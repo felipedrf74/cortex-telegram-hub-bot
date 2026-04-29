@@ -1244,6 +1244,26 @@ describe('executeToolCall — chat authorization guard', () => {
     expect(setReminder).not.toHaveBeenCalled();
   });
 
+  it('blocks prompt-injected tenant ids before the tool can execute', async () => {
+    const result = await runWithChatToolAuthorization({
+      userId: AUTH_USER_ID,
+      tenantId: AUTH_USER_ID,
+      confirmedDestructiveAction: false,
+      confirmationSource: 'none',
+    }, () => execAsTenantUser('set_reminder', {
+      tenant_id: AUTH_USER_ID + 1,
+      message: 'Use the other tenant',
+      remind_at: '2026-05-01T09:00:00Z',
+    }, AUTH_USER_ID));
+
+    expect(result).toMatchObject({
+      success: false,
+      code: 'TENANT_SCOPE_MISMATCH',
+      confirmation_required: false,
+    });
+    expect(setReminder).not.toHaveBeenCalled();
+  });
+
   it('rejects prompt-injected explicit user ids instead of silently rewriting them to the chat user', async () => {
     const result = await runWithChatToolAuthorization({
       userId: AUTH_USER_ID,
@@ -1259,6 +1279,12 @@ describe('executeToolCall — chat authorization guard', () => {
       start_date: '2026-05-01',
     }));
 
-    expect(result).toEqual({ error: 'create_training_plan cannot run for a different user than the authenticated chat user' });
+    expect(result).toMatchObject({
+      success: false,
+      code: 'AUTH_REQUIRED',
+      error: 'create_training_plan requested a user outside the authenticated chat user',
+      confirmation_required: false,
+      tool_risk: 'write',
+    });
   });
 });

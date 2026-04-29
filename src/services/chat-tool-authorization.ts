@@ -7,7 +7,7 @@ export interface ChatToolAuthorizationContext {
   userId: number;
   tenantId: number;
   confirmedDestructiveAction: boolean;
-  confirmationSource: 'explicit_current_turn' | 'none';
+  confirmationSource: 'explicit_current_turn' | 'pending_confirmation' | 'none';
 }
 
 export interface ChatToolAuthorizationResult {
@@ -82,7 +82,7 @@ export function getChatToolRisk(toolName: string): ChatToolRisk {
 
 export function authorizeChatToolCall(
   toolName: string,
-  _input: Record<string, unknown> | null | undefined,
+  input: Record<string, unknown> | null | undefined,
   userId?: number,
   tenantId?: number,
 ): ChatToolAuthorizationResult {
@@ -92,6 +92,21 @@ export function authorizeChatToolCall(
   if (!current) {
     return { allowed: true, toolRisk: risk };
   }
+
+  const requestedTenantId = typeof input?.tenantId === 'number'
+    ? input.tenantId
+    : typeof input?.tenant_id === 'number'
+      ? input.tenant_id
+      : null;
+  const requestedUserId = typeof input?.userId === 'number'
+    ? input.userId
+    : typeof input?.user_id === 'number'
+      ? input.user_id
+      : typeof input?.ownerUserId === 'number'
+        ? input.ownerUserId
+        : typeof input?.owner_user_id === 'number'
+          ? input.owner_user_id
+          : null;
 
   if (!userId || userId !== current.userId) {
     return {
@@ -108,6 +123,24 @@ export function authorizeChatToolCall(
       allowed: false,
       code: 'TENANT_SCOPE_MISMATCH',
       message: `${toolName} cannot run outside the active chat tenant`,
+      toolRisk: risk,
+    };
+  }
+
+  if (requestedTenantId != null && requestedTenantId !== current.tenantId) {
+    return {
+      allowed: false,
+      code: 'TENANT_SCOPE_MISMATCH',
+      message: `${toolName} requested a tenant outside the active chat tenant`,
+      toolRisk: risk,
+    };
+  }
+
+  if (requestedUserId != null && requestedUserId !== current.userId) {
+    return {
+      allowed: false,
+      code: 'AUTH_REQUIRED',
+      message: `${toolName} requested a user outside the authenticated chat user`,
       toolRisk: risk,
     };
   }

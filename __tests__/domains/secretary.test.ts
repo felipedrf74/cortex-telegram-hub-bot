@@ -97,6 +97,7 @@ vi.mock('../../src/services/shared-decision-context', () => ({
 vi.mock('../../src/state/shared-memory', () => ({
   getSharedMemorySummary: vi.fn().mockReturnValue(''),
   getSharedMemory: vi.fn().mockReturnValue([]),
+  getSharedMemoryByScope: vi.fn().mockReturnValue({ userPrivate: [], tenantShared: [] }),
 }));
 
 vi.mock('../../src/services/tool-executor', () => ({
@@ -138,6 +139,7 @@ import {
   buildSharedDecisionContracts,
 } from '../../src/services/shared-decision-context';
 import { getUserLanguage, getUserTimezone } from '../../src/services/user-service';
+import { getSharedMemoryByScope } from '../../src/state/shared-memory';
 
 const mockCallDomain = vi.mocked(callDomain);
 const mockContinue = vi.mocked(continueWithToolResults);
@@ -198,6 +200,7 @@ beforeEach(() => {
   } as any);
   vi.mocked(buildSharedDecisionContext).mockResolvedValue('');
   vi.mocked(buildSharedDecisionContracts).mockResolvedValue({});
+  vi.mocked(getSharedMemoryByScope).mockReturnValue({ userPrivate: [], tenantShared: [] });
   vi.mocked(getRemindersForToday).mockReturnValue([] as any);
   vi.mocked(now).mockReturnValue({
     toFormat: vi.fn().mockReturnValue('Monday, March 30 2026, 10:00'),

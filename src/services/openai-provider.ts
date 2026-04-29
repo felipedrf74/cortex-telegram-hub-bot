@@ -325,12 +325,21 @@ async function withRetry<T>(fn: () => Promise<T>, maxRetries = 3): Promise<T> {
 /**
  * Convert Anthropic-format tool definitions to OpenAI function-calling format.
  */
-function toOpenAITools(): OpenAI.ChatCompletionTool[] {
-  return TOOLS.map((t) => ({
+function toOpenAITools(filteredTools?: unknown[]): OpenAI.ChatCompletionTool[] {
+  const sourceTools = (Array.isArray(filteredTools) ? filteredTools : TOOLS) as Array<{
+    name?: unknown;
+    description?: unknown;
+    input_schema?: unknown;
+  }>;
+  return sourceTools
+    .filter((t): t is { name: string; description?: string; input_schema?: unknown } => (
+      typeof t?.name === 'string' && t.name.trim().length > 0
+    ))
+    .map((t) => ({
     type: 'function' as const,
     function: {
       name: t.name,
-      description: t.description || '',
+      description: typeof t.description === 'string' ? t.description : '',
       parameters: t.input_schema as Record<string, unknown>,
     },
   }));
@@ -419,6 +428,7 @@ ${message}`;
     // routing picks the sport-specific coach persona prompt.
     const systemPrompt = getDomainSystemPrompt(domain, currentMessage);
     const useTools = domain === 'secretary' || domain === 'triathlon';
+    const tools = useTools ? toOpenAITools(opts.filteredTools) : [];
     const contextPrefix = stateContext ? `[Current State]\n${stateContext}\n\n` : '';
 
     const messages: OpenAI.ChatCompletionMessageParam[] = [
@@ -434,7 +444,7 @@ ${message}`;
       trackedCompletion(getClient(), withTokenLimit({
         model: routing.model,
         messages,
-        ...(useTools ? { tools: toOpenAITools() } : {}),
+        ...(tools.length > 0 ? { tools } : {}),
       }, opts.maxTokensOverride || routing.maxTokens), `openai_domain_${domain}`, opts.userId ?? 0, opts.tenantId ?? opts.userId ?? 0)
     );
 
@@ -460,6 +470,7 @@ ${message}`;
     // routing picks the sport-specific coach persona prompt.
     const systemPrompt = getDomainSystemPrompt(domain, currentMessage);
     const useTools = domain === 'secretary' || domain === 'triathlon';
+    const tools = useTools ? toOpenAITools(opts.filteredTools) : [];
     const contextPrefix = stateContext ? `[Current State]\n${stateContext}\n\n` : '';
 
     const messages: OpenAI.ChatCompletionMessageParam[] = [
@@ -505,7 +516,7 @@ ${message}`;
       trackedCompletion(getClient(), withTokenLimit({
         model: routing.model,
         messages,
-        ...(useTools ? { tools: toOpenAITools() } : {}),
+        ...(tools.length > 0 ? { tools } : {}),
       }, opts.maxTokensOverride || routing.maxTokens), 'openai_tool_continuation', opts.userId ?? 0, opts.tenantId ?? opts.userId ?? 0)
     );
 

@@ -12,6 +12,7 @@ export type PortalChatDiagnosticsDb = {
 export interface PortalChatDiagnosticsOptions {
   windowDays?: number;
   limit?: number;
+  tenantId?: number;
 }
 
 export interface PortalChatDiagnosticsWindow {
@@ -154,7 +155,7 @@ function safeGet<T>(db: PortalChatDiagnosticsDb, sql: string, args: unknown[] = 
   }
 }
 
-function normalizeOptions(options: PortalChatDiagnosticsOptions = {}): Required<PortalChatDiagnosticsOptions> {
+function normalizeOptions(options: PortalChatDiagnosticsOptions = {}): { windowDays: number; limit: number } {
   return {
     windowDays: clampPositiveInt(options.windowDays, 7, 90),
     limit: clampPositiveInt(options.limit, 20, 100),
@@ -165,9 +166,15 @@ function buildTotals(
   db: PortalChatDiagnosticsDb,
   windowDays: number,
   userId?: number,
+  tenantId?: number,
 ): PortalChatDiagnosticsWindow {
   const userClause = userId ? 'AND user_id = ?' : '';
-  const args = userId ? [sinceArg(windowDays), userId] : [sinceArg(windowDays)];
+  const tenantClause = tenantId ? 'AND tenant_id = ?' : '';
+  const args = [
+    sinceArg(windowDays),
+    ...(userId ? [userId] : []),
+    ...(tenantId ? [tenantId] : []),
+  ];
   const row = safeGet<Record<string, unknown>>(db, `
     SELECT
       COUNT(*) as messages,
@@ -182,6 +189,7 @@ function buildTotals(
     WHERE created_at >= datetime('now', ?)
       AND COALESCE(scope_status, 'active') = 'active'
       ${userClause}
+      ${tenantClause}
   `, args) ?? {};
 
   return {
@@ -201,9 +209,16 @@ function buildTenantBuckets(
   windowDays: number,
   limit: number,
   userId?: number,
+  tenantId?: number,
 ): PortalChatTenantDiagnostic[] {
   const userClause = userId ? 'AND user_id = ?' : '';
-  const args = userId ? [sinceArg(windowDays), userId, limit] : [sinceArg(windowDays), limit];
+  const tenantClause = tenantId ? 'AND tenant_id = ?' : '';
+  const args = [
+    sinceArg(windowDays),
+    ...(userId ? [userId] : []),
+    ...(tenantId ? [tenantId] : []),
+    limit,
+  ];
   const rows = safeAll<Record<string, unknown>>(db, `
     SELECT
       tenant_id as tenantId,
@@ -216,6 +231,7 @@ function buildTenantBuckets(
     WHERE created_at >= datetime('now', ?)
       AND COALESCE(scope_status, 'active') = 'active'
       ${userClause}
+      ${tenantClause}
     GROUP BY tenant_id
     ORDER BY messages DESC
     LIMIT ?
@@ -239,13 +255,18 @@ function buildSimpleBuckets(
     fallback: string;
     limit: number;
     userId?: number;
+    tenantId?: number;
     includeConfidence?: boolean;
   },
 ): PortalChatDiagnosticBucket[] {
   const userClause = input.userId ? 'AND user_id = ?' : '';
-  const args = input.userId
-    ? [sinceArg(input.windowDays), input.userId, input.limit]
-    : [sinceArg(input.windowDays), input.limit];
+  const tenantClause = input.tenantId ? 'AND tenant_id = ?' : '';
+  const args = [
+    sinceArg(input.windowDays),
+    ...(input.userId ? [input.userId] : []),
+    ...(input.tenantId ? [input.tenantId] : []),
+    input.limit,
+  ];
   const confidenceSql = input.includeConfidence
     ? ', AVG(confidence) as avgConfidence'
     : '';
@@ -259,6 +280,7 @@ function buildSimpleBuckets(
     WHERE created_at >= datetime('now', ?)
       AND COALESCE(scope_status, 'active') = 'active'
       ${userClause}
+      ${tenantClause}
     GROUP BY key
     ORDER BY messages DESC
     LIMIT ?
@@ -277,11 +299,17 @@ function buildProviderUsage(
   windowDays: number,
   limit: number,
   userId?: number,
+  tenantId?: number,
 ): PortalChatProviderDiagnostic[] {
   const userClause = userId ? 'AND user_id = ?' : '';
-  const args = userId
-    ? [sinceArg(windowDays), userId, ...CHAT_USAGE_CATEGORIES, limit]
-    : [sinceArg(windowDays), ...CHAT_USAGE_CATEGORIES, limit];
+  const tenantClause = tenantId ? 'AND tenant_id = ?' : '';
+  const args = [
+    sinceArg(windowDays),
+    ...(userId ? [userId] : []),
+    ...(tenantId ? [tenantId] : []),
+    ...CHAT_USAGE_CATEGORIES,
+    limit,
+  ];
   const placeholders = CHAT_USAGE_CATEGORIES.map(() => '?').join(', ');
   const rows = safeAll<Record<string, unknown>>(db, `
     SELECT
@@ -295,6 +323,7 @@ function buildProviderUsage(
     FROM api_usage
     WHERE ts >= datetime('now', ?)
       ${userClause}
+      ${tenantClause}
       AND (
         category IN (${placeholders})
         OR category LIKE '%chat%'
@@ -379,6 +408,7 @@ function mapRecentMessage(row: RawMessageRow): PortalChatMessageDiagnostic {
 function buildRecentMessages(
   db: PortalChatDiagnosticsDb,
   userId: number,
+  tenantId: number,
   windowDays: number,
   limit: number,
 ): PortalChatMessageDiagnostic[] {
@@ -397,13 +427,14 @@ function buildRecentMessages(
       metadata_json,
       created_at
     FROM messages
-    WHERE user_id = ?
+    WHERE tenant_id = ?
+      AND user_id = ?
       AND created_at >= datetime('now', ?)
       AND COALESCE(scope_status, 'active') = 'active'
       AND COALESCE(lifecycle_state, 'completed') != 'deleted'
     ORDER BY created_at DESC, id DESC
     LIMIT ?
-  `, [userId, sinceArg(windowDays), limit]);
+  `, [tenantId, userId, sinceArg(windowDays), limit]);
 
   return rows.map(mapRecentMessage);
 }
@@ -448,19 +479,23 @@ export function buildPortalUserChatDiagnostics(
   options: PortalChatDiagnosticsOptions = {},
 ): PortalUserChatDiagnostics {
   const normalized = normalizeOptions(options);
+  const tenantId = Number.isInteger(options.tenantId) && Number(options.tenantId) > 0
+    ? Number(options.tenantId)
+    : userId;
   return {
     ok: true,
     privacyMode: 'metadata_only',
     userId,
     windowDays: normalized.windowDays,
-    totals: buildTotals(db, normalized.windowDays, userId),
-    byTenant: buildTenantBuckets(db, normalized.windowDays, normalized.limit, userId),
+    totals: buildTotals(db, normalized.windowDays, userId, tenantId),
+    byTenant: buildTenantBuckets(db, normalized.windowDays, normalized.limit, userId, tenantId),
     byLifecycle: buildSimpleBuckets(db, {
       windowDays: normalized.windowDays,
       columnSql: "COALESCE(lifecycle_state, CASE WHEN role = 'user' THEN 'sent' ELSE 'completed' END)",
       fallback: 'unknown',
       limit: normalized.limit,
       userId,
+      tenantId,
     }),
     byDomain: buildSimpleBuckets(db, {
       windowDays: normalized.windowDays,
@@ -468,6 +503,7 @@ export function buildPortalUserChatDiagnostics(
       fallback: 'unknown',
       limit: normalized.limit,
       userId,
+      tenantId,
       includeConfidence: true,
     }),
     byRouteMethod: buildSimpleBuckets(db, {
@@ -476,8 +512,9 @@ export function buildPortalUserChatDiagnostics(
       fallback: 'unknown',
       limit: normalized.limit,
       userId,
+      tenantId,
     }),
-    providerUsage: buildProviderUsage(db, normalized.windowDays, normalized.limit, userId),
-    recentMessages: buildRecentMessages(db, userId, normalized.windowDays, normalized.limit),
+    providerUsage: buildProviderUsage(db, normalized.windowDays, normalized.limit, userId, tenantId),
+    recentMessages: buildRecentMessages(db, userId, tenantId, normalized.windowDays, normalized.limit),
   };
 }

@@ -5,9 +5,9 @@ import { AuthenticatedRequest } from '../auth-middleware';
 import { logger } from '../../utils/logger';
 import { getUserLanguage } from '../../services/user-service';
 import { tryDeterministicChatCommand } from './chat-fastpath';
-import { getCallback } from '../../utils/callback-store';
+import { consumeCallbackForScope, getCallbackForScope } from '../../utils/callback-store';
 import { applyCoachRecommendations } from '../../services/garmin-coach';
-import * as microsoftTodo from '../../services/microsoft-todo';
+import { getTaskProviderForUser } from '../../services/task-store/task-router';
 import { labelsForLanguage } from './chat-inline-buttons';
 import {
   buildCallbackDataRequiredError,
@@ -34,6 +34,7 @@ import {
 export type ChatRouteScopeGuard = (
   res: Response,
   userId: number | undefined,
+  tenantId: number | undefined,
   operation: string,
   details?: Record<string, unknown>,
 ) => userId is number;
@@ -50,7 +51,7 @@ export function registerChatCallbackRoutes(
     const { userId, tenantId = userId } = req as AuthenticatedRequest;
     const { callbackData, messageId } = req.body;
 
-    if (!ensureValidChatRouteScope(res, userId, 'chat_route_callback', {
+    if (!ensureValidChatRouteScope(res, userId, tenantId, 'chat_route_callback', {
       callbackPrefix: typeof callbackData === 'string' ? callbackData.split(':').slice(0, 2).join(':') : null,
       hasMessageId: Boolean(messageId),
     })) {
@@ -71,7 +72,7 @@ export function registerChatCallbackRoutes(
 
       if (callbackData.startsWith('cmd:')) {
         const command = callbackData.slice(4);
-        const fastPath = await tryDeterministicChatCommand(command, userId);
+        const fastPath = await tryDeterministicChatCommand(command, userId, tenantId);
         if (!fastPath) {
           res.status(400).json({
             error: buildUnsupportedCommandCallbackError(language, command),
@@ -128,7 +129,7 @@ export function registerChatCallbackRoutes(
           return;
         }
 
-        const cbData = ref ? getCallback(ref) : null;
+        const cbData = ref ? getCallbackForScope(ref, { tenantId, userId }) : null;
         const recommendationIds = Array.isArray(cbData?.recommendationIds)
           ? cbData.recommendationIds.filter((id: unknown): id is string => typeof id === 'string' && id.length > 0)
           : [];
@@ -141,6 +142,9 @@ export function registerChatCallbackRoutes(
         }
 
         const applied = await applyCoachRecommendations(userId, recommendationIds);
+        if (ref) {
+          consumeCallbackForScope(ref, { tenantId, userId });
+        }
         const payload = buildCoachApplyPayload(lang, applied.count, applied.appliedRecommendations);
 
         if (messageId) {
@@ -162,8 +166,9 @@ export function registerChatCallbackRoutes(
 
       // Resolve the callback data from the store. The iOS route supports
       // the most common Telegram-origin callback patterns used by task cards.
-      const cbData = getCallback(callbackData);
       const prefix = callbackData.split(':').slice(0, 2).join(':');
+      const ref = callbackData.split(':')[2];
+      const cbData = ref ? getCallbackForScope(ref, { tenantId, userId }) : null;
       if (!cbData && prefix !== 'td:dn') {
         res.status(410).json({
           error: buildCallbackExpiredError(language),
@@ -176,18 +181,19 @@ export function registerChatCallbackRoutes(
         : 'Action processed';
       let editOriginal = false;
       let newButtons: { text: string; callbackData: string }[][] | null = null;
+      const taskProvider = getTaskProviderForUser(userId);
 
       switch (prefix) {
         case 'td:ls': {
           if (cbData?.listId && cbData?.listName) {
-            const result = await microsoftTodo.getTasks(cbData.listId, cbData.listName, { status: 'notStarted' });
+            const result = await taskProvider.getTasks(cbData.listId, cbData.listName, { status: 'notStarted' });
             if (!result.success) {
               const payload = buildTodoListFetchFailurePayload(language);
               responseText = payload.text;
               editOriginal = payload.editOriginal;
               break;
             }
-            const payload = buildTodoListSelectionPayload(result.data, cbData.listName, language, labels);
+            const payload = buildTodoListSelectionPayload(result.data, cbData.listName, language, labels, { tenantId, userId });
             responseText = payload.text;
             newButtons = payload.newButtons;
             editOriginal = payload.editOriginal;
@@ -196,7 +202,8 @@ export function registerChatCallbackRoutes(
         }
         case 'td:tc': {
           if (cbData?.listId && cbData?.taskId) {
-            await microsoftTodo.completeTask(cbData.listId, cbData.taskId);
+            await taskProvider.completeTask(cbData.listId, cbData.taskId);
+            if (ref) consumeCallbackForScope(ref, { tenantId, userId });
             const payload = buildTaskCompletedPayload(language, cbData.title);
             responseText = payload.text;
             editOriginal = payload.editOriginal;
@@ -205,12 +212,14 @@ export function registerChatCallbackRoutes(
         }
         case 'td:dy': {
           if (cbData?.listId && cbData?.taskId) {
-            await microsoftTodo.deleteTask(cbData.listId, cbData.taskId);
+            await taskProvider.deleteTask(cbData.listId, cbData.taskId);
+            if (ref) consumeCallbackForScope(ref, { tenantId, userId });
             const payload = buildTaskDeletedPayload(language, cbData.title);
             responseText = payload.text;
             editOriginal = payload.editOriginal;
           } else if (cbData?.listId && cbData?.type === 'list') {
-            await microsoftTodo.deleteList(cbData.listId);
+            await taskProvider.deleteList(cbData.listId);
+            if (ref) consumeCallbackForScope(ref, { tenantId, userId });
             const payload = buildListDeletedPayload(language, cbData.listName);
             responseText = payload.text;
             editOriginal = payload.editOriginal;
@@ -228,6 +237,7 @@ export function registerChatCallbackRoutes(
           break;
         }
         case 'td:dn': {
+          if (ref) consumeCallbackForScope(ref, { tenantId, userId });
           const payload = buildCancelledPayload(language);
           responseText = payload.text;
           editOriginal = payload.editOriginal;

@@ -13,6 +13,7 @@
 import { AIProvider, AICallResult, AIToolResultMessage, CallDomainOptions } from './ai-provider';
 import { DomainName, DomainMessage, ClassificationResult } from '../domains/types';
 import { logger } from '../utils/logger';
+import { getCurrentContext } from '../utils/request-context';
 
 // ─── Error Classification ─────────────────────────────────────────
 // Only retryable errors should trigger circuit-breaker failures and fallback.
@@ -38,6 +39,177 @@ function isRetryableError(err: any): boolean {
 import { planSecretaryOptimization, type SecretaryOptimization } from './secretary-tools';
 import { TOOLS } from './anthropic';
 import type Anthropic from '@anthropic-ai/sdk';
+
+// ─── Tenant-safe routing metadata ─────────────────────────────────
+
+export type RoutingCallKind = 'classify' | 'domain' | 'tool-continuation';
+export type ProviderPairSource = 'task_default' | 'domain_override' | 'domain_cache';
+export type FallbackReason =
+  | 'rate_limited'
+  | 'provider_server_error'
+  | 'network_timeout'
+  | 'network_unavailable'
+  | 'provider_overloaded'
+  | 'circuit_open'
+  | 'unknown_retryable';
+
+export interface SafeProviderErrorSummary {
+  name: string;
+  status?: number | string;
+  code?: string;
+  retryable: boolean;
+  reason: FallbackReason | 'non_retryable';
+}
+
+export interface RoutingCallMetadata {
+  callKind: RoutingCallKind;
+  category: string;
+  domain?: DomainName;
+  userId?: number;
+  tenantId?: number;
+  modelTier?: CallDomainOptions['modelTier'];
+  pairSource?: ProviderPairSource;
+  operatorOverrideApplied?: boolean;
+  historyCount?: number;
+  promptChars?: number;
+  stateContextChars?: number;
+  toolConversationTurns?: number;
+}
+
+export interface SafeRoutingLogMetadata extends RoutingCallMetadata {
+  taskType: TaskType;
+  provider: string;
+  requestId?: string;
+  requestSource?: string;
+  fallbackUsed: boolean;
+  fallbackReason?: FallbackReason;
+  primaryProvider?: string;
+  fallbackProvider?: string;
+  circuitOpen?: boolean;
+  tenantScope: 'present' | 'missing';
+  userScope: 'present' | 'missing';
+  providerAttemptCount?: number;
+  runawayThreshold?: number;
+}
+
+interface RequestProviderCallCounter {
+  count: number;
+  warned: boolean;
+  lastSeen: number;
+}
+
+const requestProviderCallCounts = new Map<string, RequestProviderCallCounter>();
+
+function fallbackReasonForError(err: any): FallbackReason {
+  const status = err?.status ?? err?.statusCode ?? err?.error_code;
+  const code = err?.code;
+  if (status === 429) return 'rate_limited';
+  if (typeof status === 'number' && status >= 500) return 'provider_server_error';
+  if (code === 'ETIMEDOUT' || code === 'UND_ERR_CONNECT_TIMEOUT' || code === 'UND_ERR_SOCKET') return 'network_timeout';
+  if (code === 'ECONNREFUSED' || code === 'ENOTFOUND') return 'network_unavailable';
+  if (err?.error?.type === 'overloaded_error') return 'provider_overloaded';
+  return 'unknown_retryable';
+}
+
+function summarizeProviderError(err: any, retryable = isRetryableError(err)): SafeProviderErrorSummary {
+  const status = err?.status ?? err?.statusCode ?? err?.error_code;
+  const code = typeof err?.code === 'string' ? err.code : undefined;
+  const name = typeof err?.name === 'string' && err.name.trim() ? err.name : 'ProviderError';
+  return {
+    name,
+    ...(status !== undefined ? { status } : {}),
+    ...(code ? { code } : {}),
+    retryable,
+    reason: retryable ? fallbackReasonForError(err) : 'non_retryable',
+  };
+}
+
+function runawayThreshold(): number {
+  const raw = Number.parseInt(process.env.AI_PROVIDER_RUNAWAY_CALL_THRESHOLD || '', 10);
+  return Number.isFinite(raw) && raw > 0 ? raw : 12;
+}
+
+function safeRoutingMetadata(
+  taskType: TaskType,
+  provider: string,
+  metadata: RoutingCallMetadata | undefined,
+  opts?: {
+    fallbackUsed?: boolean;
+    fallbackReason?: FallbackReason;
+    primaryProvider?: string;
+    fallbackProvider?: string;
+    circuitOpen?: boolean;
+  },
+): SafeRoutingLogMetadata {
+  const ctx = getCurrentContext();
+  const tenantScope = typeof metadata?.tenantId === 'number' && Number.isFinite(metadata.tenantId) && metadata.tenantId > 0
+    ? 'present'
+    : 'missing';
+  const userScope = typeof metadata?.userId === 'number' && Number.isFinite(metadata.userId) && metadata.userId > 0
+    ? 'present'
+    : 'missing';
+  return {
+    callKind: metadata?.callKind ?? (taskType === 'classify' ? 'classify' : 'domain'),
+    category: metadata?.category ?? taskType,
+    taskType,
+    provider,
+    ...(metadata?.domain ? { domain: metadata.domain } : {}),
+    ...(metadata?.userId !== undefined ? { userId: metadata.userId } : {}),
+    ...(metadata?.tenantId !== undefined ? { tenantId: metadata.tenantId } : {}),
+    ...(metadata?.modelTier ? { modelTier: metadata.modelTier } : {}),
+    ...(metadata?.pairSource ? { pairSource: metadata.pairSource } : {}),
+    ...(metadata?.operatorOverrideApplied !== undefined ? { operatorOverrideApplied: metadata.operatorOverrideApplied } : {}),
+    ...(metadata?.historyCount !== undefined ? { historyCount: metadata.historyCount } : {}),
+    ...(metadata?.promptChars !== undefined ? { promptChars: metadata.promptChars } : {}),
+    ...(metadata?.stateContextChars !== undefined ? { stateContextChars: metadata.stateContextChars } : {}),
+    ...(metadata?.toolConversationTurns !== undefined ? { toolConversationTurns: metadata.toolConversationTurns } : {}),
+    ...(ctx?.requestId ? { requestId: ctx.requestId } : {}),
+    ...(ctx?.source ? { requestSource: ctx.source } : {}),
+    fallbackUsed: Boolean(opts?.fallbackUsed),
+    ...(opts?.fallbackReason ? { fallbackReason: opts.fallbackReason } : {}),
+    ...(opts?.primaryProvider ? { primaryProvider: opts.primaryProvider } : {}),
+    ...(opts?.fallbackProvider ? { fallbackProvider: opts.fallbackProvider } : {}),
+    ...(opts?.circuitOpen !== undefined ? { circuitOpen: opts.circuitOpen } : {}),
+    tenantScope,
+    userScope,
+  };
+}
+
+function trackRunawayProviderCalls(meta: SafeRoutingLogMetadata): SafeRoutingLogMetadata {
+  if (!meta.requestId) return meta;
+  const threshold = runawayThreshold();
+  const now = Date.now();
+  const existing = requestProviderCallCounts.get(meta.requestId) ?? { count: 0, warned: false, lastSeen: now };
+  existing.count++;
+  existing.lastSeen = now;
+  requestProviderCallCounts.set(meta.requestId, existing);
+
+  if (requestProviderCallCounts.size > 1000) {
+    for (const [key, value] of requestProviderCallCounts.entries()) {
+      if (now - value.lastSeen > 15 * 60 * 1000) requestProviderCallCounts.delete(key);
+    }
+  }
+
+  const enriched = {
+    ...meta,
+    providerAttemptCount: existing.count,
+    runawayThreshold: threshold,
+  };
+
+  if (existing.count > threshold && !existing.warned) {
+    existing.warned = true;
+    logger.warn(
+      enriched,
+      'Potential runaway AI provider call loop detected',
+    );
+  }
+
+  return enriched;
+}
+
+function sanitizedFallbackError(reason: FallbackReason | 'non_retryable'): Error {
+  return new Error(`provider_failure:${reason}`);
+}
 
 // ─── Task Types ────────────────────────────────────────────────────
 
@@ -194,9 +366,23 @@ export interface ProviderMetrics {
 export interface FallbackEvent {
   taskType: TaskType;
   error: Error;
+  errorSummary: SafeProviderErrorSummary;
+  fallbackReason: FallbackReason;
   primaryProvider: string;
   fallbackProvider: string;
   circuitOpen: boolean;
+  callKind: RoutingCallKind;
+  category: string;
+  domain?: DomainName;
+  modelTier?: CallDomainOptions['modelTier'];
+  userId?: number;
+  tenantId?: number;
+  requestId?: string;
+  requestSource?: string;
+  pairSource?: ProviderPairSource;
+  operatorOverrideApplied?: boolean;
+  tenantScope: 'present' | 'missing';
+  userScope: 'present' | 'missing';
 }
 
 /**
@@ -260,6 +446,7 @@ export class TaskRoutingProvider implements AIProvider {
     taskType: TaskType,
     fn: (provider: AIProvider) => Promise<T>,
     pairOverride?: TaskProviderPair,
+    metadata?: RoutingCallMetadata,
   ): Promise<T> {
     const pair = pairOverride ?? this.routing[taskType];
     const primaryBreaker = this.getBreaker(pair.primary.name);
@@ -267,14 +454,24 @@ export class TaskRoutingProvider implements AIProvider {
     // Try primary if circuit allows
     if (primaryBreaker.canAttempt()) {
       try {
+        const attemptMeta = trackRunawayProviderCalls(safeRoutingMetadata(taskType, pair.primary.name, metadata));
+        if (attemptMeta.userScope === 'present' && attemptMeta.tenantScope === 'missing') {
+          logger.warn(
+            attemptMeta,
+            'AI provider call has user scope but no tenant scope',
+          );
+        }
+        logger.debug(attemptMeta, 'AI provider routing attempt');
         const result = await fn(pair.primary);
         primaryBreaker.recordSuccess();
         const pm = this.getMetrics(pair.primary.name);
         pm.usageCount++;
         pm.lastSuccessAt = new Date().toISOString();
+        logger.debug(attemptMeta, 'AI provider routing attempt succeeded');
         return result;
       } catch (err) {
         const retryable = isRetryableError(err);
+        const errorSummary = summarizeProviderError(err, retryable);
         if (retryable) {
           primaryBreaker.recordFailure();
         }
@@ -287,7 +484,10 @@ export class TaskRoutingProvider implements AIProvider {
         // Non-retryable errors (auth, bad request) should not trigger fallback
         if (!retryable) {
           logger.warn(
-            { taskType, provider: pair.primary.name, status: (err as any)?.status, retryable: false },
+            {
+              ...safeRoutingMetadata(taskType, pair.primary.name, metadata),
+              error: errorSummary,
+            },
             'Non-retryable error — not falling back (would fail too)',
           );
           throw err;
@@ -297,15 +497,32 @@ export class TaskRoutingProvider implements AIProvider {
           const fm = this.getMetrics(pair.fallback.name);
           fm.fallbackTriggerCount++;
 
-          this.onFallback?.({
-            taskType,
-            error: err as Error,
+          const fallbackReason = errorSummary.reason as FallbackReason;
+          this.emitFallbackEvent({
+            ...safeRoutingMetadata(taskType, pair.fallback.name, metadata, {
+              fallbackUsed: true,
+              fallbackReason,
+              primaryProvider: pair.primary.name,
+              fallbackProvider: pair.fallback.name,
+              circuitOpen: false,
+            }),
+            error: sanitizedFallbackError(fallbackReason),
+            errorSummary,
+            fallbackReason,
             primaryProvider: pair.primary.name,
             fallbackProvider: pair.fallback.name,
             circuitOpen: false,
           });
           logger.warn(
-            { taskType, provider: pair.primary.name, err },
+            {
+              ...safeRoutingMetadata(taskType, pair.primary.name, metadata, {
+                fallbackReason,
+                primaryProvider: pair.primary.name,
+                fallbackProvider: pair.fallback.name,
+                circuitOpen: false,
+              }),
+              error: errorSummary,
+            },
             'Primary provider failed — trying fallback',
           );
         } else {
@@ -325,32 +542,91 @@ export class TaskRoutingProvider implements AIProvider {
       const fm = this.getMetrics(pair.fallback.name);
       fm.fallbackTriggerCount++;
 
-      this.onFallback?.({
-        taskType,
-        error: new Error(`Circuit open for ${pair.primary.name}`),
+      const fallbackReason: FallbackReason = 'circuit_open';
+      const errorSummary: SafeProviderErrorSummary = {
+        name: 'CircuitOpen',
+        retryable: true,
+        reason: fallbackReason,
+      };
+      this.emitFallbackEvent({
+        ...safeRoutingMetadata(taskType, pair.fallback.name, metadata, {
+          fallbackUsed: true,
+          fallbackReason,
+          primaryProvider: pair.primary.name,
+          fallbackProvider: pair.fallback.name,
+          circuitOpen: true,
+        }),
+        error: sanitizedFallbackError(fallbackReason),
+        errorSummary,
+        fallbackReason,
         primaryProvider: pair.primary.name,
         fallbackProvider: pair.fallback.name,
         circuitOpen: true,
       });
       logger.info(
-        { taskType, provider: pair.primary.name },
+        safeRoutingMetadata(taskType, pair.primary.name, metadata, {
+          fallbackReason,
+          primaryProvider: pair.primary.name,
+          fallbackProvider: pair.fallback.name,
+          circuitOpen: true,
+        }),
         'Circuit open — routing directly to fallback',
       );
     }
 
     // Try fallback (track its own success/failure)
     try {
+      const fallbackMeta = trackRunawayProviderCalls(safeRoutingMetadata(taskType, pair.fallback!.name, metadata, {
+        fallbackUsed: true,
+        primaryProvider: pair.primary.name,
+        fallbackProvider: pair.fallback!.name,
+      }));
+      logger.debug(fallbackMeta, 'AI provider fallback attempt');
       const result = await fn(pair.fallback!);
       const fm = this.getMetrics(pair.fallback!.name);
       fm.usageCount++;
       fm.lastSuccessAt = new Date().toISOString();
+      logger.info(fallbackMeta, 'AI provider fallback succeeded');
       return result;
     } catch (fallbackErr) {
+      const retryable = isRetryableError(fallbackErr);
+      const errorSummary = summarizeProviderError(fallbackErr, retryable);
       const fm = this.getMetrics(pair.fallback!.name);
       fm.usageCount++;
       fm.failureCount++;
       fm.lastFailureAt = new Date().toISOString();
+      logger.warn(
+        {
+          ...safeRoutingMetadata(taskType, pair.fallback!.name, metadata, {
+            fallbackUsed: true,
+            fallbackReason: errorSummary.reason === 'non_retryable' ? undefined : errorSummary.reason,
+            primaryProvider: pair.primary.name,
+            fallbackProvider: pair.fallback!.name,
+          }),
+          error: errorSummary,
+        },
+        'Fallback provider failed',
+      );
       throw fallbackErr;
+    }
+  }
+
+  private emitFallbackEvent(event: FallbackEvent): void {
+    if (!this.onFallback) return;
+    try {
+      this.onFallback(event);
+    } catch (err) {
+      logger.warn(
+        {
+          err: summarizeProviderError(err, false),
+          taskType: event.taskType,
+          primaryProvider: event.primaryProvider,
+          fallbackProvider: event.fallbackProvider,
+          fallbackReason: event.fallbackReason,
+          requestId: event.requestId,
+        },
+        'AI provider fallback observer failed; continuing with fallback',
+      );
     }
   }
 
@@ -362,6 +638,15 @@ export class TaskRoutingProvider implements AIProvider {
   ): Promise<ClassificationResult> {
     return this.executeWithFallback('classify', (p) =>
       p.classify(message, activeContext),
+      undefined,
+      {
+        callKind: 'classify',
+        category: 'classify_message',
+        promptChars: message.length,
+        historyCount: activeContext ? 1 : 0,
+        pairSource: 'task_default',
+        operatorOverrideApplied: false,
+      },
     );
   }
 
@@ -374,13 +659,20 @@ export class TaskRoutingProvider implements AIProvider {
    * for domain-specific routing (e.g., secretary→Claude, cooking→Gemini),
    * then falls back to task-type routing.
    */
-  private resolveProviderPairForDomain(domain: DomainName): { taskType: TaskType; pair: TaskProviderPair } {
+  private resolveProviderPairForDomain(domain: DomainName): {
+    taskType: TaskType;
+    pair: TaskProviderPair;
+    pairSource: ProviderPairSource;
+    operatorOverrideApplied: boolean;
+  } {
     const taskType = resolveTaskType(domain);
     const defaultPair = this.routing[taskType];
 
     // Check cache first
     const cached = this.domainPairCache.get(domain);
-    if (cached) return { taskType, pair: cached };
+    if (cached) {
+      return { taskType, pair: cached, pairSource: 'domain_cache', operatorOverrideApplied: true };
+    }
 
     // Check domain-specific provider routing (e.g., cooking→Gemini)
     try {
@@ -398,14 +690,14 @@ export class TaskRoutingProvider implements AIProvider {
           const pair: TaskProviderPair = { primary, fallback: fallback || defaultPair.fallback };
           this.domainPairCache.set(domain, pair);
           logger.info({ domain, provider: domainProvider, fallback: domainFallback }, 'Domain-specific provider pair cached');
-          return { taskType, pair };
+          return { taskType, pair, pairSource: 'domain_override', operatorOverrideApplied: true };
         }
       }
     } catch {
       // domain-provider-router not available — use task-type routing
     }
 
-    return { taskType, pair: defaultPair };
+    return { taskType, pair: defaultPair, pairSource: 'task_default', operatorOverrideApplied: false };
   }
 
   /** Clear cached domain pairs (call when routing config changes at runtime). */
@@ -420,7 +712,7 @@ export class TaskRoutingProvider implements AIProvider {
     stateContext: string,
     optionsOrMaxTokens?: number | CallDomainOptions,
   ): Promise<AICallResult> {
-    const { taskType, pair } = this.resolveProviderPairForDomain(domain);
+    const { taskType, pair, pairSource, operatorOverrideApplied } = this.resolveProviderPairForDomain(domain);
 
     // ── TASK-17 Layer 3+4+5: provider-agnostic optimization ──────
     //
@@ -440,7 +732,19 @@ export class TaskRoutingProvider implements AIProvider {
 
     return this.executeWithFallback(taskType, (p) =>
       p.callDomain(domain, opts.slicedHistory, currentMessage, stateContext, opts.callOptions),
-    pair);
+    pair, {
+      callKind: 'domain',
+      category: `domain_${domain}`,
+      domain,
+      userId: opts.callOptions.userId,
+      tenantId: opts.callOptions.tenantId,
+      modelTier: opts.callOptions.modelTier,
+      pairSource,
+      operatorOverrideApplied,
+      historyCount: opts.slicedHistory.length,
+      promptChars: currentMessage.length,
+      stateContextChars: stateContext.length,
+    });
   }
 
   async continueWithToolResults(
@@ -451,7 +755,7 @@ export class TaskRoutingProvider implements AIProvider {
     toolConversation: AIToolResultMessage[],
     options?: CallDomainOptions,
   ): Promise<AICallResult> {
-    const { taskType, pair } = this.resolveProviderPairForDomain(domain);
+    const { taskType, pair, pairSource, operatorOverrideApplied } = this.resolveProviderPairForDomain(domain);
 
     // Same optimization logic as callDomain. Critical: must compute the
     // SAME decision (same currentMessage → same tier/tools/history) so
@@ -463,7 +767,20 @@ export class TaskRoutingProvider implements AIProvider {
 
     return this.executeWithFallback(taskType, (p) =>
       p.continueWithToolResults(domain, opts.slicedHistory, currentMessage, stateContext, toolConversation, opts.callOptions),
-    pair);
+    pair, {
+      callKind: 'tool-continuation',
+      category: 'tool_continuation',
+      domain,
+      userId: opts.callOptions.userId,
+      tenantId: opts.callOptions.tenantId,
+      modelTier: opts.callOptions.modelTier,
+      pairSource,
+      operatorOverrideApplied,
+      historyCount: opts.slicedHistory.length,
+      promptChars: currentMessage.length,
+      stateContextChars: stateContext.length,
+      toolConversationTurns: toolConversation.length,
+    });
   }
 
   /**

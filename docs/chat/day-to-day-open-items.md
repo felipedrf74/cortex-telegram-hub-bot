@@ -1,11 +1,11 @@
 # Chat Day-To-Day Open Items
 
-Generated: 2026-04-29 03:45 WEST  
-Branch: `feature/chat-tenant-safe-context-orchestration`
+Generated: 2026-04-29 12:39 WEST
+Branch: `feature/chat-p0-tenant-security-audit`
 
 ## P0
 
-None from the deterministic day-to-day harness itself.
+None from the deterministic day-to-day harness itself. The latest deterministic run passed 12 scenarios / 34 turns with average score `1.94 / 2.00`.
 
 Existing Chat workstream P0s still apply:
 
@@ -17,7 +17,7 @@ Existing Chat workstream P0s still apply:
 
 | Item | Reason | Next Step |
 | --- | --- | --- |
-| Full local product engine integration | Fixture harness proves behavior expectations, not live REST/tool state. | Connect scenarios to seeded local Nexus runtime. |
+| Full local product engine integration | Fixture harness proves behavior expectations, not live REST/tool state. | Replay the 12 scenarios against seeded local Nexus runtime. |
 | iOS simulator Chat smoke | Harness validates envelope shape but not rendering/state refresh. | Run iOS Chat against full local backend with these scenarios. |
 | Bounded live-provider sample | Fixture mode avoids cost but cannot evaluate real wording/reasoning drift. | Run a small curated provider pass after scoped context builder is locked. |
 | Tool-call lifecycle persistence | Harness records tool status but does not persist durable invocation state. | Continue message/tool lifecycle workstream. |
@@ -27,7 +27,7 @@ Existing Chat workstream P0s still apply:
 | Item | Reason | Next Step |
 | --- | --- | --- |
 | Portal/web Chat replay view | Useful for reviewing transcripts and rubric failures. | Add report viewer or export format if needed. |
-| More frustrated-user variants | Current coverage has one failure/retry path. | Add interruption, cancellation, and contradictory instruction variants. |
+| More frustrated-user variants | Current coverage now includes tool failure/retry and contradictory cancellation/change instructions. | Add interruption and cancellation-during-stream variants. |
 | Attachment-driven prompt injection | Current scenario simulates quoted malicious content only. | Add real local attachment fixtures once attachment scope is audited. |
 
 ## Cleanup Status

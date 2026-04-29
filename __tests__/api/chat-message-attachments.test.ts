@@ -24,6 +24,7 @@ describe('chat message attachment execution helpers', () => {
       attachment: { base64: 'abc123', mimeType: 'image/jpeg' },
       normalizedText: '',
       userId: 42,
+      tenantId: 42,
       language: 'pt-PT',
       classifier,
       timestamp: '2026-04-24T12:00:00.000Z',
@@ -49,7 +50,7 @@ describe('chat message attachment execution helpers', () => {
       },
     });
 
-    expect(classifier).toHaveBeenCalledWith('abc123', 'image/jpeg', 'Analisa esta imagem.', 42);
+    expect(classifier).toHaveBeenCalledWith('abc123', 'image/jpeg', 'Analisa esta imagem.', 42, 42);
   });
 
   it('returns a degraded response instead of hanging when classification exceeds the iOS-safe timeout', async () => {
@@ -60,6 +61,7 @@ describe('chat message attachment execution helpers', () => {
       attachment: { base64: 'abc123', mimeType: 'image/png' },
       normalizedText: 'Can you read this receipt?',
       userId: 99,
+      tenantId: 99,
       language: 'en-US',
       classifier,
       timestamp: '2026-04-24T12:30:00.000Z',
@@ -96,6 +98,7 @@ describe('chat message attachment execution helpers', () => {
       attachment: { base64: 'abc123', mimeType: 'image/webp' },
       normalizedText: '',
       userId: 7,
+      tenantId: 7,
       language: 'pt-BR',
       classifier,
       timestamp: '2026-04-24T13:00:00.000Z',

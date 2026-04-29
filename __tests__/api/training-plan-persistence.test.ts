@@ -149,6 +149,7 @@ describe('training-plan-persistence', () => {
       session_type: 'run',
       duration_minutes: 50,
       intensity_text: 'RPE 72%',
+      status: 'scheduled',
       session_identity_key: expect.stringContaining('plan:901|week:1|day:monday|type:run|slot:1'),
       session_shape_hash: expect.any(String),
     }));
@@ -263,7 +264,15 @@ describe('training-plan-persistence', () => {
           {
             weekNumber: 1,
             sessions: [
-              { dayOfWeek: 'Monday', sessionType: 'gym', title: 'Scheduled Lift', durationMinutes: 35, scheduleState: 'compressed', exercises: [{ name: 'Goblet Squat' }] },
+              {
+                dayOfWeek: 'Monday',
+                sessionType: 'gym',
+                title: 'Scheduled Lift',
+                durationMinutes: 35,
+                scheduleState: 'compressed',
+                scheduleReason: 'Compressed from 45 to 35 minutes because only a short hotel-gym window was available.',
+                exercises: [{ name: 'Goblet Squat' }],
+              },
               { dayOfWeek: 'Tuesday', sessionType: 'rest', title: 'Unscheduled Lift', durationMinutes: 45, scheduleState: 'unscheduled', scheduleReason: 'No feasible slot remained.' },
               { dayOfWeek: 'Wednesday', sessionType: 'run', title: 'Deferred Run', durationMinutes: 0, scheduleState: 'deferred', scheduleReason: 'Deferred by capacity reconciliation.' },
             ],
@@ -276,7 +285,11 @@ describe('training-plan-persistence', () => {
     expect(result.eventsCreated).toBe(1);
     expect(result.weekSummaries).toEqual([{ weekNumber: 1, focus: undefined, sessionCount: 1 }]);
     expect(mockCreateSession).toHaveBeenCalledTimes(3);
-    expect(mockCreateSession).toHaveBeenCalledWith(expect.objectContaining({ title: 'Scheduled Lift' }));
+    expect(mockCreateSession).toHaveBeenCalledWith(expect.objectContaining({
+      title: 'Scheduled Lift',
+      status: 'compressed',
+      description: expect.stringContaining('Compressed from 45 to 35 minutes'),
+    }));
     expect(mockCreateSession).toHaveBeenCalledWith(expect.objectContaining({
       title: 'Unscheduled Lift',
       status: 'unscheduled',
@@ -287,6 +300,60 @@ describe('training-plan-persistence', () => {
       status: 'deferred',
     }));
     expect(mockCreateEvent).toHaveBeenCalledTimes(1);
+    expect(mockCreateEvent.mock.calls[0]?.[0]?.description).toContain('Compressed from 45 to 35 minutes');
+  });
+
+  it('persists reflowed/capped schedule adjustments as rich lifecycle states for iOS read models', async () => {
+    await persistGeneratedTrainingPlan({
+      userId: 12,
+      objective: 'Travel week',
+      durationWeeks: 1,
+      startDate: '2026-04-19',
+      endDate: '2026-04-26',
+      now: new Date('2026-04-19T00:00:00.000Z'),
+      preferencesJson: '{}',
+      normalizedPreferredTime: '12:00',
+      normalizedPreferredCardioTime: '07:00',
+      normalizedPreferredStrengthTime: '12:30',
+      busyWindows: [],
+      planData: {
+        weeks: [
+          {
+            weekNumber: 1,
+            sessions: [
+              {
+                dayOfWeek: 'Monday',
+                sessionType: 'run',
+                title: 'Reflowed Run',
+                durationMinutes: 30,
+                scheduleAdjustments: ['reflowed', 'compressed'],
+                scheduleReason: 'Moved around travel and compressed to fit the available window.',
+              },
+              {
+                dayOfWeek: 'Thursday',
+                sessionType: 'gym',
+                title: 'Capped Lift',
+                durationMinutes: 25,
+                scheduleAdjustments: ['capped'],
+                scheduleReason: 'Capped to the available hotel-gym window.',
+              },
+            ],
+          },
+        ],
+      },
+    });
+
+    expect(mockCreateSession).toHaveBeenCalledWith(expect.objectContaining({
+      title: 'Reflowed Run',
+      status: 'reflowed',
+      description: expect.stringContaining('Moved around travel'),
+    }));
+    expect(mockCreateSession).toHaveBeenCalledWith(expect.objectContaining({
+      title: 'Capped Lift',
+      status: 'capped',
+      description: expect.stringContaining('Capped to the available hotel-gym window'),
+    }));
+    expect(mockCreateEvent).toHaveBeenCalledTimes(2);
   });
 
   it('persists a session as unscheduled when real calendar busy windows leave no valid slot', async () => {

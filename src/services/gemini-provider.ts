@@ -384,7 +384,7 @@ export async function completeVisionOneShotWithFallback(
   image: { base64: string; mimeType: string },
   category: string,
   anthropicFallback: () => Promise<string>,
-  options?: { model?: string; maxTokens?: number; temperature?: number; userId?: number },
+  options?: { model?: string; maxTokens?: number; temperature?: number; userId?: number; tenantId?: number },
 ): Promise<{ text: string; provider: 'gemini' | 'openai' | 'anthropic' }> {
   // Stage 1: Gemini (primary)
   if (isGeminiProviderConfigured()) {

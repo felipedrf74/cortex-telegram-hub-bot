@@ -572,6 +572,102 @@ describe('Training API routes', () => {
     expect(res.body.data.totalCount).toBe(0);
   });
 
+  it('surfaces rich training lifecycle states in the week payload without counting inactive sessions as active load', async () => {
+    mockGetActivePlan.mockReturnValue({
+      id: 44,
+      name: 'Travel build',
+      start_date: '2026-04-20',
+      periodization: 'build',
+      plan_version: 3,
+    });
+    mockGetCurrentWeek.mockReturnValue({ id: 78, week_number: 1, focus: 'travel' });
+    mockGetSessionsForWeek.mockReturnValue([
+      {
+        id: 301,
+        plan_id: 44,
+        day_of_week: 'Monday',
+        session_type: 'run',
+        title: 'Reflowed Run',
+        duration_minutes: 30,
+        status: 'reflowed',
+        session_identity_key: 'plan:44|week:1|day:monday|type:run|slot:1',
+        session_shape_hash: 'shape-reflowed-run',
+        description: 'Moved because of a meeting.',
+      },
+      {
+        id: 302,
+        plan_id: 44,
+        day_of_week: 'Wednesday',
+        session_type: 'gym',
+        title: 'Compressed Lift',
+        duration_minutes: 25,
+        status: 'compressed',
+        session_identity_key: 'plan:44|week:1|day:wednesday|type:gym|slot:1',
+        session_shape_hash: 'shape-compressed-lift',
+        description: 'Compressed to match the short hotel-gym window.',
+      },
+      {
+        id: 303,
+        plan_id: 44,
+        day_of_week: 'Friday',
+        session_type: 'run',
+        title: 'No Slot Run',
+        duration_minutes: 45,
+        status: 'unscheduled',
+        session_identity_key: 'plan:44|week:1|day:friday|type:run|slot:1',
+        session_shape_hash: 'shape-unscheduled-run',
+        description: 'No valid slot remained.',
+      },
+      {
+        id: 304,
+        plan_id: 44,
+        day_of_week: 'Saturday',
+        session_type: 'gym',
+        title: 'Old Lift',
+        duration_minutes: 40,
+        status: 'superseded',
+        session_identity_key: 'plan:44|week:1|day:saturday|type:gym|slot:1',
+        session_shape_hash: 'shape-old-lift',
+        description: 'Superseded by regenerated plan.',
+      },
+    ]);
+
+    const res = await dispatch('GET', '/week');
+
+    expect(res.statusCode).toBe(200);
+    expect(res.body.ok).toBe(true);
+    expect(res.body.data.plan).toEqual(expect.objectContaining({
+      id: 44,
+      planVersion: 3,
+      lifecycleState: 'active',
+    }));
+    expect(res.body.data.totalCount).toBe(2);
+    expect(res.body.data.sessions).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        id: '301',
+        lifecycleState: 'reflowed',
+        status: 'planned',
+        sessionShapeHash: 'shape-reflowed-run',
+      }),
+      expect.objectContaining({
+        id: '302',
+        lifecycleState: 'compressed',
+        status: 'planned',
+        sessionShapeHash: 'shape-compressed-lift',
+      }),
+      expect.objectContaining({
+        id: '303',
+        lifecycleState: 'unscheduled',
+        status: 'unscheduled',
+      }),
+      expect.objectContaining({
+        id: '304',
+        lifecycleState: 'superseded',
+        status: 'superseded',
+      }),
+    ]));
+  });
+
   it('classifies training home as no-plan when only a standalone calendar workout exists', async () => {
     mockGetActivePlan.mockReturnValue(null);
     mockGetEvents.mockResolvedValue([

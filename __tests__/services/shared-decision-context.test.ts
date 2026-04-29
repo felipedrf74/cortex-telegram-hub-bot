@@ -17,6 +17,7 @@ vi.mock('../../src/services/cross-agent-learning', () => ({
 import {
   buildSharedDecisionContext,
   buildSharedDecisionContracts,
+  invalidateSharedContextForSkillChange,
   invalidateSharedDecisionContextCache,
   resetSharedDecisionContextCacheForTests,
 } from '../../src/services/shared-decision-context';
@@ -58,6 +59,36 @@ function makeBudgetView(overrides: Partial<{
     notes: [],
     ...overrides,
   };
+}
+
+function futureIso(minutes = 120): string {
+  return new Date(Date.now() + minutes * 60 * 1000).toISOString();
+}
+
+function pastIso(minutes = 5): string {
+  return new Date(Date.now() - minutes * 60 * 1000).toISOString();
+}
+
+function meshSignal(input: {
+  signalType: string;
+  payload?: Record<string, unknown>;
+  sourceAgent?: string;
+  priority?: string;
+  meshPriority?: number;
+  expiresAt?: string;
+}) {
+  return {
+    sourceAgent: input.sourceAgent ?? 'mesh.test',
+    signalType: input.signalType,
+    priority: input.priority ?? 'normal',
+    meshPriority: input.meshPriority ?? 3,
+    payload: input.payload ?? {},
+    expiresAt: input.expiresAt ?? futureIso(),
+  };
+}
+
+function countOccurrences(haystack: string, needle: string): number {
+  return haystack.split(needle).length - 1;
 }
 
 describe('shared-decision-context', () => {
@@ -166,6 +197,105 @@ describe('shared-decision-context', () => {
     expect(mockReadTrainingMeshContext).toHaveBeenCalledWith({ userId: 42 });
   });
 
+  it('adds source attribution, skill ownership boundaries, and downstream update signals for Training -> Secretary', async () => {
+    mockReadTrainingMeshContext.mockResolvedValueOnce({
+      derivedSignals: [
+        meshSignal({
+          sourceAgent: 'mesh.training-context',
+          signalType: 'recovery_state',
+          priority: 'urgent',
+          meshPriority: 2,
+          payload: { state: 'strained' },
+        }),
+        meshSignal({
+          sourceAgent: 'mesh.training-context',
+          signalType: 'session_prescription',
+          meshPriority: 3,
+          payload: { title: 'Tempo Run', date: '2026-04-17' },
+        }),
+      ],
+    });
+
+    const context = await buildSharedDecisionContext('secretary', 42);
+
+    expect(context).toContain('<context_scope tenant_id="42" user_id="42" visibility="user_private"');
+    expect(context).toContain('Training: recovery is strained; next key session is Tempo Run on 2026-04-17');
+    expect(context).toContain('training.recovery_state: source=mesh.training-context; freshness=active; confidence=0.84; priority=urgent; meshPriority=2');
+    expect(context).toContain('Secretary owns schedule placement, agenda feasibility, reminders, reflow, and calendar arbitration.');
+    expect(context).toContain('Training owns workout content, recovery logic, and training-plan shape.');
+    expect(context).toContain('If training changes its source state, invalidate shared context and refresh secretary before acting from cached tradeoffs.');
+  });
+
+  it('keeps Training -> Cooking and Content -> Secretary context visible with source metadata', async () => {
+    mockReadTrainingMeshContext.mockResolvedValue({
+      derivedSignals: [
+        meshSignal({
+          sourceAgent: 'mesh.training-fueling',
+          signalType: 'fueling_requirements',
+          meshPriority: 2,
+          payload: { supportLevel: 'elevated', carbFocus: 'high' },
+        }),
+      ],
+    });
+    mockReadContentMeshContext.mockResolvedValue({
+      derivedSignals: [
+        meshSignal({
+          sourceAgent: 'mesh.content-calendar',
+          signalType: 'publishing_commitment',
+          meshPriority: 2,
+          payload: { upcomingTopicCount: 2, nextDate: '2026-04-21', nextTopicTitle: 'Build week recap' },
+        }),
+      ],
+      filmingRecommendation: null,
+    });
+
+    const cookingContext = await buildSharedDecisionContext('cooking', 42);
+    const secretaryContext = await buildSharedDecisionContext('secretary', 42);
+
+    expect(cookingContext).toContain('Training: fueling support is elevated with high carb focus');
+    expect(cookingContext).toContain('training.fueling_requirements: source=mesh.training-fueling');
+    expect(secretaryContext).toContain('Content: 2 topic(s) are queued; next publish target is "Build week recap" on 2026-04-21');
+    expect(secretaryContext).toContain('content.publishing_commitment: source=mesh.content-calendar');
+  });
+
+  it('shares Finance constraints into Training and Cooking without losing scope metadata', async () => {
+    mockReadFinanceMeshContext.mockResolvedValue({
+      monthlySummary: { transactionCount: 4, totalIncome: 1000, totalExpenses: 900, totalDeductions: 0 },
+      budgetView: makeBudgetView({
+        expensesInBasisCurrency: 900,
+        currentRemainingInBasisCurrency: 100,
+        currentRemainingRatio: 0.1,
+        projectedExpensesInBasisCurrency: 900,
+        projectedRemainingInBasisCurrency: 100,
+        projectedRemainingRatio: 0.1,
+        affordability: 'tight',
+      }),
+      derivedSignals: [
+        meshSignal({
+          sourceAgent: 'mesh.finance-budget',
+          signalType: 'budget_remaining',
+          priority: 'high',
+          meshPriority: 1,
+          payload: {
+            month: '2026-04',
+            remainingRatio: 0.1,
+            budgetMode: 'tight',
+            groceryMode: 'lean',
+            trainingSpendMode: 'minimum_effective_dose',
+          },
+        }),
+      ],
+    });
+
+    const trainingContext = await buildSharedDecisionContext('triathlon', 42);
+    const cookingContext = await buildSharedDecisionContext('cooking', 42);
+
+    expect(trainingContext).toContain('Finance: projected budget remaining is 10% for 2026-04; training spend mode is minimum_effective_dose');
+    expect(trainingContext).toContain('finance.budget_remaining: source=mesh.finance-budget; freshness=active; confidence=0.92');
+    expect(cookingContext).toContain('Finance: projected budget remaining is 10% for 2026-04; grocery mode is lean');
+    expect(cookingContext).toContain('finance.budget_remaining: source=mesh.finance-budget; freshness=active; confidence=0.92');
+  });
+
   it('gives cooking and content the secretary/content context they need for schedule-aware tradeoffs', async () => {
     const cookingContext = await buildSharedDecisionContext('cooking', 42);
     const contentContext = await buildSharedDecisionContext('content', 42);
@@ -251,6 +381,123 @@ describe('shared-decision-context', () => {
 
     expect(refreshed).toContain('budget mode is tight');
     expect(refreshed).toContain('projected budget remaining is 8% for 2026-04');
+  });
+
+  it('invalidates shared decision and chat context together after a source skill update signal', async () => {
+    const first = await buildSharedDecisionContext('secretary', 42);
+    expect(first).toContain('budget mode is controlled');
+
+    mockReadFinanceMeshContext.mockResolvedValueOnce({
+      monthlySummary: {
+        transactionCount: 4,
+        totalIncome: 1000,
+        totalExpenses: 930,
+        totalDeductions: 0,
+      },
+      budgetView: makeBudgetView({
+        expensesInBasisCurrency: 930,
+        currentRemainingInBasisCurrency: 70,
+        currentRemainingRatio: 0.07,
+        projectedExpensesInBasisCurrency: 930,
+        projectedRemainingInBasisCurrency: 70,
+        projectedRemainingRatio: 0.07,
+        affordability: 'tight',
+      }),
+      derivedSignals: [
+        meshSignal({
+          sourceAgent: 'mesh.finance-budget',
+          signalType: 'budget_remaining',
+          meshPriority: 1,
+          payload: {
+            month: '2026-04',
+            remainingRatio: 0.07,
+            budgetMode: 'tight',
+            groceryMode: 'lean',
+            trainingSpendMode: 'minimum_effective_dose',
+          },
+        }),
+      ],
+    });
+
+    invalidateSharedContextForSkillChange({
+      userId: 42,
+      tenantId: 0,
+      sourceSkill: 'finance',
+      reason: 'budget_updated',
+    });
+    const refreshed = await buildSharedDecisionContext('secretary', 42);
+
+    expect(refreshed).toContain('budget mode is tight');
+    expect(refreshed).toContain('projected budget remaining is 7% for 2026-04');
+  });
+
+  it('ignores stale peer signals and records why they were excluded', async () => {
+    mockReadTrainingMeshContext.mockResolvedValueOnce({
+      derivedSignals: [
+        meshSignal({
+          sourceAgent: 'mesh.training-context',
+          signalType: 'recovery_state',
+          meshPriority: 2,
+          payload: { state: 'critical' },
+          expiresAt: pastIso(),
+        }),
+      ],
+    });
+    mockReadCookingMeshContext.mockResolvedValueOnce({ derivedSignals: [] });
+    mockReadFinanceMeshContext.mockResolvedValueOnce({
+      monthlySummary: {
+        transactionCount: 0,
+        totalIncome: 0,
+        totalExpenses: 0,
+        totalDeductions: 0,
+      },
+      budgetView: makeBudgetView({
+        integrity: 'no_income',
+        affordability: 'unknown',
+        incomeInBasisCurrency: 0,
+        expensesInBasisCurrency: 0,
+        currentRemainingInBasisCurrency: null,
+        currentRemainingRatio: null,
+        projectedExpensesInBasisCurrency: null,
+        projectedRemainingInBasisCurrency: null,
+        projectedRemainingRatio: null,
+      }),
+      derivedSignals: [],
+    });
+    mockReadContentMeshContext.mockResolvedValueOnce({ derivedSignals: [], filmingRecommendation: null });
+    mockReadSecretaryMeshContext.mockResolvedValueOnce({ derivedSignals: [], focusBlock: null });
+
+    const context = await buildSharedDecisionContext('secretary', 42);
+
+    expect(context).toContain('<stale_context>');
+    expect(context).toContain('training.recovery_state: ignored stale signal from mesh.training-context');
+    expect(context).not.toContain('Training: recovery is critical');
+    expect(context).toContain('No fresh peer-skill signals');
+  });
+
+  it('deduplicates repeated cross-skill warnings before Chat or Secretary consume them', async () => {
+    const duplicateFueling = meshSignal({
+      sourceAgent: 'mesh.cooking-fueling',
+      signalType: 'fueling_support_status',
+      meshPriority: 2,
+      payload: { status: 'at_risk', hardDatesMissingMeals: ['2026-04-18'] },
+    });
+    mockReadCookingMeshContext.mockResolvedValueOnce({
+      derivedSignals: [
+        duplicateFueling,
+        { ...duplicateFueling },
+        meshSignal({
+          sourceAgent: 'mesh.cooking-execution',
+          signalType: 'meal_execution_readiness',
+          payload: { status: 'partial' },
+        }),
+      ],
+    });
+
+    const context = await buildSharedDecisionContext('triathlon', 42);
+
+    expect(countOccurrences(context, 'fueling support is at_risk because hard training lacks meals on 2026-04-18')).toBe(1);
+    expect(countOccurrences(context, 'cooking.fueling_support_status: source=mesh.cooking-fueling')).toBe(1);
   });
 
   it('refuses peer mesh prompt context for a non-canonical tenant until tenant-aware mesh reads exist', async () => {

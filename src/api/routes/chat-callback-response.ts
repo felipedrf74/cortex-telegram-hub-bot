@@ -8,6 +8,7 @@ import {
   buildTaskActionButtons,
   type ChatButtonLabels,
 } from './chat-inline-buttons';
+import type { CallbackScope } from '../../utils/callback-store';
 
 export type ChatCallbackPayload = {
   text: string;
@@ -142,11 +143,12 @@ export function buildTodoListSelectionPayload(
   listName: string,
   language: string,
   labels: ChatButtonLabels,
+  scope?: CallbackScope,
 ): ChatCallbackPayload {
   return {
     text: formatMsTodoTasks(tasks, listName, language),
     editOriginal: true,
-    newButtons: buildTaskActionButtons(tasks, labels),
+    newButtons: buildTaskActionButtons(tasks, labels, 5, scope),
   };
 }
 

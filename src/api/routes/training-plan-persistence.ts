@@ -54,9 +54,26 @@ type GeneratedTrainingSession = {
 
 type PersistableSessionScheduleState =
   | 'pending'
+  | 'scheduled'
+  | 'reflowed'
+  | 'compressed'
+  | 'capped'
   | 'unscheduled'
   | 'deferred'
   | 'dropped';
+
+const ACTIVE_SCHEDULE_STATES = new Set<PersistableSessionScheduleState>([
+  'scheduled',
+  'reflowed',
+  'compressed',
+  'capped',
+]);
+
+const INACTIVE_SCHEDULE_STATES = new Set<PersistableSessionScheduleState>([
+  'unscheduled',
+  'deferred',
+  'dropped',
+]);
 
 export interface PersistGeneratedTrainingPlanInput {
   userId: number;
@@ -188,6 +205,9 @@ export async function persistGeneratedTrainingPlan(
         continue;
       }
 
+      const activeScheduleState = activeScheduleStateFor(sessionData);
+      const activeDescription = appendScheduleReason(richDescription.text, sessionData.scheduleReason);
+
       const scheduledWindow = scheduleSessionForPlan({
         weekNumber: weekData.weekNumber || 1,
         dayIndex,
@@ -241,7 +261,7 @@ export async function persistGeneratedTrainingPlan(
         day_of_week: sessionData.dayOfWeek || '',
         session_type: sessionData.sessionType || 'training',
         title: sessionData.title || 'Training session',
-        description: richDescription.text,
+        description: activeDescription,
         description_json: JSON.stringify(richDescription.sections),
         exercises_json: JSON.stringify(sessionData.exercises || []),
         duration_minutes: durationMinutes,
@@ -249,7 +269,7 @@ export async function persistGeneratedTrainingPlan(
         session_identity_key: sessionIdentityKey,
         session_shape_hash: sessionShapeHash,
         preferred_time_unavailable: scheduledWindow.preferredTimeUnavailable,
-        status: 'pending',
+        status: activeScheduleState,
       });
 
       calendarEvents.push({
@@ -259,7 +279,7 @@ export async function persistGeneratedTrainingPlan(
         title: `${emojiForTrainingSession(sessionData.sessionType)} ${sessionData.title || 'Training session'} (${durationMinutes}min)`,
         start: scheduledWindow.start.toISOString(),
         end: scheduledWindow.end.toISOString(),
-        description: appendTrainingIdentityMarker(richDescription.text, {
+        description: appendTrainingIdentityMarker(activeDescription, {
           planId: plan.id,
           planVersion: getPlanVersion(plan.id) ?? 1,
           sessionId: session.id,
@@ -365,11 +385,52 @@ export async function persistGeneratedTrainingPlan(
 }
 
 function inactiveScheduleState(session: GeneratedTrainingSession): PersistableSessionScheduleState | null {
-  const scheduleState = String(session.scheduleState || '').trim().toLowerCase();
-  if (scheduleState === 'deferred' || scheduleState === 'unscheduled' || scheduleState === 'dropped') {
+  const scheduleState = normalizedScheduleState(session);
+  if (scheduleState && INACTIVE_SCHEDULE_STATES.has(scheduleState)) {
     return scheduleState;
   }
   return null;
+}
+
+function activeScheduleStateFor(session: GeneratedTrainingSession): PersistableSessionScheduleState {
+  const scheduleState = normalizedScheduleState(session);
+  if (scheduleState && ACTIVE_SCHEDULE_STATES.has(scheduleState)) return scheduleState;
+  return 'scheduled';
+}
+
+function normalizedScheduleState(session: GeneratedTrainingSession): PersistableSessionScheduleState | null {
+  const direct = normalizeScheduleStateValue(session.scheduleState);
+  if (direct) return direct;
+  if (Array.isArray(session.scheduleAdjustments)) {
+    const normalizedAdjustments = session.scheduleAdjustments
+      .map((value) => normalizeScheduleStateValue(value))
+      .filter((value): value is PersistableSessionScheduleState => Boolean(value));
+    if (normalizedAdjustments.includes('reflowed')) return 'reflowed';
+    if (normalizedAdjustments.includes('compressed')) return 'compressed';
+    if (normalizedAdjustments.includes('capped')) return 'capped';
+    if (normalizedAdjustments.includes('scheduled')) return 'scheduled';
+    if (normalizedAdjustments.includes('unscheduled')) return 'unscheduled';
+    if (normalizedAdjustments.includes('deferred')) return 'deferred';
+    if (normalizedAdjustments.includes('dropped')) return 'dropped';
+  }
+  return null;
+}
+
+function normalizeScheduleStateValue(value: unknown): PersistableSessionScheduleState | null {
+  const normalized = String(value || '').trim().toLowerCase();
+  switch (normalized) {
+    case 'pending':
+    case 'scheduled':
+    case 'reflowed':
+    case 'compressed':
+    case 'capped':
+    case 'unscheduled':
+    case 'deferred':
+    case 'dropped':
+      return normalized;
+    default:
+      return null;
+  }
 }
 
 function isCalendarSchedulableTrainingSession(session: GeneratedTrainingSession): boolean {

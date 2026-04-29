@@ -46,6 +46,7 @@ vi.mock('../../src/state/todos', () => ({
 vi.mock('../../src/state/shared-memory', () => ({
   getSharedMemorySummary: vi.fn().mockReturnValue(''),
   getSharedMemory: vi.fn().mockReturnValue([]),
+  getSharedMemoryByScope: vi.fn().mockReturnValue({ userPrivate: [], tenantShared: [] }),
 }));
 
 vi.mock('../../src/services/tool-executor', () => ({
@@ -85,13 +86,14 @@ import { listTodos } from '../../src/state/todos';
 import { getSharedMemorySummary } from '../../src/state/shared-memory';
 import { executeToolCall } from '../../src/services/tool-executor';
 import { now } from '../../src/utils/date-parser';
-import { callDomain } from '../../src/services/anthropic';
+import { callDomain, continueWithToolResults } from '../../src/services/anthropic';
 
 // Use the provider-routed mocks (domain-handler now calls getActiveProvider().callDomain)
 const mockCallDomain = mockCallDomainFn;
 const mockContinue = mockContinueFn;
 const mockExecuteTool = vi.mocked(executeToolCall);
 const mockDirectAnthropicCall = vi.mocked(callDomain);
+const mockDirectAnthropicContinue = vi.mocked(continueWithToolResults);
 
 function applyMigrations(db: Database.Database): void {
   db.exec(`CREATE TABLE IF NOT EXISTS _migrations (id INTEGER PRIMARY KEY, filename TEXT UNIQUE, applied_at TEXT DEFAULT (datetime('now')))`);
@@ -462,6 +464,34 @@ describe('handleSimpleDomain', () => {
       expect.any(String),
       expect.objectContaining({ maxTokensOverride: 4096 }),
     );
+  });
+
+  it('passes tenant scope into the direct Anthropic fallback path before provider calls', async () => {
+    process.env.ANTHROPIC_ENABLED = 'true';
+    process.env.ANTHROPIC_API_KEY = 'test-anthropic-key';
+    mockGetActiveProvider.mockReturnValue(null);
+    mockEnsureActiveProvider.mockReturnValue(null);
+    mockDirectAnthropicCall.mockResolvedValue({
+      text: 'Fallback answer.',
+      toolCalls: [],
+      stopReason: 'end_turn',
+    } as any);
+
+    const result = await handleSimpleDomain('secretary', 'What is today?', 5, 77, undefined, 77);
+
+    expect(result).toEqual({ text: 'Fallback answer.', domain: 'secretary' });
+    expect(mockDirectAnthropicCall).toHaveBeenCalledWith(
+      'secretary',
+      expect.any(Array),
+      'What is today?',
+      expect.any(String),
+      expect.objectContaining({
+        userId: 77,
+        tenantId: 77,
+        maxTokensOverride: undefined,
+      }),
+    );
+    expect(mockDirectAnthropicContinue).not.toHaveBeenCalled();
   });
 
   it('does not persist conversation history when no user scope is provided', async () => {

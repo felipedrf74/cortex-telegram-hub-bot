@@ -1,11 +1,11 @@
 # Chat Day-To-Day Simulation Harness
 
-Generated: 2026-04-29 03:45 WEST  
-Branch: `feature/chat-tenant-safe-context-orchestration`
+Generated: 2026-04-29 12:39 WEST
+Branch: `feature/chat-p0-tenant-security-audit`
 
 ## Purpose
 
-The Chat day-to-day simulation harness tests whether Nexus Chat behaves like a useful product surface during realistic multi-turn conversations. It is not an exact wording snapshot suite. It scores whether each response is correct, tenant-safe, context-aware, actionable, concise enough, and compatible with the iOS chat response envelope.
+The Chat day-to-day simulation harness tests whether Nexus Chat behaves like a useful product surface during realistic multi-turn conversations. It is not an exact wording snapshot suite. It scores whether each response is correct, tenant-safe, memory-aware, context-relevant, fresh enough, routed to the right skill, actionable, clear under ambiguity, hallucination-resistant, stale-context-safe, and sufficient for the user.
 
 The harness lives in:
 
@@ -29,6 +29,12 @@ Focused test:
 npm test -- --run __tests__/services/chat-day-to-day-simulation.test.ts
 ```
 
+Broader harness/eval sanity:
+
+```bash
+npm test -- --run __tests__/services/chat-day-to-day-simulation.test.ts __tests__/services/chat-evaluation-harness.test.ts
+```
+
 Typecheck:
 
 ```bash
@@ -41,6 +47,13 @@ CLI report after build:
 npm run build
 node dist/tools/chat-day-to-day-simulation.js
 ```
+
+Latest measured run:
+
+- Test: PASS - 1 file / 8 tests
+- Eval sanity: PASS - 2 files / 14 tests
+- Typecheck: PASS
+- CLI: PASS - 12 scenarios / 34 turns, average score `1.94 / 2.00`
 
 ## What The Harness Records
 
@@ -64,9 +77,27 @@ node dist/tools/chat-day-to-day-simulation.js
 - Tenant switch scenarios verify previous-tenant content is not reused.
 - Prompt-injection scenarios forbid tool calls and require refusal.
 - Retry scenarios verify idempotency evidence instead of duplicate actions.
+- Contradictory frustrated-user scenarios require clarification before action, confirmation before agenda mutation, and preservation of the Training plan when only the calendar block is removed.
 
 ## Evaluation Philosophy
 
 The harness intentionally avoids exact assistant wording as the only pass condition. Each turn has semantic expectations such as required skills, required action state, required clarification/refusal/confirmation, forbidden content, tool-call expectations, and minimum average score.
 
 This makes it useful for comparing future real-provider responses where wording will vary but product behavior must remain safe and sufficient.
+
+## Current Scenario Count
+
+The runnable bank now covers 12 scenarios:
+
+1. Morning planning
+2. Training adjustment
+3. Cooking/fueling around Training
+4. Finance constraint affecting plans
+5. Content planning with references
+6. Tenant switch
+7. Vague follow-ups
+8. User correction
+9. Tool failure and retry
+10. Prompt-injection attempt
+11. Longitudinal memory across days
+12. Frustrated user with contradictory instructions

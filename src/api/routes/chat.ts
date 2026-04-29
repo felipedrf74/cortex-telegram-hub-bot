@@ -10,10 +10,25 @@ import { registerChatHistoryRoutes } from './chat-history-routes';
 function ensureValidChatRouteScope(
   res: Response,
   userId: number | undefined,
+  tenantId: number | undefined,
   operation: string,
   details?: Record<string, unknown>,
 ): userId is number {
-  if (isValidTenantUserId(userId)) return true;
+  if (isValidTenantUserId(userId) && tenantId === userId) return true;
+  if (isValidTenantUserId(userId) && tenantId !== userId) {
+    recordTenantScopeAnomaly({
+      layer: 'delivery',
+      operation,
+      reason: 'tenant_mismatch',
+      userId,
+      details: {
+        ...details,
+        tenantId: typeof tenantId === 'number' ? tenantId : null,
+      },
+    });
+    sendError(res, 'FORBIDDEN', 'Invalid tenant scope', 403);
+    return false;
+  }
   recordTenantScopeAnomaly({
     layer: 'delivery',
     operation,

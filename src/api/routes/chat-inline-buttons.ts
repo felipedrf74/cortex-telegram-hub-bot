@@ -3,7 +3,7 @@
 import type { InlineButton } from '../../adapters/message-adapter';
 import type { TodoList, TodoTask } from '../../services/microsoft-todo';
 import type { CoachRecommendation } from '../../services/garmin-coach';
-import { storeCallback } from '../../utils/callback-store';
+import { storeCallback, storeCallbackForScope, type CallbackScope } from '../../utils/callback-store';
 
 export interface ChatButtonLabels {
   today: string;
@@ -55,13 +55,23 @@ export function buildSecretaryQuickActionButtons(labels: ChatButtonLabels): Inli
   ]];
 }
 
+function storeScopedOrLegacyCallback(
+  data: Record<string, unknown>,
+  scope: CallbackScope | undefined,
+  actionType: string,
+): string {
+  if (!scope) return storeCallback(data);
+  return storeCallbackForScope(data, { ...scope, actionType });
+}
+
 export function buildListSelectionButtons(
   lists: TodoList[],
   labels: ChatButtonLabels,
   limit = 10,
+  scope?: CallbackScope,
 ): InlineButton[][] {
   const rows = lists.slice(0, limit).map((list) => {
-    const ref = storeCallback({ listId: list.id, listName: list.displayName });
+    const ref = storeScopedOrLegacyCallback({ listId: list.id, listName: list.displayName }, scope, 'todo_list_select');
     return [{ text: list.displayName.slice(0, 28), callbackData: `td:ls:${ref}` }];
   });
 
@@ -76,21 +86,22 @@ export function buildTaskActionButtons(
   tasks: TodoTask[],
   labels: ChatButtonLabels,
   limit = 5,
+  scope?: CallbackScope,
 ): InlineButton[][] {
   const rows = tasks.slice(0, limit).map((task) => {
-    const completeRef = storeCallback({
+    const completeRef = storeScopedOrLegacyCallback({
       listId: task.listId,
       taskId: task.id,
       title: task.title,
       listName: task.listName,
-    });
-    const deleteRef = storeCallback({
+    }, scope, 'todo_task_complete');
+    const deleteRef = storeScopedOrLegacyCallback({
       listId: task.listId,
       taskId: task.id,
       title: task.title,
       listName: task.listName,
       type: 'task',
-    });
+    }, scope, 'todo_task_delete_confirm');
     return [
       {
         text: `${labels.completePrefix}${task.title}`.slice(0, 34),
@@ -124,13 +135,14 @@ export function buildCoachRecommendationButtons(
   recommendations: CoachRecommendation[],
   labels: ChatButtonLabels,
   limit = 4,
+  scope?: CallbackScope,
 ): InlineButton[][] {
   const actionable = recommendations
     .filter((rec) => rec.action !== 'KEEP')
     .slice(0, limit);
 
   const rows = actionable.map((rec) => {
-    const ref = storeCallback({ recommendationIds: [rec.eventId] });
+    const ref = storeScopedOrLegacyCallback({ recommendationIds: [rec.eventId] }, scope, 'coach_recommendation_apply');
     const emoji = rec.action === 'MODIFY'
       ? '⚠️'
       : rec.action === 'SWAP'
@@ -143,7 +155,11 @@ export function buildCoachRecommendationButtons(
   });
 
   if (actionable.length > 1) {
-    const ref = storeCallback({ recommendationIds: actionable.map((rec) => rec.eventId) });
+    const ref = storeScopedOrLegacyCallback(
+      { recommendationIds: actionable.map((rec) => rec.eventId) },
+      scope,
+      'coach_recommendation_apply_all',
+    );
     rows.push([{ text: labels.applyAll, callbackData: `coach:all:${ref}` }]);
   }
 

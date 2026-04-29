@@ -70,8 +70,9 @@ export async function tryBuildFastPathChatResponse(
   normalizedText: string,
   normalizedTextLower: string,
   userId: number,
+  tenantId?: number,
 ): Promise<LocalChatResponse | null> {
-  const fastPath = await tryDeterministicChatCommand(normalizedText, userId);
+  const fastPath = await tryDeterministicChatCommand(normalizedText, userId, tenantId);
   if (!fastPath) {
     return null;
   }

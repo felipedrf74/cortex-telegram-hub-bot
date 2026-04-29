@@ -83,6 +83,7 @@ export function buildDefaultButtonsForChatDomain(
   lang: string,
   userId?: number,
   requestStartedAt?: number,
+  tenantId?: number,
 ): InlineButton[][] | null {
   if (domain === 'secretary') {
     return buildSecretaryQuickActionButtons(labelsForLanguage(lang));
@@ -91,7 +92,12 @@ export function buildDefaultButtonsForChatDomain(
   if (domain === 'triathlon' && userId && requestStartedAt) {
     const coachState = getLastCoachState(userId);
     if (coachState && coachState.timestamp >= requestStartedAt - 1000) {
-      const buttons = buildCoachRecommendationButtons(coachState.recommendations, labelsForLanguage(lang));
+      const buttons = buildCoachRecommendationButtons(
+        coachState.recommendations,
+        labelsForLanguage(lang),
+        4,
+        { userId, tenantId },
+      );
       return buttons.length > 0 ? buttons : null;
     }
   }

@@ -128,7 +128,10 @@ const mockGetFiscalCollectionSummary = vi.fn(() => ({
   warnings: [],
 }));
 const mockGetCallback = vi.fn(() => null);
+const mockGetCallbackForScope = vi.fn(() => null);
+const mockConsumeCallbackForScope = vi.fn(() => true);
 const mockStoreCallback = vi.fn(() => 'cb-ref');
+const mockStoreCallbackForScope = vi.fn(() => 'cb-ref');
 const mockGetLastCoachState = vi.fn(() => null);
 const mockApplyCoachRecommendations = vi.fn(async () => ({
   count: 0,
@@ -303,7 +306,10 @@ vi.mock('../../src/utils/logger', () => ({
 
 vi.mock('../../src/utils/callback-store', () => ({
   getCallback: (...args: unknown[]) => mockGetCallback(...args),
+  getCallbackForScope: (...args: unknown[]) => mockGetCallbackForScope(...args),
+  consumeCallbackForScope: (...args: unknown[]) => mockConsumeCallbackForScope(...args),
   storeCallback: (...args: unknown[]) => mockStoreCallback(...args),
+  storeCallbackForScope: (...args: unknown[]) => mockStoreCallbackForScope(...args),
 }));
 
 import { chatRoutes } from '../../src/api/routes/chat';
@@ -341,9 +347,10 @@ function mockRes(): MockRes {
   return r;
 }
 
-function mockReq(userId: number, body?: any, headers: Record<string, string> = {}): Request {
+function mockReq(userId: number, body?: any, headers: Record<string, string> = {}, tenantId = userId): Request {
   return {
     userId,
+    tenantId,
     body,
     headers,
     header(name: string) {
@@ -358,9 +365,10 @@ async function dispatch(
   userId: number,
   body?: any,
   headers: Record<string, string> = {},
+  tenantId = userId,
 ): Promise<MockRes> {
   const router = chatRoutes();
-  const req = mockReq(userId, body, headers);
+  const req = mockReq(userId, body, headers, tenantId);
   (req as any).method = method;
   (req as any).url = url;
   (req as any).originalUrl = url;
@@ -430,7 +438,10 @@ describe('Chat API routes', () => {
     mockCalculateMonthlyTax.mockReset();
     mockGetFiscalCollectionSummary.mockReset();
     mockGetCallback.mockReset();
+    mockGetCallbackForScope.mockReset();
+    mockConsumeCallbackForScope.mockReset();
     mockStoreCallback.mockReset();
+    mockStoreCallbackForScope.mockReset();
     mockGetLastCoachState.mockReset();
     mockApplyCoachRecommendations.mockReset();
     mockClearChatHistory.mockReset();
@@ -561,7 +572,10 @@ describe('Chat API routes', () => {
       warnings: [],
     });
     mockGetCallback.mockReturnValue(null);
+    mockGetCallbackForScope.mockReturnValue(null);
+    mockConsumeCallbackForScope.mockReturnValue(true);
     mockStoreCallback.mockReturnValue('cb-ref');
+    mockStoreCallbackForScope.mockReturnValue('cb-ref');
     mockGetLastCoachState.mockReturnValue(null);
     mockApplyCoachRecommendations.mockResolvedValue({
       count: 0,
@@ -684,6 +698,29 @@ describe('Chat API routes', () => {
       domain: 'secretary',
       routeMethod: 'classifier',
       confidence: 0.93,
+    });
+  });
+
+  it('rejects chat access when the authenticated tenant scope does not match the canonical user tenant', async () => {
+    const messageRes = await dispatch('POST', '/message', 7001, {
+      text: 'schedule a meeting',
+    }, {}, 7002);
+
+    expect(messageRes.statusCode).toBe(403);
+    expect(messageRes.body).toMatchObject({
+      ok: false,
+      error: {
+        code: 'FORBIDDEN',
+        message: 'Invalid tenant scope',
+      },
+    });
+    expect(mockRouteMessage).not.toHaveBeenCalled();
+
+    const anomalies = getTenantScopeAnomalies(1);
+    expect(anomalies[0]).toMatchObject({
+      operation: 'chat_route_message',
+      reason: 'tenant_mismatch',
+      userId: 7001,
     });
   });
 
@@ -1110,7 +1147,7 @@ describe('Chat API routes', () => {
   });
 
   it('applies coach callbacks and clears buttons from the persisted message', async () => {
-    mockGetCallback.mockReturnValue({ recommendationIds: ['evt-1'] });
+    mockGetCallbackForScope.mockReturnValue({ recommendationIds: ['evt-1'] });
     mockApplyCoachRecommendations.mockResolvedValue({
       count: 1,
       appliedRecommendations: [

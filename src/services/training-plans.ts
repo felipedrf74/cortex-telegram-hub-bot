@@ -58,6 +58,10 @@ export interface TrainingWeek {
 
 export type TrainingSessionStatus =
   | 'pending'
+  | 'scheduled'
+  | 'reflowed'
+  | 'compressed'
+  | 'capped'
   | 'completed'
   | 'skipped'
   | 'moved'
@@ -66,6 +70,32 @@ export type TrainingSessionStatus =
   | 'dropped'
   | 'cancelled'
   | 'superseded';
+
+const INACTIVE_TRAINING_SESSION_STATUSES = new Set<string>([
+  'rest',
+  'unscheduled',
+  'deferred',
+  'dropped',
+  'cancelled',
+  'superseded',
+]);
+
+const NON_LOAD_TRAINING_SESSION_STATUSES = new Set<string>([
+  ...INACTIVE_TRAINING_SESSION_STATUSES,
+  'skipped',
+]);
+
+function normalizedSessionStatus(status: unknown): string {
+  return String(status || '').trim().toLowerCase();
+}
+
+function isAdherenceBearingSession(status: unknown): boolean {
+  return !INACTIVE_TRAINING_SESSION_STATUSES.has(normalizedSessionStatus(status));
+}
+
+function isLoadBearingSession(status: unknown): boolean {
+  return !NON_LOAD_TRAINING_SESSION_STATUSES.has(normalizedSessionStatus(status));
+}
 
 export interface TrainingSession {
   id: number;
@@ -255,7 +285,7 @@ export function getCrossplanWeeklyLoad(userId: number): {
     const week = getCurrentWeek(plan.id);
     if (!week) continue;
     const sessions = getSessionsForWeek(week.id);
-    const sportSessions = sessions.filter(s => s.status !== 'skipped');
+    const sportSessions = sessions.filter(s => isLoadBearingSession(s.status));
     result.totalSessions += sportSessions.length;
     result.bySport[plan.sport] = (result.bySport[plan.sport] || 0) + sportSessions.length;
     result.totalMinutes += sportSessions.reduce((sum, s) => sum + (s.duration_minutes || 0), 0);
@@ -579,9 +609,10 @@ export function getWeeklyAdherence(planId: number, weekId: number): WeeklyAdhere
   const week = db.prepare('SELECT week_number FROM training_weeks WHERE id = ?')
     .get(weekId) as { week_number: number } | undefined;
 
-  const total = sessions.length;
-  const completed = sessions.filter(s => s.status === 'completed').length;
-  const skipped = sessions.filter(s => s.status === 'skipped').length;
+  const adherenceSessions = sessions.filter((s) => isAdherenceBearingSession(s.status));
+  const total = adherenceSessions.length;
+  const completed = adherenceSessions.filter(s => s.status === 'completed').length;
+  const skipped = adherenceSessions.filter(s => s.status === 'skipped').length;
 
   const rpValues = completions.filter(c => c.rpe_overall != null).map(c => c.rpe_overall!);
   const energyValues = completions.filter(c => c.energy_level != null).map(c => c.energy_level!);

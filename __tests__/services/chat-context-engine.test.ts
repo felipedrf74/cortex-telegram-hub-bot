@@ -82,13 +82,15 @@ function insertMemory(input: {
   sourceDomain?: string;
   expiresAt?: string | null;
   scopeStatus?: string;
+  visibilityScope?: string;
 }): void {
   testDb.prepare(`
     INSERT INTO shared_memory (tenant_id, user_id, visibility_scope, scope_status, created_by, key, value, source_domain, expires_at)
-    VALUES (?, ?, 'user_private', ?, ?, ?, ?, ?, ?)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     input.tenantId,
     input.userId,
+    input.visibilityScope ?? 'user_private',
     input.scopeStatus ?? 'active',
     input.userId,
     input.key,
@@ -141,6 +143,36 @@ describe('chat-context-engine', () => {
     expect(mockBuildSharedDecisionContext).toHaveBeenCalledWith('secretary', 7, 10);
   });
 
+  it('passes multi-skill shared context source attribution through to Chat prompt construction', async () => {
+    mockBuildSharedDecisionContext.mockResolvedValue([
+      '<shared_decision_context domain="secretary">',
+      '<context_scope tenant_id="10" user_id="7" visibility="user_private" cache_ttl_ms="30000" />',
+      '<source_attribution>',
+      '- training.recovery_state: source=mesh.training-context; freshness=active; confidence=0.84; priority=urgent; meshPriority=2; expiresAt=2026-04-30T08:00:00.000Z',
+      '- finance.budget_remaining: source=mesh.finance-budget; freshness=active; confidence=0.92; priority=high; meshPriority=1; expiresAt=2026-04-30T08:00:00.000Z',
+      '</source_attribution>',
+      '<skill_ownership_boundaries>',
+      '- Secretary owns schedule placement, agenda feasibility, reminders, reflow, and calendar arbitration.',
+      '- Training owns workout content, recovery logic, and training-plan shape.',
+      '- Finance owns budget, bill, subscription, tax, and purchase constraints.',
+      '</skill_ownership_boundaries>',
+      '</shared_decision_context>',
+    ].join('\n'));
+
+    const context = await buildChatPromptContext({
+      domain: 'secretary',
+      message: 'Plan my day around my workout and budget review',
+      userId: 7,
+      tenantId: 10,
+    });
+
+    expect(context.items.some((item) => item.source === 'shared_decision_context')).toBe(true);
+    expect(context.block).toContain('training.recovery_state: source=mesh.training-context');
+    expect(context.block).toContain('finance.budget_remaining: source=mesh.finance-budget');
+    expect(context.block).toContain('Secretary owns schedule placement');
+    expect(mockBuildSharedDecisionContext).toHaveBeenCalledWith('secretary', 7, 10);
+  });
+
   it('asks for clarification on an ambiguous follow-up when no scoped history exists', async () => {
     const context = await buildChatPromptContext({
       domain: 'secretary',
@@ -165,6 +197,45 @@ describe('chat-context-engine', () => {
 
     expect(context.weakSignals.map((signal) => signal.code)).toContain('tenant_boundary_requires_confirmation');
     expect(context.block).toContain('Which workspace should this apply to?');
+  });
+
+  it('keeps user-private and tenant-shared memory scoped to the active tenant/user', async () => {
+    insertMemory({
+      tenantId: 10,
+      userId: 7,
+      key: 'private_workout_preference',
+      value: 'private after-work lift preference',
+      sourceDomain: 'triathlon',
+      visibilityScope: 'user_private',
+    });
+    insertMemory({
+      tenantId: 10,
+      userId: 7,
+      key: 'tenant_shared_content_cadence',
+      value: 'shared launch review on Thursday',
+      sourceDomain: 'content',
+      visibilityScope: 'tenant_shared',
+    });
+    insertMemory({
+      tenantId: 10,
+      userId: 8,
+      key: 'tenant_shared_secret',
+      value: 'other user tenant-shared secret',
+      sourceDomain: 'content',
+      visibilityScope: 'tenant_shared',
+    });
+
+    const context = await buildChatPromptContext({
+      domain: 'secretary',
+      message: 'Use my usual setup for training and content planning',
+      userId: 7,
+      tenantId: 10,
+    });
+
+    expect(context.block).toContain('private after-work lift preference');
+    expect(context.block).toContain('shared launch review on Thursday');
+    expect(context.block).toContain('scope="tenant_shared"');
+    expect(context.block).not.toContain('other user tenant-shared secret');
   });
 
   it('treats prompt-injection attempts as weak context instead of expanding authorization', async () => {
@@ -228,6 +299,51 @@ describe('chat-context-engine', () => {
     expect(context.block).toContain('Current message length=');
     expect(context.block).toContain('We created plan A');
     expect(context.items.some((item) => item.source === 'conversation_history' && item.critical)).toBe(true);
+  });
+
+  it('asks a targeted clarification when scoped history contains multiple possible action targets', async () => {
+    insertConversation({
+      tenantId: 10,
+      userId: 7,
+      role: 'assistant',
+      content: 'I found two possible items: the meal prep block and the workout session.',
+    });
+
+    const context = await buildChatPromptContext({
+      domain: 'secretary',
+      message: 'Move it.',
+      userId: 7,
+      tenantId: 10,
+    });
+
+    expect(context.weakSignals.map((signal) => signal.code)).toContain('unsafe_ambiguous_action');
+    expect(context.block).toContain('Which exact item should I update?');
+  });
+
+  it('uses a single scoped prior object for vague follow-up without cross-tenant leakage', async () => {
+    insertConversation({
+      tenantId: 10,
+      userId: 7,
+      role: 'assistant',
+      content: 'I created the budget review block for Friday.',
+    });
+    insertConversation({
+      tenantId: 11,
+      userId: 7,
+      role: 'assistant',
+      content: 'Tenant B confidential planning block.',
+    });
+
+    const context = await buildChatPromptContext({
+      domain: 'secretary',
+      message: 'Move it to Monday.',
+      userId: 7,
+      tenantId: 10,
+    });
+
+    expect(context.block).toContain('budget review block');
+    expect(context.block).not.toContain('Tenant B confidential');
+    expect(context.weakSignals.map((signal) => signal.code)).not.toContain('ambiguous_follow_up_without_history');
   });
 
   it('marks near-expiring memory as low confidence rather than treating it as stable fact', async () => {
