@@ -1,23 +1,61 @@
 # Nexus Hub — Focused QA Report
 
-**Generated:** 2026-04-29 18:48 WEST
+**Generated:** 2026-04-29 18:48 WEST (v1 Sonnet baseline) + 19:30 WEST (Opus 4.7 rerun)
 **Audit branch:** `qa/nexus-hub-focused-review-selected-areas`
 **Reviewed HEAD:** `888b69e2a792106bc75a93744e02a64ae5412835`
+**Audit commits:** `a0341d5` (Sonnet baseline) — Opus rerun deltas in [`nexus-hub-focused-qa-opus-rerun-addendum.md`](nexus-hub-focused-qa-opus-rerun-addendum.md)
 **Backup tag:** `backup-qa-focused-nexus-hub-review-20260429-1848`
 **Backup branch:** `backup/qa-focused-nexus-hub-review-20260429-1848`
 **Reviewed working tree:** 59 uncommitted Codex files (the in-flight content-creation intelligence upgrade)
+
+> **⚠️ READ THE OPUS ADDENDUM**: the Sonnet baseline below is preserved for traceability, but **9 net-new P0 findings** and **13 refuted/downgraded findings** appear in the Opus rerun. The corrected catalog is in [`nexus-hub-focused-qa-opus-rerun-addendum.md`](nexus-hub-focused-qa-opus-rerun-addendum.md) and supersedes selected entries in [`nexus-hub-focused-qa-findings.md`](nexus-hub-focused-qa-findings.md).
 
 ---
 
 ## 1. Executive Summary
 
-### Final verdict: **FAIL**
+### Final verdict: **FAIL** (confirmed by Opus 4.7 rerun)
 
-The reviewed scope contains:
+The reviewed scope contains, after the Opus 4.7 max-effort rerun on all 9 critical sections:
 
-- **15 P0 findings** including: missing tool allowlist, hardcoded Anthropic kill-switch bypasses, three tenant-leakage queries in `content-learning-store.ts`, a missing `tenant_id` column on `training_agenda_event_ownership`, missing authorization gates on skill version promotion/deprecation, and three crash-prone null/zero paths in the new coach engine.
-- **18 P1 findings** including: per-domain model overrides not applied to OpenAI/Gemini, training calendar writes that bypass Secretary intent submission, plan-cancellation saga with zero integration tests, agenda lifecycle states underused (only 5 of 11 written), reminder-table without uniqueness constraint, classifier passing un-scrubbed PII to providers, and 7 partial-tenant-scope queries in content + memory services.
-- **A clean test layer.** All 14 focused targets passed (140 tests, 0 failures, 0 skips). `npx tsc --noEmit` exits 0 against the full uncommitted change set. **The test coverage proves what's written, not what's missing.** The P0/P1 findings are gaps, missing scope predicates, and missing authorization checks — categories that Codex's current tests do not exercise adversarially.
+- **24 P0 findings** (up from 15 in Sonnet baseline). Net change: -7 Sonnet P0s refuted/downgraded (coach-engine null guards work, cancellation saga branches are tested, route-level auth gates exist for skill version mutations), +13 net-new Opus findings (prompt injection via `[Current State]` markers, provider fallback restoring full TOOLS array, internal AI proxy reachable from any network, 6 *more* unscoped content queries Sonnet missed, lifecycle never advancing past `'scheduled'`, dead-code `incrementPlanVersion`, missing `tenant_id` on cross-skill signal bus, `skill_specific_memory` umbrella bypass, `UNSAFE_MEMORY_PATTERNS` missing every modern token shape, illegal version status regressions). +3 escalations from Sonnet P1 → P0.
+- **35 P1 findings** (up from 20). Includes routing parity gaps, conditional-tenant filters in content-workflow, training calendar bypassing Secretary, agenda lifecycle states underused (8 of 11 written, not 5 as Sonnet thought), no reminder–agenda link at all, classifier PII leakage, signal origin not enforced, server-pinned timezone in training, concurrent cancel race.
+- **A clean test layer.** All 14 focused targets passed (140 tests, 0 failures), full pre-commit suite ran 410 files / 6233 tests in 485s with 0 failures, `npx tsc --noEmit` clean. **Test coverage proves what's written, not what's missing.** The P0/P1 findings are gaps, missing scope predicates, missing authorization checks, and dead-code paths — categories existing tests do not exercise adversarially.
+
+## 1.5 QA Agent Model/Tier Usage
+
+Per task instruction, every critical QA agent must run on Claude Opus 4.7 with maximum effort. The audit was executed in two waves:
+
+| Section | Wave 1 (initial) | Wave 2 (Opus rerun) | Final coverage |
+|---|---|---|---|
+| Phase 1 — Chat security/memory/tools | Sonnet 4.6 (default) | **Opus 4.7 max effort** | ✅ Opus-validated |
+| Phase 2 — Live model-routing safety | Sonnet 4.6 (default) | **Opus 4.7 max effort** | ✅ Opus-validated |
+| Phase 3 — Secretary scheduling | Sonnet 4.6 (default) | **Opus 4.7 max effort** (combined with C/D/I rerun) | ✅ Opus-validated |
+| Phase 4 — Training engine + iOS | Sonnet 4.6 (default) | **Opus 4.7 max effort** (combined with C/D/I rerun) | ✅ Opus-validated |
+| Phase 5 — Content references/provenance | Sonnet 4.6 (default) | **Opus 4.7 max effort** | ✅ Opus-validated |
+| Phase 6 — Cross-skill orchestration | Sonnet 4.6 (default) | **Opus 4.7 max effort** (combined with F/G/H rerun) | ✅ Opus-validated |
+| Phase 7 — Skill versioning | Sonnet 4.6 (default) | **Opus 4.7 max effort** (combined with F/G/H rerun) | ✅ Opus-validated |
+| Phase 8 — Cross-skill memory | Sonnet 4.6 (default) | **Opus 4.7 max effort** (combined with F/G/H rerun) | ✅ Opus-validated |
+| Phase 9 — Calendar/agenda lifecycle | Sonnet 4.6 (default) | **Opus 4.7 max effort** (combined with C/D/I rerun) | ✅ Opus-validated |
+| Phase 10 — Test execution | n/a (general-purpose tool runner) | n/a | n/a — test results are deterministic |
+| Final synthesis (this report) | Sonnet/Opus (parent agent) | Opus updated this report directly | ✅ |
+
+**Wave 1 limitation:** The `Explore` subagent type defaulted to Sonnet 4.6 in this environment. The initial 8 parallel evidence agents and the Phase 10 test runner ran on Sonnet, not Opus 4.7. This was identified as a QA confidence risk and mitigated in Wave 2.
+
+**Wave 2 mitigation:** All 9 critical sections were rerun on `Explore` with `model: "opus"` override (Claude Opus 4.7) at maximum effort. Each Wave 2 agent received Wave 1's findings as a baseline and was instructed to (a) validate each finding with file:line evidence, (b) hunt for what Wave 1 missed, (c) extend the catalog with new findings.
+
+**Wave 2 outcomes:**
+- Wave 2 **refuted or downgraded 13 Wave 1 findings** (the largest cluster being three Training-engine "crash bug" P0s that turned out to be properly defended; another being the route-level auth gate Wave 1 missed for skill version mutations).
+- Wave 2 **surfaced 41 net-new findings**, including 13 new P0s.
+- Full deltas in [`nexus-hub-focused-qa-opus-rerun-addendum.md`](nexus-hub-focused-qa-opus-rerun-addendum.md).
+
+**Final QA confidence:** **HIGH** — no critical section is left as a Sonnet-only review. Wave 2 evidence is read-grounded with file:line citations.
+
+> Reasoning/effort setting in Wave 2: each Opus agent was given a tightly scoped brief with file paths and line ranges to inspect, plus instructions to "apply Opus-level depth here". Final reports averaged 1200–1500 words of evidence-dense content per agent. No Wave 2 agent terminated early or returned shallow output.
+
+> **Critical distinction preserved:** Nexus Hub's runtime model routing is NOT hardcoded to Opus 4.7. The audit verifies — and the corrected findings catalog continues to enforce — that Nexus uses live model routing (Gemini primary, OpenAI fallback, Anthropic gated by `ANTHROPIC_ENABLED`, per-domain pins, tier pins, env overrides, portal/operator overrides). The Opus 4.7 max-effort requirement applies only to the Claude Code QA review agents.
+
+---
 
 ### Why FAIL, not PASS WITH CONDITIONS:
 
@@ -41,6 +79,8 @@ These are not "ship-and-fix-next-sprint" issues. They are pre-deploy fixes.
 8. Apply `getDomainModelOverride()` to OpenAI + Gemini call sites, not just Anthropic (P1, routing parity)
 9. Write integration tests for the 5 cancellation saga branches (P1, test gap on operationally critical path)
 10. Replace conditional `${userId != null ? 'AND user_id = ?' : ''}` with mandatory `contentScopePredicate()` in `content-workflow.ts` (P1, 3 sites)
+
+> **Post-Opus update:** Items 5 (Anthropic SDK wrap), 6 (null/zero guards), 7 (skill-version auth gate), and 9 (saga tests) above were **REFUTED or downgraded by the Opus rerun** — see [`nexus-hub-focused-qa-opus-rerun-addendum.md`](nexus-hub-focused-qa-opus-rerun-addendum.md). Replacement P0s: loopback-restrict `/api/v1/internal/*`, sanitize `[Current State]` markers, add `tenant_id` to `agent_signals`, expand `UNSAFE_MEMORY_PATTERNS`, schema-validate `skill_specific_memory`, wire `'synced'`/`'failed_sync'`/`'completed'` lifecycle writes, route Cooking/Training/Finance through Secretary `submitSecretarySchedulingIntent`, decide `incrementPlanVersion` (delete or wire), version-status transition validation, 3 *more* unscoped queries in `content-learning-store.ts` (lines 557-561, 572-573, 595-599, 612-618 — 4 more sites Sonnet missed), 1 cross-tenant write path in `content-workflow.ts:79-99`, AsyncLocalStorage fallback in `content-dedup.ts:62-89`, provider-fallback TOOLS allowlist enforcement in `gemini-provider.ts:802, :862`, approval-gate actor permission check in `content-editorial-workflow.ts:439-445`. **The corrected must-fix list is in the updated [`nexus-hub-focused-qa-open-blockers.md`](nexus-hub-focused-qa-open-blockers.md).**
 
 ### Highest-impact improvements (ranked by leverage)
 
