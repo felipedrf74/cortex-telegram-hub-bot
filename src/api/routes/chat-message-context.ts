@@ -22,9 +22,9 @@ export interface ChatActiveContext {
   lastAssistantMessage: string;
 }
 
-export type ChatDomainHandler = (message: string, userId?: number) => Promise<{ text: string; domain: DomainName }>;
+export type ChatDomainHandler = (message: string, userId?: number, tenantId?: number) => Promise<{ text: string; domain: DomainName }>;
 
-const lastActiveDomain = new Map<number, { domain: DomainName; timestamp: number }>();
+const lastActiveDomain = new Map<string, { domain: DomainName; timestamp: number }>();
 
 const domainHandlers: Record<string, ChatDomainHandler> = {
   secretary: handleSecretary,
@@ -34,26 +34,40 @@ const domainHandlers: Record<string, ChatDomainHandler> = {
   cooking: handleCooking,
 };
 
-export function rememberChatActiveDomain(userId: number, domain: DomainName, timestamp = Date.now()): void {
-  lastActiveDomain.set(userId, { domain, timestamp });
+function activeDomainKey(userId: number, tenantId?: number): string {
+  const scopedTenantId = typeof tenantId === 'number' && Number.isFinite(tenantId) && tenantId > 0
+    ? tenantId
+    : userId;
+  return `${scopedTenantId}:${userId}`;
 }
 
-export function clearChatActiveDomain(userId: number): void {
-  lastActiveDomain.delete(userId);
+export function rememberChatActiveDomain(
+  userId: number,
+  domain: DomainName,
+  timestamp = Date.now(),
+  tenantId?: number,
+): void {
+  lastActiveDomain.set(activeDomainKey(userId, tenantId), { domain, timestamp });
 }
 
-export function getLastChatActiveDomain(userId: number, now = Date.now()): DomainName | null {
-  const lastState = lastActiveDomain.get(userId);
+export function clearChatActiveDomain(userId: number, tenantId?: number): void {
+  lastActiveDomain.delete(activeDomainKey(userId, tenantId));
+}
+
+export function getLastChatActiveDomain(userId: number, now = Date.now(), tenantId?: number): DomainName | null {
+  const lastState = lastActiveDomain.get(activeDomainKey(userId, tenantId));
   if (!lastState || now - lastState.timestamp >= CHAT_ACTIVE_DOMAIN_TTL_MS) return null;
   return lastState.domain;
 }
 
-export function resolveChatActiveContext(userId: number, now = Date.now()): ChatActiveContext | null {
-  const domain = getLastChatActiveDomain(userId, now);
+export function resolveChatActiveContext(userId: number, now = Date.now(), tenantId?: number): ChatActiveContext | null {
+  const domain = getLastChatActiveDomain(userId, now, tenantId);
   if (!domain) return null;
 
   try {
-    const lastAssistantMessage = getLastAssistantMessage(userId, domain);
+    const lastAssistantMessage = tenantId
+      ? getLastAssistantMessage(userId, domain, tenantId)
+      : getLastAssistantMessage(userId, domain);
     return lastAssistantMessage ? { domain, lastAssistantMessage } : null;
   } catch {
     return null;

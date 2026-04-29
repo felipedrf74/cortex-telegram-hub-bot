@@ -54,6 +54,7 @@ vi.mock('../../src/state/todos', () => ({
 
 vi.mock('../../src/state/shared-memory', () => ({
   getSharedMemorySummary: vi.fn().mockReturnValue(''),
+  getSharedMemory: vi.fn().mockReturnValue([]),
 }));
 
 vi.mock('../../src/services/tool-executor', () => ({
@@ -692,14 +693,18 @@ describe('Integration: State context is passed to domain calls', () => {
 
     await handleTriathlon('test', 123456789);
 
-    // Provider interface: callDomain(domain, history, message, stateContext, maxTokensOverride)
-    // userId is handled by domain-handler, not passed to the provider
+    // Provider interface: callDomain(domain, history, message, stateContext, options)
+    // Chat tenant hardening passes user/tenant scope in the options object.
     expect(mockCallDomain).toHaveBeenCalledWith(
       'triathlon',
       expect.any(Array),    // history
       'test',               // message
       expect.stringContaining('Wednesday, April 01 2026'), // stateContext
-      undefined,            // maxTokensOverride
+      expect.objectContaining({
+        maxTokensOverride: undefined,
+        userId: 123456789,
+        tenantId: undefined,
+      }),
     );
   });
 });
@@ -843,8 +848,8 @@ describe('Integration: Classification tier priority', () => {
     const route = await routeMessage('I feel creative today');
     expect(route.method).toBe('classifier');
     expect(route.domain).toBe('content');
-    // Third arg: new optional `userId` (see April 9 2026 note above)
-    expect(mockClassifyMessage).toHaveBeenCalledWith('I feel creative today', undefined, undefined);
+    // Third/fourth args carry optional user and tenant scope.
+    expect(mockClassifyMessage).toHaveBeenCalledWith('I feel creative today', undefined, undefined, undefined);
   });
 });
 
@@ -1007,8 +1012,8 @@ describe('Scenario: Ambiguous message → Haiku classifier → most likely domai
     expect(route.confidence).toBe(0.72);
 
     // Verify classifier was called (Haiku in production, mocked here)
-    // Third arg: new optional `userId` (see April 9 2026 note above)
-    expect(mockClassifyMessage).toHaveBeenCalledWith('como estou indo?', undefined, undefined);
+    // Third/fourth args carry optional user and tenant scope.
+    expect(mockClassifyMessage).toHaveBeenCalledWith('como estou indo?', undefined, undefined, undefined);
   });
 
   it('classifier respects minimum confidence threshold', async () => {
@@ -1042,8 +1047,8 @@ describe('Scenario: Ambiguous message → Haiku classifier → most likely domai
     expect(route.confidence).toBe(0.88);
 
     // Verify context was passed to classifier
-    // Third arg: new optional `userId` (see April 9 2026 note above)
-    expect(mockClassifyMessage).toHaveBeenCalledWith('sim, para 4 pessoas', activeContext, undefined);
+    // Third/fourth args carry optional user and tenant scope.
+    expect(mockClassifyMessage).toHaveBeenCalledWith('sim, para 4 pessoas', activeContext, undefined, undefined);
   });
 });
 

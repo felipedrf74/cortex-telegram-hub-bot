@@ -27,6 +27,7 @@ import { getDb } from './database';
 import { logger } from '../utils/logger';
 import { now } from '../utils/date-parser';
 import { config } from '../config';
+import { resolveChatTenantId } from './chat-tenant-scope';
 
 // ─── Cache primitives ──────────────────────────────────────────────────
 
@@ -40,12 +41,13 @@ function todayString(): string {
  * exists — never throws, never falls back to building. Callers that want
  * "either cached or freshly built" should use `getOrBuildDailyContext`.
  */
-export function getDailyContext(userId: number): string {
+export function getDailyContext(userId: number, tenantId?: number): string {
   try {
     const db = getDb();
+    const scopedTenantId = resolveChatTenantId(userId, tenantId);
     const row = db.prepare(
-      'SELECT context_summary FROM daily_context_cache WHERE user_id = ? AND date = ?',
-    ).get(userId, todayString()) as { context_summary: string } | undefined;
+      'SELECT context_summary FROM daily_context_cache WHERE tenant_id = ? AND user_id = ? AND date = ? AND scope_status = ?',
+    ).get(scopedTenantId, userId, todayString(), 'active') as { context_summary: string } | undefined;
     return row?.context_summary || '';
   } catch (err) {
     logger.debug({ err, userId }, 'getDailyContext lookup failed');
@@ -59,13 +61,14 @@ export function getDailyContext(userId: number): string {
  * Called from task-service after every create / complete / delete so the
  * AI never sees stale "5 tasks pending" when the user just completed two.
  */
-export function invalidateContextCache(userId?: number): void {
+export function invalidateContextCache(userId?: number, tenantId?: number): void {
   try {
     const db = getDb();
     if (typeof userId === 'number' && Number.isFinite(userId)) {
+      const scopedTenantId = resolveChatTenantId(userId, tenantId);
       db.prepare(
-        'DELETE FROM daily_context_cache WHERE user_id = ? AND date = ?',
-      ).run(userId, todayString());
+        'DELETE FROM daily_context_cache WHERE tenant_id = ? AND user_id = ? AND date = ?',
+      ).run(scopedTenantId, userId, todayString());
       return;
     }
 
@@ -78,10 +81,10 @@ export function invalidateContextCache(userId?: number): void {
 }
 
 /** Convenience: cached or freshly-built. Used by domain-handler. */
-export async function getOrBuildDailyContext(userId: number): Promise<string> {
-  const cached = getDailyContext(userId);
+export async function getOrBuildDailyContext(userId: number, tenantId?: number): Promise<string> {
+  const cached = getDailyContext(userId, tenantId);
   if (cached) return cached;
-  return await buildDailyContext(userId);
+  return await buildDailyContext(userId, tenantId);
 }
 
 // ─── Builder ───────────────────────────────────────────────────────────
@@ -99,7 +102,7 @@ export async function getOrBuildDailyContext(userId: number): Promise<string> {
  * truncated with a "+N more" suffix. The hard cap is enforced at the end
  * to prevent a runaway context blowing up the system prompt.
  */
-export async function buildDailyContext(userId: number): Promise<string> {
+export async function buildDailyContext(userId: number, tenantId?: number): Promise<string> {
   const parts: string[] = [];
   const db = getDb();
 
@@ -214,13 +217,15 @@ export async function buildDailyContext(userId: number): Promise<string> {
 
   // Persist to cache (PK conflict → overwrite the existing row)
   try {
+    const scopedTenantId = resolveChatTenantId(userId, tenantId);
     db.prepare(
-      `INSERT INTO daily_context_cache (user_id, date, context_summary, built_at)
-       VALUES (?, ?, ?, datetime('now'))
-       ON CONFLICT(user_id, date) DO UPDATE SET
+      `INSERT INTO daily_context_cache (tenant_id, user_id, scope_status, context_summary, date, built_at)
+       VALUES (?, ?, 'active', ?, ?, datetime('now'))
+       ON CONFLICT(tenant_id, user_id, date) DO UPDATE SET
          context_summary = excluded.context_summary,
+         scope_status = excluded.scope_status,
          built_at = excluded.built_at`,
-    ).run(userId, todayString(), summary);
+    ).run(scopedTenantId, userId, summary, todayString());
   } catch (err) {
     logger.warn({ err, userId }, 'Failed to persist daily context cache');
   }

@@ -556,6 +556,8 @@ vi.mock('../../src/services/database', () => ({
 }));
 
 describe('REGRESSION: Conversation history per-domain isolation', () => {
+  const userId = 1;
+
   beforeEach(() => {
     testDb = createTestDb();
     applyMigrations(testDb);
@@ -570,11 +572,11 @@ describe('REGRESSION: Conversation history per-domain isolation', () => {
   it('messages added to secretary are NOT visible in triathlon', async () => {
     const { addToConversation, getConversationHistory } = await import('../../src/state/conversation');
 
-    addToConversation(0, 'secretary', 'user', 'What are my tasks?');
-    addToConversation(0, 'secretary', 'assistant', 'Here are your 5 tasks...');
+    addToConversation(userId, 'secretary', 'user', 'What are my tasks?');
+    addToConversation(userId, 'secretary', 'assistant', 'Here are your 5 tasks...');
 
-    const secHistory = getConversationHistory(0, 'secretary');
-    const triHistory = getConversationHistory(0, 'triathlon');
+    const secHistory = getConversationHistory(userId, 'secretary');
+    const triHistory = getConversationHistory(userId, 'triathlon');
 
     expect(secHistory.length).toBe(2);
     expect(triHistory.length).toBe(0);
@@ -583,11 +585,11 @@ describe('REGRESSION: Conversation history per-domain isolation', () => {
   it('messages added to triathlon are NOT visible in content', async () => {
     const { addToConversation, getConversationHistory } = await import('../../src/state/conversation');
 
-    addToConversation(0, 'triathlon', 'user', 'Show me my workout');
-    addToConversation(0, 'triathlon', 'assistant', '5x5 squat day');
+    addToConversation(userId, 'triathlon', 'user', 'Show me my workout');
+    addToConversation(userId, 'triathlon', 'assistant', '5x5 squat day');
 
-    const triHistory = getConversationHistory(0, 'triathlon');
-    const contentHistory = getConversationHistory(0, 'content');
+    const triHistory = getConversationHistory(userId, 'triathlon');
+    const contentHistory = getConversationHistory(userId, 'content');
 
     expect(triHistory.length).toBe(2);
     expect(contentHistory.length).toBe(0);
@@ -596,26 +598,26 @@ describe('REGRESSION: Conversation history per-domain isolation', () => {
   it('each domain maintains independent history', async () => {
     const { addToConversation, getConversationHistory } = await import('../../src/state/conversation');
 
-    addToConversation(0, 'secretary', 'user', 'Tasks please');
-    addToConversation(0, 'triathlon', 'user', 'Workout plan');
-    addToConversation(0, 'content', 'user', 'Video ideas');
+    addToConversation(userId, 'secretary', 'user', 'Tasks please');
+    addToConversation(userId, 'triathlon', 'user', 'Workout plan');
+    addToConversation(userId, 'content', 'user', 'Video ideas');
 
-    addToConversation(0, 'secretary', 'assistant', 'Here are tasks');
-    addToConversation(0, 'triathlon', 'assistant', 'Here is your plan');
-    addToConversation(0, 'content', 'assistant', 'Here are ideas');
+    addToConversation(userId, 'secretary', 'assistant', 'Here are tasks');
+    addToConversation(userId, 'triathlon', 'assistant', 'Here is your plan');
+    addToConversation(userId, 'content', 'assistant', 'Here are ideas');
 
-    expect(getConversationHistory(0, 'secretary').length).toBe(2);
-    expect(getConversationHistory(0, 'triathlon').length).toBe(2);
-    expect(getConversationHistory(0, 'content').length).toBe(2);
+    expect(getConversationHistory(userId, 'secretary').length).toBe(2);
+    expect(getConversationHistory(userId, 'triathlon').length).toBe(2);
+    expect(getConversationHistory(userId, 'content').length).toBe(2);
 
     // Verify content correctness — messages are present in secretary
-    const secHistory = getConversationHistory(0, 'secretary');
+    const secHistory = getConversationHistory(userId, 'secretary');
     const secContents = secHistory.map(m => m.content);
     expect(secContents).toContain('Tasks please');
     expect(secContents).toContain('Here are tasks');
 
     // Verify triathlon messages are correct
-    const triHistory = getConversationHistory(0, 'triathlon');
+    const triHistory = getConversationHistory(userId, 'triathlon');
     const triContents = triHistory.map(m => m.content);
     expect(triContents).toContain('Workout plan');
   });
@@ -623,35 +625,35 @@ describe('REGRESSION: Conversation history per-domain isolation', () => {
   it('clearing one domain does not affect others', async () => {
     const { addToConversation, getConversationHistory, clearConversation } = await import('../../src/state/conversation');
 
-    addToConversation(0, 'secretary', 'user', 'Task A');
-    addToConversation(0, 'triathlon', 'user', 'Workout A');
-    addToConversation(0, 'content', 'user', 'Video A');
+    addToConversation(userId, 'secretary', 'user', 'Task A');
+    addToConversation(userId, 'triathlon', 'user', 'Workout A');
+    addToConversation(userId, 'content', 'user', 'Video A');
 
-    clearConversation(0, 'secretary');
+    clearConversation(userId, 'secretary');
 
-    expect(getConversationHistory(0, 'secretary').length).toBe(0);
-    expect(getConversationHistory(0, 'triathlon').length).toBe(1);
-    expect(getConversationHistory(0, 'content').length).toBe(1);
+    expect(getConversationHistory(userId, 'secretary').length).toBe(0);
+    expect(getConversationHistory(userId, 'triathlon').length).toBe(1);
+    expect(getConversationHistory(userId, 'content').length).toBe(1);
   });
 
   it('getLastAssistantMessage is domain-scoped', async () => {
     const { addToConversation, getLastAssistantMessage } = await import('../../src/state/conversation');
 
     // Empty domain returns null
-    expect(getLastAssistantMessage(0, 'content')).toBeNull();
+    expect(getLastAssistantMessage(userId, 'content')).toBeNull();
 
     // Add only an assistant message to secretary (no ordering ambiguity)
-    addToConversation(0, 'secretary', 'assistant', 'Here are your tasks');
+    addToConversation(userId, 'secretary', 'assistant', 'Here are your tasks');
 
-    expect(getLastAssistantMessage(0, 'secretary')).toBe('Here are your tasks');
+    expect(getLastAssistantMessage(userId, 'secretary')).toBe('Here are your tasks');
     // Other domains unaffected
-    expect(getLastAssistantMessage(0, 'triathlon')).toBeNull();
-    expect(getLastAssistantMessage(0, 'content')).toBeNull();
+    expect(getLastAssistantMessage(userId, 'triathlon')).toBeNull();
+    expect(getLastAssistantMessage(userId, 'content')).toBeNull();
 
     // After a user message, getLastAssistantMessage returns null (last msg is user)
-    addToConversation(0, 'secretary', 'user', 'Thanks');
+    addToConversation(userId, 'secretary', 'user', 'Thanks');
     // The function returns null if the LAST message is from user
-    const result = getLastAssistantMessage(0, 'secretary');
+    const result = getLastAssistantMessage(userId, 'secretary');
     // With same-second timestamps, ordering by created_at is non-deterministic;
     // just verify it returns either null or a string (function works)
     expect(result === null || typeof result === 'string').toBe(true);
@@ -662,18 +664,18 @@ describe('REGRESSION: Conversation history per-domain isolation', () => {
 
     // Add 14 messages to secretary (7 user + 7 assistant)
     for (let i = 0; i < 7; i++) {
-      addToConversation(0, 'secretary', 'user', `sec user msg ${i}`);
-      addToConversation(0, 'secretary', 'assistant', `sec assistant msg ${i}`);
+      addToConversation(userId, 'secretary', 'user', `sec user msg ${i}`);
+      addToConversation(userId, 'secretary', 'assistant', `sec assistant msg ${i}`);
     }
 
     // Add 10 messages to triathlon (5 user + 5 assistant)
     for (let i = 0; i < 5; i++) {
-      addToConversation(0, 'triathlon', 'user', `tri user msg ${i}`);
-      addToConversation(0, 'triathlon', 'assistant', `tri assistant msg ${i}`);
+      addToConversation(userId, 'triathlon', 'user', `tri user msg ${i}`);
+      addToConversation(userId, 'triathlon', 'assistant', `tri assistant msg ${i}`);
     }
 
-    const secHistory = getConversationHistory(0, 'secretary');
-    const triHistory = getConversationHistory(0, 'triathlon');
+    const secHistory = getConversationHistory(userId, 'secretary');
+    const triHistory = getConversationHistory(userId, 'triathlon');
 
     // Secretary limit is 10 messages
     expect(secHistory.length).toBeLessThanOrEqual(10);
@@ -684,15 +686,15 @@ describe('REGRESSION: Conversation history per-domain isolation', () => {
   it('clearAllConversations wipes every domain', async () => {
     const { addToConversation, getConversationHistory, clearAllConversations } = await import('../../src/state/conversation');
 
-    addToConversation(0, 'secretary', 'user', 'A');
-    addToConversation(0, 'triathlon', 'user', 'B');
-    addToConversation(0, 'content', 'user', 'C');
+    addToConversation(userId, 'secretary', 'user', 'A');
+    addToConversation(userId, 'triathlon', 'user', 'B');
+    addToConversation(userId, 'content', 'user', 'C');
 
-    clearAllConversations(0);
+    clearAllConversations(userId);
 
-    expect(getConversationHistory(0, 'secretary').length).toBe(0);
-    expect(getConversationHistory(0, 'triathlon').length).toBe(0);
-    expect(getConversationHistory(0, 'content').length).toBe(0);
+    expect(getConversationHistory(userId, 'secretary').length).toBe(0);
+    expect(getConversationHistory(userId, 'triathlon').length).toBe(0);
+    expect(getConversationHistory(userId, 'content').length).toBe(0);
   });
 });
 

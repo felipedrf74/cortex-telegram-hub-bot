@@ -15,6 +15,7 @@ import { sendError } from './response-helpers';
 import { getDb } from '../services/database';
 
 export interface AuthenticatedRequest extends Request {
+  tenantId: number;
   userId: number;
   deviceId: string;
 }
@@ -122,6 +123,10 @@ export function authMiddleware(req: Request, res: Response, next: NextFunction):
       return;
     }
 
+    // Nexus currently uses users.id as the canonical tenant key for iOS
+    // runtime data. Keep tenant scope explicit on the request so downstream
+    // Chat/agenda/memory paths never have to infer it from frontend filters.
+    (req as AuthenticatedRequest).tenantId = payload.userId;
     (req as AuthenticatedRequest).userId = payload.userId;
     (req as AuthenticatedRequest).deviceId = payload.deviceId;
 

@@ -79,7 +79,7 @@ export async function trackedCreate(
   client: Anthropic,
   params: Anthropic.MessageCreateParamsNonStreaming,
   category: string,
-  options?: { userId?: number; isUserMessage?: boolean; timeoutMs?: number },
+  options?: { userId?: number; tenantId?: number; isUserMessage?: boolean; timeoutMs?: number },
 ): Promise<Anthropic.Message> {
   // ── Kill switch — see the doc block above ──
   if (!isAnthropicRuntimeEnabled()) {
@@ -146,12 +146,13 @@ export async function trackedCreate(
   try {
     getDb().prepare(`
       INSERT INTO api_usage
-        (category, model, user_id, input_tokens, output_tokens,
+        (category, model, tenant_id, user_id, input_tokens, output_tokens,
          cache_read_tokens, cache_write_tokens, cost_usd, duration_ms)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       category,
       params.model,
+      options?.tenantId ?? options?.userId ?? 0,
       options?.userId ?? 0,
       usage.input_tokens,
       usage.output_tokens,
@@ -161,7 +162,26 @@ export async function trackedCreate(
       durationMs,
     );
   } catch (err) {
-    logger.warn({ err }, 'Failed to record api_usage');
+    try {
+      getDb().prepare(`
+        INSERT INTO api_usage
+          (category, model, user_id, input_tokens, output_tokens,
+           cache_read_tokens, cache_write_tokens, cost_usd, duration_ms)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        category,
+        params.model,
+        options?.userId ?? 0,
+        usage.input_tokens,
+        usage.output_tokens,
+        usage.cache_read_input_tokens ?? 0,
+        usage.cache_creation_input_tokens ?? 0,
+        cost,
+        durationMs,
+      );
+    } catch (fallbackErr) {
+      logger.warn({ err: fallbackErr }, 'Failed to record api_usage');
+    }
   }
 
   // Record per-user usage metering (non-critical — swallow errors)

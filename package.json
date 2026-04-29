@@ -15,6 +15,7 @@
     "typecheck": "tsc --noEmit",
     "preflight:owner-bootstrap": "node dist/tools/owner-bootstrap-preflight.js --strict",
     "portal:session:mint": "node dist/tools/portal-session-token.js",
+    "chat:eval": "node dist/tools/chat-evaluation-harness.js",
     "fiscal:vendors:audit": "node dist/tools/invoice-vendor-cleanup.js",
     "fiscal:vendors:repair": "node dist/tools/invoice-vendor-cleanup.js --apply",
     "lint": "npm run typecheck",

@@ -59,6 +59,9 @@ function applyMigrations(db: Database.Database): void {
 
 const USER_A = 111111;
 const USER_B = 222222;
+const SAME_USER = 333333;
+const TENANT_A = 444444;
+const TENANT_B = 555555;
 
 describe('Per-user data isolation', () => {
   beforeEach(() => {
@@ -113,6 +116,18 @@ describe('Per-user data isolation', () => {
 
       expect(getLastAssistantMessage(USER_A, 'secretary')).toBe('A reply');
       expect(getLastAssistantMessage(USER_B, 'secretary')).toBe('B reply');
+    });
+
+    it('same user conversation context is isolated by explicit tenant scope', () => {
+      addToConversation(SAME_USER, 'secretary', 'assistant', 'Tenant A reply', TENANT_A);
+      addToConversation(SAME_USER, 'secretary', 'assistant', 'Tenant B reply', TENANT_B);
+
+      expect(getConversationHistory(SAME_USER, 'secretary', TENANT_A)).toHaveLength(1);
+      expect(getConversationHistory(SAME_USER, 'secretary', TENANT_A)[0].content).toBe('Tenant A reply');
+      expect(getConversationHistory(SAME_USER, 'secretary', TENANT_B)).toHaveLength(1);
+      expect(getConversationHistory(SAME_USER, 'secretary', TENANT_B)[0].content).toBe('Tenant B reply');
+      expect(getLastAssistantMessage(SAME_USER, 'secretary', TENANT_A)).toBe('Tenant A reply');
+      expect(getLastAssistantMessage(SAME_USER, 'secretary', TENANT_B)).toBe('Tenant B reply');
     });
   });
 
@@ -181,6 +196,16 @@ describe('Per-user data isolation', () => {
       const summaryB = getSharedMemorySummary(USER_B);
       expect(summaryB).toBe('');
     });
+
+    it('same user shared memory can store the same key independently per tenant', () => {
+      setSharedMemory(SAME_USER, 'planning_style', 'protect mornings', 'secretary', undefined, TENANT_A);
+      setSharedMemory(SAME_USER, 'planning_style', 'flexible afternoons', 'secretary', undefined, TENANT_B);
+
+      expect(getSharedMemory(SAME_USER, 'planning_style', TENANT_A)[0].value).toBe('protect mornings');
+      expect(getSharedMemory(SAME_USER, 'planning_style', TENANT_B)[0].value).toBe('flexible afternoons');
+      expect(getSharedMemorySummary(SAME_USER, TENANT_A)).toContain('protect mornings');
+      expect(getSharedMemorySummary(SAME_USER, TENANT_B)).toContain('flexible afternoons');
+    });
   });
 
   describe('notes', () => {
@@ -199,12 +224,10 @@ describe('Per-user data isolation', () => {
   });
 
   describe('backward compatibility', () => {
-    it('default user_id=0 handles existing data', () => {
-      // Simulate pre-migration data (user_id=0)
+    it('ambiguous user_id=0 conversation data is not exposed as active chat context', () => {
       addToConversation(0, 'secretary', 'user', 'legacy message');
       const hist = getConversationHistory(0, 'secretary');
-      expect(hist).toHaveLength(1);
-      expect(hist[0].content).toBe('legacy message');
+      expect(hist).toHaveLength(0);
     });
   });
 

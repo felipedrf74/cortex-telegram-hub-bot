@@ -29,6 +29,7 @@ import {
 } from './security';
 import { registerPortalAdminDataRoutes } from './admin-data-routes';
 import { registerPortalActionRoutes } from './action-routes';
+import { registerPortalChatRoutes } from './chat-routes';
 import { registerPortalContentRoutes } from './content-routes';
 import { registerPortalDocumentRoutes } from './document-routes';
 import { registerPortalFounderRoutes } from './founder-routes';
@@ -313,6 +314,8 @@ export function createPortalServer(bot?: any): http.Server {
   registerPortalFounderRoutes(app);
 
   registerPortalAdminDataRoutes(app);
+
+  registerPortalChatRoutes(app);
 
   registerPortalUserSkillRoutes(app);
 

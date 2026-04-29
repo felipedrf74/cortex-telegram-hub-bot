@@ -47,7 +47,7 @@ export function registerChatCallbackRoutes(
    * Handle inline button presses (equivalent to Telegram callback queries).
    */
   router.post('/callback', async (req, res: Response) => {
-    const { userId } = req as AuthenticatedRequest;
+    const { userId, tenantId = userId } = req as AuthenticatedRequest;
     const { callbackData, messageId } = req.body;
 
     if (!ensureValidChatRouteScope(res, userId, 'chat_route_callback', {
@@ -88,6 +88,7 @@ export function registerChatCallbackRoutes(
 
         if (messageId) {
           persistAssistantEdit({
+            tenantId,
             userId,
             messageId,
             text: fastPath.text,
@@ -112,6 +113,7 @@ export function registerChatCallbackRoutes(
 
           if (messageId) {
             persistAssistantEdit({
+              tenantId,
               userId,
               messageId,
               text: payload.text,
@@ -143,6 +145,7 @@ export function registerChatCallbackRoutes(
 
         if (messageId) {
           persistAssistantEdit({
+            tenantId,
             userId,
             messageId,
             text: payload.text,
@@ -246,6 +249,7 @@ export function registerChatCallbackRoutes(
       };
 
       persistCallbackAssistantResponse({
+        tenantId,
         userId,
         messageId,
         text: responseText,
@@ -258,7 +262,13 @@ export function registerChatCallbackRoutes(
 
       res.json(payload);
     } catch (err: any) {
-      logger.error({ err, callbackData, platform: 'ios' }, 'iOS callback failed');
+      logger.error({
+        err,
+        callbackPrefix: typeof callbackData === 'string' ? callbackData.split(':').slice(0, 2).join(':') : null,
+        platform: 'ios',
+        tenantId,
+        userId,
+      }, 'iOS callback failed');
       const language = getUserLanguage(userId);
       res.status(500).json({
         error: {

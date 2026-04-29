@@ -103,7 +103,9 @@ export function exportAllUserData(userId: number): FullUserExport {
 
   // Conversations
   const conversations = safeAll(db,
-    'SELECT domain, role, content, created_at as createdAt FROM conversations WHERE user_id = ? ORDER BY created_at', userId);
+    "SELECT domain, role, content, created_at as createdAt FROM conversations WHERE tenant_id = ? AND user_id = ? AND scope_status = 'active' ORDER BY created_at",
+    userId,
+    userId);
 
   // Todos
   const todos = safeAll(db,
@@ -123,7 +125,9 @@ export function exportAllUserData(userId: number): FullUserExport {
 
   // Shared Memory
   const sharedMemory = safeAll(db,
-    'SELECT key, value, updated_at as updatedAt FROM shared_memory WHERE user_id = ? ORDER BY key', userId);
+    "SELECT key, value, updated_at as updatedAt FROM shared_memory WHERE tenant_id = ? AND user_id = ? AND scope_status = 'active' ORDER BY key",
+    userId,
+    userId);
 
   // Finance (uses existing decrypting export)
   const finance = exportUserFinanceData(userId);

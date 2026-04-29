@@ -10,6 +10,7 @@ import { getActivePlanSummary } from '../services/training-plans';
 import { ensureActiveProvider, getActiveProvider } from '../services/provider-registry';
 import { getDailyContext } from '../services/context-engine';
 import { buildSharedDecisionContext } from '../services/shared-decision-context';
+import { buildChatPromptContextBlock } from '../services/chat-context-engine';
 import { buildAIUnavailableResponse, canUseDirectAnthropicFallback } from './ai-unavailable';
 import { normalizeReplyForUserLanguage } from '../services/reply-language-normalizer';
 import {
@@ -161,6 +162,32 @@ export function __resetLastCoachStateCacheForTests(): void {
   lastCoachStates.clear();
 }
 
+function addScopedConversation(
+  userId: number,
+  domain: DomainName,
+  role: 'user' | 'assistant',
+  content: string,
+  tenantId?: number,
+): void {
+  if (typeof tenantId === 'number') {
+    addToConversation(userId, domain, role, content, tenantId);
+    return;
+  }
+  addToConversation(userId, domain, role, content);
+}
+
+function executeScopedToolCall(
+  name: string,
+  input: Record<string, any>,
+  userId?: number,
+  tenantId?: number,
+): Promise<unknown> {
+  if (typeof tenantId === 'number') {
+    return executeToolCall(name, input, userId, tenantId);
+  }
+  return executeToolCall(name, input, userId);
+}
+
 /**
  * Drop the last coach state for a user from both the in-memory LRU
  * and the durable persistence layer. Called when the user's training
@@ -187,6 +214,7 @@ export async function buildSimpleStateContext(
   domain: DomainName,
   userId?: number,
   message?: string,
+  tenantId?: number,
 ): Promise<string> {
   const hasUserScope = typeof userId === 'number';
   const parts: string[] = [];
@@ -332,11 +360,11 @@ export async function buildSimpleStateContext(
   }
 
   // Cross-domain shared context
-  const sharedCtx = hasUserScope ? getSharedMemorySummary(userId) : '';
+  const sharedCtx = hasUserScope ? getSharedMemorySummary(userId, tenantId) : '';
   if (sharedCtx) parts.push(sharedCtx);
 
   if (hasUserScope) {
-    const decisionCtx = await buildSharedDecisionContext(domain, userId);
+    const decisionCtx = await buildSharedDecisionContext(domain, userId, tenantId);
     if (decisionCtx) parts.push(`\n${decisionCtx}`);
   }
 
@@ -346,10 +374,21 @@ export async function buildSimpleStateContext(
   // day looking like?" before answering. Cost: ~500 tokens per message
   // instead of ~1350. See src/services/context-engine.ts.
   if (hasUserScope) {
-    const dailyContext = getDailyContext(userId);
+    const dailyContext = getDailyContext(userId, tenantId);
     if (dailyContext) {
       parts.push('\n--- Daily Context ---\n' + dailyContext);
     }
+  }
+
+  if (hasUserScope) {
+    const promptContext = await buildChatPromptContextBlock({
+      domain,
+      message: message ?? '',
+      userId,
+      tenantId,
+      budgetChars: 1800,
+    });
+    if (promptContext) parts.push(`\n${promptContext}`);
   }
 
   return parts.join('\n');
@@ -370,13 +409,14 @@ export async function handleSimpleDomain(
   maxIterations = 5,
   userId?: number,
   maxTokensOverride?: number,
+  tenantId?: number,
 ): Promise<DomainResponse> {
   const hasUserScope = typeof userId === 'number';
-  const history = hasUserScope ? getConversationHistory(userId, domain) : [];
+  const history = hasUserScope ? getConversationHistory(userId, domain, tenantId) : [];
   // Phase 3 Slice A: pass the incoming message so the triathlon
   // branch of buildSimpleStateContext can run the sport classifier
   // and inject the onboarding-pending block when appropriate.
-  const stateContext = await buildSimpleStateContext(domain, userId, message);
+  const stateContext = await buildSimpleStateContext(domain, userId, message, tenantId);
 
   try {
     // Get the active routing provider (handles fallback + circuit breaker)
@@ -387,11 +427,15 @@ export async function handleSimpleDomain(
       }
       // Fallback to direct Anthropic if routing provider not initialized
       const { callDomain, continueWithToolResults } = require('../services/anthropic');
-      return await handleWithDirectCalls(domain, history, message, stateContext, maxIterations, userId, maxTokensOverride, callDomain, continueWithToolResults);
+      return await handleWithDirectCalls(domain, history, message, stateContext, maxIterations, userId, maxTokensOverride, callDomain, continueWithToolResults, tenantId);
     }
 
     // Route through the provider-agnostic interface
-    let result = await provider.callDomain(domain, history, message, stateContext, maxTokensOverride);
+    let result = await provider.callDomain(domain, history, message, stateContext, {
+      maxTokensOverride,
+      userId,
+      tenantId,
+    });
     let finalText = result.text;
 
     logger.debug({ domain, provider: provider.name, hasTools: result.toolCalls.length > 0 }, 'Domain call completed via routing provider');
@@ -415,7 +459,7 @@ export async function handleSimpleDomain(
       // Execute tool calls in parallel
       const toolResults = await Promise.all(
         result.toolCalls.map(async (tc) => {
-          const toolResult = await executeToolCall(tc.name, tc.input as Record<string, any>, userId);
+          const toolResult = await executeScopedToolCall(tc.name, tc.input as Record<string, any>, userId, tenantId);
           let content = JSON.stringify(toolResult);
           if (content.length > 2000) content = content.slice(0, 2000) + '...(truncated)';
           return { type: 'tool_result' as const, tool_use_id: tc.id, content };
@@ -429,18 +473,21 @@ export async function handleSimpleDomain(
       );
 
       // Continue with tool results via the routing provider
-      result = await provider.continueWithToolResults(domain, history, message, stateContext, toolConversation);
+      result = await provider.continueWithToolResults(domain, history, message, stateContext, toolConversation, {
+        userId,
+        tenantId,
+      });
       finalText = result.text;
     }
 
     finalText = normalizeReplyForUserLanguage(finalText, userId);
 
     if (hasUserScope) {
-      addToConversation(userId, domain, 'user', message);
       const storedText = toolsUsed.length > 0
         ? `[Tools: ${[...new Set(toolsUsed)].join(', ')}]\n${finalText}`
         : finalText;
-      addToConversation(userId, domain, 'assistant', storedText);
+      addScopedConversation(userId, domain, 'user', message, tenantId);
+      addScopedConversation(userId, domain, 'assistant', storedText, tenantId);
     }
 
     return { text: finalText, domain };
@@ -461,6 +508,7 @@ async function handleWithDirectCalls(
   domain: DomainName, history: any[], message: string, stateContext: string,
   maxIterations: number, userId: number | undefined, maxTokensOverride: number | undefined,
   callDomainFn: (...args: any[]) => Promise<any>, continueWithToolResultsFn: (...args: any[]) => Promise<any>,
+  tenantId?: number,
 ): Promise<DomainResponse> {
   let result = await callDomainFn(domain, history, message, stateContext, maxTokensOverride, userId);
   let finalText = result.text;
@@ -479,7 +527,7 @@ async function handleWithDirectCalls(
     }
     const toolResults = await Promise.all(
       result.toolCalls.map(async (tc: any) => {
-        const toolResult = await executeToolCall(tc.name, tc.input as Record<string, any>, userId);
+        const toolResult = await executeScopedToolCall(tc.name, tc.input as Record<string, any>, userId, tenantId);
         let content = JSON.stringify(toolResult);
         // Truncate large results (consistent with primary path)
         if (content.length > 2000) content = content.slice(0, 2000) + '...(truncated)';
@@ -497,11 +545,11 @@ async function handleWithDirectCalls(
   finalText = normalizeReplyForUserLanguage(finalText, userId);
 
   if (typeof userId === 'number') {
-    addToConversation(userId, domain, 'user', message);
+    addScopedConversation(userId, domain, 'user', message, tenantId);
     const storedText = toolsUsed.length > 0
       ? `[Tools: ${[...new Set(toolsUsed)].join(', ')}]\n${finalText}`
       : finalText;
-    addToConversation(userId, domain, 'assistant', storedText);
+    addScopedConversation(userId, domain, 'assistant', storedText, tenantId);
   }
 
   return { text: finalText, domain };

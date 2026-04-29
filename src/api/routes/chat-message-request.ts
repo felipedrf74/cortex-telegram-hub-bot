@@ -16,6 +16,8 @@ export type NormalizedChatMessageRequest = {
   normalizedText: string;
   normalizedTextLower: string;
   normalizedAttachments: ChatImageAttachment[];
+  clientMessageId: string | null;
+  idempotencyKey: string | null;
 };
 
 export function normalizeChatMessageRequest(body: unknown): NormalizedChatMessageRequest {
@@ -29,6 +31,12 @@ export function normalizeChatMessageRequest(body: unknown): NormalizedChatMessag
     normalizedText,
     normalizedTextLower: normalizedText.toLowerCase(),
     normalizedAttachments,
+    clientMessageId: typeof payload.clientMessageId === 'string' && payload.clientMessageId.trim()
+      ? payload.clientMessageId.trim().slice(0, 160)
+      : null,
+    idempotencyKey: typeof payload.idempotencyKey === 'string' && payload.idempotencyKey.trim()
+      ? payload.idempotencyKey.trim().slice(0, 160)
+      : null,
   };
 }
 

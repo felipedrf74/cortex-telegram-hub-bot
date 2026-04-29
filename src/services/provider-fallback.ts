@@ -259,8 +259,9 @@ export class TaskRoutingProvider implements AIProvider {
   private async executeWithFallback<T>(
     taskType: TaskType,
     fn: (provider: AIProvider) => Promise<T>,
+    pairOverride?: TaskProviderPair,
   ): Promise<T> {
-    const pair = this.routing[taskType];
+    const pair = pairOverride ?? this.routing[taskType];
     const primaryBreaker = this.getBreaker(pair.primary.name);
 
     // Try primary if circuit allows
@@ -419,7 +420,7 @@ export class TaskRoutingProvider implements AIProvider {
     stateContext: string,
     optionsOrMaxTokens?: number | CallDomainOptions,
   ): Promise<AICallResult> {
-    const { taskType } = this.resolveProviderPairForDomain(domain);
+    const { taskType, pair } = this.resolveProviderPairForDomain(domain);
 
     // ── TASK-17 Layer 3+4+5: provider-agnostic optimization ──────
     //
@@ -439,7 +440,7 @@ export class TaskRoutingProvider implements AIProvider {
 
     return this.executeWithFallback(taskType, (p) =>
       p.callDomain(domain, opts.slicedHistory, currentMessage, stateContext, opts.callOptions),
-    );
+    pair);
   }
 
   async continueWithToolResults(
@@ -450,7 +451,7 @@ export class TaskRoutingProvider implements AIProvider {
     toolConversation: AIToolResultMessage[],
     options?: CallDomainOptions,
   ): Promise<AICallResult> {
-    const { taskType } = this.resolveProviderPairForDomain(domain);
+    const { taskType, pair } = this.resolveProviderPairForDomain(domain);
 
     // Same optimization logic as callDomain. Critical: must compute the
     // SAME decision (same currentMessage → same tier/tools/history) so
@@ -462,7 +463,7 @@ export class TaskRoutingProvider implements AIProvider {
 
     return this.executeWithFallback(taskType, (p) =>
       p.continueWithToolResults(domain, opts.slicedHistory, currentMessage, stateContext, toolConversation, opts.callOptions),
-    );
+    pair);
   }
 
   /**
@@ -511,6 +512,8 @@ export class TaskRoutingProvider implements AIProvider {
       filteredTools: callerOpts.filteredTools ?? optimization.filteredTools,
       modelTier: callerOpts.modelTier ?? optimization.modelTier,
       maxTokensOverride: callerOpts.maxTokensOverride,
+      userId: callerOpts.userId,
+      tenantId: callerOpts.tenantId,
     };
 
     return {

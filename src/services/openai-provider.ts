@@ -14,7 +14,15 @@
  */
 
 import OpenAI from 'openai';
-import { AIProvider, AICallResult, AIToolCall, AIToolResultMessage, getModelRouting } from './ai-provider';
+import {
+  AIProvider,
+  AICallResult,
+  AIToolCall,
+  AIToolResultMessage,
+  CallDomainOptions,
+  getModelRouting,
+  normalizeCallDomainOptions,
+} from './ai-provider';
 import { DomainName, DomainMessage, ClassificationResult } from '../domains/types';
 import { config } from '../config';
 import { logger } from '../utils/logger';
@@ -67,6 +75,7 @@ type OneShotOptions = {
   maxTokens?: number;
   temperature?: number;
   userId?: number;
+  tenantId?: number;
   timeoutMs?: number;
   jsonMode?: boolean;
 };
@@ -108,6 +117,7 @@ async function trackedCompletion(
   params: OpenAINonStreamingParams,
   category: string,
   userId: number = 0,
+  tenantId: number = userId,
   timeoutMs?: number,
 ): Promise<OpenAI.ChatCompletion> {
   const AI_CALL_TIMEOUT_MS = timeoutMs ?? getAICallTimeoutMs();
@@ -129,11 +139,19 @@ async function trackedCompletion(
     try {
       const db = getDb();
       db.prepare(`
-        INSERT INTO api_usage (category, model, user_id, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, cost_usd, duration_ms, provider)
-        VALUES (?, ?, ?, ?, ?, 0, 0, ?, ?, 'openai')
-      `).run(category, model, userId, usage.prompt_tokens, usage.completion_tokens, costUsd, durationMs);
+        INSERT INTO api_usage (category, model, tenant_id, user_id, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, cost_usd, duration_ms, provider)
+        VALUES (?, ?, ?, ?, ?, ?, 0, 0, ?, ?, 'openai')
+      `).run(category, model, tenantId, userId, usage.prompt_tokens, usage.completion_tokens, costUsd, durationMs);
     } catch (e) {
-      logger.warn({ err: e }, 'Failed to log OpenAI usage to database');
+      try {
+        const db = getDb();
+        db.prepare(`
+          INSERT INTO api_usage (category, model, user_id, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, cost_usd, duration_ms, provider)
+          VALUES (?, ?, ?, ?, ?, 0, 0, ?, ?, 'openai')
+        `).run(category, model, userId, usage.prompt_tokens, usage.completion_tokens, costUsd, durationMs);
+      } catch (fallbackErr) {
+        logger.warn({ err: fallbackErr }, 'Failed to log OpenAI usage to database');
+      }
     }
 
     pushEvent({
@@ -205,6 +223,7 @@ export async function completeOneShot(
       }, maxTokens),
       category,
       options?.userId ?? 0,
+      options?.tenantId ?? options?.userId ?? 0,
       options?.timeoutMs,
     ),
   );
@@ -232,7 +251,7 @@ export async function completeVisionOneShot(
   userPrompt: string,
   image: { base64: string; mimeType: string },
   category: string,
-  options?: { model?: string; maxTokens?: number; temperature?: number; userId?: number },
+  options?: { model?: string; maxTokens?: number; temperature?: number; userId?: number; tenantId?: number },
 ): Promise<string> {
   if (!isOpenAIConfigured()) {
     throw new Error('OpenAI provider not configured (OPENAI_API_KEY missing)');
@@ -262,6 +281,7 @@ export async function completeVisionOneShot(
       }, maxTokens),
       category,
       options?.userId ?? 0,
+      options?.tenantId ?? options?.userId ?? 0,
     ),
   );
 
@@ -391,8 +411,9 @@ ${message}`;
     history: DomainMessage[],
     currentMessage: string,
     stateContext: string,
-    maxTokensOverride?: number,
+    optionsOrMaxTokens?: number | CallDomainOptions,
   ): Promise<AICallResult> {
+    const opts = normalizeCallDomainOptions(optionsOrMaxTokens);
     const routing = getModelRouting(config.openai, domain, 'openai');
     // Phase 2 Slice A: pass currentMessage so triathlon sub-skill
     // routing picks the sport-specific coach persona prompt.
@@ -414,7 +435,7 @@ ${message}`;
         model: routing.model,
         messages,
         ...(useTools ? { tools: toOpenAITools() } : {}),
-      }, maxTokensOverride || routing.maxTokens), `openai_domain_${domain}`)
+      }, opts.maxTokensOverride || routing.maxTokens), `openai_domain_${domain}`, opts.userId ?? 0, opts.tenantId ?? opts.userId ?? 0)
     );
 
     const choice = response.choices[0];
@@ -431,7 +452,9 @@ ${message}`;
     currentMessage: string,
     stateContext: string,
     toolConversation: AIToolResultMessage[],
+    options?: CallDomainOptions,
   ): Promise<AICallResult> {
+    const opts = normalizeCallDomainOptions(options);
     const routing = getModelRouting(config.openai, domain, 'openai');
     // Phase 2 Slice A: pass currentMessage so triathlon sub-skill
     // routing picks the sport-specific coach persona prompt.
@@ -483,7 +506,7 @@ ${message}`;
         model: routing.model,
         messages,
         ...(useTools ? { tools: toOpenAITools() } : {}),
-      }, routing.maxTokens), 'openai_tool_continuation')
+      }, opts.maxTokensOverride || routing.maxTokens), 'openai_tool_continuation', opts.userId ?? 0, opts.tenantId ?? opts.userId ?? 0)
     );
 
     const choice = response.choices[0];

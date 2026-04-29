@@ -88,6 +88,20 @@ function computeCostBreakdownForRoute(deps: PortalProviderRouteDeps, rows: unkno
   return computeCostBreakdown(rows, days);
 }
 
+function modelOptionTierForRole(role: string): 'chat' | 'classifier' {
+  return role === 'chat' || role === 'secretary' ? 'chat' : 'classifier';
+}
+
+function isAllowedModelOption(modelConfig: ModelConfigService, provider: string, role: string, model: unknown): model is string {
+  if (typeof model !== 'string' || !model.trim()) return false;
+
+  const options = modelConfig.MODEL_OPTIONS as Record<string, { chat?: unknown; classifier?: unknown }> | undefined;
+  const providerOptions = options?.[provider];
+  const roleOptions = providerOptions?.[modelOptionTierForRole(role)];
+
+  return Array.isArray(roleOptions) && roleOptions.includes(model);
+}
+
 function parseWindowDays(value: unknown, fallback = 7): number {
   const parsed = parseInt(typeof value === 'string' ? value : String(fallback), 10);
   if (!Number.isFinite(parsed)) return fallback;
@@ -183,12 +197,12 @@ export function registerPortalProviderRoutes(app: Express, deps: PortalProviderR
   app.put('/api/model-config', requirePortalAdminToken, express.json(), (req: Request, res: Response) => {
     try {
       const { provider, role, model } = req.body;
-      if (!VALID_MODEL_PROVIDERS.has(provider) || !VALID_MODEL_ROLES.has(role) || !model) {
+      const modelConfig = getModelConfig(deps);
+      if (!VALID_MODEL_PROVIDERS.has(provider) || !VALID_MODEL_ROLES.has(role) || !isAllowedModelOption(modelConfig, provider, role, model)) {
         res.status(400).json({ error: 'Invalid provider, role, or model' });
         return;
       }
 
-      const modelConfig = getModelConfig(deps);
       modelConfig.setActiveModel(provider, role, model);
       res.json({ ok: true, provider, role, model, message: 'Model updated. Active immediately — no restart needed.' });
     } catch (err) {

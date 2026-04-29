@@ -26,6 +26,7 @@ export type AuditAction =
 
 export interface AuditEntry {
   userId: number;
+  tenantId?: number;
   actorId: number;
   action: AuditAction;
   resource: string;
@@ -37,9 +38,10 @@ export function logAudit(entry: AuditEntry): void {
   try {
     const db = getDb();
     db.prepare(`
-      INSERT INTO audit_trail (user_id, actor_id, action, resource, details, ip_address)
-      VALUES (?, ?, ?, ?, ?, ?)
+      INSERT INTO audit_trail (tenant_id, user_id, actor_id, action, resource, details, ip_address)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
     `).run(
+      entry.tenantId ?? entry.userId,
       entry.userId,
       entry.actorId,
       entry.action,
@@ -65,8 +67,8 @@ export function getAuditTrail(userId: number, limit = 50): AuditRow[] {
   return db.prepare(`
     SELECT ts, action, resource, actor_id as actorId, details
     FROM audit_trail
-    WHERE user_id = ?
+    WHERE tenant_id = ? AND user_id = ?
     ORDER BY ts DESC
     LIMIT ?
-  `).all(userId, limit) as AuditRow[];
+  `).all(userId, userId, limit) as AuditRow[];
 }

@@ -133,6 +133,7 @@ export async function routeMessage(
   message: string,
   activeContext?: ConversationContext | null,
   userId?: number,
+  tenantId?: number,
 ): Promise<RouteResult> {
   // Step 1: Try pattern matching (explicit /commands always win)
   const patternDomain = patternMatch(message);
@@ -190,7 +191,7 @@ export async function routeMessage(
   // Step 3: Claude classifier for genuinely ambiguous messages.
   // Pass activeContext if available so the classifier has conversation history.
   // Pass userId so the api_usage row attributes the cost to the caller.
-  const classification = await classifyWithClaude(message, activeContext ?? undefined, userId);
+  const classification = await classifyWithClaude(message, activeContext ?? undefined, userId, tenantId);
   logger.debug(
     { domain: classification.domain, confidence: classification.confidence, method: 'classifier', hadActiveContext: !!activeContext },
     'Routed by classifier',

@@ -13,7 +13,8 @@ export type TenantScopeAnomalyLayer =
 export type TenantScopeAnomalyReason =
   | 'missing_user_scope'
   | 'invalid_user_scope'
-  | 'unexpected_user_scope';
+  | 'unexpected_user_scope'
+  | 'tenant_mismatch';
 
 export interface TenantScopeAnomaly {
   layer: TenantScopeAnomalyLayer;

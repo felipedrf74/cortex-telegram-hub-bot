@@ -49,7 +49,7 @@ vi.mock('../../src/utils/logger', () => ({
 // Mock external services that tool-executor imports
 vi.mock('../../src/state/notes', () => ({ saveNote: vi.fn(), searchNotes: vi.fn() }));
 vi.mock('../../src/state/reminders', () => ({ setReminder: vi.fn() }));
-vi.mock('../../src/state/shared-memory', () => ({ setSharedMemory: vi.fn(), removeSharedMemory: vi.fn() }));
+vi.mock('../../src/state/shared-memory', () => ({ setSharedMemory: vi.fn(), removeSharedMemory: vi.fn(), getSharedMemory: vi.fn(() => []), getSharedMemorySummary: vi.fn(() => '') }));
 vi.mock('../../src/services/unified-calendar', () => ({
   isAnyCalendarConfigured: vi.fn().mockReturnValue(false),
   getEvents: vi.fn(), createEvent: vi.fn(), updateEvent: vi.fn(), deleteEvent: vi.fn(),
@@ -92,7 +92,7 @@ describe('Training Plan Tool Handlers', () => {
     }, testUserId);
     const result = await executeToolCall('add_training_week', {
       plan_id: 1, week_number: 1, focus: 'hypertrophy', intensity_pct: 100, volume_sessions: 5,
-    });
+    }, testUserId);
     expect(result.success).toBe(true);
     expect(result.week_id).toBe(1);
   });
@@ -102,13 +102,13 @@ describe('Training Plan Tool Handlers', () => {
       name: 'Plan', sport: 'strength', duration_weeks: 4,
       start_date: '2026-04-01', end_date: '2026-04-29',
     }, testUserId);
-    await executeToolCall('add_training_week', { plan_id: 1, week_number: 1 });
+    await executeToolCall('add_training_week', { plan_id: 1, week_number: 1 }, testUserId);
     const result = await executeToolCall('add_training_session', {
       week_id: 1, plan_id: 1, day_of_week: 'Monday',
       session_type: 'strength', title: 'Upper Body Push',
       exercises_json: JSON.stringify([{ name: 'Bench Press', sets: 4, reps: 8 }]),
       duration_minutes: 60, intensity_text: 'RPE 7',
-    });
+    }, testUserId);
     expect(result.success).toBe(true);
     expect(result.session_id).toBe(1);
     expect(result.title).toBe('Upper Body Push');
@@ -123,11 +123,11 @@ describe('Training Plan Tool Handlers', () => {
       name: 'Plan', sport: 'strength', duration_weeks: 4,
       start_date: today, end_date: endDate.toISOString().slice(0, 10),
     }, testUserId);
-    await executeToolCall('add_training_week', { plan_id: 1, week_number: 1, focus: 'hypertrophy' });
+    await executeToolCall('add_training_week', { plan_id: 1, week_number: 1, focus: 'hypertrophy' }, testUserId);
     await executeToolCall('add_training_session', {
       week_id: 1, plan_id: 1, day_of_week: 'Monday',
       session_type: 'strength', title: 'Push Day',
-    });
+    }, testUserId);
 
     const result = await executeToolCall('get_training_plan', { plan_id: 1 }, testUserId);
     expect(result.plan.name).toBe('Plan');
@@ -145,16 +145,16 @@ describe('Training Plan Tool Handlers', () => {
       name: 'Plan', sport: 'strength', duration_weeks: 4,
       start_date: '2026-04-01', end_date: '2026-04-29',
     }, testUserId);
-    await executeToolCall('add_training_week', { plan_id: 1, week_number: 1 });
+    await executeToolCall('add_training_week', { plan_id: 1, week_number: 1 }, testUserId);
     await executeToolCall('add_training_session', {
       week_id: 1, plan_id: 1, day_of_week: 'Monday',
       session_type: 'strength', title: 'Test',
-    });
+    }, testUserId);
 
     const result = await executeToolCall('log_training_completion', {
       session_id: 1, rpe_overall: 7, energy_level: 8,
       soreness_level: 3, notes: 'Felt great',
-    });
+    }, testUserId);
     expect(result.success).toBe(true);
     expect(result.completion_id).toBe(1);
   });
@@ -169,15 +169,15 @@ describe('Training Plan Tool Handlers', () => {
       name: 'Plan', sport: 'strength', duration_weeks: 4,
       start_date: '2026-04-01', end_date: '2026-04-29',
     }, testUserId);
-    await executeToolCall('add_training_week', { plan_id: 1, week_number: 1 });
+    await executeToolCall('add_training_week', { plan_id: 1, week_number: 1 }, testUserId);
     await executeToolCall('add_training_session', {
       week_id: 1, plan_id: 1, day_of_week: 'Monday',
       session_type: 'strength', title: 'Original',
-    });
+    }, testUserId);
 
     const result = await executeToolCall('update_training_session', {
       session_id: 1, title: 'Updated', intensity_text: 'RPE 9',
-    });
+    }, testUserId);
     expect(result.success).toBe(true);
   });
 
@@ -186,15 +186,15 @@ describe('Training Plan Tool Handlers', () => {
       name: 'Plan', sport: 'strength', duration_weeks: 4,
       start_date: '2026-04-01', end_date: '2026-04-29',
     }, testUserId);
-    await executeToolCall('add_training_week', { plan_id: 1, week_number: 1 });
+    await executeToolCall('add_training_week', { plan_id: 1, week_number: 1 }, testUserId);
     await executeToolCall('add_training_session', {
       week_id: 1, plan_id: 1, day_of_week: 'Monday',
       session_type: 'strength', title: 'Test',
-    });
+    }, testUserId);
 
     const result = await executeToolCall('link_session_calendar', {
       session_id: 1, calendar_event_id: 'AAMk456', calendar_source: 'outlook',
-    });
+    }, testUserId);
     expect(result.success).toBe(true);
   });
 });

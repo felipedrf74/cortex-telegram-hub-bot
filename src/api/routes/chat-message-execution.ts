@@ -27,9 +27,10 @@ export async function executeChatDomainHandler(
   handler: ChatDomainHandler,
   message: string,
   userId: number,
+  tenantId?: number,
   timeoutMs = CHAT_DOMAIN_HANDLER_TIMEOUT_MS,
 ): Promise<ChatDomainExecutionResult> {
-  const handlerPromise = handler(message, userId);
+  const handlerPromise = handler(message, userId, tenantId);
   let timeout: ReturnType<typeof setTimeout> | undefined;
   const timeoutPromise = new Promise<never>((_, reject) => {
     timeout = setTimeout(() => reject(new Error('Response timeout — AI is taking too long')), timeoutMs);

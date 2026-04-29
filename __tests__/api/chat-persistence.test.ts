@@ -38,17 +38,22 @@ describe('chat-persistence', () => {
       buttons: [[{ text: 'Today', callbackData: 'cmd:/day' }]],
       metadata: { source: 'test' },
       timestamp: '2026-04-23T10:00:00.000Z',
-    });
+    }, 1001);
 
     expect(mocks.storeChatMessage).toHaveBeenCalledTimes(2);
     expect(mocks.storeChatMessage).toHaveBeenNthCalledWith(1, {
+      tenantId: 1001,
       userId: 42,
       messageId: 'u-1',
       role: 'user',
       text: 'hello',
       timestamp: '2026-04-23T10:00:00.000Z',
+      lifecycleState: 'sent',
+      clientMessageId: null,
+      requestId: null,
     });
     expect(mocks.storeChatMessage).toHaveBeenNthCalledWith(2, {
+      tenantId: 1001,
       userId: 42,
       messageId: 'a-1',
       role: 'assistant',
@@ -59,15 +64,19 @@ describe('chat-persistence', () => {
       buttons: [[{ text: 'Today', callbackData: 'cmd:/day' }]],
       metadata: { source: 'test' },
       timestamp: '2026-04-23T10:00:00.000Z',
+      lifecycleState: 'completed',
+      completedAt: '2026-04-23T10:00:00.000Z',
+      retryOfMessageId: 'u-1',
+      requestId: null,
     });
   });
 
   it('syncs shortcut conversation turns', () => {
-    syncConversationStateForShortcut(42, 'finance', 'budget?', 'Budget is stable.');
+    syncConversationStateForShortcut(42, 'finance', 'budget?', 'Budget is stable.', 1001);
 
     expect(mocks.addToConversation).toHaveBeenCalledTimes(2);
-    expect(mocks.addToConversation).toHaveBeenNthCalledWith(1, 42, 'finance', 'user', 'budget?');
-    expect(mocks.addToConversation).toHaveBeenNthCalledWith(2, 42, 'finance', 'assistant', 'Budget is stable.');
+    expect(mocks.addToConversation).toHaveBeenNthCalledWith(1, 42, 'finance', 'user', 'budget?', 1001);
+    expect(mocks.addToConversation).toHaveBeenNthCalledWith(2, 42, 'finance', 'assistant', 'Budget is stable.', 1001);
   });
 
   it('edits persisted assistant messages and syncs conversation state', () => {
@@ -82,6 +91,7 @@ describe('chat-persistence', () => {
       metadata: null,
       routeMethod: 'fast-path',
       timestamp: '2026-04-23T10:01:00.000Z',
+      tenantId: 1001,
     });
 
     expect(updated).toBe(true);
@@ -93,8 +103,8 @@ describe('chat-persistence', () => {
       routeMethod: 'fast-path',
       confidence: null,
       timestamp: '2026-04-23T10:01:00.000Z',
-    });
-    expect(mocks.syncLastAssistantConversationMessage).toHaveBeenCalledWith(42, 'secretary', 'Updated');
+    }, 1001);
+    expect(mocks.syncLastAssistantConversationMessage).toHaveBeenCalledWith(42, 'secretary', 'Updated', 1001);
   });
 
   it('stores a fallback callback message when original edit misses', () => {
@@ -110,11 +120,13 @@ describe('chat-persistence', () => {
       timestamp: '2026-04-23T10:02:00.000Z',
       editOriginal: true,
       fallbackMessageId: 'cb-test',
+      tenantId: 1001,
     });
 
     expect(result).toEqual({ updatedOriginal: false, storedFallback: true });
     expect(mocks.updateAssistantMessage).toHaveBeenCalledTimes(1);
     expect(mocks.storeChatMessage).toHaveBeenCalledWith({
+      tenantId: 1001,
       userId: 42,
       messageId: 'cb-test',
       role: 'assistant',
@@ -126,6 +138,6 @@ describe('chat-persistence', () => {
       metadata: null,
       timestamp: '2026-04-23T10:02:00.000Z',
     });
-    expect(mocks.syncLastAssistantConversationMessage).toHaveBeenCalledWith(42, 'secretary', 'Cancelled.');
+    expect(mocks.syncLastAssistantConversationMessage).toHaveBeenCalledWith(42, 'secretary', 'Cancelled.', 1001);
   });
 });

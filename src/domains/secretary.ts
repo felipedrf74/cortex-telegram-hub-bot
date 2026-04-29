@@ -33,6 +33,7 @@ import { composeDailyBrief } from '../services/daily-brief-orchestrator';
 import { getUnreadMailSummaryForUser, isAnyMailConfiguredForUser } from '../services/unified-mail-pressure';
 import { getUserLanguage, getUserTimezone } from '../services/user-service';
 import { DateTime } from 'luxon';
+import { buildChatPromptContextBlock } from '../services/chat-context-engine';
 
 const DOMAIN: DomainName = 'secretary';
 
@@ -43,6 +44,31 @@ const DOMAIN: DomainName = 'secretary';
 const _stateContextCache: Map<string, { value: string; expiresAt: number }> = new Map();
 const STATE_CONTEXT_TTL = 30_000; // 30 seconds
 const MAX_CACHE_ENTRIES = 50; // Prevent unbounded growth
+
+function addScopedConversation(
+  userId: number,
+  role: 'user' | 'assistant',
+  content: string,
+  tenantId?: number,
+): void {
+  if (typeof tenantId === 'number') {
+    addToConversation(userId, DOMAIN, role, content, tenantId);
+    return;
+  }
+  addToConversation(userId, DOMAIN, role, content);
+}
+
+function executeScopedToolCall(
+  name: string,
+  input: Record<string, any>,
+  userId?: number,
+  tenantId?: number,
+): Promise<unknown> {
+  if (typeof tenantId === 'number') {
+    return executeToolCall(name, input, userId, tenantId);
+  }
+  return executeToolCall(name, input, userId);
+}
 
 /**
  * Test-only: clear the in-process state context cache so each test starts
@@ -71,7 +97,7 @@ export function _resetStateContextCacheForTesting(): void {
  * a "show tasks" cache hit on a follow-up "what's my week" would miss
  * (calendar wasn't loaded the first time) and re-run with calendar.
  */
-async function buildStateContext(message: string = '', userId?: number): Promise<string> {
+async function buildStateContext(message: string = '', userId?: number, tenantId?: number): Promise<string> {
   const scopedUserId = typeof userId === 'number' ? userId : null;
   const hasUserScope = scopedUserId !== null;
   const contextLanguage = resolveSecretaryContextLanguage(scopedUserId);
@@ -111,11 +137,24 @@ async function buildStateContext(message: string = '', userId?: number): Promise
 
   // Cache key = userId + context shape — prevents cross-user leakage
   const shape = `${needs.tasks ? 't' : ''}${needs.calendar ? 'c' : ''}${needs.email ? 'e' : ''}${needs.reminders ? 'r' : ''}${needs.garmin ? 'g' : ''}${needs.planner ? 'p' : ''}`;
-  const cacheKey = `${hasUserScope ? scopedUserId : 'anon'}:${shape}:${contextLanguage}`;
+  const scopedTenantKey = hasUserScope ? (typeof tenantId === 'number' && tenantId > 0 ? tenantId : scopedUserId) : 'anon';
+  const appendPromptContext = async (baseContext: string): Promise<string> => {
+    if (!hasUserScope) return baseContext;
+    const promptContext = await buildChatPromptContextBlock({
+      domain: DOMAIN,
+      message,
+      userId: scopedUserId,
+      tenantId,
+      budgetChars: 2000,
+    });
+    return promptContext ? `${baseContext}\n${promptContext}` : baseContext;
+  };
+
+  const cacheKey = `${scopedTenantKey}:${hasUserScope ? scopedUserId : 'anon'}:${shape}:${contextLanguage}`;
 
   const cached = _stateContextCache.get(cacheKey);
   if (cached && Date.now() < cached.expiresAt) {
-    return cached.value;
+    return appendPromptContext(cached.value);
   }
 
   const timezone = getUserTimezone(scopedUserId);
@@ -149,8 +188,8 @@ async function buildStateContext(message: string = '', userId?: number): Promise
     hasUserScope && needs.planner
       ? composeDailyBrief({ userId: scopedUserId, language: contextLanguage }).catch(() => null)
       : Promise.resolve(null),
-    hasUserScope ? buildSharedDecisionContext(DOMAIN, scopedUserId).catch(() => '') : Promise.resolve(''),
-    hasUserScope ? buildSharedDecisionContracts(DOMAIN, scopedUserId).catch(() => ({} as SharedDecisionContracts)) : Promise.resolve({} as SharedDecisionContracts),
+    hasUserScope ? buildSharedDecisionContext(DOMAIN, scopedUserId, tenantId).catch(() => '') : Promise.resolve(''),
+    hasUserScope ? buildSharedDecisionContracts(DOMAIN, scopedUserId, tenantId).catch(() => ({} as SharedDecisionContracts)) : Promise.resolve({} as SharedDecisionContracts),
   ]);
 
   // Microsoft To Do — compact summary (details available via tools)
@@ -268,7 +307,7 @@ async function buildStateContext(message: string = '', userId?: number): Promise
   }
 
   // Cross-domain shared context — SECURITY FIX: now uses actual userId
-  const sharedCtx = hasUserScope ? getSharedMemorySummary(scopedUserId) : '';
+  const sharedCtx = hasUserScope ? getSharedMemorySummary(scopedUserId, tenantId) : '';
   if (sharedCtx) parts.push(sharedCtx);
 
   if (plannerBrief) {
@@ -302,7 +341,7 @@ async function buildStateContext(message: string = '', userId?: number): Promise
     if (oldest) _stateContextCache.delete(oldest);
   }
   _stateContextCache.set(cacheKey, { value: result, expiresAt: Date.now() + STATE_CONTEXT_TTL });
-  return result;
+  return appendPromptContext(result);
 }
 
 function renderSharedDecisionContracts(contracts: SharedDecisionContracts): string {
@@ -383,7 +422,7 @@ function secretaryStateContextCopy(language: string) {
   };
 }
 
-export async function handleSecretary(message: string, userId?: number): Promise<DomainResponse> {
+export async function handleSecretary(message: string, userId?: number, tenantId?: number): Promise<DomainResponse> {
   const hasUserScope = typeof userId === 'number';
 
   // ── Layer 1: Command Fastpath ──────────────────────────────────
@@ -396,21 +435,16 @@ export async function handleSecretary(message: string, userId?: number): Promise
     // Record in conversation history so the next AI turn has context
     // about what the user just asked. Tag the assistant message with the
     // pattern id so future debugging can spot fastpath responses in logs.
-    addToConversation(userId, DOMAIN, 'user', message);
-    addToConversation(
-      userId,
-      DOMAIN,
-      'assistant',
-      `[fastpath:${fastpath.patternId}]\n${fastpath.response.text}`,
-    );
+    addScopedConversation(userId, 'user', message, tenantId);
+    addScopedConversation(userId, 'assistant', `[fastpath:${fastpath.patternId}]\n${fastpath.response.text}`, tenantId);
     return fastpath.response;
   }
 
-  const history = hasUserScope ? getConversationHistory(userId, DOMAIN) : [];
+  const history = hasUserScope ? getConversationHistory(userId, DOMAIN, tenantId) : [];
   // Layer 2: pass the message so buildStateContext can fetch only what
   // the message actually needs (saves ~1,000-2,000 input tokens on
   // intent-typed queries; ambiguous queries fall back to fetching all).
-  const stateContext = await buildStateContext(message, userId);
+  const stateContext = await buildStateContext(message, userId, tenantId);
 
   // ── Provider routing — TASK-17 Option B fix ────────────────────
   //
@@ -440,7 +474,7 @@ export async function handleSecretary(message: string, userId?: number): Promise
       // anthropic.ts so this static import is cheap; the test suites
       // can mock the imports normally without dynamic-require gotchas.
       return await handleSecretaryWithDirectAnthropic(
-        userId, message, history, stateContext, directCallDomain, directContinueWithToolResults, userId,
+        userId, message, history, stateContext, directCallDomain, directContinueWithToolResults, userId, tenantId,
       );
     }
 
@@ -448,7 +482,10 @@ export async function handleSecretary(message: string, userId?: number): Promise
   // but with secretary's iteration cap (4 instead of 5) and the
   // empty-response fallback message that secretary specifically needs
   // because its tool loop is more brittle than the chat domains.
-  let result = await provider.callDomain(DOMAIN, history, message, stateContext);
+  let result = await provider.callDomain(DOMAIN, history, message, stateContext, {
+    userId,
+    tenantId,
+  });
   let finalText = result.text;
 
   logger.debug(
@@ -476,7 +513,7 @@ export async function handleSecretary(message: string, userId?: number): Promise
     // Execute all tool calls in parallel, truncate large results
     const toolResults = await Promise.all(
       result.toolCalls.map(async (tc) => {
-        const toolResult = await executeToolCall(tc.name, tc.input as Record<string, any>, userId);
+        const toolResult = await executeScopedToolCall(tc.name, tc.input as Record<string, any>, userId, tenantId);
         let content = JSON.stringify(toolResult);
         if (content.length > 2000) content = content.slice(0, 2000) + '...(truncated)';
         return { type: 'tool_result' as const, tool_use_id: tc.id, content };
@@ -489,7 +526,10 @@ export async function handleSecretary(message: string, userId?: number): Promise
     );
 
     logger.debug({ iteration: iterations, msgCount: toolConversation.length }, 'Calling continueWithToolResults');
-    result = await provider.continueWithToolResults(DOMAIN, history, message, stateContext, toolConversation);
+    result = await provider.continueWithToolResults(DOMAIN, history, message, stateContext, toolConversation, {
+      userId,
+      tenantId,
+    });
     finalText = result.text;
     logger.debug({ iteration: iterations, hasText: !!finalText, toolCalls: result.toolCalls.length }, 'Continue result');
   }
@@ -512,11 +552,11 @@ export async function handleSecretary(message: string, userId?: number): Promise
 
   // Store conversation — include tool summary so future turns have context
   if (hasUserScope) {
-    addToConversation(userId, DOMAIN, 'user', message);
+    addScopedConversation(userId, 'user', message, tenantId);
     const storedText = toolsUsed.length > 0
       ? `[Tools: ${[...new Set(toolsUsed)].join(', ')}]\n${finalText}`
       : finalText;
-    addToConversation(userId, DOMAIN, 'assistant', storedText);
+    addScopedConversation(userId, 'assistant', storedText, tenantId);
   }
 
   return { text: finalText, domain: DOMAIN };
@@ -541,6 +581,7 @@ async function handleSecretaryWithDirectAnthropic(
   callDomain: (...args: any[]) => Promise<{ text: string; toolCalls: any[]; stopReason: string }>,
   continueWithToolResults: (...args: any[]) => Promise<{ text: string; toolCalls: any[]; stopReason: string }>,
   userId: number | undefined,
+  tenantId?: number,
 ): Promise<DomainResponse> {
   let result = await callDomain(DOMAIN, history, message, stateContext, undefined, userId);
   let finalText = result.text;
@@ -560,7 +601,7 @@ async function handleSecretaryWithDirectAnthropic(
 
     const toolResults = await Promise.all(
       result.toolCalls.map(async (tc: any) => {
-        const toolResult = await executeToolCall(tc.name, tc.input as Record<string, any>, userId);
+        const toolResult = await executeScopedToolCall(tc.name, tc.input as Record<string, any>, userId, tenantId);
         let content = JSON.stringify(toolResult);
         if (content.length > 2000) content = content.slice(0, 2000) + '...(truncated)';
         return { type: 'tool_result' as const, tool_use_id: tc.id, content };
@@ -583,11 +624,11 @@ async function handleSecretaryWithDirectAnthropic(
   finalText = normalizeReplyForUserLanguage(finalText, uid);
 
   if (typeof uid === 'number') {
-    addToConversation(uid, DOMAIN, 'user', message);
+    addScopedConversation(uid, 'user', message, tenantId);
     const storedText = toolsUsed.length > 0
       ? `[Tools: ${[...new Set(toolsUsed)].join(', ')}]\n${finalText}`
       : finalText;
-    addToConversation(uid, DOMAIN, 'assistant', storedText);
+    addScopedConversation(uid, 'assistant', storedText, tenantId);
   }
 
   return { text: finalText, domain: DOMAIN };

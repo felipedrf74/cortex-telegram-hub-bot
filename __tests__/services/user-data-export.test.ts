@@ -83,10 +83,14 @@ function seedUser(db: Database.Database, telegramId: number, opts?: { username?:
 // ── Helper: seed data across multiple tables ──
 function seedUserData(db: Database.Database, userId: number) {
   try {
-    db.prepare('INSERT INTO conversations (user_id, domain, role, content) VALUES (?, ?, ?, ?)')
-      .run(userId, 'secretary', 'user', 'Hello bot');
-    db.prepare('INSERT INTO conversations (user_id, domain, role, content) VALUES (?, ?, ?, ?)')
-      .run(userId, 'secretary', 'assistant', 'Hi there!');
+    db.prepare(`
+      INSERT INTO conversations (tenant_id, user_id, visibility_scope, scope_status, created_by, domain, role, content)
+      VALUES (?, ?, 'user_private', 'active', ?, ?, ?, ?)
+    `).run(userId, userId, userId, 'secretary', 'user', 'Hello bot');
+    db.prepare(`
+      INSERT INTO conversations (tenant_id, user_id, visibility_scope, scope_status, created_by, domain, role, content)
+      VALUES (?, ?, 'user_private', 'active', ?, ?, ?, ?)
+    `).run(userId, userId, userId, 'secretary', 'assistant', 'Hi there!');
   } catch { /* table may not exist */ }
 
   try {
@@ -105,8 +109,10 @@ function seedUserData(db: Database.Database, userId: number) {
   } catch { /* table may not exist */ }
 
   try {
-    db.prepare('INSERT INTO shared_memory (user_id, key, value, source_domain) VALUES (?, ?, ?, ?)')
-      .run(userId, `preference_${userId}`, 'dark mode', 'secretary');
+    db.prepare(`
+      INSERT INTO shared_memory (tenant_id, user_id, visibility_scope, scope_status, created_by, key, value, source_domain)
+      VALUES (?, ?, 'user_private', 'active', ?, ?, ?, ?)
+    `).run(userId, userId, userId, `preference_${userId}`, 'dark mode', 'secretary');
   } catch { /* table may not exist */ }
 }
 

@@ -3,6 +3,7 @@
 import type { InlineButton } from '../../adapters/message-adapter';
 import type { DomainName } from '../../domains/types';
 import { getCached, setCache } from '../../services/cache-store';
+import { resolveChatTenantId } from '../../services/chat-tenant-scope';
 import { getUserLanguage } from '../../services/user-service';
 import { tryDeterministicChatCommand } from './chat-fastpath';
 
@@ -33,8 +34,9 @@ const CACHEABLE_COMMANDS = new Set([
 
 const CHAT_CMD_TTL = 60; // seconds
 
-function cacheKey(userId: number, normalizedTextLower: string): string {
-  return `chat-cmd:${userId}:${normalizedTextLower}`;
+function cacheKey(userId: number, normalizedTextLower: string, tenantId?: number): string {
+  const scopedTenantId = resolveChatTenantId(userId, tenantId);
+  return `chat-cmd:${scopedTenantId}:${userId}:${normalizedTextLower}`;
 }
 
 export function isCacheableChatCommand(normalizedTextLower: string): boolean {
@@ -44,22 +46,24 @@ export function isCacheableChatCommand(normalizedTextLower: string): boolean {
 export function getCachedChatCommandResponse(
   userId: number,
   normalizedTextLower: string,
+  tenantId?: number,
 ): ChatMessageRouteResponse | null {
   if (!isCacheableChatCommand(normalizedTextLower)) {
     return null;
   }
-  return getCached<ChatMessageRouteResponse>(cacheKey(userId, normalizedTextLower)) ?? null;
+  return getCached<ChatMessageRouteResponse>(cacheKey(userId, normalizedTextLower, tenantId)) ?? null;
 }
 
 export function maybeCacheChatCommandResponse(
   userId: number,
   normalizedTextLower: string,
   response: ChatMessageRouteResponse,
+  tenantId?: number,
 ): void {
   if (!isCacheableChatCommand(normalizedTextLower)) {
     return;
   }
-  setCache(cacheKey(userId, normalizedTextLower), response, CHAT_CMD_TTL);
+  setCache(cacheKey(userId, normalizedTextLower, tenantId), response, CHAT_CMD_TTL);
 }
 
 export async function tryBuildFastPathChatResponse(

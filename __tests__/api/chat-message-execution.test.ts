@@ -20,12 +20,12 @@ describe('chat message execution helpers', () => {
       domain: 'secretary',
     });
 
-    await expect(executeChatDomainHandler(handler, 'What is next?', 42)).resolves.toEqual({
+    await expect(executeChatDomainHandler(handler, 'What is next?', 42, 1001)).resolves.toEqual({
       text: 'Agenda looks clear.',
       domain: 'secretary',
     });
 
-    expect(handler).toHaveBeenCalledWith('What is next?', 42);
+    expect(handler).toHaveBeenCalledWith('What is next?', 42, 1001);
     expect(vi.getTimerCount()).toBe(0);
   });
 
@@ -38,7 +38,7 @@ describe('chat message execution helpers', () => {
     await vi.advanceTimersByTimeAsync(CHAT_DOMAIN_HANDLER_TIMEOUT_MS);
 
     await timeoutExpectation;
-    expect(handler).toHaveBeenCalledWith('slow request', 42);
+    expect(handler).toHaveBeenCalledWith('slow request', 42, undefined);
   });
 
   it('builds the stable chat response envelope from route and handler output', () => {

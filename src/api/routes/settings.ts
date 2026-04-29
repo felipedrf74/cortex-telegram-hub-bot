@@ -151,7 +151,7 @@ export function settingsRoutes(): Router {
 
   /** POST /api/v1/settings/export — GDPR data export (Article 15: right of access) */
   router.post('/export', async (req, res: Response) => {
-    const { userId } = req as AuthenticatedRequest;
+    const { userId, tenantId = userId } = req as AuthenticatedRequest;
     if (!ensureValidSettingsUserScope(res, userId, 'settings_route_export')) return;
     try {
       const db = require('../../services/database').getDb();
@@ -166,7 +166,11 @@ export function settingsRoutes(): Router {
       };
 
       // ── Core data ──
-      userData.messages = safeAll('SELECT * FROM messages WHERE user_id = ? ORDER BY created_at DESC LIMIT 10000', userId);
+      userData.messages = safeAll(
+        'SELECT * FROM messages WHERE tenant_id = ? AND user_id = ? ORDER BY created_at DESC LIMIT 10000',
+        tenantId,
+        userId,
+      );
       userData.devices = safeAll('SELECT device_id, device_name, created_at, last_active_at FROM ios_devices WHERE user_id = ?', userId);
 
       // ── Profiles ──
@@ -242,6 +246,7 @@ export function settingsRoutes(): Router {
         // ── Core ──
         'ios_devices', 'messages', 'onboarding_sessions', 'user_profiles',
         'conversations', 'todos', 'notes', 'reminders', 'shared_memory',
+        'daily_context_cache',
         // ── Content (learning store + pipeline) ──
         'saved_ideas', 'content_topic_feedback', 'content_ref_channels',
         'content_knowledge', 'content_patterns', 'content_research_briefs',

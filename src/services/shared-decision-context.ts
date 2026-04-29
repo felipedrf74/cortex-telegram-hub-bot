@@ -15,6 +15,7 @@ import {
 } from './cross-agent-learning';
 import { formatCurrencyAmount } from './finance-tracker';
 import { isValidTenantUserId, recordTenantScopeAnomaly } from './tenant-scope-observability';
+import { resolveChatTenantId } from './chat-tenant-scope';
 
 const CONTEXT_TTL_MS = 30_000;
 const _sharedDecisionContextCache = new Map<string, {
@@ -48,9 +49,10 @@ export function resetSharedDecisionContextCacheForTests(): void {
   invalidateSharedDecisionContextCache();
 }
 
-export function invalidateSharedDecisionContextCache(userId?: number): void {
+export function invalidateSharedDecisionContextCache(userId?: number, tenantId?: number): void {
   if (typeof userId === 'number' && Number.isFinite(userId)) {
-    const prefix = `${userId}:`;
+    const tenantKey = resolveChatTenantId(userId, tenantId);
+    const prefix = `${tenantKey}:${userId}:`;
     for (const key of _sharedDecisionContextCache.keys()) {
       if (key.startsWith(prefix)) {
         _sharedDecisionContextCache.delete(key);
@@ -62,19 +64,20 @@ export function invalidateSharedDecisionContextCache(userId?: number): void {
   _sharedDecisionContextCache.clear();
 }
 
-export async function buildSharedDecisionContext(domain: DomainName, userId: number): Promise<string> {
-  const artifacts = await buildSharedDecisionArtifacts(domain, userId);
+export async function buildSharedDecisionContext(domain: DomainName, userId: number, tenantId?: number): Promise<string> {
+  const artifacts = await buildSharedDecisionArtifacts(domain, userId, tenantId);
   return artifacts.text;
 }
 
-export async function buildSharedDecisionContracts(domain: DomainName, userId: number): Promise<SharedDecisionContracts> {
-  const artifacts = await buildSharedDecisionArtifacts(domain, userId);
+export async function buildSharedDecisionContracts(domain: DomainName, userId: number, tenantId?: number): Promise<SharedDecisionContracts> {
+  const artifacts = await buildSharedDecisionArtifacts(domain, userId, tenantId);
   return artifacts.contracts;
 }
 
 async function buildSharedDecisionArtifacts(
   domain: DomainName,
   userId: number,
+  tenantId?: number,
 ): Promise<{ text: string; contracts: SharedDecisionContracts }> {
   if (!isValidTenantUserId(userId)) {
     recordTenantScopeAnomaly({
@@ -89,7 +92,23 @@ async function buildSharedDecisionArtifacts(
     return { text: '', contracts: {} };
   }
 
-  const cacheKey = `${userId}:${domain}`;
+  const resolvedTenantId = resolveChatTenantId(userId, tenantId);
+  if (resolvedTenantId !== userId) {
+    recordTenantScopeAnomaly({
+      layer: 'shared_decision_context',
+      operation: 'build_shared_decision_context',
+      reason: 'tenant_mismatch',
+      userId,
+      details: {
+        domain,
+        tenantId: resolvedTenantId,
+        note: 'Peer mesh readers are user-scoped; refusing cross-tenant prompt context until tenant-aware mesh reads exist.',
+      },
+    });
+    return { text: '', contracts: {} };
+  }
+
+  const cacheKey = `${resolvedTenantId}:${userId}:${domain}`;
   const cached = _sharedDecisionContextCache.get(cacheKey);
   if (cached && Date.now() < cached.expiresAt) {
     return {
