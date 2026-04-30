@@ -443,6 +443,10 @@ export function cookingRoutes(): Router {
       sendError(res, 'BAD_REQUEST', 'ingredients must be an array');
       return;
     }
+    if (instructions !== undefined && instructions !== null && typeof instructions !== 'string') {
+      sendError(res, 'BAD_REQUEST', 'instructions must be a string when provided');
+      return;
+    }
     if (!isValidNutritionField(protein) || !isValidNutritionField(fat)
         || !isValidNutritionField(carbs) || !isValidNutritionField(calories)) {
       sendError(res, 'BAD_REQUEST', 'nutrition fields must be non-negative numbers or null');
@@ -538,6 +542,10 @@ export function cookingRoutes(): Router {
     }
     if (ingredients !== undefined && !Array.isArray(ingredients)) {
       sendError(res, 'BAD_REQUEST', 'ingredients must be an array when provided');
+      return;
+    }
+    if (instructions !== undefined && instructions !== null && typeof instructions !== 'string') {
+      sendError(res, 'BAD_REQUEST', 'instructions must be a string when provided');
       return;
     }
     if (!isValidNutritionField(protein) || !isValidNutritionField(fat)

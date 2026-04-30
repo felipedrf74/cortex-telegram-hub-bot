@@ -207,6 +207,41 @@ describe('Cooking API — shopping list item updates', () => {
     expect(res.body.data.list.items[0].checked).toBe(true);
   });
 
+  it('rejects non-string recipe instructions on create without leaking SQLite errors', async () => {
+    const user = getOrCreateUser(21020, { username: 'cook20' });
+
+    const res = await dispatch('POST', '/recipes', user.id, {
+      title: 'Peanut recovery bowl',
+      ingredients: [{ name: 'Peanuts', quantity: '30', unit: 'g' }],
+      instructions: ['Cook rice', 'Top with peanuts'],
+    });
+
+    expect(res.statusCode).toBe(400);
+    expect(res.body.ok).toBe(false);
+    expect(res.body.error).toMatchObject({
+      code: 'BAD_REQUEST',
+      message: 'instructions must be a string when provided',
+    });
+  });
+
+  it('rejects non-string recipe instructions on update without leaking SQLite errors', async () => {
+    const user = getOrCreateUser(21021, { username: 'cook21' });
+    const recipe = addRecipe(user.id, 'Rice bowl', [
+      { name: 'Rice', quantity: '100', unit: 'g' },
+    ]);
+
+    const res = await dispatch('PATCH', `/recipes/${recipe.id}`, user.id, {
+      instructions: ['Unexpected array instruction'],
+    });
+
+    expect(res.statusCode).toBe(400);
+    expect(res.body.ok).toBe(false);
+    expect(res.body.error).toMatchObject({
+      code: 'BAD_REQUEST',
+      message: 'instructions must be a string when provided',
+    });
+  });
+
   it('creates, lists, updates, and deletes pantry items through tenant-scoped APIs', async () => {
     const user = getOrCreateUser(21014, { username: 'cook14' });
 
