@@ -949,6 +949,7 @@ export async function readTrainingMeshContext(opts: {
 
 export async function readCookingMeshContext(opts: {
   userId: number;
+  tenantId?: number;
   weekStart?: string;
 }): Promise<CookingMeshContext> {
   if (!isValidTenantUserId(opts.userId)) {
@@ -961,18 +962,18 @@ export async function readCookingMeshContext(opts: {
   let shoppingList: ShoppingList | null = null;
 
   try {
-    meals = getMealPlan(opts.userId, window.weekStart, window.weekEnd);
+    meals = getMealPlan(opts.userId, window.weekStart, window.weekEnd, opts.tenantId);
   } catch (err) {
     logger.debug({ err, userId: opts.userId }, 'Mesh: cooking meal plan unavailable');
   }
 
   try {
-    shoppingList = getShoppingList(opts.userId, window.weekStart);
+    shoppingList = getShoppingList(opts.userId, window.weekStart, opts.tenantId);
   } catch (err) {
     logger.debug({ err, userId: opts.userId }, 'Mesh: shopping list unavailable');
   }
 
-  const mealProfiles = meals.map((meal) => buildCookingMealProfile(opts.userId, meal));
+  const mealProfiles = meals.map((meal) => buildCookingMealProfile(opts.userId, meal, opts.tenantId));
   const [calendarEvents, focusBlock] = await Promise.all([
     safelyAsync(
       () => getEvents(window.start.toUTC().toISO()!, window.end.toUTC().toISO()!, opts.userId),
@@ -1140,7 +1141,7 @@ interface CookingMealProfile {
   ingredients: Ingredient[];
 }
 
-function buildCookingMealProfile(userId: number, meal: MealPlan): CookingMealProfile {
+function buildCookingMealProfile(userId: number, meal: MealPlan, tenantId?: number): CookingMealProfile {
   if (!meal.recipe_id) {
     return {
       date: meal.date,
@@ -1152,7 +1153,7 @@ function buildCookingMealProfile(userId: number, meal: MealPlan): CookingMealPro
     };
   }
 
-  const recipe = safely(() => getRecipeById(userId, meal.recipe_id!), null);
+  const recipe = safely(() => getRecipeById(userId, meal.recipe_id!, tenantId), null);
   const prepMinutes = recipe?.prep_time_min ?? 0;
   const cookMinutes = recipe?.cook_time_min ?? 0;
   const totalMinutes = prepMinutes + cookMinutes;

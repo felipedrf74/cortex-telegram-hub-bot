@@ -42,7 +42,7 @@ vi.mock('../../src/utils/logger', () => ({
 }));
 
 import {
-  addRecipe, getRecipes, deleteRecipe, updateRecipe,
+  addRecipe, getRecipeById, getRecipes, deleteRecipe, updateRecipe,
   setMealPlan, getMealPlan, deleteMealPlan,
   generateShoppingList, getShoppingList,
 } from '../../src/services/cooking-chef';
@@ -119,6 +119,23 @@ describe('Recipe CRUD', () => {
     expect(getRecipes(1)).toHaveLength(1);
     expect(getRecipes(2)).toHaveLength(1);
   });
+
+  it('isolates recipes between active tenants for the same user', () => {
+    const tenantARecipe = addRecipe(1, 'Tenant A Recipe', [
+      { name: 'A', quantity: '1', unit: 'g' },
+    ], { tenantId: 101 });
+
+    addRecipe(1, 'Tenant B Recipe', [
+      { name: 'B', quantity: '1', unit: 'g' },
+    ], { tenantId: 202 });
+
+    expect(getRecipes(1, { tenantId: 101 }).map((recipe) => recipe.title)).toEqual(['Tenant A Recipe']);
+    expect(getRecipes(1, { tenantId: 202 }).map((recipe) => recipe.title)).toEqual(['Tenant B Recipe']);
+    expect(getRecipeById(1, tenantARecipe.id, 202)).toBeNull();
+    expect(updateRecipe(1, tenantARecipe.id, { title: 'Leaked' }, 202)).toBeNull();
+    expect(deleteRecipe(1, tenantARecipe.id, 202)).toBe(false);
+    expect(getRecipeById(1, tenantARecipe.id, 101)?.title).toBe('Tenant A Recipe');
+  });
 });
 
 describe('Meal Planning', () => {
@@ -154,6 +171,18 @@ describe('Meal Planning', () => {
     setMealPlan(1, '2024-06-15', 'dinner', 'Steak');
     expect(deleteMealPlan(1, '2024-06-15', 'dinner')).toBe(true);
     expect(getMealPlan(1, '2024-06-15', '2024-06-15')).toHaveLength(0);
+  });
+
+  it('isolates meal plans by tenant and rejects same-slot tenant overwrite', () => {
+    setMealPlan(1, '2024-06-15', 'dinner', 'Tenant A dinner', { tenantId: 101 });
+
+    expect(getMealPlan(1, '2024-06-15', '2024-06-15', 101)).toHaveLength(1);
+    expect(getMealPlan(1, '2024-06-15', '2024-06-15', 202)).toHaveLength(0);
+    expect(() => {
+      setMealPlan(1, '2024-06-15', 'dinner', 'Tenant B overwrite', { tenantId: 202 });
+    }).toThrow(/COOKING_SCOPE_CONFLICT/);
+    expect(deleteMealPlan(1, '2024-06-15', 'dinner', 202)).toBe(false);
+    expect(getMealPlan(1, '2024-06-15', '2024-06-15', 101)[0].title).toBe('Tenant A dinner');
   });
 });
 
@@ -202,6 +231,18 @@ describe('Shopping List', () => {
     const retrieved = getShoppingList(1, '2024-06-17');
     expect(retrieved).toBeTruthy();
     expect(retrieved!.items).toHaveLength(1);
+  });
+
+  it('isolates shopping lists by tenant', () => {
+    const recipe = addRecipe(1, 'Tenant Pantry Pasta', [
+      { name: 'Pasta', quantity: '250', unit: 'g' },
+    ], { tenantId: 101 });
+    setMealPlan(1, '2024-06-17', 'dinner', 'Tenant pasta', { recipeId: recipe.id, tenantId: 101 });
+    const list = generateShoppingList(1, '2024-06-17', 101);
+
+    expect(list.items.map((item) => item.name)).toEqual(['Pasta']);
+    expect(getShoppingList(1, '2024-06-17', 202)).toBeNull();
+    expect(generateShoppingList(1, '2024-06-24', 202).items).toEqual([]);
   });
 
   it('returns null for non-existent shopping list', () => {

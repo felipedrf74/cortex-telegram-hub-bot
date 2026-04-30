@@ -415,8 +415,8 @@ const FINANCE_SKILL: SkillDefinition = {
 
 const COOKING_SKILL: SkillDefinition = {
   name: 'cooking',
-  description: 'Personal chef — recipes, meal planning, shopping lists',
-  version: '1.0.0',
+  description: 'Adaptive cooking intelligence — meal planning, recipes, shopping, fueling, and schedule-aware prep',
+  version: '1.1.0',
   routing: {
     patternRoutes: [
       /^\/(cook|recipe|meal|mealplan|shopping|ingredients?)\b/i,

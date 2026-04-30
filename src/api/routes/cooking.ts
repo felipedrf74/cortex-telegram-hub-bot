@@ -46,6 +46,7 @@ import {
   type MealPlan,
   type Recipe,
 } from '../../services/cooking-chef';
+import { assessCookingMealPlan } from '../../services/cooking-intelligence';
 import { createEvent as createCalendarEvent, isAnyCalendarConfigured } from '../../services/unified-calendar';
 import { getActivePlans, getCurrentWeek, getSessionsForWeek, getWeeksForPlan, type TrainingSession } from '../../services/training-plans';
 import { invalidateCookingDerivedCaches } from '../../services/cooking-cache-invalidator';
@@ -95,6 +96,13 @@ function sendCookingInternalError(
 ): void {
   logger.error({ err: opts.err, userId: opts.userId, ...(opts.extra ?? {}) }, opts.operation);
   sendError(res, 'INTERNAL', opts.message, 500);
+}
+
+function sendCookingScopeConflictIfNeeded(res: Response, err: unknown): boolean {
+  const message = err instanceof Error ? err.message : '';
+  if (!message.startsWith('COOKING_SCOPE_CONFLICT')) return false;
+  sendError(res, 'FORBIDDEN', 'Cooking resource belongs to a different tenant scope', 403);
+  return true;
 }
 
 function isValidNutritionField(value: unknown): value is number | null | undefined {
@@ -312,7 +320,7 @@ export function cookingRoutes(): Router {
    * List the user's recipes, newest first.
    */
   router.get('/recipes', asyncHandler(async (req, res: Response) => {
-    const { userId } = req as AuthenticatedRequest;
+    const { userId, tenantId } = req as AuthenticatedRequest;
 
     const search = typeof req.query.search === 'string' ? req.query.search : undefined;
     const tags = typeof req.query.tags === 'string' ? req.query.tags : undefined;
@@ -321,9 +329,10 @@ export function cookingRoutes(): Router {
       : 20;
 
     try {
-      const recipes = getRecipes(userId, { search, tags, limit });
+      const recipes = getRecipes(userId, { search, tags, limit, tenantId });
       sendSuccess(res, { recipes, count: recipes.length });
     } catch (err: unknown) {
+      if (sendCookingScopeConflictIfNeeded(res, err)) return;
       sendCookingInternalError(res, {
         err,
         userId,
@@ -342,7 +351,7 @@ export function cookingRoutes(): Router {
    * }
    */
   router.post('/recipes', asyncHandler(async (req, res: Response) => {
-    const { userId } = req as AuthenticatedRequest;
+    const { userId, tenantId } = req as AuthenticatedRequest;
     const { title, ingredients, instructions, prepTime, cookTime, servings, tags, source, protein, fat, carbs, calories } = req.body;
 
     if (!title || typeof title !== 'string' || !title.trim()) {
@@ -371,10 +380,12 @@ export function cookingRoutes(): Router {
         fat,
         carbs,
         calories,
+        tenantId,
       });
       logger.info({ userId, recipeId: recipe.id }, 'iOS recipe created');
       sendSuccess(res, { recipe }, { status: 201 });
     } catch (err: unknown) {
+      if (sendCookingScopeConflictIfNeeded(res, err)) return;
       sendCookingInternalError(res, {
         err,
         userId,
@@ -390,7 +401,7 @@ export function cookingRoutes(): Router {
    * the user taps a row from the recipes list.
    */
   router.get('/recipes/:id', asyncHandler(async (req, res: Response) => {
-    const { userId } = req as AuthenticatedRequest;
+    const { userId, tenantId } = req as AuthenticatedRequest;
     const recipeId = parseInt(req.params.id, 10);
 
     if (Number.isNaN(recipeId)) {
@@ -399,7 +410,7 @@ export function cookingRoutes(): Router {
     }
 
     try {
-      const recipe = getRecipeById(userId, recipeId);
+      const recipe = getRecipeById(userId, recipeId, tenantId);
       if (!recipe) {
         sendError(res, 'NOT_FOUND', 'Recipe not found or not owned by user', 404);
         return;
@@ -422,7 +433,7 @@ export function cookingRoutes(): Router {
    * Returns 404 on missing or cross-user recipes.
    */
   router.patch('/recipes/:id', asyncHandler(async (req, res: Response) => {
-    const { userId } = req as AuthenticatedRequest;
+    const { userId, tenantId } = req as AuthenticatedRequest;
     const recipeId = parseInt(req.params.id, 10);
     const { title, ingredients, instructions, prepTime, cookTime, servings, tags, source, protein, fat, carbs, calories } = req.body;
 
@@ -468,7 +479,7 @@ export function cookingRoutes(): Router {
         fat,
         carbs,
         calories,
-      });
+      }, tenantId);
       if (!updated) {
         sendError(res, 'NOT_FOUND', 'Recipe not found or not owned by user', 404);
         return;
@@ -489,7 +500,7 @@ export function cookingRoutes(): Router {
    * DELETE /api/v1/cooking/recipes/:id
    */
   router.delete('/recipes/:id', asyncHandler(async (req, res: Response) => {
-    const { userId } = req as AuthenticatedRequest;
+    const { userId, tenantId } = req as AuthenticatedRequest;
     const recipeId = parseInt(req.params.id, 10);
 
     if (Number.isNaN(recipeId)) {
@@ -498,7 +509,7 @@ export function cookingRoutes(): Router {
     }
 
     try {
-      const deleted = deleteRecipe(userId, recipeId);
+      const deleted = deleteRecipe(userId, recipeId, tenantId);
       if (!deleted) {
         sendError(res, 'NOT_FOUND', 'Recipe not found or not owned by user', 404);
         return;
@@ -522,7 +533,7 @@ export function cookingRoutes(): Router {
    * Returns all meal plan entries for the given date range.
    */
   router.get('/meal-plan', asyncHandler(async (req, res: Response) => {
-    const { userId } = req as AuthenticatedRequest;
+    const { userId, tenantId } = req as AuthenticatedRequest;
     const from = typeof req.query.from === 'string' ? req.query.from : undefined;
     const to = typeof req.query.to === 'string' ? req.query.to : undefined;
 
@@ -532,13 +543,35 @@ export function cookingRoutes(): Router {
     }
 
     try {
-      const plans = getMealPlan(userId, from, to);
+      const plans = getMealPlan(userId, from, to, tenantId);
       const trainingSnapshot = await buildCookingTrainingSnapshot(userId);
       const meals: MealPlanRouteRow[] = plans.map((plan) => ({
         ...plan,
         adaptation: buildMealAdaptation(plan, trainingSnapshot),
       }));
-      sendSuccess(res, { meals, count: meals.length, from, to });
+      const recipesById = new Map(
+        plans
+          .map((plan) => plan.recipe_id ? getRecipeById(userId, plan.recipe_id, tenantId) : null)
+          .filter((recipe): recipe is NonNullable<typeof recipe> => Boolean(recipe))
+          .map((recipe) => [recipe.id, recipe]),
+      );
+      const shoppingList = getShoppingList(userId, from, tenantId);
+      const assessment = assessCookingMealPlan({
+        meals: plans,
+        recipesById,
+        shoppingList,
+        trainingContext: {
+          trainingDates: [
+            ...(trainingSnapshot.todayHasTraining ? [trainingSnapshot.todayIso] : []),
+            ...(trainingSnapshot.tomorrowHasTraining ? [trainingSnapshot.tomorrowIso] : []),
+          ],
+          hardTrainingDates: [
+            ...(trainingSnapshot.todayHasHardSession ? [trainingSnapshot.todayIso] : []),
+            ...(trainingSnapshot.tomorrowHasHardSession ? [trainingSnapshot.tomorrowIso] : []),
+          ],
+        },
+      });
+      sendSuccess(res, { meals, count: meals.length, from, to, assessment });
     } catch (err: unknown) {
       sendCookingInternalError(res, {
         err,
@@ -555,7 +588,7 @@ export function cookingRoutes(): Router {
    * Upserts one meal plan slot (unique on user+date+mealType).
    */
   router.post('/meal-plan', asyncHandler(async (req, res: Response) => {
-    const { userId } = req as AuthenticatedRequest;
+    const { userId, tenantId } = req as AuthenticatedRequest;
     const { date, mealType, title, recipeId, notes } = req.body;
 
     if (!date || !mealType || !title) {
@@ -564,10 +597,11 @@ export function cookingRoutes(): Router {
     }
 
     try {
-      const plan = setMealPlan(userId, date, mealType, title, { recipeId, notes });
+      const plan = setMealPlan(userId, date, mealType, title, { recipeId, notes, tenantId });
       invalidateCookingDerivedCaches(userId);
       sendSuccess(res, { meal: plan });
     } catch (err: unknown) {
+      if (sendCookingScopeConflictIfNeeded(res, err)) return;
       sendCookingInternalError(res, {
         err,
         userId,
@@ -581,7 +615,7 @@ export function cookingRoutes(): Router {
    * DELETE /api/v1/cooking/meal-plan?date=&mealType=
    */
   router.delete('/meal-plan', asyncHandler(async (req, res: Response) => {
-    const { userId } = req as AuthenticatedRequest;
+    const { userId, tenantId } = req as AuthenticatedRequest;
     const date = typeof req.query.date === 'string' ? req.query.date : undefined;
     const mealType = typeof req.query.mealType === 'string' ? req.query.mealType : undefined;
 
@@ -591,7 +625,7 @@ export function cookingRoutes(): Router {
     }
 
     try {
-      const deleted = deleteMealPlan(userId, date, mealType);
+      const deleted = deleteMealPlan(userId, date, mealType, tenantId);
       invalidateCookingDerivedCaches(userId);
       sendSuccess(res, { deleted, date, mealType });
     } catch (err: unknown) {
@@ -611,7 +645,7 @@ export function cookingRoutes(): Router {
    * Returns the stored shopping list for the given week, or null.
    */
   router.get('/shopping-list', asyncHandler(async (req, res: Response) => {
-    const { userId } = req as AuthenticatedRequest;
+    const { userId, tenantId } = req as AuthenticatedRequest;
     const week = typeof req.query.week === 'string' ? req.query.week : undefined;
 
     if (!week) {
@@ -620,7 +654,7 @@ export function cookingRoutes(): Router {
     }
 
     try {
-      const list = getShoppingList(userId, week);
+      const list = getShoppingList(userId, week, tenantId);
       sendSuccess(res, { list });
     } catch (err: unknown) {
       sendCookingInternalError(res, {
@@ -639,7 +673,7 @@ export function cookingRoutes(): Router {
    * meal plan entry in the week. Overwrites any existing list for that week.
    */
   router.post('/shopping-list/generate', asyncHandler(async (req, res: Response) => {
-    const { userId } = req as AuthenticatedRequest;
+    const { userId, tenantId } = req as AuthenticatedRequest;
     const { week } = req.body;
 
     if (!week || typeof week !== 'string') {
@@ -648,11 +682,12 @@ export function cookingRoutes(): Router {
     }
 
     try {
-      const list = generateShoppingList(userId, week);
+      const list = generateShoppingList(userId, week, tenantId);
       logger.info({ userId, week, itemCount: list.items.length }, 'iOS shopping list generated');
       invalidateCookingDerivedCaches(userId);
       sendSuccess(res, { list });
     } catch (err: unknown) {
+      if (sendCookingScopeConflictIfNeeded(res, err)) return;
       sendCookingInternalError(res, {
         err,
         userId,
@@ -669,7 +704,7 @@ export function cookingRoutes(): Router {
    * Persists the checked state for one item in the week's list.
    */
   router.patch('/shopping-list/items/:index', asyncHandler(async (req, res: Response) => {
-    const { userId } = req as AuthenticatedRequest;
+    const { userId, tenantId } = req as AuthenticatedRequest;
     const index = parseInt(req.params.index, 10);
     const { week, checked } = req.body;
 
@@ -687,7 +722,7 @@ export function cookingRoutes(): Router {
     }
 
     try {
-      const list = updateShoppingListItemChecked(userId, week, index, checked);
+      const list = updateShoppingListItemChecked(userId, week, index, checked, tenantId);
       if (!list) {
         sendError(res, 'NOT_FOUND', 'Shopping list not found for that week', 404);
         return;
@@ -740,7 +775,7 @@ export function cookingRoutes(): Router {
    * endpoint.
    */
   router.post('/meal-plan/create-prep-event', asyncHandler(async (req, res: Response) => {
-    const { userId } = req as AuthenticatedRequest;
+    const { userId, tenantId } = req as AuthenticatedRequest;
     const { week, dayOfWeek, startHour, durationMinutes } = req.body;
 
     if (!week || typeof week !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(week)) {
@@ -782,7 +817,7 @@ export function cookingRoutes(): Router {
       // Read the week's meal plan so we can summarize what's being prepped.
       // Week ends on Sunday (6 days after Monday).
       const weekEnd = mondayDate.plus({ days: 6 }).toFormat('yyyy-LL-dd');
-      const meals = getMealPlan(userId, week, weekEnd);
+      const meals = getMealPlan(userId, week, weekEnd, tenantId);
 
       if (meals.length === 0) {
         sendError(
@@ -831,7 +866,7 @@ export function cookingRoutes(): Router {
       const endIso = endDt.toISO() || endDt.toFormat("yyyy-LL-dd'T'HH:mm:ss");
       const secretaryDecision = submitCookingMealPrepSchedulingIntent({
         userId,
-        tenantId: userId,
+        tenantId: tenantId ?? userId,
         week,
         title,
         startIso,

@@ -968,6 +968,7 @@ export async function executeToolCall(
         const recipe = cookingChef.addRecipe(uid, input.title, input.ingredients, {
           instructions: input.instructions, prepTime: input.prep_time_min,
           cookTime: input.cook_time_min, servings: input.servings, tags: input.tags,
+          tenantId: scope.tenantId,
         });
         return { success: true, id: recipe.id, title: recipe.title };
       }
@@ -975,20 +976,25 @@ export async function executeToolCall(
         const scope = requireTenantToolUserId(toolName, userId, undefined, tenantId);
         if (!scope.ok) return { error: scope.error };
         const uid = scope.userId;
-        return cookingChef.getRecipes(uid, { tags: input.tags, search: input.search, limit: input.limit });
+        return cookingChef.getRecipes(uid, {
+          tags: input.tags,
+          search: input.search,
+          limit: input.limit,
+          tenantId: scope.tenantId,
+        });
       }
       case 'cooking_delete_recipe': {
         const scope = requireTenantToolUserId(toolName, userId, undefined, tenantId);
         if (!scope.ok) return { error: scope.error };
         const uid = scope.userId;
-        return cookingChef.deleteRecipe(uid, input.recipe_id) ? { success: true } : { error: 'Recipe not found' };
+        return cookingChef.deleteRecipe(uid, input.recipe_id, scope.tenantId) ? { success: true } : { error: 'Recipe not found' };
       }
       case 'cooking_set_meal': {
         const scope = requireTenantToolUserId(toolName, userId, undefined, tenantId);
         if (!scope.ok) return { error: scope.error };
         const uid = scope.userId;
         const meal = cookingChef.setMealPlan(uid, input.date, input.meal_type, input.title, {
-          recipeId: input.recipe_id, notes: input.notes,
+          recipeId: input.recipe_id, notes: input.notes, tenantId: scope.tenantId,
         });
         invalidateCookingDerivedCaches(uid);
         return { success: true, date: meal.date, meal_type: meal.meal_type, title: meal.title };
@@ -997,13 +1003,13 @@ export async function executeToolCall(
         const scope = requireTenantToolUserId(toolName, userId, undefined, tenantId);
         if (!scope.ok) return { error: scope.error };
         const uid = scope.userId;
-        return cookingChef.getMealPlan(uid, input.start_date, input.end_date);
+        return cookingChef.getMealPlan(uid, input.start_date, input.end_date, scope.tenantId);
       }
       case 'cooking_delete_meal': {
         const scope = requireTenantToolUserId(toolName, userId, undefined, tenantId);
         if (!scope.ok) return { error: scope.error };
         const uid = scope.userId;
-        const deleted = cookingChef.deleteMealPlan(uid, input.date, input.meal_type);
+        const deleted = cookingChef.deleteMealPlan(uid, input.date, input.meal_type, scope.tenantId);
         if (deleted) invalidateCookingDerivedCaches(uid);
         return deleted ? { success: true } : { error: 'Meal not found' };
       }
@@ -1011,7 +1017,7 @@ export async function executeToolCall(
         const scope = requireTenantToolUserId(toolName, userId, undefined, tenantId);
         if (!scope.ok) return { error: scope.error };
         const uid = scope.userId;
-        const list = cookingChef.generateShoppingList(uid, input.week_start);
+        const list = cookingChef.generateShoppingList(uid, input.week_start, scope.tenantId);
         invalidateCookingDerivedCaches(uid);
         return list;
       }
@@ -1019,7 +1025,7 @@ export async function executeToolCall(
         const scope = requireTenantToolUserId(toolName, userId, undefined, tenantId);
         if (!scope.ok) return { error: scope.error };
         const uid = scope.userId;
-        const list = cookingChef.getShoppingList(uid, input.week_start);
+        const list = cookingChef.getShoppingList(uid, input.week_start, scope.tenantId);
         return list || { items: [], status: 'not_found' };
       }
 

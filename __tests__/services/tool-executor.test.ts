@@ -1152,6 +1152,36 @@ describe('executeToolCall — Cooking', () => {
     setMealSpy.mockRestore();
   });
 
+  it('passes authenticated tenant scope into cooking meal writes', async () => {
+    const setMealSpy = vi.spyOn(cookingChef, 'setMealPlan');
+    setMealSpy.mockReturnValue({
+      date: '2026-04-15',
+      meal_type: 'dinner',
+      title: 'Tenant-safe salmon bowl',
+    } as any);
+
+    const result = await execAsTenantUser('cooking_set_meal', {
+      date: '2026-04-15',
+      meal_type: 'dinner',
+      title: 'Tenant-safe salmon bowl',
+    }, 1001);
+
+    expect(result).toEqual({
+      success: true,
+      date: '2026-04-15',
+      meal_type: 'dinner',
+      title: 'Tenant-safe salmon bowl',
+    });
+    expect(setMealSpy).toHaveBeenCalledWith(
+      AUTH_USER_ID,
+      '2026-04-15',
+      'dinner',
+      'Tenant-safe salmon bowl',
+      expect.objectContaining({ tenantId: 1001 }),
+    );
+    setMealSpy.mockRestore();
+  });
+
   it('invalidates cooking-derived surfaces after deleting a meal', async () => {
     const deleteMealSpy = vi.spyOn(cookingChef, 'deleteMealPlan');
     deleteMealSpy.mockReturnValue(true);

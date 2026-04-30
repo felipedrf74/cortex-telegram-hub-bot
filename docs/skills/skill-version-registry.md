@@ -120,6 +120,28 @@ The candidate record documents the Content Creation intelligence workstream:
 
 The candidate does not deploy or activate the release. It exists so support, release docs, and rollback planning can reference a concrete Content version while production conditions remain open.
 
+## Cooking Candidate
+
+Migration `103_cooking_intelligence_candidate_version.sql` registers:
+
+- Skill: `cooking`
+- Version: `1.1.0-rc.1`
+- Status: `candidate`
+- Rollout scope: `global`
+- Quality gate: `pending`
+- Active database-seeded version remains: `cooking@1.0.0` until explicit promotion.
+
+The candidate record documents the Cooking intelligence foundation:
+
+- tenant-scoped recipes, meal plans, and shopping lists
+- deterministic meal-plan practicality assessment
+- allergy and dietary restriction blockers
+- grocery and pantry coherence checks
+- schedule, budget, and Training-fit warnings
+- provider-agnostic Cooking prompt/runtime guardrails
+
+The candidate does not deploy or activate the release. It exists so support, release docs, and rollback planning can reference a concrete Cooking version while full local runtime/iOS/portal conditions remain open.
+
 ## Public Skill Metadata
 
 Each skill can expose:

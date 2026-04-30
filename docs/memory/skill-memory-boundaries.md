@@ -96,6 +96,12 @@ Examples:
 - prep-time preferences
 - ingredient dislikes
 - budget/time constraints
+- allergies and dietary restrictions
+- equipment and cooking skill level
+- batch-cooking and leftovers preferences
+- training-day fueling preferences
+
+Cooking memory must not store medical diagnoses, treatment plans, raw private grocery receipts, or tenant-shared dietary restrictions without explicit scope. Allergy/restriction memory should be treated as safety-critical and should override weaker recipe/style preferences.
 
 ## Finance
 
@@ -155,4 +161,3 @@ Optional retrieval:
 - `includeCrossSkillSignals` can include explicit cross-skill signals
 - `includeStale` can include stale/expired memory for audit or repair
 - `includePlatformInternal` is reserved and should not be used in user-facing prompt construction
-

@@ -115,3 +115,19 @@ Prompt builders should use `buildSkillMemorySummary()` or scoped retrieval resul
 
 Prompt builders must not bypass the service and query `skill_memories` directly.
 
+## Cooking Candidate Notes
+
+The Cooking intelligence candidate keeps runtime memory compatibility at `cooking-memory-v1` and documents the next memory fields that should be written through `skill_memories`:
+
+- allergies and dietary restrictions
+- disliked ingredients
+- preferred ingredients and cuisines
+- equipment and skill level
+- weekday prep-time tolerance
+- batch-cooking preference
+- budget sensitivity
+- favorite/rejected meals
+- training-day fueling preferences
+- correction overrides
+
+Until a dedicated Cooking memory writer is promoted, these values should enter prompt/context construction only through tenant/user-authorized fixtures, route inputs, or scoped `skill_memories` retrieval. Do not infer or store sensitive dietary data from unrelated Chat context.

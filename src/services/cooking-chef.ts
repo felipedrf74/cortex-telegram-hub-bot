@@ -9,6 +9,12 @@
 
 import { getDb } from './database';
 import { logger } from '../utils/logger';
+import {
+  cookingPrivateScopePredicate,
+  cookingScopeForInsert,
+  cookingScopeParams,
+  ensureCookingTenantScopeColumns,
+} from './cooking-tenant-scope';
 
 // ── Types ──────────────────────────────────────────────────────────
 
@@ -20,7 +26,12 @@ export interface Ingredient {
 
 export interface Recipe {
   id: number;
+  tenant_id: number;
   user_id: number;
+  owner_user_id: number;
+  visibility_scope: string;
+  lifecycle_state: string;
+  scope_status: string;
   title: string;
   ingredients: Ingredient[];
   instructions: string | null;
@@ -39,7 +50,12 @@ export interface Recipe {
 
 export interface MealPlan {
   id: number;
+  tenant_id: number;
   user_id: number;
+  owner_user_id: number;
+  visibility_scope: string;
+  lifecycle_state: string;
+  scope_status: string;
   date: string;
   meal_type: string;
   recipe_id: number | null;
@@ -50,7 +66,12 @@ export interface MealPlan {
 
 export interface ShoppingList {
   id: number;
+  tenant_id: number;
   user_id: number;
+  owner_user_id: number;
+  visibility_scope: string;
+  lifecycle_state: string;
+  scope_status: string;
   week_start: string;
   items: ShoppingItem[];
   status: string;
@@ -68,6 +89,12 @@ export interface ShoppingItem {
 
 // ── Recipe CRUD ────────────────────────────────────────────────────
 
+function getCookingDb() {
+  const db = getDb();
+  ensureCookingTenantScopeColumns(db);
+  return db;
+}
+
 export function addRecipe(
   userId: number,
   title: string,
@@ -83,17 +110,30 @@ export function addRecipe(
     fat?: number | null;
     carbs?: number | null;
     calories?: number | null;
+    tenantId?: number | null;
   },
 ): Recipe {
-  const db = getDb();
+  const db = getCookingDb();
+  const scope = cookingScopeForInsert(userId, opts?.tenantId, 'user_private', 'active');
   db.prepare(`
     INSERT INTO recipes (
-      user_id, title, ingredients, instructions, prep_time_min, cook_time_min,
+      tenant_id, user_id, owner_user_id, visibility_scope, lifecycle_state, scope_status,
+      created_by, updated_by, audit_metadata_json,
+      title, ingredients, instructions, prep_time_min, cook_time_min,
       servings, tags, source, protein_g, fat_g, carbs_g, calories_kcal
     )
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
-    userId, title, JSON.stringify(ingredients),
+    scope.tenantId,
+    userId,
+    scope.ownerUserId,
+    scope.visibilityScope,
+    scope.lifecycleState,
+    scope.scopeStatus,
+    scope.createdBy,
+    scope.updatedBy,
+    scope.auditMetadataJson,
+    title, JSON.stringify(ingredients),
     opts?.instructions ?? null,
     opts?.prepTime ?? null,
     opts?.cookTime ?? null,
@@ -112,11 +152,11 @@ export function addRecipe(
 
 export function getRecipes(
   userId: number,
-  opts?: { tags?: string; search?: string; limit?: number },
+  opts?: { tags?: string; search?: string; limit?: number; tenantId?: number | null },
 ): Recipe[] {
-  const db = getDb();
-  const conditions = ['user_id = ?'];
-  const params: any[] = [userId];
+  const db = getCookingDb();
+  const conditions = [cookingPrivateScopePredicate()];
+  const params: any[] = cookingScopeParams(userId, opts?.tenantId);
 
   if (opts?.tags) {
     conditions.push("tags LIKE ?");
@@ -137,9 +177,11 @@ export function getRecipes(
   return rows.map(parseRecipe);
 }
 
-export function deleteRecipe(userId: number, recipeId: number): boolean {
-  const db = getDb();
-  const result = db.prepare('DELETE FROM recipes WHERE id = ? AND user_id = ?').run(recipeId, userId);
+export function deleteRecipe(userId: number, recipeId: number, tenantId?: number | null): boolean {
+  const db = getCookingDb();
+  const result = db.prepare(
+    `DELETE FROM recipes WHERE id = ? AND ${cookingPrivateScopePredicate()}`,
+  ).run(recipeId, ...cookingScopeParams(userId, tenantId));
   return result.changes > 0;
 }
 
@@ -147,11 +189,11 @@ export function deleteRecipe(userId: number, recipeId: number): boolean {
  * Fetch a single recipe by id, scoped to user_id. Returns null
  * if not found or owned by another user.
  */
-export function getRecipeById(userId: number, recipeId: number): Recipe | null {
-  const db = getDb();
+export function getRecipeById(userId: number, recipeId: number, tenantId?: number | null): Recipe | null {
+  const db = getCookingDb();
   const row = db.prepare(
-    'SELECT * FROM recipes WHERE id = ? AND user_id = ?',
-  ).get(recipeId, userId) as any;
+    `SELECT * FROM recipes WHERE id = ? AND ${cookingPrivateScopePredicate()}`,
+  ).get(recipeId, ...cookingScopeParams(userId, tenantId)) as any;
   return row ? parseRecipe(row) : null;
 }
 
@@ -181,8 +223,9 @@ export function updateRecipe(
     carbs?: number | null;
     calories?: number | null;
   },
+  tenantId?: number | null,
 ): Recipe | null {
-  const db = getDb();
+  const db = getCookingDb();
 
   // Build the SET clause dynamically so we only touch fields the
   // caller actually wants to change.
@@ -240,14 +283,16 @@ export function updateRecipe(
 
   if (setParts.length > 0) {
     setParts.push("updated_at = datetime('now')");
-    const sql = `UPDATE recipes SET ${setParts.join(', ')} WHERE id = ? AND user_id = ?`;
-    params.push(recipeId, userId);
+    setParts.push('updated_by = ?');
+    params.push(userId);
+    const sql = `UPDATE recipes SET ${setParts.join(', ')} WHERE id = ? AND ${cookingPrivateScopePredicate()}`;
+    params.push(recipeId, ...cookingScopeParams(userId, tenantId));
     const result = db.prepare(sql).run(...params);
     if (result.changes === 0) return null;
     logger.info({ userId, recipeId }, 'Recipe updated');
   }
 
-  return getRecipeById(userId, recipeId);
+  return getRecipeById(userId, recipeId, tenantId);
 }
 
 // ── Meal Planning ──────────────────────────────────────────────────
@@ -257,42 +302,76 @@ export function setMealPlan(
   date: string,
   mealType: string,
   title: string,
-  opts?: { recipeId?: number; notes?: string },
+  opts?: { recipeId?: number; notes?: string; tenantId?: number | null },
 ): MealPlan {
-  const db = getDb();
+  const db = getCookingDb();
+  const scope = cookingScopeForInsert(userId, opts?.tenantId, 'user_private', 'planned');
+  const existingScope = db.prepare(
+    'SELECT tenant_id FROM meal_plans WHERE user_id = ? AND date = ? AND meal_type = ?',
+  ).get(userId, date, mealType) as { tenant_id: number | null } | undefined;
+  if (existingScope && Number(existingScope.tenant_id ?? userId) !== scope.tenantId) {
+    throw new Error('COOKING_SCOPE_CONFLICT: meal plan slot belongs to a different tenant');
+  }
   db.prepare(`
-    INSERT INTO meal_plans (user_id, date, meal_type, recipe_id, title, notes)
-    VALUES (?, ?, ?, ?, ?, ?)
+    INSERT INTO meal_plans (
+      tenant_id, user_id, owner_user_id, visibility_scope, lifecycle_state, scope_status,
+      created_by, updated_by, audit_metadata_json,
+      date, meal_type, recipe_id, title, notes
+    )
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(user_id, date, meal_type) DO UPDATE SET
+      tenant_id = excluded.tenant_id,
+      owner_user_id = excluded.owner_user_id,
+      visibility_scope = excluded.visibility_scope,
+      lifecycle_state = excluded.lifecycle_state,
+      scope_status = excluded.scope_status,
+      updated_by = excluded.updated_by,
+      audit_metadata_json = excluded.audit_metadata_json,
       recipe_id = excluded.recipe_id,
       title = excluded.title,
       notes = excluded.notes
-  `).run(userId, date, mealType, opts?.recipeId ?? null, title, opts?.notes ?? null);
+  `).run(
+    scope.tenantId,
+    userId,
+    scope.ownerUserId,
+    scope.visibilityScope,
+    scope.lifecycleState,
+    scope.scopeStatus,
+    scope.createdBy,
+    scope.updatedBy,
+    scope.auditMetadataJson,
+    date,
+    mealType,
+    opts?.recipeId ?? null,
+    title,
+    opts?.notes ?? null,
+  );
 
   return db.prepare(
-    'SELECT * FROM meal_plans WHERE user_id = ? AND date = ? AND meal_type = ?',
-  ).get(userId, date, mealType) as MealPlan;
+    `SELECT * FROM meal_plans WHERE date = ? AND meal_type = ? AND ${cookingPrivateScopePredicate()}`,
+  ).get(date, mealType, ...cookingScopeParams(userId, opts?.tenantId)) as MealPlan;
 }
 
-export function getMealPlan(userId: number, startDate: string, endDate: string): MealPlan[] {
-  const db = getDb();
+export function getMealPlan(userId: number, startDate: string, endDate: string, tenantId?: number | null): MealPlan[] {
+  const db = getCookingDb();
   return db.prepare(
-    'SELECT * FROM meal_plans WHERE user_id = ? AND date >= ? AND date <= ? ORDER BY date, meal_type',
-  ).all(userId, startDate, endDate) as MealPlan[];
+    `SELECT * FROM meal_plans WHERE ${cookingPrivateScopePredicate()} AND date >= ? AND date <= ? ORDER BY date, meal_type`,
+  ).all(...cookingScopeParams(userId, tenantId), startDate, endDate) as MealPlan[];
 }
 
-export function deleteMealPlan(userId: number, date: string, mealType: string): boolean {
-  const db = getDb();
+export function deleteMealPlan(userId: number, date: string, mealType: string, tenantId?: number | null): boolean {
+  const db = getCookingDb();
   const result = db.prepare(
-    'DELETE FROM meal_plans WHERE user_id = ? AND date = ? AND meal_type = ?',
-  ).run(userId, date, mealType);
+    `DELETE FROM meal_plans WHERE date = ? AND meal_type = ? AND ${cookingPrivateScopePredicate()}`,
+  ).run(date, mealType, ...cookingScopeParams(userId, tenantId));
   return result.changes > 0;
 }
 
 // ── Shopping List ──────────────────────────────────────────────────
 
-export function generateShoppingList(userId: number, weekStart: string): ShoppingList {
-  const db = getDb();
+export function generateShoppingList(userId: number, weekStart: string, tenantId?: number | null): ShoppingList {
+  const db = getCookingDb();
+  const scope = cookingScopeForInsert(userId, tenantId, 'user_private', 'active');
 
   // Calculate week end (7 days)
   const start = new Date(weekStart);
@@ -300,19 +379,21 @@ export function generateShoppingList(userId: number, weekStart: string): Shoppin
   const endDate = end.toISOString().slice(0, 10);
 
   // Get all meal plans for the week
-  const meals = getMealPlan(userId, weekStart, endDate);
+  const meals = getMealPlan(userId, weekStart, endDate, tenantId);
 
   // Aggregate ingredients from linked recipes
   const itemMap = new Map<string, ShoppingItem>();
   const quantityMap = new Map<string, NormalizedQuantity>();
-  const existing = getShoppingList(userId, weekStart);
+  const existing = getShoppingList(userId, weekStart, tenantId);
   const checkedByKey = new Map(
     (existing?.items ?? []).map((item) => [item.name.toLowerCase(), item.checked]),
   );
 
   for (const meal of meals) {
     if (meal.recipe_id) {
-      const recipe = db.prepare('SELECT ingredients FROM recipes WHERE id = ? AND user_id = ?').get(meal.recipe_id, userId) as any;
+      const recipe = db.prepare(
+        `SELECT ingredients FROM recipes WHERE id = ? AND ${cookingPrivateScopePredicate()}`,
+      ).get(meal.recipe_id, ...cookingScopeParams(userId, tenantId)) as any;
       if (recipe) {
         const ingredients: Ingredient[] = JSON.parse(recipe.ingredients);
         for (const ing of ingredients) {
@@ -352,17 +433,46 @@ export function generateShoppingList(userId: number, weekStart: string): Shoppin
   });
 
   // Upsert shopping list
+  const existingScope = db.prepare(
+    'SELECT tenant_id FROM shopping_lists WHERE user_id = ? AND week_start = ?',
+  ).get(userId, weekStart) as { tenant_id: number | null } | undefined;
+  if (existingScope && Number(existingScope.tenant_id ?? userId) !== scope.tenantId) {
+    throw new Error('COOKING_SCOPE_CONFLICT: shopping list belongs to a different tenant');
+  }
+
   db.prepare(`
-    INSERT INTO shopping_lists (user_id, week_start, items)
-    VALUES (?, ?, ?)
+    INSERT INTO shopping_lists (
+      tenant_id, user_id, owner_user_id, visibility_scope, lifecycle_state, scope_status,
+      created_by, updated_by, audit_metadata_json, week_start, items
+    )
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(user_id, week_start) DO UPDATE SET
+      tenant_id = excluded.tenant_id,
+      owner_user_id = excluded.owner_user_id,
+      visibility_scope = excluded.visibility_scope,
+      lifecycle_state = excluded.lifecycle_state,
+      scope_status = excluded.scope_status,
+      updated_by = excluded.updated_by,
+      audit_metadata_json = excluded.audit_metadata_json,
       items = excluded.items,
       updated_at = datetime('now')
-  `).run(userId, weekStart, JSON.stringify(items));
+  `).run(
+    scope.tenantId,
+    userId,
+    scope.ownerUserId,
+    scope.visibilityScope,
+    scope.lifecycleState,
+    scope.scopeStatus,
+    scope.createdBy,
+    scope.updatedBy,
+    scope.auditMetadataJson,
+    weekStart,
+    JSON.stringify(items),
+  );
 
   const row = db.prepare(
-    'SELECT * FROM shopping_lists WHERE user_id = ? AND week_start = ?',
-  ).get(userId, weekStart) as any;
+    `SELECT * FROM shopping_lists WHERE week_start = ? AND ${cookingPrivateScopePredicate()}`,
+  ).get(weekStart, ...cookingScopeParams(userId, tenantId)) as any;
 
   logger.info({ userId, weekStart, itemCount: items.length }, 'Shopping list generated');
   return parseShoppingList(row);
@@ -451,11 +561,11 @@ function appendQuantity(existing: ShoppingItem, ingredient: Ingredient): string 
   return `${left} + ${right}`;
 }
 
-export function getShoppingList(userId: number, weekStart: string): ShoppingList | null {
-  const db = getDb();
+export function getShoppingList(userId: number, weekStart: string, tenantId?: number | null): ShoppingList | null {
+  const db = getCookingDb();
   const row = db.prepare(
-    'SELECT * FROM shopping_lists WHERE user_id = ? AND week_start = ?',
-  ).get(userId, weekStart) as any;
+    `SELECT * FROM shopping_lists WHERE week_start = ? AND ${cookingPrivateScopePredicate()}`,
+  ).get(weekStart, ...cookingScopeParams(userId, tenantId)) as any;
   return row ? parseShoppingList(row) : null;
 }
 
@@ -464,9 +574,10 @@ export function updateShoppingListItemChecked(
   weekStart: string,
   itemIndex: number,
   checked: boolean,
+  tenantId?: number | null,
 ): ShoppingList | null {
-  const db = getDb();
-  const existing = getShoppingList(userId, weekStart);
+  const db = getCookingDb();
+  const existing = getShoppingList(userId, weekStart, tenantId);
   if (!existing) {
     return null;
   }
@@ -480,11 +591,11 @@ export function updateShoppingListItemChecked(
 
   db.prepare(`
     UPDATE shopping_lists
-    SET items = ?, updated_at = datetime('now')
-    WHERE user_id = ? AND week_start = ?
-  `).run(JSON.stringify(items), userId, weekStart);
+    SET items = ?, updated_at = datetime('now'), updated_by = ?
+    WHERE week_start = ? AND ${cookingPrivateScopePredicate()}
+  `).run(JSON.stringify(items), userId, weekStart, ...cookingScopeParams(userId, tenantId));
 
-  const updated = getShoppingList(userId, weekStart);
+  const updated = getShoppingList(userId, weekStart, tenantId);
   logger.info({ userId, weekStart, itemIndex, checked }, 'Shopping list item updated');
   return updated;
 }
