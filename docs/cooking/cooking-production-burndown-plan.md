@@ -9,10 +9,9 @@ No known unresolved P0 after focused backend tests.
 ## P1 Before Production
 
 1. Run full local Nexus runtime smoke and archive logs.
-2. Add Cooking preference/memory write and correction handling.
-3. Add iOS support for assessment warnings, pantry status, and unknown future states.
-4. Add portal preference/pantry management readiness plan.
-5. Connect Finance and Secretary runtime context to generation-quality flows.
+2. Add iOS support for assessment warnings, pantry/preference status, and unknown future states.
+3. Add portal preference/pantry management readiness plan.
+4. Connect Finance and Secretary runtime context to generation-quality flows.
 
 ## P2
 

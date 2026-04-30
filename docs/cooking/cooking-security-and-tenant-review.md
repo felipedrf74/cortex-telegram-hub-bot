@@ -20,7 +20,7 @@ PASS WITH CONDITIONS for backend tenant scope foundation.
 ## Remaining Conditions
 
 - Runtime auth still blocks same-user active tenant switching until a membership-backed model exists.
-- Cooking preferences/memory write path is not yet production-backed.
+- Cooking preferences/memory write path is backed by `skill_memories` through user-private, tenant-scoped REST and Chat tool contracts.
 - Admin/support Cooking visibility is not implemented; do not expose private Cooking data in support tools until audited.
 
 ## Prompt/Provider Safety

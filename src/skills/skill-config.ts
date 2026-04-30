@@ -454,6 +454,12 @@ const COOKING_SKILL: SkillDefinition = {
       tools: ['cooking_upsert_pantry_item', 'cooking_get_pantry', 'cooking_delete_pantry_item'],
     },
     {
+      name: 'preferences',
+      description: 'User-private Cooking memory and corrections',
+      enabledByDefault: true,
+      tools: ['cooking_set_preference', 'cooking_get_preferences'],
+    },
+    {
       name: 'notes',
       description: 'Cooking notes and tips',
       enabledByDefault: true,

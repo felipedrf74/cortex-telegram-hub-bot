@@ -42,11 +42,12 @@ Every Cooking memory must include:
 - Deterministic `buildCookingPreferenceMemorySummary()` for safe prompt/context summaries.
 - Assessment input accepts preference profiles for allergy, restriction, disliked ingredient, prep-time, budget, and training-day logic.
 - Skill registry candidate records memory schema compatibility as `cooking-memory-v1`.
+- `src/services/cooking-preferences.ts` writes and reads user-private Cooking preference memory through `skill_memories`.
+- `GET /api/v1/cooking/preferences` and `POST /api/v1/cooking/preferences` expose tenant-scoped read/write/correction contracts.
+- Chat tools `cooking_set_preference` and `cooking_get_preferences` let Chat record explicit user corrections without bypassing backend authorization.
+- `GET /api/v1/cooking/meal-plan` now applies active Cooking preference memory before returning deterministic assessment warnings/blockers.
 
 ## Still Open
 
-- Dedicated write/update APIs for Cooking preferences.
-- Automatic correction handling from Chat utterances such as "stop suggesting mushrooms."
 - Stale preference downgrade job.
 - User-facing preference review in iOS/portal.
-

@@ -255,6 +255,81 @@ describe('Cooking API — shopping list item updates', () => {
     expect(tenantBDelete.statusCode).toBe(404);
   });
 
+  it('writes and reads Cooking preference memory through tenant-scoped APIs', async () => {
+    const user = getOrCreateUser(21016, { username: 'cook16' });
+
+    const written = await dispatch('POST', '/preferences', user.id, {
+      kind: 'weekday_max_prep_minutes',
+      value: 45,
+      source: 'onboarding',
+    }, 101);
+    const corrected = await dispatch('POST', '/preferences', user.id, {
+      kind: 'weekday_max_prep_minutes',
+      value: 20,
+      correction: true,
+      source: 'chat_correction',
+    }, 101);
+    const read = await dispatch('GET', '/preferences', user.id, undefined, 101);
+
+    expect(written.statusCode, JSON.stringify(written.body)).toBe(201);
+    expect(corrected.statusCode, JSON.stringify(corrected.body)).toBe(201);
+    expect(corrected.body.data.memory).toMatchObject({
+      memoryKey: 'weekday_max_prep_minutes',
+      memoryValue: '20',
+      freshnessStatus: 'corrected',
+    });
+    expect(read.statusCode).toBe(200);
+    expect(read.body.data.preferences.profile.weekdayMaxPrepMinutes).toBe(20);
+    expect(read.body.data.preferences.summary).toContain('Weekday prep tolerance: 20 minutes');
+    expect(mockInvalidateCookingDerivedCaches).toHaveBeenCalledWith(user.id);
+  });
+
+  it('does not expose same-user Cooking preference memory across tenants', async () => {
+    const user = getOrCreateUser(21017, { username: 'cook17' });
+
+    await dispatch('POST', '/preferences', user.id, {
+      kind: 'disliked_ingredient',
+      value: 'mushrooms',
+    }, 101);
+    await dispatch('POST', '/preferences', user.id, {
+      kind: 'disliked_ingredient',
+      value: 'cilantro',
+    }, 202);
+
+    const tenantA = await dispatch('GET', '/preferences', user.id, undefined, 101);
+    const tenantB = await dispatch('GET', '/preferences', user.id, undefined, 202);
+
+    expect(tenantA.body.data.preferences.profile.dislikedIngredients).toEqual(['mushrooms']);
+    expect(tenantB.body.data.preferences.profile.dislikedIngredients).toEqual(['cilantro']);
+  });
+
+  it('applies Cooking allergy preference memory before meal-plan response composition', async () => {
+    const user = getOrCreateUser(21018, { username: 'cook18' });
+    const recipe = addRecipe(user.id, 'Peanut noodles', [
+      { name: 'Peanuts', quantity: '30', unit: 'g' },
+      { name: 'Noodles', quantity: '100', unit: 'g' },
+    ], { tenantId: 101 });
+    setMealPlan(user.id, '2026-04-13', 'dinner', 'Peanut noodles', { recipeId: recipe.id, tenantId: 101 });
+    await dispatch('POST', '/preferences', user.id, {
+      kind: 'allergy',
+      value: 'peanuts',
+      source: 'chat_correction',
+    }, 101);
+
+    const res = await dispatch('GET', '/meal-plan?from=2026-04-13&to=2026-04-13', user.id, undefined, 101);
+
+    expect(res.statusCode).toBe(200);
+    expect(res.body.data.assessment.status).toBe('blocked');
+    expect(res.body.data.assessment.issues).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        code: 'ALLERGY_CONFLICT',
+        severity: 'blocker',
+        ingredient: 'peanuts',
+      }),
+    ]));
+    expect(res.body.data.preferences.summary).toContain('Allergies: peanuts');
+  });
+
   it('fails closed on invalid tenant scope before loading a meal plan', async () => {
     const res = await dispatch('GET', '/meal-plan?from=2026-04-13&to=2026-04-13', 0);
 

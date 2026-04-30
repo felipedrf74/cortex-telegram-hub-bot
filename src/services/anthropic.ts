@@ -532,6 +532,36 @@ export const TOOLS: Anthropic.Tool[] = [
     }, required: ['item_id'] },
   },
   {
+    name: 'cooking_set_preference', description: 'Save or correct a tenant-scoped, user-private Cooking preference such as allergy, disliked ingredient, prep-time, or budget sensitivity',
+    input_schema: { type: 'object' as const, properties: {
+      kind: {
+        type: 'string',
+        enum: [
+          'allergy',
+          'dietary_restriction',
+          'disliked_ingredient',
+          'preferred_ingredient',
+          'equipment',
+          'weekday_max_prep_minutes',
+          'budget_limit',
+          'budget_currency',
+          'batch_cooking_preferred',
+          'training_day_preference',
+          'cooking_skill_level',
+          'grocery_preference',
+        ],
+      },
+      value: { type: 'string', description: 'Preference value; numbers/booleans may be sent as strings' },
+      correction: { type: 'boolean', description: 'True when the user is correcting or replacing a previous preference' },
+      confidence: { type: 'number', description: '0-1 confidence from explicit user instruction' },
+      source: { type: 'string', description: 'Short source label such as chat_correction' },
+    }, required: ['kind', 'value'] },
+  },
+  {
+    name: 'cooking_get_preferences', description: 'Read active tenant-scoped Cooking preference memory for this user',
+    input_schema: { type: 'object' as const, properties: {} },
+  },
+  {
     name: 'cooking_set_meal', description: 'Plan a meal for a specific date and meal type',
     input_schema: { type: 'object' as const, properties: {
       date: { type: 'string', description: 'ISO date YYYY-MM-DD' },

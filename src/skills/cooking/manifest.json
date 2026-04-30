@@ -35,6 +35,13 @@
       "cronJobs": []
     },
     {
+      "module_name": "preferences",
+      "description": "User-private Cooking memory and correction handling",
+      "enabled_by_default": true,
+      "tools": ["cooking_set_preference", "cooking_get_preferences"],
+      "cronJobs": []
+    },
+    {
       "module_name": "batch-cook",
       "description": "Prep-day grouping and kitchen batching heuristics",
       "enabled_by_default": true,

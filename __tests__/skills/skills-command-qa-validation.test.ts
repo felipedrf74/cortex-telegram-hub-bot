@@ -131,7 +131,7 @@ describe('QA: Sub-module counts match skill-config', () => {
     triathlon: 10,
     content: 11,   // notes, shared-memory, research-pipeline, script-generator, seo-tracker, reaction-radar, voice-evolution, performance-intel, pipeline-tracker, topic-scheduler, meme-scout
     finance: 4,    // expenses, tax, notes, shared-memory
-    cooking: 6,    // recipes, meal-planning, shopping, pantry, notes, shared-memory
+    cooking: 7,    // recipes, meal-planning, shopping, pantry, preferences, notes, shared-memory
   };
 
   for (const [domain, count] of Object.entries(expectedCounts)) {
@@ -159,9 +159,9 @@ describe('QA: Tool counts are accurate', () => {
   it('cooking has pantry-capable tools across sub-skills', () => {
     const skill = getSkillStatus('cooking');
     const totalTools = skill.subSkills.reduce((sum, s) => sum + s.toolCount, 0);
-    // 3 (recipes) + 3 (meal-planning) + 2 (shopping) + 2 (notes) + 2 (shared-memory) = 12
+    // 3 (recipes) + 3 (meal-planning) + 2 (shopping) + 3 (pantry) + 2 (preferences) + shared tools.
     // But notes and shared-memory use shared tool names, toolCount counts per sub-skill
-    expect(totalTools).toBeGreaterThanOrEqual(11);
+    expect(totalTools).toBeGreaterThanOrEqual(13);
   });
 
   it('finance has expense and tax tools', () => {

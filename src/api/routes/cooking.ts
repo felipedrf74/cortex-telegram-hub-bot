@@ -23,6 +23,8 @@
  *   POST   /pantry/items                 — create/update one pantry item
  *   PATCH  /pantry/items/:id             — update one pantry item
  *   DELETE /pantry/items/:id             — remove one pantry item
+ *   GET    /preferences                  — read Cooking preference memory
+ *   POST   /preferences                  — write/correct Cooking preference memory
  *
  * Part of TASK-14 Phase 1 (foundation) — backend plumbing for the
  * iOS Cooking skill landing page. Real UI features ship in follow-up
@@ -57,6 +59,12 @@ import {
   type Recipe,
 } from '../../services/cooking-chef';
 import { assessCookingMealPlan } from '../../services/cooking-intelligence';
+import {
+  buildCookingPreferenceReadModel,
+  isCookingPreferenceKind,
+  setCookingPreferenceMemory,
+  type CookingPreferenceWriteInput,
+} from '../../services/cooking-preferences';
 import { createEvent as createCalendarEvent, isAnyCalendarConfigured } from '../../services/unified-calendar';
 import { getActivePlans, getCurrentWeek, getSessionsForWeek, getWeeksForPlan, type TrainingSession } from '../../services/training-plans';
 import { invalidateCookingDerivedCaches } from '../../services/cooking-cache-invalidator';
@@ -112,6 +120,14 @@ function sendCookingScopeConflictIfNeeded(res: Response, err: unknown): boolean 
   const message = err instanceof Error ? err.message : '';
   if (!message.startsWith('COOKING_SCOPE_CONFLICT')) return false;
   sendError(res, 'FORBIDDEN', 'Cooking resource belongs to a different tenant scope', 403);
+  return true;
+}
+
+function sendCookingPreferenceErrorIfNeeded(res: Response, err: unknown): boolean {
+  const message = err instanceof Error ? err.message : '';
+  if (!message.startsWith('COOKING_PREFERENCE') && !message.startsWith('SKILL_MEMORY')) return false;
+  const status = message.includes('SCOPE') ? 403 : 400;
+  sendError(res, status === 403 ? 'FORBIDDEN' : 'BAD_REQUEST', message, status);
   return true;
 }
 
@@ -706,6 +722,71 @@ export function cookingRoutes(): Router {
     }
   }));
 
+  // ── Preference Memory ─────────────────────────────────────────────
+
+  /**
+   * GET /api/v1/cooking/preferences
+   * Reads active user-private Cooking preference memory for the active tenant.
+   */
+  router.get('/preferences', asyncHandler(async (req, res: Response) => {
+    const { userId, tenantId } = req as AuthenticatedRequest;
+
+    try {
+      const preferences = buildCookingPreferenceReadModel(userId, tenantId);
+      sendSuccess(res, { preferences });
+    } catch (err: unknown) {
+      if (sendCookingPreferenceErrorIfNeeded(res, err)) return;
+      sendCookingInternalError(res, {
+        err,
+        userId,
+        operation: 'iOS cooking preferences read failed',
+        message: 'Failed to fetch cooking preferences',
+      });
+    }
+  }));
+
+  /**
+   * POST /api/v1/cooking/preferences
+   * Body: { kind, value, correction?, confidence?, source? }
+   *
+   * Preferences are user-private by default. Tenant-shared Cooking memory
+   * needs a membership-backed policy before being exposed here.
+   */
+  router.post('/preferences', asyncHandler(async (req, res: Response) => {
+    const { userId, tenantId } = req as AuthenticatedRequest;
+    const input = req.body as CookingPreferenceWriteInput;
+
+    if (!isCookingPreferenceKind(input?.kind)) {
+      sendError(res, 'BAD_REQUEST', 'kind is required and must be a supported Cooking preference kind');
+      return;
+    }
+    if (input.value === undefined || input.value === null || String(input.value).trim().length === 0) {
+      sendError(res, 'BAD_REQUEST', 'value is required');
+      return;
+    }
+    if (input.confidence !== undefined && input.confidence !== null
+        && (typeof input.confidence !== 'number' || !Number.isFinite(input.confidence)
+          || input.confidence < 0 || input.confidence > 1)) {
+      sendError(res, 'BAD_REQUEST', 'confidence must be a number between 0 and 1');
+      return;
+    }
+
+    try {
+      const memory = setCookingPreferenceMemory(userId, input, tenantId);
+      invalidateCookingDerivedCaches(userId);
+      const preferences = buildCookingPreferenceReadModel(userId, tenantId);
+      sendSuccess(res, { memory, preferences }, { status: 201 });
+    } catch (err: unknown) {
+      if (sendCookingPreferenceErrorIfNeeded(res, err)) return;
+      sendCookingInternalError(res, {
+        err,
+        userId,
+        operation: 'iOS cooking preferences write failed',
+        message: 'Failed to save cooking preference',
+      });
+    }
+  }));
+
   // ── Meal Planning ──────────────────────────────────────────────────
 
   /**
@@ -736,10 +817,27 @@ export function cookingRoutes(): Router {
           .map((recipe) => [recipe.id, recipe]),
       );
       const shoppingList = getShoppingList(userId, from, tenantId);
+      const preferenceReadModel = buildCookingPreferenceReadModel(userId, tenantId);
+      const pantryItems = getPantryItems(userId, { tenantId, includeExpired: true, limit: 250 })
+        .map((item) => ({
+          name: item.name,
+          quantity: item.quantity ?? undefined,
+          unit: item.unit ?? undefined,
+          expiresAt: item.expires_at,
+          status: item.freshness_status === 'expired'
+            ? 'expired' as const
+            : item.availability_status === 'unavailable'
+              ? 'unavailable' as const
+              : item.freshness_status === 'unknown'
+                ? 'unknown' as const
+                : 'available' as const,
+        }));
       const assessment = assessCookingMealPlan({
         meals: plans,
         recipesById,
         shoppingList,
+        preferences: preferenceReadModel.profile,
+        pantryItems,
         trainingContext: {
           trainingDates: [
             ...(trainingSnapshot.todayHasTraining ? [trainingSnapshot.todayIso] : []),
@@ -751,7 +849,14 @@ export function cookingRoutes(): Router {
           ],
         },
       });
-      sendSuccess(res, { meals, count: meals.length, from, to, assessment });
+      sendSuccess(res, {
+        meals,
+        count: meals.length,
+        from,
+        to,
+        assessment,
+        preferences: { summary: preferenceReadModel.summary },
+      });
     } catch (err: unknown) {
       sendCookingInternalError(res, {
         err,

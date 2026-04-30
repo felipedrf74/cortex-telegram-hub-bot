@@ -96,6 +96,7 @@ vi.mock('../../src/services/cooking-chef', () => ({
   generateShoppingList: vi.fn(),
   getShoppingList: vi.fn(),
   updateShoppingListItemChecked: vi.fn(),
+  getPantryItems: vi.fn(() => []),
 }));
 
 vi.mock('../../src/services/training-plans', () => ({
@@ -404,8 +405,9 @@ function protectedApp(mountPath: string, router: Router): express.Express {
   // request on the "auth has admitted the caller" path so the route family
   // health checks stay focused on downstream app-facing contracts.
   app.use((req, _res, next) => {
-    (req as express.Request & { userId: number; deviceId: string }).userId = 7001;
-    (req as express.Request & { userId: number; deviceId: string }).deviceId = 'smoke-device';
+    (req as express.Request & { userId: number; tenantId: number; deviceId: string }).userId = 7001;
+    (req as express.Request & { userId: number; tenantId: number; deviceId: string }).tenantId = 7001;
+    (req as express.Request & { userId: number; tenantId: number; deviceId: string }).deviceId = 'smoke-device';
     next();
   });
   app.use(mountPath, router);

@@ -60,6 +60,7 @@ const WRITE_TOOLS = new Set([
   'finance_calculate_tax',
   'cooking_add_recipe',
   'cooking_upsert_pantry_item',
+  'cooking_set_preference',
   'cooking_set_meal',
   'cooking_generate_shopping_list',
 ]);

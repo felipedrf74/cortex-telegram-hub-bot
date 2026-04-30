@@ -9,6 +9,7 @@ import * as msTodo from './microsoft-todo';
 import * as trainingPlans from './training-plans';
 import * as financeTracker from './finance-tracker';
 import * as cookingChef from './cooking-chef';
+import * as cookingPreferences from './cooking-preferences';
 import * as trainingSignals from './training-signals';
 import * as onboarding from './onboarding';
 import { invalidateCalendarCaches } from './calendar-cache-invalidator';
@@ -89,6 +90,8 @@ export const DISPATCHABLE_TOOL_NAMES = [
   'cooking_upsert_pantry_item',
   'cooking_get_pantry',
   'cooking_delete_pantry_item',
+  'cooking_set_preference',
+  'cooking_get_preferences',
   'cooking_set_meal',
   'cooking_get_meal_plan',
   'cooking_delete_meal',
@@ -1030,6 +1033,37 @@ export async function executeToolCall(
         const deleted = cookingChef.deletePantryItem(uid, input.item_id, scope.tenantId);
         if (deleted) invalidateCookingDerivedCaches(uid);
         return deleted ? { success: true } : { error: 'Pantry item not found' };
+      }
+      case 'cooking_set_preference': {
+        const scope = requireTenantToolUserId(toolName, userId, undefined, tenantId);
+        if (!scope.ok) return { error: scope.error };
+        const uid = scope.userId;
+        try {
+          const memory = cookingPreferences.setCookingPreferenceMemory(uid, {
+            kind: input.kind,
+            value: input.value,
+            source: input.source,
+            correction: input.correction,
+            confidence: input.confidence,
+            expiresAt: input.expires_at,
+          }, scope.tenantId);
+          invalidateCookingDerivedCaches(uid);
+          return {
+            success: true,
+            memory_id: memory.memoryId,
+            memory_key: memory.memoryKey,
+            freshness_status: memory.freshnessStatus,
+          };
+        } catch (err) {
+          const message = err instanceof Error ? err.message : 'Invalid cooking preference';
+          return { error: message };
+        }
+      }
+      case 'cooking_get_preferences': {
+        const scope = requireTenantToolUserId(toolName, userId, undefined, tenantId);
+        if (!scope.ok) return { error: scope.error };
+        const uid = scope.userId;
+        return cookingPreferences.buildCookingPreferenceReadModel(uid, scope.tenantId);
       }
       case 'cooking_set_meal': {
         const scope = requireTenantToolUserId(toolName, userId, undefined, tenantId);

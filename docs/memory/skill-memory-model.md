@@ -117,7 +117,7 @@ Prompt builders must not bypass the service and query `skill_memories` directly.
 
 ## Cooking Candidate Notes
 
-The Cooking intelligence candidate keeps runtime memory compatibility at `cooking-memory-v1` and documents the next memory fields that should be written through `skill_memories`:
+The Cooking intelligence candidate keeps runtime memory compatibility at `cooking-memory-v1` and now writes explicit user-private Cooking preferences through `src/services/cooking-preferences.ts`:
 
 - allergies and dietary restrictions
 - disliked ingredients
@@ -130,4 +130,4 @@ The Cooking intelligence candidate keeps runtime memory compatibility at `cookin
 - training-day fueling preferences
 - correction overrides
 
-Until a dedicated Cooking memory writer is promoted, these values should enter prompt/context construction only through tenant/user-authorized fixtures, route inputs, or scoped `skill_memories` retrieval. Do not infer or store sensitive dietary data from unrelated Chat context.
+These values enter prompt/context construction only through tenant/user-authorized route/tool calls or scoped `skill_memories` retrieval. Do not infer or store sensitive dietary data from unrelated Chat context.

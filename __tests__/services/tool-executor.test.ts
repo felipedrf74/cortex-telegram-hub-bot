@@ -120,6 +120,7 @@ import * as msTodo from '../../src/services/microsoft-todo';
 import * as unifiedCal from '../../src/services/unified-calendar';
 import * as outlookMail from '../../src/services/outlook-mail';
 import * as cookingChef from '../../src/services/cooking-chef';
+import * as cookingPreferences from '../../src/services/cooking-preferences';
 import { setReminder } from '../../src/state/reminders';
 import { saveNote, searchNotes } from '../../src/state/notes';
 import { setSharedMemory, removeSharedMemory } from '../../src/state/shared-memory';
@@ -1228,6 +1229,59 @@ describe('executeToolCall — Cooking', () => {
       includeExpired: true,
     }));
     listSpy.mockRestore();
+  });
+
+  it('passes authenticated tenant scope into cooking preference writes', async () => {
+    const setPreferenceSpy = vi.spyOn(cookingPreferences, 'setCookingPreferenceMemory');
+    setPreferenceSpy.mockReturnValue({
+      memoryId: 'mem_cooking_test',
+      memoryKey: 'disliked_ingredient.mushrooms',
+      freshnessStatus: 'corrected',
+    } as any);
+
+    const result = await execAsTenantUser('cooking_set_preference', {
+      kind: 'disliked_ingredient',
+      value: 'mushrooms',
+      correction: true,
+      source: 'chat_correction',
+    }, 1001);
+
+    expect(result).toEqual({
+      success: true,
+      memory_id: 'mem_cooking_test',
+      memory_key: 'disliked_ingredient.mushrooms',
+      freshness_status: 'corrected',
+    });
+    expect(setPreferenceSpy).toHaveBeenCalledWith(
+      AUTH_USER_ID,
+      expect.objectContaining({
+        kind: 'disliked_ingredient',
+        value: 'mushrooms',
+        correction: true,
+      }),
+      1001,
+    );
+    expect(mockInvalidateCookingDerivedCaches).toHaveBeenCalledWith(AUTH_USER_ID);
+    setPreferenceSpy.mockRestore();
+  });
+
+  it('passes authenticated tenant scope into cooking preference reads', async () => {
+    const readPreferenceSpy = vi.spyOn(cookingPreferences, 'buildCookingPreferenceReadModel');
+    readPreferenceSpy.mockReturnValue({
+      profile: { dislikedIngredients: ['mushrooms'] },
+      memories: [],
+      summary: 'Avoid: mushrooms',
+      skillMemorySummary: 'Skill memory for cooking:',
+    });
+
+    const result = await execAsTenantUser('cooking_get_preferences', {}, 1001);
+
+    expect(result).toEqual(expect.objectContaining({
+      profile: { dislikedIngredients: ['mushrooms'] },
+      summary: 'Avoid: mushrooms',
+    }));
+    expect(readPreferenceSpy).toHaveBeenCalledWith(AUTH_USER_ID, 1001);
+    readPreferenceSpy.mockRestore();
   });
 
   it('invalidates cooking-derived surfaces after deleting a meal', async () => {

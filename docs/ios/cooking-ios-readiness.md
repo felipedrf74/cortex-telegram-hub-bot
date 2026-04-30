@@ -31,13 +31,22 @@ Pantry now also has additive backend routes:
 Shopping-list items may now include `pantry_status`,
 `pantry_item_id`, `pantry_freshness_status`, and `pantry_note`.
 
+Cooking preference memory now has additive backend routes:
+
+- `GET /api/v1/cooking/preferences`
+- `POST /api/v1/cooking/preferences`
+
+`GET /api/v1/cooking/meal-plan` may also include
+`preferences.summary` so iOS can show what memory influenced warnings without
+rendering raw prompt context.
+
 ## Gaps
 
 - Render assessment warnings/blockers.
 - Render allergy/restriction warning distinctly.
 - Render pantry available/expired status from shopping-list items and pantry list rows.
+- Render preference/correction state and expose a correction capture path.
 - Render substitution/review prompts once substitution engine lands.
-- Capture user correction input.
 - Invalidate Cooking cache on tenant switch.
 - Unknown enum/state fallback tests.
 

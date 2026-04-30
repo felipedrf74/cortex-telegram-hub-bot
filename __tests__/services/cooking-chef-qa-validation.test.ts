@@ -462,6 +462,8 @@ describe('QA: Cooking tool definitions', () => {
       'cooking_upsert_pantry_item',
       'cooking_get_pantry',
       'cooking_delete_pantry_item',
+      'cooking_set_preference',
+      'cooking_get_preferences',
       'cooking_set_meal',
       'cooking_get_meal_plan',
       'cooking_delete_meal',
