@@ -224,4 +224,20 @@ describe('cooking intelligence assessment', () => {
       trainingDayPreference: 'higher-protein dinners after hard sessions',
     })).toContain('Allergies: shellfish');
   });
+
+  it('treats regex metacharacter ingredients as plain strings', () => {
+    const assessment = assessCookingMealPlan({
+      meals: [meal({ title: 'Regex probe bowl' })],
+      recipesById: new Map([[10, recipe({ ingredients: [{ name: '(a+)+$', quantity: '1', unit: 'pinch' }] })]]),
+      preferences: { dislikedIngredients: ['(a+)+$'] },
+    });
+
+    expect(assessment.status).toBe('needs_review');
+    expect(assessment.issues).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        code: 'DISLIKED_INGREDIENT',
+        ingredient: '(a+)+$',
+      }),
+    ]));
+  });
 });

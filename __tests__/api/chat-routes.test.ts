@@ -3,6 +3,7 @@ import Database from 'better-sqlite3';
 import fs from 'fs';
 import path from 'path';
 import type { Request, Response } from 'express';
+import { Settings } from 'luxon';
 import {
   clearTenantScopeAnomaliesForTests,
   getTenantScopeAnomalies,
@@ -399,6 +400,8 @@ async function dispatch(
 
 describe('Chat API routes', () => {
   beforeEach(() => {
+    Settings.now = () => new Date('2026-04-15T12:00:00.000Z').valueOf();
+
     testDb = new Database(':memory:');
     testDb.pragma('journal_mode = WAL');
     applyMigrations(testDb);
@@ -666,6 +669,7 @@ describe('Chat API routes', () => {
   });
 
   afterEach(() => {
+    Settings.now = Date.now;
     testDb?.close();
   });
 

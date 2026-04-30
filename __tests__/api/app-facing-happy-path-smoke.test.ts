@@ -731,7 +731,7 @@ describe('app-facing happy path smoke', () => {
       if (sql.includes("FROM content_ideas WHERE stage = 'filmed'")) return [];
       if (sql.includes("FROM content_ideas WHERE stage = 'editing'")) return [];
       if (sql.includes("FROM content_ideas WHERE stage = 'published'")) {
-        return [{ id: 3, title: 'Publicado ontem', score: 70, created_at: `${todayIso}T08:00:00.000Z` }];
+        return [{ id: 3, title: 'Publicado ontem', score: 70, created_at: new Date().toISOString() }];
       }
       return [];
     });
@@ -792,6 +792,7 @@ describe('app-facing happy path smoke', () => {
         path: '/content/pipeline',
         assert: (body) => {
           expect(body.data.stages.ideas).toHaveLength(1);
+          expect(body.data.stages.published).toHaveLength(1);
           expect(body.data.stats).toMatchObject({
             totalIdeas: 2,
             publishedThisMonth: 1,

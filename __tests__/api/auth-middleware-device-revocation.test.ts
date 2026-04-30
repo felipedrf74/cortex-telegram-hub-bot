@@ -77,14 +77,14 @@ function mockRes(): MockRes {
   return res;
 }
 
-function mockReq(headers: Record<string, string>): Request {
+function mockReq(headers: Record<string, string>, method = 'GET', url = '/noop'): Request {
   return {
     headers,
     ip: '127.0.0.1',
     socket: { remoteAddress: '127.0.0.1' },
     header(name: string) { return headers[name.toLowerCase()]; },
-    method: 'GET',
-    url: '/noop',
+    method,
+    url,
   } as any;
 }
 
@@ -125,7 +125,7 @@ describe('authMiddleware: device revocation', () => {
   async function runMiddleware(
     userId: number,
     deviceId: string,
-    options: { seedDevice?: boolean; userStatus?: string; headers?: Record<string, string> } = {},
+    options: { seedDevice?: boolean; userStatus?: string; headers?: Record<string, string>; method?: string; url?: string } = {},
   ): Promise<MockRes & { admitted: boolean; requestTenantId?: number; requestUserId?: number }> {
     const seedDevice = options.seedDevice !== false;
     const userStatus = options.userStatus ?? 'active';
@@ -149,7 +149,7 @@ describe('authMiddleware: device revocation', () => {
     const req = mockReq({
       authorization: `Bearer ${token}`,
       ...(options.headers ?? {}),
-    });
+    }, options.method, options.url);
     const res = mockRes();
 
     let admitted = false;
@@ -184,6 +184,19 @@ describe('authMiddleware: device revocation', () => {
   it('fails closed when the same user tries to switch to a non-membership-backed tenant', async () => {
     const res = await runMiddleware(505, 'dev-tenant-switch', {
       headers: { 'x-nexus-active-tenant-id': '1505' },
+    });
+
+    expect(res.admitted).toBe(false);
+    expect(res.statusCode).toBe(403);
+    expect(res.body.error.code).toBe('FORBIDDEN');
+    expect(res.body.error.message).toBe('Active tenant switching is not enabled for this session');
+  });
+
+  it('fails closed before a Cooking POST when the active tenant header is forged', async () => {
+    const res = await runMiddleware(507, 'dev-cooking-tenant-forge', {
+      method: 'POST',
+      url: '/api/v1/cooking/recipes',
+      headers: { 'x-nexus-active-tenant-id': '1507' },
     });
 
     expect(res.admitted).toBe(false);

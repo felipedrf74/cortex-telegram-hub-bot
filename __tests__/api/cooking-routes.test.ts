@@ -224,6 +224,39 @@ describe('Cooking API — shopping list item updates', () => {
     });
   });
 
+  it('accepts empty-string recipe instructions as intentional blank instructions', async () => {
+    const user = getOrCreateUser(21022, { username: 'cook22' });
+
+    const created = await dispatch('POST', '/recipes', user.id, {
+      title: 'Plain rice',
+      ingredients: [{ name: 'Rice', quantity: '100', unit: 'g' }],
+      instructions: '',
+    });
+
+    expect(created.statusCode, JSON.stringify(created.body)).toBe(201);
+    expect(created.body.data.recipe.instructions).toBe('');
+  });
+
+  it.each([
+    ['boolean', true],
+    ['object', {}],
+    ['number', 42],
+  ])('rejects %s recipe instructions on create', async (_label, instructions) => {
+    const user = getOrCreateUser(21023, { username: 'cook23' });
+
+    const res = await dispatch('POST', '/recipes', user.id, {
+      title: 'Instruction type probe',
+      ingredients: [{ name: 'Rice', quantity: '100', unit: 'g' }],
+      instructions,
+    });
+
+    expect(res.statusCode).toBe(400);
+    expect(res.body.error).toMatchObject({
+      code: 'BAD_REQUEST',
+      message: 'instructions must be a string when provided',
+    });
+  });
+
   it('rejects non-string recipe instructions on update without leaking SQLite errors', async () => {
     const user = getOrCreateUser(21021, { username: 'cook21' });
     const recipe = addRecipe(user.id, 'Rice bowl', [
@@ -240,6 +273,97 @@ describe('Cooking API — shopping list item updates', () => {
       code: 'BAD_REQUEST',
       message: 'instructions must be a string when provided',
     });
+  });
+
+  it.each([
+    ['boolean', true],
+    ['object', {}],
+    ['number', 42],
+  ])('rejects %s recipe instructions on update', async (_label, instructions) => {
+    const user = getOrCreateUser(21024, { username: 'cook24' });
+    const recipe = addRecipe(user.id, 'Rice bowl', [
+      { name: 'Rice', quantity: '100', unit: 'g' },
+    ]);
+
+    const res = await dispatch('PATCH', `/recipes/${recipe.id}`, user.id, {
+      instructions,
+    });
+
+    expect(res.statusCode).toBe(400);
+    expect(res.body.error).toMatchObject({
+      code: 'BAD_REQUEST',
+      message: 'instructions must be a string when provided',
+    });
+  });
+
+  it('handles SQL-shaped recipe titles as data without widening query scope', async () => {
+    const user = getOrCreateUser(21025, { username: 'cook25' });
+    const title = "Robert'); DROP TABLE recipes; --";
+
+    const created = await dispatch('POST', '/recipes', user.id, {
+      title,
+      ingredients: [{ name: 'Rice', quantity: '100', unit: 'g' }],
+    });
+    const listed = await dispatch('GET', '/recipes?search=Robert', user.id);
+
+    expect(created.statusCode, JSON.stringify(created.body)).toBe(201);
+    expect(created.body.data.recipe.title).toBe(title);
+    expect(listed.statusCode).toBe(200);
+    expect(listed.body.data.recipes).toEqual([
+      expect.objectContaining({ title }),
+    ]);
+  });
+
+  it('ignores body-side tenantId spoofing on recipe create and update', async () => {
+    const user = getOrCreateUser(21026, { username: 'cook26' });
+
+    const created = await dispatch('POST', '/recipes', user.id, {
+      title: 'Tenant-safe bowl',
+      ingredients: [{ name: 'Rice', quantity: '100', unit: 'g' }],
+      tenantId: 202,
+    }, 101);
+    const recipeId = created.body.data.recipe.id;
+    const updated = await dispatch('PATCH', `/recipes/${recipeId}`, user.id, {
+      title: 'Still tenant-safe bowl',
+      tenantId: 202,
+    }, 101);
+    const tenantBRead = await dispatch('GET', `/recipes/${recipeId}`, user.id, undefined, 202);
+
+    expect(created.statusCode, JSON.stringify(created.body)).toBe(201);
+    expect(created.body.data.recipe.tenant_id).toBe(101);
+    expect(updated.statusCode, JSON.stringify(updated.body)).toBe(200);
+    expect(updated.body.data.recipe.tenant_id).toBe(101);
+    expect(tenantBRead.statusCode).toBe(404);
+  });
+
+  it('treats prototype-shaped ingredient payloads as data without polluting objects', async () => {
+    const user = getOrCreateUser(21027, { username: 'cook27' });
+    const ingredient = JSON.parse('{"name":"Rice","quantity":"100","unit":"g","__proto__":{"polluted":true}}');
+
+    const created = await dispatch('POST', '/recipes', user.id, {
+      title: 'Prototype probe bowl',
+      ingredients: [ingredient],
+    });
+
+    expect(created.statusCode, JSON.stringify(created.body)).toBe(201);
+    expect(({} as any).polluted).toBeUndefined();
+    expect(created.body.data.recipe.ingredients[0].name).toBe('Rice');
+  });
+
+  it('handles reasonably oversized recipe text without crashing or leaking internals', async () => {
+    const user = getOrCreateUser(21028, { username: 'cook28' });
+    const longTitle = `Batch prep ${'x'.repeat(2048)}`;
+    const longInstructions = 'Prep safely. '.repeat(500);
+
+    const created = await dispatch('POST', '/recipes', user.id, {
+      title: longTitle,
+      ingredients: [{ name: 'Rice', quantity: '100', unit: 'g' }],
+      instructions: longInstructions,
+    });
+
+    expect(created.statusCode, JSON.stringify(created.body).slice(0, 400)).toBe(201);
+    expect(created.body.data.recipe.title).toBe(longTitle);
+    expect(created.body.data.recipe.instructions).toBe(longInstructions);
   });
 
   it('creates, lists, updates, and deletes pantry items through tenant-scoped APIs', async () => {

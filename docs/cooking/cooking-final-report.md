@@ -2,7 +2,7 @@
 
 Date: 2026-04-30
 Branch: `feature/cooking-intelligence-upgrade`
-Verdict: GO WITH CONDITIONS
+Verdict: backend candidate PASS WITH CONDITIONS — do not promote to production from this workstream
 
 ## What Changed
 
@@ -29,7 +29,7 @@ Verdict: GO WITH CONDITIONS
 - Pantry-focused Vitest: 4 files / 175 tests PASS.
 - Preference-memory focused Vitest plus app-facing smoke: 7 files / 208 tests PASS.
 - Planning-context focused Vitest: 3 files / 29 tests PASS.
-- Substitution-candidate focused Vitest: 3 files / 34 tests PASS.
+- Substitution-candidate focused Vitest: 3 files / 48 tests PASS.
 - Typecheck: PASS.
 - Full `npm run verify`: PASS, 427 files / 6398 tests.
 - Full local backend product smoke: PASS WITH CONDITIONS on `127.0.0.1:8326`; authenticated API smoke 13/13, Chat tenant smoke 15 pass / 1 partial / 0 fail, cross-skill fixtures PASS, Chat eval/day-to-day fixtures PASS.

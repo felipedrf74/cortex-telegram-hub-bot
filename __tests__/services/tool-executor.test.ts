@@ -1231,6 +1231,21 @@ describe('executeToolCall — Cooking', () => {
     listSpy.mockRestore();
   });
 
+  it('fails closed on string-typed tenant ids for cooking tool execution', async () => {
+    const listSpy = vi.spyOn(cookingChef, 'getPantryItems');
+    listSpy.mockReturnValue([{ id: 57, name: 'Rice' }] as any);
+
+    const result = await executeToolCall('cooking_get_pantry', {}, AUTH_USER_ID, '1001' as any);
+
+    expect(result).toMatchObject({
+      success: false,
+      code: 'TENANT_SCOPE_MISMATCH',
+      error: 'cooking_get_pantry cannot run outside the active chat tenant',
+    });
+    expect(listSpy).not.toHaveBeenCalled();
+    listSpy.mockRestore();
+  });
+
   it('passes authenticated tenant scope into cooking preference writes', async () => {
     const setPreferenceSpy = vi.spyOn(cookingPreferences, 'setCookingPreferenceMemory');
     setPreferenceSpy.mockReturnValue({
