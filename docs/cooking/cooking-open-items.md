@@ -8,7 +8,8 @@ None currently known after focused backend tenant-scope and allergy-blocker test
 
 ## P1
 
-- Add portal Cooking preferences/pantry management.
+- Add portal Cooking browser UI/deep editor. Backend portal preference/pantry
+  management routes are implemented and tested.
 - Add iOS correction capture, substitution/review prompts, and pantry freshness
   rendering. Core assessment/warning/context rendering is implemented on
   `feature/cooking-rich-state-ui` at `f4f1053`.

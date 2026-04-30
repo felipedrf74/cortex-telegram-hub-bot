@@ -42,7 +42,8 @@ FULL_NEXUS_STATE_DIR=.local/cooking-full-nexus-smoke DATABASE_PATH="$PWD/data/co
 | Cooking live local planning-context read-back | PASS | Authenticated local API returned Finance `available/tight` context, Secretary available cooking minutes `{ "2026-05-04": 60 }`, `COOKING_TIME_OVER_CAPACITY`, and `FINANCE_BUDGET_TIGHT` |
 | iOS focused rich-state tests | PASS | iOS branch `feature/cooking-rich-state-ui` at `f4f1053`; 7 Cooking presentation tests passed, including rich and legacy meal-plan payload decoding |
 | iOS simulator | NOT RUN | Still a separate frontend gate for rich Cooking states against the local backend |
-| Portal runtime | NOT RUN | Portal Cooking preferences/pantry management remains a frontend/product gap |
+| Portal Cooking contracts | PASS | `npx vitest run __tests__/portal/portal-cooking-routes.test.ts`: 6 tests passed for admin/operator guards, tenant rejection, sanitized preference reads, pantry reads/writes, and audit calls |
+| Portal browser runtime | NOT RUN | Portal Cooking browser UI/deep editor remains a frontend/product gap |
 
 ## Cleanup
 

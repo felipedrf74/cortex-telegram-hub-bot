@@ -17,16 +17,31 @@ Portal should be the deeper Cooking setup and management surface:
 
 ## Current Status
 
-No portal Cooking surface was modified in this pass. Backend pantry CRUD and
-user-private preference read/write APIs are now available for a future portal
-Cooking setup surface, but portal UI and admin/support policy are still open.
+Backend portal Cooking management APIs now exist:
 
-## Required Before Production Claim
+- `GET /api/users/:userId/cooking/preferences`
+- `POST /api/users/:userId/cooking/preferences`
+- `GET /api/users/:userId/cooking/pantry`
+- `POST /api/users/:userId/cooking/pantry`
+- `DELETE /api/users/:userId/cooking/pantry/:itemId`
 
-- Backend authorization for any portal Cooking reads/writes.
-- Private preferences hidden from tenant admins unless explicit policy/audit exists.
-- Pantry and memory review UI backed by the tenant-scoped pantry and preference APIs.
-- Audit logs for admin/support access.
+These routes require the portal admin credential and the operator target-user
+guard, fail closed on cross-tenant `tenantId`, audit reads/mutations, and avoid
+returning raw preference `memoryValue` fields in read responses.
+
+The browser UI/deep editor for Cooking is still open.
+
+## Required Before Full Portal Product Claim
+
+- Browser UI for Cooking setup, preference review, and pantry editing.
+- Tenant-admin policy for private preferences if support/admin roles expand
+  beyond platform operator access.
 - Aggregate diagnostics without raw private meal/preference exposure.
 
-Verdict: OPEN.
+## Validation
+
+- `npx tsc --noEmit`: PASS
+- `npx vitest run __tests__/portal/portal-cooking-routes.test.ts`: PASS, 6 tests
+
+Verdict: PASS WITH CONDITIONS. Backend portal management contracts are ready;
+browser UI remains open.

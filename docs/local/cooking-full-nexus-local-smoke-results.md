@@ -20,6 +20,7 @@ PASS WITH CONDITIONS.
 - Cross-skill fixtures passed for Secretary, Training, Cooking, Finance, Content, and shared signal prompt plumbing.
 - Chat evaluation and day-to-day simulation fixtures passed.
 - Authenticated Cooking read-back smoke proved `planningContext.financeBudget` and `planningContext.secretaryAvailability` are returned by the live local API before response composition.
+- Portal Cooking management contract tests passed for scoped preferences and pantry routes with audit coverage.
 - No production data or calendars used.
 - No real provider calls used.
 
@@ -28,7 +29,7 @@ PASS WITH CONDITIONS.
 - iOS focused rich Cooking DTO/rendering tests passed on branch
   `feature/cooking-rich-state-ui` at `f4f1053`; full simulator smoke for rich
   Cooking warning/pantry/preference rendering was not run.
-- Portal runtime smoke for Cooking preference/pantry management was not run.
+- Portal browser runtime smoke for Cooking preference/pantry management was not run.
 - No real provider quality sampling was run.
 
 ## Remaining Conditions

@@ -42,7 +42,8 @@ Branch: `feature/cooking-intelligence-upgrade`
   `feature/cooking-rich-state-ui` at `f4f1053` renders assessment/context/preference
   signals. Pantry freshness rendering, substitution/review prompts, correction
   capture, and simulator smoke remain open.
-- Portal Cooking preferences/pantry management is not implemented.
+- Portal Cooking preference/pantry management contracts are implemented as
+  audited admin/operator routes; browser UI/deep editing remains open.
 - Local backend product smoke for Cooking ran with fixture model on `127.0.0.1:8326`; iOS focused tests passed for rich-state DTOs, while iOS simulator and portal runtime smoke remain open.
 
 ## Model Routing
@@ -52,5 +53,5 @@ Cooking domain handling uses the live domain/provider routing path through `hand
 ## Risk Summary
 
 - P0 before fix: explicit tenant metadata missing on recipes, meal plans, and shopping lists.
-- P1: iOS rich assessment rendering is partially complete; portal rich states and iOS correction/pantry/simulator coverage remain incomplete.
+- P1: iOS rich assessment rendering and backend portal contracts are partially complete; portal browser UI and iOS correction/pantry/simulator coverage remain incomplete.
 - P2: deeper recipe substitution and food-safety workflow needs more runtime coverage.
