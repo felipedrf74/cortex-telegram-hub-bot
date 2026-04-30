@@ -50,4 +50,5 @@ Every Cooking memory must include:
 ## Still Open
 
 - Stale preference downgrade job.
-- User-facing preference review in iOS/portal.
+- Full user-facing preference history review in iOS; portal currently supports
+  scoped preference review and correction writes.

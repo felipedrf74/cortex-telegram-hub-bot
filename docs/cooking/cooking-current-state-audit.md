@@ -46,8 +46,8 @@ Branch: `feature/cooking-intelligence-upgrade`
   `feature/cooking-rich-state-ui` at `f4f1053` renders assessment/context/preference
   signals; `cfe5df4` renders pantry freshness states; `e8cdc80` captures
   preference corrections through the backend route; `d7eb9f4` routes assessment
-  issues to review prompts. Substitution rendering and simulator smoke remain
-  open.
+  issues to review prompts; `7be4b6f` renders compact substitution suggestions.
+  Full simulator smoke remains open.
 - Portal Cooking preference/pantry management contracts are implemented as
   audited admin/operator routes; browser UI for scoped preference review,
   correction writes, pantry editing, and delete confirmation is implemented.
