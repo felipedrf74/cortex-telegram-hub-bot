@@ -12,6 +12,7 @@ PASS WITH CONDITIONS.
 - Pantry-focused Vitest passed: 4 files / 175 tests.
 - Preference-memory focused Vitest plus app-facing smoke passed: 7 files / 208 tests.
 - Planning-context focused Vitest passed: 3 files / 29 tests.
+- Substitution-candidate focused Vitest passed: 3 files / 34 tests.
 - Typecheck passed.
 - Full backend verify passed: 427 files / 6398 tests.
 - Full local backend product runtime smoke ran on `127.0.0.1:8326` with a fresh SQLite DB and fixture model mode.
@@ -23,15 +24,17 @@ PASS WITH CONDITIONS.
 - Portal Cooking management contract tests passed for scoped preferences and pantry routes with audit coverage.
 - Portal Cooking browser UI wiring tests passed for the new preference/pantry
   manager.
+- iOS focused rich Cooking DTO/rendering tests passed on branch
+  `feature/cooking-rich-state-ui` at `f4f1053`, `cfe5df4`, `e8cdc80`,
+  `d7eb9f4`, and `7be4b6f`; 13 Cooking presentation tests passed, including
+  compact substitution suggestion rendering.
 - No production data or calendars used.
 - No real provider calls used.
 
 ## Not Completed
 
-- iOS focused rich Cooking DTO/rendering tests passed on branch
-  `feature/cooking-rich-state-ui` at `f4f1053`, `cfe5df4`, `e8cdc80`, and
-  `d7eb9f4`; full simulator smoke for rich Cooking warning/pantry/preference
-  rendering was not run.
+- Full simulator smoke for rich Cooking warning/pantry/preference/substitution
+  rendering against the local backend was not run.
 - Portal browser runtime smoke for Cooking preference/pantry management was not run.
 - No real provider quality sampling was run.
 

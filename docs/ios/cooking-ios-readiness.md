@@ -10,16 +10,17 @@ Training adaptations, and prep-event scheduling responses.
 Additional iOS branch evidence:
 
 - Branch: `feature/cooking-rich-state-ui`
-- Commits: `f4f1053`, `cfe5df4`, `e8cdc80`, `d7eb9f4`
+- Commits: `f4f1053`, `cfe5df4`, `e8cdc80`, `d7eb9f4`, `7be4b6f`
 - Scope: additive DTOs for meal-plan assessment/planning context, repository state
   retention/reset, a compact Cooking signals card, shopping-list pantry
   available/expired rendering, pantry notes, accessibility labels, and
   first-class preference correction capture through `POST /api/v1/cooking/preferences`,
-  and deterministic review prompts that route assessment issues to the meal plan
-  or shopping list without inventing substitution suggestions.
+  deterministic review prompts that route assessment issues to the meal plan
+  or shopping list without inventing substitution suggestions, and compact
+  rendering for backend-provided `assessment.substitutionSuggestions`.
 - Focused test:
   `xcodebuild test -project "Nexus Hub.xcodeproj" -scheme "Nexus Hub" -sdk iphonesimulator -destination "platform=iOS Simulator,name=iPhone 17 Pro" "-only-testing:Nexus HubTests/CookingPresentationTests"`:
-  PASS, 11 Cooking presentation tests.
+  PASS, 13 Cooking presentation tests.
 
 ## New Backend Field
 
@@ -32,6 +33,10 @@ Additional iOS branch evidence:
 - scheduleFit
 - budgetFit
 - trainingFit
+- substitutionSuggestions
+
+Each `assessment.issues[]` entry may also include additive
+`substitutionSuggestions`.
 
 Existing clients should ignore it safely if not decoded.
 
@@ -58,10 +63,12 @@ rendering raw prompt context.
 ## Gaps
 
 - Render allergy/restriction warning with a stronger distinct visual treatment.
-- Render substitution suggestions once backend substitution candidates land.
 - Re-run iOS simulator smoke against the local backend bundle with rich Cooking
   payload fixtures.
+- Add a dedicated in-place substitution acceptance/replacement workflow if
+  direct apply actions become part of the Cooking UX.
 - Unknown enum/state fallback tests.
 
 Verdict: PASS WITH CONDITIONS. The primary iOS rich assessment rendering gap is
-closed in code on the iOS branch; simulator smoke remains a release condition.
+closed in code on the iOS branch, including compact substitution suggestions;
+simulator smoke remains a release condition.

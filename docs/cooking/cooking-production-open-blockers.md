@@ -8,16 +8,16 @@ None known.
 
 ## P1
 
-- iOS substitution suggestion rendering remains open now that backend
-  `assessment.substitutionSuggestions` candidates exist. The rich assessment/warning card landed at `f4f1053`; pantry freshness
-  rendering is implemented at `cfe5df4`; preference correction capture is
-  implemented at `e8cdc80`; assessment review prompts are implemented at
-  `d7eb9f4`.
+None currently known after backend substitution candidates and iOS compact
+substitution rendering landed.
 
 ## P2
 
 - Portal Cooking preference/pantry browser manager is implemented and covered by
   static UI tests; portal browser runtime smoke remains open.
+- Full rich Cooking iOS simulator smoke against a local backend remains open.
+- Dedicated in-place substitution acceptance/replacement workflow remains
+  product follow-up; current iOS support is compact reviewable rendering.
 - Recipe library, meal-plan, and grocery-settings portal deep editors remain
   future work until backend management contracts exist.
 

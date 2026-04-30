@@ -8,14 +8,18 @@ No known unresolved P0 after focused backend tests.
 
 ## P1 Before Production
 
-1. Add iOS substitution suggestion rendering for backend
-   `assessment.substitutionSuggestions`.
-2. Add rich Cooking simulator smoke. Assessment warning/context/preference rendering is implemented on `feature/cooking-rich-state-ui` at `f4f1053`; pantry freshness rendering is implemented at `cfe5df4`; preference correction capture is implemented at `e8cdc80`; assessment review prompts are implemented at `d7eb9f4`.
+1. Add rich Cooking simulator smoke. Assessment warning/context/preference
+   rendering is implemented on `feature/cooking-rich-state-ui` at `f4f1053`;
+   pantry freshness rendering is implemented at `cfe5df4`; preference
+   correction capture is implemented at `e8cdc80`; assessment review prompts are
+   implemented at `d7eb9f4`; compact substitution suggestion rendering is
+   implemented at `7be4b6f`.
 
 ## P2
 
 - Add iOS simulator smoke for rich Cooking result rendering against the local backend bundle.
 - Add portal browser runtime smoke for the Cooking preference/pantry manager.
+- Add dedicated in-place substitution acceptance/replacement workflow if needed.
 - Add portal recipe library, meal-plan, and grocery-settings deep editors after
   backend contracts exist.
 - Advanced substitution engine.

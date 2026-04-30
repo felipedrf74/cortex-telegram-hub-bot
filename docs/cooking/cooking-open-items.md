@@ -8,13 +8,8 @@ None currently known after focused backend tenant-scope and allergy-blocker test
 
 ## P1
 
-- Add iOS substitution suggestion rendering for backend
-  `assessment.substitutionSuggestions`. Core assessment/warning/context
-  rendering is implemented on `feature/cooking-rich-state-ui` at `f4f1053`;
-  pantry freshness rendering is implemented at `cfe5df4`; preference
-  correction capture is implemented at `e8cdc80`; assessment review prompts are
-  implemented at `d7eb9f4`; backend substitution candidates are implemented in
-  the Cooking assessment layer.
+None currently known after backend substitution candidates and iOS compact
+substitution rendering landed.
 
 ## P2
 
@@ -22,6 +17,8 @@ None currently known after focused backend tenant-scope and allergy-blocker test
   backend bundle.
 - Add portal browser runtime smoke for the new Cooking preference/pantry
   manager.
+- Add a dedicated in-place substitution application workflow if product wants
+  users to accept a suggested replacement directly from iOS/portal.
 - Add recipe library, meal-plan, and grocery-settings portal deep editors once
   those backend management contracts are promoted beyond preference/pantry.
 - Pantry quantity normalization and low-stock suggestions beyond CRUD/status.

@@ -34,7 +34,7 @@ Verdict: GO WITH CONDITIONS
 - Full `npm run verify`: PASS, 427 files / 6398 tests.
 - Full local backend product smoke: PASS WITH CONDITIONS on `127.0.0.1:8326`; authenticated API smoke 13/13, Chat tenant smoke 15 pass / 1 partial / 0 fail, cross-skill fixtures PASS, Chat eval/day-to-day fixtures PASS.
 - Live local Cooking planning-context API read-back: PASS; Finance tight-budget context and Secretary cooking-window pressure were returned by `GET /api/v1/cooking/meal-plan`.
-- iOS rich Cooking DTO/rendering slice: PASS on branch `feature/cooking-rich-state-ui` at `f4f1053`, `cfe5df4`, `e8cdc80`, and `d7eb9f4`; 11 focused Cooking presentation tests passed, including rich and legacy meal-plan payload decoding, pantry freshness DTO rendering, direct preference-correction POST body validation, and assessment review-prompt routing.
+- iOS rich Cooking DTO/rendering slice: PASS on branch `feature/cooking-rich-state-ui` at `f4f1053`, `cfe5df4`, `e8cdc80`, `d7eb9f4`, and `7be4b6f`; 13 focused Cooking presentation tests passed, including rich and legacy meal-plan payload decoding, pantry freshness DTO rendering, direct preference-correction POST body validation, assessment review-prompt routing, and compact substitution suggestion rendering.
 - Portal Cooking management: PASS; `npx vitest run __tests__/portal/portal-cooking-routes.test.ts __tests__/portal/portal-cooking-ui.test.ts` passed 10 tests for guarded backend contracts and browser UI wiring.
 - No production data used.
 - No production calendar used.
@@ -44,8 +44,9 @@ Verdict: GO WITH CONDITIONS
 ## Remaining Conditions Before Production
 
 - Add rich Cooking simulator smoke before claiming full frontend readiness.
-- Add iOS substitution rendering for backend `assessment.substitutionSuggestions`.
 - Run portal browser smoke before claiming full portal runtime readiness.
+- Add a dedicated in-place substitution acceptance/replacement workflow if the
+  product wants direct apply actions beyond compact suggestion rendering.
 - Add recipe library, meal-plan, and grocery-settings portal deep editors once
   backend management contracts exist.
 
