@@ -21,6 +21,8 @@ PASS WITH CONDITIONS.
 - Chat evaluation and day-to-day simulation fixtures passed.
 - Authenticated Cooking read-back smoke proved `planningContext.financeBudget` and `planningContext.secretaryAvailability` are returned by the live local API before response composition.
 - Portal Cooking management contract tests passed for scoped preferences and pantry routes with audit coverage.
+- Portal Cooking browser UI wiring tests passed for the new preference/pantry
+  manager.
 - No production data or calendars used.
 - No real provider calls used.
 
@@ -35,5 +37,6 @@ PASS WITH CONDITIONS.
 
 ## Remaining Conditions
 
-- Keep the release gate at GO WITH CONDITIONS until iOS simulator smoke and portal Cooking surfaces can represent the richer backend states.
+- Keep the release gate at GO WITH CONDITIONS until iOS simulator smoke and
+  portal browser runtime smoke are archived.
 - Do not claim live provider quality from this smoke; it intentionally used fixture/degraded routing.

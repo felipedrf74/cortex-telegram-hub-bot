@@ -43,7 +43,8 @@ FULL_NEXUS_STATE_DIR=.local/cooking-full-nexus-smoke DATABASE_PATH="$PWD/data/co
 | iOS focused rich-state tests | PASS | iOS branch `feature/cooking-rich-state-ui` at `f4f1053`, `cfe5df4`, `e8cdc80`, and `d7eb9f4`; 11 Cooking presentation tests passed, including rich/legacy meal-plan payload decoding, pantry freshness DTO rendering, direct preference-correction POST body validation, and assessment review-prompt routing |
 | iOS simulator | NOT RUN | Still a separate frontend gate for rich Cooking states against the local backend |
 | Portal Cooking contracts | PASS | `npx vitest run __tests__/portal/portal-cooking-routes.test.ts`: 6 tests passed for admin/operator guards, tenant rejection, sanitized preference reads, pantry reads/writes, and audit calls |
-| Portal browser runtime | NOT RUN | Portal Cooking browser UI/deep editor remains a frontend/product gap |
+| Portal Cooking UI wiring | PASS | `npx vitest run __tests__/portal/portal-cooking-ui.test.ts`: 4 tests passed for script syntax, nav/section wiring, direct backend route usage, no Chat command path, and delete confirmation |
+| Portal browser runtime | NOT RUN | Browser smoke for the new Cooking preference/pantry manager remains open |
 
 ## Cleanup
 

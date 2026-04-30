@@ -8,8 +8,6 @@ None currently known after focused backend tenant-scope and allergy-blocker test
 
 ## P1
 
-- Add portal Cooking browser UI/deep editor. Backend portal preference/pantry
-  management routes are implemented and tested.
 - Add iOS substitution suggestions once backend substitution candidates are
   available. Core assessment/warning/context
   rendering is implemented on `feature/cooking-rich-state-ui` at `f4f1053`;
@@ -21,6 +19,10 @@ None currently known after focused backend tenant-scope and allergy-blocker test
 
 - Add iOS simulator smoke for rich Cooking result rendering against the local
   backend bundle.
+- Add portal browser runtime smoke for the new Cooking preference/pantry
+  manager.
+- Add recipe library, meal-plan, and grocery-settings portal deep editors once
+  those backend management contracts are promoted beyond preference/pantry.
 - Pantry quantity normalization and low-stock suggestions beyond CRUD/status.
 - Advanced substitution engine.
 - Leftover/waste optimizer.

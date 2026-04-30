@@ -56,7 +56,7 @@ are never treated as safely usable.
 ## Open Items
 
 - iOS simulator smoke for pantry rendering and correction capture.
-- Portal browser UI/deep editor for pantry management; backend portal
-  contracts are implemented and tested.
+- Portal browser runtime smoke for pantry management; backend portal contracts
+  and static UI wiring tests are implemented.
 - Grocery budget estimation backed by Finance.
 - Store/unavailable item fallback.

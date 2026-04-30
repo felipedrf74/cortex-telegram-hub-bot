@@ -1376,6 +1376,11 @@ table.legacy th {
         <span class="nav-label">Content</span>
         <span class="nav-badge mono" id="nav-content-badge"></span>
       </a>
+      <a class="nav-item" data-nav="cooking">
+        <span class="nav-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 3v7a3 3 0 006 0V3"/><path d="M7 3v18"/><path d="M19 3v18"/><path d="M15 3h4a1 1 0 011 1v7a4 4 0 01-4 4h-1"/></svg></span>
+        <span class="nav-label">Cooking</span>
+        <span class="nav-badge mono" id="nav-cooking-badge"></span>
+      </a>
     </nav>
 
     <div class="nav-section-label" style="margin-top: var(--space-5)">Configuration</div>
@@ -2173,6 +2178,147 @@ table.legacy th {
       </div>
     </section>
 
+    <!-- ════════════════════ COOKING ════════════════════ -->
+    <section class="section" data-section="cooking">
+      <div class="section-header">
+        <div>
+          <h1 class="section-title">Cooking</h1>
+          <div class="section-subtitle">Scoped preference review, pantry management, and Cooking setup diagnostics</div>
+        </div>
+        <div class="section-actions">
+          <button class="btn btn-ghost btn-sm" id="cooking-refresh-btn">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12a9 9 0 11-3-6.7L21 8M21 3v5h-5"/></svg>
+            Refresh
+          </button>
+        </div>
+      </div>
+
+      <div class="card" style="margin-bottom:var(--space-4)">
+        <div class="card-header">
+          <div>
+            <div class="card-title">Target Scope</div>
+            <span class="card-subtitle">Portal access is backend-authorized; current operator scoping requires tenant ID to match user ID.</span>
+          </div>
+          <span class="badge badge-neutral mono" id="cooking-scope-status">No user selected</span>
+        </div>
+        <div class="grid grid-cols-4" style="gap:var(--space-3);align-items:end">
+          <div>
+            <label class="label" for="cooking-target-user-id">User ID</label>
+            <input type="number" min="1" id="cooking-target-user-id" placeholder="42" style="width:100%;padding:8px 10px;border-radius:var(--radius-sm);border:1px solid var(--border);background:var(--bg-tertiary);color:var(--text-primary)">
+          </div>
+          <div>
+            <label class="label" for="cooking-target-tenant-id">Tenant ID</label>
+            <input type="number" min="1" id="cooking-target-tenant-id" placeholder="same as user" style="width:100%;padding:8px 10px;border-radius:var(--radius-sm);border:1px solid var(--border);background:var(--bg-tertiary);color:var(--text-primary)">
+          </div>
+          <div>
+            <button class="btn btn-sm" id="cooking-load-btn" style="width:100%">Load Cooking</button>
+          </div>
+          <div>
+            <button class="btn btn-ghost btn-sm" id="cooking-clear-btn" style="width:100%">Clear</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="grid grid-cols-4" style="margin-bottom:var(--space-4)">
+        <div class="kpi-card">
+          <div class="kpi-label">Preference memories</div>
+          <div class="kpi-value" id="cooking-kpi-preferences">—</div>
+          <div class="kpi-sub" id="cooking-kpi-preferences-sub">scoped metadata</div>
+        </div>
+        <div class="kpi-card">
+          <div class="kpi-label">Pantry items</div>
+          <div class="kpi-value" id="cooking-kpi-pantry">—</div>
+          <div class="kpi-sub" id="cooking-kpi-pantry-sub">including expired</div>
+        </div>
+        <div class="kpi-card">
+          <div class="kpi-label">Allergies</div>
+          <div class="kpi-value" id="cooking-kpi-allergies">—</div>
+          <div class="kpi-sub">from read model</div>
+        </div>
+        <div class="kpi-card">
+          <div class="kpi-label">Diet rules</div>
+          <div class="kpi-value" id="cooking-kpi-diet">—</div>
+          <div class="kpi-sub">restrictions</div>
+        </div>
+      </div>
+
+      <div class="grid grid-cols-2" style="margin-bottom:var(--space-4)">
+        <div class="card">
+          <div class="card-header">
+            <div>
+              <div class="card-title">Preference Review</div>
+              <span class="card-subtitle" id="cooking-preferences-meta">Select a user to load Cooking preferences</span>
+            </div>
+          </div>
+          <div style="padding:var(--space-3);border-bottom:1px solid var(--border)">
+            <div style="display:grid;grid-template-columns:1fr 1.4fr auto auto;gap:var(--space-2);align-items:end">
+              <div>
+                <label class="label" for="cooking-preference-kind">Kind</label>
+                <select id="cooking-preference-kind" style="width:100%;padding:7px 10px;border-radius:var(--radius-sm);border:1px solid var(--border);background:var(--bg-tertiary);color:var(--text-primary)">
+                  <option value="allergy">Allergy</option>
+                  <option value="dietary_restriction">Dietary restriction</option>
+                  <option value="disliked_ingredient">Disliked ingredient</option>
+                  <option value="preferred_ingredient">Preferred ingredient</option>
+                  <option value="equipment">Equipment</option>
+                  <option value="weekday_max_prep_minutes">Weekday prep minutes</option>
+                  <option value="budget_limit">Budget limit</option>
+                  <option value="budget_currency">Budget currency</option>
+                  <option value="batch_cooking_preferred">Batch cooking preferred</option>
+                  <option value="training_day_preference">Training day preference</option>
+                  <option value="cooking_skill_level">Cooking skill level</option>
+                  <option value="grocery_preference">Grocery preference</option>
+                </select>
+              </div>
+              <div>
+                <label class="label" for="cooking-preference-value">Value</label>
+                <input type="text" id="cooking-preference-value" placeholder="peanuts, 20, true…" style="width:100%;padding:8px 10px;border-radius:var(--radius-sm);border:1px solid var(--border);background:var(--bg-tertiary);color:var(--text-primary)">
+              </div>
+              <label class="flex items-center" style="gap:6px;white-space:nowrap;padding-bottom:8px">
+                <input type="checkbox" id="cooking-preference-correction" checked>
+                <span class="text-muted" style="font-size:12px">Correction</span>
+              </label>
+              <button class="btn btn-sm" id="cooking-save-preference-btn">Save</button>
+            </div>
+          </div>
+          <div style="padding:var(--space-3);border-bottom:1px solid var(--border)">
+            <div class="text-muted" style="font-size:11px;text-transform:uppercase;letter-spacing:.04em;margin-bottom:var(--space-2)">Summary</div>
+            <div id="cooking-preferences-summary" style="font-size:12px;line-height:1.5;color:var(--text-secondary)">No preferences loaded</div>
+          </div>
+          <div id="cooking-preferences-list"><div class="empty">No Cooking preferences loaded</div></div>
+        </div>
+
+        <div class="card">
+          <div class="card-header">
+            <div>
+              <div class="card-title">Pantry Editor</div>
+              <span class="card-subtitle" id="cooking-pantry-meta">Select a user to load pantry state</span>
+            </div>
+          </div>
+          <div style="padding:var(--space-3);border-bottom:1px solid var(--border)">
+            <div style="display:grid;grid-template-columns:1.5fr .7fr .7fr 1fr;gap:var(--space-2);margin-bottom:var(--space-2)">
+              <input type="text" id="cooking-pantry-name" placeholder="Ingredient" style="padding:7px 10px;border-radius:var(--radius-sm);border:1px solid var(--border);background:var(--bg-tertiary);color:var(--text-primary)">
+              <input type="text" id="cooking-pantry-quantity" placeholder="Qty" style="padding:7px 10px;border-radius:var(--radius-sm);border:1px solid var(--border);background:var(--bg-tertiary);color:var(--text-primary)">
+              <input type="text" id="cooking-pantry-unit" placeholder="Unit" style="padding:7px 10px;border-radius:var(--radius-sm);border:1px solid var(--border);background:var(--bg-tertiary);color:var(--text-primary)">
+              <input type="text" id="cooking-pantry-category" placeholder="Category" style="padding:7px 10px;border-radius:var(--radius-sm);border:1px solid var(--border);background:var(--bg-tertiary);color:var(--text-primary)">
+            </div>
+            <div style="display:grid;grid-template-columns:1fr 1fr 1.5fr auto;gap:var(--space-2)">
+              <input type="date" id="cooking-pantry-expires-at" style="padding:7px 10px;border-radius:var(--radius-sm);border:1px solid var(--border);background:var(--bg-tertiary);color:var(--text-primary)">
+              <select id="cooking-pantry-freshness" style="padding:7px 10px;border-radius:var(--radius-sm);border:1px solid var(--border);background:var(--bg-tertiary);color:var(--text-primary)">
+                <option value="">Freshness</option>
+                <option value="fresh">Fresh</option>
+                <option value="aging">Aging</option>
+                <option value="expired">Expired</option>
+                <option value="unknown">Unknown</option>
+              </select>
+              <input type="text" id="cooking-pantry-notes" placeholder="Notes" style="padding:7px 10px;border-radius:var(--radius-sm);border:1px solid var(--border);background:var(--bg-tertiary);color:var(--text-primary)">
+              <button class="btn btn-sm" id="cooking-save-pantry-btn">Save item</button>
+            </div>
+          </div>
+          <div id="cooking-pantry-list"><div class="empty">No pantry loaded</div></div>
+        </div>
+      </div>
+    </section>
+
     <!-- ════════════════════ SETTINGS ════════════════════ -->
     <section class="section" data-section="settings">
       <div class="section-header">
@@ -2546,7 +2692,7 @@ table.legacy th {
   // ════════════════════════════════════════════════════════════
   // Navigation — hash routing between sections
   // ════════════════════════════════════════════════════════════
-  const SECTIONS = ['dashboard', 'alerts', 'users', 'ai', 'jobs', 'skills', 'content', 'settings', 'invites', 'founders', 'waitlist', 'audit'];
+  const SECTIONS = ['dashboard', 'alerts', 'users', 'ai', 'jobs', 'skills', 'content', 'cooking', 'settings', 'invites', 'founders', 'waitlist', 'audit'];
   let currentSection = 'dashboard';
 
   function navigateTo(section) {
@@ -2571,6 +2717,7 @@ table.legacy th {
     if (section === 'jobs') loadQuickActions();
     if (section === 'skills') loadSkillsUserSelector();
     if (section === 'content') loadContentDashboard();
+    if (section === 'cooking') renderCookingPortal();
   }
 
   document.querySelectorAll('[data-nav]').forEach(el => {
@@ -3317,7 +3464,8 @@ table.legacy th {
         '<div class="card-title" style="margin-bottom:var(--space-3)">Skill Access</div>' +
         '<div class="grid" style="gap:var(--space-3);margin-bottom:var(--space-5)">' + skillsHtml + '</div>' +
         '<div class="card-title" style="margin-bottom:var(--space-3)">Data Summary</div>' +
-        '<div>' + dataRows + '</div>';
+        '<div style="margin-bottom:var(--space-4)">' + dataRows + '</div>' +
+        '<button class="btn btn-sm" onclick="openCookingManagerForUser(' + user.id + ')" style="width:100%">Open Cooking setup →</button>';
     } catch (err) {
       body.innerHTML = '<div class="empty">Failed to load user details</div>';
     }
@@ -4526,6 +4674,289 @@ table.legacy th {
     URL.revokeObjectURL(url);
     showToast('Exported ' + allWaitlistEntries.length + ' entries');
   });
+
+  // ════════════════════════════════════════════════════════════
+  // Cooking portal manager
+  // ════════════════════════════════════════════════════════════
+  const COOKING_PREF_KINDS_NUMERIC = new Set(['weekday_max_prep_minutes', 'budget_limit']);
+  const COOKING_PREF_KINDS_BOOLEAN = new Set(['batch_cooking_preferred']);
+  let cookingPortalState = {
+    userId: null,
+    tenantId: null,
+    preferences: null,
+    pantry: [],
+    error: '',
+    loading: false,
+  };
+
+  function getCookingTarget(quiet = false) {
+    const userInput = document.getElementById('cooking-target-user-id');
+    const tenantInput = document.getElementById('cooking-target-tenant-id');
+    const userId = Number.parseInt(userInput?.value || '', 10);
+    const tenantId = Number.parseInt(tenantInput?.value || userInput?.value || '', 10);
+    if (!Number.isInteger(userId) || userId <= 0 || !Number.isInteger(tenantId) || tenantId <= 0) {
+      if (!quiet) showToast('Enter a valid Cooking user ID', false);
+      return null;
+    }
+    return { userId, tenantId };
+  }
+
+  function setCookingScopeStatus(text, kind = 'neutral') {
+    const el = document.getElementById('cooking-scope-status');
+    if (!el) return;
+    el.textContent = text;
+    el.className = 'badge mono badge-' + kind;
+  }
+
+  function updateCookingKpis() {
+    const prefs = cookingPortalState.preferences?.preferences || cookingPortalState.preferences || {};
+    const profile = prefs.profile || {};
+    const memories = prefs.memories || [];
+    const pantry = cookingPortalState.pantry || [];
+    const allergies = Array.isArray(profile.allergies) ? profile.allergies : [];
+    const restrictions = Array.isArray(profile.dietaryRestrictions) ? profile.dietaryRestrictions : [];
+    const expired = pantry.filter(item => item.freshness_status === 'expired' || item.freshnessStatus === 'expired').length;
+    const badge = document.getElementById('nav-cooking-badge');
+    if (badge) badge.textContent = (memories.length || pantry.length) ? String(memories.length + pantry.length) : '';
+    document.getElementById('cooking-kpi-preferences').textContent = fmtNum(memories.length);
+    document.getElementById('cooking-kpi-preferences-sub').textContent = memories.length ? 'metadata only' : 'scoped metadata';
+    document.getElementById('cooking-kpi-pantry').textContent = fmtNum(pantry.length);
+    document.getElementById('cooking-kpi-pantry-sub').textContent = expired ? expired + ' expired' : 'including expired';
+    document.getElementById('cooking-kpi-allergies').textContent = fmtNum(allergies.length);
+    document.getElementById('cooking-kpi-diet').textContent = fmtNum(restrictions.length);
+  }
+
+  function renderCookingPreferences() {
+    const prefs = cookingPortalState.preferences?.preferences || cookingPortalState.preferences || {};
+    const memories = prefs.memories || [];
+    const meta = document.getElementById('cooking-preferences-meta');
+    const summary = document.getElementById('cooking-preferences-summary');
+    const list = document.getElementById('cooking-preferences-list');
+    if (!cookingPortalState.userId) {
+      meta.textContent = 'Select a user to load Cooking preferences';
+      summary.textContent = 'No preferences loaded';
+      list.innerHTML = '<div class="empty">No Cooking preferences loaded</div>';
+      return;
+    }
+    meta.textContent = 'User ' + cookingPortalState.userId + ' · tenant ' + cookingPortalState.tenantId;
+    summary.textContent = prefs.summary || prefs.skillMemorySummary || 'No preference summary available';
+    if (!memories.length) {
+      list.innerHTML = '<div class="empty">No Cooking preference memories returned</div>';
+      return;
+    }
+    list.innerHTML = '<div style="overflow-x:auto"><table class="data-table">' +
+      '<thead><tr><th>Kind</th><th>Scope</th><th>Confidence</th><th>Freshness</th><th>Updated</th></tr></thead>' +
+      '<tbody>' + memories.map(memory => {
+        const key = memory.memoryKey || memory.memoryType || 'preference';
+        return '<tr>' +
+          '<td><span class="mono">' + esc(key) + '</span></td>' +
+          '<td><span class="badge badge-neutral">' + esc(memory.scope || 'unknown') + '</span></td>' +
+          '<td class="mono">' + esc(memory.confidence ?? '—') + '</td>' +
+          '<td>' + esc(memory.freshnessStatus || memory.status || '—') + '</td>' +
+          '<td class="text-muted">' + esc(memory.updatedAt ? relativeTime(memory.updatedAt) : '—') + '</td>' +
+        '</tr>';
+      }).join('') + '</tbody></table></div>';
+  }
+
+  function renderCookingPantry() {
+    const list = document.getElementById('cooking-pantry-list');
+    const meta = document.getElementById('cooking-pantry-meta');
+    const items = cookingPortalState.pantry || [];
+    if (!cookingPortalState.userId) {
+      meta.textContent = 'Select a user to load pantry state';
+      list.innerHTML = '<div class="empty">No pantry loaded</div>';
+      return;
+    }
+    meta.textContent = items.length + ' items · user ' + cookingPortalState.userId + ' · tenant ' + cookingPortalState.tenantId;
+    if (!items.length) {
+      list.innerHTML = '<div class="empty">No pantry items returned</div>';
+      return;
+    }
+    list.innerHTML = '<div style="overflow-x:auto"><table class="data-table">' +
+      '<thead><tr><th>Item</th><th>Quantity</th><th>Freshness</th><th>Expires</th><th></th></tr></thead>' +
+      '<tbody>' + items.map(item => {
+        const freshness = item.freshness_status || item.freshnessStatus || 'unknown';
+        const badgeClass = freshness === 'expired' ? 'badge-error' : freshness === 'aging' ? 'badge-warning' : 'badge-success';
+        const qty = [item.quantity, item.unit].filter(Boolean).join(' ') || '—';
+        return '<tr>' +
+          '<td><div style="font-weight:600">' + esc(item.name || 'Unnamed item') + '</div><div class="text-muted" style="font-size:11px">' + esc(item.category || item.availability_status || 'pantry') + '</div></td>' +
+          '<td class="mono">' + esc(qty) + '</td>' +
+          '<td><span class="badge ' + badgeClass + '">' + esc(freshness) + '</span></td>' +
+          '<td class="text-muted">' + esc(item.expires_at || item.expiresAt || '—') + '</td>' +
+          '<td class="text-right"><button class="btn btn-xs btn-danger" onclick="deleteCookingPantryItem(' + Number(item.id) + ')">Delete</button></td>' +
+        '</tr>';
+      }).join('') + '</tbody></table></div>';
+  }
+
+  function renderCookingPortal() {
+    if (!getCookingTarget(true) && !cookingPortalState.userId) setCookingScopeStatus('No user selected');
+    if (cookingPortalState.loading) setCookingScopeStatus('Loading…', 'neutral');
+    else if (cookingPortalState.error) setCookingScopeStatus('Load failed', 'error');
+    else if (cookingPortalState.userId) setCookingScopeStatus('User ' + cookingPortalState.userId + ' · tenant ' + cookingPortalState.tenantId, 'success');
+    updateCookingKpis();
+    renderCookingPreferences();
+    renderCookingPantry();
+  }
+
+  async function loadCookingPortal() {
+    const target = getCookingTarget();
+    if (!target) return;
+    cookingPortalState = { ...cookingPortalState, ...target, loading: true, error: '' };
+    renderCookingPortal();
+    const query = '?tenantId=' + encodeURIComponent(String(target.tenantId));
+    try {
+      const [preferencesRes, pantryRes] = await Promise.all([
+        apiFetch('/api/users/' + target.userId + '/cooking/preferences' + query),
+        apiFetch('/api/users/' + target.userId + '/cooking/pantry' + query + '&includeExpired=true&limit=250'),
+      ]);
+      const preferences = await preferencesRes.json();
+      const pantry = await pantryRes.json();
+      if (!preferencesRes.ok) throw new Error(preferences?.error?.message || 'Cooking preferences load failed');
+      if (!pantryRes.ok) throw new Error(pantry?.error?.message || 'Cooking pantry load failed');
+      cookingPortalState = {
+        ...cookingPortalState,
+        ...target,
+        preferences,
+        pantry: pantry.items || [],
+        error: '',
+        loading: false,
+      };
+      renderCookingPortal();
+    } catch (err) {
+      cookingPortalState = { ...cookingPortalState, ...target, error: err?.message || 'Cooking portal load failed', loading: false };
+      document.getElementById('cooking-preferences-list').innerHTML = '<div class="empty">Failed to load Cooking preferences</div>';
+      document.getElementById('cooking-pantry-list').innerHTML = '<div class="empty">Failed to load Cooking pantry</div>';
+      renderCookingPortal();
+      showToast(cookingPortalState.error, false);
+    }
+  }
+
+  function coerceCookingPreferenceValue(kind, raw) {
+    const trimmed = String(raw ?? '').trim();
+    if (COOKING_PREF_KINDS_NUMERIC.has(kind)) return Number(trimmed);
+    if (COOKING_PREF_KINDS_BOOLEAN.has(kind)) return ['true', 'yes', '1', 'on'].includes(trimmed.toLowerCase());
+    return trimmed;
+  }
+
+  async function saveCookingPreferenceFromPortal() {
+    const target = getCookingTarget();
+    if (!target) return;
+    const kind = document.getElementById('cooking-preference-kind').value;
+    const rawValue = document.getElementById('cooking-preference-value').value;
+    if (!String(rawValue || '').trim()) {
+      showToast('Enter a Cooking preference value', false);
+      return;
+    }
+    const body = {
+      tenantId: target.tenantId,
+      kind,
+      value: coerceCookingPreferenceValue(kind, rawValue),
+      correction: document.getElementById('cooking-preference-correction').checked,
+      source: 'portal_browser',
+      confidence: 0.9,
+    };
+    const btn = document.getElementById('cooking-save-preference-btn');
+    btn.disabled = true;
+    try {
+      const res = await apiFetch('/api/users/' + target.userId + '/cooking/preferences', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data?.error?.message || 'Preference write failed');
+      document.getElementById('cooking-preference-value').value = '';
+      showToast('Cooking preference saved');
+      await loadCookingPortal();
+    } catch (err) {
+      showToast(err?.message || 'Cooking preference write failed', false);
+    } finally {
+      btn.disabled = false;
+    }
+  }
+
+  async function saveCookingPantryFromPortal() {
+    const target = getCookingTarget();
+    if (!target) return;
+    const name = document.getElementById('cooking-pantry-name').value.trim();
+    if (!name) {
+      showToast('Enter a pantry item name', false);
+      return;
+    }
+    const body = {
+      tenantId: target.tenantId,
+      name,
+      quantity: document.getElementById('cooking-pantry-quantity').value.trim(),
+      unit: document.getElementById('cooking-pantry-unit').value.trim(),
+      category: document.getElementById('cooking-pantry-category').value.trim(),
+      expiresAt: document.getElementById('cooking-pantry-expires-at').value,
+      freshnessStatus: document.getElementById('cooking-pantry-freshness').value,
+      notes: document.getElementById('cooking-pantry-notes').value.trim(),
+      confidence: 0.9,
+    };
+    const btn = document.getElementById('cooking-save-pantry-btn');
+    btn.disabled = true;
+    try {
+      const res = await apiFetch('/api/users/' + target.userId + '/cooking/pantry', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data?.error?.message || 'Pantry write failed');
+      ['cooking-pantry-name', 'cooking-pantry-quantity', 'cooking-pantry-unit', 'cooking-pantry-category', 'cooking-pantry-expires-at', 'cooking-pantry-freshness', 'cooking-pantry-notes'].forEach(id => {
+        const el = document.getElementById(id);
+        if (el) el.value = '';
+      });
+      showToast('Pantry item saved');
+      await loadCookingPortal();
+    } catch (err) {
+      showToast(err?.message || 'Pantry write failed', false);
+    } finally {
+      btn.disabled = false;
+    }
+  }
+
+  window.deleteCookingPantryItem = async function(itemId) {
+    const target = getCookingTarget();
+    if (!target || !itemId) return;
+    if (!confirm('Delete this Cooking pantry item?')) return;
+    try {
+      const res = await apiFetch('/api/users/' + target.userId + '/cooking/pantry/' + encodeURIComponent(String(itemId)), {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ tenantId: target.tenantId }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data?.error?.message || 'Pantry delete failed');
+      showToast('Pantry item deleted');
+      await loadCookingPortal();
+    } catch (err) {
+      showToast(err?.message || 'Pantry delete failed', false);
+    }
+  };
+
+  window.openCookingManagerForUser = function(userId) {
+    const userInput = document.getElementById('cooking-target-user-id');
+    const tenantInput = document.getElementById('cooking-target-tenant-id');
+    if (userInput) userInput.value = String(userId);
+    if (tenantInput) tenantInput.value = String(userId);
+    navigateTo('cooking');
+    loadCookingPortal();
+  };
+
+  document.getElementById('cooking-refresh-btn')?.addEventListener('click', loadCookingPortal);
+  document.getElementById('cooking-load-btn')?.addEventListener('click', loadCookingPortal);
+  document.getElementById('cooking-clear-btn')?.addEventListener('click', () => {
+    ['cooking-target-user-id', 'cooking-target-tenant-id'].forEach(id => {
+      const el = document.getElementById(id);
+      if (el) el.value = '';
+    });
+    cookingPortalState = { userId: null, tenantId: null, preferences: null, pantry: [], error: '', loading: false };
+    renderCookingPortal();
+  });
+  document.getElementById('cooking-save-preference-btn')?.addEventListener('click', saveCookingPreferenceFromPortal);
+  document.getElementById('cooking-save-pantry-btn')?.addEventListener('click', saveCookingPantryFromPortal);
 
   // ════════════════════════════════════════════════════════════
   // Content dashboard
