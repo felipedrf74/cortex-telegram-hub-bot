@@ -199,6 +199,50 @@ describe('skill-memory foundation', () => {
     ]);
   });
 
+  it('keeps full correction lineage across repeated skill memory corrections', () => {
+    const first = setSkillMemory({
+      tenantId: 50,
+      userId: 7,
+      skillId: 'content',
+      memoryType: 'content_creative_preference',
+      scope: 'user_private',
+      memoryKey: 'voice_style',
+      memoryValue: 'Soft editorial voice.',
+      source: 'user_answer',
+      confidence: 0.7,
+    });
+
+    const second = applySkillMemoryCorrection({
+      tenantId: 50,
+      userId: 7,
+      skillId: 'content',
+      memoryType: 'content_creative_preference',
+      scope: 'user_private',
+      memoryKey: 'voice_style',
+      correctedValue: 'Direct creator voice.',
+      source: 'user_correction',
+    });
+
+    const third = applySkillMemoryCorrection({
+      tenantId: 50,
+      userId: 7,
+      skillId: 'content',
+      memoryType: 'content_creative_preference',
+      scope: 'user_private',
+      memoryKey: 'voice_style',
+      correctedValue: 'Direct creator voice with proof points.',
+      source: 'user_correction',
+    });
+
+    expect(second.correctionHistory).toEqual([
+      expect.objectContaining({ supersededMemoryId: first.memoryId, previousValue: 'Soft editorial voice.' }),
+    ]);
+    expect(third.correctionHistory).toEqual([
+      expect.objectContaining({ supersededMemoryId: first.memoryId, previousValue: 'Soft editorial voice.' }),
+      expect.objectContaining({ supersededMemoryId: second.memoryId, previousValue: 'Direct creator voice.' }),
+    ]);
+  });
+
   it('invalidates stale schema-version memories after a major skill release without leaking tenants', () => {
     setSkillMemory({
       tenantId: 60,

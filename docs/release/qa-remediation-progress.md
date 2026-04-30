@@ -334,3 +334,77 @@ Release-gate note:
 
 - Backend unit/integration verification is now green for the remediation branch.
 - Staging deploy/smoke and the requested external Opus re-audit are still not performed in this local remediation pass. They remain release-process gates, not code-level closures.
+
+## Branch Push, Staging, and Opus Re-Audit — 2026-04-30
+
+Branches and commits:
+
+- Backend branch pushed: `feature/qa-remediation-content-creation-upgrade`
+- Backend commit pushed before re-audit: `a59f697`
+- iOS branch pushed: `feature/ios-content-creation-intelligence-upgrade`
+- iOS commit pushed: `1c06032`
+- Local backup refs:
+  - backend branch/tag: `backup/codex-pre-push-20260430-0048`, `backup-codex-pre-push-20260430-0048`
+  - iOS branch/tag: `backup/ios-pre-push-20260430-0048`, `backup-ios-pre-push-20260430-0048`
+
+Validation:
+
+- PASS: backend pre-commit hook
+  - TypeScript clean
+  - 423 test files / 6,353 tests passed
+- PASS: backend pre-push hook
+  - TypeScript clean
+  - 423 test files / 6,353 tests passed
+- PASS: iOS simulator build
+  - `xcodebuild -project "Nexus Hub.xcodeproj" -scheme "Nexus Hub" -sdk iphonesimulator build`
+- PASS: iOS simulator test
+  - `xcodebuild test -project "Nexus Hub.xcodeproj" -scheme "Nexus Hub" -sdk iphonesimulator -destination "platform=iOS Simulator,name=iPhone 17 Pro"`
+- PASS: staging deploy
+  - `./scripts/deploy-staging.sh`
+  - Staging content engine OK
+  - Staging portal OK
+  - Production not touched
+- PASS: general staging smoke
+  - `./scripts/staging-smoke.sh`
+  - 17/17 tests passed
+  - Staging DB `integrity_check=ok`
+- PASS WITH CONDITIONS: focused staging Chat tenant smoke
+  - remote staging run of `scripts/chat-tenant-security-smoke.js` against `http://127.0.0.1:8201`
+  - 14 pass / 2 partial / 0 fail
+  - Partials: admin/support diagnostics token was not supplied to the local-only helper; real provider fallback call was not made.
+
+Read-only Opus re-audit:
+
+- Command: Claude Code `--model opus --effort max`, read-only tools only.
+- Verdict: `PASS WITH CONDITIONS`.
+- Remaining code P0 found:
+  - `A-OPUS-P0-2`: `src/state/shared-memory.ts` preserved only the active value and did not keep correction lineage.
+- Remaining code P1 found:
+  - `H-OPUS-P1-3`: `src/services/skill-memory.ts` correction history kept only the most recent supersession.
+- Documented deferrals that remain accepted release-scope caveats:
+  - Training/Cooking/Finance now route primary scheduling paths through Secretary, but legacy Training backfill still writes direct.
+  - `setActiveModel()` still mutates live model config instead of per-request snapshotting.
+  - `skill_version_rollouts` still needs a durable schema-level skill identifier before strict uniqueness.
+
+Follow-up fixes applied after Opus re-audit:
+
+- Added migration `101_shared_memory_history.sql` with append-only shared-memory correction lineage.
+- Updated `setSharedMemory()` to record superseded values in `shared_memory_history` before active-row updates.
+- Added `getSharedMemoryHistory()` for support/test inspection.
+- Lifted expanded credential-like value rejection into Chat shared memory as a fast-follow hardening improvement.
+- Updated `setSkillMemory()` to append existing correction history instead of replacing it with a single latest entry.
+
+Focused validation after follow-up fixes:
+
+- PASS: `npx vitest run __tests__/state/shared-memory.test.ts __tests__/services/skill-memory.test.ts`
+  - 2 files / 32 tests
+- PASS: `npx tsc --noEmit`
+
+Release-process gates still open:
+
+- Commit and push the follow-up fix commit.
+- Re-run full backend `npm run verify` through the normal commit/push hooks.
+- Re-run or accept the Opus re-audit delta after the follow-up fixes.
+- Take a fresh production DB snapshot immediately before any production deploy.
+- Promote only after the exact deployed staging artifact remains accepted.
+- Run production health checks after promotion.

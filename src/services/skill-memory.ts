@@ -457,13 +457,16 @@ export function setSkillMemory(input: SkillMemoryInput): SkillMemoryRecord {
   assertMemoryQuota(input, scopedUserId, skillId, Boolean(existing));
   const memoryId = makeMemoryId(skillId);
   const correctionHistory = existing
-    ? [{
-        supersededMemoryId: existing.memoryId,
-        previousValue: existing.memoryValue,
-        previousConfidence: existing.confidence,
-        correctedAt: new Date().toISOString(),
-        source: input.source,
-      }]
+    ? [
+        ...existing.correctionHistory,
+        {
+          supersededMemoryId: existing.memoryId,
+          previousValue: existing.memoryValue,
+          previousConfidence: existing.confidence,
+          correctedAt: new Date().toISOString(),
+          source: input.source,
+        },
+      ]
     : [];
 
   const tx = db.transaction(() => {

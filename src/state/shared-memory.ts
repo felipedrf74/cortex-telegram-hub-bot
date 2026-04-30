@@ -37,12 +37,43 @@ export interface SharedMemoryScopeBuckets {
   tenantShared: SharedMemoryEntry[];
 }
 
+export interface SharedMemoryHistoryEntry {
+  id: number;
+  tenant_id: number;
+  user_id: number;
+  key: string;
+  previous_value: string;
+  new_value: string;
+  previous_source_domain: string | null;
+  new_source_domain: string;
+  previous_expires_at: string | null;
+  new_expires_at: string | null;
+  previous_visibility_scope: string | null;
+  new_visibility_scope: string;
+  previous_scope_status: string | null;
+  new_scope_status: string;
+  corrected_by: number | null;
+  corrected_at: string;
+}
+
 const SAFE_MEMORY_KEY_RE = /^[a-zA-Z0-9_.:-]{1,96}$/;
 const MAX_MEMORY_VALUE_CHARS = 1200;
 const UNSAFE_MEMORY_PATTERNS = [
   /\b(api[_-]?key|secret[_-]?key|client[_-]?secret|password|passcode|bearer\s+[a-z0-9._-]+)\b/i,
   /\b(access[_-]?token|refresh[_-]?token|oauth[_-]?token|id[_-]?token|session[_-]?token)\b/i,
   /-----BEGIN [A-Z ]*PRIVATE KEY-----/i,
+  /\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b/,
+  /\bAKIA[0-9A-Z]{16}\b/,
+  /\b[A-Za-z0-9/+]{40}\b/,
+  /\bAIza[0-9A-Za-z_-]{35}\b/,
+  /\b(?:sk_live_|pk_live_)[A-Za-z0-9_]+\b/,
+  /\b(?:ghp_[A-Za-z0-9_]{20,}|github_pat_[A-Za-z0-9_]+)\b/,
+  /\bxox[baprs]-[A-Za-z0-9-]+\b/,
+  /\bpostgres:\/\/[^:\s]+:[^@\s]+@[^\s]+/i,
+  /\bmongodb(?:\+srv)?:\/\/[^:\s]+:[^@\s]+@[^\s]+/i,
+  /\bmysql:\/\/[^:\s]+:[^@\s]+@[^\s]+/i,
+  /\bFQoGZXIvYXdzE[A-Za-z0-9/+=]+/i,
+  /\bDefaultEndpointsProtocol=.*?AccountKey=[^;\s]+/i,
   /\b(?:\d[ -]*?){13,19}\b/,
 ];
 
@@ -97,20 +128,69 @@ export function setSharedMemory(
   if (!scope) {
     throw new Error('CHAT_SCOPE_INVALID: refusing to store shared memory without valid tenant/user scope');
   }
-  db.prepare(`
-    INSERT INTO shared_memory (tenant_id, user_id, visibility_scope, scope_status, created_by, key, value, source_domain, expires_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-    ON CONFLICT(tenant_id, user_id, key) DO UPDATE SET
-      value = excluded.value,
-      source_domain = excluded.source_domain,
-      expires_at = excluded.expires_at,
-      visibility_scope = excluded.visibility_scope,
-      scope_status = excluded.scope_status,
-      created_by = excluded.created_by,
-      updated_at = datetime('now')
-  `).run(scope.tenantId, userId, scope.visibilityScope, scope.scopeStatus, scope.createdBy, key, value, sourceDomain, expiresAt || null);
-  return db.prepare('SELECT * FROM shared_memory WHERE tenant_id = ? AND user_id = ? AND key = ?')
-    .get(scope.tenantId, userId, key) as SharedMemoryEntry;
+  const expiresAtValue = expiresAt || null;
+  const tx = db.transaction(() => {
+    const existing = db.prepare('SELECT * FROM shared_memory WHERE tenant_id = ? AND user_id = ? AND key = ?')
+      .get(scope.tenantId, userId, key) as SharedMemoryEntry | undefined;
+    const shouldRecordHistory = Boolean(existing) && (
+      existing!.value !== value
+      || existing!.source_domain !== sourceDomain
+      || (existing!.expires_at ?? null) !== expiresAtValue
+      || normalizeVisibilityScope(existing!.visibility_scope) !== scope.visibilityScope
+      || (existing!.scope_status ?? 'active') !== scope.scopeStatus
+    );
+    if (existing && shouldRecordHistory) {
+      db.prepare(`
+        INSERT INTO shared_memory_history (
+          tenant_id,
+          user_id,
+          key,
+          previous_value,
+          new_value,
+          previous_source_domain,
+          new_source_domain,
+          previous_expires_at,
+          new_expires_at,
+          previous_visibility_scope,
+          new_visibility_scope,
+          previous_scope_status,
+          new_scope_status,
+          corrected_by
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        scope.tenantId,
+        userId,
+        key,
+        existing.value,
+        value,
+        existing.source_domain,
+        sourceDomain,
+        existing.expires_at ?? null,
+        expiresAtValue,
+        normalizeVisibilityScope(existing.visibility_scope),
+        scope.visibilityScope,
+        existing.scope_status ?? 'active',
+        scope.scopeStatus,
+        scope.createdBy,
+      );
+    }
+
+    db.prepare(`
+      INSERT INTO shared_memory (tenant_id, user_id, visibility_scope, scope_status, created_by, key, value, source_domain, expires_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(tenant_id, user_id, key) DO UPDATE SET
+        value = excluded.value,
+        source_domain = excluded.source_domain,
+        expires_at = excluded.expires_at,
+        visibility_scope = excluded.visibility_scope,
+        scope_status = excluded.scope_status,
+        created_by = excluded.created_by,
+        updated_at = datetime('now')
+    `).run(scope.tenantId, userId, scope.visibilityScope, scope.scopeStatus, scope.createdBy, key, value, sourceDomain, expiresAtValue);
+    return db.prepare('SELECT * FROM shared_memory WHERE tenant_id = ? AND user_id = ? AND key = ?')
+      .get(scope.tenantId, userId, key) as SharedMemoryEntry;
+  });
+  return tx();
 }
 
 export function applySharedMemoryCorrection(input: SharedMemoryCorrectionInput): SharedMemoryEntry {
@@ -178,6 +258,26 @@ export function getSharedMemoryByScope(userId: number, tenantId?: number): Share
     userPrivate: entries.filter((entry) => normalizeVisibilityScope(entry.visibility_scope) === 'user_private'),
     tenantShared: entries.filter((entry) => normalizeVisibilityScope(entry.visibility_scope) === 'tenant_shared'),
   };
+}
+
+export function getSharedMemoryHistory(userId: number, key: string, tenantId?: number): SharedMemoryHistoryEntry[] {
+  const db = getDb();
+  const scope = resolveChatTenantScope({
+    userId,
+    tenantId,
+    operation: 'shared_memory_history_read',
+    layer: 'delivery',
+    details: { key },
+  });
+  if (!scope) return [];
+  return db.prepare(`
+    SELECT *
+    FROM shared_memory_history
+    WHERE tenant_id = ?
+      AND user_id = ?
+      AND key = ?
+    ORDER BY id ASC
+  `).all(scope.tenantId, userId, key) as SharedMemoryHistoryEntry[];
 }
 
 /** Remove a shared memory entry by key. Returns true if deleted. */
