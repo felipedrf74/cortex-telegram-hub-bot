@@ -52,7 +52,27 @@ Known remaining follow-ups before claiming full second-round PASS:
 Release-gate note:
 
 - This branch closes the active second-round P0s in focused code/tests.
-- Production promotion still requires a fresh backend full verify, full iOS test/build gate, staging deploy, focused staging smoke, and production health capture.
+- Production promotion still requires a fresh production backup/snapshot and production health capture.
+
+Git and staging rollout status:
+
+- Backend feature branch pushed: `feature/r2-qa-remediation-training-secretary-cascade` at `729f376`.
+- Backend `main` pushed: `729f376`.
+- iOS feature branch pushed: `feature/ios-r2-contract-fixes` at `65924fe`.
+- iOS `main` pushed: `65924fe`.
+- PASS: staging deploy from backend `main`
+  - Command: `./scripts/deploy-staging.sh`
+  - Evidence: `docs/release/smoke-evidence/staging-deploy-20260430-r2-remediation.log`
+  - Result: staging content engine OK, staging portal OK, production untouched.
+- PASS: general staging smoke
+  - Command: `./scripts/staging-smoke.sh`
+  - Evidence: `docs/release/smoke-evidence/staging-smoke-20260430-r2-remediation.log`
+  - Result: 17/17 tests passed; DB `integrity_check=ok`; staging safe to promote per script.
+- PASS WITH CONDITIONS: focused staging Chat tenant/security smoke
+  - Command: remote staging run of `node scripts/chat-tenant-security-smoke.js --base-url http://127.0.0.1:8201`
+  - Evidence: `docs/release/smoke-evidence/staging-chat-tenant-security-smoke-20260430-r2-remediation-rerun.log`
+  - Result: 14 pass / 2 partial / 0 fail.
+  - Partials: admin/support diagnostics token was not supplied; real provider fallback call was not made. No cross-tenant leakage or prompt-injection leak was observed.
 
 ## Branch / Backup Setup
 

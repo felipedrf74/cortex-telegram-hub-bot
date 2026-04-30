@@ -167,7 +167,7 @@ Still open before upgrading this QA-of-QA document to PASS:
 8. R2-P1-5 (needsReview partition)
 
 **Block D — Smoke + iOS evidence preservation (½ day)**
-9. R2-P1-10 (archive staging smoke)
+9. R2-P1-10 (archive staging smoke) — fixed on 2026-04-30 with `docs/release/smoke-evidence/staging-smoke-20260430-r2-remediation.log`; general staging smoke passed 17/17.
 10. R2-P1-11 (archive full iOS `.xcresult`) — fixed on 2026-04-30 with `docs/release/smoke-evidence/ios-full-test-20260430-070039.xcresult.zip` and summary JSON, 940 passed / 0 failed.
 11. R2-P1-12 (preserve Opus transcript)
 
