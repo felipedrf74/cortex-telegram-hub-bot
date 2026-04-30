@@ -60,6 +60,12 @@ import {
 } from '../../services/cooking-chef';
 import { assessCookingMealPlan } from '../../services/cooking-intelligence';
 import {
+  buildCookingFinanceBudgetContext,
+  buildCookingSecretaryAvailabilityContext,
+  type CookingFinanceBudgetContext,
+  type CookingSecretaryAvailabilityContext,
+} from '../../services/cooking-planning-context';
+import {
   buildCookingPreferenceReadModel,
   isCookingPreferenceKind,
   setCookingPreferenceMemory,
@@ -100,6 +106,55 @@ interface CookingTrainingSnapshot {
   todayHasHardSession: boolean;
   tomorrowHasTraining: boolean;
   tomorrowHasHardSession: boolean;
+}
+
+function readCookingFinanceBudgetContextSafely(input: {
+  userId: number;
+  tenantId: number;
+  from: string;
+  to: string;
+}): CookingFinanceBudgetContext {
+  try {
+    return buildCookingFinanceBudgetContext(input);
+  } catch (err) {
+    logger.debug({ err, userId: input.userId, tenantId: input.tenantId }, 'Cooking Finance budget context unavailable');
+    return {
+      source: 'finance_monthly_budget',
+      status: 'unavailable',
+      integrity: null,
+      affordability: null,
+      budgetLimit: null,
+      currency: null,
+      monthKeys: [],
+      notes: ['Finance budget context is temporarily unavailable.'],
+    };
+  }
+}
+
+function readCookingSecretaryAvailabilityContextSafely(input: {
+  userId: number;
+  tenantId: number;
+  from: string;
+  to: string;
+}): CookingSecretaryAvailabilityContext {
+  try {
+    return buildCookingSecretaryAvailabilityContext(input);
+  } catch (err) {
+    const timezone = config.app.timezone || 'Europe/Lisbon';
+    logger.debug({ err, userId: input.userId, tenantId: input.tenantId }, 'Cooking Secretary availability context unavailable');
+    return {
+      source: 'secretary_agenda_items',
+      status: 'unknown',
+      defaultCookingWindow: {
+        startHour: 17,
+        endHour: 21,
+        timezone,
+      },
+      availableCookingMinutesByDate: {},
+      busyAgendaItemIdsByDate: {},
+      notes: ['Secretary availability context is temporarily unavailable.'],
+    };
+  }
 }
 
 function sendCookingInternalError(
@@ -818,6 +873,8 @@ export function cookingRoutes(): Router {
       );
       const shoppingList = getShoppingList(userId, from, tenantId);
       const preferenceReadModel = buildCookingPreferenceReadModel(userId, tenantId);
+      const financeBudgetContext = readCookingFinanceBudgetContextSafely({ userId, tenantId, from, to });
+      const secretaryAvailabilityContext = readCookingSecretaryAvailabilityContextSafely({ userId, tenantId, from, to });
       const pantryItems = getPantryItems(userId, { tenantId, includeExpired: true, limit: 250 })
         .map((item) => ({
           name: item.name,
@@ -838,6 +895,8 @@ export function cookingRoutes(): Router {
         shoppingList,
         preferences: preferenceReadModel.profile,
         pantryItems,
+        availableCookingMinutesByDate: secretaryAvailabilityContext.availableCookingMinutesByDate,
+        financeBudgetContext,
         trainingContext: {
           trainingDates: [
             ...(trainingSnapshot.todayHasTraining ? [trainingSnapshot.todayIso] : []),
@@ -856,6 +915,10 @@ export function cookingRoutes(): Router {
         to,
         assessment,
         preferences: { summary: preferenceReadModel.summary },
+        planningContext: {
+          financeBudget: financeBudgetContext,
+          secretaryAvailability: secretaryAvailabilityContext,
+        },
       });
     } catch (err: unknown) {
       sendCookingInternalError(res, {

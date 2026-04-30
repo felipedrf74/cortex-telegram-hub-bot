@@ -11,8 +11,9 @@ PASS WITH CONDITIONS.
 - Focused backend Cooking tests passed, including persistent pantry route/service/tool coverage and Cooking preference-memory correction coverage.
 - Pantry-focused Vitest passed: 4 files / 175 tests.
 - Preference-memory focused Vitest plus app-facing smoke passed: 7 files / 208 tests.
+- Planning-context focused Vitest passed: 3 files / 29 tests.
 - Typecheck passed.
-- Full backend verify passed: 426 files / 6394 tests.
+- Full backend verify passed: 427 files / 6398 tests.
 - No production data or calendars used.
 - No real provider calls used.
 

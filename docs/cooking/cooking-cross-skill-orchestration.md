@@ -10,11 +10,11 @@ Implemented:
 
 - `src/services/cooking-secretary-integration.ts`
 - `POST /api/v1/cooking/meal-plan/create-prep-event`
+- `GET /api/v1/cooking/meal-plan` now reads Secretary agenda pressure through `cooking-planning-context.ts` and feeds available cooking minutes into assessment.
 
 Open:
 
 - grocery shopping block scheduling
-- Secretary available-window input for meal-plan generation
 - iOS rendering of Secretary decision reasons for Cooking prep
 
 ## Training
@@ -36,10 +36,11 @@ Implemented:
 
 - Cooking mesh grocery spend forecast.
 - Assessment can evaluate budget input when supplied.
+- `GET /api/v1/cooking/meal-plan` now reads Finance monthly budget headroom and returns tenant/user-safe budget context without exposing raw transactions.
 
 Open:
 
-- Finance-backed budget read path and grocery category planning.
+- Item-price grocery optimization and category-level grocery planning.
 
 ## Content Creation
 
@@ -58,4 +59,3 @@ Implemented:
 Open:
 
 - Vague follow-up resolution with Cooking memory and pantry context.
-

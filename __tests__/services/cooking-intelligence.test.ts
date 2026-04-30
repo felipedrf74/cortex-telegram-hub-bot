@@ -137,6 +137,32 @@ describe('cooking intelligence assessment', () => {
     ]));
   });
 
+  it('surfaces tight Finance budget context even before item-level grocery prices exist', () => {
+    const assessment = assessCookingMealPlan({
+      meals: [meal({ date: '2026-05-04' })],
+      financeBudgetContext: {
+        status: 'available',
+        affordability: 'tight',
+        budgetLimit: 25,
+        currency: 'EUR',
+        source: 'finance_monthly_budget',
+      },
+    });
+
+    expect(assessment.status).toBe('needs_review');
+    expect(assessment.budgetFit).toMatchObject({
+      status: 'unknown',
+      budgetLimit: 25,
+      currency: 'EUR',
+    });
+    expect(assessment.issues).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        code: 'FINANCE_BUDGET_TIGHT',
+        source: 'finance_monthly_budget',
+      }),
+    ]));
+  });
+
   it('flags hard training days without meal support', () => {
     const assessment = assessCookingMealPlan({
       meals: [meal({ date: '2026-05-04' })],

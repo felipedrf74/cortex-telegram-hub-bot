@@ -39,6 +39,13 @@ export interface CookingPlanAssessmentInput {
   pantryItems?: CookingPantryItem[];
   availableCookingMinutesByDate?: Record<string, number>;
   estimatedBudget?: number | null;
+  financeBudgetContext?: {
+    status?: string;
+    affordability?: string | null;
+    budgetLimit?: number | null;
+    currency?: string | null;
+    source?: string;
+  } | null;
   trainingContext?: CookingTrainingContext;
   todayIso?: string;
 }
@@ -89,7 +96,7 @@ export function assessCookingMealPlan(input: CookingPlanAssessmentInput): Cookin
   addRestrictionIssues(issues, input.meals, mealIngredients, input.preferences);
   const groceryCoherence = assessGroceryCoherence(input.shoppingList ?? null, mealIngredients, pantry, issues);
   const scheduleFit = assessScheduleFit(input.meals, recipesById, input.availableCookingMinutesByDate ?? {}, issues);
-  const budgetFit = assessBudgetFit(input.estimatedBudget ?? null, input.preferences, issues);
+  const budgetFit = assessBudgetFit(input.estimatedBudget ?? null, input.preferences, input.financeBudgetContext, issues);
   const trainingFit = assessTrainingFit(input.meals, input.trainingContext, issues);
   addRepetitionIssues(issues, input.meals);
   addComplexityIssues(issues, input.meals, recipesById, input.preferences);
@@ -282,15 +289,25 @@ function assessScheduleFit(
 function assessBudgetFit(
   estimatedBudget: number | null,
   preferences: CookingPreferenceProfile | undefined,
+  financeBudgetContext: CookingPlanAssessmentInput['financeBudgetContext'],
   issues: CookingConstraintIssue[],
 ): CookingPlanAssessment['budgetFit'] {
-  const limit = preferences?.budgetLimit ?? null;
+  const limit = preferences?.budgetLimit ?? financeBudgetContext?.budgetLimit ?? null;
+  const currency = preferences?.budgetCurrency ?? financeBudgetContext?.currency ?? null;
+  if (estimatedBudget == null && financeBudgetContext?.status === 'available' && financeBudgetContext.affordability === 'tight') {
+    issues.push({
+      code: 'FINANCE_BUDGET_TIGHT',
+      severity: 'warning',
+      message: 'Finance budget context is tight; keep grocery choices conservative or confirm a higher food budget.',
+      source: financeBudgetContext.source ?? 'finance_budget_context',
+    });
+  }
   if (estimatedBudget == null || limit == null) {
     return {
       status: 'unknown',
       estimatedBudget,
       budgetLimit: limit,
-      currency: preferences?.budgetCurrency ?? null,
+      currency,
     };
   }
   if (estimatedBudget > limit) {
@@ -304,14 +321,14 @@ function assessBudgetFit(
       status: 'over_budget',
       estimatedBudget,
       budgetLimit: limit,
-      currency: preferences?.budgetCurrency ?? null,
+      currency,
     };
   }
   return {
     status: 'within_budget',
     estimatedBudget,
     budgetLimit: limit,
-    currency: preferences?.budgetCurrency ?? null,
+    currency,
   };
 }
 

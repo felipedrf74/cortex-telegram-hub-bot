@@ -8,8 +8,6 @@ None currently known after focused backend tenant-scope and allergy-blocker test
 
 ## P1
 
-- Connect Finance budget context to meal/grocery planning.
-- Connect Secretary available cooking windows to meal-plan generation.
 - Add iOS rendering for assessment warnings, substitutions, pantry status, and correction capture.
 - Add portal Cooking preferences/pantry management.
 - Run full local product smoke and archive logs.
@@ -20,6 +18,7 @@ None currently known after focused backend tenant-scope and allergy-blocker test
 - Advanced substitution engine.
 - Leftover/waste optimizer.
 - Store/unavailable item fallback.
+- Item-price grocery budget optimizer and Secretary-driven alternate cooking-window proposals.
 - Cooking-to-Content opportunity handoff with approval.
 - Food-safety note library and tests for common storage/handling risks.
 

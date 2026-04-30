@@ -37,7 +37,7 @@ Branch: `feature/cooking-intelligence-upgrade`
 - Same-user multi-tenant Cooking storage was not modeled. Auth currently blocks active tenant switching, but persistence should still be explicit.
 - No deterministic meal-plan quality assessment existed before response/API composition.
 - Cooking preferences and correction handling now use the dedicated `cooking-preferences.ts` adapter over `skill_memories`.
-- Finance budget context is represented through mesh estimates but not a full meal-planning budget contract.
+- Finance budget context is represented in meal-plan read-back through monthly budget headroom. Item-price grocery optimization remains open.
 - iOS receives basic Cooking DTOs but does not yet render rich assessment, pantry, substitution, and warning states.
 - Portal Cooking preferences/pantry management is not implemented.
 - Local full-product smoke for Cooking has focused tests but no archived full runtime log in this branch.
@@ -49,5 +49,5 @@ Cooking domain handling uses the live domain/provider routing path through `hand
 ## Risk Summary
 
 - P0 before fix: explicit tenant metadata missing on recipes, meal plans, and shopping lists.
-- P1: Finance/Secretary runtime integration, iOS/portal rich states, and full local runtime smoke remain incomplete.
+- P1: iOS/portal rich states and full local runtime smoke remain incomplete.
 - P2: deeper recipe substitution and food-safety workflow needs more runtime coverage.

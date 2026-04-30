@@ -136,6 +136,7 @@ The candidate record documents the Cooking intelligence foundation:
 - tenant-scoped recipes, meal plans, and shopping lists
 - tenant-scoped pantry persistence and freshness/availability metadata
 - user-private Cooking preference memory with correction lineage
+- Finance budget and Secretary availability context read-through for meal-plan assessment
 - deterministic meal-plan practicality assessment
 - allergy and dietary restriction blockers
 - grocery and pantry coherence checks

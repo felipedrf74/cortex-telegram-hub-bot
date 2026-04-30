@@ -11,7 +11,7 @@ Date: 2026-04-30
 | P0 | Allergy/restriction conflicts not deterministically blocked | Fixed for explicit Cooking preference memory and route-supplied profiles |
 | P1 | Dedicated pantry persistence | Fixed with migration `104`, tenant-scoped service APIs, REST APIs, and Chat tools |
 | P1 | Cooking preference/memory writer and correction flow | Fixed with `cooking-preferences.ts`, REST APIs, Chat tools, and meal-plan assessment read path |
-| P1 | Finance-backed grocery budget model | Open |
+| P1 | Finance/Secretary runtime context read-back | Fixed with `cooking-planning-context.ts` and route-level assessment integration |
 | P1 | iOS rich warning/substitution/correction rendering | Open |
 | P1 | Portal Cooking preference/pantry console | Open |
 | P1 | Full local runtime smoke with backend, workers, iOS, and fixture model | Documented blocker |
@@ -29,6 +29,6 @@ Date: 2026-04-30
 ## Recommended Next Sequence
 
 1. Add route/tool support for meal-plan generation using structured constraints.
-2. Add Finance budget read path for grocery planning.
+2. Add item-price grocery budget optimizer and Secretary-driven alternative-window proposals.
 3. Extend iOS and portal DTOs for Cooking assessment/pantry/preference states.
 4. Run full local runtime smoke with fixture model and archived logs.

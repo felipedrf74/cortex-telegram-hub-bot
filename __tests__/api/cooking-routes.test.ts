@@ -30,6 +30,7 @@ vi.mock('../../src/config', () => ({
     telegram: { allowedUserIds: [111111] },
     app: { timezone: 'Europe/Lisbon' },
     garmin: { tokenPath: '/tmp' },
+    financeEncryption: { enabled: false, masterKey: null },
   },
 }));
 
@@ -53,6 +54,8 @@ import * as cookingChef from '../../src/services/cooking-chef';
 import { createPlan, createWeek, createSession } from '../../src/services/training-plans';
 import { publishHighLegLoad, publishLowSleep } from '../../src/services/training-signals';
 import { setDbProvider } from '../../src/services/intelligence-bus';
+import { addTransaction } from '../../src/services/finance-tracker';
+import { submitSecretarySchedulingIntent } from '../../src/services/secretary-scheduling-arbitrator';
 
 function applyMigrations(db: Database.Database): void {
   db.exec(`CREATE TABLE IF NOT EXISTS _migrations (id INTEGER PRIMARY KEY, filename TEXT UNIQUE, applied_at TEXT DEFAULT (datetime('now')))`);
@@ -328,6 +331,63 @@ describe('Cooking API — shopping list item updates', () => {
       }),
     ]));
     expect(res.body.data.preferences.summary).toContain('Allergies: peanuts');
+  });
+
+  it('applies Finance budget and Secretary availability context before meal-plan response composition', async () => {
+    const user = getOrCreateUser(21019, { username: 'cook19' });
+    const recipe = addRecipe(user.id, 'Big dinner prep', [
+      { name: 'Chicken', quantity: '500', unit: 'g' },
+      { name: 'Rice', quantity: '300', unit: 'g' },
+    ], { tenantId: 101, prepTime: 40, cookTime: 40 });
+    setMealPlan(user.id, '2026-05-04', 'dinner', 'Big dinner prep', { recipeId: recipe.id, tenantId: 101 });
+    addTransaction(user.id, '2026-05-01', 'income', 1000, { currency: 'EUR' });
+    addTransaction(user.id, '2026-05-02', 'groceries', 900, { currency: 'EUR' });
+    const decision = submitSecretarySchedulingIntent({
+      intentId: `secretary:busy:test:${user.id}:101`,
+      sourceSkill: 'secretary',
+      sourceAction: 'protect_time_for_this',
+      sourceEntityId: 'busy-window',
+      sourceEntityType: 'calendar_block',
+      ownerUserId: user.id,
+      tenantId: 101,
+      title: 'Client meeting',
+      requestedDurationMinutes: 180,
+      minimumDurationMinutes: 180,
+      preferredWindows: [{
+        start: '2026-05-04T17:30:00.000+01:00',
+        end: '2026-05-04T20:30:00.000+01:00',
+        hard: true,
+      }],
+      priority: 'high',
+      flexibility: 'fixed',
+      createdAt: '2026-05-01T00:00:00.000Z',
+      updatedAt: '2026-05-01T00:00:00.000Z',
+    }, { now: '2026-05-01T00:00:00.000Z' });
+
+    const res = await dispatch('GET', '/meal-plan?from=2026-05-04&to=2026-05-04', user.id, undefined, 101);
+
+    expect(decision.status).toBe('scheduled');
+    expect(res.statusCode).toBe(200);
+    expect(res.body.data.assessment.scheduleFit).toMatchObject({
+      status: 'over_capacity',
+      overCapacityDates: ['2026-05-04'],
+    });
+    expect(res.body.data.assessment.budgetFit).toMatchObject({
+      status: 'unknown',
+      currency: 'EUR',
+    });
+    expect(res.body.data.assessment.issues).toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: 'COOKING_TIME_OVER_CAPACITY', source: 'secretary_schedule_context' }),
+      expect.objectContaining({ code: 'FINANCE_BUDGET_TIGHT', source: 'finance_monthly_budget' }),
+    ]));
+    expect(res.body.data.planningContext.financeBudget).toMatchObject({
+      source: 'finance_monthly_budget',
+      status: 'available',
+      affordability: 'tight',
+    });
+    expect(res.body.data.planningContext.secretaryAvailability.availableCookingMinutesByDate).toEqual({
+      '2026-05-04': 60,
+    });
   });
 
   it('fails closed on invalid tenant scope before loading a meal plan', async () => {

@@ -18,7 +18,7 @@ npm run verify
 - Pantry-focused tests: PASS, 175 tests.
 - Preference-memory focused tests plus app-facing smoke: PASS, 208 tests.
 - Typecheck: PASS.
-- Full verify: PASS, 426 files / 6394 tests.
+- Full verify: PASS, 427 files / 6398 tests.
 
 ## Safety Coverage
 

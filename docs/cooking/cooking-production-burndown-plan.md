@@ -11,11 +11,11 @@ No known unresolved P0 after focused backend tests.
 1. Run full local Nexus runtime smoke and archive logs.
 2. Add iOS support for assessment warnings, pantry/preference status, and unknown future states.
 3. Add portal preference/pantry management readiness plan.
-4. Connect Finance and Secretary runtime context to generation-quality flows.
 
 ## P2
 
 - Advanced substitution engine.
 - Finance-backed grocery budget optimizer.
+- Secretary-driven alternate cooking-window proposals.
 - Leftover/waste planner.
 - Food-safety prompt-injection tests.
