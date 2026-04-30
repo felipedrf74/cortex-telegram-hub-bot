@@ -55,7 +55,8 @@ are never treated as safely usable.
 
 ## Open Items
 
-- iOS pantry rendering and correction.
-- Portal pantry management.
+- iOS simulator smoke for pantry rendering and correction capture.
+- Portal browser UI/deep editor for pantry management; backend portal
+  contracts are implemented and tested.
 - Grocery budget estimation backed by Finance.
 - Store/unavailable item fallback.

@@ -8,7 +8,7 @@ No known unresolved P0 after focused backend tests.
 
 ## P1 Before Production
 
-1. Add iOS correction capture and rich Cooking simulator smoke. Assessment warning/context/preference rendering is implemented on `feature/cooking-rich-state-ui` at `f4f1053`; pantry freshness rendering is implemented on the same branch at `cfe5df4`.
+1. Add rich Cooking simulator smoke. Assessment warning/context/preference rendering is implemented on `feature/cooking-rich-state-ui` at `f4f1053`; pantry freshness rendering is implemented at `cfe5df4`; preference correction capture is implemented at `e8cdc80`.
 2. Add portal browser UI/deep editor. Backend portal preference/pantry
    management contracts are implemented and tested.
 

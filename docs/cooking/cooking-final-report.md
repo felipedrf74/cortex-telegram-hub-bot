@@ -30,7 +30,7 @@ Verdict: GO WITH CONDITIONS
 - Full `npm run verify`: PASS, 427 files / 6398 tests.
 - Full local backend product smoke: PASS WITH CONDITIONS on `127.0.0.1:8326`; authenticated API smoke 13/13, Chat tenant smoke 15 pass / 1 partial / 0 fail, cross-skill fixtures PASS, Chat eval/day-to-day fixtures PASS.
 - Live local Cooking planning-context API read-back: PASS; Finance tight-budget context and Secretary cooking-window pressure were returned by `GET /api/v1/cooking/meal-plan`.
-- iOS rich Cooking DTO/rendering slice: PASS on branch `feature/cooking-rich-state-ui` at `f4f1053` and `cfe5df4`; 8 focused Cooking presentation tests passed, including rich and legacy meal-plan payload decoding plus pantry freshness DTO rendering.
+- iOS rich Cooking DTO/rendering slice: PASS on branch `feature/cooking-rich-state-ui` at `f4f1053`, `cfe5df4`, and `e8cdc80`; 9 focused Cooking presentation tests passed, including rich and legacy meal-plan payload decoding, pantry freshness DTO rendering, and direct preference-correction POST body validation.
 - Portal Cooking management contracts: PASS; `npx vitest run __tests__/portal/portal-cooking-routes.test.ts` passed 6 tests after `npx tsc --noEmit`.
 - No production data used.
 - No production calendar used.
@@ -39,7 +39,7 @@ Verdict: GO WITH CONDITIONS
 
 ## Remaining Conditions Before Production
 
-- Add iOS correction capture and rich Cooking simulator smoke before claiming full frontend readiness.
+- Add rich Cooking simulator smoke before claiming full frontend readiness.
 - Add portal browser UI/deep editor before claiming full portal readiness.
 
 ## Release Recommendation
