@@ -27,8 +27,9 @@ PASS WITH CONDITIONS.
 ## Not Completed
 
 - iOS focused rich Cooking DTO/rendering tests passed on branch
-  `feature/cooking-rich-state-ui` at `f4f1053`, `cfe5df4`, and `e8cdc80`; full simulator
-  smoke for rich Cooking warning/pantry/preference rendering was not run.
+  `feature/cooking-rich-state-ui` at `f4f1053`, `cfe5df4`, `e8cdc80`, and
+  `d7eb9f4`; full simulator smoke for rich Cooking warning/pantry/preference
+  rendering was not run.
 - Portal browser runtime smoke for Cooking preference/pantry management was not run.
 - No real provider quality sampling was run.
 

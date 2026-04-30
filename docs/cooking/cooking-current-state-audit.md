@@ -41,8 +41,9 @@ Branch: `feature/cooking-intelligence-upgrade`
 - iOS basic Cooking DTOs now have a rich-state extension branch:
   `feature/cooking-rich-state-ui` at `f4f1053` renders assessment/context/preference
   signals; `cfe5df4` renders pantry freshness states; `e8cdc80` captures
-  preference corrections through the backend route. Substitution/review prompts
-  and simulator smoke remain open.
+  preference corrections through the backend route; `d7eb9f4` routes assessment
+  issues to review prompts. Substitution suggestions and simulator smoke remain
+  open.
 - Portal Cooking preference/pantry management contracts are implemented as
   audited admin/operator routes; browser UI/deep editing remains open.
 - Local backend product smoke for Cooking ran with fixture model on `127.0.0.1:8326`; iOS focused tests passed for rich-state DTOs, while iOS simulator and portal runtime smoke remain open.

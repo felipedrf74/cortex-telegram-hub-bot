@@ -10,10 +10,12 @@ None currently known after focused backend tenant-scope and allergy-blocker test
 
 - Add portal Cooking browser UI/deep editor. Backend portal preference/pantry
   management routes are implemented and tested.
-- Add iOS substitution/review prompts. Core assessment/warning/context
+- Add iOS substitution suggestions once backend substitution candidates are
+  available. Core assessment/warning/context
   rendering is implemented on `feature/cooking-rich-state-ui` at `f4f1053`;
   pantry freshness rendering is implemented at `cfe5df4`; preference
-  correction capture is implemented at `e8cdc80`.
+  correction capture is implemented at `e8cdc80`; assessment review prompts are
+  implemented at `d7eb9f4`.
 
 ## P2
 

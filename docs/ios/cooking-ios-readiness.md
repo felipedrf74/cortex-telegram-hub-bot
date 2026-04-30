@@ -10,14 +10,16 @@ Training adaptations, and prep-event scheduling responses.
 Additional iOS branch evidence:
 
 - Branch: `feature/cooking-rich-state-ui`
-- Commits: `f4f1053`, `cfe5df4`, `e8cdc80`
+- Commits: `f4f1053`, `cfe5df4`, `e8cdc80`, `d7eb9f4`
 - Scope: additive DTOs for meal-plan assessment/planning context, repository state
   retention/reset, a compact Cooking signals card, shopping-list pantry
   available/expired rendering, pantry notes, accessibility labels, and
-  first-class preference correction capture through `POST /api/v1/cooking/preferences`.
+  first-class preference correction capture through `POST /api/v1/cooking/preferences`,
+  and deterministic review prompts that route assessment issues to the meal plan
+  or shopping list without inventing substitution suggestions.
 - Focused test:
   `xcodebuild test -project "Nexus Hub.xcodeproj" -scheme "Nexus Hub" -sdk iphonesimulator -destination "platform=iOS Simulator,name=iPhone 17 Pro" "-only-testing:Nexus HubTests/CookingPresentationTests"`:
-  PASS, 9 Cooking presentation tests.
+  PASS, 11 Cooking presentation tests.
 
 ## New Backend Field
 
@@ -56,7 +58,7 @@ rendering raw prompt context.
 ## Gaps
 
 - Render allergy/restriction warning with a stronger distinct visual treatment.
-- Render substitution/review prompts once substitution engine lands.
+- Render substitution suggestions once backend substitution candidates land.
 - Re-run iOS simulator smoke against the local backend bundle with rich Cooking
   payload fixtures.
 - Unknown enum/state fallback tests.
