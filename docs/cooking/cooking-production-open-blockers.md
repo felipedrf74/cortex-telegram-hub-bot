@@ -8,8 +8,10 @@ None known.
 
 ## P1
 
-- iOS rich Cooking warning/correction rendering not implemented.
 - Portal Cooking management not implemented.
+- iOS correction capture and pantry freshness rendering remain open after the
+  rich assessment/warning card landed on `feature/cooking-rich-state-ui`
+  (`f4f1053`).
 
 ## Release Gate
 

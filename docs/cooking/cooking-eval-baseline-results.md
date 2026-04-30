@@ -13,10 +13,10 @@ Focused deterministic fixtures.
 | Tenant safety foundation | 4/5 | Service-level tenant tests pass; full same-user runtime blocked by auth |
 | Allergy/restriction safety | 4/5 | Deterministic allergy blocker added; explicit Cooking preference memory now feeds meal-plan assessment |
 | Grocery coherence | 4/5 | Missing ingredient and pantry available/expired checks added |
-| Schedule fit | 3/5 | Assessment accepts schedule capacity; Secretary window integration open |
-| Budget fit | 3/5 | Assessment accepts budget input; Finance read path open |
+| Schedule fit | 4/5 | Secretary availability read path now feeds assessment; alternate-window proposals remain open |
+| Budget fit | 4/5 | Finance monthly budget headroom feeds assessment; item-price grocery optimization remains open |
 | Training fit | 4/5 | Existing route adaptations plus hard-day coverage warning |
-| iOS/portal readiness | 2/5 | Backend additive fields exist; rich UI not implemented |
-| Full local runtime evidence | 2/5 | Focused tests pass; full smoke not archived |
+| iOS/portal readiness | 3/5 | iOS assessment/context/preference rendering branch exists; portal and iOS simulator smoke remain open |
+| Full local runtime evidence | 4/5 | Full backend local smoke archived; iOS simulator and portal smoke remain open |
 
-Overall: 26/40, PASS WITH CONDITIONS for backend candidate foundation.
+Overall: 31/40, PASS WITH CONDITIONS for backend+iOS candidate foundation.

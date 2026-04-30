@@ -45,5 +45,7 @@ The backend portion of this smoke ran on 2026-04-30 with:
 - `NEXUS_LOCAL_ALLOW_MODEL_CALLS=0`
 
 Results are archived in `docs/local/cooking-full-nexus-local-smoke-results.md`.
-The iOS rendering scenario remains open until the frontend supports the richer
-Cooking warning, pantry, preference, and planning-context states.
+The iOS rendering scenario remains open for simulator smoke, but the frontend
+now has DTO and compact card support for assessment warnings, Finance/Secretary
+planning context, and preference summaries on `feature/cooking-rich-state-ui`
+at `f4f1053`.

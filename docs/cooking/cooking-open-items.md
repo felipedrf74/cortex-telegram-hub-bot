@@ -8,12 +8,15 @@ None currently known after focused backend tenant-scope and allergy-blocker test
 
 ## P1
 
-- Add iOS rendering for assessment warnings, substitutions, pantry status, and correction capture.
 - Add portal Cooking preferences/pantry management.
+- Add iOS correction capture, substitution/review prompts, and pantry freshness
+  rendering. Core assessment/warning/context rendering is implemented on
+  `feature/cooking-rich-state-ui` at `f4f1053`.
 
 ## P2
 
-- Add iOS simulator smoke for rich Cooking result rendering once frontend DTO support exists.
+- Add iOS simulator smoke for rich Cooking result rendering against the local
+  backend bundle.
 - Pantry quantity normalization and low-stock suggestions beyond CRUD/status.
 - Advanced substitution engine.
 - Leftover/waste optimizer.

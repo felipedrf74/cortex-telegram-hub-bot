@@ -40,7 +40,8 @@ FULL_NEXUS_STATE_DIR=.local/cooking-full-nexus-smoke DATABASE_PATH="$PWD/data/co
 | Full backend verify | PASS | `npm run verify`: 427 files / 6398 tests |
 | Full local backend engine | PASS WITH CONDITIONS | Backend ran attached on `127.0.0.1:8326`; 13/13 authenticated API smoke checks passed; Chat tenant smoke 15 pass / 1 partial; cross-skill fixtures and Chat eval/day-to-day fixtures passed |
 | Cooking live local planning-context read-back | PASS | Authenticated local API returned Finance `available/tight` context, Secretary available cooking minutes `{ "2026-05-04": 60 }`, `COOKING_TIME_OVER_CAPACITY`, and `FINANCE_BUDGET_TIGHT` |
-| iOS simulator | NOT RUN | Still a separate frontend gate for rich Cooking states |
+| iOS focused rich-state tests | PASS | iOS branch `feature/cooking-rich-state-ui` at `f4f1053`; 7 Cooking presentation tests passed, including rich and legacy meal-plan payload decoding |
+| iOS simulator | NOT RUN | Still a separate frontend gate for rich Cooking states against the local backend |
 | Portal runtime | NOT RUN | Portal Cooking preferences/pantry management remains a frontend/product gap |
 
 ## Cleanup

@@ -4,7 +4,19 @@ Date: 2026-04-30
 
 ## Current Readiness
 
-Existing iOS contracts can consume recipes, meal plans, shopping lists, Training adaptations, and prep-event scheduling responses.
+Existing iOS contracts can consume recipes, meal plans, shopping lists,
+Training adaptations, and prep-event scheduling responses.
+
+Additional iOS branch evidence:
+
+- Branch: `feature/cooking-rich-state-ui`
+- Commit: `f4f1053`
+- Scope: additive DTOs for meal-plan assessment/planning context, repository state
+  retention/reset, a compact Cooking signals card, and backward-compatible decode
+  tests.
+- Focused test:
+  `xcodebuild test -project "Nexus Hub.xcodeproj" -scheme "Nexus Hub" -sdk iphonesimulator -destination "platform=iOS Simulator,name=iPhone 17 Pro" "-only-testing:Nexus HubTests/CookingPresentationTests"`:
+  PASS, 7 Cooking presentation tests.
 
 ## New Backend Field
 
@@ -42,12 +54,13 @@ rendering raw prompt context.
 
 ## Gaps
 
-- Render assessment warnings/blockers.
-- Render allergy/restriction warning distinctly.
+- Render allergy/restriction warning with a stronger distinct visual treatment.
 - Render pantry available/expired status from shopping-list items and pantry list rows.
-- Render preference/correction state and expose a correction capture path.
+- Expose a first-class correction capture path for Cooking preferences.
 - Render substitution/review prompts once substitution engine lands.
-- Invalidate Cooking cache on tenant switch.
+- Re-run iOS simulator smoke against the local backend bundle with rich Cooking
+  payload fixtures.
 - Unknown enum/state fallback tests.
 
-Verdict: PASS WITH CONDITIONS. No iOS code was modified in this backend pass.
+Verdict: PASS WITH CONDITIONS. The primary iOS rich assessment rendering gap is
+closed in code on the iOS branch; simulator smoke remains a release condition.

@@ -12,7 +12,7 @@ Date: 2026-04-30
 | P1 | Dedicated pantry persistence | Fixed with migration `104`, tenant-scoped service APIs, REST APIs, and Chat tools |
 | P1 | Cooking preference/memory writer and correction flow | Fixed with `cooking-preferences.ts`, REST APIs, Chat tools, and meal-plan assessment read path |
 | P1 | Finance/Secretary runtime context read-back | Fixed with `cooking-planning-context.ts` and route-level assessment integration |
-| P1 | iOS rich warning/substitution/correction rendering | Open |
+| P1 | iOS rich warning/substitution/correction rendering | Partially fixed: assessment/context/preference rendering landed on iOS branch `feature/cooking-rich-state-ui` at `f4f1053`; substitution prompts, pantry freshness UI, correction capture, and simulator smoke remain open |
 | P1 | Portal Cooking preference/pantry console | Open |
 | P1 | Full local runtime smoke with backend, workers/cache, and fixture model | Fixed with attached backend full-smoke on `127.0.0.1:8326`; iOS simulator remains a frontend gate |
 | P2 | Advanced substitution model | Documented foundation, not fully implemented |
@@ -30,5 +30,5 @@ Date: 2026-04-30
 
 1. Add route/tool support for meal-plan generation using structured constraints.
 2. Add item-price grocery budget optimizer and Secretary-driven alternative-window proposals.
-3. Extend iOS and portal DTOs for Cooking assessment/pantry/preference states.
-4. Add iOS/portal rich state support and run simulator/portal smoke.
+3. Add iOS correction capture, pantry freshness rendering, and simulator smoke for the rich Cooking payload.
+4. Add portal rich state support and run portal smoke.

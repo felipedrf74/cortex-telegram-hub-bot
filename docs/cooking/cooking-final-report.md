@@ -29,6 +29,7 @@ Verdict: GO WITH CONDITIONS
 - Full `npm run verify`: PASS, 427 files / 6398 tests.
 - Full local backend product smoke: PASS WITH CONDITIONS on `127.0.0.1:8326`; authenticated API smoke 13/13, Chat tenant smoke 15 pass / 1 partial / 0 fail, cross-skill fixtures PASS, Chat eval/day-to-day fixtures PASS.
 - Live local Cooking planning-context API read-back: PASS; Finance tight-budget context and Secretary cooking-window pressure were returned by `GET /api/v1/cooking/meal-plan`.
+- iOS rich Cooking DTO/rendering slice: PASS on branch `feature/cooking-rich-state-ui` at `f4f1053`; 7 focused Cooking presentation tests passed, including rich and legacy meal-plan payload decoding.
 - No production data used.
 - No production calendar used.
 - No deployment performed.
@@ -36,8 +37,8 @@ Verdict: GO WITH CONDITIONS
 
 ## Remaining Conditions Before Production
 
-- Add iOS/portal rich state support for assessment warnings and corrections before claiming frontend readiness.
-- Run iOS simulator smoke after rich Cooking state support lands.
+- Add iOS correction capture, pantry freshness rendering, and rich Cooking simulator smoke before claiming full frontend readiness.
+- Add portal preference/pantry management before claiming portal readiness.
 
 ## Release Recommendation
 

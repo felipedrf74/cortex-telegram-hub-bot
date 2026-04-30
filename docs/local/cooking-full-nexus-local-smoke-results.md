@@ -25,11 +25,13 @@ PASS WITH CONDITIONS.
 
 ## Not Completed
 
-- iOS simulator smoke for rich Cooking warning/pantry/preference rendering was not run.
+- iOS focused rich Cooking DTO/rendering tests passed on branch
+  `feature/cooking-rich-state-ui` at `f4f1053`; full simulator smoke for rich
+  Cooking warning/pantry/preference rendering was not run.
 - Portal runtime smoke for Cooking preference/pantry management was not run.
 - No real provider quality sampling was run.
 
 ## Remaining Conditions
 
-- Keep the release gate at GO WITH CONDITIONS until iOS and portal Cooking surfaces can represent the richer backend states.
+- Keep the release gate at GO WITH CONDITIONS until iOS simulator smoke and portal Cooking surfaces can represent the richer backend states.
 - Do not claim live provider quality from this smoke; it intentionally used fixture/degraded routing.
