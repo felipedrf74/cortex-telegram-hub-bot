@@ -19,6 +19,7 @@ import { getWorkflowEligibleIdeas, markIdeaPromoted } from '../state/saved-ideas
 import { readSignals } from './intelligence-bus';
 import { loadPromptWithConfig } from '../utils/prompt-loader';
 import { getUserLanguage } from './user-service';
+import { buildAuthorizedContentReferenceContext } from './content-reference-context';
 import {
   contentScopeForInsert,
   contentScopeParams,
@@ -411,6 +412,7 @@ export async function generateScript(
   const engineFormat = format === 'reel' ? 'Reel' : 'YouTube';
   const targetLanguage = userId > 0 ? getUserLanguage(userId) : 'pt-BR';
   const voiceMemory = buildWorkflowVoiceMemory(userId);
+  assertUsableReferencesForScriptGeneration(userId, format);
 
   const result = await getScript(
     topic.title,
@@ -462,6 +464,20 @@ export async function generateScript(
   }
 
   return result;
+}
+
+function assertUsableReferencesForScriptGeneration(userId: number, format: 'reel' | 'youtube'): void {
+  if (userId <= 0) return;
+  const requiresSourcing = format === 'youtube' || format === 'reel';
+  if (!requiresSourcing) return;
+  const context = buildAuthorizedContentReferenceContext(userId, userId);
+  const groundedReferences = context.references.filter((reference) => !reference.needsReview);
+  if (groundedReferences.length > 0) return;
+  const err = new Error(
+    'CONTENT_GENERATION_REFUSED_NO_REFERENCES: Add at least one indexed, trusted Content reference before generating sourced scripts.',
+  );
+  (err as Error & { code?: string }).code = 'CONTENT_GENERATION_REFUSED_NO_REFERENCES';
+  throw err;
 }
 
 /**

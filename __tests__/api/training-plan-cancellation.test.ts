@@ -18,6 +18,7 @@ const mocks = vi.hoisted(() => ({
   findOwnershipsForPlan: vi.fn(),
   markCalendarOwnershipDeleted: vi.fn(),
   getTrainingCalendarEventOwners: vi.fn(),
+  cancelTrainingPlanCrossSkillDependents: vi.fn(),
 }));
 
 vi.mock('../../src/services/unified-calendar', () => ({
@@ -53,6 +54,10 @@ vi.mock('../../src/services/training-plan-lifecycle', () => ({
 
 vi.mock('../../src/services/training-calendar-scope', () => ({
   getTrainingCalendarEventOwners: mocks.getTrainingCalendarEventOwners,
+}));
+
+vi.mock('../../src/services/training-plan-cancellation-cascade', () => ({
+  cancelTrainingPlanCrossSkillDependents: mocks.cancelTrainingPlanCrossSkillDependents,
 }));
 
 import { cancelTrainingPlanForUser } from '../../src/api/routes/training-plan-cancellation';
@@ -101,6 +106,11 @@ describe('training-plan-cancellation (hard delete)', () => {
     mocks.getSessionsForWeek.mockReturnValue([]);
     mocks.findOwnershipsForPlan.mockReturnValue([]);
     mocks.getTrainingCalendarEventOwners.mockReturnValue([]);
+    mocks.cancelTrainingPlanCrossSkillDependents.mockReturnValue({
+      canceledAgendaItems: 0,
+      staleMemories: 0,
+      signalId: null,
+    });
     mocks.deletePlanHard.mockReturnValue({
       ok: true,
       removedPlans: 1,
@@ -151,6 +161,16 @@ describe('training-plan-cancellation (hard delete)', () => {
     expect(mocks.deleteEvent).toHaveBeenCalledWith('evt-completed', 'outlook', 12);
     expect(mocks.deleteEvent).toHaveBeenCalledWith('evt-planned', 'google', 12);
     expect(mocks.deletePlanHard).toHaveBeenCalledWith(44, 12);
+    expect(mocks.cancelTrainingPlanCrossSkillDependents).toHaveBeenCalledWith({
+      userId: 12,
+      tenantId: 12,
+      planId: 44,
+      planVersion: 1,
+      sessionIds: [321, 322, 323],
+      reason: 'training_plan_canceled',
+    });
+    expect(mocks.deletePlanHard.mock.invocationCallOrder[0])
+      .toBeLessThan(mocks.cancelTrainingPlanCrossSkillDependents.mock.invocationCallOrder[0]);
     expect(mocks.markCalendarOwnershipDeleted).toHaveBeenCalledWith({
       eventId: 'evt-completed',
       source: 'outlook',

@@ -257,6 +257,68 @@ describe('Content reference provenance integrity', () => {
     expect(testDb.prepare('SELECT COUNT(*) AS count FROM content_source_output_links').get()).toEqual({ count: 1 });
   });
 
+  it('classifies outputs with references but no factual claims as no_claims without source review', () => {
+    const referenceId = upsertContentReference({
+      userId: 101,
+      referenceType: 'book',
+      sourceIdentifier: 'book-no-claims',
+      title: 'Tenant A source for style only',
+      extractionStatus: 'ready',
+      trustLevel: 'curated',
+      confidenceScore: 0.9,
+      qualityScore: 0.85,
+      freshnessScore: 0.9,
+      brokenStatus: 'ok',
+      staleStatus: 'fresh',
+      sourceSummary: 'Style inspiration.',
+      sourceMetadata: { title: 'Tenant A source for style only', author: 'A' },
+    });
+    const [reference] = retrieveAuthorizedContentReferences({ userId: 101, query: 'style' });
+    expect(reference.id).toBe(referenceId);
+
+    const grounding = assessClaimsGrounding([], [reference]);
+
+    expect(grounding).toEqual({
+      groundingStatus: 'no_claims',
+      unsupportedClaims: [],
+      reviewRequired: false,
+    });
+  });
+
+  it('partitions review-required references into an inspiration-only prompt block that cannot be cited', () => {
+    addContentReferenceLink({
+      userId: 101,
+      url: 'https://tenant-a.example/grounded',
+      title: 'Grounded reference',
+      extractionStatus: 'ready',
+      trustLevel: 'curated',
+      qualityScore: 0.8,
+      freshnessScore: 0.8,
+      brokenStatus: 'ok',
+      staleStatus: 'fresh',
+    });
+    addContentReferenceLink({
+      userId: 101,
+      url: 'https://tenant-a.example/review',
+      title: 'Needs review reference',
+      extractionStatus: 'pending',
+      trustLevel: 'unverified',
+      qualityScore: 0.8,
+      freshnessScore: 0.8,
+      brokenStatus: 'ok',
+      staleStatus: 'fresh',
+    });
+
+    const context = buildAuthorizedContentReferenceContext(101);
+
+    expect(context.promptBlock).toContain('[GROUNDED REFERENCES]');
+    expect(context.promptBlock).toContain('Citations and factual source claims may use only entries in this block.');
+    expect(context.promptBlock).toContain('[INSPIRATION ONLY — DO NOT CITE]');
+    expect(context.promptBlock).toContain('Entries in this block may inform tone or exploration only. They must never be cited');
+    expect(context.promptBlock.indexOf('Grounded reference')).toBeLessThan(context.promptBlock.indexOf('[INSPIRATION ONLY — DO NOT CITE]'));
+    expect(context.promptBlock.indexOf('Needs review reference')).toBeGreaterThan(context.promptBlock.indexOf('[INSPIRATION ONLY — DO NOT CITE]'));
+  });
+
   it('rejects hallucinated or cross-tenant reference ids in claim grounding', () => {
     const tenantARefId = upsertContentReference({
       userId: 101,

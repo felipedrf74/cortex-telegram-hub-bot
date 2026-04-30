@@ -7,6 +7,28 @@ This is the **post-round-2 corrected blocker list**, distinct from the round-1 [
 
 > Production stays at 4.14.106 while these are addressed. None are immediate-rollback severity for a single-user deploy.
 
+## 2026-04-30 remediation status
+
+Focused fixes are in progress on `feature/r2-qa-remediation-training-secretary-cascade` and `feature/ios-r2-contract-fixes`.
+
+Code/test status:
+
+- `R2-P0-1`, `R2-P0-2`, and `R2-P0-3` are fixed in the backend remediation branch with focused tests.
+- `R2-P1-3`, `R2-P1-4`, `R2-P1-5`, and `R2-P1-9` are fixed in the backend remediation branch with focused tests.
+- `R2-P1-14` and `R2-P1-15` are fixed in the iOS remediation branch with focused simulator tests.
+
+Validated so far:
+
+- Backend: `npx tsc --noEmit` plus 6 focused Vitest files / 73 tests.
+- Backend full suite: `npm run verify` passed with 424 files / 6,364 tests.
+- iOS: focused `xcodebuild test` on `ModelDecodingTests`, `TrainingPresentationTests`, and `ContentIdeaReviewDetailRenderingTests`.
+
+Still open before upgrading this QA-of-QA document to PASS:
+
+- Archive staging smoke, full iOS smoke, and Opus re-audit evidence.
+- Run fresh full backend verify and full iOS gate after branch commits.
+- Keep `R2-P1-1`, `R2-P1-2`, `R2-P1-6`, and `R2-P1-7` as documented deferrals unless explicitly pulled into this release.
+
 ## P0 (3)
 
 ### R2-P0-1 (ADV-4) — Training cancellation does not cascade to Secretary agenda items
@@ -145,8 +167,9 @@ This is the **post-round-2 corrected blocker list**, distinct from the round-1 [
 8. R2-P1-5 (needsReview partition)
 
 **Block D — Smoke + iOS evidence preservation (½ day)**
-9. R2-P1-10/11 (archive smoke + xcresult)
-10. R2-P1-12 (preserve Opus transcript)
+9. R2-P1-10 (archive staging smoke)
+10. R2-P1-11 (archive full iOS `.xcresult`) — fixed on 2026-04-30 with `docs/release/smoke-evidence/ios-full-test-20260430-070039.xcresult.zip` and summary JSON, 940 passed / 0 failed.
+11. R2-P1-12 (preserve Opus transcript)
 
 **Block E — Latent risks deferred (3+ days, can ship with documented exceptions)**
 11. R2-P1-1 (mid-loop fallback)

@@ -36,6 +36,7 @@ import {
   buildSkillMemorySummary,
   getSkillMemories,
   getSkillMemoryBoundaries,
+  markSkillMemoriesStaleForRelatedSkillVersion,
   markSkillMemoriesStaleForVersion,
   resolveSkillMemoryReference,
   setSkillMemory,
@@ -43,6 +44,7 @@ import {
 
 describe('skill-memory foundation', () => {
   beforeEach(() => {
+    delete process.env.ENABLE_TENANT_SHARED_MEMORY;
     testDb = new Database(':memory:');
     testDb.pragma('foreign_keys = ON');
     applyMigrations(testDb);
@@ -279,6 +281,56 @@ describe('skill-memory foundation', () => {
     expect(getSkillMemories({ tenantId: 61, userId: 7, skillId: 'content' })).toHaveLength(1);
   });
 
+  it('stales only memories tied to the canceled related skill version', () => {
+    setSkillMemory({
+      tenantId: 60,
+      userId: 7,
+      skillId: 'cooking',
+      memoryType: 'cross_skill_signal',
+      scope: 'user_private',
+      memoryKey: 'training_meal_window',
+      memoryValue: 'Prep before cancelled plan.',
+      source: 'training',
+      relatedSkillVersion: 'training-plan-v3',
+    });
+    setSkillMemory({
+      tenantId: 60,
+      userId: 7,
+      skillId: 'cooking',
+      memoryType: 'cross_skill_signal',
+      scope: 'user_private',
+      memoryKey: 'current_training_context',
+      memoryValue: 'Active plan context.',
+      source: 'training',
+      relatedSkillVersion: 'training-plan-v4',
+    });
+    setSkillMemory({
+      tenantId: 61,
+      userId: 7,
+      skillId: 'cooking',
+      memoryType: 'cross_skill_signal',
+      scope: 'user_private',
+      memoryKey: 'other_tenant_training_window',
+      memoryValue: 'Other tenant context.',
+      source: 'training',
+      relatedSkillVersion: 'training-plan-v3',
+    });
+
+    const changed = markSkillMemoriesStaleForRelatedSkillVersion({
+      tenantId: 60,
+      userId: 7,
+      skillId: 'cooking',
+      relatedSkillVersion: 'training-plan-v3',
+      reason: 'training_plan_canceled',
+    });
+
+    expect(changed).toBe(1);
+    expect(getSkillMemories({ tenantId: 60, userId: 7, skillId: 'cooking' }).map((memory) => memory.memoryKey))
+      .toEqual(['current_training_context']);
+    expect(getSkillMemories({ tenantId: 61, userId: 7, skillId: 'cooking' }).map((memory) => memory.memoryKey))
+      .toEqual(['other_tenant_training_window']);
+  });
+
   it('surfaces Content voice memory and Secretary/Training preferences with source and confidence', () => {
     setSkillMemory({
       tenantId: 70,
@@ -480,6 +532,32 @@ describe('skill-memory foundation', () => {
     })).toEqual(expect.objectContaining({
       memoryKey: 'preference_0',
       memoryValue: 'Corrected preference 0',
+    }));
+  });
+
+  it('rejects non-owner tenant-shared memory writes until membership authorization exists', () => {
+    expect(() => setSkillMemory({
+      tenantId: 70,
+      userId: 99,
+      skillId: 'content',
+      memoryType: 'voice_brand_preference',
+      scope: 'tenant_shared',
+      memoryKey: 'voice',
+      memoryValue: 'Unauthorized tenant-shared voice update.',
+      source: 'portal',
+    })).toThrow(/TENANT_SHARED_NOT_AVAILABLE/);
+
+    expect(setSkillMemory({
+      tenantId: 70,
+      userId: 70,
+      skillId: 'content',
+      memoryType: 'voice_brand_preference',
+      scope: 'tenant_shared',
+      memoryKey: 'voice',
+      memoryValue: 'Owner-approved tenant voice.',
+      source: 'portal',
+    })).toEqual(expect.objectContaining({
+      memoryValue: 'Owner-approved tenant voice.',
     }));
   });
 });

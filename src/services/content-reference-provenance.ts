@@ -20,7 +20,7 @@ import {
 
 export type ContentBrokenStatus = 'ok' | 'unknown' | 'broken';
 export type ContentStaleStatus = 'fresh' | 'unknown' | 'stale';
-export type ContentGroundingStatus = 'grounded' | 'partially_grounded' | 'ungrounded';
+export type ContentGroundingStatus = 'grounded' | 'partially_grounded' | 'ungrounded' | 'no_claims';
 
 export interface ContentReferenceRegistryInput {
   userId: number;
@@ -419,9 +419,9 @@ export function assessClaimsGrounding(
 } {
   if (claims.length === 0) {
     return {
-      groundingStatus: references.length > 0 ? 'partially_grounded' : 'ungrounded',
+      groundingStatus: references.length > 0 ? 'no_claims' : 'ungrounded',
       unsupportedClaims: [],
-      reviewRequired: references.some((ref) => ref.reviewRequired),
+      reviewRequired: false,
     };
   }
   const referenceIds = new Set(references.map((ref) => ref.referenceId));

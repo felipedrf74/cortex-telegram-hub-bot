@@ -93,6 +93,25 @@ function applyMigrations(db: Database.Database): void {
   }
 }
 
+function seedGroundedReference(userId: number): void {
+  testDb.prepare(`
+    INSERT INTO content_reference_links (
+      user_id, tenant_id, owner_user_id, visibility_scope, lifecycle_state, scope_status,
+      url, title, source_type, extraction_status, freshness_score, quality_score, trust_level,
+      broken_status, stale_status, created_by, updated_by, audit_metadata_json
+    )
+    VALUES (?, ?, ?, 'user_private', 'active', 'active', ?, ?, 'link', 'ready', 0.9, 0.9, 'curated', 'ok', 'fresh', ?, ?, '{}')
+  `).run(
+    userId,
+    userId,
+    userId,
+    `https://example.com/source-${userId}`,
+    'Trusted source',
+    userId,
+    userId,
+  );
+}
+
 import {
   generateScript,
   generateTopicCandidates,
@@ -192,6 +211,7 @@ describe('content-workflow: user-scoped knowledge injection', () => {
   });
 
   it('forwards first-party topic context and packaging lineage through generateScript', async () => {
+    seedGroundedReference(42);
     getUserLanguage.mockReturnValue('en-US');
     getScript.mockResolvedValue({
       topic: 'Build solo with vibe coding',
@@ -244,5 +264,19 @@ describe('content-workflow: user-scoped knowledge injection', () => {
       cta: 'Save this for your next sprint.',
       userId: 42,
     }));
+  });
+
+  it('refuses sourced script generation when the tenant has no grounded references', async () => {
+    await expect(generateScript({
+      title: 'Unsupported source-required script',
+      niche: 'product',
+      whyNow: 'Needs proof',
+      hookIdea: 'Proof first',
+    }, 'youtube', 42)).rejects.toMatchObject({
+      code: 'CONTENT_GENERATION_REFUSED_NO_REFERENCES',
+    });
+
+    expect(getScript).not.toHaveBeenCalled();
+    expect(storeScript).not.toHaveBeenCalled();
   });
 });

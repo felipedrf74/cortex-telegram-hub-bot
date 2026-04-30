@@ -2,6 +2,58 @@
 
 Date: 2026-04-29
 
+## 2026-04-30 Second-Round QA Remediation
+
+Branch / backup:
+
+- Backend fix branch: `feature/r2-qa-remediation-training-secretary-cascade`
+- Backend backup branch: `backup/r2-qa-remediation-before-fixes-20260430-0629`
+- Backend backup tag: `backup-r2-qa-remediation-before-fixes-20260430-0629`
+- iOS fix branch: `feature/ios-r2-contract-fixes`
+- iOS backup branch: `backup/ios-r2-contract-fixes-before-20260430-0640`
+- iOS backup tag: `backup-ios-r2-contract-fixes-before-20260430-0640`
+
+Findings closed in code:
+
+- `R2-P0-1` / `ADV-4`: Training cancellation now cascades to matching Secretary agenda items through `cancelTrainingPlanCrossSkillDependents()`.
+- `R2-P0-2` / `ADV-5`: Training cancellation emits `training_plan_canceled` on the intelligence bus and marks downstream Cooking, Secretary, and Chat skill memories stale for the canceled training plan version.
+- `R2-P0-3` / `FC-1`: The legacy training calendar sync path now submits a Secretary scheduling intent before creating provider calendar events, and it leaves sessions unscheduled when Secretary cannot return a valid slot.
+- `R2-P1-3`: Empty-claims-with-references provenance now returns `no_claims` without forcing review.
+- `R2-P1-4`: Source-required script generation now refuses generation when no usable authorized references exist.
+- `R2-P1-5`: Content reference prompt context now partitions grounded references from inspiration-only references that must not be cited.
+- `R2-P1-9`: `tenant_shared` skill-memory writes fail closed unless the temporary `ENABLE_TENANT_SHARED_MEMORY=true` gate is enabled or the owner bootstrap path is used.
+- `R2-P1-14`: iOS `WeekSession` now decodes and renders `decision_explanation` / `decisionExplanation`.
+- `R2-P1-15`: iOS `ContentIdea` now decodes `content_output_provenance`, unsupported claims, grounding status, and provenance references, and the idea review detail view renders backend-provided provenance warnings.
+
+Validation completed:
+
+- PASS: `npx tsc --noEmit`
+- PASS: `npx vitest run __tests__/api/training-plan-calendar-sync.test.ts __tests__/api/training-plan-cancellation.test.ts __tests__/services/training-plan-cancellation-cascade.test.ts __tests__/services/skill-memory.test.ts __tests__/services/content-workflow-user-scope.test.ts __tests__/services/content-reference-provenance.test.ts`
+  - 6 files / 73 tests
+- PASS: `npm run verify`
+  - 424 files / 6,364 tests
+- PASS: `xcodebuild test -project "Nexus Hub.xcodeproj" -scheme "Nexus Hub" -sdk iphonesimulator -destination "platform=iOS Simulator,name=iPhone 17 Pro" -only-testing:"Nexus HubTests/ModelDecodingTests" -only-testing:"Nexus HubTests/TrainingPresentationTests" -only-testing:"Nexus HubTests/ContentIdeaReviewDetailRenderingTests"`
+  - Result bundle: `/Users/felipedominguez/Library/Developer/Xcode/DerivedData/Nexus_Hub-gsoqdyrpqmkkotdmfddhuhobycvu/Logs/Test/Test-Nexus Hub-2026.04.30_06-47-47-+0100.xcresult`
+- PASS: full iOS simulator test
+  - Command: `xcodebuild test -project "Nexus Hub.xcodeproj" -scheme "Nexus Hub" -sdk iphonesimulator -destination "platform=iOS Simulator,name=iPhone 17 Pro"`
+  - Result: 940 passed / 0 failed / 0 skipped
+  - Result bundle: `/Users/felipedominguez/Library/Developer/Xcode/DerivedData/Nexus_Hub-gsoqdyrpqmkkotdmfddhuhobycvu/Logs/Test/Test-Nexus Hub-2026.04.30_07-00-39-+0100.xcresult`
+  - Archived evidence: `docs/release/smoke-evidence/ios-full-test-20260430-070039-summary.json`
+  - Archived bundle: `docs/release/smoke-evidence/ios-full-test-20260430-070039.xcresult.zip`
+
+Known remaining follow-ups before claiming full second-round PASS:
+
+- `R2-P1-1`: Mid-tool-loop provider fallback should fail typed instead of orphaning `tool_use_id`.
+- `R2-P1-2`: Destructive chat confirmation should bind to a specific tool/object target, not a turn-wide boolean.
+- `R2-P1-6`: Silent push/cache invalidation remains a backend+iOS follow-up.
+- `R2-P1-7`: Secretary provider adapters should require or emulate `findEventsByAgendaItemId` for duplicate prevention.
+- `R2-P1-10` / `R2-P1-12`: Staging smoke and Opus re-audit artifacts still need to be archived under `docs/release/smoke-evidence/` before the QA-of-QA evidence gap is fully closed. `R2-P1-11` now has archived full iOS `.xcresult` evidence.
+
+Release-gate note:
+
+- This branch closes the active second-round P0s in focused code/tests.
+- Production promotion still requires a fresh backend full verify, full iOS test/build gate, staging deploy, focused staging smoke, and production health capture.
+
 ## Branch / Backup Setup
 
 - Starting branch: `feature/content-editorial-mutation-contracts`

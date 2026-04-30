@@ -15,6 +15,7 @@ import {
   findOwnershipsForPlan,
   markCalendarOwnershipDeleted,
 } from '../../services/training-plan-lifecycle';
+import { cancelTrainingPlanCrossSkillDependents } from '../../services/training-plan-cancellation-cascade';
 import { getTrainingCalendarEventOwners } from '../../services/training-calendar-scope';
 import {
   buildTrainingSessionIdentityKey,
@@ -238,6 +239,9 @@ async function cancelTrainingPlanForUserLocked(
       }, 'Some calendar events could not be deleted during plan cancellation; proceeding with local hard delete');
     }
 
+    const sessionIdsForCascade = sessionsByWeek.flatMap(({ sessions }) => sessions.map((session) => session.id));
+    const planVersionForCascade = Number((plan as any).plan_version ?? 1);
+
     // Step 2 — hard-delete the plan row. FK CASCADE removes weeks,
     // sessions, and completions atomically. The user_id scope on the
     // DELETE is defense-in-depth in case the ownership gate above is
@@ -258,6 +262,26 @@ async function cancelTrainingPlanForUserLocked(
     removedWeeks += removal.removedWeeks;
     removedCompletions += removal.removedCompletions;
     removedPlans += removal.removedPlans;
+
+    const cascade = cancelTrainingPlanCrossSkillDependents({
+      userId,
+      tenantId: Number((plan as any).tenant_id ?? userId),
+      planId: plan.id,
+      planVersion: planVersionForCascade,
+      sessionIds: sessionIdsForCascade,
+      reason: 'training_plan_canceled',
+    });
+
+    if (cascade.canceledAgendaItems > 0 || cascade.staleMemories > 0 || cascade.signalId != null) {
+      logger.info({
+        userId,
+        planId: plan.id,
+        planVersion: planVersionForCascade,
+        canceledAgendaItems: cascade.canceledAgendaItems,
+        staleMemories: cascade.staleMemories,
+        signalId: cascade.signalId,
+      }, 'Training cancellation cascaded to Secretary agenda and downstream skill context');
+    }
   }
 
   // Step 3 — wipe every per-user coach narrative store that survives

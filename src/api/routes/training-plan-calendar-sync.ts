@@ -26,6 +26,11 @@ import {
   computeTrainingSessionShapeHash,
   parseTrainingIdentityMarker,
 } from '../../services/training-session-identity';
+import {
+  submitSecretarySchedulingIntent,
+  type SecretarySchedulingDecision,
+  type SecretarySchedulingIntent,
+} from '../../services/secretary-scheduling-arbitrator';
 
 export type TrainingPlanCalendarSyncResult =
   | {
@@ -503,9 +508,54 @@ export async function syncTrainingPlanCalendar(
       );
       continue;
     }
+    let secretaryWindow: { start: string; end: string } | null = null;
+    try {
+      const secretaryDecision = submitSecretarySchedulingIntent(
+        buildTrainingSyncSecretaryIntent({
+          userId,
+          tenantId: Number((plan as any).tenant_id ?? userId),
+          planId: plan.id,
+          planVersion,
+          item,
+          start: window.start,
+          end: window.end,
+        }),
+        { now: now.toISOString() },
+      );
+      secretaryWindow = selectedTrainingSyncSecretaryWindow(secretaryDecision);
+      if (!secretaryWindow) {
+        trainingPlans.updateSession(item.sessionId, {
+          status: 'unscheduled',
+          calendar_event_id: null,
+          calendar_source: null,
+        });
+        sessionsFailed += 1;
+        logger.warn(
+          {
+            userId,
+            planId: plan.id,
+            planVersion,
+            sessionId: item.sessionId,
+            secretaryStatus: secretaryDecision.status,
+            reasonCodes: secretaryDecision.reasonCodes,
+          },
+          'syncTrainingPlanCalendar: Secretary did not return a schedulable Training slot',
+        );
+        continue;
+      }
+    } catch (err) {
+      sessionsFailed += 1;
+      if (!firstError) firstError = err as Error;
+      logger.warn(
+        { err, userId, planId: plan.id, planVersion, sessionId: item.sessionId },
+        'syncTrainingPlanCalendar: Secretary scheduling intent failed for session',
+      );
+      continue;
+    }
+
     scheduledWindows.push({
-      startMs: window.start.getTime(),
-      endMs: window.end.getTime(),
+      startMs: Date.parse(secretaryWindow.start),
+      endMs: Date.parse(secretaryWindow.end),
       title: item.title,
     });
 
@@ -513,8 +563,8 @@ export async function syncTrainingPlanCalendar(
       const event = await createTrainingCalendarEvent(
         {
           title: `${emojiForTrainingSession(item.sessionType)} ${item.title} (${item.durationMinutes}min)`,
-          start: window.start.toISOString(),
-          end: window.end.toISOString(),
+          start: secretaryWindow.start,
+          end: secretaryWindow.end,
           description: appendTrainingIdentityMarker(item.description, {
             planId: plan.id,
             planVersion,
@@ -705,6 +755,53 @@ function preferredTrainingCalendarSource(userId: number): 'google' | 'outlook' |
     return undefined;
   }
   return undefined;
+}
+
+function buildTrainingSyncSecretaryIntent(input: {
+  userId: number;
+  tenantId: number;
+  planId: number;
+  planVersion: number;
+  item: {
+    sessionId: number;
+    sessionIdentityKey: string;
+    sessionShapeHash: string;
+    title: string;
+    durationMinutes: number;
+  };
+  start: Date;
+  end: Date;
+}): SecretarySchedulingIntent {
+  return {
+    intentId: `training:${input.planId}:${input.planVersion}:${input.item.sessionId}`,
+    sourceSkill: 'training',
+    sourceAction: 'sync_training_session_calendar',
+    sourceEntityId: input.item.sessionId,
+    sourceEntityType: 'training_session',
+    ownerUserId: input.userId,
+    tenantId: input.tenantId,
+    title: input.item.title,
+    requestedDurationMinutes: Math.max(1, input.item.durationMinutes),
+    minimumDurationMinutes: Math.min(Math.max(20, Math.round(input.item.durationMinutes * 0.75)), input.item.durationMinutes),
+    preferredWindows: [{
+      start: input.start.toISOString(),
+      end: input.end.toISOString(),
+      label: 'training calendar sync slot',
+      hard: true,
+    }],
+    priority: 'high',
+    flexibility: 'fixed',
+    reason: 'Training calendar sync requested Secretary-owned agenda placement.',
+    context: `plan_id=${input.planId}; plan_version=${input.planVersion}; session_identity_key=${input.item.sessionIdentityKey}; session_shape_hash=${input.item.sessionShapeHash}`,
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  };
+}
+
+function selectedTrainingSyncSecretaryWindow(decision: SecretarySchedulingDecision): { start: string; end: string } | null {
+  if (!['scheduled', 'reflowed', 'compressed'].includes(decision.status)) return null;
+  if (!decision.selectedSlot?.start || !decision.selectedSlot?.end) return null;
+  return { start: decision.selectedSlot.start, end: decision.selectedSlot.end };
 }
 
 function consumeMatchingExistingTrainingEvent(

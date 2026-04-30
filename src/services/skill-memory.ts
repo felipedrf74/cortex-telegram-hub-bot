@@ -104,6 +104,14 @@ export interface StaleMemoryInvalidationInput {
   reason: string;
 }
 
+export interface RelatedSkillMemoryInvalidationInput {
+  tenantId?: number;
+  userId?: number | null;
+  skillId: string;
+  relatedSkillVersion: string;
+  reason: string;
+}
+
 export type MemoryReferenceResolution =
   | { status: 'resolved'; memory: SkillMemoryRecord }
   | { status: 'needs_clarification'; reason: string; candidates: SkillMemoryRecord[] };
@@ -360,6 +368,18 @@ function canReadTenantSharedMemory(userId: number | null | undefined, tenantId: 
   return isValidTenantUserId(userId) && userId === tenantId;
 }
 
+function assertTenantSharedWriteAllowed(input: SkillMemoryInput | SkillMemoryCorrectionInput): void {
+  if (input.scope !== 'tenant_shared') return;
+  if (process.env.ENABLE_TENANT_SHARED_MEMORY === 'true') return;
+  // Until a durable tenant-membership table exists, tenant-shared writes are
+  // limited to system callers or the canonical owner workspace user. That
+  // avoids an asymmetric state where any member-shaped call can write shared
+  // memory but only owner-shaped calls can read it.
+  if (input.userId == null) return;
+  if (isValidTenantUserId(input.userId) && input.userId === input.tenantId) return;
+  throw new Error('TENANT_SHARED_NOT_AVAILABLE: tenant-shared memory writes require owner scope until membership authorization lands');
+}
+
 function rowToRecord(row: SkillMemoryRow): SkillMemoryRecord {
   return {
     id: row.id,
@@ -450,6 +470,7 @@ function assertMemoryQuota(input: SkillMemoryInput, scopedUserId: number, skillI
 
 export function setSkillMemory(input: SkillMemoryInput): SkillMemoryRecord {
   assertSafeMemory(input);
+  assertTenantSharedWriteAllowed(input);
   const db = getDb();
   const skillId = normalizeSkillId(input.skillId);
   const scopedUserId = userIdForScope(input.scope, input.userId);
@@ -638,6 +659,38 @@ export function markSkillMemoriesStaleForVersion(input: StaleMemoryInvalidationI
   if (input.relatedSkillVersion) {
     clauses.push('(related_skill_version IS NULL OR related_skill_version <> ?)');
     params.push(input.relatedSkillVersion);
+  }
+
+  const result = getDb().prepare(`
+    UPDATE skill_memories
+    SET status = 'stale',
+        freshness_status = 'stale',
+        updated_at = datetime('now'),
+        audit_metadata_json = json_set(
+          COALESCE(NULLIF(audit_metadata_json, ''), '{}'),
+          '$.staleReason',
+          ?
+        )
+    WHERE ${clauses.join(' AND ')}
+  `).run(input.reason, ...params);
+
+  return result.changes;
+}
+
+export function markSkillMemoriesStaleForRelatedSkillVersion(input: RelatedSkillMemoryInvalidationInput): number {
+  const skillId = normalizeSkillId(input.skillId);
+  const relatedSkillVersion = String(input.relatedSkillVersion || '').trim();
+  if (!relatedSkillVersion) return 0;
+
+  const clauses = ['skill_id = ?', "status = 'active'", 'related_skill_version = ?'];
+  const params: unknown[] = [skillId, relatedSkillVersion];
+  if (isValidTenantUserId(input.tenantId)) {
+    clauses.push('tenant_id = ?');
+    params.push(input.tenantId);
+  }
+  if (isValidTenantUserId(input.userId)) {
+    clauses.push('user_id IN (?, 0)');
+    params.push(input.userId);
   }
 
   const result = getDb().prepare(`
