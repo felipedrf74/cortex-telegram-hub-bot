@@ -10,10 +10,10 @@ None currently known after focused backend tenant-scope and allergy-blocker test
 
 - Add iOS rendering for assessment warnings, substitutions, pantry status, and correction capture.
 - Add portal Cooking preferences/pantry management.
-- Run full local product smoke and archive logs.
 
 ## P2
 
+- Add iOS simulator smoke for rich Cooking result rendering once frontend DTO support exists.
 - Pantry quantity normalization and low-stock suggestions beyond CRUD/status.
 - Advanced substitution engine.
 - Leftover/waste optimizer.

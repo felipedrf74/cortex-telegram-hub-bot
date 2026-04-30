@@ -8,7 +8,6 @@ None known.
 
 ## P1
 
-- Full local product smoke not run.
 - iOS rich Cooking warning/correction rendering not implemented.
 - Portal Cooking management not implemented.
 

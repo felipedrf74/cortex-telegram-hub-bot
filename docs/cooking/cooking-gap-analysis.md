@@ -14,7 +14,7 @@ Date: 2026-04-30
 | P1 | Finance/Secretary runtime context read-back | Fixed with `cooking-planning-context.ts` and route-level assessment integration |
 | P1 | iOS rich warning/substitution/correction rendering | Open |
 | P1 | Portal Cooking preference/pantry console | Open |
-| P1 | Full local runtime smoke with backend, workers, iOS, and fixture model | Documented blocker |
+| P1 | Full local runtime smoke with backend, workers/cache, and fixture model | Fixed with attached backend full-smoke on `127.0.0.1:8326`; iOS simulator remains a frontend gate |
 | P2 | Advanced substitution model | Documented foundation, not fully implemented |
 | P2 | Food waste/leftover optimization | Partial assessment only |
 
@@ -31,4 +31,4 @@ Date: 2026-04-30
 1. Add route/tool support for meal-plan generation using structured constraints.
 2. Add item-price grocery budget optimizer and Secretary-driven alternative-window proposals.
 3. Extend iOS and portal DTOs for Cooking assessment/pantry/preference states.
-4. Run full local runtime smoke with fixture model and archived logs.
+4. Add iOS/portal rich state support and run simulator/portal smoke.

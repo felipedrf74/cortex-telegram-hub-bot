@@ -8,12 +8,12 @@ No known unresolved P0 after focused backend tests.
 
 ## P1 Before Production
 
-1. Run full local Nexus runtime smoke and archive logs.
-2. Add iOS support for assessment warnings, pantry/preference status, and unknown future states.
-3. Add portal preference/pantry management readiness plan.
+1. Add iOS support for assessment warnings, pantry/preference status, and unknown future states.
+2. Add portal preference/pantry management readiness plan.
 
 ## P2
 
+- Add iOS simulator smoke for rich Cooking result rendering after frontend DTO support lands.
 - Advanced substitution engine.
 - Finance-backed grocery budget optimizer.
 - Secretary-driven alternate cooking-window proposals.

@@ -4,7 +4,7 @@ Date: 2026-04-30
 
 ## Mode
 
-Focused backend fixture tests only.
+Focused backend fixture tests plus full local backend product runtime smoke.
 
 No production data, production calendars, or real provider calls were used.
 
@@ -17,6 +17,10 @@ npx vitest run __tests__/services/cooking-preferences.test.ts __tests__/api/cook
 npx vitest run __tests__/services/cooking-planning-context.test.ts __tests__/services/cooking-intelligence.test.ts __tests__/api/cooking-routes.test.ts
 npx tsc --noEmit
 npm run verify
+FULL_NEXUS_STATE_DIR=.local/cooking-full-nexus-smoke DATABASE_PATH="$PWD/data/cooking-full-nexus-smoke.db" PORTAL_PORT=8326 FULL_NEXUS_RESET_DB=1 NEXUS_LOCAL_ALLOW_MODEL_CALLS=0 scripts/full-nexus-local-engine.sh cleanup
+FULL_NEXUS_STATE_DIR=.local/cooking-full-nexus-smoke DATABASE_PATH="$PWD/data/cooking-full-nexus-smoke.db" PORTAL_PORT=8326 NEXUS_LOCAL_ALLOW_MODEL_CALLS=0 scripts/full-nexus-local-engine.sh doctor
+FULL_NEXUS_STATE_DIR=.local/cooking-full-nexus-smoke DATABASE_PATH="$PWD/data/cooking-full-nexus-smoke.db" PORTAL_PORT=8326 NEXUS_LOCAL_ALLOW_MODEL_CALLS=0 scripts/full-nexus-local-engine.sh up
+FULL_NEXUS_STATE_DIR=.local/cooking-full-nexus-smoke DATABASE_PATH="$PWD/data/cooking-full-nexus-smoke.db" PORTAL_PORT=8326 NEXUS_LOCAL_ALLOW_MODEL_CALLS=0 scripts/full-nexus-local-engine.sh full-smoke
 ```
 
 ## Results
@@ -34,8 +38,11 @@ npm run verify
 | Tool tenant scope | PASS | Tool executor forwards authenticated tenant into Cooking writes and preference reads/writes |
 | Model routing | PASS BY INSPECTION | No provider/model hardcoding added |
 | Full backend verify | PASS | `npm run verify`: 427 files / 6398 tests |
-| Full local engine | BLOCKED/NOT RUN | Requires full runtime startup, workers/cache, fixture mode, and iOS simulator pass |
+| Full local backend engine | PASS WITH CONDITIONS | Backend ran attached on `127.0.0.1:8326`; 13/13 authenticated API smoke checks passed; Chat tenant smoke 15 pass / 1 partial; cross-skill fixtures and Chat eval/day-to-day fixtures passed |
+| Cooking live local planning-context read-back | PASS | Authenticated local API returned Finance `available/tight` context, Secretary available cooking minutes `{ "2026-05-04": 60 }`, `COOKING_TIME_OVER_CAPACITY`, and `FINANCE_BUDGET_TIGHT` |
+| iOS simulator | NOT RUN | Still a separate frontend gate for rich Cooking states |
+| Portal runtime | NOT RUN | Portal Cooking preferences/pantry management remains a frontend/product gap |
 
 ## Cleanup
 
-No long-running local services, workers, containers, tunnels, or provider loops were started for this focused smoke.
+Attached backend was stopped after smoke. Final cleanup removed the local smoke DB/auth artifacts and verified no listener remained on port `8326`.

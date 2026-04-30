@@ -34,3 +34,16 @@ Validate Cooking in the full local product runtime:
 8. User correction updates Cooking memory.
 9. Tenant switch does not leak Cooking data.
 10. iOS renders Cooking result.
+
+## Execution Addendum
+
+The backend portion of this smoke ran on 2026-04-30 with:
+
+- `FULL_NEXUS_STATE_DIR=.local/cooking-full-nexus-smoke`
+- `DATABASE_PATH=data/cooking-full-nexus-smoke.db`
+- `PORTAL_PORT=8326`
+- `NEXUS_LOCAL_ALLOW_MODEL_CALLS=0`
+
+Results are archived in `docs/local/cooking-full-nexus-local-smoke-results.md`.
+The iOS rendering scenario remains open until the frontend supports the richer
+Cooking warning, pantry, preference, and planning-context states.

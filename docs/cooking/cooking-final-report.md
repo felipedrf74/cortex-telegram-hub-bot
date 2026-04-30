@@ -27,6 +27,8 @@ Verdict: GO WITH CONDITIONS
 - Planning-context focused Vitest: 3 files / 29 tests PASS.
 - Typecheck: PASS.
 - Full `npm run verify`: PASS, 427 files / 6398 tests.
+- Full local backend product smoke: PASS WITH CONDITIONS on `127.0.0.1:8326`; authenticated API smoke 13/13, Chat tenant smoke 15 pass / 1 partial / 0 fail, cross-skill fixtures PASS, Chat eval/day-to-day fixtures PASS.
+- Live local Cooking planning-context API read-back: PASS; Finance tight-budget context and Secretary cooking-window pressure were returned by `GET /api/v1/cooking/meal-plan`.
 - No production data used.
 - No production calendar used.
 - No deployment performed.
@@ -34,8 +36,8 @@ Verdict: GO WITH CONDITIONS
 
 ## Remaining Conditions Before Production
 
-- Run full local Nexus product smoke with backend, auth, tenant context, Chat, Secretary, Training, Finance, Content, Cooking, workers/cache, fixture model, and iOS simulator.
 - Add iOS/portal rich state support for assessment warnings and corrections before claiming frontend readiness.
+- Run iOS simulator smoke after rich Cooking state support lands.
 
 ## Release Recommendation
 
