@@ -1,0 +1,2976 @@
+═══════════════════════════════════════════════
+  🚀 Nexus Hub Promote to Production
+═══════════════════════════════════════════════
+
+🔍 Preflight checks...
+   ✅ Staging install present
+   ✅ Local and staging dist/ hashes match
+
+🧪 Running staging smoke test...
+═══════════════════════════════════════════════
+  🧪 Nexus Hub Staging Smoke Test
+═══════════════════════════════════════════════
+
+📡 1/6 — Health endpoints
+  ✅ content-engine /health — status=ok
+  ✅ nexus-hub /api/snapshot — version=4.14.106
+
+🧠 2/6 — Snapshot has expected shape
+  ✅ snapshot.uptime — uptime={"seconds":1225,"human":"20m"}
+  ✅ snapshot.bot — bot={"polling":false,"restarting":false,"las
+  ✅ snapshot.integrations — integrations=[{"name":"Telegram Bot","group":"system"
+  ✅ snapshot.apiUsage — apiUsage={"today":{"calls":25,"cost":0.0196138,"t
+
+💸 3/6 — Per-endpoint cost dashboard
+  ✅ cost-by-domain.totalCost — totalCost=0.1903
+  ✅ cost-by-domain.detailed — detailed=[{"domain":"content_engine_script","cate
+  ✅ cost-by-domain.providerSplit — providerSplit=[{"provider":"gemini","calls":82,"cost":
+  ✅ cost-by-domain.dailySeries — dailySeries=[{"date":"2026-04-24","cost":0.0025,"cal
+
+🔌 4/6 — Provider stats
+  ✅ provider-stats.providers — providers=[{"name":"gemini","today":{"calls":9,"co
+
+📱 iOS-surface contract smoke
+  ✅ iOS /api/v1/dashboard — 401 with canonical error envelope
+  ✅ iOS /api/v1/tasks/lists — 401 with canonical error envelope
+  ✅ iOS /api/v1/training/today — 401 with canonical error envelope
+  ✅ iOS /api/v1/plan/today — 401 with canonical error envelope
+
+🏃 5/6 — Process state via PM2
+  ✅ PM2 — both staging processes online
+
+🗃  6/6 — DB integrity
+  ✅ Staging DB integrity_check: ok
+
+═══════════════════════════════════════════════
+  ✅ ALL 17 TESTS PASSED — staging is safe to promote
+═══════════════════════════════════════════════
+
+   Current prod version:  v4.14.106
+   Current staging version: v4.14.106
+   Local working tree:    v4.14.106  ← will become prod
+
+
+📦 Promoting to production via deploy.sh...
+
+🚀 Deploying from: /Users/felipedominguez/Desktop/Custom Connectors/Cortex/cortex-telegram-hub-bot
+   To: dominguez@serverdominguez:/home/dominguez/telegram-hub-bot
+
+🔍 Running full validation (typecheck + tests)...
+
+> @nexushub/core@4.14.106 verify
+> npm run typecheck && npm run test
+
+
+> @nexushub/core@4.14.106 typecheck
+> tsc --noEmit
+
+
+> @nexushub/core@4.14.106 test
+> vitest run
+
+
+ RUN  v3.2.4 /Users/felipedominguez/Desktop/Custom Connectors/Cortex/cortex-telegram-hub-bot
+
+ ✓ __tests__/commands/skill-toggles.test.ts (50 tests) 12232ms
+ ✓ __tests__/skills/registry.test.ts (47 tests) 11607ms
+ ✓ __tests__/services/webhook-registry.test.ts (46 tests) 11473ms
+ ✓ __tests__/api/chat-routes.test.ts (45 tests) 11305ms
+ ✓ __tests__/services/webhook-registry-qa-validation.test.ts (42 tests) 10477ms
+ ✓ __tests__/services/database.test.ts (43 tests) 9999ms
+ ✓ __tests__/services/finance-tracker-qa-validation.test.ts (37 tests) 9225ms
+ ✓ __tests__/services/onboarding-qa.test.ts (43 tests) 9037ms
+ ✓ __tests__/services/integration-status.test.ts (36 tests) 9074ms
+ ✓ __tests__/services/progression-analytics.test.ts (90 tests) 8765ms
+ ✓ __tests__/services/user-service.test.ts (46 tests) 8765ms
+ ✓ __tests__/services/cooking-chef-qa-validation.test.ts (50 tests) 8706ms
+ ✓ __tests__/skills/skill-manager.test.ts (34 tests) 8534ms
+ ✓ __tests__/services/task-store/unified-task-store.test.ts (33 tests) 8437ms
+ ✓ __tests__/services/adherence-signals.test.ts (33 tests) 8343ms
+ ✓ __tests__/services/training-plans.test.ts (32 tests) 8045ms
+ ✓ __tests__/services/chat-triggered-onboarding.test.ts (29 tests) 7630ms
+   ✓ Phase 3 Slice A — buildSimpleStateContext onboarding block > injects an <onboarding_pending> block for a confident sport with no profile  358ms
+   ✓ Phase 3 Slice A — buildSimpleStateContext onboarding block > injects the block for a running message when running profile is missing  349ms
+ ✓ __tests__/skills/skill-security.test.ts (66 tests) 7291ms
+ ✓ __tests__/services/training-plan-lifecycle.test.ts (28 tests) 7066ms
+ ✓ __tests__/services/oauth-store.test.ts (28 tests) 7086ms
+ ✓ __tests__/services/skill-memory.test.ts (28 tests) 7039ms
+ ✓ __tests__/skills/skills-command-qa-validation.test.ts (27 tests) 6822ms
+ ✓ __tests__/portal/skill-management-qa-validation.test.ts (27 tests) 6842ms
+ ✓ __tests__/services/cross-agent-learning-qa-validation.test.ts (26 tests) 6561ms
+ ✓ __tests__/services/user-data-export.test.ts (26 tests) 6545ms
+ ✓ __tests__/services/usage-metering.test.ts (25 tests) 6317ms
+ ✓ __tests__/services/training-signals.test.ts (26 tests) 6362ms
+ ✓ __tests__/domains/domain-handler.test.ts (23 tests) 6121ms
+   ✓ buildSimpleStateContext > includes onboarding-pending context for prescriptive training asks when profile data is missing  375ms
+ ✓ __tests__/services/task-store/notion-adapter.test.ts (24 tests) 6094ms
+ ✓ __tests__/services/skill-gated-onboarding.test.ts (23 tests) 5791ms
+ ✓ __tests__/services/finance-tracker.test.ts (40 tests) 5566ms
+ ✓ __tests__/services/signal-ranking.test.ts (28 tests) 5559ms
+ ✓ __tests__/services/skill-migration-qa-validation.test.ts (21 tests) 5551ms
+   ✓ Skill Database Migrations QA Validation > migration files on disk > all migrations apply without errors  501ms
+ ✓ __tests__/services/task-store/todoist-adapter.test.ts (21 tests) 5367ms
+ ✓ __tests__/services/skill-tiers.test.ts (21 tests) 5340ms
+ ✓ __tests__/portal/skill-management.test.ts (21 tests) 5316ms
+ ✓ __tests__/api/skills-routes.test.ts (20 tests) 5107ms
+ ✓ __tests__/services/content-notifications.test.ts (27 tests) 5088ms
+ ✓ __tests__/services/signals-observability.test.ts (20 tests) 5087ms
+ ✓ __tests__/services/content-learning-store.test.ts (24 tests) 4952ms
+ ✓ __tests__/services/report-document-store.test.ts (25 tests) 4815ms
+ ✓ __tests__/services/usage-metering-qa-validation.test.ts (26 tests) 4833ms
+ ✓ __tests__/state/user-isolation.test.ts (19 tests) 4803ms
+ ✓ __tests__/services/error-monitor.test.ts (18 tests) 4610ms
+ ✓ __tests__/regression/skill-extraction.test.ts (233 tests) 4571ms
+ ✓ __tests__/services/cost-guardrail.test.ts (18 tests) 4621ms
+ ✓ __tests__/services/training-history.test.ts (18 tests) 4577ms
+ ✓ __tests__/services/user-skill-access.test.ts (18 tests) 4536ms
+ ✓ __tests__/services/context-engine.test.ts (17 tests) 4398ms
+ ✓ __tests__/services/content-dashboard-service.test.ts (24 tests) 4087ms
+ ✓ __tests__/api/onboarding-profile-detail.test.ts (16 tests) 4084ms
+ ✓ __tests__/commands/skills.test.ts (16 tests) 4068ms
+ ✓ __tests__/services/error-categorizer.test.ts (16 tests) 4055ms
+ ✓ __tests__/skills/skills-command.test.ts (16 tests) 4077ms
+ ✓ __tests__/services/cooking-chef.test.ts (15 tests) 3792ms
+ ✓ __tests__/api/finance-routes.test.ts (15 tests) 3818ms
+ ✓ __tests__/api/cooking-routes.test.ts (14 tests) 3555ms
+ ✓ __tests__/services/onboarding.test.ts (18 tests) 3573ms
+ ✓ __tests__/services/readiness-scorer.test.ts (29 tests) 3534ms
+ ✓ __tests__/services/task-store/task-service.test.ts (13 tests) 3436ms
+ ✓ __tests__/services/task-store/sync-engine.test.ts (13 tests) 3455ms
+ ✓ __tests__/services/session-analytics.test.ts (20 tests) 3063ms
+ ✓ __tests__/services/cross-agent-learning.test.ts (16 tests) 3071ms
+ ✓ __tests__/skills/secretary-skill-package-qa-validation.test.ts (21 tests) 2790ms
+ ✓ __tests__/services/content-radar-engine.test.ts (10 tests) 2542ms
+ ✓ __tests__/services/content-generation-quality.test.ts (10 tests) 2538ms
+ ✓ __tests__/api/auth-routes.test.ts (9 tests) 2478ms
+   ✓ Auth invite registration > provisions beta invite users with active max-tier sandbox access  305ms
+ ✓ __tests__/services/training-plans-tools.test.ts (9 tests) 2292ms
+ ✓ __tests__/services/skill-version-registry.test.ts (9 tests) 2284ms
+ ✓ __tests__/services/training-comparison.test.ts (9 tests) 2296ms
+ ✓ __tests__/portal/portal-hardening.test.ts (17 tests) 2295ms
+ ✓ __tests__/services/content-memory-profile.test.ts (8 tests) 2026ms
+ ✓ __tests__/services/onboarding-idempotency.test.ts (8 tests) 2061ms
+ ✓ __tests__/services/coach-phase-memory.test.ts (8 tests) 2033ms
+ ✓ __tests__/services/content-cross-skill-orchestration.test.ts (8 tests) 2039ms
+ ✓ __tests__/agents/voice-evolution-agent.test.ts (8 tests) 2024ms
+ ✓ __tests__/services/content-novelty-reuse.test.ts (8 tests) 2034ms
+ ✓ __tests__/services/tier-gate-integration.test.ts (11 tests) 2048ms
+ ✓ __tests__/api/content-dashboard.test.ts (7 tests) 1854ms
+   ✓ content-dashboard route > returns a fully populated payload when explicit loopback bypass is enabled  303ms
+ ✓ __tests__/services/content-security-red-team.test.ts (7 tests) 1794ms
+ ✓ __tests__/services/quality-scorer.test.ts (7 tests) 1852ms
+ ✓ __tests__/portal/domain-status.test.ts (7 tests) 1780ms
+ ✓ __tests__/api/settings-routes.test.ts (6 tests) 1662ms
+ ✓ __tests__/api/onboarding-status-and-idempotency.test.ts (6 tests) 1526ms
+ ✓ __tests__/api/auth-middleware-device-revocation.test.ts (6 tests) 1549ms
+ ✓ __tests__/services/onboarding-sport-profiles.test.ts (37 tests) 1525ms
+ ✓ __tests__/services/audit-trail.test.ts (6 tests) 1543ms
+ ✓ __tests__/services/tenant-scope-observability.test.ts (6 tests) 1526ms
+ ✓ __tests__/services/task-metrics.test.ts (6 tests) 1525ms
+ ✓ __tests__/skills/secretary-skill-package.test.ts (32 tests) 1534ms
+ ✓ __tests__/utils/callback-store.test.ts (6 tests) 1571ms
+ ✓ __tests__/services/content-workflow-user-scope.test.ts (5 tests) 1303ms
+ ✓ __tests__/api/auth-session-revocation.test.ts (4 tests) 1106ms
+ ✓ __tests__/api/health-data-routes.test.ts (4 tests) 1023ms
+(node:44608) Warning: `--localstorage-file` was provided without a valid path
+(Use `node --trace-warnings ...` to show where the warning was created)
+ ✓ __tests__/api/content-intelligence-summary.test.ts (4 tests) 1041ms
+Sourcemap for "/Users/felipedominguez/Desktop/Custom Connectors/Cortex/cortex-telegram-hub-bot/node_modules/node-cron/dist/esm/node-cron.js" points to missing source files
+ ✓ __tests__/portal/portal-token-strength.test.ts (7 tests) 904ms
+   ✓ portal boot — PORTAL_TOKEN strength gate (M-3) > refuses to boot with a token shorter than 12 chars  641ms
+ ✓ __tests__/api/content-intelligence-detail.test.ts (3 tests) 787ms
+ ✓ __tests__/portal/portal-admin-data-isolation.integration.test.ts (3 tests) 795ms
+ ✓ __tests__/api/content-topics-recommendation.test.ts (3 tests) 782ms
+ ✓ __tests__/api/onboarding-start.test.ts (3 tests) 769ms
+ ✓ __tests__/services/invoice-state-isolation.test.ts (3 tests) 770ms
+ ✓ __tests__/scope/content-tenant-isolation.test.ts (3 tests) 773ms
+ ✓ __tests__/services/google-auth.test.ts (3 tests) 770ms
+ ✓ __tests__/services/training-plans-coach-sync.test.ts (1 test) 498ms
+   ✓ Training plan coach sync > updates the linked training session when a workout moves to another day  498ms
+ ✓ __tests__/services/content-owner-scope.test.ts (2 tests) 521ms
+ ✓ __tests__/api/invoices-tenant-isolation.test.ts (2 tests) 515ms
+ ✓ __tests__/api/wearable-cache-isolation.test.ts (2 tests) 517ms
+ ✓ __tests__/api/content-ideas-routes.test.ts (2 tests) 529ms
+ ✓ __tests__/services/fiscal-collection-profile-state.test.ts (2 tests) 529ms
+ ✓ __tests__/services/backup.test.ts (25 tests) 339ms
+ ✓ __tests__/adapters/telegram-adapter.test.ts (40 tests) 359ms
+ ✓ __tests__/router/sport-classifier.test.ts (65 tests) 314ms
+ ✓ __tests__/services/channel-learner-scope.test.ts (1 test) 272ms
+ ✓ __tests__/services/training-plan-cancellation-cascade.test.ts (1 test) 269ms
+ ✓ __tests__/api/connections-tenant-isolation.test.ts (1 test) 264ms
+ ✓ __tests__/adapters/telegram-adapter-qa-validation.test.ts (47 tests) 265ms
+ ✓ __tests__/api/training-calendar-coalesce.test.ts (5 tests) 220ms
+ ✓ __tests__/api/garmin-auth-routes.test.ts (8 tests) 221ms
+ ✓ __tests__/api/internal-routes-runtime.test.ts (8 tests) 185ms
+ ✓ __tests__/api/tasks-routes.test.ts (24 tests) 67ms
+ ✓ __tests__/services/cost-guardrail-lock.test.ts (7 tests) 62ms
+ ✓ __tests__/brand/copyright-headers-qa-validation.test.ts (6 tests) 51ms
+ ✓ __tests__/portal/health-endpoints.test.ts (9 tests) 48ms
+ ✓ __tests__/integration/message-flow.test.ts (53 tests) 146ms
+ ✓ __tests__/services/secretary-fastpath.test.ts (96 tests) 37ms
+ ✓ __tests__/brand/rename-qa-validation.test.ts (13 tests) 32ms
+ ✓ __tests__/domains/secretary.test.ts (20 tests) 30ms
+ ✓ __tests__/api/settings-error-handling.test.ts (2 tests) 30ms
+ ✓ __tests__/api/connections-routes.test.ts (9 tests) 32ms
+ ✓ __tests__/api/content-admin-write-auth.test.ts (17 tests) 28ms
+ ✓ __tests__/api/billing-routes.test.ts (1 test) 28ms
+ ✓ __tests__/api/webhooks-telegram.test.ts (6 tests) 29ms
+ ✓ __tests__/services/openai-provider.test.ts (42 tests) 18ms
+ ✓ __tests__/api/content-editorial-routes.test.ts (9 tests) 24ms
+ ✓ __tests__/api/content-script-quota.test.ts (2 tests) 19ms
+ ✓ __tests__/utils/request-context.test.ts (14 tests) 19ms
+ ✓ __tests__/api/oauth-initiate-routes.test.ts (5 tests) 19ms
+ ✓ __tests__/api/training-routes.test.ts (29 tests) 20ms
+ ✓ __tests__/utils/timeout.test.ts (5 tests) 19ms
+ ✓ __tests__/api/content-script-duration.test.ts (7 tests) 22ms
+ ✓ __tests__/services/gemini-provider.test.ts (39 tests) 18ms
+ ✓ __tests__/api/app-facing-happy-path-smoke.test.ts (2 tests) 19ms
+ ✓ __tests__/api/training-plan-calendar-sync.test.ts (20 tests) 12ms
+ ✓ __tests__/services/error-tracker.test.ts (15 tests) 19ms
+ ✓ __tests__/services/training-profile-model.test.ts (10 tests) 14ms
+ ✓ __tests__/api/dashboard-routes.test.ts (19 tests) 16ms
+ ✓ __tests__/api/notifications-routes.test.ts (10 tests) 16ms
+ ✓ __tests__/api/content-home-route.test.ts (2 tests) 20ms
+ ✓ __tests__/api/secret-guards.test.ts (25 tests) 16ms
+ ✓ __tests__/services/weekly-plan-orchestrator.test.ts (14 tests) 15ms
+ ✓ __tests__/api/plan-routes.test.ts (9 tests) 15ms
+ ✓ __tests__/api/content-learning-routes.test.ts (11 tests) 14ms
+ ✓ __tests__/api/calendar-focus-recommendation.test.ts (2 tests) 13ms
+ ✓ __tests__/services/focus-planner.test.ts (3 tests) 13ms
+ ✓ __tests__/services/content-editorial-workflow.test.ts (12 tests) 14ms
+ ✓ __tests__/api/webhooks.test.ts (11 tests) 13ms
+ ✓ __tests__/api/authenticated-support-routes-scope.test.ts (13 tests) 10ms
+ ✓ __tests__/api/chat-fastpath.test.ts (19 tests) 15ms
+ ✓ __tests__/services/operator-alerts.test.ts (9 tests) 14ms
+ ✓ __tests__/services/coach-kernel-planner.test.ts (13 tests) 8ms
+ ✓ __tests__/api/content-pipeline-routes.test.ts (6 tests) 6ms
+ ✓ __tests__/services/content-reference-provenance.test.ts (6 tests) 14ms
+ ✓ __tests__/portal/portal-user-skill-routes.test.ts (8 tests) 5ms
+ ✓ __tests__/services/provider-registry-fixture-mode.test.ts (2 tests) 11ms
+ ✓ __tests__/api/chat-persistence.test.ts (4 tests) 3ms
+ ✓ __tests__/portal/portal-user-routes.test.ts (10 tests) 7ms
+ ✓ __tests__/services/garmin-session-store.test.ts (4 tests) 10ms
+ ✓ __tests__/portal/portal-invite-routes.test.ts (9 tests) 6ms
+ ✓ __tests__/api/content-reference-routes.test.ts (6 tests) 8ms
+ ✓ __tests__/services/wearable-service.test.ts (15 tests) 10ms
+ ✓ __tests__/services/content-tenant-scope.test.ts (4 tests) 10ms
+ ✓ __tests__/services/garmin-adapter.test.ts (21 tests) 6ms
+ ✓ __tests__/portal/portal-founder-routes.test.ts (10 tests) 6ms
+ ✓ __tests__/handlers/commands/secretary-commands.test.ts (5 tests) 5ms
+ ✓ __tests__/api/training-plan-cancellation.test.ts (13 tests) 9ms
+ ✓ __tests__/api/app-facing-auth-smoke.test.ts (21 tests) 11ms
+ ✓ __tests__/portal/portal-settings-routes.test.ts (8 tests) 6ms
+ ✓ __tests__/services/scheduler-user-scope.test.ts (10 tests) 12ms
+ ✓ __tests__/portal/portal-owner-bootstrap.test.ts (8 tests) 6ms
+ ✓ __tests__/api/content-topic-routes.test.ts (9 tests) 8ms
+ ✓ __tests__/services/model-routing-local-smoke.test.ts (4 tests) 6ms
+ ✓ __tests__/domains/ai-unavailable.test.ts (7 tests) 6ms
+ ✓ __tests__/services/secretary-context.test.ts (11 tests) 18ms
+ ✓ __tests__/services/integration-health-observability.test.ts (2 tests) 11ms
+ ✓ __tests__/services/coach-kernel-evaluation.test.ts (5 tests) 9ms
+ ✓ __tests__/services/task-store/task-router.test.ts (6 tests) 12ms
+ ✓ __tests__/services/secretary-agenda-provider-sync.test.ts (12 tests) 8ms
+ ✓ __tests__/api/rate-limiter.test.ts (14 tests) 8ms
+ ✓ __tests__/services/manual-report-triggers.test.ts (7 tests) 6ms
+ ✓ __tests__/services/garmin-coach-user-scope.test.ts (3 tests) 5ms
+ ✓ __tests__/services/training-agenda-reconciliation.test.ts (4 tests) 4ms
+ ✓ __tests__/services/model-routing-observability.test.ts (6 tests) 9ms
+ ✓ __tests__/services/secretary-tools.test.ts (54 tests) 8ms
+ ✓ __tests__/portal/portal-admin-data-routes.test.ts (6 tests) 6ms
+ ✓ __tests__/handlers/commands/secretary-helpers.test.ts (5 tests) 8ms
+ ✓ __tests__/services/script-pipeline.test.ts (23 tests) 8ms
+ ✓ __tests__/api/content-intelligence-routes.test.ts (3 tests) 9ms
+ ✓ __tests__/portal/portal-chat-routes.test.ts (6 tests) 7ms
+ ✓ __tests__/services/microsoft-auth.test.ts (3 tests) 17ms
+ ✓ __tests__/skills/prompt-validator.test.ts (12 tests) 7ms
+ ✓ __tests__/services/outlook-calendar-configured.test.ts (7 tests) 8ms
+ ✓ __tests__/portal/portal-action-routes.test.ts (4 tests) 6ms
+ ✓ __tests__/services/coach-kernel-catalog-depth.test.ts (9 tests) 7ms
+ ✓ __tests__/portal/portal-plan-routes.test.ts (9 tests) 11ms
+ ✓ __tests__/api/wearable-routes.test.ts (3 tests) 7ms
+ ✓ __tests__/services/config-runtime-validation.test.ts (7 tests) 7ms
+ ✓ __tests__/portal/portal-snapshot-routes.test.ts (6 tests) 10ms
+ ✓ __tests__/services/provider-fallback-domain-routing.test.ts (3 tests) 10ms
+ ✓ __tests__/services/coach-kernel-feedback-analysis.test.ts (8 tests) 7ms
+ ✓ __tests__/storage/kv-store.test.ts (40 tests) 6ms
+ ✓ __tests__/handlers/callback-query.test.ts (5 tests) 12ms
+ ✓ __tests__/services/daily-brief-orchestrator.test.ts (6 tests) 5ms
+ ✓ __tests__/api/content-notification-routes.test.ts (4 tests) 7ms
+ ✓ __tests__/services/provider-registry-anthropic-gate.test.ts (1 test) 6ms
+ ✓ __tests__/api/training-calendar-event-writer.test.ts (2 tests) 4ms
+ ✓ __tests__/router/classifier.test.ts (267 tests) 6ms
+ ✓ __tests__/services/microsoft-todo-date-parsing.test.ts (5 tests) 9ms
+ ✓ __tests__/handlers/photo-task-extraction.test.ts (3 tests) 6ms
+ ✓ __tests__/services/content-topic-secretary-sync.test.ts (4 tests) 10ms
+ ✓ __tests__/services/surface-cache-invalidators.test.ts (15 tests) 6ms
+ ✓ __tests__/skills/loader.test.ts (60 tests) 6ms
+ ✓ __tests__/services/secretary-scheduling-arbitrator.test.ts (10 tests) 7ms
+ ✓ __tests__/portal/portal-waitlist-routes.test.ts (7 tests) 10ms
+ ✓ __tests__/services/provider-fallback.test.ts (48 tests) 5ms
+ ✓ __tests__/services/chat-day-to-day-simulation.test.ts (8 tests) 6ms
+ ✓ __tests__/services/autoresearch-gates.test.ts (4 tests) 4ms
+ ✓ __tests__/services/coach-kernel-guardrails.test.ts (9 tests) 5ms
+ ✓ __tests__/services/garmin-passive-auth.test.ts (3 tests) 5ms
+ ✓ __tests__/portal/portal-document-routes.test.ts (4 tests) 7ms
+ ✓ __tests__/portal/telemetry-operational-guardrails.test.ts (2 tests) 6ms
+ ✓ __tests__/services/shared-decision-context.test.ts (29 tests) 5ms
+ ✓ __tests__/services/training-coach-kernel-plan-generator.test.ts (8 tests) 5ms
+ ✓ __tests__/adapters/whatsapp-adapter-qa-validation.test.ts (78 tests) 5ms
+ ✓ __tests__/services/cache-store-observability.test.ts (4 tests) 6ms
+ ✓ __tests__/services/secretary-mesh-context.test.ts (1 test) 5ms
+ ✓ __tests__/services/chat-context-engine.test.ts (13 tests) 4ms
+ ✓ __tests__/services/secretary-unified-calendar-provider-adapter.test.ts (5 tests) 8ms
+ ✓ __tests__/sdk/skill-sdk.test.ts (35 tests) 3ms
+ ✓ __tests__/api/training-home-payload.test.ts (3 tests) 4ms
+ ✓ __tests__/utils/lru-map.test.ts (8 tests) 4ms
+ ✓ __tests__/services/tool-executor.test.ts (83 tests) 4ms
+ ✓ __tests__/services/coach-kernel-poor-recovery-variation.test.ts (6 tests) 4ms
+ ✓ __tests__/services/owner-bootstrap-preflight.test.ts (6 tests) 4ms
+ ✓ __tests__/domains/thin-wrappers.test.ts (5 tests) 8ms
+ ✓ __tests__/agents/voice-evolution-qa-validation.test.ts (19 tests) 3ms
+ ✓ __tests__/services/training-home-view-state.test.ts (30 tests) 4ms
+ ✓ __tests__/services/chat-history-store.test.ts (11 tests) 3ms
+ ✓ __tests__/api/response-helpers.test.ts (18 tests) 4ms
+ ✓ __tests__/services/coach-kernel-constrained-week-capacity.test.ts (6 tests) 3ms
+ ✓ __tests__/services/storage-provider-qa-validation.test.ts (36 tests) 3ms
+ ✓ __tests__/services/dashboard-home-view-state.test.ts (12 tests) 3ms
+ ✓ __tests__/adapters/whatsapp-adapter.test.ts (35 tests) 2ms
+ ✓ __tests__/services/entitlement.test.ts (21 tests) 3ms
+ ✓ __tests__/services/prompt-cleanliness.test.ts (63 tests) 2ms
+ ✓ __tests__/skills/skill-config.test.ts (40 tests) 3ms
+ ✓ __tests__/api/chat-state-shortcuts.test.ts (4 tests) 3ms
+ ✓ __tests__/router/dynamic-routing.test.ts (27 tests) 4ms
+ ✓ __tests__/services/coach-kernel-strength-engine.test.ts (9 tests) 3ms
+ ✓ __tests__/services/model-config.test.ts (34 tests) 3ms
+ ✓ __tests__/services/coach-kernel-tools.test.ts (5 tests) 3ms
+ ✓ __tests__/services/cooking-mesh-context.test.ts (4 tests) 3ms
+ ✓ __tests__/api/calendar-routes.test.ts (13 tests) 3ms
+ ✓ __tests__/services/coach-kernel-decision-trail.test.ts (3 tests) 2ms
+ ✓ __tests__/services/ai-provider-qa-validation.test.ts (38 tests) 3ms
+ ✓ __tests__/api/training-plan-generation.test.ts (12 tests) 3ms
+ ✓ __tests__/api/training-read-models.test.ts (12 tests) 3ms
+ ✓ __tests__/services/config-provider-db.test.ts (27 tests) 4ms
+ ✓ __tests__/services/chat-evaluation-harness.test.ts (6 tests) 2ms
+ ✓ __tests__/tools/training-cross-skill-staging-smoke.test.ts (8 tests) 2ms
+ ✓ __tests__/services/apns-sender.test.ts (26 tests) 3ms
+ ✓ __tests__/portal/cost-breakdown.test.ts (29 tests) 2ms
+ ✓ __tests__/services/content-eval-history.test.ts (3 tests) 2ms
+ ✓ __tests__/state/shared-memory.test.ts (6 tests) 2ms
+ ✓ __tests__/portal/portal-webhook-routes.test.ts (7 tests) 2ms
+ ✓ __tests__/services/oauth-state-store.test.ts (2 tests) 2ms
+ ✓ __tests__/services/secretary-orchestrator.test.ts (10 tests) 2ms
+ ✓ __tests__/services/creator-config-eval.test.ts (35 tests) 2ms
+ ✓ __tests__/services/storage-provider.test.ts (28 tests) 2ms
+ ✓ __tests__/portal/anthropic-hook.test.ts (7 tests) 1ms
+ ✓ __tests__/services/python-engine-hardening.test.ts (54 tests) 2ms
+ ✓ __tests__/api/training-plan-persistence.test.ts (7 tests) 2ms
+ ✓ __tests__/services/content-dedup-routing.test.ts (2 tests) 3ms
+ ✓ __tests__/api/invoices-routes.test.ts (11 tests) 2ms
+ ✓ __tests__/portal/portal-provider-routes.test.ts (8 tests) 2ms
+ ✓ __tests__/api/chat-shortcut-parsers.test.ts (6 tests) 2ms
+ ✓ __tests__/portal/portal-oauth-routes.test.ts (7 tests) 2ms
+ ✓ __tests__/services/transport-boundary.test.ts (50 tests) 2ms
+ ✓ __tests__/services/coach-kernel-support-session-builder.test.ts (15 tests) 2ms
+ ✓ __tests__/services/training-plan-coordination.test.ts (7 tests) 1ms
+ ✓ __tests__/skills/types.test.ts (24 tests) 2ms
+ ✓ __tests__/utils/encryption.test.ts (20 tests) 2ms
+ ✓ __tests__/services/swr-refresh-observability.test.ts (2 tests) 2ms
+ ✓ __tests__/portal/portal-static-routes.test.ts (4 tests) 2ms
+ ✓ __tests__/services/ai-provider.test.ts (19 tests) 1ms
+ ✓ __tests__/tools/training-calendar-staging-smoke.test.ts (7 tests) 1ms
+ ✓ __tests__/api/chat-content-refinement.test.ts (6 tests) 1ms
+ ✓ __tests__/portal/portal-route-uniqueness.test.ts (1 test) 2ms
+ ✓ __tests__/services/finance-mesh-context.test.ts (4 tests) 2ms
+ ✓ __tests__/services/training-mesh-context.test.ts (2 tests) 1ms
+ ✓ __tests__/portal/portal-operations-routes.test.ts (12 tests) 1ms
+ ✓ __tests__/skills/content-skill-refactor-qa-validation.test.ts (31 tests) 1ms
+ ✓ __tests__/services/invoice-vendor-cleanup.test.ts (6 tests) 1ms
+ ✓ __tests__/api/chat-history-routes.test.ts (4 tests) 1ms
+ ✓ __tests__/services/coach-kernel-biomechanics-and-ordering.test.ts (20 tests) 1ms
+ ✓ __tests__/skills/sub-skill-arch-qa-validation.test.ts (48 tests) 1ms
+ ✓ __tests__/services/coach-kernel-session-coherence.test.ts (27 tests) 1ms
+ ✓ __tests__/services/fiscal-bundle-attachments.test.ts (2 tests) 1ms
+ ✓ __tests__/api/chat-callback-routes.test.ts (7 tests) 1ms
+ ✓ __tests__/services/content-day-to-day-evaluation.test.ts (6 tests) 1ms
+ ✓ __tests__/services/mesh-context-scope.test.ts (1 test) 1ms
+ ✓ __tests__/services/calendar-dedup.test.ts (16 tests) 1ms
+ ✓ __tests__/services/config-provider-qa-validation.test.ts (25 tests) 1ms
+ ✓ __tests__/portal/domain-status-qa-validation.test.ts (35 tests) 1ms
+ ✓ __tests__/services/domain-provider-router.test.ts (7 tests) 1ms
+ ✓ __tests__/services/content-home-view-state.test.ts (10 tests) 1ms
+ ✓ __tests__/services/training-plan-volume-enforcement.test.ts (4 tests) 1ms
+ ✓ __tests__/services/anthropic-language.test.ts (8 tests) 1ms
+ ✓ __tests__/api/training-session-mutations.test.ts (8 tests) 1ms
+ ✓ __tests__/services/coach-kernel-strength-engine-target-exercise-count.test.ts (15 tests) 1ms
+ ✓ __tests__/portal/portal-admin-scope.test.ts (11 tests) 1ms
+ ✓ __tests__/services/content-domain-ontology.test.ts (7 tests) 1ms
+ ✓ __tests__/api/entitlement-middleware.test.ts (9 tests) 2ms
+ ✓ __tests__/portal/chat-diagnostics.test.ts (3 tests) 1ms
+ ✓ __tests__/portal/integration-health-qa-validation.test.ts (40 tests) 1ms
+ ✓ __tests__/api/chat-message-local-responses.test.ts (6 tests) 1ms
+ ✓ __tests__/services/recurrence-utils.test.ts (4 tests) 1ms
+ ✓ __tests__/api/training-coach-briefing.test.ts (4 tests) 1ms
+ ✓ __tests__/services/training-session-description.test.ts (8 tests) 1ms
+ ✓ __tests__/utils/telegram-templates.test.ts (29 tests) 1ms
+ ✓ __tests__/services/training-coach-kernel-equipment-access.test.ts (20 tests) 1ms
+ ✓ __tests__/services/coach-kernel-exercise-metadata.test.ts (35 tests) 1ms
+ ✓ __tests__/services/coach-kernel-multi-week-rotation.test.ts (9 tests) 1ms
+ ✓ __tests__/services/apple-health-parity.test.ts (20 tests) 1ms
+ ✓ __tests__/portal/health-endpoint-qa-validation.test.ts (15 tests) 1ms
+ ✓ __tests__/api/training-analytics-routes.test.ts (4 tests) 1ms
+ ✓ __tests__/services/training-coach-kernel-primary-focus.test.ts (26 tests) 1ms
+ ✓ __tests__/services/unified-calendar-user-routing.test.ts (10 tests) 1ms
+ ✓ __tests__/services/fiscal-bundle.test.ts (6 tests) 1ms
+ ✓ __tests__/api/reports-routes.test.ts (2 tests) 1ms
+ ✓ __tests__/services/plan-generator.test.ts (12 tests) 1ms
+ ✓ __tests__/portal/portal-operator-user-scope.test.ts (13 tests) 1ms
+ ✓ __tests__/api/training-schedule-utils.test.ts (11 tests) 1ms
+ ✓ __tests__/services/content-intelligence.test.ts (6 tests) 1ms
+ ✓ __tests__/services/config-provider.test.ts (20 tests) 1ms
+ ✓ __tests__/api/chat-message-attachments.test.ts (3 tests) 1ms
+ ✓ __tests__/api/security-launch-blockers.test.ts (24 tests) 1ms
+ ✓ __tests__/services/dashboard-cache-invalidator.test.ts (5 tests) 1ms
+ ✓ __tests__/services/calendar-dedup-qa-validation.test.ts (18 tests) 1ms
+ ✓ __tests__/services/coach-kernel-availability-day-picker.test.ts (15 tests) 1ms
+ ✓ __tests__/portal/portal-admin-beta-readiness.test.ts (16 tests) 1ms
+ ✓ __tests__/services/conflict-resolver.test.ts (7 tests) 1ms
+ ✓ __tests__/services/chat-skill-orchestrator.test.ts (6 tests) 1ms
+ ✓ __tests__/api/chat-script-shortcut-response.test.ts (6 tests) 1ms
+ ✓ __tests__/api/content-script-route-utils.test.ts (7 tests) 1ms
+ ✓ __tests__/skills/training-plans-skill.test.ts (6 tests) 1ms
+ ✓ __tests__/services/training-coach-kernel-strength-goal.test.ts (19 tests) 1ms
+ ✓ __tests__/api/chat-message-context.test.ts (6 tests) 1ms
+ ✓ __tests__/services/training-coach-kernel-training-history.test.ts (21 tests) 1ms
+ ✓ __tests__/services/tool-executor-allowlist.test.ts (2 tests) 1ms
+ ✓ __tests__/api/chat-message-request.test.ts (4 tests) 1ms
+ ✓ __tests__/services/coach-kernel-adaptation-engine.test.ts (13 tests) 1ms
+ ✓ __tests__/api/chat-message-degraded-response.test.ts (3 tests) 1ms
+ ✓ __tests__/api/chat-message-execution.test.ts (3 tests) 1ms
+ ✓ __tests__/services/coach-kernel-readiness-snapshot-adapter.test.ts (14 tests) 1ms
+ ✓ __tests__/api/onboarding-degraded-routes.test.ts (2 tests) 1ms
+ ✓ __tests__/services/coordination-cache-invalidator.test.ts (2 tests) 0ms
+ ✓ __tests__/api/chat-message-tier-gate.test.ts (5 tests) 1ms
+ ✓ __tests__/api/dashboard-home-orchestration-summary.test.ts (4 tests) 0ms
+ ✓ __tests__/utils/telegram-formatter.test.ts (3 tests) 1ms
+ ✓ __tests__/api/chat-callback-response.test.ts (4 tests) 0ms
+ ✓ __tests__/api/training-calendar-utils.test.ts (6 tests) 0ms
+ ✓ __tests__/tools/training-cross-skill-staging-fixtures.test.ts (7 tests) 1ms
+ ✓ __tests__/api/training-fallback-plan.test.ts (4 tests) 1ms
+ ✓ __tests__/adapters/whatsapp-webhooks.test.ts (11 tests) 0ms
+ ✓ __tests__/portal/oauth-ios-callbacks-qa-validation.test.ts (4 tests) 0ms
+ ✓ __tests__/api/content-learning-route-utils.test.ts (5 tests) 1ms
+ ✓ __tests__/services/training-calendar-scope.test.ts (4 tests) 1ms
+ ✓ __tests__/portal/portal-snapshot-statements.test.ts (1 test) 0ms
+ ✓ __tests__/brand/package-rename-qa-validation.test.ts (11 tests) 0ms
+ ✓ __tests__/portal/adapter-status.test.ts (8 tests) 0ms
+ ✓ __tests__/portal/portal-intelligence-routes.test.ts (4 tests) 0ms
+ ✓ __tests__/services/portal-session-mint.test.ts (4 tests) 0ms
+ ✓ __tests__/api/content-intelligence-route-utils.test.ts (2 tests) 0ms
+ ✓ __tests__/services/waitlist-ip-hash.test.ts (4 tests) 0ms
+ ✓ __tests__/services/coach-plan-registry.test.ts (8 tests) 0ms
+ ✓ __tests__/services/training-coach-kernel-experience-level.test.ts (17 tests) 0ms
+ ✓ __tests__/services/outlook-calendar-user-client.test.ts (3 tests) 0ms
+ ✓ __tests__/api/internal-routes.test.ts (17 tests) 1ms
+ ✓ __tests__/portal/portal-usage-summary.test.ts (2 tests) 0ms
+ ✓ __tests__/services/training-operational-switches.test.ts (6 tests) 0ms
+ ✓ __tests__/api/chat-attachments.test.ts (4 tests) 0ms
+ ✓ __tests__/services/runtime-flags.test.ts (5 tests) 0ms
+ ✓ __tests__/api/content-home-route-utils.test.ts (6 tests) 0ms
+ ✓ __tests__/services/chat-response-sufficiency.test.ts (3 tests) 0ms
+ ✓ __tests__/services/sensitive-log-sinks.test.ts (3 tests) 0ms
+ ✓ __tests__/services/finance-secretary-integration.test.ts (2 tests) 0ms
+ ✓ __tests__/services/training-session-identity.test.ts (3 tests) 0ms
+ ✓ __tests__/portal/portal-snapshot-builder.test.ts (2 tests) 0ms
+ ✓ __tests__/portal/portal-security.test.ts (3 tests) 0ms
+ ✓ __tests__/services/reply-language-normalizer.test.ts (2 tests) 0ms
+ ✓ __tests__/api/training-profile-requirements.test.ts (5 tests) 0ms
+ ✓ __tests__/services/training-plan-equipment-adaptation.test.ts (3 tests) 0ms
+ ✓ __tests__/portal/portal-webhooks.test.ts (3 tests) 0ms
+ ✓ __tests__/api/content-script-utils.test.ts (5 tests) 0ms
+ ✓ __tests__/agents/editorial-coordinator-agent.test.ts (1 test) 0ms
+ ✓ __tests__/utils/log-sanitizer.test.ts (3 tests) 0ms
+ ✓ __tests__/api/content-topic-context.test.ts (3 tests) 8ms
+ ✓ __tests__/portal/portal-admin-audit.test.ts (2 tests) 1ms
+ ✓ __tests__/portal/portal-http.test.ts (1 test) 0ms
+ ✓ __tests__/services/invoice-collector-vendors.test.ts (3 tests) 0ms
+ ✓ __tests__/utils/logger-redaction.test.ts (3 tests) 0ms
+ ✓ __tests__/services/content-radar-preferences.test.ts (2 tests) 0ms
+ ✓ __tests__/services/training-coach-kernel-two-a-day.test.ts (7 tests) 0ms
+ ✓ __tests__/services/cost-validation.test.ts (5 tests) 0ms
+ ✓ __tests__/portal/portal-error-sanitization.test.ts (1 test) 0ms
+ ✓ __tests__/api/content-generation-meta.test.ts (2 tests) 0ms
+ ✓ __tests__/portal/portal-validation.test.ts (3 tests) 0ms
+ ✓ __tests__/services/energy-reserve.test.ts (3 tests) 0ms
+ ✓ __tests__/services/plan-cache-invalidator.test.ts (2 tests) 0ms
+ ✓ __tests__/portal/portal-snapshot-cache.test.ts (3 tests) 0ms
+ ✓ __tests__/portal/portal-formatters.test.ts (2 tests) 0ms
+ ✓ __tests__/brand/package-name.test.ts (4 tests) 0ms
+ ✓ __tests__/services/google-drive-brand.test.ts (3 tests) 0ms
+ ✓ __tests__/services/chat-tool-auth-fail-closed.test.ts (1 test) 0ms
+
+ Test Files  424 passed (424)
+      Tests  6364 passed (6364)
+   Start at  07:52:36
+   Duration  476.01s (transform 2.89s, setup 220ms, collect 5.42s, tests 467.51s, environment 0ms, prepare 34ms)
+
+
+═══════════════════════════════════════════════
+  ✅ VALIDATION PASSED — proceeding with deploy
+═══════════════════════════════════════════════
+
+📦 Building TypeScript...
+
+> @nexushub/core@4.14.106 build
+> tsc && cp src/portal/portal.html dist/portal/portal.html && cp src/portal/landing.html dist/portal/landing.html && rm -rf dist/services/coach-kernel/knowledge && mkdir -p dist/services/coach-kernel/knowledge && cp -R src/services/coach-kernel/knowledge/* dist/services/coach-kernel/knowledge/
+
+   ✅ Build complete
+
+🔑 Validating production .env...
+   ✅ All required production keys present
+📌 Version: 4.14.106 → 4.14.107
+[main f78eb61] chore: bump version to 4.14.107 [deploy]
+ 2 files changed, 3 insertions(+), 3 deletions(-)
+🔍 Pre-push: Verifying main...
+   📝 Type check...
+   ✅ Types OK
+   🧪 Running tests...
+
+ RUN  v3.2.4 /Users/felipedominguez/Desktop/Custom Connectors/Cortex/cortex-telegram-hub-bot
+
+····························································································································································································································································································································································································································································································································································································································································································································································································································································································································································································································································································································································································································································································································································································································································································································································································································································································································································································································································································································································································································································································································································································································································································································································································································································································································································································································································································································································································································································································································································································································································································································································································································································································································································································································································································································································································································································································································································································································································································································································································································································································································································································································································································································································································································································································································································································································································································································································································································································································································································································································································································································································································································································································································································································································································································································································································································································································································································································································································································································································································································································································································································································································································································································································································································································································································································································································
+
+ Test Files  424 passed (424)
+      Tests  6364 passed (6364)
+   Start at  08:08:46
+   Duration  491.28s (transform 2.89s, setup 240ms, collect 5.29s, tests 483.03s, environment 0ms, prepare 34ms)
+
+   ✅ Tests passed
+   🔨 Build verification (pushing to main)...
+
+> @nexushub/core@4.14.107 build
+> tsc && cp src/portal/portal.html dist/portal/portal.html && cp src/portal/landing.html dist/portal/landing.html && rm -rf dist/services/coach-kernel/knowledge && mkdir -p dist/services/coach-kernel/knowledge && cp -R src/services/coach-kernel/knowledge/* dist/services/coach-kernel/knowledge/
+
+   ✅ Build OK
+✅ All checks passed — pushing
+
+🛑 Stopping services on server...
+[PM2] Applying action stopProcessId on app [nexus-hub](ids: [ 3 ])
+[PM2] [nexus-hub](3) ✓
+┌────┬───────────────────────────┬─────────────┬─────────┬─────────┬──────────┬────────┬──────┬───────────┬──────────┬──────────┬──────────┬──────────┐
+│ id │ name                      │ namespace   │ version │ mode    │ pid      │ uptime │ ↺    │ status    │ cpu      │ mem      │ user     │ watching │
+├────┼───────────────────────────┼─────────────┼─────────┼─────────┼──────────┼────────┼──────┼───────────┼──────────┼──────────┼──────────┼──────────┤
+│ 0  │ content-engine            │ default     │ 4.14.1… │ fork    │ 3163570  │ 5h     │ 3    │ online    │ 0%       │ 62.4mb   │ domingu… │ disabled │
+│ 6  │ content-engine-staging    │ default     │ 4.14.1… │ fork    │ 3297171  │ 45m    │ 0    │ online    │ 0%       │ 57.0mb   │ domingu… │ disabled │
+│ 3  │ nexus-hub                 │ default     │ 4.14.1… │ fork    │ 0        │ 0      │ 429  │ stopped   │ 0%       │ 0b       │ domingu… │ disabled │
+│ 4  │ nexus-hub-staging         │ default     │ 4.14.1… │ fork    │ 3297180  │ 45m    │ 13   │ online    │ 0%       │ 329.0mb  │ domingu… │ disabled │
+└────┴───────────────────────────┴─────────────┴─────────┴─────────┴──────────┴────────┴──────┴───────────┴──────────┴──────────┴──────────┴──────────┘
+[PM2] Applying action stopProcessId on app [content-engine](ids: [ 0 ])
+[PM2] [content-engine](0) ✓
+┌────┬───────────────────────────┬─────────────┬─────────┬─────────┬──────────┬────────┬──────┬───────────┬──────────┬──────────┬──────────┬──────────┐
+│ id │ name                      │ namespace   │ version │ mode    │ pid      │ uptime │ ↺    │ status    │ cpu      │ mem      │ user     │ watching │
+├────┼───────────────────────────┼─────────────┼─────────┼─────────┼──────────┼────────┼──────┼───────────┼──────────┼──────────┼──────────┼──────────┤
+│ 0  │ content-engine            │ default     │ 4.14.1… │ fork    │ 0        │ 0      │ 3    │ stopped   │ 0%       │ 0b       │ domingu… │ disabled │
+│ 6  │ content-engine-staging    │ default     │ 4.14.1… │ fork    │ 3297171  │ 45m    │ 0    │ online    │ 0%       │ 57.0mb   │ domingu… │ disabled │
+│ 3  │ nexus-hub                 │ default     │ 4.14.1… │ fork    │ 0        │ 0      │ 429  │ stopped   │ 0%       │ 0b       │ domingu… │ disabled │
+│ 4  │ nexus-hub-staging         │ default     │ 4.14.1… │ fork    │ 3297180  │ 45m    │ 13   │ online    │ 0%       │ 329.0mb  │ domingu… │ disabled │
+└────┴───────────────────────────┴─────────────┴─────────┴─────────┴──────────┴────────┴──────┴───────────┴──────────┴──────────┴──────────┴──────────┘
+   Stopped.
+
+💾 Creating backup on server (now WITH bot.db)...
+   ✅ Backup created (7.7M, bot.db included: 1)
+   Waiting for port 8200 to release...
+   ✅ Port 8200 free (after 1s)
+
+📤 Syncing files to server...
+sending incremental file list
+./
+package-lock.json
+package.json
+__tests__/
+__tests__/api/
+__tests__/api/auth-middleware-device-revocation.test.ts
+__tests__/api/authenticated-support-routes-scope.test.ts
+__tests__/api/chat-callback-routes.test.ts
+__tests__/api/chat-message-attachments.test.ts
+__tests__/api/chat-message-local-responses.test.ts
+__tests__/api/chat-routes.test.ts
+__tests__/api/content-admin-write-auth.test.ts
+__tests__/api/content-dashboard.test.ts
+__tests__/api/content-editorial-routes.test.ts
+__tests__/api/content-home-route.test.ts
+__tests__/api/content-intelligence-detail.test.ts
+__tests__/api/content-intelligence-summary.test.ts
+__tests__/api/content-learning-routes.test.ts
+__tests__/api/content-notification-routes.test.ts
+__tests__/api/content-reference-routes.test.ts
+__tests__/api/cooking-routes.test.ts
+__tests__/api/internal-routes-runtime.test.ts
+__tests__/api/internal-routes.test.ts
+__tests__/api/skills-routes.test.ts
+__tests__/api/training-plan-calendar-sync.test.ts
+__tests__/api/training-plan-cancellation.test.ts
+__tests__/api/training-plan-persistence.test.ts
+__tests__/api/training-routes.test.ts
+__tests__/domains/
+__tests__/domains/domain-handler.test.ts
+__tests__/domains/secretary.test.ts
+__tests__/integration/
+__tests__/integration/message-flow.test.ts
+__tests__/portal/
+__tests__/portal/portal-chat-routes.test.ts
+__tests__/scope/
+__tests__/scope/content-tenant-isolation.test.ts
+__tests__/services/
+__tests__/services/channel-learner-scope.test.ts
+__tests__/services/chat-context-engine.test.ts
+__tests__/services/chat-day-to-day-simulation.test.ts
+__tests__/services/chat-response-sufficiency.test.ts
+__tests__/services/chat-tool-auth-fail-closed.test.ts
+__tests__/services/chat-triggered-onboarding.test.ts
+__tests__/services/content-cross-skill-orchestration.test.ts
+__tests__/services/content-dashboard-service.test.ts
+__tests__/services/content-day-to-day-evaluation.test.ts
+__tests__/services/content-dedup-routing.test.ts
+__tests__/services/content-domain-ontology.test.ts
+__tests__/services/content-editorial-workflow.test.ts
+__tests__/services/content-eval-history.test.ts
+__tests__/services/content-generation-quality.test.ts
+__tests__/services/content-learning-store.test.ts
+__tests__/services/content-memory-profile.test.ts
+__tests__/services/content-notifications.test.ts
+__tests__/services/content-novelty-reuse.test.ts
+__tests__/services/content-radar-engine.test.ts
+__tests__/services/content-reference-provenance.test.ts
+__tests__/services/content-security-red-team.test.ts
+__tests__/services/content-tenant-scope.test.ts
+__tests__/services/content-workflow-user-scope.test.ts
+__tests__/services/error-categorizer.test.ts
+__tests__/services/error-monitor.test.ts
+__tests__/services/finance-secretary-integration.test.ts
+__tests__/services/gemini-provider.test.ts
+__tests__/services/model-routing-local-smoke.test.ts
+__tests__/services/model-routing-observability.test.ts
+__tests__/services/openai-provider.test.ts
+__tests__/services/provider-registry-anthropic-gate.test.ts
+__tests__/services/provider-registry-fixture-mode.test.ts
+__tests__/services/python-engine-hardening.test.ts
+__tests__/services/secretary-agenda-provider-sync.test.ts
+__tests__/services/secretary-context.test.ts
+__tests__/services/secretary-scheduling-arbitrator.test.ts
+__tests__/services/secretary-unified-calendar-provider-adapter.test.ts
+__tests__/services/sensitive-log-sinks.test.ts
+__tests__/services/shared-decision-context.test.ts
+__tests__/services/signals-observability.test.ts
+__tests__/services/skill-memory.test.ts
+__tests__/services/skill-version-registry.test.ts
+__tests__/services/tenant-scope-observability.test.ts
+__tests__/services/tool-executor-allowlist.test.ts
+__tests__/services/tool-executor.test.ts
+__tests__/services/training-agenda-reconciliation.test.ts
+__tests__/services/training-plan-cancellation-cascade.test.ts
+__tests__/services/training-plan-lifecycle.test.ts
+__tests__/services/training-plans-tools.test.ts
+__tests__/services/training-plans.test.ts
+__tests__/skills/
+__tests__/state/
+__tests__/state/shared-memory.test.ts
+__tests__/utils/
+__tests__/utils/callback-store.test.ts
+__tests__/utils/log-sanitizer.test.ts
+__tests__/utils/logger-redaction.test.ts
+content-engine/
+content-engine/config.py
+content-engine/models/
+content-engine/models/requests.py
+content-engine/searchers/
+content-engine/searchers/reddit.py
+content-engine/services/
+content-engine/services/claude_client.py
+content-engine/services/creative/
+content-engine/services/creative/script_writer.py
+content-engine/services/intelligence/
+content-engine/services/intelligence/gap_finder.py
+dist/boot.d.ts
+dist/boot.d.ts.map
+dist/boot.js
+dist/boot.js.map
+dist/bot.d.ts
+dist/bot.d.ts.map
+dist/bot.js
+dist/bot.js.map
+dist/config.d.ts
+dist/config.d.ts.map
+dist/config.js
+dist/config.js.map
+dist/index.d.ts
+dist/index.d.ts.map
+dist/index.js
+dist/index.js.map
+dist/trigger-reports.d.ts
+dist/trigger-reports.d.ts.map
+dist/trigger-reports.js
+dist/trigger-reports.js.map
+dist/adapters/index.d.ts
+dist/adapters/index.d.ts.map
+dist/adapters/index.js
+dist/adapters/index.js.map
+dist/adapters/ios-adapter.d.ts
+dist/adapters/ios-adapter.d.ts.map
+dist/adapters/ios-adapter.js
+dist/adapters/ios-adapter.js.map
+dist/adapters/message-adapter.d.ts
+dist/adapters/message-adapter.d.ts.map
+dist/adapters/message-adapter.js
+dist/adapters/message-adapter.js.map
+dist/adapters/telegram-adapter.d.ts
+dist/adapters/telegram-adapter.d.ts.map
+dist/adapters/telegram-adapter.js
+dist/adapters/telegram-adapter.js.map
+dist/adapters/telegram-content-adapter.d.ts
+dist/adapters/telegram-content-adapter.d.ts.map
+dist/adapters/telegram-content-adapter.js
+dist/adapters/telegram-content-adapter.js.map
+dist/adapters/whatsapp-adapter.d.ts
+dist/adapters/whatsapp-adapter.d.ts.map
+dist/adapters/whatsapp-adapter.js
+dist/adapters/whatsapp-adapter.js.map
+dist/agents/editorial-coordinator-agent.d.ts
+dist/agents/editorial-coordinator-agent.d.ts.map
+dist/agents/editorial-coordinator-agent.js
+dist/agents/editorial-coordinator-agent.js.map
+dist/agents/performance-agent.d.ts
+dist/agents/performance-agent.d.ts.map
+dist/agents/performance-agent.js
+dist/agents/performance-agent.js.map
+dist/agents/pipeline-agent.d.ts
+dist/agents/pipeline-agent.d.ts.map
+dist/agents/pipeline-agent.js
+dist/agents/pipeline-agent.js.map
+dist/agents/reaction-radar-agent.d.ts
+dist/agents/reaction-radar-agent.d.ts.map
+dist/agents/reaction-radar-agent.js
+dist/agents/reaction-radar-agent.js.map
+dist/agents/seo-agent.d.ts
+dist/agents/seo-agent.d.ts.map
+dist/agents/seo-agent.js
+dist/agents/seo-agent.js.map
+dist/agents/voice-evolution-agent.d.ts
+dist/agents/voice-evolution-agent.d.ts.map
+dist/agents/voice-evolution-agent.js
+dist/agents/voice-evolution-agent.js.map
+dist/api/auth-middleware.d.ts
+dist/api/auth-middleware.d.ts.map
+dist/api/auth-middleware.js
+dist/api/auth-middleware.js.map
+dist/api/entitlement-middleware.d.ts
+dist/api/entitlement-middleware.d.ts.map
+dist/api/entitlement-middleware.js
+dist/api/entitlement-middleware.js.map
+dist/api/rate-limiter.d.ts
+dist/api/rate-limiter.d.ts.map
+dist/api/rate-limiter.js
+dist/api/rate-limiter.js.map
+dist/api/request-timer.d.ts
+dist/api/request-timer.d.ts.map
+dist/api/request-timer.js
+dist/api/request-timer.js.map
+dist/api/response-helpers.d.ts
+dist/api/response-helpers.d.ts.map
+dist/api/response-helpers.js
+dist/api/response-helpers.js.map
+dist/api/router.d.ts
+dist/api/router.d.ts.map
+dist/api/router.js
+dist/api/router.js.map
+dist/api/secret-guards.d.ts
+dist/api/secret-guards.d.ts.map
+dist/api/secret-guards.js
+dist/api/secret-guards.js.map
+dist/api/tenant-route-scope.d.ts
+dist/api/tenant-route-scope.d.ts.map
+dist/api/tenant-route-scope.js
+dist/api/tenant-route-scope.js.map
+dist/api/websocket.d.ts
+dist/api/websocket.d.ts.map
+dist/api/websocket.js
+dist/api/websocket.js.map
+dist/api/routes/audit-trail.d.ts
+dist/api/routes/audit-trail.d.ts.map
+dist/api/routes/audit-trail.js
+dist/api/routes/audit-trail.js.map
+dist/api/routes/auth.d.ts
+dist/api/routes/auth.d.ts.map
+dist/api/routes/auth.js
+dist/api/routes/auth.js.map
+dist/api/routes/billing.d.ts
+dist/api/routes/billing.d.ts.map
+dist/api/routes/billing.js
+dist/api/routes/billing.js.map
+dist/api/routes/calendar.d.ts
+dist/api/routes/calendar.d.ts.map
+dist/api/routes/calendar.js
+dist/api/routes/calendar.js.map
+dist/api/routes/chat-attachments.d.ts
+dist/api/routes/chat-attachments.d.ts.map
+dist/api/routes/chat-attachments.js
+dist/api/routes/chat-attachments.js.map
+dist/api/routes/chat-callback-response.d.ts
+dist/api/routes/chat-callback-response.d.ts.map
+dist/api/routes/chat-callback-response.js
+dist/api/routes/chat-callback-response.js.map
+dist/api/routes/chat-callback-routes.d.ts
+dist/api/routes/chat-callback-routes.d.ts.map
+dist/api/routes/chat-callback-routes.js
+dist/api/routes/chat-callback-routes.js.map
+dist/api/routes/chat-content-refinement.d.ts
+dist/api/routes/chat-content-refinement.d.ts.map
+dist/api/routes/chat-content-refinement.js
+dist/api/routes/chat-content-refinement.js.map
+dist/api/routes/chat-fastpath.d.ts
+dist/api/routes/chat-fastpath.d.ts.map
+dist/api/routes/chat-fastpath.js
+dist/api/routes/chat-fastpath.js.map
+dist/api/routes/chat-history-routes.d.ts
+dist/api/routes/chat-history-routes.d.ts.map
+dist/api/routes/chat-history-routes.js
+dist/api/routes/chat-history-routes.js.map
+dist/api/routes/chat-inline-buttons.d.ts
+dist/api/routes/chat-inline-buttons.d.ts.map
+dist/api/routes/chat-inline-buttons.js
+dist/api/routes/chat-inline-buttons.js.map
+dist/api/routes/chat-message-attachments.d.ts
+dist/api/routes/chat-message-attachments.d.ts.map
+dist/api/routes/chat-message-attachments.js
+dist/api/routes/chat-message-attachments.js.map
+dist/api/routes/chat-message-context.d.ts
+dist/api/routes/chat-message-context.d.ts.map
+dist/api/routes/chat-message-context.js
+dist/api/routes/chat-message-context.js.map
+dist/api/routes/chat-message-degraded-response.d.ts
+dist/api/routes/chat-message-degraded-response.d.ts.map
+dist/api/routes/chat-message-degraded-response.js
+dist/api/routes/chat-message-degraded-response.js.map
+dist/api/routes/chat-message-execution.d.ts
+dist/api/routes/chat-message-execution.d.ts.map
+dist/api/routes/chat-message-execution.js
+dist/api/routes/chat-message-execution.js.map
+dist/api/routes/chat-message-local-responses.d.ts
+dist/api/routes/chat-message-local-responses.d.ts.map
+dist/api/routes/chat-message-local-responses.js
+dist/api/routes/chat-message-local-responses.js.map
+dist/api/routes/chat-message-request.d.ts
+dist/api/routes/chat-message-request.d.ts.map
+dist/api/routes/chat-message-request.js
+dist/api/routes/chat-message-request.js.map
+dist/api/routes/chat-message-routes.d.ts
+dist/api/routes/chat-message-routes.d.ts.map
+dist/api/routes/chat-message-routes.js
+dist/api/routes/chat-message-routes.js.map
+dist/api/routes/chat-message-shortcuts.d.ts
+dist/api/routes/chat-message-shortcuts.d.ts.map
+dist/api/routes/chat-message-shortcuts.js
+dist/api/routes/chat-message-shortcuts.js.map
+dist/api/routes/chat-message-tier-gate.d.ts
+dist/api/routes/chat-message-tier-gate.d.ts.map
+dist/api/routes/chat-message-tier-gate.js
+dist/api/routes/chat-message-tier-gate.js.map
+dist/api/routes/chat-persistence.d.ts
+dist/api/routes/chat-persistence.d.ts.map
+dist/api/routes/chat-persistence.js
+dist/api/routes/chat-persistence.js.map
+dist/api/routes/chat-script-shortcut-response.d.ts
+dist/api/routes/chat-script-shortcut-response.d.ts.map
+dist/api/routes/chat-script-shortcut-response.js
+dist/api/routes/chat-script-shortcut-response.js.map
+dist/api/routes/chat-shortcut-parsers.d.ts
+dist/api/routes/chat-shortcut-parsers.d.ts.map
+dist/api/routes/chat-shortcut-parsers.js
+dist/api/routes/chat-shortcut-parsers.js.map
+dist/api/routes/chat-state-shortcuts.d.ts
+dist/api/routes/chat-state-shortcuts.d.ts.map
+dist/api/routes/chat-state-shortcuts.js
+dist/api/routes/chat-state-shortcuts.js.map
+dist/api/routes/chat.d.ts
+dist/api/routes/chat.d.ts.map
+dist/api/routes/chat.js
+dist/api/routes/chat.js.map
+dist/api/routes/client-errors.d.ts
+dist/api/routes/client-errors.d.ts.map
+dist/api/routes/client-errors.js
+dist/api/routes/client-errors.js.map
+dist/api/routes/connections.d.ts
+dist/api/routes/connections.d.ts.map
+dist/api/routes/connections.js
+dist/api/routes/connections.js.map
+dist/api/routes/content-admin-write.d.ts
+dist/api/routes/content-admin-write.d.ts.map
+dist/api/routes/content-admin-write.js
+dist/api/routes/content-admin-write.js.map
+dist/api/routes/content-dashboard.d.ts
+dist/api/routes/content-dashboard.d.ts.map
+dist/api/routes/content-dashboard.js
+dist/api/routes/content-dashboard.js.map
+dist/api/routes/content-editorial-routes.d.ts
+dist/api/routes/content-editorial-routes.d.ts.map
+dist/api/routes/content-editorial-routes.js
+dist/api/routes/content-editorial-routes.js.map
+dist/api/routes/content-generation-meta.d.ts
+dist/api/routes/content-generation-meta.d.ts.map
+dist/api/routes/content-generation-meta.js
+dist/api/routes/content-generation-meta.js.map
+dist/api/routes/content-home-route-utils.d.ts
+dist/api/routes/content-home-route-utils.d.ts.map
+dist/api/routes/content-home-route-utils.js
+dist/api/routes/content-home-route-utils.js.map
+dist/api/routes/content-intelligence-route-utils.d.ts
+dist/api/routes/content-intelligence-route-utils.d.ts.map
+dist/api/routes/content-intelligence-route-utils.js
+dist/api/routes/content-intelligence-route-utils.js.map
+dist/api/routes/content-intelligence-routes.d.ts
+dist/api/routes/content-intelligence-routes.d.ts.map
+dist/api/routes/content-intelligence-routes.js
+dist/api/routes/content-intelligence-routes.js.map
+dist/api/routes/content-learning-route-utils.d.ts
+dist/api/routes/content-learning-route-utils.d.ts.map
+dist/api/routes/content-learning-route-utils.js
+dist/api/routes/content-learning-route-utils.js.map
+dist/api/routes/content-learning-routes.d.ts
+dist/api/routes/content-learning-routes.d.ts.map
+dist/api/routes/content-learning-routes.js
+dist/api/routes/content-learning-routes.js.map
+dist/api/routes/content-notification-routes.d.ts
+dist/api/routes/content-notification-routes.d.ts.map
+dist/api/routes/content-notification-routes.js
+dist/api/routes/content-notification-routes.js.map
+dist/api/routes/content-pipeline-routes.d.ts
+dist/api/routes/content-pipeline-routes.d.ts.map
+dist/api/routes/content-pipeline-routes.js
+dist/api/routes/content-pipeline-routes.js.map
+dist/api/routes/content-reference-routes.d.ts
+dist/api/routes/content-reference-routes.d.ts.map
+dist/api/routes/content-reference-routes.js
+dist/api/routes/content-reference-routes.js.map
+dist/api/routes/content-script-route-utils.d.ts
+dist/api/routes/content-script-route-utils.d.ts.map
+dist/api/routes/content-script-route-utils.js
+dist/api/routes/content-script-route-utils.js.map
+dist/api/routes/content-script-routes.d.ts
+dist/api/routes/content-script-routes.d.ts.map
+dist/api/routes/content-script-routes.js
+dist/api/routes/content-script-routes.js.map
+dist/api/routes/content-script-utils.d.ts
+dist/api/routes/content-script-utils.d.ts.map
+dist/api/routes/content-script-utils.js
+dist/api/routes/content-script-utils.js.map
+dist/api/routes/content-topic-context.d.ts
+dist/api/routes/content-topic-context.d.ts.map
+dist/api/routes/content-topic-context.js
+dist/api/routes/content-topic-context.js.map
+dist/api/routes/content-topic-routes.d.ts
+dist/api/routes/content-topic-routes.d.ts.map
+dist/api/routes/content-topic-routes.js
+dist/api/routes/content-topic-routes.js.map
+dist/api/routes/content.d.ts
+dist/api/routes/content.d.ts.map
+dist/api/routes/content.js
+dist/api/routes/content.js.map
+dist/api/routes/cooking.d.ts
+dist/api/routes/cooking.d.ts.map
+dist/api/routes/cooking.js
+dist/api/routes/cooking.js.map
+dist/api/routes/dashboard-data-fetchers.d.ts
+dist/api/routes/dashboard-data-fetchers.d.ts.map
+dist/api/routes/dashboard-data-fetchers.js
+dist/api/routes/dashboard-data-fetchers.js.map
+dist/api/routes/dashboard-home-input.d.ts
+dist/api/routes/dashboard-home-input.d.ts.map
+dist/api/routes/dashboard-home-input.js
+dist/api/routes/dashboard-home-input.js.map
+dist/api/routes/dashboard.d.ts
+dist/api/routes/dashboard.d.ts.map
+dist/api/routes/dashboard.js
+dist/api/routes/dashboard.js.map
+dist/api/routes/finance.d.ts
+dist/api/routes/finance.d.ts.map
+dist/api/routes/finance.js
+dist/api/routes/finance.js.map
+dist/api/routes/garmin-auth.d.ts
+dist/api/routes/garmin-auth.d.ts.map
+dist/api/routes/garmin-auth.js
+dist/api/routes/garmin-auth.js.map
+dist/api/routes/health-data.d.ts
+dist/api/routes/health-data.d.ts.map
+dist/api/routes/health-data.js
+dist/api/routes/health-data.js.map
+dist/api/routes/internal.d.ts
+dist/api/routes/internal.d.ts.map
+dist/api/routes/internal.js
+dist/api/routes/internal.js.map
+dist/api/routes/invoices.d.ts
+dist/api/routes/invoices.d.ts.map
+dist/api/routes/invoices.js
+dist/api/routes/invoices.js.map
+dist/api/routes/notes.d.ts
+dist/api/routes/notes.d.ts.map
+dist/api/routes/notes.js
+dist/api/routes/notes.js.map
+dist/api/routes/notifications.d.ts
+dist/api/routes/notifications.d.ts.map
+dist/api/routes/notifications.js
+dist/api/routes/notifications.js.map
+dist/api/routes/oauth-initiate.d.ts
+dist/api/routes/oauth-initiate.d.ts.map
+dist/api/routes/oauth-initiate.js
+dist/api/routes/oauth-initiate.js.map
+dist/api/routes/onboarding.d.ts
+dist/api/routes/onboarding.d.ts.map
+dist/api/routes/onboarding.js
+dist/api/routes/onboarding.js.map
+dist/api/routes/plan.d.ts
+dist/api/routes/plan.d.ts.map
+dist/api/routes/plan.js
+dist/api/routes/plan.js.map
+dist/api/routes/reminders.d.ts
+dist/api/routes/reminders.d.ts.map
+dist/api/routes/reminders.js
+dist/api/routes/reminders.js.map
+dist/api/routes/reports.d.ts
+dist/api/routes/reports.d.ts.map
+dist/api/routes/reports.js
+dist/api/routes/reports.js.map
+dist/api/routes/settings.d.ts
+dist/api/routes/settings.d.ts.map
+dist/api/routes/settings.js
+dist/api/routes/settings.js.map
+dist/api/routes/signals.d.ts
+dist/api/routes/signals.d.ts.map
+dist/api/routes/signals.js
+dist/api/routes/signals.js.map
+dist/api/routes/skills.d.ts
+dist/api/routes/skills.d.ts.map
+dist/api/routes/skills.js
+dist/api/routes/skills.js.map
+dist/api/routes/tasks.d.ts
+dist/api/routes/tasks.d.ts.map
+dist/api/routes/tasks.js
+dist/api/routes/tasks.js.map
+dist/api/routes/training-analytics-routes.d.ts
+dist/api/routes/training-analytics-routes.d.ts.map
+dist/api/routes/training-analytics-routes.js
+dist/api/routes/training-analytics-routes.js.map
+dist/api/routes/training-calendar-event-writer.d.ts
+dist/api/routes/training-calendar-event-writer.d.ts.map
+dist/api/routes/training-calendar-event-writer.js
+dist/api/routes/training-calendar-event-writer.js.map
+dist/api/routes/training-calendar-lookup.d.ts
+dist/api/routes/training-calendar-lookup.d.ts.map
+dist/api/routes/training-calendar-lookup.js
+dist/api/routes/training-calendar-lookup.js.map
+dist/api/routes/training-calendar-utils.d.ts
+dist/api/routes/training-calendar-utils.d.ts.map
+dist/api/routes/training-calendar-utils.js
+dist/api/routes/training-calendar-utils.js.map
+dist/api/routes/training-coach-briefing.d.ts
+dist/api/routes/training-coach-briefing.d.ts.map
+dist/api/routes/training-coach-briefing.js
+dist/api/routes/training-coach-briefing.js.map
+dist/api/routes/training-fallback-plan.d.ts
+dist/api/routes/training-fallback-plan.d.ts.map
+dist/api/routes/training-fallback-plan.js
+dist/api/routes/training-fallback-plan.js.map
+dist/api/routes/training-home-payload.d.ts
+dist/api/routes/training-home-payload.d.ts.map
+dist/api/routes/training-home-payload.js
+dist/api/routes/training-home-payload.js.map
+dist/api/routes/training-plan-calendar-sync.d.ts
+dist/api/routes/training-plan-calendar-sync.d.ts.map
+dist/api/routes/training-plan-calendar-sync.js
+dist/api/routes/training-plan-calendar-sync.js.map
+dist/api/routes/training-plan-cancellation.d.ts
+dist/api/routes/training-plan-cancellation.d.ts.map
+dist/api/routes/training-plan-cancellation.js
+dist/api/routes/training-plan-cancellation.js.map
+dist/api/routes/training-plan-generation.d.ts
+dist/api/routes/training-plan-generation.d.ts.map
+dist/api/routes/training-plan-generation.js
+dist/api/routes/training-plan-generation.js.map
+dist/api/routes/training-plan-persistence.d.ts
+dist/api/routes/training-plan-persistence.d.ts.map
+dist/api/routes/training-plan-persistence.js
+dist/api/routes/training-plan-persistence.js.map
+dist/api/routes/training-plan-routes.d.ts
+dist/api/routes/training-plan-routes.d.ts.map
+dist/api/routes/training-plan-routes.js
+dist/api/routes/training-plan-routes.js.map
+dist/api/routes/training-profile-requirements.d.ts
+dist/api/routes/training-profile-requirements.d.ts.map
+dist/api/routes/training-profile-requirements.js
+dist/api/routes/training-profile-requirements.js.map
+dist/api/routes/training-read-models.d.ts
+dist/api/routes/training-read-models.d.ts.map
+dist/api/routes/training-read-models.js
+dist/api/routes/training-read-models.js.map
+dist/api/routes/training-schedule-utils.d.ts
+dist/api/routes/training-schedule-utils.d.ts.map
+dist/api/routes/training-schedule-utils.js
+dist/api/routes/training-schedule-utils.js.map
+dist/api/routes/training-session-mutations.d.ts
+dist/api/routes/training-session-mutations.d.ts.map
+dist/api/routes/training-session-mutations.js
+dist/api/routes/training-session-mutations.js.map
+dist/api/routes/training.d.ts
+dist/api/routes/training.d.ts.map
+dist/api/routes/training.js
+dist/api/routes/training.js.map
+dist/api/routes/usage.d.ts
+dist/api/routes/usage.d.ts.map
+dist/api/routes/usage.js
+dist/api/routes/usage.js.map
+dist/api/routes/waitlist.d.ts
+dist/api/routes/waitlist.d.ts.map
+dist/api/routes/waitlist.js
+dist/api/routes/waitlist.js.map
+dist/api/routes/wearable.d.ts
+dist/api/routes/wearable.d.ts.map
+dist/api/routes/wearable.js
+dist/api/routes/wearable.js.map
+dist/api/routes/webhooks.d.ts
+dist/api/routes/webhooks.d.ts.map
+dist/api/routes/webhooks.js
+dist/api/routes/webhooks.js.map
+dist/commands/autoresearch.d.ts
+dist/commands/autoresearch.d.ts.map
+dist/commands/autoresearch.js
+dist/commands/autoresearch.js.map
+dist/commands/books.d.ts
+dist/commands/books.d.ts.map
+dist/commands/books.js
+dist/commands/books.js.map
+dist/commands/pipeline.d.ts
+dist/commands/pipeline.d.ts.map
+dist/commands/pipeline.js
+dist/commands/pipeline.js.map
+dist/commands/skills.d.ts
+dist/commands/skills.d.ts.map
+dist/commands/skills.js
+dist/commands/skills.js.map
+dist/domains/ai-unavailable.d.ts
+dist/domains/ai-unavailable.d.ts.map
+dist/domains/ai-unavailable.js
+dist/domains/ai-unavailable.js.map
+dist/domains/content-creator.d.ts
+dist/domains/content-creator.d.ts.map
+dist/domains/content-creator.js
+dist/domains/content-creator.js.map
+dist/domains/cooking.d.ts
+dist/domains/cooking.d.ts.map
+dist/domains/cooking.js
+dist/domains/cooking.js.map
+dist/domains/domain-handler.d.ts
+dist/domains/domain-handler.d.ts.map
+dist/domains/domain-handler.js
+dist/domains/domain-handler.js.map
+dist/domains/finance.d.ts
+dist/domains/finance.d.ts.map
+dist/domains/finance.js
+dist/domains/finance.js.map
+dist/domains/secretary.d.ts
+dist/domains/secretary.d.ts.map
+dist/domains/secretary.js
+dist/domains/secretary.js.map
+dist/domains/triathlon.d.ts
+dist/domains/triathlon.d.ts.map
+dist/domains/triathlon.js
+dist/domains/triathlon.js.map
+dist/domains/types.d.ts
+dist/domains/types.d.ts.map
+dist/domains/types.js
+dist/domains/types.js.map
+dist/handlers/callback-query.d.ts
+dist/handlers/callback-query.d.ts.map
+dist/handlers/callback-query.js
+dist/handlers/callback-query.js.map
+dist/handlers/help-text.d.ts
+dist/handlers/help-text.d.ts.map
+dist/handlers/help-text.js
+dist/handlers/help-text.js.map
+dist/handlers/media.d.ts
+dist/handlers/media.d.ts.map
+dist/handlers/media.js
+dist/handlers/media.js.map
+dist/handlers/message.d.ts
+dist/handlers/message.d.ts.map
+dist/handlers/message.js
+dist/handlers/message.js.map
+dist/handlers/onboarding.d.ts
+dist/handlers/onboarding.d.ts.map
+dist/handlers/onboarding.js
+dist/handlers/onboarding.js.map
+dist/handlers/photo.d.ts
+dist/handlers/photo.d.ts.map
+dist/handlers/photo.js
+dist/handlers/photo.js.map
+dist/handlers/shared-state.d.ts
+dist/handlers/shared-state.d.ts.map
+dist/handlers/shared-state.js
+dist/handlers/shared-state.js.map
+dist/handlers/telegram-file.d.ts
+dist/handlers/telegram-file.d.ts.map
+dist/handlers/telegram-file.js
+dist/handlers/telegram-file.js.map
+dist/handlers/text.d.ts
+dist/handlers/text.d.ts.map
+dist/handlers/text.js
+dist/handlers/text.js.map
+dist/handlers/commands/content.d.ts
+dist/handlers/commands/content.d.ts.map
+dist/handlers/commands/content.js
+dist/handlers/commands/content.js.map
+dist/handlers/commands/finance.d.ts
+dist/handlers/commands/finance.d.ts.map
+dist/handlers/commands/finance.js
+dist/handlers/commands/finance.js.map
+dist/handlers/commands/secretary-helpers.d.ts
+dist/handlers/commands/secretary-helpers.d.ts.map
+dist/handlers/commands/secretary-helpers.js
+dist/handlers/commands/secretary-helpers.js.map
+dist/handlers/commands/secretary.d.ts
+dist/handlers/commands/secretary.d.ts.map
+dist/handlers/commands/secretary.js
+dist/handlers/commands/secretary.js.map
+dist/handlers/commands/skills-commands.d.ts
+dist/handlers/commands/skills-commands.d.ts.map
+dist/handlers/commands/skills-commands.js
+dist/handlers/commands/skills-commands.js.map
+dist/handlers/commands/system.d.ts
+dist/handlers/commands/system.d.ts.map
+dist/handlers/commands/system.js
+dist/handlers/commands/system.js.map
+dist/handlers/commands/triathlon.d.ts
+dist/handlers/commands/triathlon.d.ts.map
+dist/handlers/commands/triathlon.js
+dist/handlers/commands/triathlon.js.map
+dist/portal/action-routes.d.ts
+dist/portal/action-routes.d.ts.map
+dist/portal/action-routes.js
+dist/portal/action-routes.js.map
+dist/portal/actions.d.ts
+dist/portal/actions.d.ts.map
+dist/portal/actions.js
+dist/portal/actions.js.map
+dist/portal/admin-audit.d.ts
+dist/portal/admin-audit.d.ts.map
+dist/portal/admin-audit.js
+dist/portal/admin-audit.js.map
+dist/portal/admin-data-routes.d.ts
+dist/portal/admin-data-routes.d.ts.map
+dist/portal/admin-data-routes.js
+dist/portal/admin-data-routes.js.map
+dist/portal/admin-target-user.d.ts
+dist/portal/admin-target-user.d.ts.map
+dist/portal/admin-target-user.js
+dist/portal/admin-target-user.js.map
+dist/portal/anthropic-hook.d.ts
+dist/portal/anthropic-hook.d.ts.map
+dist/portal/anthropic-hook.js
+dist/portal/anthropic-hook.js.map
+dist/portal/chat-diagnostics.d.ts
+dist/portal/chat-diagnostics.d.ts.map
+dist/portal/chat-diagnostics.js
+dist/portal/chat-diagnostics.js.map
+dist/portal/chat-routes.d.ts
+dist/portal/chat-routes.d.ts.map
+dist/portal/chat-routes.js
+dist/portal/chat-routes.js.map
+dist/portal/content-routes.d.ts
+dist/portal/content-routes.d.ts.map
+dist/portal/content-routes.js
+dist/portal/content-routes.js.map
+dist/portal/cost-breakdown.d.ts
+dist/portal/cost-breakdown.d.ts.map
+dist/portal/cost-breakdown.js
+dist/portal/cost-breakdown.js.map
+dist/portal/document-routes.d.ts
+dist/portal/document-routes.d.ts.map
+dist/portal/document-routes.js
+dist/portal/document-routes.js.map
+dist/portal/formatters.d.ts
+dist/portal/formatters.d.ts.map
+dist/portal/formatters.js
+dist/portal/formatters.js.map
+dist/portal/founder-routes.d.ts
+dist/portal/founder-routes.d.ts.map
+dist/portal/founder-routes.js
+dist/portal/founder-routes.js.map
+dist/portal/health-routes.d.ts
+dist/portal/health-routes.d.ts.map
+dist/portal/health-routes.js
+dist/portal/health-routes.js.map
+dist/portal/http.d.ts
+dist/portal/http.d.ts.map
+dist/portal/http.js
+dist/portal/http.js.map
+dist/portal/intelligence-routes.d.ts
+dist/portal/intelligence-routes.d.ts.map
+dist/portal/intelligence-routes.js
+dist/portal/intelligence-routes.js.map
+dist/portal/invite-routes.d.ts
+dist/portal/invite-routes.d.ts.map
+dist/portal/invite-routes.js
+dist/portal/invite-routes.js.map
+dist/portal/landing.html
+dist/portal/oauth-routes.d.ts
+dist/portal/oauth-routes.d.ts.map
+dist/portal/oauth-routes.js
+dist/portal/oauth-routes.js.map
+dist/portal/operations-routes.d.ts
+dist/portal/operations-routes.d.ts.map
+dist/portal/operations-routes.js
+dist/portal/operations-routes.js.map
+dist/portal/plan-routes.d.ts
+dist/portal/plan-routes.d.ts.map
+dist/portal/plan-routes.js
+dist/portal/plan-routes.js.map
+dist/portal/portal.html
+dist/portal/provider-routes.d.ts
+dist/portal/provider-routes.d.ts.map
+dist/portal/provider-routes.js
+dist/portal/provider-routes.js.map
+dist/portal/security.d.ts
+dist/portal/security.d.ts.map
+dist/portal/security.js
+dist/portal/security.js.map
+dist/portal/server.d.ts
+dist/portal/server.d.ts.map
+dist/portal/server.js
+dist/portal/server.js.map
+dist/portal/settings-routes.d.ts
+dist/portal/settings-routes.d.ts.map
+dist/portal/settings-routes.js
+dist/portal/settings-routes.js.map
+dist/portal/skill-routes.d.ts
+dist/portal/skill-routes.d.ts.map
+dist/portal/skill-routes.js
+dist/portal/skill-routes.js.map
+dist/portal/snapshot-builder.d.ts
+dist/portal/snapshot-builder.d.ts.map
+dist/portal/snapshot-builder.js
+dist/portal/snapshot-builder.js.map
+dist/portal/snapshot-cache.d.ts
+dist/portal/snapshot-cache.d.ts.map
+dist/portal/snapshot-cache.js
+dist/portal/snapshot-cache.js.map
+dist/portal/snapshot-routes.d.ts
+dist/portal/snapshot-routes.d.ts.map
+dist/portal/snapshot-routes.js
+dist/portal/snapshot-routes.js.map
+dist/portal/snapshot-statements.d.ts
+dist/portal/snapshot-statements.d.ts.map
+dist/portal/snapshot-statements.js
+dist/portal/snapshot-statements.js.map
+dist/portal/static-routes.d.ts
+dist/portal/static-routes.d.ts.map
+dist/portal/static-routes.js
+dist/portal/static-routes.js.map
+dist/portal/telemetry.d.ts
+dist/portal/telemetry.d.ts.map
+dist/portal/telemetry.js
+dist/portal/telemetry.js.map
+dist/portal/usage-summary.d.ts
+dist/portal/usage-summary.d.ts.map
+dist/portal/usage-summary.js
+dist/portal/usage-summary.js.map
+dist/portal/user-routes.d.ts
+dist/portal/user-routes.d.ts.map
+dist/portal/user-routes.js
+dist/portal/user-routes.js.map
+dist/portal/user-skill-routes.d.ts
+dist/portal/user-skill-routes.d.ts.map
+dist/portal/user-skill-routes.js
+dist/portal/user-skill-routes.js.map
+dist/portal/validation.d.ts
+dist/portal/validation.d.ts.map
+dist/portal/validation.js
+dist/portal/validation.js.map
+dist/portal/waitlist-routes.d.ts
+dist/portal/waitlist-routes.d.ts.map
+dist/portal/waitlist-routes.js
+dist/portal/waitlist-routes.js.map
+dist/portal/webhook-routes.d.ts
+dist/portal/webhook-routes.d.ts.map
+dist/portal/webhook-routes.js
+dist/portal/webhook-routes.js.map
+dist/portal/webhooks.d.ts
+dist/portal/webhooks.d.ts.map
+dist/portal/webhooks.js
+dist/portal/webhooks.js.map
+dist/router/classifier.d.ts
+dist/router/classifier.d.ts.map
+dist/router/classifier.js
+dist/router/classifier.js.map
+dist/router/index.d.ts
+dist/router/index.d.ts.map
+dist/router/index.js
+dist/router/index.js.map
+dist/router/sport-classifier.d.ts
+dist/router/sport-classifier.d.ts.map
+dist/router/sport-classifier.js
+dist/router/sport-classifier.js.map
+dist/sdk/create-skill.d.ts
+dist/sdk/create-skill.d.ts.map
+dist/sdk/create-skill.js
+dist/sdk/create-skill.js.map
+dist/sdk/define-agents.d.ts
+dist/sdk/define-agents.d.ts.map
+dist/sdk/define-agents.js
+dist/sdk/define-agents.js.map
+dist/sdk/define-commands.d.ts
+dist/sdk/define-commands.d.ts.map
+dist/sdk/define-commands.js
+dist/sdk/define-commands.js.map
+dist/sdk/define-tools.d.ts
+dist/sdk/define-tools.d.ts.map
+dist/sdk/define-tools.js
+dist/sdk/define-tools.js.map
+dist/sdk/index.d.ts
+dist/sdk/index.d.ts.map
+dist/sdk/index.js
+dist/sdk/index.js.map
+dist/sdk/types.d.ts
+dist/sdk/types.d.ts.map
+dist/sdk/types.js
+dist/sdk/types.js.map
+dist/sdk/examples/hello-world.d.ts
+dist/sdk/examples/hello-world.d.ts.map
+dist/sdk/examples/hello-world.js
+dist/sdk/examples/hello-world.js.map
+dist/services/
+dist/services/adherence-signals.d.ts
+dist/services/adherence-signals.d.ts.map
+dist/services/adherence-signals.js
+dist/services/adherence-signals.js.map
+dist/services/ai-provider.d.ts
+dist/services/ai-provider.d.ts.map
+dist/services/ai-provider.js
+dist/services/ai-provider.js.map
+dist/services/amazon-collector.d.ts
+dist/services/amazon-collector.d.ts.map
+dist/services/amazon-collector.js
+dist/services/amazon-collector.js.map
+dist/services/anthropic-provider.d.ts
+dist/services/anthropic-provider.d.ts.map
+dist/services/anthropic-provider.js
+dist/services/anthropic-provider.js.map
+dist/services/anthropic.d.ts
+dist/services/anthropic.d.ts.map
+dist/services/anthropic.js
+dist/services/anthropic.js.map
+dist/services/apns-sender.d.ts
+dist/services/apns-sender.d.ts.map
+dist/services/apns-sender.js
+dist/services/apns-sender.js.map
+dist/services/audit-trail.d.ts
+dist/services/audit-trail.d.ts.map
+dist/services/audit-trail.js
+dist/services/audit-trail.js.map
+dist/services/autoresearch.d.ts
+dist/services/autoresearch.d.ts.map
+dist/services/autoresearch.js
+dist/services/autoresearch.js.map
+dist/services/backup.d.ts
+dist/services/backup.d.ts.map
+dist/services/backup.js
+dist/services/backup.js.map
+dist/services/cache-store.d.ts
+dist/services/cache-store.d.ts.map
+dist/services/cache-store.js
+dist/services/cache-store.js.map
+dist/services/calendar-cache-invalidator.d.ts
+dist/services/calendar-cache-invalidator.d.ts.map
+dist/services/calendar-cache-invalidator.js
+dist/services/calendar-cache-invalidator.js.map
+dist/services/channel-learner.d.ts
+dist/services/channel-learner.d.ts.map
+dist/services/channel-learner.js
+dist/services/channel-learner.js.map
+dist/services/chat-context-engine.d.ts
+dist/services/chat-context-engine.d.ts.map
+dist/services/chat-context-engine.js
+dist/services/chat-context-engine.js.map
+dist/services/chat-day-to-day-simulation.d.ts
+dist/services/chat-day-to-day-simulation.d.ts.map
+dist/services/chat-day-to-day-simulation.js
+dist/services/chat-day-to-day-simulation.js.map
+dist/services/chat-evaluation-harness.d.ts
+dist/services/chat-evaluation-harness.d.ts.map
+dist/services/chat-evaluation-harness.js
+dist/services/chat-evaluation-harness.js.map
+dist/services/chat-history-store.d.ts
+dist/services/chat-history-store.d.ts.map
+dist/services/chat-history-store.js
+dist/services/chat-history-store.js.map
+dist/services/chat-pending-confirmations.d.ts
+dist/services/chat-pending-confirmations.d.ts.map
+dist/services/chat-pending-confirmations.js
+dist/services/chat-pending-confirmations.js.map
+dist/services/chat-response-sufficiency.d.ts
+dist/services/chat-response-sufficiency.d.ts.map
+dist/services/chat-response-sufficiency.js
+dist/services/chat-response-sufficiency.js.map
+dist/services/chat-skill-orchestrator.d.ts
+dist/services/chat-skill-orchestrator.d.ts.map
+dist/services/chat-skill-orchestrator.js
+dist/services/chat-skill-orchestrator.js.map
+dist/services/chat-tenant-scope.d.ts
+dist/services/chat-tenant-scope.d.ts.map
+dist/services/chat-tenant-scope.js
+dist/services/chat-tenant-scope.js.map
+dist/services/chat-tool-authorization.d.ts
+dist/services/chat-tool-authorization.d.ts.map
+dist/services/chat-tool-authorization.js
+dist/services/chat-tool-authorization.js.map
+dist/services/coach-phase-memory.d.ts
+dist/services/coach-phase-memory.d.ts.map
+dist/services/coach-phase-memory.js
+dist/services/coach-phase-memory.js.map
+dist/services/coach-plan-registry.d.ts
+dist/services/coach-plan-registry.d.ts.map
+dist/services/coach-plan-registry.js
+dist/services/coach-plan-registry.js.map
+dist/services/config-provider.d.ts
+dist/services/config-provider.d.ts.map
+dist/services/config-provider.js
+dist/services/config-provider.js.map
+dist/services/conflict-resolver.d.ts
+dist/services/conflict-resolver.d.ts.map
+dist/services/conflict-resolver.js
+dist/services/conflict-resolver.js.map
+dist/services/content-cache-invalidator.d.ts
+dist/services/content-cache-invalidator.d.ts.map
+dist/services/content-cache-invalidator.js
+dist/services/content-cache-invalidator.js.map
+dist/services/content-cross-skill-orchestration.d.ts
+dist/services/content-cross-skill-orchestration.d.ts.map
+dist/services/content-cross-skill-orchestration.js
+dist/services/content-cross-skill-orchestration.js.map
+dist/services/content-dashboard-service.d.ts
+dist/services/content-dashboard-service.d.ts.map
+dist/services/content-dashboard-service.js
+dist/services/content-dashboard-service.js.map
+dist/services/content-day-to-day-evaluation.d.ts
+dist/services/content-day-to-day-evaluation.d.ts.map
+dist/services/content-day-to-day-evaluation.js
+dist/services/content-day-to-day-evaluation.js.map
+dist/services/content-dedup.d.ts
+dist/services/content-dedup.d.ts.map
+dist/services/content-dedup.js
+dist/services/content-dedup.js.map
+dist/services/content-discovery.d.ts
+dist/services/content-discovery.d.ts.map
+dist/services/content-discovery.js
+dist/services/content-discovery.js.map
+dist/services/content-domain-ontology.d.ts
+dist/services/content-domain-ontology.d.ts.map
+dist/services/content-domain-ontology.js
+dist/services/content-domain-ontology.js.map
+dist/services/content-editorial-workflow.d.ts
+dist/services/content-editorial-workflow.d.ts.map
+dist/services/content-editorial-workflow.js
+dist/services/content-editorial-workflow.js.map
+dist/services/content-engine.d.ts
+dist/services/content-engine.d.ts.map
+dist/services/content-engine.js
+dist/services/content-engine.js.map
+dist/services/content-eval-history.d.ts
+dist/services/content-eval-history.d.ts.map
+dist/services/content-eval-history.js
+dist/services/content-eval-history.js.map
+dist/services/content-file-saver.d.ts
+dist/services/content-file-saver.d.ts.map
+dist/services/content-file-saver.js
+dist/services/content-file-saver.js.map
+dist/services/content-generation-quality.d.ts
+dist/services/content-generation-quality.d.ts.map
+dist/services/content-generation-quality.js
+dist/services/content-generation-quality.js.map
+dist/services/content-home-view-state.d.ts
+dist/services/content-home-view-state.d.ts.map
+dist/services/content-home-view-state.js
+dist/services/content-home-view-state.js.map
+dist/services/content-intelligence.d.ts
+dist/services/content-intelligence.d.ts.map
+dist/services/content-intelligence.js
+dist/services/content-intelligence.js.map
+dist/services/content-learning-store.d.ts
+dist/services/content-learning-store.d.ts.map
+dist/services/content-learning-store.js
+dist/services/content-learning-store.js.map
+dist/services/content-memory-profile.d.ts
+dist/services/content-memory-profile.d.ts.map
+dist/services/content-memory-profile.js
+dist/services/content-memory-profile.js.map
+dist/services/content-notification-store.d.ts
+dist/services/content-notification-store.d.ts.map
+dist/services/content-notification-store.js
+dist/services/content-notification-store.js.map
+dist/services/content-novelty-reuse.d.ts
+dist/services/content-novelty-reuse.d.ts.map
+dist/services/content-novelty-reuse.js
+dist/services/content-novelty-reuse.js.map
+dist/services/content-radar-engine.d.ts
+dist/services/content-radar-engine.d.ts.map
+dist/services/content-radar-engine.js
+dist/services/content-radar-engine.js.map
+dist/services/content-radar-preferences.d.ts
+dist/services/content-radar-preferences.d.ts.map
+dist/services/content-radar-preferences.js
+dist/services/content-radar-preferences.js.map
+dist/services/content-reference-context.d.ts
+dist/services/content-reference-context.d.ts.map
+dist/services/content-reference-context.js
+dist/services/content-reference-context.js.map
+dist/services/content-reference-provenance.d.ts
+dist/services/content-reference-provenance.d.ts.map
+dist/services/content-reference-provenance.js
+dist/services/content-reference-provenance.js.map
+dist/services/content-scheduler.d.ts
+dist/services/content-scheduler.d.ts.map
+dist/services/content-scheduler.js
+dist/services/content-scheduler.js.map
+dist/services/content-telegram-formatter.d.ts
+dist/services/content-telegram-formatter.d.ts.map
+dist/services/content-telegram-formatter.js
+dist/services/content-telegram-formatter.js.map
+dist/services/content-tenant-scope.d.ts
+dist/services/content-tenant-scope.d.ts.map
+dist/services/content-tenant-scope.js
+dist/services/content-tenant-scope.js.map
+dist/services/content-topic-secretary-sync.d.ts
+dist/services/content-topic-secretary-sync.d.ts.map
+dist/services/content-topic-secretary-sync.js
+dist/services/content-topic-secretary-sync.js.map
+dist/services/content-workflow.d.ts
+dist/services/content-workflow.d.ts.map
+dist/services/content-workflow.js
+dist/services/content-workflow.js.map
+dist/services/context-engine.d.ts
+dist/services/context-engine.d.ts.map
+dist/services/context-engine.js
+dist/services/context-engine.js.map
+dist/services/cooking-cache-invalidator.d.ts
+dist/services/cooking-cache-invalidator.d.ts.map
+dist/services/cooking-cache-invalidator.js
+dist/services/cooking-cache-invalidator.js.map
+dist/services/cooking-chef.d.ts
+dist/services/cooking-chef.d.ts.map
+dist/services/cooking-chef.js
+dist/services/cooking-chef.js.map
+dist/services/cooking-secretary-integration.d.ts
+dist/services/cooking-secretary-integration.d.ts.map
+dist/services/cooking-secretary-integration.js
+dist/services/cooking-secretary-integration.js.map
+dist/services/coordination-cache-invalidator.d.ts
+dist/services/coordination-cache-invalidator.d.ts.map
+dist/services/coordination-cache-invalidator.js
+dist/services/coordination-cache-invalidator.js.map
+dist/services/cost-guardrail.d.ts
+dist/services/cost-guardrail.d.ts.map
+dist/services/cost-guardrail.js
+dist/services/cost-guardrail.js.map
+dist/services/cross-agent-learning.d.ts
+dist/services/cross-agent-learning.d.ts.map
+dist/services/cross-agent-learning.js
+dist/services/cross-agent-learning.js.map
+dist/services/daily-brief-orchestrator.d.ts
+dist/services/daily-brief-orchestrator.d.ts.map
+dist/services/daily-brief-orchestrator.js
+dist/services/daily-brief-orchestrator.js.map
+dist/services/dashboard-cache-invalidator.d.ts
+dist/services/dashboard-cache-invalidator.d.ts.map
+dist/services/dashboard-cache-invalidator.js
+dist/services/dashboard-cache-invalidator.js.map
+dist/services/dashboard-home-view-state.d.ts
+dist/services/dashboard-home-view-state.d.ts.map
+dist/services/dashboard-home-view-state.js
+dist/services/dashboard-home-view-state.js.map
+dist/services/database.d.ts
+dist/services/database.d.ts.map
+dist/services/database.js
+dist/services/database.js.map
+dist/services/domain-provider-router.d.ts
+dist/services/domain-provider-router.d.ts.map
+dist/services/domain-provider-router.js
+dist/services/domain-provider-router.js.map
+dist/services/email-sender.d.ts
+dist/services/email-sender.d.ts.map
+dist/services/email-sender.js
+dist/services/email-sender.js.map
+dist/services/entitlement.d.ts
+dist/services/entitlement.d.ts.map
+dist/services/entitlement.js
+dist/services/entitlement.js.map
+dist/services/error-categorizer.d.ts
+dist/services/error-categorizer.d.ts.map
+dist/services/error-categorizer.js
+dist/services/error-categorizer.js.map
+dist/services/error-monitor.d.ts
+dist/services/error-monitor.d.ts.map
+dist/services/error-monitor.js
+dist/services/error-monitor.js.map
+dist/services/error-tracker.d.ts
+dist/services/error-tracker.d.ts.map
+dist/services/error-tracker.js
+dist/services/error-tracker.js.map
+dist/services/eval-criteria.d.ts
+dist/services/eval-criteria.d.ts.map
+dist/services/eval-criteria.js
+dist/services/eval-criteria.js.map
+dist/services/finance-cache-invalidator.d.ts
+dist/services/finance-cache-invalidator.d.ts.map
+dist/services/finance-cache-invalidator.js
+dist/services/finance-cache-invalidator.js.map
+dist/services/finance-secretary-integration.d.ts
+dist/services/finance-secretary-integration.d.ts.map
+dist/services/finance-secretary-integration.js
+dist/services/finance-secretary-integration.js.map
+dist/services/finance-tracker.d.ts
+dist/services/finance-tracker.d.ts.map
+dist/services/finance-tracker.js
+dist/services/finance-tracker.js.map
+dist/services/fiscal-bundle.d.ts
+dist/services/fiscal-bundle.d.ts.map
+dist/services/fiscal-bundle.js
+dist/services/fiscal-bundle.js.map
+dist/services/focus-planner.d.ts
+dist/services/focus-planner.d.ts.map
+dist/services/focus-planner.js
+dist/services/focus-planner.js.map
+dist/services/founders.d.ts
+dist/services/founders.d.ts.map
+dist/services/founders.js
+dist/services/founders.js.map
+dist/services/garmin-coach.d.ts
+dist/services/garmin-coach.d.ts.map
+dist/services/garmin-coach.js
+dist/services/garmin-coach.js.map
+dist/services/garmin-session-store.d.ts
+dist/services/garmin-session-store.d.ts.map
+dist/services/garmin-session-store.js
+dist/services/garmin-session-store.js.map
+dist/services/garmin.d.ts
+dist/services/garmin.d.ts.map
+dist/services/garmin.js
+dist/services/garmin.js.map
+dist/services/gemini-provider.d.ts
+dist/services/gemini-provider.d.ts.map
+dist/services/gemini-provider.js
+dist/services/gemini-provider.js.map
+dist/services/google-auth-session-store.d.ts
+dist/services/google-auth-session-store.d.ts.map
+dist/services/google-auth-session-store.js
+dist/services/google-auth-session-store.js.map
+dist/services/google-auth.d.ts
+dist/services/google-auth.d.ts.map
+dist/services/google-auth.js
+dist/services/google-auth.js.map
+dist/services/google-calendar.d.ts
+dist/services/google-calendar.d.ts.map
+dist/services/google-calendar.js
+dist/services/google-calendar.js.map
+dist/services/google-drive.d.ts
+dist/services/google-drive.d.ts.map
+dist/services/google-drive.js
+dist/services/google-drive.js.map
+dist/services/google-gmail.d.ts
+dist/services/google-gmail.d.ts.map
+dist/services/google-gmail.js
+dist/services/google-gmail.js.map
+dist/services/google-sign-in.d.ts
+dist/services/google-sign-in.d.ts.map
+dist/services/google-sign-in.js
+dist/services/google-sign-in.js.map
+dist/services/integration-cache-invalidator.d.ts
+dist/services/integration-cache-invalidator.d.ts.map
+dist/services/integration-cache-invalidator.js
+dist/services/integration-cache-invalidator.js.map
+dist/services/integration-health.d.ts
+dist/services/integration-health.d.ts.map
+dist/services/integration-health.js
+dist/services/integration-health.js.map
+dist/services/integration-status.d.ts
+dist/services/integration-status.d.ts.map
+dist/services/integration-status.js
+dist/services/integration-status.js.map
+dist/services/intelligence-bus.d.ts
+dist/services/intelligence-bus.d.ts.map
+dist/services/intelligence-bus.js
+dist/services/intelligence-bus.js.map
+dist/services/invoice-collector.d.ts
+dist/services/invoice-collector.d.ts.map
+dist/services/invoice-collector.js
+dist/services/invoice-collector.js.map
+dist/services/invoice-filer.d.ts
+dist/services/invoice-filer.d.ts.map
+dist/services/invoice-filer.js
+dist/services/invoice-filer.js.map
+dist/services/invoice-queue.d.ts
+dist/services/invoice-queue.d.ts.map
+dist/services/invoice-queue.js
+dist/services/invoice-queue.js.map
+dist/services/invoice-vendor-cleanup.d.ts
+dist/services/invoice-vendor-cleanup.d.ts.map
+dist/services/invoice-vendor-cleanup.js
+dist/services/invoice-vendor-cleanup.js.map
+dist/services/ios-auth-session.d.ts
+dist/services/ios-auth-session.d.ts.map
+dist/services/ios-auth-session.js
+dist/services/ios-auth-session.js.map
+dist/services/manual-report-triggers.d.ts
+dist/services/manual-report-triggers.d.ts.map
+dist/services/manual-report-triggers.js
+dist/services/manual-report-triggers.js.map
+dist/services/microsoft-auth.d.ts
+dist/services/microsoft-auth.d.ts.map
+dist/services/microsoft-auth.js
+dist/services/microsoft-auth.js.map
+dist/services/microsoft-todo.d.ts
+dist/services/microsoft-todo.d.ts.map
+dist/services/microsoft-todo.js
+dist/services/microsoft-todo.js.map
+dist/services/model-config.d.ts
+dist/services/model-config.d.ts.map
+dist/services/model-config.js
+dist/services/model-config.js.map
+dist/services/oauth-flow.d.ts
+dist/services/oauth-flow.d.ts.map
+dist/services/oauth-flow.js
+dist/services/oauth-flow.js.map
+dist/services/oauth-state-store.d.ts
+dist/services/oauth-state-store.d.ts.map
+dist/services/oauth-state-store.js
+dist/services/oauth-state-store.js.map
+dist/services/oauth-store.d.ts
+dist/services/oauth-store.d.ts.map
+dist/services/oauth-store.js
+dist/services/oauth-store.js.map
+dist/services/onboarding-cache-invalidator.d.ts
+dist/services/onboarding-cache-invalidator.d.ts.map
+dist/services/onboarding-cache-invalidator.js
+dist/services/onboarding-cache-invalidator.js.map
+dist/services/onboarding.d.ts
+dist/services/onboarding.d.ts.map
+dist/services/onboarding.js
+dist/services/onboarding.js.map
+dist/services/openai-provider.d.ts
+dist/services/openai-provider.d.ts.map
+dist/services/openai-provider.js
+dist/services/openai-provider.js.map
+dist/services/operator-alerts.d.ts
+dist/services/operator-alerts.d.ts.map
+dist/services/operator-alerts.js
+dist/services/operator-alerts.js.map
+dist/services/outlook-calendar.d.ts
+dist/services/outlook-calendar.d.ts.map
+dist/services/outlook-calendar.js
+dist/services/outlook-calendar.js.map
+dist/services/outlook-mail.d.ts
+dist/services/outlook-mail.d.ts.map
+dist/services/outlook-mail.js
+dist/services/outlook-mail.js.map
+dist/services/owner-bootstrap-preflight.d.ts
+dist/services/owner-bootstrap-preflight.d.ts.map
+dist/services/owner-bootstrap-preflight.js
+dist/services/owner-bootstrap-preflight.js.map
+dist/services/plan-cache-invalidator.d.ts
+dist/services/plan-cache-invalidator.d.ts.map
+dist/services/plan-cache-invalidator.js
+dist/services/plan-cache-invalidator.js.map
+dist/services/plan-generator.d.ts
+dist/services/plan-generator.d.ts.map
+dist/services/plan-generator.js
+dist/services/plan-generator.js.map
+dist/services/plan-quotas.d.ts
+dist/services/plan-quotas.d.ts.map
+dist/services/plan-quotas.js
+dist/services/plan-quotas.js.map
+dist/services/portal-session-mint.d.ts
+dist/services/portal-session-mint.d.ts.map
+dist/services/portal-session-mint.js
+dist/services/portal-session-mint.js.map
+dist/services/portal-session-token.d.ts
+dist/services/portal-session-token.d.ts.map
+dist/services/portal-session-token.js
+dist/services/portal-session-token.js.map
+dist/services/progression-analytics.d.ts
+dist/services/progression-analytics.d.ts.map
+dist/services/progression-analytics.js
+dist/services/progression-analytics.js.map
+dist/services/provider-fallback.d.ts
+dist/services/provider-fallback.d.ts.map
+dist/services/provider-fallback.js
+dist/services/provider-fallback.js.map
+dist/services/provider-registry.d.ts
+dist/services/provider-registry.d.ts.map
+dist/services/provider-registry.js
+dist/services/provider-registry.js.map
+dist/services/provider-state-context.d.ts
+dist/services/provider-state-context.d.ts.map
+dist/services/provider-state-context.js
+dist/services/provider-state-context.js.map
+dist/services/quality-scorer.d.ts
+dist/services/quality-scorer.d.ts.map
+dist/services/quality-scorer.js
+dist/services/quality-scorer.js.map
+dist/services/readiness-scorer.d.ts
+dist/services/readiness-scorer.d.ts.map
+dist/services/readiness-scorer.js
+dist/services/readiness-scorer.js.map
+dist/services/recurrence-utils.d.ts
+dist/services/recurrence-utils.d.ts.map
+dist/services/recurrence-utils.js
+dist/services/recurrence-utils.js.map
+dist/services/reply-language-normalizer.d.ts
+dist/services/reply-language-normalizer.d.ts.map
+dist/services/reply-language-normalizer.js
+dist/services/reply-language-normalizer.js.map
+dist/services/report-document-store.d.ts
+dist/services/report-document-store.d.ts.map
+dist/services/report-document-store.js
+dist/services/report-document-store.js.map
+dist/services/runtime-flags.d.ts
+dist/services/runtime-flags.d.ts.map
+dist/services/runtime-flags.js
+dist/services/runtime-flags.js.map
+dist/services/runtime-status.d.ts
+dist/services/runtime-status.d.ts.map
+dist/services/runtime-status.js
+dist/services/runtime-status.js.map
+dist/services/scheduler.d.ts
+dist/services/scheduler.d.ts.map
+dist/services/scheduler.js
+dist/services/scheduler.js.map
+dist/services/screen-contract-meta.d.ts
+dist/services/screen-contract-meta.d.ts.map
+dist/services/screen-contract-meta.js
+dist/services/screen-contract-meta.js.map
+dist/services/secretary-agenda-provider-sync.d.ts
+dist/services/secretary-agenda-provider-sync.d.ts.map
+dist/services/secretary-agenda-provider-sync.js
+dist/services/secretary-agenda-provider-sync.js.map
+dist/services/secretary-fastpath.d.ts
+dist/services/secretary-fastpath.d.ts.map
+dist/services/secretary-fastpath.js
+dist/services/secretary-fastpath.js.map
+dist/services/secretary-orchestrator.d.ts
+dist/services/secretary-orchestrator.d.ts.map
+dist/services/secretary-orchestrator.js
+dist/services/secretary-orchestrator.js.map
+dist/services/secretary-scheduling-arbitrator.d.ts
+dist/services/secretary-scheduling-arbitrator.d.ts.map
+dist/services/secretary-scheduling-arbitrator.js
+dist/services/secretary-scheduling-arbitrator.js.map
+dist/services/secretary-tools.d.ts
+dist/services/secretary-tools.d.ts.map
+dist/services/secretary-tools.js
+dist/services/secretary-tools.js.map
+dist/services/secretary-unified-calendar-provider-adapter.d.ts
+dist/services/secretary-unified-calendar-provider-adapter.d.ts.map
+dist/services/secretary-unified-calendar-provider-adapter.js
+dist/services/secretary-unified-calendar-provider-adapter.js.map
+dist/services/session-analytics.d.ts
+dist/services/session-analytics.d.ts.map
+dist/services/session-analytics.js
+dist/services/session-analytics.js.map
+dist/services/shared-decision-context.d.ts
+dist/services/shared-decision-context.d.ts.map
+dist/services/shared-decision-context.js
+dist/services/shared-decision-context.js.map
+dist/services/signals-observability.d.ts
+dist/services/signals-observability.d.ts.map
+dist/services/signals-observability.js
+dist/services/signals-observability.js.map
+dist/services/skill-memory.d.ts
+dist/services/skill-memory.d.ts.map
+dist/services/skill-memory.js
+dist/services/skill-memory.js.map
+dist/services/skill-tiers.d.ts
+dist/services/skill-tiers.d.ts.map
+dist/services/skill-tiers.js
+dist/services/skill-tiers.js.map
+dist/services/skill-version-registry.d.ts
+dist/services/skill-version-registry.d.ts.map
+dist/services/skill-version-registry.js
+dist/services/skill-version-registry.js.map
+dist/services/storage-provider.d.ts
+dist/services/storage-provider.d.ts.map
+dist/services/storage-provider.js
+dist/services/storage-provider.js.map
+dist/services/stripe-service.d.ts
+dist/services/stripe-service.d.ts.map
+dist/services/stripe-service.js
+dist/services/stripe-service.js.map
+dist/services/swr-refresh-observability.d.ts
+dist/services/swr-refresh-observability.d.ts.map
+dist/services/swr-refresh-observability.js
+dist/services/swr-refresh-observability.js.map
+dist/services/task-cache-invalidator.d.ts
+dist/services/task-cache-invalidator.d.ts.map
+dist/services/task-cache-invalidator.js
+dist/services/task-cache-invalidator.js.map
+dist/services/task-metrics.d.ts
+dist/services/task-metrics.d.ts.map
+dist/services/task-metrics.js
+dist/services/task-metrics.js.map
+dist/services/tenant-scope-observability.d.ts
+dist/services/tenant-scope-observability.d.ts.map
+dist/services/tenant-scope-observability.js
+dist/services/tenant-scope-observability.js.map
+dist/services/tool-executor.d.ts
+dist/services/tool-executor.d.ts.map
+dist/services/tool-executor.js
+dist/services/tool-executor.js.map
+dist/services/training-agenda-reconciliation.d.ts
+dist/services/training-agenda-reconciliation.d.ts.map
+dist/services/training-agenda-reconciliation.js
+dist/services/training-agenda-reconciliation.js.map
+dist/services/training-cache-invalidator.d.ts
+dist/services/training-cache-invalidator.d.ts.map
+dist/services/training-cache-invalidator.js
+dist/services/training-cache-invalidator.js.map
+dist/services/training-calendar-scope.d.ts
+dist/services/training-calendar-scope.d.ts.map
+dist/services/training-calendar-scope.js
+dist/services/training-calendar-scope.js.map
+dist/services/training-coach-kernel-plan-generator.d.ts
+dist/services/training-coach-kernel-plan-generator.d.ts.map
+dist/services/training-coach-kernel-plan-generator.js
+dist/services/training-coach-kernel-plan-generator.js.map
+dist/services/training-comparison.d.ts
+dist/services/training-comparison.d.ts.map
+dist/services/training-comparison.js
+dist/services/training-comparison.js.map
+dist/services/training-history.d.ts
+dist/services/training-history.d.ts.map
+dist/services/training-history.js
+dist/services/training-history.js.map
+dist/services/training-home-view-state.d.ts
+dist/services/training-home-view-state.d.ts.map
+dist/services/training-home-view-state.js
+dist/services/training-home-view-state.js.map
+dist/services/training-operational-switches.d.ts
+dist/services/training-operational-switches.d.ts.map
+dist/services/training-operational-switches.js
+dist/services/training-operational-switches.js.map
+dist/services/training-plan-cancellation-cascade.d.ts
+dist/services/training-plan-cancellation-cascade.d.ts.map
+dist/services/training-plan-cancellation-cascade.js
+dist/services/training-plan-cancellation-cascade.js.map
+dist/services/training-plan-coordination.d.ts
+dist/services/training-plan-coordination.d.ts.map
+dist/services/training-plan-coordination.js
+dist/services/training-plan-coordination.js.map
+dist/services/training-plan-equipment-adaptation.d.ts
+dist/services/training-plan-equipment-adaptation.d.ts.map
+dist/services/training-plan-equipment-adaptation.js
+dist/services/training-plan-equipment-adaptation.js.map
+dist/services/training-plan-lifecycle.d.ts
+dist/services/training-plan-lifecycle.d.ts.map
+dist/services/training-plan-lifecycle.js
+dist/services/training-plan-lifecycle.js.map
+dist/services/training-plan-volume-enforcement.d.ts
+dist/services/training-plan-volume-enforcement.d.ts.map
+dist/services/training-plan-volume-enforcement.js
+dist/services/training-plan-volume-enforcement.js.map
+dist/services/training-plans.d.ts
+dist/services/training-plans.d.ts.map
+dist/services/training-plans.js
+dist/services/training-plans.js.map
+dist/services/training-profile-model.d.ts
+dist/services/training-profile-model.d.ts.map
+dist/services/training-profile-model.js
+dist/services/training-profile-model.js.map
+dist/services/training-session-description.d.ts
+dist/services/training-session-description.d.ts.map
+dist/services/training-session-description.js
+dist/services/training-session-description.js.map
+dist/services/training-session-identity.d.ts
+dist/services/training-session-identity.d.ts.map
+dist/services/training-session-identity.js
+dist/services/training-session-identity.js.map
+dist/services/training-signals.d.ts
+dist/services/training-signals.d.ts.map
+dist/services/training-signals.js
+dist/services/training-signals.js.map
+dist/services/uber-collector.d.ts
+dist/services/uber-collector.d.ts.map
+dist/services/uber-collector.js
+dist/services/uber-collector.js.map
+dist/services/unified-calendar.d.ts
+dist/services/unified-calendar.d.ts.map
+dist/services/unified-calendar.js
+dist/services/unified-calendar.js.map
+dist/services/unified-mail-pressure.d.ts
+dist/services/unified-mail-pressure.d.ts.map
+dist/services/unified-mail-pressure.js
+dist/services/unified-mail-pressure.js.map
+dist/services/usage-metering.d.ts
+dist/services/usage-metering.d.ts.map
+dist/services/usage-metering.js
+dist/services/usage-metering.js.map
+dist/services/user-data-export.d.ts
+dist/services/user-data-export.d.ts.map
+dist/services/user-data-export.js
+dist/services/user-data-export.js.map
+dist/services/user-service.d.ts
+dist/services/user-service.d.ts.map
+dist/services/user-service.js
+dist/services/user-service.js.map
+dist/services/user-skill-access.d.ts
+dist/services/user-skill-access.d.ts.map
+dist/services/user-skill-access.js
+dist/services/user-skill-access.js.map
+dist/services/video-study.d.ts
+dist/services/video-study.d.ts.map
+dist/services/video-study.js
+dist/services/video-study.js.map
+dist/services/waitlist-ip-hash.d.ts
+dist/services/waitlist-ip-hash.d.ts.map
+dist/services/waitlist-ip-hash.js
+dist/services/waitlist-ip-hash.js.map
+dist/services/webhook-registry.d.ts
+dist/services/webhook-registry.d.ts.map
+dist/services/webhook-registry.js
+dist/services/webhook-registry.js.map
+dist/services/weekly-plan-orchestrator.d.ts
+dist/services/weekly-plan-orchestrator.d.ts.map
+dist/services/weekly-plan-orchestrator.js
+dist/services/weekly-plan-orchestrator.js.map
+dist/services/youtube-analytics.d.ts
+dist/services/youtube-analytics.d.ts.map
+dist/services/youtube-analytics.js
+dist/services/youtube-analytics.js.map
+dist/services/youtube-transcript.d.ts
+dist/services/youtube-transcript.d.ts.map
+dist/services/youtube-transcript.js
+dist/services/youtube-transcript.js.map
+dist/services/coach-kernel/
+dist/services/coach-kernel/adaptation-engine.d.ts
+dist/services/coach-kernel/adaptation-engine.d.ts.map
+dist/services/coach-kernel/adaptation-engine.js
+dist/services/coach-kernel/adaptation-engine.js.map
+dist/services/coach-kernel/availability-day-picker.d.ts
+dist/services/coach-kernel/availability-day-picker.d.ts.map
+dist/services/coach-kernel/availability-day-picker.js
+dist/services/coach-kernel/availability-day-picker.js.map
+dist/services/coach-kernel/biomechanics-and-ordering.d.ts
+dist/services/coach-kernel/biomechanics-and-ordering.d.ts.map
+dist/services/coach-kernel/biomechanics-and-ordering.js
+dist/services/coach-kernel/biomechanics-and-ordering.js.map
+dist/services/coach-kernel/capacity-reconciliation.d.ts
+dist/services/coach-kernel/capacity-reconciliation.d.ts.map
+dist/services/coach-kernel/capacity-reconciliation.js
+dist/services/coach-kernel/capacity-reconciliation.js.map
+dist/services/coach-kernel/decision-trail.d.ts
+dist/services/coach-kernel/decision-trail.d.ts.map
+dist/services/coach-kernel/decision-trail.js
+dist/services/coach-kernel/decision-trail.js.map
+dist/services/coach-kernel/exercise-metadata.d.ts
+dist/services/coach-kernel/exercise-metadata.d.ts.map
+dist/services/coach-kernel/exercise-metadata.js
+dist/services/coach-kernel/exercise-metadata.js.map
+dist/services/coach-kernel/feedback-analysis.d.ts
+dist/services/coach-kernel/feedback-analysis.d.ts.map
+dist/services/coach-kernel/feedback-analysis.js
+dist/services/coach-kernel/feedback-analysis.js.map
+dist/services/coach-kernel/guardrails.d.ts
+dist/services/coach-kernel/guardrails.d.ts.map
+dist/services/coach-kernel/guardrails.js
+dist/services/coach-kernel/guardrails.js.map
+dist/services/coach-kernel/index.d.ts
+dist/services/coach-kernel/index.d.ts.map
+dist/services/coach-kernel/index.js
+dist/services/coach-kernel/index.js.map
+dist/services/coach-kernel/knowledge-loader.d.ts
+dist/services/coach-kernel/knowledge-loader.d.ts.map
+dist/services/coach-kernel/knowledge-loader.js
+dist/services/coach-kernel/knowledge-loader.js.map
+dist/services/coach-kernel/planner-engine.d.ts
+dist/services/coach-kernel/planner-engine.d.ts.map
+dist/services/coach-kernel/planner-engine.js
+dist/services/coach-kernel/planner-engine.js.map
+dist/services/coach-kernel/poor-recovery-variation.d.ts
+dist/services/coach-kernel/poor-recovery-variation.d.ts.map
+dist/services/coach-kernel/poor-recovery-variation.js
+dist/services/coach-kernel/poor-recovery-variation.js.map
+dist/services/coach-kernel/readiness-snapshot-adapter.d.ts
+dist/services/coach-kernel/readiness-snapshot-adapter.d.ts.map
+dist/services/coach-kernel/readiness-snapshot-adapter.js
+dist/services/coach-kernel/readiness-snapshot-adapter.js.map
+dist/services/coach-kernel/session-coherence.d.ts
+dist/services/coach-kernel/session-coherence.d.ts.map
+dist/services/coach-kernel/session-coherence.js
+dist/services/coach-kernel/session-coherence.js.map
+dist/services/coach-kernel/support-session-builder.d.ts
+dist/services/coach-kernel/support-session-builder.d.ts.map
+dist/services/coach-kernel/support-session-builder.js
+dist/services/coach-kernel/support-session-builder.js.map
+dist/services/coach-kernel/tools.d.ts
+dist/services/coach-kernel/tools.d.ts.map
+dist/services/coach-kernel/tools.js
+dist/services/coach-kernel/tools.js.map
+dist/services/coach-kernel/types.d.ts
+dist/services/coach-kernel/types.d.ts.map
+dist/services/coach-kernel/types.js
+dist/services/coach-kernel/types.js.map
+dist/services/coach-kernel/utils.d.ts
+dist/services/coach-kernel/utils.d.ts.map
+dist/services/coach-kernel/utils.js
+dist/services/coach-kernel/utils.js.map
+dist/services/coach-kernel/engines/cycling-engine.d.ts
+dist/services/coach-kernel/engines/cycling-engine.d.ts.map
+dist/services/coach-kernel/engines/cycling-engine.js
+dist/services/coach-kernel/engines/cycling-engine.js.map
+dist/services/coach-kernel/engines/hybrid-engine.d.ts
+dist/services/coach-kernel/engines/hybrid-engine.d.ts.map
+dist/services/coach-kernel/engines/hybrid-engine.js
+dist/services/coach-kernel/engines/hybrid-engine.js.map
+dist/services/coach-kernel/engines/interfaces.d.ts
+dist/services/coach-kernel/engines/interfaces.d.ts.map
+dist/services/coach-kernel/engines/interfaces.js
+dist/services/coach-kernel/engines/interfaces.js.map
+dist/services/coach-kernel/engines/running-engine.d.ts
+dist/services/coach-kernel/engines/running-engine.d.ts.map
+dist/services/coach-kernel/engines/running-engine.js
+dist/services/coach-kernel/engines/running-engine.js.map
+dist/services/coach-kernel/engines/strength-engine.d.ts
+dist/services/coach-kernel/engines/strength-engine.d.ts.map
+dist/services/coach-kernel/engines/strength-engine.js
+dist/services/coach-kernel/engines/strength-engine.js.map
+dist/services/coach-kernel/engines/swimming-engine.d.ts
+dist/services/coach-kernel/engines/swimming-engine.d.ts.map
+dist/services/coach-kernel/engines/swimming-engine.js
+dist/services/coach-kernel/engines/swimming-engine.js.map
+dist/services/coach-kernel/engines/triathlon-engine.d.ts
+dist/services/coach-kernel/engines/triathlon-engine.d.ts.map
+dist/services/coach-kernel/engines/triathlon-engine.js
+dist/services/coach-kernel/engines/triathlon-engine.js.map
+dist/services/coach-kernel/evaluation/index.d.ts
+dist/services/coach-kernel/evaluation/index.d.ts.map
+dist/services/coach-kernel/evaluation/index.js
+dist/services/coach-kernel/evaluation/index.js.map
+dist/services/coach-kernel/evaluation/personas.d.ts
+dist/services/coach-kernel/evaluation/personas.d.ts.map
+dist/services/coach-kernel/evaluation/personas.js
+dist/services/coach-kernel/evaluation/personas.js.map
+dist/services/coach-kernel/evaluation/rubric.d.ts
+dist/services/coach-kernel/evaluation/rubric.d.ts.map
+dist/services/coach-kernel/evaluation/rubric.js
+dist/services/coach-kernel/evaluation/rubric.js.map
+dist/services/coach-kernel/evaluation/runner.d.ts
+dist/services/coach-kernel/evaluation/runner.d.ts.map
+dist/services/coach-kernel/evaluation/runner.js
+dist/services/coach-kernel/evaluation/runner.js.map
+dist/services/coach-kernel/evaluation/scenarios.d.ts
+dist/services/coach-kernel/evaluation/scenarios.d.ts.map
+dist/services/coach-kernel/evaluation/scenarios.js
+dist/services/coach-kernel/evaluation/scenarios.js.map
+dist/services/coach-kernel/evaluation/types.d.ts
+dist/services/coach-kernel/evaluation/types.d.ts.map
+dist/services/coach-kernel/evaluation/types.js
+dist/services/coach-kernel/evaluation/types.js.map
+dist/services/coach-kernel/knowledge/
+dist/services/coach-kernel/knowledge/docs/
+dist/services/coach-kernel/knowledge/docs/hybrid-athlete-rules.md
+dist/services/coach-kernel/knowledge/docs/llm-tool-contract.md
+dist/services/coach-kernel/knowledge/docs/marathon-periodization.md
+dist/services/coach-kernel/knowledge/entities/
+dist/services/coach-kernel/knowledge/entities/exercises.json
+dist/services/coach-kernel/knowledge/entities/training-principles.json
+dist/services/coach-kernel/knowledge/templates/
+dist/services/coach-kernel/knowledge/templates/bike-workouts.yaml
+dist/services/coach-kernel/knowledge/templates/run-workouts.yaml
+dist/services/coach-kernel/knowledge/templates/strength-blocks.yaml
+dist/services/coach-kernel/knowledge/templates/swim-workouts.yaml
+dist/services/coach-kernel/seed/sample-athletes.d.ts
+dist/services/coach-kernel/seed/sample-athletes.d.ts.map
+dist/services/coach-kernel/seed/sample-athletes.js
+dist/services/coach-kernel/seed/sample-athletes.js.map
+dist/services/coach-kernel/stores/in-memory-plan-store.d.ts
+dist/services/coach-kernel/stores/in-memory-plan-store.d.ts.map
+dist/services/coach-kernel/stores/in-memory-plan-store.js
+dist/services/coach-kernel/stores/in-memory-plan-store.js.map
+dist/services/task-store/adapter-interface.d.ts
+dist/services/task-store/adapter-interface.d.ts.map
+dist/services/task-store/adapter-interface.js
+dist/services/task-store/adapter-interface.js.map
+dist/services/task-store/native-adapter.d.ts
+dist/services/task-store/native-adapter.d.ts.map
+dist/services/task-store/native-adapter.js
+dist/services/task-store/native-adapter.js.map
+dist/services/task-store/notion-adapter.d.ts
+dist/services/task-store/notion-adapter.d.ts.map
+dist/services/task-store/notion-adapter.js
+dist/services/task-store/notion-adapter.js.map
+dist/services/task-store/notion-mapping.d.ts
+dist/services/task-store/notion-mapping.d.ts.map
+dist/services/task-store/notion-mapping.js
+dist/services/task-store/notion-mapping.js.map
+dist/services/task-store/sync-engine.d.ts
+dist/services/task-store/sync-engine.d.ts.map
+dist/services/task-store/sync-engine.js
+dist/services/task-store/sync-engine.js.map
+dist/services/task-store/task-list-resolution.d.ts
+dist/services/task-store/task-list-resolution.d.ts.map
+dist/services/task-store/task-list-resolution.js
+dist/services/task-store/task-list-resolution.js.map
+dist/services/task-store/task-router.d.ts
+dist/services/task-store/task-router.d.ts.map
+dist/services/task-store/task-router.js
+dist/services/task-store/task-router.js.map
+dist/services/task-store/task-service.d.ts
+dist/services/task-store/task-service.d.ts.map
+dist/services/task-store/task-service.js
+dist/services/task-store/task-service.js.map
+dist/services/task-store/todoist-adapter.d.ts
+dist/services/task-store/todoist-adapter.d.ts.map
+dist/services/task-store/todoist-adapter.js
+dist/services/task-store/todoist-adapter.js.map
+dist/services/task-store/types.d.ts
+dist/services/task-store/types.d.ts.map
+dist/services/task-store/types.js
+dist/services/task-store/types.js.map
+dist/services/task-store/unified-task-store.d.ts
+dist/services/task-store/unified-task-store.d.ts.map
+dist/services/task-store/unified-task-store.js
+dist/services/task-store/unified-task-store.js.map
+dist/services/wearable/adapter-interface.d.ts
+dist/services/wearable/adapter-interface.d.ts.map
+dist/services/wearable/adapter-interface.js
+dist/services/wearable/adapter-interface.js.map
+dist/services/wearable/apple-health-adapter.d.ts
+dist/services/wearable/apple-health-adapter.d.ts.map
+dist/services/wearable/apple-health-adapter.js
+dist/services/wearable/apple-health-adapter.js.map
+dist/services/wearable/body-battery-synthesis.d.ts
+dist/services/wearable/body-battery-synthesis.d.ts.map
+dist/services/wearable/body-battery-synthesis.js
+dist/services/wearable/body-battery-synthesis.js.map
+dist/services/wearable/energy-reserve.d.ts
+dist/services/wearable/energy-reserve.d.ts.map
+dist/services/wearable/energy-reserve.js
+dist/services/wearable/energy-reserve.js.map
+dist/services/wearable/fitbit-adapter.d.ts
+dist/services/wearable/fitbit-adapter.d.ts.map
+dist/services/wearable/fitbit-adapter.js
+dist/services/wearable/fitbit-adapter.js.map
+dist/services/wearable/garmin-adapter.d.ts
+dist/services/wearable/garmin-adapter.d.ts.map
+dist/services/wearable/garmin-adapter.js
+dist/services/wearable/garmin-adapter.js.map
+dist/services/wearable/index.d.ts
+dist/services/wearable/index.d.ts.map
+dist/services/wearable/index.js
+dist/services/wearable/index.js.map
+dist/services/wearable/oauth-helper.d.ts
+dist/services/wearable/oauth-helper.d.ts.map
+dist/services/wearable/oauth-helper.js
+dist/services/wearable/oauth-helper.js.map
+dist/services/wearable/strava-adapter.d.ts
+dist/services/wearable/strava-adapter.d.ts.map
+dist/services/wearable/strava-adapter.js
+dist/services/wearable/strava-adapter.js.map
+dist/services/wearable/types.d.ts
+dist/services/wearable/types.d.ts.map
+dist/services/wearable/types.js
+dist/services/wearable/types.js.map
+dist/services/wearable/wearable-service.d.ts
+dist/services/wearable/wearable-service.d.ts.map
+dist/services/wearable/wearable-service.js
+dist/services/wearable/wearable-service.js.map
+dist/services/wearable/whoop-adapter.d.ts
+dist/services/wearable/whoop-adapter.d.ts.map
+dist/services/wearable/whoop-adapter.js
+dist/services/wearable/whoop-adapter.js.map
+dist/skills/credentials.d.ts
+dist/skills/credentials.d.ts.map
+dist/skills/credentials.js
+dist/skills/credentials.js.map
+dist/skills/loader.d.ts
+dist/skills/loader.d.ts.map
+dist/skills/loader.js
+dist/skills/loader.js.map
+dist/skills/prompt-validator.d.ts
+dist/skills/prompt-validator.d.ts.map
+dist/skills/prompt-validator.js
+dist/skills/prompt-validator.js.map
+dist/skills/registry.d.ts
+dist/skills/registry.d.ts.map
+dist/skills/registry.js
+dist/skills/registry.js.map
+dist/skills/skill-config.d.ts
+dist/skills/skill-config.d.ts.map
+dist/skills/skill-config.js
+dist/skills/skill-config.js.map
+dist/skills/skill-manager.d.ts
+dist/skills/skill-manager.d.ts.map
+dist/skills/skill-manager.js
+dist/skills/skill-manager.js.map
+dist/skills/types.d.ts
+dist/skills/types.d.ts.map
+dist/skills/types.js
+dist/skills/types.js.map
+dist/state/coach-state.d.ts
+dist/state/coach-state.d.ts.map
+dist/state/coach-state.js
+dist/state/coach-state.js.map
+dist/state/content-references.d.ts
+dist/state/content-references.d.ts.map
+dist/state/content-references.js
+dist/state/content-references.js.map
+dist/state/conversation.d.ts
+dist/state/conversation.d.ts.map
+dist/state/conversation.js
+dist/state/conversation.js.map
+dist/state/fiscal-collection-profiles.d.ts
+dist/state/fiscal-collection-profiles.d.ts.map
+dist/state/fiscal-collection-profiles.js
+dist/state/fiscal-collection-profiles.js.map
+dist/state/invoice-filings.d.ts
+dist/state/invoice-filings.d.ts.map
+dist/state/invoice-filings.js
+dist/state/invoice-filings.js.map
+dist/state/invoice-vendors.d.ts
+dist/state/invoice-vendors.d.ts.map
+dist/state/invoice-vendors.js
+dist/state/invoice-vendors.js.map
+dist/state/notes.d.ts
+dist/state/notes.d.ts.map
+dist/state/notes.js
+dist/state/notes.js.map
+dist/state/reminders.d.ts
+dist/state/reminders.d.ts.map
+dist/state/reminders.js
+dist/state/reminders.js.map
+dist/state/saved-ideas.d.ts
+dist/state/saved-ideas.d.ts.map
+dist/state/saved-ideas.js
+dist/state/saved-ideas.js.map
+dist/state/shared-memory.d.ts
+dist/state/shared-memory.d.ts.map
+dist/state/shared-memory.js
+dist/state/shared-memory.js.map
+dist/state/todos.d.ts
+dist/state/todos.d.ts.map
+dist/state/todos.js
+dist/state/todos.js.map
+dist/storage/kv-store.d.ts
+dist/storage/kv-store.d.ts.map
+dist/storage/kv-store.js
+dist/storage/kv-store.js.map
+dist/tools/chat-day-to-day-simulation.d.ts
+dist/tools/chat-day-to-day-simulation.d.ts.map
+dist/tools/chat-day-to-day-simulation.js
+dist/tools/chat-day-to-day-simulation.js.map
+dist/tools/chat-evaluation-harness.d.ts
+dist/tools/chat-evaluation-harness.d.ts.map
+dist/tools/chat-evaluation-harness.js
+dist/tools/chat-evaluation-harness.js.map
+dist/tools/content-evaluation-harness.d.ts
+dist/tools/content-evaluation-harness.d.ts.map
+dist/tools/content-evaluation-harness.js
+dist/tools/content-evaluation-harness.js.map
+dist/tools/invoice-vendor-cleanup.d.ts
+dist/tools/invoice-vendor-cleanup.d.ts.map
+dist/tools/invoice-vendor-cleanup.js
+dist/tools/invoice-vendor-cleanup.js.map
+dist/tools/owner-bootstrap-preflight.d.ts
+dist/tools/owner-bootstrap-preflight.d.ts.map
+dist/tools/owner-bootstrap-preflight.js
+dist/tools/owner-bootstrap-preflight.js.map
+dist/tools/portal-session-token.d.ts
+dist/tools/portal-session-token.d.ts.map
+dist/tools/portal-session-token.js
+dist/tools/portal-session-token.js.map
+dist/tools/secretary-calendar-staging-smoke.d.ts
+dist/tools/secretary-calendar-staging-smoke.d.ts.map
+dist/tools/secretary-calendar-staging-smoke.js
+dist/tools/secretary-calendar-staging-smoke.js.map
+dist/tools/training-calendar-staging-smoke.d.ts
+dist/tools/training-calendar-staging-smoke.d.ts.map
+dist/tools/training-calendar-staging-smoke.js
+dist/tools/training-calendar-staging-smoke.js.map
+dist/tools/training-cross-skill-staging-fixtures.d.ts
+dist/tools/training-cross-skill-staging-fixtures.d.ts.map
+dist/tools/training-cross-skill-staging-fixtures.js
+dist/tools/training-cross-skill-staging-fixtures.js.map
+dist/tools/training-cross-skill-staging-smoke.d.ts
+dist/tools/training-cross-skill-staging-smoke.d.ts.map
+dist/tools/training-cross-skill-staging-smoke.js
+dist/tools/training-cross-skill-staging-smoke.js.map
+dist/tools/training-eval-harness.d.ts
+dist/tools/training-eval-harness.d.ts.map
+dist/tools/training-eval-harness.js
+dist/tools/training-eval-harness.js.map
+dist/utils/callback-store.d.ts
+dist/utils/callback-store.d.ts.map
+dist/utils/callback-store.js
+dist/utils/callback-store.js.map
+dist/utils/date-parser.d.ts
+dist/utils/date-parser.d.ts.map
+dist/utils/date-parser.js
+dist/utils/date-parser.js.map
+dist/utils/encryption.d.ts
+dist/utils/encryption.d.ts.map
+dist/utils/encryption.js
+dist/utils/encryption.js.map
+dist/utils/i18n.d.ts
+dist/utils/i18n.d.ts.map
+dist/utils/i18n.js
+dist/utils/i18n.js.map
+dist/utils/log-sanitizer.d.ts
+dist/utils/log-sanitizer.d.ts.map
+dist/utils/log-sanitizer.js
+dist/utils/log-sanitizer.js.map
+dist/utils/logger.d.ts
+dist/utils/logger.d.ts.map
+dist/utils/logger.js
+dist/utils/logger.js.map
+dist/utils/lru-map.d.ts
+dist/utils/lru-map.d.ts.map
+dist/utils/lru-map.js
+dist/utils/lru-map.js.map
+dist/utils/prompt-loader.d.ts
+dist/utils/prompt-loader.d.ts.map
+dist/utils/prompt-loader.js
+dist/utils/prompt-loader.js.map
+dist/utils/request-context.d.ts
+dist/utils/request-context.d.ts.map
+dist/utils/request-context.js
+dist/utils/request-context.js.map
+dist/utils/telegram-formatter.d.ts
+dist/utils/telegram-formatter.d.ts.map
+dist/utils/telegram-formatter.js
+dist/utils/telegram-formatter.js.map
+dist/utils/telegram-templates.d.ts
+dist/utils/telegram-templates.d.ts.map
+dist/utils/telegram-templates.js
+dist/utils/telegram-templates.js.map
+dist/utils/timeout.d.ts
+dist/utils/timeout.d.ts.map
+dist/utils/timeout.js
+dist/utils/timeout.js.map
+docs/
+docs/ai/
+docs/ai/model-routing-fixes.md
+docs/ai/model-routing-open-blockers.md
+docs/ai/model-routing-release-gate.md
+docs/ai/model-routing-safety-audit.md
+docs/ai/model-routing-smoke-results.md
+docs/ai/model-routing-test-results.md
+docs/calendar/
+docs/calendar/calendar-lifecycle-audit.md
+docs/calendar/calendar-lifecycle-fixes.md
+docs/calendar/calendar-lifecycle-risk-register.md
+docs/calendar/calendar-lifecycle-test-results.md
+docs/calendar/calendar-release-gate.md
+docs/calendar/google-staging-smoke-results.md
+docs/calendar/local-calendar-smoke-results.md
+docs/calendar/outlook-staging-smoke-results.md
+docs/chat/
+docs/chat/chat-memory-test-results.md
+docs/chat/chat-open-items.md
+docs/chat/chat-reasoning-context-implementation.md
+docs/chat/chat-reasoning-memory-gap-analysis.md
+docs/chat/day-to-day-interaction-risk-map.md
+docs/chat/day-to-day-open-items.md
+docs/chat/day-to-day-scenario-bank.md
+docs/chat/day-to-day-simulation-harness.md
+docs/chat/day-to-day-simulation-results.md
+docs/chat/p0-tenant-fixes-applied.md
+docs/chat/p0-tenant-open-blockers.md
+docs/chat/p0-tenant-release-gate.md
+docs/chat/p0-tenant-security-audit.md
+docs/chat/p0-tenant-test-results.md
+docs/chat/p0-tenant-threat-model.md
+docs/chat/response-sufficiency-rubric.md
+docs/content/
+docs/content/brand-profile-model.md
+docs/content/content-creation-current-state-audit.md
+docs/content/content-creation-gap-analysis.md
+docs/content/content-creation-implementation-notes.md
+docs/content/content-creation-open-blockers.md
+docs/content/content-creation-risk-register.md
+docs/content/content-creation-upgrade-plan.md
+docs/content/content-current-state-audit.md
+docs/content/content-data-model-scope.md
+docs/content/content-day-to-day-simulation-harness.md
+docs/content/content-domain-ontology.md
+docs/content/content-domain-test-matrix.md
+docs/content/content-editorial-mutation-contracts.md
+docs/content/content-eval-baseline-results.md
+docs/content/content-final-production-go-no-go.md
+docs/content/content-frontend-contracts.md
+docs/content/content-frontend-open-items.md
+docs/content/content-gap-analysis.md
+docs/content/content-generation-pipeline.md
+docs/content/content-lifecycle-model.md
+docs/content/content-lifecycle-test-matrix.md
+docs/content/content-memory-and-voice-profile.md
+docs/content/content-memory-open-items.md
+docs/content/content-memory-test-matrix.md
+docs/content/content-notification-deep-link-resolver.md
+docs/content/content-object-model.md
+docs/content/content-open-items.md
+docs/content/content-opportunity-scoring.md
+docs/content/content-persona-bank.md
+docs/content/content-privacy-review.md
+docs/content/content-product-outcome-definition.md
+docs/content/content-production-burndown-plan.md
+docs/content/content-production-open-blockers.md
+docs/content/content-production-readiness-criteria.md
+docs/content/content-prompt-injection-defense.md
+docs/content/content-provenance-model.md
+docs/content/content-provenance-red-team.md
+docs/content/content-quality-open-items.md
+docs/content/content-quality-rubric.md
+docs/content/content-radar-engine.md
+docs/content/content-radar-test-matrix.md
+docs/content/content-refinement-workflow.md
+docs/content/content-release-candidate-merge-plan.md
+docs/content/content-release-candidate-risk-register.md
+docs/content/content-release-candidate-rollback-plan.md
+docs/content/content-release-candidate-test-run.md
+docs/content/content-repurposing-model.md
+docs/content/content-risk-register.md
+docs/content/content-scenario-bank.md
+docs/content/content-secretary-scheduling-actions.md
+docs/content/content-security-open-items.md
+docs/content/content-security-red-team.md
+docs/content/content-security-test-matrix.md
+docs/content/content-security-test-results.md
+docs/content/content-skill-signal-model.md
+docs/content/content-tenant-security-model.md
+docs/content/content-upgrade-execution-plan.md
+docs/content/cross-skill-content-opportunities.md
+docs/content/cross-skill-content-orchestration.md
+docs/content/cross-skill-content-test-matrix.md
+docs/content/duplicate-novelty-reuse-control.md
+docs/content/duplicate-novelty-test-matrix.md
+docs/content/editorial-workflow.md
+docs/content/generation-quality-test-matrix.md
+docs/content/human-approval-rules.md
+docs/content/platform-format-model.md
+docs/content/platform-specific-generation.md
+docs/content/reference-provenance-integrity.md
+docs/content/reference-provenance-test-matrix.md
+docs/content/reference-registry-model.md
+docs/content/sensitive-signal-policy.md
+docs/context/
+docs/context/shared-context-audit.md
+docs/context/shared-context-fixes.md
+docs/context/shared-context-release-gate.md
+docs/context/shared-context-risk-register.md
+docs/context/shared-context-test-results.md
+docs/ios/
+docs/ios/content-ios-readiness.md
+docs/local/
+docs/local/chat-same-user-tenant-switch-smoke-results.md
+docs/local/chat-tenant-security-smoke-results.md
+docs/local/content-full-nexus-local-open-blockers.md
+docs/local/content-full-nexus-local-smoke-results.md
+docs/local/content-full-nexus-local-smoke.md
+docs/local/content-local-cleanup-confirmation.md
+docs/local/content-secretary-scheduling-smoke-results.md
+docs/local/cross-skill-smoke-results.md
+docs/local/full-nexus-fixture-strategy.md
+docs/local/full-nexus-local-cleanup-confirmation.md
+docs/local/full-nexus-local-engine-open-blockers.md
+docs/local/full-nexus-local-runbook.md
+docs/local/full-nexus-local-smoke-results.md
+docs/local/full-nexus-runtime-map.md
+docs/local/full-nexus-shutdown-checklist.md
+docs/local/secretary-full-product-smoke-results.md
+docs/local/training-release-smoke-results.md
+docs/memory/
+docs/memory/memory-open-items.md
+docs/memory/memory-test-matrix.md
+docs/memory/skill-memory-boundaries.md
+docs/memory/skill-memory-model.md
+docs/memory/version-aware-memory.md
+docs/portal/
+docs/portal/content-portal-readiness.md
+docs/portal/content-provenance-reuse-workflows.md
+docs/qa/
+docs/qa/QA_BACKEND_REPORT.md
+docs/qa/nexus-hub-focused-qa-findings.md
+docs/qa/nexus-hub-focused-qa-open-blockers.md
+docs/qa/nexus-hub-focused-qa-opus-rerun-addendum.md
+docs/qa/nexus-hub-focused-qa-recommendations.md
+docs/qa/nexus-hub-focused-qa-release-risk-register.md
+docs/qa/nexus-hub-focused-qa-report.md
+docs/qa/nexus-hub-focused-qa-test-results.md
+docs/qa/nexus-hub-missing-tests-and-smokes.md
+docs/qa/nexus-hub-qa-coverage-gap-matrix.md
+docs/qa/nexus-hub-second-round-gap-review.md
+docs/qa/nexus-hub-second-round-open-blockers.md
+docs/qa/nexus-hub-second-round-recommendations.md
+docs/qa/nexus-hub-second-round-risk-register.md
+docs/qa/nexus-hub-unverified-claims.md
+docs/release/
+docs/release/nexus-hub-deployment-checklist.md
+docs/release/nexus-hub-final-go-no-go.md
+docs/release/nexus-hub-merge-plan.md
+docs/release/nexus-hub-monitoring-checklist.md
+docs/release/nexus-hub-open-blockers.md
+docs/release/nexus-hub-production-burndown.md
+docs/release/nexus-hub-production-release-notes.md
+docs/release/nexus-hub-readiness-criteria.md
+docs/release/nexus-hub-release-candidate-test-run.md
+docs/release/nexus-hub-risk-register.md
+docs/release/nexus-hub-rollback-plan.md
+docs/release/nexus-hub-support-runbook.md
+docs/release/qa-remediation-progress.md
+docs/release/smoke-evidence/
+docs/release/smoke-evidence/ios-full-test-20260430-070039-summary.json
+docs/release/smoke-evidence/ios-full-test-20260430-070039.xcresult.zip
+docs/release/smoke-evidence/prod-promote-20260430-r2-remediation-confirmed-yes-stream.log
+docs/release/smoke-evidence/prod-promote-20260430-r2-remediation-confirmed.log
+docs/release/smoke-evidence/prod-promote-20260430-r2-remediation.log
+docs/release/smoke-evidence/staging-chat-tenant-security-smoke-20260430-r2-remediation-rerun.log
+docs/release/smoke-evidence/staging-chat-tenant-security-smoke-20260430-r2-remediation.log
+docs/release/smoke-evidence/staging-deploy-20260430-r2-remediation.log
+docs/release/smoke-evidence/staging-smoke-20260430-r2-remediation.log
+docs/secretary/
+docs/secretary/agenda-lifecycle-state-machine.md
+docs/secretary/secretary-agenda-ownership-gaps.md
+docs/secretary/secretary-agenda-ownership-model.md
+docs/secretary/secretary-orchestration-audit.md
+docs/secretary/secretary-orchestration-test-results.md
+docs/secretary/secretary-release-gate.md
+docs/secretary/secretary-scheduling-intent-model.md
+docs/skills/
+docs/skills/skill-memory-versioning-plan.md
+docs/skills/skill-release-history-model.md
+docs/skills/skill-version-registry.md
+docs/skills/skill-versioning-open-items.md
+docs/skills/skill-versioning-test-matrix.md
+docs/training/
+docs/training/plan-version-lifecycle.md
+docs/training/training-production-open-blockers.md
+docs/training/training-release-blocker-audit.md
+docs/training/training-release-fixes.md
+docs/training/training-release-gate.md
+docs/training/training-release-test-results.md
+migrations/
+migrations/086_chat_callback_scope.sql
+migrations/087_skill_version_registry.sql
+migrations/088_skill_memory_foundation.sql
+migrations/089_content_tenant_privacy_scope.sql
+migrations/090_content_domain_ontology.sql
+migrations/091_content_reference_provenance_integrity.sql
+migrations/092_content_lifecycle_editorial_workflow.sql
+migrations/093_content_radar_opportunity_engine.sql
+migrations/094_content_duplicate_novelty_reuse.sql
+migrations/095_content_creation_production_candidate_version.sql
+migrations/096_content_eval_history.sql
+migrations/097_reminders_agenda_item_link.sql
+migrations/098_secretary_decision_explanation.sql
+migrations/099_training_agenda_ownership_tenant_scope.sql
+migrations/100_agent_signals_tenant_scope.sql
+migrations/101_shared_memory_history.sql
+scripts/
+scripts/chat-tenant-security-smoke.js
+scripts/content-full-nexus-local-smoke.sh
+scripts/full-nexus-local-engine.sh
+src/agents/
+src/agents/reaction-radar-agent.ts
+src/api/
+src/api/auth-middleware.ts
+src/api/websocket.ts
+src/api/routes/
+src/api/routes/chat-callback-response.ts
+src/api/routes/chat-callback-routes.ts
+src/api/routes/chat-fastpath.ts
+src/api/routes/chat-history-routes.ts
+src/api/routes/chat-inline-buttons.ts
+src/api/routes/chat-message-attachments.ts
+src/api/routes/chat-message-context.ts
+src/api/routes/chat-message-local-responses.ts
+src/api/routes/chat-message-routes.ts
+src/api/routes/chat.ts
+src/api/routes/client-errors.ts
+src/api/routes/content-admin-write.ts
+src/api/routes/content-editorial-routes.ts
+src/api/routes/content-learning-routes.ts
+src/api/routes/content-notification-routes.ts
+src/api/routes/content-reference-routes.ts
+src/api/routes/content-script-route-utils.ts
+src/api/routes/content-script-routes.ts
+src/api/routes/content.ts
+src/api/routes/cooking.ts
+src/api/routes/internal.ts
+src/api/routes/skills.ts
+src/api/routes/training-calendar-utils.ts
+src/api/routes/training-plan-calendar-sync.ts
+src/api/routes/training-plan-cancellation.ts
+src/api/routes/training-plan-generation.ts
+src/api/routes/training-plan-persistence.ts
+src/commands/
+src/commands/books.ts
+src/domains/
+src/domains/domain-handler.ts
+src/handlers/commands/
+src/handlers/commands/content.ts
+src/portal/
+src/portal/chat-diagnostics.ts
+src/portal/chat-routes.ts
+src/portal/content-routes.ts
+src/services/
+src/services/anthropic.ts
+src/services/channel-learner.ts
+src/services/chat-context-engine.ts
+src/services/chat-day-to-day-simulation.ts
+src/services/chat-pending-confirmations.ts
+src/services/chat-response-sufficiency.ts
+src/services/chat-tool-authorization.ts
+src/services/content-cross-skill-orchestration.ts
+src/services/content-dashboard-service.ts
+src/services/content-day-to-day-evaluation.ts
+src/services/content-dedup.ts
+src/services/content-discovery.ts
+src/services/content-domain-ontology.ts
+src/services/content-editorial-workflow.ts
+src/services/content-engine.ts
+src/services/content-eval-history.ts
+src/services/content-generation-quality.ts
+src/services/content-learning-store.ts
+src/services/content-memory-profile.ts
+src/services/content-notification-store.ts
+src/services/content-novelty-reuse.ts
+src/services/content-radar-engine.ts
+src/services/content-radar-preferences.ts
+src/services/content-reference-context.ts
+src/services/content-reference-provenance.ts
+src/services/content-tenant-scope.ts
+src/services/content-workflow.ts
+src/services/cooking-secretary-integration.ts
+src/services/error-categorizer.ts
+src/services/error-monitor.ts
+src/services/finance-secretary-integration.ts
+src/services/gemini-provider.ts
+src/services/intelligence-bus.ts
+src/services/invoice-filer.ts
+src/services/openai-provider.ts
+src/services/plan-generator.ts
+src/services/provider-fallback.ts
+src/services/provider-registry.ts
+src/services/provider-state-context.ts
+src/services/runtime-flags.ts
+src/services/secretary-agenda-provider-sync.ts
+src/services/secretary-scheduling-arbitrator.ts
+src/services/secretary-unified-calendar-provider-adapter.ts
+src/services/shared-decision-context.ts
+src/services/skill-memory.ts
+src/services/skill-version-registry.ts
+src/services/tool-executor.ts
+src/services/training-agenda-reconciliation.ts
+src/services/training-plan-cancellation-cascade.ts
+src/services/training-plan-lifecycle.ts
+src/services/training-plans.ts
+src/state/
+src/state/content-references.ts
+src/state/reminders.ts
+src/state/shared-memory.ts
+src/tools/
+src/tools/content-evaluation-harness.ts
+src/tools/secretary-calendar-staging-smoke.ts
+src/tools/training-cross-skill-staging-smoke.ts
+src/utils/
+src/utils/callback-store.ts
+src/utils/log-sanitizer.ts
+src/utils/logger.ts
+
+sent 1,891,109 bytes  received 191,315 bytes  1,388,282.67 bytes/sec
+total size is 125,057,430  speedup is 60.05
+   ✅ rsync complete
+
+📥 Installing dependencies...
+Run `npm audit` for details.
+   ✅ Dependencies updated
+
+🧭 Verifying owner bootstrap on server...
+Owner bootstrap preflight
+- strict mode: on
+- database path: ./data/bot.db
+- database exists: yes
+- explicit OWNER_TELEGRAM_ID: none
+- persisted owner telegram_id: 7807541475
+- persisted owner user id: 1
+- persisted owner row count: 1
+- startup action: none
+- result: OK
+- note: startup already has a stable owner bootstrap source
+   ✅ Owner bootstrap preflight passed
+
+🔧 Rebuilding native modules for system Node (used by spawned bot processes)...
+   System Node: v22.22.2
+rebuilt dependencies successfully
+   ✅ Native modules rebuilt for system Node
+
+🟢 Starting services...
+[PM2] Applying action restartProcessId on app [content-engine](ids: [ 0 ])
+[PM2] [content-engine](0) ✓
+[PM2] Process successfully started
+┌────┬───────────────────────────┬─────────────┬─────────┬─────────┬──────────┬────────┬──────┬───────────┬──────────┬──────────┬──────────┬──────────┐
+│ id │ name                      │ namespace   │ version │ mode    │ pid      │ uptime │ ↺    │ status    │ cpu      │ mem      │ user     │ watching │
+├────┼───────────────────────────┼─────────────┼─────────┼─────────┼──────────┼────────┼──────┼───────────┼──────────┼──────────┼──────────┼──────────┤
+│ 0  │ content-engine            │ default     │ 4.14.1… │ fork    │ 3323741  │ 0s     │ 3    │ online    │ 0%       │ 6.8mb    │ domingu… │ disabled │
+│ 6  │ content-engine-staging    │ default     │ 4.14.1… │ fork    │ 3297171  │ 45m    │ 0    │ online    │ 0%       │ 57.0mb   │ domingu… │ disabled │
+│ 3  │ nexus-hub                 │ default     │ 4.14.1… │ fork    │ 0        │ 0      │ 429  │ stopped   │ 0%       │ 0b       │ domingu… │ disabled │
+│ 4  │ nexus-hub-staging         │ default     │ 4.14.1… │ fork    │ 3297180  │ 45m    │ 13   │ online    │ 0%       │ 327.3mb  │ domingu… │ disabled │
+└────┴───────────────────────────┴─────────────┴─────────┴─────────┴──────────┴────────┴──────┴───────────┴──────────┴──────────┴──────────┴──────────┘
+[PM2] Applying action restartProcessId on app [nexus-hub](ids: [ 3 ])
+[PM2] [nexus-hub](3) ✓
+[PM2] Process successfully started
+┌────┬───────────────────────────┬─────────────┬─────────┬─────────┬──────────┬────────┬──────┬───────────┬──────────┬──────────┬──────────┬──────────┐
+│ id │ name                      │ namespace   │ version │ mode    │ pid      │ uptime │ ↺    │ status    │ cpu      │ mem      │ user     │ watching │
+├────┼───────────────────────────┼─────────────┼─────────┼─────────┼──────────┼────────┼──────┼───────────┼──────────┼──────────┼──────────┼──────────┤
+│ 0  │ content-engine            │ default     │ 4.14.1… │ fork    │ 3323741  │ 0s     │ 3    │ online    │ 100%     │ 29.1mb   │ domingu… │ disabled │
+│ 6  │ content-engine-staging    │ default     │ 4.14.1… │ fork    │ 3297171  │ 45m    │ 0    │ online    │ 0%       │ 57.0mb   │ domingu… │ disabled │
+│ 3  │ nexus-hub                 │ default     │ 4.14.1… │ fork    │ 3323750  │ 0s     │ 429  │ online    │ 0%       │ 21.6mb   │ domingu… │ disabled │
+│ 4  │ nexus-hub-staging         │ default     │ 4.14.1… │ fork    │ 3297180  │ 45m    │ 13   │ online    │ 0%       │ 327.3mb  │ domingu… │ disabled │
+└────┴───────────────────────────┴─────────────┴─────────┴─────────┴──────────┴────────┴──────┴───────────┴──────────┴──────────┴──────────┴──────────┘
+[PM2] Saving current process list...
+[PM2] Successfully saved in /home/dominguez/.pm2/dump.pm2
+   ✅ All services running
+
+🏥 Health check (waiting 10s for startup)...
+{"status":"ok","version":"0.1.0"} ✅ Content engine OK
+{"version":"4.14.107","generatedAt":"2026-04-30T07:17:27.553Z","uptime":{"seconds":10,"human":"0m"}, ✅ Status portal OK
+ ✅ Bot: online
+│ 0  │ content-engine            │ default     │ 4.14.1… │ fork    │ 3323741  │ 12s    │ 3    │ online    │ 0%       │ 61.6mb   │ domingu… │ disabled │
+│ 6  │ content-engine-staging    │ default     │ 4.14.1… │ fork    │ 3297171  │ 45m    │ 0    │ online    │ 0%       │ 57.0mb   │ domingu… │ disabled │
+│ 3  │ nexus-hub                 │ default     │ 4.14.1… │ fork    │ 3323750  │ 12s    │ 429  │ online    │ 0%       │ 325.1mb  │ domingu… │ disabled │
+│ 4  │ nexus-hub-staging         │ default     │ 4.14.1… │ fork    │ 3297180  │ 45m    │ 13   │ online    │ 0%       │ 327.3mb  │ domingu… │ disabled │
+
+📋 Skipping Notion log (set NOTION_TOKEN to enable)
+   NOTION_TOKEN=ntn_xxx ./scripts/deploy.sh
+
+═══════════════════════════════════════════════
+  ✅ Deploy complete! v4.14.107 (f78eb61)
+═══════════════════════════════════════════════
+
+═══════════════════════════════════════════════
+  ✅ PROMOTE COMPLETE
+═══════════════════════════════════════════════
+
+Production is now running v4.14.107 (was v4.14.106).
+Local working tree is now v4.14.107.
+Staging remains on v4.14.106.
+Note: deploy.sh may auto-bump production. Run ./scripts/deploy-staging.sh if staging should match prod exactly.
+
+To deploy a new change next time, the workflow is:
+  1. git pull / make changes locally
+  2. ./scripts/deploy-staging.sh   (ship to staging)
+  3. (let staging soak for a few minutes)
+  4. ./scripts/promote-to-prod.sh  (this script)

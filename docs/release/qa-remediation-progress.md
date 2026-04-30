@@ -73,6 +73,14 @@ Git and staging rollout status:
   - Evidence: `docs/release/smoke-evidence/staging-chat-tenant-security-smoke-20260430-r2-remediation-rerun.log`
   - Result: 14 pass / 2 partial / 0 fail.
   - Partials: admin/support diagnostics token was not supplied; real provider fallback call was not made. No cross-tenant leakage or prompt-injection leak was observed.
+- PASS: production promotion
+  - Command: `./scripts/promote-to-prod.sh`
+  - Evidence: `docs/release/smoke-evidence/prod-promote-20260430-r2-remediation-confirmed-yes-stream.log`
+  - Result: production promoted from `4.14.106` to `4.14.107` at commit `f78eb61`.
+  - Backup: `deploy.sh` created a predeploy server backup including `bot.db` before syncing the new artifact.
+- PASS: production health
+  - Evidence: `docs/release/smoke-evidence/prod-health-20260430-r2-remediation-corrected.log`
+  - Result: content engine local health OK; Nexus Hub local snapshot returned `4.14.107`; `nexus-hub` and `content-engine` PM2 processes online with zero unstable restarts after deploy.
 
 ## Branch / Backup Setup
 
