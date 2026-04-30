@@ -17,15 +17,16 @@ Portal should be the deeper Cooking setup and management surface:
 
 ## Current Status
 
-No portal Cooking surface was modified in this pass.
+No portal Cooking surface was modified in this pass. Backend pantry CRUD is now
+available for a future portal Reference/Pantry surface, but portal UI and
+admin/support policy are still open.
 
 ## Required Before Production Claim
 
 - Backend authorization for any portal Cooking reads/writes.
 - Private preferences hidden from tenant admins unless explicit policy/audit exists.
-- Pantry and memory review UI.
+- Pantry and memory review UI backed by the tenant-scoped pantry APIs.
 - Audit logs for admin/support access.
 - Aggregate diagnostics without raw private meal/preference exposure.
 
 Verdict: OPEN.
-

@@ -134,6 +134,7 @@ Migration `103_cooking_intelligence_candidate_version.sql` registers:
 The candidate record documents the Cooking intelligence foundation:
 
 - tenant-scoped recipes, meal plans, and shopping lists
+- tenant-scoped pantry persistence and freshness/availability metadata
 - deterministic meal-plan practicality assessment
 - allergy and dietary restriction blockers
 - grocery and pantry coherence checks

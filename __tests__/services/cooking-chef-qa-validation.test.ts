@@ -452,13 +452,16 @@ describe('QA: Cooking prompt file', () => {
 // ── Tool definitions ──────────────────────────────────────────────
 
 describe('QA: Cooking tool definitions', () => {
-  it('all 8 cooking tools are defined in TOOLS array', async () => {
+  it('all cooking tools are defined in TOOLS array', async () => {
     const { TOOLS } = await import('../../src/services/anthropic');
     const cookingTools = TOOLS.filter((t: any) => t.name.startsWith('cooking_'));
     const expectedTools = [
       'cooking_add_recipe',
       'cooking_get_recipes',
       'cooking_delete_recipe',
+      'cooking_upsert_pantry_item',
+      'cooking_get_pantry',
+      'cooking_delete_pantry_item',
       'cooking_set_meal',
       'cooking_get_meal_plan',
       'cooking_delete_meal',

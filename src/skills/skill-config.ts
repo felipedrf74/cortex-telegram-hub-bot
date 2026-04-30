@@ -448,6 +448,12 @@ const COOKING_SKILL: SkillDefinition = {
       tools: ['cooking_generate_shopping_list', 'cooking_get_shopping_list'],
     },
     {
+      name: 'pantry',
+      description: 'Tenant-scoped pantry inventory and freshness',
+      enabledByDefault: true,
+      tools: ['cooking_upsert_pantry_item', 'cooking_get_pantry', 'cooking_delete_pantry_item'],
+    },
+    {
       name: 'notes',
       description: 'Cooking notes and tips',
       enabledByDefault: true,

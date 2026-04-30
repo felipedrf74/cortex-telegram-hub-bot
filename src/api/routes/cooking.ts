@@ -19,6 +19,10 @@
  *   DELETE /meal-plan?date=&mealType=    — clear one meal plan slot
  *   GET    /shopping-list?week=          — fetch the shopping list for a week
  *   POST   /shopping-list/generate       — (re)generate from the week's meal plan
+ *   GET    /pantry                       — list pantry items
+ *   POST   /pantry/items                 — create/update one pantry item
+ *   PATCH  /pantry/items/:id             — update one pantry item
+ *   DELETE /pantry/items/:id             — remove one pantry item
  *
  * Part of TASK-14 Phase 1 (foundation) — backend plumbing for the
  * iOS Cooking skill landing page. Real UI features ship in follow-up
@@ -42,8 +46,14 @@ import {
   generateShoppingList,
   getShoppingList,
   updateShoppingListItemChecked,
+  upsertPantryItem,
+  getPantryItems,
+  getPantryItemById,
+  updatePantryItem,
+  deletePantryItem,
   type Ingredient,
   type MealPlan,
+  type PantryItemInput,
   type Recipe,
 } from '../../services/cooking-chef';
 import { assessCookingMealPlan } from '../../services/cooking-intelligence';
@@ -522,6 +532,176 @@ export function cookingRoutes(): Router {
         operation: 'iOS cooking recipe delete failed',
         message: 'Failed to delete recipe',
         extra: { recipeId },
+      });
+    }
+  }));
+
+  // ── Pantry ────────────────────────────────────────────────────────
+
+  /**
+   * GET /api/v1/cooking/pantry?search=&category=&includeExpired=&limit=
+   * Lists tenant/user-scoped pantry items. Expired rows are hidden by default
+   * in day-to-day views, but can be requested explicitly for review/cleanup.
+   */
+  router.get('/pantry', asyncHandler(async (req, res: Response) => {
+    const { userId, tenantId } = req as AuthenticatedRequest;
+    const search = typeof req.query.search === 'string' ? req.query.search : undefined;
+    const category = typeof req.query.category === 'string' ? req.query.category : undefined;
+    const includeExpired = String(req.query.includeExpired ?? '').toLowerCase() === 'true';
+    const limit = req.query.limit
+      ? Math.min(parseInt(String(req.query.limit), 10) || 100, 250)
+      : 100;
+
+    try {
+      const items = getPantryItems(userId, { tenantId, search, category, includeExpired, limit });
+      sendSuccess(res, { items, count: items.length });
+    } catch (err: unknown) {
+      sendCookingInternalError(res, {
+        err,
+        userId,
+        operation: 'iOS cooking pantry list failed',
+        message: 'Failed to fetch pantry items',
+      });
+    }
+  }));
+
+  /**
+   * POST /api/v1/cooking/pantry/items
+   * Body: { name, quantity?, unit?, category?, expiresAt?, freshnessStatus?,
+   *         availabilityStatus?, source?, confidence?, notes? }
+   */
+  router.post('/pantry/items', asyncHandler(async (req, res: Response) => {
+    const { userId, tenantId } = req as AuthenticatedRequest;
+    const input = req.body as PantryItemInput;
+
+    if (!input?.name || typeof input.name !== 'string' || !input.name.trim()) {
+      sendError(res, 'BAD_REQUEST', 'name is required');
+      return;
+    }
+    if (input.confidence !== undefined && input.confidence !== null
+        && (typeof input.confidence !== 'number' || !Number.isFinite(input.confidence)
+          || input.confidence < 0 || input.confidence > 1)) {
+      sendError(res, 'BAD_REQUEST', 'confidence must be a number between 0 and 1');
+      return;
+    }
+
+    try {
+      const item = upsertPantryItem(userId, input, tenantId);
+      invalidateCookingDerivedCaches(userId);
+      sendSuccess(res, { item }, { status: 201 });
+    } catch (err: unknown) {
+      sendCookingInternalError(res, {
+        err,
+        userId,
+        operation: 'iOS cooking pantry item upsert failed',
+        message: 'Failed to save pantry item',
+      });
+    }
+  }));
+
+  /**
+   * GET /api/v1/cooking/pantry/items/:id
+   */
+  router.get('/pantry/items/:id', asyncHandler(async (req, res: Response) => {
+    const { userId, tenantId } = req as AuthenticatedRequest;
+    const itemId = parseInt(req.params.id, 10);
+
+    if (Number.isNaN(itemId)) {
+      sendError(res, 'BAD_REQUEST', 'id must be a number');
+      return;
+    }
+
+    try {
+      const item = getPantryItemById(userId, itemId, tenantId);
+      if (!item) {
+        sendError(res, 'NOT_FOUND', 'Pantry item not found or not owned by user', 404);
+        return;
+      }
+      sendSuccess(res, { item });
+    } catch (err: unknown) {
+      sendCookingInternalError(res, {
+        err,
+        userId,
+        operation: 'iOS cooking pantry item fetch failed',
+        message: 'Failed to fetch pantry item',
+        extra: { itemId },
+      });
+    }
+  }));
+
+  /**
+   * PATCH /api/v1/cooking/pantry/items/:id
+   */
+  router.patch('/pantry/items/:id', asyncHandler(async (req, res: Response) => {
+    const { userId, tenantId } = req as AuthenticatedRequest;
+    const itemId = parseInt(req.params.id, 10);
+    const input = req.body as Partial<PantryItemInput>;
+
+    if (Number.isNaN(itemId)) {
+      sendError(res, 'BAD_REQUEST', 'id must be a number');
+      return;
+    }
+    if (!input || Object.keys(input).length === 0) {
+      sendError(res, 'BAD_REQUEST', 'At least one field must be provided');
+      return;
+    }
+    if (input.name !== undefined && (typeof input.name !== 'string' || !input.name.trim())) {
+      sendError(res, 'BAD_REQUEST', 'name must be a non-empty string when provided');
+      return;
+    }
+    if (input.confidence !== undefined && input.confidence !== null
+        && (typeof input.confidence !== 'number' || !Number.isFinite(input.confidence)
+          || input.confidence < 0 || input.confidence > 1)) {
+      sendError(res, 'BAD_REQUEST', 'confidence must be a number between 0 and 1');
+      return;
+    }
+
+    try {
+      const item = updatePantryItem(userId, itemId, input, tenantId);
+      if (!item) {
+        sendError(res, 'NOT_FOUND', 'Pantry item not found or not owned by user', 404);
+        return;
+      }
+      invalidateCookingDerivedCaches(userId);
+      sendSuccess(res, { item });
+    } catch (err: unknown) {
+      sendCookingInternalError(res, {
+        err,
+        userId,
+        operation: 'iOS cooking pantry item update failed',
+        message: 'Failed to update pantry item',
+        extra: { itemId },
+      });
+    }
+  }));
+
+  /**
+   * DELETE /api/v1/cooking/pantry/items/:id
+   */
+  router.delete('/pantry/items/:id', asyncHandler(async (req, res: Response) => {
+    const { userId, tenantId } = req as AuthenticatedRequest;
+    const itemId = parseInt(req.params.id, 10);
+
+    if (Number.isNaN(itemId)) {
+      sendError(res, 'BAD_REQUEST', 'id must be a number');
+      return;
+    }
+
+    try {
+      const deleted = deletePantryItem(userId, itemId, tenantId);
+      if (!deleted) {
+        sendError(res, 'NOT_FOUND', 'Pantry item not found or not owned by user', 404);
+        return;
+      }
+      invalidateCookingDerivedCaches(userId);
+      sendSuccess(res, { deleted: true, id: itemId });
+    } catch (err: unknown) {
+      sendCookingInternalError(res, {
+        err,
+        userId,
+        operation: 'iOS cooking pantry item delete failed',
+        message: 'Failed to delete pantry item',
+        extra: { itemId },
       });
     }
   }));

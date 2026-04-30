@@ -33,6 +33,7 @@ const DESTRUCTIVE_TOOLS = new Set([
   'finance_mark_tax_paid',
   'cooking_delete_recipe',
   'cooking_delete_meal',
+  'cooking_delete_pantry_item',
 ]);
 
 const WRITE_TOOLS = new Set([
@@ -58,6 +59,7 @@ const WRITE_TOOLS = new Set([
   'finance_add_transaction',
   'finance_calculate_tax',
   'cooking_add_recipe',
+  'cooking_upsert_pantry_item',
   'cooking_set_meal',
   'cooking_generate_shopping_list',
 ]);

@@ -504,6 +504,34 @@ export const TOOLS: Anthropic.Tool[] = [
     }, required: ['recipe_id'] },
   },
   {
+    name: 'cooking_upsert_pantry_item', description: 'Add or update a tenant-scoped pantry item',
+    input_schema: { type: 'object' as const, properties: {
+      name: { type: 'string' },
+      quantity: { type: 'string' },
+      unit: { type: 'string' },
+      category: { type: 'string' },
+      expires_at: { type: 'string', description: 'Optional YYYY-MM-DD expiration/freshness date' },
+      freshness_status: { type: 'string', enum: ['fresh', 'use_soon', 'expired', 'unknown'] },
+      availability_status: { type: 'string', enum: ['available', 'low_stock', 'unavailable'] },
+      notes: { type: 'string' },
+    }, required: ['name'] },
+  },
+  {
+    name: 'cooking_get_pantry', description: 'List tenant-scoped pantry items',
+    input_schema: { type: 'object' as const, properties: {
+      search: { type: 'string' },
+      category: { type: 'string' },
+      include_expired: { type: 'boolean' },
+      limit: { type: 'number' },
+    } },
+  },
+  {
+    name: 'cooking_delete_pantry_item', description: 'Remove a pantry item',
+    input_schema: { type: 'object' as const, properties: {
+      item_id: { type: 'number' },
+    }, required: ['item_id'] },
+  },
+  {
     name: 'cooking_set_meal', description: 'Plan a meal for a specific date and meal type',
     input_schema: { type: 'object' as const, properties: {
       date: { type: 'string', description: 'ISO date YYYY-MM-DD' },

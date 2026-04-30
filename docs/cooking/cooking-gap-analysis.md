@@ -9,7 +9,7 @@ Date: 2026-04-30
 | P0 | Cooking persistence lacks explicit tenant metadata | Fixed in this branch with migration `102` and scoped service queries |
 | P0 | Cross-tenant Cooking reads/writes possible if future same-user tenants are enabled without storage scope | Fixed at service layer for recipes, meal plans, and shopping lists |
 | P0 | Allergy/restriction conflicts not deterministically blocked | Improved by deterministic assessment; full memory-driven enforcement still P1 |
-| P1 | Dedicated pantry persistence | Open |
+| P1 | Dedicated pantry persistence | Fixed with migration `104`, tenant-scoped service APIs, REST APIs, and Chat tools |
 | P1 | Cooking preference/memory writer and correction flow | Open |
 | P1 | Finance-backed grocery budget model | Open |
 | P1 | iOS rich warning/substitution/correction rendering | Open |
@@ -28,10 +28,8 @@ Date: 2026-04-30
 
 ## Recommended Next Sequence
 
-1. Add pantry tables and APIs with tenant/user scope.
-2. Wire Cooking preference writes into `skill_memories`.
-3. Add route/tool support for meal-plan generation using structured constraints.
-4. Add Finance budget read path for grocery planning.
-5. Extend iOS and portal DTOs for Cooking assessment states.
-6. Run full local runtime smoke with fixture model and archived logs.
-
+1. Wire Cooking preference writes into `skill_memories`.
+2. Add route/tool support for meal-plan generation using structured constraints.
+3. Add Finance budget read path for grocery planning.
+4. Extend iOS and portal DTOs for Cooking assessment/pantry states.
+5. Run full local runtime smoke with fixture model and archived logs.

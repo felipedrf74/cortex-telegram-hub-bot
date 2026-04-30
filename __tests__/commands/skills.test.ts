@@ -232,6 +232,7 @@ describe('formatSkillDetail', () => {
     expect(result).toContain('recipes');
     expect(result).toContain('meal-planning');
     expect(result).toContain('shopping');
-    expect(result).toContain('Sub-modules (5)');
+    expect(result).toContain('pantry');
+    expect(result).toContain('Sub-modules (6)');
   });
 });

@@ -86,6 +86,9 @@ export const DISPATCHABLE_TOOL_NAMES = [
   'cooking_add_recipe',
   'cooking_get_recipes',
   'cooking_delete_recipe',
+  'cooking_upsert_pantry_item',
+  'cooking_get_pantry',
+  'cooking_delete_pantry_item',
   'cooking_set_meal',
   'cooking_get_meal_plan',
   'cooking_delete_meal',
@@ -988,6 +991,45 @@ export async function executeToolCall(
         if (!scope.ok) return { error: scope.error };
         const uid = scope.userId;
         return cookingChef.deleteRecipe(uid, input.recipe_id, scope.tenantId) ? { success: true } : { error: 'Recipe not found' };
+      }
+      case 'cooking_upsert_pantry_item': {
+        const scope = requireTenantToolUserId(toolName, userId, undefined, tenantId);
+        if (!scope.ok) return { error: scope.error };
+        const uid = scope.userId;
+        const item = cookingChef.upsertPantryItem(uid, {
+          name: input.name,
+          quantity: input.quantity,
+          unit: input.unit,
+          category: input.category,
+          expiresAt: input.expires_at,
+          freshnessStatus: input.freshness_status,
+          availabilityStatus: input.availability_status,
+          source: input.source,
+          confidence: input.confidence,
+          notes: input.notes,
+        }, scope.tenantId);
+        invalidateCookingDerivedCaches(uid);
+        return { success: true, id: item.id, name: item.name, freshness_status: item.freshness_status };
+      }
+      case 'cooking_get_pantry': {
+        const scope = requireTenantToolUserId(toolName, userId, undefined, tenantId);
+        if (!scope.ok) return { error: scope.error };
+        const uid = scope.userId;
+        return cookingChef.getPantryItems(uid, {
+          tenantId: scope.tenantId,
+          search: input.search,
+          category: input.category,
+          includeExpired: input.include_expired,
+          limit: input.limit,
+        });
+      }
+      case 'cooking_delete_pantry_item': {
+        const scope = requireTenantToolUserId(toolName, userId, undefined, tenantId);
+        if (!scope.ok) return { error: scope.error };
+        const uid = scope.userId;
+        const deleted = cookingChef.deletePantryItem(uid, input.item_id, scope.tenantId);
+        if (deleted) invalidateCookingDerivedCaches(uid);
+        return deleted ? { success: true } : { error: 'Pantry item not found' };
       }
       case 'cooking_set_meal': {
         const scope = requireTenantToolUserId(toolName, userId, undefined, tenantId);

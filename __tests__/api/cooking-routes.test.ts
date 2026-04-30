@@ -48,7 +48,7 @@ vi.mock('../../src/services/cooking-secretary-integration', () => ({
 
 import { cookingRoutes } from '../../src/api/routes/cooking';
 import { getOrCreateUser } from '../../src/services/user-service';
-import { addRecipe, setMealPlan, generateShoppingList } from '../../src/services/cooking-chef';
+import { addRecipe, setMealPlan, generateShoppingList, upsertPantryItem } from '../../src/services/cooking-chef';
 import * as cookingChef from '../../src/services/cooking-chef';
 import { createPlan, createWeek, createSession } from '../../src/services/training-plans';
 import { publishHighLegLoad, publishLowSleep } from '../../src/services/training-signals';
@@ -103,8 +103,8 @@ function mockRes(): MockRes {
   return r;
 }
 
-function mockReq(userId: number, body?: any): Request {
-  return { userId, body } as any;
+function mockReq(userId: number, body?: any, tenantId = userId): Request {
+  return { userId, tenantId, body } as any;
 }
 
 async function dispatch(
@@ -112,9 +112,10 @@ async function dispatch(
   url: string,
   userId: number,
   body?: any,
+  tenantId = userId,
 ): Promise<MockRes> {
   const router = cookingRoutes();
-  const req = mockReq(userId, body);
+  const req = mockReq(userId, body, tenantId);
   const parsed = new URL(url, 'http://test.local');
   (req as any).method = method;
   (req as any).url = parsed.pathname + parsed.search;
@@ -201,6 +202,57 @@ describe('Cooking API — shopping list item updates', () => {
     expect(res.body.ok).toBe(true);
     expect(res.body.data.list.items[0].name).toBe('Tomatoes');
     expect(res.body.data.list.items[0].checked).toBe(true);
+  });
+
+  it('creates, lists, updates, and deletes pantry items through tenant-scoped APIs', async () => {
+    const user = getOrCreateUser(21014, { username: 'cook14' });
+
+    const created = await dispatch('POST', '/pantry/items', user.id, {
+      name: 'Greek yogurt',
+      quantity: '2',
+      unit: 'cups',
+      category: 'protein',
+      expiresAt: '2099-01-01',
+    }, 101);
+
+    expect(created.statusCode, JSON.stringify(created.body)).toBe(201);
+    expect(created.body.data.item).toMatchObject({
+      name: 'Greek yogurt',
+      tenant_id: 101,
+      freshness_status: 'fresh',
+    });
+
+    const listed = await dispatch('GET', '/pantry', user.id, undefined, 101);
+    expect(listed.statusCode).toBe(200);
+    expect(listed.body.data.items).toEqual([
+      expect.objectContaining({ name: 'Greek yogurt', quantity: '2' }),
+    ]);
+
+    const updated = await dispatch('PATCH', `/pantry/items/${created.body.data.item.id}`, user.id, {
+      quantity: '3',
+      notes: 'For weekday breakfast',
+    }, 101);
+    expect(updated.statusCode).toBe(200);
+    expect(updated.body.data.item).toMatchObject({ quantity: '3', notes: 'For weekday breakfast' });
+
+    const deleted = await dispatch('DELETE', `/pantry/items/${created.body.data.item.id}`, user.id, undefined, 101);
+    expect(deleted.statusCode).toBe(200);
+    expect(deleted.body.data.deleted).toBe(true);
+    expect(mockInvalidateCookingDerivedCaches).toHaveBeenCalledWith(user.id);
+  });
+
+  it('does not expose same-user pantry items across tenants', async () => {
+    const user = getOrCreateUser(21015, { username: 'cook15' });
+    const item = upsertPantryItem(user.id, { name: 'Tenant A rice' }, 101);
+
+    const tenantBList = await dispatch('GET', '/pantry', user.id, undefined, 202);
+    const tenantBFetch = await dispatch('GET', `/pantry/items/${item.id}`, user.id, undefined, 202);
+    const tenantBDelete = await dispatch('DELETE', `/pantry/items/${item.id}`, user.id, undefined, 202);
+
+    expect(tenantBList.statusCode).toBe(200);
+    expect(tenantBList.body.data.items).toEqual([]);
+    expect(tenantBFetch.statusCode).toBe(404);
+    expect(tenantBDelete.statusCode).toBe(404);
   });
 
   it('fails closed on invalid tenant scope before loading a meal plan', async () => {

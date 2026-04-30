@@ -7,8 +7,10 @@ Verdict: GO WITH CONDITIONS
 ## What Changed
 
 - Added explicit tenant/owner/visibility/lifecycle metadata for Cooking recipes, meal plans, and shopping lists.
+- Added persistent tenant-scoped pantry items with freshness/availability metadata and REST/Chat tool access.
 - Hardened Cooking service queries to filter by tenant and owner.
 - Passed tenant scope through Cooking REST routes, Chat tools, and Cooking mesh reads.
+- Shopping-list generation now marks items as pantry available, expired, or still needed.
 - Added deterministic Cooking intelligence assessment for allergy, dietary restriction, grocery coherence, pantry freshness, schedule capacity, budget, Training coverage, repetition, and complexity.
 - Added additive `assessment` read-back to `GET /api/v1/cooking/meal-plan`.
 - Updated Cooking prompt guardrails to avoid tenant leakage, pantry invention, unsafe medical advice, and allergy/restriction casualness.
@@ -18,6 +20,7 @@ Verdict: GO WITH CONDITIONS
 ## Evidence
 
 - Focused Vitest: 5 files / 126 tests PASS.
+- Pantry-focused Vitest: 4 files / 175 tests PASS.
 - Typecheck: PASS.
 - Full `npm run verify`: PASS, 425 files / 6374 tests.
 - No production data used.
@@ -28,7 +31,7 @@ Verdict: GO WITH CONDITIONS
 ## Remaining Conditions Before Production
 
 - Run full local Nexus product smoke with backend, auth, tenant context, Chat, Secretary, Training, Finance, Content, Cooking, workers/cache, fixture model, and iOS simulator.
-- Add persistent pantry and preference-memory write paths before claiming full adaptive Cooking.
+- Add preference-memory write paths before claiming full adaptive Cooking memory.
 - Add iOS/portal rich state support for assessment warnings and corrections before claiming frontend readiness.
 
 ## Release Recommendation

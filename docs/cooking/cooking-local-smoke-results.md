@@ -12,6 +12,7 @@ No production data, production calendars, or real provider calls were used.
 
 ```bash
 npx vitest run __tests__/services/tool-executor.test.ts __tests__/services/cooking-chef.test.ts __tests__/services/cooking-intelligence.test.ts __tests__/api/cooking-routes.test.ts __tests__/services/cooking-mesh-context.test.ts
+npx vitest run __tests__/services/cooking-chef.test.ts __tests__/api/cooking-routes.test.ts __tests__/services/tool-executor.test.ts __tests__/services/cooking-chef-qa-validation.test.ts
 npx tsc --noEmit
 npm run verify
 ```
@@ -23,6 +24,7 @@ npm run verify
 | Cooking recipes | PASS | CRUD and tenant isolation covered |
 | Cooking meal plans | PASS | CRUD, tenant isolation, Training adaptation covered |
 | Shopping list | PASS | Generation, grouping, checked state, tenant isolation covered |
+| Pantry | PASS | Persistent tenant-scoped CRUD, expired filtering, shopping-list pantry status, and route/tool tenant scope covered |
 | Secretary prep scheduling route | PASS | Existing route regression passed after tenant fallback fix |
 | Deterministic assessment | PASS | Allergy, pantry, grocery, schedule, budget, Training cases covered |
 | Tool tenant scope | PASS | Tool executor forwards authenticated tenant into Cooking writes |

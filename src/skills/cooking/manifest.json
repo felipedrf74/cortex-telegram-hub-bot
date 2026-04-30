@@ -28,6 +28,13 @@
       "cronJobs": []
     },
     {
+      "module_name": "pantry",
+      "description": "Tenant-scoped pantry inventory, freshness, and availability",
+      "enabled_by_default": true,
+      "tools": ["cooking_upsert_pantry_item", "cooking_get_pantry", "cooking_delete_pantry_item"],
+      "cronJobs": []
+    },
+    {
       "module_name": "batch-cook",
       "description": "Prep-day grouping and kitchen batching heuristics",
       "enabled_by_default": true,

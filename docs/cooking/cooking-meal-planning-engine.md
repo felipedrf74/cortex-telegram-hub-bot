@@ -30,7 +30,6 @@ This is backwards compatible for current iOS clients because the existing fields
 - Full meal generation endpoint using structured constraints.
 - Finance-backed grocery budget estimates.
 - Secretary-backed available cooking windows.
-- Pantry persistence.
+- Pantry-aware meal-plan generation that actively prefers available/use-soon pantry items.
 - Leftover and waste minimization planner.
 - Travel-week and batch-cooking optimizer.
-

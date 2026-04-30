@@ -85,6 +85,46 @@ export interface ShoppingItem {
   unit: string;
   checked: boolean;
   aisle: string;
+  pantry_status?: 'needed' | 'pantry_available' | 'pantry_expired';
+  pantry_item_id?: number;
+  pantry_freshness_status?: string;
+  pantry_note?: string;
+}
+
+export interface PantryItem {
+  id: number;
+  tenant_id: number;
+  user_id: number;
+  owner_user_id: number;
+  visibility_scope: string;
+  lifecycle_state: string;
+  scope_status: string;
+  name: string;
+  normalized_name: string;
+  quantity: string | null;
+  unit: string | null;
+  category: string | null;
+  expires_at: string | null;
+  freshness_status: string;
+  availability_status: string;
+  source: string;
+  confidence: number;
+  notes: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface PantryItemInput {
+  name: string;
+  quantity?: string | null;
+  unit?: string | null;
+  category?: string | null;
+  expiresAt?: string | null;
+  freshnessStatus?: string | null;
+  availabilityStatus?: string | null;
+  source?: string | null;
+  confidence?: number | null;
+  notes?: string | null;
 }
 
 // ── Recipe CRUD ────────────────────────────────────────────────────
@@ -367,6 +407,215 @@ export function deleteMealPlan(userId: number, date: string, mealType: string, t
   return result.changes > 0;
 }
 
+// ── Pantry ─────────────────────────────────────────────────────────
+
+export function upsertPantryItem(userId: number, input: PantryItemInput, tenantId?: number | null): PantryItem {
+  const db = getCookingDb();
+  const name = normalizeRequiredText(input.name, 'name');
+  const normalizedName = normalizePantryName(name);
+  const scope = cookingScopeForInsert(userId, tenantId, 'user_private', 'available');
+  const existing = db.prepare(
+    `SELECT id FROM cooking_pantry_items WHERE normalized_name = ? AND ${cookingPrivateScopePredicate()}`,
+  ).get(normalizedName, ...cookingScopeParams(userId, tenantId)) as { id: number } | undefined;
+
+  if (existing) {
+    db.prepare(`
+      UPDATE cooking_pantry_items
+      SET
+        name = ?,
+        quantity = ?,
+        unit = ?,
+        category = ?,
+        expires_at = ?,
+        freshness_status = ?,
+        availability_status = ?,
+        source = ?,
+        confidence = ?,
+        notes = ?,
+        lifecycle_state = ?,
+        updated_by = ?,
+        updated_at = datetime('now')
+      WHERE id = ? AND ${cookingPrivateScopePredicate()}
+    `).run(
+      name,
+      cleanNullableText(input.quantity),
+      cleanNullableText(input.unit),
+      cleanNullableText(input.category),
+      cleanNullableText(input.expiresAt),
+      normalizePantryFreshness(input.freshnessStatus, input.expiresAt),
+      normalizePantryAvailability(input.availabilityStatus),
+      cleanNullableText(input.source) ?? 'manual',
+      normalizeConfidence(input.confidence),
+      cleanNullableText(input.notes),
+      normalizePantryAvailability(input.availabilityStatus) === 'available' ? 'available' : 'unavailable',
+      userId,
+      existing.id,
+      ...cookingScopeParams(userId, tenantId),
+    );
+    return getPantryItemById(userId, existing.id, tenantId)!;
+  }
+
+  db.prepare(`
+    INSERT INTO cooking_pantry_items (
+      tenant_id, user_id, owner_user_id, visibility_scope, lifecycle_state, scope_status,
+      created_by, updated_by, audit_metadata_json,
+      name, normalized_name, quantity, unit, category, expires_at, freshness_status,
+      availability_status, source, confidence, notes
+    )
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    scope.tenantId,
+    userId,
+    scope.ownerUserId,
+    scope.visibilityScope,
+    scope.lifecycleState,
+    scope.scopeStatus,
+    scope.createdBy,
+    scope.updatedBy,
+    scope.auditMetadataJson,
+    name,
+    normalizedName,
+    cleanNullableText(input.quantity),
+    cleanNullableText(input.unit),
+    cleanNullableText(input.category),
+    cleanNullableText(input.expiresAt),
+    normalizePantryFreshness(input.freshnessStatus, input.expiresAt),
+    normalizePantryAvailability(input.availabilityStatus),
+    cleanNullableText(input.source) ?? 'manual',
+    normalizeConfidence(input.confidence),
+    cleanNullableText(input.notes),
+  );
+
+  const row = db.prepare(
+    `SELECT * FROM cooking_pantry_items WHERE normalized_name = ? AND ${cookingPrivateScopePredicate()}`,
+  ).get(normalizedName, ...cookingScopeParams(userId, tenantId)) as any;
+  logger.info({ userId, tenantId: scope.tenantId, pantryItemId: row?.id }, 'Cooking pantry item upserted');
+  return parsePantryItem(row);
+}
+
+export function getPantryItems(
+  userId: number,
+  opts?: {
+    tenantId?: number | null;
+    search?: string;
+    category?: string;
+    includeExpired?: boolean;
+    limit?: number;
+  },
+): PantryItem[] {
+  const db = getCookingDb();
+  const conditions = [cookingPrivateScopePredicate(), "COALESCE(availability_status, 'available') != 'removed'"];
+  const params: any[] = cookingScopeParams(userId, opts?.tenantId);
+
+  if (opts?.search?.trim()) {
+    conditions.push('(name LIKE ? OR notes LIKE ?)');
+    const search = `%${opts.search.trim()}%`;
+    params.push(search, search);
+  }
+  if (opts?.category?.trim()) {
+    conditions.push('category = ?');
+    params.push(opts.category.trim());
+  }
+  if (!opts?.includeExpired) {
+    conditions.push("COALESCE(freshness_status, 'unknown') != 'expired'");
+  }
+
+  const limit = Math.min(Math.max(Number(opts?.limit ?? 100) || 100, 1), 250);
+  params.push(limit);
+
+  const rows = db.prepare(`
+    SELECT * FROM cooking_pantry_items
+    WHERE ${conditions.join(' AND ')}
+    ORDER BY
+      CASE COALESCE(freshness_status, 'unknown')
+        WHEN 'use_soon' THEN 0
+        WHEN 'unknown' THEN 1
+        WHEN 'fresh' THEN 2
+        ELSE 3
+      END,
+      updated_at DESC,
+      name ASC
+    LIMIT ?
+  `).all(...params) as any[];
+  return rows.map(parsePantryItem);
+}
+
+export function getPantryItemById(userId: number, itemId: number, tenantId?: number | null): PantryItem | null {
+  const db = getCookingDb();
+  const row = db.prepare(
+    `SELECT * FROM cooking_pantry_items WHERE id = ? AND ${cookingPrivateScopePredicate()} AND COALESCE(availability_status, 'available') != 'removed'`,
+  ).get(itemId, ...cookingScopeParams(userId, tenantId)) as any;
+  return row ? parsePantryItem(row) : null;
+}
+
+export function updatePantryItem(
+  userId: number,
+  itemId: number,
+  updates: Partial<PantryItemInput>,
+  tenantId?: number | null,
+): PantryItem | null {
+  const db = getCookingDb();
+  const existing = getPantryItemById(userId, itemId, tenantId);
+  if (!existing) return null;
+
+  const name = updates.name !== undefined ? normalizeRequiredText(updates.name, 'name') : existing.name;
+  const setParts = [
+    'name = ?',
+    'normalized_name = ?',
+    'quantity = ?',
+    'unit = ?',
+    'category = ?',
+    'expires_at = ?',
+    'freshness_status = ?',
+    'availability_status = ?',
+    'source = ?',
+    'confidence = ?',
+    'notes = ?',
+    "updated_at = datetime('now')",
+    'updated_by = ?',
+  ];
+  const expiresAt = updates.expiresAt !== undefined ? cleanNullableText(updates.expiresAt) : existing.expires_at;
+  const availability = normalizePantryAvailability(updates.availabilityStatus ?? existing.availability_status);
+  const params = [
+    name,
+    normalizePantryName(name),
+    updates.quantity !== undefined ? cleanNullableText(updates.quantity) : existing.quantity,
+    updates.unit !== undefined ? cleanNullableText(updates.unit) : existing.unit,
+    updates.category !== undefined ? cleanNullableText(updates.category) : existing.category,
+    expiresAt,
+    normalizePantryFreshness(updates.freshnessStatus ?? existing.freshness_status, expiresAt),
+    availability,
+    updates.source !== undefined ? cleanNullableText(updates.source) ?? 'manual' : existing.source,
+    updates.confidence !== undefined ? normalizeConfidence(updates.confidence) : existing.confidence,
+    updates.notes !== undefined ? cleanNullableText(updates.notes) : existing.notes,
+    userId,
+    itemId,
+    ...cookingScopeParams(userId, tenantId),
+  ];
+
+  const result = db.prepare(`
+    UPDATE cooking_pantry_items
+    SET ${setParts.join(', ')}
+    WHERE id = ? AND ${cookingPrivateScopePredicate()}
+  `).run(...params);
+  if (result.changes === 0) return null;
+  return getPantryItemById(userId, itemId, tenantId);
+}
+
+export function deletePantryItem(userId: number, itemId: number, tenantId?: number | null): boolean {
+  const db = getCookingDb();
+  const result = db.prepare(`
+    UPDATE cooking_pantry_items
+    SET scope_status = 'deleted',
+        availability_status = 'removed',
+        lifecycle_state = 'archived',
+        updated_by = ?,
+        updated_at = datetime('now')
+    WHERE id = ? AND ${cookingPrivateScopePredicate()}
+  `).run(userId, itemId, ...cookingScopeParams(userId, tenantId));
+  return result.changes > 0;
+}
+
 // ── Shopping List ──────────────────────────────────────────────────
 
 export function generateShoppingList(userId: number, weekStart: string, tenantId?: number | null): ShoppingList {
@@ -385,6 +634,10 @@ export function generateShoppingList(userId: number, weekStart: string, tenantId
   const itemMap = new Map<string, ShoppingItem>();
   const quantityMap = new Map<string, NormalizedQuantity>();
   const existing = getShoppingList(userId, weekStart, tenantId);
+  const pantryByName = new Map(
+    getPantryItems(userId, { tenantId, includeExpired: true, limit: 250 })
+      .map((item) => [item.normalized_name, item]),
+  );
   const checkedByKey = new Map(
     (existing?.items ?? []).map((item) => [item.name.toLowerCase(), item.checked]),
   );
@@ -419,6 +672,7 @@ export function generateShoppingList(userId: number, weekStart: string, tenantId
               unit: ing.unit,
               checked: checkedByKey.get(key) ?? false,
               aisle: classifyIngredientAisle(ing.name),
+              ...shoppingPantryMetadata(pantryByName.get(normalizePantryName(ing.name))),
             });
           }
         }
@@ -630,8 +884,78 @@ function parseShoppingList(row: any): ShoppingList {
           aisle: typeof item?.aisle === 'string' && item.aisle.trim()
             ? item.aisle
             : classifyIngredientAisle(String(item?.name ?? '')),
+          pantry_status: item?.pantry_status ?? 'needed',
         }))
       : [],
+  };
+}
+
+function parsePantryItem(row: any): PantryItem {
+  return {
+    ...row,
+    confidence: typeof row.confidence === 'number' ? row.confidence : Number(row.confidence ?? 1),
+  };
+}
+
+function normalizeRequiredText(value: unknown, field: string): string {
+  const text = String(value ?? '').trim();
+  if (!text) throw new Error(`${field} is required`);
+  return text;
+}
+
+function cleanNullableText(value: unknown): string | null {
+  if (value === undefined || value === null) return null;
+  const text = String(value).trim();
+  return text ? text : null;
+}
+
+function normalizePantryName(name: string): string {
+  return name.trim().toLowerCase().replace(/\s+/g, ' ');
+}
+
+function normalizePantryFreshness(value: unknown, expiresAt?: string | null): string {
+  const normalized = String(value ?? '').trim().toLowerCase();
+  if (['fresh', 'use_soon', 'expired', 'unknown'].includes(normalized)) return normalized;
+  if (expiresAt && /^\d{4}-\d{2}-\d{2}/.test(expiresAt)) {
+    const expiryDate = new Date(`${expiresAt.slice(0, 10)}T00:00:00.000Z`).getTime();
+    const today = new Date();
+    const todayUtc = Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), today.getUTCDate());
+    const daysUntilExpiry = Math.floor((expiryDate - todayUtc) / 86400_000);
+    if (daysUntilExpiry < 0) return 'expired';
+    if (daysUntilExpiry <= 3) return 'use_soon';
+    return 'fresh';
+  }
+  return 'unknown';
+}
+
+function normalizePantryAvailability(value: unknown): string {
+  const normalized = String(value ?? '').trim().toLowerCase();
+  if (['available', 'low_stock', 'unavailable', 'removed'].includes(normalized)) return normalized;
+  return 'available';
+}
+
+function normalizeConfidence(value: unknown): number {
+  const numberValue = Number(value ?? 1);
+  if (!Number.isFinite(numberValue)) return 1;
+  return Math.max(0, Math.min(1, numberValue));
+}
+
+function shoppingPantryMetadata(item: PantryItem | undefined): Pick<ShoppingItem, 'pantry_status' | 'pantry_item_id' | 'pantry_freshness_status' | 'pantry_note'> {
+  if (!item || item.availability_status === 'unavailable' || item.availability_status === 'removed') {
+    return { pantry_status: 'needed' };
+  }
+  if (item.freshness_status === 'expired') {
+    return {
+      pantry_status: 'pantry_expired',
+      pantry_item_id: item.id,
+      pantry_freshness_status: item.freshness_status,
+      pantry_note: 'Pantry item exists but is expired; do not use silently.',
+    };
+  }
+  return {
+    pantry_status: 'pantry_available',
+    pantry_item_id: item.id,
+    pantry_freshness_status: item.freshness_status,
   };
 }
 

@@ -21,7 +21,7 @@ export interface CookingScopeInsert {
   auditMetadataJson: string;
 }
 
-const cookingScopedTables = ['recipes', 'meal_plans', 'shopping_lists'] as const;
+const cookingScopedTables = ['recipes', 'meal_plans', 'shopping_lists', 'cooking_pantry_items'] as const;
 const ensured = new WeakSet<object>();
 
 export function resolveCookingTenantId(userId: number, tenantId?: number | null): number {
@@ -100,6 +100,8 @@ function ensureColumn(db: any, table: string, column: string, definition: string
 function backfillTable(db: any, table: string): void {
   const defaultLifecycle = table === 'meal_plans'
     ? 'planned'
+    : table === 'cooking_pantry_items'
+      ? 'available'
     : table === 'shopping_lists'
       ? 'active'
       : 'active';

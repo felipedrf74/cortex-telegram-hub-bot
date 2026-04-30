@@ -9,7 +9,6 @@ None known.
 ## P1
 
 - Full local product smoke not run.
-- Pantry persistence not implemented.
 - Cooking memory correction flow not implemented.
 - iOS rich Cooking warning/correction rendering not implemented.
 - Portal Cooking management not implemented.

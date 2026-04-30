@@ -8,7 +8,6 @@ None currently known after focused backend tenant-scope and allergy-blocker test
 
 ## P1
 
-- Add persistent pantry model and tenant-scoped APIs.
 - Add Cooking preference/memory writer and correction handling.
 - Connect Finance budget context to meal/grocery planning.
 - Connect Secretary available cooking windows to meal-plan generation.
@@ -18,6 +17,7 @@ None currently known after focused backend tenant-scope and allergy-blocker test
 
 ## P2
 
+- Pantry quantity normalization and low-stock suggestions beyond CRUD/status.
 - Advanced substitution engine.
 - Leftover/waste optimizer.
 - Store/unavailable item fallback.
@@ -28,4 +28,3 @@ None currently known after focused backend tenant-scope and allergy-blocker test
 
 - Cuisine/style ontology.
 - Performance-informed favorite/rejected meal analytics.
-

@@ -15,6 +15,8 @@ Branch: `feature/cooking-intelligence-upgrade`
 - `src/skills/cooking/prompts/system.md`
 - `migrations/024_cooking_tables.sql`
 - `migrations/072_recipe_nutrition.sql`
+- `migrations/102_cooking_tenant_scope_and_intelligence.sql`
+- `migrations/104_cooking_pantry_items.sql`
 - Cooking tests under `__tests__/services` and `__tests__/api`
 
 ## Existing Strengths
@@ -22,6 +24,7 @@ Branch: `feature/cooking-intelligence-upgrade`
 - Token-zero REST endpoints exist for recipes, meal plans, shopping lists, and prep-event scheduling.
 - Recipe CRUD and meal-plan CRUD are covered by tests.
 - Shopping list generation merges compatible quantities and assigns grocery aisle metadata.
+- Pantry is now persisted as tenant/user-scoped rows and shopping lists can mark pantry-available or pantry-expired ingredients.
 - iOS route layer avoids leaking internal exception details.
 - Cooking already has Training-aware meal adaptation for hard sessions, readiness, low sleep, low HRV, and leg-load context.
 - Cooking meal prep is routed through `submitCookingMealPrepSchedulingIntent` before calendar event creation.
@@ -33,7 +36,6 @@ Branch: `feature/cooking-intelligence-upgrade`
 - Core Cooking tables were historically scoped only by `user_id`; they did not carry explicit `tenant_id`, owner, visibility, lifecycle, or audit metadata.
 - Same-user multi-tenant Cooking storage was not modeled. Auth currently blocks active tenant switching, but persistence should still be explicit.
 - No deterministic meal-plan quality assessment existed before response/API composition.
-- Pantry is not persisted as a first-class Cooking object.
 - Cooking preferences and correction handling are documented in the skill memory foundation but not yet wired into a dedicated Cooking preference writer.
 - Finance budget context is represented through mesh estimates but not a full meal-planning budget contract.
 - iOS receives basic Cooking DTOs but does not yet render rich assessment, pantry, substitution, and warning states.
@@ -47,6 +49,5 @@ Cooking domain handling uses the live domain/provider routing path through `hand
 ## Risk Summary
 
 - P0 before fix: explicit tenant metadata missing on recipes, meal plans, and shopping lists.
-- P1: pantry, preference memory, budget, iOS/portal rich states, and full local runtime smoke remain incomplete.
+- P1: preference memory, budget, iOS/portal rich states, and full local runtime smoke remain incomplete.
 - P2: deeper recipe substitution and food-safety workflow needs more runtime coverage.
-

@@ -16,34 +16,46 @@ Current strengths:
 
 ## Current Pantry Model
 
-Pantry is not yet persisted. The new assessment service accepts pantry fixture input and handles:
+Pantry now has a persistent tenant-scoped backend foundation in
+`cooking_pantry_items`.
 
-- available pantry items
-- expired pantry blockers
-- missing ingredient detection
+Rows include:
 
-## Proposed Pantry Table
-
-Future pantry rows should include:
-
-- `pantry_item_id`
+- `id`
 - `tenant_id`
+- `user_id`
 - `owner_user_id`
 - `visibility_scope`
+- `scope_status`
+- `lifecycle_state`
 - `name`
+- `normalized_name`
 - `quantity`
 - `unit`
-- `status`
+- `category`
 - `expires_at`
-- `freshness_confidence`
-- `last_updated_at`
+- `freshness_status`
+- `availability_status`
 - `source`
+- `confidence`
+- `notes`
+- audit/update metadata
+
+Current APIs:
+
+- `GET /api/v1/cooking/pantry`
+- `POST /api/v1/cooking/pantry/items`
+- `GET /api/v1/cooking/pantry/items/:id`
+- `PATCH /api/v1/cooking/pantry/items/:id`
+- `DELETE /api/v1/cooking/pantry/items/:id`
+
+Shopping-list generation marks matching ingredients as
+`pantry_available`, `pantry_expired`, or `needed`. Expired pantry items
+are never treated as safely usable.
 
 ## Open Items
 
-- Pantry APIs.
 - iOS pantry rendering and correction.
 - Portal pantry management.
 - Grocery budget estimation backed by Finance.
 - Store/unavailable item fallback.
-

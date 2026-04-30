@@ -45,6 +45,7 @@ import {
   addRecipe, getRecipeById, getRecipes, deleteRecipe, updateRecipe,
   setMealPlan, getMealPlan, deleteMealPlan,
   generateShoppingList, getShoppingList,
+  upsertPantryItem, getPantryItems, getPantryItemById, updatePantryItem, deletePantryItem,
 } from '../../src/services/cooking-chef';
 
 describe('Recipe CRUD', () => {
@@ -247,5 +248,86 @@ describe('Shopping List', () => {
 
   it('returns null for non-existent shopping list', () => {
     expect(getShoppingList(1, '2099-01-01')).toBeNull();
+  });
+
+  it('marks shopping list items that are already available in tenant pantry', () => {
+    upsertPantryItem(1, {
+      name: 'Pasta',
+      quantity: '500',
+      unit: 'g',
+      freshnessStatus: 'fresh',
+    }, 101);
+    const recipe = addRecipe(1, 'Tenant pasta', [
+      { name: 'Pasta', quantity: '250', unit: 'g' },
+      { name: 'Tomatoes', quantity: '2', unit: 'pcs' },
+    ], { tenantId: 101 });
+    setMealPlan(1, '2024-06-17', 'dinner', 'Tenant pasta', { recipeId: recipe.id, tenantId: 101 });
+
+    const list = generateShoppingList(1, '2024-06-17', 101);
+
+    expect(list.items).toEqual(expect.arrayContaining([
+      expect.objectContaining({ name: 'Pasta', pantry_status: 'pantry_available' }),
+      expect.objectContaining({ name: 'Tomatoes', pantry_status: 'needed' }),
+    ]));
+  });
+});
+
+describe('Pantry', () => {
+  beforeEach(() => { testDb = createTestDb(); applyMigrations(testDb); });
+  afterEach(() => { testDb.close(); });
+
+  it('upserts and lists pantry items for the active tenant', () => {
+    const item = upsertPantryItem(1, {
+      name: 'Greek yogurt',
+      quantity: '2',
+      unit: 'cups',
+      category: 'protein',
+      expiresAt: '2099-01-01',
+      notes: 'For breakfast bowls',
+    }, 101);
+
+    expect(item.name).toBe('Greek yogurt');
+    expect(item.tenant_id).toBe(101);
+    expect(item.freshness_status).toBe('fresh');
+
+    const updated = upsertPantryItem(1, {
+      name: 'Greek yogurt',
+      quantity: '3',
+      unit: 'cups',
+      category: 'protein',
+    }, 101);
+
+    expect(updated.id).toBe(item.id);
+    expect(updated.quantity).toBe('3');
+    expect(getPantryItems(1, { tenantId: 101 })).toHaveLength(1);
+  });
+
+  it('isolates pantry items between active tenants for the same user', () => {
+    const tenantA = upsertPantryItem(1, { name: 'Rice', quantity: '1', unit: 'kg' }, 101);
+    upsertPantryItem(1, { name: 'Beans', quantity: '2', unit: 'cans' }, 202);
+
+    expect(getPantryItems(1, { tenantId: 101 }).map((item) => item.name)).toEqual(['Rice']);
+    expect(getPantryItems(1, { tenantId: 202 }).map((item) => item.name)).toEqual(['Beans']);
+    expect(getPantryItemById(1, tenantA.id, 202)).toBeNull();
+    expect(updatePantryItem(1, tenantA.id, { quantity: 'leaked' }, 202)).toBeNull();
+    expect(deletePantryItem(1, tenantA.id, 202)).toBe(false);
+    expect(getPantryItemById(1, tenantA.id, 101)?.quantity).toBe('1');
+  });
+
+  it('soft deletes pantry items without exposing them in list reads', () => {
+    const item = upsertPantryItem(1, { name: 'Old oats' }, 101);
+
+    expect(deletePantryItem(1, item.id, 101)).toBe(true);
+    expect(getPantryItems(1, { tenantId: 101, includeExpired: true })).toEqual([]);
+    expect(getPantryItemById(1, item.id, 101)).toBeNull();
+  });
+
+  it('keeps expired pantry items out of default list reads but available for review', () => {
+    upsertPantryItem(1, { name: 'Old milk', expiresAt: '2000-01-01' }, 101);
+
+    expect(getPantryItems(1, { tenantId: 101 })).toEqual([]);
+    expect(getPantryItems(1, { tenantId: 101, includeExpired: true })).toEqual([
+      expect.objectContaining({ name: 'Old milk', freshness_status: 'expired' }),
+    ]);
   });
 });

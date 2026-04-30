@@ -1182,6 +1182,54 @@ describe('executeToolCall — Cooking', () => {
     setMealSpy.mockRestore();
   });
 
+  it('passes authenticated tenant scope into cooking pantry writes', async () => {
+    const upsertSpy = vi.spyOn(cookingChef, 'upsertPantryItem');
+    upsertSpy.mockReturnValue({
+      id: 55,
+      name: 'Rice',
+      freshness_status: 'fresh',
+    } as any);
+
+    const result = await execAsTenantUser('cooking_upsert_pantry_item', {
+      name: 'Rice',
+      quantity: '1',
+      unit: 'kg',
+      freshness_status: 'fresh',
+    }, 1001);
+
+    expect(result).toEqual({
+      success: true,
+      id: 55,
+      name: 'Rice',
+      freshness_status: 'fresh',
+    });
+    expect(upsertSpy).toHaveBeenCalledWith(
+      AUTH_USER_ID,
+      expect.objectContaining({ name: 'Rice', quantity: '1', unit: 'kg' }),
+      1001,
+    );
+    expect(mockInvalidateCookingDerivedCaches).toHaveBeenCalledWith(AUTH_USER_ID);
+    upsertSpy.mockRestore();
+  });
+
+  it('passes authenticated tenant scope into cooking pantry reads', async () => {
+    const listSpy = vi.spyOn(cookingChef, 'getPantryItems');
+    listSpy.mockReturnValue([{ id: 56, name: 'Oats' }] as any);
+
+    const result = await execAsTenantUser('cooking_get_pantry', {
+      search: 'oats',
+      include_expired: true,
+    }, 1001);
+
+    expect(result).toEqual([{ id: 56, name: 'Oats' }]);
+    expect(listSpy).toHaveBeenCalledWith(AUTH_USER_ID, expect.objectContaining({
+      tenantId: 1001,
+      search: 'oats',
+      includeExpired: true,
+    }));
+    listSpy.mockRestore();
+  });
+
   it('invalidates cooking-derived surfaces after deleting a meal', async () => {
     const deleteMealSpy = vi.spyOn(cookingChef, 'deleteMealPlan');
     deleteMealSpy.mockReturnValue(true);
