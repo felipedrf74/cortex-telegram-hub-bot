@@ -12,7 +12,7 @@ Date: 2026-04-30
 | P1 | Dedicated pantry persistence | Fixed with migration `104`, tenant-scoped service APIs, REST APIs, and Chat tools |
 | P1 | Cooking preference/memory writer and correction flow | Fixed with `cooking-preferences.ts`, REST APIs, Chat tools, and meal-plan assessment read path |
 | P1 | Finance/Secretary runtime context read-back | Fixed with `cooking-planning-context.ts` and route-level assessment integration |
-| P1 | iOS rich warning/substitution/correction rendering | Partially fixed: assessment/context/preference rendering landed on iOS branch `feature/cooking-rich-state-ui` at `f4f1053`; pantry freshness UI landed at `cfe5df4`; correction capture landed at `e8cdc80`; assessment review prompts landed at `d7eb9f4`; substitution suggestions and simulator smoke remain open |
+| P1 | iOS rich warning/substitution/correction rendering | Partially fixed: assessment/context/preference rendering landed on iOS branch `feature/cooking-rich-state-ui` at `f4f1053`; pantry freshness UI landed at `cfe5df4`; correction capture landed at `e8cdc80`; assessment review prompts landed at `d7eb9f4`; backend substitution candidates now exist; iOS substitution rendering and simulator smoke remain open |
 | P1 | Portal Cooking preference/pantry console | Fixed for preference/pantry scope: backend admin/operator routes and browser UI are implemented and tested; browser runtime smoke remains open |
 | P1 | Full local runtime smoke with backend, workers/cache, and fixture model | Fixed with attached backend full-smoke on `127.0.0.1:8326`; iOS simulator remains a frontend gate |
 | P2 | Advanced substitution model | Documented foundation, not fully implemented |
@@ -28,7 +28,8 @@ Date: 2026-04-30
 
 ## Recommended Next Sequence
 
-1. Add route/tool support for meal-plan generation using structured constraints.
-2. Add item-price grocery budget optimizer and Secretary-driven alternative-window proposals.
-3. Add iOS simulator smoke for the rich Cooking payload.
-4. Run portal browser smoke for the Cooking preference/pantry manager.
+1. Add iOS rendering for backend `assessment.substitutionSuggestions`.
+2. Add route/tool support for meal-plan generation using structured constraints.
+3. Add item-price grocery budget optimizer and Secretary-driven alternative-window proposals.
+4. Add iOS simulator smoke for the rich Cooking payload.
+5. Run portal browser smoke for the Cooking preference/pantry manager.

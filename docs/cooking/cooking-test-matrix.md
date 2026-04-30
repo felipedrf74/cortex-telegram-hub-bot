@@ -12,6 +12,7 @@ Date: 2026-04-30
 | Tenant-safe pantry | `__tests__/services/cooking-chef.test.ts`, `__tests__/api/cooking-routes.test.ts` | Pantry CRUD, same-user cross-tenant read/update/delete denied |
 | Cooking preference memory | `__tests__/services/cooking-preferences.test.ts`, `__tests__/api/cooking-routes.test.ts` | User-private preference writes, corrections, tenant isolation, and allergy assessment read-through |
 | Allergy/restriction safety | `__tests__/services/cooking-intelligence.test.ts` | Allergy conflict blocks assessment |
+| Substitution candidates | `__tests__/services/cooking-intelligence.test.ts`, `__tests__/api/cooking-routes.test.ts` | Allergy, dietary-restriction, and expired-pantry issues emit reviewable substitution candidates |
 | Pantry safety | `__tests__/services/cooking-intelligence.test.ts` | Expired pantry item blocks use |
 | Grocery coherence | `__tests__/services/cooking-intelligence.test.ts` | Pantry/list coherence and missing ingredient warning |
 | Schedule/budget realism | `__tests__/services/cooking-intelligence.test.ts` | Over-capacity and over-budget warnings |
@@ -31,6 +32,7 @@ npx vitest run __tests__/services/cooking-chef.test.ts __tests__/api/cooking-rou
 npx vitest run __tests__/services/cooking-preferences.test.ts __tests__/api/cooking-routes.test.ts __tests__/services/tool-executor.test.ts __tests__/services/cooking-chef-qa-validation.test.ts __tests__/skills/skills-command-qa-validation.test.ts __tests__/commands/skills.test.ts __tests__/api/app-facing-happy-path-smoke.test.ts
 npx vitest run __tests__/services/cooking-planning-context.test.ts __tests__/services/cooking-intelligence.test.ts __tests__/api/cooking-routes.test.ts
 npx vitest run __tests__/portal/portal-cooking-ui.test.ts __tests__/portal/portal-cooking-routes.test.ts
+npx vitest run __tests__/services/cooking-preferences.test.ts __tests__/services/cooking-intelligence.test.ts __tests__/api/cooking-routes.test.ts
 npx tsc --noEmit
 npm run verify
 ```
@@ -38,6 +40,7 @@ npm run verify
 ## Results
 
 - Focused Vitest: PASS, 5 files / 126 tests.
+- Substitution-candidate focused Vitest: PASS, 3 files / 34 tests.
 - Pantry-focused Vitest: PASS, 4 files / 175 tests.
 - Preference-memory focused Vitest plus app-facing smoke: PASS, 7 files / 208 tests.
 - Planning-context focused Vitest: PASS, 3 files / 29 tests.

@@ -139,8 +139,18 @@ describe('cooking preference memory adapter', () => {
       expect.objectContaining({
         code: 'ALLERGY_CONFLICT',
         severity: 'blocker',
-        ingredient: 'peanuts',
+        ingredient: 'Peanuts',
+        substitutionSuggestions: expect.arrayContaining([
+          expect.objectContaining({
+            originalIngredient: 'Peanuts',
+            suggestedIngredient: 'sunflower seed butter',
+            reason: 'allergy',
+          }),
+        ]),
       }),
+    ]));
+    expect(assessment.substitutionSuggestions).toEqual(expect.arrayContaining([
+      expect.objectContaining({ originalIngredient: 'Peanuts', reason: 'allergy' }),
     ]));
   });
 

@@ -14,6 +14,7 @@ Verdict: GO WITH CONDITIONS
 - Passed tenant scope through Cooking REST routes, Chat tools, and Cooking mesh reads.
 - Shopping-list generation now marks items as pantry available, expired, or still needed.
 - Added deterministic Cooking intelligence assessment for allergy, dietary restriction, grocery coherence, pantry freshness, schedule capacity, budget, Training coverage, repetition, and complexity.
+- Added deterministic, reviewable substitution candidates to Cooking assessment issues and the top-level `assessment.substitutionSuggestions` array.
 - Added additive `assessment` read-back to `GET /api/v1/cooking/meal-plan`.
 - Added audited portal admin/operator routes for scoped Cooking preference and pantry management.
 - Added portal browser UI for scoped Cooking preference review, preference
@@ -28,6 +29,7 @@ Verdict: GO WITH CONDITIONS
 - Pantry-focused Vitest: 4 files / 175 tests PASS.
 - Preference-memory focused Vitest plus app-facing smoke: 7 files / 208 tests PASS.
 - Planning-context focused Vitest: 3 files / 29 tests PASS.
+- Substitution-candidate focused Vitest: 3 files / 34 tests PASS.
 - Typecheck: PASS.
 - Full `npm run verify`: PASS, 427 files / 6398 tests.
 - Full local backend product smoke: PASS WITH CONDITIONS on `127.0.0.1:8326`; authenticated API smoke 13/13, Chat tenant smoke 15 pass / 1 partial / 0 fail, cross-skill fixtures PASS, Chat eval/day-to-day fixtures PASS.
@@ -42,6 +44,7 @@ Verdict: GO WITH CONDITIONS
 ## Remaining Conditions Before Production
 
 - Add rich Cooking simulator smoke before claiming full frontend readiness.
+- Add iOS substitution rendering for backend `assessment.substitutionSuggestions`.
 - Run portal browser smoke before claiming full portal runtime readiness.
 - Add recipe library, meal-plan, and grocery-settings portal deep editors once
   backend management contracts exist.

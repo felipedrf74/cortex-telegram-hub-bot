@@ -140,6 +140,7 @@ The candidate record documents the Cooking intelligence foundation:
 - deterministic meal-plan practicality assessment
 - allergy and dietary restriction blockers
 - grocery and pantry coherence checks
+- deterministic, reviewable substitution candidates for unsafe or stale ingredients
 - schedule, budget, and Training-fit warnings
 - provider-agnostic Cooking prompt/runtime guardrails
 

@@ -23,21 +23,35 @@ This branch adds the validation foundation that substitutions should obey:
 - disliked ingredient warnings
 - pantry expired blockers
 - time/budget warnings
+- deterministic substitution candidates in meal-plan assessment issues and the
+  top-level `assessment.substitutionSuggestions` array
 
-## Required Next Implementation
-
-Add a substitution contract that produces:
+Substitution suggestions include:
 
 - original ingredient
 - reason for substitution
-- safe substitute
+- suggested ingredient
 - cooking role preserved
-- allergy/restriction validation
-- budget/time/equipment impact
+- allergy/restriction/preference validation before emitting a candidate
+- candidate impact
 - confidence
 - review warning when uncertain
+
+The first implementation is intentionally conservative and deterministic. It is
+designed for iOS/portal rendering and review workflows, not automatic recipe
+mutation.
+
+## Required Next Implementation
+
+Add a deeper substitution engine that considers:
+
+- item price and grocery budget
+- equipment constraints
+- cuisine/style preservation
+- texture/flavor role
+- unavailable store items
+- pantry quantity and low-stock status
 
 ## Safety Rule
 
 Cooking must never suggest unsafe allergy substitutions or medical diet treatment. It should flag uncertainty and recommend professional guidance for clinical conditions.
-

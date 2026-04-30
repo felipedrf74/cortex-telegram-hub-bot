@@ -38,11 +38,15 @@ Branch: `feature/cooking-intelligence-upgrade`
 - No deterministic meal-plan quality assessment existed before response/API composition.
 - Cooking preferences and correction handling now use the dedicated `cooking-preferences.ts` adapter over `skill_memories`.
 - Finance budget context is represented in meal-plan read-back through monthly budget headroom. Item-price grocery optimization remains open.
+- Meal-plan assessment now emits deterministic, reviewable substitution
+  candidates for allergy, dietary restriction, disliked ingredient, and expired
+  pantry issues. Advanced price/equipment/cuisine-aware substitution remains
+  open.
 - iOS basic Cooking DTOs now have a rich-state extension branch:
   `feature/cooking-rich-state-ui` at `f4f1053` renders assessment/context/preference
   signals; `cfe5df4` renders pantry freshness states; `e8cdc80` captures
   preference corrections through the backend route; `d7eb9f4` routes assessment
-  issues to review prompts. Substitution suggestions and simulator smoke remain
+  issues to review prompts. Substitution rendering and simulator smoke remain
   open.
 - Portal Cooking preference/pantry management contracts are implemented as
   audited admin/operator routes; browser UI for scoped preference review,

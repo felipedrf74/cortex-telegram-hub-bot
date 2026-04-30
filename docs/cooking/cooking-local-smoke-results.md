@@ -33,6 +33,7 @@ FULL_NEXUS_STATE_DIR=.local/cooking-full-nexus-smoke DATABASE_PATH="$PWD/data/co
 | Pantry | PASS | Persistent tenant-scoped CRUD, expired filtering, shopping-list pantry status, and route/tool tenant scope covered |
 | Preference memory | PASS | User-private preference writes, corrections, tenant isolation, Chat tools, allergy assessment read-through, and app-facing smoke covered |
 | Finance/Secretary planning context | PASS | Finance monthly budget headroom and Secretary agenda pressure are read before meal-plan assessment, with safe degradation |
+| Substitution candidates | PASS | `npx vitest run __tests__/services/cooking-preferences.test.ts __tests__/services/cooking-intelligence.test.ts __tests__/api/cooking-routes.test.ts`: 34 tests passed; allergy/restriction/expired-pantry issues include reviewable substitution candidates |
 | Secretary prep scheduling route | PASS | Existing route regression passed after tenant fallback fix |
 | Deterministic assessment | PASS | Allergy, pantry, grocery, schedule, budget, Training cases covered |
 | Tool tenant scope | PASS | Tool executor forwards authenticated tenant into Cooking writes and preference reads/writes |

@@ -50,6 +50,17 @@ export interface CookingPlanAssessmentInput {
   todayIso?: string;
 }
 
+export interface CookingSubstitutionSuggestion {
+  originalIngredient: string;
+  suggestedIngredient: string;
+  reason: 'allergy' | 'dietary_restriction' | 'disliked_ingredient' | 'expired_pantry';
+  cookingRole: 'protein' | 'carb' | 'fat' | 'vegetable' | 'dairy' | 'sauce' | 'seasoning' | 'unknown';
+  impact: string[];
+  confidence: 'high' | 'medium' | 'low';
+  requiresReview: boolean;
+  source: 'cooking_substitution_rules';
+}
+
 export interface CookingConstraintIssue {
   code: string;
   severity: CookingConstraintSeverity;
@@ -58,6 +69,7 @@ export interface CookingConstraintIssue {
   mealId?: number;
   ingredient?: string;
   source: string;
+  substitutionSuggestions?: CookingSubstitutionSuggestion[];
 }
 
 export interface CookingPlanAssessment {
@@ -85,7 +97,27 @@ export interface CookingPlanAssessment {
     missingTrainingDates: string[];
     hardTrainingDatesWithoutMeals: string[];
   };
+  substitutionSuggestions: CookingSubstitutionSuggestion[];
 }
+
+const SUBSTITUTION_RULES: Array<{
+  terms: string[];
+  role: CookingSubstitutionSuggestion['cookingRole'];
+  alternatives: string[];
+}> = [
+  { terms: ['peanut', 'peanuts', 'peanut sauce', 'peanut butter'], role: 'sauce', alternatives: ['sunflower seed butter', 'roasted chickpeas'] },
+  { terms: ['shellfish', 'shrimp', 'prawn', 'crab', 'lobster'], role: 'protein', alternatives: ['tofu', 'white beans', 'chicken'] },
+  { terms: ['chicken', 'turkey'], role: 'protein', alternatives: ['tofu', 'tempeh', 'chickpeas', 'white beans'] },
+  { terms: ['beef', 'steak', 'pork', 'bacon'], role: 'protein', alternatives: ['lentils', 'black beans', 'tofu', 'turkey'] },
+  { terms: ['fish', 'salmon', 'tuna', 'cod'], role: 'protein', alternatives: ['chickpeas', 'tofu', 'chicken'] },
+  { terms: ['egg', 'eggs'], role: 'protein', alternatives: ['tofu scramble', 'chickpea flour'] },
+  { terms: ['milk', 'cream', 'yogurt'], role: 'dairy', alternatives: ['oat milk', 'coconut yogurt'] },
+  { terms: ['cheese'], role: 'dairy', alternatives: ['nutritional yeast', 'avocado'] },
+  { terms: ['butter'], role: 'fat', alternatives: ['olive oil', 'avocado oil'] },
+  { terms: ['wheat', 'flour', 'bread', 'pasta'], role: 'carb', alternatives: ['rice noodles', 'quinoa', 'corn tortillas'] },
+  { terms: ['rice'], role: 'carb', alternatives: ['quinoa', 'potatoes', 'cauliflower rice'] },
+  { terms: ['mushroom', 'mushrooms'], role: 'vegetable', alternatives: ['zucchini', 'eggplant', 'bell pepper'] },
+];
 
 export function assessCookingMealPlan(input: CookingPlanAssessmentInput): CookingPlanAssessment {
   const issues: CookingConstraintIssue[] = [];
@@ -100,6 +132,7 @@ export function assessCookingMealPlan(input: CookingPlanAssessmentInput): Cookin
   const trainingFit = assessTrainingFit(input.meals, input.trainingContext, issues);
   addRepetitionIssues(issues, input.meals);
   addComplexityIssues(issues, input.meals, recipesById, input.preferences);
+  const substitutionSuggestions = collectSubstitutionSuggestions(issues);
 
   const hasBlocker = issues.some((issue) => issue.severity === 'blocker');
   const hasWarning = issues.some((issue) => issue.severity === 'warning');
@@ -118,6 +151,7 @@ export function assessCookingMealPlan(input: CookingPlanAssessmentInput): Cookin
     scheduleFit,
     budgetFit,
     trainingFit,
+    substitutionSuggestions,
   };
 }
 
@@ -145,49 +179,57 @@ function addRestrictionIssues(
   if (allergies.length === 0 && restrictions.length === 0 && dislikes.length === 0) return;
 
   for (const meal of meals) {
+    const ingredients = ingredientsByMealId.get(meal.id) ?? [];
     const haystack = [
       meal.title,
       meal.notes ?? '',
-      ...(ingredientsByMealId.get(meal.id) ?? []).map((ingredient) => ingredient.name),
+      ...ingredients.map((ingredient) => ingredient.name),
     ].join(' | ');
 
     for (const allergy of allergies) {
       if (containsTerm(haystack, allergy)) {
+        const matchedIngredient = findIngredientContainingTerm(ingredients, allergy) ?? allergy;
         issues.push({
           code: 'ALLERGY_CONFLICT',
           severity: 'blocker',
           message: `Meal includes or references allergy "${allergy}".`,
           date: meal.date,
           mealId: meal.id,
-          ingredient: allergy,
+          ingredient: matchedIngredient,
           source: 'cooking_preference_profile',
+          substitutionSuggestions: buildSubstitutionSuggestions(matchedIngredient, 'allergy', preferences),
         });
       }
     }
 
     for (const restriction of restrictions) {
       if (violatesDietaryRestriction(haystack, restriction)) {
+        const matchedIngredient = findIngredientViolatingRestriction(ingredients, restriction) ?? restriction;
         issues.push({
           code: 'DIETARY_RESTRICTION_CONFLICT',
           severity: 'blocker',
           message: `Meal conflicts with dietary restriction "${restriction}".`,
           date: meal.date,
           mealId: meal.id,
+          ingredient: matchedIngredient,
           source: 'cooking_preference_profile',
+          substitutionSuggestions: buildSubstitutionSuggestions(matchedIngredient, 'dietary_restriction', preferences),
         });
       }
     }
 
     for (const disliked of dislikes) {
       if (containsTerm(haystack, disliked)) {
+        const matchedIngredient = findIngredientContainingTerm(ingredients, disliked) ?? disliked;
         issues.push({
           code: 'DISLIKED_INGREDIENT',
           severity: 'warning',
           message: `Meal uses disliked ingredient "${disliked}".`,
           date: meal.date,
           mealId: meal.id,
-          ingredient: disliked,
+          ingredient: matchedIngredient,
           source: 'cooking_preference_profile',
+          substitutionSuggestions: buildSubstitutionSuggestions(matchedIngredient, 'disliked_ingredient', preferences),
         });
       }
     }
@@ -216,6 +258,7 @@ function assessGroceryCoherence(
         message: `Pantry item "${pantryItem.name}" appears expired and should not be used silently.`,
         ingredient: pantryItem.name,
         source: 'pantry',
+        substitutionSuggestions: buildSubstitutionSuggestions(pantryItem.name, 'expired_pantry'),
       });
       continue;
     }
@@ -411,6 +454,83 @@ function addComplexityIssues(
       source: 'cooking_preference_profile',
     });
   }
+}
+
+function buildSubstitutionSuggestions(
+  originalIngredient: string,
+  reason: CookingSubstitutionSuggestion['reason'],
+  preferences: CookingPreferenceProfile = {},
+): CookingSubstitutionSuggestion[] {
+  const normalizedOriginal = normalizeName(originalIngredient);
+  if (!normalizedOriginal) return [];
+  const rules = SUBSTITUTION_RULES.filter((rule) => rule.terms.some((term) => containsTerm(normalizedOriginal, term)));
+  const sourceRules = rules.length > 0 ? rules : [{ terms: [normalizedOriginal], role: 'unknown' as const, alternatives: [] }];
+  const suggestions: CookingSubstitutionSuggestion[] = [];
+
+  for (const rule of sourceRules) {
+    for (const alternative of rule.alternatives) {
+      if (candidateConflictsWithPreferences(alternative, preferences)) continue;
+      suggestions.push({
+        originalIngredient,
+        suggestedIngredient: alternative,
+        reason,
+        cookingRole: rule.role,
+        impact: buildSubstitutionImpact(reason),
+        confidence: rule.role === 'unknown' ? 'low' : reason === 'allergy' || reason === 'dietary_restriction' ? 'medium' : 'high',
+        requiresReview: reason === 'allergy' || reason === 'dietary_restriction' || reason === 'expired_pantry',
+        source: 'cooking_substitution_rules',
+      });
+      if (suggestions.length >= 3) return suggestions;
+    }
+  }
+
+  return suggestions;
+}
+
+function buildSubstitutionImpact(reason: CookingSubstitutionSuggestion['reason']): string[] {
+  if (reason === 'allergy') return ['allergy_safe_candidate', 'requires_review'];
+  if (reason === 'dietary_restriction') return ['restriction_safe_candidate', 'requires_review'];
+  if (reason === 'expired_pantry') return ['avoids_expired_pantry', 'requires_review'];
+  return ['preference_fit'];
+}
+
+function candidateConflictsWithPreferences(candidate: string, preferences: CookingPreferenceProfile): boolean {
+  for (const allergy of normalizeTerms(preferences.allergies ?? [])) {
+    if (containsTerm(candidate, allergy)) return true;
+  }
+  for (const restriction of normalizeTerms(preferences.dietaryRestrictions ?? [])) {
+    if (violatesDietaryRestriction(candidate, restriction)) return true;
+  }
+  for (const disliked of normalizeTerms(preferences.dislikedIngredients ?? [])) {
+    if (containsTerm(candidate, disliked)) return true;
+  }
+  return false;
+}
+
+function collectSubstitutionSuggestions(issues: CookingConstraintIssue[]): CookingSubstitutionSuggestion[] {
+  const seen = new Set<string>();
+  const suggestions: CookingSubstitutionSuggestion[] = [];
+  for (const issue of issues) {
+    for (const suggestion of issue.substitutionSuggestions ?? []) {
+      const key = [
+        normalizeName(suggestion.originalIngredient),
+        normalizeName(suggestion.suggestedIngredient),
+        suggestion.reason,
+      ].join('|');
+      if (seen.has(key)) continue;
+      seen.add(key);
+      suggestions.push(suggestion);
+    }
+  }
+  return suggestions;
+}
+
+function findIngredientContainingTerm(ingredients: Ingredient[], term: string): string | null {
+  return ingredients.find((ingredient) => containsTerm(ingredient.name, term))?.name ?? null;
+}
+
+function findIngredientViolatingRestriction(ingredients: Ingredient[], restriction: string): string | null {
+  return ingredients.find((ingredient) => violatesDietaryRestriction(ingredient.name, restriction))?.name ?? null;
 }
 
 function collectMealIngredients(meals: MealPlan[], recipesById: Map<number, Recipe>): Map<number, Ingredient[]> {

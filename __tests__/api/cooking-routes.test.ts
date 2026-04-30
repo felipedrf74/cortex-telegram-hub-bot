@@ -327,7 +327,14 @@ describe('Cooking API — shopping list item updates', () => {
       expect.objectContaining({
         code: 'ALLERGY_CONFLICT',
         severity: 'blocker',
-        ingredient: 'peanuts',
+        ingredient: 'Peanuts',
+      }),
+    ]));
+    expect(res.body.data.assessment.substitutionSuggestions).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        originalIngredient: 'Peanuts',
+        suggestedIngredient: 'sunflower seed butter',
+        reason: 'allergy',
       }),
     ]));
     expect(res.body.data.preferences.summary).toContain('Allergies: peanuts');

@@ -8,8 +8,8 @@ None known.
 
 ## P1
 
-- iOS substitution suggestions remain open until backend substitution candidates
-  exist. The rich assessment/warning card landed at `f4f1053`; pantry freshness
+- iOS substitution suggestion rendering remains open now that backend
+  `assessment.substitutionSuggestions` candidates exist. The rich assessment/warning card landed at `f4f1053`; pantry freshness
   rendering is implemented at `cfe5df4`; preference correction capture is
   implemented at `e8cdc80`; assessment review prompts are implemented at
   `d7eb9f4`.

@@ -83,6 +83,35 @@ describe('cooking intelligence assessment', () => {
       expect.objectContaining({ code: 'ALLERGY_CONFLICT', severity: 'blocker' }),
       expect.objectContaining({ code: 'GROCERY_LIST_MISSING_INGREDIENTS' }),
     ]);
+    expect(assessment.substitutionSuggestions).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        originalIngredient: 'Peanut sauce',
+        suggestedIngredient: 'sunflower seed butter',
+        reason: 'allergy',
+        requiresReview: true,
+      }),
+    ]));
+  });
+
+  it('suggests dietary-safe substitutions without violating the active restriction', () => {
+    const assessment = assessCookingMealPlan({
+      meals: [meal({ title: 'Chicken dinner' })],
+      recipesById: new Map([[10, recipe({ ingredients: [{ name: 'Chicken', quantity: '300', unit: 'g' }] })]]),
+      preferences: { dietaryRestrictions: ['vegetarian'] },
+    });
+
+    const restrictionIssue = assessment.issues.find((issue) => issue.code === 'DIETARY_RESTRICTION_CONFLICT');
+    expect(restrictionIssue).toEqual(expect.objectContaining({
+      ingredient: 'Chicken',
+      substitutionSuggestions: expect.arrayContaining([
+        expect.objectContaining({
+          suggestedIngredient: 'tofu',
+          reason: 'dietary_restriction',
+          requiresReview: true,
+        }),
+      ]),
+    }));
+    expect(assessment.substitutionSuggestions.map((suggestion) => suggestion.suggestedIngredient)).not.toContain('turkey');
   });
 
   it('detects missing groceries while respecting available pantry items', () => {
@@ -116,6 +145,14 @@ describe('cooking intelligence assessment', () => {
     expect(assessment.groceryCoherence.expiredPantryNames).toEqual(['Rice']);
     expect(assessment.issues).toEqual(expect.arrayContaining([
       expect.objectContaining({ code: 'EXPIRED_PANTRY_ITEM', severity: 'blocker' }),
+    ]));
+    expect(assessment.substitutionSuggestions).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        originalIngredient: 'Rice',
+        suggestedIngredient: 'quinoa',
+        reason: 'expired_pantry',
+        requiresReview: true,
+      }),
     ]));
   });
 
