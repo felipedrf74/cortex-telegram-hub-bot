@@ -12,9 +12,9 @@ Date: 2026-04-30
 | P1 | Dedicated pantry persistence | Fixed with migration `104`, tenant-scoped service APIs, REST APIs, and Chat tools |
 | P1 | Cooking preference/memory writer and correction flow | Fixed with `cooking-preferences.ts`, REST APIs, Chat tools, and meal-plan assessment read path |
 | P1 | Finance/Secretary runtime context read-back | Fixed with `cooking-planning-context.ts` and route-level assessment integration |
-| P1 | iOS rich warning/substitution/correction rendering | Fixed in focused code/tests: assessment/context/preference rendering landed on iOS branch `feature/cooking-rich-state-ui` at `f4f1053`; pantry freshness UI landed at `cfe5df4`; correction capture landed at `e8cdc80`; assessment review prompts landed at `d7eb9f4`; compact substitution suggestion rendering landed at `7be4b6f`; full simulator smoke remains open |
-| P1 | Portal Cooking preference/pantry console | Fixed for preference/pantry scope: backend admin/operator routes and browser UI are implemented and tested; browser runtime smoke remains open |
-| P1 | Full local runtime smoke with backend, workers/cache, and fixture model | Fixed with attached backend full-smoke on `127.0.0.1:8326`; iOS simulator remains a frontend gate |
+| P1 | iOS rich warning/substitution/correction rendering | Fixed in focused code/tests and local simulator smoke: assessment/context/preference rendering landed on iOS branch `feature/cooking-rich-state-ui` at `f4f1053`; pantry freshness UI landed at `cfe5df4`; correction capture landed at `e8cdc80`; assessment review prompts landed at `d7eb9f4`; compact substitution suggestion rendering landed at `7be4b6f`; simulator smoke passed against local backend `127.0.0.1:8200` |
+| P1 | Portal Cooking preference/pantry console | Fixed for preference/pantry scope: backend admin/operator routes and browser UI are implemented and tested; browser runtime smoke passed against `127.0.0.1:8200/portal` |
+| P1 | Full local runtime smoke with backend, workers/cache, and fixture model | Fixed with attached backend full-smoke on `127.0.0.1:8326`, plus rich iOS/portal smoke on `127.0.0.1:8200` |
 | P2 | Advanced substitution model | Documented foundation, not fully implemented |
 | P2 | Food waste/leftover optimization | Partial assessment only |
 
@@ -30,6 +30,7 @@ Date: 2026-04-30
 
 1. Add route/tool support for meal-plan generation using structured constraints.
 2. Add item-price grocery budget optimizer and Secretary-driven alternative-window proposals.
-3. Add iOS simulator smoke for the rich Cooking payload.
-4. Run portal browser smoke for the Cooking preference/pantry manager.
-5. Add dedicated substitution acceptance/replacement actions if needed beyond compact rendering.
+3. Add dedicated substitution acceptance/replacement actions if needed beyond compact rendering.
+4. Add portal recipe library, meal-plan, and grocery-settings deep editors when
+   the backend mutation contracts exist.
+5. Add real-provider quality sampling under the normal provider-call limits.

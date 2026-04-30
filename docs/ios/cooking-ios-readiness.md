@@ -21,6 +21,14 @@ Additional iOS branch evidence:
 - Focused test:
   `xcodebuild test -project "Nexus Hub.xcodeproj" -scheme "Nexus Hub" -sdk iphonesimulator -destination "platform=iOS Simulator,name=iPhone 17 Pro" "-only-testing:Nexus HubTests/CookingPresentationTests"`:
   PASS, 13 Cooking presentation tests.
+- Local simulator smoke:
+  `xcodebuild -project "Nexus Hub.xcodeproj" -scheme "Nexus Hub" -sdk iphonesimulator build -derivedDataPath /tmp/nexus-cooking-ios-rich-smoke-deriveddata`:
+  PASS. The app was installed on iPhone 17 Pro, launched with
+  `-nexus_allow_local_backend YES`, `-nexus_base_url http://127.0.0.1:8200`,
+  and a local auth import token. The Cooking skill rendered the seeded dinner,
+  blocked assessment signals, allergy/grocery issues, two substitution
+  suggestions, preference summary, and action affordances without app error
+  logs.
 
 ## New Backend Field
 
@@ -63,12 +71,12 @@ rendering raw prompt context.
 ## Gaps
 
 - Render allergy/restriction warning with a stronger distinct visual treatment.
-- Re-run iOS simulator smoke against the local backend bundle with rich Cooking
-  payload fixtures.
 - Add a dedicated in-place substitution acceptance/replacement workflow if
   direct apply actions become part of the Cooking UX.
 - Unknown enum/state fallback tests.
 
 Verdict: PASS WITH CONDITIONS. The primary iOS rich assessment rendering gap is
 closed in code on the iOS branch, including compact substitution suggestions;
-simulator smoke remains a release condition.
+local simulator smoke has passed against the full local backend. Remaining gaps
+are polish/future-action coverage rather than release-blocking representation
+failures.

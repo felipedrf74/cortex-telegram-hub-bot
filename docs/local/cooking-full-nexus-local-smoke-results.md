@@ -24,22 +24,29 @@ PASS WITH CONDITIONS.
 - Portal Cooking management contract tests passed for scoped preferences and pantry routes with audit coverage.
 - Portal Cooking browser UI wiring tests passed for the new preference/pantry
   manager.
+- Portal Cooking browser runtime smoke passed on the local portal at
+  `127.0.0.1:8200`: authenticated with the local portal token, selected
+  user/tenant `2`, loaded scoped Cooking preferences, rendered the allergy
+  preference summary, and reported no Playwright page or console errors.
 - iOS focused rich Cooking DTO/rendering tests passed on branch
   `feature/cooking-rich-state-ui` at `f4f1053`, `cfe5df4`, `e8cdc80`,
   `d7eb9f4`, and `7be4b6f`; 13 Cooking presentation tests passed, including
   compact substitution suggestion rendering.
+- iOS rich Cooking simulator smoke passed against the full local backend on
+  `127.0.0.1:8200`: the app built, installed, authenticated through local auth
+  import, opened the Cooking skill, rendered the seeded dinner, rendered
+  blocked Cooking signals, rendered two backend-provided substitution
+  candidates, exposed preference/schedule actions, and produced no app error
+  logs.
 - No production data or calendars used.
 - No real provider calls used.
 
 ## Not Completed
 
-- Full simulator smoke for rich Cooking warning/pantry/preference/substitution
-  rendering against the local backend was not run.
-- Portal browser runtime smoke for Cooking preference/pantry management was not run.
 - No real provider quality sampling was run.
 
 ## Remaining Conditions
 
-- Keep the release gate at GO WITH CONDITIONS until iOS simulator smoke and
-  portal browser runtime smoke are archived.
 - Do not claim live provider quality from this smoke; it intentionally used fixture/degraded routing.
+- Do not claim production calendar/provider behavior from this smoke; it used
+  local fixtures and no production data.

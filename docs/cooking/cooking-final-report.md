@@ -35,7 +35,15 @@ Verdict: GO WITH CONDITIONS
 - Full local backend product smoke: PASS WITH CONDITIONS on `127.0.0.1:8326`; authenticated API smoke 13/13, Chat tenant smoke 15 pass / 1 partial / 0 fail, cross-skill fixtures PASS, Chat eval/day-to-day fixtures PASS.
 - Live local Cooking planning-context API read-back: PASS; Finance tight-budget context and Secretary cooking-window pressure were returned by `GET /api/v1/cooking/meal-plan`.
 - iOS rich Cooking DTO/rendering slice: PASS on branch `feature/cooking-rich-state-ui` at `f4f1053`, `cfe5df4`, `e8cdc80`, `d7eb9f4`, and `7be4b6f`; 13 focused Cooking presentation tests passed, including rich and legacy meal-plan payload decoding, pantry freshness DTO rendering, direct preference-correction POST body validation, assessment review-prompt routing, and compact substitution suggestion rendering.
+- iOS rich Cooking simulator smoke: PASS on local backend
+  `127.0.0.1:8200` with fixture model mode and local auth import; the
+  simulator rendered the seeded dinner, blocked Cooking signals,
+  backend-provided substitution candidates, preference summary, and action
+  affordances without app error logs.
 - Portal Cooking management: PASS; `npx vitest run __tests__/portal/portal-cooking-routes.test.ts __tests__/portal/portal-cooking-ui.test.ts` passed 10 tests for guarded backend contracts and browser UI wiring.
+- Portal Cooking browser runtime: PASS on `127.0.0.1:8200/portal`; authenticated
+  local portal loaded user/tenant `2`, rendered the scoped preference/pantry
+  manager, one allergy preference, and no browser page/console errors.
 - No production data used.
 - No production calendar used.
 - No deployment performed.
@@ -43,13 +51,16 @@ Verdict: GO WITH CONDITIONS
 
 ## Remaining Conditions Before Production
 
-- Add rich Cooking simulator smoke before claiming full frontend readiness.
-- Run portal browser smoke before claiming full portal runtime readiness.
 - Add a dedicated in-place substitution acceptance/replacement workflow if the
   product wants direct apply actions beyond compact suggestion rendering.
 - Add recipe library, meal-plan, and grocery-settings portal deep editors once
   backend management contracts exist.
+- Preserve the condition that this smoke used fixture routing, not real provider
+  quality sampling.
 
 ## Release Recommendation
 
-Do not deploy as a standalone production release yet. Treat this as a strong backend candidate foundation and continue with the open P1s.
+Do not deploy from this workstream without the normal staging gate. Treat this
+as a strong backend+iOS+portal candidate foundation with no known P0/P1 Cooking
+blockers; remaining work is product polish, deeper portal editors, and live
+provider-quality sampling.

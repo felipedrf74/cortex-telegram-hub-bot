@@ -13,13 +13,12 @@ substitution rendering landed.
 
 ## P2
 
-- Portal Cooking preference/pantry browser manager is implemented and covered by
-  static UI tests; portal browser runtime smoke remains open.
-- Full rich Cooking iOS simulator smoke against a local backend remains open.
 - Dedicated in-place substitution acceptance/replacement workflow remains
   product follow-up; current iOS support is compact reviewable rendering.
 - Recipe library, meal-plan, and grocery-settings portal deep editors remain
   future work until backend management contracts exist.
+- Stronger allergy/restriction visual treatment in iOS remains polish work.
+- Unknown/future Cooking enum fallback tests remain open.
 
 ## Release Gate
 

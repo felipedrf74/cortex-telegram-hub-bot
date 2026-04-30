@@ -45,9 +45,15 @@ The backend portion of this smoke ran on 2026-04-30 with:
 - `NEXUS_LOCAL_ALLOW_MODEL_CALLS=0`
 
 Results are archived in `docs/local/cooking-full-nexus-local-smoke-results.md`.
-The iOS rendering scenario remains open for simulator smoke, but the frontend
-now has DTO and compact card support for assessment warnings, Finance/Secretary
-planning context, preference summaries, pantry freshness labels, preference
-correction capture, and assessment review prompts on
-`feature/cooking-rich-state-ui` at `f4f1053`, `cfe5df4`, `e8cdc80`, and
-`d7eb9f4`.
+
+Rich iOS and portal runtime addendum also ran on 2026-04-30 with:
+
+- `FULL_NEXUS_STATE_DIR=.local/cooking-ios-rich-smoke`
+- `DATABASE_PATH=data/cooking-ios-rich-smoke.db`
+- `PORTAL_PORT=8200`
+- `NEXUS_LOCAL_ALLOW_MODEL_CALLS=0`
+
+The iOS simulator rendered assessment warnings, Finance/Secretary planning
+context, preference summaries, pantry freshness labels, review prompts, and
+compact substitution suggestions on `feature/cooking-rich-state-ui`. The portal
+browser loaded the Cooking preference/pantry manager for user/tenant `2`.

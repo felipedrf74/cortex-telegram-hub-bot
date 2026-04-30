@@ -128,7 +128,7 @@ Migration `103_cooking_intelligence_candidate_version.sql` registers:
 - Version: `1.1.0-rc.1`
 - Status: `candidate`
 - Rollout scope: `global`
-- Quality gate: `pending`
+- Quality gate: `pass_with_conditions`
 - Active database-seeded version remains: `cooking@1.0.0` until explicit promotion.
 
 The candidate record documents the Cooking intelligence foundation:
@@ -141,7 +141,9 @@ The candidate record documents the Cooking intelligence foundation:
 - allergy and dietary restriction blockers
 - grocery and pantry coherence checks
 - deterministic, reviewable substitution candidates for unsafe or stale ingredients
-- iOS compact rendering support for reviewable substitution candidates
+- iOS compact rendering support and local simulator smoke for reviewable
+  substitution candidates
+- Portal preference/pantry management runtime smoke
 - schedule, budget, and Training-fit warnings
 - provider-agnostic Cooking prompt/runtime guardrails
 

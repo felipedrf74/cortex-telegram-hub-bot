@@ -55,7 +55,12 @@ instead of becoming a security boundary itself.
 - `npx tsc --noEmit`: PASS
 - `npx vitest run __tests__/portal/portal-cooking-routes.test.ts`: PASS, 6 tests
 - `npx vitest run __tests__/portal/portal-cooking-ui.test.ts`: PASS, 4 tests
+- Browser runtime smoke: PASS. Headless Playwright loaded
+  `http://127.0.0.1:8200/portal`, authenticated with the local portal token,
+  opened the Cooking section, selected user/tenant `2`, loaded the scoped
+  preference/pantry manager, rendered `1` preference and `1` allergy, and
+  reported no page or console errors.
 
 Verdict: PASS WITH CONDITIONS. Preference and pantry portal management now have
-backend contracts and browser UI coverage; broader Cooking deep-editing remains
-scoped to future backend contracts.
+backend contracts, static browser UI coverage, and local runtime browser smoke;
+broader Cooking deep-editing remains scoped to future backend contracts.

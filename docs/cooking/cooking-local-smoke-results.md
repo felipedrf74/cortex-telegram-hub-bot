@@ -21,6 +21,10 @@ FULL_NEXUS_STATE_DIR=.local/cooking-full-nexus-smoke DATABASE_PATH="$PWD/data/co
 FULL_NEXUS_STATE_DIR=.local/cooking-full-nexus-smoke DATABASE_PATH="$PWD/data/cooking-full-nexus-smoke.db" PORTAL_PORT=8326 NEXUS_LOCAL_ALLOW_MODEL_CALLS=0 scripts/full-nexus-local-engine.sh doctor
 FULL_NEXUS_STATE_DIR=.local/cooking-full-nexus-smoke DATABASE_PATH="$PWD/data/cooking-full-nexus-smoke.db" PORTAL_PORT=8326 NEXUS_LOCAL_ALLOW_MODEL_CALLS=0 scripts/full-nexus-local-engine.sh up
 FULL_NEXUS_STATE_DIR=.local/cooking-full-nexus-smoke DATABASE_PATH="$PWD/data/cooking-full-nexus-smoke.db" PORTAL_PORT=8326 NEXUS_LOCAL_ALLOW_MODEL_CALLS=0 scripts/full-nexus-local-engine.sh full-smoke
+FULL_NEXUS_STATE_DIR=.local/cooking-ios-rich-smoke DATABASE_PATH="$PWD/data/cooking-ios-rich-smoke.db" PORTAL_PORT=8200 NEXUS_LOCAL_ALLOW_MODEL_CALLS=0 scripts/full-nexus-local-engine.sh up
+FULL_NEXUS_STATE_DIR=.local/cooking-ios-rich-smoke DATABASE_PATH="$PWD/data/cooking-ios-rich-smoke.db" PORTAL_PORT=8200 NEXUS_LOCAL_ALLOW_MODEL_CALLS=0 scripts/full-nexus-local-engine.sh auth-token
+FULL_NEXUS_STATE_DIR=.local/cooking-ios-rich-smoke DATABASE_PATH="$PWD/data/cooking-ios-rich-smoke.db" PORTAL_PORT=8200 NEXUS_LOCAL_ALLOW_MODEL_CALLS=0 scripts/full-nexus-local-engine.sh smoke
+xcodebuild -project "Nexus Hub.xcodeproj" -scheme "Nexus Hub" -sdk iphonesimulator build -derivedDataPath /tmp/nexus-cooking-ios-rich-smoke-deriveddata
 ```
 
 ## Results
@@ -42,11 +46,13 @@ FULL_NEXUS_STATE_DIR=.local/cooking-full-nexus-smoke DATABASE_PATH="$PWD/data/co
 | Full local backend engine | PASS WITH CONDITIONS | Backend ran attached on `127.0.0.1:8326`; 13/13 authenticated API smoke checks passed; Chat tenant smoke 15 pass / 1 partial; cross-skill fixtures and Chat eval/day-to-day fixtures passed |
 | Cooking live local planning-context read-back | PASS | Authenticated local API returned Finance `available/tight` context, Secretary available cooking minutes `{ "2026-05-04": 60 }`, `COOKING_TIME_OVER_CAPACITY`, and `FINANCE_BUDGET_TIGHT` |
 | iOS focused rich-state tests | PASS | iOS branch `feature/cooking-rich-state-ui` at `f4f1053`, `cfe5df4`, `e8cdc80`, `d7eb9f4`, and `7be4b6f`; 13 Cooking presentation tests passed, including rich/legacy meal-plan payload decoding, pantry freshness DTO rendering, direct preference-correction POST body validation, assessment review-prompt routing, and compact substitution suggestion rendering |
-| iOS simulator | NOT RUN | Still a separate frontend gate for rich Cooking warning/pantry/preference/substitution states against the local backend |
+| iOS simulator | PASS | Local backend `127.0.0.1:8200`, fixture model mode, local auth import, seeded `Peanut recovery bowl` + `peanuts` allergy. Simulator rendered the Cooking skill, dinner card, blocked signals, allergy/grocery issues, substitution candidates (`Peanuts -> sunflower seed butter`, `Peanuts -> roasted chickpeas`), preference summary, and action buttons with no app error logs. |
 | Portal Cooking contracts | PASS | `npx vitest run __tests__/portal/portal-cooking-routes.test.ts`: 6 tests passed for admin/operator guards, tenant rejection, sanitized preference reads, pantry reads/writes, and audit calls |
 | Portal Cooking UI wiring | PASS | `npx vitest run __tests__/portal/portal-cooking-ui.test.ts`: 4 tests passed for script syntax, nav/section wiring, direct backend route usage, no Chat command path, and delete confirmation |
-| Portal browser runtime | NOT RUN | Browser smoke for the new Cooking preference/pantry manager remains open |
+| Portal browser runtime | PASS | Headless Playwright loaded `127.0.0.1:8200/portal`, authenticated with the local portal token, opened Cooking, loaded user/tenant `2`, rendered scope `User 2 · tenant 2`, `1` preference, `1` allergy, and no page/console errors. |
 
 ## Cleanup
 
-Attached backend was stopped after smoke. Final cleanup removed the local smoke DB/auth artifacts and verified no listener remained on port `8326`.
+The original full local backend on `8326` was stopped and cleaned after smoke.
+The later rich iOS/portal backend on `8200` was stopped and cleaned after the
+simulator/browser pass, with no listener left on the port.
