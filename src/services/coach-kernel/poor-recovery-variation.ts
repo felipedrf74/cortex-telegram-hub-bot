@@ -111,6 +111,8 @@ function ordinalForSport(session: Session, weekSessions: Session[]): number {
 
 function stableVariantIndex(context: PoorRecoveryContext, optionCount: number): number {
   if (optionCount <= 1) return 0;
+  const roleIndex = rolePreferredVariantIndex(context.session);
+  if (roleIndex != null) return Math.min(roleIndex, optionCount - 1);
   const sportOrdinal = Math.max(0, ordinalForSport(context.session, context.weekSessions));
   const seed = context.athlete.currentBlock.weekIndex
     + dayIndex(context.session.dayOfWeek)
@@ -118,6 +120,17 @@ function stableVariantIndex(context: PoorRecoveryContext, optionCount: number): 
     + sportOrdinal
     + context.session.sessionType.length;
   return seed % optionCount;
+}
+
+function rolePreferredVariantIndex(session: Session): number | null {
+  if (session.sport === 'running') {
+    if (session.sessionType === 'threshold_run' || session.sessionType === 'interval_run') return 0;
+    if (session.sessionType === 'long_run') return 1;
+  }
+  if (session.sport === 'cycling' && (session.sessionType === 'threshold_ride' || session.sessionType === 'vo2_ride')) {
+    return 0;
+  }
+  return null;
 }
 
 function recoveryVariantsFor(session: Session, scenario: RecoveryScenario, athlete: AthleteState): RecoveryVariant[] {

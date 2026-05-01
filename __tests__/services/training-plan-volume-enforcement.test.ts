@@ -116,4 +116,26 @@ describe('training-plan-volume-enforcement', () => {
       .map((session) => session.dayOfWeek);
     expect(new Set(strengthDays).size).toBe(strengthDays.length);
   });
+
+  it('does not fill a remaining double-session day with two strength sessions', () => {
+    const result = enforceRequestedTrainingPlanVolume(
+      { sport: 'running', weeks: [{ weekNumber: 1, sessions: [] }] },
+      {
+        sessionsPerWeek: 3,
+        strengthSessionsPerWeek: 2,
+        preferredCardioTime: '07:00',
+        preferredStrengthTime: '12:00',
+        startDate: '2026-05-03',
+      },
+    );
+
+    const sessions = result.weeks?.[0]?.sessions ?? [];
+    const sunday = sessions.filter((session) => session.dayOfWeek === 'Sunday');
+    const sundayStrength = sunday.filter((session) => session.sessionType === 'gym');
+
+    expect(sunday).toHaveLength(2);
+    expect(sundayStrength).toHaveLength(1);
+    expect(sunday.some((session) => session.sessionType === 'run')).toBe(true);
+    expect(sundayStrength[0].preferredStartTime).toBe('12:00');
+  });
 });

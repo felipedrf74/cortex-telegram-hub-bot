@@ -239,6 +239,8 @@ function chooseInsertionDay(
     if (day) return day;
   }
 
+  if (kind === 'strength') return null;
+
   return candidates.find((candidate) =>
     sessions.filter((session) => normalizeDay(session.dayOfWeek) === candidate).length < 2
   ) ?? null;
