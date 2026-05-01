@@ -36,9 +36,9 @@ Highest remaining risk: not a code P0/P1. The highest remaining release risk is 
 
 - Path: `/Users/felipedominguez/Desktop/Custom Connectors/Cortex/cortex-telegram-hub-bot`
 - Branch: `feature/cooking-intelligence-upgrade`
-- Commit: `c01cace feat(cooking): add portal substitution acceptance`
+- Commit: `2d887f8 docs(cooking): record ios future-state fallback`
 - Dirty state at start of this pass: clean.
-- Recent commits: `c8dca78`, `98f6860`, `cf3d7af`, `32286ac`, `aead9a6`.
+- Recent commits: `2d887f8`, `c01cace`, `7d52168`, `46d74a1`, `8229fe9`.
 
 ### Cooking iOS
 
@@ -62,7 +62,7 @@ Highest remaining risk: not a code P0/P1. The highest remaining release risk is 
 | --- | --- | --- | --- |
 | Environment cleanup | `xcrun simctl shutdown all`; `osascript ... quit`; `lsof` checks for `8200`/`8326` | PASS | Avoided simulator-clone and stale-service contamination. |
 | Cooking backend typecheck | `NEXUS_LOCAL_ALLOW_MODEL_CALLS=0 npx tsc --noEmit` | PASS | Confirms current backend branch compiles. |
-| Cooking focused tests | `NEXUS_LOCAL_ALLOW_MODEL_CALLS=0 npx vitest run __tests__/services/cooking-preferences.test.ts __tests__/services/cooking-intelligence.test.ts __tests__/api/cooking-routes.test.ts __tests__/portal/portal-cooking-routes.test.ts __tests__/portal/portal-cooking-ui.test.ts __tests__/services/provider-registry-fixture-mode.test.ts` | PASS, 6 files / 61 tests | Confirms current Cooking route, tenant, substitution, portal, and fixture-provider safety. |
+| Cooking focused tests | `NEXUS_LOCAL_ALLOW_MODEL_CALLS=0 npx vitest run __tests__/services/cooking-preferences.test.ts __tests__/services/cooking-intelligence.test.ts __tests__/api/cooking-routes.test.ts __tests__/portal/portal-cooking-routes.test.ts __tests__/portal/portal-cooking-ui.test.ts __tests__/services/provider-registry-fixture-mode.test.ts` | PASS, 6 files / 69 tests | Confirms current Cooking route, tenant, substitution, portal, and fixture-provider safety. |
 | Portal substitution acceptance tests | `NEXUS_LOCAL_ALLOW_MODEL_CALLS=0 npx vitest run __tests__/portal/portal-cooking-ui.test.ts __tests__/portal/portal-cooking-routes.test.ts __tests__/api/cooking-routes.test.ts` | PASS, 3 files / 52 tests | Confirms the new portal operator panel calls guarded backend contracts and rejects cross-tenant/invalid substitution mutations before service access. |
 | Cooking full backend verify | `NEXUS_LOCAL_ALLOW_MODEL_CALLS=0 npm run verify` | PASS, 429 files / 6434 tests | Strong current full-suite evidence after the portal substitution-acceptance pass. |
 | Training iOS build-for-testing | `xcodebuild build-for-testing ... -destination 'id=A0B13967-B5DE-4E6F-897D-F1E409093F94' -parallel-testing-enabled NO -maximum-concurrent-test-simulator-destinations 1` | PASS | Confirms branch builds with the UI test target. |

@@ -16,10 +16,10 @@ Verdict: `READY_TO_MERGE` with normal review/CI conditions.
 
 Evidence:
 
-- Backend branch `feature/cooking-intelligence-upgrade` at `c8dca78`.
+- Backend branch `feature/cooking-intelligence-upgrade` at `2d887f8`.
 - iOS Cooking branch `feature/cooking-rich-state-ui` at `8a5bdad`.
 - `NEXUS_LOCAL_ALLOW_MODEL_CALLS=0 npx tsc --noEmit` passed.
-- Focused Cooking/provider/portal tests passed: 6 files / 61 tests.
+- Focused Cooking/provider/portal tests passed: 6 files / 69 tests.
 - Full backend verify passed in the current pass: 429 files / 6434 tests.
 - Portal browser smoke exists and passed against local backend, including forged tenant fail-closed state and stale-data clearing.
 - Hardened portal auth browser smoke passed with `PORTAL_REQUIRE_SESSION_AUTH=true`, `PORTAL_ALLOW_LOCAL_BYPASS=false`, and a signed `ps_` admin session; invalid `ps_` login returned `401` and kept the login overlay visible before the valid session loaded scoped Cooking data.

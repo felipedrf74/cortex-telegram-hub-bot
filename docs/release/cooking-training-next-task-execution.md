@@ -11,7 +11,7 @@ Reason: Current validation found no safe P0/P1 code issue in Cooking or Training
 ## Reproduction / Evidence
 
 - `docs/cooking/cooking-final-report.md` still said full `npm run verify` passed `427 files / 6398 tests`.
-- Current branch evidence from commit `c8dca78` and this pass says full backend verify passed `429 files / 6434 tests`.
+- Current branch evidence from commit `2d887f8` and this pass says full backend verify passed `429 files / 6434 tests`.
 - The same file described the portal runtime smoke before the forged-tenant stale-data clear was added.
 - The requested consolidated release docs under `docs/release/cooking-training-*` did not exist.
 
@@ -32,11 +32,11 @@ No product code changed in this task.
 | Check | Result |
 | --- | --- |
 | Cooking backend typecheck | PASS |
-| Cooking focused backend tests | PASS, 6 files / 61 tests |
+| Cooking focused backend tests | PASS, 6 files / 69 tests |
 | Cooking full backend verify | PASS in current `NEXUS_LOCAL_ALLOW_MODEL_CALLS=0 npm run verify`, 429 files / 6434 tests |
 | Training iOS build-for-testing | PASS |
 | Training focused iOS tests | PASS, 59 unit + 4 UI tests |
-| Cooking iOS focused tests | PASS, 13 tests |
+| Cooking iOS focused tests | PASS, 15 tests |
 
 ## Validation After Docs
 
