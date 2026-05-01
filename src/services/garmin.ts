@@ -1104,6 +1104,7 @@ async function serializedAuthRecovery(): Promise<boolean> {
 
 /** Data endpoints where 404 means "no data" (not an auth failure) */
 const DATA_ENDPOINTS_404_OK = [
+  '/usersummary-service/',
   '/wellness-service/',
   '/workout-service/schedule/',
   '/workout-service/api/trainingplan/',

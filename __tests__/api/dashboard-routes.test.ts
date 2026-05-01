@@ -167,6 +167,28 @@ async function dispatch(userId = 4, headers: Record<string, string> = {}, path =
   return res;
 }
 
+async function dispatchUntilResponse(userId = 4, headers: Record<string, string> = {}, path = '/'): Promise<MockRes> {
+  const router = dashboardRoutes();
+  const req = mockReq(userId, path, headers);
+  let res!: MockRes;
+
+  await new Promise<void>((resolve, reject) => {
+    res = {
+      ...mockRes(),
+      json(body: any) { res.body = body; resolve(); return res; },
+      end() { resolve(); return res; },
+    };
+    (router as any).handle(req, res, (err: any) => {
+      if (err) {
+        reject(err);
+        return;
+      }
+    });
+  });
+
+  return res;
+}
+
 function todayAt(hour: number, minute = 0): string {
   const parts = new Intl.DateTimeFormat('en-US', {
     timeZone: 'Europe/Lisbon',
@@ -497,6 +519,23 @@ describe('Dashboard API route', () => {
     expect(res.body.data.coordinatedDecision.protectedLater).toBeTruthy();
     expect(res.body.data.skillQueue[0]?.domain).toBe('training');
     expect(res.body.data.skillQueue[0]?.whyNow).toBeTruthy();
+  });
+
+  it('returns a partial home contract instead of waiting forever on slow providers', async () => {
+    vi.useFakeTimers();
+    mockGetAllPendingTasks.mockImplementation(() => new Promise(() => {}));
+    mockComposeDailyBrief.mockImplementation(() => new Promise(() => {}));
+
+    const pending = dispatchUntilResponse(4, {}, '/home');
+
+    await vi.advanceTimersByTimeAsync(3100);
+    const res = await pending;
+    vi.useRealTimers();
+
+    expect(res.statusCode).toBe(200);
+    expect(res.body.ok).toBe(true);
+    expect(res.body.data.meta.reasonCodes).toContain('TASKS_UNAVAILABLE');
+    expect(res.body.data.meta.reasonCodes).toContain('DAILY_BRIEF_UNAVAILABLE');
   });
 
   it('returns a client-safe error when the home dashboard aggregation throws unexpectedly', async () => {

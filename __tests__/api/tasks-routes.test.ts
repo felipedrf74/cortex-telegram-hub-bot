@@ -426,6 +426,24 @@ describe('Task routes sync provider metadata', () => {
     ]);
   });
 
+  it('returns task lists promptly when task count providers hang', async () => {
+    vi.useFakeTimers();
+    providerApi.getAllPendingTasks.mockImplementation(() => new Promise(() => {}));
+    providerApi.getTasks.mockImplementation(() => new Promise(() => {}));
+
+    const pending = dispatch('GET', '/lists');
+    await vi.advanceTimersByTimeAsync(2600);
+    const res = await pending;
+    vi.useRealTimers();
+
+    expect(res.statusCode).toBe(200);
+    expect(res.body.ok).toBe(true);
+    expect(res.body.data.lists).toEqual([
+      { id: 'list-1', name: 'Tasks', taskCount: 0 },
+      { id: 'list-2', name: 'Work', taskCount: 0 },
+    ]);
+  });
+
   it('returns full task detail with checklist items for the task drill-down flow', async () => {
     const res = await dispatch('GET', '/list-1/task-1', {
       params: { listId: 'list-1', taskId: 'task-1' },

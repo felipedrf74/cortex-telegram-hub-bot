@@ -24,12 +24,29 @@ const TASKS_CACHE_TTL = 120;  // 2 min for task items (change more often)
 // instant responses; the next request gets the refreshed data.
 const LISTS_SWR_STALE = 1800;  // 30 min stale grace for lists
 const TASKS_SWR_STALE = 600;   // 10 min stale grace for individual lists
+const TASK_LIST_COUNT_SNAPSHOT_TIMEOUT_MS = readPositiveIntEnv('TASK_LIST_COUNT_SNAPSHOT_TIMEOUT_MS', 1500);
+const TASK_LIST_COUNT_PER_LIST_TIMEOUT_MS = readPositiveIntEnv('TASK_LIST_COUNT_PER_LIST_TIMEOUT_MS', 1000);
 
 // In-flight refresh tracker — prevents 50 concurrent SWR requests from
 // triggering 50 background refreshes for the same key. Each key can have
 // at most one in-flight background fetch at a time.
 const swrInFlight = new Set<string>();
 const completeTaskInFlight = new Map<string, Promise<{ task: any; alreadyCompleted: boolean }>>();
+
+function readPositiveIntEnv(name: string, fallback: number): number {
+  const parsed = Number.parseInt(process.env[name] || '', 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function withTaskTimeout<T>(promise: Promise<T>, timeoutMs: number, fallback: T): Promise<T> {
+  let timer: NodeJS.Timeout | undefined;
+  const timeout = new Promise<T>((resolve) => {
+    timer = setTimeout(() => resolve(fallback), timeoutMs);
+  });
+  return Promise.race([promise, timeout]).finally(() => {
+    if (timer) clearTimeout(timer);
+  });
+}
 
 export function dateKeyInAppTimezone(
   value: Date | string,
@@ -835,7 +852,11 @@ function formatTaskLists(
 }
 
 async function buildTaskCountMap(todo: any, lists: any[]): Promise<Map<string, number>> {
-  const fromPendingSnapshot = await readTaskCountsFromPendingSnapshot(todo);
+  const fromPendingSnapshot = await withTaskTimeout(
+    readTaskCountsFromPendingSnapshot(todo),
+    TASK_LIST_COUNT_SNAPSHOT_TIMEOUT_MS,
+    null,
+  );
   if (fromPendingSnapshot) return fromPendingSnapshot;
 
   const countByListId = new Map<string, number>();
@@ -843,7 +864,11 @@ async function buildTaskCountMap(todo: any, lists: any[]): Promise<Map<string, n
     lists.map(async (list: any) => {
       const listId = String(list.id || '');
       const listName = list.displayName || list.name || 'Tasks';
-      const tasksResult = await todo.getTasks(listId, listName, { status: 'notStarted' });
+      const tasksResult = await withTaskTimeout(
+        todo.getTasks(listId, listName, { status: 'notStarted' }),
+        TASK_LIST_COUNT_PER_LIST_TIMEOUT_MS,
+        { success: false, data: [] },
+      );
       const tasks = Array.isArray(tasksResult?.data) ? tasksResult.data : [];
       return { listId, count: tasks.length };
     }),

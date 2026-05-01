@@ -33,7 +33,27 @@ const DASHBOARD_CACHE_TTL = 60;
 const DASHBOARD_SWR_STALE = 300;
 const DASHBOARD_HOME_CACHE_TTL = 60;
 const DASHBOARD_HOME_SWR_STALE = 300;
+const DASHBOARD_SECTION_TIMEOUT_MS = readPositiveIntEnv('DASHBOARD_SECTION_TIMEOUT_MS', 3000);
+const DASHBOARD_HOME_BRIEF_TIMEOUT_MS = readPositiveIntEnv('DASHBOARD_HOME_BRIEF_TIMEOUT_MS', 2500);
 const swrInFlight = new Set<string>();
+
+function readPositiveIntEnv(name: string, fallback: number): number {
+  const parsed = Number.parseInt(process.env[name] || '', 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function withDashboardTimeout<T>(promise: Promise<T>, timeoutMs: number, label: string): Promise<T> {
+  let timer: NodeJS.Timeout | undefined;
+  const timeout = new Promise<T>((_, reject) => {
+    timer = setTimeout(() => {
+      reject(new Error(`dashboard_${label}_timeout_${timeoutMs}ms`));
+    }, timeoutMs);
+  });
+
+  return Promise.race([promise, timeout]).finally(() => {
+    if (timer) clearTimeout(timer);
+  });
+}
 
 function ensureValidDashboardRouteScope(
   res: Response,
@@ -241,10 +261,10 @@ function localizedWeekday(date: Date, language: Lang): string {
 
 async function buildDashboardPayload(userId: number, language: Lang) {
   const [calendarResult, tasksResult, trainingResult, contentResult] = await Promise.allSettled([
-    fetchCalendar(userId),
-    fetchTasks(userId),
-    fetchTraining(userId),
-    fetchContent(userId),
+    withDashboardTimeout(fetchCalendar(userId), DASHBOARD_SECTION_TIMEOUT_MS, 'calendar'),
+    withDashboardTimeout(fetchTasks(userId), DASHBOARD_SECTION_TIMEOUT_MS, 'tasks'),
+    withDashboardTimeout(fetchTraining(userId), DASHBOARD_SECTION_TIMEOUT_MS, 'training'),
+    withDashboardTimeout(fetchContent(userId), DASHBOARD_SECTION_TIMEOUT_MS, 'content'),
   ]);
 
   const calendar = calendarResult.status === 'fulfilled'
@@ -330,7 +350,7 @@ async function buildDashboardPayload(userId: number, language: Lang) {
 async function buildDashboardHomePayload(userId: number, language: Lang) {
   const [dashboardResult, briefResult] = await Promise.allSettled([
     buildDashboardPayload(userId, language),
-    composeDailyBrief({ userId, language }),
+    withDashboardTimeout(composeDailyBrief({ userId, language }), DASHBOARD_HOME_BRIEF_TIMEOUT_MS, 'daily_brief'),
   ]);
 
   if (dashboardResult.status !== 'fulfilled') {
