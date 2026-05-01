@@ -3,9 +3,11 @@
 import type { Express, Request, Response } from 'express';
 import { requirePortalAdminToken, getPortalAuthContext } from '../api/secret-guards';
 import {
+  applyMealPlanSubstitution,
   deletePantryItem,
   getPantryItems,
   upsertPantryItem,
+  type CookingSubstitutionReason,
   type PantryItem,
 } from '../services/cooking-chef';
 import {
@@ -35,6 +37,13 @@ function normalizeOptionalString(value: unknown): string | undefined {
   if (typeof value !== 'string') return undefined;
   const trimmed = value.trim();
   return trimmed.length ? trimmed : undefined;
+}
+
+function isCookingSubstitutionReason(value: unknown): value is CookingSubstitutionReason {
+  return value === 'allergy'
+    || value === 'dietary_restriction'
+    || value === 'disliked_ingredient'
+    || value === 'expired_pantry';
 }
 
 function resolveTenantId(req: Request, userId: number): number | null {
@@ -312,6 +321,85 @@ export function registerPortalCookingRoutes(app: Express): void {
         res.json({ ok: true, tenantId, deleted: true, itemId });
       } catch (err) {
         sendPortalInternalError(res, err, 'Failed to delete Cooking pantry item', 'Portal: cooking pantry delete failed');
+      }
+    },
+  );
+
+  app.post(
+    '/api/users/:userId/cooking/meal-plan/substitutions/apply',
+    requirePortalAdminToken,
+    requireOperatorTargetUser('userId'),
+    (req: Request, res: Response) => {
+      try {
+        const userId = parsePositiveInteger(req.params.userId);
+        if (!userId) {
+          sendBadRequest(res, 'INVALID_USER_ID', 'invalid userId');
+          return;
+        }
+        const tenantId = resolveTenantId(req, userId);
+        if (!tenantId) {
+          sendForbiddenTenant(res);
+          return;
+        }
+
+        const date = normalizeOptionalString(req.body?.date);
+        const mealType = normalizeOptionalString(req.body?.mealType);
+        const originalIngredient = normalizeOptionalString(req.body?.originalIngredient);
+        const suggestedIngredient = normalizeOptionalString(req.body?.suggestedIngredient);
+        const reason = req.body?.reason;
+        const updateShoppingList = req.body?.updateShoppingList;
+        if (!date || !mealType || !originalIngredient || !suggestedIngredient) {
+          sendBadRequest(res, 'INVALID_COOKING_SUBSTITUTION', 'date, mealType, originalIngredient, and suggestedIngredient are required');
+          return;
+        }
+        if (!isCookingSubstitutionReason(reason)) {
+          sendBadRequest(res, 'INVALID_COOKING_SUBSTITUTION_REASON', 'valid substitution reason required');
+          return;
+        }
+        if (updateShoppingList !== undefined && typeof updateShoppingList !== 'boolean') {
+          sendBadRequest(res, 'INVALID_COOKING_SUBSTITUTION_SHOPPING_LIST', 'updateShoppingList must be a boolean when provided');
+          return;
+        }
+
+        const result = applyMealPlanSubstitution(userId, {
+          date,
+          mealType,
+          originalIngredient,
+          suggestedIngredient,
+          reason,
+          updateShoppingList,
+        }, tenantId);
+        if (!result.applied) {
+          const status = result.reason === 'meal_not_found' || result.reason === 'recipe_not_found' ? 404 : 400;
+          res.status(status).json({
+            ok: false,
+            error: {
+              code: status === 404 ? 'COOKING_SUBSTITUTION_TARGET_NOT_FOUND' : 'COOKING_SUBSTITUTION_NOT_APPLIED',
+              message: result.reason ?? 'substitution was not applied',
+            },
+            result,
+          });
+          return;
+        }
+
+        invalidateCookingDerivedCaches(userId);
+        logPortalAdminMutation(req, userId, 'portal.cooking.substitution.apply', {
+          tenantId,
+          date,
+          mealType,
+          reason,
+          affectedMealId: result.substitution.affectedMealId,
+          affectedRecipeId: result.substitution.affectedRecipeId,
+          shoppingListUpdated: result.substitution.shoppingListUpdated,
+        });
+        res.status(201).json({ ok: true, tenantId, result });
+      } catch (err) {
+        const message = err instanceof Error ? err.message : '';
+        if (message.startsWith('COOKING_SUBSTITUTION')) {
+          sendBadRequest(res, 'INVALID_COOKING_SUBSTITUTION', message);
+          return;
+        }
+        sendPortalInternalError(res, err, 'Failed to apply Cooking substitution', 'Portal: cooking substitution apply failed');
       }
     },
   );

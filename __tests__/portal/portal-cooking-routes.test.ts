@@ -10,6 +10,7 @@ const hoisted = vi.hoisted(() => {
     buildCookingPreferenceReadModel: vi.fn(),
     isCookingPreferenceKind: vi.fn(),
     setCookingPreferenceMemory: vi.fn(),
+    applyMealPlanSubstitution: vi.fn(),
     getPantryItems: vi.fn(),
     upsertPantryItem: vi.fn(),
     deletePantryItem: vi.fn(),
@@ -37,6 +38,7 @@ vi.mock('../../src/services/cooking-preferences', () => ({
 }));
 
 vi.mock('../../src/services/cooking-chef', () => ({
+  applyMealPlanSubstitution: (...args: unknown[]) => hoisted.applyMealPlanSubstitution(...args),
   getPantryItems: (...args: unknown[]) => hoisted.getPantryItems(...args),
   upsertPantryItem: (...args: unknown[]) => hoisted.upsertPantryItem(...args),
   deletePantryItem: (...args: unknown[]) => hoisted.deletePantryItem(...args),
@@ -150,6 +152,22 @@ const pantryItem = {
   updated_at: '2026-04-30T18:00:00Z',
 };
 
+const substitutionResult = {
+  applied: true,
+  meal: { id: 11, date: '2026-05-04', meal_type: 'dinner', title: 'Sunflower noodle bowl' },
+  recipe: { id: 17, title: 'Sunflower noodle bowl' },
+  shoppingList: { id: 23, week_start: '2026-05-04', items: [] },
+  substitution: {
+    originalIngredient: 'peanuts',
+    suggestedIngredient: 'sunflower seeds',
+    reason: 'allergy',
+    shoppingListUpdated: true,
+    appliedAt: '2026-05-01T10:00:00Z',
+    affectedMealId: 11,
+    affectedRecipeId: 17,
+  },
+};
+
 describe('portal cooking routes', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -166,6 +184,7 @@ describe('portal cooking routes', () => {
     hoisted.getPantryItems.mockReturnValue([pantryItem]);
     hoisted.upsertPantryItem.mockReturnValue(pantryItem);
     hoisted.deletePantryItem.mockReturnValue(true);
+    hoisted.applyMealPlanSubstitution.mockReturnValue(substitutionResult);
   });
 
   it('registers Cooking portal routes behind admin and target-user guards', () => {
@@ -178,6 +197,7 @@ describe('portal cooking routes', () => {
     expect(app.get).toHaveBeenCalledWith('/api/users/:userId/cooking/pantry', hoisted.requirePortalAdminToken, hoisted.targetUserGuard, expect.any(Function));
     expect(app.post).toHaveBeenCalledWith('/api/users/:userId/cooking/pantry', hoisted.requirePortalAdminToken, hoisted.targetUserGuard, expect.any(Function));
     expect(app.delete).toHaveBeenCalledWith('/api/users/:userId/cooking/pantry/:itemId', hoisted.requirePortalAdminToken, hoisted.targetUserGuard, expect.any(Function));
+    expect(app.post).toHaveBeenCalledWith('/api/users/:userId/cooking/meal-plan/substitutions/apply', hoisted.requirePortalAdminToken, hoisted.targetUserGuard, expect.any(Function));
     expect(routes.get('GET /api/users/:userId/cooking/preferences')?.[0]).toBe(hoisted.requirePortalAdminToken);
     expect(routes.get('GET /api/users/:userId/cooking/preferences')?.[1]).toBe(hoisted.targetUserGuard);
   });
@@ -316,5 +336,133 @@ describe('portal cooking routes', () => {
     }));
     expect(upsertResponse.payload.statusCode).toBe(201);
     expect(deleteResponse.payload.body).toEqual({ ok: true, tenantId: 42, deleted: true, itemId: 7 });
+  });
+
+  it('applies reviewed substitutions through the tenant-scoped Cooking service', () => {
+    const req = {
+      params: { userId: '42' },
+      body: {
+        tenantId: 42,
+        date: '2026-05-04',
+        mealType: 'dinner',
+        originalIngredient: 'peanuts',
+        suggestedIngredient: 'sunflower seeds',
+        reason: 'allergy',
+        updateShoppingList: true,
+      },
+    };
+    const { app, routes } = makeApp();
+    registerPortalCookingRoutes(app as any);
+    const handler = routes.get('POST /api/users/:userId/cooking/meal-plan/substitutions/apply')?.[2]!;
+    const { payload, res } = makeResponse();
+
+    handler(req, res);
+
+    expect(hoisted.applyMealPlanSubstitution).toHaveBeenCalledWith(42, {
+      date: '2026-05-04',
+      mealType: 'dinner',
+      originalIngredient: 'peanuts',
+      suggestedIngredient: 'sunflower seeds',
+      reason: 'allergy',
+      updateShoppingList: true,
+    }, 42);
+    expect(hoisted.invalidateCookingDerivedCaches).toHaveBeenCalledWith(42);
+    expect(hoisted.logPortalAdminMutation).toHaveBeenCalledWith(req, 42, 'portal.cooking.substitution.apply', expect.objectContaining({
+      tenantId: 42,
+      date: '2026-05-04',
+      mealType: 'dinner',
+      reason: 'allergy',
+      affectedMealId: 11,
+      affectedRecipeId: 17,
+      shoppingListUpdated: true,
+    }));
+    expect(payload.statusCode).toBe(201);
+    expect(payload.body).toEqual({ ok: true, tenantId: 42, result: substitutionResult });
+  });
+
+  it('rejects cross-tenant substitution apply before service access', () => {
+    const { app, routes } = makeApp();
+    registerPortalCookingRoutes(app as any);
+    const handler = routes.get('POST /api/users/:userId/cooking/meal-plan/substitutions/apply')?.[2]!;
+    const { payload, res } = makeResponse();
+
+    handler({
+      params: { userId: '42' },
+      body: {
+        tenantId: 99,
+        date: '2026-05-04',
+        mealType: 'dinner',
+        originalIngredient: 'peanuts',
+        suggestedIngredient: 'sunflower seeds',
+        reason: 'allergy',
+      },
+    }, res);
+
+    expect(payload.statusCode).toBe(403);
+    expect(hoisted.applyMealPlanSubstitution).not.toHaveBeenCalled();
+    expect(hoisted.invalidateCookingDerivedCaches).not.toHaveBeenCalled();
+    expect(hoisted.logPortalAdminMutation).not.toHaveBeenCalledWith(expect.anything(), expect.anything(), 'portal.cooking.substitution.apply', expect.anything());
+  });
+
+  it('rejects invalid substitution reasons before mutation', () => {
+    const { app, routes } = makeApp();
+    registerPortalCookingRoutes(app as any);
+    const handler = routes.get('POST /api/users/:userId/cooking/meal-plan/substitutions/apply')?.[2]!;
+    const { payload, res } = makeResponse();
+
+    handler({
+      params: { userId: '42' },
+      body: {
+        tenantId: 42,
+        date: '2026-05-04',
+        mealType: 'dinner',
+        originalIngredient: 'peanuts',
+        suggestedIngredient: 'sunflower seeds',
+        reason: 'because_operator_said_so',
+      },
+    }, res);
+
+    expect(payload.statusCode).toBe(400);
+    expect(payload.body).toEqual({
+      ok: false,
+      error: {
+        code: 'INVALID_COOKING_SUBSTITUTION_REASON',
+        message: 'valid substitution reason required',
+      },
+    });
+    expect(hoisted.applyMealPlanSubstitution).not.toHaveBeenCalled();
+  });
+
+  it('maps service-level substitution validation failures to bad request', () => {
+    hoisted.applyMealPlanSubstitution.mockImplementationOnce(() => {
+      throw new Error('COOKING_SUBSTITUTION_NOOP: suggestedIngredient must differ from originalIngredient');
+    });
+    const { app, routes } = makeApp();
+    registerPortalCookingRoutes(app as any);
+    const handler = routes.get('POST /api/users/:userId/cooking/meal-plan/substitutions/apply')?.[2]!;
+    const { payload, res } = makeResponse();
+
+    handler({
+      params: { userId: '42' },
+      body: {
+        tenantId: 42,
+        date: '2026-05-04',
+        mealType: 'dinner',
+        originalIngredient: 'peanuts',
+        suggestedIngredient: 'peanut',
+        reason: 'allergy',
+      },
+    }, res);
+
+    expect(payload.statusCode).toBe(400);
+    expect(payload.body).toEqual({
+      ok: false,
+      error: {
+        code: 'INVALID_COOKING_SUBSTITUTION',
+        message: 'COOKING_SUBSTITUTION_NOOP: suggestedIngredient must differ from originalIngredient',
+      },
+    });
+    expect(hoisted.invalidateCookingDerivedCaches).not.toHaveBeenCalled();
+    expect(hoisted.sendPortalInternalError).not.toHaveBeenCalled();
   });
 });

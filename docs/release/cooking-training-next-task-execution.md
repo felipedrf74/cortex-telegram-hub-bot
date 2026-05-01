@@ -11,7 +11,7 @@ Reason: Current validation found no safe P0/P1 code issue in Cooking or Training
 ## Reproduction / Evidence
 
 - `docs/cooking/cooking-final-report.md` still said full `npm run verify` passed `427 files / 6398 tests`.
-- Current branch evidence from commit `c8dca78` and this pass says full backend verify passed `429 files / 6426 tests`.
+- Current branch evidence from commit `c8dca78` and this pass says full backend verify passed `429 files / 6434 tests`.
 - The same file described the portal runtime smoke before the forged-tenant stale-data clear was added.
 - The requested consolidated release docs under `docs/release/cooking-training-*` did not exist.
 
@@ -33,7 +33,7 @@ No product code changed in this task.
 | --- | --- |
 | Cooking backend typecheck | PASS |
 | Cooking focused backend tests | PASS, 6 files / 61 tests |
-| Cooking full backend verify | PASS in pre-commit for `c8dca78`, 429 files / 6426 tests |
+| Cooking full backend verify | PASS in current `NEXUS_LOCAL_ALLOW_MODEL_CALLS=0 npm run verify`, 429 files / 6434 tests |
 | Training iOS build-for-testing | PASS |
 | Training focused iOS tests | PASS, 59 unit + 4 UI tests |
 | Cooking iOS focused tests | PASS, 13 tests |
@@ -144,3 +144,46 @@ NEXUS_LOCAL_ALLOW_MODEL_CALLS=0 npx tsc --noEmit
 Result: PASS. Focused Cooking route/intelligence tests passed 2 files / 45
 tests, including accepted substitution application, cross-tenant denial, and
 invalid reason rejection. Typecheck passed.
+
+## Follow-Up Execution: Portal Substitution Acceptance Panel
+
+Selected task: partial closure of `CT-P2-002` for the substitution-acceptance
+portal affordance.
+
+Reason: after the backend substitution mutation contract landed, the next safe
+portal/frontend release task was to give operators a backend-authorized way to
+apply an already-reviewed safe substitution without using Chat or a manual API
+client. The broader recipe-library, meal-plan, and grocery-settings deep editors
+remain separate product scope.
+
+Implementation:
+
+- Added `POST /api/users/:userId/cooking/meal-plan/substitutions/apply` to the
+  portal Cooking admin routes.
+- The route is guarded by the portal admin token middleware and
+  `requireOperatorTargetUser('userId')`.
+- It uses the existing fail-closed portal tenant rule, so body-side
+  `tenantId` cannot elevate the operator into another tenant.
+- It validates required meal/substitution fields and typed reasons before
+  mutation.
+- It calls the tenant-scoped `applyMealPlanSubstitution` service, invalidates
+  derived Cooking caches only after success, and records a portal admin mutation
+  audit entry.
+- Added a compact portal browser panel with meal date/type, original ingredient,
+  replacement, reason, shopping-list refresh, status, and result feedback.
+
+Validation:
+
+```bash
+NEXUS_LOCAL_ALLOW_MODEL_CALLS=0 npx vitest run \
+  __tests__/portal/portal-cooking-ui.test.ts \
+  __tests__/portal/portal-cooking-routes.test.ts \
+  __tests__/api/cooking-routes.test.ts
+
+NEXUS_LOCAL_ALLOW_MODEL_CALLS=0 npx tsc --noEmit
+```
+
+Result: PASS. Focused portal/API tests passed 3 files / 52 tests, including
+guard registration, scoped substitution apply audit/invalidation, cross-tenant
+denial before service access, invalid-reason rejection, portal script syntax,
+and direct backend route wiring. Typecheck passed.

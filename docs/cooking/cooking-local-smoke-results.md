@@ -18,6 +18,7 @@ npx vitest run __tests__/services/cooking-planning-context.test.ts __tests__/ser
 npx tsc --noEmit
 npm run verify
 NEXUS_LOCAL_ALLOW_MODEL_CALLS=0 npm run smoke:cooking:portal -- --base-url http://127.0.0.1:8200 --user-id 2 --tenant-id 2 --forged-tenant-id 9002
+NEXUS_LOCAL_ALLOW_MODEL_CALLS=0 npx vitest run __tests__/portal/portal-cooking-ui.test.ts __tests__/portal/portal-cooking-routes.test.ts __tests__/api/cooking-routes.test.ts
 FULL_NEXUS_STATE_DIR=.local/cooking-full-nexus-smoke DATABASE_PATH="$PWD/data/cooking-full-nexus-smoke.db" PORTAL_PORT=8326 FULL_NEXUS_RESET_DB=1 NEXUS_LOCAL_ALLOW_MODEL_CALLS=0 scripts/full-nexus-local-engine.sh cleanup
 FULL_NEXUS_STATE_DIR=.local/cooking-full-nexus-smoke DATABASE_PATH="$PWD/data/cooking-full-nexus-smoke.db" PORTAL_PORT=8326 NEXUS_LOCAL_ALLOW_MODEL_CALLS=0 scripts/full-nexus-local-engine.sh doctor
 FULL_NEXUS_STATE_DIR=.local/cooking-full-nexus-smoke DATABASE_PATH="$PWD/data/cooking-full-nexus-smoke.db" PORTAL_PORT=8326 NEXUS_LOCAL_ALLOW_MODEL_CALLS=0 scripts/full-nexus-local-engine.sh up
@@ -43,13 +44,13 @@ xcodebuild -project "Nexus Hub.xcodeproj" -scheme "Nexus Hub" -sdk iphonesimulat
 | Deterministic assessment | PASS | Allergy, pantry, grocery, schedule, budget, Training cases covered |
 | Tool tenant scope | PASS | Tool executor forwards authenticated tenant into Cooking writes and preference reads/writes |
 | Model routing | PASS BY INSPECTION | No provider/model hardcoding added |
-| Full backend verify | PASS | `NEXUS_LOCAL_ALLOW_MODEL_CALLS=0 npm run verify`: 429 files / 6426 tests after the portal-smoke addition |
+| Full backend verify | PASS | `NEXUS_LOCAL_ALLOW_MODEL_CALLS=0 npm run verify`: 429 files / 6434 tests after the portal substitution-acceptance addition |
 | Full local backend engine | PASS WITH CONDITIONS | Backend ran attached on `127.0.0.1:8326`; 13/13 authenticated API smoke checks passed; Chat tenant smoke 15 pass / 1 partial; cross-skill fixtures and Chat eval/day-to-day fixtures passed |
 | Cooking live local planning-context read-back | PASS | Authenticated local API returned Finance `available/tight` context, Secretary available cooking minutes `{ "2026-05-04": 60 }`, `COOKING_TIME_OVER_CAPACITY`, and `FINANCE_BUDGET_TIGHT` |
 | iOS focused rich-state tests | PASS | iOS branch `feature/cooking-rich-state-ui` at `f4f1053`, `cfe5df4`, `e8cdc80`, `d7eb9f4`, and `7be4b6f`; 13 Cooking presentation tests passed, including rich/legacy meal-plan payload decoding, pantry freshness DTO rendering, direct preference-correction POST body validation, assessment review-prompt routing, and compact substitution suggestion rendering |
 | iOS simulator | PASS | Local backend `127.0.0.1:8200`, fixture model mode, local auth import, seeded `Peanut recovery noodles` + `peanuts` allergy. Simulator rendered the Cooking skill, dinner card, blocked signals, allergy/grocery issues, substitution candidates (`peanuts -> sunflower seed butter`, `peanuts -> roasted chickpeas`), preference summary, and action buttons. |
-| Portal Cooking contracts | PASS | `npx vitest run __tests__/portal/portal-cooking-routes.test.ts`: 6 tests passed for admin/operator guards, tenant rejection, sanitized preference reads, pantry reads/writes, and audit calls |
-| Portal Cooking UI wiring | PASS | `npx vitest run __tests__/portal/portal-cooking-ui.test.ts`: 5 tests passed for script syntax, nav/section wiring, direct backend route usage, no Chat command path, delete confirmation, and stale-data clearing after scoped load failure |
+| Portal Cooking contracts | PASS | `NEXUS_LOCAL_ALLOW_MODEL_CALLS=0 npx vitest run __tests__/portal/portal-cooking-routes.test.ts`: 10 tests passed for admin/operator guards, tenant rejection, sanitized preference reads, pantry reads/writes, audited substitution application, invalid-reason rejection, and cross-tenant substitution denial |
+| Portal Cooking UI wiring | PASS | `NEXUS_LOCAL_ALLOW_MODEL_CALLS=0 npx vitest run __tests__/portal/portal-cooking-ui.test.ts`: 6 tests passed for script syntax, nav/section wiring, direct backend route usage, no Chat command path, delete confirmation, substitution acceptance panel wiring, and stale-data clearing after scoped load failure |
 | Portal browser runtime | PASS | Headless Playwright loaded `127.0.0.1:8200/portal`, authenticated with the local portal login, opened Cooking, loaded user/tenant `2`, saved a scoped allergy preference, saved pantry state, then verified forged tenant `9002` fails closed with `Load failed`, no stale tables, no unexpected HTTP failures, and `providerCallsAllowed:false`. |
 
 ## Cleanup

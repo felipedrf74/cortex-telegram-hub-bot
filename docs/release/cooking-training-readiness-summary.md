@@ -19,9 +19,9 @@ Highest remaining risk: not a code P0/P1. The highest remaining release risk is 
 
 | Path | Workstream | Claimed verdict | Evidence level | Key open items | Confidence impact |
 | --- | --- | --- | --- | --- | --- |
-| `docs/qa/cooking-codex-revalidation-fixes.md` plus current hardened portal/substitution passes | Cooking | Medium-high confidence after fixes | E4/E5 | P2 portal deep editors and direct UI accept affordance | High signal; includes adversarial tests, full verify, local smoke, iOS focused tests, portal browser smoke, hardened signed-session invalid-auth browser proof, and backend substitution application tests. |
-| `docs/cooking/cooking-final-report.md` | Cooking | backend candidate PASS WITH CONDITIONS | E4/E5 | normal staging/prod gates; no P0/P1 | Updated in this pass to current `429/6426` full verify and portal smoke evidence. |
-| `docs/cooking/cooking-production-open-blockers.md` | Cooking | no P0/P1 known | E2/E4 | P2 direct substitution apply workflow, portal editors, enum fallback tests | Supports merge readiness; not unconditional production readiness. |
+| `docs/qa/cooking-codex-revalidation-fixes.md` plus current hardened portal/substitution passes | Cooking | Medium-high confidence after fixes | E4/E5 | P2 portal deep editors and iOS direct accept affordance | High signal; includes adversarial tests, full verify, local smoke, iOS focused tests, portal browser smoke, hardened signed-session invalid-auth browser proof, backend substitution application tests, and portal substitution-acceptance route/UI tests. |
+| `docs/cooking/cooking-final-report.md` | Cooking | backend candidate PASS WITH CONDITIONS | E4/E5 | normal staging/prod gates; no P0/P1 | Updated in this pass to current `429/6434` full verify and portal smoke evidence. |
+| `docs/cooking/cooking-production-open-blockers.md` | Cooking | no P0/P1 known | E2/E4 | P2 deeper portal editors, iOS direct substitution accept, enum fallback tests | Supports merge readiness; not unconditional production readiness. |
 | `docs/cooking/cooking-local-smoke-results.md` | Cooking | PASS / PASS WITH CONDITIONS by area | E4/E5 | fixture routing, not real-provider quality sampling | Useful local product evidence. |
 | `docs/ios/cooking-ios-readiness.md` | Cooking iOS | readiness tracked separately | E2/E5 | richer visual treatment/future states | Focused iOS surface evidence, not full-device proof. |
 | `docs/ios/training-rich-payload-smoke.md` | Training iOS | Post-follow-up closure | E2/E5 | provider-backed calendar smoke; signed TestFlight/device gates | High signal for the old iOS audit findings; records `TrainingFixtureBypassUITests` 4/4 and focused unit pack evidence. |
@@ -63,7 +63,8 @@ Highest remaining risk: not a code P0/P1. The highest remaining release risk is 
 | Environment cleanup | `xcrun simctl shutdown all`; `osascript ... quit`; `lsof` checks for `8200`/`8326` | PASS | Avoided simulator-clone and stale-service contamination. |
 | Cooking backend typecheck | `NEXUS_LOCAL_ALLOW_MODEL_CALLS=0 npx tsc --noEmit` | PASS | Confirms current backend branch compiles. |
 | Cooking focused tests | `NEXUS_LOCAL_ALLOW_MODEL_CALLS=0 npx vitest run __tests__/services/cooking-preferences.test.ts __tests__/services/cooking-intelligence.test.ts __tests__/api/cooking-routes.test.ts __tests__/portal/portal-cooking-routes.test.ts __tests__/portal/portal-cooking-ui.test.ts __tests__/services/provider-registry-fixture-mode.test.ts` | PASS, 6 files / 61 tests | Confirms current Cooking route, tenant, substitution, portal, and fixture-provider safety. |
-| Cooking full backend verify | pre-commit for `c8dca78` | PASS, 429 files / 6426 tests | Strong current full-suite evidence; not rerun again because it just passed in the prior step. |
+| Portal substitution acceptance tests | `NEXUS_LOCAL_ALLOW_MODEL_CALLS=0 npx vitest run __tests__/portal/portal-cooking-ui.test.ts __tests__/portal/portal-cooking-routes.test.ts __tests__/api/cooking-routes.test.ts` | PASS, 3 files / 52 tests | Confirms the new portal operator panel calls guarded backend contracts and rejects cross-tenant/invalid substitution mutations before service access. |
+| Cooking full backend verify | `NEXUS_LOCAL_ALLOW_MODEL_CALLS=0 npm run verify` | PASS, 429 files / 6434 tests | Strong current full-suite evidence after the portal substitution-acceptance pass. |
 | Training iOS build-for-testing | `xcodebuild build-for-testing ... -destination 'id=A0B13967-B5DE-4E6F-897D-F1E409093F94' -parallel-testing-enabled NO -maximum-concurrent-test-simulator-destinations 1` | PASS | Confirms branch builds with the UI test target. |
 | Training focused tests | `xcodebuild test ... PlanGenerateResponsePrimaryFocusTests, TrainingTodayCalendarSyncStateTests, TrainingRepositoryAllWeeksTests, TrainingWeekResponsePlanSyncStatusTests, TrainingLocalSmokeFixtureTests, TrainingPresentationTests, TrainingViewModelObservationTests, TrainingFixtureBypassUITests` | PASS, 59 unit tests + 4 UI tests | Directly validates the old F1-F5 audit risks and the rich fixture UI harness. |
 | Cooking iOS focused tests | `xcodebuild test ... -only-testing:"Nexus HubTests/CookingPresentationTests"` in Cooking worktree | PASS, 13 tests | Confirms the Cooking rich-state iOS presentation slice still passes. |
@@ -77,7 +78,7 @@ Highest remaining risk: not a code P0/P1. The highest remaining release risk is 
 - Prior verified interaction: local backend `127.0.0.1:8200`, fixture model mode, authenticated local seed with `Peanut recovery noodles` and `peanuts` allergy. iOS rendered the meal card, blocked signals, allergy/grocery issues, and substitution candidates `peanuts -> sunflower seed butter` / `peanuts -> roasted chickpeas`.
 - Portal interaction: `npm run smoke:cooking:portal` passed after the stale-data clear fix; forged tenant `9002` fails closed without stale tables.
 - Hardened portal auth interaction: `PORTAL_REQUIRE_SESSION_AUTH=true`, `PORTAL_ALLOW_LOCAL_BYPASS=false`, and a signed `ps_` admin session passed the browser smoke with `--probe-invalid-auth`; invalid `ps_` login returned `401` and kept the login overlay visible before the valid session loaded Cooking.
-- Untested paths: direct iOS/portal accept affordances and deep recipe/meal-plan/grocery portal editors. Backend substitution application contract is tested.
+- Untested paths: direct iOS accept affordance and deep recipe/meal-plan/grocery portal editors. Backend and portal substitution application contracts are tested.
 
 ### Training
 
@@ -138,6 +139,7 @@ Production deployment conditions that remain P1 operational gates:
 ### P2
 
 - Cooking portal deep recipe/meal-plan/grocery editors.
+- Cooking iOS direct substitution accept affordance.
 - Cooking stronger allergy/restriction visual treatment and unknown/future enum fallback tests.
 - Training provider-backed calendar read-back from exact release candidate if the candidate changed since the recorded provider smokes.
 - Training rich feedback end-to-end proof that future plans adapt, before making adaptive-learning claims.

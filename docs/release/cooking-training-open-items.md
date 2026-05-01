@@ -8,8 +8,8 @@ Date: 2026-05-01
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | CT-P0-001 | Cooking | P0 | tenant/security | Current re-validation | E3/E4/E5 | No | No | None. No known P0 after forged tenant, body spoof, tool tenant, portal stale-data, and provider fixture tests. | Closed |
 | CT-P1-001 | Cooking | P1 | build/test | Current re-validation | E3/E4 | No | No | None. Typecheck, focused tests, and full verify evidence pass. | Closed |
-| CT-P2-001 | Cooking | P2 | product quality | Current substitution application pass | E2 | No | No | None for backend. `POST /api/v1/cooking/meal-plan/substitutions/apply` applies an accepted replacement to the scoped linked recipe/meal copy and regenerated shopping list; UI direct-accept affordances are tracked separately. | Closed |
-| CT-P2-002 | Cooking | P2 | portal/frontend | `docs/cooking/cooking-production-open-blockers.md` | E1/E2 | No | No | Add recipe library, meal-plan, grocery-settings, and substitution-acceptance portal deep editors once UI scope is selected. | Open |
+| CT-P2-001 | Cooking | P2 | product quality | Current substitution application pass | E2 | No | No | None for backend or portal. `POST /api/v1/cooking/meal-plan/substitutions/apply` applies an accepted replacement to the scoped linked recipe/meal copy and regenerated shopping list, and the portal now exposes the guarded acceptance panel. iOS direct-accept affordance is tracked separately. | Closed |
+| CT-P2-002 | Cooking | P2 | portal/frontend | `docs/cooking/cooking-production-open-blockers.md` | E2 | No | No | Remaining scope: add recipe library, meal-plan, and grocery-settings portal deep editors once UI scope is selected. The scoped substitution-acceptance portal panel and admin route are implemented and tested. | Partial |
 | CT-P2-003 | Cooking | P2 | portal/security smoke | Current hardened local portal probe | E5 | No | No | None. Hardened local portal mode now requires signed sessions, disables loopback bypass, rejects invalid `ps_` sessions in-browser, then proves scoped Cooking load and forged tenant fail-closed behavior. | Closed |
 | CT-P2-004 | Cooking | P2 | iOS/frontend | `docs/cooking/cooking-open-items.md` | E2 | No | No | Add stronger allergy/restriction visual treatment and unknown/future Cooking enum fallback tests. | Open |
 | CT-P2-005 | Cooking | P2 | product quality | `docs/cooking/cooking-open-items.md` | E1 | No | No | Expand pantry quantity normalization, low-stock suggestions, price/budget optimizer, leftovers/waste, and store unavailable-item fallback. | Open |
@@ -25,5 +25,5 @@ Date: 2026-05-01
 
 1. No P0/P1 code fix is currently selected.
 2. Before any production deployment, close operational conditions `TR-P1-001`, `TR-P1-002`, and `TR-P1-003` as applicable to the exact candidate.
-3. For product polish after merge, prioritize `CT-P2-002` and `CT-P2-004`.
+3. For product polish after merge, prioritize remaining `CT-P2-002` deep editors and `CT-P2-004`.
 4. For stronger release evidence, prioritize `TR-P2-002` and staging/device provider gates tied to the exact RC.

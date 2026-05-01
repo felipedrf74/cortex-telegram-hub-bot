@@ -13,7 +13,8 @@ runtime smoke passed against the local backend on 2026-04-30.
 
 ## P2
 
-- Add dedicated in-place substitution acceptance/replacement workflow if needed.
+- Add iOS direct-accept affordance for the scoped substitution
+  acceptance/replacement workflow if needed.
 - Add portal recipe library, meal-plan, and grocery-settings deep editors after
   backend contracts exist.
 - Add stronger iOS visual treatment for allergy/restriction issues.

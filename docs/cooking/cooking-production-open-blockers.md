@@ -8,12 +8,13 @@ None known.
 
 ## P1
 
-None currently known after backend substitution candidates and iOS compact
+None currently known after backend substitution candidates, scoped
+substitution application, portal acceptance wiring, and iOS compact
 substitution rendering landed.
 
 ## P2
 
-- Dedicated in-place substitution acceptance/replacement workflow remains
+- iOS direct-accept affordance for scoped substitution application remains
   product follow-up; current iOS support is compact reviewable rendering.
 - Recipe library, meal-plan, and grocery-settings portal deep editors remain
   future work until backend management contracts exist.

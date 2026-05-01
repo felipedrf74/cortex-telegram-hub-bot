@@ -24,6 +24,7 @@ describe('portal Cooking browser UI', () => {
   it('uses backend-authorized Cooking portal contracts instead of chat commands', () => {
     expect(portalHtml).toContain("'/api/users/' + target.userId + '/cooking/preferences'");
     expect(portalHtml).toContain("'/api/users/' + target.userId + '/cooking/pantry'");
+    expect(portalHtml).toContain("'/api/users/' + target.userId + '/cooking/meal-plan/substitutions/apply'");
     expect(portalHtml).toContain("body: JSON.stringify({ tenantId: target.tenantId })");
     expect(portalHtml).not.toContain('/api/v1/chat');
     expect(portalHtml).not.toContain('memoryValue');
@@ -36,6 +37,19 @@ describe('portal Cooking browser UI', () => {
     expect(portalHtml).toContain('id="cooking-pantry-freshness"');
     expect(portalHtml).toContain("if (!confirm('Delete this Cooking pantry item?')) return");
     expect(portalHtml).toContain('openCookingManagerForUser');
+  });
+
+  it('renders an explicit reviewed substitution acceptance panel', () => {
+    expect(portalHtml).toContain('id="cooking-substitution-date"');
+    expect(portalHtml).toContain('id="cooking-substitution-meal-type"');
+    expect(portalHtml).toContain('id="cooking-substitution-original"');
+    expect(portalHtml).toContain('id="cooking-substitution-suggested"');
+    expect(portalHtml).toContain('id="cooking-substitution-reason"');
+    expect(portalHtml).toContain('id="cooking-substitution-update-shopping" checked');
+    expect(portalHtml).toContain('id="cooking-apply-substitution-btn"');
+    expect(portalHtml).toContain('applyCookingSubstitutionFromPortal');
+    expect(portalHtml).toContain('reason,');
+    expect(portalHtml).toContain('updateShoppingList,');
   });
 
   it('clears stale Cooking portal data after a scoped load failure', () => {

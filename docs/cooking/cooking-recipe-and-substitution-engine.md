@@ -45,6 +45,10 @@ replacement. Accepted replacements update the scoped meal's linked recipe,
 adjust matching meal/recipe copy, and optionally regenerate the tenant-scoped
 weekly shopping list.
 
+The portal now exposes an operator-facing acceptance panel backed by the same
+scoped mutation contract. It is intentionally limited to reviewed safety
+reasons rather than broad free-form recipe rewriting.
+
 ## Required Next Implementation
 
 Add a deeper substitution engine that considers:
@@ -55,7 +59,7 @@ Add a deeper substitution engine that considers:
 - texture/flavor role
 - unavailable store items
 - pantry quantity and low-stock status
-- portal/iOS affordances for accepting a backend substitution candidate
+- iOS affordance for accepting a backend substitution candidate
 
 ## Safety Rule
 
