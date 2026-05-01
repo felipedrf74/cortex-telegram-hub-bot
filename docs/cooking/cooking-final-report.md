@@ -1,7 +1,7 @@
 # Cooking Final Report
 
-Date: 2026-04-30
-Branch: `feature/cooking-intelligence-upgrade` at `c8dca78`
+Date: 2026-04-30, updated 2026-05-01
+Branch: `feature/cooking-intelligence-upgrade`
 Verdict: backend candidate PASS WITH CONDITIONS — do not promote to production from this workstream
 
 ## What Changed
@@ -46,6 +46,12 @@ Verdict: backend candidate PASS WITH CONDITIONS — do not promote to production
   manager, saved a scoped allergy preference, saved pantry state, then verified
   forged tenant `9002` fails closed with `Load failed`, no stale Cooking
   tables, no unexpected HTTP failures, and `providerCallsAllowed:false`.
+- Hardened portal auth browser runtime: PASS with `PORTAL_REQUIRE_SESSION_AUTH=true`,
+  `PORTAL_ALLOW_LOCAL_BYPASS=false`, and a signed `ps_` admin session. The
+  invalid-auth probe submitted an invalid `ps_` token through the real portal
+  login form, observed `/api/snapshot` return `401`, kept the login overlay
+  visible with `Invalid token`, then signed in with the valid session and
+  repeated the scoped Cooking/forged-tenant smoke with `providerCallsAllowed:false`.
 - No production data used.
 - No production calendar used.
 - No deployment performed.

@@ -19,7 +19,7 @@ Highest remaining risk: not a code P0/P1. The highest remaining release risk is 
 
 | Path | Workstream | Claimed verdict | Evidence level | Key open items | Confidence impact |
 | --- | --- | --- | --- | --- | --- |
-| `docs/qa/cooking-codex-revalidation-fixes.md` | Cooking | Medium-high confidence after fixes | E4/E5 | P2 substitution acceptance workflow, portal deep editors, non-loopback operator probe | High signal; includes adversarial tests, full verify, local smoke, iOS focused tests, and portal browser smoke. |
+| `docs/qa/cooking-codex-revalidation-fixes.md` plus current hardened portal probe | Cooking | Medium-high confidence after fixes | E4/E5 | P2 substitution acceptance workflow, portal deep editors | High signal; includes adversarial tests, full verify, local smoke, iOS focused tests, portal browser smoke, and hardened signed-session invalid-auth browser proof. |
 | `docs/cooking/cooking-final-report.md` | Cooking | backend candidate PASS WITH CONDITIONS | E4/E5 | normal staging/prod gates; no P0/P1 | Updated in this pass to current `429/6426` full verify and portal smoke evidence. |
 | `docs/cooking/cooking-production-open-blockers.md` | Cooking | no P0/P1 known | E2/E4 | P2 direct substitution apply workflow, portal editors, enum fallback tests | Supports merge readiness; not unconditional production readiness. |
 | `docs/cooking/cooking-local-smoke-results.md` | Cooking | PASS / PASS WITH CONDITIONS by area | E4/E5 | fixture routing, not real-provider quality sampling | Useful local product evidence. |
@@ -76,7 +76,8 @@ Highest remaining risk: not a code P0/P1. The highest remaining release risk is 
 - Current pass: focused `CookingPresentationTests` passed 13/13.
 - Prior verified interaction: local backend `127.0.0.1:8200`, fixture model mode, authenticated local seed with `Peanut recovery noodles` and `peanuts` allergy. iOS rendered the meal card, blocked signals, allergy/grocery issues, and substitution candidates `peanuts -> sunflower seed butter` / `peanuts -> roasted chickpeas`.
 - Portal interaction: `npm run smoke:cooking:portal` passed after the stale-data clear fix; forged tenant `9002` fails closed without stale tables.
-- Untested paths: substitution accept/apply workflow, deep recipe/meal-plan/grocery portal editors, non-loopback forged operator browser probe.
+- Hardened portal auth interaction: `PORTAL_REQUIRE_SESSION_AUTH=true`, `PORTAL_ALLOW_LOCAL_BYPASS=false`, and a signed `ps_` admin session passed the browser smoke with `--probe-invalid-auth`; invalid `ps_` login returned `401` and kept the login overlay visible before the valid session loaded Cooking.
+- Untested paths: substitution accept/apply workflow and deep recipe/meal-plan/grocery portal editors.
 
 ### Training
 
@@ -138,7 +139,6 @@ Production deployment conditions that remain P1 operational gates:
 
 - Cooking substitution acceptance/replacement workflow.
 - Cooking portal deep recipe/meal-plan/grocery editors.
-- Cooking non-loopback forged operator/session browser probe.
 - Cooking stronger allergy/restriction visual treatment and unknown/future enum fallback tests.
 - Training provider-backed calendar read-back from exact release candidate if the candidate changed since the recorded provider smokes.
 - Training rich feedback end-to-end proof that future plans adapt, before making adaptive-learning claims.

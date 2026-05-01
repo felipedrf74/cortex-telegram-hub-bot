@@ -10,7 +10,7 @@ Date: 2026-05-01
 | CT-P1-001 | Cooking | P1 | build/test | Current re-validation | E3/E4 | No | No | None. Typecheck, focused tests, and full verify evidence pass. | Closed |
 | CT-P2-001 | Cooking | P2 | product quality | `docs/cooking/cooking-open-items.md` | E1/E2 | No | No | Add in-place substitution acceptance/replacement workflow if product wants direct apply actions. | Open |
 | CT-P2-002 | Cooking | P2 | portal/frontend | `docs/cooking/cooking-production-open-blockers.md` | E1/E2 | No | No | Add recipe library, meal-plan, and grocery-settings portal deep editors once backend contracts are promoted. | Open |
-| CT-P2-003 | Cooking | P2 | portal/security smoke | `docs/qa/cooking-codex-revalidation-fixes.md` | E2/E5 partial | No | Conditional | Add non-loopback forged operator/session browser probe in staging or a hardened local portal mode. | Open |
+| CT-P2-003 | Cooking | P2 | portal/security smoke | Current hardened local portal probe | E5 | No | No | None. Hardened local portal mode now requires signed sessions, disables loopback bypass, rejects invalid `ps_` sessions in-browser, then proves scoped Cooking load and forged tenant fail-closed behavior. | Closed |
 | CT-P2-004 | Cooking | P2 | iOS/frontend | `docs/cooking/cooking-open-items.md` | E2 | No | No | Add stronger allergy/restriction visual treatment and unknown/future Cooking enum fallback tests. | Open |
 | CT-P2-005 | Cooking | P2 | product quality | `docs/cooking/cooking-open-items.md` | E1 | No | No | Expand pantry quantity normalization, low-stock suggestions, price/budget optimizer, leftovers/waste, and store unavailable-item fallback. | Open |
 | TR-P0-001 | Training | P0 | iOS/frontend | `/tmp/ios-audit-2026-04-30.md`, superseded | E2/E5 current | No | No | Old F1-F5 iOS blockers are closed or constrained by `c83ee42` and May 1 focused validation. | Closed |
@@ -26,5 +26,4 @@ Date: 2026-05-01
 1. No P0/P1 code fix is currently selected.
 2. Before any production deployment, close operational conditions `TR-P1-001`, `TR-P1-002`, and `TR-P1-003` as applicable to the exact candidate.
 3. For product polish after merge, prioritize `CT-P2-001` and `CT-P2-002`.
-4. For stronger release evidence, prioritize `CT-P2-003` and `TR-P2-002`.
-
+4. For stronger release evidence, prioritize `TR-P2-002` and staging/device provider gates tied to the exact RC.

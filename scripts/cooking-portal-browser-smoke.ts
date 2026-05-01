@@ -7,6 +7,9 @@ interface SmokeArgs {
   userId: number;
   tenantId: number;
   forgedTenantId: number;
+  authToken: string;
+  invalidAuthToken: string;
+  probeInvalidAuth: boolean;
   headed: boolean;
   allowModelCalls: boolean;
 }
@@ -27,6 +30,12 @@ function readNumber(name: string, fallback: number): number {
   return parsed;
 }
 
+function readFlag(name: string): boolean {
+  const envName = `COOKING_PORTAL_SMOKE_${name.toUpperCase().replace(/-/g, '_')}`;
+  const raw = process.env[envName];
+  return process.argv.includes(`--${name}`) || raw === '1' || raw === 'true';
+}
+
 function parseArgs(): SmokeArgs {
   const userId = readNumber('user-id', 2);
   const tenantId = readNumber('tenant-id', userId);
@@ -36,8 +45,11 @@ function parseArgs(): SmokeArgs {
     userId,
     tenantId,
     forgedTenantId,
-    headed: process.argv.includes('--headed') || process.env.COOKING_PORTAL_SMOKE_HEADED === '1',
-    allowModelCalls: process.argv.includes('--allow-model-calls'),
+    authToken: readArg('auth-token') ?? process.env.COOKING_PORTAL_SMOKE_AUTH_TOKEN ?? 'local-cooking-portal-smoke-token',
+    invalidAuthToken: readArg('invalid-auth-token') ?? process.env.COOKING_PORTAL_SMOKE_INVALID_AUTH_TOKEN ?? 'ps_invalid.invalid',
+    probeInvalidAuth: readFlag('probe-invalid-auth'),
+    headed: readFlag('headed'),
+    allowModelCalls: readFlag('allow-model-calls'),
   };
 }
 
@@ -72,6 +84,36 @@ async function clickAndWaitForCookingResponses(page: Page, action: () => Promise
   await Promise.all([preferenceResponse, pantryResponse]);
 }
 
+async function submitPortalLogin(
+  page: Page,
+  token: string,
+  expected: 'valid' | 'invalid',
+): Promise<{ status: number; errorText?: string }> {
+  const loginOverlay = page.locator('#login-overlay');
+  await loginOverlay.waitFor({ state: 'visible', timeout: 10_000 });
+  await page.fill('#login-token', token);
+  const responsePromise = page.waitForResponse(response => response.url().includes('/api/snapshot'), { timeout: 10_000 });
+  await page.click('#login-btn');
+  const response = await responsePromise;
+
+  if (expected === 'valid') {
+    if (!response.ok()) {
+      throw new Error(`Expected valid portal login to pass; /api/snapshot returned ${response.status()}`);
+    }
+    await loginOverlay.waitFor({ state: 'hidden', timeout: 10_000 });
+    return { status: response.status() };
+  }
+
+  if (response.status() !== 401) {
+    throw new Error(`Expected invalid portal login to return 401; /api/snapshot returned ${response.status()}`);
+  }
+  const errorText = await waitForText(page, '#login-error', /Invalid token/, 'invalid portal login error');
+  if (!await loginOverlay.isVisible({ timeout: 2_000 }).catch(() => false)) {
+    throw new Error('Invalid portal login hid the login overlay instead of failing closed');
+  }
+  return { status: response.status(), errorText };
+}
+
 async function main(): Promise<void> {
   const args = parseArgs();
   if (!args.allowModelCalls && process.env.NEXUS_LOCAL_ALLOW_MODEL_CALLS === '1') {
@@ -95,7 +137,10 @@ async function main(): Promise<void> {
     const isExpectedForgedTenantFailure = status === 403
       && url.includes('/cooking/')
       && url.includes(`tenantId=${args.forgedTenantId}`);
-    if (status >= 400 && !isExpectedForgedTenantFailure) {
+    const isExpectedInvalidAuthFailure = args.probeInvalidAuth
+      && status === 401
+      && url.includes('/api/snapshot');
+    if (status >= 400 && !isExpectedForgedTenantFailure && !isExpectedInvalidAuthFailure) {
       failedRequests.push(`${status} ${url}`);
     }
   });
@@ -105,11 +150,13 @@ async function main(): Promise<void> {
 
   try {
     await page.goto(`${args.baseUrl}/portal`, { waitUntil: 'domcontentloaded', timeout: 20_000 });
+    let invalidAuthProbe: { status: number; errorText?: string } | null = null;
+    if (args.probeInvalidAuth) {
+      invalidAuthProbe = await submitPortalLogin(page, args.invalidAuthToken, 'invalid');
+    }
     const loginOverlay = page.locator('#login-overlay');
     if (await loginOverlay.isVisible({ timeout: 2_000 }).catch(() => false)) {
-      await page.fill('#login-token', 'local-cooking-portal-smoke-token');
-      await page.click('#login-btn');
-      await loginOverlay.waitFor({ state: 'hidden', timeout: 10_000 });
+      await submitPortalLogin(page, args.authToken, 'valid');
     }
     await page.locator('[data-nav="cooking"]').waitFor({ state: 'visible', timeout: 15_000 });
     await page.locator('[data-nav="cooking"]').click();
@@ -166,6 +213,7 @@ async function main(): Promise<void> {
       preferenceKpi,
       pantryKpi,
       forgedScope,
+      invalidAuthProbe,
       providerCallsAllowed: process.env.NEXUS_LOCAL_ALLOW_MODEL_CALLS === '1',
     }, null, 2));
   } finally {

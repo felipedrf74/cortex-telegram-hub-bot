@@ -22,6 +22,7 @@ Evidence:
 - Focused Cooking/provider/portal tests passed: 6 files / 61 tests.
 - Full backend verify passed in the `c8dca78` pre-commit hook: 429 files / 6426 tests.
 - Portal browser smoke exists and passed against local backend, including forged tenant fail-closed state and stale-data clearing.
+- Hardened portal auth browser smoke passed with `PORTAL_REQUIRE_SESSION_AUTH=true`, `PORTAL_ALLOW_LOCAL_BYPASS=false`, and a signed `ps_` admin session; invalid `ps_` login returned `401` and kept the login overlay visible before the valid session loaded scoped Cooking data.
 - Focused iOS `CookingPresentationTests` passed: 13 tests.
 
 Conditions:
@@ -100,4 +101,3 @@ No known Training iOS P0/P1 code blocker remains from this pass.
 - Training iOS decode/render errors for rich payloads.
 - Calendar provider failure rate, latency, and auth expiration.
 - Production-safe logs only; no raw sensitive prompt/context leakage.
-
