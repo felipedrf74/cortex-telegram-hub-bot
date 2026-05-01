@@ -19,7 +19,6 @@ substitution rendering landed.
 - Recipe library, meal-plan, and grocery-settings portal deep editors remain
   future work until backend management contracts exist.
 - Stronger allergy/restriction visual treatment in iOS remains polish work.
-- Unknown/future Cooking enum fallback tests remain open.
 
 ## Release Gate
 

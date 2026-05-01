@@ -41,7 +41,7 @@ Verdict: backend candidate PASS WITH CONDITIONS — do not promote to production
 - Full `NEXUS_LOCAL_ALLOW_MODEL_CALLS=0 npm run verify`: PASS, 429 files / 6434 tests after the portal substitution-acceptance addition.
 - Full local backend product smoke: PASS WITH CONDITIONS on `127.0.0.1:8326`; authenticated API smoke 13/13, Chat tenant smoke 15 pass / 1 partial / 0 fail, cross-skill fixtures PASS, Chat eval/day-to-day fixtures PASS.
 - Live local Cooking planning-context API read-back: PASS; Finance tight-budget context and Secretary cooking-window pressure were returned by `GET /api/v1/cooking/meal-plan`.
-- iOS rich Cooking DTO/rendering slice: PASS on branch `feature/cooking-rich-state-ui` at `f4f1053`, `cfe5df4`, `e8cdc80`, `d7eb9f4`, and `7be4b6f`; 13 focused Cooking presentation tests passed, including rich and legacy meal-plan payload decoding, pantry freshness DTO rendering, direct preference-correction POST body validation, assessment review-prompt routing, and compact substitution suggestion rendering.
+- iOS rich Cooking DTO/rendering slice: PASS on branch `feature/cooking-rich-state-ui` at `f4f1053`, `cfe5df4`, `e8cdc80`, `d7eb9f4`, `7be4b6f`, and `8a5bdad`; 15 focused Cooking presentation tests passed, including rich and legacy meal-plan payload decoding, pantry freshness DTO rendering, direct preference-correction POST body validation, assessment review-prompt routing, compact substitution suggestion rendering, future adaptation-kind fallback, and unknown substitution metadata fallback.
 - iOS rich Cooking simulator smoke: PASS on local backend
   `127.0.0.1:8200` with fixture model mode and local auth import; the
   simulator rendered the seeded dinner, blocked Cooking signals,

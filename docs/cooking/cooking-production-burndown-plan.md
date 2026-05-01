@@ -18,7 +18,6 @@ runtime smoke passed against the local backend on 2026-04-30.
 - Add portal recipe library, meal-plan, and grocery-settings deep editors after
   backend contracts exist.
 - Add stronger iOS visual treatment for allergy/restriction issues.
-- Add unknown/future Cooking enum fallback tests.
 - Advanced substitution engine.
 - Finance-backed grocery budget optimizer.
 - Secretary-driven alternate cooking-window proposals.

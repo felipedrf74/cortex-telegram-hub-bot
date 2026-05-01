@@ -10,17 +10,18 @@ Training adaptations, and prep-event scheduling responses.
 Additional iOS branch evidence:
 
 - Branch: `feature/cooking-rich-state-ui`
-- Commits: `f4f1053`, `cfe5df4`, `e8cdc80`, `d7eb9f4`, `7be4b6f`
+- Commits: `f4f1053`, `cfe5df4`, `e8cdc80`, `d7eb9f4`, `7be4b6f`, `8a5bdad`
 - Scope: additive DTOs for meal-plan assessment/planning context, repository state
   retention/reset, a compact Cooking signals card, shopping-list pantry
   available/expired rendering, pantry notes, accessibility labels, and
   first-class preference correction capture through `POST /api/v1/cooking/preferences`,
   deterministic review prompts that route assessment issues to the meal plan
   or shopping list without inventing substitution suggestions, and compact
-  rendering for backend-provided `assessment.substitutionSuggestions`.
+  rendering for backend-provided `assessment.substitutionSuggestions`, and
+  safe fallback for future/unknown Cooking meal adaptation kinds.
 - Focused test:
-  `xcodebuild test -project "Nexus Hub.xcodeproj" -scheme "Nexus Hub" -sdk iphonesimulator -destination "platform=iOS Simulator,name=iPhone 17 Pro" "-only-testing:Nexus HubTests/CookingPresentationTests"`:
-  PASS, 13 Cooking presentation tests.
+  `xcodebuild test -project "Nexus Hub.xcodeproj" -scheme "Nexus Hub" -destination "id=A0B13967-B5DE-4E6F-897D-F1E409093F94" -parallel-testing-enabled NO -maximum-concurrent-test-simulator-destinations 1 "-only-testing:Nexus HubTests/CookingPresentationTests"`:
+  PASS, 15 Cooking presentation tests on iPhone 17 Pro / iOS 26.4.
 - Local simulator smoke:
   `xcodebuild -project "Nexus Hub.xcodeproj" -scheme "Nexus Hub" -sdk iphonesimulator build -derivedDataPath /tmp/nexus-cooking-ios-rich-smoke-deriveddata`:
   PASS. The app was installed on iPhone 17 Pro, launched with
@@ -73,10 +74,10 @@ rendering raw prompt context.
 - Render allergy/restriction warning with a stronger distinct visual treatment.
 - Add a dedicated in-place substitution acceptance/replacement workflow if
   direct apply actions become part of the Cooking UX.
-- Unknown enum/state fallback tests.
 
 Verdict: PASS WITH CONDITIONS. The primary iOS rich assessment rendering gap is
 closed in code on the iOS branch, including compact substitution suggestions;
-local simulator smoke has passed against the full local backend. Remaining gaps
-are polish/future-action coverage rather than release-blocking representation
+future adaptation-kind fallback is covered by focused tests, and local
+simulator smoke has passed against the full local backend. Remaining gaps are
+polish/future-action coverage rather than release-blocking representation
 failures.

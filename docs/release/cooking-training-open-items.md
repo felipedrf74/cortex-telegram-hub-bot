@@ -11,7 +11,7 @@ Date: 2026-05-01
 | CT-P2-001 | Cooking | P2 | product quality | Current substitution application pass | E2 | No | No | None for backend or portal. `POST /api/v1/cooking/meal-plan/substitutions/apply` applies an accepted replacement to the scoped linked recipe/meal copy and regenerated shopping list, and the portal now exposes the guarded acceptance panel. iOS direct-accept affordance is tracked separately. | Closed |
 | CT-P2-002 | Cooking | P2 | portal/frontend | `docs/cooking/cooking-production-open-blockers.md` | E2 | No | No | Remaining scope: add recipe library, meal-plan, and grocery-settings portal deep editors once UI scope is selected. The scoped substitution-acceptance portal panel and admin route are implemented and tested. | Partial |
 | CT-P2-003 | Cooking | P2 | portal/security smoke | Current hardened local portal probe | E5 | No | No | None. Hardened local portal mode now requires signed sessions, disables loopback bypass, rejects invalid `ps_` sessions in-browser, then proves scoped Cooking load and forged tenant fail-closed behavior. | Closed |
-| CT-P2-004 | Cooking | P2 | iOS/frontend | `docs/cooking/cooking-open-items.md` | E2 | No | No | Add stronger allergy/restriction visual treatment and unknown/future Cooking enum fallback tests. | Open |
+| CT-P2-004 | Cooking | P2 | iOS/frontend | `docs/cooking/cooking-open-items.md` | E2 | No | No | Unknown/future Cooking adaptation fallback is closed on iOS commit `8a5bdad` with `CookingPresentationTests` 15/15. Remaining scope: stronger allergy/restriction visual treatment. | Partial |
 | CT-P2-005 | Cooking | P2 | product quality | `docs/cooking/cooking-open-items.md` | E1 | No | No | Expand pantry quantity normalization, low-stock suggestions, price/budget optimizer, leftovers/waste, and store unavailable-item fallback. | Open |
 | TR-P0-001 | Training | P0 | iOS/frontend | `/tmp/ios-audit-2026-04-30.md`, superseded | E2/E5 current | No | No | Old F1-F5 iOS blockers are closed or constrained by `c83ee42` and May 1 focused validation. | Closed |
 | TR-P1-001 | Training | P1 | provider/calendar lifecycle | `docs/ios/training-rich-payload-smoke.md`, `docs/training/final-production-go-no-go.md` | E5/E6 historical | No | Conditional | If the exact Training RC changed since provider smokes, rerun non-production Google/Outlook calendar create/read/update/cancel proof. | Open condition |
@@ -25,5 +25,5 @@ Date: 2026-05-01
 
 1. No P0/P1 code fix is currently selected.
 2. Before any production deployment, close operational conditions `TR-P1-001`, `TR-P1-002`, and `TR-P1-003` as applicable to the exact candidate.
-3. For product polish after merge, prioritize remaining `CT-P2-002` deep editors and `CT-P2-004`.
+3. For product polish after merge, prioritize remaining `CT-P2-002` deep editors and the visual-treatment remainder of `CT-P2-004`.
 4. For stronger release evidence, prioritize `TR-P2-002` and staging/device provider gates tied to the exact RC.

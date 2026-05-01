@@ -17,7 +17,7 @@ Verdict: `READY_TO_MERGE` with normal review/CI conditions.
 Evidence:
 
 - Backend branch `feature/cooking-intelligence-upgrade` at `c8dca78`.
-- iOS Cooking branch `feature/cooking-rich-state-ui` at `7be4b6f`.
+- iOS Cooking branch `feature/cooking-rich-state-ui` at `8a5bdad`.
 - `NEXUS_LOCAL_ALLOW_MODEL_CALLS=0 npx tsc --noEmit` passed.
 - Focused Cooking/provider/portal tests passed: 6 files / 61 tests.
 - Full backend verify passed in the current pass: 429 files / 6434 tests.
@@ -25,7 +25,7 @@ Evidence:
 - Hardened portal auth browser smoke passed with `PORTAL_REQUIRE_SESSION_AUTH=true`, `PORTAL_ALLOW_LOCAL_BYPASS=false`, and a signed `ps_` admin session; invalid `ps_` login returned `401` and kept the login overlay visible before the valid session loaded scoped Cooking data.
 - Backend substitution acceptance contract exists: `POST /api/v1/cooking/meal-plan/substitutions/apply` updates only the authenticated tenant's linked recipe/meal copy and regenerated shopping list; focused tests passed 45/45 for Cooking routes plus intelligence assessment.
 - Portal substitution acceptance contract exists: `POST /api/users/:userId/cooking/meal-plan/substitutions/apply` is admin/operator guarded, rejects cross-tenant and invalid-reason mutations before service access, audits successful application, and is wired to a portal panel; focused portal/API tests passed 52/52.
-- Focused iOS `CookingPresentationTests` passed: 13 tests.
+- Focused iOS `CookingPresentationTests` passed: 15 tests, including future adaptation-kind fallback and unknown substitution metadata readability.
 
 Conditions:
 

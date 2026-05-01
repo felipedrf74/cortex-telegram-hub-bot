@@ -24,6 +24,7 @@ Date: 2026-04-30
 | Mesh context | `__tests__/services/cooking-mesh-context.test.ts` | Cross-skill Cooking signals |
 | Portal management contracts | `__tests__/portal/portal-cooking-routes.test.ts` | Admin/operator guards, tenant rejection, sanitized preference reads, pantry reads/writes, audited substitution apply, invalid-reason rejection, and cross-tenant substitution denial |
 | Portal browser UI wiring | `__tests__/portal/portal-cooking-ui.test.ts` | Cooking nav/section, script syntax, direct scoped backend routes, no Chat command path, delete confirmation, and substitution acceptance panel wiring |
+| iOS Cooking future-state fallback | `Nexus HubTests/CookingPresentationTests` | Unknown meal adaptation kinds decode to `.unknown` without dropping the meal-plan payload; unknown substitution reason/confidence metadata remains readable |
 
 ## Commands Run
 
@@ -48,6 +49,7 @@ npm run verify
 - Planning-context focused Vitest: PASS, 3 files / 29 tests.
 - Portal focused Vitest: PASS, 2 files / 16 tests.
 - Portal/API substitution acceptance focused Vitest: PASS, 3 files / 52 tests.
+- iOS Cooking presentation focused tests: PASS, 15 tests on iPhone 17 Pro / iOS 26.4 using explicit simulator UDID.
 - Typecheck: PASS.
 - Full verify: PASS, 429 files / 6434 tests.
 

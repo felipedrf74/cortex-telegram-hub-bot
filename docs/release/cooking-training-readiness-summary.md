@@ -7,7 +7,7 @@ Date: 2026-05-01
 | Workstream | Merge-to-main readiness | Production readiness | Confidence | Summary |
 | --- | --- | --- | --- | --- |
 | Cooking backend | READY_TO_MERGE with conditions | NOT DIRECT-DEPLOY READY | Medium-high | No known P0/P1 remains. Backend typecheck, focused Cooking/provider/portal/substitution-apply tests, full `npm run verify`, local product smoke, portal smoke, and iOS focused rendering evidence are available. Production still needs normal staging, staging smoke, owner approval, and production health. |
-| Cooking iOS | READY_TO_MERGE with conditions | NOT DIRECT-DEPLOY READY | Medium | Focused `CookingPresentationTests` passed on a single simulator, and prior live local UI proof rendered backend substitution candidates. Full iOS suite has unrelated Content failures in the prior Cooking validation report, so merge should rely on focused Cooking evidence plus normal iOS CI/review. |
+| Cooking iOS | READY_TO_MERGE with conditions | NOT DIRECT-DEPLOY READY | Medium | Focused `CookingPresentationTests` passed 15/15 on a single simulator, including future adaptation-kind fallback and unknown substitution metadata readability. Prior live local UI proof rendered backend substitution candidates. Full iOS suite has unrelated Content failures in the prior Cooking validation report, so merge should rely on focused Cooking evidence plus normal iOS CI/review. |
 | Training iOS | READY_TO_MERGE with conditions | NOT DIRECT-DEPLOY READY | Medium-high | The old `/tmp/ios-audit-2026-04-30.md` DO-NOT-SHIP findings are superseded by `c83ee42`/`173ce5b`: multi-week data is consumed, calendar fields are preserved, primary-focus notes render, and rich fixture UI tests pass. Production still requires provider-backed/non-production calendar smoke where applicable and signed TestFlight/device gates for auth/Health/APNs/account switching. |
 | Training backend/provider gates | READY_TO_MERGE with conditions | DEPLOY_WITH_CONDITIONS only | Medium-high | Existing Training release docs report Google/Outlook staging lifecycle and cross-skill staging smoke passed for the Training release candidate. This pass did not redeploy or rerun staging/provider smokes. |
 
@@ -36,7 +36,7 @@ Highest remaining risk: not a code P0/P1. The highest remaining release risk is 
 
 - Path: `/Users/felipedominguez/Desktop/Custom Connectors/Cortex/cortex-telegram-hub-bot`
 - Branch: `feature/cooking-intelligence-upgrade`
-- Commit: `c8dca78 test(cooking): add portal browser smoke`
+- Commit: `c01cace feat(cooking): add portal substitution acceptance`
 - Dirty state at start of this pass: clean.
 - Recent commits: `c8dca78`, `98f6860`, `cf3d7af`, `32286ac`, `aead9a6`.
 
@@ -44,7 +44,7 @@ Highest remaining risk: not a code P0/P1. The highest remaining release risk is 
 
 - Path: `/Users/felipedominguez/Desktop/Nexus Hub IOS/Nexus Hub Cooking UI Worktree`
 - Branch: `feature/cooking-rich-state-ui`
-- Commit: `7be4b6f Render cooking substitution suggestions`
+- Commit: `8a5bdad fix(cooking): tolerate future adaptation kinds`
 - Dirty state at start of this pass: clean.
 - Recent commits: `7be4b6f`, `d7eb9f4`, `e8cdc80`, `cfe5df4`, `f4f1053`.
 
@@ -67,14 +67,14 @@ Highest remaining risk: not a code P0/P1. The highest remaining release risk is 
 | Cooking full backend verify | `NEXUS_LOCAL_ALLOW_MODEL_CALLS=0 npm run verify` | PASS, 429 files / 6434 tests | Strong current full-suite evidence after the portal substitution-acceptance pass. |
 | Training iOS build-for-testing | `xcodebuild build-for-testing ... -destination 'id=A0B13967-B5DE-4E6F-897D-F1E409093F94' -parallel-testing-enabled NO -maximum-concurrent-test-simulator-destinations 1` | PASS | Confirms branch builds with the UI test target. |
 | Training focused tests | `xcodebuild test ... PlanGenerateResponsePrimaryFocusTests, TrainingTodayCalendarSyncStateTests, TrainingRepositoryAllWeeksTests, TrainingWeekResponsePlanSyncStatusTests, TrainingLocalSmokeFixtureTests, TrainingPresentationTests, TrainingViewModelObservationTests, TrainingFixtureBypassUITests` | PASS, 59 unit tests + 4 UI tests | Directly validates the old F1-F5 audit risks and the rich fixture UI harness. |
-| Cooking iOS focused tests | `xcodebuild test ... -only-testing:"Nexus HubTests/CookingPresentationTests"` in Cooking worktree | PASS, 13 tests | Confirms the Cooking rich-state iOS presentation slice still passes. |
+| Cooking iOS focused tests | `xcodebuild test ... -destination 'id=A0B13967-B5DE-4E6F-897D-F1E409093F94' ... -only-testing:"Nexus HubTests/CookingPresentationTests"` in Cooking worktree | PASS, 15 tests | Confirms the Cooking rich-state iOS presentation slice and future-state fallbacks still pass. |
 
 ## Frontend Interaction Validation
 
 ### Cooking
 
 - Simulator/device: iPhone 17 Pro / iOS 26.4 / `A0B13967-B5DE-4E6F-897D-F1E409093F94`.
-- Current pass: focused `CookingPresentationTests` passed 13/13.
+- Current pass: focused `CookingPresentationTests` passed 15/15 on a single explicit simulator UDID.
 - Prior verified interaction: local backend `127.0.0.1:8200`, fixture model mode, authenticated local seed with `Peanut recovery noodles` and `peanuts` allergy. iOS rendered the meal card, blocked signals, allergy/grocery issues, and substitution candidates `peanuts -> sunflower seed butter` / `peanuts -> roasted chickpeas`.
 - Portal interaction: `npm run smoke:cooking:portal` passed after the stale-data clear fix; forged tenant `9002` fails closed without stale tables.
 - Hardened portal auth interaction: `PORTAL_REQUIRE_SESSION_AUTH=true`, `PORTAL_ALLOW_LOCAL_BYPASS=false`, and a signed `ps_` admin session passed the browser smoke with `--probe-invalid-auth`; invalid `ps_` login returned `401` and kept the login overlay visible before the valid session loaded Cooking.
@@ -140,7 +140,7 @@ Production deployment conditions that remain P1 operational gates:
 
 - Cooking portal deep recipe/meal-plan/grocery editors.
 - Cooking iOS direct substitution accept affordance.
-- Cooking stronger allergy/restriction visual treatment and unknown/future enum fallback tests.
+- Cooking stronger allergy/restriction visual treatment. Unknown/future adaptation-kind fallback tests are closed on iOS commit `8a5bdad`.
 - Training provider-backed calendar read-back from exact release candidate if the candidate changed since the recorded provider smokes.
 - Training rich feedback end-to-end proof that future plans adapt, before making adaptive-learning claims.
 

@@ -187,3 +187,42 @@ Result: PASS. Focused portal/API tests passed 3 files / 52 tests, including
 guard registration, scoped substitution apply audit/invalidation, cross-tenant
 denial before service access, invalid-reason rejection, portal script syntax,
 and direct backend route wiring. Typecheck passed.
+
+## Follow-Up Execution: iOS Future-State Cooking Fallback
+
+Selected task: partial closure of `CT-P2-004` for unknown/future Cooking enum
+fallback tests.
+
+Reason: after the portal substitution acceptance panel landed, the next safe
+local release task was to make the iOS Cooking rich-state decoder tolerant of
+future backend meal adaptation kinds. A new backend adaptation kind previously
+could have failed the whole meal-plan payload decode instead of degrading the
+single unknown adaptation.
+
+Implementation:
+
+- Updated `CookingMealAdaptation.Kind` to conform to the shared unknown-string
+  enum fallback pattern and decode unknown backend values as `.unknown`.
+- Added neutral UI fallback tint/icon for unknown meal adaptations.
+- Kept user-facing copy conservative: unknown adaptation kinds do not invent a
+  title or detail.
+- Added focused tests for unknown meal adaptation decode and unknown
+  substitution reason/confidence readability.
+
+Validation:
+
+```bash
+xcrun simctl shutdown all
+xcrun simctl boot A0B13967-B5DE-4E6F-897D-F1E409093F94
+xcodebuild test \
+  -project "Nexus Hub.xcodeproj" \
+  -scheme "Nexus Hub" \
+  -destination 'id=A0B13967-B5DE-4E6F-897D-F1E409093F94' \
+  -parallel-testing-enabled NO \
+  -maximum-concurrent-test-simulator-destinations 1 \
+  -only-testing:"Nexus HubTests/CookingPresentationTests"
+```
+
+Result: PASS. Focused iOS Cooking presentation tests passed 15/15 on iPhone 17
+Pro / iOS 26.4 using a single explicit simulator UDID. No additional simulator
+clones appeared during the run.
