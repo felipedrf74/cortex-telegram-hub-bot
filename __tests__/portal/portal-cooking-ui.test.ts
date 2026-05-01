@@ -37,4 +37,12 @@ describe('portal Cooking browser UI', () => {
     expect(portalHtml).toContain("if (!confirm('Delete this Cooking pantry item?')) return");
     expect(portalHtml).toContain('openCookingManagerForUser');
   });
+
+  it('clears stale Cooking portal data after a scoped load failure', () => {
+    expect(portalHtml).toContain("summary.textContent = 'Cooking preferences unavailable for this scoped request'");
+    expect(portalHtml).toContain("list.innerHTML = '<div class=\"empty\">Failed to load Cooking preferences</div>'");
+    expect(portalHtml).toContain("list.innerHTML = '<div class=\"empty\">Failed to load Cooking pantry</div>'");
+    expect(portalHtml).toContain('preferences: null');
+    expect(portalHtml).toContain('pantry: []');
+  });
 });

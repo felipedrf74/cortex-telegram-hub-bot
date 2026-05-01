@@ -4738,6 +4738,12 @@ table.legacy th {
       list.innerHTML = '<div class="empty">No Cooking preferences loaded</div>';
       return;
     }
+    if (cookingPortalState.error) {
+      meta.textContent = 'Load failed for user ' + cookingPortalState.userId + ' · tenant ' + cookingPortalState.tenantId;
+      summary.textContent = 'Cooking preferences unavailable for this scoped request';
+      list.innerHTML = '<div class="empty">Failed to load Cooking preferences</div>';
+      return;
+    }
     meta.textContent = 'User ' + cookingPortalState.userId + ' · tenant ' + cookingPortalState.tenantId;
     summary.textContent = prefs.summary || prefs.skillMemorySummary || 'No preference summary available';
     if (!memories.length) {
@@ -4765,6 +4771,11 @@ table.legacy th {
     if (!cookingPortalState.userId) {
       meta.textContent = 'Select a user to load pantry state';
       list.innerHTML = '<div class="empty">No pantry loaded</div>';
+      return;
+    }
+    if (cookingPortalState.error) {
+      meta.textContent = 'Load failed for user ' + cookingPortalState.userId + ' · tenant ' + cookingPortalState.tenantId;
+      list.innerHTML = '<div class="empty">Failed to load Cooking pantry</div>';
       return;
     }
     meta.textContent = items.length + ' items · user ' + cookingPortalState.userId + ' · tenant ' + cookingPortalState.tenantId;
@@ -4823,9 +4834,14 @@ table.legacy th {
       };
       renderCookingPortal();
     } catch (err) {
-      cookingPortalState = { ...cookingPortalState, ...target, error: err?.message || 'Cooking portal load failed', loading: false };
-      document.getElementById('cooking-preferences-list').innerHTML = '<div class="empty">Failed to load Cooking preferences</div>';
-      document.getElementById('cooking-pantry-list').innerHTML = '<div class="empty">Failed to load Cooking pantry</div>';
+      cookingPortalState = {
+        ...cookingPortalState,
+        ...target,
+        preferences: null,
+        pantry: [],
+        error: err?.message || 'Cooking portal load failed',
+        loading: false,
+      };
       renderCookingPortal();
       showToast(cookingPortalState.error, false);
     }

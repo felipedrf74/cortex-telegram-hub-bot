@@ -45,22 +45,18 @@ Date: 2026-05-01
 | Prototype pollution/object injection | PASS | Added `__tests__/api/cooking-routes.test.ts:339`; `__proto__` ingredient payload does not pollute `Object.prototype`. |
 | Oversized payload | PASS | Added `__tests__/api/cooking-routes.test.ts:353`; reasonably oversized title/instructions are handled without crash/internal leak. |
 | Fixture-mode provider escape | PASS | `__tests__/services/provider-registry-fixture-mode.test.ts` passed; local smoke logs showed `routing(fixture)` and no provider call path. |
-| Full `npm run verify` | PASS after unrelated test determinism fixes | Initial run failed on May 1 date-sensitive tests in Chat/content smoke, not Cooking. Fixed tests to pin the clock/current date, then `NEXUS_LOCAL_ALLOW_MODEL_CALLS=0 npm run verify` passed: 429 files / 6425 tests. |
-| Portal smoke | PARTIAL | Static/unit portal tests passed. No Playwright config or dedicated browser smoke harness was available, so browser-level portal interaction was not claimed. |
+| Full `npm run verify` | PASS after unrelated test determinism fixes | Initial run failed on May 1 date-sensitive tests in Chat/content smoke, not Cooking. Fixed tests to pin the clock/current date, then `NEXUS_LOCAL_ALLOW_MODEL_CALLS=0 npm run verify` passed after the portal-smoke addition: 429 files / 6426 tests. |
+| Portal smoke | PASS | Added and ran `npm run smoke:cooking:portal`, a headless Playwright harness for local Cooking portal interaction. It loaded `127.0.0.1:8200/portal`, authenticated through the local loopback portal login, opened Cooking, loaded user/tenant `2`, saved a scoped allergy preference, saved pantry state, then verified forged tenant `9002` fails closed with `Load failed` and no stale Cooking tables. |
 | Full local product smoke | PASS WITH CONDITIONS | `scripts/full-nexus-local-engine.sh full-smoke` on local fixture backend passed: authenticated API smoke 13/13, Chat tenant smoke 15 pass / 1 partial / 0 fail, cross-skill fixtures PASS, Chat eval PASS, Chat day-to-day PASS. |
 | API smoke | PASS | Same full local product smoke reran authenticated API smoke: 13/13. |
 | iOS Cooking tests | PASS focused; unrelated full-suite failures | `CookingPresentationTests` passed 13/13. Full `Nexus HubTests` had 1009 passed / 4 failed, all in unrelated Content localization/model tests. |
-| Frontend interaction validation | PARTIAL PASS | Single-simulator local backend smoke reached Home -> Areas -> Cooking, opened new recipe form, weekly agenda, shopping list, generated empty shopping list, and back navigation. Live seeded state did not expose substitution rows, so substitution rendering remains covered by unit tests rather than live UI proof. |
+| Frontend interaction validation | PASS WITH CONDITIONS | Single-simulator local backend smoke reached Home -> Areas -> Cooking and rendered authenticated backend Cooking state. After seeding `peanuts` allergy plus `Peanut recovery noodles`, iOS rendered the meal card, blocked Cooking signals, allergy/grocery issues, and live substitution candidates `peanuts -> sunflower seed butter` / `peanuts -> roasted chickpeas`. |
 
 New findings:
 
-- MEDIUM / P2 - Portal browser smoke remains unproven.
-  - Evidence: no `playwright.config.*` or dedicated Cooking portal browser smoke command was found; only static/unit portal tests were available.
-  - Recommended fix: add a repeatable local portal smoke harness for Cooking preference/pantry interactions and invalid operator/session cases.
-
-- MEDIUM / P2 - iOS live UI did not prove backend-provided substitution rows in the current seeded state.
-  - Evidence: the local UI smoke rendered Cooking empty/weekly/shopping states, but no `cooking-substitution-suggestion-row` was present in the live state. Unit tests still pass.
-  - Recommended fix: add a deterministic iOS/local fixture that seeds an allergy conflict and validates visible substitution rows through UI automation.
+- MEDIUM / P2 - Portal Cooking stale UI state after scoped load failure.
+  - Evidence: the first browser smoke attempt loaded valid Cooking state, then requested forged tenant `9002`; backend returned 403, but the portal renderer could leave the previous Cooking preference/pantry tables visible below a `Load failed` badge.
+  - Fix applied: `src/portal/portal.html` now clears `preferences` and `pantry` on scoped load failure and renders explicit failed-state tables; `__tests__/portal/portal-cooking-ui.test.ts` pins the stale-data clear. The rerun of `npm run smoke:cooking:portal` passed.
 
 - LOW / P3 - Unrelated iOS full-suite Content localization/model tests are red on this simulator.
   - Evidence: full `Nexus HubTests` failed 4 Content tests while CookingPresentationTests passed 13/13.
@@ -85,18 +81,19 @@ New findings:
   - `/tmp/nexus-cooking-ui-smoke-new-recipe.png`
   - `/tmp/nexus-cooking-ui-smoke-weekly-agenda.png`
   - `/tmp/nexus-cooking-ui-smoke-shopping-list.png`
-- iOS Cooking substitution suggestions rendered: not verified live in this seeded run; verified by `CookingPresentationTests` only.
-- Portal smoke environment used: none; backend unit/static portal tests only.
-- Portal interactions performed: none browser-level.
-- Untested frontend paths: live iOS substitution row with backend seeded allergy conflict, portal browser invalid/forged operator session, deep portal pantry/preference interactions in a real browser.
-- Confidence impact: medium. Backend candidate is strong; frontend/browser proof still has two fixture gaps.
+- iOS Cooking substitution suggestions rendered: yes. Authenticated backend seed returned two `substitutionSuggestions`, and the iOS accessibility snapshot for `cooking-meal-plan-intelligence-card` included both candidate rows.
+- Portal smoke environment used: local backend on `127.0.0.1:8200`, `NEXUS_LOCAL_ALLOW_MODEL_CALLS=0`, temporary DB/state dir, headless Playwright.
+- Portal interactions performed: local portal login, Cooking nav, scoped load, preference save, pantry save, forged tenant load failure.
+- Untested frontend paths: substitution acceptance/replacement workflow, deep portal recipe/meal-plan/grocery editors, and non-loopback forged operator session.
+- Confidence impact: improved. The two highest-value frontend evidence gaps are now closed locally; remaining items are product workflow/deep-editor coverage.
 
 ## Phase C: triage
 
 1. P0/P1 tenant/provider safety probes - fixed/covered first. Forged tenant header, body-side tenant spoofing, string tenant id, SQL-shaped titles, prototype payload, regex ingredient, oversized text, and fixture-mode provider gate all passed with tests.
-2. P3 doc findings - fixed after the probes because they were confirmed and tiny.
-3. Full-suite validation - reran `npm run verify`; fixed unrelated date-sensitive tests to make the suite stable after May 1.
-4. Frontend runtime smoke - ran focused iOS tests and a local single-simulator interaction smoke; documented live substitution/portal gaps instead of claiming more than observed.
+2. Portal/browser stale-state safety - fixed after the first browser smoke exposed stale Cooking tables following an authorized-to-forbidden tenant target switch.
+3. P3 doc findings - fixed after the probes because they were confirmed and tiny.
+4. Full-suite validation - reran `npm run verify`; fixed unrelated date-sensitive tests to make the suite stable after May 1.
+5. Frontend runtime smoke - ran focused iOS tests, a local single-simulator interaction smoke, and the new portal browser smoke.
 
 Skipped-refuted:
 
@@ -105,7 +102,7 @@ Skipped-refuted:
 Skipped-out-of-scope:
 
 - Unrelated iOS full-suite Content localization/model failures were not fixed in the Cooking workstream.
-- Browser-level portal smoke was not implemented in this pass because no local Playwright/browser harness was present.
+- Non-loopback forged operator browser smoke remains out of scope for local-only fixture mode; backend/unit guards remain the source of truth there.
 
 Skipped-broad-redesign:
 
@@ -155,6 +152,13 @@ Skipped-broad-redesign:
 - Diff summary: changed the headline from an excerptable GO-style phrase to a scoped backend-candidate PASS WITH CONDITIONS phrase, and updated substitution evidence to the current 48-test focused command.
 - Focused validation result: substitution command passed: 3 files / 48 tests.
 
+### Fix 7 - Portal Cooking browser smoke and stale-data clear
+
+- Files: `scripts/cooking-portal-browser-smoke.ts`, `package.json`, `src/portal/portal.html`, `__tests__/portal/portal-cooking-ui.test.ts`.
+- Test: `npm run smoke:cooking:portal` plus `npx vitest run __tests__/portal/portal-cooking-ui.test.ts`.
+- Diff summary: added a repeatable headless portal smoke for Cooking preference/pantry interaction and forged-tenant fail-closed behavior. Fixed the portal renderer so a scoped load failure clears prior Cooking state instead of leaving stale preference/pantry data visible under a failure badge.
+- Focused validation result: browser smoke passed against `127.0.0.1:8200`; portal UI test passed with 5 tests.
+
 ## Phase E: verification
 
 - `npx tsc --noEmit`: PASS.
@@ -162,9 +166,9 @@ Skipped-broad-redesign:
   - 3-file substitution command: PASS, 48 tests.
   - 7-file focused Cooking/security/tool/API command: PASS, 154 tests.
 - New tests: all new Cooking/auth/tool adversarial tests above passed.
-- `npm run verify`: PASS after date-determinism fixes, 429 files / 6425 tests, about 538 seconds.
+- `npm run verify`: PASS after the portal-smoke addition, 429 files / 6426 tests, about 527 seconds.
 - Authenticated API smoke: PASS, 13/13 via `scripts/full-nexus-local-engine.sh full-smoke`.
-- Portal smoke: static/unit portal tests passed; browser-level portal smoke not available.
+- Portal smoke: PASS. `npm run smoke:cooking:portal -- --base-url http://127.0.0.1:8200 --user-id 2 --tenant-id 2 --forged-tenant-id 9002` passed with `providerCallsAllowed:false`.
 - iOS CookingPresentationTests: PASS, 13/13 on selected iPhone 17 Pro simulator.
 - Full Nexus HubTests: FAIL unrelated to Cooking, 1009 passed / 4 failed in Content localization/model tests.
 - Cleanup status: PASS.
@@ -174,7 +178,7 @@ Skipped-broad-redesign:
 ## Decisions / pushbacks
 
 - I did not trust Claude's reports as ground truth. They were read from the QA branch and re-checked with focused tests, full verify, local engine smoke, and iOS tests.
-- I did not implement a live portal Playwright smoke because no project Playwright config or dedicated browser smoke command was present; adding a new harness is useful but not a low-risk release-gate patch.
+- I added a dedicated live portal Playwright smoke because the browser evidence gap was release-gate relevant and the implementation stayed local-only, fixture-gated, and scoped to Cooking.
 - I did not modify iOS code because the focused Cooking presentation tests passed and the live UI issue is fixture/evidence coverage, not a confirmed UI bug.
 - I did not fix unrelated full-suite iOS Content failures in the Cooking workstream.
 
@@ -183,8 +187,6 @@ Skipped-broad-redesign:
 - P0: none found in this pass.
 - P1: none found in this pass.
 - P2:
-  - Browser-level Cooking portal smoke remains missing.
-  - Live iOS substitution-row proof needs a deterministic seeded fixture.
   - Substitution acceptance/replacement workflow remains product follow-up.
   - Portal deep recipe/meal-plan/grocery editors remain future work.
 - P3:
@@ -192,13 +194,11 @@ Skipped-broad-redesign:
 
 ## Confidence
 
-- Overall confidence in shipped state: MEDIUM.
+- Overall confidence in shipped state: MEDIUM-HIGH.
 - Conditions remaining before production promotion:
   - Normal staging gate, staging smoke, and production health checks.
-  - Browser-level Cooking portal smoke or documented acceptance.
-  - Deterministic live iOS fixture proving substitution rows from backend data.
   - Real-provider quality sampling only if explicitly approved and controlled.
 - What would raise confidence to HIGH:
-  - Add/run a portal browser smoke with invalid operator/session probes.
-  - Add/run an iOS seeded Cooking fixture that renders backend substitution candidates.
+  - Add invalid non-loopback operator/session probes beyond local loopback bypass.
+  - Add first-class substitution acceptance/replacement workflow coverage.
   - Confirm staging Cooking smoke with the exact release candidate.
