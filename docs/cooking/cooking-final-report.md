@@ -1,7 +1,7 @@
 # Cooking Final Report
 
 Date: 2026-04-30
-Branch: `feature/cooking-intelligence-upgrade`
+Branch: `feature/cooking-intelligence-upgrade` at `c8dca78`
 Verdict: backend candidate PASS WITH CONDITIONS — do not promote to production from this workstream
 
 ## What Changed
@@ -31,7 +31,7 @@ Verdict: backend candidate PASS WITH CONDITIONS — do not promote to production
 - Planning-context focused Vitest: 3 files / 29 tests PASS.
 - Substitution-candidate focused Vitest: 3 files / 48 tests PASS.
 - Typecheck: PASS.
-- Full `npm run verify`: PASS, 427 files / 6398 tests.
+- Full `NEXUS_LOCAL_ALLOW_MODEL_CALLS=0 npm run verify`: PASS, 429 files / 6426 tests after the portal-smoke addition.
 - Full local backend product smoke: PASS WITH CONDITIONS on `127.0.0.1:8326`; authenticated API smoke 13/13, Chat tenant smoke 15 pass / 1 partial / 0 fail, cross-skill fixtures PASS, Chat eval/day-to-day fixtures PASS.
 - Live local Cooking planning-context API read-back: PASS; Finance tight-budget context and Secretary cooking-window pressure were returned by `GET /api/v1/cooking/meal-plan`.
 - iOS rich Cooking DTO/rendering slice: PASS on branch `feature/cooking-rich-state-ui` at `f4f1053`, `cfe5df4`, `e8cdc80`, `d7eb9f4`, and `7be4b6f`; 13 focused Cooking presentation tests passed, including rich and legacy meal-plan payload decoding, pantry freshness DTO rendering, direct preference-correction POST body validation, assessment review-prompt routing, and compact substitution suggestion rendering.
@@ -40,10 +40,12 @@ Verdict: backend candidate PASS WITH CONDITIONS — do not promote to production
   simulator rendered the seeded dinner, blocked Cooking signals,
   backend-provided substitution candidates, preference summary, and action
   affordances without app error logs.
-- Portal Cooking management: PASS; `npx vitest run __tests__/portal/portal-cooking-routes.test.ts __tests__/portal/portal-cooking-ui.test.ts` passed 10 tests for guarded backend contracts and browser UI wiring.
+- Portal Cooking management: PASS; `npx vitest run __tests__/portal/portal-cooking-routes.test.ts __tests__/portal/portal-cooking-ui.test.ts` passed 11 tests for guarded backend contracts, browser UI wiring, destructive confirmation, and stale-data clearing after a scoped load failure.
 - Portal Cooking browser runtime: PASS on `127.0.0.1:8200/portal`; authenticated
   local portal loaded user/tenant `2`, rendered the scoped preference/pantry
-  manager, one allergy preference, and no browser page/console errors.
+  manager, saved a scoped allergy preference, saved pantry state, then verified
+  forged tenant `9002` fails closed with `Load failed`, no stale Cooking
+  tables, no unexpected HTTP failures, and `providerCallsAllowed:false`.
 - No production data used.
 - No production calendar used.
 - No deployment performed.
