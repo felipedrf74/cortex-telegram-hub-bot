@@ -49,7 +49,7 @@ vi.mock('../../src/services/cooking-secretary-integration', () => ({
 
 import { cookingRoutes } from '../../src/api/routes/cooking';
 import { getOrCreateUser } from '../../src/services/user-service';
-import { addRecipe, setMealPlan, generateShoppingList, upsertPantryItem } from '../../src/services/cooking-chef';
+import { addRecipe, setMealPlan, generateShoppingList, upsertPantryItem, getRecipeById, getShoppingList, getMealPlan } from '../../src/services/cooking-chef';
 import * as cookingChef from '../../src/services/cooking-chef';
 import { createPlan, createWeek, createSession } from '../../src/services/training-plans';
 import { publishHighLegLoad, publishLowSleep } from '../../src/services/training-signals';
@@ -497,6 +497,103 @@ describe('Cooking API — shopping list item updates', () => {
       }),
     ]));
     expect(res.body.data.preferences.summary).toContain('Allergies: peanuts');
+  });
+
+  it('accepts a scoped substitution candidate and refreshes the shopping list', async () => {
+    const user = getOrCreateUser(21023, { username: 'cook23' });
+    const recipe = addRecipe(user.id, 'Peanut noodles', [
+      { name: 'Peanuts', quantity: '30', unit: 'g' },
+      { name: 'Noodles', quantity: '100', unit: 'g' },
+    ], {
+      tenantId: 101,
+      instructions: 'Toss noodles with peanuts.',
+    });
+    setMealPlan(user.id, '2026-04-13', 'dinner', 'Peanut noodles', {
+      recipeId: recipe.id,
+      notes: 'Use peanuts if available.',
+      tenantId: 101,
+    });
+    generateShoppingList(user.id, '2026-04-13', 101);
+
+    const res = await dispatch('POST', '/meal-plan/substitutions/apply', user.id, {
+      date: '2026-04-13',
+      mealType: 'dinner',
+      originalIngredient: 'Peanuts',
+      suggestedIngredient: 'sunflower seed butter',
+      reason: 'allergy',
+      updateShoppingList: true,
+      tenantId: 202,
+    }, 101);
+
+    expect(res.statusCode).toBe(200);
+    expect(res.body.data.substitution).toMatchObject({
+      originalIngredient: 'Peanuts',
+      suggestedIngredient: 'sunflower seed butter',
+      reason: 'allergy',
+      shoppingListUpdated: true,
+    });
+    expect(res.body.data.recipe.ingredients).toEqual(expect.arrayContaining([
+      expect.objectContaining({ name: 'sunflower seed butter', quantity: '30', unit: 'g' }),
+    ]));
+    expect(res.body.data.meal.title).toBe('sunflower seed butter noodles');
+
+    const updatedRecipe = getRecipeById(user.id, recipe.id, 101)!;
+    expect(updatedRecipe.title).toBe('sunflower seed butter noodles');
+    expect(updatedRecipe.instructions).toBe('Toss noodles with sunflower seed butter.');
+    expect(updatedRecipe.ingredients.map((ingredient) => ingredient.name)).not.toContain('Peanuts');
+
+    const updatedMeal = getMealPlan(user.id, '2026-04-13', '2026-04-13', 101)[0];
+    expect(updatedMeal.notes).toBe('Use sunflower seed butter if available.');
+
+    const updatedList = getShoppingList(user.id, '2026-04-13', 101)!;
+    expect(updatedList.items.map((item) => item.name)).toContain('sunflower seed butter');
+    expect(updatedList.items.map((item) => item.name)).not.toContain('Peanuts');
+    expect(mockInvalidateCookingDerivedCaches).toHaveBeenCalledWith(user.id);
+  });
+
+  it('does not apply a substitution across tenant scope', async () => {
+    const user = getOrCreateUser(21024, { username: 'cook24' });
+    const recipe = addRecipe(user.id, 'Peanut noodles', [
+      { name: 'Peanuts', quantity: '30', unit: 'g' },
+    ], { tenantId: 101 });
+    setMealPlan(user.id, '2026-04-13', 'dinner', 'Peanut noodles', { recipeId: recipe.id, tenantId: 101 });
+
+    const res = await dispatch('POST', '/meal-plan/substitutions/apply', user.id, {
+      date: '2026-04-13',
+      mealType: 'dinner',
+      originalIngredient: 'Peanuts',
+      suggestedIngredient: 'sunflower seed butter',
+      reason: 'allergy',
+    }, 202);
+
+    expect(res.statusCode).toBe(404);
+    expect(res.body.error.code).toBe('NOT_FOUND');
+    expect(getRecipeById(user.id, recipe.id, 101)!.ingredients).toEqual([
+      { name: 'Peanuts', quantity: '30', unit: 'g' },
+    ]);
+    expect(getRecipeById(user.id, recipe.id, 202)).toBeNull();
+    expect(mockInvalidateCookingDerivedCaches).not.toHaveBeenCalled();
+  });
+
+  it('rejects invalid substitution reasons before mutating Cooking data', async () => {
+    const user = getOrCreateUser(21025, { username: 'cook25' });
+    const recipe = addRecipe(user.id, 'Mushroom toast', [
+      { name: 'Mushrooms', quantity: '1', unit: 'cup' },
+    ]);
+    setMealPlan(user.id, '2026-04-13', 'dinner', 'Mushroom toast', { recipeId: recipe.id });
+
+    const res = await dispatch('POST', '/meal-plan/substitutions/apply', user.id, {
+      date: '2026-04-13',
+      mealType: 'dinner',
+      originalIngredient: 'Mushrooms',
+      suggestedIngredient: 'zucchini',
+      reason: 'because_i_said_so',
+    });
+
+    expect(res.statusCode).toBe(400);
+    expect(res.body.error.message).toContain('reason must be');
+    expect(getRecipeById(user.id, recipe.id)!.ingredients[0].name).toBe('Mushrooms');
+    expect(mockInvalidateCookingDerivedCaches).not.toHaveBeenCalled();
   });
 
   it('applies Finance budget and Secretary availability context before meal-plan response composition', async () => {

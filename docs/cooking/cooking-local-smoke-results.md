@@ -38,7 +38,7 @@ xcodebuild -project "Nexus Hub.xcodeproj" -scheme "Nexus Hub" -sdk iphonesimulat
 | Pantry | PASS | Persistent tenant-scoped CRUD, expired filtering, shopping-list pantry status, and route/tool tenant scope covered |
 | Preference memory | PASS | User-private preference writes, corrections, tenant isolation, Chat tools, allergy assessment read-through, and app-facing smoke covered |
 | Finance/Secretary planning context | PASS | Finance monthly budget headroom and Secretary agenda pressure are read before meal-plan assessment, with safe degradation |
-| Substitution candidates | PASS | `npx vitest run __tests__/services/cooking-preferences.test.ts __tests__/services/cooking-intelligence.test.ts __tests__/api/cooking-routes.test.ts`: 48 tests passed; allergy/restriction/expired-pantry issues include reviewable substitution candidates plus adversarial instruction/body-tenant/payload probes |
+| Substitution candidates and application | PASS | `NEXUS_LOCAL_ALLOW_MODEL_CALLS=0 npx vitest run __tests__/api/cooking-routes.test.ts __tests__/services/cooking-intelligence.test.ts`: 45 tests passed; allergy/restriction/expired-pantry issues include reviewable substitution candidates, and accepted substitutions update the scoped recipe/meal copy plus regenerated shopping list while cross-tenant attempts fail closed |
 | Secretary prep scheduling route | PASS | Existing route regression passed after tenant fallback fix |
 | Deterministic assessment | PASS | Allergy, pantry, grocery, schedule, budget, Training cases covered |
 | Tool tenant scope | PASS | Tool executor forwards authenticated tenant into Cooking writes and preference reads/writes |

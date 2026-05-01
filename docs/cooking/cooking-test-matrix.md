@@ -13,6 +13,7 @@ Date: 2026-04-30
 | Cooking preference memory | `__tests__/services/cooking-preferences.test.ts`, `__tests__/api/cooking-routes.test.ts` | User-private preference writes, corrections, tenant isolation, and allergy assessment read-through |
 | Allergy/restriction safety | `__tests__/services/cooking-intelligence.test.ts` | Allergy conflict blocks assessment |
 | Substitution candidates | `__tests__/services/cooking-intelligence.test.ts`, `__tests__/api/cooking-routes.test.ts` | Allergy, dietary-restriction, and expired-pantry issues emit reviewable substitution candidates |
+| Substitution application | `__tests__/api/cooking-routes.test.ts` | Accepted substitution updates only the authenticated tenant's linked recipe/meal copy and regenerated shopping list; cross-tenant attempts fail closed |
 | Pantry safety | `__tests__/services/cooking-intelligence.test.ts` | Expired pantry item blocks use |
 | Grocery coherence | `__tests__/services/cooking-intelligence.test.ts` | Pantry/list coherence and missing ingredient warning |
 | Schedule/budget realism | `__tests__/services/cooking-intelligence.test.ts` | Over-capacity and over-budget warnings |
@@ -40,7 +41,7 @@ npm run verify
 ## Results
 
 - Focused Vitest: PASS, 5 files / 126 tests.
-- Substitution-candidate focused Vitest: PASS, 3 files / 34 tests.
+- Substitution-candidate/application focused Vitest: PASS, 2 files / 45 tests.
 - Pantry-focused Vitest: PASS, 4 files / 175 tests.
 - Preference-memory focused Vitest plus app-facing smoke: PASS, 7 files / 208 tests.
 - Planning-context focused Vitest: PASS, 3 files / 29 tests.
@@ -50,5 +51,5 @@ npm run verify
 
 ## Not Yet Run
 
-- iOS simulator smoke for rich Cooking states against the local backend.
-- Portal browser runtime smoke for the Cooking preference/pantry manager.
+- iOS/portal UI affordances for accepting the backend substitution application
+  contract.

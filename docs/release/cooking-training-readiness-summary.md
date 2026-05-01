@@ -6,7 +6,7 @@ Date: 2026-05-01
 
 | Workstream | Merge-to-main readiness | Production readiness | Confidence | Summary |
 | --- | --- | --- | --- | --- |
-| Cooking backend | READY_TO_MERGE with conditions | NOT DIRECT-DEPLOY READY | Medium-high | No known P0/P1 remains. Backend typecheck, focused Cooking/provider/portal tests, full `npm run verify`, local product smoke, portal smoke, and iOS focused rendering evidence are available. Production still needs normal staging, staging smoke, owner approval, and production health. |
+| Cooking backend | READY_TO_MERGE with conditions | NOT DIRECT-DEPLOY READY | Medium-high | No known P0/P1 remains. Backend typecheck, focused Cooking/provider/portal/substitution-apply tests, full `npm run verify`, local product smoke, portal smoke, and iOS focused rendering evidence are available. Production still needs normal staging, staging smoke, owner approval, and production health. |
 | Cooking iOS | READY_TO_MERGE with conditions | NOT DIRECT-DEPLOY READY | Medium | Focused `CookingPresentationTests` passed on a single simulator, and prior live local UI proof rendered backend substitution candidates. Full iOS suite has unrelated Content failures in the prior Cooking validation report, so merge should rely on focused Cooking evidence plus normal iOS CI/review. |
 | Training iOS | READY_TO_MERGE with conditions | NOT DIRECT-DEPLOY READY | Medium-high | The old `/tmp/ios-audit-2026-04-30.md` DO-NOT-SHIP findings are superseded by `c83ee42`/`173ce5b`: multi-week data is consumed, calendar fields are preserved, primary-focus notes render, and rich fixture UI tests pass. Production still requires provider-backed/non-production calendar smoke where applicable and signed TestFlight/device gates for auth/Health/APNs/account switching. |
 | Training backend/provider gates | READY_TO_MERGE with conditions | DEPLOY_WITH_CONDITIONS only | Medium-high | Existing Training release docs report Google/Outlook staging lifecycle and cross-skill staging smoke passed for the Training release candidate. This pass did not redeploy or rerun staging/provider smokes. |
@@ -19,7 +19,7 @@ Highest remaining risk: not a code P0/P1. The highest remaining release risk is 
 
 | Path | Workstream | Claimed verdict | Evidence level | Key open items | Confidence impact |
 | --- | --- | --- | --- | --- | --- |
-| `docs/qa/cooking-codex-revalidation-fixes.md` plus current hardened portal probe | Cooking | Medium-high confidence after fixes | E4/E5 | P2 substitution acceptance workflow, portal deep editors | High signal; includes adversarial tests, full verify, local smoke, iOS focused tests, portal browser smoke, and hardened signed-session invalid-auth browser proof. |
+| `docs/qa/cooking-codex-revalidation-fixes.md` plus current hardened portal/substitution passes | Cooking | Medium-high confidence after fixes | E4/E5 | P2 portal deep editors and direct UI accept affordance | High signal; includes adversarial tests, full verify, local smoke, iOS focused tests, portal browser smoke, hardened signed-session invalid-auth browser proof, and backend substitution application tests. |
 | `docs/cooking/cooking-final-report.md` | Cooking | backend candidate PASS WITH CONDITIONS | E4/E5 | normal staging/prod gates; no P0/P1 | Updated in this pass to current `429/6426` full verify and portal smoke evidence. |
 | `docs/cooking/cooking-production-open-blockers.md` | Cooking | no P0/P1 known | E2/E4 | P2 direct substitution apply workflow, portal editors, enum fallback tests | Supports merge readiness; not unconditional production readiness. |
 | `docs/cooking/cooking-local-smoke-results.md` | Cooking | PASS / PASS WITH CONDITIONS by area | E4/E5 | fixture routing, not real-provider quality sampling | Useful local product evidence. |
@@ -77,7 +77,7 @@ Highest remaining risk: not a code P0/P1. The highest remaining release risk is 
 - Prior verified interaction: local backend `127.0.0.1:8200`, fixture model mode, authenticated local seed with `Peanut recovery noodles` and `peanuts` allergy. iOS rendered the meal card, blocked signals, allergy/grocery issues, and substitution candidates `peanuts -> sunflower seed butter` / `peanuts -> roasted chickpeas`.
 - Portal interaction: `npm run smoke:cooking:portal` passed after the stale-data clear fix; forged tenant `9002` fails closed without stale tables.
 - Hardened portal auth interaction: `PORTAL_REQUIRE_SESSION_AUTH=true`, `PORTAL_ALLOW_LOCAL_BYPASS=false`, and a signed `ps_` admin session passed the browser smoke with `--probe-invalid-auth`; invalid `ps_` login returned `401` and kept the login overlay visible before the valid session loaded Cooking.
-- Untested paths: substitution accept/apply workflow and deep recipe/meal-plan/grocery portal editors.
+- Untested paths: direct iOS/portal accept affordances and deep recipe/meal-plan/grocery portal editors. Backend substitution application contract is tested.
 
 ### Training
 
@@ -137,7 +137,6 @@ Production deployment conditions that remain P1 operational gates:
 
 ### P2
 
-- Cooking substitution acceptance/replacement workflow.
 - Cooking portal deep recipe/meal-plan/grocery editors.
 - Cooking stronger allergy/restriction visual treatment and unknown/future enum fallback tests.
 - Training provider-backed calendar read-back from exact release candidate if the candidate changed since the recorded provider smokes.

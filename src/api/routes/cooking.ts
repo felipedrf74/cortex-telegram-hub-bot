@@ -16,6 +16,7 @@
  *   DELETE /recipes/:id                  — remove a recipe
  *   GET    /meal-plan?from=&to=          — list meal plan entries in range
  *   POST   /meal-plan                    — upsert one meal plan slot
+ *   POST   /meal-plan/substitutions/apply — accept a scoped substitution candidate
  *   DELETE /meal-plan?date=&mealType=    — clear one meal plan slot
  *   GET    /shopping-list?week=          — fetch the shopping list for a week
  *   POST   /shopping-list/generate       — (re)generate from the week's meal plan
@@ -43,6 +44,7 @@ import {
   updateRecipe,
   deleteRecipe,
   setMealPlan,
+  applyMealPlanSubstitution,
   getMealPlan,
   deleteMealPlan,
   generateShoppingList,
@@ -57,6 +59,7 @@ import {
   type MealPlan,
   type PantryItemInput,
   type Recipe,
+  type CookingSubstitutionReason,
 } from '../../services/cooking-chef';
 import { assessCookingMealPlan } from '../../services/cooking-intelligence';
 import {
@@ -190,6 +193,13 @@ function isValidNutritionField(value: unknown): value is number | null | undefin
   return value === undefined
     || value === null
     || (typeof value === 'number' && Number.isFinite(value) && value >= 0);
+}
+
+function isCookingSubstitutionReason(value: unknown): value is CookingSubstitutionReason {
+  return value === 'allergy'
+    || value === 'dietary_restriction'
+    || value === 'disliked_ingredient'
+    || value === 'expired_pantry';
 }
 
 function isHardTrainingSession(session: TrainingSession): boolean {
@@ -963,6 +973,75 @@ export function cookingRoutes(): Router {
         userId,
         operation: 'iOS cooking meal-plan set failed',
         message: 'Failed to save meal plan',
+      });
+    }
+  }));
+
+  /**
+   * POST /api/v1/cooking/meal-plan/substitutions/apply
+   * Body: { date, mealType, originalIngredient, suggestedIngredient, reason, updateShoppingList? }
+   *
+   * Accepts one deterministic substitution candidate and applies it to the
+   * scoped meal's linked recipe. The optional shopping-list refresh keeps the
+   * grocery plan aligned with the accepted replacement.
+   */
+  router.post('/meal-plan/substitutions/apply', asyncHandler(async (req, res: Response) => {
+    const { userId, tenantId } = req as AuthenticatedRequest;
+    const { date, mealType, originalIngredient, suggestedIngredient, reason, updateShoppingList } = req.body ?? {};
+
+    if (typeof date !== 'string' || !date.trim()) {
+      sendError(res, 'BAD_REQUEST', 'date is required');
+      return;
+    }
+    if (typeof mealType !== 'string' || !mealType.trim()) {
+      sendError(res, 'BAD_REQUEST', 'mealType is required');
+      return;
+    }
+    if (typeof originalIngredient !== 'string' || !originalIngredient.trim()) {
+      sendError(res, 'BAD_REQUEST', 'originalIngredient is required');
+      return;
+    }
+    if (typeof suggestedIngredient !== 'string' || !suggestedIngredient.trim()) {
+      sendError(res, 'BAD_REQUEST', 'suggestedIngredient is required');
+      return;
+    }
+    if (!isCookingSubstitutionReason(reason)) {
+      sendError(res, 'BAD_REQUEST', 'reason must be allergy, dietary_restriction, disliked_ingredient, or expired_pantry');
+      return;
+    }
+    if (updateShoppingList !== undefined && typeof updateShoppingList !== 'boolean') {
+      sendError(res, 'BAD_REQUEST', 'updateShoppingList must be a boolean when provided');
+      return;
+    }
+
+    try {
+      const result = applyMealPlanSubstitution(userId, {
+        date,
+        mealType,
+        originalIngredient,
+        suggestedIngredient,
+        reason,
+        updateShoppingList,
+      }, tenantId);
+      if (!result.applied) {
+        const status = result.reason === 'meal_not_found' || result.reason === 'recipe_not_found' ? 404 : 400;
+        sendError(res, status === 404 ? 'NOT_FOUND' : 'BAD_REQUEST', result.reason ?? 'substitution_not_applied', status);
+        return;
+      }
+      invalidateCookingDerivedCaches(userId);
+      sendSuccess(res, result);
+    } catch (err: unknown) {
+      if (sendCookingScopeConflictIfNeeded(res, err)) return;
+      const message = err instanceof Error ? err.message : '';
+      if (message.startsWith('COOKING_SUBSTITUTION')) {
+        sendError(res, 'BAD_REQUEST', message, 400);
+        return;
+      }
+      sendCookingInternalError(res, {
+        err,
+        userId,
+        operation: 'iOS cooking substitution application failed',
+        message: 'Failed to apply Cooking substitution',
       });
     }
   }));

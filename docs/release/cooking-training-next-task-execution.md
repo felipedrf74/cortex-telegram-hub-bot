@@ -104,3 +104,43 @@ NEXUS_LOCAL_ALLOW_MODEL_CALLS=0 npm run smoke:cooking:portal -- \
 Result: PASS. The invalid `ps_` session returned `401` with visible
 `Invalid token`, the valid signed session loaded user/tenant `2`, forged tenant
 `9002` failed closed, and `providerCallsAllowed:false`.
+
+## Follow-Up Execution: Substitution Application Contract
+
+Selected task: `CT-P2-001` backend in-place Cooking substitution acceptance
+workflow.
+
+Reason: after the hardened portal auth evidence gap closed, the next highest
+safe local item was a P2 product-quality gap. Cooking could generate and render
+reviewable substitution candidates, but there was no backend mutation contract
+for a client to accept one and keep the recipe, meal copy, and shopping list
+consistent.
+
+Implementation:
+
+- Added `applyMealPlanSubstitution` in `src/services/cooking-chef.ts`.
+- Added `POST /api/v1/cooking/meal-plan/substitutions/apply`.
+- The route requires `date`, `mealType`, `originalIngredient`,
+  `suggestedIngredient`, and a typed reason:
+  `allergy`, `dietary_restriction`, `disliked_ingredient`, or
+  `expired_pantry`.
+- The service finds the authenticated tenant's meal slot, updates only the
+  linked scoped recipe, replaces matching meal/recipe copy without regex-based
+  matching, and regenerates the tenant-scoped weekly shopping list unless the
+  caller explicitly disables it.
+- Body-side tenant spoofing is ignored; the authenticated route tenant remains
+  the scope of truth.
+
+Validation:
+
+```bash
+NEXUS_LOCAL_ALLOW_MODEL_CALLS=0 npx vitest run \
+  __tests__/api/cooking-routes.test.ts \
+  __tests__/services/cooking-intelligence.test.ts
+
+NEXUS_LOCAL_ALLOW_MODEL_CALLS=0 npx tsc --noEmit
+```
+
+Result: PASS. Focused Cooking route/intelligence tests passed 2 files / 45
+tests, including accepted substitution application, cross-tenant denial, and
+invalid reason rejection. Typecheck passed.

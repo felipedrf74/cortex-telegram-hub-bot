@@ -25,6 +25,8 @@ This branch adds the validation foundation that substitutions should obey:
 - time/budget warnings
 - deterministic substitution candidates in meal-plan assessment issues and the
   top-level `assessment.substitutionSuggestions` array
+- accepted substitution application through
+  `POST /api/v1/cooking/meal-plan/substitutions/apply`
 
 Substitution suggestions include:
 
@@ -37,9 +39,11 @@ Substitution suggestions include:
 - confidence
 - review warning when uncertain
 
-The first implementation is intentionally conservative and deterministic. It is
-designed for iOS/portal rendering and review workflows, not automatic recipe
-mutation.
+The implementation is intentionally conservative and deterministic. Candidate
+generation is separate from mutation: users or clients must explicitly accept a
+replacement. Accepted replacements update the scoped meal's linked recipe,
+adjust matching meal/recipe copy, and optionally regenerate the tenant-scoped
+weekly shopping list.
 
 ## Required Next Implementation
 
@@ -51,6 +55,7 @@ Add a deeper substitution engine that considers:
 - texture/flavor role
 - unavailable store items
 - pantry quantity and low-stock status
+- portal/iOS affordances for accepting a backend substitution candidate
 
 ## Safety Rule
 

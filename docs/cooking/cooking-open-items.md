@@ -13,15 +13,14 @@ substitution rendering landed.
 
 ## P2
 
-- Add a dedicated in-place substitution application workflow if product wants
-  users to accept a suggested replacement directly from iOS/portal.
 - Add recipe library, meal-plan, and grocery-settings portal deep editors once
   those backend management contracts are promoted beyond preference/pantry.
 - Add stronger iOS visual treatment for allergy/restriction issues.
 - Add unknown/future Cooking enum fallback tests.
 - Pantry quantity normalization and low-stock suggestions beyond CRUD/status.
 - Advanced substitution engine for price/equipment/cuisine/function-aware
-  substitutions beyond the deterministic safety candidates.
+  substitutions beyond deterministic safety candidates and accepted
+  replacement application.
 - Leftover/waste optimizer.
 - Store/unavailable item fallback.
 - Item-price grocery budget optimizer and Secretary-driven alternate cooking-window proposals.

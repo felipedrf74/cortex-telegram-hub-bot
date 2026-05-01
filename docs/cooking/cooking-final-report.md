@@ -15,6 +15,9 @@ Verdict: backend candidate PASS WITH CONDITIONS — do not promote to production
 - Shopping-list generation now marks items as pantry available, expired, or still needed.
 - Added deterministic Cooking intelligence assessment for allergy, dietary restriction, grocery coherence, pantry freshness, schedule capacity, budget, Training coverage, repetition, and complexity.
 - Added deterministic, reviewable substitution candidates to Cooking assessment issues and the top-level `assessment.substitutionSuggestions` array.
+- Added scoped substitution application contract so accepted replacements update
+  the linked recipe, matching meal/recipe copy, and regenerated weekly shopping
+  list without crossing tenant boundaries.
 - Added additive `assessment` read-back to `GET /api/v1/cooking/meal-plan`.
 - Added audited portal admin/operator routes for scoped Cooking preference and pantry management.
 - Added portal browser UI for scoped Cooking preference review, preference
@@ -30,6 +33,7 @@ Verdict: backend candidate PASS WITH CONDITIONS — do not promote to production
 - Preference-memory focused Vitest plus app-facing smoke: 7 files / 208 tests PASS.
 - Planning-context focused Vitest: 3 files / 29 tests PASS.
 - Substitution-candidate focused Vitest: 3 files / 48 tests PASS.
+- Substitution application focused Vitest: 2 files / 45 tests PASS.
 - Typecheck: PASS.
 - Full `NEXUS_LOCAL_ALLOW_MODEL_CALLS=0 npm run verify`: PASS, 429 files / 6426 tests after the portal-smoke addition.
 - Full local backend product smoke: PASS WITH CONDITIONS on `127.0.0.1:8326`; authenticated API smoke 13/13, Chat tenant smoke 15 pass / 1 partial / 0 fail, cross-skill fixtures PASS, Chat eval/day-to-day fixtures PASS.
@@ -59,10 +63,10 @@ Verdict: backend candidate PASS WITH CONDITIONS — do not promote to production
 
 ## Remaining Conditions Before Production
 
-- Add a dedicated in-place substitution acceptance/replacement workflow if the
-  product wants direct apply actions beyond compact suggestion rendering.
 - Add recipe library, meal-plan, and grocery-settings portal deep editors once
   backend management contracts exist.
+- Add iOS/portal direct-accept affordances for the backend substitution
+  application contract if product wants one-tap replacement actions.
 - Preserve the condition that this smoke used fixture routing, not real provider
   quality sampling.
 

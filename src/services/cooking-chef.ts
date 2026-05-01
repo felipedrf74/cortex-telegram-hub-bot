@@ -127,6 +127,38 @@ export interface PantryItemInput {
   notes?: string | null;
 }
 
+export type CookingSubstitutionReason =
+  | 'allergy'
+  | 'dietary_restriction'
+  | 'disliked_ingredient'
+  | 'expired_pantry';
+
+export interface MealPlanSubstitutionInput {
+  date: string;
+  mealType: string;
+  originalIngredient: string;
+  suggestedIngredient: string;
+  reason: CookingSubstitutionReason;
+  updateShoppingList?: boolean;
+}
+
+export interface MealPlanSubstitutionResult {
+  applied: boolean;
+  reason?: 'meal_not_found' | 'recipe_not_found' | 'ingredient_not_found';
+  meal: MealPlan | null;
+  recipe: Recipe | null;
+  shoppingList: ShoppingList | null;
+  substitution: {
+    originalIngredient: string;
+    suggestedIngredient: string;
+    reason: CookingSubstitutionReason;
+    affectedMealId?: number;
+    affectedRecipeId?: number;
+    shoppingListUpdated: boolean;
+    appliedAt: string;
+  };
+}
+
 // ── Recipe CRUD ────────────────────────────────────────────────────
 
 function getCookingDb() {
@@ -405,6 +437,111 @@ export function deleteMealPlan(userId: number, date: string, mealType: string, t
     `DELETE FROM meal_plans WHERE date = ? AND meal_type = ? AND ${cookingPrivateScopePredicate()}`,
   ).run(date, mealType, ...cookingScopeParams(userId, tenantId));
   return result.changes > 0;
+}
+
+export function applyMealPlanSubstitution(
+  userId: number,
+  input: MealPlanSubstitutionInput,
+  tenantId?: number | null,
+): MealPlanSubstitutionResult {
+  const originalIngredient = normalizeRequiredText(input.originalIngredient, 'originalIngredient');
+  const suggestedIngredient = normalizeRequiredText(input.suggestedIngredient, 'suggestedIngredient');
+  if (normalizePantryName(originalIngredient) === normalizePantryName(suggestedIngredient)) {
+    throw new Error('COOKING_SUBSTITUTION_NOOP: suggestedIngredient must differ from originalIngredient');
+  }
+
+  const meals = getMealPlan(userId, input.date, input.date, tenantId);
+  const meal = meals.find((candidate) => candidate.meal_type === input.mealType) ?? null;
+  const baseSubstitution = {
+    originalIngredient,
+    suggestedIngredient,
+    reason: input.reason,
+    shoppingListUpdated: false,
+    appliedAt: new Date().toISOString(),
+  };
+  if (!meal) {
+    return {
+      applied: false,
+      reason: 'meal_not_found',
+      meal: null,
+      recipe: null,
+      shoppingList: null,
+      substitution: baseSubstitution,
+    };
+  }
+  if (!meal.recipe_id) {
+    return {
+      applied: false,
+      reason: 'recipe_not_found',
+      meal,
+      recipe: null,
+      shoppingList: null,
+      substitution: { ...baseSubstitution, affectedMealId: meal.id },
+    };
+  }
+
+  const recipe = getRecipeById(userId, meal.recipe_id, tenantId);
+  if (!recipe) {
+    return {
+      applied: false,
+      reason: 'recipe_not_found',
+      meal,
+      recipe: null,
+      shoppingList: null,
+      substitution: { ...baseSubstitution, affectedMealId: meal.id },
+    };
+  }
+
+  let ingredientChanged = false;
+  const updatedIngredients = recipe.ingredients.map((ingredient) => {
+    if (!ingredientNameMatches(ingredient.name, originalIngredient)) return ingredient;
+    ingredientChanged = true;
+    return { ...ingredient, name: suggestedIngredient };
+  });
+
+  if (!ingredientChanged) {
+    return {
+      applied: false,
+      reason: 'ingredient_not_found',
+      meal,
+      recipe,
+      shoppingList: null,
+      substitution: {
+        ...baseSubstitution,
+        affectedMealId: meal.id,
+        affectedRecipeId: recipe.id,
+      },
+    };
+  }
+
+  const updatedRecipe = updateRecipe(userId, recipe.id, {
+    title: replaceIngredientText(recipe.title, originalIngredient, suggestedIngredient),
+    ingredients: updatedIngredients,
+    instructions: recipe.instructions == null
+      ? recipe.instructions
+      : replaceIngredientText(recipe.instructions, originalIngredient, suggestedIngredient),
+  }, tenantId);
+  const updatedMeal = setMealPlan(userId, meal.date, meal.meal_type, replaceIngredientText(meal.title, originalIngredient, suggestedIngredient), {
+    recipeId: recipe.id,
+    notes: meal.notes == null ? undefined : replaceIngredientText(meal.notes, originalIngredient, suggestedIngredient),
+    tenantId,
+  });
+  const shoppingList = input.updateShoppingList === false
+    ? null
+    : generateShoppingList(userId, weekStartForDate(input.date), tenantId);
+
+  return {
+    applied: true,
+    meal: updatedMeal,
+    recipe: updatedRecipe,
+    shoppingList,
+    substitution: {
+      ...baseSubstitution,
+      affectedMealId: meal.id,
+      affectedRecipeId: recipe.id,
+      shoppingListUpdated: Boolean(shoppingList),
+    },
+  };
 }
 
 // ── Pantry ─────────────────────────────────────────────────────────
@@ -901,6 +1038,64 @@ function normalizeRequiredText(value: unknown, field: string): string {
   const text = String(value ?? '').trim();
   if (!text) throw new Error(`${field} is required`);
   return text;
+}
+
+function ingredientNameMatches(candidate: string, originalIngredient: string): boolean {
+  const candidateName = normalizePantryName(candidate);
+  const originalName = normalizePantryName(originalIngredient);
+  return candidateName === originalName || candidateName.includes(originalName);
+}
+
+function replaceIngredientText(value: string, originalIngredient: string, suggestedIngredient: string): string {
+  let source = String(value ?? '');
+  for (const needle of replacementNeedles(originalIngredient)) {
+    const lowerSource = source.toLowerCase();
+    const lowerNeedle = needle.toLowerCase();
+    let cursor = 0;
+    let result = '';
+    let changed = false;
+    while (cursor < source.length) {
+      const index = lowerSource.indexOf(lowerNeedle, cursor);
+      if (index === -1) {
+        result += source.slice(cursor);
+        break;
+      }
+      result += source.slice(cursor, index);
+      result += suggestedIngredient;
+      cursor = index + needle.length;
+      changed = true;
+    }
+    if (changed) source = result;
+  }
+  return source;
+}
+
+function replacementNeedles(originalIngredient: string): string[] {
+  const original = String(originalIngredient ?? '').trim();
+  if (!original) return [];
+  const needles = [original];
+  if (original.toLowerCase().endsWith('s') && original.length > 1) {
+    needles.push(original.slice(0, -1));
+  } else {
+    needles.push(`${original}s`);
+  }
+  return [...new Set(needles)].sort((a, b) => b.length - a.length);
+}
+
+function weekStartForDate(date: string): string {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(date);
+  if (!match) throw new Error('COOKING_SUBSTITUTION_INVALID_DATE: date must be YYYY-MM-DD');
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  const utc = new Date(Date.UTC(year, month - 1, day));
+  if (utc.getUTCFullYear() !== year || utc.getUTCMonth() !== month - 1 || utc.getUTCDate() !== day) {
+    throw new Error('COOKING_SUBSTITUTION_INVALID_DATE: date must be YYYY-MM-DD');
+  }
+  const dayOfWeek = utc.getUTCDay();
+  const mondayOffset = dayOfWeek === 0 ? -6 : 1 - dayOfWeek;
+  utc.setUTCDate(utc.getUTCDate() + mondayOffset);
+  return utc.toISOString().slice(0, 10);
 }
 
 function cleanNullableText(value: unknown): string | null {

@@ -23,6 +23,7 @@ Evidence:
 - Full backend verify passed in the `c8dca78` pre-commit hook: 429 files / 6426 tests.
 - Portal browser smoke exists and passed against local backend, including forged tenant fail-closed state and stale-data clearing.
 - Hardened portal auth browser smoke passed with `PORTAL_REQUIRE_SESSION_AUTH=true`, `PORTAL_ALLOW_LOCAL_BYPASS=false`, and a signed `ps_` admin session; invalid `ps_` login returned `401` and kept the login overlay visible before the valid session loaded scoped Cooking data.
+- Backend substitution acceptance contract exists: `POST /api/v1/cooking/meal-plan/substitutions/apply` updates only the authenticated tenant's linked recipe/meal copy and regenerated shopping list; focused tests passed 45/45 for Cooking routes plus intelligence assessment.
 - Focused iOS `CookingPresentationTests` passed: 13 tests.
 
 Conditions:
@@ -37,7 +38,7 @@ Verdict: `DEPLOY_WITH_CONDITIONS`.
 Conditions:
 
 1. Deploy exact Cooking RC to staging.
-2. Run focused Cooking staging smoke: recipe create/read, meal-plan read-back, pantry/preference read/write, portal scoped load, tenant forged request denial, and iOS/API compatibility where applicable.
+2. Run focused Cooking staging smoke: recipe create/read, meal-plan read-back, substitution apply/read-back, pantry/preference read/write, portal scoped load, tenant forged request denial, and iOS/API compatibility where applicable.
 3. Keep local fixture-mode evidence distinct from any real-provider quality sampling.
 4. Promote only after owner approval.
 5. Run production health checks and log/tenant-denial monitoring after deploy.
