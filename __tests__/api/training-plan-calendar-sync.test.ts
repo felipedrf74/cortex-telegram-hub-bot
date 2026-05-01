@@ -6,6 +6,7 @@ const mocks = vi.hoisted(() => ({
   getSessionsForWeek: vi.fn(),
   linkSessionToCalendar: vi.fn(),
   updateSession: vi.fn(),
+  updatePlanPreferences: vi.fn(),
   createEvent: vi.fn(),
   updateEvent: vi.fn(),
   deleteEvent: vi.fn(),
@@ -29,6 +30,7 @@ vi.mock('../../src/services/training-plans', () => ({
   getSessionsForWeek: mocks.getSessionsForWeek,
   linkSessionToCalendar: mocks.linkSessionToCalendar,
   updateSession: mocks.updateSession,
+  updatePlanPreferences: mocks.updatePlanPreferences,
 }));
 
 vi.mock('../../src/services/unified-calendar', () => ({
@@ -128,6 +130,7 @@ describe('training-plan-calendar-sync', () => {
     mocks.updateEvent.mockResolvedValue({ id: 'evt-updated', source: 'google' });
     mocks.linkSessionToCalendar.mockReturnValue(true);
     mocks.updateSession.mockReturnValue(true);
+    mocks.updatePlanPreferences.mockReturnValue(true);
     mocks.deleteEvent.mockResolvedValue(undefined);
     mocks.isConnected.mockImplementation((_userId: number, provider: string) => provider === 'google');
     mocks.isTrainingCalendarEventUnclaimed.mockReturnValue(true);
@@ -233,6 +236,99 @@ describe('training-plan-calendar-sync', () => {
     // Run title uses the runner emoji.
     const wedPayload = mocks.createEvent.mock.calls[1][0];
     expect(wedPayload.title).toBe('🏃 Tempo Run (35min)');
+  });
+
+  it('uses Outlook by default when both Google and Outlook are connected', async () => {
+    mocks.isConnected.mockImplementation((_userId: number, provider: string) => (
+      provider === 'google' || provider === 'outlook'
+    ));
+    mocks.getActivePlan.mockReturnValue({
+      id: 7,
+      user_id: 42,
+      start_date: '2026-04-20T00:00:00.000Z',
+      preferences_json: null,
+    });
+    mocks.getWeeksForPlan.mockReturnValue([{ id: 70, week_number: 1 }]);
+    mocks.getSessionsForWeek.mockReturnValue([
+      { id: 100, day_of_week: 'Monday', session_type: 'run', title: 'Easy Run', duration_minutes: 40, description: 'Easy.', status: 'pending', calendar_event_id: null, calendar_source: null },
+    ]);
+    mocks.createEvent.mockResolvedValueOnce({ id: 'evt-outlook', source: 'outlook' });
+
+    await syncTrainingPlanCalendar(42, now);
+
+    expect(mocks.createEvent).toHaveBeenCalledWith(expect.any(Object), 'outlook', 42);
+    expect(mocks.linkSessionToCalendar).toHaveBeenCalledWith(100, 'evt-outlook', 'outlook');
+  });
+
+  it('uses the requested connected provider and stores it as the plan preference', async () => {
+    mocks.isConnected.mockImplementation((_userId: number, provider: string) => (
+      provider === 'google' || provider === 'outlook'
+    ));
+    mocks.getActivePlan.mockReturnValue({
+      id: 7,
+      user_id: 42,
+      start_date: '2026-04-20T00:00:00.000Z',
+      preferences_json: JSON.stringify({ preferredTime: '12:00' }),
+    });
+    mocks.getWeeksForPlan.mockReturnValue([{ id: 70, week_number: 1 }]);
+    mocks.getSessionsForWeek.mockReturnValue([
+      { id: 100, day_of_week: 'Monday', session_type: 'run', title: 'Easy Run', duration_minutes: 40, description: 'Easy.', status: 'pending', calendar_event_id: null, calendar_source: null },
+    ]);
+    mocks.createEvent.mockResolvedValueOnce({ id: 'evt-google', source: 'google' });
+
+    await syncTrainingPlanCalendar(42, now, 'google');
+
+    expect(mocks.createEvent).toHaveBeenCalledWith(expect.any(Object), 'google', 42);
+    expect(mocks.updatePlanPreferences).toHaveBeenCalledWith(
+      7,
+      JSON.stringify({ preferredTime: '12:00', trainingCalendarSource: 'google' }),
+    );
+  });
+
+  it('does not relink a stale event from the non-selected provider when repairing sync', async () => {
+    mocks.isConnected.mockImplementation((_userId: number, provider: string) => (
+      provider === 'google' || provider === 'outlook'
+    ));
+    const session = {
+      id: 100,
+      day_of_week: 'Monday',
+      session_type: 'run',
+      title: 'Easy Run',
+      duration_minutes: 40,
+      description: 'Easy.',
+      status: 'pending',
+      calendar_event_id: 'evt-old-google',
+      calendar_source: 'google',
+    };
+    mocks.getActivePlan.mockReturnValue({
+      id: 7,
+      user_id: 42,
+      start_date: '2026-04-20T00:00:00.000Z',
+      preferences_json: JSON.stringify({ trainingCalendarSource: 'outlook' }),
+    });
+    mocks.getWeeksForPlan.mockReturnValue([{ id: 70, week_number: 1 }]);
+    mocks.getSessionsForWeek.mockReturnValue([session]);
+    mocks.getEvents.mockResolvedValue([
+      {
+        id: 'evt-old-google',
+        source: 'google',
+        summary: '🏃 Easy Run (40min)',
+        start: '2026-04-20T12:00:00.000Z',
+        end: '2026-04-20T12:40:00.000Z',
+        description: markerDescription(7, 3, 100, session),
+      },
+    ]);
+    mocks.createEvent.mockResolvedValueOnce({ id: 'evt-new-outlook', source: 'outlook' });
+
+    await syncTrainingPlanCalendar(42, now);
+
+    expect(mocks.createEvent).toHaveBeenCalledWith(expect.any(Object), 'outlook', 42);
+    expect(mocks.createEvent.mock.calls[0][0]).toMatchObject({
+      start: '2026-04-20T11:00:00.000Z',
+      end: '2026-04-20T11:40:00.000Z',
+    });
+    expect(mocks.linkSessionToCalendar).toHaveBeenCalledWith(100, 'evt-new-outlook', 'outlook');
+    expect(mocks.deleteEvent).toHaveBeenCalledWith('evt-old-google', 'google', 42);
   });
 
   it('submits Secretary scheduling intent before creating a legacy calendar event and uses the selected slot', async () => {

@@ -29,6 +29,7 @@ import {
   type ScheduleSessionResult,
 } from './training-schedule-utils';
 import { createTrainingCalendarEvent } from './training-calendar-event-writer';
+import type { CalendarSource } from '../../services/unified-calendar';
 
 const DAY_NAMES = ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday'];
 
@@ -100,6 +101,7 @@ export interface PersistGeneratedTrainingPlanInput {
    * omits the per-zone block and uses generic effort cues.
    */
   athleteProfiles?: AthleteProfiles;
+  calendarSource?: CalendarSource;
 }
 
 export interface PersistGeneratedTrainingPlanResult {
@@ -354,7 +356,7 @@ export async function persistGeneratedTrainingPlan(
           end: selectedWindow.end,
           description: eventPayload.description,
         },
-        undefined,
+        input.calendarSource,
         input.userId,
         {
           userId: input.userId,

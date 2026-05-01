@@ -2,7 +2,6 @@
 
 import * as trainingPlans from '../../services/training-plans';
 import { deleteEvent, getEvents, updateEvent, type CalendarSource, type UnifiedCalendarEvent } from '../../services/unified-calendar';
-import { isConnected } from '../../services/oauth-store';
 import {
   buildBusyWindows,
   normalizePreferredTime,
@@ -31,6 +30,10 @@ import {
   type SecretarySchedulingDecision,
   type SecretarySchedulingIntent,
 } from '../../services/secretary-scheduling-arbitrator';
+import {
+  resolveTrainingCalendarSource,
+  withTrainingCalendarSourcePreference,
+} from '../../services/training-calendar-source';
 
 export type TrainingPlanCalendarSyncResult =
   | {
@@ -158,6 +161,7 @@ function sessionDateFor(planStart: Date, weekNumber: number, dayOfWeek: string):
 export async function syncTrainingPlanCalendar(
   userId: number,
   now: Date = new Date(),
+  requestedCalendarSource?: CalendarSource | null,
 ): Promise<TrainingPlanCalendarSyncResult> {
   const plan = trainingPlans.getActivePlan(userId);
   if (!plan) {
@@ -174,7 +178,6 @@ export async function syncTrainingPlanCalendar(
 
   const preferences = readPlanPreferences(plan);
   const planStart = new Date(plan.start_date);
-  const calendarSource = preferredTrainingCalendarSource(userId);
   const planVersion = getPlanVersion(plan.id) ?? 1;
 
   // Walk every week / session up front so we can skip past or finished
@@ -262,6 +265,24 @@ export async function syncTrainingPlanCalendar(
     };
   }
 
+  const calendarSource = resolveTrainingCalendarSource({
+    userId,
+    requestedSource: requestedCalendarSource ?? undefined,
+    planPreferencesJson: plan.preferences_json,
+    linkedSources: candidates.map((candidate) => candidate.calendarSource),
+  });
+  if (!calendarSource) {
+    return {
+      status: 'no_calendar',
+      data: {
+        eventsCreated: 0,
+        sessionsAttempted: candidates.length,
+        sessionsAlreadySynced: 0,
+        message: 'No calendar provider is connected. Reconnect Google or Microsoft, then try again.',
+      },
+    };
+  }
+
   // Fetch busy windows ONCE for the entire span so each scheduling pass
   // sees the same calendar state. If the calendar fetch itself throws
   // (provider still degraded), we proceed with empty busy windows — the
@@ -277,7 +298,18 @@ export async function syncTrainingPlanCalendar(
   try {
     const events = await getEvents(startStr, endStr, userId);
     calendarEvents = events || [];
-    busyWindows = buildBusyWindows(calendarEvents);
+    const replacedLinkedEventKeys = new Set(
+      candidates
+        .filter((candidate) =>
+          candidate.calendarEventId
+          && candidate.calendarSource
+          && candidate.calendarSource !== calendarSource
+        )
+        .map((candidate) => `${candidate.calendarSource}:${candidate.calendarEventId}`),
+    );
+    busyWindows = buildBusyWindows(calendarEvents.filter((event) =>
+      !replacedLinkedEventKeys.has(`${event.source}:${event.id}`)
+    ));
     calendarFetchSucceeded = true;
   } catch (err) {
     logger.debug({ err, userId }, 'syncTrainingPlanCalendar: getEvents failed — scheduling without busy-window constraints');
@@ -308,6 +340,10 @@ export async function syncTrainingPlanCalendar(
     const ownershipToRelink = existingOwnership ?? reusableOwnership;
 
     if (!item.calendarEventId && ownershipToRelink) {
+      if (ownershipToRelink.calendar_source !== calendarSource) {
+        pending.push(item);
+        continue;
+      }
       if (!calendarFetchSucceeded) {
         trainingPlans.linkSessionToCalendar(
           item.sessionId,
@@ -369,6 +405,10 @@ export async function syncTrainingPlanCalendar(
     }
 
     const linkedEvent = findLinkedCalendarEvent(item, calendarEvents);
+    if (linkedEvent && linkedEvent.source !== calendarSource) {
+      pending.push({ ...item, staleLinkedEvent: linkedEvent });
+      continue;
+    }
     if (linkedEvent && isMatchingGeneratedTrainingEvent(item, linkedEvent, plan.id, { allowLegacyTitleMatch: true })) {
       await updateSameShapeEventIfNeeded({
         planId: plan.id,
@@ -417,6 +457,9 @@ export async function syncTrainingPlanCalendar(
   }
 
   if (pending.length === 0) {
+    if (requestedCalendarSource) {
+      persistPlanTrainingCalendarSourcePreference(plan, requestedCalendarSource);
+    }
     return {
       status: 'synced',
       data: {
@@ -441,7 +484,7 @@ export async function syncTrainingPlanCalendar(
   let firstError: Error | null = null;
 
   for (const item of pending) {
-    const existingEvent = consumeMatchingExistingTrainingEvent(item, plan.id, calendarEvents, consumedExistingEventKeys);
+    const existingEvent = consumeMatchingExistingTrainingEvent(item, plan.id, calendarEvents, consumedExistingEventKeys, calendarSource);
     if (existingEvent) {
       trainingPlans.linkSessionToCalendar(item.sessionId, existingEvent.id, existingEvent.source);
       recordTrainingCalendarOwnership({
@@ -611,6 +654,10 @@ export async function syncTrainingPlanCalendar(
     }
   }
 
+  if (requestedCalendarSource) {
+    persistPlanTrainingCalendarSourcePreference(plan, requestedCalendarSource);
+  }
+
   // Detect "no calendar provider connected" specifically — that's the
   // signal we want to give the iOS UI a clear "go reconnect" message
   // instead of a generic "some events failed" toast.
@@ -747,16 +794,6 @@ function recordTrainingCalendarOwnership(input: {
   }
 }
 
-function preferredTrainingCalendarSource(userId: number): 'google' | 'outlook' | undefined {
-  try {
-    if (isConnected(userId, 'google')) return 'google';
-    if (isConnected(userId, 'outlook')) return 'outlook';
-  } catch {
-    return undefined;
-  }
-  return undefined;
-}
-
 function buildTrainingSyncSecretaryIntent(input: {
   userId: number;
   tenantId: number;
@@ -816,8 +853,10 @@ function consumeMatchingExistingTrainingEvent(
   planId: number,
   events: UnifiedCalendarEvent[],
   consumedKeys: Set<string>,
+  calendarSource: CalendarSource,
 ): UnifiedCalendarEvent | null {
   for (const event of events) {
+    if (event.source !== calendarSource) continue;
     const key = `${event.source}:${event.id}`;
     if (consumedKeys.has(key)) continue;
     if (!isMatchingGeneratedTrainingEvent(item, event, planId, { allowLegacyTitleMatch: false })) continue;
@@ -826,6 +865,21 @@ function consumeMatchingExistingTrainingEvent(
     return event;
   }
   return null;
+}
+
+function persistPlanTrainingCalendarSourcePreference(
+  plan: trainingPlans.TrainingPlan,
+  calendarSource: CalendarSource,
+): void {
+  const preferencesJson = withTrainingCalendarSourcePreference(plan.preferences_json, calendarSource);
+  try {
+    trainingPlans.updatePlanPreferences?.(plan.id, preferencesJson);
+  } catch (err) {
+    logger.warn(
+      { err, userId: plan.user_id, planId: plan.id, calendarSource },
+      'syncTrainingPlanCalendar: failed to persist requested training calendar source preference',
+    );
+  }
 }
 
 function findLinkedCalendarEvent(

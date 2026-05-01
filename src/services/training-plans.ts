@@ -317,6 +317,16 @@ export function updatePlanStatus(planId: number, status: TrainingPlan['status'])
   return result.changes > 0;
 }
 
+export function updatePlanPreferences(planId: number, preferencesJson: string): boolean {
+  const db = getDb();
+  const result = db.prepare(`
+    UPDATE fitness_training_plans
+    SET preferences_json = ?, updated_at = datetime('now')
+    WHERE id = ?
+  `).run(preferencesJson, planId);
+  return result.changes > 0;
+}
+
 /**
  * Hard-delete a training plan and every artifact derived from it.
  *

@@ -324,6 +324,21 @@ describe('generateTrainingPlanForUser', () => {
     });
   });
 
+  it('persists the requested training calendar source for generation and follow-up sync', async () => {
+    const result = await generateTrainingPlanForUser({
+      userId: 12,
+      objective: 'Lisbon Marathon',
+      calendarSource: 'google',
+    });
+
+    expect(result.status).toBe('created');
+    const persistInput = mockPersistGeneratedTrainingPlan.mock.calls[0][0];
+    expect(persistInput.calendarSource).toBe('google');
+    expect(JSON.parse(persistInput.preferencesJson)).toMatchObject({
+      trainingCalendarSource: 'google',
+    });
+  });
+
   it('falls back to the deterministic template when the coach kernel fails', async () => {
     mockBuildCoachKernelTrainingPlan.mockImplementation(() => {
       throw new Error('kernel unavailable');

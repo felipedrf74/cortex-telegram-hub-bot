@@ -38,6 +38,7 @@ import * as trainingPlans from '../../services/training-plans';
 import { findOrphanedOwnerships } from '../../services/training-plan-lifecycle';
 import { reconcileOrphanedTrainingAgendaEvents } from '../../services/training-agenda-reconciliation';
 import { logger } from '../../utils/logger';
+import type { CalendarSource } from '../../services/unified-calendar';
 
 export interface GenerateTrainingPlanForUserInput {
   userId: number;
@@ -57,6 +58,7 @@ export interface GenerateTrainingPlanForUserInput {
    * inference) — additive, fully backward-compatible.
    */
   twoADayPreference?: 'never' | 'optional' | 'preferred' | null;
+  calendarSource?: CalendarSource | null;
 }
 
 export type TrainingPlanGenerationResult =
@@ -184,6 +186,7 @@ export async function generateTrainingPlanForUser(
     longWorkoutDay,
     notes,
     twoADayPreference,
+    calendarSource,
   } = input;
   const durationWeeks = input.durationWeeks ?? 4;
 
@@ -411,6 +414,7 @@ export async function generateTrainingPlanForUser(
       strengthSessionsPerWeek,
       longWorkoutDay: longWorkoutDay || null,
       notes: notes || null,
+      trainingCalendarSource: calendarSource || null,
     }),
     normalizedPreferredTime,
     normalizedPreferredCardioTime,
@@ -421,6 +425,7 @@ export async function generateTrainingPlanForUser(
       gymProfile,
       runProfile,
     },
+    calendarSource: calendarSource || undefined,
   });
 
   return {

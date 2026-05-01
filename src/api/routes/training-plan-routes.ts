@@ -18,6 +18,7 @@ import {
   isTrainingPlanGenerationEnabled,
   trainingOperationDisabledMessage,
 } from '../../services/training-operational-switches';
+import { validateRequestedTrainingCalendarSource } from '../../services/training-calendar-source';
 
 type TrainingScreenCacheInvalidator = (userId: number) => void;
 
@@ -71,10 +72,22 @@ export function registerTrainingPlanRoutes(
       longWorkoutDay,
       notes,
       twoADayPreference,
+      calendarSource,
     } = req.body;
 
     if (!objective || typeof objective !== 'string') {
       sendError(res, 'VALIDATION', 'objective is required (e.g., "Lisbon Marathon October 2026")', 400);
+      return;
+    }
+
+    const calendarSourceValidation = validateRequestedTrainingCalendarSource(userId, calendarSource);
+    if (!calendarSourceValidation.ok) {
+      sendError(
+        res,
+        calendarSourceValidation.code,
+        calendarSourceValidation.message,
+        calendarSourceValidation.status,
+      );
       return;
     }
 
@@ -110,6 +123,7 @@ export function registerTrainingPlanRoutes(
           && (twoADayPreference === 'never' || twoADayPreference === 'optional' || twoADayPreference === 'preferred')
           ? twoADayPreference
           : undefined,
+        calendarSource: calendarSourceValidation.source,
       });
 
       if (result.status === 'needs_profile') {
@@ -190,7 +204,18 @@ export function registerTrainingPlanRoutes(
     }
 
     try {
-      const result = await syncTrainingPlanCalendar(userId);
+      const calendarSourceValidation = validateRequestedTrainingCalendarSource(userId, req.body?.calendarSource);
+      if (!calendarSourceValidation.ok) {
+        sendError(
+          res,
+          calendarSourceValidation.code,
+          calendarSourceValidation.message,
+          calendarSourceValidation.status,
+        );
+        return;
+      }
+
+      const result = await syncTrainingPlanCalendar(userId, new Date(), calendarSourceValidation.source);
       if (result.status === 'no_active_plan') {
         sendSuccess(res, result.data);
         return;
