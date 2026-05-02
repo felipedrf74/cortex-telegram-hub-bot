@@ -24,4 +24,6 @@ Final rerun: 431/431 test files passed, 6507/6507 tests passed.
 ## iOS focused validation
 
 - 40/40 focused Training iOS tests passed on a single selected simulator.
-- Physical-device validation was unavailable.
+- 40/40 focused Training iOS tests passed on connected `iPhone Felipe`.
+- 4/4 `TrainingFixtureBypassUITests` passed on connected `iPhone Felipe`, including the no-plan create-plan sheet, strength stepper to 5, weekly plan timeline, and count-aware calendar banner.
+- True TestFlight/fresh-auth, account-switch, HealthKit/Apple Watch, and provider-backed calendar validation remain open.

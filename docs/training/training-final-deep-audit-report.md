@@ -6,7 +6,7 @@
 - biggest gray areas found: five-day strength support was not complete across all layers; marathon missing race date was not being surfaced as critical context; physical-device and provider-calendar validation remain open.
 - biggest bugs found: app-facing route normalization, volume enforcement, marathon strength engine maintenance logic, and deterministic fallback could still prevent or degrade explicit five-day strength requests.
 - biggest fixes applied: five-day strength now survives route, engine, volume enforcement, and fallback; marathon without race date now gets a critical follow-up; fallback default behavior was restored after full verify caught a regression.
-- remaining release risk: signed-device/TestFlight Training interaction and Google/Outlook non-production lifecycle smoke were not run.
+- remaining release risk: fixture-based signed-device Training interaction passed after the initial report, but true TestFlight/fresh-auth/Apple/Health/two-account validation and Google/Outlook non-production lifecycle smoke were not run.
 - whether Training is ready to merge/main: yes, with the listed validation conditions.
 - whether Training is ready for production: not from this pass alone; production needs staging/provider calendar smoke and signed-device validation.
 
@@ -14,7 +14,7 @@
 
 - Did you proceed without unnecessary pauses: yes.
 - Did you prioritize P0/P1 over easier tasks: yes; the incomplete five-day strength path and marathon missing-data path were fixed before docs/polish.
-- Any hard blockers: physical iPhone was not available to Xcode; default local smoke user lacked a completed Training profile, so local generation correctly stopped at profile completion.
+- Any hard blockers: default local smoke user lacked a completed Training profile, so local generation correctly stopped at profile completion. Physical iPhone became available after the main pass and was used for focused Training tests.
 - Any task skipped due to risk: broad tenant-aware mesh reader redesign and provider calendar smoke were documented, not patched, because they require broader schema/provider work.
 
 ## Branch and backup
@@ -123,10 +123,10 @@
 
 ## iOS contract and frontend validation
 
-- iOS run: focused xcodebuild tests on one selected simulator.
-- physical device run if available: not available to Xcode.
-- flows tested: contract/resolver/sync-state unit tests, not manual end-to-end UI interaction.
-- rich states: plan sync state tests pass; full rich visual set remains open.
+- iOS run: focused xcodebuild tests on one selected simulator during the main pass, then focused physical-device tests on `iPhone Felipe` after the device became available.
+- physical device run if available: `iPhone Felipe` (`00008150-000C0D5101D8401C`) ran 40 focused Training unit/contract tests and 4 Training XCUITests.
+- flows tested: remote CTA dedup, Training home state builder, week/today sync decoding, auth/onboarding fixture bypass, no-plan create-plan sheet, strength stepper to 5, rich weekly plan timeline, and count-aware calendar banner.
+- rich states: plan sync state tests pass; full TestFlight/fresh-auth visual set remains open.
 - UI copy: no new change.
 - duplicate sections: fixed by prior iOS commit and revalidated statically/tests.
 - technical details: no new issue found.
@@ -155,6 +155,8 @@
 - Cross-skill fixtures: pass.
 - Chat tenant smoke: 15 pass / 1 partial / 0 fail.
 - iOS focused Training tests: 40/40 pass.
+- Physical-device iOS focused Training tests: 40/40 pass on `iPhone Felipe`.
+- Physical-device Training fixture XCUITests: 4/4 pass on `iPhone Felipe`.
 
 ## Cleanup
 
@@ -181,11 +183,11 @@
 
 - P0: none.
 - P1: none remaining from this code scope.
-- P2: signed device/TestFlight Training smoke; Google/Outlook non-production lifecycle smoke; tenant-explicit mesh readers; iOS feedback interaction; cycling/hybrid progression harness.
+- P2: true TestFlight/fresh-auth/Apple/Health/two-account Training smoke; Google/Outlook non-production lifecycle smoke; tenant-explicit mesh readers; iOS feedback interaction; cycling/hybrid progression harness.
 - P3: richer local Training fixture; visual rich-state snapshots.
 
 ## Final verdict
 
 PASS WITH CONDITIONS.
 
-The high-risk engine correctness gaps found in this pass are fixed and heavily tested, including full backend verify. Production promotion should still wait for provider calendar lifecycle smoke and signed-device/TestFlight Training interaction because those were not executable here.
+The high-risk engine correctness gaps found in this pass are fixed and heavily tested, including full backend verify and fixture-based physical-device Training UI tests. Production promotion should still wait for provider calendar lifecycle smoke and true TestFlight/fresh-auth/Apple/Health/two-account validation because those were not executed here.
