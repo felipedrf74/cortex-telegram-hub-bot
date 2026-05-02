@@ -17,8 +17,9 @@ import {
   _resetRateLimiterForTests,
 } from '../../src/api/rate-limiter';
 
-function mockReq(opts: { userId?: number; ip?: string } = {}): Request {
+function mockReq(opts: { userId?: number; ip?: string; method?: string } = {}): Request {
   return {
+    method: opts.method,
     ip: opts.ip,
     socket: { remoteAddress: opts.ip || '203.0.113.1' },
     userId: opts.userId,
@@ -49,11 +50,39 @@ describe('rate-limiter — two-bucket behavior', () => {
   it('keys authenticated traffic by userId', () => {
     const res = mockRes();
     const next = vi.fn();
-    rateLimitMiddleware(mockReq({ userId: 7 }), res, next as NextFunction);
+    rateLimitMiddleware(mockReq({ userId: 7, method: 'POST' }), res, next as NextFunction);
 
     expect(next).toHaveBeenCalledOnce();
     expect((res as any).headers['X-RateLimit-Bucket']).toBe('user');
     expect((res as any).headers['X-RateLimit-Limit']).toBe(60);
+  });
+
+  it('uses a higher separate bucket for authenticated GET navigation reads', () => {
+    const next = vi.fn();
+
+    for (let i = 0; i < 180; i++) {
+      const res = mockRes();
+      rateLimitMiddleware(mockReq({ userId: 7, method: 'GET' }), res, next as NextFunction);
+      expect((res as any).statusCode).toBe(200);
+      expect((res as any).headers['X-RateLimit-Bucket']).toBe('user-read');
+      expect((res as any).headers['X-RateLimit-Limit']).toBe(300);
+    }
+
+    expect(next).toHaveBeenCalledTimes(180);
+  });
+
+  it('keeps authenticated GET bursts from consuming the tighter mutation/chat bucket', () => {
+    const next = vi.fn();
+
+    for (let i = 0; i < 180; i++) {
+      rateLimitMiddleware(mockReq({ userId: 9, method: 'GET' }), mockRes(), next as NextFunction);
+    }
+
+    const mutationRes = mockRes();
+    rateLimitMiddleware(mockReq({ userId: 9, method: 'POST' }), mutationRes, next as NextFunction);
+    expect((mutationRes as any).statusCode).toBe(200);
+    expect((mutationRes as any).headers['X-RateLimit-Bucket']).toBe('user');
+    expect((mutationRes as any).headers['X-RateLimit-Remaining']).toBe(59);
   });
 
   it('keys unauthenticated traffic by client IP (tighter limit)', () => {
@@ -105,7 +134,7 @@ describe('rate-limiter — two-bucket behavior', () => {
 
     // Exhaust user 1's bucket (60 requests)
     for (let i = 0; i < 61; i++) {
-      rateLimitMiddleware(mockReq({ userId: 1, ip: '198.51.100.50' }), mockRes(), next);
+      rateLimitMiddleware(mockReq({ userId: 1, ip: '198.51.100.50', method: 'POST' }), mockRes(), next);
     }
 
     // Unauth'd call from the same IP should still work (hasn't touched the IP bucket)

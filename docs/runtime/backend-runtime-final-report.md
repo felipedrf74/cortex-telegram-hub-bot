@@ -1,0 +1,156 @@
+# Backend/runtime QA and usability performance report
+
+## Executive summary
+
+Verdict: PASS WITH CONDITIONS
+
+Biggest root cause: authenticated iOS read traffic shared the same 60/minute quota as mutations and chat/model-triggering requests.
+
+Biggest fix: split authenticated `GET`/`HEAD` requests into a separate `user-read` bucket with default `IOS_API_READ_RATE_LIMIT=300`, while preserving the existing tighter mutation/chat bucket.
+
+Remaining risk: iOS interaction and staging p95 validation still need to confirm the perceived app improvement on a physical device and real release environment.
+
+Backend/runtime likely contributed to iOS lag: yes, especially when repeated navigation caused read bursts to hit `429`.
+
+## Execution behavior
+
+The pass prioritized the confirmed P1 user-facing runtime issue before lower-priority docs and polish. No task was skipped because it was difficult.
+
+## Branch and backup
+
+Repo: `/tmp/nexus-backend-runtime-ios-audit`
+
+Branch: `feature/backend-runtime-ios-usability-performance-audit`
+
+Base commit: `53f580a chore: bump version to 4.14.112 [deploy]`
+
+Backup branch/tag: `backup/backend-runtime-ios-usability-before-audit-20260502-0218`
+
+Primary backend repo was dirty before work, so changes were made in a clean worktree.
+
+## Local engine
+
+Startup:
+
+```bash
+NEXUS_LOCAL_ALLOW_MODEL_CALLS=0 scripts/full-nexus-local-engine.sh up
+```
+
+Local fixture/provider mode was active. No production data, production calendars, or real provider/model calls were used.
+
+Authenticated local smoke passed 13/13.
+
+## iOS-facing endpoint inventory
+
+Measured local reads after fix:
+
+- Home: `/api/v1/dashboard/home`, 200, 33.3 ms, 8003 bytes
+- Dashboard shell: `/api/v1/dashboard`, 200, 3.2 ms, 1302 bytes
+- Week/Semana: `/api/v1/plan/week`, 200, 1.6 ms, 7726 bytes
+- Plan today: `/api/v1/plan/today`, 200, 1.5 ms, 5680 bytes
+- Tasks: `/api/v1/tasks/lists`, 200, 0.7 ms
+- Tasks due today: `/api/v1/tasks/filtered?filter=dueToday`, 200, 0.7 ms
+- Training: `/api/v1/training/home`, 200, 2.6 ms
+- Connections: `/api/v1/connections`, 200, 1.2 ms
+- Areas/Skills: `/api/v1/skills/catalog`, 200, 2.0 ms, 9213 bytes
+
+No model/provider calls were observed on simple navigation reads in fixture mode.
+
+## Root causes found
+
+Cause: read-heavy navigation could exhaust shared authenticated quota.
+
+Affected service: `src/api/rate-limiter.ts`
+
+Evidence: synthetic rapid read baseline previously hit `429` near 60 authenticated requests/minute. After the fix, a 144-request read burst returned 0 rate-limit responses.
+
+User impact: app tabs and Week/Semana can appear frozen or unresponsive when backend returns `429` during normal read refreshes.
+
+Severity: P1.
+
+## Fixes implemented
+
+Files:
+
+- `src/api/rate-limiter.ts`
+- `src/config.ts`
+- `.env.example`
+- `__tests__/api/rate-limiter.test.ts`
+
+Summary:
+
+- Added `IOS_API_READ_RATE_LIMIT`.
+- Added separate authenticated read bucket.
+- Preserved mutation/chat, unauthenticated, internal, webhook, and internal-AI rate limits.
+- Added regression tests for read bursts and bucket independence.
+
+## Runtime performance evidence
+
+After fix:
+
+- 144 authenticated read probes
+- 0 `429` responses
+- valid endpoints returned `200`
+- authenticated read responses exposed `X-RateLimit-Bucket: user-read`
+- follow-up POST used `X-RateLimit-Bucket: user`, proving separate buckets
+
+## Cross-skill/shared-context findings
+
+No confirmed model/provider calls during simple navigation reads in local fixture mode.
+
+Remaining follow-up:
+
+- add dependency timing for Home and Plan aggregation in staging.
+- confirm Skills catalog fetch cadence from iOS.
+
+## iOS contract findings
+
+The backend now exposes separate read rate-limit metadata. iOS should still handle future `RATE_LIMITED` responses with explicit retry/backoff instead of an indefinite loading state.
+
+## Tests and smoke
+
+Focused results:
+
+- `npx tsc --noEmit`: passed
+- `__tests__/api/rate-limiter.test.ts`: 16/16 passed
+- app-facing route focused sample: 8 files / 111 tests passed
+- local authenticated API smoke: 13/13 passed
+- full `npm run verify`: 429 files / 6447 tests passed
+
+## iOS interaction correlation
+
+iOS was not launched in this backend-only pass. The backend evidence supports a likely improvement, but final perceived responsiveness must be validated by running the iOS app against this backend build and by staging/physical-device testing.
+
+## Open items
+
+P0: none.
+
+P1: none confirmed after this fix.
+
+P2:
+
+- staging dependency timing for Home/Plan.
+- ETag or short-lived cache for stable read surfaces if iOS request cadence confirms repeated fetches.
+- iOS explicit `429` retry/backoff state.
+
+P3:
+
+- historical migration prefix warnings.
+
+## Next priority
+
+Run iOS against this backend branch in local/staging mode and repeat:
+
+- 10x bottom tab switching
+- 5x Home to Week/Semana open/close
+- Tasks load
+- Chat open
+- Areas open
+
+Correlate perceived latency with backend request counts, status codes, and p95 route timings.
+
+## Final verdict
+
+PASS WITH CONDITIONS
+
+The confirmed backend/runtime P1 was fixed and tested without weakening tenant/security or model routing. Production promotion still requires iOS interaction correlation and staging validation.

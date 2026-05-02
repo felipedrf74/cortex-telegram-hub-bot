@@ -25,6 +25,7 @@ import type { AuthenticatedRequest } from './auth-middleware';
  * buckets if we scale horizontally.
  */
 
+const userReadRequestLog = new Map<number, number[]>();
 const userRequestLog = new Map<number, number[]>();
 const ipRequestLog = new Map<string, number[]>();
 const internalRequestLog = new Map<string, number[]>();
@@ -34,6 +35,10 @@ const WINDOW_MS = 60 * 1000; // 1 minute
 
 // Authenticated users get the configured per-user quota.
 const USER_MAX_REQUESTS = config.ios?.rateLimit || 60;
+// Navigation/read-heavy iOS screens can legitimately make many GETs while
+// keeping the app responsive. Keep reads on a separate, higher bucket so a
+// rapid tab switch does not starve the tighter mutation/chat budget.
+const USER_READ_MAX_REQUESTS = config.ios?.readRateLimit || Math.max(USER_MAX_REQUESTS, 300);
 // Unauthenticated traffic gets a TIGHTER cap because:
 //   - legitimate use is rare (register/refresh are one-shot)
 //   - abuse potential is much higher (brute-force invite codes,
@@ -76,18 +81,22 @@ export function rateLimitMiddleware(req: Request, res: Response, next: NextFunct
 
   if (typeof userId === 'number' && userId > 0) {
     // ── Authenticated path ──
-    const userRequests = userRequestLog.get(userId) || [];
+    const isRead = req.method === 'GET' || req.method === 'HEAD';
+    const bucket = isRead ? userReadRequestLog : userRequestLog;
+    const maxRequests = isRead ? USER_READ_MAX_REQUESTS : USER_MAX_REQUESTS;
+    const bucketName = isRead ? 'user-read' : 'user';
+    const userRequests = bucket.get(userId) || [];
     const inWindow = userRequests.filter((ts) => now - ts < WINDOW_MS);
     inWindow.push(now);
-    userRequestLog.set(userId, inWindow);
+    bucket.set(userId, inWindow);
 
-    const remaining = Math.max(0, USER_MAX_REQUESTS - inWindow.length);
-    res.setHeader('X-RateLimit-Limit', USER_MAX_REQUESTS);
+    const remaining = Math.max(0, maxRequests - inWindow.length);
+    res.setHeader('X-RateLimit-Limit', maxRequests);
     res.setHeader('X-RateLimit-Remaining', remaining);
     res.setHeader('X-RateLimit-Reset', Math.ceil((now + WINDOW_MS) / 1000));
-    res.setHeader('X-RateLimit-Bucket', 'user');
+    res.setHeader('X-RateLimit-Bucket', bucketName);
 
-    if (inWindow.length > USER_MAX_REQUESTS) {
+    if (inWindow.length > maxRequests) {
       const retryAfter = Math.ceil(WINDOW_MS / 1000);
       res.setHeader('Retry-After', retryAfter);
       res.status(429).json({
@@ -132,6 +141,14 @@ export function rateLimitMiddleware(req: Request, res: Response, next: NextFunct
 // Cleanup old entries every 5 minutes (both buckets).
 setInterval(() => {
   const now = Date.now();
+  for (const [userId, timestamps] of userReadRequestLog) {
+    const inWindow = timestamps.filter((ts) => now - ts < WINDOW_MS);
+    if (inWindow.length === 0) {
+      userReadRequestLog.delete(userId);
+    } else {
+      userReadRequestLog.set(userId, inWindow);
+    }
+  }
   for (const [userId, timestamps] of userRequestLog) {
     const inWindow = timestamps.filter((ts) => now - ts < WINDOW_MS);
     if (inWindow.length === 0) {
@@ -267,6 +284,7 @@ export function internalAiCompleteRateLimitMiddleware(req: Request, res: Respons
 
 /** Test-only: clear both buckets between test cases. */
 export function _resetRateLimiterForTests(): void {
+  userReadRequestLog.clear();
   userRequestLog.clear();
   ipRequestLog.clear();
   webhookRequestLog.clear();

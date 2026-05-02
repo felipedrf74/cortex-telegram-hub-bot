@@ -445,6 +445,7 @@ export const config = {
     jwtSecret: process.env.IOS_API_JWT_SECRET || '',
     jwtExpiry: process.env.IOS_JWT_EXPIRY || '7d',
     rateLimit: optionalInt('IOS_API_RATE_LIMIT', 60, { min: 1 }),
+    readRateLimit: optionalInt('IOS_API_READ_RATE_LIMIT', 300, { min: 1 }),
     inviteCode: process.env.IOS_INVITE_CODE || '',
     ownerCode: process.env.IOS_OWNER_CODE || '',
   },
