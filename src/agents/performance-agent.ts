@@ -1,7 +1,7 @@
 // Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
 
 /**
- * Performance Intelligence Agent — analyzes Felipe's YouTube channel
+ * Performance Intelligence Agent — analyzes the authenticated creator's YouTube channel
  * performance to identify what works and feed back into content creation.
  *
  * Schedule: Weekly, Sunday 06:00 (after channel relearn at 03:00)
@@ -215,7 +215,7 @@ export async function runPerformanceAgent(): Promise<void> {
       return;
     }
 
-    // Fetch Felipe's recent videos
+    // Fetch the authenticated creator's recent videos
     const videos = await fetchOwnChannelVideos(30);
     if (videos.length === 0) {
       logger.warn('Performance Agent: No videos found. Channel may be new or API issue.');

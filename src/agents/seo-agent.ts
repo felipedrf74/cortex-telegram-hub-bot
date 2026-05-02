@@ -2,7 +2,7 @@
 
 /**
  * SEO Tracking Agent — monitors YouTube keyword rankings,
- * identifies opportunities, and tracks Felipe's search visibility.
+ * identifies opportunities, and tracks the authenticated creator's search visibility.
  *
  * Schedule: Weekly, Monday 06:00
  *
@@ -55,7 +55,7 @@ interface RankChange {
 // ── Core Functions ───────────────────────────────────────────────────
 
 /**
- * Search YouTube for a keyword and find Felipe's ranking position.
+ * Search YouTube for a keyword and find the authenticated creator's ranking position.
  */
 async function checkKeywordRank(keyword: string, channelId: string): Promise<KeywordRank> {
   const apiKey = config.youtube?.apiKey;
@@ -110,14 +110,14 @@ async function checkKeywordRank(keyword: string, channelId: string): Promise<Key
         topCompetitor = item.snippet?.channelTitle || '';
       }
 
-      // Found Felipe's video
+      // Found the authenticated creator's video
       if (itemChannelId === channelId) {
         position = i + 1;
         break;
       }
     }
 
-    // If Felipe's not in the results, the top result is the competitor
+    // If the authenticated creator's channel is not in the results, the top result is the competitor
     if (!topCompetitor && items.length > 0) {
       topCompetitor = items[0].snippet?.channelTitle || '';
     }
@@ -230,7 +230,7 @@ export async function runSEOAgent(): Promise<void> {
     const db = getDb();
     seedKeywordsIfEmpty();
 
-    // Get Felipe's channel ID (from reference channels or config)
+    // Get the authenticated creator's channel ID (from reference channels or config)
     const felipeChannelId = config.youtube?.channelId || '';
     if (!felipeChannelId) {
       logger.warn('SEO Agent: No YouTube channel ID configured (YOUTUBE_CHANNEL_ID). Skipping rank checks.');

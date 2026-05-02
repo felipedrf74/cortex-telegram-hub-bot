@@ -8,7 +8,7 @@
  *   - Hook breakdown (first 30s: exact words, pacing, technique)
  *   - Content structure (section-by-section with timestamps)
  *   - Key moments (quotable/viral moments with timestamps)
- *   - Content ideas (inspired by this video, adapted for Felipe)
+ *   - Content ideas (inspired by this video, adapted for the authenticated creator)
  *   - Reel/Short cuts (suggested clip points with timestamps)
  *
  * Used by:
