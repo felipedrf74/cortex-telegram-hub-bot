@@ -53,6 +53,7 @@ Measured local reads after fix:
 - Training: `/api/v1/training/home`, 200, 2.6 ms
 - Connections: `/api/v1/connections`, 200, 1.2 ms
 - Areas/Skills: `/api/v1/skills/catalog`, 200, 2.0 ms, 9213 bytes
+- Areas/Skills repeated reads: `/api/v1/skills/catalog` now supports private `ETag`/`If-None-Match` and can return `304` when the per-user catalog payload is unchanged.
 
 No model/provider calls were observed on simple navigation reads in fixture mode.
 
@@ -75,7 +76,9 @@ Files:
 - `src/api/rate-limiter.ts`
 - `src/config.ts`
 - `.env.example`
+- `src/api/routes/skills.ts`
 - `__tests__/api/rate-limiter.test.ts`
+- `__tests__/api/skills-routes.test.ts`
 
 Summary:
 
@@ -83,6 +86,7 @@ Summary:
 - Added separate authenticated read bucket.
 - Preserved mutation/chat, unauthenticated, internal, webhook, and internal-AI rate limits.
 - Added regression tests for read bursts and bucket independence.
+- Added private ETag validation for the stable Skills catalog response.
 
 ## Runtime performance evidence
 
@@ -100,8 +104,7 @@ No confirmed model/provider calls during simple navigation reads in local fixtur
 
 Remaining follow-up:
 
-- add dependency timing for Home and Plan aggregation in staging.
-- confirm Skills catalog fetch cadence from iOS.
+- iOS should send `If-None-Match` for repeated Skills catalog reads to use the backend `304` path.
 
 ## iOS contract findings
 
@@ -113,6 +116,7 @@ Focused results:
 
 - `npx tsc --noEmit`: passed
 - `__tests__/api/rate-limiter.test.ts`: 16/16 passed
+- `__tests__/api/skills-routes.test.ts`: 21/21 passed
 - app-facing route focused sample: 8 files / 111 tests passed
 - local authenticated API smoke: 13/13 passed
 - full `npm run verify`: 429 files / 6447 tests passed
@@ -131,8 +135,8 @@ P1: none confirmed after this fix.
 P2:
 
 - correlate physical-device iOS navigation latency with backend request counts and the new Home/Plan `Server-Timing` headers.
-- ETag or short-lived cache for stable read surfaces if iOS request cadence confirms repeated fetches.
 - iOS explicit `429` retry/backoff state.
+- iOS should send `If-None-Match` for repeated Skills catalog reads to use the new backend `304` path.
 
 P3:
 

@@ -42,18 +42,24 @@ Remaining next action:
 
 - Correlate physical-device iOS navigation latency with request timing. The backend staging p95 for these read paths is now too low to explain multi-second tab lag by itself.
 
-## P2 open: Skills catalog payload is larger than most app bootstrap calls
+## P2 fixed: Skills catalog supports conditional reads
 
 Measured local payload:
 
 - `/api/v1/skills/catalog`: about 9.2 KB
 
-This is not currently large enough to explain multi-second UI freezes, but it is a good candidate for ETag or short-lived authenticated read caching if the app refreshes it on tab switches.
+This was not large enough to explain multi-second UI freezes by itself, but it was a stable Areas payload that could be re-fetched during tab switches. The route now returns a private ETag and supports `If-None-Match` so repeated reads can avoid the full response body.
 
-Recommended next action:
+Implemented:
 
-- Confirm iOS request frequency for Skills/Areas.
-- Add `updatedAt`/ETag support if the app re-fetches the catalog repeatedly.
+- `ETag: "skills-catalog-..."` computed over the per-user catalog payload.
+- `Cache-Control: private, max-age=30`.
+- Matching `If-None-Match` returns `304`.
+- The cache validator is user/access aware because it hashes the final tier/override-annotated payload.
+
+Validation:
+
+- `npx vitest run __tests__/api/skills-routes.test.ts`: 21/21 passed.
 
 ## P3 open: local migration prefix warnings
 

@@ -20,7 +20,7 @@ The route comments explicitly preserve token-zero behavior: data lookups go thro
 | Week/Semana | `GET /api/v1/plan/week`, `GET /api/v1/plan/today` | Fast locally | Should stay read-only and not block on provider calendar sync. |
 | Tasks | `GET /api/v1/tasks/lists`, `GET /api/v1/tasks/filtered` | Fast locally | Needs continued iOS retry/backoff sanity after read-limit fix. |
 | Chat | `POST /api/v1/chat`, `GET /api/v1/chat/history` | Not performance-smoked in this pass | Chat remains the correct AI pipeline boundary. |
-| Areas | `GET /api/v1/skills/catalog` | Fast locally, ~9.2 KB | Consider ETag if fetched often. |
+| Areas | `GET /api/v1/skills/catalog` | Fast locally, ~9.2 KB | Supports private ETag/`If-None-Match` for repeated reads. |
 | More | `GET /api/v1/connections`, `GET /api/v1/settings/status`, settings routes | Connections fast locally | The audit probe used two invalid paths and excluded them from pass counts. |
 | Training | `GET /api/v1/training/home`, `GET /api/v1/training/today`, `GET /api/v1/training/week` | Fast locally | Calendar sync remains a separate write/sync concern. |
 | Cooking | `GET /api/v1/cooking/*` | Auth smoke passed | Entitlement-gated. |
@@ -41,6 +41,4 @@ This gives iOS a safer budget for tab navigation and repeated read refreshes.
 ### Open follow-ups
 
 - iOS should avoid treating `429` as a generic long-loading state; it should surface retry/backoff where possible.
-- Add endpoint dependency timing to make slow fan-out visible in staging logs.
-- Consider ETags or `If-None-Match` for stable read surfaces such as Skills catalog and Settings.
-
+- Settings remains a future candidate for ETag/`If-None-Match` if device traces show repeated stable reads.

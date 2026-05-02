@@ -22,24 +22,24 @@ The largest confirmed issue was not a slow skill call but quota coupling: every 
 
 That risk is fixed by splitting read and mutation buckets.
 
-## Remaining overfetch risks
+## Remaining overfetch risks and mitigations
 
 ### Skills catalog
 
-The catalog is a stable read and measured about 9.2 KB locally. It should not be repeatedly fetched on every tab switch.
+The catalog is a stable read and measured about 9.2 KB locally. It should not be repeatedly fetched on every tab switch. The backend now mitigates repeated fetches with private `ETag`/`If-None-Match` support, returning `304` when the per-user tier/override-annotated payload is unchanged.
 
 Recommended follow-up:
 
 - Confirm iOS fetch cadence.
-- Add ETag/short-lived cache if repeated.
+- Have iOS send `If-None-Match` on repeated Skills catalog reads if it is not already doing so.
 
 ### Dashboard/Home
 
-Home aggregates multiple sections into one payload. Locally it is fast, but staging p95 should be captured because real accounts have more provider/account state.
+Home aggregates multiple sections into one payload. Locally it is fast; staging p50/p95 evidence now shows healthy Home/Plan read latency on the aligned `4.14.114` candidate.
 
 Recommended follow-up:
 
-- Add dependency timing around Home sub-builders.
+- Correlate physical-device navigation latency with backend `Server-Timing` headers.
 - Track p50/p95 and payload size in staging.
 
 ### Week/Semana
@@ -49,4 +49,3 @@ Plan week/today reads were fast locally and did not require real provider calls.
 Recommended follow-up:
 
 - Add a staging assertion that `GET /plan/week` does not perform Google/Outlook provider read-back.
-

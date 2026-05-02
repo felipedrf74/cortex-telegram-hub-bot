@@ -27,14 +27,20 @@ Follow-up:
 
 - Correlate these backend timings with physical-device iOS navigation latency. Backend staging p95 no longer points to a multi-second server bottleneck on these reads.
 
-### RT-P2-2: evaluate ETag/short-lived cache for stable read surfaces
+### RT-P2-2: add private ETag support for stable Skills catalog reads
 
-`/api/v1/skills/catalog` measured about 9.2 KB locally. If iOS fetches it frequently during Areas/tab navigation, add ETag or a short-lived authenticated cache.
+Status: closed in code on 2026-05-02.
 
-Next action:
+Evidence:
 
-- Correlate iOS request cadence.
-- Add conditional GET if repeated fetches are confirmed.
+- `/api/v1/skills/catalog` now returns `ETag` and `Cache-Control: private, max-age=30`.
+- Matching `If-None-Match` returns `304` with no response body.
+- The ETag is computed from the per-user catalog payload, preserving tier/override-specific access truth.
+- Focused regression test passed: `npx vitest run __tests__/api/skills-routes.test.ts` (21/21).
+
+Follow-up:
+
+- Correlate physical-device Areas tab request cadence. Backend now supports conditional reads, but iOS still needs to send `If-None-Match` to realize the payload savings.
 
 ### RT-P2-3: iOS retry/backoff for `429`
 

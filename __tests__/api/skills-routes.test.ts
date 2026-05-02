@@ -77,16 +77,26 @@ import { getOrCreateUser, setUserTier } from '../../src/services/user-service';
 interface MockRes {
   statusCode: number;
   body: any;
+  ended: boolean;
+  headers: Record<string, number | string | string[]>;
   status(code: number): MockRes;
+  setHeader(name: string, value: number | string | string[]): MockRes;
+  getHeader(name: string): number | string | string[] | undefined;
   json(body: any): MockRes;
+  end(): MockRes;
 }
 
 function mockRes(): MockRes {
   const r: MockRes = {
     statusCode: 200,
     body: null,
+    ended: false,
+    headers: {},
     status(code: number) { r.statusCode = code; return r; },
+    setHeader(name: string, value: number | string | string[]) { r.headers[name.toLowerCase()] = value; return r; },
+    getHeader(name: string) { return r.headers[name.toLowerCase()]; },
     json(body: any) { r.body = body; return r; },
+    end() { r.ended = true; return r; },
   };
   return r;
 }
@@ -105,6 +115,7 @@ async function dispatch(
   url: string,
   userId: number,
   body?: any,
+  options: { headers?: Record<string, string | string[]> } = {},
 ): Promise<MockRes> {
   const router = skillsRoutes();
   const req = mockReq(userId, body);
@@ -116,6 +127,9 @@ async function dispatch(
   (req as any).query = {};
   (req as any).params = {};
   (req as any).headers = {};
+  for (const [name, value] of Object.entries(options.headers ?? {})) {
+    (req as any).headers[name.toLowerCase()] = value;
+  }
 
   const res = mockRes();
 
@@ -241,6 +255,27 @@ describe('Skills API — GET /catalog', () => {
     getOrCreateUser(1005, { username: 'cnt' });
     const res = await dispatch('GET', '/catalog', 1005);
     expect(res.body.data.catalogRowCount).toBeGreaterThan(20);
+  });
+
+  it('supports private ETag validation for repeated catalog reads', async () => {
+    getOrCreateUser(1006, { username: 'etag-reader' });
+
+    const first = await dispatch('GET', '/catalog', 1006);
+    expect(first.statusCode).toBe(200);
+    expect(first.body.ok).toBe(true);
+    expect(first.getHeader('cache-control')).toBe('private, max-age=30');
+
+    const etag = first.getHeader('etag');
+    expect(etag).toEqual(expect.stringMatching(/^"skills-catalog-[a-f0-9]{32}"$/));
+
+    const second = await dispatch('GET', '/catalog', 1006, undefined, {
+      headers: { 'If-None-Match': String(etag) },
+    });
+    expect(second.statusCode).toBe(304);
+    expect(second.ended).toBe(true);
+    expect(second.body).toBeNull();
+    expect(second.getHeader('etag')).toBe(etag);
+    expect(second.getHeader('cache-control')).toBe('private, max-age=30');
   });
 });
 

@@ -78,3 +78,36 @@ Validation:
 
 - TypeScript typecheck: passed.
 - Focused dashboard + plan tests: 2 files / 30 tests passed.
+
+## Fix 3: add private ETag validation to Skills catalog reads
+
+Severity: P2
+
+Root cause:
+
+`/api/v1/skills/catalog` is a stable, deterministic, user-access-annotated payload around 9.2 KB. It was fast locally, but repeated Areas tab refreshes had to download and decode the full catalog every time.
+
+Files changed:
+
+- `src/api/routes/skills.ts`
+- `__tests__/api/skills-routes.test.ts`
+
+Implementation:
+
+- Added `ETag` computed over the final per-user catalog payload.
+- Added `Cache-Control: private, max-age=30`.
+- Added `If-None-Match` handling that returns `304` with no body when the payload has not changed.
+- Kept the existing success response shape unchanged for normal `200` reads.
+
+Why it improves usability:
+
+Repeated Areas/Skills refreshes can now avoid transferring and decoding the catalog when tier/override state has not changed. The validator remains private and user-specific, so it does not weaken skill entitlement or tenant boundaries.
+
+Regression tests:
+
+- `supports private ETag validation for repeated catalog reads`
+
+Validation:
+
+- TypeScript typecheck: passed.
+- `npx vitest run __tests__/api/skills-routes.test.ts`: 21/21 passed.

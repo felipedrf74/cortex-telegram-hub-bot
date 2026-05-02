@@ -17,6 +17,7 @@
  *   DEL  /api/v1/skills/override/:id   — admin revokes override (owner only)
  */
 
+import crypto from 'crypto';
 import { Router, Response } from 'express';
 import type { AuthenticatedRequest } from '../auth-middleware';
 import { sendSuccess, sendError, sendInternalError } from '../response-helpers';
@@ -125,6 +126,16 @@ function requireOwner(res: Response, userId: number): boolean {
     return false;
   }
   return true;
+}
+
+function buildCatalogEtag(payload: CatalogResponse): string {
+  return `"skills-catalog-${crypto.createHash('md5').update(JSON.stringify(payload)).digest('hex')}"`;
+}
+
+function requestMatchesEtag(req: AuthenticatedRequest, etag: string): boolean {
+  const raw = req.headers?.['if-none-match'];
+  const values = Array.isArray(raw) ? raw : typeof raw === 'string' ? raw.split(',') : [];
+  return values.map((value) => value.trim()).some((value) => value === etag);
 }
 
 function asStringArray(value: unknown): string[] | undefined {
@@ -248,6 +259,14 @@ export function skillsRoutes(): Router {
       skills,
       catalogRowCount: listSkillTiers().length,
     };
+
+    const etag = buildCatalogEtag(payload);
+    res.setHeader('ETag', etag);
+    res.setHeader('Cache-Control', 'private, max-age=30');
+    if (requestMatchesEtag(req as AuthenticatedRequest, etag)) {
+      res.status(304).end();
+      return;
+    }
 
     sendSuccess(res, payload);
   });
