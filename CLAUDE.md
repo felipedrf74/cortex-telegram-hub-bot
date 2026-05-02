@@ -27,14 +27,165 @@ release index links them.
 
 **Providers**: Gemini primary (2.5-flash / 2.5-flash-lite), Anthropic fallback (Claude Sonnet 4.6 / Haiku 4.5), OpenAI as secondary fallback. See `src/config.ts > providerRouting`.
 
-## Current Production Truth - 2026-04-27
+## Current Production Truth - 2026-05-02
 
-- Production backend is live at `4.14.99` (deploy bump from `4.14.98`).
-- Staging is aligned to `4.14.98`.
+- Production backend is live at `4.14.119` (deploy bump from `4.14.118`).
+- Staging is aligned to `4.14.118`.
 - Current deployed branch: `main`.
 - Historical beta recovery branch: `beta/single-agent-rc`.
-- Full backend verification passed before the latest production deploy:
-  368 test files / 5,875 tests.
+- Full backend verification passed before each of the latest two production
+  deploys: 433 test files / 6,545 tests for `4.14.119`; 433 test files /
+  6,536 tests for `4.14.118`.
+
+- `4.14.119` shipped the **Training/Coach hardening pass + test-isolation
+  fix** as a single batch promote on top of `4.14.118`:
+
+  - **Codex Training/Coach hardening** (cherry-picked from
+    `feature/training-coach-deep-audit-and-hardening`, commits 8ac0b50 +
+    4d971c1, landed locally as `1b1bd61` + `7f9a913`):
+    - Hardened high-volume coach plans by closing the 5x/week strength
+      support gap through route normalization, volume enforcement, and
+      coach-kernel marathon strength generation, plus deterministic
+      fallback templates.
+    - Preserved the legacy 4-day default gym fallback unless the user
+      explicitly asks for 5/6 sessions.
+    - Added the critical `race_date` missing-profile follow-up so a
+      marathon plan can no longer be generated without a race date.
+    - Codex's pre-deploy validation: `npx tsc --noEmit` clean, focused
+      training suite 192/192, full backend `npm run verify` 431/431
+      files / 6,507/6,507 tests, local Nexus smoke 13/13, cross-skill
+      fixture smoke green, chat tenant smoke 15 pass / 1 partial / 0
+      fail, physical iPhone Felipe Training focused tests 40/40, and
+      physical iPhone Training fixture XCUITests 4/4.
+
+  - **Test-isolation fix** (`c84001f` — the integration owner):
+    Codex's new `__tests__/api/training-plan-generation.test.ts` had a
+    partial `vi.mock` of `unified-calendar` (only `getEvents`).
+    Combined with the project's `vitest.config.ts` `singleFork: true`
+    setting, the partial mock leaked stale undefined exports into
+    `__tests__/api/training-plan-calendar-sync.test.ts`, producing 16
+    deterministic failures in the full suite (but green in isolation).
+    The fix extends the mock to cover all 9 `unified-calendar` public
+    exports as no-op spies. After the fix, post-integration full
+    verify is **6,545 / 6,545 PASS** deterministically.
+
+  Verification: `npx tsc --noEmit` clean, focused Codex training suite
+  58 / 58 PASS (6 files), full `npm run verify` 6,545 / 6,545 PASS, full
+  staging smoke 17 / 17 PASS, prod deploy health (content engine OK,
+  status portal OK, bot online) at commit `4d61fc1`. Production at
+  v4.14.119 confirmed via /api/snapshot. Provider-live training
+  calendar lifecycle smoke remains BLOCKED on dedicated non-production
+  Google/Outlook OAuth credentials (intentional `--allow-live-writes`
+  guardrail); unit/integration coverage at
+  `__tests__/api/training-plan-calendar-sync.test.ts` (23 / 23 PASS)
+  comprehensively covers the same scenarios.
+
+- `4.14.118` shipped the **P0 chat identity / tenant isolation fix
+  (May 2026 audit closeout)** as a single batch promote:
+
+  - **Smoking gun:** a non-Felipe user (`nexushubbot`) who asked
+    "Who am I?" in the iOS Chat received "You're Felipe." The
+    contamination came from the system prompt itself asserting
+    Felipe's identity for every chat turn — `prompts/secretary.md`
+    started "You are Felipe's personal assistant…" + 4 other domain
+    prompts had the same pattern, and
+    `src/state/content-references.ts:562` (`buildKnowledgePromptBlock`)
+    appended literal "adapt to Felipe's voice" to the content-domain
+    system prompt for any user with `content_knowledge` rows.
+
+  - **End-to-end fixes (82 files):** all chat-domain prompts + skill
+    prompts (`secretary.md`, `content.md`, `cooking.md`, `finance.md`,
+    `topic-generation.md`, `creator-config.md`,
+    `cross-skill-and-memory.md`, `src/skills/secretary/prompts/system.md`,
+    `src/skills/finance/prompts/system.md`) sanitized to neutral,
+    authenticated-user/tenant scoped phrasing. `creator-config.md`
+    rewritten as a NEUTRAL TEMPLATE (no name, no worldview, no
+    audience, no political/religious/dietary defaults).
+
+  - **Deterministic identity fast-path:** new
+    `tryBuildAuthenticatedIdentityResponse` in
+    `src/api/routes/chat-message-local-responses.ts` catches 16 PT/EN
+    identity questions ("who am I", "quem sou eu", "qual e o meu
+    nome", "como me chamo", etc.) BEFORE any AI call and answers from
+    the JWT-derived authenticated session. Wired in
+    `chat-message-routes.ts:283` ahead of the slash-command and AI
+    fast-paths.
+
+  - **Authenticated-user ChatContextItem:** new context entry at
+    priority 98 (`critical: true`) in
+    `src/services/chat-context-engine.ts:208–227` carrying the JWT
+    display name and explicit "do not use owner, founder, default,
+    or prior-user names" instruction.
+
+  - **Strict by-id resolvers:** new `getPreferredDisplayNameById`,
+    `getUserLanguageById`, `getUserTimezoneById` in
+    `src/services/user-service.ts`. All 11 iOS API route call sites
+    migrated away from the fuzzy any-identifier helpers.
+    `getUserByAnyIdentifier` reordered to resolve users.id BEFORE
+    telegram_id (closes the iOS-id-vs-foreign-telegram-id collision
+    foot-gun).
+
+  - **Daily-briefing greeting parameterized:**
+    `src/utils/telegram-formatter.ts` `goodMorning` is now a function
+    of recipient name; `scheduler.ts:1640` passes
+    `getPreferredDisplayNameById(target.tenantId)`. Empty name falls
+    through to a name-less greeting; never substitutes "Felipe".
+
+  - **Persisted-payload writers de-Felipe'd:**
+    `src/agents/voice-evolution-agent.ts`,
+    `src/agents/reaction-radar-agent.ts:341`,
+    `src/services/eval-criteria.ts`,
+    `src/services/video-study.ts`. Intelligence-bus rows surfaced in
+    the iOS Content Intelligence views no longer carry founder
+    identity.
+
+  - **Python content-engine (10 modules) sanitized:**
+    `creator_profile.py` `_FALLBACK_PROFILE` rewritten to NEUTRAL,
+    `creative/{hook_generator,caption_writer,thumbnail_gen,title_tester,repurpose_engine}.py`,
+    `book_knowledge.py`,
+    `intelligence/{gap_finder,competitor_analyzer}.py`,
+    `scorer.py`, `orchestrator.py`. `felipes_angle` JSON field
+    renamed `creator_angle` (with backward-compat fallback for older
+    payloads).
+
+  - **Memory scope tightening:**
+    `src/services/context-engine.ts:206` `saved_ideas` count strictly
+    per-user (no `IN (0, ?)`). `src/state/saved-ideas.ts:80`
+    `getIdeasBySource` now requires a `userId` parameter.
+
+  - **Single-tenant cron gated:** `fossa_email` cron in `scheduler.ts`
+    (sends literal owner PII to a Portuguese municipal email) gated
+    behind a new `FOSSA_EMAIL_ENABLED=1` env flag in addition to
+    OUTLOOK availability.
+
+  - **Regression suite:** new
+    `__tests__/security/p0-chat-identity-isolation.test.ts` (23
+    cases) + extended `prompt-cleanliness.test.ts` for skill prompts
+    and `creator-config.md` neutrality. ~12 test mock files updated
+    to expose strict by-id helpers.
+
+  - **iOS architecture verified clean:** static audit confirmed
+    `signOut()` invalidates all 15 repos + Keychain + UserDefaults,
+    `RootView` re-mounts `MainTabView` killing `ChatViewModel` on
+    auth flip, `ChatRepository.ensureCurrentScope()` resets messages
+    on `user-<id>.tenant-<id>` scope change, and iOS sends NO
+    client-injected user identity in `/api/v1/chat/message` (only
+    `{ text, replyToId?, attachments? }`).
+
+  - **Documentation:** 12 docs created across `docs/security/`,
+    `docs/ios/`, `docs/memory/`, `docs/context/`. The smoking-gun
+    analysis lives at
+    `docs/security/p0-chat-identity-root-cause.md`; the live
+    two-account device walk-through runbook lives at
+    `docs/security/p0-chat-identity-frontend-validation.md`.
+
+  Verification: `npx tsc --noEmit` clean, full backend regression
+  `npm run verify` 433 / 6,536 green, staging smoke 17/17 green,
+  production deploy gate 17/17 + content engine + status portal +
+  bot online (commit `ca07d3f`). The remaining condition before this
+  is closed against production is a live two-account walk-through on
+  a signed iOS build (`nexushubbot` and Felipe accounts, asking
+  "Who am I?" through the Chat UI).
 - Production deploy health passed for content engine, status portal, and bot
   online at deploy commit `d7b9502`; merge commit `384ab52` brought the
   Training engine + agenda orchestration overhaul into main; staging was

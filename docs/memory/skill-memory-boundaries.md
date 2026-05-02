@@ -77,6 +77,8 @@ Examples:
 - adherence patterns
 - exercise dislikes and limitations
 
+Training memory must remain scoped to the authenticated user and active tenant. Training plans, questionnaire answers, feedback, calendar mappings, and coach phase memory must never be reused across accounts after an iOS account switch or Chat/Secretary tool call. Any future cross-skill Training signal should carry source user, active tenant, freshness, and confidence, and should degrade rather than falling back to another user's profile.
+
 ## Cooking
 
 Can store:

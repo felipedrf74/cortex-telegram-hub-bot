@@ -238,12 +238,12 @@ export async function generateTrainingPlanForUser(
   });
 
   const normalizedSessionsPerWeek = clampNumber(sessionsPerWeek, 5, 3, 7);
-  const normalizedStrengthSessionsPerWeek = clampNumber(strengthSessionsPerWeek, 0, 0, 4);
+  const normalizedStrengthSessionsPerWeek = clampNumber(strengthSessionsPerWeek, 0, 0, 6);
   const gymOnlyObjective = objectiveNeedsGymProfile(objective) && !objectiveNeedsRunningProfile(objective);
   const effectiveStrengthSessionsPerWeek = normalizedStrengthSessionsPerWeek > 0
     ? normalizedStrengthSessionsPerWeek
     : gymOnlyObjective
-      ? Math.min(normalizedSessionsPerWeek, 4)
+      ? Math.min(normalizedSessionsPerWeek, 6)
       : 0;
   const normalizedLongWorkoutDay = typeof longWorkoutDay === 'string' ? longWorkoutDay.trim() : null;
 

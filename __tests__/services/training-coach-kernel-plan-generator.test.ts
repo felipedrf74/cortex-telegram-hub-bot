@@ -126,6 +126,53 @@ describe('buildCoachKernelTrainingPlan — side effects', () => {
     expect(plan.weeks?.[0]?.sessions?.some((session) => session.sessionType === 'run')).toBe(true);
   });
 
+  it('builds marathon weeks with five distinct strength sessions when explicitly requested', () => {
+    const plan = buildCoachKernelTrainingPlan({
+      userId: 507,
+      objective: 'Marathon training with full gym strength',
+      durationWeeks: 4,
+      startDate: '2026-05-04',
+      sessionsPerWeek: 6,
+      strengthSessionsPerWeek: 5,
+      preferredTime: '12:00',
+      preferredCardioTime: '07:00',
+      preferredStrengthTime: '12:00',
+      longWorkoutDay: 'Saturday',
+      notes: 'Advanced runner and 5+ years gym. Full commercial gym. Prefer double sessions if needed.',
+      fitnessProfile: {
+        experience_level: 'advanced',
+        weekly_frequency: '6 days',
+        training_goals: 'marathon and strength',
+        injuries: 'none',
+        available_equipment: 'Full commercial gym',
+        session_duration_minutes: '60',
+      },
+      gymProfile: {
+        training_age: '5 years',
+        primary_goal: 'Hypertrophy',
+        equipment_access: 'Full commercial gym',
+        sessions_per_week: '5',
+        session_duration_minutes: '60',
+      },
+      runProfile: {
+        weekly_availability_days: '6 days',
+        weekly_mileage_km: '45',
+        easy_pace_min_per_km: '5:20',
+      },
+      currentReadiness: { score: 82 },
+      twoADayPreference: 'preferred',
+    });
+
+    const weekOneSessions = plan.weeks?.[0]?.sessions ?? [];
+    const strengthSessions = weekOneSessions.filter((session) => session.sessionType === 'gym');
+    const strengthTitles = strengthSessions.map((session) => session.title);
+
+    expect(strengthSessions).toHaveLength(5);
+    expect(new Set(strengthTitles).size).toBe(5);
+    expect(weekOneSessions.some((session) => /long run/i.test(session.title))).toBe(true);
+    expect(strengthSessions.every((session) => session.preferredStartTime === '12:00')).toBe(true);
+  });
+
   it('seeds AthleteState.readiness from currentReadiness when provided', () => {
     // This is the core fix for QW#2. When the route supplies real
     // wearable readiness data the planner must consume it so guardrails

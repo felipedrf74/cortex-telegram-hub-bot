@@ -34,6 +34,22 @@ vi.mock('../../src/services/onboarding', () => ({
 
 vi.mock('../../src/services/unified-calendar', () => ({
   getEvents: (...args: unknown[]) => mockGetEvents(...args),
+  // Identity-safety / test-isolation: vitest config has `singleFork: true`,
+  // so a partial mock on this module leaks `undefined` exports to later
+  // test files (e.g., `training-plan-calendar-sync.test.ts` re-mocks but
+  // hits a stale module cache without these methods). Provide complete
+  // no-op spies for the rest of the surface so the partial mock cannot
+  // poison sibling tests.
+  createEvent: vi.fn(),
+  updateEvent: vi.fn(),
+  deleteEvent: vi.fn(),
+  getEventsWithDiagnostics: vi.fn(async () => ({ events: [], status: 'ready', warnings: [], warningCodes: [] })),
+  isAnyCalendarConfigured: vi.fn(() => false),
+  hasConnectedCalendarForUser: vi.fn(() => false),
+  hasWritableCalendarForUser: vi.fn(() => false),
+  getConfiguredSources: vi.fn(() => []),
+  eventFingerprint: vi.fn(() => ''),
+  deduplicateEvents: vi.fn((events: unknown[]) => events),
 }));
 
 vi.mock('../../src/services/training-plan-equipment-adaptation', () => ({
@@ -414,6 +430,31 @@ describe('generateTrainingPlanForUser', () => {
       sessionsPerWeek: 5,
       strengthSessionsPerWeek: 2,
     }));
+  });
+
+  it('passes explicit five-day strength volume through the app-facing marathon generation route', async () => {
+    await generateTrainingPlanForUser({
+      userId: 12,
+      objective: 'Lisbon Marathon',
+      sessionsPerWeek: 6,
+      strengthSessionsPerWeek: 5,
+    });
+
+    expect(mockBuildTrainingPlanCoordination).toHaveBeenLastCalledWith(expect.objectContaining({
+      sessionsPerWeek: 6,
+      strengthSessionsPerWeek: 5,
+    }));
+    expect(mockBuildCoachKernelTrainingPlan).toHaveBeenCalledWith(expect.objectContaining({
+      objective: 'Lisbon Marathon',
+      sessionsPerWeek: 6,
+      strengthSessionsPerWeek: 5,
+    }));
+
+    const persistInput = mockPersistGeneratedTrainingPlan.mock.calls[0][0];
+    expect(JSON.parse(persistInput.preferencesJson)).toMatchObject({
+      sessionsPerWeek: 6,
+      strengthSessionsPerWeek: 5,
+    });
   });
 
   // ─── Slice 4.D.2 — pre-persist cancellation saga ─────────────────────
