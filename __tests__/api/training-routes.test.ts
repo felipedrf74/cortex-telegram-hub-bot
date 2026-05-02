@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Request } from 'express';
 import { clearTenantScopeAnomaliesForTests, getTenantScopeAnomalies } from '../../src/services/tenant-scope-observability';
 
@@ -310,6 +310,10 @@ function resetTrainingOperationalEnvForTests(): void {
 }
 
 describe('Training API routes', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
   beforeEach(async () => {
     resetTrainingOperationalEnvForTests();
 
@@ -1217,6 +1221,9 @@ describe('Training API routes', () => {
   });
 
   it('applies cross-skill coaching coordination before training sessions are stored', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    vi.setSystemTime(new Date('2026-04-13T12:00:00.000Z'));
+
     mockGetProfile.mockImplementation((_userId: number, profile: string) => {
       if (profile === 'fitness') {
         return { experienceLevel: 'Beginner (< 1 year)', available_equipment: 'Full gym', injuries: 'left knee irritation' };

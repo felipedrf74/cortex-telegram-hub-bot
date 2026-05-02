@@ -26,6 +26,7 @@ const LISTS_SWR_STALE = 1800;  // 30 min stale grace for lists
 const TASKS_SWR_STALE = 600;   // 10 min stale grace for individual lists
 const TASK_LIST_COUNT_SNAPSHOT_TIMEOUT_MS = readPositiveIntEnv('TASK_LIST_COUNT_SNAPSHOT_TIMEOUT_MS', 1500);
 const TASK_LIST_COUNT_PER_LIST_TIMEOUT_MS = readPositiveIntEnv('TASK_LIST_COUNT_PER_LIST_TIMEOUT_MS', 1000);
+const TASK_FILTERED_PENDING_TIMEOUT_MS = readPositiveIntEnv('TASK_FILTERED_PENDING_TIMEOUT_MS', 3000);
 
 // In-flight refresh tracker — prevents 50 concurrent SWR requests from
 // triggering 50 background refreshes for the same key. Each key can have
@@ -241,24 +242,10 @@ export function taskRoutes(): Router {
     const cacheKey = `u:${userId}:tasks-filtered:${filter}`;
     const syncProvider = resolveTaskProvider(userId);
 
-    // Helper for the actual fetch+filter+cache write.
-    const fetchAndCache = async (): Promise<{ tasks: any[]; count: number }> => {
-      const todo = getTodo(req);
-      const result = await todo.getAllPendingTasks();
-      const allTasks = result?.data || result || [];
+    const buildFilteredPayload = (allTasks: any[]): { tasks: any[]; count: number } => {
       if (!Array.isArray(allTasks)) {
-        const empty = { tasks: [], count: 0 };
-        setCacheSWR(cacheKey, empty, TASKS_CACHE_TTL, TASKS_SWR_STALE);
-        return empty;
+        return { tasks: [], count: 0 };
       }
-
-      // Reuse the same cross-list snapshot for the chat fast-path cache so
-      // `/overdue`, `/dueToday`, and the task tab share one fresh view of
-      // the user's pending tasks instead of paying duplicate provider reads.
-      if (userId) {
-        setCache(userCacheKey(userId, 'fastpath:pending-tasks'), allTasks, TASKS_CACHE_TTL);
-      }
-
       // Use the configured app timezone for date-only comparisons so DST
       // boundaries do not depend on the server's local clock zone.
       const timezone = getUserTimezone(userId);
@@ -279,7 +266,60 @@ export function taskRoutes(): Router {
 
       const tasks = filtered.map((t: any) => normalizeTaskDto(t, syncProvider));
 
-      const payload = { tasks, count: tasks.length };
+      return { tasks, count: tasks.length };
+    };
+
+    // Helper for the actual fetch+filter+cache write.
+    const fetchAndCache = async (): Promise<{ tasks: any[]; count: number; degraded?: boolean; reasonCodes?: string[] }> => {
+      const cachedPending = getCached<any[]>(userCacheKey(userId, 'fastpath:pending-tasks'));
+      if (Array.isArray(cachedPending)) {
+        const payload = buildFilteredPayload(cachedPending);
+        setCacheSWR(cacheKey, payload, TASKS_CACHE_TTL, TASKS_SWR_STALE);
+        return payload;
+      }
+
+      const todo = getTodo(req);
+      const result = await withTaskTimeout<any>(
+        todo.getAllPendingTasks(),
+        TASK_FILTERED_PENDING_TIMEOUT_MS,
+        null,
+      );
+      if (result == null) {
+        const empty = {
+          tasks: [],
+          count: 0,
+          degraded: true,
+          reasonCodes: ['TASK_PROVIDER_TIMEOUT'],
+        };
+        logger.warn(
+          { userId, filter, timeoutMs: TASK_FILTERED_PENDING_TIMEOUT_MS },
+          'tasks/filtered provider read timed out; returning degraded empty payload',
+        );
+        return empty;
+      }
+      const allTasks = result?.data || result || [];
+      if (!Array.isArray(allTasks)) {
+        const empty = {
+          tasks: [],
+          count: 0,
+          degraded: true,
+          reasonCodes: ['TASK_PROVIDER_TIMEOUT'],
+        };
+        logger.warn(
+          { userId, filter, timeoutMs: TASK_FILTERED_PENDING_TIMEOUT_MS },
+          'tasks/filtered provider read timed out; returning degraded empty payload',
+        );
+        return empty;
+      }
+
+      // Reuse the same cross-list snapshot for the chat fast-path cache so
+      // `/overdue`, `/dueToday`, and the task tab share one fresh view of
+      // the user's pending tasks instead of paying duplicate provider reads.
+      if (userId) {
+        setCache(userCacheKey(userId, 'fastpath:pending-tasks'), allTasks, TASKS_CACHE_TTL);
+      }
+
+      const payload = buildFilteredPayload(allTasks);
       setCacheSWR(cacheKey, payload, TASKS_CACHE_TTL, TASKS_SWR_STALE);
       return payload;
     };
