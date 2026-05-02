@@ -48,7 +48,7 @@ function inferTrainingTemplate(
   options: { sessionsPerWeek?: number; strengthSessionsPerWeek?: number; longWorkoutDay?: string | null } = {},
 ) {
   const targetSessionsPerWeek = Math.max(3, Math.min(7, options.sessionsPerWeek || 5));
-  const targetStrengthSessions = Math.max(0, Math.min(4, options.strengthSessionsPerWeek || 0));
+  const targetStrengthSessions = Math.max(0, Math.min(6, options.strengthSessionsPerWeek || 0));
 
   if (/(triathlon|triatlo|70\.3|ironman|half ironman)/i.test(lowerObjective)) {
     return {
@@ -120,6 +120,12 @@ function inferTrainingTemplate(
   }
 
   if (/(hipertrofia|hypertrophy|muscle|strength|gym|massa|bodybuilding)/i.test(lowerObjective)) {
+    const gymSessionCount = targetStrengthSessions > 0
+      ? targetStrengthSessions
+      : typeof options.sessionsPerWeek === 'number'
+        ? targetSessionsPerWeek
+        : 4;
+
     return {
       sport: 'gym',
       focuses: ['hypertrophy', 'strength', 'strength'],
@@ -156,7 +162,23 @@ function inferTrainingTemplate(
           description: 'Hinge-dominant lower-body session with posterior-chain emphasis.',
           exercises: lowerBodyBExercises(),
         },
-      ],
+        {
+          dayOfWeek: 'saturday',
+          sessionType: 'gym',
+          title: 'Upper Body C',
+          durationMinutes: 55,
+          description: 'Accessory upper-body hypertrophy with shoulders, arms, back volume, and trunk control.',
+          exercises: upperBodyCExercises(),
+        },
+        {
+          dayOfWeek: 'sunday',
+          sessionType: 'gym',
+          title: 'Lower Body C',
+          durationMinutes: 55,
+          description: 'Lower-body accessory day that builds glutes, hamstrings, calves, and trunk durability.',
+          exercises: lowerBodyCExercises(),
+        },
+      ].slice(0, Math.max(1, Math.min(gymSessionCount, 6))),
     };
   }
 
@@ -298,6 +320,22 @@ function buildRunnerFallbackSessions(
       description: 'Short support lift with mobility and tissue resilience work.',
       exercises: runnerStrengthExercises(),
     },
+    {
+      dayOfWeek: 'tuesday',
+      sessionType: 'gym',
+      title: 'Runner Strength D',
+      durationMinutes: 35,
+      description: 'Upper-body and trunk support that preserves posture without adding heavy leg fatigue.',
+      exercises: runnerUpperSupportExercises(),
+    },
+    {
+      dayOfWeek: 'thursday',
+      sessionType: 'gym',
+      title: 'Runner Strength E',
+      durationMinutes: 35,
+      description: 'Calf, hip, and trunk durability work kept controlled for high-frequency running weeks.',
+      exercises: runnerDurabilityExercises(),
+    },
   ];
 
   const runSessionCount = Math.max(1, Math.min(runTemplates.length, sessionsPerWeek));
@@ -339,6 +377,24 @@ function runnerStrengthExercises() {
   ];
 }
 
+function runnerUpperSupportExercises() {
+  return [
+    { name: 'Incline DB Press', sets: 3, reps: 10, rpe: '7', restSec: 60 },
+    { name: 'One-Arm Row', sets: 3, reps: 10, rpe: '7', restSec: 60 },
+    { name: 'Pallof Press', sets: 3, reps: 12, rpe: '6', restSec: 45 },
+    { name: 'Suitcase Carry', sets: 3, reps: 40, rpe: '7', restSec: 45 },
+  ];
+}
+
+function runnerDurabilityExercises() {
+  return [
+    { name: 'Calf Raise', sets: 4, reps: 12, rpe: '7', restSec: 45 },
+    { name: 'Glute Bridge', sets: 3, reps: 12, rpe: '7', restSec: 60 },
+    { name: 'Lateral Lunge', sets: 3, reps: 8, rpe: '7', restSec: 60 },
+    { name: 'Dead Bug', sets: 3, reps: 10, rpe: '6', restSec: 45 },
+  ];
+}
+
 function upperBodyExercises() {
   return [
     { name: 'Bench Press', sets: 4, reps: 8, rpe: '7-8', restSec: 90 },
@@ -375,5 +431,25 @@ function lowerBodyBExercises() {
     { name: 'Bulgarian Split Squat', sets: 3, reps: 8, rpe: '8', restSec: 75 },
     { name: 'Seated Calf Raise', sets: 3, reps: 15, rpe: '8', restSec: 45 },
     { name: 'Pallof Press', sets: 3, reps: 12, rpe: '6', restSec: 45 },
+  ];
+}
+
+function upperBodyCExercises() {
+  return [
+    { name: 'Machine Chest Press', sets: 3, reps: 10, rpe: '7-8', restSec: 75 },
+    { name: 'Lat Pulldown / Pull-Up', sets: 3, reps: 10, rpe: '7', restSec: 75 },
+    { name: 'Seated Cable Row', sets: 3, reps: 12, rpe: '7', restSec: 60 },
+    { name: 'Lateral Raise', sets: 3, reps: 15, rpe: '8', restSec: 45 },
+    { name: 'Incline Curl', sets: 3, reps: 12, rpe: '8', restSec: 45 },
+  ];
+}
+
+function lowerBodyCExercises() {
+  return [
+    { name: 'Hip Thrust', sets: 4, reps: 8, rpe: '7-8', restSec: 90 },
+    { name: 'Single-Leg RDL', sets: 3, reps: 8, rpe: '7', restSec: 75 },
+    { name: 'Leg Curl', sets: 3, reps: 12, rpe: '8', restSec: 60 },
+    { name: 'Calf Raise', sets: 4, reps: 12, rpe: '8', restSec: 45 },
+    { name: 'Side Plank', sets: 3, reps: 40, rpe: '6', restSec: 45 },
   ];
 }

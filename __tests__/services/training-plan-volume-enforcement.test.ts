@@ -55,6 +55,29 @@ describe('training-plan-volume-enforcement', () => {
     expect(sessions.filter((session) => session.sessionType === 'gym')).toHaveLength(4);
   });
 
+  it('preserves five requested strength sessions instead of trimming to the old four-session cap', () => {
+    const result = enforceRequestedTrainingPlanVolume(
+      { sport: 'running', weeks: [{ weekNumber: 1, sessions: [] }] },
+      {
+        sessionsPerWeek: 6,
+        strengthSessionsPerWeek: 5,
+        preferredCardioTime: '07:00',
+        preferredStrengthTime: '12:00',
+        startDate: '2026-04-27',
+      },
+    );
+
+    const sessions = result.weeks?.[0]?.sessions ?? [];
+    const strengthSessions = sessions.filter((session) => session.sessionType === 'gym');
+    const strengthDays = strengthSessions.map((session) => session.dayOfWeek);
+
+    expect(sessions).toHaveLength(11);
+    expect(strengthSessions).toHaveLength(5);
+    expect(sessions.filter((session) => session.sessionType === 'run')).toHaveLength(6);
+    expect(new Set(strengthDays).size).toBe(5);
+    expect(strengthSessions.every((session) => session.preferredStartTime === '12:00')).toBe(true);
+  });
+
   it('converts excess gym sessions into aerobic support instead of standalone mobility', () => {
     const plan: CoordinatedTrainingPlan = {
       sport: 'gym',

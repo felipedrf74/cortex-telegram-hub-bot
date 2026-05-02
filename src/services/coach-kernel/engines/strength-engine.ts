@@ -340,6 +340,16 @@ function strengthVariantFor(
             exerciseIds: ['pull_up', 'machine_chest_press', 'seated_cable_row', 'suitcase_carry', 'side_plank'],
             tags: ['upper_body', 'pull', 'trunk', 'hypertrophy'],
           },
+          {
+            title: 'Upper Hypertrophy - Delts/Arms',
+            exerciseIds: ['dumbbell_overhead_press', 'lat_pulldown', 'machine_chest_press', 'suitcase_carry', 'pallof_press'],
+            tags: ['upper_body', 'delts', 'arms', 'hypertrophy', 'trunk'],
+          },
+          {
+            title: 'Lower Hypertrophy - Glutes/Calves',
+            exerciseIds: ['dumbbell_hip_thrust', 'single_leg_rdl', 'dumbbell_reverse_lunge', 'calf_raise', 'dead_bug'],
+            tags: ['lower_body', 'glutes', 'calves', 'hypertrophy', 'core'],
+          },
         ]
       : profile === 'max_strength'
         ? [
@@ -363,6 +373,16 @@ function strengthVariantFor(
               exerciseIds: ['lat_pulldown', 'dumbbell_bench_press', 'inverted_row', 'suitcase_carry', 'hollow_hold'],
               tags: ['upper_body', 'support', 'pull', 'carry'],
             },
+            {
+              title: 'Strength Technique - Speed/Trunk',
+              exerciseIds: ['front_squat', 'bench_press', 'kettlebell_swing', 'pallof_press', 'farmer_carry'],
+              tags: ['full_body', 'technique', 'speed', 'trunk'],
+            },
+            {
+              title: 'Strength Support - Posterior/Carry',
+              exerciseIds: ['romanian_deadlift', 'single_leg_rdl', 'lat_pulldown', 'suitcase_carry', 'side_plank'],
+              tags: ['posterior_chain', 'support', 'carry', 'core'],
+            },
           ]
         : [
             {
@@ -384,6 +404,16 @@ function strengthVariantFor(
               title: `Upper Body ${profileTitle} B`,
               exerciseIds: ['lat_pulldown', 'dumbbell_bench_press', 'inverted_row', 'suitcase_carry', 'side_plank'],
               tags: ['upper_body', 'pull', 'carry'],
+            },
+            {
+              title: `Athletic Strength ${profileTitle} - Power/Carry`,
+              exerciseIds: ['kettlebell_swing', 'front_squat', 'pull_up', 'farmer_carry', 'pallof_press'],
+              tags: ['full_body', 'power', 'carry', 'trunk'],
+            },
+            {
+              title: `Durability Strength ${profileTitle} - Hips/Core`,
+              exerciseIds: ['single_leg_rdl', 'dumbbell_reverse_lunge', 'glute_bridge', 'calf_raise', 'dead_bug'],
+              tags: ['lower_body', 'durability', 'hips', 'core'],
             },
           ];
     return variants[slot] ?? variants[0];
@@ -1095,14 +1125,20 @@ export const strengthEngine: SportEngine = {
       const weekMs = Date.parse(context.weekStart);
       return Number.isFinite(raceMs) && Number.isFinite(weekMs) && raceMs - weekMs <= 42 * 24 * 60 * 60 * 1000;
     });
+    const marathonStrengthBlock = context.athlete.goals.primaryFocus === 'marathon'
+      && requestedSessions >= 5
+      && !raceIsClose
+      && context.phase !== 'peak'
+      && context.phase !== 'taper';
+    const enduranceMaintenance = context.athlete.goals.primaryFocus === 'triathlon'
+      || (context.athlete.goals.primaryFocus === 'marathon' && !marathonStrengthBlock);
     const maintenance = context.phase === 'peak'
       || context.phase === 'taper'
       || raceIsClose
-      || context.athlete.goals.primaryFocus === 'marathon'
-      || context.athlete.goals.primaryFocus === 'triathlon';
+      || enduranceMaintenance;
     const strengthProfile = resolveStrengthProfile(context, maintenance);
     const sessionType = preferredSessionType(strengthProfile);
-    const targetSessions = clamp(maintenance ? Math.min(requestedSessions, 2) : requestedSessions, 0, 4);
+    const targetSessions = clamp(maintenance ? Math.min(requestedSessions, 2) : requestedSessions, 0, 6);
     const template = templateFor(templates, sessionType);
     const days = resolveStrengthDays(context.athlete, targetSessions);
 

@@ -74,3 +74,31 @@ All fixed. Validated by 1001 passing tests.
 - Portal admin / operator surfaces — not implicated in this incident.
 - Periodic codebase-scan job for new "Felipe" hardcoding — recommended as CI follow-up.
 - One-off DB query in production to confirm no `users.id`/`telegram_id` numeric collision currently exists — recommended as ops follow-up.
+
+---
+
+## Training slice addendum (May 2026 Training deep-audit pass)
+
+Filed during the Codex Training/Coach hardening audit (commits 8ac0b50 + 4d971c1). The Training-slice perspective on the same P0 surface, with cross-skill mesh implications:
+
+Date: 2026-05-02
+
+## Result
+
+No direct Training-specific identity leak was reproduced in this pass. The known user report where `nexushubbot` received a Felipe identity answer remains treated as P0 history, but local tenant smoke did not reproduce cross-tenant conversation, memory, prompt, attachment, or tool-context leakage.
+
+## Evidence
+
+- `NEXUS_LOCAL_ALLOW_MODEL_CALLS=0 scripts/full-nexus-local-engine.sh chat-tenant-smoke`
+- Result: 15 pass, 1 partial provider-fallback check, 0 failures.
+- Active tenant override denial returned 403 in the smoke.
+- Training-focused hardcoded identity scan found no product Training runtime hardcoding of Felipe.
+
+## Remaining risk
+
+- Shared context mesh readers are still user-scoped rather than tenant-explicit in several places. This is already tracked in `docs/context/shared-context-risk-register.md` as CTX-P1-02/04.
+- DEBUG-only iOS auth bypass can still produce Felipe-like local QA state if explicitly enabled, but it is excluded from TestFlight/production by `#if DEBUG`.
+
+## Release posture
+
+PASS WITH CONDITIONS for the Training slice. Do not claim unconditional multi-tenant shared-context safety until tenant-explicit mesh reader work closes.

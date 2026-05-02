@@ -99,6 +99,64 @@ describe('coach-kernel strength engine', () => {
     expect(sessions.every((session) => (session.exercises?.length ?? 0) >= 5)).toBe(true);
   });
 
+  it('honors an advanced marathon athlete requesting five strength sessions outside peak/taper', () => {
+    const athlete: AthleteState = {
+      ...sampleMarathonAthlete,
+      profile: {
+        ...sampleMarathonAthlete.profile,
+        experienceLevel: 'advanced',
+      },
+      goals: {
+        ...sampleMarathonAthlete.goals,
+        strengthGoal: 'hypertrophy',
+        raceCalendar: [],
+        weeklySessionsTarget: {
+          ...sampleMarathonAthlete.goals.weeklySessionsTarget,
+          strength: 5,
+        },
+      },
+      currentBlock: {
+        ...sampleMarathonAthlete.currentBlock,
+        phase: 'base',
+        weekIndex: 1,
+      },
+    };
+
+    const sessions = buildStrengthSessions(athlete, '2026-05-04');
+    const titles = sessions.map((session) => session.title);
+    const strengthDays = sessions.map((session) => session.dayOfWeek);
+
+    expect(sessions).toHaveLength(5);
+    expect(new Set(titles).size).toBe(5);
+    expect(new Set(strengthDays).size).toBe(5);
+    expect(sessions.every((session) => session.sessionType === 'strength_hypertrophy')).toBe(true);
+    expect(sessions.every((session) => !session.tags.includes('beginner_safe'))).toBe(true);
+  });
+
+  it('keeps marathon strength at maintenance dose when race day is close', () => {
+    const athlete: AthleteState = {
+      ...sampleMarathonAthlete,
+      goals: {
+        ...sampleMarathonAthlete.goals,
+        raceCalendar: [{ id: 'near-race', name: 'Near Marathon', discipline: 'running', subtype: 'marathon', date: '2026-06-01', priority: 'a' }],
+        weeklySessionsTarget: {
+          ...sampleMarathonAthlete.goals.weeklySessionsTarget,
+          strength: 5,
+        },
+      },
+      currentBlock: {
+        ...sampleMarathonAthlete.currentBlock,
+        phase: 'build',
+        weekIndex: 1,
+      },
+    };
+
+    const sessions = buildStrengthSessions(athlete, '2026-05-04');
+
+    expect(sessions).toHaveLength(2);
+    expect(sessions.every((session) => session.sessionType === 'strength_maintenance')).toBe(true);
+  });
+
   it('scales prescriptions by strength experience level', () => {
     // Slice 2.A (coach-engine refactor 2026-04-27) — novices now also get
     // exercise-level differentiation, not just sets/reps tuning. The

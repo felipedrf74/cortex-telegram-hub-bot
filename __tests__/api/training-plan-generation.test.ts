@@ -416,6 +416,31 @@ describe('generateTrainingPlanForUser', () => {
     }));
   });
 
+  it('passes explicit five-day strength volume through the app-facing marathon generation route', async () => {
+    await generateTrainingPlanForUser({
+      userId: 12,
+      objective: 'Lisbon Marathon',
+      sessionsPerWeek: 6,
+      strengthSessionsPerWeek: 5,
+    });
+
+    expect(mockBuildTrainingPlanCoordination).toHaveBeenLastCalledWith(expect.objectContaining({
+      sessionsPerWeek: 6,
+      strengthSessionsPerWeek: 5,
+    }));
+    expect(mockBuildCoachKernelTrainingPlan).toHaveBeenCalledWith(expect.objectContaining({
+      objective: 'Lisbon Marathon',
+      sessionsPerWeek: 6,
+      strengthSessionsPerWeek: 5,
+    }));
+
+    const persistInput = mockPersistGeneratedTrainingPlan.mock.calls[0][0];
+    expect(JSON.parse(persistInput.preferencesJson)).toMatchObject({
+      sessionsPerWeek: 6,
+      strengthSessionsPerWeek: 5,
+    });
+  });
+
   // ─── Slice 4.D.2 — pre-persist cancellation saga ─────────────────────
 
   describe('pre-persist cancellation saga (slice 4.D.2)', () => {

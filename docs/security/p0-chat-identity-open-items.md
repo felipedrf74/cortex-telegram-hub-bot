@@ -47,3 +47,23 @@ The static iOS audit (Phase 6) is high-confidence — the cache-clear path is co
 ---
 
 **Summary:** The P0 itself is closed. P1 is the device walk-through. P2/P3 are hygiene and defense-in-depth. P4 is a code-quality smell uncovered during the audit (already fixed for this site).
+
+---
+
+## Training slice addendum (May 2026 Training deep-audit pass)
+
+Filed during the Codex Training/Coach hardening audit (commits 8ac0b50 + 4d971c1). These items overlap with the P0 audit's findings but are surfaced from the Training perspective:
+
+## P0
+
+- None reproduced in this Training deep-audit pass.
+
+## P1
+
+- Make mesh readers tenant-explicit (`userId` + `tenantId`) before claiming full cross-skill shared-context safety.
+- Add a cross-account iOS smoke that logs in as user A, loads Training/Chat, switches to user B, and verifies no prior plan/profile/name is visible.
+
+## P2
+
+- Add a provider-enabled tenant smoke once non-production provider credentials are available, so model fallback behavior is validated beyond local fixture mode.
+- Add a QA guard that fails if DEBUG identity bypass arguments are present in TestFlight/Release launch configurations.

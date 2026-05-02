@@ -10,6 +10,8 @@ Related audit: `docs/context/shared-context-audit.md`
 
 No immediate P0 cross-tenant exploit was confirmed in the newer Chat memory/context path. The broader shared-context stack still has P1 production blockers before a fully tenant-safe cross-skill release.
 
+2026-05-02 Training deep audit update: local `chat-tenant-smoke` passed 15 checks with 1 partial provider-fallback check and 0 failures. No direct Training-specific identity leak was reproduced, but CTX-P1-02/04 remain release-significant because Training mesh/shared-decision readers still need tenant-explicit APIs before Nexus can claim unconditional multi-tenant shared-context safety.
+
 ## P0 Blockers
 
 | ID | Status | Risk | Evidence | Required Closure |

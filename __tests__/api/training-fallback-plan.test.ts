@@ -39,6 +39,30 @@ describe('training-fallback-plan', () => {
     ]);
   });
 
+  it('honors an explicit five-day gym fallback request without changing the default', () => {
+    const plan = buildDeterministicTrainingPlan('Hypertrophy phase', 3, {
+      strengthSessionsPerWeek: 5,
+    });
+
+    expect(plan.sport).toBe('gym');
+    expect(plan.weeks[0].sessions.map((session: any) => session.title)).toEqual([
+      'Upper Body A',
+      'Lower Body A',
+      'Upper Body B',
+      'Lower Body B',
+      'Upper Body C',
+    ]);
+  });
+
+  it('uses sessionsPerWeek as an explicit gym fallback volume when strength count is absent', () => {
+    const plan = buildDeterministicTrainingPlan('Strength block', 3, {
+      sessionsPerWeek: 5,
+    });
+
+    expect(plan.sport).toBe('gym');
+    expect(plan.weeks[0].sessions).toHaveLength(5);
+  });
+
   it('uses a deload final week with reduced intensity and scaled sets', () => {
     const plan = buildDeterministicTrainingPlan('General strength block', 4);
 
