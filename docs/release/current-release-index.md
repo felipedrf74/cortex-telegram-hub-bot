@@ -1,12 +1,30 @@
 # Current Release Index
 
-Date: 2026-05-01
+Date: 2026-05-02
 
 ## Current Status
 
-There is no active production-promotion package in this file.
+Active production-promotion package:
 
-The active work completed here is a release-process audit and cleanup:
+- source branch: `feature/p0-readiness-integration-task-isolation`
+- candidate commit: `6549934 fix(p0): scope Garmin readiness and task list cache`
+- base deploy branch before fix: `main` / `4.14.118`
+- release state: `docs/release/CURRENT_RELEASE_STATE.md`
+
+Scope:
+
+- P0 readiness/body battery isolation
+- Garmin connection-state isolation
+- stale-empty task list detail cache bypass
+
+Validated before promotion:
+
+- `npx tsc --noEmit` passed
+- focused P0 suite 7 files / 117 tests passed
+- full backend vitest 432 files / 6546 tests passed
+- pre-commit full backend vitest 432 files / 6546 tests passed
+
+The release-process audit remains the canonical process reference:
 
 - active process source: `docs/release/README.md`
 - final audit: `docs/release/release-process-audit-final-report.md`

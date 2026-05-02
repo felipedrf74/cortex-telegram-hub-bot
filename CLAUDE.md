@@ -1,5 +1,20 @@
 # CLAUDE.md — Nexus Hub Backend
 
+## Agent Bootloader - Read First
+
+This file is a repo-local bootloader. Before creating or updating markdown,
+read:
+
+1. `/Users/felipedominguez/Desktop/Nexus Hub/docs/DOCS_INDEX.md`
+2. `docs/DOCS_INDEX.md`
+3. `docs/release/current-release-index.md`
+4. `docs/qa/QA_BACKEND_REPORT.md`
+
+Do not create a new scattered final report when a current/canonical doc already
+exists. Update the current doc and link any one-off evidence from the current
+index. Historical reports are evidence, not active truth, unless the current
+release index links them.
+
 **You are working directly on the single-source-of-truth backend for Nexus Hub, a multi-domain AI personal assistant.** Do not assume a multi-agent orchestration, queue system, or "role" — those files were removed in Phase 0 (April 2026). There is one codebase, one main branch, one human owner (Felipe), and one deploy path.
 
 ---
