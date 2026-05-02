@@ -186,9 +186,56 @@ describe('authMiddleware: device revocation', () => {
     });
   }
 
+  async function runMiddlewareWithRawPayload(
+    payload: Record<string, unknown>,
+  ): Promise<MockRes & { admitted: boolean; requestTenantId?: number; requestUserId?: number }> {
+    const token = jwt.sign(
+      payload,
+      'test-ios-secret',
+      { expiresIn: '7d' as any },
+    );
+
+    const { authMiddleware } = await import('../../src/api/auth-middleware');
+    const req = mockReq({ authorization: `Bearer ${token}` });
+    const res = mockRes();
+
+    let admitted = false;
+    await new Promise<void>((resolve) => {
+      const next: NextFunction = () => { admitted = true; resolve(); };
+      authMiddleware(req, res as unknown as Response, next);
+      setImmediate(resolve);
+    });
+
+    return Object.assign(res, {
+      admitted,
+      requestTenantId: (req as any).tenantId,
+      requestUserId: (req as any).userId,
+    });
+  }
+
   it('admits a request when the device row still exists', async () => {
     const res = await runMiddleware(501, 'dev-live');
     expect(res.admitted).toBe(true);
+  });
+
+  it('fails closed when the JWT userId is not a positive integer number', async () => {
+    const stringUser = await runMiddlewareWithRawPayload({
+      userId: '501',
+      deviceId: 'dev-string-user',
+    });
+    expect(stringUser.admitted).toBe(false);
+    expect(stringUser.statusCode).toBe(401);
+    expect(stringUser.body.error.code).toBe('UNAUTHORIZED');
+    expect(stringUser.body.error.message).toBe('Invalid authenticated user scope');
+
+    const fractionalUser = await runMiddlewareWithRawPayload({
+      userId: 501.5,
+      deviceId: 'dev-fractional-user',
+    });
+    expect(fractionalUser.admitted).toBe(false);
+    expect(fractionalUser.statusCode).toBe(401);
+    expect(fractionalUser.body.error.code).toBe('UNAUTHORIZED');
+    expect(fractionalUser.body.error.message).toBe('Invalid authenticated user scope');
   });
 
   it('admits an explicit active-tenant header only when it matches the canonical tenant', async () => {

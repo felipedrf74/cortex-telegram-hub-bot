@@ -42,6 +42,10 @@ function readRequestedActiveTenant(req: Request): { header: string; raw: string;
   return null;
 }
 
+function isValidAuthPayloadUserId(userId: unknown): userId is number {
+  return typeof userId === 'number' && Number.isInteger(userId) && isValidTenantUserId(userId);
+}
+
 /**
  * JWT authentication middleware for iOS API routes.
  * Validates the Bearer token and attaches userId/deviceId to the request.
@@ -68,9 +72,23 @@ export function authMiddleware(req: Request, res: Response, next: NextFunction):
   const token = authHeader.slice(7);
   try {
     const payload = jwt.verify(token, config.ios.jwtSecret) as {
-      userId: number;
-      deviceId: string;
+      userId?: unknown;
+      deviceId?: unknown;
     };
+
+    if (!isValidAuthPayloadUserId(payload.userId)) {
+      recordTenantScopeAnomaly({
+        layer: 'delivery',
+        operation: 'ios_auth_jwt_payload',
+        reason: payload.userId == null ? 'missing_user_scope' : 'invalid_user_scope',
+        userId: typeof payload.userId === 'number' ? payload.userId : null,
+        details: {
+          userIdType: typeof payload.userId,
+        },
+      });
+      sendError(res, 'UNAUTHORIZED', 'Invalid authenticated user scope', 401);
+      return;
+    }
 
     // Hardening audit 2026-04-20: verify the user is still active
     // BEFORE admitting the request. Previously the middleware trusted
@@ -185,16 +203,17 @@ export function authMiddleware(req: Request, res: Response, next: NextFunction):
     // If a client attempts same-user workspace switching before the backend
     // has a membership-backed active-tenant model, fail closed above instead
     // of silently accepting or ignoring the requested tenant.
+    const authenticatedDeviceId = typeof payload.deviceId === 'string' ? payload.deviceId : '';
     (req as AuthenticatedRequest).tenantId = payload.userId;
     (req as AuthenticatedRequest).userId = payload.userId;
-    (req as AuthenticatedRequest).deviceId = payload.deviceId;
+    (req as AuthenticatedRequest).deviceId = authenticatedDeviceId;
 
     // Update last_active_at for portal user tracking (fire-and-forget, non-blocking)
     try {
       const db = getDb();
       db.prepare(
         "UPDATE ios_devices SET last_active_at = datetime('now') WHERE user_id = ? AND device_id = ?"
-      ).run(payload.userId, payload.deviceId);
+      ).run(payload.userId, authenticatedDeviceId);
       db.prepare(
         "UPDATE users SET last_active_at = datetime('now') WHERE id = ?"
       ).run(payload.userId);
