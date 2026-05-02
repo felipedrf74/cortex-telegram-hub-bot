@@ -680,12 +680,36 @@ function matchObjectiveKeyword(lower: string): { discipline: CoachingDiscipline;
   return null;
 }
 
-function resolveWeeklyTargets(
+/**
+ * Resolve the per-sport weekly session counts for a given primary
+ * focus + user-provided session/strength preferences.
+ *
+ * **Exported (May 2 2026)** so the May-2 marathon-minimum + strength-
+ * cap expansion is directly testable. Internal callers continue to
+ * use it via the same signature.
+ *
+ * Caps: strength 0–6 (was 0–4 before May 2, bumped to allow advanced
+ * lifters who explicitly request 5+ strength sessions). Marathon
+ * focus enforces a minimum of 4 running sessions/week (1 long +
+ * 1 quality + 2 supports — the standard marathon-prep skeleton).
+ */
+export function resolveWeeklyTargets(
   primaryFocus: CoachingDiscipline,
   input: CoachKernelTrainingPlanInput,
 ): Goals['weeklySessionsTarget'] {
   const total = clamp(Math.max(3, Math.min(7, input.sessionsPerWeek)), 3, 7);
-  const strength = clamp(Math.max(0, Math.min(4, input.strengthSessionsPerWeek)), 0, 4);
+  // May 2 2026 (Felipe-reported): strength cap was 4 sessions/week,
+  // silently capping advanced lifters who explicitly request 5+
+  // strength sessions (with marathon prep on top, that's a totally
+  // reasonable load for someone with 5+ years of gym experience).
+  // Bumped cap to 6 — downstream guardrails (capacity-reconciliation,
+  // session-coherence) still adjust if the resulting load is
+  // unsustainable for the user's recovery state. The cap remains
+  // because runaway values (10/week) would break the planner's
+  // session-spacing math, but 5–6 is now allowed for users who
+  // know what they're doing.
+  const STRENGTH_CAP = 6;
+  const strength = clamp(Math.max(0, Math.min(STRENGTH_CAP, input.strengthSessionsPerWeek)), 0, STRENGTH_CAP);
 
   switch (primaryFocus) {
     case 'triathlon': {
@@ -699,7 +723,15 @@ function resolveWeeklyTargets(
     case 'marathon':
     case 'running': {
       const runningCap = availabilityDaysCap(input.runProfile?.weekly_availability_days);
-      const running = clamp(Math.max(2, total), 2, runningCap ?? 7);
+      // May 2 2026 (Felipe-reported): marathon prep needs at least
+      // 4 running sessions/week (1 long + 1 quality + 2 supports).
+      // The prior min of 2 was sufficient for casual jogging but
+      // produced under-volume marathon plans. For "running" focus
+      // (non-marathon, e.g. 5K/10K casual) the legacy minimum of
+      // 2 still applies — marathon-specific minimum is gated on
+      // primaryFocus.
+      const minRunning = primaryFocus === 'marathon' ? 4 : 2;
+      const running = clamp(Math.max(minRunning, total), minRunning, runningCap ?? 7);
       return { running, strength: strength };
     }
     case 'cycling':
@@ -707,7 +739,7 @@ function resolveWeeklyTargets(
     case 'swimming':
       return { swimming: total, strength: strength };
     case 'strength': {
-      const strengthTarget = Math.min(strength || Math.min(total, 4), total, 4);
+      const strengthTarget = Math.min(strength || Math.min(total, STRENGTH_CAP), total, STRENGTH_CAP);
       const aerobicSupport = Math.max(0, total - strengthTarget);
       return aerobicSupport > 0
         ? { running: aerobicSupport, strength: strengthTarget }
@@ -929,24 +961,87 @@ function matchEquipmentKeywords(raw: string): { value: EquipmentAccess; matchedK
   const lower = raw.toLowerCase();
   const matchedKeywords: string[] = [];
 
+  // ── Full / commercial gym vocabulary ──────────────────────
   const hasFullGym = lower.includes('full gym');
   if (hasFullGym) matchedKeywords.push('full gym');
   const hasFullCommercial = lower.includes('full commercial');
   if (hasFullCommercial) matchedKeywords.push('full commercial');
+  // Slice 3.J expansion (May 2 2026, Felipe-reported): users with
+  // legitimate full-gym access were silently downgraded to
+  // FALLBACK_EQUIPMENT_ACCESS (no barbell, no dumbbells) when their
+  // profile string didn't include "full gym" or "full commercial".
+  // Real-world strings observed during onboarding: "commercial gym",
+  // "fitness center", "Crossfit box", "fully equipped", "academia"
+  // (Portuguese for any gym), "ginásio" (Portuguese-PT). All of
+  // these imply barbell + dumbbell access in practice.
+  const hasCommercialGym = lower.includes('commercial gym') || lower.includes('commercial-gym');
+  if (hasCommercialGym) matchedKeywords.push('commercial gym');
+  const hasFitnessCenter = lower.includes('fitness center') || lower.includes('fitness centre') || lower.includes('fitness club');
+  if (hasFitnessCenter) matchedKeywords.push('fitness center');
+  const hasFullyEquipped = lower.includes('fully equipped') || lower.includes('fully-equipped') || lower.includes('well equipped') || lower.includes('well-equipped');
+  if (hasFullyEquipped) matchedKeywords.push('fully equipped');
+  const hasCompleteGym = lower.includes('complete gym') || lower.includes('complete-gym');
+  if (hasCompleteGym) matchedKeywords.push('complete gym');
+  const hasCrossfit = lower.includes('crossfit') || lower.includes('cross-fit') || lower.includes('cross fit');
+  if (hasCrossfit) matchedKeywords.push('crossfit');
+  // "gym membership", "gym member", "gym access" — common phrasing
+  // when a user is describing what they have, not where they train.
+  const hasGymMembership = /\bgym\s+(membership|member|access|subscription)\b/.test(lower);
+  if (hasGymMembership) matchedKeywords.push('gym membership');
+  // Portuguese (pt-BR / pt-PT) — Felipe is a pt user. "Academia"
+  // in pt-BR and "ginásio" in pt-PT both mean a commercial gym
+  // facility (barbells + dumbbells + machines). The accent-stripped
+  // variant `ginasio` covers users who don't type the diacritic.
+  // "Academia completa" / "ginásio completo" are the explicit
+  // "full" variants.
+  const hasAcademiaCompleta = lower.includes('academia completa') || lower.includes('ginásio completo') || lower.includes('ginasio completo');
+  if (hasAcademiaCompleta) matchedKeywords.push('academia completa');
+  // Word-boundary check on plain "academia"/"ginásio" so we don't
+  // false-match phrases like "academia matemática" or part-of-word
+  // matches. Tests pin every recognized variant.
+  const hasAcademia = /\bacademia\b/.test(lower) || /\bgin[áa]sio\b/.test(lower);
+  if (hasAcademia) matchedKeywords.push('academia');
+
+  // ── Home / garage / partial vocabulary (existing) ─────────
   const hasGarageGym = lower.includes('garage');
   if (hasGarageGym) matchedKeywords.push('garage');
   const hasHomeGym = lower.includes('home gym');
   if (hasHomeGym) matchedKeywords.push('home gym');
   const hasBasic = lower.includes('basic');
   if (hasBasic) matchedKeywords.push('basic');
-  const hasBodyweightOnly = lower.includes('bodyweight');
+
+  // ── Bodyweight / resistance vocabulary ────────────────────
+  // Includes pt-BR/pt-PT variants for users describing minimal
+  // setups in their native language.
+  const hasBodyweightOnly = lower.includes('bodyweight')
+    || lower.includes('body weight')
+    || lower.includes('peso corporal')
+    || lower.includes('sem equipamento')
+    || lower.includes('no equipment');
   if (hasBodyweightOnly) matchedKeywords.push('bodyweight');
-  const hasBands = lower.includes('band');
+  const hasBands = lower.includes('band')
+    || lower.includes('elástico')
+    || lower.includes('elastico')
+    || lower.includes('faixa');
   if (hasBands) matchedKeywords.push('band');
 
-  // Capability derivation matches the pre-slice-3.J behavior so
-  // sample-athlete tests stay green.
-  const isFullCommercialOrGym = hasFullGym || hasFullCommercial;
+  // Capability derivation. Any recognized "real gym" vocabulary
+  // (commercial / full / Crossfit / fitness-center / fully-equipped
+  // / academia[-completa] / ginásio[-completo] / gym-membership)
+  // implies barbell + dumbbell access — those facilities have
+  // them by definition. Garage gyms typically have barbells too;
+  // home/basic gyms have dumbbells but not always barbells.
+  const isFullCommercialOrGym =
+    hasFullGym ||
+    hasFullCommercial ||
+    hasCommercialGym ||
+    hasFitnessCenter ||
+    hasFullyEquipped ||
+    hasCompleteGym ||
+    hasCrossfit ||
+    hasGymMembership ||
+    hasAcademia ||
+    hasAcademiaCompleta;
   const hasHomeBasic = hasHomeGym || hasBasic;
 
   return {
@@ -1432,6 +1527,7 @@ function matchExperienceFromString(
   if (typeof raw !== 'string') return null;
   const normalized = raw.trim().toLowerCase();
   if (normalized.length === 0) return null;
+  // ── Original vocabulary (preserved verbatim, same precedence) ──
   if (normalized.includes('advanced')) return { value: 'advanced', matchedKeyword: 'advanced' };
   if (normalized.includes('5+')) return { value: 'advanced', matchedKeyword: '5+' };
   if (normalized.includes('intermediate')) return { value: 'intermediate', matchedKeyword: 'intermediate' };
@@ -1440,6 +1536,52 @@ function matchExperienceFromString(
   if (normalized.includes('novice')) return { value: 'novice', matchedKeyword: 'novice' };
   if (normalized.includes('beginner')) return { value: 'novice', matchedKeyword: 'beginner' };
   if (normalized.includes('<1')) return { value: 'novice', matchedKeyword: '<1' };
+  // ── EXPANSION (May 2 2026, Felipe-reported) ──
+  // Felipe (3+ years running, 5+ years gym) was being treated as
+  // novice because his profile string didn't match any of the
+  // tokens above. Expanded with English synonyms for each level
+  // plus Portuguese (pt-BR / pt-PT) variants since Felipe is a
+  // pt user. New explicit-token recognitions:
+  //   advanced     ← experienced, veteran, expert,
+  //                  experiente, veterano, avançado, avancado
+  //   intermediate ← intermediário, intermediario
+  //   novice       ← iniciante, principiante, novato
+  // Portuguese variants checked FIRST so they win when their
+  // accent-stripped form is a substring of an English token
+  // (e.g. "veterano".includes("veteran") would match the English
+  // path first). Order matters: longer/more-specific PT tokens
+  // before shorter EN.
+  if (normalized.includes('experiente')) return { value: 'advanced', matchedKeyword: 'experiente' };
+  if (normalized.includes('veterano')) return { value: 'advanced', matchedKeyword: 'veterano' };
+  if (normalized.includes('experienced')) return { value: 'advanced', matchedKeyword: 'experienced' };
+  if (normalized.includes('veteran')) return { value: 'advanced', matchedKeyword: 'veteran' };
+  if (normalized.includes('expert')) return { value: 'advanced', matchedKeyword: 'expert' };
+  if (normalized.includes('avançado') || normalized.includes('avancado')) {
+    return { value: 'advanced', matchedKeyword: 'avançado' };
+  }
+  if (normalized.includes('intermediário') || normalized.includes('intermediario')) {
+    return { value: 'intermediate', matchedKeyword: 'intermediário' };
+  }
+  if (normalized.includes('iniciante')) return { value: 'novice', matchedKeyword: 'iniciante' };
+  if (normalized.includes('principiante')) return { value: 'novice', matchedKeyword: 'principiante' };
+  if (normalized.includes('novato')) return { value: 'novice', matchedKeyword: 'novato' };
+  // Numeric year patterns: "5 years", "10 anos", "3 yrs", "5 ano".
+  // Caught AFTER explicit tokens so phrases like "advanced (5
+  // years)" keep their explicit-token precedence. Maps:
+  //   ≥5 years → advanced       (matches gym lifters with deep base)
+  //   1–4 years → intermediate  (mid-cycle athletes)
+  //   <1 year  → novice         (true beginners)
+  // Word-boundary (`\b`) on the unit so "5 years" matches but
+  // "5yearbookofficial" doesn't.
+  const yearMatch = normalized.match(/(\d{1,2})\s*\+?\s*(?:years?|anos?|yrs?)\b/);
+  if (yearMatch) {
+    const years = parseInt(yearMatch[1], 10);
+    if (Number.isFinite(years)) {
+      if (years >= 5) return { value: 'advanced', matchedKeyword: `${years}+ years` };
+      if (years >= 1) return { value: 'intermediate', matchedKeyword: `${years} years` };
+      return { value: 'novice', matchedKeyword: `<1 year (${years})` };
+    }
+  }
   // Unrecognized vocabulary — let the caller fall through to the
   // `'fallback' / 'missing'` path so the audit-trail log captures
   // the new word and we can absorb it into this list later.

@@ -15,6 +15,7 @@ import {
   findOwnershipsForPlan,
   markCalendarOwnershipDeleted,
 } from '../../services/training-plan-lifecycle';
+import { reconcileOrphanedTrainingAgendaEvents } from '../../services/training-agenda-reconciliation';
 import { cancelTrainingPlanCrossSkillDependents } from '../../services/training-plan-cancellation-cascade';
 import { getTrainingCalendarEventOwners } from '../../services/training-calendar-scope';
 import {
@@ -329,6 +330,44 @@ async function cancelTrainingPlanForUserLocked(
     };
   }
 
+  // 2026-05-02 (Felipe-reported "agenda residues"): retry any
+  // ownership rows still flagged 'orphaned' after the deletion
+  // pass above. This catches:
+  //   - events whose external delete failed transiently in the
+  //     for-loop (network blip / 5xx) and got marked 'orphaned'
+  //   - events ORPHANED BY EARLIER cancellations that the user
+  //     never followed with a plan-creation cycle (which is where
+  //     the existing reconciler hook fires from)
+  // Without this opportunistic call, an offline/5xx hiccup during
+  // cancellation leaves stray events on the user's calendar
+  // until they happen to create a new plan. Awaited so the
+  // response payload's removedEvents count reflects the reconciled
+  // total, but errors are caught so a failing reconciliation never
+  // blocks cancellation success.
+  let reconciledExtraEvents = 0;
+  try {
+    const reconciliation = await reconcileOrphanedTrainingAgendaEvents(userId);
+    reconciledExtraEvents = reconciliation.deleted;
+    if (reconciliation.attempted > 0) {
+      logger.info(
+        {
+          userId,
+          planIds,
+          attemptedReconciled: reconciliation.attempted,
+          deletedReconciled: reconciliation.deleted,
+          failedReconciled: reconciliation.failed,
+        },
+        'Training plan cancellation reconciled orphaned calendar events',
+      );
+    }
+  } catch (err) {
+    logger.warn(
+      { err, userId, planIds },
+      'Post-cancellation orphan reconciliation failed; orphans remain in ownership table for next plan-creation cycle',
+    );
+  }
+  removedEvents += reconciledExtraEvents;
+
   logger.info({
     userId,
     planIds,
@@ -338,6 +377,7 @@ async function cancelTrainingPlanForUserLocked(
     removedCompletions,
     removedReports,
     clearedRegistry,
+    reconciledExtraEvents,
   }, 'Training plan cancelled and per-user coach state cleared');
 
   return {
