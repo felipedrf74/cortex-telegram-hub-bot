@@ -145,8 +145,13 @@ vi.mock('../../src/services/secretary-fastpath', () => ({
 }));
 
 vi.mock('../../src/services/user-service', () => ({
+  // Identity-safety: iOS routes use the strict by-id helpers post-audit.
   getUserLanguage: (...args: unknown[]) => mockGetUserLanguage(...args),
+  getUserLanguageById: (...args: unknown[]) => mockGetUserLanguage(...args),
   getUserTimezone: () => 'Europe/Lisbon',
+  getUserTimezoneById: () => 'Europe/Lisbon',
+  getPreferredDisplayName: () => 'Test User',
+  getPreferredDisplayNameById: () => 'Test User',
   getOwnerBootstrapUser: () => null,
   getUserById: (...args: unknown[]) => mockGetUserById(...args),
   getUserByTelegramId: (...args: unknown[]) => mockGetUserById(...args),

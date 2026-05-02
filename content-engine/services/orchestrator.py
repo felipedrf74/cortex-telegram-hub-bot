@@ -294,8 +294,8 @@ YOUR TASK — produce a {"DEEP RESEARCH BRIEF" if not evergreen_query else "PRAC
   "summary": "3-5 sentence executive summary of what's happening with this topic right now",
   "key_facts": ["fact 1 with specific data/numbers", "fact 2", "fact 3", "fact 4", "fact 5"],
   "arguments_for": ["argument supporting the mainstream position"],
-  "arguments_against": ["counter-argument / Felipe's likely contrarian take"],
-  "felipes_angle": "How Felipe should approach this — his unique conservative/libertarian take that resonates with his audience",
+  "arguments_against": ["counter-argument / the creator's likely contrarian take"],
+  "creator_angle": "How the authenticated creator should approach this — using their saved brand voice, worldview, and audience profile from the creator memory; do not assume any specific political or ideological default",
   "content_ideas": [
     {{
       "title": "Compelling PT-BR title",
@@ -353,7 +353,7 @@ Return ONLY the JSON object."""
         # Store synthesis metadata in the first brief's why_now
         summary = synthesis.get("summary", "")
         key_facts = synthesis.get("key_facts", [])
-        felipes_angle = synthesis.get("felipes_angle", "")
+        creator_angle = synthesis.get("creator_angle", synthesis.get("felipes_angle", ""))  # creator_angle is the new key; fall back to legacy felipes_angle for older payloads
         args_for = synthesis.get("arguments_for", [])
         args_against = synthesis.get("arguments_against", [])
 
@@ -371,7 +371,7 @@ Return ONLY the JSON object."""
             brief = ContentBrief(
                 title=idea.get("title", query),
                 hook=idea.get("hook", ""),
-                angle=felipes_angle,
+                angle=creator_angle,
                 format=idea.get("format", "YouTube"),
                 niche="deep_research",
                 key_points=idea.get("key_points", []),
@@ -392,7 +392,7 @@ Return ONLY the JSON object."""
                 research_block += "\n\nARGUMENTOS A FAVOR:\n" + "\n".join(f"• {a}" for a in args_for)
             if args_against:
                 research_block += "\n\nCONTRA-ARGUMENTOS:\n" + "\n".join(f"• {a}" for a in args_against)
-            research_block += f"\n\nÂNGULO DO FELIPE: {felipes_angle}"
+            research_block += f"\n\nÂNGULO DO CRIADOR: {creator_angle}"
             briefs[0].why_now = research_block
 
         duration_ms = int((time.monotonic() - start) * 1000)
@@ -429,7 +429,7 @@ Return ONLY the JSON object."""
         return SourcesResponse(query=query, sources=sources)
 
     async def hot_news(self) -> HotNewsResponse:
-        """What's trending right now — curated through Felipe's worldview lens."""
+        """What's trending right now — curated through the creator's saved worldview lens."""
         from services.claude_client import ask_claude_json, FAST_MODEL
 
         # Phase 1: Gather raw results from targeted queries
@@ -469,9 +469,9 @@ Here are {len(all_raw)} trending topics found right now:
 
 {json.dumps(all_raw, ensure_ascii=False, indent=1)}
 
-TASK: Select the TOP 8 most interesting topics for Felipe's content. For each:
-1. Rewrite the title as a compelling Portuguese headline Felipe would use
-2. Add a "content_angle" — how Felipe should approach this (his unique take)
+TASK: Select the TOP 8 most interesting topics for the authenticated creator's content. For each:
+1. Rewrite the title as a compelling Portuguese headline the authenticated creator would use
+2. Add a "content_angle" — how the authenticated creator should approach this (his unique take)
 3. Rate "relevance" 1-10 (how well it fits his brand)
 4. Classify the "niche": politica | economia | fitness | fe_familia | geopolitica | desenvolvimento | reacao
 

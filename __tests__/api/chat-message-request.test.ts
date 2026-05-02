@@ -10,7 +10,10 @@ const mockLoggerDebug = vi.fn();
 const mockLoggerWarn = vi.fn();
 
 vi.mock('../../src/services/user-service', () => ({
+  // Identity-safety: iOS routes call the strict by-id helper after the
+  // May 2026 audit. Tests mock both legacy + *ById names for safety.
   getUserLanguage: (...args: unknown[]) => mockGetUserLanguage(...args),
+  getUserLanguageById: (...args: unknown[]) => mockGetUserLanguage(...args),
   setUserLanguage: (...args: unknown[]) => mockSetUserLanguage(...args),
 }));
 

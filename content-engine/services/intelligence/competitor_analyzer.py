@@ -117,7 +117,7 @@ Provide a competitor analysis with:
 5. top_performer: which video did best and why
 6. strengths: what they do well (array)
 7. weaknesses: content gaps or weaknesses (array)
-8. actionable_insights: specific things Felipe can learn/adapt (array)
+8. actionable_insights: specific things the authenticated creator can learn/adapt (array)
 
 Return as JSON object. Insights in PT-BR."""
 

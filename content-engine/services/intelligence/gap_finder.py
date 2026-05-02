@@ -45,7 +45,7 @@ For each gap, provide:
 - search_demand: "high" | "medium" | "low"
 - existing_content_quality: "none" | "low" | "medium" | "high"
 - opportunity_score: 1-10
-- suggested_angle: how Felipe should approach this differently
+- suggested_angle: how the authenticated creator should approach this differently
 - suggested_title: a title for this content
 
 Return ONLY a JSON array. Language: PT-BR."""

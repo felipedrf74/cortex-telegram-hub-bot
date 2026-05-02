@@ -559,7 +559,7 @@ export function buildKnowledgePromptBlock(userId?: number, tenantId?: number): s
 
   const lines: string[] = [
     '\n[LEARNED CONTENT PATTERNS — from reference creators]',
-    'These patterns were extracted from successful YouTube creators. Use them as inspiration — adapt to Felipe\'s voice, never copy verbatim.\n',
+    'These patterns were extracted from successful YouTube creators. Use them as inspiration — adapt to the authenticated creator\'s saved Voice DNA / brand voice for this user and tenant, never copy verbatim. Do not assume any founder, owner, or default creator identity.\n',
   ];
 
   for (const k of knowledge) {

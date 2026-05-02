@@ -174,17 +174,17 @@ export function buildTasteProfileBlock(userId: number, tenantId: number): string
   const rejected = rows.filter((r) => r.sentiment === 'rejected');
 
   let block = '\n\n[TASTE PROFILE — learned from past feedback]\n';
-  block += 'Use this to suggest topics Felipe is more likely to approve.\n\n';
+  block += 'Use this to suggest topics the authenticated creator is more likely to approve.\n\n';
 
   if (approved.length > 0) {
-    block += 'Topics Felipe APPROVED:\n';
+    block += 'Topics the authenticated creator APPROVED:\n';
     for (const r of approved.slice(0, 15)) {
       block += `  • "${r.topic}" (${r.niche || 'general'})\n`;
     }
   }
 
   if (rejected.length > 0) {
-    block += '\nTopics Felipe REJECTED (avoid similar):\n';
+    block += '\nTopics the authenticated creator REJECTED (avoid similar):\n';
     for (const r of rejected.slice(0, 15)) {
       block += `  • "${r.topic}" (${r.niche || 'general'})\n`;
     }
@@ -267,8 +267,8 @@ export async function generateTopicCandidates(
   const enrichment = `${angleDiversity}${bookBlock}${discoveryBlock}`;
 
   const userMessage = isTrending
-    ? `Today is ${today.toFormat('cccc, LLLL dd, yyyy')}. Generate ${count} trending ${format} topic candidates for The Operator brand. Search for what's hot right now across all pillars (🤖 AI/Tech, 🎤 Commentary, 🏋️ Training, 🎮 Gaming, 🃏 Wild Card). Don't force quotas — follow what's genuinely interesting and timely.${enrichment}\n\nRespond with a JSON array. Each object must have: "title", "niche" (one of: ai-tech, commentary, training, gaming, wild-card), "whyNow", "hookIdea", "angle_tag", "pillar_emoji", "time_sensitivity".`
-    : `Generate ${count} evergreen ${format} topic candidates for The Operator brand. Timeless topics across any pillar (🤖 AI/Tech, 🎤 Commentary, 🏋️ Training, 🎮 Gaming, 🃏 Wild Card). Follow genuine interest, not quotas.${enrichment}\n\nRespond with a JSON array. Each object must have: "title", "niche" (one of: ai-tech, commentary, training, gaming, wild-card), "whyNow", "hookIdea", "angle_tag", "pillar_emoji", "time_sensitivity".`;
+    ? `Today is ${today.toFormat('cccc, LLLL dd, yyyy')}. Generate ${count} trending ${format} topic candidates for the authenticated creator/brand. Search for what's hot right now across the authorized pillars, references, taste profile, and knowledge block. Don't force quotas — follow what's genuinely interesting and timely.${enrichment}\n\nRespond with a JSON array. Each object must have: "title", "niche" (one of: ai-tech, commentary, training, gaming, wild-card), "whyNow", "hookIdea", "angle_tag", "pillar_emoji", "time_sensitivity".`
+    : `Generate ${count} evergreen ${format} topic candidates for the authenticated creator/brand. Use authorized pillars, references, taste profile, and knowledge block. Follow genuine interest, not quotas.${enrichment}\n\nRespond with a JSON array. Each object must have: "title", "niche" (one of: ai-tech, commentary, training, gaming, wild-card), "whyNow", "hookIdea", "angle_tag", "pillar_emoji", "time_sensitivity".`;
 
   // Gemini-first routing for cost reduction (cost-optimization pass).
   // Topic generation is a JSON-output task that doesn't need Anthropic-specific

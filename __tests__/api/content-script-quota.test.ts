@@ -28,7 +28,9 @@ vi.mock('../../src/services/cost-guardrail', () => ({
 }));
 
 vi.mock('../../src/services/user-service', () => ({
+  // Identity-safety: content-script-routes uses the strict by-id helper.
   getUserLanguage: () => 'pt-BR',
+  getUserLanguageById: () => 'pt-BR',
 }));
 
 interface MockRes {

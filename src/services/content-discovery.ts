@@ -10,7 +10,6 @@ import { trackedCreate } from '../portal/anthropic-hook';
 import { completeOneShotWithSearch, isGeminiProviderConfigured } from './gemini-provider';
 import { saveIdea } from '../state/saved-ideas';
 import { isDuplicateIdea } from './content-dedup';
-import { loadCreatorConfig } from '../utils/prompt-loader';
 import { getUserLanguage } from './user-service';
 
 const client = new Anthropic({ apiKey: config.anthropic.apiKey });
@@ -25,10 +24,7 @@ const CONTENT_NICHES = [
 ];
 
 function buildDiscoverySystemPrompt(language: string): string {
-  return `You are the creator's content discovery engine. Use the creator configuration below as the canonical source of audience, worldview, language defaults, and editorial fit.
-
-CREATOR CONFIG:
-${loadCreatorConfig()}
+  return `You are the authenticated creator's content discovery engine. Use only authorized creator identity, audience, references, voice, and editorial memory supplied by the request context. If those are missing, keep recommendations neutral and setup-safe instead of assuming a founder/default brand.
 
 ACTIVE OUTPUT LANGUAGE: ${language}
 
@@ -47,7 +43,7 @@ OUTPUT FORMAT — Return EXACTLY this structure:
 **Why now:** [what makes this relevant THIS WEEK — cite source when timely]
 **Format:** [YouTube / Reel / Carousel / Short]
 **Hook (first 3s):** [the exact opening line/visual]
-**Angle:** [what makes Felipe's take unique]
+**Angle:** [what makes the authenticated creator's take unique]
 **Key points:** [3-5 bullet points for the content]
 **Title options:** [3 SEO-friendly title variations]
 **Estimated virality:** [Low / Medium / High — and why]

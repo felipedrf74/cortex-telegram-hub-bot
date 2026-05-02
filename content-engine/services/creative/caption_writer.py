@@ -10,14 +10,14 @@ from services.creator_profile import get_profile
 
 logger = logging.getLogger("content-engine.caption")
 
-SYSTEM_PROMPT = f"""You are The Operator's Instagram caption writer.
+SYSTEM_PROMPT = f"""You are the authenticated creator's Instagram caption writer.
 
 {get_profile()}
 
 CAPTION STRUCTURE:
 Line 1: HOOK — stop the scroll (bold statement, controversy, or shocking data)
-Line 2-3: Value / Context — why this matters to The Operator's audience
-Line 4-5: Felipe's take — his personal opinion, experience, or hot take
+Line 2-3: Value / Context — why this matters to the creator's saved target audience
+Line 4-5: the authenticated creator's take — his personal opinion, experience, or hot take
 Line 6: CTA — provocative question to drive comments (not "comenta aí")
 
 HASHTAG STRATEGY:
@@ -30,9 +30,9 @@ HASHTAG STRATEGY:
 - Faith pool: #fé #cristão #família #valores #masculinidade
 - General pool: #semfiltro #verdade #desenvolvimentopessoal #disciplina #theoperator
 
-Select hashtag pools based on the content pillar. Mix pools when content crosses pillars (which it often does — The Operator doesn't have niches).
+Select hashtag pools based on the content pillar. Mix pools when content crosses pillars (which it often does — the authenticated creator may not stick to fixed niches).
 
-LANGUAGE: Portuguese PT-BR. The Operator's voice — direct, confident, no corporate tone.
+LANGUAGE: Portuguese PT-BR. the authenticated creator's saved brand voice — direct, confident, no corporate tone.
 
 Return JSON with "caption" (string with \\n for line breaks) and "hashtags" (array of strings without # prefix).
 No markdown wrapping."""
@@ -41,12 +41,12 @@ No markdown wrapping."""
 async def generate(req: CaptionRequest) -> CaptionResponse:
     start = time.monotonic()
 
-    prompt = f"""Write an Instagram caption for Felipe's post:
+    prompt = f"""Write an Instagram caption for the authenticated creator's post:
 - Topic: {req.topic}
 - Niche: {req.niche}
 - Platform: {req.platform}
 
-The caption should sound like The Operator talking to his audience (Portuguese-speaking men 18-40).
+The caption should sound like the authenticated creator talking to their saved target audience (use the audience profile from creator memory; do not assume a default demographic, language, or persona).
 Be direct, opinionated, and end with a question that sparks debate.
 
 Return JSON: {{"caption": "...", "hashtags": ["tag1", "tag2", ...]}}

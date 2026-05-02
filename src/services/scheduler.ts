@@ -38,7 +38,7 @@ import { runVoiceEvolutionAgent } from '../agents/voice-evolution-agent';
 import { expireStaleSignals } from './intelligence-bus';
 import { seedBooksIfEmpty } from '../commands/books';
 import { runAutoresearch, getScheduledTarget } from './autoresearch';
-import { getUserLanguage } from './user-service';
+import { getPreferredDisplayNameById, getUserLanguageById } from './user-service';
 import { runDatabaseBackup, weeklyRestoreTest } from './backup';
 import { getDb } from './database';
 import { listActiveFiscalCollectionProfiles } from '../state/fiscal-collection-profiles';
@@ -1028,8 +1028,14 @@ export function startScheduler(bot?: any): void {
   }), { timezone: tz });
 
   // ── Bi-weekly fossa email (Monday 07:30) ───────────────────────────
+  // Identity-safety: this cron sends a single-tenant home-services request
+  // with literal owner PII (full name, address, phone, account number).
+  // Gate behind an explicit FOSSA_EMAIL_ENABLED=1 env flag in addition to
+  // OUTLOOK availability so a different tenant configuring Outlook does
+  // NOT inherit this owner-specific automation.
   const fossaTo = process.env.FOSSA_EMAIL_TO || 'smas.fossas@mun-montijo.pt';
-  if (isOutlookMailConfigured()) {
+  const fossaEnabled = (process.env.FOSSA_EMAIL_ENABLED || '').trim() === '1';
+  if (fossaEnabled && isOutlookMailConfigured()) {
     cron.schedule('30 7 * * 1', wrapJob('fossa_email', async () => {
       const today = now();
       const refDate = today.set({ year: 2026, month: 3, day: 23, hour: 0, minute: 0, second: 0, millisecond: 0 });
@@ -1637,7 +1643,11 @@ export async function sendDailyBriefing(bot?: any): Promise<void> {
   };
   for (const target of getActiveUserTargets()) {
     const data = await buildDailyBriefingDataForUser(target.tenantId);
-    const msg = formatDailyBriefing(data, getUserLanguage(target.tenantId));
+    // Identity-safety: resolve display name via the strict by-id helper so
+    // the briefing greets the actual recipient and never the legacy founder
+    // default. Empty string falls through to a name-less greeting.
+    const recipientDisplayName = getPreferredDisplayNameById(target.tenantId);
+    const msg = formatDailyBriefing(data, getUserLanguageById(target.tenantId), recipientDisplayName);
     const chunks = splitMessage(msg);
 
     // ── Store durable report + push (April 2026) ────────────────────

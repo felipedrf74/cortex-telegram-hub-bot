@@ -38,7 +38,7 @@ import {
 import { config } from '../../config';
 import { logger } from '../../utils/logger';
 import { getCached, setCache } from '../../services/cache-store';
-import { getUserLanguage } from '../../services/user-service';
+import { getUserLanguageById } from '../../services/user-service';
 import type { InlineButton } from '../../adapters/message-adapter';
 import {
   buildListSelectionButtons,
@@ -113,7 +113,7 @@ function getFastPathLabels(userId?: number): ReturnType<typeof labelsForLanguage
     return labelsForLanguage('en-US');
   }
   try {
-    return labelsForLanguage(getUserLanguage(userId));
+    return labelsForLanguage(getUserLanguageById(userId));
   } catch (err) {
     logger.debug({ err, userId }, 'fast-path language lookup unavailable, falling back to English labels');
     return labelsForLanguage('en-US');
@@ -125,7 +125,7 @@ function getFastPathLanguage(userId?: number): string {
     return 'en-US';
   }
   try {
-    return getUserLanguage(userId);
+    return getUserLanguageById(userId);
   } catch (err) {
     logger.debug({ err, userId }, 'fast-path language lookup unavailable, falling back to English copy');
     return 'en-US';

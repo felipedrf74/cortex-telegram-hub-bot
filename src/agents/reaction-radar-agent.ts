@@ -338,7 +338,7 @@ function scoreReactionPotential(
     counterPosition = 'Expose the statist logic and present the freedom-based alternative';
   } else if (video.source === 'reference_channel') {
     suggestedAngle = `React/respond to ${video.channelTitle}'s take`;
-    counterPosition = `Agree, disagree, or add Felipe's unique perspective`;
+    counterPosition = `Agree, disagree, or add the authenticated creator's unique perspective`;
   } else {
     suggestedAngle = `React to "${video.title.slice(0, 50)}" — ${video.pillar} angle`;
     counterPosition = 'Take a contrarian or deeper-analysis stance';
@@ -382,7 +382,7 @@ export async function runReactionRadar(): Promise<void> {
     const pillarSignals = readSignals('reaction-radar', ['pillar_performance'], 5);
     signalsConsumed += dnaSignals.length + bookSignals.length + pillarSignals.length;
 
-    // Cross-agent learning: consume voice patterns to suggest reactions in Felipe's style
+    // Cross-agent learning: consume voice patterns to suggest reactions in the authenticated creator's style
     const peerContext = buildAgentContext('reaction-radar');
     signalsConsumed += peerContext.signalsConsumed;
 

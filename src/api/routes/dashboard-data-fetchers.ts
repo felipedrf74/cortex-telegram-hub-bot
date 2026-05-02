@@ -11,7 +11,7 @@ import {
   getEvents as getOutlookCalendarEvents,
   isOutlookCalendarConfigured,
 } from '../../services/outlook-calendar';
-import { getUserTimezone } from '../../services/user-service';
+import { getUserTimezoneById } from '../../services/user-service';
 
 export type DashboardSectionStatus = 'ready' | 'degraded' | 'unavailable';
 
@@ -156,7 +156,7 @@ export async function fetchCalendar(userId?: number) {
 }
 
 async function fetchCalendarForUser(userId?: number) {
-  const zone = getUserTimezone(userId);
+  const zone = getUserTimezoneById(userId);
   const today = DateTime.now().setZone(zone);
   const actualStart = today.startOf('day');
   const actualEnd = today.endOf('day');
@@ -273,7 +273,7 @@ export async function fetchTasks(userId: number) {
     );
   }
 
-  const zone = getUserTimezone(userId);
+  const zone = getUserTimezoneById(userId);
   const now = new Date();
   // MS Graph stores due dates as T23:00:00 UTC for the "previous" day in European TZ.
   // Example: "due April 7" = "2026-04-06T23:00:00" in UTC = April 7 in Lisbon.
@@ -406,7 +406,7 @@ export async function fetchTraining(userId: number) {
     const currentWeek = plan ? getCurrentWeek(plan.id) : null;
     const sessions = currentWeek ? getSessionsForWeek(currentWeek.id) : null;
     if (Array.isArray(sessions) && sessions.length > 0) {
-      const zone = getUserTimezone(userId);
+      const zone = getUserTimezoneById(userId);
       const todayDow = DateTime.now().setZone(zone).toFormat('cccc');
       todaySession = sessions.find((s: any) => s?.day_of_week === todayDow) || null;
     }
@@ -414,7 +414,7 @@ export async function fetchTraining(userId: number) {
 
   if (!todaySession) {
     try {
-      const zone = getUserTimezone(userId);
+      const zone = getUserTimezoneById(userId);
       const today = DateTime.now().setZone(zone);
       const startOfDay = today.startOf('day');
       const endOfDay = today.endOf('day');

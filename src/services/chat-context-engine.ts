@@ -14,9 +14,11 @@ import {
   analyzeChatSkillOrchestration,
   buildChatSkillRoutingPromptBlock,
 } from './chat-skill-orchestrator';
+import { getPreferredDisplayNameById } from './user-service';
 
 export type ChatContextSource =
   | 'current_turn'
+  | 'authenticated_profile'
   | 'conversation_history'
   | 'shared_memory'
   | 'daily_context'
@@ -201,6 +203,27 @@ export async function selectChatContextItems(input: {
     staleAfter: new Date(now.getTime() + 10 * 60 * 1000).toISOString(),
     critical: true,
     reason: 'Current user message drives intent and context selection.',
+  });
+
+  const displayName = getPreferredDisplayNameById(input.userId);
+  items.push({
+    id: 'authenticated-user',
+    tenantId: input.tenantId,
+    userId: input.userId,
+    ownerUserId: input.userId,
+    scope: DEFAULT_CHAT_VISIBILITY_SCOPE,
+    source: 'authenticated_profile',
+    content: displayName
+      ? `Authenticated user display name: ${displayName}. This is the only person identity you may assert for this request. Do not use owner, founder, default, or prior-user names unless they appear in authorized context for this same user and tenant.`
+      : 'Authenticated user profile has no saved display name. Do not infer a person name; ask the user to set a profile name if identity is required.',
+    freshness: 'fresh',
+    confidence: displayName ? 0.96 : 0.7,
+    relevanceScore: 0.95,
+    priority: 98,
+    permissionRequirements: ['authenticated_user', 'active_tenant'],
+    staleAfter: new Date(now.getTime() + 10 * 60 * 1000).toISOString(),
+    critical: true,
+    reason: 'Server-scoped authenticated profile prevents founder/default persona identity leakage.',
   });
 
   const history = getConversationHistory(input.userId, input.domain, input.tenantId) ?? [];

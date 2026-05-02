@@ -202,9 +202,15 @@ export async function buildDailyContext(userId: number, tenantId?: number): Prom
   try {
     // saved_ideas.status enum: 'saved' | 'promoted' | 'used'
     // 'saved' means in the pipeline and not yet acted on
-    // SECURITY FIX: filter by user_id to prevent cross-user count leakage
+    // Identity-safety (May 2026 audit): scope strictly by user_id. Earlier
+    // code used `user_id IN (0, ?)` to mix system seeds (user_id = 0) into
+    // every user's pipeline count; that allowed any non-zero user's
+    // accidentally-zero-keyed row to leak into other users' counts. The
+    // strict per-user scope removes that risk surface entirely. System
+    // seeds, if needed, should now be surfaced via an explicit, audited
+    // path that does not coalesce with per-user data.
     const pipeline = db.prepare(
-      `SELECT COUNT(*) AS cnt FROM saved_ideas WHERE user_id IN (0, ?) AND status = 'saved'`,
+      `SELECT COUNT(*) AS cnt FROM saved_ideas WHERE user_id = ? AND status = 'saved'`,
     ).get(userId) as { cnt: number };
     if (pipeline.cnt > 0) {
       parts.push(`CONTENT: ${pipeline.cnt} ideas saved in pipeline`);

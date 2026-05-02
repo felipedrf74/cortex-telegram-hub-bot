@@ -58,6 +58,10 @@ describe('telegram formatter localization', () => {
   });
 
   it('formats daily briefings in Portuguese when the user language is pt-BR', () => {
+    // Identity-safety (May 2026 audit): the greeting is now parameterized
+    // by the recipient's saved display name. A passed name should appear
+    // in the greeting, and the legacy hardcoded "Felipe" must NEVER appear
+    // unless the caller explicitly passes that as the recipient name.
     const text = formatDailyBriefing({
       date: 'segunda-feira, 20 de abril',
       events: [],
@@ -67,13 +71,33 @@ describe('telegram formatter localization', () => {
       reminders: [],
       unreadEmails: 2,
       yesterdayCompleted: 1,
-    }, 'pt-BR');
+    }, 'pt-BR', 'Jaqueline');
 
-    expect(text).toContain('Bom dia, Felipe');
+    expect(text).toContain('Bom dia, Jaqueline');
+    expect(text).not.toContain('Felipe');
     expect(text).toContain('Sem eventos hoje');
     expect(text).toContain('Sem tarefas para hoje');
     expect(text).toContain('concluídas ontem');
     expect(text).toContain('emails não lidos');
     expect(text).not.toContain('Good morning');
+  });
+
+  it('formats daily briefings without a name when the recipient has no saved display name', () => {
+    // Empty recipient = name-less greeting. NEVER falls back to a default
+    // founder name.
+    const text = formatDailyBriefing({
+      date: 'segunda-feira, 20 de abril',
+      events: [],
+      highPriorityTasks: [],
+      dueTodayTasks: [],
+      overdueTasks: [],
+      reminders: [],
+      unreadEmails: 0,
+      yesterdayCompleted: 0,
+    }, 'pt-BR', '');
+
+    expect(text).toContain('Bom dia!');
+    expect(text).not.toContain('Felipe');
+    expect(text).not.toContain('Bom dia,');
   });
 });

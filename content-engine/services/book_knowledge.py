@@ -117,12 +117,12 @@ async def extract_book(title: str, author: str) -> BookDNA:
     # Phase 2: Claude Sonnet synthesis
     profile = get_profile()
 
-    system_prompt = f"""You are an intellectual knowledge extractor for Felipe, a Brazilian content creator.
+    system_prompt = f"""You are an intellectual knowledge extractor for the authenticated content creator.
 
 {profile}
 
-Your task: Extract structured knowledge from a book that Felipe can use in his content.
-Think through Felipe's lens — how would HE use these ideas in videos for Brazilian men aged 18-35?
+Your task: Extract structured knowledge from a book that the authenticated creator can use in his content.
+Think through the creator's saved brand voice and worldview — how would HE use these ideas in videos for the creator's saved target audience?
 Focus on frameworks, provocative ideas, and counter-arguments that align with his worldview.
 
 Return ONLY valid JSON, no markdown wrapping."""
@@ -141,7 +141,7 @@ Extract and return a JSON object with these exact fields:
         {{
             "name": "Framework name",
             "description": "What it is (2-3 sentences)",
-            "use_in_content": "How Felipe would use this in a video — specific example",
+            "use_in_content": "How the creator would use this in a video — specific example",
             "pillar": "Which content pillar it maps to (politics/economics/fitness/faith/self-development/geopolitics)"
         }}
     ],
@@ -149,7 +149,7 @@ Extract and return a JSON object with these exact fields:
         {{
             "idea": "The provocative idea or quote",
             "context": "What the author meant",
-            "use_when": "When Felipe should reference this (e.g., 'when discussing minimum wage')"
+            "use_when": "When the authenticated creator should reference this (e.g., 'when discussing minimum wage')"
         }}
     ],
     "pillar_mapping": ["economics", "politics"],
@@ -158,7 +158,7 @@ Extract and return a JSON object with these exact fields:
     "personal_notes": []
 }}
 
-Extract 3-6 key frameworks and 4-8 quotable ideas. Focus on what's USEFUL for Felipe's content, not academic completeness.
+Extract 3-6 key frameworks and 4-8 quotable ideas. Focus on what's USEFUL for the authenticated creator's content, not academic completeness.
 For Austrian economics books, extract the most provocative anti-state arguments.
 For philosophy/faith books, extract frameworks that challenge mainstream thinking."""
 

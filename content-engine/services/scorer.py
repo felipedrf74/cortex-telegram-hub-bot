@@ -7,7 +7,12 @@ WEIGHT_RELEVANCE = 0.40
 WEIGHT_VIRALITY = 0.30
 WEIGHT_RECENCY = 0.30
 
-# The Operator content pillars — used for relevance keyword matching
+# Default content-pillar keywords — used for setup-safe relevance matching
+# when the authenticated creator's saved niches/keywords are unavailable.
+# Per-request scoring should override this with the creator's saved
+# pillar_keywords from creator memory (see content_creative_memory).
+# Identity-safety: keep these neutral — no political, religious, dietary,
+# or ideological lexicon that biases scoring for non-default creators.
 NICHE_KEYWORDS: dict[str, list[str]] = {
     "ai-tech": [
         "ai", "artificial intelligence", "machine learning", "claude", "gpt", "chatgpt",
@@ -16,13 +21,11 @@ NICHE_KEYWORDS: dict[str, list[str]] = {
     ],
     "commentary": [
         "reaction", "react", "controversy", "viral", "trending", "drama", "opinion",
-        "take", "hot take", "commentary", "culture", "politics", "government", "state",
-        "libertarian", "conservative",
+        "take", "hot take", "commentary", "culture", "politics", "government",
     ],
     "training": [
         "triathlon", "running", "cycling", "swimming", "gym", "strength", "training",
-        "workout", "carnivore", "diet", "recovery", "garmin", "athlete", "marathon",
-        "ironman",
+        "workout", "diet", "recovery", "athlete", "marathon", "ironman",
     ],
     "gaming": [
         "game", "gaming", "gta", "resident evil", "counter-strike", "cs2", "steam",
@@ -33,7 +36,7 @@ NICHE_KEYWORDS: dict[str, list[str]] = {
 
 
 def _relevance_score(result: SearchResult) -> float:
-    """How relevant is this result to Felipe's content niches?"""
+    """How relevant is this result to the authenticated creator's saved niches?"""
     text = f"{result.title} {result.snippet}".lower()
     matches = 0
     total_keywords = 0

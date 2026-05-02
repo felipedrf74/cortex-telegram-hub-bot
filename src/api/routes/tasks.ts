@@ -9,7 +9,7 @@ import { sendSuccess, sendError, sendInternalError } from '../response-helpers';
 import * as microsoftTodo from '../../services/microsoft-todo';
 import { getTaskProviderForUser, resolveTaskProvider } from '../../services/task-store/task-router';
 import { resolveTaskCreationList, TaskListResolutionError } from '../../services/task-store/task-list-resolution';
-import { getOwnerBootstrapUser, getUserTimezone } from '../../services/user-service';
+import { getOwnerBootstrapUser, getUserTimezoneById } from '../../services/user-service';
 import { ensureValidTenantRouteScope } from '../tenant-route-scope';
 import { invalidateTaskCaches } from '../../services/task-cache-invalidator';
 import { normalizeMicrosoftRecurrence } from '../../services/recurrence-utils';
@@ -24,30 +24,12 @@ const TASKS_CACHE_TTL = 120;  // 2 min for task items (change more often)
 // instant responses; the next request gets the refreshed data.
 const LISTS_SWR_STALE = 1800;  // 30 min stale grace for lists
 const TASKS_SWR_STALE = 600;   // 10 min stale grace for individual lists
-const TASK_LIST_COUNT_SNAPSHOT_TIMEOUT_MS = readPositiveIntEnv('TASK_LIST_COUNT_SNAPSHOT_TIMEOUT_MS', 1500);
-const TASK_LIST_COUNT_PER_LIST_TIMEOUT_MS = readPositiveIntEnv('TASK_LIST_COUNT_PER_LIST_TIMEOUT_MS', 1000);
-const TASK_FILTERED_PENDING_TIMEOUT_MS = readPositiveIntEnv('TASK_FILTERED_PENDING_TIMEOUT_MS', 3000);
 
 // In-flight refresh tracker — prevents 50 concurrent SWR requests from
 // triggering 50 background refreshes for the same key. Each key can have
 // at most one in-flight background fetch at a time.
 const swrInFlight = new Set<string>();
 const completeTaskInFlight = new Map<string, Promise<{ task: any; alreadyCompleted: boolean }>>();
-
-function readPositiveIntEnv(name: string, fallback: number): number {
-  const parsed = Number.parseInt(process.env[name] || '', 10);
-  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
-}
-
-function withTaskTimeout<T>(promise: Promise<T>, timeoutMs: number, fallback: T): Promise<T> {
-  let timer: NodeJS.Timeout | undefined;
-  const timeout = new Promise<T>((resolve) => {
-    timer = setTimeout(() => resolve(fallback), timeoutMs);
-  });
-  return Promise.race([promise, timeout]).finally(() => {
-    if (timer) clearTimeout(timer);
-  });
-}
 
 export function dateKeyInAppTimezone(
   value: Date | string,
@@ -242,13 +224,27 @@ export function taskRoutes(): Router {
     const cacheKey = `u:${userId}:tasks-filtered:${filter}`;
     const syncProvider = resolveTaskProvider(userId);
 
-    const buildFilteredPayload = (allTasks: any[]): { tasks: any[]; count: number } => {
+    // Helper for the actual fetch+filter+cache write.
+    const fetchAndCache = async (): Promise<{ tasks: any[]; count: number }> => {
+      const todo = getTodo(req);
+      const result = await todo.getAllPendingTasks();
+      const allTasks = result?.data || result || [];
       if (!Array.isArray(allTasks)) {
-        return { tasks: [], count: 0 };
+        const empty = { tasks: [], count: 0 };
+        setCacheSWR(cacheKey, empty, TASKS_CACHE_TTL, TASKS_SWR_STALE);
+        return empty;
       }
+
+      // Reuse the same cross-list snapshot for the chat fast-path cache so
+      // `/overdue`, `/dueToday`, and the task tab share one fresh view of
+      // the user's pending tasks instead of paying duplicate provider reads.
+      if (userId) {
+        setCache(userCacheKey(userId, 'fastpath:pending-tasks'), allTasks, TASKS_CACHE_TTL);
+      }
+
       // Use the configured app timezone for date-only comparisons so DST
       // boundaries do not depend on the server's local clock zone.
-      const timezone = getUserTimezone(userId);
+      const timezone = getUserTimezoneById(userId);
       const todayStr = dateKeyInAppTimezone(new Date(), timezone) || new Date().toISOString().slice(0, 10);
 
       let filtered = allTasks;
@@ -266,60 +262,7 @@ export function taskRoutes(): Router {
 
       const tasks = filtered.map((t: any) => normalizeTaskDto(t, syncProvider));
 
-      return { tasks, count: tasks.length };
-    };
-
-    // Helper for the actual fetch+filter+cache write.
-    const fetchAndCache = async (): Promise<{ tasks: any[]; count: number; degraded?: boolean; reasonCodes?: string[] }> => {
-      const cachedPending = getCached<any[]>(userCacheKey(userId, 'fastpath:pending-tasks'));
-      if (Array.isArray(cachedPending)) {
-        const payload = buildFilteredPayload(cachedPending);
-        setCacheSWR(cacheKey, payload, TASKS_CACHE_TTL, TASKS_SWR_STALE);
-        return payload;
-      }
-
-      const todo = getTodo(req);
-      const result = await withTaskTimeout<any>(
-        todo.getAllPendingTasks(),
-        TASK_FILTERED_PENDING_TIMEOUT_MS,
-        null,
-      );
-      if (result == null) {
-        const empty = {
-          tasks: [],
-          count: 0,
-          degraded: true,
-          reasonCodes: ['TASK_PROVIDER_TIMEOUT'],
-        };
-        logger.warn(
-          { userId, filter, timeoutMs: TASK_FILTERED_PENDING_TIMEOUT_MS },
-          'tasks/filtered provider read timed out; returning degraded empty payload',
-        );
-        return empty;
-      }
-      const allTasks = result?.data || result || [];
-      if (!Array.isArray(allTasks)) {
-        const empty = {
-          tasks: [],
-          count: 0,
-          degraded: true,
-          reasonCodes: ['TASK_PROVIDER_TIMEOUT'],
-        };
-        logger.warn(
-          { userId, filter, timeoutMs: TASK_FILTERED_PENDING_TIMEOUT_MS },
-          'tasks/filtered provider read timed out; returning degraded empty payload',
-        );
-        return empty;
-      }
-
-      // Reuse the same cross-list snapshot for the chat fast-path cache so
-      // `/overdue`, `/dueToday`, and the task tab share one fresh view of
-      // the user's pending tasks instead of paying duplicate provider reads.
-      if (userId) {
-        setCache(userCacheKey(userId, 'fastpath:pending-tasks'), allTasks, TASKS_CACHE_TTL);
-      }
-
-      const payload = buildFilteredPayload(allTasks);
+      const payload = { tasks, count: tasks.length };
       setCacheSWR(cacheKey, payload, TASKS_CACHE_TTL, TASKS_SWR_STALE);
       return payload;
     };
@@ -418,7 +361,7 @@ export function taskRoutes(): Router {
       const syncProvider = resolveTaskProvider(userId);
       const todo = getTodo(req);
       const { title, listName, dueDateTime, importance, body, recurrence } = req.body;
-      const timezone = getUserTimezone(userId);
+      const timezone = getUserTimezoneById(userId);
 
       if (!title) {
         sendError(res, 'BAD_REQUEST', 'title is required');
@@ -510,7 +453,7 @@ export function taskRoutes(): Router {
       const { listId, taskId } = req.params;
       const userId = (req as any).userId;
       const listName = await resolveTaskListName(todo, listId, (req as any).userId);
-      const timezone = getUserTimezone(userId);
+      const timezone = getUserTimezoneById(userId);
 
       const ALLOWED_FIELDS = new Set(['title', 'body', 'importance', 'status', 'dueDateTime']);
       const updates: Record<string, unknown> = {};
@@ -892,11 +835,7 @@ function formatTaskLists(
 }
 
 async function buildTaskCountMap(todo: any, lists: any[]): Promise<Map<string, number>> {
-  const fromPendingSnapshot = await withTaskTimeout(
-    readTaskCountsFromPendingSnapshot(todo),
-    TASK_LIST_COUNT_SNAPSHOT_TIMEOUT_MS,
-    null,
-  );
+  const fromPendingSnapshot = await readTaskCountsFromPendingSnapshot(todo);
   if (fromPendingSnapshot) return fromPendingSnapshot;
 
   const countByListId = new Map<string, number>();
@@ -904,11 +843,7 @@ async function buildTaskCountMap(todo: any, lists: any[]): Promise<Map<string, n
     lists.map(async (list: any) => {
       const listId = String(list.id || '');
       const listName = list.displayName || list.name || 'Tasks';
-      const tasksResult = await withTaskTimeout(
-        todo.getTasks(listId, listName, { status: 'notStarted' }),
-        TASK_LIST_COUNT_PER_LIST_TIMEOUT_MS,
-        { success: false, data: [] },
-      );
+      const tasksResult = await todo.getTasks(listId, listName, { status: 'notStarted' });
       const tasks = Array.isArray(tasksResult?.data) ? tasksResult.data : [];
       return { listId, count: tasks.length };
     }),

@@ -38,7 +38,7 @@ import { getDb } from '../../services/database';
 import { getKnowledgeStats, getVoiceDna } from '../../services/content-dashboard-service';
 import { readSignals } from '../../services/intelligence-bus';
 import { normalizeLangHeader } from '../../services/secretary-fastpath';
-import { getUserLanguage } from '../../services/user-service';
+import { getUserLanguageById } from '../../services/user-service';
 import type { Lang } from '../../utils/i18n';
 import { buildContentHomeViewState } from '../../services/content-home-view-state';
 import { isValidTenantUserId, recordTenantScopeAnomaly } from '../../services/tenant-scope-observability';
@@ -250,5 +250,5 @@ function resolveContentLanguage(req: Pick<AuthenticatedRequest, 'header'>, userI
   // send an x-language header. Check the raw header for presence first.
   const rawHeader = req.header?.('x-language');
   if (rawHeader) return normalizeLangHeader(rawHeader);
-  return getUserLanguage(userId);
+  return getUserLanguageById(userId);
 }

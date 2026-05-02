@@ -4,7 +4,7 @@ import type { InlineButton } from '../../adapters/message-adapter';
 import type { DomainName } from '../../domains/types';
 import { getCached, setCache } from '../../services/cache-store';
 import { resolveChatTenantId } from '../../services/chat-tenant-scope';
-import { getUserLanguage } from '../../services/user-service';
+import { getPreferredDisplayNameById, getUserLanguageById } from '../../services/user-service';
 import { tryDeterministicChatCommand } from './chat-fastpath';
 
 export type ChatMessageRouteResponse = {
@@ -33,6 +33,40 @@ const CACHEABLE_COMMANDS = new Set([
 ]);
 
 const CHAT_CMD_TTL = 60; // seconds
+
+const IDENTITY_QUESTION_PATTERNS = [
+  /\bwho am i\b/,
+  /\bwho am i signed in as\b/,
+  /\bwhat(?:'s| is) my name\b/,
+  /\bdo you know who i am\b/,
+  /\bwhich account am i using\b/,
+  /\bwhich user am i\b/,
+  /\bquem sou eu\b/,
+  /\bquem eu sou\b/,
+  /\bquem sou\b/,
+  /\bqual e o meu nome\b/,
+  /\bqual e meu nome\b/,
+  /\bcomo me chamo\b/,
+  /\bsabes quem sou\b/,
+  /\bvoce sabe quem eu sou\b/,
+  /\bque conta estou a usar\b/,
+  /\bqual usuario sou eu\b/,
+];
+
+function normalizeIdentityQuestion(text: string): string {
+  return text
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[?!.,;:()[\]{}"']/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+export function isAuthenticatedIdentityQuestion(text: string): boolean {
+  const normalized = normalizeIdentityQuestion(text);
+  return IDENTITY_QUESTION_PATTERNS.some((pattern) => pattern.test(normalized));
+}
 
 function cacheKey(userId: number, normalizedTextLower: string, tenantId?: number): string {
   const scopedTenantId = resolveChatTenantId(userId, tenantId);
@@ -95,6 +129,47 @@ export async function tryBuildFastPathChatResponse(
   };
 }
 
+export function tryBuildAuthenticatedIdentityResponse(
+  normalizedText: string,
+  normalizedTextLower: string,
+  userId: number,
+): LocalChatResponse | null {
+  if (!isAuthenticatedIdentityQuestion(normalizedTextLower || normalizedText)) {
+    return null;
+  }
+
+  const lang = getUserLanguageById(userId);
+  const isPT = lang.startsWith('pt');
+  const displayName = getPreferredDisplayNameById(userId);
+  const hasDisplayName = Boolean(displayName);
+  const text = isPT
+    ? hasDisplayName
+      ? `A sessão autenticada está em nome de ${displayName}. Vou usar apenas os dados ligados a esta conta e a este tenant.`
+      : 'Consigo ver a tua sessão autenticada, mas não há um nome de perfil guardado. Vou usar apenas os dados ligados ao teu utilizador autenticado e a este tenant.'
+    : hasDisplayName
+      ? `This authenticated session is signed in as ${displayName}. I will only use data tied to this account and tenant.`
+      : 'I can see the authenticated session, but there is no saved profile name. I will only use data tied to this authenticated user and tenant.';
+
+  return {
+    conversationDomain: 'secretary',
+    cacheable: false,
+    response: {
+      id: `msg-${Date.now()}`,
+      text,
+      domain: 'secretary',
+      routeMethod: 'authenticated-identity',
+      confidence: 1,
+      buttons: null,
+      metadata: {
+        type: 'authenticated_identity',
+        userId,
+        hasDisplayName,
+      },
+      timestamp: new Date().toISOString(),
+    },
+  };
+}
+
 export function tryBuildTrainingPlanShortcutResponse(
   normalizedText: string,
   normalizedTextLower: string,
@@ -110,7 +185,7 @@ export function tryBuildTrainingPlanShortcutResponse(
     return null;
   }
 
-  const lang = getUserLanguage(userId);
+  const lang = getUserLanguageById(userId);
   const isPT = lang.startsWith('pt');
   const response: ChatMessageRouteResponse = {
     id: `msg-${Date.now()}`,

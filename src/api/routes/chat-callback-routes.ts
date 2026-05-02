@@ -3,7 +3,7 @@
 import { Router, Response } from 'express';
 import { AuthenticatedRequest } from '../auth-middleware';
 import { logger } from '../../utils/logger';
-import { getUserLanguage } from '../../services/user-service';
+import { getUserLanguageById } from '../../services/user-service';
 import { tryDeterministicChatCommand } from './chat-fastpath';
 import { consumeCallbackForScope, getCallbackForScope } from '../../utils/callback-store';
 import { applyCoachRecommendations } from '../../services/garmin-coach';
@@ -59,7 +59,7 @@ export function registerChatCallbackRoutes(
     }
 
     if (!callbackData) {
-      const language = getUserLanguage(userId);
+      const language = getUserLanguageById(userId);
       res.status(400).json({
         error: buildCallbackDataRequiredError(language),
       });
@@ -67,7 +67,7 @@ export function registerChatCallbackRoutes(
     }
 
     try {
-      const language = getUserLanguage(userId);
+      const language = getUserLanguageById(userId);
       const labels = labelsForLanguage(language);
 
       if (callbackData.startsWith('cmd:')) {
@@ -106,7 +106,7 @@ export function registerChatCallbackRoutes(
       }
 
       if (callbackData.startsWith('coach:')) {
-        const lang = getUserLanguage(userId);
+        const lang = getUserLanguageById(userId);
         const [, action, ref] = callbackData.split(':');
 
         if (action === 'dismiss') {
@@ -279,7 +279,7 @@ export function registerChatCallbackRoutes(
         tenantId,
         userId,
       }, 'iOS callback failed');
-      const language = getUserLanguage(userId);
+      const language = getUserLanguageById(userId);
       res.status(500).json({
         error: {
           code: 'INTERNAL',

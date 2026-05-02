@@ -19,6 +19,7 @@ const mockTryDeterministicChatCommand = vi.fn();
 const mockClassifyAndExtractImage = vi.fn();
 const mockGetUserLanguage = vi.fn(() => 'en');
 const mockSetUserLanguage = vi.fn();
+const mockGetPreferredDisplayName = vi.fn(() => 'Jaqueline');
 const mockCheckTierAccess = vi.fn(() => ({
   allowed: true,
   userTier: 'pro',
@@ -180,7 +181,10 @@ vi.mock('../../src/services/cache-store', () => ({
 
 vi.mock('../../src/services/user-service', () => ({
   getUserLanguage: (...args: unknown[]) => mockGetUserLanguage(...args),
+  getUserLanguageById: (...args: unknown[]) => mockGetUserLanguage(...args),
   setUserLanguage: (...args: unknown[]) => mockSetUserLanguage(...args),
+  getPreferredDisplayName: (...args: unknown[]) => mockGetPreferredDisplayName(...args),
+  getPreferredDisplayNameById: (...args: unknown[]) => mockGetPreferredDisplayName(...args),
   getUserTimezone: () => 'Europe/Lisbon',
   getUserById: (userId: number) => ({ id: userId, tier: 'pro' }),
   getUserByTelegramId: (userId: number) => ({ id: userId, tier: 'pro' }),
@@ -413,6 +417,7 @@ describe('Chat API routes', () => {
     mockClassifyAndExtractImage.mockReset();
     mockGetUserLanguage.mockReset();
     mockSetUserLanguage.mockReset();
+    mockGetPreferredDisplayName.mockReset();
     mockCheckTierAccess.mockReset();
     mockIsUserOverDailyCap.mockReset();
     mockGetLastAssistantMessage.mockReset();
@@ -452,6 +457,7 @@ describe('Chat API routes', () => {
     mockTryDeterministicChatCommand.mockResolvedValue(null);
     mockKeywordMatch.mockReturnValue(null);
     mockGetUserLanguage.mockReturnValue('en');
+    mockGetPreferredDisplayName.mockReturnValue('Jaqueline');
     mockCheckTierAccess.mockReturnValue({
       allowed: true,
       userTier: 'pro',
@@ -726,6 +732,32 @@ describe('Chat API routes', () => {
       reason: 'tenant_mismatch',
       userId: 7001,
     });
+  });
+
+  it('answers who-am-I questions from authenticated scope before classifier or model routing', async () => {
+    mockGetUserLanguage.mockReturnValue('pt-PT');
+    mockGetPreferredDisplayName.mockReturnValue('Jaqueline');
+
+    const messageRes = await dispatch('POST', '/message', 7001, {
+      text: 'Quem sou eu?',
+    });
+
+    expect(messageRes.statusCode, JSON.stringify(messageRes.body)).toBe(200);
+    expect(messageRes.body).toMatchObject({
+      domain: 'secretary',
+      routeMethod: 'authenticated-identity',
+      confidence: 1,
+      metadata: {
+        type: 'authenticated_identity',
+        userId: 7001,
+        hasDisplayName: true,
+      },
+    });
+    expect(messageRes.body.text).toContain('Jaqueline');
+    expect(messageRes.body.text).not.toContain('Felipe');
+    expect(mockRouteMessage).not.toHaveBeenCalled();
+    expect(mockHandleSecretary).not.toHaveBeenCalled();
+    expect(mockCompleteOneShotWithFallback).not.toHaveBeenCalled();
   });
 
   it('returns the existing assistant response on idempotent retry without invoking the skill twice', async () => {

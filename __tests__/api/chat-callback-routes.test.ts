@@ -18,7 +18,9 @@ const mockDeleteList = vi.fn(async () => undefined);
 const mockGetTaskProviderForUser = vi.fn();
 
 vi.mock('../../src/services/user-service', () => ({
+  // Identity-safety: chat-callback-routes uses the strict by-id helper.
   getUserLanguage: (...args: unknown[]) => mockGetUserLanguage(...args),
+  getUserLanguageById: (...args: unknown[]) => mockGetUserLanguage(...args),
 }));
 
 vi.mock('../../src/api/routes/chat-fastpath', () => ({

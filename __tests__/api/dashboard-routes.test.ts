@@ -49,8 +49,15 @@ vi.mock('../../src/services/cache-store', () => ({
 
 vi.mock('../../src/services/user-service', () => ({
   getUserById: (...args: unknown[]) => mockGetUserById(...args),
+  // Identity-safety: dashboard route uses the strict by-id helpers
+  // (getUserLanguageById, getPreferredDisplayNameById,
+  // getUserTimezoneById). Mocks expose both legacy and *ById names.
   getUserLanguage: () => 'pt-BR',
+  getUserLanguageById: () => 'pt-BR',
+  getPreferredDisplayName: () => 'Test User',
+  getPreferredDisplayNameById: () => 'Test User',
   getUserTimezone: (...args: unknown[]) => mockGetUserTimezone(...args),
+  getUserTimezoneById: (...args: unknown[]) => mockGetUserTimezone(...args),
 }));
 
 vi.mock('../../src/services/runtime-status', () => ({
@@ -640,7 +647,12 @@ describe('Dashboard API route', () => {
     const res = await dispatch(4, { 'x-language': 'pt-BR' });
 
     expect(res.statusCode).toBe(200);
-    expect(res.body.data.greeting).toMatch(/^(Bom dia|Boa tarde|Boa noite)(, Felipe)?$/);
+    // Identity-safety (May 2026 audit): the greeting must NEVER hardcode
+    // "Felipe". The display-name suffix should be derived from the
+    // authenticated user's saved profile (here mocked to "Test User"),
+    // and the bare greeting is acceptable when the profile has no name.
+    expect(res.body.data.greeting).toMatch(/^(Bom dia|Boa tarde|Boa noite)(,\s+\S.*)?$/);
+    expect(res.body.data.greeting).not.toContain('Felipe');
     expect([
       'Segunda-feira',
       'Terça-feira',

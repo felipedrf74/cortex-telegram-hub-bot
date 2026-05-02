@@ -76,7 +76,7 @@ export function registerMediaHandlers(
             `Everything in PT-BR. Make each format self-contained and optimized for its platform.\n\n` +
             `━━━ ORIGINAL SCRIPT ━━━\n\n${scriptText}`;
 
-          const contentResponse = await handleContentDomain(repurposePrompt, 8192);
+          const contentResponse = await handleContentDomain(repurposePrompt, ctx.from!.id, undefined, 8192);
 
           await ctx.api.editMessageText(ctx.chat.id, statusMsg.message_id,
             '📄 Saving as Word document...');

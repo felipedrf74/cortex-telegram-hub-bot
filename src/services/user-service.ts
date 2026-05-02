@@ -204,10 +204,17 @@ export function getUserById(id: number): User | null {
 }
 
 function getUserByAnyIdentifier(userRef: number): User | null {
-  // Telegram traffic still uses telegram_id, while iOS API requests carry
-  // the canonical users.id in JWTs. Resolve both so shared helpers like
-  // getUserLanguage() behave consistently across platforms.
-  return getUserByTelegramId(userRef) ?? getUserById(userRef);
+  // Identity-safety (May 2026 audit): resolve users.id FIRST, then fall back
+  // to telegram_id. iOS API requests carry the canonical users.id in JWTs;
+  // resolving users.id first means an iOS-derived id can never accidentally
+  // match a foreign user's telegram_id (defense-in-depth against the
+  // documented id-collision surface). Telegram traffic carries large numeric
+  // telegram_id values that won't collide with the small autoincrement
+  // users.id range, so this reorder is safe for legacy Telegram callers too.
+  // New callers that know their input shape should prefer the strict
+  // getUserById / getUserByTelegramId / *ById helpers instead of this
+  // dual-lookup helper.
+  return getUserById(userRef) ?? getUserByTelegramId(userRef);
 }
 
 /**
@@ -353,6 +360,22 @@ export function sanitizeDisplayName(value: string | null | undefined): string {
 
 export function getPreferredDisplayName(userRef: number): string {
   const user = getUserByAnyIdentifier(userRef);
+  return getPreferredDisplayNameFromUser(user);
+}
+
+/**
+ * Strict by-id resolver for the user's preferred display name. Use this
+ * from any iOS API route or other path where the input is the canonical
+ * users.id from authentication — it bypasses the Telegram-id-first lookup
+ * in getUserByAnyIdentifier and removes the cross-user collision risk
+ * surface flagged in the May 2026 identity audit.
+ */
+export function getPreferredDisplayNameById(userId: number): string {
+  const user = getUserById(userId);
+  return getPreferredDisplayNameFromUser(user);
+}
+
+function getPreferredDisplayNameFromUser(user: User | null): string {
   if (!user) return '';
   return (
     sanitizeDisplayName(user.first_name)
@@ -464,6 +487,18 @@ export function getUserLanguage(userRef: number): Lang {
   return (user?.language as Lang) || 'pt-BR';
 }
 
+/**
+ * Strict by-id resolver for the user's saved language preference. Use
+ * this from any iOS API route or other path where the input is the
+ * canonical users.id from authentication — it bypasses the Telegram-id-
+ * first lookup in getUserByAnyIdentifier and removes the cross-user
+ * collision risk surface flagged in the May 2026 identity audit.
+ */
+export function getUserLanguageById(userId: number): Lang {
+  const user = getUserById(userId);
+  return (user?.language as Lang) || 'pt-BR';
+}
+
 export function getUserTimezone(userRef: number | null | undefined): string {
   const fallback = config.app.timezone || 'Europe/Lisbon';
   if (typeof userRef !== 'number' || !Number.isFinite(userRef) || userRef <= 0) {
@@ -476,6 +511,28 @@ export function getUserTimezone(userRef: number | null | undefined): string {
     return candidate;
   } catch {
     logger.warn({ userRef, timezone: candidate }, 'Invalid user timezone; falling back to app timezone');
+    return fallback;
+  }
+}
+
+/**
+ * Strict by-id resolver for the user's timezone. Use this from any iOS API
+ * route or other path where the input is the canonical users.id from
+ * authentication — it bypasses the Telegram-id-first lookup in
+ * getUserByAnyIdentifier and removes the cross-user collision risk
+ * surface flagged in the May 2026 identity audit.
+ */
+export function getUserTimezoneById(userId: number | null | undefined): string {
+  const fallback = config.app.timezone || 'Europe/Lisbon';
+  if (typeof userId !== 'number' || !Number.isFinite(userId) || userId <= 0) {
+    return fallback;
+  }
+  const candidate = getUserById(userId)?.timezone || fallback;
+  try {
+    new Intl.DateTimeFormat('en-US', { timeZone: candidate });
+    return candidate;
+  } catch {
+    logger.warn({ userId, timezone: candidate }, 'Invalid user timezone; falling back to app timezone');
     return fallback;
   }
 }

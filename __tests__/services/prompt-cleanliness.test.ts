@@ -90,6 +90,62 @@ describe('prompt-cleanliness: training prompts are not founder-persona prompts',
   }
 });
 
+describe('prompt-cleanliness: shared app-facing prompts are not founder-persona prompts', () => {
+  const appFacingPrompts = [
+    'secretary.md',
+    'finance.md',
+    'cooking.md',
+    'content.md',
+    'topic-generation.md',
+    // Identity-safety (May 2026 audit): creator-config.md is auto-injected
+    // anywhere `{{CREATOR_CONFIG}}` is used. It MUST stay free of any
+    // specific creator identity, founder name, owner persona, worldview,
+    // or audience profile — those values are loaded per-request from the
+    // authenticated user's saved Voice DNA / creator memory rows.
+    'creator-config.md',
+    // Identity-safety: cross-skill-and-memory.md doc was historically a
+    // founder-persona feature spec ("Felipe says /remember ..."). The
+    // May 2026 audit rewrote it to be authenticated-user-scoped; this
+    // regression test pins that the rewrite stays.
+    'cross-skill-and-memory.md',
+  ];
+  const founderPersonaPattern = /\bFelipe\b|Felipe's|"The Operator"|founder routines|Brazilian freelancer \(PJ|Carnivore default|Carnivore diet/i;
+
+  for (const promptFile of appFacingPrompts) {
+    it(`${promptFile} avoids hardcoded founder identity defaults`, () => {
+      const content = fs.readFileSync(path.join(PROMPTS_DIR, promptFile), 'utf8');
+      expect(content).not.toMatch(founderPersonaPattern);
+    });
+  }
+});
+
+// ═══════════════════════════════════════════════════════════════════
+// Identity-safety: skill-bundled prompts must also avoid founder defaults
+// ═══════════════════════════════════════════════════════════════════
+
+describe('prompt-cleanliness: skill-bundled prompts are not founder-persona prompts', () => {
+  // Skills under src/skills/<skill>/prompts/system.md are loaded by the
+  // skill manager at runtime. Any user enabling the skill receives the
+  // skill prompt; therefore the skill prompts must be authenticated-user
+  // scoped — never hardcode "founder-athlete-creator" or single-tenant
+  // defaults.
+  const skillPromptFiles = [
+    path.join(SRC_DIR, 'skills/secretary/prompts/system.md'),
+    path.join(SRC_DIR, 'skills/finance/prompts/system.md'),
+  ];
+  const founderPersonaPattern =
+    /\bFelipe\b|Felipe's|"The Operator"|founder routines|founder-athlete-creator|founder\/athlete\/creator|founder, athlete, creator|Brazilian freelancer \(PJ|Carnivore default|Carnivore diet|strong Brazilian tax literacy/i;
+
+  for (const filePath of skillPromptFiles) {
+    if (!fs.existsSync(filePath)) continue;
+    const relativeName = filePath.split('/skills/')[1];
+    it(`skill prompt ${relativeName} avoids hardcoded founder identity defaults`, () => {
+      const content = fs.readFileSync(filePath, 'utf8');
+      expect(content).not.toMatch(founderPersonaPattern);
+    });
+  }
+});
+
 // ═══════════════════════════════════════════════════════════════════
 // 2. System Descriptions — iOS-First
 // ═══════════════════════════════════════════════════════════════════

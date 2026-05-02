@@ -4,7 +4,7 @@ import { Router, Response } from 'express';
 import { AuthenticatedRequest } from '../auth-middleware';
 import { logger } from '../../utils/logger';
 import { normalizeLangHeader } from '../../services/secretary-fastpath';
-import { getUserLanguage } from '../../services/user-service';
+import { getUserLanguageById } from '../../services/user-service';
 import type { Lang } from '../../utils/i18n';
 import { getCached, setCache } from '../../services/cache-store';
 import { invalidateTrainingDerivedCaches } from '../../services/training-cache-invalidator';
@@ -51,7 +51,7 @@ function resolveTrainingLanguage(req: Pick<AuthenticatedRequest, 'header'>, user
   // language wins when the client didn't send x-language.
   const rawHeader = req.header?.('x-language');
   if (rawHeader) return normalizeLangHeader(rawHeader);
-  return getUserLanguage(userId);
+  return getUserLanguageById(userId);
 }
 
 function invalidateTrainingScreenCaches(userId: number) {

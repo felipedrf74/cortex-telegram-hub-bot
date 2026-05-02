@@ -242,7 +242,7 @@ const targets: EvalTarget[] = [
     criteria: [
       {
         id: 'voice_fit',
-        question: 'Does the script sound like Felipe\'s actual voice (PT-BR, conversational, "The Operator" energy — not robotic, not formal, not generic motivational)? Does it use Portuguese slang naturally?',
+        question: 'Does the script sound like the authenticated creator\'s actual saved Voice DNA (conversational, in their stored brand voice — not robotic, not formal, not generic motivational)? Does it use the user\'s saved language register naturally?',
         weight: 3,
       },
       {
@@ -272,7 +272,7 @@ const targets: EvalTarget[] = [
       },
       {
         id: 'overall_quality',
-        question: 'Would this script produce a video that Felipe\'s target audience (male, Brazilian, 18-35, tech + self-improvement) would watch to completion and share? Is it engaging, not just informative?',
+        question: 'Would this script produce a video that the authenticated creator\'s saved target audience (per stored creator profile) would watch to completion and share? Is it engaging, not just informative?',
         weight: 2.5,
       },
     ],
@@ -300,7 +300,7 @@ const targets: EvalTarget[] = [
       {
         id: 'sq_evergreen',
         userMessage: 'Write a script about 5 habits that changed my life as an entrepreneur',
-        description: 'Evergreen listicle — should feel personal (not generic), have The Operator voice',
+        description: 'Evergreen listicle — should feel personal (not generic), match the authenticated creator\'s saved brand voice',
       },
     ],
   },
@@ -335,7 +335,7 @@ const targets: EvalTarget[] = [
       },
       {
         id: 'brand_voice',
-        question: 'Does the hook sound like The Operator — direct, confident, a bit provocative — not like a generic content creator?',
+        question: 'Does the hook sound like the authenticated creator\'s saved brand voice — matching the tone and stylistic constraints in their creator profile — not like a generic content creator?',
         weight: 2,
       },
     ],

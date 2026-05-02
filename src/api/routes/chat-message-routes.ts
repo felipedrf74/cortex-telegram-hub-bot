@@ -10,7 +10,7 @@ import {
   findCompletedAssistantForClientMessage,
   listChatMessages,
 } from '../../services/chat-history-store';
-import { getUserLanguage } from '../../services/user-service';
+import { getUserLanguageById } from '../../services/user-service';
 import { acquireCostLock } from '../../services/cost-guardrail';
 import { getCurrentRequestId } from '../../utils/request-context';
 import {
@@ -45,6 +45,7 @@ import { tryBuildChatMessageShortcutResponse } from './chat-message-shortcuts';
 import {
   getCachedChatCommandResponse,
   maybeCacheChatCommandResponse,
+  tryBuildAuthenticatedIdentityResponse,
   tryBuildFastPathChatResponse,
   tryBuildTrainingPlanShortcutResponse,
 } from './chat-message-local-responses';
@@ -249,7 +250,7 @@ export function registerChatMessageRoutes(
         if (sendChatQuotaExceededIfNeeded(res, userId, 'iOS chat attachment blocked by quota')) return;
 
         const attachment = normalizedAttachments[0];
-        const lang = getUserLanguage?.(userId) || 'pt-BR';
+        const lang = getUserLanguageById(userId) || 'pt-BR';
         const result = await buildChatAttachmentResponse({
           attachment,
           normalizedText,
@@ -270,6 +271,25 @@ export function registerChatMessageRoutes(
           );
         }
         res.json(result.response);
+        return;
+      }
+
+      // ── Authenticated identity fast-path ────────────────────────────
+      // Identity questions must be answered from the server-scoped auth
+      // session, not from a domain prompt or model memory. This prevents
+      // founder/default persona text from ever overriding the logged-in
+      // user's real account identity.
+      const identityResponse = tryBuildAuthenticatedIdentityResponse(normalizedText, normalizedTextLower, userId);
+      if (identityResponse) {
+        const { response, conversationDomain } = identityResponse;
+        rememberChatActiveDomain(userId, conversationDomain, Date.now(), tenantId);
+        persistExchange(userId, userMessageId, normalizedText, response.id, response, tenantId, {
+          clientMessageId: scopedClientMessageId,
+          requestId: chatRequestId,
+        });
+        syncConversationStateForShortcut(userId, conversationDomain, normalizedText, response.text, tenantId);
+        logger.info({ chatRequestId, platform: 'ios', mode: 'authenticated-identity', tenantId, userId }, 'iOS chat authenticated identity fast-path hit');
+        res.json(response);
         return;
       }
 
@@ -326,7 +346,7 @@ export function registerChatMessageRoutes(
       });
 
       if (preRoutingDecision.safety.requiresConfirmation && !preRoutingDecision.safety.explicitConfirmation) {
-        const lang = getUserLanguage(userId);
+        const lang = getUserLanguageById(userId);
         const isPT = lang.startsWith('pt');
         const pendingConfirmation = trackPendingChatConfirmation({
           userId,
@@ -433,7 +453,7 @@ export function registerChatMessageRoutes(
         route,
         normalizedText,
         userId,
-        userLanguage: getUserLanguage(userId),
+        userLanguage: getUserLanguageById(userId),
         activeContext,
       });
       if (shortcutResult) {
@@ -463,7 +483,7 @@ export function registerChatMessageRoutes(
       // Secretary fast-path messages expose deterministic command buttons.
       // Triathlon coach replies can expose real "apply recommendation"
       // actions when the current request produced fresh coach state.
-      const lang = getUserLanguage(userId);
+      const lang = getUserLanguageById(userId);
       const buttons = buildDefaultButtonsForChatDomain(result.domain || route.domain, lang, userId, requestStartedAt, tenantId);
 
       const response = buildChatHandlerResponseEnvelope({ route, result, buttons });

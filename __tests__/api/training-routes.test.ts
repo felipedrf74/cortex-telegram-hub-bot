@@ -153,6 +153,7 @@ vi.mock('../../src/services/signals-observability', () => ({
 // hitting the real database resolver (which is unmocked in this file).
 vi.mock('../../src/services/user-service', () => ({
   getUserLanguage: vi.fn(() => 'pt-BR'),
+  getUserLanguageById: vi.fn(() => 'pt-BR'),
 }));
 
 vi.mock('../../src/services/cost-guardrail', () => ({

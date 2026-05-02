@@ -142,7 +142,13 @@ vi.mock('../../src/utils/request-context', () => ({
 vi.mock('../../src/services/user-service', () => ({
   getUserById: vi.fn((id: number) => ({ id, telegram_id: id + 1000 })),
   resolveCanonicalUserId: vi.fn((ref: number) => ref + 10),
+  // Identity-safety: scheduler now uses the strict by-id helpers post-audit.
   getUserLanguage: vi.fn(() => 'en'),
+  getUserLanguageById: vi.fn(() => 'en'),
+  getPreferredDisplayName: vi.fn(() => 'Test User'),
+  getPreferredDisplayNameById: vi.fn(() => 'Test User'),
+  getUserTimezone: vi.fn(() => 'Europe/Lisbon'),
+  getUserTimezoneById: vi.fn(() => 'Europe/Lisbon'),
   getOwnerBootstrapTarget: (...args: unknown[]) => mockGetOwnerBootstrapTarget(...args),
 }));
 vi.mock('../../src/services/task-store/task-router', () => ({

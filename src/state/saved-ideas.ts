@@ -77,12 +77,20 @@ export function getSavedIdeas(status = 'saved', userId?: number): SavedIdea[] {
   ).all(status) as SavedIdea[];
 }
 
-/** Get ideas by source type */
-export function getIdeasBySource(source: string, limit = 20): SavedIdea[] {
+/**
+ * Get ideas by source type, scoped to a specific user.
+ *
+ * Identity-safety (May 2026 audit): every read must be user-scoped. The
+ * legacy zero-arg variant of this function returned every user's rows for
+ * the requested source — a cross-user data leak surface even though no
+ * caller currently relies on it. The required `userId` parameter forces
+ * callers to declare scope at the type level.
+ */
+export function getIdeasBySource(source: string, userId: number, limit = 20): SavedIdea[] {
   const db = getDb();
   return db.prepare(
-    'SELECT * FROM saved_ideas WHERE source = ? ORDER BY created_at DESC LIMIT ?'
-  ).all(source, limit) as SavedIdea[];
+    'SELECT * FROM saved_ideas WHERE source = ? AND user_id = ? ORDER BY created_at DESC LIMIT ?'
+  ).all(source, userId, limit) as SavedIdea[];
 }
 
 /**

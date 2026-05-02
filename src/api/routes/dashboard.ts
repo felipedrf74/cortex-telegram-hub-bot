@@ -9,7 +9,7 @@ import { getRuntimeStatus } from '../../services/runtime-status';
 import { getCachedSWR, setCacheSWR } from '../../services/cache-store';
 import { apiSuccess, sendError, sendInternalError } from '../response-helpers';
 import { normalizeLangHeader } from '../../services/secretary-fastpath';
-import { getUserLanguage } from '../../services/user-service';
+import { getPreferredDisplayNameById, getUserLanguageById } from '../../services/user-service';
 import { getDailyQuotaStatus } from '../../services/cost-guardrail';
 import { composeDailyBrief } from '../../services/daily-brief-orchestrator';
 import { buildDashboardHomeViewState } from '../../services/dashboard-home-view-state';
@@ -210,7 +210,7 @@ export function dashboardRoutes(): Router {
  * Called on startup and periodically.
  */
 export async function warmDashboardCache(userId: number): Promise<void> {
-  const language = getUserLanguage(userId);
+  const language = getUserLanguageById(userId);
   const cacheKey = dashboardCacheKeyFor(userId, language);
   if (getCachedSWR(cacheKey)?.fresh) return; // Already warm enough
 
@@ -238,7 +238,7 @@ function resolveDashboardLanguage(req: Request, userId: number): Lang {
   // language wins when the client didn't send x-language.
   const rawHeader = req.header?.('x-language');
   if (rawHeader) return normalizeLangHeader(rawHeader);
-  return getUserLanguage(userId);
+  return getUserLanguageById(userId);
 }
 
 function localizeGreeting(hour: number, language: Lang): string {
@@ -313,11 +313,11 @@ async function buildDashboardPayload(userId: number, language: Lang, timings: Ro
   const hour = parseInt(now.toLocaleString('en-US', { hour: 'numeric', hour12: false, timeZone: config.app.timezone }), 10);
   const greeting = localizeGreeting(hour, language);
 
-  let displayName = '';
-  try {
-    const { getPreferredDisplayName } = require('../../services/user-service');
-    displayName = getPreferredDisplayName(userId);
-  } catch { /* user-service not available */ }
+  // Identity-safety: strict by-id resolver only. The legacy
+  // require('../../services/user-service').getPreferredDisplayName path was
+  // a fuzzy any-identifier lookup that could match a foreign user via
+  // telegram_id collision; the *ById helper rejects that surface.
+  const displayName = getPreferredDisplayNameById(userId);
 
   const startTime = (global as any).__startTime;
   const uptimeMs = startTime ? Date.now() - startTime : 0;

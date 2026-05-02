@@ -176,9 +176,9 @@ You will receive the video's full transcript with timestamps. Analyze it thoroug
    - How it could be adapted for PT-BR content
 
 4. **CONTENT IDEAS** (3-5 ideas)
-   - Ideas INSPIRED by this video that Felipe could create
+   - Ideas INSPIRED by this video that the authenticated creator could create
    - Each with: title (PT-BR), format (YouTube/Reel/Short), hook, unique angle
-   - These should NOT be copies — they should be Felipe's take using his fitness + commentary niches
+   - These should NOT be copies — they should be the creator's own take using their saved pillars and brand voice
 
 5. **REEL/SHORT CUTS** (3-5 suggested clips)
    - Start timestamp → End timestamp
@@ -213,7 +213,7 @@ RULES:
 - Be specific — cite exact timestamps and quotes from the transcript
 - Content ideas MUST be in PT-BR (Brazilian Portuguese) for titles/hooks
 - Reel cuts should be self-contained (make sense without the full video)
-- Focus on ACTIONABLE insights — what can Felipe actually use?
+- Focus on ACTIONABLE insights — what can the authenticated creator actually use?
 - If transcript is auto-generated, account for possible transcription errors`;
 
 /**

@@ -27,7 +27,7 @@ Nexus Hub is an AI personal operating system with 5 domains: secretary, triathlo
 ## Feature 1: Memory-Driven Context
 
 ### What it does
-A persistent key-value memory store that automatically injects active context into EVERY domain's API call. Felipe says `/remember Sprint: migrating Qlik apps to Cloud` once, and from then on every conversation in every domain knows about the active sprint — without re-explaining.
+A persistent key-value memory store that automatically injects active context into EVERY domain's API call. The authenticated user issues `/remember Sprint: migrating Qlik apps to Cloud` once, and from then on every conversation in every domain (scoped to that same authenticated user and tenant) knows about the active sprint — without re-explaining.
 
 ### Database
 
@@ -110,7 +110,7 @@ Do the SAME in `continueWithToolResults()` — both functions build the messages
 ### System prompt awareness
 
 Add one line to EACH domain's system prompt in `DOMAIN_SYSTEM_PROMPTS`:
-- Secretary: add `The [Memory] block contains persistent context about Felipe's active projects, goals, and preferences. Use it to provide contextual responses without asking.`
+- Secretary: add `The [Memory] block contains persistent context about the authenticated user's active projects, goals, and preferences (scoped to this same user and tenant). Use it to provide contextual responses without asking.`
 - Other domains: add the same line. Keep it short — one sentence.
 
 ### Scheduler integration

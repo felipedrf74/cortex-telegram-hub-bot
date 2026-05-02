@@ -7,7 +7,6 @@ import {
 
 const mockResolveTaskProvider = vi.fn();
 const mockGetTaskProviderForUser = vi.fn();
-const mockGetCached = vi.fn();
 const mockGetCachedSWR = vi.fn();
 const mockSetCacheSWR = vi.fn();
 const mockSetCache = vi.fn();
@@ -41,7 +40,7 @@ vi.mock('../../src/api/routes/../../services/microsoft-todo', () => ({
 }));
 
 vi.mock('../../src/services/cache-store', () => ({
-  getCached: (...args: unknown[]) => mockGetCached(...args),
+  getCached: vi.fn(),
   setCache: (...args: unknown[]) => mockSetCache(...args),
   clearCache: (...args: unknown[]) => mockClearCache(...args),
   clearCacheByPrefix: (...args: unknown[]) => mockClearCacheByPrefix(...args),
@@ -51,8 +50,10 @@ vi.mock('../../src/services/cache-store', () => ({
 }));
 
 vi.mock('../../src/services/user-service', () => ({
+  // Identity-safety: tasks route uses the strict by-id helper post-audit.
   getOwnerBootstrapUser: vi.fn(() => null),
   getUserTimezone: (...args: unknown[]) => mockGetUserTimezone(...args),
+  getUserTimezoneById: (...args: unknown[]) => mockGetUserTimezone(...args),
 }));
 
 vi.mock('../../src/utils/logger', () => ({
@@ -163,7 +164,6 @@ describe('Task routes sync provider metadata', () => {
     clearTenantScopeAnomaliesForTests();
     mockResolveTaskProvider.mockReturnValue('ms_todo');
     mockGetTaskProviderForUser.mockReturnValue(providerApi);
-    mockGetCached.mockReturnValue(undefined);
     mockGetCachedSWR.mockReturnValue(null);
     mockSetCacheSWR.mockReturnValue(undefined);
     mockSetCache.mockReturnValue(undefined);
@@ -426,72 +426,6 @@ describe('Task routes sync provider metadata', () => {
       { id: 'list-1', name: 'Tasks', taskCount: 2 },
       { id: 'list-2', name: 'Work', taskCount: 1 },
     ]);
-  });
-
-  it('returns task lists promptly when task count providers hang', async () => {
-    vi.useFakeTimers();
-    providerApi.getAllPendingTasks.mockImplementation(() => new Promise(() => {}));
-    providerApi.getTasks.mockImplementation(() => new Promise(() => {}));
-
-    const pending = dispatch('GET', '/lists');
-    await vi.advanceTimersByTimeAsync(2600);
-    const res = await pending;
-    vi.useRealTimers();
-
-    expect(res.statusCode).toBe(200);
-    expect(res.body.ok).toBe(true);
-    expect(res.body.data.lists).toEqual([
-      { id: 'list-1', name: 'Tasks', taskCount: 0 },
-      { id: 'list-2', name: 'Work', taskCount: 0 },
-    ]);
-  });
-
-  it('returns a degraded filtered task payload when the pending-task provider hangs', async () => {
-    vi.useFakeTimers();
-    providerApi.getAllPendingTasks.mockImplementation(() => new Promise(() => {}));
-
-    const pending = dispatch('GET', '/filtered', { query: { filter: 'dueToday' } });
-    await vi.advanceTimersByTimeAsync(3100);
-    const res = await pending;
-    vi.useRealTimers();
-
-    expect(res.statusCode).toBe(200);
-    expect(res.body.ok).toBe(true);
-    expect(res.body.data).toEqual({
-      tasks: [],
-      count: 0,
-      degraded: true,
-      reasonCodes: ['TASK_PROVIDER_TIMEOUT'],
-    });
-  });
-
-  it('serves filtered tasks from the cached pending snapshot before hitting a slow provider', async () => {
-    const today = new Date().toLocaleDateString('en-CA', { timeZone: 'Europe/Lisbon' });
-    mockGetCached.mockImplementation((key: string) => {
-      if (key === 'u:12:fastpath:pending-tasks') {
-        return [
-          {
-            id: 'task-cached',
-            title: 'Cached due-today task',
-            status: 'notStarted',
-            dueDateTime: `${today}T10:00:00.000Z`,
-            listId: 'list-1',
-            listName: 'Tasks',
-          },
-        ];
-      }
-      return undefined;
-    });
-    providerApi.getAllPendingTasks.mockImplementation(() => new Promise(() => {}));
-
-    const res = await dispatch('GET', '/filtered', { query: { filter: 'dueToday' } });
-
-    expect(res.statusCode).toBe(200);
-    expect(res.body.ok).toBe(true);
-    expect(res.body.data.tasks).toEqual([
-      expect.objectContaining({ id: 'task-cached' }),
-    ]);
-    expect(providerApi.getAllPendingTasks).not.toHaveBeenCalled();
   });
 
   it('returns full task detail with checklist items for the task drill-down flow', async () => {

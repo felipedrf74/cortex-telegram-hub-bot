@@ -7,7 +7,7 @@ import { DomainMessage, DomainName } from '../domains/types';
 import { trackedCreate } from '../portal/anthropic-hook';
 import { completeOneShotWithFallback, completeVisionOneShotWithFallback } from './gemini-provider';
 import { buildKnowledgePromptBlock } from '../state/content-references';
-import { loadPrompt, loadPromptWithConfig } from '../utils/prompt-loader';
+import { loadPrompt } from '../utils/prompt-loader';
 import { readTrainingContextAll, formatTrainingContextForPrompt } from './training-signals';
 import { getTriathlonPromptNameForMessage } from '../router/sport-classifier';
 import { buildScopedStateContextPrefix } from './provider-state-context';
@@ -57,9 +57,7 @@ export function getDomainSystemPrompt(domain: DomainName, message?: string): str
       }
     }
   }
-  basePrompt = domain === 'content'
-    ? loadPromptWithConfig(domain)
-    : loadPrompt(domain);
+  basePrompt = loadPrompt(domain);
   return withLanguageInstruction(basePrompt, message);
 }
 

@@ -79,6 +79,23 @@ vi.mock('../../src/utils/logger', () => ({
   },
 }));
 
+// Identity-safety (May 2026 audit): mock user-service so the domain-handler
+// chain never hits the real database resolver. Both legacy and *ById names
+// must be exposed for any caller migrated during the audit.
+vi.mock('../../src/services/user-service', () => ({
+  getUserLanguage: vi.fn(() => 'en-US'),
+  getUserLanguageById: vi.fn(() => 'en-US'),
+  getUserTimezone: vi.fn(() => 'Europe/Lisbon'),
+  getUserTimezoneById: vi.fn(() => 'Europe/Lisbon'),
+  getPreferredDisplayName: vi.fn(() => 'Test User'),
+  getPreferredDisplayNameById: vi.fn(() => 'Test User'),
+  getUserById: vi.fn((id: number) => ({ id, first_name: 'Test', tier: 'pro' })),
+  getUserByTelegramId: vi.fn(() => null),
+  resolveCanonicalUserId: vi.fn((id: number) => id),
+  getOwnerBootstrapTarget: vi.fn(() => null),
+  getOwnerBootstrapUser: vi.fn(() => null),
+}));
+
 // ─── Imports (after mocks) ─────────────────────────────────────────
 
 import { routeMessage, isSystemCommand } from '../../src/router';

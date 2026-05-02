@@ -3,7 +3,7 @@
 import { Response } from 'express';
 import { buildQuotaExceededMessage, isUserOverDailyCap } from '../../services/cost-guardrail';
 import { normalizeLangHeader } from '../../services/secretary-fastpath';
-import { getUserLanguage, setUserLanguage } from '../../services/user-service';
+import { getUserLanguageById, setUserLanguage } from '../../services/user-service';
 import { logger } from '../../utils/logger';
 import { sendError } from '../response-helpers';
 import { normalizeChatAttachment, type ChatImageAttachment } from './chat-attachments';
@@ -46,7 +46,7 @@ export function persistChatLanguagePreference(req: HeaderReadable, userId: numbe
     if (!headerValue) return;
 
     const lang = normalizeLangHeader(headerValue);
-    const current = getUserLanguage(userId);
+    const current = getUserLanguageById(userId);
     if (current === lang) return;
 
     setUserLanguage(userId, lang);

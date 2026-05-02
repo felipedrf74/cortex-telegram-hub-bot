@@ -23,7 +23,7 @@ STRATEGIES to use (mix them):
 - STORY: "Eu Testei [TOPIC] por [TIME] e..."
 - CONTROVERSY: "PAREI de [THING] e Isto Aconteceu"
 - URGENCY: "O Que NINGUÉM Está a Dizer"
-- CONTRARIAN: Goes against mainstream — Felipe's signature
+- CONTRARIAN: Goes against mainstream — the creator's saved signature style
 
 SCORING (0-100) based on:
 - Length: YouTube ideal 50-60 chars, Instagram 30-40
@@ -40,19 +40,19 @@ async def generate(req: TitlesRequest) -> TitlesResponse:
     start = time.monotonic()
 
     char_target = "50-60" if req.platform == "YouTube" else "30-40"
-    prompt = f"""Generate {req.count} title variants for Felipe's channel:
+    prompt = f"""Generate {req.count} title variants for the authenticated creator's channel:
 - Topic: {req.topic}
 - Niche: {req.niche}
 - Platform: {req.platform} (ideal length: {char_target} characters)
 
-Titles should sound like Felipe — direct, bold, no-BS. His audience is Brazilian men 18-35.
+Titles should sound in the authenticated creator's saved brand voice and tone. Audience: use the creator's saved target audience profile from creator memory (do not assume a default demographic).
 Titles should stay grounded in the actual topic. Do NOT force politics, training, or reaction framing when the topic points somewhere else.
 
 Return JSON array where each object has:
 - "title": the title in PT-BR
 - "strategy": which strategy was used
 - "score": 0-100 effectiveness score
-- "why": one sentence on why it works for Felipe's audience
+- "why": one sentence on why it works for the creator's saved target audience
 - "char_count": number of characters
 
 Sort by score descending."""

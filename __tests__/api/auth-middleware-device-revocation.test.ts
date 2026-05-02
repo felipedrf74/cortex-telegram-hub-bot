@@ -125,7 +125,14 @@ describe('authMiddleware: device revocation', () => {
   async function runMiddleware(
     userId: number,
     deviceId: string,
-    options: { seedDevice?: boolean; userStatus?: string; headers?: Record<string, string>; method?: string; url?: string } = {},
+    options: {
+      seedDevice?: boolean;
+      userStatus?: string;
+      headers?: Record<string, string>;
+      method?: string;
+      url?: string;
+      conflictingDeviceUserId?: number;
+    } = {},
   ): Promise<MockRes & { admitted: boolean; requestTenantId?: number; requestUserId?: number }> {
     const seedDevice = options.seedDevice !== false;
     const userStatus = options.userStatus ?? 'active';
@@ -137,6 +144,19 @@ describe('authMiddleware: device revocation', () => {
       testDb.prepare(
         'INSERT INTO ios_devices (user_id, device_id, refresh_token) VALUES (?, ?, ?)',
       ).run(userId, deviceId, `refresh-${deviceId}`);
+    }
+    if (options.conflictingDeviceUserId) {
+      testDb.prepare(
+        'INSERT OR REPLACE INTO users (id, telegram_id, first_name, status) VALUES (?, ?, ?, ?)',
+      ).run(
+        options.conflictingDeviceUserId,
+        700000 + options.conflictingDeviceUserId,
+        `User${options.conflictingDeviceUserId}`,
+        'active',
+      );
+      testDb.prepare(
+        'INSERT INTO ios_devices (user_id, device_id, refresh_token) VALUES (?, ?, ?)',
+      ).run(options.conflictingDeviceUserId, deviceId, `refresh-conflict-${deviceId}`);
     }
 
     const token = jwt.sign(
@@ -223,6 +243,18 @@ describe('authMiddleware: device revocation', () => {
     // /auth/logout. This is the ONLY way the middleware learns that
     // the session was revoked.
     const res = await runMiddleware(502, 'dev-revoked', { seedDevice: false });
+    expect(res.admitted).toBe(false);
+    expect(res.statusCode).toBe(401);
+    expect(res.body.error.code).toBe('UNAUTHORIZED');
+    expect(res.body.error.message).toBe('Session has been revoked');
+  });
+
+  it('rejects a stale access token after the same physical device switches to another account', async () => {
+    const res = await runMiddleware(508, 'shared-device-after-account-switch', {
+      seedDevice: false,
+      conflictingDeviceUserId: 509,
+    });
+
     expect(res.admitted).toBe(false);
     expect(res.statusCode).toBe(401);
     expect(res.body.error.code).toBe('UNAUTHORIZED');

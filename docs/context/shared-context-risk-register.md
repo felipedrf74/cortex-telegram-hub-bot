@@ -82,3 +82,29 @@ No immediate P0 cross-tenant exploit was confirmed in the newer Chat memory/cont
 **PASS WITH CONDITIONS**
 
 Safe to continue implementation on this branch. Not safe to treat cross-skill shared context as fully production-ready for multi-tenant release until the P1 items are closed or explicitly accepted with scope limits.
+
+---
+
+## May 2026 P0 chat-identity audit — addendum
+
+Two new shared-context risks identified and closed:
+
+1. **`buildKnowledgePromptBlock` injected literal "Felipe's voice"** into the content-domain system prompt for any user with content_knowledge rows. Closed by `docs/security/p0-chat-identity-final-report.md` — the literal Felipe text was removed and replaced with "the authenticated creator's saved Voice DNA / brand voice for this user and tenant".
+
+2. **`prompts/creator-config.md` was a fully-fleshed founder identity doc** auto-injected via `{{CREATOR_CONFIG}}` placeholder by `loadPromptWithConfig`. Closed by:
+   - Removing `{{CREATOR_CONFIG}}` placeholder from `prompts/content.md` and `prompts/topic-generation.md`.
+   - Removing `loadPromptWithConfig` from `src/services/anthropic.ts:60` for the content domain.
+   - Sanitizing `prompts/creator-config.md` itself to a NEUTRAL TEMPLATE (no creator name, no worldview, no audience defaults, no political/religious/dietary defaults) — so that any future code path which DOES still reference `{{CREATOR_CONFIG}}` cannot leak founder identity.
+
+In addition, the `authenticated-user` `ChatContextItem` was injected into `src/services/chat-context-engine.ts:208-227` with priority 98 (`critical: true`) carrying the JWT-derived display name and explicit "do not use owner/founder/default names" rule. This is the new highest-priority context entry for chat prompts.
+
+Defense-in-depth fixes added in the same audit:
+- `getUserByAnyIdentifier` reordered to resolve `users.id` before `telegram_id`, removing the cross-user collision foot-gun.
+- New strict by-id resolvers (`getPreferredDisplayNameById`, `getUserLanguageById`, `getUserTimezoneById`) plus migration of all 11 iOS API route call sites to use them.
+- `tryBuildAuthenticatedIdentityResponse` deterministic fast-path catches identity questions BEFORE any AI call.
+- Persisted-payload writers (`voice-evolution-agent`, `reaction-radar-agent`, `eval-criteria`, `video-study`) and the Python content-engine creative modules de-Felipe'd.
+- `fossa_email` cron gated behind `FOSSA_EMAIL_ENABLED=1` env flag to prevent owner PII leaking into a different tenant's automations.
+
+Verification: `__tests__/security/p0-chat-identity-isolation.test.ts` (23 cases) + 998 prior regression tests pass.
+
+Reference: `docs/security/p0-chat-identity-final-report.md`.

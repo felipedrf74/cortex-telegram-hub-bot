@@ -4,7 +4,7 @@ import { Router, Response } from 'express';
 import { AuthenticatedRequest } from '../auth-middleware';
 import { asyncHandler, sendError, sendInternalError, sendSuccess } from '../response-helpers';
 import { acquireCostLock, buildQuotaExceededMessage, isUserOverDailyCap } from '../../services/cost-guardrail';
-import { getUserLanguage } from '../../services/user-service';
+import { getUserLanguageById } from '../../services/user-service';
 import { logger } from '../../utils/logger';
 import type { Lang } from '../../utils/i18n';
 import {
@@ -135,7 +135,7 @@ export function registerContentScriptRoutes(
       } catch { /* non-critical — generate without voice if DB fails */ }
 
       const scriptTopicContext = resolveScriptTopicContext(userId, req.body || {});
-      const targetLanguage = resolveScriptTargetLanguage(language, userId, getUserLanguage);
+      const targetLanguage = resolveScriptTargetLanguage(language, userId, getUserLanguageById);
       const shouldForceRefresh = forceRefresh === true || regenerate === true;
       const resolvedRegenerationSeed = shouldForceRefresh
         ? (typeof regenerationSeed === 'string' && regenerationSeed.trim().length > 0

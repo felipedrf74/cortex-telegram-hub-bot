@@ -87,8 +87,13 @@ vi.mock('../../src/services/task-store/task-router', () => ({
   getTaskProviderForUser: vi.fn(),
 }));
 vi.mock('../../src/services/user-service', () => ({
+  // Identity-safety: secretary path uses the strict by-id helpers post-audit.
   getUserLanguage: vi.fn(() => 'en-US'),
+  getUserLanguageById: vi.fn(() => 'en-US'),
   getUserTimezone: vi.fn(() => 'Europe/Lisbon'),
+  getUserTimezoneById: vi.fn(() => 'Europe/Lisbon'),
+  getPreferredDisplayName: vi.fn(() => 'Test User'),
+  getPreferredDisplayNameById: vi.fn(() => 'Test User'),
 }));
 vi.mock('../../src/skills/registry', () => ({
   isSubmoduleEnabled: vi.fn(() => true),

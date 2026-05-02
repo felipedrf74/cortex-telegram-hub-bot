@@ -2,7 +2,8 @@
 
 /**
  * Voice Evolution Agent — compares AI-generated scripts against
- * actual published video transcripts to learn Felipe's true voice.
+ * actual published video transcripts to learn the authenticated
+ * creator's true voice.
  *
  * Schedule: Monthly, 1st of month at 04:00
  *
@@ -27,9 +28,9 @@ const IDEAS_DIR = path.join(os.homedir(), 'Desktop', 'IDEAS', 'SCRIPTS');
 
 const client = new Anthropic({ apiKey: config.anthropic.apiKey, maxRetries: 2 });
 
-const ANALYSIS_PROMPT = `You are analyzing the voice evolution of Felipe, a Brazilian content creator.
+const ANALYSIS_PROMPT = `You are analyzing the voice evolution of the authenticated content creator (resolved per request from the owner bootstrap target).
 
-Compare these AI-GENERATED scripts against Felipe's ACTUAL published video transcripts.
+Compare these AI-GENERATED scripts against the creator's ACTUAL published video transcripts.
 
 AI-GENERATED SCRIPTS:
 {scripts}
@@ -37,52 +38,52 @@ AI-GENERATED SCRIPTS:
 PUBLISHED VIDEO TRANSCRIPTS:
 {transcripts}
 
-BOOK KNOWLEDGE (extracted from books Felipe reads — frameworks, vocabulary, and techniques):
+BOOK KNOWLEDGE (extracted from books the creator reads — frameworks, vocabulary, and techniques):
 {book_knowledge}
 
 Analyze and return a JSON object with:
 {{
   "additions": [
     {{
-      "pattern": "Short description of what Felipe adds",
-      "examples": ["Specific text he added"],
+      "pattern": "Short description of what the creator adds",
+      "examples": ["Specific text added"],
       "frequency": "often|sometimes|rare",
       "category": "anecdote|argument|humor|data|reference|transition"
     }}
   ],
   "removals": [
     {{
-      "pattern": "What Felipe consistently removes/shortens",
-      "examples": ["Original text he cut"],
+      "pattern": "What the creator consistently removes/shortens",
+      "examples": ["Original text cut"],
       "category": "filler|formal|repetitive|off_brand"
     }}
   ],
   "rephrasing": [
     {{
       "original": "How the AI wrote it",
-      "felipe_version": "How Felipe actually said it",
-      "insight": "What this tells us about his voice"
+      "creator_version": "How the creator actually said it",
+      "insight": "What this tells us about the creator's voice"
     }}
   ],
   "recurring_phrases": [
     {{
-      "phrase": "Exact phrase Felipe repeats",
-      "context": "When he uses it",
+      "phrase": "Exact phrase the creator repeats",
+      "context": "When it is used",
       "count": 3
     }}
   ],
   "book_influences": [
     {{
       "book_or_concept": "Name of book or concept from book knowledge",
-      "how_it_appears": "How this concept shows up in Felipe's scripts or transcripts",
+      "how_it_appears": "How this concept shows up in the creator's scripts or transcripts",
       "adoption_level": "integrated|emerging|absent"
     }}
   ],
-  "voice_summary": "2-3 sentences describing Felipe's actual voice vs the AI-generated voice, including any book influences detected"
+  "voice_summary": "2-3 sentences describing the creator's actual voice vs the AI-generated voice, including any book influences detected"
 }}
 
 If transcripts are limited, analyze the scripts against the creator profile instead and note what's missing.
-If book knowledge is available, identify which concepts Felipe has integrated into his natural voice vs. which remain absent.
+If book knowledge is available, identify which concepts the creator has integrated into his/her natural voice vs. which remain absent.
 Return ONLY valid JSON, no markdown.`;
 
 // ── Main Agent Runner ────────────────────────────────────────────────
@@ -154,7 +155,7 @@ export async function runVoiceEvolutionAgent(): Promise<void> {
     const dnaSignals = readSignals('voice-evolution', ['channel_dna'], 20);
     signalsConsumed += dnaSignals.length;
 
-    // Consume book knowledge — frameworks, vocabulary, techniques from books Felipe reads
+    // Consume book knowledge — frameworks, vocabulary, techniques from books the authenticated creator reads
     const bookSignals = readSignals('voice-evolution', ['book_knowledge'], 10);
     signalsConsumed += bookSignals.length;
 
@@ -236,7 +237,7 @@ export async function runVoiceEvolutionAgent(): Promise<void> {
         signal_type: 'voice_pattern',
         payload: {
           observation: 'content_additions',
-          description: `Felipe adds ${analysis.additions.length} types of content not in generated scripts`,
+          description: `creator adds ${analysis.additions.length} types of content not in generated scripts`,
           patterns: analysis.additions,
           strength: analysis.additions.filter((a: any) => a.frequency === 'often').length / Math.max(1, analysis.additions.length),
           first_detected: new Date().toISOString().slice(0, 10),
@@ -252,7 +253,7 @@ export async function runVoiceEvolutionAgent(): Promise<void> {
         signal_type: 'voice_pattern',
         payload: {
           observation: 'content_removals',
-          description: `Felipe removes ${analysis.removals.length} types of content from generated scripts`,
+          description: `creator removes ${analysis.removals.length} types of content from generated scripts`,
           patterns: analysis.removals,
           strength: 0.7,
           first_detected: new Date().toISOString().slice(0, 10),
@@ -268,7 +269,7 @@ export async function runVoiceEvolutionAgent(): Promise<void> {
         signal_type: 'voice_pattern',
         payload: {
           observation: 'voice_rephrasing',
-          description: 'How Felipe rephrases AI-generated text to match his voice',
+          description: 'How the creator rephrases AI-generated text to match their voice',
           examples: analysis.rephrasing.slice(0, 5),
           strength: 0.8,
           first_detected: new Date().toISOString().slice(0, 10),
@@ -295,7 +296,7 @@ export async function runVoiceEvolutionAgent(): Promise<void> {
       }
     }
 
-    // Write book influence signals (tracks how book concepts enter Felipe's voice)
+    // Write book influence signals (tracks how book concepts enter the authenticated creator's voice)
     if (analysis.book_influences?.length > 0) {
       writeSignal({
         source_agent: 'voice-evolution',

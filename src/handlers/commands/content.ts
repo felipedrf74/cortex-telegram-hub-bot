@@ -1036,8 +1036,8 @@ export function registerContentCommands(bot: Bot): void {
       const typingInterval = setInterval(() => { ctx.replyWithChatAction('typing').catch(() => {}); }, 4000);
       try {
         const calendarPrompt =
-          `Generate a content calendar for the next ${days} days for a Brazilian creator named Felipe "The Operator" Dominguez.\n\n` +
-          `PILLARS (rotate evenly across all days):\n` +
+          `Generate a content calendar for the next ${days} days for the authenticated creator.\n\n` +
+          `PILLARS (use the authenticated creator's stored pillars when available; otherwise keep the mix neutral and setup-safe):\n` +
           `\u{1F916} AI/Tech \u2014 builds, automations, AI tools\n` +
           `\u{1F5E3}\uFE0F Commentary \u2014 politics, culture, hot takes\n` +
           `\u{1F4AA} Training \u2014 triathlon, carnivore diet, fitness\n` +
@@ -1055,7 +1055,7 @@ export function registerContentCommands(bot: Bot): void {
           `- Output as HTML table with <b> tags for headers\n` +
           `- Language: PT-BR for topics`;
 
-        const contentResponse = await handleContent(calendarPrompt, 4096);
+        const contentResponse = await handleContent(calendarPrompt, ctx.from!.id, undefined, 4096);
         clearInterval(typingInterval);
         const msg = `\u{1F4C5} <b>CONTENT CALENDAR \u2014 Next ${days} days</b>\n\n${contentResponse.text}`;
         await sendOrSave(ctx, msg, 'calendar', `${days}-day-plan`);
@@ -1102,8 +1102,8 @@ export function registerContentCommands(bot: Bot): void {
         }
 
         const analysisPrompt =
-          `You are a content strategist analyzing pillar balance for Felipe "The Operator" Dominguez.\n\n` +
-          `His 5 pillars are:\n` +
+          `You are a content strategist analyzing pillar balance for the authenticated creator.\n\n` +
+          `Use the authenticated creator's stored pillars when available. Default analysis buckets:\n` +
           `\u{1F916} AI/Tech\n\u{1F5E3}\uFE0F Commentary/Politics\n\u{1F4AA} Training/Fitness\n\u{1F3AE} Gaming\n\u{1F0CF} Wild Card\n\n` +
           `Here is the actual data from the last 30 days:\n${dataSummary}\n\n` +
           `Provide:\n` +
@@ -1112,7 +1112,7 @@ export function registerContentCommands(bot: Bot): void {
           `3. Exactly 3 specific topic suggestions for each underrepresented pillar\n\n` +
           `Format as clean HTML with <b> tags for headers. Be direct and actionable. Language: PT-BR.`;
 
-        const contentResponse = await handleContent(analysisPrompt, 4096);
+        const contentResponse = await handleContent(analysisPrompt, ctx.from!.id, undefined, 4096);
         clearInterval(typingInterval);
         const msg = `\u{1F4CA} <b>BRAND CHECK \u2014 Pillar Balance (30 days)</b>\n\n${contentResponse.text}`;
         await sendOrSave(ctx, msg, 'brandcheck', 'pillar-analysis');
@@ -1142,7 +1142,7 @@ export function registerContentCommands(bot: Bot): void {
             `2. **1 STORIES SEQUENCE** (5-7 stories) \u2014 text + poll/question stickers suggestions.\n\n` +
             `Everything in PT-BR. Make each format self-contained and optimized for its platform.\n\n` +
             `Topic: ${textTopic}`;
-          const contentResponse = await handleContent(repurposePrompt, 8192);
+          const contentResponse = await handleContent(repurposePrompt, ctx.from!.id, undefined, 8192);
           clearInterval(typingInterval);
           const filePath = await saveScriptAsDocx(`Repurpose \u2014 ${textTopic}`, contentResponse.text);
           await ctx.replyWithDocument(new InputFile(filePath), {
@@ -1206,7 +1206,7 @@ export function registerContentCommands(bot: Bot): void {
           `Everything in PT-BR. Make each format self-contained and optimized for its platform.\n\n` +
           `\u2501\u2501\u2501 ORIGINAL SCRIPT \u2501\u2501\u2501\n\n${scriptText}`;
 
-        const contentResponse = await handleContent(repurposePrompt, 8192);
+        const contentResponse = await handleContent(repurposePrompt, ctx.from!.id, undefined, 8192);
 
         await ctx.api.editMessageText(ctx.chat.id, statusMsg.message_id,
           '\u{1F4C4} Saving as Word document...');

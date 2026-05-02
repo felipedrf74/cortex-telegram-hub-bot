@@ -10,17 +10,17 @@ from services.creator_profile import get_profile
 
 logger = logging.getLogger("content-engine.thumbnail")
 
-SYSTEM_PROMPT = f"""You are The Operator's YouTube thumbnail designer.
+SYSTEM_PROMPT = f"""You are the authenticated creator's YouTube thumbnail designer.
 
 {get_profile(short=True)}
 
-THE OPERATOR'S BRAND VISUAL IDENTITY:
-- AI/Tech builds: Terminal green (#00FF41) on dark background (#0D1117), code overlays, matrix-style accents, screen recordings with glow effects, Claude/API logos subtle in corner
-- Reaction/commentary: Webcam-corner overlay style (Asmongold layout), exaggerated facial expressions, content fills background, red/yellow accent text, screenshot overlays with highlight circles
-- Training/lifestyle: High contrast, athletic imagery, clean design, bold numbers, suffering faces, carnivore diet aesthetic (raw steak colors — deep reds, warm browns)
-- Political/economic: Red/black dramatic tones, data overlays, newspaper/chart screenshots, bold claim text
+BRAND VISUAL IDENTITY (use the authenticated creator's saved brand-visual identity from creator memory; the patterns below are setup-safe defaults to use ONLY when the creator has not specified):
+- AI/Tech builds: Terminal green (#00FF41) on dark background (#0D1117), code overlays, matrix-style accents, screen recordings with glow effects
+- Reaction/commentary: Webcam-corner overlay style, exaggerated facial expressions, content fills background, red/yellow accent text, screenshot overlays with highlight circles
+- Training/lifestyle: High contrast, athletic imagery, clean design, bold numbers; only follow a specific dietary aesthetic (e.g. carnivore, plant-forward, balanced) when the authenticated creator's saved profile explicitly indicates it
+- Political/economic: Use the creator's saved political/economic stance from their profile; if unspecified, keep tones neutral
 - Gaming: Neon accents, game UI elements, dark backgrounds, character/logo overlays
-- Wild cards: Mix visual elements from relevant pillars — The Operator's brand is the person, not the topic
+- Wild cards: Mix visual elements from relevant pillars — the brand is the authenticated creator, not the topic
 
 Each concept must include:
 - layout: "split_screen" | "close_up" | "text_heavy" | "before_after" | "reaction_face" | "webcam_corner" | "terminal_screen" | "build_demo"
@@ -28,7 +28,7 @@ Each concept must include:
 - text_overlay: main text (2-4 words MAX in PT-BR), font style, color, position
 - facial_expression: "shocked" | "angry" | "skeptical" | "excited" | "determined" | "deadpan" | "suffering" | "smirk"
 - additional_elements: arrows, circles, emojis, charts, screenshots, code snippets, terminal windows, webcam frames, etc.
-- why_it_works: psychological explanation for The Operator's audience (men 18-40)
+- why_it_works: psychological explanation grounded in the authenticated creator's saved target audience profile (do not assume a default demographic)
 
 Return ONLY a JSON array of 3 concepts. No markdown."""
 
@@ -36,12 +36,12 @@ Return ONLY a JSON array of 3 concepts. No markdown."""
 async def generate(req: ThumbnailRequest) -> ThumbnailResponse:
     start = time.monotonic()
 
-    prompt = f"""Generate 3 thumbnail concepts for Felipe's video:
+    prompt = f"""Generate 3 thumbnail concepts for the authenticated creator's video:
 - Video title: {req.title}
 - Topic: {req.topic or req.title}
 - Niche: {req.niche}
 
-Target audience: Portuguese-speaking men 18-40. Thumbnails should convey authority, boldness, and The Operator's unified brand identity.
+Target audience: use the authenticated creator's saved target audience profile (do not assume a default demographic). Thumbnails should convey authority, boldness, and the creator's saved brand identity.
 
 Return JSON array of 3 objects, each with: layout, background_color, text_overlay (object with main_text, font_style, text_color, position), facial_expression, additional_elements (array), why_it_works.
 

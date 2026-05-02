@@ -106,9 +106,18 @@ export interface DailyBriefingData {
   automatedNotifications?: string[]; // e.g. fossa email, other scheduled emails
 }
 
-export function formatDailyBriefing(data: DailyBriefingData, language?: FormatterLanguage): string {
+export function formatDailyBriefing(
+  data: DailyBriefingData,
+  language?: FormatterLanguage,
+  recipientDisplayName?: string,
+): string {
   const copy = todoCopy(language);
-  let msg = `${copy.goodMorning} <b>${data.date}</b>\n`;
+  // Identity-safety: NEVER substitute a hardcoded founder/owner name. Greet
+  // by the authenticated recipient's saved display name, or fall back to a
+  // name-less greeting. The caller is responsible for resolving the name
+  // from the authenticated user/tenant scope.
+  const trimmedName = typeof recipientDisplayName === 'string' ? recipientDisplayName.trim() : '';
+  let msg = `${copy.goodMorning(trimmedName)} <b>${data.date}</b>\n`;
 
   // ── Schedule ──
   if (data.events.length > 0) {
@@ -218,7 +227,7 @@ function formatterLocale(language?: FormatterLanguage): 'pt' | 'en' {
 
 const TODO_COPY = {
   en: {
-    goodMorning: '☀️ Good morning, Felipe!',
+    goodMorning: (name?: string) => (name ? `☀️ Good morning, ${escapeHtml(name)}!` : '☀️ Good morning!'),
     schedule: '📅 <b>Schedule</b>',
     noEventsToday: '📅 No events today — open schedule!',
     tasksLabel: '📋 <b>Tasks:</b>',
@@ -268,7 +277,7 @@ const TODO_COPY = {
       : `<b>✅ Recently Completed (${count})</b>`,
   },
   pt: {
-    goodMorning: '☀️ Bom dia, Felipe!',
+    goodMorning: (name?: string) => (name ? `☀️ Bom dia, ${escapeHtml(name)}!` : '☀️ Bom dia!'),
     schedule: '📅 <b>Agenda</b>',
     noEventsToday: '📅 Sem eventos hoje — agenda aberta!',
     tasksLabel: '📋 <b>Tarefas:</b>',

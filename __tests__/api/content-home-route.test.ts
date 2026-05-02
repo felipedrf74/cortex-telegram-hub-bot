@@ -13,7 +13,9 @@ vi.mock('../../src/utils/logger', () => ({
 }));
 
 vi.mock('../../src/services/user-service', () => ({
+  // Identity-safety: content route uses the strict by-id helper.
   getUserLanguage: vi.fn(() => 'pt-BR'),
+  getUserLanguageById: vi.fn(() => 'pt-BR'),
 }));
 
 vi.mock('../../src/services/tenant-scope-observability', () => ({

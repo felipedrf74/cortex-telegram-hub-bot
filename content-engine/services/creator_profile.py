@@ -1,13 +1,17 @@
 """
-Felipe's creator profile — injected into all creative AI prompts.
+Creator profile loader — injected into all creative AI prompts.
 
 CENTRALIZATION (April 2026):
   The canonical source is `prompts/creator-config.md` in the repository root.
   This module reads that file at startup instead of maintaining a duplicate.
   If the file is not found (e.g. during isolated testing), it falls back to
-  a minimal hardcoded profile.
+  a NEUTRAL profile with NO hardcoded identity.
 
-  DO NOT duplicate creator identity, voice, or config values here.
+  DO NOT add specific creator identity, founder name, owner persona,
+  worldview, or audience profile here. Real creator identity is loaded
+  per-request from the authenticated user's saved Voice DNA / creator
+  profile rows (see content-creative-memory and tenant-scoped services).
+
   Edit `prompts/creator-config.md` — both TS and Python read from it.
 """
 
@@ -21,14 +25,18 @@ logger = logging.getLogger("content-engine.profile")
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 _CONFIG_PATH = os.path.join(_REPO_ROOT, "prompts", "creator-config.md")
 
-_FALLBACK_PROFILE = """CREATOR: Felipe Dominguez — "The Operator"
-LANGUAGE: Portuguese (PT-BR), natural and conversational
-AUDIENCE: Portuguese-speaking men 18-40 into tech, self-improvement, direct opinions.
-Voice: direct, no-BS, Asmongold-style reactions. Austrian economics, anti-state.
-NOTE: This is a fallback profile — prompts/creator-config.md was not found."""
+# ── Identity-safety fallback (May 2026 audit) ────────────────────────
+# If creator-config.md is unreachable, we MUST NOT substitute a specific
+# founder identity. The fallback below is intentionally neutral — no name,
+# no worldview, no audience. Callers that need real creator identity must
+# load it per-request from the authenticated user's tenant-scoped row.
+_FALLBACK_PROFILE = """CREATOR PROFILE: NOT YET CONFIGURED FOR THIS USER
+The authenticated creator's saved Voice DNA, audience, references, and
+brand voice were not available at request time. Generate setup-safe,
+neutral output OR ask for the missing creator setup; do not assume a
+founder, owner, or default creator identity."""
 
-_FALLBACK_SHORT = """Felipe Dominguez — "The Operator". Brazilian creator, conservative Christian libertarian.
-Audience: men 18-40. Voice: direct, no-BS, PT-BR. (Fallback — creator-config.md not found.)"""
+_FALLBACK_SHORT = """Creator profile not configured for this user. Stay neutral; do not assume founder/owner/default identity."""
 
 
 def _load_config() -> str:
@@ -39,10 +47,10 @@ def _load_config() -> str:
         logger.info("Loaded creator config from %s (%d chars)", _CONFIG_PATH, len(content))
         return content
     except FileNotFoundError:
-        logger.warning("Creator config not found at %s — using fallback", _CONFIG_PATH)
+        logger.warning("Creator config not found at %s — using neutral fallback", _CONFIG_PATH)
         return _FALLBACK_PROFILE
     except Exception as e:
-        logger.error("Failed to load creator config: %s — using fallback", e)
+        logger.error("Failed to load creator config: %s — using neutral fallback", e)
         return _FALLBACK_PROFILE
 
 

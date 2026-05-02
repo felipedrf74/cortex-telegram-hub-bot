@@ -3,8 +3,8 @@
  *
  * Covers:
  *   1. Creator config is the canonical single source
- *   2. Content prompts reference config via {{CREATOR_CONFIG}}, not inline duplication
- *   3. Prompt loader injects config correctly
+ *   2. Shared app-facing content prompts do not inject the owner/founder profile
+ *   3. Prompt loader keeps the legacy creator config opt-in only
  *   4. Eval criteria cover script quality and hook quality
  *   5. No Telegram HTML formatting in core prompts
  *   6. SFX/EDIT library centralized in one file
@@ -32,23 +32,28 @@ describe('creator-config: single source of truth', () => {
     expect(config).toContain('CREATOR CONFIGURATION');
   });
 
-  it('defines brand identity', () => {
-    expect(config).toContain('The Operator');
-    expect(config).toContain('Felipe Dominguez');
+  // Identity-safety (May 2026 audit): creator-config.md is now a NEUTRAL
+  // TEMPLATE. It MUST NOT contain a specific creator identity, founder
+  // name, owner persona, worldview, audience profile, or political/
+  // religious/dietary defaults. Real creator identity is loaded per-
+  // request from the authenticated user's saved Voice DNA.
+
+  it('does NOT name a specific creator (no founder identity leak)', () => {
+    expect(config).not.toContain('Felipe Dominguez');
+    expect(config).not.toContain('"The Operator"');
   });
 
-  it('defines all 5 content pillars', () => {
-    expect(config).toContain('AI/Tech');
-    expect(config).toContain('Commentary/Reactions');
-    expect(config).toContain('Training/Lifestyle');
-    expect(config).toContain('Gaming');
-    expect(config).toContain('Wild Cards');
+  it('does NOT hardcode a specific worldview (no political/religious/ideological default)', () => {
+    expect(config).not.toMatch(/Conservative Christian/i);
+    expect(config).not.toMatch(/Austrian Economics/i);
+    expect(config).not.toMatch(/Non-Aggression Principle/i);
+    expect(config).not.toMatch(/Libertarian \/ anti-state/i);
   });
 
-  it('defines worldview', () => {
-    expect(config).toContain('Conservative Christian');
-    expect(config).toContain('Austrian Economics');
-    expect(config).toContain('Non-Aggression Principle');
+  it('does NOT hardcode specific content pillars or quota percentages', () => {
+    expect(config).not.toMatch(/AI\/Tech.*~35%/i);
+    expect(config).not.toMatch(/Commentary\/Reactions.*~30%/i);
+    expect(config).not.toMatch(/Training\/Lifestyle.*~20%/i);
   });
 
   it('defines SFX library', () => {
@@ -75,7 +80,9 @@ describe('creator-config: single source of truth', () => {
     expect(config).toContain('CONTENT ACCURACY');
     expect(config).toContain('NEEDS VERIFICATION');
     expect(config).toContain('VERIFIED: source');
-    expect(config).toContain('FONTES VERIFICADAS');
+    // Identity-safety: the published-asset language must NOT be hardcoded
+    // PT-BR. The verified-sources rule is now language-neutral.
+    expect(config).toContain('verified-sources');
   });
 
   it('defines output format without HTML', () => {
@@ -83,8 +90,15 @@ describe('creator-config: single source of truth', () => {
     expect(config).toContain('Do NOT use HTML tags');
   });
 
-  it('defines target audience', () => {
-    expect(config).toContain('Male, Brazilian, 18-35');
+  it('does NOT hardcode a specific target audience (May 2026 audit)', () => {
+    // The neutral template tells callers to use the authenticated user's
+    // saved target audience, never a single demographic default.
+    expect(config).not.toContain('Male, Brazilian, 18-35');
+    expect(config).not.toContain('Portuguese-speaking men 18-40');
+  });
+
+  it('explicitly tells callers to load identity per-request from authenticated user', () => {
+    expect(config).toContain('authenticated');
   });
 });
 
@@ -92,15 +106,19 @@ describe('creator-config: single source of truth', () => {
 // 2. Content Prompts Reference Config (No Duplication)
 // ═══════════════════════════════════════════════════════════════════
 
-describe('creator-config: prompts reference config', () => {
-  it('content.md uses {{CREATOR_CONFIG}} placeholder', () => {
+describe('creator-config: prompts keep owner profile out of shared app-facing defaults', () => {
+  it('content.md does not use the global {{CREATOR_CONFIG}} placeholder', () => {
     const content = fs.readFileSync(path.join(PROMPTS_DIR, 'content.md'), 'utf8');
-    expect(content).toContain('{{CREATOR_CONFIG}}');
+    expect(content).not.toContain('{{CREATOR_CONFIG}}');
+    expect(content).not.toContain('Felipe');
+    expect(content).not.toContain('The Operator');
   });
 
-  it('topic-generation.md uses {{CREATOR_CONFIG}} placeholder', () => {
+  it('topic-generation.md does not use the global {{CREATOR_CONFIG}} placeholder', () => {
     const topicGen = fs.readFileSync(path.join(PROMPTS_DIR, 'topic-generation.md'), 'utf8');
-    expect(topicGen).toContain('{{CREATOR_CONFIG}}');
+    expect(topicGen).not.toContain('{{CREATOR_CONFIG}}');
+    expect(topicGen).not.toContain('Felipe');
+    expect(topicGen).not.toContain('The Operator');
   });
 
   it('content.md does NOT duplicate worldview inline', () => {
@@ -186,42 +204,46 @@ vi.mock('../../src/utils/logger', () => ({
 }));
 
 describe('creator-config: prompt loader', () => {
-  it('loadCreatorConfig returns creator config content', async () => {
+  it('loadCreatorConfig returns the neutral template (no founder identity)', async () => {
     const { loadCreatorConfig } = await import('../../src/utils/prompt-loader');
     const config = loadCreatorConfig();
     expect(config).toContain('CREATOR CONFIGURATION');
-    expect(config).toContain('The Operator');
+    // Identity-safety: the neutral template does NOT carry a specific
+    // creator identity. Real identity is loaded per-request from the
+    // authenticated user's saved Voice DNA.
+    expect(config).not.toContain('"The Operator"');
+    expect(config).not.toContain('Felipe Dominguez');
   });
 
-  it('loadPromptWithConfig injects creator config into content.md', async () => {
+  it('loadPromptWithConfig does not inject creator config into content.md without an explicit placeholder', async () => {
     const { loadPromptWithConfig } = await import('../../src/utils/prompt-loader');
     const content = loadPromptWithConfig('content');
-    // After injection, the {{CREATOR_CONFIG}} placeholder should be gone
     expect(content).not.toContain('{{CREATOR_CONFIG}}');
-    // And the config content should be present
-    expect(content).toContain('The Operator');
-    expect(content).toContain('Austrian Economics');
-    expect(content).toContain('SFX LIBRARY');
+    expect(content).not.toContain('The Operator');
+    expect(content).not.toContain('Felipe Dominguez');
+    expect(content).not.toContain('Austrian Economics');
+    expect(content).not.toContain('SFX LIBRARY');
   });
 
-  it('loadPromptWithConfig injects into topic-generation.md', async () => {
+  it('loadPromptWithConfig does not inject owner profile into topic-generation.md without an explicit placeholder', async () => {
     const { loadPromptWithConfig } = await import('../../src/utils/prompt-loader');
     const topicGen = loadPromptWithConfig('topic-generation', {
       FORMAT_DESC: 'test format',
       TRENDING_INSTRUCTION: 'test trending',
     });
     expect(topicGen).not.toContain('{{CREATOR_CONFIG}}');
-    expect(topicGen).toContain('The Operator');
+    expect(topicGen).not.toContain('The Operator');
+    expect(topicGen).not.toContain('Felipe Dominguez');
     expect(topicGen).toContain('test format');
   });
 
-  it('anthropic content prompt path uses loadPromptWithConfig for content domain', () => {
+  it('anthropic content prompt path uses the neutral content prompt, not global creator-config injection', () => {
     const anthropicSource = fs.readFileSync(
       path.resolve(__dirname, '../../src/services/anthropic.ts'),
       'utf8',
     );
-    expect(anthropicSource).toContain("basePrompt = domain === 'content'");
-    expect(anthropicSource).toContain("? loadPromptWithConfig(domain)");
+    expect(anthropicSource).toContain('basePrompt = loadPrompt(domain)');
+    expect(anthropicSource).not.toContain('loadPromptWithConfig(domain)');
   });
 });
 
@@ -325,14 +347,22 @@ describe('creator-config: consistency with Python', () => {
     expect(py).toContain('_load_config');
   });
 
-  it.skipIf(!pyExists)('Canonical creator-config.md contains required worldview values', () => {
+  it.skipIf(!pyExists)('Canonical creator-config.md is now a NEUTRAL template (May 2026 audit)', () => {
     const config = fs.readFileSync(path.join(PROMPTS_DIR, 'creator-config.md'), 'utf8');
-    // The config (which Python now reads) should contain these values
-    expect(config).toContain('35%');
-    expect(config).toContain('30%');
-    expect(config).toContain('20%');
-    expect(config).toContain('Austrian Economics');
-    expect(config).toContain('Mises');
-    expect(config).toContain('Hayek');
+    // Identity-safety: Python (and TS) consumers now read the SAME
+    // creator-config.md, but the file is NEUTRAL — no founder identity,
+    // no worldview defaults, no pillar-percentage hardcoding, no
+    // political/economic-philosophy lexicon. Real creator identity is
+    // loaded per-request from the authenticated user's saved Voice DNA
+    // (see content-creative-memory and tenant-scoped services).
+    expect(config).not.toContain('35%');
+    expect(config).not.toContain('Austrian Economics');
+    expect(config).not.toContain('Mises');
+    expect(config).not.toContain('Hayek');
+    // The neutral template still names the doc category and the
+    // user-scoped guidance.
+    expect(config).toContain('CREATOR CONFIGURATION');
+    expect(config).toContain('NEUTRAL TEMPLATE');
+    expect(config).toContain('authenticated');
   });
 });
