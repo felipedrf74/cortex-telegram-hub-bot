@@ -80,19 +80,18 @@ export function hasActiveGarminConnection(userId: number): boolean {
   `).get(userId) as { status?: string | null } | undefined;
 
   if (tokenRow?.status === 'active') {
-    return true;
+    return hasGarminSessionMaterial(userId);
   }
 
-  if (tokenRow?.status === 'needs_reauth' || tokenRow?.status === 'mfa_pending') {
+  if (tokenRow) {
     return false;
   }
 
-  return getDb().prepare(`
-    SELECT 1
-    FROM garmin_sessions
-    WHERE user_id = ?
-    LIMIT 1
-  `).get(userId) != null;
+  // The owner account predates the per-user Garmin session tables in some
+  // environments. Keep that compatibility only for the canonical owner so a
+  // stale/non-owner row cannot make another user look Garmin-connected.
+  const owner = getOwnerBootstrapUser();
+  return owner?.id === userId && hasGarminSessionMaterial(userId);
 }
 
 export function getLegacyGarminTokenBlob(userId: number): LegacyTokenBlob | null {
@@ -109,6 +108,16 @@ export function getLegacyGarminTokenBlob(userId: number): LegacyTokenBlob | null
     oauth1: parsed.oauth1 ?? null,
     oauth2: parsed.oauth2 ?? null,
   };
+}
+
+function hasGarminSessionMaterial(userId: number): boolean {
+  const session = getGarminSession(userId);
+  if (session?.oauth1TokenJson && session.oauth2TokenJson) {
+    return true;
+  }
+
+  const legacy = getLegacyGarminTokenBlob(userId);
+  return Boolean(legacy?.oauth1 && legacy?.oauth2);
 }
 
 function invalidateGarminDerivedCaches(userId: number): void {

@@ -3,6 +3,28 @@
 Generated: 2026-04-29 03:30 WEST  
 Branch: `feature/chat-tenant-safe-context-orchestration`
 
+## 2026-05-02 P0 Readiness / Garmin / Task-List Isolation Addendum
+
+Branch: `feature/p0-readiness-integration-task-isolation`
+
+Status: P0 backend fix pass complete locally. No production deploy.
+
+Issues addressed:
+
+- Readiness score and Body Battery reads now execute under the requested user context before Garmin data is fetched. This prevents a non-owner request from falling back to the owner Garmin session during readiness calculation.
+- Garmin connection state now requires scoped token material. A stale `garmin_user_tokens.status='active'` metadata row without `garmin_sessions` or valid legacy DB token material no longer renders as connected in `/api/v1/connections` or canonical integration status.
+- Passive Garmin data reads no longer import legacy filesystem tokens into arbitrary request-scoped users. Legacy filesystem token migration remains blocked outside explicit auth/manual flows.
+- `/api/v1/tasks/list/:listId` bypasses a stale empty list-detail cache when the user-scoped list metadata cache reports a positive task count for the same list, fixing the “Entrada count > 0, detail empty” failure mode.
+
+Validation:
+
+- `npx vitest run __tests__/services/readiness-scorer.test.ts __tests__/services/garmin-session-store.test.ts __tests__/services/garmin-passive-auth.test.ts __tests__/services/integration-status.test.ts __tests__/api/connections-routes.test.ts __tests__/api/connections-tenant-isolation.test.ts __tests__/api/tasks-routes.test.ts --reporter=default` passed: 7 files / 117 tests.
+- `npx tsc --noEmit` passed.
+
+Remaining caveat:
+
+- These changes are not deployed to production. Validate against Felipe, Jaqueline, and `nexushubbot` accounts after staging promotion before any production deploy.
+
 ## 2026-04-29 Content Editorial Mutation Contracts Addendum
 
 Branch: `feature/content-editorial-mutation-contracts`

@@ -15,6 +15,10 @@ vi.mock('../../src/services/coach-kernel/planner-engine', () => ({
   adjustForFatigue: (...args: unknown[]) => mockAdjustForFatigue(...args),
 }));
 
+vi.mock('../../src/services/integration-status', () => ({
+  isGarminActivelyIntegrated: vi.fn(() => false),
+}));
+
 vi.mock('../../src/utils/logger', () => ({
   logger: {
     info: vi.fn(),

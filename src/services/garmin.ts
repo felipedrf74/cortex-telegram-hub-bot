@@ -767,7 +767,7 @@ async function getClient(opts?: { silent?: boolean }): Promise<InstanceType<type
   // Slow path — kick off a single bootstrap that everyone else awaits
   _clientBootstrapUserId = sessionUserId;
   _clientBootstrapPromise = (async () => {
-    const hydrated = await hydrateClientFromPersistedSession(sessionUserId, { allowLegacyFile: true });
+    const hydrated = await hydrateClientFromPersistedSession(sessionUserId, { allowLegacyFile: false });
     if (hydrated) {
       return hydrated;
     }
@@ -1005,7 +1005,7 @@ async function silentAuthRecovery(): Promise<boolean> {
 
       // Step 2: Reload tokens from the DB session store
       const userId = resolveGarminUserId();
-      const rehydrated = await hydrateClientFromPersistedSession(userId, { allowLegacyFile: true });
+      const rehydrated = await hydrateClientFromPersistedSession(userId, { allowLegacyFile: false });
       if (rehydrated) {
         try {
           logger.info({ userId }, 'Garmin: silent recovery — DB token reload succeeded');
@@ -1080,7 +1080,7 @@ async function serializedAuthRecovery(): Promise<boolean> {
 
       // Step 2: Reload tokens from the DB session store
       const userId = resolveGarminUserId();
-      const rehydrated = await hydrateClientFromPersistedSession(userId, { allowLegacyFile: true });
+      const rehydrated = await hydrateClientFromPersistedSession(userId, { allowLegacyFile: false });
       if (rehydrated) {
         try {
           logger.info({ userId }, 'Garmin: auth recovered via DB token reload');

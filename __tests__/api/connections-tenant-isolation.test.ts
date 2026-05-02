@@ -129,6 +129,10 @@ describe('Connections API tenant isolation', () => {
       INSERT INTO garmin_user_tokens (user_id, garmin_email, tokens_json, status)
       VALUES (?, ?, ?, 'active')
     `).run(userA, 'tenant-a@garmin.example', '{"refresh":"garmin-secret-a"}');
+    testDb.prepare(`
+      INSERT INTO garmin_sessions (user_id, oauth1_token_json, oauth2_token_json, last_refreshed_at)
+      VALUES (?, ?, ?, datetime('now'))
+    `).run(userA, '{"token":"oauth1-a"}', '{"token":"oauth2-a"}');
 
     const forA = await dispatch(userA);
     const forB = await dispatch(userB);

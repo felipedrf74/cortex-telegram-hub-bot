@@ -176,6 +176,24 @@ describe('garmin passive auth safety', () => {
     expect(mockMarkGarminNeedsReauth).toHaveBeenCalled();
   });
 
+  it('request-scoped data reads do not import legacy filesystem tokens into the user connection', async () => {
+    mockGetGarminSession.mockReturnValue(null);
+    mockExistsSync.mockReturnValue(true);
+    const { getDailySummary, setSilentMode } = await import('../../src/services/garmin');
+    setSilentMode(true);
+
+    const summary = await getDailySummary('2026-04-15');
+
+    expect(summary).toBeNull();
+    const legacyTokenChecks = mockExistsSync.mock.calls.filter(([filePath]) =>
+      String(filePath).includes('oauth1_token.json') || String(filePath).includes('oauth2_token.json')
+    );
+    expect(legacyTokenChecks).toEqual([]);
+    expect(mockMigrateLegacyTokens).toHaveBeenCalledWith(12);
+    expect(mockMarkGarminConnectionActive).not.toHaveBeenCalled();
+    expect(mockFetchOauthConsumer).not.toHaveBeenCalled();
+  });
+
   it('treats daily summary 403 as missing data instead of starting auth recovery', async () => {
     mockGetUserSettings.mockResolvedValue({ displayName: 'Athlete' });
     mockGarminGet.mockRejectedValue(new Error('ERROR: (403), Forbidden, {"message":null,"error":"ForbiddenException"}'));

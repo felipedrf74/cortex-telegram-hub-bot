@@ -34,6 +34,7 @@ import {
   getUserConnections,
   type OAuthProvider,
 } from './oauth-store';
+import { hasActiveGarminConnection } from './garmin-session-store';
 
 // ─── Canonical types ─────────────────────────────────────────────────
 
@@ -246,7 +247,7 @@ function loadGarminRow(userId: number): GarminStatusRow | undefined {
  * Keep the mapping here so the rest of the app can speak the canonical
  * vocabulary without knowing Garmin's internal strings.
  */
-function mapGarminStatus(row: GarminStatusRow | undefined): {
+function mapGarminStatus(row: GarminStatusRow | undefined, hasUsableSession: boolean): {
   state: IntegrationState;
   reasonCode?: IntegrationReasonCode;
   detail?: string;
@@ -255,7 +256,12 @@ function mapGarminStatus(row: GarminStatusRow | undefined): {
   const status = String(row.status || '').toLowerCase();
   switch (status) {
     case 'active':
-      return { state: 'connected' };
+      return hasUsableSession
+        ? { state: 'connected' }
+        : {
+          state: 'disconnected',
+          detail: 'Garmin connection metadata exists but no scoped session is available.',
+        };
     case 'mfa_pending':
       return {
         state: 'pending',
@@ -275,9 +281,7 @@ function mapGarminStatus(row: GarminStatusRow | undefined): {
         detail: 'Garmin session expired. Reconnect to resume sync.',
       };
     default:
-      // Unknown status: defensive fallback to "connected" if we stored *any*
-      // row at all, because historically the row presence meant "connected".
-      return { state: 'connected' };
+      return { state: 'disconnected' };
   }
 }
 
@@ -467,7 +471,7 @@ function buildGarminStatus(userId: number): ProviderIntegrationStatus {
   // column than OAuth providers. Map the string to the canonical state
   // machine first, then overlay probe-derived degradation on top.
   const row = loadGarminRow(userId);
-  const mapped = mapGarminStatus(row);
+  const mapped = mapGarminStatus(row, hasActiveGarminConnection(userId));
 
   const baseCapabilities = capabilitiesForProvider('garmin');
 

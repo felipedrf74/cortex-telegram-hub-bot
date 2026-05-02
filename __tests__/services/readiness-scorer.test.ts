@@ -66,6 +66,7 @@ import {
   scoreHrv, scoreSleep, scoreBodyBattery, scoreAcwr,
   calculateReadiness, persistReadinessScore, getRecentReadinessScores,
 } from '../../src/services/readiness-scorer';
+import { getCurrentContext } from '../../src/utils/request-context';
 
 // ── Unit Tests: Individual Factor Scorers ──
 
@@ -143,6 +144,17 @@ describe('readiness-scorer — factor scorers', () => {
 // ── Integration Tests: Composite Score ──
 
 describe('readiness-scorer — calculateReadiness', () => {
+  function seedActiveGarminSession(userId: number, email = `athlete-${userId}@example.com`): void {
+    testDb.prepare(`
+      INSERT OR REPLACE INTO garmin_user_tokens (user_id, garmin_email, tokens_json, status, updated_at)
+      VALUES (?, ?, '{}', 'active', datetime('now'))
+    `).run(userId, email);
+    testDb.prepare(`
+      INSERT OR REPLACE INTO garmin_sessions (user_id, oauth1_token_json, oauth2_token_json, last_refreshed_at)
+      VALUES (?, ?, ?, datetime('now'))
+    `).run(userId, '{"token":"oauth1"}', '{"token":"oauth2"}');
+  }
+
   beforeEach(() => {
     testDb = createTestDb();
     applyMigrations(testDb);
@@ -152,10 +164,7 @@ describe('readiness-scorer — calculateReadiness', () => {
     try {
       testDb.prepare("INSERT OR IGNORE INTO users (id, first_name, tier, auth_provider, status) VALUES (1, 'Test', 'owner', 'test', 'active')").run();
       testDb.prepare("INSERT OR IGNORE INTO users (id, first_name, tier, auth_provider, status) VALUES (2, 'Connected', 'pro', 'test', 'active')").run();
-      testDb.prepare(`
-        INSERT OR REPLACE INTO garmin_user_tokens (user_id, garmin_email, tokens_json, status, updated_at)
-        VALUES (?, ?, '{}', 'active', datetime('now'))
-      `).run(1, 'owner@example.com');
+      seedActiveGarminSession(1, 'owner@example.com');
     } catch { /* table may not exist in minimal test db */ }
   });
   afterEach(() => { testDb.close(); });
@@ -253,10 +262,7 @@ describe('readiness-scorer — calculateReadiness', () => {
   });
 
   it('uses Garmin readiness for a non-owner user with an active Garmin connection', async () => {
-    testDb.prepare(`
-      INSERT OR REPLACE INTO garmin_user_tokens (user_id, garmin_email, tokens_json, status, updated_at)
-      VALUES (?, ?, '{}', 'active', datetime('now'))
-    `).run(2, 'connected@example.com');
+    seedActiveGarminSession(2, 'connected@example.com');
 
     mockGarmin.getHrvData.mockResolvedValue({ hrvSummary: { lastNightAvg: 68, weeklyAvg: 60 } });
     mockGarmin.getSleepData.mockResolvedValue({ dailySleepDTO: { sleepTimeSeconds: 28800, overallSleepScore: 84 } });
@@ -267,6 +273,39 @@ describe('readiness-scorer — calculateReadiness', () => {
     const result = await calculateReadiness(2);
     expect(result.score).toBeGreaterThan(0);
     expect(result.factors.bodyBattery.current).toBe(82);
+  });
+
+  it('binds Garmin readiness reads to the requested user scope', async () => {
+    seedActiveGarminSession(2, 'connected@example.com');
+
+    const scopedUserIds: Array<number | undefined> = [];
+    const captureScope = <T>(value: T) => {
+      scopedUserIds.push(getCurrentContext()?.userId);
+      return Promise.resolve(value);
+    };
+
+    mockGarmin.getHrvData.mockImplementation(() =>
+      captureScope({ hrvSummary: { lastNightAvg: 68, weeklyAvg: 60 } })
+    );
+    mockGarmin.getSleepData.mockImplementation(() =>
+      captureScope({ dailySleepDTO: { sleepTimeSeconds: 28800, overallSleepScore: 84 } })
+    );
+    mockGarmin.getBodyBatteryEvents.mockImplementation(() =>
+      captureScope([{ bodyBatteryLevel: 82 }])
+    );
+    mockGarmin.getTrainingReadiness.mockImplementation(() =>
+      captureScope({ score: 74 })
+    );
+    mockGarmin.getActivitiesByDate.mockImplementation(() =>
+      captureScope([])
+    );
+    mockGarmin.getDailySummary.mockImplementation(() =>
+      captureScope(null)
+    );
+
+    await calculateReadiness(2);
+
+    expect(scopedUserIds).toEqual([2, 2, 2, 2, 2, 2]);
   });
 
   it('falls back to neutral when Garmin is configured globally but this user is not connected', async () => {

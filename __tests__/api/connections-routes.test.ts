@@ -182,6 +182,40 @@ describe('Connections routes', () => {
     });
   });
 
+  it('does not surface Garmin as connected from active metadata without scoped session material', async () => {
+    const garminRow = {
+      garmin_email: 'wrong-user@garmin.example',
+      status: 'active',
+      connected_at: '2026-05-02T10:00:00Z',
+      updated_at: '2026-05-02T10:00:00Z',
+    };
+    const get = vi.fn()
+      .mockReturnValueOnce(garminRow)
+      .mockReturnValueOnce({ status: 'active' })
+      .mockReturnValueOnce(undefined)
+      .mockReturnValueOnce({ tokens_json: '{}' })
+      .mockReturnValueOnce(garminRow)
+      .mockReturnValueOnce({ status: 'active' })
+      .mockReturnValueOnce(undefined)
+      .mockReturnValueOnce({ tokens_json: '{}' });
+    vi.doMock('../../src/services/database', () => ({
+      getDb: vi.fn(() => ({
+        prepare: vi.fn(() => ({
+          get,
+          all: vi.fn(() => []),
+        })),
+      })),
+    }));
+
+    const res = await dispatchConnections(42);
+    const connectionProviders = res.body.data.connections.map((connection: any) => connection.provider);
+    const garmin = res.body.data.integrations.find((integration: any) => integration.provider === 'garmin');
+
+    expect(connectionProviders).toEqual(['google']);
+    expect(garmin.state).toBe('disconnected');
+    expect(res.body.data.capabilities.health).toBe(false);
+  });
+
   it('fails closed on invalid tenant scope before loading connections', async () => {
     const res = await dispatchConnections(0);
     const observability = await import('../../src/services/tenant-scope-observability');

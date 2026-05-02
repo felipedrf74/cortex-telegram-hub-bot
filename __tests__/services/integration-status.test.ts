@@ -131,6 +131,20 @@ function seedGarmin(
          updated_at = datetime('now')`,
     )
     .run(userId, 'felipe@example.com', '{}', status);
+
+  if (status === 'active') {
+    testDb
+      .prepare(
+        `INSERT INTO garmin_sessions (user_id, oauth1_token_json, oauth2_token_json, last_refreshed_at)
+         VALUES (?, ?, ?, datetime('now'))
+         ON CONFLICT(user_id) DO UPDATE SET
+           oauth1_token_json = excluded.oauth1_token_json,
+           oauth2_token_json = excluded.oauth2_token_json,
+           last_refreshed_at = excluded.last_refreshed_at,
+           updated_at = datetime('now')`,
+      )
+      .run(userId, '{"token":"oauth1"}', '{"token":"oauth2"}');
+  }
 }
 
 function seedAppleHealth(userId: number, date = new Date().toISOString().slice(0, 10)): void {
@@ -280,6 +294,22 @@ describe('integration-status', () => {
 
       expect(garmin.state).toBe('connected');
       expect(garmin.capabilities).toEqual(['training', 'sleep', 'readiness']);
+    });
+
+    it('does not report Garmin connected from an active metadata row without scoped tokens', () => {
+      testDb
+        .prepare(
+          `INSERT INTO garmin_user_tokens (user_id, garmin_email, tokens_json, status)
+           VALUES (?, ?, '{}', 'active')`,
+        )
+        .run(1444, 'wrong-user@garmin.example');
+
+      const summary = getIntegrationSummary(1444);
+      const garmin = summary.providers.find((p) => p.provider === 'garmin')!;
+
+      expect(garmin.state).toBe('disconnected');
+      expect(summary.capabilities.health).toBe(false);
+      expect(isGarminActivelyIntegrated(1444)).toBe(false);
     });
 
     it('does NOT imply any email provider is connected', () => {

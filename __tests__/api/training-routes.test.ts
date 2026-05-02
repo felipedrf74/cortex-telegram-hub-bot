@@ -156,6 +156,10 @@ vi.mock('../../src/services/user-service', () => ({
   getUserLanguageById: vi.fn(() => 'pt-BR'),
 }));
 
+vi.mock('../../src/services/integration-status', () => ({
+  isGarminActivelyIntegrated: vi.fn(() => false),
+}));
+
 vi.mock('../../src/services/cost-guardrail', () => ({
   isUserOverDailyCap: (...args: unknown[]) => mockIsUserOverDailyCap(...args),
   buildQuotaExceededMessage: vi.fn((quota: { plan: string; resetAt: string }) => `Daily AI quota reached for the ${quota.plan} plan. Resets at ${quota.resetAt}.`),

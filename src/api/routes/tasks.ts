@@ -324,8 +324,20 @@ export function taskRoutes(): Router {
     try {
       const swr = getCachedSWR<any>(cacheKey);
       if (swr) {
-        sendSuccess(res, swr.value, { cached: true });
-        if (!swr.fresh) swrRefresh(cacheKey, async () => { await fetchAndCache(); });
+        const hasEmptyDetailWithPositiveCount = Array.isArray(swr.value?.tasks)
+          && swr.value.tasks.length === 0
+          && cachedListCount(userId, listId) > 0;
+        if (!hasEmptyDetailWithPositiveCount) {
+          sendSuccess(res, swr.value, { cached: true });
+          if (!swr.fresh) swrRefresh(cacheKey, async () => { await fetchAndCache(); });
+          return;
+        }
+        logger.debug(
+          { userId, listId },
+          'tasks/list cache bypassed because task-lists cache reports items for an empty detail cache',
+        );
+        const payload = await fetchAndCache();
+        sendSuccess(res, payload);
         return;
       }
       const payload = await fetchAndCache();
@@ -832,6 +844,19 @@ function formatTaskLists(
     name: l.displayName || l.name,
     taskCount: countByListId.get(String(l.id)) || 0,
   }));
+}
+
+function cachedListCount(userId: number | undefined, listId: string): number {
+  if (typeof userId !== 'number' || userId <= 0) return 0;
+  try {
+    const cached = getCachedSWR<{ lists?: Array<{ id?: string; taskCount?: number }> }>(
+      `u:${userId}:task-lists`,
+    );
+    const match = cached?.value?.lists?.find((list) => String(list.id) === String(listId));
+    return typeof match?.taskCount === 'number' ? match.taskCount : 0;
+  } catch {
+    return 0;
+  }
 }
 
 async function buildTaskCountMap(todo: any, lists: any[]): Promise<Map<string, number>> {

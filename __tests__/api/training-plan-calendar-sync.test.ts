@@ -126,6 +126,12 @@ describe('training-plan-calendar-sync', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    delete process.env.TRAINING_ENGINE_ENABLED;
+    delete process.env.TRAINING_ENGINE_DISABLED;
+    delete process.env.TRAINING_CALENDAR_WRITES_ENABLED;
+    delete process.env.TRAINING_CALENDAR_WRITES_DISABLED;
+    delete process.env.TRAINING_CALENDAR_SYNC_ENABLED;
+    delete process.env.TRAINING_CALENDAR_SYNC_DISABLED;
     mocks.getEvents.mockResolvedValue([]);
     mocks.updateEvent.mockResolvedValue({ id: 'evt-updated', source: 'google' });
     mocks.linkSessionToCalendar.mockReturnValue(true);

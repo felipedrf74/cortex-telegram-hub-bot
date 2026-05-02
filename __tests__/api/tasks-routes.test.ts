@@ -428,6 +428,50 @@ describe('Task routes sync provider metadata', () => {
     ]);
   });
 
+  it('bypasses stale empty list-detail cache when list metadata reports pending tasks', async () => {
+    mockGetCachedSWR.mockImplementation((key: string) => {
+      if (key === 'u:12:tasks:list-1:all') {
+        return { value: { listName: 'Entrada', tasks: [] }, fresh: true };
+      }
+      if (key === 'u:12:task-lists') {
+        return { value: { lists: [{ id: 'list-1', name: 'Entrada', taskCount: 9 }] }, fresh: true };
+      }
+      return null;
+    });
+    providerApi.getTasks.mockResolvedValueOnce({
+      success: true,
+      data: [
+        {
+          id: 'task-entrada-1',
+          title: 'Family inbox item',
+          status: 'notStarted',
+          listId: 'list-1',
+          listName: 'Entrada',
+        },
+      ],
+    });
+
+    const res = await dispatch('GET', '/list/list-1', {
+      params: { listId: 'list-1' },
+      query: { listName: 'Entrada' },
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(providerApi.getTasks).toHaveBeenCalledWith('list-1', 'Entrada', undefined);
+    expect(res.body.data.tasks).toEqual([
+      expect.objectContaining({ id: 'task-entrada-1', title: 'Family inbox item' }),
+    ]);
+    expect(mockSetCacheSWR).toHaveBeenCalledWith(
+      'u:12:tasks:list-1:all',
+      expect.objectContaining({
+        listName: 'Entrada',
+        tasks: [expect.objectContaining({ id: 'task-entrada-1' })],
+      }),
+      expect.any(Number),
+      expect.any(Number),
+    );
+  });
+
   it('returns full task detail with checklist items for the task drill-down flow', async () => {
     const res = await dispatch('GET', '/list-1/task-1', {
       params: { listId: 'list-1', taskId: 'task-1' },

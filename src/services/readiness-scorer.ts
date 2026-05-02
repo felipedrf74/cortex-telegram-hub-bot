@@ -9,6 +9,7 @@
 
 import { getDb } from './database';
 import { logger } from '../utils/logger';
+import { runWithContext } from '../utils/request-context';
 import { hasActiveGarminConnection } from './garmin-session-store';
 import {
   isGarminConfigured,
@@ -537,14 +538,17 @@ export async function calculateReadiness(userId: number): Promise<ReadinessResul
 
   const today = new Date().toISOString().slice(0, 10);
 
-  const [hrvResult, sleepResult, bbResult, , activitiesResult, summaryResult] = await Promise.allSettled([
-    getHrvData(today),
-    getSleepData(today),
-    getBodyBatteryEvents(today),
-    getTrainingReadiness(today),
-    getActivitiesByDate(subtractDays(today, 28), today),
-    getDailySummary(today),
-  ]);
+  const [hrvResult, sleepResult, bbResult, , activitiesResult, summaryResult] = await runWithContext(
+    { source: 'manual', userId },
+    () => Promise.allSettled([
+      getHrvData(today),
+      getSleepData(today),
+      getBodyBatteryEvents(today),
+      getTrainingReadiness(today),
+      getActivitiesByDate(subtractDays(today, 28), today),
+      getDailySummary(today),
+    ]),
+  );
 
   // ── Extract HRV ──
   const hrvRaw = hrvResult.status === 'fulfilled' ? hrvResult.value as any : null;
