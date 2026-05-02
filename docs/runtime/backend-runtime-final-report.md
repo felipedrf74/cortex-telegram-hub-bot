@@ -139,7 +139,7 @@ P2:
 
 P3:
 
-- historical migration prefix warnings.
+- none. Historical migration prefix warnings are now suppressed only for the five known deployed duplicate-prefix groups; future duplicate prefixes still warn.
 
 ## Next priority
 

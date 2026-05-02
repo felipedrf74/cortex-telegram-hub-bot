@@ -10,6 +10,46 @@ import { SQLiteStorage, setStorageProvider, clearStorageProvider } from './stora
 let db: Database.Database;
 let storage: SQLiteStorage | null = null;
 
+type MigrationPrefixCollision = {
+  prefix: string;
+  files: string[];
+};
+
+const LEGACY_MIGRATION_PREFIX_COLLISIONS: Record<string, string[]> = {
+  '008': ['008_api_cache.sql', '008_email_log.sql'],
+  '009': ['009_api_usage_provider.sql', '009_job_history.sql'],
+  '022': ['022_finance_tables.sql', '022_webhook_events.sql'],
+  '023': ['023_fitness_training_plans.sql', '023_onboarding.sql'],
+  '024': ['024_cooking_tables.sql', '024_usage_metering.sql'],
+};
+
+function sameMembers(a: readonly string[], b: readonly string[]): boolean {
+  if (a.length !== b.length) return false;
+  const left = [...a].sort();
+  const right = [...b].sort();
+  return left.every((value, index) => value === right[index]);
+}
+
+export function findUnexpectedMigrationPrefixCollisions(
+  files: readonly string[],
+): MigrationPrefixCollision[] {
+  const prefixMap = new Map<string, string[]>();
+  for (const f of files) {
+    const m = f.match(/^(\d{3})_/);
+    if (m) {
+      const prefix = m[1];
+      const list = prefixMap.get(prefix) ?? [];
+      list.push(f);
+      prefixMap.set(prefix, list);
+    }
+  }
+
+  return [...prefixMap.entries()]
+    .filter(([, list]) => list.length > 1)
+    .filter(([prefix, list]) => !sameMembers(list, LEGACY_MIGRATION_PREFIX_COLLISIONS[prefix] ?? []))
+    .map(([prefix, list]) => ({ prefix, files: [...list].sort() }));
+}
+
 export function getDb(): Database.Database {
   if (!db) {
     throw new Error('Database not initialized. Call initDatabase() first.');
@@ -104,19 +144,9 @@ function runMigrations(): void {
   // collisions are silent timebombs for cross-environment schema drift.
   // We log loudly here so future devs (and AI agents in the factory) get
   // a flag the moment they introduce one. See audit P0-5.
-  const prefixMap = new Map<string, string[]>();
-  for (const f of files) {
-    const m = f.match(/^(\d{3})_/);
-    if (m) {
-      const prefix = m[1];
-      const list = prefixMap.get(prefix) ?? [];
-      list.push(f);
-      prefixMap.set(prefix, list);
-    }
-  }
-  const collisions = [...prefixMap.entries()].filter(([, list]) => list.length > 1);
+  const collisions = findUnexpectedMigrationPrefixCollisions(files);
   if (collisions.length > 0) {
-    for (const [prefix, list] of collisions) {
+    for (const { prefix, files: list } of collisions) {
       logger.warn(
         { prefix, files: list },
         `Migration prefix collision: ${list.length} files share prefix ${prefix}. Apply order is locale-dependent. Future migrations should use unique prefixes (e.g. ${prefix}a_, ${prefix}b_) or timestamp prefixes (YYYYMMDD_).`,

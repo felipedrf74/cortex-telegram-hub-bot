@@ -57,8 +57,10 @@ Evidence:
 
 ### RT-P3-1: historical migration prefix warnings
 
-Local startup warns about duplicate migration numeric prefixes. This is release diagnostic noise, not a runtime usability blocker.
+Status: closed in code on 2026-05-02.
 
-Next action:
+Evidence:
 
-- Document in release-process cleanup backlog.
+- The migration runner now suppresses only the five known historical duplicate-prefix groups: `008`, `009`, `022`, `023`, and `024`.
+- The guardrail remains active for any new duplicate numeric prefix, and also warns if one of the historical groups gains another unexpected file.
+- Focused regression test passed: `npx vitest run __tests__/services/database-migration-prefix-collisions.test.ts` (3/3).
