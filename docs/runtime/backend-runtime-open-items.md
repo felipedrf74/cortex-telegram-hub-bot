@@ -40,7 +40,7 @@ Evidence:
 
 Follow-up:
 
-- Correlate physical-device Areas tab request cadence. Backend now supports conditional reads, but iOS still needs to send `If-None-Match` to realize the payload savings.
+- Correlate physical-device Areas tab request cadence. Backend supports conditional reads and iOS already sends `If-None-Match`; remaining work is real-device request-count/timing evidence, not code.
 
 ### RT-P2-3: iOS retry/backoff for `429`
 
