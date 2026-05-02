@@ -30,9 +30,17 @@ Implemented:
 - `/api/v1/plan/today`: `daily_brief`
 - `/api/v1/plan/week`: `weekly_plan`
 
+Staging evidence after deploying `4.14.114`:
+
+- Generic staging smoke passed 17/17.
+- Authenticated staging timing capture sampled each route 25 times with an iOS-like bearer request.
+- `/api/v1/dashboard/home`: 25/25 `200`, total p50 2.0 ms, p95 2.6 ms, max 77.6 ms. Cold-path `Server-Timing` sample showed `training;dur=56.1`, `dashboard;dur=57.5`, `daily_brief;dur=68.4`, and `home_view_state;dur=3.7`.
+- `/api/v1/plan/today`: 25/25 `200`, total p50 1.9 ms, p95 2.5 ms, max 2.8 ms. `daily_brief` p95 was 0.3 ms.
+- `/api/v1/plan/week`: 25/25 `200`, total p50 1.9 ms, p95 2.4 ms, max 2.7 ms. `weekly_plan` p95 was 0.4 ms.
+
 Remaining next action:
 
-- Capture staging/device p50/p95 for `/api/v1/dashboard/home`, `/api/v1/plan/today`, and `/api/v1/plan/week` after this build is deployed.
+- Correlate physical-device iOS navigation latency with request timing. The backend staging p95 for these read paths is now too low to explain multi-second tab lag by itself.
 
 ## P2 open: Skills catalog payload is larger than most app bootstrap calls
 

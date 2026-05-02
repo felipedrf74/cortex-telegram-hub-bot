@@ -12,12 +12,20 @@ None left as confirmed, safe, scoped backend fixes in this pass after the read-r
 
 ### RT-P2-1: capture staging p50/p95 for Home and Plan read timings
 
-Status: code support added. Home and Plan routes now emit `Server-Timing` dependency breakdowns.
+Status: closed for backend staging evidence on 2026-05-02.
 
-Next action:
+Evidence:
 
-- Track staging p50/p95 for `/api/v1/dashboard/home`, `/api/v1/plan/today`, `/api/v1/plan/week`.
-- Correlate these headers with physical-device iOS navigation latency.
+- Staging was aligned to `4.14.114`.
+- Generic staging smoke passed 17/17.
+- Authenticated timing capture used a staging-only invite/device and sampled each route 25 times.
+- `/api/v1/dashboard/home`: 25/25 `200`, `user-read`, total p50 2.0 ms, p95 2.6 ms, max 77.6 ms.
+- `/api/v1/plan/today`: 25/25 `200`, `user-read`, total p50 1.9 ms, p95 2.5 ms, max 2.8 ms.
+- `/api/v1/plan/week`: 25/25 `200`, `user-read`, total p50 1.9 ms, p95 2.4 ms, max 2.7 ms.
+
+Follow-up:
+
+- Correlate these backend timings with physical-device iOS navigation latency. Backend staging p95 no longer points to a multi-second server bottleneck on these reads.
 
 ### RT-P2-2: evaluate ETag/short-lived cache for stable read surfaces
 
