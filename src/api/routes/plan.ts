@@ -9,6 +9,7 @@ import { composeWeeklyPlan } from '../../services/weekly-plan-orchestrator';
 import { invalidatePlanningCaches } from '../../services/plan-cache-invalidator';
 import { getUserById } from '../../services/user-service';
 import { isValidTenantUserId, recordTenantScopeAnomaly } from '../../services/tenant-scope-observability';
+import { setServerTimingHeader, timedAsync, type RouteTiming } from '../route-timing';
 
 function ensureValidPlanRouteScope(
   res: Response,
@@ -37,8 +38,9 @@ export function planRoutes(): Router {
     const weekStart = typeof req.query.weekStart === 'string' ? req.query.weekStart : undefined;
 
     try {
-      const data = await composeWeeklyPlan({ userId, weekStart });
-      sendEtagged(res, req, data);
+      const timings: RouteTiming[] = [];
+      const data = await timedAsync(timings, 'weekly_plan', () => composeWeeklyPlan({ userId, weekStart }));
+      sendEtagged(res, req, data, timings);
     } catch (err: any) {
       sendInternalError(res, 'Unable to load the weekly plan right now.');
     }
@@ -50,8 +52,9 @@ export function planRoutes(): Router {
     const date = typeof req.query.date === 'string' ? req.query.date : undefined;
 
     try {
-      const data = await composeDailyBrief({ userId, date });
-      sendEtagged(res, req, data);
+      const timings: RouteTiming[] = [];
+      const data = await timedAsync(timings, 'daily_brief', () => composeDailyBrief({ userId, date }));
+      sendEtagged(res, req, data, timings);
     } catch (err: any) {
       sendInternalError(res, 'Unable to load the daily plan right now.');
     }
@@ -107,7 +110,7 @@ export function planRoutes(): Router {
   return router;
 }
 
-function sendEtagged(res: Response, req: Request, data: unknown): void {
+function sendEtagged(res: Response, req: Request, data: unknown, timings: RouteTiming[] = []): void {
   const envelope = apiSuccess(data);
   const envelopeJson = JSON.stringify({ ...envelope, timestamp: undefined });
   const etag = `"${crypto.createHash('md5').update(envelopeJson).digest('hex')}"`;
@@ -119,6 +122,7 @@ function sendEtagged(res: Response, req: Request, data: unknown): void {
 
   res.setHeader('ETag', etag);
   res.setHeader('Cache-Control', 'private, max-age=30');
+  setServerTimingHeader(res, timings);
   res.json(envelope);
 }
 

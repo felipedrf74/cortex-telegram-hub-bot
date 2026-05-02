@@ -10,14 +10,14 @@ None left as confirmed, safe, scoped backend fixes in this pass after the read-r
 
 ## P2
 
-### RT-P2-1: add staging dependency timing for Home and Plan reads
+### RT-P2-1: capture staging p50/p95 for Home and Plan read timings
 
-Home and Week/Semana are fast locally, but real accounts can have more calendar, training, content, and integration state.
+Status: code support added. Home and Plan routes now emit `Server-Timing` dependency breakdowns.
 
 Next action:
 
-- Add dependency timing around dashboard and plan sub-builders.
 - Track staging p50/p95 for `/api/v1/dashboard/home`, `/api/v1/plan/today`, `/api/v1/plan/week`.
+- Correlate these headers with physical-device iOS navigation latency.
 
 ### RT-P2-2: evaluate ETag/short-lived cache for stable read surfaces
 
@@ -45,4 +45,3 @@ Local startup warns about duplicate migration numeric prefixes. This is release 
 Next action:
 
 - Document in release-process cleanup backlog.
-

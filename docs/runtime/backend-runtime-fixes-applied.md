@@ -40,3 +40,41 @@ Validation:
 - TypeScript typecheck: passed.
 - Local engine burst: 144 authenticated reads, 0 rate-limit responses.
 
+## Fix 2: add Server-Timing dependency breakdowns for Home and Plan reads
+
+Severity: P2
+
+Root cause:
+
+The backend had good local latency numbers, but staging and production did not expose which dependency dominated a slow iOS-facing read. Home and Week/Semana aggregate calendar, tasks, training, content, and daily/weekly planning state; without per-step timing, the next real-user latency report would still require guesswork.
+
+Files changed:
+
+- `src/api/route-timing.ts`
+- `src/api/routes/dashboard.ts`
+- `src/api/routes/plan.ts`
+- `__tests__/api/dashboard-routes.test.ts`
+- `__tests__/api/plan-routes.test.ts`
+
+Implementation:
+
+- Added a small `Server-Timing` helper.
+- `/api/v1/dashboard` now reports `calendar`, `tasks`, `training`, and `content` timings on uncached reads.
+- `/api/v1/dashboard/home` now reports `dashboard`, `daily_brief`, and `home_view_state` timings, plus nested dashboard section timings.
+- `/api/v1/plan/week` now reports `weekly_plan`.
+- `/api/v1/plan/today` now reports `daily_brief`.
+- Cached dashboard reads emit `cache_hit`.
+
+Why it improves usability:
+
+This does not change payloads or product behavior. It gives staging/device validation enough evidence to distinguish backend dependency latency from iOS rendering, network, or animation latency.
+
+Regression tests:
+
+- Dashboard route test asserts uncached dashboard/home reads include the expected timing labels.
+- Plan route test asserts `/week` and `/today` include planner timing labels.
+
+Validation:
+
+- TypeScript typecheck: passed.
+- Focused dashboard + plan tests: 2 files / 30 tests passed.

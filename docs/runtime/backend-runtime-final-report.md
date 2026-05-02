@@ -8,7 +8,7 @@ Biggest root cause: authenticated iOS read traffic shared the same 60/minute quo
 
 Biggest fix: split authenticated `GET`/`HEAD` requests into a separate `user-read` bucket with default `IOS_API_READ_RATE_LIMIT=300`, while preserving the existing tighter mutation/chat bucket.
 
-Remaining risk: iOS interaction and staging p95 validation still need to confirm the perceived app improvement on a physical device and real release environment.
+Remaining risk: iOS interaction and staging p95 validation still need to confirm the perceived app improvement on a physical device and real release environment. Home and Plan reads now expose `Server-Timing` dependency breakdowns to make that validation concrete.
 
 Backend/runtime likely contributed to iOS lag: yes, especially when repeated navigation caused read bursts to hit `429`.
 
@@ -116,6 +116,7 @@ Focused results:
 - app-facing route focused sample: 8 files / 111 tests passed
 - local authenticated API smoke: 13/13 passed
 - full `npm run verify`: 429 files / 6447 tests passed
+- dashboard + plan timing focused tests: 2 files / 30 tests passed
 
 ## iOS interaction correlation
 
@@ -129,7 +130,7 @@ P1: none confirmed after this fix.
 
 P2:
 
-- staging dependency timing for Home/Plan.
+- capture staging p50/p95 from the new Home/Plan `Server-Timing` headers.
 - ETag or short-lived cache for stable read surfaces if iOS request cadence confirms repeated fetches.
 - iOS explicit `429` retry/backoff state.
 

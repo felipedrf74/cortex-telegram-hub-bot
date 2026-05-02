@@ -197,6 +197,7 @@ describe('plan routes', () => {
     expect(response.statusCode).toBe(200);
     expect(response.body.ok).toBe(true);
     expect(response.body.data.weekStart).toBe('2026-04-13');
+    expect(response.headers['Server-Timing']).toEqual(expect.stringContaining('weekly_plan;dur='));
   });
 
   it('returns the daily plan route with stable coordination data and honors If-None-Match', async () => {
@@ -210,6 +211,7 @@ describe('plan routes', () => {
     expect(first.body.data.date).toBe('2026-04-14');
     expect(first.body.data.coordination.dayOrchestration.title).toBe('Protect the morning block first.');
     expect(first.headers.ETag).toBeTruthy();
+    expect(first.headers['Server-Timing']).toEqual(expect.stringContaining('daily_brief;dur='));
     expect(second.statusCode).toBe(304);
   });
 

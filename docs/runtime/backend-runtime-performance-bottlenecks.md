@@ -19,14 +19,20 @@ Fix:
 - Added a separate authenticated read bucket for `GET`/`HEAD`.
 - Kept mutation/chat/model-triggering calls on the existing tighter bucket.
 
-## P2 open: Home and Plan reads still do synchronous aggregation
+## P2 fixed: Home and Plan reads now expose dependency timing
 
-Local single-request latency was acceptable, but Home/Plan read paths still aggregate several pieces of state synchronously. In local fixture data this is not a blocker; with larger real accounts it should be watched.
+Local single-request latency was acceptable, but Home/Plan read paths still aggregate several pieces of state synchronously. The routes now emit `Server-Timing` headers so staging and production-safe checks can identify the slow dependency instead of treating the screen as a single opaque request.
 
-Recommended next action:
+Implemented:
 
-- Add endpoint-level dependency timing for Home and Plan reads.
-- Persist p50/p95 in staging for `/api/v1/dashboard/home`, `/api/v1/plan/today`, and `/api/v1/plan/week`.
+- `/api/v1/dashboard`: `calendar`, `tasks`, `training`, `content`
+- `/api/v1/dashboard/home`: `dashboard`, `daily_brief`, `home_view_state`, plus nested dashboard section timings
+- `/api/v1/plan/today`: `daily_brief`
+- `/api/v1/plan/week`: `weekly_plan`
+
+Remaining next action:
+
+- Capture staging/device p50/p95 for `/api/v1/dashboard/home`, `/api/v1/plan/today`, and `/api/v1/plan/week` after this build is deployed.
 
 ## P2 open: Skills catalog payload is larger than most app bootstrap calls
 
@@ -48,4 +54,3 @@ Local startup emits migration-prefix collision warnings for historical files. Th
 Recommended next action:
 
 - Track as release-process cleanup; do not rename historical migrations without a dedicated migration audit.
-

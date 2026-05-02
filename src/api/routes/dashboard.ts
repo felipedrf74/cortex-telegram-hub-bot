@@ -25,6 +25,7 @@ import {
   fetchTraining,
 } from './dashboard-data-fetchers';
 import { buildDashboardHomeInput } from './dashboard-home-input';
+import { setServerTimingHeader, timedAsync, timedSync, type RouteTiming } from '../route-timing';
 
 export { mapDashboardTask, queryContentPipelineCounts } from './dashboard-data-fetchers';
 export { buildHomeOrchestrationSummary } from './dashboard-home-input';
@@ -104,6 +105,7 @@ export function dashboardRoutes(): Router {
         }
         res.setHeader('ETag', etag);
         res.setHeader('Cache-Control', 'private, max-age=30');
+        setServerTimingHeader(res, [{ name: 'cache_hit', durationMs: 0 }]);
         res.json(envelope);
 
         if (!swr.fresh) {
@@ -115,7 +117,8 @@ export function dashboardRoutes(): Router {
         return;
       }
 
-      const home = await buildDashboardHomePayload(userId, language);
+      const timings: RouteTiming[] = [];
+      const home = await buildDashboardHomePayload(userId, language, timings);
       setCacheSWR(cacheKey, home, DASHBOARD_HOME_CACHE_TTL, DASHBOARD_HOME_SWR_STALE);
 
       const envelope = apiSuccess(home);
@@ -128,6 +131,7 @@ export function dashboardRoutes(): Router {
 
       res.setHeader('ETag', etag);
       res.setHeader('Cache-Control', 'private, max-age=30');
+      setServerTimingHeader(res, timings);
       res.json(envelope);
     } catch (err: any) {
       logger.error({ err, platform: 'ios' }, 'Dashboard home aggregation failed');
@@ -162,6 +166,7 @@ export function dashboardRoutes(): Router {
         }
         res.setHeader('ETag', etag);
         res.setHeader('Cache-Control', 'private, max-age=30');
+        setServerTimingHeader(res, [{ name: 'cache_hit', durationMs: 0 }]);
         res.json(envelope);
 
         if (!swr.fresh) {
@@ -173,7 +178,8 @@ export function dashboardRoutes(): Router {
         return;
       }
 
-      const dashboard = await buildDashboardPayload(userId, language);
+      const timings: RouteTiming[] = [];
+      const dashboard = await buildDashboardPayload(userId, language, timings);
       setCacheSWR(dashboardCacheKey, dashboard, DASHBOARD_CACHE_TTL, DASHBOARD_SWR_STALE);
 
       const envelope = apiSuccess(dashboard);
@@ -188,6 +194,7 @@ export function dashboardRoutes(): Router {
 
       res.setHeader('ETag', etag);
       res.setHeader('Cache-Control', 'private, max-age=30');
+      setServerTimingHeader(res, timings);
       res.json(envelope);
     } catch (err: any) {
       logger.error({ err, platform: 'ios' }, 'Dashboard aggregation failed');
@@ -259,12 +266,12 @@ function localizedWeekday(date: Date, language: Lang): string {
   return weekday.charAt(0).toUpperCase() + weekday.slice(1);
 }
 
-async function buildDashboardPayload(userId: number, language: Lang) {
+async function buildDashboardPayload(userId: number, language: Lang, timings: RouteTiming[] = []) {
   const [calendarResult, tasksResult, trainingResult, contentResult] = await Promise.allSettled([
-    withDashboardTimeout(fetchCalendar(userId), DASHBOARD_SECTION_TIMEOUT_MS, 'calendar'),
-    withDashboardTimeout(fetchTasks(userId), DASHBOARD_SECTION_TIMEOUT_MS, 'tasks'),
-    withDashboardTimeout(fetchTraining(userId), DASHBOARD_SECTION_TIMEOUT_MS, 'training'),
-    withDashboardTimeout(fetchContent(userId), DASHBOARD_SECTION_TIMEOUT_MS, 'content'),
+    timedAsync(timings, 'calendar', () => withDashboardTimeout(fetchCalendar(userId), DASHBOARD_SECTION_TIMEOUT_MS, 'calendar')),
+    timedAsync(timings, 'tasks', () => withDashboardTimeout(fetchTasks(userId), DASHBOARD_SECTION_TIMEOUT_MS, 'tasks')),
+    timedAsync(timings, 'training', () => withDashboardTimeout(fetchTraining(userId), DASHBOARD_SECTION_TIMEOUT_MS, 'training')),
+    timedAsync(timings, 'content', () => withDashboardTimeout(fetchContent(userId), DASHBOARD_SECTION_TIMEOUT_MS, 'content')),
   ]);
 
   const calendar = calendarResult.status === 'fulfilled'
@@ -347,10 +354,10 @@ async function buildDashboardPayload(userId: number, language: Lang) {
   };
 }
 
-async function buildDashboardHomePayload(userId: number, language: Lang) {
+async function buildDashboardHomePayload(userId: number, language: Lang, timings: RouteTiming[] = []) {
   const [dashboardResult, briefResult] = await Promise.allSettled([
-    buildDashboardPayload(userId, language),
-    withDashboardTimeout(composeDailyBrief({ userId, language }), DASHBOARD_HOME_BRIEF_TIMEOUT_MS, 'daily_brief'),
+    timedAsync(timings, 'dashboard', () => buildDashboardPayload(userId, language, timings)),
+    timedAsync(timings, 'daily_brief', () => withDashboardTimeout(composeDailyBrief({ userId, language }), DASHBOARD_HOME_BRIEF_TIMEOUT_MS, 'daily_brief')),
   ]);
 
   if (dashboardResult.status !== 'fulfilled') {
@@ -370,20 +377,20 @@ async function buildDashboardHomePayload(userId: number, language: Lang) {
     ...(briefResult.status === 'rejected' ? ['DAILY_BRIEF_UNAVAILABLE'] : []),
   ];
 
-  return buildDashboardHomeViewState(buildDashboardHomeInput({
-    userId,
-    dashboard,
-    brief,
-    language,
-    meta: buildScreenContractMeta({
-      source: 'server',
-      isFallback: reasonCodes.length > 0,
-      isPartial: reasonCodes.length > 0,
-      isStale: false,
-      generatedAt: new Date().toISOString(),
-      reasonCodes,
-    }),
-  }), language);
+  return timedSync(timings, 'home_view_state', () => buildDashboardHomeViewState(buildDashboardHomeInput({
+      userId,
+      dashboard,
+      brief,
+      language,
+      meta: buildScreenContractMeta({
+        source: 'server',
+        isFallback: reasonCodes.length > 0,
+        isPartial: reasonCodes.length > 0,
+        isStale: false,
+        generatedAt: new Date().toISOString(),
+        reasonCodes,
+      }),
+    }), language));
 }
 
 /** Read version from package.json (works with PM2, not just npm start) */

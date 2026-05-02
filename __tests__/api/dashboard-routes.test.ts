@@ -521,6 +521,22 @@ describe('Dashboard API route', () => {
     expect(res.body.data.skillQueue[0]?.whyNow).toBeTruthy();
   });
 
+  it('emits Server-Timing breakdowns for uncached dashboard and home reads', async () => {
+    const dashboardRes = await dispatch(4);
+    const homeRes = await dispatch(4, {}, '/home');
+
+    expect(dashboardRes.statusCode).toBe(200);
+    expect(dashboardRes.headers['Server-Timing']).toEqual(expect.stringContaining('calendar;dur='));
+    expect(dashboardRes.headers['Server-Timing']).toEqual(expect.stringContaining('tasks;dur='));
+    expect(dashboardRes.headers['Server-Timing']).toEqual(expect.stringContaining('training;dur='));
+    expect(dashboardRes.headers['Server-Timing']).toEqual(expect.stringContaining('content;dur='));
+
+    expect(homeRes.statusCode).toBe(200);
+    expect(homeRes.headers['Server-Timing']).toEqual(expect.stringContaining('dashboard;dur='));
+    expect(homeRes.headers['Server-Timing']).toEqual(expect.stringContaining('daily_brief;dur='));
+    expect(homeRes.headers['Server-Timing']).toEqual(expect.stringContaining('home_view_state;dur='));
+  });
+
   it('returns a partial home contract instead of waiting forever on slow providers', async () => {
     vi.useFakeTimers();
     mockGetAllPendingTasks.mockImplementation(() => new Promise(() => {}));
