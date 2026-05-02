@@ -104,11 +104,11 @@ No confirmed model/provider calls during simple navigation reads in local fixtur
 
 Remaining follow-up:
 
-- iOS should send `If-None-Match` for repeated Skills catalog reads to use the backend `304` path.
+- Correlate physical-device Areas tab request cadence. iOS now sends `If-None-Match` for repeated Skills catalog reads and keeps cached catalog data on backend `304`.
 
 ## iOS contract findings
 
-The backend now exposes separate read rate-limit metadata. iOS should still handle future `RATE_LIMITED` responses with explicit retry/backoff instead of an indefinite loading state.
+The backend now exposes separate read rate-limit metadata. iOS already maps 429 responses to `NexusError.rateLimited(retryAfter:)`; the latest iOS follow-up also turns slow first-load Tasks warmup into a retryable unavailable state after the grace window.
 
 ## Tests and smoke
 
@@ -135,8 +135,7 @@ P1: none confirmed after this fix.
 P2:
 
 - correlate physical-device iOS navigation latency with backend request counts and the new Home/Plan `Server-Timing` headers.
-- iOS explicit `429` retry/backoff state.
-- iOS should send `If-None-Match` for repeated Skills catalog reads to use the new backend `304` path.
+- physical-device Areas tab cadence should still be checked, but iOS conditional Skills catalog reads are in place.
 
 P3:
 

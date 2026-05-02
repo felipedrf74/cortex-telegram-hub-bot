@@ -44,11 +44,14 @@ Follow-up:
 
 ### RT-P2-3: iOS retry/backoff for `429`
 
-The backend fix reduces false rate limits, but iOS should still render explicit retry/backoff instead of a generic loading state for any future `429`.
+Status: closed in iOS on 2026-05-02.
 
-Next action:
+Evidence:
 
-- Audit iOS network error mapping for `RATE_LIMITED`.
+- iOS `NexusHTTPClient` maps HTTP 429 responses to `NexusError.rateLimited(retryAfter:)`.
+- `NexusHTTPClientTests` pins both JSON-body `retryAfter` and `Retry-After` header precedence.
+- The Tasks workspace now escapes first-load warmup after the three-second grace window and shows a retryable unavailable state instead of an indefinite loader.
+- Focused iOS validation passed on `main` at `b5fc073`: `TasksWorkspaceStateResolverTests` + `NavigationPerformanceSourcePinsTests` (16/16).
 
 ## P3
 
