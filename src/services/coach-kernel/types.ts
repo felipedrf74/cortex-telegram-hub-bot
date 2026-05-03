@@ -386,6 +386,22 @@ export interface Exercise {
   /** Warmup needs the engine should fold into the session warmup
    *  (e.g. 'hip_mobility', 'thoracic_rotation'). */
   warmupNeeds?: string[];
+  /**
+   * Slice 5.A — progression family metadata for catalog-aware
+   * progression. Identifies the skill ladder this exercise sits in
+   * (e.g. `vertical_pull`: scapular_pull_up → band_assisted_pull_up →
+   * pull_up → weighted_pull_up → muscle_up). The strength engine and
+   * the calisthenics modality use this to advance an athlete to the
+   * next level when their current level is consistently completed.
+   */
+  progressionFamily?: string;
+  /** 1 (entry) through 5 (mastery). Within a family, higher level is
+   *  harder. Same-level exercises are interchangeable variants. */
+  progressionLevel?: 1 | 2 | 3 | 4 | 5;
+  /** Conditions an athlete should meet before advancing to this
+   *  level (e.g. `[{ exerciseId: "push_up", criterion: "3x15 clean" }]`).
+   *  Used by progression rules in training-principles.json. */
+  progressionPrerequisites?: Array<{ exerciseId: string; criterion: string }>;
 }
 
 export interface ExercisePrescription {
@@ -396,6 +412,43 @@ export interface ExercisePrescription {
   rir?: number;
   restSec?: number;
   notes?: string;
+  /**
+   * Slice 5.D — tempo as a progression vector. Format: four digits
+   * separated by `-`, in seconds: eccentric-bottomPause-concentric-topPause.
+   * Examples: `"3-1-1-0"` = 3s lower, 1s pause at bottom, 1s up, 0s top;
+   * `"2-0-X-0"` = 2s lower, no pause, explosive concentric, no pause.
+   * Used heavily by the calisthenics modality where tempo is the
+   * primary progression knob (you can't add load to a push-up; you
+   * can make it 5-3-1-0). For loaded strength work, tempo lets the
+   * engine progress technique cycles without changing exercise.
+   */
+  tempo?: string;
+  /**
+   * Slice 5.E — coach reasoning surface. When present, captures why
+   * the engine picked this specific exercise over alternatives.
+   * Rendered on tap in iOS to differentiate Nexus from black-box
+   * "AI generated" workout apps.
+   */
+  selectionReason?: ExerciseSelectionReason;
+}
+
+export interface ExerciseSelectionReason {
+  /** The movement pattern slot this exercise filled. */
+  pattern: 'squat' | 'hinge' | 'push' | 'pull' | 'single_leg' | 'core' | 'carry' | 'mobility';
+  /**
+   * Bullet-style reasons the engine picked this exercise. Each string
+   * is short, user-readable, and grounded in athlete state — e.g.
+   * "progression level 3 matches your current strength",
+   * "no shoulder impingement contraindication",
+   * "fits dumbbells-only equipment".
+   */
+  pickedBecause: string[];
+  /** Total candidate count the engine evaluated for this slot. */
+  alternativesConsidered?: number;
+  /** Top alternatives that were ruled out, with the reason. Keep this
+   *  small (≤3) so the UI can show "we also considered…" without
+   *  drowning the user. */
+  alternativesRejectedBecause?: Array<{ exerciseId: string; reason: string }>;
 }
 
 export interface WorkoutTemplate {

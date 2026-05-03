@@ -3,663 +3,83 @@
     "id": "front_squat",
     "name": "Front Squat",
     "movementPattern": "squat",
-    "equipment": [
-      "barbell",
-      "rack"
-    ],
+    "equipment": ["barbell", "rack"],
     "fatigueCost": "high",
-    "substitutions": [
-      "goblet_squat",
-      "split_squat"
-    ],
+    "substitutions": ["goblet_squat", "split_squat"],
     "complexity": "advanced",
     "spinalLoading": "high",
     "unilateral": false,
     "primaryPurpose": "strength",
-    "contraindicationFlags": [
-      "low_back",
-      "wrist_mobility"
-    ],
-    "warmupNeeds": [
-      "hip_mobility",
-      "ankle_mobility",
-      "thoracic_extension",
-      "wrist_mobility"
+    "contraindicationFlags": ["low_back", "wrist_mobility"],
+    "warmupNeeds": ["hip_mobility", "ankle_mobility", "thoracic_extension", "wrist_mobility"],
+    "progressionFamily": "bilateral_squat",
+    "progressionLevel": 4
+  },
+  {
+    "id": "back_squat",
+    "name": "Back Squat",
+    "movementPattern": "squat",
+    "equipment": ["barbell", "rack"],
+    "fatigueCost": "high",
+    "substitutions": ["front_squat", "goblet_squat", "leg_press"],
+    "complexity": "advanced",
+    "spinalLoading": "high",
+    "unilateral": false,
+    "primaryPurpose": "strength",
+    "contraindicationFlags": ["low_back"],
+    "warmupNeeds": ["hip_mobility", "ankle_mobility", "thoracic_extension"],
+    "progressionFamily": "bilateral_squat",
+    "progressionLevel": 4
+  },
+  {
+    "id": "paused_back_squat",
+    "name": "Paused Back Squat",
+    "movementPattern": "squat",
+    "equipment": ["barbell", "rack"],
+    "fatigueCost": "high",
+    "substitutions": ["back_squat", "front_squat"],
+    "complexity": "advanced",
+    "spinalLoading": "high",
+    "unilateral": false,
+    "primaryPurpose": "strength",
+    "contraindicationFlags": ["low_back"],
+    "warmupNeeds": ["hip_mobility", "ankle_mobility"],
+    "progressionFamily": "bilateral_squat",
+    "progressionLevel": 4,
+    "progressionPrerequisites": [
+      { "exerciseId": "back_squat", "criterion": "5x5 with 1.25× bodyweight" }
     ]
   },
   {
-    "id": "romanian_deadlift",
-    "name": "Romanian Deadlift",
-    "movementPattern": "hinge",
-    "equipment": [
-      "barbell",
-      "dumbbells"
-    ],
+    "id": "tempo_back_squat",
+    "name": "Tempo Back Squat",
+    "movementPattern": "squat",
+    "equipment": ["barbell", "rack"],
     "fatigueCost": "high",
-    "substitutions": [
-      "single_leg_rdl",
-      "hip_hinge_band"
-    ],
+    "substitutions": ["back_squat", "goblet_squat"],
     "complexity": "intermediate",
     "spinalLoading": "high",
     "unilateral": false,
     "primaryPurpose": "strength",
-    "contraindicationFlags": [
-      "low_back"
-    ],
-    "warmupNeeds": [
-      "hip_mobility",
-      "hamstring_warmup"
-    ]
-  },
-  {
-    "id": "pull_up",
-    "name": "Pull-Up",
-    "movementPattern": "pull",
-    "equipment": [
-      "pullup_bar"
-    ],
-    "fatigueCost": "medium",
-    "substitutions": [
-      "lat_pulldown",
-      "one_arm_dumbbell_row",
-      "ring_row"
-    ],
-    "complexity": "advanced",
-    "spinalLoading": "low",
-    "unilateral": false,
-    "primaryPurpose": "strength",
-    "warmupNeeds": [
-      "shoulder_warmup",
-      "scapular_activation"
-    ]
-  },
-  {
-    "id": "bench_press",
-    "name": "Bench Press",
-    "movementPattern": "push",
-    "equipment": [
-      "barbell",
-      "bench"
-    ],
-    "fatigueCost": "medium",
-    "substitutions": [
-      "dumbbell_bench_press",
-      "push_up"
-    ],
-    "complexity": "intermediate",
-    "spinalLoading": "low",
-    "unilateral": false,
-    "primaryPurpose": "strength",
-    "warmupNeeds": [
-      "shoulder_warmup"
-    ],
-    "contraindicationFlags": [
-      "shoulder_impingement"
-    ]
-  },
-  {
-    "id": "split_squat",
-    "name": "Split Squat",
-    "movementPattern": "single_leg",
-    "equipment": [
-      "dumbbells"
-    ],
-    "fatigueCost": "medium",
-    "substitutions": [
-      "step_up",
-      "lunging_iso_hold"
-    ],
-    "complexity": "intermediate",
-    "spinalLoading": "low",
-    "unilateral": true,
-    "primaryPurpose": "strength",
-    "warmupNeeds": [
-      "hip_mobility",
-      "ankle_mobility"
-    ]
-  },
-  {
-    "id": "dead_bug",
-    "name": "Dead Bug",
-    "movementPattern": "core",
-    "equipment": [],
-    "fatigueCost": "low",
-    "substitutions": [
-      "hollow_hold",
-      "bear_crawl"
-    ],
-    "complexity": "beginner",
-    "spinalLoading": "low",
-    "unilateral": false,
-    "primaryPurpose": "stability",
-    "warmupNeeds": [
-      "breathing_prep",
-      "core_bracing"
-    ]
-  },
-  {
-    "id": "farmer_carry",
-    "name": "Farmer Carry",
-    "movementPattern": "carry",
-    "equipment": [
-      "dumbbells",
-      "kettlebells"
-    ],
-    "fatigueCost": "medium",
-    "substitutions": [
-      "suitcase_carry",
-      "sandbag_hold"
-    ],
-    "complexity": "beginner",
-    "spinalLoading": "moderate",
-    "unilateral": false,
-    "primaryPurpose": "conditioning",
-    "warmupNeeds": [
-      "grip_warmup"
-    ]
-  },
-  {
-    "id": "hip_airplane",
-    "name": "Hip Airplane",
-    "movementPattern": "mobility",
-    "equipment": [],
-    "fatigueCost": "low",
-    "substitutions": [
-      "worlds_greatest_stretch",
-      "cossack_squat"
-    ],
-    "complexity": "intermediate",
-    "spinalLoading": "low",
-    "unilateral": true,
-    "primaryPurpose": "mobility",
-    "warmupNeeds": [
-      "hip_mobility",
-      "balance_prep"
-    ]
+    "contraindicationFlags": ["low_back"],
+    "warmupNeeds": ["hip_mobility", "ankle_mobility"],
+    "progressionFamily": "bilateral_squat",
+    "progressionLevel": 3
   },
   {
     "id": "goblet_squat",
     "name": "Goblet Squat",
     "movementPattern": "squat",
-    "equipment": [
-      "dumbbells"
-    ],
+    "equipment": ["dumbbells"],
     "fatigueCost": "medium",
-    "substitutions": [
-      "split_squat",
-      "cossack_squat"
-    ],
+    "substitutions": ["split_squat", "cossack_squat"],
     "complexity": "beginner",
     "spinalLoading": "moderate",
     "unilateral": false,
     "primaryPurpose": "hypertrophy",
-    "warmupNeeds": [
-      "hip_mobility",
-      "ankle_mobility"
-    ]
-  },
-  {
-    "id": "single_leg_rdl",
-    "name": "Single-Leg Romanian Deadlift",
-    "movementPattern": "hinge",
-    "equipment": [
-      "dumbbells"
-    ],
-    "fatigueCost": "medium",
-    "substitutions": [
-      "hip_hinge_band",
-      "hip_airplane"
-    ],
-    "complexity": "intermediate",
-    "spinalLoading": "low",
-    "unilateral": true,
-    "primaryPurpose": "stability",
-    "warmupNeeds": [
-      "hip_mobility",
-      "hamstring_warmup",
-      "balance_prep"
-    ]
-  },
-  {
-    "id": "hip_hinge_band",
-    "name": "Banded Hip Hinge",
-    "movementPattern": "hinge",
-    "equipment": [],
-    "fatigueCost": "low",
-    "substitutions": [
-      "single_leg_rdl"
-    ],
-    "complexity": "beginner",
-    "spinalLoading": "low",
-    "unilateral": false,
-    "primaryPurpose": "mobility",
-    "warmupNeeds": [
-      "hip_mobility"
-    ]
-  },
-  {
-    "id": "lat_pulldown",
-    "name": "Lat Pulldown",
-    "movementPattern": "pull",
-    "equipment": [
-      "lat_pulldown"
-    ],
-    "fatigueCost": "medium",
-    "substitutions": [
-      "one_arm_dumbbell_row",
-      "ring_row"
-    ],
-    "complexity": "beginner",
-    "spinalLoading": "low",
-    "unilateral": false,
-    "primaryPurpose": "hypertrophy",
-    "warmupNeeds": [
-      "shoulder_warmup"
-    ]
-  },
-  {
-    "id": "one_arm_dumbbell_row",
-    "name": "One-Arm Dumbbell Row",
-    "movementPattern": "pull",
-    "equipment": [
-      "dumbbells"
-    ],
-    "fatigueCost": "medium",
-    "substitutions": [
-      "ring_row"
-    ],
-    "complexity": "beginner",
-    "spinalLoading": "low",
-    "unilateral": true,
-    "primaryPurpose": "strength",
-    "warmupNeeds": [
-      "shoulder_warmup",
-      "thoracic_rotation"
-    ]
-  },
-  {
-    "id": "ring_row",
-    "name": "Ring Row",
-    "movementPattern": "pull",
-    "equipment": [
-      "pullup_bar"
-    ],
-    "fatigueCost": "low",
-    "substitutions": [
-      "one_arm_dumbbell_row"
-    ],
-    "complexity": "beginner",
-    "spinalLoading": "low",
-    "unilateral": false,
-    "primaryPurpose": "hypertrophy",
-    "warmupNeeds": [
-      "shoulder_warmup",
-      "scapular_activation"
-    ]
-  },
-  {
-    "id": "push_up",
-    "name": "Push-Up",
-    "movementPattern": "push",
-    "equipment": [],
-    "fatigueCost": "low",
-    "substitutions": [
-      "dumbbell_bench_press"
-    ],
-    "complexity": "beginner",
-    "spinalLoading": "low",
-    "unilateral": false,
-    "primaryPurpose": "hypertrophy",
-    "warmupNeeds": [
-      "shoulder_warmup"
-    ]
-  },
-  {
-    "id": "dumbbell_bench_press",
-    "name": "Dumbbell Bench Press",
-    "movementPattern": "push",
-    "equipment": [
-      "dumbbells"
-    ],
-    "fatigueCost": "medium",
-    "substitutions": [
-      "push_up"
-    ],
-    "complexity": "beginner",
-    "spinalLoading": "low",
-    "unilateral": false,
-    "primaryPurpose": "hypertrophy",
-    "warmupNeeds": [
-      "shoulder_warmup"
-    ]
-  },
-  {
-    "id": "step_up",
-    "name": "Step-Up",
-    "movementPattern": "single_leg",
-    "equipment": [
-      "dumbbells"
-    ],
-    "fatigueCost": "medium",
-    "substitutions": [
-      "lunging_iso_hold",
-      "split_squat"
-    ],
-    "complexity": "beginner",
-    "spinalLoading": "low",
-    "unilateral": true,
-    "primaryPurpose": "hypertrophy",
-    "contraindicationFlags": [
-      "knee_pain"
-    ],
-    "warmupNeeds": [
-      "hip_mobility",
-      "ankle_mobility",
-      "single_leg_prep"
-    ]
-  },
-  {
-    "id": "lunging_iso_hold",
-    "name": "Lunge Iso Hold",
-    "movementPattern": "single_leg",
-    "equipment": [],
-    "fatigueCost": "low",
-    "substitutions": [
-      "step_up"
-    ],
-    "complexity": "beginner",
-    "spinalLoading": "low",
-    "unilateral": true,
-    "primaryPurpose": "stability",
-    "warmupNeeds": [
-      "hip_mobility",
-      "single_leg_prep"
-    ]
-  },
-  {
-    "id": "hollow_hold",
-    "name": "Hollow Hold",
-    "movementPattern": "core",
-    "equipment": [],
-    "fatigueCost": "low",
-    "substitutions": [
-      "dead_bug",
-      "bear_crawl"
-    ],
-    "complexity": "beginner",
-    "spinalLoading": "low",
-    "unilateral": false,
-    "primaryPurpose": "stability",
-    "warmupNeeds": [
-      "breathing_prep",
-      "core_bracing"
-    ]
-  },
-  {
-    "id": "bear_crawl",
-    "name": "Bear Crawl",
-    "movementPattern": "core",
-    "equipment": [],
-    "fatigueCost": "medium",
-    "substitutions": [
-      "dead_bug",
-      "hollow_hold"
-    ],
-    "complexity": "beginner",
-    "spinalLoading": "low",
-    "unilateral": false,
-    "primaryPurpose": "stability",
-    "warmupNeeds": [
-      "wrist_prep",
-      "core_bracing"
-    ]
-  },
-  {
-    "id": "suitcase_carry",
-    "name": "Suitcase Carry",
-    "movementPattern": "carry",
-    "equipment": [
-      "dumbbells"
-    ],
-    "fatigueCost": "medium",
-    "substitutions": [
-      "sandbag_hold"
-    ],
-    "complexity": "beginner",
-    "spinalLoading": "moderate",
-    "unilateral": true,
-    "primaryPurpose": "conditioning",
-    "warmupNeeds": [
-      "grip_warmup",
-      "core_bracing"
-    ]
-  },
-  {
-    "id": "sandbag_hold",
-    "name": "Sandbag Hold",
-    "movementPattern": "carry",
-    "equipment": [],
-    "fatigueCost": "low",
-    "substitutions": [
-      "suitcase_carry"
-    ],
-    "complexity": "beginner",
-    "spinalLoading": "low",
-    "unilateral": false,
-    "primaryPurpose": "conditioning",
-    "warmupNeeds": [
-      "grip_warmup",
-      "core_bracing"
-    ]
-  },
-  {
-    "id": "worlds_greatest_stretch",
-    "name": "World's Greatest Stretch",
-    "movementPattern": "mobility",
-    "equipment": [],
-    "fatigueCost": "low",
-    "substitutions": [
-      "hip_airplane",
-      "cossack_squat"
-    ],
-    "complexity": "beginner",
-    "spinalLoading": "low",
-    "unilateral": false,
-    "primaryPurpose": "mobility",
-    "warmupNeeds": [
-      "hip_mobility",
-      "thoracic_rotation",
-      "ankle_mobility"
-    ]
-  },
-  {
-    "id": "cossack_squat",
-    "name": "Cossack Squat",
-    "movementPattern": "mobility",
-    "equipment": [],
-    "fatigueCost": "low",
-    "substitutions": [
-      "worlds_greatest_stretch",
-      "split_squat"
-    ],
-    "complexity": "intermediate",
-    "spinalLoading": "low",
-    "unilateral": true,
-    "primaryPurpose": "mobility",
-    "warmupNeeds": [
-      "hip_mobility",
-      "ankle_mobility"
-    ]
-  },
-  {
-    "id": "dumbbell_overhead_press",
-    "name": "Dumbbell Overhead Press",
-    "movementPattern": "push",
-    "equipment": [
-      "dumbbells"
-    ],
-    "fatigueCost": "medium",
-    "substitutions": [
-      "push_up",
-      "dumbbell_bench_press"
-    ],
-    "complexity": "intermediate",
-    "spinalLoading": "low",
-    "unilateral": false,
-    "primaryPurpose": "strength",
-    "contraindicationFlags": [
-      "shoulder_impingement"
-    ],
-    "warmupNeeds": [
-      "shoulder_warmup",
-      "thoracic_extension"
-    ]
-  },
-  {
-    "id": "dumbbell_floor_press",
-    "name": "Dumbbell Floor Press",
-    "movementPattern": "push",
-    "equipment": [
-      "dumbbells"
-    ],
-    "fatigueCost": "medium",
-    "substitutions": [
-      "push_up",
-      "dumbbell_bench_press"
-    ],
-    "complexity": "beginner",
-    "spinalLoading": "low",
-    "unilateral": false,
-    "primaryPurpose": "hypertrophy",
-    "warmupNeeds": [
-      "shoulder_warmup"
-    ]
-  },
-  {
-    "id": "dumbbell_reverse_lunge",
-    "name": "Dumbbell Reverse Lunge",
-    "movementPattern": "single_leg",
-    "equipment": [
-      "dumbbells"
-    ],
-    "fatigueCost": "medium",
-    "substitutions": [
-      "split_squat",
-      "step_up",
-      "lunging_iso_hold"
-    ],
-    "complexity": "intermediate",
-    "spinalLoading": "low",
-    "unilateral": true,
-    "primaryPurpose": "hypertrophy",
-    "contraindicationFlags": [
-      "knee_pain"
-    ],
-    "warmupNeeds": [
-      "hip_mobility",
-      "ankle_mobility"
-    ]
-  },
-  {
-    "id": "glute_bridge",
-    "name": "Glute Bridge",
-    "movementPattern": "hinge",
-    "equipment": [],
-    "fatigueCost": "low",
-    "substitutions": [
-      "hip_hinge_band",
-      "single_leg_rdl"
-    ],
-    "complexity": "beginner",
-    "spinalLoading": "low",
-    "unilateral": false,
-    "primaryPurpose": "hypertrophy",
-    "warmupNeeds": [
-      "hip_mobility"
-    ]
-  },
-  {
-    "id": "side_plank",
-    "name": "Side Plank",
-    "movementPattern": "core",
-    "equipment": [],
-    "fatigueCost": "low",
-    "substitutions": [
-      "dead_bug",
-      "hollow_hold"
-    ],
-    "complexity": "beginner",
-    "spinalLoading": "low",
-    "unilateral": true,
-    "primaryPurpose": "stability",
-    "warmupNeeds": [
-      "core_bracing",
-      "shoulder_warmup"
-    ]
-  },
-  {
-    "id": "calf_raise",
-    "name": "Calf Raise",
-    "movementPattern": "single_leg",
-    "equipment": [],
-    "fatigueCost": "low",
-    "substitutions": [
-      "step_up",
-      "lunging_iso_hold"
-    ],
-    "complexity": "beginner",
-    "spinalLoading": "low",
-    "unilateral": false,
-    "primaryPurpose": "hypertrophy",
-    "warmupNeeds": [
-      "ankle_mobility"
-    ]
-  },
-  {
-    "id": "kettlebell_swing",
-    "name": "Kettlebell Swing",
-    "movementPattern": "hinge",
-    "equipment": [
-      "kettlebells"
-    ],
-    "fatigueCost": "medium",
-    "substitutions": [
-      "hip_hinge_band",
-      "glute_bridge"
-    ],
-    "complexity": "intermediate",
-    "spinalLoading": "moderate",
-    "unilateral": false,
-    "primaryPurpose": "power",
-    "contraindicationFlags": [
-      "low_back"
-    ],
-    "warmupNeeds": [
-      "hip_mobility",
-      "hamstring_warmup"
-    ]
-  },
-  {
-    "id": "inverted_row",
-    "name": "Inverted Row",
-    "movementPattern": "pull",
-    "equipment": [
-      "pullup_bar"
-    ],
-    "fatigueCost": "medium",
-    "substitutions": [
-      "one_arm_dumbbell_row",
-      "lat_pulldown"
-    ],
-    "complexity": "beginner",
-    "spinalLoading": "low",
-    "unilateral": false,
-    "primaryPurpose": "hypertrophy",
-    "warmupNeeds": [
-      "shoulder_warmup",
-      "thoracic_rotation"
-    ]
+    "warmupNeeds": ["hip_mobility", "ankle_mobility"],
+    "progressionFamily": "bilateral_squat",
+    "progressionLevel": 2
   },
   {
     "id": "bodyweight_squat",
@@ -667,155 +87,697 @@
     "movementPattern": "squat",
     "equipment": [],
     "fatigueCost": "low",
-    "substitutions": [
-      "goblet_squat",
-      "split_squat"
-    ],
+    "substitutions": ["goblet_squat", "split_squat"],
     "complexity": "beginner",
     "spinalLoading": "low",
     "unilateral": false,
     "primaryPurpose": "stability",
-    "warmupNeeds": [
-      "hip_mobility",
-      "ankle_mobility"
-    ]
+    "warmupNeeds": ["hip_mobility", "ankle_mobility"],
+    "progressionFamily": "bilateral_squat",
+    "progressionLevel": 1
   },
   {
     "id": "leg_press",
     "name": "Leg Press",
     "movementPattern": "squat",
-    "equipment": [
-      "leg_press"
-    ],
+    "equipment": ["leg_press"],
     "fatigueCost": "medium",
-    "substitutions": [
-      "goblet_squat",
-      "bodyweight_squat"
-    ],
+    "substitutions": ["goblet_squat", "bodyweight_squat"],
     "complexity": "beginner",
     "spinalLoading": "low",
     "unilateral": false,
     "primaryPurpose": "hypertrophy",
-    "contraindicationFlags": [
-      "knee_pain"
-    ],
-    "warmupNeeds": [
-      "hip_mobility",
-      "ankle_mobility"
+    "contraindicationFlags": ["knee_pain"],
+    "warmupNeeds": ["hip_mobility", "ankle_mobility"],
+    "progressionFamily": "bilateral_squat",
+    "progressionLevel": 2
+  },
+  {
+    "id": "hack_squat_machine",
+    "name": "Hack Squat Machine",
+    "movementPattern": "squat",
+    "equipment": ["hack_squat_machine"],
+    "fatigueCost": "medium",
+    "substitutions": ["leg_press", "back_squat", "goblet_squat"],
+    "complexity": "beginner",
+    "spinalLoading": "low",
+    "unilateral": false,
+    "primaryPurpose": "hypertrophy",
+    "contraindicationFlags": ["knee_pain"],
+    "warmupNeeds": ["hip_mobility", "ankle_mobility"],
+    "progressionFamily": "bilateral_squat",
+    "progressionLevel": 2
+  },
+  {
+    "id": "jump_squat",
+    "name": "Jump Squat",
+    "movementPattern": "squat",
+    "equipment": [],
+    "fatigueCost": "medium",
+    "substitutions": ["bodyweight_squat", "tuck_jump"],
+    "complexity": "beginner",
+    "spinalLoading": "low",
+    "unilateral": false,
+    "primaryPurpose": "power",
+    "contraindicationFlags": ["knee_pain"],
+    "warmupNeeds": ["hip_mobility", "ankle_mobility"],
+    "progressionFamily": "lower_body_power",
+    "progressionLevel": 1
+  },
+  {
+    "id": "tuck_jump",
+    "name": "Tuck Jump",
+    "movementPattern": "squat",
+    "equipment": [],
+    "fatigueCost": "medium",
+    "substitutions": ["jump_squat", "broad_jump"],
+    "complexity": "intermediate",
+    "spinalLoading": "low",
+    "unilateral": false,
+    "primaryPurpose": "power",
+    "contraindicationFlags": ["knee_pain"],
+    "warmupNeeds": ["hip_mobility", "ankle_mobility"],
+    "progressionFamily": "lower_body_power",
+    "progressionLevel": 2
+  },
+  {
+    "id": "box_jump",
+    "name": "Box Jump",
+    "movementPattern": "squat",
+    "equipment": ["box"],
+    "fatigueCost": "medium",
+    "substitutions": ["broad_jump", "jump_squat"],
+    "complexity": "beginner",
+    "spinalLoading": "low",
+    "unilateral": false,
+    "primaryPurpose": "power",
+    "contraindicationFlags": ["knee_pain"],
+    "warmupNeeds": ["hip_mobility", "ankle_mobility"],
+    "progressionFamily": "lower_body_power",
+    "progressionLevel": 2
+  },
+  {
+    "id": "broad_jump",
+    "name": "Broad Jump",
+    "movementPattern": "squat",
+    "equipment": [],
+    "fatigueCost": "medium",
+    "substitutions": ["box_jump", "jump_squat"],
+    "complexity": "intermediate",
+    "spinalLoading": "low",
+    "unilateral": false,
+    "primaryPurpose": "power",
+    "contraindicationFlags": ["knee_pain"],
+    "warmupNeeds": ["hip_mobility", "ankle_mobility"],
+    "progressionFamily": "lower_body_power",
+    "progressionLevel": 3
+  },
+  {
+    "id": "depth_jump",
+    "name": "Depth Jump",
+    "movementPattern": "squat",
+    "equipment": ["box"],
+    "fatigueCost": "high",
+    "substitutions": ["box_jump", "broad_jump"],
+    "complexity": "advanced",
+    "spinalLoading": "low",
+    "unilateral": false,
+    "primaryPurpose": "power",
+    "contraindicationFlags": ["knee_pain", "achilles"],
+    "warmupNeeds": ["hip_mobility", "ankle_mobility"],
+    "progressionFamily": "lower_body_power",
+    "progressionLevel": 4,
+    "progressionPrerequisites": [
+      { "exerciseId": "box_jump", "criterion": "3x5 onto a knee-height box" }
+    ]
+  },
+  {
+    "id": "romanian_deadlift",
+    "name": "Romanian Deadlift",
+    "movementPattern": "hinge",
+    "equipment": ["barbell", "dumbbells"],
+    "fatigueCost": "high",
+    "substitutions": ["conventional_deadlift", "single_leg_rdl", "hip_hinge_band"],
+    "complexity": "intermediate",
+    "spinalLoading": "high",
+    "unilateral": false,
+    "primaryPurpose": "strength",
+    "contraindicationFlags": ["low_back"],
+    "warmupNeeds": ["hip_mobility", "hamstring_warmup"],
+    "progressionFamily": "bilateral_hinge",
+    "progressionLevel": 3
+  },
+  {
+    "id": "conventional_deadlift",
+    "name": "Conventional Deadlift",
+    "movementPattern": "hinge",
+    "equipment": ["barbell"],
+    "fatigueCost": "very_high",
+    "substitutions": ["romanian_deadlift", "kettlebell_swing"],
+    "complexity": "advanced",
+    "spinalLoading": "high",
+    "unilateral": false,
+    "primaryPurpose": "strength",
+    "contraindicationFlags": ["low_back"],
+    "warmupNeeds": ["hip_mobility", "hamstring_warmup", "thoracic_extension"],
+    "progressionFamily": "bilateral_hinge",
+    "progressionLevel": 4
+  },
+  {
+    "id": "deficit_deadlift",
+    "name": "Deficit Deadlift",
+    "movementPattern": "hinge",
+    "equipment": ["barbell"],
+    "fatigueCost": "very_high",
+    "substitutions": ["conventional_deadlift", "romanian_deadlift"],
+    "complexity": "advanced",
+    "spinalLoading": "high",
+    "unilateral": false,
+    "primaryPurpose": "strength",
+    "contraindicationFlags": ["low_back"],
+    "warmupNeeds": ["hip_mobility", "hamstring_warmup", "ankle_mobility"],
+    "progressionFamily": "bilateral_hinge",
+    "progressionLevel": 4,
+    "progressionPrerequisites": [
+      { "exerciseId": "conventional_deadlift", "criterion": "5x5 with 1.5× bodyweight" }
+    ]
+  },
+  {
+    "id": "snatch_grip_deadlift",
+    "name": "Snatch-Grip Deadlift",
+    "movementPattern": "hinge",
+    "equipment": ["barbell"],
+    "fatigueCost": "very_high",
+    "substitutions": ["conventional_deadlift", "romanian_deadlift"],
+    "complexity": "advanced",
+    "spinalLoading": "high",
+    "unilateral": false,
+    "primaryPurpose": "strength",
+    "contraindicationFlags": ["low_back", "shoulder_impingement"],
+    "warmupNeeds": ["hip_mobility", "hamstring_warmup", "thoracic_extension", "shoulder_warmup"],
+    "progressionFamily": "bilateral_hinge",
+    "progressionLevel": 4
+  },
+  {
+    "id": "single_leg_rdl",
+    "name": "Single-Leg Romanian Deadlift",
+    "movementPattern": "hinge",
+    "equipment": ["dumbbells"],
+    "fatigueCost": "medium",
+    "substitutions": ["kickstand_rdl", "single_leg_rdl_bodyweight", "hip_airplane"],
+    "complexity": "intermediate",
+    "spinalLoading": "low",
+    "unilateral": true,
+    "primaryPurpose": "stability",
+    "warmupNeeds": ["hip_mobility", "hamstring_warmup", "balance_prep"],
+    "progressionFamily": "single_leg_hinge",
+    "progressionLevel": 3
+  },
+  {
+    "id": "kickstand_rdl",
+    "name": "Kickstand RDL",
+    "movementPattern": "hinge",
+    "equipment": ["dumbbells"],
+    "fatigueCost": "medium",
+    "substitutions": ["single_leg_rdl", "single_leg_rdl_bodyweight"],
+    "complexity": "beginner",
+    "spinalLoading": "low",
+    "unilateral": true,
+    "primaryPurpose": "stability",
+    "warmupNeeds": ["hip_mobility", "hamstring_warmup"],
+    "progressionFamily": "single_leg_hinge",
+    "progressionLevel": 2
+  },
+  {
+    "id": "single_leg_rdl_bodyweight",
+    "name": "Single-Leg RDL (Bodyweight)",
+    "movementPattern": "hinge",
+    "equipment": [],
+    "fatigueCost": "low",
+    "substitutions": ["kickstand_rdl", "hip_airplane"],
+    "complexity": "beginner",
+    "spinalLoading": "low",
+    "unilateral": true,
+    "primaryPurpose": "stability",
+    "warmupNeeds": ["hip_mobility", "balance_prep"],
+    "progressionFamily": "single_leg_hinge",
+    "progressionLevel": 1
+  },
+  {
+    "id": "hip_hinge_band",
+    "name": "Banded Hip Hinge",
+    "movementPattern": "hinge",
+    "equipment": [],
+    "fatigueCost": "low",
+    "substitutions": ["single_leg_rdl", "glute_bridge"],
+    "complexity": "beginner",
+    "spinalLoading": "low",
+    "unilateral": false,
+    "primaryPurpose": "mobility",
+    "warmupNeeds": ["hip_mobility"],
+    "progressionFamily": "bilateral_hinge",
+    "progressionLevel": 1
+  },
+  {
+    "id": "glute_bridge",
+    "name": "Glute Bridge",
+    "movementPattern": "hinge",
+    "equipment": [],
+    "fatigueCost": "low",
+    "substitutions": ["single_leg_glute_bridge", "hip_hinge_band", "single_leg_rdl"],
+    "complexity": "beginner",
+    "spinalLoading": "low",
+    "unilateral": false,
+    "primaryPurpose": "hypertrophy",
+    "warmupNeeds": ["hip_mobility"],
+    "progressionFamily": "bilateral_hinge",
+    "progressionLevel": 1
+  },
+  {
+    "id": "single_leg_glute_bridge",
+    "name": "Single-Leg Glute Bridge",
+    "movementPattern": "hinge",
+    "equipment": [],
+    "fatigueCost": "low",
+    "substitutions": ["glute_bridge", "single_leg_rdl_bodyweight"],
+    "complexity": "beginner",
+    "spinalLoading": "low",
+    "unilateral": true,
+    "primaryPurpose": "hypertrophy",
+    "warmupNeeds": ["hip_mobility", "glute_activation"],
+    "progressionFamily": "single_leg_hinge",
+    "progressionLevel": 1
+  },
+  {
+    "id": "kettlebell_swing",
+    "name": "Kettlebell Swing",
+    "movementPattern": "hinge",
+    "equipment": ["kettlebells"],
+    "fatigueCost": "medium",
+    "substitutions": ["hip_hinge_band", "glute_bridge", "kettlebell_clean"],
+    "complexity": "intermediate",
+    "spinalLoading": "moderate",
+    "unilateral": false,
+    "primaryPurpose": "power",
+    "contraindicationFlags": ["low_back"],
+    "warmupNeeds": ["hip_mobility", "hamstring_warmup"],
+    "progressionFamily": "power_hinge",
+    "progressionLevel": 2
+  },
+  {
+    "id": "kettlebell_clean",
+    "name": "Kettlebell Clean",
+    "movementPattern": "hinge",
+    "equipment": ["kettlebells"],
+    "fatigueCost": "medium",
+    "substitutions": ["kettlebell_swing", "hang_clean"],
+    "complexity": "intermediate",
+    "spinalLoading": "moderate",
+    "unilateral": true,
+    "primaryPurpose": "power",
+    "contraindicationFlags": ["low_back"],
+    "warmupNeeds": ["hip_mobility", "shoulder_warmup"],
+    "progressionFamily": "power_hinge",
+    "progressionLevel": 3
+  },
+  {
+    "id": "hang_clean",
+    "name": "Hang Clean",
+    "movementPattern": "hinge",
+    "equipment": ["barbell"],
+    "fatigueCost": "high",
+    "substitutions": ["power_clean", "kettlebell_clean", "kettlebell_swing"],
+    "complexity": "advanced",
+    "spinalLoading": "moderate",
+    "unilateral": false,
+    "primaryPurpose": "power",
+    "contraindicationFlags": ["low_back", "wrist_mobility"],
+    "warmupNeeds": ["hip_mobility", "thoracic_extension", "shoulder_warmup", "wrist_mobility"],
+    "progressionFamily": "power_hinge",
+    "progressionLevel": 4
+  },
+  {
+    "id": "power_clean",
+    "name": "Power Clean",
+    "movementPattern": "hinge",
+    "equipment": ["barbell"],
+    "fatigueCost": "very_high",
+    "substitutions": ["hang_clean", "kettlebell_clean"],
+    "complexity": "expert",
+    "spinalLoading": "high",
+    "unilateral": false,
+    "primaryPurpose": "power",
+    "contraindicationFlags": ["low_back", "wrist_mobility"],
+    "warmupNeeds": ["hip_mobility", "thoracic_extension", "shoulder_warmup", "wrist_mobility", "ankle_mobility"],
+    "progressionFamily": "power_hinge",
+    "progressionLevel": 5,
+    "progressionPrerequisites": [
+      { "exerciseId": "hang_clean", "criterion": "5x3 with 0.7× bodyweight" }
     ]
   },
   {
     "id": "cable_pull_through",
     "name": "Cable Pull-Through",
     "movementPattern": "hinge",
-    "equipment": [
-      "cable_stack"
-    ],
+    "equipment": ["cable_stack"],
     "fatigueCost": "medium",
-    "substitutions": [
-      "glute_bridge",
-      "hip_hinge_band"
-    ],
+    "substitutions": ["glute_bridge", "hip_hinge_band", "romanian_deadlift"],
     "complexity": "beginner",
     "spinalLoading": "low",
     "unilateral": false,
     "primaryPurpose": "hypertrophy",
-    "warmupNeeds": [
-      "hip_mobility",
-      "hamstring_warmup"
-    ]
+    "warmupNeeds": ["hip_mobility", "hamstring_warmup"],
+    "progressionFamily": "bilateral_hinge",
+    "progressionLevel": 2
   },
   {
     "id": "dumbbell_hip_thrust",
     "name": "Dumbbell Hip Thrust",
     "movementPattern": "hinge",
-    "equipment": [
-      "dumbbells",
-      "bench"
-    ],
+    "equipment": ["dumbbells", "bench"],
     "fatigueCost": "medium",
-    "substitutions": [
-      "glute_bridge",
-      "cable_pull_through"
-    ],
+    "substitutions": ["barbell_hip_thrust", "glute_bridge", "cable_pull_through"],
     "complexity": "beginner",
     "spinalLoading": "low",
     "unilateral": false,
     "primaryPurpose": "hypertrophy",
-    "warmupNeeds": [
-      "hip_mobility",
-      "glute_activation"
-    ]
+    "warmupNeeds": ["hip_mobility", "glute_activation"],
+    "progressionFamily": "bilateral_hinge",
+    "progressionLevel": 2
   },
   {
-    "id": "machine_chest_press",
-    "name": "Machine Chest Press",
-    "movementPattern": "push",
-    "equipment": [
-      "chest_press_machine"
-    ],
+    "id": "barbell_hip_thrust",
+    "name": "Barbell Hip Thrust",
+    "movementPattern": "hinge",
+    "equipment": ["barbell", "bench"],
     "fatigueCost": "medium",
-    "substitutions": [
-      "dumbbell_bench_press",
-      "push_up"
-    ],
-    "complexity": "beginner",
-    "spinalLoading": "low",
+    "substitutions": ["dumbbell_hip_thrust", "glute_bridge"],
+    "complexity": "intermediate",
+    "spinalLoading": "moderate",
     "unilateral": false,
     "primaryPurpose": "hypertrophy",
-    "contraindicationFlags": [
-      "shoulder_impingement"
-    ],
-    "warmupNeeds": [
-      "shoulder_warmup",
-      "scapular_activation"
+    "warmupNeeds": ["hip_mobility", "glute_activation"],
+    "progressionFamily": "bilateral_hinge",
+    "progressionLevel": 3
+  },
+  {
+    "id": "good_morning",
+    "name": "Good Morning",
+    "movementPattern": "hinge",
+    "equipment": ["barbell"],
+    "fatigueCost": "high",
+    "substitutions": ["romanian_deadlift", "single_leg_rdl"],
+    "complexity": "intermediate",
+    "spinalLoading": "high",
+    "unilateral": false,
+    "primaryPurpose": "strength",
+    "contraindicationFlags": ["low_back"],
+    "warmupNeeds": ["hip_mobility", "hamstring_warmup", "thoracic_extension"],
+    "progressionFamily": "bilateral_hinge",
+    "progressionLevel": 3
+  },
+  {
+    "id": "pull_up",
+    "name": "Pull-Up",
+    "movementPattern": "pull",
+    "equipment": ["pullup_bar"],
+    "fatigueCost": "medium",
+    "substitutions": ["chin_up", "lat_pulldown", "ring_row", "band_assisted_pull_up"],
+    "complexity": "advanced",
+    "spinalLoading": "low",
+    "unilateral": false,
+    "primaryPurpose": "strength",
+    "warmupNeeds": ["shoulder_warmup", "scapular_activation"],
+    "progressionFamily": "vertical_pull",
+    "progressionLevel": 3,
+    "progressionPrerequisites": [
+      { "exerciseId": "negative_pull_up", "criterion": "3x5 controlled 5s lowering" }
     ]
   },
   {
-    "id": "incline_dumbbell_press",
-    "name": "Incline Dumbbell Press",
-    "movementPattern": "push",
-    "equipment": [
-      "dumbbells",
-      "bench"
-    ],
+    "id": "chin_up",
+    "name": "Chin-Up",
+    "movementPattern": "pull",
+    "equipment": ["pullup_bar"],
     "fatigueCost": "medium",
-    "substitutions": [
-      "dumbbell_floor_press",
-      "push_up"
-    ],
+    "substitutions": ["pull_up", "band_assisted_pull_up", "lat_pulldown"],
     "complexity": "intermediate",
     "spinalLoading": "low",
     "unilateral": false,
-    "primaryPurpose": "hypertrophy",
-    "contraindicationFlags": [
-      "shoulder_impingement"
-    ],
-    "warmupNeeds": [
-      "shoulder_warmup",
-      "thoracic_extension"
+    "primaryPurpose": "strength",
+    "warmupNeeds": ["shoulder_warmup", "scapular_activation"],
+    "progressionFamily": "vertical_pull",
+    "progressionLevel": 2
+  },
+  {
+    "id": "scapular_pull_up",
+    "name": "Scapular Pull-Up",
+    "movementPattern": "pull",
+    "equipment": ["pullup_bar"],
+    "fatigueCost": "low",
+    "substitutions": ["band_row", "ring_row"],
+    "complexity": "beginner",
+    "spinalLoading": "low",
+    "unilateral": false,
+    "primaryPurpose": "stability",
+    "warmupNeeds": ["shoulder_warmup", "scapular_activation"],
+    "progressionFamily": "vertical_pull",
+    "progressionLevel": 1
+  },
+  {
+    "id": "band_assisted_pull_up",
+    "name": "Band-Assisted Pull-Up",
+    "movementPattern": "pull",
+    "equipment": ["pullup_bar", "resistance_band"],
+    "fatigueCost": "medium",
+    "substitutions": ["chin_up", "lat_pulldown", "ring_row"],
+    "complexity": "beginner",
+    "spinalLoading": "low",
+    "unilateral": false,
+    "primaryPurpose": "strength",
+    "warmupNeeds": ["shoulder_warmup", "scapular_activation"],
+    "progressionFamily": "vertical_pull",
+    "progressionLevel": 2
+  },
+  {
+    "id": "negative_pull_up",
+    "name": "Negative Pull-Up",
+    "movementPattern": "pull",
+    "equipment": ["pullup_bar"],
+    "fatigueCost": "medium",
+    "substitutions": ["band_assisted_pull_up", "ring_row", "chin_up"],
+    "complexity": "intermediate",
+    "spinalLoading": "low",
+    "unilateral": false,
+    "primaryPurpose": "strength",
+    "warmupNeeds": ["shoulder_warmup", "scapular_activation"],
+    "progressionFamily": "vertical_pull",
+    "progressionLevel": 2
+  },
+  {
+    "id": "weighted_pull_up",
+    "name": "Weighted Pull-Up",
+    "movementPattern": "pull",
+    "equipment": ["pullup_bar", "dumbbells"],
+    "fatigueCost": "high",
+    "substitutions": ["pull_up", "lat_pulldown"],
+    "complexity": "advanced",
+    "spinalLoading": "low",
+    "unilateral": false,
+    "primaryPurpose": "strength",
+    "warmupNeeds": ["shoulder_warmup", "scapular_activation"],
+    "progressionFamily": "vertical_pull",
+    "progressionLevel": 4,
+    "progressionPrerequisites": [
+      { "exerciseId": "pull_up", "criterion": "3x10 strict reps" }
     ]
+  },
+  {
+    "id": "archer_pull_up",
+    "name": "Archer Pull-Up",
+    "movementPattern": "pull",
+    "equipment": ["pullup_bar"],
+    "fatigueCost": "high",
+    "substitutions": ["pull_up", "weighted_pull_up"],
+    "complexity": "advanced",
+    "spinalLoading": "low",
+    "unilateral": true,
+    "primaryPurpose": "strength",
+    "warmupNeeds": ["shoulder_warmup", "scapular_activation"],
+    "progressionFamily": "vertical_pull",
+    "progressionLevel": 4,
+    "progressionPrerequisites": [
+      { "exerciseId": "pull_up", "criterion": "3x8 strict reps" }
+    ]
+  },
+  {
+    "id": "l_sit_pull_up",
+    "name": "L-Sit Pull-Up",
+    "movementPattern": "pull",
+    "equipment": ["pullup_bar"],
+    "fatigueCost": "high",
+    "substitutions": ["pull_up", "weighted_pull_up"],
+    "complexity": "advanced",
+    "spinalLoading": "low",
+    "unilateral": false,
+    "primaryPurpose": "strength",
+    "warmupNeeds": ["shoulder_warmup", "scapular_activation", "hip_mobility"],
+    "progressionFamily": "vertical_pull",
+    "progressionLevel": 4
+  },
+  {
+    "id": "muscle_up",
+    "name": "Muscle-Up",
+    "movementPattern": "pull",
+    "equipment": ["pullup_bar"],
+    "fatigueCost": "very_high",
+    "substitutions": ["weighted_pull_up", "explosive_pull_up"],
+    "complexity": "expert",
+    "spinalLoading": "low",
+    "unilateral": false,
+    "primaryPurpose": "power",
+    "warmupNeeds": ["shoulder_warmup", "scapular_activation", "wrist_mobility"],
+    "progressionFamily": "vertical_pull",
+    "progressionLevel": 5,
+    "progressionPrerequisites": [
+      { "exerciseId": "pull_up", "criterion": "3x12 strict reps" },
+      { "exerciseId": "dip", "criterion": "3x12 strict reps" }
+    ]
+  },
+  {
+    "id": "explosive_pull_up",
+    "name": "Explosive Pull-Up",
+    "movementPattern": "pull",
+    "equipment": ["pullup_bar"],
+    "fatigueCost": "high",
+    "substitutions": ["pull_up", "weighted_pull_up"],
+    "complexity": "advanced",
+    "spinalLoading": "low",
+    "unilateral": false,
+    "primaryPurpose": "power",
+    "warmupNeeds": ["shoulder_warmup", "scapular_activation"],
+    "progressionFamily": "vertical_pull",
+    "progressionLevel": 4
+  },
+  {
+    "id": "lat_pulldown",
+    "name": "Lat Pulldown",
+    "movementPattern": "pull",
+    "equipment": ["lat_pulldown"],
+    "fatigueCost": "medium",
+    "substitutions": ["pull_up", "band_assisted_pull_up", "one_arm_dumbbell_row"],
+    "complexity": "beginner",
+    "spinalLoading": "low",
+    "unilateral": false,
+    "primaryPurpose": "hypertrophy",
+    "warmupNeeds": ["shoulder_warmup"],
+    "progressionFamily": "vertical_pull",
+    "progressionLevel": 1
+  },
+  {
+    "id": "one_arm_dumbbell_row",
+    "name": "One-Arm Dumbbell Row",
+    "movementPattern": "pull",
+    "equipment": ["dumbbells"],
+    "fatigueCost": "medium",
+    "substitutions": ["ring_row", "seated_cable_row", "inverted_row"],
+    "complexity": "beginner",
+    "spinalLoading": "low",
+    "unilateral": true,
+    "primaryPurpose": "strength",
+    "warmupNeeds": ["shoulder_warmup", "thoracic_rotation"],
+    "progressionFamily": "horizontal_pull",
+    "progressionLevel": 2
+  },
+  {
+    "id": "ring_row",
+    "name": "Ring Row",
+    "movementPattern": "pull",
+    "equipment": ["pullup_bar"],
+    "fatigueCost": "low",
+    "substitutions": ["one_arm_dumbbell_row", "inverted_row"],
+    "complexity": "beginner",
+    "spinalLoading": "low",
+    "unilateral": false,
+    "primaryPurpose": "hypertrophy",
+    "warmupNeeds": ["shoulder_warmup", "scapular_activation"],
+    "progressionFamily": "horizontal_pull",
+    "progressionLevel": 2
+  },
+  {
+    "id": "inverted_row",
+    "name": "Inverted Row",
+    "movementPattern": "pull",
+    "equipment": ["pullup_bar"],
+    "fatigueCost": "medium",
+    "substitutions": ["ring_row", "one_arm_dumbbell_row", "lat_pulldown"],
+    "complexity": "beginner",
+    "spinalLoading": "low",
+    "unilateral": false,
+    "primaryPurpose": "hypertrophy",
+    "warmupNeeds": ["shoulder_warmup", "thoracic_rotation"],
+    "progressionFamily": "horizontal_pull",
+    "progressionLevel": 2
+  },
+  {
+    "id": "incline_inverted_row",
+    "name": "Incline Inverted Row",
+    "movementPattern": "pull",
+    "equipment": ["pullup_bar"],
+    "fatigueCost": "low",
+    "substitutions": ["ring_row", "band_row"],
+    "complexity": "beginner",
+    "spinalLoading": "low",
+    "unilateral": false,
+    "primaryPurpose": "hypertrophy",
+    "warmupNeeds": ["shoulder_warmup", "scapular_activation"],
+    "progressionFamily": "horizontal_pull",
+    "progressionLevel": 1
+  },
+  {
+    "id": "archer_ring_row",
+    "name": "Archer Ring Row",
+    "movementPattern": "pull",
+    "equipment": ["pullup_bar"],
+    "fatigueCost": "medium",
+    "substitutions": ["ring_row", "one_arm_dumbbell_row"],
+    "complexity": "advanced",
+    "spinalLoading": "low",
+    "unilateral": true,
+    "primaryPurpose": "strength",
+    "warmupNeeds": ["shoulder_warmup", "scapular_activation"],
+    "progressionFamily": "horizontal_pull",
+    "progressionLevel": 4
+  },
+  {
+    "id": "one_arm_ring_row",
+    "name": "One-Arm Ring Row",
+    "movementPattern": "pull",
+    "equipment": ["pullup_bar"],
+    "fatigueCost": "high",
+    "substitutions": ["archer_ring_row", "weighted_pull_up"],
+    "complexity": "advanced",
+    "spinalLoading": "low",
+    "unilateral": true,
+    "primaryPurpose": "strength",
+    "warmupNeeds": ["shoulder_warmup", "scapular_activation"],
+    "progressionFamily": "horizontal_pull",
+    "progressionLevel": 5
   },
   {
     "id": "seated_cable_row",
     "name": "Seated Cable Row",
     "movementPattern": "pull",
-    "equipment": [
-      "cable_stack"
-    ],
+    "equipment": ["cable_stack"],
     "fatigueCost": "medium",
-    "substitutions": [
-      "one_arm_dumbbell_row",
-      "ring_row"
-    ],
+    "substitutions": ["one_arm_dumbbell_row", "ring_row", "inverted_row"],
     "complexity": "beginner",
     "spinalLoading": "low",
     "unilateral": false,
     "primaryPurpose": "hypertrophy",
-    "warmupNeeds": [
-      "shoulder_warmup",
-      "scapular_activation"
-    ]
+    "warmupNeeds": ["shoulder_warmup", "scapular_activation"],
+    "progressionFamily": "horizontal_pull",
+    "progressionLevel": 2
   },
   {
     "id": "band_row",
@@ -823,56 +785,588 @@
     "movementPattern": "pull",
     "equipment": [],
     "fatigueCost": "low",
-    "substitutions": [
-      "one_arm_dumbbell_row",
-      "ring_row"
-    ],
+    "substitutions": ["one_arm_dumbbell_row", "ring_row"],
     "complexity": "beginner",
     "spinalLoading": "low",
     "unilateral": false,
     "primaryPurpose": "stability",
-    "warmupNeeds": [
-      "shoulder_warmup",
-      "scapular_activation"
+    "warmupNeeds": ["shoulder_warmup", "scapular_activation"],
+    "progressionFamily": "horizontal_pull",
+    "progressionLevel": 1
+  },
+  {
+    "id": "pendlay_row",
+    "name": "Pendlay Row",
+    "movementPattern": "pull",
+    "equipment": ["barbell"],
+    "fatigueCost": "high",
+    "substitutions": ["one_arm_dumbbell_row", "barbell_bent_row"],
+    "complexity": "intermediate",
+    "spinalLoading": "moderate",
+    "unilateral": false,
+    "primaryPurpose": "strength",
+    "contraindicationFlags": ["low_back"],
+    "warmupNeeds": ["shoulder_warmup", "thoracic_rotation", "hip_mobility"],
+    "progressionFamily": "horizontal_pull",
+    "progressionLevel": 3
+  },
+  {
+    "id": "barbell_bent_row",
+    "name": "Barbell Bent-Over Row",
+    "movementPattern": "pull",
+    "equipment": ["barbell"],
+    "fatigueCost": "high",
+    "substitutions": ["pendlay_row", "one_arm_dumbbell_row"],
+    "complexity": "intermediate",
+    "spinalLoading": "moderate",
+    "unilateral": false,
+    "primaryPurpose": "strength",
+    "contraindicationFlags": ["low_back"],
+    "warmupNeeds": ["shoulder_warmup", "thoracic_rotation", "hip_mobility"],
+    "progressionFamily": "horizontal_pull",
+    "progressionLevel": 3
+  },
+  {
+    "id": "bench_press",
+    "name": "Bench Press",
+    "movementPattern": "push",
+    "equipment": ["barbell", "bench"],
+    "fatigueCost": "medium",
+    "substitutions": ["dumbbell_bench_press", "push_up", "incline_bench_press"],
+    "complexity": "intermediate",
+    "spinalLoading": "low",
+    "unilateral": false,
+    "primaryPurpose": "strength",
+    "warmupNeeds": ["shoulder_warmup"],
+    "contraindicationFlags": ["shoulder_impingement"],
+    "progressionFamily": "horizontal_push",
+    "progressionLevel": 3
+  },
+  {
+    "id": "paused_bench_press",
+    "name": "Paused Bench Press",
+    "movementPattern": "push",
+    "equipment": ["barbell", "bench"],
+    "fatigueCost": "medium",
+    "substitutions": ["bench_press", "tempo_bench_press"],
+    "complexity": "intermediate",
+    "spinalLoading": "low",
+    "unilateral": false,
+    "primaryPurpose": "strength",
+    "warmupNeeds": ["shoulder_warmup"],
+    "contraindicationFlags": ["shoulder_impingement"],
+    "progressionFamily": "horizontal_push",
+    "progressionLevel": 4
+  },
+  {
+    "id": "tempo_bench_press",
+    "name": "Tempo Bench Press",
+    "movementPattern": "push",
+    "equipment": ["barbell", "bench"],
+    "fatigueCost": "medium",
+    "substitutions": ["bench_press", "paused_bench_press"],
+    "complexity": "intermediate",
+    "spinalLoading": "low",
+    "unilateral": false,
+    "primaryPurpose": "strength",
+    "warmupNeeds": ["shoulder_warmup"],
+    "contraindicationFlags": ["shoulder_impingement"],
+    "progressionFamily": "horizontal_push",
+    "progressionLevel": 3
+  },
+  {
+    "id": "close_grip_bench_press",
+    "name": "Close-Grip Bench Press",
+    "movementPattern": "push",
+    "equipment": ["barbell", "bench"],
+    "fatigueCost": "medium",
+    "substitutions": ["bench_press", "dip"],
+    "complexity": "intermediate",
+    "spinalLoading": "low",
+    "unilateral": false,
+    "primaryPurpose": "strength",
+    "warmupNeeds": ["shoulder_warmup", "wrist_mobility"],
+    "progressionFamily": "horizontal_push",
+    "progressionLevel": 3
+  },
+  {
+    "id": "incline_bench_press",
+    "name": "Incline Bench Press",
+    "movementPattern": "push",
+    "equipment": ["barbell", "bench"],
+    "fatigueCost": "medium",
+    "substitutions": ["incline_dumbbell_press", "bench_press"],
+    "complexity": "intermediate",
+    "spinalLoading": "low",
+    "unilateral": false,
+    "primaryPurpose": "strength",
+    "warmupNeeds": ["shoulder_warmup", "thoracic_extension"],
+    "contraindicationFlags": ["shoulder_impingement"],
+    "progressionFamily": "horizontal_push",
+    "progressionLevel": 3
+  },
+  {
+    "id": "push_up",
+    "name": "Push-Up",
+    "movementPattern": "push",
+    "equipment": [],
+    "fatigueCost": "low",
+    "substitutions": ["dumbbell_bench_press", "incline_push_up", "knee_push_up"],
+    "complexity": "beginner",
+    "spinalLoading": "low",
+    "unilateral": false,
+    "primaryPurpose": "hypertrophy",
+    "warmupNeeds": ["shoulder_warmup"],
+    "progressionFamily": "horizontal_push",
+    "progressionLevel": 2
+  },
+  {
+    "id": "knee_push_up",
+    "name": "Knee Push-Up",
+    "movementPattern": "push",
+    "equipment": [],
+    "fatigueCost": "low",
+    "substitutions": ["incline_push_up", "push_up"],
+    "complexity": "beginner",
+    "spinalLoading": "low",
+    "unilateral": false,
+    "primaryPurpose": "hypertrophy",
+    "warmupNeeds": ["shoulder_warmup"],
+    "progressionFamily": "horizontal_push",
+    "progressionLevel": 1
+  },
+  {
+    "id": "incline_push_up",
+    "name": "Incline Push-Up",
+    "movementPattern": "push",
+    "equipment": [],
+    "fatigueCost": "low",
+    "substitutions": ["knee_push_up", "push_up"],
+    "complexity": "beginner",
+    "spinalLoading": "low",
+    "unilateral": false,
+    "primaryPurpose": "hypertrophy",
+    "warmupNeeds": ["shoulder_warmup"],
+    "progressionFamily": "horizontal_push",
+    "progressionLevel": 1
+  },
+  {
+    "id": "decline_push_up",
+    "name": "Decline Push-Up",
+    "movementPattern": "push",
+    "equipment": [],
+    "fatigueCost": "medium",
+    "substitutions": ["push_up", "dip"],
+    "complexity": "intermediate",
+    "spinalLoading": "low",
+    "unilateral": false,
+    "primaryPurpose": "hypertrophy",
+    "warmupNeeds": ["shoulder_warmup"],
+    "contraindicationFlags": ["shoulder_impingement"],
+    "progressionFamily": "horizontal_push",
+    "progressionLevel": 3
+  },
+  {
+    "id": "diamond_push_up",
+    "name": "Diamond Push-Up",
+    "movementPattern": "push",
+    "equipment": [],
+    "fatigueCost": "medium",
+    "substitutions": ["push_up", "close_grip_bench_press"],
+    "complexity": "intermediate",
+    "spinalLoading": "low",
+    "unilateral": false,
+    "primaryPurpose": "strength",
+    "warmupNeeds": ["shoulder_warmup", "wrist_mobility"],
+    "progressionFamily": "horizontal_push",
+    "progressionLevel": 3
+  },
+  {
+    "id": "archer_push_up",
+    "name": "Archer Push-Up",
+    "movementPattern": "push",
+    "equipment": [],
+    "fatigueCost": "high",
+    "substitutions": ["push_up", "decline_push_up"],
+    "complexity": "advanced",
+    "spinalLoading": "low",
+    "unilateral": true,
+    "primaryPurpose": "strength",
+    "warmupNeeds": ["shoulder_warmup", "scapular_activation"],
+    "progressionFamily": "horizontal_push",
+    "progressionLevel": 4,
+    "progressionPrerequisites": [
+      { "exerciseId": "push_up", "criterion": "3x20 strict reps" }
     ]
   },
   {
-    "id": "pallof_press",
-    "name": "Pallof Press",
-    "movementPattern": "core",
+    "id": "ring_push_up",
+    "name": "Ring Push-Up",
+    "movementPattern": "push",
+    "equipment": ["pullup_bar"],
+    "fatigueCost": "medium",
+    "substitutions": ["push_up", "decline_push_up"],
+    "complexity": "intermediate",
+    "spinalLoading": "low",
+    "unilateral": false,
+    "primaryPurpose": "strength",
+    "warmupNeeds": ["shoulder_warmup", "scapular_activation"],
+    "progressionFamily": "horizontal_push",
+    "progressionLevel": 3
+  },
+  {
+    "id": "one_arm_push_up",
+    "name": "One-Arm Push-Up",
+    "movementPattern": "push",
+    "equipment": [],
+    "fatigueCost": "very_high",
+    "substitutions": ["archer_push_up", "weighted_dip"],
+    "complexity": "expert",
+    "spinalLoading": "low",
+    "unilateral": true,
+    "primaryPurpose": "strength",
+    "warmupNeeds": ["shoulder_warmup", "scapular_activation", "wrist_mobility"],
+    "progressionFamily": "horizontal_push",
+    "progressionLevel": 5,
+    "progressionPrerequisites": [
+      { "exerciseId": "archer_push_up", "criterion": "3x6 each side" }
+    ]
+  },
+  {
+    "id": "plyo_push_up",
+    "name": "Plyometric Push-Up",
+    "movementPattern": "push",
+    "equipment": [],
+    "fatigueCost": "medium",
+    "substitutions": ["push_up", "decline_push_up"],
+    "complexity": "advanced",
+    "spinalLoading": "low",
+    "unilateral": false,
+    "primaryPurpose": "power",
+    "warmupNeeds": ["shoulder_warmup", "wrist_mobility"],
+    "progressionFamily": "horizontal_push",
+    "progressionLevel": 3
+  },
+  {
+    "id": "dumbbell_bench_press",
+    "name": "Dumbbell Bench Press",
+    "movementPattern": "push",
+    "equipment": ["dumbbells"],
+    "fatigueCost": "medium",
+    "substitutions": ["bench_press", "push_up", "dumbbell_floor_press"],
+    "complexity": "beginner",
+    "spinalLoading": "low",
+    "unilateral": false,
+    "primaryPurpose": "hypertrophy",
+    "warmupNeeds": ["shoulder_warmup"],
+    "progressionFamily": "horizontal_push",
+    "progressionLevel": 3
+  },
+  {
+    "id": "dumbbell_floor_press",
+    "name": "Dumbbell Floor Press",
+    "movementPattern": "push",
+    "equipment": ["dumbbells"],
+    "fatigueCost": "medium",
+    "substitutions": ["push_up", "dumbbell_bench_press"],
+    "complexity": "beginner",
+    "spinalLoading": "low",
+    "unilateral": false,
+    "primaryPurpose": "hypertrophy",
+    "warmupNeeds": ["shoulder_warmup"],
+    "progressionFamily": "horizontal_push",
+    "progressionLevel": 2
+  },
+  {
+    "id": "incline_dumbbell_press",
+    "name": "Incline Dumbbell Press",
+    "movementPattern": "push",
+    "equipment": ["dumbbells", "bench"],
+    "fatigueCost": "medium",
+    "substitutions": ["dumbbell_floor_press", "push_up", "incline_bench_press"],
+    "complexity": "intermediate",
+    "spinalLoading": "low",
+    "unilateral": false,
+    "primaryPurpose": "hypertrophy",
+    "contraindicationFlags": ["shoulder_impingement"],
+    "warmupNeeds": ["shoulder_warmup", "thoracic_extension"],
+    "progressionFamily": "horizontal_push",
+    "progressionLevel": 3
+  },
+  {
+    "id": "machine_chest_press",
+    "name": "Machine Chest Press",
+    "movementPattern": "push",
+    "equipment": ["chest_press_machine"],
+    "fatigueCost": "medium",
+    "substitutions": ["dumbbell_bench_press", "push_up", "bench_press"],
+    "complexity": "beginner",
+    "spinalLoading": "low",
+    "unilateral": false,
+    "primaryPurpose": "hypertrophy",
+    "contraindicationFlags": ["shoulder_impingement"],
+    "warmupNeeds": ["shoulder_warmup", "scapular_activation"],
+    "progressionFamily": "horizontal_push",
+    "progressionLevel": 2
+  },
+  {
+    "id": "dumbbell_overhead_press",
+    "name": "Dumbbell Overhead Press",
+    "movementPattern": "push",
+    "equipment": ["dumbbells"],
+    "fatigueCost": "medium",
+    "substitutions": ["push_up", "dumbbell_bench_press", "barbell_overhead_press"],
+    "complexity": "intermediate",
+    "spinalLoading": "low",
+    "unilateral": false,
+    "primaryPurpose": "strength",
+    "contraindicationFlags": ["shoulder_impingement"],
+    "warmupNeeds": ["shoulder_warmup", "thoracic_extension"],
+    "progressionFamily": "vertical_push",
+    "progressionLevel": 3
+  },
+  {
+    "id": "barbell_overhead_press",
+    "name": "Barbell Overhead Press",
+    "movementPattern": "push",
+    "equipment": ["barbell"],
+    "fatigueCost": "high",
+    "substitutions": ["dumbbell_overhead_press", "push_press", "pike_push_up"],
+    "complexity": "advanced",
+    "spinalLoading": "moderate",
+    "unilateral": false,
+    "primaryPurpose": "strength",
+    "contraindicationFlags": ["shoulder_impingement", "low_back"],
+    "warmupNeeds": ["shoulder_warmup", "thoracic_extension", "wrist_mobility"],
+    "progressionFamily": "vertical_push",
+    "progressionLevel": 4
+  },
+  {
+    "id": "push_press",
+    "name": "Push Press",
+    "movementPattern": "push",
+    "equipment": ["barbell"],
+    "fatigueCost": "high",
+    "substitutions": ["barbell_overhead_press", "dumbbell_overhead_press"],
+    "complexity": "advanced",
+    "spinalLoading": "moderate",
+    "unilateral": false,
+    "primaryPurpose": "power",
+    "contraindicationFlags": ["shoulder_impingement", "low_back"],
+    "warmupNeeds": ["shoulder_warmup", "thoracic_extension", "ankle_mobility"],
+    "progressionFamily": "vertical_push",
+    "progressionLevel": 4
+  },
+  {
+    "id": "push_jerk",
+    "name": "Push Jerk",
+    "movementPattern": "push",
+    "equipment": ["barbell"],
+    "fatigueCost": "high",
+    "substitutions": ["push_press", "barbell_overhead_press"],
+    "complexity": "expert",
+    "spinalLoading": "moderate",
+    "unilateral": false,
+    "primaryPurpose": "power",
+    "contraindicationFlags": ["shoulder_impingement", "low_back"],
+    "warmupNeeds": ["shoulder_warmup", "thoracic_extension", "ankle_mobility", "hip_mobility"],
+    "progressionFamily": "vertical_push",
+    "progressionLevel": 5
+  },
+  {
+    "id": "pike_push_up",
+    "name": "Pike Push-Up",
+    "movementPattern": "push",
+    "equipment": [],
+    "fatigueCost": "medium",
+    "substitutions": ["dumbbell_overhead_press", "push_up"],
+    "complexity": "intermediate",
+    "spinalLoading": "low",
+    "unilateral": false,
+    "primaryPurpose": "strength",
+    "contraindicationFlags": ["shoulder_impingement"],
+    "warmupNeeds": ["shoulder_warmup", "thoracic_extension", "wrist_mobility"],
+    "progressionFamily": "vertical_push",
+    "progressionLevel": 2
+  },
+  {
+    "id": "wall_walk",
+    "name": "Wall Walk",
+    "movementPattern": "push",
+    "equipment": [],
+    "fatigueCost": "medium",
+    "substitutions": ["pike_push_up", "handstand_hold"],
+    "complexity": "intermediate",
+    "spinalLoading": "low",
+    "unilateral": false,
+    "primaryPurpose": "stability",
+    "contraindicationFlags": ["shoulder_impingement", "wrist_mobility"],
+    "warmupNeeds": ["shoulder_warmup", "wrist_mobility", "core_bracing"],
+    "progressionFamily": "vertical_push",
+    "progressionLevel": 3
+  },
+  {
+    "id": "handstand_hold",
+    "name": "Wall Handstand Hold",
+    "movementPattern": "push",
+    "equipment": [],
+    "fatigueCost": "medium",
+    "substitutions": ["wall_walk", "pike_push_up"],
+    "complexity": "advanced",
+    "spinalLoading": "low",
+    "unilateral": false,
+    "primaryPurpose": "stability",
+    "contraindicationFlags": ["shoulder_impingement", "wrist_mobility"],
+    "warmupNeeds": ["shoulder_warmup", "wrist_mobility", "core_bracing"],
+    "progressionFamily": "vertical_push",
+    "progressionLevel": 3
+  },
+  {
+    "id": "handstand_push_up_negative",
+    "name": "Handstand Push-Up Negative",
+    "movementPattern": "push",
+    "equipment": [],
+    "fatigueCost": "high",
+    "substitutions": ["handstand_hold", "pike_push_up"],
+    "complexity": "advanced",
+    "spinalLoading": "low",
+    "unilateral": false,
+    "primaryPurpose": "strength",
+    "contraindicationFlags": ["shoulder_impingement", "wrist_mobility"],
+    "warmupNeeds": ["shoulder_warmup", "wrist_mobility", "scapular_activation"],
+    "progressionFamily": "vertical_push",
+    "progressionLevel": 4
+  },
+  {
+    "id": "handstand_push_up",
+    "name": "Wall Handstand Push-Up",
+    "movementPattern": "push",
+    "equipment": [],
+    "fatigueCost": "very_high",
+    "substitutions": ["handstand_push_up_negative", "barbell_overhead_press"],
+    "complexity": "expert",
+    "spinalLoading": "low",
+    "unilateral": false,
+    "primaryPurpose": "strength",
+    "contraindicationFlags": ["shoulder_impingement", "wrist_mobility"],
+    "warmupNeeds": ["shoulder_warmup", "wrist_mobility", "scapular_activation", "core_bracing"],
+    "progressionFamily": "vertical_push",
+    "progressionLevel": 5,
+    "progressionPrerequisites": [
+      { "exerciseId": "handstand_push_up_negative", "criterion": "3x5 controlled 5s lowering" }
+    ]
+  },
+  {
+    "id": "dip",
+    "name": "Dip",
+    "movementPattern": "push",
+    "equipment": ["pullup_bar"],
+    "fatigueCost": "medium",
+    "substitutions": ["close_grip_bench_press", "push_up"],
+    "complexity": "intermediate",
+    "spinalLoading": "low",
+    "unilateral": false,
+    "primaryPurpose": "strength",
+    "contraindicationFlags": ["shoulder_impingement"],
+    "warmupNeeds": ["shoulder_warmup", "scapular_activation", "wrist_mobility"],
+    "progressionFamily": "horizontal_push",
+    "progressionLevel": 3
+  },
+  {
+    "id": "weighted_dip",
+    "name": "Weighted Dip",
+    "movementPattern": "push",
+    "equipment": ["pullup_bar", "dumbbells"],
+    "fatigueCost": "high",
+    "substitutions": ["dip", "bench_press"],
+    "complexity": "advanced",
+    "spinalLoading": "low",
+    "unilateral": false,
+    "primaryPurpose": "strength",
+    "contraindicationFlags": ["shoulder_impingement"],
+    "warmupNeeds": ["shoulder_warmup", "scapular_activation", "wrist_mobility"],
+    "progressionFamily": "horizontal_push",
+    "progressionLevel": 4,
+    "progressionPrerequisites": [
+      { "exerciseId": "dip", "criterion": "3x12 strict reps" }
+    ]
+  },
+  {
+    "id": "split_squat",
+    "name": "Split Squat",
+    "movementPattern": "single_leg",
+    "equipment": ["dumbbells"],
+    "fatigueCost": "medium",
+    "substitutions": ["bulgarian_split_squat", "step_up", "lunging_iso_hold"],
+    "complexity": "intermediate",
+    "spinalLoading": "low",
+    "unilateral": true,
+    "primaryPurpose": "strength",
+    "warmupNeeds": ["hip_mobility", "ankle_mobility"],
+    "progressionFamily": "single_leg_squat",
+    "progressionLevel": 2
+  },
+  {
+    "id": "bulgarian_split_squat",
+    "name": "Bulgarian Split Squat",
+    "movementPattern": "single_leg",
+    "equipment": ["dumbbells", "bench"],
+    "fatigueCost": "medium",
+    "substitutions": ["split_squat", "dumbbell_reverse_lunge"],
+    "complexity": "intermediate",
+    "spinalLoading": "low",
+    "unilateral": true,
+    "primaryPurpose": "strength",
+    "warmupNeeds": ["hip_mobility", "ankle_mobility", "single_leg_prep"],
+    "progressionFamily": "single_leg_squat",
+    "progressionLevel": 3
+  },
+  {
+    "id": "step_up",
+    "name": "Step-Up",
+    "movementPattern": "single_leg",
+    "equipment": ["dumbbells", "box"],
+    "fatigueCost": "medium",
+    "substitutions": ["lunging_iso_hold", "split_squat"],
+    "complexity": "beginner",
+    "spinalLoading": "low",
+    "unilateral": true,
+    "primaryPurpose": "hypertrophy",
+    "contraindicationFlags": ["knee_pain"],
+    "warmupNeeds": ["hip_mobility", "ankle_mobility", "single_leg_prep"],
+    "progressionFamily": "single_leg_squat",
+    "progressionLevel": 1
+  },
+  {
+    "id": "lunging_iso_hold",
+    "name": "Lunge Iso Hold",
+    "movementPattern": "single_leg",
     "equipment": [],
     "fatigueCost": "low",
-    "substitutions": [
-      "side_plank",
-      "dead_bug"
-    ],
+    "substitutions": ["step_up", "split_squat"],
     "complexity": "beginner",
     "spinalLoading": "low",
     "unilateral": true,
     "primaryPurpose": "stability",
-    "warmupNeeds": [
-      "core_bracing",
-      "hip_mobility"
-    ]
+    "warmupNeeds": ["hip_mobility", "single_leg_prep"],
+    "progressionFamily": "single_leg_squat",
+    "progressionLevel": 1
   },
   {
-    "id": "plank",
-    "name": "Plank",
-    "movementPattern": "core",
-    "equipment": [],
-    "fatigueCost": "low",
-    "substitutions": [
-      "dead_bug",
-      "side_plank"
-    ],
-    "complexity": "beginner",
+    "id": "dumbbell_reverse_lunge",
+    "name": "Dumbbell Reverse Lunge",
+    "movementPattern": "single_leg",
+    "equipment": ["dumbbells"],
+    "fatigueCost": "medium",
+    "substitutions": ["split_squat", "step_up", "bulgarian_split_squat"],
+    "complexity": "intermediate",
     "spinalLoading": "low",
-    "unilateral": false,
-    "primaryPurpose": "stability",
-    "warmupNeeds": [
-      "breathing_prep",
-      "core_bracing"
-    ]
+    "unilateral": true,
+    "primaryPurpose": "hypertrophy",
+    "contraindicationFlags": ["knee_pain"],
+    "warmupNeeds": ["hip_mobility", "ankle_mobility"],
+    "progressionFamily": "single_leg_squat",
+    "progressionLevel": 3
   },
   {
     "id": "lateral_lunge",
@@ -880,21 +1374,662 @@
     "movementPattern": "single_leg",
     "equipment": [],
     "fatigueCost": "medium",
-    "substitutions": [
-      "cossack_squat",
-      "step_up"
-    ],
+    "substitutions": ["cossack_squat", "step_up"],
     "complexity": "intermediate",
     "spinalLoading": "low",
     "unilateral": true,
     "primaryPurpose": "mobility",
-    "contraindicationFlags": [
-      "knee_pain"
-    ],
-    "warmupNeeds": [
-      "hip_mobility",
-      "ankle_mobility",
-      "single_leg_prep"
+    "contraindicationFlags": ["knee_pain"],
+    "warmupNeeds": ["hip_mobility", "ankle_mobility", "single_leg_prep"],
+    "progressionFamily": "single_leg_squat",
+    "progressionLevel": 2
+  },
+  {
+    "id": "calf_raise",
+    "name": "Calf Raise",
+    "movementPattern": "single_leg",
+    "equipment": [],
+    "fatigueCost": "low",
+    "substitutions": ["step_up", "lunging_iso_hold", "single_leg_calf_raise"],
+    "complexity": "beginner",
+    "spinalLoading": "low",
+    "unilateral": false,
+    "primaryPurpose": "hypertrophy",
+    "warmupNeeds": ["ankle_mobility"],
+    "progressionFamily": "ankle_strength",
+    "progressionLevel": 1
+  },
+  {
+    "id": "single_leg_calf_raise",
+    "name": "Single-Leg Calf Raise",
+    "movementPattern": "single_leg",
+    "equipment": [],
+    "fatigueCost": "low",
+    "substitutions": ["calf_raise", "step_up"],
+    "complexity": "beginner",
+    "spinalLoading": "low",
+    "unilateral": true,
+    "primaryPurpose": "hypertrophy",
+    "warmupNeeds": ["ankle_mobility"],
+    "progressionFamily": "ankle_strength",
+    "progressionLevel": 2
+  },
+  {
+    "id": "assisted_pistol_squat",
+    "name": "Assisted Pistol Squat",
+    "movementPattern": "single_leg",
+    "equipment": [],
+    "fatigueCost": "medium",
+    "substitutions": ["box_pistol_squat", "bulgarian_split_squat"],
+    "complexity": "intermediate",
+    "spinalLoading": "low",
+    "unilateral": true,
+    "primaryPurpose": "strength",
+    "contraindicationFlags": ["knee_pain"],
+    "warmupNeeds": ["hip_mobility", "ankle_mobility", "single_leg_prep"],
+    "progressionFamily": "single_leg_squat_advanced",
+    "progressionLevel": 2
+  },
+  {
+    "id": "box_pistol_squat",
+    "name": "Box Pistol Squat",
+    "movementPattern": "single_leg",
+    "equipment": ["box"],
+    "fatigueCost": "medium",
+    "substitutions": ["assisted_pistol_squat", "pistol_squat"],
+    "complexity": "intermediate",
+    "spinalLoading": "low",
+    "unilateral": true,
+    "primaryPurpose": "strength",
+    "contraindicationFlags": ["knee_pain"],
+    "warmupNeeds": ["hip_mobility", "ankle_mobility", "single_leg_prep"],
+    "progressionFamily": "single_leg_squat_advanced",
+    "progressionLevel": 2
+  },
+  {
+    "id": "pistol_squat",
+    "name": "Pistol Squat",
+    "movementPattern": "single_leg",
+    "equipment": [],
+    "fatigueCost": "high",
+    "substitutions": ["box_pistol_squat", "shrimp_squat"],
+    "complexity": "advanced",
+    "spinalLoading": "low",
+    "unilateral": true,
+    "primaryPurpose": "strength",
+    "contraindicationFlags": ["knee_pain"],
+    "warmupNeeds": ["hip_mobility", "ankle_mobility", "single_leg_prep"],
+    "progressionFamily": "single_leg_squat_advanced",
+    "progressionLevel": 4,
+    "progressionPrerequisites": [
+      { "exerciseId": "bulgarian_split_squat", "criterion": "3x10 with bodyweight only, controlled" }
     ]
+  },
+  {
+    "id": "shrimp_squat",
+    "name": "Shrimp Squat",
+    "movementPattern": "single_leg",
+    "equipment": [],
+    "fatigueCost": "very_high",
+    "substitutions": ["pistol_squat", "bulgarian_split_squat"],
+    "complexity": "expert",
+    "spinalLoading": "low",
+    "unilateral": true,
+    "primaryPurpose": "strength",
+    "contraindicationFlags": ["knee_pain"],
+    "warmupNeeds": ["hip_mobility", "ankle_mobility", "single_leg_prep"],
+    "progressionFamily": "single_leg_squat_advanced",
+    "progressionLevel": 5
+  },
+  {
+    "id": "skater_jump",
+    "name": "Skater Jump",
+    "movementPattern": "single_leg",
+    "equipment": [],
+    "fatigueCost": "medium",
+    "substitutions": ["lateral_lunge", "lateral_box_jump"],
+    "complexity": "beginner",
+    "spinalLoading": "low",
+    "unilateral": true,
+    "primaryPurpose": "power",
+    "contraindicationFlags": ["knee_pain"],
+    "warmupNeeds": ["hip_mobility", "ankle_mobility"],
+    "progressionFamily": "single_leg_power",
+    "progressionLevel": 1
+  },
+  {
+    "id": "single_leg_box_jump",
+    "name": "Single-Leg Box Jump",
+    "movementPattern": "single_leg",
+    "equipment": ["box"],
+    "fatigueCost": "high",
+    "substitutions": ["box_jump", "skater_jump"],
+    "complexity": "advanced",
+    "spinalLoading": "low",
+    "unilateral": true,
+    "primaryPurpose": "power",
+    "contraindicationFlags": ["knee_pain"],
+    "warmupNeeds": ["hip_mobility", "ankle_mobility"],
+    "progressionFamily": "single_leg_power",
+    "progressionLevel": 3
+  },
+  {
+    "id": "lateral_box_jump",
+    "name": "Lateral Box Jump",
+    "movementPattern": "single_leg",
+    "equipment": ["box"],
+    "fatigueCost": "medium",
+    "substitutions": ["skater_jump", "box_jump"],
+    "complexity": "intermediate",
+    "spinalLoading": "low",
+    "unilateral": true,
+    "primaryPurpose": "power",
+    "contraindicationFlags": ["knee_pain"],
+    "warmupNeeds": ["hip_mobility", "ankle_mobility"],
+    "progressionFamily": "single_leg_power",
+    "progressionLevel": 2
+  },
+  {
+    "id": "dead_bug",
+    "name": "Dead Bug",
+    "movementPattern": "core",
+    "equipment": [],
+    "fatigueCost": "low",
+    "substitutions": ["hollow_hold", "bear_crawl"],
+    "complexity": "beginner",
+    "spinalLoading": "low",
+    "unilateral": false,
+    "primaryPurpose": "stability",
+    "warmupNeeds": ["breathing_prep", "core_bracing"],
+    "progressionFamily": "core_anti_extension",
+    "progressionLevel": 1
+  },
+  {
+    "id": "hollow_hold",
+    "name": "Hollow Hold",
+    "movementPattern": "core",
+    "equipment": [],
+    "fatigueCost": "low",
+    "substitutions": ["dead_bug", "hollow_rocks"],
+    "complexity": "beginner",
+    "spinalLoading": "low",
+    "unilateral": false,
+    "primaryPurpose": "stability",
+    "warmupNeeds": ["breathing_prep", "core_bracing"],
+    "progressionFamily": "core_anti_extension",
+    "progressionLevel": 2
+  },
+  {
+    "id": "hollow_rocks",
+    "name": "Hollow Rocks",
+    "movementPattern": "core",
+    "equipment": [],
+    "fatigueCost": "low",
+    "substitutions": ["hollow_hold", "dead_bug"],
+    "complexity": "beginner",
+    "spinalLoading": "low",
+    "unilateral": false,
+    "primaryPurpose": "stability",
+    "warmupNeeds": ["breathing_prep", "core_bracing"],
+    "progressionFamily": "core_anti_extension",
+    "progressionLevel": 2
+  },
+  {
+    "id": "l_sit_tuck",
+    "name": "L-Sit Tuck Hold",
+    "movementPattern": "core",
+    "equipment": [],
+    "fatigueCost": "medium",
+    "substitutions": ["hollow_hold", "l_sit_hold"],
+    "complexity": "intermediate",
+    "spinalLoading": "low",
+    "unilateral": false,
+    "primaryPurpose": "stability",
+    "warmupNeeds": ["breathing_prep", "core_bracing", "shoulder_warmup"],
+    "progressionFamily": "core_anti_extension",
+    "progressionLevel": 3
+  },
+  {
+    "id": "l_sit_hold",
+    "name": "L-Sit Hold",
+    "movementPattern": "core",
+    "equipment": [],
+    "fatigueCost": "high",
+    "substitutions": ["l_sit_tuck", "v_sit"],
+    "complexity": "advanced",
+    "spinalLoading": "low",
+    "unilateral": false,
+    "primaryPurpose": "stability",
+    "warmupNeeds": ["breathing_prep", "core_bracing", "shoulder_warmup", "hip_mobility"],
+    "progressionFamily": "core_anti_extension",
+    "progressionLevel": 4,
+    "progressionPrerequisites": [
+      { "exerciseId": "l_sit_tuck", "criterion": "3x20s clean hold" }
+    ]
+  },
+  {
+    "id": "v_sit",
+    "name": "V-Sit Hold",
+    "movementPattern": "core",
+    "equipment": [],
+    "fatigueCost": "very_high",
+    "substitutions": ["l_sit_hold"],
+    "complexity": "expert",
+    "spinalLoading": "low",
+    "unilateral": false,
+    "primaryPurpose": "stability",
+    "warmupNeeds": ["breathing_prep", "core_bracing", "shoulder_warmup", "hip_mobility"],
+    "progressionFamily": "core_anti_extension",
+    "progressionLevel": 5
+  },
+  {
+    "id": "dragon_flag_tuck",
+    "name": "Dragon Flag (Tuck)",
+    "movementPattern": "core",
+    "equipment": ["bench"],
+    "fatigueCost": "medium",
+    "substitutions": ["hollow_hold", "hollow_rocks"],
+    "complexity": "intermediate",
+    "spinalLoading": "low",
+    "unilateral": false,
+    "primaryPurpose": "stability",
+    "warmupNeeds": ["breathing_prep", "core_bracing", "shoulder_warmup"],
+    "progressionFamily": "core_anti_extension",
+    "progressionLevel": 3
+  },
+  {
+    "id": "dragon_flag",
+    "name": "Dragon Flag",
+    "movementPattern": "core",
+    "equipment": ["bench"],
+    "fatigueCost": "very_high",
+    "substitutions": ["dragon_flag_tuck", "hollow_hold"],
+    "complexity": "expert",
+    "spinalLoading": "low",
+    "unilateral": false,
+    "primaryPurpose": "stability",
+    "warmupNeeds": ["breathing_prep", "core_bracing", "shoulder_warmup"],
+    "progressionFamily": "core_anti_extension",
+    "progressionLevel": 5
+  },
+  {
+    "id": "ab_wheel_rollout",
+    "name": "Ab Wheel Rollout",
+    "movementPattern": "core",
+    "equipment": ["ab_wheel"],
+    "fatigueCost": "medium",
+    "substitutions": ["dead_bug", "hollow_rocks"],
+    "complexity": "intermediate",
+    "spinalLoading": "low",
+    "unilateral": false,
+    "primaryPurpose": "stability",
+    "contraindicationFlags": ["low_back"],
+    "warmupNeeds": ["breathing_prep", "core_bracing", "shoulder_warmup"],
+    "progressionFamily": "core_anti_extension",
+    "progressionLevel": 3
+  },
+  {
+    "id": "bear_crawl",
+    "name": "Bear Crawl",
+    "movementPattern": "core",
+    "equipment": [],
+    "fatigueCost": "medium",
+    "substitutions": ["dead_bug", "hollow_hold"],
+    "complexity": "beginner",
+    "spinalLoading": "low",
+    "unilateral": false,
+    "primaryPurpose": "stability",
+    "warmupNeeds": ["wrist_prep", "core_bracing"],
+    "progressionFamily": "core_stability",
+    "progressionLevel": 2
+  },
+  {
+    "id": "side_plank",
+    "name": "Side Plank",
+    "movementPattern": "core",
+    "equipment": [],
+    "fatigueCost": "low",
+    "substitutions": ["dead_bug", "hollow_hold"],
+    "complexity": "beginner",
+    "spinalLoading": "low",
+    "unilateral": true,
+    "primaryPurpose": "stability",
+    "warmupNeeds": ["core_bracing", "shoulder_warmup"],
+    "progressionFamily": "core_anti_lateral",
+    "progressionLevel": 2
+  },
+  {
+    "id": "pallof_press",
+    "name": "Pallof Press",
+    "movementPattern": "core",
+    "equipment": [],
+    "fatigueCost": "low",
+    "substitutions": ["side_plank", "dead_bug"],
+    "complexity": "beginner",
+    "spinalLoading": "low",
+    "unilateral": true,
+    "primaryPurpose": "stability",
+    "warmupNeeds": ["core_bracing", "hip_mobility"],
+    "progressionFamily": "core_anti_rotation",
+    "progressionLevel": 1
+  },
+  {
+    "id": "plank",
+    "name": "Plank",
+    "movementPattern": "core",
+    "equipment": [],
+    "fatigueCost": "low",
+    "substitutions": ["dead_bug", "side_plank"],
+    "complexity": "beginner",
+    "spinalLoading": "low",
+    "unilateral": false,
+    "primaryPurpose": "stability",
+    "warmupNeeds": ["breathing_prep", "core_bracing"],
+    "progressionFamily": "core_anti_extension",
+    "progressionLevel": 1
+  },
+  {
+    "id": "farmer_carry",
+    "name": "Farmer Carry",
+    "movementPattern": "carry",
+    "equipment": ["dumbbells", "kettlebells"],
+    "fatigueCost": "medium",
+    "substitutions": ["suitcase_carry", "sandbag_hold"],
+    "complexity": "beginner",
+    "spinalLoading": "moderate",
+    "unilateral": false,
+    "primaryPurpose": "conditioning",
+    "warmupNeeds": ["grip_warmup"],
+    "progressionFamily": "loaded_carry",
+    "progressionLevel": 2
+  },
+  {
+    "id": "suitcase_carry",
+    "name": "Suitcase Carry",
+    "movementPattern": "carry",
+    "equipment": ["dumbbells"],
+    "fatigueCost": "medium",
+    "substitutions": ["sandbag_hold", "farmer_carry"],
+    "complexity": "beginner",
+    "spinalLoading": "moderate",
+    "unilateral": true,
+    "primaryPurpose": "conditioning",
+    "warmupNeeds": ["grip_warmup", "core_bracing"],
+    "progressionFamily": "loaded_carry",
+    "progressionLevel": 2
+  },
+  {
+    "id": "sandbag_hold",
+    "name": "Sandbag Hold",
+    "movementPattern": "carry",
+    "equipment": [],
+    "fatigueCost": "low",
+    "substitutions": ["suitcase_carry", "farmer_carry"],
+    "complexity": "beginner",
+    "spinalLoading": "low",
+    "unilateral": false,
+    "primaryPurpose": "conditioning",
+    "warmupNeeds": ["grip_warmup", "core_bracing"],
+    "progressionFamily": "loaded_carry",
+    "progressionLevel": 1
+  },
+  {
+    "id": "overhead_carry",
+    "name": "Overhead Carry",
+    "movementPattern": "carry",
+    "equipment": ["dumbbells", "kettlebells"],
+    "fatigueCost": "high",
+    "substitutions": ["farmer_carry", "suitcase_carry"],
+    "complexity": "intermediate",
+    "spinalLoading": "moderate",
+    "unilateral": false,
+    "primaryPurpose": "conditioning",
+    "contraindicationFlags": ["shoulder_impingement"],
+    "warmupNeeds": ["grip_warmup", "shoulder_warmup", "core_bracing"],
+    "progressionFamily": "loaded_carry",
+    "progressionLevel": 3
+  },
+  {
+    "id": "yoke_carry",
+    "name": "Yoke / Front-Rack Carry",
+    "movementPattern": "carry",
+    "equipment": ["barbell"],
+    "fatigueCost": "high",
+    "substitutions": ["farmer_carry", "overhead_carry"],
+    "complexity": "advanced",
+    "spinalLoading": "high",
+    "unilateral": false,
+    "primaryPurpose": "conditioning",
+    "contraindicationFlags": ["low_back"],
+    "warmupNeeds": ["grip_warmup", "shoulder_warmup", "core_bracing", "hip_mobility"],
+    "progressionFamily": "loaded_carry",
+    "progressionLevel": 4
+  },
+  {
+    "id": "prowler_push",
+    "name": "Prowler Push",
+    "movementPattern": "carry",
+    "equipment": ["sled"],
+    "fatigueCost": "high",
+    "substitutions": ["sled_drag", "farmer_carry"],
+    "complexity": "beginner",
+    "spinalLoading": "low",
+    "unilateral": false,
+    "primaryPurpose": "conditioning",
+    "warmupNeeds": ["hip_mobility", "ankle_mobility"],
+    "progressionFamily": "sled_work",
+    "progressionLevel": 2
+  },
+  {
+    "id": "sled_drag",
+    "name": "Sled Drag",
+    "movementPattern": "carry",
+    "equipment": ["sled"],
+    "fatigueCost": "medium",
+    "substitutions": ["prowler_push", "farmer_carry"],
+    "complexity": "beginner",
+    "spinalLoading": "low",
+    "unilateral": false,
+    "primaryPurpose": "conditioning",
+    "warmupNeeds": ["hip_mobility", "ankle_mobility"],
+    "progressionFamily": "sled_work",
+    "progressionLevel": 1
+  },
+  {
+    "id": "battle_ropes_alternating",
+    "name": "Battle Ropes — Alternating Waves",
+    "movementPattern": "carry",
+    "equipment": ["battle_ropes"],
+    "fatigueCost": "medium",
+    "substitutions": ["battle_ropes_slams", "med_ball_slam"],
+    "complexity": "beginner",
+    "spinalLoading": "low",
+    "unilateral": false,
+    "primaryPurpose": "conditioning",
+    "warmupNeeds": ["shoulder_warmup", "core_bracing"],
+    "progressionFamily": "metabolic_conditioning",
+    "progressionLevel": 1
+  },
+  {
+    "id": "battle_ropes_slams",
+    "name": "Battle Ropes — Slams",
+    "movementPattern": "carry",
+    "equipment": ["battle_ropes"],
+    "fatigueCost": "medium",
+    "substitutions": ["battle_ropes_alternating", "med_ball_slam"],
+    "complexity": "beginner",
+    "spinalLoading": "low",
+    "unilateral": false,
+    "primaryPurpose": "power",
+    "warmupNeeds": ["shoulder_warmup", "core_bracing", "hip_mobility"],
+    "progressionFamily": "metabolic_conditioning",
+    "progressionLevel": 2
+  },
+  {
+    "id": "med_ball_slam",
+    "name": "Medicine Ball Slam",
+    "movementPattern": "core",
+    "equipment": ["med_ball"],
+    "fatigueCost": "medium",
+    "substitutions": ["battle_ropes_slams", "kettlebell_swing"],
+    "complexity": "beginner",
+    "spinalLoading": "moderate",
+    "unilateral": false,
+    "primaryPurpose": "power",
+    "warmupNeeds": ["shoulder_warmup", "core_bracing", "hip_mobility"],
+    "progressionFamily": "med_ball_power",
+    "progressionLevel": 1
+  },
+  {
+    "id": "med_ball_chest_pass",
+    "name": "Medicine Ball Chest Pass",
+    "movementPattern": "push",
+    "equipment": ["med_ball"],
+    "fatigueCost": "low",
+    "substitutions": ["plyo_push_up", "push_press"],
+    "complexity": "beginner",
+    "spinalLoading": "low",
+    "unilateral": false,
+    "primaryPurpose": "power",
+    "warmupNeeds": ["shoulder_warmup", "core_bracing"],
+    "progressionFamily": "med_ball_power",
+    "progressionLevel": 1
+  },
+  {
+    "id": "med_ball_rotational_throw",
+    "name": "Medicine Ball Rotational Throw",
+    "movementPattern": "core",
+    "equipment": ["med_ball"],
+    "fatigueCost": "medium",
+    "substitutions": ["pallof_press", "med_ball_slam"],
+    "complexity": "intermediate",
+    "spinalLoading": "low",
+    "unilateral": true,
+    "primaryPurpose": "power",
+    "contraindicationFlags": ["low_back"],
+    "warmupNeeds": ["thoracic_rotation", "core_bracing", "hip_mobility"],
+    "progressionFamily": "med_ball_power",
+    "progressionLevel": 2
+  },
+  {
+    "id": "hip_airplane",
+    "name": "Hip Airplane",
+    "movementPattern": "mobility",
+    "equipment": [],
+    "fatigueCost": "low",
+    "substitutions": ["worlds_greatest_stretch", "cossack_squat"],
+    "complexity": "intermediate",
+    "spinalLoading": "low",
+    "unilateral": true,
+    "primaryPurpose": "mobility",
+    "warmupNeeds": ["hip_mobility", "balance_prep"],
+    "progressionFamily": "single_leg_balance",
+    "progressionLevel": 3
+  },
+  {
+    "id": "worlds_greatest_stretch",
+    "name": "World's Greatest Stretch",
+    "movementPattern": "mobility",
+    "equipment": [],
+    "fatigueCost": "low",
+    "substitutions": ["hip_airplane", "cossack_squat", "couch_stretch"],
+    "complexity": "beginner",
+    "spinalLoading": "low",
+    "unilateral": false,
+    "primaryPurpose": "mobility",
+    "warmupNeeds": ["hip_mobility", "thoracic_rotation", "ankle_mobility"],
+    "progressionFamily": "mobility_complex",
+    "progressionLevel": 1
+  },
+  {
+    "id": "cossack_squat",
+    "name": "Cossack Squat",
+    "movementPattern": "mobility",
+    "equipment": [],
+    "fatigueCost": "low",
+    "substitutions": ["worlds_greatest_stretch", "split_squat", "lateral_lunge"],
+    "complexity": "intermediate",
+    "spinalLoading": "low",
+    "unilateral": true,
+    "primaryPurpose": "mobility",
+    "warmupNeeds": ["hip_mobility", "ankle_mobility"],
+    "progressionFamily": "mobility_complex",
+    "progressionLevel": 2
+  },
+  {
+    "id": "couch_stretch",
+    "name": "Couch Stretch",
+    "movementPattern": "mobility",
+    "equipment": [],
+    "fatigueCost": "low",
+    "substitutions": ["worlds_greatest_stretch", "hip_flexor_stretch"],
+    "complexity": "beginner",
+    "spinalLoading": "low",
+    "unilateral": true,
+    "primaryPurpose": "mobility",
+    "warmupNeeds": ["hip_mobility"],
+    "progressionFamily": "mobility_complex",
+    "progressionLevel": 1
+  },
+  {
+    "id": "hip_flexor_stretch",
+    "name": "Half-Kneeling Hip Flexor Stretch",
+    "movementPattern": "mobility",
+    "equipment": [],
+    "fatigueCost": "low",
+    "substitutions": ["couch_stretch", "worlds_greatest_stretch"],
+    "complexity": "beginner",
+    "spinalLoading": "low",
+    "unilateral": true,
+    "primaryPurpose": "mobility",
+    "warmupNeeds": ["hip_mobility"],
+    "progressionFamily": "mobility_complex",
+    "progressionLevel": 1
+  },
+  {
+    "id": "ninety_ninety_hip_switch",
+    "name": "90/90 Hip Switch",
+    "movementPattern": "mobility",
+    "equipment": [],
+    "fatigueCost": "low",
+    "substitutions": ["worlds_greatest_stretch", "hip_flexor_stretch"],
+    "complexity": "beginner",
+    "spinalLoading": "low",
+    "unilateral": false,
+    "primaryPurpose": "mobility",
+    "warmupNeeds": ["hip_mobility"],
+    "progressionFamily": "mobility_complex",
+    "progressionLevel": 1
+  },
+  {
+    "id": "jefferson_curl",
+    "name": "Jefferson Curl",
+    "movementPattern": "mobility",
+    "equipment": ["dumbbells"],
+    "fatigueCost": "low",
+    "substitutions": ["worlds_greatest_stretch", "hip_flexor_stretch"],
+    "complexity": "intermediate",
+    "spinalLoading": "moderate",
+    "unilateral": false,
+    "primaryPurpose": "mobility",
+    "contraindicationFlags": ["low_back"],
+    "warmupNeeds": ["hip_mobility", "thoracic_extension", "hamstring_warmup"],
+    "progressionFamily": "mobility_complex",
+    "progressionLevel": 2
+  },
+  {
+    "id": "thoracic_rotation_open",
+    "name": "Open-Book Thoracic Rotation",
+    "movementPattern": "mobility",
+    "equipment": [],
+    "fatigueCost": "low",
+    "substitutions": ["worlds_greatest_stretch"],
+    "complexity": "beginner",
+    "spinalLoading": "low",
+    "unilateral": true,
+    "primaryPurpose": "mobility",
+    "warmupNeeds": ["thoracic_rotation"],
+    "progressionFamily": "mobility_complex",
+    "progressionLevel": 1
   }
 ]

@@ -21,6 +21,271 @@
   "triathlon": {
     "maxBricksPerWeek": 1,
     "minimumSwimSessions": 2
+  },
+  "exerciseSelection": {
+    "byPhase": {
+      "base": {
+        "compoundEmphasisPct": 70,
+        "isolationShareMaxPct": 30,
+        "noveltyTolerance": "high",
+        "intentNote": "Base phase rewards movement quality and capacity build. Allow exercise variation week-to-week to expose the athlete to a broad pattern repertoire."
+      },
+      "build": {
+        "compoundEmphasisPct": 60,
+        "isolationShareMaxPct": 30,
+        "noveltyTolerance": "low",
+        "intensityPriority": "increase",
+        "intentNote": "Build phase locks exercise selection so progression signal is interpretable. Vary load/reps/tempo, not exercise identity."
+      },
+      "peak": {
+        "compoundEmphasisPct": 80,
+        "isolationShareMaxPct": 20,
+        "noveltyTolerance": "none",
+        "intensityPriority": "max",
+        "intentNote": "Peak phase keeps the exact compound stack from build and pushes intensity. New exercises are explicitly disallowed."
+      },
+      "taper": {
+        "compoundEmphasisPct": 70,
+        "isolationShareMaxPct": 30,
+        "noveltyTolerance": "none",
+        "intensityPriority": "preserve",
+        "intentNote": "Taper preserves stimulus signature while reducing fatigue. Keep exercises and intensity, drop volume."
+      },
+      "race": {
+        "compoundEmphasisPct": 0,
+        "isolationShareMaxPct": 100,
+        "noveltyTolerance": "none",
+        "intensityPriority": "minimum",
+        "intentNote": "Race week is dress rehearsal only. No new stimulus."
+      },
+      "deload": {
+        "compoundEmphasisPct": 50,
+        "isolationShareMaxPct": 50,
+        "noveltyTolerance": "moderate",
+        "intensityPriority": "low",
+        "intentNote": "Deload allows movement variety at low load. Use it to address weak patterns without accumulating fatigue."
+      },
+      "maintenance": {
+        "compoundEmphasisPct": 60,
+        "isolationShareMaxPct": 40,
+        "noveltyTolerance": "moderate",
+        "intentNote": "Maintenance phase keeps tissue resilience. Bias toward minimum effective dose. Variety is a bonus, not a requirement."
+      }
+    },
+    "byExperience": {
+      "novice": {
+        "complexityMax": "intermediate",
+        "spinalLoadingMax": "moderate",
+        "sessionPatternCountMax": 4,
+        "tempoProgressionAllowed": false,
+        "minimumWarmupMinutes": 10,
+        "intentNote": "Novices need few patterns repeated frequently to learn. Cap session breadth and skip advanced/expert lifts until form is grooved."
+      },
+      "intermediate": {
+        "complexityMax": "advanced",
+        "spinalLoadingMax": "high",
+        "sessionPatternCountMax": 6,
+        "tempoProgressionAllowed": true,
+        "minimumWarmupMinutes": 8,
+        "intentNote": "Intermediates can handle full pattern surface. Tempo and pause variants become available as progression knobs."
+      },
+      "advanced": {
+        "complexityMax": "expert",
+        "spinalLoadingMax": "high",
+        "sessionPatternCountMax": 8,
+        "tempoProgressionAllowed": true,
+        "minimumWarmupMinutes": 6,
+        "intentNote": "Advanced athletes can use the full catalog including expert-tier lifts and complex tempo schemes."
+      }
+    },
+    "byEquipment": {
+      "bodyweight_only": {
+        "preferredFamilies": ["calisthenics_strength", "calisthenics_volume", "calisthenics_full_body", "calisthenics_endurance"],
+        "primaryProgressionVector": "tempo",
+        "secondaryProgressionVector": "leverage",
+        "tertiaryProgressionVector": "reps",
+        "intentNote": "Bodyweight athletes progress via tempo and leverage manipulation, not load. Reps are the last knob to turn."
+      },
+      "bodyweight_plus_bar": {
+        "preferredFamilies": ["calisthenics_skill", "calisthenics_volume", "vertical_pull", "horizontal_push"],
+        "primaryProgressionVector": "leverage",
+        "secondaryProgressionVector": "tempo",
+        "tertiaryProgressionVector": "reps",
+        "intentNote": "Pull-up bar unlocks vertical pulling progressions. Otherwise treat like bodyweight_only."
+      },
+      "dumbbells_only": {
+        "preferredFamilies": ["bilateral_squat", "bilateral_hinge", "single_leg_squat", "horizontal_push", "horizontal_pull"],
+        "primaryProgressionVector": "load",
+        "secondaryProgressionVector": "tempo",
+        "tertiaryProgressionVector": "reps",
+        "intentNote": "Dumbbells favor unilateral and stable bilateral work. Skip max-strength low-rep schemes; lean into hypertrophy ranges."
+      },
+      "full_gym": {
+        "preferredFamilies": ["bilateral_squat", "bilateral_hinge", "horizontal_push", "vertical_pull", "vertical_push", "power_hinge"],
+        "primaryProgressionVector": "load",
+        "secondaryProgressionVector": "volume",
+        "tertiaryProgressionVector": "tempo",
+        "intentNote": "Full gym unlocks the entire compound stack. Progression should run on linear or undulating load schemes."
+      }
+    }
+  },
+  "progressionRules": [
+    {
+      "id": "linear_load_increment_strength",
+      "trigger": {
+        "metric": "all_target_reps_hit",
+        "windowSessions": 2,
+        "rpeAvgUnder": 8
+      },
+      "action": {
+        "kind": "increment_load_pct",
+        "amount": 2.5,
+        "appliesTo": ["bilateral_squat", "bilateral_hinge", "horizontal_push", "vertical_push"]
+      },
+      "rationale": "If the athlete completes target reps at sub-RPE 8 for two consecutive sessions, the lift is ready for a 2.5% load bump."
+    },
+    {
+      "id": "rep_progression_hypertrophy",
+      "trigger": {
+        "metric": "top_set_reps_hit",
+        "windowSessions": 1,
+        "rirAtLeast": 2
+      },
+      "action": {
+        "kind": "increment_reps",
+        "amount": 1,
+        "appliesTo": ["horizontal_pull", "horizontal_push", "single_leg_squat", "core_anti_extension"]
+      },
+      "rationale": "For accessory work, add a rep when the top set still leaves 2+ reps in reserve."
+    },
+    {
+      "id": "tempo_progression_calisthenics",
+      "trigger": {
+        "metric": "top_set_reps_hit",
+        "windowSessions": 2,
+        "exerciseEquipmentEmpty": true
+      },
+      "action": {
+        "kind": "tempo_eccentric_increment",
+        "amount": 1,
+        "appliesTo": ["calisthenics_strength", "calisthenics_volume", "calisthenics_full_body"]
+      },
+      "rationale": "Bodyweight lifts can't grow load-wise. When reps top out, increase eccentric tempo by 1s to extend time-under-tension."
+    },
+    {
+      "id": "leverage_progression_calisthenics",
+      "trigger": {
+        "metric": "tempo_top_reached",
+        "tempoEccentricSec": 5
+      },
+      "action": {
+        "kind": "advance_progression_level",
+        "appliesTo": ["calisthenics_strength", "calisthenics_volume", "calisthenics_full_body"]
+      },
+      "rationale": "When eccentric tempo hits 5s and reps are still hit, the next progression level (harder leverage variant) is unlocked."
+    },
+    {
+      "id": "deload_after_missed_keys",
+      "trigger": {
+        "metric": "missed_key_session_count",
+        "atLeast": 1
+      },
+      "action": {
+        "kind": "hold_volume_flat",
+        "scope": "current_week"
+      },
+      "rationale": "If a key session was missed, do not progress volume that week. Re-baseline before pushing again."
+    },
+    {
+      "id": "deload_high_soreness",
+      "trigger": {
+        "metric": "soreness_high_or_pain_moderate",
+        "phaseNot": ["peak", "race"]
+      },
+      "action": {
+        "kind": "deload_load_pct",
+        "amount": -10,
+        "appliesTo": ["all_strength"]
+      },
+      "rationale": "Persistent high soreness or moderate pain drops load 10% next session, preserving the movement pattern."
+    },
+    {
+      "id": "low_readiness_intensity_cap",
+      "trigger": {
+        "metric": "readiness_orange_or_red"
+      },
+      "action": {
+        "kind": "cap_intensity_zone",
+        "max": "tempo",
+        "appliesTo": ["all_endurance"]
+      },
+      "rationale": "Yellow/red readiness suppresses threshold and VO2 work for the day. Aerobic base preserves fitness without piling on stress."
+    }
+  ],
+  "fatigueModulation": {
+    "veryHighFatigueRules": {
+      "maxBackToBackHardDays": 0,
+      "minimumRecoveryDayAfter": 1,
+      "spinalLoadingHighMaxPerWeek": 2
+    },
+    "highFatigueRules": {
+      "maxBackToBackHardDays": 1,
+      "minimumRecoveryDayAfter": 1,
+      "spinalLoadingHighMaxPerWeek": 3
+    },
+    "interferenceRules": {
+      "minutesBetweenStrengthAndKeyEndurance": 360,
+      "avoidSameDayKeyEnduranceWithMaxStrength": true,
+      "intentNote": "Six hours between heavy strength and key endurance protects the higher-priority discipline. If schedule forces same-day, key endurance comes first."
+    }
+  },
+  "sessionRoleRotation": {
+    "strengthFocusOrderForFiveDayWeek": [
+      "lower_squat_focus",
+      "upper_horizontal_push",
+      "lower_hinge_focus",
+      "upper_vertical_pull",
+      "single_leg_emphasis"
+    ],
+    "strengthFocusOrderForFourDayWeek": [
+      "upper_horizontal_push",
+      "lower_squat_focus",
+      "upper_vertical_pull",
+      "lower_hinge_focus"
+    ],
+    "strengthFocusOrderForThreeDayWeek": [
+      "full_body_density",
+      "lower_squat_focus",
+      "upper_vertical_pull"
+    ],
+    "calisthenicsOrderForFourDayWeek": [
+      "calisthenics_skill_strength",
+      "calisthenics_volume",
+      "calisthenics_full_body",
+      "calisthenics_endurance"
+    ],
+    "intentNote": "Roles must not repeat within a week. Lower/upper alternation is preserved when sessions ≥ 4 days. For three-day weeks, prefer full-body density days to avoid leaving any pattern undertrained."
+  },
+  "calisthenicsSpecific": {
+    "sessionStructure": {
+      "openWith": "skill_or_high_tension_primary",
+      "thenAccessorySupersetCount": 2,
+      "finishWith": "core_skill_or_density_circuit",
+      "intentNote": "A calisthenics session opens with the highest-skill movement (handstand work, lever, weighted bodyweight strength) when CNS is fresh, then runs antagonist supersets, then a core/density finisher."
+    },
+    "progressionPath": {
+      "push": ["incline_push_up", "knee_push_up", "push_up", "diamond_push_up", "decline_push_up", "pike_push_up", "ring_push_up", "archer_push_up", "wall_walk", "handstand_hold", "handstand_push_up_negative", "handstand_push_up", "one_arm_push_up"],
+      "pull": ["scapular_pull_up", "band_assisted_pull_up", "negative_pull_up", "ring_row", "inverted_row", "chin_up", "pull_up", "weighted_pull_up", "archer_pull_up", "l_sit_pull_up", "muscle_up"],
+      "legs": ["bodyweight_squat", "lunging_iso_hold", "step_up", "split_squat", "bulgarian_split_squat", "assisted_pistol_squat", "box_pistol_squat", "pistol_squat", "shrimp_squat"],
+      "core": ["plank", "dead_bug", "side_plank", "hollow_hold", "hollow_rocks", "l_sit_tuck", "dragon_flag_tuck", "l_sit_hold", "ab_wheel_rollout", "dragon_flag", "v_sit"],
+      "intentNote": "Each path is ordered by progression difficulty. The engine advances along the path when the athlete completes target reps with target tempo for two consecutive sessions."
+    },
+    "tempoProgressionScheme": {
+      "default": "2-0-1-0",
+      "intermediate": "3-1-1-0",
+      "advanced": "5-1-1-0",
+      "isometric_emphasis": "2-3-1-0",
+      "intentNote": "Tempo digits = eccentric / bottom pause / concentric / top pause in seconds. The intermediate scheme is the workhorse for hypertrophy. Advanced (5s eccentric) is the gating tempo before unlocking the next leverage variant."
+    }
   }
 }
-
