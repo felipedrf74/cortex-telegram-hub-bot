@@ -6,41 +6,46 @@ Date: 2026-05-03
 
 Active production package:
 
-- source branch: `feature/p0-readiness-integration-task-isolation`
-- production HEAD: `396b8f0` (version-bump for 4.14.123)
-- production version: `4.14.123`
+- source branch: `main`
+- production HEAD: `9f503a0` (version-bump for 4.14.124)
+- production version: `4.14.124`
 - release state: `docs/release/CURRENT_RELEASE_STATE.md` (backend) and `/Users/felipedominguez/Desktop/Nexus Hub/docs/release/CURRENT_RELEASE_STATE.md` (workspace)
 - official workspace root: `/Users/felipedominguez/Desktop/Nexus Hub`
 
-Commits in this release (4.14.122 → 4.14.123):
+Commits in this release (4.14.123 → 4.14.124):
 
-- `0ab56a8 fix(training): close poor-recovery time-volume coherence (eval 82 -> 98)`
-- `b06cbb7 feat(coach-engine): slice 5.A — catalog v2 + progression families + calisthenics modality + principles rulebook`
-- `058b0de chore(docs): archive 2026-04 training release-candidate evidence`
-- `396b8f0 chore: bump version to 4.14.123 [deploy]`
+- `3bf9a37 fix(training): harden local coach profile and equipment planning`
+- `9f503a0 chore: bump version to 4.14.124 [deploy]`
 
 Scope:
 
-- Poor-recovery time-volume coherence fix (eval `time_volume_coherence` 82 → 98, overall 97 → 99)
-- Catalog expansion 43 → 129 exercises across 23 progression families
-- Strength + calisthenics templates 3 → 14
-- Principles rulebook 26 → 291 lines (executable phase × experience × equipment matrix, progression rules, fatigue modulation, role rotation, calisthenics paths)
-- Optional `progressionFamily/Level/Prerequisites`, `tempo`, `selectionReason` fields on `Exercise` / `ExercisePrescription`
-- 8 release-candidate-*.md and production-release-final-status.md archived under `docs/release/archive/2026-04/training/`
+- Persisted Training onboarding profile wrapper rows are unwrapped before plan generation.
+- Strength planning supports up to 6 weekly strength sessions where feasible.
+- Weekly session capping removes exact excess instead of over-removing sessions.
+- No-equipment/bodyweight profiles map to bodyweight-safe prescriptions.
+- Romanian deadlift aliases are equipment-adapted consistently.
+- `/api/v1/training/plan/weeks` exposes read-only all-week plan state with sync summaries.
+- v2 risk-based release pipeline is now on `main` and was used for this promotion.
 
 Validated through promotion:
 
-- pre-commit full vitest (×3 commits): 432 files / 6557 tests passed
-- pre-push full vitest (deploy.sh): 432 files / 6557 tests passed
+- pre-push full vitest before source push: 432 files / 6565 tests passed
+- dry-run deploy rehearsal: full verify + build passed, no server mutation
 - staging deploy: exit 0
+- staging soak: 5 minutes
 - staging smoke: 17/17 passed
+- Training cross-skill staging smoke: passed against staging user `24`
+- staging fixture cleanup: `activeFixturePlans=0`, `activeFixtureFinanceRows=0`
 - local↔staging dist hash match preflight: passed
-- prod deploy.sh: rsync → npm ci → pm2 start → 10s health wait → ✅ `Deploy complete! v4.14.123`
+- deploy-time full verify: 432 files / 6565 tests passed
+- deploy-time pre-push full vitest for version bump: 432 files / 6565 tests passed
+- prod deploy.sh: rsync → npm ci → pm2 start → 10s health wait → ✅ `Deploy complete! v4.14.124`
 - promote-to-prod.sh: ✅ `PROMOTE COMPLETE`
-- post-deploy: PM2 `nexus-hub` and `content-engine` online (22s uptime), prod `package.json` reports `4.14.123`
+- post-deploy: PM2 `nexus-hub` and `content-engine` online, prod `package.json` reports `4.14.124`
 
 ## Previous Production Versions On This Branch
 
+- 4.14.123 (`396b8f0`) — Training poor-recovery coherence + catalog v2 release
 - 4.14.122 (`a172a9f`) — `fix(training): use rolling week window for volume enforcement` (source commit `e5181fe`)
 - 4.14.121 (`ba2089b`) — version bump
 - 4.14.120 (`eaf98f3`) — P0 readiness/Garmin/task-list isolation fix (source commit `6549934`)
