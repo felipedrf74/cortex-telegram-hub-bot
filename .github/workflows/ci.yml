@@ -133,6 +133,13 @@ jobs:
         # engine + ios history. Non-gating during the soak window.
         run: scripts/release-doc-drift-check.sh || true
 
+      - name: closed-beta identity scan (advisor)
+        # Catches v4.14.118-class hardcoded-founder-identity residue in
+        # runtime code (prompts, persisted-payload writers, etc.).
+        # Closed-beta-readiness-hardening (2026-05-03). Strict mode runs
+        # nightly; here it's advisor only.
+        run: scripts/closed-beta-identity-scan.sh || true
+
   # ═══════════════════════════════════════════════════
   # FOCUSED OR FULL VITEST (driven by classifier)
   # ═══════════════════════════════════════════════════

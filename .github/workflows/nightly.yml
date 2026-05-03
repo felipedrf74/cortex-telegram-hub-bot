@@ -113,6 +113,18 @@ jobs:
         # docs. PR runs use the advisor mode; nightly raises the bar.
         run: scripts/release-doc-drift-check.sh --strict
 
+  closed-beta-identity-scan-strict:
+    name: 🔒 Closed-beta identity scan (strict)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Strict identity scan
+        # Closed-beta-readiness-hardening (2026-05-03). Strict mode in
+        # nightly catches the v4.14.118-class hardcoded-founder-identity
+        # regression before it can leak to production. PR-side runs in
+        # advisor mode; nightly is the gate.
+        run: scripts/closed-beta-identity-scan.sh --strict
+
   vi-mock-completeness:
     name: 🧪 vi.mock completeness lint
     runs-on: ubuntu-latest
