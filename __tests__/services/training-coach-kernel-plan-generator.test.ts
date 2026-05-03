@@ -173,6 +173,84 @@ describe('buildCoachKernelTrainingPlan — side effects', () => {
     expect(strengthSessions.every((session) => session.preferredStartTime === '12:00')).toBe(true);
   });
 
+  it('uses app-supplied race date and priority intent in AthleteState goals', () => {
+    const athlete = buildAthleteStateFromTrainingProfiles({
+      userId: 508,
+      objective: 'Lisbon Marathon',
+      durationWeeks: 4,
+      startDate: '2026-05-04',
+      sessionsPerWeek: 7,
+      strengthSessionsPerWeek: 5,
+      preferredTime: '12:00',
+      preferredCardioTime: '07:00',
+      preferredStrengthTime: '12:00',
+      longWorkoutDay: 'Saturday',
+      notes: null,
+      fitnessProfile: { experience_level: 'advanced', available_equipment: 'Full commercial gym' },
+      gymProfile: { training_age: '5 years', equipment_access: 'Full commercial gym' },
+      runProfile: { weekly_mileage_km: '45' },
+      goalMode: 'event_based',
+      trainingPriority: 'running',
+      raceDate: '2026-10-18',
+    });
+
+    expect(athlete.goals.raceCalendar).toEqual([
+      expect.objectContaining({
+        date: '2026-10-18',
+        name: 'Lisbon Marathon',
+        subtype: 'marathon',
+      }),
+    ]);
+    expect(athlete.goals.priorityOrder[0]).toBe('running');
+  });
+
+  it('marks maintenance and return-to-training goal modes in priority order', () => {
+    const maintenanceAthlete = buildAthleteStateFromTrainingProfiles({
+      userId: 509,
+      objective: 'General Fitness',
+      durationWeeks: 4,
+      startDate: '2026-05-04',
+      sessionsPerWeek: 4,
+      strengthSessionsPerWeek: 2,
+      preferredTime: '12:00',
+      preferredCardioTime: '07:00',
+      preferredStrengthTime: '12:00',
+      longWorkoutDay: null,
+      notes: null,
+      fitnessProfile: { experience_level: 'intermediate', available_equipment: 'Full gym' },
+      gymProfile: { equipment_access: 'Full gym' },
+      runProfile: null,
+      goalMode: 'maintenance',
+      trainingPriority: 'strength',
+    });
+
+    expect(maintenanceAthlete.goals.strengthGoal).toBe('maintenance');
+    expect(maintenanceAthlete.goals.priorityOrder[0]).toBe('maintenance');
+    expect(maintenanceAthlete.goals.priorityOrder[1]).toBe('strength');
+
+    const returnAthlete = buildAthleteStateFromTrainingProfiles({
+      userId: 510,
+      objective: 'Running consistency',
+      durationWeeks: 4,
+      startDate: '2026-05-04',
+      sessionsPerWeek: 3,
+      strengthSessionsPerWeek: 1,
+      preferredTime: '12:00',
+      preferredCardioTime: '07:00',
+      preferredStrengthTime: '12:00',
+      longWorkoutDay: null,
+      notes: null,
+      fitnessProfile: { experience_level: 'intermediate', available_equipment: 'Bodyweight' },
+      gymProfile: null,
+      runProfile: { weekly_mileage_km: '15' },
+      goalMode: 'return_to_training',
+      trainingPriority: 'running',
+    });
+
+    expect(returnAthlete.goals.priorityOrder[0]).toBe('return');
+    expect(returnAthlete.goals.priorityOrder[1]).toBe('running');
+  });
+
   it('seeds AthleteState.readiness from currentReadiness when provided', () => {
     // This is the core fix for QW#2. When the route supplies real
     // wearable readiness data the planner must consume it so guardrails

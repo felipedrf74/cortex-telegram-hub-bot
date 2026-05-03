@@ -18,7 +18,11 @@ import {
   applyTrainingPlanCoordination,
   buildTrainingPlanCoordination,
 } from '../../services/training-plan-coordination';
-import { buildCoachKernelTrainingPlan } from '../../services/training-coach-kernel-plan-generator';
+import {
+  buildCoachKernelTrainingPlan,
+  type TrainingGoalMode,
+  type TrainingPriority,
+} from '../../services/training-coach-kernel-plan-generator';
 import {
   buildBusyWindows,
   normalizePreferredTime,
@@ -51,6 +55,9 @@ export interface GenerateTrainingPlanForUserInput {
   strengthSessionsPerWeek?: unknown;
   longWorkoutDay?: unknown;
   notes?: unknown;
+  goalMode?: unknown;
+  trainingPriority?: unknown;
+  raceDate?: unknown;
   /**
    * Slice 2.B — explicit two-a-day preference. Routes to
    * `availability.maxSessionsPerDay` inside the kernel input. When
@@ -185,6 +192,9 @@ export async function generateTrainingPlanForUser(
     strengthSessionsPerWeek = 2,
     longWorkoutDay,
     notes,
+    goalMode,
+    trainingPriority,
+    raceDate,
     twoADayPreference,
     calendarSource,
   } = input;
@@ -193,6 +203,18 @@ export async function generateTrainingPlanForUser(
   const fitnessProfile = unwrapOnboardingProfileData(onboarding.getProfile?.(userId, 'fitness'));
   const gymProfile = unwrapOnboardingProfileData(onboarding.getProfile?.(userId, 'triathlon-gym'));
   const runProfile = unwrapOnboardingProfileData(onboarding.getProfile?.(userId, 'triathlon-running'));
+  const normalizedGoalMode = normalizeGoalMode(goalMode);
+  const normalizedTrainingPriority = normalizeTrainingPriority(trainingPriority);
+  const normalizedRaceDate = normalizeIsoDate(raceDate);
+  const runProfileForPlan = normalizedRaceDate
+    ? {
+        ...(runProfile ?? {}),
+        target_race_date: normalizedRaceDate,
+        target_race: typeof runProfile?.target_race === 'string' && runProfile.target_race.trim()
+          ? runProfile.target_race
+          : objective,
+      }
+    : runProfile;
 
   if (!fitnessProfile || Object.keys(fitnessProfile).length === 0) {
     return {
@@ -224,12 +246,37 @@ export async function generateTrainingPlanForUser(
   const startStr = now.toISOString().slice(0, 10);
   const endStr = endDate.toISOString().slice(0, 10);
 
+  // training-expert-coach-knowledge-engine (2026-05-03):
+  // Calendar fetch is the upstream source of truth for "when can the
+  // user actually train?". A silent empty `busyWindows` after a
+  // `getEvents` failure means we schedule blind — sessions land on top
+  // of meetings with no warning. Two changes here:
+  //   1. The catch logs the error structurally so SRE can see when
+  //      Google/Outlook is degraded for a real user.
+  //   2. We track a `calendarFetchDegraded` flag so downstream callers
+  //      (and the plan-linter response) can attach an explicit warning
+  //      ("Plan generated without calendar conflict detection — please
+  //      review your week before trusting it"). The plan still
+  //      generates so the user isn't blocked by transient OAuth
+  //      hiccups, but the caller knows it happened.
   let busyWindows: BusyWindow[] = [];
+  let calendarFetchDegraded = false;
+  let calendarFetchError: string | undefined;
   try {
     const events = await getEvents(startStr, endStr, userId);
     busyWindows = buildBusyWindows(events || []);
-  } catch {
-    // Calendar unavailable — plan without schedule constraints.
+  } catch (err) {
+    calendarFetchDegraded = true;
+    calendarFetchError = err instanceof Error ? err.message : String(err);
+    logger.warn(
+      {
+        userId,
+        startDate: startStr,
+        endDate: endStr,
+        err,
+      },
+      'training-plan-generation: calendar getEvents failed; plan will be generated without conflict detection',
+    );
   }
 
   const equipmentAdaptation = buildTrainingEquipmentAdaptation({
@@ -254,7 +301,7 @@ export async function generateTrainingPlanForUser(
     longWorkoutDay: normalizedLongWorkoutDay,
     fitnessProfile,
     gymProfile,
-    runProfile,
+    runProfile: runProfileForPlan,
     training: null,
     cooking: null,
     finance: null,
@@ -286,7 +333,7 @@ export async function generateTrainingPlanForUser(
       longWorkoutDay: normalizedLongWorkoutDay,
       fitnessProfile,
       gymProfile,
-      runProfile,
+      runProfile: runProfileForPlan,
       training: trainingContextResult.status === 'fulfilled' ? trainingContextResult.value : null,
       cooking: cookingContextResult.status === 'fulfilled' ? cookingContextResult.value : null,
       finance: financeContextResult.status === 'fulfilled' ? financeContextResult.value : null,
@@ -319,9 +366,12 @@ export async function generateTrainingPlanForUser(
         preferredStrengthTime: normalizedPreferredStrengthTime,
         longWorkoutDay: normalizedLongWorkoutDay,
         notes: typeof notes === 'string' ? notes.trim() : null,
+        goalMode: normalizedGoalMode,
+        trainingPriority: normalizedTrainingPriority,
+        raceDate: normalizedRaceDate,
         fitnessProfile,
         gymProfile,
-        runProfile,
+        runProfile: runProfileForPlan,
         currentReadiness,
         twoADayPreference,
       }), coordination),
@@ -398,6 +448,33 @@ export async function generateTrainingPlanForUser(
       break;
   }
 
+  // training-expert-coach-knowledge-engine (2026-05-03):
+  // The persister now runs the deterministic plan-linter in advisor
+  // mode. Pass through the fields the linter needs for accurate rules:
+  //   • equipmentProfile — drives the equipment_compatibility rule.
+  //   • raceDate         — drives the no_fake_taper_without_event rule
+  //                        and the race_specific_plan_requires_race_date
+  //                        rule.
+  //   • isRaceSpecific   — derived from the objective; tells the linter
+  //                        whether to treat missing race date as a
+  //                        blocker.
+  // All three are best-effort: when absent, the relevant rules no-op.
+  const equipmentProfileLabel: string | undefined =
+    typeof gymProfile?.equipment_access === 'string'
+      ? String(gymProfile.equipment_access).toLowerCase().trim() || undefined
+      : typeof fitnessProfile?.available_equipment === 'string'
+        ? String(fitnessProfile.available_equipment).toLowerCase().trim() || undefined
+        : undefined;
+  const raceDateForLint: string | null =
+    normalizedRaceDate
+      ? normalizedRaceDate
+      : typeof runProfileForPlan?.target_race_date === 'string' && runProfileForPlan.target_race_date.trim()
+      ? runProfileForPlan.target_race_date
+      : null;
+  const isRaceSpecificForLint =
+    objectiveNeedsRunningProfile(objective) &&
+    /\b(marathon|half\s*marathon|10k|5k|race|ironman|70\.3|trail)\b/i.test(objective);
+
   const persistedPlan = await persistGeneratedTrainingPlan({
     userId,
     objective,
@@ -414,6 +491,9 @@ export async function generateTrainingPlanForUser(
       strengthSessionsPerWeek,
       longWorkoutDay: longWorkoutDay || null,
       notes: notes || null,
+      goalMode: normalizedGoalMode,
+      trainingPriority: normalizedTrainingPriority,
+      raceDate: normalizedRaceDate,
       trainingCalendarSource: calendarSource || null,
     }),
     normalizedPreferredTime,
@@ -423,10 +503,44 @@ export async function generateTrainingPlanForUser(
     athleteProfiles: {
       fitnessProfile,
       gymProfile,
-      runProfile,
+      runProfile: runProfileForPlan,
     },
     calendarSource: calendarSource || undefined,
+    equipmentProfile: equipmentProfileLabel,
+    raceDate: raceDateForLint,
+    isRaceSpecific: isRaceSpecificForLint,
   });
+
+  // training-expert-coach-knowledge-engine (2026-05-03):
+  // Surface plan-linter findings + calendar-degraded warning on the
+  // response so iOS can render an honest "review your week before
+  // trusting it" banner. Both fields are best-effort signals; the iOS
+  // client decides UX. Treating these as silent passes was the historical
+  // foot-gun where a calendar outage produced sessions stacked on top of
+  // meetings with no warning.
+  // Lint result is optional defensively: mocked persistGeneratedTrainingPlan
+  // in legacy tests pre-dates the lint field; production always populates it.
+  const lintResult = persistedPlan.lint ?? {
+    status: 'pass' as const,
+    blockers: [],
+    warnings: [],
+    suggestedFixes: [],
+  };
+  const planWarnings: Array<{ code: string; message: string }> = [];
+  if (calendarFetchDegraded) {
+    planWarnings.push({
+      code: 'calendar_fetch_degraded',
+      message:
+        'Could not read your calendar to detect conflicts. The plan was generated ' +
+        'without conflict checks — please review the week before trusting it.',
+    });
+  }
+  for (const blocker of lintResult.blockers) {
+    planWarnings.push({ code: `lint_blocker_${blocker.ruleId}`, message: blocker.message });
+  }
+  for (const warning of lintResult.warnings) {
+    planWarnings.push({ code: `lint_warning_${warning.ruleId}`, message: warning.message });
+  }
 
   return {
     status: 'created',
@@ -448,6 +562,15 @@ export async function generateTrainingPlanForUser(
       profileQuality: planData.profileQuality ?? null,
       decisionReasons: Array.isArray(planData.decisionReasons) ? planData.decisionReasons : [],
       fallbackTemplateUsed: usedFallbackTemplate,
+      goalMode: normalizedGoalMode,
+      trainingPriority: normalizedTrainingPriority,
+      raceDate: raceDateForLint,
+      // training-expert-coach-knowledge-engine: explicit calendar
+      // health flag + lint verdict surface on the response payload.
+      calendarFetchDegraded,
+      ...(calendarFetchError ? { calendarFetchError } : {}),
+      planLint: lintResult,
+      warnings: planWarnings,
       message: usedFallbackTemplate
         ? `Plan created with a reliable fallback template. ${persistedPlan.totalSessions} sessions scheduled across ${durationWeeks} weeks. ${persistedPlan.eventsCreated} calendar events created.`
         : `Plan created! ${persistedPlan.totalSessions} sessions scheduled across ${durationWeeks} weeks. ${persistedPlan.eventsCreated} calendar events created.`,
@@ -473,4 +596,40 @@ function unwrapOnboardingProfileData(profile: unknown): Record<string, any> | nu
 function clampNumber(raw: unknown, fallback: number, min: number, max: number): number {
   const resolved = Number(raw) || fallback;
   return Math.max(min, Math.min(max, resolved));
+}
+
+function normalizeGoalMode(raw: unknown): TrainingGoalMode | null {
+  if (typeof raw !== 'string') return null;
+  const normalized = raw.trim().toLowerCase();
+  if (
+    normalized === 'event_based' ||
+    normalized === 'continuous' ||
+    normalized === 'maintenance' ||
+    normalized === 'return_to_training'
+  ) {
+    return normalized;
+  }
+  return null;
+}
+
+function normalizeTrainingPriority(raw: unknown): TrainingPriority | null {
+  if (typeof raw !== 'string') return null;
+  const normalized = raw.trim().toLowerCase();
+  if (
+    normalized === 'running' ||
+    normalized === 'cycling' ||
+    normalized === 'swimming' ||
+    normalized === 'strength' ||
+    normalized === 'triathlon' ||
+    normalized === 'hybrid'
+  ) {
+    return normalized;
+  }
+  return null;
+}
+
+function normalizeIsoDate(raw: unknown): string | null {
+  if (typeof raw !== 'string') return null;
+  const trimmed = raw.trim();
+  return /^\d{4}-\d{2}-\d{2}$/.test(trimmed) ? trimmed : null;
 }

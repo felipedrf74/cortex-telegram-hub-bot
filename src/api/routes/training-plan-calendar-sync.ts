@@ -530,6 +530,7 @@ export async function syncTrainingPlanCalendar(
       preferredTime,
       busyWindows,
       scheduledWindows,
+      { notBefore: now },
     );
     if (window.noAvailableSlot) {
       trainingPlans.updateSession(item.sessionId, {

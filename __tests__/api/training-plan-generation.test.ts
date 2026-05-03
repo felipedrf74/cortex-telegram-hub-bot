@@ -504,6 +504,48 @@ describe('generateTrainingPlanForUser', () => {
     }));
   });
 
+  // training-expert-coach-knowledge-engine (2026-05-03):
+  // P0-C — calendar fetch fail-safe. When `getEvents` errors we still
+  // generate a plan (so a transient OAuth blip doesn't block the user)
+  // but mark `calendarFetchDegraded: true` and emit an explicit
+  // `calendar_fetch_degraded` warning so iOS can render a "review your
+  // week before trusting it" banner. Historical bug: the silent empty
+  // busyWindows scheduled sessions on top of meetings.
+  it('marks the response as calendarFetchDegraded when getEvents throws', async () => {
+    mockGetEvents.mockRejectedValue(new Error('OAuth token expired'));
+
+    const result = await generateTrainingPlanForUser({
+      userId: 12,
+      objective: 'Build consistency',
+    });
+
+    expect(result.status).toBe('created');
+    expect((result as any).data.calendarFetchDegraded).toBe(true);
+    expect((result as any).data.calendarFetchError).toBe('OAuth token expired');
+    expect((result as any).data.warnings).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ code: 'calendar_fetch_degraded' }),
+      ]),
+    );
+  });
+
+  it('does NOT mark calendarFetchDegraded on a normal calendar read', async () => {
+    mockGetEvents.mockResolvedValue([]);
+
+    const result = await generateTrainingPlanForUser({
+      userId: 12,
+      objective: 'Build consistency',
+    });
+
+    expect(result.status).toBe('created');
+    expect((result as any).data.calendarFetchDegraded).toBe(false);
+    expect((result as any).data.calendarFetchError).toBeUndefined();
+    // No `calendar_fetch_degraded` warning surface.
+    const warnings = (result as any).data.warnings ?? [];
+    const codes = warnings.map((w: any) => w.code);
+    expect(codes).not.toContain('calendar_fetch_degraded');
+  });
+
   it('preserves legacy zero-value session fallback semantics', async () => {
     await generateTrainingPlanForUser({
       userId: 12,
@@ -559,6 +601,73 @@ describe('generateTrainingPlanForUser', () => {
     expect(JSON.parse(persistInput.preferencesJson)).toMatchObject({
       sessionsPerWeek: 6,
       strengthSessionsPerWeek: 5,
+    });
+  });
+
+  it('forwards explicit goal mode, priority, and race date from the app request', async () => {
+    const result = await generateTrainingPlanForUser({
+      userId: 12,
+      objective: 'Lisbon Marathon',
+      sessionsPerWeek: 7,
+      strengthSessionsPerWeek: 5,
+      goalMode: 'event_based',
+      trainingPriority: 'running',
+      raceDate: '2026-10-18',
+    });
+
+    expect(result.status).toBe('created');
+    expect(mockBuildCoachKernelTrainingPlan).toHaveBeenCalledWith(expect.objectContaining({
+      objective: 'Lisbon Marathon',
+      goalMode: 'event_based',
+      trainingPriority: 'running',
+      raceDate: '2026-10-18',
+      runProfile: expect.objectContaining({
+        currentMileage: 35,
+        target_race_date: '2026-10-18',
+        target_race: 'Lisbon Marathon',
+      }),
+    }));
+
+    const persistInput = mockPersistGeneratedTrainingPlan.mock.calls[0][0];
+    expect(persistInput.raceDate).toBe('2026-10-18');
+    expect(persistInput.athleteProfiles.runProfile).toEqual(expect.objectContaining({
+      target_race_date: '2026-10-18',
+    }));
+    expect(JSON.parse(persistInput.preferencesJson)).toMatchObject({
+      goalMode: 'event_based',
+      trainingPriority: 'running',
+      raceDate: '2026-10-18',
+    });
+    expect((result as any).data).toMatchObject({
+      goalMode: 'event_based',
+      trainingPriority: 'running',
+      raceDate: '2026-10-18',
+    });
+  });
+
+  it('drops unsupported goal mode, priority, and non-ISO race date before planning', async () => {
+    const result = await generateTrainingPlanForUser({
+      userId: 12,
+      objective: 'General running consistency',
+      goalMode: 'race',
+      trainingPriority: 'bodybuilding',
+      raceDate: '18/10/2026',
+    });
+
+    expect(result.status).toBe('created');
+    expect(mockBuildCoachKernelTrainingPlan).toHaveBeenCalledWith(expect.objectContaining({
+      goalMode: null,
+      trainingPriority: null,
+      raceDate: null,
+      runProfile: { currentMileage: 35 },
+    }));
+
+    const persistInput = mockPersistGeneratedTrainingPlan.mock.calls[0][0];
+    expect(persistInput.raceDate).toBeNull();
+    expect(JSON.parse(persistInput.preferencesJson)).toMatchObject({
+      goalMode: null,
+      trainingPriority: null,
+      raceDate: null,
     });
   });
 

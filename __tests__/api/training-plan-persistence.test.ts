@@ -163,6 +163,15 @@ describe('training-plan-persistence', () => {
       totalSessions: 2,
       eventsCreated: 2,
       weekSummaries: [{ weekNumber: 1, focus: 'base', sessionCount: 2 }],
+      // training-expert-coach-knowledge-engine (2026-05-03):
+      // The persister now runs the deterministic plan-linter in advisor
+      // mode. Healthy plans return `pass` with empty findings.
+      lint: {
+        status: 'pass',
+        blockers: [],
+        warnings: [],
+        suggestedFixes: [],
+      },
     });
     expect(mockCreatePlan).toHaveBeenCalledWith(expect.objectContaining({
       user_id: 12,
@@ -485,5 +494,348 @@ describe('training-plan-persistence', () => {
     expect(mockCreateEvent).toHaveBeenCalledTimes(2);
     expect(mockLinkSessionToCalendar).toHaveBeenCalledWith(2001, 'evt-1', 'google');
     expect(mockLinkSessionToCalendar).toHaveBeenCalledWith(2002, 'evt-2', 'google');
+  });
+
+  // training-expert-coach-knowledge-engine (2026-05-03):
+  // mid-week-creation past-day floor. Before this fix, creating a plan on
+  // Wednesday with a "week 1 Monday" session silently slid the session to
+  // *next* Monday — users lost Mon/Tue of week 1 with no warning. The fix
+  // marks past days as `unscheduled` with a clear `unavailableReason`
+  // surfaced in the session description, leveraging the same plumbing as
+  // the no-available-slot path.
+  describe('mid-week creation past-day floor', () => {
+    it('marks week 1 Monday as unscheduled when plan is generated on Wednesday', async () => {
+      // 2026-04-22 is a Wednesday (UTC). A "week 1 Monday" session generated
+      // on this day used to silently slide forward to the following Monday.
+      const result = await persistGeneratedTrainingPlan({
+        userId: 12,
+        objective: 'Mid-week marathon block',
+        durationWeeks: 1,
+        startDate: '2026-04-22',
+        endDate: '2026-04-29',
+        now: new Date('2026-04-22T08:00:00.000Z'),
+        preferencesJson: '{}',
+        normalizedPreferredTime: '12:00',
+        normalizedPreferredCardioTime: '07:00',
+        normalizedPreferredStrengthTime: '12:30',
+        busyWindows: [],
+        planData: {
+          weeks: [
+            {
+              weekNumber: 1,
+              sessions: [
+                { dayOfWeek: 'Monday', sessionType: 'run', title: 'Easy Run', durationMinutes: 50 },
+                { dayOfWeek: 'Tuesday', sessionType: 'gym', title: 'Lift A', durationMinutes: 45 },
+                { dayOfWeek: 'Wednesday', sessionType: 'run', title: 'Wed Run', durationMinutes: 40 },
+                { dayOfWeek: 'Friday', sessionType: 'run', title: 'Fri Run', durationMinutes: 45 },
+                { dayOfWeek: 'Saturday', sessionType: 'run', title: 'Long Run', durationMinutes: 90 },
+              ],
+            },
+          ],
+        },
+      });
+
+      // 5 sessions persisted total; 2 unscheduled (Mon, Tue), 3 active.
+      expect(result.totalSessions).toBe(3);
+      expect(result.eventsCreated).toBe(3);
+      expect(mockCreateSession).toHaveBeenCalledTimes(5);
+
+      // Mon — past day, unscheduled, reason mentions Monday + Wednesday.
+      expect(mockCreateSession).toHaveBeenCalledWith(expect.objectContaining({
+        title: 'Easy Run',
+        status: 'unscheduled',
+        preferred_time_unavailable: true,
+        description: expect.stringMatching(/Monday[\s\S]*has already passed[\s\S]*Wednesday/),
+      }));
+      // Tue — past day, unscheduled, reason mentions Tuesday + Wednesday.
+      expect(mockCreateSession).toHaveBeenCalledWith(expect.objectContaining({
+        title: 'Lift A',
+        status: 'unscheduled',
+        description: expect.stringMatching(/Tuesday[\s\S]*has already passed[\s\S]*Wednesday/),
+      }));
+      // Wed — today, scheduled.
+      expect(mockCreateSession).toHaveBeenCalledWith(expect.objectContaining({
+        title: 'Wed Run',
+        status: 'scheduled',
+      }));
+      // Fri/Sat — forward-looking, scheduled.
+      expect(mockCreateSession).toHaveBeenCalledWith(expect.objectContaining({
+        title: 'Fri Run',
+        status: 'scheduled',
+      }));
+      expect(mockCreateSession).toHaveBeenCalledWith(expect.objectContaining({
+        title: 'Long Run',
+        status: 'scheduled',
+      }));
+
+      // Calendar events created ONLY for the 3 forward-looking sessions.
+      expect(mockCreateEvent).toHaveBeenCalledTimes(3);
+
+      // No-available-slot warning telemetry emitted for both past-day rejects.
+      const pastDayWarnings = mockLoggerWarn.mock.calls.filter(call =>
+        String(call[1] || '').includes('no calendar slot was available'),
+      );
+      expect(pastDayWarnings.length).toBe(2);
+    });
+
+    it('keeps week 1 sessions on a Sunday-generated plan (no past-day rejects)', async () => {
+      // 2026-04-19 is a Sunday — every weekday and Saturday/Sunday of week 1
+      // are still in the future, so no past-day floor should fire.
+      const result = await persistGeneratedTrainingPlan({
+        userId: 12,
+        objective: 'Sunday-start week',
+        durationWeeks: 1,
+        startDate: '2026-04-19',
+        endDate: '2026-04-26',
+        now: new Date('2026-04-19T08:00:00.000Z'),
+        preferencesJson: '{}',
+        normalizedPreferredTime: '12:00',
+        normalizedPreferredCardioTime: '07:00',
+        normalizedPreferredStrengthTime: '12:30',
+        busyWindows: [],
+        planData: {
+          weeks: [
+            {
+              weekNumber: 1,
+              sessions: [
+                { dayOfWeek: 'Monday', sessionType: 'run', title: 'Mon Run', durationMinutes: 40 },
+                { dayOfWeek: 'Wednesday', sessionType: 'run', title: 'Wed Run', durationMinutes: 40 },
+                { dayOfWeek: 'Saturday', sessionType: 'run', title: 'Sat Long', durationMinutes: 80 },
+              ],
+            },
+          ],
+        },
+      });
+
+      expect(result.totalSessions).toBe(3);
+      expect(mockCreateSession).toHaveBeenCalledTimes(3);
+      // None of these should be `unscheduled` — all forward-looking.
+      const calls = mockCreateSession.mock.calls.map(call => (call[0] as any).status);
+      expect(calls).toEqual(['scheduled', 'scheduled', 'scheduled']);
+    });
+
+    it('does not schedule a same-day session earlier than the plan creation time', async () => {
+      const now = new Date(2026, 3, 22, 15, 15, 0, 0); // Wednesday 15:15 local
+      const result = await persistGeneratedTrainingPlan({
+        userId: 12,
+        objective: 'Same-day floor',
+        durationWeeks: 1,
+        startDate: '2026-04-22',
+        endDate: '2026-04-29',
+        now,
+        preferencesJson: '{}',
+        normalizedPreferredTime: '12:00',
+        normalizedPreferredCardioTime: '07:00',
+        normalizedPreferredStrengthTime: '12:30',
+        busyWindows: [],
+        planData: {
+          weeks: [
+            {
+              weekNumber: 1,
+              sessions: [
+                {
+                  dayOfWeek: 'Wednesday',
+                  sessionType: 'run',
+                  title: 'Today Run',
+                  durationMinutes: 40,
+                },
+              ],
+            },
+          ],
+        },
+      });
+
+      expect(result.eventsCreated).toBe(1);
+      expect(mockCreateSession).toHaveBeenCalledWith(expect.objectContaining({
+        title: 'Today Run',
+        status: 'scheduled',
+        preferred_time_unavailable: true,
+      }));
+      const eventStart = new Date(mockCreateEvent.mock.calls[0]?.[0]?.start);
+      expect(eventStart.getTime()).toBeGreaterThanOrEqual(now.getTime());
+      expect(eventStart.getHours()).toBe(15);
+      expect(eventStart.getMinutes()).toBe(30);
+    });
+
+    it('plan-linter advisor: surfaces equipment-incompatibility on bodyweight profile + barbell session', async () => {
+      const result = await persistGeneratedTrainingPlan({
+        userId: 12,
+        objective: 'Beginner bodyweight',
+        durationWeeks: 1,
+        startDate: '2026-04-19',
+        endDate: '2026-04-26',
+        now: new Date('2026-04-19T08:00:00.000Z'),
+        preferencesJson: '{}',
+        normalizedPreferredTime: '12:00',
+        normalizedPreferredCardioTime: '07:00',
+        normalizedPreferredStrengthTime: '12:30',
+        busyWindows: [],
+        equipmentProfile: 'bodyweight',
+        planData: {
+          weeks: [
+            {
+              weekNumber: 1,
+              sessions: [
+                {
+                  dayOfWeek: 'Monday',
+                  sessionType: 'gym',
+                  title: 'Lift A',
+                  durationMinutes: 45,
+                  exercises: [
+                    { name: 'Barbell Back Squat' }, // equipment violation
+                  ],
+                },
+              ],
+            },
+          ],
+        },
+      });
+
+      expect(result.lint.status).toBe('fail');
+      expect(result.lint.blockers).toHaveLength(1);
+      expect(result.lint.blockers[0]?.ruleId).toBe('equipment_compatibility');
+      // Even with a blocker the plan still persisted (advisor mode).
+      expect(result.totalSessions).toBe(1);
+      expect(mockLoggerWarn).toHaveBeenCalledWith(
+        expect.objectContaining({ status: 'fail' }),
+        'persistGeneratedTrainingPlan: plan-linter findings (advisor mode)',
+      );
+    });
+
+    it('plan-linter advisor: uses persisted dates to catch heavy lower before next-week long run', async () => {
+      const result = await persistGeneratedTrainingPlan({
+        userId: 12,
+        objective: 'Week-boundary long-run protection',
+        durationWeeks: 2,
+        startDate: '2026-04-19',
+        endDate: '2026-05-03',
+        now: new Date('2026-04-19T08:00:00.000Z'),
+        preferencesJson: '{}',
+        normalizedPreferredTime: '12:00',
+        normalizedPreferredCardioTime: '07:00',
+        normalizedPreferredStrengthTime: '12:30',
+        busyWindows: [],
+        planData: {
+          weeks: [
+            {
+              weekNumber: 1,
+              sessions: [
+                {
+                  dayOfWeek: 'Wednesday',
+                  sessionType: 'run',
+                  title: 'Bridge Run',
+                  durationMinutes: 40,
+                },
+              ],
+            },
+            {
+              weekNumber: 2,
+              sessions: [
+                {
+                  dayOfWeek: 'Sunday',
+                  sessionType: 'gym',
+                  title: 'Lower Body Strength',
+                  durationMinutes: 45,
+                  exercises: [{ name: 'Barbell Back Squat' }],
+                },
+                {
+                  dayOfWeek: 'Monday',
+                  sessionType: 'long_run',
+                  title: 'Long Run',
+                  durationMinutes: 90,
+                },
+              ],
+            },
+          ],
+        },
+      });
+
+      expect(result.eventsCreated).toBe(3);
+      expect(result.lint.status).toBe('fail');
+      expect(result.lint.blockers).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            ruleId: 'no_heavy_lower_before_long_run',
+            affectedSessions: [
+              expect.objectContaining({
+                weekNumber: 2,
+                dayOfWeek: 'sunday',
+                title: 'Lower Body Strength',
+              }),
+            ],
+          }),
+        ]),
+      );
+    });
+
+    it('plan-linter advisor: warns on race-week label without race date', async () => {
+      const result = await persistGeneratedTrainingPlan({
+        userId: 12,
+        objective: 'Plan with stale taper label',
+        durationWeeks: 1,
+        startDate: '2026-04-19',
+        endDate: '2026-04-26',
+        now: new Date('2026-04-19T08:00:00.000Z'),
+        preferencesJson: '{}',
+        normalizedPreferredTime: '12:00',
+        normalizedPreferredCardioTime: '07:00',
+        normalizedPreferredStrengthTime: '12:30',
+        busyWindows: [],
+        // raceDate intentionally absent.
+        planData: {
+          weeks: [
+            {
+              weekNumber: 1,
+              focus: 'race week',
+              sessions: [
+                { dayOfWeek: 'Wednesday', sessionType: 'run', title: 'Easy Run', durationMinutes: 30 },
+              ],
+            },
+          ],
+        },
+      });
+
+      expect(result.lint.status).toBe('pass_with_warnings');
+      expect(result.lint.warnings.some((w) => w.ruleId === 'no_fake_taper_without_event')).toBe(true);
+    });
+
+    it('does NOT apply the past-day floor to week 2+ (rolling 7-day envelope is correct)', async () => {
+      // Plan generated Wed 2026-04-22; the same Mon target in week 2 should
+      // schedule successfully (5 days from Wed = next Mon, which is the
+      // legitimate week-2 Monday).
+      const result = await persistGeneratedTrainingPlan({
+        userId: 12,
+        objective: 'Week 2 still gets Monday',
+        durationWeeks: 2,
+        startDate: '2026-04-22',
+        endDate: '2026-05-06',
+        now: new Date('2026-04-22T08:00:00.000Z'),
+        preferencesJson: '{}',
+        normalizedPreferredTime: '12:00',
+        normalizedPreferredCardioTime: '07:00',
+        normalizedPreferredStrengthTime: '12:30',
+        busyWindows: [],
+        planData: {
+          weeks: [
+            { weekNumber: 1, sessions: [
+              { dayOfWeek: 'Wednesday', sessionType: 'run', title: 'W1 Wed', durationMinutes: 40 },
+            ] },
+            { weekNumber: 2, sessions: [
+              { dayOfWeek: 'Monday', sessionType: 'run', title: 'W2 Mon', durationMinutes: 50 },
+              { dayOfWeek: 'Wednesday', sessionType: 'gym', title: 'W2 Wed', durationMinutes: 45 },
+            ] },
+          ],
+        },
+      });
+
+      // Week 1 Wed is today → scheduled.
+      // Week 2 Mon is 5 days from now → scheduled (NOT unscheduled).
+      // Week 2 Wed is 7 days from now → scheduled.
+      expect(result.totalSessions).toBe(3);
+      expect(mockCreateSession).toHaveBeenCalledWith(expect.objectContaining({
+        title: 'W2 Mon',
+        status: 'scheduled',
+      }));
+    });
   });
 });

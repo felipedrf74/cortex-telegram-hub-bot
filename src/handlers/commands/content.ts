@@ -1037,12 +1037,8 @@ export function registerContentCommands(bot: Bot): void {
       try {
         const calendarPrompt =
           `Generate a content calendar for the next ${days} days for the authenticated creator.\n\n` +
-          `PILLARS (use the authenticated creator's stored pillars when available; otherwise keep the mix neutral and setup-safe):\n` +
-          `\u{1F916} AI/Tech \u2014 builds, automations, AI tools\n` +
-          `\u{1F5E3}\uFE0F Commentary \u2014 politics, culture, hot takes\n` +
-          `\u{1F4AA} Training \u2014 triathlon, carnivore diet, fitness\n` +
-          `\u{1F3AE} Gaming \u2014 Helldivers, game reviews\n` +
-          `\u{1F0CF} Wild Card \u2014 memes, personal stories, collabs\n\n` +
+          `PILLARS:\n` +
+          `Use the authenticated creator's stored pillars (from their saved creator profile / Voice DNA / brand voice) as the source of truth. If the request context already includes pillars, use those exactly. If no pillars are configured for this user/tenant, ask the user to set them up first OR propose a small neutral mix (3\u20135 pillars) chosen for THIS creator's stated audience and goals; do NOT assume a founder, owner, or default brand identity.\n\n` +
           `For each day provide EXACTLY this format (one line per day):\n` +
           `DAY | PILLAR_EMOJI | TOPIC | FORMAT | TIME_SENSITIVITY\n\n` +
           `FORMAT must be one of: Reel, YouTube, Both\n` +
@@ -1053,7 +1049,7 @@ export function registerContentCommands(bot: Bot): void {
           `- Topics should be specific and actionable, not generic\n` +
           `- Start from tomorrow's date\n` +
           `- Output as HTML table with <b> tags for headers\n` +
-          `- Language: PT-BR for topics`;
+          `- Use the creator's stored language preference if known; otherwise default to the creator's onboarded language and ask if unsure`;
 
         const contentResponse = await handleContent(calendarPrompt, ctx.from!.id, undefined, 4096);
         clearInterval(typingInterval);

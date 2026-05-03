@@ -353,6 +353,7 @@ Return ONLY the JSON object."""
         # Store synthesis metadata in the first brief's why_now
         summary = synthesis.get("summary", "")
         key_facts = synthesis.get("key_facts", [])
+        # nx-allow-identity-scan: backward-compat read for payloads persisted before the field rename.
         creator_angle = synthesis.get("creator_angle", synthesis.get("felipes_angle", ""))  # creator_angle is the new key; fall back to legacy felipes_angle for older payloads
         args_for = synthesis.get("arguments_for", [])
         args_against = synthesis.get("arguments_against", [])
@@ -471,8 +472,8 @@ Here are {len(all_raw)} trending topics found right now:
 
 TASK: Select the TOP 8 most interesting topics for the authenticated creator's content. For each:
 1. Rewrite the title as a compelling Portuguese headline the authenticated creator would use
-2. Add a "content_angle" — how the authenticated creator should approach this (his unique take)
-3. Rate "relevance" 1-10 (how well it fits his brand)
+2. Add a "content_angle" — how the authenticated creator should approach this (their unique take)
+3. Rate "relevance" 1-10 (how well it fits their brand)
 4. Classify the "niche": politica | economia | fitness | fe_familia | geopolitica | desenvolvimento | reacao
 
 Return JSON array:

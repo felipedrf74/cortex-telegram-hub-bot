@@ -16,6 +16,7 @@ import type {
   Session,
   Sport,
   TrainingDecisionReason,
+  TrainingDecisionReasonCode,
   TrainingHistory,
   TrainingProfileQuality,
   WeeklyPlan,
@@ -52,6 +53,9 @@ export interface CoachKernelReadinessInput {
   /** One-line reasoning from the scorer, surfaced as a planner note. */
   reasoning?: string | null;
 }
+
+export type TrainingGoalMode = 'event_based' | 'continuous' | 'maintenance' | 'return_to_training';
+export type TrainingPriority = Sport | 'triathlon' | 'hybrid';
 
 export interface CoachKernelTrainingPlanInput {
   userId: number;
@@ -92,6 +96,9 @@ export interface CoachKernelTrainingPlanInput {
    * (`'optional'` semantics) — additive change only.
    */
   twoADayPreference?: 'never' | 'optional' | 'preferred' | null;
+  goalMode?: TrainingGoalMode | null;
+  trainingPriority?: TrainingPriority | null;
+  raceDate?: string | null;
   recentlyAskedFollowUpIds?: string[] | null;
   resolvedFollowUpIds?: string[] | null;
 }
@@ -176,13 +183,34 @@ export function buildCoachKernelTrainingPlan(input: CoachKernelTrainingPlanInput
     return convertWeeklyPlanToLegacyWeek(weeklyPlan, weekNumber);
   });
 
+  // TR-EC-QA-O1 + TR-EC-QA-O2 (2026-05-03 hostile QA closeout):
+  // Goal-mode reasons are derived from the RAW resolveWeeklyTargets
+  // output (NOT the shaped targets on `athlete.goals`). Re-derive
+  // primary focus + raw targets here for the reason collector — the
+  // helpers are pure so the duplicate work is cheap, and dedupe at
+  // line 203 collapses any duplicates that survive.
+  const reasonPrimaryFocus = resolvePrimaryFocusWithSource(
+    input.objective,
+    input.sessionsPerWeek,
+    input.strengthSessionsPerWeek,
+  ).value;
+  const reasonRawTargets = resolveWeeklyTargets(reasonPrimaryFocus, input);
+  const goalModeReasons = collectGoalModeDecisionReasons({
+    input,
+    rawTargets: reasonRawTargets,
+    raceCalendar: athlete.goals.raceCalendar,
+  });
+
   return {
     planName: `${input.objective.trim()} — Coach Plan`,
     sport: legacyPlanSport(athlete.goals.primaryFocus),
     periodization: 'block',
     weeks,
     profileQuality: trainingPlanProfileQuality(athlete.profileQuality),
-    decisionReasons: dedupeTrainingDecisionReasons(rawWeeklyPlans.flatMap((plan) => plan.decisionReasons ?? [])),
+    decisionReasons: dedupeTrainingDecisionReasons([
+      ...goalModeReasons,
+      ...rawWeeklyPlans.flatMap((plan) => plan.decisionReasons ?? []),
+    ]),
   };
 }
 
@@ -219,8 +247,27 @@ export function buildAthleteStateFromTrainingProfiles(input: CoachKernelTraining
       : 'Primary-focus resolver fell back to hybrid — objective string was empty; weekly targets, race calendar, and priority order will all use the hybrid default');
   }
   const primaryFocus = primaryFocusResolution.value;
-  const weeklyTargets = resolveWeeklyTargets(primaryFocus, input);
-  const raceCalendar = resolveRaceCalendar(primaryFocus, input.objective, input.runProfile);
+  const rawWeeklyTargets = resolveWeeklyTargets(primaryFocus, input);
+  const raceCalendar = resolveRaceCalendar(primaryFocus, input.objective, input.runProfile, input.raceDate);
+  // TR-EC-QA-O1 + TR-EC-QA-O2 (2026-05-03 hostile QA closeout):
+  // Apply goalMode-aware shaping. Before this pass goalMode was
+  // accept-and-echo: maintenance only relabeled priorityOrder and
+  // strengthGoal but did NOT throttle weekly volume. The shaping pass
+  // now enforces deterministic caps (60% scale capped at 4 for
+  // maintenance, 50% scale capped at 3 for return_to_training) AND
+  // emits structured TrainingDecisionReasons for every goal-mode
+  // signal — including continuous_plan_no_taper (so the user sees the
+  // continuous mode actively prevented a fake taper) and
+  // event_based_missing_race_date (so the user sees that picking
+  // event_based without a date is incomplete intent).
+  // `applyGoalModeVolumeShaping` is also called by
+  // `collectGoalModeDecisionReasons` to populate decisionReasons. The
+  // function is pure + idempotent under its own output, so emitting
+  // both inside the AthleteState build (for shaped targets) and again
+  // at the kernel level (for reasons) is safe — the dedupe pass at
+  // line 198 collapses any duplicates.
+  const { targets: weeklyTargets } =
+    applyGoalModeVolumeShaping(rawWeeklyTargets, input, raceCalendar);
   const constraints = resolveConstraints(input.fitnessProfile, input.runProfile, input.notes);
 
   // Slice 3.J (Layer 1, audit follow-up): emit a structured warning
@@ -377,13 +424,18 @@ export function buildAthleteStateFromTrainingProfiles(input: CoachKernelTraining
       : 'Strength-goal resolver fell back to athletic — no primary_goal data on profile; planner will use the generic athletic prescription template');
   }
 
-  const priorityOrder = resolvePriorityOrder(primaryFocus);
+  const resolvedStrengthGoal: NonNullable<Goals['strengthGoal']> =
+    input.goalMode === 'maintenance'
+      ? 'maintenance'
+      : strengthGoalResolution.value;
+  const priorityOrder = resolvePriorityOrder(primaryFocus, input.goalMode, input.trainingPriority);
+  const modalityPriorityOrder = priorityOrder.filter(isModalityPriority);
   const maxSessionsPerDay = resolveMaxSessionsPerDay(input.twoADayPreference, weeklyTargets);
   const normalizedTrainingProfile = extractNormalizedTrainingProfile(input, {
     primaryFocus,
-    priorityOrder,
+    priorityOrder: modalityPriorityOrder,
     weeklyTargets,
-    strengthGoal: strengthGoalResolution.value,
+    strengthGoal: resolvedStrengthGoal,
     raceCalendar,
     equipment,
     equipmentSource: equipmentResolution.source === 'fallback' ? 'fallback' : 'provided',
@@ -412,7 +464,7 @@ export function buildAthleteStateFromTrainingProfiles(input: CoachKernelTraining
     goals: {
       primaryFocus,
       secondaryFocus: weeklyTargets.strength ? 'strength' : undefined,
-      strengthGoal: strengthGoalResolution.value,
+      strengthGoal: resolvedStrengthGoal,
       raceCalendar,
       priorityOrder,
       weeklySessionsTarget: weeklyTargets,
@@ -758,8 +810,9 @@ function resolveRaceCalendar(
   primaryFocus: CoachingDiscipline,
   objective: string,
   runProfile?: Record<string, any> | null,
+  requestRaceDate?: string | null,
 ): RaceEvent[] {
-  const raceDate = normalizeRaceDate(runProfile?.target_race_date);
+  const raceDate = normalizeRaceDate(requestRaceDate) ?? normalizeRaceDate(runProfile?.target_race_date);
   if (!raceDate) return [];
 
   const subtype = normalizeRaceSubtype(runProfile?.target_race, objective);
@@ -1348,7 +1401,20 @@ function pickStrengthGoalString(raw: unknown): string | null {
   return trimmed.length === 0 ? null : trimmed;
 }
 
-function resolvePriorityOrder(primaryFocus: CoachingDiscipline): Goals['priorityOrder'] {
+function resolvePriorityOrder(
+  primaryFocus: CoachingDiscipline,
+  goalMode?: TrainingGoalMode | null,
+  trainingPriority?: TrainingPriority | null,
+): Goals['priorityOrder'] {
+  const base = resolveBasePriorityOrder(primaryFocus);
+  const priorityLead = priorityToOrderToken(trainingPriority);
+  const reordered = priorityLead ? [priorityLead, ...base.filter((item) => item !== priorityLead)] : base;
+  if (goalMode === 'maintenance') return ['maintenance', ...reordered.filter((item) => item !== 'maintenance')];
+  if (goalMode === 'return_to_training') return ['return', ...reordered.filter((item) => item !== 'return')];
+  return reordered;
+}
+
+function resolveBasePriorityOrder(primaryFocus: CoachingDiscipline): Goals['priorityOrder'] {
   switch (primaryFocus) {
     case 'triathlon':
       return ['running', 'cycling', 'swimming', 'strength'];
@@ -1365,6 +1431,28 @@ function resolvePriorityOrder(primaryFocus: CoachingDiscipline): Goals['priority
     default:
       return ['strength', 'running'];
   }
+}
+
+function priorityToOrderToken(priority?: TrainingPriority | null): Goals['priorityOrder'][number] | null {
+  switch (priority) {
+    case 'running':
+    case 'cycling':
+    case 'swimming':
+    case 'strength':
+      return priority;
+    case 'triathlon':
+      return 'running';
+    case 'hybrid':
+    default:
+      return null;
+  }
+}
+
+function isModalityPriority(value: Goals['priorityOrder'][number]): value is Sport | 'strength' {
+  return value === 'running' ||
+    value === 'cycling' ||
+    value === 'swimming' ||
+    value === 'strength';
 }
 
 function resolveWeeklyMinutesTarget(
@@ -1694,6 +1782,179 @@ function dedupeTrainingDecisionReasons(reasons: TrainingDecisionReason[]): Train
     output.push(reason);
   }
   return output;
+}
+
+// TR-EC-QA-O1 (2026-05-03 hostile QA closeout):
+// Maintenance volume cap. A user who picks "Maintenance" should not
+// receive 7 sessions/week regardless of what they typed in the
+// stepper — that defeats the maintenance intent. Apply a deterministic
+// scale + hard cap so the plan honors the goal-mode label.
+//
+// Constants chosen for closed beta:
+//   maintenance      → 60% of requested, capped at 4 total
+//   return_to_training → 50% of requested, capped at 3 total
+//
+// The shaping happens AFTER `resolveWeeklyTargets` so the per-modality
+// proportions (running:strength split, etc.) are preserved; we just
+// scale the totals down. If the resolver returned ≤ the cap already,
+// the targets pass through unchanged.
+const MAINTENANCE_SCALE = 0.6;
+const MAINTENANCE_TOTAL_CAP = 4;
+const RETURN_TO_TRAINING_SCALE = 0.5;
+const RETURN_TO_TRAINING_TOTAL_CAP = 3;
+
+export function applyGoalModeVolumeShaping(
+  rawTargets: Goals['weeklySessionsTarget'],
+  input: CoachKernelTrainingPlanInput,
+  raceCalendar: RaceEvent[],
+): { targets: Goals['weeklySessionsTarget']; decisionReasons: TrainingDecisionReason[] } {
+  const reasons: TrainingDecisionReason[] = [];
+  const goalMode = input.goalMode ?? null;
+
+  // Sum the per-modality counts to compute the total volume.
+  const sumTargets = (t: Goals['weeklySessionsTarget']): number =>
+    Object.values(t).reduce<number>((sum, v) => sum + (v ?? 0), 0);
+
+  // No throttling for non-volume-shaping modes — but signals are still
+  // emitted in `collectGoalModeDecisionReasons`.
+  if (goalMode !== 'maintenance' && goalMode !== 'return_to_training') {
+    return { targets: rawTargets, decisionReasons: reasons };
+  }
+
+  const scale = goalMode === 'maintenance' ? MAINTENANCE_SCALE : RETURN_TO_TRAINING_SCALE;
+  const cap = goalMode === 'maintenance' ? MAINTENANCE_TOTAL_CAP : RETURN_TO_TRAINING_TOTAL_CAP;
+
+  const rawTotal = sumTargets(rawTargets);
+  if (rawTotal <= cap) {
+    // Already at or below the cap; no throttling needed.
+    return { targets: rawTargets, decisionReasons: reasons };
+  }
+
+  // Scale each modality proportionally, then cap the total. We round
+  // each modality first, then trim the highest-volume one if the sum
+  // overshoots after rounding.
+  const scaled: Goals['weeklySessionsTarget'] = {};
+  let runningTotal = 0;
+  for (const [sport, count] of Object.entries(rawTargets) as Array<[Sport, number | undefined]>) {
+    if (!count || count <= 0) continue;
+    // Strength stays at minimum 1 if it was originally requested in
+    // either maintenance or return-to-training (otherwise the user
+    // loses their gym work entirely).
+    const minForSport = sport === 'strength' && count > 0 ? 1 : 0;
+    const scaledCount = Math.max(minForSport, Math.round(count * scale));
+    if (scaledCount > 0) {
+      scaled[sport] = scaledCount;
+      runningTotal += scaledCount;
+    }
+  }
+
+  // Hard cap on total: trim the highest-count non-strength modality
+  // (we keep the strength minimum as a recovery anchor).
+  while (runningTotal > cap) {
+    const candidates = (Object.entries(scaled) as Array<[Sport, number]>)
+      .filter(([sport, _count]) => sport !== 'strength')
+      .sort(([, a], [, b]) => b - a);
+    if (candidates.length === 0) break;
+    const [sport] = candidates[0];
+    scaled[sport] = (scaled[sport] ?? 0) - 1;
+    if ((scaled[sport] ?? 0) <= 0) delete scaled[sport];
+    runningTotal -= 1;
+  }
+
+  const reasonCode: TrainingDecisionReasonCode =
+    goalMode === 'maintenance' ? 'maintenance_volume_capped' : 'return_to_training_volume_capped';
+  const reasonText =
+    goalMode === 'maintenance'
+      ? `Plan volume capped at ${cap} sessions/week because Goal Mode is "Maintenance" (you requested ${rawTotal}). Maintenance prioritises consistency over progression.`
+      : `Plan volume capped at ${cap} sessions/week because Goal Mode is "Return to training" (you requested ${rawTotal}). The coach ramps up gradually after a layoff to protect against re-injury.`;
+
+  reasons.push({
+    code: reasonCode,
+    text: reasonText,
+    severity: 'notice',
+    affectedEntity: { type: 'week' },
+    sourceConstraint: { type: 'volume', label: goalMode },
+    before: { weeklyTargets: rawTargets, totalSessions: rawTotal },
+    after: { weeklyTargets: scaled, totalSessions: runningTotal, cap },
+    preservedIntent: 'goal_mode_volume_alignment',
+    evidence: [`requested=${rawTotal}`, `cap=${cap}`, `scale=${scale}`, `goalMode=${goalMode}`],
+  });
+
+  // Mark raceCalendar in evidence if present so downstream readers can
+  // see the planner kept any race date despite shaping.
+  if (raceCalendar.length > 0) {
+    reasons[0].evidence!.push(`raceDate=${raceCalendar[0].date}`);
+  }
+
+  return { targets: scaled, decisionReasons: reasons };
+}
+
+// TR-EC-QA-O2 (2026-05-03 hostile QA closeout):
+// Goal-mode reason collector. Codex's prior pass plumbed goalMode
+// through but never emitted user-actionable signal when the field
+// was inert. The collector now surfaces:
+//   • maintenance/return_to_training cap (volume_capped reason from
+//     applyGoalModeVolumeShaping — passed through)
+//   • continuous + no-taper assertion (continuous_plan_no_taper) so
+//     the iOS banner can confirm the coach intentionally avoided a
+//     taper week
+//   • event_based + no raceDate (event_based_missing_race_date) so
+//     the iOS create-plan flow can prompt the user to add the date
+function collectGoalModeDecisionReasons(args: {
+  input: CoachKernelTrainingPlanInput;
+  rawTargets: Goals['weeklySessionsTarget'];
+  raceCalendar: RaceEvent[];
+}): TrainingDecisionReason[] {
+  const { input, rawTargets, raceCalendar } = args;
+  const out: TrainingDecisionReason[] = [];
+  const goalMode = input.goalMode ?? null;
+
+  // Re-emit the shaping reason from the RAW resolveWeeklyTargets output
+  // (not the already-shaped targets — passing the post-shape result
+  // would short-circuit the cap-detection because the targets would
+  // already be ≤ cap). The helper is pure + cheap so re-running it is
+  // safe; dedupe at line 198 collapses any duplicate.
+  const shaping = applyGoalModeVolumeShaping(rawTargets, input, raceCalendar);
+  out.push(...shaping.decisionReasons);
+
+  // Continuous plan — emit a reassuring signal that no fake taper
+  // will be applied. The kernel `resolveWeekPhase` derives phase from
+  // race calendar, so a continuous plan with empty raceCalendar will
+  // never produce a 'taper' or 'race' phase. The decisionReason
+  // documents this for users who might wonder why their plan looks
+  // flat across weeks.
+  if (goalMode === 'continuous') {
+    out.push({
+      code: 'continuous_plan_no_taper',
+      text: 'Continuous mode — the coach maintains build/recovery cycles instead of a race taper. Your plan stays balanced week-over-week.',
+      severity: 'info',
+      affectedEntity: { type: 'week' },
+      sourceConstraint: { type: 'volume', label: 'continuous' },
+      preservedIntent: 'no_fake_taper_without_event',
+      evidence: ['goalMode=continuous'],
+    });
+  }
+
+  // Event-based without a race date — the request shape is
+  // incomplete. The plan-linter rule
+  // `race_specific_plan_requires_race_date` already catches the
+  // most-egregious case (race-typed objective without date), but
+  // the goal-mode signal is more direct: the user explicitly said
+  // "event-based" without supplying a date. Surface as a warning
+  // so iOS can prompt for the missing input on the same screen.
+  if (goalMode === 'event_based' && raceCalendar.length === 0) {
+    out.push({
+      code: 'event_based_missing_race_date',
+      text: 'You picked Event-based mode but no race date is set. Add a race date so the coach can structure build, peak, and taper around your event.',
+      severity: 'warning',
+      affectedEntity: { type: 'week' },
+      sourceConstraint: { type: 'volume', label: 'event_based' },
+      preservedIntent: 'race_specific_plan_requires_race_date',
+      evidence: ['goalMode=event_based', 'raceCalendar=empty'],
+    });
+  }
+
+  return out;
 }
 
 function legacyPlanSport(primaryFocus: CoachingDiscipline): CoordinatedTrainingPlan['sport'] {
