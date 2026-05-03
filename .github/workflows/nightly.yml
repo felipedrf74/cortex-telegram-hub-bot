@@ -99,3 +99,44 @@ jobs:
             sqlite3 "$DB" < "$f" || echo "⚠️ migration $f produced an error"
           done
           echo "✅ Full migration rehearsal complete"
+
+  release-doc-drift-strict:
+    name: 📝 Release-doc drift (strict)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Strict drift check
+        # Nightly is when we want to FAIL on stale SHAs in current/QA
+        # docs. PR runs use the advisor mode; nightly raises the bar.
+        run: scripts/release-doc-drift-check.sh --strict
+
+  vi-mock-completeness:
+    name: 🧪 vi.mock completeness lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+
+      - run: npm ci
+
+      - name: Lint vi.mock factories (top-25 + JSON artifact)
+        run: |
+          node scripts/vi-mock-completeness-lint.mjs --top
+          node scripts/vi-mock-completeness-lint.mjs --json > /tmp/vi-mock-lint.json
+          echo "Top-level summary:"
+          node -e "const j=JSON.parse(require('fs').readFileSync('/tmp/vi-mock-lint.json','utf8')); console.log(j.summary);"
+
+      - name: Upload lint JSON
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: vi-mock-completeness-lint-${{ github.run_id }}
+          path: /tmp/vi-mock-lint.json
+          retention-days: 14
