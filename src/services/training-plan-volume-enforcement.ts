@@ -77,7 +77,10 @@ function allowedDaysForWeek(startDate: string, weekNumber: number): string[] {
   if (weekNumber !== 1) return [...DAY_ORDER];
   const startIndex = dayIndexFromIsoDate(startDate);
   if (startIndex < 0) return [...DAY_ORDER];
-  return DAY_ORDER.slice(startIndex);
+  return [
+    ...DAY_ORDER.slice(startIndex),
+    ...DAY_ORDER.slice(0, startIndex),
+  ];
 }
 
 function dayIndexFromIsoDate(value: string): number {

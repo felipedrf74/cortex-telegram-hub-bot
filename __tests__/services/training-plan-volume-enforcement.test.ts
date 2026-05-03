@@ -35,7 +35,7 @@ describe('training-plan-volume-enforcement', () => {
     expect(sessions.filter((session) => session.sessionType !== 'gym').every((session) => session.preferredStartTime === '07:00')).toBe(true);
   });
 
-  it('uses remaining future days when week one starts mid-week', () => {
+  it('uses a rolling seven-day window when week one starts mid-week', () => {
     const result = enforceRequestedTrainingPlanVolume(
       { sport: 'hybrid', weeks: [{ weekNumber: 1, sessions: [] }] },
       {
@@ -49,10 +49,10 @@ describe('training-plan-volume-enforcement', () => {
 
     const sessions = result.weeks?.[0]?.sessions ?? [];
     const days = new Set(sessions.map((session) => session.dayOfWeek.toLowerCase()));
-    expect(days.has('monday')).toBe(false);
-    expect(days.has('tuesday')).toBe(false);
     expect(sessions).toHaveLength(6);
     expect(sessions.filter((session) => session.sessionType === 'gym')).toHaveLength(4);
+    expect(days.has('wednesday')).toBe(true);
+    expect(days.has('monday') || days.has('tuesday')).toBe(true);
   });
 
   it('preserves five requested strength sessions instead of trimming to the old four-session cap', () => {
@@ -140,7 +140,7 @@ describe('training-plan-volume-enforcement', () => {
     expect(new Set(strengthDays).size).toBe(strengthDays.length);
   });
 
-  it('does not fill a remaining double-session day with two strength sessions', () => {
+  it('does not compress Sunday-start plans into one overloaded day', () => {
     const result = enforceRequestedTrainingPlanVolume(
       { sport: 'running', weeks: [{ weekNumber: 1, sessions: [] }] },
       {
@@ -153,12 +153,19 @@ describe('training-plan-volume-enforcement', () => {
     );
 
     const sessions = result.weeks?.[0]?.sessions ?? [];
-    const sunday = sessions.filter((session) => session.dayOfWeek === 'Sunday');
-    const sundayStrength = sunday.filter((session) => session.sessionType === 'gym');
+    const sessionsByDay = new Map<string, typeof sessions>();
+    for (const session of sessions) {
+      const daySessions = sessionsByDay.get(session.dayOfWeek) ?? [];
+      daySessions.push(session);
+      sessionsByDay.set(session.dayOfWeek, daySessions);
+    }
 
-    expect(sunday).toHaveLength(2);
-    expect(sundayStrength).toHaveLength(1);
-    expect(sunday.some((session) => session.sessionType === 'run')).toBe(true);
-    expect(sundayStrength[0].preferredStartTime).toBe('12:00');
+    expect(sessions).toHaveLength(5);
+    expect(sessions.filter((session) => session.sessionType === 'gym')).toHaveLength(2);
+    expect(sessions.filter((session) => session.sessionType === 'run')).toHaveLength(3);
+    expect([...sessionsByDay.values()].every((daySessions) =>
+      daySessions.filter((session) => session.sessionType === 'gym').length <= 1
+    )).toBe(true);
+    expect([...sessionsByDay.values()].every((daySessions) => daySessions.length <= 2)).toBe(true);
   });
 });
