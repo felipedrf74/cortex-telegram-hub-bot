@@ -29,23 +29,94 @@ echo "   To: $SERVER:$REMOTE_DIR"
 echo ""
 
 # ── 0. VALIDATE FIRST — before any git operations ────
-# This is the safety gate: typecheck + full test suite must pass
-# before we bump version, commit, push, or touch the server.
-# If this fails, nothing has changed — safe to fix and retry.
+# This is the safety gate. Historically `deploy.sh` re-ran the full
+# `npm run verify` (typecheck + full Vitest) here, even though pre-push
+# had already enforced both on the same SHA and `staging-smoke.sh`
+# validates the deployed artifact. That redundancy adds ~9 min per
+# deploy with zero incremental signal (release-pipeline-risk-based-
+# optimization audit, 2026-05-03).
+#
+# Behavior modes (all preserve the safety contract: nothing risky runs
+# until typecheck passes):
+#
+#   default                                 → full verify (legacy behavior)
+#   NEXUS_DEPLOY_SKIP_VERIFY=1              → typecheck only; trust the
+#                                             pre-push + staging-smoke
+#                                             chain. Saves ~9 min/deploy.
+#   NEXUS_DEPLOY_SKIP_VERIFY=auto-when-staged
+#                                           → typecheck only IFF the
+#                                             local↔staging dist hashes
+#                                             match (verified by
+#                                             promote-to-prod.sh before
+#                                             this script is invoked).
+#                                             Falls back to full verify
+#                                             otherwise.
+#
+# Owner approval required to flip the project default to a non-empty
+# NEXUS_DEPLOY_SKIP_VERIFY in `.env` or shell config. The script itself
+# defaults to legacy behavior so accidental rollouts are safe.
 cd "$LOCAL_DIR"
-echo "🔍 Running full validation (typecheck + tests)..."
-npm run verify 2>&1 && echo "" || {
-  echo ""
-  echo "═══════════════════════════════════════════════"
-  echo "  ❌ VALIDATION FAILED — deploy aborted"
-  echo "  Fix type errors or failing tests, then retry."
-  echo "═══════════════════════════════════════════════"
-  exit 1
+SKIP_MODE="${NEXUS_DEPLOY_SKIP_VERIFY:-0}"
+
+run_full_verify() {
+  echo "🔍 Running full validation (typecheck + tests)..."
+  if npm run verify 2>&1; then
+    echo ""
+    echo "═══════════════════════════════════════════════"
+    echo "  ✅ VALIDATION PASSED — proceeding with deploy"
+    echo "═══════════════════════════════════════════════"
+    echo ""
+  else
+    echo ""
+    echo "═══════════════════════════════════════════════"
+    echo "  ❌ VALIDATION FAILED — deploy aborted"
+    echo "  Fix type errors or failing tests, then retry."
+    echo "═══════════════════════════════════════════════"
+    exit 1
+  fi
 }
-echo "═══════════════════════════════════════════════"
-echo "  ✅ VALIDATION PASSED — proceeding with deploy"
-echo "═══════════════════════════════════════════════"
-echo ""
+
+run_typecheck_only() {
+  echo "🔍 Running typecheck-only validation (NEXUS_DEPLOY_SKIP_VERIFY=$SKIP_MODE)..."
+  if npx tsc --noEmit; then
+    echo ""
+    echo "═══════════════════════════════════════════════"
+    echo "  ✅ TYPECHECK PASSED — skipping full vitest"
+    echo "  (pre-push + staging-smoke already validated this SHA)"
+    echo "═══════════════════════════════════════════════"
+    echo ""
+  else
+    echo ""
+    echo "═══════════════════════════════════════════════"
+    echo "  ❌ TYPECHECK FAILED — deploy aborted"
+    echo "═══════════════════════════════════════════════"
+    exit 1
+  fi
+}
+
+case "$SKIP_MODE" in
+  1|true|yes)
+    run_typecheck_only
+    ;;
+  auto-when-staged)
+    LOCAL_DIST_HASH="$(shasum -a 256 "$LOCAL_DIR/dist/index.js" 2>/dev/null | cut -d' ' -f1 || echo missing)"
+    STAGING_DIST_HASH="$(ssh "$SERVER" "shasum -a 256 ${STAGING_PATH:-/home/dominguez/telegram-hub-bot-staging}/dist/index.js 2>/dev/null | cut -d' ' -f1" 2>/dev/null || echo missing)"
+    if [ "$LOCAL_DIST_HASH" != "missing" ] && [ "$LOCAL_DIST_HASH" = "$STAGING_DIST_HASH" ]; then
+      echo "🔁 NEXUS_DEPLOY_SKIP_VERIFY=auto-when-staged: local↔staging dist hashes match — typecheck only"
+      run_typecheck_only
+    else
+      echo "🔁 NEXUS_DEPLOY_SKIP_VERIFY=auto-when-staged: hashes differ — full verify"
+      run_full_verify
+    fi
+    ;;
+  0|false|no|"")
+    run_full_verify
+    ;;
+  *)
+    echo "⚠️  Unrecognized NEXUS_DEPLOY_SKIP_VERIFY='$SKIP_MODE' — defaulting to full verify"
+    run_full_verify
+    ;;
+esac
 
 # ── 1. Build TypeScript locally ──────────────────────
 echo "📦 Building TypeScript..."
