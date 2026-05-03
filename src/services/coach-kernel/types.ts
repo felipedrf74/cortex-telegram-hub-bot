@@ -489,7 +489,15 @@ export type TrainingDecisionReasonCode =
   | 'recovery_intensity_reduced'
   | 'volume_growth_trimmed'
   | 'schedule_density_trimmed'
-  | 'interference_reflowed';
+  | 'interference_reflowed'
+  // Goal-mode signals (TR-EC-QA-O1 + TR-EC-QA-O2; 2026-05-03):
+  // Surfaced on the plan response so iOS can render an honest
+  // "you asked for X, the coach did Y because of goalMode" banner
+  // instead of the field being silently inert.
+  | 'maintenance_volume_capped'
+  | 'return_to_training_volume_capped'
+  | 'continuous_plan_no_taper'
+  | 'event_based_missing_race_date';
 
 export interface TrainingDecisionReason {
   code: TrainingDecisionReasonCode;

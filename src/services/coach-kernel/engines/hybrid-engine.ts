@@ -1,12 +1,38 @@
 // Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
 
-import type { AthleteState, BlockPhase } from '../types';
+import type { AthleteState, BlockPhase, Goals, Sport } from '../types';
 
 export interface HybridResolution {
   adjustedRunSessions: number;
   adjustedCyclingSessions: number;
   adjustedStrengthSessions: number;
   notes: string[];
+}
+
+// TR-EC-QA-O3 (2026-05-03 hostile QA closeout):
+// `Goals.priorityOrder` was widened to allow `'maintenance' | 'return'`
+// tokens when goalMode is set. The hybrid engine previously read
+// `priorityOrder[0]` as a Sport-like value; with maintenance/return
+// at the head, the engine couldn't recognise endurance priority via
+// the leading priority alone. This helper extracts the FIRST entry
+// that is actually a sport modality, skipping the new lifecycle
+// tokens. Returns `undefined` when the priority order has no
+// modality entry — caller falls back to `primaryFocus` for endurance
+// detection.
+function firstModalityPriority(
+  priorityOrder: Goals['priorityOrder'],
+): Sport | 'strength' | undefined {
+  for (const entry of priorityOrder) {
+    if (
+      entry === 'running' ||
+      entry === 'cycling' ||
+      entry === 'swimming' ||
+      entry === 'strength'
+    ) {
+      return entry;
+    }
+  }
+  return undefined;
 }
 
 export function resolveHybridPriority(athlete: AthleteState, phase: BlockPhase): HybridResolution {
@@ -18,7 +44,10 @@ export function resolveHybridPriority(athlete: AthleteState, phase: BlockPhase):
     const raceMs = Date.parse(race.date);
     return Number.isFinite(raceMs) && raceMs - Date.now() <= 56 * 24 * 60 * 60 * 1000;
   });
-  const leadingPriority = athlete.goals.priorityOrder[0];
+  // Skip any lifecycle prefix (`'maintenance' | 'return'`) when
+  // detecting endurance priority — those tokens carry no modality
+  // information.
+  const leadingPriority = firstModalityPriority(athlete.goals.priorityOrder);
   const endurancePriority = leadingPriority === 'running'
     || leadingPriority === 'cycling'
     || athlete.goals.primaryFocus === 'marathon'
