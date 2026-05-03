@@ -112,6 +112,53 @@ else
 fi
 
 # ── Smoke test gate ──────────────────────────────────
+# release-pipeline-risk-based-optimization (2026-05-03):
+# Reuse recent (≤ NEXUS_SMOKE_REUSE_MAX_AGE_S, default 1800 s = 30 min)
+# smoke-evidence JSON for the same staging dist hash. Skips one ~30 s
+# smoke run + ssh round-trips when the operator just ran staging-smoke.sh
+# manually before invoking promote-to-prod.sh (the documented workflow).
+# Disable with NEXUS_SMOKE_REUSE=0 to force a fresh smoke every time.
+LOCAL_SMOKE_HASH="$(shasum -a 256 "$LOCAL_DIR/dist/index.js" 2>/dev/null | cut -d' ' -f1 || echo missing)"
+EVIDENCE_DIR="$LOCAL_DIR/docs/release/smoke-evidence"
+SMOKE_REUSE_MAX_AGE_S="${NEXUS_SMOKE_REUSE_MAX_AGE_S:-1800}"
+SMOKE_REUSE_ENABLED="${NEXUS_SMOKE_REUSE:-1}"
+
+find_recent_evidence_for_hash() {
+  # Find the newest staging-smoke evidence file whose payload matches
+  # the dist hash currently sitting on staging AND whose age is within
+  # the freshness window AND whose verdict is "passed".
+  if [ "$SMOKE_REUSE_ENABLED" != "1" ] || [ ! -d "$EVIDENCE_DIR" ]; then
+    return 1
+  fi
+  local now_epoch="$(date -u +%s)"
+  local found=""
+  while IFS= read -r f; do
+    [ -z "$f" ] && continue
+    [ -f "$f" ] || continue
+    local mtime_epoch
+    mtime_epoch="$(stat -f %m "$f" 2>/dev/null || stat -c %Y "$f" 2>/dev/null || echo 0)"
+    local age=$((now_epoch - mtime_epoch))
+    if [ "$age" -gt "$SMOKE_REUSE_MAX_AGE_S" ]; then
+      continue
+    fi
+    # Parse verdict + sha from evidence
+    local verdict sha
+    verdict="$(NODE_NO_WARNINGS=1 node -e "let b='';process.stdin.on('data',c=>b+=c);process.stdin.on('end',()=>{try{process.stdout.write(JSON.parse(b).verdict||'')}catch(e){}})" < "$f" 2>/dev/null)"
+    sha="$(NODE_NO_WARNINGS=1 node -e "let b='';process.stdin.on('data',c=>b+=c);process.stdin.on('end',()=>{try{process.stdout.write(JSON.parse(b).sha||'')}catch(e){}})" < "$f" 2>/dev/null)"
+    [ "$verdict" = "passed" ] || continue
+    [ -n "$sha" ] || continue
+    if [ "$sha" = "$STAGING_HEAD_SHA" ]; then
+      found="$f|$age"
+      break
+    fi
+  done < <(ls -t "$EVIDENCE_DIR"/staging-smoke-*.json 2>/dev/null)
+  [ -n "$found" ] && printf '%s' "$found"
+  [ -n "$found" ] && return 0 || return 1
+}
+
+# Capture staging head SHA for evidence matching (cheap one-shot ssh)
+STAGING_HEAD_SHA="$(ssh "$SERVER" "/usr/bin/node -p \"require('$STAGING_DIR/package.json').version\" >/dev/null 2>&1; cd $STAGING_DIR 2>/dev/null && git rev-parse --short HEAD 2>/dev/null" || echo unknown)"
+
 if [ "$SKIP_SMOKE" = true ]; then
   echo ""
   echo "⚠️  Skipping smoke test (--skip-smoke)"
@@ -123,12 +170,25 @@ if [ "$SKIP_SMOKE" = true ]; then
   fi
 else
   echo ""
-  echo "🧪 Running staging smoke test..."
-  if ! "$LOCAL_DIR/scripts/staging-smoke.sh"; then
-    echo ""
-    echo "❌ Smoke test failed — REFUSING to promote to prod."
-    echo "   Fix the failing tests on staging first, then re-run this script."
-    exit 1
+  RECENT_EVIDENCE=""
+  if [ -n "$STAGING_HEAD_SHA" ] && [ "$STAGING_HEAD_SHA" != "unknown" ]; then
+    RECENT_EVIDENCE="$(find_recent_evidence_for_hash || true)"
+  fi
+  if [ -n "$RECENT_EVIDENCE" ]; then
+    EVIDENCE_FILE="${RECENT_EVIDENCE%|*}"
+    EVIDENCE_AGE_S="${RECENT_EVIDENCE##*|}"
+    echo "♻️  Reusing recent staging-smoke evidence (age: ${EVIDENCE_AGE_S}s, max: ${SMOKE_REUSE_MAX_AGE_S}s)"
+    echo "   $EVIDENCE_FILE"
+    echo "   verdict: passed · sha: $STAGING_HEAD_SHA"
+    echo "   Set NEXUS_SMOKE_REUSE=0 to force a fresh smoke."
+  else
+    echo "🧪 Running staging smoke test..."
+    if ! "$LOCAL_DIR/scripts/staging-smoke.sh"; then
+      echo ""
+      echo "❌ Smoke test failed — REFUSING to promote to prod."
+      echo "   Fix the failing tests on staging first, then re-run this script."
+      exit 1
+    fi
   fi
 fi
 
