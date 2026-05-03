@@ -307,6 +307,86 @@ else
   evidence_record "Staging DB integrity" "failed" "$DB_CHECK"
 fi
 
+# ── Classifier-driven domain appendation (release-pipeline-risk-based-
+# optimization, 2026-05-03):
+# Past this point, the 17 generic checks have all run. We additionally
+# probe for domain-specific risk based on what the changed-area
+# classifier says about the diff currently on staging vs origin/main.
+# This turns staging-smoke from "always 17 checks" into "17 generic +
+# (classifier-driven) domain checks" without changing the generic
+# pass/fail contract above.
+#
+# Classifier flags drive these probes:
+#   training/coach-kernel  → /api/v1/training/today response shape (auth-401 only)
+#   calendar               → /api/v1/training/calendar response shape (auth-401 only)
+#   cooking                → /api/v1/cooking/recipes response shape (auth-401 only)
+#   content                → /api/v1/content/ideas response shape (auth-401 only)
+#   secretary              → /api/v1/plan/today response shape (auth-401 only)
+#   migration              → migration count assertion (count > 0 in DB schema)
+#
+# All probes are auth-401 contract checks — they verify the route is
+# mounted, returns the canonical error envelope, and isn't shadowing a
+# 200 leak. They do NOT require auth tokens, do NOT mutate state, and
+# are safe on every staging install.
+#
+# Disable with NEXUS_SMOKE_DOMAIN_PROBES=0.
+DOMAIN_PROBES_ENABLED="${NEXUS_SMOKE_DOMAIN_PROBES:-1}"
+if [ "$DOMAIN_PROBES_ENABLED" = "1" ] && [ -x "$LOCAL_DIR/scripts/changed-area-classifier.sh" ]; then
+  echo ""
+  echo "🎯 Bonus — classifier-driven domain probes"
+
+  CLASSIFIER_JSON="$("$LOCAL_DIR/scripts/changed-area-classifier.sh" --base origin/main --format json 2>/dev/null || true)"
+  if [ -n "$CLASSIFIER_JSON" ]; then
+    has_flag() {
+      printf '%s' "$CLASSIFIER_JSON" \
+        | NODE_NO_WARNINGS=1 node -e "let b='';process.stdin.on('data',c=>b+=c);process.stdin.on('end',()=>{try{const j=JSON.parse(b);process.stdout.write(String(!!j.flags['$1']))}catch(_){process.stdout.write('false')}})" 2>/dev/null
+    }
+
+    if [ "$(has_flag training)" = "true" ]; then
+      test_ios_401 "domain training /api/v1/training/today" "http://localhost:8201/api/v1/training/today"
+    fi
+    if [ "$(has_flag coachKernel)" = "true" ]; then
+      test_ios_401 "domain coach /api/v1/training/coach/briefing" "http://localhost:8201/api/v1/training/coach/briefing"
+    fi
+    if [ "$(has_flag calendar)" = "true" ]; then
+      test_ios_401 "domain calendar /api/v1/training/calendar" "http://localhost:8201/api/v1/training/calendar"
+    fi
+    if [ "$(has_flag cooking)" = "true" ]; then
+      test_ios_401 "domain cooking /api/v1/cooking/recipes" "http://localhost:8201/api/v1/cooking/recipes"
+    fi
+    if [ "$(has_flag content)" = "true" ]; then
+      test_ios_401 "domain content /api/v1/content/ideas" "http://localhost:8201/api/v1/content/ideas"
+    fi
+    if [ "$(has_flag secretary)" = "true" ]; then
+      test_ios_401 "domain secretary /api/v1/plan/today" "http://localhost:8201/api/v1/plan/today"
+    fi
+    if [ "$(has_flag migration)" = "true" ]; then
+      MIG_COUNT=$(ssh "$SERVER" "cd /home/dominguez/telegram-hub-bot-staging && /usr/bin/node -e \"
+        const db = require('better-sqlite3')('data/bot.db', { readonly: true });
+        const r = db.prepare('SELECT COUNT(*) AS c FROM applied_migrations').get();
+        console.log(r.c);
+      \"" 2>&1 || echo "ERR")
+      if [[ "$MIG_COUNT" =~ ^[0-9]+$ ]] && [ "$MIG_COUNT" -gt 0 ]; then
+        echo "  ✅ migrations applied — count=$MIG_COUNT"
+        PASS=$((PASS + 1))
+        evidence_record "domain migration count" "passed" "applied=$MIG_COUNT"
+      else
+        echo "  ❌ migrations applied count missing: $MIG_COUNT"
+        FAIL=$((FAIL + 1))
+        FAILED_TESTS+=("migration count")
+        evidence_record "domain migration count" "failed" "$MIG_COUNT"
+      fi
+    fi
+
+    # If no domain flags were active, say so explicitly.
+    if [ "$(has_flag training)$(has_flag coachKernel)$(has_flag calendar)$(has_flag cooking)$(has_flag content)$(has_flag secretary)$(has_flag migration)" = "falsefalsefalsefalsefalsefalsefalse" ]; then
+      echo "  ℹ️ No domain probes triggered by current diff (docs-only / scripts-only)"
+    fi
+  else
+    echo "  ⚠️ classifier returned empty output — skipping domain probes"
+  fi
+fi
+
 # ── Smoke-evidence JSON ───────────────────────────────
 # Write a JSON file recording: branch, SHA, timestamps, per-check results.
 # Audits and `promote-to-prod.sh` can read this instead of re-running the
