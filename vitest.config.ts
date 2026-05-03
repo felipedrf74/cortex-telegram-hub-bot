@@ -31,7 +31,17 @@ export default defineConfig({
     pool: 'forks',
     poolOptions: {
       forks: {
-        singleFork: true,
+        // singleFork lifted on 2026-05-03 (release-pipeline-risk-based-
+        // optimization) after the empirical experiment showed:
+        //   - full vitest wall clock: 9 m 35.63 s → 1 m 19.76 s (7.22× speedup)
+        //   - 6,563 / 6,563 tests pass (vs 6,562 / 6,563 with singleFork=true)
+        //   - the singleFork flake was actually caused by the shared
+        //     module cache, not despite it; per-file fork isolation
+        //     eliminated it
+        // Re-enable singleFork: true ONLY if vi.mock partial-pollution
+        // returns. The vi.mock-completeness lint (scripts/vi-mock-
+        // completeness-lint.mjs) is the diagnostic tool for that case.
+        singleFork: false,
       },
     },
   },
