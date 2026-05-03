@@ -60,15 +60,19 @@ done
 # (file_path, repos_to_check_pipe-separated) pairs.
 # Workspace docs reference SHAs from BOTH engine + ios repos — cross-repo
 # is the norm there, so we accept a SHA reachable from either repo.
-# Repo-local docs check only their own repo.
+# Repo-local docs are also allowed to cite SHAs from the OTHER repo: the
+# iOS QA report frequently references backend deploy SHAs ("deploy commit
+# X"), and the backend QA report sometimes references iOS commits. So
+# every doc gets to check against both repos. The (rare) genuine drift
+# is when a SHA exists in NEITHER repo's history.
 CURRENT_DOCS=(
   "$WORKSPACE_DOCS_ROOT/docs/release/CURRENT_RELEASE_STATE.md|$ENGINE_REPO,$IOS_REPO"
   "$WORKSPACE_DOCS_ROOT/docs/release/OPEN_ITEMS.md|$ENGINE_REPO,$IOS_REPO"
   "$WORKSPACE_DOCS_ROOT/docs/release/release-pipeline-optimization-report.md|$ENGINE_REPO,$IOS_REPO"
-  "$ENGINE_REPO/docs/release/CURRENT_RELEASE_STATE.md|$ENGINE_REPO"
-  "$ENGINE_REPO/docs/release/current-release-index.md|$ENGINE_REPO"
-  "$ENGINE_REPO/docs/qa/QA_BACKEND_REPORT.md|$ENGINE_REPO"
-  "$IOS_REPO/docs/qa/QA_IOS_REPORT.md|$IOS_REPO"
+  "$ENGINE_REPO/docs/release/CURRENT_RELEASE_STATE.md|$ENGINE_REPO,$IOS_REPO"
+  "$ENGINE_REPO/docs/release/current-release-index.md|$ENGINE_REPO,$IOS_REPO"
+  "$ENGINE_REPO/docs/qa/QA_BACKEND_REPORT.md|$ENGINE_REPO,$IOS_REPO"
+  "$IOS_REPO/docs/qa/QA_IOS_REPORT.md|$IOS_REPO,$ENGINE_REPO"
 )
 
 FINDINGS=()
@@ -92,9 +96,25 @@ check_doc() {
   fi
   TOTAL_DOCS=$((TOTAL_DOCS + 1))
 
+  # Strip UUID-like patterns first. A UUID looks like
+  # XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX (8-4-4-4-12 hex). Without this
+  # filter, the inner chunks of every UUID get matched as "stale SHAs".
+  # Also strip OAuth tokens / device IDs that look like long hex blobs.
+  # Note: BSD sed (macOS) doesn't support `\b`, so we don't anchor to
+  # word boundaries — the lengths are specific enough on their own.
+  local stripped
+  stripped="$(sed -E '
+    s/[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}//g
+    s/[0-9a-fA-F]{32,}//g
+  ' "$doc" 2>/dev/null)"
+
   # Pull every short SHA (7–12 hex chars at word boundary) from the doc.
+  # We use grep on the stripped variant but keep the original line numbers
+  # by computing them from the matched line content via grep -n on the
+  # original file with the same regex (less precise than offsets but good
+  # enough for the user-visible output).
   local shas
-  shas="$(grep -oEn '\b[0-9a-fA-F]{7,12}\b' "$doc" 2>/dev/null \
+  shas="$(printf '%s' "$stripped" | grep -oEn '\b[0-9a-fA-F]{7,12}\b' 2>/dev/null \
     | awk -F: 'tolower($2) ~ /^[0-9a-f]+$/ && $2 !~ /^[0-9]+$/ {print $1 ":" tolower($2)}' \
     | sort -u)"
 
