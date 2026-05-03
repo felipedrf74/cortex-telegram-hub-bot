@@ -56,6 +56,8 @@ const canonicalFiles = new Set([
   path.join(backendRoot, 'docs', 'DOCUMENTATION-MAP.md'),
   path.join(backendRoot, 'docs', 'qa', 'QA_BACKEND_REPORT.md'),
   path.join(iosRoot, 'README.md'),
+  path.join(iosRoot, 'AGENTS.md'),
+  path.join(iosRoot, 'CLAUDE.md'),
   path.join(iosRoot, 'docs', 'qa', 'QA_IOS_REPORT.md'),
 ]);
 
