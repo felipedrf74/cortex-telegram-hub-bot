@@ -3,6 +3,44 @@
 Generated: 2026-04-29 03:30 WEST  
 Branch: `feature/chat-tenant-safe-context-orchestration`
 
+## 2026-05-03 Training Poor-Recovery Time-Volume Coherence Addendum
+
+Branch: `feature/p0-readiness-integration-task-isolation`
+
+Status: Coach-engine quality fix. Local pass only. No deployment.
+
+Issue addressed:
+
+- The poor-recovery adaptation path in `src/services/coach-kernel/poor-recovery-variation.ts` shrunk `durationMinutes` to a recovery range (20-35 min) but left the original strength session's exercise list attached. The coach-engine evaluation harness flagged this as `time_volume_coherence: 82/100`, with critical failures of the form "Technique Strength + Mobility: claimed 20min, estimated 51min, action trimContent". The 2026-04-28 red-team artefact `docs/training/red-team-open-issues.md` referred to this class of issue under poor-recovery variety; the eval harness pinned the precise pattern.
+- The fix applies two transformations after variant selection in `adaptSessionForPoorRecovery`:
+  1. For variants with `sessionType: 'mobility'`, clear the inherited exercise list (mobility variants are explicitly empty-block sessions, matching the existing variety-test contract that mobility recovery sessions hold no exercises).
+  2. For variants with `sessionType: 'strength_maintenance'`, run the existing `trimOverstuffedStrengthSessionToDuration` utility from `session-coherence.ts` to drop trailing accessory volume until the content matches the shrunk duration.
+  3. After both transformations, run `validateSessionCoherence` and shrink `durationMinutes` to the estimated content when the session is still underfilled. The variant's `minMinutes` becomes a soft preference; coherence becomes a hard requirement so the user-visible duration matches what the session can credibly deliver.
+
+Eval impact:
+
+- Overall score: 97 → **99** across 156 cases.
+- `time_volume_coherence` dimension: 82 → **98**.
+- Lowest-case score: 88 → 94.
+- Critical failures in lowest 10 cases: 7 → **0**.
+- Eval baseline artefacts: `/tmp/training-eval-2026-05-03/results.json` (post-trim, before duration honesty), `/tmp/training-eval-2026-05-03/results-v2.json` (final).
+
+Validation:
+
+- `npx tsc --noEmit`: passed.
+- Focused `coach-kernel-poor-recovery-variation` + `coach-kernel-session-coherence`: 35/35 passed (added 2 regression tests).
+- Broader training suite: 46 files / 615 tests passed.
+- Full backend vitest: 432 files / **6557 tests** passed (was 6555 pre-fix; the +2 are the new regression tests).
+
+Files changed:
+
+- `src/services/coach-kernel/poor-recovery-variation.ts`
+- `__tests__/services/coach-kernel-poor-recovery-variation.test.ts`
+
+Remaining caveat:
+
+- No deploy. The fix sits on `feature/p0-readiness-integration-task-isolation` alongside the previously merged P0 isolation fixes; merging requires the same staging/production review path used for v4.14.120.
+
 ## 2026-05-02 P0 Readiness / Garmin / Task-List Isolation Addendum
 
 Branch: `feature/p0-readiness-integration-task-isolation`

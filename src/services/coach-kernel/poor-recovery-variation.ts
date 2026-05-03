@@ -1,6 +1,8 @@
 // Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
 
-import type { AthleteState, FatigueCost, IntensityZone, Session, SessionType, Sport } from './types';
+import { loadCoachKnowledge } from './knowledge-loader';
+import { trimOverstuffedStrengthSessionToDuration, validateSessionCoherence } from './session-coherence';
+import type { AthleteState, ExercisePrescription, FatigueCost, IntensityZone, Session, SessionType, Sport } from './types';
 import { clamp, dayIndex, durationToLoad } from './utils';
 
 export type RecoveryScenario =
@@ -346,7 +348,22 @@ export function adaptSessionForPoorRecovery(context: PoorRecoveryContext): PoorR
     'readiness_adjusted',
   ]);
 
-  const session: Session = {
+  // The original strength session's exercise list was sized for the
+  // original (longer) duration. Recovery shrinks `durationMinutes` to
+  // 20-35 min, but inheriting the original exercises produces an
+  // overstuffed session — the pattern flagged by `time_volume_coherence`
+  // in the eval baseline (e.g. "Technique Strength + Mobility: claimed
+  // 20min, estimated 51min"). Recompute the exercise list so the
+  // recovery slot is honest.
+  let exercises: ExercisePrescription[] | undefined = context.session.exercises;
+  if (context.session.sport === 'strength' && variant.sessionType === 'mobility') {
+    // Mobility variants are explicitly empty-block sessions — no loaded
+    // compounds, just movement work captured by the description. The
+    // existing variety test already pins this contract.
+    exercises = [];
+  }
+
+  let session: Session = {
     ...context.session,
     sessionType: variant.sessionType,
     title: variant.title,
@@ -361,7 +378,50 @@ export function adaptSessionForPoorRecovery(context: PoorRecoveryContext): PoorR
       ...(context.session.alternatives ?? []),
       ...variant.alternatives,
     ]),
+    exercises,
   };
+
+  // For strength sport, the session's content has now diverged from
+  // the original (mobility variants emptied the list; strength_maintenance
+  // variants kept the original list). Reconcile the claimed duration
+  // with the actual content:
+  //   1. Strength_maintenance with exercises: trim trailing accessory
+  //      volume until claimed duration is honest.
+  //   2. After trim (or for empty mobility blocks), if still
+  //      underfilled, shrink the claim to match estimated content.
+  //
+  // This guarantees the planner emits a recovery session whose
+  // displayed minutes credibly match what the user will do — closing
+  // the `time_volume_coherence` gap the eval baseline pinned at 82.
+  if (session.sport === 'strength') {
+    const knowledge = loadCoachKnowledge();
+    if (variant.sessionType === 'strength_maintenance' && session.exercises?.length) {
+      session = trimOverstuffedStrengthSessionToDuration(session, knowledge, {
+        tag: 'recovery_duration_coherent',
+        alternative: 'Trailing strength volume was trimmed so the recovery session matches the shrunk duration.',
+      }).session;
+    }
+    const verdict = validateSessionCoherence(session, knowledge);
+    if (!verdict.ok && verdict.reason === 'underfilled') {
+      // The variant's `minMinutes` is a soft preference; the absolute
+      // floor is warmup + cooldown (~12 min) so we never claim a
+      // sub-credible duration. Honesty wins over the variant's
+      // aspirational range.
+      const honestDuration = Math.max(12, verdict.estimatedMinutes);
+      if (honestDuration < session.durationMinutes) {
+        session = {
+          ...session,
+          durationMinutes: honestDuration,
+          plannedLoad: durationToLoad(honestDuration, variant.intensityZone, variant.fatigueCost),
+          tags: dedupeStrings([...session.tags, 'recovery_duration_coherent']),
+          alternatives: dedupeStrings([
+            ...(session.alternatives ?? []),
+            'Recovery duration was reduced to match what the trimmed content can credibly deliver.',
+          ]),
+        };
+      }
+    }
+  }
 
   return { session, scenario, explanation };
 }
