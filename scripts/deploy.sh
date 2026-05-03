@@ -24,6 +24,23 @@ PM2="/home/dominguez/.npm-global/bin/pm2"
 NOTION_TOKEN="${NOTION_TOKEN:-}"
 NOTION_RELEASES_DB="${NOTION_RELEASES_DB:-332ad49d-23e7-8134-b413-d8d3cc3f1a4a}"
 
+# release-pipeline-risk-based-optimization (2026-05-03) — Round 3:
+# --dry-run mode exercises every gate (env validation, typecheck/verify
+# decision, build, version-bump preview, backup plan) WITHOUT actually
+# touching the server, the git tree, or PM2. Useful for rehearsing a
+# risky deploy or auditing the gate chain.
+DRY_RUN="${NEXUS_DEPLOY_DRY_RUN:-0}"
+for arg in "$@"; do
+  case "$arg" in
+    --dry-run) DRY_RUN=1 ;;
+  esac
+done
+
+if [ "$DRY_RUN" = "1" ]; then
+  echo "🟡 DRY RUN — no server, git, or PM2 mutations will occur"
+  echo ""
+fi
+
 echo "🚀 Deploying from: $LOCAL_DIR"
 echo "   To: $SERVER:$REMOTE_DIR"
 echo ""
@@ -121,6 +138,32 @@ esac
 # ── 1. Build TypeScript locally ──────────────────────
 echo "📦 Building TypeScript..."
 npm run build 2>/dev/null && echo "   ✅ Build complete" || { echo "   ❌ Build failed — aborting"; exit 1; }
+
+# Dry-run early-exit: everything below this line touches the server, the
+# git tree, or PM2. Stop here for the rehearsal mode.
+if [ "$DRY_RUN" = "1" ]; then
+  echo ""
+  echo "═══════════════════════════════════════════════"
+  echo "  🟡 DRY RUN — would now do:"
+  echo "       1a) ssh validate prod .env"
+  echo "       1b) npm version patch + git commit + git push"
+  echo "       2)  ssh \$SERVER pm2 stop nexus-hub + content-engine"
+  echo "       2b) ssh \$SERVER tar backup of dist + bot.db"
+  echo "       3b) ssh \$SERVER drain port 8200"
+  echo "       4)  rsync to \$SERVER:$REMOTE_DIR"
+  echo "       5)  ssh \$SERVER npm ci + pip install"
+  echo "       5a) ssh \$SERVER owner-bootstrap-preflight --strict"
+  echo "       5b) ssh \$SERVER rebuild native modules"
+  echo "       6)  ssh \$SERVER mkdir protected dirs"
+  echo "       7)  ssh \$SERVER pm2 start"
+  echo "       8)  health checks (curl + pm2 jlist)"
+  echo "       9)  Notion log (if NOTION_TOKEN set)"
+  echo ""
+  echo "  ✅ Validation/build phase passed; no server mutations performed."
+  echo "  Re-run without --dry-run (or unset NEXUS_DEPLOY_DRY_RUN) to deploy."
+  echo "═══════════════════════════════════════════════"
+  exit 0
+fi
 
 # ── 1a. Validate production .env before version bump/deploy ─────────
 # The Python content-engine calls the TS AI proxy for script synthesis.
