@@ -3,6 +3,35 @@
 Generated: 2026-04-29 03:30 WEST  
 Branch: `feature/chat-tenant-safe-context-orchestration`
 
+## 2026-05-03 Closed-Beta Identity Validation Addendum
+
+Branch: `feature/closed-beta-readiness-codex-validation`
+
+Status: second-pass Codex validation complete locally. No production deploy.
+
+Findings and fixes:
+
+- Claude's closed-beta identity scanner was valid but too narrow. It missed legacy Content runtime strings such as `ÂNGULO DO FELIPE`, `Felipe's style`, `Felipe's take`, and `Felipe's niches`. The scanner now covers those patterns and excludes generated Python virtualenv/build output so strict scans finish quickly.
+- Legacy deep-search briefings that still contain `ÂNGULO DO FELIPE:` are now rendered to users as `SEU ÂNGULO`, preserving backward compatibility without leaking founder copy into runtime output.
+- Residual Content model comments and a live sidecar synthesis prompt were neutralized from founder-specific or male-default creator language to authenticated-creator language.
+- The stale `prompts/daily-content-discovery.md` design doc was moved under `docs/archive/2026-05/content/` so active runtime prompt sweeps do not need to allowlist Felipe-specific prompt drafts.
+
+Validation:
+
+- `npx tsc --noEmit`: passed.
+- `npx vitest run __tests__/agents/voice-evolution-agent.test.ts __tests__/agents/voice-evolution-qa-validation.test.ts __tests__/security/p0-chat-identity-isolation.test.ts __tests__/services/content-telegram-formatter-identity.test.ts __tests__/api/training-plan-calendar-sync.test.ts --reporter=default`: 5 files / 75 tests passed.
+- `scripts/closed-beta-identity-scan.sh --strict --json`: 0 flags.
+- Local engine `smoke`: 13 authenticated API checks passed.
+- Local engine `chat-tenant-smoke`: 15 pass, 1 fixture-provider partial, 0 fail.
+- Local engine `chat-eval`: deterministic Chat baseline passed.
+- Local engine `cross-skill-fixtures`: deterministic local fixtures passed; staging provider section intentionally blocked in local dry-run mode.
+- Direct local API `Who am I?` probe with two named users returned Alice for Alice and Bruna for Bruna, with no cross-user identity leak.
+- iOS simulator build passed on iPhone 17 Pro iOS 26.4. Simulator interaction covered Home, Chat, Week agenda, Training, More/Settings, and Connections against the local engine; Chat `Who am I?` returned scoped authenticated-session language and no Felipe leak; 10 rapid bottom-tab taps completed without a hang.
+
+Remaining caveat:
+
+- This is still `READY_WITH_CONDITIONS` rather than unconditional closed-beta readiness because signed-device two-account switching and live non-production Google/Outlook calendar lifecycle smoke remain unvalidated.
+
 ## 2026-05-03 Training Poor-Recovery Time-Volume Coherence Addendum
 
 Branch: `feature/p0-readiness-integration-task-isolation`

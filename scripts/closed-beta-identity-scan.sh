@@ -19,6 +19,7 @@
 #
 # What IT FLAGS:
 #   - "Felipe's voice", "adapt to Felipe", "Felipe's brand", "Felipe's profile"
+#   - legacy Portuguese labels such as "ÂNGULO DO FELIPE"
 #   - the literal string "felipe_version" as a code-level field name
 #     (was renamed to creator_version on 2026-05-03; future regressions
 #     should fail this scan)
@@ -68,6 +69,13 @@ forbidden_patterns=(
   "Felipe's profile"
   "adapt to Felipe"
   "Felipe's audience"
+  "Felipe's style"
+  "Felipe's take"
+  "Felipe's niches"
+  "Felipe should"
+  "how Felipe"
+  "ÂNGULO DO FELIPE"
+  "ANGULO DO FELIPE"
   "felipe_version"
   "felipes_angle"
 )
@@ -91,8 +99,6 @@ allow_paths=(
   '^engine/docs/'
   '^scripts/closed-beta-identity-scan\.sh$'
   '\.archived$'
-  # Stale legacy design doc; not loaded at runtime. P3 cleanup item.
-  '^prompts/daily-content-discovery\.md$'
 )
 
 # Build the egrep allow-pattern (OR-joined)
@@ -134,6 +140,13 @@ for pat in "${forbidden_patterns[@]}"; do
     total_flags=$((total_flags + 1))
   done < <(
     grep -rni --binary-files=without-match "$pat" \
+      --exclude-dir=node_modules \
+      --exclude-dir=dist \
+      --exclude-dir=coverage \
+      --exclude-dir=.venv \
+      --exclude-dir=.venv313 \
+      --exclude-dir=__pycache__ \
+      --exclude='*.map' \
       src/ prompts/ content-engine/ 2>/dev/null \
       | grep -vE "^\s*\*" \
       | grep -vE "// Copyright" \

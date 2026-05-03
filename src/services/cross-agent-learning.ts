@@ -17,7 +17,7 @@
  * Cross-agent consumption (NEW in v2):
  *   Performance reads: voice_pattern (correlate voice alignment with views)
  *   SEO reads: retention_pattern, hook_effectiveness (inform keyword strategy)
- *   Reaction reads: voice_pattern (suggest reactions in Felipe's style)
+ *   Reaction reads: voice_pattern (suggest reactions in the authenticated creator's style)
  *   Voice reads: pillar_performance (focus analysis on high-performing content)
  *   Pipeline reads: keyword_opportunity, hook_effectiveness (prioritize topics)
  */

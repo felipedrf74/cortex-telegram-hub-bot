@@ -65,6 +65,9 @@ export function formatDeepSearch(res: DeepSearchResponse): string {
     msg += `📊 <b>RESEARCH BRIEFING</b>\n`;
     msg += `━━━━━━━━━━━━━━━━━━━━━━\n\n`;
     const sections = res.briefs[0].why_now.split('\n\n');
+    // nx-allow-identity-scan: backward-compat parser for deep-search briefings stored before creator-neutral labels.
+    const legacyCreatorAnglePrefix = 'ÂNGULO DO FELIPE:';
+    const creatorAnglePrefixes = ['SEU ÂNGULO:', 'ÂNGULO DO CRIADOR:', 'ÂNGULO DA CRIADORA:', legacyCreatorAnglePrefix];
     for (const section of sections) {
       if (section.startsWith('RESUMO:')) {
         msg += `${escapeHtml(section.replace('RESUMO: ', ''))}\n\n`;
@@ -83,9 +86,10 @@ export function formatDeepSearch(res: DeepSearchResponse): string {
         const args = section.split('\n').slice(1);
         for (const a of args) msg += `${escapeHtml(a)}\n`;
         msg += '\n';
-      } else if (section.startsWith('ÂNGULO DO FELIPE:')) {
+      } else if (creatorAnglePrefixes.some((prefix) => section.startsWith(prefix))) {
+        const prefix = creatorAnglePrefixes.find((candidate) => section.startsWith(candidate)) ?? '';
         msg += `<b>🎯 SEU ÂNGULO</b>\n`;
-        msg += `<i>${escapeHtml(section.replace('ÂNGULO DO FELIPE: ', ''))}</i>\n\n`;
+        msg += `<i>${escapeHtml(section.slice(prefix.length).trim())}</i>\n\n`;
       }
     }
   }

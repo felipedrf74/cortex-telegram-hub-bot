@@ -472,8 +472,8 @@ Here are {len(all_raw)} trending topics found right now:
 
 TASK: Select the TOP 8 most interesting topics for the authenticated creator's content. For each:
 1. Rewrite the title as a compelling Portuguese headline the authenticated creator would use
-2. Add a "content_angle" — how the authenticated creator should approach this (his unique take)
-3. Rate "relevance" 1-10 (how well it fits his brand)
+2. Add a "content_angle" — how the authenticated creator should approach this (their unique take)
+3. Rate "relevance" 1-10 (how well it fits their brand)
 4. Classify the "niche": politica | economia | fitness | fe_familia | geopolitica | desenvolvimento | reacao
 
 Return JSON array:
