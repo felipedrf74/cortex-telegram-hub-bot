@@ -353,6 +353,7 @@ Return ONLY the JSON object."""
         # Store synthesis metadata in the first brief's why_now
         summary = synthesis.get("summary", "")
         key_facts = synthesis.get("key_facts", [])
+        # nx-allow-identity-scan: backward-compat read for payloads persisted before the field rename.
         creator_angle = synthesis.get("creator_angle", synthesis.get("felipes_angle", ""))  # creator_angle is the new key; fall back to legacy felipes_angle for older payloads
         args_for = synthesis.get("arguments_for", [])
         args_against = synthesis.get("arguments_against", [])

@@ -376,10 +376,20 @@ export async function runVoiceEvolutionAgent(): Promise<void> {
           });
         }
         for (const rp of analysis.rephrasing ?? []) {
+          // The analysis prompt produces `creator_version` (line 64 of the
+          // ANALYSIS_PROMPT template). Earlier code read the legacy
+          // field name which silently dropped the rephrased example to
+          // `undefined` and rendered patternText as
+          // `<original> → undefined`. Closed-beta-readiness-hardening
+          // (2026-05-03): align reader with the prompt schema and fall
+          // back to the legacy field name ONLY for rows persisted before
+          // the rename so already-stored patterns continue to render.
+          // nx-allow-identity-scan: intentional backward-compat read
+          const creatorVersion = (rp as any).creator_version ?? (rp as any).felipe_version ?? '';
           upsertLearnedPattern({
             category: 'voice_rephrasing',
-            patternText: rp.insight || `${rp.original} → ${rp.felipe_version}`,
-            examples: [rp.original, rp.felipe_version].filter(Boolean),
+            patternText: rp.insight || `${rp.original} → ${creatorVersion}`,
+            examples: [rp.original, creatorVersion].filter(Boolean),
             confidence: 0.8,
             sourceAgent: 'voice-evolution',
             userId,
