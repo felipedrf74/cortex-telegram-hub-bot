@@ -46,6 +46,28 @@ PASS=0
 FAIL=0
 FAILED_TESTS=()
 
+# ── Smoke-evidence JSON (release-pipeline-risk-based-optimization, 2026-05-03)
+# Every check result also goes into an in-memory array so we can emit a
+# single JSON evidence file at the end. The file is written under
+# docs/release/smoke-evidence/ (mkdir-p safe) and named with the deployed
+# SHA + UTC timestamp so promote-to-prod.sh and audits can read it
+# instead of re-running this script. Disable with NEXUS_SMOKE_EVIDENCE=0.
+EVIDENCE_RESULTS=()
+EVIDENCE_ENABLED="${NEXUS_SMOKE_EVIDENCE:-1}"
+LOCAL_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+EVIDENCE_DIR="$LOCAL_DIR/docs/release/smoke-evidence"
+SMOKE_START_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+SMOKE_HEAD_SHA="$(cd "$LOCAL_DIR" && git rev-parse --short HEAD 2>/dev/null || echo unknown)"
+SMOKE_BRANCH="$(cd "$LOCAL_DIR" && git branch --show-current 2>/dev/null || echo unknown)"
+
+evidence_record() {
+  # evidence_record <name> <status:passed|failed> [<detail>]
+  local name="$1"
+  local status="$2"
+  local detail="${3:-}"
+  EVIDENCE_RESULTS+=("$(printf '%s\t%s\t%s' "$name" "$status" "$detail")")
+}
+
 # Read staging portal auth once — saves N ssh round trips. Hardened beta
 # staging may require signed ps_ sessions, in which case the legacy
 # PORTAL_TOKEN must not be used.
@@ -104,6 +126,7 @@ test_endpoint() {
     echo "  ❌ $name — curl failed (URL not responding)"
     FAIL=$((FAIL + 1))
     FAILED_TESTS+=("$name")
+    evidence_record "$name" "failed" "curl_failed url=$url"
     return 1
   fi
 
@@ -131,11 +154,13 @@ test_endpoint() {
     local val="${check#OK:}"
     echo "  ✅ $name — $field=$val"
     PASS=$((PASS + 1))
+    evidence_record "$name" "passed" "$field=$val"
     return 0
   else
     echo "  ❌ $name — $check"
     FAIL=$((FAIL + 1))
     FAILED_TESTS+=("$name")
+    evidence_record "$name" "failed" "$check"
     if [ "$VERBOSE" = true ]; then
       echo "     Full body: $(echo "$result" | head -c 200)"
     fi
@@ -191,6 +216,7 @@ test_ios_401() {
     echo "  ❌ $name — expected 401, got $http_code"
     FAIL=$((FAIL + 1))
     FAILED_TESTS+=("$name (http $http_code)")
+    evidence_record "$name" "failed" "http_code=$http_code expected=401"
     [ "$VERBOSE" = true ] && echo "     Body: $(echo "$body" | head -c 200)"
     return 1
   fi
@@ -216,10 +242,12 @@ test_ios_401() {
   if [ "$shape" = "OK" ]; then
     echo "  ✅ $name — 401 with canonical error envelope"
     PASS=$((PASS + 1))
+    evidence_record "$name" "passed" "http_code=401 envelope=canonical"
   else
     echo "  ❌ $name — $shape"
     FAIL=$((FAIL + 1))
     FAILED_TESTS+=("$name (shape)")
+    evidence_record "$name" "failed" "envelope=$shape"
   fi
 }
 
@@ -247,6 +275,7 @@ PM2_STATUS=$(ssh "$SERVER" "/home/dominguez/.npm-global/bin/pm2 jlist 2>/dev/nul
 if [[ "$PM2_STATUS" =~ ns=online && "$PM2_STATUS" =~ ce=online ]]; then
   echo "  ✅ PM2 — both staging processes online"
   PASS=$((PASS + 1))
+  evidence_record "PM2 staging processes" "passed" "$PM2_STATUS"
   if [[ "$PM2_STATUS" =~ ns_restarts=([0-9]+) ]] && [ "${BASH_REMATCH[1]}" -gt 0 ]; then
     echo "  ⚠️  nexus-hub-staging has ${BASH_REMATCH[1]} unstable restarts — investigate"
   fi
@@ -254,6 +283,7 @@ else
   echo "  ❌ PM2 — $PM2_STATUS"
   FAIL=$((FAIL + 1))
   FAILED_TESTS+=("PM2 process state")
+  evidence_record "PM2 staging processes" "failed" "$PM2_STATUS"
 fi
 
 echo ""
@@ -269,11 +299,56 @@ DB_CHECK=$(ssh "$SERVER" "
 if echo "$DB_CHECK" | grep -q '"integrity_check":"ok"'; then
   echo "  ✅ Staging DB integrity_check: ok"
   PASS=$((PASS + 1))
+  evidence_record "Staging DB integrity" "passed" "integrity_check=ok"
 else
   echo "  ❌ Staging DB integrity_check failed: $DB_CHECK"
   FAIL=$((FAIL + 1))
   FAILED_TESTS+=("DB integrity")
+  evidence_record "Staging DB integrity" "failed" "$DB_CHECK"
 fi
+
+# ── Smoke-evidence JSON ───────────────────────────────
+# Write a JSON file recording: branch, SHA, timestamps, per-check results.
+# Audits and `promote-to-prod.sh` can read this instead of re-running the
+# 17-check suite. Failure to write the evidence file does not change the
+# smoke pass/fail outcome — pure side effect.
+write_evidence_file() {
+  if [ "$EVIDENCE_ENABLED" != "1" ]; then
+    return
+  fi
+  mkdir -p "$EVIDENCE_DIR" 2>/dev/null || return
+  local stamp
+  stamp="$(date -u +%Y%m%dT%H%M%SZ)"
+  local file="$EVIDENCE_DIR/staging-smoke-${SMOKE_HEAD_SHA}-${stamp}.json"
+
+  # Build a JSON via node, feeding each result line as TAB-separated.
+  local results_blob
+  results_blob="$(printf '%s\n' "${EVIDENCE_RESULTS[@]+"${EVIDENCE_RESULTS[@]}"}")"
+  printf '%s' "$results_blob" \
+    | NODE_NO_WARNINGS=1 node -e '
+      const lines = require("fs").readFileSync(0, "utf8").split("\n").filter(Boolean);
+      const checks = lines.map((l) => {
+        const [name, status, ...rest] = l.split("\t");
+        return { name, status, detail: (rest.join("\t") || null) };
+      });
+      const passed = checks.filter((c) => c.status === "passed").length;
+      const failed = checks.filter((c) => c.status === "failed").length;
+      const payload = {
+        version: "1",
+        runStartedAt: process.env.SMOKE_START_AT,
+        runCompletedAt: new Date().toISOString(),
+        branch: process.env.SMOKE_BRANCH,
+        sha: process.env.SMOKE_HEAD_SHA,
+        host: "staging",
+        verdict: failed === 0 ? "passed" : "failed",
+        totals: { passed, failed, total: checks.length },
+        checks,
+      };
+      console.log(JSON.stringify(payload, null, 2));
+    ' > "$file" 2>/dev/null \
+    && echo "  📝 Smoke evidence: $file"
+}
+export SMOKE_START_AT SMOKE_BRANCH SMOKE_HEAD_SHA
 
 # ── Summary ────────────────────────────────────────
 echo ""
@@ -281,6 +356,7 @@ echo "════════════════════════�
 TOTAL=$((PASS + FAIL))
 if [ "$FAIL" -eq 0 ]; then
   echo "  ✅ ALL $TOTAL TESTS PASSED — staging is safe to promote"
+  write_evidence_file
   echo "═══════════════════════════════════════════════"
   exit 0
 else
@@ -290,6 +366,7 @@ else
   for t in "${FAILED_TESTS[@]}"; do
     echo "    - $t"
   done
+  write_evidence_file
   echo ""
   echo "  DO NOT promote to prod until these are fixed."
   echo "═══════════════════════════════════════════════"
