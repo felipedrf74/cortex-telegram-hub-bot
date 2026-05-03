@@ -31,6 +31,34 @@ echo "🔍 Pre-commit: Type checking..."
 npx tsc --noEmit
 echo "✅ Type check passed"
 
+# ── Release-identity auto-refresh (release-pipeline-risk-based-
+# optimization, 2026-05-03):
+# If any current-verdict doc is staged, regenerate the persisted
+# release-identity artifact so the doc's references are always backed
+# by the latest git state. Auto-stages the refreshed artifact so the
+# identity update lands in the same commit.
+# Disable with NEXUS_PRECOMMIT_SKIP_IDENTITY_REFRESH=1.
+STAGED_FILES_FOR_IDENTITY="$(git diff --cached --name-only --diff-filter=ACMR 2>/dev/null || true)"
+if [ "${NEXUS_PRECOMMIT_SKIP_IDENTITY_REFRESH:-0}" != "1" ] && \
+   echo "$STAGED_FILES_FOR_IDENTITY" \
+   | grep -E '(^|/)(docs/release/CURRENT_RELEASE_STATE\.md|docs/release/OPEN_ITEMS\.md|docs/release/release-pipeline-optimization-report\.md|docs/release/current-release-index\.md|docs/qa/QA_BACKEND_REPORT\.md|docs/qa/QA_IOS_REPORT\.md)$' \
+   >/dev/null 2>&1; then
+  echo "📝 Pre-commit: refreshing release-identity artifact (current-verdict doc staged)"
+  if [ -x "$ROOT/scripts/release-identity.sh" ]; then
+    "$ROOT/scripts/release-identity.sh" --persist --quiet \
+      || echo "    ⚠️ release-identity refresh failed (non-fatal)"
+    # Auto-stage the refreshed artifact only if it's a tracked file.
+    WORKSPACE_DOCS_ROOT="${NEXUS_WORKSPACE_DOCS_ROOT:-/Users/felipedominguez/Desktop/Nexus Hub}"
+    for ART in \
+      "$WORKSPACE_DOCS_ROOT/docs/release/release-identity.json" \
+      "$WORKSPACE_DOCS_ROOT/docs/release/release-identity.md"; do
+      if [ -f "$ART" ] && git -C "$ROOT" ls-files --error-unmatch "$ART" >/dev/null 2>&1; then
+        git -C "$ROOT" add "$ART" 2>/dev/null || true
+      fi
+    done
+  fi
+fi
+
 # ── Vitest gating ─────────────────────────────────────
 if [ "${NEXUS_PRECOMMIT_FULL_VITEST:-0}" = "1" ]; then
   echo "🧪 Pre-commit: NEXUS_PRECOMMIT_FULL_VITEST=1 — running full vitest suite..."
