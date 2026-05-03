@@ -5,15 +5,19 @@
 This file is a repo-local bootloader. Before creating or updating markdown,
 read:
 
+0. Start from the official workspace:
+   `/Users/felipedominguez/Desktop/Nexus Hub`
 1. `/Users/felipedominguez/Desktop/Nexus Hub/docs/DOCS_INDEX.md`
-2. `docs/DOCS_INDEX.md`
-3. `docs/release/current-release-index.md`
-4. `docs/qa/QA_BACKEND_REPORT.md`
+2. `/Users/felipedominguez/Desktop/Nexus Hub/docs/agent/OPERATING_CONTEXT.md`
+3. `docs/DOCS_INDEX.md`
+4. `docs/release/current-release-index.md`
+5. `docs/qa/QA_BACKEND_REPORT.md`
 
 Do not create a new scattered final report when a current/canonical doc already
 exists. Update the current doc and link any one-off evidence from the current
 index. Historical reports are evidence, not active truth, unless the current
-release index links them.
+release index links them. Run `npm run docs:audit` before creating release docs
+or copying verdicts, commit hashes, or test counts.
 
 **You are working directly on the single-source-of-truth backend for Nexus Hub, a multi-domain AI personal assistant.** Do not assume a multi-agent orchestration, queue system, or "role" — those files were removed in Phase 0 (April 2026). There is one codebase, one main branch, one human owner (Felipe), and one deploy path.
 
@@ -27,10 +31,12 @@ release index links them.
 
 **Providers**: Gemini primary (2.5-flash / 2.5-flash-lite), Anthropic fallback (Claude Sonnet 4.6 / Haiku 4.5), OpenAI as secondary fallback. See `src/config.ts > providerRouting`.
 
-## Current Production Truth - 2026-05-02
+## Current Production Truth - 2026-05-03
 
-- Production backend is live at `4.14.119` (deploy bump from `4.14.118`).
-- Staging is aligned to `4.14.118`.
+- Production backend is live at `4.14.120`.
+- Current production commit is `eaf98f3`.
+- Staging remains at `4.14.119` unless explicitly redeployed after the
+  `4.14.120` production bump.
 - Current deployed branch: `main`.
 - Historical beta recovery branch: `beta/single-agent-rc`.
 - Full backend verification passed before each of the latest two production

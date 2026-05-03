@@ -1,16 +1,17 @@
 # Current Release Index
 
-Date: 2026-05-02
+Date: 2026-05-03
 
 ## Current Status
 
 Active production-promotion package:
 
 - source branch: `feature/p0-readiness-integration-task-isolation`
-- candidate HEAD after merging `origin/main`: `9889f6d`
+- production HEAD: `eaf98f3`
 - P0 fix commit: `6549934 fix(p0): scope Garmin readiness and task list cache`
-- base deploy branch before fix: `main` / `4.14.119`
+- production version: `4.14.120`
 - release state: `docs/release/CURRENT_RELEASE_STATE.md`
+- official workspace root: `/Users/felipedominguez/Desktop/Nexus Hub`
 
 Scope:
 
@@ -26,15 +27,17 @@ Validated before promotion:
 - pre-commit full backend vitest 432 files / 6546 tests passed
 - post-merge `npx tsc --noEmit` passed
 - post-merge full backend vitest 432 files / 6555 tests passed
+- staging smoke 17/17 passed
+- production promote completed at `4.14.120`
 
 The release-process audit remains the canonical process reference:
 
 - active process source: `docs/release/README.md`
-- final audit: `docs/release/release-process-audit-final-report.md`
 - proposed process: `docs/release/streamlined-release-process-v2.md`
 - risk matrix: `docs/release/risk-based-release-gate-matrix.md`
 - promotion checklist: `docs/release/production-promotion-checklist-v2.md`
 - identity helper: `scripts/release-identity.sh`
+- docs audit: `npm run docs:audit`
 
 ## Active Gate Rule
 

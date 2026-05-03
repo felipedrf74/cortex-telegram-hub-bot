@@ -24,6 +24,7 @@
     "chat:eval": "node dist/tools/chat-evaluation-harness.js",
     "fiscal:vendors:audit": "node dist/tools/invoice-vendor-cleanup.js",
     "fiscal:vendors:repair": "node dist/tools/invoice-vendor-cleanup.js --apply",
+    "docs:audit": "node scripts/audit-docs.mjs",
     "lint": "npm run typecheck",
     "verify": "npm run typecheck && npm run test",
     "precommit": "npm run verify",

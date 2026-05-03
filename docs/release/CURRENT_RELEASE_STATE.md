@@ -1,13 +1,14 @@
 # Backend Current Release State
 
-Last updated: 2026-05-02
+Last updated: 2026-05-03
 
 ## Active Release Candidate
 
 - Source branch: `feature/p0-readiness-integration-task-isolation`
-- Release-candidate HEAD after merging `origin/main`: `9889f6d`
+- Production HEAD: `eaf98f3`
 - P0 fix commit: `6549934 fix(p0): scope Garmin readiness and task list cache`
-- Base deploy branch before fix: `main` / `4.14.119`
+- Production version: `4.14.120`
+- Official workspace root: `/Users/felipedominguez/Desktop/Nexus Hub`
 
 ## Scope
 
@@ -27,6 +28,15 @@ P0 user-data isolation and read-back fix:
 - Pre-commit full backend vitest: 432 files / 6546 tests passed
 - Post-merge `npx tsc --noEmit`: passed
 - Post-merge full backend vitest: 432 files / 6555 tests passed
+- Staging smoke: 17/17 passed
+- Production promote: completed at `4.14.120`
+
+## Documentation Cleanup
+
+- Stale markdown cleanup completed on 2026-05-03.
+- Manifest: `/Users/felipedominguez/Desktop/Nexus Hub/docs/archive/delete-marked-2026-05-03.txt`
+- Deleted stale markdown files: 688
+- Docs audit command: `npm run docs:audit`
 
 ## Required Post-Promotion Checks
 
