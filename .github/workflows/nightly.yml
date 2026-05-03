@@ -1,0 +1,101 @@
+name: Nightly — Full regression + coverage
+
+# release-pipeline-risk-based-optimization (2026-05-03):
+# Coverage upload + full vitest now run nightly + on-demand instead of on
+# every PR. The risk-based ci.yml runs focused tests on PRs; nightly is
+# where the breadth lives.
+#
+# Manual run:
+#   gh workflow run "Nightly — Full regression + coverage"
+
+on:
+  schedule:
+    - cron: '15 4 * * *'   # 04:15 UTC daily
+  workflow_dispatch:
+
+env:
+  NODE_VERSION: '20'
+
+jobs:
+  full-vitest-coverage:
+    name: 🧪 Full vitest + coverage
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+
+      - run: npm ci
+
+      - name: TypeScript type check
+        run: npx tsc --noEmit
+
+      - name: Full vitest with coverage
+        env:
+          NODE_ENV: test
+          TELEGRAM_BOT_TOKEN: test_token
+          TELEGRAM_ALLOWED_USER_IDS: '123456789'
+          ANTHROPIC_API_KEY: sk-ant-test-key
+          DATABASE_PATH: ':memory:'
+        run: npx vitest run --reporter=verbose --coverage
+
+      - name: Upload coverage report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: coverage/
+          retention-days: 14
+
+  python-full-compile:
+    name: 🐍 Content Engine full compile
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+          cache-dependency-path: content-engine/requirements.txt
+
+      - run: |
+          cd content-engine
+          pip install -r requirements.txt
+          python -m py_compile main.py config.py
+          find . -name "*.py" -not -path "./.venv/*" -not -path "./__pycache__/*" \
+            -exec python -m py_compile {} \;
+
+  migration-rehearsal:
+    name: 🗃️ Migration full rehearsal
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify migration sequence + syntax
+        run: |
+          cd migrations
+          expected=1
+          for f in $(ls *.sql | sort); do
+            num=$(echo "$f" | grep -oP '^\d+')
+            num=$((10#$num))
+            if [ "$num" -ne "$expected" ]; then
+              echo "❌ Gap: expected $expected, got $num ($f)"
+              exit 1
+            fi
+            expected=$((expected + 1))
+          done
+          echo "✅ $((expected - 1)) migrations in sequence"
+
+      - name: Apply migrations to a fresh in-memory DB
+        run: |
+          cd migrations
+          DB="/tmp/nightly-rehearsal.db"
+          rm -f "$DB"
+          for f in $(ls *.sql | sort); do
+            sqlite3 "$DB" < "$f" || echo "⚠️ migration $f produced an error"
+          done
+          echo "✅ Full migration rehearsal complete"

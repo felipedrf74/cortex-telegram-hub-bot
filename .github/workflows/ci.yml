@@ -1,32 +1,112 @@
-name: CI — Lint, Test, Build
+name: CI — Risk-based parallel matrix
+
+# release-pipeline-risk-based-optimization (2026-05-03):
+# Refactored from the serial `lint → test → build` chain into a parallel
+# matrix that runs typecheck, focused tests, migration check, Python
+# compile, and build concurrently. Full coverage is now driven by
+# `nightly.yml` and `workflow_dispatch`, NOT every push.
+#
+# Decisions encoded here:
+#   1. lint, focused-tests, migrations, python-test, build run IN
+#      PARALLEL after install. None depend on each other.
+#   2. focused-tests uses scripts/changed-area-classifier.sh to decide
+#      between `vitest run --changed origin/main` (PRs) and full vitest
+#      (push to main). Full coverage only runs on nightly + manual.
+#   3. python-test only runs when content-engine/** changed.
+#   4. build runs unconditionally as a "does dist still build" check.
+#
+# Manual full-suite + coverage:
+#   gh workflow run "CI — Risk-based parallel matrix" -f mode=full
 
 on:
   push:
     branches: [main, develop]
   pull_request:
     branches: [main, develop]
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'Test mode: focused (default for PRs), full (full vitest), full+coverage (nightly)'
+        required: false
+        default: 'focused'
+        type: choice
+        options:
+          - focused
+          - full
+          - full+coverage
 
 env:
   NODE_VERSION: '20'
 
 jobs:
   # ═══════════════════════════════════════════════════
-  # LINT & TYPE CHECK
+  # CHANGED-AREA CLASSIFIER (drives the rest)
+  # ═══════════════════════════════════════════════════
+  classify:
+    name: 🧭 Classify changes
+    runs-on: ubuntu-latest
+    outputs:
+      vitest_mode: ${{ steps.classify.outputs.vitest_mode }}
+      vitest_globs: ${{ steps.classify.outputs.vitest_globs }}
+      run_python_test: ${{ steps.classify.outputs.run_python_test }}
+      run_migrations: ${{ steps.classify.outputs.run_migrations }}
+      docs_only: ${{ steps.classify.outputs.docs_only }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # need history to diff against base
+
+      - name: Run classifier
+        id: classify
+        run: |
+          # Decide base ref based on event
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            BASE_REF="origin/${{ github.base_ref }}"
+          else
+            BASE_REF="HEAD~1"
+          fi
+          # Manual mode override
+          MODE_OVERRIDE='${{ github.event.inputs.mode }}'
+          if [ "$MODE_OVERRIDE" = "full" ] || [ "$MODE_OVERRIDE" = "full+coverage" ]; then
+            echo "Manual override mode=$MODE_OVERRIDE — full vitest"
+            echo "vitest_mode=full" >> "$GITHUB_OUTPUT"
+            echo "vitest_globs=" >> "$GITHUB_OUTPUT"
+            echo "run_python_test=true" >> "$GITHUB_OUTPUT"
+            echo "run_migrations=true" >> "$GITHUB_OUTPUT"
+            echo "docs_only=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          chmod +x scripts/changed-area-classifier.sh
+          JSON="$(scripts/changed-area-classifier.sh --base "$BASE_REF" --format json)"
+          echo "$JSON" > /tmp/classifier.json
+          echo "$JSON"
+          MODE="$(jq -r '.vitest.mode' /tmp/classifier.json)"
+          GLOBS="$(jq -r '.vitest.globs | join(" ")' /tmp/classifier.json)"
+          PY="$(jq -r '.flags.pythonEngine' /tmp/classifier.json)"
+          MIG="$(jq -r '.flags.migration' /tmp/classifier.json)"
+          DOCS_ONLY="$(jq -r '.flags.docsOnly' /tmp/classifier.json)"
+          echo "vitest_mode=$MODE" >> "$GITHUB_OUTPUT"
+          echo "vitest_globs=$GLOBS" >> "$GITHUB_OUTPUT"
+          echo "run_python_test=$PY" >> "$GITHUB_OUTPUT"
+          echo "run_migrations=$MIG" >> "$GITHUB_OUTPUT"
+          echo "docs_only=$DOCS_ONLY" >> "$GITHUB_OUTPUT"
+
+  # ═══════════════════════════════════════════════════
+  # LINT & TYPE CHECK (parallel — no `needs` chain)
   # ═══════════════════════════════════════════════════
   lint:
     name: 🔍 Lint & Type Check
     runs-on: ubuntu-latest
+    needs: classify
     steps:
       - uses: actions/checkout@v4
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
+      - uses: actions/setup-node@v4
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: 'npm'
 
-      - name: Install dependencies
-        run: npm ci
+      - run: npm ci
 
       - name: TypeScript type check
         run: npx tsc --noEmit
@@ -42,62 +122,84 @@ jobs:
           echo "✅ All prompt files have content"
 
   # ═══════════════════════════════════════════════════
-  # UNIT & INTEGRATION TESTS
+  # FOCUSED OR FULL VITEST (driven by classifier)
   # ═══════════════════════════════════════════════════
   test:
-    name: 🧪 Tests
+    name: 🧪 Tests (${{ needs.classify.outputs.vitest_mode }})
     runs-on: ubuntu-latest
-    needs: lint
+    needs: classify
+    if: needs.classify.outputs.vitest_mode != 'skip'
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
+      - uses: actions/setup-node@v4
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: 'npm'
 
-      - name: Install dependencies
-        run: npm ci
+      - run: npm ci
 
-      - name: Run unit tests
-        run: npx vitest run --reporter=verbose --coverage
+      - name: Run vitest
         env:
           NODE_ENV: test
           TELEGRAM_BOT_TOKEN: test_token
           TELEGRAM_ALLOWED_USER_IDS: '123456789'
           ANTHROPIC_API_KEY: sk-ant-test-key
           DATABASE_PATH: ':memory:'
-
-      - name: Upload coverage report
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: coverage-report
-          path: coverage/
-          retention-days: 7
+          MODE: ${{ needs.classify.outputs.vitest_mode }}
+          GLOBS: ${{ needs.classify.outputs.vitest_globs }}
+        run: |
+          case "$MODE" in
+            full)
+              echo "▶️ Full vitest"
+              npx vitest run --reporter=verbose
+              ;;
+            changed-only)
+              if [ "${{ github.event_name }}" = "pull_request" ]; then
+                BASE="origin/${{ github.base_ref }}"
+              else
+                BASE="HEAD~1"
+              fi
+              echo "▶️ Vitest --changed $BASE"
+              npx vitest run --reporter=verbose --changed "$BASE"
+              ;;
+            focused)
+              if [ -z "$GLOBS" ]; then
+                echo "Focused mode but empty globs — falling back to full"
+                npx vitest run --reporter=verbose
+              else
+                echo "▶️ Focused vitest: $GLOBS"
+                # shellcheck disable=SC2086
+                npx vitest run --reporter=verbose $GLOBS
+              fi
+              ;;
+            *)
+              echo "Unknown mode '$MODE' — full"
+              npx vitest run --reporter=verbose
+              ;;
+          esac
 
   # ═══════════════════════════════════════════════════
-  # BUILD VERIFICATION
+  # BUILD VERIFICATION (parallel; no `needs: test`)
   # ═══════════════════════════════════════════════════
   build:
     name: 🔨 Build
     runs-on: ubuntu-latest
-    needs: test
+    needs: classify
+    if: needs.classify.outputs.docs_only != 'true'
     steps:
       - uses: actions/checkout@v4
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
+      - uses: actions/setup-node@v4
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: 'npm'
 
-      - name: Install dependencies
-        run: npm ci
+      - run: npm ci
 
-      - name: Build TypeScript
-        run: npm run build
+      - run: npm run build
 
       - name: Verify dist output
         run: |
@@ -112,17 +214,17 @@ jobs:
           retention-days: 30
 
   # ═══════════════════════════════════════════════════
-  # CONTENT ENGINE (PYTHON) TESTS
+  # PYTHON CONTENT-ENGINE (only when content-engine/** changed)
   # ═══════════════════════════════════════════════════
   python-test:
     name: 🐍 Content Engine Check
     runs-on: ubuntu-latest
-    needs: lint
+    needs: classify
+    if: needs.classify.outputs.run_python_test == 'true'
     steps:
       - uses: actions/checkout@v4
 
-      - name: Setup Python
-        uses: actions/setup-python@v5
+      - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
           cache: 'pip'
@@ -143,12 +245,13 @@ jobs:
           echo "✅ All Python files compile"
 
   # ═══════════════════════════════════════════════════
-  # MIGRATION SAFETY CHECK
+  # MIGRATION SAFETY CHECK (only when migrations/** changed)
   # ═══════════════════════════════════════════════════
   migrations:
     name: 🗃️ Migration Check
     runs-on: ubuntu-latest
-    needs: lint
+    needs: classify
+    if: needs.classify.outputs.run_migrations == 'true'
     steps:
       - uses: actions/checkout@v4
 
@@ -158,7 +261,7 @@ jobs:
           expected=1
           for f in $(ls *.sql | sort); do
             num=$(echo "$f" | grep -oP '^\d+')
-            num=$((10#$num))  # Remove leading zeros
+            num=$((10#$num))
             if [ "$num" -ne "$expected" ]; then
               echo "❌ Gap in migration sequence: expected $expected, got $num ($f)"
               exit 1
