@@ -4,31 +4,48 @@ Date: 2026-05-03
 
 ## Current Status
 
-Active production-promotion package:
+Active production package:
 
 - source branch: `feature/p0-readiness-integration-task-isolation`
-- production HEAD: `eaf98f3`
-- P0 fix commit: `6549934 fix(p0): scope Garmin readiness and task list cache`
-- production version: `4.14.120`
-- release state: `docs/release/CURRENT_RELEASE_STATE.md`
+- production HEAD: `396b8f0` (version-bump for 4.14.123)
+- production version: `4.14.123`
+- release state: `docs/release/CURRENT_RELEASE_STATE.md` (backend) and `/Users/felipedominguez/Desktop/Nexus Hub/docs/release/CURRENT_RELEASE_STATE.md` (workspace)
 - official workspace root: `/Users/felipedominguez/Desktop/Nexus Hub`
+
+Commits in this release (4.14.122 → 4.14.123):
+
+- `0ab56a8 fix(training): close poor-recovery time-volume coherence (eval 82 -> 98)`
+- `b06cbb7 feat(coach-engine): slice 5.A — catalog v2 + progression families + calisthenics modality + principles rulebook`
+- `058b0de chore(docs): archive 2026-04 training release-candidate evidence`
+- `396b8f0 chore: bump version to 4.14.123 [deploy]`
 
 Scope:
 
-- P0 readiness/body battery isolation
-- Garmin connection-state isolation
-- stale-empty task list detail cache bypass
+- Poor-recovery time-volume coherence fix (eval `time_volume_coherence` 82 → 98, overall 97 → 99)
+- Catalog expansion 43 → 129 exercises across 23 progression families
+- Strength + calisthenics templates 3 → 14
+- Principles rulebook 26 → 291 lines (executable phase × experience × equipment matrix, progression rules, fatigue modulation, role rotation, calisthenics paths)
+- Optional `progressionFamily/Level/Prerequisites`, `tempo`, `selectionReason` fields on `Exercise` / `ExercisePrescription`
+- 8 release-candidate-*.md and production-release-final-status.md archived under `docs/release/archive/2026-04/training/`
 
-Validated before promotion:
+Validated through promotion:
 
-- `npx tsc --noEmit` passed
-- focused P0 suite 7 files / 117 tests passed
-- full backend vitest 432 files / 6546 tests passed
-- pre-commit full backend vitest 432 files / 6546 tests passed
-- post-merge `npx tsc --noEmit` passed
-- post-merge full backend vitest 432 files / 6555 tests passed
-- staging smoke 17/17 passed
-- production promote completed at `4.14.120`
+- pre-commit full vitest (×3 commits): 432 files / 6557 tests passed
+- pre-push full vitest (deploy.sh): 432 files / 6557 tests passed
+- staging deploy: exit 0
+- staging smoke: 17/17 passed
+- local↔staging dist hash match preflight: passed
+- prod deploy.sh: rsync → npm ci → pm2 start → 10s health wait → ✅ `Deploy complete! v4.14.123`
+- promote-to-prod.sh: ✅ `PROMOTE COMPLETE`
+- post-deploy: PM2 `nexus-hub` and `content-engine` online (22s uptime), prod `package.json` reports `4.14.123`
+
+## Previous Production Versions On This Branch
+
+- 4.14.122 (`a172a9f`) — `fix(training): use rolling week window for volume enforcement` (source commit `e5181fe`)
+- 4.14.121 (`ba2089b`) — version bump
+- 4.14.120 (`eaf98f3`) — P0 readiness/Garmin/task-list isolation fix (source commit `6549934`)
+
+## Process References
 
 The release-process audit remains the canonical process reference:
 

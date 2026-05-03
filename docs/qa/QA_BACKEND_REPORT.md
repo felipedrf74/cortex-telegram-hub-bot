@@ -7,7 +7,7 @@ Branch: `feature/chat-tenant-safe-context-orchestration`
 
 Branch: `feature/p0-readiness-integration-task-isolation`
 
-Status: Coach-engine quality fix. Local pass only. No deployment.
+Status: **Released to production at version `4.14.123` (commit `396b8f0`) on 2026-05-03**, deployed via the documented `deploy-staging.sh` → `staging-smoke.sh` (17/17) → `promote-to-prod.sh` chain. PM2 confirms `nexus-hub` and `content-engine` online post-restart.
 
 Issue addressed:
 
@@ -39,7 +39,7 @@ Files changed:
 
 Remaining caveat:
 
-- No deploy. The fix sits on `feature/p0-readiness-integration-task-isolation` alongside the previously merged P0 isolation fixes; merging requires the same staging/production review path used for v4.14.120.
+- Production-safe Felipe / Jaqueline / `nexushubbot` validation (workspace P1) was not part of this deploy and remains open. The TestFlight runbook for the fix is at `docs/release/training-recovery-fix-testflight-checklist.md` (workspace level).
 
 ## 2026-05-02 P0 Readiness / Garmin / Task-List Isolation Addendum
 
