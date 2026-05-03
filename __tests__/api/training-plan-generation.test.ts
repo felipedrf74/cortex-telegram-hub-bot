@@ -504,6 +504,48 @@ describe('generateTrainingPlanForUser', () => {
     }));
   });
 
+  // training-expert-coach-knowledge-engine (2026-05-03):
+  // P0-C — calendar fetch fail-safe. When `getEvents` errors we still
+  // generate a plan (so a transient OAuth blip doesn't block the user)
+  // but mark `calendarFetchDegraded: true` and emit an explicit
+  // `calendar_fetch_degraded` warning so iOS can render a "review your
+  // week before trusting it" banner. Historical bug: the silent empty
+  // busyWindows scheduled sessions on top of meetings.
+  it('marks the response as calendarFetchDegraded when getEvents throws', async () => {
+    mockGetEvents.mockRejectedValue(new Error('OAuth token expired'));
+
+    const result = await generateTrainingPlanForUser({
+      userId: 12,
+      objective: 'Build consistency',
+    });
+
+    expect(result.status).toBe('created');
+    expect((result as any).data.calendarFetchDegraded).toBe(true);
+    expect((result as any).data.calendarFetchError).toBe('OAuth token expired');
+    expect((result as any).data.warnings).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ code: 'calendar_fetch_degraded' }),
+      ]),
+    );
+  });
+
+  it('does NOT mark calendarFetchDegraded on a normal calendar read', async () => {
+    mockGetEvents.mockResolvedValue([]);
+
+    const result = await generateTrainingPlanForUser({
+      userId: 12,
+      objective: 'Build consistency',
+    });
+
+    expect(result.status).toBe('created');
+    expect((result as any).data.calendarFetchDegraded).toBe(false);
+    expect((result as any).data.calendarFetchError).toBeUndefined();
+    // No `calendar_fetch_degraded` warning surface.
+    const warnings = (result as any).data.warnings ?? [];
+    const codes = warnings.map((w: any) => w.code);
+    expect(codes).not.toContain('calendar_fetch_degraded');
+  });
+
   it('preserves legacy zero-value session fallback semantics', async () => {
     await generateTrainingPlanForUser({
       userId: 12,

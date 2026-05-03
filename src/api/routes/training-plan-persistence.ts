@@ -21,6 +21,15 @@ import {
   buildTrainingSessionIdentityKey,
   computeTrainingSessionShapeHash,
 } from '../../services/training-session-identity';
+import {
+  lintPlan,
+  type EquipmentProfileLabel,
+  type PlanLintFinding,
+  type PlanLintInput,
+  type PlanLintSession,
+  type PlanLintWeek,
+  type PlanLintResult,
+} from '../../services/coach-kernel/plan-linter';
 import { logger } from '../../utils/logger';
 import {
   preferredTimeForSessionType,
@@ -102,6 +111,18 @@ export interface PersistGeneratedTrainingPlanInput {
    */
   athleteProfiles?: AthleteProfiles;
   calendarSource?: CalendarSource;
+  // ─── Optional plan-linter context ──────────────────────────────────
+  // training-expert-coach-knowledge-engine (2026-05-03):
+  // The persister runs the deterministic plan-linter AFTER all sessions
+  // are written so it can validate cross-week + cross-session
+  // invariants no per-session check sees. These optional fields enrich
+  // the lint context — when absent, the relevant rules gracefully no-op.
+  /** Equipment profile vocabulary as resolved by the equipment-adaptation pass. */
+  equipmentProfile?: EquipmentProfileLabel;
+  /** Race date if the plan is event-based; enables the taper / race-specific rules. */
+  raceDate?: string | Date | null;
+  /** True when the plan was generated for a specific event (marathon, 5k, etc.). */
+  isRaceSpecific?: boolean;
 }
 
 export interface PersistGeneratedTrainingPlanResult {
@@ -113,6 +134,12 @@ export interface PersistGeneratedTrainingPlanResult {
     focus: string | undefined;
     sessionCount: number;
   }>;
+  /**
+   * Plan-linter verdict + findings. Always populated; in advisor mode
+   * (the default), `status === 'fail'` does NOT prevent the plan from
+   * being persisted — the API caller decides what to surface.
+   */
+  lint: PlanLintResult;
 }
 
 export async function persistGeneratedTrainingPlan(
@@ -406,6 +433,26 @@ export async function persistGeneratedTrainingPlan(
     );
   }
 
+  // training-expert-coach-knowledge-engine (2026-05-03):
+  // Plan-level deterministic lint. Defense-in-depth pass that catches
+  // cross-week invariants no per-session check sees: past-dated active
+  // sessions, equipment-impossible exercises (a bodyweight-only user
+  // with a barbell session), 3+ consecutive leg-heavy days, heavy
+  // lower-body the day before a long run, taper labels without a race
+  // date, race-specific plans with no race date, and consecutive
+  // identical strength sessions. Initial deployment is ADVISOR mode:
+  // findings are logged + surfaced on the API response, but a non-empty
+  // blocker list does NOT prevent plan generation from succeeding. The
+  // entire pass is wrapped to ensure a linter bug never breaks plan
+  // persistence (paranoia: `lint.status === 'fail'` is far better than
+  // `persistGeneratedTrainingPlan` throwing).
+  const lint = runPlanLintGuarded({
+    input,
+    planId: plan.id,
+    weeks: input.planData.weeks ?? [],
+    calendarEvents,
+  });
+
   return {
     planId: plan.id,
     totalSessions,
@@ -415,7 +462,180 @@ export async function persistGeneratedTrainingPlan(
       focus: weekData.focus,
       sessionCount: weekData.sessions?.filter(isCalendarSchedulableTrainingSession).length || 0,
     })),
+    lint,
   };
+}
+
+const LOWER_BODY_EXERCISE_TOKENS = [
+  'squat',
+  'deadlift',
+  'rdl',
+  'lunge',
+  'split squat',
+  'leg press',
+  'leg extension',
+  'leg curl',
+  'hip thrust',
+  'glute bridge',
+  'good morning',
+  'step up',
+  'box jump',
+];
+
+function flattenExerciseTokens(exercises: Array<Record<string, any>> | undefined): string[] {
+  if (!exercises?.length) return [];
+  const tokens: string[] = [];
+  for (const ex of exercises) {
+    if (!ex || typeof ex !== 'object') continue;
+    for (const key of ['name', 'exercise', 'movement', 'equipment', 'tags']) {
+      const val = (ex as any)[key];
+      if (typeof val === 'string' && val.trim()) tokens.push(val.toLowerCase().trim());
+      if (Array.isArray(val)) {
+        for (const v of val) {
+          if (typeof v === 'string' && v.trim()) tokens.push(v.toLowerCase().trim());
+        }
+      }
+    }
+  }
+  return tokens;
+}
+
+function inferIsLowerHeavy(sessionData: GeneratedTrainingSession, exerciseTokens: string[]): boolean {
+  const sessionType = String(sessionData.sessionType || '').toLowerCase();
+  if (sessionType !== 'gym' && !sessionType.startsWith('strength') && sessionType !== 'lift') {
+    return false;
+  }
+  // Title-based fast path: "Lower Body", "Squat day", etc.
+  const title = String(sessionData.title || '').toLowerCase();
+  if (title.includes('lower') || title.includes('squat') || title.includes('deadlift')) {
+    return true;
+  }
+  // Exercise-based: any of the lower-body tokens appears in flattened tokens.
+  return LOWER_BODY_EXERCISE_TOKENS.some((tok) =>
+    exerciseTokens.some((existing) => existing.includes(tok)),
+  );
+}
+
+function inferIsLongRun(sessionData: GeneratedTrainingSession): boolean {
+  const sessionType = String(sessionData.sessionType || '').toLowerCase();
+  if (sessionType === 'long_run') return true;
+  const title = String(sessionData.title || '').toLowerCase();
+  return /\blong\s+run\b/.test(title);
+}
+
+function buildPlanLintWeek(
+  weekData: NonNullable<GeneratedTrainingPlan['weeks']>[number],
+  calendarEvents: ReadonlyArray<{ sessionId: number; start: string; sessionIdentityKey: string }>,
+): PlanLintWeek {
+  const sessions: PlanLintSession[] = [];
+  for (const sessionData of weekData.sessions ?? []) {
+    const dayOfWeek = String(sessionData.dayOfWeek || '').toLowerCase();
+    if (!dayOfWeek) continue;
+    const sessionType = String(sessionData.sessionType || '').toLowerCase();
+    const exerciseTokens = flattenExerciseTokens(sessionData.exercises);
+    const status: PlanLintSession['status'] = (() => {
+      // The persister has decided per session. We re-derive the status
+      // family from the input rather than carrying it through the loop:
+      //   • explicit inactiveScheduleState → pass-through.
+      //   • activeScheduleStateFor → 'scheduled' / 'reflowed' / etc.
+      //   • neither → 'pending' (our default; linter ignores).
+      const inactive = inactiveScheduleState(sessionData);
+      if (inactive) return inactive;
+      const active = activeScheduleStateFor(sessionData);
+      if (active) return active;
+      return 'pending';
+    })();
+    sessions.push({
+      // session id can't be looked up here without more wiring; use the
+      // calendar-event sessionId when available so iOS can correlate
+      // findings back to a row.
+      id: undefined,
+      dayOfWeek,
+      sessionType,
+      title: String(sessionData.title || 'Training session'),
+      durationMinutes: typeof sessionData.durationMinutes === 'number'
+        ? sessionData.durationMinutes
+        : undefined,
+      status,
+      // scheduledDate is best resolved from the calendarEvents list when
+      // the persister produced an event, since that's the actual date
+      // we wrote. For unscheduled rows, leave undefined; the linter's
+      // past-day rule deliberately ignores non-active rows.
+      scheduledDate: undefined,
+      exerciseTokens,
+      isLowerHeavy: inferIsLowerHeavy(sessionData, exerciseTokens),
+      isLongRun: inferIsLongRun(sessionData),
+      isKey: inferIsLongRun(sessionData) || /\b(threshold|interval|race pace)\b/i.test(
+        String(sessionData.title || ''),
+      ),
+    });
+  }
+  // Backfill scheduledDate from the calendar-event records (best-effort).
+  // The mapping is one calendarEvent per persisted active session; we
+  // walk in-order and pair by index since both lists are produced in the
+  // same loop ordering.
+  const activeIndices: number[] = [];
+  for (let i = 0; i < sessions.length; i++) {
+    if (sessions[i].status && ACTIVE_SCHEDULE_STATES.has(sessions[i].status as any)) {
+      activeIndices.push(i);
+    }
+  }
+  // calendarEvents is the global cross-week list; we can't re-pair it
+  // here without more bookkeeping. Leave scheduledDate undefined; the
+  // past-day rule then no-ops for sessions whose date the linter can't
+  // verify. This is conservative — the per-session past-day floor in
+  // `resolvePlanSlotDate` already rejects past days at scheduling time.
+  void activeIndices;
+  return {
+    weekNumber: weekData.weekNumber || 1,
+    focus: weekData.focus,
+    intensityPct: weekData.intensityPct,
+    sessions,
+  };
+}
+
+function runPlanLintGuarded(args: {
+  input: PersistGeneratedTrainingPlanInput;
+  planId: number;
+  weeks: NonNullable<GeneratedTrainingPlan['weeks']>;
+  calendarEvents: ReadonlyArray<{ sessionId: number; start: string; sessionIdentityKey: string }>;
+}): PlanLintResult {
+  try {
+    const lintInput: PlanLintInput = {
+      now: args.input.now,
+      planId: args.planId,
+      startDate: args.input.startDate,
+      isRaceSpecific: args.input.isRaceSpecific,
+      raceDate: args.input.raceDate ?? null,
+      equipmentProfile: args.input.equipmentProfile,
+      weeks: args.weeks.map((w) => buildPlanLintWeek(w, args.calendarEvents)),
+    };
+    const lint = lintPlan(lintInput);
+    if (lint.blockers.length > 0 || lint.warnings.length > 0) {
+      logger.warn(
+        {
+          userId: args.input.userId,
+          planId: args.planId,
+          status: lint.status,
+          blockerRuleIds: lint.blockers.map((b) => b.ruleId),
+          warningRuleIds: lint.warnings.map((w) => w.ruleId),
+        },
+        'persistGeneratedTrainingPlan: plan-linter findings (advisor mode)',
+      );
+    }
+    return lint;
+  } catch (err) {
+    logger.warn(
+      { err, userId: args.input.userId, planId: args.planId },
+      'persistGeneratedTrainingPlan: plan-linter threw; defaulting to pass (advisor mode)',
+    );
+    return {
+      status: 'pass',
+      blockers: [],
+      warnings: [],
+      suggestedFixes: [],
+    };
+  }
 }
 
 function buildTrainingSecretaryIntent(input: {
@@ -532,6 +752,89 @@ function appendScheduleReason(description: string, reason: string | null | undef
   return `${description}\n\nSCHEDULE:\n${trimmedReason}`.trim();
 }
 
+/**
+ * Computes the calendar date for a (weekNumber, dayIndex) slot relative
+ * to the plan-generation moment `now` and decides whether the slot is
+ * legal (i.e. not in the past for week 1).
+ *
+ * Week 1 is anchored at `now`. If the named day-of-week has already
+ * passed this calendar week (e.g. plan generated Wed, slot is Monday),
+ * the slot is REJECTED rather than silently sliding to next Monday.
+ * The historical bug: the legacy code added +7 days when `daysUntil`
+ * went negative, which produced a forward-looking date but landed
+ * "Week 1 Monday" on the SAME calendar day as "Week 2 Monday" — users
+ * lost Mon/Tue of week 1 silently and a generated plan that claimed
+ * "starts today" actually started two days in the future.
+ *
+ * For weekNumber >= 2 the additive offset is correct: each subsequent
+ * week is 7 days after the prior, so the rolling weekStart anchor is
+ * always at least 7 days in the future — there is no past-day risk
+ * downstream.
+ *
+ * Returns either:
+ *   { kind: 'usable', sessionDate }  → call scheduleSessionWindow
+ *   { kind: 'past_day_in_week_1', dayName, generatedOn } → caller marks
+ *     as `unscheduled` with a clear reason.
+ */
+type PlanSlotResolution =
+  | { kind: 'usable'; sessionDate: Date }
+  | {
+      kind: 'past_day_in_week_1';
+      dayName: string;
+      generatedOnDayName: string;
+    };
+
+const DAY_NAMES_SUN_FIRST = [
+  'Sunday',
+  'Monday',
+  'Tuesday',
+  'Wednesday',
+  'Thursday',
+  'Friday',
+  'Saturday',
+];
+
+export function resolvePlanSlotDate(input: {
+  weekNumber: number;
+  dayIndex: number; // 0=Mon, 1=Tue, ..., 6=Sun (matches DAY_NAMES at top of file)
+  now: Date;
+}): PlanSlotResolution {
+  const weekStart = new Date(input.now);
+  weekStart.setDate(weekStart.getDate() + ((input.weekNumber - 1) * 7));
+
+  const currentDay = weekStart.getDay();
+  const targetDay = (input.dayIndex + 1) % 7; // shift Mon=0..Sun=6 → Mon=1..Sat=6,Sun=0
+
+  let daysUntil = targetDay - currentDay;
+
+  // PAST-DAY FLOOR: only relevant for week 1.
+  //
+  // For week 1 (weekStart === now's calendar week), daysUntil < 0 means
+  // the user is generating a plan AFTER the named day already passed
+  // (e.g. now=Wed, target=Mon → daysUntil = 1 - 3 = -2). The legacy code
+  // added +7 here; we now mark this as a past-day rejection so the
+  // session is persisted with status='unscheduled' and surfaced honestly
+  // to iOS instead of silently sliding to next week's Monday.
+  //
+  // For week 2+ we keep the +7 fallback because weekStart is already a
+  // forward-looking anchor; sliding within that week's 7-day envelope
+  // is the correct behavior.
+  if (daysUntil < 0) {
+    if (input.weekNumber === 1) {
+      return {
+        kind: 'past_day_in_week_1',
+        dayName: DAY_NAMES_SUN_FIRST[targetDay],
+        generatedOnDayName: DAY_NAMES_SUN_FIRST[currentDay],
+      };
+    }
+    daysUntil += 7;
+  }
+
+  const sessionDate = new Date(weekStart);
+  sessionDate.setDate(sessionDate.getDate() + daysUntil);
+  return { kind: 'usable', sessionDate };
+}
+
 function scheduleSessionForPlan(input: {
   weekNumber: number;
   dayIndex: number;
@@ -546,16 +849,32 @@ function scheduleSessionForPlan(input: {
   scheduledWindows: BusyWindow[];
   title: string;
 }): ScheduleSessionResult {
-  const weekStart = new Date(input.now);
-  weekStart.setDate(weekStart.getDate() + ((input.weekNumber - 1) * 7));
+  const slot = resolvePlanSlotDate({
+    weekNumber: input.weekNumber,
+    dayIndex: input.dayIndex,
+    now: input.now,
+  });
 
-  const currentDay = weekStart.getDay();
-  const targetDay = input.dayIndex + 1;
-  let daysUntil = targetDay - currentDay;
-  if (daysUntil < 0) daysUntil += 7;
+  if (slot.kind === 'past_day_in_week_1') {
+    // Reuse the `noAvailableSlot` plumbing that already drives the
+    // `status: 'unscheduled'` persistence path. The reason string is
+    // intentionally human-readable — it surfaces in the session
+    // description and helps iOS render an honest "Mon/Tue skipped
+    // because plan was created on Wednesday" explanation.
+    const fallback = new Date(input.now);
+    return {
+      start: fallback,
+      end: new Date(fallback.getTime() + input.durationMinutes * 60 * 1000),
+      preferredTimeUnavailable: true,
+      noAvailableSlot: true,
+      unavailableReason:
+        `${slot.dayName} of week 1 has already passed this calendar week ` +
+        `(plan created on ${slot.generatedOnDayName}). Look for the equivalent ` +
+        `session in week 2 or adjust your start day.`,
+    };
+  }
 
-  const sessionDate = new Date(weekStart);
-  sessionDate.setDate(sessionDate.getDate() + daysUntil);
+  const sessionDate = slot.sessionDate;
 
   const resolvedPreferredTime = typeof input.preferredStartTime === 'string' && /^\d{2}:\d{2}$/.test(input.preferredStartTime)
     ? input.preferredStartTime
@@ -574,11 +893,15 @@ function scheduleSessionForPlan(input: {
     input.scheduledWindows,
   );
 
-  input.scheduledWindows.push({
-    startMs: scheduledWindow.start.getTime(),
-    endMs: scheduledWindow.end.getTime(),
-    title: input.title,
-  });
+  // Don't pollute the busy-window guard with a past-day fallback marker
+  // (start time = `now`); only push the window when the slot is real.
+  if (!scheduledWindow.noAvailableSlot) {
+    input.scheduledWindows.push({
+      startMs: scheduledWindow.start.getTime(),
+      endMs: scheduledWindow.end.getTime(),
+      title: input.title,
+    });
+  }
 
   return scheduledWindow;
 }

@@ -224,12 +224,37 @@ export async function generateTrainingPlanForUser(
   const startStr = now.toISOString().slice(0, 10);
   const endStr = endDate.toISOString().slice(0, 10);
 
+  // training-expert-coach-knowledge-engine (2026-05-03):
+  // Calendar fetch is the upstream source of truth for "when can the
+  // user actually train?". A silent empty `busyWindows` after a
+  // `getEvents` failure means we schedule blind — sessions land on top
+  // of meetings with no warning. Two changes here:
+  //   1. The catch logs the error structurally so SRE can see when
+  //      Google/Outlook is degraded for a real user.
+  //   2. We track a `calendarFetchDegraded` flag so downstream callers
+  //      (and the plan-linter response) can attach an explicit warning
+  //      ("Plan generated without calendar conflict detection — please
+  //      review your week before trusting it"). The plan still
+  //      generates so the user isn't blocked by transient OAuth
+  //      hiccups, but the caller knows it happened.
   let busyWindows: BusyWindow[] = [];
+  let calendarFetchDegraded = false;
+  let calendarFetchError: string | undefined;
   try {
     const events = await getEvents(startStr, endStr, userId);
     busyWindows = buildBusyWindows(events || []);
-  } catch {
-    // Calendar unavailable — plan without schedule constraints.
+  } catch (err) {
+    calendarFetchDegraded = true;
+    calendarFetchError = err instanceof Error ? err.message : String(err);
+    logger.warn(
+      {
+        userId,
+        startDate: startStr,
+        endDate: endStr,
+        err,
+      },
+      'training-plan-generation: calendar getEvents failed; plan will be generated without conflict detection',
+    );
   }
 
   const equipmentAdaptation = buildTrainingEquipmentAdaptation({
@@ -398,6 +423,31 @@ export async function generateTrainingPlanForUser(
       break;
   }
 
+  // training-expert-coach-knowledge-engine (2026-05-03):
+  // The persister now runs the deterministic plan-linter in advisor
+  // mode. Pass through the fields the linter needs for accurate rules:
+  //   • equipmentProfile — drives the equipment_compatibility rule.
+  //   • raceDate         — drives the no_fake_taper_without_event rule
+  //                        and the race_specific_plan_requires_race_date
+  //                        rule.
+  //   • isRaceSpecific   — derived from the objective; tells the linter
+  //                        whether to treat missing race date as a
+  //                        blocker.
+  // All three are best-effort: when absent, the relevant rules no-op.
+  const equipmentProfileLabel: string | undefined =
+    typeof gymProfile?.equipment_access === 'string'
+      ? String(gymProfile.equipment_access).toLowerCase().trim() || undefined
+      : typeof fitnessProfile?.available_equipment === 'string'
+        ? String(fitnessProfile.available_equipment).toLowerCase().trim() || undefined
+        : undefined;
+  const raceDateForLint: string | null =
+    typeof runProfile?.target_race_date === 'string' && runProfile.target_race_date.trim()
+      ? runProfile.target_race_date
+      : null;
+  const isRaceSpecificForLint =
+    objectiveNeedsRunningProfile(objective) &&
+    /\b(marathon|half\s*marathon|10k|5k|race|ironman|70\.3|trail)\b/i.test(objective);
+
   const persistedPlan = await persistGeneratedTrainingPlan({
     userId,
     objective,
@@ -426,7 +476,41 @@ export async function generateTrainingPlanForUser(
       runProfile,
     },
     calendarSource: calendarSource || undefined,
+    equipmentProfile: equipmentProfileLabel,
+    raceDate: raceDateForLint,
+    isRaceSpecific: isRaceSpecificForLint,
   });
+
+  // training-expert-coach-knowledge-engine (2026-05-03):
+  // Surface plan-linter findings + calendar-degraded warning on the
+  // response so iOS can render an honest "review your week before
+  // trusting it" banner. Both fields are best-effort signals; the iOS
+  // client decides UX. Treating these as silent passes was the historical
+  // foot-gun where a calendar outage produced sessions stacked on top of
+  // meetings with no warning.
+  // Lint result is optional defensively: mocked persistGeneratedTrainingPlan
+  // in legacy tests pre-dates the lint field; production always populates it.
+  const lintResult = persistedPlan.lint ?? {
+    status: 'pass' as const,
+    blockers: [],
+    warnings: [],
+    suggestedFixes: [],
+  };
+  const planWarnings: Array<{ code: string; message: string }> = [];
+  if (calendarFetchDegraded) {
+    planWarnings.push({
+      code: 'calendar_fetch_degraded',
+      message:
+        'Could not read your calendar to detect conflicts. The plan was generated ' +
+        'without conflict checks — please review the week before trusting it.',
+    });
+  }
+  for (const blocker of lintResult.blockers) {
+    planWarnings.push({ code: `lint_blocker_${blocker.ruleId}`, message: blocker.message });
+  }
+  for (const warning of lintResult.warnings) {
+    planWarnings.push({ code: `lint_warning_${warning.ruleId}`, message: warning.message });
+  }
 
   return {
     status: 'created',
@@ -448,6 +532,12 @@ export async function generateTrainingPlanForUser(
       profileQuality: planData.profileQuality ?? null,
       decisionReasons: Array.isArray(planData.decisionReasons) ? planData.decisionReasons : [],
       fallbackTemplateUsed: usedFallbackTemplate,
+      // training-expert-coach-knowledge-engine: explicit calendar
+      // health flag + lint verdict surface on the response payload.
+      calendarFetchDegraded,
+      ...(calendarFetchError ? { calendarFetchError } : {}),
+      planLint: lintResult,
+      warnings: planWarnings,
       message: usedFallbackTemplate
         ? `Plan created with a reliable fallback template. ${persistedPlan.totalSessions} sessions scheduled across ${durationWeeks} weeks. ${persistedPlan.eventsCreated} calendar events created.`
         : `Plan created! ${persistedPlan.totalSessions} sessions scheduled across ${durationWeeks} weeks. ${persistedPlan.eventsCreated} calendar events created.`,
