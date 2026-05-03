@@ -1,23 +1,142 @@
 #!/usr/bin/env bash
 # ─────────────────────────────────────────────────────
-# Committed pre-commit hook (hardening audit 2026-04-20).
+# Committed pre-commit hook (release-pipeline-risk-based-optimization,
+# 2026-05-03; supersedes 2026-04-20 hardening pass).
 #
 # Activate once per clone:
 #   git config core.hooksPath .husky
-# (This file is then used directly — no husky npm dep required.)
 #
-# Runs typecheck + full vitest so a broken tree can't commit. Matches
-# what `scripts/setup-hooks.sh` used to imperatively write into
-# `.git/hooks/pre-commit`, but lives in version control so every
-# clone gets the same gates — no drift between Felipe's Mac and any
-# future contributor / CI-paired dev environment.
+# Behavior:
+#   - typecheck: ALWAYS (`npx tsc --noEmit`). Types are global; cheap (~5–8 s).
+#   - vitest: gated by the changed-area classifier
+#       * docs-only diff           → skip vitest entirely (saves ~9 min)
+#       * source/test diff         → focused `vitest run` against domain-scoped
+#                                    globs from the classifier
+#       * test config / package*   → full `vitest run` (shared-behavior risk)
+#       * unmapped non-doc diff    → `vitest run --changed origin/main`
+#         (changed-files-only)
+#
+#   - escape hatch: NEXUS_PRECOMMIT_FULL_VITEST=1 forces the legacy
+#     full-suite behavior (used when investigating a flake or running
+#     a release-candidate commit).
+#   - failure-safe: if the classifier or git base resolution fails, the
+#     hook falls back to the legacy full-vitest run.
 # ─────────────────────────────────────────────────────
 set -e
+
+ROOT="$(git rev-parse --show-toplevel)"
+CLASSIFIER="$ROOT/scripts/changed-area-classifier.sh"
 
 echo "🔍 Pre-commit: Type checking..."
 npx tsc --noEmit
 echo "✅ Type check passed"
 
-echo "🧪 Pre-commit: Running tests..."
-npx vitest run --reporter=dot
-echo "✅ Tests passed"
+# ── Vitest gating ─────────────────────────────────────
+if [ "${NEXUS_PRECOMMIT_FULL_VITEST:-0}" = "1" ]; then
+  echo "🧪 Pre-commit: NEXUS_PRECOMMIT_FULL_VITEST=1 — running full vitest suite..."
+  npx vitest run --reporter=dot
+  echo "✅ Tests passed (full)"
+  exit 0
+fi
+
+STAGED_FILES="$(git diff --cached --name-only --diff-filter=ACMR | tr '\n' ',' | sed 's/,$//')"
+
+if [ -z "$STAGED_FILES" ]; then
+  echo "🧪 Pre-commit: nothing staged — skipping vitest"
+  exit 0
+fi
+
+if [ ! -x "$CLASSIFIER" ]; then
+  echo "⚠️  Classifier not found at $CLASSIFIER — falling back to full vitest"
+  npx vitest run --reporter=dot
+  echo "✅ Tests passed (full, classifier unavailable)"
+  exit 0
+fi
+
+CLASSIFIER_JSON="$("$CLASSIFIER" --files "$STAGED_FILES" --format json 2>/dev/null || true)"
+if [ -z "$CLASSIFIER_JSON" ]; then
+  echo "⚠️  Classifier produced no output — falling back to full vitest"
+  npx vitest run --reporter=dot
+  echo "✅ Tests passed (full, classifier no-op)"
+  exit 0
+fi
+
+# Use a small node helper to extract mode + globs + skipReason. Errors fall
+# back to mode=full so we never silently skip a real risk.
+VITEST_MODE="$(printf '%s' "$CLASSIFIER_JSON" | node -e '
+  let b = "";
+  process.stdin.on("data", (c) => (b += c));
+  process.stdin.on("end", () => {
+    try {
+      const j = JSON.parse(b);
+      process.stdout.write(j.vitest.mode || "full");
+    } catch (_) {
+      process.stdout.write("full");
+    }
+  });
+' 2>/dev/null || echo "full")"
+
+read_globs() {
+  printf '%s' "$CLASSIFIER_JSON" | node -e '
+    let b = "";
+    process.stdin.on("data", (c) => (b += c));
+    process.stdin.on("end", () => {
+      try {
+        const g = JSON.parse(b).vitest.globs || [];
+        process.stdout.write(g.join(" "));
+      } catch (_) {}
+    });
+  ' 2>/dev/null
+}
+
+read_skip_reason() {
+  printf '%s' "$CLASSIFIER_JSON" | node -e '
+    let b = "";
+    process.stdin.on("data", (c) => (b += c));
+    process.stdin.on("end", () => {
+      try {
+        process.stdout.write(JSON.parse(b).vitest.skipReason || "");
+      } catch (_) {}
+    });
+  ' 2>/dev/null
+}
+
+case "$VITEST_MODE" in
+  skip)
+    REASON="$(read_skip_reason)"
+    echo "🧪 Pre-commit: docs-only/non-vitest staged set — skipping vitest"
+    [ -n "$REASON" ] && echo "    classifier reason: $REASON"
+    exit 0
+    ;;
+  full)
+    echo "🧪 Pre-commit: shared-behavior risk — running full vitest suite..."
+    npx vitest run --reporter=dot
+    echo "✅ Tests passed (full)"
+    ;;
+  changed-only)
+    BASE_REF="$(git for-each-ref --format='%(refname:short)' refs/remotes/origin/main 2>/dev/null | head -1)"
+    BASE_REF="${BASE_REF:-main}"
+    echo "🧪 Pre-commit: scoped — running vitest --changed $BASE_REF..."
+    npx vitest run --reporter=dot --changed "$BASE_REF"
+    echo "✅ Tests passed (changed-only)"
+    ;;
+  focused)
+    GLOBS="$(read_globs)"
+    if [ -z "$GLOBS" ]; then
+      echo "⚠️  Focused mode but no globs — falling back to full vitest"
+      npx vitest run --reporter=dot
+      echo "✅ Tests passed (full, focused fallback)"
+    else
+      echo "🧪 Pre-commit: focused — running vitest against domain-scoped globs"
+      printf '    %s\n' $GLOBS
+      # shellcheck disable=SC2086
+      npx vitest run --reporter=dot $GLOBS
+      echo "✅ Tests passed (focused)"
+    fi
+    ;;
+  *)
+    echo "⚠️  Unknown vitest mode '$VITEST_MODE' — falling back to full vitest"
+    npx vitest run --reporter=dot
+    echo "✅ Tests passed (full, unknown mode fallback)"
+    ;;
+esac

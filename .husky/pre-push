@@ -1,14 +1,27 @@
 #!/usr/bin/env bash
 # ─────────────────────────────────────────────────────
-# Committed pre-push hook (hardening audit 2026-04-20).
+# Committed pre-push hook (release-pipeline-risk-based-optimization,
+# 2026-05-03; supersedes 2026-04-20 hardening pass).
 #
-# Matches the behavior previously written imperatively into
-# .git/hooks/pre-push by scripts/setup-hooks.sh. Now lives in version
-# control so every clone runs the same gates.
+# Behavior:
+#   - typecheck: ALWAYS (`npx tsc --noEmit`).
+#   - vitest: gated by branch + classifier
+#       * push to `main`            → full vitest (RC gate)
+#       * push to release/rc/p0-*   → full vitest (RC gate)
+#       * push to feature/* etc     → focused vitest via classifier
+#       * empty diff                → typecheck only
+#   - build: only when pushing to `main`.
+#   - escape hatches:
+#       NEXUS_PREPUSH_FULL_VITEST=1   force full vitest
+#       NEXUS_PREPUSH_SKIP_VITEST=1   skip vitest entirely (escape hatch
+#                                     for emergency push; logs WHY)
+#   - failure-safe: classifier failure ⇒ full vitest.
 # ─────────────────────────────────────────────────────
 set -e
 
-BRANCH=$(git rev-parse --abbrev-ref HEAD)
+ROOT="$(git rev-parse --show-toplevel)"
+CLASSIFIER="$ROOT/scripts/changed-area-classifier.sh"
+BRANCH="$(git rev-parse --abbrev-ref HEAD)"
 
 echo "🔍 Pre-push: Verifying $BRANCH..."
 
@@ -16,9 +29,102 @@ echo "   📝 Type check..."
 npx tsc --noEmit
 echo "   ✅ Types OK"
 
-echo "   🧪 Running tests..."
-npx vitest run --reporter=dot
-echo "   ✅ Tests passed"
+# ── Branch classification ────────────────────────────
+is_rc_branch() {
+  case "$BRANCH" in
+    main|master|release/*|rc/*|feature/p0-*|feature/release-*)
+      return 0;;
+    *)
+      return 1;;
+  esac
+}
+
+# ── Vitest gating ─────────────────────────────────────
+if [ "${NEXUS_PREPUSH_SKIP_VITEST:-0}" = "1" ]; then
+  echo "   ⚠️  NEXUS_PREPUSH_SKIP_VITEST=1 — skipping vitest"
+  echo "       Reason MUST be recorded in the PR/release-state when this is used."
+elif [ "${NEXUS_PREPUSH_FULL_VITEST:-0}" = "1" ] || is_rc_branch; then
+  if is_rc_branch; then
+    echo "   🧪 Branch '$BRANCH' is an RC-class branch — running full vitest"
+  else
+    echo "   🧪 NEXUS_PREPUSH_FULL_VITEST=1 — running full vitest"
+  fi
+  npx vitest run --reporter=dot
+  echo "   ✅ Tests passed (full)"
+else
+  # Feature branch: classify by diff against origin/main (or main)
+  BASE_REF="$(git for-each-ref --format='%(refname:short)' refs/remotes/origin/main 2>/dev/null | head -1)"
+  BASE_REF="${BASE_REF:-main}"
+  if [ ! -x "$CLASSIFIER" ]; then
+    echo "   ⚠️  Classifier not found — falling back to full vitest"
+    npx vitest run --reporter=dot
+    echo "   ✅ Tests passed (full, classifier unavailable)"
+  else
+    CLASSIFIER_JSON="$("$CLASSIFIER" --base "$BASE_REF" --format json 2>/dev/null || true)"
+    if [ -z "$CLASSIFIER_JSON" ]; then
+      echo "   ⚠️  Classifier produced no output — falling back to full vitest"
+      npx vitest run --reporter=dot
+      echo "   ✅ Tests passed (full, classifier no-op)"
+    else
+      VITEST_MODE="$(printf '%s' "$CLASSIFIER_JSON" | node -e '
+        let b = "";
+        process.stdin.on("data", (c) => (b += c));
+        process.stdin.on("end", () => {
+          try {
+            const j = JSON.parse(b);
+            process.stdout.write(j.vitest.mode || "full");
+          } catch (_) {
+            process.stdout.write("full");
+          }
+        });
+      ' 2>/dev/null || echo "full")"
+
+      case "$VITEST_MODE" in
+        skip)
+          echo "   🧪 Pre-push: docs-only diff — skipping vitest"
+          ;;
+        full)
+          echo "   🧪 Pre-push: shared-behavior risk — running full vitest"
+          npx vitest run --reporter=dot
+          echo "   ✅ Tests passed (full)"
+          ;;
+        changed-only)
+          echo "   🧪 Pre-push: scoped — vitest --changed $BASE_REF"
+          npx vitest run --reporter=dot --changed "$BASE_REF"
+          echo "   ✅ Tests passed (changed-only)"
+          ;;
+        focused)
+          GLOBS="$(printf '%s' "$CLASSIFIER_JSON" | node -e '
+            let b = "";
+            process.stdin.on("data", (c) => (b += c));
+            process.stdin.on("end", () => {
+              try {
+                const g = JSON.parse(b).vitest.globs || [];
+                process.stdout.write(g.join(" "));
+              } catch (_) {}
+            });
+          ' 2>/dev/null)"
+          if [ -z "$GLOBS" ]; then
+            echo "   ⚠️  Focused mode but no globs — falling back to full"
+            npx vitest run --reporter=dot
+            echo "   ✅ Tests passed (full, focused fallback)"
+          else
+            echo "   🧪 Pre-push: focused vitest"
+            printf '       %s\n' $GLOBS
+            # shellcheck disable=SC2086
+            npx vitest run --reporter=dot $GLOBS
+            echo "   ✅ Tests passed (focused)"
+          fi
+          ;;
+        *)
+          echo "   ⚠️  Unknown vitest mode '$VITEST_MODE' — falling back to full"
+          npx vitest run --reporter=dot
+          echo "   ✅ Tests passed (full, unknown-mode fallback)"
+          ;;
+      esac
+    fi
+  fi
+fi
 
 if [ "$BRANCH" = "main" ]; then
   echo "   🔨 Build verification (pushing to main)..."
