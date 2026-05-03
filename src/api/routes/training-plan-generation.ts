@@ -190,9 +190,9 @@ export async function generateTrainingPlanForUser(
   } = input;
   const durationWeeks = input.durationWeeks ?? 4;
 
-  const fitnessProfile = onboarding.getProfile?.(userId, 'fitness');
-  const gymProfile = onboarding.getProfile?.(userId, 'triathlon-gym');
-  const runProfile = onboarding.getProfile?.(userId, 'triathlon-running');
+  const fitnessProfile = unwrapOnboardingProfileData(onboarding.getProfile?.(userId, 'fitness'));
+  const gymProfile = unwrapOnboardingProfileData(onboarding.getProfile?.(userId, 'triathlon-gym'));
+  const runProfile = unwrapOnboardingProfileData(onboarding.getProfile?.(userId, 'triathlon-running'));
 
   if (!fitnessProfile || Object.keys(fitnessProfile).length === 0) {
     return {
@@ -453,6 +453,21 @@ export async function generateTrainingPlanForUser(
         : `Plan created! ${persistedPlan.totalSessions} sessions scheduled across ${durationWeeks} weeks. ${persistedPlan.eventsCreated} calendar events created.`,
     },
   };
+}
+
+function unwrapOnboardingProfileData(profile: unknown): Record<string, any> | null {
+  if (!profile || typeof profile !== 'object' || Array.isArray(profile)) return null;
+
+  const record = profile as Record<string, any>;
+  const data = record.data;
+  if (data && typeof data === 'object' && !Array.isArray(data)) {
+    return data as Record<string, any>;
+  }
+
+  // Unit tests and legacy callers sometimes pass the profile-data object
+  // directly. Keep that path supported while the production service returns
+  // the persisted wrapper row { id, user_id, profile_type, data, ... }.
+  return record;
 }
 
 function clampNumber(raw: unknown, fallback: number, min: number, max: number): number {

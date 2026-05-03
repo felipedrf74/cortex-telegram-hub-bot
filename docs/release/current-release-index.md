@@ -55,6 +55,7 @@ The release-process audit remains the canonical process reference:
 - promotion checklist: `docs/release/production-promotion-checklist-v2.md`
 - identity helper: `scripts/release-identity.sh`
 - docs audit: `npm run docs:audit`
+- local-only Training hardening report: `docs/training/training-final-deep-audit-report.md`
 
 ## Active Gate Rule
 

@@ -1511,6 +1511,79 @@ describe('Training API routes', () => {
     expect(weekRes.body.data.totalCount).toBe(0);
   });
 
+  it('returns every active plan week for the iOS progression timeline without regenerating or syncing', async () => {
+    mockGetActivePlan.mockReturnValue({
+      id: 77,
+      name: 'Marathon Build',
+      start_date: '2026-05-04',
+      end_date: '2026-06-01',
+      periodization: 'block',
+      duration_weeks: 4,
+      plan_version: 3,
+      status: 'active',
+    });
+    mockGetWeeksForPlan.mockReturnValue([
+      { id: 771, week_number: 1, focus: 'base', intensity_pct: 64, adjustment_reason: null },
+      { id: 772, week_number: 2, focus: 'build', intensity_pct: 70, adjustment_reason: 'progression' },
+    ]);
+    mockGetSessionsForWeek.mockImplementation((weekId: number) => (
+      weekId === 771
+        ? [
+            {
+              id: 1,
+              plan_id: 77,
+              day_of_week: 'Monday',
+              session_type: 'run',
+              title: 'Easy Run',
+              duration_minutes: 45,
+              status: 'planned',
+              calendar_event_id: null,
+              exercises_json: null,
+              description_json: null,
+            },
+          ]
+        : [
+            {
+              id: 2,
+              plan_id: 77,
+              day_of_week: 'Saturday',
+              session_type: 'run',
+              title: 'Long Run',
+              duration_minutes: 90,
+              status: 'planned',
+              calendar_event_id: null,
+              exercises_json: null,
+              description_json: null,
+            },
+          ]
+    ));
+
+    const res = await dispatch('GET', '/plan/weeks');
+
+    expect(res.statusCode).toBe(200);
+    expect(res.body.ok).toBe(true);
+    expect(res.body.data.plan).toMatchObject({
+      id: 77,
+      name: 'Marathon Build',
+      planVersion: 3,
+      durationWeeks: 4,
+    });
+    expect(res.body.data.weeks).toHaveLength(2);
+    expect(res.body.data.weeks[0]).toMatchObject({
+      weekNumber: 1,
+      phase: 'base',
+      activeSessionCount: 1,
+      syncedSessionCount: 0,
+      missingSessionCount: 1,
+      weekSyncStatus: 'unsynced',
+    });
+    expect(res.body.data.weeks[1].sessions[0]).toMatchObject({
+      title: 'Long Run',
+      calendarSyncState: 'missing',
+    });
+    expect(mockBuildCoachKernelTrainingPlan).not.toHaveBeenCalled();
+    expect(mockCreateEvent).not.toHaveBeenCalled();
+  });
 
   it('recognizes explicit training events while excluding routine walk labels', () => {
     expect(looksLikeTrainingCalendarEvent('Tempo Run')).toBe(true);

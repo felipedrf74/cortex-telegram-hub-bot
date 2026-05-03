@@ -103,7 +103,7 @@ type AthleteConstraintProfile = {
 
 export function buildTrainingPlanCoordination(input: TrainingPlanCoordinationInput): TrainingPlanCoordination {
   const requestedSessions = clamp(Math.round(input.sessionsPerWeek || 5), 3, 7);
-  const requestedStrength = clamp(Math.round(input.strengthSessionsPerWeek || 0), 0, 4);
+  const requestedStrength = clamp(Math.round(input.strengthSessionsPerWeek || 0), 0, 6);
 
   const recoveryState = extractRecoveryState(input.training);
   const cookingRisk = extractCookingRisk(input.cooking);
@@ -403,7 +403,7 @@ function enforceWeeklySessionCap(sessions: CoordinatedTrainingSession[], cap: nu
   const removable = [...activeSessions]
     .sort((a, b) => removableSessionScore(a.session) - removableSessionScore(b.session));
 
-  for (const extra of removable.slice(cap)) {
+  for (const extra of removable.slice(0, activeSessions.length - cap)) {
     sessions[extra.index] = {
       dayOfWeek: extra.session.dayOfWeek,
       sessionType: 'rest',

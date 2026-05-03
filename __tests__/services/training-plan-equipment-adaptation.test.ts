@@ -93,4 +93,59 @@ describe('training-plan-equipment-adaptation', () => {
     expect(names).toEqual(['Tempo Air Squat', 'Single-Leg Hip Hinge']);
     expect(result.weeks?.[0].sessions?.[0].description).toContain('Adapted for bodyweight-only execution');
   });
+
+  it('treats no-equipment profile text as bodyweight-only', () => {
+    const adaptation = buildTrainingEquipmentAdaptation({
+      fitnessProfile: { available_equipment: 'No equipment' },
+      gymProfile: { equipment_access: 'No equipment' },
+    });
+
+    expect(adaptation.equipmentProfile).toBe('bodyweight');
+    expect(adaptation.summary).toBe('Bodyweight only');
+    expect(adaptation.promptBlock).toContain('no barbell, dumbbell, machine, or cable access');
+  });
+
+  it('removes equipment-dependent support lifts for no-equipment athletes', () => {
+    const adaptation = buildTrainingEquipmentAdaptation({
+      gymProfile: { equipment_access: 'No equipment' },
+    });
+
+    const plan: CoordinatedTrainingPlan = {
+      weeks: [
+        {
+          weekNumber: 1,
+          sessions: [
+            {
+              dayOfWeek: 'monday',
+              sessionType: 'gym',
+              title: 'Strength + Core Support',
+              durationMinutes: 40,
+              description: 'Support strength.',
+              exercises: [
+                { name: 'Goblet Squat', sets: 3, reps: 8, rpe: '7', restSec: 75 },
+                { name: 'Romanian Deadlift', sets: 3, reps: 8, rpe: '7', restSec: 75 },
+                { name: 'One-Arm Row', sets: 3, reps: 10, rpe: '7', restSec: 60 },
+                { name: 'Single-Leg RDL', sets: 3, reps: 8, rpe: '7', restSec: 60 },
+                { name: 'Banded Hip Hinge', sets: 3, reps: 12, rpe: '7', restSec: 45 },
+                { name: 'Front Plank', sets: 3, reps: 40, rpe: '6', restSec: 30 },
+              ],
+            },
+          ],
+        },
+      ],
+    };
+
+    const result = adaptTrainingPlanToAvailableEquipment(plan, adaptation);
+    const names = (result.weeks?.[0].sessions?.[0].exercises ?? []).map((exercise: any) => exercise.name);
+
+    expect(names).toEqual([
+      'Tempo Air Squat',
+      'Single-Leg Hip Hinge',
+      'Prone Snow Angel',
+      'Single-Leg Hip Hinge',
+      'Single-Leg Hip Hinge',
+      'Front Plank',
+    ]);
+    expect(names.join(' ')).not.toMatch(/\b(goblet|dumbbell|db|barbell|machine|cable|banded|band|rdl)\b/i);
+  });
 });

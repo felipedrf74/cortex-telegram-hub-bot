@@ -241,6 +241,111 @@ describe('generateTrainingPlanForUser', () => {
     expect(mockPersistGeneratedTrainingPlan).not.toHaveBeenCalled();
   });
 
+  it('treats an empty persisted onboarding wrapper as a missing profile', async () => {
+    mockGetProfile.mockImplementation((_userId: number, questionnaireId: string) => {
+      if (questionnaireId === 'fitness') {
+        return {
+          id: 1,
+          user_id: 12,
+          profile_type: 'fitness',
+          data: {},
+          created_at: '2026-05-03',
+          updated_at: '2026-05-03',
+        };
+      }
+      return null;
+    });
+    mockGetMissingProfileFields.mockReturnValue([{ key: 'experience_level' }]);
+
+    const result = await generateTrainingPlanForUser({
+      userId: 12,
+      objective: 'General fitness',
+    });
+
+    expect(result.status).toBe('needs_profile');
+    expect(mockBuildTrainingEquipmentAdaptation).not.toHaveBeenCalled();
+    expect(mockBuildCoachKernelTrainingPlan).not.toHaveBeenCalled();
+    expect(mockPersistGeneratedTrainingPlan).not.toHaveBeenCalled();
+  });
+
+  it('unwraps persisted onboarding profile rows before planning and equipment adaptation', async () => {
+    mockGetProfile.mockImplementation((_userId: number, questionnaireId: string) => {
+      if (questionnaireId === 'fitness') {
+        return {
+          id: 1,
+          user_id: 12,
+          profile_type: 'fitness',
+          data: {
+            experience_level: 'Advanced (3+ years)',
+            available_equipment: 'Full gym',
+            training_goals: 'Strength, Endurance',
+          },
+          created_at: '2026-05-03',
+          updated_at: '2026-05-03',
+        };
+      }
+      if (questionnaireId === 'triathlon-gym') {
+        return {
+          id: 2,
+          user_id: 12,
+          profile_type: 'triathlon-gym',
+          data: {
+            training_age: '5+ years',
+            equipment_access: 'Full commercial gym',
+            primary_goal: 'Hypertrophy',
+          },
+          created_at: '2026-05-03',
+          updated_at: '2026-05-03',
+        };
+      }
+      if (questionnaireId === 'triathlon-running') {
+        return {
+          id: 3,
+          user_id: 12,
+          profile_type: 'triathlon-running',
+          data: {
+            weekly_mileage_km: '45',
+            target_race: 'Marathon',
+            target_race_date: '2026-10-18',
+          },
+          created_at: '2026-05-03',
+          updated_at: '2026-05-03',
+        };
+      }
+      return null;
+    });
+
+    await generateTrainingPlanForUser({
+      userId: 12,
+      objective: 'Lisbon Marathon',
+      sessionsPerWeek: 7,
+      strengthSessionsPerWeek: 5,
+    });
+
+    expect(mockBuildTrainingEquipmentAdaptation).toHaveBeenCalledWith({
+      fitnessProfile: expect.objectContaining({
+        available_equipment: 'Full gym',
+      }),
+      gymProfile: expect.objectContaining({
+        equipment_access: 'Full commercial gym',
+      }),
+    });
+    expect(mockBuildCoachKernelTrainingPlan).toHaveBeenCalledWith(expect.objectContaining({
+      fitnessProfile: expect.objectContaining({
+        experience_level: 'Advanced (3+ years)',
+      }),
+      gymProfile: expect.objectContaining({
+        training_age: '5+ years',
+      }),
+      runProfile: expect.objectContaining({
+        weekly_mileage_km: '45',
+      }),
+    }));
+    expect(mockBuildCoachKernelTrainingPlan.mock.calls[0][0].fitnessProfile).not.toHaveProperty('data');
+    expect(mockBuildCoachKernelTrainingPlan.mock.calls[0][0].gymProfile).not.toHaveProperty('data');
+    expect(mockBuildCoachKernelTrainingPlan.mock.calls[0][0].runProfile).not.toHaveProperty('data');
+  });
+
   it('returns the objective-specific questionnaire requirement before planning', async () => {
     mockGetProfile.mockImplementation((_userId: number, questionnaireId: string) => {
       if (questionnaireId === 'fitness') return { experienceLevel: 'Intermediate' };

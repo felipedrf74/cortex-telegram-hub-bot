@@ -34,6 +34,7 @@ import {
 import {
   getReadiness,
   getTodaySession,
+  getAllPlanWeeks,
   getWeekPlan,
 } from './training-read-models';
 import { registerTrainingAnalyticsRoutes } from './training-analytics-routes';
@@ -214,6 +215,18 @@ export function trainingRoutes(): Router {
     } catch (err: any) {
       logger.error({ err }, 'iOS training/week failed');
       sendInternalError(res, 'Failed to fetch week plan');
+    }
+  });
+
+  /** GET /api/v1/training/plan/weeks */
+  router.get('/plan/weeks', async (req, res: Response) => {
+    const { userId } = req as AuthenticatedRequest;
+    try {
+      const weeks = await getAllPlanWeeks(userId);
+      sendSuccess(res, weeks);
+    } catch (err: any) {
+      logger.error({ err }, 'iOS training/plan/weeks failed');
+      sendInternalError(res, 'Failed to fetch training plan weeks');
     }
   });
 
