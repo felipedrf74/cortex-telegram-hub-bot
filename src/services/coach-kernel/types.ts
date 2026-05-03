@@ -98,7 +98,7 @@ export interface Goals {
   secondaryFocus?: Sport | 'strength';
   strengthGoal?: 'hypertrophy' | 'max_strength' | 'athletic' | 'maintenance';
   raceCalendar: RaceEvent[];
-  priorityOrder: Array<Sport | 'strength'>;
+  priorityOrder: Array<Sport | 'strength' | 'maintenance' | 'return'>;
   weeklySessionsTarget: Partial<Record<Sport, number>>;
   weeklyMinutesTarget?: Partial<Record<Sport, number>>;
 }

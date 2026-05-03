@@ -604,6 +604,73 @@ describe('generateTrainingPlanForUser', () => {
     });
   });
 
+  it('forwards explicit goal mode, priority, and race date from the app request', async () => {
+    const result = await generateTrainingPlanForUser({
+      userId: 12,
+      objective: 'Lisbon Marathon',
+      sessionsPerWeek: 7,
+      strengthSessionsPerWeek: 5,
+      goalMode: 'event_based',
+      trainingPriority: 'running',
+      raceDate: '2026-10-18',
+    });
+
+    expect(result.status).toBe('created');
+    expect(mockBuildCoachKernelTrainingPlan).toHaveBeenCalledWith(expect.objectContaining({
+      objective: 'Lisbon Marathon',
+      goalMode: 'event_based',
+      trainingPriority: 'running',
+      raceDate: '2026-10-18',
+      runProfile: expect.objectContaining({
+        currentMileage: 35,
+        target_race_date: '2026-10-18',
+        target_race: 'Lisbon Marathon',
+      }),
+    }));
+
+    const persistInput = mockPersistGeneratedTrainingPlan.mock.calls[0][0];
+    expect(persistInput.raceDate).toBe('2026-10-18');
+    expect(persistInput.athleteProfiles.runProfile).toEqual(expect.objectContaining({
+      target_race_date: '2026-10-18',
+    }));
+    expect(JSON.parse(persistInput.preferencesJson)).toMatchObject({
+      goalMode: 'event_based',
+      trainingPriority: 'running',
+      raceDate: '2026-10-18',
+    });
+    expect((result as any).data).toMatchObject({
+      goalMode: 'event_based',
+      trainingPriority: 'running',
+      raceDate: '2026-10-18',
+    });
+  });
+
+  it('drops unsupported goal mode, priority, and non-ISO race date before planning', async () => {
+    const result = await generateTrainingPlanForUser({
+      userId: 12,
+      objective: 'General running consistency',
+      goalMode: 'race',
+      trainingPriority: 'bodybuilding',
+      raceDate: '18/10/2026',
+    });
+
+    expect(result.status).toBe('created');
+    expect(mockBuildCoachKernelTrainingPlan).toHaveBeenCalledWith(expect.objectContaining({
+      goalMode: null,
+      trainingPriority: null,
+      raceDate: null,
+      runProfile: { currentMileage: 35 },
+    }));
+
+    const persistInput = mockPersistGeneratedTrainingPlan.mock.calls[0][0];
+    expect(persistInput.raceDate).toBeNull();
+    expect(JSON.parse(persistInput.preferencesJson)).toMatchObject({
+      goalMode: null,
+      trainingPriority: null,
+      raceDate: null,
+    });
+  });
+
   // ─── Slice 4.D.2 — pre-persist cancellation saga ─────────────────────
 
   describe('pre-persist cancellation saga (slice 4.D.2)', () => {

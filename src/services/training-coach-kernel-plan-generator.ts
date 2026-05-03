@@ -53,6 +53,9 @@ export interface CoachKernelReadinessInput {
   reasoning?: string | null;
 }
 
+export type TrainingGoalMode = 'event_based' | 'continuous' | 'maintenance' | 'return_to_training';
+export type TrainingPriority = Sport | 'triathlon' | 'hybrid';
+
 export interface CoachKernelTrainingPlanInput {
   userId: number;
   objective: string;
@@ -92,6 +95,9 @@ export interface CoachKernelTrainingPlanInput {
    * (`'optional'` semantics) — additive change only.
    */
   twoADayPreference?: 'never' | 'optional' | 'preferred' | null;
+  goalMode?: TrainingGoalMode | null;
+  trainingPriority?: TrainingPriority | null;
+  raceDate?: string | null;
   recentlyAskedFollowUpIds?: string[] | null;
   resolvedFollowUpIds?: string[] | null;
 }
@@ -220,7 +226,7 @@ export function buildAthleteStateFromTrainingProfiles(input: CoachKernelTraining
   }
   const primaryFocus = primaryFocusResolution.value;
   const weeklyTargets = resolveWeeklyTargets(primaryFocus, input);
-  const raceCalendar = resolveRaceCalendar(primaryFocus, input.objective, input.runProfile);
+  const raceCalendar = resolveRaceCalendar(primaryFocus, input.objective, input.runProfile, input.raceDate);
   const constraints = resolveConstraints(input.fitnessProfile, input.runProfile, input.notes);
 
   // Slice 3.J (Layer 1, audit follow-up): emit a structured warning
@@ -377,13 +383,18 @@ export function buildAthleteStateFromTrainingProfiles(input: CoachKernelTraining
       : 'Strength-goal resolver fell back to athletic — no primary_goal data on profile; planner will use the generic athletic prescription template');
   }
 
-  const priorityOrder = resolvePriorityOrder(primaryFocus);
+  const resolvedStrengthGoal: NonNullable<Goals['strengthGoal']> =
+    input.goalMode === 'maintenance'
+      ? 'maintenance'
+      : strengthGoalResolution.value;
+  const priorityOrder = resolvePriorityOrder(primaryFocus, input.goalMode, input.trainingPriority);
+  const modalityPriorityOrder = priorityOrder.filter(isModalityPriority);
   const maxSessionsPerDay = resolveMaxSessionsPerDay(input.twoADayPreference, weeklyTargets);
   const normalizedTrainingProfile = extractNormalizedTrainingProfile(input, {
     primaryFocus,
-    priorityOrder,
+    priorityOrder: modalityPriorityOrder,
     weeklyTargets,
-    strengthGoal: strengthGoalResolution.value,
+    strengthGoal: resolvedStrengthGoal,
     raceCalendar,
     equipment,
     equipmentSource: equipmentResolution.source === 'fallback' ? 'fallback' : 'provided',
@@ -412,7 +423,7 @@ export function buildAthleteStateFromTrainingProfiles(input: CoachKernelTraining
     goals: {
       primaryFocus,
       secondaryFocus: weeklyTargets.strength ? 'strength' : undefined,
-      strengthGoal: strengthGoalResolution.value,
+      strengthGoal: resolvedStrengthGoal,
       raceCalendar,
       priorityOrder,
       weeklySessionsTarget: weeklyTargets,
@@ -758,8 +769,9 @@ function resolveRaceCalendar(
   primaryFocus: CoachingDiscipline,
   objective: string,
   runProfile?: Record<string, any> | null,
+  requestRaceDate?: string | null,
 ): RaceEvent[] {
-  const raceDate = normalizeRaceDate(runProfile?.target_race_date);
+  const raceDate = normalizeRaceDate(requestRaceDate) ?? normalizeRaceDate(runProfile?.target_race_date);
   if (!raceDate) return [];
 
   const subtype = normalizeRaceSubtype(runProfile?.target_race, objective);
@@ -1348,7 +1360,20 @@ function pickStrengthGoalString(raw: unknown): string | null {
   return trimmed.length === 0 ? null : trimmed;
 }
 
-function resolvePriorityOrder(primaryFocus: CoachingDiscipline): Goals['priorityOrder'] {
+function resolvePriorityOrder(
+  primaryFocus: CoachingDiscipline,
+  goalMode?: TrainingGoalMode | null,
+  trainingPriority?: TrainingPriority | null,
+): Goals['priorityOrder'] {
+  const base = resolveBasePriorityOrder(primaryFocus);
+  const priorityLead = priorityToOrderToken(trainingPriority);
+  const reordered = priorityLead ? [priorityLead, ...base.filter((item) => item !== priorityLead)] : base;
+  if (goalMode === 'maintenance') return ['maintenance', ...reordered.filter((item) => item !== 'maintenance')];
+  if (goalMode === 'return_to_training') return ['return', ...reordered.filter((item) => item !== 'return')];
+  return reordered;
+}
+
+function resolveBasePriorityOrder(primaryFocus: CoachingDiscipline): Goals['priorityOrder'] {
   switch (primaryFocus) {
     case 'triathlon':
       return ['running', 'cycling', 'swimming', 'strength'];
@@ -1365,6 +1390,28 @@ function resolvePriorityOrder(primaryFocus: CoachingDiscipline): Goals['priority
     default:
       return ['strength', 'running'];
   }
+}
+
+function priorityToOrderToken(priority?: TrainingPriority | null): Goals['priorityOrder'][number] | null {
+  switch (priority) {
+    case 'running':
+    case 'cycling':
+    case 'swimming':
+    case 'strength':
+      return priority;
+    case 'triathlon':
+      return 'running';
+    case 'hybrid':
+    default:
+      return null;
+  }
+}
+
+function isModalityPriority(value: Goals['priorityOrder'][number]): value is Sport | 'strength' {
+  return value === 'running' ||
+    value === 'cycling' ||
+    value === 'swimming' ||
+    value === 'strength';
 }
 
 function resolveWeeklyMinutesTarget(

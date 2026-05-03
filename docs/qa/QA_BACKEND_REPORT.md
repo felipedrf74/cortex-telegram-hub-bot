@@ -22,13 +22,35 @@ Validation:
 - Broad Training regression passed: 39 files / 474 tests.
 - Full backend Vitest passed: 437 files / 6645 tests.
 - Local full Nexus engine smoke passed: 13 authenticated iOS API checks, including Training summary and Training today.
-- iOS Training fixture XCUITest partially passed: 3 rich-fixture interactions passed, but `test_noPlanFixture_createPlanSheetStrengthStepperAccepts5Sessions` failed because `training-action-createPlan` did not render.
+- Initial iOS Training fixture XCUITest partially passed: 3 rich-fixture interactions passed, but `test_noPlanFixture_createPlanSheetStrengthStepperAccepts5Sessions` failed because `training-action-createPlan` did not render. This is now superseded by the paired iOS validation branch, where the full physical-device `TrainingFixtureBypassUITests` passes 11/11.
 
 Remaining caveat:
 
-- Training is `READY_WITH_CONDITIONS`, not fully closed-beta ready. The backend is locally strong, but iOS Training creation workflows A-I are not end-to-end validated, the no-plan create-plan CTA fixture is failing, and plan-linter blockers remain advisor-only instead of strict/repair.
+- Training is `READY_WITH_CONDITIONS`, not fully closed-beta ready. The backend is locally strong and the iOS no-plan create-plan CTA gap was fixed in the paired iOS validation branch, but full backend-generated iOS Training workflows A-I are not end-to-end validated and plan-linter blockers remain advisor-only instead of strict/repair.
 
 Detailed report: `docs/training/training-expert-coach-codex-validation.md`.
+
+### 2026-05-03 Training goal-mode / priority request-contract addendum
+
+Status: app-facing request-contract closure completed locally on the same branch. No production deploy.
+
+Changes verified:
+
+- `/api/v1/training/plan/generate` now accepts allowlisted `goalMode`, `trainingPriority`, and request `raceDate`.
+- Unsupported goal modes, priorities, and malformed dates are dropped before planning.
+- Request `raceDate` is injected into the normalized running profile used by coach-kernel generation and plan-linter context, so an app-supplied race date no longer depends on stale stored profile data.
+- Coach-kernel planning uses the requested goal mode to mark maintenance / return-to-training intent and uses requested training priority to order planning goals.
+- Generation response echoes `goalMode`, `trainingPriority`, and `raceDate` for iOS contract verification.
+
+Validation:
+
+- `npx tsc --noEmit`: passed.
+- Focused generation tests: `training-plan-generation.test.ts` 20/20 passed.
+- Combined Training generation/regression slice: 74/74 passed across Training generation, coach-kernel generation, lifecycle, weekly-target, and persistence tests.
+
+Remaining caveat:
+
+- Plan-linter blockers remain advisor-only. Full backend-generated iOS Workflows A-I still need local full-engine/provider-safe validation.
 
 ## 2026-05-03 Closed-Beta Identity Validation Addendum
 

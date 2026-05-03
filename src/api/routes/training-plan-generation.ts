@@ -18,7 +18,11 @@ import {
   applyTrainingPlanCoordination,
   buildTrainingPlanCoordination,
 } from '../../services/training-plan-coordination';
-import { buildCoachKernelTrainingPlan } from '../../services/training-coach-kernel-plan-generator';
+import {
+  buildCoachKernelTrainingPlan,
+  type TrainingGoalMode,
+  type TrainingPriority,
+} from '../../services/training-coach-kernel-plan-generator';
 import {
   buildBusyWindows,
   normalizePreferredTime,
@@ -51,6 +55,9 @@ export interface GenerateTrainingPlanForUserInput {
   strengthSessionsPerWeek?: unknown;
   longWorkoutDay?: unknown;
   notes?: unknown;
+  goalMode?: unknown;
+  trainingPriority?: unknown;
+  raceDate?: unknown;
   /**
    * Slice 2.B — explicit two-a-day preference. Routes to
    * `availability.maxSessionsPerDay` inside the kernel input. When
@@ -185,6 +192,9 @@ export async function generateTrainingPlanForUser(
     strengthSessionsPerWeek = 2,
     longWorkoutDay,
     notes,
+    goalMode,
+    trainingPriority,
+    raceDate,
     twoADayPreference,
     calendarSource,
   } = input;
@@ -193,6 +203,18 @@ export async function generateTrainingPlanForUser(
   const fitnessProfile = unwrapOnboardingProfileData(onboarding.getProfile?.(userId, 'fitness'));
   const gymProfile = unwrapOnboardingProfileData(onboarding.getProfile?.(userId, 'triathlon-gym'));
   const runProfile = unwrapOnboardingProfileData(onboarding.getProfile?.(userId, 'triathlon-running'));
+  const normalizedGoalMode = normalizeGoalMode(goalMode);
+  const normalizedTrainingPriority = normalizeTrainingPriority(trainingPriority);
+  const normalizedRaceDate = normalizeIsoDate(raceDate);
+  const runProfileForPlan = normalizedRaceDate
+    ? {
+        ...(runProfile ?? {}),
+        target_race_date: normalizedRaceDate,
+        target_race: typeof runProfile?.target_race === 'string' && runProfile.target_race.trim()
+          ? runProfile.target_race
+          : objective,
+      }
+    : runProfile;
 
   if (!fitnessProfile || Object.keys(fitnessProfile).length === 0) {
     return {
@@ -279,7 +301,7 @@ export async function generateTrainingPlanForUser(
     longWorkoutDay: normalizedLongWorkoutDay,
     fitnessProfile,
     gymProfile,
-    runProfile,
+    runProfile: runProfileForPlan,
     training: null,
     cooking: null,
     finance: null,
@@ -311,7 +333,7 @@ export async function generateTrainingPlanForUser(
       longWorkoutDay: normalizedLongWorkoutDay,
       fitnessProfile,
       gymProfile,
-      runProfile,
+      runProfile: runProfileForPlan,
       training: trainingContextResult.status === 'fulfilled' ? trainingContextResult.value : null,
       cooking: cookingContextResult.status === 'fulfilled' ? cookingContextResult.value : null,
       finance: financeContextResult.status === 'fulfilled' ? financeContextResult.value : null,
@@ -344,9 +366,12 @@ export async function generateTrainingPlanForUser(
         preferredStrengthTime: normalizedPreferredStrengthTime,
         longWorkoutDay: normalizedLongWorkoutDay,
         notes: typeof notes === 'string' ? notes.trim() : null,
+        goalMode: normalizedGoalMode,
+        trainingPriority: normalizedTrainingPriority,
+        raceDate: normalizedRaceDate,
         fitnessProfile,
         gymProfile,
-        runProfile,
+        runProfile: runProfileForPlan,
         currentReadiness,
         twoADayPreference,
       }), coordination),
@@ -441,8 +466,10 @@ export async function generateTrainingPlanForUser(
         ? String(fitnessProfile.available_equipment).toLowerCase().trim() || undefined
         : undefined;
   const raceDateForLint: string | null =
-    typeof runProfile?.target_race_date === 'string' && runProfile.target_race_date.trim()
-      ? runProfile.target_race_date
+    normalizedRaceDate
+      ? normalizedRaceDate
+      : typeof runProfileForPlan?.target_race_date === 'string' && runProfileForPlan.target_race_date.trim()
+      ? runProfileForPlan.target_race_date
       : null;
   const isRaceSpecificForLint =
     objectiveNeedsRunningProfile(objective) &&
@@ -464,6 +491,9 @@ export async function generateTrainingPlanForUser(
       strengthSessionsPerWeek,
       longWorkoutDay: longWorkoutDay || null,
       notes: notes || null,
+      goalMode: normalizedGoalMode,
+      trainingPriority: normalizedTrainingPriority,
+      raceDate: normalizedRaceDate,
       trainingCalendarSource: calendarSource || null,
     }),
     normalizedPreferredTime,
@@ -473,7 +503,7 @@ export async function generateTrainingPlanForUser(
     athleteProfiles: {
       fitnessProfile,
       gymProfile,
-      runProfile,
+      runProfile: runProfileForPlan,
     },
     calendarSource: calendarSource || undefined,
     equipmentProfile: equipmentProfileLabel,
@@ -532,6 +562,9 @@ export async function generateTrainingPlanForUser(
       profileQuality: planData.profileQuality ?? null,
       decisionReasons: Array.isArray(planData.decisionReasons) ? planData.decisionReasons : [],
       fallbackTemplateUsed: usedFallbackTemplate,
+      goalMode: normalizedGoalMode,
+      trainingPriority: normalizedTrainingPriority,
+      raceDate: raceDateForLint,
       // training-expert-coach-knowledge-engine: explicit calendar
       // health flag + lint verdict surface on the response payload.
       calendarFetchDegraded,
@@ -563,4 +596,40 @@ function unwrapOnboardingProfileData(profile: unknown): Record<string, any> | nu
 function clampNumber(raw: unknown, fallback: number, min: number, max: number): number {
   const resolved = Number(raw) || fallback;
   return Math.max(min, Math.min(max, resolved));
+}
+
+function normalizeGoalMode(raw: unknown): TrainingGoalMode | null {
+  if (typeof raw !== 'string') return null;
+  const normalized = raw.trim().toLowerCase();
+  if (
+    normalized === 'event_based' ||
+    normalized === 'continuous' ||
+    normalized === 'maintenance' ||
+    normalized === 'return_to_training'
+  ) {
+    return normalized;
+  }
+  return null;
+}
+
+function normalizeTrainingPriority(raw: unknown): TrainingPriority | null {
+  if (typeof raw !== 'string') return null;
+  const normalized = raw.trim().toLowerCase();
+  if (
+    normalized === 'running' ||
+    normalized === 'cycling' ||
+    normalized === 'swimming' ||
+    normalized === 'strength' ||
+    normalized === 'triathlon' ||
+    normalized === 'hybrid'
+  ) {
+    return normalized;
+  }
+  return null;
+}
+
+function normalizeIsoDate(raw: unknown): string | null {
+  if (typeof raw !== 'string') return null;
+  const trimmed = raw.trim();
+  return /^\d{4}-\d{2}-\d{2}$/.test(trimmed) ? trimmed : null;
 }
