@@ -30,6 +30,13 @@ const ignoredDirs = new Set([
   'build',
   'dist',
   'node_modules',
+  // Git worktrees (added 2026-05-03 release-pipeline-risk-based-optimization).
+  // Each worktree is a parallel checkout that contains its OWN copy of every
+  // markdown file. Walking them inflates the issue count by hundreds and
+  // confuses drift detection: the same SHA may be reachable from one
+  // worktree's branch but not from main. Worktrees are ALWAYS evidence of
+  // in-progress parallel work, never canonical.
+  'worktrees',
 ]);
 
 const currentVerdictFiles = new Set([
