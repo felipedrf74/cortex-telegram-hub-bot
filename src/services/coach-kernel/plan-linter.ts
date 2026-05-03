@@ -299,6 +299,48 @@ function ruleNoThreeConsecutiveLegHeavyDays(input: PlanLintInput): PlanLintFindi
 
 function ruleNoHeavyLowerBeforeLongRun(input: PlanLintInput): PlanLintFinding | null {
   const offenders: PlanLintAffectedSession[] = [];
+
+  // Prefer exact scheduled dates when callers provide them. This catches
+  // boundary cases such as "week 1 Sunday heavy lower" before "week 2
+  // Monday long run", which weekday-only logic cannot see.
+  const datedSessions: Array<{ weekNumber: number; session: PlanLintSession; dayStartMs: number }> = [];
+  for (const week of input.weeks) {
+    for (const session of week.sessions) {
+      const d = toDate(session.scheduledDate);
+      if (!d) continue;
+      datedSessions.push({ weekNumber: week.weekNumber, session, dayStartMs: startOfDay(d).getTime() });
+    }
+  }
+  if (datedSessions.length > 0) {
+    const lowerByDay = new Map<number, Array<{ weekNumber: number; session: PlanLintSession }>>();
+    for (const entry of datedSessions) {
+      if (!entry.session.isLowerHeavy) continue;
+      const existing = lowerByDay.get(entry.dayStartMs) ?? [];
+      existing.push({ weekNumber: entry.weekNumber, session: entry.session });
+      lowerByDay.set(entry.dayStartMs, existing);
+    }
+    const DAY_MS = 24 * 60 * 60 * 1000;
+    for (const entry of datedSessions) {
+      if (!entry.session.isLongRun) continue;
+      const previousDay = entry.dayStartMs - DAY_MS;
+      for (const heavy of lowerByDay.get(previousDay) ?? []) {
+        offenders.push(makeAffected(heavy.weekNumber, heavy.session));
+      }
+    }
+    if (offenders.length > 0) {
+      return {
+        ruleId: 'no_heavy_lower_before_long_run',
+        severity: 'blocker',
+        message:
+          `Heavy lower-body strength scheduled the day before a long run in ${
+            new Set(offenders.map((o) => o.weekNumber)).size
+          } week${offenders.length === 1 ? '' : 's'}. ` +
+          `Move heavy lower-body two days before, or to upper-body that day.`,
+        affectedSessions: offenders,
+      };
+    }
+  }
+
   for (const week of input.weeks) {
     const longRunDays = new Set<number>();
     const heavyLowerDays = new Map<number, PlanLintSession>();

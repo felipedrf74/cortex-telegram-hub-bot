@@ -207,6 +207,34 @@ describe('coach-kernel/plan-linter', () => {
       }));
       expect(result.status).toBe('pass');
     });
+
+    it('blocks heavy lower-body across a week boundary when scheduled dates are present', () => {
+      const result = lintPlan(input({
+        weeks: [
+          week(1, [
+            session({
+              dayOfWeek: 'sunday',
+              sessionType: 'gym',
+              isLowerHeavy: true,
+              title: 'Heavy Lower',
+              scheduledDate: '2026-04-26T18:00:00.000Z',
+            }),
+          ]),
+          week(2, [
+            session({
+              dayOfWeek: 'monday',
+              sessionType: 'run',
+              isLongRun: true,
+              title: 'Long Run',
+              scheduledDate: '2026-04-27T08:00:00.000Z',
+            }),
+          ]),
+        ],
+      }));
+      expect(result.status).toBe('fail');
+      expect(result.blockers[0]?.ruleId).toBe('no_heavy_lower_before_long_run');
+      expect(result.blockers[0]?.affectedSessions[0]?.title).toBe('Heavy Lower');
+    });
   });
 
   describe('rule: no_fake_taper_without_event', () => {

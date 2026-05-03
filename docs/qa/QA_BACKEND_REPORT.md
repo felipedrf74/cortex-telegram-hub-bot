@@ -3,6 +3,33 @@
 Generated: 2026-04-29 03:30 WEST  
 Branch: `feature/chat-tenant-safe-context-orchestration`
 
+## 2026-05-03 Training Expert-Coach Codex Validation Addendum
+
+Branch: `feature/training-expert-coach-codex-validation`
+
+Status: second-pass Codex validation complete locally. No production deploy.
+
+Findings and fixes:
+
+- Claude's week-1 past-day floor was valid, but incomplete: same-day sessions could still schedule earlier than the plan creation time. Codex added a `notBefore` floor to `scheduleSessionWindow` and passed the plan/sync clock from persistence and calendar sync.
+- Claude's plan-linter pure tests were valid, but the persistence bridge did not actually feed scheduled dates into lint sessions. Codex now pairs persisted calendar event starts back into lint sessions so exact-date rules catch boundary cases such as Sunday heavy lower before Monday long run.
+- The archived `prompts/daily-content-discovery.md` prompt-cleanliness assertion was stale after closed-beta hardening archived that prompt. Codex updated the test to assert the runtime prompt stays removed and the archived evidence remains in `docs/archive/2026-05/content/`.
+
+Validation:
+
+- `npx tsc --noEmit`: passed.
+- Focused Training persistence/linter tests passed.
+- Broad Training regression passed: 39 files / 474 tests.
+- Full backend Vitest passed: 437 files / 6645 tests.
+- Local full Nexus engine smoke passed: 13 authenticated iOS API checks, including Training summary and Training today.
+- iOS Training fixture XCUITest partially passed: 3 rich-fixture interactions passed, but `test_noPlanFixture_createPlanSheetStrengthStepperAccepts5Sessions` failed because `training-action-createPlan` did not render.
+
+Remaining caveat:
+
+- Training is `READY_WITH_CONDITIONS`, not fully closed-beta ready. The backend is locally strong, but iOS Training creation workflows A-I are not end-to-end validated, the no-plan create-plan CTA fixture is failing, and plan-linter blockers remain advisor-only instead of strict/repair.
+
+Detailed report: `docs/training/training-expert-coach-codex-validation.md`.
+
 ## 2026-05-03 Closed-Beta Identity Validation Addendum
 
 Branch: `feature/closed-beta-readiness-codex-validation`

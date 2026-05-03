@@ -523,9 +523,21 @@ function inferIsLongRun(sessionData: GeneratedTrainingSession): boolean {
   return /\blong\s+run\b/.test(title);
 }
 
+function buildPlanLintWeeks(
+  weeks: NonNullable<GeneratedTrainingPlan['weeks']>,
+  calendarEvents: ReadonlyArray<{ sessionId: number; start: string; sessionIdentityKey: string }>,
+): PlanLintWeek[] {
+  let calendarEventCursor = 0;
+  return weeks.map((weekData) => buildPlanLintWeek(weekData, () => {
+    const event = calendarEvents[calendarEventCursor];
+    calendarEventCursor += 1;
+    return event?.start;
+  }));
+}
+
 function buildPlanLintWeek(
   weekData: NonNullable<GeneratedTrainingPlan['weeks']>[number],
-  calendarEvents: ReadonlyArray<{ sessionId: number; start: string; sessionIdentityKey: string }>,
+  nextActiveScheduledDate: () => string | undefined,
 ): PlanLintWeek {
   const sessions: PlanLintSession[] = [];
   for (const sessionData of weekData.sessions ?? []) {
@@ -545,6 +557,9 @@ function buildPlanLintWeek(
       if (active) return active;
       return 'pending';
     })();
+    const scheduledDate = status && ACTIVE_SCHEDULE_STATES.has(status as any)
+      ? nextActiveScheduledDate()
+      : undefined;
     sessions.push({
       // session id can't be looked up here without more wiring; use the
       // calendar-event sessionId when available so iOS can correlate
@@ -561,7 +576,7 @@ function buildPlanLintWeek(
       // the persister produced an event, since that's the actual date
       // we wrote. For unscheduled rows, leave undefined; the linter's
       // past-day rule deliberately ignores non-active rows.
-      scheduledDate: undefined,
+      scheduledDate,
       exerciseTokens,
       isLowerHeavy: inferIsLowerHeavy(sessionData, exerciseTokens),
       isLongRun: inferIsLongRun(sessionData),
@@ -570,22 +585,6 @@ function buildPlanLintWeek(
       ),
     });
   }
-  // Backfill scheduledDate from the calendar-event records (best-effort).
-  // The mapping is one calendarEvent per persisted active session; we
-  // walk in-order and pair by index since both lists are produced in the
-  // same loop ordering.
-  const activeIndices: number[] = [];
-  for (let i = 0; i < sessions.length; i++) {
-    if (sessions[i].status && ACTIVE_SCHEDULE_STATES.has(sessions[i].status as any)) {
-      activeIndices.push(i);
-    }
-  }
-  // calendarEvents is the global cross-week list; we can't re-pair it
-  // here without more bookkeeping. Leave scheduledDate undefined; the
-  // past-day rule then no-ops for sessions whose date the linter can't
-  // verify. This is conservative — the per-session past-day floor in
-  // `resolvePlanSlotDate` already rejects past days at scheduling time.
-  void activeIndices;
   return {
     weekNumber: weekData.weekNumber || 1,
     focus: weekData.focus,
@@ -608,7 +607,7 @@ function runPlanLintGuarded(args: {
       isRaceSpecific: args.input.isRaceSpecific,
       raceDate: args.input.raceDate ?? null,
       equipmentProfile: args.input.equipmentProfile,
-      weeks: args.weeks.map((w) => buildPlanLintWeek(w, args.calendarEvents)),
+      weeks: buildPlanLintWeeks(args.weeks, args.calendarEvents),
     };
     const lint = lintPlan(lintInput);
     if (lint.blockers.length > 0 || lint.warnings.length > 0) {
@@ -891,6 +890,7 @@ function scheduleSessionForPlan(input: {
     resolvedPreferredTime,
     input.busyWindows,
     input.scheduledWindows,
+    { notBefore: input.now },
   );
 
   // Don't pollute the busy-window guard with a past-day fallback marker

@@ -170,10 +170,12 @@ function tryWindowAt(
   durationMinutes: number,
   busyWindows: BusyWindow[],
   scheduledWindows: BusyWindow[],
+  notBefore?: Date,
 ): { start: Date; end: Date } | null {
   const start = new Date(sessionDate);
   start.setHours(Math.floor(startMinutes / 60), startMinutes % 60, 0, 0);
   const end = new Date(start.getTime() + durationMinutes * 60 * 1000);
+  if (notBefore && start.getTime() < notBefore.getTime()) return null;
   if (overlapsRange(start.getTime(), end.getTime(), busyWindows)) return null;
   if (overlapsRange(start.getTime(), end.getTime(), scheduledWindows)) return null;
   return { start, end };
@@ -185,6 +187,7 @@ export function scheduleSessionWindow(
   preferredTime: string,
   busyWindows: BusyWindow[],
   scheduledWindows: BusyWindow[],
+  options: { notBefore?: Date } = {},
 ): ScheduleSessionResult {
   // Stage 1: try the preferred time + symmetric ±1/±1.5/±2/±2.5 candidates.
   // This is the friendly fit where the user gets close to their stated
@@ -192,7 +195,14 @@ export function scheduleSessionWindow(
   const candidates = candidateTimesForPreferredTime(preferredTime);
   for (const candidate of candidates) {
     const candidateMinutes = minutesFromTimeString(candidate);
-    const slot = tryWindowAt(sessionDate, candidateMinutes, durationMinutes, busyWindows, scheduledWindows);
+    const slot = tryWindowAt(
+      sessionDate,
+      candidateMinutes,
+      durationMinutes,
+      busyWindows,
+      scheduledWindows,
+      options.notBefore,
+    );
     if (slot) return { ...slot, preferredTimeUnavailable: false };
   }
 
@@ -202,7 +212,14 @@ export function scheduleSessionWindow(
   // session on top of an existing meeting because the fallback path
   // ignored busy windows entirely.
   for (let m = DAY_WALK_START_MINUTES; m + durationMinutes <= DAY_WALK_END_MINUTES; m += DAY_WALK_STEP_MINUTES) {
-    const slot = tryWindowAt(sessionDate, m, durationMinutes, busyWindows, scheduledWindows);
+    const slot = tryWindowAt(
+      sessionDate,
+      m,
+      durationMinutes,
+      busyWindows,
+      scheduledWindows,
+      options.notBefore,
+    );
     if (slot) return { ...slot, preferredTimeUnavailable: true };
   }
 

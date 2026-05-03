@@ -188,4 +188,29 @@ describe('training schedule route utilities', () => {
     const hour = scheduled.start.getHours();
     expect([6, 8]).toContain(hour);
   });
+
+  it('does not schedule a same-day session before the notBefore floor', () => {
+    const day = new Date(2026, 3, 22);
+    const notBefore = new Date(day);
+    notBefore.setHours(14, 15, 0, 0);
+
+    const scheduled = scheduleSessionWindow(day, 60, '07:00', [], [], { notBefore });
+
+    expect(scheduled.start.getTime()).toBeGreaterThanOrEqual(notBefore.getTime());
+    expect(scheduled.preferredTimeUnavailable).toBe(true);
+    // Day-walk should choose the first 30-minute slot after the floor.
+    expect(scheduled.start.getHours()).toBe(14);
+    expect(scheduled.start.getMinutes()).toBe(30);
+  });
+
+  it('returns noAvailableSlot when every remaining same-day slot is behind the notBefore floor', () => {
+    const day = new Date(2026, 3, 22);
+    const notBefore = new Date(day);
+    notBefore.setHours(21, 30, 0, 0);
+
+    const scheduled = scheduleSessionWindow(day, 60, '07:00', [], [], { notBefore });
+
+    expect(scheduled.noAvailableSlot).toBe(true);
+    expect(scheduled.preferredTimeUnavailable).toBe(true);
+  });
 });

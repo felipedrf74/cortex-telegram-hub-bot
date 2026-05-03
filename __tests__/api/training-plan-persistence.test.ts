@@ -614,6 +614,49 @@ describe('training-plan-persistence', () => {
       expect(calls).toEqual(['scheduled', 'scheduled', 'scheduled']);
     });
 
+    it('does not schedule a same-day session earlier than the plan creation time', async () => {
+      const now = new Date(2026, 3, 22, 15, 15, 0, 0); // Wednesday 15:15 local
+      const result = await persistGeneratedTrainingPlan({
+        userId: 12,
+        objective: 'Same-day floor',
+        durationWeeks: 1,
+        startDate: '2026-04-22',
+        endDate: '2026-04-29',
+        now,
+        preferencesJson: '{}',
+        normalizedPreferredTime: '12:00',
+        normalizedPreferredCardioTime: '07:00',
+        normalizedPreferredStrengthTime: '12:30',
+        busyWindows: [],
+        planData: {
+          weeks: [
+            {
+              weekNumber: 1,
+              sessions: [
+                {
+                  dayOfWeek: 'Wednesday',
+                  sessionType: 'run',
+                  title: 'Today Run',
+                  durationMinutes: 40,
+                },
+              ],
+            },
+          ],
+        },
+      });
+
+      expect(result.eventsCreated).toBe(1);
+      expect(mockCreateSession).toHaveBeenCalledWith(expect.objectContaining({
+        title: 'Today Run',
+        status: 'scheduled',
+        preferred_time_unavailable: true,
+      }));
+      const eventStart = new Date(mockCreateEvent.mock.calls[0]?.[0]?.start);
+      expect(eventStart.getTime()).toBeGreaterThanOrEqual(now.getTime());
+      expect(eventStart.getHours()).toBe(15);
+      expect(eventStart.getMinutes()).toBe(30);
+    });
+
     it('plan-linter advisor: surfaces equipment-incompatibility on bodyweight profile + barbell session', async () => {
       const result = await persistGeneratedTrainingPlan({
         userId: 12,
@@ -656,6 +699,72 @@ describe('training-plan-persistence', () => {
       expect(mockLoggerWarn).toHaveBeenCalledWith(
         expect.objectContaining({ status: 'fail' }),
         'persistGeneratedTrainingPlan: plan-linter findings (advisor mode)',
+      );
+    });
+
+    it('plan-linter advisor: uses persisted dates to catch heavy lower before next-week long run', async () => {
+      const result = await persistGeneratedTrainingPlan({
+        userId: 12,
+        objective: 'Week-boundary long-run protection',
+        durationWeeks: 2,
+        startDate: '2026-04-19',
+        endDate: '2026-05-03',
+        now: new Date('2026-04-19T08:00:00.000Z'),
+        preferencesJson: '{}',
+        normalizedPreferredTime: '12:00',
+        normalizedPreferredCardioTime: '07:00',
+        normalizedPreferredStrengthTime: '12:30',
+        busyWindows: [],
+        planData: {
+          weeks: [
+            {
+              weekNumber: 1,
+              sessions: [
+                {
+                  dayOfWeek: 'Wednesday',
+                  sessionType: 'run',
+                  title: 'Bridge Run',
+                  durationMinutes: 40,
+                },
+              ],
+            },
+            {
+              weekNumber: 2,
+              sessions: [
+                {
+                  dayOfWeek: 'Sunday',
+                  sessionType: 'gym',
+                  title: 'Lower Body Strength',
+                  durationMinutes: 45,
+                  exercises: [{ name: 'Barbell Back Squat' }],
+                },
+                {
+                  dayOfWeek: 'Monday',
+                  sessionType: 'long_run',
+                  title: 'Long Run',
+                  durationMinutes: 90,
+                },
+              ],
+            },
+          ],
+        },
+      });
+
+      expect(result.eventsCreated).toBe(3);
+      expect(result.lint.status).toBe('fail');
+      expect(result.lint.blockers).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            ruleId: 'no_heavy_lower_before_long_run',
+            affectedSessions: [
+              expect.objectContaining({
+                weekNumber: 2,
+                dayOfWeek: 'sunday',
+                title: 'Lower Body Strength',
+              }),
+            ],
+          }),
+        ]),
       );
     });
 
