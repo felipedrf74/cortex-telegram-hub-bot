@@ -1,0 +1,20 @@
+{
+  "version": "1",
+  "schema": "engine/scripts/testflight-evidence.sh",
+  "generatedAt": "2026-05-04T13:45:01.106Z",
+  "runIdentifier": "2026-05-04T13-45-01Z",
+  "engineSha": "751480d",
+  "releaseVersion": "4.14.128",
+  "device": {
+    "udid": "00008150-000C0D5101D8401C",
+    "iosVersion": "26.5"
+  },
+  "build": {
+    "flavor": "debug"
+  },
+  "workflow": "training-fixture-bypass-A-through-I",
+  "outcome": "pass",
+  "evidencePaths": [],
+  "steps": "TrainingFixtureBypassUITests 11/11 PASS on iPhone Felipe (iPhone 17 Pro Max, iOS 26.5). Cases: account-fixture-switch (15s), beginner-no-equipment (8s), continuous-no-event (9s), event-added-later (9s), feedback-adapted (7s), no-plan-create-CTA stepper (15s), rich-fixture-bypass-onboarding (10s), rich-fixture-weekly-plan (7s), rich-fixture-banner-copy (6s), rich-fixture-tab-stress 10x (198s), saturday-conflict (9s).",
+  "note": "Includes 198s tab-stress test that exercises 10 round-trip tab switches under rich-fixture state — closest thing to real-device responsiveness assertion. xcodebuild auto-clone behavior absent on physical device (runner identity = direct device, no XPC Busy noise)."
+}

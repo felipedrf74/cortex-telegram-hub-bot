@@ -2,14 +2,28 @@
 
 Last updated: 2026-05-04
 
-## Closed-beta auth + training + engineering closeout — Claude review of Codex validation (2026-05-04 night)
+## Closed-beta auth + training + engineering closeout — Physical iPhone E3 closure (2026-05-04 late night)
 
 Original branch: `feature/engineering-excellence-architecture-standards` @ `73b5c6a` (Claude initial closeout).
-Codex validation branch: `feature/closed-beta-auth-training-engineering-codex-validation` @ `69fded6`
-(4 commits on top of `73b5c6a`: `972bf58` + `9f4d828` + `4dbbd90` + `69fded6`).
+Codex validation branch: `feature/closed-beta-auth-training-engineering-codex-validation` @ `751480d`
+(5 commits on top of `73b5c6a`: `972bf58` + `9f4d828` + `4dbbd90` + `69fded6` + `751480d`).
 Backup tag: `backup/engineering-excellence-before-hardening-20260504-1057`.
 
-Verdict: **READY_TO_OPEN_PR with Codex branch merged in** — every P0/P1 is now CLOSED. Codex's two extensions (AUTH-O2 devToken gating + AUTH-O4 backfill) are validated and reproduce green; the simulator-`Busy` blocker on `TrainingValidationUITests` is REFUTED by a clean rerun.
+Verdict: **READY_TO_OPEN_PR** — every P0/P1 is CLOSED including physical-iPhone E3. Codex's two extensions validated; simulator-`Busy` blocker REFUTED; physical iPhone Felipe (now connected, was `unavailable`) ran both Training UI suites green.
+
+### Physical iPhone E3 evidence (NEW)
+
+iPhone Felipe (`00008150-000C0D5101D8401C`, iPhone 17 Pro Max, iOS 26.5):
+
+- `TrainingFixtureBypassUITests`: **11/11 PASS** on physical device (≈300s total). All 11 cases including the 198s tab-stress (10× round-trip switches under rich-fixture state) green.
+- `TrainingValidationUITests`: **3 PASS + 1 SKIP** on physical device (≈26s). Skipped case requires fixture-bypass env exclusive to the sister suite — by design.
+
+Evidence files:
+- `engine/docs/release/testflight-evidence/testflight-751480d-training-fixture-bypass-A-through-I-2026-05-04T13-45-01Z.json`
+- `engine/docs/release/testflight-evidence/testflight-751480d-training-validation-welcome-to-auth-transition-2026-05-04T13-45-01Z.json`
+
+Build: clean after `xattr -cr build/DerivedData/Build/Products/Debug-iphoneos`.
+Auto-clone behavior: absent on physical devices (runner = `iPhone Felipe - Nexus HubUITests-Runner`, no XPC `Busy` noise).
 
 ### Claude's review of Codex validation delta
 
@@ -49,7 +63,7 @@ Recommended merge: a single `--no-ff` merge of the Codex branch into `feature/en
 | AUTH-O2 | P0 | **CLOSED** (Codex `972bf58` extends Claude `627e0e4`) |
 | AUTH-O4 | P1 | **CLOSED** (Codex backfill closes the migration gap) |
 | AUTH-O6/O7/O8/O9/O10/O11/O12 | P1 | **CLOSED** (Claude `627e0e4`) |
-| TR-EC-O10 / TR-EC-IOS-O3 | P1 | **CLOSED on simulator**; physical iPhone E5 pending device unlock |
+| TR-EC-O10 / TR-EC-IOS-O3 | P1 | **CLOSED on physical iPhone Felipe E3** (11/11 fixture-bypass + 3/3 validation, evidence under `engine/docs/release/testflight-evidence/`) |
 | TR-EC-O11/O12 | P1 | **SHIPPED** in main 4.14.128 |
 | TR-EC-O13 | P1 | **DECIDED + telemetry** (Claude `1aa5955`) |
 | TR-EC-IOS-O1/O2 | P1 | **PRE-EXISTING / DECIDED** |
@@ -62,9 +76,8 @@ Recommended merge: a single `--no-ff` merge of the Codex branch into `feature/en
 ### What remains operator-action
 
 1. **Open the engine PR** from `feature/engineering-excellence-architecture-standards` AFTER merging the Codex validation branch in.
-2. Unlock iPhone Felipe + Trust This Computer + Developer Mode to satisfy the physical-device E3/E5 evidence for TR-EC-O10/O3 (simulator-only is acceptable for closed-beta but not for open-beta).
-3. Soften the "5-attempt cap" language in `src/services/password-reset.ts` per AUTH-CX-O3 guidance — present it as defense-in-depth, not primary control.
-4. Run signed TestFlight E5 walk-through with the new AUTH flows (login, password reset, account-switch, two-account "Who am I?").
+2. Soften the "5-attempt cap" language in `src/services/password-reset.ts` per AUTH-CX-O3 guidance — present it as defense-in-depth, not primary control. P3 docs-only.
+3. Run signed TestFlight E5 walk-through with the new AUTH flows (login, password reset, account-switch, two-account "Who am I?") — required for OPEN-beta gate; closed-beta is satisfied by the physical-device E3 above.
 
 ---
 
