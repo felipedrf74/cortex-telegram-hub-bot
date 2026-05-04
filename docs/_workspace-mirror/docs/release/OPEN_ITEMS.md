@@ -246,11 +246,11 @@ Codex independent validation: `docs/archive/2026-05/engineering-excellence-codex
 | ENG-EXC-O3 | P1 | **FIXED** (`ca4eed1`). | Cannot-skip gate dashboard exists at `engine/scripts/cannot-skip-gate-dashboard.sh`; emits JSON evidence to `engine/docs/release/cannot-skip-gate-evidence/`; runs from weekly housekeeping; classifier test pins 23/23 PASS. Found+fixed a real prompts-only classifier gap during dashboard build. |
 | ENG-EXC-O4 | P2 | **FIXED, MERGED** (`799af5d`). | `HAS_AUDIT` + `audit-trail-emission-and-scope` cannot-skip gate — Codex closure merged. |
 | ENG-EXC-O5 | P2 | **FIXED, MERGED** (`799af5d`). | `HAS_DEPLOY_CONFIG` + `deploy-config-health-rehearsal` cannot-skip gate + Tier-4 staging-smoke uplift — Codex closure merged. |
-| ENG-EXC-O6 | P2 | OPEN | E5 (signed TestFlight) walk-through has no machine-readable evidence convention. Define a TestFlight-evidence file pattern under `engine/docs/release/` (similar to `cannot-skip-gate-evidence/` and `smoke-evidence/`). |
-| ENG-EXC-O7 | P2 | OPEN | `docs:audit` literal-test-count warnings (73). Define a clear archive policy on whether old archive docs need regenerated counts, or accept as a frozen baseline. |
+| ENG-EXC-O6 | P2 | **FIXED LATER** (`1aa5955`, 2026-05-04 evening). | TestFlight evidence pattern at `engine/scripts/testflight-evidence.sh` — see Closed-beta evening pass for closure. |
+| ENG-EXC-O7 | P2 | **FIXED LATER** (`1aa5955`, 2026-05-04 evening). | docs:audit baseline policy at `engine/docs/release/docs-audit-baseline-policy.md`. |
 | ENG-EXC-O8 | P1 | **FIXED** (`ca4eed1`). | Workspace docs durability via `engine/docs/_workspace-mirror/` (one-way snapshot) + `audit-docs.mjs` drift detection + housekeeping wiring. 15 workspace docs mirrored. |
-| ENG-EXC-O9 | P3 | OPEN | Add an outbound-markdown-link resolver lint over `engineering/` paths. |
-| ENG-EXC-O10 | P3 | OPEN | Document a deprecation / `superseded_by` workflow for retiring "must" rules. |
+| ENG-EXC-O9 | P3 | **FIXED LATER** (`1aa5955`, 2026-05-04 evening). | Outbound markdown link lint enabled by extending `audit-docs.mjs` `isCurrentLike()` to engineering paths. |
+| ENG-EXC-O10 | P3 | **FIXED LATER** (`1aa5955`, 2026-05-04 evening). | Standard deprecation workflow added to workspace `ENGINEERING_STANDARDS_INDEX.md`. |
 
 ### Codex validation findings (CX-O*)
 
@@ -260,7 +260,7 @@ Codex independent validation: `docs/archive/2026-05/engineering-excellence-codex
 | ENG-EXC-CX-O2 | P1 | **FIXED, MERGED** (`799af5d`). | iOS navigation/DTO classifier sub-flags. |
 | ENG-EXC-CX-O3 | P1 | **FIXED, MERGED** (`799af5d`). | Audit + deploy-config classifier flags. |
 | ENG-EXC-CX-O4 | P2 | **FIXED, MERGED** (`799af5d`). | Engineering-standard frontmatter check. |
-| ENG-EXC-CX-O5 | P2 | OPEN | `npm run docs:audit` baseline of 486 historical warnings remains. Treat as frozen baseline OR run a dedicated cleanup project. |
+| ENG-EXC-CX-O5 | P2 | **FIXED LATER** (`1aa5955`, 2026-05-04 evening). | docs:audit baseline policy doc codifies frozen-baseline classes (227 outside-approved + 78 commit-hash + 73 test-count) vs actionable classes (broken-link + duplicate-verdict). Total budget: 486 ± 5. |
 
 ### Recommended next operator action
 
