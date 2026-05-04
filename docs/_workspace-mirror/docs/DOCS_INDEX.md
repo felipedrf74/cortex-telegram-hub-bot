@@ -25,6 +25,7 @@ Official working path: `/Users/felipedominguez/Desktop/Nexus Hub`
 | --- | --- | --- | --- |
 | Shared agent operating context | canonical | `docs/agent/OPERATING_CONTEXT.md` | Update when agent workflow or repo map changes. |
 | Agent process standard | canonical | `docs/agent/AGENT_PROCESS_STANDARD.md` | Update when an agent failure mode is closed via process or a new evidence type is required. |
+| Agent technical mastery pack | canonical | `docs/agent/AGENT_TECHNICAL_MASTERY.md` | Update when a top-level area is added (new domain, new provider, new release gate), when an architectural rule changes, or when a recurring agent failure mode produces a new anti-pattern. Cross-repo technical onboarding for Claude/Codex. |
 | Current release state | current | `docs/release/CURRENT_RELEASE_STATE.md` | Update after merge, staging, production, or deploy-gate changes. |
 | Current open items | current | `docs/release/OPEN_ITEMS.md` | Update when a P0/P1/P2/P3 item opens or closes. |
 | Archive index | archive | `docs/archive/ARCHIVE_INDEX.md` | Update when moving old reports into archive. |

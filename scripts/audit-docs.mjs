@@ -58,6 +58,12 @@ const canonicalFiles = new Set([
   path.join(workspaceRoot, 'docs', 'release', 'OPEN_ITEMS.md'),
   path.join(workspaceRoot, 'docs', 'agent', 'OPERATING_CONTEXT.md'),
   path.join(workspaceRoot, 'docs', 'agent', 'AGENT_PROCESS_STANDARD.md'),
+  // Added 2026-05-04: cross-repo technical onboarding pack. Lives next to
+  // OPERATING_CONTEXT and AGENT_PROCESS_STANDARD because it teaches the
+  // workspace's full technical surface to new Claude/Codex sessions.
+  // Registered in `docs/DOCS_INDEX.md` and
+  // `engine/docs/engineering/ENGINEERING_STANDARDS_INDEX.md`.
+  path.join(workspaceRoot, 'docs', 'agent', 'AGENT_TECHNICAL_MASTERY.md'),
   path.join(backendRoot, 'CLAUDE.md'),
   path.join(backendRoot, 'README.md'),
   path.join(backendRoot, 'docs', 'DOCS_INDEX.md'),

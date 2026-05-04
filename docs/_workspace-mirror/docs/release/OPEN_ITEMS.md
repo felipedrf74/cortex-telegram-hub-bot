@@ -7,6 +7,31 @@ Update policy: update when a P0/P1/P2/P3 item opens or closes. Older sections re
 
 Last updated: 2026-05-04
 
+## Technical suite mastery Codex validation (2026-05-04 late)
+
+Workspace validation branch: `feature/technical-suite-mastery-codex-validation`.
+iOS validation branch: `feature/technical-suite-mastery-codex-validation`.
+Validation report: `docs/archive/2026-05/technical-suite-mastery-codex-validation/codex-validation.md`.
+
+Verdict: **READY_WITH_CONDITIONS** — the technical mastery pack is usable for agent onboarding after Codex's docs/process corrections. Remaining condition: merge the restored iOS engineering docs to iOS `main` and keep the historical docs-audit cleanup/symlink-resolution workstream open.
+
+### Validation delta
+
+| ID | Severity | Status | Description |
+|---|---|---|---|
+| TECH-CX-O1 | P2 | **FIXED LOCALLY** | Canonical indexes referenced `ios/docs/engineering/*`, but iOS `main` did not contain those docs. Codex restored the iOS engineering standards on the validation branch and cross-linked the technical mastery pack. |
+| TECH-CX-O2 | P2 | **FIXED** | `CURRENT_RELEASE_STATE.md` still described production `4.14.129` after the auth-UX promote to `4.14.130`. Codex refreshed the production/source/deploy/iOS status and mirrored the workspace doc. |
+| TECH-CX-O3 | P3 | **FIXED** | `docs/agent/AGENT_TECHNICAL_MASTERY.md` omitted `engine/src/router/` and `engine/src/sdk/` from the source-tree map. Codex added path-specific rows and test/ownership guidance. |
+| TECH-CX-O4 | P3 | **FIXED** | The mastery pack described docs-audit as a simple frozen-count check. Codex updated it to require per-class drift investigation when totals exceed the baseline policy. |
+| TECH-CX-O5 | P3 | **OPEN** | Historical docs-audit noise remains. Current rerun is inside budget, but the broken-link/outside-approved/test-count classes still need a dedicated cleanup or symlink-resolution follow-up. |
+
+### Evidence
+
+- `npm run docs:audit`: **487 issues / 387 files** (inside frozen baseline budget after iOS docs restoration, validation report, and mirror refresh).
+- `engine/scripts/workspace-docs-mirror.sh --check`: PASS.
+- `npx tsc --noEmit`: PASS.
+- `engine/scripts/cannot-skip-gate-dashboard.sh --json --no-evidence`: PASS, 23 gates / 0 failures.
+
 ## Engineering excellence Codex validation refresh (2026-05-04 late)
 
 Codex validation branch: `feature/engineering-excellence-codex-validation-20260504`.
