@@ -1,17 +1,17 @@
 {
-  "generatedAt": "2026-05-04T13:46:23Z",
+  "generatedAt": "2026-05-04T14:14:10Z",
   "backend": {
     "path": "/Users/felipedominguez/Desktop/Custom Connectors/Cortex/cortex-telegram-hub-bot",
-    "branch": "feature/closed-beta-auth-training-engineering-codex-validation",
-    "commit": "751480d",
+    "branch": "feature/engineering-excellence-architecture-standards",
+    "commit": "731634f",
     "dirtyState": "dirty",
     "packageVersion": "4.14.127",
     "migrationCount": "115"
   },
   "ios": {
     "path": "/Users/felipedominguez/Desktop/Nexus Hub IOS/Nexus Hub",
-    "branch": "feature/engineering-excellence-codex-validation",
-    "commit": "f07e80c",
+    "branch": "feature/engineering-excellence-architecture-standards",
+    "commit": "d2a20a1",
     "dirtyState": "dirty"
   }
 }

@@ -1,5 +1,10 @@
 # Backend Current Release State
 
+Status: canonical
+Owner: backend release lead (Felipe)
+Last verified: 2026-05-04
+Update policy: update after backend deploy or staging change. Workspace-level entry point is docs/release/CURRENT_RELEASE_STATE.md.
+
 Last updated: 2026-05-04
 
 ## Active Production Release

@@ -1,5 +1,10 @@
 # Risk-Based Release Gate Matrix
 
+Status: canonical
+Owner: release lead (Felipe)
+Last verified: 2026-05-04
+Update policy: update when changed-area gating rules change. The runtime classifier at engine/scripts/changed-area-classifier.sh implements this matrix.
+
 Date: 2026-05-01
 
 | Changed area | Required checks | Optional/conditional checks | Production gates | Can skip safely when | Cannot skip when |

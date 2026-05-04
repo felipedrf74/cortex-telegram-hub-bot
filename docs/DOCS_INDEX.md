@@ -1,5 +1,12 @@
 # Backend Documentation Index
 
+Status: canonical
+Owner: backend architecture lead (Felipe)
+Last verified: 2026-05-04
+Update policy: update when a new canonical backend doc location is added
+or a canonical path moves. The workspace-level entry point is
+`docs/DOCS_INDEX.md`.
+
 This is the backend repo's markdown routing map for Codex and Claude Code.
 
 ## Current Docs To Update

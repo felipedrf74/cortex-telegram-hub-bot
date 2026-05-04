@@ -1,5 +1,10 @@
 # Nexus Hub Agent Operating Context
 
+Status: canonical
+Owner: workspace lead (Felipe)
+Last verified: 2026-05-04
+Update policy: update when the workspace map, shared product rules, or release workflow change. Companions are AGENT_PROCESS_STANDARD.md (governs HOW agents operate) and DOCS_INDEX.md (canonical doc routing).
+
 ## Workspace
 
 - Workspace root: `/Users/felipedominguez/Desktop/Nexus Hub`

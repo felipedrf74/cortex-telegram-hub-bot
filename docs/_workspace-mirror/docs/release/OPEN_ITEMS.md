@@ -1,5 +1,10 @@
 # Open Items
 
+Status: canonical
+Owner: release lead (Felipe)
+Last verified: 2026-05-04
+Update policy: update when a P0/P1/P2/P3 item opens or closes. Older sections record state at their original closeout time; backfill with FIXED LATER pointers when the item is closed in a subsequent pass.
+
 Last updated: 2026-05-04
 
 ## Closed-beta auth + training + engineering closeout — Physical iPhone E3 closure (2026-05-04 late night)

@@ -1,5 +1,12 @@
 # Nexus Hub Documentation Index
 
+Status: canonical
+Owner: workspace lead (Felipe)
+Last verified: 2026-05-04
+Update policy: update when a new canonical doc location is added or a
+canonical path moves. Removing a canonical entry requires owner
+approval and a documented replacement.
+
 This is the routing map for Codex and Claude Code.
 
 Official working path: `/Users/felipedominguez/Desktop/Nexus Hub`

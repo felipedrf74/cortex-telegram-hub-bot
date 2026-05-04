@@ -1,5 +1,10 @@
 # Closed-Beta Operations Runbook
 
+Status: canonical
+Owner: closed-beta release lead (Felipe)
+Last verified: 2026-05-04
+Update policy: update when closed-beta sign-up, cohort-management, or audit-evidence requirements change.
+
 Date opened: 2026-05-03
 Owner: Felipe Dominguez (sole on-call)
 Backup on-call: none configured (single-operator deployment)

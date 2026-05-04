@@ -1,5 +1,11 @@
 # CLAUDE.md - Nexus Hub Workspace Bootloader
 
+Status: canonical
+Owner: workspace lead (Felipe)
+Last verified: 2026-05-04
+Update policy: update when the agent workflow, read-first list, or
+markdown rules change. The companion is `AGENTS.md` (Codex bootloader).
+
 Claude Code should treat this file as a bootloader, not as the full source of
 truth.
 

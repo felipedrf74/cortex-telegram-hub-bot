@@ -1,5 +1,10 @@
 # Production Promotion Checklist V2
 
+Status: canonical
+Owner: release lead (Felipe)
+Last verified: 2026-05-04
+Update policy: update only when the production-promote process changes (deploy-staging → smoke → promote-to-prod sequence).
+
 Date: 2026-05-01
 
 ## Preflight

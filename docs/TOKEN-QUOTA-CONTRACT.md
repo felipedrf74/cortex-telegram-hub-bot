@@ -1,5 +1,10 @@
 # Token Quota Contract
 
+Status: canonical
+Owner: backend cost-guardrail lead (Felipe)
+Last verified: 2026-05-04
+Update policy: update when iOS quota contract fields or per-tier daily caps change.
+
 This document defines the iOS-facing quota contract for AI-backed endpoints
 plus the canonical entitlement resolver that gates every paid route.
 

@@ -1,5 +1,10 @@
 # Current Release State
 
+Status: canonical
+Owner: release lead (Felipe)
+Last verified: 2026-05-04
+Update policy: update after merge / staging / production / deploy-gate changes. Live identity (branch/commit/version/migrations) auto-generated via engine/scripts/release-identity.sh --persist; do not type those by hand.
+
 Last updated: 2026-05-04
 
 > **Live identity** — branch / commit / version / migration count for the

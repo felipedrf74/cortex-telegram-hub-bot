@@ -1,5 +1,10 @@
 # Garmin Re-auth Notification Contract
 
+Status: canonical
+Owner: backend integrations lead (Felipe)
+Last verified: 2026-05-04
+Update policy: update when Garmin reauth flow or MFA-aware notification contract changes.
+
 When Garmin passive refresh fails, the backend must NOT trigger a silent
 credential login or an MFA email loop.
 

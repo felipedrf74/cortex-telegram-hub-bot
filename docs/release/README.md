@@ -1,5 +1,10 @@
 # Nexus Hub Release Docs
 
+Status: canonical
+Owner: release lead (Felipe)
+Last verified: 2026-05-04
+Update policy: update when the release-process entrypoint structure changes.
+
 Date: 2026-05-03
 
 This folder is the active source of truth for the release process.

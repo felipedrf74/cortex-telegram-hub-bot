@@ -1,5 +1,11 @@
 # AGENTS.md - Nexus Hub Workspace Bootloader
 
+Status: canonical
+Owner: workspace lead (Felipe)
+Last verified: 2026-05-04
+Update policy: update when the agent workflow, repo map, or workspace
+safety rules change. Removing a safety rule requires owner approval.
+
 Official working path: `/Users/felipedominguez/Desktop/Nexus Hub`
 
 ## Start Here

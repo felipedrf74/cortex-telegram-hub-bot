@@ -5,7 +5,7 @@
 
 | Area | Path | Branch | Commit | Dirty state | Version | Migrations |
 | --- | --- | --- | --- | --- | --- | --- |
-| Backend | `/Users/felipedominguez/Desktop/Custom Connectors/Cortex/cortex-telegram-hub-bot` | `feature/closed-beta-auth-training-engineering-codex-validation` | `751480d` | `dirty` | `4.14.127` | `115` |
-| iOS | `/Users/felipedominguez/Desktop/Nexus Hub IOS/Nexus Hub` | `feature/engineering-excellence-codex-validation` | `f07e80c` | `dirty` | n/a | n/a |
+| Backend | `/Users/felipedominguez/Desktop/Custom Connectors/Cortex/cortex-telegram-hub-bot` | `feature/engineering-excellence-architecture-standards` | `731634f` | `dirty` | `4.14.127` | `115` |
+| iOS | `/Users/felipedominguez/Desktop/Nexus Hub IOS/Nexus Hub` | `feature/engineering-excellence-architecture-standards` | `d2a20a1` | `dirty` | n/a | n/a |
 
-Generated at: `2026-05-04T13:46:23Z`
+Generated at: `2026-05-04T14:14:10Z`
