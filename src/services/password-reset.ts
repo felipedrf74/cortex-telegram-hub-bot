@@ -1,3 +1,5 @@
+// Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
+//
 // AUTH-O2 (closed-beta-auth-hardening, 2026-05-04): Password reset service.
 //
 // Pure-ish module; depends only on `database`, `logger`, `audit-trail`,
@@ -12,9 +14,29 @@ import { logAudit } from './audit-trail';
 
 // 1 hour TTL is the OWASP cheat-sheet recommendation.
 export const PASSWORD_RESET_TTL_MS = 60 * 60 * 1000;
-// 5-attempt cap mirrors AUTH-O5 / migration 108.
+// AUTH-CX-O3 (closed-beta-auth-hardening, 2026-05-04): the 5-attempt cap
+// is DEFENSE-IN-DEPTH, not the primary brute-force control. The primary
+// control is the 256-bit token entropy (PASSWORD_RESET_TOKEN_BYTES = 32),
+// which makes brute-force infeasible by entropy alone.
+//
+// Why have an attempt cap at all? Two reasons:
+//   1. Pathological client: a buggy iOS app retrying the same valid token
+//      with a wrong newPassword would burn bcrypt cycles unnecessarily.
+//      The cap at 5 keeps that bounded.
+//   2. Latency oracle: even with constant-time hash compare, a determined
+//      attacker pinging the same token row in a tight loop could observe
+//      micro-timing variance. The cap closes that loop.
+//
+// What the cap is NOT: it is NOT a primary defense against unknown-token
+// brute-force, because those requests never associate to an existing
+// row to increment. For that defense, the IP-bucket rate limiter
+// (rate-limiter.ts) on `/auth/*` is the actual control.
+//
+// Mirrors AUTH-O5 / migration 108 attempt-cap shape for consistency.
 export const PASSWORD_RESET_MAX_ATTEMPTS = 5;
-// 32 random bytes = 256 bits = brute-force-infeasible by entropy.
+// 32 random bytes = 256 bits = brute-force-infeasible by entropy. THIS
+// is the primary brute-force control. See AUTH-CX-O3 above for the cap
+// vs. entropy distinction.
 export const PASSWORD_RESET_TOKEN_BYTES = 32;
 
 export interface PasswordResetTokenRow {

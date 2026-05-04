@@ -1,3 +1,5 @@
+// Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
+//
 // AUTH-O7 (closed-beta-auth-hardening, 2026-05-04): per-account login
 // lockout. IP-bucket rate limiting (rate-limiter.ts) does not bound
 // distributed credential-stuffing across many source IPs. This module

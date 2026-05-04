@@ -385,6 +385,33 @@ describe('Auth invite registration', () => {
     const expectedHash = crypto.createHash('sha256')
       .update(activeRefresh.body.data.refreshToken, 'utf8').digest('hex');
     expect(device.refresh_token_hash).toBe(expectedHash);
+
+    const replayPrevious = await dispatchAuth('/refresh', { refreshToken: sessionB.refreshToken });
+    expect(replayPrevious.statusCode).toBe(401);
+    expect(replayPrevious.body.error.code).toBe('UNAUTHORIZED');
+    const remainingSessions = testDb.prepare('SELECT COUNT(*) AS n FROM ios_devices WHERE user_id = ?')
+      .get(userBId) as { n: number };
+    expect(remainingSessions.n).toBe(0);
+
+    testDb.prepare(`
+      INSERT INTO ios_devices (device_id, user_id, refresh_token)
+      VALUES ('legacy-device', ?, 'legacy-refresh-token')
+    `).run(userAId);
+    const countBeforeBackfill = testDb.prepare('SELECT COUNT(*) AS n FROM ios_devices').get() as { n: number };
+    const { backfillLegacyRefreshTokenHashes } = await import('../../src/services/ios-auth-session');
+    const backfill = backfillLegacyRefreshTokenHashes();
+    const countAfterBackfill = testDb.prepare('SELECT COUNT(*) AS n FROM ios_devices').get() as { n: number };
+    expect(countAfterBackfill.n).toBe(countBeforeBackfill.n);
+    expect(backfill.hashedRows).toBe(1);
+    const legacy = testDb.prepare(`
+      SELECT refresh_token, refresh_token_hash
+      FROM ios_devices
+      WHERE device_id = 'legacy-device'
+    `).get() as { refresh_token: string | null; refresh_token_hash: string | null };
+    expect(legacy.refresh_token).toBeNull();
+    expect(legacy.refresh_token_hash).toBe(
+      crypto.createHash('sha256').update('legacy-refresh-token', 'utf8').digest('hex'),
+    );
   });
 
   it('returns the authenticated user profile for session rehydration', async () => {

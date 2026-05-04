@@ -119,6 +119,56 @@ export function createAuthSessionAndRegisterDevice(input: CreateAuthSessionInput
   };
 }
 
+export function backfillLegacyRefreshTokenHashes(): { inspectedRows: number; hashedRows: number; clearedPlaintextRows: number } {
+  const db = getDb();
+  const columns = db.prepare(`PRAGMA table_info(ios_devices)`).all() as Array<{ name: string }>;
+  const names = new Set(columns.map((column) => column.name));
+  if (!names.has('refresh_token') || !names.has('refresh_token_hash')) {
+    return { inspectedRows: 0, hashedRows: 0, clearedPlaintextRows: 0 };
+  }
+
+  const rows = db.prepare(`
+    SELECT id, refresh_token, refresh_token_hash
+    FROM ios_devices
+    WHERE refresh_token IS NOT NULL
+      AND refresh_token != ''
+  `).all() as Array<{ id: number; refresh_token: string; refresh_token_hash: string | null }>;
+
+  let hashedRows = 0;
+  let clearedPlaintextRows = 0;
+  const updateWithHash = db.prepare(`
+    UPDATE ios_devices
+       SET refresh_token_hash = ?,
+           refresh_token = NULL
+     WHERE id = ?
+       AND refresh_token = ?
+  `);
+  const clearPlaintext = db.prepare(`
+    UPDATE ios_devices
+       SET refresh_token = NULL
+     WHERE id = ?
+       AND refresh_token = ?
+  `);
+
+  const tx = db.transaction(() => {
+    for (const row of rows) {
+      if (!row.refresh_token_hash) {
+        const result = updateWithHash.run(hashRefreshToken(row.refresh_token), row.id, row.refresh_token);
+        if (result.changes === 1) {
+          hashedRows += 1;
+          clearedPlaintextRows += 1;
+        }
+      } else {
+        const result = clearPlaintext.run(row.id, row.refresh_token);
+        if (result.changes === 1) clearedPlaintextRows += 1;
+      }
+    }
+  });
+  tx();
+
+  return { inspectedRows: rows.length, hashedRows, clearedPlaintextRows };
+}
+
 export function grantBetaSandboxAccess(userId: number): void {
   const db = getDb();
   const periodStart = new Date().toISOString();

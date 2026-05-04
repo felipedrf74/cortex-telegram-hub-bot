@@ -115,6 +115,7 @@ beforeEach(async () => {
   process.env.IOS_INVITE_CODE = 'TEST_INVITE';
   process.env.IOS_OWNER_CODE = 'TEST_OWNER';
   process.env.OWNER_TELEGRAM_ID = '991122';
+  process.env.PASSWORD_RESET_DEV_TOKEN = '1';
   delete process.env.RESEND_API_KEY; // exercise dev-mode (returns devToken)
 
   auditCalls.length = 0;
@@ -198,11 +199,27 @@ describe('AUTH-O2 password reset — request', () => {
   });
 
   it('returns same generic 200 for an unknown email and creates no row', async () => {
+    const userId = seedUserWithPassword('alice@example.com', 'oldpass1');
+    delete process.env.PASSWORD_RESET_DEV_TOKEN;
+
+    const known = await dispatch('/password-reset/request', { email: 'alice@example.com' });
     const res = await dispatch('/password-reset/request', { email: 'unknown@example.com' });
+    expect(known.statusCode).toBe(200);
     expect(res.statusCode).toBe(200);
+    // Anti-enumeration assertion: known + unknown email responses must
+    // be byte-identical EXCEPT for the per-request `timestamp` field
+    // (set by `apiSuccess()` envelope; differs by milliseconds between
+    // two sequential calls under load). Strip timestamp before comparing.
+    const stripTimestamp = (body: any) => {
+      const { timestamp: _ignored, ...rest } = body;
+      return rest;
+    };
+    expect(stripTimestamp(known.body)).toEqual(stripTimestamp(res.body));
+    expect(known.body.data.devToken).toBeUndefined();
     expect(res.body.ok).toBe(true);
     const rows = testDb.prepare('SELECT COUNT(*) AS n FROM password_reset_tokens').get() as any;
-    expect(rows.n).toBe(0);
+    expect(rows.n).toBe(1);
+    expect(testDb.prepare('SELECT user_id FROM password_reset_tokens').get()).toEqual({ user_id: userId });
     expect(auditCalls.find((c) => c.details?.outcome === 'request_silent')).toBeDefined();
   });
 

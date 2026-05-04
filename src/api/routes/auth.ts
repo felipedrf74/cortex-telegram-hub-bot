@@ -71,6 +71,28 @@ function authCopy(language: Lang, ptPT: string, ptBR: string, enUS: string): str
   return enUS;
 }
 
+function passwordResetDevTokenAllowed(): boolean {
+  return process.env.PASSWORD_RESET_DEV_TOKEN === '1'
+    && process.env.NODE_ENV !== 'production'
+    && !config.isStaging;
+}
+
+function passwordResetRequestMinDelayMs(): number {
+  if (process.env.NODE_ENV === 'test') return 0;
+  const raw = process.env.PASSWORD_RESET_REQUEST_MIN_DELAY_MS;
+  if (!raw) return 150;
+  const parsed = Number.parseInt(raw, 10);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : 150;
+}
+
+async function waitForPasswordResetRequestFloor(startedAt: number): Promise<void> {
+  const floorMs = passwordResetRequestMinDelayMs();
+  const remainingMs = floorMs - (Date.now() - startedAt);
+  if (remainingMs > 0) {
+    await new Promise((resolve) => setTimeout(resolve, remainingMs));
+  }
+}
+
 async function getAppleJwks(forceRefresh = false): Promise<any[]> {
   const now = Date.now();
   if (
@@ -1028,6 +1050,7 @@ export function authRoutes(): Router {
   // mounted in router.ts. We additionally cap per-token attempts at 5
   // (mirrors AUTH-O5 / migration 108).
   router.post('/password-reset/request', asyncHandler(async (req: Request, res: Response) => {
+    const startedAt = Date.now();
     const language = resolveAuthLanguage(req);
     const { email } = req.body as { email?: string };
     const ipAddress = (req.ip || req.socket?.remoteAddress) ?? undefined;
@@ -1035,19 +1058,23 @@ export function authRoutes(): Router {
     // Same generic OK envelope regardless of input outcome — defence
     // against both enumeration (does this email exist?) and timing
     // (is the response slower for hits than misses?).
-    const okEnvelope = () => sendSuccess(res, {
-      sent: true,
-      message: authCopy(language,
-        'Se este endereço existir, enviámos um email com instruções.',
-        'Se este e-mail existir, enviamos um e-mail com instruções.',
-        'If that email exists, we sent a reset link.'),
-    });
+    const okEnvelope = async (extra: Record<string, unknown> = {}) => {
+      await waitForPasswordResetRequestFloor(startedAt);
+      sendSuccess(res, {
+        sent: true,
+        message: authCopy(language,
+          'Se este endereço existir, enviámos um email com instruções.',
+          'Se este e-mail existir, enviamos um e-mail com instruções.',
+          'If that email exists, we sent a reset link.'),
+        ...extra,
+      });
+    };
 
     if (!email || typeof email !== 'string') {
       // Even a malformed body returns the same generic envelope so a
       // bot probing for shape signals can't confirm "this is the
       // password-reset endpoint".
-      okEnvelope();
+      await okEnvelope();
       return;
     }
 
@@ -1063,7 +1090,7 @@ export function authRoutes(): Router {
       // emit a silent audit row so operators can see request volume
       // by IP without leaking whether the email exists.
       auditPasswordResetEvent({ outcome: 'request_silent', userId: 0, emailHash, ipAddress });
-      okEnvelope();
+      await okEnvelope();
       return;
     }
 
@@ -1085,31 +1112,39 @@ export function authRoutes(): Router {
 
     try {
       if (!isEmailConfigured()) {
-        // Dev / staging without RESEND_API_KEY: still 200 OK to keep
-        // the contract uniform, but include `devToken` so local tests
-        // can exercise the confirm path. Production never hits this
-        // because the env validates RESEND_API_KEY at startup.
-        logger.warn({ userId: user.id }, 'Email not configured — password reset link not sent');
-        sendSuccess(res, {
-          sent: false,
-          message: authCopy(language,
-            'O serviço de email não está configurado',
-            'O serviço de e-mail não está configurado',
-            'Email service not configured'),
-          devToken: token,
-          expiresAt: expiresAt.toISOString(),
-        });
+        // Local test/development escape hatch only. Production and staging
+        // never return the raw token even if RESEND_API_KEY is missing or
+        // the email provider is misconfigured.
+        logger.warn(
+          { userId: user.id, devTokenAllowed: passwordResetDevTokenAllowed() },
+          'Email not configured — password reset link not sent',
+        );
+        if (passwordResetDevTokenAllowed()) {
+          await okEnvelope({
+            sent: false,
+            devToken: token,
+            expiresAt: expiresAt.toISOString(),
+          });
+          return;
+        }
+        await okEnvelope();
         return;
       }
-      await sendPasswordResetEmail(normalized, resetUrl, user.first_name || 'there');
+      void sendPasswordResetEmail(normalized, resetUrl, user.first_name || 'there')
+        .catch((err: any) => {
+          logger.error(
+            { err, userId: user.id, emailHash },
+            'Failed to send password reset email',
+          );
+        });
     } catch (err: any) {
-      logger.error({ err, userId: user.id }, 'Failed to send password reset email');
+      logger.error({ err, userId: user.id, emailHash }, 'Failed to queue password reset email');
       // Even on email-send failure we return the generic 200 OK so the
       // attacker cannot distinguish "email failed" from "email sent".
       // The audit row above already recorded the issue path.
     }
 
-    okEnvelope();
+    await okEnvelope();
   }));
 
   router.post('/password-reset/confirm', asyncHandler(async (req: Request, res: Response) => {

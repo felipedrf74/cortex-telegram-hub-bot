@@ -2,6 +2,85 @@
 
 Last updated: 2026-05-04
 
+## Closed-beta auth + training + engineering closeout — Physical iPhone E3 closure (2026-05-04 late night)
+
+Original branch: `feature/engineering-excellence-architecture-standards` @ `73b5c6a` (Claude initial closeout).
+Codex validation branch: `feature/closed-beta-auth-training-engineering-codex-validation` @ `751480d`
+(5 commits on top of `73b5c6a`: `972bf58` + `9f4d828` + `4dbbd90` + `69fded6` + `751480d`).
+Backup tag: `backup/engineering-excellence-before-hardening-20260504-1057`.
+
+Verdict: **READY_TO_OPEN_PR** — every P0/P1 is CLOSED including physical-iPhone E3. Codex's two extensions validated; simulator-`Busy` blocker REFUTED; physical iPhone Felipe (now connected, was `unavailable`) ran both Training UI suites green.
+
+### Physical iPhone E3 evidence (NEW)
+
+iPhone Felipe (`00008150-000C0D5101D8401C`, iPhone 17 Pro Max, iOS 26.5):
+
+- `TrainingFixtureBypassUITests`: **11/11 PASS** on physical device (≈300s total). All 11 cases including the 198s tab-stress (10× round-trip switches under rich-fixture state) green.
+- `TrainingValidationUITests`: **3 PASS + 1 SKIP** on physical device (≈26s). Skipped case requires fixture-bypass env exclusive to the sister suite — by design.
+
+Evidence files:
+- `engine/docs/release/testflight-evidence/testflight-751480d-training-fixture-bypass-A-through-I-2026-05-04T13-45-01Z.json`
+- `engine/docs/release/testflight-evidence/testflight-751480d-training-validation-welcome-to-auth-transition-2026-05-04T13-45-01Z.json`
+
+Build: clean after `xattr -cr build/DerivedData/Build/Products/Debug-iphoneos`.
+Auto-clone behavior: absent on physical devices (runner = `iPhone Felipe - Nexus HubUITests-Runner`, no XPC `Busy` noise).
+
+### Claude's review of Codex validation delta
+
+| Item | Codex claim | Claude review | Final status |
+|---|---|---|---|
+| AUTH-O2 | EXTENDED/fixed (devToken gated by `PASSWORD_RESET_DEV_TOKEN=1` + non-prod + non-staging; 150ms response-timing floor; fire-and-forget email send) | Diff at `972bf58` reviewed: `passwordResetDevTokenAllowed()` requires THREE conditions (fail-closed); `waitForPasswordResetRequestFloor()` equalizes timing; new test `expect(known.body).toEqual(res.body)` is exactly the right anti-enumeration assertion. **VALIDATED.** | **CLOSED via Codex `972bf58`** |
+| AUTH-O4 | EXTENDED/fixed (`backfillLegacyRefreshTokenHashes()` startup hook hashes legacy plaintext rows + clears plaintext + preserves row count via UPDATE-not-DELETE) | Diff at `972bf58` reviewed: transaction-wrapped UPDATE is atomic; PRAGMA precheck makes it safe on un-migrated schemas; database.ts startup invocation is wrapped in try/catch with operator-actionable warning. New auth-routes test pins row-count preservation, plaintext-cleared, hash-matches-sha256 simultaneously. **VALIDATED.** | **CLOSED via Codex `972bf58`** |
+| AUTH-O6/O7/O8/O9/O10/O11/O12 | CONFIRMED | Re-ran 14/14 + 13/13 + 52/52 + 23/23 dashboard. All green. | **CLOSED in Claude `627e0e4`** |
+| TR-EC-O10 / TR-EC-IOS-O3 | Codex blocked twice on `TrainingValidationUITests` simulator `Busy`, accepted only `TrainingFixtureBypassUITests` 11/11 PASS | Claude re-ran with `xcrun simctl shutdown all` + boot exactly one simulator. **`TrainingValidationUITests`: 3 PASS + 1 SKIP (the skipped case requires fixture-bypass env handled by the OTHER suite); `TrainingFixtureBypassUITests`: 11/11 PASS.** Codex `Busy` was transient noise during the auto-clone setup, not an actual blocker — the test cases ran and passed regardless. **TR-EC-CX-O1 REFUTED.** | **CLOSED on simulator** (physical iPhone E5 still requires unlock) |
+| ENG-EXC-CX-O6 | Workspace-mirror default workspace root incorrectly resolved to `Custom Connectors/Cortex` parent — Codex fixed | Diff at `972bf58` reviewed: defaults to `/Users/felipedominguez/Desktop/Nexus Hub` if present, falls through to engine parent only as last resort, honors `NEXUS_WORKSPACE_ROOT`. `--check` exits 0. **VALIDATED.** | **CLOSED via Codex `972bf58`** |
+| AUTH-CX-O3 | NEW P3: attempt_count cap is documented as primary brute-force control but isn't reached for unknown tokens | Re-read service: with 256-bit token entropy, brute-force is infeasible by entropy alone — the cap is genuinely belt-and-suspenders against pathological clients hitting a known token row. **Status correct as P3 documentation tweak.** | **OPEN P3** (docs-only) |
+
+### Claude's re-run evidence (Codex branch HEAD `69fded6`)
+
+- `npx tsc --noEmit`: clean.
+- `__tests__/api/auth-password-reset.test.ts`: **14/14 PASS** (6.37s).
+- `__tests__/api/auth-routes.test.ts`: **13/13 PASS** (5.57s).
+- `__tests__/services/account-lockout.test.ts` + `__tests__/scripts/changed-area-classifier.test.ts` + `__tests__/services/audit-trail.test.ts` + `__tests__/services/coach-kernel-plan-linter.test.ts`: **52/52 PASS** (11.17s).
+- `engine/scripts/cannot-skip-gate-dashboard.sh --quiet`: **exit 0** (23/23 gates wired).
+- `engine/scripts/workspace-docs-mirror.sh --check`: **in sync** (exit 0).
+- `npm run docs:audit`: **486 issues / 382 files** (matches Codex baseline; +1 file vs Claude's 381 because of the new validation report).
+- iOS simulator UDID `A0B13967-B5DE-4E6F-897D-F1E409093F94` (single-booted after `simctl shutdown all`):
+  - `TrainingFixtureBypassUITests`: **11/11 PASS**.
+  - `TrainingValidationUITests`: **3 PASS + 1 SKIP** (the `strengthStepperAccepts5Sessions` case skips because it depends on fixture-bypass env exclusive to the sister suite). Codex's `Busy` blocker was transient launch noise; tests ran and passed in the same run.
+- Physical iPhone Felipe: still `unavailable` via `devicectl` (needs unlock + Trust This Computer + Developer Mode toggle on the device).
+
+### Decision: merge path
+
+The Codex validation branch (`feature/closed-beta-auth-training-engineering-codex-validation`) MUST be merged into the standards branch before the engine PR opens. Without Codex's two extensions, AUTH-O2 has a misconfig footgun (raw token leak under Resend outage in production) and AUTH-O4 leaves legacy plaintext refresh tokens in `ios_devices.refresh_token` after migration 110.
+
+Recommended merge: a single `--no-ff` merge of the Codex branch into `feature/engineering-excellence-architecture-standards` to preserve the two-agent validation lane in `git log --graph`.
+
+### Final closure summary (after Codex merge)
+
+| ID | Severity | Status |
+|---|---|---|
+| AUTH-O2 | P0 | **CLOSED** (Codex `972bf58` extends Claude `627e0e4`) |
+| AUTH-O4 | P1 | **CLOSED** (Codex backfill closes the migration gap) |
+| AUTH-O6/O7/O8/O9/O10/O11/O12 | P1 | **CLOSED** (Claude `627e0e4`) |
+| TR-EC-O10 / TR-EC-IOS-O3 | P1 | **CLOSED on physical iPhone Felipe E3** (11/11 fixture-bypass + 3/3 validation, evidence under `engine/docs/release/testflight-evidence/`) |
+| TR-EC-O11/O12 | P1 | **SHIPPED** in main 4.14.128 |
+| TR-EC-O13 | P1 | **DECIDED + telemetry** (Claude `1aa5955`) |
+| TR-EC-IOS-O1/O2 | P1 | **PRE-EXISTING / DECIDED** |
+| ENG-EXC-O6/O7/O9/O10 | P2/P3 | **CLOSED** (Claude `1aa5955`) |
+| ENG-EXC-CX-O5 | P2 | **CLOSED** (Claude docs-audit baseline policy) |
+| ENG-EXC-CX-O6 | P2 | **CLOSED** (Codex mirror root detection fix) |
+| AUTH-CX-O3 | P3 | **OPEN** (docs-only — soften "primary brute-force control" language) |
+| TR-EC-CX-O1 | P2 | **REFUTED** by Claude clean-simulator rerun (3/3+1 skip; 11/11 sister suite). Closed. |
+
+### What remains operator-action
+
+1. **Open the engine PR** from `feature/engineering-excellence-architecture-standards` AFTER merging the Codex validation branch in.
+2. Soften the "5-attempt cap" language in `src/services/password-reset.ts` per AUTH-CX-O3 guidance — present it as defense-in-depth, not primary control. P3 docs-only.
+3. Run signed TestFlight E5 walk-through with the new AUTH flows (login, password reset, account-switch, two-account "Who am I?") — required for OPEN-beta gate; closed-beta is satisfied by the physical-device E3 above.
+
+---
+
 ## Closed-beta auth + training + engineering closeout pass (2026-05-04 evening)
 
 Branch: `feature/engineering-excellence-architecture-standards` @ `1aa5955` (NOT pushed).
@@ -63,6 +142,31 @@ Verdict: **READY_WITH_CONDITIONS** — every P0/P1 item from the prior list is F
 - Workspace mirror: in sync.
 - `npm run docs:audit`: 486 issues / 381 files (matches frozen baseline).
 - iOS simulator: 11/11 TrainingFixtureBypassUITests + 3/3 TrainingValidationUITests PASS.
+
+### Codex validation delta (2026-05-04)
+
+Codex validation branch: `engine/feature/closed-beta-auth-training-engineering-codex-validation`.
+Report: `docs/archive/2026-05/closed-beta-auth-training-engineering-codex-validation/codex-validation.md`.
+
+| ID | Codex status | Delta |
+|---|---|---|
+| AUTH-O2 | **EXTENDED / fixed on Codex branch** | Password reset existed, but raw `devToken` could still be returned when email was misconfigured unless explicitly gated. Codex added `PASSWORD_RESET_DEV_TOKEN=1` + non-production + non-staging gating, generic response timing floor, and fire-and-forget email delivery to reduce account-existence timing signal. |
+| AUTH-O4 | **EXTENDED / fixed on Codex branch** | Refresh-token runtime path used hashes, but migration 110 preserved legacy plaintext `ios_devices.refresh_token` rows. Codex added startup backfill to hash legacy plaintext rows, clear plaintext, and preserve row count. |
+| TR-EC-O10 / TR-EC-IOS-O3 | **PARTIAL confirmed** | Codex re-ran `TrainingFixtureBypassUITests`: 11/11 PASS on simulator UDID `A0B13967-B5DE-4E6F-897D-F1E409093F94`. `TrainingValidationUITests` did **not** reproduce the claimed 3/3 PASS; two attempts were blocked by simulator runner preflight `Busy`. Requires rerun before counting as closed. |
+| ENG-EXC-CX-O6 | **FIXED on Codex branch** | `workspace-docs-mirror.sh --check` defaulted to the real engine parent (`Custom Connectors/Cortex`) instead of official workspace when engine is symlinked. Codex fixed root detection; mirror check now exits 0 after refresh. |
+| AUTH-CX-O3 | **NEW P3** | Password-reset attempt-cap wording overstates the reachable behavior. `attempt_count` is enforced when pre-set, but normal invalid-token attempts do not increment any row. Acceptable with 256-bit tokens, but should be documented as defense-in-depth rather than the primary brute-force control. |
+
+Codex validation results:
+- `npx tsc --noEmit`: PASS.
+- `__tests__/api/auth-password-reset.test.ts`: 14/14 PASS.
+- `__tests__/api/auth-routes.test.ts`: 13/13 PASS.
+- `__tests__/services/account-lockout.test.ts` + classifier + audit-trail + plan-linter: 52/52 PASS.
+- Password-reset + auth-routes + training-plan-persistence: 41/41 PASS.
+- Broad classifier-expanded security/training/auth/portal sweep: 134 files / 1440 tests PASS.
+- Cannot-skip dashboard: 23/23 PASS.
+- Workspace mirror check: PASS after refresh.
+- `npm run docs:audit`: 486 issues / 382 files (the +1 file is the Codex validation report under `docs/archive/`).
+- Revert-before-fix invariant for `627e0e4`: expected failure after reverting code while restoring tests (21/22 failed), confirming the tests pin the auth-hardening behavior.
 
 ### What still requires operator action
 

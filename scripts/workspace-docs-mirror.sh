@@ -37,7 +37,15 @@
 set -euo pipefail
 
 ENGINE_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-WORKSPACE_ROOT="${NEXUS_WORKSPACE_ROOT:-$(cd "$ENGINE_ROOT/.." && pwd)}"
+DEFAULT_WORKSPACE_ROOT="$(cd "$ENGINE_ROOT/.." && pwd)"
+OFFICIAL_WORKSPACE_ROOT="/Users/felipedominguez/Desktop/Nexus Hub"
+if [ -n "${NEXUS_WORKSPACE_ROOT:-}" ]; then
+  WORKSPACE_ROOT="$NEXUS_WORKSPACE_ROOT"
+elif [ -f "$OFFICIAL_WORKSPACE_ROOT/docs/DOCS_INDEX.md" ]; then
+  WORKSPACE_ROOT="$OFFICIAL_WORKSPACE_ROOT"
+else
+  WORKSPACE_ROOT="$DEFAULT_WORKSPACE_ROOT"
+fi
 MIRROR_ROOT="$ENGINE_ROOT/docs/_workspace-mirror"
 
 MODE="snapshot"
