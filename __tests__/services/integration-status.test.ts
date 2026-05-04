@@ -517,6 +517,26 @@ describe('integration-status', () => {
       expect(status.state).toBe('degraded');
       expect(status.reasonCode).toBe('PROBE_FAILING');
     });
+
+    it('does not show user-facing Google reconnect when only the global owner probe has invalid_grant', () => {
+      seedGoogle(66);
+      testDb
+        .prepare(`UPDATE user_oauth_tokens SET updated_at = ? WHERE user_id = ? AND provider = 'google'`)
+        .run('2026-05-04 10:00:00', 66);
+
+      const insertProbe = testDb.prepare(
+        `INSERT INTO integration_health (provider, status, ts, error_message)
+         VALUES ('google', 'fail', ?, ?)`,
+      );
+      insertProbe.run('2026-05-04 10:01:00', 'invalid_grant');
+      insertProbe.run('2026-05-04 10:02:00', 'invalid_grant');
+      insertProbe.run('2026-05-04 10:03:00', 'invalid_grant');
+
+      const status = getProviderStatus(66, 'google');
+      expect(status.state).toBe('connected');
+      expect(status.reasonCode).toBeUndefined();
+      expect(status.detail).toBeUndefined();
+    });
   });
 
   // ── Convenience helpers ──────────────────────────────────────────

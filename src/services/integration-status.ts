@@ -301,6 +301,14 @@ type ProbeRow = {
   errorMessage: string | null;
 };
 
+function isCredentialScopedProbeFailure(row: ProbeRow): boolean {
+  if (row.status !== 'fail') return false;
+  const message = String(row.errorMessage || '').toLowerCase();
+  return /\b(invalid_grant|invalid_client|unauthorized_client|access_denied|login_required|consent_required)\b/.test(message)
+    || /\b(refresh token|access token|id token|oauth token|token expired|token revoked|token has been expired)\b/.test(message)
+    || /\b(401|403)\b/.test(message);
+}
+
 function loadRecentProbes(
   provider: string,
   limit = DEGRADE_THRESHOLD + 1,
@@ -368,9 +376,21 @@ function probeDerivedState(
   if (rows.length === 0) {
     return { degraded: false, lastCheckedAt: null, lastErrorMessage: null };
   }
-  const [latest] = rows;
+  // The `integration_health` probes are owner/global synthetic checks. A
+  // credential-scoped failure such as Google `invalid_grant` means the probed
+  // credential needs operator attention; it does NOT prove every beta user's
+  // own Google token is bad. Keep those alerts in the operator stream, but do
+  // not turn them into user-facing "Reconnect Google" banners.
+  if (isCredentialScopedProbeFailure(rows[0])) {
+    return { degraded: false, lastCheckedAt: null, lastErrorMessage: null };
+  }
+  const latest = rows.find((row) => !isCredentialScopedProbeFailure(row));
+  if (!latest) {
+    return { degraded: false, lastCheckedAt: null, lastErrorMessage: null };
+  }
   let consecutiveFailures = 0;
   for (const row of rows) {
+    if (isCredentialScopedProbeFailure(row)) break;
     if (row.status !== 'fail') break;
     consecutiveFailures += 1;
   }
