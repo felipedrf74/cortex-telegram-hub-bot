@@ -133,12 +133,18 @@ jobs:
         # engine + ios history. Non-gating during the soak window.
         run: scripts/release-doc-drift-check.sh || true
 
-      - name: closed-beta identity scan (advisor)
+      - name: closed-beta identity scan (strict, gating)
         # Catches v4.14.118-class hardcoded-founder-identity residue in
         # runtime code (prompts, persisted-payload writers, etc.).
-        # Closed-beta-readiness-hardening (2026-05-03). Strict mode runs
-        # nightly; here it's advisor only.
-        run: scripts/closed-beta-identity-scan.sh || true
+        # Closed-beta-readiness-hardening (2026-05-03): promoted from
+        # advisor (`|| true`) to strict gating. Any new flagged literal
+        # in src/, prompts/, content-engine/, src/skills/ that isn't
+        # explicitly allow-listed (copyright headers, manifest authors,
+        # backward-compat reads tagged `nx-allow-identity-scan`,
+        # tests/fixtures) blocks the PR. Run locally via
+        # `./scripts/closed-beta-identity-scan.sh --strict` to
+        # reproduce.
+        run: scripts/closed-beta-identity-scan.sh --strict
 
   # ═══════════════════════════════════════════════════
   # FOCUSED OR FULL VITEST (driven by classifier)

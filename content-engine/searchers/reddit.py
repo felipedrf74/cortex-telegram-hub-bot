@@ -19,8 +19,8 @@ logger = logging.getLogger("content-engine.reddit")
 
 # Niche-specific subreddits for targeted research
 NICHE_SUBREDDITS = {
-    "fitness": ["fitness", "running", "cycling", "triathlon", "carnivore", "AdvancedRunning"],
-    "commentary": ["brasil", "brasilivre", "desabafos", "futebol"],
+    "fitness": ["fitness", "running", "cycling", "triathlon", "AdvancedRunning"],
+    "commentary": ["CreatorEconomy", "youtube", "socialmedia", "OutOfTheLoop"],
 }
 ALL_SUBREDDITS = [s for subs in NICHE_SUBREDDITS.values() for s in subs]
 

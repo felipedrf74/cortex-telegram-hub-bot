@@ -97,7 +97,7 @@ class ScriptResponse(BaseModel):
     estimated_duration: str
     duration_ms: int
     # Creator-pack fields (April 2026) — structured for iOS/portal rendering
-    hashtags: list[str] = []                      # e.g., ["#theoperator", "#ai"]
+    hashtags: list[str] = []                      # e.g., ["#ai", "#tech"]
     caption: str = ""                             # social media caption/post copy
     cta: str = ""                                 # call to action text
     degraded: bool = False

@@ -20,24 +20,36 @@ from datetime import datetime, timezone
 
 logger = logging.getLogger("content-engine")
 
-# Default content niches — broad enough to follow real topic interest
+# Setup-safe broad-topic fallback niches. These fire ONLY when a caller
+# does not supply explicit niches (e.g. `trending(niche=None)` AND the
+# creator profile has no saved pillars yet). Identity-safety contract
+# (closed-beta v4.14.126+): keep these neutral broad-domain queries — no
+# political, religious, dietary, or ideological vocabulary, no
+# founder-shaped pillar bias. Once the authenticated creator has saved
+# their own pillars, callers should pass `niche=<creator_pillar>`
+# instead of relying on this fallback.
 DEFAULT_NICHES = [
-    "ai automation product startup builder tools internet culture",
-    "commentary reactions economics politics creator debates internet trends",
-    "training endurance strength recovery lifestyle experimentation",
-    "gaming creator internet nostalgia streaming",
-    "self-direction business discipline entrepreneurship systems",
+    "technology product launch internet culture",
+    "creator economy social media trends",
+    "training endurance strength recovery wellness",
+    "lifestyle hobbies entertainment",
+    "business productivity systems",
 ]
 
-# Search queries for hot news — more specific, higher signal
+# Setup-safe broad hot-news fallback queries. Same contract as
+# DEFAULT_NICHES: neutral broad-domain coverage; no political,
+# religious, dietary, or ideological framing. Per-creator hot-news
+# personalization happens downstream in the AI curation step
+# (`hot_news()` calls `get_profile(short=True)` which is creator-scoped),
+# so this raw query set only needs broad coverage, not founder pillars.
 HOT_NEWS_QUERIES = [
-    "AI startup product launch debate today",
-    "creator economy YouTube Instagram internet trend today",
-    "politics economics policy debate today",
-    "training performance recovery trend today",
-    "gaming internet culture reaction today",
-    "business systems entrepreneurship build in public today",
-    "viral debate commentary reaction today",
+    "technology product launch today",
+    "creator economy social media trend today",
+    "current events news today",
+    "training performance wellness trend today",
+    "lifestyle entertainment trend today",
+    "business productivity trend today",
+    "viral story today",
 ]
 
 EVERGREEN_HINTS = [
@@ -298,8 +310,8 @@ YOUR TASK — produce a {"DEEP RESEARCH BRIEF" if not evergreen_query else "PRAC
   "creator_angle": "How the authenticated creator should approach this — using their saved brand voice, worldview, and audience profile from the creator memory; do not assume any specific political or ideological default",
   "content_ideas": [
     {{
-      "title": "Compelling PT-BR title",
-      "hook": "Scroll-stopping opening line in PT-BR (conversational, not clickbait)",
+      "title": "Compelling title in the creator's saved primary content language",
+      "hook": "Scroll-stopping opening line in the creator's saved primary content language (conversational, not clickbait)",
       "format": "YouTube|Reel|Short",
       "key_points": ["specific talking point 1 with data", "point 2", "point 3"],
       "why_now": "Why this matters RIGHT NOW",
@@ -315,9 +327,9 @@ RULES:
 - Generate 3-5 content_ideas, each with a DIFFERENT angle on the topic
 - Include SPECIFIC data, numbers, statistics from the sources
 - key_points should be concrete talking points, not vague platitudes
-- hooks must be in natural PT-BR, conversational
+- hooks must be conversational in the creator's saved primary content language; if the creator has no saved language, mirror the language of the supplied TOPIC. Do NOT default to Portuguese.
 - best_sources: pick the 5-8 most useful, explain WHY each is useful
-- Everything in Portuguese except field names
+- All free-text fields use the creator's saved primary content language; field names stay in English.
 - {"For evergreen training/health/performance topics, do NOT manufacture virality. Treat `why_now` as practical relevance and usually keep `time_sensitive` false unless the sources clearly prove timeliness." if evergreen_query else "For timely commentary topics, explain the urgency clearly and use `time_sensitive` when the window is actually short."}
 
 Return ONLY the JSON object."""
@@ -384,16 +396,24 @@ Return ONLY the JSON object."""
             )
             briefs.append(brief)
 
-        # Inject research context into first brief
+        # Inject research context into first brief.
+        # Identity-safety: section labels are English (the API contract
+        # language); free-text content (`summary`, `key_facts`,
+        # `creator_angle`) carries the creator's saved language as
+        # produced by the AI synthesis above. The previous hardcoded
+        # PT-BR labels ("RESUMO", "FATOS-CHAVE", "ARGUMENTOS A FAVOR",
+        # "CONTRA-ARGUMENTOS", "ÂNGULO DO CRIADOR") asserted PT-BR
+        # identity into every authenticated user's first brief; fixed
+        # in v4.14.126 closed-beta hardening.
         if briefs:
-            research_block = f"RESUMO: {summary}"
+            research_block = f"SUMMARY: {summary}"
             if key_facts:
-                research_block += "\n\nFATOS-CHAVE:\n" + "\n".join(f"• {f}" for f in key_facts)
+                research_block += "\n\nKEY FACTS:\n" + "\n".join(f"• {f}" for f in key_facts)
             if args_for:
-                research_block += "\n\nARGUMENTOS A FAVOR:\n" + "\n".join(f"• {a}" for a in args_for)
+                research_block += "\n\nARGUMENTS FOR:\n" + "\n".join(f"• {a}" for a in args_for)
             if args_against:
-                research_block += "\n\nCONTRA-ARGUMENTOS:\n" + "\n".join(f"• {a}" for a in args_against)
-            research_block += f"\n\nÂNGULO DO CRIADOR: {creator_angle}"
+                research_block += "\n\nARGUMENTS AGAINST:\n" + "\n".join(f"• {a}" for a in args_against)
+            research_block += f"\n\nCREATOR ANGLE: {creator_angle}"
             briefs[0].why_now = research_block
 
         duration_ms = int((time.monotonic() - start) * 1000)
@@ -460,8 +480,18 @@ Return ONLY the JSON object."""
 
         # Phase 2: AI curation — filter and rank through creator lens
         import json
+        # Identity-safety: the niche classification list is no longer a  # nx-allow-identity-scan
+        # hardcoded enum (the previous list — "politica | economia |  # nx-allow-identity-scan
+        # fitness | fe_familia | geopolitica | desenvolvimento |  # nx-allow-identity-scan
+        # reacao" — leaked the founder's pillars, including the  # nx-allow-identity-scan
+        # `fe_familia` faith/family ideology label, into every  # nx-allow-identity-scan
+        # authenticated user's hot-news metadata). The model is now
+        # instructed to choose a niche label drawn from the creator's
+        # saved pillars in the creator profile, falling back to a
+        # generic broad-content label only when the creator has no
+        # saved pillars.
         curation_prompt = f"""You are the creator's content curator.
-Use the creator configuration below as the canonical source of editorial fit, audience, worldview, and language defaults.
+Use the creator configuration below as the canonical source of editorial fit, audience, worldview, language defaults, and pillar labels.
 
 CREATOR CONFIG:
 {get_profile(short=True)}
@@ -471,10 +501,10 @@ Here are {len(all_raw)} trending topics found right now:
 {json.dumps(all_raw, ensure_ascii=False, indent=1)}
 
 TASK: Select the TOP 8 most interesting topics for the authenticated creator's content. For each:
-1. Rewrite the title as a compelling Portuguese headline the authenticated creator would use
-2. Add a "content_angle" — how the authenticated creator should approach this (their unique take)
-3. Rate "relevance" 1-10 (how well it fits their brand)
-4. Classify the "niche": politica | economia | fitness | fe_familia | geopolitica | desenvolvimento | reacao
+1. Rewrite the title as a compelling headline the authenticated creator would use, in their saved primary content language (do NOT default to Portuguese unless that is the creator's saved language).
+2. Add a "content_angle" — how the authenticated creator should approach this, in their saved voice and through their saved worldview / audience profile (do NOT inject political, religious, or ideological defaults).
+3. Rate "relevance" 1-10 (how well it fits their brand).
+4. Classify the "niche" using a label drawn from the creator's saved pillars in the creator profile. If the creator has no saved pillars, use a generic broad-content label such as "technology", "creator-economy", "wellness", "lifestyle", or "business". Do NOT use ideological labels (e.g. faith/family, political-leaning, dietary identity) unless they appear explicitly in the creator's saved pillars.
 
 Return JSON array:
 [{{"title": "...", "content_angle": "...", "relevance": 9, "niche": "...", "heat_score": 0.85, "sources": ["..."], "original_title": "..."}}]
@@ -594,9 +624,18 @@ Only return the JSON array, nothing else."""
                 angle = f"Breaking news reaction — '{short}'"
                 fmt = "YouTube"
 
+            # Identity-safety: hook/title_options template strings are
+            # in English (the API contract language). The previous
+            # hardcoded PT-BR templates ("Vocês viram...", "REAGINDO
+            # a...", "A VERDADE sobre...") asserted PT-BR identity
+            # into every authenticated user's reaction briefs. The
+            # caller (TS workflow) is expected to localize/AI-rewrite
+            # these strings into the creator's saved primary content
+            # language as a downstream step. Fixed in v4.14.126
+            # closed-beta hardening.
             briefs.append(ContentBrief(
                 title=title,
-                hook=f"Vocês viram o que está acontecendo com {short}? Eu não acredito...",
+                hook=f"Did you see what's happening with {short}? I can't believe it...",
                 angle=angle,
                 format=fmt,
                 niche="reaction",
@@ -606,9 +645,9 @@ Only return the JSON array, nothing else."""
                     "Your hot take + audience engagement question",
                 ],
                 title_options=[
-                    f"REAGINDO a {short}",
-                    f"A VERDADE sobre {short} que ninguém fala",
-                    f"{short} — Isto é ABSURDO",
+                    f"REACTING to {short}",
+                    f"The TRUTH about {short} that nobody talks about",
+                    f"{short} — This is OUTRAGEOUS",
                 ],
                 sources=[SourceReference(
                     title=title, url=r.url,

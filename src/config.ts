@@ -277,7 +277,7 @@ export const config = {
   // ── YouTube ────────────────────────────────────────────────────────
   youtube: {
     apiKey: process.env.YOUTUBE_API_KEY || '',
-    channelId: process.env.YOUTUBE_CHANNEL_ID || '',  // Felipe's own channel ID
+    channelId: process.env.YOUTUBE_CHANNEL_ID || '',  // configured creator channel ID
   },
   // ── Content Engine (Python microservice) ────────────────────────────
   contentEngine: {

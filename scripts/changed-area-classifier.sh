@@ -140,6 +140,13 @@ HAS_CI_WORKFLOW=false
 HAS_TEST_CONFIG=false
 HAS_PACKAGE_JSON=false
 HAS_NON_DOC=false
+# Closed-beta hardening (2026-05-03): attachment plumbing, model
+# routing, and explicit personalization-scope changes that the audit
+# flagged as missing dedicated routing into the security tests.
+HAS_ATTACHMENT=false
+HAS_MODEL_ROUTING=false
+HAS_PERSONALIZATION_SCOPE=false
+HAS_CONTENT_AGENT=false
 
 # Use grep-based detection so multiple flags can match a single file.
 # Bash `case` stops at the first match — that's wrong here because e.g.
@@ -192,6 +199,7 @@ match 'cooking' && match '^__tests__/' && HAS_COOKING=true
 
 match '^src/domains/content/|^src/services/content-|^src/services/voice-|^src/agents/|^content-engine/' && HAS_CONTENT=true
 match '^__tests__/services/content-' && HAS_CONTENT=true
+match '^src/agents/|^__tests__/services/cross-agent-learning|^__tests__/security/content-agent-neutrality' && HAS_CONTENT_AGENT=true
 
 match '^src/domains/finance/|^src/services/finance-|^src/services/invoice-|^src/skills/finance/' && HAS_FINANCE=true
 match '^__tests__/services/finance-|^__tests__/services/invoice-' && HAS_FINANCE=true
@@ -209,6 +217,31 @@ match '^\.husky/' && HAS_HOOK=true
 match '^\.github/workflows/' && HAS_CI_WORKFLOW=true
 match '^vitest\.config\.ts$|^tsconfig\.json$' && HAS_TEST_CONFIG=true
 match '^package\.json$|^package-lock\.json$' && HAS_PACKAGE_JSON=true
+
+# Closed-beta hardening (2026-05-03): three new flags so the
+# security/isolation suite gets dispatched whenever the relevant
+# surfaces change.
+
+# Attachment / image / media plumbing — chat attachment routes,
+# media handlers, and any test that exercises them. Cross-tenant
+# attachment leakage is a high-blast-radius P0 vector if anything
+# in this surface regresses (an attachment handed to user A could
+# be served to user B).
+match '^src/api/routes/chat-message-attachments|^src/api/routes/chat-attachments|^src/handlers/media|^__tests__/api/chat-attachments|^__tests__/api/chat-message-attachments|^__tests__/services/fiscal-bundle-attachments' && HAS_ATTACHMENT=true
+
+# Model routing / domain provider router — provider routing already
+# has its own flag, but the higher-level `domain-provider-router.ts`
+# and `model-routing-*` test files are about which model handles
+# which user request, separate from the SDK wrappers. Changes here
+# affect cross-tenant cost attribution and per-domain fallback
+# behavior.
+match '^src/services/domain-provider-router|^src/portal/provider-routes|^__tests__/services/domain-provider-router|^__tests__/services/model-routing-' && HAS_MODEL_ROUTING=true
+
+# Personalization scope — cooking-preferences, content-references,
+# finance preferences, skill-memory. These determine what data
+# crosses into a per-user prompt. The audit flagged Cooking and
+# Finance preference scope as missing dedicated routing.
+match '^src/services/cooking-preferences|^src/services/finance-preferences|^src/services/skill-memory|^src/state/content-references|^__tests__/services/cooking-preferences|^__tests__/services/finance-preferences|^__tests__/services/skill-memory|^__tests__/services/content-references' && HAS_PERSONALIZATION_SCOPE=true
 
 # Detect iOS changes by file path. iOS repo is at ../Nexus Hub IOS/Nexus Hub
 # but in workspace symlink it's `ios/`. Since this script runs from engine,
@@ -246,6 +279,11 @@ $HAS_DEPLOY_SCRIPT && CANNOT_SKIP+=("deploy-script-promotion-rehearsal")
 $HAS_HOOK && CANNOT_SKIP+=("hook-validation-on-feature-branch")
 $HAS_CI_WORKFLOW && CANNOT_SKIP+=("ci-workflow-validation-on-PR")
 $HAS_TEST_CONFIG && CANNOT_SKIP+=("test-config-mock-completeness-audit")
+# Closed-beta hardening (2026-05-03): three new cannot-skip gates.
+$HAS_ATTACHMENT && CANNOT_SKIP+=("attachment-tenant-isolation")
+$HAS_MODEL_ROUTING && CANNOT_SKIP+=("model-routing-cost-attribution")
+$HAS_PERSONALIZATION_SCOPE && CANNOT_SKIP+=("personalization-scope-isolation")
+$HAS_CONTENT_AGENT && CANNOT_SKIP+=("content-agent-neutrality")
 
 # Tier 1 if anything non-doc is in scope
 if $HAS_NON_DOC; then
@@ -292,6 +330,11 @@ if $HAS_NON_DOC; then
     $HAS_FINANCE && VITEST_GLOBS+=("__tests__/services/finance-*.test.ts" "__tests__/services/invoice-*.test.ts")
     $HAS_SECRETARY && VITEST_GLOBS+=("__tests__/services/secretary-*.test.ts")
     $HAS_PORTAL && VITEST_GLOBS+=("__tests__/portal/**/*.test.ts")
+    # Closed-beta hardening (2026-05-03):
+    $HAS_ATTACHMENT && VITEST_GLOBS+=("__tests__/api/chat-attachments*.test.ts" "__tests__/api/chat-message-attachments*.test.ts" "__tests__/services/fiscal-bundle-attachments*.test.ts" "__tests__/security/**/*.test.ts")
+    $HAS_MODEL_ROUTING && VITEST_GLOBS+=("__tests__/services/domain-provider-router*.test.ts" "__tests__/services/model-routing-*.test.ts")
+    $HAS_PERSONALIZATION_SCOPE && VITEST_GLOBS+=("__tests__/services/cooking-preferences*.test.ts" "__tests__/services/finance-preferences*.test.ts" "__tests__/services/skill-memory*.test.ts" "__tests__/services/content-references*.test.ts" "__tests__/security/**/*.test.ts")
+    $HAS_CONTENT_AGENT && VITEST_GLOBS+=("__tests__/security/content-agent-neutrality.test.ts" "__tests__/services/cross-agent-learning*.test.ts" "__tests__/portal/domain-status.test.ts")
     if [ "${#VITEST_GLOBS[@]}" -eq 0 ]; then
       # Backend src/test changed but no domain mapped — fall back to changed-files-only
       VITEST_MODE="changed-only"
@@ -387,6 +430,10 @@ emit_json() {
   export CLAS_TEST_CONFIG="$HAS_TEST_CONFIG"
   export CLAS_PACKAGE_JSON="$HAS_PACKAGE_JSON"
   export CLAS_CURRENT_VERDICT_DOC="$HAS_CURRENT_VERDICT_DOC"
+  export CLAS_ATTACHMENT="$HAS_ATTACHMENT"
+  export CLAS_MODEL_ROUTING="$HAS_MODEL_ROUTING"
+  export CLAS_PERSONALIZATION_SCOPE="$HAS_PERSONALIZATION_SCOPE"
+  export CLAS_CONTENT_AGENT="$HAS_CONTENT_AGENT"
 
   node <<'JS'
 function lines(name) {
@@ -447,6 +494,10 @@ const payload = {
     testConfig: flag('CLAS_TEST_CONFIG'),
     packageJson: flag('CLAS_PACKAGE_JSON'),
     currentVerdictDoc: flag('CLAS_CURRENT_VERDICT_DOC'),
+    attachment: flag('CLAS_ATTACHMENT'),
+    modelRouting: flag('CLAS_MODEL_ROUTING'),
+    personalizationScope: flag('CLAS_PERSONALIZATION_SCOPE'),
+    contentAgent: flag('CLAS_CONTENT_AGENT'),
   },
 };
 console.log(JSON.stringify(payload, null, 2));

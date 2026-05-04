@@ -78,6 +78,30 @@ forbidden_patterns=(
   "ANGULO DO FELIPE"
   "felipe_version"
   "felipes_angle"
+  # Closed-beta hardening (2026-05-03) — ideology / persona / dietary
+  # hashtag vocabulary that v4.14.118 did not cover. Hits in
+  # caption_writer.py SYSTEM_PROMPT, orchestrator.py niche enum, etc.
+  # The audit found these regressions still active in v4.14.125; the
+  # closed-beta hardening pass sanitized the runtime sites, and these
+  # patterns are now strict-mode gates so the regression cannot
+  # silently return.
+  "fe_familia"
+  "#carnivorediet"
+  "#theoperator"
+  "#liberdade"
+  "#livremercado"
+  "#conservador"
+  "#masculinidade"
+  "livre mercado brasil"
+  "estado é o problema"
+  "valores cristãos homem"
+  "disciplina masculina"
+  "desenvolvimento pessoal homem"
+  "Brazilian men 18-35"
+  "free market / libertarian"
+  "dieta carnívora resultados"
+  "carnívoro e performance esportiva"
+  "brasilivre"
 )
 
 # Files / path-prefixes that are ALLOWED to mention founder identity

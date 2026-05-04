@@ -151,10 +151,26 @@ export function formatSources(res: SourcesResponse): string {
 }
 
 export function formatHotNews(res: HotNewsResponse): string {
+  // Identity-safety (closed-beta v4.14.126+): the niche → emoji map is  // nx-allow-identity-scan
+  // now keyed by the generic broad-content labels orchestrator.py
+  // emits when the creator has no saved pillars. The previous
+  // founder-shaped enum was removed in the closed-beta hardening pass;  // nx-allow-identity-scan
+  // it leaked the founder's pillar set — including a faith/family  // nx-allow-identity-scan
+  // ideology label — into every authenticated user's hot-news
+  // Telegram render. The fallback `'📰'` at the lookup site
+  // (`NICHE_EMOJI[t.niche] || '📰'`) handles any creator-saved-pillar
+  // label not present in this map.
   const NICHE_EMOJI: Record<string, string> = {
-    politica: '🏛', economia: '📊', fitness: '💪',
-    fe_familia: '✝️', geopolitica: '🌍', desenvolvimento: '🧠',
-    reacao: '🎬', geral: '📰',
+    technology: '🛰',
+    'creator-economy': '🎬',
+    wellness: '💪',
+    fitness: '💪',
+    lifestyle: '🌿',
+    business: '📊',
+    'current events': '📰',
+    'current-events': '📰',
+    geral: '📰',
+    general: '📰',
   };
   let msg = `🔥 <b>Hot News — Curated for You</b>\n\n`;
   for (let i = 0; i < res.topics.length; i++) {

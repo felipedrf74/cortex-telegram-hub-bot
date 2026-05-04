@@ -266,9 +266,20 @@ export async function generateTopicCandidates(
 
   const enrichment = `${angleDiversity}${bookBlock}${discoveryBlock}`;
 
+  // Identity-safety: the niche/pillar enum is no longer hardcoded in the
+  // user-message prompt. The system prompt (prompts/topic-generation.md)
+  // now instructs the model to draw the `niche` value from the
+  // authenticated creator's saved pillars in the knowledge block. The
+  // founder-shaped enum ("ai-tech, commentary, training, gaming,
+  // wild-card") was removed in v4.14.126 closed-beta hardening; it
+  // biased every authenticated user's topics into the founder's pillars
+  // and made `pillar_emoji` carry founder-shaped emojis (🤖, 🎤, 🏋️,
+  // 🎮, 🃏) regardless of who authenticated.
+  const responseShape = `Respond with a JSON array. Each object must have: "title", "niche" (use one of the creator's saved pillars from the knowledge block above; if none exist yet, use "uncategorized"), "whyNow", "hookIdea", "angle_tag", "pillar_emoji" (the emoji the creator has saved for that pillar; empty string if none), "time_sensitivity".`;
+
   const userMessage = isTrending
-    ? `Today is ${today.toFormat('cccc, LLLL dd, yyyy')}. Generate ${count} trending ${format} topic candidates for the authenticated creator/brand. Search for what's hot right now across the authorized pillars, references, taste profile, and knowledge block. Don't force quotas — follow what's genuinely interesting and timely.${enrichment}\n\nRespond with a JSON array. Each object must have: "title", "niche" (one of: ai-tech, commentary, training, gaming, wild-card), "whyNow", "hookIdea", "angle_tag", "pillar_emoji", "time_sensitivity".`
-    : `Generate ${count} evergreen ${format} topic candidates for the authenticated creator/brand. Use authorized pillars, references, taste profile, and knowledge block. Follow genuine interest, not quotas.${enrichment}\n\nRespond with a JSON array. Each object must have: "title", "niche" (one of: ai-tech, commentary, training, gaming, wild-card), "whyNow", "hookIdea", "angle_tag", "pillar_emoji", "time_sensitivity".`;
+    ? `Today is ${today.toFormat('cccc, LLLL dd, yyyy')}. Generate ${count} trending ${format} topic candidates for the authenticated creator/brand. Search for what's hot right now across the authorized pillars, references, taste profile, and knowledge block. Don't force quotas — follow what's genuinely interesting and timely.${enrichment}\n\n${responseShape}`
+    : `Generate ${count} evergreen ${format} topic candidates for the authenticated creator/brand. Use authorized pillars, references, taste profile, and knowledge block. Follow genuine interest, not quotas.${enrichment}\n\n${responseShape}`;
 
   // Gemini-first routing for cost reduction (cost-optimization pass).
   // Topic generation is a JSON-output task that doesn't need Anthropic-specific

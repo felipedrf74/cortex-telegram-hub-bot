@@ -1,4 +1,5 @@
 from datetime import datetime, timezone
+from typing import Iterable, Optional
 from models.research import SearchResult
 from models.scoring import ScoreBreakdown, ScoredResult
 
@@ -9,10 +10,18 @@ WEIGHT_RECENCY = 0.30
 
 # Default content-pillar keywords — used for setup-safe relevance matching
 # when the authenticated creator's saved niches/keywords are unavailable.
-# Per-request scoring should override this with the creator's saved
+# Per-request scoring SHOULD override this with the creator's saved
 # pillar_keywords from creator memory (see content_creative_memory).
-# Identity-safety: keep these neutral — no political, religious, dietary,
-# or ideological lexicon that biases scoring for non-default creators.
+#
+# Identity-safety contract (closed-beta v4.14.126+): keep these neutral —
+# no political, religious, dietary, or ideological lexicon that biases
+# scoring for non-default creators. The keywords here are GENRE labels
+# (ai, training, gaming, commentary), not ideology. To override per
+# request, pass `creator_keywords=[...]` into `score_results(...)` —
+# callers SHOULD pull these from the authenticated creator's saved
+# `pillar_keywords` and pass them through. The default fallback only
+# fires for first-touch / setup-safe scoring before a creator profile
+# exists.
 NICHE_KEYWORDS: dict[str, list[str]] = {
     "ai-tech": [
         "ai", "artificial intelligence", "machine learning", "claude", "gpt", "chatgpt",
@@ -35,14 +44,37 @@ NICHE_KEYWORDS: dict[str, list[str]] = {
 }
 
 
-def _relevance_score(result: SearchResult) -> float:
-    """How relevant is this result to the authenticated creator's saved niches?"""
-    text = f"{result.title} {result.snippet}".lower()
-    matches = 0
-    total_keywords = 0
+def _flatten_default_keywords() -> list[str]:
+    """Flatten the per-pillar default keywords into a single list for
+    setup-safe scoring when the caller doesn't supply creator keywords."""
+    flat: list[str] = []
     for keywords in NICHE_KEYWORDS.values():
-        total_keywords += len(keywords)
-        matches += sum(1 for kw in keywords if kw.lower() in text)
+        flat.extend(keywords)
+    return flat
+
+
+def _relevance_score(
+    result: SearchResult,
+    creator_keywords: Optional[Iterable[str]] = None,
+) -> float:
+    """How relevant is this result to the authenticated creator's saved niches?
+
+    When `creator_keywords` is provided (the per-request override path),
+    relevance is computed against the creator's own saved pillar keywords.
+    When omitted, falls back to the genre-only setup-safe defaults from
+    `NICHE_KEYWORDS`. The fallback never includes ideological vocabulary
+    by contract — see the comment at the top of the module.
+    """
+    text = f"{result.title} {result.snippet}".lower()
+    if creator_keywords is not None:
+        keyword_pool = [kw for kw in creator_keywords if kw]
+    else:
+        keyword_pool = _flatten_default_keywords()
+
+    if not keyword_pool:
+        return 0.0
+
+    matches = sum(1 for kw in keyword_pool if kw.lower() in text)
     return min(matches / 3.0, 1.0)  # 3+ keyword hits = max relevance
 
 
@@ -88,9 +120,17 @@ def _recency_score(result: SearchResult) -> float:
     return 0.0
 
 
-def score_result(result: SearchResult) -> ScoredResult:
-    """Score a single search result across all dimensions."""
-    relevance = _relevance_score(result)
+def score_result(
+    result: SearchResult,
+    creator_keywords: Optional[Iterable[str]] = None,
+) -> ScoredResult:
+    """Score a single search result across all dimensions.
+
+    Pass `creator_keywords` to use the authenticated creator's saved
+    pillar keywords for relevance matching; omit to fall back to
+    setup-safe genre defaults.
+    """
+    relevance = _relevance_score(result, creator_keywords=creator_keywords)
     virality = _virality_score(result)
     recency = _recency_score(result)
     composite = (
@@ -109,8 +149,20 @@ def score_result(result: SearchResult) -> ScoredResult:
     )
 
 
-def score_results(results: list[SearchResult]) -> list[ScoredResult]:
-    """Score and rank results by composite score (descending)."""
-    scored = [score_result(r) for r in results]
+def score_results(
+    results: list[SearchResult],
+    creator_keywords: Optional[Iterable[str]] = None,
+) -> list[ScoredResult]:
+    """Score and rank results by composite score (descending).
+
+    Pass `creator_keywords` (typically the authenticated creator's saved
+    `pillar_keywords` from creator memory) to score against the creator's
+    own pillars. When omitted, the setup-safe genre defaults from
+    `NICHE_KEYWORDS` are used. By contract those defaults carry no
+    ideological/dietary/political vocabulary.
+    """
+    # Materialize the iterable once so we don't exhaust it across N calls.
+    keywords_list = list(creator_keywords) if creator_keywords is not None else None
+    scored = [score_result(r, creator_keywords=keywords_list) for r in results]
     scored.sort(key=lambda s: s.score.composite, reverse=True)
     return scored

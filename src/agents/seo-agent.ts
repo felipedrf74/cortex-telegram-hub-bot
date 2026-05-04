@@ -21,17 +21,19 @@ const YOUTUBE_API_BASE = 'https://www.googleapis.com/youtube/v3';
 // ── Seed Keywords ────────────────────────────────────────────────────
 
 const SEED_KEYWORDS = [
-  // Fitness
-  'treino híbrido', 'atleta híbrido', 'corrida e musculação',
-  'treino de força corrida', 'dieta para treino',
-  // Politics / Economics
-  'economia austríaca', 'livre mercado brasil', 'estado é o problema',
-  'liberalismo brasil', 'impostos brasil',
-  // Self-development
-  'disciplina masculina', 'desenvolvimento pessoal homem',
-  'mentalidade vencedora',
-  // Faith
-  'fé e disciplina', 'valores cristãos homem',
+  // Setup-safe defaults only. Per-creator keywords should be added through
+  // tracked SEO keywords or saved content pillars, not founder-shaped seeds.
+  'ai automation tools',
+  'creator economy 2026',
+  'youtube growth strategy',
+  'content workflow automation',
+  'running strength training',
+  'marathon training plan',
+  'meal prep for training',
+  'wellness routine',
+  'productivity systems',
+  'small business operations',
+  'gaming creator trends',
 ];
 
 // ── Types ────────────────────────────────────────────────────────────
@@ -231,8 +233,8 @@ export async function runSEOAgent(): Promise<void> {
     seedKeywordsIfEmpty();
 
     // Get the authenticated creator's channel ID (from reference channels or config)
-    const felipeChannelId = config.youtube?.channelId || '';
-    if (!felipeChannelId) {
+    const creatorChannelId = config.youtube?.channelId || '';
+    if (!creatorChannelId) {
       logger.warn('SEO Agent: No YouTube channel ID configured (YOUTUBE_CHANNEL_ID). Skipping rank checks.');
     }
 
@@ -245,7 +247,7 @@ export async function runSEOAgent(): Promise<void> {
     // Check ranks for each keyword (with 2s delay between to avoid rate limits)
     for (let i = 0; i < keywords.length; i++) {
       const kw = keywords[i];
-      const rank = await checkKeywordRank(kw.keyword, felipeChannelId);
+      const rank = await checkKeywordRank(kw.keyword, creatorChannelId);
 
       // Store previous and update current
       db.prepare(`

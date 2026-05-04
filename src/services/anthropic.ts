@@ -1071,7 +1071,13 @@ export async function callDomain(
   // persona prompt file. Non-triathlon domains ignore the message arg.
   let systemPrompt = getDomainSystemPrompt(domain, currentMessage);
   if (domain === 'content') {
-    const knowledgeBlock = buildKnowledgePromptBlock(meteredUserId);
+    // Identity-safety (closed-beta v4.14.126+): pass tenantId so the
+    // knowledge block is scoped strictly to the authenticated user
+    // AND tenant. Without tenantId the underlying contentScopePredicate
+    // falls back to the platform scope, which could leak knowledge
+    // rows from another tenant that share the same userId in a
+    // multi-tenant deployment.
+    const knowledgeBlock = buildKnowledgePromptBlock(meteredUserId, opts.tenantId);
     if (knowledgeBlock) systemPrompt += knowledgeBlock;
   }
   // Layer 3: tool filtering. If the routing layer pre-computed the
@@ -1177,7 +1183,11 @@ export async function continueWithToolResults(
   // currentMessage guarantees the classifier produces the same answer.
   let systemPrompt = getDomainSystemPrompt(domain, currentMessage);
   if (domain === 'content') {
-    const knowledgeBlock = buildKnowledgePromptBlock(meteredUserId);
+    // Identity-safety (closed-beta v4.14.126+): pass tenantId so the
+    // continuation call's knowledge block is scoped to the same
+    // (userId, tenantId) pair as the initial callDomain. Same
+    // rationale as the initial-call site above.
+    const knowledgeBlock = buildKnowledgePromptBlock(meteredUserId, opts.tenantId);
     if (knowledgeBlock) systemPrompt += knowledgeBlock;
   }
 

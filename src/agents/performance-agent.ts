@@ -109,11 +109,11 @@ async function fetchOwnChannelVideos(maxResults = 30): Promise<VideoStats[]> {
 function detectPillar(title: string): string {
   const lower = title.toLowerCase();
   const pillars: Record<string, string[]> = {
-    politics: ['política', 'governo', 'lula', 'estado', 'imposto', 'esquerda', 'direita', 'liberal'],
-    economics: ['economia', 'inflação', 'dólar', 'mercado', 'juros', 'banco', 'investimento'],
-    fitness: ['treino', 'corrida', 'musculação', 'dieta', 'academia', 'atleta', 'gym'],
-    faith: ['cristão', 'deus', 'fé', 'família', 'igreja', 'bíblia', 'valores'],
-    selfdev: ['disciplina', 'hábito', 'produtividade', 'mentalidade', 'sucesso', 'foco'],
+    technology: ['tecnologia', 'inteligência artificial', 'automação', 'software', 'produto', 'ferramenta', 'startup'],
+    creator_economy: ['criador', 'youtube', 'instagram', 'vídeo', 'shorts', 'reels', 'conteúdo', 'audiência'],
+    wellness: ['treino', 'corrida', 'nutrição', 'recuperação', 'sono', 'saúde', 'performance', 'gym'],
+    lifestyle: ['rotina', 'hábitos', 'viagem', 'organização', 'agenda', 'trabalho', 'comunidade'],
+    business: ['negócio', 'empresa', 'mercado', 'cliente', 'produto', 'operação', 'finanças'],
   };
 
   let best = 'general';

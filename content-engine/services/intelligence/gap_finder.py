@@ -15,23 +15,23 @@ logger = logging.getLogger("content-engine.gaps")
 # Seed topics per niche to scan for gaps
 NICHE_SEED_TOPICS = {
     "fitness": [
-        "treino híbrido para iniciantes",
-        "dieta carnívora resultados",
-        "corrida e musculação juntos",
-        "treino de força para corredores",
-        "atleta híbrido rotina",
-        "carnívoro e performance esportiva",
+        "beginner hybrid training plan",
+        "strength training for runners",
+        "running and gym schedule",
+        "recovery routine for endurance athletes",
+        "meal prep for active weeks",
+        "training consistency for busy people",
     ],
     "commentary": [
-        "polêmica influencer brasil",
-        "opinião impopular cultura",
-        "reaction tendências brasil",
-        "cancelamento redes sociais",
-        "debate político análise",
+        "creator economy trends",
+        "internet culture debate",
+        "reaction to platform changes",
+        "audience trust in creators",
+        "media trend analysis",
     ],
 }
 
-SYSTEM_PROMPT = """You are a content gap analysis expert for PT-BR YouTube/Instagram.
+SYSTEM_PROMPT = """You are a content gap analysis expert for YouTube/Instagram.
 A "content gap" is a topic with HIGH search demand but LOW content supply.
 
 GAP TYPES:
@@ -48,7 +48,7 @@ For each gap, provide:
 - suggested_angle: how the authenticated creator should approach this differently
 - suggested_title: a title for this content
 
-Return ONLY a JSON array. Language: PT-BR."""
+Return ONLY a JSON array. Match the language implied by the requested niche/topics; do not assume a default creator identity, worldview, country, or dietary pattern."""
 
 
 async def find(req: GapsRequest, orchestrator) -> GapsResponse:
@@ -79,7 +79,7 @@ async def find(req: GapsRequest, orchestrator) -> GapsResponse:
 
 {context}
 
-Based on this data and your knowledge of PT-BR content landscape,
+Based on this data and the current creator-platform landscape,
 identify the top {req.max_gaps} content gaps — topics where there's demand but insufficient supply.
 
 Return JSON array of gap objects with: topic, gap_type, search_demand, existing_content_quality, opportunity_score, suggested_angle, suggested_title."""

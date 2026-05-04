@@ -3,6 +3,32 @@
 Generated: 2026-04-29 03:30 WEST  
 Branch: `feature/chat-tenant-safe-context-orchestration`
 
+## 2026-05-04 Closed-Beta Hardening Codex Validation Addendum
+
+Branch: `feature/closed-beta-readiness-hardening-20260503`
+
+Status: second-pass Codex validation completed locally. No push, no deploy, no production data, and no production calendars were used.
+
+Findings and fixes:
+
+- Claude's closed-beta hardening was directionally correct, but the runtime hardcoded-identity sweep was still too narrow. Codex found and neutralized additional founder-shaped defaults in Content agent/runtime paths: `seo-agent.ts` seed keywords, `reaction-radar-agent.ts` fallback pillars and audience/scoring assumptions, `performance-agent.ts` pillar detection, Python `gap_finder.py` seed topics/default language prompt, and Reddit searcher subreddits.
+- The strict identity scanner now covers the missed vocabulary class (`Brazilian men 18-35`, free-market/libertarian phrasing, carnivore seed topics, `brasilivre`, and related founder-persona strings) so the regression is caught by CI instead of human memory.
+- The changed-area classifier now treats Content agent changes as a cannot-skip security area and routes them to `content-agent-neutrality` plus cross-agent/content regression tests.
+- Added `__tests__/security/content-agent-neutrality.test.ts` and `__tests__/scripts/changed-area-classifier.test.ts` so the neutrality and gate-routing fixes are pinned.
+
+Validation:
+
+- `scripts/closed-beta-identity-scan.sh --strict --json`: passed with `0` flags.
+- `npx tsc --noEmit`: passed.
+- Focused neutrality/security gate: `content-agent-neutrality`, `creator-config-neutrality`, `p0-chat-identity-isolation`, and content formatter identity tests passed: 4 files / 30 tests.
+- Content agent regression gate passed: 5 files / 105 tests.
+- Classifier gate passed: 2 files / 3 tests.
+- Broader security/content scope pass completed locally: 14 files / 113 tests.
+
+Remaining caveat:
+
+- Closed beta remains `READY_WITH_CONDITIONS`, not unconditional ready. Live signed two-account validation, real provider/non-production calendar lifecycle smoke, and portal user-console preference editing remain external validation conditions.
+
 ## 2026-05-03 Training Expert-Coach Codex Validation Addendum
 
 Branch: `feature/training-expert-coach-codex-validation`
