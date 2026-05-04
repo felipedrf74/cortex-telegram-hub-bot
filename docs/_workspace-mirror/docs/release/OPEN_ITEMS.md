@@ -9,11 +9,12 @@ Last updated: 2026-05-04
 
 ## Backlog drain pass — frontmatter hygiene + archive sweep + mobility catalog (2026-05-04 night, post-merge)
 
-Engine branch: `feature/engineering-excellence-architecture-standards` @ `612cf52` (NOT pushed).
+Engine branch: `feature/engineering-excellence-architecture-standards` @ `9a64df4` (NOT pushed).
 iOS branch: `feature/engineering-excellence-architecture-standards` @ `ced1cb4` (NOT pushed).
+Codex validation branch: `feature/closed-beta-backlog-drain-codex-validation` (required before opening the engine PR).
 Backup tags preserved on both repos.
 
-Verdict: **READY_TO_OPEN_PR — ALL P0/P1/P2/P3 backlog items closed except open-beta TestFlight E5 (operator-action only).**
+Verdict: **EXTENDED — frontmatter + archive sweep confirmed; mobility catalog required Codex fix before opening the engine PR.**
 
 ### What I shipped (commits `61f974a` + `626067b` + `612cf52` + `ced1cb4`)
 
@@ -33,14 +34,21 @@ Verdict: **READY_TO_OPEN_PR — ALL P0/P1/P2/P3 backlog items closed except open
 - Effect: poor-recovery-day mobility sessions now claim AND deliver 18-25 min (was: empty-block shrunk to ~13 min).
 - 16 new pin tests in `__tests__/services/coach-kernel-mobility-recovery-builder.test.ts`.
 
+**Codex validation delta — EXTENDED (2026-05-04 night):**
+- **MOBILITY-CX-O1 (P2) — FIXED on `feature/closed-beta-backlog-drain-codex-validation`:** `adaptSessionForPoorRecovery()` built the catalog mobility list, but `guardrails.ts` discarded strength mobility exercises before the full plan surfaced. A realistic low-readiness strength-athlete plan still produced `exerciseCount:0`, `duration:18`, `estimated:13` at `9a64df4`.
+- Codex fix preserves `adaptation.session.exercises` for strength mobility variants and aligns `durationMinutes` to the estimator-derived mobility flow, clamped to the 18-25 minute band. End-to-end probe now produces two mobility sessions with `exerciseCount:4`, `duration:22`, `estimated:22`, all catalog-backed.
+- Added regression coverage: builder test count is now **17/17** (adds the 4-candidates/1-bucket fallback pin), and poor-recovery planner-path tests fail against `9a64df4` without the source fix.
+- **FRONTMATTER-CX-O1 (P3) — FIXED by mirror refresh:** initial Codex run found `workspace-docs-mirror.sh --check` failing on stale `release-identity.{json,md}` mirror files. Mirror is refreshed in the Codex validation branch after this validation report.
+- Validation report: `docs/archive/2026-05/closed-beta-backlog-drain-codex-validation/codex-validation.md`.
+
 ### Verification
 
 - `npx tsc --noEmit`: clean.
-- `__tests__/services/coach-kernel-mobility-recovery-builder.test.ts`: **16/16 PASS** (constants lock-step, candidate filter, builder bounds, integration with `estimateStrengthSessionMinutes`).
+- `__tests__/services/coach-kernel-mobility-recovery-builder.test.ts`: **17/17 PASS** after Codex extension (constants lock-step, candidate filter, one-bucket fallback, builder bounds, integration with `estimateStrengthSessionMinutes`).
 - Touch-risk regression: poor-recovery-variation 8/8 PASS, session-coherence 27/27 PASS, plan-linter 23/23 PASS, training-plan-persistence 14/14 PASS.
 - Pre-commit hook (classifier-driven, mobility commit triggered focused training sweep): **893/893 PASS** across 69 files.
-- `npm run docs:audit`: 485 / 382 (1 BELOW the frozen-baseline budget of 486 ± 5).
-- Workspace mirror: in sync.
+- `npm run docs:audit`: initial Codex rerun 488 / 382 due 2 stale mirror warnings; final post-refresh count **486 / 383**, inside the frozen-baseline budget of 486 ± 5.
+- Workspace mirror: initial Codex check found stale release identity mirror; fixed by Codex validation branch refresh (`workspace-docs-mirror.sh --check` exits 0).
 
 ### Closure summary (cumulative across all 2026-05-04 sessions)
 
@@ -58,11 +66,13 @@ Verdict: **READY_TO_OPEN_PR — ALL P0/P1/P2/P3 backlog items closed except open
 | TR-EC-CX-O1 | P2 | REFUTED + closed (clean-simulator rerun) |
 | **P3 frontmatter hygiene** | **P3** | **CLOSED** (this pass) |
 | **P3 archive sweep** | **P3** | **CLOSED** (this pass) |
-| **P2 training mobility-variant catalog** | **P2** | **CLOSED** (this pass) |
+| **P2 training mobility-variant catalog** | **P2** | **EXTENDED / FIXED ON CODEX VALIDATION BRANCH** |
+| MOBILITY-CX-O1 | P2 | **FIXED** (Codex validation branch; merge before opening engine PR) |
+| FRONTMATTER-CX-O1 | P3 | **FIXED** (mirror refresh) |
 
 ### What still requires operator action
 
-1. **Open the engine PR** from `feature/engineering-excellence-architecture-standards` (24 commits since main `4da8fce`/4.14.128). Backup tag preserved.
+1. **Merge `feature/closed-beta-backlog-drain-codex-validation` into `feature/engineering-excellence-architecture-standards`, then open the engine PR.** Opening directly from `9a64df4` would ship the full-plan mobility discard bug.
 2. **Open the iOS PR** from `feature/engineering-excellence-architecture-standards` (3 commits since main).
 3. **Open-beta gate (E5)**: signed TestFlight walk-through with the new AUTH flows when ready. Closed-beta is fully satisfied by the E3 evidence in `engine/docs/release/testflight-evidence/`.
 

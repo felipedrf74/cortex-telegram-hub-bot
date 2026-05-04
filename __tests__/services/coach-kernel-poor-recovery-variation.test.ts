@@ -11,7 +11,7 @@ import {
 } from '../../src/services/coach-kernel';
 import { isActiveTrainingSession } from '../../src/services/coach-kernel/capacity-reconciliation';
 import { adaptSessionForPoorRecovery } from '../../src/services/coach-kernel/poor-recovery-variation';
-import { validateSessionCoherence } from '../../src/services/coach-kernel/session-coherence';
+import { estimateStrengthSessionMinutes, validateSessionCoherence } from '../../src/services/coach-kernel/session-coherence';
 import type { ExercisePrescription } from '../../src/services/coach-kernel/types';
 
 function withPoorRecovery(athlete: AthleteState, overrides: Partial<AthleteState> = {}): AthleteState {
@@ -121,14 +121,21 @@ describe('coach-kernel poor recovery variation', () => {
   });
 
   it('gives poor-recovery strength weeks more than one safe fallback shape', () => {
+    const knowledge = loadCoachKnowledge();
     const plan = buildWeekPlan(strengthAthlete(), '2026-05-04');
     const strengthSessions = readinessAdjusted(plan.sessions).filter((session) => session.sport === 'strength');
+    const mobilitySessions = strengthSessions.filter((session) => session.sessionType === 'mobility');
 
     expect(strengthSessions.length).toBeGreaterThanOrEqual(3);
     expect(uniqueTitles(strengthSessions).size).toBeGreaterThanOrEqual(2);
     expect(strengthSessions.every((session) => session.fatigueCost === 'low')).toBe(true);
     expect(strengthSessions.every((session) => session.durationMinutes <= 35)).toBe(true);
-    expect(strengthSessions.filter((session) => session.sessionType === 'mobility').every((session) => !session.exercises?.length)).toBe(true);
+    expect(mobilitySessions.length).toBeGreaterThanOrEqual(1);
+    for (const session of mobilitySessions) {
+      expect(session.exercises?.length ?? 0).toBeGreaterThanOrEqual(4);
+      expect(estimateStrengthSessionMinutes({ exercises: session.exercises ?? [] }, knowledge))
+        .toBeGreaterThanOrEqual(session.durationMinutes - 2);
+    }
   });
 
   it('uses travel-aware low-burden recovery instead of pretending every constrained week can ride normally', () => {
@@ -206,12 +213,13 @@ describe('coach-kernel poor recovery variation', () => {
     }
   });
 
-  it('drops the original hypertrophy block when the variant is mobility', () => {
+  it('replaces the original hypertrophy block with catalog mobility when the variant is mobility', () => {
     // Direct unit test on `adaptSessionForPoorRecovery`: when the
-    // chosen variant is mobility, the inherited exercise list must be
-    // cleared. The integration variety test pins this for the
-    // buildWeekPlan path; this test pins the unit-level contract so
-    // future variant rotations cannot silently regress it.
+    // chosen variant is mobility, the inherited hypertrophy list must
+    // be replaced by a catalog-grounded mobility flow. The integration
+    // variety test pins this for the buildWeekPlan path; this test pins
+    // the unit-level contract so future variant rotations cannot
+    // silently regress it.
     const originalExercises: ExercisePrescription[] = [
       { exerciseId: 'front_squat', name: 'Front Squat', sets: 4, reps: '8-12', restSec: 120 },
       { exerciseId: 'bench_press', name: 'Bench Press', sets: 4, reps: '8-12', restSec: 90 },
@@ -245,11 +253,17 @@ describe('coach-kernel poor recovery variation', () => {
       athlete,
       session: original,
       weekSessions: [original],
-      sessionIndex: 0,
+      sessionIndex: 2,
     });
 
     if (adaptation.session.sessionType === 'mobility') {
-      expect(adaptation.session.exercises ?? []).toEqual([]);
+      const knowledge = loadCoachKnowledge();
+      const originalIds = new Set(originalExercises.map((exercise) => exercise.exerciseId));
+      const mobilityExercises = adaptation.session.exercises ?? [];
+      expect(mobilityExercises.length).toBeGreaterThanOrEqual(4);
+      expect(mobilityExercises.every((exercise) => !originalIds.has(exercise.exerciseId))).toBe(true);
+      const verdict = validateSessionCoherence(adaptation.session, knowledge);
+      expect(verdict.ok).toBe(true);
     } else if (adaptation.session.sessionType === 'strength_maintenance') {
       // Strength_maintenance variants keep light technique work but
       // must trim the original block to fit the shrunk duration.

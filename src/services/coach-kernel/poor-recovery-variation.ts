@@ -6,7 +6,7 @@ import {
   MOBILITY_TARGET_MAX_MINUTES,
   MOBILITY_TARGET_MIN_MINUTES,
 } from './mobility-recovery-builder';
-import { trimOverstuffedStrengthSessionToDuration, validateSessionCoherence } from './session-coherence';
+import { estimateStrengthSessionMinutes, trimOverstuffedStrengthSessionToDuration, validateSessionCoherence } from './session-coherence';
 import type { AthleteState, ExercisePrescription, FatigueCost, IntensityZone, Session, SessionType, Sport } from './types';
 import { clamp, dayIndex, durationToLoad } from './utils';
 
@@ -344,7 +344,7 @@ export function adaptSessionForPoorRecovery(context: PoorRecoveryContext): PoorR
   const scenario = classifyRecoveryScenario(context);
   const variants = recoveryVariantsFor(context.session, scenario, context.athlete);
   const variant = variants[stableVariantIndex(context, variants.length)];
-  const durationMinutes = recoveryDuration(context.session, variant);
+  let durationMinutes = recoveryDuration(context.session, variant);
   const explanation = scenarioExplanation(scenario, context.session, variant);
   const tags = dedupeStrings([
     ...context.session.tags.filter((tag) => !tag.startsWith('key_')),
@@ -369,16 +369,21 @@ export function adaptSessionForPoorRecovery(context: PoorRecoveryContext): PoorR
     // the variant's claimed minutes. Falls back to empty-block if the
     // catalog can't span ≥3 distinct warmupNeeds buckets, in which
     // case the existing shrink path keeps the duration credible.
-    const mobilityList = buildMobilityRecoveryExerciseList(
-      loadCoachKnowledge(),
-      // Target the variant's typical claimed minutes (between min and
-      // max bounds). The variant may declare a longer aspirational
-      // window via `maxMinutes`, but we cap at the credible upper
-      // bound so we don't claim an unrealistic 35-min mobility flow
-      // on a poor-recovery day.
-      Math.max(MOBILITY_TARGET_MIN_MINUTES, Math.min(MOBILITY_TARGET_MAX_MINUTES, variant.maxMinutes ?? MOBILITY_TARGET_MAX_MINUTES)),
-    );
-    exercises = mobilityList ?? [];
+    const knowledge = loadCoachKnowledge();
+    const mobilityList = buildMobilityRecoveryExerciseList(knowledge, durationMinutes);
+    if (mobilityList) {
+      exercises = mobilityList;
+      // Keep the claim aligned to the catalog-grounded content. This
+      // prevents later capacity reconciliation from trimming a valid
+      // 4-exercise mobility flow merely because the old multiplier
+      // placeholder landed at the lower 18-minute bound.
+      durationMinutes = Math.max(
+        MOBILITY_TARGET_MIN_MINUTES,
+        Math.min(MOBILITY_TARGET_MAX_MINUTES, estimateStrengthSessionMinutes({ exercises: mobilityList }, knowledge)),
+      );
+    } else {
+      exercises = [];
+    }
   }
 
   let session: Session = {

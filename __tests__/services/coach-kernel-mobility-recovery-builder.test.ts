@@ -106,6 +106,25 @@ describe('buildMobilityRecoveryExerciseList', () => {
     expect(buildMobilityRecoveryExerciseList(skinnyKnowledge, 22)).toBeNull();
   });
 
+  it('returns null when 4 candidates cannot span 3 warmup buckets', () => {
+    const oneBucketKnowledge = {
+      exercises: Array.from({ length: 4 }, (_, idx) => ({
+        id: `hip_only_${idx}`,
+        name: `Hip Only ${idx}`,
+        movementPattern: 'mobility',
+        primaryPurpose: 'mobility',
+        complexity: 'beginner',
+        fatigueCost: 'low',
+        unilateral: false,
+        equipment: [],
+        substitutions: [],
+        warmupNeeds: ['hip_mobility'],
+      } as unknown as Exercise)),
+    } as unknown as CoachKnowledgeBase;
+
+    expect(buildMobilityRecoveryExerciseList(oneBucketKnowledge, 22)).toBeNull();
+  });
+
   it('returns at least 4 distinct exercises when the real catalog is loaded', () => {
     const knowledge = loadCoachKnowledge();
     const list = buildMobilityRecoveryExerciseList(knowledge, 22);
