@@ -2031,5 +2031,35 @@
     "warmupNeeds": ["thoracic_rotation"],
     "progressionFamily": "mobility_complex",
     "progressionLevel": 1
+  },
+  {
+    "id": "cat_cow",
+    "name": "Cat-Cow",
+    "movementPattern": "mobility",
+    "equipment": [],
+    "fatigueCost": "low",
+    "substitutions": ["thoracic_rotation_open", "worlds_greatest_stretch"],
+    "complexity": "beginner",
+    "spinalLoading": "low",
+    "unilateral": false,
+    "primaryPurpose": "mobility",
+    "warmupNeeds": ["spine_mobility"],
+    "progressionFamily": "mobility_complex",
+    "progressionLevel": 1
+  },
+  {
+    "id": "childs_pose",
+    "name": "Child's Pose",
+    "movementPattern": "mobility",
+    "equipment": [],
+    "fatigueCost": "low",
+    "substitutions": ["hip_flexor_stretch", "couch_stretch"],
+    "complexity": "beginner",
+    "spinalLoading": "low",
+    "unilateral": false,
+    "primaryPurpose": "mobility",
+    "warmupNeeds": ["hip_mobility", "lat_mobility"],
+    "progressionFamily": "mobility_complex",
+    "progressionLevel": 1
   }
 ]
