@@ -1,11 +1,11 @@
 {
-  "generatedAt": "2026-05-04T18:47:36Z",
+  "generatedAt": "2026-05-04T19:00:43Z",
   "backend": {
     "path": "/private/tmp/nexus-engine-prod-main.kVEmfI",
     "branch": "main",
-    "commit": "bfba63b",
+    "commit": "b58d8c2",
     "dirtyState": "unknown",
-    "packageVersion": "4.14.128",
+    "packageVersion": "4.14.129",
     "migrationCount": "115"
   },
   "ios": {
