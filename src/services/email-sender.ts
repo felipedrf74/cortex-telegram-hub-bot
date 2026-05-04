@@ -10,6 +10,7 @@
  */
 
 import { Resend } from 'resend';
+import crypto from 'crypto';
 import fs from 'fs';
 import path from 'path';
 import { config } from '../config';
@@ -28,6 +29,10 @@ function getResend(): Resend {
 
 export function isEmailConfigured(): boolean {
   return !!process.env.RESEND_API_KEY;
+}
+
+function emailLogHash(email: string): string {
+  return crypto.createHash('sha256').update(email.trim().toLowerCase(), 'utf8').digest('hex').slice(0, 16);
 }
 
 export function isFiscalBundleDeliveryConfigured(): boolean {
@@ -226,10 +231,10 @@ export async function sendPasswordResetEmail(
       `,
     });
 
-    logger.info({ to, firstName }, 'Password reset email sent');
+    logger.info({ toHash: emailLogHash(to) }, 'Password reset email sent');
     return true;
   } catch (err) {
-    logger.error({ err, to }, 'Failed to send password reset email');
+    logger.error({ err, toHash: emailLogHash(to) }, 'Failed to send password reset email');
     return false;
   }
 }

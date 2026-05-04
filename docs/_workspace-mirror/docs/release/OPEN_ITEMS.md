@@ -64,6 +64,31 @@ Verdict: **READY_WITH_CONDITIONS** — every P0/P1 item from the prior list is F
 - `npm run docs:audit`: 486 issues / 381 files (matches frozen baseline).
 - iOS simulator: 11/11 TrainingFixtureBypassUITests + 3/3 TrainingValidationUITests PASS.
 
+### Codex validation delta (2026-05-04)
+
+Codex validation branch: `engine/feature/closed-beta-auth-training-engineering-codex-validation`.
+Report: `docs/archive/2026-05/closed-beta-auth-training-engineering-codex-validation/codex-validation.md`.
+
+| ID | Codex status | Delta |
+|---|---|---|
+| AUTH-O2 | **EXTENDED / fixed on Codex branch** | Password reset existed, but raw `devToken` could still be returned when email was misconfigured unless explicitly gated. Codex added `PASSWORD_RESET_DEV_TOKEN=1` + non-production + non-staging gating, generic response timing floor, and fire-and-forget email delivery to reduce account-existence timing signal. |
+| AUTH-O4 | **EXTENDED / fixed on Codex branch** | Refresh-token runtime path used hashes, but migration 110 preserved legacy plaintext `ios_devices.refresh_token` rows. Codex added startup backfill to hash legacy plaintext rows, clear plaintext, and preserve row count. |
+| TR-EC-O10 / TR-EC-IOS-O3 | **PARTIAL confirmed** | Codex re-ran `TrainingFixtureBypassUITests`: 11/11 PASS on simulator UDID `A0B13967-B5DE-4E6F-897D-F1E409093F94`. `TrainingValidationUITests` did **not** reproduce the claimed 3/3 PASS; two attempts were blocked by simulator runner preflight `Busy`. Requires rerun before counting as closed. |
+| ENG-EXC-CX-O6 | **FIXED on Codex branch** | `workspace-docs-mirror.sh --check` defaulted to the real engine parent (`Custom Connectors/Cortex`) instead of official workspace when engine is symlinked. Codex fixed root detection; mirror check now exits 0 after refresh. |
+| AUTH-CX-O3 | **NEW P3** | Password-reset attempt-cap wording overstates the reachable behavior. `attempt_count` is enforced when pre-set, but normal invalid-token attempts do not increment any row. Acceptable with 256-bit tokens, but should be documented as defense-in-depth rather than the primary brute-force control. |
+
+Codex validation results:
+- `npx tsc --noEmit`: PASS.
+- `__tests__/api/auth-password-reset.test.ts`: 14/14 PASS.
+- `__tests__/api/auth-routes.test.ts`: 13/13 PASS.
+- `__tests__/services/account-lockout.test.ts` + classifier + audit-trail + plan-linter: 52/52 PASS.
+- Password-reset + auth-routes + training-plan-persistence: 41/41 PASS.
+- Broad classifier-expanded security/training/auth/portal sweep: 134 files / 1440 tests PASS.
+- Cannot-skip dashboard: 23/23 PASS.
+- Workspace mirror check: PASS after refresh.
+- `npm run docs:audit`: 486 issues / 381 files.
+- Revert-before-fix invariant for `627e0e4`: expected failure after reverting code while restoring tests (21/22 failed), confirming the tests pin the auth-hardening behavior.
+
 ### What still requires operator action
 
 1. Open the engine PR (7 commits since main: `eacebb3` + merge `799af5d` + `ca4eed1` + `dcb27cf` + `d11e4e1` + `627e0e4` + `1aa5955`).
