@@ -1,50 +1,47 @@
 # Current Release Index
 
-Date: 2026-05-03
+Date: 2026-05-04
 
 ## Current Status
 
 Active production package:
 
 - source branch: `main`
-- production HEAD: `9f503a0` (version-bump for 4.14.124)
-- production version: `4.14.124`
+- production HEAD: `bc6e963` (version-bump for 4.14.127)
+- production version: `4.14.127`
 - release state: `docs/release/CURRENT_RELEASE_STATE.md` (backend) and `/Users/felipedominguez/Desktop/Nexus Hub/docs/release/CURRENT_RELEASE_STATE.md` (workspace)
 - official workspace root: `/Users/felipedominguez/Desktop/Nexus Hub`
 
-Commits in this release (4.14.123 → 4.14.124):
+Commits in this release (4.14.126 -> 4.14.127):
 
-- `3bf9a37 fix(training): harden local coach profile and equipment planning`
-- `9f503a0 chore: bump version to 4.14.124 [deploy]`
+- `00a1d23 fix(auth): close beta replay and oauth state gaps`
+- `bc6e963 chore: bump version to 4.14.127 [deploy]`
 
 Scope:
 
-- Persisted Training onboarding profile wrapper rows are unwrapped before plan generation.
-- Strength planning supports up to 6 weekly strength sessions where feasible.
-- Weekly session capping removes exact excess instead of over-removing sessions.
-- No-equipment/bodyweight profiles map to bodyweight-safe prescriptions.
-- Romanian deadlift aliases are equipment-adapted consistently.
-- `/api/v1/training/plan/weeks` exposes read-only all-week plan state with sync summaries.
-- v2 risk-based release pipeline is now on `main` and was used for this promotion.
+- Auth and registration closed-beta hardening: Apple nonce replay guard, Telegram OAuth nonce state, Google verified-email account creation/linking guard, email verification attempt cap, and auth-sensitive release classifier routing.
+- iOS auth hardening: Apple raw nonce generation, Keychain/session protections, server-side logout, and auth focused tests.
+- iOS navigation performance: interaction-first tab transitions, lighter tab press feedback, deferred warmups, and Home fallback-card rendering after the first bootstrap attempt so Home does not look blank during navigation.
 
 Validated through promotion:
 
-- pre-push full vitest before source push: 432 files / 6565 tests passed
-- dry-run deploy rehearsal: full verify + build passed, no server mutation
+- pre-push full vitest before source push: 445 files / 6691 tests passed
 - staging deploy: exit 0
-- staging soak: 5 minutes
 - staging smoke: 17/17 passed
-- Training cross-skill staging smoke: passed against staging user `24`
-- staging fixture cleanup: `activeFixturePlans=0`, `activeFixtureFinanceRows=0`
 - local↔staging dist hash match preflight: passed
-- deploy-time full verify: 432 files / 6565 tests passed
-- deploy-time pre-push full vitest for version bump: 432 files / 6565 tests passed
-- prod deploy.sh: rsync → npm ci → pm2 start → 10s health wait → ✅ `Deploy complete! v4.14.124`
+- deploy-time typecheck and build passed
+- deploy-time pre-push full vitest for version bump: 445 files / 6691 tests passed
+- prod deploy.sh: rsync -> npm ci -> pm2 start -> health wait -> `Deploy complete! v4.14.127`
 - promote-to-prod.sh: ✅ `PROMOTE COMPLETE`
-- post-deploy: PM2 `nexus-hub` and `content-engine` online, prod `package.json` reports `4.14.124`
+- post-deploy: PM2 `nexus-hub` and `content-engine` online, prod status portal reports `4.14.127`
+- iOS `main` pushed at `50d2fa7`
+- iOS validation before push: focused navigation/Home tests passed, and physical iPhone rapid bottom-tab switching UI test passed on iPhone Felipe.
 
 ## Previous Production Versions On This Branch
 
+- 4.14.126 (`cf1e5de`) — closed-beta content identity + iOS fixture isolation release
+- 4.14.125 (`f974cb6`) — closed-beta readiness hardening release
+- 4.14.124 (`9f503a0`) — Training coach profile/equipment hardening release
 - 4.14.123 (`396b8f0`) — Training poor-recovery coherence + catalog v2 release
 - 4.14.122 (`a172a9f`) — `fix(training): use rolling week window for volume enforcement` (source commit `e5181fe`)
 - 4.14.121 (`ba2089b`) — version bump
