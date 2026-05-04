@@ -325,6 +325,35 @@ describe('changed-area-classifier engineering-excellence enrichments (2026-05-04
     expect(result.xctest.classes).toContain('Nexus HubTests/TrainingHomeViewStateContractDecodingTests');
   });
 
+  it('routes prompts-only diff into the security suite (ENG-EXC-O3 fix)', () => {
+    // Before this fix, a diff that only touched prompts/*.md was classified
+    // as docs-only AND named `prompt-injection-defense` as a cannot-skip
+    // gate — but emitted ZERO vitest globs. The cannot-skip-gate dashboard
+    // caught the disconnect. The classifier now forces the security suite
+    // to run when HAS_PROMPT fires regardless of HAS_NON_DOC.
+    const raw = execFileSync(
+      'bash',
+      [
+        'scripts/changed-area-classifier.sh',
+        '--json',
+        '--files',
+        'prompts/secretary.md',
+      ],
+      { encoding: 'utf8' },
+    );
+    const result = JSON.parse(raw) as {
+      flags: Record<string, boolean>;
+      cannotSkip: string[];
+      vitest: { mode: string; globs: string[] };
+    };
+
+    expect(result.flags.prompt).toBe(true);
+    expect(result.cannotSkip).toContain('prompt-injection-defense');
+    expect(result.vitest.mode).toBe('focused');
+    expect(result.vitest.globs).toContain('__tests__/security/**/*.test.ts');
+    expect(result.vitest.globs).toContain('__tests__/services/prompt-cleanliness.test.ts');
+  });
+
   it('preserves all new flags as false on unrelated diff (no false positives)', () => {
     const raw = execFileSync(
       'bash',
@@ -347,5 +376,34 @@ describe('changed-area-classifier engineering-excellence enrichments (2026-05-04
     expect(result.flags.deployConfig).toBe(false);
     expect(result.flags.iosNavigation).toBe(false);
     expect(result.flags.iosDto).toBe(false);
+  });
+});
+
+describe('changed-area-classifier cannot-skip dashboard wiring (ENG-EXC-O3)', () => {
+  it('cannot-skip gate dashboard reports all 23 gates wired and PASS verdict', () => {
+    const raw = execFileSync(
+      'bash',
+      ['scripts/cannot-skip-gate-dashboard.sh', '--json', '--no-evidence'],
+      { encoding: 'utf8' },
+    );
+    const result = JSON.parse(raw) as {
+      summary: {
+        total: number;
+        pass: number;
+        fail: number;
+        verdict: 'PASS' | 'FAIL';
+        failedGates: string[];
+      };
+      gates: Array<{ gate: string; pass: boolean }>;
+    };
+
+    expect(result.summary.verdict).toBe('PASS');
+    expect(result.summary.fail).toBe(0);
+    expect(result.summary.total).toBeGreaterThanOrEqual(23);
+    expect(result.summary.pass).toBe(result.summary.total);
+    // Every per-gate row must report pass:true.
+    for (const gate of result.gates) {
+      expect(gate.pass, `gate ${gate.gate} failed wiring`).toBe(true);
+    }
   });
 });

@@ -162,6 +162,8 @@ function isApprovedCurrentOrArchive(file) {
   if (normalized.startsWith(path.join(workspaceRoot, 'docs', 'engineering') + path.sep)) return true;
   if (normalized.startsWith(path.join(backendRoot, 'docs', 'engineering') + path.sep)) return true;
   if (normalized.startsWith(path.join(iosRoot, 'docs', 'engineering') + path.sep)) return true;
+  // ENG-EXC-O8 (2026-05-04): the workspace docs mirror inside engine/.
+  if (normalized.startsWith(path.join(backendRoot, 'docs', '_workspace-mirror') + path.sep)) return true;
   if (normalized.startsWith(path.join(backendRoot, 'docs', 'release') + path.sep)) return true;
   if (normalized.startsWith(path.join(backendRoot, 'docs') + path.sep) && path.dirname(normalized) === path.join(backendRoot, 'docs')) return true;
   if (normalized.startsWith(iosSpecsRoot + path.sep)) return true;
@@ -183,6 +185,70 @@ function isEngineeringStandard(file) {
     || normalized.startsWith(path.join(backendRoot, 'docs', 'engineering') + path.sep)
     || normalized.startsWith(path.join(iosRoot, 'docs', 'engineering') + path.sep)
     || normalized === path.join(workspaceRoot, 'docs', 'agent', 'AGENT_PROCESS_STANDARD.md');
+}
+
+// Engineering-excellence enrichment (2026-05-04, ENG-EXC-O8): the workspace
+// `docs/` folder is not git-tracked. The mirror at
+// engine/docs/_workspace-mirror/ is a one-way snapshot; drift between the
+// workspace source and the mirror is a durability bug. This check warns
+// once if the mirror is stale relative to the workspace.
+const WORKSPACE_MIRROR_ROOT = path.join(backendRoot, 'docs', '_workspace-mirror');
+const WORKSPACE_MIRROR_SOURCES = [
+  { rel: 'CLAUDE.md', src: path.join(workspaceRoot, 'CLAUDE.md') },
+  { rel: 'AGENTS.md', src: path.join(workspaceRoot, 'AGENTS.md') },
+  { rel: 'README.md', src: path.join(workspaceRoot, 'README.md') },
+];
+
+function checkWorkspaceMirrorDrift() {
+  // Walk every doc under workspace docs/ that the mirror is supposed to track.
+  const sources = [...WORKSPACE_MIRROR_SOURCES];
+  const docsRoot = path.join(workspaceRoot, 'docs');
+  if (existsDir(docsRoot)) {
+    function walk(dir) {
+      for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+        if (entry.name === 'archive' || entry.name === '.git') continue;
+        const full = path.join(dir, entry.name);
+        if (entry.isDirectory()) {
+          walk(full);
+        } else if (entry.isFile()
+          && (entry.name.toLowerCase().endsWith('.md')
+            || entry.name === 'release-identity.json')) {
+          const rel = path.relative(workspaceRoot, full);
+          sources.push({ rel, src: full });
+        }
+      }
+    }
+    walk(docsRoot);
+  }
+  for (const { rel, src } of sources) {
+    if (!fs.existsSync(src)) continue;
+    const mirror = path.join(WORKSPACE_MIRROR_ROOT, rel);
+    if (!fs.existsSync(mirror)) {
+      addIssue(
+        'warn',
+        'workspace-mirror-missing',
+        src,
+        1,
+        `Workspace doc has no mirror at engine/docs/_workspace-mirror/${rel}. Run engine/scripts/workspace-docs-mirror.sh.`,
+      );
+      continue;
+    }
+    try {
+      const a = fs.readFileSync(src);
+      const b = fs.readFileSync(mirror);
+      if (!a.equals(b)) {
+        addIssue(
+          'warn',
+          'workspace-mirror-stale',
+          src,
+          1,
+          `Workspace doc differs from mirror at engine/docs/_workspace-mirror/${rel}. Run engine/scripts/workspace-docs-mirror.sh.`,
+        );
+      }
+    } catch {
+      // Read errors are non-fatal here; the mirror script is the source of truth.
+    }
+  }
 }
 
 function validateEngineeringFrontmatter(file, content) {
@@ -256,7 +322,21 @@ const roots = [
 
 const markdownFiles = [...new Set(roots.flatMap((entry) => walkMarkdown(entry.root, entry.followSymlinks).map(normalize)))].sort();
 
+// Run the workspace-mirror drift check once before per-file iteration so
+// the warnings appear at workspace path locations (not mirror paths).
+checkWorkspaceMirrorDrift();
+
+// ENG-EXC-O8 (2026-05-04): the workspace-mirror at engine/docs/_workspace-mirror/
+// is a one-way snapshot of workspace docs. Per-file lints already run on the
+// workspace source; running them again on the mirror produces duplicate
+// warnings. Skip mirrored files from the per-file iteration; the drift check
+// above is the only audit signal that matters for the mirror.
+function isWorkspaceMirror(file) {
+  return normalize(file).startsWith(WORKSPACE_MIRROR_ROOT + path.sep);
+}
+
 for (const file of markdownFiles) {
+  if (isWorkspaceMirror(file)) continue;
   const content = fs.readFileSync(file, 'utf8');
 
   validateEngineeringFrontmatter(file, content);

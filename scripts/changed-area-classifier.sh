@@ -436,6 +436,17 @@ if $HAS_NON_DOC; then
   fi
 fi
 
+# Engineering-excellence enrichment (2026-05-04, ENG-EXC-O3): when only
+# prompts/*.md changed, the diff is treated as docs-only and the entire
+# vitest block above is skipped — even though `prompt-injection-defense`
+# is named as a cannot-skip gate. The cannot-skip-gate-dashboard caught
+# this. Patch: if HAS_PROMPT fired, force the security suite to run.
+if $HAS_PROMPT && [ "$VITEST_MODE" = "skip" ]; then
+  VITEST_MODE="focused"
+  VITEST_GLOBS+=("__tests__/security/**/*.test.ts" "__tests__/services/prompt-cleanliness.test.ts")
+  SKIP_REASON=""
+fi
+
 SKIP_REASON=""
 if [ "$VITEST_MODE" = "skip" ]; then
   if $HAS_DOCS_ONLY; then
