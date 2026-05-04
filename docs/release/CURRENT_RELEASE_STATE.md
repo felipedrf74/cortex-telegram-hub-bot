@@ -1,50 +1,61 @@
 # Backend Current Release State
 
-Last updated: 2026-05-03
+Last updated: 2026-05-04
 
 ## Active Production Release
 
 - Source branch: `main`
-- Production HEAD: `9f503a0`
-- Release source commit: `3bf9a37 fix(training): harden local coach profile and equipment planning`
-- Production version: `4.14.124`
+- Production HEAD: `cf1e5de`
+- Release source commits:
+  - `0fdbaa4 fix(beta): harden content identity gates for closed beta`
+  - `6b72619 test(training): make same-day schedule route deterministic`
+  - `cf1e5de chore: bump version to 4.14.126 [deploy]`
+- iOS main shipped for this QA pass: `f327942 fix(ios): isolate training fixtures for closed beta QA`
+- Production version: `4.14.126`
 - Official workspace root: `/Users/felipedominguez/Desktop/Nexus Hub`
 
 ## Scope
 
-Training reliability and release-pipeline promotion:
+Closed-beta identity, content-personalization, and iOS fixture-isolation hardening:
 
-- persisted Training onboarding profile wrapper rows are unwrapped before plan generation
-- strength planning supports up to 6 weekly strength sessions where feasible
-- weekly session capping removes exact excess instead of over-removing sessions
-- no-equipment/bodyweight profiles map to bodyweight-safe prescriptions
-- Romanian deadlift aliases are equipment-adapted consistently
-- `/api/v1/training/plan/weeks` exposes read-only all-week plan state with sync summaries
-- v2 risk-based release pipeline is now on `main` and used for this promotion
+- removed founder-shaped defaults from Content Creation agent prompts, topic workflow, caption writer, orchestrator, Reddit search, and gap-finder paths
+- extended the closed-beta identity scanner with broader founder/ideology/content-niche leak patterns
+- promoted the closed-beta identity scan to a strict PR gate
+- added content-agent neutrality and classifier regression coverage
+- fixed the Training same-day route test so it is deterministic under the current same-day scheduling floor
+- isolated iOS Training local-smoke fixture bootstrap from real account/session, subscription, task, dashboard, and HealthKit warmups
+- added stable iOS accessibility identifiers for Skills and Training fixture workflows used in closed-beta QA
 
 ## Validation Before Promotion
 
-- `npm run verify`: passed, 432 files / 6565 tests
-- Deploy-time full validation: passed, 432 files / 6565 tests
-- Build: passed
-- Staging deploy: passed on `4.14.123`
-- Generic staging smoke: 17/17 passed
-- Training cross-skill staging smoke: passed against staging user `24`
-- Staging fixture cleanup: verified `activeFixturePlans=0`, `activeFixtureFinanceRows=0`
-- Production promote: completed at `4.14.124`
+- Backend `main` pre-push full validation: passed, 442 files / 6675 tests
+- Deploy-time validation: typecheck passed; build passed
+- Staging deploy: passed on `4.14.125`
+- Generic staging smoke: 17/17 passed before promotion
+- Production promote: completed at `4.14.126`
 - Production health: content engine OK, status portal OK, bot online, PM2 `nexus-hub` and `content-engine` online
+- iOS `main` push: completed at `f327942`
+- iOS physical-device validation before push: build-for-testing passed on iPhone Felipe, `TrainingFixtureBypassUITests` passed 11/11, focused unit/cache/security suite passed with one expected device-sandbox skip
 
 ## Evidence
 
-- Generic staging smoke evidence: `docs/release/smoke-evidence/staging-smoke-3bf9a37-20260503T151559Z.json`
-- Training cross-skill smoke evidence: `docs/release/smoke-evidence/training-cross-skill-staging-remote-3bf9a37-20260503T151447Z.json`
-- Training smoke markdown: `docs/training/cross-skill-staging-smoke-results.md`
+- Staging smoke evidence:
+  - `docs/release/smoke-evidence/staging-smoke-6b72619-20260504T081941Z.json`
+  - `docs/release/smoke-evidence/staging-smoke-6b72619-20260504T082011Z.json`
+  - `docs/release/smoke-evidence/staging-smoke-6b72619-20260504T082156Z.json`
+  - `docs/release/smoke-evidence/staging-smoke-6b72619-20260504T082234Z.json`
+- Backend QA report: `docs/qa/QA_BACKEND_REPORT.md`
+- iOS QA report: `/Users/felipedominguez/Desktop/Nexus Hub/ios/docs/qa/QA_IOS_REPORT.md`
+- Release gate report: `docs/qa/QA_RELEASE_GATE_REPORT.md`
+- Closed-beta runbook: `docs/release/closed-beta-runbook.md`
+- Portal scope policy: `docs/release/portal-scope-policy.md`
 
 ## Required Post-Promotion Checks
 
 Production-safe validation still recommended with Felipe, Jaqueline, and nexushubbot:
 
-- readiness/body battery values do not cross users
+- readiness/body battery values do not cross users after cold start or tab switching
 - Garmin shows connected only for users with real scoped Garmin session material
 - Jaqueline's `Entrada` list opens with the same task truth as its list count
-- TestFlight Training creation/review confirms the new backend contract renders correctly on device
+- TestFlight Training creation/review confirms the latest backend contract renders correctly on device
+- Content Creation beta smoke confirms no founder/operator niche defaults appear for non-founder accounts
