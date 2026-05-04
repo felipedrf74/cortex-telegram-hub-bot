@@ -37,6 +37,17 @@ export interface AuthSessionPayload {
     firstName: string;
     lastName?: string;
     language: string;
+    /**
+     * AUTH-O2 follow-up (2026-05-04). Returning these on every
+     * register/login response (not only on `/auth/me`) means the
+     * iOS app can drive the post-registration email-verification
+     * sheet without an extra round-trip. Existing iOS clients
+     * ignore unknown fields per the iOS DTO standard, so this is
+     * a purely additive change.
+     */
+    email?: string;
+    emailVerified?: boolean;
+    authProvider?: string;
   };
 }
 
@@ -82,14 +93,40 @@ export function createAuthSessionAndRegisterDevice(input: CreateAuthSessionInput
       last_active_at = datetime('now')
   `).run(input.userId, input.deviceId, input.deviceName, input.pushToken, refreshTokenHash);
 
+  // AUTH-O2 follow-up (2026-05-04): also pull email_verified +
+  // auth_provider so the registration response can carry them.
+  // Without these, a freshly-registered email user has no
+  // `emailVerified` flag locally until their NEXT app launch
+  // (when AuthManager fires /auth/me rehydration), which means
+  // the post-registration email-verification sheet wouldn't
+  // present until the second cold launch. The values are
+  // optional in the response shape and older iOS clients ignore
+  // unknown fields by contract.
+  let registeredUserEmail: string | undefined;
+  let registeredUserEmailVerified: boolean | undefined;
+  let registeredUserAuthProvider: string | undefined;
   try {
-    const userRow = db.prepare('SELECT email FROM users WHERE id = ?').get(input.userId) as { email: string } | undefined;
-    if (userRow?.email) {
+    const userRow = db
+      .prepare(
+        'SELECT email, email_verified AS emailVerified, auth_provider AS authProvider FROM users WHERE id = ?',
+      )
+      .get(input.userId) as
+        | { email: string | null; emailVerified: number | null; authProvider: string | null }
+        | undefined;
+    if (userRow) {
+      registeredUserEmail = userRow.email ?? undefined;
+      registeredUserEmailVerified =
+        typeof userRow.emailVerified === 'number'
+          ? Boolean(userRow.emailVerified)
+          : undefined;
+      registeredUserAuthProvider = userRow.authProvider ?? undefined;
+    }
+    if (registeredUserEmail) {
       const { getFounderPlan, syncFounderSubscription } = require('./founders');
-      const founderPlan = getFounderPlan(userRow.email);
+      const founderPlan = getFounderPlan(registeredUserEmail);
       if (founderPlan) {
-        syncFounderSubscription(userRow.email, founderPlan);
-        logger.info({ userId: input.userId, email: userRow.email, plan: founderPlan }, 'Founder subscription granted on registration');
+        syncFounderSubscription(registeredUserEmail, founderPlan);
+        logger.info({ userId: input.userId, email: registeredUserEmail, plan: founderPlan }, 'Founder subscription granted on registration');
       }
     }
   } catch { /* founders table may not exist yet */ }
@@ -115,6 +152,13 @@ export function createAuthSessionAndRegisterDevice(input: CreateAuthSessionInput
       firstName: input.user.first_name || 'User',
       lastName: input.user.last_name || undefined,
       language: input.user.language || 'en',
+      // AUTH-O2 follow-up (2026-05-04): purely additive fields.
+      // Older iOS builds ignore them by contract; newer builds
+      // use them to drive the post-registration verification
+      // gate without an extra /auth/me round-trip.
+      email: registeredUserEmail,
+      emailVerified: registeredUserEmailVerified,
+      authProvider: registeredUserAuthProvider,
     },
   };
 }

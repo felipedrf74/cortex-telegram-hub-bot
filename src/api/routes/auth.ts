@@ -71,6 +71,20 @@ function authCopy(language: Lang, ptPT: string, ptBR: string, enUS: string): str
   return enUS;
 }
 
+function isValidIosEmailSignupInvite(inviteCode: unknown): boolean {
+  const normalized = String(inviteCode ?? '').trim().toLowerCase();
+  if (!normalized) return false;
+
+  const validCodes = [
+    config.ios.inviteCode,
+    config.ios.ownerCode,
+  ]
+    .map((code) => String(code ?? '').trim().toLowerCase())
+    .filter(Boolean);
+
+  return validCodes.includes(normalized);
+}
+
 function passwordResetDevTokenAllowed(): boolean {
   return process.env.PASSWORD_RESET_DEV_TOKEN === '1'
     && process.env.NODE_ENV !== 'production'
@@ -680,12 +694,25 @@ export function authRoutes(): Router {
   // ── Register with Email + Password ────────────────────────────────
   router.post('/register/email', asyncHandler(async (req: Request, res: Response) => {
     const language = resolveAuthLanguage(req);
-    const { email, password, firstName, deviceId, deviceName } = req.body;
+    const { email, password, firstName, deviceId, deviceName, inviteCode } = req.body;
     if (!email || !password || !firstName || !deviceId) {
       sendError(res, 'BAD_REQUEST', authCopy(language,
         'email, password, firstName e deviceId são obrigatórios',
         'email, password, firstName e deviceId são obrigatórios',
         'email, password, firstName, and deviceId are required'));
+      return;
+    }
+
+    // Closed beta posture: email/password sign-up is still invite-gated.
+    // Do not call `resolveIosInviteRegistrationTarget()` here: that helper
+    // provisions invite-code sandbox users as a side effect. Email sign-up
+    // only needs a side-effect-free validity check before creating the real
+    // email user below.
+    if (!isValidIosEmailSignupInvite(inviteCode)) {
+      sendError(res, 'INVALID_INVITE', authCopy(language,
+        'Código de convite inválido',
+        'Código de convite inválido',
+        'Invalid invite code'), 403);
       return;
     }
 
@@ -1097,10 +1124,18 @@ export function authRoutes(): Router {
     const { token, expiresAt } = issuePasswordResetToken(user.id, normalized);
 
     // Build the reset URL. PASSWORD_RESET_BASE_URL is operator-configured;
-    // fall back to a generic web origin so the URL is never empty.
+    // fall back to the API host because the backend now serves the
+    // /auth/password-reset destination page itself (see
+    // `engine/src/portal/auth/password-reset.html` +
+    // `engine/src/portal/static-routes.ts`). Same-origin POST means
+    // the page can hit /api/v1/auth/password-reset/confirm without
+    // any CORS preflight. If a dedicated user-facing web origin
+    // (e.g. https://app.nexushub.me) ships later, set
+    // PASSWORD_RESET_BASE_URL to point at it and this default
+    // becomes the always-on fallback.
     const baseUrl = process.env.PASSWORD_RESET_BASE_URL
       || process.env.WEB_BASE_URL
-      || 'https://app.nexushub.me';
+      || 'https://api.nexushub.me';
     const resetUrl = `${baseUrl.replace(/\/+$/, '')}/auth/password-reset?token=${encodeURIComponent(token)}`;
 
     auditPasswordResetEvent({

@@ -64,8 +64,20 @@ describe('portal static routes', () => {
 
     registerPortalStaticRoutes(app as any, createTempPortalDir());
 
+    // The order matters because Express resolves the FIRST matching
+    // GET handler — `/auth/password-reset` MUST be registered before
+    // any catch-all dashboard route would intercept it. Today the
+    // dashboard routes are exact-match (`/`, `/admin`, `/portal`)
+    // so order is documentation, not load-bearing — but we pin it
+    // here so a future "everything not matched goes to dashboard"
+    // refactor doesn't accidentally swallow the password-reset path.
+    //
+    // The `/auth/password-reset` mount was added 2026-05-04 as the
+    // AUTH-O2 follow-up: closes the gap where the email link from
+    // /api/v1/auth/password-reset/request had no destination.
     expect(Array.from(routes.keys())).toEqual([
       '/landing-preview',
+      '/auth/password-reset',
       '/',
       '/admin',
       '/portal',

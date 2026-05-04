@@ -479,6 +479,33 @@ describe('Auth invite registration', () => {
     expect(res.body.error.message).toBe('E-mail ou senha inválidos');
   });
 
+  it('keeps email/password registration behind the closed-beta invite gate', async () => {
+    const res = await dispatchAuth('/register/email', {
+      email: 'new-email-user@example.com',
+      password: 'correct-horse-battery',
+      firstName: 'New',
+      deviceId: 'ios-device-register-missing-invite',
+    });
+
+    expect(res.statusCode).toBe(403);
+    expect(res.body.ok).toBe(false);
+    expect(res.body.error.code).toBe('INVALID_INVITE');
+  });
+
+  it('rejects invalid invite codes during email/password registration', async () => {
+    const res = await dispatchAuth('/register/email', {
+      email: 'new-email-user@example.com',
+      password: 'correct-horse-battery',
+      firstName: 'New',
+      deviceId: 'ios-device-register-invalid-invite',
+      inviteCode: 'NOT_THE_BETA_CODE',
+    });
+
+    expect(res.statusCode).toBe(403);
+    expect(res.body.ok).toBe(false);
+    expect(res.body.error.code).toBe('INVALID_INVITE');
+  });
+
   it('does not reveal whether an email already exists during email registration', async () => {
     testDb.prepare(`
       INSERT INTO users (email, password_hash, first_name, language, auth_provider, daily_cost_limit_usd)
@@ -490,6 +517,7 @@ describe('Auth invite registration', () => {
       password: 'correct-horse-battery',
       firstName: 'Registered',
       deviceId: 'ios-device-register-duplicate',
+      inviteCode: 'LOCALBETA_TEST',
     });
 
     expect(res.statusCode).toBe(400);
