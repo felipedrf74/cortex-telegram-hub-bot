@@ -1,11 +1,11 @@
 {
-  "generatedAt": "2026-05-04T18:41:06Z",
+  "generatedAt": "2026-05-04T18:47:36Z",
   "backend": {
-    "path": "/Users/felipedominguez/Desktop/Custom Connectors/Cortex/cortex-telegram-hub-bot",
-    "branch": "feature/closed-beta-backlog-drain-codex-validation",
-    "commit": "11d071b",
-    "dirtyState": "clean",
-    "packageVersion": "4.14.127",
+    "path": "/private/tmp/nexus-engine-prod-main.kVEmfI",
+    "branch": "main",
+    "commit": "bfba63b",
+    "dirtyState": "unknown",
+    "packageVersion": "4.14.128",
     "migrationCount": "115"
   },
   "ios": {
