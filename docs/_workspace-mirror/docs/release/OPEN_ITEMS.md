@@ -359,7 +359,7 @@ NO migration. All four new modules are pure-derivation, on-demand. The lint runs
 | TR-EC-O11 | P1 | Codex validation found same-day plan creation could schedule today's preferred time in the past. Fixed locally on `feature/training-expert-coach-codex-validation`; requires review/merge before staging. |
 | TR-EC-O12 | P1 | Codex validation found persisted plan-linter sessions were missing scheduled dates, so exact-date lint rules were not reliable through real persistence. Fixed locally on `feature/training-expert-coach-codex-validation`; requires review/merge before staging. |
 | TR-EC-O13 | P1 | Plan-linter blockers are still advisor-only: the API creates the plan with `planLint.status:"fail"`. Decide strict/repair behavior before closed beta. |
-| TR-EC-O14 | P1 | iOS `TrainingFixtureBypassUITests/test_noPlanFixture_createPlanSheetStrengthStepperAccepts5Sessions` failed because `training-action-createPlan` did not render. Fix the no-plan fixture/create-plan CTA path before claiming A-I workflow validation. |
+| TR-EC-O14 | P1 | **CLOSED / superseded by the iOS readiness pass.** The `training-action-createPlan` accessibility path was fixed and `TrainingFixtureBypassUITests/test_noPlanFixture_createPlanSheetStrengthStepperAccepts5Sessions` was re-verified on simulator and physical iPhone Felipe. Full A-I workflow validation remains tracked separately under `TR-EC-O10` / `TR-EC-IOS-O3`. |
 
 ### Closed-beta readiness implication
 
