@@ -86,7 +86,7 @@ Codex validation results:
 - Broad classifier-expanded security/training/auth/portal sweep: 134 files / 1440 tests PASS.
 - Cannot-skip dashboard: 23/23 PASS.
 - Workspace mirror check: PASS after refresh.
-- `npm run docs:audit`: 486 issues / 381 files.
+- `npm run docs:audit`: 486 issues / 382 files (the +1 file is the Codex validation report under `docs/archive/`).
 - Revert-before-fix invariant for `627e0e4`: expected failure after reverting code while restoring tests (21/22 failed), confirming the tests pin the auth-hardening behavior.
 
 ### What still requires operator action
