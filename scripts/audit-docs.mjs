@@ -76,6 +76,12 @@ const testCountPattern =
   /\b(?:\d{1,4}\s+files?\s*\/\s*)?\d{1,5}\s*\/\s*\d{1,5}\s+(?:tests?|PASS|passed)\b|\b\d{2,5}\s+tests?\b|\b\d{2,5}\s*\/\s*\d{2,5}\b/i;
 const commitHashPattern = /\b[0-9a-f]{7,40}\b/gi;
 const markdownLinkPattern = /\[[^\]]*]\(([^)#?]+\.md)(?:#[^)]+)?\)|`([^`]+\.md)`/g;
+const requiredEngineeringFrontmatter = [
+  /^Status:\s*\S+/im,
+  /^Owner:\s*\S+/im,
+  /^Last verified:\s*\d{4}-\d{2}-\d{2}/im,
+  /^Update policy:\s*\S+/im,
+];
 
 const issues = [];
 
@@ -171,6 +177,38 @@ function isCurrentLike(file) {
     || normalized.startsWith(path.join(backendRoot, 'docs', 'qa') + path.sep);
 }
 
+function isEngineeringStandard(file) {
+  const normalized = normalize(file);
+  return normalized.startsWith(path.join(workspaceRoot, 'docs', 'engineering') + path.sep)
+    || normalized.startsWith(path.join(backendRoot, 'docs', 'engineering') + path.sep)
+    || normalized.startsWith(path.join(iosRoot, 'docs', 'engineering') + path.sep)
+    || normalized === path.join(workspaceRoot, 'docs', 'agent', 'AGENT_PROCESS_STANDARD.md');
+}
+
+function validateEngineeringFrontmatter(file, content) {
+  if (!isEngineeringStandard(file)) return;
+
+  const header = content.split('\n').slice(0, 16).join('\n');
+  const missing = requiredEngineeringFrontmatter
+    .filter((pattern) => !pattern.test(header))
+    .map((pattern) => {
+      if (String(pattern).includes('Status')) return 'Status';
+      if (String(pattern).includes('Owner')) return 'Owner';
+      if (String(pattern).includes('Last verified')) return 'Last verified';
+      return 'Update policy';
+    });
+
+  if (missing.length > 0) {
+    addIssue(
+      'warn',
+      'engineering-standard-frontmatter-missing',
+      file,
+      1,
+      `Engineering standard is missing required frontmatter: ${missing.join(', ')}.`,
+    );
+  }
+}
+
 function lineNumber(content, index) {
   return content.slice(0, index).split('\n').length;
 }
@@ -220,6 +258,8 @@ const markdownFiles = [...new Set(roots.flatMap((entry) => walkMarkdown(entry.ro
 
 for (const file of markdownFiles) {
   const content = fs.readFileSync(file, 'utf8');
+
+  validateEngineeringFrontmatter(file, content);
 
   if (!isApprovedCurrentOrArchive(file)) {
     addIssue(
