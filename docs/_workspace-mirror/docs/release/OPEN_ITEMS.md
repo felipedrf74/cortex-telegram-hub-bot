@@ -7,6 +7,67 @@ Update policy: update when a P0/P1/P2/P3 item opens or closes. Older sections re
 
 Last updated: 2026-05-04
 
+## Backlog drain pass — frontmatter hygiene + archive sweep + mobility catalog (2026-05-04 night, post-merge)
+
+Engine branch: `feature/engineering-excellence-architecture-standards` @ `612cf52` (NOT pushed).
+iOS branch: `feature/engineering-excellence-architecture-standards` @ `ced1cb4` (NOT pushed).
+Backup tags preserved on both repos.
+
+Verdict: **READY_TO_OPEN_PR — ALL P0/P1/P2/P3 backlog items closed except open-beta TestFlight E5 (operator-action only).**
+
+### What I shipped (commits `61f974a` + `626067b` + `612cf52` + `ced1cb4`)
+
+**P3 frontmatter hygiene — CLOSED (`61f974a` + `ced1cb4`):**
+- Added `Status: / Owner: / Last verified: / Update policy:` frontmatter to 22 high-value canonical docs (workspace AGENTS/CLAUDE/DOCS_INDEX/OPERATING_CONTEXT, engine 9 root docs, engine 7 release docs, engine QA report, iOS QA report).
+- Codex's `audit-docs.mjs` engineering-frontmatter check already enforces the shape on `engineering/` paths; this extension unifies the shape across all canonical surfaces.
+- `audit-docs.mjs` baseline went from 486 → 485 issues / 382 files (1 BELOW the frozen baseline of 486).
+
+**P3 archive sweep — CLOSED (`626067b`):**
+- Moved `engine/docs/training/training-release-fixes.md` → `engine/docs/release/archive/2026-04/training/` for consistency with the 8 already-archived release-candidate-* and production-release-final-status docs.
+- Net effect: `markdown-outside-approved-current-or-archive-location` 227 → 226; `duplicate-or-scattered-current-verdict` 36 → 35.
+
+**P2 training mobility-variant catalog — CLOSED (`612cf52`):**
+- Added `cat_cow` and `childs_pose` to `engine/src/services/coach-kernel/knowledge/entities/exercises.json`. Catalog now has 12 mobility-pattern exercises.
+- New module `engine/src/services/coach-kernel/mobility-recovery-builder.ts` (247 LOC) with two-pass selection (greedy-novel-buckets, then fill) producing 4-5 distinct exercises spanning ≥3 distinct `warmupNeeds`. Estimator-aware: per-rep math mirrors `session-coherence.ts` exactly. Falls back to null when catalog can't span 3 buckets — caller uses empty-block + shrink (existing behavior).
+- Wired into `engine/src/services/coach-kernel/poor-recovery-variation.ts` mobility-variant branch.
+- Effect: poor-recovery-day mobility sessions now claim AND deliver 18-25 min (was: empty-block shrunk to ~13 min).
+- 16 new pin tests in `__tests__/services/coach-kernel-mobility-recovery-builder.test.ts`.
+
+### Verification
+
+- `npx tsc --noEmit`: clean.
+- `__tests__/services/coach-kernel-mobility-recovery-builder.test.ts`: **16/16 PASS** (constants lock-step, candidate filter, builder bounds, integration with `estimateStrengthSessionMinutes`).
+- Touch-risk regression: poor-recovery-variation 8/8 PASS, session-coherence 27/27 PASS, plan-linter 23/23 PASS, training-plan-persistence 14/14 PASS.
+- Pre-commit hook (classifier-driven, mobility commit triggered focused training sweep): **893/893 PASS** across 69 files.
+- `npm run docs:audit`: 485 / 382 (1 BELOW the frozen-baseline budget of 486 ± 5).
+- Workspace mirror: in sync.
+
+### Closure summary (cumulative across all 2026-05-04 sessions)
+
+| ID | Severity | Status |
+|---|---|---|
+| AUTH-O2 | P0 | **CLOSED** |
+| AUTH-O4..O12 | P1 | **CLOSED** (8 items, single batch + Codex hardening) |
+| AUTH-CX-O3 | P3 | **CLOSED** (`2688b23` docs softening) |
+| TR-EC-O10 / TR-EC-IOS-O3 | P1 | **CLOSED on physical iPhone E3** |
+| TR-EC-O11/O12 | P1 | SHIPPED in main 4.14.128 |
+| TR-EC-O13 | P1 | DECIDED + telemetry |
+| TR-EC-IOS-O1/O2 | P1 | PRE-EXISTING / DECIDED |
+| ENG-EXC-O6/O7/O9/O10 | P2/P3 | CLOSED |
+| ENG-EXC-CX-O5/O6 | P2 | CLOSED |
+| TR-EC-CX-O1 | P2 | REFUTED + closed (clean-simulator rerun) |
+| **P3 frontmatter hygiene** | **P3** | **CLOSED** (this pass) |
+| **P3 archive sweep** | **P3** | **CLOSED** (this pass) |
+| **P2 training mobility-variant catalog** | **P2** | **CLOSED** (this pass) |
+
+### What still requires operator action
+
+1. **Open the engine PR** from `feature/engineering-excellence-architecture-standards` (24 commits since main `4da8fce`/4.14.128). Backup tag preserved.
+2. **Open the iOS PR** from `feature/engineering-excellence-architecture-standards` (3 commits since main).
+3. **Open-beta gate (E5)**: signed TestFlight walk-through with the new AUTH flows when ready. Closed-beta is fully satisfied by the E3 evidence in `engine/docs/release/testflight-evidence/`.
+
+---
+
 ## Closed-beta auth + training + engineering closeout — Physical iPhone E3 closure (2026-05-04 late night)
 
 Original branch: `feature/engineering-excellence-architecture-standards` @ `73b5c6a` (Claude initial closeout).
