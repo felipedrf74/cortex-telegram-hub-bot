@@ -39,6 +39,16 @@ vi.mock('../../src/services/database', () => ({
   }),
 }));
 
+// AUTH-O12 (closed-beta-auth-hardening, 2026-05-04): the portal token
+// enforcement now emits `portal.auth` audit rows on every branch
+// (success / failure with typed reasons). Without this stub, those
+// audit-trail INSERTs would route into the same generic `mockDbRun`
+// spy below and pollute the route-level scope assertions. Stubbing
+// `logAudit` keeps the spy focused on actual route DB writes.
+vi.mock('../../src/services/audit-trail', () => ({
+  logAudit: vi.fn(),
+}));
+
 async function fetchJson(
   app: express.Express,
   method: 'GET' | 'POST' | 'PATCH' | 'DELETE',

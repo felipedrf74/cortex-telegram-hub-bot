@@ -206,7 +206,15 @@ describe('AUTH-O2 password reset — request', () => {
     const res = await dispatch('/password-reset/request', { email: 'unknown@example.com' });
     expect(known.statusCode).toBe(200);
     expect(res.statusCode).toBe(200);
-    expect(known.body).toEqual(res.body);
+    // Anti-enumeration assertion: known + unknown email responses must
+    // be byte-identical EXCEPT for the per-request `timestamp` field
+    // (set by `apiSuccess()` envelope; differs by milliseconds between
+    // two sequential calls under load). Strip timestamp before comparing.
+    const stripTimestamp = (body: any) => {
+      const { timestamp: _ignored, ...rest } = body;
+      return rest;
+    };
+    expect(stripTimestamp(known.body)).toEqual(stripTimestamp(res.body));
     expect(known.body.data.devToken).toBeUndefined();
     expect(res.body.ok).toBe(true);
     const rows = testDb.prepare('SELECT COUNT(*) AS n FROM password_reset_tokens').get() as any;
