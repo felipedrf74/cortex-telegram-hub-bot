@@ -31,9 +31,10 @@ candidate cross-tenant attack surface. The four tenants of focus:
 
 The 4.14.118-class incident (`prompts/secretary.md` literally said "You
 are Felipe's personal assistant…" and was used for every tenant) closed
-threat #2 at the prompt layer. The 4.14.127 auth-hardening pass closed
-threat #4 family items. The standard below is what must hold to prevent
-all four.
+threat #2 at the prompt layer. The 4.14.127 through 4.14.129 auth
+hardening passes closed the known threat #4 P0/P1 backlog items in
+`docs/release/OPEN_ITEMS.md`; the standard below is what must continue
+to hold to prevent all four classes from returning.
 
 ## 2. Auth + session contract (must)
 
@@ -56,10 +57,10 @@ all four.
 
 1. **Access tokens are JWT-signed, 7-day TTL.** Acceptable for closed
    beta; revisit before open beta (see AUTH-O15).
-2. **Refresh tokens are stored hashed at rest.** AUTH-O4 still open —
-   plaintext storage in `ios_devices.refresh_token` is the deferred fix.
-   The schema field exists; the hash-at-rest migration coordinates with
-   active sessions.
+2. **Refresh tokens are stored hashed at rest.** AUTH-O4 is closed:
+   refresh tokens use SHA-256 hashes at rest, legacy plaintext rows are
+   backfilled at startup, and row-count preservation is covered by
+   auth-route tests.
 3. **Refresh rotation includes theft detection.** When a refresh token is
    used, the previous one is invalidated; if the previous one is then
    used again, all sessions for that user are revoked.
@@ -87,8 +88,10 @@ all four.
    `GoogleAccountLinkRequiresVerificationError` → HTTP 409.
 6. **Telegram OAuth state nonce binding.** State is `tg:<userId>:<nonce>`
    backed by the existing nonce store. Legacy numeric state is rejected.
-7. **No Apple `@privaterelay.appleid.com` email linking** (AUTH-O8 still
-   open). Defensive check planned.
+7. **No Apple `@privaterelay.appleid.com` email linking.** AUTH-O8 is
+   closed: private-relay Apple emails are treated as ambiguous for
+   cross-provider linking and require a safer account path instead of
+   automatic merge.
 
 ### Email + password
 
@@ -176,10 +179,9 @@ is the gold-standard pattern. Copy that shape.
 
 1. **`logAudit(...)` rows exist for every auth event.** Login success,
    login failure (per-reason), register success, register rejection,
-   provider link, provider unlink, password change, email verification,
-   logout, account suspension. AUTH-O6 and AUTH-O12 still open for
-   provider-link audit and portal-login audit; close before broad cohort
-   sign-up.
+   provider link, provider unlink, password reset/change, email
+   verification, logout, portal auth, account suspension. AUTH-O6 and
+   AUTH-O12 are closed and pinned by auth-route / audit-trail tests.
 2. **Audit rows do NOT contain raw secrets.** Hashed email, redacted
    provider id, user id, IP — yes. Raw email, raw provider token, raw
    password — no.
@@ -189,13 +191,13 @@ is the gold-standard pattern. Copy that shape.
 ## 7. Rate limits and abuse controls (must)
 
 1. **Auth routes have IP-bucket rate limits.** Login, register, password
-   reset (when AUTH-O2 lands) — all rate-limited.
-2. **Per-account lockout after failed attempts.** AUTH-O7 still open;
-   distributed credential-stuffing across many IPs is currently unbounded
-   per account. Plan: 10-attempt 15-min lockout via
-   `failed_login_attempts` table.
-3. **Portal `/api/*` rate limit.** AUTH-O10 still open; portal does not
-   currently mount `rateLimitMiddleware`. Plan: 20 req/min/IP for portal.
+   reset request/confirm, refresh, and provider-link paths are all routed
+   through auth-sensitive rate limits.
+2. **Per-account lockout after failed attempts.** AUTH-O7 is closed:
+   `failed_login_attempts` enforces 10 attempts / 15-minute sliding
+   window / 15-minute lockout by user id before password hash comparison.
+3. **Portal `/api/*` rate limit.** AUTH-O10 is closed: portal API paths
+   have a portal-scoped rate limit that excludes iOS `/api/v1/*` traffic.
 4. **Cost guardrails enforce daily AI spend caps** globally and per-user.
 
 ## 8. Secrets and logging (must)

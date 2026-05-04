@@ -7,6 +7,30 @@ Update policy: update when a P0/P1/P2/P3 item opens or closes. Older sections re
 
 Last updated: 2026-05-04
 
+## Engineering excellence Codex validation refresh (2026-05-04 late)
+
+Codex validation branch: `feature/engineering-excellence-codex-validation-20260504`.
+Validation report: `docs/archive/2026-05/engineering-excellence-codex-validation-20260504/engineering-excellence-codex-validation.md`.
+
+Verdict: **PASS WITH CONDITIONS** — standards/classifier layer verified; Codex fixed documentation drift in current release state and security standards. No runtime P0/P1 issue found in this engineering-standards pass.
+
+### Validation delta
+
+| ID | Severity | Status | Description |
+|---|---|---|---|
+| ENG-EXC-CX-O7 | P2 | **FIXED** | `CURRENT_RELEASE_STATE.md` still described 4.14.127 after the 4.14.129 production/staging align. Codex refreshed release scope/status and mirrored the workspace doc into engine. |
+| ENG-EXC-CX-O8 | P2 | **FIXED** | `security-and-data-isolation-standard.md` still called AUTH-O4/O6/O7/O8/O10/O12 open after OPEN_ITEMS closed them. Codex updated the canonical standard to describe the current permanent controls. |
+| ENG-EXC-CX-O9 | P3 | **FIXED** | Agent-process issue-ledger example reused live AUTH-O1/AUTH-O2 IDs and looked like stale state. Codex made the sample IDs generic and clarified generated identity vs manual rollout summary rules. |
+
+### Evidence
+
+- `npm run docs:audit`: **487 issues / 384 files** (within frozen baseline budget; +1 archive report).
+- `engine/scripts/workspace-docs-mirror.sh --check`: PASS.
+- `npx tsc --noEmit`: PASS.
+- `__tests__/scripts/changed-area-classifier.test.ts`: PASS.
+- `engine/scripts/cannot-skip-gate-dashboard.sh --json --no-evidence`: PASS.
+- Representative routed suites for logger/secrets, scheduler, notifications, health integrations, rate limits, audit/admin scope, config/deploy health, prompt cleanliness, and P0 chat identity: PASS.
+
 ## Backlog drain pass — frontmatter hygiene + archive sweep + mobility catalog (2026-05-04 night, post-merge)
 
 Engine branch: `feature/engineering-excellence-architecture-standards` @ `9a64df4` (NOT pushed).

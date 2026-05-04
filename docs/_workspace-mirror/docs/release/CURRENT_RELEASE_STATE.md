@@ -17,41 +17,50 @@ Last updated: 2026-05-04
 
 - Repo: `engine`
 - Workspace HEAD / version / migrations / dirty state: see `docs/release/release-identity.md`
-- Production status (last manual update 2026-05-04): promoted via `./scripts/promote-to-prod.sh`, health-checked, both `nexus-hub` and `content-engine` PM2 processes online at version `4.14.127`.
+- Production status (last manual update 2026-05-04): promoted via `./scripts/promote-to-prod.sh`, health-checked, both `nexus-hub` and `content-engine` PM2 processes online at version `4.14.129`.
 
-### Commits in this release (4.14.126 -> 4.14.127)
+### Commits in this release (4.14.128 -> 4.14.129)
 
-- `00a1d23 fix(auth): close beta replay and oauth state gaps`
-- `bc6e963 chore: bump version to 4.14.127 [deploy]`
+- Source merge: closed-beta backlog/auth/training/engineering closeout merged to `main`.
+- Deploy bump: backend package version advanced to `4.14.129`.
 
 ### Scope of this release
 
-- **Auth hardening**: Apple nonce replay guard, Telegram OAuth nonce state, Google verified-email account creation/linking guard, email verification attempt cap, and auth-sensitive release classifier routing.
-- **iOS auth hardening**: Apple raw nonce generation, Keychain/session protections, server-side logout, and focused auth tests.
-- **iOS navigation responsiveness**: interaction-first tab transitions, lighter tab press feedback, deferred warmups, and Home fallback-card rendering after the first bootstrap attempt.
+- **Auth closeout**: password reset, refresh-token hashing/backfill, per-account lockout, provider/portal audit rows, portal API rate limits, Apple private-relay defensive linking, and extended `/auth/me` shape.
+- **Training closeout**: mid-week Training scheduling and plan-linter persistence fixes from the expert-coach validation branch are in `main`.
+- **Engineering excellence closeout**: classifier dashboard, workspace docs mirror, docs-audit baseline policy, TestFlight evidence pattern, standard deprecation workflow, and mobility-variant catalog work landed through the closed-beta backlog drain.
+- **iOS auth/navigation hardening**: Apple raw nonce generation, Keychain/session protections, server-side logout, fixture isolation, navigation responsiveness, and focused auth/training tests are reflected in the iOS mainline history.
 
 ### Validation
 
 - Closed-beta identity scan: strict mode passed with 0 flags.
 - `npx tsc --noEmit`: passed.
-- Backend `main` pre-push full vitest: **445 files / 6691 tests passed**.
+- Backend `main` pre-push full vitest: **448 files / 6743 tests passed**.
 - Deploy-time validation: typecheck passed and build passed.
 - Staging deploy: passed.
 - Staging smoke: **17/17 passed**.
 - Production health check (deploy.sh built-in): passed.
-- Production version assertion: `4.14.127` ✓
+- Production version assertion: `4.14.129` ✓
 - PM2 nexus-hub: online ✓
 - PM2 content-engine: online ✓
 
 ## iOS
 
 - Repo: `ios`
-- Branch: `main`
-- Current commit: `f327942 fix(ios): isolate training fixtures for closed beta QA`
+- Release source branch: `origin/main` (local feature branches may be checked
+  out for validation; use git for the exact current source SHA).
+- Current shipped-source focus: closed-beta user-scope health integration
+  isolation, Google reconnect-noise handling, auth/session hardening,
+  navigation responsiveness, and Training fixture readiness.
 
 ### iOS scope
 
-- Debug Training fixture bootstrap now returns before real keychain/session, subscription, tasks, dashboard, and HealthKit warmups.
+- Home, Training, and Connections guard user-scoped health/readiness/Garmin
+  state so one account cannot hydrate another account's cached wearable truth.
+- Google reconnect noise hides raw provider error details and treats expired
+  provider sync state as a recovery action rather than a fresh install prompt.
+- Debug Training fixture bootstrap returns before real keychain/session,
+  subscription, tasks, dashboard, and HealthKit warmups.
 - Training smoke fixtures get their own fixture-scoped subscription snapshot.
 - Skills and Training fixture workflows have stable accessibility identifiers for closed-beta QA.
 
@@ -79,7 +88,7 @@ Last updated: 2026-05-04
 
 - No production data was used for validation.
 - Production data was not modified except by the normal deployment process.
-- Staging remains on `4.14.126`; the promotion script notes that staging can be redeployed if Felipe wants it aligned exactly to production.
+- Staging and production were aligned after the 4.14.129 promotion; keep using staging for production-safe smoke before future promotes.
 - Post-promotion production-safe checks still recommended:
   - readiness/body battery isolation across Felipe / Jaqueline / nexushubbot
   - Garmin connection visibility per user

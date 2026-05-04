@@ -213,9 +213,12 @@ When an agent finishes a workstream:
 3. **Never duplicate a verdict across multiple "current" files.** If
    the verdict needs to be visible in a per-domain doc, link back to
    the workspace-level CURRENT_RELEASE_STATE.
-4. **Never type a SHA, version, or test count by hand into a current
-   doc.** Use `engine/scripts/release-identity.sh --persist` to
-   regenerate the auto-injected identity block.
+4. **Do not hand-type the generated release identity block.** Use
+   `engine/scripts/release-identity.sh --persist` for branch / SHA /
+   version / migration identity. If a manually maintained status section
+   needs a test count or rollout summary, run `cd engine && npm run
+   docs:audit` first and keep the exact identity delegated to
+   `docs/release/release-identity.md`.
 5. **Run `cd engine && npm run docs:audit`** and reduce the warning
    count (or document why it grew).
 
@@ -227,8 +230,8 @@ verdict line in OPEN_ITEMS.md:
 ```
 | ID | Severity | Description |
 |---|---|---|
-| AUTH-O1 | P0 | Apple Sign In nonce contract... — FIXED in 4.14.127 (`bc6e963`). |
-| AUTH-O2 | P0 | Password reset flow does not exist. — OPEN, see plan in §X. |
+| AUTH-EXAMPLE-O1 | P0 | Apple Sign In nonce contract... — FIXED in `<release>` (`<sha>`). |
+| AUTH-EXAMPLE-O2 | P0 | Password reset flow missing. — OPEN, see plan in §X. |
 ```
 
 Closing an item without explicitly marking it closed in OPEN_ITEMS is
