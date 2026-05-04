@@ -176,7 +176,15 @@ function isCurrentLike(file) {
     || currentVerdictFiles.has(normalized)
     || normalized.startsWith(path.join(workspaceRoot, 'docs') + path.sep)
     || normalized.startsWith(path.join(backendRoot, 'docs', 'release') + path.sep)
-    || normalized.startsWith(path.join(backendRoot, 'docs', 'qa') + path.sep);
+    || normalized.startsWith(path.join(backendRoot, 'docs', 'qa') + path.sep)
+    // ENG-EXC-O9 (closed-beta-auth-hardening, 2026-05-04): outbound
+    // markdown link resolution over `engineering/` paths. Engineering
+    // standards reference each other heavily; a renamed standard
+    // would break a link silently. Treating engineering paths as
+    // current-like means broken-link warnings fire on them.
+    || normalized.startsWith(path.join(workspaceRoot, 'docs', 'engineering') + path.sep)
+    || normalized.startsWith(path.join(backendRoot, 'docs', 'engineering') + path.sep)
+    || normalized.startsWith(path.join(iosRoot, 'docs', 'engineering') + path.sep);
 }
 
 function isEngineeringStandard(file) {

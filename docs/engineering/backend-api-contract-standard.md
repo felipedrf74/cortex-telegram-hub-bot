@@ -179,8 +179,9 @@ no-side-effect assertion is the explicit unit-level form.
    `083_*.sql`, etc. Never edit a previously-deployed migration.
 2. **Every migration has an inverse.** Either an explicit
    `migrations/down/082_*.sql` or, where down-migration is impossible,
-   a documented "irreversible" note in `engine/docs/release/migration-irreversible.md`
-   (create when first irreversible migration ships).
+   a documented "irreversible" note alongside the migration file
+   (the canonical home is `engine/docs/release/migration-irreversible`,
+   create when the first irreversible migration ships).
 3. **A migration that drops a column requires a feature-flag intermediate
    step.** Step 1: stop reading the column (deploy). Step 2: stop writing
    the column (deploy). Step 3: drop the column (migration). Never collapse

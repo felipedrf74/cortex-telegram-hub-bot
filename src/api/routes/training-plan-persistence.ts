@@ -610,9 +610,38 @@ function runPlanLintGuarded(args: {
       weeks: buildPlanLintWeeks(args.weeks, args.calendarEvents),
     };
     const lint = lintPlan(lintInput);
-    if (lint.blockers.length > 0 || lint.warnings.length > 0) {
+    // TR-EC-O13 (closed-beta-auth-hardening, 2026-05-04): the
+    // backend stays in ADVISOR mode for now. The decision was made
+    // explicitly: a backend regression in lint logic must not lock
+    // users out (fail-soft); iOS instead enforces a "requiresReview"
+    // UI gate when `planLint.status === 'fail'`. To make the
+    // future flip-to-strict decision data-driven, every fail outcome
+    // emits a dedicated pino log line with a stable event surface so
+    // operators can dashboard the blocker rate.
+    //
+    // Threshold for flipping to strict (operator decision):
+    //   - lint.status === 'fail' rate < 1% over 14 days, AND
+    //   - no false-positive blockers reported by users in 7 days, AND
+    //   - iOS `planGenerationRequiresReview` gate has zero crash
+    //     reports.
+    if (lint.status === 'fail') {
       logger.warn(
         {
+          event: 'plan_linter.blocker_present',
+          userId: args.input.userId,
+          planId: args.planId,
+          status: lint.status,
+          blockerCount: lint.blockers.length,
+          blockerRuleIds: lint.blockers.map((b) => b.ruleId),
+          warningCount: lint.warnings.length,
+          warningRuleIds: lint.warnings.map((w) => w.ruleId),
+        },
+        'plan-linter: blocker(s) present (advisor mode; iOS gates UI)',
+      );
+    } else if (lint.blockers.length > 0 || lint.warnings.length > 0) {
+      logger.warn(
+        {
+          event: 'plan_linter.findings',
           userId: args.input.userId,
           planId: args.planId,
           status: lint.status,
@@ -625,7 +654,12 @@ function runPlanLintGuarded(args: {
     return lint;
   } catch (err) {
     logger.warn(
-      { err, userId: args.input.userId, planId: args.planId },
+      {
+        event: 'plan_linter.threw',
+        err,
+        userId: args.input.userId,
+        planId: args.planId,
+      },
       'persistGeneratedTrainingPlan: plan-linter threw; defaulting to pass (advisor mode)',
     );
     return {

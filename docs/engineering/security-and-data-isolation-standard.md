@@ -141,10 +141,12 @@ is the gold-standard pattern. Copy that shape.
    `cooking_preferences`, `finance_preferences`, `skill_memory` are all
    strictly per-user.** Every read goes through a typed by-userId
    accessor.
-4. **`creator-config.md` and every domain prompt under `prompts/` is a
-   NEUTRAL TEMPLATE.** No name, no worldview, no audience, no political /
-   religious / dietary defaults. The prompt-cleanliness test
-   (`__tests__/services/prompt-cleanliness.test.ts`, 72 cases) pins this.
+4. **The `creator-config` prompt and every domain prompt under
+   `prompts/` is a NEUTRAL TEMPLATE.** No name, no worldview, no
+   audience, no political/religious/dietary defaults. The
+   prompt-cleanliness test
+   (`__tests__/services/prompt-cleanliness.test.ts`, 72 cases) pins
+   this.
 5. **The deterministic identity fast-path at
    `src/api/routes/chat-message-local-responses.ts`** answers 16 PT/EN
    identity questions BEFORE any AI call, using the JWT-derived

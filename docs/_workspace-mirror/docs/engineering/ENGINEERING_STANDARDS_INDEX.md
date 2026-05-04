@@ -111,6 +111,49 @@ The mirror is auditor-aware: `audit-docs.mjs` skips the mirror itself
 from per-file lints (it would otherwise duplicate every warning), but
 flags drift as a single workspace-level warning.
 
+## Standard deprecation workflow (ENG-EXC-O10 closure)
+
+When a "must" rule becomes obsolete or is superseded by a different
+standard, follow this 4-step workflow. Removing a "must" without
+following it is a release-gate review failure.
+
+1. **Add a `Status: deprecated` line** to the affected standard's
+   frontmatter, with a `Superseded by:` reference to the new standard
+   (or `Removed because:` if no replacement). Example:
+
+   ```
+   Status: deprecated
+   Owner: backend architecture lead
+   Last verified: 2026-05-04
+   Update policy: ...
+   Superseded by: engine/docs/engineering/<new-standard>.md
+   Deprecated since: 2026-05-04
+   Reason: <one-line summary; cite the failure mode no longer present>
+   ```
+
+2. **Add a deprecation banner** at the top of the standard's body:
+
+   ```
+   > **DEPRECATED (2026-05-04).** This standard is superseded by
+   > [<new-standard>](path). Existing references are kept for
+   > historical context. Do not author new code against this standard.
+   ```
+
+3. **Update the engineering standards index** in the corresponding
+   repo (`engine/`, `ios/`, or workspace) to mark the standard
+   `(deprecated)` next to its name. Keep the row — removing it breaks
+   incoming links.
+
+4. **Open an OPEN_ITEMS entry** at P3 to remove the standard after
+   90 days OR explicitly mark it as long-lived archive. Removing
+   sooner risks breaking outbound links from external evidence.
+
+If the standard had a corresponding classifier flag, cannot-skip gate,
+or `audit-docs.mjs` rule, mark them deprecated first (with a one-week
+warning window in CI) before removing the standard text. The classifier
+test pinning the gate must be updated to assert the gate's absence
+explicitly.
+
 ## Standard authoring rules
 
 When adding a new engineering standard:

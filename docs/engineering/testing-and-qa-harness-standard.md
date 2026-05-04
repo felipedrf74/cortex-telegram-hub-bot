@@ -86,7 +86,7 @@ The classifier maps changed files to:
 - Cannot-skip safety gates (tenant-auth-security, etc.)
 
 **Cannot-skip gates take precedence over classifier minimization.** A
-docs-only diff that touches `prompts/<x>.md` still triggers
+docs-only diff that touches a file under `prompts/` still triggers
 `prompt-injection-defense` cannot-skip → security tests run.
 
 ## 5. Two-user / two-tenant matrix (must)

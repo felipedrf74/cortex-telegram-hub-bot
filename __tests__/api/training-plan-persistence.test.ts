@@ -696,9 +696,16 @@ describe('training-plan-persistence', () => {
       expect(result.lint.blockers[0]?.ruleId).toBe('equipment_compatibility');
       // Even with a blocker the plan still persisted (advisor mode).
       expect(result.totalSessions).toBe(1);
+      // TR-EC-O13 (closed-beta-auth-hardening, 2026-05-04): the
+      // dedicated `plan_linter.blocker_present` event fires for any
+      // lint with `status === 'fail'`, separating fail-blockers from
+      // non-blocking findings so operators can dashboard the rate.
       expect(mockLoggerWarn).toHaveBeenCalledWith(
-        expect.objectContaining({ status: 'fail' }),
-        'persistGeneratedTrainingPlan: plan-linter findings (advisor mode)',
+        expect.objectContaining({
+          event: 'plan_linter.blocker_present',
+          status: 'fail',
+        }),
+        'plan-linter: blocker(s) present (advisor mode; iOS gates UI)',
       );
     });
 
