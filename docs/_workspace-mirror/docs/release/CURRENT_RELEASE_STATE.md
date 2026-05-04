@@ -17,30 +17,28 @@ Last updated: 2026-05-04
 
 - Repo: `engine`
 - Workspace HEAD / version / migrations / dirty state: see `docs/release/release-identity.md`
-- Production status (last manual update 2026-05-04): promoted via `./scripts/promote-to-prod.sh`, health-checked, both `nexus-hub` and `content-engine` PM2 processes online at version `4.14.129`.
+- Production status (last manual update 2026-05-04): promoted via `./scripts/promote-to-prod.sh`, health-checked, both `nexus-hub` and `content-engine` PM2 processes online at version `4.14.130`.
 
-### Commits in this release (4.14.128 -> 4.14.129)
+### Commits in this release (4.14.129 -> 4.14.130)
 
-- Source merge: closed-beta backlog/auth/training/engineering closeout merged to `main`.
-- Deploy bump: backend package version advanced to `4.14.129`.
+- Source merge: auth UX closeout merged to backend `main` at `5b76dfc`.
+- Deploy bump: backend package version advanced to `4.14.130` at `782f0d3`.
+- iOS source merge: auth UX closeout merged to iOS `main` at `29f50ed`.
 
 ### Scope of this release
 
-- **Auth closeout**: password reset, refresh-token hashing/backfill, per-account lockout, provider/portal audit rows, portal API rate limits, Apple private-relay defensive linking, and extended `/auth/me` shape.
-- **Training closeout**: mid-week Training scheduling and plan-linter persistence fixes from the expert-coach validation branch are in `main`.
-- **Engineering excellence closeout**: classifier dashboard, workspace docs mirror, docs-audit baseline policy, TestFlight evidence pattern, standard deprecation workflow, and mobility-variant catalog work landed through the closed-beta backlog drain.
-- **iOS auth/navigation hardening**: Apple raw nonce generation, Keychain/session protections, server-side logout, fixture isolation, navigation responsiveness, and focused auth/training tests are reflected in the iOS mainline history.
+- **Backend auth UX closeout**: email/password registration now requires a valid invite code, the same-origin password-reset page is served from `/auth/password-reset`, password-reset links default to `https://api.nexushub.me`, and iOS auth sessions expose additive `email`, `emailVerified`, and `authProvider` fields.
+- **iOS auth UX closeout**: signup collects invite code, forgot-password flow is reachable from login mode, the email-verification prompt is gated for unverified email-provider accounts, and typed auth errors route through user-facing copy without weakening login anti-enumeration.
+- **Static reset safety**: live `https://api.nexushub.me/auth/password-reset` returns HTTP 200 with no-cache headers and a same-origin CSP (`connect-src 'self'`, `form-action 'self'`, `frame-ancestors 'none'`).
 
 ### Validation
 
-- Closed-beta identity scan: strict mode passed with 0 flags.
-- `npx tsc --noEmit`: passed.
-- Backend `main` pre-push full vitest: **448 files / 6743 tests passed**.
+- Backend `main` pre-push/deploy full vitest: **449 files / 6749 tests passed**.
 - Deploy-time validation: typecheck passed and build passed.
 - Staging deploy: passed.
 - Staging smoke: **17/17 passed**.
 - Production health check (deploy.sh built-in): passed.
-- Production version assertion: `4.14.129` ✓
+- Production version assertion: `4.14.130` ✓
 - PM2 nexus-hub: online ✓
 - PM2 content-engine: online ✓
 
@@ -88,7 +86,7 @@ Last updated: 2026-05-04
 
 - No production data was used for validation.
 - Production data was not modified except by the normal deployment process.
-- Staging and production were aligned after the 4.14.129 promotion; keep using staging for production-safe smoke before future promotes.
+- Production now runs one deploy-bump commit ahead of staging (`4.14.130` vs `4.14.129`). The code change was staged and smoke-tested before promote; run `./scripts/deploy-staging.sh` if staging should match the production version label exactly.
 - Post-promotion production-safe checks still recommended:
   - readiness/body battery isolation across Felipe / Jaqueline / nexushubbot
   - Garmin connection visibility per user

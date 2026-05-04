@@ -47,7 +47,8 @@ non-trivial changes.
 1. `docs/DOCS_INDEX.md` (workspace)
 2. `docs/agent/OPERATING_CONTEXT.md`
 3. `docs/agent/AGENT_PROCESS_STANDARD.md`
-4. `docs/release/CURRENT_RELEASE_STATE.md`
-5. `docs/release/OPEN_ITEMS.md`
-6. `engine/CLAUDE.md`
-7. The standards relevant to the work area (this index).
+4. `docs/agent/AGENT_TECHNICAL_MASTERY.md` (cross-repo technical onboarding pack)
+5. `docs/release/CURRENT_RELEASE_STATE.md`
+6. `docs/release/OPEN_ITEMS.md`
+7. `engine/CLAUDE.md`
+8. The standards relevant to the work area (this index).

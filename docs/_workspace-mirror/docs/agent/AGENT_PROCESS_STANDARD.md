@@ -32,9 +32,11 @@ Each rule below is a direct response to an actual past failure.
 2. **Read in order** before doing anything else:
    1. `docs/DOCS_INDEX.md`
    2. `docs/agent/OPERATING_CONTEXT.md`
-   3. `docs/release/CURRENT_RELEASE_STATE.md`
-   4. `docs/release/OPEN_ITEMS.md`
-   5. The repo-local `CLAUDE.md` for the area you'll touch
+   3. `docs/agent/AGENT_PROCESS_STANDARD.md`
+   4. `docs/agent/AGENT_TECHNICAL_MASTERY.md`
+   5. `docs/release/CURRENT_RELEASE_STATE.md`
+   6. `docs/release/OPEN_ITEMS.md`
+   7. The repo-local `CLAUDE.md` for the area you'll touch
       (`engine/CLAUDE.md`, `ios/CLAUDE.md`).
 3. **Then read the engineering standard for the area you'll touch:**
    - iOS architecture: `ios/docs/engineering/ios-architecture-and-swiftui-performance-standard.md`

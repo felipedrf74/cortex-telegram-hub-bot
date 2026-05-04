@@ -15,8 +15,10 @@ Official working path: `/Users/felipedominguez/Desktop/Nexus Hub`
 
 1. `docs/DOCS_INDEX.md`
 2. `docs/agent/OPERATING_CONTEXT.md`
-3. `docs/release/CURRENT_RELEASE_STATE.md`
-4. `docs/release/OPEN_ITEMS.md`
+3. `docs/agent/AGENT_PROCESS_STANDARD.md`
+4. `docs/agent/AGENT_TECHNICAL_MASTERY.md`
+5. `docs/release/CURRENT_RELEASE_STATE.md`
+6. `docs/release/OPEN_ITEMS.md`
 
 Then read the repo-local bootloader for the area you are changing:
 
