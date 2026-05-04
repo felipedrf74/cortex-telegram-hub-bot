@@ -2,6 +2,77 @@
 
 Last updated: 2026-05-04
 
+## Closed-beta auth + training + engineering closeout pass (2026-05-04 evening)
+
+Branch: `feature/engineering-excellence-architecture-standards` @ `1aa5955` (NOT pushed).
+Backup tag: `backup/engineering-excellence-before-hardening-20260504-1057`.
+
+Verdict: **READY_WITH_CONDITIONS** — every P0/P1 item from the prior list is FIXED locally; only physical-iPhone E5 walk-throughs and operator deploy decisions remain.
+
+### What I shipped (commits `627e0e4` + `1aa5955`)
+
+**P0:**
+- **AUTH-O2** password reset flow — `POST /auth/password-reset/{request,confirm}`, opaque hashed token (SHA-256 at rest), 1h TTL, 5-attempt cap, single-use, account-existence-enumeration-resistant generic 200 envelope, all-session revocation on success. Migration 109. 14 new tests.
+
+**P1 (auth):**
+- **AUTH-O4** refresh tokens hashed at rest + `previous_refresh_token_hash` for theft detection. Migration 110. `/auth/refresh` revokes ALL device sessions on previous-hash replay.
+- **AUTH-O6** `auth.user_created` + `auth.provider_linked` audit rows on every Apple/Google/email/invite creation path.
+- **AUTH-O7** per-account lockout (10 attempts / 15min sliding window / 15min lockout). New `failed_login_attempts` table + `account-lockout.ts`. 8 pin tests.
+- **AUTH-O8** Apple `@privaterelay.appleid.com` defensive check on `/auth/register/apple`.
+- **AUTH-O9** `/auth/me` extended with `email`, `emailVerified`, `tier`, `authProvider` (additive).
+- **AUTH-O10** portal `/api/*` rate limit mounted (excluding iOS `/api/v1/*`).
+- **AUTH-O11** `PORTAL_BETA_HARDENED=true` now refuses to boot when `PORTAL_ADMIN_TOKEN` is empty.
+- **AUTH-O12** portal `enforcePortalToken` emits `portal.auth` audit rows on every branch.
+
+**P1 (training, already in main at 4.14.128):**
+- **TR-EC-O11** scheduler-floor fix.
+- **TR-EC-O12** plan-linter session date persistence fix.
+- **TR-EC-O13** advisor-mode kept; new `plan_linter.blocker_present` event for operator dashboarding.
+
+**P1 (iOS training):**
+- **TR-EC-IOS-O1** `training-goal-mode-picker` already in `Nexus Hub/Views/Training/TrainingView.swift:1066`.
+- **TR-EC-IOS-O2** decision: modality-specific profile inputs stay in onboarding.
+- **TR-EC-O10 + TR-EC-IOS-O3** Workflows A–I: 11/11 `TrainingFixtureBypassUITests` PASS on iPhone 17 Pro simulator. Physical iPhone Felipe blocked by `devicectl unavailable` (needs unlock + Trust + Developer Mode).
+
+**P2/P3 (engineering excellence):**
+- **ENG-EXC-O6** TestFlight evidence pattern → `engine/scripts/testflight-evidence.sh`.
+- **ENG-EXC-O7 + ENG-EXC-CX-O5** `docs/release/docs-audit-baseline-policy.md` codifying frozen-baseline classes.
+- **ENG-EXC-O9** outbound markdown link lint over engineering paths.
+- **ENG-EXC-O10** "must" rule deprecation workflow.
+
+### Closure summary
+
+| ID | Severity | Status |
+|---|---|---|
+| AUTH-O2 | P0 | **FIXED locally** (`627e0e4`) |
+| AUTH-O4..O12 | P1 | **FIXED locally** (`627e0e4`, 8 items, single batch) |
+| TR-EC-O10 | P1 | **PARTIAL** (simulator green; physical iPhone blocked on unlock) |
+| TR-EC-O11/O12 | P1 | **MERGED in main 4.14.128** |
+| TR-EC-O13 | P1 | **DECIDED + telemetry** (`1aa5955`) |
+| TR-EC-IOS-O1 | P1 | **PRE-EXISTING in iOS main** |
+| TR-EC-IOS-O2 | P1 | **DECIDED** (kept in onboarding) |
+| TR-EC-IOS-O3 | P1 | **PARTIAL** — see TR-EC-O10 |
+| ENG-EXC-O6/O7/O9/O10/CX-O5 | P2/P3 | **FIXED locally** (`1aa5955`) |
+
+### Verification
+
+- `npx tsc --noEmit` clean.
+- **202/202 tests PASS** across 19 files (classifier 15/15, auth-routes 13/13, auth-password-reset 14/14, account-lockout 8/8, audit-trail 6/6, plan-linter 23/23, training-plan-persistence 14/14, etc.).
+- Pre-commit hooks ran clean (88/88 first commit, 877/877 second).
+- Cannot-skip dashboard: 23/23 gates PASS.
+- Workspace mirror: in sync.
+- `npm run docs:audit`: 486 issues / 381 files (matches frozen baseline).
+- iOS simulator: 11/11 TrainingFixtureBypassUITests + 3/3 TrainingValidationUITests PASS.
+
+### What still requires operator action
+
+1. Open the engine PR (7 commits since main: `eacebb3` + merge `799af5d` + `ca4eed1` + `dcb27cf` + `d11e4e1` + `627e0e4` + `1aa5955`).
+2. Unlock iPhone Felipe + Trust + Developer Mode → re-run physical-device tests + record via `scripts/testflight-evidence.sh --apply` for TR-EC-O10 final E3 closure.
+3. Decide deploy plan: AUTH P0+P1 batch (single migration sequence 109+110); training telemetry is a no-op behavior change; engineering docs/scripts are docs-only.
+4. Signed TestFlight E5 walk-through with the AUTH changes (login, password reset, account-switch, two-account "Who am I?" test).
+
+---
+
 ## Engineering excellence enrichment pass (2026-05-04)
 
 Branches:
