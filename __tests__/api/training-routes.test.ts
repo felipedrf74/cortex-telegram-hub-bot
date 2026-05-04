@@ -1060,6 +1060,9 @@ describe('Training API routes', () => {
   });
 
   it('schedules same-day run and gym sessions at separate preferred times', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    vi.setSystemTime(new Date('2026-04-12T12:00:00.000Z'));
+
     mockGetProfile.mockImplementation((_userId: number, profile: string) => {
       if (profile === 'fitness') return { experienceLevel: 'Intermediate', available_equipment: 'Full gym' };
       if (profile === 'triathlon-running') return { target_race: 'Marathon' };
