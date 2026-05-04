@@ -214,6 +214,117 @@ describe('changed-area-classifier engineering-excellence enrichments (2026-05-04
     expect(result.vitest.globs).toContain('__tests__/security/**/*.test.ts');
   });
 
+  it('routes audit-trail changes into audit emission and scope tests', () => {
+    const raw = execFileSync(
+      'bash',
+      [
+        'scripts/changed-area-classifier.sh',
+        '--json',
+        '--files',
+        [
+          'src/services/audit-trail.ts',
+          'src/api/routes/audit-trail.ts',
+          'src/portal/admin-audit.ts',
+        ].join(','),
+      ],
+      { encoding: 'utf8' },
+    );
+    const result = JSON.parse(raw) as {
+      flags: Record<string, boolean>;
+      cannotSkip: string[];
+      vitest: { globs: string[] };
+    };
+
+    expect(result.flags.audit).toBe(true);
+    expect(result.cannotSkip).toContain('audit-trail-emission-and-scope');
+    expect(result.vitest.globs).toContain('__tests__/services/audit-trail.test.ts');
+    expect(result.vitest.globs).toContain('__tests__/api/authenticated-support-routes-scope.test.ts');
+    expect(result.vitest.globs).toContain('__tests__/portal/portal-admin-audit.test.ts');
+  });
+
+  it('routes deploy and PM2 config changes into deploy-config gates', () => {
+    const raw = execFileSync(
+      'bash',
+      [
+        'scripts/changed-area-classifier.sh',
+        '--json',
+        '--files',
+        [
+          'ecosystem.config.js',
+          'ecosystem.staging.config.js',
+          'src/config.ts',
+        ].join(','),
+      ],
+      { encoding: 'utf8' },
+    );
+    const result = JSON.parse(raw) as {
+      flags: Record<string, boolean>;
+      cannotSkip: string[];
+      vitest: { globs: string[] };
+    };
+
+    expect(result.flags.deployConfig).toBe(true);
+    expect(result.cannotSkip).toContain('deploy-config-health-rehearsal');
+    expect(result.vitest.globs).toContain('__tests__/services/config-*.test.ts');
+    expect(result.vitest.globs).toContain('__tests__/portal/health-endpoint*.test.ts');
+    expect(result.vitest.globs).toContain('__tests__/scripts/*.test.ts');
+    expect(result.vitest.globs).toContain('__tests__/security/**/*.test.ts');
+  });
+
+  it('routes iOS navigation and view-model changes into responsiveness XCTest classes', () => {
+    const raw = execFileSync(
+      'bash',
+      [
+        'scripts/changed-area-classifier.sh',
+        '--json',
+        '--files',
+        [
+          'Nexus Hub/Views/MainTabView.swift',
+          'Nexus Hub/ViewModels/DashboardViewModel.swift',
+        ].join(','),
+      ],
+      { encoding: 'utf8' },
+    );
+    const result = JSON.parse(raw) as {
+      flags: Record<string, boolean>;
+      cannotSkip: string[];
+      xctest: { classes: string[] };
+    };
+
+    expect(result.flags.iosSrc).toBe(true);
+    expect(result.flags.iosNavigation).toBe(true);
+    expect(result.cannotSkip).toContain('ios-navigation-responsiveness');
+    expect(result.xctest.classes).toContain('Nexus HubTests/NavigationPerformanceSourcePinsTests');
+    expect(result.xctest.classes).toContain('Nexus HubUITests/AppWideResponsivenessUITests');
+  });
+
+  it('routes iOS DTO and decoder changes into contract decoder XCTest classes', () => {
+    const raw = execFileSync(
+      'bash',
+      [
+        'scripts/changed-area-classifier.sh',
+        '--json',
+        '--files',
+        [
+          'Nexus Hub/Core/Services/TrainingService.swift',
+          'Nexus HubTests/TrainingHomeViewStateContractDecodingTests.swift',
+        ].join(','),
+      ],
+      { encoding: 'utf8' },
+    );
+    const result = JSON.parse(raw) as {
+      flags: Record<string, boolean>;
+      cannotSkip: string[];
+      xctest: { classes: string[] };
+    };
+
+    expect(result.flags.iosSrc).toBe(true);
+    expect(result.flags.iosDto).toBe(true);
+    expect(result.cannotSkip).toContain('ios-contract-decoder-resilience');
+    expect(result.xctest.classes).toContain('Nexus HubTests/ContractDecoderResilienceTests');
+    expect(result.xctest.classes).toContain('Nexus HubTests/TrainingHomeViewStateContractDecodingTests');
+  });
+
   it('preserves all new flags as false on unrelated diff (no false positives)', () => {
     const raw = execFileSync(
       'bash',
@@ -232,5 +343,9 @@ describe('changed-area-classifier engineering-excellence enrichments (2026-05-04
     expect(result.flags.notification).toBe(false);
     expect(result.flags.healthIntegration).toBe(false);
     expect(result.flags.rateLimit).toBe(false);
+    expect(result.flags.audit).toBe(false);
+    expect(result.flags.deployConfig).toBe(false);
+    expect(result.flags.iosNavigation).toBe(false);
+    expect(result.flags.iosDto).toBe(false);
   });
 });

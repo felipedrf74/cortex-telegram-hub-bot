@@ -148,7 +148,7 @@ HAS_ATTACHMENT=false
 HAS_MODEL_ROUTING=false
 HAS_PERSONALIZATION_SCOPE=false
 HAS_CONTENT_AGENT=false
-# Engineering-excellence hardening (2026-05-04): four classifier gaps
+# Engineering-excellence hardening (2026-05-04): classifier gaps
 # that the audit flagged as currently missing dedicated test routing.
 # Each maps a high-blast-radius surface to its existing test files so
 # touching that surface auto-fans out into the right suites.
@@ -157,6 +157,10 @@ HAS_SCHEDULER=false           # cron/scheduler/job-failure paths
 HAS_NOTIFICATION=false        # APNs/iOS push/notification routing
 HAS_HEALTH_INTEGRATION=false  # Garmin/HealthKit/wearable/body-battery
 HAS_RATE_LIMIT=false          # rate-limit middleware + per-account lockout
+HAS_AUDIT=false               # audit trail and audit-event contracts
+HAS_DEPLOY_CONFIG=false       # PM2/deploy config and environment shape
+HAS_IOS_NAVIGATION=false      # tab/navigation/view-model responsiveness
+HAS_IOS_DTO=false             # app-facing DTO/decoder contract changes
 
 # Use grep-based detection so multiple flags can match a single file.
 # Bash `case` stops at the first match — that's wrong here because e.g.
@@ -253,7 +257,7 @@ match '^src/services/domain-provider-router|^src/portal/provider-routes|^__tests
 # Finance preference scope as missing dedicated routing.
 match '^src/services/cooking-preferences|^src/services/finance-preferences|^src/services/skill-memory|^src/state/content-references|^__tests__/services/cooking-preferences|^__tests__/services/finance-preferences|^__tests__/services/skill-memory|^__tests__/services/content-references' && HAS_PERSONALIZATION_SCOPE=true
 
-# Engineering-excellence hardening (2026-05-04): four additional
+# Engineering-excellence hardening (2026-05-04): additional
 # flag groups so the relevant safety/regression suites are picked up
 # automatically when a change touches these surfaces.
 
@@ -288,6 +292,16 @@ match '^src/services/garmin|^src/services/apple-health|^src/services/wearable|^s
 # remove an auth-defense layer.
 match '^src/api/middleware/rate-limit|^src/services/rate-limiter|^src/api/middleware/auth-rate-limit|^__tests__/api/rate-limiter' && HAS_RATE_LIMIT=true
 
+# Audit trail — GDPR/self-service audit reads, admin audit reads, and
+# auth/provider-link/user-created audit emission. A regression here weakens
+# incident response and user-data accountability.
+match '^src/services/audit-trail|^src/api/routes/audit-trail|^src/portal/admin-audit|^src/portal/admin-data-routes|^__tests__/services/audit-trail|^__tests__/api/authenticated-support-routes-scope|^__tests__/portal/portal-admin-audit|^__tests__/portal/portal-admin-data-routes|^__tests__/portal/portal-admin-data-isolation' && HAS_AUDIT=true
+
+# Deploy / PM2 config — runtime process topology and environment shape.
+# These are not deploy scripts themselves, but they change what deploy scripts
+# start and health-check.
+match '(^|/)ecosystem(\.staging)?\.config\.js$|^src/config\.ts$|^__tests__/config|^__tests__/scripts/deploy' && HAS_DEPLOY_CONFIG=true
+
 # Detect iOS changes by file path. iOS repo is at ../Nexus Hub IOS/Nexus Hub
 # but in workspace symlink it's `ios/`. Since this script runs from engine,
 # ios files won't appear in this engine diff — included for forward-compat
@@ -301,11 +315,19 @@ while IFS= read -r f; do
   case "$f" in
     *Core/AuthManager.swift|*Core/KeychainHelper.swift|*Views/Auth/*|*Auth*Tests.swift|*Keychain*Tests.swift|*GoogleAuthCallbackResolverTests.swift) HAS_IOS_AUTH=true ;;
   esac
+  case "$f" in
+    *MainTabView.swift|*RootView.swift|*AppState.swift|*Navigation*|*ViewModel.swift|*DashboardViewModel.swift|*TrainingViewModel.swift|*ChatViewModel.swift|*TasksViewModel.swift|*NavigationPerformance*|*Responsiveness*|*HomeWeekNavigationPerformanceUITests.swift|*AppWideResponsivenessUITests.swift) HAS_IOS_NAVIGATION=true ;;
+  esac
+  case "$f" in
+    *Service.swift|*Repository.swift|*DTO*|*Contract*|*Decoder*|*Response*.swift|*ContractDecoderResilienceTests.swift|*HomeViewStateContractDecodingTests.swift|*TrainingHomeViewStateContractDecodingTests.swift|*ContentHomeContractDecodingTests.swift|*PlanGenerateResponse*Tests.swift) HAS_IOS_DTO=true ;;
+  esac
 done <<EOF
 $CHANGED
 EOF
 
 $HAS_IOS_AUTH && HAS_AUTH_OR_TENANT=true
+$HAS_IOS_NAVIGATION && HAS_IOS_SRC=true
+$HAS_IOS_DTO && HAS_IOS_SRC=true
 
 # ── Tier resolution ────────────────────────────────────
 # Tier 0: always.
@@ -334,14 +356,20 @@ $HAS_ATTACHMENT && CANNOT_SKIP+=("attachment-tenant-isolation")
 $HAS_MODEL_ROUTING && CANNOT_SKIP+=("model-routing-cost-attribution")
 $HAS_PERSONALIZATION_SCOPE && CANNOT_SKIP+=("personalization-scope-isolation")
 $HAS_CONTENT_AGENT && CANNOT_SKIP+=("content-agent-neutrality")
-# Engineering-excellence hardening (2026-05-04): five new cannot-skip
-# gates so operator-visible-PII, scheduler-failure, APNs-regression,
-# wearable-tenant-leak, and rate-limit weakening trigger their tests.
+# Engineering-excellence hardening (2026-05-04): cannot-skip gates so
+# operator-visible-PII, scheduler-failure, APNs-regression,
+# wearable-tenant-leak, rate-limit weakening, audit regressions,
+# deploy-config drift, iOS navigation, and iOS decoder changes trigger
+# their tests.
 $HAS_LOGGER && CANNOT_SKIP+=("logger-redaction-pii-scan")
 $HAS_SCHEDULER && CANNOT_SKIP+=("scheduler-tenant-scope-and-failure")
 $HAS_NOTIFICATION && CANNOT_SKIP+=("notification-apns-delivery-and-tenant")
 $HAS_HEALTH_INTEGRATION && CANNOT_SKIP+=("health-integration-tenant-isolation")
 $HAS_RATE_LIMIT && CANNOT_SKIP+=("auth-rate-limit-and-lockout")
+$HAS_AUDIT && CANNOT_SKIP+=("audit-trail-emission-and-scope")
+$HAS_DEPLOY_CONFIG && CANNOT_SKIP+=("deploy-config-health-rehearsal")
+$HAS_IOS_NAVIGATION && CANNOT_SKIP+=("ios-navigation-responsiveness")
+$HAS_IOS_DTO && CANNOT_SKIP+=("ios-contract-decoder-resilience")
 
 # Tier 1 if anything non-doc is in scope
 if $HAS_NON_DOC; then
@@ -359,7 +387,7 @@ $HAS_TEST_CONFIG && TIERS+=("T3-recommended")
 $HAS_PACKAGE_JSON && TIERS+=("T3-recommended")
 
 # Tier 4 (staging smoke) if backend src or migration in scope
-if $HAS_BACKEND_SRC || $HAS_MIGRATION || $HAS_PYTHON_ENGINE; then
+if $HAS_BACKEND_SRC || $HAS_MIGRATION || $HAS_PYTHON_ENGINE || $HAS_DEPLOY_CONFIG; then
   TIERS+=("T4")
 fi
 
@@ -375,7 +403,7 @@ VITEST_GLOBS=()
 if $HAS_NON_DOC; then
   if $HAS_TEST_CONFIG || $HAS_PACKAGE_JSON; then
     VITEST_MODE="full"
-  elif $HAS_BACKEND_SRC || $HAS_BACKEND_TEST; then
+  elif $HAS_BACKEND_SRC || $HAS_BACKEND_TEST || $HAS_DEPLOY_CONFIG; then
     VITEST_MODE="focused"
     $HAS_TRAINING && VITEST_GLOBS+=("__tests__/services/training-*.test.ts" "__tests__/services/coach-kernel-*.test.ts" "__tests__/api/training-*.test.ts")
     $HAS_CALENDAR && VITEST_GLOBS+=("__tests__/services/calendar*.test.ts" "__tests__/api/training-calendar-*.test.ts" "__tests__/api/training-plan-calendar-*.test.ts")
@@ -399,6 +427,8 @@ if $HAS_NON_DOC; then
     $HAS_NOTIFICATION && VITEST_GLOBS+=("__tests__/services/apns-*.test.ts" "__tests__/services/content-notifications*.test.ts" "__tests__/api/notifications-*.test.ts" "__tests__/api/content-notification-*.test.ts")
     $HAS_HEALTH_INTEGRATION && VITEST_GLOBS+=("__tests__/services/garmin-*.test.ts" "__tests__/services/apple-health-*.test.ts" "__tests__/services/integration-health-*.test.ts" "__tests__/api/wearable-*.test.ts" "__tests__/api/health-data-*.test.ts" "__tests__/api/garmin-auth-*.test.ts" "__tests__/portal/integration-health-*.test.ts")
     $HAS_RATE_LIMIT && VITEST_GLOBS+=("__tests__/api/rate-limiter.test.ts" "__tests__/security/**/*.test.ts")
+    $HAS_AUDIT && VITEST_GLOBS+=("__tests__/services/audit-trail.test.ts" "__tests__/api/authenticated-support-routes-scope.test.ts" "__tests__/portal/portal-admin-audit.test.ts" "__tests__/portal/portal-admin-data-routes.test.ts" "__tests__/portal/portal-admin-data-isolation.integration.test.ts")
+    $HAS_DEPLOY_CONFIG && VITEST_GLOBS+=("__tests__/services/config-*.test.ts" "__tests__/portal/health-endpoint*.test.ts" "__tests__/portal/health-endpoints.test.ts" "__tests__/scripts/*.test.ts" "__tests__/security/**/*.test.ts")
     if [ "${#VITEST_GLOBS[@]}" -eq 0 ]; then
       # Backend src/test changed but no domain mapped — fall back to changed-files-only
       VITEST_MODE="changed-only"
@@ -422,6 +452,8 @@ if $HAS_IOS_SRC; then
   XCTEST_MODE="focused"
   $HAS_IOS_UI && XCTEST_CLASSES+=("Nexus HubUITests/*")
   $HAS_IOS_AUTH && XCTEST_CLASSES+=("Nexus HubTests/AppleSignInNonceTests" "Nexus HubTests/KeychainHelperTests" "Nexus HubTests/AuthManagerFixtureLeakTests" "Nexus HubTests/AuthManagerPersistenceTests" "Nexus HubTests/AuthUserPresentationTests" "Nexus HubTests/GoogleAuthCallbackResolverTests")
+  $HAS_IOS_NAVIGATION && XCTEST_CLASSES+=("Nexus HubTests/NavigationPerformanceSourcePinsTests" "Nexus HubTests/MainTabViewBadgeMemoizationTests" "Nexus HubUITests/AppWideResponsivenessUITests" "Nexus HubUITests/HomeWeekNavigationPerformanceUITests")
+  $HAS_IOS_DTO && XCTEST_CLASSES+=("Nexus HubTests/ContractDecoderResilienceTests" "Nexus HubTests/HomeViewStateContractDecodingTests" "Nexus HubTests/TrainingHomeViewStateContractDecodingTests" "Nexus HubTests/ContentHomeContractDecodingTests")
   XCTEST_CLASSES+=("Nexus HubTests/ContractDecoderResilienceTests")
   XCTEST_CLASSES+=("Nexus HubTests/AuthManagerPersistenceTests")
 fi
@@ -429,7 +461,7 @@ fi
 # ── Staging smoke ──────────────────────────────────────
 SS_GENERIC=false
 SS_DOMAINS=()
-if $HAS_BACKEND_SRC || $HAS_MIGRATION || $HAS_PYTHON_ENGINE; then
+if $HAS_BACKEND_SRC || $HAS_MIGRATION || $HAS_PYTHON_ENGINE || $HAS_DEPLOY_CONFIG; then
   SS_GENERIC=true
 fi
 $HAS_TRAINING && { $HAS_CALENDAR || true; } && SS_DOMAINS+=("smoke:training-cross-skill:staging")
@@ -505,6 +537,10 @@ emit_json() {
   export CLAS_NOTIFICATION="$HAS_NOTIFICATION"
   export CLAS_HEALTH_INTEGRATION="$HAS_HEALTH_INTEGRATION"
   export CLAS_RATE_LIMIT="$HAS_RATE_LIMIT"
+  export CLAS_AUDIT="$HAS_AUDIT"
+  export CLAS_DEPLOY_CONFIG="$HAS_DEPLOY_CONFIG"
+  export CLAS_IOS_NAVIGATION="$HAS_IOS_NAVIGATION"
+  export CLAS_IOS_DTO="$HAS_IOS_DTO"
 
   node <<'JS'
 function lines(name) {
@@ -575,6 +611,10 @@ const payload = {
     notification: flag('CLAS_NOTIFICATION'),
     healthIntegration: flag('CLAS_HEALTH_INTEGRATION'),
     rateLimit: flag('CLAS_RATE_LIMIT'),
+    audit: flag('CLAS_AUDIT'),
+    deployConfig: flag('CLAS_DEPLOY_CONFIG'),
+    iosNavigation: flag('CLAS_IOS_NAVIGATION'),
+    iosDto: flag('CLAS_IOS_DTO'),
   },
 };
 console.log(JSON.stringify(payload, null, 2));
