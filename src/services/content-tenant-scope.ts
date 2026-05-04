@@ -58,6 +58,10 @@ const scopedTables = [
   'video_transcripts',
   'video_studies',
   'content_ideas',
+  // CONTENT-UI-O1: unified per-tenant creator profile (pillars/voice/etc.)
+  'content_creator_profile',
+  // CONTENT-UI-O2: per-signal radar feedback (accept/reject/save/create_brief)
+  'content_radar_feedback',
 ];
 
 const ensured = new WeakSet<object>();

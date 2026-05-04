@@ -785,6 +785,88 @@ These remain because I cannot perform real-device validation from the audit harn
 
 ## P2
 
+- **Content Creation UI workflow follow-ups** (2026-05-04 vertical slice
+  closeout — see `engine/docs/portal/content-portal-readiness.md` and
+  `engine/docs/content/content-frontend-contracts.md`):
+  - ~~**CONTENT-UI-O1**~~ → **DONE 2026-05-04**: migration `111_content_creator_profile.sql`,
+    `src/state/content-creator-profile.ts`, REST routes
+    `GET/PUT/DELETE /api/v1/content/creator-profile`, 15 backend tests,
+    iOS round-trip via `ContentService.getCreatorProfile()` /
+    `putCreatorProfile()` with offline-first local cache.
+  - ~~**CONTENT-UI-O2**~~ → **DONE 2026-05-04**: migration
+    `112_content_radar_feedback.sql`,
+    `src/state/content-radar-feedback.ts`, REST routes
+    `POST/GET /api/v1/content/radar/feedback`, 13 backend tests, iOS
+    per-card accept/reject/save/create-brief buttons in
+    `ContentIntelligenceView` with confirmation chip + Undo + error
+    inline. Accessibility ids `content-idea-accept-button`,
+    `content-idea-reject-button`, `content-create-brief-button`.
+  - ~~**CONTENT-UI-O3**~~ → **DONE 2026-05-04**:
+    `src/state/content-performance-aggregate.ts` aggregator (read-only
+    over existing tables), admin route
+    `GET /api/v1/admin/content/performance`, 8 backend tests, portal
+    Performance card with KPI strip + highlights/warnings + top
+    accepted/rejected topics (visible only when scope is active).
+  - ~~**CONTENT-UI-O4**~~ → **DONE 2026-05-04**:
+    `src/state/content-lifecycle.ts` canonical-12-stage mapper
+    (`mapContentTopicStatusToCanonical` collapses 22 `ContentTopicStatus`
+    cases into 12; `mapSavedIdeaStatusToCanonical` covers the legacy
+    `saved_ideas` set; radar-feedback signals feed `accepted` /
+    `rejected` buckets). Routes `GET /api/v1/content/lifecycle` (iOS,
+    JWT) + `GET /api/v1/admin/content/lifecycle` (portal, scope picker).
+    19 backend tests. iOS canonical lifecycle pill band on
+    `PipelineDetailView`. Portal canonical lifecycle band inside the
+    Content Pipeline card.
+  - ~~**CONTENT-UI-O5**~~ → **DONE 2026-05-04**: portal browser-runtime
+    smoke at `engine/scripts/content-portal-browser-smoke.mjs` — two
+    modes: `--validate-only` (31 structural + JS-presence assertions, no
+    browser, no engine) and Playwright live-smoke mode (boots Chromium,
+    applies scope, asserts `x-nexus-user-id` / `x-nexus-tenant-id`
+    headers ride along on `/api/v1/admin/content/*`). The validate-only
+    mode is wired into the focused-test lane.
+  - ~~**CONTENT-UI-O6**~~ → **DONE 2026-05-04**:
+    `ios/Nexus Hub/Views/Content/ContentBriefEditorView.swift` — 12-field
+    brief editor (objective, audience, platform, format, angle, source
+    material, main points, claims, CTA, constraints, deadline, approval
+    owner) with offline-first tenant-scoped `ContentBriefLocalStore`,
+    `POST /api/v1/content/workflow/:id/actions` round-trip when a
+    `contentObjectId` is attached. Brief nav card on Content Home
+    (`content-brief-button`). Save button id `content-brief-save-button`.
+  - ~~**CONTENT-UI-O7**~~ → **DONE 2026-05-04**: `TopicSchedulerView`
+    now defaults to a 7-column week-grid view of the current + next 3
+    weeks, with status-tinted topic chips, today highlight, mode picker
+    (`topic-scheduler-mode-picker`) toggling to the legacy week-grouped
+    list, and the unscheduled drawer below the grid. Accessibility id
+    `topic-scheduler-week-grid`.
+  - ~~**CONTENT-UI-O8**~~ → **DONE 2026-05-04**: `ios-specs/03-SCREENS-UI.md`
+    Content section rewritten to match the shipped IA (Skills tab slot 3
+    → ContentSkillView). Tab 5/More section is now marked **legacy**;
+    new Tab 4: Skills section is normative. Includes accessibility ids,
+    nav order, Profile/Voice editor, Brief editor, week-grid topic
+    scheduler, canonical lifecycle band, and per-card Radar action
+    contracts.
+
+  Codex validation delta (2026-05-05): READY_WITH_CONDITIONS for local QA
+  after second-pass fixes; archive evidence:
+  `docs/archive/2026-05/content-creation-ui-codex-validation/codex-validation.md`.
+  Added/fixed: iOS Radar `create_brief` now opens a seeded Brief editor;
+  Content Home profile completeness refreshes backend state before rendering;
+  sign-out clears new Content profile/brief local stores; portal scope controls
+  work inside the IIFE; scoped Performance/Lifecycle panels load independently
+  from the legacy content dashboard; portal smoke asserts live scoped route
+  2xx responses; Performance aggregate now counts scripts using the real
+  `content_scripts.created_at` schema. Verification: backend `tsc --noEmit`
+  clean; 60/60 backend Content tests PASS across state/API suites; portal
+  validate-only smoke PASS (38/38 assertions); portal live Chromium smoke PASS
+  against local throwaway DB with 6 scoped V1 admin Content requests carrying
+  tenant/user headers and 4 scoped panel endpoint responses returning 2xx; iOS
+  `xcodebuild build-for-testing` PASS; iOS `ContentCreatorProfileTests` PASS
+  (27/27). Remaining conditions: provider-backed semantic quality and
+  tenant-facing portal profile/brief/script/calendar/memory workflows still
+  require staging-safe or explicit follow-up validation. `docs:audit` baseline
+  was 488 issues / 387 markdown files immediately before this validation
+  report/update.
+
 - Run `cd engine && npm run docs:audit` before future release-doc updates; the
   first implementation landed on 2026-05-03 and now flags scattered verdicts,
   commit-hash drift, literal test-count drift risk, broken markdown references,

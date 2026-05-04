@@ -35,6 +35,10 @@ import {
   listContentReuseLineage,
   recordContentNoveltyCandidate,
 } from '../../services/content-novelty-reuse';
+// CONTENT-UI-O3: portal performance dashboard
+import { getContentPerformanceAggregate } from '../../state/content-performance-aggregate';
+// CONTENT-UI-O4: portal canonical lifecycle alias
+import { summarizeCanonicalLifecycle } from '../../state/content-lifecycle';
 
 function sendSuccess(res: Response, data: Record<string, unknown> = {}): void {
   res.json({ ok: true, ...data });
@@ -324,6 +328,36 @@ export function contentAdminWriteRoutes(): Router {
     } catch (err: any) {
       logger.error({ err }, 'Portal: build content provenance review pack failed');
       sendInternalError(res, 'Failed to build provenance review pack');
+    }
+  });
+
+  // ═══════════════════════════════════════════════════════════════════
+  // PERFORMANCE — Tenant-scoped Content Performance aggregate (CONTENT-UI-O3)
+  // ═══════════════════════════════════════════════════════════════════
+
+  /** GET /performance?userId=&tenantId= — read aggregate performance metrics */
+  router.get('/performance', (req: Request, res: Response) => {
+    const scope = resolvePortalContentScope(req, res, true);
+    if (!scope) return;
+    try {
+      const aggregate = getContentPerformanceAggregate(scope.userId, scope.tenantId);
+      sendSuccess(res, { performance: aggregate, scope });
+    } catch (err: any) {
+      logger.error({ err }, 'Portal: get content performance aggregate failed');
+      sendInternalError(res, 'Failed to read performance aggregate');
+    }
+  });
+
+  /** GET /lifecycle?userId=&tenantId= — canonical 12-bucket lifecycle (CONTENT-UI-O4) */
+  router.get('/lifecycle', (req: Request, res: Response) => {
+    const scope = resolvePortalContentScope(req, res, true);
+    if (!scope) return;
+    try {
+      const lifecycle = summarizeCanonicalLifecycle(scope.userId, scope.tenantId);
+      sendSuccess(res, { lifecycle, scope });
+    } catch (err: any) {
+      logger.error({ err }, 'Portal: get content canonical lifecycle failed');
+      sendInternalError(res, 'Failed to read canonical lifecycle');
     }
   });
 

@@ -2018,6 +2018,37 @@ table.legacy th {
         </div>
       </div>
 
+      <!-- ────────── Tenant scope picker (2026-05-04 — content-creation-ui) ─
+        The V1 admin Content routes (/api/v1/admin/content/links,
+        /voice-dna upsert, /pillars-when-scoped) require explicit
+        user/tenant scope. This card lets the operator pick which
+        user/tenant context the Content panels operate on. The scope
+        is persisted to localStorage and attached as
+        x-nexus-user-id / x-nexus-tenant-id headers automatically
+        by `apiFetch` for any /api/v1/admin/content/* call.
+      ─────────────────────────────────────────────────────────────── -->
+      <div class="card" id="content-scope-card" style="margin-bottom:var(--space-4);border:1px solid var(--accent);background:var(--bg-elevated)">
+        <div class="card-header">
+          <div>
+            <div class="card-title">🎯 Tenant Scope</div>
+            <span class="card-subtitle" id="content-scope-subtitle">Set the user / tenant context for V1 Content admin actions. Leave both empty to operate as platform/operator (legacy behavior).</span>
+          </div>
+        </div>
+        <div style="padding:var(--space-3);display:flex;flex-wrap:wrap;gap:var(--space-2);align-items:center">
+          <label style="font-size:11px;color:var(--text-secondary);display:flex;flex-direction:column;gap:4px">
+            User ID
+            <input type="number" id="content-scope-user-id" min="0" style="width:120px;padding:6px 10px;border-radius:var(--radius-sm);border:1px solid var(--border);background:var(--bg-tertiary);color:var(--text-primary);font-size:12px" placeholder="e.g. 1">
+          </label>
+          <label style="font-size:11px;color:var(--text-secondary);display:flex;flex-direction:column;gap:4px">
+            Tenant ID
+            <input type="number" id="content-scope-tenant-id" min="0" style="width:120px;padding:6px 10px;border-radius:var(--radius-sm);border:1px solid var(--border);background:var(--bg-tertiary);color:var(--text-primary);font-size:12px" placeholder="e.g. 1">
+          </label>
+          <button class="btn btn-sm" onclick="saveContentScope()" id="content-scope-save-btn" style="margin-top:18px">Apply</button>
+          <button class="btn btn-ghost btn-sm" onclick="clearContentScope()" id="content-scope-clear-btn" style="margin-top:18px">Clear</button>
+          <span id="content-scope-status" style="margin-left:var(--space-3);margin-top:18px;font-size:11px;color:var(--text-tertiary)"></span>
+        </div>
+      </div>
+
       <!-- KPI strip -->
       <div class="grid grid-cols-4" style="margin-bottom:var(--space-4)">
         <div class="kpi-card">
@@ -2047,6 +2078,15 @@ table.legacy th {
         <div class="card-header">
           <div class="card-title">🎬 Content Pipeline</div>
           <span class="card-subtitle" id="content-pipeline-meta">—</span>
+        </div>
+        <!-- CONTENT-UI-O4: Canonical 12-bucket lifecycle band (visible
+             when scope is active; collapses when no scope is set). -->
+        <div id="content-canonical-lifecycle-card" style="display:none;padding:var(--space-3);border-bottom:1px solid var(--border)">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:var(--space-2)">
+            <div style="font-size:12px;font-weight:600">Lifecycle (12-stage canonical)</div>
+            <span style="font-size:11px;color:var(--text-tertiary)" id="content-canonical-lifecycle-meta">—</span>
+          </div>
+          <div id="content-canonical-lifecycle-band" style="display:flex;gap:6px;flex-wrap:wrap"></div>
         </div>
         <div id="content-pipeline-stages" class="grid grid-cols-auto" style="margin-bottom:var(--space-4)"></div>
         <div id="content-pipeline-recent"></div>
@@ -2127,6 +2167,65 @@ table.legacy th {
             </div>
           </div>
           <div id="content-radar-list"><div class="empty">Loading reactions…</div></div>
+        </div>
+      </div>
+
+      <!-- ──────────────────────────────────────────────────────────────────
+        Performance dashboard (CONTENT-UI-O3, 2026-05-04)
+        Read-only aggregate of topics / scripts / radar feedback for the
+        currently scoped (userId, tenantId). Renders highlights ("what's
+        working") and warnings ("what's underperforming"). Only loads
+        when scope is active.
+      ─────────────────────────────────────────────────────────────────── -->
+      <div class="card" id="content-performance-card" style="margin-bottom:var(--space-4);display:none">
+        <div class="card-header" style="display:flex;justify-content:space-between;align-items:center">
+          <div>
+            <div class="card-title">📈 Performance (scoped tenant)</div>
+            <span class="card-subtitle" id="content-performance-meta">—</span>
+          </div>
+          <button class="btn btn-ghost btn-sm" onclick="loadContentPerformance()" id="content-performance-refresh-btn">↻ Refresh</button>
+        </div>
+        <div class="grid grid-cols-4" style="padding:var(--space-3);border-bottom:1px solid var(--border)">
+          <div class="kpi-card">
+            <div class="kpi-label">Topics total</div>
+            <div class="kpi-value" id="content-perf-topics-total">—</div>
+            <div class="kpi-sub" id="content-perf-topics-sub">by status</div>
+          </div>
+          <div class="kpi-card">
+            <div class="kpi-label">Published 30d</div>
+            <div class="kpi-value" id="content-perf-published-30d">—</div>
+            <div class="kpi-sub">live cadence</div>
+          </div>
+          <div class="kpi-card">
+            <div class="kpi-label">Scripts 30d</div>
+            <div class="kpi-value" id="content-perf-scripts-30d">—</div>
+            <div class="kpi-sub" id="content-perf-scripts-sub">script velocity</div>
+          </div>
+          <div class="kpi-card">
+            <div class="kpi-label">Radar feedback</div>
+            <div class="kpi-value" id="content-perf-radar-total">—</div>
+            <div class="kpi-sub" id="content-perf-radar-sub">accept / reject</div>
+          </div>
+        </div>
+        <div class="grid grid-cols-2" style="padding:var(--space-3)">
+          <div>
+            <div class="card-subtitle" style="margin-bottom:var(--space-2);font-weight:600">✅ What's working</div>
+            <ul id="content-perf-highlights" style="margin:0;padding-left:var(--space-4);font-size:12px;color:var(--text-secondary)"></ul>
+          </div>
+          <div>
+            <div class="card-subtitle" style="margin-bottom:var(--space-2);font-weight:600">⚠️ Underperforming</div>
+            <ul id="content-perf-warnings" style="margin:0;padding-left:var(--space-4);font-size:12px;color:var(--text-secondary)"></ul>
+          </div>
+        </div>
+        <div class="grid grid-cols-2" style="padding:var(--space-3);border-top:1px solid var(--border)">
+          <div>
+            <div class="card-subtitle" style="margin-bottom:var(--space-2);font-weight:600">Top accepted topics</div>
+            <div id="content-perf-top-accepted"><div class="empty">No data yet</div></div>
+          </div>
+          <div>
+            <div class="card-subtitle" style="margin-bottom:var(--space-2);font-weight:600">Top rejected topics</div>
+            <div id="content-perf-top-rejected"><div class="empty">No data yet</div></div>
+          </div>
         </div>
       </div>
 
@@ -2673,10 +2772,51 @@ table.legacy th {
     location.reload();
   });
 
+  // ────────── Tenant scope (added 2026-05-04 — content-creation-ui slice) ──
+  //
+  // The Content Creation V1 admin routes (/api/v1/admin/content/links,
+  // /voice-dna upsert, /pillars when scoped) require an explicit
+  // user/tenant scope via x-nexus-user-id / x-nexus-tenant-id headers OR
+  // body fields. Before this slice the portal SPA sent NO scope at all,
+  // which silently caused scoped writes to be rejected.
+  //
+  // We persist the active scope to localStorage so it survives reloads,
+  // expose it as a top-of-Content-section input, and make `apiFetch`
+  // automatically attach the scope headers ONLY when the URL is a
+  // V1 admin content route (so legacy /api/* paths keep their old
+  // behavior). Operators can clear the scope by leaving the inputs empty.
+  const SCOPE_STORAGE_KEY = 'nexus-portal-content-scope-v1';
+
+  function loadStoredScope() {
+    try {
+      const raw = localStorage.getItem(SCOPE_STORAGE_KEY);
+      if (!raw) return { userId: '', tenantId: '' };
+      const parsed = JSON.parse(raw);
+      return { userId: parsed.userId || '', tenantId: parsed.tenantId || '' };
+    } catch (_) { return { userId: '', tenantId: '' }; }
+  }
+  function persistScope(scope) {
+    try {
+      localStorage.setItem(SCOPE_STORAGE_KEY, JSON.stringify({
+        userId: scope.userId || '', tenantId: scope.tenantId || ''
+      }));
+    } catch (_) {}
+  }
+  let CONTENT_SCOPE = loadStoredScope();
+
+  function isContentScopedRoute(url) {
+    return typeof url === 'string'
+      && url.includes('/api/v1/admin/content');
+  }
+
   // ────────── Fetch wrapper with auth ──────────
   async function apiFetch(url, opts = {}) {
     const headers = { ...(opts.headers || {}) };
     if (TOKEN) headers['Authorization'] = 'Bearer ' + TOKEN;
+    if (isContentScopedRoute(url)) {
+      if (CONTENT_SCOPE.userId) headers['x-nexus-user-id'] = String(CONTENT_SCOPE.userId);
+      if (CONTENT_SCOPE.tenantId) headers['x-nexus-tenant-id'] = String(CONTENT_SCOPE.tenantId);
+    }
     const res = await fetch(url, { ...opts, headers });
     if (res.status === 401) {
       TOKEN = '';
@@ -5094,6 +5234,15 @@ table.legacy th {
   let contentDashboardCache = null;
 
   async function loadContentDashboard() {
+    // 2026-05-04 — Refresh the scope picker UI from persisted state
+    // before any data load so the operator can see the active scope
+    // and the dashboard data they are about to fetch matches it.
+    refreshContentScopeUI();
+    // CONTENT-UI-O3/O4 panels are scoped, first-class surfaces. Keep them
+    // independent from the legacy content-dashboard payload so a missing
+    // legacy endpoint does not hide tenant-scoped evidence.
+    loadContentPerformance().catch(() => {});
+    loadContentCanonicalLifecycle().catch(() => {});
     try {
       const r = await apiFetch('/api/v1/admin/content-dashboard');
       if (!r.ok) {
@@ -5109,6 +5258,230 @@ table.legacy th {
         '<div class="empty">Network error loading content dashboard</div>';
     }
   }
+
+  // ────────── Tenant scope UI helpers (2026-05-04) ──────────
+  function refreshContentScopeUI() {
+    const userInput = document.getElementById('content-scope-user-id');
+    const tenantInput = document.getElementById('content-scope-tenant-id');
+    const status = document.getElementById('content-scope-status');
+    if (!userInput || !tenantInput || !status) return;
+    userInput.value = CONTENT_SCOPE.userId || '';
+    tenantInput.value = CONTENT_SCOPE.tenantId || '';
+    if (CONTENT_SCOPE.userId || CONTENT_SCOPE.tenantId) {
+      status.textContent = 'Scoped to user=' + (CONTENT_SCOPE.userId || '—')
+        + ' / tenant=' + (CONTENT_SCOPE.tenantId || '—');
+      status.style.color = 'var(--accent)';
+    } else {
+      status.textContent = 'Operator/platform scope (no x-nexus-* headers)';
+      status.style.color = 'var(--text-tertiary)';
+    }
+  }
+  function saveContentScope() {
+    const userId = (document.getElementById('content-scope-user-id').value || '').trim();
+    const tenantId = (document.getElementById('content-scope-tenant-id').value || '').trim();
+    // Numeric-only sanity. Empty stays empty (clears scope).
+    if (userId && !/^\d+$/.test(userId)) {
+      showToast('User ID must be numeric', false);
+      return;
+    }
+    if (tenantId && !/^\d+$/.test(tenantId)) {
+      showToast('Tenant ID must be numeric', false);
+      return;
+    }
+    CONTENT_SCOPE = { userId, tenantId };
+    persistScope(CONTENT_SCOPE);
+    refreshContentScopeUI();
+    showToast(
+      (userId || tenantId)
+        ? 'Scope applied. Re-loading Content dashboard.'
+        : 'Scope cleared. Re-loading Content dashboard.',
+      true
+    );
+    // Reload dashboard with new scope.
+    loadContentDashboard();
+  }
+  function clearContentScope() {
+    CONTENT_SCOPE = { userId: '', tenantId: '' };
+    persistScope(CONTENT_SCOPE);
+    refreshContentScopeUI();
+    showToast('Scope cleared. Re-loading Content dashboard.', true);
+    loadContentDashboard();
+  }
+
+  // ────────── Performance panel (CONTENT-UI-O3, 2026-05-04) ──────────
+  async function loadContentPerformance() {
+    const card = document.getElementById('content-performance-card');
+    if (!card) return;
+    if (!CONTENT_SCOPE.userId) {
+      // No scope active — hide the performance card; it's tenant-only.
+      card.style.display = 'none';
+      return;
+    }
+    card.style.display = '';
+    document.getElementById('content-performance-meta').textContent = 'Loading…';
+    try {
+      const params = new URLSearchParams({
+        userId: String(CONTENT_SCOPE.userId),
+      });
+      if (CONTENT_SCOPE.tenantId) params.set('tenantId', String(CONTENT_SCOPE.tenantId));
+      const r = await apiFetch('/api/v1/admin/content/performance?' + params.toString());
+      if (!r.ok) {
+        document.getElementById('content-performance-meta').textContent =
+          'Failed to load (' + r.status + ')';
+        return;
+      }
+      const data = await r.json();
+      const perf = data && data.performance;
+      if (!perf) {
+        document.getElementById('content-performance-meta').textContent = 'No data returned';
+        return;
+      }
+      renderContentPerformance(perf);
+    } catch (err) {
+      document.getElementById('content-performance-meta').textContent =
+        'Network error loading performance';
+    }
+  }
+
+  function renderContentPerformance(perf) {
+    const meta = document.getElementById('content-performance-meta');
+    if (meta) meta.textContent = 'As of ' + (perf.generatedAt || 'now')
+      + ' · tenant=' + perf.tenantId + ' / owner=' + perf.ownerUserId;
+    setText('content-perf-topics-total', String(perf.topics.total));
+    const breakdown = Object.entries(perf.topics.byStatus || {})
+      .map(([k, v]) => k + ' ' + v).join(' · ');
+    setText('content-perf-topics-sub', breakdown || 'no topics yet');
+    setText('content-perf-published-30d', String(perf.topics.publishedLast30d));
+    setText('content-perf-scripts-30d', String(perf.scripts.last30d));
+    setText('content-perf-scripts-sub', 'total ' + perf.scripts.total);
+    const ra = perf.radarFeedback || { total: 0, byAction: { accept: 0, reject: 0 } };
+    setText('content-perf-radar-total', String(ra.total));
+    setText('content-perf-radar-sub',
+      (ra.byAction.accept || 0) + ' ✓ · ' + (ra.byAction.reject || 0) + ' ✗ · '
+      + (ra.byAction.save || 0) + ' 🔖 · ' + (ra.byAction.create_brief || 0) + ' 📝');
+
+    const hi = document.getElementById('content-perf-highlights');
+    if (hi) hi.innerHTML = (perf.highlights || []).length
+      ? perf.highlights.map(h => '<li>' + esc(h) + '</li>').join('')
+      : '<li class="empty">No highlights yet — keep publishing.</li>';
+
+    const wa = document.getElementById('content-perf-warnings');
+    if (wa) wa.innerHTML = (perf.warnings || []).length
+      ? perf.warnings.map(w => '<li>' + esc(w) + '</li>').join('')
+      : '<li class="empty">No warnings.</li>';
+
+    const accepted = (ra.topAcceptedTopics || []);
+    const acceptedHost = document.getElementById('content-perf-top-accepted');
+    if (acceptedHost) {
+      acceptedHost.innerHTML = accepted.length
+        ? '<ul style="margin:0;padding-left:var(--space-4);font-size:12px">'
+          + accepted.map(t => '<li>' + esc(t.topic) + ' <span class="text-muted">×' + t.count + '</span></li>').join('')
+          + '</ul>'
+        : '<div class="empty">No accepts yet</div>';
+    }
+    const rejected = (ra.topRejectedTopics || []);
+    const rejectedHost = document.getElementById('content-perf-top-rejected');
+    if (rejectedHost) {
+      rejectedHost.innerHTML = rejected.length
+        ? '<ul style="margin:0;padding-left:var(--space-4);font-size:12px">'
+          + rejected.map(t => '<li>' + esc(t.topic) + ' <span class="text-muted">×' + t.count + '</span></li>').join('')
+          + '</ul>'
+        : '<div class="empty">No rejects yet</div>';
+    }
+  }
+
+  function setText(id, value) {
+    const el = document.getElementById(id);
+    if (el) el.textContent = value;
+  }
+
+  // ────────── Canonical lifecycle (CONTENT-UI-O4, 2026-05-04) ──────────
+  // Renders the 12-bucket canonical lifecycle as a horizontal pill row
+  // inside the existing Content Pipeline card. Visible only when scope
+  // is active (the legacy 5-stage view is the no-scope fallback).
+  async function loadContentCanonicalLifecycle() {
+    const card = document.getElementById('content-canonical-lifecycle-card');
+    if (!card) return;
+    if (!CONTENT_SCOPE.userId) {
+      card.style.display = 'none';
+      return;
+    }
+    card.style.display = '';
+    setText('content-canonical-lifecycle-meta', 'Loading…');
+    try {
+      const params = new URLSearchParams({ userId: String(CONTENT_SCOPE.userId) });
+      if (CONTENT_SCOPE.tenantId) params.set('tenantId', String(CONTENT_SCOPE.tenantId));
+      const r = await apiFetch('/api/v1/admin/content/lifecycle?' + params.toString());
+      if (!r.ok) {
+        setText('content-canonical-lifecycle-meta', 'Failed to load (' + r.status + ')');
+        return;
+      }
+      const data = await r.json();
+      const lc = data && data.lifecycle;
+      if (!lc) {
+        setText('content-canonical-lifecycle-meta', 'No data');
+        return;
+      }
+      renderContentCanonicalLifecycle(lc);
+    } catch (err) {
+      setText('content-canonical-lifecycle-meta', 'Network error');
+    }
+  }
+
+  const CANONICAL_LIFECYCLE_TINTS = {
+    discovered: 'var(--info)',
+    suggested: 'var(--info)',
+    accepted: 'var(--success)',
+    briefing: 'var(--warning)',
+    drafting: 'var(--warning)',
+    review: 'var(--domain-content)',
+    approved: 'var(--domain-content)',
+    scheduled: 'var(--accent)',
+    published: 'var(--success)',
+    measured: 'var(--info)',
+    archived: 'var(--text-tertiary)',
+    rejected: 'var(--error)',
+  };
+
+  function renderContentCanonicalLifecycle(lc) {
+    const meta = document.getElementById('content-canonical-lifecycle-meta');
+    if (meta) meta.textContent = (lc.total || 0) + ' items · tenant=' + lc.tenantId
+      + ' / owner=' + lc.ownerUserId;
+    const band = document.getElementById('content-canonical-lifecycle-band');
+    if (!band) return;
+    const buckets = Array.isArray(lc.buckets) ? lc.buckets : [];
+    if (buckets.length === 0) {
+      band.innerHTML = '<div class="empty">No lifecycle data yet.</div>';
+      return;
+    }
+    band.innerHTML = buckets.map(b => {
+      const tint = CANONICAL_LIFECYCLE_TINTS[b.stage] || 'var(--text-secondary)';
+      const dimmed = !b.count;
+      const opacity = dimmed ? '0.45' : '1';
+      const bg = dimmed
+        ? 'rgba(150,150,150,0.06)'
+        : `color-mix(in srgb, ${tint} 14%, var(--bg-elevated))`;
+      return `
+        <div style="min-width:74px;padding:6px 10px;border-radius:8px;
+                    background:${bg};opacity:${opacity};
+                    text-align:center;font-family:var(--font-mono,inherit)">
+          <div style="font-size:16px;font-weight:700;color:${dimmed ? 'var(--text-tertiary)' : tint}">
+            ${b.count}
+          </div>
+          <div style="font-size:9px;font-weight:600;color:var(--text-secondary);margin-top:2px">
+            ${esc(b.label)}
+          </div>
+        </div>
+      `;
+    }).join('');
+  }
+
+  // The portal script runs inside an IIFE. Inline `onclick="..."` handlers
+  // resolve against `window`, so expose the Content controls they invoke.
+  window.saveContentScope = saveContentScope;
+  window.clearContentScope = clearContentScope;
+  window.loadContentPerformance = loadContentPerformance;
+  window.loadContentCanonicalLifecycle = loadContentCanonicalLifecycle;
 
   function renderContentDashboard(d) {
     if (!d || d.ok !== true) return;

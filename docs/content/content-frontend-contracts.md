@@ -1,7 +1,7 @@
 # Content Frontend Contracts
 
-Date: 2026-04-29
-Scope: iOS and portal contracts for upgraded Content Creation.
+Date: 2026-05-04 (extended)
+Scope: iOS and portal contracts for upgraded Content Creation. The 2026-05-04 vertical slice added the iOS creator profile editor, profile completeness card, accessibility identifiers per spec, two contrasting test fixtures, and a portal tenant scope picker with scope-aware fetch wrapper. See `docs/portal/content-portal-readiness.md` for verdict, gaps, and follow-up CONTENT-UI-O* items.
 
 ## Contract Principles
 
@@ -366,12 +366,15 @@ New rich fields should be additive. Backend routes should not make old clients d
 
 ## Minimum Tests Before Release
 
-- iOS decodes unknown content lifecycle values without crash.
-- iOS renders source attribution and review warnings.
-- iOS tenant switch clears or partitions Content caches.
-- Portal user console cannot read another tenant's private draft.
-- Portal admin aggregate view does not expose raw private content.
-- Portal support access is audited when raw content is viewed.
-- Reference from another tenant is not returned to frontend contracts.
-- Source/provenance warnings survive script refinement.
-- Secretary schedule decision states render in iOS and portal.
+- iOS decodes unknown content lifecycle values without crash. **E2 PASS** — `ContentHomeContractDecodingTests` + `ContentSkillPresentationTests` pin `ContentTopicStatus` unknown→`.unknown` and `ContentHomeViewState` decodeOrDefault.
+- iOS renders source attribution and review warnings. **E2 PASS** — `ContentScriptProvenanceDecodingTests` + `ContentIdeaReviewDetailRenderingTests` cover provenance/risk/review surfaces.
+- iOS tenant switch clears or partitions Content caches. **E2 PASS (extended)** — `ContentReferenceLocalStoreTests` + the new `ContentCreatorProfileTests` (2026-05-04, 25 tests) pin scope-key partitioning, legacy-key quarantine, reset-only-this-scope semantics, and User A vs User B fixture isolation.
+- Portal user console cannot read another tenant's private draft. **NOT PROVEN** — needs full user-console route + browser smoke. Tracked under CONTENT-UI-O5.
+- Portal admin aggregate view does not expose raw private content. **NOT PROVEN** — same.
+- Portal support access is audited when raw content is viewed. **NOT PROVEN**.
+- Reference from another tenant is not returned to frontend contracts. **E1 PASS** — backend `content-admin-write.test.ts` pins scope predicates.
+- Source/provenance warnings survive script refinement. **E2 PASS** — provenance decoding tests.
+- Secretary schedule decision states render in iOS and portal. **E1 PARTIAL** — iOS `SecretaryDayPlanPreviewData` covers `scheduled` / `reflowed` / `compressed` / `deferred` / `unscheduled` states; portal lifecycle states still BLOCKED.
+- (NEW 2026-05-04) iOS Content Home exposes accessibility identifiers per spec — `content-home-screen`, `content-next-action-card`, `content-profile-completeness-card`, `content-radar-button`, `content-ideas-button`, `content-script-studio-button`, `content-calendar-button`, `content-references-button`, `content-profile-voice-button`, `content-performance-button`. **E2 PASS** — all added on this branch via `accessibilityIdentifier` modifiers and tested via `xcodebuild build` PASS.
+- (NEW 2026-05-04) iOS creator profile editor saves and reads back without crash. **E2 PASS** — `ContentCreatorProfileTests.test_writeAndReadProfile_roundTripsAllFields` round-trips all 13 fields against a `UserDefaults(suiteName: ...)`.
+- (NEW 2026-05-04) Portal V1 admin content routes receive `x-nexus-user-id` / `x-nexus-tenant-id` when scope is set. **E2 PASS** (Node self-test) — 3-assertion suite validates the `apiFetch` wrapper. Browser/runtime smoke is the next gate (E3).

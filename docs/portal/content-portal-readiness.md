@@ -1,8 +1,44 @@
 # Content Portal Readiness
 
-Date: 2026-04-29
-Branch audited: `qa/nexus-hub-focused-review-selected-areas`
-Mode: static portal/backend surface audit plus power-console contract definition. Backend link/book/channel/manual Voice DNA hardening was added after the initial audit; full portal browser/runtime smoke was not run in this batch.
+Date: 2026-05-04
+Branch audited: `feature/content-creation-workflow-ui-redesign`
+Mode: 2026-05-04 vertical-slice closeout — extends the 2026-04-29 portal/backend surface audit with the additions shipped on this branch (tenant scope picker + scope-aware `apiFetch` + iOS Profile/Voice editor) and re-asserts which portal sections are still BLOCKED, PARTIAL, or PASS. Browser-runtime smoke is documented as the next required gate.
+
+## 2026-05-04 vertical-slice update
+
+This pass added the safest useful slice of the upgraded Content Creation
+power console:
+
+- **Portal scope picker** in `src/portal/portal.html` Content section.
+  Operator enters `userId` / `tenantId`; the picker persists the scope to
+  `localStorage` (`nexus-portal-content-scope-v1`) and the `apiFetch`
+  wrapper attaches `x-nexus-user-id` / `x-nexus-tenant-id` headers to every
+  `/api/v1/admin/content/*` call. Non-content paths (`/api/snapshot`,
+  `/api/agents`, `/api/signals`, `/api/pipeline`, `/api/notifications`,
+  `/api/reports`) keep their legacy unscoped behavior. Self-tested via 3
+  Node self-checks (no-scope → no headers; scope active on content path →
+  headers present; scope active on non-content path → no headers).
+- **iOS `ContentCreatorProfileView`** added — pillars / niches / audience /
+  platforms / voice rules / preferred formats / disliked-banned topics /
+  trusted-disliked sources / content goals / language / voice examples
+  editor; tenant-scoped local persistence via `ContentCreatorProfileLocalStore`
+  (mirrors `ContentReferenceLocalStore` versioned scope-key partitioning).
+  Two contrasting fixtures (User A AI/training creator, User B
+  cooking/family creator) for QA. Profile completeness card on Content
+  Home with progressive disclosure (hidden when ≥70%). 25-test focused
+  XCTest suite (`Nexus HubTests/ContentCreatorProfileTests.swift`) covers
+  completeness math, tenant-scope partitioning, legacy-key quarantine,
+  reset semantics, and fixture contrast.
+- **iOS accessibility identifiers** added per spec:
+  `content-home-screen`, `content-next-action-card`,
+  `content-profile-completeness-card`, `content-radar-button`,
+  `content-ideas-button`, `content-script-studio-button`,
+  `content-calendar-button`, `content-references-button`,
+  `content-profile-voice-button`, `content-performance-button`, plus
+  `content-save-profile-button` and 13 per-editor identifiers on the new
+  profile view.
+
+iOS `xcodebuild -scheme "Nexus Hub" -destination 'platform=iOS Simulator,name=iPhone 17,OS=26.4.1' build` PASS. Backend `tsc --noEmit` PASS. `npm run docs:audit` baseline preserved.
 
 ## Executive Summary
 
@@ -25,6 +61,26 @@ Current portal limits:
 - The portal does not yet expose all upgraded provenance, approval, lifecycle, memory, novelty, and content calendar workflow as first-class UI surfaces, but backend portal contracts now exist for provenance review packs, reuse lineage, and historical comparison.
 
 Verdict: **NO-GO for tenant-facing Content portal readiness**. The current portal can remain an operator dashboard, but it must not be treated as a tenant admin/user Content console without additional authorization and audit controls.
+
+**2026-05-04 verdict (slice closeout):** still **NO-GO for tenant-facing portal**. The added tenant scope picker + scope-aware `apiFetch` is a NECESSARY but NOT SUFFICIENT precondition for tenant-facing usage; the still-MISSING surfaces below (brief editor, script studio, calendar, performance, memory & feedback, approval queue) keep the portal in operator-dashboard mode. iOS-side **PASS WITH CONDITIONS** — Content surface now has an editable creator profile (largest single gap closed) and accessibility identifiers per spec; per-card Radar accept/reject/save/create-brief actions remain BLOCKED until backend exposes a per-signal feedback endpoint to iOS (intelligence-bus `/api/signals/:id/dismiss` is portal-only).
+
+**2026-05-04 update (CONTENT-UI-O1..O8 closeout):** all 8 follow-ups
+landed in this same vertical slice. Net effect on portal readiness:
+
+- Performance dashboard, canonical 12-bucket lifecycle band, and
+  scope-aware `apiFetch` are now in production-ready shape on the
+  portal. Operator workflow gap is significantly reduced.
+- iOS now has unified `ContentCreatorProfile` round-trip (CONTENT-UI-O1),
+  per-card Radar accept/reject/save/create-brief (CONTENT-UI-O2),
+  Brief editor (CONTENT-UI-O6), and week-grid Topic Scheduler
+  (CONTENT-UI-O7). The iOS half of the workflow is no longer the
+  bottleneck.
+- **Verdict update**: portal moves from NO-GO to **PASS WITH CONDITIONS
+  for operator-scoped Content workflows** (i.e. an operator can scope
+  to a specific tenant and review their performance / lifecycle /
+  references). Tenant-facing direct portal usage is still NO-GO until
+  brief editor, script studio, calendar, memory & feedback, and
+  approval queue surfaces ship on the portal.
 
 ## Current Portal Surfaces
 
@@ -124,6 +180,15 @@ The portal needs read APIs or dashboard sections for:
 | Portal approval workflow | Blocked | Backend approval records exist, portal UI missing. |
 | Tenant switch does not leak references | Blocked | Needs User/Tenant Console scoping and smoke. |
 | Unauthorized user cannot see private draft | Not proven | Needs backend route and portal policy tests. |
+| Portal sends `x-nexus-user-id` / `x-nexus-tenant-id` on V1 admin content writes | **PASS** (2026-05-04 vertical slice) | `apiFetch` wrapper attaches headers when `isContentScopedRoute(url)` matches. Self-tested via 3 Node assertions: (a) no scope → no headers; (b) scope active + content path → headers present; (c) scope active + non-content path → no headers (legacy paths preserved). Browser smoke + write round-trip is the next gate. |
+| Portal exposes a tenant scope picker on Content tab | **PASS** (2026-05-04) | New "Tenant Scope" card at the top of `data-section="content"`; persists to `localStorage` (`nexus-portal-content-scope-v1`); numeric input validation; Apply/Clear actions reload the dashboard. |
+| Portal Content Profile editor (pillars/audience/voice/banned topics/sources) | iOS-only PASS / portal Blocked | iOS round-trip via `GET/PUT /api/v1/content/creator-profile` is shipped (CONTENT-UI-O1). Portal-side editor for the same profile is a follow-up — backend route works for both surfaces. |
+| Portal performance dashboard (what worked / underperformed) | **PASS** (2026-05-04 CONTENT-UI-O3) | `getContentPerformanceAggregate` aggregates topics + scripts + radar feedback by tenant; admin route `GET /api/v1/admin/content/performance`; portal Performance card with KPI strip + highlights + warnings + top accepted/rejected topics. 8/8 backend tests PASS. |
+| Portal full ideas pipeline kanban (12-stage lifecycle) | **PARTIAL PASS** (2026-05-04 CONTENT-UI-O4) | Canonical 12-bucket lifecycle band visible inside the Content Pipeline card on the portal (read-only) + on iOS `PipelineDetailView`. Backed by `summarizeCanonicalLifecycle` mapper over existing `content_topics`, `saved_ideas`, and `content_radar_feedback` tables. Native 12-stage transitions on the underlying data is the remaining follow-up; the read view is canonical now. |
+| Portal browser-runtime smoke (scope picker + scope-aware apiFetch) | **PASS validate-only** (2026-05-04 CONTENT-UI-O5) | `engine/scripts/content-portal-browser-smoke.mjs --validate-only` — 31/31 structural + JS-presence assertions PASS. Live Playwright mode available for runtime verification when engine is booted. |
+| iOS per-card Radar accept/reject/save/create-brief actions | **PASS** (2026-05-04 CONTENT-UI-O2) | `POST /api/v1/content/radar/feedback` endpoint + iOS per-card buttons + confirmation/Undo/error chips. 13/13 backend tests PASS. |
+| iOS Brief editor (objective/audience/platform/format/angle/sources/main points/claims/CTA/constraints/deadline/approval owner) | **PASS** (2026-05-04 CONTENT-UI-O6) | `ContentBriefEditorView` + `ContentBriefLocalStore` + offline-first round-trip through `POST /api/v1/content/workflow/:id/actions` when a content_object id is attached. Standalone-draft mode supported when no underlying object exists. |
+| iOS Topic Scheduler week-view grid | **PASS** (2026-05-04 CONTENT-UI-O7) | 7-column week-grid (current + next 3 weeks), status-tinted chips, today highlight, mode picker toggle to legacy list view. |
 
 ## Release Recommendation
 
