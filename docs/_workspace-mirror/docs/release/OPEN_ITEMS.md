@@ -5,59 +5,94 @@ Last updated: 2026-05-04
 ## Engineering excellence enrichment pass (2026-05-04)
 
 Branches:
-- engine: `feature/engineering-excellence-architecture-standards` @ `eacebb3` (one commit, NOT pushed).
+- engine: `feature/engineering-excellence-architecture-standards` @ `ca4eed1` (three commits, NOT pushed).
+  - `eacebb3` Claude initial standards + 5 classifier flags + 6 classifier tests.
+  - merge `799af5d` ← Codex `61d381e` (frontmatter check + 4 classifier flags + 4 classifier tests).
+  - `ca4eed1` ENG-EXC-O3 + ENG-EXC-O8 closure (mirror + dashboard + prompt-only fix + 2 classifier tests).
 - ios: `feature/engineering-excellence-architecture-standards` @ `f07e80c` (one commit, NOT pushed).
 - Backup tags (both repos): `backup/engineering-excellence-before-hardening-20260504-1057`.
 
-Verdict: **PASS WITH CONDITIONS**.
+Verdict: **PASS WITH CONDITIONS** → CONDITIONS NARROWED. ENG-EXC-O1, O2, O3, O4, O5, O8 are now FIXED locally on `feature/engineering-excellence-architecture-standards`. ENG-EXC-O6, O7, O9, O10 remain open at P2/P3.
 
 Canonical report: `docs/archive/2026-05/engineering-excellence-architecture-standards/engineering-excellence-enrichment-report.md`.
 Codex independent validation: `docs/archive/2026-05/engineering-excellence-codex-validation/engineering-excellence-codex-validation.md`.
 
-### What I shipped
+### What I shipped (Claude initial — `eacebb3`)
 
 - 8 canonical engineering standards: 5 backend (API contract, security/isolation, runtime/observability, testing/QA, engineering index) under `engine/docs/engineering/`; 2 iOS (architecture/SwiftUI performance, frontend validation checklist) under `ios/docs/engineering/`; 1 workspace agent-process standard at `docs/agent/AGENT_PROCESS_STANDARD.md`.
 - 3 engineering standards indexes (workspace + engine + iOS).
 - 1 new iOS DOCS_INDEX (`ios/docs/DOCS_INDEX.md`).
 - 5 new release-classifier flags (`HAS_LOGGER`, `HAS_SCHEDULER`, `HAS_NOTIFICATION`, `HAS_HEALTH_INTEGRATION`, `HAS_RATE_LIMIT`) + 5 cannot-skip safety gates + 5 vitest glob mappings.
-- 6 new classifier test cases (5 affirmative + 1 no-false-positives sentinel).
+- 6 new classifier test cases.
 - `scripts/audit-docs.mjs` extended to register the new `engineering/` canonical paths and `AGENT_PROCESS_STANDARD.md`.
 - Workspace + engine + iOS DOCS_INDEX updated.
 
-### Verification
+### What Codex shipped (merge `799af5d` ← `61d381e`)
 
-- `engine`: `npx tsc --noEmit` clean. Pre-commit hook (classifier-driven) ran clean: typecheck + 9/9 classifier tests. Sanity: `p0-chat-identity-isolation` 23/23 PASS, `prompt-cleanliness` 72/72 PASS, `logger-redaction` 3/3 PASS, `scheduler-user-scope` 10/10 PASS, `apns-sender` 26/26 PASS, `wearable-cache-isolation` 2/2 PASS, `rate-limiter` 16/16 PASS. `npm run docs:audit` 485 issues / 364 files (down from 492 after registering the new canonical paths).
-- `ios`: docs-only commit; no source code changed. iOS feature branch holds the docs commit.
-- Cleanup: no simulators booted, no orphan vitest/xcodebuild/xctrace processes, no listeners on dev ports. PM2 `telegram-hub-bot` is the user's pre-existing service.
+- `scripts/audit-docs.mjs`: `engineering-standard-frontmatter-missing` validation for workspace/backend/iOS engineering standards + agent process standard.
+- `scripts/changed-area-classifier.sh`: 4 new flags + cannot-skip gates + XCTest/Vitest mappings — `HAS_AUDIT`, `HAS_DEPLOY_CONFIG`, `HAS_IOS_NAVIGATION`, `HAS_IOS_DTO`. `HAS_DEPLOY_CONFIG` also bumps Tier-4 staging-smoke and generic 17-check.
+- `__tests__/scripts/changed-area-classifier.test.ts`: 4 affirmative tests + extended no-false-positives sentinel.
 
-### Codex validation delta (2026-05-04)
+### What Claude shipped (continuation — `ca4eed1`, ENG-EXC-O3 + O8)
 
-- engine validation branch: `feature/engineering-excellence-codex-validation`.
-- iOS validation branch: `feature/engineering-excellence-codex-validation`.
-- Added docs-audit enforcement for engineering standard frontmatter (`Status`, `Owner`, `Last verified`, `Update policy`).
-- Added release-classifier flags/cannot-skip gates/tests for audit trail, deploy config, iOS navigation/view-model responsiveness, and iOS DTO/decoder changes.
-- Validation: `npx tsc --noEmit` clean; `changed-area-classifier.test.ts` 13/13 PASS; audit-focused tests 27/27 PASS; config/runtime health tests 51/51 PASS; `npm run docs:audit` reports 486 historical warnings and no new engineering-frontmatter warnings.
+- **ENG-EXC-O8 (workspace docs durability) — CLOSED**:
+  - `scripts/workspace-docs-mirror.sh`: one-way mirror from workspace `docs/`, `CLAUDE.md`, `AGENTS.md`, `README.md` into `engine/docs/_workspace-mirror/`. Modes: snapshot (default), `--check` (drift exit 1), `--dry-run`.
+  - 15 workspace docs are now mirrored (CLAUDE/AGENTS/README + docs/agent + docs/engineering + docs/release; docs/archive intentionally NOT mirrored).
+  - `audit-docs.mjs` gains `workspace-mirror-stale` + `workspace-mirror-missing` warnings; mirror itself is registered as approved-current AND skipped from per-file lints (avoids duplicate warnings on the same content).
+  - Workspace `ENGINEERING_STANDARDS_INDEX` documents the mirror contract.
+  - Wired into `release-pipeline-housekeeping.sh` step 3 (dry-run checks drift, `--apply` refreshes).
+  - `.gitignore` excludes `docs/release/cannot-skip-gate-evidence/` (generated).
+
+- **ENG-EXC-O3 (cannot-skip gate dashboard) — CLOSED**:
+  - `scripts/cannot-skip-gate-dashboard.sh`: synthetically invokes the classifier with a representative file per gate, asserts every gate name appears in `cannotSkip` AND every expected test route appears in `vitest`/`xctest` output. 23 gates total. Emits markdown to stdout + JSON evidence file under `docs/release/cannot-skip-gate-evidence/`.
+  - **Found and fixed a real classifier gap during dashboard development**: prompts-only diffs (`HAS_PROMPT=true`, `HAS_NON_DOC=false`) named `prompt-injection-defense` as cannot-skip BUT emitted ZERO vitest globs because the entire vitest block was inside the `HAS_NON_DOC` branch. Fix: when `HAS_PROMPT` fires and `VITEST_MODE` would otherwise be `skip`, force focused mode and add the security suite + prompt-cleanliness globs.
+  - 2 new classifier tests pinning the prompt-only fix and the dashboard wiring.
+  - Wired into `release-pipeline-housekeeping.sh` step 4 (runs `--quiet`; sets `OVERALL_RC=1` on any wiring failure).
+
+### Verification (final state @ `ca4eed1`)
+
+- `engine`: `npx tsc --noEmit` clean.
+- Pre-commit hook (classifier-driven): typecheck + 15/15 classifier tests pass.
+- `__tests__/scripts/changed-area-classifier.test.ts`: **15/15 PASS** (was 9 → 13 after Codex → 15 after ENG-EXC-O3 fix).
+- Audit-focused tests (Codex 27/27 reference): **27/27 PASS** across 4 files (`audit-trail`, `authenticated-support-routes-scope`, `portal-admin-audit`, `portal-admin-data-routes`).
+- Config/runtime/health tests (Codex 51/51 reference): **51/51 PASS** across 4 files (`config-runtime-validation`, `config-provider`, `health-endpoint-qa-validation`, `health-endpoints`).
+- `npm run docs:audit`: **486 issues / 380 files** (matches Codex baseline; zero new engineering-frontmatter warnings; zero workspace-mirror-stale warnings after mirror is in sync).
+- `cannot-skip-gate-dashboard.sh`: **23/23 gates PASS**, verdict PASS, JSON evidence written.
+- `release-pipeline-housekeeping.sh`: dry-run completes clean across all 5 steps including the new mirror + dashboard steps.
+- `ios`: docs-only iOS branch; no iOS source code changed in this continuation pass.
+- Cleanup: no simulators booted, no orphan vitest/xcodebuild/xctrace processes, no listeners on dev ports.
 
 ### Open engineering-excellence items
 
-| ID | Severity | Description |
-|---|---|---|
-| ENG-EXC-O1 | P1 | **FIXED locally by Codex validation.** Added `HAS_IOS_NAVIGATION` and `HAS_IOS_DTO` with focused XCTest classes for navigation/view-model/responsiveness and DTO/decoder changes. Merge `feature/engineering-excellence-codex-validation` with Claude's standards branch. |
-| ENG-EXC-O2 | P1 | **FIXED locally by Codex validation.** `scripts/audit-docs.mjs` now warns on missing engineering-standard frontmatter. Merge `feature/engineering-excellence-codex-validation`. |
-| ENG-EXC-O3 | P1 | The 9 cannot-skip gates are not yet wired into a single dashboard. Recommend a weekly `closed-beta-smoke` run that emits gate-status JSON for the operator portal. |
-| ENG-EXC-O4 | P2 | **FIXED locally by Codex validation.** Added `HAS_AUDIT`, `audit-trail-emission-and-scope`, and focused audit test routing. Merge `feature/engineering-excellence-codex-validation`. |
-| ENG-EXC-O5 | P2 | **FIXED locally by Codex validation.** Added `HAS_DEPLOY_CONFIG`, `deploy-config-health-rehearsal`, focused config/health/script/security routing, and generic staging-smoke requirement. Merge `feature/engineering-excellence-codex-validation`. |
-| ENG-EXC-O6 | P2 | E5 (signed TestFlight) walk-through has no machine-readable evidence convention. Define a TestFlight-evidence file pattern under `engine/docs/release/`. |
-| ENG-EXC-O7 | P2 | docs:audit literal-test-count warnings (73). Define a clear archive policy on whether old archive docs need regenerated counts. |
-| ENG-EXC-O8 | P1 | Workspace `docs/agent/AGENT_PROCESS_STANDARD.md`, `docs/engineering/ENGINEERING_STANDARDS_INDEX.md`, and `docs/DOCS_INDEX.md` exist as filesystem artifacts (workspace `docs/` is not git-tracked). Codex validation raises this from P2 to P1: standards can be lost or diverge unless mirrored/tracked. Recommend a workspace-level backup hook or a git-tracked mirror before relying on standards as durable release gates. |
-| ENG-EXC-O9 | P3 | Add an outbound-markdown-link resolver lint over `engineering/` paths. |
-| ENG-EXC-O10 | P3 | Document a deprecation / `superseded_by` workflow for retiring "must" rules. |
+| ID | Severity | Status | Description |
+|---|---|---|---|
+| ENG-EXC-O1 | P1 | **FIXED, MERGED** (`799af5d`). | Per-iOS-area classifier sub-flags (`HAS_IOS_NAVIGATION`, `HAS_IOS_DTO`) — Codex closure merged. |
+| ENG-EXC-O2 | P1 | **FIXED, MERGED** (`799af5d`). | Engineering-standard frontmatter check in `audit-docs.mjs` — Codex closure merged. |
+| ENG-EXC-O3 | P1 | **FIXED** (`ca4eed1`). | Cannot-skip gate dashboard exists at `engine/scripts/cannot-skip-gate-dashboard.sh`; emits JSON evidence to `engine/docs/release/cannot-skip-gate-evidence/`; runs from weekly housekeeping; classifier test pins 23/23 PASS. Found+fixed a real prompts-only classifier gap during dashboard build. |
+| ENG-EXC-O4 | P2 | **FIXED, MERGED** (`799af5d`). | `HAS_AUDIT` + `audit-trail-emission-and-scope` cannot-skip gate — Codex closure merged. |
+| ENG-EXC-O5 | P2 | **FIXED, MERGED** (`799af5d`). | `HAS_DEPLOY_CONFIG` + `deploy-config-health-rehearsal` cannot-skip gate + Tier-4 staging-smoke uplift — Codex closure merged. |
+| ENG-EXC-O6 | P2 | OPEN | E5 (signed TestFlight) walk-through has no machine-readable evidence convention. Define a TestFlight-evidence file pattern under `engine/docs/release/` (similar to `cannot-skip-gate-evidence/` and `smoke-evidence/`). |
+| ENG-EXC-O7 | P2 | OPEN | `docs:audit` literal-test-count warnings (73). Define a clear archive policy on whether old archive docs need regenerated counts, or accept as a frozen baseline. |
+| ENG-EXC-O8 | P1 | **FIXED** (`ca4eed1`). | Workspace docs durability via `engine/docs/_workspace-mirror/` (one-way snapshot) + `audit-docs.mjs` drift detection + housekeeping wiring. 15 workspace docs mirrored. |
+| ENG-EXC-O9 | P3 | OPEN | Add an outbound-markdown-link resolver lint over `engineering/` paths. |
+| ENG-EXC-O10 | P3 | OPEN | Document a deprecation / `superseded_by` workflow for retiring "must" rules. |
+
+### Codex validation findings (CX-O*)
+
+| ID | Severity | Status | Description |
+|---|---|---|---|
+| ENG-EXC-CX-O1 | P1 | **FIXED** (`ca4eed1`). | Workspace docs are now mirrored into engine via `engine/scripts/workspace-docs-mirror.sh`; durability concern resolved. |
+| ENG-EXC-CX-O2 | P1 | **FIXED, MERGED** (`799af5d`). | iOS navigation/DTO classifier sub-flags. |
+| ENG-EXC-CX-O3 | P1 | **FIXED, MERGED** (`799af5d`). | Audit + deploy-config classifier flags. |
+| ENG-EXC-CX-O4 | P2 | **FIXED, MERGED** (`799af5d`). | Engineering-standard frontmatter check. |
+| ENG-EXC-CX-O5 | P2 | OPEN | `npm run docs:audit` baseline of 486 historical warnings remains. Treat as frozen baseline OR run a dedicated cleanup project. |
 
 ### Recommended next operator action
 
-1. Codex independent validation of the 8 new standards against the existing codebase (find any "must" rule that is already routinely violated and raise as a new `ENG-EXC-O*` item).
-2. Close ENG-EXC-O2 + ENG-EXC-O4 + ENG-EXC-O5 in a small follow-up classifier slice.
-3. Continue with the AUTH-O2 password-reset closure tracked below; the new security/isolation standard §2 references its contract.
+1. Open the engine PR from `feature/engineering-excellence-architecture-standards` (3 commits: `eacebb3` + merge `799af5d` + `ca4eed1`) and the iOS PR from `feature/engineering-excellence-architecture-standards` (1 commit: `f07e80c`). CI strict-scanner gate already passes locally for the engine branch.
+2. Close ENG-EXC-O6 (TestFlight evidence pattern) as a small follow-up slice when the next iOS device-validation pass runs.
+3. Close ENG-EXC-O7 and ENG-EXC-CX-O5 together as a "docs-audit historical cleanup" project (P2/P3 hygiene).
+4. Continue with AUTH-O2 (password reset) per the security/isolation standard §2.
 
 ---
 
