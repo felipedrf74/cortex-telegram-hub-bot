@@ -16,7 +16,7 @@ import {
   createAppleUser, createEmailUser,
   resolveIosInviteRegistrationTarget,
 } from '../../services/user-service';
-import { createAuthSessionAndRegisterDevice, grantBetaSandboxAccess } from '../../services/ios-auth-session';
+import { createAuthSessionAndRegisterDevice, grantBetaSandboxAccess, hashRefreshToken } from '../../services/ios-auth-session';
 import { createGoogleAuthPendingSession, consumeGoogleAuthCompletion } from '../../services/google-auth-session-store';
 import { consumeAppleSignInNonce, AppleSignInNonceError } from '../../services/apple-sign-in-nonce';
 import {
@@ -25,6 +25,25 @@ import {
   GoogleAccountLinkRequiresVerificationError,
   GoogleEmailNotVerifiedError,
 } from '../../services/google-sign-in';
+import {
+  issuePasswordResetToken,
+  findActiveResetByToken,
+  consumeResetTokenAndApplyPassword,
+  revokeAllSessionsAfterReset,
+  hashNewPassword,
+  pruneExpiredResetTokens,
+  auditPasswordResetEvent,
+  PASSWORD_RESET_MAX_ATTEMPTS,
+} from '../../services/password-reset';
+import {
+  assertNotLocked,
+  recordFailedLogin,
+  recordSuccessfulLogin,
+} from '../../services/account-lockout';
+import {
+  sendPasswordResetEmail,
+  isEmailConfigured,
+} from '../../services/email-sender';
 import { normalizeLangHeader } from '../../services/secretary-fastpath';
 import type { Lang } from '../../utils/i18n';
 
@@ -177,15 +196,72 @@ export function authRoutes(): Router {
     }
 
     const db = getDb();
-    const device = db.prepare(
-      'SELECT user_id, device_id FROM ios_devices WHERE refresh_token = ?',
-    ).get(refreshToken) as { user_id: number; device_id: string } | undefined;
+    // AUTH-O4 (closed-beta-auth-hardening): look up by hash, NOT by
+    // plaintext token. The DB stores SHA-256(refresh_token); the
+    // plaintext is gone after migration 110. We also check the
+    // `previous_refresh_token_hash` column for theft detection: if the
+    // incoming token matches the PREVIOUS hash, the legitimate client
+    // has already rotated past it — we treat the hit as session theft
+    // and revoke ALL device rows for the user (forces re-login on
+    // every device).
+    const incomingHash = hashRefreshToken(refreshToken);
+    const ipAddress = (req.ip || req.socket?.remoteAddress) ?? undefined;
+    const device = db.prepare(`
+      SELECT user_id, device_id, refresh_token_hash, previous_refresh_token_hash
+      FROM ios_devices
+      WHERE refresh_token_hash = ? OR previous_refresh_token_hash = ?
+    `).get(incomingHash, incomingHash) as {
+      user_id: number;
+      device_id: string;
+      refresh_token_hash: string | null;
+      previous_refresh_token_hash: string | null;
+    } | undefined;
 
     if (!device) {
+      logAudit({
+        userId: 0, actorId: 0, action: 'access', resource: 'auth.refresh',
+        details: { outcome: 'failure', reason: 'unknown_token' },
+        ipAddress,
+      });
       sendError(res, 'UNAUTHORIZED', authCopy(language,
         'Refresh token inválido',
         'Refresh token inválido',
         'Invalid refresh token'), 401);
+      return;
+    }
+
+    // Theft detection: incoming token matches a row but ONLY via the
+    // previous-hash column → this token was already rotated away from.
+    // The legitimate client holds the new token. Treat as theft.
+    if (device.previous_refresh_token_hash === incomingHash &&
+        device.refresh_token_hash !== incomingHash) {
+      // Revoke EVERY session for this user across every device.
+      const revoked = db.prepare('DELETE FROM ios_devices WHERE user_id = ?')
+        .run(device.user_id);
+      logger.warn(
+        {
+          userId: device.user_id,
+          deviceId: device.device_id,
+          event: 'auth.refresh_token_theft_detected',
+          sessionsRevoked: revoked.changes,
+        },
+        'Refresh-token theft detected — all sessions revoked',
+      );
+      logAudit({
+        userId: device.user_id, actorId: device.user_id,
+        action: 'access', resource: 'auth.refresh',
+        details: {
+          outcome: 'failure',
+          reason: 'theft_detected_previous_hash_replay',
+          deviceId: device.device_id,
+          sessionsRevoked: revoked.changes,
+        },
+        ipAddress,
+      });
+      sendError(res, 'UNAUTHORIZED', authCopy(language,
+        'Sessão expirada por segurança. Por favor, inicia sessão novamente.',
+        'Sessão expirada por segurança. Faça login novamente.',
+        'Session expired for security. Sign in again.'), 401);
       return;
     }
 
@@ -195,10 +271,17 @@ export function authRoutes(): Router {
       { expiresIn: '7d' as any },
     );
 
-    // Rotate refresh token — invalidate old one, issue new one
+    // Rotate refresh token — current hash → previous, new hash issued.
     const newRefreshToken = crypto.randomBytes(64).toString('hex');
-    db.prepare('UPDATE ios_devices SET refresh_token = ?, last_active_at = datetime(\'now\') WHERE device_id = ?')
-      .run(newRefreshToken, device.device_id);
+    const newHash = hashRefreshToken(newRefreshToken);
+    db.prepare(`
+      UPDATE ios_devices
+         SET previous_refresh_token_hash = refresh_token_hash,
+             refresh_token_hash = ?,
+             refresh_token = NULL,
+             last_active_at = datetime('now')
+       WHERE device_id = ?
+    `).run(newHash, device.device_id);
 
     // Audit P0-10: refresh token rotation. Sensitive because it extends a
     // session — if a leaked refresh token is used, the resulting refresh+
@@ -208,8 +291,8 @@ export function authRoutes(): Router {
       actorId: device.user_id,
       action: 'access',
       resource: 'auth.refresh',
-      details: { deviceId: device.device_id },
-      ipAddress: (req.ip || req.socket?.remoteAddress) ?? undefined,
+      details: { outcome: 'success', deviceId: device.device_id },
+      ipAddress,
     });
 
     logger.info(
@@ -237,11 +320,21 @@ export function authRoutes(): Router {
       return;
     }
 
+    // AUTH-O9 (closed-beta-auth-hardening, 2026-05-04): extend /auth/me
+    // to surface email, emailVerified, and tier. iOS previously had to
+    // make extra requests (or omit the data entirely) when it needed to
+    // gate UI on these fields. The fields are PURELY ADDITIVE — older
+    // iOS clients ignore unknown fields per the iOS DTO standard
+    // (`ios/docs/engineering/ios-architecture-and-swiftui-performance-standard.md`).
     sendSuccess(res, {
       id: user.id,
       firstName: user.first_name || 'User',
       lastName: user.last_name || undefined,
       language: user.language || 'en',
+      email: user.email || null,
+      emailVerified: Boolean(user.email_verified),
+      tier: user.tier || 'free',
+      authProvider: user.auth_provider || null,
     });
   }));
 
@@ -303,9 +396,49 @@ export function authRoutes(): Router {
         appleUserId,
       });
 
+      // AUTH-O8 (closed-beta-auth-hardening, 2026-05-04): defensive
+      // check on Apple's @privaterelay.appleid.com email. When a user
+      // chooses "Hide My Email" with Apple, Apple synthesizes an
+      // address ending in @privaterelay.appleid.com that forwards to
+      // their real inbox. We MUST refuse to cross-link such a relay
+      // email into an existing email-matched user record because:
+      //   - The relay address is opaque and not verifiable as
+      //     belonging to the same human as `existing.email`.
+      //   - Treating it as a match would let an attacker who learns a
+      //     victim's real email register an Apple account that gets
+      //     auto-linked into the victim's existing account.
+      //
+      // For NEW Apple-only registrations (no email-matched user) the
+      // relay address is fine — Apple handles the forwarding.
+      const normalizedEmail = (email || '').toLowerCase();
+      const isPrivateRelay = normalizedEmail.endsWith('@privaterelay.appleid.com');
+
       // Find or create user
       let user = getUserByAppleId(appleUserId);
       if (!user) {
+        if (isPrivateRelay) {
+          // Look up by relay email — only exact match is acceptable.
+          // We refuse cross-provider link; the user must register fresh.
+          const existing = getUserByEmail(normalizedEmail);
+          if (existing && !existing.apple_user_id) {
+            logger.warn(
+              { appleUserId, email: normalizedEmail, existingUserId: existing.id,
+                event: 'auth.apple_privaterelay_link_refused' },
+              'Apple sign-in: refused to link privaterelay email to existing non-Apple user',
+            );
+            logAudit({
+              userId: existing.id, actorId: existing.id, action: 'access',
+              resource: 'auth.apple_sign_in',
+              details: { outcome: 'failure', reason: 'privaterelay_link_refused', appleUserId },
+              ipAddress: (req.ip || req.socket?.remoteAddress) ?? undefined,
+            });
+            sendError(res, 'PRIVATERELAY_LINK_REFUSED', authCopy(language,
+              'Esta conta não pode ser ligada via Apple privaterelay. Por favor, inicia sessão com o método original.',
+              'Esta conta não pode ser ligada via Apple privaterelay. Por favor, faça login com o método original.',
+              'This account cannot be linked via Apple privaterelay. Please sign in with your original method first.'), 409);
+            return;
+          }
+        }
         user = createAppleUser(appleUserId, { email, firstName, lastName });
       }
 
@@ -651,14 +784,50 @@ export function authRoutes(): Router {
       return;
     }
 
+    // AUTH-O7 (closed-beta-auth-hardening): per-account lockout. Check
+    // BEFORE bcrypt.compare so a locked account never burns CPU on the
+    // hash compare. This is a separate defence layer from the IP-bucket
+    // rate limiter (rate-limiter.ts) — it bounds distributed
+    // credential-stuffing across many source IPs.
+    const lockoutBefore = assertNotLocked(user.id);
+    if (lockoutBefore.kind === 'locked') {
+      logAudit({
+        userId: user.id, actorId: user.id, action: 'access',
+        resource: 'auth.login_email',
+        details: {
+          outcome: 'failure',
+          reason: 'account_locked',
+          deviceId,
+          lockedUntil: lockoutBefore.until.toISOString(),
+          attemptsInWindow: lockoutBefore.attemptsInWindow,
+        },
+        ipAddress: (req.ip || req.socket?.remoteAddress) ?? undefined,
+      });
+      // Return the same generic 401 shape as wrong-password so we don't
+      // leak account-existence ("user X is locked" → exists). The
+      // lockedUntil hint is kept ONLY in the audit row.
+      sendError(res, 'AUTH_FAILED', authCopy(language,
+        'Email ou palavra-passe inválidos',
+        'E-mail ou senha inválidos',
+        'Invalid email or password'), 401);
+      return;
+    }
+
     const valid = await bcrypt.compare(password, user.password_hash);
     if (!valid) {
+      const lockoutAfter = recordFailedLogin(user.id, email);
       logAudit({
         userId: user.id,
         actorId: user.id,
         action: 'access',
         resource: 'auth.login_email',
-        details: { outcome: 'failure', reason: 'invalid_password', deviceId },
+        details: {
+          outcome: 'failure',
+          reason: 'invalid_password',
+          deviceId,
+          attemptsInWindow: lockoutAfter.attemptsInWindow,
+          lockedAfterThisAttempt: lockoutAfter.kind === 'locked',
+        },
         ipAddress: (req.ip || req.socket?.remoteAddress) ?? undefined,
       });
       sendError(res, 'AUTH_FAILED', authCopy(language,
@@ -684,6 +853,8 @@ export function authRoutes(): Router {
       return;
     }
 
+    // AUTH-O7: clear any failed-login state on successful auth.
+    recordSuccessfulLogin(user.id);
     logAudit({
       userId: user.id,
       actorId: user.id,
@@ -838,6 +1009,196 @@ export function authRoutes(): Router {
 
     logger.info({ userId }, 'Email verified successfully');
     sendSuccess(res, { verified: true });
+  }));
+
+  // ── Password reset (AUTH-O2, closed-beta-auth-hardening 2026-05-04) ──
+  //
+  // Two-stage flow:
+  //   POST /auth/password-reset/request — accept an email, issue an
+  //     opaque token (256-bit, hashed at rest), email the user. ALWAYS
+  //     returns 200 OK with the same body whether the email matched or
+  //     not — closes account-existence enumeration via timing/HTTP code.
+  //
+  //   POST /auth/password-reset/confirm — accept token + new password,
+  //     verify hash match + not expired + not used + attempt cap not
+  //     hit, set the new password, mark the row used, revoke ALL active
+  //     iOS device sessions. Single-use enforced by `used_at IS NULL`.
+  //
+  // Rate limit is provided by the existing `/auth` rate-limit middleware
+  // mounted in router.ts. We additionally cap per-token attempts at 5
+  // (mirrors AUTH-O5 / migration 108).
+  router.post('/password-reset/request', asyncHandler(async (req: Request, res: Response) => {
+    const language = resolveAuthLanguage(req);
+    const { email } = req.body as { email?: string };
+    const ipAddress = (req.ip || req.socket?.remoteAddress) ?? undefined;
+
+    // Same generic OK envelope regardless of input outcome — defence
+    // against both enumeration (does this email exist?) and timing
+    // (is the response slower for hits than misses?).
+    const okEnvelope = () => sendSuccess(res, {
+      sent: true,
+      message: authCopy(language,
+        'Se este endereço existir, enviámos um email com instruções.',
+        'Se este e-mail existir, enviamos um e-mail com instruções.',
+        'If that email exists, we sent a reset link.'),
+    });
+
+    if (!email || typeof email !== 'string') {
+      // Even a malformed body returns the same generic envelope so a
+      // bot probing for shape signals can't confirm "this is the
+      // password-reset endpoint".
+      okEnvelope();
+      return;
+    }
+
+    const normalized = String(email).trim().toLowerCase();
+    const emailHash = crypto.createHash('sha256').update(normalized).digest('hex').slice(0, 16);
+    const user = getUserByEmail(normalized);
+
+    // Best-effort prune; never blocks the request.
+    try { pruneExpiredResetTokens(); } catch (_e) { /* swallow */ }
+
+    if (!user || !user.password_hash) {
+      // No user OR user has no password (Apple/Google-only). We still
+      // emit a silent audit row so operators can see request volume
+      // by IP without leaking whether the email exists.
+      auditPasswordResetEvent({ outcome: 'request_silent', userId: 0, emailHash, ipAddress });
+      okEnvelope();
+      return;
+    }
+
+    const { token, expiresAt } = issuePasswordResetToken(user.id, normalized);
+
+    // Build the reset URL. PASSWORD_RESET_BASE_URL is operator-configured;
+    // fall back to a generic web origin so the URL is never empty.
+    const baseUrl = process.env.PASSWORD_RESET_BASE_URL
+      || process.env.WEB_BASE_URL
+      || 'https://app.nexushub.me';
+    const resetUrl = `${baseUrl.replace(/\/+$/, '')}/auth/password-reset?token=${encodeURIComponent(token)}`;
+
+    auditPasswordResetEvent({
+      outcome: 'request_issued',
+      userId: user.id,
+      emailHash,
+      ipAddress,
+    });
+
+    try {
+      if (!isEmailConfigured()) {
+        // Dev / staging without RESEND_API_KEY: still 200 OK to keep
+        // the contract uniform, but include `devToken` so local tests
+        // can exercise the confirm path. Production never hits this
+        // because the env validates RESEND_API_KEY at startup.
+        logger.warn({ userId: user.id }, 'Email not configured — password reset link not sent');
+        sendSuccess(res, {
+          sent: false,
+          message: authCopy(language,
+            'O serviço de email não está configurado',
+            'O serviço de e-mail não está configurado',
+            'Email service not configured'),
+          devToken: token,
+          expiresAt: expiresAt.toISOString(),
+        });
+        return;
+      }
+      await sendPasswordResetEmail(normalized, resetUrl, user.first_name || 'there');
+    } catch (err: any) {
+      logger.error({ err, userId: user.id }, 'Failed to send password reset email');
+      // Even on email-send failure we return the generic 200 OK so the
+      // attacker cannot distinguish "email failed" from "email sent".
+      // The audit row above already recorded the issue path.
+    }
+
+    okEnvelope();
+  }));
+
+  router.post('/password-reset/confirm', asyncHandler(async (req: Request, res: Response) => {
+    const language = resolveAuthLanguage(req);
+    const { token, newPassword } = req.body as { token?: string; newPassword?: string };
+    const ipAddress = (req.ip || req.socket?.remoteAddress) ?? undefined;
+
+    if (!token || typeof token !== 'string') {
+      sendError(res, 'INVALID_TOKEN', authCopy(language,
+        'Token inválido ou expirado',
+        'Token inválido ou expirado',
+        'Invalid or expired token'), 400);
+      return;
+    }
+
+    if (!newPassword || typeof newPassword !== 'string' || newPassword.length < 8) {
+      sendError(res, 'WEAK_PASSWORD', authCopy(language,
+        'A nova palavra-passe deve ter pelo menos 8 caracteres',
+        'A nova senha deve ter pelo menos 8 caracteres',
+        'New password must be at least 8 characters'), 400);
+      return;
+    }
+
+    const row = findActiveResetByToken(token);
+    if (!row) {
+      // Token does not match any row (or already used+pruned). We
+      // intentionally do NOT increment an attempt counter for the
+      // unknown-token case because there is no row to attach it to.
+      auditPasswordResetEvent({ outcome: 'confirm_invalid', userId: 0, ipAddress });
+      sendError(res, 'INVALID_TOKEN', authCopy(language,
+        'Token inválido ou expirado',
+        'Token inválido ou expirado',
+        'Invalid or expired token'), 400);
+      return;
+    }
+
+    if (row.used_at) {
+      auditPasswordResetEvent({ outcome: 'confirm_already_used', userId: row.user_id, ipAddress });
+      sendError(res, 'INVALID_TOKEN', authCopy(language,
+        'Token inválido ou expirado',
+        'Token inválido ou expirado',
+        'Invalid or expired token'), 400);
+      return;
+    }
+
+    if (Number(row.attempt_count ?? 0) >= PASSWORD_RESET_MAX_ATTEMPTS) {
+      auditPasswordResetEvent({ outcome: 'confirm_too_many', userId: row.user_id, ipAddress });
+      sendError(res, 'TOO_MANY_ATTEMPTS', authCopy(language,
+        'Foram feitas demasiadas tentativas. Pede um novo link.',
+        'Muitas tentativas. Solicite um novo link.',
+        'Too many attempts. Request a new reset link.'), 429);
+      return;
+    }
+
+    if (new Date(row.expires_at) < new Date()) {
+      auditPasswordResetEvent({ outcome: 'confirm_expired', userId: row.user_id, ipAddress });
+      sendError(res, 'INVALID_TOKEN', authCopy(language,
+        'Token inválido ou expirado',
+        'Token inválido ou expirado',
+        'Invalid or expired token'), 400);
+      return;
+    }
+
+    // Hash the new password BEFORE consuming the token so a bcrypt
+    // failure doesn't void a user's only reset link.
+    const newPasswordHash = await hashNewPassword(newPassword);
+
+    const consumed = consumeResetTokenAndApplyPassword(row.user_id, newPasswordHash);
+    if (!consumed) {
+      // Race condition: another request beat us to it. Treat as already-used.
+      auditPasswordResetEvent({ outcome: 'confirm_already_used', userId: row.user_id, ipAddress });
+      sendError(res, 'INVALID_TOKEN', authCopy(language,
+        'Token inválido ou expirado',
+        'Token inválido ou expirado',
+        'Invalid or expired token'), 400);
+      return;
+    }
+
+    revokeAllSessionsAfterReset(row.user_id);
+    auditPasswordResetEvent({ outcome: 'confirm_success', userId: row.user_id, ipAddress });
+
+    logger.info({ userId: row.user_id }, 'Password reset successfully');
+    sendSuccess(res, {
+      reset: true,
+      message: authCopy(language,
+        'Palavra-passe redefinida. Sessão renovada.',
+        'Senha redefinida. Sessão renovada.',
+        'Password reset. Sign in again to continue.'),
+    });
   }));
 
   // ── Sign Out ─────────────────────────────────────────────────────

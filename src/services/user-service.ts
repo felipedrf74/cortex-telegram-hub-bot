@@ -421,8 +421,12 @@ export function createAppleUser(appleUserId: string, profile: {
     profile.lastName || null,
     getStoredDailyCostLimitUsdForTier('free'),
   );
+  const user = getUserByAppleId(appleUserId)!;
   logger.info({ appleUserId, email: profile.email }, 'New Apple user registered');
-  return getUserByAppleId(appleUserId)!;
+  // AUTH-O6 (closed-beta-auth-hardening, 2026-05-04): emit auth.user_created
+  // audit row so operators can dashboard registration volume + provider mix.
+  emitUserCreatedAudit(user.id, 'apple', { appleUserId, email: profile.email });
+  return user;
 }
 
 export function createGoogleUser(googleUserId: string, profile: {
@@ -445,8 +449,10 @@ export function createGoogleUser(googleUserId: string, profile: {
     profile.picture || null,
     getStoredDailyCostLimitUsdForTier('free'),
   );
+  const user = getUserByGoogleId(googleUserId)!;
   logger.info({ googleUserId, email: profile.email }, 'New Google user registered');
-  return getUserByGoogleId(googleUserId)!;
+  emitUserCreatedAudit(user.id, 'google', { googleUserId, email: profile.email });
+  return user;
 }
 
 export function createEmailUser(email: string, passwordHash: string, profile: {
@@ -462,8 +468,62 @@ export function createEmailUser(email: string, passwordHash: string, profile: {
       auth_provider, tier, daily_message_limit, daily_token_limit, daily_cost_limit_usd)
     VALUES (?, ?, ?, 0, 'email', 'free', 40, 100000, ?)
   `).run(email.toLowerCase(), passwordHash, profile.firstName, getStoredDailyCostLimitUsdForTier('free'));
+  const user = getUserByEmail(email)!;
   logger.info({ email }, 'New email user registered');
-  return getUserByEmail(email)!;
+  emitUserCreatedAudit(user.id, 'email', { email });
+  return user;
+}
+
+// AUTH-O6 (closed-beta-auth-hardening, 2026-05-04): canonical helper for
+// emitting `auth.user_created` audit rows. Keeps the event shape stable
+// across the four creation paths (Apple, Google, email, invite). Audit
+// emission failures must never block user creation — the user row is
+// already committed at this point.
+function emitUserCreatedAudit(
+  userId: number,
+  provider: 'apple' | 'google' | 'email' | 'invite',
+  details: Record<string, unknown> = {},
+): void {
+  try {
+    // Lazy require to avoid an import cycle (audit-trail → database →
+    // user-service in some call paths).
+    const { logAudit } = require('./audit-trail');
+    logAudit({
+      userId,
+      tenantId: userId,
+      actorId: userId,
+      action: 'access',
+      resource: 'auth.user_created',
+      details: { provider, ...details },
+    });
+  } catch (err: any) {
+    logger.warn({ err, userId, provider, event: 'auth.user_created.audit_failed' },
+      'Failed to emit auth.user_created audit row');
+  }
+}
+
+// AUTH-O6: emit on provider-link branches. Used by google-sign-in.ts when
+// it merges a Google sub into an existing email-matched user, by future
+// Apple-link branches, etc.
+export function emitProviderLinkedAudit(
+  userId: number,
+  provider: 'apple' | 'google' | 'telegram',
+  details: Record<string, unknown> = {},
+): void {
+  try {
+    const { logAudit } = require('./audit-trail');
+    logAudit({
+      userId,
+      tenantId: userId,
+      actorId: userId,
+      action: 'access',
+      resource: 'auth.provider_linked',
+      details: { provider, ...details },
+    });
+  } catch (err: any) {
+    logger.warn({ err, userId, provider, event: 'auth.provider_linked.audit_failed' },
+      'Failed to emit auth.provider_linked audit row');
+  }
 }
 
 export function isUserAuthorized(telegramId: number): boolean {
