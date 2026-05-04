@@ -65,16 +65,22 @@ export function saveIdea(
   return db.prepare('SELECT * FROM saved_ideas WHERE id = ?').get(result.lastInsertRowid) as SavedIdea;
 }
 
-export function getSavedIdeas(status = 'saved', userId?: number): SavedIdea[] {
+/**
+ * Closed-beta-auth-hardening (2026-05-04): the previous signature
+ * accepted `userId?: number`. When omitted, the query returned every
+ * user's saved ideas — a cross-tenant leak surface for any "list X
+ * for current user" route that forgot to thread userId. Same shape
+ * as the May-2026 fix on `getIdeasBySource`.
+ *
+ * Post-fix: `userId` is required. Callers MUST supply the
+ * authenticated user's id explicitly; there is no all-users
+ * variant.
+ */
+export function getSavedIdeas(status = 'saved', userId: number): SavedIdea[] {
   const db = getDb();
-  if (userId != null) {
-    return db.prepare(
-      'SELECT * FROM saved_ideas WHERE status = ? AND user_id = ? ORDER BY created_at DESC'
-    ).all(status, userId) as SavedIdea[];
-  }
   return db.prepare(
-    'SELECT * FROM saved_ideas WHERE status = ? ORDER BY created_at DESC'
-  ).all(status) as SavedIdea[];
+    'SELECT * FROM saved_ideas WHERE status = ? AND user_id = ? ORDER BY created_at DESC'
+  ).all(status, userId) as SavedIdea[];
 }
 
 /**
@@ -96,25 +102,24 @@ export function getIdeasBySource(source: string, userId: number, limit = 20): Sa
 /**
  * Get workflow-eligible ideas from discovery (last 7 days, not yet promoted).
  *
- * @param userId — scope to this user's ideas. If omitted, returns ideas
- *   for all users (backward compat for legacy callers). New callers
- *   MUST pass userId for proper multi-tenant isolation.
+ * Closed-beta-auth-hardening (2026-05-04): `userId` is now required.
+ * The previous optional signature returned every user's eligible
+ * ideas when omitted — a cross-tenant leak vector. Same shape as
+ * `getIdeasBySource` (May 2026 audit fix) and `getSavedIdeas`
+ * (this pass).
  */
-export function getWorkflowEligibleIdeas(userId?: number): SavedIdea[] {
+export function getWorkflowEligibleIdeas(userId: number): SavedIdea[] {
   const db = getDb();
-  const userClause = userId != null ? 'AND user_id = ?' : '';
-  const params: any[] = [];
-  if (userId != null) params.push(userId);
   return db.prepare(`
     SELECT * FROM saved_ideas
     WHERE workflow_eligible = 1
       AND source = 'discovery'
       AND status = 'saved'
       AND created_at > datetime('now', '-7 days')
-      ${userClause}
+      AND user_id = ?
     ORDER BY score DESC
     LIMIT 10
-  `).all(...params) as SavedIdea[];
+  `).all(userId) as SavedIdea[];
 }
 
 /** Mark an idea as promoted to workflow */

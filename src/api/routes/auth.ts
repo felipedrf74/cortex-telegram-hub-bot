@@ -18,13 +18,29 @@ import {
 } from '../../services/user-service';
 import { createAuthSessionAndRegisterDevice, grantBetaSandboxAccess } from '../../services/ios-auth-session';
 import { createGoogleAuthPendingSession, consumeGoogleAuthCompletion } from '../../services/google-auth-session-store';
-import { resolveGoogleIdentityUser, verifyGoogleIdentityToken } from '../../services/google-sign-in';
+import { consumeAppleSignInNonce, AppleSignInNonceError } from '../../services/apple-sign-in-nonce';
+import {
+  resolveGoogleIdentityUser,
+  verifyGoogleIdentityToken,
+  GoogleAccountLinkRequiresVerificationError,
+  GoogleEmailNotVerifiedError,
+} from '../../services/google-sign-in';
 import { normalizeLangHeader } from '../../services/secretary-fastpath';
 import type { Lang } from '../../utils/i18n';
 
 // Apple JWKS cache
 let appleJwksCache: { keys: any[]; fetchedAt: number } | null = null;
 const APPLE_JWKS_TTL = 24 * 60 * 60 * 1000; // 24h
+// Closed-beta-auth-hardening (2026-05-04): when Apple rotates a key,
+// the new `kid` won't be in our 24h-cached JWKS for up to 24h. The
+// previous code 401'd every Apple sign-in attempt during that window.
+// We now allow a one-shot force-refresh (`forceRefresh=true`) when a
+// `kid` lookup misses, with a 60-second min gap so a flood of bogus
+// `kid`s can't DoS our outbound bandwidth to Apple.
+const APPLE_JWKS_FORCE_REFRESH_MIN_GAP_MS = 60 * 1000;
+let appleJwksLastForceRefresh = 0;
+
+const MAX_EMAIL_VERIFICATION_ATTEMPTS = 5;
 
 function resolveAuthLanguage(req: Pick<Request, 'header'>): Lang {
   return normalizeLangHeader(req.header?.('x-language')) ?? 'en-US';
@@ -36,14 +52,28 @@ function authCopy(language: Lang, ptPT: string, ptBR: string, enUS: string): str
   return enUS;
 }
 
-async function getAppleJwks(): Promise<any[]> {
-  if (appleJwksCache && Date.now() - appleJwksCache.fetchedAt < APPLE_JWKS_TTL) {
+async function getAppleJwks(forceRefresh = false): Promise<any[]> {
+  const now = Date.now();
+  if (
+    !forceRefresh &&
+    appleJwksCache &&
+    now - appleJwksCache.fetchedAt < APPLE_JWKS_TTL
+  ) {
     return appleJwksCache.keys;
+  }
+  if (forceRefresh && now - appleJwksLastForceRefresh < APPLE_JWKS_FORCE_REFRESH_MIN_GAP_MS) {
+    // Avoid a refresh storm if many bogus `kid`s arrive in succession.
+    return appleJwksCache?.keys ?? [];
   }
   const res = await fetch('https://appleid.apple.com/auth/keys');
   const data = await res.json() as { keys: any[] };
-  appleJwksCache = { keys: data.keys, fetchedAt: Date.now() };
+  appleJwksCache = { keys: data.keys, fetchedAt: now };
+  if (forceRefresh) appleJwksLastForceRefresh = now;
   return data.keys;
+}
+
+function generateEmailVerificationCode(): string {
+  return String(crypto.randomInt(100000, 1000000));
 }
 
 /**
@@ -218,20 +248,29 @@ export function authRoutes(): Router {
   // ── Sign in with Apple ─────────────────────────────────────────────
   router.post('/register/apple', asyncHandler(async (req: Request, res: Response) => {
     const language = resolveAuthLanguage(req);
-    const { identityToken, deviceId, deviceName, firstName, lastName } = req.body;
-    if (!identityToken || !deviceId) {
+    const { identityToken, rawNonce, deviceId, deviceName, firstName, lastName } = req.body;
+    if (!identityToken || !rawNonce || !deviceId) {
       sendError(res, 'BAD_REQUEST', authCopy(language,
-        'identityToken e deviceId são obrigatórios',
-        'identityToken e deviceId são obrigatórios',
-        'identityToken and deviceId are required'));
+        'identityToken, rawNonce e deviceId são obrigatórios',
+        'identityToken, rawNonce e deviceId são obrigatórios',
+        'identityToken, rawNonce, and deviceId are required'));
       return;
     }
 
     try {
       // Decode JWT header to find the key ID (kid)
       const header = JSON.parse(Buffer.from(identityToken.split('.')[0], 'base64url').toString());
-      const keys = await getAppleJwks();
-      const key = keys.find((k: any) => k.kid === header.kid);
+      // Closed-beta-auth-hardening (2026-05-04): if the cached JWKS
+      // doesn't have a key matching the token's `kid`, do ONE forced
+      // re-fetch (debounced 60s) before giving up. Apple key rotation
+      // would otherwise 401 every Apple sign-in for up to 24h until
+      // the cache TTL expires.
+      let keys = await getAppleJwks();
+      let key = keys.find((k: any) => k.kid === header.kid);
+      if (!key) {
+        keys = await getAppleJwks(true);
+        key = keys.find((k: any) => k.kid === header.kid);
+      }
       if (!key) {
         sendError(res, 'INVALID_TOKEN', authCopy(language,
           'Chave Apple não encontrada',
@@ -240,16 +279,29 @@ export function authRoutes(): Router {
         return;
       }
 
-      // Convert JWK to PEM for verification
+      // Convert JWK to PEM for verification.
+      // Closed-beta-auth-hardening (2026-05-04): pass `maxAge: '5m'`
+      // and `clockTolerance: 30` so a captured Apple identity_token
+      // cannot be replayed for the full 10-minute Apple TTL window
+      // (combined with the missing nonce contract documented in
+      // `docs/release/auth-readiness-report.md`, this narrows the
+      // replay surface significantly).
       const jwkToPem = (await import('crypto')).createPublicKey({ key, format: 'jwk' });
       const payload = jwt.verify(identityToken, jwkToPem, {
         algorithms: ['RS256'],
         issuer: 'https://appleid.apple.com',
         audience: config.apns.bundleId, // me.nexushub.app
+        maxAge: '5m',
+        clockTolerance: 30,
       }) as any;
 
       const appleUserId = payload.sub;
       const email = payload.email;
+      consumeAppleSignInNonce({
+        rawNonce,
+        tokenNonce: payload.nonce,
+        appleUserId,
+      });
 
       // Find or create user
       let user = getUserByAppleId(appleUserId);
@@ -259,6 +311,17 @@ export function authRoutes(): Router {
 
       issueTokensAndRegisterDevice(req, res, user.id, deviceId, deviceName || null, null, user);
     } catch (err: any) {
+      if (err instanceof AppleSignInNonceError) {
+        logger.warn(
+          { event: 'auth', action: 'apple_sign_in', outcome: 'rejected', reason: 'nonce_failed', errorName: err.name },
+          'Apple sign-in nonce verification failed',
+        );
+        sendError(res, 'INVALID_NONCE', authCopy(language,
+          'A validação Apple expirou. Tenta novamente.',
+          'A validação Apple expirou. Tente novamente.',
+          'Apple validation expired. Please try again.'), 401);
+        return;
+      }
       logger.warn(
         { event: 'auth', action: 'apple_sign_in', outcome: 'rejected', reason: 'verification_failed', errorName: err?.name || 'Error' },
         'Apple sign-in verification failed',
@@ -419,6 +482,35 @@ export function authRoutes(): Router {
 
       issueTokensAndRegisterDevice(req, res, user.id, deviceId, deviceName || null, null, user);
     } catch (err: any) {
+      // Closed-beta-auth-hardening (2026-05-04): the
+      // GoogleAccountLinkRequiresVerificationError path is a
+      // distinct 409 status so iOS can render "An account with this
+      // email exists. Sign in with the existing method to link
+      // Google" rather than a generic AUTH_FAILED. The legitimate
+      // owner of the email gets actionable guidance; an attacker
+      // attempting takeover is blocked at the 409.
+      if (err instanceof GoogleAccountLinkRequiresVerificationError) {
+        logger.warn(
+          { event: 'auth', action: 'google_sign_in', outcome: 'rejected', reason: 'link_requires_verification' },
+          'Google sign-in refused: link requires verification',
+        );
+        sendError(res, 'ACCOUNT_LINK_REQUIRES_VERIFICATION', authCopy(language,
+          'Já existe uma conta com este email. Inicia sessão com o método existente para ligar a conta Google.',
+          'Já existe uma conta com este e-mail. Faça login com o método existente para vincular a conta Google.',
+          'An account with this email already exists. Sign in with the existing method to link Google.'), 409);
+        return;
+      }
+      if (err instanceof GoogleEmailNotVerifiedError) {
+        logger.warn(
+          { event: 'auth', action: 'google_sign_in', outcome: 'rejected', reason: 'email_not_verified' },
+          'Google sign-in refused: Google email is not verified',
+        );
+        sendError(res, 'GOOGLE_EMAIL_NOT_VERIFIED', authCopy(language,
+          'A Google ainda não verificou este email.',
+          'O Google ainda não verificou este e-mail.',
+          'Google has not verified this email.'), 403);
+        return;
+      }
       logger.warn(
         { event: 'auth', action: 'google_sign_in', outcome: 'rejected', reason: 'verification_failed', errorName: err?.name || 'Error' },
         'Google sign-in verification failed',
@@ -460,13 +552,36 @@ export function authRoutes(): Router {
       return;
     }
 
-    // Check if email already exists
+    // Closed-beta-auth-hardening (2026-05-04): account-existence
+    // enumeration mitigation. The previous code returned a distinct
+    // `EMAIL_EXISTS 409` status when the email was already registered,
+    // which let any unauthenticated caller probe the user database
+    // by submitting candidate emails to /register/email.
+    //
+    // Post-fix: the duplicate-email path returns a generic 400
+    // BAD_REQUEST with copy that does NOT confirm whether the email
+    // is taken. Legitimate users who really do already have an
+    // account get actionable guidance ("Could not create account.
+    // Please verify your details and sign in if you already have
+    // one"); an enumeration attacker gets the same status code as
+    // a malformed-request response. The duplicate IS still logged
+    // server-side at info level so ops have visibility.
     const existing = getUserByEmail(email);
     if (existing) {
-      sendError(res, 'EMAIL_EXISTS', authCopy(language,
-        'Já existe uma conta com este email',
-        'Já existe uma conta com este e-mail',
-        'An account with this email already exists'), 409);
+      logger.info(
+        {
+          event: 'auth',
+          action: 'register_email',
+          outcome: 'rejected',
+          reason: 'email_already_registered',
+          existingUserId: existing.id,
+        },
+        'Email registration refused: email already in use',
+      );
+      sendError(res, 'REGISTRATION_REJECTED', authCopy(language,
+        'Não foi possível criar a conta. Verifica os dados e inicia sessão se já tens uma conta.',
+        'Não foi possível criar a conta. Verifique os dados e faça login se já tem uma conta.',
+        'Could not create account. Please verify your details and sign in if you already have one.'), 400);
       return;
     }
 
@@ -478,14 +593,19 @@ export function authRoutes(): Router {
     try {
       const { sendVerificationCode, isEmailConfigured } = require('../../services/email-sender');
       if (isEmailConfigured()) {
-        const code = String(Math.floor(100000 + Math.random() * 900000));
+        const code = generateEmailVerificationCode();
         const expiresAt = new Date(Date.now() + 15 * 60 * 1000).toISOString();
         const db = getDb();
         db.prepare(`
-          INSERT INTO email_verification_codes (user_id, email, code, expires_at)
-          VALUES (?, ?, ?, ?)
-          ON CONFLICT(user_id) DO UPDATE SET code = excluded.code, expires_at = excluded.expires_at
-        `).run(user.id, email.toLowerCase(), code, expiresAt);
+          INSERT INTO email_verification_codes (user_id, email, code, expires_at, attempt_count)
+          VALUES (?, ?, ?, ?, ?)
+          ON CONFLICT(user_id) DO UPDATE SET
+            code = excluded.code,
+            email = excluded.email,
+            expires_at = excluded.expires_at,
+            attempt_count = 0,
+            created_at = datetime('now')
+        `).run(user.id, email.toLowerCase(), code, expiresAt, 0);
         // Fire-and-forget — don't block registration on email delivery
         sendVerificationCode(email, code, firstName).catch(() => {});
       }
@@ -509,6 +629,21 @@ export function authRoutes(): Router {
     // Vague error on all failures (never reveal if email exists)
     const user = getUserByEmail(email);
     if (!user || !user.password_hash) {
+      // Closed-beta-auth-hardening (2026-05-04): audit log for failed
+      // login. Email is hashed so log aggregation does not leak the
+      // attempted address. The pino warn captures the vague reason
+      // ("user_not_found") while the audit row records the outcome
+      // for ops review. Successful logins also get an audit row
+      // below.
+      const emailHash = crypto.createHash('sha256').update(email.toLowerCase().trim()).digest('hex');
+      logAudit({
+        userId: 0,
+        actorId: 0,
+        action: 'access',
+        resource: 'auth.login_email',
+        details: { outcome: 'failure', reason: 'user_not_found_or_no_password', emailHash, deviceId },
+        ipAddress: (req.ip || req.socket?.remoteAddress) ?? undefined,
+      });
       sendError(res, 'AUTH_FAILED', authCopy(language,
         'Email ou palavra-passe inválidos',
         'E-mail ou senha inválidos',
@@ -518,6 +653,14 @@ export function authRoutes(): Router {
 
     const valid = await bcrypt.compare(password, user.password_hash);
     if (!valid) {
+      logAudit({
+        userId: user.id,
+        actorId: user.id,
+        action: 'access',
+        resource: 'auth.login_email',
+        details: { outcome: 'failure', reason: 'invalid_password', deviceId },
+        ipAddress: (req.ip || req.socket?.remoteAddress) ?? undefined,
+      });
       sendError(res, 'AUTH_FAILED', authCopy(language,
         'Email ou palavra-passe inválidos',
         'E-mail ou senha inválidos',
@@ -526,6 +669,14 @@ export function authRoutes(): Router {
     }
 
     if (user.status !== 'active') {
+      logAudit({
+        userId: user.id,
+        actorId: user.id,
+        action: 'access',
+        resource: 'auth.login_email',
+        details: { outcome: 'failure', reason: 'account_not_active', status: user.status, deviceId },
+        ipAddress: (req.ip || req.socket?.remoteAddress) ?? undefined,
+      });
       sendError(res, 'ACCOUNT_SUSPENDED', authCopy(language,
         'A tua conta foi suspensa',
         'Sua conta foi suspensa',
@@ -533,6 +684,14 @@ export function authRoutes(): Router {
       return;
     }
 
+    logAudit({
+      userId: user.id,
+      actorId: user.id,
+      action: 'access',
+      resource: 'auth.login_email',
+      details: { outcome: 'success', deviceId },
+      ipAddress: (req.ip || req.socket?.remoteAddress) ?? undefined,
+    });
     issueTokensAndRegisterDevice(req, res, user.id, deviceId, deviceName || null, null, user);
   }));
 
@@ -562,17 +721,18 @@ export function authRoutes(): Router {
     }
 
     // Generate 6-digit code
-    const code = String(Math.floor(100000 + Math.random() * 900000));
+    const code = generateEmailVerificationCode();
     const expiresAt = new Date(Date.now() + 15 * 60 * 1000).toISOString();
 
     // Store code (UPSERT — one active code per user)
     db.prepare(`
-      INSERT INTO email_verification_codes (user_id, email, code, expires_at)
-      VALUES (?, ?, ?, ?)
+      INSERT INTO email_verification_codes (user_id, email, code, expires_at, attempt_count)
+      VALUES (?, ?, ?, ?, 0)
       ON CONFLICT(user_id) DO UPDATE SET
         code = excluded.code,
         email = excluded.email,
         expires_at = excluded.expires_at,
+        attempt_count = 0,
         created_at = datetime('now')
     `).run(userId, user.email, code, expiresAt);
 
@@ -620,8 +780,8 @@ export function authRoutes(): Router {
 
     const db = getDb();
     const record = db.prepare(
-      'SELECT * FROM email_verification_codes WHERE user_id = ? AND code = ?'
-    ).get(userId, String(code)) as any;
+      'SELECT * FROM email_verification_codes WHERE user_id = ?'
+    ).get(userId) as any;
 
     if (!record) {
       sendError(res, 'INVALID_CODE', authCopy(language,
@@ -631,12 +791,37 @@ export function authRoutes(): Router {
       return;
     }
 
+    if (Number(record.attempt_count ?? 0) >= MAX_EMAIL_VERIFICATION_ATTEMPTS) {
+      sendError(res, 'TOO_MANY_ATTEMPTS', authCopy(language,
+        'Foram feitas demasiadas tentativas. Pede um novo código.',
+        'Muitas tentativas. Solicite um novo código.',
+        'Too many attempts. Request a new code.'), 429);
+      return;
+    }
+
     // Check expiry
     if (new Date(record.expires_at) < new Date()) {
       sendError(res, 'CODE_EXPIRED', authCopy(language,
         'O código de verificação expirou. Pede um novo.',
         'O código de verificação expirou. Solicite um novo.',
         'Verification code has expired. Request a new one.'), 400);
+      return;
+    }
+
+    if (String(record.code) !== String(code)) {
+      const attempts = Number(record.attempt_count ?? 0) + 1;
+      db.prepare('UPDATE email_verification_codes SET attempt_count = ? WHERE user_id = ?')
+        .run(attempts, userId);
+      sendError(res, attempts >= MAX_EMAIL_VERIFICATION_ATTEMPTS ? 'TOO_MANY_ATTEMPTS' : 'INVALID_CODE', authCopy(language,
+        attempts >= MAX_EMAIL_VERIFICATION_ATTEMPTS
+          ? 'Foram feitas demasiadas tentativas. Pede um novo código.'
+          : 'Código de verificação inválido',
+        attempts >= MAX_EMAIL_VERIFICATION_ATTEMPTS
+          ? 'Muitas tentativas. Solicite um novo código.'
+          : 'Código de verificação inválido',
+        attempts >= MAX_EMAIL_VERIFICATION_ATTEMPTS
+          ? 'Too many attempts. Request a new code.'
+          : 'Invalid verification code'), attempts >= MAX_EMAIL_VERIFICATION_ATTEMPTS ? 429 : 400);
       return;
     }
 

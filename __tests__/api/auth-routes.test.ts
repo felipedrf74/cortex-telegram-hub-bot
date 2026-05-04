@@ -6,7 +6,6 @@ import type { Request } from 'express';
 import jwt from 'jsonwebtoken';
 
 const MIGRATIONS_DIR = path.resolve(__dirname, '../../migrations');
-
 let testDb: Database.Database;
 
 function applyMigrations(db: Database.Database): void {
@@ -281,6 +280,44 @@ describe('Auth invite registration', () => {
     expect(res.body.data.user.lastName).toBe('Silva');
   });
 
+  it('rejects native Google registration when Google has not verified the email claim', async () => {
+    class MockGoogleAccountLinkRequiresVerificationError extends Error {}
+    class MockGoogleEmailNotVerifiedError extends Error {}
+    vi.doMock('../../src/services/google-sign-in', () => ({
+      GoogleAccountLinkRequiresVerificationError: MockGoogleAccountLinkRequiresVerificationError,
+      GoogleEmailNotVerifiedError: MockGoogleEmailNotVerifiedError,
+      verifyGoogleIdentityToken: vi.fn(async () => ({
+        iss: 'https://accounts.google.com',
+        aud: 'google-ios-client',
+        sub: 'google-sub-unverified',
+        email: 'unverified@example.com',
+        emailVerified: false,
+      })),
+      resolveGoogleIdentityUser: vi.fn(() => {
+        throw new MockGoogleEmailNotVerifiedError('Google email is not verified');
+      }),
+    }));
+
+    const res = await dispatchAuth('/register/google', {
+      idToken: 'google-id-token',
+      deviceId: 'ios-device-google-unverified',
+    });
+
+    expect(res.statusCode).toBe(403);
+    expect(res.body.error.code).toBe('GOOGLE_EMAIL_NOT_VERIFIED');
+  });
+
+  it('requires Apple rawNonce before attempting Apple identity registration', async () => {
+    const res = await dispatchAuth('/register/apple', {
+      identityToken: 'apple-id-token',
+      deviceId: 'ios-device-apple-no-nonce',
+    });
+
+    expect(res.statusCode).toBe(400);
+    expect(res.body.error.code).toBe('BAD_REQUEST');
+    expect(res.body.error.message).toContain('rawNonce');
+  });
+
   it('invalidates stale device refresh tokens when the same device switches accounts', async () => {
     const userAResult = testDb.prepare(`
       INSERT INTO users (email, first_name, language, auth_provider, daily_cost_limit_usd)
@@ -405,4 +442,65 @@ describe('Auth invite registration', () => {
     expect(res.body.error.code).toBe('AUTH_FAILED');
     expect(res.body.error.message).toBe('E-mail ou senha inválidos');
   });
+
+  it('does not reveal whether an email already exists during email registration', async () => {
+    testDb.prepare(`
+      INSERT INTO users (email, password_hash, first_name, language, auth_provider, daily_cost_limit_usd)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `).run('registered@example.com', 'bcrypt-hash', 'Registered', 'en', 'email', 0.05);
+
+    const res = await dispatchAuth('/register/email', {
+      email: 'registered@example.com',
+      password: 'correct-horse-battery',
+      firstName: 'Registered',
+      deviceId: 'ios-device-register-duplicate',
+    });
+
+    expect(res.statusCode).toBe(400);
+    expect(res.body.ok).toBe(false);
+    expect(res.body.error.code).toBe('REGISTRATION_REJECTED');
+    expect(res.body.error.code).not.toBe('EMAIL_EXISTS');
+  });
+
+  it('caps email verification code guesses and locks the active code', async () => {
+    const userId = Number(testDb.prepare(`
+      INSERT INTO users (email, first_name, language, auth_provider, daily_cost_limit_usd, email_verified)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `).run('verify@example.com', 'Verify', 'en', 'email', 0.05, 0).lastInsertRowid);
+    testDb.prepare(`
+      INSERT INTO email_verification_codes (user_id, email, code, expires_at, attempt_count)
+      VALUES (?, ?, ?, ?, ?)
+    `).run(userId, 'verify@example.com', '123456', new Date(Date.now() + 60_000).toISOString(), 0);
+
+    for (let attempt = 1; attempt <= 4; attempt += 1) {
+      const res = await dispatchAuth(
+        '/verify-email',
+        { code: '000000' },
+        { headers: { 'x-test-user-id': String(userId) } },
+      );
+      expect(res.statusCode).toBe(400);
+      expect(res.body.error.code).toBe('INVALID_CODE');
+    }
+
+    const fifth = await dispatchAuth(
+      '/verify-email',
+      { code: '000000' },
+      { headers: { 'x-test-user-id': String(userId) } },
+    );
+    expect(fifth.statusCode).toBe(429);
+    expect(fifth.body.error.code).toBe('TOO_MANY_ATTEMPTS');
+
+    const correctAfterLock = await dispatchAuth(
+      '/verify-email',
+      { code: '123456' },
+      { headers: { 'x-test-user-id': String(userId) } },
+    );
+    expect(correctAfterLock.statusCode).toBe(429);
+    expect(correctAfterLock.body.error.code).toBe('TOO_MANY_ATTEMPTS');
+
+    const row = testDb.prepare('SELECT attempt_count FROM email_verification_codes WHERE user_id = ?')
+      .get(userId) as { attempt_count: number };
+    expect(row.attempt_count).toBe(5);
+  });
+
 });

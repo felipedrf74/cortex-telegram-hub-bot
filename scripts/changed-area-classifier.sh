@@ -130,6 +130,7 @@ HAS_PORTAL=false
 HAS_MIGRATION=false
 HAS_PYTHON_ENGINE=false
 HAS_IOS_SRC=false
+HAS_IOS_AUTH=false
 HAS_IOS_UI=false
 HAS_IOS_TEST=false
 HAS_DOCS_ONLY=true
@@ -186,8 +187,8 @@ match '^__tests__/api/training-plan-calendar-' && HAS_CALENDAR=true
 match '^src/services/provider-registry|^src/services/gemini-provider|^src/services/anthropic|^src/services/tool-executor|^src/services/openai' && HAS_PROVIDER_ROUTING=true
 match '^__tests__/services/provider-|^__tests__/services/ai-provider' && HAS_PROVIDER_ROUTING=true
 
-match '^src/api/middleware/auth|^src/services/auth|^src/services/user-service|^src/state/scope' && HAS_AUTH_OR_TENANT=true
-match '^__tests__/security/|^__tests__/scope/|^__tests__/api/auth-|^__tests__/api/connections-tenant-' && HAS_AUTH_OR_TENANT=true
+match '^src/api/middleware/auth|^src/api/routes/auth|^src/services/auth|^src/services/ios-auth-session|^src/services/google-sign-in|^src/services/apple-sign-in-nonce|^src/services/google-auth-session-store|^src/services/oauth-flow|^src/services/oauth-state-store|^src/portal/oauth-routes|^src/services/user-service|^src/state/scope' && HAS_AUTH_OR_TENANT=true
+match '^__tests__/security/|^__tests__/scope/|^__tests__/api/auth-|^__tests__/api/connections-tenant-|^__tests__/services/google-sign-in|^__tests__/services/apple-sign-in-nonce|^__tests__/services/oauth-|^__tests__/portal/portal-oauth-routes' && HAS_AUTH_OR_TENANT=true
 
 match '^src/services/context-engine|^src/services/chat-context-engine|^src/state/content-references|^src/services/intelligence-bus' && HAS_MEMORY_OR_RETRIEVAL=true
 match '^__tests__/services/.*context|^__tests__/services/.*memory|^__tests__/services/.*retrieval' && HAS_MEMORY_OR_RETRIEVAL=true
@@ -253,9 +254,14 @@ while IFS= read -r f; do
     *UITests*|*UITest.swift) HAS_IOS_UI=true; HAS_IOS_TEST=true ;;
     *Tests*|*Test.swift) HAS_IOS_TEST=true ;;
   esac
+  case "$f" in
+    *Core/AuthManager.swift|*Core/KeychainHelper.swift|*Views/Auth/*|*Auth*Tests.swift|*Keychain*Tests.swift|*GoogleAuthCallbackResolverTests.swift) HAS_IOS_AUTH=true ;;
+  esac
 done <<EOF
 $CHANGED
 EOF
+
+$HAS_IOS_AUTH && HAS_AUTH_OR_TENANT=true
 
 # ── Tier resolution ────────────────────────────────────
 # Tier 0: always.
@@ -322,7 +328,7 @@ if $HAS_NON_DOC; then
     $HAS_TRAINING && VITEST_GLOBS+=("__tests__/services/training-*.test.ts" "__tests__/services/coach-kernel-*.test.ts" "__tests__/api/training-*.test.ts")
     $HAS_CALENDAR && VITEST_GLOBS+=("__tests__/services/calendar*.test.ts" "__tests__/api/training-calendar-*.test.ts" "__tests__/api/training-plan-calendar-*.test.ts")
     $HAS_PROVIDER_ROUTING && VITEST_GLOBS+=("__tests__/services/provider-*.test.ts" "__tests__/services/ai-provider*.test.ts")
-    $HAS_AUTH_OR_TENANT && VITEST_GLOBS+=("__tests__/security/**/*.test.ts" "__tests__/scope/**/*.test.ts" "__tests__/api/auth-*.test.ts" "__tests__/api/connections-tenant-*.test.ts")
+    $HAS_AUTH_OR_TENANT && VITEST_GLOBS+=("__tests__/security/**/*.test.ts" "__tests__/scope/**/*.test.ts" "__tests__/api/auth-*.test.ts" "__tests__/api/connections-tenant-*.test.ts" "__tests__/services/google-sign-in.test.ts" "__tests__/services/apple-sign-in-nonce.test.ts" "__tests__/services/oauth*.test.ts" "__tests__/portal/portal-oauth-routes.test.ts")
     $HAS_MEMORY_OR_RETRIEVAL && VITEST_GLOBS+=("__tests__/services/*context*.test.ts" "__tests__/services/*memory*.test.ts")
     $HAS_PROMPT && VITEST_GLOBS+=("__tests__/security/**/*.test.ts")
     $HAS_COOKING && VITEST_GLOBS+=("__tests__/services/*cooking*.test.ts" "__tests__/api/cooking-*.test.ts")
@@ -357,6 +363,7 @@ XCTEST_CLASSES=()
 if $HAS_IOS_SRC; then
   XCTEST_MODE="focused"
   $HAS_IOS_UI && XCTEST_CLASSES+=("Nexus HubUITests/*")
+  $HAS_IOS_AUTH && XCTEST_CLASSES+=("Nexus HubTests/AppleSignInNonceTests" "Nexus HubTests/KeychainHelperTests" "Nexus HubTests/AuthManagerFixtureLeakTests" "Nexus HubTests/AuthManagerPersistenceTests" "Nexus HubTests/AuthUserPresentationTests" "Nexus HubTests/GoogleAuthCallbackResolverTests")
   XCTEST_CLASSES+=("Nexus HubTests/ContractDecoderResilienceTests")
   XCTEST_CLASSES+=("Nexus HubTests/AuthManagerPersistenceTests")
 fi
@@ -422,6 +429,7 @@ emit_json() {
   export CLAS_MIGRATION="$HAS_MIGRATION"
   export CLAS_PY_ENGINE="$HAS_PYTHON_ENGINE"
   export CLAS_IOS_SRC="$HAS_IOS_SRC"
+  export CLAS_IOS_AUTH="$HAS_IOS_AUTH"
   export CLAS_IOS_TEST="$HAS_IOS_TEST"
   export CLAS_IOS_UI="$HAS_IOS_UI"
   export CLAS_DEPLOY_SCRIPT="$HAS_DEPLOY_SCRIPT"
@@ -486,6 +494,7 @@ const payload = {
     migration: flag('CLAS_MIGRATION'),
     pythonEngine: flag('CLAS_PY_ENGINE'),
     iosSrc: flag('CLAS_IOS_SRC'),
+    iosAuth: flag('CLAS_IOS_AUTH'),
     iosTest: flag('CLAS_IOS_TEST'),
     iosUi: flag('CLAS_IOS_UI'),
     deployScript: flag('CLAS_DEPLOY_SCRIPT'),

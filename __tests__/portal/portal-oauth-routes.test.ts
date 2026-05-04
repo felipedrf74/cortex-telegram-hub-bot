@@ -179,17 +179,54 @@ describe('portal oauth routes', () => {
   });
 
   it('starts Todoist sync after a Telegram-origin callback stores tokens', async () => {
-    const services = createServices();
+    const services = createServices({
+      consumeNonce: vi.fn(() => ({ userId: 7, provider: 'todoist' })),
+    });
     const routes = captureRoutes(services);
 
     const res = await invoke(findRoute(routes, '/oauth/todoist/callback'), {
-      query: { code: 'code-3', state: '7' },
+      query: { code: 'code-3', state: 'tg:7:nonce-todoist' },
     });
 
+    expect(services.consumeNonce).toHaveBeenCalledWith('nonce-todoist');
     expect(services.exchangeCode).toHaveBeenCalledWith('todoist', 'code-3', 7);
     expect(services.storeTokens).toHaveBeenCalledWith(7, 'todoist', { access_token: 'token' });
     expect(services.invalidateIntegrationDerivedCaches).toHaveBeenCalledWith(7, 'todoist');
     expect(services.syncProvider).toHaveBeenCalledWith(7, 'todoist');
     expect(String(res.sent)).toContain('Your first sync is starting now');
+  });
+
+  it('rejects legacy numeric Telegram OAuth state without exchanging tokens', async () => {
+    const services = createServices({
+      exchangeCode: vi.fn(async () => ({ access_token: 'token' })),
+      consumeNonce: vi.fn(() => ({ userId: 7, provider: 'todoist' })),
+    });
+    const routes = captureRoutes(services);
+
+    const res = await invoke(findRoute(routes, '/oauth/todoist/callback'), {
+      query: { code: 'code-legacy', state: '7' },
+    });
+
+    expect(res.statusCode).toBe(400);
+    expect(services.consumeNonce).not.toHaveBeenCalled();
+    expect(services.exchangeCode).not.toHaveBeenCalled();
+    expect(services.storeTokens).not.toHaveBeenCalled();
+  });
+
+  it('rejects Telegram OAuth state when the nonce provider does not match the callback provider', async () => {
+    const services = createServices({
+      exchangeCode: vi.fn(async () => ({ access_token: 'token' })),
+      consumeNonce: vi.fn(() => ({ userId: 7, provider: 'outlook' })),
+    });
+    const routes = captureRoutes(services);
+
+    const res = await invoke(findRoute(routes, '/oauth/todoist/callback'), {
+      query: { code: 'code-mismatch', state: 'tg:7:nonce-outlook' },
+    });
+
+    expect(res.statusCode).toBe(400);
+    expect(services.consumeNonce).toHaveBeenCalledWith('nonce-outlook');
+    expect(services.exchangeCode).not.toHaveBeenCalled();
+    expect(services.storeTokens).not.toHaveBeenCalled();
   });
 });

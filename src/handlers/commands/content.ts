@@ -236,7 +236,11 @@ export function registerContentCommands(bot: Bot): void {
 
       // /ideas saved — show saved content ideas
       if (dateArg === 'saved') {
-        const saved = getSavedIdeas();
+        // Closed-beta-auth-hardening (2026-05-04): getSavedIdeas now
+        // requires explicit userId. The Telegram /ideas command runs
+        // in the legacy operator surface (single-tenant), so the
+        // authenticated Telegram from-id is the correct scope.
+        const saved = getSavedIdeas('saved', ctx.from!.id);
         if (saved.length === 0) {
           await ctx.reply('\u{1F4ED} No saved ideas. Use /discover and tap \u{1F4BE} to save ideas.');
           return;

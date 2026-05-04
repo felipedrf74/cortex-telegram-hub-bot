@@ -116,43 +116,44 @@ function redirectIOSOAuth(provider: OAuthProvider, res: Response, status: 'succe
   res.redirect(`me.nexushub.app://oauth/${provider}?status=${status}${suffix}`);
 }
 
-function parseTelegramState(state: string): number {
-  return parseInt(state, 10);
+function parseNonceState(state: string, prefix: 'ios' | 'tg'): { userId: number; nonce: string } | null {
+  const parts = state.split(':');
+  if (parts.length !== 3 || parts[0] !== prefix) return null;
+  const userId = parseInt(parts[1], 10);
+  const nonce = parts[2];
+  if (!Number.isFinite(userId) || userId <= 0 || !nonce) return null;
+  return { userId, nonce };
 }
 
-function resolveIOSOAuthUser(
+function resolveOAuthUser(
   state: string,
   provider: OAuthProvider,
   services: PortalOAuthServices,
   logger: PortalOAuthLogger,
 ): { userId: number; isIOS: boolean } | { error: string } {
-  if (!services.isIOSState(state)) {
-    return { userId: parseTelegramState(state), isIOS: false };
-  }
-
-  const parsed = services.parseIOSState(state);
+  const isIOS = services.isIOSState(state);
+  const parsed = isIOS ? services.parseIOSState(state) : parseNonceState(state, 'tg');
   if (!parsed) {
     return { error: 'Invalid OAuth state' };
   }
   const nonceData = services.consumeNonce(parsed.nonce);
   if (!nonceData || nonceData.userId !== parsed.userId || nonceData.provider !== provider) {
-    if (provider === 'google' || provider === 'outlook') {
-      logger.warn(
-        {
-          flow: 'oauth_callback_nonce_mismatch',
-          provider,
-          parsedUserId: parsed.userId,
-          noncePrefix: parsed.nonce.slice(0, 8),
-          nonceFound: Boolean(nonceData),
-          nonceUserId: nonceData?.userId,
-          nonceProvider: nonceData?.provider,
-        },
-        `${provider === 'google' ? 'Google' : 'Outlook'} iOS OAuth callback rejected due to missing or mismatched nonce session`,
-      );
-    }
+    logger.warn(
+      {
+        flow: 'oauth_callback_nonce_mismatch',
+        provider,
+        origin: isIOS ? 'ios' : 'telegram',
+        parsedUserId: parsed.userId,
+        noncePrefix: parsed.nonce.slice(0, 8),
+        nonceFound: Boolean(nonceData),
+        nonceUserId: nonceData?.userId,
+        nonceProvider: nonceData?.provider,
+      },
+      'OAuth callback rejected due to missing or mismatched nonce session',
+    );
     return { error: 'Expired or invalid OAuth session' };
   }
-  return { userId: parsed.userId, isIOS: true };
+  return { userId: parsed.userId, isIOS };
 }
 
 async function notifyTelegramConnection(
@@ -200,9 +201,13 @@ async function handleIOSAwareOAuthCallback(
 
   try {
     const services = loadServices();
-    const resolved = resolveIOSOAuthUser(state, provider, services, logger);
+    const resolved = resolveOAuthUser(state, provider, services, logger);
     if ('error' in resolved) {
-      redirectIOSOAuth(provider, res, 'error', resolved.error);
+      if (state.startsWith('ios:')) {
+        redirectIOSOAuth(provider, res, 'error', resolved.error);
+        return;
+      }
+      res.status(400).send(htmlConnectionFailed(provider));
       return;
     }
 
@@ -327,9 +332,14 @@ export function registerPortalOAuthRoutes(app: Express, deps: PortalOAuthRouteDe
       return;
     }
 
-    const userId = parseTelegramState(state);
     try {
       const services = loadServices();
+      const resolved = resolveOAuthUser(state, 'fitbit', services, logger);
+      if ('error' in resolved) {
+        res.status(400).send(htmlConnectionFailed('fitbit'));
+        return;
+      }
+      const userId = resolved.userId;
       const tokens = await services.exchangeCode('fitbit', code, userId);
       services.storeTokens(userId, 'fitbit', tokens);
       invalidateProviderConnectionCaches(userId, 'fitbit', services, logger);
@@ -351,9 +361,14 @@ export function registerPortalOAuthRoutes(app: Express, deps: PortalOAuthRouteDe
       return;
     }
 
-    const userId = parseTelegramState(state);
     try {
       const services = loadServices();
+      const resolved = resolveOAuthUser(state, 'todoist', services, logger);
+      if ('error' in resolved) {
+        res.status(400).send(htmlConnectionFailed('todoist'));
+        return;
+      }
+      const userId = resolved.userId;
       const tokens = await services.exchangeCode('todoist', code, userId);
       services.storeTokens(userId, 'todoist', tokens);
       invalidateProviderConnectionCaches(userId, 'todoist', services, logger);
@@ -383,9 +398,14 @@ export function registerPortalOAuthRoutes(app: Express, deps: PortalOAuthRouteDe
       return;
     }
 
-    const userId = parseTelegramState(state);
     try {
       const services = loadServices();
+      const resolved = resolveOAuthUser(state, 'notion', services, logger);
+      if ('error' in resolved) {
+        res.status(400).send(htmlConnectionFailed('notion'));
+        return;
+      }
+      const userId = resolved.userId;
       const tokens = await services.exchangeCode('notion', code, userId);
       services.storeTokens(userId, 'notion', tokens);
       invalidateProviderConnectionCaches(userId, 'notion', services, logger);

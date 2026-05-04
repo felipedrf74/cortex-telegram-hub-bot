@@ -192,10 +192,20 @@ describe('Content API — intelligence detail', () => {
         user_id INTEGER NOT NULL DEFAULT 0
       )
     `);
+    // Closed-beta-auth-hardening (2026-05-04): the previous test seeded
+    // the `Training` pillar at user_id=0 (platform-seed bucket) and
+    // expected the response to merge it with the user-scoped `Recovery`
+    // pillar. The strict-per-user fix in
+    // `services/content-intelligence.ts` now refuses to surface
+    // user_id=0 rows for any per-user read (they were a cross-tenant
+    // leak vector — every user inherited every platform-seed pillar
+    // with weight > 1). Both pillars are now seeded per-user; the
+    // assertion below was updated to match the strict-per-user
+    // contract.
     testDb.prepare(`
       INSERT INTO config_pillars (name, keywords, weight, enabled, user_id)
-      VALUES (?, ?, ?, 1, 0)
-    `).run('Training', JSON.stringify(['run', 'ride', 'gym']), 1.2);
+      VALUES (?, ?, ?, 1, ?)
+    `).run('Training', JSON.stringify(['run', 'ride', 'gym']), 1.2, user.id);
     testDb.prepare(`
       INSERT INTO config_pillars (name, keywords, weight, enabled, user_id)
       VALUES (?, ?, ?, 1, ?)
