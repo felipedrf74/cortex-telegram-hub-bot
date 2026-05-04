@@ -2,10 +2,10 @@
 
 Status: canonical
 Owner: release lead (Felipe)
-Last verified: 2026-05-04
+Last verified: 2026-05-05
 Update policy: update after merge / staging / production / deploy-gate changes. Live identity (branch/commit/version/migrations) auto-generated via engine/scripts/release-identity.sh --persist; do not type those by hand.
 
-Last updated: 2026-05-04
+Last updated: 2026-05-05
 
 > **Live identity** — branch / commit / version / migration count for the
 > current working tree are auto-generated. Do NOT type those values by
@@ -17,28 +17,30 @@ Last updated: 2026-05-04
 
 - Repo: `engine`
 - Workspace HEAD / version / migrations / dirty state: see `docs/release/release-identity.md`
-- Production status (last manual update 2026-05-04): promoted via `./scripts/promote-to-prod.sh`, health-checked, both `nexus-hub` and `content-engine` PM2 processes online at version `4.14.130`.
+- Production status (last manual update 2026-05-05): promoted via `./scripts/promote-to-prod.sh`, health-checked, both `nexus-hub` and `content-engine` PM2 processes online at version `4.14.131`.
 
-### Commits in this release (4.14.129 -> 4.14.130)
+### Commits in this release (4.14.130 -> 4.14.131)
 
-- Source merge: auth UX closeout merged to backend `main` at `5b76dfc`.
-- Deploy bump: backend package version advanced to `4.14.130` at `782f0d3`.
-- iOS source merge: auth UX closeout merged to iOS `main` at `29f50ed`.
+- Source merge: Content Creation workflow surfaces, contracts, portal panels, and technical mastery docs merged to backend `main` at `e3de170`.
+- Deploy bump: backend package version advanced to `4.14.131` at `583b431`.
+- iOS source merge: Content Creation workflow surfaces merged to iOS `main` at `6d76f53`.
 
 ### Scope of this release
 
-- **Backend auth UX closeout**: email/password registration now requires a valid invite code, the same-origin password-reset page is served from `/auth/password-reset`, password-reset links default to `https://api.nexushub.me`, and iOS auth sessions expose additive `email`, `emailVerified`, and `authProvider` fields.
-- **iOS auth UX closeout**: signup collects invite code, forgot-password flow is reachable from login mode, the email-verification prompt is gated for unverified email-provider accounts, and typed auth errors route through user-facing copy without weakening login anti-enumeration.
-- **Static reset safety**: live `https://api.nexushub.me/auth/password-reset` returns HTTP 200 with no-cache headers and a same-origin CSP (`connect-src 'self'`, `form-action 'self'`, `frame-ancestors 'none'`).
+- **Content Creation backend contracts**: creator profile, voice/profile read-back, references/provenance, radar feedback, content lifecycle, and performance aggregation surfaces are available through tenant-scoped REST/portal paths.
+- **Content Creation portal surfaces**: operator-facing Content overview, profile, radar, pipeline, briefs/scripts, references, calendar/performance, and memory/feedback panels are wired to the new contracts where backend support exists.
+- **Content Creation iOS surfaces**: Content Home, Profile & Voice, Radar, Ideas/Briefs, Script Studio, Calendar, References, and Performance are present with deterministic local/fixture-backed behavior and tenant/session cleanup hooks.
+- **Agent technical mastery docs**: `docs/agent/AGENT_TECHNICAL_MASTERY.md` and related engineering standards/index updates are merged into backend `main` as agent onboarding material.
 
 ### Validation
 
-- Backend `main` pre-push/deploy full vitest: **449 files / 6749 tests passed**.
+- Backend focused content/portal validation: **100 files / 783 tests passed**.
+- Backend `main` pre-push/deploy full vitest: **454 files / 6809 tests passed**.
 - Deploy-time validation: typecheck passed and build passed.
 - Staging deploy: passed.
 - Staging smoke: **17/17 passed**.
 - Production health check (deploy.sh built-in): passed.
-- Production version assertion: `4.14.130` ✓
+- Production version assertion: `4.14.131` ✓
 - PM2 nexus-hub: online ✓
 - PM2 content-engine: online ✓
 
@@ -47,12 +49,17 @@ Last updated: 2026-05-04
 - Repo: `ios`
 - Release source branch: `origin/main` (local feature branches may be checked
   out for validation; use git for the exact current source SHA).
-- Current shipped-source focus: closed-beta user-scope health integration
-  isolation, Google reconnect-noise handling, auth/session hardening,
-  navigation responsiveness, and Training fixture readiness.
+- Current shipped-source focus: Content Creation workflow surfaces,
+  closed-beta user-scope health integration isolation, Google
+  reconnect-noise handling, auth/session hardening, navigation
+  responsiveness, and Training fixture readiness.
 
 ### iOS scope
 
+- Content Creation now has first-pass workflow surfaces for profile/voice,
+  radar, ideas/briefs, script studio, calendar, references, and performance.
+  The source is pushed to iOS `main` at `6d76f53`; TestFlight/App Store
+  distribution remains a separate release action.
 - Home, Training, and Connections guard user-scoped health/readiness/Garmin
   state so one account cannot hydrate another account's cached wearable truth.
 - Google reconnect noise hides raw provider error details and treats expired
@@ -64,18 +71,19 @@ Last updated: 2026-05-04
 
 ### iOS validation
 
-- Physical device: iPhone Felipe (`00008150-000C0D5101D8401C`, iOS 26.5)
-- `xcodebuild build-for-testing`: passed.
-- `TrainingFixtureBypassUITests`: **11/11 passed**.
-- Focused unit/cache/security suite: passed with one expected device-sandbox skip.
+- `xcodebuild build-for-testing` for Content Creation source: passed.
+- `ContentCreatorProfileTests`: **27/27 passed**.
+- Prior physical-device Training evidence remains valid: iPhone Felipe
+  (`00008150-000C0D5101D8401C`, iOS 26.5), `TrainingFixtureBypassUITests`
+  **11/11 passed**, focused unit/cache/security suite passed with one expected
+  device-sandbox skip.
 
 ## Evidence
 
 - Backend staging smoke evidence:
-  - `engine/docs/release/smoke-evidence/staging-smoke-00a1d23-20260504T101706Z.json`
-  - `engine/docs/release/smoke-evidence/staging-smoke-00a1d23-20260504T101729Z.json`
-  - `engine/docs/release/smoke-evidence/staging-smoke-00a1d23-20260504T101805Z.json`
-  - `engine/docs/release/smoke-evidence/staging-smoke-00a1d23-20260504T101841Z.json`
+  - `engine/docs/release/smoke-evidence/staging-smoke-e3de170-20260504T235034Z.json`
+  - `engine/docs/release/smoke-evidence/staging-smoke-e3de170-20260504T235107Z.json`
+  - `engine/docs/release/smoke-evidence/staging-smoke-e3de170-20260504T235134Z.json`
 - Backend QA report: `engine/docs/qa/QA_BACKEND_REPORT.md`
 - iOS QA report: `ios/docs/qa/QA_IOS_REPORT.md`
 - Release gate report: `engine/docs/qa/QA_RELEASE_GATE_REPORT.md`
@@ -86,19 +94,19 @@ Last updated: 2026-05-04
 
 - No production data was used for validation.
 - Production data was not modified except by the normal deployment process.
-- Production now runs one deploy-bump commit ahead of staging (`4.14.130` vs `4.14.129`). The code change was staged and smoke-tested before promote; run `./scripts/deploy-staging.sh` if staging should match the production version label exactly.
+- Production now runs one deploy-bump commit ahead of staging (`4.14.131` vs `4.14.130`). The code change was staged and smoke-tested before promote; run `./scripts/deploy-staging.sh` if staging should match the production version label exactly.
 - Post-promotion production-safe checks still recommended:
   - readiness/body battery isolation across Felipe / Jaqueline / nexushubbot
   - Garmin connection visibility per user
   - task list detail count/read-back consistency for Jaqueline's `Entrada`
   - TestFlight Training creation/review behavior on the latest backend contract
-  - Content Creation beta smoke for non-founder accounts to verify neutral/no-profile fallbacks
+  - Content Creation E5 beta smoke for two non-founder accounts to verify neutral/no-profile fallbacks, tenant-scoped profile read-back, and radar/idea/script workflow behavior in the signed iOS build
 
 ## Docs Hygiene
 
 - Official working path: `/Users/felipedominguez/Desktop/Nexus Hub`
 - Docs audit command: `cd engine && npm run docs:audit`
-- Latest docs audit before this update: completed on 2026-05-04 with pre-existing warnings only.
+- Latest docs audit before this update: completed on 2026-05-05 with pre-existing warnings only.
 - Engineering excellence standards are being validated on local feature
   branches. Claude report:
   `docs/archive/2026-05/engineering-excellence-architecture-standards/engineering-excellence-enrichment-report.md`.

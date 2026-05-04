@@ -2,10 +2,34 @@
 
 Status: canonical
 Owner: release lead (Felipe)
-Last verified: 2026-05-04
+Last verified: 2026-05-05
 Update policy: update when a P0/P1/P2/P3 item opens or closes. Older sections record state at their original closeout time; backfill with FIXED LATER pointers when the item is closed in a subsequent pass.
 
-Last updated: 2026-05-04
+Last updated: 2026-05-05
+
+## Content Creation workflow promote (2026-05-05)
+
+Backend source: `main` @ `e3de170`; production deploy bump `583b431` (`4.14.131`).
+iOS source: `main` @ `6d76f53`.
+
+Verdict: **PROMOTED TO BACKEND PRODUCTION / IOS SOURCE PUSHED** — the validated Content Creation workflow branch was merged and pushed to both `main` branches. Backend was staged, smoke-tested, and promoted to production. iOS source is pushed; TestFlight/App Store distribution remains a separate operator release action.
+
+### Closure delta
+
+| ID | Severity | Status | Description |
+|---|---|---|---|
+| CONTENT-CX-O1 | P1 | **CLOSED IN SOURCE + PROD BACKEND** | Content Creation REST/portal contracts for creator profile, radar feedback, lifecycle, references/provenance, and performance aggregates are merged to backend `main` and live in production `4.14.131`. |
+| CONTENT-CX-O2 | P1 | **CLOSED IN IOS SOURCE** | iOS Content Creation workflow surfaces are merged to iOS `main` with focused profile tests passing. Signed TestFlight delivery is separate from source promotion. |
+| CONTENT-CX-O3 | P2 | **OPEN E5 VALIDATION** | Run a signed TestFlight two-account Content Creation walkthrough: create/edit profile, read back profile/voice, accept/reject radar idea, open brief/script, verify no cross-user/tenant leakage, and confirm neutral/no-profile fallback for non-founder accounts. |
+| CONTENT-CX-O4 | P2 | **OPEN PORTAL SMOKE** | Run operator-scoped portal Content smoke with realistic dummy entries after the next portal QA window; do not count shell load only. |
+
+### Evidence
+
+- Backend focused Content/portal tests: **100 files / 783 tests passed**.
+- Backend main pre-push/deploy full suite: **454 files / 6809 tests passed**.
+- Staging smoke before promote: **17/17 passed**.
+- Production health: `nexus-hub` online, `content-engine` online, status portal reported `4.14.131`.
+- iOS Content source: `xcodebuild build-for-testing` passed; `ContentCreatorProfileTests` **27/27 passed**.
 
 ## Technical suite mastery Codex validation (2026-05-04 late)
 
