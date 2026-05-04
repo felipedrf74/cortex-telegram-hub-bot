@@ -90,3 +90,326 @@ describe('changed-area-classifier closed-beta content-agent routing', () => {
     expect(result.xctest.classes).toContain('Nexus HubTests/GoogleAuthCallbackResolverTests');
   });
 });
+
+describe('changed-area-classifier engineering-excellence enrichments (2026-05-04)', () => {
+  it('routes logger / redaction changes into logger + secret-guards tests', () => {
+    const raw = execFileSync(
+      'bash',
+      [
+        'scripts/changed-area-classifier.sh',
+        '--json',
+        '--files',
+        'src/utils/logger.ts',
+      ],
+      { encoding: 'utf8' },
+    );
+    const result = JSON.parse(raw) as {
+      flags: Record<string, boolean>;
+      cannotSkip: string[];
+      vitest: { globs: string[] };
+    };
+
+    expect(result.flags.logger).toBe(true);
+    expect(result.cannotSkip).toContain('logger-redaction-pii-scan');
+    expect(result.vitest.globs).toContain('__tests__/utils/logger-*.test.ts');
+    expect(result.vitest.globs).toContain('__tests__/api/secret-guards.test.ts');
+  });
+
+  it('routes scheduler / cron changes into scheduler tests', () => {
+    const raw = execFileSync(
+      'bash',
+      [
+        'scripts/changed-area-classifier.sh',
+        '--json',
+        '--files',
+        'src/services/scheduler.ts',
+      ],
+      { encoding: 'utf8' },
+    );
+    const result = JSON.parse(raw) as {
+      flags: Record<string, boolean>;
+      cannotSkip: string[];
+      vitest: { globs: string[] };
+    };
+
+    expect(result.flags.scheduler).toBe(true);
+    expect(result.cannotSkip).toContain('scheduler-tenant-scope-and-failure');
+    expect(result.vitest.globs).toContain('__tests__/services/scheduler-*.test.ts');
+  });
+
+  it('routes APNs / notification changes into APNs + notification routes tests', () => {
+    const raw = execFileSync(
+      'bash',
+      [
+        'scripts/changed-area-classifier.sh',
+        '--json',
+        '--files',
+        [
+          'src/services/apns-sender.ts',
+          'src/api/routes/notifications.ts',
+        ].join(','),
+      ],
+      { encoding: 'utf8' },
+    );
+    const result = JSON.parse(raw) as {
+      flags: Record<string, boolean>;
+      cannotSkip: string[];
+      vitest: { globs: string[] };
+    };
+
+    expect(result.flags.notification).toBe(true);
+    expect(result.cannotSkip).toContain('notification-apns-delivery-and-tenant');
+    expect(result.vitest.globs).toContain('__tests__/services/apns-*.test.ts');
+    expect(result.vitest.globs).toContain('__tests__/api/notifications-*.test.ts');
+  });
+
+  it('routes Garmin / Apple Health / wearable changes into health-integration tests', () => {
+    const raw = execFileSync(
+      'bash',
+      [
+        'scripts/changed-area-classifier.sh',
+        '--json',
+        '--files',
+        [
+          'src/services/garmin.ts',
+          'src/services/apple-health.ts',
+          'src/api/routes/wearable-routes.ts',
+        ].join(','),
+      ],
+      { encoding: 'utf8' },
+    );
+    const result = JSON.parse(raw) as {
+      flags: Record<string, boolean>;
+      cannotSkip: string[];
+      vitest: { globs: string[] };
+    };
+
+    expect(result.flags.healthIntegration).toBe(true);
+    expect(result.cannotSkip).toContain('health-integration-tenant-isolation');
+    expect(result.vitest.globs).toContain('__tests__/services/garmin-*.test.ts');
+    expect(result.vitest.globs).toContain('__tests__/services/apple-health-*.test.ts');
+    expect(result.vitest.globs).toContain('__tests__/api/wearable-*.test.ts');
+  });
+
+  it('routes rate-limit middleware changes into rate-limiter + security tests', () => {
+    const raw = execFileSync(
+      'bash',
+      [
+        'scripts/changed-area-classifier.sh',
+        '--json',
+        '--files',
+        'src/api/middleware/rate-limit.ts',
+      ],
+      { encoding: 'utf8' },
+    );
+    const result = JSON.parse(raw) as {
+      flags: Record<string, boolean>;
+      cannotSkip: string[];
+      vitest: { globs: string[] };
+    };
+
+    expect(result.flags.rateLimit).toBe(true);
+    expect(result.cannotSkip).toContain('auth-rate-limit-and-lockout');
+    expect(result.vitest.globs).toContain('__tests__/api/rate-limiter.test.ts');
+    expect(result.vitest.globs).toContain('__tests__/security/**/*.test.ts');
+  });
+
+  it('routes audit-trail changes into audit emission and scope tests', () => {
+    const raw = execFileSync(
+      'bash',
+      [
+        'scripts/changed-area-classifier.sh',
+        '--json',
+        '--files',
+        [
+          'src/services/audit-trail.ts',
+          'src/api/routes/audit-trail.ts',
+          'src/portal/admin-audit.ts',
+        ].join(','),
+      ],
+      { encoding: 'utf8' },
+    );
+    const result = JSON.parse(raw) as {
+      flags: Record<string, boolean>;
+      cannotSkip: string[];
+      vitest: { globs: string[] };
+    };
+
+    expect(result.flags.audit).toBe(true);
+    expect(result.cannotSkip).toContain('audit-trail-emission-and-scope');
+    expect(result.vitest.globs).toContain('__tests__/services/audit-trail.test.ts');
+    expect(result.vitest.globs).toContain('__tests__/api/authenticated-support-routes-scope.test.ts');
+    expect(result.vitest.globs).toContain('__tests__/portal/portal-admin-audit.test.ts');
+  });
+
+  it('routes deploy and PM2 config changes into deploy-config gates', () => {
+    const raw = execFileSync(
+      'bash',
+      [
+        'scripts/changed-area-classifier.sh',
+        '--json',
+        '--files',
+        [
+          'ecosystem.config.js',
+          'ecosystem.staging.config.js',
+          'src/config.ts',
+        ].join(','),
+      ],
+      { encoding: 'utf8' },
+    );
+    const result = JSON.parse(raw) as {
+      flags: Record<string, boolean>;
+      cannotSkip: string[];
+      vitest: { globs: string[] };
+    };
+
+    expect(result.flags.deployConfig).toBe(true);
+    expect(result.cannotSkip).toContain('deploy-config-health-rehearsal');
+    expect(result.vitest.globs).toContain('__tests__/services/config-*.test.ts');
+    expect(result.vitest.globs).toContain('__tests__/portal/health-endpoint*.test.ts');
+    expect(result.vitest.globs).toContain('__tests__/scripts/*.test.ts');
+    expect(result.vitest.globs).toContain('__tests__/security/**/*.test.ts');
+  });
+
+  it('routes iOS navigation and view-model changes into responsiveness XCTest classes', () => {
+    const raw = execFileSync(
+      'bash',
+      [
+        'scripts/changed-area-classifier.sh',
+        '--json',
+        '--files',
+        [
+          'Nexus Hub/Views/MainTabView.swift',
+          'Nexus Hub/ViewModels/DashboardViewModel.swift',
+        ].join(','),
+      ],
+      { encoding: 'utf8' },
+    );
+    const result = JSON.parse(raw) as {
+      flags: Record<string, boolean>;
+      cannotSkip: string[];
+      xctest: { classes: string[] };
+    };
+
+    expect(result.flags.iosSrc).toBe(true);
+    expect(result.flags.iosNavigation).toBe(true);
+    expect(result.cannotSkip).toContain('ios-navigation-responsiveness');
+    expect(result.xctest.classes).toContain('Nexus HubTests/NavigationPerformanceSourcePinsTests');
+    expect(result.xctest.classes).toContain('Nexus HubUITests/AppWideResponsivenessUITests');
+  });
+
+  it('routes iOS DTO and decoder changes into contract decoder XCTest classes', () => {
+    const raw = execFileSync(
+      'bash',
+      [
+        'scripts/changed-area-classifier.sh',
+        '--json',
+        '--files',
+        [
+          'Nexus Hub/Core/Services/TrainingService.swift',
+          'Nexus HubTests/TrainingHomeViewStateContractDecodingTests.swift',
+        ].join(','),
+      ],
+      { encoding: 'utf8' },
+    );
+    const result = JSON.parse(raw) as {
+      flags: Record<string, boolean>;
+      cannotSkip: string[];
+      xctest: { classes: string[] };
+    };
+
+    expect(result.flags.iosSrc).toBe(true);
+    expect(result.flags.iosDto).toBe(true);
+    expect(result.cannotSkip).toContain('ios-contract-decoder-resilience');
+    expect(result.xctest.classes).toContain('Nexus HubTests/ContractDecoderResilienceTests');
+    expect(result.xctest.classes).toContain('Nexus HubTests/TrainingHomeViewStateContractDecodingTests');
+  });
+
+  it('routes prompts-only diff into the security suite (ENG-EXC-O3 fix)', () => {
+    // Before this fix, a diff that only touched prompts/*.md was classified
+    // as docs-only AND named `prompt-injection-defense` as a cannot-skip
+    // gate — but emitted ZERO vitest globs. The cannot-skip-gate dashboard
+    // caught the disconnect. The classifier now forces the security suite
+    // to run when HAS_PROMPT fires regardless of HAS_NON_DOC.
+    const raw = execFileSync(
+      'bash',
+      [
+        'scripts/changed-area-classifier.sh',
+        '--json',
+        '--files',
+        'prompts/secretary.md',
+      ],
+      { encoding: 'utf8' },
+    );
+    const result = JSON.parse(raw) as {
+      flags: Record<string, boolean>;
+      cannotSkip: string[];
+      vitest: { mode: string; globs: string[] };
+    };
+
+    expect(result.flags.prompt).toBe(true);
+    expect(result.cannotSkip).toContain('prompt-injection-defense');
+    expect(result.vitest.mode).toBe('focused');
+    expect(result.vitest.globs).toContain('__tests__/security/**/*.test.ts');
+    expect(result.vitest.globs).toContain('__tests__/services/prompt-cleanliness.test.ts');
+  });
+
+  it('preserves all new flags as false on unrelated diff (no false positives)', () => {
+    const raw = execFileSync(
+      'bash',
+      [
+        'scripts/changed-area-classifier.sh',
+        '--json',
+        '--files',
+        'src/services/cooking-shopping-list.ts',
+      ],
+      { encoding: 'utf8' },
+    );
+    const result = JSON.parse(raw) as { flags: Record<string, boolean> };
+
+    expect(result.flags.logger).toBe(false);
+    expect(result.flags.scheduler).toBe(false);
+    expect(result.flags.notification).toBe(false);
+    expect(result.flags.healthIntegration).toBe(false);
+    expect(result.flags.rateLimit).toBe(false);
+    expect(result.flags.audit).toBe(false);
+    expect(result.flags.deployConfig).toBe(false);
+    expect(result.flags.iosNavigation).toBe(false);
+    expect(result.flags.iosDto).toBe(false);
+  });
+});
+
+describe('changed-area-classifier cannot-skip dashboard wiring (ENG-EXC-O3)', () => {
+  // The dashboard spawns 23 sequential bash + node child processes (one
+  // per gate). Under full-sweep load (300+ test files in singleFork
+  // mode) the default 10s timeout is tight enough to flake. Bump to 60s
+  // to absorb the cold-spawn cost without masking a real regression —
+  // a real wiring regression prints the failed gate names in the JSON
+  // payload regardless of duration.
+  it('cannot-skip gate dashboard reports all 23 gates wired and PASS verdict', { timeout: 60_000 }, () => {
+    const raw = execFileSync(
+      'bash',
+      ['scripts/cannot-skip-gate-dashboard.sh', '--json', '--no-evidence'],
+      { encoding: 'utf8' },
+    );
+    const result = JSON.parse(raw) as {
+      summary: {
+        total: number;
+        pass: number;
+        fail: number;
+        verdict: 'PASS' | 'FAIL';
+        failedGates: string[];
+      };
+      gates: Array<{ gate: string; pass: boolean }>;
+    };
+
+    expect(result.summary.verdict).toBe('PASS');
+    expect(result.summary.fail).toBe(0);
+    expect(result.summary.total).toBeGreaterThanOrEqual(23);
+    expect(result.summary.pass).toBe(result.summary.total);
+    // Every per-gate row must report pass:true.
+    for (const gate of result.gates) {
+      expect(gate.pass, `gate ${gate.gate} failed wiring`).toBe(true);
+    }
+  });
+});

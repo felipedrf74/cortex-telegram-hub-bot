@@ -1,5 +1,10 @@
 # iOS Integration — Multi-Skill Plan API
 
+Status: canonical
+Owner: backend ↔ iOS contract lead (Felipe)
+Last verified: 2026-05-04
+Update policy: update when the backend ↔ iOS REST contract or skill-execution shape changes.
+
 ## Status
 
 These endpoints are available only when `NEXUS_MULTISKILL_MESH=on`.

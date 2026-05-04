@@ -1,0 +1,20 @@
+{
+  "version": "1",
+  "schema": "engine/scripts/testflight-evidence.sh",
+  "generatedAt": "2026-05-04T13:45:01.177Z",
+  "runIdentifier": "2026-05-04T13-45-01Z",
+  "engineSha": "751480d",
+  "releaseVersion": "4.14.128",
+  "device": {
+    "udid": "00008150-000C0D5101D8401C",
+    "iosVersion": "26.5"
+  },
+  "build": {
+    "flavor": "debug"
+  },
+  "workflow": "training-validation-welcome-to-auth-transition",
+  "outcome": "pass",
+  "evidencePaths": [],
+  "steps": "TrainingValidationUITests 3 PASS + 1 SKIP on iPhone Felipe. Cases: documentation-only-identifiers (0.03s, pass), welcome-rendersBrandAndEnterCTA (4.7s, pass), welcomeToAuth-transitionRendersAuthSurface (6.2s, pass), createPlanSheet-strengthStepper (skipped — requires fixture-bypass env exclusive to TrainingFixtureBypassUITests sister suite).",
+  "note": "Confirms welcome screen + welcome→auth transition render correctly on physical iPhone 17 Pro Max iOS 26.5. The 1 skipped case is by design: the sister suite TrainingFixtureBypassUITests covers strength stepper under fixture-bypass env."
+}

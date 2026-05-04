@@ -10,6 +10,7 @@
  */
 
 import { Resend } from 'resend';
+import crypto from 'crypto';
 import fs from 'fs';
 import path from 'path';
 import { config } from '../config';
@@ -28,6 +29,10 @@ function getResend(): Resend {
 
 export function isEmailConfigured(): boolean {
   return !!process.env.RESEND_API_KEY;
+}
+
+function emailLogHash(email: string): string {
+  return crypto.createHash('sha256').update(email.trim().toLowerCase(), 'utf8').digest('hex').slice(0, 16);
 }
 
 export function isFiscalBundleDeliveryConfigured(): boolean {
@@ -167,6 +172,69 @@ export async function sendVerificationCode(
     return true;
   } catch (err) {
     logger.error({ err, to }, 'Failed to send verification email');
+    return false;
+  }
+}
+
+/**
+ * AUTH-O2 (closed-beta-auth-hardening, 2026-05-04): password reset email.
+ *
+ * The reset URL is delivered exactly once. The token is a 256-bit
+ * url-safe base64 string; the server stores only its SHA-256 hash.
+ * If the email transport leaks (compromised mailbox), the attacker can
+ * follow the link until the 1h TTL expires OR the user resets first
+ * (which atomically invalidates the token via UPSERT). Successful
+ * confirm also revokes all existing iOS sessions.
+ *
+ * Token expiry, attempt cap, and single-use enforcement all live in
+ * the password-reset service, NOT in this email helper.
+ */
+export async function sendPasswordResetEmail(
+  to: string,
+  resetUrl: string,
+  firstName: string,
+): Promise<boolean> {
+  try {
+    const resend = getResend();
+    const from = process.env.RESEND_FROM || 'Nexus Hub <noreply@nexushub.me>';
+
+    await resend.emails.send({
+      from,
+      to,
+      subject: 'Reset your Nexus Hub password',
+      html: `
+        <div style="font-family: -apple-system, BlinkMacSystemFont, 'Inter', sans-serif; max-width: 480px; margin: 0 auto; padding: 40px 24px; background: #0A0A0B; color: #EDEDEF;">
+          <div style="text-align: center; margin-bottom: 32px;">
+            <div style="display: inline-block; width: 56px; height: 56px; background: #1E1E1E; border-radius: 16px; line-height: 56px; font-size: 28px; font-weight: 900; color: #FF6B35;">N</div>
+          </div>
+          <h1 style="font-size: 24px; font-weight: 800; text-align: center; margin-bottom: 8px; color: #EDEDEF;">
+            Reset your password
+          </h1>
+          <p style="font-size: 15px; color: #A1A1A6; text-align: center; margin-bottom: 32px;">
+            Hi ${firstName}, tap the button below to set a new password.
+          </p>
+          <div style="text-align: center; margin-bottom: 32px;">
+            <a href="${resetUrl}"
+               style="display: inline-block; background: #FF6B35; color: #0A0A0B; padding: 14px 28px; border-radius: 12px; font-weight: 700; font-size: 16px; text-decoration: none;">
+              Reset password
+            </a>
+          </div>
+          <p style="font-size: 13px; color: #6E6E76; text-align: center;">
+            This link expires in 1 hour and can only be used once.<br>
+            If you didn't request a password reset, ignore this email — your account is safe.
+          </p>
+          <hr style="border: none; border-top: 1px solid rgba(255,255,255,0.06); margin: 32px 0;">
+          <p style="font-size: 11px; color: #48484F; text-align: center;">
+            Nexus Hub · nexushub.me · The personal operating system
+          </p>
+        </div>
+      `,
+    });
+
+    logger.info({ toHash: emailLogHash(to) }, 'Password reset email sent');
+    return true;
+  } catch (err) {
+    logger.error({ err, toHash: emailLogHash(to) }, 'Failed to send password reset email');
     return false;
   }
 }

@@ -1,5 +1,10 @@
 # Simulator And Local Service Hygiene
 
+Status: canonical
+Owner: release + iOS QA lead (Felipe)
+Last verified: 2026-05-04
+Update policy: update when simulator UDID pinning, local-service cleanup, or iOS-test hygiene contract changes.
+
 Date: 2026-05-01
 
 ## Simulator Standard

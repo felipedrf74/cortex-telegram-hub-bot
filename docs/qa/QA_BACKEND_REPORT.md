@@ -1,5 +1,12 @@
 # QA Backend Report - Chat Tenant-Safe Context Audit
 
+Status: canonical
+Owner: backend QA lead (Felipe)
+Last verified: 2026-05-04
+Update policy: append addendum sections (do not overwrite historical
+ones). The body's per-addendum "Status:" lines refer to QA findings of
+that pass, not this doc's canonical-status frontmatter.
+
 Generated: 2026-04-29 03:30 WEST  
 Branch: `feature/chat-tenant-safe-context-orchestration`
 

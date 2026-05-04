@@ -1,5 +1,10 @@
 # Documentation Map — Backend / Content Engine
 
+Status: canonical
+Owner: backend lead (Felipe)
+Last verified: 2026-05-04
+Update policy: update when a new docs/ subdirectory is added or canonical doc moves.
+
 ## Purpose
 This file is the Markdown inventory for the Nexus Hub backend and content
 engine workspace.

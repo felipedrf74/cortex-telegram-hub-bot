@@ -366,16 +366,52 @@ describe('Auth invite registration', () => {
     expect(decoded.deviceId).toBe('shared-ios-device');
 
     const device = testDb.prepare(
-      'SELECT user_id, push_token, refresh_token FROM ios_devices WHERE device_id = ?',
+      'SELECT user_id, push_token, refresh_token, refresh_token_hash FROM ios_devices WHERE device_id = ?',
     ).get('shared-ios-device') as {
       user_id: number;
       push_token: string;
-      refresh_token: string;
+      refresh_token: string | null;
+      refresh_token_hash: string | null;
     };
 
     expect(device.user_id).toBe(userBId);
     expect(device.push_token).toBe('push-b');
-    expect(device.refresh_token).toBe(activeRefresh.body.data.refreshToken);
+    // AUTH-O4 (closed-beta-auth-hardening, 2026-05-04): refresh tokens
+    // are now stored as SHA-256 hash at rest, not plaintext. The
+    // plaintext column is cleared on every write; the hash column is
+    // what backs lookup at /auth/refresh.
+    expect(device.refresh_token).toBeNull();
+    const crypto = await import('crypto');
+    const expectedHash = crypto.createHash('sha256')
+      .update(activeRefresh.body.data.refreshToken, 'utf8').digest('hex');
+    expect(device.refresh_token_hash).toBe(expectedHash);
+
+    const replayPrevious = await dispatchAuth('/refresh', { refreshToken: sessionB.refreshToken });
+    expect(replayPrevious.statusCode).toBe(401);
+    expect(replayPrevious.body.error.code).toBe('UNAUTHORIZED');
+    const remainingSessions = testDb.prepare('SELECT COUNT(*) AS n FROM ios_devices WHERE user_id = ?')
+      .get(userBId) as { n: number };
+    expect(remainingSessions.n).toBe(0);
+
+    testDb.prepare(`
+      INSERT INTO ios_devices (device_id, user_id, refresh_token)
+      VALUES ('legacy-device', ?, 'legacy-refresh-token')
+    `).run(userAId);
+    const countBeforeBackfill = testDb.prepare('SELECT COUNT(*) AS n FROM ios_devices').get() as { n: number };
+    const { backfillLegacyRefreshTokenHashes } = await import('../../src/services/ios-auth-session');
+    const backfill = backfillLegacyRefreshTokenHashes();
+    const countAfterBackfill = testDb.prepare('SELECT COUNT(*) AS n FROM ios_devices').get() as { n: number };
+    expect(countAfterBackfill.n).toBe(countBeforeBackfill.n);
+    expect(backfill.hashedRows).toBe(1);
+    const legacy = testDb.prepare(`
+      SELECT refresh_token, refresh_token_hash
+      FROM ios_devices
+      WHERE device_id = 'legacy-device'
+    `).get() as { refresh_token: string | null; refresh_token_hash: string | null };
+    expect(legacy.refresh_token).toBeNull();
+    expect(legacy.refresh_token_hash).toBe(
+      crypto.createHash('sha256').update('legacy-refresh-token', 'utf8').digest('hex'),
+    );
   });
 
   it('returns the authenticated user profile for session rehydration', async () => {

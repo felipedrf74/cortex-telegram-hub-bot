@@ -1,5 +1,12 @@
 # Backend Documentation Index
 
+Status: canonical
+Owner: backend architecture lead (Felipe)
+Last verified: 2026-05-04
+Update policy: update when a new canonical backend doc location is added
+or a canonical path moves. The workspace-level entry point is
+`docs/DOCS_INDEX.md`.
+
 This is the backend repo's markdown routing map for Codex and Claude Code.
 
 ## Current Docs To Update
@@ -11,6 +18,11 @@ This is the backend repo's markdown routing map for Codex and Claude Code.
 | Current release index | current | `docs/release/current-release-index.md` | Update first for active release decisions and exact RC identity. |
 | Production checklist | canonical | `docs/release/production-promotion-checklist-v2.md` | Update only when the process changes. |
 | Risk-based gate matrix | canonical | `docs/release/risk-based-release-gate-matrix.md` | Update when changed-file gating changes. |
+| Engineering standards index | canonical | `docs/engineering/ENGINEERING_STANDARDS_INDEX.md` | Update when a new backend engineering standard is added. |
+| Backend API contract standard | canonical | `docs/engineering/backend-api-contract-standard.md` | Update when REST contract conventions change. |
+| Security and data isolation standard | canonical | `docs/engineering/security-and-data-isolation-standard.md` | Update when threat model or permanent gates change. |
+| Runtime and observability standard | canonical | `docs/engineering/runtime-and-observability-standard.md` | Update when health/log/alert semantics change. |
+| Testing and QA harness standard | canonical | `docs/engineering/testing-and-qa-harness-standard.md` | Update when test categories or evidence requirements change. |
 | Docs drift audit | canonical command | `npm run docs:audit` | Run before creating release docs or copying verdicts/test counts. |
 
 ## Historical Docs

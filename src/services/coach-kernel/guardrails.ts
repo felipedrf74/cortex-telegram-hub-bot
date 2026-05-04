@@ -234,7 +234,7 @@ function enforceReadiness(plan: WeeklyPlan, athlete: AthleteState): GuardrailRes
         exercises: adaptation.session.sport !== 'strength'
           ? adaptation.session.exercises
           : adaptation.session.sessionType === 'mobility'
-            ? undefined
+            ? adaptation.session.exercises
             : techniqueStrengthExercisesForRedReadiness(session),
       };
     }

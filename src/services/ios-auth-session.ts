@@ -9,6 +9,25 @@ import { logAudit } from './audit-trail';
 import { getStoredDailyCostLimitUsdForTier } from './plan-quotas';
 import type { User } from './user-service';
 
+// AUTH-O4 (closed-beta-auth-hardening, 2026-05-04): refresh-token at-rest
+// hashing. The plaintext token leaves the server exactly once (returned
+// to iOS in the auth response). The DB stores only the SHA-256 hash.
+//
+// Active hash: matches the currently-issued refresh token.
+// Previous hash: the one we just rotated AWAY from, kept for theft
+// detection (if a refresh attempt arrives bearing the previous-only
+// hash, the legitimate client already has the new one — only an
+// attacker would still be presenting the old one).
+//
+// SHA-256 (NOT bcrypt) because:
+//   - O(1) lookup by hash via index.
+//   - 512-bit token entropy (64 bytes hex = 128 chars) makes bcrypt's
+//     cost factor irrelevant.
+//   - Constant-time-friendly integer compare.
+export function hashRefreshToken(token: string): string {
+  return crypto.createHash('sha256').update(token, 'utf8').digest('hex');
+}
+
 export interface AuthSessionPayload {
   accessToken: string;
   refreshToken: string;
@@ -41,18 +60,27 @@ export function createAuthSessionAndRegisterDevice(input: CreateAuthSessionInput
     { expiresIn: '7d' as any },
   );
   const refreshToken = crypto.randomBytes(64).toString('hex');
+  const refreshTokenHash = hashRefreshToken(refreshToken);
 
   const db = getDb();
+  // AUTH-O4: write hash to refresh_token_hash; clear plaintext column
+  // and previous_refresh_token_hash on a fresh session/registration
+  // (no theft-detection lineage when registering a new device row).
   db.prepare(`
-    INSERT INTO ios_devices (user_id, device_id, device_name, push_token, refresh_token)
-    VALUES (?, ?, ?, ?, ?)
+    INSERT INTO ios_devices (
+      user_id, device_id, device_name, push_token,
+      refresh_token, refresh_token_hash, previous_refresh_token_hash
+    )
+    VALUES (?, ?, ?, ?, NULL, ?, NULL)
     ON CONFLICT(device_id) DO UPDATE SET
       user_id = excluded.user_id,
       device_name = excluded.device_name,
       push_token = excluded.push_token,
-      refresh_token = excluded.refresh_token,
+      refresh_token = NULL,
+      refresh_token_hash = excluded.refresh_token_hash,
+      previous_refresh_token_hash = NULL,
       last_active_at = datetime('now')
-  `).run(input.userId, input.deviceId, input.deviceName, input.pushToken, refreshToken);
+  `).run(input.userId, input.deviceId, input.deviceName, input.pushToken, refreshTokenHash);
 
   try {
     const userRow = db.prepare('SELECT email FROM users WHERE id = ?').get(input.userId) as { email: string } | undefined;
@@ -89,6 +117,56 @@ export function createAuthSessionAndRegisterDevice(input: CreateAuthSessionInput
       language: input.user.language || 'en',
     },
   };
+}
+
+export function backfillLegacyRefreshTokenHashes(): { inspectedRows: number; hashedRows: number; clearedPlaintextRows: number } {
+  const db = getDb();
+  const columns = db.prepare(`PRAGMA table_info(ios_devices)`).all() as Array<{ name: string }>;
+  const names = new Set(columns.map((column) => column.name));
+  if (!names.has('refresh_token') || !names.has('refresh_token_hash')) {
+    return { inspectedRows: 0, hashedRows: 0, clearedPlaintextRows: 0 };
+  }
+
+  const rows = db.prepare(`
+    SELECT id, refresh_token, refresh_token_hash
+    FROM ios_devices
+    WHERE refresh_token IS NOT NULL
+      AND refresh_token != ''
+  `).all() as Array<{ id: number; refresh_token: string; refresh_token_hash: string | null }>;
+
+  let hashedRows = 0;
+  let clearedPlaintextRows = 0;
+  const updateWithHash = db.prepare(`
+    UPDATE ios_devices
+       SET refresh_token_hash = ?,
+           refresh_token = NULL
+     WHERE id = ?
+       AND refresh_token = ?
+  `);
+  const clearPlaintext = db.prepare(`
+    UPDATE ios_devices
+       SET refresh_token = NULL
+     WHERE id = ?
+       AND refresh_token = ?
+  `);
+
+  const tx = db.transaction(() => {
+    for (const row of rows) {
+      if (!row.refresh_token_hash) {
+        const result = updateWithHash.run(hashRefreshToken(row.refresh_token), row.id, row.refresh_token);
+        if (result.changes === 1) {
+          hashedRows += 1;
+          clearedPlaintextRows += 1;
+        }
+      } else {
+        const result = clearPlaintext.run(row.id, row.refresh_token);
+        if (result.changes === 1) clearedPlaintextRows += 1;
+      }
+    }
+  });
+  tx();
+
+  return { inspectedRows: rows.length, hashedRows, clearedPlaintextRows };
 }
 
 export function grantBetaSandboxAccess(userId: number): void {

@@ -239,6 +239,17 @@ export function resolveGoogleIdentityUser(payload: GoogleIdentityPayload): User 
         },
         'Linked Google ID to existing user (both sides email-verified)',
       );
+      // AUTH-O6 (closed-beta-auth-hardening, 2026-05-04): emit
+      // auth.provider_linked audit row when an existing user gets a
+      // Google sub linked. The link branch is the highest-risk
+      // user-creation surface (it merges identities) and was the
+      // smoking gun behind v4.14.118-class issues.
+      try {
+        const { emitProviderLinkedAudit } = require('./user-service');
+        emitProviderLinkedAudit(existing.id, 'google', { googleUserId });
+      } catch (err: any) {
+        logger.warn({ err, userId: existing.id }, 'Failed to emit auth.provider_linked audit');
+      }
       user = getUserByGoogleId(googleUserId) ?? existing;
     }
   }

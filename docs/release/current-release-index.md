@@ -1,5 +1,10 @@
 # Current Release Index
 
+Status: canonical
+Owner: release lead (Felipe)
+Last verified: 2026-05-04
+Update policy: update when the current RC identity, deploy-gate evidence, or canonical-doc cross-references change. Run engine/scripts/release-identity.sh --persist to refresh auto-generated identity fields.
+
 Date: 2026-05-04
 
 ## Current Status

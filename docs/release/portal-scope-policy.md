@@ -1,5 +1,10 @@
 # Portal Scope Policy — Closed-Beta v4.14.126+
 
+Status: canonical
+Owner: release + portal-security lead (Felipe)
+Last verified: 2026-05-04
+Update policy: update when portal scope (admin/read/write) policy, BetaHardened guard, or session/actor signature requirements change.
+
 Date: 2026-05-03
 Owner: Felipe Dominguez (sole operator)
 Source code: `src/portal/server.ts`, `src/api/secret-guards.ts`,

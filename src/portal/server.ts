@@ -22,6 +22,7 @@ import { getOwnerBootstrapTarget } from '../services/user-service';
 import { logger } from '../utils/logger';
 import { generateRequestId, runWithContext } from '../utils/request-context';
 import { requirePortalTokenByMethod } from '../api/secret-guards';
+import { rateLimitMiddleware } from '../api/rate-limiter';
 import {
   getConfiguredPortalCredentials,
   validatePortalAdminBetaReadiness,
@@ -277,6 +278,19 @@ export function createPortalServer(bot?: any): http.Server {
   // warning when admin is exposed in production without signed sessions or
   // actor signatures, so the on-call runbook has a single log line to check.
   validatePortalAdminBetaReadiness(config.portal);
+
+  // AUTH-O10 (closed-beta-auth-hardening, 2026-05-04): mount the IP-bucket
+  // rate limiter on portal `/api/*` (not `/api/v1/*` — iOS already mounts
+  // its own at `createApiRouter()` above). Without this, distributed
+  // brute-force against the portal token would be unbounded.
+  // The rate limiter is unauthenticated-safe (falls back to IP bucket
+  // when no userId is on the request).
+  app.use('/api', (req: Request, res: Response, next: NextFunction) => {
+    if (req.path.startsWith('/v1/') || req.path.startsWith('/v1')) {
+      return next();
+    }
+    return rateLimitMiddleware(req, res, next);
+  });
 
   app.use('/api', (req: Request, res: Response, next: NextFunction) => {
     // Skip portal auth for iOS API routes — they use their own JWT middleware

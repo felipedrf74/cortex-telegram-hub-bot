@@ -1,5 +1,12 @@
 # Observability / On-Call Loop
 
+Status: canonical
+Owner: backend on-call lead (Felipe)
+Last verified: 2026-05-04
+Update policy: update when alert sources, runbook surfaces, or the
+delivery contract change. Drill cadence is at least every 90 days; the
+last verified drill date is recorded in §1.
+
 This document covers the backend alert loop for Nexus Hub operators. It is not
 a release checklist; it describes how durable operator alerts are created,
 delivered, acknowledged, resolved, and recovered.

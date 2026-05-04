@@ -1,5 +1,10 @@
 # Model Review Process
 
+Status: canonical
+Owner: AI provider routing lead (Felipe)
+Last verified: 2026-05-04
+Update policy: run monthly on the 1st; update when provider routing matrix or task-type pinning changes.
+
 ## Monthly Review (1st of each month)
 
 ### 1. Cost Analysis

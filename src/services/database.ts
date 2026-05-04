@@ -68,6 +68,19 @@ export function initDatabase(): Database.Database {
 
   runMigrations();
 
+  try {
+    const { backfillLegacyRefreshTokenHashes } = require('./ios-auth-session');
+    const result = backfillLegacyRefreshTokenHashes();
+    if (result.hashedRows > 0 || result.clearedPlaintextRows > 0) {
+      logger.warn(
+        result,
+        'iOS auth migration: hashed legacy refresh tokens and cleared plaintext',
+      );
+    }
+  } catch (err) {
+    logger.error({ err }, 'iOS auth refresh-token hash backfill failed — investigate before next deploy');
+  }
+
   // Load persisted model overrides from kv_store (after migrations create the table)
   try {
     const { loadModelOverrides } = require('./model-config');

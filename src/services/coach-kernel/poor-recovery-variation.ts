@@ -1,7 +1,12 @@
 // Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
 
 import { loadCoachKnowledge } from './knowledge-loader';
-import { trimOverstuffedStrengthSessionToDuration, validateSessionCoherence } from './session-coherence';
+import {
+  buildMobilityRecoveryExerciseList,
+  MOBILITY_TARGET_MAX_MINUTES,
+  MOBILITY_TARGET_MIN_MINUTES,
+} from './mobility-recovery-builder';
+import { estimateStrengthSessionMinutes, trimOverstuffedStrengthSessionToDuration, validateSessionCoherence } from './session-coherence';
 import type { AthleteState, ExercisePrescription, FatigueCost, IntensityZone, Session, SessionType, Sport } from './types';
 import { clamp, dayIndex, durationToLoad } from './utils';
 
@@ -339,7 +344,7 @@ export function adaptSessionForPoorRecovery(context: PoorRecoveryContext): PoorR
   const scenario = classifyRecoveryScenario(context);
   const variants = recoveryVariantsFor(context.session, scenario, context.athlete);
   const variant = variants[stableVariantIndex(context, variants.length)];
-  const durationMinutes = recoveryDuration(context.session, variant);
+  let durationMinutes = recoveryDuration(context.session, variant);
   const explanation = scenarioExplanation(scenario, context.session, variant);
   const tags = dedupeStrings([
     ...context.session.tags.filter((tag) => !tag.startsWith('key_')),
@@ -357,10 +362,28 @@ export function adaptSessionForPoorRecovery(context: PoorRecoveryContext): PoorR
   // recovery slot is honest.
   let exercises: ExercisePrescription[] | undefined = context.session.exercises;
   if (context.session.sport === 'strength' && variant.sessionType === 'mobility') {
-    // Mobility variants are explicitly empty-block sessions — no loaded
-    // compounds, just movement work captured by the description. The
-    // existing variety test already pins this contract.
-    exercises = [];
+    // P2 follow-up (closed-beta backlog, 2026-05-04 night): instead of
+    // an empty exercise list (which used to force the duration-honesty
+    // shrink to ~13 min), populate the mobility recovery slot with a
+    // catalog-grounded mobility flow whose estimated content matches
+    // the variant's claimed minutes. Falls back to empty-block if the
+    // catalog can't span ≥3 distinct warmupNeeds buckets, in which
+    // case the existing shrink path keeps the duration credible.
+    const knowledge = loadCoachKnowledge();
+    const mobilityList = buildMobilityRecoveryExerciseList(knowledge, durationMinutes);
+    if (mobilityList) {
+      exercises = mobilityList;
+      // Keep the claim aligned to the catalog-grounded content. This
+      // prevents later capacity reconciliation from trimming a valid
+      // 4-exercise mobility flow merely because the old multiplier
+      // placeholder landed at the lower 18-minute bound.
+      durationMinutes = Math.max(
+        MOBILITY_TARGET_MIN_MINUTES,
+        Math.min(MOBILITY_TARGET_MAX_MINUTES, estimateStrengthSessionMinutes({ exercises: mobilityList }, knowledge)),
+      );
+    } else {
+      exercises = [];
+    }
   }
 
   let session: Session = {

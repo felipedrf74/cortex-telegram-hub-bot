@@ -57,6 +57,7 @@ const canonicalFiles = new Set([
   path.join(workspaceRoot, 'docs', 'release', 'CURRENT_RELEASE_STATE.md'),
   path.join(workspaceRoot, 'docs', 'release', 'OPEN_ITEMS.md'),
   path.join(workspaceRoot, 'docs', 'agent', 'OPERATING_CONTEXT.md'),
+  path.join(workspaceRoot, 'docs', 'agent', 'AGENT_PROCESS_STANDARD.md'),
   path.join(backendRoot, 'CLAUDE.md'),
   path.join(backendRoot, 'README.md'),
   path.join(backendRoot, 'docs', 'DOCS_INDEX.md'),
@@ -65,6 +66,7 @@ const canonicalFiles = new Set([
   path.join(iosRoot, 'README.md'),
   path.join(iosRoot, 'AGENTS.md'),
   path.join(iosRoot, 'CLAUDE.md'),
+  path.join(iosRoot, 'docs', 'DOCS_INDEX.md'),
   path.join(iosRoot, 'docs', 'qa', 'QA_IOS_REPORT.md'),
 ]);
 
@@ -74,6 +76,12 @@ const testCountPattern =
   /\b(?:\d{1,4}\s+files?\s*\/\s*)?\d{1,5}\s*\/\s*\d{1,5}\s+(?:tests?|PASS|passed)\b|\b\d{2,5}\s+tests?\b|\b\d{2,5}\s*\/\s*\d{2,5}\b/i;
 const commitHashPattern = /\b[0-9a-f]{7,40}\b/gi;
 const markdownLinkPattern = /\[[^\]]*]\(([^)#?]+\.md)(?:#[^)]+)?\)|`([^`]+\.md)`/g;
+const requiredEngineeringFrontmatter = [
+  /^Status:\s*\S+/im,
+  /^Owner:\s*\S+/im,
+  /^Last verified:\s*\d{4}-\d{2}-\d{2}/im,
+  /^Update policy:\s*\S+/im,
+];
 
 const issues = [];
 
@@ -148,6 +156,14 @@ function isApprovedCurrentOrArchive(file) {
   }
   if (normalized.startsWith(path.join(workspaceRoot, 'docs', 'agent') + path.sep)) return true;
   if (normalized.startsWith(path.join(workspaceRoot, 'docs', 'release') + path.sep)) return true;
+  // Engineering-excellence enrichment (2026-05-04): canonical engineering
+  // standards live under workspace `docs/engineering/`, backend
+  // `engine/docs/engineering/`, and iOS `ios/docs/engineering/`.
+  if (normalized.startsWith(path.join(workspaceRoot, 'docs', 'engineering') + path.sep)) return true;
+  if (normalized.startsWith(path.join(backendRoot, 'docs', 'engineering') + path.sep)) return true;
+  if (normalized.startsWith(path.join(iosRoot, 'docs', 'engineering') + path.sep)) return true;
+  // ENG-EXC-O8 (2026-05-04): the workspace docs mirror inside engine/.
+  if (normalized.startsWith(path.join(backendRoot, 'docs', '_workspace-mirror') + path.sep)) return true;
   if (normalized.startsWith(path.join(backendRoot, 'docs', 'release') + path.sep)) return true;
   if (normalized.startsWith(path.join(backendRoot, 'docs') + path.sep) && path.dirname(normalized) === path.join(backendRoot, 'docs')) return true;
   if (normalized.startsWith(iosSpecsRoot + path.sep)) return true;
@@ -160,7 +176,111 @@ function isCurrentLike(file) {
     || currentVerdictFiles.has(normalized)
     || normalized.startsWith(path.join(workspaceRoot, 'docs') + path.sep)
     || normalized.startsWith(path.join(backendRoot, 'docs', 'release') + path.sep)
-    || normalized.startsWith(path.join(backendRoot, 'docs', 'qa') + path.sep);
+    || normalized.startsWith(path.join(backendRoot, 'docs', 'qa') + path.sep)
+    // ENG-EXC-O9 (closed-beta-auth-hardening, 2026-05-04): outbound
+    // markdown link resolution over `engineering/` paths. Engineering
+    // standards reference each other heavily; a renamed standard
+    // would break a link silently. Treating engineering paths as
+    // current-like means broken-link warnings fire on them.
+    || normalized.startsWith(path.join(workspaceRoot, 'docs', 'engineering') + path.sep)
+    || normalized.startsWith(path.join(backendRoot, 'docs', 'engineering') + path.sep)
+    || normalized.startsWith(path.join(iosRoot, 'docs', 'engineering') + path.sep);
+}
+
+function isEngineeringStandard(file) {
+  const normalized = normalize(file);
+  return normalized.startsWith(path.join(workspaceRoot, 'docs', 'engineering') + path.sep)
+    || normalized.startsWith(path.join(backendRoot, 'docs', 'engineering') + path.sep)
+    || normalized.startsWith(path.join(iosRoot, 'docs', 'engineering') + path.sep)
+    || normalized === path.join(workspaceRoot, 'docs', 'agent', 'AGENT_PROCESS_STANDARD.md');
+}
+
+// Engineering-excellence enrichment (2026-05-04, ENG-EXC-O8): the workspace
+// `docs/` folder is not git-tracked. The mirror at
+// engine/docs/_workspace-mirror/ is a one-way snapshot; drift between the
+// workspace source and the mirror is a durability bug. This check warns
+// once if the mirror is stale relative to the workspace.
+const WORKSPACE_MIRROR_ROOT = path.join(backendRoot, 'docs', '_workspace-mirror');
+const WORKSPACE_MIRROR_SOURCES = [
+  { rel: 'CLAUDE.md', src: path.join(workspaceRoot, 'CLAUDE.md') },
+  { rel: 'AGENTS.md', src: path.join(workspaceRoot, 'AGENTS.md') },
+  { rel: 'README.md', src: path.join(workspaceRoot, 'README.md') },
+];
+
+function checkWorkspaceMirrorDrift() {
+  // Walk every doc under workspace docs/ that the mirror is supposed to track.
+  const sources = [...WORKSPACE_MIRROR_SOURCES];
+  const docsRoot = path.join(workspaceRoot, 'docs');
+  if (existsDir(docsRoot)) {
+    function walk(dir) {
+      for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+        if (entry.name === 'archive' || entry.name === '.git') continue;
+        const full = path.join(dir, entry.name);
+        if (entry.isDirectory()) {
+          walk(full);
+        } else if (entry.isFile()
+          && (entry.name.toLowerCase().endsWith('.md')
+            || entry.name === 'release-identity.json')) {
+          const rel = path.relative(workspaceRoot, full);
+          sources.push({ rel, src: full });
+        }
+      }
+    }
+    walk(docsRoot);
+  }
+  for (const { rel, src } of sources) {
+    if (!fs.existsSync(src)) continue;
+    const mirror = path.join(WORKSPACE_MIRROR_ROOT, rel);
+    if (!fs.existsSync(mirror)) {
+      addIssue(
+        'warn',
+        'workspace-mirror-missing',
+        src,
+        1,
+        `Workspace doc has no mirror at engine/docs/_workspace-mirror/${rel}. Run engine/scripts/workspace-docs-mirror.sh.`,
+      );
+      continue;
+    }
+    try {
+      const a = fs.readFileSync(src);
+      const b = fs.readFileSync(mirror);
+      if (!a.equals(b)) {
+        addIssue(
+          'warn',
+          'workspace-mirror-stale',
+          src,
+          1,
+          `Workspace doc differs from mirror at engine/docs/_workspace-mirror/${rel}. Run engine/scripts/workspace-docs-mirror.sh.`,
+        );
+      }
+    } catch {
+      // Read errors are non-fatal here; the mirror script is the source of truth.
+    }
+  }
+}
+
+function validateEngineeringFrontmatter(file, content) {
+  if (!isEngineeringStandard(file)) return;
+
+  const header = content.split('\n').slice(0, 16).join('\n');
+  const missing = requiredEngineeringFrontmatter
+    .filter((pattern) => !pattern.test(header))
+    .map((pattern) => {
+      if (String(pattern).includes('Status')) return 'Status';
+      if (String(pattern).includes('Owner')) return 'Owner';
+      if (String(pattern).includes('Last verified')) return 'Last verified';
+      return 'Update policy';
+    });
+
+  if (missing.length > 0) {
+    addIssue(
+      'warn',
+      'engineering-standard-frontmatter-missing',
+      file,
+      1,
+      `Engineering standard is missing required frontmatter: ${missing.join(', ')}.`,
+    );
+  }
 }
 
 function lineNumber(content, index) {
@@ -210,8 +330,24 @@ const roots = [
 
 const markdownFiles = [...new Set(roots.flatMap((entry) => walkMarkdown(entry.root, entry.followSymlinks).map(normalize)))].sort();
 
+// Run the workspace-mirror drift check once before per-file iteration so
+// the warnings appear at workspace path locations (not mirror paths).
+checkWorkspaceMirrorDrift();
+
+// ENG-EXC-O8 (2026-05-04): the workspace-mirror at engine/docs/_workspace-mirror/
+// is a one-way snapshot of workspace docs. Per-file lints already run on the
+// workspace source; running them again on the mirror produces duplicate
+// warnings. Skip mirrored files from the per-file iteration; the drift check
+// above is the only audit signal that matters for the mirror.
+function isWorkspaceMirror(file) {
+  return normalize(file).startsWith(WORKSPACE_MIRROR_ROOT + path.sep);
+}
+
 for (const file of markdownFiles) {
+  if (isWorkspaceMirror(file)) continue;
   const content = fs.readFileSync(file, 'utf8');
+
+  validateEngineeringFrontmatter(file, content);
 
   if (!isApprovedCurrentOrArchive(file)) {
     addIssue(

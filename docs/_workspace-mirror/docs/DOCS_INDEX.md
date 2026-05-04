@@ -1,0 +1,71 @@
+# Nexus Hub Documentation Index
+
+Status: canonical
+Owner: workspace lead (Felipe)
+Last verified: 2026-05-04
+Update policy: update when a new canonical doc location is added or a
+canonical path moves. Removing a canonical entry requires owner
+approval and a documented replacement.
+
+This is the routing map for Codex and Claude Code.
+
+Official working path: `/Users/felipedominguez/Desktop/Nexus Hub`
+
+## Status Values
+
+- `canonical`: long-lived source of truth
+- `current`: active release/runtime truth to update in normal work
+- `historical`: evidence from a past audit or release
+- `archive`: moved out of active context
+- `generated`: produced by a test/smoke/script
+
+## Current Workspace Docs
+
+| Purpose | Status | Path | Update Policy |
+| --- | --- | --- | --- |
+| Shared agent operating context | canonical | `docs/agent/OPERATING_CONTEXT.md` | Update when agent workflow or repo map changes. |
+| Agent process standard | canonical | `docs/agent/AGENT_PROCESS_STANDARD.md` | Update when an agent failure mode is closed via process or a new evidence type is required. |
+| Current release state | current | `docs/release/CURRENT_RELEASE_STATE.md` | Update after merge, staging, production, or deploy-gate changes. |
+| Current open items | current | `docs/release/OPEN_ITEMS.md` | Update when a P0/P1/P2/P3 item opens or closes. |
+| Archive index | archive | `docs/archive/ARCHIVE_INDEX.md` | Update when moving old reports into archive. |
+| Docs drift audit | generated command | `engine/npm run docs:audit` | Run before creating release docs or copying verdicts/test counts. |
+
+## Repo-Local Canonical Docs
+
+### Backend
+
+| Purpose | Path |
+| --- | --- |
+| Backend bootloader | `engine/CLAUDE.md` |
+| Backend docs index | `engine/docs/DOCS_INDEX.md` |
+| Backend QA current report | `engine/docs/qa/QA_BACKEND_REPORT.md` |
+| Backend release state | `engine/docs/release/CURRENT_RELEASE_STATE.md` |
+| Backend engineering standards index | `engine/docs/engineering/ENGINEERING_STANDARDS_INDEX.md` |
+| API contract standard | `engine/docs/engineering/backend-api-contract-standard.md` |
+| Security and data isolation standard | `engine/docs/engineering/security-and-data-isolation-standard.md` |
+| Runtime and observability standard | `engine/docs/engineering/runtime-and-observability-standard.md` |
+| Testing and QA harness standard | `engine/docs/engineering/testing-and-qa-harness-standard.md` |
+
+### iOS
+
+| Purpose | Path |
+| --- | --- |
+| Codex/iOS bootloader | `ios/AGENTS.md` |
+| Claude/iOS bootloader | `ios/CLAUDE.md` |
+| Product truth | `ios-specs/00-CURRENT-PRODUCT-TRUTH.md` |
+| API contract | `ios-specs/02-API-SPECIFICATION.md` |
+| Token-zero rule | `ios-specs/08-TOKEN-ZERO-ARCHITECTURE.md` |
+| iOS engineering standards index | `ios/docs/engineering/ENGINEERING_STANDARDS_INDEX.md` |
+| iOS architecture + SwiftUI standard | `ios/docs/engineering/ios-architecture-and-swiftui-performance-standard.md` |
+| iOS frontend validation checklist | `ios/docs/engineering/ios-frontend-validation-checklist.md` |
+
+## Creation Rules
+
+1. Before creating a markdown report, search this index and update the current
+   canonical file when one exists.
+2. One-off audit evidence goes under `docs/archive/YYYY-MM/<workstream>/`.
+3. Timestamped reports are historical evidence, not current truth.
+4. Never copy a verdict into multiple current files. Link back to the current
+   release state instead.
+5. If a doc has stale commit hashes or test counts, update
+   `docs/release/CURRENT_RELEASE_STATE.md` first.
