@@ -148,6 +148,15 @@ HAS_ATTACHMENT=false
 HAS_MODEL_ROUTING=false
 HAS_PERSONALIZATION_SCOPE=false
 HAS_CONTENT_AGENT=false
+# Engineering-excellence hardening (2026-05-04): four classifier gaps
+# that the audit flagged as currently missing dedicated test routing.
+# Each maps a high-blast-radius surface to its existing test files so
+# touching that surface auto-fans out into the right suites.
+HAS_LOGGER=false              # pino/redaction/PII-scrub changes
+HAS_SCHEDULER=false           # cron/scheduler/job-failure paths
+HAS_NOTIFICATION=false        # APNs/iOS push/notification routing
+HAS_HEALTH_INTEGRATION=false  # Garmin/HealthKit/wearable/body-battery
+HAS_RATE_LIMIT=false          # rate-limit middleware + per-account lockout
 
 # Use grep-based detection so multiple flags can match a single file.
 # Bash `case` stops at the first match — that's wrong here because e.g.
@@ -244,6 +253,41 @@ match '^src/services/domain-provider-router|^src/portal/provider-routes|^__tests
 # Finance preference scope as missing dedicated routing.
 match '^src/services/cooking-preferences|^src/services/finance-preferences|^src/services/skill-memory|^src/state/content-references|^__tests__/services/cooking-preferences|^__tests__/services/finance-preferences|^__tests__/services/skill-memory|^__tests__/services/content-references' && HAS_PERSONALIZATION_SCOPE=true
 
+# Engineering-excellence hardening (2026-05-04): four additional
+# flag groups so the relevant safety/regression suites are picked up
+# automatically when a change touches these surfaces.
+
+# Logger / pino / redaction — `src/utils/logger.ts` and the redaction
+# helpers control what does (and does not) end up in operator-visible
+# logs. Bug here is a security-policy violation by definition (PII or
+# raw secrets reaching pino). Changes route through the existing
+# `__tests__/utils/logger-redaction.test.ts` and the secret-guard
+# integration test.
+match '^src/utils/logger|^src/utils/redact|^src/utils/log-context|^__tests__/utils/logger-|^__tests__/api/secret-guards' && HAS_LOGGER=true
+
+# Scheduler / cron / job-failure plumbing — `src/services/scheduler.ts`
+# fans out 28+ cron jobs. A regression that breaks per-user scope or
+# silent-fails a job leaks into operator alerts and into stale
+# task/calendar state. The user-scope test pins per-tenant iteration.
+match '^src/services/scheduler|^src/services/cron|^src/services/job-|^__tests__/services/scheduler-' && HAS_SCHEDULER=true
+
+# Notification / APNs / push routing — APNs token upload, content
+# notification routes, push payload shaping. The closed-beta P0 list
+# includes APNs delivery proof; regressions here block iOS release.
+match '^src/services/apns-|^src/services/notification|^src/api/routes/notifications|^src/api/routes/content-notification|^src/services/content-notifications|^__tests__/services/apns-|^__tests__/services/content-notifications|^__tests__/api/notifications-|^__tests__/api/content-notification-' && HAS_NOTIFICATION=true
+
+# Health integration — Garmin, Apple Health, HealthKit, body-battery,
+# readiness, wearable cache isolation. Cross-user readiness leaks are
+# a known risk class (Felipe / Jaqueline / nexushubbot isolation
+# verification is in OPEN_ITEMS). Test mapping covers wearable cache
+# and Apple Health parity.
+match '^src/services/garmin|^src/services/apple-health|^src/services/wearable|^src/services/readiness|^src/services/body-battery|^src/api/routes/wearable|^src/api/routes/health-data|^src/api/routes/garmin-auth|^__tests__/services/garmin-|^__tests__/services/apple-health-|^__tests__/services/integration-health-|^__tests__/api/wearable-|^__tests__/api/health-data-|^__tests__/api/garmin-auth-|^__tests__/portal/integration-health-' && HAS_HEALTH_INTEGRATION=true
+
+# Rate limit / abuse control — auth-route rate limiter, portal rate
+# limiter, per-account lockout (AUTH-O7 still open). Regressions here
+# remove an auth-defense layer.
+match '^src/api/middleware/rate-limit|^src/services/rate-limiter|^src/api/middleware/auth-rate-limit|^__tests__/api/rate-limiter' && HAS_RATE_LIMIT=true
+
 # Detect iOS changes by file path. iOS repo is at ../Nexus Hub IOS/Nexus Hub
 # but in workspace symlink it's `ios/`. Since this script runs from engine,
 # ios files won't appear in this engine diff — included for forward-compat
@@ -290,6 +334,14 @@ $HAS_ATTACHMENT && CANNOT_SKIP+=("attachment-tenant-isolation")
 $HAS_MODEL_ROUTING && CANNOT_SKIP+=("model-routing-cost-attribution")
 $HAS_PERSONALIZATION_SCOPE && CANNOT_SKIP+=("personalization-scope-isolation")
 $HAS_CONTENT_AGENT && CANNOT_SKIP+=("content-agent-neutrality")
+# Engineering-excellence hardening (2026-05-04): five new cannot-skip
+# gates so operator-visible-PII, scheduler-failure, APNs-regression,
+# wearable-tenant-leak, and rate-limit weakening trigger their tests.
+$HAS_LOGGER && CANNOT_SKIP+=("logger-redaction-pii-scan")
+$HAS_SCHEDULER && CANNOT_SKIP+=("scheduler-tenant-scope-and-failure")
+$HAS_NOTIFICATION && CANNOT_SKIP+=("notification-apns-delivery-and-tenant")
+$HAS_HEALTH_INTEGRATION && CANNOT_SKIP+=("health-integration-tenant-isolation")
+$HAS_RATE_LIMIT && CANNOT_SKIP+=("auth-rate-limit-and-lockout")
 
 # Tier 1 if anything non-doc is in scope
 if $HAS_NON_DOC; then
@@ -341,6 +393,12 @@ if $HAS_NON_DOC; then
     $HAS_MODEL_ROUTING && VITEST_GLOBS+=("__tests__/services/domain-provider-router*.test.ts" "__tests__/services/model-routing-*.test.ts")
     $HAS_PERSONALIZATION_SCOPE && VITEST_GLOBS+=("__tests__/services/cooking-preferences*.test.ts" "__tests__/services/finance-preferences*.test.ts" "__tests__/services/skill-memory*.test.ts" "__tests__/services/content-references*.test.ts" "__tests__/security/**/*.test.ts")
     $HAS_CONTENT_AGENT && VITEST_GLOBS+=("__tests__/security/content-agent-neutrality.test.ts" "__tests__/services/cross-agent-learning*.test.ts" "__tests__/portal/domain-status.test.ts")
+    # Engineering-excellence hardening (2026-05-04): wire new flags.
+    $HAS_LOGGER && VITEST_GLOBS+=("__tests__/utils/logger-*.test.ts" "__tests__/api/secret-guards.test.ts")
+    $HAS_SCHEDULER && VITEST_GLOBS+=("__tests__/services/scheduler-*.test.ts")
+    $HAS_NOTIFICATION && VITEST_GLOBS+=("__tests__/services/apns-*.test.ts" "__tests__/services/content-notifications*.test.ts" "__tests__/api/notifications-*.test.ts" "__tests__/api/content-notification-*.test.ts")
+    $HAS_HEALTH_INTEGRATION && VITEST_GLOBS+=("__tests__/services/garmin-*.test.ts" "__tests__/services/apple-health-*.test.ts" "__tests__/services/integration-health-*.test.ts" "__tests__/api/wearable-*.test.ts" "__tests__/api/health-data-*.test.ts" "__tests__/api/garmin-auth-*.test.ts" "__tests__/portal/integration-health-*.test.ts")
+    $HAS_RATE_LIMIT && VITEST_GLOBS+=("__tests__/api/rate-limiter.test.ts" "__tests__/security/**/*.test.ts")
     if [ "${#VITEST_GLOBS[@]}" -eq 0 ]; then
       # Backend src/test changed but no domain mapped — fall back to changed-files-only
       VITEST_MODE="changed-only"
@@ -442,6 +500,11 @@ emit_json() {
   export CLAS_MODEL_ROUTING="$HAS_MODEL_ROUTING"
   export CLAS_PERSONALIZATION_SCOPE="$HAS_PERSONALIZATION_SCOPE"
   export CLAS_CONTENT_AGENT="$HAS_CONTENT_AGENT"
+  export CLAS_LOGGER="$HAS_LOGGER"
+  export CLAS_SCHEDULER="$HAS_SCHEDULER"
+  export CLAS_NOTIFICATION="$HAS_NOTIFICATION"
+  export CLAS_HEALTH_INTEGRATION="$HAS_HEALTH_INTEGRATION"
+  export CLAS_RATE_LIMIT="$HAS_RATE_LIMIT"
 
   node <<'JS'
 function lines(name) {
@@ -507,6 +570,11 @@ const payload = {
     modelRouting: flag('CLAS_MODEL_ROUTING'),
     personalizationScope: flag('CLAS_PERSONALIZATION_SCOPE'),
     contentAgent: flag('CLAS_CONTENT_AGENT'),
+    logger: flag('CLAS_LOGGER'),
+    scheduler: flag('CLAS_SCHEDULER'),
+    notification: flag('CLAS_NOTIFICATION'),
+    healthIntegration: flag('CLAS_HEALTH_INTEGRATION'),
+    rateLimit: flag('CLAS_RATE_LIMIT'),
   },
 };
 console.log(JSON.stringify(payload, null, 2));

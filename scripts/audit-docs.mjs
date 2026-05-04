@@ -57,6 +57,7 @@ const canonicalFiles = new Set([
   path.join(workspaceRoot, 'docs', 'release', 'CURRENT_RELEASE_STATE.md'),
   path.join(workspaceRoot, 'docs', 'release', 'OPEN_ITEMS.md'),
   path.join(workspaceRoot, 'docs', 'agent', 'OPERATING_CONTEXT.md'),
+  path.join(workspaceRoot, 'docs', 'agent', 'AGENT_PROCESS_STANDARD.md'),
   path.join(backendRoot, 'CLAUDE.md'),
   path.join(backendRoot, 'README.md'),
   path.join(backendRoot, 'docs', 'DOCS_INDEX.md'),
@@ -65,6 +66,7 @@ const canonicalFiles = new Set([
   path.join(iosRoot, 'README.md'),
   path.join(iosRoot, 'AGENTS.md'),
   path.join(iosRoot, 'CLAUDE.md'),
+  path.join(iosRoot, 'docs', 'DOCS_INDEX.md'),
   path.join(iosRoot, 'docs', 'qa', 'QA_IOS_REPORT.md'),
 ]);
 
@@ -148,6 +150,12 @@ function isApprovedCurrentOrArchive(file) {
   }
   if (normalized.startsWith(path.join(workspaceRoot, 'docs', 'agent') + path.sep)) return true;
   if (normalized.startsWith(path.join(workspaceRoot, 'docs', 'release') + path.sep)) return true;
+  // Engineering-excellence enrichment (2026-05-04): canonical engineering
+  // standards live under workspace `docs/engineering/`, backend
+  // `engine/docs/engineering/`, and iOS `ios/docs/engineering/`.
+  if (normalized.startsWith(path.join(workspaceRoot, 'docs', 'engineering') + path.sep)) return true;
+  if (normalized.startsWith(path.join(backendRoot, 'docs', 'engineering') + path.sep)) return true;
+  if (normalized.startsWith(path.join(iosRoot, 'docs', 'engineering') + path.sep)) return true;
   if (normalized.startsWith(path.join(backendRoot, 'docs', 'release') + path.sep)) return true;
   if (normalized.startsWith(path.join(backendRoot, 'docs') + path.sep) && path.dirname(normalized) === path.join(backendRoot, 'docs')) return true;
   if (normalized.startsWith(iosSpecsRoot + path.sep)) return true;
