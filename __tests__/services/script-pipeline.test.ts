@@ -168,7 +168,10 @@ describe('script-pipeline: formatScriptToText', () => {
         all: vi.fn().mockReturnValue([]),
       }),
     }),
-  }));
+    initDatabase: vi.fn(),
+  closeDatabase: vi.fn(),
+  findUnexpectedMigrationPrefixCollisions: vi.fn(() => []),
+}));
 
   vi.mock('../../src/config', () => ({
     config: {
@@ -180,7 +183,8 @@ describe('script-pipeline: formatScriptToText', () => {
 
   vi.mock('../../src/utils/logger', () => ({
     logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn(), trace: vi.fn(), child: vi.fn().mockReturnThis() },
-  }));
+    LOGGER_REDACTION_PATHS: [],
+}));
 
   it('renders title options, hook, script, and sources', async () => {
     const { formatScriptToText } = await import('../../src/services/content-workflow');

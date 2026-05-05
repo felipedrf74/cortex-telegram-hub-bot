@@ -175,6 +175,7 @@ vi.mock('../../src/utils/logger', () => ({
     trace: vi.fn(),
     child: vi.fn().mockReturnThis(),
   },
+  LOGGER_REDACTION_PATHS: [],
 }));
 
 // Slice 4.D — lifecycle audit module touches the real DB. Stubbed here

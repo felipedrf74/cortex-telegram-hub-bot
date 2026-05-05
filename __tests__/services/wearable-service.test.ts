@@ -24,6 +24,9 @@ vi.mock('../../src/services/database', () => ({
       all: vi.fn().mockReturnValue([]),
     }),
   }),
+  initDatabase: vi.fn(),
+  closeDatabase: vi.fn(),
+  findUnexpectedMigrationPrefixCollisions: vi.fn(() => []),
 }));
 
 vi.mock('../../src/services/garmin-session-store', () => ({

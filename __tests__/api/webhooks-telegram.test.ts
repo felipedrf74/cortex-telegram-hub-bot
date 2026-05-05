@@ -24,6 +24,7 @@ import http from 'http';
 
 vi.mock('../../src/utils/logger', () => ({
   logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
+  LOGGER_REDACTION_PATHS: [],
 }));
 
 // Hoisted state — `vi.hoisted` lets the mock factory read variables that
@@ -55,6 +56,9 @@ vi.mock('../../src/config', () => ({
 // Mock the dependent services
 vi.mock('../../src/services/database', () => ({
   getDb: () => ({ prepare: () => ({ all: () => [] }) }),
+  initDatabase: vi.fn(),
+  closeDatabase: vi.fn(),
+  findUnexpectedMigrationPrefixCollisions: vi.fn(() => []),
 }));
 vi.mock('../../src/services/task-store/sync-engine', () => ({
   syncProvider: vi.fn().mockResolvedValue({ tasksUpserted: 0, errors: [] }),

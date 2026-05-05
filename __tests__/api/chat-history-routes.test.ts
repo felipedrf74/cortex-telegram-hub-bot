@@ -20,6 +20,7 @@ vi.mock('../../src/utils/logger', () => ({
     debug: vi.fn(),
     error: vi.fn(),
   },
+  LOGGER_REDACTION_PATHS: [],
 }));
 
 import { registerChatHistoryRoutes } from '../../src/api/routes/chat-history-routes';

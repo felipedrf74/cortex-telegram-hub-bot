@@ -26,6 +26,9 @@ vi.mock('../../src/services/database', () => ({
       run: (...args: unknown[]) => mockDbRun(...args),
     }),
   }),
+  initDatabase: vi.fn(),
+  closeDatabase: vi.fn(),
+  findUnexpectedMigrationPrefixCollisions: vi.fn(() => []),
 }));
 
 vi.mock('../../src/state/notes', () => ({
@@ -61,6 +64,7 @@ vi.mock('../../src/utils/logger', () => ({
     trace: vi.fn(),
     child: vi.fn().mockReturnThis(),
   },
+  LOGGER_REDACTION_PATHS: [],
 }));
 
 import { auditTrailRoutes } from '../../src/api/routes/audit-trail';

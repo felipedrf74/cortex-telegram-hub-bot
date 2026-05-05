@@ -51,6 +51,7 @@ vi.mock('../../src/utils/logger', () => ({
   logger: {
     error: vi.fn(),
   },
+  LOGGER_REDACTION_PATHS: [],
 }));
 
 import {

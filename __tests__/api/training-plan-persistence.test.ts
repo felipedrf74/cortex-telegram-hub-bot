@@ -44,6 +44,7 @@ vi.mock('../../src/utils/logger', () => ({
     warn: (...args: unknown[]) => mockLoggerWarn(...args),
     info: (...args: unknown[]) => mockLoggerInfo(...args),
   },
+  LOGGER_REDACTION_PATHS: [],
 }));
 
 import { persistGeneratedTrainingPlan } from '../../src/api/routes/training-plan-persistence';

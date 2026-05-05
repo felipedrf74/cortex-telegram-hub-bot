@@ -14,6 +14,7 @@ vi.mock('../../src/utils/logger', () => ({
     info: vi.fn(),
     error: vi.fn(),
   },
+  LOGGER_REDACTION_PATHS: [],
 }));
 
 describe('swr-refresh-observability', () => {

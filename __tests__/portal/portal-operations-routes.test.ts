@@ -77,6 +77,7 @@ vi.mock('../../src/utils/logger', () => ({
   logger: {
     error: (...args: unknown[]) => mockLoggerError(...args),
   },
+  LOGGER_REDACTION_PATHS: [],
 }));
 
 import { registerPortalOperationsRoutes } from '../../src/portal/operations-routes';

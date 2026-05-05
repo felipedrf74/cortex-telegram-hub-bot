@@ -100,6 +100,7 @@ vi.mock('../../src/skills/registry', () => ({
 }));
 vi.mock('../../src/utils/logger', () => ({
   logger: { info: vi.fn(), warn: vi.fn(), debug: vi.fn(), error: vi.fn() },
+  LOGGER_REDACTION_PATHS: [],
 }));
 
 // Import AFTER mocks

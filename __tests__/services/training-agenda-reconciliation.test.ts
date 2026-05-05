@@ -22,6 +22,7 @@ vi.mock('../../src/utils/logger', () => ({
   logger: {
     warn: mocks.loggerWarn,
   },
+  LOGGER_REDACTION_PATHS: [],
 }));
 
 import { reconcileOrphanedTrainingAgendaEvents } from '../../src/services/training-agenda-reconciliation';

@@ -42,6 +42,9 @@ const mockIsRestarting = vi.fn();
 
 vi.mock('../../src/services/database', () => ({
   getDb: () => mockGetDb(),
+  initDatabase: vi.fn(),
+  closeDatabase: vi.fn(),
+  findUnexpectedMigrationPrefixCollisions: vi.fn(() => []),
 }));
 
 vi.mock('../../src/portal/telemetry', () => ({
@@ -67,6 +70,7 @@ vi.mock('../../src/config', () => ({
 
 vi.mock('../../src/utils/logger', () => ({
   logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
+  LOGGER_REDACTION_PATHS: [],
 }));
 
 // Mock all remaining dependencies to prevent import side effects

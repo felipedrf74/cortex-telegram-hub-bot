@@ -71,6 +71,9 @@ vi.mock('../../src/services/database', () => ({
       run: (...args: unknown[]) => mockDbRun(sql, ...args),
     }),
   }),
+  initDatabase: vi.fn(),
+  closeDatabase: vi.fn(),
+  findUnexpectedMigrationPrefixCollisions: vi.fn(() => []),
 }));
 
 vi.mock('../../src/services/cache-store', () => ({
@@ -333,6 +336,7 @@ vi.mock('../../src/utils/logger', () => ({
     trace: vi.fn(),
     child: vi.fn().mockReturnThis(),
   },
+  LOGGER_REDACTION_PATHS: [],
 }));
 
 import { planRoutes } from '../../src/api/routes/plan';

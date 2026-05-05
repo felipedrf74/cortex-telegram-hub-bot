@@ -12,6 +12,9 @@ const hoisted = vi.hoisted(() => ({
 
 vi.mock('../../src/services/database', () => ({
   getDb: (...args: unknown[]) => hoisted.getDb(...args),
+  initDatabase: vi.fn(),
+  closeDatabase: vi.fn(),
+  findUnexpectedMigrationPrefixCollisions: vi.fn(() => []),
 }));
 
 vi.mock('../../src/api/secret-guards', () => ({
@@ -35,6 +38,7 @@ vi.mock('../../src/utils/logger', () => ({
   logger: {
     warn: (...args: unknown[]) => hoisted.loggerWarn(...args),
   },
+  LOGGER_REDACTION_PATHS: [],
 }));
 
 import { registerPortalPlanRoutes } from '../../src/portal/plan-routes';

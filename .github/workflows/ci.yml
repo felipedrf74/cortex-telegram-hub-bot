@@ -121,12 +121,10 @@ jobs:
           done
           echo "✅ All prompt files have content"
 
-      - name: vi.mock completeness lint (advisor)
-        # Reports partial mocks but does NOT gate. Once the lint is
-        # green or the threshold is established, switch to --strict and
-        # promote to a gating step (release-pipeline-risk-based-
-        # optimization roadmap).
-        run: node scripts/vi-mock-completeness-lint.mjs --top || true
+      - name: vi.mock completeness lint
+        # Gating against scripts/.vi-mock-baseline.txt. Lower the baseline
+        # monthly until partial factories are effectively eliminated.
+        run: node scripts/vi-mock-completeness-lint.mjs --top --strict
 
       - name: release-doc drift check (advisor)
         # Verifies short SHAs in current/QA docs resolve to commits in

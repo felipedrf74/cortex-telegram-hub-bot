@@ -69,6 +69,7 @@ vi.mock('../../src/services/user-service', () => ({
 
 vi.mock('../../src/utils/logger', () => ({
   logger: { info: vi.fn(), warn: vi.fn(), debug: vi.fn(), error: vi.fn() },
+  LOGGER_REDACTION_PATHS: [],
 }));
 
 // Import AFTER mocks so the module picks them up

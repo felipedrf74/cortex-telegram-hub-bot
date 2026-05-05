@@ -13,6 +13,7 @@ vi.mock('../../src/utils/logger', () => ({
     error: vi.fn(),
     info: vi.fn(),
   },
+  LOGGER_REDACTION_PATHS: [],
 }));
 
 vi.mock('../../src/utils/callback-store', () => ({

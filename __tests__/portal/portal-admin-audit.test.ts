@@ -19,6 +19,7 @@ vi.mock('../../src/utils/logger', () => ({
   logger: {
     warn: mocks.warn,
   },
+  LOGGER_REDACTION_PATHS: [],
 }));
 
 import {

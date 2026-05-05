@@ -33,6 +33,7 @@ vi.mock('../../src/utils/logger', () => ({
   logger: {
     warn: (...args: unknown[]) => hoisted.loggerWarn(...args),
   },
+  LOGGER_REDACTION_PATHS: [],
 }));
 
 import { registerPortalSettingsRoutes } from '../../src/portal/settings-routes';

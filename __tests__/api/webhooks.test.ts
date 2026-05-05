@@ -13,6 +13,7 @@ import http from 'http';
 
 vi.mock('../../src/utils/logger', () => ({
   logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
+  LOGGER_REDACTION_PATHS: [],
 }));
 
 // Mock the config so the webhook secret is deterministic
@@ -32,7 +33,11 @@ const serviceMocks = vi.hoisted(() => ({
 }));
 
 // Mock the dependent services so the async processor doesn't crash
-vi.mock('../../src/services/database', () => ({ getDb: () => ({ prepare: () => ({ all: () => [] }) }) }));
+vi.mock('../../src/services/database', () => ({ getDb: () => ({ prepare: () => ({ all: () => [] }) })  ,
+  initDatabase: vi.fn(),
+  closeDatabase: vi.fn(),
+  findUnexpectedMigrationPrefixCollisions: vi.fn(() => []),
+}));
 vi.mock('../../src/services/task-store/sync-engine', () => ({
   syncProvider: (...args: unknown[]) => serviceMocks.syncProvider(...args),
 }));

@@ -13,6 +13,9 @@ vi.mock('../../src/services/database', () => ({
       get: (...args: unknown[]) => mockGet(...args),
     }),
   }),
+  initDatabase: vi.fn(),
+  closeDatabase: vi.fn(),
+  findUnexpectedMigrationPrefixCollisions: vi.fn(() => []),
 }));
 
 vi.mock('../../src/services/cache-store', () => ({

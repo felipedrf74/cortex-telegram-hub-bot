@@ -35,6 +35,7 @@ vi.mock('../../src/utils/logger', () => ({
   logger: {
     warn: (...args: unknown[]) => mockLoggerWarn(...args),
   },
+  LOGGER_REDACTION_PATHS: [],
 }));
 
 import { sendRetryableChatFailureResponseIfNeeded } from '../../src/api/routes/chat-message-degraded-response';

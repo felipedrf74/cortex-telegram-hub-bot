@@ -4,6 +4,7 @@ vi.mock('../../src/utils/logger', () => ({
   logger: {
     fatal: vi.fn(),
   },
+  LOGGER_REDACTION_PATHS: [],
 }));
 
 import {
