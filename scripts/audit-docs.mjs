@@ -76,6 +76,13 @@ const canonicalFiles = new Set([
   path.join(iosRoot, 'docs', 'qa', 'QA_IOS_REPORT.md'),
 ]);
 
+const approvedCurrentFiles = new Set([
+  // Backend CLAUDE.md treats this as the cross-agent backend handoff.
+  // Approve the location without promoting the stale handoff body into
+  // current-like broken-link scanning; archival cleanup remains tracked.
+  path.join(backendRoot, 'docs', 'agents', 'claude', 'handoff.md'),
+]);
+
 const verdictPattern =
   /(^|\n)\s*(#{1,4}\s*)?(final\s+)?(verdict|recommendation)\s*[:\-]|READY_FOR_PRODUCTION|READY_FOR_PRODUCTION_PROMOTION|DO_NOT_PROMOTE|DO_NOT_DEPLOY|DO_NOT_MERGE|GO WITH CONDITIONS|PASS WITH CONDITIONS|DO-NOT-SHIP|SHIP-WITH-FOLLOWUP/i;
 const testCountPattern =
@@ -157,7 +164,7 @@ function isProductMarkdownAsset(file) {
 
 function isApprovedCurrentOrArchive(file) {
   const normalized = normalize(file);
-  if (canonicalFiles.has(normalized) || isArchive(normalized) || isProductMarkdownAsset(normalized)) {
+  if (canonicalFiles.has(normalized) || approvedCurrentFiles.has(normalized) || isArchive(normalized) || isProductMarkdownAsset(normalized)) {
     return true;
   }
   if (normalized.startsWith(path.join(workspaceRoot, 'docs', 'agent') + path.sep)) return true;
