@@ -30,7 +30,7 @@ or explicit owner approval before proceeding.
 | TD-A3 | P0 | **CLOSED IN SOURCE BRANCH** | `feature/tech-debt-2026-05-hash-email` (`8145b82`) unifies email hash normalization through `src/utils/identity.ts`. Follow-up: historical audit-log `emailHash` joins may need a one-time backfill note if old drifted hashes matter. |
 | TD-A4 | P1 | **CLOSED IN SOURCE BRANCH** | `feature/tech-debt-2026-05-migration-collision-gate` (`26a583c`) fails startup for non-allowlisted duplicate migration prefixes and adds a CI duplicate-prefix gate while preserving known legacy duplicates. |
 | TD-CX-O1 | P2 | **OPEN** | Scoped pre-commit can emit glob patterns that Vitest treats as no-match (`__tests__/portal/**/*.test.ts` observed during A2). Full pre-commit mode passed, but the focused hook should be fixed. |
-| TD-CX-O2 | P1 | **OPEN** | `npm run docs:audit` is over the requested frozen budget (489 issues / 389 files during this pass). Needs a dedicated docs-audit cleanup or allowlist-sync slice before the docs gate can be called green. |
+| TD-CX-O2 | P1 | **OPEN** | `npm run docs:audit` is over the requested frozen budget (final rerun: 490 issues / 390 files). Needs a dedicated docs-audit cleanup or allowlist-sync slice before the docs gate can be called green. |
 
 ## Content Creation workflow promote (2026-05-05)
 
