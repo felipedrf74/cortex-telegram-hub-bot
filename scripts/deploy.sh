@@ -178,11 +178,16 @@ ENV_CHECK=$(ssh "$SERVER" "
     exit 0
   fi
   MISSING=''
+  WARNINGS=''
   for KEY in DATABASE_PATH CONTENT_ENGINE_PORT PORTAL_TOKEN OAUTH_ENCRYPTION_KEY INTERNAL_API_SECRET AI_CALL_TIMEOUT_MS; do
     if ! grep -qE \"^\${KEY}=.+\" $REMOTE_DIR/.env; then
       MISSING=\"\$MISSING \$KEY\"
     fi
   done
+  NODE_ENV_VALUE=\$(grep -oE '^NODE_ENV=.+' $REMOTE_DIR/.env 2>/dev/null | tail -1 | cut -d= -f2- || true)
+  if [ \"\$NODE_ENV_VALUE\" = \"production\" ] && ! grep -qE '^SENTRY_DSN=.+' $REMOTE_DIR/.env; then
+    WARNINGS=\"\$WARNINGS SENTRY_DSN\"
+  fi
   if ! grep -qE '^NEXUS_BACKEND_BASE_URL=.+' $REMOTE_DIR/.env && ! grep -qE '^NEXUS_BACKEND_PORT=.+' $REMOTE_DIR/.env; then
     MISSING=\"\$MISSING NEXUS_BACKEND_BASE_URL_OR_NEXUS_BACKEND_PORT\"
   fi
@@ -191,6 +196,8 @@ ENV_CHECK=$(ssh "$SERVER" "
   fi
   if [ -n \"\$MISSING\" ]; then
     echo \"MISSING_KEYS:\$MISSING\"
+  elif [ -n \"\$WARNINGS\" ]; then
+    echo \"WARNING_KEYS:\$WARNINGS\"
   else
     echo OK
   fi
@@ -207,6 +214,10 @@ case "$ENV_CHECK" in
     ;;
   OK)
     echo "   ✅ All required production keys present"
+    ;;
+  WARNING_KEYS:*)
+    echo "   ⚠️  Production .env is missing recommended keys:${ENV_CHECK#WARNING_KEYS:}"
+    echo "      Sentry is warning-only for this pass; add SENTRY_DSN before making it a hard deploy gate."
     ;;
   *)
     echo "   ⚠️  Unexpected .env validator output: $ENV_CHECK — proceeding cautiously"

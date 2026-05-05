@@ -35,7 +35,7 @@ export interface ErrorTrackerConfig {
 export function init(cfg: ErrorTrackerConfig): void {
   if (_initialized) return;
   if (!cfg.dsn) {
-    logger.info('Sentry: no DSN configured — error tracking disabled');
+    logger.warn({ environment: cfg.environment }, 'Sentry: no DSN configured — error tracking disabled');
     return;
   }
 
@@ -63,6 +63,13 @@ export function init(cfg: ErrorTrackerConfig): void {
 /** Whether Sentry was successfully initialized with a valid DSN. */
 export function isEnabled(): boolean {
   return _initialized;
+}
+
+export function getStatus(environment: string): { enabled: boolean; environment: string } {
+  return {
+    enabled: _initialized,
+    environment,
+  };
 }
 
 /**
