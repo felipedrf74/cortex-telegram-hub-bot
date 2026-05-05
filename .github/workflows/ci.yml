@@ -282,18 +282,53 @@ jobs:
 
       - name: Verify migration sequence
         run: |
-          cd migrations
-          expected=1
-          for f in $(ls *.sql | sort); do
-            num=$(echo "$f" | grep -oP '^\d+')
-            num=$((10#$num))
-            if [ "$num" -ne "$expected" ]; then
-              echo "❌ Gap in migration sequence: expected $expected, got $num ($f)"
-              exit 1
-            fi
-            expected=$((expected + 1))
-          done
-          echo "✅ $((expected - 1)) migrations in sequence"
+          node <<'NODE'
+          const fs = require('fs');
+          const files = fs.readdirSync('migrations')
+            .filter((file) => /^\d{3}_.*\.sql$/.test(file))
+            .sort();
+          const prefixes = [...new Set(files.map((file) => Number(file.slice(0, 3))))].sort((a, b) => a - b);
+          let expected = 1;
+          for (const prefix of prefixes) {
+            if (prefix !== expected) {
+              console.error(`❌ Gap in migration sequence: expected ${expected}, got ${prefix}`);
+              process.exit(1);
+            }
+            expected += 1;
+          }
+          console.log(`✅ ${prefixes.length} migration prefixes in sequence`);
+          NODE
+
+      - name: Verify migration prefix uniqueness
+        run: |
+          node <<'NODE'
+          const fs = require('fs');
+          const legacy = new Map([
+            ['008', ['008_api_cache.sql', '008_email_log.sql']],
+            ['009', ['009_api_usage_provider.sql', '009_job_history.sql']],
+            ['022', ['022_finance_tables.sql', '022_webhook_events.sql']],
+            ['023', ['023_fitness_training_plans.sql', '023_onboarding.sql']],
+            ['024', ['024_cooking_tables.sql', '024_usage_metering.sql']],
+          ]);
+          const sameMembers = (left, right) =>
+            left.length === right.length &&
+            [...left].sort().every((value, index) => value === [...right].sort()[index]);
+          const groups = new Map();
+          for (const file of fs.readdirSync('migrations').filter((name) => /^\d{3}_.*\.sql$/.test(name))) {
+            const prefix = file.slice(0, 3);
+            groups.set(prefix, [...(groups.get(prefix) || []), file]);
+          }
+          const unexpected = [...groups.entries()]
+            .filter(([, files]) => files.length > 1)
+            .filter(([prefix, files]) => !sameMembers(files, legacy.get(prefix) || []));
+          if (unexpected.length > 0) {
+            for (const [prefix, files] of unexpected) {
+              console.error(`❌ Duplicate migration prefix ${prefix}: ${files.sort().join(', ')}`);
+            }
+            process.exit(1);
+          }
+          console.log('✅ Migration prefixes are unique outside the legacy allowlist');
+          NODE
 
       - name: Validate SQL syntax
         run: |

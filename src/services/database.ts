@@ -50,6 +50,18 @@ export function findUnexpectedMigrationPrefixCollisions(
     .map(([prefix, list]) => ({ prefix, files: [...list].sort() }));
 }
 
+export function assertNoUnexpectedMigrationPrefixCollisions(files: readonly string[]): void {
+  const collisions = findUnexpectedMigrationPrefixCollisions(files);
+  if (collisions.length === 0) return;
+
+  const details = collisions
+    .map(({ prefix, files: list }) => `${prefix}: ${list.join(', ')}`)
+    .join('; ');
+  throw new Error(
+    `Unexpected migration prefix collision(s): ${details}. Use a unique migration prefix; legacy duplicate prefixes are explicitly allowlisted only for historical files.`,
+  );
+}
+
 export function getDb(): Database.Database {
   if (!db) {
     throw new Error('Database not initialized. Call initDatabase() first.');
@@ -152,20 +164,10 @@ function runMigrations(): void {
     .filter((f) => f.endsWith('.sql'))
     .sort();
 
-  // Lint: warn on numeric prefix collisions. Apply order between two files
+  // Lint: fail on numeric prefix collisions. Apply order between two files
   // sharing the same prefix is filesystem-sort-dependent (locale, OS), so
   // collisions are silent timebombs for cross-environment schema drift.
-  // We log loudly here so future devs (and AI agents in the factory) get
-  // a flag the moment they introduce one. See audit P0-5.
-  const collisions = findUnexpectedMigrationPrefixCollisions(files);
-  if (collisions.length > 0) {
-    for (const { prefix, files: list } of collisions) {
-      logger.warn(
-        { prefix, files: list },
-        `Migration prefix collision: ${list.length} files share prefix ${prefix}. Apply order is locale-dependent. Future migrations should use unique prefixes (e.g. ${prefix}a_, ${prefix}b_) or timestamp prefixes (YYYYMMDD_).`,
-      );
-    }
-  }
+  assertNoUnexpectedMigrationPrefixCollisions(files);
 
   db.exec(`
     CREATE TABLE IF NOT EXISTS _migrations (
