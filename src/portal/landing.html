@@ -201,6 +201,16 @@
                   transform var(--duration-fast) var(--ease-out);
     }
     .nav__cta:hover { background: var(--brand-400); transform: translateY(-1px); }
+    .nav__login {
+      display: inline-flex;
+      align-items: center;
+      padding: 8px 12px;
+      color: var(--text-secondary);
+      font-weight: 600;
+      font-size: 13px;
+      margin-right: var(--s-2);
+    }
+    .nav__login:hover { color: var(--text-primary); }
 
     /* ─── LANGUAGE TOGGLE (segmented PT | EN switch) ─────────── */
     .lang-toggle {
@@ -1104,6 +1114,7 @@
           <button type="button" class="lang-toggle__btn" data-lang="pt" aria-pressed="true">PT</button>
           <button type="button" class="lang-toggle__btn" data-lang="en" aria-pressed="false">EN</button>
         </div>
+        <a href="/user" class="nav__login" data-i18n="nav.login">Entrar</a>
         <a href="#waitlist" class="nav__cta" data-i18n="nav.cta">Entrar no beta →</a>
       </div>
     </div>
@@ -1567,6 +1578,7 @@
         'nav.skills': 'Skills',
         'nav.pricing': 'Preços',
         'nav.quiz': 'Quem é você',
+        'nav.login': 'Entrar',
         'nav.cta': 'Entrar no beta →',
 
         // Hero
@@ -1722,6 +1734,7 @@
         'nav.skills': 'Skills',
         'nav.pricing': 'Pricing',
         'nav.quiz': 'Who you are',
+        'nav.login': 'Sign in',
         'nav.cta': 'Join the beta →',
 
         // Hero

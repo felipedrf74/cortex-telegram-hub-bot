@@ -256,6 +256,26 @@ describe('Auth invite registration', () => {
     expect(res.body.data.url).toContain('scope=openid+email+profile');
   });
 
+  it('starts Google browser sign-in with a web callback state for the user login page', async () => {
+    process.env.GOOGLE_CLIENT_ID = 'google-web-client';
+    process.env.GOOGLE_CLIENT_SECRET = 'google-secret';
+
+    const res = await dispatchAuth('/register/google/start', {
+      deviceId: 'web-browser-device',
+      deviceName: 'Nexus Web',
+      flow: 'web',
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.body.ok).toBe(true);
+    expect(res.body.data.provider).toBe('google');
+    expect(res.body.data.flow).toBe('web');
+    expect(res.body.data.url).toContain('https://accounts.google.com/o/oauth2/v2/auth?');
+    expect(res.body.data.url).toContain('client_id=google-web-client');
+    expect(res.body.data.url).toContain('state=web-auth%3A');
+    expect(res.body.data.url).toContain('scope=openid+email+profile');
+  });
+
   it('finishes Google web sign-in with a stored auth completion payload', async () => {
     const { storeGoogleAuthCompletion } = await import('../../src/services/google-auth-session-store');
 

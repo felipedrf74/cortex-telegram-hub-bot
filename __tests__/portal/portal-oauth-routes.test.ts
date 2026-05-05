@@ -23,6 +23,8 @@ function createServices(overrides: Record<string, unknown> = {}) {
     consumeNonce: vi.fn((nonce: string) => ({ userId: nonce === 'bad' ? 999 : 7, provider: 'outlook' })),
     isIOSGoogleAuthState: vi.fn((state: string) => state.startsWith('ios-auth:')),
     parseIOSGoogleAuthState: vi.fn((_state: string) => ({ nonce: 'google-nonce' })),
+    isWebGoogleAuthState: vi.fn((state: string) => state.startsWith('web-auth:')),
+    parseWebGoogleAuthState: vi.fn((_state: string) => ({ nonce: 'google-nonce' })),
     consumeGoogleAuthPendingSession: vi.fn(() => ({ deviceId: 'device-1', deviceName: 'iPhone' })),
     storeGoogleAuthCompletion: vi.fn(() => 'auth-code'),
     exchangeGoogleCodeForIdentity: vi.fn(async () => ({ sub: 'google-user' })),
@@ -131,6 +133,25 @@ describe('portal oauth routes', () => {
       pushToken: null,
     }));
     expect(res.redirectedTo).toBe('me.nexushub.app://auth/google?status=success&authCode=auth-code');
+  });
+
+  it('completes the Google browser sign-in callback back to the user login page', async () => {
+    const services = createServices({ parseWebGoogleAuthState: vi.fn(() => ({ nonce: 'web-nonce' })) });
+    const routes = captureRoutes(services);
+
+    const res = await invoke(findRoute(routes, '/oauth/google/callback'), {
+      query: { code: 'code-web', state: 'web-auth:web-nonce' },
+      ip: '127.0.0.1',
+    });
+
+    expect(services.exchangeGoogleCodeForIdentity).toHaveBeenCalledWith('code-web', 'https://api.test/oauth/google/callback');
+    expect(services.consumeGoogleAuthPendingSession).toHaveBeenCalledWith('web-nonce');
+    expect(services.createAuthSessionAndRegisterDevice).toHaveBeenCalledWith(expect.objectContaining({
+      userId: 42,
+      deviceId: 'device-1',
+      pushToken: null,
+    }));
+    expect(res.redirectedTo).toBe('/user?googleAuthCode=auth-code');
   });
 
   it('stores Outlook tokens and resets clients for a valid iOS OAuth callback', async () => {

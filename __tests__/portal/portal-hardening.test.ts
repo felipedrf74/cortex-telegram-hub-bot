@@ -236,6 +236,23 @@ describe('portal-hardening: no localStorage or URL token', () => {
     // All functions should use userId, not telegramId
     expect(html).not.toContain('telegramId');
   });
+
+  it.skipIf(!htmlExists)('portal.html links user account sign-in separately from operator token login', () => {
+    const html = fs.readFileSync(htmlPath, 'utf8');
+    expect(html).toContain('Sign in with your portal access token');
+    expect(html).toContain('href="/user"');
+    expect(html).toContain('Sign in with email, Google, or Apple');
+  });
+
+  it.skipIf(!htmlExists)('configuration sections render auth errors instead of keeping loading placeholders forever', () => {
+    const html = fs.readFileSync(htmlPath, 'utf8');
+    expect(html).toContain('function apiJson(url, opts = {})');
+    expect(html).toContain("setCardError('settings-content', 'Could not load settings', err)");
+    expect(html).toContain("setCardError('invite-codes-content', 'Could not load invite codes', err)");
+    expect(html).toContain("setTableError('founders-tbody', 5, 'Could not load founders', err)");
+    expect(html).toContain("setTableError('waitlist-tbody', 7, 'Could not load waitlist', err)");
+    expect(html).toContain("setTableError('audit-tbody', 5, 'Could not load audit trail', err)");
+  });
 });
 
 // ═══════════════════════════════════════════════════════════════

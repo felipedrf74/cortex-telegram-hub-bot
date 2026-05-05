@@ -1,0 +1,288 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="color-scheme" content="dark">
+  <title>Nexus Hub - Sign in</title>
+  <style>
+    :root {
+      --bg: #070707;
+      --panel: #141414;
+      --panel-2: #1d1d1f;
+      --border: rgba(255,255,255,.11);
+      --text: #f5f5f7;
+      --muted: #a1a1a6;
+      --accent: #ff6b35;
+      --danger: #ff453a;
+      --success: #32d74b;
+      font-family: Inter, -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      color: var(--text);
+      background: radial-gradient(circle at 50% 0%, #1b1512 0, var(--bg) 42rem);
+      display: grid;
+      place-items: center;
+      padding: 32px 16px;
+    }
+    .shell { width: min(960px, 100%); display: grid; grid-template-columns: 1fr 420px; gap: 28px; align-items: center; }
+    .brand { display: inline-flex; align-items: center; gap: 12px; font-weight: 700; margin-bottom: 28px; }
+    .mark { width: 38px; height: 38px; border-radius: 10px; display: grid; place-items: center; background: var(--accent); color: #fff; }
+    h1 { margin: 0 0 16px; font-size: clamp(38px, 7vw, 72px); line-height: .95; letter-spacing: -0.04em; }
+    p { margin: 0; color: var(--muted); line-height: 1.55; font-size: 16px; max-width: 54ch; }
+    .card { background: color-mix(in srgb, var(--panel) 94%, transparent); border: 1px solid var(--border); border-radius: 20px; padding: 24px; box-shadow: 0 24px 80px rgba(0,0,0,.35); }
+    .tabs { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; padding: 4px; border-radius: 14px; background: var(--panel-2); margin-bottom: 18px; }
+    .tab { border: 0; border-radius: 11px; color: var(--muted); background: transparent; padding: 10px; font-weight: 700; cursor: pointer; }
+    .tab.active { background: rgba(255,255,255,.08); color: var(--text); }
+    label { display: block; margin: 14px 0 7px; color: var(--muted); font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: .08em; }
+    input { width: 100%; border: 1px solid var(--border); border-radius: 12px; background: #0d0d0e; color: var(--text); padding: 13px 14px; font: inherit; }
+    input:focus { outline: 2px solid color-mix(in srgb, var(--accent) 45%, transparent); border-color: var(--accent); }
+    button.primary, button.oauth, a.button {
+      width: 100%;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 10px;
+      border: 0;
+      border-radius: 12px;
+      padding: 13px 14px;
+      font-weight: 800;
+      cursor: pointer;
+      text-decoration: none;
+    }
+    button.primary { background: var(--accent); color: #fff; margin-top: 18px; }
+    button.oauth, a.button { background: var(--panel-2); color: var(--text); border: 1px solid var(--border); margin-top: 10px; }
+    button:disabled { opacity: .6; cursor: not-allowed; }
+    .divider { display: flex; align-items: center; gap: 12px; color: var(--muted); font-size: 12px; margin: 18px 0 8px; }
+    .divider::before, .divider::after { content: ""; height: 1px; background: var(--border); flex: 1; }
+    .message { min-height: 24px; margin-top: 14px; color: var(--muted); font-size: 14px; }
+    .message.error { color: var(--danger); }
+    .message.ok { color: var(--success); }
+    .small { margin-top: 14px; font-size: 13px; color: var(--muted); }
+    .small a { color: var(--text); }
+    .signed-in { display: none; }
+    .pill { display: inline-flex; padding: 5px 9px; border-radius: 999px; background: rgba(255,107,53,.14); color: #ff9d7c; font-size: 12px; font-weight: 800; margin-top: 14px; }
+    @media (max-width: 820px) { .shell { grid-template-columns: 1fr; } .intro { text-align: left; } }
+  </style>
+</head>
+<body>
+  <main class="shell">
+    <section class="intro">
+      <div class="brand"><span class="mark">N</span><span>Nexus Hub</span></div>
+      <h1>Your account, not an operator token.</h1>
+      <p>Use this page to sign in with the same account method you configured in Nexus. Admin tools still require the separate operator portal token.</p>
+      <span class="pill">Closed beta web sign-in</span>
+    </section>
+
+    <section class="card" aria-label="Nexus account sign in">
+      <div id="login-panel">
+        <div class="tabs" role="tablist" aria-label="Sign in mode">
+          <button class="tab active" id="tab-email" type="button">Email</button>
+          <button class="tab" id="tab-provider" type="button">Apple / Google</button>
+        </div>
+
+        <form id="email-form">
+          <label for="email">Email</label>
+          <input id="email" name="email" type="email" autocomplete="email" required>
+          <label for="password">Password</label>
+          <input id="password" name="password" type="password" autocomplete="current-password" required>
+          <button class="primary" id="email-submit" type="submit">Sign in</button>
+          <div class="small"><a href="/auth/password-reset">Forgot password?</a></div>
+        </form>
+
+        <div id="provider-panel" style="display:none">
+          <button class="oauth" id="google-btn" type="button">Continue with Google</button>
+          <button class="oauth" id="apple-btn" type="button">Continue with Apple</button>
+          <div class="small">Google opens a secure Google page and returns here. Apple browser sign-in needs a web Service ID; if it is not configured yet, use the iOS app.</div>
+        </div>
+
+        <div class="message" id="message" aria-live="polite"></div>
+      </div>
+
+      <div class="signed-in" id="signed-in-panel">
+        <h2 style="margin:0 0 8px">Signed in</h2>
+        <p id="signed-in-copy">Your Nexus account session is active in this browser tab.</p>
+        <a class="button" href="me.nexushub.app://">Open iOS app</a>
+        <button class="oauth" id="sign-out-btn" type="button">Sign out</button>
+      </div>
+    </section>
+  </main>
+
+  <script>
+  (function() {
+    const ACCESS_KEY = 'nexus_web_access_token_v1';
+    const REFRESH_KEY = 'nexus_web_refresh_token_v1';
+    const DEVICE_KEY = 'nexus_web_device_id_v1';
+    const message = document.getElementById('message');
+    const emailForm = document.getElementById('email-form');
+    const providerPanel = document.getElementById('provider-panel');
+    const loginPanel = document.getElementById('login-panel');
+    const signedInPanel = document.getElementById('signed-in-panel');
+
+    function setMessage(text, kind) {
+      message.textContent = text || '';
+      message.className = 'message ' + (kind || '');
+    }
+    function getDeviceId() {
+      try {
+        let value = localStorage.getItem(DEVICE_KEY);
+        if (!value) {
+          value = 'web-' + crypto.randomUUID();
+          localStorage.setItem(DEVICE_KEY, value);
+        }
+        return value;
+      } catch {
+        return 'web-' + Math.random().toString(36).slice(2) + Date.now();
+      }
+    }
+    function saveSession(payload) {
+      sessionStorage.setItem(ACCESS_KEY, payload.accessToken || '');
+      sessionStorage.setItem(REFRESH_KEY, payload.refreshToken || '');
+      renderSignedIn(payload.user);
+    }
+    function clearSession() {
+      sessionStorage.removeItem(ACCESS_KEY);
+      sessionStorage.removeItem(REFRESH_KEY);
+    }
+    function authHeaders() {
+      const token = sessionStorage.getItem(ACCESS_KEY);
+      return token ? { Authorization: 'Bearer ' + token } : {};
+    }
+    async function readError(res) {
+      try {
+        const body = await res.json();
+        return body?.error?.message || body?.message || body?.error?.code || 'Sign-in failed';
+      } catch {
+        return 'Sign-in failed';
+      }
+    }
+    function renderSignedIn(user) {
+      const name = [user?.firstName, user?.lastName].filter(Boolean).join(' ') || user?.email || 'your account';
+      document.getElementById('signed-in-copy').textContent = 'Signed in as ' + name + '. Use the iOS app for the full Nexus experience.';
+      loginPanel.style.display = 'none';
+      signedInPanel.style.display = 'block';
+    }
+    async function hydrateExistingSession() {
+      const token = sessionStorage.getItem(ACCESS_KEY);
+      if (!token) return;
+      const res = await fetch('/api/v1/auth/me', { headers: authHeaders() });
+      if (!res.ok) {
+        clearSession();
+        return;
+      }
+      const body = await res.json();
+      renderSignedIn(body.data?.user || body.user || {});
+    }
+
+    document.getElementById('tab-email').addEventListener('click', () => {
+      document.getElementById('tab-email').classList.add('active');
+      document.getElementById('tab-provider').classList.remove('active');
+      emailForm.style.display = '';
+      providerPanel.style.display = 'none';
+      setMessage('');
+    });
+    document.getElementById('tab-provider').addEventListener('click', () => {
+      document.getElementById('tab-provider').classList.add('active');
+      document.getElementById('tab-email').classList.remove('active');
+      emailForm.style.display = 'none';
+      providerPanel.style.display = '';
+      setMessage('');
+    });
+
+    emailForm.addEventListener('submit', async (event) => {
+      event.preventDefault();
+      const btn = document.getElementById('email-submit');
+      btn.disabled = true;
+      setMessage('Checking credentials...');
+      try {
+        const res = await fetch('/api/v1/auth/login/email', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            email: document.getElementById('email').value.trim(),
+            password: document.getElementById('password').value,
+            deviceId: getDeviceId(),
+            deviceName: 'Nexus Web',
+          }),
+        });
+        if (!res.ok) {
+          setMessage(await readError(res), 'error');
+          return;
+        }
+        const body = await res.json();
+        saveSession(body.data || body);
+        setMessage('', 'ok');
+      } catch {
+        setMessage('Network error. Try again in a moment.', 'error');
+      } finally {
+        btn.disabled = false;
+      }
+    });
+
+    document.getElementById('google-btn').addEventListener('click', async () => {
+      const btn = document.getElementById('google-btn');
+      btn.disabled = true;
+      setMessage('Opening Google...');
+      try {
+        const res = await fetch('/api/v1/auth/register/google/start', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ deviceId: getDeviceId(), deviceName: 'Nexus Web', flow: 'web' }),
+        });
+        if (!res.ok) {
+          setMessage(await readError(res), 'error');
+          return;
+        }
+        const body = await res.json();
+        location.href = body.data?.url || body.url;
+      } catch {
+        setMessage('Network error. Try again in a moment.', 'error');
+      } finally {
+        btn.disabled = false;
+      }
+    });
+
+    document.getElementById('apple-btn').addEventListener('click', () => {
+      setMessage('Apple web sign-in is not configured for this browser page yet. Use Sign in with Apple in the iOS app.', 'error');
+    });
+
+    document.getElementById('sign-out-btn').addEventListener('click', () => {
+      clearSession();
+      location.href = '/user';
+    });
+
+    async function finishGoogleIfNeeded() {
+      const params = new URLSearchParams(location.search);
+      const authCode = params.get('googleAuthCode');
+      const error = params.get('error');
+      if (error) {
+        history.replaceState(null, '', location.pathname);
+        setMessage(error, 'error');
+        return;
+      }
+      if (!authCode) return;
+      history.replaceState(null, '', location.pathname);
+      setMessage('Finishing Google sign-in...');
+      const res = await fetch('/api/v1/auth/register/google/finish', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ authCode }),
+      });
+      if (!res.ok) {
+        setMessage(await readError(res), 'error');
+        return;
+      }
+      const body = await res.json();
+      saveSession(body.data || body);
+    }
+
+    finishGoogleIfNeeded().then(hydrateExistingSession).catch(() => {
+      setMessage('Could not restore the web session. Please sign in again.', 'error');
+    });
+  })();
+  </script>
+</body>
+</html>

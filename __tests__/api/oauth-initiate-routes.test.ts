@@ -115,7 +115,7 @@ describe('OAuth initiate routes', () => {
     expect(res.body.data.url).toContain('https://accounts.google.com/o/oauth2/v2/auth?');
     expect(res.body.data.url).toContain('client_id=google-client');
     expect(res.body.data.url).toContain('state=ios%3A12%3A');
-    expect(res.body.data.url).toContain(encodeURIComponent('https://nexushub.me/oauth/google/callback'));
+    expect(res.body.data.url).toContain(encodeURIComponent('https://api.nexushub.me/oauth/google/callback'));
   });
 
   it('starts an Outlook iOS OAuth flow', async () => {
@@ -128,7 +128,7 @@ describe('OAuth initiate routes', () => {
     expect(res.body.data.url).toContain('/oauth2/v2.0/authorize?');
     expect(res.body.data.url).toContain('client_id=outlook-client');
     expect(res.body.data.url).toContain('state=ios%3A21%3A');
-    expect(res.body.data.url).toContain(encodeURIComponent('https://nexushub.me/oauth/outlook/callback'));
+    expect(res.body.data.url).toContain(encodeURIComponent('https://api.nexushub.me/oauth/outlook/callback'));
   });
 
   it('returns coming soon for WHOOP iOS OAuth flow', async () => {

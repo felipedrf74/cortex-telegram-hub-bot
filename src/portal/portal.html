@@ -1298,6 +1298,9 @@ table.legacy th {
       <input id="login-token" type="password" placeholder="Portal token" autofocus>
       <button id="login-btn" class="btn btn-primary">Sign In</button>
       <div id="login-error" class="login-error"></div>
+      <div style="margin-top:14px;font-size:12px;color:var(--text-tertiary)">
+        User account? <a href="/user" style="color:var(--accent);font-weight:700">Sign in with email, Google, or Apple</a>
+      </div>
     </div>
   </div>
 </div>
@@ -2824,6 +2827,46 @@ table.legacy th {
       throw new Error('Unauthorized');
     }
     return res;
+  }
+
+  async function responseErrorMessage(res) {
+    try {
+      const body = await res.json();
+      return body?.error?.message || body?.message || body?.error || ('HTTP ' + res.status);
+    } catch (_) {
+      return 'HTTP ' + res.status;
+    }
+  }
+
+  async function apiJson(url, opts = {}) {
+    const res = await apiFetch(url, opts);
+    if (!res.ok) throw new Error(await responseErrorMessage(res));
+    return res.json();
+  }
+
+  function adminLoadErrorMessage(err) {
+    const raw = err && err.message ? err.message : String(err || 'Request failed');
+    if (raw === 'Unauthorized' || /token|session|unauthorized/i.test(raw)) {
+      return 'This section needs the current admin-capable portal credential. Sign out and sign in with the current PORTAL_ADMIN_TOKEN or operator token.';
+    }
+    return raw;
+  }
+
+  function cardErrorHtml(title, err) {
+    return '<div class="empty" style="text-align:left;max-width:620px;margin:0 auto">' +
+      '<div style="font-weight:700;color:var(--error);margin-bottom:6px">' + esc(title) + '</div>' +
+      '<div class="text-muted">' + esc(adminLoadErrorMessage(err)) + '</div>' +
+    '</div>';
+  }
+
+  function setCardError(id, title, err) {
+    const el = document.getElementById(id);
+    if (el) el.innerHTML = cardErrorHtml(title, err);
+  }
+
+  function setTableError(tbodyId, colspan, title, err) {
+    const el = document.getElementById(tbodyId);
+    if (el) el.innerHTML = '<tr><td colspan="' + colspan + '">' + cardErrorHtml(title, err) + '</td></tr>';
   }
 
   // ────────── HTML escape ──────────
@@ -4379,9 +4422,7 @@ table.legacy th {
   // ════════════════════════════════════════════════════════════
   async function loadSettings() {
     try {
-      const r = await apiFetch('/api/settings');
-      if (!r.ok) return;
-      const d = await r.json();
+      const d = await apiJson('/api/settings');
       const el = document.getElementById('settings-content');
       const settings = d.settings || [];
       if (settings.length === 0) {
@@ -4435,7 +4476,9 @@ table.legacy th {
           rows +
         '</div>';
       }).join('');
-    } catch { /* silent */ }
+    } catch (err) {
+      setCardError('settings-content', 'Could not load settings', err);
+    }
   }
 
   window.updateSetting = async function(id, value) {
@@ -4469,9 +4512,7 @@ table.legacy th {
   // ════════════════════════════════════════════════════════════
   async function loadInviteCodes() {
     try {
-      const r = await apiFetch('/api/invite-codes');
-      if (!r.ok) return;
-      const d = await r.json();
+      const d = await apiJson('/api/invite-codes');
       const el = document.getElementById('invite-codes-content');
       const codes = d.codes || [];
       if (codes.length === 0) {
@@ -4500,7 +4541,9 @@ table.legacy th {
             '</td>' +
           '</tr>';
         }).join('') + '</tbody></table>';
-    } catch { /* silent */ }
+    } catch (err) {
+      setCardError('invite-codes-content', 'Could not load invite codes', err);
+    }
   }
   window.copyInvite = function(code) {
     if (navigator.clipboard) {
@@ -4532,9 +4575,7 @@ table.legacy th {
   // ════════════════════════════════════════════════════════════
   async function loadFounders() {
     try {
-      const r = await apiFetch('/api/founders');
-      if (!r.ok) return;
-      const d = await r.json();
+      const d = await apiJson('/api/founders');
       const tbody = document.getElementById('founders-tbody');
       const founders = d.founders || [];
       const badge = document.getElementById('nav-founders-count');
@@ -4555,7 +4596,9 @@ table.legacy th {
           '<td class="text-right"><button class="btn btn-xs btn-danger" onclick="removeFounder(\'' + esc(f.email) + '\')">Remove</button></td>' +
         '</tr>';
       }).join('');
-    } catch { /* silent */ }
+    } catch (err) {
+      setTableError('founders-tbody', 5, 'Could not load founders', err);
+    }
   }
   window.removeFounder = async function(email) {
     if (!confirm('Remove founder access for ' + email + '?')) return;
@@ -4596,9 +4639,7 @@ table.legacy th {
     try {
       // Reuse allUsers if the Users tab has already loaded them
       if (!allUsers || allUsers.length === 0) {
-        const r = await apiFetch('/api/users');
-        if (!r.ok) return;
-        const d = await r.json();
+        const d = await apiJson('/api/users');
         allUsers = d.users || [];
       }
       const sel = document.getElementById('audit-filter');
@@ -4620,7 +4661,9 @@ table.legacy th {
       sel.innerHTML = options.join('');
       if (currentValue) sel.value = currentValue;
       auditUsersPopulated = true;
-    } catch { /* silent */ }
+    } catch (err) {
+      throw err;
+    }
   }
 
   async function loadAuditTrail() {
@@ -4628,12 +4671,15 @@ table.legacy th {
       await populateAuditUserDropdown(false);
       const filter = (document.getElementById('audit-filter').value || '').trim();
       const url = filter ? '/api/audit-trail?userId=' + encodeURIComponent(filter) + '&limit=200' : '/api/audit-trail?limit=200';
-      const r = await apiFetch(url);
-      if (!r.ok) return;
-      const d = await r.json();
+      const d = await apiJson(url);
       allAuditEntries = d.entries || [];
       renderAuditTrail();
-    } catch { /* silent */ }
+    } catch (err) {
+      allAuditEntries = [];
+      const count = document.getElementById('audit-count-label');
+      if (count) count.textContent = '0 entries';
+      setTableError('audit-tbody', 5, 'Could not load audit trail', err);
+    }
   }
   function renderAuditTrail() {
     const tbody = document.getElementById('audit-tbody');
@@ -4694,9 +4740,7 @@ table.legacy th {
       if (status) params.set('status', status);
       if (intent) params.set('intent', intent);
       params.set('limit', '500');
-      const r = await apiFetch('/api/waitlist?' + params.toString());
-      if (!r.ok) return;
-      const d = await r.json();
+      const d = await apiJson('/api/waitlist?' + params.toString());
       if (!d.ok) return;
       allWaitlistEntries = d.entries || [];
 
@@ -4722,7 +4766,15 @@ table.legacy th {
       }
 
       renderWaitlist();
-    } catch { /* silent */ }
+    } catch (err) {
+      allWaitlistEntries = [];
+      setText('waitlist-kpi-founder', '—');
+      setText('waitlist-kpi-general', '—');
+      setText('waitlist-kpi-pending', '—');
+      setText('waitlist-kpi-signed', '—');
+      setText('waitlist-count-label', '');
+      setTableError('waitlist-tbody', 7, 'Could not load waitlist', err);
+    }
   }
 
   function setText(id, v) {

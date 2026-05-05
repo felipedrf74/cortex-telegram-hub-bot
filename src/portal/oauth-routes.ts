@@ -21,6 +21,8 @@ interface PortalOAuthServices {
   consumeNonce: (nonce: string) => { userId: number; provider: string } | null | undefined;
   isIOSGoogleAuthState: (state: string) => boolean;
   parseIOSGoogleAuthState: (state: string) => { nonce: string } | null;
+  isWebGoogleAuthState: (state: string) => boolean;
+  parseWebGoogleAuthState: (state: string) => { nonce: string } | null;
   consumeGoogleAuthPendingSession: (nonce: string) => { deviceId: string; deviceName?: string | null } | null | undefined;
   storeGoogleAuthCompletion: (payload: unknown) => string;
   exchangeGoogleCodeForIdentity: (code: string, redirectUri: string) => Promise<unknown>;
@@ -55,6 +57,8 @@ function loadDefaultOAuthServices(): PortalOAuthServices {
   const {
     isIOSGoogleAuthState,
     parseIOSGoogleAuthState,
+    isWebGoogleAuthState,
+    parseWebGoogleAuthState,
     consumeGoogleAuthPendingSession,
     storeGoogleAuthCompletion,
   } = require('../services/google-auth-session-store');
@@ -91,6 +95,8 @@ function loadDefaultOAuthServices(): PortalOAuthServices {
     consumeNonce,
     isIOSGoogleAuthState,
     parseIOSGoogleAuthState,
+    isWebGoogleAuthState,
+    parseWebGoogleAuthState,
     consumeGoogleAuthPendingSession,
     storeGoogleAuthCompletion,
     exchangeGoogleCodeForIdentity,
@@ -251,7 +257,7 @@ export function registerPortalOAuthRoutes(app: Express, deps: PortalOAuthRouteDe
 
     try {
       const services = loadServices();
-      const redirectBase = env.OAUTH_REDIRECT_BASE || 'https://nexushub.me';
+      const redirectBase = env.OAUTH_REDIRECT_BASE || 'https://api.nexushub.me';
 
       if (services.isIOSGoogleAuthState(state)) {
         const parsed = services.parseIOSGoogleAuthState(state);
@@ -281,6 +287,34 @@ export function registerPortalOAuthRoutes(app: Express, deps: PortalOAuthRouteDe
         return;
       }
 
+      if (services.isWebGoogleAuthState(state)) {
+        const parsed = services.parseWebGoogleAuthState(state);
+        if (!parsed) {
+          res.redirect(`/user?error=${encodeURIComponent('Invalid Google sign-in state')}`);
+          return;
+        }
+
+        const pending = services.consumeGoogleAuthPendingSession(parsed.nonce);
+        if (!pending) {
+          res.redirect(`/user?error=${encodeURIComponent('Google sign-in session expired')}`);
+          return;
+        }
+
+        const payload = await services.exchangeGoogleCodeForIdentity(code, `${redirectBase}/oauth/google/callback`);
+        const user = services.resolveGoogleIdentityUser(payload);
+        const authPayload = services.createAuthSessionAndRegisterDevice({
+          userId: user.id,
+          deviceId: pending.deviceId,
+          deviceName: pending.deviceName,
+          pushToken: null,
+          user,
+          ipAddress: (req.ip || req.socket?.remoteAddress) ?? undefined,
+        });
+        const authCode = services.storeGoogleAuthCompletion(authPayload);
+        res.redirect(`/user?googleAuthCode=${encodeURIComponent(authCode)}`);
+        return;
+      }
+
       await handleIOSAwareOAuthCallback(
         'google',
         'Google',
@@ -295,6 +329,8 @@ export function registerPortalOAuthRoutes(app: Express, deps: PortalOAuthRouteDe
       logger.error({ err }, 'Google OAuth callback failed');
       if (state.startsWith('ios-auth:')) {
         res.redirect(`me.nexushub.app://auth/google?status=error&message=${encodeURIComponent('Google sign-in failed')}`);
+      } else if (state.startsWith('web-auth:')) {
+        res.redirect(`/user?error=${encodeURIComponent('Google sign-in failed')}`);
       } else if (state.startsWith('ios:')) {
         redirectIOSOAuth('google', res, 'error', 'Connection failed');
       } else {

@@ -208,6 +208,16 @@ export function parseIOSGoogleAuthState(state: string): { nonce: string } | null
   return { nonce: parts[1] };
 }
 
+export function isWebGoogleAuthState(state: string): boolean {
+  return state.startsWith('web-auth:');
+}
+
+export function parseWebGoogleAuthState(state: string): { nonce: string } | null {
+  const parts = state.split(':');
+  if (parts.length !== 2 || parts[0] !== 'web-auth' || !parts[1]) return null;
+  return { nonce: parts[1] };
+}
+
 export function _resetGoogleAuthSessionStoreForTests(): void {
   pendingInMemory.clear();
   completionInMemory.clear();

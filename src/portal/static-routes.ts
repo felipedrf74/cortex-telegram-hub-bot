@@ -30,6 +30,32 @@ export function createLandingPreviewHandler(portalDir = __dirname) {
   };
 }
 
+export function createUserLoginHandler(portalDir = __dirname) {
+  return (_req: Request, res: Response): void => {
+    const htmlPath = path.join(portalDir, 'user-login.html');
+    if (!fs.existsSync(htmlPath)) {
+      res.status(503).send('User login page not deployed — run `npm run build`.');
+      return;
+    }
+
+    res.set('Cache-Control', 'no-cache, no-store, must-revalidate');
+    res.set('Pragma', 'no-cache');
+    res.set('Expires', '0');
+    res.set('X-Frame-Options', 'DENY');
+    res.set('X-Content-Type-Options', 'nosniff');
+    res.set('Referrer-Policy', 'strict-origin-when-cross-origin');
+    res.set(
+      'Content-Security-Policy',
+      "default-src 'self'; script-src 'self' 'unsafe-inline'; "
+      + "style-src 'self' 'unsafe-inline'; img-src 'self' data:; "
+      + "connect-src 'self'; form-action 'self'; frame-ancestors 'none'; "
+      + "base-uri 'none'",
+    );
+
+    res.type('html').send(fs.readFileSync(htmlPath, 'utf-8'));
+  };
+}
+
 export function createAdminDashboardHandler(portalDir = __dirname) {
   return (_req: Request, res: Response): void => {
     const htmlPath = path.join(portalDir, 'portal.html');
@@ -108,6 +134,11 @@ export function registerPortalStaticRoutes(app: Express, portalDir = __dirname):
 
   const servePasswordResetPage = createPasswordResetPageHandler(portalDir);
   app.get('/auth/password-reset', servePasswordResetPage);
+
+  const serveUserLoginPage = createUserLoginHandler(portalDir);
+  app.get('/user', serveUserLoginPage);
+  app.get('/login', serveUserLoginPage);
+  app.get('/app', serveUserLoginPage);
 
   const serveAdminDashboard = createAdminDashboardHandler(portalDir);
   app.get('/', serveAdminDashboard);

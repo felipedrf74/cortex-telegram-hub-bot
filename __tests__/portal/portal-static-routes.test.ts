@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   createAdminDashboardHandler,
   createLandingPreviewHandler,
+  createUserLoginHandler,
   registerPortalStaticRoutes,
 } from '../../src/portal/static-routes';
 
@@ -78,6 +79,9 @@ describe('portal static routes', () => {
     expect(Array.from(routes.keys())).toEqual([
       '/landing-preview',
       '/auth/password-reset',
+      '/user',
+      '/login',
+      '/app',
       '/',
       '/admin',
       '/portal',
@@ -112,6 +116,22 @@ describe('portal static routes', () => {
     expect(payload.contentType).toBe('html');
     expect(payload.body).toBe('<html>landing</html>');
     expect(payload.headers['Cache-Control']).toBe('no-cache, no-store, must-revalidate');
+  });
+
+  it('serves the user login page with strict static-page headers', () => {
+    const dir = createTempPortalDir();
+    fs.writeFileSync(path.join(dir, 'user-login.html'), '<html>user login</html>');
+    const { payload, res } = makeResponse();
+
+    createUserLoginHandler(dir)({}, res);
+
+    expect(payload.statusCode).toBe(200);
+    expect(payload.contentType).toBe('html');
+    expect(payload.body).toBe('<html>user login</html>');
+    expect(payload.headers['Cache-Control']).toBe('no-cache, no-store, must-revalidate');
+    expect(payload.headers['Content-Security-Policy']).toContain("connect-src 'self'");
+    expect(payload.headers['Content-Security-Policy']).toContain("frame-ancestors 'none'");
+    expect(JSON.stringify(payload)).not.toContain('PORTAL_TOKEN');
   });
 
   it('returns stable missing-file errors for build-output problems', () => {

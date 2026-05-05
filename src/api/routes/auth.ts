@@ -506,7 +506,7 @@ export function authRoutes(): Router {
 
   router.post('/register/google/start', asyncHandler(async (req: Request, res: Response) => {
     const language = resolveAuthLanguage(req);
-    const { deviceId, deviceName } = req.body;
+    const { deviceId, deviceName, flow } = req.body;
     if (!deviceId) {
       sendError(res, 'BAD_REQUEST', authCopy(language,
         'deviceId é obrigatório',
@@ -523,7 +523,8 @@ export function authRoutes(): Router {
     }
 
     const nonce = createGoogleAuthPendingSession(deviceId, deviceName || null);
-    const redirectBase = process.env.OAUTH_REDIRECT_BASE || 'https://nexushub.me';
+    const statePrefix = flow === 'web' ? 'web-auth' : 'ios-auth';
+    const redirectBase = process.env.OAUTH_REDIRECT_BASE || 'https://api.nexushub.me';
     const params = new URLSearchParams({
       client_id: config.google.clientId,
       redirect_uri: `${redirectBase}/oauth/google/callback`,
@@ -531,12 +532,13 @@ export function authRoutes(): Router {
       scope: 'openid email profile',
       access_type: 'offline',
       prompt: 'select_account',
-      state: `ios-auth:${nonce}`,
+      state: `${statePrefix}:${nonce}`,
     });
 
     sendSuccess(res, {
       url: `https://accounts.google.com/o/oauth2/v2/auth?${params.toString()}`,
       provider: 'google',
+      flow: flow === 'web' ? 'web' : 'ios',
     });
   }));
 

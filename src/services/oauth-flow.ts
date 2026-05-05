@@ -15,7 +15,7 @@ import { logger } from '../utils/logger';
 import type { OAuthTokens, OAuthProvider } from './oauth-store';
 import { createOAuthNonceSession } from './oauth-state-store';
 
-const REDIRECT_BASE = process.env.OAUTH_REDIRECT_BASE || 'https://nexushub.me';
+const REDIRECT_BASE = process.env.OAUTH_REDIRECT_BASE || 'https://api.nexushub.me';
 
 // ─── Google OAuth ───────────────────────────────────────────────────
 
