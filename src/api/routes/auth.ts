@@ -7,6 +7,7 @@ import bcrypt from 'bcryptjs';
 import { config } from '../../config';
 import { getDb } from '../../services/database';
 import { logger } from '../../utils/logger';
+import { hashEmail } from '../../utils/identity';
 import { sendSuccess, sendError, asyncHandler } from '../response-helpers';
 import { authMiddleware as verifyJwt } from '../auth-middleware';
 import type { AuthenticatedRequest } from '../auth-middleware';
@@ -881,7 +882,7 @@ export function authRoutes(): Router {
       // ("user_not_found") while the audit row records the outcome
       // for ops review. Successful logins also get an audit row
       // below.
-      const emailHash = crypto.createHash('sha256').update(email.toLowerCase().trim()).digest('hex');
+      const emailHash = hashEmail(email);
       logAudit({
         userId: 0,
         actorId: 0,
@@ -1170,7 +1171,7 @@ export function authRoutes(): Router {
     }
 
     const normalized = String(email).trim().toLowerCase();
-    const emailHash = crypto.createHash('sha256').update(normalized).digest('hex').slice(0, 16);
+    const emailHash = hashEmail(normalized, 16);
     const user = getUserByEmail(normalized);
 
     // Best-effort prune; never blocks the request.

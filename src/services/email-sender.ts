@@ -10,11 +10,11 @@
  */
 
 import { Resend } from 'resend';
-import crypto from 'crypto';
 import fs from 'fs';
 import path from 'path';
 import { config } from '../config';
 import { logger } from '../utils/logger';
+import { hashEmail } from '../utils/identity';
 
 let resendClient: Resend | null = null;
 
@@ -32,7 +32,7 @@ export function isEmailConfigured(): boolean {
 }
 
 function emailLogHash(email: string): string {
-  return crypto.createHash('sha256').update(email.trim().toLowerCase(), 'utf8').digest('hex').slice(0, 16);
+  return hashEmail(email, 16);
 }
 
 export function isFiscalBundleDeliveryConfigured(): boolean {
