@@ -5,7 +5,7 @@
 
 | Area | Path | Branch | Commit | Dirty state | Version | Migrations |
 | --- | --- | --- | --- | --- | --- | --- |
-| Backend | `/Users/felipedominguez/Desktop/Custom Connectors/Cortex/cortex-telegram-hub-bot` | `feature/tech-debt-2026-05-open-items-cleanup` | `ed53f84` | `dirty` | `4.14.132` | `117` |
+| Backend | `/Users/felipedominguez/Desktop/Custom Connectors/Cortex/cortex-telegram-hub-bot` | `feature/tech-debt-2026-05-open-items-cleanup` | `7fb8c19` | `dirty` | `4.14.132` | `117` |
 | iOS | `/Users/felipedominguez/Desktop/Nexus Hub IOS/Nexus Hub` | `feature/tech-debt-2026-05-ios-scope-unification` | `55bc2e2` | `clean` | n/a | n/a |
 
-Generated at: `2026-05-05T20:33:49Z`
+Generated at: `2026-05-05T20:37:41Z`
