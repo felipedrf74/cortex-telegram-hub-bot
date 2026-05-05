@@ -17,30 +17,30 @@ Last updated: 2026-05-05
 
 - Repo: `engine`
 - Workspace HEAD / version / migrations / dirty state: see `docs/release/release-identity.md`
-- Production status (last manual update 2026-05-05): promoted via `./scripts/promote-to-prod.sh`, health-checked, both `nexus-hub` and `content-engine` PM2 processes online at version `4.14.131`.
+- Production status (last manual update 2026-05-05): promoted via `./scripts/promote-to-prod.sh`, health-checked, both `nexus-hub` and `content-engine` PM2 processes online at version `4.14.132`.
 
-### Commits in this release (4.14.130 -> 4.14.131)
+### Commits in this release (4.14.131 -> 4.14.132)
 
-- Source merge: Content Creation workflow surfaces, contracts, portal panels, and technical mastery docs merged to backend `main` at `e3de170`.
-- Deploy bump: backend package version advanced to `4.14.131` at `583b431`.
-- iOS source merge: Content Creation workflow surfaces merged to iOS `main` at `6d76f53`.
+- Source merge: Content Creation radar/reference sync fallback, portal user-login/config fixes, and Apple web sign-in merged to backend `main` at `4f0b6f1`.
+- Deploy bump: backend package version advanced to `4.14.132` at `130d574`.
+- iOS source merge: Content Creation radar/reference sync and navigation bootstrap fixes merged to iOS `main` at `de220ad`.
 
 ### Scope of this release
 
-- **Content Creation backend contracts**: creator profile, voice/profile read-back, references/provenance, radar feedback, content lifecycle, and performance aggregation surfaces are available through tenant-scoped REST/portal paths.
-- **Content Creation portal surfaces**: operator-facing Content overview, profile, radar, pipeline, briefs/scripts, references, calendar/performance, and memory/feedback panels are wired to the new contracts where backend support exists.
-- **Content Creation iOS surfaces**: Content Home, Profile & Voice, Radar, Ideas/Briefs, Script Studio, Calendar, References, and Performance are present with deterministic local/fixture-backed behavior and tenant/session cleanup hooks.
-- **Agent technical mastery docs**: `docs/agent/AGENT_TECHNICAL_MASTERY.md` and related engineering standards/index updates are merged into backend `main` as agent onboarding material.
+- **Content Creation radar resilience**: `/api/v1/content/discover` now returns iOS-decodable idea objects and falls back to user-scoped saved radar topics when live discovery is unavailable.
+- **Content Creation reference sync**: iOS tolerates snake_case/camelCase/alias channel payloads and backend reference tests pin user-scoped behavior so seed/operator references do not leak as user data.
+- **Portal login/config fixes**: portal user login and configuration surfaces gained explicit error states, and Apple web sign-in support is live in the backend.
+- **iOS navigation bootstrap**: Home/tab warmup no longer waits on deep Content backstage detail, reducing first-open and tab-switch contention.
 
 ### Validation
 
-- Backend focused content/portal validation: **100 files / 783 tests passed**.
-- Backend `main` pre-push/deploy full vitest: **454 files / 6809 tests passed**.
+- Backend focused content validation: `npx tsc --noEmit` passed and focused content/security slice passed (**7 files / 79 tests**).
+- Backend full validation: `npm run verify` passed locally and in deploy gates (**455 files / 6829 tests**).
 - Deploy-time validation: typecheck passed and build passed.
 - Staging deploy: passed.
 - Staging smoke: **17/17 passed**.
 - Production health check (deploy.sh built-in): passed.
-- Production version assertion: `4.14.131` ✓
+- Production version assertion: `4.14.132` ✓
 - PM2 nexus-hub: online ✓
 - PM2 content-engine: online ✓
 
@@ -58,7 +58,7 @@ Last updated: 2026-05-05
 
 - Content Creation now has first-pass workflow surfaces for profile/voice,
   radar, ideas/briefs, script studio, calendar, references, and performance.
-  The source is pushed to iOS `main` at `6d76f53`; TestFlight/App Store
+  The source is pushed to iOS `main` at `de220ad`; TestFlight/App Store
   distribution remains a separate release action.
 - Home, Training, and Connections guard user-scoped health/readiness/Garmin
   state so one account cannot hydrate another account's cached wearable truth.
@@ -71,8 +71,10 @@ Last updated: 2026-05-05
 
 ### iOS validation
 
-- `xcodebuild build-for-testing` for Content Creation source: passed.
-- `ContentCreatorProfileTests`: **27/27 passed**.
+- Focused iOS Content/bootstrapping unit suite passed (**10 focused tests**).
+- Physical iPhone Felipe navigation/content smoke passed on device `00008150-000C0D5101D8401C`; the signed-in session was Felipe, so nexushubbot deep mutation workflow remains blocked until the device session is switched to `nexushubbot@gmail.com`.
+- Prior `xcodebuild build-for-testing` for Content Creation source: passed.
+- Prior `ContentCreatorProfileTests`: **27/27 passed**.
 - Prior physical-device Training evidence remains valid: iPhone Felipe
   (`00008150-000C0D5101D8401C`, iOS 26.5), `TrainingFixtureBypassUITests`
   **11/11 passed**, focused unit/cache/security suite passed with one expected
@@ -81,6 +83,9 @@ Last updated: 2026-05-05
 ## Evidence
 
 - Backend staging smoke evidence:
+  - `engine/docs/release/smoke-evidence/staging-smoke-4f0b6f1-20260505T105847Z.json`
+  - `engine/docs/release/smoke-evidence/staging-smoke-4f0b6f1-20260505T105931Z.json`
+  - `engine/docs/release/smoke-evidence/staging-smoke-4f0b6f1-20260505T110002Z.json`
   - `engine/docs/release/smoke-evidence/staging-smoke-e3de170-20260504T235034Z.json`
   - `engine/docs/release/smoke-evidence/staging-smoke-e3de170-20260504T235107Z.json`
   - `engine/docs/release/smoke-evidence/staging-smoke-e3de170-20260504T235134Z.json`
@@ -94,7 +99,7 @@ Last updated: 2026-05-05
 
 - No production data was used for validation.
 - Production data was not modified except by the normal deployment process.
-- Production now runs one deploy-bump commit ahead of staging (`4.14.131` vs `4.14.130`). The code change was staged and smoke-tested before promote; run `./scripts/deploy-staging.sh` if staging should match the production version label exactly.
+- Production now runs one deploy-bump commit ahead of staging (`4.14.132` vs `4.14.131`). The code change was staged and smoke-tested before promote; run `./scripts/deploy-staging.sh` if staging should match the production version label exactly.
 - Post-promotion production-safe checks still recommended:
   - readiness/body battery isolation across Felipe / Jaqueline / nexushubbot
   - Garmin connection visibility per user
