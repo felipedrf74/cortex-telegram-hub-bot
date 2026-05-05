@@ -27,6 +27,7 @@ export interface SaveIdeaOptions {
   niche?: string;
   hookIdea?: string;
   whyNow?: string;
+  userId?: number;
 }
 
 export function saveIdea(opts: SaveIdeaOptions): SavedIdea;
@@ -60,7 +61,7 @@ export function saveIdea(
     opts.niche || null,
     opts.hookIdea || null,
     opts.whyNow || null,
-    (opts as any).userId ?? 0,
+    opts.userId ?? 0,
   );
   return db.prepare('SELECT * FROM saved_ideas WHERE id = ?').get(result.lastInsertRowid) as SavedIdea;
 }

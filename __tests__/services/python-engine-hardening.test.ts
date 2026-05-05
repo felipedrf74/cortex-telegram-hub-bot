@@ -390,6 +390,12 @@ describe('Python book_knowledge.py — no hallucination on empty search', () => 
   it('passes category to ask_claude_json', () => {
     expect(src).toContain('category="content_engine_book"');
   });
+
+  it('uses neutral creator wording instead of gendered/founder-shaped copy', () => {
+    expect(src).toContain('how would this creator use these ideas');
+    expect(src).not.toContain('how would HE use');
+    expect(src).not.toContain('align with his worldview');
+  });
 });
 
 describe('Python creator_profile.py — reads from canonical config', () => {

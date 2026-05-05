@@ -121,9 +121,9 @@ async def extract_book(title: str, author: str) -> BookDNA:
 
 {profile}
 
-Your task: Extract structured knowledge from a book that the authenticated creator can use in his content.
-Think through the creator's saved brand voice and worldview — how would HE use these ideas in videos for the creator's saved target audience?
-Focus on frameworks, provocative ideas, and counter-arguments that align with his worldview.
+Your task: Extract structured knowledge from a book that the authenticated creator can use in their content.
+Think through the creator's saved brand voice and worldview — how would this creator use these ideas in videos for their saved target audience?
+Focus on frameworks, provocative ideas, and counter-arguments that align with the creator's saved worldview.
 
 Return ONLY valid JSON, no markdown wrapping."""
 

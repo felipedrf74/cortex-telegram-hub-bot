@@ -1,6 +1,18 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Request } from 'express';
 
+const mockRunContentDiscovery = vi.hoisted(() => vi.fn(async (userId: number) => ({
+  ideas: ['Creator operating system'],
+  provider: 'gemini',
+  fullContent: '# Content Ideas',
+  filePath: `/tmp/content-${userId}.md`,
+  searchCount: 1,
+})));
+
+const mockSaveIdea = vi.hoisted(() => vi.fn());
+const mockIsDuplicateIdea = vi.hoisted(() => vi.fn(async () => ({ isDuplicate: false, confidence: 0 })));
+const mockGetContentRadarPreferences = vi.hoisted(() => vi.fn(() => ({ topics: [], updatedAt: null })));
+
 vi.mock('../../src/utils/logger', () => ({
   logger: {
     info: vi.fn(),
@@ -24,14 +36,15 @@ vi.mock('../../src/services/tenant-scope-observability', () => ({
 }));
 
 vi.mock('../../src/services/content-discovery', () => ({
-  runContentDiscovery: vi.fn(async (userId: number) => ({
-    count: 1,
-    ideas: ['Creator operating system'],
-    provider: 'gemini',
-    fullContent: '# Content Ideas',
-    filePath: `/tmp/content-${userId}.md`,
-    searchCount: 1,
-  })),
+  runContentDiscovery: mockRunContentDiscovery,
+}));
+
+vi.mock('../../src/state/saved-ideas', () => ({
+  saveIdea: (...args: unknown[]) => mockSaveIdea(...args),
+}));
+
+vi.mock('../../src/services/content-dedup', () => ({
+  isDuplicateIdea: (...args: unknown[]) => mockIsDuplicateIdea(...args),
 }));
 
 vi.mock('../../src/portal/telemetry', () => ({
@@ -73,7 +86,7 @@ vi.mock('../../src/services/content-intelligence', () => ({
 }));
 
 vi.mock('../../src/services/content-radar-preferences', () => ({
-  getContentRadarPreferences: vi.fn(() => ({ topics: [], updatedAt: null })),
+  getContentRadarPreferences: (...args: unknown[]) => mockGetContentRadarPreferences(...args),
   setContentRadarPreferences: vi.fn(),
   filterSignalsForRadarPreferences: vi.fn((signals: any[]) => signals),
   buildRadarTopicSummaries: vi.fn(() => []),
@@ -185,6 +198,15 @@ async function dispatch(path = '/home', method = 'GET', userId = 12): Promise<Mo
 describe('Content API — home route', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockRunContentDiscovery.mockResolvedValue({
+      ideas: ['Creator operating system'],
+      provider: 'gemini',
+      fullContent: '# Content Ideas',
+      filePath: '/tmp/content-12.md',
+      searchCount: 1,
+    });
+    mockIsDuplicateIdea.mockResolvedValue({ isDuplicate: false, confidence: 0 });
+    mockGetContentRadarPreferences.mockReturnValue({ topics: [], updatedAt: null });
   });
 
   it('returns a render-ready creator home contract', async () => {
@@ -208,5 +230,52 @@ describe('Content API — home route', () => {
     expect(response.statusCode).toBe(401);
     expect(response.body.error.code).toBe('UNAUTHORIZED');
     expect(runContentDiscovery).not.toHaveBeenCalled();
+  });
+
+  it('returns iOS-decodable idea objects when discovery service returns titles', async () => {
+    mockRunContentDiscovery.mockResolvedValueOnce({
+      ideas: ['AI automation sprint', 'Training creator stack'],
+      provider: 'gemini',
+      fullContent: '# Content Ideas',
+      filePath: '/tmp/content-12.md',
+      searchCount: 2,
+    });
+
+    const response = await dispatch('/discover', 'POST', 12);
+
+    expect(response.statusCode).toBe(200);
+    expect(response.body.ok).toBe(true);
+    expect(response.body.data.discovered).toBe(2);
+    expect(response.body.data.ideas).toEqual([
+      expect.objectContaining({
+        id: expect.stringContaining('discovery-'),
+        title: 'AI automation sprint',
+        lifecycleState: 'discovered',
+        approvalState: 'pending_review',
+      }),
+      expect.objectContaining({
+        title: 'Training creator stack',
+      }),
+    ]);
+  });
+
+  it('falls back to saved radar topics when live discovery fails', async () => {
+    mockRunContentDiscovery.mockRejectedValueOnce(new Error('provider unavailable'));
+    mockGetContentRadarPreferences.mockReturnValueOnce({
+      topics: ['AI automation', 'marathon training'],
+      updatedAt: '2026-05-05T09:00:00.000Z',
+    });
+
+    const response = await dispatch('/discover', 'POST', 12);
+
+    expect(response.statusCode).toBe(200);
+    expect(response.body.ok).toBe(true);
+    expect(response.body.data.degraded).toBe(true);
+    expect(response.body.data.generation.provider).toBe('local-fallback');
+    expect(response.body.data.ideas[0]).toMatchObject({
+      title: expect.stringContaining('AI automation'),
+      workflowBlockers: ['Sem pesquisa ao vivo'],
+    });
+    expect(mockSaveIdea).toHaveBeenCalled();
   });
 });

@@ -193,6 +193,34 @@ describe('content reference routes', () => {
     expect(response.body.data.books[0]).not.toHaveProperty('owner_scope');
   });
 
+  it('does not expose platform seed books as user references', async () => {
+    testDb.prepare(`
+      INSERT INTO book_library (title, author, extraction_status, user_id, owner_scope)
+      VALUES (?, ?, ?, ?, ?)
+    `).run('Economics in One Lesson', 'Henry Hazlitt', 'extracted', 0, 'system');
+
+    const { response } = await dispatch('GET', '/books', {}, 88);
+
+    expect(response.statusCode).toBe(200);
+    expect(response.body.ok).toBe(true);
+    expect(response.body.data.books).toEqual([]);
+  });
+
+  it('keeps user-owned political or economics books scoped to that user only', async () => {
+    testDb.prepare(`
+      INSERT INTO book_library (title, author, extraction_status, user_id, owner_scope)
+      VALUES (?, ?, ?, ?, ?)
+    `).run('Economics in One Lesson', 'Henry Hazlitt', 'extracted', 41, 'user');
+
+    const ownerResponse = await dispatch('GET', '/books', {}, 41);
+    const otherResponse = await dispatch('GET', '/books', {}, 88);
+
+    expect(ownerResponse.response.body.data.books).toEqual([
+      expect.objectContaining({ title: 'Economics in One Lesson' }),
+    ]);
+    expect(otherResponse.response.body.data.books).toEqual([]);
+  });
+
   it('adds channels through the content-reference state owner with user scope', async () => {
     const { response } = await dispatch('POST', '/channels', { url: '  https://youtube.com/@nexus  ' }, 77);
 

@@ -179,6 +179,15 @@ canonical phrasing patterns:
 > ❌ NOT ACCEPTABLE
 > "iOS app builds and launches without crashes."
 
+For workflow-heavy skills such as Content Creation, Finance, Cooking, and
+Training, navigation is not validation. A release claim must exercise every
+section with realistic dummy data: create or seed entries, save them, read
+them back, run the workflow action, and inspect the semantic output against
+the active profile. For Content Creation specifically this means Profile &
+Voice, References, Radar, Ideas Pipeline, Briefs, Script Studio, Calendar,
+Performance, Memory/Feedback, and any integrations/settings surface. Empty
+cards, screenshots of static UI, or "renders without crashing" do not count.
+
 ## 8. Hard non-negotiables (must — release blockers)
 
 These are forbidden in every agent run unless Felipe explicitly

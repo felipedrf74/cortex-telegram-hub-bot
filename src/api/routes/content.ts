@@ -43,6 +43,7 @@ import { getUserLanguageById } from '../../services/user-service';
 import type { Lang } from '../../utils/i18n';
 import { buildContentHomeViewState } from '../../services/content-home-view-state';
 import { isValidTenantUserId, recordTenantScopeAnomaly } from '../../services/tenant-scope-observability';
+import { saveIdea } from '../../state/saved-ideas';
 
 export function contentRoutes(): Router {
   const router = Router();
@@ -211,12 +212,13 @@ export function contentRoutes(): Router {
 
     const startMs = Date.now();
     try {
-      const { runContentDiscovery } = require('../../services/content-discovery');
+      const { runContentDiscovery } = await import('../../services/content-discovery');
       const result = await runContentDiscovery(userId, tenantId);
+      const ideas = normalizeDiscoveredIdeasForResponse(result?.ideas || [], startMs);
       sendSuccess(res, {
-        discovered: result?.count || 0,
-        ideas: result?.ideas || [],
-        message: `Discovered ${result?.count || 0} new content ideas.`,
+        discovered: ideas.length,
+        ideas,
+        message: `Discovered ${ideas.length} new content ideas.`,
         generation: buildGenerationMeta({
           mode: 'standard',
           startMs,
@@ -226,6 +228,35 @@ export function contentRoutes(): Router {
       });
     } catch (err: any) {
       logger.error({ err }, 'iOS content/discover failed');
+
+      const language = resolveContentLanguage(req, userId);
+      const fallback = await buildLocalDiscoveryFallback({
+        userId,
+        tenantId,
+        requestedTopic: typeof req.body?.topic === 'string' ? req.body.topic : undefined,
+        language,
+      });
+      if (fallback.length > 0) {
+        sendSuccess(res, {
+          discovered: fallback.length,
+          ideas: fallback,
+          message: language.startsWith('pt')
+            ? 'Radar local pronto. Revê antes de transformar em roteiro.'
+            : 'Local radar is ready. Review before turning these into scripts.',
+          degraded: true,
+          warnings: [language.startsWith('pt')
+            ? 'A pesquisa ao vivo não respondeu; estas opções foram geradas a partir dos teus temas guardados.'
+            : 'Live discovery did not respond; these options were built from your saved radar topics.'],
+          generation: buildGenerationMeta({
+            mode: 'quick',
+            startMs,
+            provider: 'local-fallback',
+            researchUsed: false,
+          }),
+        });
+        return;
+      }
+
       sendInternalError(res, 'Content discovery not available.', {
         code: 'DISCOVERY_UNAVAILABLE',
         status: 503,
@@ -243,6 +274,128 @@ export function contentRoutes(): Router {
   registerContentCreatorProfileRoutes(router, ensureValidContentRouteScope);
 
   return router;
+}
+
+export function normalizeDiscoveredIdeasForResponse(rawIdeas: unknown[], startMs = Date.now()) {
+  return rawIdeas
+    .map((idea, index) => {
+      if (typeof idea === 'string') {
+        const title = idea.trim();
+        if (!title) return null;
+        return {
+          id: `discovery-${startMs}-${index}`,
+          title,
+          score: index < 10 ? 0.7 : 0.4,
+          createdAt: new Date(startMs).toISOString(),
+          lifecycleState: 'discovered',
+          approvalState: 'pending_review',
+          reviewState: 'needs_review',
+          workflowBlockers: [],
+          provenanceSources: [],
+        };
+      }
+      if (idea && typeof idea === 'object') {
+        const record = idea as Record<string, unknown>;
+        const title = typeof record.title === 'string' ? record.title.trim() : '';
+        if (!title) return null;
+        return {
+          id: typeof record.id === 'string' || typeof record.id === 'number'
+            ? String(record.id)
+            : `discovery-${startMs}-${index}`,
+          title,
+          score: typeof record.score === 'number' ? record.score : undefined,
+          createdAt: typeof record.createdAt === 'string'
+            ? record.createdAt
+            : typeof record.created_at === 'string'
+              ? record.created_at
+              : new Date(startMs).toISOString(),
+          lifecycleState: typeof record.lifecycleState === 'string'
+            ? record.lifecycleState
+            : typeof record.lifecycle_state === 'string'
+              ? record.lifecycle_state
+              : 'discovered',
+          approvalState: typeof record.approvalState === 'string'
+            ? record.approvalState
+            : typeof record.approval_state === 'string'
+              ? record.approval_state
+              : 'pending_review',
+          reviewState: typeof record.reviewState === 'string'
+            ? record.reviewState
+            : typeof record.review_state === 'string'
+              ? record.review_state
+              : 'needs_review',
+          workflowBlockers: Array.isArray(record.workflowBlockers)
+            ? record.workflowBlockers.filter((value): value is string => typeof value === 'string')
+            : [],
+          provenanceSources: Array.isArray(record.provenanceSources)
+            ? record.provenanceSources
+            : [],
+        };
+      }
+      return null;
+    })
+    .filter((idea): idea is NonNullable<typeof idea> => idea != null);
+}
+
+async function buildLocalDiscoveryFallback(params: {
+  userId: number;
+  tenantId?: number;
+  requestedTopic?: string;
+  language: Lang;
+}) {
+  const preferences = getContentRadarPreferences(params.userId, params.tenantId);
+  const topics = [
+    params.requestedTopic,
+    ...preferences.topics,
+  ]
+    .map((topic) => topic?.replace(/\s+/g, ' ').trim())
+    .filter((topic): topic is string => Boolean(topic))
+    .slice(0, 4);
+
+  if (topics.length === 0) return [];
+
+  const sourceDate = new Date().toISOString().slice(0, 10);
+  const ideas: string[] = [];
+  for (const topic of topics) {
+    if (params.language.startsWith('pt')) {
+      ideas.push(`O que mudou em ${topic} esta semana`);
+      ideas.push(`Como usar ${topic} sem cair em hype genérico`);
+    } else {
+      ideas.push(`What changed in ${topic} this week`);
+      ideas.push(`How to use ${topic} without generic hype`);
+    }
+  }
+
+  const saved: string[] = [];
+  const { isDuplicateIdea } = await import('../../services/content-dedup');
+  for (const title of ideas.slice(0, 6)) {
+    try {
+      const dedupe = await isDuplicateIdea(title, undefined, params.userId, params.tenantId);
+      if (dedupe.isDuplicate && dedupe.confidence > 0.8) continue;
+      saveIdea({
+        title,
+        sourceDate,
+        source: 'discovery',
+        score: 0.35,
+        workflowEligible: true,
+        angleTag: 'local-radar-fallback',
+        whyNow: params.language.startsWith('pt')
+          ? 'Gerado localmente a partir dos temas guardados enquanto a pesquisa ao vivo estava indisponível.'
+          : 'Generated locally from saved radar topics while live discovery was unavailable.',
+        userId: params.userId,
+      });
+      saved.push(title);
+    } catch (fallbackErr) {
+      logger.warn({ err: fallbackErr, userId: params.userId, title }, 'Content discovery local fallback save failed');
+    }
+  }
+
+  return normalizeDiscoveredIdeasForResponse(saved, Date.now()).map((idea) => ({
+    ...idea,
+    score: 0.35,
+    provenanceSources: [],
+    workflowBlockers: [params.language.startsWith('pt') ? 'Sem pesquisa ao vivo' : 'No live research'],
+  }));
 }
 
 function resolveContentLanguage(req: Pick<AuthenticatedRequest, 'header'>, userId: number): Lang {
