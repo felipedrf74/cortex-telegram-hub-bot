@@ -7,6 +7,31 @@ Update policy: update when a P0/P1/P2/P3 item opens or closes. Older sections re
 
 Last updated: 2026-05-05
 
+## Tech-debt validation pass (2026-05-05)
+
+Validation report:
+`docs/archive/2026-05/tech-debt-validation/codex-tech-debt-pass.md`.
+Validation matrix:
+`docs/archive/2026-05/tech-debt-validation/codex-validation-matrix.md`.
+
+Verdict: **PARTIAL PASS / STOPPED BEFORE P2** - Codex validated all supplied
+P0/P1 findings and landed Phase A1-A4 remediations on separate `main`-based
+feature branches. Nothing was pushed or deployed. P2 validation/remediation is
+blocked because `claude-tech-debt-2026-05-05.md` was not present in the
+workspace; per the task instruction, P2-23 through P2-44 require the attachment
+or explicit owner approval before proceeding.
+
+### Closure delta
+
+| ID | Severity | Status | Description |
+|---|---|---|---|
+| TD-A1 | P0 | **CLOSED IN SOURCE BRANCH** | `feature/tech-debt-2026-05-audit-fix` (`2139235`) refreshes vulnerable transitive packages. `npm audit --json` reports 0 vulnerabilities on that branch; focused provider/auth tests, full verify, and staging-smoke passed. |
+| TD-A2 | P0/P1 | **CLOSED IN SOURCE BRANCH** | `feature/tech-debt-2026-05-sentry-gate` (`463d5da`) documents `SENTRY_DSN`, adds production deploy warning-only posture, surfaces Sentry status in `/health/detailed`, and pins disabled-with-warning behavior. |
+| TD-A3 | P0 | **CLOSED IN SOURCE BRANCH** | `feature/tech-debt-2026-05-hash-email` (`8145b82`) unifies email hash normalization through `src/utils/identity.ts`. Follow-up: historical audit-log `emailHash` joins may need a one-time backfill note if old drifted hashes matter. |
+| TD-A4 | P1 | **CLOSED IN SOURCE BRANCH** | `feature/tech-debt-2026-05-migration-collision-gate` (`26a583c`) fails startup for non-allowlisted duplicate migration prefixes and adds a CI duplicate-prefix gate while preserving known legacy duplicates. |
+| TD-CX-O1 | P2 | **OPEN** | Scoped pre-commit can emit glob patterns that Vitest treats as no-match (`__tests__/portal/**/*.test.ts` observed during A2). Full pre-commit mode passed, but the focused hook should be fixed. |
+| TD-CX-O2 | P1 | **OPEN** | `npm run docs:audit` is over the requested frozen budget (489 issues / 389 files during this pass). Needs a dedicated docs-audit cleanup or allowlist-sync slice before the docs gate can be called green. |
+
 ## Content Creation workflow promote (2026-05-05)
 
 Backend source: `main` @ `e3de170`; production deploy bump `583b431` (`4.14.131`).
