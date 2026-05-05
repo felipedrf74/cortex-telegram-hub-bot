@@ -155,10 +155,20 @@ case "$VITEST_MODE" in
       npx vitest run --reporter=dot
       echo "✅ Tests passed (full, focused fallback)"
     else
+      FILTERED_GLOBS="$(node "$ROOT/scripts/filter-existing-vitest-globs.mjs" $GLOBS 2>/dev/null || true)"
+      if [ -z "$FILTERED_GLOBS" ]; then
+        echo "⚠️  Focused globs matched no test files — falling back to full vitest"
+        npx vitest run --reporter=dot
+        echo "✅ Tests passed (full, no matching focused globs)"
+        exit 0
+      fi
+      if [ "$FILTERED_GLOBS" != "$GLOBS" ]; then
+        echo "⚠️  Pre-commit: dropped focused globs with no matching test files"
+      fi
       echo "🧪 Pre-commit: focused — running vitest against domain-scoped globs"
-      printf '    %s\n' $GLOBS
+      printf '    %s\n' $FILTERED_GLOBS
       # shellcheck disable=SC2086
-      npx vitest run --reporter=dot $GLOBS
+      npx vitest run --reporter=dot $FILTERED_GLOBS
       echo "✅ Tests passed (focused)"
     fi
     ;;

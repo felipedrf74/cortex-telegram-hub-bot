@@ -7,6 +7,61 @@ Update policy: update when a P0/P1/P2/P3 item opens or closes. Older sections re
 
 Last updated: 2026-05-05
 
+## Tech-debt validation pass (2026-05-05)
+
+Validation report:
+`docs/archive/2026-05/tech-debt-validation/codex-tech-debt-pass.md`.
+Validation matrix:
+`docs/archive/2026-05/tech-debt-validation/codex-validation-matrix.md`.
+Batch 2 revalidation:
+`docs/archive/2026-05/tech-debt-validation/codex-batch-2-revalidation.md`.
+Batch 2 remediation:
+`docs/archive/2026-05/tech-debt-validation/codex-batch-2-remediation.md`.
+Batch 3 revalidation:
+`docs/archive/2026-05/tech-debt-validation/codex-batch-3-revalidation.md`.
+
+Verdict: **PHASE B COMPLETE WITH CONDITIONS** - Codex validated all supplied
+P0/P1 findings, validated P2-23 through P2-44 after Claude added
+`docs/archive/2026-05/tech-debt-validation/claude-tech-debt-2026-05-05.md`,
+completed Phase A1-A7, and staged Phase
+B1-B6 on separate `main`-based feature branches. Nothing was pushed or
+deployed. Conditions: branches remain independent/not merged, docs:audit
+remains above the frozen budget on current source, and the B4/B5 signed
+two-account E5 walkthroughs are documented but not executed.
+
+Batch 3 status: **BLOCKED BEFORE REMEDIATION**. Codex revalidated C1-C6 and
+stopped before code changes because C1 found explicit transaction control in
+`engine/migrations/042_unified_fks.sql`, while C5 depends on Batch 2/C4
+centralization not present on `main` under the prompt's "branch from main" rule.
+
+### Closure delta
+
+| ID | Severity | Status | Description |
+|---|---|---|---|
+| TD-A1 | P0 | **CLOSED IN SOURCE BRANCH** | `feature/tech-debt-2026-05-audit-fix` (`2139235`) refreshes vulnerable transitive packages. `npm audit --json` reports 0 vulnerabilities on that branch; focused provider/auth tests, full verify, and staging-smoke passed. |
+| TD-A2 | P0/P1 | **CLOSED IN SOURCE BRANCH** | `feature/tech-debt-2026-05-sentry-gate` (`463d5da`) documents `SENTRY_DSN`, adds production deploy warning-only posture, surfaces Sentry status in `/health/detailed`, and pins disabled-with-warning behavior. |
+| TD-A3 | P0 | **CLOSED IN SOURCE BRANCH** | `feature/tech-debt-2026-05-hash-email` (`8145b82`) unifies email hash normalization through `src/utils/identity.ts`. Follow-up: historical audit-log `emailHash` joins may need a one-time backfill note if old drifted hashes matter. |
+| TD-A4 | P1 | **CLOSED IN SOURCE BRANCH** | `feature/tech-debt-2026-05-migration-collision-gate` (`26a583c`) fails startup for non-allowlisted duplicate migration prefixes and adds a CI duplicate-prefix gate while preserving known legacy duplicates. |
+| TD-A5 | P2 | **CLOSED IN SOURCE BRANCH** | `feature/tech-debt-2026-05-audit-allowlist` (`2aff001`) aligns docs:audit with DOCS_INDEX for `engine/docs/agents/claude/handoff.md` without promoting the handoff to a canonical link root. |
+| TD-A6 | P2 | **CLOSED IN SOURCE BRANCH** | `feature/tech-debt-2026-05-delete-whatsapp` (`1ef044e`) deletes the dead WhatsApp adapter, its adapter-only tests, historical task spec, and adapter re-export; active webhook tests remain. Full verify passed (`453` files / `6716` tests). |
+| TD-A7 | P3 | **CLOSED IN SOURCE BRANCH** | `feature/tech-debt-2026-05-drop-types-sharp` (`a4dd949`) removes deprecated `@types/sharp`; TypeScript, invoice-focused tests (`25/25`), and full verify (`455` files / `6829` tests) passed. |
+| TD-B1 | P0 | **CLOSED IN SOURCE BRANCH** | `feature/tech-debt-2026-05-auth-failure-paths` (`7538749`) adds a 12-case auth failure-path safety net. Auth-routes + P0 identity focused run passed (`54/54`); full verify passed (`455` files / `6841` tests). |
+| TD-B2 | P1 | **CLOSED IN SOURCE BRANCH** | `feature/tech-debt-2026-05-coverage-threshold` (`33745b5`) rebaselines Vitest coverage thresholds to statements/lines 69%, branches 72%, functions 78%, adds a coverage baseline doc, and documents the monthly ratchet. Full verify passed (`455` files / `6829` tests). |
+| TD-B3 | P1 | **CLOSED IN SOURCE BRANCH** | `feature/tech-debt-2026-05-model-id-constants` (`3ededc3`) centralizes Anthropic model IDs behind `config.anthropic.*`; literal grep now returns only `src/config.ts`. Full verify passed (`456` files / `6831` tests). |
+| TD-B4 | P1 | **CLOSED IN SOURCE BRANCH** | `feature/tech-debt-2026-05-jwt-helper` (`43fb15d`) centralizes Nexus JWT and Apple identity-token verification in `src/services/auth-tokens.ts`; runtime `jwt.verify` call sites are reduced to the helper. Full verify passed (`456` files / `6837` tests). E5 two-account walkthrough remains manual/operator action. |
+| TD-B5 | P0 | **CLOSED IN SOURCE BRANCHES** | Backend `feature/tech-debt-2026-05-timezone-resolver` (`025319e`) and iOS `feature/tech-debt-2026-05-timezone-resolver` (`1a82150`) replace Lisbon assumptions with saved-user timezone resolution. `users.timezone` exists in `migrations/030_users.sql` and `migrations/051_multi_auth_users.sql`; non-Lisbon users now use their saved timezone in touched flows. Backend full verify passed (`456` files / `6833` tests); iOS focused timezone/currency/parser tests passed (`17/17`). |
+| TD-B6 | P0/P2 | **CLOSED IN SOURCE BRANCH** | iOS `feature/tech-debt-2026-05-ios-scope-unification` (`55bc2e2`) adds `AuthScope` and `ScopedUserDefaults`, preserving the historical scoped-key shape while removing repeated `currentScopeKey` definitions. iOS build passed; focused scope/content/navigation tests passed (`67/67`). |
+| TD-CX-O1 | P2 | **CLOSED IN SOURCE BRANCH** | `feature/tech-debt-2026-05-open-items-cleanup` adds `scripts/filter-existing-vitest-globs.mjs` and wires pre-commit/pre-push focused Vitest runs through it, dropping stale no-match globs before Vitest is invoked. |
+| TD-CX-O2 | P1 | **PARTIALLY CLOSED IN SOURCE BRANCH** | `feature/tech-debt-2026-05-open-items-cleanup` repairs stale current-doc references and lowers `npm run docs:audit` from the Batch 2 rerun of 491 issues / 393 files to 482 issues / 394 files. The issue count is now under the frozen 488 issue budget; the markdown file count remains above the 388-file envelope because historical/archive evidence is still counted. |
+| TD-CX-O3 | P2 | **OPEN E5 VALIDATION** | B4/B5 documented signed TestFlight two-account procedures for Felipe + nexushubbot, but Codex did not execute them in this environment. Required before claiming E5 closure for auth token unification and timezone/cache behavior. |
+| TD-CX-O4 | P1 | **BLOCKING BATCH 3** | C1 migration safety cannot be applied as written because `engine/migrations/042_unified_fks.sql:149` contains explicit `COMMIT;`. Need a per-file legacy fallback design before wrapping every migration in `db.transaction(...)`. |
+| TD-CX-O5 | P1 | **BLOCKING BATCH 3** | C5 Anthropic wrapper depends on Batch 2 B3 model constants and C4 retry extraction, but the Batch 3 prompt also requires every C branch from `main`. Resolve by landing B branches first or approving a local integration branch/dependency branch chain. |
+
+### Deferred validated tech-debt
+
+- **Phase C/D queue**: P1-09 retry helper, P1-13 cost tables, P1-14 scheduler split, P1-17 formatter centralization, P1-21 restore-test alerting, P1-22 health/content-engine readiness, P2-25/P2-38/P2-39/P2-43/P2-44 infra runbooks, P2-30 provider-bypass wrapper, P2-33 observability module extraction, P2-35 Garmin client ownership, P2-37 docs verdict cleanup, P2-41 Content XCUITest identifier walk, P2-42 mock factories, `@google/generative-ai` -> `@google/genai`, migration-runner transaction wrapping, iOS fastlane/TestFlight automation, self-hosted GitHub runner, and Python content-engine pytest bootstrap.
+- **P2 count corrections**: `src/state` currently has 15 files, not 87; of Claude's ten listed untested state modules, only `coach-state.ts` lacked direct test-name evidence. `PreviewRuntime` hits are 21, `services/* -> portal/*` imports are 29, and partial mocks remain 1,039.
+
 ## Content Creation workflow promote (2026-05-05)
 
 Backend source: `main` @ `e3de170`; production deploy bump `583b431` (`4.14.131`).
@@ -68,7 +123,7 @@ Verdict: **PASS WITH CONDITIONS** — standards/classifier layer verified; Codex
 | ID | Severity | Status | Description |
 |---|---|---|---|
 | ENG-EXC-CX-O7 | P2 | **FIXED** | `CURRENT_RELEASE_STATE.md` still described 4.14.127 after the 4.14.129 production/staging align. Codex refreshed release scope/status and mirrored the workspace doc into engine. |
-| ENG-EXC-CX-O8 | P2 | **FIXED** | `security-and-data-isolation-standard.md` still called AUTH-O4/O6/O7/O8/O10/O12 open after OPEN_ITEMS closed them. Codex updated the canonical standard to describe the current permanent controls. |
+| ENG-EXC-CX-O8 | P2 | **FIXED** | `engine/docs/engineering/security-and-data-isolation-standard.md` still called AUTH-O4/O6/O7/O8/O10/O12 open after OPEN_ITEMS closed them. Codex updated the canonical standard to describe the current permanent controls. |
 | ENG-EXC-CX-O9 | P3 | **FIXED** | Agent-process issue-ledger example reused live AUTH-O1/AUTH-O2 IDs and looked like stale state. Codex made the sample IDs generic and clarified generated identity vs manual rollout summary rules. |
 
 ### Evidence
@@ -97,7 +152,7 @@ Verdict: **EXTENDED — frontmatter + archive sweep confirmed; mobility catalog 
 - `audit-docs.mjs` baseline went from 486 → 485 issues / 382 files (1 BELOW the frozen baseline of 486).
 
 **P3 archive sweep — CLOSED (`626067b`):**
-- Moved `engine/docs/training/training-release-fixes.md` → `engine/docs/release/archive/2026-04/training/` for consistency with the 8 already-archived release-candidate-* and production-release-final-status docs.
+- Moved `engine/docs/release/archive/2026-04/training/training-release-fixes.md` into the release archive for consistency with the 8 already-archived release-candidate-* and production-release-final-status docs.
 - Net effect: `markdown-outside-approved-current-or-archive-location` 227 → 226; `duplicate-or-scattered-current-verdict` 36 → 35.
 
 **P2 training mobility-variant catalog — CLOSED (`612cf52`):**
@@ -348,7 +403,7 @@ Codex independent validation: `docs/archive/2026-05/engineering-excellence-codex
 - 1 new iOS DOCS_INDEX (`ios/docs/DOCS_INDEX.md`).
 - 5 new release-classifier flags (`HAS_LOGGER`, `HAS_SCHEDULER`, `HAS_NOTIFICATION`, `HAS_HEALTH_INTEGRATION`, `HAS_RATE_LIMIT`) + 5 cannot-skip safety gates + 5 vitest glob mappings.
 - 6 new classifier test cases.
-- `scripts/audit-docs.mjs` extended to register the new `engineering/` canonical paths and `AGENT_PROCESS_STANDARD.md`.
+- `scripts/audit-docs.mjs` extended to register the new `engineering/` canonical paths and `docs/agent/AGENT_PROCESS_STANDARD.md`.
 - Workspace + engine + iOS DOCS_INDEX updated.
 
 ### What Codex shipped (merge `799af5d` ← `61d381e`)
@@ -363,7 +418,7 @@ Codex independent validation: `docs/archive/2026-05/engineering-excellence-codex
   - `scripts/workspace-docs-mirror.sh`: one-way mirror from workspace `docs/`, `CLAUDE.md`, `AGENTS.md`, `README.md` into `engine/docs/_workspace-mirror/`. Modes: snapshot (default), `--check` (drift exit 1), `--dry-run`.
   - 15 workspace docs are now mirrored (CLAUDE/AGENTS/README + docs/agent + docs/engineering + docs/release; docs/archive intentionally NOT mirrored).
   - `audit-docs.mjs` gains `workspace-mirror-stale` + `workspace-mirror-missing` warnings; mirror itself is registered as approved-current AND skipped from per-file lints (avoids duplicate warnings on the same content).
-  - Workspace `ENGINEERING_STANDARDS_INDEX` documents the mirror contract.
+  - Workspace `engine/docs/engineering/ENGINEERING_STANDARDS_INDEX.md` documents the mirror contract.
   - Wired into `release-pipeline-housekeeping.sh` step 3 (dry-run checks drift, `--apply` refreshes).
   - `.gitignore` excludes `docs/release/cannot-skip-gate-evidence/` (generated).
 
@@ -399,7 +454,7 @@ Codex independent validation: `docs/archive/2026-05/engineering-excellence-codex
 | ENG-EXC-O7 | P2 | **FIXED LATER** (`1aa5955`, 2026-05-04 evening). | docs:audit baseline policy at `engine/docs/release/docs-audit-baseline-policy.md`. |
 | ENG-EXC-O8 | P1 | **FIXED** (`ca4eed1`). | Workspace docs durability via `engine/docs/_workspace-mirror/` (one-way snapshot) + `audit-docs.mjs` drift detection + housekeeping wiring. 15 workspace docs mirrored. |
 | ENG-EXC-O9 | P3 | **FIXED LATER** (`1aa5955`, 2026-05-04 evening). | Outbound markdown link lint enabled by extending `audit-docs.mjs` `isCurrentLike()` to engineering paths. |
-| ENG-EXC-O10 | P3 | **FIXED LATER** (`1aa5955`, 2026-05-04 evening). | Standard deprecation workflow added to workspace `ENGINEERING_STANDARDS_INDEX.md`. |
+| ENG-EXC-O10 | P3 | **FIXED LATER** (`1aa5955`, 2026-05-04 evening). | Standard deprecation workflow added to workspace `engine/docs/engineering/ENGINEERING_STANDARDS_INDEX.md`. |
 
 ### Codex validation findings (CX-O*)
 
@@ -664,7 +719,7 @@ NO migration. All four new modules are pure-derivation, on-demand. The lint runs
 
 - `npx tsc --noEmit` clean.
 - Pre-commit (auto-classified focused) ran 66 test files / 848 tests in 11.5s on each commit.
-- Full `vitest run` after the batch: **6,639 / 6,640 PASS** in 65.8s. The 1 failing test (`__tests__/services/prompt-cleanliness.test.ts:160` referencing the now-archived `prompts/daily-content-discovery.md`) is a PRE-EXISTING artifact of the closed-beta-hardening commit `8bb7f34` that landed on the same branch ancestry. Verified by checking out `dadcbe0` (the production main before closed-beta hardening) — there the test passes 72/72. Documented as `TR-EC-O9` in the new training report's open items.
+- Full `vitest run` after the batch: **6,639 / 6,640 PASS** in 65.8s. The 1 failing test (`__tests__/services/prompt-cleanliness.test.ts:160` referencing the now-archived `engine/docs/archive/2026-05/content/daily-content-discovery.md`) is a PRE-EXISTING artifact of the closed-beta-hardening commit `8bb7f34` that landed on the same branch ancestry. Verified by checking out `dadcbe0` (the production main before closed-beta hardening) — there the test passes 72/72. Documented as `TR-EC-O9` in the new training report's open items.
 
 ### What's still pending (after this pass)
 
@@ -678,7 +733,7 @@ NO migration. All four new modules are pure-derivation, on-demand. The lint runs
 | TR-EC-O6 | P3 | Promote `SessionLoadMetadata` fields onto `Session` shape via backfill migration once telemetry stabilizes. |
 | TR-EC-O7 | P3 | Add `tempo_run`, `hill_run`, `strength_lower_heavy`, `strength_upper_heavy` to `SessionType`. |
 | TR-EC-O8 | P3 | Persist `AthleteLifecycleState` to a `training_athlete_lifecycle` table for trend analysis. |
-| TR-EC-O9 | P2 | (Pre-existing) `__tests__/services/prompt-cleanliness.test.ts:160` references `prompts/daily-content-discovery.md` archived by `8bb7f34`. Either restore the prompt-cleanliness check from the archive path or remove the test. |
+| TR-EC-O9 | P2 | (Pre-existing) `__tests__/services/prompt-cleanliness.test.ts:160` references `engine/docs/archive/2026-05/content/daily-content-discovery.md` archived by `8bb7f34`. Either restore the prompt-cleanliness check from the archive path or remove the test. |
 | TR-EC-O10 | P1 | iOS device-level validation for the 9 Training workflows (A–I per the prompt) — physical iPhone fixture UI tests pass; full-engine/two-account/provider-safe workflow validation remains open. |
 | TR-EC-O11 | P1 | Codex validation found same-day plan creation could schedule today's preferred time in the past. Fixed locally on `feature/training-expert-coach-codex-validation`; requires review/merge before staging. |
 | TR-EC-O12 | P1 | Codex validation found persisted plan-linter sessions were missing scheduled dates, so exact-date lint rules were not reliable through real persistence. Fixed locally on `feature/training-expert-coach-codex-validation`; requires review/merge before staging. |
@@ -930,4 +985,4 @@ These remain because I cannot perform real-device validation from the audit harn
   - `update_policy`
   - `supersedes`
   - `superseded_by`
-- Doc hygiene sweep on `engine/docs/training/release-candidate-*.md` and `production-release-final-status.md` — these were release-candidate evidence for v4.14.100 (2026-04-28) and now belong under `engine/docs/release/archive/2026-04/training/` per the canonical hygiene rule.
+- Doc hygiene sweep on `engine/docs/training/release-candidate-*.md` and `engine/docs/release/archive/2026-04/training/production-release-final-status.md` — these were release-candidate evidence for v4.14.100 (2026-04-28) and now belong under `engine/docs/release/archive/2026-04/training/` per the canonical hygiene rule.
