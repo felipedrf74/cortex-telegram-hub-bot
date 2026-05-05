@@ -87,6 +87,8 @@ describe('Auth invite registration', () => {
     OWNER_TELEGRAM_ID: process.env.OWNER_TELEGRAM_ID,
     GOOGLE_CLIENT_ID: process.env.GOOGLE_CLIENT_ID,
     GOOGLE_CLIENT_SECRET: process.env.GOOGLE_CLIENT_SECRET,
+    APPLE_WEB_CLIENT_ID: process.env.APPLE_WEB_CLIENT_ID,
+    APPLE_WEB_REDIRECT_URI: process.env.APPLE_WEB_REDIRECT_URI,
   };
 
   function restoreEnv(key: keyof typeof originalEnv): void {
@@ -298,6 +300,69 @@ describe('Auth invite registration', () => {
     expect(res.body.data.accessToken).toBe('access-token');
     expect(res.body.data.user.firstName).toBe('Jaqueline');
     expect(res.body.data.user.lastName).toBe('Silva');
+  });
+
+  it('returns a setup error when Apple browser sign-in has no Services ID', async () => {
+    delete process.env.APPLE_WEB_CLIENT_ID;
+    delete process.env.APPLE_WEB_REDIRECT_URI;
+
+    const res = await dispatchAuth('/register/apple/start', {
+      deviceId: 'web-browser-device-apple',
+      deviceName: 'Nexus Web',
+      flow: 'web',
+    });
+
+    expect(res.statusCode).toBe(503);
+    expect(res.body.ok).toBe(false);
+    expect(res.body.error.code).toBe('NOT_CONFIGURED');
+  });
+
+  it('starts Apple browser sign-in with a Services-ID audience and form_post callback', async () => {
+    process.env.APPLE_WEB_CLIENT_ID = 'me.nexushub.web';
+    process.env.APPLE_WEB_REDIRECT_URI = 'https://api.test/oauth/apple/callback';
+
+    const res = await dispatchAuth('/register/apple/start', {
+      deviceId: 'web-browser-device-apple',
+      deviceName: 'Nexus Web',
+      flow: 'web',
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.body.ok).toBe(true);
+    expect(res.body.data.provider).toBe('apple');
+    expect(res.body.data.flow).toBe('web');
+    expect(res.body.data.url).toContain('https://appleid.apple.com/auth/authorize?');
+    expect(res.body.data.url).toContain('client_id=me.nexushub.web');
+    expect(res.body.data.url).toContain('redirect_uri=https%3A%2F%2Fapi.test%2Foauth%2Fapple%2Fcallback');
+    expect(res.body.data.url).toContain('response_type=code+id_token');
+    expect(res.body.data.url).toContain('response_mode=form_post');
+    expect(res.body.data.url).toContain('scope=name+email');
+    expect(res.body.data.url).toContain('state=web-apple%3A');
+    expect(res.body.data.url).toContain('nonce=');
+  });
+
+  it('finishes Apple web sign-in with a stored auth completion payload', async () => {
+    const { storeAppleWebAuthCompletion } = await import('../../src/services/apple-web-sign-in');
+
+    const authCode = storeAppleWebAuthCompletion({
+      accessToken: 'apple-access-token',
+      refreshToken: 'apple-refresh-token',
+      expiresIn: 604800,
+      user: {
+        id: 88,
+        firstName: 'Apple',
+        language: 'en',
+        authProvider: 'apple',
+      },
+    });
+
+    const res = await dispatchAuth('/register/apple/finish', { authCode });
+
+    expect(res.statusCode).toBe(201);
+    expect(res.body.ok).toBe(true);
+    expect(res.body.data.accessToken).toBe('apple-access-token');
+    expect(res.body.data.user.firstName).toBe('Apple');
+    expect(res.body.data.user.authProvider).toBe('apple');
   });
 
   it('rejects native Google registration when Google has not verified the email claim', async () => {

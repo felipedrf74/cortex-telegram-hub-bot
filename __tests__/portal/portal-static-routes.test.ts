@@ -134,6 +134,18 @@ describe('portal static routes', () => {
     expect(JSON.stringify(payload)).not.toContain('PORTAL_TOKEN');
   });
 
+  it('user login page includes live Apple and Google browser sign-in flows', () => {
+    const htmlPath = path.resolve(__dirname, '../../src/portal/user-login.html');
+    const html = fs.readFileSync(htmlPath, 'utf8');
+
+    expect(html).toContain('/api/v1/auth/register/google/start');
+    expect(html).toContain('/api/v1/auth/register/google/finish');
+    expect(html).toContain('/api/v1/auth/register/apple/start');
+    expect(html).toContain('/api/v1/auth/register/apple/finish');
+    expect(html).toContain('appleAuthCode');
+    expect(html).not.toContain('Apple web sign-in is not configured for this browser page yet');
+  });
+
   it('returns stable missing-file errors for build-output problems', () => {
     const dir = createTempPortalDir();
     const { payload: dashboardPayload, res: dashboardRes } = makeResponse();

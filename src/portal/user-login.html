@@ -96,7 +96,7 @@
         <div id="provider-panel" style="display:none">
           <button class="oauth" id="google-btn" type="button">Continue with Google</button>
           <button class="oauth" id="apple-btn" type="button">Continue with Apple</button>
-          <div class="small">Google opens a secure Google page and returns here. Apple browser sign-in needs a web Service ID; if it is not configured yet, use the iOS app.</div>
+          <div class="small">Apple and Google open secure provider pages and return here. If a provider is not configured yet, the page will show a setup message.</div>
         </div>
 
         <div class="message" id="message" aria-live="polite"></div>
@@ -245,8 +245,27 @@
       }
     });
 
-    document.getElementById('apple-btn').addEventListener('click', () => {
-      setMessage('Apple web sign-in is not configured for this browser page yet. Use Sign in with Apple in the iOS app.', 'error');
+    document.getElementById('apple-btn').addEventListener('click', async () => {
+      const btn = document.getElementById('apple-btn');
+      btn.disabled = true;
+      setMessage('Opening Apple...');
+      try {
+        const res = await fetch('/api/v1/auth/register/apple/start', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ deviceId: getDeviceId(), deviceName: 'Nexus Web', flow: 'web' }),
+        });
+        if (!res.ok) {
+          setMessage(await readError(res), 'error');
+          return;
+        }
+        const body = await res.json();
+        location.href = body.data?.url || body.url;
+      } catch {
+        setMessage('Network error. Try again in a moment.', 'error');
+      } finally {
+        btn.disabled = false;
+      }
     });
 
     document.getElementById('sign-out-btn').addEventListener('click', () => {
@@ -254,19 +273,25 @@
       location.href = '/user';
     });
 
-    async function finishGoogleIfNeeded() {
+    async function finishProviderIfNeeded() {
       const params = new URLSearchParams(location.search);
-      const authCode = params.get('googleAuthCode');
+      const googleAuthCode = params.get('googleAuthCode');
+      const appleAuthCode = params.get('appleAuthCode');
       const error = params.get('error');
       if (error) {
         history.replaceState(null, '', location.pathname);
         setMessage(error, 'error');
         return;
       }
+      const provider = appleAuthCode ? 'Apple' : 'Google';
+      const authCode = appleAuthCode || googleAuthCode;
       if (!authCode) return;
       history.replaceState(null, '', location.pathname);
-      setMessage('Finishing Google sign-in...');
-      const res = await fetch('/api/v1/auth/register/google/finish', {
+      setMessage('Finishing ' + provider + ' sign-in...');
+      const endpoint = appleAuthCode
+        ? '/api/v1/auth/register/apple/finish'
+        : '/api/v1/auth/register/google/finish';
+      const res = await fetch(endpoint, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ authCode }),
@@ -279,7 +304,7 @@
       saveSession(body.data || body);
     }
 
-    finishGoogleIfNeeded().then(hydrateExistingSession).catch(() => {
+    finishProviderIfNeeded().then(hydrateExistingSession).catch(() => {
       setMessage('Could not restore the web session. Please sign in again.', 'error');
     });
   })();

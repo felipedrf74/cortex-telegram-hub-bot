@@ -4,7 +4,7 @@ import { registerPortalOAuthRoutes } from '../../src/portal/oauth-routes';
 type Handler = (req: any, res: any, next?: () => void) => unknown;
 
 interface CapturedRoute {
-  method: 'GET';
+  method: 'GET' | 'POST';
   path: string;
   handlers: Handler[];
 }
@@ -29,6 +29,13 @@ function createServices(overrides: Record<string, unknown> = {}) {
     storeGoogleAuthCompletion: vi.fn(() => 'auth-code'),
     exchangeGoogleCodeForIdentity: vi.fn(async () => ({ sub: 'google-user' })),
     resolveGoogleIdentityUser: vi.fn(() => ({ id: 42 })),
+    isWebAppleAuthState: vi.fn((state: string) => state.startsWith('web-apple:')),
+    parseWebAppleAuthState: vi.fn((_state: string) => ({ nonce: 'apple-nonce' })),
+    consumeAppleWebAuthPendingSession: vi.fn(() => ({ nonceHash: 'nonce-hash', deviceId: 'device-apple', deviceName: 'Nexus Web' })),
+    storeAppleWebAuthCompletion: vi.fn(() => 'apple-auth-code'),
+    verifyAppleWebIdentityToken: vi.fn(async () => ({ sub: 'apple-user', nonce: 'nonce-hash' })),
+    parseAppleUserHint: vi.fn(() => ({ firstName: 'Apple', lastName: 'User' })),
+    resolveAppleWebIdentityUser: vi.fn(() => ({ id: 43 })),
     createAuthSessionAndRegisterDevice: vi.fn(() => ({ refreshToken: 'refresh' })),
     resetGoogleClients: vi.fn(),
     resetMicrosoftClients: vi.fn(),
@@ -67,6 +74,9 @@ function captureRoutes(
     get(path: string, ...handlers: Handler[]) {
       routes.push({ method: 'GET', path, handlers });
     },
+    post(path: string, ...handlers: Handler[]) {
+      routes.push({ method: 'POST', path, handlers });
+    },
   };
   registerPortalOAuthRoutes(app as any, {
     loadServices: loadServices as any,
@@ -77,9 +87,9 @@ function captureRoutes(
   return routes;
 }
 
-function findRoute(routes: CapturedRoute[], path: string): CapturedRoute {
-  const route = routes.find((candidate) => candidate.path === path);
-  if (!route) throw new Error(`Route not registered: GET ${path}`);
+function findRoute(routes: CapturedRoute[], path: string, method?: CapturedRoute['method']): CapturedRoute {
+  const route = routes.find((candidate) => candidate.path === path && (!method || candidate.method === method));
+  if (!route) throw new Error(`Route not registered: ${method ?? 'ANY'} ${path}`);
   return route;
 }
 
@@ -95,14 +105,15 @@ describe('portal oauth routes', () => {
   it('registers all public OAuth callbacks before portal API auth can run', () => {
     const routes = captureRoutes();
 
-    expect(routes.map((route) => route.path)).toEqual([
-      '/oauth/google/callback',
-      '/oauth/outlook/callback',
-      '/oauth/strava/callback',
-      '/oauth/whoop/callback',
-      '/oauth/fitbit/callback',
-      '/oauth/todoist/callback',
-      '/oauth/notion/callback',
+    expect(routes.map((route) => `${route.method} ${route.path}`)).toEqual([
+      'GET /oauth/google/callback',
+      'POST /oauth/apple/callback',
+      'GET /oauth/outlook/callback',
+      'GET /oauth/strava/callback',
+      'GET /oauth/whoop/callback',
+      'GET /oauth/fitbit/callback',
+      'GET /oauth/todoist/callback',
+      'GET /oauth/notion/callback',
     ]);
   });
 
@@ -152,6 +163,50 @@ describe('portal oauth routes', () => {
       pushToken: null,
     }));
     expect(res.redirectedTo).toBe('/user?googleAuthCode=auth-code');
+  });
+
+  it('completes the Apple browser sign-in callback back to the user login page', async () => {
+    const services = createServices();
+    const routes = captureRoutes(services);
+
+    const res = await invoke(findRoute(routes, '/oauth/apple/callback', 'POST'), {
+      body: {
+        id_token: 'apple-id-token',
+        state: 'web-apple:apple-nonce',
+        user: JSON.stringify({ name: { firstName: 'Apple', lastName: 'User' } }),
+      },
+      ip: '127.0.0.1',
+    });
+
+    expect(services.consumeAppleWebAuthPendingSession).toHaveBeenCalledWith('apple-nonce');
+    expect(services.verifyAppleWebIdentityToken).toHaveBeenCalledWith('apple-id-token', 'nonce-hash');
+    expect(services.parseAppleUserHint).toHaveBeenCalledWith(expect.stringContaining('Apple'));
+    expect(services.resolveAppleWebIdentityUser).toHaveBeenCalledWith(
+      { sub: 'apple-user', nonce: 'nonce-hash' },
+      { firstName: 'Apple', lastName: 'User' },
+    );
+    expect(services.createAuthSessionAndRegisterDevice).toHaveBeenCalledWith(expect.objectContaining({
+      userId: 43,
+      deviceId: 'device-apple',
+      pushToken: null,
+    }));
+    expect(res.redirectedTo).toBe('/user?appleAuthCode=apple-auth-code');
+  });
+
+  it('returns Apple browser callback errors to the login page without creating a session', async () => {
+    const services = createServices();
+    const routes = captureRoutes(services);
+
+    const res = await invoke(findRoute(routes, '/oauth/apple/callback', 'POST'), {
+      body: {
+        error: 'user_cancelled_authorize',
+        state: 'web-apple:apple-nonce',
+      },
+    });
+
+    expect(services.verifyAppleWebIdentityToken).not.toHaveBeenCalled();
+    expect(services.createAuthSessionAndRegisterDevice).not.toHaveBeenCalled();
+    expect(res.redirectedTo).toBe('/user?error=Apple%20sign-in%20was%20cancelled');
   });
 
   it('stores Outlook tokens and resets clients for a valid iOS OAuth callback', async () => {

@@ -1,6 +1,7 @@
 // Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
 
 import type { Express, Request, Response } from 'express';
+import express from 'express';
 import { logger as defaultLogger } from '../utils/logger';
 import { getBotRef as defaultGetBotRef } from './telemetry';
 
@@ -27,6 +28,13 @@ interface PortalOAuthServices {
   storeGoogleAuthCompletion: (payload: unknown) => string;
   exchangeGoogleCodeForIdentity: (code: string, redirectUri: string) => Promise<unknown>;
   resolveGoogleIdentityUser: (payload: unknown) => { id: number };
+  isWebAppleAuthState: (state: string) => boolean;
+  parseWebAppleAuthState: (state: string) => { nonce: string } | null;
+  consumeAppleWebAuthPendingSession: (nonce: string) => { nonceHash: string; deviceId: string; deviceName?: string | null } | null | undefined;
+  storeAppleWebAuthCompletion: (payload: unknown) => string;
+  verifyAppleWebIdentityToken: (identityToken: string, expectedNonceHash: string) => Promise<unknown>;
+  parseAppleUserHint: (rawUser: unknown) => unknown;
+  resolveAppleWebIdentityUser: (payload: unknown, profileHint?: unknown) => { id: number };
   createAuthSessionAndRegisterDevice: (params: {
     userId: number;
     deviceId: string;
@@ -63,6 +71,15 @@ function loadDefaultOAuthServices(): PortalOAuthServices {
     storeGoogleAuthCompletion,
   } = require('../services/google-auth-session-store');
   const { exchangeGoogleCodeForIdentity, resolveGoogleIdentityUser } = require('../services/google-sign-in');
+  const {
+    isWebAppleAuthState,
+    parseWebAppleAuthState,
+    consumeAppleWebAuthPendingSession,
+    storeAppleWebAuthCompletion,
+    verifyAppleWebIdentityToken,
+    parseAppleUserHint,
+    resolveAppleWebIdentityUser,
+  } = require('../services/apple-web-sign-in');
   const { createAuthSessionAndRegisterDevice } = require('../services/ios-auth-session');
 
   let resetGoogleClients: (() => void) | undefined;
@@ -101,6 +118,13 @@ function loadDefaultOAuthServices(): PortalOAuthServices {
     storeGoogleAuthCompletion,
     exchangeGoogleCodeForIdentity,
     resolveGoogleIdentityUser,
+    isWebAppleAuthState,
+    parseWebAppleAuthState,
+    consumeAppleWebAuthPendingSession,
+    storeAppleWebAuthCompletion,
+    verifyAppleWebIdentityToken,
+    parseAppleUserHint,
+    resolveAppleWebIdentityUser,
     createAuthSessionAndRegisterDevice,
     resetGoogleClients,
     resetMicrosoftClients,
@@ -338,6 +362,65 @@ export function registerPortalOAuthRoutes(app: Express, deps: PortalOAuthRouteDe
       }
     }
   });
+
+  app.post(
+    '/oauth/apple/callback',
+    express.urlencoded({ extended: false, limit: '16kb' }),
+    async (req: Request, res: Response) => {
+      const state = typeof req.body?.state === 'string' ? req.body.state : '';
+      const idToken = typeof req.body?.id_token === 'string' ? req.body.id_token : '';
+      const appleError = typeof req.body?.error === 'string' ? req.body.error : '';
+
+      if (appleError) {
+        res.redirect(`/user?error=${encodeURIComponent(appleError === 'user_cancelled_authorize'
+          ? 'Apple sign-in was cancelled'
+          : 'Apple sign-in failed')}`);
+        return;
+      }
+
+      if (!state || !idToken) {
+        res.redirect(`/user?error=${encodeURIComponent('Missing Apple sign-in response')}`);
+        return;
+      }
+
+      try {
+        const services = loadServices();
+        if (!services.isWebAppleAuthState(state)) {
+          res.redirect(`/user?error=${encodeURIComponent('Invalid Apple sign-in state')}`);
+          return;
+        }
+
+        const parsed = services.parseWebAppleAuthState(state);
+        if (!parsed) {
+          res.redirect(`/user?error=${encodeURIComponent('Invalid Apple sign-in state')}`);
+          return;
+        }
+
+        const pending = services.consumeAppleWebAuthPendingSession(parsed.nonce);
+        if (!pending) {
+          res.redirect(`/user?error=${encodeURIComponent('Apple sign-in session expired')}`);
+          return;
+        }
+
+        const payload = await services.verifyAppleWebIdentityToken(idToken, pending.nonceHash);
+        const profileHint = services.parseAppleUserHint(req.body?.user);
+        const user = services.resolveAppleWebIdentityUser(payload, profileHint);
+        const authPayload = services.createAuthSessionAndRegisterDevice({
+          userId: user.id,
+          deviceId: pending.deviceId,
+          deviceName: pending.deviceName,
+          pushToken: null,
+          user,
+          ipAddress: (req.ip || req.socket?.remoteAddress) ?? undefined,
+        });
+        const authCode = services.storeAppleWebAuthCompletion(authPayload);
+        res.redirect(`/user?appleAuthCode=${encodeURIComponent(authCode)}`);
+      } catch (err) {
+        logger.error({ err }, 'Apple web sign-in callback failed');
+        res.redirect(`/user?error=${encodeURIComponent('Apple sign-in failed')}`);
+      }
+    },
+  );
 
   app.get('/oauth/outlook/callback', async (req: Request, res: Response) => {
     await handleIOSAwareOAuthCallback(

@@ -20,6 +20,12 @@ import { createAuthSessionAndRegisterDevice, grantBetaSandboxAccess, hashRefresh
 import { createGoogleAuthPendingSession, consumeGoogleAuthCompletion } from '../../services/google-auth-session-store';
 import { consumeAppleSignInNonce, AppleSignInNonceError } from '../../services/apple-sign-in-nonce';
 import {
+  buildAppleWebAuthorizeUrl,
+  appleWebSignInConfigured,
+  createAppleWebAuthPendingSession,
+  consumeAppleWebAuthCompletion,
+} from '../../services/apple-web-sign-in';
+import {
   resolveGoogleIdentityUser,
   verifyGoogleIdentityToken,
   GoogleAccountLinkRequiresVerificationError,
@@ -500,6 +506,62 @@ export function authRoutes(): Router {
         'A autenticação Apple falhou',
         'Apple authentication failed'), 401);
     }
+  }));
+
+  // ── Sign in with Apple start/finish (browser OAuth via backend callback) ──
+  //
+  // This is intentionally separate from /register/apple above. Native iOS
+  // tokens are verified against the app bundle ID; browser Sign in with Apple
+  // tokens must be verified against an Apple Services ID.
+  router.post('/register/apple/start', asyncHandler(async (req: Request, res: Response) => {
+    const language = resolveAuthLanguage(req);
+    const { deviceId, deviceName } = req.body;
+    if (!deviceId) {
+      sendError(res, 'BAD_REQUEST', authCopy(language,
+        'deviceId é obrigatório',
+        'deviceId é obrigatório',
+        'deviceId is required'));
+      return;
+    }
+
+    if (!appleWebSignInConfigured()) {
+      sendError(res, 'NOT_CONFIGURED', authCopy(language,
+        'O início de sessão Apple no navegador não está configurado',
+        'O login com Apple no navegador não está configurado',
+        'Apple browser sign-in is not configured'), 503);
+      return;
+    }
+
+    const session = createAppleWebAuthPendingSession(deviceId, deviceName || null);
+    const url = buildAppleWebAuthorizeUrl(session);
+    sendSuccess(res, {
+      url,
+      provider: 'apple',
+      flow: 'web',
+    });
+  }));
+
+  router.post('/register/apple/finish', asyncHandler(async (req: Request, res: Response) => {
+    const language = resolveAuthLanguage(req);
+    const { authCode } = req.body;
+    if (!authCode) {
+      sendError(res, 'BAD_REQUEST', authCopy(language,
+        'authCode é obrigatório',
+        'authCode é obrigatório',
+        'authCode is required'));
+      return;
+    }
+
+    const payload = consumeAppleWebAuthCompletion(authCode);
+    if (!payload) {
+      sendError(res, 'INVALID_AUTH_CODE', authCopy(language,
+        'A sessão de início de sessão Apple expirou. Tenta novamente.',
+        'A sessão de login com Apple expirou. Tente novamente.',
+        'Apple sign-in session expired. Please try again.'), 401);
+      return;
+    }
+
+    sendSuccess(res, payload, { status: 201 });
   }));
 
   // ── Google sign-in start/finish (web OAuth via backend callback) ─────

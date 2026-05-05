@@ -191,6 +191,15 @@ export const config = {
     refreshToken: process.env.GOOGLE_REFRESH_TOKEN || '',
     iosClientId: process.env.GOOGLE_IOS_CLIENT_ID || '',
   },
+  appleWeb: {
+    // Sign in with Apple on the web uses an Apple Services ID as the
+    // OAuth client_id. Keep this separate from APNS_BUNDLE_ID, which is
+    // the native iOS App ID audience used by /auth/register/apple.
+    clientId: process.env.APPLE_WEB_CLIENT_ID || '',
+    redirectUri:
+      process.env.APPLE_WEB_REDIRECT_URI ||
+      `${process.env.OAUTH_REDIRECT_BASE || 'https://api.nexushub.me'}/oauth/apple/callback`,
+  },
   outlook: {
     clientId: process.env.OUTLOOK_CLIENT_ID || '',
     clientSecret: process.env.OUTLOOK_CLIENT_SECRET || '',
