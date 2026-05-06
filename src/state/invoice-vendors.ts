@@ -17,6 +17,12 @@ function normalizeSubjectPatterns(subjectPatterns?: string): string | null {
   return normalized || null;
 }
 
+function assertPositiveUserId(userId: number): void {
+  if (!Number.isSafeInteger(userId) || userId <= 0) {
+    throw new Error('userId required: must be a positive integer');
+  }
+}
+
 /**
  * Add a new custom vendor for monthly invoice collection.
  * Sender patterns are normalized to lowercase so vendor identity is stable
@@ -28,6 +34,7 @@ export function addVendor(
   userId: number,
   subjectPatterns?: string,
 ): InvoiceVendor {
+  assertPositiveUserId(userId);
   const db = getDb();
   const normalizedSenderPattern = normalizeSenderPattern(senderPattern);
   const normalizedSubjectPatterns = normalizeSubjectPatterns(subjectPatterns);
@@ -57,6 +64,7 @@ export function addVendor(
 
 /** Soft-delete: disable a vendor by ID (keeps history for audit trail). */
 export function removeVendor(id: number, userId: number): boolean {
+  assertPositiveUserId(userId);
   const db = getDb();
   const info = db.prepare(
     'UPDATE invoice_vendors SET enabled = 0 WHERE id = ? AND user_id = ?',
@@ -66,6 +74,7 @@ export function removeVendor(id: number, userId: number): boolean {
 
 /** Disable a vendor by name (case-insensitive). Returns true if found. */
 export function removeVendorByName(name: string, userId: number): boolean {
+  assertPositiveUserId(userId);
   const db = getDb();
   const info = db.prepare(
     'UPDATE invoice_vendors SET enabled = 0 WHERE LOWER(name) = LOWER(?) AND user_id = ?',
@@ -75,6 +84,7 @@ export function removeVendorByName(name: string, userId: number): boolean {
 
 /** Get all enabled custom vendors (merged with builtins at runtime). */
 export function getActiveVendors(userId: number): InvoiceVendor[] {
+  assertPositiveUserId(userId);
   const db = getDb();
   return db.prepare(
     'SELECT * FROM invoice_vendors WHERE enabled = 1 AND user_id = ? ORDER BY name ASC',
@@ -83,6 +93,7 @@ export function getActiveVendors(userId: number): InvoiceVendor[] {
 
 /** Check if a sender pattern is already registered. */
 export function vendorExists(senderPattern: string, userId: number): boolean {
+  assertPositiveUserId(userId);
   const db = getDb();
   const row = db.prepare(
     'SELECT COUNT(*) as count FROM invoice_vendors WHERE sender_pattern = ? AND enabled = 1 AND user_id = ?',
@@ -92,6 +103,7 @@ export function vendorExists(senderPattern: string, userId: number): boolean {
 
 /** Get all vendors including disabled ones (for admin listing). */
 export function getAllVendors(userId: number): InvoiceVendor[] {
+  assertPositiveUserId(userId);
   const db = getDb();
   return db.prepare(
     'SELECT * FROM invoice_vendors WHERE user_id = ? ORDER BY enabled DESC, name ASC',
