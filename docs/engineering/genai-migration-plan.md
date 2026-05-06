@@ -8,10 +8,9 @@ surface changes.
 
 ## Scope
 
-Nexus currently uses `@google/generative-ai` through
-`src/services/gemini-provider.ts`. Batch 21 authorizes phase 1 only: add
-`@google/genai`, create a compatibility adapter, and verify the adapter can
-represent the current call patterns without changing production call sites.
+Nexus uses `@google/genai` through `src/services/gemini-adapter.ts` and
+`src/services/gemini-provider.ts`. The adapter is intentionally retained as the
+stable Nexus boundary around Google's SDK surface.
 
 ## Phase 1 — Dependency And Shim
 
@@ -55,7 +54,7 @@ Status: closed in Batch 23 T3 source branch.
 
 ## Phase 3 — Mock Migration
 
-Requires explicit authorization.
+Status: closed in Batch 23 T2 source branch.
 
 - Move Gemini tests from mocking `@google/generative-ai` to mocking
   `@google/genai`.
@@ -64,8 +63,10 @@ Requires explicit authorization.
 
 ## Phase 4 — Old SDK Removal
 
-Requires explicit authorization.
+Status: closed in Batch 23 T4 source branch.
 
 - Remove `@google/generative-ai`.
-- Remove any adapter code that only exists for the old import surface.
+- Keep `src/services/gemini-adapter.ts`: it preserves the stable Nexus
+  response-helper surface (`text()`, `functionCalls()`, candidates, usage
+  metadata) while delegating to `@google/genai`.
 - Re-run provider fallback, model routing, and live configurable routing gates.

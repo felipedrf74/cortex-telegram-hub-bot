@@ -24,11 +24,6 @@ vi.mock('@google/genai', () => {
   };
 });
 
-vi.mock('@google/generative-ai', async () => {
-  const adapter = await import('../../src/services/gemini-adapter');
-  return adapter;
-});
-
 vi.mock('../../src/services/anthropic', () => ({
   getDomainSystemPrompt: vi.fn().mockReturnValue('You are a helpful secretary.'),
   getClassifierSystemPrompt: vi.fn().mockReturnValue('Classify into: secretary, triathlon, content.'),

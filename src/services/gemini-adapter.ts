@@ -3,7 +3,7 @@
 /**
  * Phase-1 compatibility adapter for the @google/genai migration.
  *
- * The current provider code uses @google/generative-ai's
+ * The previous Google Gemini SDK used
  * `new GoogleGenerativeAI(apiKey).getGenerativeModel(...).generateContent(...)`
  * shape. @google/genai exposes `new GoogleGenAI({ apiKey }).models.generateContent(...)`.
  *
