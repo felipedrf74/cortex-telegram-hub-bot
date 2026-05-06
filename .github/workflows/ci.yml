@@ -273,8 +273,8 @@ jobs:
           echo "✅ All Python files compile"
 
       - name: Python content-engine tests (advisory)
-        # Advisory until 2026-06-01; flip to blocking once >= 80 cases
-        # pass across >= 16 modules and Felipe approves the gate change.
+        # Advisory until 2026-06-01; flip to blocking once >= 100 cases
+        # pass across >= 24 modules and Felipe approves the gate change.
         run: |
           cd content-engine
           python -m pytest tests/ -v || {
