@@ -26,6 +26,23 @@ Status: in source branch.
   tool declarations.
 - Do not switch `src/services/gemini-provider.ts` yet.
 
+## Adapter Surface
+
+Batch 23 T1 expands the shim to cover the old SDK surface that blocked the
+first phase-2 probe:
+
+- `GoogleGenerativeAI` remains available as an alias of the adapter class.
+- `Content`, `Part`, `FunctionDeclaration`, `FunctionCallingMode`,
+  `SchemaType`, and `GenerateContentResult` are exported with the old
+  `@google/generative-ai` shapes used by `src/services/gemini-provider.ts`.
+- Response helpers preserve the old method surface:
+  `response.text()`, `response.functionCall()`, `response.functionCalls()`,
+  `response.candidates`, and `response.usageMetadata`.
+
+The adapter still delegates through `new GoogleGenAI({ apiKey })` and
+`client.models.generateContent(...)`; the compatibility layer is limited to
+type exports and the old response helper wrapper.
+
 ## Phase 2 — Provider Import Switch
 
 Requires explicit authorization.
