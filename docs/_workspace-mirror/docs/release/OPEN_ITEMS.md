@@ -40,6 +40,61 @@ BATCH-21-GENAI-MIGRATION-PHASE-1-AUTHORIZED: phase=dependency-plus-adapter-only
 - Scope: add `@google/genai`, create an adapter shim for the current Gemini call surface, and verify existing tests without changing production call sites. Phases 2-4 remain unauthorized.
 - Closed annotation: honored in R7 at `feature/tech-debt-2026-05-r7-genai-migration-phase-1` (`6c16bad1`), with `@google/genai@1.52.0` pinned and adapter tests passing.
 
+BATCH-22-Q3-DIAGNOSIS-AUTHORIZED: scope=D5/F4-Q3-diagnosis
+- Granted by Felipe in Batch 22 prompt.
+- Scope: diagnose Batch 20 Q3's D5/F4 stop reason and attempt the matching autonomous resolution branch.
+- Closed annotation: honored in S1; Q3 mapped to Diagnosis Branch A and refreshed D5/F4 closed at D5 `16d05f1b` and F4 `5d1a722b`.
+
+BATCH-22-GENAI-MIGRATION-PHASE-2-AUTHORIZED: phase=provider-import-switch
+- Granted by Felipe in Batch 22 prompt.
+- Scope: migrate production `@google/generative-ai` imports to the Batch 21 `gemini-adapter.ts` shim. Test mocks and old dependency removal remain unauthorized.
+- Closed annotation: attempted in S2 and BLOCKED by adapter type-surface mismatch plus provider tests still mocking the old SDK. No S2 commit was created.
+
+BATCH-22-Q3-SECONDARY-SOURCE-AUTHORIZED: source=Batch21-report-plus-OPEN_ITEMS-mirror
+- Granted by Felipe in Batch 22 unblock prompt.
+- Scope: use Batch 21 remediation and workspace-mirror `OPEN_ITEMS.md` as the canonical Q3 source because the Batch 20 archive report was missing.
+- Closed annotation: honored in S1/S3; secondary references supplied the Q3 stop reason.
+
+BATCH-22-RETRO-BATCH-20-REPORT-AUTHORIZED: path=docs/archive/2026-05/tech-debt-validation/codex-batch-20-remediation.md
+- Granted by Felipe in Batch 22 unblock prompt.
+- Scope: reconstruct the missing Batch 20 closure report from secondary references and mark it explicitly retroactive.
+- Closed annotation: honored in S3 at `docs/archive/2026-05/tech-debt-validation/codex-batch-20-remediation.md`.
+
+## Tech-debt Batch 22 — D5/F4 ratchet resolution + genai phase 2 attempt (2026-05-06)
+
+Report:
+`docs/archive/2026-05/tech-debt-validation/codex-batch-22-remediation.md`.
+
+Verdict: **PARTIAL**. S1 closed the D5/F4 ratchet refresh using the authorized
+secondary-source diagnosis and reset formula. S2 stopped correctly because
+switching `gemini-provider.ts` to the Batch 21 adapter requires mock/type work
+that belongs to the next authorized genai phase. S3 reconstructed the missing
+Batch 20 closure report.
+
+Branches:
+
+- `feature/tech-debt-2026-05-d5-mock-factories` (`16d05f1b`)
+- `feature/tech-debt-2026-05-f4-mock-ratchet-stack` (`5d1a722b`)
+- `feature/tech-debt-2026-05-s2-genai-migration-phase-2` — BLOCKED, no commit.
+- `feature/tech-debt-2026-05-s3-batch-22-closure` — report branch.
+
+Closure delta:
+
+| Workstream | Status | Evidence |
+|---|---|---|
+| D5/F4 mock ratchet | **CLOSED IN SOURCE STACK BRANCH** | D5 refreshed baseline to 842; F4 target reset to 827 with strict lint PASS. Full verify passed: 467 files / 6971 tests. |
+| Genai migration Phase 2 | **BLOCKED / NEEDS PHASE 3 MOCK AUTHORIZATION** | Provider import probe made TypeScript fail on adapter type-surface differences and made `gemini-provider.test.ts` call real `@google/genai` because tests still mock `@google/generative-ai`. |
+| Batch 20 audit trail | **RETRO REPORT WRITTEN** | `docs/archive/2026-05/tech-debt-validation/codex-batch-20-remediation.md` reconstructed from Batch 21 report and `OPEN_ITEMS.md` mirror. |
+
+Open next actions:
+
+1. Authorize Genai Phase 3 / provider-test mock migration before retrying the
+   provider import switch.
+2. Keep Genai Phase 4 dependency removal blocked until phases 2 and 3 are
+   both green.
+3. Continue content lifecycle, self-hosted runner, and iOS fastlane only under
+   separate explicit authorizations.
+
 ## Tech-debt Batch 21 — engineering closure + authorized expansions (2026-05-06)
 
 Report:
