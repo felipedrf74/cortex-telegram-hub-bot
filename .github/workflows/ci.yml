@@ -259,6 +259,9 @@ jobs:
         run: |
           cd content-engine
           pip install -r requirements.txt
+          if [ -f requirements-dev.txt ]; then
+            pip install -r requirements-dev.txt
+          fi
 
       - name: Syntax check
         run: |
@@ -268,6 +271,16 @@ jobs:
           find . -name "*.py" -not -path "./.venv/*" -not -path "./__pycache__/*" \
             -exec python -m py_compile {} \;
           echo "✅ All Python files compile"
+
+      - name: Python content-engine tests (advisory)
+        # Advisory until 2026-06-01; flip to blocking once >= 100 cases
+        # pass across >= 24 modules and Felipe approves the gate change.
+        run: |
+          cd content-engine
+          python -m pytest tests/ -v || {
+            echo "⚠️ Python content-engine pytest is advisory during bootstrap"
+            exit 0
+          }
 
   # ═══════════════════════════════════════════════════
   # MIGRATION SAFETY CHECK (only when migrations/** changed)
