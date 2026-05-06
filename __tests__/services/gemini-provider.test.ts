@@ -15,23 +15,29 @@ const mockGenerateContent = vi.fn();
 // tool list passed in (Layer 4 + Layer 3 verification).
 const mockGetGenerativeModel = vi.fn();
 
-vi.mock('@google/generative-ai', () => {
+vi.mock('@google/genai', () => {
   return {
-    GoogleGenerativeAI: class {
-      getGenerativeModel(...args: unknown[]) {
-        mockGetGenerativeModel(...args);
-        return { generateContent: mockGenerateContent };
+    GoogleGenAI: class {
+      models = { generateContent: mockGenerateContent };
+
+      constructor(options: unknown) {
+        expect(options).toEqual({ apiKey: 'gemini-test-key' });
       }
     },
-    SchemaType: {
-      STRING: 'STRING',
-      NUMBER: 'NUMBER',
-      INTEGER: 'INTEGER',
-      BOOLEAN: 'BOOLEAN',
-      ARRAY: 'ARRAY',
-      OBJECT: 'OBJECT',
+  };
+});
+
+vi.mock('@google/generative-ai', async () => {
+  const adapter = await import('../../src/services/gemini-adapter');
+
+  return {
+    ...adapter,
+    GoogleGenerativeAI: class extends adapter.GoogleGenerativeAIAdapter {
+      getGenerativeModel(...args: [any]) {
+        mockGetGenerativeModel(...args);
+        return super.getGenerativeModel(...args);
+      }
     },
-    FunctionCallingMode: { AUTO: 'AUTO' },
   };
 });
 
@@ -99,45 +105,39 @@ afterEach(() => { _sleep.fn = _origSleep; });
 
 function mockGeminiResponse(text: string, functionCalls?: any[], finishReason = 'STOP') {
   mockGenerateContent.mockResolvedValue({
-    response: {
-      text: () => text,
-      functionCalls: () => functionCalls || [],
-      candidates: [{ finishReason }],
-      usageMetadata: {
-        promptTokenCount: 100,
-        candidatesTokenCount: 50,
-        totalTokenCount: 150,
-      },
+    text,
+    functionCalls: functionCalls || [],
+    candidates: [{ finishReason }],
+    usageMetadata: {
+      promptTokenCount: 100,
+      candidatesTokenCount: 50,
+      totalTokenCount: 150,
     },
   });
 }
 
 function mockGeminiResponseNoText(functionCalls: any[], finishReason = 'STOP') {
   mockGenerateContent.mockResolvedValue({
-    response: {
-      text: () => { throw new Error('No text parts'); },
-      functionCalls: () => functionCalls,
-      candidates: [{ finishReason }],
-      usageMetadata: {
-        promptTokenCount: 80,
-        candidatesTokenCount: 30,
-        totalTokenCount: 110,
-      },
+    get text() { throw new Error('No text parts'); },
+    functionCalls,
+    candidates: [{ finishReason }],
+    usageMetadata: {
+      promptTokenCount: 80,
+      candidatesTokenCount: 30,
+      totalTokenCount: 110,
     },
   });
 }
 
 function mockGeminiResponseWithUsage(text: string, promptTokens: number, completionTokens: number) {
   mockGenerateContent.mockResolvedValue({
-    response: {
-      text: () => text,
-      functionCalls: () => [],
-      candidates: [{ finishReason: 'STOP' }],
-      usageMetadata: {
-        promptTokenCount: promptTokens,
-        candidatesTokenCount: completionTokens,
-        totalTokenCount: promptTokens + completionTokens,
-      },
+    text,
+    functionCalls: [],
+    candidates: [{ finishReason: 'STOP' }],
+    usageMetadata: {
+      promptTokenCount: promptTokens,
+      candidatesTokenCount: completionTokens,
+      totalTokenCount: promptTokens + completionTokens,
     },
   });
 }
@@ -170,7 +170,7 @@ describe('GeminiProvider', () => {
     );
 
     const genArgs = mockGetGenerativeModel.mock.calls[0][0];
-    const promptArg = mockGenerateContent.mock.calls[0][0][0].text;
+    const promptArg = mockGenerateContent.mock.calls[0][0].contents[0].text;
     expect(genArgs.systemInstruction).not.toContain('felipe@example.com');
     expect(promptArg).not.toContain('felipe@example.com');
     expect(promptArg).not.toContain('555');
@@ -547,12 +547,10 @@ describe('GeminiProvider', () => {
 
     it('handles missing usageMetadata gracefully', async () => {
       mockGenerateContent.mockResolvedValue({
-        response: {
-          text: () => '{"domain":"secretary","confidence":0.9}',
-          functionCalls: () => [],
-          candidates: [{ finishReason: 'STOP' }],
-          usageMetadata: undefined,
-        },
+        text: '{"domain":"secretary","confidence":0.9}',
+        functionCalls: [],
+        candidates: [{ finishReason: 'STOP' }],
+        usageMetadata: undefined,
       });
 
       const result = await provider.classify('hello');
@@ -578,12 +576,10 @@ describe('GeminiProvider', () => {
       mockGenerateContent
         .mockRejectedValueOnce(error429)
         .mockResolvedValueOnce({
-          response: {
-            text: () => 'Recovered',
-            functionCalls: () => [],
-            candidates: [{ finishReason: 'STOP' }],
-            usageMetadata: { promptTokenCount: 50, candidatesTokenCount: 20, totalTokenCount: 70 },
-          },
+          text: 'Recovered',
+          functionCalls: [],
+          candidates: [{ finishReason: 'STOP' }],
+          usageMetadata: { promptTokenCount: 50, candidatesTokenCount: 20, totalTokenCount: 70 },
         });
 
       const result = await provider.callDomain('secretary', [], 'hello', '');
@@ -596,12 +592,10 @@ describe('GeminiProvider', () => {
       mockGenerateContent
         .mockRejectedValueOnce(error503)
         .mockResolvedValueOnce({
-          response: {
-            text: () => 'Back',
-            functionCalls: () => [],
-            candidates: [{ finishReason: 'STOP' }],
-            usageMetadata: { promptTokenCount: 40, candidatesTokenCount: 10, totalTokenCount: 50 },
-          },
+          text: 'Back',
+          functionCalls: [],
+          candidates: [{ finishReason: 'STOP' }],
+          usageMetadata: { promptTokenCount: 40, candidatesTokenCount: 10, totalTokenCount: 50 },
         });
 
       const result = await provider.callDomain('content', [], 'test', '');
