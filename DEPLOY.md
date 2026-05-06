@@ -11,9 +11,13 @@
 
 ### CD Pipeline (MANUAL ONLY) ⚠️
 - **Trigger:** Manual only (`workflow_dispatch`) — NOT on push
-- **Workflow:** `.github/workflows/cd-production.yml`
-- **Why manual:** Server is IPv6-only (`2a01:14:8021:c0d0:d5e8:b946:d3e4:a53b`). GitHub Actions runners don't have IPv6 connectivity, so SSH-based deploy fails.
-- **Status:** Available but can't reach server from GitHub
+- **Workflow:** archived as `.github/workflows/cd-production.yml.archived`
+- **Why archived:** hosted GitHub Actions runners cannot reach the SSH/rsync
+  deploy target. The existing Cloudflare Tunnel exposes HTTPS app health routes,
+  not SSH deploy transport.
+- **Status:** production deploys still run from Felipe's Mac via the local
+  scripts below. Actions now has a non-deploy reachability smoke at
+  `.github/workflows/promote-reachability.yml`.
 
 ### Release Pipeline (MANUAL) 🏷️
 - **Trigger:** Manual (`workflow_dispatch`) in GitHub Actions UI
@@ -47,6 +51,19 @@ cd ~/Desktop/Custom\ Connectors/Cortex/cortex-telegram-hub-bot
 against the staging install: health, snapshot shape, cost-by-domain shape,
 provider stats, PM2 state, DB integrity), and only proceeds to
 `deploy.sh` if all 13 pass. See `STAGING.md` for the full staging runbook.
+
+### GitHub Actions Reachability Smoke
+
+Use `.github/workflows/promote-reachability.yml` only to prove reachability. It
+does not deploy. The hosted job checks the existing Cloudflare HTTPS route for
+`api.nexushub.me` and `api-staging.nexushub.me`; the self-hosted job checks
+that a runner labeled `self-hosted` + `nexus-hub-promote` can resolve
+`serverdominguez` and SSH to `dominguez@serverdominguez`.
+
+The self-hosted runner dependency is documented in
+`docs/release/self-hosted-runner-prereqs.md`. Do not add GitHub SSH deploy
+secrets or revive direct hosted-runner SSH deploys without explicit owner
+approval.
 
 ### Telegram Delivery Mode: Long-Polling vs Webhooks
 
@@ -197,7 +214,7 @@ both passed integrity check with expected row counts for
 4. Felipe reviews, merges, and deploys manually via `./scripts/deploy.sh`
 
 ### Do NOT
-- Modify `.github/workflows/cd-production.yml` to add push triggers
+- Restore `.github/workflows/cd-production.yml.archived` or add deploy push triggers
 - Try to SSH to the server from within Claude Code
 - Attempt any deployment commands — deployment is Felipe's responsibility
 - Modify `.env`, `data/`, or any server-specific configuration
@@ -229,7 +246,7 @@ Then merge: `server-sync/* → develop → main → deploy.sh`
 
 | Secret | Status | Notes |
 |--------|--------|-------|
-| SERVER_HOST | ⚠️ IPv6 (can't reach from GH Actions) | Works from local Mac |
+| SERVER_HOST | ⚠️ legacy archived-CD secret | Do not use from hosted runners |
 | SERVER_USER | ✅ dominguez | |
 | SERVER_SSH_KEY | ✅ Configured | |
 | NOTION_TOKEN | ✅ Configured | |
@@ -237,7 +254,12 @@ Then merge: `server-sync/* → develop → main → deploy.sh`
 
 ## Future: Re-enabling Auto-Deploy
 
-When the server gets a stable IPv4 address or Cloudflare Tunnel:
-1. Update `SERVER_HOST` secret with reachable address
-2. Add `push: branches: [main]` back to `cd-production.yml` trigger
-3. Auto-deploy will resume
+When the server gets a stable SSH transport that GitHub Actions can use:
+1. Prove reachability with `.github/workflows/promote-reachability.yml`.
+2. Prefer a self-hosted runner that already has local SSH access to
+   `serverdominguez`.
+3. Only restore a deploy workflow after owner approval and after deciding
+   whether the transport is self-hosted SSH, stable IPv4 SSH, or an explicit
+   SSH-capable tunnel.
+4. Do not add `push: branches: [main]` until manual promote has passed from the
+   chosen runner path.
