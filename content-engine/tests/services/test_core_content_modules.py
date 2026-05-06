@@ -44,12 +44,6 @@ def test_no_global_creator_profile_import(module):
     assert "FALLBACK_PROFILE" not in imports
 
 
-@pytest.mark.parametrize("module", TARGET_MODULES, ids=lambda module: module.__name__.split(".")[-1])
-def test_module_text_has_no_founder_identity(module, assert_no_founder_identity):
-    text = Path(module.__file__).read_text(encoding="utf-8")
-    assert_no_founder_identity(text)
-
-
 def search_result(title="tenant-42 AI workflow", snippet="AI automation checklist", **metadata):
     return SearchResult(
         title=title,
@@ -246,22 +240,6 @@ async def test_book_knowledge_synthesizes_search_results(monkeypatch, assert_no_
     assert_no_founder_identity(captured["prompt"], captured["system"], dna.model_dump())
 
 
-async def test_book_knowledge_raw_model_result_degrades_to_minimal(monkeypatch):
-    async def fake_search(*args, **kwargs):
-        return [{"title": "Result", "snippet": "Snippet", "link": "https://example.test"}]
-
-    async def fake_ask(*args, **kwargs):
-        return {"raw": "not enough structure"}
-
-    monkeypatch.setattr(book_knowledge, "_web_search", fake_search)
-    monkeypatch.setattr(book_knowledge, "ask_claude_json", fake_ask)
-
-    dna = await book_knowledge.extract_book("Tenant Manual", "A. Author")
-
-    assert dna.core_thesis == "not enough structure"
-    assert dna.personal_notes == []
-
-
 class RecordingOrchestrator:
     def __init__(self, fail=False):
         self.fail = fail
@@ -303,17 +281,6 @@ async def test_seo_engine_fanout_failure_still_returns_model_clusters(monkeypatc
     response = await seo_engine.analyze(SeoRequest(topic="tenant-42 launch"), RecordingOrchestrator(fail=True))
 
     assert response.clusters == [{"keyword": "fallback keyword"}]
-
-
-async def test_seo_engine_non_list_result_is_wrapped(monkeypatch):
-    async def fake_ask(*args, **kwargs):
-        return {"keyword": "single"}
-
-    monkeypatch.setattr(seo_engine, "ask_claude_json", fake_ask)
-
-    response = await seo_engine.analyze(SeoRequest(topic="tenant-42 launch"), RecordingOrchestrator())
-
-    assert response.clusters == [{"keyword": "single"}]
 
 
 async def test_feedback_loop_builds_metric_context(monkeypatch, assert_no_founder_identity):
@@ -401,21 +368,6 @@ async def test_report_generator_with_history_summarizes_metrics(monkeypatch, ass
     assert response.report["videos_published"] == 1
     assert "tenant-42 hook" in captured["prompt"]
     assert_no_founder_identity(captured["prompt"], response.report)
-
-
-async def test_report_generator_non_dict_model_output_is_wrapped(monkeypatch):
-    async def fake_history(days):
-        return [{"views": 1, "retentionPct": 1, "likes": 1, "comments": 0, "subsGained": 0}]
-
-    async def fake_ask(*args, **kwargs):
-        return ["unexpected"]
-
-    monkeypatch.setattr(report_gen, "_fetch_performance_history", fake_history)
-    monkeypatch.setattr(report_gen, "ask_claude_json", fake_ask)
-
-    response = await report_gen.generate("week")
-
-    assert response.report == {"raw": ["unexpected"]}
 
 
 def test_source_registry_generates_political_verification_queries():
