@@ -33,6 +33,7 @@ const mockTaskGetAllPendingTasks = vi.fn();
 const mockTaskGetDefaultList = vi.fn();
 const mockTaskCreateTask = vi.fn();
 vi.mock('../../src/services/task-store/task-router', () => ({
+  resolveTaskProvider: vi.fn(() => 'nexus'),
   getTaskProviderForUser: (...args: unknown[]) => mockGetTaskProviderForUser(...args),
 }));
 

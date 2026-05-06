@@ -14,6 +14,7 @@ vi.mock('../../src/utils/logger', () => ({
 }));
 
 vi.mock('../../src/services/task-store/task-router', () => ({
+  resolveTaskProvider: vi.fn(() => 'nexus'),
   getTaskProviderForUser: vi.fn(() => taskProvider),
 }));
 

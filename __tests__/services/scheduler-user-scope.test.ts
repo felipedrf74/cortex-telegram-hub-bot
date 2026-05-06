@@ -153,6 +153,7 @@ vi.mock('../../src/services/user-service', () => ({
   getOwnerBootstrapTarget: (...args: unknown[]) => mockGetOwnerBootstrapTarget(...args),
 }));
 vi.mock('../../src/services/task-store/task-router', () => ({
+  resolveTaskProvider: vi.fn(() => 'nexus'),
   getTaskProviderForUser: (...args: unknown[]) => mockGetTaskProviderForUser(...args),
 }));
 vi.mock('../../src/services/database', () => ({

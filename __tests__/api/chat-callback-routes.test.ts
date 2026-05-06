@@ -44,6 +44,7 @@ vi.mock('../../src/api/routes/chat-persistence', () => ({
 }));
 
 vi.mock('../../src/services/task-store/task-router', () => ({
+  resolveTaskProvider: vi.fn(() => 'nexus'),
   getTaskProviderForUser: (...args: unknown[]) => mockGetTaskProviderForUser(...args),
 }));
 

@@ -28,6 +28,7 @@ vi.mock('../../src/api/secret-guards', () => ({
 }));
 
 vi.mock('../../src/portal/admin-audit', () => ({
+  buildPortalAdminAuditDetails: vi.fn(),
   logPortalAdminMutation: (...args: unknown[]) => hoisted.logPortalAdminMutation(...args),
 }));
 

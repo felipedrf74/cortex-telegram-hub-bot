@@ -1,2 +1,2 @@
 # Lower this monthly by >=10 until <100.
-partialMockCount=842
+partialMockCount=827

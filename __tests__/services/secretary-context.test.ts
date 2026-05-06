@@ -84,6 +84,7 @@ vi.mock('../../src/services/tool-executor', () => ({
   executeToolCall: vi.fn(),
 }));
 vi.mock('../../src/services/task-store/task-router', () => ({
+  resolveTaskProvider: vi.fn(() => 'nexus'),
   getTaskProviderForUser: vi.fn(),
 }));
 vi.mock('../../src/services/user-service', () => ({

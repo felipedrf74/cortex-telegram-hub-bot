@@ -99,6 +99,7 @@ vi.mock('../../src/services/finance-tracker', () => ({
 }));
 
 vi.mock('../../src/services/task-store/task-router', () => ({
+  resolveTaskProvider: vi.fn(() => 'nexus'),
   getTaskProviderForUser: (...args: unknown[]) => mockGetTaskProviderForUser(...args),
 }));
 

@@ -87,6 +87,7 @@ vi.mock('../../src/services/daily-brief-orchestrator', () => ({
 }));
 
 vi.mock('../../src/services/task-store/task-router', () => ({
+  resolveTaskProvider: vi.fn(() => 'nexus'),
   getTaskProviderForUser: () => ({
     getAllPendingTasks: (...args: unknown[]) => mockGetAllPendingTasks(...args),
   }),
