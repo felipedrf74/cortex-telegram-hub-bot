@@ -3,6 +3,12 @@
 import { getDb } from '../services/database';
 import { InvoiceFiling } from '../domains/types';
 
+function assertPositiveUserId(userId: number): void {
+  if (!Number.isSafeInteger(userId) || userId <= 0) {
+    throw new Error('userId required: must be a positive integer');
+  }
+}
+
 /** Insert a new filing record (photo, email, or amazon source). */
 export function recordFiling(data: {
   vendor: string;
@@ -20,6 +26,7 @@ export function recordFiling(data: {
   error_message?: string | null;
   user_id: number;
 }): InvoiceFiling {
+  assertPositiveUserId(data.user_id);
   const db = getDb();
   const stmt = db.prepare(`
     INSERT INTO invoice_filings
@@ -53,6 +60,7 @@ export function recordFiling(data: {
  * Only considers successfully filed invoices (status = 'filed').
  */
 export function isDuplicate(vendor: string, invoiceNumber: string | null, userId: number): boolean {
+  assertPositiveUserId(userId);
   if (!invoiceNumber) return false;
   const db = getDb();
   const row = db.prepare(`
@@ -68,6 +76,7 @@ export function isDuplicate(vendor: string, invoiceNumber: string | null, userId
  * This catches duplicates even when invoice_number is missing/null.
  */
 export function isEmailAlreadyFiled(messageId: string, userId: number): boolean {
+  assertPositiveUserId(userId);
   const db = getDb();
   const row = db.prepare(`
     SELECT COUNT(*) as count FROM invoice_filings
@@ -79,6 +88,7 @@ export function isEmailAlreadyFiled(messageId: string, userId: number): boolean 
 
 /** Get all filings for a specific year/month (for reporting). */
 export function getFilingsForMonth(year: number, month: number, userId: number): InvoiceFiling[] {
+  assertPositiveUserId(userId);
   const db = getDb();
   const monthStr = month.toString().padStart(2, '0');
   const startDate = `${year}-${monthStr}-01`;
@@ -99,6 +109,7 @@ export function getFilingsForMonth(year: number, month: number, userId: number):
  * Returns the number of records deleted.
  */
 export function deleteAmazonFilings(year: number, month: number, userId: number): number {
+  assertPositiveUserId(userId);
   const db = getDb();
   const monthStr = month.toString().padStart(2, '0');
   const startDate = `${year}-${monthStr}-01`;
@@ -122,6 +133,7 @@ export function deleteAmazonFilings(year: number, month: number, userId: number)
  * Used by the /uber --force flag to re-collect invoices after a bad run.
  */
 export function deleteUberFilings(year: number, month: number, userId: number): number {
+  assertPositiveUserId(userId);
   const db = getDb();
   const monthStr = month.toString().padStart(2, '0');
   const startDate = `${year}-${monthStr}-01`;
@@ -142,6 +154,7 @@ export function deleteUberFilings(year: number, month: number, userId: number): 
 
 /** Get recent filings for the /invoices-log display. */
 export function getRecentFilings(userId: number, limit: number = 20): InvoiceFiling[] {
+  assertPositiveUserId(userId);
   const db = getDb();
   return db.prepare(`
     SELECT * FROM invoice_filings WHERE user_id = ?
