@@ -30,7 +30,7 @@ const MAX_BUFFERED_ANOMALIES = 200;
 const _tenantScopeAnomalies: TenantScopeAnomaly[] = [];
 
 export function isValidTenantUserId(userId: number | null | undefined): userId is number {
-  return typeof userId === 'number' && Number.isFinite(userId) && userId > 0;
+  return typeof userId === 'number' && Number.isSafeInteger(userId) && userId > 0;
 }
 
 export function recordTenantScopeAnomaly(
