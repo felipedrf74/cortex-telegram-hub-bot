@@ -23,15 +23,19 @@ import { pushEvent } from '../portal/telemetry';
 import { deepAnalyzeTopVideos } from './video-study';
 import {
   addChannel,
-  getAllChannels,
+  addSystemChannel,
+  createContentReferencesAdminContext,
   getActiveChannels,
+  getSystemChannels,
   getPatternsForChannel,
   updateChannelStatus,
   upsertPatterns,
   upsertKnowledge,
+  upsertSystemKnowledge,
   PATTERN_CATEGORIES,
   type PatternCategory,
   type ContentRefChannel,
+  type ContentReferencesAccess,
 } from '../state/content-references';
 import { writeSignal } from './intelligence-bus';
 import { getDb } from './database';
@@ -45,6 +49,20 @@ const client = new Anthropic({
   apiKey: config.anthropic.apiKey,
   maxRetries: 3,
 });
+
+const CONTENT_LEARNER_ADMIN_CONTEXT = createContentReferencesAdminContext('channel-learner system-scope processing');
+
+function accessForChannel(channel: Pick<ContentRefChannel, 'user_id' | 'tenant_id'>): ContentReferencesAccess {
+  return channel.user_id && channel.user_id > 0
+    ? { userId: channel.user_id, tenantId: channel.tenant_id ?? undefined }
+    : { adminContext: CONTENT_LEARNER_ADMIN_CONTEXT };
+}
+
+function accessForUserId(userId?: number): ContentReferencesAccess {
+  return userId && userId > 0
+    ? { userId }
+    : { adminContext: CONTENT_LEARNER_ADMIN_CONTEXT };
+}
 
 function getScopeClause(userId?: number): { clause: string; params: unknown[] } {
   if (userId != null && userId > 0) {
@@ -377,7 +395,7 @@ async function synthesizeKnowledge(userId?: number): Promise<void> {
     // Group by channel
     const byChannel = new Map<string, ReturnType<typeof getPatternsForChannel>>();
     for (const channel of channels) {
-      const patterns = getPatternsForChannel(channel.id)
+      const patterns = getPatternsForChannel(channel.id, accessForChannel(channel))
         .filter((pattern) => pattern.category === category && pattern.confidence >= 0.5);
       if (patterns.length === 0) continue;
       const name = channel.channel_name || channel.channel_url;
@@ -404,7 +422,11 @@ async function synthesizeKnowledge(userId?: number): Promise<void> {
         return `${p.pattern_text}\nExamples from ${channelName}: ${examples.slice(0, 3).join('; ')}`;
       }).join('\n');
 
-      upsertKnowledge(category, directText, [channelName], scopedUserId);
+      if (scopedUserId > 0) {
+        upsertKnowledge(category, directText, [channelName], scopedUserId);
+      } else {
+        upsertSystemKnowledge(category, directText, [channelName], CONTENT_LEARNER_ADMIN_CONTEXT);
+      }
       continue;
     }
 
@@ -455,7 +477,16 @@ async function synthesizeKnowledge(userId?: number): Promise<void> {
 
       for (const cat of result.categories) {
         if (cat.category === category) {
-          upsertKnowledge(category as PatternCategory, cat.synthesized_text, cat.source_channels, scopedUserId);
+          if (scopedUserId > 0) {
+            upsertKnowledge(category as PatternCategory, cat.synthesized_text, cat.source_channels, scopedUserId);
+          } else {
+            upsertSystemKnowledge(
+              category as PatternCategory,
+              cat.synthesized_text,
+              cat.source_channels,
+              CONTENT_LEARNER_ADMIN_CONTEXT,
+            );
+          }
           break;
         }
       }
@@ -467,12 +498,21 @@ async function synthesizeKnowledge(userId?: number): Promise<void> {
         .map((p) => p.pattern_text)
         .join('\n');
       if (allText) {
-        upsertKnowledge(
-          category,
-          allText,
-          [...byChannel.keys()],
-          scopedUserId,
-        );
+        if (scopedUserId > 0) {
+          upsertKnowledge(
+            category,
+            allText,
+            [...byChannel.keys()],
+            scopedUserId,
+          );
+        } else {
+          upsertSystemKnowledge(
+            category,
+            allText,
+            [...byChannel.keys()],
+            CONTENT_LEARNER_ADMIN_CONTEXT,
+          );
+        }
       }
     }
   }
@@ -501,7 +541,7 @@ function writeChannelDNASignals(channels: ContentRefChannel[], userId?: number):
 
   for (const channel of channels) {
     for (const category of PATTERN_CATEGORIES) {
-      const patterns = getPatternsForChannel(channel.id)
+      const patterns = getPatternsForChannel(channel.id, accessForChannel(channel))
         .filter((p) => p.category === category && p.confidence >= 0.4);
 
       if (patterns.length === 0) continue;
@@ -556,13 +596,14 @@ export async function analyzeChannel(channelId: number): Promise<{
   error?: string;
 }> {
   const { getChannel } = await import('../state/content-references');
-  const channel = getChannel(channelId);
+  const channel = getChannel(channelId, { adminContext: CONTENT_LEARNER_ADMIN_CONTEXT });
   if (!channel) {
     return { success: false, summary: '', patternsFound: 0, videosAnalyzed: 0, error: 'Channel not found' };
   }
+  const channelAccess = accessForChannel(channel);
 
   logger.info({ channelId, url: channel.channel_url }, 'Starting channel analysis');
-  updateChannelStatus(channelId, 'analyzing');
+  updateChannelStatus(channelId, 'analyzing', undefined, channelAccess);
 
   try {
     // Step 1: Resolve channel
@@ -570,7 +611,7 @@ export async function analyzeChannel(channelId: number): Promise<{
     if (!resolved) {
       updateChannelStatus(channelId, 'failed', {
         error_message: 'Could not resolve YouTube channel — check URL or API key',
-      });
+      }, channelAccess);
       return {
         success: false,
         summary: '',
@@ -583,14 +624,14 @@ export async function analyzeChannel(channelId: number): Promise<{
     updateChannelStatus(channelId, 'analyzing', {
       channel_name: resolved.channelName,
       channel_id: resolved.channelId,
-    });
+    }, channelAccess);
 
     // Step 2: Fetch recent videos
     const videos = await fetchChannelVideos(resolved.channelId, 10);
     if (videos.length === 0) {
       updateChannelStatus(channelId, 'failed', {
         error_message: 'No videos found for this channel',
-      });
+      }, channelAccess);
       return {
         success: false,
         summary: '',
@@ -631,14 +672,14 @@ export async function analyzeChannel(channelId: number): Promise<{
     );
 
     if (validPatterns.length > 0) {
-      upsertPatterns(channelId, validPatterns);
+      upsertPatterns(channelId, validPatterns, channelAccess);
     }
 
     // Step 5: Mark as active
     updateChannelStatus(channelId, 'active', {
       video_count_analyzed: videos.length,
       error_message: null,
-    });
+    }, channelAccess);
 
     logger.info({
       channelName: resolved.channelName,
@@ -661,7 +702,7 @@ export async function analyzeChannel(channelId: number): Promise<{
   } catch (err) {
     const message = (err as Error).message;
     logger.error({ err, channelId }, 'Channel analysis failed');
-    updateChannelStatus(channelId, 'failed', { error_message: message });
+    updateChannelStatus(channelId, 'failed', { error_message: message }, channelAccess);
     return {
       success: false,
       summary: '',
@@ -719,7 +760,7 @@ export async function processAllChannels(force = false, userId?: number): Promis
     for (const ch of stuckAnalyzing) {
       updateChannelStatus(ch.id, 'pending', {
         error_message: 'Auto-recovered from stuck analyzing state (process crash or timeout)',
-      });
+      }, accessForUserId(userId));
       logger.warn(
         { channelId: ch.id, channelName: ch.channel_name },
         'Channel was stuck in analyzing — reset to pending for retry',
@@ -734,7 +775,7 @@ export async function processAllChannels(force = false, userId?: number): Promis
     `).all(...scopeParams) as Array<{ id: number; channel_name: string | null }>;
 
     for (const ch of failedRetryable) {
-      updateChannelStatus(ch.id, 'pending', { error_message: null });
+      updateChannelStatus(ch.id, 'pending', { error_message: null }, accessForUserId(userId));
       logger.info(
         { channelId: ch.id, channelName: ch.channel_name },
         'Previously failed channel reset to pending for auto-retry',
@@ -832,7 +873,9 @@ export async function addAndAnalyzeChannel(
   channel: ContentRefChannel;
   analysis: Awaited<ReturnType<typeof analyzeChannel>>;
 }> {
-  const channel = addChannel(channelUrl, addedVia, userId, tenantId);
+  const channel = userId > 0
+    ? addChannel(channelUrl, addedVia, userId, tenantId)
+    : addSystemChannel(channelUrl, addedVia, CONTENT_LEARNER_ADMIN_CONTEXT);
   const analysis = await analyzeChannel(channel.id);
 
   // Re-synthesize if analysis was successful
@@ -849,7 +892,7 @@ export async function addAndAnalyzeChannel(
 
   // Return fresh channel data
   const { getChannel } = await import('../state/content-references');
-  const updated = getChannel(channel.id);
+  const updated = getChannel(channel.id, accessForChannel(channel));
 
   return {
     channel: updated || channel,
@@ -882,12 +925,12 @@ const DEFAULT_CHANNELS = getDefaultChannels();
  * Called once during bot startup.
  */
 export function seedDefaultChannels(): void {
-  const existing = getAllChannels(0);
+  const existing = getSystemChannels(CONTENT_LEARNER_ADMIN_CONTEXT);
   if (existing.length > 0) return; // Already seeded
 
   logger.info({ channels: DEFAULT_CHANNELS }, 'Seeding default content reference channels');
   for (const url of DEFAULT_CHANNELS) {
-    addChannel(url, 'manual', 0);
+    addSystemChannel(url, 'manual', CONTENT_LEARNER_ADMIN_CONTEXT);
   }
 }
 

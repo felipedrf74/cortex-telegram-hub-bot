@@ -16,6 +16,67 @@ import {
 
 export type ContentOwnerScope = 'system' | 'user';
 
+/**
+ * Batch 20 admin/system-scope split.
+ *
+ * Architecture decision: Option beta from the batch prompt. System-scope
+ * content-reference reads and writes require an explicit opaque admin context
+ * at the state-layer entry point. This keeps the guard local to the state
+ * boundary, avoids new dependencies, and keeps existing positive-user call
+ * sites unchanged while removing silent `userId = 0` system markers.
+ */
+const CONTENT_REFERENCES_ADMIN_CONTEXT = Symbol('content-references-admin-context');
+
+export interface ContentReferencesAdminContext {
+  readonly [CONTENT_REFERENCES_ADMIN_CONTEXT]: true;
+  readonly actor: 'admin' | 'system';
+  readonly reason: string;
+}
+
+export function createContentReferencesAdminContext(
+  reason: string,
+  actor: 'admin' | 'system' = 'system',
+): ContentReferencesAdminContext {
+  return Object.freeze({
+    [CONTENT_REFERENCES_ADMIN_CONTEXT]: true as const,
+    actor,
+    reason,
+  });
+}
+
+export type ContentReferencesAccess =
+  | { userId: number; tenantId?: number | null }
+  | { adminContext: ContentReferencesAdminContext };
+
+function assertPositiveUserId(userId: number): void {
+  if (!Number.isFinite(userId) || !Number.isSafeInteger(userId) || userId <= 0) {
+    throw new Error('userId required: must be a positive integer');
+  }
+}
+
+function requireAdminContext(
+  adminContext: ContentReferencesAdminContext | undefined,
+  action: string,
+): ContentReferencesAdminContext {
+  if (!adminContext || adminContext[CONTENT_REFERENCES_ADMIN_CONTEXT] !== true) {
+    throw new Error(`admin context required for system-scope ${action}`);
+  }
+  return adminContext;
+}
+
+function isAdminAccess(access: ContentReferencesAccess): access is { adminContext: ContentReferencesAdminContext } {
+  return 'adminContext' in access;
+}
+
+function assertAccess(access: ContentReferencesAccess, action: string): ContentReferencesAccess {
+  if (isAdminAccess(access)) {
+    requireAdminContext(access.adminContext, action);
+    return access;
+  }
+  assertPositiveUserId(access.userId);
+  return access;
+}
+
 function resolveContentOwnerScope(userId: number): ContentOwnerScope {
   return userId === 0 ? 'system' : 'user';
 }
@@ -135,7 +196,26 @@ function visibilityScopeForSystemOrUser(
 export function addChannel(
   channelUrl: string,
   addedVia: 'manual' | 'portal' | 'bot' | 'ios' = 'manual',
-  userId: number = 0,
+  userId: number,
+  tenantId?: number,
+): ContentRefChannel {
+  assertPositiveUserId(userId);
+  return insertChannel(channelUrl, addedVia, userId, tenantId);
+}
+
+export function addSystemChannel(
+  channelUrl: string,
+  addedVia: 'manual' | 'portal' | 'bot' | 'ios' = 'manual',
+  adminContext: ContentReferencesAdminContext,
+): ContentRefChannel {
+  requireAdminContext(adminContext, 'channel write');
+  return insertChannel(channelUrl, addedVia, 0, 0);
+}
+
+function insertChannel(
+  channelUrl: string,
+  addedVia: 'manual' | 'portal' | 'bot' | 'ios',
+  userId: number,
   tenantId?: number,
 ): ContentRefChannel {
   const db = getDb();
@@ -193,101 +273,117 @@ export function addChannel(
     .get(result.lastInsertRowid) as ContentRefChannel;
 }
 
-export function getChannel(id: number): ContentRefChannel | undefined {
+export function getChannel(id: number, access: ContentReferencesAccess): ContentRefChannel | undefined {
   const db = getDb();
   ensureContentTenantScopeColumns(db);
-  return db.prepare('SELECT * FROM content_ref_channels WHERE id = ?')
-    .get(id) as ContentRefChannel | undefined;
-}
-
-export function getAllChannels(userId?: number, tenantId?: number): ContentRefChannel[] {
-  const db = getDb();
-  ensureContentTenantScopeColumns(db);
-  if (userId != null) {
-    if (userId === 0) {
-      return db.prepare(
-        `SELECT * FROM content_ref_channels
-          WHERE ${platformContentScopePredicate()}
-          ORDER BY status ASC, channel_name ASC`,
-      ).all() as ContentRefChannel[];
-    }
-    const rows = db.prepare(
-      `SELECT * FROM content_ref_channels
-        WHERE ${contentScopePredicate()}
-        ORDER BY ${contentScopeOrderExpr(undefined, userId)},
-                 status ASC,
-                 channel_name ASC`,
-    ).all(...contentScopeParams(userId, tenantId)) as ContentRefChannel[];
-    return dedupeScopedRows(rows, (row) => row.channel_url, userId);
+  const checked = assertAccess(access, 'channel read');
+  if (isAdminAccess(checked)) {
+    return db.prepare('SELECT * FROM content_ref_channels WHERE id = ?')
+      .get(id) as ContentRefChannel | undefined;
   }
   return db.prepare(
-    'SELECT * FROM content_ref_channels ORDER BY status ASC, channel_name ASC',
+    `SELECT * FROM content_ref_channels
+      WHERE id = ?
+        AND ${contentScopePredicate()}`,
+  ).get(id, ...contentScopeParams(checked.userId, checked.tenantId)) as ContentRefChannel | undefined;
+}
+
+export function getSystemChannels(adminContext: ContentReferencesAdminContext): ContentRefChannel[] {
+  const db = getDb();
+  ensureContentTenantScopeColumns(db);
+  requireAdminContext(adminContext, 'channel read');
+  return db.prepare(
+    `SELECT * FROM content_ref_channels
+      WHERE ${platformContentScopePredicate()}
+      ORDER BY status ASC, channel_name ASC`,
   ).all() as ContentRefChannel[];
 }
 
-export function getActiveChannels(userId?: number, tenantId?: number): ContentRefChannel[] {
+export function getAllChannels(userId: number, tenantId?: number): ContentRefChannel[] {
   const db = getDb();
   ensureContentTenantScopeColumns(db);
-  if (userId != null) {
-    if (userId === 0) {
-      return db.prepare(
-        `SELECT * FROM content_ref_channels
-          WHERE status = 'active'
-            AND ${platformContentScopePredicate()}
-          ORDER BY channel_name ASC`,
-      ).all() as ContentRefChannel[];
-    }
-    const rows = db.prepare(
-      `SELECT * FROM content_ref_channels
-        WHERE status = 'active'
-          AND ${contentScopePredicate()}
-        ORDER BY ${contentScopeOrderExpr(undefined, userId)},
-                 channel_name ASC`,
-    ).all(...contentScopeParams(userId, tenantId)) as ContentRefChannel[];
-    return dedupeScopedRows(rows, (row) => row.channel_url, userId);
-  }
+  assertPositiveUserId(userId);
+  const rows = db.prepare(
+    `SELECT * FROM content_ref_channels
+      WHERE ${contentScopePredicate()}
+      ORDER BY ${contentScopeOrderExpr(undefined, userId)},
+               status ASC,
+               channel_name ASC`,
+  ).all(...contentScopeParams(userId, tenantId)) as ContentRefChannel[];
+  return dedupeScopedRows(rows, (row) => row.channel_url, userId);
+}
+
+export function getSystemActiveChannels(adminContext: ContentReferencesAdminContext): ContentRefChannel[] {
+  const db = getDb();
+  ensureContentTenantScopeColumns(db);
+  requireAdminContext(adminContext, 'channel read');
   return db.prepare(
-    "SELECT * FROM content_ref_channels WHERE status = 'active' ORDER BY channel_name ASC",
+    `SELECT * FROM content_ref_channels
+      WHERE status = 'active'
+        AND ${platformContentScopePredicate()}
+      ORDER BY channel_name ASC`,
   ).all() as ContentRefChannel[];
 }
 
-export function getPendingChannels(userId?: number, tenantId?: number): ContentRefChannel[] {
+export function getActiveChannels(userId: number, tenantId?: number): ContentRefChannel[] {
   const db = getDb();
   ensureContentTenantScopeColumns(db);
-  if (userId != null) {
-    if (userId === 0) {
-      return db.prepare(
-        `SELECT * FROM content_ref_channels
-          WHERE status = 'pending'
-            AND ${platformContentScopePredicate()}
-          ORDER BY created_at ASC`,
-      ).all() as ContentRefChannel[];
-    }
-    const rows = db.prepare(
-      `SELECT * FROM content_ref_channels
-        WHERE status = 'pending'
-          AND ${contentScopePredicate()}
-        ORDER BY ${contentScopeOrderExpr(undefined, userId)},
-                 created_at ASC`,
-    ).all(...contentScopeParams(userId, tenantId)) as ContentRefChannel[];
-    return dedupeScopedRows(rows, (row) => row.channel_url, userId);
-  }
+  assertPositiveUserId(userId);
+  const rows = db.prepare(
+    `SELECT * FROM content_ref_channels
+      WHERE status = 'active'
+        AND ${contentScopePredicate()}
+      ORDER BY ${contentScopeOrderExpr(undefined, userId)},
+               channel_name ASC`,
+  ).all(...contentScopeParams(userId, tenantId)) as ContentRefChannel[];
+  return dedupeScopedRows(rows, (row) => row.channel_url, userId);
+}
+
+export function getSystemPendingChannels(adminContext: ContentReferencesAdminContext): ContentRefChannel[] {
+  const db = getDb();
+  ensureContentTenantScopeColumns(db);
+  requireAdminContext(adminContext, 'channel read');
   return db.prepare(
-    "SELECT * FROM content_ref_channels WHERE status = 'pending' ORDER BY created_at ASC",
+    `SELECT * FROM content_ref_channels
+      WHERE status = 'pending'
+        AND ${platformContentScopePredicate()}
+      ORDER BY created_at ASC`,
   ).all() as ContentRefChannel[];
+}
+
+export function getPendingChannels(userId: number, tenantId?: number): ContentRefChannel[] {
+  const db = getDb();
+  ensureContentTenantScopeColumns(db);
+  assertPositiveUserId(userId);
+  const rows = db.prepare(
+    `SELECT * FROM content_ref_channels
+      WHERE status = 'pending'
+        AND ${contentScopePredicate()}
+      ORDER BY ${contentScopeOrderExpr(undefined, userId)},
+               created_at ASC`,
+  ).all(...contentScopeParams(userId, tenantId)) as ContentRefChannel[];
+  return dedupeScopedRows(rows, (row) => row.channel_url, userId);
 }
 
 export function updateChannelStatus(
   id: number,
   status: ContentRefChannel['status'],
-  extra?: {
+  extra: {
     channel_name?: string;
     channel_id?: string;
     video_count_analyzed?: number;
     error_message?: string | null;
-  },
+  } | undefined,
+  access: ContentReferencesAccess,
 ): void {
   const db = getDb();
+  const checked = assertAccess(access, 'channel status write');
+  const channel = getChannel(id, checked);
+  if (!channel) {
+    throw new Error(isAdminAccess(checked)
+      ? 'channel not found'
+      : 'channel not found in requested user scope');
+  }
   const sets: string[] = ['status = ?', "updated_at = datetime('now')"];
   const params: unknown[] = [status];
 
@@ -315,9 +411,12 @@ export function updateChannelStatus(
   db.prepare(`UPDATE content_ref_channels SET ${sets.join(', ')} WHERE id = ?`).run(...params);
 }
 
-export function removeChannel(id: number): boolean {
+export function removeChannel(id: number, access: ContentReferencesAccess): boolean {
   const db = getDb();
   ensureContentTenantScopeColumns(db);
+  const checked = assertAccess(access, 'channel delete');
+  const channel = getChannel(id, checked);
+  if (!channel) return false;
   // Delete patterns first (cascade), then channel
   db.prepare('DELETE FROM content_patterns WHERE channel_id = ?').run(id);
   const result = db.prepare('DELETE FROM content_ref_channels WHERE id = ?').run(id);
@@ -335,10 +434,17 @@ export function upsertPatterns(
     confidence: number;
     source_videos: string[];
   }[],
+  access: ContentReferencesAccess,
 ): void {
   const db = getDb();
   ensureContentTenantScopeColumns(db);
-  const channel = getChannel(channelId);
+  const checked = assertAccess(access, 'pattern write');
+  const channel = getChannel(channelId, checked);
+  if (!channel) {
+    throw new Error(isAdminAccess(checked)
+      ? 'channel not found'
+      : 'channel not found in requested user scope');
+  }
   const patternUserId = channel?.user_id ?? 0;
   const scope = contentScopeForInsert(
     patternUserId,
@@ -382,49 +488,55 @@ export function upsertPatterns(
   insertMany(patterns);
 }
 
-export function getPatternsForChannel(channelId: number): ContentPattern[] {
+export function getPatternsForChannel(channelId: number, access: ContentReferencesAccess): ContentPattern[] {
   const db = getDb();
   ensureContentTenantScopeColumns(db);
+  const checked = assertAccess(access, 'pattern read');
+  const channel = getChannel(channelId, checked);
+  if (!channel) return [];
   return db.prepare(
     'SELECT * FROM content_patterns WHERE channel_id = ? ORDER BY category, confidence DESC',
   ).all(channelId) as ContentPattern[];
 }
 
-export function getAllPatternsByCategory(category: PatternCategory, userId?: number, tenantId?: number): ContentPattern[] {
+export function getSystemPatternsByCategory(
+  category: PatternCategory,
+  adminContext: ContentReferencesAdminContext,
+): ContentPattern[] {
   const db = getDb();
   ensureContentTenantScopeColumns(db);
-  if (userId != null) {
-    if (userId === 0) {
-      return db.prepare(
-        `SELECT p.*, c.channel_name
-           FROM content_patterns p
-           JOIN content_ref_channels c ON p.channel_id = c.id
-          WHERE p.category = ?
-            AND c.status = ?
-            AND ${platformContentScopePredicate('c')}
-            AND ${platformContentScopePredicate('p')}
-          ORDER BY p.confidence DESC`,
-      ).all(category, 'active') as (ContentPattern & { channel_name: string })[];
-    }
-    return db.prepare(
-      `SELECT p.*, c.channel_name
-         FROM content_patterns p
-         JOIN content_ref_channels c ON p.channel_id = c.id
-        WHERE p.category = ?
-          AND c.status = ?
-          AND ${contentScopePredicate('c')}
-          AND ${contentScopePredicate('p')}
-        ORDER BY p.confidence DESC`,
-    ).all(
-      category,
-      'active',
-      ...contentScopeParams(userId, tenantId),
-      ...contentScopeParams(userId, tenantId),
-    ) as (ContentPattern & { channel_name: string })[];
-  }
+  requireAdminContext(adminContext, 'pattern read');
   return db.prepare(
-    'SELECT p.*, c.channel_name FROM content_patterns p JOIN content_ref_channels c ON p.channel_id = c.id WHERE p.category = ? AND c.status = ? ORDER BY p.confidence DESC',
+    `SELECT p.*, c.channel_name
+       FROM content_patterns p
+       JOIN content_ref_channels c ON p.channel_id = c.id
+      WHERE p.category = ?
+        AND c.status = ?
+        AND ${platformContentScopePredicate('c')}
+        AND ${platformContentScopePredicate('p')}
+      ORDER BY p.confidence DESC`,
   ).all(category, 'active') as (ContentPattern & { channel_name: string })[];
+}
+
+export function getAllPatternsByCategory(category: PatternCategory, userId: number, tenantId?: number): ContentPattern[] {
+  const db = getDb();
+  ensureContentTenantScopeColumns(db);
+  assertPositiveUserId(userId);
+  return db.prepare(
+    `SELECT p.*, c.channel_name
+       FROM content_patterns p
+       JOIN content_ref_channels c ON p.channel_id = c.id
+      WHERE p.category = ?
+        AND c.status = ?
+        AND ${contentScopePredicate('c')}
+        AND ${contentScopePredicate('p')}
+      ORDER BY p.confidence DESC`,
+  ).all(
+    category,
+    'active',
+    ...contentScopeParams(userId, tenantId),
+    ...contentScopeParams(userId, tenantId),
+  ) as (ContentPattern & { channel_name: string })[];
 }
 
 // ─── Knowledge (Synthesized) ─────────────────────────────────────────
@@ -433,7 +545,28 @@ export function upsertKnowledge(
   category: PatternCategory,
   synthesizedText: string,
   sourceChannels: string[],
-  userId: number = 0,
+  userId: number,
+  tenantId?: number,
+): void {
+  assertPositiveUserId(userId);
+  upsertKnowledgeRow(category, synthesizedText, sourceChannels, userId, tenantId);
+}
+
+export function upsertSystemKnowledge(
+  category: PatternCategory,
+  synthesizedText: string,
+  sourceChannels: string[],
+  adminContext: ContentReferencesAdminContext,
+): void {
+  requireAdminContext(adminContext, 'knowledge write');
+  upsertKnowledgeRow(category, synthesizedText, sourceChannels, 0, 0);
+}
+
+function upsertKnowledgeRow(
+  category: PatternCategory,
+  synthesizedText: string,
+  sourceChannels: string[],
+  userId: number,
   tenantId?: number,
 ): void {
   const db = getDb();
@@ -480,69 +613,70 @@ export function upsertKnowledge(
   );
 }
 
-export function getAllKnowledge(userId?: number, tenantId?: number): ContentKnowledge[] {
+export function getSystemKnowledge(adminContext: ContentReferencesAdminContext): ContentKnowledge[] {
   const db = getDb();
   ensureContentTenantScopeColumns(db);
-  if (userId != null) {
-    if (userId === 0) {
-      return db.prepare(
-        `SELECT * FROM content_knowledge
-          WHERE ${platformContentScopePredicate()}
-          ORDER BY category ASC, updated_at DESC`,
-      ).all() as ContentKnowledge[];
-    }
-    const rows = db.prepare(
-      `SELECT * FROM content_knowledge
-        WHERE ${contentScopePredicate()}
-        ORDER BY ${contentScopeOrderExpr(undefined, userId)},
-                 category ASC,
-                 updated_at DESC`,
-    ).all(...contentScopeParams(userId, tenantId)) as ContentKnowledge[];
-    return dedupeScopedRows(rows, (row) => row.category, userId);
-  }
+  requireAdminContext(adminContext, 'knowledge read');
   return db.prepare(
-    'SELECT * FROM content_knowledge ORDER BY category ASC',
+    `SELECT * FROM content_knowledge
+      WHERE ${platformContentScopePredicate()}
+      ORDER BY category ASC, updated_at DESC`,
   ).all() as ContentKnowledge[];
+}
+
+export function getAllKnowledge(userId: number, tenantId?: number): ContentKnowledge[] {
+  const db = getDb();
+  ensureContentTenantScopeColumns(db);
+  assertPositiveUserId(userId);
+  const rows = db.prepare(
+    `SELECT * FROM content_knowledge
+      WHERE ${contentScopePredicate()}
+      ORDER BY ${contentScopeOrderExpr(undefined, userId)},
+               category ASC,
+               updated_at DESC`,
+  ).all(...contentScopeParams(userId, tenantId)) as ContentKnowledge[];
+  return dedupeScopedRows(rows, (row) => row.category, userId);
+}
+
+export function getSystemKnowledgeByCategory(
+  category: PatternCategory,
+  adminContext: ContentReferencesAdminContext,
+): ContentKnowledge | undefined {
+  const db = getDb();
+  ensureContentTenantScopeColumns(db);
+  requireAdminContext(adminContext, 'knowledge read');
+  return db.prepare(
+    `SELECT * FROM content_knowledge
+      WHERE category = ?
+        AND ${platformContentScopePredicate()}
+      ORDER BY updated_at DESC
+      LIMIT 1`,
+  ).get(category) as ContentKnowledge | undefined;
 }
 
 export function getKnowledgeByCategory(
   category: PatternCategory,
-  userId?: number,
+  userId: number,
   tenantId?: number,
 ): ContentKnowledge | undefined {
   const db = getDb();
   ensureContentTenantScopeColumns(db);
-  if (userId != null) {
-    if (userId === 0) {
-      return db.prepare(
-        `SELECT * FROM content_knowledge
-          WHERE category = ?
-            AND ${platformContentScopePredicate()}
-          ORDER BY updated_at DESC
-          LIMIT 1`,
-      ).get(category) as ContentKnowledge | undefined;
-    }
-    return db.prepare(
-      `SELECT * FROM content_knowledge
-        WHERE category = ?
-          AND ${contentScopePredicate()}
-        ORDER BY ${contentScopeOrderExpr(undefined, userId)},
-                 updated_at DESC
-        LIMIT 1`,
-    ).get(category, ...contentScopeParams(userId, tenantId)) as ContentKnowledge | undefined;
-  }
+  assertPositiveUserId(userId);
   return db.prepare(
-    'SELECT * FROM content_knowledge WHERE category = ?',
-  ).get(category) as ContentKnowledge | undefined;
+    `SELECT * FROM content_knowledge
+      WHERE category = ?
+        AND ${contentScopePredicate()}
+      ORDER BY ${contentScopeOrderExpr(undefined, userId)},
+               updated_at DESC
+      LIMIT 1`,
+  ).get(category, ...contentScopeParams(userId, tenantId)) as ContentKnowledge | undefined;
 }
 
 /**
  * Build a compact knowledge summary for injection into the content domain system prompt.
  * Returns empty string if no knowledge has been synthesized yet.
  */
-export function buildKnowledgePromptBlock(userId?: number, tenantId?: number): string {
-  const knowledge = getAllKnowledge(userId, tenantId)
-    .filter((row) => userId == null || isAuthorizedContentRow(row, { userId, tenantId }));
+function formatKnowledgePromptBlock(knowledge: ContentKnowledge[]): string {
   if (knowledge.length === 0) return '';
 
   const CATEGORY_LABELS: Record<string, string> = {
@@ -571,4 +705,16 @@ export function buildKnowledgePromptBlock(userId?: number, tenantId?: number): s
   }
 
   return lines.join('\n');
+}
+
+export function buildKnowledgePromptBlock(userId: number, tenantId?: number): string {
+  assertPositiveUserId(userId);
+  const knowledge = getAllKnowledge(userId, tenantId)
+    .filter((row) => isAuthorizedContentRow(row, { userId, tenantId }));
+  return formatKnowledgePromptBlock(knowledge);
+}
+
+export function buildSystemKnowledgePromptBlock(adminContext: ContentReferencesAdminContext): string {
+  const knowledge = getSystemKnowledge(adminContext);
+  return formatKnowledgePromptBlock(knowledge);
 }

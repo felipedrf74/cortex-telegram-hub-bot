@@ -17,7 +17,11 @@ import { isOutlookTodoConfigured } from '../services/microsoft-todo';
 import { getRuntimeStatus } from '../services/runtime-status';
 import { getOwnerBootstrapTarget } from '../services/user-service';
 import { getAllSkillStatuses } from '../skills/skill-manager';
-import { getAllChannels as getRefChannels, getAllKnowledge } from '../state/content-references';
+import {
+  createContentReferencesAdminContext,
+  getSystemChannels as getRefChannels,
+  getSystemKnowledge,
+} from '../state/content-references';
 import { logger } from '../utils/logger';
 import { humanDelta, humanUptime } from './formatters';
 import { getPortalSnapshotStatements as getStmts } from './snapshot-statements';
@@ -487,7 +491,7 @@ export function buildPortalSnapshot(startedAt: number): PortalSnapshotResponse {
   };
   try {
     contentReferences = {
-      channels: getRefChannels().map((ch) => ({
+      channels: getRefChannels(createContentReferencesAdminContext('portal snapshot content reference summary')).map((ch) => ({
         id: ch.id,
         url: ch.channel_url,
         name: ch.channel_name,
@@ -496,7 +500,7 @@ export function buildPortalSnapshot(startedAt: number): PortalSnapshotResponse {
         lastAnalyzed: ch.last_analyzed_at,
         error: ch.error_message,
       })),
-      knowledgeCategories: getAllKnowledge().length,
+      knowledgeCategories: getSystemKnowledge(createContentReferencesAdminContext('portal snapshot content reference summary')).length,
     };
   } catch { /* table may not exist yet */ }
 
