@@ -20,6 +20,40 @@ BATCH-13-J1-AUTHORIZED: base=feature/tech-debt-2026-05-f4-mock-ratchet-stack
 - Closed annotation: J1 ran on the authorized F4 stack and is closed in source at `feature/tech-debt-2026-05-j1-mock-ratchet-640` (`e4884c2b`), lowering the staged strict baseline from 655 to 640 with current partial mocks at 637. Marker retained for audit trail; do not reuse for other workstreams.
 - Expires: closed by Batch 13 J1. D5/F4 still need to land on `main` before strict mock lint is a `main` gate.
 
+## Tech-debt Batch 20 — content-references admin split + state isolation closure (2026-05-06)
+
+Report:
+`docs/archive/2026-05/tech-debt-validation/codex-batch-20-remediation.md`.
+
+Verdict: **PRIMARY CLOSED / SIDE-TASK BLOCKED**. Q1 closed the
+`content-references.ts` system-scope gap with an explicit state-layer admin
+context. Q2 closed P2-24 with six green state isolation packs. Q3 stopped
+before changes because D5 rebase conflicts appeared in workspace mirror/release
+identity docs, outside the allowed SQL/mock-factory conflict set.
+
+Branches:
+
+- `feature/tech-debt-2026-05-q1-content-references-admin-split`
+  (`266094e5`)
+- `feature/tech-debt-2026-05-q2-state-isolation-pack` (`9cd72866`)
+- `feature/tech-debt-2026-05-q4-batch-20-report` — report branch on Q2 tip.
+
+Closure delta:
+
+| Finding | Status | Evidence |
+|---|---|---|
+| P2-24 state isolation tests | **CLOSED IN SOURCE BRANCH** | Q2 adds six isolation packs for `coach-state`, `conversation`, `fiscal-collection-profiles`, `invoice-filings`, `invoice-vendors`, and `content-references`. Isolation pack passed: 6 files / 209 tests. Full verify passed: 464 files / 6958 tests. |
+| `content-references.ts` owner/admin boundary | **CLOSED IN SOURCE BRANCH** | Q1 chose explicit opaque admin context (Option beta), guards user-scoped entry points with positive safe-integer user IDs, and requires admin context for system-scope reads/writes. |
+| D5/F4 ratchet refresh | **BLOCKED / MANUAL RECONCILIATION REQUIRED** | D5 rebase hit conflicts in `docs/_workspace-mirror/docs/agent/AGENT_PROCESS_STANDARD.md`, `docs/_workspace-mirror/docs/release/release-identity.json`, and `docs/_workspace-mirror/docs/release/release-identity.md`; rebase aborted, branches unchanged. |
+
+Open next actions:
+
+1. Manually reconcile the D5 rebase conflicts, then retry the mock-baseline
+   refresh.
+2. Continue with P2-38 PM2 recovery and P2-40 JWT rotation as the next natural
+   engine-side P2 pair.
+3. Keep P2-44 under the self-hosted runner / infra authorization lane.
+
 ## Tech-debt Batch 19 — P2-24 fix-first completion + state isolation retry (2026-05-06)
 
 Report:
