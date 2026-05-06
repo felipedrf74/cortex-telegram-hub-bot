@@ -27,7 +27,7 @@ function getDbSafe() {
 }
 
 function assertPositiveUserId(userId: number): void {
-  if (!Number.isFinite(userId) || userId <= 0) {
+  if (!Number.isSafeInteger(userId) || userId <= 0) {
     throw new Error('userId required: must be a positive integer');
   }
 }
