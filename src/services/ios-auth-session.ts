@@ -1,13 +1,12 @@
 // Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
 
-import jwt from 'jsonwebtoken';
 import crypto from 'crypto';
-import { config } from '../config';
 import { getDb } from './database';
 import { logger } from '../utils/logger';
 import { logAudit } from './audit-trail';
 import { getStoredDailyCostLimitUsdForTier } from './plan-quotas';
 import type { User } from './user-service';
+import { signIosJwt } from './ios-jwt';
 
 // AUTH-O4 (closed-beta-auth-hardening, 2026-05-04): refresh-token at-rest
 // hashing. The plaintext token leaves the server exactly once (returned
@@ -65,11 +64,7 @@ interface CreateAuthSessionInput {
 }
 
 export function createAuthSessionAndRegisterDevice(input: CreateAuthSessionInput): AuthSessionPayload {
-  const accessToken = jwt.sign(
-    { userId: input.userId, deviceId: input.deviceId },
-    config.ios.jwtSecret,
-    { expiresIn: '7d' as any },
-  );
+  const accessToken = signIosJwt({ userId: input.userId, deviceId: input.deviceId });
   const refreshToken = crypto.randomBytes(64).toString('hex');
   const refreshTokenHash = hashRefreshToken(refreshToken);
 

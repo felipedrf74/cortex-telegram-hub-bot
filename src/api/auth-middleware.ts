@@ -1,8 +1,6 @@
 // Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
 
 import { Request, Response, NextFunction } from 'express';
-import jwt from 'jsonwebtoken';
-import { config } from '../config';
 import { logger } from '../utils/logger';
 import { sendError } from './response-helpers';
 // Beta gap 3 (2026-04-24): moved from inline `require()` to a static
@@ -14,6 +12,7 @@ import { sendError } from './response-helpers';
 // import is cycle-safe.
 import { getDb } from '../services/database';
 import { isValidTenantUserId, recordTenantScopeAnomaly } from '../services/tenant-scope-observability';
+import { verifyIosJwt } from '../services/ios-jwt';
 
 export interface AuthenticatedRequest extends Request {
   tenantId: number;
@@ -71,10 +70,7 @@ export function authMiddleware(req: Request, res: Response, next: NextFunction):
 
   const token = authHeader.slice(7);
   try {
-    const payload = jwt.verify(token, config.ios.jwtSecret) as {
-      userId?: unknown;
-      deviceId?: unknown;
-    };
+    const payload = verifyIosJwt(token);
 
     if (!isValidAuthPayloadUserId(payload.userId)) {
       recordTenantScopeAnomaly({
