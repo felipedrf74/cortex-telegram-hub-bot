@@ -237,6 +237,25 @@ When an agent finishes a workstream:
    merged; run `cd engine && npx vitest run --coverage` before changing
    thresholds. If the previous month stayed green, raise each global threshold
    by one percentage point until the suite stabilizes near real coverage.
+7. **Avoid new partial `vi.mock(...)` factories.** Use the shared
+   `engine/__tests__/__mocks__/<module>.ts` factory when one exists, or
+   spread the real module with `vi.importActual` before overriding specific
+   exports. The strict lint gate is capped by `engine/scripts/.vi-mock-baseline.txt`;
+   lower that baseline monthly by at least 10 until it is below 100. Batch 13
+   lowered the source-stack baseline from 655 to 640; the monthly target
+   remains fewer than 100 partial mocks by 2026-08-01.
+8. **Canonical engine docs require frontmatter.** Every non-archive,
+   non-mirror `engine/docs/**/*.md` file must carry `Status:`, `Owner:`,
+   `Last verified:`, and `Update policy:` near the top. The docs audit treats
+   missing canonical engine frontmatter as an error; archives and workspace
+   mirror snapshots are intentionally exempt.
+9. **Workspace and iOS canonical docs require frontmatter.** Batch 12 extends
+   the same error-severity check to workspace `docs/agent/**`,
+   `docs/release/**`, `docs/DOCS_INDEX.md`, root bootloaders, iOS engineering
+   docs, `ios/docs/qa/QA_IOS_REPORT.md`, and
+   `ios-specs/00-CURRENT-PRODUCT-TRUTH.md`. Generated
+   `docs/release/release-identity.md` remains exempt because the release
+   identity script owns that file.
 
 ## 10. Issue ledger closure (must)
 

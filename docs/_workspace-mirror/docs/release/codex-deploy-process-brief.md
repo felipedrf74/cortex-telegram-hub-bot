@@ -1,5 +1,10 @@
 # Codex deploy brief — v2 release pipeline
 
+Status: canonical
+Owner: release lead (Felipe)
+Last verified: 2026-05-06
+Update policy: update when release-pipeline commands or gates change.
+
 This file is the self-contained operator brief for executing a Nexus Hub
 release using the v2 risk-based release pipeline (designed and
 implemented on 2026-05-03 under

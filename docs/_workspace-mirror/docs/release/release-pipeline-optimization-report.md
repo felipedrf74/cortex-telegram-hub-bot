@@ -1,5 +1,10 @@
 # Nexus Hub Release Pipeline Optimization Report
 
+Status: canonical
+Owner: release architect (audit pass)
+Last verified: 2026-05-03
+Update policy: update when the release-pipeline architecture changes.
+
 Date: 2026-05-03
 Owner: release architect (audit pass)
 Status: `current` analysis. Final recommendation: **ADOPT_RISK_BASED_RELEASE_PROCESS**.
