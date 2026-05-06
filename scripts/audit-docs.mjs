@@ -349,8 +349,9 @@ function isWorkspaceMirror(file) {
   return normalize(file).startsWith(WORKSPACE_MIRROR_ROOT + path.sep);
 }
 
-for (const file of markdownFiles) {
-  if (isWorkspaceMirror(file)) continue;
+const auditedMarkdownFiles = markdownFiles.filter((file) => !isWorkspaceMirror(file));
+
+for (const file of auditedMarkdownFiles) {
   const content = fs.readFileSync(file, 'utf8');
 
   validateEngineeringFrontmatter(file, content);
@@ -425,7 +426,9 @@ const summary = {
   workspaceRoot,
   backendRoot,
   iosRoot: normalize(iosRoot),
-  markdownFiles: markdownFiles.length,
+  markdownFiles: auditedMarkdownFiles.length,
+  totalMarkdownFilesDiscovered: markdownFiles.length,
+  skippedWorkspaceMirrorFiles: markdownFiles.length - auditedMarkdownFiles.length,
   issueCount: issues.length,
   issuesByType: issues.reduce((acc, issue) => {
     acc[issue.type] = (acc[issue.type] || 0) + 1;
@@ -439,7 +442,10 @@ if (json) {
   console.log('# Nexus Hub docs audit');
   console.log('');
   console.log(`- workspace: ${summary.workspaceRoot}`);
-  console.log(`- markdown files scanned: ${summary.markdownFiles}`);
+  console.log(`- markdown files audited: ${summary.markdownFiles}`);
+  if (summary.skippedWorkspaceMirrorFiles > 0) {
+    console.log(`- workspace mirror files skipped: ${summary.skippedWorkspaceMirrorFiles}`);
+  }
   console.log(`- issues flagged: ${summary.issueCount}`);
   console.log('');
   for (const [type, count] of Object.entries(summary.issuesByType).sort()) {

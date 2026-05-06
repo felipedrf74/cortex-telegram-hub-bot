@@ -232,6 +232,11 @@ When an agent finishes a workstream:
    `docs/release/release-identity.md`.
 5. **Run `cd engine && npm run docs:audit`** and reduce the warning
    count (or document why it grew).
+6. **Coverage thresholds ratchet monthly.** The backend coverage baseline is
+   recorded on the B2 coverage-threshold source branch until that branch is
+   merged; run `cd engine && npx vitest run --coverage` before changing
+   thresholds. If the previous month stayed green, raise each global threshold
+   by one percentage point until the suite stabilizes near real coverage.
 
 ## 10. Issue ledger closure (must)
 
