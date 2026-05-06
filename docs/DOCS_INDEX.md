@@ -21,6 +21,7 @@ This is the backend repo's markdown routing map for Codex and Claude Code.
 | Engineering standards index | canonical | `docs/engineering/ENGINEERING_STANDARDS_INDEX.md` | Update when a new backend engineering standard is added. |
 | Backend API contract standard | canonical | `docs/engineering/backend-api-contract-standard.md` | Update when REST contract conventions change. |
 | Security and data isolation standard | canonical | `docs/engineering/security-and-data-isolation-standard.md` | Update when threat model or permanent gates change. |
+| Content references scope audit | current | `docs/security/content-references-scope-audit.md` | Update when `src/state/content-references.ts` owner-scope, admin-gating, or prompt-reference semantics change. |
 | Runtime and observability standard | canonical | `docs/engineering/runtime-and-observability-standard.md` | Update when health/log/alert semantics change. |
 | Testing and QA harness standard | canonical | `docs/engineering/testing-and-qa-harness-standard.md` | Update when test categories or evidence requirements change. |
 | Docs drift audit | canonical command | `npm run docs:audit` | Run before creating release docs or copying verdicts/test counts. |
