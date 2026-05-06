@@ -1,17 +1,17 @@
 {
-  "generatedAt": "2026-05-05T20:41:00Z",
+  "generatedAt": "2026-05-06T15:01:42Z",
   "backend": {
     "path": "/Users/felipedominguez/Desktop/Custom Connectors/Cortex/cortex-telegram-hub-bot",
-    "branch": "feature/tech-debt-2026-05-open-items-cleanup",
-    "commit": "310b6c0",
+    "branch": "feature/tech-debt-2026-05-o4-batch-18-closure",
+    "commit": "8f89821a",
     "dirtyState": "dirty",
     "packageVersion": "4.14.132",
     "migrationCount": "117"
   },
   "ios": {
     "path": "/Users/felipedominguez/Desktop/Nexus Hub IOS/Nexus Hub",
-    "branch": "feature/tech-debt-2026-05-ios-scope-unification",
-    "commit": "55bc2e2",
-    "dirtyState": "clean"
+    "branch": "feature/tech-debt-2026-05-i4-workspace-ios-frontmatter-error",
+    "commit": "d660792",
+    "dirtyState": "dirty"
   }
 }

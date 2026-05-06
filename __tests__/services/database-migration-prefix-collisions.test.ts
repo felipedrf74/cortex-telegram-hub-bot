@@ -1,8 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { findUnexpectedMigrationPrefixCollisions } from '../../src/services/database';
+import {
+  assertNoUnexpectedMigrationPrefixCollisions,
+  findUnexpectedMigrationPrefixCollisions,
+} from '../../src/services/database';
 
 describe('database migration prefix collision lint', () => {
-  it('does not warn for the known historical duplicate migration prefixes', () => {
+  it('does not report the known historical duplicate migration prefixes', () => {
     const collisions = findUnexpectedMigrationPrefixCollisions([
       '001_initial.sql',
       '008_api_cache.sql',
@@ -20,7 +23,7 @@ describe('database migration prefix collision lint', () => {
     expect(collisions).toEqual([]);
   });
 
-  it('still warns when a new duplicate numeric prefix is introduced', () => {
+  it('reports when a new duplicate numeric prefix is introduced', () => {
     const collisions = findUnexpectedMigrationPrefixCollisions([
       '107_new_feature.sql',
       '107_other_feature.sql',
@@ -34,7 +37,7 @@ describe('database migration prefix collision lint', () => {
     ]);
   });
 
-  it('warns when a historical duplicate group gains an unexpected file', () => {
+  it('reports when a historical duplicate group gains an unexpected file', () => {
     const collisions = findUnexpectedMigrationPrefixCollisions([
       '008_api_cache.sql',
       '008_email_log.sql',
@@ -47,5 +50,25 @@ describe('database migration prefix collision lint', () => {
         files: ['008_api_cache.sql', '008_email_log.sql', '008_new_surprise.sql'],
       },
     ]);
+  });
+
+  it('throws before startup can apply migrations with a new prefix collision', () => {
+    expect(() =>
+      assertNoUnexpectedMigrationPrefixCollisions([
+        '108_first.sql',
+        '108_second.sql',
+      ]),
+    ).toThrow(/Unexpected migration prefix collision\(s\): 108/);
+  });
+
+  it('allows startup when only legacy duplicate prefixes are present', () => {
+    expect(() =>
+      assertNoUnexpectedMigrationPrefixCollisions([
+        '008_api_cache.sql',
+        '008_email_log.sql',
+        '009_api_usage_provider.sql',
+        '009_job_history.sql',
+      ]),
+    ).not.toThrow();
   });
 });
