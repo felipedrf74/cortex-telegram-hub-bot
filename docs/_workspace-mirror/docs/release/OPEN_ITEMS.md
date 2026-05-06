@@ -60,6 +60,76 @@ BATCH-22-RETRO-BATCH-20-REPORT-AUTHORIZED: path=docs/archive/2026-05/tech-debt-v
 - Scope: reconstruct the missing Batch 20 closure report from secondary references and mark it explicitly retroactive.
 - Closed annotation: honored in S3 at `docs/archive/2026-05/tech-debt-validation/codex-batch-20-remediation.md`.
 
+BATCH-23-D5-F4-MERGE-AUTHORIZED: branches=feature/tech-debt-2026-05-d5-mock-factories+feature/tech-debt-2026-05-f4-mock-ratchet-stack
+- Granted by Felipe in Batch 23 prompt.
+- Scope: merge refreshed D5/F4 stack into local `main`; strict mock lint becomes enforceable on `main`.
+- Closed annotation: honored in Batch 23 pre-flight. D5/F4 landed through merge `ef9b5e0b`; strict mock lint passed at 827 partial mocks / baseline 827.
+
+BATCH-23-S3-CLOSURE-MERGE-AUTHORIZED: branch=feature/tech-debt-2026-05-s3-batch-22-closure
+- Granted by Felipe in Batch 23 prompt.
+- Scope: merge Batch 22 S3 closure for audit-trail completeness.
+- Closed annotation: honored in Batch 23 pre-flight through merge `09d35547`.
+
+BATCH-23-GENAI-ADAPTER-EXPANSION-AUTHORIZED: phase=adapter-surface-expansion
+- Granted by Felipe in Batch 23 prompt.
+- Scope: expand `src/services/gemini-adapter.ts` for the Batch 22 S2 surface mismatches while keeping it a thin shim.
+- Closed annotation: honored in T1 at `feature/tech-debt-2026-05-t1-genai-adapter-expansion` (`7211a09b`).
+
+BATCH-23-GENAI-MIGRATION-PHASE-3-AUTHORIZED: phase=test-mock-migration
+- Granted by Felipe in Batch 23 prompt.
+- Scope: migrate test mocks targeting `@google/generative-ai` to the `@google/genai` boundary.
+- Closed annotation: honored in T2 at `feature/tech-debt-2026-05-t2-genai-mock-migration-phase-3` (`8d735e56`).
+
+BATCH-23-GENAI-MIGRATION-PHASE-2-RETRY-AUTHORIZED: phase=provider-import-switch-retry
+- Granted by Felipe in Batch 23 prompt.
+- Scope: retry production Gemini call-site migration after T1 and T2 close.
+- Closed annotation: honored in T3 at `feature/tech-debt-2026-05-t3-genai-phase-2-retry` (`a783d4d8`).
+
+BATCH-23-GENAI-MIGRATION-PHASE-4-AUTHORIZED: phase=legacy-dependency-removal
+- Granted by Felipe in Batch 23 prompt.
+- Scope: remove `@google/generative-ai` after T3 closes and record whether the adapter remains.
+- Closed annotation: honored in T4 at `feature/tech-debt-2026-05-t4-genai-phase-4-dependency-removal` (`ac8108e0`); adapter retained as the stable Nexus Gemini boundary.
+
+## Tech-debt Batch 23 — genai migration completion + D5/F4 merge consolidation (2026-05-06)
+
+Report:
+`docs/archive/2026-05/tech-debt-validation/codex-batch-23-remediation.md`.
+
+Verdict: **CLOSED / CONDITIONAL SKIPS HONORED**. Batch 23 merged the refreshed
+D5/F4 mock-ratchet stack and Batch 22 closure onto local `main`, then completed
+the authorized Gemini SDK migration through Phase 4. T5 stayed skipped because
+content-lifecycle Phase 1 was not authorized; T6 stayed skipped because Batch
+21 R3 had already closed the self-hosted-runner prerequisite doc.
+
+Branches:
+
+- `feature/tech-debt-2026-05-t1-genai-adapter-expansion` (`7211a09b`)
+- `feature/tech-debt-2026-05-t2-genai-mock-migration-phase-3` (`8d735e56`)
+- `feature/tech-debt-2026-05-t3-genai-phase-2-retry` (`a783d4d8`)
+- `feature/tech-debt-2026-05-t4-genai-phase-4-dependency-removal` (`ac8108e0`)
+- `feature/tech-debt-2026-05-t7-batch-23-closure` — closure branch.
+
+Closure delta:
+
+| Workstream | Status | Evidence |
+|---|---|---|
+| D5/F4 merge consolidation | **CLOSED ON LOCAL MAIN** | Refreshed D5/F4 stack merged via `ef9b5e0b`; strict mock lint passed at 827 partial mocks / baseline 827. |
+| Batch 22 audit trail | **CLOSED ON LOCAL MAIN** | S3 closure merged via `09d35547`; retro Batch 20 report remains archived. |
+| Genai adapter expansion | **CLOSED IN SOURCE BRANCH** | T1 expanded old-SDK-compatible response/type helpers without call-site changes; adapter tests passed 5/5. |
+| Genai mock migration | **CLOSED IN SOURCE STACK BRANCH** | T2 moved provider tests to mock `@google/genai`; focused provider tests passed 39/39. |
+| Genai Phase 2 retry | **CLOSED IN SOURCE STACK BRANCH** | T3 switched `gemini-provider.ts` to the adapter; production source has no `@google/generative-ai` import. |
+| Genai Phase 4 removal | **CLOSED IN SOURCE STACK BRANCH** | T4 removed `@google/generative-ai` from `package.json` / lockfile; full verify passed 467 files / 6973 tests. |
+| Content lifecycle Phase 1 | **SKIPPED BY AUTHORIZATION CHECKBOX** | `BATCH-23-CONTENT-LIFECYCLE-PHASE-1-AUTHORIZED` remained unchecked. |
+| Self-hosted runner prereq finalization | **SKIPPED BY CONDITION** | `docs/release/self-hosted-runner-prereqs.md` already exists and Batch 21 R3 closed that documentation surface. |
+
+Open next actions:
+
+1. Treat Genai migration as complete at the SDK/dependency level; future work is
+   normal provider hardening, not a migration phase.
+2. Keep content lifecycle unification authorization-gated.
+3. Keep self-hosted runner provisioning, iOS fastlane/TestFlight automation,
+   APNs, OAuth credentials, Garmin MFA, and Content portal smoke operator-gated.
+
 ## Tech-debt Batch 22 — D5/F4 ratchet resolution + genai phase 2 attempt (2026-05-06)
 
 Report:
