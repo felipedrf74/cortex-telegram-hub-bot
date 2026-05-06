@@ -2,6 +2,7 @@ import ast
 from pathlib import Path
 from types import SimpleNamespace
 
+import httpx
 import pytest
 from pydantic import ValidationError
 
@@ -120,6 +121,88 @@ async def test_gap_finder_raw_malformed_output_returns_empty_list():
     assert response.gaps == []
 
 
+async def test_gap_finder_slices_model_gaps_to_requested_count(monkeypatch):
+    async def fake_ask(*args, **kwargs):
+        return [
+            {"topic": "gap one", "gap_type": "quality_gap"},
+            {"topic": "gap two", "gap_type": "quality_gap"},
+            {"topic": "gap three", "gap_type": "quality_gap"},
+        ]
+
+    monkeypatch.setattr(gap_finder, "ask_claude_json", fake_ask)
+
+    response = await gap_finder.find(GapsRequest(niche="fitness", max_gaps=2), RecordingOrchestrator())
+
+    assert [gap["topic"] for gap in response.gaps] == ["gap one", "gap two"]
+
+
+async def test_gap_finder_dict_model_output_is_wrapped(monkeypatch):
+    async def fake_ask(*args, **kwargs):
+        return {"topic": "single gap", "gap_type": "quality_gap"}
+
+    monkeypatch.setattr(gap_finder, "ask_claude_json", fake_ask)
+
+    response = await gap_finder.find(GapsRequest(niche="fitness", max_gaps=3), RecordingOrchestrator())
+
+    assert response.gaps == [{"topic": "single gap", "gap_type": "quality_gap"}]
+
+
+async def test_gap_finder_raw_dict_with_metadata_is_preserved(monkeypatch):
+    async def fake_ask(*args, **kwargs):
+        return {"raw": "manual JSON parse needed", "source": "tenant-42"}
+
+    monkeypatch.setattr(gap_finder, "ask_claude_json", fake_ask)
+
+    response = await gap_finder.find(GapsRequest(niche="fitness", max_gaps=3), RecordingOrchestrator())
+
+    assert response.gaps == [{"raw": "manual JSON parse needed", "source": "tenant-42"}]
+
+
+async def test_gap_finder_commentary_niche_uses_commentary_seed_topics(monkeypatch):
+    captured = {}
+
+    async def fake_ask(prompt, **kwargs):
+        captured["prompt"] = prompt
+        return [{"topic": "creator economy gap", "gap_type": "quality_gap"}]
+
+    monkeypatch.setattr(gap_finder, "ask_claude_json", fake_ask)
+    orchestrator = RecordingOrchestrator()
+
+    await gap_finder.find(GapsRequest(niche="commentary", max_gaps=1), orchestrator)
+
+    assert [topic for topic, _ in orchestrator.calls] == gap_finder.NICHE_SEED_TOPICS["commentary"]
+    assert "creator economy trends" in captured["prompt"]
+    assert "beginner hybrid training plan" not in captured["prompt"]
+
+
+async def test_gap_finder_partial_research_failure_keeps_successful_context(monkeypatch):
+    captured = {}
+
+    class PartiallyFailingOrchestrator:
+        def __init__(self):
+            self.calls = []
+
+        async def _fan_out(self, topic, max_per_searcher=3):
+            self.calls.append(topic)
+            if len(self.calls) == 1:
+                raise RuntimeError("tenant-42 first searcher fault")
+            return [SimpleNamespace(title=f"{topic} result")]
+
+    async def fake_ask(prompt, **kwargs):
+        captured["prompt"] = prompt
+        return [{"topic": "partial context gap", "gap_type": "quality_gap"}]
+
+    monkeypatch.setattr(gap_finder, "ask_claude_json", fake_ask)
+    orchestrator = PartiallyFailingOrchestrator()
+
+    response = await gap_finder.find(GapsRequest(niche="fitness", max_gaps=1), orchestrator)
+
+    assert response.gaps[0]["topic"] == "partial context gap"
+    assert len(orchestrator.calls) == 5
+    assert "strength training for runners" in captured["prompt"]
+    assert "beginner hybrid training plan" not in captured["prompt"]
+
+
 def test_gap_finder_rejects_invalid_max_gaps():
     with pytest.raises(ValidationError):
         GapsRequest(max_gaps=0)
@@ -205,6 +288,195 @@ async def test_competitor_fetch_failure_is_visible(monkeypatch):
 
     with pytest.raises(RuntimeError, match="tenant-42 youtube fault"):
         await competitor_analyzer.analyze(CompetitorRequest(channel="tenant-42 channel"))
+
+
+async def test_competitor_fetch_without_youtube_key_never_opens_client(monkeypatch):
+    class FailingClient:
+        def __init__(self, *args, **kwargs):
+            raise AssertionError("http client should not be opened without a key")
+
+    monkeypatch.setattr(competitor_analyzer, "cfg", SimpleNamespace(youtube_api_key=""))
+    monkeypatch.setattr(competitor_analyzer.httpx, "AsyncClient", FailingClient)
+
+    videos = await competitor_analyzer._fetch_channel_videos("tenant-42 channel", 5)
+
+    assert videos == []
+
+
+async def test_competitor_fetch_empty_channel_search_returns_empty(monkeypatch):
+    calls = []
+
+    class FakeResponse:
+        def __init__(self, payload):
+            self._payload = payload
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return self._payload
+
+    class FakeClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return None
+
+        async def get(self, url, params):
+            calls.append((url, params))
+            return FakeResponse({"items": []})
+
+    monkeypatch.setattr(competitor_analyzer, "cfg", SimpleNamespace(youtube_api_key="tenant-key"))
+    monkeypatch.setattr(competitor_analyzer.httpx, "AsyncClient", lambda *args, **kwargs: FakeClient())
+
+    videos = await competitor_analyzer._fetch_channel_videos("tenant-42 channel", 8)
+
+    assert videos == []
+    assert len(calls) == 1
+    assert calls[0][0] == competitor_analyzer.YT_SEARCH_URL
+
+
+async def test_competitor_fetch_caps_recent_video_request_and_parses_stats(monkeypatch):
+    calls = []
+
+    class FakeResponse:
+        def __init__(self, payload):
+            self._payload = payload
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return self._payload
+
+    class FakeClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return None
+
+        async def get(self, url, params):
+            calls.append((url, params))
+            if len(calls) == 1:
+                return FakeResponse({
+                    "items": [{
+                        "id": {"channelId": "channel-42"},
+                        "snippet": {"channelTitle": "Tenant 42"},
+                    }]
+                })
+            if len(calls) == 2:
+                return FakeResponse({
+                    "items": [{
+                        "id": {"videoId": "video-42"},
+                        "snippet": {
+                            "title": "Tenant scoped launch",
+                            "publishedAt": "2026-05-06T12:00:00Z",
+                        },
+                    }]
+                })
+            return FakeResponse({
+                "items": [{
+                    "id": "video-42",
+                    "statistics": {"viewCount": "1200", "likeCount": "80", "commentCount": "9"},
+                }]
+            })
+
+    monkeypatch.setattr(competitor_analyzer, "cfg", SimpleNamespace(youtube_api_key="tenant-key"))
+    monkeypatch.setattr(competitor_analyzer.httpx, "AsyncClient", lambda *args, **kwargs: FakeClient())
+
+    videos = await competitor_analyzer._fetch_channel_videos("tenant-42 channel", 50)
+
+    assert calls[1][1]["maxResults"] == 20
+    assert videos == [{
+        "title": "Tenant scoped launch",
+        "published_at": "2026-05-06T12:00:00Z",
+        "views": 1200,
+        "likes": 80,
+        "comments": 9,
+        "channel": "Tenant 42",
+    }]
+
+
+async def test_competitor_fetch_skips_stats_when_recent_search_has_no_video_ids(monkeypatch):
+    calls = []
+
+    class FakeResponse:
+        def __init__(self, payload):
+            self._payload = payload
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return self._payload
+
+    class FakeClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return None
+
+        async def get(self, url, params):
+            calls.append((url, params))
+            if len(calls) == 1:
+                return FakeResponse({
+                    "items": [{
+                        "id": {"channelId": "channel-42"},
+                        "snippet": {"channelTitle": "Tenant 42"},
+                    }]
+                })
+            return FakeResponse({"items": [{"id": {}, "snippet": {"title": "missing id"}}]})
+
+    monkeypatch.setattr(competitor_analyzer, "cfg", SimpleNamespace(youtube_api_key="tenant-key"))
+    monkeypatch.setattr(competitor_analyzer.httpx, "AsyncClient", lambda *args, **kwargs: FakeClient())
+
+    videos = await competitor_analyzer._fetch_channel_videos("tenant-42 channel", 4)
+
+    assert videos == []
+    assert len(calls) == 2
+
+
+async def test_competitor_analyze_uses_expected_claude_budget(monkeypatch):
+    captured = {}
+
+    async def fake_fetch(*args, **kwargs):
+        return []
+
+    async def fake_ask(prompt, **kwargs):
+        captured["kwargs"] = kwargs
+        return {"channel": "tenant-42 channel"}
+
+    monkeypatch.setattr(competitor_analyzer, "_fetch_channel_videos", fake_fetch)
+    monkeypatch.setattr(competitor_analyzer, "ask_claude_json", fake_ask)
+
+    await competitor_analyzer.analyze(CompetitorRequest(channel="tenant-42 channel"))
+
+    assert captured["kwargs"]["max_tokens"] == 4096
+
+
+async def test_competitor_fetch_http_status_errors_are_not_swallowed(monkeypatch):
+    class FakeResponse:
+        def raise_for_status(self):
+            raise httpx.HTTPStatusError("tenant-42 forbidden", request=None, response=None)
+
+    class FakeClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return None
+
+        async def get(self, *args, **kwargs):
+            return FakeResponse()
+
+    monkeypatch.setattr(competitor_analyzer, "cfg", SimpleNamespace(youtube_api_key="tenant-key"))
+    monkeypatch.setattr(competitor_analyzer.httpx, "AsyncClient", lambda *args, **kwargs: FakeClient())
+
+    with pytest.raises(httpx.HTTPStatusError, match="tenant-42 forbidden"):
+        await competitor_analyzer._fetch_channel_videos("tenant-42 channel", 5)
 
 
 def test_competitor_rejects_invalid_channel():
