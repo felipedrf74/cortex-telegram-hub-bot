@@ -66,6 +66,7 @@ const canonicalFiles = new Set([
   path.join(workspaceRoot, 'docs', 'agent', 'AGENT_TECHNICAL_MASTERY.md'),
   path.join(backendRoot, 'CLAUDE.md'),
   path.join(backendRoot, 'README.md'),
+  path.join(backendRoot, 'content-engine', 'README.md'),
   path.join(backendRoot, 'docs', 'DOCS_INDEX.md'),
   path.join(backendRoot, 'docs', 'DOCUMENTATION-MAP.md'),
   path.join(backendRoot, 'docs', 'qa', 'QA_BACKEND_REPORT.md'),
