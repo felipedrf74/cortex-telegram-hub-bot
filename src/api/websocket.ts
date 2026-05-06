@@ -12,14 +12,13 @@
 
 import http from 'http';
 import { WebSocketServer, WebSocket } from 'ws';
-import jwt from 'jsonwebtoken';
-import { config } from '../config';
 import { logger } from '../utils/logger';
 import { routeMessage } from '../router';
 import type { DomainName } from '../domains/types';
 import { generateRequestId, runWithContext } from '../utils/request-context';
 import { pushEvent } from '../portal/telemetry';
 import { getDb } from '../services/database';
+import { verifyIosJwt } from '../services/ios-jwt';
 
 function getDomainHandlers(): Record<string, (message: string, userId?: number, tenantId?: number) => Promise<{ text: string; domain: DomainName }>> {
   const { handleSecretary } = require('../domains/secretary');
@@ -82,7 +81,7 @@ export function attachWebSocket(server: http.Server): void {
             return;
           }
           try {
-            const payload = jwt.verify(msg.token, config.ios.jwtSecret) as { userId: number; deviceId: string };
+            const payload = verifyIosJwt(msg.token) as { userId: number; deviceId: string };
             const db = getDb();
             const user = db.prepare('SELECT status FROM users WHERE id = ?').get(payload.userId) as { status?: string } | undefined;
             if (!user || (user.status && user.status !== 'active')) {
