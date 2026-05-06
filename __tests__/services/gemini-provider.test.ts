@@ -11,9 +11,6 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 // ─── Mock Gemini SDK ────────────────────────────────────────────────
 
 const mockGenerateContent = vi.fn();
-// Spy on getGenerativeModel so tests can assert on the model name and
-// tool list passed in (Layer 4 + Layer 3 verification).
-const mockGetGenerativeModel = vi.fn();
 
 vi.mock('@google/genai', () => {
   return {
@@ -29,16 +26,7 @@ vi.mock('@google/genai', () => {
 
 vi.mock('@google/generative-ai', async () => {
   const adapter = await import('../../src/services/gemini-adapter');
-
-  return {
-    ...adapter,
-    GoogleGenerativeAI: class extends adapter.GoogleGenerativeAIAdapter {
-      getGenerativeModel(...args: [any]) {
-        mockGetGenerativeModel(...args);
-        return super.getGenerativeModel(...args);
-      }
-    },
-  };
+  return adapter;
 });
 
 vi.mock('../../src/services/anthropic', () => ({
@@ -142,6 +130,10 @@ function mockGeminiResponseWithUsage(text: string, promptTokens: number, complet
   });
 }
 
+function lastGenerateRequest(): any {
+  return mockGenerateContent.mock.calls.at(-1)?.[0];
+}
+
 // ═══════════════════════════════════════════════════════════════════
 
 describe('GeminiProvider', () => {
@@ -160,7 +152,6 @@ describe('GeminiProvider', () => {
   it('scrubs sensitive user context before Google Search grounding', async () => {
     mockGeminiResponse('Search result summary.');
     mockGenerateContent.mockClear();
-    mockGetGenerativeModel.mockClear();
 
     await completeOneShotWithSearch(
       'Use public web context for this request about felipe@example.com.',
@@ -169,9 +160,9 @@ describe('GeminiProvider', () => {
       { userId: 7, tenantId: 7 },
     );
 
-    const genArgs = mockGetGenerativeModel.mock.calls[0][0];
-    const promptArg = mockGenerateContent.mock.calls[0][0].contents[0].text;
-    expect(genArgs.systemInstruction).not.toContain('felipe@example.com');
+    const genArgs = lastGenerateRequest();
+    const promptArg = genArgs.contents[0].text;
+    expect(genArgs.config.systemInstruction).not.toContain('felipe@example.com');
     expect(promptArg).not.toContain('felipe@example.com');
     expect(promptArg).not.toContain('555');
     expect(promptArg).not.toContain('abcd1234');
@@ -289,22 +280,20 @@ describe('GeminiProvider', () => {
     describe('TASK-17: respects CallDomainOptions from routing layer', () => {
       it('modelTier="light" → uses classifierModel (Haiku-equivalent)', async () => {
         mockGeminiResponse('OK');
-        mockGetGenerativeModel.mockClear();
 
         await provider.callDomain('secretary', [], 'show my tasks', '', {
           modelTier: 'light',
           filteredTools: [],
         });
 
-        expect(mockGetGenerativeModel).toHaveBeenCalledTimes(1);
-        const args = mockGetGenerativeModel.mock.calls[0][0];
+        expect(mockGenerateContent).toHaveBeenCalledTimes(1);
+        const args = lastGenerateRequest();
         // Light tier maps to gemini.classifierModel from the mocked config
         expect(args.model).toBe('gemini-2.0-flash');
       });
 
       it('domain override wins over routing-layer modelTier', async () => {
         mockGeminiResponse('OK');
-        mockGetGenerativeModel.mockClear();
         setDomainModel('gemini', 'secretary', 'gemini-operator-pinned-secretary');
 
         await provider.callDomain('secretary', [], 'show my tasks', '', {
@@ -312,33 +301,31 @@ describe('GeminiProvider', () => {
           filteredTools: [],
         });
 
-        expect(mockGetGenerativeModel).toHaveBeenCalledTimes(1);
-        const args = mockGetGenerativeModel.mock.calls[0][0];
+        expect(mockGenerateContent).toHaveBeenCalledTimes(1);
+        const args = lastGenerateRequest();
         expect(args.model).toBe('gemini-operator-pinned-secretary');
       });
 
       it('modelTier="heavy" → uses gemini.model', async () => {
         mockGeminiResponse('OK');
-        mockGetGenerativeModel.mockClear();
 
         await provider.callDomain('secretary', [], 'plan my week', '', {
           modelTier: 'heavy',
           filteredTools: [],
         });
 
-        expect(mockGetGenerativeModel).toHaveBeenCalledTimes(1);
-        const args = mockGetGenerativeModel.mock.calls[0][0];
+        expect(mockGenerateContent).toHaveBeenCalledTimes(1);
+        const args = lastGenerateRequest();
         expect(args.model).toBe('gemini-2.0-pro');
       });
 
       it('no modelTier → falls back to legacy per-domain default (gemini-2.0-pro for secretary)', async () => {
         mockGeminiResponse('OK');
-        mockGetGenerativeModel.mockClear();
 
         // No options passed at all — old call style
         await provider.callDomain('secretary', [], 'do something', '');
 
-        const args = mockGetGenerativeModel.mock.calls[0][0];
+        const args = lastGenerateRequest();
         // Legacy fallback uses getModelRouting() which returns the
         // per-domain default — gemini.model for secretary
         expect(args.model).toBe('gemini-2.0-pro');
@@ -366,7 +353,6 @@ describe('GeminiProvider', () => {
 
       it('filteredTools narrows the function declarations sent to Gemini', async () => {
         mockGeminiResponse('OK');
-        mockGetGenerativeModel.mockClear();
 
         const filteredTools = [
           { name: 'set_reminder', description: 'Set a reminder', input_schema: { type: 'object', properties: {} } },
@@ -377,42 +363,38 @@ describe('GeminiProvider', () => {
           filteredTools,
         });
 
-        const args = mockGetGenerativeModel.mock.calls[0][0];
+        const args = lastGenerateRequest();
         // The functionDeclarations should match the filtered set, not
         // the full TOOLS array
-        const declarations = args.tools[0].functionDeclarations;
+        const declarations = args.config.tools[0].functionDeclarations;
         expect(declarations).toHaveLength(1);
         expect(declarations[0].name).toBe('set_reminder');
       });
 
       it('fails closed when routing options omit filteredTools', async () => {
         mockGeminiResponse('OK');
-        mockGetGenerativeModel.mockClear();
 
         await expect(provider.callDomain('secretary', [], 'do something', '', {
           modelTier: 'heavy',
         })).rejects.toThrow('Gemini callDomain requires explicit filteredTools');
 
-        expect(mockGetGenerativeModel).not.toHaveBeenCalled();
         expect(mockGenerateContent).not.toHaveBeenCalled();
       });
 
       it('omits tool declarations when the routing layer intentionally filters to none', async () => {
         mockGeminiResponse('OK');
-        mockGetGenerativeModel.mockClear();
 
         await provider.callDomain('secretary', [], 'no tools for this turn', '', {
           modelTier: 'light',
           filteredTools: [],
         });
 
-        const args = mockGetGenerativeModel.mock.calls[0][0];
-        expect(args.tools).toBeUndefined();
+        const args = lastGenerateRequest();
+        expect(args.config.tools).toBeUndefined();
       });
 
       it('continueWithToolResults: same tier + tools as the initial call', async () => {
         mockGeminiResponse('Continued.');
-        mockGetGenerativeModel.mockClear();
 
         const filteredTools = [
           { name: 'set_reminder', description: 'Set a reminder', input_schema: { type: 'object', properties: {} } },
@@ -427,9 +409,9 @@ describe('GeminiProvider', () => {
           { modelTier: 'light', filteredTools },
         );
 
-        const args = mockGetGenerativeModel.mock.calls[0][0];
+        const args = lastGenerateRequest();
         expect(args.model).toBe('gemini-2.0-flash');
-        expect(args.tools[0].functionDeclarations).toHaveLength(1);
+        expect(args.config.tools[0].functionDeclarations).toHaveLength(1);
       });
     });
   });

@@ -45,7 +45,7 @@ type exports and the old response helper wrapper.
 
 ## Phase 2 — Provider Import Switch
 
-Requires explicit authorization.
+Status: closed in Batch 23 T3 source branch.
 
 - Switch `src/services/gemini-provider.ts` from `@google/generative-ai` to the
   compatibility adapter.
