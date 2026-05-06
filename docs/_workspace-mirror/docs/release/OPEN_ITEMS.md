@@ -20,6 +20,41 @@ BATCH-13-J1-AUTHORIZED: base=feature/tech-debt-2026-05-f4-mock-ratchet-stack
 - Closed annotation: J1 ran on the authorized F4 stack and is closed in source at `feature/tech-debt-2026-05-j1-mock-ratchet-640` (`e4884c2b`), lowering the staged strict baseline from 655 to 640 with current partial mocks at 637. Marker retained for audit trail; do not reuse for other workstreams.
 - Expires: closed by Batch 13 J1. D5/F4 still need to land on `main` before strict mock lint is a `main` gate.
 
+## Tech-debt Batch 19 — P2-24 fix-first completion + state isolation retry (2026-05-06)
+
+Report:
+`docs/archive/2026-05/tech-debt-validation/codex-batch-19-remediation.md`.
+
+Verdict: **BLOCKED / STOP CONDITION HONORED**. P1 closed the fiscal/invoice
+invalid-user guard gap in source. P2 found intentional `content-references.ts`
+system-scope semantics plus system-scope write paths without an explicit
+admin-gated state-layer contract, which fired the mandatory stop rule. P3
+six-module isolation tests and the D5/F4 refresh side-task did not run.
+
+Branches:
+
+- `feature/tech-debt-2026-05-p1-fiscal-invoice-userid-guards` (`0bf095e2`)
+- `feature/tech-debt-2026-05-p2-content-references-scope-audit` (`4bf712a6`)
+- `feature/tech-debt-2026-05-p4-batch-19-report` — report branch with P1/P2
+  merged for integrated evidence.
+
+Closure delta:
+
+| Finding | Status | Evidence |
+|---|---|---|
+| Fiscal/invoice invalid-user guards | **CLOSED IN SOURCE BRANCH** | `fiscal-collection-profiles.ts`, `invoice-filings.ts`, and `invoice-vendors.ts` now reject non-positive or unsafe user IDs at public entry points. Focused state tests passed: 7 files / 100 tests. Full verify passed: 457 files / 6745 tests. |
+| `content-references.ts` owner-scope boundary | **BLOCKED / FIX-FIRST REQUIRED** | Audit found system-scope writes (`addChannel`, `upsertKnowledge`, `updateChannelStatus`, `removeChannel`, `upsertPatterns`) without explicit admin-gated state-layer entry points. See `engine/docs/security/content-references-scope-audit.md`. |
+| P2-24 six-module isolation pack | **DEFERRED BY STOP RULE** | P3 must wait until `content-references.ts` user-scoped vs system-scoped paths are explicit. |
+| D5/F4 ratchet refresh | **SKIPPED** | Side-task only runs after Batch 19 verdict is CLOSED; this batch is blocked. |
+
+Required next fix-first branch for P2-24:
+
+1. Split or explicitly admin-gate `content-references.ts` system-scope write
+   paths.
+2. Remove implicit `userId = 0` write defaults from app-facing entry points.
+3. Add positive-user guards to user-scoped content-reference paths.
+4. Re-run the six-module isolation pack only after the boundary is explicit.
+
 ## Batch 18 Active Fix-First Item (2026-05-06)
 
 | ID | Severity | Status | Description |
