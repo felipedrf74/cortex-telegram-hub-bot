@@ -5,6 +5,7 @@ import { config } from '../config';
 import { allowLocalHealthBypass } from '../api/secret-guards';
 import { getCacheStoreStats } from '../services/cache-store';
 import { getDashboardCacheInvalidationStats } from '../services/dashboard-cache-invalidator';
+import { getStatus as getSentryStatus } from '../services/error-tracker';
 import { getRuntimeStatus } from '../services/runtime-status';
 import { getJobStatuses, getRecentEvents } from './telemetry';
 import { humanUptime } from './formatters';
@@ -151,6 +152,7 @@ export function registerPortalHealthRoutes(app: Express, options: HealthRoutesOp
       crons: jobs,
       integrations: integrationHealth,
       providers: providerHealthSnapshot(),
+      sentry: getSentryStatus(config.sentry?.environment ?? 'unknown'),
       cache,
       errors: {
         total: errorCount,
