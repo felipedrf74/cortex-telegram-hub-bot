@@ -8,6 +8,7 @@ vi.mock('../../src/utils/logger', () => ({
     error: vi.fn(),
     debug: vi.fn(),
   },
+  LOGGER_REDACTION_PATHS: [],
 }));
 
 function deferred<T = void>() {

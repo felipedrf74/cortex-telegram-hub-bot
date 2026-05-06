@@ -42,6 +42,7 @@ vi.mock('../../src/utils/logger', () => ({
   logger: {
     error: vi.fn(),
   },
+  LOGGER_REDACTION_PATHS: [],
 }));
 
 import { registerPortalActionRoutes } from '../../src/portal/action-routes';

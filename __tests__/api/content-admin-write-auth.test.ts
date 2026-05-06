@@ -27,6 +27,7 @@ vi.mock('../../src/config', () => ({
 
 vi.mock('../../src/utils/logger', () => ({
   logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
+  LOGGER_REDACTION_PATHS: [],
 }));
 
 vi.mock('../../src/services/database', () => ({
@@ -37,6 +38,9 @@ vi.mock('../../src/services/database', () => ({
       run: (...args: unknown[]) => mockDbRun(...args),
     }),
   }),
+  initDatabase: vi.fn(),
+  closeDatabase: vi.fn(),
+  findUnexpectedMigrationPrefixCollisions: vi.fn(() => []),
 }));
 
 // AUTH-O12 (closed-beta-auth-hardening, 2026-05-04): the portal token

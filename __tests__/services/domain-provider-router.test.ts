@@ -9,6 +9,9 @@ vi.mock('../../src/services/database', () => ({
       run: vi.fn(),
     }),
   }),
+  initDatabase: vi.fn(),
+  closeDatabase: vi.fn(),
+  findUnexpectedMigrationPrefixCollisions: vi.fn(() => []),
 }));
 
 import {

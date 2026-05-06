@@ -44,6 +44,7 @@ vi.mock('../../src/api/routes/chat-persistence', () => ({
 }));
 
 vi.mock('../../src/services/task-store/task-router', () => ({
+  resolveTaskProvider: vi.fn(() => 'nexus'),
   getTaskProviderForUser: (...args: unknown[]) => mockGetTaskProviderForUser(...args),
 }));
 
@@ -51,6 +52,7 @@ vi.mock('../../src/utils/logger', () => ({
   logger: {
     error: vi.fn(),
   },
+  LOGGER_REDACTION_PATHS: [],
 }));
 
 import {

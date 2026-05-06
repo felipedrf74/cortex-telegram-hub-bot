@@ -10,6 +10,7 @@ const hoisted = vi.hoisted(() => ({
 
 vi.mock('../../src/utils/logger', () => ({
   logger: hoisted.logger,
+  LOGGER_REDACTION_PATHS: [],
 }));
 
 import {

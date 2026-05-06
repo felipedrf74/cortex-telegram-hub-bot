@@ -99,6 +99,7 @@ vi.mock('../../src/services/finance-tracker', () => ({
 }));
 
 vi.mock('../../src/services/task-store/task-router', () => ({
+  resolveTaskProvider: vi.fn(() => 'nexus'),
   getTaskProviderForUser: (...args: unknown[]) => mockGetTaskProviderForUser(...args),
 }));
 
@@ -111,6 +112,7 @@ vi.mock('../../src/utils/logger', () => ({
     info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn(),
     trace: vi.fn(), child: vi.fn().mockReturnThis(),
   },
+  LOGGER_REDACTION_PATHS: [],
 }));
 
 // ─── Imports (after mocks are declared) ─────────────────────────────

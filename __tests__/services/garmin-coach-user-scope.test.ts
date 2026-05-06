@@ -28,6 +28,7 @@ vi.mock('../../src/config', () => ({
 
 vi.mock('../../src/utils/logger', () => ({
   logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
+  LOGGER_REDACTION_PATHS: [],
 }));
 
 vi.mock('../../src/utils/date-parser', () => ({
@@ -80,6 +81,9 @@ vi.mock('../../src/services/user-service', () => ({
 
 vi.mock('../../src/services/database', () => ({
   getDb: (...args: unknown[]) => mockGetDb(...args),
+  initDatabase: vi.fn(),
+  closeDatabase: vi.fn(),
+  findUnexpectedMigrationPrefixCollisions: vi.fn(() => []),
 }));
 
 import { generateCoachBriefing } from '../../src/services/garmin-coach';

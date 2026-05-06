@@ -49,6 +49,7 @@ vi.mock('../../../src/utils/logger', () => ({
     warn: vi.fn(),
     error: vi.fn(),
   },
+  LOGGER_REDACTION_PATHS: [],
 }));
 
 vi.mock('../../../src/utils/date-parser', () => ({

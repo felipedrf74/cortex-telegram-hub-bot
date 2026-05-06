@@ -8,6 +8,9 @@ const mockInvalidateContentDerivedCaches = vi.hoisted(() => vi.fn());
 
 vi.mock('../../src/services/database', () => ({
   getDb: () => testDb,
+  initDatabase: vi.fn(),
+  closeDatabase: vi.fn(),
+  findUnexpectedMigrationPrefixCollisions: vi.fn(() => []),
 }));
 
 vi.mock('../../src/services/content-cache-invalidator', () => ({

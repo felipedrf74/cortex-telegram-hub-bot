@@ -8,6 +8,9 @@ const MIGRATION_083 = path.resolve(__dirname, '../../migrations/083_secretary_ag
 
 vi.mock('../../src/services/database', () => ({
   getDb: () => testDb,
+  initDatabase: vi.fn(),
+  closeDatabase: vi.fn(),
+  findUnexpectedMigrationPrefixCollisions: vi.fn(() => []),
 }));
 
 import {

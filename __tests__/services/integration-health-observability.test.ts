@@ -9,6 +9,9 @@ const pushEvent = vi.fn();
 
 vi.mock('../../src/services/database', () => ({
   getDb: () => testDb,
+  initDatabase: vi.fn(),
+  closeDatabase: vi.fn(),
+  findUnexpectedMigrationPrefixCollisions: vi.fn(() => []),
 }));
 
 vi.mock('../../src/portal/telemetry', () => ({
@@ -22,6 +25,7 @@ vi.mock('../../src/utils/logger', () => ({
     error: vi.fn(),
     debug: vi.fn(),
   },
+  LOGGER_REDACTION_PATHS: [],
 }));
 
 describe('integration health observability', () => {

@@ -38,9 +38,14 @@ function applyMigrations(db: Database.Database): void {
 let testDb: Database.Database;
 const mockInvalidateTaskCaches = vi.fn();
 
-vi.mock('../../../src/services/database', () => ({ getDb: () => testDb }));
+vi.mock('../../../src/services/database', () => ({ getDb: () => testDb,
+  initDatabase: vi.fn(),
+  closeDatabase: vi.fn(),
+  findUnexpectedMigrationPrefixCollisions: vi.fn(() => []),
+}));
 vi.mock('../../../src/utils/logger', () => ({
   logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
+  LOGGER_REDACTION_PATHS: [],
 }));
 vi.mock('../../../src/services/task-cache-invalidator', () => ({
   invalidateTaskCaches: (...args: unknown[]) => mockInvalidateTaskCaches(...args),

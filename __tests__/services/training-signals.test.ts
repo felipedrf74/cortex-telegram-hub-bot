@@ -27,6 +27,7 @@ let testDb: Database.Database;
 
 vi.mock('../../src/utils/logger', () => ({
   logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn(), trace: vi.fn(), child: vi.fn().mockReturnThis() },
+  LOGGER_REDACTION_PATHS: [],
 }));
 
 // intelligence-bus uses a lazy DB provider (setDbProvider) instead of

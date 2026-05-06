@@ -33,6 +33,7 @@ const mockTaskGetAllPendingTasks = vi.fn();
 const mockTaskGetDefaultList = vi.fn();
 const mockTaskCreateTask = vi.fn();
 vi.mock('../../src/services/task-store/task-router', () => ({
+  resolveTaskProvider: vi.fn(() => 'nexus'),
   getTaskProviderForUser: (...args: unknown[]) => mockGetTaskProviderForUser(...args),
 }));
 
@@ -69,6 +70,7 @@ vi.mock('../../src/services/user-service', () => ({
 
 vi.mock('../../src/utils/logger', () => ({
   logger: { info: vi.fn(), warn: vi.fn(), debug: vi.fn(), error: vi.fn() },
+  LOGGER_REDACTION_PATHS: [],
 }));
 
 // Import AFTER mocks so the module picks them up

@@ -12,6 +12,7 @@ vi.mock('../../src/utils/logger', () => ({
     error: (...args: unknown[]) => loggerError(...args),
     debug: (...args: unknown[]) => loggerDebug(...args),
   },
+  LOGGER_REDACTION_PATHS: [],
 }));
 
 vi.mock('../../src/services/error-monitor', () => ({

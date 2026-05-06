@@ -63,6 +63,7 @@ vi.mock('../../src/api/secret-guards', () => ({
 }));
 
 vi.mock('../../src/portal/admin-audit', () => ({
+  buildPortalAdminAuditDetails: vi.fn(),
   logPortalAdminMutation: (...args: unknown[]) => hoistedOps.mockLogPortalAdminMutation(...args),
 }));
 
@@ -77,6 +78,7 @@ vi.mock('../../src/utils/logger', () => ({
   logger: {
     error: (...args: unknown[]) => mockLoggerError(...args),
   },
+  LOGGER_REDACTION_PATHS: [],
 }));
 
 import { registerPortalOperationsRoutes } from '../../src/portal/operations-routes';

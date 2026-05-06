@@ -13,6 +13,7 @@ vi.mock('../../src/utils/logger', () => ({
   logger: {
     warn: mocks.loggerWarn,
   },
+  LOGGER_REDACTION_PATHS: [],
 }));
 
 import { createTrainingCalendarEvent } from '../../src/api/routes/training-calendar-event-writer';

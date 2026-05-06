@@ -66,6 +66,7 @@ vi.mock('../../src/utils/logger', () => ({
     info: mocks.loggerInfo,
     warn: mocks.loggerWarn,
   },
+  LOGGER_REDACTION_PATHS: [],
 }));
 
 import { syncTrainingPlanCalendar } from '../../src/api/routes/training-plan-calendar-sync';

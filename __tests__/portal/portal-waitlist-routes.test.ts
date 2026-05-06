@@ -20,6 +20,9 @@ vi.mock('../../src/api/secret-guards', () => ({
 
 vi.mock('../../src/services/database', () => ({
   getDb: (...args: unknown[]) => hoisted.getDb(...args),
+  initDatabase: vi.fn(),
+  closeDatabase: vi.fn(),
+  findUnexpectedMigrationPrefixCollisions: vi.fn(() => []),
 }));
 
 vi.mock('../../src/services/user-service', () => ({
@@ -30,6 +33,7 @@ vi.mock('../../src/utils/logger', () => ({
   logger: {
     error: (...args: unknown[]) => hoisted.loggerError(...args),
   },
+  LOGGER_REDACTION_PATHS: [],
 }));
 
 vi.mock('../../src/portal/admin-audit', () => ({

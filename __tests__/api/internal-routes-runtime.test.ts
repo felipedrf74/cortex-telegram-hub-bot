@@ -12,6 +12,7 @@ const loggerError = vi.fn();
 
 vi.mock('../../src/utils/logger', () => ({
   logger: { info: vi.fn(), warn: vi.fn(), error: loggerError, debug: vi.fn() },
+  LOGGER_REDACTION_PATHS: [],
 }));
 
 vi.mock('../../src/config', () => ({

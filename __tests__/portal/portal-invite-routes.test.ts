@@ -18,6 +18,9 @@ vi.mock('../../src/services/user-service', () => ({
 
 vi.mock('../../src/services/database', () => ({
   getDb: (...args: unknown[]) => hoisted.getDb(...args),
+  initDatabase: vi.fn(),
+  closeDatabase: vi.fn(),
+  findUnexpectedMigrationPrefixCollisions: vi.fn(() => []),
 }));
 
 vi.mock('../../src/api/secret-guards', () => ({
@@ -25,6 +28,7 @@ vi.mock('../../src/api/secret-guards', () => ({
 }));
 
 vi.mock('../../src/portal/admin-audit', () => ({
+  buildPortalAdminAuditDetails: vi.fn(),
   logPortalAdminMutation: (...args: unknown[]) => hoisted.logPortalAdminMutation(...args),
 }));
 

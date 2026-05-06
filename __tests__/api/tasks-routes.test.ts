@@ -65,6 +65,7 @@ vi.mock('../../src/utils/logger', () => ({
     trace: vi.fn(),
     child: vi.fn().mockReturnThis(),
   },
+  LOGGER_REDACTION_PATHS: [],
 }));
 
 import { dateKeyInAppTimezone, taskDueDateKey, taskRoutes } from '../../src/api/routes/tasks';

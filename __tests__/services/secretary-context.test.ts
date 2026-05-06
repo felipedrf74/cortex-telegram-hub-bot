@@ -84,6 +84,7 @@ vi.mock('../../src/services/tool-executor', () => ({
   executeToolCall: vi.fn(),
 }));
 vi.mock('../../src/services/task-store/task-router', () => ({
+  resolveTaskProvider: vi.fn(() => 'nexus'),
   getTaskProviderForUser: vi.fn(),
 }));
 vi.mock('../../src/services/user-service', () => ({
@@ -100,6 +101,7 @@ vi.mock('../../src/skills/registry', () => ({
 }));
 vi.mock('../../src/utils/logger', () => ({
   logger: { info: vi.fn(), warn: vi.fn(), debug: vi.fn(), error: vi.fn() },
+  LOGGER_REDACTION_PATHS: [],
 }));
 
 // Import AFTER mocks

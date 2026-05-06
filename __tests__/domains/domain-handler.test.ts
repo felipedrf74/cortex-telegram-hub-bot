@@ -65,10 +65,14 @@ vi.mock('../../src/utils/logger', () => ({
     info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn(),
     trace: vi.fn(), child: vi.fn().mockReturnThis(),
   },
+  LOGGER_REDACTION_PATHS: [],
 }));
 
 vi.mock('../../src/services/database', () => ({
   getDb: () => testDb,
+  initDatabase: vi.fn(),
+  closeDatabase: vi.fn(),
+  findUnexpectedMigrationPrefixCollisions: vi.fn(() => []),
 }));
 
 // ─── Imports ─────────────────────────────────────────────────────────

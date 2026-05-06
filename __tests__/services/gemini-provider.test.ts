@@ -63,6 +63,7 @@ vi.mock('../../src/utils/logger', () => ({
     info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn(),
     trace: vi.fn(), child: vi.fn().mockReturnThis(),
   },
+  LOGGER_REDACTION_PATHS: [],
 }));
 
 // ─── Mock database and telemetry ────────────────────────────────────
@@ -72,6 +73,9 @@ vi.mock('../../src/services/database', () => ({
   getDb: () => ({
     prepare: () => ({ run: mockDbRun }),
   }),
+  initDatabase: vi.fn(),
+  closeDatabase: vi.fn(),
+  findUnexpectedMigrationPrefixCollisions: vi.fn(() => []),
 }));
 
 vi.mock('../../src/portal/telemetry', () => ({

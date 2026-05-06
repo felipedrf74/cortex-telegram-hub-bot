@@ -11,6 +11,9 @@ const mockSendDailyBriefing = vi.fn();
 
 vi.mock('../../src/services/database', () => ({
   getDb: (...args: unknown[]) => mockGetDb(...args),
+  initDatabase: vi.fn(),
+  closeDatabase: vi.fn(),
+  findUnexpectedMigrationPrefixCollisions: vi.fn(() => []),
 }));
 
 vi.mock('../../src/services/user-service', () => ({

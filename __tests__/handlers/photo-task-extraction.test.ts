@@ -13,6 +13,7 @@ vi.mock('../../src/utils/logger', () => ({
     error: vi.fn(),
     info: vi.fn(),
   },
+  LOGGER_REDACTION_PATHS: [],
 }));
 
 vi.mock('../../src/utils/callback-store', () => ({
@@ -69,6 +70,7 @@ vi.mock('../../src/services/user-service', () => ({
 
 const mockGetTaskProviderForUser = vi.fn();
 vi.mock('../../src/services/task-store/task-router', () => ({
+  resolveTaskProvider: vi.fn(() => 'nexus'),
   getTaskProviderForUser: (...args: unknown[]) => mockGetTaskProviderForUser(...args),
 }));
 

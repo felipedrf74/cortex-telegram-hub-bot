@@ -48,6 +48,7 @@ vi.mock('../../src/utils/logger', () => ({
     error: vi.fn(),
     debug: vi.fn(),
   },
+  LOGGER_REDACTION_PATHS: [],
 }));
 
 // ── Mock better-sqlite3 / database module ───────────────────────────
@@ -75,6 +76,9 @@ vi.mock('../../src/services/database', () => ({
       },
     }),
   }),
+  initDatabase: vi.fn(),
+  closeDatabase: vi.fn(),
+  findUnexpectedMigrationPrefixCollisions: vi.fn(() => []),
 }));
 
 // ── Mock jsonwebtoken so we don't need a real ES256 key ─────────────

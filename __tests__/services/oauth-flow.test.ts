@@ -17,6 +17,7 @@ vi.mock('../../src/services/oauth-state-store', () => ({
 
 vi.mock('../../src/utils/logger', () => ({
   logger: { error: vi.fn(), warn: vi.fn(), info: vi.fn(), debug: vi.fn(), child: vi.fn().mockReturnThis() },
+  LOGGER_REDACTION_PATHS: [],
 }));
 
 describe('oauth-flow URL state binding', () => {

@@ -11,6 +11,9 @@ vi.mock('../../src/services/database', () => ({
     }),
     exec: vi.fn(),
   }),
+  initDatabase: vi.fn(),
+  closeDatabase: vi.fn(),
+  findUnexpectedMigrationPrefixCollisions: vi.fn(() => []),
 }));
 
 describe('Cost Validation — Gemini Model Pricing', () => {

@@ -74,6 +74,7 @@ vi.mock('../../../src/utils/logger', () => ({
     warn: vi.fn(),
     error: vi.fn(),
   },
+  LOGGER_REDACTION_PATHS: [],
 }));
 
 import { registerSecretaryCommands } from '../../../src/handlers/commands/secretary';

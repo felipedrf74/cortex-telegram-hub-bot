@@ -8,6 +8,7 @@ import Database from 'better-sqlite3';
 // We test the exported functions directly, mocking config and logger
 vi.mock('../../src/utils/logger', () => ({
   logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
+  LOGGER_REDACTION_PATHS: [],
 }));
 
 // Dynamic config mock — override per test via `mockConfig`
@@ -24,6 +25,9 @@ vi.mock('../../src/config', () => ({
 let testSourceDb: Database.Database;
 vi.mock('../../src/services/database', () => ({
   getDb: () => testSourceDb,
+  initDatabase: vi.fn(),
+  closeDatabase: vi.fn(),
+  findUnexpectedMigrationPrefixCollisions: vi.fn(() => []),
 }));
 
 import {

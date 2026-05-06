@@ -10,6 +10,9 @@ let testDb: Database.Database;
 
 vi.mock('../../src/services/database', () => ({
   getDb: () => testDb,
+  initDatabase: vi.fn(),
+  closeDatabase: vi.fn(),
+  findUnexpectedMigrationPrefixCollisions: vi.fn(() => []),
 }));
 
 vi.mock('../../src/config', () => ({
@@ -33,6 +36,7 @@ vi.mock('../../src/utils/logger', () => ({
     trace: vi.fn(),
     child: vi.fn().mockReturnThis(),
   },
+  LOGGER_REDACTION_PATHS: [],
 }));
 
 import { connectionRoutes } from '../../src/api/routes/connections';

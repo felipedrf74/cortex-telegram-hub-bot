@@ -51,6 +51,9 @@ let testDb: Database.Database;
 
 vi.mock('../../src/services/database', () => ({
   getDb: () => testDb,
+  initDatabase: vi.fn(),
+  closeDatabase: vi.fn(),
+  findUnexpectedMigrationPrefixCollisions: vi.fn(() => []),
 }));
 
 vi.mock('../../src/utils/logger', () => ({
@@ -60,6 +63,7 @@ vi.mock('../../src/utils/logger', () => ({
     error: vi.fn(),
     debug: vi.fn(),
   },
+  LOGGER_REDACTION_PATHS: [],
 }));
 
 // Import AFTER mocks

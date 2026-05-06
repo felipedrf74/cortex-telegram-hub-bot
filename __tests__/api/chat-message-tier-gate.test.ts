@@ -22,6 +22,7 @@ vi.mock('../../src/utils/logger', () => ({
     info: (...args: unknown[]) => mockLoggerInfo(...args),
     warn: (...args: unknown[]) => mockLoggerWarn(...args),
   },
+  LOGGER_REDACTION_PATHS: [],
 }));
 
 import { sendChatTierRequiredIfNeeded } from '../../src/api/routes/chat-message-tier-gate';

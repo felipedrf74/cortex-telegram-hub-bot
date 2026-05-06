@@ -12,6 +12,9 @@ vi.mock('../../src/services/database', () => ({
     }),
     exec: (...args: unknown[]) => mockExec(...args),
   }),
+  initDatabase: vi.fn(),
+  closeDatabase: vi.fn(),
+  findUnexpectedMigrationPrefixCollisions: vi.fn(() => []),
 }));
 
 vi.mock('../../src/utils/logger', () => ({
@@ -21,6 +24,7 @@ vi.mock('../../src/utils/logger', () => ({
     warn: vi.fn(),
     error: vi.fn(),
   },
+  LOGGER_REDACTION_PATHS: [],
 }));
 
 describe('cache-store observability', () => {

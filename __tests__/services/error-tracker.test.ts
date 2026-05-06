@@ -26,6 +26,7 @@ vi.mock('@sentry/node', () => ({
 
 vi.mock('../../src/utils/logger', () => ({
   logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn(), fatal: vi.fn() },
+  LOGGER_REDACTION_PATHS: [],
 }));
 
 import * as Sentry from '@sentry/node';

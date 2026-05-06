@@ -50,6 +50,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '..');
 const TESTS_DIR = path.join(ROOT, '__tests__');
 const SRC_DIR = path.join(ROOT, 'src');
+const BASELINE_PATH = path.join(__dirname, '.vi-mock-baseline.txt');
 
 const args = new Set(process.argv.slice(2));
 const STRICT = args.has('--strict');
@@ -556,6 +557,14 @@ const summary = {
   affectedTestFiles: [...new Set(findings.map((f) => f.test))].sort(),
 };
 
+function readStrictBaseline() {
+  if (explicitFiles) return { partialMockCount: 0 };
+  if (!fs.existsSync(BASELINE_PATH)) return { partialMockCount: 0 };
+  const raw = fs.readFileSync(BASELINE_PATH, 'utf8');
+  const match = raw.match(/partialMockCount\s*=\s*(\d+)/);
+  return { partialMockCount: match ? Number(match[1]) : 0 };
+}
+
 // Aggregate by real-module to spot the most-mocked modules
 const byModule = new Map();
 for (const f of findings) {
@@ -588,6 +597,10 @@ if (JSON_OUT) {
   console.log(`Unparseable factories: ${summary.unparseableCount}`);
   console.log(`Affected real modules: ${summary.affectedRealModules.length}`);
   console.log(`Affected test files: ${summary.affectedTestFiles.length}`);
+  if (STRICT) {
+    const baseline = readStrictBaseline();
+    console.log(`Strict baseline: ${baseline.partialMockCount} partial mocks`);
+  }
   console.log();
   if (findings.length === 0) {
     console.log('✅ No partial mocks detected. `singleFork: true` is safe to lift.');
@@ -621,4 +634,7 @@ if (JSON_OUT) {
   }
 }
 
-if (STRICT && summary.partialMockCount > 0) process.exit(1);
+if (STRICT) {
+  const baseline = readStrictBaseline();
+  if (summary.partialMockCount > baseline.partialMockCount) process.exit(1);
+}

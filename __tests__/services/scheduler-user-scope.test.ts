@@ -37,6 +37,7 @@ vi.mock('../../src/config', () => ({
 
 vi.mock('../../src/utils/logger', () => ({
   logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
+  LOGGER_REDACTION_PATHS: [],
 }));
 
 vi.mock('../../src/state/reminders', () => ({
@@ -152,10 +153,14 @@ vi.mock('../../src/services/user-service', () => ({
   getOwnerBootstrapTarget: (...args: unknown[]) => mockGetOwnerBootstrapTarget(...args),
 }));
 vi.mock('../../src/services/task-store/task-router', () => ({
+  resolveTaskProvider: vi.fn(() => 'nexus'),
   getTaskProviderForUser: (...args: unknown[]) => mockGetTaskProviderForUser(...args),
 }));
 vi.mock('../../src/services/database', () => ({
   getDb: (...args: unknown[]) => mockGetDb(...args),
+  initDatabase: vi.fn(),
+  closeDatabase: vi.fn(),
+  findUnexpectedMigrationPrefixCollisions: vi.fn(() => []),
 }));
 vi.mock('../../src/services/report-document-store', () => ({
   storeAndPushReport: (...args: unknown[]) => mockStoreAndPushReport(...args),

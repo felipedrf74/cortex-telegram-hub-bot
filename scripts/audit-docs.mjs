@@ -174,6 +174,7 @@ function isApprovedCurrentOrArchive(file) {
   }
   if (normalized.startsWith(path.join(workspaceRoot, 'docs', 'agent') + path.sep)) return true;
   if (normalized.startsWith(path.join(workspaceRoot, 'docs', 'release') + path.sep)) return true;
+  if (normalized.startsWith(path.join(workspaceRoot, 'docs', 'runbooks') + path.sep)) return true;
   // Engineering-excellence enrichment (2026-05-04): canonical engineering
   // standards live under workspace `docs/engineering/`, backend
   // `engine/docs/engineering/`, and iOS `ios/docs/engineering/`.
