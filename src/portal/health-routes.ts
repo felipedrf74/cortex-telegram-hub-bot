@@ -7,6 +7,7 @@ import { getCacheStoreStats } from '../services/cache-store';
 import { getDashboardCacheInvalidationStats } from '../services/dashboard-cache-invalidator';
 import { getStatus as getSentryStatus } from '../services/error-tracker';
 import { getRuntimeStatus } from '../services/runtime-status';
+import { getPm2SupervisorHealth, recordPm2SupervisorAlerts } from '../services/pm2-health';
 import { getJobStatuses, getRecentEvents } from './telemetry';
 import { humanUptime } from './formatters';
 
@@ -79,7 +80,7 @@ export function registerPortalHealthRoutes(app: Express, options: HealthRoutesOp
   });
 
   // GET /health/detailed — operational diagnostics, protected outside local development.
-  app.get('/health/detailed', (req: Request, res: Response) => {
+  app.get('/health/detailed', async (req: Request, res: Response) => {
     const healthToken = config.health.token;
     if (!healthToken) {
       if (!allowLocalHealthBypass(req)) {
@@ -132,6 +133,8 @@ export function registerPortalHealthRoutes(app: Express, options: HealthRoutesOp
       dashboardInvalidation: getDashboardCacheInvalidationStats(),
     };
 
+    const pm2 = await getPm2SupervisorHealth();
+    const pm2AlertsRecorded = recordPm2SupervisorAlerts(pm2);
     const status = runtime.serviceStatus === 'online' ? 'healthy' : 'degraded';
 
     res.status(status === 'healthy' ? 200 : 503).json({
@@ -152,6 +155,10 @@ export function registerPortalHealthRoutes(app: Express, options: HealthRoutesOp
       crons: jobs,
       integrations: integrationHealth,
       providers: providerHealthSnapshot(),
+      pm2: {
+        ...pm2,
+        alertsRecorded: pm2AlertsRecorded,
+      },
       sentry: getSentryStatus(config.sentry?.environment ?? 'unknown'),
       cache,
       errors: {

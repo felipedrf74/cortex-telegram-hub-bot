@@ -97,6 +97,22 @@ vi.mock('../../src/services/dashboard-cache-invalidator', () => ({
   getDashboardCacheInvalidationStats: () => mockDashboardCacheInvalidationStats,
 }));
 
+vi.mock('../../src/services/pm2-health', () => ({
+  getPm2SupervisorHealth: vi.fn(async () => ({
+    available: true,
+    processes: [{
+      name: 'nexus-hub',
+      pmId: 0,
+      status: 'online',
+      restartCount: 0,
+      unstableRestarts: 0,
+      uptimeMs: 120_000,
+      lastCrashReason: null,
+    }],
+  })),
+  recordPm2SupervisorAlerts: vi.fn(() => 0),
+}));
+
 // ── Mock config (port 0 = OS-assigned random port) ──────────────────
 
 let healthToken = 'test-health-secret';
@@ -427,6 +443,16 @@ describe('GET /health/detailed', () => {
       userScopedRequestCount: 5,
       globalRequestCount: 1,
       lastUserId: 42,
+    });
+
+    expect(body.pm2).toMatchObject({
+      available: true,
+      alertsRecorded: 0,
+      processes: [expect.objectContaining({
+        name: 'nexus-hub',
+        status: 'online',
+        restartCount: 0,
+      })],
     });
   });
 
