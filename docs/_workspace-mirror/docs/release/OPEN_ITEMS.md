@@ -44,7 +44,8 @@ Branches:
 - `feature/tech-debt-2026-05-o1-coach-state-userid-fix` (`4e7e89df`)
 - `feature/tech-debt-2026-05-o3-state-modules-finish-retry` — **BLOCKED /
   NO TEST COMMIT**; preflight found additional invalid-user write paths.
-- `feature/tech-debt-2026-05-o4-batch-18-closure` — report-only branch.
+- `feature/tech-debt-2026-05-o4-batch-18-closure` (`8f89821a`) — report-only
+  branch with workspace mirror refresh.
 
 Closure delta:
 
