@@ -69,11 +69,16 @@ function applyMigrations(db: Database.Database): void {
 
 import {
   addChannel,
+  addSystemChannel,
+  createContentReferencesAdminContext,
   getKnowledgeByCategory,
+  getSystemKnowledgeByCategory,
   updateChannelStatus,
   upsertPatterns,
 } from '../../src/state/content-references';
 import { processAllChannelScopes } from '../../src/services/channel-learner';
+
+const adminContext = createContentReferencesAdminContext('channel learner scope test');
 
 describe('channel-learner: scoped synthesis', () => {
   beforeEach(() => {
@@ -161,7 +166,7 @@ describe('channel-learner: scoped synthesis', () => {
   });
 
   it('resynthesizes user knowledge after shared system channels refresh without emitting per-user channel_dna signals', async () => {
-    const systemChannel = addChannel('https://www.youtube.com/channel/UCsystem', 'manual', 0);
+    const systemChannel = addSystemChannel('https://www.youtube.com/channel/UCsystem', 'manual', adminContext);
     testDb.prepare(`
       UPDATE content_ref_channels
          SET tenant_id = 0,
@@ -179,7 +184,7 @@ describe('channel-learner: scoped synthesis', () => {
       channel_name: 'User Channel',
       channel_id: 'UCuser',
       video_count_analyzed: 1,
-    });
+    }, { userId: 42 });
     upsertPatterns(userChannel.id, [
       {
         category: 'hook_style',
@@ -188,7 +193,7 @@ describe('channel-learner: scoped synthesis', () => {
         confidence: 0.88,
         source_videos: ['vid-user-1'],
       },
-    ]);
+    ], { userId: 42 });
 
     vi.useFakeTimers();
     const resultPromise = processAllChannelScopes(false);
@@ -202,7 +207,7 @@ describe('channel-learner: scoped synthesis', () => {
       synthesized: true,
     });
 
-    const systemKnowledge = getKnowledgeByCategory('hook_style', 0);
+    const systemKnowledge = getSystemKnowledgeByCategory('hook_style', adminContext);
     const userKnowledge = getKnowledgeByCategory('hook_style', 42);
 
     expect(systemKnowledge?.user_id).toBe(0);

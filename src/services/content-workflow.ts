@@ -212,7 +212,7 @@ function buildTopicSystemPrompt(format: 'reel' | 'youtube', isTrending: boolean,
 
   // userId passed explicitly — no more AsyncLocalStorage dependency.
   // This makes personalization stable across transports (iOS, Telegram, scheduler).
-  const knowledgeBlock = buildKnowledgePromptBlock(userId);
+  const knowledgeBlock = userId > 0 ? buildKnowledgePromptBlock(userId, tenantId) : '';
   const tasteBlock = buildTasteProfileBlock(userId, tenantId);
 
   return loadPromptWithConfig('topic-generation', {

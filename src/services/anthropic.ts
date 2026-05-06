@@ -1077,7 +1077,9 @@ export async function callDomain(
     // falls back to the platform scope, which could leak knowledge
     // rows from another tenant that share the same userId in a
     // multi-tenant deployment.
-    const knowledgeBlock = buildKnowledgePromptBlock(meteredUserId, opts.tenantId);
+    const knowledgeBlock = meteredUserId && meteredUserId > 0
+      ? buildKnowledgePromptBlock(meteredUserId, opts.tenantId)
+      : '';
     if (knowledgeBlock) systemPrompt += knowledgeBlock;
   }
   // Layer 3: tool filtering. If the routing layer pre-computed the
@@ -1187,7 +1189,9 @@ export async function continueWithToolResults(
     // continuation call's knowledge block is scoped to the same
     // (userId, tenantId) pair as the initial callDomain. Same
     // rationale as the initial-call site above.
-    const knowledgeBlock = buildKnowledgePromptBlock(meteredUserId, opts.tenantId);
+    const knowledgeBlock = meteredUserId && meteredUserId > 0
+      ? buildKnowledgePromptBlock(meteredUserId, opts.tenantId)
+      : '';
     if (knowledgeBlock) systemPrompt += knowledgeBlock;
   }
 

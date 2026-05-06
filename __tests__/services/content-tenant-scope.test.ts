@@ -143,7 +143,7 @@ describe('Content tenant/privacy scope', () => {
       examples: ['A example'],
       confidence: 0.9,
       source_videos: ['A video'],
-    }]);
+    }], { userId: 101 });
 
     const books = getScopedBooksForGeneration(101).map((ref) => ref.title);
     const links = getScopedLinksForGeneration(101).map((ref) => ref.title);
@@ -188,7 +188,7 @@ describe('Content tenant/privacy scope', () => {
       examples: ['B example'],
       confidence: 0.9,
       source_videos: ['B video'],
-    }]);
+    }], { userId: 202 });
 
     expect(getAllKnowledge(101).map((row) => row.synthesized_text)).toEqual(['Tenant A voice']);
     expect(getAllKnowledge(101).map((row) => row.synthesized_text).join('\n')).not.toContain('Tenant B');
