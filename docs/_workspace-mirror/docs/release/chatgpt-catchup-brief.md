@@ -1,5 +1,10 @@
 # ChatGPT catch-up brief — Nexus Hub release pipeline
 
+Status: canonical
+Owner: release lead (Felipe)
+Last verified: 2026-05-06
+Update policy: update when release-pipeline handoff context changes.
+
 This file is the self-contained snapshot for any LLM (ChatGPT, a fresh
 Claude session, etc.) that needs to catch up on the current state of
 Nexus Hub: what shipped, what's in flight, where the work lives, what

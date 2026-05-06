@@ -2,10 +2,273 @@
 
 Status: canonical
 Owner: release lead (Felipe)
-Last verified: 2026-05-05
-Update policy: update when a P0/P1/P2/P3 item opens or closes. Older sections record state at their original closeout time; backfill with FIXED LATER pointers when the item is closed in a subsequent pass.
+Last verified: 2026-05-06
+Update policy: update when a P0/P1/P2/P3 item opens or closes. Rotate every
+Friday or every production release: archive dated `## ` sections older than
+7 days whose items are all closed to the monthly open-items archive using
+`engine/scripts/rotate-open-items.mjs`. Active surface target: <= 250 LOC.
+Older sections record state at their original closeout time; backfill with
+FIXED LATER pointers when the item is closed in a subsequent pass.
 
-Last updated: 2026-05-05
+Last updated: 2026-05-06
+
+## Standing authorizations
+
+BATCH-13-J1-AUTHORIZED: base=feature/tech-debt-2026-05-f4-mock-ratchet-stack
+- Granted by Felipe via 2026-05-06 delegated-approval message ("If anything needs my approval, send in the next prompt that is approved to move on.").
+- Scope: Codex may branch the Batch 13 J1 mock-baseline ratchet from the F4 stack (`feature/tech-debt-2026-05-f4-mock-ratchet-stack`) and lower `engine/scripts/.vi-mock-baseline.txt` toward 640. `main` still fails strict lint until D5/F4 land — that gate stays open and is tracked in I1's merge-readiness analysis.
+- Closed annotation: J1 ran on the authorized F4 stack and is closed in source at `feature/tech-debt-2026-05-j1-mock-ratchet-640` (`e4884c2b`), lowering the staged strict baseline from 655 to 640 with current partial mocks at 637. Marker retained for audit trail; do not reuse for other workstreams.
+- Expires: closed by Batch 13 J1. D5/F4 still need to land on `main` before strict mock lint is a `main` gate.
+
+## Batch 18 Active Fix-First Item (2026-05-06)
+
+| ID | Severity | Status | Description |
+|---|---|---|---|
+| TD-CS-O1 | P0-class | **CLOSED IN SOURCE BRANCH** | `coach-state.ts` userId validation hardened to match the positive-user contract after Batch 16 M2 exposed the fix-first blocker. Closed on `feature/tech-debt-2026-05-o1-coach-state-userid-fix` (`4e7e89df`); focused RED→GREEN proof and full verify evidence are archived in `docs/archive/2026-05/tech-debt-validation/codex-batch-18-coach-state-userid-fix-rationale.md`. |
+
+## Tech-debt Batch 18 — coach-state fix-first + Batch 16 retry (2026-05-06)
+
+Report:
+`docs/archive/2026-05/tech-debt-validation/codex-batch-18-remediation.md`.
+Revalidation:
+`docs/archive/2026-05/tech-debt-validation/codex-batch-18-revalidation.md`.
+
+Verdict: **PARTIAL SOURCE CLOSURE / STOP CONDITION HONORED**. O1 closed the
+`coach-state.ts` invalid-user bug in source. O2 deferred because no J2 stack
+authorization marker exists. O3 stopped before adding the six-module state test
+pack because non-coach modules still accept `userId=0` writes and require their
+own fix-first branch.
+
+Branches:
+
+- `feature/tech-debt-2026-05-o1-coach-state-userid-fix` (`4e7e89df`)
+- `feature/tech-debt-2026-05-o3-state-modules-finish-retry` — **BLOCKED /
+  NO TEST COMMIT**; preflight found additional invalid-user write paths.
+- `feature/tech-debt-2026-05-o4-batch-18-closure` — report-only branch.
+
+Closure delta:
+
+| Finding | Status | Evidence |
+|---|---|---|
+| TD-CS-O1 `coach-state.ts` invalid-user fix | **CLOSED IN SOURCE BRANCH** | O1 adds positive-user guards to `saveCoachState`, `loadCoachState`, and `deleteCoachState`. Focused RED→GREEN proof: 18 invalid-user assertions failed pre-fix and 19/19 passed post-fix. Full verify passed: 456 files / 6848 tests. |
+| P2-24 remaining state isolation tests | **STILL BLOCKED / FIX-FIRST REQUIRED** | O3 preflight found `fiscal-collection-profiles.ts`, `invoice-filings.ts`, and `invoice-vendors.ts` can still accept `userId=0` writes. The test-only O3 scope stopped instead of adding known-red tests or changing source. |
+| Python pytest finish | **DEFERRED** | `BATCH-18-O2-AUTHORIZED` is absent; J2 exists but is not on `main`; `main` has zero Python pytest files. |
+
+Required next fix-first branch for P2-24:
+
+1. Harden invalid-user guards in fiscal collection profiles, invoice filings,
+   and invoice vendors.
+2. Preserve intentional `content-references.ts` system-scope administration
+   separately from app-facing user-private paths.
+3. Re-run the six-module state isolation pack only after the guards pass.
+
+## Tech-debt Batch 16 — test-infra finish + deploy safety (2026-05-06)
+
+Report:
+`docs/archive/2026-05/tech-debt-validation/codex-batch-16-remediation.md`.
+Revalidation:
+`docs/archive/2026-05/tech-debt-validation/codex-batch-16-revalidation.md`.
+
+Verdict: **PARTIAL SOURCE CLOSURE / STOP CONDITIONS HONORED**. Batch 16
+closed P2-34 and P2-29 in source branches. M1 and M2 did not run because their
+pre-flight checks hit explicit blockers: M1 depends on an unmerged Python
+pytest stack while Batch 16 required branching from `main`, and M2's test-only
+scope would expose a real invalid-user contract bug in `coach-state.ts`.
+
+Branches:
+
+- `feature/tech-debt-2026-05-m3-python-version-drift-detection` (`c47aae56`)
+- `feature/tech-debt-2026-05-m4-deploy-skip-verify-audit` (`add2a2cb`)
+- `feature/tech-debt-2026-05-m5-batch-16-closure` (report-only branch)
+
+Closure delta:
+
+| Finding | Status | Evidence |
+|---|---|---|
+| P2-24 remaining state isolation tests | **STILL BLOCKED / FIX-FIRST REQUIRED** | `src/state/coach-state.ts` does not reject `userId === 0` or invalid/missing user IDs; M2 was tests-only and stopped. |
+| P2-29 `deploy.sh --no-verify` policy | **CLOSED IN SOURCE BRANCH** | M4 adds skip-verify audit rows, a smoke-evidence freshness gate for `auto-when-staged`, `/health/detailed.lastDeploy`, and `docs/runbooks/deploy-safety.md`. Full verify passed: 457 files / 6835 tests. |
+| P2-34 Python ↔ TS version drift | **CLOSED IN SOURCE BRANCH** | M3 adds `content-engine/version.txt`, deploy-time version bake, TS drift classification, and `/health/detailed.contentEngine.versionDrift`. Full verify passed: 456 files / 6835 tests. |
+| Python pytest finish | **BLOCKED** | `main` has 0 pytest files and no `content-engine/tests/conftest.py`; Batch 13 J2 has the 114-case scaffold on a staged branch. |
+
+Next unblock actions:
+
+1. Land or authorize the Python pytest stack through Batch 13 J2, then run the
+   remaining-module finish pass.
+2. Run a fix-first state-scope branch for `coach-state.ts`, then rerun M2's
+   six-module isolation-test pack.
+3. Merge M3 before M4 if possible; both touch `scripts/deploy.sh`, but the
+   conflict is mechanical: keep M3's version-bake step and M4's skip-verify
+   audit/smoke-evidence gate.
+
+## Tech-debt validation pass (2026-05-05)
+
+Validation report:
+`docs/archive/2026-05/tech-debt-validation/codex-tech-debt-pass.md`.
+Validation matrix:
+`docs/archive/2026-05/tech-debt-validation/codex-validation-matrix.md`.
+Batch 2 revalidation:
+`docs/archive/2026-05/tech-debt-validation/codex-batch-2-revalidation.md`.
+Batch 2 remediation:
+`docs/archive/2026-05/tech-debt-validation/codex-batch-2-remediation.md`.
+Batch 3 revalidation:
+`docs/archive/2026-05/tech-debt-validation/codex-batch-3-revalidation.md`.
+
+Verdict: **PHASE B COMPLETE WITH CONDITIONS** - Codex validated all supplied
+P0/P1 findings, validated P2-23 through P2-44 after Claude added
+`docs/archive/2026-05/tech-debt-validation/claude-tech-debt-2026-05-05.md`,
+completed Phase A1-A7, and staged Phase
+B1-B6 on separate `main`-based feature branches. Nothing was pushed or
+deployed. Conditions: branches remain independent/not merged, docs:audit
+remains above the frozen budget on current source, and the B4/B5 signed
+two-account E5 walkthroughs are documented but not executed.
+
+Batch 3 status: **BLOCKED BEFORE REMEDIATION**. Codex revalidated C1-C6 and
+stopped before code changes because C1 found explicit transaction control in
+`engine/migrations/042_unified_fks.sql`, while C5 depends on Batch 2/C4
+centralization not present on `main` under the prompt's "branch from main" rule.
+
+Batch 4 status: **D1-D6 STAGED ON SOURCE BRANCHES / NOT PUSHED / NOT
+DEPLOYED**. Codex reopened the C-batch work with a `042_unified_fks.sql`
+carve-out and staged D1-D6 on separate `main`-based branches. Reports:
+`docs/archive/2026-05/tech-debt-validation/codex-batch-4-revalidation.md`
+and
+`docs/archive/2026-05/tech-debt-validation/codex-batch-4-remediation.md`.
+
+Batch 5 status: **E2/E3/E5/E6 STAGED ON SOURCE BRANCHES / E1 AND E4
+BLOCKED / NOT PUSHED / NOT DEPLOYED**. Report:
+`docs/archive/2026-05/tech-debt-validation/codex-batch-5-remediation.md`.
+E1 remains blocked because B3 model constants and D4 retry extraction are not
+on `main` and no stack-branch authorization exists. E4 remains blocked because
+the D2/D3/D6 validation stack is staged but not authorized as the local-stack
+base for operator evidence.
+
+Batch 5 E1/F1 supersession: Felipe authorized stacked branches on 2026-05-06.
+Codex stacked B3 + D4 on `main` and closed the Anthropic wrapper in source on
+`feature/tech-debt-2026-05-f1-anthropic-wrapper-stack` (`2f02196c`, plus audit
+cleanup `6b2eadf0`). Report:
+`docs/archive/2026-05/tech-debt-validation/codex-batch-9-remediation.md`.
+
+Batch 5 E4/F2 supersession: the same stack authorization allowed a
+validation-only D1/D2/D3/D6 stack. Codex captured local `/health` healthy and
+degraded evidence, restore-test alert/history evidence, and Cloudflare headers
+on `feature/tech-debt-2026-05-f2-d2-d3-d6-validation-stack` (`920a3e1b`
+evidence commit). Public Cloudflare health headers report
+`cf-cache-status: DYNAMIC`, so no repository config change was required.
+
+Batch 6 F4 supersession: stack authorization allowed D5's mock-factory branch
+to be ratcheted without waiting for `main`. Codex staged
+`feature/tech-debt-2026-05-f4-mock-ratchet-stack` (`142398f3`, audit cleanup
+`5488ed8e`), lowering the strict partial-mock baseline from 660 to 655 with
+current count 653. Full verify passed (`6829/6829`) and docs-audit is at
+490 issues / 408 markdown files on the stack.
+
+Batch 6 F3 supersession: stack authorization allowed the E5 observability shim
+cleanup to be staged on top of E5. Codex staged
+`feature/tech-debt-2026-05-f3-shim-removal-stack` (`ad0ce25e`) based on E5
+(`d42a1e6b`), deleting `src/portal/anthropic-hook.ts` and
+`src/portal/telemetry.ts` and updating the remaining runtime imports to
+`src/observability/*`. Full verify passed (`6831/6831`) and docs-audit is at
+492 issues / 410 markdown files on the stack.
+
+Batch 6 E8 docs-mirror supersession: Codex refreshed
+`engine/docs/_workspace-mirror` from the current canonical workspace docs on
+`feature/tech-debt-2026-05-e8-docs-mirror-sync`. The mirror now includes the
+current agent process/open-items/release identity docs and the three runbooks.
+
+## Tech-debt Batch 6 - merge-safety analysis (2026-05-06)
+
+Reports:
+`docs/archive/2026-05/tech-debt-validation/codex-batch-6-revalidation.md`
+and
+`docs/archive/2026-05/tech-debt-validation/codex-batch-6-merge-safety-analysis.md`.
+
+Verdict: **F0 COMPLETE / F1, F2, F3, F4 CLOSED IN SOURCE STACK BRANCHES /
+F5 CLOSED IN SOURCE**. Current
+`main` remains `ed53f84`; none of the Batch 1-5 tech-debt feature branches
+has landed. Batch 6 revalidation found 27 existing
+`feature/tech-debt-2026-05-*` branches before F0, docs-audit baseline
+491 issues / 402 markdown files, and strict mock lint still failing at
+1,039 partial mocks on `main` because D5 is not merged there. Felipe's later
+stack authorization allowed source closure for F1, F2, F3, and F4 on dedicated
+stack branches.
+
+Operator action checklist for Felipe:
+
+1. Merge `feature/tech-debt-2026-05-open-items-cleanup` first.
+2. Merge the Phase A low-risk cluster: audit fix, drop-types-sharp,
+   audit allowlist, delete WhatsApp, auth-failure paths, hash-email,
+   migration-collision gate, and Sentry gate.
+3. Merge `feature/tech-debt-2026-05-model-id-constants` and
+   `feature/tech-debt-2026-05-d4-with-retry` to unblock F1/C5.
+4. Merge D1 -> D2 -> D3 -> D6 to unblock F2 operator validation.
+5. Merge D5, then E5. D5 unlocks F4; E5 should land after B3 so the moved
+   Anthropic hook already contains the model-id changes.
+
+Conditional readiness:
+
+| Batch | Status | Reason |
+|---|---|---|
+| F1 C5/E1 Anthropic wrapper | **CLOSED IN SOURCE STACK BRANCH** | Felipe authorized stacking after F0. `feature/tech-debt-2026-05-f1-anthropic-wrapper-stack` carries B3 (`6284fb3b`), D4 (`5660da9d`), and the wrapper implementation (`2f02196c`). |
+| F2 D2/D3/D6 validation | **CLOSED IN SOURCE STACK BRANCH** | Felipe authorized stacking after F0. `feature/tech-debt-2026-05-f2-d2-d3-d6-validation-stack` carries D1/D2/D3/D6 and captured local health, restore-test, and Cloudflare evidence. |
+| F3 E5 shim removal | **CLOSED IN SOURCE STACK BRANCH** | Felipe authorized stacking after F0. `feature/tech-debt-2026-05-f3-shim-removal-stack` is based on E5 (`d42a1e6b`) and removes the legacy portal observability shims in `ad0ce25e`. |
+| F4 D5 mock ratchet | **CLOSED IN SOURCE STACK BRANCH** | Felipe authorized stacking after F0. `feature/tech-debt-2026-05-f4-mock-ratchet-stack` carries D5 (`13c9cc74`), ratchets strict baseline 660 -> 655, and current partial mocks drop to 653. |
+| F5 Python pytest expansion | **CLOSED IN SOURCE BRANCH** | `feature/tech-debt-2026-05-f5-python-pytest-expansion` (`49cf23a1`) carries the E6 bootstrap forward from `main`, expands content-engine pytest to 53 cases across 10 modules, and leaves Python source semantics untouched. |
+
+### Closure delta
+
+| ID | Severity | Status | Description |
+|---|---|---|---|
+| TD-H1 | P2/P1 | **CLOSED IN SOURCE STACK BRANCH** | `feature/tech-debt-2026-05-f1-anthropic-wrapper-stack` (`2f02196c`, audit cleanup `6b2eadf0`) closes the C5/E1/F1 Anthropic-wrapper item by stacking B3 model constants (`6284fb3b`) and D4 retry helper (`5660da9d`) on `main`. Direct task-style Anthropic callers now go through `src/services/anthropic-task.ts`; structural guard tests block new runtime SDK construction outside approved wrappers. Full verify passed (`6845/6845`), P0 identity passed (`23/23`), and docs-audit is at 491 issues / 408 markdown files. |
+| TD-H2 | P1 ops | **CLOSED IN SOURCE STACK BRANCH** | `feature/tech-debt-2026-05-f2-d2-d3-d6-validation-stack` (`920a3e1b` evidence commit) closes the D2/D3/D6 operator-validation blocker on a validation stack. Local `/health` returned 200 healthy and 503 when content-engine was stopped; `/health/detailed` surfaced `migrationChecksums` and restore-test backup state; manual scheduler-equivalent restore-test failure inserted `restore_test_history` and a critical `operator_alerts` row; `https://api.nexushub.me/health` returned `cf-cache-status: DYNAMIC`. Full verify passed (`6848/6848`), docs-audit passed at 487 issues / 411 markdown files, and no listeners remained on 8100/8200/8201. |
+| TD-H3 | P2 test infra | **CLOSED IN SOURCE STACK BRANCH** | `feature/tech-debt-2026-05-f4-mock-ratchet-stack` (`142398f3`, audit cleanup `5488ed8e`) closes the D5/F4 strict mock-ratchet blocker on a stack. The branch carries D5 (`13c9cc74`), lowers `engine/scripts/.vi-mock-baseline.txt` from 660 to 655, and current partial mocks are 653. Focused tests + P0 identity passed (`262/262`), full verify passed (`6829/6829`), strict lint passed, and docs-audit passed at 490 issues / 408 markdown files. |
+| TD-H4 | P2 architecture | **CLOSED IN SOURCE STACK BRANCH** | `feature/tech-debt-2026-05-f3-shim-removal-stack` (`ad0ce25e`) closes the E5/F3 shim-removal item on a post-E5 stack. The branch deletes `src/portal/anthropic-hook.ts` and `src/portal/telemetry.ts`, updates remaining runtime imports to `src/observability/*`, extends the architecture guard to block shim reintroduction, and passes full verify (`6831/6831`). Merge order: E5 first, then F3 after dependent branches have been rebased or merged. |
+| TD-H5 | P2 docs gate | **CLOSED IN SOURCE BRANCH** | `feature/tech-debt-2026-05-e8-docs-mirror-sync` refreshes `engine/docs/_workspace-mirror` from the current workspace docs so `workspace-docs-mirror.sh --check` has a source branch that passes after the staged docs branches land. |
+| TD-G2 | P3 tests | **CLOSED IN SOURCE BRANCH** | `feature/tech-debt-2026-05-f7-python-pytest-expansion-3` (`e637f219`) continues the unblocked Python pytest expansion, raises content-engine pytest to 91/91 cases across 29 modules, and adds app/router/searcher/config/model coverage without changing Python source semantics. Report: `docs/archive/2026-05/tech-debt-validation/codex-batch-8-remediation.md`. |
+| TD-G1 | P3 tests | **CLOSED IN SOURCE BRANCH** | `feature/tech-debt-2026-05-f6-python-pytest-expansion-2` (`01385b69`) continues the Batch 6 Python pytest expansion, raises content-engine pytest to 71/71 cases across 18 modules, fixes `book_knowledge.py` SerpAPI config lookup (`cfg.serpapi_key`), and keeps Python pytest advisory until Felipe approves the 2026-06-01 blocking flip. Report: `docs/archive/2026-05/tech-debt-validation/codex-batch-7-remediation.md`. |
+| TD-F0 | P1 merge gate | **CLOSED** | `docs/archive/2026-05/tech-debt-validation/codex-batch-6-merge-safety-analysis.md` inventories 27 pre-existing tech-debt feature branches, records the conflict-shape matrix, and gives Felipe the next-five merge checklist inline above. |
+| TD-F1 | P2/P1 | **CLOSED IN SOURCE STACK BRANCH** | Superseded by Felipe's 2026-05-06 stack authorization. `feature/tech-debt-2026-05-f1-anthropic-wrapper-stack` stacks B3 + D4 and closes the Anthropic wrapper in source. Merge order: land B3, land D4, then merge or replay this stack branch. |
+| TD-F2 | P1 ops | **CLOSED IN SOURCE STACK BRANCH** | Superseded by Felipe's 2026-05-06 stack authorization. The F2 validation stack captured healthy/degraded local `/health`, restore-test alert/history, detailed backup health, and Cloudflare dynamic-cache evidence. |
+| TD-F3 | P2 architecture | **CLOSED IN SOURCE STACK BRANCH** | Superseded by Felipe's 2026-05-06 stack authorization. `feature/tech-debt-2026-05-f3-shim-removal-stack` stacks on E5 and removes the one-merge-cycle portal observability shims. |
+| TD-F4 | P2 test infra | **CLOSED IN SOURCE STACK BRANCH** | Superseded by Felipe's 2026-05-06 stack authorization. `feature/tech-debt-2026-05-f4-mock-ratchet-stack` stacks D5 and ratchets the staged baseline from 660 to 655 with current partial mocks at 653. |
+| TD-F5 | P3 tests | **CLOSED IN SOURCE BRANCH** | `feature/tech-debt-2026-05-f5-python-pytest-expansion` (`49cf23a1`) adds Batch 6 Python tests for hook generator, caption writer, thumbnail generator, title tester, repurpose engine, gap finder, and competitor analyzer. Content-engine pytest now passes 53/53 cases across 10 modules; full backend verify passes on the branch. |
+| TD-A1 | P0 | **CLOSED IN SOURCE BRANCH** | `feature/tech-debt-2026-05-audit-fix` (`2139235`) refreshes vulnerable transitive packages. `npm audit --json` reports 0 vulnerabilities on that branch; focused provider/auth tests, full verify, and staging-smoke passed. |
+| TD-A2 | P0/P1 | **CLOSED IN SOURCE BRANCH** | `feature/tech-debt-2026-05-sentry-gate` (`463d5da`) documents `SENTRY_DSN`, adds production deploy warning-only posture, surfaces Sentry status in `/health/detailed`, and pins disabled-with-warning behavior. |
+| TD-A3 | P0 | **CLOSED IN SOURCE BRANCH** | `feature/tech-debt-2026-05-hash-email` (`8145b82`) unifies email hash normalization through `src/utils/identity.ts`. Follow-up: historical audit-log `emailHash` joins may need a one-time backfill note if old drifted hashes matter. |
+| TD-A4 | P1 | **CLOSED IN SOURCE BRANCH** | `feature/tech-debt-2026-05-migration-collision-gate` (`26a583c`) fails startup for non-allowlisted duplicate migration prefixes and adds a CI duplicate-prefix gate while preserving known legacy duplicates. |
+| TD-A5 | P2 | **CLOSED IN SOURCE BRANCH** | `feature/tech-debt-2026-05-audit-allowlist` (`2aff001`) aligns docs:audit with DOCS_INDEX for `engine/docs/agents/claude/handoff.md` without promoting the handoff to a canonical link root. |
+| TD-A6 | P2 | **CLOSED IN SOURCE BRANCH** | `feature/tech-debt-2026-05-delete-whatsapp` (`1ef044e`) deletes the dead WhatsApp adapter, its adapter-only tests, historical task spec, and adapter re-export; active webhook tests remain. Full verify passed (`453` files / `6716` tests). |
+| TD-A7 | P3 | **CLOSED IN SOURCE BRANCH** | `feature/tech-debt-2026-05-drop-types-sharp` (`a4dd949`) removes deprecated `@types/sharp`; TypeScript, invoice-focused tests (`25/25`), and full verify (`455` files / `6829` tests) passed. |
+| TD-B1 | P0 | **CLOSED IN SOURCE BRANCH** | `feature/tech-debt-2026-05-auth-failure-paths` (`7538749`) adds a 12-case auth failure-path safety net. Auth-routes + P0 identity focused run passed (`54/54`); full verify passed (`455` files / `6841` tests). |
+| TD-B2 | P1 | **CLOSED IN SOURCE BRANCH** | `feature/tech-debt-2026-05-coverage-threshold` (`33745b5`) rebaselines Vitest coverage thresholds to statements/lines 69%, branches 72%, functions 78%, adds a coverage baseline doc, and documents the monthly ratchet. Full verify passed (`455` files / `6829` tests). |
+| TD-B3 | P1 | **CLOSED IN SOURCE BRANCH** | `feature/tech-debt-2026-05-model-id-constants` (`3ededc3`) centralizes Anthropic model IDs behind `config.anthropic.*`; literal grep now returns only `src/config.ts`. Full verify passed (`456` files / `6831` tests). |
+| TD-B4 | P1 | **CLOSED IN SOURCE BRANCH** | `feature/tech-debt-2026-05-jwt-helper` (`43fb15d`) centralizes Nexus JWT and Apple identity-token verification in `src/services/auth-tokens.ts`; runtime `jwt.verify` call sites are reduced to the helper. Full verify passed (`456` files / `6837` tests). E5 two-account walkthrough remains manual/operator action. |
+| TD-B5 | P0 | **CLOSED IN SOURCE BRANCHES** | Backend `feature/tech-debt-2026-05-timezone-resolver` (`025319e`) and iOS `feature/tech-debt-2026-05-timezone-resolver` (`1a82150`) replace Lisbon assumptions with saved-user timezone resolution. `users.timezone` exists in `migrations/030_users.sql` and `migrations/051_multi_auth_users.sql`; non-Lisbon users now use their saved timezone in touched flows. Backend full verify passed (`456` files / `6833` tests); iOS focused timezone/currency/parser tests passed (`17/17`). |
+| TD-B6 | P0/P2 | **CLOSED IN SOURCE BRANCH** | iOS `feature/tech-debt-2026-05-ios-scope-unification` (`55bc2e2`) adds `AuthScope` and `ScopedUserDefaults`, preserving the historical scoped-key shape while removing repeated `currentScopeKey` definitions. iOS build passed; focused scope/content/navigation tests passed (`67/67`). |
+| TD-CX-O1 | P2 | **CLOSED IN SOURCE BRANCH** | `feature/tech-debt-2026-05-open-items-cleanup` adds `scripts/filter-existing-vitest-globs.mjs` and wires pre-commit/pre-push focused Vitest runs through it, dropping stale no-match globs before Vitest is invoked. |
+| TD-CX-O2 | P1 | **CLOSED IN SOURCE BRANCH** | `feature/tech-debt-2026-05-open-items-cleanup` repairs stale current-doc references and updates `audit-docs.mjs` so skipped workspace-mirror snapshots no longer inflate the active markdown-file budget. `npm run docs:audit -- --json` now reports 482 issues / 379 audited files, with 15 mirror files disclosed separately as skipped duplicates. |
+| TD-CX-O3 | P2 | **OPEN E5 VALIDATION** | Requires a signed TestFlight build containing B4/B5/B6 before closure. Walkthrough: sign in as Felipe, verify `/auth/me`, read Content/Home/Calendar/Training state, rotate or refresh the session, create/read scoped local Content profile/reference/brief state, set/confirm Felipe timezone; sign out, sign in as nexushubbot, verify `/auth/me`, confirm Felipe state is invisible, create bot-scoped Content state, set/confirm a different timezone, relaunch, switch back to Felipe, and confirm identity, timezone labels, and local cache scopes remain partitioned. Record screenshots/log notes with `engine/scripts/testflight-evidence.sh --apply`. |
+| TD-CX-O4 | P1 | **CLOSED IN SOURCE STACK BRANCH** | D1 resolved the C1 blocker by adding a filename-specific carve-out for self-transactional `042_unified_fks.sql` while wrapping non-legacy migrations in `db.transaction(...)`. The F2 validation stack carries D1 (`fc20ef19`) plus D2/D3/D6 evidence. |
+| TD-CX-O5 | P1 | **CLOSED IN SOURCE STACK BRANCH** | Felipe approved stacked branches on 2026-05-06. `feature/tech-debt-2026-05-f1-anthropic-wrapper-stack` carries the required B3/D4 prerequisites plus the Anthropic wrapper closure. |
+| TD-D1 | P1 | **CLOSED IN SOURCE BRANCH** | `feature/tech-debt-2026-05-d1-migration-safety` (`3a68ccc2`) wraps non-legacy migrations in `db.transaction(...)`, adds `_migrations.checksum`, surfaces checksum drift, and preserves `042_unified_fks.sql` as the only self-transactional carve-out. Full verify and P0 identity passed on branch. |
+| TD-D2 | P1 | **CLOSED IN SOURCE BRANCH** | `feature/tech-debt-2026-05-d2-health-extension` (`a61dc5ec`) adds content-engine/provider readiness to `/health` and `/health/detailed`, with degraded 503 semantics. Follow-up: verify Cloudflare cache rules do not mask 503 responses. |
+| TD-D3 | P1 | **CLOSED IN SOURCE BRANCH** | `feature/tech-debt-2026-05-d3-restore-test-alerts` (`605f0f46`) persists restore-test history and routes failures through operator alerts instead of Telegram-only best effort. |
+| TD-D4 | P1 | **CLOSED IN SOURCE BRANCH** | `feature/tech-debt-2026-05-d4-with-retry` (`47fb7ed6`) centralizes retry behavior in `src/utils/retry.ts` and codemods Telegram, Microsoft Todo, content-engine, OpenAI, and Gemini callers while preserving existing retry semantics. |
+| TD-D5 | P2 | **CLOSED IN SOURCE BRANCH** | `feature/tech-debt-2026-05-d5-mock-factories` (`a83e4517`) adds logger/database/user-service mock factories and strict-ratchets `vi-mock-completeness-lint` from 1,039 partial mocks to a 660 baseline. |
+| TD-D6 | P2 | **CLOSED IN SOURCE BRANCH** | `feature/tech-debt-2026-05-d6-runbook-trio` (`93308a6e`) adds canonical VPS cold-start, Cloudflared tunnel, and secret-rotation runbooks, a sanitized Cloudflare config example, and a dry-run-first OAuth encryption-key rotation script. |
+| TD-D7 | P2 | **CLOSED IN SOURCE STACK BRANCH** | F2 validation captured public `https://api.nexushub.me/health` headers with `cf-cache-status: DYNAMIC`; no stale 200 cache behavior was visible from Cloudflare's public health route. |
+| TD-E1 | P2/P1 | **CLOSED IN SOURCE STACK BRANCH** | Batch 5's E1 blocker was resolved by Felipe's later stack authorization. The stack branch includes B3/D4 prerequisites and the wrapper implementation; no push or deploy has occurred. |
+| TD-E2 | P1 docs | **CLOSED IN SOURCE BRANCH** | `feature/tech-debt-2026-05-e2-claude-md-bootloader` (`d3b7ec7c`) slims `engine/CLAUDE.md` to a bootloader, archives release narrative, and pins the shape with `claude-md-bootloader-shape` tests. E2 branch docs-audit improved to 472 issues / 402 markdown files from the Batch 5 baseline of 493 / 399. |
+| TD-E3 | P1 docs | **CLOSED IN SOURCE BRANCH** | `feature/tech-debt-2026-05-e3-open-items-rotation` (`8bd70cf7`) adds `rotate-open-items.mjs`, weekly housekeeping wiring, tests, and the May archive template. Dry-run moved 0 sections on current source and warned on undated priority sections. |
+| TD-E4 | P1 ops | **CLOSED IN SOURCE STACK BRANCH** | Superseded by the F2 validation stack after Felipe authorized stacking. Evidence is committed under `engine/docs/release/smoke-evidence/2026-05-batch9-f2-*` and summarized in `docs/archive/2026-05/tech-debt-validation/codex-batch-9-remediation.md`. |
+| TD-E5 | P2 architecture | **CLOSED IN SOURCE BRANCH** | `feature/tech-debt-2026-05-e5-observability-extraction` (`d42a1e6b`) moves cost telemetry from `portal/` to `observability/`, keeps one-merge-cycle re-export shims, and adds a structural no-portal-import-from-services test. Merge note: B3 edits inside the moved `anthropic-hook` must be applied to the new observability path; D4 conflicts should be import-path-only; E1 should use the observability path if E5 lands first. |
+| TD-E6 | P3 tests | **CLOSED IN SOURCE BRANCH** | `feature/tech-debt-2026-05-e6-python-pytest-bootstrap` (`48624b2c`, includes `c1aa931b`) adds pytest bootstrap for content-engine creator profile, orchestrator, and script writer. Python pytest passed 17/17; latest Batch 5 full verify passed 455 files / 6829 tests. |
+| TD-E7 | P2 merge gate | **CLOSED IN SOURCE STACK BRANCH** | Batch 5 final strict mock gate is source-closed on the F4 stack after Felipe authorized stacking. `main` still has the old 1,039 partial-mock state until D5/F4 are merged, but the stack branch passes strict lint at baseline 655 with current count 653. |
+| TD-E8 | P2 docs gate | **CLOSED IN SOURCE BRANCH** | `feature/tech-debt-2026-05-e8-docs-mirror-sync` refreshes the engine workspace mirror from current canonical docs, including D6 runbooks and current OPEN_ITEMS/release identity state. |
+
+### Deferred validated tech-debt
+
+- **Phase C/D queue**: P1-09 retry helper, P1-13 cost tables, P1-14 scheduler split, P1-17 formatter centralization, P1-21 restore-test alerting, P1-22 health/content-engine readiness, P2-25/P2-38/P2-39/P2-43/P2-44 infra runbooks, P2-30 provider-bypass wrapper, P2-33 observability module extraction, P2-35 Garmin client ownership, P2-37 docs verdict cleanup, P2-41 Content XCUITest identifier walk, P2-42 mock factories, `@google/generative-ai` -> `@google/genai`, migration-runner transaction wrapping, iOS fastlane/TestFlight automation, self-hosted GitHub runner, and Python content-engine pytest bootstrap.
+- **P2 count corrections**: `src/state` currently has 15 files, not 87; of Claude's ten listed untested state modules, only `coach-state.ts` lacked direct test-name evidence. `PreviewRuntime` hits are 21, `services/* -> portal/*` imports are 29, and partial mocks remain 1,039.
 
 ## Content Creation workflow promote (2026-05-05)
 
@@ -47,7 +310,31 @@ Verdict: **READY_WITH_CONDITIONS** — the technical mastery pack is usable for 
 | TECH-CX-O2 | P2 | **FIXED** | `CURRENT_RELEASE_STATE.md` still described production `4.14.129` after the auth-UX promote to `4.14.130`. Codex refreshed the production/source/deploy/iOS status and mirrored the workspace doc. |
 | TECH-CX-O3 | P3 | **FIXED** | `docs/agent/AGENT_TECHNICAL_MASTERY.md` omitted `engine/src/router/` and `engine/src/sdk/` from the source-tree map. Codex added path-specific rows and test/ownership guidance. |
 | TECH-CX-O4 | P3 | **FIXED** | The mastery pack described docs-audit as a simple frozen-count check. Codex updated it to require per-class drift investigation when totals exceed the baseline policy. |
-| TECH-CX-O5 | P3 | **OPEN** | Historical docs-audit noise remains. Current rerun is inside budget, but the broken-link/outside-approved/test-count classes still need a dedicated cleanup or symlink-resolution follow-up. |
+| TECH-CX-O5 | P3 | **CLOSED IN SOURCE BRANCH** | Batch 10 reduced docs:audit from 494 issues / 408 audited files on engine `main` to 268 issues / 396 audited files on `feature/tech-debt-2026-05-g5-tech-cx-o5-closure` (-226 total). Residual broken-link noise remains tracked as future cross-repo path-resolution cleanup, but the historical outside-approved/SHA/test-count/verdict noise is now materially below budget. |
+
+## Tech-debt Batch 10 — TECH-CX-O5 docs-audit cleanup (2026-05-06)
+
+Branches:
+
+- `feature/tech-debt-2026-05-g1-archive-sweep` — `08dc585b`
+- `feature/tech-debt-2026-05-g2-auditor-refinements` — `b441fdc0`
+- `feature/tech-debt-2026-05-g3-verdict-backlinks` — `b45d1444`
+- `feature/tech-debt-2026-05-g4-frontmatter-completion` — `3bd7c0b5`
+- `feature/tech-debt-2026-05-g5-tech-cx-o5-closure` — `e4149b02`
+
+docs:audit:
+
+| Metric | Start | End | Delta |
+|---|---:|---:|---:|
+| Total issues | 494 | 268 | -226 |
+| Audited markdown files | 408 | 396 | -12 |
+| markdown-outside-approved-current-or-archive-location | 229 | 128 | -101 |
+| commit-hash-not-found-in-own-repo | 78 | 32 | -46 |
+| test-count-literal-outside-current-report | 75 | 30 | -45 |
+| broken-markdown-reference | 68 | 76 | +8 |
+| duplicate-or-scattered-current-verdict | 35 | 2 | -33 |
+
+Verdict: **CLOSED IN SOURCE BRANCH** because cumulative reduction is 226 issues, above the 175-issue closure threshold. Remaining broken-link noise is mostly cross-repo/iOS path resolution and stays deferred to a dedicated follow-up.
 
 ### Evidence
 
@@ -55,6 +342,223 @@ Verdict: **READY_WITH_CONDITIONS** — the technical mastery pack is usable for 
 - `engine/scripts/workspace-docs-mirror.sh --check`: PASS.
 - `npx tsc --noEmit`: PASS.
 - `engine/scripts/cannot-skip-gate-dashboard.sh --json --no-evidence`: PASS, 23 gates / 0 failures.
+
+## Tech-debt Batch 11 — residual non-operator cleanup (2026-05-06)
+
+Branches:
+
+- `feature/tech-debt-2026-05-h1-cross-repo-link-resolver` — `a5a72b31`
+- `feature/tech-debt-2026-05-h2-frontmatter-error-flip` — `6cffb0b4`
+- `feature/tech-debt-2026-05-h3-mock-ratchet-645` — **DEFERRED**; D5/F4 mock baseline is not on `main` and no `BATCH-11-H3-AUTHORIZED` marker exists.
+- `feature/tech-debt-2026-05-h4-python-pytest-expansion` — `96459575`
+- `feature/tech-debt-2026-05-h5-batch-11-closure` — `a7d0d953`
+
+Closure delta:
+
+| Item | Status | Evidence |
+|---|---|---|
+| Dedicated broken-markdown-reference pass | **CLOSED IN SOURCE BRANCH** | docs:audit `broken-markdown-reference` dropped 68 -> 1 on the Batch 11 stack. |
+| G4 follow-up: canonical engine frontmatter promotion | **CLOSED IN SOURCE BRANCH** | `engineering-standard-frontmatter-missing` remains 0; missing frontmatter is now error-severity for canonical `engine/docs/**/*.md`. |
+| D5 mock baseline ratchet 655 -> 645 | **DEFERRED** | main still lacks D5/F4 baseline; strict mock lint reports the historical 1,039 partial mocks. |
+| Python content-engine pytest expansion | **CLOSED IN SOURCE BRANCH** | 50 pytest cases pass across hook, caption, thumbnail, title, repurpose, gap finder, and competitor analyzer modules. |
+
+docs:audit:
+
+| Metric | Start on main | End on Batch 11 stack | Delta |
+|---|---:|---:|---:|
+| Total issues | 494 | 418 | -76 |
+| Audited markdown files | 410 | 417 | +7 |
+| broken-markdown-reference | 68 | 1 | -67 |
+| markdown-outside-approved-current-or-archive-location | 229 | 229 | 0 |
+| commit-hash-not-found-in-own-repo | 78 | 78 | 0 |
+| test-count-literal-outside-current-report | 75 | 75 | 0 |
+| duplicate-or-scattered-current-verdict | 35 | 35 | 0 |
+
+Note: Batch 10's G1-G5 stack already source-closed TECH-CX-O5 at 268 issues.
+Batch 11 intentionally ran from `main`, so it does not include the G1 archive
+sweep/G2 regex/G3 verdict consolidation reductions. Do not raise Batch 10's
+lower baseline from this main-derived stack; merge Batch 10 first, then apply
+Batch 11's `broken-markdown-reference <= 1` result on top.
+
+Evidence:
+
+- `npx vitest run __tests__/scripts/audit-docs-cross-repo-resolver.test.ts`: 4/4 PASS.
+- `npx vitest run __tests__/scripts/canonical-frontmatter-coverage.test.ts __tests__/scripts/audit-docs-frontmatter-error.test.ts`: 5/5 PASS.
+- `cd content-engine && .venv313/bin/python -m pytest tests/ -v`: 50/50 PASS. Literal `python -m pytest` is blocked locally because no `python` shim exists; `python3` lacks pytest outside the content-engine venv.
+- `npx vitest run __tests__/security/p0-chat-identity-isolation.test.ts`: 23/23 PASS.
+- `npm run verify`: PASS on H2, 458 files / 6,838 tests.
+
+## Batch 12 — merge-readiness analysis (2026-05-06)
+
+Reports:
+
+- Revalidation:
+  `docs/archive/2026-05/tech-debt-validation/codex-batch-12-revalidation.md`
+- Merge-readiness analysis:
+  `docs/archive/2026-05/tech-debt-validation/codex-batch-12-merge-readiness-analysis.md`
+
+Verdict: **I1 COMPLETE / I2 GATE UNMET AT START**. Engine `main` remains
+`ed53f84a`; docs:audit baseline is 494 issues / 412 audited markdown files;
+strict mock lint on `main` still reports 1,039 partial mocks because D5/F4 are
+not on `main`.
+
+D5/F4 unblock options:
+
+| Option | Action | Impact |
+|---|---|---|
+| A | Land D5, then F4, on `main`. | Cleanest path; future mock ratchets branch from `main`. |
+| B | Add `BATCH-12-I2-AUTHORIZED: base=feature/tech-debt-2026-05-f4-mock-ratchet-stack`. | Lets Codex ratchet 655 -> 640 on the stack; `main` still fails strict lint until D5/F4 land. |
+| C | Queue mock work until after the landing wave. | Lowest immediate risk; no partial-mock progress until merge cadence catches up. |
+
+Operator action checklist:
+
+1. Pick D5/F4 unblock option A, B, or C.
+2. If A: merge/cherry-pick D5 (`a83e4517`, carrying D5 `13c9cc74`), then F4
+   (`5488ed8e`, carrying ratchet `142398f3` and cleanup).
+3. If B: add the `BATCH-12-I2-AUTHORIZED` marker above.
+4. Merge B3 (`model-id-constants`) and D4 (`with-retry`) before replaying F1/C5.
+5. Merge Batch 10 before Batch 11 docs branches so the lower docs-audit
+   baseline remains the ceiling.
+
+## Tech-debt Batch 12 — D5/F4 merge gate + independent work (2026-05-06)
+
+Branches:
+
+- `feature/tech-debt-2026-05-i1-merge-readiness-analysis` — `c1e71788`
+- `feature/tech-debt-2026-05-i2-mock-ratchet-640` — **DEFERRED**; D5/F4 are not on `main` and no `BATCH-12-I2-AUTHORIZED` marker exists.
+- `feature/tech-debt-2026-05-i3-python-pytest-expansion-2` — `12e1fd03` standalone, integrated into I5 as `04f7b218` + `5411fce6`
+- `feature/tech-debt-2026-05-i4-workspace-ios-frontmatter-error` — engine `7633d259`, iOS `d660792`
+- `feature/tech-debt-2026-05-i5-batch-12-closure` — final closure stack
+
+Report: `docs/archive/2026-05/tech-debt-validation/codex-batch-12-remediation.md`
+
+Closure delta:
+
+| Item | Status | Evidence |
+|---|---|---|
+| D5/F4 merge-readiness decision tree | **CLOSED IN SOURCE BRANCH** | I1 produced `docs/archive/2026-05/tech-debt-validation/codex-batch-12-merge-readiness-analysis.md` and inlined the 3-option D5/F4 unblock proposal above. |
+| Mock baseline ratchet 655 -> 640 | **DEFERRED** | `main` still lacks D5/F4; strict mock lint remains the historical 1,039 partial mocks. Use option A or B from the I1 proposal to unblock. |
+| Python content-engine pytest expansion | **CLOSED IN SOURCE BRANCH** | I3 adds pytest bootstrap plus 82/82 passing tests across core, creative, and intelligence content-engine modules without changing Python source semantics. |
+| Workspace + iOS canonical frontmatter enforcement | **CLOSED IN SOURCE BRANCH** | I4 extends `engineering-standard-frontmatter-missing` to workspace and iOS canonical docs at error severity; docs:audit reports 0 frontmatter errors. |
+
+docs:audit:
+
+| Metric | Start on main | End on I5 stack | Delta |
+|---|---:|---:|---:|
+| Total issues | 494 | 485 | -9 |
+| Audited markdown files | 412 | 420 | +8 |
+| engineering-standard-frontmatter-missing | 0 | 0 | 0 |
+| markdown-outside-approved-current-or-archive-location | 229 | 229 | 0 |
+| broken-markdown-reference | 68 | 68 | 0 |
+
+Evidence:
+
+- `npm run verify`: PASS on I5, 456 files / 6,830 tests.
+- `cd content-engine && .venv313/bin/python -m pytest tests/ -q`: 82/82 PASS.
+- `npx vitest run __tests__/security/p0-chat-identity-isolation.test.ts`: 23/23 PASS on I1, I3, and I4.
+- `bash scripts/workspace-docs-mirror.sh --check`: PASS.
+- iOS frontmatter doc change is staged on iOS branch `feature/tech-debt-2026-05-i4-workspace-ios-frontmatter-error` (`d660792`). Existing iOS code edits in `CalendarRepository.swift` / `DashboardViewModel.swift` remain untouched.
+
+## Tech-debt Batch 13 — mock ratchet + pytest expansion + cross-repo replay (2026-05-06)
+
+Report: `docs/archive/2026-05/tech-debt-validation/codex-batch-13-remediation.md`
+
+Branches:
+
+- `feature/tech-debt-2026-05-j1-mock-ratchet-640` — source-stack branch from authorized F4 base; commit `e4884c2b`.
+- `feature/tech-debt-2026-05-j2-python-pytest-expansion-3` — main-rooted Python pytest expansion; commit `04fd36e3` on top of replayed I3 scaffold.
+- `feature/tech-debt-2026-05-j3-cross-repo-resolver-on-main` — main-rooted H1 resolver replay; commits `8fa5919f`, `96c0fb2b`, `1681205c`.
+- `feature/tech-debt-2026-05-j4-batch-13-closure` — combined J2+J3 closure stack for final verification/reporting.
+
+Closure delta:
+
+| Item | Status | Evidence |
+|---|---|---|
+| I2 / TD-H3 mock baseline ratchet 655 -> 640 | **CLOSED IN SOURCE STACK BRANCH** | J1 ran under the standing authorization on `feature/tech-debt-2026-05-f4-mock-ratchet-stack`; strict lint passed at 637 partial mocks with baseline 640; full verify passed 455 files / 6,829 tests; P0 identity passed 23/23. |
+| Python content-engine pytest expansion | **PROGRESSING** | J2/J4 expand content-engine pytest to 114 passing cases and disable `.pytest_cache` generation so docs:audit does not count generated pytest markdown. Python source semantics unchanged. |
+| Cross-repo broken-md-ref replay onto main-rooted base | **CLOSED IN SOURCE BRANCH** | J3 replays the H1 resolver onto a fresh `main` branch; docs:audit broken-markdown-reference drops from 68 at Batch 13 start to 1 on J3/J4; resolver regression test passes 4/4. |
+
+docs:audit:
+
+| Metric | Start on main | End on J4 stack | Delta |
+|---|---:|---:|---:|
+| Total issues | 498 | 418 | -80 |
+| Audited markdown files | 415 | 421 | +6 |
+| broken-markdown-reference | 68 | 1 | -67 |
+| markdown-outside-approved-current-or-archive-location | 229 | 229 | 0 |
+
+Evidence:
+
+- J1: `node scripts/vi-mock-completeness-lint.mjs --strict` PASS at baseline 640; `npm run verify` PASS (455 files / 6,829 tests).
+- J2/J4: `cd content-engine && .venv313/bin/python -m pytest tests/ -q` PASS (114/114).
+- J3/J4: `npx vitest run __tests__/scripts/audit-docs-cross-repo-resolver.test.ts` PASS (4/4); `bash scripts/workspace-docs-mirror.sh --check` PASS.
+- P0 identity: `npx vitest run __tests__/security/p0-chat-identity-isolation.test.ts` PASS (23/23) on J1, J2, and J3/J4.
+
+## Tech-debt Batch 14 — quick-win mechanical sweep + state-module isolation (2026-05-06)
+
+Report: `docs/archive/2026-05/tech-debt-validation/codex-batch-14-remediation.md`
+
+Branches:
+
+- `feature/tech-debt-2026-05-k1-cost-per-mtk-consolidation` — engine source branch, commit `e448e437`.
+- `feature/tech-debt-2026-05-k2-ios-date-formatters` — iOS source branch, commit `4bc6fe6`.
+- `feature/tech-debt-2026-05-k3-named-scoring-weights` — engine source branch, commit `2850d47d`.
+- K4 state-module isolation tests — **BLOCKED before branch** by a `saved_ideas` scoped-mutation bug.
+
+Closure delta:
+
+| Item | Status | Evidence |
+|---|---|---|
+| P1-13 `COST_PER_MTK` duplication | **CLOSED IN SOURCE BRANCH** | K1 centralizes Anthropic/OpenAI pricing in `engine/src/services/provider-pricing.ts`; full backend verify passed 456 files / 6,835 tests; P0 identity passed 23/23. |
+| P1-17 iOS formatter proliferation | **CLOSED IN SOURCE BRANCH WITH BROAD-SUITE RISK** | K2 adds `Date+Formatters.swift`, `DateFormattersTests`, and the formatter cookbook. iOS build passed; focused formatter XCTest passed 5/5; constructor grep is reduced to helper implementation only. Broad iOS suite still fails 7 non-formatter tests and needs separate cleanup. |
+| P2-32 inline scoring weights | **CLOSED IN SOURCE BRANCH** | K3 names notification/content scoring constants, adds `scoring-weights-rationale.md`, and passes focused tests plus full backend verify. |
+| P2-24 state isolation tests | **BLOCKED / P0 FIX-FIRST REQUIRED** | Source inspection found `markIdeaPromoted(id)`, `markIdeaUsed(id)`, and `deleteIdea(id)` mutate `saved_ideas` by raw `id` only. K4 was test-only by prompt, so Codex stopped instead of adding failing tests or changing production code in the test slice. |
+| P1-14 scheduler decomposition | **CLOSED IN SOURCE STACK BRANCH** | Batch 15 L0-L3 decomposed `engine/src/services/scheduler.ts` into a registry bootloader plus per-domain job modules. `scheduler.ts` is now 150 LOC with 0 inline `cron.schedule(...)` calls; inventory invariant pins 34 registry jobs / 33 telemetry jobs. Full backend verify passed 463 files / 6,845 tests. |
+
+Required next fix-first branch for P2-24:
+
+1. Change `engine/src/state/saved-ideas.ts` mutation helpers to require `userId` and mutate with `WHERE id = ? AND user_id = ?`.
+2. Update `engine/src/services/content-workflow.ts` to pass the authenticated `userId` into `markIdeaPromoted`.
+3. Add the K4 state isolation tests for `notes`, `reminders`, `saved-ideas`, and `todos` after the scoped mutation fix is in place.
+
+Evidence:
+
+- K1: `npx tsc --noEmit` PASS; focused provider-pricing/usage-metering/P0 identity tests PASS 55/55; full `npm run verify` PASS 456 files / 6,835 tests.
+- K2: iOS `xcodebuild build` PASS; focused `DateFormattersTests` PASS 5/5; P0 identity PASS 23/23; broad `xcodebuild test` FAILS 1,247 passed / 12 skipped / 7 failed in unrelated contract/UI tests.
+- K3: `npx tsc --noEmit` PASS; focused scoring/P0 identity tests PASS 29/29; docs:audit PASS 498 issues / 419 audited; full `npm run verify` PASS 456 files / 6,835 tests.
+- Post-report docs:audit: 499 issues / 420 audited, within Batch 14's start-baseline +2 allowance but not a completion signal because K4 is blocked.
+
+## Tech-debt Batch 15 — scheduler.ts decomposition (2026-05-06)
+
+Report: `docs/archive/2026-05/tech-debt-validation/codex-batch-15-remediation.md`
+
+Branch stack and merge order:
+
+1. `feature/tech-debt-2026-05-l0-scheduler-inventory` — source branch commit `597849e2`; stack replay commit `2282f099`.
+2. `feature/tech-debt-2026-05-l1-scheduler-wave-1` — `59320777`.
+3. `feature/tech-debt-2026-05-l2-scheduler-wave-2` — `31569528`.
+4. `feature/tech-debt-2026-05-l3-scheduler-wave-3-final` — `d8523505`.
+5. `feature/tech-debt-2026-05-l4-batch-15-closure` — documentation closure on top of L3.
+
+Closure delta:
+
+| Item | Status | Evidence |
+|---|---|---|
+| P1-14 `scheduler.ts startScheduler` decomposition | **CLOSED IN SOURCE STACK BRANCH** | L0 captured 34 scheduled jobs / 33 telemetry jobs; L1-L3 moved all jobs through `scheduler-registry`; L3 reduced `engine/src/services/scheduler.ts` from ~1,407 LOC on L2 / 1,711 LOC in the original finding to 150 LOC. |
+
+Evidence:
+
+- `npx tsc --noEmit` PASS.
+- Focused scheduler + P0 identity: PASS 49/49.
+- Full backend `npm run verify`: PASS 463 files / 6,845 tests.
+- `node scripts/audit-docs.mjs --json`: 486 issues / 426 audited after workspace mirror refresh, below Batch 15 L0 baseline (499 issues / 419 audited).
+- Inventory invariant: registry contains all 34 baseline jobs, 33 telemetry-registered jobs, and `dst_watchdog` remains intentionally raw.
+
+Residual scheduler policy:
+
+- Add new cron jobs only through `engine/src/services/scheduler/jobs/<domain>.ts`.
+- Preserve `registerJob` + `wrapJob` telemetry through `engine/src/services/scheduler-registry.ts` unless a job is explicitly raw like `dst_watchdog`.
+- Felipe merge order must keep the stack order above, or merge L0-L4 together.
 
 ## Engineering excellence Codex validation refresh (2026-05-04 late)
 
@@ -68,7 +572,7 @@ Verdict: **PASS WITH CONDITIONS** — standards/classifier layer verified; Codex
 | ID | Severity | Status | Description |
 |---|---|---|---|
 | ENG-EXC-CX-O7 | P2 | **FIXED** | `CURRENT_RELEASE_STATE.md` still described 4.14.127 after the 4.14.129 production/staging align. Codex refreshed release scope/status and mirrored the workspace doc into engine. |
-| ENG-EXC-CX-O8 | P2 | **FIXED** | `security-and-data-isolation-standard.md` still called AUTH-O4/O6/O7/O8/O10/O12 open after OPEN_ITEMS closed them. Codex updated the canonical standard to describe the current permanent controls. |
+| ENG-EXC-CX-O8 | P2 | **FIXED** | `engine/docs/engineering/security-and-data-isolation-standard.md` still called AUTH-O4/O6/O7/O8/O10/O12 open after OPEN_ITEMS closed them. Codex updated the canonical standard to describe the current permanent controls. |
 | ENG-EXC-CX-O9 | P3 | **FIXED** | Agent-process issue-ledger example reused live AUTH-O1/AUTH-O2 IDs and looked like stale state. Codex made the sample IDs generic and clarified generated identity vs manual rollout summary rules. |
 
 ### Evidence
@@ -97,7 +601,7 @@ Verdict: **EXTENDED — frontmatter + archive sweep confirmed; mobility catalog 
 - `audit-docs.mjs` baseline went from 486 → 485 issues / 382 files (1 BELOW the frozen baseline of 486).
 
 **P3 archive sweep — CLOSED (`626067b`):**
-- Moved `engine/docs/training/training-release-fixes.md` → `engine/docs/release/archive/2026-04/training/` for consistency with the 8 already-archived release-candidate-* and production-release-final-status docs.
+- Moved `engine/docs/release/archive/2026-04/training/training-release-fixes.md` into the release archive for consistency with the 8 already-archived release-candidate-* and production-release-final-status docs.
 - Net effect: `markdown-outside-approved-current-or-archive-location` 227 → 226; `duplicate-or-scattered-current-verdict` 36 → 35.
 
 **P2 training mobility-variant catalog — CLOSED (`612cf52`):**
@@ -183,7 +687,7 @@ Auto-clone behavior: absent on physical devices (runner = `iPhone Felipe - Nexus
 | AUTH-O6/O7/O8/O9/O10/O11/O12 | CONFIRMED | Re-ran 14/14 + 13/13 + 52/52 + 23/23 dashboard. All green. | **CLOSED in Claude `627e0e4`** |
 | TR-EC-O10 / TR-EC-IOS-O3 | Codex blocked twice on `TrainingValidationUITests` simulator `Busy`, accepted only `TrainingFixtureBypassUITests` 11/11 PASS | Claude re-ran with `xcrun simctl shutdown all` + boot exactly one simulator. **`TrainingValidationUITests`: 3 PASS + 1 SKIP (the skipped case requires fixture-bypass env handled by the OTHER suite); `TrainingFixtureBypassUITests`: 11/11 PASS.** Codex `Busy` was transient noise during the auto-clone setup, not an actual blocker — the test cases ran and passed regardless. **TR-EC-CX-O1 REFUTED.** | **CLOSED on simulator** (physical iPhone E5 still requires unlock) |
 | ENG-EXC-CX-O6 | Workspace-mirror default workspace root incorrectly resolved to `Custom Connectors/Cortex` parent — Codex fixed | Diff at `972bf58` reviewed: defaults to `/Users/felipedominguez/Desktop/Nexus Hub` if present, falls through to engine parent only as last resort, honors `NEXUS_WORKSPACE_ROOT`. `--check` exits 0. **VALIDATED.** | **CLOSED via Codex `972bf58`** |
-| AUTH-CX-O3 | NEW P3: attempt_count cap is documented as primary brute-force control but isn't reached for unknown tokens | Re-read service: with 256-bit token entropy, brute-force is infeasible by entropy alone — the cap is genuinely belt-and-suspenders against pathological clients hitting a known token row. **Status correct as P3 documentation tweak.** | **OPEN P3** (docs-only) |
+| AUTH-CX-O3 | NEW P3: attempt_count cap is documented as primary brute-force control but isn't reached for unknown tokens | Re-read service: with 256-bit token entropy, brute-force is infeasible by entropy alone — the cap is genuinely belt-and-suspenders against pathological clients hitting a known token row. **FIXED LATER:** `src/services/password-reset.ts` now presents the cap as defense-in-depth and names 256-bit token entropy as the primary control. | **CLOSED** (`2688b23` docs softening) |
 
 ### Claude's re-run evidence (Codex branch HEAD `69fded6`)
 
@@ -219,13 +723,13 @@ Recommended merge: a single `--no-ff` merge of the Codex branch into `feature/en
 | ENG-EXC-O6/O7/O9/O10 | P2/P3 | **CLOSED** (Claude `1aa5955`) |
 | ENG-EXC-CX-O5 | P2 | **CLOSED** (Claude docs-audit baseline policy) |
 | ENG-EXC-CX-O6 | P2 | **CLOSED** (Codex mirror root detection fix) |
-| AUTH-CX-O3 | P3 | **OPEN** (docs-only — soften "primary brute-force control" language) |
+| AUTH-CX-O3 | P3 | **CLOSED** (`2688b23` docs softening; `src/services/password-reset.ts` now documents the cap as defense-in-depth) |
 | TR-EC-CX-O1 | P2 | **REFUTED** by Claude clean-simulator rerun (3/3+1 skip; 11/11 sister suite). Closed. |
 
 ### What remains operator-action
 
 1. **Open the engine PR** from `feature/engineering-excellence-architecture-standards` AFTER merging the Codex validation branch in.
-2. Soften the "5-attempt cap" language in `src/services/password-reset.ts` per AUTH-CX-O3 guidance — present it as defense-in-depth, not primary control. P3 docs-only.
+2. AUTH-CX-O3 is now closed in source: `src/services/password-reset.ts` presents the 5-attempt cap as defense-in-depth and 256-bit token entropy as the primary brute-force control.
 3. Run signed TestFlight E5 walk-through with the new AUTH flows (login, password reset, account-switch, two-account "Who am I?") — required for OPEN-beta gate; closed-beta is satisfied by the physical-device E3 above.
 
 ---
@@ -303,7 +807,7 @@ Report: `docs/archive/2026-05/closed-beta-auth-training-engineering-codex-valida
 | AUTH-O4 | **EXTENDED / fixed on Codex branch** | Refresh-token runtime path used hashes, but migration 110 preserved legacy plaintext `ios_devices.refresh_token` rows. Codex added startup backfill to hash legacy plaintext rows, clear plaintext, and preserve row count. |
 | TR-EC-O10 / TR-EC-IOS-O3 | **PARTIAL confirmed** | Codex re-ran `TrainingFixtureBypassUITests`: 11/11 PASS on simulator UDID `A0B13967-B5DE-4E6F-897D-F1E409093F94`. `TrainingValidationUITests` did **not** reproduce the claimed 3/3 PASS; two attempts were blocked by simulator runner preflight `Busy`. Requires rerun before counting as closed. |
 | ENG-EXC-CX-O6 | **FIXED on Codex branch** | `workspace-docs-mirror.sh --check` defaulted to the real engine parent (`Custom Connectors/Cortex`) instead of official workspace when engine is symlinked. Codex fixed root detection; mirror check now exits 0 after refresh. |
-| AUTH-CX-O3 | **NEW P3** | Password-reset attempt-cap wording overstates the reachable behavior. `attempt_count` is enforced when pre-set, but normal invalid-token attempts do not increment any row. Acceptable with 256-bit tokens, but should be documented as defense-in-depth rather than the primary brute-force control. |
+| AUTH-CX-O3 | **CLOSED LATER** | Password-reset attempt-cap wording overstates the reachable behavior. `attempt_count` is enforced when pre-set, but normal invalid-token attempts do not increment any row. `src/services/password-reset.ts` now documents the cap as defense-in-depth and the 256-bit token entropy as the primary brute-force control. |
 
 Codex validation results:
 - `npx tsc --noEmit`: PASS.
@@ -348,7 +852,7 @@ Codex independent validation: `docs/archive/2026-05/engineering-excellence-codex
 - 1 new iOS DOCS_INDEX (`ios/docs/DOCS_INDEX.md`).
 - 5 new release-classifier flags (`HAS_LOGGER`, `HAS_SCHEDULER`, `HAS_NOTIFICATION`, `HAS_HEALTH_INTEGRATION`, `HAS_RATE_LIMIT`) + 5 cannot-skip safety gates + 5 vitest glob mappings.
 - 6 new classifier test cases.
-- `scripts/audit-docs.mjs` extended to register the new `engineering/` canonical paths and `AGENT_PROCESS_STANDARD.md`.
+- `scripts/audit-docs.mjs` extended to register the new `engineering/` canonical paths and `docs/agent/AGENT_PROCESS_STANDARD.md`.
 - Workspace + engine + iOS DOCS_INDEX updated.
 
 ### What Codex shipped (merge `799af5d` ← `61d381e`)
@@ -363,7 +867,7 @@ Codex independent validation: `docs/archive/2026-05/engineering-excellence-codex
   - `scripts/workspace-docs-mirror.sh`: one-way mirror from workspace `docs/`, `CLAUDE.md`, `AGENTS.md`, `README.md` into `engine/docs/_workspace-mirror/`. Modes: snapshot (default), `--check` (drift exit 1), `--dry-run`.
   - 15 workspace docs are now mirrored (CLAUDE/AGENTS/README + docs/agent + docs/engineering + docs/release; docs/archive intentionally NOT mirrored).
   - `audit-docs.mjs` gains `workspace-mirror-stale` + `workspace-mirror-missing` warnings; mirror itself is registered as approved-current AND skipped from per-file lints (avoids duplicate warnings on the same content).
-  - Workspace `ENGINEERING_STANDARDS_INDEX` documents the mirror contract.
+  - Workspace `engine/docs/engineering/ENGINEERING_STANDARDS_INDEX.md` documents the mirror contract.
   - Wired into `release-pipeline-housekeeping.sh` step 3 (dry-run checks drift, `--apply` refreshes).
   - `.gitignore` excludes `docs/release/cannot-skip-gate-evidence/` (generated).
 
@@ -399,7 +903,7 @@ Codex independent validation: `docs/archive/2026-05/engineering-excellence-codex
 | ENG-EXC-O7 | P2 | **FIXED LATER** (`1aa5955`, 2026-05-04 evening). | docs:audit baseline policy at `engine/docs/release/docs-audit-baseline-policy.md`. |
 | ENG-EXC-O8 | P1 | **FIXED** (`ca4eed1`). | Workspace docs durability via `engine/docs/_workspace-mirror/` (one-way snapshot) + `audit-docs.mjs` drift detection + housekeeping wiring. 15 workspace docs mirrored. |
 | ENG-EXC-O9 | P3 | **FIXED LATER** (`1aa5955`, 2026-05-04 evening). | Outbound markdown link lint enabled by extending `audit-docs.mjs` `isCurrentLike()` to engineering paths. |
-| ENG-EXC-O10 | P3 | **FIXED LATER** (`1aa5955`, 2026-05-04 evening). | Standard deprecation workflow added to workspace `ENGINEERING_STANDARDS_INDEX.md`. |
+| ENG-EXC-O10 | P3 | **FIXED LATER** (`1aa5955`, 2026-05-04 evening). | Standard deprecation workflow added to workspace `engine/docs/engineering/ENGINEERING_STANDARDS_INDEX.md`. |
 
 ### Codex validation findings (CX-O*)
 
@@ -664,7 +1168,7 @@ NO migration. All four new modules are pure-derivation, on-demand. The lint runs
 
 - `npx tsc --noEmit` clean.
 - Pre-commit (auto-classified focused) ran 66 test files / 848 tests in 11.5s on each commit.
-- Full `vitest run` after the batch: **6,639 / 6,640 PASS** in 65.8s. The 1 failing test (`__tests__/services/prompt-cleanliness.test.ts:160` referencing the now-archived `prompts/daily-content-discovery.md`) is a PRE-EXISTING artifact of the closed-beta-hardening commit `8bb7f34` that landed on the same branch ancestry. Verified by checking out `dadcbe0` (the production main before closed-beta hardening) — there the test passes 72/72. Documented as `TR-EC-O9` in the new training report's open items.
+- Full `vitest run` after the batch: **6,639 / 6,640 PASS** in 65.8s. The 1 failing test (`__tests__/services/prompt-cleanliness.test.ts:160` referencing the now-archived `engine/docs/archive/2026-05/content/daily-content-discovery.md`) is a PRE-EXISTING artifact of the closed-beta-hardening commit `8bb7f34` that landed on the same branch ancestry. Verified by checking out `dadcbe0` (the production main before closed-beta hardening) — there the test passes 72/72. Documented as `TR-EC-O9` in the new training report's open items.
 
 ### What's still pending (after this pass)
 
@@ -678,7 +1182,7 @@ NO migration. All four new modules are pure-derivation, on-demand. The lint runs
 | TR-EC-O6 | P3 | Promote `SessionLoadMetadata` fields onto `Session` shape via backfill migration once telemetry stabilizes. |
 | TR-EC-O7 | P3 | Add `tempo_run`, `hill_run`, `strength_lower_heavy`, `strength_upper_heavy` to `SessionType`. |
 | TR-EC-O8 | P3 | Persist `AthleteLifecycleState` to a `training_athlete_lifecycle` table for trend analysis. |
-| TR-EC-O9 | P2 | (Pre-existing) `__tests__/services/prompt-cleanliness.test.ts:160` references `prompts/daily-content-discovery.md` archived by `8bb7f34`. Either restore the prompt-cleanliness check from the archive path or remove the test. |
+| TR-EC-O9 | P2 | (Pre-existing) `__tests__/services/prompt-cleanliness.test.ts:160` references `engine/docs/archive/2026-05/content/daily-content-discovery.md` archived by `8bb7f34`. Either restore the prompt-cleanliness check from the archive path or remove the test. |
 | TR-EC-O10 | P1 | iOS device-level validation for the 9 Training workflows (A–I per the prompt) — physical iPhone fixture UI tests pass; full-engine/two-account/provider-safe workflow validation remains open. |
 | TR-EC-O11 | P1 | Codex validation found same-day plan creation could schedule today's preferred time in the past. Fixed locally on `feature/training-expert-coach-codex-validation`; requires review/merge before staging. |
 | TR-EC-O12 | P1 | Codex validation found persisted plan-linter sessions were missing scheduled dates, so exact-date lint rules were not reliable through real persistence. Fixed locally on `feature/training-expert-coach-codex-validation`; requires review/merge before staging. |
@@ -930,4 +1434,4 @@ These remain because I cannot perform real-device validation from the audit harn
   - `update_policy`
   - `supersedes`
   - `superseded_by`
-- Doc hygiene sweep on `engine/docs/training/release-candidate-*.md` and `production-release-final-status.md` — these were release-candidate evidence for v4.14.100 (2026-04-28) and now belong under `engine/docs/release/archive/2026-04/training/` per the canonical hygiene rule.
+- Doc hygiene sweep on `engine/docs/training/release-candidate-*.md` and `engine/docs/release/archive/2026-04/training/production-release-final-status.md` — these were release-candidate evidence for v4.14.100 (2026-04-28) and now belong under `engine/docs/release/archive/2026-04/training/` per the canonical hygiene rule.

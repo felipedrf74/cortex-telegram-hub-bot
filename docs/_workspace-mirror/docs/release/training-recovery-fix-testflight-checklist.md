@@ -1,5 +1,10 @@
 # Training Recovery Fix + Cross-User Isolation TestFlight Smoke Checklist
 
+Status: canonical
+Owner: release lead (Felipe)
+Last verified: 2026-05-03
+Update policy: update when signed-device recovery validation steps change.
+
 Created: 2026-05-03
 
 This checklist closes the workspace P1 validation gaps (cross-user isolation,
