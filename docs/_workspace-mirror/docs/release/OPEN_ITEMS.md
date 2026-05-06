@@ -20,6 +20,65 @@ BATCH-13-J1-AUTHORIZED: base=feature/tech-debt-2026-05-f4-mock-ratchet-stack
 - Closed annotation: J1 ran on the authorized F4 stack and is closed in source at `feature/tech-debt-2026-05-j1-mock-ratchet-640` (`e4884c2b`), lowering the staged strict baseline from 655 to 640 with current partial mocks at 637. Marker retained for audit trail; do not reuse for other workstreams.
 - Expires: closed by Batch 13 J1. D5/F4 still need to land on `main` before strict mock lint is a `main` gate.
 
+BATCH-21-Q-MERGES-AUTHORIZED: base=local-main-post-Batch-19
+- Granted by Felipe via Batch 21 unblock prompt on 2026-05-06.
+- Scope: Codex may merge Batch 20 branches into local `main` only when the Batch 20 closure report marks the corresponding Q workstream CLOSED. Q1/Q2/Q4 were merged; Q3 was not merged because it was BLOCKED.
+- Closed annotation: honored in Batch 21 pre-flight unblock; post-merge local `main` became `5d3ab548`. Marker retained for audit trail.
+
+BATCH-21-J2-AUTHORIZED: base=feature/tech-debt-2026-05-j2-python-pytest-expansion-3
+- Granted by Felipe in Batch 21 prompt.
+- Scope: Codex may merge the Batch 13 J2 Python pytest stack into local `main` and expand content-engine pytest to 130+ cases.
+- Closed annotation: honored in R4; content-engine pytest reached 135 passing cases on `feature/tech-debt-2026-05-r4-python-pytest-j2-landing` (`dee6ba63`).
+
+BATCH-21-F4-TARGET-RESET-AUTHORIZED: formula=max(600,current_baseline-15)
+- Granted by Felipe in Batch 21 prompt.
+- Scope: only applies if Batch 20 Q3 stopped because the F4 ratchet target was no longer meaningful.
+- Closed annotation: recorded but not exercised in Batch 21 because Batch 20 Q3 was BLOCKED by D5 rebase conflicts, not by target judgment. D5/F4 refresh remains a manual-reconciliation follow-up.
+
+BATCH-21-GENAI-MIGRATION-PHASE-1-AUTHORIZED: phase=dependency-plus-adapter-only
+- Granted by Felipe in Batch 21 prompt.
+- Scope: add `@google/genai`, create an adapter shim for the current Gemini call surface, and verify existing tests without changing production call sites. Phases 2-4 remain unauthorized.
+- Closed annotation: honored in R7 at `feature/tech-debt-2026-05-r7-genai-migration-phase-1` (`6c16bad1`), with `@google/genai@1.52.0` pinned and adapter tests passing.
+
+## Tech-debt Batch 21 — engineering closure + authorized expansions (2026-05-06)
+
+Report:
+`docs/archive/2026-05/tech-debt-validation/codex-batch-21-remediation.md`.
+
+Verdict: **CLOSED / CONDITIONAL SKIPS HONORED**. Batch 21 merged the closed
+Batch 20 workstreams into local `main`, closed PM2 recovery observability, JWT
+rotation key-id support, GH Actions reachability documentation, Python pytest
+J2 landing plus expansion, and `@google/genai` migration phase 1. R5 and R6
+were skipped by their conditions.
+
+Branches:
+
+- `feature/tech-debt-2026-05-r1-pm2-recovery-self-heal` (`c23d748a`)
+- `feature/tech-debt-2026-05-r2-jwt-rotation-key-id` (`aef9fa9d`)
+- `feature/tech-debt-2026-05-r3-gh-actions-ipv6` (`a78b6922`)
+- `feature/tech-debt-2026-05-r4-python-pytest-j2-landing` (`dee6ba63`)
+- `feature/tech-debt-2026-05-r7-genai-migration-phase-1` (`6c16bad1`)
+- `feature/tech-debt-2026-05-r8-batch-21-closure` — integrated closure branch.
+
+Closure delta:
+
+| Finding / Workstream | Status | Evidence |
+|---|---|---|
+| P2-38 PM2 recovery | **CLOSED IN SOURCE BRANCH** | `/health/detailed` now includes PM2 process health and records error-monitor alerts for restart-loop/non-online process state. Focused tests passed: 2 files / 14 tests. |
+| P2-40 JWT rotation | **CLOSED IN SOURCE BRANCH** | iOS JWT issuance includes `kid`; verification supports multi-key rotation and legacy no-`kid` fallback. Focused tests passed: 3 files / 33 tests. |
+| P2-44 GH Actions IPv6 reachability | **DOCUMENTED / RUNNER DEPENDENCY CLARIFIED** | Hosted workflow probes Cloudflare HTTPS health only; SSH stays self-hosted-runner gated. |
+| Python pytest workstream | **CLOSED IN SOURCE STACK BRANCH** | J2 merged under authorization and expanded to 135 content-engine pytest cases. |
+| `@google/genai` migration Phase 1 | **CLOSED IN SOURCE BRANCH** | `@google/genai@1.52.0` pinned; compatibility adapter and phase plan added; no production call sites switched. |
+| D5/F4 target reset | **SKIPPED BY CONDITION** | Batch 20 Q3 was blocked by D5 rebase conflicts rather than target reset. |
+
+Open next actions:
+
+1. Authorize GenAI Phase 2 when ready: switch `gemini-provider.ts` import
+   boundary to the adapter and keep the old SDK installed for rollback.
+2. Manually reconcile D5 rebase conflicts before retrying the F4 mock ratchet.
+3. Treat self-hosted runner setup as an operator/infra workstream, using the
+   Batch 21 prerequisites doc.
+
 ## Tech-debt Batch 20 — content-references admin split + state isolation closure (2026-05-06)
 
 Report:
