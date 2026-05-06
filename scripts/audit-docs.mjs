@@ -81,6 +81,10 @@ const approvedCurrentFiles = new Set([
   // Approve the location without promoting the stale handoff body into
   // current-like broken-link scanning; archival cleanup remains tracked.
   path.join(backendRoot, 'docs', 'agents', 'claude', 'handoff.md'),
+  // Batch 19 P2: one-off but current security audit for the content-reference
+  // owner-scope boundary. Approve the exact file rather than all
+  // docs/security/** so future security notes still need DOCS_INDEX routing.
+  path.join(backendRoot, 'docs', 'security', 'content-references-scope-audit.md'),
 ]);
 
 const verdictPattern =
