@@ -34,6 +34,7 @@ vi.mock('../../src/services/database', () => ({
 }));
 
 vi.mock('../../src/services/audit-trail', () => ({
+  getAuditTrail: vi.fn(() => []),
   logAudit: vi.fn(),
 }));
 
