@@ -1,5 +1,8 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Router, type Request, type Response } from 'express';
+import Database from 'better-sqlite3';
+
+let testDb: Database.Database;
 
 vi.mock('../../src/utils/logger', () => ({
   logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn(), trace: vi.fn(), child: vi.fn().mockReturnThis() },
@@ -8,6 +11,14 @@ vi.mock('../../src/utils/logger', () => ({
 
 vi.mock('../../src/services/content-cache-invalidator', () => ({
   invalidateContentDerivedCaches: vi.fn(),
+}));
+
+vi.mock('../../src/services/database', () => ({
+  getDb: () => testDb,
+  initDatabase: vi.fn(),
+  closeDatabase: vi.fn(),
+  findUnexpectedMigrationPrefixCollisions: vi.fn(() => []),
+  assertNoUnexpectedMigrationPrefixCollisions: vi.fn(),
 }));
 
 vi.mock('../../src/services/content-intelligence', () => ({
@@ -160,7 +171,12 @@ async function dispatch(
 
 describe('content topic routes', () => {
   beforeEach(() => {
+    testDb = new Database(':memory:');
     vi.clearAllMocks();
+  });
+
+  afterEach(() => {
+    testDb.close();
   });
 
   it('reads and writes radar preferences through explicit user scope', async () => {

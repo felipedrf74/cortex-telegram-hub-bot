@@ -5,6 +5,7 @@ const mocks = vi.hoisted(() => ({
   updateAssistantMessage: vi.fn(),
   addToConversation: vi.fn(),
   syncLastAssistantConversationMessage: vi.fn(),
+  emitDomainEvent: vi.fn(),
 }));
 
 vi.mock('../../src/services/chat-history-store', () => ({
@@ -15,6 +16,24 @@ vi.mock('../../src/services/chat-history-store', () => ({
 vi.mock('../../src/state/conversation', () => ({
   addToConversation: (...args: unknown[]) => mocks.addToConversation(...args),
   syncLastAssistantConversationMessage: (...args: unknown[]) => mocks.syncLastAssistantConversationMessage(...args),
+}));
+
+vi.mock('../../src/services/event-outbox', () => ({
+  cancelEvent: vi.fn(),
+  claimPendingEvents: vi.fn(() => []),
+  emitDomainEvent: (...args: unknown[]) => mocks.emitDomainEvent(...args),
+  ensureEventOutboxTables: vi.fn(),
+  getEventSequenceBounds: vi.fn(() => ({ min: 0, max: 0 })),
+  listDeadLetterEvents: vi.fn(() => []),
+  listEventsForScope: vi.fn(() => ({ changes: [], hasMore: false })),
+  markEventFailed: vi.fn(() => 'failed'),
+  markEventProcessed: vi.fn(),
+  processPendingEvents: vi.fn(async () => ({ processed: 0, failed: 0 })),
+  replayEvent: vi.fn(() => false),
+  replayEventsForType: vi.fn(() => 0),
+  runOutboxTransaction: (operation: (emitDomainEvent: typeof mocks.emitDomainEvent) => unknown) =>
+    operation(mocks.emitDomainEvent),
+  sanitizeEventPayload: vi.fn((payload: Record<string, unknown>) => payload),
 }));
 
 import {
@@ -69,6 +88,15 @@ describe('chat-persistence', () => {
       retryOfMessageId: 'u-1',
       requestId: null,
     });
+    expect(mocks.emitDomainEvent).toHaveBeenCalledWith(expect.objectContaining({
+      tenantId: 1001,
+      userId: 42,
+      sourceSkill: 'chat',
+      eventType: 'chat.message.created',
+      entityType: 'chat_message',
+      entityId: 'a-1',
+      idempotencyKey: 'chat.message.created:1001:42:a-1',
+    }));
   });
 
   it('syncs shortcut conversation turns', () => {

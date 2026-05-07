@@ -25,6 +25,7 @@ import { splitMessage, escapeHtml } from '../utils/telegram-formatter';
 import { formatTime } from '../utils/date-parser';
 import { resolveCanonicalUserId } from '../services/user-service';
 import { getTaskProviderForUser } from '../services/task-store/task-router';
+import { runTelegramDomainHandlerWithToolAuthorization } from './chat-tool-auth-context';
 
 // ── Types ─────���───────────────────────────────────────────────────
 
@@ -87,7 +88,10 @@ export async function handlePhotoMessage(
       if (domainFromCaption && domainFromCaption !== 'secretary') {
         const handler = domainHandlers[domainFromCaption];
         const photoContext = `[Photo attached] ${caption}`;
-        const response = await handler(photoContext, userId);
+        const response = await runTelegramDomainHandlerWithToolAuthorization(
+          userId,
+          () => handler(photoContext, userId),
+        );
         if (userId) lastActiveDomain.set(userId, { domain: domainFromCaption, timestamp: Date.now() });
         const parts = splitMessage(response.text);
         for (const part of parts) {

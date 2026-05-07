@@ -77,6 +77,8 @@ export interface PushNotificationPayload {
   threadId?: string;
   /** Notification category — maps to iOS UNNotificationCategory actions. */
   category?: string;
+  /** APNs interruption level. Keep critical out until entitlement/product policy is explicit. */
+  interruptionLevel?: 'passive' | 'active' | 'time-sensitive';
 }
 
 export interface SendResult {
@@ -337,6 +339,7 @@ async function dispatchOne(
   if (payload.sound !== undefined) apsPayload.sound = payload.sound;
   if (payload.threadId) apsPayload['thread-id'] = payload.threadId;
   if (payload.category) apsPayload.category = payload.category;
+  if (payload.interruptionLevel) apsPayload['interruption-level'] = payload.interruptionLevel;
 
   const body: Record<string, unknown> = { aps: apsPayload };
   if (payload.data) Object.assign(body, payload.data);

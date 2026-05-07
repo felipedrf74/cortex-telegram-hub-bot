@@ -22,6 +22,7 @@ vi.mock('../../src/services/database', () => ({
   initDatabase: vi.fn(),
   closeDatabase: vi.fn(),
   findUnexpectedMigrationPrefixCollisions: vi.fn(() => []),
+  assertNoUnexpectedMigrationPrefixCollisions: vi.fn(),
 }));
 
 vi.mock('../../src/utils/logger', () => ({
@@ -40,7 +41,16 @@ vi.mock('../../src/config', () => ({
 
 vi.mock('../../src/services/unified-calendar', () => ({
   createEvent: (...args: unknown[]) => mockCalendarCreateEvent(...args),
+  deleteEvent: vi.fn(),
+  deduplicateEvents: vi.fn((events: unknown[]) => events),
+  eventFingerprint: vi.fn(() => 'event-fingerprint'),
+  getConfiguredSources: vi.fn(() => []),
+  getEvents: vi.fn(async () => []),
+  getEventsWithDiagnostics: vi.fn(async () => ({ events: [], status: 'ready', sources: [] })),
+  hasConnectedCalendarForUser: vi.fn(() => false),
+  hasWritableCalendarForUser: vi.fn(() => false),
   isAnyCalendarConfigured: (...args: unknown[]) => mockIsAnyCalendarConfigured(...args),
+  updateEvent: vi.fn(),
 }));
 
 vi.mock('../../src/services/cooking-cache-invalidator', () => ({
@@ -48,6 +58,7 @@ vi.mock('../../src/services/cooking-cache-invalidator', () => ({
 }));
 
 vi.mock('../../src/services/cooking-secretary-integration', () => ({
+  buildCookingMealPrepSchedulingIntent: vi.fn(),
   submitCookingMealPrepSchedulingIntent: (...args: unknown[]) => mockSubmitCookingMealPrepSchedulingIntent(...args),
 }));
 
@@ -60,6 +71,7 @@ import { publishHighLegLoad, publishLowSleep } from '../../src/services/training
 import { setDbProvider } from '../../src/services/intelligence-bus';
 import { addTransaction } from '../../src/services/finance-tracker';
 import { submitSecretarySchedulingIntent } from '../../src/services/secretary-scheduling-arbitrator';
+import { listNotificationCenterItems } from '../../src/services/notification-orchestrator';
 
 function applyMigrations(db: Database.Database): void {
   db.exec(`CREATE TABLE IF NOT EXISTS _migrations (id INTEGER PRIMARY KEY, filename TEXT UNIQUE, applied_at TEXT DEFAULT (datetime('now')))`);
@@ -503,6 +515,61 @@ describe('Cooking API — shopping list item updates', () => {
     expect(res.body.data.preferences.summary).toContain('Allergies: peanuts');
   });
 
+  it('rejects recipe writes that conflict with stored allergy memory', async () => {
+    const user = getOrCreateUser(210181, { username: 'cook18a' });
+    await dispatch('POST', '/preferences', user.id, {
+      kind: 'allergy',
+      value: 'peanuts',
+      source: 'chat_correction',
+    }, 101);
+
+    const res = await dispatch('POST', '/recipes', user.id, {
+      title: 'Peanut noodles',
+      ingredients: [
+        { name: 'Peanuts', quantity: '30', unit: 'g' },
+        { name: 'Noodles', quantity: '100', unit: 'g' },
+      ],
+    }, 101);
+
+    expect(res.statusCode).toBe(400);
+    expect(res.body.error).toMatchObject({
+      code: 'BAD_REQUEST',
+      message: 'Cooking item conflicts with a saved allergy preference',
+    });
+    expect(cookingChef.getRecipes(user.id, { tenantId: 101 })).toEqual([]);
+  });
+
+  it('rejects substitution actions that would introduce a stored allergy', async () => {
+    const user = getOrCreateUser(210182, { username: 'cook18b' });
+    const recipe = addRecipe(user.id, 'Peanut noodles', [
+      { name: 'Peanuts', quantity: '30', unit: 'g' },
+      { name: 'Noodles', quantity: '100', unit: 'g' },
+    ], { tenantId: 101 });
+    setMealPlan(user.id, '2026-04-13', 'dinner', 'Peanut noodles', { recipeId: recipe.id, tenantId: 101 });
+    await dispatch('POST', '/preferences', user.id, {
+      kind: 'allergy',
+      value: 'almonds',
+      source: 'chat_correction',
+    }, 101);
+    mockInvalidateCookingDerivedCaches.mockClear();
+
+    const res = await dispatch('POST', '/meal-plan/substitutions/apply', user.id, {
+      date: '2026-04-13',
+      mealType: 'dinner',
+      originalIngredient: 'Peanuts',
+      suggestedIngredient: 'Almond butter',
+      reason: 'allergy',
+    }, 101);
+
+    expect(res.statusCode).toBe(400);
+    expect(res.body.error).toMatchObject({
+      code: 'BAD_REQUEST',
+      message: 'Cooking item conflicts with a saved allergy preference',
+    });
+    expect(getRecipeById(user.id, recipe.id, 101)!.ingredients.map((ingredient) => ingredient.name)).toEqual(['Peanuts', 'Noodles']);
+    expect(mockInvalidateCookingDerivedCaches).not.toHaveBeenCalled();
+  });
+
   it('accepts a scoped substitution candidate and refreshes the shopping list', async () => {
     const user = getOrCreateUser(21023, { username: 'cook23' });
     const recipe = addRecipe(user.id, 'Peanut noodles', [
@@ -939,5 +1006,12 @@ describe('Cooking API — shopping list item updates', () => {
       .toBeLessThan(mockCalendarCreateEvent.mock.invocationCallOrder[0]);
     expect(mockCalendarCreateEvent).toHaveBeenCalledTimes(1);
     expect(mockInvalidateCookingDerivedCaches).toHaveBeenCalledWith(user.id, { includeCalendarSurfaces: true });
+    const notifications = listNotificationCenterItems(user.id, user.id, { sourceSkill: 'cooking' });
+    expect(notifications).toHaveLength(1);
+    expect(notifications[0]).toMatchObject({
+      sourceSkill: 'cooking',
+      type: 'reminder',
+      safeBody: 'Cooking reminder — open Nexus to view details.',
+    });
   });
 });

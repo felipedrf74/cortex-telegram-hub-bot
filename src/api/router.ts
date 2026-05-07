@@ -36,6 +36,9 @@ import { planRoutes } from './routes/plan';
 import { requireEntitlement } from './entitlement-middleware';
 import { notificationRoutes } from './routes/notifications';
 import { reportRoutes } from './routes/reports';
+import { summaryRoutes } from './routes/summaries';
+import { syncRoutes } from './routes/sync';
+import { eventBackboneAdminRoutes } from './routes/event-backbone-admin';
 
 /**
  * Creates the iOS API router.
@@ -73,6 +76,8 @@ export function createApiRouter(): Router {
         invoices: 'GET/POST/DELETE /api/v1/invoices/{vendors|scan-now} — vendor config + on-demand collection',
         billing: 'GET /api/v1/billing/status, POST /api/v1/billing/{checkout|portal|apple-verify}',
         plan: 'GET /api/v1/plan/{week|today}, POST /api/v1/plan/recompute — multiskill mesh (feature-flagged)',
+        summaries: 'GET /api/v1/summaries/{home|week|training|content|notifications} — fast app read models',
+        sync: 'GET /api/v1/sync/changes?since=cursor — RAMEN-lite delta sync',
       },
       auth_note: 'POST /auth/register with inviteCode to get a JWT. Include as Authorization: Bearer <token> on all other endpoints.',
     });
@@ -102,6 +107,7 @@ export function createApiRouter(): Router {
   // having to register as an iOS device first.
   router.use('/admin/content-dashboard', contentDashboardRoutes());
   router.use('/admin/content', contentAdminWriteRoutes());
+  router.use('/admin/event-backbone', eventBackboneAdminRoutes());
 
   // Apple App Store Server Notifications — public (no JWT).
   // Apple sends lifecycle events (renewal, expiry, refund) server-to-server.
@@ -248,6 +254,8 @@ export function createApiRouter(): Router {
 
   // Aggregated home screen
   router.use('/dashboard', dashboardRoutes());
+  router.use('/summaries', summaryRoutes());
+  router.use('/sync', syncRoutes());
 
   // Token-zero data routes — direct service calls, no AI involvement.
   router.use('/tasks', taskRoutes());

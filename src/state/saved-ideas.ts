@@ -27,11 +27,10 @@ export interface SaveIdeaOptions {
   niche?: string;
   hookIdea?: string;
   whyNow?: string;
-  userId?: number;
+  userId: number;
 }
 
 export function saveIdea(opts: SaveIdeaOptions): SavedIdea;
-export function saveIdea(title: string, sourceDate: string): SavedIdea;
 export function saveIdea(
   titleOrOpts: string | SaveIdeaOptions,
   sourceDateArg?: string,
@@ -40,14 +39,14 @@ export function saveIdea(
 
   // Legacy 2-arg signature
   if (typeof titleOrOpts === 'string') {
-    const result = db.prepare(
-      'INSERT INTO saved_ideas (title, source_date, user_id) VALUES (?, ?, ?)'
-    ).run(titleOrOpts, sourceDateArg!, 0);
-    return db.prepare('SELECT * FROM saved_ideas WHERE id = ?').get(result.lastInsertRowid) as SavedIdea;
+    throw new Error('userId required: use saveIdea({ title, sourceDate, userId })');
   }
 
   // New options signature
   const opts = titleOrOpts;
+  if (!Number.isSafeInteger(opts.userId) || opts.userId <= 0) {
+    throw new Error('userId required: must be a positive integer');
+  }
   const result = db.prepare(`
     INSERT INTO saved_ideas (title, source_date, source, score, workflow_eligible, angle_tag, niche, hook_idea, why_now, user_id)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -61,7 +60,7 @@ export function saveIdea(
     opts.niche || null,
     opts.hookIdea || null,
     opts.whyNow || null,
-    opts.userId ?? 0,
+    opts.userId,
   );
   return db.prepare('SELECT * FROM saved_ideas WHERE id = ?').get(result.lastInsertRowid) as SavedIdea;
 }
@@ -78,6 +77,9 @@ export function saveIdea(
  * variant.
  */
 export function getSavedIdeas(status = 'saved', userId: number): SavedIdea[] {
+  if (!Number.isSafeInteger(userId) || userId <= 0) {
+    throw new Error('userId required: must be a positive integer');
+  }
   const db = getDb();
   return db.prepare(
     'SELECT * FROM saved_ideas WHERE status = ? AND user_id = ? ORDER BY created_at DESC'
@@ -94,6 +96,9 @@ export function getSavedIdeas(status = 'saved', userId: number): SavedIdea[] {
  * callers to declare scope at the type level.
  */
 export function getIdeasBySource(source: string, userId: number, limit = 20): SavedIdea[] {
+  if (!Number.isSafeInteger(userId) || userId <= 0) {
+    throw new Error('userId required: must be a positive integer');
+  }
   const db = getDb();
   return db.prepare(
     'SELECT * FROM saved_ideas WHERE source = ? AND user_id = ? ORDER BY created_at DESC LIMIT ?'
@@ -110,6 +115,9 @@ export function getIdeasBySource(source: string, userId: number, limit = 20): Sa
  * (this pass).
  */
 export function getWorkflowEligibleIdeas(userId: number): SavedIdea[] {
+  if (!Number.isSafeInteger(userId) || userId <= 0) {
+    throw new Error('userId required: must be a positive integer');
+  }
   const db = getDb();
   return db.prepare(`
     SELECT * FROM saved_ideas
@@ -124,24 +132,33 @@ export function getWorkflowEligibleIdeas(userId: number): SavedIdea[] {
 }
 
 /** Mark an idea as promoted to workflow */
-export function markIdeaPromoted(id: number): boolean {
+export function markIdeaPromoted(id: number, userId: number): boolean {
+  if (!Number.isSafeInteger(userId) || userId <= 0) {
+    throw new Error('userId required: must be a positive integer');
+  }
   const db = getDb();
   const result = db.prepare(
-    "UPDATE saved_ideas SET status = 'promoted' WHERE id = ?"
-  ).run(id);
+    "UPDATE saved_ideas SET status = 'promoted' WHERE id = ? AND user_id = ?"
+  ).run(id, userId);
   return result.changes > 0;
 }
 
-export function markIdeaUsed(id: number): boolean {
+export function markIdeaUsed(id: number, userId: number): boolean {
+  if (!Number.isSafeInteger(userId) || userId <= 0) {
+    throw new Error('userId required: must be a positive integer');
+  }
   const db = getDb();
   const result = db.prepare(
-    "UPDATE saved_ideas SET status = 'used' WHERE id = ?"
-  ).run(id);
+    "UPDATE saved_ideas SET status = 'used' WHERE id = ? AND user_id = ?"
+  ).run(id, userId);
   return result.changes > 0;
 }
 
-export function deleteIdea(id: number): boolean {
+export function deleteIdea(id: number, userId: number): boolean {
+  if (!Number.isSafeInteger(userId) || userId <= 0) {
+    throw new Error('userId required: must be a positive integer');
+  }
   const db = getDb();
-  const result = db.prepare('DELETE FROM saved_ideas WHERE id = ?').run(id);
+  const result = db.prepare('DELETE FROM saved_ideas WHERE id = ? AND user_id = ?').run(id, userId);
   return result.changes > 0;
 }

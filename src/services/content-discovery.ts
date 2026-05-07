@@ -11,6 +11,7 @@ import { completeOneShotWithSearch, isGeminiProviderConfigured } from './gemini-
 import { saveIdea } from '../state/saved-ideas';
 import { isDuplicateIdea } from './content-dedup';
 import { getUserLanguage } from './user-service';
+import { isValidTenantUserId } from './tenant-scope-observability';
 
 const client = new Anthropic({ apiKey: config.anthropic.apiKey });
 
@@ -72,11 +73,25 @@ export interface ContentDiscoveryResult {
   provider: 'gemini' | 'anthropic';
 }
 
-export async function runContentDiscovery(userId?: number, tenantId?: number): Promise<ContentDiscoveryResult> {
+export interface RunContentDiscoveryOptions {
+  userId: number;
+  tenantId?: number;
+}
+
+export async function runContentDiscovery(options: RunContentDiscoveryOptions): Promise<ContentDiscoveryResult> {
+  if (!options || typeof options !== 'object') {
+    throw new Error('userId required: content discovery must run with a positive integer user/tenant scope');
+  }
+  const { userId } = options;
+  const tenantId = options.tenantId ?? userId;
+  if (!isValidTenantUserId(userId) || !isValidTenantUserId(tenantId)) {
+    throw new Error('userId required: content discovery must run with a positive integer user/tenant scope');
+  }
+
   const today = now();
   const dateStr = today.toFormat('yyyy-MM-dd');
   const dayName = today.toFormat('cccc');
-  const targetLanguage = userId ? getUserLanguage(userId) : 'pt-BR';
+  const targetLanguage = getUserLanguage(userId);
   const systemPrompt = buildDiscoverySystemPrompt(targetLanguage);
 
   const userMessage = `Today is ${dayName}, ${today.toFormat('LLLL dd, yyyy')}.
@@ -215,8 +230,8 @@ Remember: follow the creator configuration for audience fit, but keep the ideas 
         score,
         workflowEligible: isMainIdea,
         niche: undefined,
-        userId: userId ?? 0,
-      } as any);
+        userId,
+      });
       savedCount++;
     } catch (err) {
       logger.warn({ err, title }, 'Failed to save discovery idea to DB');

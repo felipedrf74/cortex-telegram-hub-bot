@@ -7,6 +7,7 @@ import { getCacheStoreStats } from '../services/cache-store';
 import { getDashboardCacheInvalidationStats } from '../services/dashboard-cache-invalidator';
 import { getStatus as getSentryStatus } from '../services/error-tracker';
 import { getRuntimeStatus } from '../services/runtime-status';
+import { getDb } from '../services/database';
 import { getPm2SupervisorHealth, recordPm2SupervisorAlerts } from '../services/pm2-health';
 import { getJobStatuses, getRecentEvents } from './telemetry';
 import { humanUptime } from './formatters';
@@ -53,12 +54,56 @@ function providerHealthSnapshot(): Record<string, unknown> {
   return {};
 }
 
+type DatabaseProbe = {
+  status: 'connected' | 'disconnected';
+  checkedAt: string;
+  latencyMs: number;
+  errorCode?: 'DB_PROBE_FAILED';
+};
+
+function probeDatabaseHealth(): DatabaseProbe {
+  const startedAt = Date.now();
+  try {
+    const row = getDb().prepare('SELECT 1 as ok').get() as { ok?: number } | undefined;
+    if (row?.ok !== 1) {
+      return {
+        status: 'disconnected',
+        checkedAt: new Date().toISOString(),
+        latencyMs: Date.now() - startedAt,
+        errorCode: 'DB_PROBE_FAILED',
+      };
+    }
+    return {
+      status: 'connected',
+      checkedAt: new Date().toISOString(),
+      latencyMs: Date.now() - startedAt,
+    };
+  } catch {
+    return {
+      status: 'disconnected',
+      checkedAt: new Date().toISOString(),
+      latencyMs: Date.now() - startedAt,
+      errorCode: 'DB_PROBE_FAILED',
+    };
+  }
+}
+
+function overallHealthStatus(
+  runtime: ReturnType<typeof getRuntimeStatus>,
+  databaseProbe: DatabaseProbe,
+): 'healthy' | 'degraded' {
+  return runtime.serviceStatus === 'online' && databaseProbe.status === 'connected'
+    ? 'healthy'
+    : 'degraded';
+}
+
 export function registerPortalHealthRoutes(app: Express, options: HealthRoutesOptions): void {
   // GET /health — public, lightweight service readiness.
   app.get('/health', (_req: Request, res: Response) => {
     const uptimeSec = uptimeSeconds(options.startedAt);
     const runtime = getRuntimeStatus();
-    const status = runtime.serviceStatus === 'online' ? 'healthy' : 'degraded';
+    const databaseProbe = probeDatabaseHealth();
+    const status = overallHealthStatus(runtime, databaseProbe);
 
     res.status(status === 'healthy' ? 200 : 503).json({
       status,
@@ -66,14 +111,15 @@ export function registerPortalHealthRoutes(app: Express, options: HealthRoutesOp
       uptimeHuman: humanUptime(uptimeSec),
       server: {
         status: runtime.serviceStatus,
-        database: runtime.databaseStatus,
+        database: databaseProbe.status,
       },
       bot: {
         polling: runtime.botPolling,
         restarting: runtime.botRestarting,
         lastMessageAt: runtime.lastMessageAt,
       },
-      database: runtime.databaseStatus,
+      database: databaseProbe.status,
+      databaseProbe,
       memory: memoryMb(),
       timestamp: new Date().toISOString(),
     });
@@ -97,6 +143,7 @@ export function registerPortalHealthRoutes(app: Express, options: HealthRoutesOp
 
     const uptimeSec = uptimeSeconds(options.startedAt);
     const runtime = getRuntimeStatus();
+    const databaseProbe = probeDatabaseHealth();
 
     const jobs = getJobStatuses().map(j => ({
       name: j.name,
@@ -135,7 +182,7 @@ export function registerPortalHealthRoutes(app: Express, options: HealthRoutesOp
 
     const pm2 = await getPm2SupervisorHealth();
     const pm2AlertsRecorded = recordPm2SupervisorAlerts(pm2);
-    const status = runtime.serviceStatus === 'online' ? 'healthy' : 'degraded';
+    const status = overallHealthStatus(runtime, databaseProbe);
 
     res.status(status === 'healthy' ? 200 : 503).json({
       status,
@@ -143,14 +190,15 @@ export function registerPortalHealthRoutes(app: Express, options: HealthRoutesOp
       uptimeHuman: humanUptime(uptimeSec),
       server: {
         status: runtime.serviceStatus,
-        database: runtime.databaseStatus,
+        database: databaseProbe.status,
       },
       bot: {
         polling: runtime.botPolling,
         restarting: runtime.botRestarting,
         lastMessageAt: runtime.lastMessageAt,
       },
-      database: runtime.databaseStatus,
+      database: databaseProbe.status,
+      databaseProbe,
       memory: memoryMb(),
       crons: jobs,
       integrations: integrationHealth,

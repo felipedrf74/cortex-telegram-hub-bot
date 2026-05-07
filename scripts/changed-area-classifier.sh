@@ -159,8 +159,10 @@ HAS_HEALTH_INTEGRATION=false  # Garmin/HealthKit/wearable/body-battery
 HAS_RATE_LIMIT=false          # rate-limit middleware + per-account lockout
 HAS_AUDIT=false               # audit trail and audit-event contracts
 HAS_DEPLOY_CONFIG=false       # PM2/deploy config and environment shape
+HAS_EVENT_BACKBONE=false      # event_outbox/jobs/read-models/delta-sync/budgets
 HAS_IOS_NAVIGATION=false      # tab/navigation/view-model responsiveness
 HAS_IOS_DTO=false             # app-facing DTO/decoder contract changes
+HAS_IOS_NOTIFICATION=false    # APNs/local notifications/Decision Center UI
 
 # Use grep-based detection so multiple flags can match a single file.
 # Bash `case` stops at the first match — that's wrong here because e.g.
@@ -186,7 +188,7 @@ match '^__tests__/' && HAS_BACKEND_TEST=true
 match '^src/api/' && HAS_API_ROUTE=true
 
 match '^src/services/coach-kernel/' && { HAS_TRAINING=true; HAS_COACH_KERNEL=true; }
-match '^src/services/training-' && HAS_TRAINING=true
+match '^src/services/training-|^src/api/routes/training' && HAS_TRAINING=true
 match '^src/skills/training/' && HAS_TRAINING=true
 match '^__tests__/services/training-' && HAS_TRAINING=true
 match '^__tests__/services/coach-kernel-' && { HAS_TRAINING=true; HAS_COACH_KERNEL=true; }
@@ -208,17 +210,17 @@ match '^__tests__/services/.*context|^__tests__/services/.*memory|^__tests__/ser
 
 match '^prompts/|^src/skills/.*/prompts/' && HAS_PROMPT=true
 
-match '^src/domains/cooking/|^src/services/cooking-|^src/skills/cooking/' && HAS_COOKING=true
+match '^src/domains/cooking/|^src/services/cooking-|^src/api/routes/cooking|^src/skills/cooking/' && HAS_COOKING=true
 match 'cooking' && match '^__tests__/' && HAS_COOKING=true
 
-match '^src/domains/content/|^src/services/content-|^src/services/voice-|^src/agents/|^content-engine/' && HAS_CONTENT=true
+match '^src/domains/content/|^src/services/content-|^src/services/voice-|^src/api/routes/content|^src/agents/|^content-engine/' && HAS_CONTENT=true
 match '^__tests__/services/content-' && HAS_CONTENT=true
 match '^src/agents/|^__tests__/services/cross-agent-learning|^__tests__/security/content-agent-neutrality' && HAS_CONTENT_AGENT=true
 
-match '^src/domains/finance/|^src/services/finance-|^src/services/invoice-|^src/skills/finance/' && HAS_FINANCE=true
+match '^src/domains/finance/|^src/services/finance-|^src/services/invoice-|^src/api/routes/finance|^src/skills/finance/' && HAS_FINANCE=true
 match '^__tests__/services/finance-|^__tests__/services/invoice-' && HAS_FINANCE=true
 
-match '^src/domains/secretary/|^src/services/secretary-|^src/skills/secretary/' && HAS_SECRETARY=true
+match '^src/domains/secretary/|^src/services/secretary-|^src/api/routes/secretary|^src/skills/secretary/' && HAS_SECRETARY=true
 match '^__tests__/services/secretary-' && HAS_SECRETARY=true
 
 match '^src/portal/|^__tests__/portal/|^scripts/cooking-portal-browser-smoke\.ts$' && HAS_PORTAL=true
@@ -275,10 +277,11 @@ match '^src/utils/logger|^src/utils/redact|^src/utils/log-context|^__tests__/uti
 # task/calendar state. The user-scope test pins per-tenant iteration.
 match '^src/services/scheduler|^src/services/cron|^src/services/job-|^__tests__/services/scheduler-' && HAS_SCHEDULER=true
 
-# Notification / APNs / push routing — APNs token upload, content
-# notification routes, push payload shaping. The closed-beta P0 list
-# includes APNs delivery proof; regressions here block iOS release.
-match '^src/services/apns-|^src/services/notification|^src/api/routes/notifications|^src/api/routes/content-notification|^src/services/content-notifications|^__tests__/services/apns-|^__tests__/services/content-notifications|^__tests__/api/notifications-|^__tests__/api/content-notification-' && HAS_NOTIFICATION=true
+# Notification / APNs / push routing — APNs token upload, Secretary
+# Notification Orchestrator, privacy-safe payload shaping, decision logs,
+# device tokens, and action handling. Regressions here can leak tenant data,
+# spam users, or expose private lock-screen copy.
+match '^src/services/apns-|^src/services/notification|^src/api/routes/notifications|^src/api/routes/content-notification|^src/services/content-notification|^__tests__/services/apns-|^__tests__/services/notification-|^__tests__/services/content-notifications|^__tests__/api/notifications-|^__tests__/api/content-notification-|^__tests__/security/notification-' && HAS_NOTIFICATION=true
 
 # Health integration — Garmin, Apple Health, HealthKit, body-battery,
 # readiness, wearable cache isolation. Cross-user readiness leaks are
@@ -302,6 +305,12 @@ match '^src/services/audit-trail|^src/api/routes/audit-trail|^src/portal/admin-a
 # start and health-check.
 match '(^|/)ecosystem(\.staging)?\.config\.js$|^src/config\.ts$|^__tests__/config|^__tests__/scripts/deploy' && HAS_DEPLOY_CONFIG=true
 
+# Event backbone / jobs / read models / sync / budgets — SQLite-backed
+# projection and delta-sync foundation. These changes must fan out into
+# event/job/idempotency tests, summary endpoint tests, sync cursor tests,
+# and tenant/user isolation checks.
+match '^src/services/event-outbox|^src/services/background-job-queue|^src/services/product-decision-log|^src/services/app-summary-read-models|^src/services/delta-sync|^src/services/resource-budgets|^src/services/event-backbone-worker|^src/api/routes/summaries|^src/api/routes/sync|^migrations/[0-9]+_event_backbone|^__tests__/services/event-backbone|^__tests__/api/event-backbone' && HAS_EVENT_BACKBONE=true
+
 # Detect iOS changes by file path. iOS repo is at ../Nexus Hub IOS/Nexus Hub
 # but in workspace symlink it's `ios/`. Since this script runs from engine,
 # ios files won't appear in this engine diff — included for forward-compat
@@ -321,6 +330,9 @@ while IFS= read -r f; do
   case "$f" in
     *Service.swift|*Repository.swift|*DTO*|*Contract*|*Decoder*|*Response*.swift|*ContractDecoderResilienceTests.swift|*HomeViewStateContractDecodingTests.swift|*TrainingHomeViewStateContractDecodingTests.swift|*ContentHomeContractDecodingTests.swift|*PlanGenerateResponse*Tests.swift) HAS_IOS_DTO=true ;;
   esac
+  case "$f" in
+    *Notification*|*DecisionCenter*|*InboxView.swift|*DeepLinkRouter.swift|*Notification*Tests.swift|*Notification*UITests.swift|*DecisionCenter*Tests.swift|*DecisionCenter*UITests.swift) HAS_IOS_NOTIFICATION=true; HAS_IOS_SRC=true ;;
+  esac
 done <<EOF
 $CHANGED
 EOF
@@ -328,6 +340,7 @@ EOF
 $HAS_IOS_AUTH && HAS_AUTH_OR_TENANT=true
 $HAS_IOS_NAVIGATION && HAS_IOS_SRC=true
 $HAS_IOS_DTO && HAS_IOS_SRC=true
+$HAS_IOS_NOTIFICATION && HAS_IOS_SRC=true
 
 # ── Tier resolution ────────────────────────────────────
 # Tier 0: always.
@@ -368,8 +381,10 @@ $HAS_HEALTH_INTEGRATION && CANNOT_SKIP+=("health-integration-tenant-isolation")
 $HAS_RATE_LIMIT && CANNOT_SKIP+=("auth-rate-limit-and-lockout")
 $HAS_AUDIT && CANNOT_SKIP+=("audit-trail-emission-and-scope")
 $HAS_DEPLOY_CONFIG && CANNOT_SKIP+=("deploy-config-health-rehearsal")
+$HAS_EVENT_BACKBONE && CANNOT_SKIP+=("event-backbone-jobs-sync-tenant-isolation")
 $HAS_IOS_NAVIGATION && CANNOT_SKIP+=("ios-navigation-responsiveness")
 $HAS_IOS_DTO && CANNOT_SKIP+=("ios-contract-decoder-resilience")
+$HAS_IOS_NOTIFICATION && CANNOT_SKIP+=("ios-notification-decision-center")
 
 # Tier 1 if anything non-doc is in scope
 if $HAS_NON_DOC; then
@@ -378,7 +393,8 @@ fi
 
 # Tier 2: app-facing flow surfaces
 if $HAS_API_ROUTE || $HAS_PORTAL || $HAS_PYTHON_ENGINE || $HAS_IOS_UI || \
-   $HAS_TRAINING || $HAS_COOKING || $HAS_CONTENT || $HAS_SECRETARY; then
+   $HAS_TRAINING || $HAS_COOKING || $HAS_CONTENT || $HAS_SECRETARY || \
+   $HAS_EVENT_BACKBONE; then
   TIERS+=("T2")
 fi
 
@@ -424,11 +440,12 @@ if $HAS_NON_DOC; then
     # Engineering-excellence hardening (2026-05-04): wire new flags.
     $HAS_LOGGER && VITEST_GLOBS+=("__tests__/utils/logger-*.test.ts" "__tests__/api/secret-guards.test.ts")
     $HAS_SCHEDULER && VITEST_GLOBS+=("__tests__/services/scheduler-*.test.ts")
-    $HAS_NOTIFICATION && VITEST_GLOBS+=("__tests__/services/apns-*.test.ts" "__tests__/services/content-notifications*.test.ts" "__tests__/api/notifications-*.test.ts" "__tests__/api/content-notification-*.test.ts")
+    $HAS_NOTIFICATION && VITEST_GLOBS+=("__tests__/services/apns-*.test.ts" "__tests__/services/notification-*.test.ts" "__tests__/services/content-notifications*.test.ts" "__tests__/api/notifications-*.test.ts" "__tests__/api/content-notification-*.test.ts" "__tests__/security/notification-*.test.ts" "__tests__/security/p0-chat-identity-isolation.test.ts")
     $HAS_HEALTH_INTEGRATION && VITEST_GLOBS+=("__tests__/services/garmin-*.test.ts" "__tests__/services/apple-health-*.test.ts" "__tests__/services/integration-health-*.test.ts" "__tests__/api/wearable-*.test.ts" "__tests__/api/health-data-*.test.ts" "__tests__/api/garmin-auth-*.test.ts" "__tests__/portal/integration-health-*.test.ts")
     $HAS_RATE_LIMIT && VITEST_GLOBS+=("__tests__/api/rate-limiter.test.ts" "__tests__/security/**/*.test.ts")
     $HAS_AUDIT && VITEST_GLOBS+=("__tests__/services/audit-trail.test.ts" "__tests__/api/authenticated-support-routes-scope.test.ts" "__tests__/portal/portal-admin-audit.test.ts" "__tests__/portal/portal-admin-data-routes.test.ts" "__tests__/portal/portal-admin-data-isolation.integration.test.ts")
     $HAS_DEPLOY_CONFIG && VITEST_GLOBS+=("__tests__/services/config-*.test.ts" "__tests__/portal/health-endpoint*.test.ts" "__tests__/portal/health-endpoints.test.ts" "__tests__/scripts/*.test.ts" "__tests__/security/**/*.test.ts")
+    $HAS_EVENT_BACKBONE && VITEST_GLOBS+=("__tests__/services/event-backbone.test.ts" "__tests__/api/event-backbone-routes.test.ts" "__tests__/security/**/*.test.ts")
     if [ "${#VITEST_GLOBS[@]}" -eq 0 ]; then
       # Backend src/test changed but no domain mapped — fall back to changed-files-only
       VITEST_MODE="changed-only"
@@ -465,6 +482,7 @@ if $HAS_IOS_SRC; then
   $HAS_IOS_AUTH && XCTEST_CLASSES+=("Nexus HubTests/AppleSignInNonceTests" "Nexus HubTests/KeychainHelperTests" "Nexus HubTests/AuthManagerFixtureLeakTests" "Nexus HubTests/AuthManagerPersistenceTests" "Nexus HubTests/AuthUserPresentationTests" "Nexus HubTests/GoogleAuthCallbackResolverTests")
   $HAS_IOS_NAVIGATION && XCTEST_CLASSES+=("Nexus HubTests/NavigationPerformanceSourcePinsTests" "Nexus HubTests/MainTabViewBadgeMemoizationTests" "Nexus HubUITests/AppWideResponsivenessUITests" "Nexus HubUITests/HomeWeekNavigationPerformanceUITests")
   $HAS_IOS_DTO && XCTEST_CLASSES+=("Nexus HubTests/ContractDecoderResilienceTests" "Nexus HubTests/HomeViewStateContractDecodingTests" "Nexus HubTests/TrainingHomeViewStateContractDecodingTests" "Nexus HubTests/ContentHomeContractDecodingTests")
+  $HAS_IOS_NOTIFICATION && XCTEST_CLASSES+=("Nexus HubTests/NotificationManagerTests" "Nexus HubTests/DeepLinkRouterTests" "Nexus HubTests/NotificationDecisionCenterTests" "Nexus HubUITests/NotificationDecisionCenterUITests")
   XCTEST_CLASSES+=("Nexus HubTests/ContractDecoderResilienceTests")
   XCTEST_CLASSES+=("Nexus HubTests/AuthManagerPersistenceTests")
 fi
@@ -546,6 +564,7 @@ emit_json() {
   export CLAS_LOGGER="$HAS_LOGGER"
   export CLAS_SCHEDULER="$HAS_SCHEDULER"
   export CLAS_NOTIFICATION="$HAS_NOTIFICATION"
+  export CLAS_EVENT_BACKBONE="$HAS_EVENT_BACKBONE"
   export CLAS_HEALTH_INTEGRATION="$HAS_HEALTH_INTEGRATION"
   export CLAS_RATE_LIMIT="$HAS_RATE_LIMIT"
   export CLAS_AUDIT="$HAS_AUDIT"
@@ -620,6 +639,7 @@ const payload = {
     logger: flag('CLAS_LOGGER'),
     scheduler: flag('CLAS_SCHEDULER'),
     notification: flag('CLAS_NOTIFICATION'),
+    eventBackbone: flag('CLAS_EVENT_BACKBONE'),
     healthIntegration: flag('CLAS_HEALTH_INTEGRATION'),
     rateLimit: flag('CLAS_RATE_LIMIT'),
     audit: flag('CLAS_AUDIT'),

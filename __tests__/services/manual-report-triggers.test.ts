@@ -63,8 +63,8 @@ describe('manual-report-triggers', () => {
     });
 
     expect(getManualReportTargets()).toEqual([
-      { tenantId: 11, telegramId: 1011 },
-      { tenantId: 22, telegramId: 2022 },
+      { userId: 11, tenantId: 11, telegramId: 1011 },
+      { userId: 22, tenantId: 22, telegramId: 2022 },
     ]);
   });
 
@@ -75,7 +75,7 @@ describe('manual-report-triggers', () => {
     mockGetOwnerBootstrapTarget.mockReturnValue({ tenantId: 17, telegramId: 7001 });
 
     expect(getManualReportTargets()).toEqual([
-      { tenantId: 17, telegramId: 7001 },
+      { userId: 17, tenantId: 17, telegramId: 7001 },
     ]);
   });
 
@@ -103,7 +103,7 @@ describe('manual-report-triggers', () => {
 
     await dispatchContentReports(send);
 
-    expect(mockRunContentDiscovery).toHaveBeenCalledWith(11);
+    expect(mockRunContentDiscovery).toHaveBeenCalledWith({ userId: 11, tenantId: 11 });
     expect(send).toHaveBeenCalledWith(
       1011,
       expect.stringContaining('Idea A'),

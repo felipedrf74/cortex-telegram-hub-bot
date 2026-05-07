@@ -59,6 +59,7 @@ import { splitMessage, escapeHtml } from '../../utils/telegram-formatter';
 import { now } from '../../utils/date-parser';
 import { enqueue, isHtmlParseError } from '../shared-state';
 import { resolveCanonicalUserId } from '../../services/user-service';
+import { resolveUserScopedYoutubeChannelId } from '../../services/youtube-channel-scope';
 import fs from 'fs';
 import path from 'path';
 
@@ -182,7 +183,13 @@ async function handleDiscoverCommand(ctx: Context, mode: 'full' | 'news' | 'plat
     await ctx.reply('\u{1F50D} Running content discovery\u2026 this takes ~2 minutes.', { parse_mode: 'HTML' });
     const typingInterval = setInterval(() => { ctx.replyWithChatAction('typing').catch(() => {}); }, 4000);
     try {
-      const result = await runContentDiscovery();
+      const canonicalUserId = ctx.from?.id ? resolveCanonicalUserId(ctx.from.id) : null;
+      if (!canonicalUserId) {
+        clearInterval(typingInterval);
+        await ctx.reply('\u26A0\uFE0F Content discovery needs a registered Nexus user.');
+        return;
+      }
+      const result = await runContentDiscovery({ userId: canonicalUserId, tenantId: canonicalUserId });
       clearInterval(typingInterval);
       const dateStr = now().toFormat('yyyy-MM-dd');
       let msg = `\u{1F3AC} <b>Content Ideas Ready</b>\n\n`;
@@ -240,7 +247,12 @@ export function registerContentCommands(bot: Bot): void {
         // requires explicit userId. The Telegram /ideas command runs
         // in the legacy operator surface (single-tenant), so the
         // authenticated Telegram from-id is the correct scope.
-        const saved = getSavedIdeas('saved', ctx.from!.id);
+        const userId = resolveCanonicalUserId(ctx.from!.id);
+        if (!userId) {
+          await ctx.reply('\u26A0\uFE0F Saved ideas need a registered Nexus user.');
+          return;
+        }
+        const saved = getSavedIdeas('saved', userId);
         if (saved.length === 0) {
           await ctx.reply('\u{1F4ED} No saved ideas. Use /discover and tap \u{1F4BE} to save ideas.');
           return;
@@ -579,7 +591,8 @@ export function registerContentCommands(bot: Bot): void {
 
         // Immediately check ranking
         const { checkKeywordRanking } = await import('../../services/youtube-analytics');
-        const channelId = config.youtube?.channelId;
+        const userId = ctx.from?.id ? resolveCanonicalUserId(ctx.from.id) : null;
+        const channelId = userId ? resolveUserScopedYoutubeChannelId(userId) : null;
         if (channelId) {
           const result = await checkKeywordRanking(keyword, channelId);
           if (result.position) {
@@ -594,7 +607,7 @@ export function registerContentCommands(bot: Bot): void {
             await ctx.reply(`\u2705 Now tracking: <b>${escapeHtml(keyword)}</b>\nNo ranking found yet (not in top 20).`, { parse_mode: 'HTML' });
           }
         } else {
-          await ctx.reply(`\u2705 Now tracking: <b>${escapeHtml(keyword)}</b>\n\u26A0\uFE0F Set YOUTUBE_CHANNEL_ID to enable rank checking.`, { parse_mode: 'HTML' });
+          await ctx.reply(`\u2705 Now tracking: <b>${escapeHtml(keyword)}</b>\n\u26A0\uFE0F Connect a user-scoped creator YouTube channel to enable rank checking.`, { parse_mode: 'HTML' });
         }
         return;
       }
@@ -1255,7 +1268,12 @@ export function registerContentCommands(bot: Bot): void {
     }
 
     if (action === 'save') {
-      saveIdea(cbData.title, cbData.date);
+      const userId = ctx.from?.id ? resolveCanonicalUserId(ctx.from.id) : null;
+      if (!userId) {
+        await ctx.answerCallbackQuery({ text: 'Sign in again before saving ideas.' });
+        return;
+      }
+      saveIdea({ title: cbData.title, sourceDate: cbData.date, userId, source: 'command' });
       await ctx.answerCallbackQuery({ text: `\u{1F4BE} Saved: ${cbData.title.slice(0, 40)}` });
     }
   });

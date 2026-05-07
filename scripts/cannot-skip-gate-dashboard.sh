@@ -80,7 +80,7 @@ GATES=(
   "content-agent-neutrality|src/agents/reaction-radar-agent.ts|content-agent-neutrality"
   "logger-redaction-pii-scan|src/utils/logger.ts|logger-"
   "scheduler-tenant-scope-and-failure|src/services/scheduler.ts|scheduler-"
-  "notification-apns-delivery-and-tenant|src/services/apns-sender.ts|apns-"
+  "notification-apns-delivery-and-tenant|src/services/notification-orchestrator.ts|notification-"
   "health-integration-tenant-isolation|src/services/garmin.ts|garmin-"
   "auth-rate-limit-and-lockout|src/api/middleware/rate-limit.ts|rate-limiter"
   "audit-trail-emission-and-scope|src/services/audit-trail.ts|audit-trail"

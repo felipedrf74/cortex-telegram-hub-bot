@@ -363,7 +363,7 @@ if [ "$DOMAIN_PROBES_ENABLED" = "1" ] && [ -x "$LOCAL_DIR/scripts/changed-area-c
     if [ "$(has_flag migration)" = "true" ]; then
       MIG_COUNT=$(ssh "$SERVER" "cd /home/dominguez/telegram-hub-bot-staging && /usr/bin/node -e \"
         const db = require('better-sqlite3')('data/bot.db', { readonly: true });
-        const r = db.prepare('SELECT COUNT(*) AS c FROM applied_migrations').get();
+        const r = db.prepare('SELECT COUNT(*) AS c FROM _migrations').get();
         console.log(r.c);
       \"" 2>&1 || echo "ERR")
       if [[ "$MIG_COUNT" =~ ^[0-9]+$ ]] && [ "$MIG_COUNT" -gt 0 ]; then

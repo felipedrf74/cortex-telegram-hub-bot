@@ -5,7 +5,7 @@
 
 | Area | Path | Branch | Commit | Dirty state | Version | Migrations |
 | --- | --- | --- | --- | --- | --- | --- |
-| Backend | `/Users/felipedominguez/Desktop/Custom Connectors/Cortex/cortex-telegram-hub-bot` | `feature/tech-debt-2026-05-u5-batch-24-closure` | `03ba6b5d` | `dirty` | `4.14.132` | `117` |
-| iOS | `/Users/felipedominguez/Desktop/Nexus Hub IOS/Nexus Hub` | `feature/tech-debt-2026-05-i4-workspace-ios-frontmatter-error` | `d660792` | `dirty` | n/a | n/a |
+| Backend | `/Users/felipedominguez/Desktop/Custom Connectors/Cortex/cortex-telegram-hub-bot` | `feature/event-backbone-readmodels-delta-sync` | `9c704b64` | `dirty` | `4.14.134` | `120` |
+| iOS | `/Users/felipedominguez/Desktop/Nexus Hub IOS/Nexus Hub` | `feature/event-backbone-readmodels-delta-sync` | `dd8ffe0` | `clean` | n/a | n/a |
 
-Generated at: `2026-05-07T00:05:40Z`
+Generated at: `2026-05-07T20:07:57Z`

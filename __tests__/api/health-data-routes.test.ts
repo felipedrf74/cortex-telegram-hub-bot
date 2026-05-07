@@ -32,6 +32,8 @@ vi.mock('../../src/utils/logger', () => ({
 }));
 
 import { healthDataRoutes } from '../../src/api/routes/health-data';
+import { getReadiness } from '../../src/api/routes/training-read-models';
+import { clearCacheByPrefix } from '../../src/services/cache-store';
 
 function applyMigrations(db: Database.Database): void {
   db.exec(`CREATE TABLE IF NOT EXISTS _migrations (id INTEGER PRIMARY KEY, filename TEXT UNIQUE, applied_at TEXT DEFAULT (datetime('now')))`);
@@ -102,6 +104,8 @@ describe('Health data routes', () => {
     testDb = new Database(':memory:');
     testDb.pragma('journal_mode = WAL');
     applyMigrations(testDb);
+    clearCacheByPrefix('readiness:');
+    clearCacheByPrefix('dashboard-readiness:');
     clearTenantScopeAnomaliesForTests();
   });
 
@@ -170,6 +174,46 @@ describe('Health data routes', () => {
     ).get('dashboard-home:62:pt-BR');
 
     expect(staleRow).toBeUndefined();
+  });
+
+  it('keeps readiness calculations isolated between Felipe and Jaqueline Apple Health snapshots', async () => {
+    const today = new Date().toISOString().slice(0, 10);
+
+    const felipeSync = await dispatch('POST', '/sync', {
+      date: today,
+      hrvMs: 88,
+      restingHeartRate: 44,
+      totalSleepMinutes: 510,
+      deepSleepMinutes: 105,
+      remSleepMinutes: 110,
+      steps: 5200,
+      activeCalories: 380,
+      exerciseMinutes: 35,
+    }, 62);
+    expect(felipeSync.statusCode, JSON.stringify(felipeSync.body)).toBe(200);
+
+    const jaquelineSync = await dispatch('POST', '/sync', {
+      date: today,
+      hrvMs: 24,
+      restingHeartRate: 82,
+      totalSleepMinutes: 210,
+      deepSleepMinutes: 16,
+      remSleepMinutes: 22,
+      steps: 18000,
+      activeCalories: 1250,
+      exerciseMinutes: 120,
+    }, 63);
+    expect(jaquelineSync.statusCode, JSON.stringify(jaquelineSync.body)).toBe(200);
+
+    const felipeReadiness = await getReadiness(62);
+    const jaquelineReadiness = await getReadiness(63);
+
+    expect(felipeReadiness.score).toBeGreaterThan(jaquelineReadiness.score);
+    expect(felipeReadiness.factors.bodyBattery).not.toBe(jaquelineReadiness.factors.bodyBattery);
+
+    const felipeAgain = await getReadiness(62);
+    expect(felipeAgain.score).toBe(felipeReadiness.score);
+    expect(felipeAgain.score).not.toBe(jaquelineReadiness.score);
   });
 
   it('fails closed on invalid tenant scope before syncing health data', async () => {

@@ -23,11 +23,14 @@
  * have something to call.
  */
 
+import { createHash } from 'node:crypto';
 import { Router, Response } from 'express';
 import { AuthenticatedRequest } from '../auth-middleware';
 import { logger } from '../../utils/logger';
 import { sendSuccess, sendError, sendInternalError, asyncHandler } from '../response-helpers';
 import { getDb } from '../../services/database';
+import { emitDomainEvent, runOutboxTransaction } from '../../services/event-outbox';
+import { consumeResourceBudget } from '../../services/resource-budgets';
 import { invalidateFinanceDerivedCaches } from '../../services/finance-cache-invalidator';
 import { config } from '../../config';
 import {
@@ -46,12 +49,13 @@ import {
 import { acquireCostLock, buildQuotaExceededMessage, isUserOverDailyCap } from '../../services/cost-guardrail';
 import { analyzeInvoiceImage } from '../../services/invoice-filer';
 import { ensureValidTenantRouteScope } from '../tenant-route-scope';
+import { createNotificationIntent } from '../../services/notification-orchestrator';
 
 export function financeRoutes(): Router {
   const router = Router();
 
   router.use((req, res, next) => {
-    const { userId } = req as AuthenticatedRequest;
+    const { userId, tenantId = userId } = req as AuthenticatedRequest;
     if (!ensureValidTenantRouteScope(res as Response, userId, 'finance_route', {
       method: req.method,
       path: req.path,
@@ -66,7 +70,7 @@ export function financeRoutes(): Router {
    * Returns transactions for the authenticated user, newest first.
    */
   router.get('/transactions', asyncHandler(async (req, res: Response) => {
-    const { userId } = req as AuthenticatedRequest;
+    const { userId, tenantId = userId } = req as AuthenticatedRequest;
 
     const startDate = typeof req.query.from === 'string' ? req.query.from : undefined;
     const endDate = typeof req.query.to === 'string' ? req.query.to : undefined;
@@ -89,7 +93,7 @@ export function financeRoutes(): Router {
    * Body: { date, category, amount, subcategory?, description?, currency?, receiptRef? }
    */
   router.post('/transactions', asyncHandler(async (req, res: Response) => {
-    const { userId } = req as AuthenticatedRequest;
+    const { userId, tenantId = userId } = req as AuthenticatedRequest;
     const { date, category, amount, subcategory, description, currency, receiptRef } = req.body;
 
     if (!date || typeof date !== 'string') {
@@ -104,16 +108,35 @@ export function financeRoutes(): Router {
       sendError(res, 'BAD_REQUEST', 'amount must be a finite number');
       return;
     }
+    if (!consumeFinanceWriteBudget(res, tenantId, userId, 'finance_transaction_create')) return;
 
     try {
-      const tx = addTransaction(userId, date, category, amount, {
+      const writeTransaction = () => addTransaction(userId, date, category, amount, {
         subcategory,
         description,
         currency,
         receiptRef,
       });
+      const tx = runOutboxTransaction((emitDomainEvent) => {
+        const created = writeTransaction();
+        emitDomainEvent({
+          tenantId,
+          userId,
+          sourceSkill: 'finance',
+          eventType: 'finance.expense.created',
+          entityType: 'finance_transaction',
+          entityId: created.id,
+          payload: {
+            summary: { currency: created.currency },
+            action: 'created',
+          },
+          privacyClassification: 'financial',
+          idempotencyKey: `finance.expense.created:${tenantId}:${userId}:${created.id}`,
+        });
+        return created;
+      });
       invalidateFinanceDerivedCaches(userId);
-      logger.info({ userId, txId: tx.id, category, amount }, 'iOS transaction added');
+      logger.info({ userId, txId: tx.id }, 'iOS transaction added');
       sendSuccess(res, { transaction: tx }, { status: 201 });
     } catch (err: any) {
       logger.error({ err, userId }, 'iOS finance transaction create failed');
@@ -132,7 +155,7 @@ export function financeRoutes(): Router {
    * surfaces show up later, this should move to finance-tracker.ts.
    */
   router.patch('/transactions/:id', asyncHandler(async (req, res: Response) => {
-    const { userId } = req as AuthenticatedRequest;
+    const { userId, tenantId = userId } = req as AuthenticatedRequest;
     const txId = parseInt(req.params.id, 10);
     const { date, category, subcategory, amount, currency, description, receiptRef } = req.body;
 
@@ -162,42 +185,58 @@ export function financeRoutes(): Router {
       sendError(res, 'BAD_REQUEST', 'amount must be a finite number');
       return;
     }
+    if (!consumeFinanceWriteBudget(res, tenantId, userId, 'finance_transaction_update')) return;
 
     try {
-      const db = getDb();
+      const updated = runOutboxTransaction((emitDomainEvent) => {
+        const db = getDb();
+        const existing = db.prepare(
+          'SELECT id FROM finance_transactions WHERE id = ? AND user_id = ?'
+        ).get(txId, userId) as { id: number } | undefined;
+        if (!existing) return null;
 
-      // Verify the row exists + is owned by this user BEFORE updating.
-      const existing = db.prepare(
-        'SELECT id FROM finance_transactions WHERE id = ? AND user_id = ?'
-      ).get(txId, userId) as { id: number } | undefined;
+        const setParts: string[] = [];
+        const params: any[] = [];
 
-      if (!existing) {
+        if (date !== undefined) { setParts.push('date = ?'); params.push(date); }
+        if (category !== undefined) { setParts.push('category = ?'); params.push(category); }
+        if (subcategory !== undefined) { setParts.push('subcategory = ?'); params.push(subcategory); }
+        if (amount !== undefined) { setParts.push('amount = ?'); params.push(amount); }
+        if (currency !== undefined) { setParts.push('currency = ?'); params.push(currency); }
+        if (description !== undefined) { setParts.push('description = ?'); params.push(description); }
+        if (receiptRef !== undefined) { setParts.push('receipt_ref = ?'); params.push(receiptRef); }
+
+        setParts.push("updated_at = datetime('now')");
+        params.push(txId, userId);
+
+        db.prepare(
+          `UPDATE finance_transactions SET ${setParts.join(', ')} WHERE id = ? AND user_id = ?`
+        ).run(...params);
+
+        const row = db.prepare(
+          'SELECT * FROM finance_transactions WHERE id = ? AND user_id = ?'
+        ).get(txId, userId) as any;
+        emitDomainEvent({
+          tenantId,
+          userId,
+          sourceSkill: 'finance',
+          eventType: 'finance.expense.updated',
+          entityType: 'finance_transaction',
+          entityId: txId,
+          payload: {
+            summary: { currency: row.currency },
+            action: 'updated',
+          },
+          privacyClassification: 'financial',
+          idempotencyKey: `finance.expense.updated:${tenantId}:${userId}:${txId}:${stableMutationFingerprint(req.body ?? {})}`,
+        });
+        return row;
+      });
+
+      if (!updated) {
         sendError(res, 'NOT_FOUND', 'Transaction not found or not owned by user', 404);
         return;
       }
-
-      // Build the SET clause dynamically — only touch fields the caller wants.
-      const setParts: string[] = [];
-      const params: any[] = [];
-
-      if (date !== undefined) { setParts.push('date = ?'); params.push(date); }
-      if (category !== undefined) { setParts.push('category = ?'); params.push(category); }
-      if (subcategory !== undefined) { setParts.push('subcategory = ?'); params.push(subcategory); }
-      if (amount !== undefined) { setParts.push('amount = ?'); params.push(amount); }
-      if (currency !== undefined) { setParts.push('currency = ?'); params.push(currency); }
-      if (description !== undefined) { setParts.push('description = ?'); params.push(description); }
-      if (receiptRef !== undefined) { setParts.push('receipt_ref = ?'); params.push(receiptRef); }
-
-      setParts.push("updated_at = datetime('now')");
-      params.push(txId, userId);
-
-      db.prepare(
-        `UPDATE finance_transactions SET ${setParts.join(', ')} WHERE id = ? AND user_id = ?`
-      ).run(...params);
-
-      const updated = db.prepare(
-        'SELECT * FROM finance_transactions WHERE id = ? AND user_id = ?'
-      ).get(txId, userId) as any;
 
       invalidateFinanceDerivedCaches(userId);
       logger.info({ userId, txId }, 'iOS finance transaction updated');
@@ -212,16 +251,36 @@ export function financeRoutes(): Router {
    * DELETE /api/v1/finance/transactions/:id
    */
   router.delete('/transactions/:id', asyncHandler(async (req, res: Response) => {
-    const { userId } = req as AuthenticatedRequest;
+    const { userId, tenantId = userId } = req as AuthenticatedRequest;
     const txId = parseInt(req.params.id, 10);
 
     if (Number.isNaN(txId)) {
       sendError(res, 'BAD_REQUEST', 'id must be a number');
       return;
     }
+    if (!consumeFinanceWriteBudget(res, tenantId, userId, 'finance_transaction_delete')) return;
 
     try {
-      const deleted = deleteTransaction(userId, txId);
+      const writeDelete = () => deleteTransaction(userId, txId);
+      const deleted = runOutboxTransaction((emitDomainEvent) => {
+        const didDelete = writeDelete();
+        if (!didDelete) return false;
+        emitDomainEvent({
+          tenantId,
+          userId,
+          sourceSkill: 'finance',
+          eventType: 'finance.expense.deleted',
+          entityType: 'finance_transaction',
+          entityId: txId,
+          payload: {
+            summary: { deleted: true },
+            action: 'deleted',
+          },
+          privacyClassification: 'financial',
+          idempotencyKey: `finance.expense.deleted:${tenantId}:${userId}:${txId}`,
+        });
+        return true;
+      });
       if (!deleted) {
         sendError(res, 'NOT_FOUND', 'Transaction not found or not owned by user', 404);
         return;
@@ -242,7 +301,7 @@ export function financeRoutes(): Router {
    * If month is omitted, defaults to the current month.
    */
   router.get('/monthly-summary', asyncHandler(async (req, res: Response) => {
-    const { userId } = req as AuthenticatedRequest;
+    const { userId, tenantId = userId } = req as AuthenticatedRequest;
     let month = typeof req.query.month === 'string' ? req.query.month : undefined;
 
     if (!month) {
@@ -280,7 +339,7 @@ export function financeRoutes(): Router {
    * Returns the user's persisted tax events (historical IRPF runs).
    */
   router.get('/tax/events', asyncHandler(async (req, res: Response) => {
-    const { userId } = req as AuthenticatedRequest;
+    const { userId, tenantId = userId } = req as AuthenticatedRequest;
     const year = req.query.year ? parseInt(String(req.query.year), 10) : undefined;
     const limit = req.query.limit
       ? Math.min(parseInt(String(req.query.limit), 10) || 12, 60)
@@ -326,7 +385,7 @@ export function financeRoutes(): Router {
    * Runs calculateAndStoreTax for the given month (defaults to current).
    */
   router.post('/tax/calculate', asyncHandler(async (req, res: Response) => {
-    const { userId } = req as AuthenticatedRequest;
+    const { userId, tenantId = userId } = req as AuthenticatedRequest;
     let { month } = req.body;
 
     if (!month) {
@@ -342,7 +401,32 @@ export function financeRoutes(): Router {
     try {
       const event = calculateAndStoreTax(userId, month);
       invalidateFinanceDerivedCaches(userId);
-      logger.info({ userId, month, taxDue: event.tax_due }, 'iOS tax event calculated');
+      if (event.status !== 'paid' && (event.tax_due > 0 || event.inss_due > 0)) {
+        try {
+          await createNotificationIntent({
+            userId,
+            tenantId,
+            sourceSkill: 'finance',
+            type: 'reminder',
+            priority: 'time_sensitive',
+            relatedEntityId: month,
+            relatedEntityType: 'tax_event',
+            title: 'Finance deadline',
+            body: 'Tax payment reminder is ready.',
+            sensitiveBody: `Tax event ${month}: tax and contribution amounts are available in Finance.`,
+            actionButtons: [
+              { id: 'mark_paid', label: 'Mark paid', style: 'primary' },
+              { id: 'open_detail', label: 'Open', style: 'secondary' },
+            ],
+            deeplink: `nexus://finance/reminder/${encodeURIComponent(String(month))}`,
+            dedupeKey: `finance:tax-event:${userId}:${month}`,
+            privacyPolicy: 'financial',
+          });
+        } catch (notificationErr) {
+          logger.warn({ err: notificationErr, userId, month }, 'Finance notification intent emit failed');
+        }
+      }
+      logger.info({ userId, month }, 'iOS tax event calculated');
       sendSuccess(res, { event });
     } catch (err: any) {
       logger.error({ err, userId, month }, 'iOS finance tax calculate failed');
@@ -538,7 +622,12 @@ export function financeRoutes(): Router {
       );
 
       logger.info(
-        { userId, merchant: mergedResult.merchant, amount: mergedResult.amount, confidence: mergedResult.confidence, provider },
+        {
+          userId,
+          confidence: mergedResult.confidence,
+          provider,
+          hasOcrBackfill: Boolean(ocrFallback),
+        },
         'iOS receipt parsed',
       );
 
@@ -566,6 +655,35 @@ export function financeRoutes(): Router {
   }));
 
   return router;
+}
+
+function stableMutationFingerprint(value: Record<string, unknown>): string {
+  return createHash('sha256')
+    .update(JSON.stringify(value, Object.keys(value).sort()))
+    .digest('hex')
+    .slice(0, 16);
+}
+
+function consumeFinanceWriteBudget(res: Response, tenantId: number, userId: number, budgetKey: string): boolean {
+  const budget = consumeResourceBudget({
+    tenantId,
+    userId,
+    budgetKey,
+    limit: 60,
+    windowSeconds: 60,
+  });
+  if (budget.allowed) return true;
+  setRetryAfter(res, budget.resetAt);
+  sendError(res, 'RATE_LIMITED', 'Too many finance write requests. Try again shortly.', 429, {
+    resetAt: budget.resetAt,
+    budgetKey: budget.budgetKey,
+  });
+  return false;
+}
+
+function setRetryAfter(res: Response, resetAt: string): void {
+  const seconds = Math.max(1, Math.ceil((Date.parse(resetAt) - Date.now()) / 1000));
+  res.setHeader('Retry-After', String(Number.isFinite(seconds) ? seconds : 60));
 }
 
 function normalizeMimeType(mimeType: string): 'image/jpeg' | 'image/png' | 'image/webp' {

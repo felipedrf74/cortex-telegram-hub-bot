@@ -3,6 +3,8 @@
 import { Router, Response } from 'express';
 import { AuthenticatedRequest } from '../auth-middleware';
 import { logger } from '../../utils/logger';
+import { runOutboxTransaction } from '../../services/event-outbox';
+import { consumeResourceBudget } from '../../services/resource-budgets';
 import { normalizeLangHeader } from '../../services/secretary-fastpath';
 import { getUserLanguageById } from '../../services/user-service';
 import type { Lang } from '../../utils/i18n';
@@ -339,8 +341,9 @@ export function trainingRoutes(): Router {
    * "Concluir" button work (it's an optimistic UX signal, not a DB invariant).
    */
   router.post('/complete', async (req, res: Response) => {
-    const { userId } = req as AuthenticatedRequest;
+    const { userId, tenantId = userId } = req as AuthenticatedRequest;
     const { sessionId, notes, rpe } = req.body;
+    if (!consumeTrainingWriteBudget(res, tenantId, userId, 'training_session_complete')) return;
 
     try {
       const resolved = resolveTrainingMutationSession(userId, sessionId, {
@@ -373,17 +376,35 @@ export function trainingRoutes(): Router {
 
       const { rowId, session } = resolved;
 
-      // 2. Mark completed (and log completion if we have RPE/notes)
-      if (notes || rpe != null) {
-        trainingPlans.logCompletion({
-          session_id: rowId,
-          plan_id: session.plan_id,
-          rpe_overall: rpe ?? null,
-          notes: notes ?? null,
+      const writeCompletion = () => {
+        if (notes || rpe != null) {
+          trainingPlans.logCompletion({
+            session_id: rowId,
+            plan_id: session.plan_id,
+            rpe_overall: rpe ?? null,
+            notes: notes ?? null,
+          });
+        } else {
+          trainingPlans.markSessionCompleted(rowId);
+        }
+      };
+      runOutboxTransaction((emitDomainEvent) => {
+        writeCompletion();
+        emitDomainEvent({
+          tenantId,
+          userId,
+          sourceSkill: 'training',
+          eventType: 'training.feedback.recorded',
+          entityType: 'training_session',
+          entityId: rowId,
+          payload: {
+            summary: { status: 'completed', hasNotes: Boolean(notes), hasRpe: rpe != null },
+            action: 'updated',
+          },
+          privacyClassification: 'health',
+          idempotencyKey: `training.feedback.recorded:${userId}:${rowId}:completed:${Boolean(notes)}:${rpe ?? 'none'}`,
         });
-      } else {
-        trainingPlans.markSessionCompleted(rowId);
-      }
+      });
 
       const adherenceRate = getTrainingWeeklyAdherenceRate(userId, {
         getActivePlan: trainingPlans.getActivePlan,
@@ -409,8 +430,9 @@ export function trainingRoutes(): Router {
    * the planned session still happened.
    */
   router.post('/skip', async (req, res: Response) => {
-    const { userId } = req as AuthenticatedRequest;
+    const { userId, tenantId = userId } = req as AuthenticatedRequest;
     const { sessionId } = req.body;
+    if (!consumeTrainingWriteBudget(res, tenantId, userId, 'training_session_skip')) return;
 
     try {
       const resolved = resolveTrainingMutationSession(userId, sessionId, {
@@ -445,7 +467,26 @@ export function trainingRoutes(): Router {
 
       const { rowId } = resolved;
 
-      trainingPlans.markSessionSkipped(rowId);
+      const writeSkip = () => {
+        trainingPlans.markSessionSkipped(rowId);
+      };
+      runOutboxTransaction((emitDomainEvent) => {
+        writeSkip();
+        emitDomainEvent({
+          tenantId,
+          userId,
+          sourceSkill: 'training',
+          eventType: 'training.session.updated',
+          entityType: 'training_session',
+          entityId: rowId,
+          payload: {
+            summary: { status: 'skipped' },
+            action: 'updated',
+          },
+          privacyClassification: 'health',
+          idempotencyKey: `training.session.updated:${userId}:${rowId}:skipped`,
+        });
+      });
 
       const adherenceRate = getTrainingWeeklyAdherenceRate(userId, {
         getActivePlan: trainingPlans.getActivePlan,
@@ -492,6 +533,28 @@ export function trainingRoutes(): Router {
   registerTrainingPlanRoutes(router, { invalidateTrainingScreenCaches });
 
   return router;
+}
+
+function consumeTrainingWriteBudget(res: Response, tenantId: number, userId: number, budgetKey: string): boolean {
+  const budget = consumeResourceBudget({
+    tenantId,
+    userId,
+    budgetKey,
+    limit: 60,
+    windowSeconds: 60,
+  });
+  if (budget.allowed) return true;
+  setRetryAfter(res, budget.resetAt);
+  sendError(res, 'RATE_LIMITED', 'Too many training write requests. Try again shortly.', 429, {
+    resetAt: budget.resetAt,
+    budgetKey: budget.budgetKey,
+  });
+  return false;
+}
+
+function setRetryAfter(res: Response, resetAt: string): void {
+  const seconds = Math.max(1, Math.ceil((Date.parse(resetAt) - Date.now()) / 1000));
+  res.setHeader('Retry-After', String(Number.isFinite(seconds) ? seconds : 60));
 }
 
 /** Test-only: reset the coalescing caches between cases. */

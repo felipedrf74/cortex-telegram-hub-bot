@@ -336,7 +336,7 @@ describe('sendPushNotification (happy path)', () => {
     expect(body.aps.alert.subtitle).toBe('SUB');
   });
 
-  it('includes badge, sound, threadId, category when provided', async () => {
+  it('includes badge, sound, threadId, category, and interruption level when provided', async () => {
     mockPushTokensForUser[1] = ['tok-1'];
     mockHttp2Responses = [{ status: 200 }];
 
@@ -347,6 +347,7 @@ describe('sendPushNotification (happy path)', () => {
       sound: 'default',
       threadId: 'reminders',
       category: 'REMINDER',
+      interruptionLevel: 'time-sensitive',
     });
 
     const body = JSON.parse(mockHttp2Requests[0].body);
@@ -354,6 +355,7 @@ describe('sendPushNotification (happy path)', () => {
     expect(body.aps.sound).toBe('default');
     expect(body.aps['thread-id']).toBe('reminders');
     expect(body.aps.category).toBe('REMINDER');
+    expect(body.aps['interruption-level']).toBe('time-sensitive');
   });
 
   it('merges custom data alongside aps', async () => {

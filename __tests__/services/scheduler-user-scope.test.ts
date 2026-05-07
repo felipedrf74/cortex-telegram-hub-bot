@@ -20,14 +20,18 @@ const mockStoreAndPushReport = vi.fn();
 const mockGetDb = vi.fn();
 const mockGetOwnerBootstrapTarget = vi.fn();
 const mockGenerateCoachBriefing = vi.hoisted(() => vi.fn());
+const mockCronSchedule = vi.hoisted(() => vi.fn());
+const mockCreateNotificationIntent = vi.hoisted(() => vi.fn());
+const mockRunEventBackboneOnce = vi.hoisted(() => vi.fn());
+const mockRunEventBackboneCleanup = vi.hoisted(() => vi.fn());
 
 vi.mock('node-cron', () => ({
-  default: { schedule: vi.fn() },
+  default: { schedule: (...args: unknown[]) => mockCronSchedule(...args) },
 }));
 
 vi.mock('../../src/config', () => ({
   config: {
-    app: { timezone: 'Europe/Lisbon' },
+    app: { timezone: 'Europe/Lisbon', databasePath: '/tmp/nexus-test.db' },
     todo: { digestTime: '08:00', digestEnabled: true },
     garmin: { coachTime: '21:00' },
     backup: { time: '03:00' },
@@ -165,6 +169,16 @@ vi.mock('../../src/services/database', () => ({
 vi.mock('../../src/services/report-document-store', () => ({
   storeAndPushReport: (...args: unknown[]) => mockStoreAndPushReport(...args),
 }));
+vi.mock('../../src/services/notification-orchestrator', () => ({
+  createNotificationIntent: (...args: unknown[]) => mockCreateNotificationIntent(...args),
+  releaseDueNotificationDeliveries: vi.fn(),
+}));
+vi.mock('../../src/services/event-backbone-worker', () => ({
+  runEventBackboneOnce: (...args: unknown[]) => mockRunEventBackboneOnce(...args),
+}));
+vi.mock('../../src/tools/event-backbone-cleanup', () => ({
+  runEventBackboneCleanup: (...args: unknown[]) => mockRunEventBackboneCleanup(...args),
+}));
 vi.mock('../../src/services/training-plans', () => ({
   getActivePlans: vi.fn(() => []),
   getActivePlan: vi.fn(() => null),
@@ -183,6 +197,7 @@ import {
   buildWeeklyReviewPayloadForUser,
   getActiveUserIds,
   getOwnerUserIds,
+  startScheduler,
   sendCoachBriefings,
   sendDailyBriefing,
 } from '../../src/services/scheduler';
@@ -219,6 +234,18 @@ describe('scheduler tenant scoping', () => {
       })),
     });
     mockGetOwnerBootstrapTarget.mockReturnValue({ tenantId: 99, telegramId: 1999 });
+    mockCreateNotificationIntent.mockResolvedValue({ decision: 'in_app_only' });
+    mockRunEventBackboneOnce.mockResolvedValue({
+      events: { processed: 0, failed: 0, deadLetter: 0 },
+      jobs: { completed: 0, failed: 0, deadLetter: 0, skipped: 0 },
+    });
+    mockRunEventBackboneCleanup.mockReturnValue({
+      apply: false,
+      databasePath: '/tmp/nexus-test.db',
+      retentionDays: 30,
+      cutoff: '2026-04-01T00:00:00.000Z',
+      targets: [],
+    });
     mockGenerateCoachBriefing.mockResolvedValue({
       message: 'coach briefing',
       recommendations: [],
@@ -388,6 +415,72 @@ describe('scheduler tenant scoping', () => {
     expect(message).toContain('Event A');
     expect(message).toContain('Event B');
     expect(message).not.toContain('Event C');
+  });
+
+  it('conflict detection cron emits Secretary NotificationIntent even when Telegram is unavailable', async () => {
+    mockGetEvents.mockResolvedValue([
+      { summary: 'Event A', start: '2026-04-18T09:00:00.000Z', end: '2026-04-18T10:00:00.000Z' },
+      { summary: 'Event B', start: '2026-04-18T09:30:00.000Z', end: '2026-04-18T11:00:00.000Z' },
+    ]);
+
+    startScheduler();
+    const conflictJob = mockCronSchedule.mock.calls.find((call) => call[0] === '30 19 * * *')?.[1] as (() => Promise<void>) | undefined;
+    expect(conflictJob).toBeTypeOf('function');
+
+    await conflictJob!();
+
+    expect(mockCreateNotificationIntent).toHaveBeenCalledWith(expect.objectContaining({
+      userId: 11,
+      tenantId: 11,
+      sourceSkill: 'secretary',
+      type: 'conflict_detected',
+      priority: 'time_sensitive',
+      privacyPolicy: 'sensitive',
+    }));
+    expect(mockCreateNotificationIntent).toHaveBeenCalledWith(expect.objectContaining({
+      userId: 22,
+      tenantId: 22,
+      sourceSkill: 'secretary',
+      type: 'conflict_detected',
+    }));
+  });
+
+  it('event backbone cron is wired through the scheduler with bounded batches and no-op skips', async () => {
+    startScheduler();
+    const backboneJob = mockCronSchedule.mock.calls.find((call) => call[0] === '* * * * *' && String(call[1]).includes('runEventBackboneOnce'))?.[1] as (() => Promise<unknown>) | undefined;
+    expect(backboneJob).toBeTypeOf('function');
+
+    const result = await backboneJob!();
+
+    expect(result).toBe('skipped');
+    expect(mockRunEventBackboneOnce).toHaveBeenCalledWith(expect.objectContaining({
+      eventLimit: 25,
+      jobLimit: 10,
+      lockOwner: expect.stringMatching(/^scheduler:/),
+    }));
+  });
+
+  it('event backbone cleanup runs in dry-run mode by default with configured retention', async () => {
+    mockRunEventBackboneCleanup.mockReturnValue({
+      apply: false,
+      databasePath: '/tmp/nexus-test.db',
+      retentionDays: 30,
+      cutoff: '2026-04-01T00:00:00.000Z',
+      targets: [{ table: 'event_outbox', exists: true, candidates: 2, protectedNewest: 0, deleted: 0 }],
+    });
+
+    startScheduler();
+    const cleanupJob = mockCronSchedule.mock.calls.find((call) => call[0] === '10 0 * * *')?.[1] as (() => Promise<unknown>) | undefined;
+    expect(cleanupJob).toBeTypeOf('function');
+
+    await cleanupJob!();
+
+    expect(mockRunEventBackboneCleanup).toHaveBeenCalledWith(expect.objectContaining({
+      dbPath: '/tmp/nexus-test.db',
+      apply: false,
+      retentionDays: 30,
+      protectNewest: 500,
+    }));
   });
 
   it('sendDailyBriefing stores report documents under canonical tenant ids', async () => {

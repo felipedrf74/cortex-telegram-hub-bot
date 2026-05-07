@@ -25,6 +25,7 @@ vi.mock('../../src/services/database', () => ({
   initDatabase: vi.fn(),
   closeDatabase: vi.fn(),
   findUnexpectedMigrationPrefixCollisions: vi.fn(() => []),
+  assertNoUnexpectedMigrationPrefixCollisions: vi.fn(),
 }));
 
 vi.mock('../../src/utils/logger', () => ({
@@ -51,6 +52,15 @@ vi.mock('../../src/services/cost-guardrail', () => ({
 
 vi.mock('../../src/services/invoice-filer', () => ({
   analyzeInvoiceImage: vi.fn(),
+  buildFilename: vi.fn(),
+  buildPdfFilename: vi.fn(),
+  fileInvoice: vi.fn(),
+  filePdf: vi.fn(),
+  getPortugueseMonthFolder: vi.fn(),
+  isInvoiceFilingConfigured: vi.fn(() => false),
+  PT_MONTHS: {},
+  resolveTargetDirectory: vi.fn(),
+  testSshConnection: vi.fn(() => false),
 }));
 
 vi.mock('../../src/services/finance-cache-invalidator', () => ({
@@ -67,6 +77,7 @@ import {
   getTransactions,
 } from '../../src/services/finance-tracker';
 import { analyzeInvoiceImage } from '../../src/services/invoice-filer';
+import { listNotificationCenterItems } from '../../src/services/notification-orchestrator';
 
 function applyMigrations(db: Database.Database): void {
   db.exec(`CREATE TABLE IF NOT EXISTS _migrations (id INTEGER PRIMARY KEY, filename TEXT UNIQUE, applied_at TEXT DEFAULT (datetime('now')))`);
@@ -175,6 +186,25 @@ describe('Finance API — tax routes', () => {
     expect(res.body.data.summary.months.length).toBe(2);
     expect(res.body.data.summary.totalTaxDue).toBeGreaterThan(0);
     expect(res.body.data.summary.totalPending).toBe(res.body.data.summary.totalTaxDue);
+  });
+
+  it('emits a finance notification intent when a tax event with due amounts is calculated', async () => {
+    const user = getOrCreateUser(22013, { username: 'finance-notification' });
+
+    addTransaction(user.id, '2024-04-10', 'income', 12000);
+    const res = await dispatch('POST', '/tax/calculate', user.id, { month: '2024-04' });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.body.ok).toBe(true);
+    const notifications = listNotificationCenterItems(user.id, user.id, { sourceSkill: 'finance' });
+    expect(notifications).toHaveLength(1);
+    expect(notifications[0]).toMatchObject({
+      sourceSkill: 'finance',
+      type: 'reminder',
+      priority: 'time_sensitive',
+      safeBody: 'Finance reminder needs review.',
+    });
+    expect(notifications[0].sensitiveBody).toContain('Tax event 2024-04');
   });
 
   it('returns preferredCurrency with monthly summary for dashboard consumers', async () => {

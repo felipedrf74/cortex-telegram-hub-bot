@@ -10,6 +10,45 @@ that pass, not this doc's canonical-status frontmatter.
 Generated: 2026-04-29 03:30 WEST  
 Branch: `feature/chat-tenant-safe-context-orchestration`
 
+## 2026-05-07 Event Backbone Hostile v2 Codex Validation Addendum
+
+Branch: `feature/event-backbone-readmodels-delta-sync`
+
+Status: second hostile-remediation pass completed locally. No push, no deploy,
+no production data, and no production calendars were used.
+
+Findings and fixes:
+
+- Removed the DB-unavailable fallback from `runOutboxTransaction`; business
+  writes now fail closed unless they execute inside an initialized SQLite
+  transaction.
+- Added rollback tests proving business rows roll back when event emission
+  fails and event rows roll back when the business callback throws.
+- Migrated notification intent creation and Finance PATCH writes to the
+  canonical outbox transaction wrapper.
+- Added event-side `canceled` guards so late processed/failed writes cannot
+  overwrite a canceled event.
+- Restored migration 114 and added migration 115 to rebuild `event_outbox` with
+  the `canceled` status for already-migrated databases.
+- Added event-backbone admin route tests for admin auth, tenant scope,
+  replay/cancel transitions, and replay attempt reset.
+- Added stale event/job lease reclaim coverage.
+
+Validation:
+
+- `npm run verify`: passed, 481 files / 7074 tests.
+- Focused event-backbone/security suite: 52/52 passed.
+- Chat/admin transaction/mocking follow-up suite: 9/9 passed.
+- `node scripts/vi-mock-completeness-lint.mjs --strict`: passed at 827/827.
+- `bash scripts/cannot-skip-gate-dashboard.sh --json --no-evidence`: passed 23/23.
+- Python content-engine pytest: 135/135 passed.
+
+Remaining caveat:
+
+- Independent hostile re-QA should run against engine `ca2e0cd9` and iOS
+  `12a9d95` before branch merge/push. Authenticated iOS product-surface smoke
+  remains unclaimed by this backend report.
+
 ## 2026-05-04 Closed-Beta Hardening Codex Validation Addendum
 
 Branch: `feature/closed-beta-readiness-hardening-20260503`

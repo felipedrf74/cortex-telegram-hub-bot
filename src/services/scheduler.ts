@@ -1,6 +1,7 @@
 // Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
 
 import path from 'path';
+import { createHash } from 'crypto';
 import cron from 'node-cron';
 import { Bot } from 'grammy';
 import { config } from '../config';
@@ -21,7 +22,7 @@ import { getFiscalCollectionSummary, isFiscalBundleDue, sendFiscalBundleNow } fr
 import { generateCoachBriefing } from './garmin-coach';
 import { isGarminConfigured, keepAlive as garminKeepAlive, ensureAuthenticated as garminEnsureAuth } from './garmin';
 import { registerJob, wrapJob, recordGarminRefresh, setJobFailureNotifier, setJobEnabledChecker, getJobMap, seedJobLastRunFromHistory } from '../portal/telemetry';
-import { sendPushNotification } from './apns-sender';
+import { createNotificationIntent, releaseDueNotificationDeliveries } from './notification-orchestrator';
 import { isCronJobEnabled } from '../skills/skill-manager';
 import { CronExpressionParser } from 'cron-parser';
 import { flushQueue, getPendingCount } from './invoice-queue';
@@ -48,6 +49,8 @@ import { getTaskProviderForUser } from './task-store/task-router';
 import { storeAndPushReport } from './report-document-store';
 import { isTelegramLegacyDeliveryEnabled } from './runtime-flags';
 import { processDueOperatorAlertDeliveries, recordOperatorAlert } from './operator-alerts';
+import { runEventBackboneOnce } from './event-backbone-worker';
+import { runEventBackboneCleanup } from '../tools/event-backbone-cleanup';
 
 interface ActiveUserTarget {
   tenantId: number;
@@ -669,6 +672,8 @@ export function startScheduler(bot?: any): void {
   registerJob('task_sync',        'Task Provider Sync',     '*/15 * * * *',    'system');
   registerJob('daily_context',    'Daily Context Builder',  '0 5 * * *',       'system');
   registerJob('operator_alert_delivery', 'Operator Alert Delivery', '* * * * *', 'system');
+  registerJob('event_backbone_worker', 'Event Backbone Worker', '* * * * *', 'system');
+  registerJob('event_backbone_cleanup', 'Event Backbone Cleanup', '10 0 * * *', 'system');
 
   // Seed lastRunAt from DB so the DST watchdog doesn't re-fire jobs after a restart
   seedJobLastRunFromHistory();
@@ -691,16 +696,27 @@ export function startScheduler(bot?: any): void {
       } catch (err) {
         logger.error({ err, userId: targetUserId }, 'Failed to send reminder');
       }
-      // Parallel iOS push. sendPushNotification already no-ops cleanly when
-      // APNs isn't configured and swallows its own errors, so we don't wrap
-      // it in try/catch — failures are logged inside the sender.
-      await sendPushNotification(targetUserId, {
+      // Parallel iOS notification. The Secretary Notification Orchestrator
+      // decides push vs in-app vs quiet-hours/digest; scheduler only emits
+      // the intent.
+      await createNotificationIntent({
+        userId: targetUserId,
+        tenantId: targetUserId,
+        sourceSkill: 'secretary',
+        type: 'reminder',
+        priority: 'active',
+        relatedEntityId: reminder.id,
+        relatedEntityType: 'reminder',
         title: 'Reminder',
         body: reminder.message,
-        sound: 'default',
-        threadId: 'reminders',
-        category: 'REMINDER',
-        data: { reminderId: reminder.id, type: 'reminder' },
+        sensitiveBody: reminder.message,
+        actionButtons: [
+          { id: 'mark_done', label: 'Done', style: 'primary' },
+          { id: 'snooze', label: 'Snooze', style: 'secondary' },
+        ],
+        deeplink: `nexus://notifications/reminder-${reminder.id}`,
+        dedupeKey: `secretary:reminder:${targetUserId}:${reminder.id}`,
+        privacyPolicy: 'sensitive',
       });
       markReminderFired(reminder.id);
     }
@@ -1071,10 +1087,41 @@ export function startScheduler(bot?: any): void {
   // ── Conflict detection (19:30) ─────────────────────────────────────
   cron.schedule('30 19 * * *', wrapJob('conflict_detection', async () => {
     for (const target of getActiveUserTargets()) {
-      if (!target.telegramId) continue;
       const message = await buildConflictAlertForUser(target.tenantId);
       if (!message) continue;
 
+      const conflictSignature = createHash('sha256')
+        .update(message.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim())
+        .digest('hex')
+        .slice(0, 16);
+
+      try {
+        await createNotificationIntent({
+          userId: target.tenantId,
+          tenantId: target.tenantId,
+          sourceSkill: 'secretary',
+          type: 'conflict_detected',
+          priority: 'time_sensitive',
+          relatedEntityId: `conflict-detection-${startOfDay()}-${conflictSignature}`,
+          relatedEntityType: 'calendar_conflict',
+          title: 'Schedule conflict detected',
+          body: 'Schedule conflict needs review.',
+          sensitiveBody: message.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim(),
+          actionButtons: [
+            { id: 'accept_reflow', label: 'Reflow', style: 'primary' },
+            { id: 'open_detail', label: 'Review', style: 'secondary' },
+          ],
+          deeplink: 'nexus://secretary/conflict/daily',
+          dedupeKey: `secretary:conflict_detection:${target.tenantId}:${startOfDay()}:${conflictSignature}`,
+          requiresUserAction: true,
+          quietHoursPolicy: 'allow_time_sensitive',
+          privacyPolicy: 'sensitive',
+        });
+      } catch (err) {
+        logger.warn({ err, tenantId: target.tenantId }, 'Conflict notification intent emit failed');
+      }
+
+      if (!target.telegramId) continue;
       try {
         await safeSend(target.telegramId, message, { parse_mode: 'HTML' });
       } catch (err) {
@@ -1312,12 +1359,20 @@ export function startScheduler(bot?: any): void {
         } catch (err) {
           logger.error({ err, userId }, 'Failed to send channel relearn notification');
         }
-        await sendPushNotification(userId, {
+        await createNotificationIntent({
+          userId,
+          tenantId: userId,
+          sourceSkill: 'content',
+          type: result.failed > 0 ? 'sync_failure' : 'insight',
+          priority: result.failed > 0 ? 'active' : 'passive',
+          relatedEntityId: 'channel_relearn',
+          relatedEntityType: 'content_channel_relearn',
           title: 'Channel Re-Learn',
           body: `${result.analyzed} channels analyzed${result.failed > 0 ? `, ${result.failed} failed` : ''}${result.synthesized ? ' — knowledge updated' : ''}`,
-          threadId: 'channel_relearn',
-          category: 'BRIEFING',
-          data: { type: 'channel_relearn', analyzed: result.analyzed, failed: result.failed, synthesized: result.synthesized },
+          actionButtons: [{ id: 'open_detail', label: 'Open', style: 'primary' }],
+          deeplink: 'nexus://notifications/channel-relearn',
+          dedupeKey: `content:channel_relearn:${userId}:${startOfDay()}`,
+          privacyPolicy: 'private_content',
         });
       }
     }
@@ -1537,9 +1592,76 @@ export function startScheduler(bot?: any): void {
     }
   });
 
+  registerJob('notification_release', 'Notification delayed/digest release', '*/15 * * * *', 'system');
+  cron.schedule('*/15 * * * *', wrapJob('notification_release', async () => {
+    const result = await releaseDueNotificationDeliveries();
+    if (result.inspected > 0) {
+      logger.info(result, 'Notification delayed/digest release completed');
+    }
+  }));
+
+  cron.schedule('* * * * *', wrapJob('event_backbone_worker', async () => {
+    if (process.env.EVENT_BACKBONE_WORKER_DISABLED === '1') {
+      return 'skipped';
+    }
+
+    const result = await runEventBackboneOnce({
+      eventLimit: intEnv('EVENT_BACKBONE_EVENT_BATCH_LIMIT', 25, 1, 100),
+      jobLimit: intEnv('EVENT_BACKBONE_JOB_BATCH_LIMIT', 10, 1, 50),
+      lockOwner: `scheduler:${process.pid}`,
+    });
+    const touched =
+      result.events.processed +
+      result.events.failed +
+      result.events.deadLetter +
+      result.jobs.completed +
+      result.jobs.failed +
+      result.jobs.deadLetter;
+
+    if (result.events.deadLetter > 0 || result.jobs.deadLetter > 0) {
+      logger.warn(result, 'Event backbone worker produced dead-letter rows');
+    }
+    if (touched === 0) return 'skipped';
+    logger.info(result, 'Event backbone worker processed pending work');
+  }));
+
+  cron.schedule('10 0 * * *', wrapJob('event_backbone_cleanup', async () => {
+    if (process.env.EVENT_BACKBONE_CLEANUP_DISABLED === '1') {
+      return 'skipped';
+    }
+
+    const apply = process.env.EVENT_BACKBONE_CLEANUP_APPLY === '1';
+    const report = runEventBackboneCleanup({
+      dbPath: config.app.databasePath,
+      apply,
+      retentionDays: intEnv('EVENT_BACKBONE_RETENTION_DAYS', 30, 1, 3650),
+      protectNewest: intEnv('EVENT_BACKBONE_RETENTION_PROTECT_NEWEST', 500, 0, 100000),
+    });
+    const candidates = report.targets.reduce((sum, target) => sum + target.candidates, 0);
+    const deleted = report.targets.reduce((sum, target) => sum + target.deleted, 0);
+    if (candidates === 0 && deleted === 0) return 'skipped';
+    logger.info(
+      {
+        apply,
+        retentionDays: report.retentionDays,
+        candidates,
+        deleted,
+        targets: report.targets.map(({ table, candidates, deleted }) => ({ table, candidates, deleted })),
+      },
+      'Event backbone retention cleanup completed',
+    );
+  }));
+
   logger.info(
-    `Scheduler started: reminders, daily briefing (${config.todo.digestTime}), end-of-day (21:00), weekly (Fri 17:00), shared list (*/5), content (16:43), invoices (1st 09:00/09:15/09:30), fiscal-bundle (daily 08:10 due-check), conflict (19:30), fossa (bi-weekly Mon 07:30), garmin-keepalive (*/30), coach (${config.garmin.coachTime}), invoice-queue (*/15), channel-relearn (Sun 03:00), tue-reels (Tue 09:00), thu-youtube (Thu 09:00), fri-weekly (Fri 18:30), pipeline-agent (20:00), expire-signals (hourly), db-backup (${config.backup.time}), dst-watchdog (*/15)`
+    `Scheduler started: reminders, daily briefing (${config.todo.digestTime}), end-of-day (21:00), weekly (Fri 17:00), shared list (*/5), content (16:43), invoices (1st 09:00/09:15/09:30), fiscal-bundle (daily 08:10 due-check), conflict (19:30), fossa (bi-weekly Mon 07:30), garmin-keepalive (*/30), coach (${config.garmin.coachTime}), invoice-queue (*/15), channel-relearn (Sun 03:00), tue-reels (Tue 09:00), thu-youtube (Thu 09:00), fri-weekly (Fri 18:30), pipeline-agent (20:00), notification-release (*/15), event-backbone-worker (* * * * *), event-backbone-cleanup (00:10), expire-signals (hourly), db-backup (${config.backup.time}), dst-watchdog (*/15)`
   );
+}
+
+function intEnv(name: string, fallback: number, min: number, max: number): number {
+  const raw = process.env[name];
+  const parsed = raw ? Number.parseInt(raw, 10) : fallback;
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.max(min, Math.min(max, Math.floor(parsed)));
 }
 
 // ── Exported for portal quick actions ─────────────────────────────────

@@ -51,7 +51,9 @@ import {
   setMealPlan, getMealPlan, deleteMealPlan,
   generateShoppingList, getShoppingList,
   upsertPantryItem, getPantryItems, getPantryItemById, updatePantryItem, deletePantryItem,
+  applyMealPlanSubstitution,
 } from '../../src/services/cooking-chef';
+import { setCookingPreferenceMemory } from '../../src/services/cooking-preferences';
 
 describe('Recipe CRUD', () => {
   beforeEach(() => { testDb = createTestDb(); applyMigrations(testDb); });
@@ -142,6 +144,33 @@ describe('Recipe CRUD', () => {
     expect(deleteRecipe(1, tenantARecipe.id, 202)).toBe(false);
     expect(getRecipeById(1, tenantARecipe.id, 101)?.title).toBe('Tenant A Recipe');
   });
+
+  it('blocks recipe creation when stored allergy memory matches an ingredient', () => {
+    setCookingPreferenceMemory(1, { kind: 'allergy', value: 'peanuts' }, 70);
+
+    expect(() => addRecipe(1, 'Peanut noodles', [
+      { name: 'Peanuts', quantity: '30', unit: 'g' },
+      { name: 'Noodles', quantity: '100', unit: 'g' },
+    ], { tenantId: 70 })).toThrow(/COOKING_SAFETY_BLOCKED: recipe contains allergy "peanuts"/);
+
+    expect(getRecipes(1, { tenantId: 70 })).toEqual([]);
+  });
+
+  it('blocks recipe updates that would introduce a stored allergy', () => {
+    setCookingPreferenceMemory(1, { kind: 'allergy', value: 'almonds' }, 70);
+    const recipe = addRecipe(1, 'Safe oats', [
+      { name: 'Oats', quantity: '60', unit: 'g' },
+    ], { tenantId: 70 });
+
+    expect(() => updateRecipe(1, recipe.id, {
+      ingredients: [
+        { name: 'Oats', quantity: '60', unit: 'g' },
+        { name: 'Almond butter', quantity: '20', unit: 'g' },
+      ],
+    }, 70)).toThrow(/COOKING_SAFETY_BLOCKED: recipe contains allergy "almonds"/);
+
+    expect(getRecipeById(1, recipe.id, 70)?.ingredients.map((ingredient) => ingredient.name)).toEqual(['Oats']);
+  });
 });
 
 describe('Meal Planning', () => {
@@ -189,6 +218,85 @@ describe('Meal Planning', () => {
     }).toThrow(/COOKING_SCOPE_CONFLICT/);
     expect(deleteMealPlan(1, '2024-06-15', 'dinner', 202)).toBe(false);
     expect(getMealPlan(1, '2024-06-15', '2024-06-15', 101)[0].title).toBe('Tenant A dinner');
+  });
+
+  it('blocks meal plan text when stored allergy memory matches the planned title', () => {
+    setCookingPreferenceMemory(1, { kind: 'allergy', value: 'peanuts' }, 70);
+
+    expect(() => setMealPlan(1, '2024-06-15', 'dinner', 'Peanut noodles', {
+      tenantId: 70,
+    })).toThrow(/COOKING_SAFETY_BLOCKED: meal_plan contains allergy "peanuts"/);
+
+    expect(getMealPlan(1, '2024-06-15', '2024-06-15', 70)).toEqual([]);
+  });
+
+  it('blocks meal plans that link a recipe made unsafe by later allergy memory', () => {
+    const recipe = addRecipe(1, 'Peanut noodles', [
+      { name: 'Peanuts', quantity: '30', unit: 'g' },
+      { name: 'Noodles', quantity: '100', unit: 'g' },
+    ], { tenantId: 70 });
+    setCookingPreferenceMemory(1, { kind: 'allergy', value: 'peanuts' }, 70);
+
+    expect(() => setMealPlan(1, '2024-06-15', 'dinner', 'Peanut noodles', {
+      recipeId: recipe.id,
+      tenantId: 70,
+    })).toThrow(/COOKING_SAFETY_BLOCKED: recipe contains allergy "peanuts"/);
+
+    expect(getMealPlan(1, '2024-06-15', '2024-06-15', 70)).toEqual([]);
+  });
+});
+
+describe('Cooking safety enforcement', () => {
+  beforeEach(() => { testDb = createTestDb(); applyMigrations(testDb); });
+  afterEach(() => { testDb.close(); });
+
+  it('blocks substitutions that would introduce a stored allergy', () => {
+    const recipe = addRecipe(1, 'Peanut noodles', [
+      { name: 'Peanuts', quantity: '30', unit: 'g' },
+      { name: 'Noodles', quantity: '100', unit: 'g' },
+    ], { tenantId: 70 });
+    setMealPlan(1, '2024-06-15', 'dinner', 'Peanut noodles', { recipeId: recipe.id, tenantId: 70 });
+    setCookingPreferenceMemory(1, { kind: 'allergy', value: 'almonds' }, 70);
+
+    expect(() => applyMealPlanSubstitution(1, {
+      date: '2024-06-15',
+      mealType: 'dinner',
+      originalIngredient: 'Peanuts',
+      suggestedIngredient: 'Almond butter',
+      reason: 'allergy',
+    }, 70)).toThrow(/COOKING_SAFETY_BLOCKED: meal_plan_substitution contains allergy "almonds"/);
+
+    expect(getRecipeById(1, recipe.id, 70)?.ingredients.map((ingredient) => ingredient.name)).toEqual(['Peanuts', 'Noodles']);
+    expect(getMealPlan(1, '2024-06-15', '2024-06-15', 70)[0].title).toBe('Peanut noodles');
+  });
+
+  it('allows substitutions that remove a stored allergen and replace it with a safe ingredient', () => {
+    const recipe = addRecipe(1, 'Peanut noodles', [
+      { name: 'Peanuts', quantity: '30', unit: 'g' },
+      { name: 'Noodles', quantity: '100', unit: 'g' },
+    ], {
+      tenantId: 70,
+      instructions: 'Toss noodles with peanuts.',
+    });
+    setMealPlan(1, '2024-06-15', 'dinner', 'Peanut noodles', {
+      recipeId: recipe.id,
+      notes: 'Use peanuts if available.',
+      tenantId: 70,
+    });
+    setCookingPreferenceMemory(1, { kind: 'allergy', value: 'peanuts' }, 70);
+
+    const result = applyMealPlanSubstitution(1, {
+      date: '2024-06-15',
+      mealType: 'dinner',
+      originalIngredient: 'Peanuts',
+      suggestedIngredient: 'sunflower seed butter',
+      reason: 'allergy',
+      updateShoppingList: false,
+    }, 70);
+
+    expect(result.applied).toBe(true);
+    expect(result.recipe?.ingredients.map((ingredient) => ingredient.name)).toEqual(['sunflower seed butter', 'Noodles']);
+    expect(result.meal?.title).toBe('sunflower seed butter noodles');
   });
 });
 

@@ -120,8 +120,7 @@ describe('cooking preference memory adapter', () => {
     expect(() => buildCookingPreferenceReadModel(7)).toThrow(/COOKING_PREFERENCE_SCOPE/);
   });
 
-  it('feeds preference memory into meal-plan safety assessment without model enforcement', () => {
-    setCookingPreferenceMemory(7, { kind: 'allergy', value: 'peanuts' }, 70);
+  it('feeds preference memory into meal-plan safety assessment for existing unsafe plans', () => {
     const recipe = addRecipe(7, 'Peanut noodles', [
       { name: 'Peanuts', quantity: '30', unit: 'g' },
       { name: 'Noodles', quantity: '100', unit: 'g' },
@@ -130,6 +129,7 @@ describe('cooking preference memory adapter', () => {
       recipeId: recipe.id,
       tenantId: 70,
     });
+    setCookingPreferenceMemory(7, { kind: 'allergy', value: 'peanuts' }, 70);
 
     const assessment = assessCookingMealPlan({
       meals: [meal],

@@ -9,7 +9,7 @@
  *
  * Lifecycle:
  *   1. Scheduler generates report → storeReport()
- *   2. APNs push sent as delivery hint (with reportId in payload)
+ *   2. Secretary Notification Orchestrator decides delivery hints
  *   3. iOS fetches via GET /api/v1/reports
  *   4. User opens → markRead(reportId)
  *   5. Portal admin views all reports via GET /api/reports
@@ -110,8 +110,8 @@ export function storeReport(opts: {
 }
 
 /**
- * Store a report AND send an APNs push referencing it.
- * The push is a delivery hint — the report is durable regardless.
+ * Store a report AND emit a central NotificationIntent referencing it.
+ * The orchestrator decides push/digest/in-app timing and privacy handling.
  */
 export async function storeAndPushReport(opts: {
   userId: number;
@@ -134,17 +134,26 @@ export async function storeAndPushReport(opts: {
   }
 
   try {
-    const { sendPushNotification } = await import('./apns-sender');
-    await sendPushNotification(opts.userId, {
+    const { createNotificationIntent } = await import('./notification-orchestrator');
+    await createNotificationIntent({
+      userId: opts.userId,
+      tenantId: opts.userId,
+      sourceSkill: mapReportTypeToSourceSkill(opts.type),
+      type: mapReportTypeToIntentType(opts.type),
+      priority: mapReportTypeToPriority(opts.type),
+      relatedEntityId: id,
+      relatedEntityType: 'report_document',
       title: opts.title,
       body: opts.summary || 'New report available',
-      data: { reportId: id, type: opts.type },
-      threadId: `report-${opts.type}`,
-      category: opts.type,
-      sound: 'default',
+      sensitiveBody: opts.summary || null,
+      actionButtons: [{ id: 'open_detail', label: 'Open', style: 'primary' }],
+      deeplink: `nexus://notifications/report-${id}`,
+      dedupeKey: `report:${opts.type}:${id}`,
+      deliveryPolicy: opts.type === 'weekly_review' ? 'digest_only' : 'auto',
+      privacyPolicy: opts.type === 'coach_briefing' || opts.type === 'coach_phase' ? 'health' : 'standard',
     });
   } catch (err) {
-    logger.debug({ err, reportId: id }, 'APNs push for report skipped (non-fatal)');
+    logger.debug({ err, reportId: id }, 'Notification intent for report skipped (non-fatal)');
   }
 
   return id;
@@ -452,4 +461,44 @@ function safeParseJSON(val: any, fallback: any): any {
   if (val === null || val === undefined) return fallback;
   if (typeof val !== 'string') return val;
   try { return JSON.parse(val); } catch { return fallback; }
+}
+
+function mapReportTypeToSourceSkill(type: ReportType): import('./notification-orchestrator').NotificationSourceSkill {
+  switch (type) {
+    case 'coach_briefing':
+    case 'coach_phase':
+      return 'training';
+    case 'morning_briefing':
+    case 'evening_summary':
+    case 'weekly_review':
+    default:
+      return 'secretary';
+  }
+}
+
+function mapReportTypeToIntentType(type: ReportType): import('./notification-orchestrator').NotificationIntentType {
+  switch (type) {
+    case 'weekly_review':
+      return 'weekly_review';
+    case 'morning_briefing':
+    case 'evening_summary':
+      return 'daily_digest';
+    case 'coach_briefing':
+    case 'coach_phase':
+    default:
+      return 'insight';
+  }
+}
+
+function mapReportTypeToPriority(type: ReportType): import('./notification-orchestrator').NotificationPriority {
+  switch (type) {
+    case 'coach_briefing':
+    case 'coach_phase':
+      return 'active';
+    case 'morning_briefing':
+    case 'evening_summary':
+    case 'weekly_review':
+    default:
+      return 'passive';
+  }
 }

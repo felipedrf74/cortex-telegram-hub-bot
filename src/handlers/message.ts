@@ -19,6 +19,7 @@ import {
   lastActiveDomain, pendingCalendarRef, CONTINUITY_WINDOW_MS, isHtmlParseError,
 } from './shared-state';
 import type { DomainHandlerFn } from './photo';
+import { runTelegramDomainHandlerWithToolAuthorization } from './chat-tool-auth-context';
 
 /**
  * The core natural language handler — routes non-command messages through
@@ -198,7 +199,10 @@ export async function handleDomainMessage(
     }
 
     const handler = domainHandlers[route.domain];
-    const response = await handler(route.strippedMessage, ctx.from?.id);
+    const response = await runTelegramDomainHandlerWithToolAuthorization(
+      userId,
+      () => handler(route.strippedMessage, userId),
+    );
 
     const parts = splitMessage(response.text);
     for (const part of parts) {
