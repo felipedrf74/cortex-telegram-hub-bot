@@ -14,7 +14,9 @@ import {
   cookingScopeForInsert,
   cookingScopeParams,
   ensureCookingTenantScopeColumns,
+  resolveCookingTenantId,
 } from './cooking-tenant-scope';
+import { buildCookingPreferenceReadModel } from './cooking-preferences';
 
 // ── Types ──────────────────────────────────────────────────────────
 
@@ -187,6 +189,13 @@ export function addRecipe(
 ): Recipe {
   const db = getCookingDb();
   const scope = cookingScopeForInsert(userId, opts?.tenantId, 'user_private', 'active');
+  assertAllergySafeRecipe(userId, scope.tenantId, {
+    title,
+    ingredients,
+    instructions: opts?.instructions,
+    tags: opts?.tags,
+    source: opts?.source,
+  });
   db.prepare(`
     INSERT INTO recipes (
       tenant_id, user_id, owner_user_id, visibility_scope, lifecycle_state, scope_status,
@@ -298,6 +307,15 @@ export function updateRecipe(
   tenantId?: number | null,
 ): Recipe | null {
   const db = getCookingDb();
+  const current = getRecipeById(userId, recipeId, tenantId);
+  if (!current) return null;
+  assertAllergySafeRecipe(userId, resolveCookingTenantId(userId, tenantId), {
+    title: updates.title ?? current.title,
+    ingredients: updates.ingredients ?? current.ingredients,
+    instructions: updates.instructions === undefined ? current.instructions : updates.instructions,
+    tags: updates.tags === undefined ? current.tags : updates.tags,
+    source: updates.source === undefined ? current.source : updates.source,
+  });
 
   // Build the SET clause dynamically so we only touch fields the
   // caller actually wants to change.
@@ -378,6 +396,14 @@ export function setMealPlan(
 ): MealPlan {
   const db = getCookingDb();
   const scope = cookingScopeForInsert(userId, opts?.tenantId, 'user_private', 'planned');
+  const linkedRecipe = opts?.recipeId ? getRecipeById(userId, opts.recipeId, opts?.tenantId) : null;
+  if (linkedRecipe) {
+    assertAllergySafeRecipe(userId, scope.tenantId, linkedRecipe);
+  }
+  assertAllergySafeText(userId, scope.tenantId, 'meal_plan', [
+    title,
+    opts?.notes,
+  ]);
   const existingScope = db.prepare(
     'SELECT tenant_id FROM meal_plans WHERE user_id = ? AND date = ? AND meal_type = ?',
   ).get(userId, date, mealType) as { tenant_id: number | null } | undefined;
@@ -449,6 +475,8 @@ export function applyMealPlanSubstitution(
   if (normalizePantryName(originalIngredient) === normalizePantryName(suggestedIngredient)) {
     throw new Error('COOKING_SUBSTITUTION_NOOP: suggestedIngredient must differ from originalIngredient');
   }
+  const resolvedTenantId = resolveCookingTenantId(userId, tenantId);
+  assertAllergySafeText(userId, resolvedTenantId, 'meal_plan_substitution', [suggestedIngredient]);
 
   const meals = getMealPlan(userId, input.date, input.date, tenantId);
   const meal = meals.find((candidate) => candidate.meal_type === input.mealType) ?? null;
@@ -1038,6 +1066,71 @@ function normalizeRequiredText(value: unknown, field: string): string {
   const text = String(value ?? '').trim();
   if (!text) throw new Error(`${field} is required`);
   return text;
+}
+
+function assertAllergySafeRecipe(
+  userId: number,
+  tenantId: number,
+  recipe: {
+    title?: string | null;
+    ingredients?: Ingredient[] | null;
+    instructions?: string | null;
+    tags?: string | null;
+    source?: string | null;
+  },
+): void {
+  const ingredientTexts = (recipe.ingredients ?? []).flatMap((ingredient) => [
+    ingredient.name,
+    ingredient.quantity,
+    ingredient.unit,
+  ]);
+  assertAllergySafeText(userId, tenantId, 'recipe', [
+    recipe.title,
+    recipe.instructions,
+    recipe.tags,
+    recipe.source,
+    ...ingredientTexts,
+  ]);
+}
+
+function assertAllergySafeText(
+  userId: number,
+  tenantId: number,
+  surface: 'recipe' | 'meal_plan' | 'meal_plan_substitution',
+  values: Array<string | null | undefined>,
+): void {
+  const allergies = buildCookingPreferenceReadModel(userId, tenantId).profile.allergies ?? [];
+  if (allergies.length === 0) return;
+
+  const haystacks = values
+    .map((value) => normalizeAllergyText(value ?? ''))
+    .filter(Boolean);
+  const conflict = allergies
+    .map((allergy) => String(allergy ?? '').trim())
+    .filter(Boolean)
+    .find((allergy) => haystacks.some((haystack) => allergyMatchesText(allergy, haystack)));
+
+  if (conflict) {
+    throw new Error(`COOKING_SAFETY_BLOCKED: ${surface} contains allergy "${conflict}"`);
+  }
+}
+
+function allergyMatchesText(allergy: string, normalizedHaystack: string): boolean {
+  const needles = replacementNeedles(normalizeAllergyText(allergy));
+  return needles.some((needle) => {
+    if (!needle) return false;
+    const escaped = needle.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const boundary = new RegExp(`(^|[^a-z0-9])${escaped}([^a-z0-9]|$)`, 'i');
+    return boundary.test(normalizedHaystack);
+  });
+}
+
+function normalizeAllergyText(value: string): string {
+  return String(value ?? '')
+    .trim()
+    .toLowerCase()
+    .replace(/[_-]+/g, ' ')
+    .replace(/\s+/g, ' ');
 }
 
 function ingredientNameMatches(candidate: string, originalIngredient: string): boolean {

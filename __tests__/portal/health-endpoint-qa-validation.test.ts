@@ -212,7 +212,8 @@ describe('QA: Health endpoint — response structure', () => {
   it('health tracks server availability separately from Telegram polling', async () => {
     const source = readPortalHealthRoutesSource();
     expect(source).toContain("const runtime = getRuntimeStatus();");
-    expect(source).toContain("runtime.serviceStatus === 'online' ? 'healthy' : 'degraded'");
+    expect(source).toContain('const databaseProbe = probeDatabaseHealth();');
+    expect(source).toContain("runtime.serviceStatus === 'online' && databaseProbe.status === 'connected'");
     expect(source).toContain('server: {');
     expect(source).toContain('bot: {');
   });

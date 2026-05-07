@@ -303,6 +303,8 @@ describe('GET /health', () => {
     expect(body.bot).toHaveProperty('polling', true);
     expect(body.bot).toHaveProperty('restarting', false);
     expect(body.database).toBe('connected');
+    expect(body.databaseProbe).toMatchObject({ status: 'connected' });
+    expect(typeof body.databaseProbe.latencyMs).toBe('number');
     expect(body.memory).toHaveProperty('rss');
     expect(body.memory).toHaveProperty('heapUsed');
     expect(body.memory).toHaveProperty('heapTotal');
@@ -337,6 +339,10 @@ describe('GET /health', () => {
     const body = await res.json();
     expect(body.status).toBe('degraded');
     expect(body.database).toBe('disconnected');
+    expect(body.databaseProbe).toMatchObject({
+      status: 'disconnected',
+      errorCode: 'DB_PROBE_FAILED',
+    });
   });
 });
 
@@ -408,6 +414,7 @@ describe('GET /health/detailed', () => {
     expect(typeof body.uptime).toBe('number');
     expect(body.bot.polling).toBe(true);
     expect(body.database).toBe('connected');
+    expect(body.databaseProbe).toMatchObject({ status: 'connected' });
     expect(body.memory).toHaveProperty('rss');
 
     // Cron statuses
@@ -475,6 +482,26 @@ describe('GET /health/detailed', () => {
     expect(body.crons).toBeDefined();
     expect(body.integrations).toBeDefined();
     expect(body.errors).toBeDefined();
+  });
+
+  it('returns 503 with detailed diagnostics when the live database probe fails', async () => {
+    mockDbOk = false;
+
+    const { server, port } = await startServer();
+    activeServer = server;
+
+    const res = await fetch(`http://127.0.0.1:${port}/health/detailed`, { headers: { Authorization: 'Bearer test-health-secret' } });
+    expect(res.status).toBe(503);
+
+    const body = await res.json();
+    expect(body.status).toBe('degraded');
+    expect(body.server.database).toBe('disconnected');
+    expect(body.databaseProbe).toMatchObject({
+      status: 'disconnected',
+      errorCode: 'DB_PROBE_FAILED',
+    });
+    expect(body.crons).toBeDefined();
+    expect(body.integrations).toBeDefined();
   });
 
   it('rejects access without token when HEALTH_TOKEN is empty and bypass is disabled', async () => {

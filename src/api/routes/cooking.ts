@@ -190,6 +190,13 @@ function sendCookingPreferenceErrorIfNeeded(res: Response, err: unknown): boolea
   return true;
 }
 
+function sendCookingSafetyErrorIfNeeded(res: Response, err: unknown): boolean {
+  const message = err instanceof Error ? err.message : '';
+  if (!message.startsWith('COOKING_SAFETY_BLOCKED')) return false;
+  sendError(res, 'BAD_REQUEST', 'Cooking item conflicts with a saved allergy preference', 400);
+  return true;
+}
+
 function isValidNutritionField(value: unknown): value is number | null | undefined {
   return value === undefined
     || value === null
@@ -425,6 +432,7 @@ export function cookingRoutes(): Router {
       sendSuccess(res, { recipes, count: recipes.length });
     } catch (err: unknown) {
       if (sendCookingScopeConflictIfNeeded(res, err)) return;
+      if (sendCookingSafetyErrorIfNeeded(res, err)) return;
       sendCookingInternalError(res, {
         err,
         userId,
@@ -482,6 +490,7 @@ export function cookingRoutes(): Router {
       sendSuccess(res, { recipe }, { status: 201 });
     } catch (err: unknown) {
       if (sendCookingScopeConflictIfNeeded(res, err)) return;
+      if (sendCookingSafetyErrorIfNeeded(res, err)) return;
       sendCookingInternalError(res, {
         err,
         userId,
@@ -513,6 +522,7 @@ export function cookingRoutes(): Router {
       }
       sendSuccess(res, { recipe });
     } catch (err: unknown) {
+      if (sendCookingSafetyErrorIfNeeded(res, err)) return;
       sendCookingInternalError(res, {
         err,
         userId,
@@ -586,6 +596,7 @@ export function cookingRoutes(): Router {
       }
       sendSuccess(res, { recipe: updated });
     } catch (err: unknown) {
+      if (sendCookingSafetyErrorIfNeeded(res, err)) return;
       sendCookingInternalError(res, {
         err,
         userId,
@@ -969,6 +980,7 @@ export function cookingRoutes(): Router {
       sendSuccess(res, { meal: plan });
     } catch (err: unknown) {
       if (sendCookingScopeConflictIfNeeded(res, err)) return;
+      if (sendCookingSafetyErrorIfNeeded(res, err)) return;
       sendCookingInternalError(res, {
         err,
         userId,
@@ -1033,6 +1045,7 @@ export function cookingRoutes(): Router {
       sendSuccess(res, result);
     } catch (err: unknown) {
       if (sendCookingScopeConflictIfNeeded(res, err)) return;
+      if (sendCookingSafetyErrorIfNeeded(res, err)) return;
       const message = err instanceof Error ? err.message : '';
       if (message.startsWith('COOKING_SUBSTITUTION')) {
         sendError(res, 'BAD_REQUEST', message, 400);
