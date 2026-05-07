@@ -10,12 +10,17 @@ vi.mock('../../src/services/database', () => ({
   initDatabase: vi.fn(),
   closeDatabase: vi.fn(),
   findUnexpectedMigrationPrefixCollisions: vi.fn(() => []),
+  assertNoUnexpectedMigrationPrefixCollisions: vi.fn(),
 }));
 
 vi.mock('../../src/services/apns-sender', () => ({
   getPushTokensForUser: vi.fn(() => pushTokens),
   isApnsConfigured: vi.fn(() => false),
   sendPushNotification: (...args: unknown[]) => mockSendPushNotification(...args),
+  deleteDeadPushToken: vi.fn(),
+  closeApnsClient: vi.fn(),
+  _resetForTests: vi.fn(),
+  sendPushToUsers: vi.fn(),
 }));
 
 vi.mock('../../src/utils/logger', () => ({

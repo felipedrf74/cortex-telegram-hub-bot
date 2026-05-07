@@ -25,6 +25,7 @@ vi.mock('../../src/services/database', () => ({
   initDatabase: vi.fn(),
   closeDatabase: vi.fn(),
   findUnexpectedMigrationPrefixCollisions: vi.fn(() => []),
+  assertNoUnexpectedMigrationPrefixCollisions: vi.fn(),
 }));
 
 vi.mock('../../src/utils/logger', () => ({
@@ -51,6 +52,15 @@ vi.mock('../../src/services/cost-guardrail', () => ({
 
 vi.mock('../../src/services/invoice-filer', () => ({
   analyzeInvoiceImage: vi.fn(),
+  buildFilename: vi.fn(),
+  buildPdfFilename: vi.fn(),
+  fileInvoice: vi.fn(),
+  filePdf: vi.fn(),
+  getPortugueseMonthFolder: vi.fn(),
+  isInvoiceFilingConfigured: vi.fn(() => false),
+  PT_MONTHS: {},
+  resolveTargetDirectory: vi.fn(),
+  testSshConnection: vi.fn(() => false),
 }));
 
 vi.mock('../../src/services/finance-cache-invalidator', () => ({

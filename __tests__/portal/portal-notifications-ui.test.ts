@@ -7,18 +7,30 @@ import {
   getNotificationProfileSummariesForPortal,
 } from '../../src/services/notification-orchestrator';
 
-vi.mock('../../src/services/content-notification-store', () => ({
-  getAllNotifications: vi.fn(),
-}));
+vi.mock('../../src/services/content-notification-store', async () => {
+  const actual = await vi.importActual<typeof import('../../src/services/content-notification-store')>('../../src/services/content-notification-store');
+  return {
+    ...actual,
+    getAllNotifications: vi.fn(),
+  };
+});
 
-vi.mock('../../src/services/report-document-store', () => ({
-  getAllReports: vi.fn(() => []),
-}));
+vi.mock('../../src/services/report-document-store', async () => {
+  const actual = await vi.importActual<typeof import('../../src/services/report-document-store')>('../../src/services/report-document-store');
+  return {
+    ...actual,
+    getAllReports: vi.fn(() => []),
+  };
+});
 
-vi.mock('../../src/services/notification-orchestrator', () => ({
-  getAllNotificationCenterItemsForPortal: vi.fn(),
-  getNotificationProfileSummariesForPortal: vi.fn(),
-}));
+vi.mock('../../src/services/notification-orchestrator', async () => {
+  const actual = await vi.importActual<typeof import('../../src/services/notification-orchestrator')>('../../src/services/notification-orchestrator');
+  return {
+    ...actual,
+    getAllNotificationCenterItemsForPortal: vi.fn(),
+    getNotificationProfileSummariesForPortal: vi.fn(),
+  };
+});
 
 vi.mock('../../src/portal/http', () => ({
   sendPortalInternalError: vi.fn((res: any) => {
@@ -26,18 +38,22 @@ vi.mock('../../src/portal/http', () => ({
   }),
 }));
 
-vi.mock('../../src/api/secret-guards', () => ({
-  requirePortalAdminToken: vi.fn((req: any, res: any, next: () => void) => {
-    if (req.headers?.authorization === 'Bearer admin-token') {
-      next();
-      return;
-    }
-    res.status(403).json({
-      ok: false,
-      error: { code: 'FORBIDDEN', message: 'admin portal token required' },
-    });
-  }),
-}));
+vi.mock('../../src/api/secret-guards', async () => {
+  const actual = await vi.importActual<typeof import('../../src/api/secret-guards')>('../../src/api/secret-guards');
+  return {
+    ...actual,
+    requirePortalAdminToken: vi.fn((req: any, res: any, next: () => void) => {
+      if (req.headers?.authorization === 'Bearer admin-token') {
+        next();
+        return;
+      }
+      res.status(403).json({
+        ok: false,
+        error: { code: 'FORBIDDEN', message: 'admin portal token required' },
+      });
+    }),
+  };
+});
 
 type CapturedRoutes = Record<string, (req: any, res: any) => void>;
 

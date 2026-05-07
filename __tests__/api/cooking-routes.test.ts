@@ -22,6 +22,7 @@ vi.mock('../../src/services/database', () => ({
   initDatabase: vi.fn(),
   closeDatabase: vi.fn(),
   findUnexpectedMigrationPrefixCollisions: vi.fn(() => []),
+  assertNoUnexpectedMigrationPrefixCollisions: vi.fn(),
 }));
 
 vi.mock('../../src/utils/logger', () => ({
@@ -40,7 +41,16 @@ vi.mock('../../src/config', () => ({
 
 vi.mock('../../src/services/unified-calendar', () => ({
   createEvent: (...args: unknown[]) => mockCalendarCreateEvent(...args),
+  deleteEvent: vi.fn(),
+  deduplicateEvents: vi.fn((events: unknown[]) => events),
+  eventFingerprint: vi.fn(() => 'event-fingerprint'),
+  getConfiguredSources: vi.fn(() => []),
+  getEvents: vi.fn(async () => []),
+  getEventsWithDiagnostics: vi.fn(async () => ({ events: [], status: 'ready', sources: [] })),
+  hasConnectedCalendarForUser: vi.fn(() => false),
+  hasWritableCalendarForUser: vi.fn(() => false),
   isAnyCalendarConfigured: (...args: unknown[]) => mockIsAnyCalendarConfigured(...args),
+  updateEvent: vi.fn(),
 }));
 
 vi.mock('../../src/services/cooking-cache-invalidator', () => ({
@@ -48,6 +58,7 @@ vi.mock('../../src/services/cooking-cache-invalidator', () => ({
 }));
 
 vi.mock('../../src/services/cooking-secretary-integration', () => ({
+  buildCookingMealPrepSchedulingIntent: vi.fn(),
   submitCookingMealPrepSchedulingIntent: (...args: unknown[]) => mockSubmitCookingMealPrepSchedulingIntent(...args),
 }));
 
