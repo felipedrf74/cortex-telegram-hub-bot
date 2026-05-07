@@ -73,6 +73,7 @@ vi.mock('../../src/config', () => ({
 }));
 
 import { vi } from 'vitest';
+import { logger } from '../../src/utils/logger';
 import {
   calculateMonthlyTax,
   addTransaction,
@@ -188,6 +189,23 @@ describe('Transaction CRUD', () => {
     expect(tx.subcategory).toBe('freelance');
     expect(tx.description).toBe('June contract payment');
     expect(tx.currency).toBe('BRL');
+  });
+
+  it('does not log raw category or amount when adding a transaction', () => {
+    vi.mocked(logger.info).mockClear();
+
+    const tx = addTransaction(1, '2024-06-15', 'medical', 2400, {
+      description: 'Private appointment',
+      currency: 'EUR',
+    });
+
+    expect(tx.id).toBeDefined();
+    const logCalls = vi.mocked(logger.info).mock.calls;
+    expect(logCalls).toHaveLength(1);
+    const metadata = logCalls[0][0] as Record<string, unknown>;
+    expect(metadata).toMatchObject({ userId: 1, txId: tx.id, currency: 'EUR' });
+    expect(metadata).not.toHaveProperty('category');
+    expect(metadata).not.toHaveProperty('amount');
   });
 
   it('gets transactions for a user', () => {

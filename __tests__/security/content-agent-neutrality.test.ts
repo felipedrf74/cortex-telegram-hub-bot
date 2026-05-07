@@ -5,6 +5,9 @@ import path from 'node:path';
 const REPO_ROOT = path.resolve(__dirname, '../..');
 
 const RUNTIME_FILES = [
+  'src/agents/editorial-coordinator-agent.ts',
+  'src/agents/pipeline-agent.ts',
+  'src/agents/voice-evolution-agent.ts',
   'src/agents/seo-agent.ts',
   'src/agents/reaction-radar-agent.ts',
   'src/agents/performance-agent.ts',
@@ -59,5 +62,15 @@ describe('closed-beta content agent neutrality', () => {
     for (const token of FOUNDER_SHAPED_DEFAULTS) {
       expect(scanner).toContain(token);
     }
+  });
+
+  it('does not read a global configured YouTube channel as creator identity in runtime agents', () => {
+    const hits: string[] = [];
+    for (const file of RUNTIME_FILES.filter((item) => item.startsWith('src/agents/'))) {
+      const text = readFileSync(path.join(REPO_ROOT, file), 'utf8');
+      if (text.includes('config.youtube?.channelId')) hits.push(file);
+    }
+
+    expect(hits).toEqual([]);
   });
 });

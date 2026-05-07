@@ -549,7 +549,7 @@ export function addTransaction(
     encDesc,
   );
   const row = db.prepare('SELECT * FROM finance_transactions WHERE rowid = last_insert_rowid()').get() as any;
-  logger.info({ userId, category, amount }, 'Finance transaction added');
+  logger.info({ userId, txId: row.id, currency: opts?.currency ?? 'BRL' }, 'Finance transaction added');
   return decryptTransaction(row);
 }
 

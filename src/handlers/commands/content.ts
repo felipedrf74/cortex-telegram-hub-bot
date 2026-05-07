@@ -59,6 +59,7 @@ import { splitMessage, escapeHtml } from '../../utils/telegram-formatter';
 import { now } from '../../utils/date-parser';
 import { enqueue, isHtmlParseError } from '../shared-state';
 import { resolveCanonicalUserId } from '../../services/user-service';
+import { resolveUserScopedYoutubeChannelId } from '../../services/youtube-channel-scope';
 import fs from 'fs';
 import path from 'path';
 
@@ -579,7 +580,8 @@ export function registerContentCommands(bot: Bot): void {
 
         // Immediately check ranking
         const { checkKeywordRanking } = await import('../../services/youtube-analytics');
-        const channelId = config.youtube?.channelId;
+        const userId = ctx.from?.id ? resolveCanonicalUserId(ctx.from.id) : null;
+        const channelId = userId ? resolveUserScopedYoutubeChannelId(userId) : null;
         if (channelId) {
           const result = await checkKeywordRanking(keyword, channelId);
           if (result.position) {
@@ -594,7 +596,7 @@ export function registerContentCommands(bot: Bot): void {
             await ctx.reply(`\u2705 Now tracking: <b>${escapeHtml(keyword)}</b>\nNo ranking found yet (not in top 20).`, { parse_mode: 'HTML' });
           }
         } else {
-          await ctx.reply(`\u2705 Now tracking: <b>${escapeHtml(keyword)}</b>\n\u26A0\uFE0F Set YOUTUBE_CHANNEL_ID to enable rank checking.`, { parse_mode: 'HTML' });
+          await ctx.reply(`\u2705 Now tracking: <b>${escapeHtml(keyword)}</b>\n\u26A0\uFE0F Connect a user-scoped creator YouTube channel to enable rank checking.`, { parse_mode: 'HTML' });
         }
         return;
       }
@@ -1255,7 +1257,12 @@ export function registerContentCommands(bot: Bot): void {
     }
 
     if (action === 'save') {
-      saveIdea(cbData.title, cbData.date);
+      const userId = ctx.from?.id ? resolveCanonicalUserId(ctx.from.id) : null;
+      if (!userId) {
+        await ctx.answerCallbackQuery({ text: 'Sign in again before saving ideas.' });
+        return;
+      }
+      saveIdea({ title: cbData.title, sourceDate: cbData.date, userId, source: 'command' });
       await ctx.answerCallbackQuery({ text: `\u{1F4BE} Saved: ${cbData.title.slice(0, 40)}` });
     }
   });

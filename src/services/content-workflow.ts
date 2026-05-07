@@ -259,7 +259,7 @@ export async function generateTopicCandidates(
       discoveryBlock = `\n## Pre-Researched Ideas from Daily Discovery\nThese high-scoring ideas were found by the daily trend scanner. Consider including, modifying, or building on them:\n${ideasList}\n`;
       // Mark promoted
       for (const idea of eligible.slice(0, 5)) {
-        markIdeaPromoted(idea.id);
+        markIdeaPromoted(idea.id, userId);
       }
     }
   } catch { /* non-critical */ }

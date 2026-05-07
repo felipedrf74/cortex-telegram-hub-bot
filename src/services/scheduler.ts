@@ -1082,10 +1082,32 @@ export function startScheduler(bot?: any): void {
   // ── Conflict detection (19:30) ─────────────────────────────────────
   cron.schedule('30 19 * * *', wrapJob('conflict_detection', async () => {
     for (const target of getActiveUserTargets()) {
-      if (!target.telegramId) continue;
       const message = await buildConflictAlertForUser(target.tenantId);
       if (!message) continue;
 
+      await createNotificationIntent({
+        userId: target.tenantId,
+        tenantId: target.tenantId,
+        sourceSkill: 'secretary',
+        type: 'conflict_detected',
+        priority: 'time_sensitive',
+        relatedEntityId: `conflict-detection-${startOfDay()}`,
+        relatedEntityType: 'calendar_conflict',
+        title: 'Schedule conflict detected',
+        body: 'Schedule conflict needs review.',
+        sensitiveBody: message.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim(),
+        actionButtons: [
+          { id: 'accept_reflow', label: 'Reflow', style: 'primary' },
+          { id: 'open_detail', label: 'Review', style: 'secondary' },
+        ],
+        deeplink: 'nexus://secretary/conflict/daily',
+        dedupeKey: `secretary:conflict_detection:${target.tenantId}:${startOfDay()}`,
+        requiresUserAction: true,
+        quietHoursPolicy: 'allow_time_sensitive',
+        privacyPolicy: 'sensitive',
+      });
+
+      if (!target.telegramId) continue;
       try {
         await safeSend(target.telegramId, message, { parse_mode: 'HTML' });
       } catch (err) {

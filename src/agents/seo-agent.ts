@@ -15,6 +15,7 @@ import { buildAgentContext } from '../services/cross-agent-learning';
 import { getDb } from '../services/database';
 import { config } from '../config';
 import { logger } from '../utils/logger';
+import { listUserScopedYoutubeChannelTargets } from '../services/youtube-channel-scope';
 
 const YOUTUBE_API_BASE = 'https://www.googleapis.com/youtube/v3';
 
@@ -232,11 +233,23 @@ export async function runSEOAgent(): Promise<void> {
     const db = getDb();
     seedKeywordsIfEmpty();
 
-    // Get the authenticated creator's channel ID (from reference channels or config)
-    const creatorChannelId = config.youtube?.channelId || '';
-    if (!creatorChannelId) {
-      logger.warn('SEO Agent: No YouTube channel ID configured (YOUTUBE_CHANNEL_ID). Skipping rank checks.');
+    const channelTargets = listUserScopedYoutubeChannelTargets();
+    if (channelTargets.length === 0) {
+      logger.warn('SEO Agent: no user-scoped creator YouTube channel configured. Global YOUTUBE_CHANNEL_ID is intentionally ignored.');
+      logAgentRun('seo-agent', 'skipped', 0, 0, Date.now() - start, 'No user-scoped creator YouTube channel configured');
+      return;
     }
+
+    // SEO keyword tables and content-mesh rank-change signals are currently
+    // platform-global. Until both are user/tenant scoped, fail closed rather
+    // than recording one creator's YouTube ranks where another creator can
+    // read them.
+    logger.warn(
+      { channelTargets: channelTargets.length },
+      'SEO Agent paused: user-scoped SEO rank storage/signals are not supported yet',
+    );
+    logAgentRun('seo-agent', 'skipped', 0, 0, Date.now() - start, 'User-scoped SEO rank storage/signals not supported yet');
+    return;
 
     // Get all tracked keywords
     const keywords = db.prepare('SELECT * FROM seo_keywords').all() as any[];
@@ -247,7 +260,7 @@ export async function runSEOAgent(): Promise<void> {
     // Check ranks for each keyword (with 2s delay between to avoid rate limits)
     for (let i = 0; i < keywords.length; i++) {
       const kw = keywords[i];
-      const rank = await checkKeywordRank(kw.keyword, creatorChannelId);
+      const rank = await checkKeywordRank(kw.keyword, channelTargets[0].channelId);
 
       // Store previous and update current
       db.prepare(`

@@ -20,9 +20,11 @@ const mockStoreAndPushReport = vi.fn();
 const mockGetDb = vi.fn();
 const mockGetOwnerBootstrapTarget = vi.fn();
 const mockGenerateCoachBriefing = vi.hoisted(() => vi.fn());
+const mockCronSchedule = vi.hoisted(() => vi.fn());
+const mockCreateNotificationIntent = vi.hoisted(() => vi.fn());
 
 vi.mock('node-cron', () => ({
-  default: { schedule: vi.fn() },
+  default: { schedule: (...args: unknown[]) => mockCronSchedule(...args) },
 }));
 
 vi.mock('../../src/config', () => ({
@@ -165,6 +167,10 @@ vi.mock('../../src/services/database', () => ({
 vi.mock('../../src/services/report-document-store', () => ({
   storeAndPushReport: (...args: unknown[]) => mockStoreAndPushReport(...args),
 }));
+vi.mock('../../src/services/notification-orchestrator', () => ({
+  createNotificationIntent: (...args: unknown[]) => mockCreateNotificationIntent(...args),
+  releaseDueNotificationDeliveries: vi.fn(),
+}));
 vi.mock('../../src/services/training-plans', () => ({
   getActivePlans: vi.fn(() => []),
   getActivePlan: vi.fn(() => null),
@@ -183,6 +189,7 @@ import {
   buildWeeklyReviewPayloadForUser,
   getActiveUserIds,
   getOwnerUserIds,
+  startScheduler,
   sendCoachBriefings,
   sendDailyBriefing,
 } from '../../src/services/scheduler';
@@ -219,6 +226,7 @@ describe('scheduler tenant scoping', () => {
       })),
     });
     mockGetOwnerBootstrapTarget.mockReturnValue({ tenantId: 99, telegramId: 1999 });
+    mockCreateNotificationIntent.mockResolvedValue({ decision: 'in_app_only' });
     mockGenerateCoachBriefing.mockResolvedValue({
       message: 'coach briefing',
       recommendations: [],
@@ -388,6 +396,34 @@ describe('scheduler tenant scoping', () => {
     expect(message).toContain('Event A');
     expect(message).toContain('Event B');
     expect(message).not.toContain('Event C');
+  });
+
+  it('conflict detection cron emits Secretary NotificationIntent even when Telegram is unavailable', async () => {
+    mockGetEvents.mockResolvedValue([
+      { summary: 'Event A', start: '2026-04-18T09:00:00.000Z', end: '2026-04-18T10:00:00.000Z' },
+      { summary: 'Event B', start: '2026-04-18T09:30:00.000Z', end: '2026-04-18T11:00:00.000Z' },
+    ]);
+
+    startScheduler();
+    const conflictJob = mockCronSchedule.mock.calls.find((call) => call[0] === '30 19 * * *')?.[1] as (() => Promise<void>) | undefined;
+    expect(conflictJob).toBeTypeOf('function');
+
+    await conflictJob!();
+
+    expect(mockCreateNotificationIntent).toHaveBeenCalledWith(expect.objectContaining({
+      userId: 11,
+      tenantId: 11,
+      sourceSkill: 'secretary',
+      type: 'conflict_detected',
+      priority: 'time_sensitive',
+      privacyPolicy: 'sensitive',
+    }));
+    expect(mockCreateNotificationIntent).toHaveBeenCalledWith(expect.objectContaining({
+      userId: 22,
+      tenantId: 22,
+      sourceSkill: 'secretary',
+      type: 'conflict_detected',
+    }));
   });
 
   it('sendDailyBriefing stores report documents under canonical tenant ids', async () => {

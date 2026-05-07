@@ -13,7 +13,8 @@ Closeout dossier:
 
 Latest closed-beta gap analysis: 2026-05-07 (mid-day Europe/Lisbon).
 Report: `docs/archive/2026-05/closed-beta-gap-analysis/all-skills-gap-analysis-report.md`
-Verdict: NOT_READY → READY_WITH_CONDITIONS once the P0 cluster closes.
+Verdict: READY_WITH_CONDITIONS on the source branch after the P0 cluster closures
+below. Operator-only device/APNs/deploy validation remains before broad beta.
 
 Secretary Notification Orchestrator source branch: 2026-05-07.
 Report:
@@ -32,9 +33,9 @@ actual, recommended fix-prompts) is in the archive report linked above.
 
 | ID | Area | Description |
 |---|---|---|
-| GAP-CONT-1 | content runtime | Performance + SEO agents read a single global `YOUTUBE_CHANNEL_ID` (`engine/src/agents/performance-agent.ts:39-40,211-212`; `seo-agent.ts:236`). All users see Felipe's channel. — OPEN |
+| GAP-CONT-1 | content runtime | Performance + SEO agents no longer read global `YOUTUBE_CHANNEL_ID` as a fallback. CLOSED IN SOURCE BRANCH `feature/secretary-notification-orchestrator`; `src/services/youtube-channel-scope.ts` resolves only explicitly user-owned channels, and Performance/SEO agents fail closed until user-scoped signal storage exists. Coverage in `__tests__/services/youtube-channel-scope.test.ts` and `__tests__/security/content-agent-neutrality.test.ts`. |
 | GAP-COOK-1 | cooking | `applyMealPlanSubstitution`, `addRecipe`, `updateRecipe`, and `setMealPlan` now enforce stored allergy memory before writes; unsafe substitutions are rejected before mutation. CLOSED IN SOURCE BRANCH `feature/secretary-notification-orchestrator` via `6b6e74cb`; coverage in `__tests__/services/cooking-chef.test.ts` and `__tests__/api/cooking-routes.test.ts`. |
-| GAP-REL-3 | iOS CI | `ios/.github/workflows/ios-release-hardening.yml` runs zero `xcodebuild test`. — OPEN |
+| GAP-REL-3 | iOS CI | `ios/.github/workflows/ios-release-hardening.yml` now runs real `xcodebuild test` on the Nexus Hub scheme before release-hardening completion. CLOSED IN SOURCE BRANCH `feature/secretary-notification-orchestrator`; coverage in `Nexus HubTests/ReleaseHardeningConfigTests.swift`. |
 | GAP-REL-4 | backend health | `/health` and `/health/detailed` now run a live `SELECT 1` DB probe and return degraded/503 on failure. CLOSED IN SOURCE BRANCH `feature/secretary-notification-orchestrator` via `6b6e74cb`; coverage in `__tests__/portal/health-endpoints.test.ts`. |
 | GAP-REL-5 | release pipeline | Notification orchestrator security gate is empty: classifier glob `__tests__/security/notification-*.test.ts` expands to nothing; cannot-skip dashboard does not include orchestrator file. — CLOSED IN SOURCE BRANCH `feature/secretary-notification-orchestrator` via `__tests__/security/notification-orchestrator-security.test.ts`, changed-area classifier mapping, and cannot-skip dashboard representative. |
 | GAP-IOS-2 | iOS APNs | `ReportService.swift:111` hardcodes `environment: "sandbox"` for ALL builds → TestFlight/prod tokens mis-tagged → APNs delivery fails. — CLOSED IN SOURCE BRANCH `feature/secretary-notification-orchestrator`; debug builds register `sandbox`, release/TestFlight builds register `production`. |
@@ -46,25 +47,25 @@ actual, recommended fix-prompts) is in the archive report linked above.
 
 | ID | Area | Description |
 |---|---|---|
-| GAP-SEC-AUTH-1 | auth/state | Legacy 2-arg `saveIdea(title, sourceDate)` writes `user_id=0`; `markIdeaPromoted/Used/deleteIdea` mutate by id only with no scope (`engine/src/state/saved-ideas.ts:33-67`). — OPEN |
-| GAP-CHAT-1 | chat | Telegram chat-tool path may not establish `runWithChatToolAuthorization` ALS context. P0 if Telegram is in active prod use; P3 if iOS-only. **Verify deployment.** — OPEN |
-| GAP-TRN-1 | training | Plan-linter blockers remain advisor-only (logs but persists). Promote `equipment_compatibility`, `no_heavy_lower_before_long_run`, `race_specific_plan_requires_race_date` to strict gates. — OPEN (known) |
-| GAP-CONT-2 | content tests | Neutrality test covers 3 of 6 runtime agents (`engine/__tests__/security/content-agent-neutrality.test.ts:7-15`). — OPEN |
-| GAP-CONT-3 | content loop | Performance feedback collected but no code consumes it for adaptation — silent dead-end loop. — OPEN |
-| GAP-CONT-4 | iOS content | iOS lacks Performance + Calendar/Scheduler views entirely (`ios/Nexus Hub/Views/Content/`). — OPEN |
+| GAP-SEC-AUTH-1 | auth/state | Legacy 2-arg `saveIdea(title, sourceDate)` no longer writes `user_id=0`; saved-idea writes and promote/use/delete mutations now require and scope by positive `userId`. CLOSED IN SOURCE BRANCH `feature/secretary-notification-orchestrator`; coverage in `__tests__/state/saved-ideas-scope.test.ts`. |
+| GAP-CHAT-1 | chat | Telegram domain routing now runs skill handlers inside `runWithChatToolAuthorization` ALS context with the canonical user/tenant. CLOSED IN SOURCE BRANCH `feature/secretary-notification-orchestrator`; coverage in `__tests__/handlers/chat-tool-auth-context.test.ts`. |
+| GAP-TRN-1 | training | Plan-linter blockers remain advisor-only after persistence; promoting to strict requires a dedicated pre-persist or rollback-safe training batch. OPEN / OWNER DECISION REQUIRED. |
+| GAP-CONT-2 | content tests | Neutrality coverage now scans all TypeScript content runtime agents and pins that runtime agents do not read global `config.youtube?.channelId`. CLOSED IN SOURCE BRANCH `feature/secretary-notification-orchestrator`; coverage in `__tests__/security/content-agent-neutrality.test.ts`. |
+| GAP-CONT-3 | content loop | Radar feedback is consumed by source-side lifecycle/performance aggregate state (`src/state/content-lifecycle.ts`, `src/state/content-performance-aggregate.ts`) and covered by existing state tests. VERIFIED EXISTING; separate product work may still deepen adaptation quality. |
+| GAP-CONT-4 | iOS content | iOS has Content schedule and optimization surfaces through `ContentIntelligenceView` and `TopicSchedulerView`, with state-builder coverage. VERIFIED EXISTING WITH CONDITIONS; physical/UI beta smoke remains operator validation. |
 | GAP-SEC-NOTIF-1 | notif orch | Quiet-hours-delayed and digest items persisted with `scheduled_for` but no scheduler/release loop consumes them. — CLOSED IN SOURCE BRANCH `feature/secretary-notification-orchestrator`; scheduler now runs the orchestrator release loop. |
 | GAP-SEC-NOTIF-2 | notif orch | `POST /api/v1/notifications/intents` accepts arbitrary `priority`/`sourceSkill`/`type` from client body; iOS could fabricate `security/critical`. — CLOSED IN SOURCE BRANCH `feature/secretary-notification-orchestrator`; arbitrary intent creation now requires internal secret authorization and fixture route remains deterministic. |
 | GAP-SEC-NOTIF-3 | notif orch | `migrations/113_*.sql` schema diverges from runtime `ensureNotificationTables()`; `ios_devices` only at runtime. — CLOSED IN SOURCE BRANCH `feature/secretary-notification-orchestrator`; migration/runtime table setup now cover orchestrator tables and existing APNs compatibility storage is preserved. |
 | GAP-SEC-NOTIF-4 | notif orch | `isInQuietHours` uses server-local time, not `profile.timezone`. — CLOSED IN SOURCE BRANCH `feature/secretary-notification-orchestrator`; quiet-hours policy now evaluates in the profile timezone. |
-| GAP-CAL-1 | secretary | Conflict-detection cron sends Telegram only, no orchestrator intent emitted (`engine/src/services/scheduler.ts:1083-1095`). — OPEN |
-| GAP-FIN-1 | finance privacy | Pino logs leak transaction `category, amount` despite encryption-at-rest (`engine/src/services/finance-tracker.ts:552`; `engine/src/api/routes/finance.ts:116`). — OPEN |
-| GAP-FIN-2 | finance | Hard-coded Brazilian tax (IRPF Carnê-Leão / INSS rates) — single-tenant by jurisdiction. — OPEN |
+| GAP-CAL-1 | secretary | Conflict-detection cron now emits a Secretary `conflict_detected` NotificationIntent before Telegram delivery and still works when Telegram is unavailable. CLOSED IN SOURCE BRANCH `feature/secretary-notification-orchestrator`; coverage in `__tests__/services/scheduler-user-scope.test.ts`. |
+| GAP-FIN-1 | finance privacy | Transaction creation logs no longer include raw transaction `category` or `amount`; logs retain user, transaction id, and currency only. CLOSED IN SOURCE BRANCH `feature/secretary-notification-orchestrator`; coverage in `__tests__/services/finance-tracker.test.ts`. |
+| GAP-FIN-2 | finance | Brazilian tax support is still the only implemented jurisdiction for tax calculation. OPEN / OWNER DECISION REQUIRED for a finance jurisdiction model and non-BR behavior contract. |
 | GAP-PORT-3 | portal | New `/api/notifications` and `/api/notification-preferences` lack tenant filter at route boundary (`engine/src/portal/document-routes.ts:13-50,52-64`). — CLOSED IN SOURCE BRANCH `feature/secretary-notification-orchestrator`; portal routes validate scoped user/tenant headers/query and reject cross-tenant scope. |
 | GAP-REL-1 | docs/identity | Workspace `docs/release/release-identity.md` stale at 4.14.132 (prod is 4.14.134). — OPEN |
 | GAP-REL-2 | docs/release | Engine `docs/release/CURRENT_RELEASE_STATE.md` frozen at 4.14.127 — 7 production releases unsynced. — OPEN |
-| GAP-REL-6 | mock-lint | Trajectory off-target: ~70 months at 10/month vs `<100 by 2026-08-01`. Need ~242/month or commitment downgrade. — OPEN |
-| GAP-REL-7 | release gate | Two-account E5 self-policed; no CI gate prevents promote-to-prod without TestFlight evidence. — OPEN |
-| GAP-IOS-5 | iOS cache | `ResponseCache.shared.clear()` never called on signOut/scope-change in `AppState.swift:504/617`. Cross-account leak risk. — OPEN |
+| GAP-REL-6 | mock-lint | Trajectory off-target: ~70 months at 10/month vs `<100 by 2026-08-01`. OPEN / OWNER DECISION REQUIRED: either authorize a larger mock-factory reduction batch or downgrade the commitment date. |
+| GAP-REL-7 | release gate | Two-account E5 remains operator-evidence gated; adding a hard CI/deploy gate needs an explicit release-process decision to avoid blocking emergency deploys without physical-device evidence. OPEN / OWNER DECISION REQUIRED. |
+| GAP-IOS-5 | iOS cache | `ResponseCache.shared.clear()` now runs on signOut and scope reconciliation/account switch paths. CLOSED IN SOURCE BRANCH `feature/secretary-notification-orchestrator`; coverage in `Nexus HubTests/ResponseCacheTests.swift` and `Nexus HubTests/RepositoryScopeChangeTests.swift`. |
 
 P2/P3 items (~30 more) live only in the archive report; surface to OPEN_ITEMS only when promoted by a fix prompt or new evidence.
 

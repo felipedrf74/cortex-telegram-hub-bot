@@ -114,7 +114,7 @@ export function financeRoutes(): Router {
         receiptRef,
       });
       invalidateFinanceDerivedCaches(userId);
-      logger.info({ userId, txId: tx.id, category, amount }, 'iOS transaction added');
+      logger.info({ userId, txId: tx.id, currency: tx.currency }, 'iOS transaction added');
       sendSuccess(res, { transaction: tx }, { status: 201 });
     } catch (err: any) {
       logger.error({ err, userId }, 'iOS finance transaction create failed');
