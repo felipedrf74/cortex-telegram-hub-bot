@@ -68,6 +68,16 @@ Original hostile verdict was **NOT_READY** and was correct at audit time.
 Source remediation now landed in engine `2e896435` and iOS `82abbea`; Claude
 hostile re-QA remains the next evidence gate.
 
+**2026-05-07 hostile QA v2 final report** —
+`docs/archive/2026-05/event-backbone-readmodels-delta-sync/hostile-qa-v2-final-report.md`.
+Verdict: **READY_FOR_LOCAL_QA**. After v2 source remediation (engine `e82bbdae`/`ca2e0cd9` + iOS `12a9d95`),
+all 11 v2 hostile findings are behaviorally closed with real-DB / real-route /
+real-cancellation tests. Independent gates: tsc clean, 56/56 focused vitest
+pass, 23/23 cannot-skip dashboard, mock lint baseline 827 unchanged, workspace
+mirror in sync. iOS xcodebuild simulator 11/11 PASS. Zero regressions found.
+Remaining gates are operator-only: authenticated iOS product-surface walkthrough,
+migration 115 staging apply, production env flag confirmation, APNs credentials.
+
 **Hostile P0 cluster — REMEDIATED IN SOURCE BRANCH**
 | ID | Source-branch remediation | Hostile re-QA verdict |
 |---|---|---|
