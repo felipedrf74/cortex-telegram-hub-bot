@@ -5,7 +5,7 @@
 
 | Area | Path | Branch | Commit | Dirty state | Version | Migrations |
 | --- | --- | --- | --- | --- | --- | --- |
-| Backend | `/Users/felipedominguez/Desktop/Custom Connectors/Cortex/cortex-telegram-hub-bot` | `feature/event-backbone-readmodels-delta-sync` | `b13e2495` | `dirty` | `4.14.134` | `120` |
+| Backend | `/Users/felipedominguez/Desktop/Custom Connectors/Cortex/cortex-telegram-hub-bot` | `feature/event-backbone-readmodels-delta-sync` | `9c704b64` | `dirty` | `4.14.134` | `120` |
 | iOS | `/Users/felipedominguez/Desktop/Nexus Hub IOS/Nexus Hub` | `feature/event-backbone-readmodels-delta-sync` | `dd8ffe0` | `clean` | n/a | n/a |
 
-Generated at: `2026-05-07T20:05:15Z`
+Generated at: `2026-05-07T20:07:57Z`
