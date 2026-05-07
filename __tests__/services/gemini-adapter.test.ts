@@ -15,7 +15,16 @@ vi.mock('@google/genai', () => ({
   },
 }));
 
-import { GoogleGenerativeAIAdapter } from '../../src/services/gemini-adapter';
+import {
+  FunctionCallingMode,
+  GoogleGenerativeAI,
+  GoogleGenerativeAIAdapter,
+  SchemaType,
+  type Content,
+  type FunctionDeclaration,
+  type GenerateContentResult,
+  type Part,
+} from '../../src/services/gemini-adapter';
 
 describe('GoogleGenerativeAIAdapter', () => {
   beforeEach(() => {
@@ -100,5 +109,54 @@ describe('GoogleGenerativeAIAdapter', () => {
       config: { tools, toolConfig },
     });
     expect(result.response.functionCalls()).toEqual(functionCalls);
+  });
+
+  it('exports old SDK-compatible enum values and request types', () => {
+    const parts: Part[] = [
+      { text: 'hello' },
+      { inlineData: { mimeType: 'image/png', data: 'abc123' } },
+      { functionCall: { name: 'set_reminder', args: { message: 'stretch' } } },
+      { functionResponse: { name: 'set_reminder', response: { ok: true } } },
+    ];
+    const contents: Content[] = [{ role: 'user', parts }];
+    const declaration: FunctionDeclaration = {
+      name: 'set_reminder',
+      description: 'Create a reminder',
+      parameters: {
+        type: SchemaType.OBJECT,
+        properties: {
+          message: { type: SchemaType.STRING },
+          priority: { type: SchemaType.INTEGER },
+        },
+        required: ['message'],
+      },
+    };
+
+    expect(contents[0].parts).toHaveLength(4);
+    expect(declaration.parameters?.type).toBe('object');
+    expect(FunctionCallingMode.AUTO).toBe('AUTO');
+    expect(SchemaType.STRING).toBe('string');
+  });
+
+  it('preserves old SDK response helpers, candidates, and usage metadata', async () => {
+    const functionCalls = [
+      { name: 'set_reminder', args: { message: 'stretch' } },
+      { name: 'archive_task', args: { id: 42 } },
+    ];
+    mockGenerateContent.mockResolvedValue({
+      text: 'done',
+      functionCalls,
+      candidates: [{ finishReason: 'STOP' }],
+      usageMetadata: { promptTokenCount: 8, candidatesTokenCount: 3, totalTokenCount: 11 },
+    });
+
+    const model = new GoogleGenerativeAI('test-key').getGenerativeModel({ model: 'gemini-2.5-flash' });
+    const result: GenerateContentResult = await model.generateContent('finish this');
+
+    expect(result.response.text()).toBe('done');
+    expect(result.response.functionCall()).toEqual(functionCalls[0]);
+    expect(result.response.functionCalls()).toEqual(functionCalls);
+    expect(result.response.candidates?.[0]?.finishReason).toBe('STOP');
+    expect(result.response.usageMetadata?.promptTokenCount).toBe(8);
   });
 });

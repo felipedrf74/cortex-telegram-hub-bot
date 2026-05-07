@@ -7,7 +7,7 @@
  * logs token counts and estimated costs.
  */
 
-import { GoogleGenerativeAI } from '@google/generative-ai';
+import { GoogleGenerativeAI } from '../src/services/gemini-adapter';
 
 const API_KEY = process.env.GEMINI_API_KEY;
 if (!API_KEY) {

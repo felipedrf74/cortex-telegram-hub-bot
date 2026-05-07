@@ -23,7 +23,7 @@ import {
   FunctionCallingMode,
   SchemaType,
   type GenerateContentResult,
-} from '@google/generative-ai';
+} from './gemini-adapter';
 import {
   AIProvider,
   AICallResult,
