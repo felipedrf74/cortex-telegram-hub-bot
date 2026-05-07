@@ -4,38 +4,50 @@ Status: current
 Owner: Codex
 Last verified: 2026-05-07
 Branch: `feature/event-backbone-readmodels-delta-sync`
-Engine commit: `887ada0eaf7e9e6ce09eab275a1c888f73916251`
-iOS commit: `2f3be83de91f3dae646ee9c49bda89f5eb73a315`
+Engine commits:
+- `887ada0eaf7e9e6ce09eab275a1c888f73916251` - foundation
+- `25133368371dafb967dc7a4f89a7360ea464fb79` - worker lifecycle, retention hook, summary budgets
+iOS commits:
+- `2f3be83de91f3dae646ee9c49bda89f5eb73a315` - delta sync store/service foundation
+- `9ff725dca44d1603c9dee82f6f1ef3b2d83be320` - app-surface summary/delta warmup
 Push/deploy: not performed
 
 ## Verdict
 
 READY_WITH_CONDITIONS.
 
-The modular-monolith foundation is implemented locally without Kafka, Redis,
-Flink, Postgres migration, WebSockets-as-truth, or service splitting. Backend
-event outbox, job queue, decision log, read-model summaries, delta sync,
-resource budgets, retention cleanup, and classifier mappings are present and
-covered by focused behavior tests. iOS now has a scoped delta-sync store/client
-and account-switch cache clearing, covered by focused simulator tests.
+The Nexus-sized modular-monolith foundation is implemented locally without
+Kafka, Redis, Flink, Postgres migration, WebSockets-as-truth, or service
+splitting. Backend event outbox, job queue, decision log, read-model
+summaries, delta sync, resource budgets, scheduled worker processing,
+retention cleanup, and classifier mappings are present and covered by
+behavior tests. iOS now has a scoped delta-sync repository/cache and warms
+summary/delta state from Home, Training, Content, Notifications, AppState
+bootstrap, and foreground refresh paths.
 
-The remaining conditions are product-integration and rollout work: wire a
-long-running/scheduled worker process before relying on async jobs in release,
-adopt the summary/delta client inside the main iOS surfaces, run real iOS
-interaction smoke, and run a local full-product smoke against a started engine.
+The remaining conditions are validation and rollout conditions, not missing
+foundation code:
+- authenticated iOS product-screen interaction still needs a valid local or
+  signed test account session; simulator validation reached onboarding/auth
+  and did not claim app-surface QA
+- production/staging must explicitly decide the worker and cleanup flags before
+  deploy (`EVENT_BACKBONE_WORKER_DISABLED`, batch limits,
+  `EVENT_BACKBONE_CLEANUP_APPLY`)
+- future product work can gradually render from summary read models instead of
+  only warming them in the background
 
 ## Executive summary
 
 - Biggest implementation: SQLite-backed event/job/read-model/sync foundation
-  with tenant/user scoped tests and app-safe summary payloads.
-- Biggest blocker: background worker lifecycle is a foundation only; no PM2 or
-  scheduler loop has been enabled for production.
-- Remaining risk: iOS surfaces still use their existing loaders; the new
-  sync/cache client is ready but not the source path for Home/Week/Training.
-- Backend readiness: foundation ready for local QA with focused tests green.
-- iOS readiness: DTO/store/client ready, no launch-only claim made.
-- Release readiness: not ready to deploy until worker lifecycle and iOS
-  interaction smoke are validated.
+  with scheduled processing and scoped iOS cache readiness.
+- Biggest blocker: no authenticated iOS product-screen interaction was
+  available in this local simulator run.
+- Remaining risk: summary read models are warmed and tested but not yet the
+  primary visible source of truth for every screen.
+- Backend readiness: implemented and validated for local QA.
+- iOS readiness: store, repository, app-surface warmup, scope invalidation, and
+  URLProtocol tests are green.
+- Release readiness: source is QA-ready; no push/deploy performed.
 
 ## Architecture implemented
 
@@ -47,13 +59,16 @@ interaction smoke, and run a local full-product smoke against a started engine.
 - `app_summary_read_models`: migration plus
   `src/services/app-summary-read-models.ts`.
 - Delta sync: `src/services/delta-sync.ts` and `GET /api/v1/sync/changes`.
-- iOS cache/sync: `DeltaSyncStore`, `DeltaSyncService`, and AppState cache
-  clearing.
-- Budgets: `src/services/resource-budgets.ts`, first concrete budget on sync
-  changes.
+- Worker lifecycle: `src/services/event-backbone-worker.ts` invoked by
+  scheduler every minute with bounded batch limits.
+- Retention cleanup: `src/tools/event-backbone-cleanup.ts`, dry-run by default,
+  scheduled at 00:10 with explicit apply flag.
+- iOS cache/sync: `DeltaSyncStore`, `DeltaSyncService`,
+  `DeltaSyncRepository`, and AppState cache clearing.
+- Budgets: `src/services/resource-budgets.ts`, concrete budgets on sync and
+  summary routes.
 - Observability: request/correlation/causation IDs carried through events and
   jobs; budget degradation logs are scoped and PII-free.
-- Cleanup/retention: `src/tools/event-backbone-cleanup.ts`, dry-run by default.
 - Release classifier: event backbone file mappings added to changed-area
   classifier.
 
@@ -93,6 +108,9 @@ Implemented behavior:
 - retry/backoff/dead-letter
 - cancel support
 - feature flag kill switch: `EVENT_BACKBONE_JOBS_DISABLED=1`
+- scheduler kill switch: `EVENT_BACKBONE_WORKER_DISABLED=1`
+- scheduler batch controls:
+  `EVENT_BACKBONE_EVENT_BATCH_LIMIT` and `EVENT_BACKBONE_JOB_BATCH_LIMIT`
 
 Initial handlers:
 - `project_read_models`
@@ -102,7 +120,10 @@ Initial handlers:
 - safe stubs for content radar, calendar sync, and memory summary jobs that do
   not call providers locally
 
-Condition: a PM2/scheduler worker loop is not enabled yet.
+Scheduler lifecycle:
+- `event_backbone_worker` runs every minute
+- no-op runs return `skipped` so `job_history` does not churn
+- dead-letter rows are logged as warnings
 
 ## Decision Log
 
@@ -134,6 +155,12 @@ focused tests verify summary reads do not call model/provider/calendar work.
 Fallback behavior: if a materialized row is missing/stale, the service rebuilds
 the summary deterministically from existing tables.
 
+Budget behavior:
+- summary list: 240 requests per user/minute
+- summary get: 300 requests per user/minute
+- summary project: 30 requests per user/minute
+- budget-denied requests return safe `RATE_LIMITED` errors with reset metadata
+
 ## Delta Sync / RAMEN-lite
 
 Endpoint:
@@ -156,15 +183,22 @@ Implemented:
 - `DeltaSyncStore` actor stores cursors and changes by scope key and device id
 - duplicate deltas are ignored by `changeId`
 - `resetRequired` clears only the current scope and stores the reset cursor
-- `clearAll()` is called from AppState process-wide cache clearing on logout or
-  scope reconciliation
-- `DeltaSyncService` fetches summary envelopes and delta changes through direct
-  REST endpoints
+- `DeltaSyncRepository` coalesces in-flight summary/delta refreshes by scope
+- stale async responses are dropped after scope changes
+- device id is stable per app install
+- `clearAll()` runs from AppState process-wide cache clearing on logout/scope
+  reconciliation
+- Home/AppState bootstrap warms Home, Week, Training, Content, and
+  Notifications summaries
+- Dashboard foreground refresh warms Home, Week, Notifications, and delta
+  changes
+- Training, Content, and Notification Inbox entry points warm their own summary
+  plus delta changes
 
 Not claimed:
-- Home/Week/Training/Content/Notifications UI adoption
+- visible product surface QA after authenticated login
 - background task execution
-- real iOS interaction smoke
+- replacing existing screen source-of-truth loaders with read-model-only UI
 
 ## Budgets / Circuit Breakers
 
@@ -172,6 +206,7 @@ Implemented:
 - reusable budget counter keyed by tenant/user/budget/window
 - unique window counter index to avoid duplicate counters
 - `sync_changes` route budget: 120 requests per user/minute
+- summary route budgets listed above
 - page-size cap helper for sync changes
 - safe 429/degraded response with no private payload
 
@@ -188,6 +223,7 @@ Implemented:
 - worker result counts
 - scoped budget degradation logs
 - decision log reason codes
+- scheduler logs for processed event/job counts and cleanup targets
 
 Privacy policy:
 - no raw prompt/chat/content/finance/calendar/token fields are written to event
@@ -204,11 +240,16 @@ Privacy policy:
 - `--json`
 - processed events, completed/canceled jobs, old decision logs, old sync cursors
 
+Scheduler integration:
+- midnight cleanup is dry-run unless `EVENT_BACKBONE_CLEANUP_APPLY=1`
+- `EVENT_BACKBONE_CLEANUP_DISABLED=1` disables the scheduled pass
+- `sync_cursors` cleanup uses the real `last_seen_at` column
+
 Dead-letter events/jobs are intentionally retained for investigation.
 
 ## Release classifier
 
-`scripts/changed-area-classifier.sh` now detects:
+`scripts/changed-area-classifier.sh` detects:
 - event outbox
 - job queue
 - decision log
@@ -219,7 +260,7 @@ Dead-letter events/jobs are intentionally retained for investigation.
 - event backbone migration/tests
 - domain route changes for Training/Cooking/Content/Finance/Secretary
 
-Classifier output for the current branch includes:
+Classifier output for this branch includes:
 - cannot-skip: `event-backbone-jobs-sync-tenant-isolation`
 - focused tests: event backbone service/API tests plus notification/security and
   affected domain globs
@@ -234,102 +275,130 @@ Validated by focused tests:
 - chat event payload records lengths/domain metadata, not raw user/assistant text
 - budget keys are tenant/user scoped
 - cleanup preserves dead letters
+- scheduler worker and cleanup hooks are test-wired without needing real
+  provider calls
 
 ## Local full-product smoke
 
-API-level flow is covered by focused tests:
-1. emit event
-2. worker enqueues read-model job
-3. job projects summaries
-4. summary endpoint returns scoped summary
-5. delta sync returns scoped changes
-6. duplicate deltas are handled by iOS store test
-7. cleanup preserves dead-letter investigation rows
+Started-engine local smoke was run against the loopback-only harness with local
+SQLite data and model-provider keys disabled.
+
+Validated:
+1. backend built and started on `127.0.0.1:8200`
+2. local sandbox iOS auth token created
+3. authenticated app-facing smoke passed 13/13:
+   Dashboard, Plan today, Plan week, Task lists, Today tasks, Training summary,
+   Training today, Content pipeline, Content intelligence summary, Current meal
+   plan, Finance monthly summary, Connections, Inbox
+4. `POST /api/v1/summaries/project` projected 5/5 summaries:
+   Home, Week, Training, Content, Notifications
+5. `GET /api/v1/summaries/home` returned `summaryType=home`, version 1,
+   `isStale=false`
+6. `GET /api/v1/sync/changes?deviceId=local-smoke-device&limit=10` returned a
+   scoped cursor, empty changes for the fresh local user, `hasMore=false`, and
+   `resetRequired=false`
+7. harness cleanup stopped the backend and cleared the auth token
+
+Focused tests cover the deeper emit-event -> worker -> job -> summary -> delta
+chain.
+
+## iOS validation
+
+Behavior tests:
+- `Nexus HubTests/DeltaSyncStoreTests`
+- `Nexus HubTests/DeltaSyncRepositoryTests`
+- Result: 6/6 passed on iPhone 17 Pro simulator, iOS 26.4.1
+
+Simulator interaction:
+- built and launched `me.nexushub.app`
+- tapped `onboarding-start-button`
+- verified the simulator reached the account creation/auth screen
 
 Blocked/not claimed:
-- started-engine smoke
-- iOS real interaction smoke
-- portal/browser smoke
+- authenticated Home/Week/Training/Content/Notifications screen interaction was
+  not performed because the simulator session stopped at auth and no valid
+  local signed test account path was available in this run
 
 ## Tests run
 
 Backend:
 - `npx tsc --noEmit` PASS
-- `npm run verify` PASS, 478 files / 7054 tests
-- `npx vitest run __tests__/services/event-backbone.test.ts __tests__/api/event-backbone-routes.test.ts --reporter=default` PASS, 11/11
-- `npx vitest run __tests__/services/notification-orchestrator.test.ts __tests__/api/notifications-routes.test.ts __tests__/security/notification-orchestrator-security.test.ts --reporter=default` PASS, 37/37
+- `npm run verify` PASS, 478 files / 7057 tests
+- `npx vitest run __tests__/services/event-backbone.test.ts __tests__/api/event-backbone-routes.test.ts __tests__/services/scheduler-user-scope.test.ts --reporter=default` PASS, 25/25
 - `npx vitest run __tests__/security/p0-chat-identity-isolation.test.ts --reporter=default` PASS, 23/23
 - `bash scripts/cannot-skip-gate-dashboard.sh --json --no-evidence` PASS, 23/23
-- `node scripts/vi-mock-completeness-lint.mjs --strict` PASS, 826 partial mocks against the 827 ceiling
+- `node scripts/vi-mock-completeness-lint.mjs --strict` PASS, 827/827
+
+Python:
+- `cd content-engine && .venv313/bin/python -m pytest tests/ -q` PASS, 135/135
+- A first invocation from the engine root failed with `tests/` not found; this
+  was a command path mistake and was corrected by running from `content-engine`.
 
 iOS:
-- XcodeBuildMCP `test_sim -only-testing:Nexus HubTests/DeltaSyncStoreTests` PASS, 4/4 on iPhone 17 Pro simulator
+- `xcodebuildmcp test_sim -only-testing:Nexus HubTests/DeltaSyncStoreTests -only-testing:Nexus HubTests/DeltaSyncRepositoryTests` PASS, 6/6
+- `xcodebuildmcp build_run_sim` PASS
+- `xcodebuildmcp snapshot_ui` PASS for onboarding and auth screen snapshots
+
+Local smoke:
+- `scripts/full-nexus-local-engine.sh smoke` PASS, 13/13
+- event backbone API probe PASS for summary projection, Home summary, and delta
+  sync cursor response
 
 Docs:
-- `npm run docs:audit` PASS with current known ceiling state: 463 issues / 435 audited after workspace mirror refresh
-
-Blocked:
-- full local engine + iOS interaction smoke was not run in this pass
-- production APNs/silent push/background sync not in scope
-
-## Area status
-
-| Area | Status |
-|---|---|
-| Workspace preservation | IMPLEMENTED_AND_VALIDATED |
-| Architecture inventory | IMPLEMENTED_AND_VALIDATED |
-| Event outbox | IMPLEMENTED_AND_VALIDATED |
-| Background job queue foundation | IMPLEMENTED_AND_VALIDATED |
-| Production worker loop | DEFERRED_WITH_OWNER_DECISION_REQUIRED |
-| Decision log | IMPLEMENTED_AND_VALIDATED |
-| Backend summaries/read models | IMPLEMENTED_AND_VALIDATED |
-| Delta sync endpoint | IMPLEMENTED_AND_VALIDATED |
-| iOS cache/sync DTO/store/client | IMPLEMENTED_AND_VALIDATED |
-| iOS summary UI adoption | DEFERRED_WITH_OWNER_DECISION_REQUIRED |
-| Resource budgets | IMPLEMENTED_AND_VALIDATED |
-| Observability baseline | IMPLEMENTED_AND_VALIDATED |
-| Retention cleanup | IMPLEMENTED_AND_VALIDATED |
-| Release classifier mapping | IMPLEMENTED_AND_VALIDATED |
-| Full-product local smoke | BLOCKED_WITH_EXACT_REASON: no local engine/iOS smoke run was started in this pass; API-level flow is covered by focused tests only |
+- `npm run docs:audit` must be rerun after this report update and workspace
+  mirror refresh.
 
 ## Open items
 
 P0:
-- none known from this implementation pass.
+- None known from this workstream.
 
 P1:
-- Enable a controlled worker lifecycle for event/job processing before release
-  depends on async jobs.
-- Run local full-product smoke with a started engine and one simulator: create or
-  update a domain entity, process event/job, verify summary and delta, verify no
-  cross-user leakage.
+- Authenticated iOS product-surface interaction smoke remains required before
+  treating summary/delta app integration as UI-validated.
+- Release/deploy operator must explicitly confirm event-backbone worker and
+  cleanup env flags before staging/prod.
 
 P2:
-- Adopt summaries and delta sync in Home, Week/Semana, Training, Content, and
-  Notifications UI paths with request dedupe and account-switch checks.
-- Expand resource budgets to provider, calendar, content radar, and notification
-  attempts.
-- Decide whether retention cleanup should be scheduled in `midnight_cleanup` or
-  operator-run only.
-- Add summary freshness telemetry to `/health/detailed` once worker loop is live.
+- Gradually render Home/Week/Training/Content/Notifications from summaries
+  where UX/product value is clear; current work warms summaries/deltas without
+  changing visible source-of-truth behavior.
+- Expand resource budgets to provider, calendar, content radar, and
+  notification-delivery attempts.
+- Add a longer local smoke fixture that creates a real domain entity through
+  API, observes event/job projection, and verifies iOS cache with an
+  authenticated app session.
 
 P3:
-- Add a compact operator runbook for event replay and dead-letter triage.
-- Consider a tiny admin-only event/job diagnostics route after permissions are
-  explicitly reviewed.
+- Consider exposing read-model freshness diagnostics in an internal portal
+  surface after first QA pass.
 
 ## Cleanup status
 
-- No push performed.
-- No deploy performed.
-- No production data/calendars/push used.
-- No long-running backend worker started.
-- iOS simulator was used for focused tests only; no app-launch validation was
-  claimed.
+- Local full Nexus backend: stopped by harness cleanup.
+- Content engine: not started.
+- Auth token: removed by cleanup.
+- Port 8200: no listener after cleanup.
+- iOS simulator: app launch used for onboarding/auth interaction; stop app
+  before handing off if no further simulator validation is needed.
+- Push/deploy: not performed.
+
+## Prompt/process improvements
+
+- For future product-engineering prompts, include a local app-auth setup step so
+  Codex/Claude can validate authenticated iOS surfaces against the local engine
+  without relying on production credentials.
+- Treat local smoke response-shape assertions as contract tests; the first
+  projection probe used the wrong response field and caught that assumption.
+- Keep this foundation modular: events project state and support sync; direct
+  REST writes and durable DB rows remain source of truth.
 
 ## Final recommendation
 
-Keep this branch in local QA as a foundation branch, not a production deploy
-candidate. The backend substrate is useful and test-backed; the iOS cache client
-is ready for integration. Before release, wire the worker lifecycle, adopt the
-summary/delta paths in user-facing surfaces, and run real interaction smoke.
+READY_WITH_CONDITIONS for Claude hostile QA and local engineering QA.
+
+Do not push or deploy from this branch yet. The backend foundation, scheduled
+worker lifecycle, local API smoke, and iOS cache/sync implementation are in
+place and tested. The main unresolved evidence gap is authenticated iOS
+product-surface interaction against a local or signed test account; that should
+be closed before release-readiness is upgraded beyond conditions.

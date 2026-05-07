@@ -59,21 +59,26 @@ operator-only; no push or deploy was performed.
 Event backbone / read models / delta sync source branch: 2026-05-07.
 Report:
 `docs/release/event-backbone-readmodels-delta-sync-report.md`.
-Verdict: READY_WITH_CONDITIONS for local QA. Backend foundation is implemented
-and focused-tested; iOS delta-sync store/client is focused-tested. Remaining
+Verdict: READY_WITH_CONDITIONS for Claude hostile QA and local engineering QA.
+Backend foundation, scheduled worker lifecycle, local API smoke, and iOS
+summary/delta warmup are implemented and validated on source branches. Remaining
 pre-release conditions:
 
-- P1: enable a controlled worker lifecycle for event/job processing before
-  release depends on async jobs.
-- P1: run local full-product smoke with started engine + one simulator:
-  write domain entity → event → job → summary → delta → iOS cache; verify
-  cross-user isolation.
-- P2: adopt summaries/delta in Home, Week/Semana, Training, Content, and
-  Notifications UI paths.
-- P2: expand resource budgets beyond sync changes to provider/calendar/content
-  radar/notification attempts.
-- P2: decide whether event-backbone cleanup remains operator-run or joins
-  midnight retention cleanup.
+- P1: authenticated iOS product-surface interaction smoke remains required
+  before treating summary/delta app integration as UI-validated. Current
+  simulator interaction reached onboarding/auth only; behavior-bearing iOS tests
+  passed.
+- P1: release/deploy operator must explicitly confirm event-backbone worker and
+  cleanup env flags before staging/prod (`EVENT_BACKBONE_WORKER_DISABLED`,
+  batch limits, `EVENT_BACKBONE_CLEANUP_APPLY`).
+- P2: gradually render Home, Week/Semana, Training, Content, and Notifications
+  from summary read models where product value is clear. Current implementation
+  warms summaries/deltas without replacing visible source-of-truth loaders.
+- P2: expand resource budgets beyond sync/summary routes to provider, calendar,
+  content radar, and notification-delivery attempts.
+- P2: add a longer authenticated iOS/local-engine smoke fixture that creates a
+  real domain entity through API, observes event/job projection, and verifies
+  scoped iOS cache application.
 
 ## 2026-05-07 Closed-Beta Gap Analysis — New P0/P1 Items
 
