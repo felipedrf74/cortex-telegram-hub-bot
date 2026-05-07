@@ -6,7 +6,9 @@ import { getAllReports } from '../services/report-document-store';
 import {
   getAllNotificationCenterItemsForPortal,
   getNotificationProfileSummariesForPortal,
+  type PortalNotificationScope,
 } from '../services/notification-orchestrator';
+import { requirePortalAdminToken } from '../api/secret-guards';
 import { sendPortalInternalError } from './http';
 
 function parsePositiveInteger(value: unknown): number | null {
@@ -19,31 +21,46 @@ function parseLimit(value: unknown, fallback: number): number {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
 }
 
-function resolvePortalNotificationScope(req: Request): { userId?: number; tenantId?: number } | null {
+type PortalScopeResolution =
+  | { ok: true; scope: PortalNotificationScope }
+  | { ok: false; status: number; code: string; message: string };
+
+function resolvePortalNotificationScope(req: Request): PortalScopeResolution {
   const rawUserId = req.headers?.['x-nexus-user-id'] ?? req.query.userId;
   const rawTenantId = req.headers?.['x-nexus-tenant-id'] ?? req.query.tenantId;
   const userId = parsePositiveInteger(rawUserId);
-  const tenantId = parsePositiveInteger(rawTenantId) ?? userId ?? undefined;
+  const tenantId = parsePositiveInteger(rawTenantId);
+
+  if (rawUserId === undefined || rawTenantId === undefined) {
+    return { ok: false, status: 400, code: 'INVALID_TENANT_SCOPE', message: 'notification tenant scope required' };
+  }
 
   if ((rawUserId !== undefined && !userId) || (rawTenantId !== undefined && !tenantId)) {
-    return null;
+    return { ok: false, status: 400, code: 'INVALID_TENANT_SCOPE', message: 'invalid tenant scope' };
+  }
+  if (!userId || !tenantId) {
+    return { ok: false, status: 400, code: 'INVALID_TENANT_SCOPE', message: 'notification tenant scope required' };
   }
   if (userId && tenantId && tenantId !== userId) {
-    return null;
+    return { ok: false, status: 403, code: 'FORBIDDEN', message: 'invalid tenant scope' };
   }
-  return userId ? { userId, tenantId } : {};
+  return { ok: true, scope: { userId, tenantId } };
 }
 
 export function registerPortalDocumentRoutes(app: Express): void {
-  app.get('/api/notifications', (req: Request, res: Response) => {
+  app.get('/api/notifications', requirePortalAdminToken, (req: Request, res: Response) => {
     try {
-      const scope = resolvePortalNotificationScope(req);
-      if (!scope) {
-        res.status(403).json({ ok: false, error: { code: 'FORBIDDEN', message: 'invalid tenant scope' } });
+      const scopeResult = resolvePortalNotificationScope(req);
+      if (!scopeResult.ok) {
+        res.status(scopeResult.status).json({
+          ok: false,
+          error: { code: scopeResult.code, message: scopeResult.message },
+        });
         return;
       }
+      const { scope } = scopeResult;
       const limit = parseLimit(req.query.limit, 100);
-      const notifications = getAllNotifications(limit);
+      const notifications = getAllNotifications(limit, scope);
       const decisionCenterItems = getAllNotificationCenterItemsForPortal(limit, scope);
       res.json({
         ok: true,
@@ -79,15 +96,18 @@ export function registerPortalDocumentRoutes(app: Express): void {
     }
   });
 
-  app.get('/api/notification-preferences', (req: Request, res: Response) => {
+  app.get('/api/notification-preferences', requirePortalAdminToken, (req: Request, res: Response) => {
     try {
-      const scope = resolvePortalNotificationScope(req);
-      if (!scope) {
-        res.status(403).json({ ok: false, error: { code: 'FORBIDDEN', message: 'invalid tenant scope' } });
+      const scopeResult = resolvePortalNotificationScope(req);
+      if (!scopeResult.ok) {
+        res.status(scopeResult.status).json({
+          ok: false,
+          error: { code: scopeResult.code, message: scopeResult.message },
+        });
         return;
       }
       const limit = parseLimit(req.query.limit, 100);
-      const profiles = getNotificationProfileSummariesForPortal(limit, scope);
+      const profiles = getNotificationProfileSummariesForPortal(limit, scopeResult.scope);
       res.json({
         ok: true,
         count: profiles.length,

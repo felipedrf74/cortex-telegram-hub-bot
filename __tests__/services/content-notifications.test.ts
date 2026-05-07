@@ -427,12 +427,34 @@ describe('content-notifications: admin view', () => {
   });
   afterEach(() => testDb?.close());
 
-  it('getAllNotifications returns all users notifications', () => {
+  it('getAllNotifications requires an explicit portal scope', () => {
+    createNotification({ userId: 1, type: 'topic_candidates_ready', title: 'U1', body: 'a' });
+
+    expect(() => (getAllNotifications as any)()).toThrow(/notification tenant scope required/);
+  });
+
+  it('getAllNotifications returns only the requested user and tenant scope', () => {
     createNotification({ userId: 1, type: 'topic_candidates_ready', title: 'U1', body: 'a' });
     createNotification({ userId: 2, type: 'script_ready', title: 'U2', body: 'b' });
 
-    const all = getAllNotifications();
-    expect(all).toHaveLength(2);
+    const all = getAllNotifications(100, { userId: 1, tenantId: 1 });
+    expect(all).toHaveLength(1);
+    expect(all[0].userId).toBe(1);
+  });
+
+  it('getAllNotifications rejects forged cross-tenant portal scope', () => {
+    createNotification({ userId: 1, type: 'topic_candidates_ready', title: 'U1', body: 'a' });
+
+    expect(() => getAllNotifications(100, { userId: 1, tenantId: 2 })).toThrow(/notification tenant scope required/);
+  });
+
+  it('getAllNotifications does not leak another user when scoped', () => {
+    createNotification({ userId: 1, type: 'topic_candidates_ready', title: 'U1', body: 'a' });
+    createNotification({ userId: 2, type: 'script_ready', title: 'U2', body: 'b' });
+
+    const all = getAllNotifications(100, { userId: 2, tenantId: 2 });
+    expect(all).toHaveLength(1);
+    expect(all.map((item) => item.userId)).toEqual([2]);
   });
 });
 

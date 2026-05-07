@@ -57,6 +57,11 @@ export interface ContentNotification {
   createdAt: string;
 }
 
+export interface ContentNotificationPortalScope {
+  userId: number;
+  tenantId: number;
+}
+
 export type ContentNotificationDeepLinkTargetKind =
   | 'approval'
   | 'source_review'
@@ -398,15 +403,26 @@ function markPushSent(notificationId: number): void {
 // ═══════════════════════════════════════════════════════════════════
 
 /**
- * Get all notifications across all users (admin/portal view).
+ * Get legacy content notifications for a single authenticated portal scope.
+ * Portal callers must never fall back to an all-tenant read.
  */
-export function getAllNotifications(limit = 100): ContentNotification[] {
+export function getAllNotifications(
+  limit = 100,
+  scope: ContentNotificationPortalScope,
+): ContentNotification[] {
+  if (!scope || !isValidTenantUserId(scope.userId) || !isValidTenantUserId(scope.tenantId) || scope.userId !== scope.tenantId) {
+    reportInvalidNotificationScope('portal_list_content_notifications', scope?.userId, {
+      tenantId: scope?.tenantId,
+    });
+    throw new Error('notification tenant scope required');
+  }
   const db = getDb();
   const rows = db.prepare(`
     SELECT * FROM content_notifications
+    WHERE user_id = ? AND COALESCE(tenant_id, user_id) = ?
     ORDER BY created_at DESC
     LIMIT ?
-  `).all(limit) as any[];
+  `).all(scope.userId, scope.tenantId, limit) as any[];
   return rows.map(mapNotification);
 }
 

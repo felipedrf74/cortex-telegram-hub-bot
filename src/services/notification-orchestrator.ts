@@ -741,30 +741,22 @@ export function listNotificationCenterItems(
   return rows.map(mapCenterItem);
 }
 
-interface PortalNotificationScope {
-  userId?: number;
-  tenantId?: number;
+export interface PortalNotificationScope {
+  userId: number;
+  tenantId: number;
 }
 
 export function getAllNotificationCenterItemsForPortal(
   limit = 100,
-  scope: PortalNotificationScope = {},
+  scope: PortalNotificationScope,
 ): NotificationCenterItem[] {
+  assertScope(scope.userId, scope.tenantId, 'portal_list_notification_center_items');
   ensureNotificationTables();
-  const clauses: string[] = [];
-  const params: unknown[] = [];
-  if (scope.userId) {
-    clauses.push('user_id = ?');
-    params.push(scope.userId);
-  }
-  if (scope.tenantId) {
-    clauses.push('tenant_id = ?');
-    params.push(scope.tenantId);
-  }
+  const params: unknown[] = [scope.userId, scope.tenantId];
   params.push(Math.min(Math.max(limit, 1), 250));
   const rows = getDb().prepare(`
     SELECT * FROM notification_center_items
-    ${clauses.length ? `WHERE ${clauses.join(' AND ')}` : ''}
+    WHERE user_id = ? AND tenant_id = ?
     ORDER BY created_at DESC
     LIMIT ?
   `).all(...params) as any[];
@@ -773,7 +765,7 @@ export function getAllNotificationCenterItemsForPortal(
 
 export function getNotificationProfileSummariesForPortal(
   limit = 100,
-  scope: PortalNotificationScope = {},
+  scope: PortalNotificationScope,
 ): Array<{
   userId: number;
   tenantId: number;
@@ -784,23 +776,15 @@ export function getNotificationProfileSummariesForPortal(
   digestPassiveItems: boolean;
   updatedAt: string;
 }> {
+  assertScope(scope.userId, scope.tenantId, 'portal_list_notification_profiles');
   ensureNotificationTables();
-  const clauses: string[] = [];
-  const params: unknown[] = [];
-  if (scope.userId) {
-    clauses.push('user_id = ?');
-    params.push(scope.userId);
-  }
-  if (scope.tenantId) {
-    clauses.push('tenant_id = ?');
-    params.push(scope.tenantId);
-  }
+  const params: unknown[] = [scope.userId, scope.tenantId];
   params.push(Math.min(Math.max(limit, 1), 250));
   const rows = getDb().prepare(`
     SELECT user_id, tenant_id, push_enabled, in_app_enabled, portal_enabled,
            allow_time_sensitive, digest_passive_items, updated_at
     FROM notification_profiles
-    ${clauses.length ? `WHERE ${clauses.join(' AND ')}` : ''}
+    WHERE user_id = ? AND tenant_id = ?
     ORDER BY updated_at DESC
     LIMIT ?
   `).all(...params) as any[];
