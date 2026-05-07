@@ -56,6 +56,25 @@ Verdict: READY_WITH_CONDITIONS on local/mock validation. Production APNs
 credentials, signed-device push/action validation, and deploy remain
 operator-only; no push or deploy was performed.
 
+Event backbone / read models / delta sync source branch: 2026-05-07.
+Report:
+`docs/release/event-backbone-readmodels-delta-sync-report.md`.
+Verdict: READY_WITH_CONDITIONS for local QA. Backend foundation is implemented
+and focused-tested; iOS delta-sync store/client is focused-tested. Remaining
+pre-release conditions:
+
+- P1: enable a controlled worker lifecycle for event/job processing before
+  release depends on async jobs.
+- P1: run local full-product smoke with started engine + one simulator:
+  write domain entity → event → job → summary → delta → iOS cache; verify
+  cross-user isolation.
+- P2: adopt summaries/delta in Home, Week/Semana, Training, Content, and
+  Notifications UI paths.
+- P2: expand resource budgets beyond sync changes to provider/calendar/content
+  radar/notification attempts.
+- P2: decide whether event-backbone cleanup remains operator-run or joins
+  midnight retention cleanup.
+
 ## 2026-05-07 Closed-Beta Gap Analysis — New P0/P1 Items
 
 These items came from the all-skills gap analysis run on 2026-05-07 by Claude Code

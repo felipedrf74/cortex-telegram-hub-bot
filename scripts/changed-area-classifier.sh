@@ -159,6 +159,7 @@ HAS_HEALTH_INTEGRATION=false  # Garmin/HealthKit/wearable/body-battery
 HAS_RATE_LIMIT=false          # rate-limit middleware + per-account lockout
 HAS_AUDIT=false               # audit trail and audit-event contracts
 HAS_DEPLOY_CONFIG=false       # PM2/deploy config and environment shape
+HAS_EVENT_BACKBONE=false      # event_outbox/jobs/read-models/delta-sync/budgets
 HAS_IOS_NAVIGATION=false      # tab/navigation/view-model responsiveness
 HAS_IOS_DTO=false             # app-facing DTO/decoder contract changes
 HAS_IOS_NOTIFICATION=false    # APNs/local notifications/Decision Center UI
@@ -187,7 +188,7 @@ match '^__tests__/' && HAS_BACKEND_TEST=true
 match '^src/api/' && HAS_API_ROUTE=true
 
 match '^src/services/coach-kernel/' && { HAS_TRAINING=true; HAS_COACH_KERNEL=true; }
-match '^src/services/training-' && HAS_TRAINING=true
+match '^src/services/training-|^src/api/routes/training' && HAS_TRAINING=true
 match '^src/skills/training/' && HAS_TRAINING=true
 match '^__tests__/services/training-' && HAS_TRAINING=true
 match '^__tests__/services/coach-kernel-' && { HAS_TRAINING=true; HAS_COACH_KERNEL=true; }
@@ -209,17 +210,17 @@ match '^__tests__/services/.*context|^__tests__/services/.*memory|^__tests__/ser
 
 match '^prompts/|^src/skills/.*/prompts/' && HAS_PROMPT=true
 
-match '^src/domains/cooking/|^src/services/cooking-|^src/skills/cooking/' && HAS_COOKING=true
+match '^src/domains/cooking/|^src/services/cooking-|^src/api/routes/cooking|^src/skills/cooking/' && HAS_COOKING=true
 match 'cooking' && match '^__tests__/' && HAS_COOKING=true
 
-match '^src/domains/content/|^src/services/content-|^src/services/voice-|^src/agents/|^content-engine/' && HAS_CONTENT=true
+match '^src/domains/content/|^src/services/content-|^src/services/voice-|^src/api/routes/content|^src/agents/|^content-engine/' && HAS_CONTENT=true
 match '^__tests__/services/content-' && HAS_CONTENT=true
 match '^src/agents/|^__tests__/services/cross-agent-learning|^__tests__/security/content-agent-neutrality' && HAS_CONTENT_AGENT=true
 
-match '^src/domains/finance/|^src/services/finance-|^src/services/invoice-|^src/skills/finance/' && HAS_FINANCE=true
+match '^src/domains/finance/|^src/services/finance-|^src/services/invoice-|^src/api/routes/finance|^src/skills/finance/' && HAS_FINANCE=true
 match '^__tests__/services/finance-|^__tests__/services/invoice-' && HAS_FINANCE=true
 
-match '^src/domains/secretary/|^src/services/secretary-|^src/skills/secretary/' && HAS_SECRETARY=true
+match '^src/domains/secretary/|^src/services/secretary-|^src/api/routes/secretary|^src/skills/secretary/' && HAS_SECRETARY=true
 match '^__tests__/services/secretary-' && HAS_SECRETARY=true
 
 match '^src/portal/|^__tests__/portal/|^scripts/cooking-portal-browser-smoke\.ts$' && HAS_PORTAL=true
@@ -304,6 +305,12 @@ match '^src/services/audit-trail|^src/api/routes/audit-trail|^src/portal/admin-a
 # start and health-check.
 match '(^|/)ecosystem(\.staging)?\.config\.js$|^src/config\.ts$|^__tests__/config|^__tests__/scripts/deploy' && HAS_DEPLOY_CONFIG=true
 
+# Event backbone / jobs / read models / sync / budgets — SQLite-backed
+# projection and delta-sync foundation. These changes must fan out into
+# event/job/idempotency tests, summary endpoint tests, sync cursor tests,
+# and tenant/user isolation checks.
+match '^src/services/event-outbox|^src/services/background-job-queue|^src/services/product-decision-log|^src/services/app-summary-read-models|^src/services/delta-sync|^src/services/resource-budgets|^src/services/event-backbone-worker|^src/api/routes/summaries|^src/api/routes/sync|^migrations/[0-9]+_event_backbone|^__tests__/services/event-backbone|^__tests__/api/event-backbone' && HAS_EVENT_BACKBONE=true
+
 # Detect iOS changes by file path. iOS repo is at ../Nexus Hub IOS/Nexus Hub
 # but in workspace symlink it's `ios/`. Since this script runs from engine,
 # ios files won't appear in this engine diff — included for forward-compat
@@ -374,6 +381,7 @@ $HAS_HEALTH_INTEGRATION && CANNOT_SKIP+=("health-integration-tenant-isolation")
 $HAS_RATE_LIMIT && CANNOT_SKIP+=("auth-rate-limit-and-lockout")
 $HAS_AUDIT && CANNOT_SKIP+=("audit-trail-emission-and-scope")
 $HAS_DEPLOY_CONFIG && CANNOT_SKIP+=("deploy-config-health-rehearsal")
+$HAS_EVENT_BACKBONE && CANNOT_SKIP+=("event-backbone-jobs-sync-tenant-isolation")
 $HAS_IOS_NAVIGATION && CANNOT_SKIP+=("ios-navigation-responsiveness")
 $HAS_IOS_DTO && CANNOT_SKIP+=("ios-contract-decoder-resilience")
 $HAS_IOS_NOTIFICATION && CANNOT_SKIP+=("ios-notification-decision-center")
@@ -385,7 +393,8 @@ fi
 
 # Tier 2: app-facing flow surfaces
 if $HAS_API_ROUTE || $HAS_PORTAL || $HAS_PYTHON_ENGINE || $HAS_IOS_UI || \
-   $HAS_TRAINING || $HAS_COOKING || $HAS_CONTENT || $HAS_SECRETARY; then
+   $HAS_TRAINING || $HAS_COOKING || $HAS_CONTENT || $HAS_SECRETARY || \
+   $HAS_EVENT_BACKBONE; then
   TIERS+=("T2")
 fi
 
@@ -436,6 +445,7 @@ if $HAS_NON_DOC; then
     $HAS_RATE_LIMIT && VITEST_GLOBS+=("__tests__/api/rate-limiter.test.ts" "__tests__/security/**/*.test.ts")
     $HAS_AUDIT && VITEST_GLOBS+=("__tests__/services/audit-trail.test.ts" "__tests__/api/authenticated-support-routes-scope.test.ts" "__tests__/portal/portal-admin-audit.test.ts" "__tests__/portal/portal-admin-data-routes.test.ts" "__tests__/portal/portal-admin-data-isolation.integration.test.ts")
     $HAS_DEPLOY_CONFIG && VITEST_GLOBS+=("__tests__/services/config-*.test.ts" "__tests__/portal/health-endpoint*.test.ts" "__tests__/portal/health-endpoints.test.ts" "__tests__/scripts/*.test.ts" "__tests__/security/**/*.test.ts")
+    $HAS_EVENT_BACKBONE && VITEST_GLOBS+=("__tests__/services/event-backbone.test.ts" "__tests__/api/event-backbone-routes.test.ts" "__tests__/security/**/*.test.ts")
     if [ "${#VITEST_GLOBS[@]}" -eq 0 ]; then
       # Backend src/test changed but no domain mapped — fall back to changed-files-only
       VITEST_MODE="changed-only"
@@ -554,6 +564,7 @@ emit_json() {
   export CLAS_LOGGER="$HAS_LOGGER"
   export CLAS_SCHEDULER="$HAS_SCHEDULER"
   export CLAS_NOTIFICATION="$HAS_NOTIFICATION"
+  export CLAS_EVENT_BACKBONE="$HAS_EVENT_BACKBONE"
   export CLAS_HEALTH_INTEGRATION="$HAS_HEALTH_INTEGRATION"
   export CLAS_RATE_LIMIT="$HAS_RATE_LIMIT"
   export CLAS_AUDIT="$HAS_AUDIT"
@@ -628,6 +639,7 @@ const payload = {
     logger: flag('CLAS_LOGGER'),
     scheduler: flag('CLAS_SCHEDULER'),
     notification: flag('CLAS_NOTIFICATION'),
+    eventBackbone: flag('CLAS_EVENT_BACKBONE'),
     healthIntegration: flag('CLAS_HEALTH_INTEGRATION'),
     rateLimit: flag('CLAS_RATE_LIMIT'),
     audit: flag('CLAS_AUDIT'),

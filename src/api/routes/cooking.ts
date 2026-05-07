@@ -78,6 +78,7 @@ import { createEvent as createCalendarEvent, isAnyCalendarConfigured } from '../
 import { getActivePlans, getCurrentWeek, getSessionsForWeek, getWeeksForPlan, type TrainingSession } from '../../services/training-plans';
 import { invalidateCookingDerivedCaches } from '../../services/cooking-cache-invalidator';
 import { submitCookingMealPrepSchedulingIntent } from '../../services/cooking-secretary-integration';
+import { emitDomainEventSafely } from '../../services/event-outbox';
 import { createNotificationIntent } from '../../services/notification-orchestrator';
 import { readTrainingContextAll } from '../../services/training-signals';
 import { getReadiness as getWearableReadiness } from '../../services/wearable/wearable-service';
@@ -485,6 +486,20 @@ export function cookingRoutes(): Router {
         carbs,
         calories,
         tenantId,
+      });
+      emitDomainEventSafely({
+        tenantId,
+        userId,
+        sourceSkill: 'cooking',
+        eventType: 'cooking.meal_plan.updated',
+        entityType: 'recipe',
+        entityId: recipe.id,
+        payload: {
+          summary: { created: true, tags: Array.isArray(tags) ? tags.length : 0 },
+          action: 'created',
+        },
+        privacyClassification: 'internal',
+        idempotencyKey: `cooking.recipe.created:${tenantId}:${userId}:${recipe.id}`,
       });
       logger.info({ userId, recipeId: recipe.id }, 'iOS recipe created');
       sendSuccess(res, { recipe }, { status: 201 });

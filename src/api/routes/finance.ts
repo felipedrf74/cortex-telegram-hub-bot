@@ -28,6 +28,7 @@ import { AuthenticatedRequest } from '../auth-middleware';
 import { logger } from '../../utils/logger';
 import { sendSuccess, sendError, sendInternalError, asyncHandler } from '../response-helpers';
 import { getDb } from '../../services/database';
+import { emitDomainEventSafely } from '../../services/event-outbox';
 import { invalidateFinanceDerivedCaches } from '../../services/finance-cache-invalidator';
 import { config } from '../../config';
 import {
@@ -114,6 +115,20 @@ export function financeRoutes(): Router {
         receiptRef,
       });
       invalidateFinanceDerivedCaches(userId);
+      emitDomainEventSafely({
+        tenantId: userId,
+        userId,
+        sourceSkill: 'finance',
+        eventType: 'finance.expense.created',
+        entityType: 'finance_transaction',
+        entityId: tx.id,
+        payload: {
+          summary: { category: tx.category, currency: tx.currency },
+          action: 'created',
+        },
+        privacyClassification: 'financial',
+        idempotencyKey: `finance.expense.created:${userId}:${tx.id}`,
+      });
       logger.info({ userId, txId: tx.id, currency: tx.currency }, 'iOS transaction added');
       sendSuccess(res, { transaction: tx }, { status: 201 });
     } catch (err: any) {

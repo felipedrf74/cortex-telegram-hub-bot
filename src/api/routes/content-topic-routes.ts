@@ -21,6 +21,7 @@ import {
 import { localizeFilmingRecommendation } from '../../services/content-intelligence';
 import { syncContentTopicSecretaryArtifacts } from '../../services/content-topic-secretary-sync';
 import { logger } from '../../utils/logger';
+import { emitDomainEventSafely } from '../../services/event-outbox';
 import type { Lang } from '../../utils/i18n';
 
 type ResolveContentLanguage = (req: Pick<AuthenticatedRequest, 'header'>, userId: number) => Lang;
@@ -180,6 +181,20 @@ export function registerContentTopicRoutes(
       });
       const syncedTopic = await syncContentTopicSecretaryArtifacts(userId, topic, { language });
       invalidateContentDerivedCaches(userId);
+      emitDomainEventSafely({
+        tenantId: userId,
+        userId,
+        sourceSkill: 'content',
+        eventType: 'content.idea.created',
+        entityType: 'content_topic',
+        entityId: syncedTopic.id,
+        payload: {
+          summary: { status: syncedTopic.status, scheduled: Boolean(syncedTopic.scheduled_date ?? syncedTopic.scheduled_at) },
+          action: 'created',
+        },
+        privacyClassification: 'private_content',
+        idempotencyKey: `content.idea.created:${userId}:${syncedTopic.id}`,
+      });
       sendSuccess(res, { topic: syncedTopic }, { status: 201 });
     } catch (err: any) {
       logger.error({ err, userId }, 'iOS content topic create failed');
@@ -244,6 +259,20 @@ export function registerContentTopicRoutes(
         language: resolveContentLanguage(req, userId),
       });
       invalidateContentDerivedCaches(userId);
+      emitDomainEventSafely({
+        tenantId: userId,
+        userId,
+        sourceSkill: 'content',
+        eventType: 'content.idea.updated',
+        entityType: 'content_topic',
+        entityId: syncedTopic.id,
+        payload: {
+          summary: { status: syncedTopic.status, scheduled: Boolean(syncedTopic.scheduled_date ?? syncedTopic.scheduled_at) },
+          action: 'updated',
+        },
+        privacyClassification: 'private_content',
+        idempotencyKey: `content.idea.updated:${userId}:${syncedTopic.id}:${Date.now()}`,
+      });
       sendSuccess(res, { topic: syncedTopic });
     } catch (err: any) {
       logger.error({ err, userId, topicId }, 'iOS content topic update failed');
@@ -273,6 +302,20 @@ export function registerContentTopicRoutes(
         return;
       }
       invalidateContentDerivedCaches(userId);
+      emitDomainEventSafely({
+        tenantId: userId,
+        userId,
+        sourceSkill: 'content',
+        eventType: 'content.idea.updated',
+        entityType: 'content_topic',
+        entityId: topicId,
+        payload: {
+          summary: { deleted: true },
+          action: 'deleted',
+        },
+        privacyClassification: 'private_content',
+        idempotencyKey: `content.idea.deleted:${userId}:${topicId}:${Date.now()}`,
+      });
       sendSuccess(res, { deleted: true, id: topicId });
     } catch (err: any) {
       logger.error({ err, userId, topicId }, 'iOS content topic delete failed');

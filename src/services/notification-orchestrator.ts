@@ -16,6 +16,8 @@ import { getDb } from './database';
 import { getPushTokensForUser, isApnsConfigured, sendPushNotification } from './apns-sender';
 import { logger } from '../utils/logger';
 import { isValidTenantUserId, recordTenantScopeAnomaly } from './tenant-scope-observability';
+import { emitDomainEventSafely } from './event-outbox';
+import { enqueueJob } from './background-job-queue';
 
 export type NotificationSourceSkill =
   | 'secretary'
@@ -515,7 +517,77 @@ export function updateNotificationProfile(userId: number, tenantId: number, patc
 
 export async function createNotificationIntent(input: NotificationIntentInput): Promise<NotificationEvaluationResult> {
   const intent = persistIntent(normalizeIntent(input));
+  emitDomainEventSafely({
+    tenantId: intent.tenantId,
+    userId: intent.userId,
+    sourceSkill: 'notification',
+    eventType: 'notification.intent.created',
+    entityType: 'notification_intent',
+    entityId: intent.intentId,
+    payload: {
+      summary: {
+        sourceSkill: intent.sourceSkill,
+        type: intent.type,
+        priority: intent.priority,
+        requiresUserAction: intent.requiresUserAction,
+      },
+      action: 'created',
+    },
+    privacyClassification: intent.privacyPolicy === 'financial' ? 'financial' : intent.privacyPolicy === 'health' ? 'health' : 'internal',
+    idempotencyKey: `notification.intent.created:${intent.tenantId}:${intent.userId}:${intent.intentId}`,
+  });
+  emitSourceSkillEventForIntent(intent);
+  try {
+    enqueueJob({
+      tenantId: intent.tenantId,
+      userId: intent.userId,
+      jobType: 'deliver_notification',
+      payload: { intentId: intent.intentId },
+      priority: intent.priority === 'time_sensitive' || intent.priority === 'critical' ? 10 : 50,
+      idempotencyKey: `deliver_notification:${intent.intentId}`,
+    });
+  } catch (err) {
+    logger.debug({ err, intentId: intent.intentId }, 'Notification delivery job enqueue skipped');
+  }
   return evaluateNotificationIntent(intent.intentId, intent.userId, intent.tenantId);
+}
+
+function emitSourceSkillEventForIntent(intent: NotificationIntentRecord): void {
+  const mapped = sourceSkillEventForIntent(intent);
+  if (!mapped) return;
+  emitDomainEventSafely({
+    tenantId: intent.tenantId,
+    userId: intent.userId,
+    sourceSkill: mapped.sourceSkill,
+    eventType: mapped.eventType,
+    entityType: intent.relatedEntityType || 'notification_intent',
+    entityId: intent.relatedEntityId || intent.intentId,
+    payload: {
+      summary: {
+        notificationType: intent.type,
+        priority: intent.priority,
+        requiresUserAction: intent.requiresUserAction,
+      },
+      action: 'updated',
+    },
+    privacyClassification: intent.privacyPolicy === 'financial' ? 'financial' : intent.privacyPolicy === 'health' ? 'health' : 'internal',
+    idempotencyKey: `${mapped.eventType}:${intent.tenantId}:${intent.userId}:${intent.intentId}`,
+  });
+}
+
+function sourceSkillEventForIntent(intent: NotificationIntentRecord): { sourceSkill: 'chat' | 'secretary' | 'training' | 'content' | 'cooking' | 'finance' | 'system'; eventType: string } | null {
+  if (intent.sourceSkill === 'secretary') {
+    if (intent.type === 'conflict_detected') return { sourceSkill: 'secretary', eventType: 'secretary.conflict.detected' };
+    if (intent.type === 'reflow_suggestion') return { sourceSkill: 'secretary', eventType: 'secretary.reflow.suggested' };
+    return { sourceSkill: 'secretary', eventType: 'secretary.agenda_item.updated' };
+  }
+  if (intent.sourceSkill === 'training') return { sourceSkill: 'training', eventType: 'training.session.updated' };
+  if (intent.sourceSkill === 'content') return { sourceSkill: 'content', eventType: 'content.idea.updated' };
+  if (intent.sourceSkill === 'cooking') return { sourceSkill: 'cooking', eventType: 'cooking.meal_plan.updated' };
+  if (intent.sourceSkill === 'finance') return { sourceSkill: 'finance', eventType: 'finance.expense.created' };
+  if (intent.sourceSkill === 'chat') return { sourceSkill: 'chat', eventType: 'chat.message.created' };
+  if (intent.sourceSkill === 'system' || intent.sourceSkill === 'security') return { sourceSkill: 'system', eventType: 'notification.item.updated' };
+  return null;
 }
 
 export async function evaluateNotificationIntent(

@@ -3,6 +3,7 @@
 import { Router, Response } from 'express';
 import { AuthenticatedRequest } from '../auth-middleware';
 import { logger } from '../../utils/logger';
+import { emitDomainEventSafely } from '../../services/event-outbox';
 import { normalizeLangHeader } from '../../services/secretary-fastpath';
 import { getUserLanguageById } from '../../services/user-service';
 import type { Lang } from '../../utils/i18n';
@@ -393,6 +394,20 @@ export function trainingRoutes(): Router {
 
       // Invalidate caches since training status changed
       invalidateTrainingScreenCaches(userId);
+      emitDomainEventSafely({
+        tenantId: userId,
+        userId,
+        sourceSkill: 'training',
+        eventType: 'training.feedback.recorded',
+        entityType: 'training_session',
+        entityId: rowId,
+        payload: {
+          summary: { status: 'completed', hasNotes: Boolean(notes), hasRpe: rpe != null },
+          action: 'updated',
+        },
+        privacyClassification: 'health',
+        idempotencyKey: `training.feedback.recorded:${userId}:${rowId}:completed`,
+      });
 
       sendSuccess(res, { completed: true, weeklyAdherence: adherenceRate });
     } catch (err: any) {
@@ -454,6 +469,20 @@ export function trainingRoutes(): Router {
       });
 
       invalidateTrainingScreenCaches(userId);
+      emitDomainEventSafely({
+        tenantId: userId,
+        userId,
+        sourceSkill: 'training',
+        eventType: 'training.session.updated',
+        entityType: 'training_session',
+        entityId: rowId,
+        payload: {
+          summary: { status: 'skipped' },
+          action: 'updated',
+        },
+        privacyClassification: 'health',
+        idempotencyKey: `training.session.updated:${userId}:${rowId}:skipped`,
+      });
 
       sendSuccess(res, { skipped: true, weeklyAdherence: adherenceRate });
     } catch (err: any) {

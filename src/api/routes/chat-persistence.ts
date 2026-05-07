@@ -7,6 +7,7 @@ import {
   updateAssistantMessage,
   type ChatHistoryWrite,
 } from '../../services/chat-history-store';
+import { emitDomainEventSafely } from '../../services/event-outbox';
 import {
   addToConversation,
   syncLastAssistantConversationMessage,
@@ -91,6 +92,26 @@ export function persistExchange(
     completedAt: assistant.timestamp,
     retryOfMessageId: userMessageId,
     requestId: options.requestId ?? null,
+  });
+  emitDomainEventSafely({
+    tenantId: tenantId ?? userId,
+    userId,
+    sourceSkill: 'chat',
+    eventType: 'chat.message.created',
+    entityType: 'chat_message',
+    entityId: assistantMessageId,
+    payload: {
+      userMessageId,
+      assistantMessageId,
+      textLength: userText.length,
+      assistantTextLength: assistant.text.length,
+      domain: assistant.domain ?? null,
+      routeMethod: assistant.routeMethod ?? null,
+    },
+    privacyClassification: 'private_content',
+    idempotencyKey: `chat.message.created:${tenantId ?? userId}:${userId}:${assistantMessageId}`,
+    correlationId: options.requestId ?? undefined,
+    requestId: options.requestId ?? undefined,
   });
 }
 
