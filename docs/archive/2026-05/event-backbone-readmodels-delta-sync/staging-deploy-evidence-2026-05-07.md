@@ -16,8 +16,9 @@ This is **not** a production-ready verdict. The production/main decision remains
 
 Engine:
 - Branch: `feature/event-backbone-readmodels-delta-sync`
-- Origin tip after evidence fix: `b13e2495acfe88732c62d67a1c1f25c647c253ad`
+- Runtime/evidence baseline: `b13e2495acfe88732c62d67a1c1f25c647c253ad`
 - Commit: `fix(release): use canonical migration ledger in staging smoke`
+- The feature branch also contains later docs-only staging evidence commits; use `git log origin/feature/event-backbone-readmodels-delta-sync -1` for the current review tip.
 - Backup tags pushed: `backup/event-backbone-before-staging-deploy-20260507-1945`, `backup/event-backbone-before-staging-deploy-20260507-1947`
 
 iOS:
@@ -28,6 +29,7 @@ iOS:
 
 Deployment note:
 - The staging runtime was deployed from the local tree before the smoke-script-only fix at `b13e2495`. The runtime code under test is therefore the same event-backbone runtime that was present at `79e36fb3`; `b13e2495` only corrects `scripts/staging-smoke.sh` to query the canonical `_migrations` ledger.
+- Later evidence commits are docs/evidence only and were pushed to preserve the staging proof on the feature branch.
 
 ## Source Gates Before Staging
 
@@ -200,4 +202,3 @@ Next owner action should be operator validation, not production deploy:
 - No production service was touched.
 - Local dev ports were checked during final cleanup in the Codex session.
 - No long-running soak or smoke command was left running.
-

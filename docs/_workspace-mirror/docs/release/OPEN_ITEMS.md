@@ -80,8 +80,9 @@ migration 115 staging apply, production env flag confirmation, APNs credentials.
 
 **2026-05-07 staging deploy evidence** —
 `docs/archive/2026-05/event-backbone-readmodels-delta-sync/staging-deploy-evidence-2026-05-07.md`.
-Verdict: **STAGING_READY**, not production-ready. Feature branch tips are engine
-`b13e2495` and iOS `dd8ffe0`, both pushed to origin. Staging deploy completed
+Verdict: **STAGING_READY**, not production-ready. Runtime/evidence baselines are
+engine `b13e2495` and iOS `dd8ffe0`, both pushed to origin; the engine feature
+branch also has later docs-only staging evidence commits. Staging deploy completed
 with conservative event-backbone flags, migration 115 applied on the staging DB,
 worker-disabled soak queued safely, worker-enabled soak drained to
 `event_outbox processed=18` and `background_jobs completed=27`, and post-worker
