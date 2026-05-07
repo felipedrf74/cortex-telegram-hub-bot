@@ -1,5 +1,6 @@
 // Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
 
+import { createHash } from 'node:crypto';
 import { Router, Response } from 'express';
 import { AuthenticatedRequest } from '../auth-middleware';
 import { asyncHandler, sendError, sendInternalError, sendSuccess } from '../response-helpers';
@@ -21,7 +22,8 @@ import {
 import { localizeFilmingRecommendation } from '../../services/content-intelligence';
 import { syncContentTopicSecretaryArtifacts } from '../../services/content-topic-secretary-sync';
 import { logger } from '../../utils/logger';
-import { emitDomainEventSafely } from '../../services/event-outbox';
+import { runOutboxTransaction } from '../../services/event-outbox';
+import { consumeResourceBudget } from '../../services/resource-budgets';
 import type { Lang } from '../../utils/i18n';
 
 type ResolveContentLanguage = (req: Pick<AuthenticatedRequest, 'header'>, userId: number) => Lang;
@@ -90,7 +92,7 @@ export function registerContentTopicRoutes(
    * topics are hidden unless the caller passes ?status=cancelled.
    */
   router.get('/topics', asyncHandler(async (req, res: Response) => {
-    const { userId } = req as unknown as AuthenticatedRequest;
+    const { userId, tenantId = userId } = req as unknown as AuthenticatedRequest;
     if (!ensureValidContentRouteScope(res, userId, 'content_route_topics_list')) return;
 
     const status = typeof req.query.status === 'string'
@@ -147,7 +149,7 @@ export function registerContentTopicRoutes(
    * to 'planned' server-side.
    */
   router.post('/topics', asyncHandler(async (req, res: Response) => {
-    const { userId } = req as unknown as AuthenticatedRequest;
+    const { userId, tenantId = userId } = req as unknown as AuthenticatedRequest;
     if (!ensureValidContentRouteScope(res, userId, 'content_route_topics_create')) return;
 
     const { title, notes, scheduledDate, scheduledDateTime, status } = req.body;
@@ -167,34 +169,39 @@ export function registerContentTopicRoutes(
       sendError(res, 'BAD_REQUEST', 'scheduledDateTime must be ISO datetime or null');
       return;
     }
+    if (!consumeContentWriteBudget(res, tenantId, userId, 'content_topic_create')) return;
 
     try {
       const language = resolveContentLanguage(req, userId);
       const effectiveScheduledDate = scheduledDate
         ?? datePartFromScheduledDateTime(scheduledDateTime)
         ?? null;
-      const topic = addTopic(userId, title.trim(), {
+      const writeTopic = () => addTopic(userId, title.trim(), {
         notes: notes ?? null,
         scheduledDate: effectiveScheduledDate,
         scheduledAt: scheduledDateTime ?? null,
         status: status ?? 'planned',
       });
+      const topic = runOutboxTransaction((emitDomainEvent) => {
+        const created = writeTopic();
+        emitDomainEvent({
+          tenantId,
+          userId,
+          sourceSkill: 'content',
+          eventType: 'content.idea.created',
+          entityType: 'content_topic',
+          entityId: created.id,
+          payload: {
+            summary: { status: created.status, scheduled: Boolean(created.scheduled_date ?? created.scheduled_at) },
+            action: 'created',
+          },
+          privacyClassification: 'private_content',
+          idempotencyKey: `content.idea.created:${userId}:${created.id}`,
+        });
+        return created;
+      }, writeTopic);
       const syncedTopic = await syncContentTopicSecretaryArtifacts(userId, topic, { language });
       invalidateContentDerivedCaches(userId);
-      emitDomainEventSafely({
-        tenantId: userId,
-        userId,
-        sourceSkill: 'content',
-        eventType: 'content.idea.created',
-        entityType: 'content_topic',
-        entityId: syncedTopic.id,
-        payload: {
-          summary: { status: syncedTopic.status, scheduled: Boolean(syncedTopic.scheduled_date ?? syncedTopic.scheduled_at) },
-          action: 'created',
-        },
-        privacyClassification: 'private_content',
-        idempotencyKey: `content.idea.created:${userId}:${syncedTopic.id}`,
-      });
       sendSuccess(res, { topic: syncedTopic }, { status: 201 });
     } catch (err: any) {
       logger.error({ err, userId }, 'iOS content topic create failed');
@@ -210,7 +217,7 @@ export function registerContentTopicRoutes(
    * `scheduledDate` and `notes` accept explicit null to clear.
    */
   router.patch('/topics/:id', asyncHandler(async (req, res: Response) => {
-    const { userId } = req as unknown as AuthenticatedRequest;
+    const { userId, tenantId = userId } = req as unknown as AuthenticatedRequest;
     const topicId = parseContentTopicId(req.params.id);
     if (!ensureValidContentRouteScope(res, userId, 'content_route_topics_update', { topicId })) return;
 
@@ -239,18 +246,45 @@ export function registerContentTopicRoutes(
       sendError(res, 'BAD_REQUEST', 'scheduledDateTime must be ISO datetime or null');
       return;
     }
+    if (!consumeContentWriteBudget(res, tenantId, userId, 'content_topic_update')) return;
 
     try {
       const effectiveScheduledDate = scheduledDate !== undefined
         ? scheduledDate
         : datePartFromScheduledDateTime(scheduledDateTime);
-      const updated = updateTopic(userId, topicId, {
+      const mutationFingerprint = stableMutationFingerprint({
+        title: title !== undefined ? title.trim() : undefined,
+        notes: notes !== undefined ? (notes === null ? null : String(notes)) : undefined,
+        scheduledDate: effectiveScheduledDate,
+        scheduledDateTime: scheduledDateTime !== undefined ? scheduledDateTime : undefined,
+        status,
+      });
+      const writeUpdate = () => updateTopic(userId, topicId, {
         title: title !== undefined ? title.trim() : undefined,
         notes: notes !== undefined ? (notes === null ? null : String(notes)) : undefined,
         scheduled_date: effectiveScheduledDate,
         scheduled_at: scheduledDateTime !== undefined ? scheduledDateTime : undefined,
         status,
       });
+      const updated = runOutboxTransaction((emitDomainEvent) => {
+        const row = writeUpdate();
+        if (!row) return null;
+        emitDomainEvent({
+          tenantId,
+          userId,
+          sourceSkill: 'content',
+          eventType: 'content.idea.updated',
+          entityType: 'content_topic',
+          entityId: row.id,
+          payload: {
+            summary: { status: row.status, scheduled: Boolean(row.scheduled_date ?? row.scheduled_at) },
+            action: 'updated',
+          },
+          privacyClassification: 'private_content',
+          idempotencyKey: `content.idea.updated:${userId}:${row.id}:${mutationFingerprint}`,
+        });
+        return row;
+      }, writeUpdate);
       if (!updated) {
         sendError(res, 'NOT_FOUND', 'Topic not found or not owned by user', 404);
         return;
@@ -259,20 +293,6 @@ export function registerContentTopicRoutes(
         language: resolveContentLanguage(req, userId),
       });
       invalidateContentDerivedCaches(userId);
-      emitDomainEventSafely({
-        tenantId: userId,
-        userId,
-        sourceSkill: 'content',
-        eventType: 'content.idea.updated',
-        entityType: 'content_topic',
-        entityId: syncedTopic.id,
-        payload: {
-          summary: { status: syncedTopic.status, scheduled: Boolean(syncedTopic.scheduled_date ?? syncedTopic.scheduled_at) },
-          action: 'updated',
-        },
-        privacyClassification: 'private_content',
-        idempotencyKey: `content.idea.updated:${userId}:${syncedTopic.id}:${Date.now()}`,
-      });
       sendSuccess(res, { topic: syncedTopic });
     } catch (err: any) {
       logger.error({ err, userId, topicId }, 'iOS content topic update failed');
@@ -286,7 +306,7 @@ export function registerContentTopicRoutes(
    * status='cancelled' instead.
    */
   router.delete('/topics/:id', asyncHandler(async (req, res: Response) => {
-    const { userId } = req as unknown as AuthenticatedRequest;
+    const { userId, tenantId = userId } = req as unknown as AuthenticatedRequest;
     const topicId = parseContentTopicId(req.params.id);
     if (!ensureValidContentRouteScope(res, userId, 'content_route_topics_delete', { topicId })) return;
 
@@ -294,32 +314,67 @@ export function registerContentTopicRoutes(
       sendError(res, 'BAD_REQUEST', 'id must be a number');
       return;
     }
+    if (!consumeContentWriteBudget(res, tenantId, userId, 'content_topic_delete')) return;
 
     try {
-      const deleted = deleteTopic(userId, topicId);
+      const writeDelete = () => deleteTopic(userId, topicId);
+      const deleted = runOutboxTransaction((emitDomainEvent) => {
+        const didDelete = writeDelete();
+        if (!didDelete) return false;
+        emitDomainEvent({
+          tenantId,
+          userId,
+          sourceSkill: 'content',
+          eventType: 'content.idea.updated',
+          entityType: 'content_topic',
+          entityId: topicId,
+          payload: {
+            summary: { deleted: true },
+            action: 'deleted',
+          },
+          privacyClassification: 'private_content',
+          idempotencyKey: `content.idea.deleted:${userId}:${topicId}`,
+        });
+        return true;
+      }, writeDelete);
       if (!deleted) {
         sendError(res, 'NOT_FOUND', 'Topic not found or not owned by user', 404);
         return;
       }
       invalidateContentDerivedCaches(userId);
-      emitDomainEventSafely({
-        tenantId: userId,
-        userId,
-        sourceSkill: 'content',
-        eventType: 'content.idea.updated',
-        entityType: 'content_topic',
-        entityId: topicId,
-        payload: {
-          summary: { deleted: true },
-          action: 'deleted',
-        },
-        privacyClassification: 'private_content',
-        idempotencyKey: `content.idea.deleted:${userId}:${topicId}:${Date.now()}`,
-      });
       sendSuccess(res, { deleted: true, id: topicId });
     } catch (err: any) {
       logger.error({ err, userId, topicId }, 'iOS content topic delete failed');
       sendInternalError(res, 'Failed to delete topic');
     }
   }));
+}
+
+function stableMutationFingerprint(value: Record<string, unknown>): string {
+  return createHash('sha256')
+    .update(JSON.stringify(value, Object.keys(value).sort()))
+    .digest('hex')
+    .slice(0, 16);
+}
+
+function consumeContentWriteBudget(res: Response, tenantId: number, userId: number, budgetKey: string): boolean {
+  const budget = consumeResourceBudget({
+    tenantId,
+    userId,
+    budgetKey,
+    limit: 60,
+    windowSeconds: 60,
+  });
+  if (budget.allowed) return true;
+  setRetryAfter(res, budget.resetAt);
+  sendError(res, 'RATE_LIMITED', 'Too many content write requests. Try again shortly.', 429, {
+    resetAt: budget.resetAt,
+    budgetKey: budget.budgetKey,
+  });
+  return false;
+}
+
+function setRetryAfter(res: Response, resetAt: string): void {
+  const seconds = Math.max(1, Math.ceil((Date.parse(resetAt) - Date.now()) / 1000));
+  res.setHeader('Retry-After', String(Number.isFinite(seconds) ? seconds : 60));
 }

@@ -14,6 +14,10 @@ export function syncRoutes(): Router {
   router.get('/changes', (req, res: Response) => {
     const { userId, tenantId = userId, deviceId } = req as AuthenticatedRequest;
     if (!ensureScope(res, userId, tenantId, 'sync_route_changes')) return;
+    if (typeof deviceId !== 'string' || deviceId.trim().length === 0) {
+      sendError(res, 'MISSING_DEVICE_ID', 'Authenticated device id is required for delta sync', 400);
+      return;
+    }
     const limit = capSyncPageSize(req.query.limit);
     const budget = consumeResourceBudget({
       tenantId,
@@ -23,6 +27,7 @@ export function syncRoutes(): Router {
       windowSeconds: 60,
     });
     if (!budget.allowed) {
+      setRetryAfter(res, budget.resetAt);
       sendError(res, 'RATE_LIMITED', 'Too many sync requests. Try again shortly.', 429, {
         resetAt: budget.resetAt,
         budgetKey: budget.budgetKey,
@@ -35,7 +40,7 @@ export function syncRoutes(): Router {
         tenantId,
         userId,
         since: typeof req.query.since === 'string' ? req.query.since : null,
-        deviceId: typeof req.query.deviceId === 'string' ? req.query.deviceId : deviceId,
+        deviceId,
         limit,
         skill: typeof req.query.skill === 'string' ? req.query.skill : null,
       });
@@ -47,6 +52,11 @@ export function syncRoutes(): Router {
   });
 
   return router;
+}
+
+function setRetryAfter(res: Response, resetAt: string): void {
+  const seconds = Math.max(1, Math.ceil((Date.parse(resetAt) - Date.now()) / 1000));
+  res.setHeader('Retry-After', String(Number.isFinite(seconds) ? seconds : 60));
 }
 
 function ensureScope(

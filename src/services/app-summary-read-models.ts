@@ -162,11 +162,11 @@ function upsertSummary(input: {
 
 function buildSummaryPayload(type: SummaryType, userId: number, tenantId: number, db: Database.Database): Record<string, unknown> {
   const generatedAt = new Date().toISOString();
-  const training = buildTrainingSummary(userId, db);
+  const training = buildTrainingSummary(userId, tenantId, db);
   const content = buildContentSummary(userId, tenantId, db);
   const notifications = buildNotificationSummary(userId, tenantId, db);
-  const cooking = buildCookingSummary(userId, db);
-  const finance = buildFinanceSummary(userId, db);
+  const cooking = buildCookingSummary(userId, tenantId, db);
+  const finance = buildFinanceSummary(userId, tenantId, db);
   const agenda = buildAgendaSummary(userId, tenantId, db);
 
   if (type === 'home') {
@@ -204,7 +204,7 @@ function buildSummaryPayload(type: SummaryType, userId: number, tenantId: number
   return { kind: 'notifications', generatedAt, ...notifications };
 }
 
-function buildTrainingSummary(userId: number, db: Database.Database): Record<string, unknown> {
+function buildTrainingSummary(userId: number, tenantId: number, db: Database.Database): Record<string, unknown> {
   const activePlan = tableExists(db, 'fitness_training_plans')
     ? db.prepare('SELECT id, name, sport, goal, status FROM fitness_training_plans WHERE user_id = ? AND status = ? ORDER BY created_at DESC LIMIT 1').get(userId, 'active') as any | undefined
     : undefined;
@@ -221,7 +221,7 @@ function buildTrainingSummary(userId: number, db: Database.Database): Record<str
   const weekCount = activePlan && tableExists(db, 'training_sessions')
     ? countRows(db, 'training_sessions', 'plan_id = ? AND status IN (\'pending\', \'moved\', \'completed\', \'skipped\')', [activePlan.id])
     : 0;
-  const warningsCount = activePlan ? countRows(db, 'notification_center_items', 'user_id = ? AND tenant_id = ? AND source_skill = ? AND status = ?', [userId, userId, 'training', 'unread']) : 0;
+  const warningsCount = activePlan ? countRows(db, 'notification_center_items', 'user_id = ? AND tenant_id = ? AND source_skill = ? AND status = ?', [userId, tenantId, 'training', 'unread']) : 0;
   return {
     activePlanId: activePlan?.id ?? null,
     currentBlock: activePlan?.name ?? null,
@@ -235,16 +235,16 @@ function buildTrainingSummary(userId: number, db: Database.Database): Record<str
 }
 
 function buildContentSummary(userId: number, tenantId: number, db: Database.Database): Record<string, unknown> {
-  const pendingTopics = countRows(db, 'content_topics', 'user_id = ? AND status IN (\'planned\', \'drafting\', \'ready\')', [userId]);
-  const scheduledThisWeek = countRows(db, 'content_topics', 'user_id = ? AND scheduled_date >= date(\'now\') AND scheduled_date < date(\'now\', \'+7 days\')', [userId]);
-  const scriptsInProgress = countRows(db, 'content_scripts', 'user_id = ? AND status IS NOT NULL', [userId]);
+  const pendingTopics = countScopedRows(db, 'content_topics', userId, tenantId, 'status IN (\'planned\', \'drafting\', \'ready\')');
+  const scheduledThisWeek = countScopedRows(db, 'content_topics', userId, tenantId, 'scheduled_date >= date(\'now\') AND scheduled_date < date(\'now\', \'+7 days\')');
+  const scriptsInProgress = countScopedRows(db, 'content_scripts', userId, tenantId, 'status IS NOT NULL');
   const profileRows = countRows(db, 'content_creator_profile', 'user_id = ? AND tenant_id = ? AND scope_status = ?', [userId, tenantId, 'active']);
   return {
     profileCompleteness: profileRows > 0 ? 'configured' : 'not_started',
     ideasNeedingReview: pendingTopics,
     scriptsInProgress,
     scheduledThisWeek,
-    radarOpportunitiesCount: countRows(db, 'content_radar_signals', 'user_id = ? AND status = ?', [userId, 'active']),
+    radarOpportunitiesCount: countScopedRows(db, 'content_radar_signals', userId, tenantId, 'status = ?', ['active'], 'owner_user_id'),
     pendingCount: pendingTopics + scriptsInProgress,
   };
 }
@@ -259,17 +259,17 @@ function buildNotificationSummary(userId: number, tenantId: number, db: Database
   };
 }
 
-function buildCookingSummary(userId: number, db: Database.Database): Record<string, unknown> {
-  const todayMeals = countRows(db, 'meal_plans', 'user_id = ? AND date = date(\'now\')', [userId]);
-  const weekMeals = countRows(db, 'meal_plans', 'user_id = ? AND date >= date(\'now\') AND date < date(\'now\', \'+7 days\')', [userId]);
+function buildCookingSummary(userId: number, tenantId: number, db: Database.Database): Record<string, unknown> {
+  const todayMeals = countScopedRows(db, 'meal_plans', userId, tenantId, 'date = date(\'now\')');
+  const weekMeals = countScopedRows(db, 'meal_plans', userId, tenantId, 'date >= date(\'now\') AND date < date(\'now\', \'+7 days\')');
   return {
     todaySummary: todayMeals > 0 ? `${todayMeals} meals planned today` : 'No meals planned today',
     weekSummary: { plannedMeals: weekMeals },
   };
 }
 
-function buildFinanceSummary(userId: number, db: Database.Database): Record<string, unknown> {
-  const pendingTax = countRows(db, 'finance_tax_events', 'user_id = ? AND status IN (\'pending\', \'overdue\')', [userId]);
+function buildFinanceSummary(userId: number, tenantId: number, db: Database.Database): Record<string, unknown> {
+  const pendingTax = countScopedRows(db, 'finance_tax_events', userId, tenantId, 'status IN (\'pending\', \'overdue\')');
   return { reminderCount: pendingTax, pendingTaxEvents: pendingTax };
 }
 
@@ -281,7 +281,7 @@ function buildAgendaSummary(userId: number, tenantId: number, db: Database.Datab
     SELECT agenda_item_id, source_skill, lifecycle_state, title, start_at
     FROM secretary_agenda_items
     WHERE owner_user_id = ?
-      AND CAST(tenant_id AS TEXT) = CAST(? AS TEXT)
+      AND tenant_id = ?
       AND lifecycle_state IN ('scheduled', 'synced', 'proposed')
       AND (start_at IS NULL OR start_at >= datetime('now'))
     ORDER BY start_at ASC
@@ -295,8 +295,34 @@ function buildAgendaSummary(userId: number, tenantId: number, db: Database.Datab
       title: next.title ? 'Agenda item' : null,
       startAt: next.start_at ?? null,
     } : null,
-    scheduledCount: countRows(db, 'secretary_agenda_items', 'owner_user_id = ? AND CAST(tenant_id AS TEXT) = CAST(? AS TEXT)', [userId, tenantId]),
+    scheduledCount: countRows(db, 'secretary_agenda_items', 'owner_user_id = ? AND tenant_id = ?', [userId, tenantId]),
   };
+}
+
+function countScopedRows(
+  db: Database.Database,
+  table: string,
+  userId: number,
+  tenantId: number,
+  whereSql: string,
+  params: unknown[] = [],
+  preferredUserColumn = 'user_id',
+): number {
+  if (!tableExists(db, table)) return 0;
+  const userColumn = columnExists(db, table, preferredUserColumn)
+    ? preferredUserColumn
+    : columnExists(db, table, 'owner_user_id')
+      ? 'owner_user_id'
+      : 'user_id';
+  if (!columnExists(db, table, userColumn)) return 0;
+  const scopeParts = [`${userColumn} = ?`];
+  const scopeParams: unknown[] = [userId];
+  if (columnExists(db, table, 'tenant_id')) {
+    scopeParts.push('tenant_id = ?');
+    scopeParams.push(tenantId);
+  }
+  const combinedWhere = `${scopeParts.join(' AND ')}${whereSql ? ` AND ${whereSql}` : ''}`;
+  return countRows(db, table, combinedWhere, [...scopeParams, ...params]);
 }
 
 function countRows(db: Database.Database, table: string, whereSql: string, params: unknown[]): number {
@@ -312,6 +338,16 @@ function countRows(db: Database.Database, table: string, whereSql: string, param
 function tableExists(db: Database.Database, table: string): boolean {
   const row = db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(table) as { 1?: number } | undefined;
   return Boolean(row);
+}
+
+function columnExists(db: Database.Database, table: string, column: string): boolean {
+  if (!tableExists(db, table)) return false;
+  try {
+    return (db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>)
+      .some((row) => row.name === column);
+  } catch {
+    return false;
+  }
 }
 
 function safeTrainingSession(row: any): Record<string, unknown> {

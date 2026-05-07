@@ -26,13 +26,13 @@ const TARGETS: CleanupTarget[] = [
     table: 'product_decision_logs',
     idColumn: 'decision_id',
     timestampColumn: 'created_at',
-    where: '1 = 1',
+    where: "event_id IS NULL OR event_id NOT IN (SELECT event_id FROM event_outbox WHERE status = 'dead_letter')",
   },
   {
     table: 'sync_cursors',
     idColumn: 'cursor_id',
     timestampColumn: 'last_seen_at',
-    where: '1 = 1',
+    where: "last_seen_at < datetime('now', '-90 days')",
   },
 ];
 
@@ -86,6 +86,7 @@ function cleanupTarget(
   cutoff: string,
   protectNewest: number,
   apply: boolean,
+  protectFloor?: number | null,
 ): EventBackboneCleanupTargetReport {
   if (!tableExists(db, target.table)) {
     return {
@@ -97,13 +98,18 @@ function cleanupTarget(
     };
   }
 
+  const floorPredicate = target.table === 'event_outbox' && typeof protectFloor === 'number' && protectFloor > 0
+    ? 'AND sequence < ?'
+    : '';
+  const params = floorPredicate ? [cutoff, protectFloor] : [cutoff];
   const ids = db.prepare(`
     SELECT ${target.idColumn} AS id
     FROM ${target.table}
     WHERE ${target.where}
       AND ${target.timestampColumn} < ?
+      ${floorPredicate}
     ORDER BY ${target.timestampColumn} ASC
-  `).all(cutoff).map((row: any) => String(row.id));
+  `).all(...params).map((row: any) => String(row.id));
 
   const deletable = ids.slice(0, Math.max(0, ids.length - protectNewest));
   if (!apply || deletable.length === 0) {
@@ -145,12 +151,19 @@ export function runEventBackboneCleanup(input: {
   const cutoff = new Date(Date.now() - retentionDays * 24 * 60 * 60 * 1000).toISOString();
   const db = new Database(input.dbPath);
   try {
+    const protectFloor = tableExists(db, 'sync_cursors')
+      ? Number((db.prepare(`
+          SELECT MIN(cursor_value) AS floor
+          FROM sync_cursors
+          WHERE last_seen_at >= datetime('now', '-90 days')
+        `).get() as { floor: number | null }).floor ?? 0)
+      : 0;
     return {
       apply: Boolean(input.apply),
       databasePath: input.dbPath,
       retentionDays,
       cutoff,
-      targets: TARGETS.map((target) => cleanupTarget(db, target, cutoff, protectNewest, Boolean(input.apply))),
+      targets: TARGETS.map((target) => cleanupTarget(db, target, cutoff, protectNewest, Boolean(input.apply), protectFloor)),
     };
   } finally {
     db.close();

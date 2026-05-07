@@ -13,6 +13,7 @@ import type Database from 'better-sqlite3';
 import { getDb } from './database';
 import { getCurrentContext } from '../utils/request-context';
 import { isValidTenantUserId, recordTenantScopeAnomaly } from './tenant-scope-observability';
+import { logger } from '../utils/logger';
 
 export type JobStatus = 'pending' | 'processing' | 'completed' | 'failed' | 'dead_letter' | 'canceled';
 
@@ -54,8 +55,11 @@ export interface JobRecord {
 
 export interface JobHandler {
   jobType: string;
+  idempotent?: boolean;
   handle(job: JobRecord): Promise<void> | void;
 }
+
+const STALE_JOB_LEASE_MINUTES = 15;
 
 export function ensureBackgroundJobTables(db: Database.Database = getDb()): void {
   db.exec(`
@@ -129,33 +133,30 @@ export function enqueueJob(input: JobInput, db: Database.Database = getDb()): Jo
 export function claimPendingJobs(limit = 10, lockOwner = `worker-${process.pid}`, db: Database.Database = getDb()): JobRecord[] {
   ensureBackgroundJobTables(db);
   const boundedLimit = Math.max(1, Math.min(Math.floor(limit), 50));
-  const tx = db.transaction(() => {
-    const rows = db.prepare(`
-      SELECT job_id FROM background_jobs
-      WHERE status IN ('pending', 'failed')
-        AND not_before <= datetime('now')
-      ORDER BY priority ASC, created_at ASC
+  return (db.prepare(`
+    UPDATE background_jobs
+    SET status = 'processing',
+        attempts = attempts + 1,
+        locked_at = datetime('now'),
+        lock_owner = ?,
+        started_at = COALESCE(started_at, datetime('now'))
+    WHERE job_id IN (
+      SELECT job_id
+      FROM background_jobs
+      WHERE (
+          status IN ('pending', 'failed')
+          AND not_before <= datetime('now')
+        )
+        OR (
+          status = 'processing'
+          AND locked_at IS NOT NULL
+          AND locked_at <= datetime('now', ?)
+        )
+      ORDER BY CASE WHEN status = 'processing' THEN 1 ELSE 0 END, priority ASC, created_at ASC
       LIMIT ?
-    `).all(boundedLimit) as { job_id: string }[];
-    if (rows.length === 0) return [];
-    const ids = rows.map((row) => row.job_id);
-    const placeholders = ids.map(() => '?').join(',');
-    db.prepare(`
-      UPDATE background_jobs
-      SET status = 'processing',
-          attempts = attempts + 1,
-          locked_at = datetime('now'),
-          lock_owner = ?,
-          started_at = COALESCE(started_at, datetime('now'))
-      WHERE job_id IN (${placeholders})
-    `).run(lockOwner, ...ids);
-    return db.prepare(`
-      SELECT * FROM background_jobs
-      WHERE job_id IN (${placeholders})
-      ORDER BY priority ASC, created_at ASC
-    `).all(...ids) as any[];
-  });
-  return tx().map(mapJob);
+    )
+    RETURNING *
+  `).all(lockOwner, `-${STALE_JOB_LEASE_MINUTES} minutes`, boundedLimit) as any[]).map(mapJob);
 }
 
 export async function processPendingJobs(
@@ -166,6 +167,7 @@ export async function processPendingJobs(
     return { completed: 0, failed: 0, deadLetter: 0, skipped: 1 };
   }
   const db = opts.db ?? getDb();
+  const startedAt = Date.now();
   const claimed = claimPendingJobs(opts.limit ?? 10, opts.lockOwner ?? `worker-${process.pid}`, db);
   const handlersByType = new Map(handlers.map((handler) => [handler.jobType, handler]));
   let completed = 0;
@@ -185,6 +187,17 @@ export async function processPendingJobs(
     }
   }
 
+  logger.info(
+    {
+      scope: 'background_jobs',
+      claimed: claimed.length,
+      completed,
+      failed,
+      deadLetter,
+      durationMs: Date.now() - startedAt,
+    },
+    'background_job_batch',
+  );
   return { completed, failed, deadLetter, skipped: 0 };
 }
 
@@ -197,15 +210,18 @@ export function markJobCompleted(jobId: string, db: Database.Database = getDb())
         lock_owner = NULL,
         last_error = NULL
     WHERE job_id = ?
+      AND status != 'canceled'
   `).run(jobId);
 }
 
 export function markJobFailed(jobId: string, err: unknown, db: Database.Database = getDb()): JobStatus {
-  const row = db.prepare('SELECT attempts, max_attempts FROM background_jobs WHERE job_id = ?').get(jobId) as { attempts: number; max_attempts: number } | undefined;
+  const row = db.prepare('SELECT attempts, max_attempts, status FROM background_jobs WHERE job_id = ?').get(jobId) as { attempts: number; max_attempts: number; status: JobStatus } | undefined;
+  if (row?.status === 'canceled') return 'canceled';
   const attempts = row?.attempts ?? 1;
   const maxAttempts = row?.max_attempts ?? 3;
   const dead = attempts >= maxAttempts;
-  const delaySeconds = Math.min(3600, 2 ** Math.max(0, attempts - 1) * 30);
+  const baseDelaySeconds = Math.min(3600, 2 ** Math.max(0, attempts - 1) * 30);
+  const delaySeconds = Math.min(3600, baseDelaySeconds + Math.floor(Math.random() * Math.max(1, baseDelaySeconds * 0.3)));
   db.prepare(`
     UPDATE background_jobs
     SET status = ?,
@@ -215,10 +231,20 @@ export function markJobFailed(jobId: string, err: unknown, db: Database.Database
         last_error = ?
     WHERE job_id = ?
   `).run(dead ? 'dead_letter' : 'failed', dead ? '+0 seconds' : `+${delaySeconds} seconds`, safeError(err), jobId);
+  if (dead) {
+    logger.warn(
+      { scope: 'background_jobs', jobId, attempts, maxAttempts, lastError: safeError(err) },
+      'job_dead_lettered',
+    );
+  }
   return dead ? 'dead_letter' : 'failed';
 }
 
-export function cancelJob(jobId: string, db: Database.Database = getDb()): boolean {
+export function cancelJob(jobId: string, dbOrTenantId: Database.Database | number = getDb(), maybeDb?: Database.Database): boolean {
+  const tenantId = typeof dbOrTenantId === 'number' ? dbOrTenantId : null;
+  const db = typeof dbOrTenantId === 'number' ? (maybeDb ?? getDb()) : dbOrTenantId;
+  const tenantPredicate = tenantId ? 'AND tenant_id = ?' : '';
+  const params: unknown[] = tenantId ? [jobId, tenantId] : [jobId];
   const result = db.prepare(`
     UPDATE background_jobs
     SET status = 'canceled',
@@ -226,8 +252,53 @@ export function cancelJob(jobId: string, db: Database.Database = getDb()): boole
         locked_at = NULL,
         lock_owner = NULL
     WHERE job_id = ?
-      AND status IN ('pending', 'failed')
-  `).run(jobId);
+      ${tenantPredicate}
+      AND status IN ('pending', 'failed', 'processing', 'dead_letter')
+  `).run(...params);
+  return result.changes > 0;
+}
+
+export function listDeadLetterJobs(input: {
+  tenantId: number;
+  userId?: number | null;
+  limit?: number;
+}, db: Database.Database = getDb()): JobRecord[] {
+  if (!isValidTenantUserId(input.tenantId)) throw new Error('tenantId required: must be a positive integer');
+  const limit = Math.max(1, Math.min(Math.floor(input.limit ?? 50), 200));
+  const params: unknown[] = [input.tenantId];
+  let userPredicate = '';
+  if (input.userId != null) {
+    if (!isValidTenantUserId(input.userId)) throw new Error('userId required: must be a positive integer when provided');
+    userPredicate = 'AND user_id = ?';
+    params.push(input.userId);
+  }
+  params.push(limit);
+  ensureBackgroundJobTables(db);
+  return (db.prepare(`
+    SELECT * FROM background_jobs
+    WHERE tenant_id = ?
+      ${userPredicate}
+      AND status = 'dead_letter'
+    ORDER BY created_at ASC
+    LIMIT ?
+  `).all(...params) as any[]).map(mapJob);
+}
+
+export function replayJob(jobId: string, tenantId: number, db: Database.Database = getDb()): boolean {
+  if (!isValidTenantUserId(tenantId)) throw new Error('tenantId required: must be a positive integer');
+  ensureBackgroundJobTables(db);
+  const result = db.prepare(`
+    UPDATE background_jobs
+    SET status = 'pending',
+        not_before = datetime('now'),
+        locked_at = NULL,
+        lock_owner = NULL,
+        completed_at = NULL,
+        last_error = NULL
+    WHERE job_id = ?
+      AND tenant_id = ?
+      AND status IN ('failed', 'dead_letter', 'canceled')
+  `).run(jobId, tenantId);
   return result.changes > 0;
 }
 

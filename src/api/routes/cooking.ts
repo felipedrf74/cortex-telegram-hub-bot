@@ -78,7 +78,8 @@ import { createEvent as createCalendarEvent, isAnyCalendarConfigured } from '../
 import { getActivePlans, getCurrentWeek, getSessionsForWeek, getWeeksForPlan, type TrainingSession } from '../../services/training-plans';
 import { invalidateCookingDerivedCaches } from '../../services/cooking-cache-invalidator';
 import { submitCookingMealPrepSchedulingIntent } from '../../services/cooking-secretary-integration';
-import { emitDomainEventSafely } from '../../services/event-outbox';
+import { runOutboxTransaction } from '../../services/event-outbox';
+import { consumeResourceBudget } from '../../services/resource-budgets';
 import { createNotificationIntent } from '../../services/notification-orchestrator';
 import { readTrainingContextAll } from '../../services/training-signals';
 import { getReadiness as getWearableReadiness } from '../../services/wearable/wearable-service';
@@ -472,9 +473,10 @@ export function cookingRoutes(): Router {
       sendError(res, 'BAD_REQUEST', 'nutrition fields must be non-negative numbers or null');
       return;
     }
+    if (!consumeCookingWriteBudget(res, tenantId, userId, 'cooking_recipe_create')) return;
 
     try {
-      const recipe = addRecipe(userId, title.trim(), ingredients as Ingredient[], {
+      const writeRecipe = () => addRecipe(userId, title.trim(), ingredients as Ingredient[], {
         instructions,
         prepTime,
         cookTime,
@@ -487,20 +489,24 @@ export function cookingRoutes(): Router {
         calories,
         tenantId,
       });
-      emitDomainEventSafely({
-        tenantId,
-        userId,
-        sourceSkill: 'cooking',
-        eventType: 'cooking.meal_plan.updated',
-        entityType: 'recipe',
-        entityId: recipe.id,
-        payload: {
-          summary: { created: true, tags: Array.isArray(tags) ? tags.length : 0 },
-          action: 'created',
-        },
-        privacyClassification: 'internal',
-        idempotencyKey: `cooking.recipe.created:${tenantId}:${userId}:${recipe.id}`,
-      });
+      const recipe = runOutboxTransaction((emitDomainEvent) => {
+        const created = writeRecipe();
+        emitDomainEvent({
+          tenantId,
+          userId,
+          sourceSkill: 'cooking',
+          eventType: 'cooking.meal_plan.updated',
+          entityType: 'recipe',
+          entityId: created.id,
+          payload: {
+            summary: { created: true, tags: Array.isArray(tags) ? tags.length : 0 },
+            action: 'created',
+          },
+          privacyClassification: 'internal',
+          idempotencyKey: `cooking.recipe.created:${tenantId}:${userId}:${created.id}`,
+        });
+        return created;
+      }, writeRecipe);
       logger.info({ userId, recipeId: recipe.id }, 'iOS recipe created');
       sendSuccess(res, { recipe }, { status: 201 });
     } catch (err: unknown) {
@@ -1409,4 +1415,26 @@ export function cookingRoutes(): Router {
   }));
 
   return router;
+}
+
+function consumeCookingWriteBudget(res: Response, tenantId: number, userId: number, budgetKey: string): boolean {
+  const budget = consumeResourceBudget({
+    tenantId,
+    userId,
+    budgetKey,
+    limit: 60,
+    windowSeconds: 60,
+  });
+  if (budget.allowed) return true;
+  setRetryAfter(res, budget.resetAt);
+  sendError(res, 'RATE_LIMITED', 'Too many cooking write requests. Try again shortly.', 429, {
+    resetAt: budget.resetAt,
+    budgetKey: budget.budgetKey,
+  });
+  return false;
+}
+
+function setRetryAfter(res: Response, resetAt: string): void {
+  const seconds = Math.max(1, Math.ceil((Date.parse(resetAt) - Date.now()) / 1000));
+  res.setHeader('Retry-After', String(Number.isFinite(seconds) ? seconds : 60));
 }

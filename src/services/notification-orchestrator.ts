@@ -16,8 +16,9 @@ import { getDb } from './database';
 import { getPushTokensForUser, isApnsConfigured, sendPushNotification } from './apns-sender';
 import { logger } from '../utils/logger';
 import { isValidTenantUserId, recordTenantScopeAnomaly } from './tenant-scope-observability';
-import { emitDomainEventSafely } from './event-outbox';
+import { emitDomainEvent } from './event-outbox';
 import { enqueueJob } from './background-job-queue';
+import { consumeResourceBudget } from './resource-budgets';
 
 export type NotificationSourceSkill =
   | 'secretary'
@@ -516,46 +517,56 @@ export function updateNotificationProfile(userId: number, tenantId: number, patc
 }
 
 export async function createNotificationIntent(input: NotificationIntentInput): Promise<NotificationEvaluationResult> {
-  const intent = persistIntent(normalizeIntent(input));
-  emitDomainEventSafely({
-    tenantId: intent.tenantId,
-    userId: intent.userId,
-    sourceSkill: 'notification',
-    eventType: 'notification.intent.created',
-    entityType: 'notification_intent',
-    entityId: intent.intentId,
-    payload: {
-      summary: {
-        sourceSkill: intent.sourceSkill,
-        type: intent.type,
-        priority: intent.priority,
-        requiresUserAction: intent.requiresUserAction,
-      },
-      action: 'created',
-    },
-    privacyClassification: intent.privacyPolicy === 'financial' ? 'financial' : intent.privacyPolicy === 'health' ? 'health' : 'internal',
-    idempotencyKey: `notification.intent.created:${intent.tenantId}:${intent.userId}:${intent.intentId}`,
+  const normalized = normalizeIntent(input);
+  const budget = consumeResourceBudget({
+    tenantId: normalized.tenantId,
+    userId: normalized.userId,
+    budgetKey: `notification_intent_create:${normalized.sourceSkill}`,
+    limit: 60,
+    windowSeconds: 60,
   });
-  emitSourceSkillEventForIntent(intent);
-  try {
-    enqueueJob({
-      tenantId: intent.tenantId,
-      userId: intent.userId,
-      jobType: 'deliver_notification',
-      payload: { intentId: intent.intentId },
-      priority: intent.priority === 'time_sensitive' || intent.priority === 'critical' ? 10 : 50,
-      idempotencyKey: `deliver_notification:${intent.intentId}`,
-    });
-  } catch (err) {
-    logger.debug({ err, intentId: intent.intentId }, 'Notification delivery job enqueue skipped');
+  if (!budget.allowed) {
+    throw new Error('notification intent rate limited');
   }
+  const intent = getDb().transaction(() => {
+    const persisted = persistIntent(normalized);
+    emitDomainEvent({
+      tenantId: persisted.tenantId,
+      userId: persisted.userId,
+      sourceSkill: 'notification',
+      eventType: 'notification.intent.created',
+      entityType: 'notification_intent',
+      entityId: persisted.intentId,
+      payload: {
+        summary: {
+          sourceSkill: persisted.sourceSkill,
+          type: persisted.type,
+          priority: persisted.priority,
+          requiresUserAction: persisted.requiresUserAction,
+        },
+        action: 'created',
+      },
+      privacyClassification: persisted.privacyPolicy === 'financial' ? 'financial' : persisted.privacyPolicy === 'health' ? 'health' : 'internal',
+      idempotencyKey: `notification.intent.created:${persisted.tenantId}:${persisted.userId}:${persisted.intentId}`,
+    });
+    emitSourceSkillEventForIntent(persisted);
+    enqueueJob({
+      tenantId: persisted.tenantId,
+      userId: persisted.userId,
+      jobType: 'deliver_notification',
+      payload: { intentId: persisted.intentId },
+      priority: persisted.priority === 'time_sensitive' || persisted.priority === 'critical' ? 10 : 50,
+      idempotencyKey: `deliver_notification:${persisted.intentId}`,
+    });
+    return persisted;
+  })();
   return evaluateNotificationIntent(intent.intentId, intent.userId, intent.tenantId);
 }
 
 function emitSourceSkillEventForIntent(intent: NotificationIntentRecord): void {
   const mapped = sourceSkillEventForIntent(intent);
   if (!mapped) return;
-  emitDomainEventSafely({
+  emitDomainEvent({
     tenantId: intent.tenantId,
     userId: intent.userId,
     sourceSkill: mapped.sourceSkill,

@@ -38,6 +38,7 @@ import { notificationRoutes } from './routes/notifications';
 import { reportRoutes } from './routes/reports';
 import { summaryRoutes } from './routes/summaries';
 import { syncRoutes } from './routes/sync';
+import { eventBackboneAdminRoutes } from './routes/event-backbone-admin';
 
 /**
  * Creates the iOS API router.
@@ -106,6 +107,7 @@ export function createApiRouter(): Router {
   // having to register as an iOS device first.
   router.use('/admin/content-dashboard', contentDashboardRoutes());
   router.use('/admin/content', contentAdminWriteRoutes());
+  router.use('/admin/event-backbone', eventBackboneAdminRoutes());
 
   // Apple App Store Server Notifications — public (no JWT).
   // Apple sends lifecycle events (renewal, expiry, refund) server-to-server.

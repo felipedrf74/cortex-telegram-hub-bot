@@ -14,7 +14,7 @@ export function summaryRoutes(): Router {
   const router = Router();
 
   router.get('/', (req, res: Response) => {
-    const { userId, tenantId = userId } = req as unknown as AuthenticatedRequest;
+    const { userId, tenantId } = req as unknown as AuthenticatedRequest;
     if (!ensureScope(res, userId, tenantId, 'summary_route_list')) return;
     if (!consumeSummaryBudget(res, tenantId, userId, 'summary_list', 240, 60)) return;
     try {
@@ -30,7 +30,7 @@ export function summaryRoutes(): Router {
   });
 
   router.get('/:type', (req, res: Response) => {
-    const { userId, tenantId = userId } = req as unknown as AuthenticatedRequest;
+    const { userId, tenantId } = req as unknown as AuthenticatedRequest;
     if (!ensureScope(res, userId, tenantId, 'summary_route_get', { type: req.params.type })) return;
     if (!consumeSummaryBudget(res, tenantId, userId, 'summary_get', 300, 60)) return;
     const summaryType = normalizeSummaryType(req.params.type);
@@ -49,7 +49,7 @@ export function summaryRoutes(): Router {
   });
 
   router.post('/project', (req, res: Response) => {
-    const { userId, tenantId = userId } = req as AuthenticatedRequest;
+    const { userId, tenantId } = req as AuthenticatedRequest;
     if (!ensureScope(res, userId, tenantId, 'summary_route_project')) return;
     if (!consumeSummaryBudget(res, tenantId, userId, 'summary_project', 30, 60)) return;
     const requested = Array.isArray(req.body?.summaryTypes)
@@ -88,11 +88,17 @@ function consumeSummaryBudget(
   });
   if (budget.allowed) return true;
 
+  setRetryAfter(res, budget.resetAt);
   sendError(res, 'RATE_LIMITED', 'Too many summary requests. Try again shortly.', 429, {
     resetAt: budget.resetAt,
     budgetKey: budget.budgetKey,
   });
   return false;
+}
+
+function setRetryAfter(res: Response, resetAt: string): void {
+  const seconds = Math.max(1, Math.ceil((Date.parse(resetAt) - Date.now()) / 1000));
+  res.setHeader('Retry-After', String(Number.isFinite(seconds) ? seconds : 60));
 }
 
 function ensureScope(

@@ -12,6 +12,7 @@ import type Database from 'better-sqlite3';
 import { getDb } from './database';
 import { isValidTenantUserId, recordTenantScopeAnomaly } from './tenant-scope-observability';
 import { getCurrentContext } from '../utils/request-context';
+import { sanitizePrivacyObject } from '../utils/privacy-sanitizer';
 
 export interface ProductDecisionLogInput {
   decisionId?: string;
@@ -132,15 +133,7 @@ function assertDecisionScope(input: ProductDecisionLogInput): void {
 }
 
 function sanitize(value: Record<string, unknown>): Record<string, unknown> {
-  const out: Record<string, unknown> = {};
-  for (const [key, candidate] of Object.entries(value)) {
-    if (/prompt|raw|draft|script|merchant|amount|calendar|token|secret|password/i.test(key)) {
-      out[key] = '[redacted]';
-    } else {
-      out[key] = candidate;
-    }
-  }
-  return out;
+  return sanitizePrivacyObject(value, { maxDepth: 4, maxStringLength: 500 });
 }
 
 function mapDecision(row: any): ProductDecisionLogRecord {

@@ -14,8 +14,9 @@ import { getDb } from './database';
 import { isValidTenantUserId, recordTenantScopeAnomaly } from './tenant-scope-observability';
 import { getCurrentContext, getCurrentRequestId } from '../utils/request-context';
 import { logger } from '../utils/logger';
+import { sanitizePrivacyObject } from '../utils/privacy-sanitizer';
 
-export type EventOutboxStatus = 'pending' | 'processing' | 'processed' | 'failed' | 'dead_letter';
+export type EventOutboxStatus = 'pending' | 'processing' | 'processed' | 'failed' | 'dead_letter' | 'canceled';
 
 export type EventSourceSkill =
   | 'auth'
@@ -83,6 +84,26 @@ export interface EventHandler {
 
 const MAX_EVENT_ATTEMPTS = 3;
 
+function isDatabaseNotInitializedError(err: unknown): boolean {
+  return err instanceof Error && err.message.includes('Database not initialized');
+}
+
+export function runOutboxTransaction<T>(
+  operation: (emit: typeof emitDomainEvent) => T,
+  fallbackWhenDatabaseUnavailable?: () => T,
+): T {
+  let db: Database.Database;
+  try {
+    db = getDb();
+  } catch (err) {
+    if (fallbackWhenDatabaseUnavailable && isDatabaseNotInitializedError(err)) {
+      return fallbackWhenDatabaseUnavailable();
+    }
+    throw err;
+  }
+  return db.transaction(() => operation(emitDomainEvent))();
+}
+
 export function ensureEventOutboxTables(db: Database.Database = getDb()): void {
   db.exec(`
     CREATE TABLE IF NOT EXISTS event_outbox (
@@ -104,7 +125,7 @@ export function ensureEventOutboxTables(db: Database.Database = getDb()): void {
       causation_id TEXT,
       request_id TEXT,
       status TEXT NOT NULL DEFAULT 'pending'
-        CHECK (status IN ('pending', 'processing', 'processed', 'failed', 'dead_letter')),
+        CHECK (status IN ('pending', 'processing', 'processed', 'failed', 'dead_letter', 'canceled')),
       attempts INTEGER NOT NULL DEFAULT 0,
       not_before TEXT NOT NULL DEFAULT (datetime('now')),
       locked_at TEXT,
@@ -172,53 +193,35 @@ export function emitDomainEvent(input: DomainEventInput, db: Database.Database =
   return mapEvent(db.prepare('SELECT * FROM event_outbox WHERE event_id = ?').get(eventId) as any);
 }
 
-export function emitDomainEventSafely(input: DomainEventInput): EventOutboxRecord | null {
-  try {
-    return emitDomainEvent(input);
-  } catch (err) {
-    logger.warn(
-      {
-        err,
-        tenantId: input.tenantId,
-        userId: input.userId ?? null,
-        eventType: input.eventType,
-        entityType: input.entityType,
-      },
-      'Event outbox emit failed; business write already succeeded',
-    );
-    return null;
-  }
-}
+const STALE_EVENT_LEASE_MINUTES = 15;
 
 export function claimPendingEvents(limit = 25, lockOwner = `worker-${process.pid}`, db: Database.Database = getDb()): EventOutboxRecord[] {
   ensureEventOutboxTables(db);
   const boundedLimit = Math.max(1, Math.min(Math.floor(limit), 100));
-  const tx = db.transaction(() => {
-    const rows = db.prepare(`
-      SELECT sequence FROM event_outbox
-      WHERE status IN ('pending', 'failed')
-        AND not_before <= datetime('now')
-      ORDER BY created_at ASC, sequence ASC
+  const rows = db.prepare(`
+    UPDATE event_outbox
+    SET status = 'processing',
+        attempts = attempts + 1,
+        locked_at = datetime('now'),
+        lock_owner = ?
+    WHERE sequence IN (
+      SELECT sequence
+      FROM event_outbox
+      WHERE (
+          status IN ('pending', 'failed')
+          AND not_before <= datetime('now')
+        )
+        OR (
+          status = 'processing'
+          AND locked_at IS NOT NULL
+          AND locked_at <= datetime('now', ?)
+        )
+      ORDER BY CASE WHEN status = 'processing' THEN 1 ELSE 0 END, created_at ASC, sequence ASC
       LIMIT ?
-    `).all(boundedLimit) as { sequence: number }[];
-    if (rows.length === 0) return [];
-    const sequences = rows.map((row) => row.sequence);
-    const placeholders = sequences.map(() => '?').join(',');
-    db.prepare(`
-      UPDATE event_outbox
-      SET status = 'processing',
-          attempts = attempts + 1,
-          locked_at = datetime('now'),
-          lock_owner = ?
-      WHERE sequence IN (${placeholders})
-    `).run(lockOwner, ...sequences);
-    return db.prepare(`
-      SELECT * FROM event_outbox
-      WHERE sequence IN (${placeholders})
-      ORDER BY created_at ASC, sequence ASC
-    `).all(...sequences) as any[];
-  });
-  return tx().map(mapEvent);
+    )
+    RETURNING *
+  `);
+  return (rows.all(lockOwner, `-${STALE_EVENT_LEASE_MINUTES} minutes`, boundedLimit) as any[]).map(mapEvent);
 }
 
 export async function processPendingEvents(
@@ -226,6 +229,7 @@ export async function processPendingEvents(
   opts: { limit?: number; lockOwner?: string; db?: Database.Database } = {},
 ): Promise<{ processed: number; failed: number; deadLetter: number }> {
   const db = opts.db ?? getDb();
+  const startedAt = Date.now();
   const claimed = claimPendingEvents(opts.limit ?? 25, opts.lockOwner ?? `worker-${process.pid}`, db);
   const handlersByType = new Map(handlers.map((handler) => [handler.eventType, handler]));
   let processed = 0;
@@ -245,6 +249,17 @@ export async function processPendingEvents(
     }
   }
 
+  logger.info(
+    {
+      scope: 'event_outbox',
+      claimed: claimed.length,
+      processed,
+      failed,
+      deadLetter,
+      durationMs: Date.now() - startedAt,
+    },
+    'event_outbox_batch',
+  );
   return { processed, failed, deadLetter };
 }
 
@@ -279,11 +294,29 @@ export function markEventFailed(eventId: string, err: unknown, db: Database.Data
     safeError(err),
     eventId,
   );
+  if (dead) {
+    logger.warn(
+      { scope: 'event_outbox', eventId, attempts, lastError: safeError(err) },
+      'event_dead_lettered',
+    );
+  }
   return dead ? 'dead_letter' : 'failed';
 }
 
-export function replayEventsForType(eventType: string, db: Database.Database = getDb()): number {
+export function replayEventsForType(
+  eventType: string,
+  input: { tenantId: number; userId?: number | null },
+  db: Database.Database = getDb(),
+): number {
+  if (!isValidTenantUserId(input.tenantId)) throw new Error('tenantId required: must be a positive integer');
   ensureEventOutboxTables(db);
+  const params: unknown[] = [eventType, input.tenantId];
+  let userPredicate = '';
+  if (input.userId != null) {
+    if (!isValidTenantUserId(input.userId)) throw new Error('userId required: must be a positive integer when provided');
+    userPredicate = 'AND user_id = ?';
+    params.push(input.userId);
+  }
   const result = db.prepare(`
     UPDATE event_outbox
     SET status = 'pending',
@@ -293,9 +326,71 @@ export function replayEventsForType(eventType: string, db: Database.Database = g
         processed_at = NULL,
         last_error = NULL
     WHERE event_type = ?
+      AND tenant_id = ?
+      ${userPredicate}
       AND status IN ('processed', 'failed', 'dead_letter')
-  `).run(eventType);
+  `).run(...params);
   return result.changes;
+}
+
+export function listDeadLetterEvents(input: {
+  tenantId: number;
+  userId?: number | null;
+  limit?: number;
+}, db: Database.Database = getDb()): EventOutboxRecord[] {
+  if (!isValidTenantUserId(input.tenantId)) throw new Error('tenantId required: must be a positive integer');
+  const limit = Math.max(1, Math.min(Math.floor(input.limit ?? 50), 200));
+  const params: unknown[] = [input.tenantId];
+  let userPredicate = '';
+  if (input.userId != null) {
+    if (!isValidTenantUserId(input.userId)) throw new Error('userId required: must be a positive integer when provided');
+    userPredicate = 'AND user_id = ?';
+    params.push(input.userId);
+  }
+  params.push(limit);
+  ensureEventOutboxTables(db);
+  return (db.prepare(`
+    SELECT * FROM event_outbox
+    WHERE tenant_id = ?
+      ${userPredicate}
+      AND status = 'dead_letter'
+    ORDER BY created_at ASC, sequence ASC
+    LIMIT ?
+  `).all(...params) as any[]).map(mapEvent);
+}
+
+export function replayEvent(eventId: string, tenantId: number, db: Database.Database = getDb()): boolean {
+  if (!isValidTenantUserId(tenantId)) throw new Error('tenantId required: must be a positive integer');
+  ensureEventOutboxTables(db);
+  const result = db.prepare(`
+    UPDATE event_outbox
+    SET status = 'pending',
+        not_before = datetime('now'),
+        locked_at = NULL,
+        lock_owner = NULL,
+        processed_at = NULL,
+        last_error = NULL
+    WHERE event_id = ?
+      AND tenant_id = ?
+      AND status IN ('failed', 'dead_letter', 'canceled')
+  `).run(eventId, tenantId);
+  return result.changes > 0;
+}
+
+export function cancelEvent(eventId: string, tenantId: number, db: Database.Database = getDb()): boolean {
+  if (!isValidTenantUserId(tenantId)) throw new Error('tenantId required: must be a positive integer');
+  ensureEventOutboxTables(db);
+  const result = db.prepare(`
+    UPDATE event_outbox
+    SET status = 'canceled',
+        processed_at = datetime('now'),
+        locked_at = NULL,
+        lock_owner = NULL
+    WHERE event_id = ?
+      AND tenant_id = ?
+      AND status IN ('pending', 'failed', 'processing', 'dead_letter')
+  `).run(eventId, tenantId);
+  return result.changes > 0;
 }
 
 export function listEventsForScope(input: {
@@ -357,20 +452,8 @@ function assertEventScope(input: DomainEventInput): void {
   }
 }
 
-function sanitizeEventPayload(payload: Record<string, unknown>): Record<string, unknown> {
-  const clone: Record<string, unknown> = {};
-  for (const [key, value] of Object.entries(payload)) {
-    if (/token|secret|password|prompt|raw|draft|script|calendarTitle|merchant|amount/i.test(key)) {
-      clone[key] = '[redacted]';
-      continue;
-    }
-    if (typeof value === 'string' && value.length > 500) {
-      clone[key] = `${value.slice(0, 500)}…`;
-      continue;
-    }
-    clone[key] = value;
-  }
-  return clone;
+export function sanitizeEventPayload(payload: Record<string, unknown>): Record<string, unknown> {
+  return sanitizePrivacyObject(payload, { maxDepth: 4, maxStringLength: 500 });
 }
 
 function positiveInt(value: number | undefined, fallback: number): number {

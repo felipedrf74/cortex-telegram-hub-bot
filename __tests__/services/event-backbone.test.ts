@@ -82,6 +82,7 @@ import { consumeResourceBudget } from '../../src/services/resource-budgets';
 import { defaultEventHandlers, defaultJobHandlers, runEventBackboneOnce } from '../../src/services/event-backbone-worker';
 import { persistExchange } from '../../src/api/routes/chat-persistence';
 import { runEventBackboneCleanup } from '../../src/tools/event-backbone-cleanup';
+import { logger } from '../../src/utils/logger';
 
 describe('event backbone foundation', () => {
   beforeEach(() => {
@@ -106,6 +107,17 @@ describe('event backbone foundation', () => {
       payload: {
         summary: { status: 'planned' },
         draft: 'private draft text',
+        nested: {
+          summary: {
+            merchant: 'ACME Finance',
+            amount: 99.5,
+            calendarTitle: 'Drinks with John',
+            body: 'long secret',
+            vendor: 'Vendor X',
+            taxDue: 100,
+            category: 'mental_health',
+          },
+        },
       },
       privacyClassification: 'private_content',
       idempotencyKey: 'content-topic-44',
@@ -125,6 +137,9 @@ describe('event backbone foundation', () => {
     expect(second.eventId).toBe(first.eventId);
     expect(second.sequence).toBe(first.sequence);
     expect(first.payload.draft).toBe('[redacted]');
+    expect(JSON.stringify(first.payload)).not.toContain('ACME Finance');
+    expect(JSON.stringify(first.payload)).not.toContain('Drinks with John');
+    expect(JSON.stringify(first.payload)).not.toContain('mental_health');
   });
 
   it('claims events with a lease and dead-letters after bounded retries', async () => {
@@ -250,6 +265,56 @@ describe('event backbone foundation', () => {
     const invalid = listDeltaChanges({ tenantId: 7, userId: 7, since: 'not-a-cursor', deviceId: 'iphone-a' });
     expect(invalid.resetRequired).toBe(true);
     expect(invalid.changes).toHaveLength(0);
+    const cursorRows = testDb.prepare('SELECT COUNT(*) AS count FROM sync_cursors').get() as { count: number };
+    expect(cursorRows.count).toBe(1);
+  });
+
+  it('does not advance a device cursor when reset is required', () => {
+    emitDomainEvent({
+      tenantId: 7,
+      userId: 7,
+      sourceSkill: 'training',
+      eventType: 'training.session.updated',
+      entityType: 'training_session',
+      entityId: 'reset-a',
+      payload: { summary: { status: 'changed' } },
+      idempotencyKey: 'reset-a',
+    });
+
+    const invalid = listDeltaChanges({ tenantId: 7, userId: 7, since: 'bad', deviceId: 'iphone-reset' });
+    const second = listDeltaChanges({ tenantId: 7, userId: 7, since: 'bad', deviceId: 'iphone-reset' });
+    const cursorRows = testDb.prepare('SELECT COUNT(*) AS count FROM sync_cursors WHERE device_id = ?').get('iphone-reset') as { count: number };
+
+    expect(invalid.resetRequired).toBe(true);
+    expect(second.resetRequired).toBe(true);
+    expect(cursorRows.count).toBe(0);
+  });
+
+  it('keeps same-tenant user-scoped deltas isolated while allowing tenant-scoped events', () => {
+    emitDomainEvent({
+      tenantId: 7,
+      userId: 71,
+      sourceSkill: 'training',
+      eventType: 'training.session.updated',
+      entityType: 'training_session',
+      entityId: 'user-a',
+      payload: { summary: { text: 'User A only' } },
+      idempotencyKey: 'user-a-only',
+    });
+    const tenantEvent = emitDomainEvent({
+      tenantId: 7,
+      userId: null,
+      sourceSkill: 'system',
+      eventType: 'notification.item.updated',
+      entityType: 'tenant_notice',
+      entityId: 'tenant',
+      payload: { summary: { text: 'Tenant notice' } },
+      idempotencyKey: 'tenant-notice',
+    });
+
+    const page = listDeltaChanges({ tenantId: 7, userId: 72, since: '0', deviceId: 'iphone-b' });
+    expect(page.changes.map((change) => change.eventId)).toEqual([tenantEvent.eventId]);
+    expect(JSON.stringify(page.changes)).not.toContain('User A only');
   });
 
   it('chains event processing into read-model jobs', async () => {
@@ -269,6 +334,9 @@ describe('event backbone foundation', () => {
     expect(result.events.processed).toBe(1);
     expect(result.jobs.completed).toBe(1);
     expect(getAppSummary({ tenantId: 7, userId: 7, summaryType: 'notifications' }).summaryType).toBe('notifications');
+    expect(logger.info).toHaveBeenCalledWith(expect.objectContaining({ scope: 'event_outbox' }), 'event_outbox_batch');
+    expect(logger.info).toHaveBeenCalledWith(expect.objectContaining({ scope: 'background_jobs' }), 'background_job_batch');
+    expect(logger.info).toHaveBeenCalledWith(expect.objectContaining({ scope: 'event_backbone_worker' }), 'event_backbone_worker_tick');
   });
 
   it('emits privacy-bounded chat events from chat persistence', () => {
@@ -306,6 +374,15 @@ describe('event backbone foundation', () => {
     expect(consumeResourceBudget({ tenantId: 7, userId: 7, budgetKey: 'sync_changes', limit: 2, windowSeconds: 60 }).allowed).toBe(true);
     expect(consumeResourceBudget({ tenantId: 7, userId: 7, budgetKey: 'sync_changes', limit: 2, windowSeconds: 60 }).allowed).toBe(false);
     expect(consumeResourceBudget({ tenantId: 8, userId: 8, budgetKey: 'sync_changes', limit: 2, windowSeconds: 60 }).allowed).toBe(true);
+  });
+
+  it('keeps resource budget counters bounded under parallel callers', async () => {
+    const attempts = await Promise.all(Array.from({ length: 100 }, () => Promise.resolve()
+      .then(() => consumeResourceBudget({ tenantId: 7, userId: 7, budgetKey: 'parallel_budget', limit: 10, windowSeconds: 60 }))));
+    const row = testDb.prepare("SELECT count FROM resource_budget_counters WHERE tenant_id = 7 AND user_id = 7 AND budget_key = 'parallel_budget'").get() as { count: number };
+    expect(row.count).toBeLessThanOrEqual(10);
+    expect(attempts.filter((attempt) => attempt.allowed)).toHaveLength(10);
+    expect(logger.warn).toHaveBeenCalledWith(expect.objectContaining({ budgetKey: 'parallel_budget' }), 'resource_budget_exceeded');
   });
 
   it('cleans only eligible processed backbone rows in apply mode', () => {
@@ -355,7 +432,7 @@ describe('event backbone foundation', () => {
     }
   });
 
-  it('cleans stale sync cursors using last_seen_at rather than a nonexistent updated_at column', () => {
+  it('does not delete active sync cursors before the offline-device retention window', () => {
     const dir = mkdtempSync(join(tmpdir(), 'event-backbone-sync-cleanup-'));
     const dbPath = join(dir, 'cleanup.db');
     const db = new Database(dbPath);
@@ -374,8 +451,49 @@ describe('event backbone foundation', () => {
     const verifyDb = new Database(dbPath);
     try {
       const remaining = verifyDb.prepare('SELECT COUNT(*) AS count FROM sync_cursors').get() as { count: number };
-      expect(applied.targets.find((target) => target.table === 'sync_cursors')?.deleted).toBe(1);
-      expect(remaining.count).toBe(0);
+      expect(applied.targets.find((target) => target.table === 'sync_cursors')?.deleted).toBe(0);
+      expect(remaining.count).toBe(1);
+    } finally {
+      verifyDb.close();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('preserves processed events at or after the oldest active sync cursor', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'event-backbone-retention-floor-'));
+    const dbPath = join(dir, 'cleanup.db');
+    const db = new Database(dbPath);
+    try {
+      ensureEventOutboxTables(db);
+      ensureDeltaSyncTables(db);
+      for (let i = 1; i <= 12; i += 1) {
+        const event = emitDomainEvent({
+          tenantId: 7,
+          userId: 7,
+          sourceSkill: 'training',
+          eventType: 'training.session.updated',
+          entityType: 'training_session',
+          entityId: `e-${i}`,
+          payload: { summary: { status: 'processed' } },
+          idempotencyKey: `retention-${i}`,
+        }, db);
+        db.prepare("UPDATE event_outbox SET status = 'processed', processed_at = datetime('now', '-45 days') WHERE event_id = ?").run(event.eventId);
+      }
+      db.prepare(`
+        INSERT INTO sync_cursors (
+          cursor_id, tenant_id, user_id, device_id, cursor_value, last_seen_at
+        ) VALUES ('cursor-active', 7, 7, 'iphone-active', 10, datetime('now'))
+      `).run();
+    } finally {
+      db.close();
+    }
+
+    const applied = runEventBackboneCleanup({ dbPath, retentionDays: 1, protectNewest: 0, apply: true });
+    const verifyDb = new Database(dbPath);
+    try {
+      const minRemaining = verifyDb.prepare('SELECT MIN(sequence) AS min FROM event_outbox').get() as { min: number };
+      expect(applied.targets.find((target) => target.table === 'event_outbox')?.deleted).toBe(9);
+      expect(minRemaining.min).toBe(10);
     } finally {
       verifyDb.close();
       rmSync(dir, { recursive: true, force: true });

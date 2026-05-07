@@ -7,10 +7,11 @@
  * modest: enough to cap expensive loops without adding a new dependency.
  */
 
-import { createHash, randomUUID } from 'node:crypto';
+import { createHash } from 'node:crypto';
 import type Database from 'better-sqlite3';
 import { getDb } from './database';
 import { isValidTenantUserId, recordTenantScopeAnomaly } from './tenant-scope-observability';
+import { logger } from '../utils/logger';
 
 export interface BudgetCheckInput {
   tenantId: number;
@@ -49,9 +50,20 @@ export function ensureResourceBudgetTables(db: Database.Database = getDb()): voi
   `);
 }
 
-export function consumeResourceBudget(input: BudgetCheckInput, db: Database.Database = getDb()): BudgetCheckResult {
+export function consumeResourceBudget(input: BudgetCheckInput, db?: Database.Database): BudgetCheckResult {
   assertBudgetScope(input);
-  ensureResourceBudgetTables(db);
+  let database = db;
+  if (!database) {
+    try {
+      database = getDb();
+    } catch (err) {
+      if (err instanceof Error && err.message.includes('Database not initialized')) {
+        return failOpenWhenDatabaseUnavailable(input);
+      }
+      throw err;
+    }
+  }
+  ensureResourceBudgetTables(database);
   const increment = Math.max(1, Math.floor(input.increment ?? 1));
   const limit = Math.max(1, Math.floor(input.limit));
   const windowSeconds = Math.max(1, Math.floor(input.windowSeconds));
@@ -61,37 +73,41 @@ export function consumeResourceBudget(input: BudgetCheckInput, db: Database.Data
   const counterId = budgetCounterId(input.tenantId, input.userId ?? null, input.budgetKey, windowStart);
   const userScope = input.userId ?? null;
 
-  const tx = db.transaction(() => {
-    db.prepare(`
-      INSERT OR IGNORE INTO resource_budget_counters (
-        counter_id, tenant_id, user_id, budget_key, window_start, window_seconds, count, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, 0, datetime('now'))
-    `).run(counterId, input.tenantId, userScope, input.budgetKey, windowStart, windowSeconds);
+  database.prepare(`
+    INSERT OR IGNORE INTO resource_budget_counters (
+      counter_id, tenant_id, user_id, budget_key, window_start, window_seconds, count, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, 0, datetime('now'))
+  `).run(counterId, input.tenantId, userScope, input.budgetKey, windowStart, windowSeconds);
 
-    const row = db.prepare(`
-      SELECT count FROM resource_budget_counters
-      WHERE tenant_id = ?
-        AND COALESCE(user_id, 0) = COALESCE(?, 0)
-        AND budget_key = ?
-        AND window_start = ?
-    `).get(input.tenantId, userScope, input.budgetKey, windowStart) as { count: number };
-    const nextCount = Number(row.count ?? 0) + increment;
-    if (nextCount > limit) {
-      return { count: Number(row.count ?? 0), allowed: false };
-    }
-    db.prepare(`
-      UPDATE resource_budget_counters
-      SET count = count + ?,
-          updated_at = datetime('now')
-      WHERE tenant_id = ?
-        AND COALESCE(user_id, 0) = COALESCE(?, 0)
-        AND budget_key = ?
-        AND window_start = ?
-    `).run(increment, input.tenantId, userScope, input.budgetKey, windowStart);
-    return { count: nextCount, allowed: true };
-  });
+  const updated = database.prepare(`
+    UPDATE resource_budget_counters
+    SET count = count + ?,
+        updated_at = datetime('now')
+    WHERE counter_id = ?
+      AND count + ? <= ?
+    RETURNING count
+  `).get(increment, counterId, increment, limit) as { count: number } | undefined;
 
-  const result = tx();
+  const result = updated
+    ? { count: Number(updated.count), allowed: true }
+    : {
+        allowed: false,
+        count: Number((database.prepare('SELECT count FROM resource_budget_counters WHERE counter_id = ?')
+          .get(counterId) as { count: number } | undefined)?.count ?? 0),
+      };
+  if (!result.allowed) {
+    logger.warn(
+      {
+        tenantId: input.tenantId,
+        userId: userScope,
+        budgetKey: input.budgetKey,
+        count: result.count,
+        limit,
+        resetAt,
+      },
+      'resource_budget_exceeded',
+    );
+  }
   return {
     allowed: result.allowed,
     budgetKey: input.budgetKey,
@@ -99,6 +115,18 @@ export function consumeResourceBudget(input: BudgetCheckInput, db: Database.Data
     limit,
     resetAt,
     degradedReason: result.allowed ? undefined : 'resource_budget_exceeded',
+  };
+}
+
+function failOpenWhenDatabaseUnavailable(input: BudgetCheckInput): BudgetCheckResult {
+  const windowSeconds = Math.max(1, Math.floor(input.windowSeconds));
+  const windowStartEpoch = Math.floor(Date.now() / (windowSeconds * 1000)) * windowSeconds * 1000;
+  return {
+    allowed: true,
+    budgetKey: input.budgetKey,
+    count: 0,
+    limit: Math.max(1, Math.floor(input.limit)),
+    resetAt: new Date(windowStartEpoch + windowSeconds * 1000).toISOString(),
   };
 }
 
@@ -139,6 +167,6 @@ function budgetCounterId(tenantId: number, userId: number | null, budgetKey: str
   const hash = createHash('sha256')
     .update(`${tenantId}:${userId ?? 0}:${budgetKey}:${windowStart}`)
     .digest('hex')
-    .slice(0, 24);
-  return `budget_${hash}_${randomUUID().slice(0, 8)}`;
+    .slice(0, 32);
+  return `budget_${hash}`;
 }

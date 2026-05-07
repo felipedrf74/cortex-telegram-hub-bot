@@ -44,7 +44,9 @@ import { emitDomainEvent } from '../../src/services/event-outbox';
 interface MockRes {
   statusCode: number;
   body: any;
+  headers: Record<string, string>;
   status(code: number): MockRes;
+  setHeader(name: string, value: string): MockRes;
   json(body: any): MockRes;
 }
 
@@ -52,7 +54,9 @@ function mockRes(onSend: () => void): MockRes {
   const res: MockRes = {
     statusCode: 200,
     body: null,
+    headers: {},
     status(code: number) { res.statusCode = code; return res; },
+    setHeader(name: string, value: string) { res.headers[name.toLowerCase()] = value; return res; },
     json(body: any) { res.body = body; onSend(); return res; },
   };
   return res;
@@ -137,5 +141,45 @@ describe('event backbone API routes', () => {
 
     const invalid = await dispatch(syncRoutes(), req('/changes', 7, { since: 'abc' }));
     expect(invalid.body.data.resetRequired).toBe(true);
+
+    let limited: MockRes | null = null;
+    for (let i = 0; i < 121; i += 1) {
+      const response = await dispatch(syncRoutes(), req('/changes', 7, { since: '0' }));
+      if (response.statusCode === 429) {
+        limited = response;
+        break;
+      }
+    }
+    expect(limited).not.toBeNull();
+    expect(limited!.statusCode).toBe(429);
+    expect(limited!.headers['retry-after']).toBeDefined();
+    expect(limited!.body.error.code).toBe('RATE_LIMITED');
+    expect(limited!.body.error.details.resetAt).toBeDefined();
+    expect(limited!.body.error.details.budgetKey).toBe('sync_changes');
+  });
+
+  it('sync route ignores forged query device ids and requires authenticated device scope', async () => {
+    emitDomainEvent({
+      tenantId: 7,
+      userId: 7,
+      sourceSkill: 'training',
+      eventType: 'training.session.updated',
+      entityType: 'training_session',
+      entityId: 'device-a',
+      payload: { summary: { text: 'Training changed' } },
+      privacyClassification: 'health',
+      idempotencyKey: 'training-device-a',
+    });
+
+    const ok = await dispatch(syncRoutes(), req('/changes', 7, { since: '0', deviceId: 'foreign-device' }));
+    expect(ok.statusCode).toBe(200);
+    const cursors = testDb.prepare('SELECT device_id FROM sync_cursors').all() as Array<{ device_id: string }>;
+    expect(cursors.map((row) => row.device_id)).toEqual(['iphone-test']);
+
+    const missingDevice = req('/changes', 7, { since: '0' }) as any;
+    missingDevice.deviceId = undefined;
+    const rejected = await dispatch(syncRoutes(), missingDevice);
+    expect(rejected.statusCode).toBe(400);
+    expect(rejected.body.error.code).toBe('MISSING_DEVICE_ID');
   });
 });

@@ -13,6 +13,7 @@ import type Database from 'better-sqlite3';
 import { getDb } from './database';
 import { ensureEventOutboxTables, getEventSequenceBounds, listEventsForScope } from './event-outbox';
 import { isValidTenantUserId, recordTenantScopeAnomaly } from './tenant-scope-observability';
+import { sanitizePrivacyObject } from '../utils/privacy-sanitizer';
 
 export interface DeltaSyncChange {
   changeId: string;
@@ -72,7 +73,6 @@ export function listDeltaChanges(input: {
   const limit = Math.max(1, Math.min(Math.floor(input.limit ?? 100), 200));
 
   if (!parsed.valid) {
-    upsertCursor(db, input.tenantId, input.userId, deviceId, bounds.max);
     return {
       cursor: String(bounds.max),
       serverTime: new Date().toISOString(),
@@ -83,8 +83,7 @@ export function listDeltaChanges(input: {
     };
   }
 
-  if (bounds.min > 0 && parsed.value > 0 && parsed.value < bounds.min - 1) {
-    upsertCursor(db, input.tenantId, input.userId, deviceId, bounds.max);
+  if (bounds.min > 0 && parsed.value > 0 && parsed.value < bounds.min) {
     return {
       cursor: String(bounds.max),
       serverTime: new Date().toISOString(),
@@ -149,7 +148,9 @@ function parseCursor(value: string | number | null | undefined): { valid: true; 
 }
 
 function normalizeDeviceId(value: string | null | undefined): string {
-  if (typeof value !== 'string' || value.trim().length === 0) return 'default-device';
+  if (typeof value !== 'string' || value.trim().length === 0) {
+    throw new Error('deviceId required for delta sync cursor');
+  }
   return value.trim().replace(/[^a-zA-Z0-9._:-]/g, '_').slice(0, 128);
 }
 
@@ -165,7 +166,7 @@ function actionForEvent(eventType: string, payload: Record<string, unknown>): De
 function appSafeSummary(payload: Record<string, unknown>, eventType: string): Record<string, unknown> {
   const summary = payload.summary;
   if (summary && typeof summary === 'object' && !Array.isArray(summary)) {
-    return summary as Record<string, unknown>;
+    return sanitizePrivacyObject(summary as Record<string, unknown>, { maxDepth: 4, maxStringLength: 160 });
   }
   if (typeof summary === 'string') {
     return { text: summary.slice(0, 160) };

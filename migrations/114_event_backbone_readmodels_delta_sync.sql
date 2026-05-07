@@ -26,7 +26,7 @@ CREATE TABLE IF NOT EXISTS event_outbox (
   causation_id TEXT,
   request_id TEXT,
   status TEXT NOT NULL DEFAULT 'pending'
-    CHECK (status IN ('pending', 'processing', 'processed', 'failed', 'dead_letter')),
+    CHECK (status IN ('pending', 'processing', 'processed', 'failed', 'dead_letter', 'canceled')),
   attempts INTEGER NOT NULL DEFAULT 0,
   not_before TEXT NOT NULL DEFAULT (datetime('now')),
   locked_at TEXT,
