@@ -10,6 +10,80 @@ that pass, not this doc's canonical-status frontmatter.
 Generated: 2026-04-29 03:30 WEST  
 Branch: `feature/chat-tenant-safe-context-orchestration`
 
+## 2026-05-08 Chat Reasoning Engine v1 Addendum
+
+Branch: `feature/chat-reasoning-engine-v1`
+
+Status: local backend implementation ready for hostile QA. No push, no deploy,
+no production data, and no production calendars were used.
+
+Prompt gaps found before implementation:
+
+- The visible Prozis bug was not a prompt-only problem. The unsafe path was the
+  natural-language chat route falling through to model/tool execution without a
+  typed ActionFrame for task/subtask creation.
+- Native Nexus tasks did not support checklist rows, so a local-user Secretary
+  task/subtask flow could not be truthfully verified without Microsoft To Do.
+- The changed-area classifier did not know that Chat ActionFrame work should
+  route through behavior tests instead of changed-only fallback.
+
+Design choices:
+
+- Added a Nexus-native Chat Reasoning Engine v1 service that builds scoped
+  context, detects reasoning mode, parses deterministic Secretary ActionFrames,
+  validates policy, executes deterministic task services, and verifies read-back
+  state before claiming success.
+- Added durable `chat_action_plans` and `chat_correction_events` tables for the
+  repair/clarification foundation, plus native checklist storage for Nexus
+  tasks.
+- Intercepted structured Secretary task/subtask messages in
+  `/api/v1/chat/message` before cost-cap AI execution, while preserving token-zero
+  identity/read fast paths.
+- Added model-routing config categories for future `chat_action_label`,
+  `chat_action_plan`, `chat_action_repair`, and `chat_action_clarify` work
+  without hardcoding any provider.
+
+Validated behavior:
+
+- Exact acceptance case creates one task `Prozis` with subtasks `creatine`,
+  `K2`, and `D3`; `for now that's it` is treated as discourse, not a due date.
+- Quoted titles containing words like `subtasks` remain one title, not an
+  instruction.
+- English, Portuguese, and mixed-language task/subtask commands parse into
+  structured frames.
+- Bulk task creation is distinguished from one task with subtasks and is not
+  falsely executed in v1.
+- Model-provided identity fields are rejected before execution.
+- iOS retry with the same client message id replays the completed chat response
+  and does not duplicate task or checklist rows.
+
+Validation:
+
+- `npm run docs:audit`: passed after this addendum; 443 markdown files audited,
+  467 existing issues flagged.
+- `npx tsc --noEmit`: passed.
+- Focused Chat Reasoning/route/native task provider suite passed: 3 files / 64
+  tests.
+- Native task route regression passed: 25/25 tests.
+- Provider routing regression passed: 5 files / 61 tests, including the new
+  Chat Action route-category defaults.
+- P0 Chat identity isolation passed: 23/23 tests.
+- `node scripts/vi-mock-completeness-lint.mjs --strict`: passed at 827/827.
+- `bash scripts/cannot-skip-gate-dashboard.sh --json --no-evidence`: passed
+  23/23.
+- `npm run verify`: passed, 483 files / 7,093 tests.
+
+Remaining caveats:
+
+- v1 intentionally executes only the Secretary task/subtask vertical slice.
+  Cross-skill manifests are present as bounded future contracts, but
+  Training/Content/Cooking/Finance execution remains follow-up work.
+- iOS structured result-card rendering was not touched; the backend now returns
+  structured metadata plus text fallback. iOS can consume this in a separate UI
+  pass if Felipe wants richer Chat cards.
+- Full undo is not enabled yet. Action plans and created entity refs now provide
+  the foundation for a future safe undo/repair flow.
+
 ## 2026-05-07 Event Backbone Hostile v2 Codex Validation Addendum
 
 Branch: `feature/event-backbone-readmodels-delta-sync`

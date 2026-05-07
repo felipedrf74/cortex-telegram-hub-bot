@@ -160,6 +160,7 @@ HAS_RATE_LIMIT=false          # rate-limit middleware + per-account lockout
 HAS_AUDIT=false               # audit trail and audit-event contracts
 HAS_DEPLOY_CONFIG=false       # PM2/deploy config and environment shape
 HAS_EVENT_BACKBONE=false      # event_outbox/jobs/read-models/delta-sync/budgets
+HAS_CHAT_REASONING=false      # Chat ActionFrame parsing/execution/eval harness
 HAS_IOS_NAVIGATION=false      # tab/navigation/view-model responsiveness
 HAS_IOS_DTO=false             # app-facing DTO/decoder contract changes
 HAS_IOS_NOTIFICATION=false    # APNs/local notifications/Decision Center UI
@@ -311,6 +312,12 @@ match '(^|/)ecosystem(\.staging)?\.config\.js$|^src/config\.ts$|^__tests__/confi
 # and tenant/user isolation checks.
 match '^src/services/event-outbox|^src/services/background-job-queue|^src/services/product-decision-log|^src/services/app-summary-read-models|^src/services/delta-sync|^src/services/resource-budgets|^src/services/event-backbone-worker|^src/api/routes/summaries|^src/api/routes/sync|^migrations/[0-9]+_event_backbone|^__tests__/services/event-backbone|^__tests__/api/event-backbone' && HAS_EVENT_BACKBONE=true
 
+# Chat Reasoning Engine — deterministic ActionFrame parsing, Secretary
+# task/subtask execution, policy validation, and route-level no-model
+# interception. These changes must route through behavior tests, not
+# shape-only prompt checks.
+match '^src/services/chat-reasoning|^src/api/routes/chat-message-routes|^__tests__/services/chat-reasoning|^__tests__/api/chat-routes' && { HAS_CHAT_REASONING=true; HAS_SECRETARY=true; }
+
 # Detect iOS changes by file path. iOS repo is at ../Nexus Hub IOS/Nexus Hub
 # but in workspace symlink it's `ios/`. Since this script runs from engine,
 # ios files won't appear in this engine diff — included for forward-compat
@@ -446,6 +453,7 @@ if $HAS_NON_DOC; then
     $HAS_AUDIT && VITEST_GLOBS+=("__tests__/services/audit-trail.test.ts" "__tests__/api/authenticated-support-routes-scope.test.ts" "__tests__/portal/portal-admin-audit.test.ts" "__tests__/portal/portal-admin-data-routes.test.ts" "__tests__/portal/portal-admin-data-isolation.integration.test.ts")
     $HAS_DEPLOY_CONFIG && VITEST_GLOBS+=("__tests__/services/config-*.test.ts" "__tests__/portal/health-endpoint*.test.ts" "__tests__/portal/health-endpoints.test.ts" "__tests__/scripts/*.test.ts" "__tests__/security/**/*.test.ts")
     $HAS_EVENT_BACKBONE && VITEST_GLOBS+=("__tests__/services/event-backbone.test.ts" "__tests__/api/event-backbone-routes.test.ts" "__tests__/security/**/*.test.ts")
+    $HAS_CHAT_REASONING && VITEST_GLOBS+=("__tests__/services/chat-reasoning-engine.test.ts" "__tests__/api/chat-routes.test.ts" "__tests__/security/p0-chat-identity-isolation.test.ts")
     if [ "${#VITEST_GLOBS[@]}" -eq 0 ]; then
       # Backend src/test changed but no domain mapped — fall back to changed-files-only
       VITEST_MODE="changed-only"
@@ -558,6 +566,7 @@ emit_json() {
   export CLAS_PACKAGE_JSON="$HAS_PACKAGE_JSON"
   export CLAS_CURRENT_VERDICT_DOC="$HAS_CURRENT_VERDICT_DOC"
   export CLAS_ATTACHMENT="$HAS_ATTACHMENT"
+  export CLAS_CHAT_REASONING="$HAS_CHAT_REASONING"
   export CLAS_MODEL_ROUTING="$HAS_MODEL_ROUTING"
   export CLAS_PERSONALIZATION_SCOPE="$HAS_PERSONALIZATION_SCOPE"
   export CLAS_CONTENT_AGENT="$HAS_CONTENT_AGENT"
@@ -633,6 +642,7 @@ const payload = {
     packageJson: flag('CLAS_PACKAGE_JSON'),
     currentVerdictDoc: flag('CLAS_CURRENT_VERDICT_DOC'),
     attachment: flag('CLAS_ATTACHMENT'),
+    chatReasoning: flag('CLAS_CHAT_REASONING'),
     modelRouting: flag('CLAS_MODEL_ROUTING'),
     personalizationScope: flag('CLAS_PERSONALIZATION_SCOPE'),
     contentAgent: flag('CLAS_CONTENT_AGENT'),

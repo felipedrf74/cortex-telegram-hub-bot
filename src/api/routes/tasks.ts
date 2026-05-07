@@ -532,29 +532,39 @@ export function taskRoutes(): Router {
         return;
       }
 
-      if (resolveTaskProvider((req as any).userId) !== 'ms_todo') {
+      const todo = getTodo(req);
+      const listName = await resolveTaskListName(todo, listId, (req as any).userId);
+
+      let item;
+      if (typeof todo.updateChecklistItem === 'function') {
+        const updated = await todo.updateChecklistItem(listId, taskId, itemId, isChecked);
+        if (!updated?.success || !updated.data) {
+          sendInternalError(res, 'Failed to toggle checklist item');
+          return;
+        }
+        item = updated.data;
+      } else if (resolveTaskProvider((req as any).userId) === 'ms_todo') {
+        // MS Graph: PATCH /me/todo/lists/{listId}/tasks/{taskId}/checklistItems/{itemId}
+        const { getGraphClient } = require('../../services/microsoft-auth');
+        const client = getGraphClient(req);
+        const result = await client
+          .api(`/me/todo/lists/${listId}/tasks/${taskId}/checklistItems/${itemId}`)
+          .patch({ isChecked });
+        item = {
+          id: result?.id || itemId,
+          displayName: result?.displayName || '',
+          isChecked: result?.isChecked ?? isChecked,
+        };
+      } else {
         sendError(res, 'UNSUPPORTED', 'Checklist items are not supported by the active task provider', 400);
         return;
       }
 
-      const listName = await resolveTaskListName(getTodo(req), listId, (req as any).userId);
-
-      // MS Graph: PATCH /me/todo/lists/{listId}/tasks/{taskId}/checklistItems/{itemId}
-      const { getGraphClient } = require('../../services/microsoft-auth');
-      const client = getGraphClient(req);
-      const result = await client
-        .api(`/me/todo/lists/${listId}/tasks/${taskId}/checklistItems/${itemId}`)
-        .patch({ isChecked });
-
       invalidateTaskRouteCaches(listId, (req as any).userId);
-      const task = await resolveTaskDetail(getTodo(req), listId, taskId, listName, { id: taskId, listId, listName });
+      const task = await resolveTaskDetail(todo, listId, taskId, listName, { id: taskId, listId, listName });
 
       sendSuccess(res, {
-        item: {
-          id: result?.id || itemId,
-          displayName: result?.displayName || '',
-          isChecked: result?.isChecked ?? isChecked,
-        },
+        item,
         task: normalizeTaskDto(task, resolveTaskProvider((req as any).userId), { listId, listName }),
       });
     } catch (err: any) {

@@ -56,6 +56,7 @@ import {
 } from './chat-message-request';
 import { sendChatTierRequiredIfNeeded } from './chat-message-tier-gate';
 import { sendRetryableChatFailureResponseIfNeeded } from './chat-message-degraded-response';
+import { tryHandleChatReasoningAction } from '../../services/chat-reasoning-engine';
 
 type ChatRouteScopeGuard = (
   res: Response,
@@ -312,6 +313,44 @@ export function registerChatMessageRoutes(
         syncConversationStateForShortcut(userId, conversationDomain, normalizedText, fastResponse.text, tenantId);
         logger.info({ cmdLength: normalizedText.length, platform: 'ios', mode: 'fast-path', tenantId, userId }, 'iOS chat fast-path hit');
         res.json(fastResponse);
+        return;
+      }
+
+      // ── Chat Reasoning Engine v1 ─────────────────────────────────
+      // Secretary mutation intents that need structure (for example one
+      // task with subtasks) are parsed into an ActionFrame and executed
+      // through deterministic task services before the model/tool loop.
+      // The model may label future actions, but it never executes tools
+      // directly or chooses user/tenant scope.
+      const reasoningAction = await tryHandleChatReasoningAction({
+        text: normalizedText,
+        userId,
+        tenantId,
+        sourceMessageId: userMessageId,
+        clientRequestId: scopedClientMessageId,
+        correlationId: chatRequestId,
+        locale: getUserLanguageById(userId) || undefined,
+      });
+      if (reasoningAction) {
+        const response = reasoningAction.response;
+        rememberChatActiveDomain(userId, response.domain, Date.now(), tenantId);
+        persistExchange(userId, userMessageId, normalizedText, response.id, response, tenantId, {
+          clientMessageId: scopedClientMessageId,
+          requestId: chatRequestId,
+        });
+        syncConversationStateForShortcut(userId, response.domain, normalizedText, response.text, tenantId);
+        logger.info(
+          {
+            chatRequestId,
+            tenantId,
+            userId,
+            mode: 'chat-reasoning-engine',
+            status: reasoningAction.status,
+            metadataType: response.metadata?.type,
+          },
+          'iOS chat reasoning engine handled structured action',
+        );
+        res.json(response);
         return;
       }
 

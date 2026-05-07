@@ -146,6 +146,7 @@ vi.mock('../../src/services/database', () => ({
   initDatabase: vi.fn(),
   closeDatabase: vi.fn(),
   findUnexpectedMigrationPrefixCollisions: vi.fn(() => []),
+  assertNoUnexpectedMigrationPrefixCollisions: vi.fn(),
 }));
 
 vi.mock('../../src/services/chat-history-store', async () => {
@@ -713,6 +714,84 @@ describe('Chat API routes', () => {
       routeMethod: 'classifier',
       confidence: 0.93,
     });
+  });
+
+  it('routes task-with-subtasks messages through Chat Reasoning Engine before the AI/tool loop', async () => {
+    const messageRes = await dispatch('POST', '/message', 7001, {
+      text: "Create a task called Prozis where it has sub tasks called creatine K2 D3 for now that's it",
+      clientMessageId: 'prozis-subtasks-1',
+    });
+
+    expect(messageRes.statusCode, JSON.stringify(messageRes.body)).toBe(200);
+    expect(messageRes.body).toMatchObject({
+      domain: 'secretary',
+      routeMethod: 'chat-reasoning-engine',
+      metadata: {
+        type: 'task_created',
+        title: 'Prozis',
+        verificationStatus: 'verified',
+        subtasks: [
+          { title: 'creatine' },
+          { title: 'K2' },
+          { title: 'D3' },
+        ],
+      },
+    });
+    expect(messageRes.body.text).toContain('Created task “Prozis” with 3 subtasks');
+    expect(mockRouteMessage).not.toHaveBeenCalled();
+    expect(mockHandleSecretary).not.toHaveBeenCalled();
+
+    const task = testDb.prepare('SELECT id, title, user_id FROM native_tasks WHERE user_id = ? AND title = ?')
+      .get(7001, 'Prozis') as any;
+    expect(task).toMatchObject({ title: 'Prozis', user_id: 7001 });
+    const subtasks = testDb.prepare(`
+      SELECT display_name
+      FROM native_task_checklist_items
+      WHERE user_id = ? AND task_id = ?
+      ORDER BY position ASC, id ASC
+    `).all(7001, task.id).map((row: any) => row.display_name);
+    expect(subtasks).toEqual(['creatine', 'K2', 'D3']);
+    const plan = testDb.prepare(`
+      SELECT status, frame_json, created_entity_refs_json
+      FROM chat_action_plans
+      WHERE user_id = ? AND tenant_id = ? AND source_message_id = ?
+    `).get(7001, 7001, 'msg-user-prozis-subtasks-1') as any;
+    expect(plan).toMatchObject({ status: 'completed' });
+    expect(JSON.parse(plan.frame_json)).toMatchObject({
+      primaryIntent: 'create_task_with_subtasks',
+      skill: 'secretary',
+    });
+    expect(JSON.parse(plan.created_entity_refs_json)).toEqual(expect.arrayContaining([
+      expect.objectContaining({ entityType: 'task', title: 'Prozis' }),
+      expect.objectContaining({ entityType: 'subtask', title: 'creatine' }),
+      expect.objectContaining({ entityType: 'subtask', title: 'K2' }),
+      expect.objectContaining({ entityType: 'subtask', title: 'D3' }),
+    ]));
+  });
+
+  it('does not duplicate task/subtask execution when iOS retries the same client message id', async () => {
+    const body = {
+      text: 'Create task Prozis with subtasks creatine K2 D3',
+      clientMessageId: 'prozis-subtasks-retry',
+    };
+
+    const first = await dispatch('POST', '/message', 7001, body);
+    const second = await dispatch('POST', '/message', 7001, body);
+
+    expect(first.statusCode).toBe(200);
+    expect(second.statusCode).toBe(200);
+    expect(second.body.metadata).toMatchObject({ idempotentReplay: true });
+
+    const taskCount = (testDb.prepare('SELECT COUNT(*) AS count FROM native_tasks WHERE user_id = ? AND title = ?')
+      .get(7001, 'Prozis') as any).count;
+    const checklistCount = (testDb.prepare(`
+      SELECT COUNT(*) AS count
+      FROM native_task_checklist_items ci
+      JOIN native_tasks t ON t.id = ci.task_id
+      WHERE t.user_id = ? AND t.title = ?
+    `).get(7001, 'Prozis') as any).count;
+    expect(taskCount).toBe(1);
+    expect(checklistCount).toBe(3);
   });
 
   it('rejects chat access when the authenticated tenant scope does not match the canonical user tenant', async () => {

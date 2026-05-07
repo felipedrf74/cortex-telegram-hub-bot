@@ -180,6 +180,22 @@ export const config = {
       primary: process.env.AI_TOOL_USE_PRIMARY || 'gemini',
       fallback: process.env.AI_TOOL_USE_FALLBACK || 'openai',
     },
+    chatActionLabel: {
+      primary: process.env.AI_CHAT_ACTION_LABEL_PRIMARY || process.env.AI_CHAT_PRIMARY || 'gemini',
+      fallback: process.env.AI_CHAT_ACTION_LABEL_FALLBACK || process.env.AI_CHAT_FALLBACK || 'openai',
+    },
+    chatActionPlan: {
+      primary: process.env.AI_CHAT_ACTION_PLAN_PRIMARY || process.env.AI_CHAT_PRIMARY || 'gemini',
+      fallback: process.env.AI_CHAT_ACTION_PLAN_FALLBACK || process.env.AI_CHAT_FALLBACK || 'openai',
+    },
+    chatActionRepair: {
+      primary: process.env.AI_CHAT_ACTION_REPAIR_PRIMARY || process.env.AI_CHAT_PRIMARY || 'gemini',
+      fallback: process.env.AI_CHAT_ACTION_REPAIR_FALLBACK || process.env.AI_CHAT_FALLBACK || 'openai',
+    },
+    chatActionClarify: {
+      primary: process.env.AI_CHAT_ACTION_CLARIFY_PRIMARY || process.env.AI_CHAT_PRIMARY || 'gemini',
+      fallback: process.env.AI_CHAT_ACTION_CLARIFY_FALLBACK || process.env.AI_CHAT_FALLBACK || 'openai',
+    },
     circuitBreaker: {
       failureThreshold: optionalInt('AI_CB_FAILURE_THRESHOLD', 3, { min: 1 }),
       cooldownMs: optionalInt('AI_CB_COOLDOWN_MS', 60000, { min: 0 }),

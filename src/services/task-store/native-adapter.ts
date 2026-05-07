@@ -19,6 +19,7 @@ import { getDb } from '../database';
 import { logger } from '../../utils/logger';
 import type { TaskProviderAdapter } from './adapter-interface';
 import type {
+  NormalizedChecklistItem,
   NormalizedTask,
   NormalizedProject,
   TaskProviderCapabilities,
@@ -82,9 +83,14 @@ export class NativeTaskAdapter implements TaskProviderAdapter {
     query += ' ORDER BY t.position ASC, t.created_at DESC';
 
     const rows = db.prepare(query).all(...params) as any[];
+    const tasks = rows.map(r => this.rowToNormalizedTask(r));
+    const checklistByTask = this.getChecklistItemsForTasks(userId, tasks.map((task) => Number(task.id)));
 
     return {
-      tasks: rows.map(r => this.rowToNormalizedTask(r)),
+      tasks: tasks.map((task) => ({
+        ...task,
+        checklistItems: checklistByTask.get(Number(task.id)) || [],
+      })),
     };
   }
 
@@ -192,7 +198,128 @@ export class NativeTaskAdapter implements TaskProviderAdapter {
     db.prepare(`UPDATE native_tasks SET ${sets.join(', ')} WHERE id = ? AND user_id = ?`).run(...params);
   }
 
+  async getChecklistItems(userId: number, externalId: string): Promise<NormalizedChecklistItem[]> {
+    const taskId = parseInt(externalId, 10);
+    if (!Number.isInteger(taskId) || taskId <= 0) return [];
+    const rows = getDb().prepare(`
+      SELECT id, display_name, is_checked
+      FROM native_task_checklist_items
+      WHERE user_id = ? AND task_id = ?
+      ORDER BY position ASC, id ASC
+    `).all(userId, taskId) as any[];
+    return rows.map((row) => ({
+      id: String(row.id),
+      displayName: row.display_name,
+      isChecked: !!row.is_checked,
+    }));
+  }
+
+  async addChecklistItem(
+    userId: number,
+    externalId: string,
+    displayName: string,
+  ): Promise<NormalizedChecklistItem> {
+    const db = getDb();
+    const taskId = parseInt(externalId, 10);
+    const trimmed = String(displayName || '').trim();
+    if (!Number.isInteger(taskId) || taskId <= 0) {
+      throw new Error('Invalid native task id');
+    }
+    if (!trimmed) {
+      throw new Error('Checklist item title is required');
+    }
+
+    const task = db.prepare('SELECT id FROM native_tasks WHERE id = ? AND user_id = ?').get(taskId, userId) as { id: number } | undefined;
+    if (!task) {
+      throw new Error('Task not found');
+    }
+
+    const maxPosition = db.prepare(`
+      SELECT COALESCE(MAX(position), 0) AS position
+      FROM native_task_checklist_items
+      WHERE user_id = ? AND task_id = ?
+    `).get(userId, taskId) as { position: number };
+
+    const result = db.prepare(`
+      INSERT INTO native_task_checklist_items (user_id, task_id, display_name, position)
+      VALUES (?, ?, ?, ?)
+    `).run(userId, taskId, trimmed, Number(maxPosition?.position || 0) + 1);
+
+    db.prepare("UPDATE native_tasks SET updated_at = datetime('now') WHERE id = ? AND user_id = ?")
+      .run(taskId, userId);
+
+    return {
+      id: String(result.lastInsertRowid),
+      displayName: trimmed,
+      isChecked: false,
+    };
+  }
+
+  async updateChecklistItem(
+    userId: number,
+    externalId: string,
+    itemId: string,
+    isChecked: boolean,
+  ): Promise<NormalizedChecklistItem> {
+    const db = getDb();
+    const taskId = parseInt(externalId, 10);
+    const checklistId = parseInt(itemId, 10);
+    if (!Number.isInteger(taskId) || !Number.isInteger(checklistId)) {
+      throw new Error('Invalid native checklist id');
+    }
+
+    const result = db.prepare(`
+      UPDATE native_task_checklist_items
+      SET is_checked = ?, updated_at = datetime('now')
+      WHERE id = ? AND task_id = ? AND user_id = ?
+    `).run(isChecked ? 1 : 0, checklistId, taskId, userId);
+    if (result.changes === 0) {
+      throw new Error('Checklist item not found');
+    }
+
+    db.prepare("UPDATE native_tasks SET updated_at = datetime('now') WHERE id = ? AND user_id = ?")
+      .run(taskId, userId);
+
+    const row = db.prepare(`
+      SELECT id, display_name, is_checked
+      FROM native_task_checklist_items
+      WHERE id = ? AND task_id = ? AND user_id = ?
+    `).get(checklistId, taskId, userId) as any;
+
+    return {
+      id: String(row.id),
+      displayName: row.display_name,
+      isChecked: !!row.is_checked,
+    };
+  }
+
   // MARK: - Private
+
+  private getChecklistItemsForTasks(userId: number, taskIds: number[]): Map<number, NormalizedChecklistItem[]> {
+    const validTaskIds = taskIds.filter((id) => Number.isInteger(id) && id > 0);
+    const byTask = new Map<number, NormalizedChecklistItem[]>();
+    if (validTaskIds.length === 0) return byTask;
+
+    const placeholders = validTaskIds.map(() => '?').join(', ');
+    const rows = getDb().prepare(`
+      SELECT id, task_id, display_name, is_checked
+      FROM native_task_checklist_items
+      WHERE user_id = ? AND task_id IN (${placeholders})
+      ORDER BY task_id ASC, position ASC, id ASC
+    `).all(userId, ...validTaskIds) as any[];
+
+    for (const row of rows) {
+      const taskId = Number(row.task_id);
+      const items = byTask.get(taskId) || [];
+      items.push({
+        id: String(row.id),
+        displayName: row.display_name,
+        isChecked: !!row.is_checked,
+      });
+      byTask.set(taskId, items);
+    }
+    return byTask;
+  }
 
   private rowToNormalizedTask(row: any): NormalizedTask {
     return {

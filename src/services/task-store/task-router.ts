@@ -517,17 +517,26 @@ function createNativeWrapper(userId: number) {
     },
 
     async getChecklistItems(_listId: string, _taskId: string) {
+      const items = await nativeAdapter.getChecklistItems(userId, _taskId);
       return {
         success: true,
-        data: [],
+        data: items,
       };
     },
 
     async addChecklistItem(_listId: string, _taskId: string, _displayName: string) {
+      const item = await nativeAdapter.addChecklistItem(userId, _taskId, _displayName);
       return {
-        success: false,
-        data: null,
-        error: 'Checklist items are not supported by the active task provider.',
+        success: true,
+        data: item,
+      };
+    },
+
+    async updateChecklistItem(_listId: string, _taskId: string, _itemId: string, _isChecked: boolean) {
+      const item = await nativeAdapter.updateChecklistItem(userId, _taskId, _itemId, _isChecked);
+      return {
+        success: true,
+        data: item,
       };
     },
   };
@@ -547,6 +556,13 @@ function taskToMsTodoShape(t: any, listId: string, listName: string) {
     reminderDateTime: null,
     recurrence: t.recurrence || null,
     isReminderOn: false,
+    checklistItems: Array.isArray(t.checklistItems)
+      ? t.checklistItems.map((ci: any) => ({
+          id: String(ci.id),
+          displayName: ci.displayName,
+          isChecked: !!ci.isChecked,
+        }))
+      : null,
     createdDateTime: t.createdAt || t.createdDateTime || t.providerData?.created_at || t.providerData?.added_at || null,
     completedDateTime: t.completedAt || null,
   };
