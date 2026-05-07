@@ -215,6 +215,7 @@ function formatCenterItemForApi(item: NotificationCenterItem): Record<string, un
     title: item.title,
     body: item.body,
     safeBody: item.safeBody,
+    sensitiveBody: item.sensitiveBody,
     sourceSkill: item.sourceSkill,
     type: item.type,
     priority: item.priority,

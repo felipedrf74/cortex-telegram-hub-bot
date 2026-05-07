@@ -146,6 +146,7 @@ export interface NotificationCenterItem {
   title: string;
   body: string;
   safeBody: string;
+  sensitiveBody: string | null;
   sourceSkill: NotificationSourceSkill;
   type: NotificationIntentType;
   priority: NotificationPriority;
@@ -325,6 +326,7 @@ export function ensureNotificationTables(): void {
       title TEXT NOT NULL,
       body TEXT NOT NULL,
       safe_body TEXT NOT NULL,
+      sensitive_body TEXT,
       source_skill TEXT NOT NULL,
       type TEXT NOT NULL,
       priority TEXT NOT NULL,
@@ -411,6 +413,7 @@ export function ensureNotificationTables(): void {
       ON notification_device_tokens(user_id, tenant_id, platform, revoked_at);
     CREATE INDEX IF NOT EXISTS idx_ios_devices_user ON ios_devices(user_id);
   `);
+  ensureColumn('notification_center_items', 'sensitive_body', 'TEXT');
 }
 
 export function getOrCreateNotificationProfile(userId: number, tenantId = userId): NotificationProfile {
@@ -1171,9 +1174,9 @@ function persistCenterItem(
   const itemId = `nc_${randomUUID()}`;
   getDb().prepare(`
     INSERT INTO notification_center_items (
-      item_id, intent_id, user_id, tenant_id, title, body, safe_body, source_skill,
+      item_id, intent_id, user_id, tenant_id, title, body, safe_body, sensitive_body, source_skill,
       type, priority, status, deeplink, actions_json, dedupe_key, expires_at, created_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'unread', ?, ?, ?, ?, datetime('now'))
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'unread', ?, ?, ?, ?, datetime('now'))
   `).run(
     itemId,
     intent.intentId,
@@ -1182,6 +1185,7 @@ function persistCenterItem(
     intent.title,
     intent.body,
     safeBody,
+    intent.sensitiveBody,
     intent.sourceSkill,
     intent.type,
     effectivePriority,
@@ -1378,7 +1382,6 @@ function quietHoursDecision(
 }
 
 function buildPrivacySafeBody(intent: NotificationIntentRecord): string {
-  if (intent.privacyPolicy === 'public') return truncate(intent.body, 150);
   if (intent.privacyPolicy === 'financial' || intent.sourceSkill === 'finance') {
     return 'Finance reminder needs review.';
   }
@@ -1389,17 +1392,26 @@ function buildPrivacySafeBody(intent: NotificationIntentRecord): string {
     return 'Content item is ready for review.';
   }
   if (intent.privacyPolicy === 'sensitive') {
-    return `${skillLabel(intent.sourceSkill)} update needs review.`;
+    return `${safeNotificationTitle(intent)} — open Nexus to view details.`;
   }
-  return truncate(intent.body, 150);
+  if (intent.privacyPolicy === 'public' && intent.sourceSkill === 'system') {
+    return truncate(intent.body, 150);
+  }
+  return `${safeNotificationTitle(intent)} — open Nexus to view details.`;
 }
 
 function safeNotificationTitle(intent: NotificationIntentRecord): string {
-  if (intent.sourceSkill === 'finance') return 'Finance reminder';
-  if (intent.sourceSkill === 'training') return 'Training update';
-  if (intent.sourceSkill === 'content') return 'Content review';
-  if (intent.sourceSkill === 'security') return 'Account activity';
-  return truncate(intent.title, 60);
+  switch (intent.sourceSkill) {
+    case 'secretary': return 'Secretary needs your attention';
+    case 'training': return 'Training update';
+    case 'content': return 'Content review';
+    case 'cooking': return 'Cooking reminder';
+    case 'finance': return 'Finance reminder';
+    case 'chat': return 'Nexus needs your attention';
+    case 'system': return 'System notification';
+    case 'security': return 'Account activity';
+    default: return truncate(intent.title, 60);
+  }
 }
 
 function normalizePriorityForPolicy(priority: NotificationPriority, profile: NotificationProfile): NotificationPriority {
@@ -1486,6 +1498,7 @@ function mapCenterItem(row: any): NotificationCenterItem {
     title: row.title,
     body: row.body,
     safeBody: row.safe_body,
+    sensitiveBody: row.sensitive_body ?? null,
     sourceSkill: row.source_skill,
     type: row.type,
     priority: row.priority,
@@ -1573,7 +1586,7 @@ function defaultPrivacyPolicy(sourceSkill: NotificationSourceSkill): Notificatio
   if (sourceSkill === 'finance') return 'financial';
   if (sourceSkill === 'training') return 'health';
   if (sourceSkill === 'content') return 'private_content';
-  if (sourceSkill === 'security') return 'standard';
+  if (sourceSkill === 'security') return 'sensitive';
   return 'standard';
 }
 
@@ -1618,6 +1631,13 @@ function defaultDedupeKey(input: NotificationIntentInput): string {
 
 function boolInt(value: boolean): number {
   return value ? 1 : 0;
+}
+
+function ensureColumn(table: string, column: string, definition: string): void {
+  const db = getDb();
+  const columns = db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
+  if (columns.some((entry) => entry.name === column)) return;
+  db.prepare(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`).run();
 }
 
 function positiveIntOr(value: number | undefined, fallback: number): number {

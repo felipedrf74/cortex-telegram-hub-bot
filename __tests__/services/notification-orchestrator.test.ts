@@ -88,7 +88,7 @@ describe('Secretary Notification Orchestrator', () => {
     expect(result.item?.status).toBe('unread');
     expect(result.decisionLog.decision).toBe('sent_push');
     expect(result.deliveryAttempts[0].status).toBe('mock_sent');
-    expect(result.pushPayload?.body).toContain('schedule conflict');
+    expect(result.pushPayload?.body).toBe('Secretary needs your attention — open Nexus to view details.');
 
     const items = listNotificationCenterItems(1, 1);
     expect(items).toHaveLength(1);
@@ -125,6 +125,56 @@ describe('Secretary Notification Orchestrator', () => {
     expect(training.pushPayload?.body).not.toContain('knee pain');
     expect(content.pushPayload?.body).toBe('Content item is ready for review.');
     expect(content.pushPayload?.body).not.toContain('brand strategy');
+  });
+
+  it('redacts standard secretary, security, chat, and public-overridden sensitive skill bodies', async () => {
+    pushTokens = ['sandbox-token'];
+
+    const secretary = await createNotificationIntent(buildSkillNotificationFixtureIntent('secretary', 31, {
+      body: 'Meeting with John Doe about Acme acquisition.',
+      sensitiveBody: 'Meeting with John Doe about Acme acquisition.',
+      dedupeKey: 'privacy-secretary',
+      privacyPolicy: 'standard',
+    }));
+    const security = await createNotificationIntent(buildSkillNotificationFixtureIntent('security', 31, {
+      body: 'Login from 192.0.2.5 near Lisbon.',
+      sensitiveBody: 'Login from 192.0.2.5 near Lisbon.',
+      dedupeKey: 'privacy-security',
+    }));
+    const chat = await createNotificationIntent(buildSkillNotificationFixtureIntent('chat', 31, {
+      body: 'Private chat answer includes tomorrow’s legal call.',
+      sensitiveBody: 'Private chat answer includes tomorrow’s legal call.',
+      dedupeKey: 'privacy-chat',
+    }));
+    const financePublic = await createNotificationIntent(buildSkillNotificationFixtureIntent('finance', 31, {
+      body: 'Bank balance: $42K with Vendor Z invoice.',
+      sensitiveBody: 'Bank balance: $42K with Vendor Z invoice.',
+      dedupeKey: 'privacy-finance-public',
+      privacyPolicy: 'public',
+    }));
+
+    expect(secretary.pushPayload?.body).toBe('Secretary needs your attention — open Nexus to view details.');
+    expect(secretary.pushPayload?.body).not.toContain('John Doe');
+    expect(security.pushPayload?.body).toBe('Account activity — open Nexus to view details.');
+    expect(security.pushPayload?.body).not.toContain('192.0.2.5');
+    expect(chat.pushPayload?.body).toBe('Nexus needs your attention — open Nexus to view details.');
+    expect(chat.pushPayload?.body).not.toContain('legal call');
+    expect(financePublic.pushPayload?.body).toBe('Finance reminder needs review.');
+    expect(financePublic.pushPayload?.body).not.toContain('Bank balance');
+  });
+
+  it('persists sensitiveBody for authenticated in-app detail while keeping safeBody redacted', async () => {
+    const result = await createNotificationIntent(buildSkillNotificationFixtureIntent('secretary', 32, {
+      body: 'Meeting with John Doe about Acme acquisition.',
+      sensitiveBody: 'Meeting with John Doe about Acme acquisition at 16:00.',
+      dedupeKey: 'privacy-sensitive-detail',
+      privacyPolicy: 'standard',
+    }));
+
+    const item = listNotificationCenterItems(32, 32)[0];
+    expect(result.item?.safeBody).toBe('Secretary needs your attention — open Nexus to view details.');
+    expect(item.safeBody).not.toContain('John Doe');
+    expect(item.sensitiveBody).toBe('Meeting with John Doe about Acme acquisition at 16:00.');
   });
 
   it('deduplicates unresolved conflicts by dedupe key', async () => {

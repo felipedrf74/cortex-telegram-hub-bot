@@ -78,6 +78,7 @@ CREATE TABLE IF NOT EXISTS notification_center_items (
   title TEXT NOT NULL,
   body TEXT NOT NULL,
   safe_body TEXT NOT NULL,
+  sensitive_body TEXT,
   source_skill TEXT NOT NULL,
   type TEXT NOT NULL,
   priority TEXT NOT NULL,
