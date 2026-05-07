@@ -68,6 +68,55 @@ actual, recommended fix-prompts) is in the archive report linked above.
 
 P2/P3 items (~30 more) live only in the archive report; surface to OPEN_ITEMS only when promoted by a fix prompt or new evidence.
 
+## 2026-05-07 Hostile QA on Notification Orchestrator — New Findings
+
+Hostile QA report: `docs/archive/2026-05/secretary-notification-orchestrator/hostile-qa-report.md`
+Verdict: **SOURCE REMEDIATION COMPLETE FOR HOSTILE P0/P1 CLUSTER** on `feature/secretary-notification-orchestrator`; original hostile verdict was **NOT_READY** until the P0/P1 cluster closed.
+Scope: 5 specialist Opus subagents in parallel; independent vitest run 37/37 passed; manual probes.
+
+### P0 NEW
+
+| ID | Area | Description |
+|---|---|---|
+| HOSTILE-POLICY-1 | notif policy | `quietHoursPolicy: 'send_now'` bypass hardened. CLOSED IN SOURCE BRANCH via `29ceb44f`; `send_now` is trusted only for security/system urgent paths and otherwise delays through quiet-hours logic. Behavioral coverage added in `__tests__/services/notification-orchestrator.test.ts`. |
+| HOSTILE-PORTAL-1 | portal | Missing portal scope no longer falls back to all tenants. CLOSED IN SOURCE BRANCH via `3d66339b`; notification portal routes require admin token plus explicit user/tenant scope and return 400 on first-paint empty scope. |
+| HOSTILE-PORTAL-2 | portal | Legacy content notifications are now scoped. CLOSED IN SOURCE BRANCH via `3d66339b`; `getAllNotifications(limit, scope)` requires validated user/tenant scope and portal tests pin no cross-tenant blend. |
+| HOSTILE-PRIVACY-1 | privacy | Lock-screen body redaction now defaults safe. CLOSED IN SOURCE BRANCH via `8b79faaa`; `sensitiveBody` is persisted/read for authenticated detail and standard/security bodies no longer expose raw content. |
+| P0-IOS-NOTIF-1 + HOSTILE-BACKEND-1 | iOS+auth lifecycle | Orphan notification tokens closed. CLOSED IN SOURCE BRANCH via backend `b50cc162` and iOS `f7a940b`; logout/logout-all revoke `notification_device_tokens`, and iOS signOut DELETEs the registered token before local reset. |
+| P0-IOS-NOTIF-2 | iOS APNs entitlement | Time-sensitive support is no longer UI-only. CLOSED IN SOURCE BRANCH via engine `29ceb44f` and iOS `f7a940b`; APNs payload includes `interruption-level`, local reminders set interruption level, and debug/release entitlements include `com.apple.developer.usernotifications.time-sensitive`. |
+| P0-IOS-NOTIF-3 | iOS test confidence | Decision action UI test is no longer fixture-only. CLOSED IN SOURCE BRANCH via iOS `d55367f`; the UI test launches against a local HTTP stub and verifies the action POST reaches `/api/v1/notifications/:id/actions`. |
+
+### P1 NEW
+
+| ID | Area | Description |
+|---|---|---|
+| HOSTILE-POLICY-2 | notif policy | Equal quiet-hours bounds are rejected. CLOSED IN SOURCE BRANCH via `29ceb44f`; `updateNotificationProfile` throws when `quietHours.start === quietHours.end`. |
+| HOSTILE-POLICY-3 | privacy | `public` no longer bypasses per-skill scrubs. CLOSED IN SOURCE BRANCH via `8b79faaa`; finance/training/content/security redaction branches win before any raw-public body path. |
+| HOSTILE-POLICY-4 | digest | Digest release now groups due passive items. CLOSED IN SOURCE BRANCH via `29ceb44f`; `assembleDailyDigest` emits one digest attempt for grouped rows. |
+| HOSTILE-POLICY-5 | spam | Push rate limiting added. CLOSED IN SOURCE BRANCH via `29ceb44f`; excess active pushes become in-app-only with a decision-log reason instead of spamming APNs. |
+| HOSTILE-POLICY-6 | APNs | APNs `interruption-level` support added. CLOSED IN SOURCE BRANCH via `29ceb44f` plus iOS `f7a940b`; backend, local notifications, and entitlement tests cover the contract. |
+| HOSTILE-POLICY-7 | cross-skill | Cooking and Finance now have production intent emission paths. CLOSED IN SOURCE BRANCH via `29ceb44f`; meal-prep scheduling and tax due calculation emit orchestrated intents without direct push delivery. |
+| HOSTILE-PRIVACY-2 | security | Security defaults are sensitive. CLOSED IN SOURCE BRANCH via `8b79faaa`; security lock-screen copy routes through the sensitive safe-title branch. |
+| HOSTILE-PORTAL-3 | portal scope | Notification portal routes require admin token. CLOSED IN SOURCE BRANCH via `3d66339b`; read-token-only access is rejected. |
+| P1-IOS-NOTIF-4 | iOS lifecycle | Queued notification actions now persist until consumed. CLOSED IN SOURCE BRANCH via iOS `676b7ed`; `DeepLinkRouter` restores pending action IDs from `UserDefaults` and clears them after matching consumption. |
+| P1-IOS-NOTIF-5 | iOS scope guard | Decision Center load is scope-key guarded. CLOSED IN SOURCE BRANCH via iOS `f7a940b`; stale async responses after signOut/account switch are dropped. |
+| P1-IOS-NOTIF-6 | iOS contract | Notification ID contract is standardized around string `itemId` while tolerating legacy numeric payloads. CLOSED IN SOURCE BRANCH via iOS `f814541` and existing router coverage; local notification payloads include both string `notificationId` and `itemId`. |
+
+### Test-quality findings
+
+- `__tests__/security/notification-orchestrator-security.test.ts`: CLOSED IN SOURCE BRANCH via `0a51d881`; replaced source-grep checks with behavior-bearing SQLite/route tests.
+- `__tests__/portal/portal-notifications-ui.test.ts`: CLOSED IN SOURCE BRANCH via `0a51d881`; portal notification reads now exercise admin/scope behavior and safe serialization.
+- `Nexus HubTests/NotificationDecisionCenterTests.swift`: CLOSED IN SOURCE BRANCH via iOS `f814541`; source-grep cases were replaced with DTO/action contract tests.
+- `Nexus HubUITests/NotificationDecisionCenterUITests.swift`: CLOSED IN SOURCE BRANCH via iOS `d55367f`; added a non-fixture local-backend action round-trip UI test.
+
+### Override notes
+
+- **GAP-PORT-3** hostile downgrade is now CLOSED AGAIN IN SOURCE BRANCH via `3d66339b`; both empty route scope and legacy notification-array bypasses have behavioral tests.
+- **GAP-SEC-NOTIF-3** hostile privacy downgrade is now CLOSED AGAIN IN SOURCE BRANCH via `8b79faaa`; `sensitive_body` is stored, mapped, serialized only where safe, and lock-screen bodies redact by default.
+
+Codex remediation prompt: `docs/archive/2026-05/secretary-notification-orchestrator/notification-orchestrator-codex-remediation-prompt.md`.
+
+
 
 
 ## Standing Authorizations
