@@ -54,5 +54,7 @@ authorizes the next batch.
 - Batch 17 iOS P2 remediation report was not reconstructable in the Batch 24
   archive pass. Revalidation exists at
   `docs/archive/2026-05/tech-debt-validation/codex-batch-17-revalidation.md`.
-- Batch 1 does not have a standalone `codex-batch-1-remediation.md`; evidence
-  is preserved in `codex-tech-debt-pass.md` and `codex-validation-matrix.md`.
+- Batch 1 does not have a standalone remediation artifact; evidence is
+  preserved in
+  `docs/archive/2026-05/tech-debt-validation/codex-tech-debt-pass.md` and
+  `docs/archive/2026-05/tech-debt-validation/codex-validation-matrix.md`.

@@ -93,7 +93,7 @@ BATCH-23-GENAI-MIGRATION-PHASE-4-AUTHORIZED: phase=legacy-dependency-removal
 Report:
 `docs/archive/2026-05/tech-debt-validation/codex-batch-23-remediation.md`.
 
-Verdict: **CLOSED / CONDITIONAL SKIPS HONORED**. Batch 23 merged the refreshed
+Archived outcome: **CLOSED / CONDITIONAL SKIPS HONORED**. Batch 23 merged the refreshed
 D5/F4 mock-ratchet stack and Batch 22 closure onto local `main`, then completed
 the authorized Gemini SDK migration through Phase 4. T5 stayed skipped because
 content-lifecycle Phase 1 was not authorized; T6 stayed skipped because Batch
@@ -114,9 +114,9 @@ Closure delta:
 | D5/F4 merge consolidation | **CLOSED ON LOCAL MAIN** | Refreshed D5/F4 stack merged via `ef9b5e0b`; strict mock lint passed at 827 partial mocks / baseline 827. |
 | Batch 22 audit trail | **CLOSED ON LOCAL MAIN** | S3 closure merged via `09d35547`; retro Batch 20 report remains archived. |
 | Genai adapter expansion | **CLOSED IN SOURCE BRANCH** | T1 expanded old-SDK-compatible response/type helpers without call-site changes; adapter tests passed 5/5. |
-| Genai mock migration | **CLOSED IN SOURCE STACK BRANCH** | T2 moved provider tests to mock `@google/genai`; focused provider tests passed 39/39. |
+| Genai mock migration | **CLOSED IN SOURCE STACK BRANCH** | T2 moved provider tests to mock `@google/genai`; focused provider suite passed. |
 | Genai Phase 2 retry | **CLOSED IN SOURCE STACK BRANCH** | T3 switched `gemini-provider.ts` to the adapter; production source has no `@google/generative-ai` import. |
-| Genai Phase 4 removal | **CLOSED IN SOURCE STACK BRANCH** | T4 removed `@google/generative-ai` from `package.json` / lockfile; full verify passed 467 files / 6973 tests. |
+| Genai Phase 4 removal | **CLOSED IN SOURCE STACK BRANCH** | T4 removed `@google/generative-ai` from `package.json` / lockfile; full verify passed. |
 | Content lifecycle Phase 1 | **SKIPPED BY AUTHORIZATION CHECKBOX** | `BATCH-23-CONTENT-LIFECYCLE-PHASE-1-AUTHORIZED` remained unchecked. |
 | Self-hosted runner prereq finalization | **SKIPPED BY CONDITION** | `docs/release/self-hosted-runner-prereqs.md` already exists and Batch 21 R3 closed that documentation surface. |
 
@@ -133,7 +133,7 @@ Open next actions:
 Report:
 `docs/archive/2026-05/tech-debt-validation/codex-batch-22-remediation.md`.
 
-Verdict: **PARTIAL**. S1 closed the D5/F4 ratchet refresh using the authorized
+Archived outcome: **PARTIAL**. S1 closed the D5/F4 ratchet refresh using the authorized
 secondary-source diagnosis and reset formula. S2 stopped correctly because
 switching `gemini-provider.ts` to the Batch 21 adapter requires mock/type work
 that belongs to the next authorized genai phase. S3 reconstructed the missing
@@ -338,7 +338,7 @@ Closure delta:
 | Finding | Status | Evidence |
 |---|---|---|
 | P2-24 remaining state isolation tests | **STILL BLOCKED / FIX-FIRST REQUIRED** | `src/state/coach-state.ts` does not reject `userId === 0` or invalid/missing user IDs; M2 was tests-only and stopped. |
-| P2-29 `deploy.sh --no-verify` policy | **CLOSED IN SOURCE BRANCH** | M4 adds skip-verify audit rows, a smoke-evidence freshness gate for `auto-when-staged`, `/health/detailed.lastDeploy`, and `docs/runbooks/deploy-safety.md`. Full verify passed: 457 files / 6835 tests. |
+| P2-29 `deploy.sh --no-verify` policy | **CLOSED IN SOURCE BRANCH** | M4 adds skip-verify audit rows, a smoke-evidence freshness gate for `auto-when-staged`, `/health/detailed.lastDeploy`, and a deploy safety runbook. Full verify passed: 457 files / 6835 tests. |
 | P2-34 Python ↔ TS version drift | **CLOSED IN SOURCE BRANCH** | M3 adds `content-engine/version.txt`, deploy-time version bake, TS drift classification, and `/health/detailed.contentEngine.versionDrift`. Full verify passed: 456 files / 6835 tests. |
 | Python pytest finish | **BLOCKED** | `main` has 0 pytest files and no `content-engine/tests/conftest.py`; Batch 13 J2 has the 114-case scaffold on a staged branch. |
 
@@ -763,7 +763,7 @@ Closure delta:
 |---|---|---|
 | P1-13 `COST_PER_MTK` duplication | **CLOSED IN SOURCE BRANCH** | K1 centralizes Anthropic/OpenAI pricing in `engine/src/services/provider-pricing.ts`; full backend verify passed 456 files / 6,835 tests; P0 identity passed 23/23. |
 | P1-17 iOS formatter proliferation | **CLOSED IN SOURCE BRANCH WITH BROAD-SUITE RISK** | K2 adds `Date+Formatters.swift`, `DateFormattersTests`, and the formatter cookbook. iOS build passed; focused formatter XCTest passed 5/5; constructor grep is reduced to helper implementation only. Broad iOS suite still fails 7 non-formatter tests and needs separate cleanup. |
-| P2-32 inline scoring weights | **CLOSED IN SOURCE BRANCH** | K3 names notification/content scoring constants, adds `scoring-weights-rationale.md`, and passes focused tests plus full backend verify. |
+| P2-32 inline scoring weights | **CLOSED IN SOURCE BRANCH** | K3 names notification/content scoring constants, adds a scoring-weights rationale doc, and passes focused tests plus full backend verify. |
 | P2-24 state isolation tests | **BLOCKED / P0 FIX-FIRST REQUIRED** | Source inspection found `markIdeaPromoted(id)`, `markIdeaUsed(id)`, and `deleteIdea(id)` mutate `saved_ideas` by raw `id` only. K4 was test-only by prompt, so Codex stopped instead of adding failing tests or changing production code in the test slice. |
 | P1-14 scheduler decomposition | **CLOSED IN SOURCE STACK BRANCH** | Batch 15 L0-L3 decomposed `engine/src/services/scheduler.ts` into a registry bootloader plus per-domain job modules. `scheduler.ts` is now 150 LOC with 0 inline `cron.schedule(...)` calls; inventory invariant pins 34 registry jobs / 33 telemetry jobs. Full backend verify passed 463 files / 6,845 tests. |
 

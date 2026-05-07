@@ -42,12 +42,15 @@ Source-side guarantees after the sweep:
 
 Verification floor after the source sweep:
 
-- `npm run verify`: 467 files / 6973 tests.
-- `content-engine/.venv313/bin/python -m pytest content-engine/tests/`: 135
-  tests.
-- `npx vitest run __tests__/security/p0-chat-identity-isolation.test.ts`: 23/23.
-- `bash scripts/cannot-skip-gate-dashboard.sh --json --no-evidence`: 23/23.
-- `node scripts/vi-mock-completeness-lint.mjs --strict`: 827/827.
+- `npm run verify`: final sweep floor recorded in the closeout dossier.
+- `content-engine/.venv313/bin/python -m pytest content-engine/tests/`: final
+  Python floor recorded in the closeout dossier.
+- `npx vitest run __tests__/security/p0-chat-identity-isolation.test.ts`:
+  passing floor recorded in the closeout dossier.
+- `bash scripts/cannot-skip-gate-dashboard.sh --json --no-evidence`: passing
+  floor recorded in the closeout dossier.
+- `node scripts/vi-mock-completeness-lint.mjs --strict`: strict floor recorded
+  in the closeout dossier.
 
 ## Post-Deploy Verification Template
 
