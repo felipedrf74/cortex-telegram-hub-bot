@@ -8,10 +8,13 @@ Engine commits:
 - `887ada0eaf7e9e6ce09eab275a1c888f73916251` - foundation
 - `25133368371dafb967dc7a4f89a7360ea464fb79` - worker lifecycle, retention hook, summary budgets
 - `2e896435` - hostile QA remediation: transactional outbox, recursive redaction, atomic budgets, worker logs, sync/retention hardening
+- `e82bbdae` - hostile QA v2 remediation: strict outbox transaction, event cancel-race guard, migration 115, admin tests
+- `ca2e0cd9` - hostile QA v2 test-ratchet follow-up: complete mocks and chat event transaction unit contract
 iOS commits:
 - `2f3be83de91f3dae646ee9c49bda89f5eb73a315` - delta sync store/service foundation
 - `9ff725dca44d1603c9dee82f6f1ef3b2d83be320` - app-surface summary/delta warmup
 - `82abbea` - hostile QA remediation: reset cursor safety, duplicate handling, bounded cache, foreground TTL refresh, physical iPhone tests
+- `12a9d95` - hostile QA v2 remediation: cancellation checkpoints, thread-safe URLProtocol test harness, scenePhase TTL guard
 Push/deploy: not performed
 
 ## Verdict
@@ -32,8 +35,8 @@ foundation code:
 - authenticated iOS product-screen interaction still needs a valid local or
   signed test account session; physical-device behavior tests ran on iPhone
   Felipe, but no authenticated product-surface walkthrough is claimed here
-- independent Claude hostile re-QA should re-run against `2e896435` and
-  `82abbea` before upgrading beyond READY_WITH_CONDITIONS
+- independent Claude hostile re-QA should re-run against `ca2e0cd9` and
+  `12a9d95` before upgrading beyond READY_WITH_CONDITIONS
 - production/staging must explicitly decide the worker and cleanup flags before
   deploy (`EVENT_BACKBONE_WORKER_DISABLED`, batch limits,
   `EVENT_BACKBONE_CLEANUP_APPLY`)
@@ -310,14 +313,16 @@ chain.
 
 Claude hostile QA originally downgraded this workstream to NOT_READY in
 `docs/archive/2026-05/event-backbone-readmodels-delta-sync/hostile-qa-report.md`.
-That verdict was correct at the time of audit. The source branch now closes the
-promoted P0/P1 cluster in engine commit `2e896435` and iOS commit `82abbea`.
+That verdict was correct at the time of audit. The source branch closed the
+promoted P0/P1 cluster in engine commit `2e896435` and iOS commit `82abbea`,
+then closed the follow-up hostile v2 findings in engine commits `e82bbdae` /
+`ca2e0cd9` and iOS commit `12a9d95`.
 
 Closed in source:
 - transactional outbox emit paths for Chat, Content, Cooking, Finance,
-  Training, and Notification intent creation; isolated no-DB test harnesses
-  keep a DB-unavailable fallback, but initialized runtime routes write business
-  state and event rows in the same transaction
+  Training, and Notification intent creation; the DB-unavailable fallback was
+  removed, so business writes fail closed unless an initialized SQLite
+  transaction is available
 - recursive privacy sanitization for event payloads and decision-log summaries
 - atomic SQLite resource budgets with 429 `Retry-After` metadata and structured
   budget-exceeded logs
@@ -331,20 +336,59 @@ Closed in source:
   needed by active sync cursors
 - iOS delta cache reset/duplicate/size/foreground-refresh hardening with
   physical-device tests
+- event-side cancel races now mirror the job-side guard: late processed/failed
+  updates do not overwrite `canceled`
+- migration `115_event_outbox_canceled_status.sql` rebuilds `event_outbox` so
+  already-migrated SQLite databases can accept the `canceled` status
+- event-backbone admin routes now have behavioral tests for admin auth, tenant
+  scope, replay, cancel, and attempts reset
+- stale event/job lease reclaim paths are behavior-tested
+- iOS summary refreshes add cancellation checkpoints and Dashboard scenePhase
+  activation now uses the TTL-gated refresh path
 
 Remaining condition:
 - independent hostile re-QA should validate the remediation before this report
   is upgraded beyond READY_WITH_CONDITIONS.
+
+### Hostile v2 closeout
+
+Claude's second prompt,
+`docs/archive/2026-05/event-backbone-readmodels-delta-sync/codex-validation-and-remediation-prompt-v2.md`,
+listed 11 remaining findings. Source remediation status:
+
+- `HOSTILE-OUTBOX-1A`: closed by removing `fallbackWhenDatabaseUnavailable`.
+  `runOutboxTransaction` now always uses `getDb().transaction(...)` and throws
+  if storage is unavailable.
+- `HOSTILE-OUTBOX-1B`: closed with rollback tests proving business rows roll
+  back when event emission fails and event rows roll back when the business
+  callback throws.
+- `HOSTILE-EVENT-CANCEL-RACE`: closed; `markEventProcessed` and
+  `markEventFailed` preserve `canceled`.
+- `HOSTILE-IOS-DS-NEW-1`: closed; URLProtocol mock state in
+  `DeltaSyncRepositoryTests` is protected by `NSLock`.
+- `HOSTILE-ADMIN-NO-TESTS`: closed with dedicated admin-route tests.
+- `HOSTILE-IOS-DS-9`: closed; Dashboard scenePhase foreground refresh uses
+  stale TTL gating.
+- `HOSTILE-IOS-DS-3`: closed with `Task.checkCancellation()` checkpoints and
+  a cancellation regression test.
+- `HOSTILE-OUTBOX-1C`: closed; notification intent creation and Finance PATCH
+  writes use the canonical outbox transaction wrapper.
+- `HOSTILE-MIGRATION-114-EDITED`: closed by restoring migration 114 and adding
+  migration 115 to rebuild `event_outbox` with `canceled`.
+- `HOSTILE-ORPHAN-REAPER-NO-TEST`: closed with stale event/job lease reclaim
+  tests.
+- `HOSTILE-IOS-DS-5`: closed with a documented first-write-wins duplicate
+  contract and store-level test.
 
 ## iOS validation
 
 Behavior tests:
 - `Nexus HubTests/DeltaSyncStoreTests`
 - `Nexus HubTests/DeltaSyncRepositoryTests`
-- Result: 8/8 passed on connected physical device `iPhone Felipe`
+- Result: 11/11 passed on connected physical device `iPhone Felipe`
 
 Physical-device validation:
-- `xcodebuild test -project "Nexus Hub.xcodeproj" -scheme "Nexus Hub" -destination 'platform=iOS,id=00008150-000C0D5101D8401C' -only-testing:"Nexus HubTests/DeltaSyncStoreTests" -only-testing:"Nexus HubTests/DeltaSyncRepositoryTests"` PASS, 8/8
+- `xcodebuild test -project "Nexus Hub.xcodeproj" -scheme "Nexus Hub" -destination 'platform=iOS,id=00008150-000C0D5101D8401C' -only-testing:"Nexus HubTests/DeltaSyncStoreTests" -only-testing:"Nexus HubTests/DeltaSyncRepositoryTests"` PASS, 11/11
 - APNs token upload emitted a local "couldn't load" warning during launch; no
   live APNs or push-delivery validation is claimed by this workstream
 
@@ -357,9 +401,11 @@ Blocked/not claimed:
 
 Backend:
 - `npx tsc --noEmit` PASS
-- `npm run verify` PASS, 478 files / 7062 tests
+- `npm run verify` PASS, 481 files / 7074 tests
+- `npx vitest run __tests__/api/event-backbone-routes.test.ts __tests__/api/event-backbone-admin-routes.test.ts __tests__/services/event-backbone.test.ts __tests__/services/event-backbone-fallback-rejection.test.ts __tests__/migrations/migration-115-event-outbox-canceled-status.test.ts __tests__/security/p0-chat-identity-isolation.test.ts --reporter=default` PASS, 52/52
+- `npx vitest run __tests__/api/chat-persistence.test.ts __tests__/api/event-backbone-admin-routes.test.ts --reporter=default` PASS, 9/9
 - `npx vitest run __tests__/api/content-topic-routes.test.ts __tests__/api/training-routes.test.ts __tests__/api/finance-routes.test.ts __tests__/api/event-backbone-routes.test.ts __tests__/services/event-backbone.test.ts --reporter=default` PASS, 72/72
-- pre-commit focused changed-area run PASS, 138 files / 1565 tests
+- pre-commit focused changed-area run PASS, 138 files / 1570 tests for `e82bbdae`; final test-only commit pre-commit focused run PASS, 2 files / 22 tests
 - `npx vitest run __tests__/security/p0-chat-identity-isolation.test.ts --reporter=default` PASS, 23/23
 - `bash scripts/cannot-skip-gate-dashboard.sh --json --no-evidence` PASS, 23/23
 - `node scripts/vi-mock-completeness-lint.mjs --strict` PASS, 827/827
@@ -370,7 +416,8 @@ Python:
   was a command path mistake and was corrected by running from `content-engine`.
 
 iOS:
-- physical iPhone test command above PASS, 8/8
+- simulator focused DeltaSyncStore/DeltaSyncRepository PASS, 11/11
+- physical iPhone test command above PASS, 11/11
 - authenticated product-surface interaction not claimed
 
 Local smoke:
@@ -379,7 +426,7 @@ Local smoke:
   sync cursor response
 
 Docs:
-- `npm run docs:audit` PASS, 464 issues / 438 audited after report update and
+- `npm run docs:audit` PASS, 465 issues / 439 audited after report update and
   workspace mirror refresh.
 
 ## Open items

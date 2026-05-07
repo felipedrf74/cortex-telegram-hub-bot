@@ -69,12 +69,53 @@ Source remediation now landed in engine `2e896435` and iOS `82abbea`; Claude
 hostile re-QA remains the next evidence gate.
 
 **Hostile P0 cluster — REMEDIATED IN SOURCE BRANCH**
-| ID | Source-branch remediation |
-|---|---|
-| HOSTILE-OUTBOX-1 | Runtime emit paths now use transactional outbox via `runOutboxTransaction`; business state and event rows commit together when the DB is initialized. |
-| HOSTILE-PRIV-1 | Event payloads and decision-log summaries now use recursive privacy sanitization before persistence/sync. |
-| HOSTILE-BUDGET-1 | Resource budgets now use atomic SQLite `UPDATE ... RETURNING` counters keyed by tenant/user/window. |
-| HOSTILE-OBS-1 | Event/job workers and budget exhaustion emit structured, scoped logs with processed/failed/dead-letter counts. |
+| ID | Source-branch remediation | Hostile re-QA verdict |
+|---|---|---|
+| HOSTILE-OUTBOX-1 | Runtime emit paths now use transactional outbox via `runOutboxTransaction`; business state and event rows commit together when the DB is initialized. | **WEAK CLOSURE** — 8 wrapped sites correct, `emitDomainEventSafely` removed; but new `fallbackWhenDatabaseUnavailable` parameter re-introduces silent-drop on DB-unavailable race (HOSTILE-OUTBOX-1A); notification-orchestrator + finance PATCH hand-roll their own transactions bypassing canonical wrapper (HOSTILE-OUTBOX-1C); transactional-rollback test missing (HOSTILE-OUTBOX-1B). |
+| HOSTILE-PRIV-1 | Event payloads and decision-log summaries now use recursive privacy sanitization before persistence/sync. | **VERIFIED CLOSED** — `src/utils/privacy-sanitizer.ts` (54 lines) recurses with `maxDepth: 4` + 26-key expanded regex; used by event-outbox, product-decision-log, AND delta-sync (defense-in-depth at appSafeSummary, tighter `maxStringLength: 160`); behavioral test pins nested redaction. |
+| HOSTILE-BUDGET-1 | Resource budgets now use atomic SQLite `UPDATE ... RETURNING` counters keyed by tenant/user/window. | **VERIFIED CLOSED** — `UPDATE ... WHERE count + ? <= ? RETURNING count` is single-statement atomic; 100-caller concurrency test asserts final count <= 10 AND exactly 10 succeed. |
+| HOSTILE-OBS-1 | Event/job workers and budget exhaustion emit structured, scoped logs with processed/failed/dead-letter counts. | **VERIFIED CLOSED** — 3 batch-summary log lines (`event_outbox_batch`, `background_job_batch`, `event_backbone_worker_tick`) with `claimed/processed/failed/deadLetter/durationMs`; spy tests assert schema; PII-safe. |
+
+**P1 cluster outcomes:**
+- HOSTILE-OUTBOX-2 (lease atomicity) — VERIFIED CLOSED
+- HOSTILE-OUTBOX-3/JOB-3 (orphan reaper) — WEAK (code present, behavioral test missing)
+- HOSTILE-OUTBOX-7 (dead-letter operator surface) — WEAK (102-line admin router, ZERO behavioral tests)
+- HOSTILE-OUTBOX-9 (replay tenant scope) — VERIFIED CLOSED
+- HOSTILE-JOB-2 (cancel processing) — WEAK / asymmetric (job side guards correct; **event side `markEventFailed`/`markEventProcessed` overwrite canceled** — HOSTILE-EVENT-CANCEL-RACE)
+- HOSTILE-JOB-4 (decision-log retention) — VERIFIED CLOSED
+- HOSTILE-SYNC-1 (deviceId no query trust) — VERIFIED CLOSED with strong behavioral test
+- HOSTILE-SYNC-2 (retention vs offline device) — VERIFIED CLOSED with `protectFloor` + behavioral test
+- HOSTILE-SYNC-4 (reset not advance cursor) — VERIFIED CLOSED with idempotent-reset test
+- HOSTILE-OBS-2 (budget log + Retry-After) — VERIFIED CLOSED
+- HOSTILE-TEST-1 (real 429 test) — VERIFIED CLOSED (drives 121 requests through live consume)
+
+**iOS hardening outcomes:**
+- HOSTILE-IOS-DS-1 (parallel fan-out): CLOSED structurally, but **validation test crashes** — HOSTILE-IOS-DS-NEW-1
+- HOSTILE-IOS-DS-2 (cold-launch race): WEAK (fragile MainActor invariant, undocumented)
+- HOSTILE-IOS-DS-3 (cancellation propagation): OPEN (no `Task.checkCancellation()`)
+- HOSTILE-IOS-DS-4 (test coverage): WEAK (parallel test broken; cancellation/duplicate/cap untested)
+- HOSTILE-IOS-DS-5 (duplicate changeId): WEAK (semantic flip last→first-write-wins, no test)
+- HOSTILE-IOS-DS-6 (cache bound): CLOSED-with-caveat (magic 500, no constant/comment)
+- HOSTILE-IOS-DS-9 (scenePhase TTL): WEAK / partial — only cold-launch gated; `onChange(of: scenePhase)` at DashboardView:214 still un-gated
+
+**NEW findings introduced by remediation — REMEDIATED IN SOURCE BRANCH**
+- **HOSTILE-OUTBOX-1A (P1)** — CLOSED via engine `e82bbdae`; `runOutboxTransaction` no longer has a DB-unavailable fallback and fails closed without initialized storage.
+- **HOSTILE-OUTBOX-1B (P1)** — CLOSED via engine `e82bbdae`; rollback tests prove business rows roll back when event emit fails and event rows roll back when the callback throws.
+- **HOSTILE-OUTBOX-1C (P2)** — CLOSED via engine `e82bbdae`; notification intent creation and Finance PATCH use `runOutboxTransaction`.
+- **HOSTILE-EVENT-CANCEL-RACE (P1)** — CLOSED via engine `e82bbdae`; event processed/failed paths preserve `canceled`.
+- **HOSTILE-MIGRATION-114-EDITED (P2)** — CLOSED via engine `e82bbdae`; migration 114 was restored and migration 115 rebuilds `event_outbox` with `canceled`.
+- **HOSTILE-IOS-DS-NEW-1 (P1)** — CLOSED via iOS `12a9d95`; URLProtocol mock state is lock-protected.
+- **HOSTILE-ADMIN-NO-TESTS (P1)** — CLOSED via engine `e82bbdae` plus `ca2e0cd9`; admin auth, tenant scope, replay, cancel, and attempts reset are behavior-tested.
+- **HOSTILE-ORPHAN-REAPER-NO-TEST (P2)** — CLOSED via engine `e82bbdae`; stale event/job lease reclaim paths are behavior-tested.
+- **HOSTILE-IOS-DS-9 (P1)** — CLOSED via iOS `12a9d95`; Dashboard scenePhase active refresh is TTL-gated.
+- **HOSTILE-IOS-DS-3 (P1)** — CLOSED via iOS `12a9d95`; summary refreshes include cancellation checkpoints and regression coverage.
+- **HOSTILE-IOS-DS-5 (P1/P2)** — CLOSED via iOS `12a9d95`; duplicate `changeId` first-write-wins is documented and tested.
+
+**Hostile re-QA closeout addendum**: `docs/archive/2026-05/event-backbone-readmodels-delta-sync/hostile-qa-report.md` (post-remediation § + v2 closeout §).
+
+**Independent gates after remediation**: tsc PASS · full `npm run verify` PASS 481 files / 7074 tests · focused event-backbone/security vitest PASS 52/52 · chat/admin follow-up vitest PASS 9/9 · Python pytest PASS 135/135 · iPhone Felipe DeltaSync tests PASS 11/11 · cannot-skip dashboard 23/23 · mock lint baseline 827.
+
+**Process improvement observed**: this is the FIRST hostile wave where Codex's closure narrative matched the source on architectural primitives. The pre-claim probe was adopted. Remaining gaps are now narrower and behavioral (fallback-path bug, asymmetric guards, missing rollback test, broken mock thread-safety) rather than "headline architectural property is fabricated."
 
 **Promoted P1 cluster — REMEDIATED IN SOURCE BRANCH**
 - Atomic event/job claims, stuck-lock recovery, dead-letter list/replay/cancel

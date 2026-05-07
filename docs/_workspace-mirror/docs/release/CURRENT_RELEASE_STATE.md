@@ -2,10 +2,10 @@
 
 Status: canonical
 Owner: release lead (Felipe)
-Last verified: 2026-05-05
+Last verified: 2026-05-07
 Update policy: update after merge / staging / production / deploy-gate changes. Live identity (branch/commit/version/migrations) auto-generated via engine/scripts/release-identity.sh --persist; do not type those by hand.
 
-Last updated: 2026-05-05
+Last updated: 2026-05-07
 
 > **Live identity** — branch / commit / version / migration count for the
 > current working tree are auto-generated. Do NOT type those values by
@@ -82,6 +82,10 @@ Last updated: 2026-05-05
 
 ## Evidence
 
+- Event backbone / read models / delta sync feature-branch report:
+  `docs/release/event-backbone-readmodels-delta-sync-report.md`. Source branch
+  remediation is complete through engine `ca2e0cd9` and iOS `12a9d95`; no
+  production deploy or push was performed from that branch.
 - Backend staging smoke evidence:
   - `engine/docs/release/smoke-evidence/staging-smoke-4f0b6f1-20260505T105847Z.json`
   - `engine/docs/release/smoke-evidence/staging-smoke-4f0b6f1-20260505T105931Z.json`
