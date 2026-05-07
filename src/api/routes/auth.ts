@@ -1367,13 +1367,18 @@ export function authRoutes(): Router {
     const result = db.prepare(
       'DELETE FROM ios_devices WHERE user_id = ? AND device_id = ?',
     ).run(userId, deviceId);
+    const notificationTokenResult = db.prepare(`
+      UPDATE notification_device_tokens
+      SET revoked_at = datetime('now')
+      WHERE user_id = ? AND device_id = ? AND revoked_at IS NULL
+    `).run(userId, deviceId);
 
     logAudit({
       userId,
       actorId: userId,
       action: 'access',
       resource: 'auth.logout',
-      details: { deviceId, devicesRevoked: result.changes },
+      details: { deviceId, devicesRevoked: result.changes, notificationTokensRevoked: notificationTokenResult.changes },
       ipAddress: (req.ip || req.socket?.remoteAddress) ?? undefined,
     });
 
@@ -1386,10 +1391,15 @@ export function authRoutes(): Router {
         userId,
         deviceId,
         devicesRevoked: result.changes,
+        notificationTokensRevoked: notificationTokenResult.changes,
       },
       'iOS session signed out',
     );
-    sendSuccess(res, { signedOut: true, devicesRevoked: result.changes });
+    sendSuccess(res, {
+      signedOut: true,
+      devicesRevoked: result.changes,
+      notificationTokensRevoked: notificationTokenResult.changes,
+    });
   }));
 
   router.post('/logout-all', verifyJwt, asyncHandler(async (req: Request, res: Response) => {
@@ -1397,13 +1407,18 @@ export function authRoutes(): Router {
     const db = getDb();
 
     const result = db.prepare('DELETE FROM ios_devices WHERE user_id = ?').run(userId);
+    const notificationTokenResult = db.prepare(`
+      UPDATE notification_device_tokens
+      SET revoked_at = datetime('now')
+      WHERE user_id = ? AND revoked_at IS NULL
+    `).run(userId);
 
     logAudit({
       userId,
       actorId: userId,
       action: 'access',
       resource: 'auth.logout_all',
-      details: { devicesRevoked: result.changes },
+      details: { devicesRevoked: result.changes, notificationTokensRevoked: notificationTokenResult.changes },
       ipAddress: (req.ip || req.socket?.remoteAddress) ?? undefined,
     });
 
@@ -1415,10 +1430,15 @@ export function authRoutes(): Router {
         surface: 'ios',
         userId,
         devicesRevoked: result.changes,
+        notificationTokensRevoked: notificationTokenResult.changes,
       },
       'iOS sessions signed out across all devices',
     );
-    sendSuccess(res, { signedOut: true, devicesRevoked: result.changes });
+    sendSuccess(res, {
+      signedOut: true,
+      devicesRevoked: result.changes,
+      notificationTokensRevoked: notificationTokenResult.changes,
+    });
   }));
 
   return router;
