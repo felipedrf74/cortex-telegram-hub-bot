@@ -404,7 +404,7 @@ export function trainingRoutes(): Router {
           privacyClassification: 'health',
           idempotencyKey: `training.feedback.recorded:${userId}:${rowId}:completed:${Boolean(notes)}:${rpe ?? 'none'}`,
         });
-      }, writeCompletion);
+      });
 
       const adherenceRate = getTrainingWeeklyAdherenceRate(userId, {
         getActivePlan: trainingPlans.getActivePlan,
@@ -486,7 +486,7 @@ export function trainingRoutes(): Router {
           privacyClassification: 'health',
           idempotencyKey: `training.session.updated:${userId}:${rowId}:skipped`,
         });
-      }, writeSkip);
+      });
 
       const adherenceRate = getTrainingWeeklyAdherenceRate(userId, {
         getActivePlan: trainingPlans.getActivePlan,

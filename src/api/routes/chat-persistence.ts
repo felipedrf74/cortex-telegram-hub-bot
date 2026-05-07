@@ -117,7 +117,7 @@ export function persistExchange(
       correlationId: options.requestId ?? undefined,
       requestId: options.requestId ?? undefined,
     });
-  }, writeExchange);
+  });
 }
 
 export function syncConversationStateForShortcut(

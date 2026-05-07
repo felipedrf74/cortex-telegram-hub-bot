@@ -134,7 +134,7 @@ export function financeRoutes(): Router {
           idempotencyKey: `finance.expense.created:${tenantId}:${userId}:${created.id}`,
         });
         return created;
-      }, writeTransaction);
+      });
       invalidateFinanceDerivedCaches(userId);
       logger.info({ userId, txId: tx.id }, 'iOS transaction added');
       sendSuccess(res, { transaction: tx }, { status: 201 });
@@ -188,7 +188,7 @@ export function financeRoutes(): Router {
     if (!consumeFinanceWriteBudget(res, tenantId, userId, 'finance_transaction_update')) return;
 
     try {
-      const updated = getDb().transaction(() => {
+      const updated = runOutboxTransaction((emitDomainEvent) => {
         const db = getDb();
         const existing = db.prepare(
           'SELECT id FROM finance_transactions WHERE id = ? AND user_id = ?'
@@ -231,7 +231,7 @@ export function financeRoutes(): Router {
           idempotencyKey: `finance.expense.updated:${tenantId}:${userId}:${txId}:${stableMutationFingerprint(req.body ?? {})}`,
         });
         return row;
-      })();
+      });
 
       if (!updated) {
         sendError(res, 'NOT_FOUND', 'Transaction not found or not owned by user', 404);
@@ -280,7 +280,7 @@ export function financeRoutes(): Router {
           idempotencyKey: `finance.expense.deleted:${tenantId}:${userId}:${txId}`,
         });
         return true;
-      }, writeDelete);
+      });
       if (!deleted) {
         sendError(res, 'NOT_FOUND', 'Transaction not found or not owned by user', 404);
         return;

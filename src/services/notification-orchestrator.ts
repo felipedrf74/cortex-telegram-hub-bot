@@ -16,7 +16,7 @@ import { getDb } from './database';
 import { getPushTokensForUser, isApnsConfigured, sendPushNotification } from './apns-sender';
 import { logger } from '../utils/logger';
 import { isValidTenantUserId, recordTenantScopeAnomaly } from './tenant-scope-observability';
-import { emitDomainEvent } from './event-outbox';
+import { emitDomainEvent, runOutboxTransaction } from './event-outbox';
 import { enqueueJob } from './background-job-queue';
 import { consumeResourceBudget } from './resource-budgets';
 
@@ -528,7 +528,7 @@ export async function createNotificationIntent(input: NotificationIntentInput): 
   if (!budget.allowed) {
     throw new Error('notification intent rate limited');
   }
-  const intent = getDb().transaction(() => {
+  const intent = runOutboxTransaction((emitDomainEvent) => {
     const persisted = persistIntent(normalized);
     emitDomainEvent({
       tenantId: persisted.tenantId,
@@ -549,7 +549,7 @@ export async function createNotificationIntent(input: NotificationIntentInput): 
       privacyClassification: persisted.privacyPolicy === 'financial' ? 'financial' : persisted.privacyPolicy === 'health' ? 'health' : 'internal',
       idempotencyKey: `notification.intent.created:${persisted.tenantId}:${persisted.userId}:${persisted.intentId}`,
     });
-    emitSourceSkillEventForIntent(persisted);
+    emitSourceSkillEventForIntent(persisted, emitDomainEvent);
     enqueueJob({
       tenantId: persisted.tenantId,
       userId: persisted.userId,
@@ -559,14 +559,17 @@ export async function createNotificationIntent(input: NotificationIntentInput): 
       idempotencyKey: `deliver_notification:${persisted.intentId}`,
     });
     return persisted;
-  })();
+  });
   return evaluateNotificationIntent(intent.intentId, intent.userId, intent.tenantId);
 }
 
-function emitSourceSkillEventForIntent(intent: NotificationIntentRecord): void {
+function emitSourceSkillEventForIntent(
+  intent: NotificationIntentRecord,
+  emit: typeof emitDomainEvent = emitDomainEvent,
+): void {
   const mapped = sourceSkillEventForIntent(intent);
   if (!mapped) return;
-  emitDomainEvent({
+  emit({
     tenantId: intent.tenantId,
     userId: intent.userId,
     sourceSkill: mapped.sourceSkill,

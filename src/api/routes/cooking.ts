@@ -506,7 +506,7 @@ export function cookingRoutes(): Router {
           idempotencyKey: `cooking.recipe.created:${tenantId}:${userId}:${created.id}`,
         });
         return created;
-      }, writeRecipe);
+      });
       logger.info({ userId, recipeId: recipe.id }, 'iOS recipe created');
       sendSuccess(res, { recipe }, { status: 201 });
     } catch (err: unknown) {

@@ -1,6 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Request } from 'express';
+import Database from 'better-sqlite3';
 import { clearTenantScopeAnomaliesForTests, getTenantScopeAnomalies } from '../../src/services/tenant-scope-observability';
+
+let testDb: Database.Database;
 
 const mockGetCached = vi.fn();
 const mockSetCache = vi.fn();
@@ -66,6 +69,14 @@ vi.mock('../../src/services/cache-store', () => ({
   setCache: (...args: unknown[]) => mockSetCache(...args),
   clearCache: (...args: unknown[]) => mockClearCache(...args),
   clearCacheByPrefix: (...args: unknown[]) => mockClearCacheByPrefix(...args),
+}));
+
+vi.mock('../../src/services/database', () => ({
+  getDb: () => testDb,
+  initDatabase: vi.fn(),
+  closeDatabase: vi.fn(),
+  findUnexpectedMigrationPrefixCollisions: vi.fn(() => []),
+  assertNoUnexpectedMigrationPrefixCollisions: vi.fn(),
 }));
 
 vi.mock('../../src/services/garmin-coach', () => ({
@@ -318,9 +329,11 @@ function resetTrainingOperationalEnvForTests(): void {
 describe('Training API routes', () => {
   afterEach(() => {
     vi.useRealTimers();
+    testDb.close();
   });
 
   beforeEach(async () => {
+    testDb = new Database(':memory:');
     resetTrainingOperationalEnvForTests();
 
     // Hardening audit 2026-04-20: reset the new calendar-lookup

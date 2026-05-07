@@ -84,23 +84,8 @@ export interface EventHandler {
 
 const MAX_EVENT_ATTEMPTS = 3;
 
-function isDatabaseNotInitializedError(err: unknown): boolean {
-  return err instanceof Error && err.message.includes('Database not initialized');
-}
-
-export function runOutboxTransaction<T>(
-  operation: (emit: typeof emitDomainEvent) => T,
-  fallbackWhenDatabaseUnavailable?: () => T,
-): T {
-  let db: Database.Database;
-  try {
-    db = getDb();
-  } catch (err) {
-    if (fallbackWhenDatabaseUnavailable && isDatabaseNotInitializedError(err)) {
-      return fallbackWhenDatabaseUnavailable();
-    }
-    throw err;
-  }
+export function runOutboxTransaction<T>(operation: (emit: typeof emitDomainEvent) => T): T {
+  const db = getDb();
   return db.transaction(() => operation(emitDomainEvent))();
 }
 
@@ -272,11 +257,13 @@ export function markEventProcessed(eventId: string, db: Database.Database = getD
         lock_owner = NULL,
         last_error = NULL
     WHERE event_id = ?
+      AND status != 'canceled'
   `).run(eventId);
 }
 
 export function markEventFailed(eventId: string, err: unknown, db: Database.Database = getDb()): EventOutboxStatus {
-  const row = db.prepare('SELECT attempts FROM event_outbox WHERE event_id = ?').get(eventId) as { attempts: number } | undefined;
+  const row = db.prepare('SELECT attempts, status FROM event_outbox WHERE event_id = ?').get(eventId) as { attempts: number; status: EventOutboxStatus } | undefined;
+  if (row?.status === 'canceled') return 'canceled';
   const attempts = row?.attempts ?? 1;
   const dead = attempts >= MAX_EVENT_ATTEMPTS;
   const delaySeconds = Math.min(3600, 2 ** Math.max(0, attempts - 1) * 30);
@@ -288,6 +275,7 @@ export function markEventFailed(eventId: string, err: unknown, db: Database.Data
         lock_owner = NULL,
         last_error = ?
     WHERE event_id = ?
+      AND status != 'canceled'
   `).run(
     dead ? 'dead_letter' : 'failed',
     dead ? '+0 seconds' : `+${delaySeconds} seconds`,
@@ -320,6 +308,7 @@ export function replayEventsForType(
   const result = db.prepare(`
     UPDATE event_outbox
     SET status = 'pending',
+        attempts = 0,
         not_before = datetime('now'),
         locked_at = NULL,
         lock_owner = NULL,
@@ -365,6 +354,7 @@ export function replayEvent(eventId: string, tenantId: number, db: Database.Data
   const result = db.prepare(`
     UPDATE event_outbox
     SET status = 'pending',
+        attempts = 0,
         not_before = datetime('now'),
         locked_at = NULL,
         lock_owner = NULL,

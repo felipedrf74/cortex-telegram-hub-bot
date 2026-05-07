@@ -62,12 +62,17 @@ vi.mock('../../src/utils/logger', () => ({
 }));
 
 import {
+  cancelEvent,
   claimPendingEvents,
   emitDomainEvent,
   ensureEventOutboxTables,
+  markEventFailed,
+  markEventProcessed,
   processPendingEvents,
+  runOutboxTransaction,
 } from '../../src/services/event-outbox';
 import {
+  claimPendingJobs,
   enqueueJob,
   ensureBackgroundJobTables,
   processPendingJobs,
@@ -170,6 +175,87 @@ describe('event backbone foundation', () => {
     expect(row.attempts).toBe(3);
   });
 
+  it('rolls back business writes when event emission fails inside the outbox transaction', () => {
+    testDb.exec('CREATE TABLE business_rows (id TEXT PRIMARY KEY)');
+
+    expect(() => runOutboxTransaction((emitDomainEvent) => {
+      testDb.prepare('INSERT INTO business_rows (id) VALUES (?)').run('business-1');
+      emitDomainEvent({
+        tenantId: 0,
+        userId: 7,
+        sourceSkill: 'training',
+        eventType: 'training.session.updated',
+        entityType: 'training_session',
+        entityId: 'bad-scope',
+        idempotencyKey: 'bad-scope',
+      });
+    })).toThrow(/tenantId required/);
+
+    const row = testDb.prepare('SELECT COUNT(*) AS count FROM business_rows').get() as { count: number };
+    expect(row.count).toBe(0);
+  });
+
+  it('rolls back event writes when the business operation fails after emitting', () => {
+    expect(() => runOutboxTransaction((emitDomainEvent) => {
+      emitDomainEvent({
+        tenantId: 7,
+        userId: 7,
+        sourceSkill: 'training',
+        eventType: 'training.session.updated',
+        entityType: 'training_session',
+        entityId: 'rollback-event',
+        idempotencyKey: 'rollback-event',
+      });
+      throw new Error('business write failed after emit');
+    })).toThrow(/business write failed/);
+
+    const row = testDb.prepare("SELECT COUNT(*) AS count FROM event_outbox WHERE entity_id = 'rollback-event'").get() as { count: number };
+    expect(row.count).toBe(0);
+  });
+
+  it('does not let late event processed or failed marks overwrite canceled rows', () => {
+    const event = emitDomainEvent({
+      tenantId: 7,
+      userId: 7,
+      sourceSkill: 'secretary',
+      eventType: 'secretary.conflict.detected',
+      entityType: 'agenda_item',
+      entityId: 'cancel-race',
+      idempotencyKey: 'cancel-race',
+    });
+    const claimed = claimPendingEvents(1, 'worker-before-cancel');
+    expect(claimed[0].eventId).toBe(event.eventId);
+    expect(cancelEvent(event.eventId, 7)).toBe(true);
+
+    markEventProcessed(event.eventId);
+    let row = testDb.prepare('SELECT status FROM event_outbox WHERE event_id = ?').get(event.eventId) as { status: string };
+    expect(row.status).toBe('canceled');
+
+    const result = markEventFailed(event.eventId, new Error('late worker failure'));
+    row = testDb.prepare('SELECT status FROM event_outbox WHERE event_id = ?').get(event.eventId) as { status: string };
+    expect(result).toBe('canceled');
+    expect(row.status).toBe('canceled');
+  });
+
+  it('reclaims stale processing event leases after fifteen minutes', () => {
+    const event = emitDomainEvent({
+      tenantId: 7,
+      userId: 7,
+      sourceSkill: 'content',
+      eventType: 'content.idea.updated',
+      entityType: 'content_topic',
+      entityId: 'stale-event',
+      idempotencyKey: 'stale-event',
+    });
+    expect(claimPendingEvents(1, 'stale-event-worker')).toHaveLength(1);
+    testDb.prepare("UPDATE event_outbox SET locked_at = datetime('now', '-20 minutes') WHERE event_id = ?").run(event.eventId);
+
+    const reclaimed = claimPendingEvents(1, 'reaper-event-worker');
+    expect(reclaimed.map((row) => row.eventId)).toEqual([event.eventId]);
+    expect(reclaimed[0].attempts).toBe(2);
+    expect(reclaimed[0].lockOwner).toBe('reaper-event-worker');
+  });
+
   it('enqueues jobs idempotently and processes a read-model projection job', async () => {
     const job = enqueueJob({
       tenantId: 7,
@@ -190,6 +276,22 @@ describe('event backbone foundation', () => {
     const result = await processPendingJobs(defaultJobHandlers, { limit: 1 });
     expect(result.completed).toBe(1);
     expect(getAppSummary({ tenantId: 7, userId: 7, summaryType: 'home' }).payload.kind).toBe('home');
+  });
+
+  it('reclaims stale processing job leases after fifteen minutes', () => {
+    const job = enqueueJob({
+      tenantId: 7,
+      userId: 7,
+      jobType: 'project_read_models',
+      idempotencyKey: 'stale-job',
+    });
+    expect(claimPendingJobs(1, 'stale-job-worker')).toHaveLength(1);
+    testDb.prepare("UPDATE background_jobs SET locked_at = datetime('now', '-20 minutes') WHERE job_id = ?").run(job.jobId);
+
+    const reclaimed = claimPendingJobs(1, 'reaper-job-worker');
+    expect(reclaimed.map((row) => row.jobId)).toEqual([job.jobId]);
+    expect(reclaimed[0].attempts).toBe(2);
+    expect(reclaimed[0].lockOwner).toBe('reaper-job-worker');
   });
 
   it('projects bounded summaries without provider/calendar calls', () => {

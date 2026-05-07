@@ -199,7 +199,7 @@ export function registerContentTopicRoutes(
           idempotencyKey: `content.idea.created:${userId}:${created.id}`,
         });
         return created;
-      }, writeTopic);
+      });
       const syncedTopic = await syncContentTopicSecretaryArtifacts(userId, topic, { language });
       invalidateContentDerivedCaches(userId);
       sendSuccess(res, { topic: syncedTopic }, { status: 201 });
@@ -284,7 +284,7 @@ export function registerContentTopicRoutes(
           idempotencyKey: `content.idea.updated:${userId}:${row.id}:${mutationFingerprint}`,
         });
         return row;
-      }, writeUpdate);
+      });
       if (!updated) {
         sendError(res, 'NOT_FOUND', 'Topic not found or not owned by user', 404);
         return;
@@ -336,7 +336,7 @@ export function registerContentTopicRoutes(
           idempotencyKey: `content.idea.deleted:${userId}:${topicId}`,
         });
         return true;
-      }, writeDelete);
+      });
       if (!deleted) {
         sendError(res, 'NOT_FOUND', 'Topic not found or not owned by user', 404);
         return;

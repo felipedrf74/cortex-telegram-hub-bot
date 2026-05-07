@@ -290,6 +290,7 @@ export function replayJob(jobId: string, tenantId: number, db: Database.Database
   const result = db.prepare(`
     UPDATE background_jobs
     SET status = 'pending',
+        attempts = 0,
         not_before = datetime('now'),
         locked_at = NULL,
         lock_owner = NULL,
