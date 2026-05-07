@@ -78,6 +78,19 @@ mirror in sync. iOS xcodebuild simulator 11/11 PASS. Zero regressions found.
 Remaining gates are operator-only: authenticated iOS product-surface walkthrough,
 migration 115 staging apply, production env flag confirmation, APNs credentials.
 
+**2026-05-07 staging deploy evidence** —
+`docs/archive/2026-05/event-backbone-readmodels-delta-sync/staging-deploy-evidence-2026-05-07.md`.
+Verdict: **STAGING_READY**, not production-ready. Feature branch tips are engine
+`b13e2495` and iOS `dd8ffe0`, both pushed to origin. Staging deploy completed
+with conservative event-backbone flags, migration 115 applied on the staging DB,
+worker-disabled soak queued safely, worker-enabled soak drained to
+`event_outbox processed=18` and `background_jobs completed=27`, and post-worker
+staging smoke passed 21/21. Dead-letter admin routes returned zero events/jobs.
+Production push/promote remains operator-only pending signed TestFlight
+two-account walkthrough, APNs production credentials, time-sensitive entitlement
+confirmation, production event-backbone env flag decision, and production row
+count review if event_backbone tables already exist there.
+
 **Hostile P0 cluster — REMEDIATED IN SOURCE BRANCH**
 | ID | Source-branch remediation | Hostile re-QA verdict |
 |---|---|---|

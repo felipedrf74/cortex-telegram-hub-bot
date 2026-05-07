@@ -1,0 +1,195 @@
+{
+  "version": "1",
+  "runStartedAt": "2026-05-07T19:22:40Z",
+  "runCompletedAt": "2026-05-07T19:22:55.155Z",
+  "branch": "feature/event-backbone-readmodels-delta-sync",
+  "sha": "79e36fb3",
+  "host": "staging",
+  "verdict": "failed",
+  "totals": {
+    "passed": 20,
+    "failed": 1,
+    "total": 39
+  },
+  "checks": [
+    {
+      "name": "content-engine /health",
+      "status": "passed",
+      "detail": "status=ok"
+    },
+    {
+      "name": "nexus-hub /api/snapshot",
+      "status": "passed",
+      "detail": "version=4.14.134"
+    },
+    {
+      "name": "snapshot.uptime",
+      "status": "passed",
+      "detail": "uptime={\"seconds\":1902,\"human\":\"31m\"}"
+    },
+    {
+      "name": "snapshot.bot",
+      "status": "passed",
+      "detail": "bot={\"polling\":false,\"restarting\":false,\"las"
+    },
+    {
+      "name": "snapshot.integrations",
+      "status": "passed",
+      "detail": "integrations=[{\"name\":\"Telegram Bot\",\"group\":\"system\""
+    },
+    {
+      "name": "snapshot.apiUsage",
+      "status": "passed",
+      "detail": "apiUsage={\"today\":{\"calls\":6,\"cost\":0.00094155,\"t"
+    },
+    {
+      "name": "cost-by-domain.totalCost",
+      "status": "passed",
+      "detail": "totalCost=0.067"
+    },
+    {
+      "name": "cost-by-domain.detailed",
+      "status": "passed",
+      "detail": "detailed=[{\"domain\":\"coach_analysis\",\"category\":\""
+    },
+    {
+      "name": "cost-by-domain.providerSplit",
+      "status": "passed",
+      "detail": "providerSplit=[{\"provider\":\"gemini\",\"calls\":69,\"cost\":"
+    },
+    {
+      "name": "cost-by-domain.dailySeries",
+      "status": "passed",
+      "detail": "dailySeries=[{\"date\":\"2026-05-01\",\"cost\":0.006,\"call"
+    },
+    {
+      "name": "provider-stats.providers",
+      "status": "passed",
+      "detail": "providers=[{\"name\":\"gemini\",\"today\":{\"calls\":0,\"co"
+    },
+    {
+      "name": "iOS /api/v1/dashboard",
+      "status": "passed",
+      "detail": "http_code=401 envelope=canonical"
+    },
+    {
+      "name": "iOS /api/v1/tasks/lists",
+      "status": "passed",
+      "detail": "http_code=401 envelope=canonical"
+    },
+    {
+      "name": "iOS /api/v1/training/today",
+      "status": "passed",
+      "detail": "http_code=401 envelope=canonical"
+    },
+    {
+      "name": "iOS /api/v1/plan/today",
+      "status": "passed",
+      "detail": "http_code=401 envelope=canonical"
+    },
+    {
+      "name": "PM2 staging processes",
+      "status": "passed",
+      "detail": "ns=online"
+    },
+    {
+      "name": "ce=online",
+      "detail": null
+    },
+    {
+      "name": "ns_restarts=0",
+      "detail": null
+    },
+    {
+      "name": "Staging DB integrity",
+      "status": "passed",
+      "detail": "integrity_check=ok"
+    },
+    {
+      "name": "domain training /api/v1/training/today",
+      "status": "passed",
+      "detail": "http_code=401 envelope=canonical"
+    },
+    {
+      "name": "domain cooking /api/v1/cooking/recipes",
+      "status": "passed",
+      "detail": "http_code=401 envelope=canonical"
+    },
+    {
+      "name": "domain content /api/v1/content/ideas",
+      "status": "passed",
+      "detail": "http_code=401 envelope=canonical"
+    },
+    {
+      "name": "domain migration count",
+      "status": "failed",
+      "detail": "/home/dominguez/telegram-hub-bot-staging/node_modules/better-sqlite3/lib/methods/wrappers.js:5"
+    },
+    {
+      "name": "",
+      "status": "return this[cppdb].prepare(sql, this, false);",
+      "detail": null
+    },
+    {
+      "name": "",
+      "status": "                   ^",
+      "detail": null
+    },
+    {
+      "name": "SqliteError: no such table: applied_migrations",
+      "detail": null
+    },
+    {
+      "name": "    at Database.prepare (/home/dominguez/telegram-hub-bot-staging/node_modules/better-sqlite3/lib/methods/wrappers.js:5:21)",
+      "detail": null
+    },
+    {
+      "name": "    at [eval]:3:22",
+      "detail": null
+    },
+    {
+      "name": "    at runScriptInThisContext (node:internal/vm:209:10)",
+      "detail": null
+    },
+    {
+      "name": "    at node:internal/process/execution:446:12",
+      "detail": null
+    },
+    {
+      "name": "    at [eval]-wrapper:6:24",
+      "detail": null
+    },
+    {
+      "name": "    at runScriptInContext (node:internal/process/execution:444:60)",
+      "detail": null
+    },
+    {
+      "name": "    at evalFunction (node:internal/process/execution:279:30)",
+      "detail": null
+    },
+    {
+      "name": "    at evalTypeScript (node:internal/process/execution:291:3)",
+      "detail": null
+    },
+    {
+      "name": "    at node:internal/main/eval_string:74:3 {",
+      "detail": null
+    },
+    {
+      "name": "  code: 'SQLITE_ERROR'",
+      "detail": null
+    },
+    {
+      "name": "}",
+      "detail": null
+    },
+    {
+      "name": "Node.js v22.22.2",
+      "detail": null
+    },
+    {
+      "name": "ERR",
+      "detail": null
+    }
+  ]
+}
