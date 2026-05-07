@@ -47,7 +47,7 @@ into `docs/_workspace-mirror/docs/release/OPEN_ITEMS.md`.
 | U2 archive index | `feature/tech-debt-2026-05-u2-batch-report-index` | `ab0d332f` |
 | U3 OPEN_ITEMS rotation | `feature/tech-debt-2026-05-u3-open-items-rotation` | `61ba774b` |
 | U4 staged CLAUDE text | `feature/tech-debt-2026-05-u4-claude-md-staged-update` | `03ba6b5d` |
-| U5 closure | `feature/tech-debt-2026-05-u5-batch-24-closure` | this report commit |
+| U5 closure | `feature/tech-debt-2026-05-u5-batch-24-closure` | `ad4bf434` + release identity sync `26cdc0a5` |
 
 ## U1 - Comprehensive Sweep Dossier
 
