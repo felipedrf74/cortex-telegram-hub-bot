@@ -9,7 +9,7 @@
  * The lifecycle of a notification:
  *   1. Created by a content event (topic ready, script generated, etc.)
  *   2. Stored in content_notifications table (status='unread')
- *   3. APNs push sent as a delivery hint (push_sent=1)
+ *   3. Secretary Notification Orchestrator decides delivery/push
  *   4. iOS app reads via GET /api/v1/notifications
  *   5. User marks as read (status='read')
  *   6. User resolves the action (status='resolved')
@@ -149,8 +149,9 @@ export function createNotification(opts: {
 }
 
 /**
- * Create a notification AND send a push via APNs.
- * The push is a delivery hint — the notification is durable regardless.
+ * Create a notification AND emit a central NotificationIntent.
+ * The orchestrator decides whether push, digest, in-app only, or quiet-hours
+ * delay is appropriate. Skills must not call APNs directly.
  */
 export async function createAndPushNotification(opts: {
   userId: number;
@@ -164,22 +165,33 @@ export async function createAndPushNotification(opts: {
     return -1;
   }
 
-  // Try APNs push (non-blocking, non-fatal)
+  // Emit to the Secretary Notification Orchestrator (non-blocking, non-fatal).
   try {
-    const { sendPushNotification } = await import('./apns-sender');
-    const result = await sendPushNotification(opts.userId, {
+    const { createNotificationIntent } = await import('./notification-orchestrator');
+    const result = await createNotificationIntent({
+      userId: opts.userId,
+      tenantId: opts.userId,
+      sourceSkill: 'content',
+      type: mapContentTypeToIntentType(opts.type),
+      priority: mapContentTypeToPriority(opts.type),
+      relatedEntityId: id,
+      relatedEntityType: 'content_notification',
       title: opts.title,
       body: opts.body,
-      data: { notificationId: id, type: opts.type, ...opts.data },
-      threadId: `content-${opts.type}`,
-      sound: 'default',
+      sensitiveBody: opts.body,
+      actionButtons: mapContentTypeToActions(opts.type),
+      deeplink: contentNotificationDeeplink(id, opts.data),
+      dedupeKey: `content:${opts.type}:${id}`,
+      requiresUserAction: opts.type === 'script_ready' || opts.type === 'content_action_required',
+      deliveryPolicy: 'auto',
+      privacyPolicy: 'private_content',
     });
 
-    if (result.sent) {
+    if (result.deliveryAttempts.some((attempt) => attempt.status === 'sent')) {
       markPushSent(id);
     }
   } catch (err) {
-    logger.debug({ err, notificationId: id }, 'APNs push skipped (non-fatal)');
+    logger.debug({ err, notificationId: id }, 'Notification intent delivery skipped (non-fatal)');
   }
 
   return id;
@@ -624,4 +636,49 @@ function safeParseJSON(val: any, fallback: any): any {
   if (val === null || val === undefined) return fallback;
   if (typeof val !== 'string') return val;
   try { return JSON.parse(val); } catch { return fallback; }
+}
+
+function mapContentTypeToIntentType(type: NotificationType): import('./notification-orchestrator').NotificationIntentType {
+  switch (type) {
+    case 'script_ready':
+    case 'content_action_required':
+      return 'approval_required';
+    case 'topic_candidates_ready':
+    case 'weekly_package_ready':
+      return 'decision_required';
+    case 'performance_logged':
+    case 'agent_insight':
+    default:
+      return 'insight';
+  }
+}
+
+function mapContentTypeToPriority(type: NotificationType): import('./notification-orchestrator').NotificationPriority {
+  switch (type) {
+    case 'script_ready':
+    case 'content_action_required':
+      return 'active';
+    case 'topic_candidates_ready':
+    case 'weekly_package_ready':
+    case 'performance_logged':
+    case 'agent_insight':
+    default:
+      return 'passive';
+  }
+}
+
+function mapContentTypeToActions(type: NotificationType): import('./notification-orchestrator').NotificationActionButton[] {
+  if (type === 'script_ready' || type === 'content_action_required') {
+    return [
+      { id: 'approve_script', label: 'Approve', style: 'primary' },
+      { id: 'request_rewrite', label: 'Rewrite', style: 'secondary' },
+    ];
+  }
+  return [{ id: 'open_detail', label: 'Open', style: 'primary' }];
+}
+
+function contentNotificationDeeplink(notificationId: number, data?: Record<string, any>): string {
+  const scriptId = data?.scriptId ?? data?.script_id;
+  if (scriptId) return `nexus://content/script/${scriptId}`;
+  return `nexus://notifications/${notificationId}`;
 }

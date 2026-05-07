@@ -161,6 +161,7 @@ HAS_AUDIT=false               # audit trail and audit-event contracts
 HAS_DEPLOY_CONFIG=false       # PM2/deploy config and environment shape
 HAS_IOS_NAVIGATION=false      # tab/navigation/view-model responsiveness
 HAS_IOS_DTO=false             # app-facing DTO/decoder contract changes
+HAS_IOS_NOTIFICATION=false    # APNs/local notifications/Decision Center UI
 
 # Use grep-based detection so multiple flags can match a single file.
 # Bash `case` stops at the first match — that's wrong here because e.g.
@@ -275,10 +276,11 @@ match '^src/utils/logger|^src/utils/redact|^src/utils/log-context|^__tests__/uti
 # task/calendar state. The user-scope test pins per-tenant iteration.
 match '^src/services/scheduler|^src/services/cron|^src/services/job-|^__tests__/services/scheduler-' && HAS_SCHEDULER=true
 
-# Notification / APNs / push routing — APNs token upload, content
-# notification routes, push payload shaping. The closed-beta P0 list
-# includes APNs delivery proof; regressions here block iOS release.
-match '^src/services/apns-|^src/services/notification|^src/api/routes/notifications|^src/api/routes/content-notification|^src/services/content-notifications|^__tests__/services/apns-|^__tests__/services/content-notifications|^__tests__/api/notifications-|^__tests__/api/content-notification-' && HAS_NOTIFICATION=true
+# Notification / APNs / push routing — APNs token upload, Secretary
+# Notification Orchestrator, privacy-safe payload shaping, decision logs,
+# device tokens, and action handling. Regressions here can leak tenant data,
+# spam users, or expose private lock-screen copy.
+match '^src/services/apns-|^src/services/notification|^src/api/routes/notifications|^src/api/routes/content-notification|^src/services/content-notification|^__tests__/services/apns-|^__tests__/services/notification-|^__tests__/services/content-notifications|^__tests__/api/notifications-|^__tests__/api/content-notification-|^__tests__/security/notification-' && HAS_NOTIFICATION=true
 
 # Health integration — Garmin, Apple Health, HealthKit, body-battery,
 # readiness, wearable cache isolation. Cross-user readiness leaks are
@@ -321,6 +323,9 @@ while IFS= read -r f; do
   case "$f" in
     *Service.swift|*Repository.swift|*DTO*|*Contract*|*Decoder*|*Response*.swift|*ContractDecoderResilienceTests.swift|*HomeViewStateContractDecodingTests.swift|*TrainingHomeViewStateContractDecodingTests.swift|*ContentHomeContractDecodingTests.swift|*PlanGenerateResponse*Tests.swift) HAS_IOS_DTO=true ;;
   esac
+  case "$f" in
+    *Notification*|*DecisionCenter*|*InboxView.swift|*DeepLinkRouter.swift|*Notification*Tests.swift|*Notification*UITests.swift|*DecisionCenter*Tests.swift|*DecisionCenter*UITests.swift) HAS_IOS_NOTIFICATION=true; HAS_IOS_SRC=true ;;
+  esac
 done <<EOF
 $CHANGED
 EOF
@@ -328,6 +333,7 @@ EOF
 $HAS_IOS_AUTH && HAS_AUTH_OR_TENANT=true
 $HAS_IOS_NAVIGATION && HAS_IOS_SRC=true
 $HAS_IOS_DTO && HAS_IOS_SRC=true
+$HAS_IOS_NOTIFICATION && HAS_IOS_SRC=true
 
 # ── Tier resolution ────────────────────────────────────
 # Tier 0: always.
@@ -370,6 +376,7 @@ $HAS_AUDIT && CANNOT_SKIP+=("audit-trail-emission-and-scope")
 $HAS_DEPLOY_CONFIG && CANNOT_SKIP+=("deploy-config-health-rehearsal")
 $HAS_IOS_NAVIGATION && CANNOT_SKIP+=("ios-navigation-responsiveness")
 $HAS_IOS_DTO && CANNOT_SKIP+=("ios-contract-decoder-resilience")
+$HAS_IOS_NOTIFICATION && CANNOT_SKIP+=("ios-notification-decision-center")
 
 # Tier 1 if anything non-doc is in scope
 if $HAS_NON_DOC; then
@@ -424,7 +431,7 @@ if $HAS_NON_DOC; then
     # Engineering-excellence hardening (2026-05-04): wire new flags.
     $HAS_LOGGER && VITEST_GLOBS+=("__tests__/utils/logger-*.test.ts" "__tests__/api/secret-guards.test.ts")
     $HAS_SCHEDULER && VITEST_GLOBS+=("__tests__/services/scheduler-*.test.ts")
-    $HAS_NOTIFICATION && VITEST_GLOBS+=("__tests__/services/apns-*.test.ts" "__tests__/services/content-notifications*.test.ts" "__tests__/api/notifications-*.test.ts" "__tests__/api/content-notification-*.test.ts")
+    $HAS_NOTIFICATION && VITEST_GLOBS+=("__tests__/services/apns-*.test.ts" "__tests__/services/notification-*.test.ts" "__tests__/services/content-notifications*.test.ts" "__tests__/api/notifications-*.test.ts" "__tests__/api/content-notification-*.test.ts" "__tests__/security/notification-*.test.ts" "__tests__/security/p0-chat-identity-isolation.test.ts")
     $HAS_HEALTH_INTEGRATION && VITEST_GLOBS+=("__tests__/services/garmin-*.test.ts" "__tests__/services/apple-health-*.test.ts" "__tests__/services/integration-health-*.test.ts" "__tests__/api/wearable-*.test.ts" "__tests__/api/health-data-*.test.ts" "__tests__/api/garmin-auth-*.test.ts" "__tests__/portal/integration-health-*.test.ts")
     $HAS_RATE_LIMIT && VITEST_GLOBS+=("__tests__/api/rate-limiter.test.ts" "__tests__/security/**/*.test.ts")
     $HAS_AUDIT && VITEST_GLOBS+=("__tests__/services/audit-trail.test.ts" "__tests__/api/authenticated-support-routes-scope.test.ts" "__tests__/portal/portal-admin-audit.test.ts" "__tests__/portal/portal-admin-data-routes.test.ts" "__tests__/portal/portal-admin-data-isolation.integration.test.ts")
@@ -465,6 +472,7 @@ if $HAS_IOS_SRC; then
   $HAS_IOS_AUTH && XCTEST_CLASSES+=("Nexus HubTests/AppleSignInNonceTests" "Nexus HubTests/KeychainHelperTests" "Nexus HubTests/AuthManagerFixtureLeakTests" "Nexus HubTests/AuthManagerPersistenceTests" "Nexus HubTests/AuthUserPresentationTests" "Nexus HubTests/GoogleAuthCallbackResolverTests")
   $HAS_IOS_NAVIGATION && XCTEST_CLASSES+=("Nexus HubTests/NavigationPerformanceSourcePinsTests" "Nexus HubTests/MainTabViewBadgeMemoizationTests" "Nexus HubUITests/AppWideResponsivenessUITests" "Nexus HubUITests/HomeWeekNavigationPerformanceUITests")
   $HAS_IOS_DTO && XCTEST_CLASSES+=("Nexus HubTests/ContractDecoderResilienceTests" "Nexus HubTests/HomeViewStateContractDecodingTests" "Nexus HubTests/TrainingHomeViewStateContractDecodingTests" "Nexus HubTests/ContentHomeContractDecodingTests")
+  $HAS_IOS_NOTIFICATION && XCTEST_CLASSES+=("Nexus HubTests/NotificationManagerTests" "Nexus HubTests/DeepLinkRouterTests" "Nexus HubTests/NotificationDecisionCenterTests" "Nexus HubUITests/NotificationDecisionCenterUITests")
   XCTEST_CLASSES+=("Nexus HubTests/ContractDecoderResilienceTests")
   XCTEST_CLASSES+=("Nexus HubTests/AuthManagerPersistenceTests")
 fi

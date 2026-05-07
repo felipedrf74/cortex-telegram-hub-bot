@@ -21,7 +21,7 @@ import { getFiscalCollectionSummary, isFiscalBundleDue, sendFiscalBundleNow } fr
 import { generateCoachBriefing } from './garmin-coach';
 import { isGarminConfigured, keepAlive as garminKeepAlive, ensureAuthenticated as garminEnsureAuth } from './garmin';
 import { registerJob, wrapJob, recordGarminRefresh, setJobFailureNotifier, setJobEnabledChecker, getJobMap, seedJobLastRunFromHistory } from '../portal/telemetry';
-import { sendPushNotification } from './apns-sender';
+import { createNotificationIntent, releaseDueNotificationDeliveries } from './notification-orchestrator';
 import { isCronJobEnabled } from '../skills/skill-manager';
 import { CronExpressionParser } from 'cron-parser';
 import { flushQueue, getPendingCount } from './invoice-queue';
@@ -691,16 +691,27 @@ export function startScheduler(bot?: any): void {
       } catch (err) {
         logger.error({ err, userId: targetUserId }, 'Failed to send reminder');
       }
-      // Parallel iOS push. sendPushNotification already no-ops cleanly when
-      // APNs isn't configured and swallows its own errors, so we don't wrap
-      // it in try/catch — failures are logged inside the sender.
-      await sendPushNotification(targetUserId, {
+      // Parallel iOS notification. The Secretary Notification Orchestrator
+      // decides push vs in-app vs quiet-hours/digest; scheduler only emits
+      // the intent.
+      await createNotificationIntent({
+        userId: targetUserId,
+        tenantId: targetUserId,
+        sourceSkill: 'secretary',
+        type: 'reminder',
+        priority: 'active',
+        relatedEntityId: reminder.id,
+        relatedEntityType: 'reminder',
         title: 'Reminder',
         body: reminder.message,
-        sound: 'default',
-        threadId: 'reminders',
-        category: 'REMINDER',
-        data: { reminderId: reminder.id, type: 'reminder' },
+        sensitiveBody: reminder.message,
+        actionButtons: [
+          { id: 'mark_done', label: 'Done', style: 'primary' },
+          { id: 'snooze', label: 'Snooze', style: 'secondary' },
+        ],
+        deeplink: `nexus://notifications/reminder-${reminder.id}`,
+        dedupeKey: `secretary:reminder:${targetUserId}:${reminder.id}`,
+        privacyPolicy: 'sensitive',
       });
       markReminderFired(reminder.id);
     }
@@ -1312,12 +1323,20 @@ export function startScheduler(bot?: any): void {
         } catch (err) {
           logger.error({ err, userId }, 'Failed to send channel relearn notification');
         }
-        await sendPushNotification(userId, {
+        await createNotificationIntent({
+          userId,
+          tenantId: userId,
+          sourceSkill: 'content',
+          type: result.failed > 0 ? 'sync_failure' : 'insight',
+          priority: result.failed > 0 ? 'active' : 'passive',
+          relatedEntityId: 'channel_relearn',
+          relatedEntityType: 'content_channel_relearn',
           title: 'Channel Re-Learn',
           body: `${result.analyzed} channels analyzed${result.failed > 0 ? `, ${result.failed} failed` : ''}${result.synthesized ? ' — knowledge updated' : ''}`,
-          threadId: 'channel_relearn',
-          category: 'BRIEFING',
-          data: { type: 'channel_relearn', analyzed: result.analyzed, failed: result.failed, synthesized: result.synthesized },
+          actionButtons: [{ id: 'open_detail', label: 'Open', style: 'primary' }],
+          deeplink: 'nexus://notifications/channel-relearn',
+          dedupeKey: `content:channel_relearn:${userId}:${startOfDay()}`,
+          privacyPolicy: 'private_content',
         });
       }
     }
@@ -1537,8 +1556,16 @@ export function startScheduler(bot?: any): void {
     }
   });
 
+  registerJob('notification_release', 'Notification delayed/digest release', '*/15 * * * *', 'system');
+  cron.schedule('*/15 * * * *', wrapJob('notification_release', async () => {
+    const result = await releaseDueNotificationDeliveries();
+    if (result.inspected > 0) {
+      logger.info(result, 'Notification delayed/digest release completed');
+    }
+  }));
+
   logger.info(
-    `Scheduler started: reminders, daily briefing (${config.todo.digestTime}), end-of-day (21:00), weekly (Fri 17:00), shared list (*/5), content (16:43), invoices (1st 09:00/09:15/09:30), fiscal-bundle (daily 08:10 due-check), conflict (19:30), fossa (bi-weekly Mon 07:30), garmin-keepalive (*/30), coach (${config.garmin.coachTime}), invoice-queue (*/15), channel-relearn (Sun 03:00), tue-reels (Tue 09:00), thu-youtube (Thu 09:00), fri-weekly (Fri 18:30), pipeline-agent (20:00), expire-signals (hourly), db-backup (${config.backup.time}), dst-watchdog (*/15)`
+    `Scheduler started: reminders, daily briefing (${config.todo.digestTime}), end-of-day (21:00), weekly (Fri 17:00), shared list (*/5), content (16:43), invoices (1st 09:00/09:15/09:30), fiscal-bundle (daily 08:10 due-check), conflict (19:30), fossa (bi-weekly Mon 07:30), garmin-keepalive (*/30), coach (${config.garmin.coachTime}), invoice-queue (*/15), channel-relearn (Sun 03:00), tue-reels (Tue 09:00), thu-youtube (Thu 09:00), fri-weekly (Fri 18:30), pipeline-agent (20:00), notification-release (*/15), expire-signals (hourly), db-backup (${config.backup.time}), dst-watchdog (*/15)`
   );
 }
 

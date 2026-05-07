@@ -1384,6 +1384,11 @@ table.legacy th {
         <span class="nav-label">Cooking</span>
         <span class="nav-badge mono" id="nav-cooking-badge"></span>
       </a>
+      <a class="nav-item" data-nav="notifications">
+        <span class="nav-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 8a6 6 0 10-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9"/><path d="M13.73 21a2 2 0 01-3.46 0"/></svg></span>
+        <span class="nav-label">Notifications</span>
+        <span class="nav-badge mono" id="nav-notifications-badge"></span>
+      </a>
     </nav>
 
     <div class="nav-section-label" style="margin-top: var(--space-5)">Configuration</div>
@@ -2473,6 +2478,54 @@ table.legacy th {
       </div>
     </section>
 
+    <!-- ════════════════════ NOTIFICATIONS ════════════════════ -->
+    <section class="section" data-section="notifications">
+      <div class="section-header">
+        <div>
+          <h1 class="section-title">Decision Center</h1>
+          <div class="section-subtitle">Secretary-orchestrated notification intents, decisions, and safe portal previews</div>
+        </div>
+      </div>
+
+      <div class="kpi-grid" style="margin-bottom:var(--space-4)">
+        <div class="kpi-card">
+          <div class="kpi-label">Unread</div>
+          <div class="kpi-value" id="notification-kpi-unread">—</div>
+          <div class="kpi-sub">active center items</div>
+        </div>
+        <div class="kpi-card">
+          <div class="kpi-label">Needs decision</div>
+          <div class="kpi-value" id="notification-kpi-decision">—</div>
+          <div class="kpi-sub">approval or conflict</div>
+        </div>
+        <div class="kpi-card">
+          <div class="kpi-label">Preferences</div>
+          <div class="kpi-value" id="notification-kpi-profiles">—</div>
+          <div class="kpi-sub">scoped profiles</div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-header">
+          <div>
+            <div class="card-title">Notification center</div>
+            <div class="card-subtitle">Portal shows privacy-safe bodies; private detail stays in the authenticated app</div>
+          </div>
+        </div>
+        <div id="notification-center-content"><div class="empty">Loading notifications…</div></div>
+      </div>
+
+      <div class="card" style="margin-top:var(--space-4)">
+        <div class="card-header">
+          <div>
+            <div class="card-title">Notification preferences</div>
+            <div class="card-subtitle">Channel and digest settings by scoped user profile</div>
+          </div>
+        </div>
+        <div id="notification-preferences-content"><div class="empty">Loading preferences…</div></div>
+      </div>
+    </section>
+
     <!-- ════════════════════ SETTINGS ════════════════════ -->
     <section class="section" data-section="settings">
       <div class="section-header">
@@ -2786,8 +2839,9 @@ table.legacy th {
   // We persist the active scope to localStorage so it survives reloads,
   // expose it as a top-of-Content-section input, and make `apiFetch`
   // automatically attach the scope headers ONLY when the URL is a
-  // V1 admin content route (so legacy /api/* paths keep their old
-  // behavior). Operators can clear the scope by leaving the inputs empty.
+  // scoped content or notification route (so legacy /api/* paths keep
+  // their old behavior). Operators can clear the scope by leaving the
+  // inputs empty.
   const SCOPE_STORAGE_KEY = 'nexus-portal-content-scope-v1';
 
   function loadStoredScope() {
@@ -2811,12 +2865,19 @@ table.legacy th {
     return typeof url === 'string'
       && url.includes('/api/v1/admin/content');
   }
+  function isNotificationScopedRoute(url) {
+    return typeof url === 'string'
+      && (
+        url.includes('/api/notifications')
+        || url.includes('/api/notification-preferences')
+      );
+  }
 
   // ────────── Fetch wrapper with auth ──────────
   async function apiFetch(url, opts = {}) {
     const headers = { ...(opts.headers || {}) };
     if (TOKEN) headers['Authorization'] = 'Bearer ' + TOKEN;
-    if (isContentScopedRoute(url)) {
+    if (isContentScopedRoute(url) || isNotificationScopedRoute(url)) {
       if (CONTENT_SCOPE.userId) headers['x-nexus-user-id'] = String(CONTENT_SCOPE.userId);
       if (CONTENT_SCOPE.tenantId) headers['x-nexus-tenant-id'] = String(CONTENT_SCOPE.tenantId);
     }
@@ -2927,7 +2988,7 @@ table.legacy th {
   // ════════════════════════════════════════════════════════════
   // Navigation — hash routing between sections
   // ════════════════════════════════════════════════════════════
-  const SECTIONS = ['dashboard', 'alerts', 'users', 'ai', 'jobs', 'skills', 'content', 'cooking', 'settings', 'invites', 'founders', 'waitlist', 'audit'];
+  const SECTIONS = ['dashboard', 'alerts', 'users', 'ai', 'jobs', 'skills', 'content', 'cooking', 'notifications', 'settings', 'invites', 'founders', 'waitlist', 'audit'];
   let currentSection = 'dashboard';
 
   function navigateTo(section) {
@@ -2953,6 +3014,7 @@ table.legacy th {
     if (section === 'skills') loadSkillsUserSelector();
     if (section === 'content') loadContentDashboard();
     if (section === 'cooking') renderCookingPortal();
+    if (section === 'notifications') loadNotificationPortal();
   }
 
   document.querySelectorAll('[data-nav]').forEach(el => {
@@ -4416,6 +4478,91 @@ table.legacy th {
       }).join('');
     } catch { /* silent */ }
   };
+
+  // ════════════════════════════════════════════════════════════
+  // Notification Decision Center
+  // ════════════════════════════════════════════════════════════
+  async function loadNotificationPortal() {
+    try {
+      const [center, prefs] = await Promise.all([
+        apiJson('/api/notifications?limit=100'),
+        apiJson('/api/notification-preferences?limit=100'),
+      ]);
+      const items = center.decisionCenterItems || [];
+      const legacy = center.notifications || [];
+      const profiles = prefs.profiles || [];
+      const unread = items.filter(i => i.status === 'unread').length;
+      const needsDecision = items.filter(i => ['decision_required', 'conflict_detected', 'approval_required'].includes(i.type)).length;
+
+      document.getElementById('notification-kpi-unread').textContent = fmtNum(unread);
+      document.getElementById('notification-kpi-decision').textContent = fmtNum(needsDecision);
+      document.getElementById('notification-kpi-profiles').textContent = fmtNum(profiles.length);
+      const navBadge = document.getElementById('nav-notifications-badge');
+      if (navBadge) navBadge.textContent = unread ? String(unread) : '';
+
+      const grouped = {
+        all: items,
+        decision: items.filter(i => ['decision_required', 'reflow_suggestion'].includes(i.type)),
+        conflicts: items.filter(i => i.type === 'conflict_detected'),
+        approvals: items.filter(i => i.type === 'approval_required'),
+        training: items.filter(i => i.sourceSkill === 'training'),
+        finance: items.filter(i => i.sourceSkill === 'finance'),
+        security: items.filter(i => i.sourceSkill === 'security' || i.type === 'security_account'),
+      };
+
+      const chips = Object.entries(grouped).map(([key, rows]) =>
+        '<span class="badge ' + (rows.length ? 'badge-accent' : 'badge-neutral') + '" style="margin-right:6px;margin-bottom:6px">' +
+          esc(key) + ' · ' + rows.length +
+        '</span>'
+      ).join('');
+
+      const rows = items.map(i => '<tr>' +
+        '<td><span class="badge badge-neutral">' + esc(i.sourceSkill || 'system') + '</span></td>' +
+        '<td>' +
+          '<div style="font-weight:600">' + esc(i.title) + '</div>' +
+          '<div class="text-muted" style="font-size:12px;line-height:1.4">' + esc(i.body || '') + '</div>' +
+        '</td>' +
+        '<td><span class="badge badge-neutral">' + esc(i.type) + '</span></td>' +
+        '<td><span class="badge ' + (i.priority === 'time_sensitive' || i.priority === 'critical' ? 'badge-warning' : 'badge-neutral') + '">' + esc(i.priority) + '</span></td>' +
+        '<td>' + esc(i.status) + '</td>' +
+        '<td class="mono" style="font-size:11px">' + esc(i.createdAt || '—') + '</td>' +
+      '</tr>').join('');
+
+      const legacyRows = legacy.slice(0, 10).map(n => '<tr>' +
+        '<td><span class="badge badge-neutral">content legacy</span></td>' +
+        '<td>' + esc(n.title) + '</td>' +
+        '<td>' + esc(n.type) + '</td>' +
+        '<td>' + esc(n.status) + '</td>' +
+        '<td class="mono" style="font-size:11px">' + esc(n.createdAt || '—') + '</td>' +
+      '</tr>').join('');
+
+      document.getElementById('notification-center-content').innerHTML =
+        '<div style="margin-bottom:var(--space-3)">' + chips + '</div>' +
+        '<div style="overflow-x:auto"><table class="data-table">' +
+          '<thead><tr><th>Skill</th><th>Safe preview</th><th>Type</th><th>Priority</th><th>Status</th><th>Created</th></tr></thead>' +
+          '<tbody>' + (rows || '<tr><td colspan="6"><div class="empty">No Decision Center items</div></td></tr>') + '</tbody>' +
+        '</table></div>' +
+        (legacyRows ? '<div class="card-title" style="margin-top:var(--space-4);margin-bottom:var(--space-2)">Legacy content inbox</div>' +
+          '<div style="overflow-x:auto"><table class="data-table"><tbody>' + legacyRows + '</tbody></table></div>' : '');
+
+      document.getElementById('notification-preferences-content').innerHTML =
+        '<div style="overflow-x:auto"><table class="data-table">' +
+          '<thead><tr><th>User</th><th>Push</th><th>In-app</th><th>Portal</th><th>Time-sensitive</th><th>Digest passive</th><th>Updated</th></tr></thead>' +
+          '<tbody>' + (profiles.map(p => '<tr>' +
+            '<td class="mono">' + esc(String(p.userId)) + '</td>' +
+            '<td>' + (p.pushEnabled ? 'on' : 'off') + '</td>' +
+            '<td>' + (p.inAppEnabled ? 'on' : 'off') + '</td>' +
+            '<td>' + (p.portalEnabled ? 'on' : 'off') + '</td>' +
+            '<td>' + (p.allowTimeSensitive ? 'on' : 'off') + '</td>' +
+            '<td>' + (p.digestPassiveItems ? 'on' : 'off') + '</td>' +
+            '<td class="mono" style="font-size:11px">' + esc(p.updatedAt || '—') + '</td>' +
+          '</tr>').join('') || '<tr><td colspan="7"><div class="empty">No notification profiles loaded yet</div></td></tr>') + '</tbody>' +
+        '</table></div>';
+    } catch (err) {
+      setCardError('notification-center-content', 'Could not load Notification Center', err);
+      setCardError('notification-preferences-content', 'Could not load notification preferences', err);
+    }
+  }
 
   // ════════════════════════════════════════════════════════════
   // Settings
@@ -6223,6 +6370,7 @@ table.legacy th {
       if (currentSection === 'invites') loadInviteCodes();
       if (currentSection === 'waitlist') loadWaitlist();
       if (currentSection === 'content') loadContentDashboard();
+      if (currentSection === 'notifications') loadNotificationPortal();
     }, 30000);
 
     // Initial section from URL hash
