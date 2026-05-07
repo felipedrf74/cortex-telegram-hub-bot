@@ -1,9 +1,9 @@
 {
-  "generatedAt": "2026-05-07T15:41:51Z",
+  "generatedAt": "2026-05-07T16:05:11Z",
   "backend": {
     "path": "/Users/felipedominguez/Desktop/Custom Connectors/Cortex/cortex-telegram-hub-bot",
     "branch": "feature/event-backbone-readmodels-delta-sync",
-    "commit": "887ada0e",
+    "commit": "25133368",
     "dirtyState": "dirty",
     "packageVersion": "4.14.134",
     "migrationCount": "119"
@@ -11,7 +11,7 @@
   "ios": {
     "path": "/Users/felipedominguez/Desktop/Nexus Hub IOS/Nexus Hub",
     "branch": "feature/event-backbone-readmodels-delta-sync",
-    "commit": "2f3be83",
+    "commit": "9ff725d",
     "dirtyState": "clean"
   }
 }
