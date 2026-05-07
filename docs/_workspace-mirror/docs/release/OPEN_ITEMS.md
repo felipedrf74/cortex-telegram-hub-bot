@@ -59,26 +59,47 @@ operator-only; no push or deploy was performed.
 Event backbone / read models / delta sync source branch: 2026-05-07.
 Report:
 `docs/release/event-backbone-readmodels-delta-sync-report.md`.
-Verdict: READY_WITH_CONDITIONS for Claude hostile QA and local engineering QA.
-Backend foundation, scheduled worker lifecycle, local API smoke, and iOS
-summary/delta warmup are implemented and validated on source branches. Remaining
-pre-release conditions:
+Verdict: **READY_WITH_CONDITIONS** after source remediation. Do not push or
+deploy from this branch yet.
 
+**2026-05-07 hostile QA on event backbone** —
+`docs/archive/2026-05/event-backbone-readmodels-delta-sync/hostile-qa-report.md`.
+Original hostile verdict was **NOT_READY** and was correct at audit time.
+Source remediation now landed in engine `2e896435` and iOS `82abbea`; Claude
+hostile re-QA remains the next evidence gate.
+
+**Hostile P0 cluster — REMEDIATED IN SOURCE BRANCH**
+| ID | Source-branch remediation |
+|---|---|
+| HOSTILE-OUTBOX-1 | Runtime emit paths now use transactional outbox via `runOutboxTransaction`; business state and event rows commit together when the DB is initialized. |
+| HOSTILE-PRIV-1 | Event payloads and decision-log summaries now use recursive privacy sanitization before persistence/sync. |
+| HOSTILE-BUDGET-1 | Resource budgets now use atomic SQLite `UPDATE ... RETURNING` counters keyed by tenant/user/window. |
+| HOSTILE-OBS-1 | Event/job workers and budget exhaustion emit structured, scoped logs with processed/failed/dead-letter counts. |
+
+**Promoted P1 cluster — REMEDIATED IN SOURCE BRANCH**
+- Atomic event/job claims, stuck-lock recovery, dead-letter list/replay/cancel
+  operator routes, tenant-scoped replay/cancel, and processing-job cancellation.
+- Cleanup preserves dead-letter forensic evidence and processed events needed by
+  active sync cursors.
+- Sync no longer trusts query-string `deviceId`; authenticated request device
+  scope is required, reset-required paths do not advance the cursor, and iOS
+  reset handling clears scope without storing an unacknowledged cursor.
+- Route/budget tests now exercise real 429 paths and `Retry-After`; iOS
+  repository/store tests now cover coalescing, parallel summaries, reset cursor
+  safety, duplicate handling, and bounded cache history.
+
+Remaining conditions:
+- P1: independent Claude hostile re-QA against `2e896435` + `82abbea`.
 - P1: authenticated iOS product-surface interaction smoke remains required
-  before treating summary/delta app integration as UI-validated. Current
-  simulator interaction reached onboarding/auth only; behavior-bearing iOS tests
-  passed.
+  before treating summary/delta app integration as UI-validated. Physical iPhone
+  behavior tests passed, but no authenticated screen walkthrough is claimed.
 - P1: release/deploy operator must explicitly confirm event-backbone worker and
   cleanup env flags before staging/prod (`EVENT_BACKBONE_WORKER_DISABLED`,
   batch limits, `EVENT_BACKBONE_CLEANUP_APPLY`).
 - P2: gradually render Home, Week/Semana, Training, Content, and Notifications
-  from summary read models where product value is clear. Current implementation
-  warms summaries/deltas without replacing visible source-of-truth loaders.
-- P2: expand resource budgets beyond sync/summary routes to provider, calendar,
-  content radar, and notification-delivery attempts.
-- P2: add a longer authenticated iOS/local-engine smoke fixture that creates a
-  real domain entity through API, observes event/job projection, and verifies
-  scoped iOS cache application.
+  from summary read models where product value is clear.
+- P2: expand budgets to provider, calendar, content radar, and live
+  notification-delivery attempts.
 
 ## 2026-05-07 Closed-Beta Gap Analysis — New P0/P1 Items
 

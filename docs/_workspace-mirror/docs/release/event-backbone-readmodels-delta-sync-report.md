@@ -7,9 +7,11 @@ Branch: `feature/event-backbone-readmodels-delta-sync`
 Engine commits:
 - `887ada0eaf7e9e6ce09eab275a1c888f73916251` - foundation
 - `25133368371dafb967dc7a4f89a7360ea464fb79` - worker lifecycle, retention hook, summary budgets
+- `2e896435` - hostile QA remediation: transactional outbox, recursive redaction, atomic budgets, worker logs, sync/retention hardening
 iOS commits:
 - `2f3be83de91f3dae646ee9c49bda89f5eb73a315` - delta sync store/service foundation
 - `9ff725dca44d1603c9dee82f6f1ef3b2d83be320` - app-surface summary/delta warmup
+- `82abbea` - hostile QA remediation: reset cursor safety, duplicate handling, bounded cache, foreground TTL refresh, physical iPhone tests
 Push/deploy: not performed
 
 ## Verdict
@@ -28,8 +30,10 @@ bootstrap, and foreground refresh paths.
 The remaining conditions are validation and rollout conditions, not missing
 foundation code:
 - authenticated iOS product-screen interaction still needs a valid local or
-  signed test account session; simulator validation reached onboarding/auth
-  and did not claim app-surface QA
+  signed test account session; physical-device behavior tests ran on iPhone
+  Felipe, but no authenticated product-surface walkthrough is claimed here
+- independent Claude hostile re-QA should re-run against `2e896435` and
+  `82abbea` before upgrading beyond READY_WITH_CONDITIONS
 - production/staging must explicitly decide the worker and cleanup flags before
   deploy (`EVENT_BACKBONE_WORKER_DISABLED`, batch limits,
   `EVENT_BACKBONE_CLEANUP_APPLY`)
@@ -41,12 +45,12 @@ foundation code:
 - Biggest implementation: SQLite-backed event/job/read-model/sync foundation
   with scheduled processing and scoped iOS cache readiness.
 - Biggest blocker: no authenticated iOS product-screen interaction was
-  available in this local simulator run.
+  available in this local/physical-device run.
 - Remaining risk: summary read models are warmed and tested but not yet the
   primary visible source of truth for every screen.
 - Backend readiness: implemented and validated for local QA.
-- iOS readiness: store, repository, app-surface warmup, scope invalidation, and
-  URLProtocol tests are green.
+- iOS readiness: store, repository, app-surface warmup, scope invalidation,
+  URLProtocol tests, and physical-device delta-sync tests are green.
 - Release readiness: source is QA-ready; no push/deploy performed.
 
 ## Architecture implemented
@@ -302,29 +306,60 @@ Validated:
 Focused tests cover the deeper emit-event -> worker -> job -> summary -> delta
 chain.
 
+## Hostile QA remediation closeout
+
+Claude hostile QA originally downgraded this workstream to NOT_READY in
+`docs/archive/2026-05/event-backbone-readmodels-delta-sync/hostile-qa-report.md`.
+That verdict was correct at the time of audit. The source branch now closes the
+promoted P0/P1 cluster in engine commit `2e896435` and iOS commit `82abbea`.
+
+Closed in source:
+- transactional outbox emit paths for Chat, Content, Cooking, Finance,
+  Training, and Notification intent creation; isolated no-DB test harnesses
+  keep a DB-unavailable fallback, but initialized runtime routes write business
+  state and event rows in the same transaction
+- recursive privacy sanitization for event payloads and decision-log summaries
+- atomic SQLite resource budgets with 429 `Retry-After` metadata and structured
+  budget-exceeded logs
+- atomic event/job claiming, stuck-lock recovery, dead-letter/replay/cancel
+  operator routes, and structured worker batch logs
+- tenant-scoped event replay and same-tenant cross-user visibility rules
+- sync device identity from authenticated request scope, not query-string
+  device poisoning
+- reset-required cursors no longer advance before client recovery
+- retention cleanup protects dead-letter evidence and processed events still
+  needed by active sync cursors
+- iOS delta cache reset/duplicate/size/foreground-refresh hardening with
+  physical-device tests
+
+Remaining condition:
+- independent hostile re-QA should validate the remediation before this report
+  is upgraded beyond READY_WITH_CONDITIONS.
+
 ## iOS validation
 
 Behavior tests:
 - `Nexus HubTests/DeltaSyncStoreTests`
 - `Nexus HubTests/DeltaSyncRepositoryTests`
-- Result: 6/6 passed on iPhone 17 Pro simulator, iOS 26.4.1
+- Result: 8/8 passed on connected physical device `iPhone Felipe`
 
-Simulator interaction:
-- built and launched `me.nexushub.app`
-- tapped `onboarding-start-button`
-- verified the simulator reached the account creation/auth screen
+Physical-device validation:
+- `xcodebuild test -project "Nexus Hub.xcodeproj" -scheme "Nexus Hub" -destination 'platform=iOS,id=00008150-000C0D5101D8401C' -only-testing:"Nexus HubTests/DeltaSyncStoreTests" -only-testing:"Nexus HubTests/DeltaSyncRepositoryTests"` PASS, 8/8
+- APNs token upload emitted a local "couldn't load" warning during launch; no
+  live APNs or push-delivery validation is claimed by this workstream
 
 Blocked/not claimed:
 - authenticated Home/Week/Training/Content/Notifications screen interaction was
-  not performed because the simulator session stopped at auth and no valid
-  local signed test account path was available in this run
+  not performed because no valid local signed test account path was available in
+  this run
 
 ## Tests run
 
 Backend:
 - `npx tsc --noEmit` PASS
-- `npm run verify` PASS, 478 files / 7057 tests
-- `npx vitest run __tests__/services/event-backbone.test.ts __tests__/api/event-backbone-routes.test.ts __tests__/services/scheduler-user-scope.test.ts --reporter=default` PASS, 25/25
+- `npm run verify` PASS, 478 files / 7062 tests
+- `npx vitest run __tests__/api/content-topic-routes.test.ts __tests__/api/training-routes.test.ts __tests__/api/finance-routes.test.ts __tests__/api/event-backbone-routes.test.ts __tests__/services/event-backbone.test.ts --reporter=default` PASS, 72/72
+- pre-commit focused changed-area run PASS, 138 files / 1565 tests
 - `npx vitest run __tests__/security/p0-chat-identity-isolation.test.ts --reporter=default` PASS, 23/23
 - `bash scripts/cannot-skip-gate-dashboard.sh --json --no-evidence` PASS, 23/23
 - `node scripts/vi-mock-completeness-lint.mjs --strict` PASS, 827/827
@@ -335,9 +370,8 @@ Python:
   was a command path mistake and was corrected by running from `content-engine`.
 
 iOS:
-- `xcodebuildmcp test_sim -only-testing:Nexus HubTests/DeltaSyncStoreTests -only-testing:Nexus HubTests/DeltaSyncRepositoryTests` PASS, 6/6
-- `xcodebuildmcp build_run_sim` PASS
-- `xcodebuildmcp snapshot_ui` PASS for onboarding and auth screen snapshots
+- physical iPhone test command above PASS, 8/8
+- authenticated product-surface interaction not claimed
 
 Local smoke:
 - `scripts/full-nexus-local-engine.sh smoke` PASS, 13/13
@@ -345,8 +379,8 @@ Local smoke:
   sync cursor response
 
 Docs:
-- `npm run docs:audit` must be rerun after this report update and workspace
-  mirror refresh.
+- `npm run docs:audit` PASS, 464 issues / 438 audited after report update and
+  workspace mirror refresh.
 
 ## Open items
 
@@ -356,6 +390,8 @@ P0:
 P1:
 - Authenticated iOS product-surface interaction smoke remains required before
   treating summary/delta app integration as UI-validated.
+- Independent Claude hostile re-QA remains required before upgrading beyond
+  READY_WITH_CONDITIONS.
 - Release/deploy operator must explicitly confirm event-backbone worker and
   cleanup env flags before staging/prod.
 
