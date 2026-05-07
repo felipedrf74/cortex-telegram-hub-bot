@@ -1,9 +1,9 @@
 {
-  "generatedAt": "2026-05-07T13:36:17Z",
+  "generatedAt": "2026-05-07T15:01:26Z",
   "backend": {
     "path": "/Users/felipedominguez/Desktop/Custom Connectors/Cortex/cortex-telegram-hub-bot",
     "branch": "feature/secretary-notification-orchestrator",
-    "commit": "6b6e74cb",
+    "commit": "24b57203",
     "dirtyState": "dirty",
     "packageVersion": "4.14.134",
     "migrationCount": "118"
@@ -11,7 +11,7 @@
   "ios": {
     "path": "/Users/felipedominguez/Desktop/Nexus Hub IOS/Nexus Hub",
     "branch": "feature/secretary-notification-orchestrator",
-    "commit": "676b7ed",
+    "commit": "f43fc5b",
     "dirtyState": "clean"
   }
 }
