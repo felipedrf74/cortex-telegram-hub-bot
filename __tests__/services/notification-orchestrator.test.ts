@@ -31,6 +31,7 @@ vi.mock('../../src/utils/logger', () => ({
 }));
 
 import {
+  assembleDailyDigest,
   buildSkillNotificationFixtureIntent,
   createNotificationIntent,
   dismissNotificationCenterItem,
@@ -209,6 +210,12 @@ describe('Secretary Notification Orchestrator', () => {
     expect(active.decisionLog.scheduledFor).toBeTruthy();
   });
 
+  it('rejects ambiguous quiet hours where start equals end', () => {
+    expect(() => updateNotificationProfile(50, 50, {
+      quietHours: { start: '08:00', end: '08:00' },
+    })).toThrow(/quiet hours start and end must be different/);
+  });
+
   it('uses the notification profile timezone for quiet hours decisions', async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date('2026-05-07T22:30:00.000Z'));
@@ -256,6 +263,75 @@ describe('Secretary Notification Orchestrator', () => {
     const updated = getNotificationDecisionLog(delayed.decisionLog.decisionLogId, 53, 53);
     expect(updated?.decision).toBe('sent_push');
     expect(updated?.deliveryAttemptIds).toHaveLength(1);
+  });
+
+  it('assembles due passive items into a single daily digest release', async () => {
+    pushTokens = ['sandbox-token'];
+    process.env.NOTIFICATION_DELIVERY_MODE = 'mock';
+    const first = await createNotificationIntent(buildSkillNotificationFixtureIntent('system', 54, {
+      dedupeKey: 'digest-item-1',
+    }));
+    const second = await createNotificationIntent(buildSkillNotificationFixtureIntent('system', 54, {
+      dedupeKey: 'digest-item-2',
+    }));
+
+    expect(first.decisionLog.decision).toBe('digest');
+    expect(second.decisionLog.decision).toBe('digest');
+    expect(assembleDailyDigest(54, 54, 2).body).toBe('2 Nexus updates are ready.');
+
+    testDb.prepare(`
+      UPDATE notification_decision_logs
+      SET scheduled_for = datetime('now', '-1 minute')
+      WHERE decision_log_id IN (?, ?)
+    `).run(first.decisionLog.decisionLogId, second.decisionLog.decisionLogId);
+
+    const result = await releaseDueNotificationDeliveries();
+    expect(result.inspected).toBe(2);
+    expect(result.released).toBe(2);
+    const firstLog = getNotificationDecisionLog(first.decisionLog.decisionLogId, 54, 54);
+    const secondLog = getNotificationDecisionLog(second.decisionLog.decisionLogId, 54, 54);
+    expect(firstLog?.decision).toBe('sent_push');
+    expect(secondLog?.decision).toBe('sent_push');
+    expect(firstLog?.deliveryAttemptIds).toEqual(secondLog?.deliveryAttemptIds);
+  });
+
+  it('does not let untrusted send_now intents bypass quiet hours', async () => {
+    pushTokens = ['sandbox-token'];
+    updateNotificationProfile(55, 55, {
+      quietHours: { start: '00:00', end: '23:59' },
+      allowTimeSensitive: true,
+    });
+
+    const untrusted = await createNotificationIntent(buildSkillNotificationFixtureIntent('cooking', 55, {
+      quietHoursPolicy: 'send_now',
+      priority: 'active',
+      dedupeKey: 'cooking-send-now',
+    }));
+    const trusted = await createNotificationIntent(buildSkillNotificationFixtureIntent('security', 55, {
+      type: 'security_account',
+      quietHoursPolicy: 'send_now',
+      priority: 'time_sensitive',
+      dedupeKey: 'security-send-now',
+    }));
+
+    expect(untrusted.decisionLog.decision).toBe('quiet_hours_delayed');
+    expect(untrusted.decisionLog.reason).toContain('untrusted send_now policy');
+    expect(trusted.decisionLog.decision).toBe('sent_push');
+  });
+
+  it('rate-limits active push delivery while preserving in-app notification items', async () => {
+    pushTokens = ['sandbox-token'];
+    const results = [];
+    for (let index = 0; index < 21; index += 1) {
+      results.push(await createNotificationIntent(buildSkillNotificationFixtureIntent('cooking', 56, {
+        dedupeKey: `cooking-rate-${index}`,
+      })));
+    }
+
+    expect(results.filter((result) => result.decisionLog.decision === 'sent_push')).toHaveLength(20);
+    expect(results.at(-1)?.decisionLog.decision).toBe('in_app_only');
+    expect(results.at(-1)?.decisionLog.reason).toContain('rate limit');
+    expect(listNotificationCenterItems(56, 56)).toHaveLength(21);
   });
 
   it('allows configured time-sensitive deadlines through quiet hours and downgrades critical by default', async () => {

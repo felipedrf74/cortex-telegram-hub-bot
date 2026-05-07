@@ -60,6 +60,7 @@ import { publishHighLegLoad, publishLowSleep } from '../../src/services/training
 import { setDbProvider } from '../../src/services/intelligence-bus';
 import { addTransaction } from '../../src/services/finance-tracker';
 import { submitSecretarySchedulingIntent } from '../../src/services/secretary-scheduling-arbitrator';
+import { listNotificationCenterItems } from '../../src/services/notification-orchestrator';
 
 function applyMigrations(db: Database.Database): void {
   db.exec(`CREATE TABLE IF NOT EXISTS _migrations (id INTEGER PRIMARY KEY, filename TEXT UNIQUE, applied_at TEXT DEFAULT (datetime('now')))`);
@@ -939,5 +940,12 @@ describe('Cooking API — shopping list item updates', () => {
       .toBeLessThan(mockCalendarCreateEvent.mock.invocationCallOrder[0]);
     expect(mockCalendarCreateEvent).toHaveBeenCalledTimes(1);
     expect(mockInvalidateCookingDerivedCaches).toHaveBeenCalledWith(user.id, { includeCalendarSurfaces: true });
+    const notifications = listNotificationCenterItems(user.id, user.id, { sourceSkill: 'cooking' });
+    expect(notifications).toHaveLength(1);
+    expect(notifications[0]).toMatchObject({
+      sourceSkill: 'cooking',
+      type: 'reminder',
+      safeBody: 'Cooking reminder — open Nexus to view details.',
+    });
   });
 });

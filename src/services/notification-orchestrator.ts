@@ -255,6 +255,9 @@ const VALID_TYPES: NotificationIntentType[] = [
 
 const VALID_PRIORITIES: NotificationPriority[] = ['critical', 'time_sensitive', 'active', 'passive'];
 const DEFAULT_TIMEZONE = 'Europe/Lisbon';
+const PUSH_RATE_LIMIT_WINDOW_MS = 60 * 60 * 1000;
+const PUSH_RATE_LIMIT_MAX_PER_SOURCE = 20;
+const pushRateLimitByScope = new Map<string, number[]>();
 
 export function ensureNotificationTables(): void {
   const db = getDb();
@@ -437,6 +440,11 @@ export function updateNotificationProfile(userId: number, tenantId: number, patc
   const current = getOrCreateNotificationProfile(userId, tenantId);
   const skillPrefs = { ...current.skillPreferences, ...(patch.skillPreferences ?? {}) };
   const quietHours = { ...current.quietHours, ...(patch.quietHours ?? {}) };
+  const quietHoursStart = normalizeTime(patch.quietHours?.start ?? quietHours.start, current.quietHours.start);
+  const quietHoursEnd = normalizeTime(patch.quietHours?.end ?? quietHours.end, current.quietHours.end);
+  if (quietHoursStart === quietHoursEnd) {
+    throw new Error('quiet hours start and end must be different');
+  }
 
   const db = getDb();
   db.prepare(`
@@ -471,8 +479,8 @@ export function updateNotificationProfile(userId: number, tenantId: number, patc
       updated_at = datetime('now')
     WHERE user_id = ? AND tenant_id = ?
   `).run(
-    normalizeTime(patch.quietHours?.start ?? quietHours.start, current.quietHours.start),
-    normalizeTime(patch.quietHours?.end ?? quietHours.end, current.quietHours.end),
+    quietHoursStart,
+    quietHoursEnd,
     stringOr(current.timezone, patch.timezone),
     boolInt(patch.pushEnabled ?? current.pushEnabled),
     boolInt(patch.localEnabled ?? current.localEnabled),
@@ -536,6 +544,7 @@ export async function evaluateNotificationIntent(
     body: safeBody,
     deeplink: intent.deeplink,
     actions: intent.actionButtons,
+    interruptionLevel: interruptionLevelForPriority(effectivePriority),
   };
 
   if (!profile.skillPreferences[intent.sourceSkill] || (!profile.inAppEnabled && !profile.portalEnabled && !profile.pushEnabled)) {
@@ -591,6 +600,9 @@ export async function evaluateNotificationIntent(
   } else if (intent.deliveryPolicy === 'in_app_only' || !profile.pushEnabled) {
     decision = 'in_app_only';
     reason = intent.deliveryPolicy === 'in_app_only' ? 'delivery policy is in-app only' : 'push disabled by user preference';
+  } else if (!consumePushRateLimit(intent, effectivePriority)) {
+    decision = 'in_app_only';
+    reason = 'push rate limit reached for notification source; stored in-app only';
   } else {
     const attempt = await attemptPushDelivery(intent, item.itemId, pushPayload, profile);
     deliveryAttempts.push(attempt);
@@ -640,6 +652,7 @@ export async function releaseDueNotificationDeliveries(now = new Date()): Promis
     SELECT
       logs.decision_log_id,
       logs.notification_id,
+      logs.decision AS pending_decision,
       logs.intent_id,
       logs.user_id,
       logs.tenant_id,
@@ -659,7 +672,63 @@ export async function releaseDueNotificationDeliveries(now = new Date()): Promis
 
   let released = 0;
   let blocked = 0;
+  const digestGroups = new Map<string, any[]>();
+  const regularRows: any[] = [];
   for (const row of rows) {
+    if (row.pending_decision === 'digest') {
+      const key = `${row.user_id}:${row.tenant_id}`;
+      digestGroups.set(key, [...(digestGroups.get(key) ?? []), row]);
+    } else {
+      regularRows.push(row);
+    }
+  }
+
+  for (const group of digestGroups.values()) {
+    try {
+      const first = group[0];
+      const profile = getOrCreateNotificationProfile(first.user_id, first.tenant_id);
+      const digestIntent = mapIntent(first);
+      const payload = assembleDailyDigest(first.user_id, first.tenant_id, group.length);
+      const attempt = await attemptPushDelivery(digestIntent, first.item_id, payload, profile);
+      const decision: NotificationDecision = attempt.status === 'sent' || attempt.status === 'mock_sent'
+        ? 'sent_push'
+        : 'blocked_missing_device_token';
+      const reason = attempt.status === 'sent'
+        ? 'digest notification released to APNs'
+        : attempt.status === 'mock_sent'
+          ? 'digest notification released to mock push provider'
+          : attempt.status === 'blocked_missing_credentials'
+            ? 'digest notification due but APNs credentials are missing'
+            : 'digest notification due but no active device token is available';
+      for (const row of group) {
+        db.prepare(`
+          UPDATE notification_decision_logs
+          SET decision = ?,
+              reason = ?,
+              sent_at = ?,
+              delivery_attempt_ids_json = ?
+          WHERE decision_log_id = ?
+            AND user_id = ?
+            AND tenant_id = ?
+        `).run(
+          decision,
+          reason,
+          attempt.sentAt,
+          JSON.stringify([attempt.attemptId]),
+          row.decision_log_id,
+          row.user_id,
+          row.tenant_id,
+        );
+      }
+      if (attempt.status === 'sent' || attempt.status === 'mock_sent') released += group.length;
+      else blocked += group.length;
+    } catch (err) {
+      blocked += group.length;
+      logger.warn({ err, userId: group[0]?.user_id, tenantId: group[0]?.tenant_id }, 'Notification digest release failed');
+    }
+  }
+
+  for (const row of regularRows) {
     try {
       const intent = mapIntent(row);
       const profile = getOrCreateNotificationProfile(row.user_id, row.tenant_id);
@@ -709,6 +778,28 @@ export async function releaseDueNotificationDeliveries(now = new Date()): Promis
   }
 
   return { inspected: rows.length, released, blocked };
+}
+
+export function assembleDailyDigest(
+  userId: number,
+  tenantId: number,
+  itemCount: number,
+): {
+  title: string;
+  body: string;
+  deeplink: string;
+  actions: NotificationActionButton[];
+  interruptionLevel: 'passive';
+} {
+  assertScope(userId, tenantId, 'assemble_daily_digest', { itemCount });
+  const count = Math.max(1, itemCount);
+  return {
+    title: 'Daily digest',
+    body: count === 1 ? '1 Nexus update is ready.' : `${count} Nexus updates are ready.`,
+    deeplink: 'nexus://notifications/digest',
+    actions: [{ id: 'open_detail', label: 'Open', style: 'primary' }],
+    interruptionLevel: 'passive',
+  };
 }
 
 export function listNotificationCenterItems(
@@ -1185,7 +1276,13 @@ function persistCenterItem(
 async function attemptPushDelivery(
   intent: NotificationIntentRecord,
   notificationId: string,
-  payload: { title: string; body: string; deeplink: string | null; actions: NotificationActionButton[] },
+  payload: {
+    title: string;
+    body: string;
+    deeplink: string | null;
+    actions: NotificationActionButton[];
+    interruptionLevel?: 'passive' | 'active' | 'time-sensitive';
+  },
   profile: NotificationProfile,
 ): Promise<DeliveryAttempt> {
   const tokens = getPushTokensForUser(intent.userId);
@@ -1215,6 +1312,7 @@ async function attemptPushDelivery(
       threadId: `${intent.sourceSkill}-${intent.type}`,
       category: intent.type,
       sound: effectiveSound(intent.priority, profile),
+      interruptionLevel: payload.interruptionLevel,
     });
     if (result.sent > 0) {
       return persistDeliveryAttempt(intent, notificationId, 'push', 'apns', 'sent', '2xx', null);
@@ -1345,9 +1443,18 @@ function quietHoursDecision(
   intent: NotificationIntentRecord,
   priority: NotificationPriority,
 ): { delayed: boolean; scheduledFor: string | null; reason: string } {
-  if (intent.quietHoursPolicy === 'send_now') return { delayed: false, scheduledFor: null, reason: 'send_now policy' };
+  if (intent.quietHoursPolicy === 'send_now' && canUseSendNowPolicy(intent, priority, profile)) {
+    return { delayed: false, scheduledFor: null, reason: 'trusted send_now policy' };
+  }
   if (!isInQuietHours(new Date(), profile.quietHours.start, profile.quietHours.end, profile.timezone)) {
     return { delayed: false, scheduledFor: null, reason: 'outside quiet hours' };
+  }
+  if (intent.quietHoursPolicy === 'send_now') {
+    return {
+      delayed: true,
+      scheduledFor: nextQuietHoursEnd(profile.quietHours.end, profile.timezone).toISO(),
+      reason: 'untrusted send_now policy delayed by quiet hours',
+    };
   }
   if (priority === 'time_sensitive' && profile.allowTimeSensitive && deadlineSoon(intent.decisionDeadline)) {
     return { delayed: false, scheduledFor: null, reason: 'time-sensitive deadline allowed during quiet hours' };
@@ -1402,6 +1509,37 @@ function normalizePriorityForPolicy(priority: NotificationPriority, profile: Not
   if (priority === 'critical' && !profile.allowCritical) return profile.allowTimeSensitive ? 'time_sensitive' : 'active';
   if (priority === 'time_sensitive' && !profile.allowTimeSensitive) return 'active';
   return priority;
+}
+
+function canUseSendNowPolicy(
+  intent: NotificationIntentRecord,
+  priority: NotificationPriority,
+  profile: NotificationProfile,
+): boolean {
+  const trustedSource = intent.sourceSkill === 'security' || intent.sourceSkill === 'system';
+  const trustedType = intent.type === 'security_account' || intent.type === 'sync_failure';
+  const allowedPriority = priority === 'time_sensitive' || (priority === 'critical' && profile.allowCritical);
+  return trustedSource && trustedType && allowedPriority && profile.allowTimeSensitive;
+}
+
+function interruptionLevelForPriority(priority: NotificationPriority): 'passive' | 'active' | 'time-sensitive' {
+  if (priority === 'passive') return 'passive';
+  if (priority === 'time_sensitive' || priority === 'critical') return 'time-sensitive';
+  return 'active';
+}
+
+function consumePushRateLimit(intent: NotificationIntentRecord, priority: NotificationPriority): boolean {
+  if (priority === 'time_sensitive' || priority === 'critical') return true;
+  const now = Date.now();
+  const key = `${intent.userId}:${intent.tenantId}:${intent.sourceSkill}`;
+  const retained = (pushRateLimitByScope.get(key) ?? []).filter((timestamp) => now - timestamp < PUSH_RATE_LIMIT_WINDOW_MS);
+  if (retained.length >= PUSH_RATE_LIMIT_MAX_PER_SOURCE) {
+    pushRateLimitByScope.set(key, retained);
+    return false;
+  }
+  retained.push(now);
+  pushRateLimitByScope.set(key, retained);
+  return true;
 }
 
 function effectiveSound(priority: NotificationPriority, _profile: NotificationProfile): string | undefined {

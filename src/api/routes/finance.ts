@@ -46,6 +46,7 @@ import {
 import { acquireCostLock, buildQuotaExceededMessage, isUserOverDailyCap } from '../../services/cost-guardrail';
 import { analyzeInvoiceImage } from '../../services/invoice-filer';
 import { ensureValidTenantRouteScope } from '../tenant-route-scope';
+import { createNotificationIntent } from '../../services/notification-orchestrator';
 
 export function financeRoutes(): Router {
   const router = Router();
@@ -342,6 +343,31 @@ export function financeRoutes(): Router {
     try {
       const event = calculateAndStoreTax(userId, month);
       invalidateFinanceDerivedCaches(userId);
+      if (event.status !== 'paid' && (event.tax_due > 0 || event.inss_due > 0)) {
+        try {
+          await createNotificationIntent({
+            userId,
+            tenantId: userId,
+            sourceSkill: 'finance',
+            type: 'reminder',
+            priority: 'time_sensitive',
+            relatedEntityId: month,
+            relatedEntityType: 'tax_event',
+            title: 'Finance deadline',
+            body: 'Tax payment reminder is ready.',
+            sensitiveBody: `Tax event ${month}: tax and contribution amounts are available in Finance.`,
+            actionButtons: [
+              { id: 'mark_paid', label: 'Mark paid', style: 'primary' },
+              { id: 'open_detail', label: 'Open', style: 'secondary' },
+            ],
+            deeplink: `nexus://finance/reminder/${encodeURIComponent(String(month))}`,
+            dedupeKey: `finance:tax-event:${userId}:${month}`,
+            privacyPolicy: 'financial',
+          });
+        } catch (notificationErr) {
+          logger.warn({ err: notificationErr, userId, month }, 'Finance notification intent emit failed');
+        }
+      }
       logger.info({ userId, month, taxDue: event.tax_due }, 'iOS tax event calculated');
       sendSuccess(res, { event });
     } catch (err: any) {

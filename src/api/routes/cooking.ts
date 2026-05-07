@@ -78,6 +78,7 @@ import { createEvent as createCalendarEvent, isAnyCalendarConfigured } from '../
 import { getActivePlans, getCurrentWeek, getSessionsForWeek, getWeeksForPlan, type TrainingSession } from '../../services/training-plans';
 import { invalidateCookingDerivedCaches } from '../../services/cooking-cache-invalidator';
 import { submitCookingMealPrepSchedulingIntent } from '../../services/cooking-secretary-integration';
+import { createNotificationIntent } from '../../services/notification-orchestrator';
 import { readTrainingContextAll } from '../../services/training-signals';
 import { getReadiness as getWearableReadiness } from '../../services/wearable/wearable-service';
 import { DateTime } from 'luxon';
@@ -1331,6 +1332,29 @@ export function cookingRoutes(): Router {
         { userId, week, eventId: event.id, mealCount: meals.length, source: event.source },
         'iOS meal prep calendar event created',
       );
+      try {
+        await createNotificationIntent({
+          userId,
+          tenantId: tenantId ?? userId,
+          sourceSkill: 'cooking',
+          type: 'reminder',
+          priority: 'active',
+          relatedEntityId: event.id,
+          relatedEntityType: 'meal_prep_block',
+          title: 'Meal prep reminder',
+          body: `${meals.length} meal prep block scheduled.`,
+          sensitiveBody: description,
+          actionButtons: [
+            { id: 'open_detail', label: 'Open', style: 'primary' },
+            { id: 'not_now', label: 'Not now', style: 'secondary' },
+          ],
+          deeplink: `nexus://cooking/meal-plan/${encodeURIComponent(week)}`,
+          dedupeKey: `cooking:meal-prep:${userId}:${week}:${event.id}`,
+          privacyPolicy: 'standard',
+        });
+      } catch (notificationErr) {
+        logger.warn({ err: notificationErr, userId, week, eventId: event.id }, 'Cooking notification intent emit failed');
+      }
       invalidateCookingDerivedCaches(userId, { includeCalendarSurfaces: true });
 
       sendSuccess(res, {
