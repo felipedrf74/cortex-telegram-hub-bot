@@ -183,7 +183,13 @@ async function handleDiscoverCommand(ctx: Context, mode: 'full' | 'news' | 'plat
     await ctx.reply('\u{1F50D} Running content discovery\u2026 this takes ~2 minutes.', { parse_mode: 'HTML' });
     const typingInterval = setInterval(() => { ctx.replyWithChatAction('typing').catch(() => {}); }, 4000);
     try {
-      const result = await runContentDiscovery();
+      const canonicalUserId = ctx.from?.id ? resolveCanonicalUserId(ctx.from.id) : null;
+      if (!canonicalUserId) {
+        clearInterval(typingInterval);
+        await ctx.reply('\u26A0\uFE0F Content discovery needs a registered Nexus user.');
+        return;
+      }
+      const result = await runContentDiscovery({ userId: canonicalUserId, tenantId: canonicalUserId });
       clearInterval(typingInterval);
       const dateStr = now().toFormat('yyyy-MM-dd');
       let msg = `\u{1F3AC} <b>Content Ideas Ready</b>\n\n`;
@@ -241,7 +247,12 @@ export function registerContentCommands(bot: Bot): void {
         // requires explicit userId. The Telegram /ideas command runs
         // in the legacy operator surface (single-tenant), so the
         // authenticated Telegram from-id is the correct scope.
-        const saved = getSavedIdeas('saved', ctx.from!.id);
+        const userId = resolveCanonicalUserId(ctx.from!.id);
+        if (!userId) {
+          await ctx.reply('\u26A0\uFE0F Saved ideas need a registered Nexus user.');
+          return;
+        }
+        const saved = getSavedIdeas('saved', userId);
         if (saved.length === 0) {
           await ctx.reply('\u{1F4ED} No saved ideas. Use /discover and tap \u{1F4BE} to save ideas.');
           return;

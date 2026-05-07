@@ -1,6 +1,7 @@
 // Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
 
 import path from 'path';
+import { createHash } from 'crypto';
 import cron from 'node-cron';
 import { Bot } from 'grammy';
 import { config } from '../config';
@@ -1085,27 +1086,36 @@ export function startScheduler(bot?: any): void {
       const message = await buildConflictAlertForUser(target.tenantId);
       if (!message) continue;
 
-      await createNotificationIntent({
-        userId: target.tenantId,
-        tenantId: target.tenantId,
-        sourceSkill: 'secretary',
-        type: 'conflict_detected',
-        priority: 'time_sensitive',
-        relatedEntityId: `conflict-detection-${startOfDay()}`,
-        relatedEntityType: 'calendar_conflict',
-        title: 'Schedule conflict detected',
-        body: 'Schedule conflict needs review.',
-        sensitiveBody: message.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim(),
-        actionButtons: [
-          { id: 'accept_reflow', label: 'Reflow', style: 'primary' },
-          { id: 'open_detail', label: 'Review', style: 'secondary' },
-        ],
-        deeplink: 'nexus://secretary/conflict/daily',
-        dedupeKey: `secretary:conflict_detection:${target.tenantId}:${startOfDay()}`,
-        requiresUserAction: true,
-        quietHoursPolicy: 'allow_time_sensitive',
-        privacyPolicy: 'sensitive',
-      });
+      const conflictSignature = createHash('sha256')
+        .update(message.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim())
+        .digest('hex')
+        .slice(0, 16);
+
+      try {
+        await createNotificationIntent({
+          userId: target.tenantId,
+          tenantId: target.tenantId,
+          sourceSkill: 'secretary',
+          type: 'conflict_detected',
+          priority: 'time_sensitive',
+          relatedEntityId: `conflict-detection-${startOfDay()}-${conflictSignature}`,
+          relatedEntityType: 'calendar_conflict',
+          title: 'Schedule conflict detected',
+          body: 'Schedule conflict needs review.',
+          sensitiveBody: message.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim(),
+          actionButtons: [
+            { id: 'accept_reflow', label: 'Reflow', style: 'primary' },
+            { id: 'open_detail', label: 'Review', style: 'secondary' },
+          ],
+          deeplink: 'nexus://secretary/conflict/daily',
+          dedupeKey: `secretary:conflict_detection:${target.tenantId}:${startOfDay()}:${conflictSignature}`,
+          requiresUserAction: true,
+          quietHoursPolicy: 'allow_time_sensitive',
+          privacyPolicy: 'sensitive',
+        });
+      } catch (err) {
+        logger.warn({ err, tenantId: target.tenantId }, 'Conflict notification intent emit failed');
+      }
 
       if (!target.telegramId) continue;
       try {

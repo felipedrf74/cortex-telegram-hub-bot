@@ -213,7 +213,7 @@ export function contentRoutes(): Router {
     const startMs = Date.now();
     try {
       const { runContentDiscovery } = await import('../../services/content-discovery');
-      const result = await runContentDiscovery(userId, tenantId);
+      const result = await runContentDiscovery({ userId, tenantId });
       const ideas = normalizeDiscoveredIdeasForResponse(result?.ideas || [], startMs);
       sendSuccess(res, {
         discovered: ideas.length,

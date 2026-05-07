@@ -406,11 +406,11 @@ export async function collectMonthlyInvoices(
       const vResult = await collectForVendor(vendor, allEmails, year, month, userId);
       vendorResults.push(vResult);
       logger.info(
-        { vendor: vendor.name, filed: vResult.filed, duplicates: vResult.duplicates, errors: vResult.errors },
+        { filed: vResult.filed, duplicates: vResult.duplicates, errors: vResult.errors, builtin: vendor.builtin },
         'Vendor collection complete',
       );
     } catch (err) {
-      logger.error({ err, vendor: vendor.name }, 'Vendor collection failed');
+      logger.error({ err, builtin: vendor.builtin }, 'Vendor collection failed');
       vendorResults.push({
         vendor: vendor.name,
         filed: 0, duplicates: 0, errors: 1,

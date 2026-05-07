@@ -33,6 +33,11 @@ import { recordMessageProcessed } from './portal/telemetry';
 import { isAnyCalendarConfigured } from './services/unified-calendar';
 import { getMasterCategories } from './services/outlook-calendar';
 import { setMfaNotifier } from './services/garmin';
+import { runTelegramDomainHandlerWithToolAuthorization } from './handlers/chat-tool-auth-context';
+import {
+  isValidTenantUserId,
+  recordTenantScopeAnomaly,
+} from './services/tenant-scope-observability';
 
 // ── Command & handler registration ──
 import { registerSystemCommands } from './handlers/commands/system';
@@ -133,6 +138,32 @@ export function createBot(): Bot {
     }
 
     await next();
+  });
+
+  // ── Chat Tool Authorization Middleware ──
+  // All Telegram commands, callback queries, and media handlers run inside the
+  // same tool-authorization AsyncLocalStorage context used by the iOS/chat
+  // tool loop. Keep this central so new Telegram entry points inherit tenant
+  // scoping and destructive-action confirmation by default.
+  bot.use(async (ctx, next) => {
+    const userId = ctx.from?.id;
+    if (userId == null) {
+      await next();
+      return;
+    }
+
+    if (!isValidTenantUserId(userId)) {
+      recordTenantScopeAnomaly({
+        layer: 'delivery',
+        operation: 'telegram_bot_middleware_authorization',
+        reason: 'invalid_user_scope',
+        userId: typeof userId === 'number' && Number.isFinite(userId) ? userId : null,
+      });
+      await next();
+      return;
+    }
+
+    await runTelegramDomainHandlerWithToolAuthorization(userId, next);
   });
 
   // ── Rate Limit Middleware ──

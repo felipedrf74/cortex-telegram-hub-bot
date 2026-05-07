@@ -368,7 +368,7 @@ export function financeRoutes(): Router {
           logger.warn({ err: notificationErr, userId, month }, 'Finance notification intent emit failed');
         }
       }
-      logger.info({ userId, month, taxDue: event.tax_due }, 'iOS tax event calculated');
+      logger.info({ userId, month }, 'iOS tax event calculated');
       sendSuccess(res, { event });
     } catch (err: any) {
       logger.error({ err, userId, month }, 'iOS finance tax calculate failed');
@@ -564,7 +564,12 @@ export function financeRoutes(): Router {
       );
 
       logger.info(
-        { userId, merchant: mergedResult.merchant, amount: mergedResult.amount, confidence: mergedResult.confidence, provider },
+        {
+          userId,
+          confidence: mergedResult.confidence,
+          provider,
+          hasOcrBackfill: Boolean(ocrFallback),
+        },
         'iOS receipt parsed',
       );
 

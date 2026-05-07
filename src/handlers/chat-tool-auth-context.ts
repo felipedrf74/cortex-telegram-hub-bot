@@ -2,6 +2,10 @@
 
 import { resolveChatTenantId } from '../services/chat-tenant-scope';
 import { runWithChatToolAuthorization } from '../services/chat-tool-authorization';
+import {
+  isValidTenantUserId,
+  recordTenantScopeAnomaly,
+} from '../services/tenant-scope-observability';
 
 /**
  * Legacy Telegram domain routing still reaches the same tool loop as iOS.
@@ -13,7 +17,16 @@ export function runTelegramDomainHandlerWithToolAuthorization<T>(
   userId: number | undefined,
   fn: () => T | Promise<T>,
 ): T | Promise<T> {
-  if (typeof userId !== 'number') return fn();
+  if (!isValidTenantUserId(userId)) {
+    recordTenantScopeAnomaly({
+      layer: 'delivery',
+      operation: 'telegram_chat_tool_authorization',
+      reason: userId == null ? 'missing_user_scope' : 'invalid_user_scope',
+      userId: typeof userId === 'number' && Number.isFinite(userId) ? userId : null,
+    });
+    return fn();
+  }
+
   return runWithChatToolAuthorization({
     userId,
     tenantId: resolveChatTenantId(userId),

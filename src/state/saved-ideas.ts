@@ -44,7 +44,7 @@ export function saveIdea(
 
   // New options signature
   const opts = titleOrOpts;
-  if (!Number.isFinite(opts.userId) || opts.userId <= 0) {
+  if (!Number.isSafeInteger(opts.userId) || opts.userId <= 0) {
     throw new Error('userId required: must be a positive integer');
   }
   const result = db.prepare(`
@@ -77,7 +77,7 @@ export function saveIdea(
  * variant.
  */
 export function getSavedIdeas(status = 'saved', userId: number): SavedIdea[] {
-  if (!Number.isFinite(userId) || userId <= 0) {
+  if (!Number.isSafeInteger(userId) || userId <= 0) {
     throw new Error('userId required: must be a positive integer');
   }
   const db = getDb();
@@ -96,7 +96,7 @@ export function getSavedIdeas(status = 'saved', userId: number): SavedIdea[] {
  * callers to declare scope at the type level.
  */
 export function getIdeasBySource(source: string, userId: number, limit = 20): SavedIdea[] {
-  if (!Number.isFinite(userId) || userId <= 0) {
+  if (!Number.isSafeInteger(userId) || userId <= 0) {
     throw new Error('userId required: must be a positive integer');
   }
   const db = getDb();
@@ -115,7 +115,7 @@ export function getIdeasBySource(source: string, userId: number, limit = 20): Sa
  * (this pass).
  */
 export function getWorkflowEligibleIdeas(userId: number): SavedIdea[] {
-  if (!Number.isFinite(userId) || userId <= 0) {
+  if (!Number.isSafeInteger(userId) || userId <= 0) {
     throw new Error('userId required: must be a positive integer');
   }
   const db = getDb();
@@ -133,7 +133,7 @@ export function getWorkflowEligibleIdeas(userId: number): SavedIdea[] {
 
 /** Mark an idea as promoted to workflow */
 export function markIdeaPromoted(id: number, userId: number): boolean {
-  if (!Number.isFinite(userId) || userId <= 0) {
+  if (!Number.isSafeInteger(userId) || userId <= 0) {
     throw new Error('userId required: must be a positive integer');
   }
   const db = getDb();
@@ -144,7 +144,7 @@ export function markIdeaPromoted(id: number, userId: number): boolean {
 }
 
 export function markIdeaUsed(id: number, userId: number): boolean {
-  if (!Number.isFinite(userId) || userId <= 0) {
+  if (!Number.isSafeInteger(userId) || userId <= 0) {
     throw new Error('userId required: must be a positive integer');
   }
   const db = getDb();
@@ -155,7 +155,7 @@ export function markIdeaUsed(id: number, userId: number): boolean {
 }
 
 export function deleteIdea(id: number, userId: number): boolean {
-  if (!Number.isFinite(userId) || userId <= 0) {
+  if (!Number.isSafeInteger(userId) || userId <= 0) {
     throw new Error('userId required: must be a positive integer');
   }
   const db = getDb();

@@ -56,8 +56,10 @@ describe('saved ideas user scoping', () => {
   });
 
   it('requires a positive userId for new saves and scoped reads', () => {
-    expect(() => saveIdea({ title: 'No owner', sourceDate: '2026-05-07', userId: 0 })).toThrow(/positive integer/i);
-    expect(() => getSavedIdeas('saved', 0)).toThrow(/positive integer/i);
+    for (const invalidUserId of [0, -1, 1.5, Number.MAX_SAFE_INTEGER + 1, Infinity, NaN]) {
+      expect(() => saveIdea({ title: 'No owner', sourceDate: '2026-05-07', userId: invalidUserId })).toThrow(/positive integer/i);
+      expect(() => getSavedIdeas('saved', invalidUserId)).toThrow(/positive integer/i);
+    }
   });
 
   it('scopes mark-used/promote/delete mutations by user id', () => {

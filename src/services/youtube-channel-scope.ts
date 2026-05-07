@@ -84,7 +84,7 @@ export function listUserScopedYoutubeChannelTargets(): UserScopedYoutubeChannelT
 }
 
 export function resolveUserScopedYoutubeChannelId(userId: number, tenantId?: number | null): string | null {
-  if (!Number.isFinite(userId) || userId <= 0) return null;
+  if (!Number.isSafeInteger(userId) || userId <= 0) return null;
   const targets = listUserScopedYoutubeChannelTargets();
   const match = targets.find((target) => (
     target.userId === userId
@@ -92,4 +92,3 @@ export function resolveUserScopedYoutubeChannelId(userId: number, tenantId?: num
   ));
   return match?.channelId ?? null;
 }
-

@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import Database from 'better-sqlite3';
 
 let testDb: Database.Database;
@@ -75,5 +75,21 @@ describe('user-scoped YouTube channel identity', () => {
     ]);
     expect(resolveUserScopedYoutubeChannelId(101, 501)).toBe('UCownerA');
     expect(resolveUserScopedYoutubeChannelId(101, 602)).toBeNull();
+  });
+
+  it('handles malformed metadata, null tenant ids, unicode ids, and duplicate owner rows safely', () => {
+    testDb.prepare(`
+      INSERT INTO content_ref_channels (user_id, tenant_id, channel_id, channel_url, status, added_via, source_metadata_json)
+      VALUES
+        (101, NULL, 'UCownerUnicode_日本', 'https://youtube.com/@ownerA', 'active', 'youtube_oauth', '{bad-json'),
+        (101, NULL, 'UCownerUnicode_日本', 'https://youtube.com/@ownerA-duplicate', 'active', 'youtube_oauth', '{"role":"own_channel"}'),
+        (202, NULL, 'UCreference', 'https://youtube.com/@ref', 'active', 'manual', '{bad-json')
+    `).run();
+
+    expect(listUserScopedYoutubeChannelTargets()).toEqual([
+      { userId: 101, tenantId: 101, channelId: 'UCownerUnicode_日本' },
+    ]);
+    expect(resolveUserScopedYoutubeChannelId(101)).toBe('UCownerUnicode_日本');
+    expect(resolveUserScopedYoutubeChannelId(Number.MAX_SAFE_INTEGER + 1)).toBeNull();
   });
 });
