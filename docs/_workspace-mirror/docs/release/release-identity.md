@@ -5,7 +5,7 @@
 
 | Area | Path | Branch | Commit | Dirty state | Version | Migrations |
 | --- | --- | --- | --- | --- | --- | --- |
-| Backend | `/Users/felipedominguez/Desktop/Custom Connectors/Cortex/cortex-telegram-hub-bot` | `feature/secretary-notification-orchestrator` | `24b57203` | `dirty` | `4.14.134` | `118` |
-| iOS | `/Users/felipedominguez/Desktop/Nexus Hub IOS/Nexus Hub` | `feature/secretary-notification-orchestrator` | `f43fc5b` | `clean` | n/a | n/a |
+| Backend | `/Users/felipedominguez/Desktop/Custom Connectors/Cortex/cortex-telegram-hub-bot` | `feature/event-backbone-readmodels-delta-sync` | `887ada0e` | `dirty` | `4.14.134` | `119` |
+| iOS | `/Users/felipedominguez/Desktop/Nexus Hub IOS/Nexus Hub` | `feature/event-backbone-readmodels-delta-sync` | `2f3be83` | `clean` | n/a | n/a |
 
-Generated at: `2026-05-07T15:01:26Z`
+Generated at: `2026-05-07T15:41:51Z`

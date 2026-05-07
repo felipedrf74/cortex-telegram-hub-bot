@@ -4,6 +4,8 @@ Status: current
 Owner: Codex
 Last verified: 2026-05-07
 Branch: `feature/event-backbone-readmodels-delta-sync`
+Engine commit: `887ada0eaf7e9e6ce09eab275a1c888f73916251`
+iOS commit: `2f3be83de91f3dae646ee9c49bda89f5eb73a315`
 Push/deploy: not performed
 
 ## Verdict
