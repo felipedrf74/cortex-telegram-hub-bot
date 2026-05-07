@@ -54,6 +54,8 @@ import {
 
 describe('Secretary Notification Orchestrator', () => {
   beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-05-07T12:00:00.000Z'));
     testDb = new Database(':memory:');
     pushTokens = [];
     mockSendPushNotification.mockReset();
@@ -258,9 +260,9 @@ describe('Secretary Notification Orchestrator', () => {
 
     testDb.prepare(`
       UPDATE notification_decision_logs
-      SET scheduled_for = datetime('now', '-1 minute')
+      SET scheduled_for = ?
       WHERE decision_log_id = ?
-    `).run(delayed.decisionLog.decisionLogId);
+    `).run('2026-05-07T11:59:00.000Z', delayed.decisionLog.decisionLogId);
 
     const result = await releaseDueNotificationDeliveries();
     expect(result.inspected).toBe(1);
@@ -286,9 +288,9 @@ describe('Secretary Notification Orchestrator', () => {
 
     testDb.prepare(`
       UPDATE notification_decision_logs
-      SET scheduled_for = datetime('now', '-1 minute')
+      SET scheduled_for = ?
       WHERE decision_log_id IN (?, ?)
-    `).run(first.decisionLog.decisionLogId, second.decisionLog.decisionLogId);
+    `).run('2026-05-07T11:59:00.000Z', first.decisionLog.decisionLogId, second.decisionLog.decisionLogId);
 
     const result = await releaseDueNotificationDeliveries();
     expect(result.inspected).toBe(2);
