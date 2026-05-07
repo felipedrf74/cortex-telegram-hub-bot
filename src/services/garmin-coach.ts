@@ -156,6 +156,15 @@ export interface CoachApplyResult {
   appliedRecommendations: CoachRecommendation[];
 }
 
+export interface CoachBriefingOptions {
+  /**
+   * Cron/report contexts must not trigger a fresh Garmin SSO login because
+   * Garmin sends a security passcode email for each credentials login. Manual
+   * Telegram `/coach` may leave this false so the interactive MFA flow works.
+   */
+  garminSilent?: boolean;
+}
+
 /**
  * Apply a single coach recommendation to the calendar.
  * REST recommendations intentionally keep the slot visible on the calendar
@@ -295,7 +304,10 @@ async function tryAppleHealthFallback(userId: number | undefined, errors: string
 
 // ─── Main coach function ──────────────────────────────────────────────
 
-export async function generateCoachBriefing(userId?: number): Promise<CoachBriefingResult> {
+export async function generateCoachBriefing(
+  userId?: number,
+  opts: CoachBriefingOptions = {},
+): Promise<CoachBriefingResult> {
   const errors: string[] = [];
   const collectStart = Date.now();
   let garminData: GarminCoachData | null = null;
@@ -307,7 +319,7 @@ export async function generateCoachBriefing(userId?: number): Promise<CoachBrief
   // data lives in apple_health_data table.
   if (canUseScopedGarmin) {
     try {
-      garminData = await fetchDailyCoachData();
+      garminData = await fetchDailyCoachData({ silent: opts.garminSilent });
       errors.push(...garminData.errors);
     } catch (err) {
       logger.error({ err }, 'Garmin data collection failed completely');

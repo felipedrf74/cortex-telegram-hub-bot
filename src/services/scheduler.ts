@@ -1153,7 +1153,6 @@ export function startScheduler(bot?: any): void {
         setSilentMode(true);
         logger.info('Garmin: startup keepalive — refreshing tokens immediately (silent mode)');
         const ok = await garminKeepAlive();
-        setSilentMode(false);
         recordGarminRefresh(ok);
         if (ok) {
           logger.info('Garmin: startup keepalive successful — session is live');
@@ -1162,6 +1161,9 @@ export function startScheduler(bot?: any): void {
         }
       } catch (err) {
         logger.warn({ err }, 'Garmin: startup keepalive error (non-fatal)');
+      } finally {
+        const { setSilentMode } = require('./garmin');
+        setSilentMode(false);
       }
     }, 5000); // 5s delay to let other services initialize first
   }
@@ -1247,7 +1249,7 @@ export function startScheduler(bot?: any): void {
       let readinessRec = '';
       if (garminAvailable) {
         try {
-          const readiness = await calculateReadiness(userId);
+          const readiness = await calculateReadiness(userId, { garminSilent: true });
           persistReadinessScore(userId, readiness);
           readinessScore = readiness.score;
           readinessRec = readiness.recommendation;
@@ -1677,7 +1679,7 @@ export async function sendCoachBriefings(bot?: any): Promise<void> {
     await runWithContext({ source: 'cron:garmin_coach', userId: target.tenantId }, async () => {
       let result;
       try {
-        result = await generateCoachBriefing(target.tenantId);
+        result = await generateCoachBriefing(target.tenantId, { garminSilent: true });
       } catch (err) {
         logger.warn({ err, userId: target.tenantId }, 'Coach briefing skipped for user');
         return;
@@ -1701,7 +1703,7 @@ export async function sendCoachBriefings(bot?: any): Promise<void> {
         let readinessData: any = null;
         try {
           const { calculateReadiness } = require('./readiness-scorer');
-          readinessData = await calculateReadiness(target.tenantId);
+          readinessData = await calculateReadiness(target.tenantId, { garminSilent: true });
         } catch { /* non-fatal */ }
 
         await storeAndPushReport({

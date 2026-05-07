@@ -230,22 +230,11 @@ export function createApiRouter(): Router {
       const requestId = (req as any).requestId || generateRequestId();
       // Wrap the rest of the middleware chain in a context that propagates
       // through await / Promise.all / timeouts without parameter threading.
-      runWithContext({ requestId, source: 'http', userId }, () => {
+      runWithContext({ requestId, source: 'http', userId, garminSilent: true }, () => {
         next();
       });
       return; // next() called inside runInContext
     }
-    next();
-  });
-
-  // Garmin silent mode for ALL iOS API routes. iOS users can't enter
-  // MFA codes, so if the Garmin session expires, we return an error
-  // instead of triggering an MFA email flood. The user re-authenticates
-  // via the Telegram bot (/readiness) where MFA is interactive.
-  router.use((_req, _res, next) => {
-    const { setSilentMode } = require('../services/garmin');
-    setSilentMode(true);
-    _res.on('finish', () => setSilentMode(false));
     next();
   });
 

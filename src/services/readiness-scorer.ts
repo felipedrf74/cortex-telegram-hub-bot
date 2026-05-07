@@ -15,6 +15,7 @@ import {
   isGarminConfigured,
   getHrvData, getSleepData, getBodyBatteryEvents,
   getTrainingReadiness, getActivitiesByDate, getDailySummary,
+  type GarminReadOptions,
 } from './garmin';
 import {
   publishLowSleep,
@@ -495,7 +496,10 @@ async function calculateAppleHealthReadiness(userId: number): Promise<ReadinessR
 
 // ── Main Calculator ─────────────────────────────────────────────────
 
-export async function calculateReadiness(userId: number): Promise<ReadinessResult> {
+export async function calculateReadiness(
+  userId: number,
+  opts: { garminSilent?: boolean } = {},
+): Promise<ReadinessResult> {
   // ── Provider priority: per-user Garmin → Apple Health → neutral ──
   // April 2026: Garmin is now a real per-user integration in iOS.
   // The old owner-only Telegram-era gate made Garmin appear connected
@@ -538,15 +542,16 @@ export async function calculateReadiness(userId: number): Promise<ReadinessResul
 
   const today = new Date().toISOString().slice(0, 10);
 
+  const garminReadOptions: GarminReadOptions = { silent: opts.garminSilent };
   const [hrvResult, sleepResult, bbResult, , activitiesResult, summaryResult] = await runWithContext(
     { source: 'manual', userId },
     () => Promise.allSettled([
-      getHrvData(today),
-      getSleepData(today),
-      getBodyBatteryEvents(today),
-      getTrainingReadiness(today),
-      getActivitiesByDate(subtractDays(today, 28), today),
-      getDailySummary(today),
+      getHrvData(today, garminReadOptions),
+      getSleepData(today, garminReadOptions),
+      getBodyBatteryEvents(today, garminReadOptions),
+      getTrainingReadiness(today, garminReadOptions),
+      getActivitiesByDate(subtractDays(today, 28), today, garminReadOptions),
+      getDailySummary(today, garminReadOptions),
     ]),
   );
 

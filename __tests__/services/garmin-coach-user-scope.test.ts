@@ -159,6 +159,12 @@ describe('garmin-coach user scoping', () => {
   it('still allows Garmin for owner-scoped users', async () => {
     mockIsOwnerUserRef.mockReturnValue(true);
     await generateCoachBriefing(7);
-    expect(mockFetchDailyCoachData).toHaveBeenCalled();
+    expect(mockFetchDailyCoachData).toHaveBeenCalledWith({ silent: undefined });
+  });
+
+  it('passes silent Garmin mode through for scheduled coach report generation', async () => {
+    mockIsOwnerUserRef.mockReturnValue(true);
+    await generateCoachBriefing(7, { garminSilent: true });
+    expect(mockFetchDailyCoachData).toHaveBeenCalledWith({ silent: true });
   });
 });

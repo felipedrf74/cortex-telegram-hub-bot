@@ -16,8 +16,9 @@
  * so one bad integration doesn't block the others.
  *
  * Probe selection rationale per provider:
- *   - Garmin:      isGarminConfigured() + a tiny getUserSettings() call
- *                  (the same call garmin-keepalive uses, so we piggyback)
+ *   - Garmin:      Mirrors the latest garmin_keepalive job_history row.
+ *                  The 5-minute health probe never touches Garmin auth/SSO,
+ *                  avoiding repeated MFA passcode emails during releases.
  *   - Google:      isGoogleConfigured() + an OAuth token refresh attempt
  *                  (cheapest call that proves the refresh token is valid)
  *   - Notion:      Read 1 row from the configured database via the SDK

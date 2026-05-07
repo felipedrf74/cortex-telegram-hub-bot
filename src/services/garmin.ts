@@ -30,7 +30,7 @@ import {
   touchGarminConnection,
   upsertGarminSession,
 } from './garmin-session-store';
-import { runWithContext } from '../utils/request-context';
+import { getCurrentContext, runWithContext } from '../utils/request-context';
 
 // ─── Suppress garmin-connect SDK 404 noise ───────────────────────────
 // The garmin-connect SDK (HttpClient.js:236-237) calls `console.error(msg)`
@@ -159,6 +159,15 @@ export interface GarminCoachData {
   weeklyStress: unknown;
   weeklyIntensityMinutes: unknown;
   errors: string[];
+}
+
+export interface GarminReadOptions {
+  /**
+   * When true, data reads may refresh/reload existing tokens but must never
+   * start a credentials-based Garmin login. Use this for cron, release,
+   * health, iOS, and report-generation paths where no one can answer MFA.
+   */
+  silent?: boolean;
 }
 
 // ─── MFA Support ─────────────────────────────────────────────────────
@@ -715,7 +724,7 @@ export function isGarminConfiguredForUser(userId: number): boolean {
  *                     commands still get the full MFA flow).
  */
 async function getClient(opts?: { silent?: boolean }): Promise<InstanceType<typeof GarminConnect>> {
-  const silent = opts?.silent ?? _silentMode;
+  const silent = opts?.silent ?? getCurrentContext()?.garminSilent ?? _silentMode;
   const sessionUserId = resolveGarminUserId();
 
   // Fast path — already authenticated
@@ -921,7 +930,7 @@ export async function keepAlive(): Promise<boolean> {
   if (await refreshOAuth2()) {
     // Validate with a lightweight call
     try {
-      const client = await getClient();
+      const client = await getClient({ silent: true });
       await client.getUserSettings();
       return true;
     } catch (err) {
@@ -956,13 +965,14 @@ export async function ensureAuthenticated(
   opts: { silent?: boolean } = {},
 ): Promise<boolean> {
   if (!isGarminConfigured()) return false;
+  const silent = opts.silent ?? getCurrentContext()?.garminSilent ?? _silentMode;
   try {
-    const client = await getClient({ silent: opts.silent });
+    const client = await getClient({ silent });
     await client.getUserSettings();
     logger.info('Garmin: pre-auth check passed');
     return true;
   } catch {
-    if (opts.silent) {
+    if (silent) {
       logger.warn('Garmin: pre-auth check failed in silent mode, running silent recovery (OAuth2 + token reload only)');
       return silentAuthRecovery();
     }
@@ -1118,8 +1128,9 @@ function isDataEndpoint(url: string): boolean {
   return DATA_ENDPOINTS_404_OK.some(prefix => url.includes(prefix));
 }
 
-async function safeGet<T = unknown>(url: string): Promise<T> {
-  const client = await getClient();
+async function safeGet<T = unknown>(url: string, opts: GarminReadOptions = {}): Promise<T> {
+  const silent = opts.silent ?? getCurrentContext()?.garminSilent ?? _silentMode;
+  const client = await getClient({ silent });
   try {
     const result = await client.get(url) as T;
     persistTokens();
@@ -1144,13 +1155,15 @@ async function safeGet<T = unknown>(url: string): Promise<T> {
     }
 
     if (status === 401 || status === 403) {
-      logger.warn({ status, url: url.split('?')[0] }, 'Garmin: auth error, waiting for serialized recovery');
+      logger.warn({ status, url: url.split('?')[0], silent }, 'Garmin: auth error, waiting for recovery');
 
-      // All concurrent 403s funnel through ONE recovery attempt
-      const recovered = await serializedAuthRecovery();
+      // All concurrent 403s funnel through ONE recovery attempt. Silent
+      // contexts use refresh/reload only; full re-login would email an MFA
+      // passcode with no interactive user to answer it.
+      const recovered = silent ? await silentAuthRecovery() : await serializedAuthRecovery();
       if (recovered) {
         try {
-          const freshClient = await getClient();
+          const freshClient = await getClient({ silent });
           const result = await freshClient.get(url) as T;
           persistTokens();
           const userId = resolveGarminUserId();
@@ -1173,43 +1186,43 @@ async function safeGet<T = unknown>(url: string): Promise<T> {
 
 // ─── Public API methods ───────────────────────────────────────────────
 
-export async function getDailySummary(date: string): Promise<GarminDailySummary | null> {
-  try { return await safeGet<GarminDailySummary>(URLS.userSummary(date)); }
+export async function getDailySummary(date: string, opts: GarminReadOptions = {}): Promise<GarminDailySummary | null> {
+  try { return await safeGet<GarminDailySummary>(URLS.userSummary(date), opts); }
   catch { return null; }
 }
 
-export async function getSleepData(date: string): Promise<unknown> {
-  try { return await safeGet(URLS.sleepData(date)); }
+export async function getSleepData(date: string, opts: GarminReadOptions = {}): Promise<unknown> {
+  try { return await safeGet(URLS.sleepData(date), opts); }
   catch { return null; }
 }
 
-export async function getStressSummary(date: string): Promise<unknown> {
-  try { return await safeGet(URLS.stressSummary(date)); }
+export async function getStressSummary(date: string, opts: GarminReadOptions = {}): Promise<unknown> {
+  try { return await safeGet(URLS.stressSummary(date), opts); }
   catch { return null; }
 }
 
-export async function getHeartRateSummary(date: string): Promise<unknown> {
-  try { return await safeGet(URLS.heartRateSummary(date)); }
+export async function getHeartRateSummary(date: string, opts: GarminReadOptions = {}): Promise<unknown> {
+  try { return await safeGet(URLS.heartRateSummary(date), opts); }
   catch { return null; }
 }
 
-export async function getHrvData(date: string): Promise<unknown> {
-  try { return await safeGet(URLS.hrvData(date)); }
+export async function getHrvData(date: string, opts: GarminReadOptions = {}): Promise<unknown> {
+  try { return await safeGet(URLS.hrvData(date), opts); }
   catch { return null; }
 }
 
-export async function getTrainingReadiness(date: string): Promise<unknown> {
-  try { return await safeGet(URLS.trainingReadiness(date)); }
+export async function getTrainingReadiness(date: string, opts: GarminReadOptions = {}): Promise<unknown> {
+  try { return await safeGet(URLS.trainingReadiness(date), opts); }
   catch { return null; }
 }
 
-export async function getTrainingStatus(date: string): Promise<unknown> {
-  try { return await safeGet(URLS.trainingStatus(date)); }
+export async function getTrainingStatus(date: string, opts: GarminReadOptions = {}): Promise<unknown> {
+  try { return await safeGet(URLS.trainingStatus(date), opts); }
   catch { return null; }
 }
 
-export async function getBodyBatteryEvents(date: string): Promise<unknown> {
-  try { return await safeGet(URLS.bodyBatteryEvents(date)); }
+export async function getBodyBatteryEvents(date: string, opts: GarminReadOptions = {}): Promise<unknown> {
+  try { return await safeGet(URLS.bodyBatteryEvents(date), opts); }
   catch { return null; }
 }
 
@@ -1217,14 +1230,18 @@ export async function getBodyBatteryEventsForUser(userId: number, date: string):
   return runWithContext({ source: 'manual', userId }, () => getBodyBatteryEvents(date));
 }
 
-export async function getRhr(date: string): Promise<unknown> {
-  try { return await safeGet(URLS.rhr(date)); }
+export async function getRhr(date: string, opts: GarminReadOptions = {}): Promise<unknown> {
+  try { return await safeGet(URLS.rhr(date), opts); }
   catch { return null; }
 }
 
-export async function getActivitiesByDate(startDate: string, endDate: string): Promise<GarminActivity[]> {
+export async function getActivitiesByDate(
+  startDate: string,
+  endDate: string,
+  opts: GarminReadOptions = {},
+): Promise<GarminActivity[]> {
   try {
-    const result = await safeGet<GarminActivity[]>(URLS.activitiesByDate(startDate, endDate));
+    const result = await safeGet<GarminActivity[]>(URLS.activitiesByDate(startDate, endDate), opts);
     return Array.isArray(result) ? result : [];
   } catch { return []; }
 }
@@ -1237,68 +1254,72 @@ export async function getActivitiesByDateForUser(
   return runWithContext({ source: 'manual', userId }, () => getActivitiesByDate(startDate, endDate));
 }
 
-export async function getActivityDetails(activityId: number): Promise<unknown> {
-  try { return await safeGet(URLS.activityDetails(activityId)); }
+export async function getActivityDetails(activityId: number, opts: GarminReadOptions = {}): Promise<unknown> {
+  try { return await safeGet(URLS.activityDetails(activityId), opts); }
   catch { return null; }
 }
 
-export async function getActivitySplits(activityId: number): Promise<unknown> {
-  try { return await safeGet(URLS.activitySplits(activityId)); }
+export async function getActivitySplits(activityId: number, opts: GarminReadOptions = {}): Promise<unknown> {
+  try { return await safeGet(URLS.activitySplits(activityId), opts); }
   catch { return null; }
 }
 
-export async function getActivityExerciseSets(activityId: number): Promise<unknown> {
-  try { return await safeGet(URLS.activityExerciseSets(activityId)); }
+export async function getActivityExerciseSets(activityId: number, opts: GarminReadOptions = {}): Promise<unknown> {
+  try { return await safeGet(URLS.activityExerciseSets(activityId), opts); }
   catch { return null; }
 }
 
-export async function getTrainingEffect(activityId: number): Promise<unknown> {
+export async function getTrainingEffect(activityId: number, opts: GarminReadOptions = {}): Promise<unknown> {
   try {
-    const details = await safeGet<Record<string, unknown>>(URLS.trainingEffect(activityId));
+    const details = await safeGet<Record<string, unknown>>(URLS.trainingEffect(activityId), opts);
     return details?.summaryDTO ?? details;
   } catch { return null; }
 }
 
-export async function getScheduledWorkouts(startDate: string, endDate: string): Promise<unknown[]> {
+export async function getScheduledWorkouts(
+  startDate: string,
+  endDate: string,
+  opts: GarminReadOptions = {},
+): Promise<unknown[]> {
   try {
-    const result = await safeGet<unknown[]>(URLS.scheduledWorkouts(startDate, endDate));
+    const result = await safeGet<unknown[]>(URLS.scheduledWorkouts(startDate, endDate), opts);
     return Array.isArray(result) ? result : [];
   } catch { return []; }
 }
 
-export async function getTrainingPlanWorkouts(date: string): Promise<unknown> {
-  try { return await safeGet(URLS.trainingPlanWorkouts(date)); }
+export async function getTrainingPlanWorkouts(date: string, opts: GarminReadOptions = {}): Promise<unknown> {
+  try { return await safeGet(URLS.trainingPlanWorkouts(date), opts); }
   catch { return null; }
 }
 
-export async function getWorkoutDetail(workoutId: number): Promise<unknown> {
-  try { return await safeGet(URLS.workoutDetail(workoutId)); }
+export async function getWorkoutDetail(workoutId: number, opts: GarminReadOptions = {}): Promise<unknown> {
+  try { return await safeGet(URLS.workoutDetail(workoutId), opts); }
   catch { return null; }
 }
 
-export async function getWeeklyStress(date: string, weeks = 1): Promise<unknown> {
-  try { return await safeGet(URLS.weeklyStress(date, weeks)); }
+export async function getWeeklyStress(date: string, weeks = 1, opts: GarminReadOptions = {}): Promise<unknown> {
+  try { return await safeGet(URLS.weeklyStress(date, weeks), opts); }
   catch { return null; }
 }
 
-export async function getWeeklyIntensityMinutes(date: string, weeks = 1): Promise<unknown> {
-  try { return await safeGet(URLS.weeklyIntensityMinutes(date, weeks)); }
+export async function getWeeklyIntensityMinutes(date: string, weeks = 1, opts: GarminReadOptions = {}): Promise<unknown> {
+  try { return await safeGet(URLS.weeklyIntensityMinutes(date, weeks), opts); }
   catch { return null; }
 }
 
-export async function getRacePredictions(): Promise<unknown> {
-  try { return await safeGet(URLS.racePredictions()); }
+export async function getRacePredictions(opts: GarminReadOptions = {}): Promise<unknown> {
+  try { return await safeGet(URLS.racePredictions(), opts); }
   catch { return null; }
 }
 
-export async function getActiveGoals(): Promise<unknown> {
-  try { return await safeGet(URLS.goals('active')); }
+export async function getActiveGoals(opts: GarminReadOptions = {}): Promise<unknown> {
+  try { return await safeGet(URLS.goals('active'), opts); }
   catch { return null; }
 }
 
 // ─── Composite: Fetch all daily coach data in parallel ────────────────
 
-export async function fetchDailyCoachData(): Promise<GarminCoachData> {
+export async function fetchDailyCoachData(opts: GarminReadOptions = {}): Promise<GarminCoachData> {
   const today = now().toFormat('yyyy-MM-dd');
   const tomorrow = now().plus({ days: 1 }).toFormat('yyyy-MM-dd');
   const errors: string[] = [];
@@ -1309,16 +1330,16 @@ export async function fetchDailyCoachData(): Promise<GarminCoachData> {
     trainingReadiness, trainingStatus, bodyBattery, rhr,
     activities,
   ] = await Promise.allSettled([
-    getDailySummary(today),
-    getSleepData(today),
-    getStressSummary(today),
-    getHeartRateSummary(today),
-    getHrvData(today),
-    getTrainingReadiness(today),
-    getTrainingStatus(today),
-    getBodyBatteryEvents(today),
-    getRhr(today),
-    getActivitiesByDate(today, today),
+    getDailySummary(today, opts),
+    getSleepData(today, opts),
+    getStressSummary(today, opts),
+    getHeartRateSummary(today, opts),
+    getHrvData(today, opts),
+    getTrainingReadiness(today, opts),
+    getTrainingStatus(today, opts),
+    getBodyBatteryEvents(today, opts),
+    getRhr(today, opts),
+    getActivitiesByDate(today, today, opts),
   ]).then(results => results.map((r, i) => {
     if (r.status === 'rejected') {
       const names = ['summary', 'sleep', 'stress', 'heartRate', 'hrv', 'trainingReadiness', 'trainingStatus', 'bodyBattery', 'rhr', 'activities'];
@@ -1336,12 +1357,12 @@ export async function fetchDailyCoachData(): Promise<GarminCoachData> {
     const detailPromises = activityList.map(async (a) => {
       try {
         const [effect, details] = await Promise.all([
-          getTrainingEffect(a.activityId),
+          getTrainingEffect(a.activityId, opts),
           isStrength(a)
-            ? getActivityExerciseSets(a.activityId)
+            ? getActivityExerciseSets(a.activityId, opts)
             : isRunning(a)
-              ? getActivityDetails(a.activityId) // includes running dynamics
-              : getActivitySplits(a.activityId),
+              ? getActivityDetails(a.activityId, opts) // includes running dynamics
+              : getActivitySplits(a.activityId, opts),
         ]);
         activityDetails.set(a.activityId, { trainingEffect: effect, extra: details });
       } catch (err) {
@@ -1353,10 +1374,10 @@ export async function fetchDailyCoachData(): Promise<GarminCoachData> {
 
   // Phase 3: Tomorrow's scheduled workouts + training plan (parallel)
   const [tomorrowWorkouts, tomorrowTrainingPlan, weeklyStress, weeklyIntensityMinutes] = await Promise.allSettled([
-    getScheduledWorkouts(tomorrow, tomorrow),
-    getTrainingPlanWorkouts(tomorrow),
-    getWeeklyStress(today),
-    getWeeklyIntensityMinutes(today),
+    getScheduledWorkouts(tomorrow, tomorrow, opts),
+    getTrainingPlanWorkouts(tomorrow, opts),
+    getWeeklyStress(today, 1, opts),
+    getWeeklyIntensityMinutes(today, 1, opts),
   ]).then(results => results.map((r, i) => {
     if (r.status === 'rejected') {
       const names = ['scheduledWorkouts', 'trainingPlan', 'weeklyStress', 'weeklyIntensity'];
