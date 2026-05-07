@@ -112,11 +112,35 @@ export const defaultJobHandlers: JobHandler[] = [
   },
 ];
 
-export async function runEventBackboneOnce(): Promise<{
+export async function runEventBackboneOnce(opts: {
+  eventLimit?: number;
+  jobLimit?: number;
+  lockOwner?: string;
+  disabled?: boolean;
+} = {}): Promise<{
   events: Awaited<ReturnType<typeof processPendingEvents>>;
   jobs: Awaited<ReturnType<typeof processPendingJobs>>;
 }> {
-  const events = await processPendingEvents(defaultEventHandlers);
-  const jobs = await processPendingJobs(defaultJobHandlers);
+  if (opts.disabled || process.env.EVENT_BACKBONE_WORKER_DISABLED === '1') {
+    return {
+      events: { processed: 0, failed: 0, deadLetter: 0 },
+      jobs: { completed: 0, failed: 0, deadLetter: 0, skipped: 1 },
+    };
+  }
+
+  const lockOwner = opts.lockOwner ?? `event-backbone-${process.pid}`;
+  const events = await processPendingEvents(defaultEventHandlers, {
+    limit: clampBatchLimit(opts.eventLimit, 1, 100, 25),
+    lockOwner,
+  });
+  const jobs = await processPendingJobs(defaultJobHandlers, {
+    limit: clampBatchLimit(opts.jobLimit, 1, 50, 10),
+    lockOwner,
+  });
   return { events, jobs };
+}
+
+function clampBatchLimit(value: number | undefined, min: number, max: number, fallback: number): number {
+  if (!Number.isInteger(value)) return fallback;
+  return Math.max(min, Math.min(max, value as number));
 }

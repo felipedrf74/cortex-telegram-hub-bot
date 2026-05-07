@@ -4,6 +4,7 @@ import { Router, Response } from 'express';
 import { AuthenticatedRequest } from '../auth-middleware';
 import { sendError, sendSuccess, sendInternalError } from '../response-helpers';
 import { getAppSummary, projectSummaryReadModelsForUser, type SummaryType } from '../../services/app-summary-read-models';
+import { consumeResourceBudget } from '../../services/resource-budgets';
 import { isValidTenantUserId, recordTenantScopeAnomaly } from '../../services/tenant-scope-observability';
 import { logger } from '../../utils/logger';
 
@@ -15,6 +16,7 @@ export function summaryRoutes(): Router {
   router.get('/', (req, res: Response) => {
     const { userId, tenantId = userId } = req as unknown as AuthenticatedRequest;
     if (!ensureScope(res, userId, tenantId, 'summary_route_list')) return;
+    if (!consumeSummaryBudget(res, tenantId, userId, 'summary_list', 240, 60)) return;
     try {
       const summaries = projectSummaryReadModelsForUser({ userId, tenantId });
       sendSuccess(res, {
@@ -30,6 +32,7 @@ export function summaryRoutes(): Router {
   router.get('/:type', (req, res: Response) => {
     const { userId, tenantId = userId } = req as unknown as AuthenticatedRequest;
     if (!ensureScope(res, userId, tenantId, 'summary_route_get', { type: req.params.type })) return;
+    if (!consumeSummaryBudget(res, tenantId, userId, 'summary_get', 300, 60)) return;
     const summaryType = normalizeSummaryType(req.params.type);
     if (!summaryType) {
       sendError(res, 'BAD_REQUEST', `summary type must be one of: ${SUMMARY_TYPES.join(', ')}`);
@@ -48,6 +51,7 @@ export function summaryRoutes(): Router {
   router.post('/project', (req, res: Response) => {
     const { userId, tenantId = userId } = req as AuthenticatedRequest;
     if (!ensureScope(res, userId, tenantId, 'summary_route_project')) return;
+    if (!consumeSummaryBudget(res, tenantId, userId, 'summary_project', 30, 60)) return;
     const requested = Array.isArray(req.body?.summaryTypes)
       ? req.body.summaryTypes.map(normalizeSummaryType).filter(Boolean) as SummaryType[]
       : undefined;
@@ -65,6 +69,30 @@ export function summaryRoutes(): Router {
 
 function normalizeSummaryType(value: unknown): SummaryType | null {
   return typeof value === 'string' && (SUMMARY_TYPES as string[]).includes(value) ? value as SummaryType : null;
+}
+
+function consumeSummaryBudget(
+  res: Response,
+  tenantId: number,
+  userId: number,
+  budgetKey: string,
+  limit: number,
+  windowSeconds: number,
+): boolean {
+  const budget = consumeResourceBudget({
+    tenantId,
+    userId,
+    budgetKey,
+    limit,
+    windowSeconds,
+  });
+  if (budget.allowed) return true;
+
+  sendError(res, 'RATE_LIMITED', 'Too many summary requests. Try again shortly.', 429, {
+    resetAt: budget.resetAt,
+    budgetKey: budget.budgetKey,
+  });
+  return false;
 }
 
 function ensureScope(

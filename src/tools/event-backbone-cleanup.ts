@@ -31,7 +31,7 @@ const TARGETS: CleanupTarget[] = [
   {
     table: 'sync_cursors',
     idColumn: 'cursor_id',
-    timestampColumn: 'updated_at',
+    timestampColumn: 'last_seen_at',
     where: '1 = 1',
   },
 ];

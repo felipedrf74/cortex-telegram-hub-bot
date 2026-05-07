@@ -77,7 +77,7 @@ import {
   getAppSummary,
   projectSummaryReadModelsForUser,
 } from '../../src/services/app-summary-read-models';
-import { listDeltaChanges } from '../../src/services/delta-sync';
+import { ensureDeltaSyncTables, listDeltaChanges } from '../../src/services/delta-sync';
 import { consumeResourceBudget } from '../../src/services/resource-budgets';
 import { defaultEventHandlers, defaultJobHandlers, runEventBackboneOnce } from '../../src/services/event-backbone-worker';
 import { persistExchange } from '../../src/api/routes/chat-persistence';
@@ -349,6 +349,33 @@ describe('event backbone foundation', () => {
       expect(dryRun.targets.find((target) => target.table === 'event_outbox')?.candidates).toBe(1);
       expect(applied.targets.find((target) => target.table === 'event_outbox')?.deleted).toBe(1);
       expect(remaining.map((row) => row.status)).toEqual(['dead_letter']);
+    } finally {
+      verifyDb.close();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('cleans stale sync cursors using last_seen_at rather than a nonexistent updated_at column', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'event-backbone-sync-cleanup-'));
+    const dbPath = join(dir, 'cleanup.db');
+    const db = new Database(dbPath);
+    try {
+      ensureDeltaSyncTables(db);
+      db.prepare(`
+        INSERT INTO sync_cursors (
+          cursor_id, tenant_id, user_id, device_id, cursor_value, last_seen_at
+        ) VALUES ('cursor-old', 7, 7, 'iphone-a', 10, datetime('now', '-45 days'))
+      `).run();
+    } finally {
+      db.close();
+    }
+
+    const applied = runEventBackboneCleanup({ dbPath, retentionDays: 30, protectNewest: 0, apply: true });
+    const verifyDb = new Database(dbPath);
+    try {
+      const remaining = verifyDb.prepare('SELECT COUNT(*) AS count FROM sync_cursors').get() as { count: number };
+      expect(applied.targets.find((target) => target.table === 'sync_cursors')?.deleted).toBe(1);
+      expect(remaining.count).toBe(0);
     } finally {
       verifyDb.close();
       rmSync(dir, { recursive: true, force: true });

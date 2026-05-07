@@ -49,6 +49,8 @@ import { getTaskProviderForUser } from './task-store/task-router';
 import { storeAndPushReport } from './report-document-store';
 import { isTelegramLegacyDeliveryEnabled } from './runtime-flags';
 import { processDueOperatorAlertDeliveries, recordOperatorAlert } from './operator-alerts';
+import { runEventBackboneOnce } from './event-backbone-worker';
+import { runEventBackboneCleanup } from '../tools/event-backbone-cleanup';
 
 interface ActiveUserTarget {
   tenantId: number;
@@ -670,6 +672,8 @@ export function startScheduler(bot?: any): void {
   registerJob('task_sync',        'Task Provider Sync',     '*/15 * * * *',    'system');
   registerJob('daily_context',    'Daily Context Builder',  '0 5 * * *',       'system');
   registerJob('operator_alert_delivery', 'Operator Alert Delivery', '* * * * *', 'system');
+  registerJob('event_backbone_worker', 'Event Backbone Worker', '* * * * *', 'system');
+  registerJob('event_backbone_cleanup', 'Event Backbone Cleanup', '10 0 * * *', 'system');
 
   // Seed lastRunAt from DB so the DST watchdog doesn't re-fire jobs after a restart
   seedJobLastRunFromHistory();
@@ -1596,9 +1600,68 @@ export function startScheduler(bot?: any): void {
     }
   }));
 
+  cron.schedule('* * * * *', wrapJob('event_backbone_worker', async () => {
+    if (process.env.EVENT_BACKBONE_WORKER_DISABLED === '1') {
+      return 'skipped';
+    }
+
+    const result = await runEventBackboneOnce({
+      eventLimit: intEnv('EVENT_BACKBONE_EVENT_BATCH_LIMIT', 25, 1, 100),
+      jobLimit: intEnv('EVENT_BACKBONE_JOB_BATCH_LIMIT', 10, 1, 50),
+      lockOwner: `scheduler:${process.pid}`,
+    });
+    const touched =
+      result.events.processed +
+      result.events.failed +
+      result.events.deadLetter +
+      result.jobs.completed +
+      result.jobs.failed +
+      result.jobs.deadLetter;
+
+    if (result.events.deadLetter > 0 || result.jobs.deadLetter > 0) {
+      logger.warn(result, 'Event backbone worker produced dead-letter rows');
+    }
+    if (touched === 0) return 'skipped';
+    logger.info(result, 'Event backbone worker processed pending work');
+  }));
+
+  cron.schedule('10 0 * * *', wrapJob('event_backbone_cleanup', async () => {
+    if (process.env.EVENT_BACKBONE_CLEANUP_DISABLED === '1') {
+      return 'skipped';
+    }
+
+    const apply = process.env.EVENT_BACKBONE_CLEANUP_APPLY === '1';
+    const report = runEventBackboneCleanup({
+      dbPath: config.app.databasePath,
+      apply,
+      retentionDays: intEnv('EVENT_BACKBONE_RETENTION_DAYS', 30, 1, 3650),
+      protectNewest: intEnv('EVENT_BACKBONE_RETENTION_PROTECT_NEWEST', 500, 0, 100000),
+    });
+    const candidates = report.targets.reduce((sum, target) => sum + target.candidates, 0);
+    const deleted = report.targets.reduce((sum, target) => sum + target.deleted, 0);
+    if (candidates === 0 && deleted === 0) return 'skipped';
+    logger.info(
+      {
+        apply,
+        retentionDays: report.retentionDays,
+        candidates,
+        deleted,
+        targets: report.targets.map(({ table, candidates, deleted }) => ({ table, candidates, deleted })),
+      },
+      'Event backbone retention cleanup completed',
+    );
+  }));
+
   logger.info(
-    `Scheduler started: reminders, daily briefing (${config.todo.digestTime}), end-of-day (21:00), weekly (Fri 17:00), shared list (*/5), content (16:43), invoices (1st 09:00/09:15/09:30), fiscal-bundle (daily 08:10 due-check), conflict (19:30), fossa (bi-weekly Mon 07:30), garmin-keepalive (*/30), coach (${config.garmin.coachTime}), invoice-queue (*/15), channel-relearn (Sun 03:00), tue-reels (Tue 09:00), thu-youtube (Thu 09:00), fri-weekly (Fri 18:30), pipeline-agent (20:00), notification-release (*/15), expire-signals (hourly), db-backup (${config.backup.time}), dst-watchdog (*/15)`
+    `Scheduler started: reminders, daily briefing (${config.todo.digestTime}), end-of-day (21:00), weekly (Fri 17:00), shared list (*/5), content (16:43), invoices (1st 09:00/09:15/09:30), fiscal-bundle (daily 08:10 due-check), conflict (19:30), fossa (bi-weekly Mon 07:30), garmin-keepalive (*/30), coach (${config.garmin.coachTime}), invoice-queue (*/15), channel-relearn (Sun 03:00), tue-reels (Tue 09:00), thu-youtube (Thu 09:00), fri-weekly (Fri 18:30), pipeline-agent (20:00), notification-release (*/15), event-backbone-worker (* * * * *), event-backbone-cleanup (00:10), expire-signals (hourly), db-backup (${config.backup.time}), dst-watchdog (*/15)`
   );
+}
+
+function intEnv(name: string, fallback: number, min: number, max: number): number {
+  const raw = process.env[name];
+  const parsed = raw ? Number.parseInt(raw, 10) : fallback;
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.max(min, Math.min(max, Math.floor(parsed)));
 }
 
 // ── Exported for portal quick actions ─────────────────────────────────
