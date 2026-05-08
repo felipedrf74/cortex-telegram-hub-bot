@@ -1,6 +1,6 @@
 // Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
 
-import { Router, Response } from 'express';
+import { Router, Request, Response } from 'express';
 import { AuthenticatedRequest } from '../auth-middleware';
 import { logger } from '../../utils/logger';
 import { sendSuccess, sendError, sendInternalError, asyncHandler } from '../response-helpers';
@@ -44,6 +44,13 @@ import type { Lang } from '../../utils/i18n';
 import { buildContentHomeViewState } from '../../services/content-home-view-state';
 import { isValidTenantUserId, recordTenantScopeAnomaly } from '../../services/tenant-scope-observability';
 import { saveIdea } from '../../state/saved-ideas';
+import { getCachedSWR, setCacheSWR } from '../../services/cache-store';
+import { recordSWRRefreshFailure, recordSWRRefreshSuccess } from '../../services/swr-refresh-observability';
+import { sendConditionalApiSuccess } from '../conditional-cache';
+
+const CONTENT_HOME_TTL_SECONDS = 120;
+const CONTENT_HOME_SWR_STALE_SECONDS = 600;
+const contentHomeSWRInFlight = new Set<string>();
 
 export function contentRoutes(): Router {
   const router = Router();
@@ -76,133 +83,28 @@ export function contentRoutes(): Router {
     const { userId, tenantId } = req as unknown as AuthenticatedRequest;
     if (!ensureValidContentRouteScope(res, userId, 'content_route_home')) return;
 
-    const db = getDb();
     const language = resolveContentLanguage(req, userId);
-
-    let pipeline = null as null | {
-      stages: {
-        ideas: Array<{ title: string }>;
-        scripted: Array<{ title: string }>;
-        filmed: Array<{ title: string }>;
-        editing: Array<{ title: string }>;
-        published: Array<{ title: string }>;
-      };
-    };
-    let ideas: Array<{ title: string }> = [];
-    let topics = [] as Array<{ status: 'planned' | 'drafting' | 'ready' | 'published' | 'cancelled'; scheduledDate: string | null }>;
-    let lastLoadError: string | null = null;
-    const reasonCodes: string[] = [];
-
-    try {
-      pipeline = readContentHomePipeline(db, userId);
-    } catch (err: any) {
-      logger.debug({ err, userId }, 'content/home pipeline digest failed');
-      lastLoadError = err?.message || 'pipeline_unavailable';
-      reasonCodes.push('PIPELINE_UNAVAILABLE');
+    const cacheKey = contentHomeCacheKey(userId, tenantId, language);
+    const cached = getCachedSWR<Awaited<ReturnType<typeof buildContentHomePayload>>>(cacheKey);
+    if (cached) {
+      sendConditionalApiSuccess(res, req, cached.value, {
+        cached: true,
+        maxAgeSeconds: CONTENT_HOME_TTL_SECONDS,
+      });
+      if (!cached.fresh) {
+        contentHomeSWRRefresh(cacheKey, async () => {
+          const refreshed = await buildContentHomePayload(userId, tenantId, language);
+          setCacheSWR(cacheKey, refreshed, CONTENT_HOME_TTL_SECONDS, CONTENT_HOME_SWR_STALE_SECONDS);
+        });
+      }
+      return;
     }
 
-    try {
-      ideas = readContentHomeIdeas(db, userId);
-    } catch (err: any) {
-      logger.debug({ err, userId }, 'content/home ideas digest failed');
-      lastLoadError = lastLoadError ?? (err?.message || 'ideas_unavailable');
-      reasonCodes.push('IDEAS_UNAVAILABLE');
-    }
-
-    try {
-      topics = getTopics(userId, {
-        includeTerminal: false,
-        limit: 100,
-      }).map((topic) => ({
-        status: topic.status,
-        scheduledDate: topic.scheduled_date ?? null,
-      }));
-    } catch (err: any) {
-      logger.debug({ err, userId }, 'content/home topics digest failed');
-      lastLoadError = lastLoadError ?? (err?.message || 'topics_unavailable');
-      reasonCodes.push('TOPICS_UNAVAILABLE');
-    }
-
-    const allDiscoverySignals = readSignals(
-      'ios-content-home',
-      ['reaction_opportunity', 'trending_spike', 'competitor_upload'],
-      6,
-      userId,
-      7,
-    );
-    const radarPreferences = getContentRadarPreferences(userId, tenantId);
-    const discoverySignals = filterSignalsForRadarPreferences(allDiscoverySignals, radarPreferences.topics);
-    const optimizationSignals = readSignals(
-      'ios-content-home',
-      ['hook_effectiveness', 'pillar_performance', 'learning_digest', 'content_formula'],
-      6,
-      userId,
-      14,
-    );
-    const monitoredPillars = radarPreferences.topics.length > 0
-      ? buildRadarTopicSummaries(radarPreferences.topics, discoverySignals)
-      : getActiveContentPillars(userId);
-    const deskItems = getContentDeskItems(userId, 3);
-    const voiceEntries = getVoiceDna(undefined, userId, tenantId);
-    const knowledgeStats = getKnowledgeStats(undefined, userId, tenantId);
-    const filmingRecommendation = localizeFilmingRecommendation(await getFilmingRecommendation(userId), language);
-
-    sendSuccess(res, buildContentHomeViewState({
-      pipeline,
-      ideas,
-      topics,
-      discovery: {
-        activeCount: discoverySignals.length,
-        deskReadyCount: deskItems.length,
-        deskItems: deskItems.map((item) => ({
-          title: item.title,
-          body: item.body,
-        })),
-        monitoredPillars: monitoredPillars.map((pillar) => ({
-          name: pillar.name,
-        })),
-      },
-      script: {
-        voicePatternCount: voiceEntries.length,
-        hasBrandVoice: voiceEntries.some((entry) => entry.category === 'brand_voice' || entry.category === 'voice_summary')
-          || knowledgeStats.categories.some((entry) => entry.category === 'brand_voice' || entry.category === 'voice_summary'),
-      },
-      optimization: {
-        activeInsightCount: optimizationSignals.length,
-        recentSignals: optimizationSignals.map((signal) => ({
-          title: buildSignalTitle(signal, language),
-          summary: buildSignalSummary(signal, language),
-        })),
-      },
-      filmingRecommendation: filmingRecommendation
-        ? {
-            date: filmingRecommendation.date,
-            confidence: filmingRecommendation.confidence,
-            localizedReason: filmingRecommendation.reason,
-            localizedConfidenceLabel: language.startsWith('pt')
-              ? filmingRecommendation.confidence === 'high'
-                ? 'Alta confiança'
-                : filmingRecommendation.confidence === 'medium'
-                  ? 'Confiança média'
-                  : 'Baixa confiança'
-              : filmingRecommendation.confidence === 'high'
-                ? 'High confidence'
-                : filmingRecommendation.confidence === 'medium'
-                  ? 'Medium confidence'
-                  : 'Low confidence',
-          }
-        : null,
-      hasAttemptedLoad: true,
-      lastLoadError,
-      meta: buildScreenContractMeta({
-        source: 'server',
-        isFallback: reasonCodes.length > 0,
-        isPartial: reasonCodes.length > 0,
-        isStale: false,
-        generatedAt: new Date().toISOString(),
-        reasonCodes,
-      }),
-    }, language));
+    const payload = await buildContentHomePayload(userId, tenantId, language);
+    setCacheSWR(cacheKey, payload, CONTENT_HOME_TTL_SECONDS, CONTENT_HOME_SWR_STALE_SECONDS);
+    sendConditionalApiSuccess(res, req, payload, {
+      maxAgeSeconds: CONTENT_HOME_TTL_SECONDS,
+    });
   }));
 
   /** POST /api/v1/content/discover — trigger content discovery */
@@ -274,6 +176,148 @@ export function contentRoutes(): Router {
   registerContentCreatorProfileRoutes(router, ensureValidContentRouteScope);
 
   return router;
+}
+
+async function buildContentHomePayload(userId: number, tenantId: number, language: Lang) {
+  const db = getDb();
+
+  let pipeline = null as null | {
+    stages: {
+      ideas: Array<{ title: string }>;
+      scripted: Array<{ title: string }>;
+      filmed: Array<{ title: string }>;
+      editing: Array<{ title: string }>;
+      published: Array<{ title: string }>;
+    };
+  };
+  let ideas: Array<{ title: string }> = [];
+  let topics = [] as Array<{ status: 'planned' | 'drafting' | 'ready' | 'published' | 'cancelled'; scheduledDate: string | null }>;
+  let lastLoadError: string | null = null;
+  const reasonCodes: string[] = [];
+
+  try {
+    pipeline = readContentHomePipeline(db, userId);
+  } catch (err: any) {
+    logger.debug({ err, userId }, 'content/home pipeline digest failed');
+    lastLoadError = err?.message || 'pipeline_unavailable';
+    reasonCodes.push('PIPELINE_UNAVAILABLE');
+  }
+
+  try {
+    ideas = readContentHomeIdeas(db, userId);
+  } catch (err: any) {
+    logger.debug({ err, userId }, 'content/home ideas digest failed');
+    lastLoadError = lastLoadError ?? (err?.message || 'ideas_unavailable');
+    reasonCodes.push('IDEAS_UNAVAILABLE');
+  }
+
+  try {
+    topics = getTopics(userId, {
+      includeTerminal: false,
+      limit: 100,
+    }).map((topic) => ({
+      status: topic.status,
+      scheduledDate: topic.scheduled_date ?? null,
+    }));
+  } catch (err: any) {
+    logger.debug({ err, userId }, 'content/home topics digest failed');
+    lastLoadError = lastLoadError ?? (err?.message || 'topics_unavailable');
+    reasonCodes.push('TOPICS_UNAVAILABLE');
+  }
+
+  const allDiscoverySignals = readSignals(
+    'ios-content-home',
+    ['reaction_opportunity', 'trending_spike', 'competitor_upload'],
+    6,
+    userId,
+    7,
+  );
+  const radarPreferences = getContentRadarPreferences(userId, tenantId);
+  const discoverySignals = filterSignalsForRadarPreferences(allDiscoverySignals, radarPreferences.topics);
+  const optimizationSignals = readSignals(
+    'ios-content-home',
+    ['hook_effectiveness', 'pillar_performance', 'learning_digest', 'content_formula'],
+    6,
+    userId,
+    14,
+  );
+  const monitoredPillars = radarPreferences.topics.length > 0
+    ? buildRadarTopicSummaries(radarPreferences.topics, discoverySignals)
+    : getActiveContentPillars(userId);
+  const deskItems = getContentDeskItems(userId, 3);
+  const voiceEntries = getVoiceDna(undefined, userId, tenantId);
+  const knowledgeStats = getKnowledgeStats(undefined, userId, tenantId);
+  const filmingRecommendation = localizeFilmingRecommendation(await getFilmingRecommendation(userId), language);
+
+  return buildContentHomeViewState({
+    pipeline,
+    ideas,
+    topics,
+    discovery: {
+      activeCount: discoverySignals.length,
+      deskReadyCount: deskItems.length,
+      deskItems: deskItems.map((item) => ({
+        title: item.title,
+        body: item.body,
+      })),
+      monitoredPillars: monitoredPillars.map((pillar) => ({
+        name: pillar.name,
+      })),
+    },
+    script: {
+      voicePatternCount: voiceEntries.length,
+      hasBrandVoice: voiceEntries.some((entry) => entry.category === 'brand_voice' || entry.category === 'voice_summary')
+        || knowledgeStats.categories.some((entry) => entry.category === 'brand_voice' || entry.category === 'voice_summary'),
+    },
+    optimization: {
+      activeInsightCount: optimizationSignals.length,
+      recentSignals: optimizationSignals.map((signal) => ({
+        title: buildSignalTitle(signal, language),
+        summary: buildSignalSummary(signal, language),
+      })),
+    },
+    filmingRecommendation: filmingRecommendation
+      ? {
+          date: filmingRecommendation.date,
+          confidence: filmingRecommendation.confidence,
+          localizedReason: filmingRecommendation.reason,
+          localizedConfidenceLabel: language.startsWith('pt')
+            ? filmingRecommendation.confidence === 'high'
+              ? 'Alta confiança'
+              : filmingRecommendation.confidence === 'medium'
+                ? 'Confiança média'
+                : 'Baixa confiança'
+            : filmingRecommendation.confidence === 'high'
+              ? 'High confidence'
+              : filmingRecommendation.confidence === 'medium'
+                ? 'Medium confidence'
+                : 'Low confidence',
+        }
+      : null,
+    hasAttemptedLoad: true,
+    lastLoadError,
+    meta: buildScreenContractMeta({
+      source: 'server',
+      isFallback: reasonCodes.length > 0,
+      isPartial: reasonCodes.length > 0,
+      isStale: false,
+      generatedAt: new Date().toISOString(),
+      reasonCodes,
+    }),
+  }, language);
+}
+
+function contentHomeCacheKey(userId: number, tenantId: number, language: Lang): string {
+  return `u:${userId}:t:${tenantId}:content:home:${language}`;
+}
+
+function contentHomeSWRRefresh(key: string, fn: () => Promise<void>): void {
+  if (contentHomeSWRInFlight.has(key)) return;
+  contentHomeSWRInFlight.add(key);
+  fn()
+    .then(() => recordSWRRefreshSuccess(key))
+    .catch((err) => recordSWRRefreshFailure(key, err, { source: 'content_route', operation: 'content_home_swr_refresh' }))
+    .finally(() => contentHomeSWRInFlight.delete(key));
 }
 
 export function normalizeDiscoveredIdeasForResponse(rawIdeas: unknown[], startMs = Date.now()) {

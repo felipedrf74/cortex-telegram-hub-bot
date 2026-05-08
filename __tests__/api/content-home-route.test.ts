@@ -12,6 +12,8 @@ const mockRunContentDiscovery = vi.hoisted(() => vi.fn(async (userId: number) =>
 const mockSaveIdea = vi.hoisted(() => vi.fn());
 const mockIsDuplicateIdea = vi.hoisted(() => vi.fn(async () => ({ isDuplicate: false, confidence: 0 })));
 const mockGetContentRadarPreferences = vi.hoisted(() => vi.fn(() => ({ topics: [], updatedAt: null })));
+const mockGetCachedSWR = vi.hoisted(() => vi.fn(() => null));
+const mockSetCacheSWR = vi.hoisted(() => vi.fn());
 
 vi.mock('../../src/utils/logger', () => ({
   logger: {
@@ -120,6 +122,16 @@ vi.mock('../../src/services/plan-cache-invalidator', () => ({
   invalidatePlanningCaches: vi.fn(),
 }));
 
+vi.mock('../../src/services/cache-store', () => ({
+  getCachedSWR: (...args: unknown[]) => mockGetCachedSWR(...args),
+  setCacheSWR: (...args: unknown[]) => mockSetCacheSWR(...args),
+}));
+
+vi.mock('../../src/services/swr-refresh-observability', () => ({
+  recordSWRRefreshSuccess: vi.fn(),
+  recordSWRRefreshFailure: vi.fn(),
+}));
+
 vi.mock('../../src/services/secretary-fastpath', () => ({
   normalizeLangHeader: vi.fn(() => 'pt-BR'),
 }));
@@ -150,21 +162,27 @@ vi.mock('../../src/services/database', () => ({
 interface MockRes {
   statusCode: number;
   body: any;
+  headers: Record<string, string>;
   status(code: number): MockRes;
+  setHeader(name: string, value: string): MockRes;
   json(body: any): MockRes;
+  end(): MockRes;
 }
 
 function mockRes(): MockRes {
   const response: MockRes = {
     statusCode: 200,
     body: null,
+    headers: {},
     status(code: number) { response.statusCode = code; return response; },
+    setHeader(name: string, value: string) { response.headers[name.toLowerCase()] = value; return response; },
     json(body: any) { response.body = body; return response; },
+    end() { return response; },
   };
   return response;
 }
 
-function mockReq(path = '/home', method = 'GET', userId = 12): Request {
+function mockReq(path = '/home', method = 'GET', userId = 12, headers: Record<string, string> = {}): Request {
   return {
     method,
     url: path,
@@ -173,19 +191,20 @@ function mockReq(path = '/home', method = 'GET', userId = 12): Request {
     path,
     query: {},
     params: {},
-    headers: { 'x-language': 'pt-BR' },
+    headers: { 'x-language': 'pt-BR', ...headers },
     header(name: string) {
       return (this.headers as any)[name.toLowerCase()] ?? (this.headers as any)[name];
     },
     body: {},
     userId,
+    tenantId: userId,
   } as any;
 }
 
-async function dispatch(path = '/home', method = 'GET', userId = 12): Promise<MockRes> {
+async function dispatch(path = '/home', method = 'GET', userId = 12, headers: Record<string, string> = {}): Promise<MockRes> {
   const { contentRoutes } = await import('../../src/api/routes/content');
   const router = contentRoutes();
-  const req = mockReq(path, method, userId);
+  const req = mockReq(path, method, userId, headers);
   const res = mockRes();
 
   await new Promise<void>((resolve) => {
@@ -211,6 +230,8 @@ describe('Content API — home route', () => {
     });
     mockIsDuplicateIdea.mockResolvedValue({ isDuplicate: false, confidence: 0 });
     mockGetContentRadarPreferences.mockReturnValue({ topics: [], updatedAt: null });
+    mockGetCachedSWR.mockReturnValue(null);
+    mockSetCacheSWR.mockClear();
   });
 
   it('returns a render-ready creator home contract', async () => {
@@ -222,6 +243,30 @@ describe('Content API — home route', () => {
     expect(response.body.data.hero.primaryAction.target).toBe('schedule');
     expect(response.body.data.flow.steps).toHaveLength(4);
     expect(response.body.data.pipelineHealth.metrics.length).toBeGreaterThan(0);
+    expect(mockSetCacheSWR).toHaveBeenCalledWith(
+      'u:12:t:12:content:home:pt-BR',
+      expect.objectContaining({ hero: expect.any(Object) }),
+      120,
+      600,
+    );
+    expect(response.headers.etag).toMatch(/^"[a-f0-9]{32}"$/);
+  });
+
+  it('returns cached content home with stable ETag and honors If-None-Match', async () => {
+    const cachedHome = {
+      hero: { state: 'readyToFilm' },
+      meta: { source: 'server' },
+    };
+    mockGetCachedSWR.mockReturnValue({ value: cachedHome, fresh: true });
+
+    const response = await dispatch('/home');
+    expect(response.statusCode).toBe(200);
+    expect(response.body.data).toEqual(cachedHome);
+    expect(response.headers['cache-control']).toBe('private, max-age=120');
+
+    const cachedAgain = await dispatch('/home', 'GET', 12, { 'if-none-match': response.headers.etag });
+    expect(cachedAgain.statusCode).toBe(304);
+    expect(cachedAgain.body).toBeNull();
   });
 
   it('rejects manual content discovery when the authenticated user scope is invalid', async () => {
