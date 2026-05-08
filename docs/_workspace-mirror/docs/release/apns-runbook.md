@@ -173,8 +173,8 @@ downtime).
 
 ## Related docs
 
-- `Nexus Hub IOS/specs/09-APNS-SETUP.md` — iOS-side notes (older; supersede
-  with this runbook for operational truth)
+- iOS-side APNs notes are folded into this runbook; no separate iOS APNs setup
+  file is canonical in the current workspace.
 - `engine/.env.example` — env key documentation
 - `engine/src/services/apns-sender.ts` — sender implementation
 - `engine/scripts/apns-smoke.mjs` — diagnostic CLI

@@ -92,9 +92,9 @@ Remaining beta/operator gates:
 ## Codex + Claude Operating Protocol
 
 - Treat this file and `docs/agents/claude/handoff.md` as the backend
-  cross-agent starting point. In the iOS workspace, read `AGENTS.md`,
-  `CLAUDE.md`, `specs/00-CURRENT-PRODUCT-TRUTH.md`, and
-  `specs/27-CLAUDE-CODE-HANDOVER.md`.
+  cross-agent starting point. In the official workspace, read the iOS
+  bootloaders plus `/Users/felipedominguez/Desktop/Nexus Hub/ios-specs/00-CURRENT-PRODUCT-TRUTH.md`
+  and `/Users/felipedominguez/Desktop/Nexus Hub/ios-specs/27-CLAUDE-CODE-HANDOVER.md`.
 - Codex has been working by verifying QA reports with code/runtime evidence,
   implementing scoped fixes, running focused and broad tests, deploying through
   staging smoke before production, and updating docs before handoff. Claude

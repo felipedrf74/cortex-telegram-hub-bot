@@ -325,6 +325,20 @@ function commitExists(gitRoot, hash) {
   }
 }
 
+function isLikelyCommitHash(hash) {
+  // The broad hex regex also sees dates (20260429), device identifiers
+  // (00008150), numeric placeholders, and other non-commit operational IDs.
+  // Real Git SHAs can technically be all digits, but in practice treating
+  // numeric-only tokens as non-commit text removes much more audit noise than
+  // signal. Full hashes and normal short SHAs with a-f letters still count.
+  return /[a-f]/i.test(hash) && !/^20\d{6}$/.test(hash);
+}
+
+function commitExistsInKnownRepo(hash) {
+  const rootsToCheck = [backendRoot, normalize(iosRoot)].filter((root) => existsDir(path.join(root, '.git')));
+  return rootsToCheck.some((root) => commitExists(root, hash));
+}
+
 function resolveMarkdownRef(file, ref) {
   if (!ref || /^[a-z]+:/i.test(ref)) return null;
   const withoutAnchor = ref.split('#')[0];
@@ -335,6 +349,8 @@ function resolveMarkdownRef(file, ref) {
   if (fs.existsSync(local)) return local;
   const backendRelative = path.resolve(backendRoot, withoutAnchor);
   if (fs.existsSync(backendRelative)) return backendRelative;
+  const iosRelative = path.resolve(normalize(iosRoot), withoutAnchor);
+  if (fs.existsSync(iosRelative)) return iosRelative;
   const workspaceRelative = path.resolve(workspaceRoot, withoutAnchor);
   if (fs.existsSync(workspaceRelative)) return workspaceRelative;
   return local;
@@ -403,9 +419,10 @@ for (const file of auditedMarkdownFiles) {
 
   const gitRoot = gitRootFor(file);
   if (gitRoot && !isArchive(file)) {
-    const hashes = [...new Set(content.match(commitHashPattern) || [])].filter((hash) => hash.length >= 7);
+    const hashes = [...new Set(content.match(commitHashPattern) || [])]
+      .filter((hash) => hash.length >= 7 && isLikelyCommitHash(hash));
     for (const hash of hashes) {
-      if (!commitExists(gitRoot, hash)) {
+      if (!commitExists(gitRoot, hash) && !commitExistsInKnownRepo(hash)) {
         const index = content.indexOf(hash);
         addIssue(
           'warn',
