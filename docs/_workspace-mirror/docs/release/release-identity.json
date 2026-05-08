@@ -1,16 +1,16 @@
 {
-  "generatedAt": "2026-05-08T13:21:59Z",
+  "generatedAt": "2026-05-08T14:53:40Z",
   "backend": {
     "path": "/Users/felipedominguez/Desktop/Custom Connectors/Cortex/cortex-telegram-hub-bot",
-    "branch": "perf/outlook-token-cache-2026-05",
-    "commit": "f7ecff88",
+    "branch": "perf/cache-and-compression-2026-05",
+    "commit": "9f551b73",
     "dirtyState": "dirty",
-    "packageVersion": "4.14.140",
+    "packageVersion": "4.14.141",
     "migrationCount": "121"
   },
   "ios": {
     "path": "/Users/felipedominguez/Desktop/Nexus Hub IOS/Nexus Hub",
-    "branch": "main",
+    "branch": "perf/cache-and-compression-2026-05",
     "commit": "fb63527",
     "dirtyState": "clean"
   }

@@ -5,7 +5,7 @@
 
 | Area | Path | Branch | Commit | Dirty state | Version | Migrations |
 | --- | --- | --- | --- | --- | --- | --- |
-| Backend | `/Users/felipedominguez/Desktop/Custom Connectors/Cortex/cortex-telegram-hub-bot` | `perf/outlook-token-cache-2026-05` | `f7ecff88` | `dirty` | `4.14.140` | `121` |
-| iOS | `/Users/felipedominguez/Desktop/Nexus Hub IOS/Nexus Hub` | `main` | `fb63527` | `clean` | n/a | n/a |
+| Backend | `/Users/felipedominguez/Desktop/Custom Connectors/Cortex/cortex-telegram-hub-bot` | `perf/cache-and-compression-2026-05` | `9f551b73` | `dirty` | `4.14.141` | `121` |
+| iOS | `/Users/felipedominguez/Desktop/Nexus Hub IOS/Nexus Hub` | `perf/cache-and-compression-2026-05` | `fb63527` | `clean` | n/a | n/a |
 
-Generated at: `2026-05-08T13:21:59Z`
+Generated at: `2026-05-08T14:53:40Z`

@@ -589,6 +589,58 @@ Backup tags created:
 - Two-account walkthrough on physical devices for closed-beta cohort onboarding (operator-physical).
 
 
+## 2026-05-08 cache/compression/iOS conditional-read batch — staged, production not promoted
+
+Codex completed the `perf/cache-and-compression-2026-05` batch after the
+Outlook token cache deploy showed residual UI lag. The branch is staged and
+smoke-tested, but production was not promoted in this batch.
+
+Closeout:
+`docs/archive/2026-05/perf-cache-and-compression/closeout.md`
+
+Implemented:
+
+- SWR + stable ETag handling for `/api/v1/plan/today` and `/api/v1/plan/week`.
+- SWR upgrade for connected-calendar `/api/v1/calendar/events` and
+  `/api/v1/calendar/today`.
+- Gzip compression middleware for large app-facing JSON responses.
+- Stable data-only conditional response helper shared by dashboard, plan,
+  calendar, and content routes.
+- Microsoft auth generation counter for in-flight invalidation safety.
+- iOS repository-level conditional reads for Tasks, Plan, Calendar, Dashboard,
+  and Content.
+- Extra hostile-review fix: `/api/v1/content/home` now has SWR/ETag support and
+  iOS conditional reads.
+
+Validation:
+
+- Backend typecheck and focused regression suite: PASS.
+- Full vitest commit-hook suite: PASS.
+- Strict mock lint: PASS at baseline 827.
+- Cannot-skip dashboard: PASS, 23/23.
+- iOS focused build and conditional-read tests: PASS on one simulator UDID.
+- Staging deploy: PASS.
+- Five-minute staging soak: PASS.
+- Staging smoke: PASS, evidence at
+  `engine/docs/release/smoke-evidence/staging-smoke-6c3d509d-20260508T154251Z.json`.
+- Staging timing probe: Plan, Dashboard, Dashboard Home, and Content Home
+  returned conditional 304 responses in low single-digit milliseconds after
+  warm-up.
+- Compression probe: `/api/v1/plan/week` returned gzip and reduced wire bytes
+  by roughly 84%.
+
+Remaining follow-ups:
+
+- **Operator**: merge/review and promote when ready; production was
+  intentionally untouched.
+- **Operator**: verify connected-calendar SWR on production because staging
+  user 25 lacks a connected calendar.
+- **Codex P2**: add an iOS request coalescer/governor if Felipe still sees
+  cold-launch fan-out stalls after this batch lands in TestFlight.
+- **Codex P3**: extend repository-level conditional reads to lower-frequency
+  repositories when their routes expose stable ETags.
+
+
 ## Standing Authorizations
 
 - `BATCH-24-CLOSEOUT-AUTHORIZED`: honored by Batch 24 U1/U2/U5.
