@@ -1,11 +1,11 @@
 {
-  "generatedAt": "2026-05-08T10:03:45Z",
+  "generatedAt": "2026-05-08T13:21:01Z",
   "backend": {
     "path": "/Users/felipedominguez/Desktop/Custom Connectors/Cortex/cortex-telegram-hub-bot",
-    "branch": "main",
-    "commit": "a927c070",
-    "dirtyState": "clean",
-    "packageVersion": "4.14.138",
+    "branch": "perf/outlook-token-cache-2026-05",
+    "commit": "f7ecff88",
+    "dirtyState": "dirty",
+    "packageVersion": "4.14.140",
     "migrationCount": "121"
   },
   "ios": {

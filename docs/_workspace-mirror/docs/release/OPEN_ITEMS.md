@@ -498,6 +498,58 @@ After Felipe reinstalled the app on his physical iPhone via TestFlight Release b
 | APNs gate status | **CLOSED on production**. Backend → Apple → device chain verified end-to-end. |
 
 
+## 2026-05-08 Outlook token-cache performance remediation — STAGING READY
+
+Closeout: `docs/archive/2026-05/perf-outlook-token-cache/closeout.md`.
+
+Codex implemented the server-side Microsoft auth remediation on branch
+`perf/outlook-token-cache-2026-05`:
+
+- Per-user and owner Microsoft Graph access-token cache with 55-minute TTL.
+- Per-user client-type memoization so iOS public-client refresh tokens skip the
+  repeated confidential-client failure path after the first fallback.
+- Cache invalidation on Outlook `storeTokens`, `disconnectProvider`, and
+  `updateAccessToken`.
+- Single-flight coalescing for concurrent cold misses.
+- Additional Tasks working-set optimization: Microsoft To Do working-set reads
+  no longer call `getAllPendingTasks()` and no longer refetch the default list's
+  active page after building the active snapshot.
+
+Validation:
+
+- TypeScript: PASS.
+- Microsoft auth focused tests: PASS, 11/11.
+- Chat/task/identity regression suite: PASS, 119/119.
+- Provider-routing safety suite: PASS, 19/19.
+- Garmin passive-auth suite: PASS, 9/9.
+- Strict mock lint: PASS at baseline 827.
+- Cannot-skip gate dashboard: PASS, 23/23.
+- Staging deploy: PASS; production untouched.
+- Five-minute staging soak: PASS.
+- Staging smoke: PASS, 17/17.
+
+Evidence limit:
+
+- Staging has no `user_oauth_tokens` rows for users 25 or 28, so staging could
+  not prove live Outlook cache hit ratio. The cache behavior is covered
+  hermetically in tests; production log verification remains required after
+  merge/deploy.
+- Physical iPhone device logs were not captured because this macOS `/usr/bin/log`
+  does not support `--device`, and `xcrun devicectl` on this host exposes no
+  device log streaming command.
+
+Remaining follow-ups:
+
+- **Operator**: merge/review and deploy to production when ready; then verify
+  production PM2 logs show the Microsoft public-client warning at most once per
+  cache key/hour and `microsoft_auth_token_cache_summary` reports >90% hit
+  ratio after warm-up.
+- **Codex/iOS follow-up (P2)**: move `TaskRepository` fetch/decode work off
+  `@MainActor`; keep only final state assignment on main.
+- **Codex/backend follow-up (P2)**: add JSON compression for large app-facing
+  API responses with tests.
+
+
 ## Standing Authorizations
 
 - `BATCH-24-CLOSEOUT-AUTHORIZED`: honored by Batch 24 U1/U2/U5.
