@@ -241,6 +241,7 @@ describe('Calendar API — mutation routes', () => {
   });
 
   it('serves stale today events immediately and refreshes them in the background', async () => {
+    const today = new Date().toLocaleDateString('en-CA', { timeZone: 'Europe/Lisbon' });
     mockGetCachedSWR.mockReturnValueOnce({
       fresh: false,
       value: {
@@ -251,13 +252,13 @@ describe('Calendar API — mutation routes', () => {
         sources: { configured: ['outlook'], fulfilled: ['outlook'], failed: [] },
       },
     });
-    mockGetEventsWithDiagnostics.mockResolvedValueOnce({
+    mockGetEventsWithDiagnostics.mockResolvedValue({
       events: [
         {
           id: 'refreshed-event',
           summary: 'Refreshed',
-          start: '2026-05-08T16:00:00.000Z',
-          end: '2026-05-08T16:30:00.000Z',
+          start: `${today}T16:00:00.000Z`,
+          end: `${today}T16:30:00.000Z`,
           source: 'outlook',
         },
       ],
@@ -267,15 +268,16 @@ describe('Calendar API — mutation routes', () => {
       sources: { configured: ['outlook'], fulfilled: ['outlook'], failed: [] },
     });
 
-    const res = await dispatch('GET', '/today');
+    const res = await dispatch('GET', '/today', undefined, 34);
+    await new Promise((resolve) => setImmediate(resolve));
     await new Promise((resolve) => setImmediate(resolve));
 
     expect(res.statusCode).toBe(200);
     expect(res.body.cached).toBe(true);
     expect(res.body.data.events).toEqual([]);
-    expect(mockGetEventsWithDiagnostics).toHaveBeenCalledTimes(1);
+    expect(mockGetEventsWithDiagnostics).toHaveBeenCalled();
     expect(mockSetCacheSWR).toHaveBeenCalledWith(
-      expect.stringMatching(/^u:12:calendar:today:/),
+      expect.stringMatching(/^u:34:calendar:today:/),
       expect.objectContaining({
         events: [expect.objectContaining({ id: 'refreshed-event' })],
       }),

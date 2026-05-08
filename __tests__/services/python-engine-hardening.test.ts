@@ -321,8 +321,11 @@ describe('Python orchestrator.py — evergreen query handling', () => {
   });
 
   it('uses creator profile config instead of hardcoded worldview blocks in synthesis prompts', () => {
-    expect(src).toContain('from services.creator_profile import get_profile');
-    expect(src).toContain('{get_profile(short=True)}');
+    expect(src).toContain('from services.creator_context import creator_profile_block, language_instruction');
+    expect(src).toContain('{creator_profile_block(creator_context)}');
+    expect(src).toContain('{language_instruction(creator_context)}');
+    expect(src).not.toContain('from services.creator_profile import get_profile');
+    expect(src).not.toContain('{get_profile(short=True)}');
     expect(src).not.toContain('Brazilian conservative/libertarian');
   });
 });
