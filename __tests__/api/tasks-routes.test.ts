@@ -436,21 +436,16 @@ describe('Task routes sync provider metadata', () => {
       status: 'completed',
       listId: 'list-1',
     }));
-    providerApi.getAllPendingTasks.mockResolvedValue({
+    providerApi.getTasks.mockImplementation(async (listId: string) => ({
       success: true,
-      data: [
-        { id: 'active-1', title: 'Creatine', status: 'notStarted', listId: 'list-1', dueDateTime: '2026-05-08T09:00:00Z' },
-        { id: 'active-2', title: 'K2', status: 'inProgress', listId: 'list-1', dueDateTime: '2026-05-07T09:00:00Z' },
-      ],
-    });
-    providerApi.getTasks.mockResolvedValue({
-      success: true,
-      data: [
-        { id: 'active-1', title: 'Creatine', status: 'notStarted', listId: 'list-1', listName: 'Tasks' },
-        { id: 'active-2', title: 'K2', status: 'inProgress', listId: 'list-1', listName: 'Tasks' },
-        ...completedHistory,
-      ].filter((task) => task.status !== 'completed'),
-    });
+      data: listId === 'list-1'
+        ? [
+          { id: 'active-1', title: 'Creatine', status: 'notStarted', listId: 'list-1', listName: 'Tasks', dueDateTime: '2026-05-08T09:00:00Z' },
+          { id: 'active-2', title: 'K2', status: 'inProgress', listId: 'list-1', listName: 'Tasks', dueDateTime: '2026-05-07T09:00:00Z' },
+          ...completedHistory,
+        ].filter((task) => task.status !== 'completed')
+        : [],
+    }));
 
     const res = await dispatch('GET', '/working-set', {
       query: { pageSize: '2' },
@@ -458,11 +453,15 @@ describe('Task routes sync provider metadata', () => {
 
     expect(res.statusCode, JSON.stringify(res.body)).toBe(200);
     expect(res.body.data.policyVersion).toBe('task-working-set-v1');
-    expect(res.body.data.activeCountsByList).toEqual({ 'list-1': 2 });
+    expect(res.body.data.activeCountsByList).toEqual({ 'list-1': 2, 'list-2': 0 });
     expect(res.body.data.smartCounts).toEqual({ dueToday: 1, overdue: 1 });
     expect(res.body.data.activePage.tasks).toHaveLength(2);
     expect(JSON.stringify(res.body.data.activePage.tasks)).not.toContain('completed-');
-    expect(providerApi.getTasks).toHaveBeenCalledWith('list-1', 'Tasks', { status: 'active', top: 2 });
+    expect(providerApi.getAllPendingTasks).not.toHaveBeenCalled();
+    expect(providerApi.getLists).toHaveBeenCalledTimes(1);
+    expect(providerApi.getTasks).toHaveBeenCalledTimes(2);
+    expect(providerApi.getTasks).toHaveBeenCalledWith('list-1', 'Tasks', { status: 'active' });
+    expect(providerApi.getTasks).toHaveBeenCalledWith('list-2', 'Work', { status: 'active' });
   });
 
   it('supports explicit active and completed scopes on list reads', async () => {

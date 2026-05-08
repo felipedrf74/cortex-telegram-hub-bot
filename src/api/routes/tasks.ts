@@ -245,15 +245,22 @@ export function taskRoutes(): Router {
       const result = await todo.getLists();
       const listsArray = result?.data || result || [];
       const rawLists = Array.isArray(listsArray) ? listsArray : [];
-      const activeSnapshot = await buildActiveTaskSnapshot(todo, rawLists);
+      const activeSnapshot = await buildActiveTaskSnapshot(todo, rawLists, {
+        // Microsoft To Do has no efficient cross-list pending endpoint in our
+        // adapter; its getAllPendingTasks() refetches lists internally. The
+        // working-set route already has the list metadata, so use it directly
+        // to avoid a duplicate list round-trip on Felipe-sized accounts.
+        preferProviderPendingSnapshot: provider !== 'ms_todo',
+      });
       const lists = formatTaskLists(rawLists, activeSnapshot.countByListId);
       const defaultList = resolveDefaultTaskList(lists);
       const defaultListName = defaultList?.name || 'Tasks';
       const activePageSize = policy.activePageSize;
-      const activeResult = defaultList
-        ? await todo.getTasks(defaultList.id, defaultListName, { status: 'active', top: activePageSize })
-        : { success: true, data: [] };
-      const activeTasks = Array.isArray(activeResult?.data) ? activeResult.data : [];
+      const activeTasks = defaultList
+        ? activeSnapshot.pendingTasks
+          .filter((task: any) => String(task?.listId || '') === String(defaultList.id))
+          .slice(0, activePageSize)
+        : [];
       const syncProvider = resolveTaskProvider(userId);
       const normalizedActiveTasks = activeTasks.map((task: any) =>
         normalizeTaskDto(task, syncProvider, { listId: defaultList?.id, listName: defaultListName })
@@ -1028,8 +1035,11 @@ async function buildTaskCountMap(todo: any, lists: any[]): Promise<Map<string, n
 async function buildActiveTaskSnapshot(
   todo: any,
   lists: any[],
+  options: { preferProviderPendingSnapshot?: boolean } = {},
 ): Promise<{ countByListId: Map<string, number>; pendingTasks: any[] }> {
-  const pendingTasks = await readPendingTaskSnapshot(todo);
+  const pendingTasks = options.preferProviderPendingSnapshot !== false
+    ? await readPendingTaskSnapshot(todo)
+    : null;
   if (pendingTasks) {
     return {
       pendingTasks,
