@@ -209,6 +209,55 @@ describe('Chat Reasoning Engine persistence and retry safety', () => {
     });
   });
 
+  it('does not create provider tasks when another request already claimed the action plan', async () => {
+    const frame = parseDeterministicActionFrame('Create task Prozis with subtasks creatine K2 D3')!;
+    testDb.prepare(`
+      INSERT INTO chat_action_plans (
+        action_plan_id, tenant_id, user_id, source_message_id, status,
+        frame_json, steps_json, created_entity_refs_json, expires_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now', '+7 days'))
+    `).run(
+      'cap-concurrent-claim',
+      9001,
+      7001,
+      'msg-concurrent-claim',
+      'draft',
+      JSON.stringify(frame),
+      JSON.stringify(frame.steps),
+      '[]',
+    );
+
+    const provider = {
+      getLists: vi.fn(async () => ({ success: true, data: [{ id: 'list-1', displayName: 'Inbox' }] })),
+      createTask: vi.fn(),
+      addChecklistItem: vi.fn(),
+    };
+
+    const result = await executeChatReasoningFrame({
+      text: 'Create task Prozis with subtasks creatine K2 D3',
+      userId: 7001,
+      tenantId: 9001,
+      sourceMessageId: 'msg-concurrent-claim',
+      frame,
+      provider,
+    });
+
+    expect(provider.getLists).not.toHaveBeenCalled();
+    expect(provider.createTask).not.toHaveBeenCalled();
+    expect(provider.addChecklistItem).not.toHaveBeenCalled();
+    expect(result).toMatchObject({
+      status: 'in_progress',
+      response: {
+        metadata: {
+          type: 'chat_action_in_progress',
+          actionPlanId: 'cap-concurrent-claim',
+          reason: 'action_plan_already_claimed',
+          existingStatus: 'draft',
+        },
+      },
+    });
+  });
+
   it('scopes action-plan idempotency by tenant and user', async () => {
     const frame = parseDeterministicActionFrame('Create task Prozis with subtasks creatine K2 D3')!;
     const makeProvider = (taskId: string) => {

@@ -68,14 +68,18 @@ Validated behavior:
   action-plan retry cannot read back either the parent task or the checklist,
   the verifier marks the state as blind and the resume path returns
   `in_progress` without re-adding subtasks.
+- Post-v2 P3 carryovers are closed locally: action plans now use atomic
+  `INSERT OR IGNORE` claim semantics so a concurrent duplicate returns
+  `in_progress` before touching provider state, and stale action-plan expiry is
+  wired into the scheduler as `chat_action_plan_expiry`.
 
 Validation:
 
-- `npm run docs:audit`: passed after this addendum; 443 markdown files audited,
+- `npm run docs:audit`: passed after this addendum; 445 markdown files audited,
   467 existing issues flagged.
 - `npx tsc --noEmit`: passed.
-- Focused Chat Reasoning/route suite passed after the F-EXEC-6 remediation:
-  3 files / 68 tests.
+- Focused Chat Reasoning/scheduler route suite passed after the v2 follow-up
+  remediation: 4 files / 83 tests.
 - Native task route regression passed: 25/25 tests.
 - Provider routing regression passed: 5 files / 61 tests, including the new
   Chat Action route-category defaults.
@@ -83,7 +87,7 @@ Validation:
 - `node scripts/vi-mock-completeness-lint.mjs --strict`: passed at 827/827.
 - `bash scripts/cannot-skip-gate-dashboard.sh --json --no-evidence`: passed
   23/23.
-- `npm run verify`: passed, 483 files / 7,093 tests.
+- `npm run verify`: passed, 484 files / 7,106 tests.
 
 Remaining caveats:
 

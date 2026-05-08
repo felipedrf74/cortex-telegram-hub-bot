@@ -51,6 +51,7 @@ import { isTelegramLegacyDeliveryEnabled } from './runtime-flags';
 import { processDueOperatorAlertDeliveries, recordOperatorAlert } from './operator-alerts';
 import { runEventBackboneOnce } from './event-backbone-worker';
 import { runEventBackboneCleanup } from '../tools/event-backbone-cleanup';
+import { expireStaleChatActionPlans } from './chat-reasoning-engine';
 
 interface ActiveUserTarget {
   tenantId: number;
@@ -672,6 +673,7 @@ export function startScheduler(bot?: any): void {
   registerJob('task_sync',        'Task Provider Sync',     '*/15 * * * *',    'system');
   registerJob('daily_context',    'Daily Context Builder',  '0 5 * * *',       'system');
   registerJob('operator_alert_delivery', 'Operator Alert Delivery', '* * * * *', 'system');
+  registerJob('chat_action_plan_expiry', 'Chat Action Plan Expiry', '15 * * * *', 'system');
   registerJob('event_backbone_worker', 'Event Backbone Worker', '* * * * *', 'system');
   registerJob('event_backbone_cleanup', 'Event Backbone Cleanup', '10 0 * * *', 'system');
 
@@ -1602,6 +1604,12 @@ export function startScheduler(bot?: any): void {
     }
   }));
 
+  cron.schedule('15 * * * *', wrapJob('chat_action_plan_expiry', async () => {
+    const expired = expireStaleChatActionPlans();
+    if (expired === 0) return 'skipped';
+    logger.info({ expired }, 'Expired stale chat action plans');
+  }));
+
   cron.schedule('* * * * *', wrapJob('event_backbone_worker', async () => {
     if (process.env.EVENT_BACKBONE_WORKER_DISABLED === '1') {
       return 'skipped';
@@ -1655,7 +1663,7 @@ export function startScheduler(bot?: any): void {
   }));
 
   logger.info(
-    `Scheduler started: reminders, daily briefing (${config.todo.digestTime}), end-of-day (21:00), weekly (Fri 17:00), shared list (*/5), content (16:43), invoices (1st 09:00/09:15/09:30), fiscal-bundle (daily 08:10 due-check), conflict (19:30), fossa (bi-weekly Mon 07:30), garmin-keepalive (*/30), coach (${config.garmin.coachTime}), invoice-queue (*/15), channel-relearn (Sun 03:00), tue-reels (Tue 09:00), thu-youtube (Thu 09:00), fri-weekly (Fri 18:30), pipeline-agent (20:00), notification-release (*/15), event-backbone-worker (* * * * *), event-backbone-cleanup (00:10), expire-signals (hourly), db-backup (${config.backup.time}), dst-watchdog (*/15)`
+    `Scheduler started: reminders, daily briefing (${config.todo.digestTime}), end-of-day (21:00), weekly (Fri 17:00), shared list (*/5), content (16:43), invoices (1st 09:00/09:15/09:30), fiscal-bundle (daily 08:10 due-check), conflict (19:30), fossa (bi-weekly Mon 07:30), garmin-keepalive (*/30), coach (${config.garmin.coachTime}), invoice-queue (*/15), channel-relearn (Sun 03:00), tue-reels (Tue 09:00), thu-youtube (Thu 09:00), fri-weekly (Fri 18:30), pipeline-agent (20:00), notification-release (*/15), chat-action-plan-expiry (hourly), event-backbone-worker (* * * * *), event-backbone-cleanup (00:10), expire-signals (hourly), db-backup (${config.backup.time}), dst-watchdog (*/15)`
   );
 }
 

@@ -299,7 +299,7 @@ Verification reproduced (read-only):
 
 ### P2/P3 — CLOSED OR LEFT AS EXPLICIT FOLLOW-UP
 
-Closed locally: `F-CTX-1` tenant fallback removed; `F-TEST-1` cross-tenant action-plan scope covered; `F-ARCH-3` stale-plan expiry utility added; `F-ARCH-4` recursive identity stripping added; `F-EXEC-3` null task read-back no longer verifies; `F-EXEC-4` partial/in-progress plans resume missing subtasks; `F-PARSE-2/5/6/8/14` covered by parser hardening where applicable. Remaining follow-up: `F-ARCH-5` model confidence remains future-only because v1 is intentionally deterministic; `F-EXEC-5` concurrent retry noise is mitigated by unique scope and in-progress replay but not fully transactional around external providers.
+Closed locally: `F-CTX-1` tenant fallback removed; `F-TEST-1` cross-tenant action-plan scope covered; `F-ARCH-3` stale-plan expiry utility added and then wired to the scheduler; `F-ARCH-4` recursive identity stripping added; `F-EXEC-3` null task read-back no longer verifies; `F-EXEC-4` partial/in-progress plans resume missing subtasks; `F-PARSE-2/5/6/8/14` covered by parser hardening where applicable. Remaining follow-up: `F-ARCH-5` model confidence remains future-only because v1 is intentionally deterministic.
 
 ### Path back to READY
 
@@ -351,8 +351,8 @@ All P2 from prior round (F-CTX-1, F-TEST-1, F-ARCH-3, F-ARCH-4, F-EXEC-3, F-EXEC
 
 ### P3 follow-ups (cosmetic, not blocking)
 
-- **F-EXEC-5** (carryover) — concurrent retry race still throws UNIQUE on the loser (data-safe; noisy 500). Replace `upsertActionPlan` two-step with `INSERT … ON CONFLICT DO UPDATE … RETURNING action_plan_id`.
-- **F-ARCH-3 follow-up** — wire `expireStaleChatActionPlans` into the scheduler/cron so it runs on cadence rather than on demand.
+- **F-EXEC-5** (carryover) — CLOSED locally. Action-plan creation now uses atomic `INSERT OR IGNORE` claim semantics; a duplicate/concurrent claimant receives `chat_action_in_progress` before resolving lists or touching provider state. Regression test seeds an already-claimed plan and asserts zero provider writes.
+- **F-ARCH-3 follow-up** — CLOSED locally. `expireStaleChatActionPlans` now runs through the scheduler as `chat_action_plan_expiry` on an hourly cadence, with a no-op skip test.
 - **F-DOCS-1** (carryover) — CLOSED locally by rerunning `bash scripts/workspace-docs-mirror.sh` after the post-v2 remediation docs update.
 - **F-PROCESS-1** (NEW) — CLOSED locally by tagging the remediation line with `backup/chat-reasoning-after-v1-remediation-20260508-0919`.
 

@@ -143,6 +143,12 @@ type ActionManifest = {
   requiredFields: string[];
 };
 
+type ActionPlanClaim = {
+  actionPlanId: string;
+  acquired: boolean;
+  status: string;
+};
+
 export const CHAT_ACTION_MANIFESTS: ActionManifest[] = [
   { skill: 'secretary', action: 'create_task', riskLevel: 'low', requiresConfirmation: false, implemented: true, undoSupported: false, requiredFields: ['title'] },
   { skill: 'secretary', action: 'create_task_with_subtasks', riskLevel: 'low', requiresConfirmation: false, implemented: true, undoSupported: false, requiredFields: ['title', 'subtasks'] },
@@ -403,7 +409,22 @@ async function executeCreateTaskWithSubtasks(options: ExecuteOptions): Promise<C
     if (resumed) return resumed;
   }
 
-  const actionPlanId = options.persistPlan !== false ? upsertActionPlan(options, 'executing') : `plan-${randomUUID()}`;
+  const actionPlanClaim = options.persistPlan !== false
+    ? claimActionPlan(options, 'executing')
+    : { actionPlanId: `plan-${randomUUID()}`, acquired: true, status: 'executing' };
+  if (!actionPlanClaim.acquired) {
+    const claimedPlan = findReusablePlan(options);
+    if (claimedPlan) {
+      const resumed = await replayOrResumeTaskWithSubtasks(options, provider, claimedPlan, entities);
+      if (resumed) return resumed;
+    }
+    return buildInProgressReplayResponse(options, actionPlanClaim.actionPlanId, {
+      reason: 'action_plan_already_claimed',
+      existingStatus: actionPlanClaim.status,
+    });
+  }
+
+  const actionPlanId = actionPlanClaim.actionPlanId;
   const list = await resolveTaskCreationList(provider, entities.list);
   if (!list?.id) {
     updateActionPlanStatus(actionPlanId, options, 'failed', []);
@@ -544,7 +565,17 @@ async function executeCreateTask(options: ExecuteOptions): Promise<ChatActionExe
     }
   }
 
-  const actionPlanId = options.persistPlan !== false ? upsertActionPlan(options, 'executing') : `plan-${randomUUID()}`;
+  const actionPlanClaim = options.persistPlan !== false
+    ? claimActionPlan(options, 'executing')
+    : { actionPlanId: `plan-${randomUUID()}`, acquired: true, status: 'executing' };
+  if (!actionPlanClaim.acquired) {
+    return buildInProgressReplayResponse(options, actionPlanClaim.actionPlanId, {
+      reason: 'action_plan_already_claimed',
+      existingStatus: actionPlanClaim.status,
+    });
+  }
+
+  const actionPlanId = actionPlanClaim.actionPlanId;
   const list = await resolveTaskCreationList(provider, (options.frame.entities as any).list);
   if (!list?.id) {
     updateActionPlanStatus(actionPlanId, options, 'failed', []);
@@ -701,7 +732,17 @@ async function executeAddSubtasksToTask(options: ExecuteOptions): Promise<ChatAc
   }
 
   const task = matches[0];
-  const actionPlanId = options.persistPlan !== false ? upsertActionPlan(options, 'executing') : `plan-${randomUUID()}`;
+  const actionPlanClaim = options.persistPlan !== false
+    ? claimActionPlan(options, 'executing')
+    : { actionPlanId: `plan-${randomUUID()}`, acquired: true, status: 'executing' };
+  if (!actionPlanClaim.acquired) {
+    return buildInProgressReplayResponse(options, actionPlanClaim.actionPlanId, {
+      reason: 'action_plan_already_claimed',
+      existingStatus: actionPlanClaim.status,
+    });
+  }
+
+  const actionPlanId = actionPlanClaim.actionPlanId;
   const addedItems: Array<{ id: string; displayName: string; isChecked: boolean }> = [];
   const failedSubtasks: string[] = [];
   for (const subtask of entities.subtasks) {
@@ -1186,25 +1227,11 @@ function sanitizeFrameForResponse(frame: ChatActionFrame): ChatActionFrame {
   };
 }
 
-function upsertActionPlan(options: ExecuteOptions, status: string): string {
+function claimActionPlan(options: ExecuteOptions, status: string): ActionPlanClaim {
   const db = getDb();
-  const existing = db.prepare(`
-    SELECT action_plan_id
-    FROM chat_action_plans
-    WHERE tenant_id = ? AND user_id = ? AND source_message_id = ?
-  `).get(options.tenantId, options.userId, options.sourceMessageId) as { action_plan_id: string } | undefined;
-  if (existing) {
-    db.prepare(`
-      UPDATE chat_action_plans
-      SET status = ?, updated_at = datetime('now')
-      WHERE action_plan_id = ? AND tenant_id = ? AND user_id = ?
-    `).run(status, existing.action_plan_id, options.tenantId, options.userId);
-    return existing.action_plan_id;
-  }
-
   const actionPlanId = `cap_${randomUUID()}`;
-  db.prepare(`
-    INSERT INTO chat_action_plans (
+  const inserted = db.prepare(`
+    INSERT OR IGNORE INTO chat_action_plans (
       action_plan_id,
       tenant_id,
       user_id,
@@ -1227,7 +1254,25 @@ function upsertActionPlan(options: ExecuteOptions, status: string): string {
     JSON.stringify(options.frame.steps),
     options.correlationId || null,
   );
-  return actionPlanId;
+  if (inserted.changes === 1) {
+    return { actionPlanId, acquired: true, status };
+  }
+
+  const existing = db.prepare(`
+    SELECT action_plan_id, status
+    FROM chat_action_plans
+    WHERE tenant_id = ? AND user_id = ? AND source_message_id = ?
+  `).get(options.tenantId, options.userId, options.sourceMessageId) as { action_plan_id: string; status: string } | undefined;
+
+  if (!existing) {
+    throw new Error('chat_action_plan_claim_failed');
+  }
+
+  return {
+    actionPlanId: existing.action_plan_id,
+    acquired: false,
+    status: existing.status,
+  };
 }
 
 function findReusablePlan(options: ExecuteOptions): any | null {

@@ -24,6 +24,7 @@ const mockCronSchedule = vi.hoisted(() => vi.fn());
 const mockCreateNotificationIntent = vi.hoisted(() => vi.fn());
 const mockRunEventBackboneOnce = vi.hoisted(() => vi.fn());
 const mockRunEventBackboneCleanup = vi.hoisted(() => vi.fn());
+const mockExpireStaleChatActionPlans = vi.hoisted(() => vi.fn());
 
 vi.mock('node-cron', () => ({
   default: { schedule: (...args: unknown[]) => mockCronSchedule(...args) },
@@ -179,6 +180,16 @@ vi.mock('../../src/services/event-backbone-worker', () => ({
 vi.mock('../../src/tools/event-backbone-cleanup', () => ({
   runEventBackboneCleanup: (...args: unknown[]) => mockRunEventBackboneCleanup(...args),
 }));
+vi.mock('../../src/services/chat-reasoning-engine', () => ({
+  CHAT_ACTION_MANIFESTS: [],
+  buildChatReasoningContextPack: vi.fn(),
+  detectChatReasoningMode: vi.fn(),
+  parseDeterministicActionFrame: vi.fn(),
+  validateChatActionFrame: vi.fn(),
+  tryHandleChatReasoningAction: vi.fn(),
+  executeChatReasoningFrame: vi.fn(),
+  expireStaleChatActionPlans: (...args: unknown[]) => mockExpireStaleChatActionPlans(...args),
+}));
 vi.mock('../../src/services/training-plans', () => ({
   getActivePlans: vi.fn(() => []),
   getActivePlan: vi.fn(() => null),
@@ -246,6 +257,7 @@ describe('scheduler tenant scoping', () => {
       cutoff: '2026-04-01T00:00:00.000Z',
       targets: [],
     });
+    mockExpireStaleChatActionPlans.mockReturnValue(0);
     mockGenerateCoachBriefing.mockResolvedValue({
       message: 'coach briefing',
       recommendations: [],
@@ -481,6 +493,17 @@ describe('scheduler tenant scoping', () => {
       retentionDays: 30,
       protectNewest: 500,
     }));
+  });
+
+  it('chat action plan expiry is wired through the scheduler and skips no-op runs', async () => {
+    startScheduler();
+    const expiryJob = mockCronSchedule.mock.calls.find((call) => call[0] === '15 * * * *')?.[1] as (() => Promise<unknown>) | undefined;
+    expect(expiryJob).toBeTypeOf('function');
+
+    const result = await expiryJob!();
+
+    expect(result).toBe('skipped');
+    expect(mockExpireStaleChatActionPlans).toHaveBeenCalledTimes(1);
   });
 
   it('sendDailyBriefing stores report documents under canonical tenant ids', async () => {
