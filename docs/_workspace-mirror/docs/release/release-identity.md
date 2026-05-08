@@ -5,7 +5,7 @@
 
 | Area | Path | Branch | Commit | Dirty state | Version | Migrations |
 | --- | --- | --- | --- | --- | --- | --- |
-| Backend | `/Users/felipedominguez/Desktop/Custom Connectors/Cortex/cortex-telegram-hub-bot` | `perf/cache-and-compression-2026-05` | `6c3d509d` | `dirty` | `4.14.141` | `121` |
-| iOS | `/Users/felipedominguez/Desktop/Nexus Hub IOS/Nexus Hub` | `perf/cache-and-compression-2026-05` | `c4ef38c` | `clean` | n/a | n/a |
+| Backend | `/Users/felipedominguez/Desktop/Custom Connectors/Cortex/cortex-telegram-hub-bot` | `architecture/summary-tasks-foundation-2026-05` | `da95f348` | `dirty` | `4.14.142` | `121` |
+| iOS | `/Users/felipedominguez/Desktop/Nexus Hub IOS/Nexus Hub` | `architecture/summary-refresh-foundation-2026-05` | `60fd195` | `dirty` | n/a | n/a |
 
-Generated at: `2026-05-08T15:47:20Z`
+Generated at: `2026-05-08T23:08:13Z`
