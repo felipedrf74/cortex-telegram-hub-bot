@@ -64,14 +64,18 @@ Validated behavior:
 - Nested identity fields are stripped/rejected, task titles and subtask lists
   are bounded, stale action plans can be expired, and read-back failure no
   longer soft-passes verification.
+- Post-v2 hostile QA follow-up F-EXEC-6 is closed locally: if an executing
+  action-plan retry cannot read back either the parent task or the checklist,
+  the verifier marks the state as blind and the resume path returns
+  `in_progress` without re-adding subtasks.
 
 Validation:
 
 - `npm run docs:audit`: passed after this addendum; 443 markdown files audited,
   467 existing issues flagged.
 - `npx tsc --noEmit`: passed.
-- Focused Chat Reasoning/route/native task provider suite passed: 4 files / 74
-  tests.
+- Focused Chat Reasoning/route suite passed after the F-EXEC-6 remediation:
+  3 files / 68 tests.
 - Native task route regression passed: 25/25 tests.
 - Provider routing regression passed: 5 files / 61 tests, including the new
   Chat Action route-category defaults.

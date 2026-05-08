@@ -306,6 +306,62 @@ Closed locally: `F-CTX-1` tenant fallback removed; `F-TEST-1` cross-tenant actio
 Secretary task/subtask vertical slice is now appropriate for hostile re-QA. iOS result-card rendering, full undo/repair, model-graded labelling, and broader cross-skill execution remain explicit follow-ups.
 
 
+## 2026-05-08 Hostile QA v2 on Chat Reasoning Engine v1 — Closure verdict
+
+Branch: `feature/chat-reasoning-engine-v1` at remediation commit `1d2e6d22`.
+
+Verdict: **READY_FOR_LOCAL_QA** after post-v2 Codex remediation. Prior NOT_READY blockers are closed behaviorally, and the v2 F-EXEC-6 retry verifier gap is closed locally.
+
+Report: `docs/archive/2026-05/chat-reasoning-engine-v1/hostile-qa-v2-final-report.md`.
+
+Verification floor reproduced (read-only):
+- `npx tsc --noEmit`: PASS.
+- Full focused suite: 6 files / **122 tests** PASS (up from 64 in the prior round). New surface: 6 tests in `chat-reasoning-engine.test.ts` + 4 in the brand-new `chat-reasoning-engine-persistence.test.ts` (real-DB sqlite + manually-inserted `'executing'` rows + cross-tenant scope + expiry sweep).
+- P0 chat identity isolation: 23/23 PASS.
+- Native task route regression: 25/25 PASS.
+- `vi-mock-completeness-lint --strict`: exit 0.
+- `cannot-skip-gate-dashboard.sh`: 23/23 PASS.
+- `npm run docs:audit`: 444 files / 469 issues during hostile v2 (under 480 ceiling; +2 workspace-mirror-stale carryover). Post-v2 remediation reruns the mirror before commit.
+
+### Independent confirmation of CLOSED locally claims
+
+All P0 (F-EXEC-1, F-PARSE-3, F-PARSE-4) confirmed CLOSED with real behavioural evidence:
+- F-EXEC-1: `findReusablePlan` filter now includes `'executing'`; `replayOrResumeTaskWithSubtasks` reads `created_entity_refs_json`, computes missing subtasks via verifier, and re-adds only missing items. Persistence test "resumes an executing action plan without creating a duplicate provider task" asserts `provider.createTask` NOT called and `addChecklistItem` called for 2 missing items.
+- F-PARSE-3: Three new patterns (`DESTRUCTIVE_VERBS`/`DESTRUCTIVE_OBJECT_TARGETS`/`DESTRUCTIVE_SWEEP_TARGETS`) and `isDestructiveIntent` helper. "Delete the Prozis task", "Cancel my 9am meeting", "Apaga a tarefa Prozis" all → `'high_risk_preview'`.
+- F-PARSE-4: `MULTI_STEP_SECOND_ACTION` regex + `hasMultiStepActionIntent` helper, gated BEFORE `TASK_CREATE_PATTERNS`. Multi-step messages return `needs_clarification` with `multi_step_action_requires_preview`.
+
+All P1 (F-EXEC-2, F-ARCH-1, F-ARCH-2, F-PARSE-1/7/9/10/11/12/13/15) confirmed CLOSED:
+- F-ARCH-1 / F-ARCH-2 closed by REMOVAL (correct call — DDL/config without callers is worse than absence).
+- All parser P1 closed by behavioral test fixtures.
+- F-EXEC-2 closed with new `executeCreateTask` executor that creates the plain task via `provider.createTask` and verifies read-back.
+
+All P2 from prior round (F-CTX-1, F-TEST-1, F-ARCH-3, F-ARCH-4, F-EXEC-3, F-EXEC-4) confirmed CLOSED:
+- F-CTX-1 escalated from "fallback" to "throw `chat_reasoning_missing_authenticated_tenant`".
+- F-TEST-1 closed with explicit "scopes action-plan idempotency by tenant and user" test using same userId + same sourceMessageId + different tenantId.
+- F-ARCH-3 closed with exported `expireStaleChatActionPlans()`. Note: function exists; scheduler/cron wiring is a P3 follow-up.
+- F-ARCH-4 closed with recursive `containsAuthoritativeIdentityField` and `stripAuthoritativeIdentityFields` over arrays + nested objects, applied to `entities` and `steps[*].entities`.
+- F-EXEC-3 closed with explicit `task_read_back_unavailable` warning.
+- F-EXEC-4 closed via `replayOrResumeTaskWithSubtasks`; F-EXEC-6 below closes the verifier-blind edge in that same path.
+
+### New P1 from this re-QA pass — CLOSED LOCALLY
+
+| ID | File / line | Description |
+|---|---|---|
+| F-EXEC-6 | `src/services/chat-reasoning-engine.ts` + `__tests__/services/chat-reasoning-engine-persistence.test.ts` | CLOSED locally. `verifyTaskWithSubtasks` now marks verifier-blind state when both task and checklist read-back are unavailable, returns no guessed missing subtasks, and `replayOrResumeTaskWithSubtasks` bails to `in_progress` without calling `addChecklistItem`. Regression test manually seeds an `executing` plan with a saved task ref, makes both provider read-backs fail, and asserts zero duplicate task/subtask writes. |
+
+### P3 follow-ups (cosmetic, not blocking)
+
+- **F-EXEC-5** (carryover) — concurrent retry race still throws UNIQUE on the loser (data-safe; noisy 500). Replace `upsertActionPlan` two-step with `INSERT … ON CONFLICT DO UPDATE … RETURNING action_plan_id`.
+- **F-ARCH-3 follow-up** — wire `expireStaleChatActionPlans` into the scheduler/cron so it runs on cadence rather than on demand.
+- **F-DOCS-1** (carryover) — CLOSED locally by rerunning `bash scripts/workspace-docs-mirror.sh` after the post-v2 remediation docs update.
+- **F-PROCESS-1** (NEW) — CLOSED locally by tagging the remediation line with `backup/chat-reasoning-after-v1-remediation-20260508-0919`.
+
+### Path to TestFlight
+
+1. Optional iOS card pass for the structured chat result (backend payload is iOS-ready: `metadata.subtasks`, `metadata.actions`, `metadata.actionPlanId`, `metadata.idempotentReplay`, `routeMethod: 'chat-reasoning-engine'`).
+2. Existing operator-only gates: signed TestFlight + APNs + two-account walkthrough on a real device.
+
+
 ## Standing Authorizations
 
 - `BATCH-24-CLOSEOUT-AUTHORIZED`: honored by Batch 24 U1/U2/U5.

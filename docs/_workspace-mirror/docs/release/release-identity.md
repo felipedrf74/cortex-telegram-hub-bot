@@ -5,7 +5,7 @@
 
 | Area | Path | Branch | Commit | Dirty state | Version | Migrations |
 | --- | --- | --- | --- | --- | --- | --- |
-| Backend | `/Users/felipedominguez/Desktop/Custom Connectors/Cortex/cortex-telegram-hub-bot` | `feature/chat-reasoning-engine-v1` | `5373398c` | `dirty` | `4.14.138` | `121` |
+| Backend | `/Users/felipedominguez/Desktop/Custom Connectors/Cortex/cortex-telegram-hub-bot` | `feature/chat-reasoning-engine-v1` | `6e2f27d3` | `dirty` | `4.14.138` | `121` |
 | iOS | `/Users/felipedominguez/Desktop/Nexus Hub IOS/Nexus Hub` | `main` | `4c1b470` | `clean` | n/a | n/a |
 
-Generated at: `2026-05-07T23:52:53Z`
+Generated at: `2026-05-08T07:38:43Z`

@@ -614,7 +614,14 @@ async function replayOrResumeTaskWithSubtasks(
   let verified = await verifyTaskWithSubtasks(provider, String(taskRef.listId), String(taskRef.entityId), entities.title, entities.subtasks);
   let addedItems: Array<{ id: string; displayName: string; isChecked: boolean }> = [];
   let failedSubtasks: string[] = [];
-  const missingSubtasks = verified.missingSubtasks;
+  const missingSubtasks = verified.verificationBlind ? [] : verified.missingSubtasks;
+
+  if (verified.verificationBlind) {
+    return buildInProgressReplayResponse(options, existingPlan.action_plan_id, {
+      reason: 'verification_blind',
+      warnings: verified.warnings,
+    });
+  }
 
   if (missingSubtasks.length > 0 && typeof provider.addChecklistItem === 'function') {
     for (const subtask of missingSubtasks) {
@@ -751,6 +758,7 @@ async function verifyTaskWithSubtasks(
   checklistItems: Array<{ id: string; displayName: string; isChecked: boolean }>;
   missingSubtasks: string[];
   warnings: string[];
+  verificationBlind: boolean;
 }> {
   const warnings: string[] = [];
   let task: any | null = null;
@@ -760,16 +768,28 @@ async function verifyTaskWithSubtasks(
   }
   if (!task) warnings.push('task_read_back_unavailable');
   let checklistItems = Array.isArray(task?.checklistItems) ? task.checklistItems : [];
+  let checklistReadSucceeded = Array.isArray(task?.checklistItems);
   if (checklistItems.length === 0 && typeof provider.getChecklistItems === 'function') {
-    const checklistResult = await provider.getChecklistItems(listId, taskId);
-    if (checklistResult?.success && Array.isArray(checklistResult.data)) checklistItems = checklistResult.data;
+    try {
+      const checklistResult = await provider.getChecklistItems(listId, taskId);
+      if (checklistResult?.success && Array.isArray(checklistResult.data)) {
+        checklistItems = checklistResult.data;
+        checklistReadSucceeded = true;
+      }
+    } catch {
+      // Treat checklist read failures as unknown state; retry code must not re-add blindly.
+    }
   }
+  const verificationBlind = expectedSubtasks.length > 0 && !task && !checklistReadSucceeded;
+  if (verificationBlind) warnings.push('checklist_read_back_unavailable');
 
   if (task && normalizeComparable(task.title) !== normalizeComparable(expectedTitle)) {
     warnings.push('created_task_title_mismatch');
   }
   const actualSubtasks = checklistItems.map((item: any) => normalizeComparable(item.displayName || item.title));
-  const missing = expectedSubtasks.filter((subtask) => !actualSubtasks.includes(normalizeComparable(subtask)));
+  const missing = verificationBlind
+    ? []
+    : expectedSubtasks.filter((subtask) => !actualSubtasks.includes(normalizeComparable(subtask)));
   if (missing.length > 0) warnings.push('created_subtasks_missing');
   return {
     ok: warnings.length === 0,
@@ -781,6 +801,7 @@ async function verifyTaskWithSubtasks(
     })),
     missingSubtasks: missing,
     warnings,
+    verificationBlind,
   };
 }
 
@@ -881,7 +902,11 @@ function buildPlainTaskCreatedResponse(input: {
   };
 }
 
-function buildInProgressReplayResponse(input: ExecuteOptions, actionPlanId: string): ChatActionExecutionResult {
+function buildInProgressReplayResponse(
+  input: ExecuteOptions,
+  actionPlanId: string,
+  extraMetadata: Record<string, unknown> = {},
+): ChatActionExecutionResult {
   return buildNonExecutableResponse({
     input,
     status: 'in_progress',
@@ -891,6 +916,7 @@ function buildInProgressReplayResponse(input: ExecuteOptions, actionPlanId: stri
       actionPlanId,
       actionFrame: sanitizeFrameForResponse(input.frame),
       idempotentReplay: true,
+      ...extraMetadata,
     },
   });
 }

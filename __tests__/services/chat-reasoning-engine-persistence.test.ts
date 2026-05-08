@@ -113,6 +113,62 @@ describe('Chat Reasoning Engine persistence and retry safety', () => {
     });
   });
 
+  it('does not re-add subtasks when retry verification is fully blind', async () => {
+    const frame = parseDeterministicActionFrame('Create task Prozis with subtasks creatine K2 D3')!;
+    testDb.prepare(`
+      INSERT INTO chat_action_plans (
+        action_plan_id, tenant_id, user_id, source_message_id, status,
+        frame_json, steps_json, created_entity_refs_json, expires_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now', '+7 days'))
+    `).run(
+      'cap-blind-retry',
+      9001,
+      7001,
+      'msg-blind-retry',
+      'executing',
+      JSON.stringify(frame),
+      JSON.stringify(frame.steps),
+      JSON.stringify([{ entityType: 'task', entityId: 'task-1', listId: 'list-1', title: 'Prozis' }]),
+    );
+
+    const provider = {
+      createTask: vi.fn(),
+      getTask: vi.fn(async () => ({ success: false, error: 'provider_unavailable' })),
+      getChecklistItems: vi.fn(async () => ({ success: false, error: 'provider_unavailable' })),
+      addChecklistItem: vi.fn(),
+    };
+
+    const result = await executeChatReasoningFrame({
+      text: 'Create task Prozis with subtasks creatine K2 D3',
+      userId: 7001,
+      tenantId: 9001,
+      sourceMessageId: 'msg-blind-retry',
+      frame,
+      provider,
+    });
+
+    expect(provider.createTask).not.toHaveBeenCalled();
+    expect(provider.addChecklistItem).not.toHaveBeenCalled();
+    expect(result).toMatchObject({
+      status: 'in_progress',
+      response: {
+        metadata: {
+          type: 'chat_action_in_progress',
+          actionPlanId: 'cap-blind-retry',
+          idempotentReplay: true,
+          reason: 'verification_blind',
+          warnings: expect.arrayContaining([
+            'task_read_back_unavailable',
+            'checklist_read_back_unavailable',
+          ]),
+        },
+      },
+    });
+    expect(testDb.prepare('SELECT status FROM chat_action_plans WHERE action_plan_id = ?').get('cap-blind-retry')).toMatchObject({
+      status: 'executing',
+    });
+  });
+
   it('fails closed when an executing retry has no saved task reference', async () => {
     const frame = parseDeterministicActionFrame('Create task Prozis with subtasks creatine K2 D3')!;
     testDb.prepare(`
