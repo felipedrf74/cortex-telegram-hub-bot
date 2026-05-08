@@ -2,6 +2,7 @@ import asyncio
 import time
 import logging
 import re
+from types import SimpleNamespace
 from models.research import SearchResult, TrendingTopic, ContentBrief
 from models.requests import (
     DeepSearchResponse, SourcesResponse, HotNewsResponse,
@@ -15,7 +16,7 @@ from searchers.news import NewsSearcher
 from searchers.reddit import RedditSearcher
 from .scorer import score_results
 from .brief_builder import build_briefs
-from services.creator_profile import get_profile
+from services.creator_context import creator_profile_block, language_instruction
 from datetime import datetime, timezone
 
 logger = logging.getLogger("content-engine")
@@ -39,9 +40,9 @@ DEFAULT_NICHES = [
 # Setup-safe broad hot-news fallback queries. Same contract as
 # DEFAULT_NICHES: neutral broad-domain coverage; no political,
 # religious, dietary, or ideological framing. Per-creator hot-news
-# personalization happens downstream in the AI curation step
-# (`hot_news()` calls `get_profile(short=True)` which is creator-scoped),
-# so this raw query set only needs broad coverage, not founder pillars.
+# personalization happens downstream in the AI curation step through the
+# per-request creator profile, so this raw query set only needs broad coverage,
+# not founder pillars.
 HOT_NEWS_QUERIES = [
     "technology product launch today",
     "creator economy social media trend today",
@@ -156,6 +157,10 @@ def _query_specific_rank(item: ScoredResult, evergreen: bool) -> float:
     return score
 
 
+def _creator_context(creator_profile: str | None = None, language: str | None = None) -> SimpleNamespace:
+    return SimpleNamespace(creator_profile=creator_profile, language=language)
+
+
 class ResearchOrchestrator:
     """Fans out queries to all searchers in parallel, scores, and builds briefs."""
 
@@ -219,7 +224,14 @@ class ResearchOrchestrator:
             warnings=["Quick mode used shallow research without AI synthesis."],
         )
 
-    async def deep_search(self, query: str, niches: list[str] | None = None, max_results: int = 10) -> DeepSearchResponse:
+    async def deep_search(
+        self,
+        query: str,
+        niches: list[str] | None = None,
+        max_results: int = 10,
+        creator_profile: str | None = None,
+        language: str | None = None,
+    ) -> DeepSearchResponse:
         """Full research pipeline: fan-out → score → AI synthesis → actionable briefs."""
         import json
         from services.claude_client import ask_claude_json, MODEL
@@ -288,14 +300,19 @@ class ResearchOrchestrator:
                 warnings=warnings,
             )
 
+        creator_context = _creator_context(creator_profile=creator_profile, language=language)
+
         # Phase 2: AI synthesis — Claude analyzes all sources and builds real briefs
         synthesis_prompt = f"""You are the creator's deep research analyst.
 Use the creator configuration below as the canonical source of worldview, audience, editorial fit, and language defaults.
 
 CREATOR CONFIG:
-{get_profile(short=True)}
+{creator_profile_block(creator_context)}
 
 TOPIC: {query}
+
+LANGUAGE:
+{language_instruction(creator_context)}
 
 I found {len(raw_sources)} sources. Here they are:
 
@@ -327,7 +344,7 @@ RULES:
 - Generate 3-5 content_ideas, each with a DIFFERENT angle on the topic
 - Include SPECIFIC data, numbers, statistics from the sources
 - key_points should be concrete talking points, not vague platitudes
-- hooks must be conversational in the creator's saved primary content language; if the creator has no saved language, mirror the language of the supplied TOPIC. Do NOT default to Portuguese.
+- hooks must be conversational in the creator's saved primary content language; if the creator has no saved language, mirror the language of the supplied TOPIC. Do NOT default to any specific language.
 - best_sources: pick the 5-8 most useful, explain WHY each is useful
 - All free-text fields use the creator's saved primary content language; field names stay in English.
 - {"For evergreen training/health/performance topics, do NOT manufacture virality. Treat `why_now` as practical relevance and usually keep `time_sensitive` false unless the sources clearly prove timeliness." if evergreen_query else "For timely commentary topics, explain the urgency clearly and use `time_sensitive` when the window is actually short."}
@@ -449,7 +466,11 @@ Return ONLY the JSON object."""
 
         return SourcesResponse(query=query, sources=sources)
 
-    async def hot_news(self) -> HotNewsResponse:
+    async def hot_news(
+        self,
+        creator_profile: str | None = None,
+        language: str | None = None,
+    ) -> HotNewsResponse:
         """What's trending right now — curated through the creator's saved worldview lens."""
         from services.claude_client import ask_claude_json, FAST_MODEL
 
@@ -490,21 +511,26 @@ Return ONLY the JSON object."""
         # saved pillars in the creator profile, falling back to a
         # generic broad-content label only when the creator has no
         # saved pillars.
+        creator_context = _creator_context(creator_profile=creator_profile, language=language)
+
         curation_prompt = f"""You are the creator's content curator.
 Use the creator configuration below as the canonical source of editorial fit, audience, worldview, language defaults, and pillar labels.
 
 CREATOR CONFIG:
-{get_profile(short=True)}
+{creator_profile_block(creator_context)}
+
+LANGUAGE:
+{language_instruction(creator_context)}
 
 Here are {len(all_raw)} trending topics found right now:
 
 {json.dumps(all_raw, ensure_ascii=False, indent=1)}
 
 TASK: Select the TOP 8 most interesting topics for the authenticated creator's content. For each:
-1. Rewrite the title as a compelling headline the authenticated creator would use, in their saved primary content language (do NOT default to Portuguese unless that is the creator's saved language).
+1. Rewrite the title as a compelling headline the authenticated creator would use, in their saved primary content language (do NOT default to any specific language unless it is the creator's saved language).
 2. Add a "content_angle" — how the authenticated creator should approach this, in their saved voice and through their saved worldview / audience profile (do NOT inject political, religious, or ideological defaults).
 3. Rate "relevance" 1-10 (how well it fits their brand).
-4. Classify the "niche" using a label drawn from the creator's saved pillars in the creator profile. If the creator has no saved pillars, use a generic broad-content label such as "technology", "creator-economy", "wellness", "lifestyle", or "business". Do NOT use ideological labels (e.g. faith/family, political-leaning, dietary identity) unless they appear explicitly in the creator's saved pillars.
+4. Classify the "niche" using a label drawn from the creator's saved pillars in the creator profile. If the creator has no saved pillars, use a generic broad-content label such as "technology", "creator-economy", "wellness", "lifestyle", or "business". Do NOT use default worldview, belief-system, political, dietary, or demographic labels unless they appear explicitly in the creator's saved pillars.
 
 Return JSON array:
 [{{"title": "...", "content_angle": "...", "relevance": 9, "niche": "...", "heat_score": 0.85, "sources": ["..."], "original_title": "..."}}]

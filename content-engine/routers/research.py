@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Depends, Query
 from models.requests import (
-    DeepSearchRequest, DeepSearchResponse, SourcesResponse, HotNewsResponse,
+    DeepSearchRequest, DeepSearchResponse, SourcesResponse, HotNewsRequest, HotNewsResponse,
     TrendingResponse, ReactionResponse,
     HooksRequest, HooksResponse,
     ScriptRequest, ScriptResponse,
@@ -41,6 +41,8 @@ async def deep_search(
         query=req.query,
         niches=req.niches if req.niches else None,
         max_results=req.max_results,
+        creator_profile=req.creator_profile,
+        language=req.language,
     )
 
 
@@ -55,10 +57,21 @@ async def get_sources(
 
 @router.get("/hotnews", response_model=HotNewsResponse)
 async def hot_news(
+    creator_profile: str | None = Query(default=None),
+    language: str = Query(default="en-US"),
     orch: ResearchOrchestrator = Depends(get_orchestrator),
 ) -> HotNewsResponse:
     """What's trending right now across all niches."""
-    return await orch.hot_news()
+    return await orch.hot_news(creator_profile=creator_profile, language=language)
+
+
+@router.post("/hotnews", response_model=HotNewsResponse)
+async def hot_news_with_context(
+    req: HotNewsRequest,
+    orch: ResearchOrchestrator = Depends(get_orchestrator),
+) -> HotNewsResponse:
+    """What's trending right now, scoped to the authenticated creator context."""
+    return await orch.hot_news(creator_profile=req.creator_profile, language=req.language)
 
 
 # ── Phase 2: Visual + Social ─────────────────────────────────────

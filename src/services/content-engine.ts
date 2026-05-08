@@ -277,9 +277,10 @@ async function engineFetch<T>(path: string, options?: RequestInit, timeoutMs = 3
 }
 
 export async function deepSearch(query: string, niches?: string[], maxResults = 10): Promise<DeepSearchResponse> {
+  const creatorPayload = buildCurrentCreatorProfilePayload();
   return withRetry(() => engineFetch<DeepSearchResponse>('/deepsearch', {
     method: 'POST',
-    body: JSON.stringify({ query, niches: niches || [], max_results: maxResults }),
+    body: JSON.stringify({ query, niches: niches || [], max_results: maxResults, ...creatorPayload }),
   }, 180_000)); // deep search: 5 query variations + AI synthesis
 }
 
@@ -288,7 +289,11 @@ export async function getSources(query: string): Promise<SourcesResponse> {
 }
 
 export async function getHotNews(): Promise<HotNewsResponse> {
-  return engineFetch<HotNewsResponse>('/hotnews');
+  const creatorPayload = buildCurrentCreatorProfilePayload();
+  return engineFetch<HotNewsResponse>('/hotnews', {
+    method: 'POST',
+    body: JSON.stringify(creatorPayload),
+  });
 }
 
 export function isContentEngineConfigured(): boolean {

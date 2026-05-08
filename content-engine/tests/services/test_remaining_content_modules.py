@@ -181,10 +181,14 @@ async def test_orchestrator_deep_search_ai_synthesis_uses_current_creator(monkey
         }
 
     monkeypatch.setattr("services.claude_client.ask_claude_json", fake_ask)
-    monkeypatch.setattr(orchestrator, "get_profile", lambda short=False: "Neutral authenticated creator profile")
     subject = orchestrator.ResearchOrchestrator(searchers=[StubSearcher(title="tenant-42 research")])
 
-    response = await subject.deep_search("tenant-42 launch", max_results=1)
+    response = await subject.deep_search(
+        "tenant-42 launch",
+        max_results=1,
+        creator_profile="Neutral authenticated creator profile",
+        language="en-US",
+    )
 
     assert response.degraded is False
     assert response.briefs[0].title == "tenant-42 idea"

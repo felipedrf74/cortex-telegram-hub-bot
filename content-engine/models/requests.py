@@ -7,6 +7,8 @@ class DeepSearchRequest(BaseModel):
     query: str = Field(min_length=1)
     niches: list[str] = Field(default_factory=list)  # empty = search all niches
     max_results: int = Field(default=10, ge=1, le=30)
+    language: str = Field(default="en-US")
+    creator_profile: str | None = Field(default=None)
 
 
 class DeepSearchResponse(BaseModel):
@@ -23,6 +25,12 @@ class SourcesResponse(BaseModel):
     """Response from /sources — curated source list for a topic."""
     query: str
     sources: list[SourceReference]
+
+
+class HotNewsRequest(BaseModel):
+    """Request body for /hotnews when caller has authenticated creator context."""
+    language: str = Field(default="en-US")
+    creator_profile: str | None = Field(default=None)
 
 
 class HotNewsResponse(BaseModel):

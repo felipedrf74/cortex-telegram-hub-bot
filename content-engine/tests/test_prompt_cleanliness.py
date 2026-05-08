@@ -1,4 +1,5 @@
 import pytest
+from datetime import datetime, timezone
 
 from models.requests import (
     CompetitorRequest,
@@ -9,10 +10,12 @@ from models.requests import (
     ThumbnailRequest,
     TitlesRequest,
 )
+from models.research import SearchResult
 from services import book_knowledge
 from services.creative import hook_generator, repurpose_engine, thumbnail_gen, title_tester
 from services.intelligence import competitor_analyzer, seo_engine
 from services.learning import feedback_loop, report_gen
+from services import orchestrator
 
 
 NON_FOUNDER_PROFILE = (
@@ -172,5 +175,91 @@ async def test_book_prompt_uses_request_profile_without_founder_defaults(monkeyp
         creator_profile=NON_FOUNDER_PROFILE,
         language="en-US",
     )
+
+    assert_clean_prompt(captured["prompt"], captured["system"])
+
+
+class PromptSearcher:
+    name = "web"
+
+    async def search(self, query: str, max_results: int = 5):
+        return [
+            SearchResult(
+                title=f"{query} for knitters",
+                url=f"https://example.test/{query.replace(' ', '-')}",
+                snippet="Sustainable cardigan craft evidence for makers.",
+                source="web",
+                published_at=datetime.now(timezone.utc),
+            )
+        ]
+
+
+async def test_orchestrator_deep_search_prompt_uses_request_profile_without_founder_defaults(monkeypatch):
+    captured = {}
+
+    async def fake_ask(prompt, **kwargs):
+        captured["prompt"] = prompt
+        captured["system"] = kwargs.get("system", "")
+        return {
+            "summary": "Knitting launch summary.",
+            "key_facts": ["Cardigan interest is rising."],
+            "arguments_for": ["Practical craft content fits."],
+            "arguments_against": ["Avoid overclaiming."],
+            "creator_angle": "Help 25-45 women make sustainable cardigan choices.",
+            "content_ideas": [
+                {
+                    "title": "The cardigan fit checklist",
+                    "hook": "A calm guide to cardigan fit.",
+                    "format": "YouTube",
+                    "key_points": ["Measure shoulders", "Choose durable yarn"],
+                    "why_now": "Spring wardrobe planning.",
+                    "time_sensitive": False,
+                }
+            ],
+            "best_sources": [
+                {
+                    "title": "Sustainable craft source",
+                    "url": "https://example.test/source",
+                    "source_type": "web",
+                    "why_useful": "Scoped evidence",
+                }
+            ],
+        }
+
+    monkeypatch.setattr("services.claude_client.ask_claude_json", fake_ask)
+
+    subject = orchestrator.ResearchOrchestrator(searchers=[PromptSearcher()])
+    await subject.deep_search(
+        "spring cardigan launch",
+        max_results=1,
+        creator_profile=NON_FOUNDER_PROFILE,
+        language="en-US",
+    )
+
+    assert_clean_prompt(captured["prompt"], captured["system"])
+
+
+async def test_orchestrator_hot_news_prompt_uses_request_profile_without_founder_defaults(monkeypatch):
+    captured = {}
+
+    async def fake_ask(prompt, **kwargs):
+        captured["prompt"] = prompt
+        captured["system"] = kwargs.get("system", "")
+        return [
+            {
+                "title": "A knitting trend worth watching",
+                "content_angle": "Explain the craft trend calmly.",
+                "relevance": 8,
+                "niche": "knitting",
+                "heat_score": 0.75,
+                "sources": ["web"],
+                "original_title": "Craft trend",
+            }
+        ]
+
+    monkeypatch.setattr("services.claude_client.ask_claude_json", fake_ask)
+
+    subject = orchestrator.ResearchOrchestrator(searchers=[PromptSearcher()])
+    await subject.hot_news(creator_profile=NON_FOUNDER_PROFILE, language="en-US")
 
     assert_clean_prompt(captured["prompt"], captured["system"])
