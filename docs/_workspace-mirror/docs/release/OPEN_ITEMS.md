@@ -550,6 +550,45 @@ Remaining follow-ups:
   API responses with tests.
 
 
+## 2026-05-08 v4.14.141 production promote — Outlook token cache + APNs unblock
+
+Engine `main` advanced from `1f7862aa` (v4.14.140) to `9f551b73` (v4.14.141, auto-bumped by `deploy.sh`). Production tag `v4.14.141-prod-20260508-1358` published to origin. iOS unchanged at `fb63527e`.
+
+Backup tags created:
+- `backup/main-before-perf-outlook-merge-20260508-1444` (pre-merge baseline)
+- `backup/perf-outlook-token-cache-before-20260508-1353` (Codex pre-remediation)
+
+### Deploy procedure executed
+
+1. Fast-forward merge `perf/outlook-token-cache-2026-05` → `main` (6 commits): `d57f9368` APNs carryover, `9a1b8d08` Microsoft auth cache + memoization, `9fd80359` regression tests, `bbc4648d` working-set duplicate-read fix, `f7ecff88` strict mock cleanup, `a1e34fe1` staging evidence.
+2. `git push origin main` — pre-push hooks PASS, 3/3 required status checks.
+3. `./scripts/deploy-staging.sh` — staging redeployed at `a1e34fe1`, health checks ✓.
+4. `./scripts/staging-smoke.sh` — **17/17 PASS**, evidence at `engine/docs/release/smoke-evidence/staging-smoke-a1e34fe1-20260508T134929Z.json`.
+5. `./scripts/promote-to-prod.sh` — re-ran staging gate (17/17 PASS again at `T135001Z`), then `deploy.sh` auto-bumped package.json to `4.14.141` and committed `9f551b73`. Production PM2 nexus-hub PID 209410 → 258309 (clean restart).
+6. Production `/health` immediately healthy: db connected, services online, RSS 323 MB.
+7. Production `/api/snapshot`: `version=4.14.141`.
+8. New code verified live on production: `grep accessTokenCache | microsoft_auth_token_cache_summary | invalidateMicrosoftAccessTokenCacheForUser` returns 13 source hits + 14 dist hits on the running production install.
+
+### Post-deploy observability targets (operator-only verification)
+
+1. PM2 logs `microsoft_auth_token_cache_summary` info-level lines should appear every 5 min once cache traffic warms. Target: hit ratio >90%.
+2. `Microsoft refresh token requires public-client MSAL flow` warning should fire AT MOST ONCE per (cacheKey, hour) instead of every 5 min as before.
+3. Felipe's iPhone Tasks/Home navigation — reduced p95 on `/api/v1/tasks/working-set`, `/api/v1/plan/today`, `/api/v1/plan/week` (target: 21s → ~3-5s).
+
+### Pre-existing tech-debt unchanged by this deploy
+
+- 403 ForbiddenException stderr noise (separate integration issue, predates this deploy).
+- Two workspace-mirror-stale entries on `release-identity.{json,md}` (timestamp drift artifact of the generator script).
+
+### Remaining follow-ups (not blocked by this deploy)
+
+- iOS @MainActor pressure in `TaskRepository` (P2 deferred per perf closeout).
+- iOS URLSession per-host concurrency governor (P2 deferred).
+- Express API gzip compression (P2 deferred).
+- F-MSAUTH-1 (P3) — race between in-flight acquisition and `storeTokens` invalidation can cache a just-replaced access token for up to 55 min. Generation-counter fix recommended.
+- Two-account walkthrough on physical devices for closed-beta cohort onboarding (operator-physical).
+
+
 ## Standing Authorizations
 
 - `BATCH-24-CLOSEOUT-AUTHORIZED`: honored by Batch 24 U1/U2/U5.
