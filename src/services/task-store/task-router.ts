@@ -107,13 +107,17 @@ function createTodoistWrapper(userId: number) {
       };
     },
 
-    async getTasks(listId: string, listName?: string, filter?: { status?: string }) {
+    async getTasks(listId: string, listName?: string, filter?: { status?: string; top?: number; completedAfter?: string }) {
       const result = await todoistAdapter.getTasks(userId, { projectId: String(listId) });
       let tasks = result.tasks;
       if (filter?.status) {
-        const normalized = filter.status === 'completed' ? 'completed' : 'pending';
-        tasks = tasks.filter((task) => task.status === normalized);
+        const normalized = normalizeTaskStatusFilter(filter.status);
+        tasks = tasks.filter((task) => {
+          if (normalized === 'active') return task.status !== 'completed' && task.status !== 'cancelled';
+          return task.status === normalized;
+        });
       }
+      if (filter?.top) tasks = tasks.slice(0, Math.max(1, Math.floor(filter.top)));
       return {
         success: true,
         data: tasks.map((task) => taskToMsTodoShape(task, String(listId), listName || task.projectName || '')),
@@ -302,19 +306,18 @@ function createNativeWrapper(userId: number) {
       };
     },
 
-    async getTasks(listId: string, listName?: string, filter?: { status?: string }) {
+    async getTasks(listId: string, listName?: string, filter?: { status?: string; top?: number; completedAfter?: string }) {
       const result = await nativeAdapter.getTasks(userId, { projectId: listId });
       let tasks = result.tasks;
 
       if (filter?.status) {
-        const statusMap: Record<string, string> = {
-          notStarted: 'pending',
-          completed: 'completed',
-          inProgress: 'in_progress',
-        };
-        const normalized = statusMap[filter.status] || filter.status;
-        tasks = tasks.filter(t => t.status === normalized);
+        const normalized = normalizeTaskStatusFilter(filter.status);
+        tasks = tasks.filter(t => {
+          if (normalized === 'active') return t.status !== 'completed' && t.status !== 'cancelled';
+          return t.status === normalized;
+        });
       }
+      if (filter?.top) tasks = tasks.slice(0, Math.max(1, Math.floor(filter.top)));
 
       return {
         success: true,
@@ -540,6 +543,20 @@ function createNativeWrapper(userId: number) {
       };
     },
   };
+}
+
+function normalizeTaskStatusFilter(status: string): 'active' | 'completed' | string {
+  switch (status.trim()) {
+    case 'active':
+    case 'pending':
+    case 'notStarted':
+    case 'inProgress':
+      return 'active';
+    case 'completed':
+      return 'completed';
+    default:
+      return status;
+  }
 }
 
 /** Convert NormalizedTask to microsoft-todo's TodoTask shape for route compat */

@@ -14,6 +14,14 @@ import { ensureValidTenantRouteScope } from '../tenant-route-scope';
 import { invalidateTaskCaches } from '../../services/task-cache-invalidator';
 import { normalizeMicrosoftRecurrence } from '../../services/recurrence-utils';
 import { recordSWRRefreshFailure, recordSWRRefreshSuccess } from '../../services/swr-refresh-observability';
+import { consumeResourceBudget } from '../../services/resource-budgets';
+import {
+  buildTaskWorkingSetPolicy,
+  capTaskPageSize,
+  getTaskProviderCapabilities,
+  normalizeTaskListScope,
+  statusForTaskScope,
+} from '../../services/task-working-set-policy';
 
 // Cache TTLs
 const LISTS_CACHE_TTL = 300;  // 5 min for list names (rarely change)
@@ -179,6 +187,131 @@ export function taskRoutes(): Router {
   });
 
   /**
+   * GET /api/v1/tasks/working-set — bounded app-facing snapshot.
+   *
+   * This is the first-load contract for iOS. It returns enough active task
+   * truth to paint the Tasks tab without pulling completed history into the
+   * active UI state. Historical completed tasks stay behind explicit,
+   * paginated list reads.
+   */
+  router.get('/working-set', async (req, res: Response) => {
+    const userId = (req as any).userId;
+    const tenantId = (req as any).tenantId ?? userId;
+    if (typeof userId !== 'number' || userId <= 0 || typeof tenantId !== 'number' || tenantId <= 0) {
+      sendError(res, 'UNAUTHORIZED', 'Authenticated user required', 401);
+      return;
+    }
+
+    const provider = resolveTaskProvider(userId);
+    const policy = buildTaskWorkingSetPolicy({
+      provider,
+      requestedPageSize: req.query.pageSize,
+      requestedCompletedPageSize: req.query.completedPageSize,
+    });
+    const budget = consumeResourceBudget({
+      tenantId,
+      userId,
+      budgetKey: 'tasks_working_set',
+      limit: 90,
+      windowSeconds: 60,
+    });
+    const cacheKey = `u:${userId}:tasks-working-set`;
+
+    if (!budget.allowed) {
+      const cached = getCachedSWR<any>(cacheKey);
+      if (cached) {
+        sendSuccess(res, {
+          ...cached.value,
+          freshness: {
+            ...(cached.value?.freshness || {}),
+            state: 'degraded',
+            reasonCodes: [
+              ...((cached.value?.freshness?.reasonCodes || []) as string[]),
+              budget.degradedReason || 'resource_budget_exceeded',
+            ],
+          },
+        }, { cached: true });
+        return;
+      }
+      sendError(res, 'RATE_LIMITED', 'Task working set is temporarily limited. Try again shortly.', 429, {
+        resetAt: budget.resetAt,
+        budgetKey: budget.budgetKey,
+      });
+      return;
+    }
+
+    try {
+      const todo = getTodo(req);
+      const result = await todo.getLists();
+      const listsArray = result?.data || result || [];
+      const rawLists = Array.isArray(listsArray) ? listsArray : [];
+      const activeSnapshot = await buildActiveTaskSnapshot(todo, rawLists);
+      const lists = formatTaskLists(rawLists, activeSnapshot.countByListId);
+      const defaultList = resolveDefaultTaskList(lists);
+      const defaultListName = defaultList?.name || 'Tasks';
+      const activePageSize = policy.activePageSize;
+      const activeResult = defaultList
+        ? await todo.getTasks(defaultList.id, defaultListName, { status: 'active', top: activePageSize })
+        : { success: true, data: [] };
+      const activeTasks = Array.isArray(activeResult?.data) ? activeResult.data : [];
+      const syncProvider = resolveTaskProvider(userId);
+      const normalizedActiveTasks = activeTasks.map((task: any) =>
+        normalizeTaskDto(task, syncProvider, { listId: defaultList?.id, listName: defaultListName })
+      );
+      const timezone = getUserTimezoneById(userId);
+      const todayStr = dateKeyInAppTimezone(new Date(), timezone) || new Date().toISOString().slice(0, 10);
+      const payload = {
+        policyVersion: policy.policyVersion,
+        provider,
+        capabilities: getTaskProviderCapabilities(provider),
+        lists,
+        activeCountsByList: Object.fromEntries(activeSnapshot.countByListId.entries()),
+        smartCounts: buildSmartCounts(activeSnapshot.pendingTasks, todayStr, timezone),
+        defaultListId: defaultList?.id || null,
+        activePage: {
+          listId: defaultList?.id || null,
+          listName: defaultListName,
+          tasks: normalizedActiveTasks,
+          pageSize: activePageSize,
+          nextCursor: null,
+          hasMore: normalizedActiveTasks.length >= activePageSize,
+        },
+        completedPolicy: policy.completedPolicy,
+        freshness: {
+          state: 'fresh',
+          generatedAt: new Date().toISOString(),
+          reasonCodes: ['active_working_set_only'],
+        },
+        nextCursors: {
+          active: null,
+          completed: null,
+        },
+      };
+      setCacheSWR(cacheKey, payload, TASKS_CACHE_TTL, TASKS_SWR_STALE);
+      setCacheSWR(`u:${userId}:task-lists`, { lists }, LISTS_CACHE_TTL, LISTS_SWR_STALE);
+      sendSuccess(res, payload);
+    } catch (err: any) {
+      const cached = getCachedSWR<any>(cacheKey);
+      if (cached) {
+        sendSuccess(res, {
+          ...cached.value,
+          freshness: {
+            ...(cached.value?.freshness || {}),
+            state: 'stale',
+            reasonCodes: [
+              ...((cached.value?.freshness?.reasonCodes || []) as string[]),
+              'provider_read_failed',
+            ],
+          },
+        }, { cached: true });
+        return;
+      }
+      logger.error({ err, userId }, 'iOS tasks/working-set failed');
+      sendInternalError(res, 'Failed to fetch task working set');
+    }
+  });
+
+  /**
    * POST /api/v1/tasks/lists — create a new task list.
    * Body: { name: string }
    * Routes to MS To-Do createList or native adapter based on user.
@@ -290,9 +423,14 @@ export function taskRoutes(): Router {
    */
   router.get('/list/:listId', async (req, res: Response) => {
     const { listId } = req.params;
-    const status = req.query.status as string | undefined;
+    const scope = normalizeTaskListScope(req.query.scope, req.query.status);
+    const status = statusForTaskScope(scope, req.query.status);
+    const pageSize = capTaskPageSize(req.query.pageSize ?? req.query.limit, scope === 'completed' ? 50 : 75, 150);
+    const completedAfter = typeof req.query.completedAfter === 'string' ? req.query.completedAfter : undefined;
     const userId = (req as any).userId;
-    const cacheKey = userId ? `u:${userId}:tasks:${listId}:${status || 'all'}` : `tasks:${listId}:${status || 'all'}`;
+    const cacheKey = userId
+      ? `u:${userId}:tasks:${listId}:${scope}:${status || 'all'}:${pageSize}:${completedAfter || ''}`
+      : `tasks:${listId}:${scope}:${status || 'all'}:${pageSize}:${completedAfter || ''}`;
     const syncProvider = resolveTaskProvider(userId);
 
     // Helper that does the actual MS Graph fetch + cache write.
@@ -309,14 +447,27 @@ export function taskRoutes(): Router {
         } catch { listName = 'Tasks'; }
       }
 
-      const tasksResult = await todo.getTasks(listId, listName, status ? { status } : undefined);
+      const tasksResult = await todo.getTasks(
+        listId,
+        listName,
+        status ? { status, top: pageSize, completedAfter } : { top: pageSize, completedAfter },
+      );
       const tasks = tasksResult?.data || [];
 
       const formatted = (Array.isArray(tasks) ? tasks : []).map((t: any) =>
         normalizeTaskDto(t, syncProvider, { listId, listName })
       );
 
-      const payload = { listName, tasks: formatted };
+      const payload = {
+        listName,
+        tasks: formatted,
+        scope,
+        pageInfo: {
+          pageSize,
+          nextCursor: null,
+          hasMore: formatted.length >= pageSize,
+        },
+      };
       setCacheSWR(cacheKey, payload, TASKS_CACHE_TTL, TASKS_SWR_STALE);
       return payload;
     };
@@ -818,7 +969,7 @@ export async function warmTaskCache(): Promise<void> {
         if (getCached(cacheKey)) return;
 
         try {
-          const tasksResult = await todo.getTasks(listId, listName, { status: 'notStarted' });
+          const tasksResult = await todo.getTasks(listId, listName, { status: 'active' });
           const tasks = tasksResult?.data || [];
           const taskFormatted = (Array.isArray(tasks) ? tasks : []).map((t: any) => ({
             id: t.id, title: t.title,
@@ -870,45 +1021,79 @@ function cachedListCount(userId: number | undefined, listId: string): number {
 }
 
 async function buildTaskCountMap(todo: any, lists: any[]): Promise<Map<string, number>> {
-  const fromPendingSnapshot = await readTaskCountsFromPendingSnapshot(todo);
-  if (fromPendingSnapshot) return fromPendingSnapshot;
+  const snapshot = await buildActiveTaskSnapshot(todo, lists);
+  return snapshot.countByListId;
+}
+
+async function buildActiveTaskSnapshot(
+  todo: any,
+  lists: any[],
+): Promise<{ countByListId: Map<string, number>; pendingTasks: any[] }> {
+  const pendingTasks = await readPendingTaskSnapshot(todo);
+  if (pendingTasks) {
+    return {
+      pendingTasks,
+      countByListId: pendingTasks.reduce((map: Map<string, number>, task: any) => {
+        const listId = String(task?.listId || '');
+        if (!listId) return map;
+        map.set(listId, (map.get(listId) || 0) + 1);
+        return map;
+      }, new Map<string, number>()),
+    };
+  }
 
   const countByListId = new Map<string, number>();
   const perList = await Promise.allSettled(
     lists.map(async (list: any) => {
       const listId = String(list.id || '');
       const listName = list.displayName || list.name || 'Tasks';
-      const tasksResult = await todo.getTasks(listId, listName, { status: 'notStarted' });
+      const tasksResult = await todo.getTasks(listId, listName, { status: 'active' });
       const tasks = Array.isArray(tasksResult?.data) ? tasksResult.data : [];
-      return { listId, count: tasks.length };
+      return { listId, tasks };
     }),
   );
 
+  const allPending: any[] = [];
   for (const result of perList) {
     if (result.status !== 'fulfilled') continue;
-    countByListId.set(result.value.listId, result.value.count);
+    countByListId.set(result.value.listId, result.value.tasks.length);
+    allPending.push(...result.value.tasks);
   }
 
-  return countByListId;
+  return { countByListId, pendingTasks: allPending };
 }
 
-async function readTaskCountsFromPendingSnapshot(todo: any): Promise<Map<string, number> | null> {
+async function readPendingTaskSnapshot(todo: any): Promise<any[] | null> {
   if (typeof todo?.getAllPendingTasks !== 'function') return null;
 
   try {
     const pendingResult = await todo.getAllPendingTasks();
     const pendingTasks = Array.isArray(pendingResult?.data) ? pendingResult.data : null;
     if (!pendingTasks) return null;
-
-    return pendingTasks.reduce((map: Map<string, number>, task: any) => {
-      const listId = String(task?.listId || '');
-      if (!listId) return map;
-      map.set(listId, (map.get(listId) || 0) + 1);
-      return map;
-    }, new Map<string, number>());
+    return pendingTasks;
   } catch {
     return null;
   }
+}
+
+function resolveDefaultTaskList(lists: Array<{ id: string; name: string; taskCount: number }>) {
+  return lists.find((list) => /^(tasks|tarefas|inbox)$/i.test(String(list.name || '').trim()))
+    || lists[0]
+    || null;
+}
+
+function buildSmartCounts(tasks: any[], todayStr: string, timezone: string): { dueToday: number; overdue: number } {
+  const dueTodayIds = new Set<string>();
+  const overdueIds = new Set<string>();
+  for (const task of tasks) {
+    if (String(task?.status || '').toLowerCase() === 'completed') continue;
+    const dueStr = taskDueDateKey(task, timezone);
+    if (!dueStr) continue;
+    const id = String(task?.id || `${task?.title || 'task'}:${dueStr}`);
+    if (dueStr === todayStr) dueTodayIds.add(id);
+    if (dueStr < todayStr) overdueIds.add(id);
+  }
+  return { dueToday: dueTodayIds.size, overdue: overdueIds.size };
 }
 
 /**
@@ -1023,7 +1208,7 @@ async function findTaskCreatedDespiteProviderFailure(
   if (typeof todo?.getTasks !== 'function') return null;
 
   try {
-    const result = await todo.getTasks(listId, listName, { status: 'notStarted' });
+    const result = await todo.getTasks(listId, listName, { status: 'active' });
     const tasks = Array.isArray(result?.data) ? result.data : [];
     const wantedTitle = target.title.trim().toLowerCase();
     return tasks.find((task: any) => {

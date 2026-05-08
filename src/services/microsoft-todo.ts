@@ -373,7 +373,7 @@ export async function getDefaultList(): Promise<TodoList | null> {
 export async function getTasks(
   listId: string,
   listName: string,
-  filter?: { status?: string; top?: number }
+  filter?: { status?: string; top?: number; completedAfter?: string }
 ): Promise<ServiceResult<TodoTask[]>> {
   try {
     const client = getGraphClient();
@@ -385,14 +385,15 @@ export async function getTasks(
     //
     // TASK-M8: $expand=checklistItems so each task includes its subtask
     // checklist inline — avoids N+1 fetches from the detail view.
+    const top = Math.max(1, Math.min(filter?.top || 50, 100));
     const query: Record<string, string> = {
       $orderby: 'createdDateTime DESC',
-      $top: String(filter?.top || 50),
+      $top: String(top),
       $expand: 'checklistItems',
     };
 
     if (filter?.status) {
-      query.$filter = `status eq '${filter.status}'`;
+      query.$filter = taskStatusFilter(filter.status, filter.completedAfter);
     }
 
     request = request.query(query);
@@ -402,18 +403,34 @@ export async function getTasks(
     allTasks.push(...(response.value || []).map((t: any) => parseTask(t, listId, listName)));
 
     // Handle pagination
-    while (response['@odata.nextLink'] && allTasks.length < 200) {
+    while (response['@odata.nextLink'] && allTasks.length < top) {
       response = await withRetry(() =>
         client.api(response['@odata.nextLink']).get()
       );
       allTasks.push(...(response.value || []).map((t: any) => parseTask(t, listId, listName)));
     }
 
-    return { success: true, data: allTasks };
+    return { success: true, data: allTasks.slice(0, top) };
   } catch (err) {
     logger.error({ err, listId }, 'Failed to fetch To Do tasks');
     return { success: false, data: [], error: (err as Error).message };
   }
+}
+
+function taskStatusFilter(status: string, completedAfter?: string): string {
+  const normalized = status.trim().toLowerCase();
+  if (normalized === 'active' || normalized === 'pending') {
+    return "status ne 'completed'";
+  }
+  if (normalized === 'completed') {
+    const filters = ["status eq 'completed'"];
+    if (completedAfter) {
+      const bare = completedAfter.replace(/[+-]\d{2}:\d{2}$/, '').replace(/Z$/, '');
+      filters.push(`completedDateTime/dateTime ge '${bare}'`);
+    }
+    return filters.join(' and ');
+  }
+  return `status eq '${status.replace(/'/g, "''")}'`;
 }
 
 export async function getTask(
@@ -622,7 +639,7 @@ export async function getTasksDueInRange(
     }
 
     const results = await Promise.all(
-      listsResult.data.map((list) => getTasks(list.id, list.displayName, { status: 'notStarted' }))
+      listsResult.data.map((list) => getTasks(list.id, list.displayName, { status: 'active' }))
     );
 
     const tasks: TodoTask[] = [];
@@ -662,7 +679,7 @@ export async function getAllPendingTasks(): Promise<ServiceResult<TodoTask[]>> {
     }
 
     const results = await Promise.all(
-      listsResult.data.map((list) => getTasks(list.id, list.displayName, { status: 'notStarted' }))
+      listsResult.data.map((list) => getTasks(list.id, list.displayName, { status: 'active' }))
     );
 
     const allPending: TodoTask[] = [];
@@ -860,7 +877,7 @@ export async function getSharedListPendingTasks(): Promise<ServiceResult<TodoTas
     }
 
     const results = await Promise.all(
-      sharedLists.map((list) => getTasks(list.id, list.displayName, { status: 'notStarted' }))
+      sharedLists.map((list) => getTasks(list.id, list.displayName, { status: 'active' }))
     );
 
     const allTasks: TodoTask[] = [];

@@ -65,8 +65,10 @@ describe('surface cache invalidators', () => {
 
     expect(mockClearCache).toHaveBeenCalledWith('u:42:task-lists');
     expect(mockClearCache).toHaveBeenCalledWith('task-lists');
-    expect(mockClearCache).toHaveBeenCalledWith('u:42:tasks:abc:all');
-    expect(mockClearCache).toHaveBeenCalledWith('tasks:abc:all');
+    expect(mockClearCache).toHaveBeenCalledWith('u:42:tasks-working-set');
+    expect(mockClearCache).toHaveBeenCalledWith('tasks-working-set');
+    expect(mockClearCacheByPrefix).toHaveBeenCalledWith('u:42:tasks:abc:');
+    expect(mockClearCacheByPrefix).toHaveBeenCalledWith('tasks:abc:');
     expect(mockInvalidateDashboardCoordinationCaches).toHaveBeenCalledWith(42);
   });
 

@@ -362,6 +362,56 @@ All P2 from prior round (F-CTX-1, F-TEST-1, F-ARCH-3, F-ARCH-4, F-EXEC-3, F-EXEC
 2. Existing operator-only gates: signed TestFlight + APNs + two-account walkthrough on a real device.
 
 
+## 2026-05-08 Hostile QA v3 on Chat Reasoning Engine v1 — Final closure verdict
+
+Branch: `feature/chat-reasoning-engine-v1`. Engine HEAD `d6d010e2` (commits since v2: `e7416c0b` F-EXEC-6 fix, `373a9a79` F-EXEC-5 + scheduler, `d6d010e2` docs). iOS HEAD `955eedb` (NEW iOS chat-reasoning card surface).
+
+Verdict: **READY_FOR_LOCAL_QA**. All v2 P1 + P3 follow-ups closed with strong behavioral evidence. One new P2 iOS polish gap (F-IOS-1) and one carryover P3 docs hygiene (F-DOCS-1). Zero P0, zero P1, zero regressions.
+
+Report: `docs/archive/2026-05/chat-reasoning-engine-v1/hostile-qa-v3-final-report.md`.
+
+### Independent verification of v2 closures (all behaviorally re-confirmed)
+
+- **F-EXEC-6** — verifier-blind retry duplication. CLOSED via `verifyTaskWithSubtasks` returning `verificationBlind: true` when both `getTask` and `getChecklistItems` fail; `replayOrResumeTaskWithSubtasks` short-circuits to `'in_progress'` with `reason: 'verification_blind'` BEFORE attempting any subtask retry. Persistence test asserts `provider.createTask` AND `provider.addChecklistItem` BOTH NOT called when both reads fail.
+- **F-EXEC-5** — concurrent retry race. CLOSED via atomic `INSERT OR IGNORE` + new `claimActionPlan` helper. Failed claims return `acquired: false` with the existing row's status; executors return `'in_progress'` with `reason: 'action_plan_already_claimed'` instead of throwing UNIQUE 500. Persistence test asserts the entire provider call chain stays untouched.
+- **F-ARCH-3 follow-up** — `expireStaleChatActionPlans` is now wired into the scheduler as `chat_action_plan_expiry` on `15 * * * *` (hourly). Logs only when expirations occur. Scheduler test asserts the cron entry exists and short-circuits cleanly.
+- **F-PROCESS-1** — three new backup tags landed: `backup/chat-reasoning-after-v1-remediation-20260508-0919`, `backup/chat-reasoning-after-v1-v2-closure-20260508-0920`, `backup/chat-reasoning-after-v1-final-20260508-0830`.
+
+### Verification floor reproduced (read-only)
+
+- `npx tsc --noEmit`: PASS.
+- Engine focused suite: 6 files / **131 tests** PASS (was 122 in v2, 64 in v1; net +9 from v2, +67 from v1).
+- `chat-reasoning-engine-persistence.test.ts`: 6/6 PASS (was 4 in v2). New: F-EXEC-6 verifier-blind test + F-EXEC-5 already-claimed test.
+- `scheduler-user-scope.test.ts`: 14/14 PASS, includes the new chat-action-plan-expiry test.
+- P0 chat identity isolation: 23/23.
+- Tasks routes regression: 25/25.
+- `vi-mock-completeness-lint --strict`: exit 0.
+- `cannot-skip-gate-dashboard.sh`: 23/23.
+- `npm run docs:audit`: 445 files / 469 issues (under 480 ceiling; +2 `workspace-mirror-stale` carryover on `release-identity.{json,md}`).
+
+### NEW finding from v3 round
+
+| ID | File / line | Description |
+|---|---|---|
+| F-IOS-1 | `Nexus Hub/Views/Chat/StructuredCards.swift:41-59` | The iOS card switch only handles `task_created` / `task_completed`. The 5 other `chat_action_*` types the engine emits (`chat_action_in_progress`, `chat_action_clarification_required`, `chat_action_confirmation_required`, `chat_action_execution_failed`, `chat_action_deferred`) all fall through to `unknownTypeInline` which renders a generic gray "Structured response" placeholder card. The `response.text` is rendered correctly in the bubble; only the card below is unhelpful. **Recommendation**: add the 5 types to the silent `EmptyView()` list (one-line fix) OR render small status badges per type. ~10 lines + 5 small rendering tests. **Severity**: P2 polish before signed TestFlight, not a blocker for local QA. |
+
+### Pending actions (TL;DR)
+
+| Owner | Action | Severity | ETA |
+|---|---|---|---|
+| Codex (or Claude) | F-IOS-1 — add the 5 `chat_action_*` types to the iOS card switch | P2 | <30 min |
+| Felipe (operator) | F-DOCS-1 — run `engine/scripts/workspace-docs-mirror.sh` to converge `+2 release-identity` drift | P3 | 1 command |
+| Felipe (operator) | iOS xcodebuild simulator run for new chat-reasoning card tests (`ChatRichStateDecodingTests` + `ChatStructuredCardRenderingTests`) | operator-only | ~15 min |
+| Felipe (operator) | Signed TestFlight + two-account walkthrough on physical device | operator-only | requires APNs creds |
+
+### Lower-priority follow-ups
+
+- **F-IOS-2** (P3) — `view_task` deep-link does not pass `taskId`/`listId`; user lands on Tasks tab list, not the specific task. Track as Tasks-tab follow-up.
+- **F-IOS-3** (P3) — "undo" action button is plumbed in iOS but the engine never emits `'undo'` in the actions array (manifest declares `undoSupported: false`). Dead code path; remove from `MetadataTaskAction` until a real undo endpoint ships.
+
+After F-IOS-1 closes, this slice is ready for the existing operator-only TestFlight + APNs + two-account gates that apply to every 2026-05 workstream.
+
+
 ## Standing Authorizations
 
 - `BATCH-24-CLOSEOUT-AUTHORIZED`: honored by Batch 24 U1/U2/U5.

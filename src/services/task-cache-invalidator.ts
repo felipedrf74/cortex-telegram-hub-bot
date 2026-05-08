@@ -1,6 +1,6 @@
 // Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
 
-import { clearCache } from './cache-store';
+import { clearCache, clearCacheByPrefix } from './cache-store';
 import { invalidateDashboardCoordinationCaches } from './coordination-cache-invalidator';
 
 export interface InvalidateTaskCachesOptions {
@@ -21,6 +21,7 @@ export function invalidateTaskCaches(options: InvalidateTaskCachesOptions = {}):
 
   for (const prefix of prefixes) {
     clearCache(`${prefix}task-lists`);
+    clearCache(`${prefix}tasks-working-set`);
     clearCache(`${prefix}fastpath:pending-tasks`);
     clearCache(`${prefix}tasks-filtered:all`);
     clearCache(`${prefix}tasks-filtered:overdue`);
@@ -28,9 +29,7 @@ export function invalidateTaskCaches(options: InvalidateTaskCachesOptions = {}):
 
     for (const listId of listIds) {
       if (!listId) continue;
-      clearCache(`${prefix}tasks:${listId}:all`);
-      clearCache(`${prefix}tasks:${listId}:notStarted`);
-      clearCache(`${prefix}tasks:${listId}:completed`);
+      clearCacheByPrefix(`${prefix}tasks:${listId}:`);
     }
   }
 
