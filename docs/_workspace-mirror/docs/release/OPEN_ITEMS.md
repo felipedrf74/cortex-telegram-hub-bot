@@ -358,7 +358,7 @@ All P2 from prior round (F-CTX-1, F-TEST-1, F-ARCH-3, F-ARCH-4, F-EXEC-3, F-EXEC
 
 ### Path to TestFlight
 
-1. Optional iOS card pass for the structured chat result (backend payload is iOS-ready: `metadata.subtasks`, `metadata.actions`, `metadata.actionPlanId`, `metadata.idempotentReplay`, `routeMethod: 'chat-reasoning-engine'`).
+1. iOS structured chat-result card pass — CLOSED locally on `feature/chat-reasoning-engine-v1`. The app now decodes `metadata.subtasks`, `metadata.actions`, `metadata.actionPlanId`, `metadata.idempotentReplay`, and `routeMethod: 'chat-reasoning-engine'`, renders the task/subtask card, and exposes View/Add-more actions without faking backend mutations.
 2. Existing operator-only gates: signed TestFlight + APNs + two-account walkthrough on a real device.
 
 

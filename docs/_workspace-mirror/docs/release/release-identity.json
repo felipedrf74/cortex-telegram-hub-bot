@@ -1,17 +1,17 @@
 {
-  "generatedAt": "2026-05-08T08:17:53Z",
+  "generatedAt": "2026-05-08T08:39:50Z",
   "backend": {
     "path": "/Users/felipedominguez/Desktop/Custom Connectors/Cortex/cortex-telegram-hub-bot",
     "branch": "feature/chat-reasoning-engine-v1",
-    "commit": "1d2e6d22",
+    "commit": "373a9a79",
     "dirtyState": "dirty",
     "packageVersion": "4.14.138",
     "migrationCount": "121"
   },
   "ios": {
     "path": "/Users/felipedominguez/Desktop/Nexus Hub IOS/Nexus Hub",
-    "branch": "main",
-    "commit": "4c1b470",
+    "branch": "feature/chat-reasoning-engine-v1",
+    "commit": "955eedb",
     "dirtyState": "clean"
   }
 }
