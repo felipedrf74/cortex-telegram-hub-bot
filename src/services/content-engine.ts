@@ -3,7 +3,8 @@
 import crypto from 'crypto';
 import { config } from '../config';
 import { logger } from '../utils/logger';
-import { getCurrentRequestId, generateRequestId } from '../utils/request-context';
+import { getCurrentContext, getCurrentRequestId, generateRequestId } from '../utils/request-context';
+import { getContentCreatorProfile } from '../state/content-creator-profile';
 import { maybeSaveToFile, saveContentAsDocx } from './content-file-saver';
 import type { AgentSignal } from './intelligence-bus';
 
@@ -294,6 +295,41 @@ export function isContentEngineConfigured(): boolean {
   return config.contentEngine.enabled;
 }
 
+function buildCurrentCreatorProfilePayload(languageHint?: string | null): {
+  language: string;
+  creator_profile?: string;
+} {
+  const context = getCurrentContext();
+  const fallbackLanguage = String(languageHint || 'en-US').trim() || 'en-US';
+  if (!context?.userId) {
+    return { language: fallbackLanguage };
+  }
+  try {
+    const profile = getContentCreatorProfile(context.userId, context.userId);
+    const language = profile.languagePreference?.trim() || fallbackLanguage;
+    const lines = [
+      'Creator scope: current authenticated Nexus Hub user only.',
+      `Primary output language: ${language}.`,
+      profile.audience ? `Audience: ${profile.audience}` : null,
+      profile.pillars.length > 0 ? `Pillars: ${profile.pillars.join(', ')}` : null,
+      profile.niches.length > 0 ? `Niches: ${profile.niches.join(', ')}` : null,
+      profile.voiceRules.length > 0 ? `Voice rules: ${profile.voiceRules.join('; ')}` : null,
+      profile.preferredFormats.length > 0 ? `Preferred formats: ${profile.preferredFormats.join(', ')}` : null,
+      profile.dislikedTopics.length > 0 ? `Disliked topics: ${profile.dislikedTopics.join(', ')}` : null,
+      profile.bannedTopics.length > 0 ? `Banned topics: ${profile.bannedTopics.join(', ')}` : null,
+      profile.contentGoals.length > 0 ? `Content goals: ${profile.contentGoals.join('; ')}` : null,
+      profile.voiceExamples.length > 0 ? `Voice examples: ${profile.voiceExamples.join('\n---\n')}` : null,
+    ].filter((line): line is string => Boolean(line));
+    return {
+      language,
+      creator_profile: lines.join('\n').slice(0, 6000),
+    };
+  } catch (err) {
+    logger.warn({ err, userId: context.userId }, 'content-engine creator profile payload unavailable');
+    return { language: fallbackLanguage };
+  }
+}
+
 // ── Phase 2 API ─────────────────────────────────────────────────────
 
 export async function getTrending(niche?: string): Promise<TrendingResponse> {
@@ -308,9 +344,10 @@ export async function getReaction(topic: string): Promise<ReactionResponse> {
 // ── Phase 3 API ─────────────────────────────────────────────────────
 
 export async function getHooks(topic: string, niche = 'general', count = 8): Promise<HooksResponse> {
+  const creatorPayload = buildCurrentCreatorProfilePayload();
   return engineFetch<HooksResponse>('/hooks', {
     method: 'POST',
-    body: JSON.stringify({ topic, niche, count }),
+    body: JSON.stringify({ topic, niche, count, ...creatorPayload }),
   }, 45_000);
 }
 
@@ -598,32 +635,36 @@ export async function getScript(
 }
 
 export async function getTitles(topic: string, niche = 'general', count = 10): Promise<TitlesResponse> {
+  const creatorPayload = buildCurrentCreatorProfilePayload();
   return engineFetch<TitlesResponse>('/titles', {
     method: 'POST',
-    body: JSON.stringify({ topic, niche, count }),
+    body: JSON.stringify({ topic, niche, count, ...creatorPayload }),
   }, 45_000);
 }
 
 export async function getThumbnail(title: string, niche = 'general'): Promise<ThumbnailResponse> {
+  const creatorPayload = buildCurrentCreatorProfilePayload();
   return engineFetch<ThumbnailResponse>('/thumbnail', {
     method: 'POST',
-    body: JSON.stringify({ title, niche }),
+    body: JSON.stringify({ title, niche, ...creatorPayload }),
   }, 45_000);
 }
 
 export async function getCaption(topic: string, niche = 'general'): Promise<CaptionResponse> {
+  const creatorPayload = buildCurrentCreatorProfilePayload();
   return engineFetch<CaptionResponse>('/caption', {
     method: 'POST',
-    body: JSON.stringify({ topic, niche }),
+    body: JSON.stringify({ topic, niche, ...creatorPayload }),
   }, 45_000);
 }
 
 // ── Phase 4 API ─────────────────────────────────────────────────────
 
 export async function getCompetitor(channel: string, maxVideos = 10): Promise<CompetitorResponse> {
+  const creatorPayload = buildCurrentCreatorProfilePayload();
   return engineFetch<CompetitorResponse>('/competitor', {
     method: 'POST',
-    body: JSON.stringify({ channel, max_videos: maxVideos }),
+    body: JSON.stringify({ channel, max_videos: maxVideos, ...creatorPayload }),
   }, 60_000);
 }
 
@@ -635,16 +676,18 @@ export async function getGaps(niche = 'fitness', maxGaps = 10): Promise<GapsResp
 }
 
 export async function getSeo(topic: string): Promise<SeoResponse> {
+  const creatorPayload = buildCurrentCreatorProfilePayload();
   return engineFetch<SeoResponse>('/seo', {
     method: 'POST',
-    body: JSON.stringify({ topic }),
+    body: JSON.stringify({ topic, ...creatorPayload }),
   }, 60_000);
 }
 
 export async function getRepurpose(topic: string, originalFormat = 'YouTube'): Promise<RepurposeResponse> {
+  const creatorPayload = buildCurrentCreatorProfilePayload();
   return engineFetch<RepurposeResponse>('/repurpose', {
     method: 'POST',
-    body: JSON.stringify({ topic, original_format: originalFormat }),
+    body: JSON.stringify({ topic, original_format: originalFormat, ...creatorPayload }),
   }, 60_000);
 }
 
@@ -660,9 +703,10 @@ export async function logFeedback(data: {
   hook_used?: string;
   notes?: string;
 }): Promise<FeedbackResponse> {
+  const creatorPayload = buildCurrentCreatorProfilePayload();
   return engineFetch<FeedbackResponse>('/feedback', {
     method: 'POST',
-    body: JSON.stringify(data),
+    body: JSON.stringify({ ...data, ...creatorPayload }),
   }, 45_000);
 }
 

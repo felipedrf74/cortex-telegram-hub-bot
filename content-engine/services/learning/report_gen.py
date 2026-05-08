@@ -15,6 +15,7 @@ import httpx
 
 from models.requests import ReportResponse
 from services.claude_client import ask_claude_json
+from services.creator_context import creator_profile_block, language_instruction
 
 logger = logging.getLogger("content-engine.report")
 
@@ -45,7 +46,7 @@ async def _fetch_performance_history(days: int) -> list[dict]:
     return []
 
 
-async def generate(period: str = "week") -> ReportResponse:
+async def generate(period: str = "week", creator_profile: str | None = None, language: str = "en-US") -> ReportResponse:
     start = time.monotonic()
 
     # Fetch from canonical TS store
@@ -73,6 +74,18 @@ async def generate(period: str = "week") -> ReportResponse:
         for v in recent
     )
 
+    context = type("ReportCreatorContext", (), {
+        "creator_profile": creator_profile,
+        "language": language,
+    })()
+    system_prompt = f"""You are the authenticated creator's content performance report analyst.
+
+{creator_profile_block(context)}
+
+{language_instruction(context)}
+
+Use only bounded performance summaries and creator profile details supplied for this request."""
+
     prompt = f"""Generate a content performance report for the period: {period_label}
 
 Data from {len(recent)} videos:
@@ -89,9 +102,9 @@ Create a report with:
 8. hook_analysis: which hooks worked best
 9. trend_direction: "improving" | "stable" | "declining"
 
-Return JSON. Insights in PT-BR."""
+Return JSON. Insights in {language}."""
 
-    report = await ask_claude_json(prompt, category="content_engine_report")
+    report = await ask_claude_json(prompt, system=system_prompt, category="content_engine_report")
     if not isinstance(report, dict):
         report = {"raw": report}
 

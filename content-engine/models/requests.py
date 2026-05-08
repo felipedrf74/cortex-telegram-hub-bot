@@ -54,6 +54,9 @@ class HooksRequest(BaseModel):
     niche: str = Field(default="general")
     format: str = Field(default="YouTube")       # YouTube | Short | Reel | Carousel
     count: int = Field(default=8, ge=1, le=20)
+    language: str = Field(default="en-US")
+    brand_voice: str | None = Field(default=None)
+    creator_profile: str | None = Field(default=None)
 
 
 class HooksResponse(BaseModel):
@@ -110,6 +113,9 @@ class TitlesRequest(BaseModel):
     niche: str = Field(default="general")
     platform: str = Field(default="YouTube")      # YouTube | Instagram
     count: int = Field(default=10, ge=1, le=20)
+    language: str = Field(default="en-US")
+    brand_voice: str | None = Field(default=None)
+    creator_profile: str | None = Field(default=None)
 
 
 class TitlesResponse(BaseModel):
@@ -124,6 +130,9 @@ class ThumbnailRequest(BaseModel):
     title: str = Field(min_length=1)
     topic: str = Field(default="")
     niche: str = Field(default="general")
+    language: str = Field(default="en-US")
+    brand_voice: str | None = Field(default=None)
+    creator_profile: str | None = Field(default=None)
 
 
 class ThumbnailResponse(BaseModel):
@@ -138,6 +147,9 @@ class CaptionRequest(BaseModel):
     topic: str = Field(min_length=1)
     niche: str = Field(default="general")
     platform: str = Field(default="Instagram")
+    language: str = Field(default="en-US")
+    brand_voice: str | None = Field(default=None)
+    creator_profile: str | None = Field(default=None)
 
 
 class CaptionResponse(BaseModel):
@@ -154,6 +166,9 @@ class CompetitorRequest(BaseModel):
     """Request body for /competitor endpoint."""
     channel: str = Field(min_length=1)            # YouTube channel URL, handle, or 'auto'
     max_videos: int = Field(default=10, ge=1, le=50)
+    language: str = Field(default="en-US")
+    brand_voice: str | None = Field(default=None)
+    creator_profile: str | None = Field(default=None)
 
 
 class CompetitorResponse(BaseModel):
@@ -180,6 +195,9 @@ class SeoRequest(BaseModel):
     """Request body for /seo endpoint."""
     topic: str = Field(min_length=1)
     platform: str = Field(default="YouTube")
+    language: str = Field(default="en-US")
+    brand_voice: str | None = Field(default=None)
+    creator_profile: str | None = Field(default=None)
 
 
 class SeoResponse(BaseModel):
@@ -193,6 +211,9 @@ class RepurposeRequest(BaseModel):
     """Request body for /repurpose endpoint."""
     topic: str = Field(min_length=1)
     original_format: str = Field(default="YouTube")
+    language: str = Field(default="en-US")
+    brand_voice: str | None = Field(default=None)
+    creator_profile: str | None = Field(default=None)
 
 
 class RepurposeResponse(BaseModel):
@@ -214,6 +235,9 @@ class FeedbackRequest(BaseModel):
     subs_gained: int = Field(default=0, ge=0)
     hook_used: str = Field(default="")
     notes: str = Field(default="")
+    language: str = Field(default="en-US")
+    brand_voice: str | None = Field(default=None)
+    creator_profile: str | None = Field(default=None)
 
 
 class FeedbackResponse(BaseModel):

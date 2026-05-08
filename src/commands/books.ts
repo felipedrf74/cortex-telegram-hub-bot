@@ -11,6 +11,7 @@ import { escapeHtml } from '../utils/telegram-formatter';
 import { logger } from '../utils/logger';
 import { getCurrentRequestId, generateRequestId } from '../utils/request-context';
 import { config } from '../config';
+import { getContentCreatorProfile } from '../state/content-creator-profile';
 import {
   contentScopeForInsert,
   contentScopeParams,
@@ -118,13 +119,33 @@ async function extractAndStore(title: string, author: string, scope?: PortalBook
     // content-engine can log it. Same pattern as engineFetch in
     // services/content-engine.ts. (Quarter audit item.)
     const requestId = getCurrentRequestId() || generateRequestId();
+    let creatorProfile: string | undefined;
+    let language = 'en-US';
+    if (scope) {
+      try {
+        const profile = getContentCreatorProfile(scope.userId, scope.tenantId);
+        language = profile.languagePreference?.trim() || language;
+        creatorProfile = [
+          'Creator scope: current authenticated Nexus Hub user only.',
+          `Primary output language: ${language}.`,
+          profile.audience ? `Audience: ${profile.audience}` : null,
+          profile.pillars.length > 0 ? `Pillars: ${profile.pillars.join(', ')}` : null,
+          profile.niches.length > 0 ? `Niches: ${profile.niches.join(', ')}` : null,
+          profile.voiceRules.length > 0 ? `Voice rules: ${profile.voiceRules.join('; ')}` : null,
+          profile.contentGoals.length > 0 ? `Content goals: ${profile.contentGoals.join('; ')}` : null,
+        ].filter((line): line is string => Boolean(line)).join('\n').slice(0, 6000);
+      } catch (err) {
+        logger.warn({ err, userId: scope.userId, tenantId: scope.tenantId },
+          'Book extraction creator profile unavailable; using neutral content-engine prompt');
+      }
+    }
     const resp = await fetch(`${CONTENT_ENGINE_URL}/books/extract`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         'X-Request-Id': requestId,
       },
-      body: JSON.stringify({ title, author }),
+      body: JSON.stringify({ title, author, creator_profile: creatorProfile, language }),
       signal: controller.signal,
     });
     clearTimeout(timer);

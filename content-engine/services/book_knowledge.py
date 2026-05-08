@@ -15,7 +15,7 @@ import logging
 from pydantic import BaseModel
 
 from services.claude_client import ask_claude_json, MODEL
-from services.creator_profile import get_profile
+from services.creator_context import creator_profile_block, language_instruction
 from config import cfg
 
 import httpx
@@ -66,7 +66,12 @@ async def _web_search(query: str, max_results: int = 5) -> list[dict]:
         return []
 
 
-async def extract_book(title: str, author: str) -> BookDNA:
+async def extract_book(
+    title: str,
+    author: str,
+    creator_profile: str | None = None,
+    language: str = "en-US",
+) -> BookDNA:
     """Research a book via web search and extract structured knowledge."""
     start = time.monotonic()
 
@@ -115,15 +120,20 @@ async def extract_book(title: str, author: str) -> BookDNA:
         )
 
     # Phase 2: Claude Sonnet synthesis
-    profile = get_profile()
+    context = type("BookCreatorContext", (), {
+        "creator_profile": creator_profile,
+        "language": language,
+    })()
 
     system_prompt = f"""You are an intellectual knowledge extractor for the authenticated content creator.
 
-{profile}
+{creator_profile_block(context)}
+
+{language_instruction(context)}
 
 Your task: Extract structured knowledge from a book that the authenticated creator can use in their content.
-Think through the creator's saved brand voice and worldview — how would this creator use these ideas in videos for their saved target audience?
-Focus on frameworks, provocative ideas, and counter-arguments that align with the creator's saved worldview.
+Think through the supplied creator profile and saved brand voice — how would this creator use these ideas in videos for their saved target audience?
+Focus on frameworks, provocative ideas, and counter-arguments that align with the supplied creator profile. If no creator profile is supplied, keep recommendations topic-driven and neutral.
 
 Return ONLY valid JSON, no markdown wrapping."""
 
@@ -142,7 +152,7 @@ Extract and return a JSON object with these exact fields:
             "name": "Framework name",
             "description": "What it is (2-3 sentences)",
             "use_in_content": "How the creator would use this in a video — specific example",
-            "pillar": "Which content pillar it maps to (politics/economics/fitness/faith/self-development/geopolitics)"
+            "pillar": "Which supplied creator content pillar it maps to, or a neutral topic category if no pillar is supplied"
         }}
     ],
     "quotable_ideas": [
@@ -152,15 +162,14 @@ Extract and return a JSON object with these exact fields:
             "use_when": "When the authenticated creator should reference this (e.g., 'when discussing minimum wage')"
         }}
     ],
-    "pillar_mapping": ["economics", "politics"],
+    "pillar_mapping": ["topic category"],
     "counter_arguments": ["What critics say about this book — useful for reaction content"],
     "related_thinkers": ["Other thinkers who share or oppose these views"],
     "personal_notes": []
 }}
 
 Extract 3-6 key frameworks and 4-8 quotable ideas. Focus on what's USEFUL for the authenticated creator's content, not academic completeness.
-For Austrian economics books, extract the most provocative anti-state arguments.
-For philosophy/faith books, extract frameworks that challenge mainstream thinking."""
+Do not assume any political, religious, dietary, national, or founder-specific angle unless the supplied creator profile asks for it."""
 
     result = await ask_claude_json(
         prompt,

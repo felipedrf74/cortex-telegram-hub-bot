@@ -22,6 +22,7 @@ import {
   handleAppleTransaction,
 } from '../../services/stripe-service';
 import { config } from '../../config';
+import { verifyAppleJws } from '../../services/apple-jws-verifier';
 
 export function billingRoutes(): Router {
   const router = Router();
@@ -179,48 +180,18 @@ export function billingRoutes(): Router {
       // modification after Apple signed the transaction.
       let payload: any;
       try {
-        const headerJson = Buffer.from(parts[0], 'base64url').toString('utf8');
-        const header = JSON.parse(headerJson);
-        const payloadJson = Buffer.from(parts[1], 'base64url').toString('utf8');
-        payload = JSON.parse(payloadJson);
-
-        // Verify signature if x5c chain is present (production JWS always has it)
-        if (header.x5c && Array.isArray(header.x5c) && header.x5c.length > 0) {
-          const crypto = require('crypto');
-          // x5c[0] is the leaf cert (DER-encoded, base64)
-          const leafCertDer = Buffer.from(header.x5c[0], 'base64');
-          const leafCertPem = '-----BEGIN CERTIFICATE-----\n'
-            + leafCertDer.toString('base64').match(/.{1,64}/g)!.join('\n')
-            + '\n-----END CERTIFICATE-----';
-
-          // Extract public key from the certificate
-          const pubKey = crypto.createPublicKey({ key: leafCertPem, format: 'pem' });
-
-          // The JWS signature is over "header.payload" (the first two base64url segments)
-          const signedData = parts[0] + '.' + parts[1];
-          const signature = Buffer.from(parts[2], 'base64url');
-
-          // ES256 = ECDSA with SHA-256
-          const isValid = crypto.verify(
-            'SHA256',
-            Buffer.from(signedData),
-            { key: pubKey, dsaEncoding: 'ieee-p1363' },
-            signature,
-          );
-
-          if (!isValid) {
-            logger.warn({ userId }, 'Apple verify: JWS signature verification FAILED');
-            sendError(res, 'INVALID_SIGNATURE', 'JWS signature verification failed — transaction may be tampered', 403);
-            return;
-          }
-          logger.debug({ userId }, 'Apple verify: JWS signature verified ✓');
-        }
-        // If no x5c (Xcode/sandbox test transactions may omit it), fall through to claims checks
+        payload = verifyAppleJws(jwsTransaction, { requireX5c: false }).payload;
+        logger.debug({ userId }, 'Apple verify: JWS signature verified ✓');
       } catch (sigErr: any) {
-        // Signature verification failure is non-fatal for sandbox/Xcode
-        // transactions that may have a different signing format.
-        // Log the error but continue with claims-based checks.
-        logger.warn({ err: sigErr.message, userId }, 'Apple verify: signature check failed — continuing with claims validation');
+        // Missing x5c remains non-fatal for older sandbox/Xcode receipts.
+        // If Apple supplied a cert chain and signature verification failed,
+        // reject instead of falling back to attacker-controlled claims.
+        if (sigErr?.message !== 'APPLE_JWS_MISSING_X5C') {
+          logger.warn({ err: sigErr?.message, userId }, 'Apple verify: signature check failed');
+          sendError(res, 'INVALID_SIGNATURE', 'Apple transaction signature verification failed', 403);
+          return;
+        }
+        logger.warn({ err: sigErr.message, userId }, 'Apple verify: missing x5c — continuing with claims validation for sandbox/Xcode compatibility');
         try {
           const payloadJson = Buffer.from(parts[1], 'base64url').toString('utf8');
           payload = JSON.parse(payloadJson);

@@ -5,6 +5,11 @@ import { AuthenticatedRequest } from '../auth-middleware';
 import { logger } from '../../utils/logger';
 import { runOutboxTransaction } from '../../services/event-outbox';
 import { consumeResourceBudget } from '../../services/resource-budgets';
+import {
+  acquireCostLock,
+  buildQuotaExceededMessage,
+  isUserOverDailyCap,
+} from '../../services/cost-guardrail';
 import { normalizeLangHeader } from '../../services/secretary-fastpath';
 import { getUserLanguageById } from '../../services/user-service';
 import type { Lang } from '../../utils/i18n';
@@ -60,6 +65,16 @@ function resolveTrainingLanguage(req: Pick<AuthenticatedRequest, 'header'>, user
 function invalidateTrainingScreenCaches(userId: number) {
   invalidateCalendarLookupCoalesce(userId);
   invalidateTrainingDerivedCaches(userId);
+}
+
+function rejectTrainingDailyLimit(res: Response, quota: ReturnType<typeof isUserOverDailyCap>): void {
+  sendError(
+    res,
+    'daily_limit_exceeded',
+    buildQuotaExceededMessage(quota),
+    429,
+    { plan: quota.plan, resetAt: quota.resetAt },
+  );
 }
 
 function trainingCopy(language: Lang, ptPT: string, ptBR: string, en: string): string {
@@ -288,7 +303,14 @@ export function trainingRoutes(): Router {
       return;
     }
 
+    const releaseCostLock = await acquireCostLock(userId);
     try {
+      const quota = isUserOverDailyCap(userId);
+      if (quota.over) {
+        rejectTrainingDailyLimit(res, quota);
+        return;
+      }
+
       const briefing = await generateCoachBriefing(userId);
 
       // `briefing.message` is the only briefing text field on CoachBriefingResult;
@@ -326,6 +348,8 @@ export function trainingRoutes(): Router {
         degraded: true,
         warnings: ['Coach briefing unavailable.'],
       });
+    } finally {
+      releaseCostLock();
     }
   });
 

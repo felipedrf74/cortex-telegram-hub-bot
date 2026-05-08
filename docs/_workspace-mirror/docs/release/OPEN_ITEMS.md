@@ -641,6 +641,87 @@ Remaining follow-ups:
   repositories when their routes expose stable ETags.
 
 
+## 2026-05-08 closed-beta block fixes phase 1 — staged, production not promoted
+
+Codex completed Phase 1 of the closed-beta blocker batch on the existing
+architecture branches. Production and `main` were intentionally untouched.
+
+Closeout:
+`docs/archive/2026-05/closed-beta-block-fixes/closeout.md`
+
+Closed in this phase:
+
+- Apple App Store Server Notification webhook now verifies both outer and inner
+  JWS payloads before subscription mutation. Forged staging probe returned
+  `{ handled: false, reason: "invalid signature" }`.
+- `/api/v1/training/*` is now centrally entitlement-gated, and
+  `/training/coach?refresh=true` uses the per-user daily AI cap/lock pattern.
+  Free-tier staging probe returned `403 TIER_REQUIRED`.
+- Nine target content-engine prompt builders now use per-request creator profile
+  context with neutral fallback instead of founder-shaped defaults.
+- Auth/onboarding iOS surfaces now expose stable accessibility identifiers and
+  have six no-`NEXUS_SKIP_AUTH` XCUITests covering email auth, Apple retry,
+  Google callback, account switch, and interrupted onboarding.
+- Cannot-skip dashboard has three new blocker gates and now reports 26/26.
+
+Validation:
+
+- Backend typecheck: PASS.
+- Focused backend security/API suite: PASS, 59 tests.
+- Content-engine prompt-cleanliness/creative/core suite: PASS, 86 tests.
+- Strict mock lint: PASS at baseline 827.
+- Cannot-skip dashboard: PASS, 26/26.
+- iOS auth/onboarding UI tests: PASS, 6 tests on simulator
+  `A0B13967-B5DE-4E6F-897D-F1E409093F94`.
+- Staging deploy: PASS.
+- Five-minute staging soak: PASS.
+- Staging smoke: PASS, 19/19 in the current script, evidence at
+  `engine/docs/release/smoke-evidence/staging-smoke-da95f348-20260508T230237Z.json`.
+
+New findings to carry forward:
+
+- **P2**: `engine/src/services/video-study.ts` still hardcodes PT-BR
+  title/hook/content-idea output. Migrate to creator-profile language/context.
+- **P3**: `engine/src/services/channel-learner.ts` still frames advice for
+  PT-BR fitness/commentary. Migrate to creator-profile niche/language context.
+- **P3**: older iOS Training/Notification UI tests still use `NEXUS_SKIP_AUTH`.
+  New auth/onboarding tests avoid it, but older critical flows should migrate
+  as mock-server coverage expands.
+
+Phase 2 carryovers from the blocker audit:
+
+- Voice-evolution agent owner-only scope leak (P1).
+- Global cost guardrail enforcement on iOS REST routes (P1).
+- iOS repository read-cache plumbing toward one shared primitive (P1).
+- WorkspaceStateView/resolver duplication cleanup (P1).
+- API route boilerplate helper cleanup (P1).
+- Cache-invalidator registry cleanup (P1).
+- In-app bug-report channel (P1).
+- iOS chat fastpath + Telegram fastpath duplication cleanup (P2).
+
+Phase 3 / parked items:
+
+- iOS URLSession governance and app-level request coalescer.
+- Per-skill HomeViewState fallback-builder collapse.
+- Apple notification + provider-client error preservation.
+- OAuth token-cache event bus deletion.
+- Scheduler cron registry extraction.
+- KeychainHelper main-thread sync audit.
+- DashboardViewModel timer leak audit.
+- Onboarding race hardening beyond the new resume-step fix.
+- TaskRepository, ContentService, TrainingViewModel size reductions.
+- Onboarding monolith split.
+- DashboardSheetCoordinator API cleanup.
+- Domain wrapper cleanup.
+- Audit-trail consolidation.
+- Chat tool-dispatch consolidation.
+- `/api/v1/internal/performance-summary` owner-only review.
+- Python FastAPI loopback auth hardening.
+- Python orchestrator singleton cleanup.
+- FastAPI route tests.
+- ResearchOrchestrator `deep_search` decomposition.
+
+
 ## Standing Authorizations
 
 - `BATCH-24-CLOSEOUT-AUTHORIZED`: honored by Batch 24 U1/U2/U5.

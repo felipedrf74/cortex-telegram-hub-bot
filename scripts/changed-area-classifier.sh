@@ -164,6 +164,9 @@ HAS_CHAT_REASONING=false      # Chat ActionFrame parsing/execution/eval harness
 HAS_IOS_NAVIGATION=false      # tab/navigation/view-model responsiveness
 HAS_IOS_DTO=false             # app-facing DTO/decoder contract changes
 HAS_IOS_NOTIFICATION=false    # APNs/local notifications/Decision Center UI
+HAS_APPLE_NOTIFICATION_WEBHOOK=false
+HAS_TRAINING_ENTITLEMENT=false
+HAS_CONTENT_PROMPT_CLEANLINESS=false
 
 # Use grep-based detection so multiple flags can match a single file.
 # Bash `case` stops at the first match — that's wrong here because e.g.
@@ -190,6 +193,7 @@ match '^src/api/' && HAS_API_ROUTE=true
 
 match '^src/services/coach-kernel/' && { HAS_TRAINING=true; HAS_COACH_KERNEL=true; }
 match '^src/services/training-|^src/api/routes/training' && HAS_TRAINING=true
+match '^src/api/routes/training|^src/api/router\.ts$|^__tests__/security/training-routes-entitlement\.test\.ts$' && HAS_TRAINING_ENTITLEMENT=true
 match '^src/skills/training/' && HAS_TRAINING=true
 match '^__tests__/services/training-' && HAS_TRAINING=true
 match '^__tests__/services/coach-kernel-' && { HAS_TRAINING=true; HAS_COACH_KERNEL=true; }
@@ -215,6 +219,7 @@ match '^src/domains/cooking/|^src/services/cooking-|^src/api/routes/cooking|^src
 match 'cooking' && match '^__tests__/' && HAS_COOKING=true
 
 match '^src/domains/content/|^src/services/content-|^src/services/voice-|^src/api/routes/content|^src/agents/|^content-engine/' && HAS_CONTENT=true
+match '^content-engine/services/|^content-engine/models/|^content-engine/routers/|^content-engine/tests/test_prompt_cleanliness\.py$|^src/services/content-engine\.ts$|^src/commands/books\.ts$' && HAS_CONTENT_PROMPT_CLEANLINESS=true
 match '^__tests__/services/content-' && HAS_CONTENT=true
 match '^src/agents/|^__tests__/services/cross-agent-learning|^__tests__/security/content-agent-neutrality' && HAS_CONTENT_AGENT=true
 
@@ -228,6 +233,7 @@ match '^src/portal/|^__tests__/portal/|^scripts/cooking-portal-browser-smoke\.ts
 
 match '^migrations/' && HAS_MIGRATION=true
 match '^content-engine/' && HAS_PYTHON_ENGINE=true
+match '^src/api/router\.ts$|^src/api/routes/billing\.ts$|^src/services/apple-jws-verifier\.ts$|^__tests__/security/billing-apple-notifications-jws-verify\.test\.ts$' && HAS_APPLE_NOTIFICATION_WEBHOOK=true
 
 match '^scripts/(deploy|deploy-staging|promote-to-prod|rollback|restore)\.sh$' && HAS_DEPLOY_SCRIPT=true
 match '^\.husky/' && HAS_HOOK=true
@@ -392,6 +398,9 @@ $HAS_EVENT_BACKBONE && CANNOT_SKIP+=("event-backbone-jobs-sync-tenant-isolation"
 $HAS_IOS_NAVIGATION && CANNOT_SKIP+=("ios-navigation-responsiveness")
 $HAS_IOS_DTO && CANNOT_SKIP+=("ios-contract-decoder-resilience")
 $HAS_IOS_NOTIFICATION && CANNOT_SKIP+=("ios-notification-decision-center")
+$HAS_APPLE_NOTIFICATION_WEBHOOK && CANNOT_SKIP+=("apple-notifications-jws-verify")
+$HAS_TRAINING_ENTITLEMENT && CANNOT_SKIP+=("training-routes-entitlement")
+$HAS_CONTENT_PROMPT_CLEANLINESS && CANNOT_SKIP+=("content-engine-prompt-cleanliness")
 
 # Tier 1 if anything non-doc is in scope
 if $HAS_NON_DOC; then
@@ -422,6 +431,7 @@ TIERS+=("T6-postdeploy")
 # ── Vitest mode ────────────────────────────────────────
 VITEST_MODE="skip"
 VITEST_GLOBS=()
+PYTEST_GLOBS=()
 
 if $HAS_NON_DOC; then
   if $HAS_TEST_CONFIG || $HAS_PACKAGE_JSON; then
@@ -429,6 +439,7 @@ if $HAS_NON_DOC; then
   elif $HAS_BACKEND_SRC || $HAS_BACKEND_TEST || $HAS_DEPLOY_CONFIG; then
     VITEST_MODE="focused"
     $HAS_TRAINING && VITEST_GLOBS+=("__tests__/services/training-*.test.ts" "__tests__/services/coach-kernel-*.test.ts" "__tests__/api/training-*.test.ts")
+    $HAS_TRAINING_ENTITLEMENT && VITEST_GLOBS+=("__tests__/security/training-routes-entitlement.test.ts")
     $HAS_CALENDAR && VITEST_GLOBS+=("__tests__/services/calendar*.test.ts" "__tests__/api/training-calendar-*.test.ts" "__tests__/api/training-plan-calendar-*.test.ts")
     $HAS_PROVIDER_ROUTING && VITEST_GLOBS+=("__tests__/services/provider-*.test.ts" "__tests__/services/ai-provider*.test.ts")
     $HAS_AUTH_OR_TENANT && VITEST_GLOBS+=("__tests__/security/**/*.test.ts" "__tests__/scope/**/*.test.ts" "__tests__/api/auth-*.test.ts" "__tests__/api/connections-tenant-*.test.ts" "__tests__/services/google-sign-in.test.ts" "__tests__/services/apple-sign-in-nonce.test.ts" "__tests__/services/oauth*.test.ts" "__tests__/portal/portal-oauth-routes.test.ts")
@@ -454,6 +465,8 @@ if $HAS_NON_DOC; then
     $HAS_DEPLOY_CONFIG && VITEST_GLOBS+=("__tests__/services/config-*.test.ts" "__tests__/portal/health-endpoint*.test.ts" "__tests__/portal/health-endpoints.test.ts" "__tests__/scripts/*.test.ts" "__tests__/security/**/*.test.ts")
     $HAS_EVENT_BACKBONE && VITEST_GLOBS+=("__tests__/services/event-backbone.test.ts" "__tests__/api/event-backbone-routes.test.ts" "__tests__/security/**/*.test.ts")
     $HAS_CHAT_REASONING && VITEST_GLOBS+=("__tests__/services/chat-reasoning-engine.test.ts" "__tests__/api/chat-routes.test.ts" "__tests__/security/p0-chat-identity-isolation.test.ts")
+    $HAS_APPLE_NOTIFICATION_WEBHOOK && VITEST_GLOBS+=("__tests__/security/billing-apple-notifications-jws-verify.test.ts")
+    $HAS_CONTENT_PROMPT_CLEANLINESS && PYTEST_GLOBS+=("content-engine/tests/test_prompt_cleanliness.py")
     if [ "${#VITEST_GLOBS[@]}" -eq 0 ]; then
       # Backend src/test changed but no domain mapped — fall back to changed-files-only
       VITEST_MODE="changed-only"
@@ -470,6 +483,10 @@ if $HAS_PROMPT && [ "$VITEST_MODE" = "skip" ]; then
   VITEST_MODE="focused"
   VITEST_GLOBS+=("__tests__/security/**/*.test.ts" "__tests__/services/prompt-cleanliness.test.ts")
   SKIP_REASON=""
+fi
+
+if $HAS_CONTENT_PROMPT_CLEANLINESS; then
+  PYTEST_GLOBS+=("content-engine/tests/test_prompt_cleanliness.py")
 fi
 
 SKIP_REASON=""
@@ -515,6 +532,7 @@ dedupe() {
 }
 
 VITEST_GLOBS_DEDUP="$(dedupe ${VITEST_GLOBS[@]+"${VITEST_GLOBS[@]}"})"
+PYTEST_GLOBS_DEDUP="$(dedupe ${PYTEST_GLOBS[@]+"${PYTEST_GLOBS[@]}"})"
 XCTEST_CLASSES_DEDUP="$(dedupe ${XCTEST_CLASSES[@]+"${XCTEST_CLASSES[@]}"})"
 SS_DOMAINS_DEDUP="$(dedupe ${SS_DOMAINS[@]+"${SS_DOMAINS[@]}"})"
 TIERS_DEDUP="$(dedupe "${TIERS[@]}")"
@@ -525,6 +543,7 @@ emit_json() {
   # bash variables. Each shell variable is exported and read via process.env.
   export CLAS_TIERS="$TIERS_DEDUP"
   export CLAS_VGLOBS="$VITEST_GLOBS_DEDUP"
+  export CLAS_PYGLOBS="$PYTEST_GLOBS_DEDUP"
   export CLAS_XCTEST="$XCTEST_CLASSES_DEDUP"
   export CLAS_SS_DOMAINS="$SS_DOMAINS_DEDUP"
   export CLAS_CANNOT_SKIP="$CANNOT_SKIP_DEDUP"
@@ -580,6 +599,9 @@ emit_json() {
   export CLAS_DEPLOY_CONFIG="$HAS_DEPLOY_CONFIG"
   export CLAS_IOS_NAVIGATION="$HAS_IOS_NAVIGATION"
   export CLAS_IOS_DTO="$HAS_IOS_DTO"
+  export CLAS_APPLE_NOTIFICATION_WEBHOOK="$HAS_APPLE_NOTIFICATION_WEBHOOK"
+  export CLAS_TRAINING_ENTITLEMENT="$HAS_TRAINING_ENTITLEMENT"
+  export CLAS_CONTENT_PROMPT_CLEANLINESS="$HAS_CONTENT_PROMPT_CLEANLINESS"
 
   node <<'JS'
 function lines(name) {
@@ -602,6 +624,9 @@ const payload = {
     mode: process.env.CLAS_VMODE,
     globs: lines('CLAS_VGLOBS'),
     skipReason: process.env.CLAS_SKIP_REASON || null,
+  },
+  pytest: {
+    globs: lines('CLAS_PYGLOBS'),
   },
   xctest: {
     mode: process.env.CLAS_XMODE,
@@ -656,6 +681,9 @@ const payload = {
     deployConfig: flag('CLAS_DEPLOY_CONFIG'),
     iosNavigation: flag('CLAS_IOS_NAVIGATION'),
     iosDto: flag('CLAS_IOS_DTO'),
+    appleNotificationWebhook: flag('CLAS_APPLE_NOTIFICATION_WEBHOOK'),
+    trainingEntitlement: flag('CLAS_TRAINING_ENTITLEMENT'),
+    contentPromptCleanliness: flag('CLAS_CONTENT_PROMPT_CLEANLINESS'),
   },
 };
 console.log(JSON.stringify(payload, null, 2));
@@ -684,6 +712,13 @@ emit_markdown() {
     while IFS= read -r g; do [ -n "$g" ] && echo "  - \`$g\`"; done <<<"$VITEST_GLOBS_DEDUP"
   else
     echo "- run: \`npx vitest run\` (full)"
+  fi
+  echo
+  echo "## Pytest"
+  if [ -n "$PYTEST_GLOBS_DEDUP" ]; then
+    while IFS= read -r g; do [ -n "$g" ] && echo "- \`$g\`"; done <<<"$PYTEST_GLOBS_DEDUP"
+  else
+    echo "- (none)"
   fi
   echo
   echo "## XCTest"

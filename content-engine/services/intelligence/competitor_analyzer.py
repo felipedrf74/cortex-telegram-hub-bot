@@ -12,6 +12,7 @@ import httpx
 from config import cfg
 from models.requests import CompetitorRequest, CompetitorResponse
 from services.claude_client import ask_claude_json
+from services.creator_context import creator_profile_block, language_instruction
 
 logger = logging.getLogger("content-engine.competitor")
 
@@ -89,6 +90,13 @@ async def _fetch_channel_videos(channel_query: str, max_videos: int) -> list[dic
 
 async def analyze(req: CompetitorRequest) -> CompetitorResponse:
     start = time.monotonic()
+    system_prompt = f"""You are the authenticated creator's competitor intelligence analyst.
+
+{creator_profile_block(req)}
+
+{language_instruction(req)}
+
+Use the creator profile only to tailor useful, scoped recommendations. Do not assume ideology, language, audience, belief system, diet, nationality, or founder persona when it is not supplied."""
 
     videos = await _fetch_channel_videos(req.channel, req.max_videos)
 
@@ -97,7 +105,7 @@ async def analyze(req: CompetitorRequest) -> CompetitorResponse:
         prompt = f"""Analyze the YouTube channel/creator "{req.channel}" as a competitor.
 Provide insights on: title patterns, content mix, upload frequency, engagement style, strengths, weaknesses.
 Return JSON with keys: channel, title_patterns (array), content_mix (object), upload_frequency, avg_views_estimate, strengths (array), weaknesses (array), actionable_insights (array).
-Language: PT-BR for insights."""
+Language: {req.language} for insights."""
     else:
         video_summary = "\n".join(
             f"- \"{v['title']}\" | {v['views']:,} views | {v['likes']:,} likes | {v['published_at'][:10]}"
@@ -119,9 +127,9 @@ Provide a competitor analysis with:
 7. weaknesses: content gaps or weaknesses (array)
 8. actionable_insights: specific things the authenticated creator can learn/adapt (array)
 
-Return as JSON object. Insights in PT-BR."""
+Return as JSON object. Insights in {req.language}."""
 
-    analysis = await ask_claude_json(prompt, max_tokens=4096)
+    analysis = await ask_claude_json(prompt, system=system_prompt, max_tokens=4096)
 
     duration_ms = int((time.monotonic() - start) * 1000)
     return CompetitorResponse(

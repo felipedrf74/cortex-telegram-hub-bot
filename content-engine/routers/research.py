@@ -169,7 +169,9 @@ async def log_feedback(req: FeedbackRequest) -> FeedbackResponse:
 @router.get("/report", response_model=ReportResponse)
 async def weekly_report(
     period: str = Query(default="week"),
+    creator_profile: str | None = Query(default=None),
+    language: str = Query(default="en-US"),
 ) -> ReportResponse:
     """Weekly or monthly content performance report."""
     from services.learning import report_gen
-    return await report_gen.generate(period)
+    return await report_gen.generate(period, creator_profile=creator_profile, language=language)

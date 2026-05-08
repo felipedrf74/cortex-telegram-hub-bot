@@ -8,13 +8,16 @@ import time
 import logging
 from models.requests import RepurposeRequest, RepurposeResponse
 from services.claude_client import ask_claude_json
-from services.creator_profile import get_profile
+from services.creator_context import creator_profile_block, language_instruction
 
 logger = logging.getLogger("content-engine.repurpose")
 
-SYSTEM_PROMPT = f"""You are the authenticated creator's content atomization strategist.
+def _build_system_prompt(req: RepurposeRequest) -> str:
+    return f"""You are the authenticated creator's content atomization strategist.
 
-{get_profile()}
+{creator_profile_block(req)}
+
+{language_instruction(req)}
 
 You turn 1 content piece into a full multi-platform ecosystem, all in the authenticated creator's saved brand voice.
 
@@ -37,7 +40,7 @@ AVAILABLE MARKERS:
 For each output provide:
 - format: Reel/Short/Carousel/Story/Tweet/CommunityPost
 - platform: YouTube/Instagram/Twitter
-- content: the specific text/description in PT-BR, the authenticated creator's saved brand voice. For Reels/Shorts, include [SFX:...] and [EDIT:...] markers inline.
+- content: the specific text/description in the requested language and authenticated creator's saved brand voice. For Reels/Shorts, include [SFX:...] and [EDIT:...] markers inline.
 - posting_delay: when to post relative to main video (e.g. "+2h", "+1d", "+3d")
 - notes: platform-specific adjustments + SFX/edit notes for video content
 
@@ -46,7 +49,16 @@ Reels should open with [SFX:vine-boom] or [SFX:metal-pipe] on the most controver
 Shorts need [EDIT:zoom-punch] on reaction faces and [EDIT:hard-cut] between segments.
 Community polls should spark debate.
 
-Return ONLY a JSON array of objects. No markdown. Language: PT-BR."""
+Return ONLY a JSON array of objects. No markdown."""
+
+
+class _NeutralPromptRequest:
+    creator_profile = None
+    brand_voice = None
+    language = "en-US"
+
+
+SYSTEM_PROMPT = _build_system_prompt(_NeutralPromptRequest())
 
 
 async def generate(req: RepurposeRequest) -> RepurposeResponse:
@@ -60,7 +72,7 @@ Generate the full ecosystem: 3 Reels, 1 Carousel, 5 Stories, 3 Tweets, 2 Communi
 All in the authenticated creator's saved brand voice and tone. Audience: use the creator's saved target audience profile from the authenticated creator memory (do not assume a default demographic, language, or persona). Include [SFX:...] and [EDIT:...] markers in all video content.
 Return JSON array of objects with: format, platform, content, posting_delay, notes."""
 
-    result = await ask_claude_json(prompt, system=SYSTEM_PROMPT, max_tokens=6000)
+    result = await ask_claude_json(prompt, system=_build_system_prompt(req), max_tokens=6000)
     outputs = result if isinstance(result, list) else [result]
 
     duration_ms = int((time.monotonic() - start) * 1000)

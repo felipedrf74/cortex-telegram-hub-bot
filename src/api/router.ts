@@ -39,6 +39,10 @@ import { reportRoutes } from './routes/reports';
 import { summaryRoutes } from './routes/summaries';
 import { syncRoutes } from './routes/sync';
 import { eventBackboneAdminRoutes } from './routes/event-backbone-admin';
+import { verifyAppleJws } from '../services/apple-jws-verifier';
+import { handleAppleNotification } from '../services/stripe-service';
+import { captureMessage } from '../services/error-tracker';
+import { logger } from '../utils/logger';
 
 /**
  * Creates the iOS API router.
@@ -117,6 +121,15 @@ export function createApiRouter(): Router {
   // prevent a forged-payload flood from CPU-starving the event loop
   // BEFORE the cheap bundle-id + JWS validation rejects bad traffic.
   router.post('/billing/apple-notifications', webhookRateLimitMiddleware, express.json(), (req, res) => {
+    const rejectInvalidAppleNotification = (reason: string, error?: unknown) => {
+      logger.warn({ reason, err: error }, 'Apple notification: invalid or forged JWS rejected');
+      captureMessage('APPLE_NOTIFICATION_FORGED_OR_INVALID', 'warning', {
+        error_code: 'APPLE_NOTIFICATION_FORGED_OR_INVALID',
+        reason,
+      });
+      res.status(200).json({ handled: false, reason: 'invalid signature' });
+    };
+
     try {
       const { signedPayload } = req.body || {};
       if (!signedPayload || typeof signedPayload !== 'string') {
@@ -125,18 +138,11 @@ export function createApiRouter(): Router {
         return;
       }
 
-      // Decode the outer JWS (notification envelope)
-      const outerParts = signedPayload.split('.');
-      if (outerParts.length !== 3) {
-        res.status(200).json({ handled: false, reason: 'malformed outer JWS' });
-        return;
-      }
-
       let outerPayload: any;
       try {
-        outerPayload = JSON.parse(Buffer.from(outerParts[1], 'base64url').toString('utf8'));
-      } catch {
-        res.status(200).json({ handled: false, reason: 'invalid outer JWS payload' });
+        outerPayload = verifyAppleJws(signedPayload, { requireX5c: true }).payload;
+      } catch (err) {
+        rejectInvalidAppleNotification('invalid outer JWS', err);
         return;
       }
 
@@ -148,40 +154,15 @@ export function createApiRouter(): Router {
         return;
       }
 
-      // Validate bundle ID from the inner transaction.
-      //
-      // Hardening 2026-04-21: prior code wrapped the inner-payload
-      // parse + bundle-id check in a try/catch that SWALLOWED errors
-      // and fell through to `handleAppleNotification` on failure. An
-      // attacker sending a malformed `signedTransactionInfo` (no
-      // `bundleId` field, or invalid base64) would sail past the
-      // check. Now: if the inner JWS isn't a well-formed 3-part
-      // structure, OR the bundleId is missing, OR the bundleId
-      // doesn't match, we REJECT with 200 (Apple retry policy
-      // compliance). Crypto signature verification is still a known
-      // gap flagged to the security owner.
-      const innerParts = signedTransactionInfo.split('.');
-      if (innerParts.length !== 3) {
-        require('../utils/logger').logger.warn(
-          { notificationType },
-          'Apple notification: malformed inner JWS — rejecting',
-        );
-        res.status(200).json({ handled: false, reason: 'malformed inner JWS' });
-        return;
-      }
       let innerPayload: any;
       try {
-        innerPayload = JSON.parse(Buffer.from(innerParts[1], 'base64url').toString('utf8'));
-      } catch {
-        require('../utils/logger').logger.warn(
-          { notificationType },
-          'Apple notification: inner JWS payload not valid JSON — rejecting',
-        );
-        res.status(200).json({ handled: false, reason: 'invalid inner payload' });
+        innerPayload = verifyAppleJws(signedTransactionInfo, { requireX5c: true }).payload;
+      } catch (err) {
+        rejectInvalidAppleNotification('invalid inner transaction JWS', err);
         return;
       }
       if (!innerPayload.bundleId) {
-        require('../utils/logger').logger.warn(
+        logger.warn(
           { notificationType },
           'Apple notification: missing bundleId in inner payload — rejecting',
         );
@@ -189,7 +170,7 @@ export function createApiRouter(): Router {
         return;
       }
       if (innerPayload.bundleId !== 'me.nexushub.app') {
-        require('../utils/logger').logger.warn(
+        logger.warn(
           { bundleId: innerPayload.bundleId, notificationType },
           'Apple notification: bundle ID mismatch — rejecting',
         );
@@ -197,13 +178,12 @@ export function createApiRouter(): Router {
         return;
       }
 
-      const { handleAppleNotification } = require('../services/stripe-service');
       const processed = handleAppleNotification(notificationType, signedTransactionInfo);
 
       res.status(200).json({ handled: processed });
     } catch (err: any) {
       // Never return errors to Apple — always 200
-      require('../utils/logger').logger.error({ err }, 'Apple notification handler error');
+      logger.error({ err }, 'Apple notification handler error');
       res.status(200).json({ handled: false, reason: 'internal error' });
     }
   });
@@ -248,7 +228,7 @@ export function createApiRouter(): Router {
 
   // Token-zero data routes — direct service calls, no AI involvement.
   router.use('/tasks', taskRoutes());
-  router.use('/training', trainingRoutes());
+  router.use('/training', requireEntitlement({ skill: 'training' }), trainingRoutes());
   router.use('/calendar', calendarRoutes());
   router.use('/reminders', reminderRoutes());
   router.use('/notes', notesRoutes());

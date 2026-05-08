@@ -3,8 +3,8 @@ Caption writer — Instagram captions + optimised hashtag sets via Claude.
 
 IDENTITY-SAFETY CONTRACT (closed-beta v4.14.126+):
 The SYSTEM_PROMPT is computed per request from the authenticated creator's
-profile (via `get_profile(...)`). It MUST NOT carry hardcoded political,
-religious, dietary, ideological, or branded hashtag pools, and MUST NOT
+profile. It MUST NOT carry hardcoded political, religious, dietary,
+ideological, or branded hashtag pools, and MUST NOT
 hardcode the output language. The hashtag strategy is purely structural
 (volume tiers + creator-pillar-driven). Language defaults to the creator's
 saved `primary_content_language` when present; otherwise the model is
@@ -13,19 +13,18 @@ instructed to mirror the input topic's language.
 Regression context: v4.14.118 closed the markdown-prompt leaks for
 `secretary.md` / `content.md` / etc., and `script_writer.py` was migrated
 to a per-request creator block. caption_writer.py was missed in that pass
-and continued to inject founder-shaped political, faith, and dietary
-hashtag pools (including the carnivore-diet and personal-brand pools)
-plus a hardcoded `LANGUAGE: Portuguese PT-BR` override into every
+and continued to inject founder-shaped worldview and dietary
+hashtag pools plus a hardcoded language override into every
 authenticated user's caption generation. The closed-beta hardening pass
 (2026-05-03) sanitized this file to the same per-request creator-block
-pattern.
+pattern; this file now reads that block from the request.
 """
 
 import time
 import logging
 from models.requests import CaptionRequest, CaptionResponse
 from services.claude_client import ask_claude_json
-from services.creator_profile import get_profile
+from services.creator_context import creator_profile_block
 
 logger = logging.getLogger("content-engine.caption")
 
@@ -35,7 +34,7 @@ def _build_system_prompt(creator_block: str) -> str:
 
     The creator_block carries the authenticated creator's worldview,
     audience, voice, language defaults, and pillar/hashtag preferences
-    (when saved). The prompt itself contains NO ideology, dietary, faith,
+    (when saved). The prompt itself contains NO ideology, dietary,
     political, or branded vocabulary — only structural guidance about
     caption shape and hashtag tiering.
     """
@@ -54,7 +53,7 @@ HASHTAG STRATEGY (structural — do not invent ideological, political, religious
 - Mix volume tiers: ~5 high-volume (>1M posts) + ~5 medium (100K–1M) + ~5 niche (<100K) + ~5 trending/branded.
 - Pull niche/branded tags ONLY from the creator's saved pillars and tag library in the creator profile above.
 - If the creator profile does not list a relevant tag for a pillar, omit it rather than fabricating one.
-- Do NOT inject political, religious, dietary, ideological, or persona hashtags that are not present in the creator's saved configuration.
+- Do NOT inject worldview, dietary, or persona hashtags that are not present in the creator's saved configuration.
 
 LANGUAGE:
 - Use the creator's saved `primary_content_language` from the creator profile above when present.
@@ -68,15 +67,7 @@ No markdown wrapping."""
 async def generate(req: CaptionRequest) -> CaptionResponse:
     start = time.monotonic()
 
-    # NOTE: per-request creator block. CaptionRequest does not yet carry an
-    # explicit `creator_profile`/`user_id`/`tenant_id` (tracked as P2 in
-    # the closed-beta identity-safety audit — extend its model to mirror
-    # ScriptRequest as a follow-up). Until then the fallback is the
-    # NEUTRAL TEMPLATE in prompts/creator-config.md, which carries no
-    # founder/owner identity. A unit-test guard
-    # (`__tests__/security/creator-config-neutrality.test.ts`) fails CI if
-    # that template ever regains a name token.
-    creator_block = get_profile()
+    creator_block = creator_profile_block(req)
     system_prompt = _build_system_prompt(creator_block)
 
     prompt = f"""Write an Instagram caption for the authenticated creator's post:

@@ -230,9 +230,13 @@ async def test_book_knowledge_synthesizes_search_results(monkeypatch, assert_no_
 
     monkeypatch.setattr(book_knowledge, "_web_search", fake_search)
     monkeypatch.setattr(book_knowledge, "ask_claude_json", fake_ask)
-    monkeypatch.setattr(book_knowledge, "get_profile", lambda: "Neutral authenticated creator profile")
 
-    dna = await book_knowledge.extract_book("Tenant Manual", "A. Author")
+    dna = await book_knowledge.extract_book(
+        "Tenant Manual",
+        "A. Author",
+        creator_profile="Neutral authenticated creator profile",
+        language="en-US",
+    )
 
     assert dna.core_thesis == "Use scoped research."
     assert "Tenant research" in captured["prompt"]

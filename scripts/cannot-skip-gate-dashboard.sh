@@ -87,6 +87,9 @@ GATES=(
   "deploy-config-health-rehearsal|ecosystem.config.js|config-"
   "ios-navigation-responsiveness|Nexus Hub/Views/MainTabView.swift|NavigationPerformance"
   "ios-contract-decoder-resilience|Nexus Hub/Core/Services/TrainingService.swift|ContractDecoder"
+  "apple-notifications-jws-verify|src/services/apple-jws-verifier.ts|apple-notifications-jws-verify"
+  "training-routes-entitlement|src/api/routes/training.ts|training-routes-entitlement"
+  "content-engine-prompt-cleanliness|content-engine/services/creative/hook_generator.py|test_prompt_cleanliness"
 )
 
 # Run the classifier once per gate and capture results into JSON.
@@ -117,6 +120,7 @@ for entry in "${GATES[@]}"; do
     const cannotSkipHit = (data.cannotSkip || []).includes(gate);
     const allTestRoutes = [
       ...(data.vitest && data.vitest.globs ? data.vitest.globs : []),
+      ...(data.pytest && data.pytest.globs ? data.pytest.globs : []),
       ...(data.xctest && data.xctest.classes ? data.xctest.classes : []),
     ];
     const expectedHit = sentinels.has(expected)
