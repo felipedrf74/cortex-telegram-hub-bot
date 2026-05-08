@@ -261,6 +261,49 @@ Scope: 5 specialist Opus subagents in parallel; independent vitest run 37/37 pas
 Codex remediation prompt: `docs/archive/2026-05/secretary-notification-orchestrator/notification-orchestrator-codex-remediation-prompt.md`.
 
 
+## 2026-05-08 Hostile QA on Chat Reasoning Engine v1
+
+Branch: `feature/chat-reasoning-engine-v1` (engine commit `6e2f27d3`, on top of `main` `5373398c` / 4.14.138).
+
+Backup tag: `backup/chat-reasoning-before-v1-20260507-2330`.
+
+Verdict: **READY_WITH_CONDITIONS** after Codex remediation on `feature/chat-reasoning-engine-v1`. Exact Prozis acceptance case works end to end, and the hostile P0/P1 source blockers listed below are closed locally. Do not promote to staging/production until the branch is merged deliberately and the normal deploy gates run.
+
+Report: `docs/archive/2026-05/chat-reasoning-engine-v1/hostile-qa-report.md`.
+
+Verification reproduced (read-only):
+- `npx tsc --noEmit`: PASS.
+- Focused suite: 3 files / 64 tests PASS (`__tests__/services/chat-reasoning-engine.test.ts`, `__tests__/api/chat-routes.test.ts`, `__tests__/services/task-store/task-router.test.ts`).
+- P0 chat identity isolation: 23/23 PASS.
+- Native task route regression: 25/25 PASS.
+- `vi-mock-completeness-lint --strict`: exit 0 (warnings about new `assertNoUnexpectedMigrationPrefixCollisions` mock key are non-fatal).
+- `cannot-skip-gate-dashboard.sh --json --no-evidence`: 23/23 PASS.
+- `npm run docs:audit`: 443 files / 469 issues (+2 drift from Codex's 467 due to stale workspace mirror; under 480 ceiling).
+
+### P0 NEW — CLOSED IN SOURCE BRANCH
+
+| ID | File / line | Description |
+|---|---|---|
+| F-EXEC-1 | `src/services/chat-reasoning-engine.ts` | CLOSED locally. Reusable action-plan lookup now includes `executing`; task refs are persisted immediately after parent creation; retries with a saved task ref resume missing subtasks without calling `createTask`; retries without a task ref fail closed as in-progress instead of duplicating. |
+| F-PARSE-3 | `src/services/chat-reasoning-engine.ts` | CLOSED locally. Targeted destructive commands on task/event/calendar nouns now route to confirmation-required before any skill/model execution. |
+| F-PARSE-4 | `src/services/chat-reasoning-engine.ts` | CLOSED locally. Task messages joined with a second action verb now fail closed as multi-step clarification instead of flattening reminders/schedules/cancels into subtasks. |
+
+### P1 NEW — CLOSED / DEFERRED HONESTLY IN SOURCE BRANCH
+
+| ID | File / line | Description |
+|---|---|---|
+| F-EXEC-2 | `src/services/chat-reasoning-engine.ts` | CLOSED locally. Plain `create_task` now executes through the deterministic task provider and verifies read-back. |
+| F-ARCH-1 | `migrations/116_chat_reasoning_engine_v1.sql` | CLOSED by removing the writerless `chat_correction_events` table from v1. Repair/correction remains a documented future slice rather than dead DDL. |
+| F-ARCH-2 | `src/config.ts` | CLOSED by removing unused `chatActionLabel/Plan/Repair/Clarify` config. Model-graded labelling remains deferred until a real call site ships. |
+| F-PARSE-1 / F-PARSE-7 / F-PARSE-9 / F-PARSE-10 / F-PARSE-11 / F-PARSE-12 / F-PARSE-13 / F-PARSE-15 | `src/services/chat-reasoning-engine.ts` | CLOSED locally with regression coverage: discourse phrases are stripped before splitting, title/subtask caps are enforced, PT implicit-subtask and Spanish explicit-subtask cases parse, mixed quotes survive, bare checklist syntax parses, multi-recipient updates ask clarification, and bulk plural/count forms no longer collapse into one task. |
+
+### P2/P3 — CLOSED OR LEFT AS EXPLICIT FOLLOW-UP
+
+Closed locally: `F-CTX-1` tenant fallback removed; `F-TEST-1` cross-tenant action-plan scope covered; `F-ARCH-3` stale-plan expiry utility added; `F-ARCH-4` recursive identity stripping added; `F-EXEC-3` null task read-back no longer verifies; `F-EXEC-4` partial/in-progress plans resume missing subtasks; `F-PARSE-2/5/6/8/14` covered by parser hardening where applicable. Remaining follow-up: `F-ARCH-5` model confidence remains future-only because v1 is intentionally deterministic; `F-EXEC-5` concurrent retry noise is mitigated by unique scope and in-progress replay but not fully transactional around external providers.
+
+### Path back to READY
+
+Secretary task/subtask vertical slice is now appropriate for hostile re-QA. iOS result-card rendering, full undo/repair, model-graded labelling, and broader cross-skill execution remain explicit follow-ups.
 
 
 ## Standing Authorizations

@@ -6,6 +6,7 @@ import {
   detectChatReasoningMode,
   executeChatReasoningFrame,
   parseDeterministicActionFrame,
+  tryHandleChatReasoningAction,
   validateChatActionFrame,
   type ChatActionFrame,
 } from '../../src/services/chat-reasoning-engine';
@@ -67,6 +68,16 @@ describe('Chat Reasoning Engine v1', () => {
       ['creatine', 'K2', 'D3'],
     );
     expectSubtaskFrame(
+      'Cria uma tarefa Prozis com creatina K2 D3',
+      'Prozis',
+      ['creatina', 'K2', 'D3'],
+    );
+    expectSubtaskFrame(
+      'Crear tarea Prozis con subtareas creatina K2 D3',
+      'Prozis',
+      ['creatina', 'K2', 'D3'],
+    );
+    expectSubtaskFrame(
       'Create uma task chamada Suplementos com subtasks creatine K2 D3',
       'Suplementos',
       ['creatine', 'K2', 'D3'],
@@ -85,6 +96,78 @@ describe('Chat Reasoning Engine v1', () => {
     expect(parseDeterministicActionFrame('Create task called creatine K2 D3')).toMatchObject({
       primaryIntent: 'create_task',
       entities: { title: 'creatine K2 D3' },
+    });
+    expect(parseDeterministicActionFrame('Create tasks A, B, C')).toMatchObject({
+      primaryIntent: 'create_multiple_tasks',
+      steps: [
+        { action: 'create_task', entities: { title: 'A' } },
+        { action: 'create_task', entities: { title: 'B' } },
+        { action: 'create_task', entities: { title: 'C' } },
+      ],
+    });
+    expect(parseDeterministicActionFrame('Create 3 tasks: A, B, C')).toMatchObject({
+      primaryIntent: 'create_multiple_tasks',
+    });
+  });
+
+  it('handles adversarial parser cases without flattening or creating noisy subtasks', () => {
+    expectSubtaskFrame(
+      "Create task Prozis with subtasks creatine for now that's it K2 D3",
+      'Prozis',
+      ['creatine', 'K2', 'D3'],
+    );
+    expectSubtaskFrame(
+      'Create checklist groceries: eggs, milk, bananas',
+      'groceries',
+      ['eggs', 'milk', 'bananas'],
+    );
+    expectSubtaskFrame(
+      'Create task Prozis with subtasks A B C D E F G H I J',
+      'Prozis',
+      ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J'],
+    );
+    expect(parseDeterministicActionFrame('Create task "Prozis \'inner\' rest"')).toMatchObject({
+      primaryIntent: 'create_task',
+      entities: { title: "Prozis 'inner' rest" },
+    });
+    const capped = expectSubtaskFrame(
+      `Create task Load Test with subtasks ${Array.from({ length: 40 }, (_, index) => `item${index + 1}`).join(' ')}`,
+      'Load Test',
+      Array.from({ length: 25 }, (_, index) => `item${index + 1}`),
+    );
+    expect((capped.entities as any).subtasks).toHaveLength(25);
+  });
+
+  it('fails closed for targeted destructive and multi-step messages', async () => {
+    expect(detectChatReasoningMode('Delete the Prozis task')).toBe('high_risk_preview');
+    expect(detectChatReasoningMode('Cancel my 9am meeting')).toBe('high_risk_preview');
+    expect(detectChatReasoningMode('Apaga a tarefa Prozis')).toBe('high_risk_preview');
+    expect(detectChatReasoningMode('Create task Prozis with subtasks creatine K2 D3 and remind me tomorrow')).toBe('multi_step_plan');
+
+    const result = await tryHandleChatReasoningAction({
+      text: 'Create task Prozis with subtasks creatine K2 D3 and remind me tomorrow',
+      userId: 42,
+      tenantId: 42,
+      sourceMessageId: 'msg-multi-step',
+    });
+    expect(result).toMatchObject({
+      status: 'needs_clarification',
+      response: {
+        metadata: {
+          type: 'chat_action_clarification_required',
+          reason: 'multi_step_action_requires_preview',
+        },
+      },
+    });
+  });
+
+  it('asks for clarification instead of merging multi-recipient subtask updates', () => {
+    const frame = parseDeterministicActionFrame('Add creatine to Prozis and K2 to Vitamins');
+
+    expect(frame).toMatchObject({
+      primaryIntent: 'add_subtasks_to_task',
+      ambiguityFlags: ['multi_recipient_subtask_update'],
+      missingFields: ['targetTask'],
     });
   });
 
@@ -111,10 +194,13 @@ describe('Chat Reasoning Engine v1', () => {
       ['create todo review invoices', 'structured_action'],
       ['create checklist Supplements: creatine, K2, D3', 'structured_action'],
       ['Create task Prozis with subtasks creatine K2 D3', 'structured_action'],
+      ['Create task Prozis with subtasks creatine K2 D3 and remind me tomorrow', 'multi_step_plan'],
       ['Create a task called Prozis where it has sub tasks called creatine K2 D3', 'structured_action'],
       ['Create task "Prozis" with subtasks "creatine", "K2", "D3"', 'structured_action'],
       ['create tasks: creatine, K2, D3', 'structured_action'],
       ['Create three tasks: creatine, K2, D3', 'structured_action'],
+      ['Create 3 tasks: creatine, K2, D3', 'structured_action'],
+      ['Create tasks creatine, K2, D3', 'structured_action'],
       ['Add creatine, K2, D3 to task Prozis', 'structured_action'],
       ['add these subtasks to my Prozis task', 'structured_action'],
       ['adiciona creatina, K2, D3 à tarefa Prozis', 'structured_action'],
@@ -122,6 +208,8 @@ describe('Chat Reasoning Engine v1', () => {
       ['Criar checklist chamado Prozis: creatina, K2, D3', 'structured_action'],
       ['Create uma task chamada Suplementos com subtasks creatine K2 D3', 'structured_action'],
       ['Delete all events tomorrow', 'high_risk_preview'],
+      ['Delete the Prozis task', 'high_risk_preview'],
+      ['Cancel my 9am meeting', 'high_risk_preview'],
       ['delete everything on my agenda', 'high_risk_preview'],
       ['Cancel everything on my calendar', 'high_risk_preview'],
       ['clear all tasks', 'high_risk_preview'],
@@ -168,6 +256,14 @@ describe('Chat Reasoning Engine v1', () => {
       decision: 'deny',
       reason: 'model_identity_fields_rejected',
     });
+    expect(validateChatActionFrame({
+      ...frame,
+      entities: { ...frame.entities, metadata: { userId: 999 } },
+      steps: [{ action: 'create_task_with_subtasks', entities: { title: 'Prozis', nested: { tenantId: 123 } } }],
+    }, context)).toMatchObject({
+      decision: 'deny',
+      reason: 'model_identity_fields_rejected',
+    });
 
     const futureAction: ChatActionFrame = {
       ...frame,
@@ -181,6 +277,10 @@ describe('Chat Reasoning Engine v1', () => {
       reason: 'manifest_only_action_not_executable',
     });
     expect(CHAT_ACTION_MANIFESTS.some((manifest) => manifest.skill === 'cooking' && manifest.action === 'create_meal_plan')).toBe(true);
+  });
+
+  it('requires an authenticated tenant instead of inventing one from the user id', () => {
+    expect(() => buildChatReasoningContextPack({ userId: 42 })).toThrow('chat_reasoning_missing_authenticated_tenant');
   });
 
   it('executes the Secretary task/subtask slice deterministically and verifies read-back state', async () => {
@@ -236,6 +336,45 @@ describe('Chat Reasoning Engine v1', () => {
     });
   });
 
+  it('executes plain task creation instead of returning a deferred developer message', async () => {
+    const frame = parseDeterministicActionFrame('Create task buy milk');
+    expect(frame).toMatchObject({
+      primaryIntent: 'create_task',
+      entities: { title: 'buy milk' },
+    });
+    const provider = {
+      getLists: vi.fn(async () => ({ success: true, data: [{ id: 'list-1', displayName: 'Inbox', wellknownListName: 'defaultList' }] })),
+      createTask: vi.fn(async (_listId: string, _listName: string, data: any) => ({
+        success: true,
+        data: { id: 'task-1', listId: 'list-1', listName: 'Inbox', title: data.title },
+      })),
+      getTask: vi.fn(async () => ({
+        success: true,
+        data: { id: 'task-1', listId: 'list-1', listName: 'Inbox', title: 'buy milk', checklistItems: [] },
+      })),
+    };
+
+    const result = await executeChatReasoningFrame({
+      text: 'Create task buy milk',
+      userId: 42,
+      tenantId: 42,
+      sourceMessageId: 'msg-create-task',
+      frame: frame!,
+      provider,
+      persistPlan: false,
+    });
+
+    expect(provider.createTask).toHaveBeenCalledWith('list-1', 'Inbox', expect.objectContaining({ title: 'buy milk' }));
+    expect(result.status).toBe('completed');
+    expect(result.response.text).toContain('Created task “buy milk”');
+    expect(result.response.metadata).toMatchObject({
+      type: 'task_created',
+      title: 'buy milk',
+      subtasks: [],
+      verificationStatus: 'verified',
+    });
+  });
+
   it('returns partial failure instead of claiming success when read-back cannot verify subtasks', async () => {
     const frame = expectSubtaskFrame(
       'Create task Prozis with subtasks creatine K2 D3',
@@ -264,6 +403,41 @@ describe('Chat Reasoning Engine v1', () => {
     expect(result.response.metadata).toMatchObject({
       verificationStatus: 'partial_failure',
       warnings: expect.arrayContaining(['created_subtasks_missing']),
+    });
+  });
+
+  it('does not mark verification successful when the created task cannot be read back', async () => {
+    const frame = expectSubtaskFrame(
+      'Create task Prozis with subtasks creatine K2 D3',
+      'Prozis',
+      ['creatine', 'K2', 'D3'],
+    );
+    const provider = {
+      getLists: vi.fn(async () => ({ success: true, data: [{ id: 'list-1', displayName: 'Inbox', wellknownListName: 'defaultList' }] })),
+      createTask: vi.fn(async () => ({ success: true, data: { id: 'task-1', listId: 'list-1', listName: 'Inbox', title: 'Prozis' } })),
+      addChecklistItem: vi.fn(async (_listId: string, _taskId: string, displayName: string) => ({ success: true, data: { id: displayName, displayName, isChecked: false } })),
+      getTask: vi.fn(async () => ({ success: false, data: null })),
+      getChecklistItems: vi.fn(async () => ({ success: true, data: [
+        { id: 'ci-1', displayName: 'creatine', isChecked: false },
+        { id: 'ci-2', displayName: 'K2', isChecked: false },
+        { id: 'ci-3', displayName: 'D3', isChecked: false },
+      ] })),
+    };
+
+    const result = await executeChatReasoningFrame({
+      text: 'Create task',
+      userId: 42,
+      tenantId: 42,
+      sourceMessageId: 'msg-user-test',
+      frame,
+      provider,
+      persistPlan: false,
+    });
+
+    expect(result.status).toBe('partial_failure');
+    expect(result.response.metadata).toMatchObject({
+      verificationStatus: 'partial_failure',
+      warnings: expect.arrayContaining(['task_read_back_unavailable']),
     });
   });
 });

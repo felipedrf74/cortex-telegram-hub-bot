@@ -1,17 +1,17 @@
 {
-  "generatedAt": "2026-05-07T20:07:57Z",
+  "generatedAt": "2026-05-07T23:52:53Z",
   "backend": {
     "path": "/Users/felipedominguez/Desktop/Custom Connectors/Cortex/cortex-telegram-hub-bot",
-    "branch": "feature/event-backbone-readmodels-delta-sync",
-    "commit": "9c704b64",
+    "branch": "feature/chat-reasoning-engine-v1",
+    "commit": "5373398c",
     "dirtyState": "dirty",
-    "packageVersion": "4.14.134",
-    "migrationCount": "120"
+    "packageVersion": "4.14.138",
+    "migrationCount": "121"
   },
   "ios": {
     "path": "/Users/felipedominguez/Desktop/Nexus Hub IOS/Nexus Hub",
-    "branch": "feature/event-backbone-readmodels-delta-sync",
-    "commit": "dd8ffe0",
+    "branch": "main",
+    "commit": "4c1b470",
     "dirtyState": "clean"
   }
 }

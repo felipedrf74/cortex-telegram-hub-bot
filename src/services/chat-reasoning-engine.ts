@@ -73,7 +73,7 @@ export type CreateTaskWithSubtasksEntities = {
   notes: string | null;
   priority: string | null;
   list: string | null;
-  language: 'en' | 'pt' | 'mixed' | 'unknown';
+  language: 'en' | 'pt' | 'es' | 'mixed' | 'unknown';
   extractionConfidence: number;
 };
 
@@ -92,12 +92,12 @@ export type ChatReasoningDecision =
   | { decision: 'deny'; reason: string };
 
 export type ChatActionExecutionResult = {
-  status: 'completed' | 'partial_failure' | 'failed' | 'needs_clarification' | 'needs_confirmation' | 'deferred';
+  status: 'completed' | 'partial_failure' | 'failed' | 'needs_clarification' | 'needs_confirmation' | 'deferred' | 'in_progress';
   response: {
     id: string;
     text: string;
     domain: 'secretary';
-    routeMethod: 'chat-reasoning-engine';
+    routeMethod: 'chat-reasoning-engine' | 'confirmation-required';
     confidence: number;
     buttons: null;
     metadata: Record<string, unknown>;
@@ -166,15 +166,24 @@ export const CHAT_ACTION_MANIFESTS: ActionManifest[] = [
   { skill: 'notifications', action: 'resolve_notification_action', riskLevel: 'medium', requiresConfirmation: false, implemented: false, undoSupported: false, requiredFields: ['notificationId', 'action'] },
 ];
 
+const MAX_TASK_TITLE_LENGTH = 500;
+const MAX_SUBTASK_TITLE_LENGTH = 200;
+const MAX_SUBTASKS = 25;
+
 const READ_INTENT_PATTERNS = [
   /\b(show|list|what'?s|what is|open)\s+(my\s+)?(tasks|todo|to[- ]?dos|agenda|calendar|week|day)\b/i,
   /\b(mostra|listar|abre|quais sao|quais são)\s+(as\s+minhas\s+)?(tarefas|agenda|calendario|calendário|semana)\b/i,
 ];
 
-const TASK_CREATE_PATTERNS = /\b(create|add|make|cria|criar|crie|adiciona|adicionar)\b.*\b(tasks?|todo|to-do|tarefas?|checklist)\b/i;
-const SUBTASK_MARKER_PATTERNS = /\b(sub\s*tasks?|subtasks?|subtarefas?|checklist items?|steps?|itens?)\b/i;
-const ADD_SUBTASK_PATTERNS = /\b(add|adiciona|adicionar)\b.*\b(to|under|à|a|na|no)\b.*\b(task|tarefa)?\b/i;
-const DESTRUCTIVE_PATTERNS = /\b(delete|remove|cancel|clear|apaga|apagar|remove|remover|cancela|cancelar)\s+(all|everything|todos|todas|tudo)\b/i;
+assertUniqueManifests(CHAT_ACTION_MANIFESTS);
+
+const TASK_CREATE_PATTERNS = /\b(create|add|make|cria|criar|crie|adiciona|adicionar|crear|crea|agrega|agregar|añade|anade|añadir|anadir)\b.*\b(tasks?|todo|to-do|tarefas?|tareas?|checklist)\b/i;
+const SUBTASK_MARKER_PATTERNS = /\b(sub\s*tasks?|subtasks?|subtarefas?|subtareas?|checklist(?:\s+items?)?|steps?|itens?|elementos?)\b/i;
+const ADD_SUBTASK_PATTERNS = /\b(add|adiciona|adicionar|añade|anade|añadir|anadir|agrega|agregar)\b.*\b(to|under|à|a|na|no|en|bajo)\b.*\b(task|tarefa|tarea)?\b/i;
+const DESTRUCTIVE_VERBS = /\b(delete|remove|cancel|clear|apaga|apagar|remove|remover|cancela|cancelar|borra|borrar|elimina|eliminar)\b/i;
+const DESTRUCTIVE_SWEEP_TARGETS = /\b(all|everything|todos|todas|tudo|todo|toda)\b/i;
+const DESTRUCTIVE_OBJECT_TARGETS = /\b(tasks?|todo|to-do|agenda|calendar|events?|meetings?|tarefas?|calend[aá]rio|eventos?|reuni(?:a|ã)o|reuniões|tareas?|calendario|reuniones?)\b/i;
+const MULTI_STEP_SECOND_ACTION = /\b(and|e|y)\s+(?:remind|schedule|reschedule|cancel|delete|move|plan|mark|create|add|lembrar|agenda|agendar|remarcar|cancela|cancelar|apaga|apagar|mover|marcar|cria|criar|crear|programar|recordar|eliminar|borrar|añade|anade)\b/i;
 
 const DISCOURSE_TAILS = [
   /\bfor now(?:\s+that'?s\s+it)?\.?$/i,
@@ -193,10 +202,12 @@ export function buildChatReasoningContextPack(input: {
   locale?: string;
   timezone?: string;
 }): ChatReasoningContextPack {
-  const tenantId = Number.isInteger(input.tenantId) && input.tenantId! > 0 ? input.tenantId! : input.userId;
+  if (!Number.isInteger(input.tenantId) || input.tenantId! <= 0) {
+    throw new Error('chat_reasoning_missing_authenticated_tenant');
+  }
   return {
     userId: input.userId,
-    tenantId,
+    tenantId: input.tenantId!,
     locale: input.locale,
     timezone: input.timezone,
     allowedActions: CHAT_ACTION_MANIFESTS
@@ -210,8 +221,9 @@ export function detectChatReasoningMode(text: string): ChatReasoningMode {
   if (!trimmed) return 'conversation_answer';
   if (/^(who am i|whoami|quem sou eu)\??$/i.test(trimmed)) return 'deterministic_fastpath';
   if (READ_INTENT_PATTERNS.some((pattern) => pattern.test(trimmed))) return 'deterministic_fastpath';
-  if (DESTRUCTIVE_PATTERNS.test(trimmed)) return 'high_risk_preview';
+  if (isDestructiveIntent(trimmed)) return 'high_risk_preview';
   if (/^(fix that|undo that|no,?\s+i meant|corrige isso|desfaz isso)/i.test(trimmed)) return 'clarification';
+  if (hasMultiStepActionIntent(trimmed)) return 'multi_step_plan';
   if (TASK_CREATE_PATTERNS.test(trimmed) || ADD_SUBTASK_PATTERNS.test(trimmed)) return 'structured_action';
   if (/\b(plan|schedule|reschedule|training|session|calendar|meal plan|grocery|invoice|marathon|recording|plano|agenda|jantar|fatura)\b/i.test(trimmed)) {
     return 'multi_step_plan';
@@ -229,8 +241,14 @@ export function parseDeterministicActionFrame(text: string): ChatActionFrame | n
   const addFrame = parseAddSubtasksFrame(cleaned, quoted);
   if (addFrame) return addFrame;
 
+  const checklistFrame = parseChecklistFrame(cleaned);
+  if (checklistFrame) return checklistFrame;
+
   const createWithSubtasks = parseCreateTaskWithSubtasksFrame(cleaned, quoted);
   if (createWithSubtasks) return createWithSubtasks;
+
+  const implicitSubtasks = parseImplicitTaskWithSubtasksFrame(cleaned);
+  if (implicitSubtasks) return implicitSubtasks;
 
   const multipleTasks = parseCreateMultipleTasksFrame(cleaned, quoted);
   if (multipleTasks) return multipleTasks;
@@ -258,6 +276,9 @@ export function validateChatActionFrame(
   if ((frame.entities as any).userId != null || (frame.entities as any).tenantId != null || (frame.entities as any).ownerId != null) {
     return { decision: 'deny', reason: 'model_identity_fields_rejected' };
   }
+  if (containsAuthoritativeIdentityField(frame.entities) || frame.steps.some((step) => containsAuthoritativeIdentityField(step.entities))) {
+    return { decision: 'deny', reason: 'model_identity_fields_rejected' };
+  }
   if (frame.missingFields.length > 0) {
     return { decision: 'needs_clarification', reason: 'missing_required_fields', missingFields: frame.missingFields };
   }
@@ -268,12 +289,18 @@ export function validateChatActionFrame(
     return { decision: 'needs_confirmation', reason: 'action_requires_confirmation' };
   }
 
+  if (frame.primaryIntent === 'create_task') {
+    const title = normalizeTitle((frame.entities as any).title);
+    if (!title) return { decision: 'needs_clarification', reason: 'missing_title', missingFields: ['title'] };
+  }
+
   if (frame.primaryIntent === 'create_task_with_subtasks' || frame.primaryIntent === 'add_subtasks_to_task') {
     const entities = frame.entities as Partial<CreateTaskWithSubtasksEntities>;
     const title = normalizeTitle(entities.title);
     const subtasks = normalizeSubtasks(entities.subtasks);
     if (!title) return { decision: 'needs_clarification', reason: 'missing_title', missingFields: ['title'] };
     if (subtasks.length === 0) return { decision: 'needs_clarification', reason: 'missing_subtasks', missingFields: ['subtasks'] };
+    if (subtasks.length > MAX_SUBTASKS) return { decision: 'needs_clarification', reason: 'too_many_subtasks', missingFields: ['subtasks'] };
   }
 
   if (frame.primaryIntent === 'create_multiple_tasks') {
@@ -285,14 +312,31 @@ export function validateChatActionFrame(
 
 export async function tryHandleChatReasoningAction(input: TryHandleInput): Promise<ChatActionExecutionResult | null> {
   const mode = detectChatReasoningMode(input.text);
-  if (mode !== 'structured_action' && mode !== 'high_risk_preview' && mode !== 'clarification') return null;
+  if (mode !== 'structured_action' && mode !== 'high_risk_preview' && mode !== 'clarification' && mode !== 'multi_step_plan') return null;
 
   if (mode === 'high_risk_preview') {
-    return buildNonExecutableResponse({
+    const response = buildNonExecutableResponse({
       input,
       status: 'needs_confirmation',
-      text: 'Before I make a destructive change, I need an explicit preview and confirmation. I did not delete, cancel, or clear anything.',
-      metadata: { type: 'chat_action_confirmation_required', reasoningMode: mode, reason: 'destructive_action' },
+      text: 'Before I make a destructive change, I need explicit confirmation with a preview. I did not delete, cancel, or clear anything.',
+      metadata: {
+        type: 'chat_action_confirmation_required',
+        reasoningMode: mode,
+        reason: 'destructive_action',
+        involvedSkills: ['secretary', 'training'],
+      },
+    });
+    response.response.routeMethod = 'confirmation-required';
+    return response;
+  }
+
+  if (mode === 'multi_step_plan') {
+    if (!hasMultiStepActionIntent(input.text)) return null;
+    return buildNonExecutableResponse({
+      input,
+      status: 'needs_clarification',
+      text: 'I see more than one action in that message. I did not change anything yet. Please confirm the steps one at a time or ask me to preview the full plan first.',
+      metadata: { type: 'chat_action_clarification_required', reasoningMode: mode, reason: 'multi_step_action_requires_preview' },
     });
   }
 
@@ -317,6 +361,10 @@ export async function executeChatReasoningFrame(options: ExecuteOptions): Promis
     return executeCreateTaskWithSubtasks(options);
   }
 
+  if (options.frame.primaryIntent === 'create_task') {
+    return executeCreateTask(options);
+  }
+
   if (options.frame.primaryIntent === 'add_subtasks_to_task') {
     return executeAddSubtasksToTask(options);
   }
@@ -324,7 +372,7 @@ export async function executeChatReasoningFrame(options: ExecuteOptions): Promis
   return buildNonExecutableResponse({
     input: options,
     status: 'deferred',
-    text: 'I understood the action, but this Chat Reasoning Engine slice can only execute Secretary task/subtask actions right now.',
+    text: 'I understood the action, but I cannot safely complete that request yet. I did not change anything.',
     metadata: {
       type: 'chat_action_deferred',
       actionFrame: sanitizeFrameForResponse(options.frame),
@@ -349,23 +397,10 @@ async function executeCreateTaskWithSubtasks(options: ExecuteOptions): Promise<C
     });
   }
 
-  const existingPlan = options.persistPlan !== false ? findCompletedPlan(options) : null;
+  const existingPlan = options.persistPlan !== false ? findReusablePlan(options) : null;
   if (existingPlan) {
-    const refs = safeJsonParse(existingPlan.created_entity_refs_json, []);
-    const taskRef = Array.isArray(refs) ? refs.find((ref: any) => ref?.entityType === 'task') : null;
-    if (taskRef?.listId && taskRef?.entityId) {
-      const verified = await verifyTaskWithSubtasks(provider, taskRef.listId, taskRef.entityId, entities.title, entities.subtasks);
-      return buildTaskCreatedResponse({
-        input: options,
-        actionPlanId: existingPlan.action_plan_id,
-        task: verified.task || taskRef,
-        checklistItems: verified.checklistItems,
-        failedSubtasks: [],
-        warnings: ['Duplicate request detected; returned the existing task instead of creating another one.'],
-        verificationStatus: verified.ok ? 'verified' : 'partial_failure',
-        idempotentReplay: true,
-      });
-    }
+    const resumed = await replayOrResumeTaskWithSubtasks(options, provider, existingPlan, entities);
+    if (resumed) return resumed;
   }
 
   const actionPlanId = options.persistPlan !== false ? upsertActionPlan(options, 'executing') : `plan-${randomUUID()}`;
@@ -408,6 +443,13 @@ async function executeCreateTaskWithSubtasks(options: ExecuteOptions): Promise<C
   }
 
   const createdTask = taskResult.data;
+  const taskRef = {
+    entityType: 'task',
+    entityId: String(createdTask.id),
+    listId: String(createdTask.listId || list.id),
+    title: entities.title,
+  };
+  updateActionPlanStatus(actionPlanId, options, 'executing', [taskRef]);
   const createdItems: Array<{ id: string; displayName: string; isChecked: boolean }> = [];
   const failedSubtasks: string[] = [];
 
@@ -437,12 +479,7 @@ async function executeCreateTaskWithSubtasks(options: ExecuteOptions): Promise<C
   );
   const status = failedSubtasks.length === 0 && verification.ok ? 'completed' : 'partial_failure';
   const refs = [
-    {
-      entityType: 'task',
-      entityId: String(createdTask.id),
-      listId: String(createdTask.listId || list.id),
-      title: entities.title,
-    },
+    taskRef,
     ...createdItems.map((item) => ({
       entityType: 'subtask',
       entityId: item.id,
@@ -460,6 +497,168 @@ async function executeCreateTaskWithSubtasks(options: ExecuteOptions): Promise<C
     failedSubtasks,
     warnings: verification.warnings,
     verificationStatus: status === 'completed' ? 'verified' : 'partial_failure',
+  });
+}
+
+async function executeCreateTask(options: ExecuteOptions): Promise<ChatActionExecutionResult> {
+  const title = normalizeTitle((options.frame.entities as any).title);
+  const provider = options.provider || getTaskProviderForUser(options.userId);
+  if (!title) {
+    return buildValidationResponse(options, { decision: 'needs_clarification', reason: 'missing_title', missingFields: ['title'] });
+  }
+  if (typeof provider.createTask !== 'function') {
+    return buildNonExecutableResponse({
+      input: options,
+      status: 'failed',
+      text: 'I understood the task, but the active task provider cannot create tasks right now.',
+      metadata: {
+        type: 'chat_action_execution_failed',
+        actionFrame: sanitizeFrameForResponse(options.frame),
+        reason: 'task_provider_missing_create_support',
+      },
+    });
+  }
+
+  const existingPlan = options.persistPlan !== false ? findReusablePlan(options) : null;
+  if (existingPlan) {
+    const refs = safeJsonParse(existingPlan.created_entity_refs_json, []);
+    const taskRef = Array.isArray(refs) ? refs.find((ref: any) => ref?.entityType === 'task') : null;
+    if (taskRef?.listId && taskRef?.entityId) {
+      const verified = await verifyTaskWithSubtasks(provider, String(taskRef.listId), String(taskRef.entityId), title, []);
+      const verificationStatus = verified.task && verified.ok ? 'verified' : 'partial_failure';
+      updateActionPlanStatus(existingPlan.action_plan_id, options, verificationStatus === 'verified' ? 'completed' : 'partial_failure', refs);
+      return buildPlainTaskCreatedResponse({
+        input: options,
+        actionPlanId: existingPlan.action_plan_id,
+        task: verified.task || taskRef,
+        warnings: [
+          'Duplicate request detected; returned the existing task instead of creating another one.',
+          ...verified.warnings,
+        ],
+        verificationStatus,
+        idempotentReplay: true,
+      });
+    }
+    if (existingPlan.status === 'executing') {
+      return buildInProgressReplayResponse(options, existingPlan.action_plan_id);
+    }
+  }
+
+  const actionPlanId = options.persistPlan !== false ? upsertActionPlan(options, 'executing') : `plan-${randomUUID()}`;
+  const list = await resolveTaskCreationList(provider, (options.frame.entities as any).list);
+  if (!list?.id) {
+    updateActionPlanStatus(actionPlanId, options, 'failed', []);
+    return buildNonExecutableResponse({
+      input: options,
+      status: 'failed',
+      text: 'I could not find a task list to create this in. I did not create anything.',
+      metadata: { type: 'chat_action_execution_failed', actionPlanId, actionFrame: sanitizeFrameForResponse(options.frame), reason: 'missing_task_list' },
+    });
+  }
+
+  const taskResult = await provider.createTask(String(list.id), list.displayName || list.name || 'Tasks', {
+    title,
+  });
+  if (!taskResult?.success || !taskResult.data?.id) {
+    updateActionPlanStatus(actionPlanId, options, 'failed', []);
+    return buildNonExecutableResponse({
+      input: options,
+      status: 'failed',
+      text: 'I understood the task, but task creation failed.',
+      metadata: { type: 'chat_action_execution_failed', actionPlanId, actionFrame: sanitizeFrameForResponse(options.frame), reason: 'task_create_failed' },
+    });
+  }
+
+  const createdTask = taskResult.data;
+  const refs = [{
+    entityType: 'task',
+    entityId: String(createdTask.id),
+    listId: String(createdTask.listId || list.id),
+    title,
+  }];
+  updateActionPlanStatus(actionPlanId, options, 'executing', refs);
+  const verification = await verifyTaskWithSubtasks(
+    provider,
+    String(createdTask.listId || list.id),
+    String(createdTask.id),
+    title,
+    [],
+  );
+  const verificationStatus = verification.task && verification.ok ? 'verified' : 'partial_failure';
+  updateActionPlanStatus(actionPlanId, options, verificationStatus === 'verified' ? 'completed' : 'partial_failure', refs);
+
+  return buildPlainTaskCreatedResponse({
+    input: options,
+    actionPlanId,
+    task: verification.task || createdTask,
+    warnings: verification.warnings,
+    verificationStatus,
+  });
+}
+
+async function replayOrResumeTaskWithSubtasks(
+  options: ExecuteOptions,
+  provider: TaskProviderLike,
+  existingPlan: any,
+  entities: CreateTaskWithSubtasksEntities,
+): Promise<ChatActionExecutionResult | null> {
+  const refs = safeJsonParse(existingPlan.created_entity_refs_json, []);
+  const taskRef = Array.isArray(refs) ? refs.find((ref: any) => ref?.entityType === 'task') : null;
+  if (!taskRef?.listId || !taskRef?.entityId) {
+    if (existingPlan.status === 'executing') {
+      return buildInProgressReplayResponse(options, existingPlan.action_plan_id);
+    }
+    return null;
+  }
+
+  let verified = await verifyTaskWithSubtasks(provider, String(taskRef.listId), String(taskRef.entityId), entities.title, entities.subtasks);
+  let addedItems: Array<{ id: string; displayName: string; isChecked: boolean }> = [];
+  let failedSubtasks: string[] = [];
+  const missingSubtasks = verified.missingSubtasks;
+
+  if (missingSubtasks.length > 0 && typeof provider.addChecklistItem === 'function') {
+    for (const subtask of missingSubtasks) {
+      try {
+        const added = await provider.addChecklistItem(String(taskRef.listId), String(taskRef.entityId), subtask);
+        if (added?.success && added.data) {
+          addedItems.push({
+            id: String(added.data.id || `${addedItems.length + 1}`),
+            displayName: String(added.data.displayName || subtask),
+            isChecked: !!added.data.isChecked,
+          });
+        } else {
+          failedSubtasks.push(subtask);
+        }
+      } catch {
+        failedSubtasks.push(subtask);
+      }
+    }
+    verified = await verifyTaskWithSubtasks(provider, String(taskRef.listId), String(taskRef.entityId), entities.title, entities.subtasks);
+  }
+
+  const mergedRefs = mergeEntityRefs(refs, addedItems.map((item) => ({
+    entityType: 'subtask',
+    entityId: item.id,
+    parentTaskId: String(taskRef.entityId),
+    title: item.displayName,
+  })));
+  const status = failedSubtasks.length === 0 && verified.ok ? 'completed' : 'partial_failure';
+  updateActionPlanStatus(existingPlan.action_plan_id, options, status, mergedRefs);
+
+  return buildTaskCreatedResponse({
+    input: options,
+    actionPlanId: existingPlan.action_plan_id,
+    task: verified.task || taskRef,
+    checklistItems: verified.checklistItems.length > 0 ? verified.checklistItems : addedItems,
+    failedSubtasks,
+    warnings: [
+      existingPlan.status === 'executing'
+        ? 'Recovered an in-progress request and reused the existing task instead of creating another one.'
+        : 'Duplicate request detected; returned the existing task instead of creating another one.',
+      ...verified.warnings,
+    ],
+    verificationStatus: status === 'completed' ? 'verified' : 'partial_failure',
+    idempotentReplay: true,
   });
 }
 
@@ -550,6 +749,7 @@ async function verifyTaskWithSubtasks(
   ok: boolean;
   task: any | null;
   checklistItems: Array<{ id: string; displayName: string; isChecked: boolean }>;
+  missingSubtasks: string[];
   warnings: string[];
 }> {
   const warnings: string[] = [];
@@ -558,14 +758,14 @@ async function verifyTaskWithSubtasks(
     const taskResult = await provider.getTask(listId, taskId);
     if (taskResult?.success && taskResult.data) task = taskResult.data;
   }
+  if (!task) warnings.push('task_read_back_unavailable');
   let checklistItems = Array.isArray(task?.checklistItems) ? task.checklistItems : [];
   if (checklistItems.length === 0 && typeof provider.getChecklistItems === 'function') {
     const checklistResult = await provider.getChecklistItems(listId, taskId);
     if (checklistResult?.success && Array.isArray(checklistResult.data)) checklistItems = checklistResult.data;
   }
 
-  const actualTitle = normalizeComparable(task?.title || expectedTitle);
-  if (actualTitle !== normalizeComparable(expectedTitle)) {
+  if (task && normalizeComparable(task.title) !== normalizeComparable(expectedTitle)) {
     warnings.push('created_task_title_mismatch');
   }
   const actualSubtasks = checklistItems.map((item: any) => normalizeComparable(item.displayName || item.title));
@@ -579,6 +779,7 @@ async function verifyTaskWithSubtasks(
       displayName: String(item.displayName || item.title || ''),
       isChecked: !!item.isChecked,
     })),
+    missingSubtasks: missing,
     warnings,
   };
 }
@@ -639,6 +840,61 @@ function buildTaskCreatedResponse(input: {
   };
 }
 
+function buildPlainTaskCreatedResponse(input: {
+  input: ExecuteOptions;
+  actionPlanId: string;
+  task: any;
+  warnings: string[];
+  verificationStatus: 'verified' | 'partial_failure';
+  idempotentReplay?: boolean;
+}): ChatActionExecutionResult {
+  const timestamp = new Date().toISOString();
+  const taskTitle = String(input.task?.title || input.task?.entityId || (input.input.frame.entities as any).title || 'Task');
+
+  return {
+    status: input.verificationStatus === 'verified' ? 'completed' : 'partial_failure',
+    response: {
+      id: `msg-${Date.now()}`,
+      text: `✅ Created task “${taskTitle}”.`,
+      domain: 'secretary',
+      routeMethod: 'chat-reasoning-engine',
+      confidence: input.input.frame.confidence,
+      buttons: null,
+      metadata: {
+        type: 'task_created',
+        reasoningEngineVersion: 'v1',
+        reasoningMode: input.input.frame.reasoningMode,
+        actionPlanId: input.actionPlanId,
+        actionFrame: sanitizeFrameForResponse(input.input.frame),
+        taskId: String(input.task?.id || input.task?.entityId || ''),
+        listId: String(input.task?.listId || ''),
+        title: taskTitle,
+        subtasks: [],
+        failedSubtasks: [],
+        warnings: input.warnings,
+        verificationStatus: input.verificationStatus,
+        actions: ['view_task', 'add_more'],
+        idempotentReplay: !!input.idempotentReplay,
+      },
+      timestamp,
+    },
+  };
+}
+
+function buildInProgressReplayResponse(input: ExecuteOptions, actionPlanId: string): ChatActionExecutionResult {
+  return buildNonExecutableResponse({
+    input,
+    status: 'in_progress',
+    text: 'That request is already in progress. I did not create a duplicate task; please refresh in a moment.',
+    metadata: {
+      type: 'chat_action_in_progress',
+      actionPlanId,
+      actionFrame: sanitizeFrameForResponse(input.frame),
+      idempotentReplay: true,
+    },
+  });
+}
+
 function buildValidationResponse(options: ExecuteOptions, validation: ChatReasoningDecision): ChatActionExecutionResult {
   const status = validation.decision === 'needs_confirmation'
     ? 'needs_confirmation'
@@ -692,7 +948,7 @@ function buildNonExecutableResponse(input: {
 
 function parseCreateTaskWithSubtasksFrame(cleaned: string, quoted: string[]): ChatActionFrame | null {
   if (!SUBTASK_MARKER_PATTERNS.test(removeQuotedSegments(cleaned))) return null;
-  const marker = /(.*?)\b(?:where\s+it\s+has|with|including|that\s+has|com|incluindo)?\s*(?:sub\s*tasks?|subtasks?|subtarefas?|checklist items?|steps?|itens?)\s*(?:called|named|chamadas?|chamados?)?\s+(.+)$/i;
+  const marker = /(.*?)\b(?:where\s+it\s+has|with|including|that\s+has|com|incluindo|con)?\s*(?:sub\s*tasks?|subtasks?|subtarefas?|subtareas?|checklist(?:\s+items?)?|steps?|itens?|elementos?)\s*(?:called|named|chamadas?|chamados?|llamadas?|llamados?)?\s+(.+)$/i;
   const match = cleaned.match(marker);
   if (!match) return null;
 
@@ -705,10 +961,36 @@ function parseCreateTaskWithSubtasksFrame(cleaned: string, quoted: string[]): Ch
   return buildSecretaryFrame('create_task_with_subtasks', title, subtasks, detectLanguage(cleaned), 0.94);
 }
 
+function parseChecklistFrame(cleaned: string): ChatActionFrame | null {
+  const match = cleaned.match(/^\s*(?:create|make|cria|criar|crie|crear|crea)\s+(?:a\s+|uma?\s+|una?\s+)?checklist\s+(?:called|named|chamado|chamada|llamado|llamada)?\s*(.+?)\s*:\s*(.+)$/i);
+  if (!match) return null;
+  const title = normalizeTitle(match[1]);
+  const subtasks = splitSubtaskItems(match[2]);
+  if (!title || subtasks.length === 0) return null;
+  return buildSecretaryFrame('create_task_with_subtasks', title, subtasks, detectLanguage(cleaned), 0.9);
+}
+
+function parseImplicitTaskWithSubtasksFrame(cleaned: string): ChatActionFrame | null {
+  const match = cleaned.match(/^\s*(?:cria|criar|crie|crear|crea)\s+(?:uma?\s+|una?\s+)?(?:tarefa|tarea)\s+(?:chamada?|chamado|llamada?|llamado)?\s*(.+?)\s+(?:com|con)\s+(.+)$/i);
+  if (!match) return null;
+  const title = normalizeTitle(match[1]);
+  const subtasks = splitSubtaskItems(match[2]);
+  if (!title || subtasks.length < 2) return null;
+  return buildSecretaryFrame('create_task_with_subtasks', title, subtasks, detectLanguage(cleaned), 0.86);
+}
+
 function parseAddSubtasksFrame(cleaned: string, quoted: string[]): ChatActionFrame | null {
   const textWithoutQuotes = removeQuotedSegments(cleaned);
-  if (!/^\s*(add|adiciona|adicionar)\b/i.test(textWithoutQuotes)) return null;
-  const match = cleaned.match(/^\s*(?:add|adiciona|adicionar)\s+(.+?)\s+(?:to|under|à|a|na|no)\s+(?:my\s+|minha\s+|meu\s+)?(?:task\s+|tarefa\s+)?(.+?)(?:\s+task|\s+tarefa)?$/i);
+  if (!/^\s*(add|adiciona|adicionar|añade|anade|añadir|anadir|agrega|agregar)\b/i.test(textWithoutQuotes)) return null;
+  if (hasMultiRecipientAddIntent(textWithoutQuotes)) {
+    return {
+      ...buildSecretaryFrame('add_subtasks_to_task', 'multiple tasks', [], detectLanguage(cleaned), 0.55),
+      missingFields: ['targetTask'],
+      ambiguityFlags: ['multi_recipient_subtask_update'],
+      userFacingSummary: 'Clarify which subtasks belong to which task',
+    };
+  }
+  const match = cleaned.match(/^\s*(?:add|adiciona|adicionar|añade|anade|añadir|anadir|agrega|agregar)\s+(.+?)\s+(?:to|under|à|a|na|no|en|bajo)\s+(?:my\s+|minha\s+|meu\s+|mi\s+)?(?:task\s+|tarefa\s+|tarea\s+)?(.+?)(?:\s+task|\s+tarefa|\s+tarea)?$/i);
   if (!match) return null;
   const subtasks = splitSubtaskItems(match[1]);
   const title = normalizeTitle(stripArticleAndTaskWords(match[2], quoted));
@@ -717,10 +999,12 @@ function parseAddSubtasksFrame(cleaned: string, quoted: string[]): ChatActionFra
 }
 
 function parseCreateMultipleTasksFrame(cleaned: string, quoted: string[]): ChatActionFrame | null {
-  if (!/\b(create|cria|criar|crie)\s+(?:three|two|multiple|varias|várias|duas|tres|três)\s+(?:tasks|tarefas)\b/i.test(cleaned)) {
+  const match = cleaned.match(/^\s*(?:create|cria|criar|crie|crear|crea)\s+(?:(\d+|three|two|multiple|varias|várias|duas|tres|três|dos)\s+)?(?:tasks|tarefas|tareas)\b[:\s]*(.+)$/i);
+  if (!match) {
     return null;
   }
-  const listPart = cleaned.split(/:\s*/).slice(1).join(':') || cleaned.replace(/^.*?\b(?:tasks|tarefas)\b/i, '');
+  const listPart = match[2] || '';
+  if (!match[1] && !/(?:,|;|\n|\u2022|•|\band\b|\be\b|\by\b)/i.test(listPart)) return null;
   const tasks = splitSubtaskItems(listPart);
   if (tasks.length < 2) return null;
   return {
@@ -805,16 +1089,17 @@ function buildSecretaryFrame(
 
 function extractTaskTitle(prefix: string, quoted: string[]): string {
   const withoutQuoted = removeQuotedSegments(prefix);
-  const hasQuotedTitle = quoted.length > 0 && /\b(called|named|chamada?|chamado?)\s+__QUOTE_0__/i.test(replaceQuotedSegments(prefix));
+  const hasQuotedTitle = quoted.length > 0 && /\b(called|named|chamada?|chamado?|llamada?|llamado?)\s+__QUOTE_0__/i.test(replaceQuotedSegments(prefix));
   if (hasQuotedTitle) return normalizeTitle(quoted[0]);
 
   let title = prefix
-    .replace(/^\s*(please\s+)?(create|add|make|cria|criar|crie|adiciona|adicionar)\s+/i, '')
-    .replace(/^\s*(a|one|uma|um)\s+/i, '')
-    .replace(/^\s*(tasks?|todo|to-do|tarefas?|checklist)\s+/i, '')
-    .replace(/^\s*(called|named|chamada?|chamado?)\s+/i, '')
-    .replace(/\s+(where\s+it\s+has|with|including|that\s+has|com|incluindo)\s*$/i, '')
+    .replace(/^\s*(please\s+)?(create|add|make|cria|criar|crie|adiciona|adicionar|crear|crea|agrega|agregar|añade|anade|añadir|anadir)\s+/i, '')
+    .replace(/^\s*(a|one|uma|um|una|un)\s+/i, '')
+    .replace(/^\s*(tasks?|todo|to-do|tarefas?|tareas?|checklist)\s+/i, '')
+    .replace(/^\s*(called|named|chamada?|chamado?|llamada?|llamado?)\s+/i, '')
+    .replace(/\s+(where\s+it\s+has|with|including|that\s+has|com|incluindo|con)\s*$/i, '')
     .trim();
+  if (quoted.length > 0 && replaceQuotedSegments(title).trim() === '__QUOTE_0__') return normalizeTitle(quoted[0]);
   const quotedOnly = title.match(/^["“”'‘’]([^"“”'‘’]+)["“”'‘’]$/);
   if (quotedOnly?.[1]) return normalizeTitle(quotedOnly[1]);
   if (!title && quoted.length > 0 && withoutQuoted.includes('__QUOTE_0__')) title = quoted[0];
@@ -825,26 +1110,26 @@ function stripArticleAndTaskWords(value: string, quoted: string[]): string {
   const withPlaceholders = replaceQuotedSegments(value);
   const replaced = withPlaceholders.replace(/__QUOTE_(\d+)__/g, (_all, index) => quoted[Number(index)] || '');
   return replaced
-    .replace(/^\s*(the|a|uma|um|minha|meu|my)\s+/i, '')
-    .replace(/\s*(task|tarefa)\s*$/i, '')
+    .replace(/^\s*(the|a|uma|um|una|un|minha|meu|my|mi)\s+/i, '')
+    .replace(/\s*(task|tarefa|tarea)\s*$/i, '')
     .trim();
 }
 
 function splitSubtaskItems(value: string): string[] {
-  const stripped = stripDiscourseTail(value)
-    .replace(/^\s*(called|named|chamadas?|chamados?)\s+/i, '')
+  const stripped = stripDiscourseEverywhere(stripDiscourseTail(value))
+    .replace(/^\s*(called|named|chamadas?|chamados?|llamadas?|llamados?)\s+/i, '')
     .trim();
   const quoted = extractQuotedSegments(stripped);
   if (quoted.length > 0) return normalizeSubtasks(quoted);
 
   const commaSplit = stripped
-    .split(/\s*(?:,|;|\n|\u2022|•|\band\b|\be\b)\s*/i)
+    .split(/\s*(?:,|;|\n|\u2022|•)\s*|\s+(?:and|e|y)\s+/g)
     .map(normalizeTitle)
     .filter(Boolean);
   if (commaSplit.length > 1) return normalizeSubtasks(commaSplit);
 
   const words = stripped.split(/\s+/).map(normalizeTitle).filter(Boolean);
-  if (words.length >= 2 && words.length <= 8 && words.every((word) => /^[\p{L}\p{N}][\p{L}\p{N}+.-]*$/u.test(word))) {
+  if (words.length >= 2 && words.every((word) => /^[\p{L}\p{N}][\p{L}\p{N}+.-]*$/u.test(word))) {
     return normalizeSubtasks(words);
   }
   return normalizeSubtasks([stripped]);
@@ -859,19 +1144,19 @@ function normalizeCreateTaskWithSubtasksEntities(raw: Record<string, unknown>): 
     notes: typeof raw.notes === 'string' && raw.notes.trim() ? raw.notes.trim() : null,
     priority: typeof raw.priority === 'string' && raw.priority.trim() ? raw.priority.trim() : null,
     list: typeof raw.list === 'string' && raw.list.trim() ? raw.list.trim() : null,
-    language: raw.language === 'en' || raw.language === 'pt' || raw.language === 'mixed' ? raw.language : 'unknown',
+    language: raw.language === 'en' || raw.language === 'pt' || raw.language === 'es' || raw.language === 'mixed' ? raw.language : 'unknown',
     extractionConfidence: typeof raw.extractionConfidence === 'number' ? raw.extractionConfidence : 0,
   };
 }
 
 function sanitizeFrameForResponse(frame: ChatActionFrame): ChatActionFrame {
-  const sanitizedEntities = { ...frame.entities };
-  delete (sanitizedEntities as any).userId;
-  delete (sanitizedEntities as any).tenantId;
-  delete (sanitizedEntities as any).ownerId;
   return {
     ...frame,
-    entities: sanitizedEntities,
+    entities: stripAuthoritativeIdentityFields(frame.entities) as Record<string, unknown>,
+    steps: frame.steps.map((step) => ({
+      ...step,
+      entities: stripAuthoritativeIdentityFields(step.entities) as Record<string, unknown>,
+    })),
   };
 }
 
@@ -919,12 +1204,13 @@ function upsertActionPlan(options: ExecuteOptions, status: string): string {
   return actionPlanId;
 }
 
-function findCompletedPlan(options: ExecuteOptions): any | null {
+function findReusablePlan(options: ExecuteOptions): any | null {
   try {
     return getDb().prepare(`
       SELECT *
       FROM chat_action_plans
-      WHERE tenant_id = ? AND user_id = ? AND source_message_id = ? AND status IN ('completed', 'partial_failure')
+      WHERE tenant_id = ? AND user_id = ? AND source_message_id = ?
+        AND status IN ('executing', 'completed', 'partial_failure')
     `).get(options.tenantId, options.userId, options.sourceMessageId) || null;
   } catch (err) {
     logger.debug({ err, userId: options.userId, tenantId: options.tenantId }, 'chat action plan lookup skipped');
@@ -958,14 +1244,47 @@ function stripDiscourseTail(value: string): string {
   return output.replace(/[.。]+$/g, '').trim();
 }
 
+function stripDiscourseEverywhere(value: string): string {
+  return value
+    .replace(/\bfor now(?:\s+that'?s\s+it)?\b/gi, ' ')
+    .replace(/\bthat'?s\s+(?:it|all)\b/gi, ' ')
+    .replace(/\band\s+that'?s\s+all\b/gi, ' ')
+    .replace(/\bjust\s+this\b/gi, ' ')
+    .replace(/\bnothing\s+else\b/gi, ' ')
+    .replace(/\bpor\s+agora(?:\s+e\s+so\s+isso)?\b/gi, ' ')
+    .replace(/\bé\s+só\s+isso\b/gi, ' ')
+    .replace(/\be\s+so\s+isso\b/gi, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function isDestructiveIntent(value: string): boolean {
+  if (!DESTRUCTIVE_VERBS.test(value)) return false;
+  return DESTRUCTIVE_SWEEP_TARGETS.test(value) || DESTRUCTIVE_OBJECT_TARGETS.test(value);
+}
+
+function hasMultiStepActionIntent(value: string): boolean {
+  if (!MULTI_STEP_SECOND_ACTION.test(value)) return false;
+  const hasFirstAction = TASK_CREATE_PATTERNS.test(value)
+    || /\b(schedule|reschedule|plan|remind|agenda|agendar|programar|recordar)\b/i.test(value);
+  return hasFirstAction;
+}
+
+function hasMultiRecipientAddIntent(value: string): boolean {
+  const targetClauses = value.match(/\b(?:to|under|à|a|na|no|en|bajo)\b/gi) || [];
+  return targetClauses.length > 1 && /\b(and|e|y)\b/i.test(value);
+}
+
 function extractQuotedSegments(value: string): string[] {
-  const matches = [...value.matchAll(/["“”'‘’]([^"“”'‘’]+)["“”'‘’]/g)];
-  return matches.map((match) => match[1].trim()).filter(Boolean);
+  const matches = [...value.matchAll(/"([^"]+)"|“([^”]+)”|'([^']+)'|‘([^’]+)’/g)];
+  return matches
+    .map((match) => (match[1] || match[2] || match[3] || match[4] || '').trim())
+    .filter(Boolean);
 }
 
 function replaceQuotedSegments(value: string): string {
   let index = 0;
-  return value.replace(/["“”'‘’]([^"“”'‘’]+)["“”'‘’]/g, () => `__QUOTE_${index++}__`);
+  return value.replace(/"([^"]+)"|“([^”]+)”|'([^']+)'|‘([^’]+)’/g, () => `__QUOTE_${index++}__`);
 }
 
 function removeQuotedSegments(value: string): string {
@@ -975,7 +1294,8 @@ function removeQuotedSegments(value: string): string {
 function normalizeTitle(value: unknown): string {
   return String(value || '')
     .replace(/\s+/g, ' ')
-    .replace(/^[:\-–—\s]+|[:\-–—\s]+$/g, '')
+    .replace(/^[:\-–—\s]+|[:\-–—\s.!?]+$/g, '')
+    .slice(0, MAX_TASK_TITLE_LENGTH)
     .trim();
 }
 
@@ -989,7 +1309,8 @@ function normalizeSubtasks(value: unknown): string[] {
     const key = normalizeComparable(normalized);
     if (seen.has(key)) continue;
     seen.add(key);
-    output.push(normalized);
+    output.push(normalized.slice(0, MAX_SUBTASK_TITLE_LENGTH).trim());
+    if (output.length >= MAX_SUBTASKS) break;
   }
   return output;
 }
@@ -1005,8 +1326,10 @@ function normalizeComparable(value: unknown): string {
 
 function detectLanguage(value: string): CreateTaskWithSubtasksEntities['language'] {
   const hasPortuguese = /\b(cria|criar|crie|tarefa|subtarefas?|adiciona|por agora|é só isso)\b/i.test(value);
+  const hasSpanish = /\b(crea|crear|tarea|subtareas?|añade|anade|agrega|con|llamada?|llamado?)\b/i.test(value);
   const hasEnglish = /\b(create|task|subtasks?|add|called|for now)\b/i.test(value);
-  if (hasPortuguese && hasEnglish) return 'mixed';
+  if ([hasPortuguese, hasSpanish, hasEnglish].filter(Boolean).length > 1) return 'mixed';
+  if (hasSpanish) return 'es';
   if (hasPortuguese) return 'pt';
   if (hasEnglish) return 'en';
   return 'unknown';
@@ -1016,6 +1339,58 @@ function extractArray(value: unknown): any[] {
   if (Array.isArray(value)) return value;
   if (value && typeof value === 'object' && Array.isArray((value as any).tasks)) return (value as any).tasks;
   return [];
+}
+
+function containsAuthoritativeIdentityField(value: unknown): boolean {
+  if (!value || typeof value !== 'object') return false;
+  if (Array.isArray(value)) return value.some(containsAuthoritativeIdentityField);
+  return Object.entries(value as Record<string, unknown>).some(([key, nested]) => (
+    /^(user|tenant|owner|account)Id$/i.test(key) || containsAuthoritativeIdentityField(nested)
+  ));
+}
+
+function stripAuthoritativeIdentityFields(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(stripAuthoritativeIdentityFields);
+  if (!value || typeof value !== 'object') return value;
+  const output: Record<string, unknown> = {};
+  for (const [key, nested] of Object.entries(value as Record<string, unknown>)) {
+    if (/^(user|tenant|owner|account)Id$/i.test(key)) continue;
+    output[key] = stripAuthoritativeIdentityFields(nested);
+  }
+  return output;
+}
+
+function assertUniqueManifests(manifests: ActionManifest[]): void {
+  const seen = new Set<string>();
+  for (const manifest of manifests) {
+    const key = `${manifest.skill}:${manifest.action}`;
+    if (seen.has(key)) throw new Error(`duplicate_chat_action_manifest:${key}`);
+    seen.add(key);
+  }
+}
+
+function mergeEntityRefs(existing: unknown[], additions: unknown[]): unknown[] {
+  const refs = Array.isArray(existing) ? [...existing] : [];
+  const seen = new Set(refs.map((ref: any) => `${ref?.entityType || ''}:${ref?.entityId || ''}:${ref?.parentTaskId || ''}`));
+  for (const addition of additions) {
+    const ref = addition as any;
+    const key = `${ref?.entityType || ''}:${ref?.entityId || ''}:${ref?.parentTaskId || ''}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    refs.push(addition);
+  }
+  return refs;
+}
+
+export function expireStaleChatActionPlans(): number {
+  const result = getDb().prepare(`
+    UPDATE chat_action_plans
+    SET status = 'expired', updated_at = datetime('now')
+    WHERE expires_at IS NOT NULL
+      AND expires_at < datetime('now')
+      AND status IN ('draft', 'awaiting_clarification', 'awaiting_confirmation', 'executing')
+  `).run();
+  return Number(result.changes || 0);
 }
 
 function safeJsonParse(value: unknown, fallback: unknown): any {

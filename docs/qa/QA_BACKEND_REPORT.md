@@ -33,36 +33,44 @@ Design choices:
   context, detects reasoning mode, parses deterministic Secretary ActionFrames,
   validates policy, executes deterministic task services, and verifies read-back
   state before claiming success.
-- Added durable `chat_action_plans` and `chat_correction_events` tables for the
-  repair/clarification foundation, plus native checklist storage for Nexus
-  tasks.
+- Added durable `chat_action_plans` for idempotent execution/retry tracking,
+  plus native checklist storage for Nexus tasks.
 - Intercepted structured Secretary task/subtask messages in
   `/api/v1/chat/message` before cost-cap AI execution, while preserving token-zero
   identity/read fast paths.
-- Added model-routing config categories for future `chat_action_label`,
-  `chat_action_plan`, `chat_action_repair`, and `chat_action_clarify` work
-  without hardcoding any provider.
+- Kept v1 deterministic and removed unused model-routing categories until a
+  real labeller/repair call site ships.
 
 Validated behavior:
 
 - Exact acceptance case creates one task `Prozis` with subtasks `creatine`,
   `K2`, and `D3`; `for now that's it` is treated as discourse, not a due date.
+- Hostile QA P0 cluster is closed locally: retry-after-crash reuses/resumes
+  the saved action plan instead of creating duplicate provider tasks; targeted
+  destructive commands require explicit confirmation; task+reminder multi-step
+  messages fail closed into clarification instead of flattening the second
+  action into a subtask.
+- Plain single-task creation now executes through the deterministic task
+  provider instead of returning a deferred developer-facing message.
 - Quoted titles containing words like `subtasks` remain one title, not an
   instruction.
-- English, Portuguese, and mixed-language task/subtask commands parse into
-  structured frames.
+- English, Portuguese, Spanish, and mixed-language task/subtask commands parse
+  into structured frames for the supported v1 patterns.
 - Bulk task creation is distinguished from one task with subtasks and is not
   falsely executed in v1.
 - Model-provided identity fields are rejected before execution.
 - iOS retry with the same client message id replays the completed chat response
   and does not duplicate task or checklist rows.
+- Nested identity fields are stripped/rejected, task titles and subtask lists
+  are bounded, stale action plans can be expired, and read-back failure no
+  longer soft-passes verification.
 
 Validation:
 
 - `npm run docs:audit`: passed after this addendum; 443 markdown files audited,
   467 existing issues flagged.
 - `npx tsc --noEmit`: passed.
-- Focused Chat Reasoning/route/native task provider suite passed: 3 files / 64
+- Focused Chat Reasoning/route/native task provider suite passed: 4 files / 74
   tests.
 - Native task route regression passed: 25/25 tests.
 - Provider routing regression passed: 5 files / 61 tests, including the new
