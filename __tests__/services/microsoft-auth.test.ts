@@ -45,25 +45,37 @@ vi.mock('../../src/config', () => ({
   config: mockState.config,
 }));
 
-vi.mock('../../src/services/database', () => ({
-  getDb: () => testDb,
-  initDatabase: vi.fn(),
-  closeDatabase: vi.fn(),
-  findUnexpectedMigrationPrefixCollisions: vi.fn(() => []),
-}));
+vi.mock('../../src/services/database', async () => {
+  const actual = await vi.importActual<typeof import('../../src/services/database')>('../../src/services/database');
+  return {
+    ...actual,
+    getDb: () => testDb,
+    initDatabase: vi.fn(),
+    closeDatabase: vi.fn(),
+    findUnexpectedMigrationPrefixCollisions: vi.fn(() => []),
+  };
+});
 
-vi.mock('../../src/services/user-service', () => ({
-  getOwnerBootstrapUserRefs: () => mockState.ownerRefs,
-}));
+vi.mock('../../src/services/user-service', async () => {
+  const actual = await vi.importActual<typeof import('../../src/services/user-service')>('../../src/services/user-service');
+  return {
+    ...actual,
+    getOwnerBootstrapUserRefs: () => mockState.ownerRefs,
+  };
+});
 
 vi.mock('../../src/utils/logger', () => ({
   logger: mockState.logger,
   LOGGER_REDACTION_PATHS: [],
 }));
 
-vi.mock('../../src/services/audit-trail', () => ({
-  logAudit: vi.fn(),
-}));
+vi.mock('../../src/services/audit-trail', async () => {
+  const actual = await vi.importActual<typeof import('../../src/services/audit-trail')>('../../src/services/audit-trail');
+  return {
+    ...actual,
+    logAudit: vi.fn(),
+  };
+});
 
 vi.mock('../../src/services/integration-cache-invalidator', () => ({
   invalidateIntegrationDerivedCaches: vi.fn(),
