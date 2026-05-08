@@ -505,6 +505,19 @@ describe('Dashboard API route', () => {
     expect(mockSetCacheSWR).toHaveBeenCalled();
   });
 
+  it('returns 304 for identical cached dashboard data even though cached metadata differs', async () => {
+    mockGetCachedSWR.mockReturnValueOnce(null);
+    const first = await dispatch(4);
+    expect(first.statusCode).toBe(200);
+    expect(first.headers.ETag).toBeTruthy();
+
+    mockGetCachedSWR.mockReturnValueOnce({ value: first.body.data, fresh: true });
+    const second = await dispatch(4, { 'if-none-match': first.headers.ETag });
+
+    expect(second.statusCode).toBe(304);
+    expect(second.body).toBeNull();
+  });
+
   it('returns a render-ready home contract', async () => {
     mockOutlookCalendarConfigured.mockReturnValue(true);
     mockOutlookCalendarEvents.mockResolvedValue([

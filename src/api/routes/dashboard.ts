@@ -1,13 +1,12 @@
 // Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
 
 import { Router, Request, Response } from 'express';
-import crypto from 'crypto';
 import { AuthenticatedRequest } from '../auth-middleware';
 import { logger } from '../../utils/logger';
 import { config } from '../../config';
 import { getRuntimeStatus } from '../../services/runtime-status';
 import { getCachedSWR, setCacheSWR } from '../../services/cache-store';
-import { apiSuccess, sendError, sendInternalError } from '../response-helpers';
+import { sendError, sendInternalError } from '../response-helpers';
 import { normalizeLangHeader } from '../../services/secretary-fastpath';
 import { getPreferredDisplayNameById, getUserLanguageById } from '../../services/user-service';
 import { getDailyQuotaStatus } from '../../services/cost-guardrail';
@@ -25,7 +24,8 @@ import {
   fetchTraining,
 } from './dashboard-data-fetchers';
 import { buildDashboardHomeInput } from './dashboard-home-input';
-import { setServerTimingHeader, timedAsync, timedSync, type RouteTiming } from '../route-timing';
+import { timedAsync, timedSync, type RouteTiming } from '../route-timing';
+import { sendConditionalApiSuccess } from '../conditional-cache';
 
 export { mapDashboardTask, queryContentPipelineCounts } from './dashboard-data-fetchers';
 export { buildHomeOrchestrationSummary } from './dashboard-home-input';
@@ -96,17 +96,10 @@ export function dashboardRoutes(): Router {
       const swr = getCachedSWR<any>(cacheKey);
 
       if (swr) {
-        const envelope = apiSuccess(swr.value, { cached: true });
-        const envelopeJson = JSON.stringify({ ...envelope, timestamp: undefined });
-        const etag = `"${crypto.createHash('md5').update(envelopeJson).digest('hex')}"`;
-        if (req.headers['if-none-match'] === etag) {
-          res.status(304).end();
-          return;
-        }
-        res.setHeader('ETag', etag);
-        res.setHeader('Cache-Control', 'private, max-age=30');
-        setServerTimingHeader(res, [{ name: 'cache_hit', durationMs: 0 }]);
-        res.json(envelope);
+        sendConditionalApiSuccess(res, req, swr.value, {
+          cached: true,
+          timings: [{ name: 'cache_hit', durationMs: 0 }],
+        });
 
         if (!swr.fresh) {
           swrRefresh(cacheKey, async () => {
@@ -121,18 +114,7 @@ export function dashboardRoutes(): Router {
       const home = await buildDashboardHomePayload(userId, language, timings);
       setCacheSWR(cacheKey, home, DASHBOARD_HOME_CACHE_TTL, DASHBOARD_HOME_SWR_STALE);
 
-      const envelope = apiSuccess(home);
-      const envelopeJson = JSON.stringify({ ...envelope, timestamp: undefined });
-      const etag = `"${crypto.createHash('md5').update(envelopeJson).digest('hex')}"`;
-      if (req.headers['if-none-match'] === etag) {
-        res.status(304).end();
-        return;
-      }
-
-      res.setHeader('ETag', etag);
-      res.setHeader('Cache-Control', 'private, max-age=30');
-      setServerTimingHeader(res, timings);
-      res.json(envelope);
+      sendConditionalApiSuccess(res, req, home, { timings });
     } catch (err: any) {
       logger.error({ err, platform: 'ios' }, 'Dashboard home aggregation failed');
       sendInternalError(res, 'Unable to load the home briefing right now.');
@@ -155,19 +137,10 @@ export function dashboardRoutes(): Router {
       const swr = getCachedSWR<any>(dashboardCacheKey);
 
       if (swr) {
-        // The ETag is computed over the wrapped envelope, so iOS clients
-        // get a stable hash that includes the timestamp/cached flags.
-        const envelope = apiSuccess(swr.value, { cached: true });
-        const envelopeJson = JSON.stringify({ ...envelope, timestamp: undefined }); // hash is content-only
-        const etag = `"${crypto.createHash('md5').update(envelopeJson).digest('hex')}"`;
-        if (req.headers['if-none-match'] === etag) {
-          res.status(304).end();
-          return;
-        }
-        res.setHeader('ETag', etag);
-        res.setHeader('Cache-Control', 'private, max-age=30');
-        setServerTimingHeader(res, [{ name: 'cache_hit', durationMs: 0 }]);
-        res.json(envelope);
+        sendConditionalApiSuccess(res, req, swr.value, {
+          cached: true,
+          timings: [{ name: 'cache_hit', durationMs: 0 }],
+        });
 
         if (!swr.fresh) {
           swrRefresh(dashboardCacheKey, async () => {
@@ -182,20 +155,7 @@ export function dashboardRoutes(): Router {
       const dashboard = await buildDashboardPayload(userId, language, timings);
       setCacheSWR(dashboardCacheKey, dashboard, DASHBOARD_CACHE_TTL, DASHBOARD_SWR_STALE);
 
-      const envelope = apiSuccess(dashboard);
-      // ETag support — skip full response if nothing changed
-      const envelopeJson = JSON.stringify({ ...envelope, timestamp: undefined });
-      const etag = `"${crypto.createHash('md5').update(envelopeJson).digest('hex')}"`;
-
-      if (req.headers['if-none-match'] === etag) {
-        res.status(304).end();
-        return;
-      }
-
-      res.setHeader('ETag', etag);
-      res.setHeader('Cache-Control', 'private, max-age=30');
-      setServerTimingHeader(res, timings);
-      res.json(envelope);
+      sendConditionalApiSuccess(res, req, dashboard, { timings });
     } catch (err: any) {
       logger.error({ err, platform: 'ios' }, 'Dashboard aggregation failed');
       sendInternalError(res, 'Unable to load the dashboard right now.');
