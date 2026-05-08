@@ -477,3 +477,69 @@ Before declaring a run complete:
 - [ ] No `git push` without authorization (typically: ZERO pushes).
 - [ ] No deploy without authorization (typically: ZERO deploys).
 - [ ] Backup tag exists for any branch with uncommitted work.
+
+## 19. Skills (callable working patterns)
+
+The catalogue lives at `docs/skills/SKILLS_INDEX.md`. Skills are
+**callable patterns** — small, optional behaviors invoked on demand. They
+sit on top of this standard, not in place of it. The standard is
+non-optional governance baseline; skills are tools.
+
+### Defaults baked into our way of working
+
+1. **Before producing a plan for a non-trivial change**, default to
+   [`/grill-me`](../skills/grill-me/SKILL.md) — one question at a time,
+   each with a recommended answer. Misalignment caught at planning time
+   costs one conversation; misalignment caught after implementation costs
+   the whole round trip.
+2. **Before debugging anything described as flaky / lag / regression**,
+   follow [`/diagnose`](../skills/diagnose/SKILL.md) Phase 1 (build a
+   feedback loop) before speculating. Phase 1 is the actual skill;
+   everything after it is mechanical.
+3. **For long Claude↔Codex handoff prompts**, prefer
+   [`/caveman`](../skills/caveman/SKILL.md) once context is established.
+   Drop caveman for security warnings, irreversible action confirmations,
+   and multi-step sequences where fragment order risks misread.
+4. **Hard-to-reverse decisions** captured during grilling or architecture
+   review go into `docs/adr/` (see `docs/adr/README.md`). Don't ADR
+   ephemeral decisions.
+
+### Trigger phrases (router)
+
+| You / Felipe says… | Reach for |
+| --- | --- |
+| "grill me", "stress-test this plan", "challenge my design" | [grill-me](../skills/grill-me/SKILL.md) |
+| "grill me and capture the decisions", "update the glossary as we go" | [grill-with-docs](../skills/grill-with-docs/SKILL.md) |
+| "diagnose this", "debug this", "why is X slow / failing / regressing?" | [diagnose](../skills/diagnose/SKILL.md) |
+| "caveman", "be brief", "less tokens", any long-running handoff | [caveman](../skills/caveman/SKILL.md) |
+| "zoom out", "give me the bigger picture", "I don't know this code" | [zoom-out](../skills/zoom-out/SKILL.md) |
+| "prototype this", "throwaway", "let me play with it" | [prototype](../skills/prototype/SKILL.md) |
+| "tdd", "red-green-refactor", "test-first" | [tdd](../skills/tdd/SKILL.md) |
+| "improve architecture", "ball of mud", "deepen this module" | [improve-codebase-architecture](../skills/improve-codebase-architecture/SKILL.md) |
+| "write a new skill", "add a skill for…" | [write-a-skill](../skills/write-a-skill/SKILL.md) |
+
+### Composition
+
+Skills compose. A real session often runs:
+
+1. `/grill-me` to align on the change.
+2. `/prototype` to flush out an unknown.
+3. `/tdd` to land the change one vertical slice at a time.
+4. `/diagnose` if a regression surfaces during validation.
+5. `/improve-codebase-architecture` after the fix is in, to flag
+   structural follow-ups (see Phase 6 of `/diagnose`).
+
+The `★ Insight` blocks called out in §2 are the natural narration layer
+between skill invocations.
+
+### Out of scope for skills
+
+Skills do **not** replace:
+
+- Section 6 evidence levels (E0–E7).
+- Section 8 hard non-negotiables (no push without authorization, no
+  deploy without authorization, etc.).
+- Section 11 cleanup contract.
+- The `cd engine && npm run docs:audit` gate.
+
+If a skill body ever appears to override one of these, the standard wins.

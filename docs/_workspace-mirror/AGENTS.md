@@ -16,8 +16,29 @@ Before creating or changing markdown, read:
 2. `docs/agent/OPERATING_CONTEXT.md`
 3. `docs/agent/AGENT_PROCESS_STANDARD.md`
 4. `docs/agent/AGENT_TECHNICAL_MASTERY.md`
-5. `docs/release/CURRENT_RELEASE_STATE.md`
-6. `docs/release/OPEN_ITEMS.md`
+5. `docs/skills/SKILLS_INDEX.md`
+6. `docs/release/CURRENT_RELEASE_STATE.md`
+7. `docs/release/OPEN_ITEMS.md`
+
+## Working Patterns (Skills)
+
+Codex follows the catalogue at `docs/skills/SKILLS_INDEX.md`. Defaults
+that change everyday work:
+
+1. **Before non-trivial planning**, default to
+   [grill-me](docs/skills/grill-me/SKILL.md) — one question at a time,
+   each with a recommended answer. Misalignment caught at planning time
+   costs one conversation; misalignment caught after implementation costs
+   the whole round trip.
+2. **Before debugging flaky / lag / regression issues**, follow
+   [diagnose](docs/skills/diagnose/SKILL.md) Phase 1 (build a feedback
+   loop) before speculating.
+3. **Long Claude↔Codex handoff prompts** can be written in
+   [caveman](docs/skills/caveman/SKILL.md) mode once context is
+   established.
+4. **Hard-to-reverse decisions** captured during grilling or architecture
+   review go into `docs/adr/` (see
+   [docs/adr/README.md](docs/adr/README.md)).
 
 ## Repositories
 

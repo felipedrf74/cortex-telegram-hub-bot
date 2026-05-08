@@ -430,6 +430,9 @@ describe('Task routes sync provider metadata', () => {
   });
 
   it('returns a bounded active working set without completed history', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-05-08T12:00:00Z'));
+
     const completedHistory = Array.from({ length: 2500 }, (_, index) => ({
       id: `completed-${index}`,
       title: `Daily recurrence ${index}`,
@@ -447,21 +450,25 @@ describe('Task routes sync provider metadata', () => {
         : [],
     }));
 
-    const res = await dispatch('GET', '/working-set', {
-      query: { pageSize: '2' },
-    });
+    try {
+      const res = await dispatch('GET', '/working-set', {
+        query: { pageSize: '2' },
+      });
 
-    expect(res.statusCode, JSON.stringify(res.body)).toBe(200);
-    expect(res.body.data.policyVersion).toBe('task-working-set-v1');
-    expect(res.body.data.activeCountsByList).toEqual({ 'list-1': 2, 'list-2': 0 });
-    expect(res.body.data.smartCounts).toEqual({ dueToday: 1, overdue: 1 });
-    expect(res.body.data.activePage.tasks).toHaveLength(2);
-    expect(JSON.stringify(res.body.data.activePage.tasks)).not.toContain('completed-');
-    expect(providerApi.getAllPendingTasks).not.toHaveBeenCalled();
-    expect(providerApi.getLists).toHaveBeenCalledTimes(1);
-    expect(providerApi.getTasks).toHaveBeenCalledTimes(2);
-    expect(providerApi.getTasks).toHaveBeenCalledWith('list-1', 'Tasks', { status: 'active' });
-    expect(providerApi.getTasks).toHaveBeenCalledWith('list-2', 'Work', { status: 'active' });
+      expect(res.statusCode, JSON.stringify(res.body)).toBe(200);
+      expect(res.body.data.policyVersion).toBe('task-working-set-v1');
+      expect(res.body.data.activeCountsByList).toEqual({ 'list-1': 2, 'list-2': 0 });
+      expect(res.body.data.smartCounts).toEqual({ dueToday: 1, overdue: 1 });
+      expect(res.body.data.activePage.tasks).toHaveLength(2);
+      expect(JSON.stringify(res.body.data.activePage.tasks)).not.toContain('completed-');
+      expect(providerApi.getAllPendingTasks).not.toHaveBeenCalled();
+      expect(providerApi.getLists).toHaveBeenCalledTimes(1);
+      expect(providerApi.getTasks).toHaveBeenCalledTimes(2);
+      expect(providerApi.getTasks).toHaveBeenCalledWith('list-1', 'Tasks', { status: 'active' });
+      expect(providerApi.getTasks).toHaveBeenCalledWith('list-2', 'Work', { status: 'active' });
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('supports explicit active and completed scopes on list reads', async () => {
