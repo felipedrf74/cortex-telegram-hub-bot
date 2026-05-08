@@ -7,8 +7,11 @@ import {
 
 const mockComposeWeeklyPlan = vi.fn();
 const mockComposeDailyBrief = vi.fn();
+const mockGetCachedSWR = vi.fn();
+const mockSetCacheSWR = vi.fn();
 const mockClearCacheByPrefix = vi.fn();
 const mockGetUserById = vi.fn();
+const mockGetUserLanguageById = vi.fn();
 
 vi.mock('../../src/services/weekly-plan-orchestrator', () => ({
   composeWeeklyPlan: (...args: unknown[]) => mockComposeWeeklyPlan(...args),
@@ -19,11 +22,14 @@ vi.mock('../../src/services/daily-brief-orchestrator', () => ({
 }));
 
 vi.mock('../../src/services/cache-store', () => ({
+  getCachedSWR: (...args: unknown[]) => mockGetCachedSWR(...args),
+  setCacheSWR: (...args: unknown[]) => mockSetCacheSWR(...args),
   clearCacheByPrefix: (...args: unknown[]) => mockClearCacheByPrefix(...args),
 }));
 
 vi.mock('../../src/services/user-service', () => ({
   getUserById: (...args: unknown[]) => mockGetUserById(...args),
+  getUserLanguageById: (...args: unknown[]) => mockGetUserLanguageById(...args),
 }));
 
 vi.mock('../../src/utils/logger', () => ({
@@ -68,13 +74,14 @@ function mockReq(
   headers: Record<string, string> = {},
   body: Record<string, unknown> = {},
 ): Request {
+  const parsed = new URL(path, 'http://test.local');
   return {
     method,
-    url: path,
-    originalUrl: path,
+    url: parsed.pathname + parsed.search,
+    originalUrl: parsed.pathname + parsed.search,
     baseUrl: '',
-    path,
-    query: {},
+    path: parsed.pathname,
+    query: Object.fromEntries(parsed.searchParams.entries()),
     params: {},
     headers,
     header(name: string) {
@@ -115,8 +122,11 @@ describe('plan routes', () => {
     clearTenantScopeAnomaliesForTests();
     mockComposeWeeklyPlan.mockReset();
     mockComposeDailyBrief.mockReset();
+    mockGetCachedSWR.mockReset();
+    mockSetCacheSWR.mockReset();
     mockClearCacheByPrefix.mockReset();
     mockGetUserById.mockReset();
+    mockGetUserLanguageById.mockReset();
 
     mockComposeWeeklyPlan.mockResolvedValue({
       weekStart: '2026-04-13',
@@ -190,6 +200,8 @@ describe('plan routes', () => {
       },
     });
     mockGetUserById.mockReturnValue({ id: 12, tier: 'max' });
+    mockGetUserLanguageById.mockReturnValue('pt-BR');
+    mockGetCachedSWR.mockReturnValue(null);
   });
 
   it('keeps plan routes available even if the old mesh flag is off', async () => {
@@ -270,6 +282,76 @@ describe('plan routes', () => {
     expect(first.statusCode).toBe(200);
     expect(first.headers.ETag).toBeTruthy();
     expect(second.statusCode).toBe(304);
+  });
+
+  it('serves a fresh cached daily plan without recomposing and returns a stable ETag', async () => {
+    mockGetCachedSWR.mockReturnValueOnce({
+      fresh: true,
+      value: {
+        date: '2026-04-14',
+        generatedAt: '2026-04-14T09:00:00.000Z',
+        degraded: false,
+        gated: { skills: [] },
+        garmin_stale: false,
+        conflicts: [],
+        creativeCopy: { headline: 'Cached', note: 'Cached note' },
+        day: {
+          date: '2026-04-14',
+          weekday: 'Tuesday',
+          headline: 'Cached day',
+          training: null,
+          meals: [],
+          content: null,
+          secretary: { focusBlock: null, pendingTasks: 0, overdueTasks: 0, travel: false, busy: false, decisions: [] },
+          finance: null,
+        },
+        coordination: { topPriority: 'Cached', executionOrder: [], watchouts: [], handoffs: [], confidence: 'high' },
+      },
+    });
+
+    const response = await dispatch('GET', '/today?date=2026-04-14', {
+      headers: { 'x-language': 'pt-BR' },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.body.cached).toBe(true);
+    expect(response.body.data.creativeCopy.headline).toBe('Cached');
+    expect(response.headers.ETag).toBeTruthy();
+    expect(mockGetCachedSWR).toHaveBeenCalledWith('plan:today:u:12:2026-04-14:route:pt-br');
+    expect(mockComposeDailyBrief).not.toHaveBeenCalled();
+  });
+
+  it('serves stale weekly plan data immediately and refreshes the route cache in the background', async () => {
+    mockGetCachedSWR.mockReturnValueOnce({
+      fresh: false,
+      value: {
+        weekStart: '2026-04-13',
+        weekEnd: '2026-04-19',
+        generatedAt: '2026-04-14T09:00:00.000Z',
+        variant: 'cached',
+        degraded: false,
+        gated: { skills: [] },
+        garmin_stale: false,
+        conflicts: [],
+        creativeCopy: { headline: 'Stale', note: 'Stale note' },
+        summary: { sessionCount: 1, mealCount: 1, activeConflictCount: 0 },
+        days: [],
+      },
+    });
+
+    const response = await dispatch('GET', '/week?weekStart=2026-04-13');
+    await new Promise((resolve) => setImmediate(resolve));
+
+    expect(response.statusCode).toBe(200);
+    expect(response.body.cached).toBe(true);
+    expect(response.body.data.creativeCopy.headline).toBe('Stale');
+    expect(mockComposeWeeklyPlan).toHaveBeenCalledWith({ userId: 12, weekStart: '2026-04-13' });
+    expect(mockSetCacheSWR).toHaveBeenCalledWith(
+      'plan:week:u:12:2026-04-13:route:pt-br',
+      expect.objectContaining({ weekStart: '2026-04-13' }),
+      120,
+      600,
+    );
   });
 
   it('returns a client-safe error when the daily plan build throws unexpectedly', async () => {

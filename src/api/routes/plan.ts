@@ -1,15 +1,26 @@
 // Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
 
-import crypto from 'crypto';
+import { DateTime } from 'luxon';
 import { Router, Request, Response } from 'express';
 import type { AuthenticatedRequest } from '../auth-middleware';
 import { apiSuccess, sendError, sendInternalError } from '../response-helpers';
+import { config } from '../../config';
 import { composeDailyBrief } from '../../services/daily-brief-orchestrator';
 import { composeWeeklyPlan } from '../../services/weekly-plan-orchestrator';
 import { invalidatePlanningCaches } from '../../services/plan-cache-invalidator';
-import { getUserById } from '../../services/user-service';
+import { getUserById, getUserLanguageById } from '../../services/user-service';
+import { getCachedSWR, setCacheSWR } from '../../services/cache-store';
+import { normalizeLangHeader } from '../../services/secretary-fastpath';
+import { recordSWRRefreshFailure, recordSWRRefreshSuccess } from '../../services/swr-refresh-observability';
 import { isValidTenantUserId, recordTenantScopeAnomaly } from '../../services/tenant-scope-observability';
-import { setServerTimingHeader, timedAsync, type RouteTiming } from '../route-timing';
+import { timedAsync, type RouteTiming } from '../route-timing';
+import { sendConditionalApiSuccess } from '../conditional-cache';
+
+const PLAN_TODAY_TTL_SECONDS = 60;
+const PLAN_TODAY_SWR_STALE_SECONDS = 300;
+const PLAN_WEEK_TTL_SECONDS = 120;
+const PLAN_WEEK_SWR_STALE_SECONDS = 600;
+const swrInFlight = new Set<string>();
 
 function ensureValidPlanRouteScope(
   res: Response,
@@ -36,11 +47,29 @@ export function planRoutes(): Router {
     const { userId } = req as AuthenticatedRequest;
     if (!ensureValidPlanRouteScope(res, userId, 'plan_route_week', { weekStart: req.query.weekStart ?? null })) return;
     const weekStart = typeof req.query.weekStart === 'string' ? req.query.weekStart : undefined;
+    const language = resolvePlanLanguage(req, userId);
+    const cacheKey = planWeekRouteCacheKey(userId, weekStart, language);
 
     try {
+      const swr = getCachedSWR<Awaited<ReturnType<typeof composeWeeklyPlan>>>(cacheKey);
+      if (swr) {
+        sendConditionalApiSuccess(res, req, swr.value, {
+          cached: true,
+          timings: [{ name: 'cache_hit', durationMs: 0 }],
+        });
+        if (!swr.fresh) {
+          swrRefresh(cacheKey, async () => {
+            const refreshed = await composeWeeklyPlan({ userId, weekStart });
+            setCacheSWR(cacheKey, refreshed, PLAN_WEEK_TTL_SECONDS, PLAN_WEEK_SWR_STALE_SECONDS);
+          });
+        }
+        return;
+      }
+
       const timings: RouteTiming[] = [];
       const data = await timedAsync(timings, 'weekly_plan', () => composeWeeklyPlan({ userId, weekStart }));
-      sendEtagged(res, req, data, timings);
+      setCacheSWR(cacheKey, data, PLAN_WEEK_TTL_SECONDS, PLAN_WEEK_SWR_STALE_SECONDS);
+      sendConditionalApiSuccess(res, req, data, { timings });
     } catch (err: any) {
       sendInternalError(res, 'Unable to load the weekly plan right now.');
     }
@@ -50,11 +79,29 @@ export function planRoutes(): Router {
     const { userId } = req as AuthenticatedRequest;
     if (!ensureValidPlanRouteScope(res, userId, 'plan_route_today', { date: req.query.date ?? null })) return;
     const date = typeof req.query.date === 'string' ? req.query.date : undefined;
+    const language = resolvePlanLanguage(req, userId);
+    const cacheKey = planTodayRouteCacheKey(userId, date, language);
 
     try {
+      const swr = getCachedSWR<Awaited<ReturnType<typeof composeDailyBrief>>>(cacheKey);
+      if (swr) {
+        sendConditionalApiSuccess(res, req, swr.value, {
+          cached: true,
+          timings: [{ name: 'cache_hit', durationMs: 0 }],
+        });
+        if (!swr.fresh) {
+          swrRefresh(cacheKey, async () => {
+            const refreshed = await composeDailyBrief({ userId, date, language });
+            setCacheSWR(cacheKey, refreshed, PLAN_TODAY_TTL_SECONDS, PLAN_TODAY_SWR_STALE_SECONDS);
+          });
+        }
+        return;
+      }
+
       const timings: RouteTiming[] = [];
-      const data = await timedAsync(timings, 'daily_brief', () => composeDailyBrief({ userId, date }));
-      sendEtagged(res, req, data, timings);
+      const data = await timedAsync(timings, 'daily_brief', () => composeDailyBrief({ userId, date, language }));
+      setCacheSWR(cacheKey, data, PLAN_TODAY_TTL_SECONDS, PLAN_TODAY_SWR_STALE_SECONDS);
+      sendConditionalApiSuccess(res, req, data, { timings });
     } catch (err: any) {
       sendInternalError(res, 'Unable to load the daily plan right now.');
     }
@@ -110,20 +157,53 @@ export function planRoutes(): Router {
   return router;
 }
 
-function sendEtagged(res: Response, req: Request, data: unknown, timings: RouteTiming[] = []): void {
-  const envelope = apiSuccess(data);
-  const envelopeJson = JSON.stringify({ ...envelope, timestamp: undefined });
-  const etag = `"${crypto.createHash('md5').update(envelopeJson).digest('hex')}"`;
+function swrRefresh(key: string, fn: () => Promise<void>): void {
+  if (swrInFlight.has(key)) return;
+  swrInFlight.add(key);
+  fn()
+    .then(() => recordSWRRefreshSuccess(key))
+    .catch((err) => recordSWRRefreshFailure(key, err, { source: 'plan_route', operation: 'plan_swr_refresh' }))
+    .finally(() => swrInFlight.delete(key));
+}
 
-  if (req.headers['if-none-match'] === etag) {
-    res.status(304).end();
-    return;
+function resolvePlanLanguage(req: Request, userId: number): string {
+  const rawHeader = req.header?.('x-language');
+  if (rawHeader) return normalizeLangHeader(rawHeader);
+  return getUserLanguageById(userId);
+}
+
+function planTodayRouteCacheKey(userId: number, date: string | undefined, language: string): string {
+  const targetDate = resolveDateKey(date);
+  return `plan:today:u:${userId}:${targetDate}:route:${languageBucket(language)}`;
+}
+
+function planWeekRouteCacheKey(userId: number, weekStart: string | undefined, language: string): string {
+  const targetWeek = resolveWeekKey(weekStart);
+  return `plan:week:u:${userId}:${targetWeek}:route:${languageBucket(language)}`;
+}
+
+function resolveDateKey(date: string | undefined): string {
+  if (date) {
+    const parsed = DateTime.fromISO(date, { zone: config.app.timezone || 'Europe/Lisbon' });
+    if (parsed.isValid) return parsed.toISODate()!;
   }
+  return DateTime.now().setZone(config.app.timezone || 'Europe/Lisbon').toISODate()!;
+}
 
-  res.setHeader('ETag', etag);
-  res.setHeader('Cache-Control', 'private, max-age=30');
-  setServerTimingHeader(res, timings);
-  res.json(envelope);
+function resolveWeekKey(weekStart: string | undefined): string {
+  const zone = config.app.timezone || 'Europe/Lisbon';
+  const parsed = weekStart
+    ? DateTime.fromISO(weekStart, { zone })
+    : DateTime.now().setZone(zone);
+  const base = parsed.isValid ? parsed : DateTime.now().setZone(zone);
+  return base.startOf('week').toISODate()!;
+}
+
+function languageBucket(language: string): string {
+  const normalized = language.trim().toLowerCase();
+  if (normalized.startsWith('pt-br')) return 'pt-br';
+  if (normalized.startsWith('pt')) return 'pt';
+  return normalized || 'en';
 }
 
 function buildWeeklyExplanation(data: Awaited<ReturnType<typeof composeWeeklyPlan>>): string {

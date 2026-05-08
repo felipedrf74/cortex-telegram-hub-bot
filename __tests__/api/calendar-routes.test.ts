@@ -13,8 +13,8 @@ const mockDeleteEvent = vi.fn();
 const mockIsAnyCalendarConfigured = vi.fn();
 const mockHasConnectedCalendarForUser = vi.fn();
 const mockHasWritableCalendarForUser = vi.fn();
-const mockGetCached = vi.fn();
-const mockSetCache = vi.fn();
+const mockGetCachedSWR = vi.fn();
+const mockSetCacheSWR = vi.fn();
 const mockClearCache = vi.fn();
 const mockClearCacheByPrefix = vi.fn();
 const mockGetFocusBlockRecommendation = vi.fn();
@@ -32,8 +32,8 @@ vi.mock('../../src/services/unified-calendar', () => ({
 }));
 
 vi.mock('../../src/services/cache-store', () => ({
-  getCached: (...args: unknown[]) => mockGetCached(...args),
-  setCache: (...args: unknown[]) => mockSetCache(...args),
+  getCachedSWR: (...args: unknown[]) => mockGetCachedSWR(...args),
+  setCacheSWR: (...args: unknown[]) => mockSetCacheSWR(...args),
   clearCache: (...args: unknown[]) => mockClearCache(...args),
   clearCacheByPrefix: (...args: unknown[]) => mockClearCacheByPrefix(...args),
 }));
@@ -70,9 +70,10 @@ import { calendarRoutes } from '../../src/api/routes/calendar';
 interface MockRes {
   statusCode: number;
   body: any;
+  headers: Record<string, string>;
   status(code: number): MockRes;
   json(body: any): MockRes;
-  setHeader(): MockRes;
+  setHeader(name: string, value: string): MockRes;
   end(): MockRes;
 }
 
@@ -80,9 +81,10 @@ function mockRes(): MockRes {
   const response: MockRes = {
     statusCode: 200,
     body: null,
+    headers: {},
     status(code: number) { response.statusCode = code; return response; },
     json(body: any) { response.body = body; return response; },
-    setHeader() { return response; },
+    setHeader(name: string, value: string) { response.headers[name] = value; return response; },
     end() { return response; },
   };
   return response;
@@ -134,14 +136,14 @@ describe('Calendar API — mutation routes', () => {
     mockIsAnyCalendarConfigured.mockReset();
     mockHasConnectedCalendarForUser.mockReset();
     mockHasWritableCalendarForUser.mockReset();
-    mockGetCached.mockReset();
-    mockSetCache.mockReset();
+    mockGetCachedSWR.mockReset();
+    mockSetCacheSWR.mockReset();
     mockClearCache.mockReset();
     mockClearCacheByPrefix.mockReset();
     mockGetFocusBlockRecommendation.mockReset();
     mockFilterCalendarEventsForTrainingScope.mockReset();
 
-    mockGetCached.mockReturnValue(null);
+    mockGetCachedSWR.mockReturnValue(null);
     mockIsAnyCalendarConfigured.mockReturnValue(true);
     mockHasConnectedCalendarForUser.mockReturnValue(true);
     mockHasWritableCalendarForUser.mockReturnValue(true);
@@ -194,6 +196,92 @@ describe('Calendar API — mutation routes', () => {
       source: 'outlook',
       color: '#8E44AD',
     });
+  });
+
+  it('serves cached calendar events without touching the provider and honors If-None-Match', async () => {
+    mockGetCachedSWR.mockReturnValue({
+      fresh: true,
+      value: {
+        events: [
+          {
+            id: 'cached-evt',
+            title: 'Cached block',
+            start: '2026-04-19T16:00:00.000Z',
+            end: '2026-04-19T16:30:00.000Z',
+            source: 'outlook',
+          },
+        ],
+        status: 'ready',
+        warningCodes: [],
+        warnings: [],
+        sources: { configured: ['outlook'], fulfilled: ['outlook'], failed: [] },
+      },
+    });
+
+    const first = await dispatch('GET', '/events?start=2026-04-19T00:00:00.000Z&end=2026-04-20T00:00:00.000Z');
+    const secondReq = mockReq('GET', '/events?start=2026-04-19T00:00:00.000Z&end=2026-04-20T00:00:00.000Z');
+    (secondReq as any).headers = { 'if-none-match': first.headers.ETag };
+    (secondReq as any).header = (name: string) => (secondReq as any).headers[name.toLowerCase()] ?? (secondReq as any).headers[name];
+    const router = calendarRoutes();
+    const second = mockRes();
+    await new Promise<void>((resolve) => {
+      (router as any).handle(secondReq, second, (err: any) => {
+        if (err) throw err;
+        resolve();
+      });
+      setImmediate(resolve);
+    });
+
+    expect(first.statusCode).toBe(200);
+    expect(first.body.cached).toBe(true);
+    expect(first.body.data.events[0].id).toBe('cached-evt');
+    expect(first.headers.ETag).toBeTruthy();
+    expect(second.statusCode).toBe(304);
+    expect(mockGetEventsWithDiagnostics).not.toHaveBeenCalled();
+  });
+
+  it('serves stale today events immediately and refreshes them in the background', async () => {
+    mockGetCachedSWR.mockReturnValueOnce({
+      fresh: false,
+      value: {
+        events: [],
+        status: 'ready',
+        warningCodes: [],
+        warnings: [],
+        sources: { configured: ['outlook'], fulfilled: ['outlook'], failed: [] },
+      },
+    });
+    mockGetEventsWithDiagnostics.mockResolvedValueOnce({
+      events: [
+        {
+          id: 'refreshed-event',
+          summary: 'Refreshed',
+          start: '2026-05-08T16:00:00.000Z',
+          end: '2026-05-08T16:30:00.000Z',
+          source: 'outlook',
+        },
+      ],
+      status: 'ready',
+      warningCodes: [],
+      warnings: [],
+      sources: { configured: ['outlook'], fulfilled: ['outlook'], failed: [] },
+    });
+
+    const res = await dispatch('GET', '/today');
+    await new Promise((resolve) => setImmediate(resolve));
+
+    expect(res.statusCode).toBe(200);
+    expect(res.body.cached).toBe(true);
+    expect(res.body.data.events).toEqual([]);
+    expect(mockGetEventsWithDiagnostics).toHaveBeenCalledTimes(1);
+    expect(mockSetCacheSWR).toHaveBeenCalledWith(
+      expect.stringMatching(/^u:12:calendar:today:/),
+      expect.objectContaining({
+        events: [expect.objectContaining({ id: 'refreshed-event' })],
+      }),
+      120,
+      300,
+    );
   });
 
   it('filters training calendar events linked outside the authenticated user scope', async () => {

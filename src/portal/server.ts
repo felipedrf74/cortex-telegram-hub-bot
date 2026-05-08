@@ -13,6 +13,7 @@
  * `PORTAL_TOKEN` remains legacy-compatible only when scoped credentials are
  * absent or explicit legacy fallback is enabled.
  */
+import compression from 'compression';
 import express, { Request, Response, NextFunction } from 'express';
 import http from 'http';
 import { config } from '../config';
@@ -57,6 +58,19 @@ import { registerPortalWebhookRoutes } from './webhook-routes';
 const startedAt = Date.now();
 
 // ─── Express App Factory ────────────────────────────────────────────
+
+export function createResponseCompressionMiddleware() {
+  return compression({
+    threshold: 1024,
+    level: 6,
+    filter(req: Request, res: Response) {
+      const contentType = String(res.getHeader('Content-Type') ?? '').toLowerCase();
+      if (/^(image|video|audio)\//.test(contentType)) return false;
+      if (/application\/(zip|gzip|x-gzip|pdf)/.test(contentType)) return false;
+      return compression.filter(req, res);
+    },
+  });
+}
 
 export function createPortalServer(bot?: any): http.Server {
   const app = express();
@@ -115,6 +129,8 @@ export function createPortalServer(bot?: any): http.Server {
       next();
     });
   });
+
+  app.use(createResponseCompressionMiddleware());
 
   // ── Webhook router (TASK-16b + Month 2: Telegram webhooks) ─────────
   // Mounted BEFORE express.json() because the Todoist webhook needs the

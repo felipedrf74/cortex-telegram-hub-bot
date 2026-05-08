@@ -28,15 +28,20 @@ import {
   hasWritableCalendarForUser,
   type CalendarSource,
 } from '../../services/unified-calendar';
-import { getCached, setCache } from '../../services/cache-store';
+import { getCachedSWR, setCacheSWR } from '../../services/cache-store';
 import { invalidateCalendarCaches } from '../../services/calendar-cache-invalidator';
 import { sendSuccess, sendError, sendInternalError, asyncHandler } from '../response-helpers';
 import { getFocusBlockRecommendation } from '../../services/focus-planner';
 import { ensureValidTenantRouteScope } from '../tenant-route-scope';
 import { filterCalendarEventsForTrainingScope } from '../../services/training-calendar-scope';
+import { sendConditionalApiSuccess } from '../conditional-cache';
+import { recordSWRRefreshFailure, recordSWRRefreshSuccess } from '../../services/swr-refresh-observability';
 
 const TODAY_TTL = 120; // 2 min — calendar can change mid-day from notifications
 const RANGE_TTL = 60;  // 1 min for arbitrary ranges
+const TODAY_SWR_STALE = 300;
+const RANGE_SWR_STALE = 300;
+const swrInFlight = new Set<string>();
 
 export function calendarRoutes(): Router {
   const router = Router();
@@ -70,37 +75,30 @@ export function calendarRoutes(): Router {
     const { start, end } = parseRange(req.query.start as string | undefined, req.query.end as string | undefined);
     const cacheKey = userId ? `u:${userId}:calendar:events:${start}:${end}` : `calendar:events:${start}:${end}`;
 
-    const cached = getCached<any>(cacheKey);
+    const cached = getCachedSWR<any>(cacheKey);
     if (cached) {
-      if (Array.isArray(cached)) {
-        sendSuccess(res, { events: cached, status: 'ready', warningCodes: [], warnings: [] }, { cached: true });
-      } else {
-        sendSuccess(res, cached, { cached: true });
+      const payload = normalizeCalendarEventsPayload(cached.value);
+      sendConditionalApiSuccess(res, req, payload, { cached: true });
+      if (!cached.fresh) {
+        swrRefresh(cacheKey, async () => {
+          const refreshed = await buildEventsPayload(start, end, userId);
+          setCacheSWR(cacheKey, refreshed, RANGE_TTL, RANGE_SWR_STALE);
+        });
       }
       return;
     }
 
     try {
-      // CHAT-M2: pass userId so unified-calendar checks per-user Outlook tokens
-      const result = await getEventsWithDiagnostics(start, end, userId);
-      if (result.status === 'unavailable' && result.sources.configured.length > 0) {
-        sendError(res, 'CALENDAR_FETCH_FAILED', result.warnings[0] || 'Failed to fetch calendar events', 503, {
-          warningCodes: result.warningCodes,
+      const payload = await buildEventsPayload(start, end, userId);
+      setCacheSWR(cacheKey, payload, RANGE_TTL, RANGE_SWR_STALE);
+      sendConditionalApiSuccess(res, req, payload);
+    } catch (err: any) {
+      if (err instanceof CalendarFetchError) {
+        sendError(res, 'CALENDAR_FETCH_FAILED', err.message, 503, {
+          warningCodes: err.warningCodes,
         });
         return;
       }
-
-      const visibleEvents = filterCalendarEventsForTrainingScope(result.events, userId);
-      const formatted = visibleEvents.map(formatEvent);
-      const payload = {
-        events: formatted,
-        status: result.status,
-        warningCodes: result.warningCodes,
-        warnings: result.warnings,
-      };
-      setCache(cacheKey, payload, RANGE_TTL);
-      sendSuccess(res, payload);
-    } catch (err: any) {
       logger.error({ err }, 'iOS calendar/events failed');
       sendInternalError(res, 'Failed to fetch calendar events', { code: 'CALENDAR_FETCH_FAILED' });
     }
@@ -362,39 +360,30 @@ export function calendarRoutes(): Router {
     }
 
     const cacheKey = userId ? `u:${userId}:calendar:today:${todayDateString()}` : `calendar:today:${todayDateString()}`;
-    const cached = getCached<any>(cacheKey);
+    const cached = getCachedSWR<any>(cacheKey);
     if (cached) {
-      if (Array.isArray(cached)) {
-        sendSuccess(res, { events: cached, date: todayDateString(), status: 'ready', warningCodes: [], warnings: [] }, { cached: true });
-      } else {
-        sendSuccess(res, { ...cached, date: todayDateString() }, { cached: true });
+      const payload = { ...normalizeCalendarEventsPayload(cached.value), date: todayDateString() };
+      sendConditionalApiSuccess(res, req, payload, { cached: true });
+      if (!cached.fresh) {
+        swrRefresh(cacheKey, async () => {
+          const refreshed = await buildTodayPayload(userId);
+          setCacheSWR(cacheKey, refreshed, TODAY_TTL, TODAY_SWR_STALE);
+        });
       }
       return;
     }
 
     try {
-      const { start, end } = todayFetchRangeISO();
-      const actualRange = todayRangeISO();
-      // CHAT-M2: pass userId for per-user Outlook token resolution
-      const result = await getEventsWithDiagnostics(start, end, userId);
-      if (result.status === 'unavailable' && result.sources.configured.length > 0) {
-        sendError(res, 'CALENDAR_FETCH_FAILED', result.warnings[0] || 'Failed to fetch today\'s events', 503, {
-          warningCodes: result.warningCodes,
+      const payload = await buildTodayPayload(userId);
+      setCacheSWR(cacheKey, payload, TODAY_TTL, TODAY_SWR_STALE);
+      sendConditionalApiSuccess(res, req, { ...payload, date: todayDateString() });
+    } catch (err: any) {
+      if (err instanceof CalendarFetchError) {
+        sendError(res, 'CALENDAR_FETCH_FAILED', err.message, 503, {
+          warningCodes: err.warningCodes,
         });
         return;
       }
-      const formatted = filterCalendarEventsForTrainingScope(result.events, userId)
-        .filter((event) => eventOverlapsRange(event, actualRange.start, actualRange.end))
-        .map(formatEvent);
-      const payload = {
-        events: formatted,
-        status: result.status,
-        warningCodes: result.warningCodes,
-        warnings: result.warnings,
-      };
-      setCache(cacheKey, payload, TODAY_TTL);
-      sendSuccess(res, { ...payload, date: todayDateString() });
-    } catch (err: any) {
       logger.error({ err }, 'iOS calendar/today failed');
       sendInternalError(res, 'Failed to fetch today\'s events', { code: 'CALENDAR_FETCH_FAILED' });
     }
@@ -432,6 +421,82 @@ export function calendarRoutes(): Router {
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────
+
+class CalendarFetchError extends Error {
+  constructor(message: string, readonly warningCodes: string[]) {
+    super(message);
+  }
+}
+
+function swrRefresh(key: string, fn: () => Promise<void>): void {
+  if (swrInFlight.has(key)) return;
+  swrInFlight.add(key);
+  fn()
+    .then(() => recordSWRRefreshSuccess(key))
+    .catch((err) => recordSWRRefreshFailure(key, err, { source: 'calendar_route', operation: 'calendar_swr_refresh' }))
+    .finally(() => swrInFlight.delete(key));
+}
+
+function normalizeCalendarEventsPayload(value: any): {
+  events: any[];
+  status: string;
+  warningCodes: string[];
+  warnings: string[];
+} {
+  if (Array.isArray(value)) {
+    return { events: value, status: 'ready', warningCodes: [], warnings: [] };
+  }
+  return {
+    events: Array.isArray(value?.events) ? value.events : [],
+    status: typeof value?.status === 'string' ? value.status : 'ready',
+    warningCodes: Array.isArray(value?.warningCodes) ? value.warningCodes : [],
+    warnings: Array.isArray(value?.warnings) ? value.warnings : [],
+  };
+}
+
+async function buildEventsPayload(start: string, end: string, userId: number): Promise<{
+  events: any[];
+  status: string;
+  warningCodes: string[];
+  warnings: string[];
+}> {
+  // CHAT-M2: pass userId so unified-calendar checks per-user Outlook tokens
+  const result = await getEventsWithDiagnostics(start, end, userId);
+  if (result.status === 'unavailable' && result.sources.configured.length > 0) {
+    throw new CalendarFetchError(result.warnings[0] || 'Failed to fetch calendar events', result.warningCodes);
+  }
+
+  const visibleEvents = filterCalendarEventsForTrainingScope(result.events, userId);
+  return {
+    events: visibleEvents.map(formatEvent),
+    status: result.status,
+    warningCodes: result.warningCodes,
+    warnings: result.warnings,
+  };
+}
+
+async function buildTodayPayload(userId: number): Promise<{
+  events: any[];
+  status: string;
+  warningCodes: string[];
+  warnings: string[];
+}> {
+  const { start, end } = todayFetchRangeISO();
+  const actualRange = todayRangeISO();
+  const result = await getEventsWithDiagnostics(start, end, userId);
+  if (result.status === 'unavailable' && result.sources.configured.length > 0) {
+    throw new CalendarFetchError(result.warnings[0] || 'Failed to fetch today\'s events', result.warningCodes);
+  }
+  const formatted = filterCalendarEventsForTrainingScope(result.events, userId)
+    .filter((event) => eventOverlapsRange(event, actualRange.start, actualRange.end))
+    .map(formatEvent);
+  return {
+    events: formatted,
+    status: result.status,
+    warningCodes: result.warningCodes,
+    warnings: result.warnings,
+  };
+}
 
 /**
  * Normalize a unified calendar event into the iOS DTO shape.

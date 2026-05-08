@@ -55,6 +55,7 @@ interface CachedAccessToken {
 const accessTokenCache = new Map<MicrosoftAccessTokenCacheKey, CachedAccessToken>();
 const accessTokenInFlight = new Map<MicrosoftAccessTokenCacheKey, Promise<string>>();
 const clientTypeByCacheKey = new Map<MicrosoftAccessTokenCacheKey, MicrosoftClientType>();
+const cacheGenerationByCacheKey = new Map<MicrosoftAccessTokenCacheKey, number>();
 
 let tokenCacheHits = 0;
 let tokenCacheMisses = 0;
@@ -81,6 +82,7 @@ function maybeLogTokenCacheSummary(now = Date.now()): void {
 }
 
 function invalidateMicrosoftAccessTokenCacheKey(cacheKey: MicrosoftAccessTokenCacheKey): void {
+  cacheGenerationByCacheKey.set(cacheKey, (cacheGenerationByCacheKey.get(cacheKey) ?? 0) + 1);
   accessTokenCache.delete(cacheKey);
   accessTokenInFlight.delete(cacheKey);
   clientTypeByCacheKey.delete(cacheKey);
@@ -186,6 +188,16 @@ async function acquireAccessTokenFromRefreshToken(
     return result.accessToken;
   };
 
+  const acquisitionGeneration = cacheGenerationByCacheKey.get(cacheKey) ?? 0;
+  const writeAcquiredToken = (token: string, clientType: MicrosoftClientType): void => {
+    if ((cacheGenerationByCacheKey.get(cacheKey) ?? 0) !== acquisitionGeneration) {
+      logger.debug({ cacheKey }, 'microsoft_auth_token_cache_write_skipped_after_invalidation');
+      return;
+    }
+    clientTypeByCacheKey.set(cacheKey, clientType);
+    accessTokenCache.set(cacheKey, { token, refreshAt: Date.now() + ACCESS_TOKEN_CACHE_TTL_MS });
+  };
+
   const acquisition = (async () => {
     const memoizedClientType = clientTypeByCacheKey.get(cacheKey);
     const initialMode: 'auto' | 'confidential' | 'public' = memoizedClientType ?? 'auto';
@@ -193,27 +205,29 @@ async function acquireAccessTokenFromRefreshToken(
     try {
       const token = await acquire(initialMode);
       if (initialMode === 'public' || (!config.outlook.clientSecret && initialMode === 'auto')) {
-        clientTypeByCacheKey.set(cacheKey, 'public');
+        writeAcquiredToken(token, 'public');
       } else {
-        clientTypeByCacheKey.set(cacheKey, 'confidential');
+        writeAcquiredToken(token, 'confidential');
       }
-      accessTokenCache.set(cacheKey, { token, refreshAt: Date.now() + ACCESS_TOKEN_CACHE_TTL_MS });
       return token;
     } catch (err) {
       if (initialMode !== 'public' && config.outlook.clientSecret && isPublicClientRefreshTokenMismatch(err)) {
         logger.warn({ cacheKey }, 'Microsoft refresh token requires public-client MSAL flow; retrying without client secret');
         const token = await acquire('public');
-        clientTypeByCacheKey.set(cacheKey, 'public');
-        accessTokenCache.set(cacheKey, { token, refreshAt: Date.now() + ACCESS_TOKEN_CACHE_TTL_MS });
+        writeAcquiredToken(token, 'public');
         return token;
       }
       throw err;
-    } finally {
-      accessTokenInFlight.delete(cacheKey);
     }
   })();
 
   accessTokenInFlight.set(cacheKey, acquisition);
+  const clearIfCurrent = () => {
+    if (accessTokenInFlight.get(cacheKey) === acquisition) {
+      accessTokenInFlight.delete(cacheKey);
+    }
+  };
+  void acquisition.then(clearIfCurrent, clearIfCurrent);
   return acquisition;
 }
 
@@ -358,6 +372,7 @@ export function resetMicrosoftClients(): void {
   accessTokenCache.clear();
   accessTokenInFlight.clear();
   clientTypeByCacheKey.clear();
+  cacheGenerationByCacheKey.clear();
   tokenCacheHits = 0;
   tokenCacheMisses = 0;
   tokenCacheCoalesced = 0;
@@ -383,6 +398,7 @@ export const __testing = {
     accessTokenCache.clear();
     accessTokenInFlight.clear();
     clientTypeByCacheKey.clear();
+    cacheGenerationByCacheKey.clear();
     tokenCacheHits = 0;
     tokenCacheMisses = 0;
     tokenCacheCoalesced = 0;
@@ -395,6 +411,7 @@ export const __testing = {
       coalesced: tokenCacheCoalesced,
       entries: accessTokenCache.size,
       clientTypeMemoizedEntries: clientTypeByCacheKey.size,
+      generations: cacheGenerationByCacheKey.size,
     };
   },
 };

@@ -329,4 +329,35 @@ describe('microsoft-auth access token cache', () => {
     expect(mockState.confidentialAcquire).toHaveBeenCalledTimes(1);
     expect(microsoftAuth.__testing.getTokenCacheStatsForTests()).toMatchObject({ misses: 1, coalesced: 1 });
   });
+
+  it('does not repopulate the access-token cache when tokens rotate during an in-flight acquisition', async () => {
+    const { microsoftAuth, oauthStore } = await loadModulesWithMsalClients();
+    storeOutlookTokens(oauthStore, 25, 'refresh-user-25-a');
+
+    let resolveFirstAcquire: ((value: { accessToken: string }) => void) | undefined;
+    mockState.confidentialAcquire
+      .mockImplementationOnce(() => new Promise((resolve) => {
+        resolveFirstAcquire = resolve;
+      }))
+      .mockResolvedValueOnce({ accessToken: 'access-user-25-b' });
+
+    const first = microsoftAuth.getAccessTokenForUser(25);
+
+    oauthStore.storeTokens(25, 'outlook', {
+      accessToken: 'stored-access-refresh-user-25-b',
+      refreshToken: 'refresh-user-25-b',
+      tokenType: 'Bearer',
+      expiresAt: null,
+      scopes: ['Tasks.ReadWrite'],
+    });
+    resolveFirstAcquire?.({ accessToken: 'access-user-25-a' });
+
+    await expect(first).resolves.toBe('access-user-25-a');
+    await expect(microsoftAuth.getAccessTokenForUser(25)).resolves.toBe('access-user-25-b');
+
+    expect(mockState.confidentialAcquire).toHaveBeenCalledTimes(2);
+    expect(mockState.confidentialAcquire.mock.calls[1][0]).toMatchObject({
+      refreshToken: 'refresh-user-25-b',
+    });
+  });
 });
