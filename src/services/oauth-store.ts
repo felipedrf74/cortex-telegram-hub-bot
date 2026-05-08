@@ -22,6 +22,7 @@ import { logger } from '../utils/logger';
 import { encryptValue, decryptValue } from '../utils/encryption';
 import { LRUMap } from '../utils/lru-map';
 import { getOwnerBootstrapUserRefs } from './user-service';
+import { notifyOAuthTokenMutation } from './oauth-token-cache-events';
 
 // ─── Types ──────────────────────────────────────────────────────────
 
@@ -274,6 +275,7 @@ export function storeTokens(userId: number, provider: OAuthProvider, tokens: OAu
   // of the old tokens so the next getTokens() immediately picks up the
   // new ones instead of waiting out the 10-minute TTL.
   invalidateTokenCache(userId, provider);
+  notifyOAuthTokenMutation({ userId, provider });
   invalidateProviderSurfaceCaches(userId, provider);
   logger.info({ userId, provider }, 'OAuth tokens stored');
 }
@@ -367,6 +369,7 @@ export function disconnectProvider(userId: number, provider: OAuthProvider): voi
   // Blow away the cached decrypted tokens so the next getTokens() returns
   // null immediately instead of serving stale data for up to 10 minutes.
   invalidateTokenCache(userId, provider);
+  notifyOAuthTokenMutation({ userId, provider });
   invalidateProviderSurfaceCaches(userId, provider);
   logger.info({ userId, provider }, 'OAuth tokens removed');
 }
@@ -419,6 +422,7 @@ export function updateAccessToken(userId: number, provider: OAuthProvider, acces
     WHERE user_id = ? AND provider = ?
   `).run(encrypt(accessToken, userId), expiresAt, userId, provider);
   invalidateTokenCache(userId, provider);
+  notifyOAuthTokenMutation({ userId, provider });
 }
 
 // ─── Owner Token Migration ──────────────────────────────────────────
