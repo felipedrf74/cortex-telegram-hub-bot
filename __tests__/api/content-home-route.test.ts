@@ -123,13 +123,25 @@ vi.mock('../../src/services/plan-cache-invalidator', () => ({
 }));
 
 vi.mock('../../src/services/cache-store', () => ({
+  getCacheStoreStats: vi.fn(() => ({})),
+  _resetCacheStoreStatsForTests: vi.fn(),
+  initCacheStore: vi.fn(),
+  userCacheKey: vi.fn((userId: number | undefined, base: string) => `u:${userId}:${base}`),
+  requireUserCacheKey: vi.fn((userId: number, base: string) => `u:${userId}:${base}`),
+  getCached: vi.fn(() => null),
+  setCache: vi.fn(),
   getCachedSWR: (...args: unknown[]) => mockGetCachedSWR(...args),
   setCacheSWR: (...args: unknown[]) => mockSetCacheSWR(...args),
+  clearCache: vi.fn(),
+  clearCacheByPrefix: vi.fn(),
+  clearExpired: vi.fn(),
 }));
 
 vi.mock('../../src/services/swr-refresh-observability', () => ({
   recordSWRRefreshSuccess: vi.fn(),
   recordSWRRefreshFailure: vi.fn(),
+  getSWRRefreshFailureSnapshot: vi.fn(() => ({})),
+  _resetSWRRefreshFailuresForTests: vi.fn(),
 }));
 
 vi.mock('../../src/services/secretary-fastpath', () => ({
