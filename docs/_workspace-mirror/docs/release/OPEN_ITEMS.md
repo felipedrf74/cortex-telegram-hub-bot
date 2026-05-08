@@ -412,6 +412,92 @@ Report: `docs/archive/2026-05/chat-reasoning-engine-v1/hostile-qa-v3-final-repor
 After F-IOS-1 closes, this slice is ready for the existing operator-only TestFlight + APNs + two-account gates that apply to every 2026-05 workstream.
 
 
+## 2026-05-08 Hostile QA v4 — F-IOS-1 + F-DOCS-1 final closure
+
+Both v3 carryovers verified CLOSED behaviorally on `main`. Engine `1f7862aa`, iOS `fb63527e`, both aligned with `origin/main`, both working trees clean. Production at backend `4.14.140`.
+
+### F-IOS-1 — CLOSED
+
+- Source contract: `Nexus Hub IOS/Nexus Hub/Nexus Hub/Views/Chat/StructuredCards.swift` declares `static let silentMetadataTypes: Set<String>` (line 9-25) containing all 5 chat_action_* types: `chat_action_in_progress`, `chat_action_clarification_required`, `chat_action_confirmation_required`, `chat_action_execution_failed`, `chat_action_deferred`.
+- Switch routing: line 71 `case let type where Self.silentMetadataTypes.contains(type): EmptyView()` matches BEFORE the `default → unknownTypeInline(type)` case, so Swift's top-down evaluation guarantees these types render as silent EmptyView, not the generic placeholder.
+- Behavioral test: `Nexus HubTests/ChatStructuredCardRenderingTests.swift:163` `test_chatActionMetadataTypesAreKnownSilentCards` iterates the 5 types, asserts membership AND renders each via the helper that asserts non-zero hosting-controller layout.
+- Test execution: `xcodebuild test … -only-testing:Nexus HubTests/ChatStructuredCardRenderingTests` on simulator `A0B13967-B5DE-4E6F-897D-F1E409093F94` (after a clean simulator erase) → **7 tests, 0 failures, 0.127s**. Simulator shut down afterward; no booted devices remaining; no orphan xcodebuild processes.
+
+### F-DOCS-1 — CLOSED
+
+- `engine/scripts/workspace-docs-mirror.sh --check` returns `workspace-docs-mirror: in sync` with exit 0.
+- `npm run docs:audit` now reports **446 markdown files / 467 issues** (down from 469; the `workspace-mirror-stale: 2` entries on `release-identity.{json,md}` are gone). Under 480 ceiling.
+
+### Cleanup
+
+- Engine HEAD `1f7862aa`, iOS HEAD `fb63527e`, both clean working trees.
+- Simulator `A0B13967` shut down via `xcrun simctl shutdown`; `xcrun simctl list devices booted` empty.
+- No orphan `xcodebuild test` processes.
+- No deploy / push / rebase / amend / force-push performed.
+
+### Final verdict
+
+**READY for the next operator-only gates** (signed TestFlight + APNs + two-account walkthrough on physical device). All Codex-closable items in the chat-reasoning workstream are now behaviorally closed.
+
+The minor follow-ups (F-IOS-2 deep-link taskId/listId, F-IOS-3 dead "undo" code path) are P3 polish, not blockers.
+
+
+## 2026-05-08 APNs operational verification — CLOSED
+
+APNs end-to-end push delivery is operationally verified on production. The "APNs validation" carryover under Operator-Only Carryovers is closed for backend wire-up; remaining is signed TestFlight + device walkthrough for cohort onboarding.
+
+Runbook: `docs/release/apns-runbook.md`.
+
+### Pre-existing config (no new portal work)
+
+- Apple Developer Auth Key already exists: Key ID `4QU52CCBPM` (created 2026-04-10 19:04 by Felipe). Service: APNs, team scoped, sandbox + production. The `.p8` file is at `~/Library/Mobile Documents/com~apple~CloudDocs/Dev/Nexus Hub/certificates/AuthKey_4QU52CCBPM.p8` on Felipe's Mac and at `/home/dominguez/secrets/AuthKey_4QU52CCBPM.p8` (mode 600) on production.
+- Production `~/telegram-hub-bot/.env` already has all 5 APNs keys set: `APNS_ENABLED=true`, `APNS_TEAM_ID=B6885R8NWM`, `APNS_KEY_ID=4QU52CCBPM`, `APNS_AUTH_KEY_P8` pointing at the server `.p8`, `APNS_BUNDLE_ID=me.nexushub.app`, `APNS_ENVIRONMENT=sandbox`.
+- iOS app has the right entitlements: `aps-environment=development` (Debug) and `aps-environment=production` (Release), plus `time-sensitive`.
+
+### End-to-end smoke (2026-05-08)
+
+Sent a real push to user 25 (Felipe) via `node scripts/apns-smoke.mjs --user 25`:
+- Endpoint: `api.sandbox.push.apple.com`
+- Topic: `me.nexushub.app`
+- Result: **HTTP 200**, Apple `apns-id=52E648D4-D3ED-D5D4-1189-6341FFF9F105`
+- JWT: ES256, kid=`4QU52CCBPM`, signed cleanly (200 chars)
+
+This proves: backend env loaded, `.p8` readable, JWT signing healthy, Apple Push endpoint reachable, topic + bundle ID accepted, auth accepted, sandbox environment matches existing tokens.
+
+### New helpers landed in this round
+
+- `engine/scripts/apns-smoke.mjs` — diagnostic CLI with `--check` (no network), `--list` (token inventory), `--user <id> [--dry-run] [--message ...]` (real send). Reads `.env` directly so it works inside an SSH session without the engine running. Never prints `.p8`, push tokens, or signed JWTs.
+- `engine/.env.example` — APNs section added with all 6 keys documented inline.
+- `docs/release/apns-runbook.md` — workspace-canonical runbook covering current state, sandbox/production switching, rotation procedure, common gotchas. Mirror in sync.
+
+### Production endpoint flip + device-verified push delivery (2026-05-08 13:30)
+
+After Felipe reinstalled the app on his physical iPhone via TestFlight Release build:
+
+1. **iOS auth-only**: 3 fresh device rows landed (IDs 244, 246, 247) but all had `push_token = NULL` because the app deliberately does NOT auto-prompt for notification permission at launch (Apple HIG compliance, see `Nexus Hub/Core/NotificationManager.swift:151`).
+2. **Felipe enabled notifications via Settings tab** → app called `registerForRemoteNotifications` → fresh token uploaded (row 247, token_len=64 — standard 32-byte hex, much cleaner than the old row 114's anomalous 160 chars).
+3. **First smoke push on sandbox endpoint returned `BadDeviceToken`** — confirming the new token came from a Release/TestFlight build (production entitlement) and the backend was misaligned at `APNS_ENVIRONMENT=sandbox`.
+4. **Flipped `APNS_ENVIRONMENT=sandbox → production`** on `~/telegram-hub-bot/.env` (backup at `.env.bak.20260508-133036`, all other env values untouched), then `pm2 restart nexus-hub --update-env`.
+5. **Re-verified config**: `node scripts/apns-smoke.mjs --check` → all green, environment now `production`.
+6. **Re-sent smoke push**: `node scripts/apns-smoke.mjs --user 25` → **HTTP 200** from `api.push.apple.com`, Apple `apns-id=EF8A9B5A-0CD3-628A-5526-303FAA5B8901`. Felipe confirmed visually that the notification landed on iPhone.
+
+### Two-account walkthrough still open
+
+- Jaqueline's user 28 token (created 2026-04-18) has token_len=64; her last push from sandbox endpoint succeeded under the prior config. Now that the backend is on production, her token may also be a production token (TestFlight install) — should be retested via `apns-smoke.mjs --user 28` once Jaqueline has confirmed her install is also fresh. If her token was sandbox, it'll now reject with `BadDeviceToken` until she reinstalls via TestFlight too.
+- Tenant-isolation device proof on Felipe + Jaqueline accounts (already validated via P0 chat-identity-isolation test suite at the API layer; device-side validation remains an operator gate).
+
+### Final APNs state
+
+| Field | Value |
+|---|---|
+| `.p8` (Apple) | Auth Key `4QU52CCBPM`, sandbox + production scope |
+| `.p8` (server) | `/home/dominguez/secrets/AuthKey_4QU52CCBPM.p8` (mode 600) |
+| Engine env | `APNS_ENABLED=true`, `APNS_TEAM_ID=B6885R8NWM`, `APNS_KEY_ID=4QU52CCBPM`, `APNS_BUNDLE_ID=me.nexushub.app`, `APNS_AUTH_KEY_P8=/home/dominguez/secrets/AuthKey_4QU52CCBPM.p8`, `APNS_ENVIRONMENT=production` |
+| pm2 nexus-hub | restart counter 430 (one clean restart at 13:30:36 to pick up production env) |
+| Last verified delivery | apns-id `EF8A9B5A-0CD3-628A-5526-303FAA5B8901` to Felipe's iPhone (user 25, row 247) on 2026-05-08 13:31 — **device-side delivery confirmed by Felipe** |
+| APNs gate status | **CLOSED on production**. Backend → Apple → device chain verified end-to-end. |
+
+
 ## Standing Authorizations
 
 - `BATCH-24-CLOSEOUT-AUTHORIZED`: honored by Batch 24 U1/U2/U5.
