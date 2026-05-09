@@ -2,7 +2,7 @@
 
 Status: canonical
 Owner: release lead (Felipe)
-Last verified: 2026-05-07
+Last verified: 2026-05-10
 Update policy: update when a current carryover opens or closes. Monthly
 historical detail for the 2026-05 tech-debt sweep lives in
 `docs/release/OPEN_ITEMS_ARCHIVE_2026-05.md`.
@@ -10,6 +10,71 @@ historical detail for the 2026-05 tech-debt sweep lives in
 Last sweep complete: 2026-05-07.
 Closeout dossier:
 `engine/docs/archive/2026-05/tech-debt-validation/sweep-closeout-dossier.md`.
+
+## 2026-05-10 Wave 1 Launch Readiness Sweep
+
+Closeout:
+`engine/docs/archive/2026-05/launch-readiness-sweep/closeout.md`
+
+Provider filesystem-session audit:
+`engine/docs/archive/2026-05/launch-readiness-sweep/provider-filesystem-session-audit.md`
+
+Verdict: **READY_FOR_HOSTILE_QA** on branch
+`launch-readiness-sweep-2026-05`.
+
+Closed in source:
+- iOS Phase 2B.4 P3 F-2: `CachedResource` now has a direct single-flight
+  regression test proving concurrent loads share one fetch.
+- P0 Garmin P3 F-2: Apple Health readiness now has six partial-data sufficiency
+  tests covering HRV-only, sleep-only, RHR-only, and paired metric subsets.
+- P0 Garmin P3 F-3 audit: Amazon and Uber collectors were audited for
+  filesystem session leakage.
+- P0 observability: a daily `garmin_tenant_isolation_watcher` dry-runs the
+  tainted-session cleanup script and records warning evidence in `error_log`
+  plus durable operator alerts if matches reappear.
+
+Evidence:
+- iOS `CachedResourceTests` PASS: 7/7 on
+  `phase2b4-ios-repository-primitive-2026-05`.
+- Engine focused B+D PASS: 2 files / 14 tests.
+- Pre-commit focused engine slice PASS: 26 files / 249 tests.
+- Mock lint PASS at 826/827 strict baseline.
+- Staging smoke PASS: 17 passed / 0 failed / 17 total.
+- Staging watcher positive-path probe PASS:
+  `engine/docs/release/smoke-evidence/staging-garmin-tenant-isolation-watcher-20260509T233855Z.json`.
+
+Carryover opened by the audit:
+- P1/P2: Amazon and Uber invoice collectors use global filesystem browser
+  sessions plus global credentials. Scheduled collection is owner-only, but
+  manual Telegram `/amazon` and `/uber` commands can invoke those global
+  sessions under any authenticated canonical user. This is
+  `dirty-different-mechanism`, not Garmin-style token-table contamination.
+  Recommended follow-up: finance collector tenant-safety round before broad
+  multi-user finance rollout.
+
+## 2026-05-10 Phase 2B.5 Chat Fastpath Dedup Deferred
+
+Closeout:
+`engine/docs/archive/2026-05/phase2b5-chat-fastpath-dedup/closeout-deferred.md`
+
+Verdict: **DEFERRED_WITH_REASON**. Phase 2B is now **4/5 done**:
+2B.1 workspace landing state, 2B.2 cache-coherence registry, 2B.3 cached route
+helper, and 2B.4 iOS repository primitive are shipped/queued. 2B.5 chat
+fastpath dedup is deferred to a likely Phase 3 post-Wave-1 round.
+
+Reason:
+- Source-truth diagnosis found 14 `fastpath` mentions, 4 actual runtime
+  adapter/call sites, and 2 heavy implementation files.
+- The smaller cache/dedup primitive prototype passed its focused suite but had
+  a positive source LoC delta, so it failed the architecture-round bar.
+- A wider iOS slash-command + Telegram secretary-fastpath merge might pass the
+  deletion test, but it would touch user-visible chat rendering and trigger the
+  visual QA protocol. That risk is not appropriate before Wave 1.
+
+Re-open trigger:
+- Reopen only if beta usage shows observable fastpath cache/coalescing bugs, a
+  third real fastpath implementation site appears, or a planned feature needs a
+  unified fastpath surface across iOS, Telegram, and WebSocket.
 
 ## 2026-05-09 P0 Garmin Tenant Leak + Apple Health Cascade
 
