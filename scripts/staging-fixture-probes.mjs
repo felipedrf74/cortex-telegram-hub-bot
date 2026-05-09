@@ -118,12 +118,24 @@ process.stdout.write(JSON.stringify({
 }
 
 function extractReadiness(json) {
-  return json?.readiness
+  const direct = json?.readiness
     ?? json?.data?.readiness
     ?? json?.home?.readiness
     ?? json?.dashboard?.readiness
     ?? json?.today?.readiness
     ?? null;
+  if (direct) return direct;
+
+  const data = json?.data;
+  if (!data || typeof data !== 'object') return null;
+
+  const metrics = Array.isArray(data.metrics) ? data.metrics : [];
+  const metricValue = (id) => metrics.find((metric) => metric?.id === id)?.value ?? null;
+  return {
+    readinessText: data.hero?.readinessText ?? metricValue('readiness'),
+    bodyBatteryText: data.hero?.energyText ?? metricValue('body-battery'),
+    reasonCodes: Array.isArray(data.meta?.reasonCodes) ? data.meta.reasonCodes : [],
+  };
 }
 
 async function requestJson(baseUrl, token, route, {
