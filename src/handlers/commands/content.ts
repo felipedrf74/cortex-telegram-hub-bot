@@ -940,7 +940,7 @@ export function registerContentCommands(bot: Bot): void {
           '\u2022 \u{1F3A3} Hook breakdown (first 30s)\n' +
           '\u2022 \u{1F3D7}\uFE0F Content structure with timestamps\n' +
           '\u2022 \u2B50 Key moments (quotable/viral)\n' +
-          '\u2022 \u{1F4A1} Content ideas (PT-BR, your niches)\n' +
+          '\u2022 \u{1F4A1} Content ideas (your language, your niches)\n' +
           '\u2022 \u{1F3AC} Reel/Short cut suggestions',
           { parse_mode: 'HTML' },
         );
@@ -950,7 +950,8 @@ export function registerContentCommands(bot: Bot): void {
       const statusMsg = await ctx.reply('\u{1F52C} Studying video... (fetching transcript + running analysis, ~30s)');
 
       try {
-        const result = await studyVideo(url);
+        const canonicalUserId = resolveCanonicalUserId(ctx.from!.id) ?? ctx.from!.id;
+        const result = await studyVideo(url, { userId: canonicalUserId, tenantId: canonicalUserId });
 
         await ctx.api.editMessageText(ctx.chat.id, statusMsg.message_id,
           '\u{1F4C4} Generating Word document...');
