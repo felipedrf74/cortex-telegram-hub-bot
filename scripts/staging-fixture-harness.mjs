@@ -76,6 +76,9 @@ async function main() {
     server: args.server || process.env.DEPLOY_SERVER,
     stagingPath: args['staging-path'] || process.env.STAGING_PATH,
     reportPath: args['report-path'],
+    route: args.route,
+    tier: args.tier,
+    seedAppleHealth: args['seed-apple-health'] === true,
   };
 
   if (action === 'seed') {

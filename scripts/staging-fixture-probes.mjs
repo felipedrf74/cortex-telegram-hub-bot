@@ -117,6 +117,15 @@ process.stdout.write(JSON.stringify({
 `;
 }
 
+function extractReadiness(json) {
+  return json?.readiness
+    ?? json?.data?.readiness
+    ?? json?.home?.readiness
+    ?? json?.dashboard?.readiness
+    ?? json?.today?.readiness
+    ?? null;
+}
+
 async function requestJson(baseUrl, token, route, {
   method = 'GET',
   body,
@@ -157,6 +166,7 @@ async function requestJson(baseUrl, token, route, {
       etag: response.headers.get('etag'),
       cacheControl: response.headers.get('cache-control'),
       errorCode: json?.error?.code ?? null,
+      readiness: extractReadiness(json),
       shapeOk: route.shape ? route.shape(json, response.status) : Boolean(json),
       bodyPreview: text.slice(0, 300),
     };
@@ -221,7 +231,11 @@ export async function runFixtureProbes(options = {}) {
     cacheCoherence: null,
   };
 
-  for (const route of ROUTES) {
+  const routes = options.route
+    ? [{ name: 'focused-route', path: options.route, shape: (json) => json && typeof json === 'object' }]
+    : ROUTES;
+
+  for (const route of routes) {
     process.stderr.write(`probe ${route.name}...\n`);
     const first = await requestJson(baseUrl, token, route);
     const second = await requestJson(baseUrl, token, route);

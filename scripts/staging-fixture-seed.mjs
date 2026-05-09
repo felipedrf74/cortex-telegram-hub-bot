@@ -47,7 +47,7 @@ export function runRemoteNode(script, {
   });
 }
 
-export function buildRemoteSeedScript({ userId, deviceId }) {
+export function buildRemoteSeedScript({ userId, deviceId, tier = 'max', seedAppleHealth = false }) {
   return String.raw`
 const Database = require('better-sqlite3');
 const db = new Database(process.env.DATABASE_PATH || process.env.DB_PATH || './data/bot.db');
@@ -55,6 +55,8 @@ const { signIosJwt } = require('./dist/services/ios-jwt');
 
 const userId = ${JSON.stringify(userId)};
 const deviceId = ${JSON.stringify(deviceId)};
+const tier = ${JSON.stringify(tier)};
+const seedAppleHealth = ${JSON.stringify(seedAppleHealth)};
 const now = new Date();
 const today = now.toISOString().slice(0, 10);
 const tomorrow = new Date(now.getTime() + 86400000).toISOString().slice(0, 10);
@@ -111,6 +113,9 @@ function deleteUserData(targetUserId) {
     'pantry_items',
     'finance_transactions',
     'finance_tax_events',
+    'apple_health_data',
+    'garmin_sessions',
+    'garmin_user_tokens',
     'native_tasks',
     'native_task_lists',
     'ios_devices',
@@ -145,7 +150,7 @@ db.transaction(() => {
     last_name: 'Fixture',
     language: 'en-US',
     timezone: 'America/New_York',
-    tier: 'max',
+    tier,
     status: 'active',
     auth_provider: 'email',
     daily_message_limit: 500,
@@ -305,6 +310,46 @@ db.transaction(() => {
     updated_at: now.toISOString(),
   }, 'INSERT');
 
+  if (seedAppleHealth) {
+    const dateDaysAgo = (days) => new Date(now.getTime() - days * 86400000).toISOString().slice(0, 10);
+    for (let day = 1; day <= 7; day += 1) {
+      insert('apple_health_data', {
+        user_id: userId,
+        data_type: 'hrv',
+        date: dateDaysAgo(day),
+        data_json: JSON.stringify({ value: 61 + day }),
+        source_name: 'staging-fixture-harness',
+        created_at: now.toISOString(),
+      });
+      insert('apple_health_data', {
+        user_id: userId,
+        data_type: 'resting_heart_rate',
+        date: dateDaysAgo(day),
+        data_json: JSON.stringify({ value: 55 + (day % 2) }),
+        source_name: 'staging-fixture-harness',
+        created_at: now.toISOString(),
+      });
+    }
+    [
+      ['hrv', { value: 74 }],
+      ['sleep', { totalSleepSeconds: 28800, deepSleepSeconds: 5400, remSleepSeconds: 6000 }],
+      ['resting_heart_rate', { value: 53 }],
+      ['daily_summary', { activeCalories: 320, exerciseMinutes: 35, steps: 7200 }],
+      ['steps', { count: 7200 }],
+      ['calories', { kcal: 320 }],
+      ['exercise_minutes', { minutes: 35 }],
+    ].forEach(([dataType, payload]) => {
+      insert('apple_health_data', {
+        user_id: userId,
+        data_type: dataType,
+        date: today,
+        data_json: JSON.stringify(payload),
+        source_name: 'staging-fixture-harness',
+        created_at: now.toISOString(),
+      });
+    });
+  }
+
   insert('content_topics', {
     user_id: userId,
     tenant_id: userId,
@@ -413,7 +458,7 @@ const token = signIosJwt({
 }, { expiresIn: '30d' });
 
 const counts = {};
-for (const table of ['users', 'subscriptions', 'ios_devices', 'native_task_lists', 'native_tasks', 'recipes', 'finance_transactions', 'content_topics', 'content_scripts', 'fitness_training_plans']) {
+for (const table of ['users', 'subscriptions', 'ios_devices', 'native_task_lists', 'native_tasks', 'recipes', 'finance_transactions', 'apple_health_data', 'content_topics', 'content_scripts', 'fitness_training_plans']) {
   if (!tableExists(table)) continue;
   const hasUserId = columnsFor(table).has('user_id');
   const count = hasUserId
@@ -437,7 +482,12 @@ export function seedFixture(options = {}) {
   const userId = options.userId ?? DEFAULT_FIXTURE_USER_ID;
   assertFixtureUserId(userId);
   const deviceId = options.deviceId ?? `${DEFAULT_FIXTURE_DEVICE_ID}-${userId}`;
-  const raw = runRemoteNode(buildRemoteSeedScript({ userId, deviceId }), options);
+  const raw = runRemoteNode(buildRemoteSeedScript({
+    userId,
+    deviceId,
+    tier: options.tier ?? 'max',
+    seedAppleHealth: options.seedAppleHealth === true,
+  }), options);
   const result = JSON.parse(raw);
   writeFileSync(tokenCachePath(userId), JSON.stringify({
     userId,
