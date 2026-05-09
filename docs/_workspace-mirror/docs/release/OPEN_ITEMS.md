@@ -809,9 +809,17 @@ Phase 3 / parked items:
 
 ## 2026-05-09 Phase 2B.1 Workspace Landing State consolidation
 
-Status: READY_FOR_HOSTILE_QA.
+Status: **READY_FOR_LOCAL_QA** after visual closure (hostile QA v3, 2026-05-09).
 
-Closeout: `docs/archive/2026-05/phase2b1-workspace-state-module/closeout.md`.
+Visual QA evidence: 32 visual cells + 5 retry-interaction tests + 1 identifier-inventory contract, 38/38 PASS on simulator A0B13967-…. Screenshot attachments exported to `/tmp/phase2b1-visual-attachments-final/` and confirmed via xcresult `Test-Nexus Hub-2026.05.09_13-21-07-+0100.xcresult`.
+
+Verdict reports:
+- v2 (architecture + behavior parity): `docs/archive/2026-05/phase2b1-workspace-state-module/hostile-qa-v2-report.md`
+- v3 (visual closure): `docs/archive/2026-05/phase2b1-workspace-state-module/hostile-qa-v3-visual-closure-report.md`
+
+Closeouts:
+- Original: `docs/archive/2026-05/phase2b1-workspace-state-module/closeout.md`
+- Visual closure: `docs/archive/2026-05/phase2b1-workspace-state-module/visual-qa-closure-closeout.md`
 
 Summary:
 
@@ -843,6 +851,44 @@ Carry forward:
 - P2 QA cleanup: `AppShellVisualSnapshotUITests` should adopt the
   `-NexusUITestMode YES` fixture pattern before full-target UI evidence is
   treated as release-grade.
+
+## 2026-05-09 Phase 2B.2 Cache-invalidator registry
+
+Status: **READY_FOR_HOSTILE_QA**.
+
+Closeout: `docs/archive/2026-05/phase2b2-cache-invalidator-registry/closeout.md`
+
+Summary:
+
+- Consolidated 11 shallow `*-cache-invalidator.ts` services into one
+  `CacheCoherenceRegistry`.
+- Preserved the legacy invalidation graph with typed named events and
+  compatibility facades.
+- Deleted the 11 obsolete source files and four obsolete invalidator test files.
+- Added a behavior-level registry suite that asserts exact event-to-cache-key
+  fan-out.
+- Added the `cache-coherence-registry` cannot-skip gate; dashboard now reports
+  31/31.
+- Removed the old `intelligence-bus` direct plan-prefix fallback so
+  mesh-priority planning invalidation is registry-wired.
+
+Validation:
+
+- Typecheck: PASS.
+- Registry suite: PASS, 15 tests.
+- Focused migration suite: PASS, 214 tests.
+- Registry-mock-touched suite: PASS, 376 tests.
+- Cannot-skip dashboard: PASS, 31/31.
+- Strict mock-completeness lint: PASS at 822 partial mocks, under baseline 827.
+- Staging deploy: PASS; production untouched.
+- Staging smoke: PASS, 21/21. Evidence:
+  `engine/docs/release/smoke-evidence/staging-smoke-d1149c52-20260509T131735Z.json`.
+
+Carry forward:
+
+- Phase 2B.3 is API route helper consolidation.
+- Read-cache key builders still live at read sites; decide in Phase 2B.3
+  whether they belong in route helpers or a sibling cache-key module.
 
 
 ## Standing Authorizations
