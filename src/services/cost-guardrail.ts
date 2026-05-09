@@ -192,6 +192,33 @@ export function buildQuotaExceededMessage(quota: Pick<DailyQuotaStatus, 'plan' |
   return `Daily AI quota reached for the ${quota.plan} plan. Resets at ${quota.resetAt}.`;
 }
 
+export type CostGuardrailDecision =
+  | {
+      block: false;
+      status: 200;
+      reason: 'ok';
+      global: ReturnType<typeof checkGlobalCostGuardrail>;
+      quota: DailyQuotaStatus;
+    }
+  | {
+      block: true;
+      status: 429;
+      reason: 'SERVICE_DEGRADED';
+      message: string;
+      global: ReturnType<typeof checkGlobalCostGuardrail>;
+      quota: DailyQuotaStatus;
+      details: Record<string, unknown>;
+    }
+  | {
+      block: true;
+      status: 429;
+      reason: 'daily_limit_exceeded';
+      message: string;
+      global: ReturnType<typeof checkGlobalCostGuardrail>;
+      quota: DailyQuotaStatus;
+      details: Record<string, unknown>;
+    };
+
 /**
  * Check global daily spend against configured limits.
  * Sends Telegram alerts at 50% / 80% / 100% (each fires once per UTC day).
@@ -269,6 +296,51 @@ export function checkGlobalCostGuardrail(): { totalUsd: number; limitUsd: number
 
 export function isUserOverDailyCap(userId: number): DailyQuotaStatus {
   return getDailyQuotaStatus(userId);
+}
+
+export function enforceCostGuardrails(userId: number): CostGuardrailDecision {
+  const global = checkGlobalCostGuardrail();
+  const quota = isUserOverDailyCap(userId);
+
+  if (global.exceeded) {
+    return {
+      block: true,
+      status: 429,
+      reason: 'SERVICE_DEGRADED',
+      message: 'AI-backed features are temporarily degraded because the workspace daily AI budget has been reached. Token-zero reads remain available.',
+      global,
+      quota,
+      details: {
+        totalUsd: global.totalUsd,
+        limitUsd: global.limitUsd,
+      },
+    };
+  }
+
+  if (quota.over) {
+    return {
+      block: true,
+      status: 429,
+      reason: 'daily_limit_exceeded',
+      message: buildQuotaExceededMessage(quota),
+      global,
+      quota,
+      details: {
+        plan: quota.plan,
+        resetAt: quota.resetAt,
+        limitUsd: quota.limitUsd,
+        usedUsd: quota.usedUsd,
+      },
+    };
+  }
+
+  return {
+    block: false,
+    status: 200,
+    reason: 'ok',
+    global,
+    quota,
+  };
 }
 
 // ── Per-user check+spend mutex ───────────────────────────────────

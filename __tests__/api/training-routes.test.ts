@@ -174,6 +174,23 @@ vi.mock('../../src/services/integration-status', () => ({
 vi.mock('../../src/services/cost-guardrail', () => ({
   isUserOverDailyCap: (...args: unknown[]) => mockIsUserOverDailyCap(...args),
   buildQuotaExceededMessage: vi.fn((quota: { plan: string; resetAt: string }) => `Daily AI quota reached for the ${quota.plan} plan. Resets at ${quota.resetAt}.`),
+  enforceCostGuardrails: (userId: number) => {
+    const quota = mockIsUserOverDailyCap(userId);
+    const global = { totalUsd: 0, limitUsd: 100, exceeded: false };
+    if (!quota.over) return { block: false, status: 200, reason: 'ok', quota, global };
+    return {
+      block: true,
+      status: 429,
+      reason: 'daily_limit_exceeded',
+      message: `Daily AI quota reached for the ${quota.plan} plan. Resets at ${quota.resetAt}.`,
+      quota,
+      global,
+      details: {
+        plan: quota.plan,
+        resetAt: quota.resetAt,
+      },
+    };
+  },
   acquireCostLock: vi.fn(async () => () => { /* no-op */ }),
 }));
 
@@ -979,7 +996,7 @@ describe('Training API routes', () => {
     });
   });
 
-  it('returns 402 on plan generation when the user is over quota', async () => {
+  it('returns 429 on plan generation when the user is over quota', async () => {
     mockIsUserOverDailyCap.mockReturnValue({
       over: true,
       spentUsd: 0.2,
@@ -992,9 +1009,9 @@ describe('Training API routes', () => {
       objective: 'Lisbon Marathon October 2026',
     });
 
-    expect(res.statusCode).toBe(402);
+    expect(res.statusCode).toBe(429);
     expect(res.body.ok).toBe(false);
-    expect(res.body.error.code).toBe('QUOTA_EXCEEDED');
+    expect(res.body.error.code).toBe('daily_limit_exceeded');
     expect(res.body.error.details).toEqual({
       plan: 'pro',
       resetAt: '2026-04-15T00:00:00.000Z',

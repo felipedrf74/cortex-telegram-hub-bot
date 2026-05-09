@@ -47,6 +47,23 @@ vi.mock('../../src/config', () => ({
 vi.mock('../../src/services/cost-guardrail', () => ({
   isUserOverDailyCap: (...args: unknown[]) => mockIsUserOverDailyCap(...args),
   buildQuotaExceededMessage: vi.fn((quota: { plan: string; resetAt: string }) => `Daily AI quota reached for the ${quota.plan} plan. Resets at ${quota.resetAt}.`),
+  enforceCostGuardrails: (userId: number) => {
+    const quota = mockIsUserOverDailyCap(userId);
+    const global = { totalUsd: 0, limitUsd: 100, exceeded: false };
+    if (!quota.over) return { block: false, status: 200, reason: 'ok', quota, global };
+    return {
+      block: true,
+      status: 429,
+      reason: 'daily_limit_exceeded',
+      message: `Daily AI quota reached for the ${quota.plan} plan. Resets at ${quota.resetAt}.`,
+      quota,
+      global,
+      details: {
+        plan: quota.plan,
+        resetAt: quota.resetAt,
+      },
+    };
+  },
   acquireCostLock: vi.fn(async () => () => { /* no-op */ }),
 }));
 
@@ -329,7 +346,7 @@ describe('Finance API — tax routes', () => {
     expect(res.body.error.code).toBe('NOT_FOUND');
   });
 
-  it('returns 402 on parse-receipt when the daily AI quota is exhausted', async () => {
+  it('returns 429 on parse-receipt when the daily AI quota is exhausted', async () => {
     const user = getOrCreateUser(22004, { username: 'finance-quota' });
     mockIsUserOverDailyCap.mockReturnValue({
       over: true,
@@ -344,9 +361,9 @@ describe('Finance API — tax routes', () => {
       mimeType: 'image/jpeg',
     });
 
-    expect(res.statusCode).toBe(402);
+    expect(res.statusCode).toBe(429);
     expect(res.body.ok).toBe(false);
-    expect(res.body.error.code).toBe('QUOTA_EXCEEDED');
+    expect(res.body.error.code).toBe('daily_limit_exceeded');
     expect(res.body.error.details).toEqual({
       plan: 'pro',
       resetAt: '2026-04-15T00:00:00.000Z',

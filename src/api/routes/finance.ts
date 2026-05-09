@@ -46,7 +46,7 @@ import {
   calculateMonthlyTax,
   markTaxPaid,
 } from '../../services/finance-tracker';
-import { acquireCostLock, buildQuotaExceededMessage, isUserOverDailyCap } from '../../services/cost-guardrail';
+import { acquireCostLock, enforceCostGuardrails } from '../../services/cost-guardrail';
 import { analyzeInvoiceImage } from '../../services/invoice-filer';
 import { ensureValidTenantRouteScope } from '../tenant-route-scope';
 import { createNotificationIntent } from '../../services/notification-orchestrator';
@@ -578,19 +578,26 @@ export function financeRoutes(): Router {
     // Acquire the per-user lock so concurrent parse-receipt calls
     // from the same user can't both pass the cap check.
     const releaseCostLock = await acquireCostLock(userId);
-    const cap = isUserOverDailyCap(userId);
-    if (cap.over) {
+    const guardrail = enforceCostGuardrails(userId);
+    if (guardrail.block) {
       releaseCostLock();
       logger.warn(
-        { userId, spentUsd: cap.spentUsd, capUsd: cap.capUsd },
-        'iOS parse-receipt blocked by daily cost cap',
+        {
+          userId,
+          reason: guardrail.reason,
+          spentUsd: guardrail.quota.spentUsd,
+          capUsd: guardrail.quota.capUsd,
+          globalTotalUsd: guardrail.global.totalUsd,
+          globalLimitUsd: guardrail.global.limitUsd,
+        },
+        'iOS parse-receipt blocked by cost guardrail',
       );
       sendError(
         res,
-        'QUOTA_EXCEEDED',
-        `${buildQuotaExceededMessage(cap)} Try manual entry.`,
-        402,
-        { plan: cap.plan, resetAt: cap.resetAt },
+        guardrail.reason,
+        `${guardrail.message} Try manual entry.`,
+        guardrail.status,
+        guardrail.details,
       );
       return;
     }

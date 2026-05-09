@@ -7,8 +7,7 @@ import { invalidateCalendarCaches } from '../../services/calendar-cache-invalida
 import { sendSuccess, sendError, sendInternalError } from '../response-helpers';
 import {
   acquireCostLock,
-  buildQuotaExceededMessage,
-  isUserOverDailyCap,
+  enforceCostGuardrails,
 } from '../../services/cost-guardrail';
 import { cancelTrainingPlanForUser } from './training-plan-cancellation';
 import { generateTrainingPlanForUser } from './training-plan-generation';
@@ -94,15 +93,15 @@ export function registerTrainingPlanRoutes(
     // TOCTOU-safe cost window — serialize check + AI + api_usage row
     // per user. See acquireCostLock docs in services/cost-guardrail.ts.
     const releaseCostLock = await acquireCostLock(userId);
-    const quota = isUserOverDailyCap(userId);
-    if (quota.over) {
+    const guardrail = enforceCostGuardrails(userId);
+    if (guardrail.block) {
       releaseCostLock();
       sendError(
         res,
-        'QUOTA_EXCEEDED',
-        buildQuotaExceededMessage(quota),
-        402,
-        { plan: quota.plan, resetAt: quota.resetAt },
+        guardrail.reason,
+        guardrail.message,
+        guardrail.status,
+        guardrail.details,
       );
       return;
     }

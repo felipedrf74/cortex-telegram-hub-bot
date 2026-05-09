@@ -3,7 +3,7 @@
 import { Router, Response } from 'express';
 import { AuthenticatedRequest } from '../auth-middleware';
 import { asyncHandler, sendError, sendInternalError, sendSuccess } from '../response-helpers';
-import { acquireCostLock, buildQuotaExceededMessage, isUserOverDailyCap } from '../../services/cost-guardrail';
+import { acquireCostLock, enforceCostGuardrails } from '../../services/cost-guardrail';
 import { getUserLanguageById } from '../../services/user-service';
 import { logger } from '../../utils/logger';
 import type { Lang } from '../../utils/i18n';
@@ -114,14 +114,14 @@ export function registerContentScriptRoutes(
     // per user. See acquireCostLock docs in services/cost-guardrail.ts.
     const releaseCostLock = await acquireCostLock(userId);
     try {
-      const quota = isUserOverDailyCap(userId);
-      if (quota.over) {
+      const guardrail = enforceCostGuardrails(userId);
+      if (guardrail.block) {
         sendError(
           res,
-          'QUOTA_EXCEEDED',
-          buildQuotaExceededMessage(quota),
-          402,
-          { plan: quota.plan, resetAt: quota.resetAt },
+          guardrail.reason,
+          guardrail.message,
+          guardrail.status,
+          guardrail.details,
         );
         return;
       }

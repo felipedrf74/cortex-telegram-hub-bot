@@ -20,6 +20,23 @@ vi.mock('../../src/services/user-service', () => ({
 vi.mock('../../src/services/cost-guardrail', () => ({
   isUserOverDailyCap: (...args: unknown[]) => mockIsUserOverDailyCap(...args),
   buildQuotaExceededMessage: (...args: unknown[]) => mockBuildQuotaExceededMessage(...args),
+  enforceCostGuardrails: (userId: number) => {
+    const quota = mockIsUserOverDailyCap(userId);
+    const global = { totalUsd: 0, limitUsd: 100, exceeded: false };
+    if (!quota.over) return { block: false, status: 200, reason: 'ok', quota, global };
+    return {
+      block: true,
+      status: 429,
+      reason: 'daily_limit_exceeded',
+      message: mockBuildQuotaExceededMessage(quota),
+      quota,
+      global,
+      details: {
+        plan: quota.plan,
+        resetAt: quota.resetAt,
+      },
+    };
+  },
 }));
 
 vi.mock('../../src/utils/logger', () => ({
@@ -141,14 +158,22 @@ describe('chat message request-boundary helpers', () => {
     expect(sendChatQuotaExceededIfNeeded(blockedRes, 42, 'iOS chat blocked by quota')).toBe(true);
 
     expect(mockLoggerWarn).toHaveBeenCalledWith(
-      { userId: 42, spentUsd: 0.2, capUsd: 0.1, platform: 'ios' },
+      {
+        userId: 42,
+        reason: 'daily_limit_exceeded',
+        spentUsd: 0.2,
+        capUsd: 0.1,
+        globalTotalUsd: 0,
+        globalLimitUsd: 100,
+        platform: 'ios',
+      },
       'iOS chat blocked by quota',
     );
-    expect(blockedRes.statusCode).toBe(402);
+    expect(blockedRes.statusCode).toBe(429);
     expect(blockedRes.body).toMatchObject({
       ok: false,
       error: {
-        code: 'QUOTA_EXCEEDED',
+        code: 'daily_limit_exceeded',
         message: 'Daily AI quota reached',
         details: {
           plan: 'free',

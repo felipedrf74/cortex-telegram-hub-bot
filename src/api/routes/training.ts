@@ -7,8 +7,8 @@ import { runOutboxTransaction } from '../../services/event-outbox';
 import { consumeResourceBudget } from '../../services/resource-budgets';
 import {
   acquireCostLock,
-  buildQuotaExceededMessage,
-  isUserOverDailyCap,
+  enforceCostGuardrails,
+  type CostGuardrailDecision,
 } from '../../services/cost-guardrail';
 import { normalizeLangHeader } from '../../services/secretary-fastpath';
 import { getUserLanguageById } from '../../services/user-service';
@@ -67,13 +67,13 @@ function invalidateTrainingScreenCaches(userId: number) {
   invalidateTrainingDerivedCaches(userId);
 }
 
-function rejectTrainingDailyLimit(res: Response, quota: ReturnType<typeof isUserOverDailyCap>): void {
+function rejectTrainingCostGuardrail(res: Response, decision: Extract<CostGuardrailDecision, { block: true }>): void {
   sendError(
     res,
-    'daily_limit_exceeded',
-    buildQuotaExceededMessage(quota),
-    429,
-    { plan: quota.plan, resetAt: quota.resetAt },
+    decision.reason,
+    decision.message,
+    decision.status,
+    decision.details,
   );
 }
 
@@ -305,9 +305,9 @@ export function trainingRoutes(): Router {
 
     const releaseCostLock = await acquireCostLock(userId);
     try {
-      const quota = isUserOverDailyCap(userId);
-      if (quota.over) {
-        rejectTrainingDailyLimit(res, quota);
+      const guardrail = enforceCostGuardrails(userId);
+      if (guardrail.block) {
+        rejectTrainingCostGuardrail(res, guardrail);
         return;
       }
 

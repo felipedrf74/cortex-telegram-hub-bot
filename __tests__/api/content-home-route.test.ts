@@ -114,6 +114,19 @@ vi.mock('../../src/services/cost-guardrail', () => ({
     plan: 'pro',
     resetAt: '2026-04-15T00:00:00.000Z',
   })),
+  enforceCostGuardrails: vi.fn(() => ({
+    block: false,
+    status: 200,
+    reason: 'ok',
+    global: { totalUsd: 0, limitUsd: 100, exceeded: false },
+    quota: {
+      over: false,
+      spentUsd: 0,
+      capUsd: 0.2,
+      plan: 'pro',
+      resetAt: '2026-04-15T00:00:00.000Z',
+    },
+  })),
   buildQuotaExceededMessage: vi.fn(() => 'quota exceeded'),
   acquireCostLock: vi.fn(async () => () => { /* no-op */ }),
 }));

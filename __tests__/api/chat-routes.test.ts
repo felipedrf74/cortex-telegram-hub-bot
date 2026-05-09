@@ -210,6 +210,23 @@ vi.mock('../../src/services/skill-tiers', () => ({
 vi.mock('../../src/services/cost-guardrail', () => ({
   isUserOverDailyCap: (...args: unknown[]) => mockIsUserOverDailyCap(...args),
   buildQuotaExceededMessage: vi.fn((quota: { plan: string; resetAt: string }) => `Daily AI quota reached for the ${quota.plan} plan. Resets at ${quota.resetAt}.`),
+  enforceCostGuardrails: (userId: number) => {
+    const quota = mockIsUserOverDailyCap(userId);
+    const global = { totalUsd: 0, limitUsd: 100, exceeded: false };
+    if (!quota.over) return { block: false, status: 200, reason: 'ok', quota, global };
+    return {
+      block: true,
+      status: 429,
+      reason: 'daily_limit_exceeded',
+      message: `Daily AI quota reached for the ${quota.plan} plan. Resets at ${quota.resetAt}.`,
+      quota,
+      global,
+      details: {
+        plan: quota.plan,
+        resetAt: quota.resetAt,
+      },
+    };
+  },
   // M-2 (2026-04-21 pass 2): route handlers wrap their check+AI+spend
   // in acquireCostLock to serialize concurrent same-user requests.
   // Tests don't exercise concurrency, so stub with a no-op release.
@@ -2325,7 +2342,7 @@ describe('Chat API routes', () => {
     });
   });
 
-  it('returns 402 with quota details when a free user tries an AI chat request', async () => {
+  it('returns 429 with quota details when a free user tries an AI chat request', async () => {
     mockIsUserOverDailyCap.mockReturnValue({
       over: true,
       spentUsd: 0,
@@ -2338,9 +2355,9 @@ describe('Chat API routes', () => {
       text: 'Help me plan my week',
     });
 
-    expect(messageRes.statusCode, JSON.stringify(messageRes.body)).toBe(402);
+    expect(messageRes.statusCode, JSON.stringify(messageRes.body)).toBe(429);
     expect(messageRes.body.ok).toBe(false);
-    expect(messageRes.body.error.code).toBe('QUOTA_EXCEEDED');
+    expect(messageRes.body.error.code).toBe('daily_limit_exceeded');
     expect(messageRes.body.error.details).toEqual({
       plan: 'free',
       resetAt: '2026-04-15T00:00:00.000Z',

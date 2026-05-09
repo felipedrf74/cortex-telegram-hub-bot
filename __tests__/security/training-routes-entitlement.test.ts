@@ -64,6 +64,23 @@ vi.mock('../../src/services/resource-budgets', () => ({
 vi.mock('../../src/services/cost-guardrail', () => ({
   isUserOverDailyCap: (...args: unknown[]) => mockIsUserOverDailyCap(...args),
   buildQuotaExceededMessage: vi.fn((quota: { plan: string; resetAt: string }) => `Daily AI quota reached for the ${quota.plan} plan. Resets at ${quota.resetAt}.`),
+  enforceCostGuardrails: (userId: number) => {
+    const quota = mockIsUserOverDailyCap(userId);
+    const global = { totalUsd: 0, limitUsd: 100, exceeded: false };
+    if (!quota.over) return { block: false, status: 200, reason: 'ok', quota, global };
+    return {
+      block: true,
+      status: 429,
+      reason: 'daily_limit_exceeded',
+      message: `Daily AI quota reached for the ${quota.plan} plan. Resets at ${quota.resetAt}.`,
+      quota,
+      global,
+      details: {
+        plan: quota.plan,
+        resetAt: quota.resetAt,
+      },
+    };
+  },
   acquireCostLock: vi.fn(async () => {
     let releaseGate: () => void = () => {};
     const gate = new Promise<void>((resolve) => { releaseGate = resolve; });
@@ -95,6 +112,7 @@ vi.mock('../../src/services/user-service', () => ({
   resolveCanonicalUserId: vi.fn((userRef: number) => userRef),
   getOwnerBootstrapUser: vi.fn(() => null),
   getOwnerBootstrapTarget: vi.fn(() => null),
+  getActiveUserTargets: vi.fn(() => []),
   getOwnerBootstrapUserRefs: vi.fn(() => []),
   getOrCreateInviteSandboxUser: vi.fn(),
   resolveIosInviteRegistrationTarget: vi.fn(() => ({ kind: 'invalid' })),
