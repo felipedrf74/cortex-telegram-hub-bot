@@ -62,6 +62,11 @@ Verdict: **DEFERRED_WITH_REASON**. Phase 2B is now **4/5 done**:
 helper, and 2B.4 iOS repository primitive are shipped/queued. 2B.5 chat
 fastpath dedup is deferred to a likely Phase 3 post-Wave-1 round.
 
+- [DEFERRED] Phase 2B.5 chat fastpath dedup — speculative cleanup,
+  source-side probe found only 4 sites and prototype hit +152 LoC. Re-open
+  trigger documented. See
+  `docs/archive/2026-05/phase2b5-chat-fastpath-dedup/closeout-deferred.md`.
+
 Reason:
 - Source-truth diagnosis found 14 `fastpath` mentions, 4 actual runtime
   adapter/call sites, and 2 heavy implementation files.
@@ -1081,7 +1086,8 @@ Validation:
 
 Carry forward:
 
-- Phase 2B.5 chat fastpath is the only remaining Phase 2B architecture item.
+- Phase 2B is 4/5 done. Phase 2B.5 chat fastpath is deferred with source-side
+  diagnosis preserved for a likely Phase 3 post-Wave-1 round.
 
 ## 2026-05-09 Phase 2B.4 iOS Repository read-cache primitive
 
@@ -1117,7 +1123,8 @@ Validation:
 
 Carry forward:
 
-- Phase 2B.5 chat fastpath remains the only Phase 2B item.
+- Phase 2B is 4/5 done. Phase 2B.5 chat fastpath is deferred with source-side
+  diagnosis preserved for a likely Phase 3 post-Wave-1 round.
 
 
 ## Standing Authorizations
