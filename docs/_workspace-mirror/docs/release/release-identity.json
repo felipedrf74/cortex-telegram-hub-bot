@@ -1,9 +1,9 @@
 {
-  "generatedAt": "2026-05-09T16:41:01Z",
+  "generatedAt": "2026-05-09T17:17:14Z",
   "backend": {
     "path": "/Users/felipedominguez/Desktop/Custom Connectors/Cortex/cortex-telegram-hub-bot",
-    "branch": "main",
-    "commit": "6f2b2a3b",
+    "branch": "p0-garmin-tenant-leak-and-applehealth-cascade-2026-05",
+    "commit": "5cb7e4b6",
     "dirtyState": "dirty",
     "packageVersion": "4.14.145",
     "migrationCount": "121"
