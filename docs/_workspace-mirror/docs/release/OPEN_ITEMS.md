@@ -11,6 +11,48 @@ Last sweep complete: 2026-05-07.
 Closeout dossier:
 `engine/docs/archive/2026-05/tech-debt-validation/sweep-closeout-dossier.md`.
 
+## 2026-05-09 P0 Garmin Tenant Leak + Apple Health Cascade
+
+Closeout:
+`docs/archive/2026-05/p0-garmin-tenant-leak-and-applehealth-cascade/closeout.md`
+
+Verdict: **READY_FOR_HOSTILE_QA** on
+`p0-garmin-tenant-leak-and-applehealth-cascade-2026-05`. Production and main
+were not touched.
+
+Closed in source/staging:
+- Garmin legacy filesystem token fallback is now owner-only.
+- Global Garmin credential MFA login is blocked for non-owner users without a
+  per-user Garmin session.
+- Apple Health readiness fallback is verified with seeded HRV/sleep/RHR data
+  and returns real per-user readiness when Garmin is empty.
+- Synthetic neutral readiness is preserved when both Garmin and Apple Health are
+  empty.
+- Staging cleanup script dry-run/delete pass found 0 contaminated Garmin rows
+  and is idempotent.
+
+Evidence:
+- Typecheck PASS.
+- Focused P0/Garmin/readiness route suite PASS: 9 files / 140 tests.
+- New P0 regression suite PASS: 6/6.
+- Cannot-skip dashboard PASS: 33/33.
+- Mock lint PASS at strict baseline 827.
+- Staging smoke PASS: 17 passed / 0 failed / 19 total.
+- Smoke evidence:
+  `engine/docs/release/smoke-evidence/staging-smoke-379f741d-20260509T171331Z.json`.
+- No-data staging probe:
+  `/tmp/staging-probe-garmin-no-data-20260509T1716.json`.
+- Apple Health staging probe:
+  `/tmp/staging-probe-garmin-apple-health-20260509T1716.json`.
+
+Remaining before Wave 1 unblock:
+- P0: Claude hostile QA on the P0 branch.
+- P0: Operator authorization for production push.
+- P0: Production cleanup script dry-run review, then explicit operator approval
+  before the `--yes` delete pass.
+- P1: Production smoke/health after promote.
+- P3: Separate provider filesystem-session audit for Amazon/Uber collectors.
+
 ## 2026-05-09 Phase 2B.1 Workspace State Visual QA Closure
 
 Closeout addendum:
