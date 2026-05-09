@@ -23,6 +23,7 @@ import {
   clearGarminSession,
   getGarminSession,
   hasActiveGarminConnection,
+  isOwnerGarminUserId,
   markGarminConnectionActive,
   markGarminNeedsReauth,
   migrateLegacyGarminTokensToSession,
@@ -681,21 +682,22 @@ async function hydrateClientFromPersistedSession(
     }
   }
 
-  if (allowLegacyFile) {
+  const isOwnerRequest = isOwnerGarminUserId(userId);
+  if (allowLegacyFile && isOwnerRequest && userId) {
     try {
       if (fs.existsSync(`${tokenDir}/oauth1_token.json`) && fs.existsSync(`${tokenDir}/oauth2_token.json`)) {
         client.loadTokenByFile(tokenDir);
         await client.getUserSettings();
-        if (userId) {
-          persistTokens(userId);
-          markGarminConnectionActive(userId, config.garmin.email);
-        }
-        logger.info({ userId }, 'Garmin: imported legacy filesystem tokens into garmin_sessions');
+        persistTokens(userId);
+        markGarminConnectionActive(userId, config.garmin.email);
+        logger.info({ userId }, 'Garmin: imported legacy filesystem tokens into garmin_sessions for owner only');
         return adoptAuthenticatedClient(client, userId);
       }
     } catch (err) {
       logger.warn({ err, userId }, 'Garmin: legacy filesystem tokens expired or invalid');
     }
+  } else if (allowLegacyFile && userId) {
+    logger.warn({ userId }, 'Garmin: skipped legacy filesystem token fallback for non-owner user');
   }
 
   return null;
@@ -776,7 +778,7 @@ async function getClient(opts?: { silent?: boolean }): Promise<InstanceType<type
   // Slow path — kick off a single bootstrap that everyone else awaits
   _clientBootstrapUserId = sessionUserId;
   _clientBootstrapPromise = (async () => {
-    const hydrated = await hydrateClientFromPersistedSession(sessionUserId, { allowLegacyFile: false });
+    const hydrated = await hydrateClientFromPersistedSession(sessionUserId, { allowLegacyFile: true });
     if (hydrated) {
       return hydrated;
     }
@@ -796,6 +798,14 @@ async function getClient(opts?: { silent?: boolean }): Promise<InstanceType<type
         await markGarminNeedsReauth(sessionUserId, 'silent_token_load_failed');
       }
       throw new Error('Garmin session expired — re-authenticate via Telegram bot');
+    }
+
+    if (sessionUserId && !isOwnerGarminUserId(sessionUserId)) {
+      logger.warn(
+        { userId: sessionUserId },
+        'Garmin: refusing global credential MFA login for non-owner user without a per-user session',
+      );
+      throw new Error('Garmin session missing for this user — connect Garmin before reading Garmin data');
     }
 
     // Fresh login — go directly to our MFA-aware flow (avoids the library's

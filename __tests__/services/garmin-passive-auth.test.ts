@@ -8,6 +8,7 @@ const mockUpsertGarminSession = vi.fn();
 const mockMarkGarminConnectionActive = vi.fn();
 const mockMigrateLegacyTokens = vi.fn();
 const mockClearGarminSession = vi.fn();
+const mockIsOwnerGarminUserId = vi.fn();
 const mockLoggerInfo = vi.fn();
 const mockLoggerWarn = vi.fn();
 const mockLoggerError = vi.fn();
@@ -31,6 +32,7 @@ vi.mock('../../src/services/garmin-session-store', () => ({
   markGarminConnectionActive: (...args: unknown[]) => mockMarkGarminConnectionActive(...args),
   migrateLegacyGarminTokensToSession: (...args: unknown[]) => mockMigrateLegacyTokens(...args),
   clearGarminSession: (...args: unknown[]) => mockClearGarminSession(...args),
+  isOwnerGarminUserId: (...args: unknown[]) => mockIsOwnerGarminUserId(...args),
 }));
 
 vi.mock('../../src/config', () => ({
@@ -116,6 +118,7 @@ describe('garmin passive auth safety', () => {
     mockMarkGarminConnectionActive.mockReset();
     mockMigrateLegacyTokens.mockReset();
     mockClearGarminSession.mockReset();
+    mockIsOwnerGarminUserId.mockReset();
     mockLoggerInfo.mockReset();
     mockLoggerWarn.mockReset();
     mockLoggerError.mockReset();
@@ -140,6 +143,7 @@ describe('garmin passive auth safety', () => {
       updatedAt: '2026-04-15T20:00:00Z',
     });
     mockMigrateLegacyTokens.mockReturnValue(false);
+    mockIsOwnerGarminUserId.mockReturnValue(false);
     mockExistsSync.mockReturnValue(false);
     mockMarkGarminNeedsReauth.mockResolvedValue(undefined);
     mockRefreshOauth2Token.mockRejectedValue(new Error('refresh failed'));

@@ -94,6 +94,12 @@ export function hasActiveGarminConnection(userId: number): boolean {
   return owner?.id === userId && hasGarminSessionMaterial(userId);
 }
 
+export function isOwnerGarminUserId(userId: number | null | undefined): boolean {
+  if (!userId) return false;
+  const owner = getOwnerBootstrapUser();
+  return owner?.id === userId;
+}
+
 export function getLegacyGarminTokenBlob(userId: number): LegacyTokenBlob | null {
   const row = getDb().prepare(`
     SELECT tokens_json
