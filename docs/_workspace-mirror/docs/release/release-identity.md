@@ -5,7 +5,7 @@
 
 | Area | Path | Branch | Commit | Dirty state | Version | Migrations |
 | --- | --- | --- | --- | --- | --- | --- |
-| Backend | `/Users/felipedominguez/Desktop/Custom Connectors/Cortex/cortex-telegram-hub-bot` | `p0-garmin-tenant-leak-and-applehealth-cascade-2026-05` | `d05e3bac` | `dirty` | `4.14.146` | `121` |
-| iOS | `/Users/felipedominguez/Desktop/Nexus Hub IOS/Nexus Hub` | `phase2b4-ios-repository-primitive-2026-05` | `964a56f` | `clean` | n/a | n/a |
+| Backend | `/Users/felipedominguez/Desktop/Custom Connectors/Cortex/cortex-telegram-hub-bot` | `phase2b5-chat-fastpath-dedup-2026-05` | `b8092bc4` | `dirty` | `4.14.146` | `121` |
+| iOS | `/Users/felipedominguez/Desktop/Nexus Hub IOS/Nexus Hub` | `main` | `3c85ce5` | `dirty` | n/a | n/a |
 
-Generated at: `2026-05-09T17:52:32Z`
+Generated at: `2026-05-09T23:18:15Z`

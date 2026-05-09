@@ -1,17 +1,17 @@
 {
-  "generatedAt": "2026-05-09T17:52:32Z",
+  "generatedAt": "2026-05-09T23:18:15Z",
   "backend": {
     "path": "/Users/felipedominguez/Desktop/Custom Connectors/Cortex/cortex-telegram-hub-bot",
-    "branch": "p0-garmin-tenant-leak-and-applehealth-cascade-2026-05",
-    "commit": "d05e3bac",
+    "branch": "phase2b5-chat-fastpath-dedup-2026-05",
+    "commit": "b8092bc4",
     "dirtyState": "dirty",
     "packageVersion": "4.14.146",
     "migrationCount": "121"
   },
   "ios": {
     "path": "/Users/felipedominguez/Desktop/Nexus Hub IOS/Nexus Hub",
-    "branch": "phase2b4-ios-repository-primitive-2026-05",
-    "commit": "964a56f",
-    "dirtyState": "clean"
+    "branch": "main",
+    "commit": "3c85ce5",
+    "dirtyState": "dirty"
   }
 }
