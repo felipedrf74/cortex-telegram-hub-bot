@@ -94,6 +94,7 @@ GATES=(
   "video-study-prompt-cleanliness|src/services/video-study.ts|video-study-prompt-cleanliness"
   "channel-learner-prompt-cleanliness|src/services/channel-learner.ts|channel-learner-prompt-cleanliness"
   "cost-guardrail-global-rest|src/services/cost-guardrail.ts|cost-guardrail-global-rest"
+  "cache-coherence-registry|src/services/cache-coherence-registry.ts|cache-coherence-registry"
 )
 
 # Run the classifier once per gate and capture results into JSON.

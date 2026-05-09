@@ -171,6 +171,7 @@ HAS_VOICE_EVOLUTION_MULTI_TENANT=false
 HAS_VIDEO_STUDY_PROMPT_CLEANLINESS=false
 HAS_CHANNEL_LEARNER_PROMPT_CLEANLINESS=false
 HAS_GLOBAL_COST_GUARDRAIL_REST=false
+HAS_CACHE_COHERENCE_REGISTRY=false
 
 # Use grep-based detection so multiple flags can match a single file.
 # Bash `case` stops at the first match — that's wrong here because e.g.
@@ -242,6 +243,7 @@ match '^migrations/' && HAS_MIGRATION=true
 match '^content-engine/' && HAS_PYTHON_ENGINE=true
 match '^src/api/router\.ts$|^src/api/routes/billing\.ts$|^src/services/apple-jws-verifier\.ts$|^__tests__/security/billing-apple-notifications-jws-verify\.test\.ts$' && HAS_APPLE_NOTIFICATION_WEBHOOK=true
 match '^src/services/cost-guardrail\.ts$|^src/api/routes/(chat-message-request|training-plan-routes|training|content-script-routes|finance)\.ts$|^__tests__/security/cost-guardrail-global-rest\.test\.ts$' && HAS_GLOBAL_COST_GUARDRAIL_REST=true
+match '^src/services/cache-coherence-registry\.ts$|^__tests__/services/cache-coherence-registry\.test\.ts$' && HAS_CACHE_COHERENCE_REGISTRY=true
 
 match '^scripts/(deploy|deploy-staging|promote-to-prod|rollback|restore)\.sh$' && HAS_DEPLOY_SCRIPT=true
 match '^\.husky/' && HAS_HOOK=true
@@ -413,6 +415,7 @@ $HAS_VOICE_EVOLUTION_MULTI_TENANT && CANNOT_SKIP+=("voice-evolution-multi-tenant
 $HAS_VIDEO_STUDY_PROMPT_CLEANLINESS && CANNOT_SKIP+=("video-study-prompt-cleanliness")
 $HAS_CHANNEL_LEARNER_PROMPT_CLEANLINESS && CANNOT_SKIP+=("channel-learner-prompt-cleanliness")
 $HAS_GLOBAL_COST_GUARDRAIL_REST && CANNOT_SKIP+=("cost-guardrail-global-rest")
+$HAS_CACHE_COHERENCE_REGISTRY && CANNOT_SKIP+=("cache-coherence-registry")
 
 # Tier 1 if anything non-doc is in scope
 if $HAS_NON_DOC; then
@@ -483,6 +486,7 @@ if $HAS_NON_DOC; then
     $HAS_VIDEO_STUDY_PROMPT_CLEANLINESS && VITEST_GLOBS+=("__tests__/services/video-study-prompt-cleanliness.test.ts")
     $HAS_CHANNEL_LEARNER_PROMPT_CLEANLINESS && VITEST_GLOBS+=("__tests__/services/channel-learner-prompt-cleanliness.test.ts")
     $HAS_GLOBAL_COST_GUARDRAIL_REST && VITEST_GLOBS+=("__tests__/security/cost-guardrail-global-rest.test.ts")
+    $HAS_CACHE_COHERENCE_REGISTRY && VITEST_GLOBS+=("__tests__/services/cache-coherence-registry.test.ts")
     $HAS_CONTENT_PROMPT_CLEANLINESS && PYTEST_GLOBS+=("content-engine/tests/test_prompt_cleanliness.py")
     if [ "${#VITEST_GLOBS[@]}" -eq 0 ]; then
       # Backend src/test changed but no domain mapped — fall back to changed-files-only
