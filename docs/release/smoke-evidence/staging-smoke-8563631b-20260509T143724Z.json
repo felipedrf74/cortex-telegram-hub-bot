@@ -1,0 +1,129 @@
+{
+  "version": "1",
+  "runStartedAt": "2026-05-09T14:37:08Z",
+  "runCompletedAt": "2026-05-09T14:37:24.787Z",
+  "branch": "staging-fixture-harness-2026-05",
+  "sha": "8563631b",
+  "host": "staging",
+  "verdict": "passed",
+  "totals": {
+    "passed": 21,
+    "failed": 0,
+    "total": 23
+  },
+  "checks": [
+    {
+      "name": "content-engine /health",
+      "status": "passed",
+      "detail": "status=ok"
+    },
+    {
+      "name": "nexus-hub /api/snapshot",
+      "status": "passed",
+      "detail": "version=4.14.144"
+    },
+    {
+      "name": "snapshot.uptime",
+      "status": "passed",
+      "detail": "uptime={\"seconds\":317,\"human\":\"5m\"}"
+    },
+    {
+      "name": "snapshot.bot",
+      "status": "passed",
+      "detail": "bot={\"polling\":false,\"restarting\":false,\"las"
+    },
+    {
+      "name": "snapshot.integrations",
+      "status": "passed",
+      "detail": "integrations=[{\"name\":\"Telegram Bot\",\"group\":\"system\""
+    },
+    {
+      "name": "snapshot.apiUsage",
+      "status": "passed",
+      "detail": "apiUsage={\"today\":{\"calls\":0,\"cost\":0,\"tokens\":0}"
+    },
+    {
+      "name": "cost-by-domain.totalCost",
+      "status": "passed",
+      "detail": "totalCost=0.0424"
+    },
+    {
+      "name": "cost-by-domain.detailed",
+      "status": "passed",
+      "detail": "detailed=[{\"domain\":\"coach_analysis\",\"category\":\""
+    },
+    {
+      "name": "cost-by-domain.providerSplit",
+      "status": "passed",
+      "detail": "providerSplit=[{\"provider\":\"gemini\",\"calls\":58,\"cost\":"
+    },
+    {
+      "name": "cost-by-domain.dailySeries",
+      "status": "passed",
+      "detail": "dailySeries=[{\"date\":\"2026-05-03\",\"cost\":0.0211,\"cal"
+    },
+    {
+      "name": "provider-stats.providers",
+      "status": "passed",
+      "detail": "providers=[{\"name\":\"gemini\",\"today\":{\"calls\":0,\"co"
+    },
+    {
+      "name": "iOS /api/v1/dashboard",
+      "status": "passed",
+      "detail": "http_code=401 envelope=canonical"
+    },
+    {
+      "name": "iOS /api/v1/tasks/lists",
+      "status": "passed",
+      "detail": "http_code=401 envelope=canonical"
+    },
+    {
+      "name": "iOS /api/v1/training/today",
+      "status": "passed",
+      "detail": "http_code=401 envelope=canonical"
+    },
+    {
+      "name": "iOS /api/v1/plan/today",
+      "status": "passed",
+      "detail": "http_code=401 envelope=canonical"
+    },
+    {
+      "name": "PM2 staging processes",
+      "status": "passed",
+      "detail": "ns=online"
+    },
+    {
+      "name": "ce=online",
+      "detail": null
+    },
+    {
+      "name": "ns_restarts=0",
+      "detail": null
+    },
+    {
+      "name": "Staging DB integrity",
+      "status": "passed",
+      "detail": "integrity_check=ok"
+    },
+    {
+      "name": "domain training /api/v1/training/today",
+      "status": "passed",
+      "detail": "http_code=401 envelope=canonical"
+    },
+    {
+      "name": "domain calendar /api/v1/training/calendar",
+      "status": "passed",
+      "detail": "http_code=401 envelope=canonical"
+    },
+    {
+      "name": "domain cooking /api/v1/cooking/recipes",
+      "status": "passed",
+      "detail": "http_code=401 envelope=canonical"
+    },
+    {
+      "name": "domain content /api/v1/content/ideas",
+      "status": "passed",
+      "detail": "http_code=401 envelope=canonical"
+    }
+  ]
+}

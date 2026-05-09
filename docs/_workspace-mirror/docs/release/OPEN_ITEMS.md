@@ -934,6 +934,38 @@ Carry forward:
 - Add a safe reusable authenticated staging fixture before the next
   route-pipeline manual-probe round.
 
+## 2026-05-09 Staging fixture harness
+
+Status: **READY_FOR_HOSTILE_QA**.
+
+Closeout: `docs/archive/2026-05/staging-fixture-harness/closeout.md`
+Runbook: `docs/runbooks/staging-fixture-harness.md`
+
+Summary:
+
+- Added a staging-only synthetic-user harness for seed → probe → cleanup.
+- Added production refusal at three layers: hostname, `staging_fixture` JWT
+  claim, and reserved synthetic user-id range `1000000-1099999`.
+- Captured authenticated staging route-pipeline evidence for 13 `/api/v1`
+  routes and cache-coherence evidence for cooking/calendar invalidation paths.
+- Closed the Phase 2B.2 CC-2 and Phase 2B.3 authenticated manual-probe gaps via
+  addenda in each archive directory.
+
+Validation:
+
+- Typecheck: PASS.
+- Focused safety tests: PASS, 7/7.
+- Pre-commit changed-area suites: PASS, 187 files / 2828 tests.
+- Staging deploy: PASS; production untouched.
+- Staging smoke: PASS, 21 passed / 0 failed / 23 total.
+- Harness seed/probe/cleanup: PASS; post-cleanup reserved-range user count `0`.
+- Production refusal: PASS, exit code 2.
+
+Carry forward:
+
+- Phase 2B.4 is the iOS Repository read-cache primitive and requires the visual
+  QA protocol.
+
 
 ## Standing Authorizations
 

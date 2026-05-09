@@ -202,6 +202,22 @@ ssh dominguez@serverdominguez "pm2 restart nexus-hub-staging"
 ssh dominguez@serverdominguez "curl -sf -H 'Authorization: Bearer <staging-portal-token>' http://localhost:8201/api/cost-by-domain?days=7"
 ```
 
+### Run authenticated route-pipeline probes
+
+Use the staging fixture harness when a change needs authenticated `/api/v1`
+evidence without borrowing a real user's token. The harness creates a
+staging-only synthetic user in the reserved `1000000-1099999` range, probes
+route cache behavior, writes `/tmp/staging-probe-<timestamp>.json`, and
+cleans up after itself.
+
+```bash
+STAGING_URL=https://staging-api.nexushub.me node scripts/staging-fixture-harness.mjs --action seed
+STAGING_URL=https://staging-api.nexushub.me node scripts/staging-fixture-harness.mjs --action probe
+STAGING_URL=https://staging-api.nexushub.me node scripts/staging-fixture-harness.mjs --action cleanup
+```
+
+Full runbook: `/Users/felipedominguez/Desktop/Nexus Hub/docs/runbooks/staging-fixture-harness.md`.
+
 ### Reset staging DB
 
 ```bash
