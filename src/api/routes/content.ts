@@ -42,15 +42,12 @@ import { normalizeLangHeader } from '../../services/secretary-fastpath';
 import { getUserLanguageById } from '../../services/user-service';
 import type { Lang } from '../../utils/i18n';
 import { buildContentHomeViewState } from '../../services/content-home-view-state';
-import { isValidTenantUserId, recordTenantScopeAnomaly } from '../../services/tenant-scope-observability';
 import { saveIdea } from '../../state/saved-ideas';
-import { getCachedSWR, setCacheSWR } from '../../services/cache-store';
-import { recordSWRRefreshFailure, recordSWRRefreshSuccess } from '../../services/swr-refresh-observability';
 import { sendConditionalApiSuccess } from '../conditional-cache';
+import { ensureCachedRouteTenantScope, handleCachedRoute, routeCacheKey } from '../route-helpers/cached-route-handler';
 
 const CONTENT_HOME_TTL_SECONDS = 120;
 const CONTENT_HOME_SWR_STALE_SECONDS = 600;
-const contentHomeSWRInFlight = new Set<string>();
 
 export function contentRoutes(): Router {
   const router = Router();
@@ -61,16 +58,7 @@ export function contentRoutes(): Router {
     operation: string,
     details?: Record<string, unknown>,
   ): userId is number {
-    if (isValidTenantUserId(userId)) return true;
-    recordTenantScopeAnomaly({
-      layer: 'delivery',
-      operation,
-      reason: 'invalid_user_scope',
-      userId: typeof userId === 'number' ? userId : null,
-      details,
-    });
-    sendError(res, 'UNAUTHORIZED', 'Invalid authenticated user scope', 401);
-    return false;
+    return ensureCachedRouteTenantScope(res, userId, operation, details);
   }
 
   registerContentPipelineRoutes(router);
@@ -85,25 +73,19 @@ export function contentRoutes(): Router {
 
     const language = resolveContentLanguage(req, userId);
     const cacheKey = contentHomeCacheKey(userId, tenantId, language);
-    const cached = getCachedSWR<Awaited<ReturnType<typeof buildContentHomePayload>>>(cacheKey);
-    if (cached) {
-      sendConditionalApiSuccess(res, req, cached.value, {
-        cached: true,
-        maxAgeSeconds: CONTENT_HOME_TTL_SECONDS,
-      });
-      if (!cached.fresh) {
-        contentHomeSWRRefresh(cacheKey, async () => {
-          const refreshed = await buildContentHomePayload(userId, tenantId, language);
-          setCacheSWR(cacheKey, refreshed, CONTENT_HOME_TTL_SECONDS, CONTENT_HOME_SWR_STALE_SECONDS);
-        });
-      }
-      return;
-    }
 
-    const payload = await buildContentHomePayload(userId, tenantId, language);
-    setCacheSWR(cacheKey, payload, CONTENT_HOME_TTL_SECONDS, CONTENT_HOME_SWR_STALE_SECONDS);
-    sendConditionalApiSuccess(res, req, payload, {
-      maxAgeSeconds: CONTENT_HOME_TTL_SECONDS,
+    await handleCachedRoute<Awaited<ReturnType<typeof buildContentHomePayload>>>({
+      cacheKey,
+      ttlSeconds: CONTENT_HOME_TTL_SECONDS,
+      staleSeconds: CONTENT_HOME_SWR_STALE_SECONDS,
+      refreshContext: { source: 'content_route', operation: 'content_home_swr_refresh', userId },
+      fetchFresh: () => buildContentHomePayload(userId, tenantId, language),
+      send: (payload, meta) => {
+        sendConditionalApiSuccess(res, req, payload, {
+          cached: meta.cached,
+          maxAgeSeconds: CONTENT_HOME_TTL_SECONDS,
+        });
+      },
     });
   }));
 
@@ -308,16 +290,7 @@ async function buildContentHomePayload(userId: number, tenantId: number, languag
 }
 
 function contentHomeCacheKey(userId: number, tenantId: number, language: Lang): string {
-  return `u:${userId}:t:${tenantId}:content:home:${language}`;
-}
-
-function contentHomeSWRRefresh(key: string, fn: () => Promise<void>): void {
-  if (contentHomeSWRInFlight.has(key)) return;
-  contentHomeSWRInFlight.add(key);
-  fn()
-    .then(() => recordSWRRefreshSuccess(key))
-    .catch((err) => recordSWRRefreshFailure(key, err, { source: 'content_route', operation: 'content_home_swr_refresh' }))
-    .finally(() => contentHomeSWRInFlight.delete(key));
+  return routeCacheKey('u', userId, 't', tenantId, 'content', 'home', language);
 }
 
 export function normalizeDiscoveredIdeasForResponse(rawIdeas: unknown[], startMs = Date.now()) {

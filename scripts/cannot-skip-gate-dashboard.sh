@@ -95,6 +95,7 @@ GATES=(
   "channel-learner-prompt-cleanliness|src/services/channel-learner.ts|channel-learner-prompt-cleanliness"
   "cost-guardrail-global-rest|src/services/cost-guardrail.ts|cost-guardrail-global-rest"
   "cache-coherence-registry|src/services/cache-coherence-registry.ts|cache-coherence-registry"
+  "cached-route-handler|src/api/route-helpers/cached-route-handler.ts|cached-route-handler"
 )
 
 # Run the classifier once per gate and capture results into JSON.

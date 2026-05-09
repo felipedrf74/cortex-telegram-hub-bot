@@ -9,67 +9,41 @@ import { composeDailyBrief } from '../../services/daily-brief-orchestrator';
 import { composeWeeklyPlan } from '../../services/weekly-plan-orchestrator';
 import { invalidatePlanningCaches } from '../../services/cache-coherence-registry';
 import { getUserById, getUserLanguageById } from '../../services/user-service';
-import { getCachedSWR, setCacheSWR } from '../../services/cache-store';
 import { normalizeLangHeader } from '../../services/secretary-fastpath';
-import { recordSWRRefreshFailure, recordSWRRefreshSuccess } from '../../services/swr-refresh-observability';
-import { isValidTenantUserId, recordTenantScopeAnomaly } from '../../services/tenant-scope-observability';
 import { timedAsync, type RouteTiming } from '../route-timing';
 import { sendConditionalApiSuccess } from '../conditional-cache';
+import { ensureCachedRouteTenantScope, handleCachedRoute, routeCacheKey } from '../route-helpers/cached-route-handler';
 
 const PLAN_TODAY_TTL_SECONDS = 60;
 const PLAN_TODAY_SWR_STALE_SECONDS = 300;
 const PLAN_WEEK_TTL_SECONDS = 120;
 const PLAN_WEEK_SWR_STALE_SECONDS = 600;
-const swrInFlight = new Set<string>();
-
-function ensureValidPlanRouteScope(
-  res: Response,
-  userId: number | undefined,
-  operation: string,
-  details?: Record<string, unknown>,
-): userId is number {
-  if (isValidTenantUserId(userId)) return true;
-  recordTenantScopeAnomaly({
-    layer: 'delivery',
-    operation,
-    reason: 'invalid_user_scope',
-    userId: typeof userId === 'number' ? userId : null,
-    details,
-  });
-  sendError(res, 'UNAUTHORIZED', 'Invalid authenticated user scope', 401);
-  return false;
-}
 
 export function planRoutes(): Router {
   const router = Router();
 
   router.get('/week', async (req: Request, res: Response) => {
     const { userId } = req as AuthenticatedRequest;
-    if (!ensureValidPlanRouteScope(res, userId, 'plan_route_week', { weekStart: req.query.weekStart ?? null })) return;
+    if (!ensureCachedRouteTenantScope(res, userId, 'plan_route_week', { weekStart: req.query.weekStart ?? null })) return;
     const weekStart = typeof req.query.weekStart === 'string' ? req.query.weekStart : undefined;
     const language = resolvePlanLanguage(req, userId);
     const cacheKey = planWeekRouteCacheKey(userId, weekStart, language);
 
     try {
-      const swr = getCachedSWR<Awaited<ReturnType<typeof composeWeeklyPlan>>>(cacheKey);
-      if (swr) {
-        sendConditionalApiSuccess(res, req, swr.value, {
-          cached: true,
-          timings: [{ name: 'cache_hit', durationMs: 0 }],
-        });
-        if (!swr.fresh) {
-          swrRefresh(cacheKey, async () => {
-            const refreshed = await composeWeeklyPlan({ userId, weekStart });
-            setCacheSWR(cacheKey, refreshed, PLAN_WEEK_TTL_SECONDS, PLAN_WEEK_SWR_STALE_SECONDS);
-          });
-        }
-        return;
-      }
-
       const timings: RouteTiming[] = [];
-      const data = await timedAsync(timings, 'weekly_plan', () => composeWeeklyPlan({ userId, weekStart }));
-      setCacheSWR(cacheKey, data, PLAN_WEEK_TTL_SECONDS, PLAN_WEEK_SWR_STALE_SECONDS);
-      sendConditionalApiSuccess(res, req, data, { timings });
+      await handleCachedRoute<Awaited<ReturnType<typeof composeWeeklyPlan>>>({
+        cacheKey,
+        ttlSeconds: PLAN_WEEK_TTL_SECONDS,
+        staleSeconds: PLAN_WEEK_SWR_STALE_SECONDS,
+        refreshContext: { source: 'plan_route', operation: 'plan_swr_refresh', userId },
+        fetchFresh: () => timedAsync(timings, 'weekly_plan', () => composeWeeklyPlan({ userId, weekStart })),
+        send: (data, meta) => {
+          sendConditionalApiSuccess(res, req, data, {
+            cached: meta.cached,
+            timings: meta.cached ? [{ name: 'cache_hit', durationMs: 0 }] : timings,
+          });
+        },
+      });
     } catch (err: any) {
       sendInternalError(res, 'Unable to load the weekly plan right now.');
     }
@@ -77,31 +51,26 @@ export function planRoutes(): Router {
 
   router.get('/today', async (req: Request, res: Response) => {
     const { userId } = req as AuthenticatedRequest;
-    if (!ensureValidPlanRouteScope(res, userId, 'plan_route_today', { date: req.query.date ?? null })) return;
+    if (!ensureCachedRouteTenantScope(res, userId, 'plan_route_today', { date: req.query.date ?? null })) return;
     const date = typeof req.query.date === 'string' ? req.query.date : undefined;
     const language = resolvePlanLanguage(req, userId);
     const cacheKey = planTodayRouteCacheKey(userId, date, language);
 
     try {
-      const swr = getCachedSWR<Awaited<ReturnType<typeof composeDailyBrief>>>(cacheKey);
-      if (swr) {
-        sendConditionalApiSuccess(res, req, swr.value, {
-          cached: true,
-          timings: [{ name: 'cache_hit', durationMs: 0 }],
-        });
-        if (!swr.fresh) {
-          swrRefresh(cacheKey, async () => {
-            const refreshed = await composeDailyBrief({ userId, date, language });
-            setCacheSWR(cacheKey, refreshed, PLAN_TODAY_TTL_SECONDS, PLAN_TODAY_SWR_STALE_SECONDS);
-          });
-        }
-        return;
-      }
-
       const timings: RouteTiming[] = [];
-      const data = await timedAsync(timings, 'daily_brief', () => composeDailyBrief({ userId, date, language }));
-      setCacheSWR(cacheKey, data, PLAN_TODAY_TTL_SECONDS, PLAN_TODAY_SWR_STALE_SECONDS);
-      sendConditionalApiSuccess(res, req, data, { timings });
+      await handleCachedRoute<Awaited<ReturnType<typeof composeDailyBrief>>>({
+        cacheKey,
+        ttlSeconds: PLAN_TODAY_TTL_SECONDS,
+        staleSeconds: PLAN_TODAY_SWR_STALE_SECONDS,
+        refreshContext: { source: 'plan_route', operation: 'plan_swr_refresh', userId },
+        fetchFresh: () => timedAsync(timings, 'daily_brief', () => composeDailyBrief({ userId, date, language })),
+        send: (data, meta) => {
+          sendConditionalApiSuccess(res, req, data, {
+            cached: meta.cached,
+            timings: meta.cached ? [{ name: 'cache_hit', durationMs: 0 }] : timings,
+          });
+        },
+      });
     } catch (err: any) {
       sendInternalError(res, 'Unable to load the daily plan right now.');
     }
@@ -109,7 +78,7 @@ export function planRoutes(): Router {
 
   router.post('/recompute', async (req: Request, res: Response) => {
     const { userId } = req as AuthenticatedRequest;
-    if (!ensureValidPlanRouteScope(res, userId, 'plan_route_recompute', {
+    if (!ensureCachedRouteTenantScope(res, userId, 'plan_route_recompute', {
       weekStart: req.body?.weekStart ?? null,
       date: req.body?.date ?? null,
     })) return;
@@ -129,7 +98,7 @@ export function planRoutes(): Router {
 
   router.get('/week/explain', async (req: Request, res: Response) => {
     const { userId } = req as AuthenticatedRequest;
-    if (!ensureValidPlanRouteScope(res, userId, 'plan_route_week_explain', { weekStart: req.query.weekStart ?? null })) return;
+    if (!ensureCachedRouteTenantScope(res, userId, 'plan_route_week_explain', { weekStart: req.query.weekStart ?? null })) return;
     const weekStart = typeof req.query.weekStart === 'string' ? req.query.weekStart : undefined;
     const user = getUserById(userId);
 
@@ -157,15 +126,6 @@ export function planRoutes(): Router {
   return router;
 }
 
-function swrRefresh(key: string, fn: () => Promise<void>): void {
-  if (swrInFlight.has(key)) return;
-  swrInFlight.add(key);
-  fn()
-    .then(() => recordSWRRefreshSuccess(key))
-    .catch((err) => recordSWRRefreshFailure(key, err, { source: 'plan_route', operation: 'plan_swr_refresh' }))
-    .finally(() => swrInFlight.delete(key));
-}
-
 function resolvePlanLanguage(req: Request, userId: number): string {
   const rawHeader = req.header?.('x-language');
   if (rawHeader) return normalizeLangHeader(rawHeader);
@@ -174,12 +134,12 @@ function resolvePlanLanguage(req: Request, userId: number): string {
 
 function planTodayRouteCacheKey(userId: number, date: string | undefined, language: string): string {
   const targetDate = resolveDateKey(date);
-  return `plan:today:u:${userId}:${targetDate}:route:${languageBucket(language)}`;
+  return routeCacheKey('plan', 'today', 'u', userId, targetDate, 'route', languageBucket(language));
 }
 
 function planWeekRouteCacheKey(userId: number, weekStart: string | undefined, language: string): string {
   const targetWeek = resolveWeekKey(weekStart);
-  return `plan:week:u:${userId}:${targetWeek}:route:${languageBucket(language)}`;
+  return routeCacheKey('plan', 'week', 'u', userId, targetWeek, 'route', languageBucket(language));
 }
 
 function resolveDateKey(date: string | undefined): string {

@@ -13,7 +13,6 @@ import { getOwnerBootstrapUser, getUserTimezoneById } from '../../services/user-
 import { ensureValidTenantRouteScope } from '../tenant-route-scope';
 import { invalidateTaskCaches } from '../../services/cache-coherence-registry';
 import { normalizeMicrosoftRecurrence } from '../../services/recurrence-utils';
-import { recordSWRRefreshFailure, recordSWRRefreshSuccess } from '../../services/swr-refresh-observability';
 import { consumeResourceBudget } from '../../services/resource-budgets';
 import {
   buildTaskWorkingSetPolicy,
@@ -22,6 +21,8 @@ import {
   normalizeTaskListScope,
   statusForTaskScope,
 } from '../../services/task-working-set-policy';
+import { handleCachedRoute, routeCacheKey } from '../route-helpers/cached-route-handler';
+import { sendProviderRouteError } from '../route-helpers/provider-error-classifier';
 
 // Cache TTLs
 const LISTS_CACHE_TTL = 300;  // 5 min for list names (rarely change)
@@ -33,10 +34,6 @@ const TASKS_CACHE_TTL = 120;  // 2 min for task items (change more often)
 const LISTS_SWR_STALE = 1800;  // 30 min stale grace for lists
 const TASKS_SWR_STALE = 600;   // 10 min stale grace for individual lists
 
-// In-flight refresh tracker — prevents 50 concurrent SWR requests from
-// triggering 50 background refreshes for the same key. Each key can have
-// at most one in-flight background fetch at a time.
-const swrInFlight = new Set<string>();
 const completeTaskInFlight = new Map<string, Promise<{ task: any; alreadyCompleted: boolean }>>();
 
 export function dateKeyInAppTimezone(
@@ -62,16 +59,6 @@ export function taskDueDateKey(
   return dateKeyInAppTimezone(raw, timezone);
 }
 
-function swrRefresh(key: string, fn: () => Promise<void>): void {
-  if (swrInFlight.has(key)) return;
-  swrInFlight.add(key);
-  // Detached so the response goes out immediately.
-  fn()
-    .then(() => recordSWRRefreshSuccess(key))
-    .catch((err) => recordSWRRefreshFailure(key, err, { source: 'tasks_route', operation: 'task_swr_refresh' }))
-    .finally(() => swrInFlight.delete(key));
-}
-
 /**
  * Get the task provider for the current request's user.
  * If the user has MS To-Do connected → microsoft-todo module.
@@ -86,35 +73,6 @@ function getTodo(req?: any) {
     }
   }
   return microsoftTodo;
-}
-
-function sendTaskProviderError(
-  res: Response,
-  err: unknown,
-  operation: 'create' | 'read' | 'update' | 'delete',
-): void {
-  const raw = typeof err === 'string'
-    ? err
-    : (err && typeof err === 'object' && 'message' in err ? String((err as any).message) : '');
-  const message = raw.toLowerCase();
-  const status = typeof err === 'object' && err && 'status' in err ? Number((err as any).status) : undefined;
-
-  if (status === 401 || status === 403 || /\b(invalid_grant|unauthorized|forbidden|expired|reauth|token)\b/.test(message)) {
-    sendError(res, 'PROVIDER_AUTH_REQUIRED', 'Reconnect your task provider and try again.', 401);
-    return;
-  }
-
-  if (status === 429 || /\b(rate|quota|throttle)\b/.test(message)) {
-    sendError(res, 'PROVIDER_RATE_LIMITED', 'Your task provider is rate limited right now. Try again shortly.', 429);
-    return;
-  }
-
-  if ((status && status >= 500) || /\b(timeout|network|unavailable|temporar|econnreset|etimedout)\b/.test(message)) {
-    sendError(res, 'PROVIDER_TEMPORARY_UNAVAILABLE', 'Your task provider is temporarily unavailable. Try again shortly.', 503);
-    return;
-  }
-
-  sendInternalError(res, `Failed to ${operation} task`, { code: 'TASK_PROVIDER_FAILED' });
 }
 
 export function taskRoutes(): Router {
@@ -148,38 +106,22 @@ export function taskRoutes(): Router {
         sendError(res, 'UNAUTHORIZED', 'Authenticated user required', 401);
         return;
       }
-      const cacheKey = `u:${userId}:task-lists`;
-      const swr = getCachedSWR<any>(cacheKey);
-
-      if (swr) {
-        // Serve cached value immediately. If it's stale, trigger an async
-        // refresh so the NEXT request gets fresh data.
-        sendSuccess(res, swr.value, { cached: true });
-        if (!swr.fresh) {
-          swrRefresh(cacheKey, async () => {
-            const todo = getTodo(req);
-            const result = await todo.getLists();
-            const listsArray = result?.data || result || [];
-            const lists = Array.isArray(listsArray) ? listsArray : [];
-            const countByListId = await buildTaskCountMap(todo, lists);
-            const formatted = formatTaskLists(lists, countByListId);
-            setCacheSWR(cacheKey, { lists: formatted }, LISTS_CACHE_TTL, LISTS_SWR_STALE);
-          });
-        }
-        return;
-      }
-
-      // Cold path: nothing in cache at all — synchronous fetch.
-      const todo = getTodo(req);
-      const result = await todo.getLists();
-      const listsArray = result?.data || result || [];
-      const lists = Array.isArray(listsArray) ? listsArray : [];
-      const countByListId = await buildTaskCountMap(todo, lists);
-      const formatted = formatTaskLists(lists, countByListId);
-
-      const payload = { lists: formatted };
-      setCacheSWR(cacheKey, payload, LISTS_CACHE_TTL, LISTS_SWR_STALE);
-      sendSuccess(res, payload);
+      const cacheKey = routeCacheKey('u', userId, 'task-lists');
+      await handleCachedRoute<any>({
+        cacheKey,
+        ttlSeconds: LISTS_CACHE_TTL,
+        staleSeconds: LISTS_SWR_STALE,
+        refreshContext: { source: 'tasks_route', operation: 'task_swr_refresh', userId },
+        fetchFresh: async () => {
+          const todo = getTodo(req);
+          const result = await todo.getLists();
+          const listsArray = result?.data || result || [];
+          const lists = Array.isArray(listsArray) ? listsArray : [];
+          const countByListId = await buildTaskCountMap(todo, lists);
+          return { lists: formatTaskLists(lists, countByListId) };
+        },
+        send: (payload, meta) => sendSuccess(res, payload, { cached: meta.cached }),
+      });
     } catch (err: any) {
       logger.error({ err }, 'iOS tasks/lists failed');
       sendInternalError(res, 'Failed to fetch lists');
@@ -361,7 +303,7 @@ export function taskRoutes(): Router {
       sendError(res, 'UNAUTHORIZED', 'Authenticated user required', 401);
       return;
     }
-    const cacheKey = `u:${userId}:tasks-filtered:${filter}`;
+    const cacheKey = routeCacheKey('u', userId, 'tasks-filtered', filter);
     const syncProvider = resolveTaskProvider(userId);
 
     // Helper for the actual fetch+filter+cache write.
@@ -370,9 +312,7 @@ export function taskRoutes(): Router {
       const result = await todo.getAllPendingTasks();
       const allTasks = result?.data || result || [];
       if (!Array.isArray(allTasks)) {
-        const empty = { tasks: [], count: 0 };
-        setCacheSWR(cacheKey, empty, TASKS_CACHE_TTL, TASKS_SWR_STALE);
-        return empty;
+        return { tasks: [], count: 0 };
       }
 
       // Reuse the same cross-list snapshot for the chat fast-path cache so
@@ -403,19 +343,18 @@ export function taskRoutes(): Router {
       const tasks = filtered.map((t: any) => normalizeTaskDto(t, syncProvider));
 
       const payload = { tasks, count: tasks.length };
-      setCacheSWR(cacheKey, payload, TASKS_CACHE_TTL, TASKS_SWR_STALE);
       return payload;
     };
 
     try {
-      const swr = getCachedSWR<any>(cacheKey);
-      if (swr) {
-        sendSuccess(res, swr.value, { cached: true });
-        if (!swr.fresh) swrRefresh(cacheKey, async () => { await fetchAndCache(); });
-        return;
-      }
-      const payload = await fetchAndCache();
-      sendSuccess(res, payload);
+      await handleCachedRoute<any>({
+        cacheKey,
+        ttlSeconds: TASKS_CACHE_TTL,
+        staleSeconds: TASKS_SWR_STALE,
+        refreshContext: { source: 'tasks_route', operation: 'task_swr_refresh', userId },
+        fetchFresh: fetchAndCache,
+        send: (payload, meta) => sendSuccess(res, payload, { cached: meta.cached }),
+      });
     } catch (err: any) {
       logger.error({ err }, 'iOS tasks/filtered failed');
       sendInternalError(res, 'Failed to fetch tasks');
@@ -435,9 +374,7 @@ export function taskRoutes(): Router {
     const pageSize = capTaskPageSize(req.query.pageSize ?? req.query.limit, scope === 'completed' ? 50 : 75, 150);
     const completedAfter = typeof req.query.completedAfter === 'string' ? req.query.completedAfter : undefined;
     const userId = (req as any).userId;
-    const cacheKey = userId
-      ? `u:${userId}:tasks:${listId}:${scope}:${status || 'all'}:${pageSize}:${completedAfter || ''}`
-      : `tasks:${listId}:${scope}:${status || 'all'}:${pageSize}:${completedAfter || ''}`;
+    const cacheKey = routeCacheKey('u', userId, 'tasks', listId, scope, status || 'all', pageSize, completedAfter || '');
     const syncProvider = resolveTaskProvider(userId);
 
     // Helper that does the actual MS Graph fetch + cache write.
@@ -475,31 +412,27 @@ export function taskRoutes(): Router {
           hasMore: formatted.length >= pageSize,
         },
       };
-      setCacheSWR(cacheKey, payload, TASKS_CACHE_TTL, TASKS_SWR_STALE);
       return payload;
     };
 
     try {
-      const swr = getCachedSWR<any>(cacheKey);
-      if (swr) {
-        const hasEmptyDetailWithPositiveCount = Array.isArray(swr.value?.tasks)
-          && swr.value.tasks.length === 0
-          && cachedListCount(userId, listId) > 0;
-        if (!hasEmptyDetailWithPositiveCount) {
-          sendSuccess(res, swr.value, { cached: true });
-          if (!swr.fresh) swrRefresh(cacheKey, async () => { await fetchAndCache(); });
-          return;
-        }
-        logger.debug(
-          { userId, listId },
-          'tasks/list cache bypassed because task-lists cache reports items for an empty detail cache',
-        );
-        const payload = await fetchAndCache();
-        sendSuccess(res, payload);
-        return;
-      }
-      const payload = await fetchAndCache();
-      sendSuccess(res, payload);
+      await handleCachedRoute<any>({
+        cacheKey,
+        ttlSeconds: TASKS_CACHE_TTL,
+        staleSeconds: TASKS_SWR_STALE,
+        refreshContext: { source: 'tasks_route', operation: 'task_swr_refresh', userId },
+        fetchFresh: fetchAndCache,
+        shouldServeCached: ({ value }) => !(Array.isArray(value?.tasks)
+          && value.tasks.length === 0
+          && cachedListCount(userId, listId) > 0),
+        onCachedBypass: () => {
+          logger.debug(
+            { userId, listId },
+            'tasks/list cache bypassed because task-lists cache reports items for an empty detail cache',
+          );
+        },
+        send: (payload, meta) => sendSuccess(res, payload, { cached: meta.cached }),
+      });
     } catch (err: any) {
       logger.error({ err }, 'iOS tasks/list failed');
       sendInternalError(res, 'Failed to fetch list tasks');
@@ -578,7 +511,7 @@ export function taskRoutes(): Router {
           return;
         }
         logger.error({ err: result?.error, list: resolvedListName }, 'iOS tasks create failed at MS Graph');
-        sendTaskProviderError(res, result?.error, 'create');
+        sendProviderRouteError(res, result?.error, 'create', 'task', 'TASK_PROVIDER_FAILED');
         return;
       }
 

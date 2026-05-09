@@ -23,15 +23,14 @@ import {
 } from '../../services/google-gmail';
 import { getEvents as getOutlookEvents } from '../../services/outlook-calendar';
 import { getEvents as getGoogleEvents } from '../../services/google-calendar';
-import { getCachedSWR, setCacheSWR } from '../../services/cache-store';
 import { logger } from '../../utils/logger';
 import { config } from '../../config';
 import { secureSecretMatches } from '../secret-guards';
 import { AITimeoutError, withTimeout } from '../../utils/timeout';
-import { isValidTenantUserId, recordTenantScopeAnomaly } from '../../services/tenant-scope-observability';
+import { isValidTenantUserId } from '../../services/tenant-scope-observability';
 import { listTasks } from '../../services/task-store/task-service';
 import type { NormalizedTask } from '../../services/task-store/types';
-import { recordSWRRefreshFailure, recordSWRRefreshSuccess } from '../../services/swr-refresh-observability';
+import { ensureCachedRouteTenantScope, handleCachedRoute, routeCacheKey } from '../route-helpers/cached-route-handler';
 import {
   buildSkillNotificationFixtureIntent,
   createNotificationIntent,
@@ -62,7 +61,6 @@ const INBOX_SUMMARY_CACHE_TTL = 30;
 const INBOX_SUMMARY_SWR_STALE = 180;
 const DEFAULT_INBOX_SOURCE_TIMEOUT_MS = 3_000;
 const DEFAULT_INBOX_SUMMARY_SOURCE_TIMEOUT_MS = 2_000;
-const inboxSWRInFlight = new Set<string>();
 
 interface UnifiedInboxItem {
   kind: InboxItemKind;
@@ -158,30 +156,13 @@ async function runInboxSource<T>(
   }
 }
 
-function reportInvalidNotificationsRouteScope(
-  operation: string,
-  userId: number | undefined,
-  details?: Record<string, unknown>,
-): void {
-  recordTenantScopeAnomaly({
-    layer: 'delivery',
-    operation,
-    reason: 'invalid_user_scope',
-    userId: typeof userId === 'number' ? userId : null,
-    details,
-  });
-}
-
 function ensureValidNotificationsRouteScope(
   res: Response,
   userId: number | undefined,
   operation: string,
   details?: Record<string, unknown>,
 ): userId is number {
-  if (isValidTenantUserId(userId)) return true;
-  reportInvalidNotificationsRouteScope(operation, userId, details);
-  sendError(res, 'UNAUTHORIZED', 'Invalid authenticated user scope', 401);
-  return false;
+  return ensureCachedRouteTenantScope(res, userId, operation, details);
 }
 
 function safeIso(input: unknown, fallback = new Date()): string {
@@ -335,15 +316,6 @@ function compareInboxItems(a: UnifiedInboxItem, b: UnifiedInboxItem): number {
   const scoreDiff = inboxPriorityScore(b) - inboxPriorityScore(a);
   if (scoreDiff !== 0) return scoreDiff;
   return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
-}
-
-function swrRefresh(key: string, fn: () => Promise<void>): void {
-  if (inboxSWRInFlight.has(key)) return;
-  inboxSWRInFlight.add(key);
-  fn()
-    .then(() => recordSWRRefreshSuccess(key))
-    .catch((err) => recordSWRRefreshFailure(key, err, { source: 'notifications_route', operation: 'inbox_swr_refresh' }))
-    .finally(() => inboxSWRInFlight.delete(key));
 }
 
 async function buildUnifiedInbox(userId: number, limit: number): Promise<{
@@ -1053,24 +1025,15 @@ export function notificationRoutes(): Router {
     const { userId } = req as unknown as AuthenticatedRequest;
     if (!ensureValidNotificationsRouteScope(res, userId, 'notifications_route_inbox')) return;
     const limit = parseInt(String(req.query.limit || '30'), 10);
-    const cacheKey = `unified-inbox:${userId}:${limit}`;
-    const cached = getCachedSWR<any>(cacheKey);
-
-    if (cached) {
-      sendSuccess(res, cached.value, { cached: true });
-
-      if (!cached.fresh) {
-        swrRefresh(cacheKey, async () => {
-          const refreshed = await buildUnifiedInbox(userId, limit);
-          setCacheSWR(cacheKey, refreshed, INBOX_CACHE_TTL, INBOX_SWR_STALE);
-        });
-      }
-      return;
-    }
-
-    const inbox = await buildUnifiedInbox(userId, limit);
-    setCacheSWR(cacheKey, inbox, INBOX_CACHE_TTL, INBOX_SWR_STALE);
-    sendSuccess(res, inbox);
+    const cacheKey = routeCacheKey('unified-inbox', userId, limit);
+    await handleCachedRoute<any>({
+      cacheKey,
+      ttlSeconds: INBOX_CACHE_TTL,
+      staleSeconds: INBOX_SWR_STALE,
+      refreshContext: { source: 'notifications_route', operation: 'inbox_swr_refresh', userId },
+      fetchFresh: () => buildUnifiedInbox(userId, limit),
+      send: (inbox, meta) => sendSuccess(res, inbox, { cached: meta.cached }),
+    });
   }));
 
   /**
@@ -1119,24 +1082,15 @@ export function notificationRoutes(): Router {
   router.get('/unread-count', asyncHandler(async (req, res: Response) => {
     const { userId } = req as unknown as AuthenticatedRequest;
     if (!ensureValidNotificationsRouteScope(res, userId, 'notifications_route_unread_count')) return;
-    const cacheKey = `unified-inbox-unread:${userId}`;
-    const cached = getCachedSWR<{ unreadCount: number; warningCodes: string[]; warnings: string[] }>(cacheKey);
-
-    if (cached) {
-      sendSuccess(res, cached.value, { cached: true });
-
-      if (!cached.fresh) {
-        swrRefresh(cacheKey, async () => {
-          const refreshed = await buildUnifiedInboxSummary(userId);
-          setCacheSWR(cacheKey, refreshed, INBOX_SUMMARY_CACHE_TTL, INBOX_SUMMARY_SWR_STALE);
-        });
-      }
-      return;
-    }
-
-    const summary = await buildUnifiedInboxSummary(userId);
-    setCacheSWR(cacheKey, summary, INBOX_SUMMARY_CACHE_TTL, INBOX_SUMMARY_SWR_STALE);
-    sendSuccess(res, summary);
+    const cacheKey = routeCacheKey('unified-inbox-unread', userId);
+    await handleCachedRoute<{ unreadCount: number; warningCodes: string[]; warnings: string[] }>({
+      cacheKey,
+      ttlSeconds: INBOX_SUMMARY_CACHE_TTL,
+      staleSeconds: INBOX_SUMMARY_SWR_STALE,
+      refreshContext: { source: 'notifications_route', operation: 'inbox_swr_refresh', userId },
+      fetchFresh: () => buildUnifiedInboxSummary(userId),
+      send: (summary, meta) => sendSuccess(res, summary, { cached: meta.cached }),
+    });
   }));
 
   /**

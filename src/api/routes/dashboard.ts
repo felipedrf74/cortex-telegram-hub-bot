@@ -6,16 +6,14 @@ import { logger } from '../../utils/logger';
 import { config } from '../../config';
 import { getRuntimeStatus } from '../../services/runtime-status';
 import { getCachedSWR, setCacheSWR } from '../../services/cache-store';
-import { sendError, sendInternalError } from '../response-helpers';
+import { sendInternalError } from '../response-helpers';
 import { normalizeLangHeader } from '../../services/secretary-fastpath';
 import { getPreferredDisplayNameById, getUserLanguageById } from '../../services/user-service';
 import { getDailyQuotaStatus } from '../../services/cost-guardrail';
 import { composeDailyBrief } from '../../services/daily-brief-orchestrator';
 import { buildDashboardHomeViewState } from '../../services/dashboard-home-view-state';
 import { buildScreenContractMeta } from '../../services/screen-contract-meta';
-import { recordSWRRefreshFailure, recordSWRRefreshSuccess } from '../../services/swr-refresh-observability';
 import type { Lang } from '../../utils/i18n';
-import { isValidTenantUserId, recordTenantScopeAnomaly } from '../../services/tenant-scope-observability';
 import {
   buildUnavailableSection,
   fetchCalendar,
@@ -26,6 +24,7 @@ import {
 import { buildDashboardHomeInput } from './dashboard-home-input';
 import { timedAsync, timedSync, type RouteTiming } from '../route-timing';
 import { sendConditionalApiSuccess } from '../conditional-cache';
+import { ensureCachedRouteTenantScope, handleCachedRoute, routeCacheKey } from '../route-helpers/cached-route-handler';
 
 export { mapDashboardTask, queryContentPipelineCounts } from './dashboard-data-fetchers';
 export { buildHomeOrchestrationSummary } from './dashboard-home-input';
@@ -36,7 +35,6 @@ const DASHBOARD_HOME_CACHE_TTL = 60;
 const DASHBOARD_HOME_SWR_STALE = 300;
 const DASHBOARD_SECTION_TIMEOUT_MS = readPositiveIntEnv('DASHBOARD_SECTION_TIMEOUT_MS', 3000);
 const DASHBOARD_HOME_BRIEF_TIMEOUT_MS = readPositiveIntEnv('DASHBOARD_HOME_BRIEF_TIMEOUT_MS', 2500);
-const swrInFlight = new Set<string>();
 
 function readPositiveIntEnv(name: string, fallback: number): number {
   const parsed = Number.parseInt(process.env[name] || '', 10);
@@ -56,65 +54,30 @@ function withDashboardTimeout<T>(promise: Promise<T>, timeoutMs: number, label: 
   });
 }
 
-function ensureValidDashboardRouteScope(
-  res: Response,
-  userId: number | undefined,
-  operation: string,
-  details?: Record<string, unknown>,
-): userId is number {
-  if (isValidTenantUserId(userId)) return true;
-  recordTenantScopeAnomaly({
-    layer: 'delivery',
-    operation,
-    reason: 'invalid_user_scope',
-    userId: typeof userId === 'number' ? userId : null,
-    details,
-  });
-  sendError(res, 'UNAUTHORIZED', 'Invalid authenticated user scope', 401);
-  return false;
-}
-
-function swrRefresh(key: string, fn: () => Promise<void>): void {
-  if (swrInFlight.has(key)) return;
-  swrInFlight.add(key);
-  fn()
-    .then(() => recordSWRRefreshSuccess(key))
-    .catch((err) => recordSWRRefreshFailure(key, err, { source: 'dashboard_route', operation: 'dashboard_swr_refresh' }))
-    .finally(() => swrInFlight.delete(key));
-}
-
 export function dashboardRoutes(): Router {
   const router = Router();
 
   router.get('/home', async (req: Request, res: Response) => {
     const { userId } = req as AuthenticatedRequest;
-    if (!ensureValidDashboardRouteScope(res, userId, 'dashboard_route_home')) return;
+    if (!ensureCachedRouteTenantScope(res, userId, 'dashboard_route_home')) return;
     const language = resolveDashboardLanguage(req, userId);
 
     try {
       const cacheKey = dashboardHomeCacheKeyFor(userId, language);
-      const swr = getCachedSWR<any>(cacheKey);
-
-      if (swr) {
-        sendConditionalApiSuccess(res, req, swr.value, {
-          cached: true,
-          timings: [{ name: 'cache_hit', durationMs: 0 }],
-        });
-
-        if (!swr.fresh) {
-          swrRefresh(cacheKey, async () => {
-            const home = await buildDashboardHomePayload(userId, language);
-            setCacheSWR(cacheKey, home, DASHBOARD_HOME_CACHE_TTL, DASHBOARD_HOME_SWR_STALE);
-          });
-        }
-        return;
-      }
-
       const timings: RouteTiming[] = [];
-      const home = await buildDashboardHomePayload(userId, language, timings);
-      setCacheSWR(cacheKey, home, DASHBOARD_HOME_CACHE_TTL, DASHBOARD_HOME_SWR_STALE);
-
-      sendConditionalApiSuccess(res, req, home, { timings });
+      await handleCachedRoute<any>({
+        cacheKey,
+        ttlSeconds: DASHBOARD_HOME_CACHE_TTL,
+        staleSeconds: DASHBOARD_HOME_SWR_STALE,
+        refreshContext: { source: 'dashboard_route', operation: 'dashboard_swr_refresh', userId },
+        fetchFresh: () => buildDashboardHomePayload(userId, language, timings),
+        send: (home, meta) => {
+          sendConditionalApiSuccess(res, req, home, {
+            cached: meta.cached,
+            timings: meta.cached ? [{ name: 'cache_hit', durationMs: 0 }] : timings,
+          });
+        },
+      });
     } catch (err: any) {
       logger.error({ err, platform: 'ios' }, 'Dashboard home aggregation failed');
       sendInternalError(res, 'Unable to load the home briefing right now.');
@@ -129,33 +92,25 @@ export function dashboardRoutes(): Router {
    */
   router.get('/', async (req: Request, res: Response) => {
     const { userId } = req as AuthenticatedRequest;
-    if (!ensureValidDashboardRouteScope(res, userId, 'dashboard_route_root')) return;
+    if (!ensureCachedRouteTenantScope(res, userId, 'dashboard_route_root')) return;
     const language = resolveDashboardLanguage(req, userId);
 
     try {
       const dashboardCacheKey = dashboardCacheKeyFor(userId, language);
-      const swr = getCachedSWR<any>(dashboardCacheKey);
-
-      if (swr) {
-        sendConditionalApiSuccess(res, req, swr.value, {
-          cached: true,
-          timings: [{ name: 'cache_hit', durationMs: 0 }],
-        });
-
-        if (!swr.fresh) {
-          swrRefresh(dashboardCacheKey, async () => {
-            const dashboard = await buildDashboardPayload(userId, language);
-            setCacheSWR(dashboardCacheKey, dashboard, DASHBOARD_CACHE_TTL, DASHBOARD_SWR_STALE);
-          });
-        }
-        return;
-      }
-
       const timings: RouteTiming[] = [];
-      const dashboard = await buildDashboardPayload(userId, language, timings);
-      setCacheSWR(dashboardCacheKey, dashboard, DASHBOARD_CACHE_TTL, DASHBOARD_SWR_STALE);
-
-      sendConditionalApiSuccess(res, req, dashboard, { timings });
+      await handleCachedRoute<any>({
+        cacheKey: dashboardCacheKey,
+        ttlSeconds: DASHBOARD_CACHE_TTL,
+        staleSeconds: DASHBOARD_SWR_STALE,
+        refreshContext: { source: 'dashboard_route', operation: 'dashboard_swr_refresh', userId },
+        fetchFresh: () => buildDashboardPayload(userId, language, timings),
+        send: (dashboard, meta) => {
+          sendConditionalApiSuccess(res, req, dashboard, {
+            cached: meta.cached,
+            timings: meta.cached ? [{ name: 'cache_hit', durationMs: 0 }] : timings,
+          });
+        },
+      });
     } catch (err: any) {
       logger.error({ err, platform: 'ios' }, 'Dashboard aggregation failed');
       sendInternalError(res, 'Unable to load the dashboard right now.');
@@ -184,11 +139,11 @@ export async function warmDashboardCache(userId: number): Promise<void> {
 }
 
 function dashboardCacheKeyFor(userId: number, language: Lang): string {
-  return `dashboard:${userId}:${language}`;
+  return routeCacheKey('dashboard', userId, language);
 }
 
 function dashboardHomeCacheKeyFor(userId: number, language: Lang): string {
-  return `dashboard-home:${userId}:${language}`;
+  return routeCacheKey('dashboard-home', userId, language);
 }
 
 function resolveDashboardLanguage(req: Request, userId: number): Lang {

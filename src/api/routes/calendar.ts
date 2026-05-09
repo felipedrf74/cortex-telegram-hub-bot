@@ -28,20 +28,18 @@ import {
   hasWritableCalendarForUser,
   type CalendarSource,
 } from '../../services/unified-calendar';
-import { getCachedSWR, setCacheSWR } from '../../services/cache-store';
 import { invalidateCalendarCaches } from '../../services/cache-coherence-registry';
 import { sendSuccess, sendError, sendInternalError, asyncHandler } from '../response-helpers';
 import { getFocusBlockRecommendation } from '../../services/focus-planner';
 import { ensureValidTenantRouteScope } from '../tenant-route-scope';
 import { filterCalendarEventsForTrainingScope } from '../../services/training-calendar-scope';
 import { sendConditionalApiSuccess } from '../conditional-cache';
-import { recordSWRRefreshFailure, recordSWRRefreshSuccess } from '../../services/swr-refresh-observability';
+import { handleCachedRoute, routeCacheKey } from '../route-helpers/cached-route-handler';
 
 const TODAY_TTL = 120; // 2 min — calendar can change mid-day from notifications
 const RANGE_TTL = 60;  // 1 min for arbitrary ranges
 const TODAY_SWR_STALE = 300;
 const RANGE_SWR_STALE = 300;
-const swrInFlight = new Set<string>();
 
 export function calendarRoutes(): Router {
   const router = Router();
@@ -73,25 +71,19 @@ export function calendarRoutes(): Router {
     }
 
     const { start, end } = parseRange(req.query.start as string | undefined, req.query.end as string | undefined);
-    const cacheKey = userId ? `u:${userId}:calendar:events:${start}:${end}` : `calendar:events:${start}:${end}`;
-
-    const cached = getCachedSWR<any>(cacheKey);
-    if (cached) {
-      const payload = normalizeCalendarEventsPayload(cached.value);
-      sendConditionalApiSuccess(res, req, payload, { cached: true });
-      if (!cached.fresh) {
-        swrRefresh(cacheKey, async () => {
-          const refreshed = await buildEventsPayload(start, end, userId);
-          setCacheSWR(cacheKey, refreshed, RANGE_TTL, RANGE_SWR_STALE);
-        });
-      }
-      return;
-    }
+    const cacheKey = calendarEventsCacheKey(userId, start, end);
 
     try {
-      const payload = await buildEventsPayload(start, end, userId);
-      setCacheSWR(cacheKey, payload, RANGE_TTL, RANGE_SWR_STALE);
-      sendConditionalApiSuccess(res, req, payload);
+      await handleCachedRoute<any>({
+        cacheKey,
+        ttlSeconds: RANGE_TTL,
+        staleSeconds: RANGE_SWR_STALE,
+        refreshContext: { source: 'calendar_route', operation: 'calendar_swr_refresh', userId },
+        fetchFresh: () => buildEventsPayload(start, end, userId),
+        send: (value, meta) => {
+          sendConditionalApiSuccess(res, req, normalizeCalendarEventsPayload(value), { cached: meta.cached });
+        },
+      });
     } catch (err: any) {
       if (err instanceof CalendarFetchError) {
         sendError(res, 'CALENDAR_FETCH_FAILED', err.message, 503, {
@@ -359,24 +351,19 @@ export function calendarRoutes(): Router {
       return;
     }
 
-    const cacheKey = userId ? `u:${userId}:calendar:today:${todayDateString()}` : `calendar:today:${todayDateString()}`;
-    const cached = getCachedSWR<any>(cacheKey);
-    if (cached) {
-      const payload = { ...normalizeCalendarEventsPayload(cached.value), date: todayDateString() };
-      sendConditionalApiSuccess(res, req, payload, { cached: true });
-      if (!cached.fresh) {
-        swrRefresh(cacheKey, async () => {
-          const refreshed = await buildTodayPayload(userId);
-          setCacheSWR(cacheKey, refreshed, TODAY_TTL, TODAY_SWR_STALE);
-        });
-      }
-      return;
-    }
+    const cacheKey = calendarTodayCacheKey(userId, todayDateString());
 
     try {
-      const payload = await buildTodayPayload(userId);
-      setCacheSWR(cacheKey, payload, TODAY_TTL, TODAY_SWR_STALE);
-      sendConditionalApiSuccess(res, req, { ...payload, date: todayDateString() });
+      await handleCachedRoute<any>({
+        cacheKey,
+        ttlSeconds: TODAY_TTL,
+        staleSeconds: TODAY_SWR_STALE,
+        refreshContext: { source: 'calendar_route', operation: 'calendar_swr_refresh', userId },
+        fetchFresh: () => buildTodayPayload(userId),
+        send: (value, meta) => {
+          sendConditionalApiSuccess(res, req, { ...normalizeCalendarEventsPayload(value), date: todayDateString() }, { cached: meta.cached });
+        },
+      });
     } catch (err: any) {
       if (err instanceof CalendarFetchError) {
         sendError(res, 'CALENDAR_FETCH_FAILED', err.message, 503, {
@@ -428,15 +415,6 @@ class CalendarFetchError extends Error {
   }
 }
 
-function swrRefresh(key: string, fn: () => Promise<void>): void {
-  if (swrInFlight.has(key)) return;
-  swrInFlight.add(key);
-  fn()
-    .then(() => recordSWRRefreshSuccess(key))
-    .catch((err) => recordSWRRefreshFailure(key, err, { source: 'calendar_route', operation: 'calendar_swr_refresh' }))
-    .finally(() => swrInFlight.delete(key));
-}
-
 function normalizeCalendarEventsPayload(value: any): {
   events: any[];
   status: string;
@@ -452,6 +430,18 @@ function normalizeCalendarEventsPayload(value: any): {
     warningCodes: Array.isArray(value?.warningCodes) ? value.warningCodes : [],
     warnings: Array.isArray(value?.warnings) ? value.warnings : [],
   };
+}
+
+function calendarEventsCacheKey(userId: number | undefined, start: string, end: string): string {
+  return typeof userId === 'number' && userId > 0
+    ? routeCacheKey('u', userId, 'calendar', 'events', start, end)
+    : routeCacheKey('calendar', 'events', start, end);
+}
+
+function calendarTodayCacheKey(userId: number | undefined, date: string): string {
+  return typeof userId === 'number' && userId > 0
+    ? routeCacheKey('u', userId, 'calendar', 'today', date)
+    : routeCacheKey('calendar', 'today', date);
 }
 
 async function buildEventsPayload(start: string, end: string, userId: number): Promise<{
