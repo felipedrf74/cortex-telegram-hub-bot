@@ -5,7 +5,7 @@
 
 | Area | Path | Branch | Commit | Dirty state | Version | Migrations |
 | --- | --- | --- | --- | --- | --- | --- |
-| Backend | `/Users/felipedominguez/Desktop/Custom Connectors/Cortex/cortex-telegram-hub-bot` | `staging-fixture-harness-2026-05` | `13909790` | `dirty` | `4.14.144` | `121` |
-| iOS | `/Users/felipedominguez/Desktop/Nexus Hub IOS/Nexus Hub` | `phase2b1-workspace-state-module-2026-05` | `862ba1a` | `clean` | n/a | n/a |
+| Backend | `/Users/felipedominguez/Desktop/Custom Connectors/Cortex/cortex-telegram-hub-bot` | `main` | `6f2b2a3b` | `dirty` | `4.14.145` | `121` |
+| iOS | `/Users/felipedominguez/Desktop/Nexus Hub IOS/Nexus Hub` | `phase2b4-ios-repository-primitive-2026-05` | `964a56f` | `clean` | n/a | n/a |
 
-Generated at: `2026-05-09T14:50:12Z`
+Generated at: `2026-05-09T16:40:29Z`

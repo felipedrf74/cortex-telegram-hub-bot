@@ -987,7 +987,10 @@ Summary:
 Validation:
 
 - Build: PASS on simulator `A0B13967-B5DE-4E6F-897D-F1E409093F94`.
-- Unit/focused tests: PASS, 21/21.
+- Full unit target: PASS, 1,280 XCTest tests / 0 failures plus 10 Swift
+  Testing checks / 0 failures.
+- Focused primitive/unit tests: PASS, 21/21; post-full-unit edge-case rerun
+  PASS, 9/9.
 - Repository visual matrix: PASS, 21 XCTest methods / 80 screenshot-bearing
   cells / 0 failures.
 - Existing focused UI smoke: PASS, 42 UI tests / 0 failures
