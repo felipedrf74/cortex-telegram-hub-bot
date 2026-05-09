@@ -222,28 +222,37 @@ vi.mock('../../src/services/task-store/task-router', () => ({
   resolveTaskProvider: vi.fn(() => 'ms_todo'),
 }));
 
-vi.mock('../../src/services/task-cache-invalidator', () => ({
+vi.mock('../../src/services/cache-coherence-registry', () => ({
+  ...{
+    CacheCoherenceEvents: {},
+    _resetDashboardCacheInvalidationStatsForTests: vi.fn(),
+    getDashboardCacheInvalidationStats: vi.fn(),
+    invalidateCacheForEvent: vi.fn(),
+    invalidateCalendarCaches: vi.fn(),
+    invalidateContentDerivedCaches: vi.fn(),
+    invalidateCookingDerivedCaches: vi.fn(),
+    invalidateDashboardCaches: vi.fn(),
+    invalidateDashboardCoordinationCaches: vi.fn(),
+    invalidateDashboardHomeCaches: vi.fn(),
+    invalidateDashboardReadinessCaches: vi.fn(),
+    invalidateDashboardRootCaches: vi.fn(),
+    invalidateExecutiveBriefCaches: vi.fn(),
+    invalidateFinanceDerivedCaches: vi.fn(),
+    invalidateIntegrationDerivedCaches: vi.fn(),
+    invalidateOnboardingDerivedCaches: vi.fn(),
+    invalidatePlanningCaches: vi.fn(),
+    invalidateTaskCaches: vi.fn(),
+    invalidateTrainingDerivedCaches: vi.fn(),
+  },
   invalidateTaskCaches: vi.fn(),
+  invalidateTrainingDerivedCaches: vi.fn(),
+  invalidateCalendarCaches: vi.fn(),
+  invalidateCookingDerivedCaches: vi.fn(),
+  invalidateFinanceDerivedCaches: vi.fn(),
 }));
 
 vi.mock('../../src/services/focus-planner', () => ({
   getFocusBlockRecommendation: (...args: unknown[]) => mockGetFocusBlockRecommendation(...args),
-}));
-
-vi.mock('../../src/services/training-cache-invalidator', () => ({
-  invalidateTrainingDerivedCaches: vi.fn(),
-}));
-
-vi.mock('../../src/services/calendar-cache-invalidator', () => ({
-  invalidateCalendarCaches: vi.fn(),
-}));
-
-vi.mock('../../src/services/cooking-cache-invalidator', () => ({
-  invalidateCookingDerivedCaches: vi.fn(),
-}));
-
-vi.mock('../../src/services/finance-cache-invalidator', () => ({
-  invalidateFinanceDerivedCaches: vi.fn(),
 }));
 
 vi.mock('../../src/services/cross-agent-learning', () => ({

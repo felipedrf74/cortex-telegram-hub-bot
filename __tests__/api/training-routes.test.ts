@@ -54,6 +54,7 @@ const mockGetStoredPlanCoveringDate = vi.fn();
 const mockLoggerError = vi.fn();
 const mockBuildActiveSignalsResponse = vi.fn();
 const mockInvalidateCalendarCaches = vi.fn();
+const mockInvalidateTrainingDerivedCaches = vi.fn();
 const mockReconcileOrphanedTrainingAgendaEvents = vi.fn();
 const mockSubmitSecretarySchedulingIntent = vi.fn();
 const mockIsUserOverDailyCap = vi.fn(() => ({
@@ -95,8 +96,30 @@ vi.mock('../../src/services/unified-calendar', () => ({
   deleteEvent: (...args: unknown[]) => mockDeleteEvent(...args),
 }));
 
-vi.mock('../../src/services/calendar-cache-invalidator', () => ({
+vi.mock('../../src/services/cache-coherence-registry', () => ({
+  ...{
+    CacheCoherenceEvents: {},
+    _resetDashboardCacheInvalidationStatsForTests: vi.fn(),
+    getDashboardCacheInvalidationStats: vi.fn(),
+    invalidateCacheForEvent: vi.fn(),
+    invalidateCalendarCaches: vi.fn(),
+    invalidateContentDerivedCaches: vi.fn(),
+    invalidateCookingDerivedCaches: vi.fn(),
+    invalidateDashboardCaches: vi.fn(),
+    invalidateDashboardCoordinationCaches: vi.fn(),
+    invalidateDashboardHomeCaches: vi.fn(),
+    invalidateDashboardReadinessCaches: vi.fn(),
+    invalidateDashboardRootCaches: vi.fn(),
+    invalidateExecutiveBriefCaches: vi.fn(),
+    invalidateFinanceDerivedCaches: vi.fn(),
+    invalidateIntegrationDerivedCaches: vi.fn(),
+    invalidateOnboardingDerivedCaches: vi.fn(),
+    invalidatePlanningCaches: vi.fn(),
+    invalidateTaskCaches: vi.fn(),
+    invalidateTrainingDerivedCaches: vi.fn(),
+  },
   invalidateCalendarCaches: (...args: unknown[]) => mockInvalidateCalendarCaches(...args),
+  invalidateTrainingDerivedCaches: (...args: unknown[]) => mockInvalidateTrainingDerivedCaches(...args),
 }));
 
 vi.mock('../../src/services/training-plans', () => ({
@@ -415,6 +438,7 @@ describe('Training API routes', () => {
     mockLoggerError.mockReset();
     mockBuildActiveSignalsResponse.mockReset();
     mockInvalidateCalendarCaches.mockReset();
+    mockInvalidateTrainingDerivedCaches.mockReset();
     mockReconcileOrphanedTrainingAgendaEvents.mockReset();
     mockSubmitSecretarySchedulingIntent.mockReset();
     mockIsUserOverDailyCap.mockReset();
@@ -910,16 +934,7 @@ describe('Training API routes', () => {
     expect(res.body.data.applied).toBe(1);
     expect(mockApplyCoachRecommendations).toHaveBeenCalledWith(12, ['rec-1']);
 
-    const clearedKeys = mockClearCache.mock.calls.map((call) => call[0]);
-    expect(clearedKeys).toEqual(
-      expect.arrayContaining([
-        'coach-briefing:12',
-        'training-summary:12',
-        'readiness:12',
-        'dashboard-readiness:12',
-      ]),
-    );
-    expect(mockClearCacheByPrefix).toHaveBeenCalledWith('dashboard-home:12:');
+    expect(mockInvalidateTrainingDerivedCaches).toHaveBeenCalledWith(12);
   });
 
   it('sanitizes degraded coach warnings when briefing generation fails', async () => {

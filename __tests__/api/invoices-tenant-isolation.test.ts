@@ -31,7 +31,28 @@ vi.mock('../../src/state/fiscal-collection-profiles', () => ({
   updateFiscalCollectionProfile: vi.fn(),
 }));
 
-vi.mock('../../src/services/finance-cache-invalidator', () => ({
+vi.mock('../../src/services/cache-coherence-registry', () => ({
+  ...{
+    CacheCoherenceEvents: {},
+    _resetDashboardCacheInvalidationStatsForTests: vi.fn(),
+    getDashboardCacheInvalidationStats: vi.fn(),
+    invalidateCacheForEvent: vi.fn(),
+    invalidateCalendarCaches: vi.fn(),
+    invalidateContentDerivedCaches: vi.fn(),
+    invalidateCookingDerivedCaches: vi.fn(),
+    invalidateDashboardCaches: vi.fn(),
+    invalidateDashboardCoordinationCaches: vi.fn(),
+    invalidateDashboardHomeCaches: vi.fn(),
+    invalidateDashboardReadinessCaches: vi.fn(),
+    invalidateDashboardRootCaches: vi.fn(),
+    invalidateExecutiveBriefCaches: vi.fn(),
+    invalidateFinanceDerivedCaches: vi.fn(),
+    invalidateIntegrationDerivedCaches: vi.fn(),
+    invalidateOnboardingDerivedCaches: vi.fn(),
+    invalidatePlanningCaches: vi.fn(),
+    invalidateTaskCaches: vi.fn(),
+    invalidateTrainingDerivedCaches: vi.fn(),
+  },
   invalidateFinanceDerivedCaches: (...args: unknown[]) =>
     mockInvalidateFinanceDerivedCaches(...args),
 }));

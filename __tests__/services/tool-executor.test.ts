@@ -44,15 +44,30 @@ vi.mock('../../src/services/unified-calendar', () => ({
   deleteEvent: vi.fn(),
 }));
 
-vi.mock('../../src/services/calendar-cache-invalidator', () => ({
+vi.mock('../../src/services/cache-coherence-registry', () => ({
+  ...{
+    CacheCoherenceEvents: {},
+    _resetDashboardCacheInvalidationStatsForTests: vi.fn(),
+    getDashboardCacheInvalidationStats: vi.fn(),
+    invalidateCacheForEvent: vi.fn(),
+    invalidateCalendarCaches: vi.fn(),
+    invalidateContentDerivedCaches: vi.fn(),
+    invalidateCookingDerivedCaches: vi.fn(),
+    invalidateDashboardCaches: vi.fn(),
+    invalidateDashboardCoordinationCaches: vi.fn(),
+    invalidateDashboardHomeCaches: vi.fn(),
+    invalidateDashboardReadinessCaches: vi.fn(),
+    invalidateDashboardRootCaches: vi.fn(),
+    invalidateExecutiveBriefCaches: vi.fn(),
+    invalidateFinanceDerivedCaches: vi.fn(),
+    invalidateIntegrationDerivedCaches: vi.fn(),
+    invalidateOnboardingDerivedCaches: vi.fn(),
+    invalidatePlanningCaches: vi.fn(),
+    invalidateTaskCaches: vi.fn(),
+    invalidateTrainingDerivedCaches: vi.fn(),
+  },
   invalidateCalendarCaches: (...args: unknown[]) => mockInvalidateCalendarCaches(...args),
-}));
-
-vi.mock('../../src/services/finance-cache-invalidator', () => ({
   invalidateFinanceDerivedCaches: (...args: unknown[]) => mockInvalidateFinanceDerivedCaches(...args),
-}));
-
-vi.mock('../../src/services/cooking-cache-invalidator', () => ({
   invalidateCookingDerivedCaches: (...args: unknown[]) => mockInvalidateCookingDerivedCaches(...args),
 }));
 

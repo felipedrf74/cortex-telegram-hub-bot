@@ -100,7 +100,6 @@ import {
   writeSignal,
   readRankedSignals,
   setDbProvider,
-  setCacheInvalidator,
   setPlanningInvalidator,
 } from '../../src/services/intelligence-bus';
 
@@ -147,9 +146,7 @@ describe('signal-ranking: writeSignal with new fields', () => {
   });
 
   it('writes meshPriority and invalidates plan caches for priority-1 signals', () => {
-    const invalidations: string[] = [];
     const planningInvalidations: Array<number | undefined> = [];
-    setCacheInvalidator((prefix) => invalidations.push(prefix));
     setPlanningInvalidator((userId) => planningInvalidations.push(userId));
 
     const id = writeSignal({
@@ -163,7 +160,6 @@ describe('signal-ranking: writeSignal with new fields', () => {
     const row = testDb.prepare('SELECT mesh_priority FROM agent_signals WHERE id = ?').get(id) as any;
     expect(row.mesh_priority).toBe(1);
     expect(planningInvalidations).toEqual([42]);
-    expect(invalidations).toEqual([]);
   });
 });
 
