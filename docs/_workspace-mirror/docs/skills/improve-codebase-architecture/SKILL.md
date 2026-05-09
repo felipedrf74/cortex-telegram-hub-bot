@@ -115,3 +115,20 @@ Run periodically — every few weeks or when:
   single concept.
 - Felipe says "this code is hard to follow" or "I keep forgetting how this
   works".
+
+## Visual-class rounds — required protocol
+
+If the candidate touches user-visible SwiftUI views (refactors, repository
+changes affecting rendering, navigation/coordinator changes, theme tokens,
+state machines that drive first-paint), the round MUST follow
+[visual-qa-protocol.md](visual-qa-protocol.md) before the hostile QA
+verdict can be `READY_FOR_LOCAL_QA`.
+
+The protocol enumerates a `surfaces × states × locales` matrix and requires
+state-forced XCUITests with screenshot attachments + accessibility
+identifier inventory + cross-locale spot checks. Skipping any cell is a
+finding, not a test-infra detour.
+
+A round can ship at `READY_WITH_CONDITIONS` if visual QA evidence is
+deferred to a small follow-up commit on the same branch — but it cannot
+ship at `READY_FOR_LOCAL_QA` without the protocol satisfied.

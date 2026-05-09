@@ -11,6 +11,38 @@ Last sweep complete: 2026-05-07.
 Closeout dossier:
 `engine/docs/archive/2026-05/tech-debt-validation/sweep-closeout-dossier.md`.
 
+## 2026-05-09 Phase 2B.1 Workspace State Visual QA Closure
+
+Closeout addendum:
+`docs/archive/2026-05/phase2b1-workspace-state-module/visual-qa-closure-closeout.md`
+
+Verdict: **READY_FOR_LOCAL_QA** eligible after visual-evidence closure.
+Production and main were not touched.
+
+Closed in source:
+- Workspace landing visual QA now covers every enumerated Tasks, Training,
+  Cooking, Content, and Finance warmup/unavailable/content state across en-US
+  and pt-BR.
+- Shared workspace warmup/unavailable views now support centrally generated
+  accessibility identifiers via optional `identifierPrefix`.
+- Cooking, Content, and Finance unavailable states can be forced through
+  `QualityAuditScenario` for deterministic XCUITest rendering.
+- Retry interactions are covered for all five domains.
+
+Evidence:
+- `WorkspaceLandingStateTests` PASS: 13/13.
+- `WorkspaceLandingVisualUITests` PASS: 38/38 with screenshot attachments.
+- Combined selected UI gate PASS: 42/42 selected UI tests including visual,
+  auth, and feedback smoke.
+- Screenshot export path:
+  `/tmp/phase2b1-visual-attachments-final`.
+- Combined xcresult:
+  `/Users/felipedominguez/Library/Developer/Xcode/DerivedData/Nexus_Hub-gsoqdyrpqmkkotdmfddhuhobycvu/Logs/Test/Test-Nexus Hub-2026.05.09_13-03-01-+0100.xcresult`.
+
+Remaining before closing Phase 2B.1:
+- P1: Claude hostile QA on the visual-closure commit stack.
+- P2: TestFlight/operator visual review after hostile QA, if requested.
+
 ## 2026-05-09 Phase 2A Wave-2 Blockers — Source/Staging Complete
 
 Closeout:
@@ -774,6 +806,43 @@ Phase 3 / parked items:
 - Python orchestrator singleton cleanup.
 - FastAPI route tests.
 - ResearchOrchestrator `deep_search` decomposition.
+
+## 2026-05-09 Phase 2B.1 Workspace Landing State consolidation
+
+Status: READY_FOR_HOSTILE_QA.
+
+Closeout: `docs/archive/2026-05/phase2b1-workspace-state-module/closeout.md`.
+
+Summary:
+
+- Corrected the prompt baseline from 7 obsolete files to 6 real obsolete source
+  files. `TrainingWorkspaceStateView.swift` did not exist.
+- Deleted four shallow `*WorkspaceStateView.swift` wrappers and two resolver
+  files.
+- Added one shared `WorkspaceLandingState` module with the three-state model,
+  per-domain presentation config, Tasks/Training resolver logic, and shared
+  warmup/unavailable renderers.
+- Migrated Tasks, Training, Cooking, Content, and Finance callers onto the
+  shared module.
+- App-source diff is net negative: 317 insertions / 319 deletions. Total diff
+  including tests is positive because the old narrow resolver tests were
+  replaced with broader shared-module coverage.
+
+Validation:
+
+- Focused workspace-state/source-pin suite passed: 14/14 selected tests on
+  simulator `A0B13967-B5DE-4E6F-897D-F1E409093F94`.
+- Selected auth/feedback UI smoke passed: 4/4 selected UI tests on the same
+  simulator.
+- Additional Training fixture smoke and tab-stress checks passed during the
+  round.
+
+Carry forward:
+
+- Phase 2B.2 is the cache-invalidator registry workstream.
+- P2 QA cleanup: `AppShellVisualSnapshotUITests` should adopt the
+  `-NexusUITestMode YES` fixture pattern before full-target UI evidence is
+  treated as release-grade.
 
 
 ## Standing Authorizations
