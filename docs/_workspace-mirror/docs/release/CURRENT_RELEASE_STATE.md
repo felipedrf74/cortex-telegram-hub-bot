@@ -2,10 +2,10 @@
 
 Status: canonical
 Owner: release lead (Felipe)
-Last verified: 2026-05-07
+Last verified: 2026-05-09
 Update policy: update after merge / staging / production / deploy-gate changes. Live identity (branch/commit/version/migrations) auto-generated via engine/scripts/release-identity.sh --persist; do not type those by hand.
 
-Last updated: 2026-05-07
+Last updated: 2026-05-09
 
 > **Live identity** — branch / commit / version / migration count for the
 > current working tree are auto-generated. Do NOT type those values by
@@ -17,7 +17,19 @@ Last updated: 2026-05-07
 
 - Repo: `engine`
 - Workspace HEAD / version / migrations / dirty state: see `docs/release/release-identity.md`
-- Production status (last manual update 2026-05-05): promoted via `./scripts/promote-to-prod.sh`, health-checked, both `nexus-hub` and `content-engine` PM2 processes online at version `4.14.132`.
+- Production status (last manual update 2026-05-09): promoted via `./scripts/promote-to-prod.sh`, health-checked, both `nexus-hub` and `content-engine` PM2 processes online at version `4.14.146`.
+
+### 2026-05-09 P0 Production Promote
+
+- Scope: Garmin tenant-leak block and Apple Health readiness cascade verification.
+- Production version: `4.14.146`.
+- Production deploy commit: `d05e3bac`.
+- Production cleanup: dry-run found 5 tainted non-owner Garmin token/session rows; delete pass removed all 5; post-delete dry-run returned `matchedCount: 0`.
+- Production API health: `https://api.nexushub.me/health` returned `status: healthy`.
+- Production snapshot: `https://api.nexushub.me/api/snapshot` returned version `4.14.146`.
+- Production PM2: `nexus-hub` and `content-engine` online at `4.14.146`.
+- Non-owner readiness verification: user `28` calculated from Apple Health with readiness `84` and body battery `78`, not the leaked Felipe pair.
+- Evidence lives under `engine/docs/release/smoke-evidence/` and the closeout addendum lives at `docs/archive/2026-05/p0-garmin-tenant-leak-and-applehealth-cascade/closeout.md`.
 
 ### Commits in this release (4.14.131 -> 4.14.132)
 

@@ -16,9 +16,9 @@ Closeout dossier:
 Closeout:
 `docs/archive/2026-05/p0-garmin-tenant-leak-and-applehealth-cascade/closeout.md`
 
-Verdict: **READY_FOR_HOSTILE_QA** on
-`p0-garmin-tenant-leak-and-applehealth-cascade-2026-05`. Production and main
-were not touched.
+Verdict: **CLOSED IN PRODUCTION** on backend `4.14.146`
+(`d05e3bac`). Hostile QA returned `READY_FOR_LOCAL_QA`; Felipe authorized the
+production promote on 2026-05-09.
 
 Closed in source/staging:
 - Garmin legacy filesystem token fallback is now owner-only.
@@ -40,17 +40,28 @@ Evidence:
 - Staging smoke PASS: 17 passed / 0 failed / 19 total.
 - Smoke evidence:
   `engine/docs/release/smoke-evidence/staging-smoke-379f741d-20260509T171331Z.json`.
+- Pre-promote staging re-smoke PASS: 17 passed / 0 failed / 19 total.
+  Evidence:
+  `engine/docs/release/smoke-evidence/staging-smoke-d580da66-20260509T173848Z.json`.
 - No-data staging probe:
-  `/tmp/staging-probe-garmin-no-data-20260509T1716.json`.
+  `engine/docs/release/smoke-evidence/staging-p0-garmin-no-data-20260509T173947Z.json`.
 - Apple Health staging probe:
-  `/tmp/staging-probe-garmin-apple-health-20260509T1716.json`.
+  `engine/docs/release/smoke-evidence/staging-p0-garmin-apple-health-20260509T173947Z.json`.
+- Production cleanup pre-promote dry-run found 5 tainted non-owner rows:
+  `engine/docs/release/smoke-evidence/prod-cleanup-dry-run-20260509T174048Z.json`.
+- Production cleanup post-deploy delete pass removed all 5 rows and follow-up
+  dry-run returned `matchedCount: 0`:
+  `engine/docs/release/smoke-evidence/prod-cleanup-delete-20260509T174717Z.json`,
+  `engine/docs/release/smoke-evidence/prod-cleanup-postdelete-dry-run-20260509T174722Z.json`.
+- Production health/snapshot/PM2 evidence:
+  `engine/docs/release/smoke-evidence/prod-health-20260509T174909Z.json`,
+  `engine/docs/release/smoke-evidence/prod-snapshot-20260509T174909Z.json`,
+  `engine/docs/release/smoke-evidence/prod-pm2-health-20260509T174938Z.json`.
+- Non-owner production readiness probe: user `28` returned Apple Health
+  readiness `84` and body battery `78`, not the leaked Felipe pair:
+  `engine/docs/release/smoke-evidence/prod-non-owner-readiness-probe-user28-clean-20260509T174858Z.json`.
 
-Remaining before Wave 1 unblock:
-- P0: Claude hostile QA on the P0 branch.
-- P0: Operator authorization for production push.
-- P0: Production cleanup script dry-run review, then explicit operator approval
-  before the `--yes` delete pass.
-- P1: Production smoke/health after promote.
+Remaining after closure:
 - P3: Separate provider filesystem-session audit for Amazon/Uber collectors.
 
 ## 2026-05-09 Phase 2B.1 Workspace State Visual QA Closure
