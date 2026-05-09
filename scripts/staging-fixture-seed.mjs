@@ -99,6 +99,7 @@ function deleteUserData(targetUserId) {
   }
 
   [
+    'subscriptions',
     'content_creator_profile',
     'content_scripts',
     'content_topics',
@@ -163,6 +164,21 @@ db.transaction(() => {
     last_active_at: now.toISOString(),
     created_at: now.toISOString(),
   }, 'INSERT OR IGNORE');
+
+  insert('subscriptions', {
+    user_id: userId,
+    plan: 'max',
+    period: 'monthly',
+    status: 'trialing',
+    provider: 'staging_fixture',
+    provider_subscription_id: 'staging-fixture-sub-' + userId,
+    provider_customer_id: 'staging-fixture-customer-' + userId,
+    current_period_start: now.toISOString(),
+    current_period_end: new Date(now.getTime() + 30 * 86400000).toISOString(),
+    cancel_at_period_end: 0,
+    created_at: now.toISOString(),
+    updated_at: now.toISOString(),
+  });
 
   insert('content_creator_profile', {
     user_id: userId,
@@ -397,7 +413,7 @@ const token = signIosJwt({
 }, { expiresIn: '30d' });
 
 const counts = {};
-for (const table of ['users', 'ios_devices', 'native_task_lists', 'native_tasks', 'recipes', 'finance_transactions', 'content_topics', 'content_scripts', 'fitness_training_plans']) {
+for (const table of ['users', 'subscriptions', 'ios_devices', 'native_task_lists', 'native_tasks', 'recipes', 'finance_transactions', 'content_topics', 'content_scripts', 'fitness_training_plans']) {
   if (!tableExists(table)) continue;
   const hasUserId = columnsFor(table).has('user_id');
   const count = hasUserId

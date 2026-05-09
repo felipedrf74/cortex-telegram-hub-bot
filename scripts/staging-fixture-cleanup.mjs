@@ -45,6 +45,7 @@ function countUserRows(table) {
 
 const tables = [
   'content_creator_profile',
+  'subscriptions',
   'content_scripts',
   'content_topics',
   'content_pipeline',

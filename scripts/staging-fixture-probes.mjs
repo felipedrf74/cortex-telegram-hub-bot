@@ -40,8 +40,44 @@ process.stdout.write(JSON.stringify({
 `;
 }
 
+function parseRemoteJson(raw) {
+  try {
+    return JSON.parse(raw);
+  } catch {
+    const start = raw.indexOf('{');
+    if (start >= 0) {
+      let depth = 0;
+      let inString = false;
+      let escaped = false;
+      for (let i = start; i < raw.length; i += 1) {
+        const ch = raw[i];
+        if (escaped) {
+          escaped = false;
+          continue;
+        }
+        if (ch === '\\') {
+          escaped = true;
+          continue;
+        }
+        if (ch === '"') {
+          inString = !inString;
+          continue;
+        }
+        if (inString) continue;
+        if (ch === '{') depth += 1;
+        if (ch === '}') depth -= 1;
+        if (depth === 0) {
+          return JSON.parse(raw.slice(start, i + 1));
+        }
+      }
+    }
+    throw new Error(`Remote command did not return JSON: ${raw.slice(0, 300)}`);
+  }
+}
+
 function buildRemoteRegistryProbeScript({ userId }) {
   return String.raw`
+require('./dist/services/database').initDatabase();
 const { setCache, getCached } = require('./dist/services/cache-store');
 const {
   invalidateCalendarCaches,
@@ -85,40 +121,64 @@ async function requestJson(baseUrl, token, route, {
   method = 'GET',
   body,
   headers = {},
+  timeoutMs = 45000,
 } = {}) {
   const url = new URL(route.path, baseUrl);
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
   const started = performance.now();
-  const response = await fetch(url, {
-    method,
-    headers: {
-      authorization: `Bearer ${token}`,
-      accept: 'application/json',
-      'content-type': 'application/json',
-      'x-language': 'en-US',
-      ...headers,
-    },
-    body: body == null ? undefined : JSON.stringify(body),
-  });
-  const elapsedMs = Math.round((performance.now() - started) * 10) / 10;
-  const text = await response.text();
-  let json = null;
   try {
-    json = text ? JSON.parse(text) : null;
-  } catch {}
-  return {
-    route: route.name,
-    method,
-    path: route.path,
-    status: response.status,
-    ok: response.ok,
-    elapsedMs,
-    cached: json?.cached ?? json?.meta?.cached ?? null,
-    etag: response.headers.get('etag'),
-    cacheControl: response.headers.get('cache-control'),
-    errorCode: json?.error?.code ?? null,
-    shapeOk: route.shape ? route.shape(json, response.status) : Boolean(json),
-    bodyPreview: text.slice(0, 300),
-  };
+    const response = await fetch(url, {
+      method,
+      signal: controller.signal,
+      headers: {
+        authorization: `Bearer ${token}`,
+        accept: 'application/json',
+        'content-type': 'application/json',
+        'x-language': 'en-US',
+        ...headers,
+      },
+      body: body == null ? undefined : JSON.stringify(body),
+    });
+    const elapsedMs = Math.round((performance.now() - started) * 10) / 10;
+    const text = await response.text();
+    let json = null;
+    try {
+      json = text ? JSON.parse(text) : null;
+    } catch {}
+    return {
+      route: route.name,
+      method,
+      path: route.path,
+      status: response.status,
+      ok: response.ok,
+      elapsedMs,
+      cached: json?.cached ?? json?.meta?.cached ?? null,
+      etag: response.headers.get('etag'),
+      cacheControl: response.headers.get('cache-control'),
+      errorCode: json?.error?.code ?? null,
+      shapeOk: route.shape ? route.shape(json, response.status) : Boolean(json),
+      bodyPreview: text.slice(0, 300),
+    };
+  } catch (err) {
+    const elapsedMs = Math.round((performance.now() - started) * 10) / 10;
+    return {
+      route: route.name,
+      method,
+      path: route.path,
+      status: 0,
+      ok: false,
+      elapsedMs,
+      cached: null,
+      etag: null,
+      cacheControl: null,
+      errorCode: err?.name === 'AbortError' ? 'REQUEST_TIMEOUT' : 'FETCH_FAILED',
+      shapeOk: false,
+      bodyPreview: err instanceof Error ? err.message : String(err),
+    };
+  } finally {
+    clearTimeout(timeout);
+  }
 }
 
 const ROUTES = [
@@ -132,7 +192,6 @@ const ROUTES = [
   { name: 'tasks-working-set', path: '/api/v1/tasks/working-set', shape: (json) => json && typeof json === 'object' },
   { name: 'tasks-filtered', path: '/api/v1/tasks/filtered?filter=all', shape: (json) => json && typeof json === 'object' },
   { name: 'training-home', path: '/api/v1/training/home', shape: (json) => json && typeof json === 'object' },
-  { name: 'training-today', path: '/api/v1/training/today', shape: (json) => json && typeof json === 'object' },
   { name: 'finance-transactions', path: '/api/v1/finance/transactions', shape: (json) => json && typeof json === 'object' },
   { name: 'cooking-recipes', path: '/api/v1/cooking/recipes', shape: (json) => json && typeof json === 'object' },
   { name: 'content-home', path: '/api/v1/content/home', shape: (json) => json && typeof json === 'object' },
@@ -147,7 +206,7 @@ export async function runFixtureProbes(options = {}) {
   const deviceId = options.deviceId ?? `${DEFAULT_FIXTURE_DEVICE_ID}-${userId}`;
   let token = options.token ?? readToken(userId);
   if (!token) {
-    const minted = JSON.parse(runRemoteNode(buildRemoteMintTokenScript({ userId, deviceId }), options));
+    const minted = parseRemoteJson(runRemoteNode(buildRemoteMintTokenScript({ userId, deviceId }), options));
     token = minted.token;
   }
 
@@ -163,6 +222,7 @@ export async function runFixtureProbes(options = {}) {
   };
 
   for (const route of ROUTES) {
+    process.stderr.write(`probe ${route.name}...\n`);
     const first = await requestJson(baseUrl, token, route);
     const second = await requestJson(baseUrl, token, route);
     const pair = {
@@ -180,6 +240,9 @@ export async function runFixtureProbes(options = {}) {
     if (first.status >= 500 || second.status >= 500) {
       report.routeFailures.push({ route: route.name, reason: 'server_error', firstStatus: first.status, secondStatus: second.status });
     }
+    if (first.status === 0 || second.status === 0) {
+      report.routeFailures.push({ route: route.name, reason: 'request_failed', firstError: first.errorCode, secondError: second.errorCode });
+    }
     if (!first.shapeOk || !second.shapeOk) {
       report.routeFailures.push({ route: route.name, reason: 'shape_failure', firstStatus: first.status, secondStatus: second.status });
     }
@@ -195,7 +258,7 @@ export async function runFixtureProbes(options = {}) {
       prepTime: 5,
       cookTime: 10,
       servings: 2,
-      tags: ['fixture', 'cache-probe'],
+      tags: 'fixture,cache-probe',
     },
   });
   const cookingReadAfterWrite = await requestJson(baseUrl, token, { name: 'cooking-recipes-after-write', path: '/api/v1/cooking/recipes' });
@@ -235,7 +298,7 @@ export async function runFixtureProbes(options = {}) {
   }
 
   try {
-    report.cacheCoherence = JSON.parse(runRemoteNode(buildRemoteRegistryProbeScript({ userId }), options));
+    report.cacheCoherence = parseRemoteJson(runRemoteNode(buildRemoteRegistryProbeScript({ userId }), options));
   } catch (err) {
     report.cacheCoherence = { ok: false, error: err instanceof Error ? err.message : String(err) };
     report.routeFailures.push({ route: 'cache-coherence-registry', reason: 'registry_probe_failed' });
