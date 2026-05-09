@@ -40,6 +40,12 @@ import {
 import { writeSignal } from './intelligence-bus';
 import { getDb } from './database';
 import {
+  buildCreatorPromptContext,
+  loadCreatorPromptContextForUser,
+  type CreatorPromptContext,
+} from './content-profile-prompt-context';
+import type { ContentCreatorProfile } from '../state/content-creator-profile';
+import {
   contentScopeParams,
   contentScopePredicate,
   ensureContentTenantScopeColumns,
@@ -275,11 +281,26 @@ interface ExtractionResult {
 /**
  * Send video data to Claude for pattern extraction.
  */
-async function extractPatterns(
+export function buildChannelLearnerExtractionPrompt(
   channelName: string,
   videos: VideoData[],
+  creatorProfile?: Partial<ContentCreatorProfile> | null,
   transcriptData?: string,
-): Promise<ExtractionResult> {
+): string {
+  return buildChannelLearnerExtractionPromptFromContext(
+    channelName,
+    videos,
+    buildCreatorPromptContext(creatorProfile),
+    transcriptData,
+  );
+}
+
+function buildChannelLearnerExtractionPromptFromContext(
+  channelName: string,
+  videos: VideoData[],
+  creator: CreatorPromptContext,
+  transcriptData?: string,
+): string {
   // Build a concise video summary for Claude
   const videoSummary = videos.map((v, i) => {
     const views = v.viewCount > 1000 ? `${(v.viewCount / 1000).toFixed(1)}K` : v.viewCount;
@@ -290,6 +311,9 @@ async function extractPatterns(
   }).join('\n\n');
 
   let prompt = `Analyze the YouTube channel "${channelName}" based on their ${videos.length} most recent videos.
+
+AUTHENTICATED CREATOR CONTEXT:
+${creator.block}
 
 VIDEOS:
 ${videoSummary}`;
@@ -305,7 +329,65 @@ ${transcriptData}`;
 
   prompt += `
 
-Extract content creation patterns across all 9 categories. Focus on what makes this creator successful — patterns that can be adapted (not copied) for a Portuguese-language fitness + commentary YouTube channel.`;
+Extract content creation patterns across all 9 categories. Focus on what makes this creator successful — patterns that can be adapted (not copied) for the authenticated creator's language, audience, pillars, and niches above.`;
+
+  return prompt;
+}
+
+export function buildChannelLearnerSynthesisPrompt(
+  creatorProfile?: Partial<ContentCreatorProfile> | null,
+): string {
+  return buildChannelLearnerSynthesisPromptFromContext(buildCreatorPromptContext(creatorProfile));
+}
+
+function buildChannelLearnerSynthesisPromptFromContext(creator: CreatorPromptContext): string {
+  return `You are a content strategy synthesizer. You receive patterns extracted from multiple successful YouTube creators. Your job: merge them into a unified, actionable knowledge base.
+
+AUTHENTICATED CREATOR CONTEXT:
+${creator.block}
+
+Rules:
+- Combine similar patterns into a single, richer description
+- Prioritize patterns that appear across MULTIPLE creators (cross-validated)
+- Keep concrete examples from each creator (attribute them)
+- Remove contradictions — if creators disagree, note both approaches
+- Write as actionable advice for the authenticated creator's language, audience, pillars, and niches
+- Be concise: each category should be 3-6 sentences max + examples
+- Output language: English for internal knowledge storage unless the creator context explicitly requires localized wording
+
+Return ONLY valid JSON:
+{
+  "categories": [
+    {
+      "category": "hook_style",
+      "synthesized_text": "Merged insight with examples...",
+      "source_channels": ["Channel A", "Channel B"]
+    }
+  ]
+}`;
+}
+
+async function extractPatterns(
+  channelName: string,
+  videos: VideoData[],
+  transcriptData?: string,
+  creatorProfile?: Partial<ContentCreatorProfile> | null,
+): Promise<ExtractionResult> {
+  return extractPatternsForCreatorContext(
+    channelName,
+    videos,
+    transcriptData,
+    buildCreatorPromptContext(creatorProfile),
+  );
+}
+
+async function extractPatternsForCreatorContext(
+  channelName: string,
+  videos: VideoData[],
+  transcriptData: string | undefined,
+  creator: CreatorPromptContext,
+): Promise<ExtractionResult> {
+  const prompt = buildChannelLearnerExtractionPromptFromContext(channelName, videos, creator, transcriptData);
 
   // Gemini-first: gemini-2.5-flash matches Sonnet for analytical pattern
   // extraction at ~9× lower cost. Falls back to Anthropic on failure.
@@ -353,30 +435,10 @@ Extract content creation patterns across all 9 categories. Focus on what makes t
 
 // ─── Synthesis (merge patterns across all channels) ──────────────────
 
-const SYNTHESIS_SYSTEM_PROMPT = `You are a content strategy synthesizer. You receive patterns extracted from multiple successful YouTube creators. Your job: merge them into a unified, actionable knowledge base.
-
-Rules:
-- Combine similar patterns into a single, richer description
-- Prioritize patterns that appear across MULTIPLE creators (cross-validated)
-- Keep concrete examples from each creator (attribute them)
-- Remove contradictions — if creators disagree, note both approaches
-- Write as actionable advice for a creator making PT-BR content about fitness + commentary
-- Be concise: each category should be 3-6 sentences max + examples
-- Output language: English (this is a system prompt, not audience-facing content)
-
-Return ONLY valid JSON:
-{
-  "categories": [
-    {
-      "category": "hook_style",
-      "synthesized_text": "Merged insight with examples...",
-      "source_channels": ["Channel A", "Channel B"]
-    }
-  ]
-}`;
-
 async function synthesizeKnowledge(userId?: number): Promise<void> {
   const scopedUserId = userId != null && userId > 0 ? userId : 0;
+  const creatorContext = scopedUserId > 0 ? loadCreatorPromptContextForUser(scopedUserId, scopedUserId) : buildCreatorPromptContext(null);
+  const synthesisSystemPrompt = buildChannelLearnerSynthesisPromptFromContext(creatorContext);
   const platformChannels = getScopedChannelsForProcessing('active', undefined);
   const userChannels = scopedUserId > 0 ? getActiveChannels(scopedUserId) : [];
   const channelsById = new Map<number, ContentRefChannel>();
@@ -437,14 +499,14 @@ async function synthesizeKnowledge(userId?: number): Promise<void> {
     try {
       const userPrompt = `Synthesize the "${category}" patterns from ${byChannel.size} creators:\n\n${context}`;
       const { text: synthText } = await completeOneShotWithFallback(
-        SYNTHESIS_SYSTEM_PROMPT,
+        synthesisSystemPrompt,
         userPrompt,
         'knowledge_synthesis',
         async () => {
           const response = await trackedCreate(client, {
             model: config.anthropic.classifierModel, // Haiku for synthesis (structured task)
             max_tokens: 2048,
-            system: SYNTHESIS_SYSTEM_PROMPT,
+            system: synthesisSystemPrompt,
             messages: [{ role: 'user', content: userPrompt }],
             temperature: 0.3,
           }, 'knowledge_synthesis');
@@ -601,6 +663,9 @@ export async function analyzeChannel(channelId: number): Promise<{
     return { success: false, summary: '', patternsFound: 0, videosAnalyzed: 0, error: 'Channel not found' };
   }
   const channelAccess = accessForChannel(channel);
+  const creatorProfile = channel.user_id && channel.user_id > 0
+    ? loadCreatorPromptContextForUser(channel.user_id, channel.tenant_id ?? channel.user_id)
+    : buildCreatorPromptContext(null);
 
   logger.info({ channelId, url: channel.channel_url }, 'Starting channel analysis');
   updateChannelStatus(channelId, 'analyzing', undefined, channelAccess);
@@ -651,7 +716,13 @@ export async function analyzeChannel(channelId: number): Promise<{
         title: v.title,
         viewCount: v.viewCount,
       }));
-      const deep = await deepAnalyzeTopVideos(resolved.channelName, topVids, 5);
+      const deep = await deepAnalyzeTopVideos(
+        resolved.channelName,
+        topVids,
+        5,
+        channel.user_id && channel.user_id > 0 ? channel.user_id : 0,
+        channel.tenant_id ?? channel.user_id ?? 0,
+      );
       if (deep.transcriptCount > 0) {
         transcriptData = deep.deepPatterns;
         logger.info({
@@ -664,7 +735,7 @@ export async function analyzeChannel(channelId: number): Promise<{
     }
 
     // Step 3: Extract patterns via Claude (now with optional transcript data)
-    const extraction = await extractPatterns(resolved.channelName, videos, transcriptData);
+    const extraction = await extractPatternsForCreatorContext(resolved.channelName, videos, transcriptData, creatorProfile);
 
     // Step 4: Store patterns
     const validPatterns = extraction.patterns.filter(
