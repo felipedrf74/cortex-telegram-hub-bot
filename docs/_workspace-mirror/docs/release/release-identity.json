@@ -1,17 +1,17 @@
 {
-  "generatedAt": "2026-05-08T23:08:13Z",
+  "generatedAt": "2026-05-09T01:09:20Z",
   "backend": {
     "path": "/Users/felipedominguez/Desktop/Custom Connectors/Cortex/cortex-telegram-hub-bot",
-    "branch": "architecture/summary-tasks-foundation-2026-05",
-    "commit": "da95f348",
+    "branch": "phase2a-wave2-blockers-2026-05",
+    "commit": "453b10bd",
     "dirtyState": "dirty",
-    "packageVersion": "4.14.142",
+    "packageVersion": "4.14.143",
     "migrationCount": "121"
   },
   "ios": {
     "path": "/Users/felipedominguez/Desktop/Nexus Hub IOS/Nexus Hub",
-    "branch": "architecture/summary-refresh-foundation-2026-05",
-    "commit": "60fd195",
+    "branch": "phase2a-wave2-blockers-2026-05",
+    "commit": "0ac6e16",
     "dirtyState": "dirty"
   }
 }
