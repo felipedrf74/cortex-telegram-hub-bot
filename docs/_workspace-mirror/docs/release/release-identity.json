@@ -1,9 +1,9 @@
 {
-  "generatedAt": "2026-05-09T13:18:42Z",
+  "generatedAt": "2026-05-09T13:58:25Z",
   "backend": {
     "path": "/Users/felipedominguez/Desktop/Custom Connectors/Cortex/cortex-telegram-hub-bot",
-    "branch": "phase2b2-cache-invalidator-registry-2026-05",
-    "commit": "d1149c52",
+    "branch": "phase2b3-api-route-helper-2026-05",
+    "commit": "d884cc62",
     "dirtyState": "dirty",
     "packageVersion": "4.14.144",
     "migrationCount": "121"

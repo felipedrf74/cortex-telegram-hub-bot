@@ -5,7 +5,7 @@
 
 | Area | Path | Branch | Commit | Dirty state | Version | Migrations |
 | --- | --- | --- | --- | --- | --- | --- |
-| Backend | `/Users/felipedominguez/Desktop/Custom Connectors/Cortex/cortex-telegram-hub-bot` | `phase2b2-cache-invalidator-registry-2026-05` | `d1149c52` | `dirty` | `4.14.144` | `121` |
+| Backend | `/Users/felipedominguez/Desktop/Custom Connectors/Cortex/cortex-telegram-hub-bot` | `phase2b3-api-route-helper-2026-05` | `d884cc62` | `dirty` | `4.14.144` | `121` |
 | iOS | `/Users/felipedominguez/Desktop/Nexus Hub IOS/Nexus Hub` | `phase2b1-workspace-state-module-2026-05` | `862ba1a` | `clean` | n/a | n/a |
 
-Generated at: `2026-05-09T13:18:42Z`
+Generated at: `2026-05-09T13:58:25Z`

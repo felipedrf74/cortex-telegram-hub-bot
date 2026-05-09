@@ -891,6 +891,49 @@ Carry forward:
 - Read-cache key builders still live at read sites; decide in Phase 2B.3
   whether they belong in route helpers or a sibling cache-key module.
 
+## 2026-05-09 Phase 2B.3 API route helper
+
+Status: **READY_FOR_HOSTILE_QA**.
+
+Closeout: `docs/archive/2026-05/phase2b3-api-route-helper/closeout.md`
+
+Summary:
+
+- Confirmed the current fit-for-helper scope is 6 route files, not the stale
+  "16+" estimate.
+- Added `cached-route-handler` for request-side SWR cache lookup, cache writes,
+  stale refresh single-flight, tenant-scope delegation, and route cache-key
+  construction.
+- Added `provider-error-classifier` with the canonical stable task-provider
+  error matrix.
+- Migrated plan, calendar, content home, dashboard, notifications, and task
+  list reads onto the helper.
+- Documented non-fits instead of forcing them through the helper:
+  task working-set budget/degraded fallback, dashboard warmers, and task
+  warmers/list helper cache paths.
+- Added the `cached-route-handler` cannot-skip gate; dashboard now reports
+  32/32.
+
+Validation:
+
+- Typecheck: PASS.
+- Focused helper + migrated routes: PASS, 107 tests.
+- Prompt validation suite: PASS, 231 tests.
+- Pre-commit focused suite: PASS, 434 tests.
+- Cannot-skip dashboard: PASS, 32/32.
+- Strict mock-completeness lint: PASS at 824 partial mocks, under baseline 827.
+- Staging deploy: PASS; production untouched.
+- Staging smoke: PASS, 21 passed / 0 failed / 23 total (2 skipped, neither
+  implementation-related). Evidence:
+  `engine/docs/release/smoke-evidence/staging-smoke-d884cc62-20260509T135559Z.json`.
+
+Carry forward:
+
+- Phase 2B.4 is the iOS Repository read-cache primitive and requires the
+  visual QA protocol.
+- Add a safe reusable authenticated staging fixture before the next
+  route-pipeline manual-probe round.
+
 
 ## Standing Authorizations
 
