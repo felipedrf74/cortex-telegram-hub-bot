@@ -4,7 +4,7 @@ import { createHash } from 'node:crypto';
 import { Router, Response } from 'express';
 import { AuthenticatedRequest } from '../auth-middleware';
 import { asyncHandler, sendError, sendInternalError, sendSuccess } from '../response-helpers';
-import { invalidateContentDerivedCaches } from '../../services/content-cache-invalidator';
+import { invalidateContentDerivedCaches } from '../../services/cache-coherence-registry';
 import {
   addTopic,
   getFilmingRecommendation,

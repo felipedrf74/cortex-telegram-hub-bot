@@ -14,7 +14,7 @@ import { normalizeLangHeader } from '../../services/secretary-fastpath';
 import { getUserLanguageById } from '../../services/user-service';
 import type { Lang } from '../../utils/i18n';
 import { getCached, setCache } from '../../services/cache-store';
-import { invalidateTrainingDerivedCaches } from '../../services/training-cache-invalidator';
+import { invalidateTrainingDerivedCaches } from '../../services/cache-coherence-registry';
 import * as trainingPlans from '../../services/training-plans';
 import { sendSuccess, sendError, sendInternalError } from '../response-helpers';
 import { applyCoachRecommendations, generateCoachBriefing } from '../../services/garmin-coach';

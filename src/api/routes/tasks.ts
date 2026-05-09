@@ -11,7 +11,7 @@ import { getTaskProviderForUser, resolveTaskProvider } from '../../services/task
 import { resolveTaskCreationList, TaskListResolutionError } from '../../services/task-store/task-list-resolution';
 import { getOwnerBootstrapUser, getUserTimezoneById } from '../../services/user-service';
 import { ensureValidTenantRouteScope } from '../tenant-route-scope';
-import { invalidateTaskCaches } from '../../services/task-cache-invalidator';
+import { invalidateTaskCaches } from '../../services/cache-coherence-registry';
 import { normalizeMicrosoftRecurrence } from '../../services/recurrence-utils';
 import { recordSWRRefreshFailure, recordSWRRefreshSuccess } from '../../services/swr-refresh-observability';
 import { consumeResourceBudget } from '../../services/resource-budgets';

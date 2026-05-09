@@ -321,18 +321,12 @@ interface DbLike {
 
 type DbProvider = () => DbLike;
 let _getDb: DbProvider | null = null;
-type CacheInvalidator = (prefix: string) => void;
-let _invalidateCacheByPrefix: CacheInvalidator | null = null;
 type PlanningInvalidator = (userId?: number) => void;
 let _invalidatePlanningCaches: PlanningInvalidator | null = null;
 let _reportScopeAnomaly: ((report: ScopeAnomalyReport) => void) | null = null;
 
 export function setDbProvider(fn: DbProvider): void {
   _getDb = fn;
-}
-
-export function setCacheInvalidator(fn: CacheInvalidator): void {
-  _invalidateCacheByPrefix = fn;
 }
 
 export function setPlanningInvalidator(fn: PlanningInvalidator): void {
@@ -530,9 +524,6 @@ export function writeSignal(signal: {
     if (meshPriority === 1) {
       if (_invalidatePlanningCaches) {
         _invalidatePlanningCaches(normalizedUserId ?? undefined);
-      } else if (_invalidateCacheByPrefix) {
-        _invalidateCacheByPrefix('plan:week:u:');
-        _invalidateCacheByPrefix('plan:today:u:');
       }
     }
     return (result as any).lastInsertRowid ?? -1;

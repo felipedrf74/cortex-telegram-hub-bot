@@ -30,7 +30,7 @@ import type { Bot } from 'grammy';
 import { getDb } from '../../services/database';
 import { syncProvider } from '../../services/task-store/sync-engine';
 import { findNexusUserByTodoistId } from '../../services/task-store/todoist-adapter';
-import { invalidateTaskCaches } from '../../services/task-cache-invalidator';
+import { invalidateTaskCaches } from '../../services/cache-coherence-registry';
 
 // Maximum age of a webhook delivery we'll accept. Without a timestamp window,
 // a leaked HMAC could let an attacker replay old events forever. Todoist

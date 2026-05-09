@@ -5,7 +5,7 @@ import { AuthenticatedRequest } from '../auth-middleware';
 import { asyncHandler, sendError, sendSuccess } from '../response-helpers';
 import { getDb } from '../../services/database';
 import { getVoiceDna } from '../../services/content-dashboard-service';
-import { invalidateContentDerivedCaches } from '../../services/content-cache-invalidator';
+import { invalidateContentDerivedCaches } from '../../services/cache-coherence-registry';
 import { addChannel, getAllChannels } from '../../state/content-references';
 import {
   contentScopeForInsert,

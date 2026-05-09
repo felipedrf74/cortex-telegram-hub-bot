@@ -7,7 +7,7 @@ import { apiSuccess, sendError, sendInternalError } from '../response-helpers';
 import { config } from '../../config';
 import { composeDailyBrief } from '../../services/daily-brief-orchestrator';
 import { composeWeeklyPlan } from '../../services/weekly-plan-orchestrator';
-import { invalidatePlanningCaches } from '../../services/plan-cache-invalidator';
+import { invalidatePlanningCaches } from '../../services/cache-coherence-registry';
 import { getUserById, getUserLanguageById } from '../../services/user-service';
 import { getCachedSWR, setCacheSWR } from '../../services/cache-store';
 import { normalizeLangHeader } from '../../services/secretary-fastpath';

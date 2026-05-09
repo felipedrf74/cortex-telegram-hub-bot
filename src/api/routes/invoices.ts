@@ -43,7 +43,7 @@ import {
 } from '../../services/fiscal-bundle';
 import { updateFiscalCollectionProfile } from '../../state/fiscal-collection-profiles';
 import { ensureValidTenantRouteScope } from '../tenant-route-scope';
-import { invalidateFinanceDerivedCaches } from '../../services/finance-cache-invalidator';
+import { invalidateFinanceDerivedCaches } from '../../services/cache-coherence-registry';
 
 function splitSubjectPatterns(subjectPatterns: string | null | undefined): string[] {
   const patterns = subjectPatterns

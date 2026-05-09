@@ -4,7 +4,7 @@ import { Router, Response } from 'express';
 import { AuthenticatedRequest } from '../auth-middleware';
 import { sendError, sendInternalError, sendSuccess } from '../response-helpers';
 import { getDb } from '../../services/database';
-import { invalidateContentDerivedCaches } from '../../services/content-cache-invalidator';
+import { invalidateContentDerivedCaches } from '../../services/cache-coherence-registry';
 import { logger } from '../../utils/logger';
 
 const CONTENT_PIPELINE_STAGE_ORDER = ['ideas', 'scripted', 'filmed', 'editing', 'published'] as const;

@@ -23,7 +23,7 @@
 import { Router, Response } from 'express';
 import { logger } from '../../utils/logger';
 import { getDb } from '../../services/database';
-import { invalidateTrainingDerivedCaches } from '../../services/training-cache-invalidator';
+import { invalidateTrainingDerivedCaches } from '../../services/cache-coherence-registry';
 import { sendInternalError as sendApiInternalError } from '../response-helpers';
 import type { AuthenticatedRequest } from '../auth-middleware';
 import type Database from 'better-sqlite3';

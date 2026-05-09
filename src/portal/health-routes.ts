@@ -4,7 +4,7 @@ import type { Express, Request, Response } from 'express';
 import { config } from '../config';
 import { allowLocalHealthBypass } from '../api/secret-guards';
 import { getCacheStoreStats } from '../services/cache-store';
-import { getDashboardCacheInvalidationStats } from '../services/dashboard-cache-invalidator';
+import { getDashboardCacheInvalidationStats } from '../services/cache-coherence-registry';
 import { getStatus as getSentryStatus } from '../services/error-tracker';
 import { getRuntimeStatus } from '../services/runtime-status';
 import { getDb } from '../services/database';

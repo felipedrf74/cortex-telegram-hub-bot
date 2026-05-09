@@ -31,7 +31,7 @@ import { sendSuccess, sendError, sendInternalError, asyncHandler } from '../resp
 import { getDb } from '../../services/database';
 import { emitDomainEvent, runOutboxTransaction } from '../../services/event-outbox';
 import { consumeResourceBudget } from '../../services/resource-budgets';
-import { invalidateFinanceDerivedCaches } from '../../services/finance-cache-invalidator';
+import { invalidateFinanceDerivedCaches } from '../../services/cache-coherence-registry';
 import { config } from '../../config';
 import {
   addTransaction,

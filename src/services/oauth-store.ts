@@ -162,7 +162,7 @@ function invalidateProviderSurfaceCaches(userId: number, provider: OAuthProvider
   try {
     // Lazy require avoids an oauth-store -> integration invalidator ->
     // planning/context/mail cycle during module initialization.
-    const { invalidateIntegrationDerivedCaches } = require('./integration-cache-invalidator');
+    const { invalidateIntegrationDerivedCaches } = require('./cache-coherence-registry');
     invalidateIntegrationDerivedCaches(userId, provider);
   } catch (err) {
     logger.debug({ err, userId, provider }, 'OAuth provider surface cache invalidation failed');

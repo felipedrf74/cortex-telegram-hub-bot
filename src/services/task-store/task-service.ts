@@ -31,7 +31,7 @@ import {
   TaskFilters,
 } from './unified-task-store';
 import { getAdapter } from './sync-engine';
-import { invalidateTaskCaches } from '../task-cache-invalidator';
+import { invalidateTaskCaches } from '../cache-coherence-registry';
 import { NormalizedTask, NormalizedStatus, TaskProvider } from './types';
 
 /**

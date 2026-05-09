@@ -99,7 +99,7 @@ function loadDefaultOAuthServices(): PortalOAuthServices {
 
   let invalidateIntegrationDerivedCaches: ((userId: number, provider: string) => void) | undefined;
   try {
-    invalidateIntegrationDerivedCaches = require('../services/integration-cache-invalidator').invalidateIntegrationDerivedCaches;
+    invalidateIntegrationDerivedCaches = require('../services/cache-coherence-registry').invalidateIntegrationDerivedCaches;
   } catch { /* optional cache invalidator */ }
 
   return {

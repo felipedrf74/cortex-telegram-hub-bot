@@ -76,7 +76,7 @@ import {
 } from '../../services/cooking-preferences';
 import { createEvent as createCalendarEvent, isAnyCalendarConfigured } from '../../services/unified-calendar';
 import { getActivePlans, getCurrentWeek, getSessionsForWeek, getWeeksForPlan, type TrainingSession } from '../../services/training-plans';
-import { invalidateCookingDerivedCaches } from '../../services/cooking-cache-invalidator';
+import { invalidateCookingDerivedCaches } from '../../services/cache-coherence-registry';
 import { submitCookingMealPrepSchedulingIntent } from '../../services/cooking-secretary-integration';
 import { runOutboxTransaction } from '../../services/event-outbox';
 import { consumeResourceBudget } from '../../services/resource-budgets';

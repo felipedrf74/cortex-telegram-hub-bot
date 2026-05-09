@@ -29,7 +29,7 @@ import {
   type CalendarSource,
 } from '../../services/unified-calendar';
 import { getCachedSWR, setCacheSWR } from '../../services/cache-store';
-import { invalidateCalendarCaches } from '../../services/calendar-cache-invalidator';
+import { invalidateCalendarCaches } from '../../services/cache-coherence-registry';
 import { sendSuccess, sendError, sendInternalError, asyncHandler } from '../response-helpers';
 import { getFocusBlockRecommendation } from '../../services/focus-planner';
 import { ensureValidTenantRouteScope } from '../tenant-route-scope';

@@ -13,13 +13,11 @@ import { startScheduler } from './services/scheduler';
 import { setBotRef, setBotPollingActive, setDbProvider } from './portal/telemetry';
 import {
   setDbProvider as setBusDbProvider,
-  setCacheInvalidator as setBusCacheInvalidator,
   setPlanningInvalidator as setBusPlanningInvalidator,
   setScopeAnomalyReporter,
 } from './services/intelligence-bus';
 import { createPortalServer } from './portal/server';
-import { clearCacheByPrefix } from './services/cache-store';
-import { invalidatePlanningCaches } from './services/plan-cache-invalidator';
+import { invalidatePlanningCaches } from './services/cache-coherence-registry';
 import { recordTenantScopeAnomaly } from './services/tenant-scope-observability';
 import {
   setDbProvider as setErrorDbProvider,
@@ -53,7 +51,6 @@ async function main(): Promise<void> {
   // Wire up DB providers for telemetry and intelligence bus
   setDbProvider(() => getDb());
   setBusDbProvider(() => getDb() as any);
-  setBusCacheInvalidator(clearCacheByPrefix);
   setBusPlanningInvalidator(invalidatePlanningCaches);
   setScopeAnomalyReporter(recordTenantScopeAnomaly);
   setErrorDbProvider(() => getDb());

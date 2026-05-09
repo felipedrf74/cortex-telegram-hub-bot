@@ -4,7 +4,7 @@ import { Router, Request, Response, NextFunction } from 'express';
 import { AuthenticatedRequest } from '../auth-middleware';
 import { asyncHandler, sendError, sendSuccess } from '../response-helpers';
 import { getDb } from '../../services/database';
-import { invalidateContentDerivedCaches } from '../../services/content-cache-invalidator';
+import { invalidateContentDerivedCaches } from '../../services/cache-coherence-registry';
 import {
   contentScopeParams,
   contentScopePredicate,

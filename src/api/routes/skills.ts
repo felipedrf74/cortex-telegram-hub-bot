@@ -43,7 +43,7 @@ import {
 import { getUserByTelegramId, getUserById } from '../../services/user-service';
 import { logger } from '../../utils/logger';
 import { ensureValidTenantRouteScope } from '../tenant-route-scope';
-import { invalidateDashboardCoordinationCaches } from '../../services/coordination-cache-invalidator';
+import { invalidateDashboardCoordinationCaches } from '../../services/cache-coherence-registry';
 
 // ─── Response shapes ────────────────────────────────────────────────
 

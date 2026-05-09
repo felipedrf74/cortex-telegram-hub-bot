@@ -15,7 +15,7 @@ import {
   isCookingPreferenceKind,
   setCookingPreferenceMemory,
 } from '../services/cooking-preferences';
-import { invalidateCookingDerivedCaches } from '../services/cooking-cache-invalidator';
+import { invalidateCookingDerivedCaches } from '../services/cache-coherence-registry';
 import { logAudit } from '../services/audit-trail';
 import type { SkillMemoryRecord } from '../services/skill-memory';
 import { requireOperatorTargetUser } from './admin-target-user';

@@ -3,7 +3,7 @@
 import { Router, Response } from 'express';
 import { AuthenticatedRequest } from '../auth-middleware';
 import { logger } from '../../utils/logger';
-import { invalidateCalendarCaches } from '../../services/calendar-cache-invalidator';
+import { invalidateCalendarCaches } from '../../services/cache-coherence-registry';
 import { sendSuccess, sendError, sendInternalError } from '../response-helpers';
 import {
   acquireCostLock,

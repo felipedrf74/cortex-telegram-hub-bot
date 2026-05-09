@@ -5,7 +5,7 @@ import { logger } from '../utils/logger';
 import { getCurrentContext } from '../utils/request-context';
 import { getOwnerBootstrapUser, getUserById, getUserByTelegramId } from './user-service';
 import { createAndPushNotification } from './content-notification-store';
-import { invalidateTrainingDerivedCaches } from './training-cache-invalidator';
+import { invalidateTrainingDerivedCaches } from './cache-coherence-registry';
 
 export interface GarminSessionRecord {
   userId: number;

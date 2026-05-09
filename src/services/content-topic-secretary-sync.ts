@@ -11,9 +11,9 @@
 import { DateTime } from 'luxon';
 import { config } from '../config';
 import { logger } from '../utils/logger';
-import { invalidateCalendarCaches } from './calendar-cache-invalidator';
+import { invalidateCalendarCaches } from './cache-coherence-registry';
 import { updateTopic, type ContentTopic } from './content-scheduler';
-import { invalidateTaskCaches } from './task-cache-invalidator';
+import { invalidateTaskCaches } from './cache-coherence-registry';
 import { resolveTaskCreationList } from './task-store/task-list-resolution';
 import { getTaskProviderForUser } from './task-store/task-router';
 import {
