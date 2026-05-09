@@ -179,6 +179,14 @@ function toFiniteNumber(value: unknown): number | null {
   return null;
 }
 
+function metricValue(payload: any, ...keys: string[]): number | null {
+  for (const key of keys) {
+    const value = toFiniteNumber(payload?.[key]);
+    if (value != null) return value;
+  }
+  return null;
+}
+
 function scoreTrainingEffectLabel(label: unknown): number | null {
   if (label == null) return null;
   const normalized = String(label).toLowerCase();
@@ -376,12 +384,12 @@ async function calculateAppleHealthReadiness(userId: number): Promise<ReadinessR
 
     // Read RHR (today)
     const rhrRow = db.prepare(
-      "SELECT data_json FROM apple_health_data WHERE user_id = ? AND data_type = 'resting_heart_rate' AND date = ? ORDER BY created_at DESC LIMIT 1",
+      "SELECT data_json FROM apple_health_data WHERE user_id = ? AND data_type IN ('resting_heart_rate', 'resting_hr') AND date = ? ORDER BY created_at DESC LIMIT 1",
     ).get(userId, today) as { data_json: string } | undefined;
 
     // Read RHR baseline (7-day average)
     const rhrHistory = db.prepare(
-      "SELECT data_json FROM apple_health_data WHERE user_id = ? AND data_type = 'resting_heart_rate' AND date > ? ORDER BY date DESC LIMIT 7",
+      "SELECT data_json FROM apple_health_data WHERE user_id = ? AND data_type IN ('resting_heart_rate', 'resting_hr') AND date > ? ORDER BY date DESC LIMIT 7",
     ).all(userId, subtractDays(today, 8)) as Array<{ data_json: string }>;
 
     // Read workouts for ACWR (28 days)
@@ -393,25 +401,35 @@ async function calculateAppleHealthReadiness(userId: number): Promise<ReadinessR
     if (!hrvRow && !sleepRow && !rhrRow) return null;
 
     // ── HRV ──
-    const todayHrv = hrvRow ? (JSON.parse(hrvRow.data_json)?.value ?? 0) : 0;
-    const hrvValues = hrvHistory.map(r => JSON.parse(r.data_json)?.value ?? 0).filter((v: number) => v > 0);
+    const todayHrv = hrvRow ? (metricValue(JSON.parse(hrvRow.data_json), 'value', 'sdnn_ms', 'ms') ?? 0) : 0;
+    const hrvValues = hrvHistory
+      .map(r => metricValue(JSON.parse(r.data_json), 'value', 'sdnn_ms', 'ms') ?? 0)
+      .filter((v: number) => v > 0);
     const weeklyHrv = hrvValues.length > 0 ? hrvValues.reduce((a: number, b: number) => a + b, 0) / hrvValues.length : todayHrv;
     const hrvTrend: 'up' | 'stable' | 'down' = todayHrv > weeklyHrv * 1.05 ? 'up' : todayHrv < weeklyHrv * 0.95 ? 'down' : 'stable';
     const hrvScoreVal = scoreHrv(todayHrv || 60, weeklyHrv || 60);
 
     // ── Sleep ──
     const sleepData = sleepRow ? JSON.parse(sleepRow.data_json) : null;
-    const totalSleepMin = sleepData ? (sleepData.totalSleepSeconds ?? 0) / 60 : 0;
-    const deepSleepMin = sleepData ? (sleepData.deepSleepSeconds ?? 0) / 60 : 0;
-    const remSleepMin = sleepData ? (sleepData.remSleepSeconds ?? 0) / 60 : 0;
+    const totalSleepMin = sleepData
+      ? (metricValue(sleepData, 'totalSleepSeconds') ?? (metricValue(sleepData, 'totalMinutes') ?? 0) * 60) / 60
+      : 0;
+    const deepSleepMin = sleepData
+      ? (metricValue(sleepData, 'deepSleepSeconds') ?? (metricValue(sleepData, 'deepMinutes') ?? 0) * 60) / 60
+      : 0;
+    const remSleepMin = sleepData
+      ? (metricValue(sleepData, 'remSleepSeconds') ?? (metricValue(sleepData, 'remMinutes') ?? 0) * 60) / 60
+      : 0;
     const derivedSleepScore = totalSleepMin > 0
       ? deriveAppleHealthSleepScore(totalSleepMin, deepSleepMin, remSleepMin)
       : 60;
     const sleepScoreVal = scoreSleep(totalSleepMin / 60, derivedSleepScore);
 
     // ── RHR ──
-    const todayRhr = rhrRow ? (JSON.parse(rhrRow.data_json)?.value ?? null) : null;
-    const rhrValues = rhrHistory.map(r => JSON.parse(r.data_json)?.value ?? 0).filter((v: number) => v > 0);
+    const todayRhr = rhrRow ? metricValue(JSON.parse(rhrRow.data_json), 'value', 'bpm') : null;
+    const rhrValues = rhrHistory
+      .map(r => metricValue(JSON.parse(r.data_json), 'value', 'bpm') ?? 0)
+      .filter((v: number) => v > 0);
     const rhrBaseline = rhrValues.length > 0 ? rhrValues.reduce((a: number, b: number) => a + b, 0) / rhrValues.length : null;
 
     // ── Derived Body Battery ──
@@ -469,7 +487,7 @@ async function calculateAppleHealthReadiness(userId: number): Promise<ReadinessR
     };
 
     const recommendation = getRecommendation(compositeScore);
-    const reasoning = buildReasoning(factors, recommendation);
+    const reasoning = `Apple Health is driving today's readiness. ${buildReasoning(factors, recommendation)}`;
 
     // Publish signals (same as Garmin path)
     try {
