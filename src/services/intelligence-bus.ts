@@ -19,6 +19,8 @@ export type SignalType =
   | 'hook_effectiveness'
   | 'pillar_performance'
   | 'retention_pattern'
+  // Voice signals are per creator. They carry tenant/user scope because a
+  // creator's phrasing and edits are private behavioral data.
   | 'voice_pattern'
   | 'voice_phrase_trend'
   | 'channel_dna'
@@ -350,8 +352,6 @@ const GLOBAL_SIGNAL_TYPES = new Set<SignalType>([
   'hook_effectiveness',
   'pillar_performance',
   'retention_pattern',
-  'voice_pattern',
-  'voice_phrase_trend',
   'channel_dna',
   'book_knowledge',
   'book_reference_effective',
@@ -584,7 +584,7 @@ export function readSignals(
     const scopeParams: any[] = [];
     if (hasTenantColumn) {
       if (scopedTenantId !== undefined) {
-        scopeClauses.push('AND tenant_id = ?');
+        scopeClauses.push('AND (tenant_id IS NULL OR tenant_id = ?)');
         scopeParams.push(scopedTenantId);
         scopeClauses.push(scopedUserId !== undefined ? 'AND (user_id IS NULL OR user_id = ?)' : 'AND user_id IS NULL');
         if (scopedUserId !== undefined) scopeParams.push(scopedUserId);

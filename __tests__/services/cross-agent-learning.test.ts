@@ -15,6 +15,8 @@ import fs from 'fs';
 import path from 'path';
 
 const MIGRATIONS_DIR = path.resolve(__dirname, '../../migrations');
+const TEST_USER_ID = 42;
+const TEST_TENANT_ID = 42;
 
 // ── Test helpers ───────────────────────────────────────────────────
 
@@ -95,6 +97,8 @@ describe('buildAgentContext', () => {
     writeSignal({
       source_agent: 'voice-evolution',
       signal_type: 'voice_pattern',
+      user_id: TEST_USER_ID,
+      tenant_id: TEST_TENANT_ID,
       payload: {
         observation: 'Felipe uses anecdotes frequently',
         patterns: [{ pattern: 'personal story', frequency: 'often' }],
@@ -102,7 +106,7 @@ describe('buildAgentContext', () => {
       },
     });
 
-    const ctx = buildAgentContext('performance-agent');
+    const ctx = buildAgentContext('performance-agent', TEST_USER_ID, TEST_TENANT_ID);
     expect(ctx.voicePatterns).toHaveLength(1);
     expect(ctx.voicePatterns[0].observation).toBe('Felipe uses anecdotes frequently');
     expect(ctx.voicePatterns[0].strength).toBe(0.85);
@@ -180,15 +184,17 @@ describe('buildAgentContext', () => {
     writeSignal({
       source_agent: 'voice-evolution',
       signal_type: 'voice_pattern',
+      user_id: TEST_USER_ID,
+      tenant_id: TEST_TENANT_ID,
       payload: { observation: 'test', patterns: [], strength: 0.5 },
     });
 
     // First call consumes it
-    const ctx1 = buildAgentContext('performance-agent');
+    const ctx1 = buildAgentContext('performance-agent', TEST_USER_ID, TEST_TENANT_ID);
     expect(ctx1.voicePatterns).toHaveLength(1);
 
     // Second call finds nothing new
-    const ctx2 = buildAgentContext('performance-agent');
+    const ctx2 = buildAgentContext('performance-agent', TEST_USER_ID, TEST_TENANT_ID);
     expect(ctx2.voicePatterns).toHaveLength(0);
   });
 
@@ -284,10 +290,12 @@ describe('produceLearningDigest', () => {
     writeSignal({
       source_agent: 'voice-evolution',
       signal_type: 'voice_pattern',
+      user_id: TEST_USER_ID,
+      tenant_id: TEST_TENANT_ID,
       payload: { observation: 'Strong opener', patterns: [], strength: 0.9 },
     });
 
-    const id = produceLearningDigest();
+    const id = produceLearningDigest(TEST_USER_ID, TEST_TENANT_ID);
     expect(id).toBeGreaterThan(0);
 
     // Verify the digest was written

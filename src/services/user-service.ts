@@ -52,7 +52,7 @@ export interface InviteCode {
 
 export interface UserTarget {
   tenantId: number;
-  telegramId: number;
+  telegramId: number | null;
 }
 
 export type IosInviteResolution =
@@ -257,6 +257,26 @@ export function getOwnerBootstrapTarget(): UserTarget | null {
     tenantId,
     telegramId: ownerTelegramId,
   };
+}
+
+export function getActiveUserTargets(): UserTarget[] {
+  try {
+    const db = getDb();
+    const rows = db.prepare(
+      "SELECT id, telegram_id FROM users WHERE status = 'active' ORDER BY id ASC",
+    ).all() as { id: number; telegram_id: number | null }[];
+    if (rows.length > 0) {
+      return rows.map((row) => ({
+        tenantId: row.id,
+        telegramId: row.telegram_id ?? null,
+      }));
+    }
+  } catch (err) {
+    logger.warn({ err }, 'Active user target query failed; falling back to owner bootstrap target');
+  }
+
+  const ownerTarget = getOwnerBootstrapTarget();
+  return ownerTarget ? [ownerTarget] : [];
 }
 
 /**

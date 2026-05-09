@@ -439,13 +439,13 @@ const AGENT_PEER_SIGNALS: Record<string, SignalType[]> = {
  * Reads peer signals and structures them into typed context.
  * Call this at the start of each agent run.
  */
-export function buildAgentContext(agentName: string): AgentContext {
+export function buildAgentContext(agentName: string, userId?: number, tenantId?: number): AgentContext {
   const peerTypes = AGENT_PEER_SIGNALS[agentName] || [];
   if (peerTypes.length === 0) {
     return emptyContext();
   }
 
-  const signals = readSignals(agentName, peerTypes, 100);
+  const signals = readSignals(agentName, peerTypes, 100, userId, undefined, tenantId);
   let consumed = 0;
 
   const ctx: AgentContext = emptyContext();
@@ -548,11 +548,11 @@ export function formatContextForPrompt(ctx: AgentContext): string {
  * Produce a learning_digest signal that synthesizes insights from
  * multiple agents. Called weekly (after Performance Agent runs).
  */
-export function produceLearningDigest(): number {
-  const voiceSignals = readSignals('learning-digest', ['voice_pattern'], 10);
-  const pillarSignals = readSignals('learning-digest', ['pillar_performance'], 5);
-  const hookSignals = readSignals('learning-digest', ['hook_effectiveness'], 10);
-  const kwSignals = readSignals('learning-digest', ['keyword_opportunity'], 10);
+export function produceLearningDigest(userId?: number, tenantId?: number): number {
+  const voiceSignals = readSignals('learning-digest', ['voice_pattern'], 10, userId, undefined, tenantId);
+  const pillarSignals = readSignals('learning-digest', ['pillar_performance'], 5, userId, undefined, tenantId);
+  const hookSignals = readSignals('learning-digest', ['hook_effectiveness'], 10, userId, undefined, tenantId);
+  const kwSignals = readSignals('learning-digest', ['keyword_opportunity'], 10, userId, undefined, tenantId);
 
   if (voiceSignals.length === 0 && pillarSignals.length === 0) {
     return -1; // nothing to digest
@@ -590,6 +590,7 @@ export function produceLearningDigest(): number {
   return writeSignal({
     source_agent: 'learning-digest',
     signal_type: 'learning_digest',
+    tenant_id: tenantId ?? userId,
     payload: digest,
     priority: 'normal',
   });

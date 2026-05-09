@@ -39,7 +39,7 @@ export function getManualReportTargets(): ManualReportTarget[] {
   }
 
   const ownerTarget = getOwnerBootstrapTarget();
-  return ownerTarget ? [{
+  return ownerTarget?.telegramId != null ? [{
     userId: ownerTarget.tenantId,
     tenantId: ownerTarget.tenantId,
     telegramId: ownerTarget.telegramId,

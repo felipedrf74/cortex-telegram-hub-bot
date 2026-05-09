@@ -30,7 +30,7 @@ import { setLastCoachState } from '../domains/domain-handler';
 import { setLastActiveDomain } from '../bot';
 import { addToConversation } from '../state/conversation';
 import { processAllChannelScopes, seedDefaultChannels } from './channel-learner';
-import { sendTopicCandidates, sendWeeklyPackage } from './content-workflow';
+import { generateAndStoreTopicCandidates, generateWeeklyPackage } from './content-workflow';
 import { runPipelineAgent } from '../agents/pipeline-agent';
 import { runSEOAgent, seedKeywordsIfEmpty } from '../agents/seo-agent';
 import { runReactionRadar } from '../agents/reaction-radar-agent';
@@ -116,7 +116,7 @@ function getOwnerUserIds(): number[] {
   }
 
   const ownerTarget = getOwnerBootstrapTarget();
-  return ownerTarget ? [ownerTarget.telegramId] : [];
+  return ownerTarget?.telegramId != null ? [ownerTarget.telegramId] : [];
 }
 
 export { getActiveUserIds, getOwnerUserIds };
@@ -154,6 +154,33 @@ function getActiveUserTargets(): ActiveUserTarget[] {
 
   const ownerTarget = getOwnerBootstrapTarget();
   return ownerTarget ? [ownerTarget] : [];
+}
+
+export async function runContentTopicCronForActiveUsers(
+  format: 'reel' | 'youtube',
+  sourceJob: 'tuesday_reels' | 'thursday_youtube' | string,
+): Promise<void> {
+  for (const target of getActiveUserTargets()) {
+    try {
+      await runWithContext({ source: `cron:${sourceJob}`, userId: target.tenantId }, async () => {
+        await generateAndStoreTopicCandidates(target.tenantId, format, sourceJob, target.tenantId);
+      });
+    } catch (err) {
+      logger.error({ err, userId: target.tenantId, tenantId: target.tenantId, sourceJob, format }, 'Content topic cron failed');
+    }
+  }
+}
+
+export async function runWeeklyContentPackageCronForActiveUsers(): Promise<void> {
+  for (const target of getActiveUserTargets()) {
+    try {
+      await runWithContext({ source: 'cron:friday_weekly', userId: target.tenantId }, async () => {
+        await generateWeeklyPackage(target.tenantId, target.tenantId);
+      });
+    } catch (err) {
+      logger.error({ err, userId: target.tenantId, tenantId: target.tenantId }, 'Friday weekly content package failed');
+    }
+  }
 }
 
 function buildTrainingSectionForSessions(sessions: any[]): string {
@@ -1384,35 +1411,17 @@ export function startScheduler(bot?: any): void {
 
   // ── Content Workflow: Tuesday Reel Topics (09:00) ──────────────────
   cron.schedule('0 9 * * 2', wrapJob('tuesday_reels', async () => {
-    for (const userId of getOwnerUserIds()) {
-      try {
-        await sendTopicCandidates(bot, userId, 'reel', 'tuesday_reels');
-      } catch (err) {
-        logger.error({ err, userId }, 'Tuesday reel topics failed');
-      }
-    }
+    await runContentTopicCronForActiveUsers('reel', 'tuesday_reels');
   }), { timezone: tz });
 
   // ── Content Workflow: Thursday YT Topic (09:00) ───────────────────
   cron.schedule('0 9 * * 4', wrapJob('thursday_youtube', async () => {
-    for (const userId of getOwnerUserIds()) {
-      try {
-        await sendTopicCandidates(bot, userId, 'youtube', 'thursday_youtube');
-      } catch (err) {
-        logger.error({ err, userId }, 'Thursday YouTube topics failed');
-      }
-    }
+    await runContentTopicCronForActiveUsers('youtube', 'thursday_youtube');
   }), { timezone: tz });
 
   // ── Content Workflow: Friday Weekly Package (18:30) ────────────────
   cron.schedule('30 18 * * 5', wrapJob('friday_weekly', async () => {
-    for (const userId of getOwnerUserIds()) {
-      try {
-        await sendWeeklyPackage(bot, userId);
-      } catch (err) {
-        logger.error({ err, userId }, 'Friday weekly package failed');
-      }
-    }
+    await runWeeklyContentPackageCronForActiveUsers();
   }), { timezone: tz });
 
   // ── Pipeline Agent (daily 20:00) ───────────────────────────────────

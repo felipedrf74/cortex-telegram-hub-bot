@@ -478,7 +478,8 @@ describe('content-learning-store: structural', () => {
     // Should import getRecentScripts
     expect(agentSource).toContain('getRecentScripts');
     expect(agentSource).toContain('content-learning-store');
-    expect(agentSource).toContain('getOwnerBootstrapTarget');
+    expect(agentSource).toContain('getActiveUserTargets');
+    expect(agentSource).not.toContain('getOwnerBootstrapTarget');
     expect(agentSource).not.toContain('getRecentScripts(0');
   });
 
