@@ -25,6 +25,7 @@ const mockCreateNotificationIntent = vi.hoisted(() => vi.fn());
 const mockRunEventBackboneOnce = vi.hoisted(() => vi.fn());
 const mockRunEventBackboneCleanup = vi.hoisted(() => vi.fn());
 const mockExpireStaleChatActionPlans = vi.hoisted(() => vi.fn());
+const mockRunGarminTenantIsolationWatcher = vi.hoisted(() => vi.fn());
 
 vi.mock('node-cron', () => ({
   default: { schedule: (...args: unknown[]) => mockCronSchedule(...args) },
@@ -114,6 +115,9 @@ vi.mock('../../src/services/garmin', () => ({
   isGarminConfigured: vi.fn(() => false),
   keepAlive: vi.fn(),
   ensureAuthenticated: vi.fn(),
+}));
+vi.mock('../../src/services/garmin-tenant-isolation-watcher', () => ({
+  runGarminTenantIsolationWatcher: (...args: unknown[]) => mockRunGarminTenantIsolationWatcher(...args),
 }));
 vi.mock('../../src/portal/telemetry', () => ({
   registerJob: vi.fn(),

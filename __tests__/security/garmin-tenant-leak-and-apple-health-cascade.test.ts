@@ -61,6 +61,48 @@ function seedAppleHealthData(db: Database.Database, userId: number): void {
   }));
 }
 
+type AppleHealthMetric = 'hrv' | 'sleep' | 'rhr';
+
+function seedPartialAppleHealthData(
+  db: Database.Database,
+  userId: number,
+  metrics: readonly AppleHealthMetric[],
+): void {
+  const today = new Date().toISOString().slice(0, 10);
+  const insert = db.prepare(`
+    INSERT OR REPLACE INTO apple_health_data (user_id, data_type, date, data_json, source_name)
+    VALUES (?, ?, ?, ?, 'p0-garmin-partial-applehealth-test')
+  `);
+  const dateDaysAgo = (days: number) => {
+    const d = new Date();
+    d.setDate(d.getDate() - days);
+    return d.toISOString().slice(0, 10);
+  };
+  const has = (metric: AppleHealthMetric) => metrics.includes(metric);
+
+  if (has('hrv')) {
+    for (let day = 1; day <= 7; day += 1) {
+      insert.run(userId, 'hrv', dateDaysAgo(day), JSON.stringify({ value: 58 + day }));
+    }
+    insert.run(userId, 'hrv', today, JSON.stringify({ value: 72 }));
+  }
+
+  if (has('sleep')) {
+    insert.run(userId, 'sleep', today, JSON.stringify({
+      totalSleepSeconds: 7.5 * 3600,
+      deepSleepSeconds: 82 * 60,
+      remSleepSeconds: 96 * 60,
+    }));
+  }
+
+  if (has('rhr')) {
+    for (let day = 1; day <= 7; day += 1) {
+      insert.run(userId, 'resting_heart_rate', dateDaysAgo(day), JSON.stringify({ value: 56 + (day % 2) }));
+    }
+    insert.run(userId, 'resting_heart_rate', today, JSON.stringify({ value: 54 }));
+  }
+}
+
 function isSyntheticNeutralReadiness(result: any): boolean {
   return result?.score === 60
     && result?.reasonCode === 'WEARABLE_INTEGRATION_MISSING'
@@ -287,6 +329,28 @@ describe('readiness provider cascade — non-owner user', () => {
     expect(result.score).toBeGreaterThan(0);
     expect(result.score).toBeLessThanOrEqual(100);
     expect(result.factors.bodyBattery.current).toBeGreaterThan(0);
+    expect(result.reasoning.toLowerCase()).toContain('apple health');
+  });
+
+  it.each([
+    ['hrvOnly', 1000101, ['hrv'] as const],
+    ['sleepOnly', 1000102, ['sleep'] as const],
+    ['rhrOnly', 1000103, ['rhr'] as const],
+    ['hrvSleep', 1000104, ['hrv', 'sleep'] as const],
+    ['hrvRhr', 1000105, ['hrv', 'rhr'] as const],
+    ['sleepRhr', 1000106, ['sleep', 'rhr'] as const],
+  ])('uses Apple Health readiness when partial data exists: %s', async (_caseName, userId, metrics) => {
+    const { db, readiness } = await importReadinessWithDb();
+    dbs.push(db);
+    seedUser(db, userId, 'pro');
+    seedPartialAppleHealthData(db, userId, metrics);
+
+    const result = await readiness.calculateReadiness(userId);
+
+    expect(result).not.toBeNull();
+    expect(isSyntheticNeutralReadiness(result)).toBe(false);
+    expect(result.score).toBeGreaterThan(0);
+    expect(result.score).toBeLessThanOrEqual(100);
     expect(result.reasoning.toLowerCase()).toContain('apple health');
   });
 

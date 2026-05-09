@@ -52,6 +52,7 @@ import { processDueOperatorAlertDeliveries, recordOperatorAlert } from './operat
 import { runEventBackboneOnce } from './event-backbone-worker';
 import { runEventBackboneCleanup } from '../tools/event-backbone-cleanup';
 import { expireStaleChatActionPlans } from './chat-reasoning-engine';
+import { runGarminTenantIsolationWatcher } from './garmin-tenant-isolation-watcher';
 
 interface ActiveUserTarget {
   tenantId: number;
@@ -681,6 +682,7 @@ export function startScheduler(bot?: any): void {
   registerJob('conflict_detection', 'Conflict Detection',    '30 19 * * *',     'secretary');
   registerJob('garmin_keepalive',   'Garmin Keep-Alive',     '*/30 * * * *',    'triathlon');
   registerJob('garmin_coach',       'Garmin Coach',          coachCron,         'triathlon');
+  registerJob('garmin_tenant_isolation_watcher', 'Garmin Tenant Isolation Watcher', '45 6 * * *', 'triathlon');
   registerJob('invoice_queue',      'Invoice Queue Flush',   '*/15 * * * *',    'invoices');
   registerJob('channel_relearn',   'Channel Re-Learn',      '0 3 * * 0',       'content');
   registerJob('tuesday_reels',     'Tuesday Reel Topics',   '0 9 * * 2',       'content');
@@ -1529,6 +1531,10 @@ export function startScheduler(bot?: any): void {
     const { runHealthProbes } = require('./integration-health');
     await runHealthProbes();
   }));
+
+  cron.schedule('45 6 * * *', wrapJob('garmin_tenant_isolation_watcher', async () => {
+    await runGarminTenantIsolationWatcher();
+  }), { timezone: tz });
 
   cron.schedule('* * * * *', wrapJob('operator_alert_delivery', async () => {
     const results = await processDueOperatorAlertDeliveries(25);
