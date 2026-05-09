@@ -25,6 +25,10 @@ export interface IosJwtKeyring {
   keys: IosJwtKeyEntry[];
 }
 
+export interface SignIosJwtOptions {
+  expiresIn?: string;
+}
+
 function readLegacySecret(): string {
   return process.env.IOS_API_JWT_SECRET || config.ios.jwtSecret;
 }
@@ -116,10 +120,10 @@ function keyStillVerifies(entry: IosJwtKeyEntry, nowMs: number): boolean {
   return Number.isFinite(cutoff) && nowMs <= cutoff;
 }
 
-export function signIosJwt(payload: IosJwtPayload): string {
+export function signIosJwt(payload: IosJwtPayload, options: SignIosJwtOptions = {}): string {
   const keyring = getIosJwtKeyring();
   return jwt.sign(payload, keyring.activeSecret, {
-    expiresIn: readJwtExpiry() as any,
+    expiresIn: (options.expiresIn ?? readJwtExpiry()) as any,
     header: { alg: 'HS256', kid: keyring.activeKid },
   });
 }

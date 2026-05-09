@@ -13,6 +13,7 @@ import { sendError } from './response-helpers';
 import { getDb } from '../services/database';
 import { isValidTenantUserId, recordTenantScopeAnomaly } from '../services/tenant-scope-observability';
 import { verifyIosJwt } from '../services/ios-jwt';
+import { validateStagingFixtureJwtPayload } from '../services/staging-fixture-safety';
 
 export interface AuthenticatedRequest extends Request {
   tenantId: number;
@@ -71,6 +72,31 @@ export function authMiddleware(req: Request, res: Response, next: NextFunction):
   const token = authHeader.slice(7);
   try {
     const payload = verifyIosJwt(token);
+    const stagingFixtureSafety = validateStagingFixtureJwtPayload(payload);
+    if (!stagingFixtureSafety.ok) {
+      recordTenantScopeAnomaly({
+        layer: 'delivery',
+        operation: 'ios_auth_staging_fixture_payload',
+        reason: 'invalid_user_scope',
+        userId: typeof payload.userId === 'number' ? payload.userId : null,
+        details: {
+          reason: stagingFixtureSafety.reason,
+          hasStagingFixtureClaim: payload.staging_fixture === true,
+        },
+      });
+      logger.warn(
+        {
+          event: 'auth',
+          action: 'jwt.verify',
+          outcome: 'rejected',
+          reason: stagingFixtureSafety.reason,
+          userId: payload.userId,
+        },
+        'iOS JWT: staging fixture token rejected by runtime safety boundary',
+      );
+      sendError(res, 'UNAUTHORIZED', 'Invalid staging fixture token', 401);
+      return;
+    }
 
     if (!isValidAuthPayloadUserId(payload.userId)) {
       recordTenantScopeAnomaly({
