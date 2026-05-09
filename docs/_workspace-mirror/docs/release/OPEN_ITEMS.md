@@ -963,8 +963,40 @@ Validation:
 
 Carry forward:
 
-- Phase 2B.4 is the iOS Repository read-cache primitive and requires the visual
-  QA protocol.
+- Phase 2B.5 chat fastpath is the only remaining Phase 2B architecture item.
+
+## 2026-05-09 Phase 2B.4 iOS Repository read-cache primitive
+
+Status: **READY_FOR_HOSTILE_QA**.
+
+Closeout: `docs/archive/2026-05/phase2b4-ios-repository-primitive/closeout.md`
+Visual manifest:
+`docs/archive/2026-05/phase2b4-ios-repository-primitive/visual-matrix-manifest.md`
+
+Summary:
+
+- Added `CachedResource<Value>` as the shared iOS repository read-cache
+  primitive for TTL freshness, stale-while-revalidate, in-flight coalescing,
+  ETag/304 handling, scope invalidation, reset, and preview seeding.
+- Migrated 13 repositories to compose the primitive while preserving their
+  public APIs and keeping mutation/optimistic-update logic local.
+- Added a repository cache-state visual audit host and an 80-cell visual matrix
+  across 10 critical repository-consuming surfaces, 4 cache states, and 2
+  locales.
+
+Validation:
+
+- Build: PASS on simulator `A0B13967-B5DE-4E6F-897D-F1E409093F94`.
+- Unit/focused tests: PASS, 21/21.
+- Repository visual matrix: PASS, 21 XCTest methods / 80 screenshot-bearing
+  cells / 0 failures.
+- Existing focused UI smoke: PASS, 42 UI tests / 0 failures
+  (`AuthenticationFlowUITests`, `FeedbackFlowUITests`,
+  `WorkspaceLandingVisualUITests`).
+
+Carry forward:
+
+- Phase 2B.5 chat fastpath remains the only Phase 2B item.
 
 
 ## Standing Authorizations
