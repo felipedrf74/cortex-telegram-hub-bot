@@ -90,6 +90,10 @@ GATES=(
   "apple-notifications-jws-verify|src/services/apple-jws-verifier.ts|apple-notifications-jws-verify"
   "training-routes-entitlement|src/api/routes/training.ts|training-routes-entitlement"
   "content-engine-prompt-cleanliness|content-engine/services/creative/hook_generator.py|test_prompt_cleanliness"
+  "voice-evolution-multi-tenant|src/agents/voice-evolution-agent.ts|voice-evolution-multi-tenant"
+  "video-study-prompt-cleanliness|src/services/video-study.ts|video-study-prompt-cleanliness"
+  "channel-learner-prompt-cleanliness|src/services/channel-learner.ts|channel-learner-prompt-cleanliness"
+  "cost-guardrail-global-rest|src/services/cost-guardrail.ts|cost-guardrail-global-rest"
 )
 
 # Run the classifier once per gate and capture results into JSON.

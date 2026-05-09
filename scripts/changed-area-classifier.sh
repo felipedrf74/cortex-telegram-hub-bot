@@ -167,6 +167,10 @@ HAS_IOS_NOTIFICATION=false    # APNs/local notifications/Decision Center UI
 HAS_APPLE_NOTIFICATION_WEBHOOK=false
 HAS_TRAINING_ENTITLEMENT=false
 HAS_CONTENT_PROMPT_CLEANLINESS=false
+HAS_VOICE_EVOLUTION_MULTI_TENANT=false
+HAS_VIDEO_STUDY_PROMPT_CLEANLINESS=false
+HAS_CHANNEL_LEARNER_PROMPT_CLEANLINESS=false
+HAS_GLOBAL_COST_GUARDRAIL_REST=false
 
 # Use grep-based detection so multiple flags can match a single file.
 # Bash `case` stops at the first match — that's wrong here because e.g.
@@ -222,6 +226,9 @@ match '^src/domains/content/|^src/services/content-|^src/services/voice-|^src/ap
 match '^content-engine/services/|^content-engine/models/|^content-engine/routers/|^content-engine/tests/test_prompt_cleanliness\.py$|^src/services/content-engine\.ts$|^src/commands/books\.ts$' && HAS_CONTENT_PROMPT_CLEANLINESS=true
 match '^__tests__/services/content-' && HAS_CONTENT=true
 match '^src/agents/|^__tests__/services/cross-agent-learning|^__tests__/security/content-agent-neutrality' && HAS_CONTENT_AGENT=true
+match '^src/agents/voice-evolution-agent\.ts$|^__tests__/agents/voice-evolution-multi-tenant\.test\.ts$' && HAS_VOICE_EVOLUTION_MULTI_TENANT=true
+match '^src/services/video-study\.ts$|^__tests__/services/video-study-prompt-cleanliness\.test\.ts$' && HAS_VIDEO_STUDY_PROMPT_CLEANLINESS=true
+match '^src/services/channel-learner\.ts$|^__tests__/services/channel-learner-prompt-cleanliness\.test\.ts$' && HAS_CHANNEL_LEARNER_PROMPT_CLEANLINESS=true
 
 match '^src/domains/finance/|^src/services/finance-|^src/services/invoice-|^src/api/routes/finance|^src/skills/finance/' && HAS_FINANCE=true
 match '^__tests__/services/finance-|^__tests__/services/invoice-' && HAS_FINANCE=true
@@ -234,6 +241,7 @@ match '^src/portal/|^__tests__/portal/|^scripts/cooking-portal-browser-smoke\.ts
 match '^migrations/' && HAS_MIGRATION=true
 match '^content-engine/' && HAS_PYTHON_ENGINE=true
 match '^src/api/router\.ts$|^src/api/routes/billing\.ts$|^src/services/apple-jws-verifier\.ts$|^__tests__/security/billing-apple-notifications-jws-verify\.test\.ts$' && HAS_APPLE_NOTIFICATION_WEBHOOK=true
+match '^src/services/cost-guardrail\.ts$|^src/api/routes/(chat-message-request|training-plan-routes|training|content-script-routes|finance)\.ts$|^__tests__/security/cost-guardrail-global-rest\.test\.ts$' && HAS_GLOBAL_COST_GUARDRAIL_REST=true
 
 match '^scripts/(deploy|deploy-staging|promote-to-prod|rollback|restore)\.sh$' && HAS_DEPLOY_SCRIPT=true
 match '^\.husky/' && HAS_HOOK=true
@@ -401,6 +409,10 @@ $HAS_IOS_NOTIFICATION && CANNOT_SKIP+=("ios-notification-decision-center")
 $HAS_APPLE_NOTIFICATION_WEBHOOK && CANNOT_SKIP+=("apple-notifications-jws-verify")
 $HAS_TRAINING_ENTITLEMENT && CANNOT_SKIP+=("training-routes-entitlement")
 $HAS_CONTENT_PROMPT_CLEANLINESS && CANNOT_SKIP+=("content-engine-prompt-cleanliness")
+$HAS_VOICE_EVOLUTION_MULTI_TENANT && CANNOT_SKIP+=("voice-evolution-multi-tenant")
+$HAS_VIDEO_STUDY_PROMPT_CLEANLINESS && CANNOT_SKIP+=("video-study-prompt-cleanliness")
+$HAS_CHANNEL_LEARNER_PROMPT_CLEANLINESS && CANNOT_SKIP+=("channel-learner-prompt-cleanliness")
+$HAS_GLOBAL_COST_GUARDRAIL_REST && CANNOT_SKIP+=("cost-guardrail-global-rest")
 
 # Tier 1 if anything non-doc is in scope
 if $HAS_NON_DOC; then
@@ -466,6 +478,11 @@ if $HAS_NON_DOC; then
     $HAS_EVENT_BACKBONE && VITEST_GLOBS+=("__tests__/services/event-backbone.test.ts" "__tests__/api/event-backbone-routes.test.ts" "__tests__/security/**/*.test.ts")
     $HAS_CHAT_REASONING && VITEST_GLOBS+=("__tests__/services/chat-reasoning-engine.test.ts" "__tests__/api/chat-routes.test.ts" "__tests__/security/p0-chat-identity-isolation.test.ts")
     $HAS_APPLE_NOTIFICATION_WEBHOOK && VITEST_GLOBS+=("__tests__/security/billing-apple-notifications-jws-verify.test.ts")
+    $HAS_TRAINING_ENTITLEMENT && VITEST_GLOBS+=("__tests__/security/training-routes-entitlement.test.ts")
+    $HAS_VOICE_EVOLUTION_MULTI_TENANT && VITEST_GLOBS+=("__tests__/agents/voice-evolution-multi-tenant.test.ts")
+    $HAS_VIDEO_STUDY_PROMPT_CLEANLINESS && VITEST_GLOBS+=("__tests__/services/video-study-prompt-cleanliness.test.ts")
+    $HAS_CHANNEL_LEARNER_PROMPT_CLEANLINESS && VITEST_GLOBS+=("__tests__/services/channel-learner-prompt-cleanliness.test.ts")
+    $HAS_GLOBAL_COST_GUARDRAIL_REST && VITEST_GLOBS+=("__tests__/security/cost-guardrail-global-rest.test.ts")
     $HAS_CONTENT_PROMPT_CLEANLINESS && PYTEST_GLOBS+=("content-engine/tests/test_prompt_cleanliness.py")
     if [ "${#VITEST_GLOBS[@]}" -eq 0 ]; then
       # Backend src/test changed but no domain mapped — fall back to changed-files-only

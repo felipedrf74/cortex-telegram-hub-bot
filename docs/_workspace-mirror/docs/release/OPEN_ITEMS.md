@@ -11,6 +11,60 @@ Last sweep complete: 2026-05-07.
 Closeout dossier:
 `engine/docs/archive/2026-05/tech-debt-validation/sweep-closeout-dossier.md`.
 
+## 2026-05-09 Phase 2A Wave-2 Blockers — Source/Staging Complete
+
+Closeout:
+`docs/archive/2026-05/phase2a-wave2-blockers/closeout.md`
+
+Verdict: **READY_FOR_HOSTILE_QA** on local source branches after staging smoke.
+Production was not touched by this phase.
+
+Closed in source/staging:
+- Voice-evolution agent and Tuesday/Thursday/Friday content crons now scope to
+  active users/tenants instead of owner-only execution.
+- `video-study.ts` and `channel-learner.ts` now derive language/audience/niche
+  from authenticated creator profiles instead of founder-shaped PT-BR/fitness
+  defaults.
+- iOS REST AI routes now use a shared global + per-user cost guardrail helper
+  before AI execution.
+- Settings now has an in-app feedback report channel with build/user/provider
+  context and recent client-error context.
+- Legacy `NEXUS_SKIP_AUTH` references were removed from `Nexus HubUITests/`.
+- Cannot-skip dashboard now includes Phase 2A gates and reports 30/30 locally.
+
+Evidence:
+- Engine typecheck PASS.
+- Focused engine vitest PASS: 6 files / 16 tests.
+- Content-engine prompt cleanliness PASS: 11/11.
+- Cannot-skip dashboard PASS: 30/30.
+- Mock lint PASS at strict baseline 827.
+- iOS focused XCUITest PASS: 10 executed, 1 skipped, 0 failures.
+- Staging deploy PASS.
+- Staging smoke PASS: 20/20.
+- Smoke evidence:
+  `engine/docs/release/smoke-evidence/staging-smoke-b1f3ceea-20260509T010124Z.json`.
+
+Remaining before Wave 2 promote:
+- P1: Claude hostile QA on Phase 2A branches.
+- P1: Operator decision on production promote after hostile QA.
+- P2: Replace the remaining TrainingValidation auth-stub skip with a hard
+  main-tab assertion once the stub server can provide the required
+  post-onboarding/profile state.
+- P2: Add authenticated staging fixture users for free-tier/pro-tier/global-cost
+  manual probes so future release gates do not rely only on local behavioral
+  tests.
+- P3: Add real screenshot attachment support to the in-app feedback channel
+  after privacy/retention rules are defined.
+- P3: Revisit Sentry/ops alert thresholds for the cohort-scoped
+  `GLOBAL_DAILY_COST_LIMIT=100.00`.
+
+Phase 2B carryovers remain unchanged and out of scope for this phase:
+- iOS Repository read-cache plumbing consolidation.
+- Workspace state module consolidation.
+- API route helper consolidation.
+- Cache invalidator registry.
+- iOS chat fastpath + Telegram fastpath convergence.
+
 Latest closed-beta gap analysis: 2026-05-07 (mid-day Europe/Lisbon).
 Report: `docs/archive/2026-05/closed-beta-gap-analysis/all-skills-gap-analysis-report.md`
 Verdict: READY_WITH_CONDITIONS on the source branch after the P0 cluster
