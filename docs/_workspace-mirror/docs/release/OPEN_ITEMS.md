@@ -881,7 +881,8 @@ Validation:
 - Cannot-skip dashboard: PASS, 31/31.
 - Strict mock-completeness lint: PASS at 822 partial mocks, under baseline 827.
 - Staging deploy: PASS; production untouched.
-- Staging smoke: PASS, 21/21. Evidence:
+- Staging smoke: PASS, 21 passed / 0 failed / 23 total (2 skipped, neither
+  implementation-related). Evidence:
   `engine/docs/release/smoke-evidence/staging-smoke-d1149c52-20260509T131735Z.json`.
 
 Carry forward:
