@@ -137,6 +137,8 @@ describe('signal-ranking: writeSignal with new fields', () => {
     const id = writeSignal({
       source_agent: 'test-agent',
       signal_type: 'voice_pattern',
+      user_id: 42,
+      tenant_id: 42,
       payload: { observation: 'test' },
     });
 
