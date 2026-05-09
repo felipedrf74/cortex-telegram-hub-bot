@@ -2,7 +2,7 @@
 
 Status: canonical
 Owner: release lead (Felipe)
-Last verified: 2026-05-07
+Last verified: 2026-05-10
 Update policy: update when a current carryover opens or closes. Monthly
 historical detail for the 2026-05 tech-debt sweep lives in
 `docs/release/OPEN_ITEMS_ARCHIVE_2026-05.md`.
@@ -10,6 +10,30 @@ historical detail for the 2026-05 tech-debt sweep lives in
 Last sweep complete: 2026-05-07.
 Closeout dossier:
 `engine/docs/archive/2026-05/tech-debt-validation/sweep-closeout-dossier.md`.
+
+## 2026-05-10 Phase 2B.5 Chat Fastpath Dedup Deferred
+
+Closeout:
+`engine/docs/archive/2026-05/phase2b5-chat-fastpath-dedup/closeout-deferred.md`
+
+Verdict: **DEFERRED_WITH_REASON**. Phase 2B is now **4/5 done**:
+2B.1 workspace landing state, 2B.2 cache-coherence registry, 2B.3 cached route
+helper, and 2B.4 iOS repository primitive are shipped/queued. 2B.5 chat
+fastpath dedup is deferred to a likely Phase 3 post-Wave-1 round.
+
+Reason:
+- Source-truth diagnosis found 14 `fastpath` mentions, 4 actual runtime
+  adapter/call sites, and 2 heavy implementation files.
+- The smaller cache/dedup primitive prototype passed its focused suite but had
+  a positive source LoC delta, so it failed the architecture-round bar.
+- A wider iOS slash-command + Telegram secretary-fastpath merge might pass the
+  deletion test, but it would touch user-visible chat rendering and trigger the
+  visual QA protocol. That risk is not appropriate before Wave 1.
+
+Re-open trigger:
+- Reopen only if beta usage shows observable fastpath cache/coalescing bugs, a
+  third real fastpath implementation site appears, or a planned feature needs a
+  unified fastpath surface across iOS, Telegram, and WebSocket.
 
 ## 2026-05-09 P0 Garmin Tenant Leak + Apple Health Cascade
 
