@@ -138,3 +138,60 @@ Staging watcher probe notes:
   global browser sessions before broad multi-user finance rollout.
 - Operator can decide whether to cherry-pick/push the iOS `CachedResource`
   single-flight test commit into the active Phase 2B.4 branch remote.
+
+## Production Promote Addendum
+
+Date: 2026-05-10.
+
+Production promote status: complete.
+
+Production version after promote: `4.14.147`.
+
+Production deploy commit: `95a42c80`.
+
+Staging re-validation:
+- Branch pushed: `launch-readiness-sweep-2026-05`.
+- Backup tag pushed: `backup/launch-readiness-sweep-before-20260510-0025`.
+- Staging deploy: PASS.
+- Staging smoke: PASS, 17 passed / 0 failed / 19 total.
+- Staging smoke evidence:
+  `docs/release/smoke-evidence/staging-smoke-2703e348-20260509T235754Z.json`
+- Promote-gate staging smoke evidence:
+  `docs/release/smoke-evidence/staging-smoke-2703e348-20260509T235939Z.json`
+  and
+  `docs/release/smoke-evidence/staging-smoke-2703e348-20260510T000002Z.json`.
+
+Watcher probe evidence:
+- Positive staging probe PASS: injected one synthetic tainted Garmin token row,
+  watcher returned `matchedCount: 1`, wrote one warning path, created an
+  operator alert, and the synthetic row plus probe evidence rows were cleaned.
+  Evidence:
+  `docs/release/smoke-evidence/staging-garmin-tenant-isolation-watcher-positive-20260509T235850Z.json`
+- Negative staging probe PASS: watcher returned `matchedCount: 0`, `alerted:
+  false`, and wrote no new warning or alert rows. Evidence:
+  `docs/release/smoke-evidence/staging-garmin-tenant-isolation-watcher-negative-20260509T235904Z.json`
+
+Production health:
+- API health returned `status: healthy`. Evidence:
+  `docs/release/smoke-evidence/prod-health-launch-readiness-20260510T000541Z.json`
+- Authenticated production snapshot returned version `4.14.147`. Evidence:
+  `docs/release/smoke-evidence/prod-snapshot-launch-readiness-auth-20260510T001015Z.json`
+- PM2 evidence shows `nexus-hub` and `content-engine` online at `4.14.147`.
+  Evidence:
+  `docs/release/smoke-evidence/prod-pm2-launch-readiness-20260510T000614Z.json`
+
+Production watcher cold-start:
+- Manual watcher invocation returned `matchedCount: 0`, `alerted: false`.
+- No new watcher warning rows were written to `error_log`.
+- No new `garmin_tenant_isolation_watcher` operator alerts were written.
+- Evidence:
+  `docs/release/smoke-evidence/prod-garmin-tenant-isolation-watcher-cold-start-20260510T001046Z.json`
+
+Main reconcile:
+- `origin/main` was fast-forwarded to production deploy commit `95a42c80`.
+- Full pre-push vitest gate passed during the main reconcile push: 493 files /
+  7165 tests.
+
+iOS Task A reconciliation:
+- Deferred to operator decision. No iOS cherry-pick, merge, push, or TestFlight
+  cut was performed in this production promote round.

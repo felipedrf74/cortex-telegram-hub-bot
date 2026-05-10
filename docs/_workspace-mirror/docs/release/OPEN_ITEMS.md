@@ -19,8 +19,9 @@ Closeout:
 Provider filesystem-session audit:
 `engine/docs/archive/2026-05/launch-readiness-sweep/provider-filesystem-session-audit.md`
 
-Verdict: **READY_FOR_HOSTILE_QA** on branch
-`launch-readiness-sweep-2026-05`.
+Verdict: **CLOSED IN PRODUCTION** on backend `4.14.147`
+(`95a42c80`). Hostile QA returned `READY_FOR_LOCAL_QA`; Felipe authorized the
+production promote on 2026-05-10.
 
 Closed in source:
 - iOS Phase 2B.4 P3 F-2: `CachedResource` now has a direct single-flight
@@ -39,9 +40,19 @@ Evidence:
 - Engine focused B+D PASS: 2 files / 14 tests.
 - Pre-commit focused engine slice PASS: 26 files / 249 tests.
 - Mock lint PASS at 826/827 strict baseline.
-- Staging smoke PASS: 17 passed / 0 failed / 17 total.
+- Staging re-smoke PASS: 17 passed / 0 failed / 19 total.
 - Staging watcher positive-path probe PASS:
-  `engine/docs/release/smoke-evidence/staging-garmin-tenant-isolation-watcher-20260509T233855Z.json`.
+  `engine/docs/release/smoke-evidence/staging-garmin-tenant-isolation-watcher-positive-20260509T235850Z.json`.
+- Staging watcher negative-path probe PASS:
+  `engine/docs/release/smoke-evidence/staging-garmin-tenant-isolation-watcher-negative-20260509T235904Z.json`.
+- Production health PASS:
+  `engine/docs/release/smoke-evidence/prod-health-launch-readiness-20260510T000541Z.json`.
+- Authenticated production snapshot returned version `4.14.147`:
+  `engine/docs/release/smoke-evidence/prod-snapshot-launch-readiness-auth-20260510T001015Z.json`.
+- Production watcher cold-start PASS: `matchedCount: 0`, no new watcher
+  warnings, no new operator alerts:
+  `engine/docs/release/smoke-evidence/prod-garmin-tenant-isolation-watcher-cold-start-20260510T001046Z.json`.
+- `origin/main` was fast-forwarded to production deploy commit `95a42c80`.
 
 Carryover opened by the audit:
 - P1/P2: Amazon and Uber invoice collectors use global filesystem browser

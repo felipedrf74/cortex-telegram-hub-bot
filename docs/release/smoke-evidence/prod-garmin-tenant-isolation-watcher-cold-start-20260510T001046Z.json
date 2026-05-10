@@ -1,0 +1,31 @@
+{
+  "ok": true,
+  "mode": "production-cold-start",
+  "result": {
+    "ok": true,
+    "matchedCount": 0,
+    "alerted": false,
+    "dryRun": {
+      "ok": true,
+      "mode": "dry-run",
+      "matchedCount": 0,
+      "matchedRows": [],
+      "remainingCount": 0,
+      "ranAt": "2026-05-10T00:10:47.029Z",
+      "note": "Dry run only. Re-run with --yes to delete matched rows."
+    }
+  },
+  "before": {
+    "watcherWarnings": 0,
+    "watcherAlerts": 0
+  },
+  "after": {
+    "watcherWarnings": 0,
+    "watcherAlerts": 0
+  },
+  "deltas": {
+    "watcherWarnings": 0,
+    "watcherAlerts": 0
+  },
+  "ranAt": "2026-05-10T00:10:47.033Z"
+}

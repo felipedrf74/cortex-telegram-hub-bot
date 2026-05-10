@@ -1,0 +1,59 @@
+{
+  "ok": true,
+  "mode": "positive",
+  "syntheticUserId": 1099998,
+  "result": {
+    "ok": true,
+    "matchedCount": 1,
+    "alerted": true,
+    "dryRun": {
+      "ok": true,
+      "mode": "dry-run",
+      "matchedCount": 1,
+      "matchedRows": [
+        {
+          "userId": 1099998,
+          "reasons": [
+            "non-owner Garmin connection email matches owner GARMIN_EMAIL"
+          ],
+          "sources": [
+            "garmin_user_tokens"
+          ]
+        }
+      ],
+      "remainingCount": 1,
+      "ranAt": "2026-05-09T23:58:51.138Z",
+      "note": "Dry run only. Re-run with --yes to delete matched rows."
+    }
+  },
+  "beforeAlert": null,
+  "afterAlert": {
+    "id": 8,
+    "source": "garmin_tenant_isolation_watcher",
+    "dedupe_key": "garmin:tenant-isolation:tainted-sessions",
+    "title": "Garmin tenant isolation watcher found tainted sessions",
+    "occurrence_count": 1,
+    "metadata_json": "{\"matchedCount\":1,\"remainingCount\":1,\"matchedRows\":[\"[object]\"]}"
+  },
+  "insertedErrorRows": [
+    {
+      "id": 127,
+      "level": "warning",
+      "source": "job",
+      "message": "Garmin tenant isolation watcher found 1 tainted row(s)",
+      "context": "{\"matchedCount\":1,\"remainingCount\":1,\"matchedRows\":[{\"userId\":1099998,\"reasons\":[\"non-owner Garmin connection email matches owner GARMIN_EMAIL\"],\"sources\":[\"garmin_user_tokens\"]}]}"
+    }
+  ],
+  "alertChanged": true,
+  "cleanup": {
+    "deletedGarminSessions": 0,
+    "deletedGarminUserTokens": 1,
+    "deletedProbeErrorRows": 1,
+    "deletedProbeAlertRows": 1
+  },
+  "finalSynthetic": {
+    "garminSessions": 0,
+    "garminUserTokens": 0
+  },
+  "ranAt": "2026-05-09T23:58:51.146Z"
+}
