@@ -361,25 +361,18 @@ export function clearExpired(): void {
   try {
     const now = new Date().toISOString();
     const db = getDb();
-    let totalCleared = 0;
-    let safetyValveFired = false;
-
-    while (true) {
-      const result = db.prepare(`
-        DELETE FROM api_cache
-        WHERE rowid IN (
-          SELECT rowid
-          FROM api_cache
-          WHERE expires_at < ?
-          ORDER BY expires_at ASC, cache_key ASC
-          LIMIT ?
-        )
-      `).run(now, CACHE_EXPIRED_DELETE_BATCH_SIZE);
-      const cleared = Number(result.changes || 0);
-      totalCleared += cleared;
-      if (cleared >= CACHE_EXPIRED_DELETE_BATCH_SIZE) safetyValveFired = true;
-      if (cleared < CACHE_EXPIRED_DELETE_BATCH_SIZE) break;
-    }
+    const result = db.prepare(`
+      DELETE FROM api_cache
+      WHERE rowid IN (
+        SELECT rowid
+        FROM api_cache
+        WHERE expires_at < ?
+        ORDER BY expires_at ASC, cache_key ASC
+        LIMIT ?
+      )
+    `).run(now, CACHE_EXPIRED_DELETE_BATCH_SIZE);
+    const totalCleared = Number(result.changes || 0);
+    const safetyValveFired = totalCleared >= CACHE_EXPIRED_DELETE_BATCH_SIZE;
 
     cacheStoreStats.expiredEntriesCleared += totalCleared;
     if (totalCleared > 0) {
