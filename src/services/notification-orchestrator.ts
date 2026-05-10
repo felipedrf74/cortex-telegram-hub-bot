@@ -58,7 +58,7 @@ export type NotificationDecision =
   | 'blocked_missing_device_token'
   | 'blocked_user_preferences'
   | 'blocked_privacy_policy';
-export type NotificationCenterStatus = 'unread' | 'read' | 'actioned' | 'dismissed' | 'expired' | 'superseded';
+export type NotificationCenterStatus = 'unread' | 'read' | 'viewed' | 'snoozed' | 'actioned' | 'dismissed' | 'failed' | 'expired' | 'superseded';
 export type NotificationPrivacyPolicy = 'public' | 'standard' | 'sensitive' | 'private_content' | 'financial' | 'health';
 export type NotificationDeliveryPolicy = 'auto' | 'in_app_only' | 'push_allowed' | 'digest_only' | 'portal_only';
 export type QuietHoursPolicy = 'respect' | 'allow_time_sensitive' | 'send_now';
@@ -1390,13 +1390,14 @@ async function attemptPushDelivery(
       body: payload.body,
       data: {
         notificationId,
+        decisionId: isDecisionIntentForPush(intent) ? notificationId : undefined,
         intentId: intent.intentId,
         sourceSkill: intent.sourceSkill,
         type: intent.type,
         deeplink: payload.deeplink,
       },
-      threadId: `${intent.sourceSkill}-${intent.type}`,
-      category: intent.type,
+      threadId: isDecisionIntentForPush(intent) ? 'decision-center' : `${intent.sourceSkill}-${intent.type}`,
+      category: notificationCategoryForIntent(intent),
       sound: effectiveSound(intent.priority, profile),
       interruptionLevel: payload.interruptionLevel,
     });
@@ -1630,6 +1631,24 @@ function consumePushRateLimit(intent: NotificationIntentRecord, priority: Notifi
 
 function effectiveSound(priority: NotificationPriority, _profile: NotificationProfile): string | undefined {
   return priority === 'passive' ? undefined : 'default';
+}
+
+function isDecisionIntentForPush(intent: NotificationIntentRecord): boolean {
+  if (intent.requiresUserAction) return true;
+  return intent.type === 'decision_required'
+    || intent.type === 'conflict_detected'
+    || intent.type === 'reflow_suggestion'
+    || intent.type === 'approval_required'
+    || intent.type === 'sync_failure'
+    || intent.type === 'security_account';
+}
+
+function notificationCategoryForIntent(intent: NotificationIntentRecord): string {
+  if (!isDecisionIntentForPush(intent)) return intent.type;
+  if (intent.type === 'conflict_detected' || intent.type === 'reflow_suggestion') return 'DECISION_SCHEDULE_CONFLICT';
+  if (intent.type === 'approval_required') return 'DECISION_APPROVAL';
+  if (intent.type === 'sync_failure') return 'DECISION_SYNC_ISSUE';
+  return 'DECISION_CLARIFICATION';
 }
 
 function mapProfile(row: any): NotificationProfile {

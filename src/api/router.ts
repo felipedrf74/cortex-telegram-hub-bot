@@ -35,6 +35,7 @@ import { internalRoutes } from './routes/internal';
 import { planRoutes } from './routes/plan';
 import { requireEntitlement } from './entitlement-middleware';
 import { notificationRoutes } from './routes/notifications';
+import { decisionRoutes, deviceTokenRoutes } from './routes/decisions';
 import { reportRoutes } from './routes/reports';
 import { summaryRoutes } from './routes/summaries';
 import { syncRoutes } from './routes/sync';
@@ -81,6 +82,7 @@ export function createApiRouter(): Router {
         billing: 'GET /api/v1/billing/status, POST /api/v1/billing/{checkout|portal|apple-verify}',
         plan: 'GET /api/v1/plan/{week|today}, POST /api/v1/plan/recompute — multiskill mesh (feature-flagged)',
         summaries: 'GET /api/v1/summaries/{home|week|training|content|notifications} — fast app read models',
+        decisions: 'GET /api/v1/decisions/summary, GET/POST/PATCH /api/v1/decisions — user-scoped decision orchestration',
         sync: 'GET /api/v1/sync/changes?since=cursor — RAMEN-lite delta sync',
       },
       auth_note: 'POST /auth/register with inviteCode to get a JWT. Include as Authorization: Bearer <token> on all other endpoints.',
@@ -285,6 +287,10 @@ export function createApiRouter(): Router {
   // Content notification inbox — durable notifications for content events.
   // Powers the iOS notification center (unread badge, read/resolve actions).
   router.use('/notifications', notificationRoutes());
+
+  // Decision Center — action-oriented facade over durable NotificationIntents.
+  router.use('/decisions', decisionRoutes());
+  router.use('/device-tokens', deviceTokenRoutes());
 
   // Durable report documents — morning briefing, evening summary, weekly review,
   // coach briefing. Structured JSON payloads rendered natively in iOS.
