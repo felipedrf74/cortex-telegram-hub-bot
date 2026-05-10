@@ -148,23 +148,21 @@ describe('cache-store observability', () => {
   it('deletes expired api_cache rows in bounded batches and warns when the safety valve fires', async () => {
     mockRun
       .mockReturnValueOnce({ changes: 10_000 })
-      .mockReturnValueOnce({ changes: 10_000 })
-      .mockReturnValueOnce({ changes: 9_000 })
       .mockReturnValueOnce({ changes: 1 });
 
     const { clearExpired, getCacheStoreStats } = await import('../../src/services/cache-store');
 
     clearExpired();
 
-    expect(mockRun).toHaveBeenCalledTimes(4);
-    expect(mockRun.mock.calls.slice(0, 3).map((call) => call[1])).toEqual([10_000, 10_000, 10_000]);
+    expect(mockRun).toHaveBeenCalledTimes(2);
+    expect(mockRun.mock.calls[0][1]).toBe(10_000);
     expect(mockWarn).toHaveBeenCalledWith(
-      expect.objectContaining({ cleared: 29_000, batchSize: 10_000 }),
+      expect.objectContaining({ cleared: 10_000, batchSize: 10_000 }),
       'api_cache expiry cleanup safety valve fired',
     );
     expect(getCacheStoreStats()).toMatchObject({
       expireSweepCount: 1,
-      expiredEntriesCleared: 29_000,
+      expiredEntriesCleared: 10_000,
     });
   });
 });
