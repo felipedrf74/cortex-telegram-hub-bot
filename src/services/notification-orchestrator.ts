@@ -1048,6 +1048,52 @@ export function performNotificationAction(
   return { item: updated, actionId, idempotent };
 }
 
+function revokePriorActiveDeviceTokenOwners(
+  db: ReturnType<typeof getDb>,
+  deviceId: string,
+  currentUserId: number,
+): void {
+  const priorRows = db.prepare(`
+    SELECT DISTINCT user_id, tenant_id
+    FROM notification_device_tokens
+    WHERE device_id = ?
+      AND user_id != ?
+      AND revoked_at IS NULL
+  `).all(deviceId, currentUserId) as Array<{ user_id: number; tenant_id: number }>;
+
+  if (priorRows.length === 0) return;
+
+  db.prepare(`
+    UPDATE notification_device_tokens
+    SET revoked_at = COALESCE(revoked_at, datetime('now'))
+    WHERE device_id = ?
+      AND user_id != ?
+      AND revoked_at IS NULL
+  `).run(deviceId, currentUserId);
+
+  for (const row of priorRows) {
+    const activeCount = (db.prepare(`
+      SELECT COUNT(*) AS count
+      FROM notification_device_tokens
+      WHERE user_id = ?
+        AND tenant_id = ?
+        AND revoked_at IS NULL
+    `).get(row.user_id, row.tenant_id) as { count: number }).count;
+    if (activeCount > 0) continue;
+
+    db.prepare(`
+      UPDATE notification_decision_logs
+      SET decision = 'blocked_missing_device_token',
+          reason = 'device token re-associated to another authenticated user',
+          sent_at = COALESCE(sent_at, datetime('now'))
+      WHERE user_id = ?
+        AND tenant_id = ?
+        AND sent_at IS NULL
+        AND decision IN ('quiet_hours_delayed', 'digest')
+    `).run(row.user_id, row.tenant_id);
+  }
+}
+
 export function registerNotificationDeviceToken(opts: {
   userId: number;
   tenantId?: number;
@@ -1070,28 +1116,32 @@ export function registerNotificationDeviceToken(opts: {
   const deviceId = opts.deviceId?.trim() || `ios-${tokenHash.slice(0, 16)}`;
   const db = getDb();
 
-  db.prepare(`
-    INSERT INTO ios_devices (user_id, device_id, device_name, push_token, refresh_token, last_active_at)
-    VALUES (?, ?, NULL, ?, '', datetime('now'))
-    ON CONFLICT(device_id) DO UPDATE SET
-      user_id = excluded.user_id,
-      push_token = excluded.push_token,
-      last_active_at = datetime('now')
-  `).run(opts.userId, deviceId, token);
+  db.transaction(() => {
+    db.prepare(`
+      INSERT INTO ios_devices (user_id, device_id, device_name, push_token, refresh_token, last_active_at)
+      VALUES (?, ?, NULL, ?, '', datetime('now'))
+      ON CONFLICT(device_id) DO UPDATE SET
+        user_id = excluded.user_id,
+        push_token = excluded.push_token,
+        last_active_at = datetime('now')
+    `).run(opts.userId, deviceId, token);
 
-  db.prepare(`
-    INSERT INTO notification_device_tokens (
-      token_id, user_id, tenant_id, platform, token_hash, token_suffix, environment,
-      device_id, app_version, last_seen_at, revoked_at
-    )
-    VALUES (?, ?, ?, 'ios', ?, ?, ?, ?, ?, datetime('now'), NULL)
-    ON CONFLICT(user_id, tenant_id, platform, token_hash, environment) DO UPDATE SET
-      device_id = excluded.device_id,
-      app_version = excluded.app_version,
-      token_suffix = excluded.token_suffix,
-      last_seen_at = datetime('now'),
-      revoked_at = NULL
-  `).run(tokenId, opts.userId, tenantId, tokenHash, tokenSuffix, environment, deviceId, opts.appVersion ?? null);
+    db.prepare(`
+      INSERT INTO notification_device_tokens (
+        token_id, user_id, tenant_id, platform, token_hash, token_suffix, environment,
+        device_id, app_version, last_seen_at, revoked_at
+      )
+      VALUES (?, ?, ?, 'ios', ?, ?, ?, ?, ?, datetime('now'), NULL)
+      ON CONFLICT(user_id, tenant_id, platform, token_hash, environment) DO UPDATE SET
+        device_id = excluded.device_id,
+        app_version = excluded.app_version,
+        token_suffix = excluded.token_suffix,
+        last_seen_at = datetime('now'),
+        revoked_at = NULL
+    `).run(tokenId, opts.userId, tenantId, tokenHash, tokenSuffix, environment, deviceId, opts.appVersion ?? null);
+
+    revokePriorActiveDeviceTokenOwners(db, deviceId, opts.userId);
+  })();
 
   const row = db.prepare(`
     SELECT * FROM notification_device_tokens
@@ -1385,21 +1435,33 @@ async function attemptPushDelivery(
   }
 
   try {
+    const isDecisionPush = isDecisionIntentForPush(intent);
+    let badge: number | undefined;
+    if (isDecisionPush) {
+      try {
+        const { countOpenUrgentDecisionsForUser } = await import('./decision-center');
+        badge = countOpenUrgentDecisionsForUser(intent.userId, intent.tenantId);
+      } catch (err) {
+        logger.debug({ err, intentId: intent.intentId }, 'Notification orchestrator badge count lookup failed');
+      }
+    }
     const result = await sendPushNotification(intent.userId, {
       title: payload.title,
       body: payload.body,
+      badge,
       data: {
         notificationId,
-        decisionId: isDecisionIntentForPush(intent) ? notificationId : undefined,
+        decisionId: isDecisionPush ? notificationId : undefined,
         intentId: intent.intentId,
         sourceSkill: intent.sourceSkill,
         type: intent.type,
         deeplink: payload.deeplink,
       },
-      threadId: isDecisionIntentForPush(intent) ? 'decision-center' : `${intent.sourceSkill}-${intent.type}`,
+      threadId: isDecisionPush ? 'decision-center' : `${intent.sourceSkill}-${intent.type}`,
       category: notificationCategoryForIntent(intent),
       sound: effectiveSound(intent.priority, profile),
       interruptionLevel: payload.interruptionLevel,
+      collapseId: isDecisionPush ? `decision:${notificationId}` : undefined,
     });
     if (result.sent > 0) {
       return persistDeliveryAttempt(intent, notificationId, 'push', 'apns', 'sent', '2xx', null);

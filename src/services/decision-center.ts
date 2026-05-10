@@ -338,6 +338,10 @@ export function getDecisionSummary(userId: number, tenantId = userId, limit = 3)
   };
 }
 
+export function countOpenUrgentDecisionsForUser(userId: number, tenantId = userId): number {
+  return getDecisionSummary(userId, tenantId).badgeCount;
+}
+
 export async function performDecisionAction(
   decisionId: string,
   actionId: string,
@@ -352,35 +356,37 @@ export async function performDecisionAction(
   if (!record.actions.some((action) => action.id === actionId)) {
     throw new DecisionActionError('DECISION_ACTION_NOT_ALLOWED', 'That action is not available for this decision', 400);
   }
-  const idempotencyKey = opts.idempotencyKey || `${decisionId}:${actionId}:${userId}:${tenantId}`;
+  const idempotencyKey = opts.idempotencyKey?.trim();
+  if (!idempotencyKey) {
+    throw new DecisionActionError('IDEMPOTENCY_KEY_REQUIRED', 'Decision actions require an idempotency key', 400);
+  }
   const existing = getExistingExecution(decisionId, actionId, userId, tenantId, idempotencyKey);
   if (existing && existing.status === 'succeeded') {
-    const current = getDecisionItem(decisionId, userId, tenantId);
-    if (!current) throw new DecisionActionError('DECISION_NOT_FOUND', 'Decision not found after idempotent action', 404);
-    return {
-      actionId,
-      status: 'idempotent',
-      idempotent: true,
-      item: current,
-      verification: {
-        readBackOk: true,
-        expectedEffect: safeParseJson(existing.expected_effect_json, {}),
-        actualEffect: safeParseJson(existing.result_json, {}),
-        message: 'Duplicate action returned the original verified result.',
-      },
-    };
+    return idempotentActionResult(decisionId, actionId, userId, tenantId, existing);
+  }
+  if (existing && existing.status === 'started') {
+    return waitForExistingExecution(decisionId, actionId, userId, tenantId, idempotencyKey);
+  }
+  if (existing && existing.status === 'failed') {
+    throw new DecisionActionError(existing.error_code || 'DECISION_ACTION_FAILED', 'Prior decision action attempt failed', 409, safeParseJson(existing.result_json, {}));
   }
   guardActionable(record);
 
   const action = record.actions.find((candidate) => candidate.id === actionId)!;
-  const executionId = existing?.action_execution_id ?? `dae_${randomUUID()}`;
-  if (!existing) {
-    insertExecution(executionId, record, actionId, idempotencyKey, executorSkillForAction(actionId, record));
+  const claimed = claimExecution(record, actionId, idempotencyKey, executorSkillForAction(actionId, record));
+  if (!claimed.isNew) {
+    if (claimed.execution.status === 'succeeded') {
+      return idempotentActionResult(decisionId, actionId, userId, tenantId, claimed.execution);
+    }
+    if (claimed.execution.status === 'started') {
+      return waitForExistingExecution(decisionId, actionId, userId, tenantId, idempotencyKey);
+    }
+    throw new DecisionActionError(claimed.execution.error_code || 'DECISION_ACTION_FAILED', 'Prior decision action attempt failed', 409, safeParseJson(claimed.execution.result_json, {}));
   }
 
   try {
     const execution = await executeDecisionAction(record, action, userId, tenantId, opts.payload ?? {});
-    markExecutionSucceeded(executionId, execution.expectedEffect, execution.actualEffect);
+    markExecutionSucceeded(claimed.execution.action_execution_id, execution.expectedEffect, execution.actualEffect);
     const updated = getDecisionItem(decisionId, userId, tenantId);
     if (!updated) throw new DecisionActionError('DECISION_NOT_FOUND', 'Decision missing after action execution', 500);
     return {
@@ -399,7 +405,7 @@ export async function performDecisionAction(
     const error = err instanceof DecisionActionError
       ? err
       : new DecisionActionError('DECISION_ACTION_FAILED', 'Decision action failed verification', 500);
-    markExecutionFailed(executionId, error.code, error.details);
+    markExecutionFailed(claimed.execution.action_execution_id, error.code, error.details);
     markDecisionFailed(record, actionId, error.code);
     throw error;
   }
@@ -720,13 +726,69 @@ function getExistingExecution(decisionId: string, actionId: string, userId: numb
   `).get(decisionId, actionId, userId, tenantId, idempotencyKey) as any ?? null;
 }
 
-function insertExecution(executionId: string, record: DecisionRecord, actionId: string, idempotencyKey: string, executorSkill: string): void {
-  getDb().prepare(`
-    INSERT INTO decision_action_executions (
-      action_execution_id, decision_id, action_id, user_id, tenant_id, idempotency_key,
-      executor_skill, status, expected_effect_json, result_json
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, 'started', '{}', '{}')
-  `).run(executionId, record.itemId, actionId, record.userId, record.tenantId, idempotencyKey, executorSkill);
+function claimExecution(record: DecisionRecord, actionId: string, idempotencyKey: string, executorSkill: string): { isNew: boolean; execution: any } {
+  const db = getDb();
+  return db.transaction(() => {
+    const existing = getExistingExecution(record.itemId, actionId, record.userId, record.tenantId, idempotencyKey);
+    if (existing) return { isNew: false, execution: existing };
+
+    const executionId = `dae_${randomUUID()}`;
+    const insert = db.prepare(`
+      INSERT OR IGNORE INTO decision_action_executions (
+        action_execution_id, decision_id, action_id, user_id, tenant_id, idempotency_key,
+        executor_skill, status, expected_effect_json, result_json
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, 'started', '{}', '{}')
+    `).run(executionId, record.itemId, actionId, record.userId, record.tenantId, idempotencyKey, executorSkill);
+
+    const execution = getExistingExecution(record.itemId, actionId, record.userId, record.tenantId, idempotencyKey);
+    if (!execution) {
+      throw new DecisionActionError('DECISION_ACTION_FAILED', 'Decision action execution could not be claimed', 500);
+    }
+    return { isNew: insert.changes === 1, execution };
+  })();
+}
+
+function idempotentActionResult(
+  decisionId: string,
+  actionId: string,
+  userId: number,
+  tenantId: number,
+  execution: any,
+): DecisionActionResult {
+  const current = getDecisionItem(decisionId, userId, tenantId);
+  if (!current) throw new DecisionActionError('DECISION_NOT_FOUND', 'Decision not found after idempotent action', 404);
+  return {
+    actionId,
+    status: 'idempotent',
+    idempotent: true,
+    item: current,
+    verification: {
+      readBackOk: true,
+      expectedEffect: safeParseJson(execution.expected_effect_json, {}),
+      actualEffect: safeParseJson(execution.result_json, {}),
+      message: 'Duplicate action returned the original verified result.',
+    },
+  };
+}
+
+async function waitForExistingExecution(
+  decisionId: string,
+  actionId: string,
+  userId: number,
+  tenantId: number,
+  idempotencyKey: string,
+): Promise<DecisionActionResult> {
+  for (let attempt = 0; attempt < 30; attempt += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    const execution = getExistingExecution(decisionId, actionId, userId, tenantId, idempotencyKey);
+    if (!execution || execution.status === 'started') continue;
+    if (execution.status === 'succeeded') {
+      return idempotentActionResult(decisionId, actionId, userId, tenantId, execution);
+    }
+    throw new DecisionActionError(execution.error_code || 'DECISION_ACTION_FAILED', 'Prior decision action attempt failed', 409, safeParseJson(execution.result_json, {}));
+  }
+
+  throw new DecisionActionError('DECISION_ACTION_IN_PROGRESS', 'Decision action is already in progress', 409);
 }
 
 async function executeDecisionAction(
@@ -742,14 +804,14 @@ async function executeDecisionAction(
   message: string;
 }> {
   if (action.id === 'open_detail') {
-    const item = markNotificationCenterItemRead(record.itemId, userId, tenantId);
-    return verifiedStatusEffect('read', item?.status ?? null, 'Decision was marked viewed.');
+    markNotificationCenterItemRead(record.itemId, userId, tenantId);
+    return verifiedStatusEffect(record, 'read', 'Decision was marked viewed.');
   }
 
   if (action.id === 'dismiss' || action.id === 'reject_reflow' || action.id === 'not_now') {
-    const item = dismissNotificationCenterItem(record.itemId, userId, tenantId);
+    dismissNotificationCenterItem(record.itemId, userId, tenantId);
     markDecisionAction(record.decisionLogId, action.id);
-    return verifiedStatusEffect('dismissed', item?.status ?? null, 'Decision was declined/dismissed.');
+    return verifiedStatusEffect(record, 'dismissed', 'Decision was declined/dismissed.');
   }
 
   if (action.id === 'snooze') {
@@ -779,12 +841,13 @@ async function executeDecisionAction(
   throw new DecisionActionError('UNSUPPORTED_DECISION_ACTION', 'This decision action is not supported yet.', 409, { actionId: action.id });
 }
 
-function verifiedStatusEffect(expected: string, actual: string | null, message: string): {
+function verifiedStatusEffect(record: DecisionRecord, expected: string, message: string): {
   readBackOk: boolean;
   expectedEffect: Record<string, unknown>;
   actualEffect: Record<string, unknown>;
   message: string;
 } {
+  const actual = getDecisionRecord(record.itemId, record.userId, record.tenantId)?.status ?? null;
   const readBackOk = actual === expected;
   if (!readBackOk) {
     throw new DecisionActionError('DECISION_READBACK_MISMATCH', 'Decision action read-back verification failed', 409, {

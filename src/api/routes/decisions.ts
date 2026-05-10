@@ -104,8 +104,8 @@ export function decisionRoutes(): Router {
     const authReq = req as unknown as AuthenticatedRequest;
     const { userId } = authReq;
     if (!ensureValidTenantRouteScope(res, userId, 'decisions_route_fixture_intent')) return;
-    if (!isInternalDecisionIntentRequest(authReq) && process.env.NODE_ENV === 'production') {
-      sendError(res, 'FORBIDDEN', 'Decision fixtures are unavailable in production', 403);
+    if (!isInternalDecisionIntentRequest(authReq)) {
+      sendError(res, 'FORBIDDEN', 'Decision fixtures are internal service events', 403);
       return;
     }
     const tenantId = routeTenantId(authReq, userId);
@@ -114,8 +114,9 @@ export function decisionRoutes(): Router {
         String(req.params.sourceSkill || 'secretary') as NotificationSourceSkill,
         userId,
         {
-          tenantId,
           ...(req.body ?? {}),
+          tenantId,
+          userId,
         },
       ));
       sendSuccess(res, result, { status: result.item ? 201 : 202 });

@@ -12,6 +12,7 @@ const mockDismissDecision = vi.fn();
 const mockMarkDecisionViewed = vi.fn();
 const mockGetDecisionPreferences = vi.fn();
 const mockUpdateDecisionPreferences = vi.fn();
+const mockCountOpenUrgentDecisionsForUser = vi.fn();
 const mockRegisterNotificationDeviceToken = vi.fn();
 const mockRevokeNotificationDeviceToken = vi.fn();
 
@@ -27,12 +28,15 @@ vi.mock('../../src/services/decision-center', () => ({
       this.details = details;
     }
   },
+  countOpenUrgentDecisionsForUser: (...args: unknown[]) => mockCountOpenUrgentDecisionsForUser(...args),
   getDecisionSummary: (...args: unknown[]) => mockGetDecisionSummary(...args),
   listDecisionItems: (...args: unknown[]) => mockListDecisionItems(...args),
   getDecisionItem: (...args: unknown[]) => mockGetDecisionItem(...args),
   performDecisionAction: (...args: unknown[]) => mockPerformDecisionAction(...args),
   createDecisionIntent: (...args: unknown[]) => mockCreateDecisionIntent(...args),
   buildSkillDecisionFixtureIntent: (...args: unknown[]) => mockBuildSkillDecisionFixtureIntent(...args),
+  ensureDecisionCenterTables: vi.fn(),
+  evaluateDecisionEligibility: vi.fn(),
   snoozeDecision: (...args: unknown[]) => mockSnoozeDecision(...args),
   dismissDecision: (...args: unknown[]) => mockDismissDecision(...args),
   markDecisionViewed: (...args: unknown[]) => mockMarkDecisionViewed(...args),
@@ -58,6 +62,7 @@ vi.mock('../../src/utils/logger', () => ({
 }));
 
 import { decisionRoutes, deviceTokenRoutes } from '../../src/api/routes/decisions';
+import { DecisionActionError } from '../../src/services/decision-center';
 
 const ORIGINAL_NODE_ENV = process.env.NODE_ENV;
 
@@ -188,9 +193,9 @@ describe('Decision routes', () => {
     expect(mockPerformDecisionAction).toHaveBeenCalledWith('nc_1', 'open_detail', 7, 7, expect.objectContaining({ idempotencyKey: 'tap-1' }));
   });
 
-  it('keeps public fixture creation gated in production unless internal secret is present', async () => {
+  it('keeps public fixture creation gated in every environment unless internal secret is present', async () => {
     const router = decisionRoutes();
-    process.env.NODE_ENV = 'production';
+    process.env.NODE_ENV = 'development';
     process.env.INTERNAL_API_SECRET = 'secret';
 
     const rejected = await dispatch(router, 'POST', '/intents/fixtures/secretary');
@@ -198,8 +203,15 @@ describe('Decision routes', () => {
 
     mockBuildSkillDecisionFixtureIntent.mockReturnValue({ sourceSkill: 'secretary' });
     mockCreateDecisionIntent.mockResolvedValue({ item: { decisionId: 'nc_fixture' }, eligibility: { classification: 'decision' } });
-    const accepted = await dispatch(router, 'POST', '/intents/fixtures/secretary', {}, {}, { 'x-internal-secret': 'secret' });
+    const accepted = await dispatch(router, 'POST', '/intents/fixtures/secretary', {}, {
+      userId: 999,
+      tenantId: 999,
+    }, { 'x-internal-secret': 'secret' });
     expect(accepted.statusCode).toBe(201);
+    expect(mockBuildSkillDecisionFixtureIntent).toHaveBeenCalledWith('secretary', 7, expect.objectContaining({
+      userId: 7,
+      tenantId: 7,
+    }));
   });
 
   it('exposes /device-tokens aliases without raw token echo', async () => {
@@ -212,5 +224,44 @@ describe('Decision routes', () => {
     const revoked = await dispatch(router, 'DELETE', '/dt_1');
     expect(revoked.statusCode).toBe(200);
     expect(revoked.body.data.revoked).toBe(true);
+  });
+
+  it('binds /device-tokens registration to JWT-derived user and tenant even when the body injects scope', async () => {
+    const router = deviceTokenRoutes();
+    const registered = await dispatch(router, 'POST', '/', {}, {
+      token: 'abcdef12345678',
+      userId: 999,
+      tenantId: 999,
+    });
+
+    expect(registered.statusCode).toBe(200);
+    expect(mockRegisterNotificationDeviceToken).toHaveBeenCalledWith(expect.objectContaining({
+      userId: 7,
+      tenantId: 7,
+      token: 'abcdef12345678',
+    }));
+    expect(mockRegisterNotificationDeviceToken).not.toHaveBeenCalledWith(expect.objectContaining({
+      userId: 999,
+    }));
+  });
+
+  it('returns 404 for wrong-user notification action attempts without revealing existence', async () => {
+    const router = decisionRoutes();
+    mockPerformDecisionAction.mockRejectedValueOnce(new DecisionActionError(
+      'DECISION_NOT_FOUND',
+      'Decision not found for authenticated user',
+      404,
+    ));
+
+    const response = await dispatch(router, 'POST', '/user-a-decision/actions', {}, {
+      actionId: 'approve_script',
+      idempotencyKey: 'wrong-user-notification-tap',
+    });
+
+    expect(response.statusCode).toBe(404);
+    expect(response.body.error.code).toBe('DECISION_NOT_FOUND');
+    expect(mockPerformDecisionAction).toHaveBeenCalledWith('user-a-decision', 'approve_script', 7, 7, expect.objectContaining({
+      idempotencyKey: 'wrong-user-notification-tap',
+    }));
   });
 });

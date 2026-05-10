@@ -137,6 +137,8 @@ function mockReq(
       return headers[name.toLowerCase()] ?? headers[name];
     },
     userId,
+    tenantId: userId,
+    deviceId: 'iphone-test',
   } as any;
 }
 
@@ -384,6 +386,25 @@ describe('Notification inbox routes', () => {
     const revoke = await dispatch('DELETE', '/device-tokens/dt_test');
     expect(revoke.statusCode).toBe(200);
     expect(revoke.body.data.revoked).toBe(true);
+  });
+
+  it('binds legacy /notifications/device-tokens registration to authenticated scope despite body injection', async () => {
+    const token = await dispatch('POST', '/device-tokens', {}, 7, {
+      token: 'abcdef1234567890',
+      userId: 999,
+      tenantId: 999,
+      deviceId: 'forged-device',
+    });
+
+    expect(token.statusCode).toBe(200);
+    expect(mockRegisterNotificationDeviceToken).toHaveBeenCalledWith(expect.objectContaining({
+      userId: 7,
+      tenantId: 7,
+      token: 'abcdef1234567890',
+    }));
+    expect(mockRegisterNotificationDeviceToken).not.toHaveBeenCalledWith(expect.objectContaining({
+      userId: 999,
+    }));
   });
 
   it('returns a unified secretary inbox with urgency ordering and degraded state on partial source failure', async () => {

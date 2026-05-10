@@ -1,8 +1,15 @@
 -- Decision Center facade over the durable notification orchestrator.
 -- Decision Center remains the source of truth for user judgment/action.
+--
+-- SQLite does not support ALTER TABLE ... ADD COLUMN IF NOT EXISTS. Runtime
+-- startup calls ensureDecisionCenterTables(), which adds snoozed_until and
+-- action_result_json with a PRAGMA table_info guard. Keeping this migration
+-- to idempotent CREATE statements prevents replay failures on local/staging
+-- clones while preserving the live guarded column creation path.
 
-ALTER TABLE notification_center_items ADD COLUMN snoozed_until TEXT;
-ALTER TABLE notification_center_items ADD COLUMN action_result_json TEXT;
+CREATE TABLE IF NOT EXISTS _migration_119_decision_center_marker (
+  run_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
 
 CREATE TABLE IF NOT EXISTS decision_action_executions (
   action_execution_id TEXT PRIMARY KEY,

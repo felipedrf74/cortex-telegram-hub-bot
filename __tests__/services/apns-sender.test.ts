@@ -54,17 +54,30 @@ vi.mock('../../src/utils/logger', () => ({
 // ── Mock better-sqlite3 / database module ───────────────────────────
 // The push-token lookup queries ios_devices; we stub the prepare().all()
 // chain so tests can set their own return value per-test.
-const mockPushTokensForUser: Record<number, string[]> = {};
+type MockPushTokenRow = string | { token: string; environment?: 'sandbox' | 'production'; deviceId?: string | null };
+const mockPushTokensForUser: Record<number, MockPushTokenRow[]> = {};
 const mockPushTokenDeletions: string[] = [];
 
 vi.mock('../../src/services/database', () => ({
   getDb: () => ({
     prepare: (sql: string) => ({
-      all: (userId: number) => {
-        if (sql.includes('SELECT DISTINCT push_token')) {
-          return (mockPushTokensForUser[userId] || []).map((t) => ({
-            push_token: t,
-          }));
+      all: (...args: unknown[]) => {
+        if (sql.includes('SELECT DISTINCT') && sql.includes('push_token')) {
+          const userId = Number(args[args.length - 1]);
+          return (mockPushTokensForUser[userId] || []).map((entry) => {
+            if (typeof entry === 'string') {
+              return {
+                push_token: entry,
+                device_id: `device-${entry}`,
+                environment: mockedApnsConfig.environment,
+              };
+            }
+            return {
+              push_token: entry.token,
+              device_id: entry.deviceId ?? `device-${entry.token}`,
+              environment: entry.environment ?? mockedApnsConfig.environment,
+            };
+          });
         }
         return [];
       },
@@ -257,7 +270,23 @@ describe('getPushTokensForUser', () => {
 
   it('returns all push tokens for a user with multiple devices', () => {
     mockPushTokensForUser[7] = ['tok-iphone', 'tok-ipad'];
-    expect(getPushTokensForUser(7)).toEqual(['tok-iphone', 'tok-ipad']);
+    expect(getPushTokensForUser(7)).toEqual([
+      { token: 'tok-iphone', environment: 'sandbox', deviceId: 'device-tok-iphone' },
+      { token: 'tok-ipad', environment: 'sandbox', deviceId: 'device-tok-ipad' },
+    ]);
+  });
+
+  it('returns each token with its persisted APNs environment', () => {
+    mockedApnsConfig.environment = 'production';
+    mockPushTokensForUser[8] = [
+      { token: 'tok-sandbox', environment: 'sandbox', deviceId: 'iphone-sandbox' },
+      { token: 'tok-prod', environment: 'production', deviceId: 'iphone-prod' },
+    ];
+
+    expect(getPushTokensForUser(8)).toEqual([
+      { token: 'tok-sandbox', environment: 'sandbox', deviceId: 'iphone-sandbox' },
+      { token: 'tok-prod', environment: 'production', deviceId: 'iphone-prod' },
+    ]);
   });
 
   it('fails closed on invalid tenant scope and records the anomaly', () => {
@@ -306,6 +335,30 @@ describe('sendPushNotification (happy path)', () => {
     expect(req.headers['apns-topic']).toBe('me.nexushub.test');
     expect(req.headers['apns-push-type']).toBe('alert');
     expect(req.headers['apns-priority']).toBe('10');
+  });
+
+  it('sets APNs collapse id when the payload asks for one', async () => {
+    mockPushTokensForUser[1] = ['tok-collapse'];
+    mockHttp2Responses = [{ status: 200 }];
+
+    await sendPushNotification(1, { title: 'T', body: 'B', collapseId: 'decision:nc_1' });
+
+    expect(mockHttp2Requests[0].headers['apns-collapse-id']).toBe('decision:nc_1');
+  });
+
+  it('honors each persisted token environment instead of the global config', async () => {
+    mockedApnsConfig.environment = 'production';
+    mockPushTokensForUser[1] = [
+      { token: 'sandbox-token', environment: 'sandbox' },
+      { token: 'production-token', environment: 'production' },
+    ];
+    mockHttp2Responses = [{ status: 200 }, { status: 200 }];
+
+    const result = await sendPushNotification(1, { title: 'T', body: 'B' });
+
+    expect(result.sent).toBe(2);
+    expect(mockHttp2Hosts).toContain('https://api.sandbox.push.apple.com:443');
+    expect(mockHttp2Hosts).toContain('https://api.push.apple.com:443');
   });
 
   it('serializes the aps payload with title + body', async () => {
