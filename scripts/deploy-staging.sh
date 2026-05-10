@@ -146,11 +146,14 @@ echo "📤 Syncing files to staging..."
     --exclude='*.db' \
     --exclude='data/' \
     --exclude='logs/' \
+    --exclude='node_modules' \
     --exclude='node_modules/' \
     --exclude='content-engine/.venv/' \
     --exclude='content-engine/data/' \
     --exclude='content-engine/__pycache__/' \
     --exclude='**/__pycache__/' \
+    --exclude='.claude/' \
+    --exclude='.claude/**' \
     --exclude='.claude/worktrees/' \
     --exclude='.claude/worktrees/**' \
     --exclude='.codex/' \
