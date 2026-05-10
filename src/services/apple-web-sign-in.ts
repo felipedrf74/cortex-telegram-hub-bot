@@ -15,7 +15,15 @@ const APPLE_JWKS_TTL_MS = 24 * 60 * 60 * 1000;
 const APPLE_JWKS_FORCE_REFRESH_MIN_GAP_MS = 60 * 1000;
 export const APPLE_WEB_STATE_PREFIX = 'web-apple';
 
-const pendingInMemory = new Map<string, { nonceHash: string; deviceId: string; deviceName: string | null; createdAt: number }>();
+interface AppleWebPendingEntry {
+  nonceHash: string;
+  deviceId: string;
+  deviceName: string | null;
+  inviteCode?: unknown;
+  createdAt: number;
+}
+
+const pendingInMemory = new Map<string, AppleWebPendingEntry>();
 const completionInMemory = new Map<string, { payload: AuthSessionPayload; createdAt: number }>();
 
 let tablesEnsured = false;
@@ -79,6 +87,7 @@ function ensureTables(): boolean {
       nonce_hash TEXT NOT NULL,
       device_id TEXT NOT NULL,
       device_name TEXT,
+      invite_code TEXT,
       created_at_ms INTEGER NOT NULL
     );
     CREATE INDEX IF NOT EXISTS idx_apple_web_auth_pending_sessions_created_at
@@ -92,6 +101,11 @@ function ensureTables(): boolean {
     CREATE INDEX IF NOT EXISTS idx_apple_web_auth_completion_sessions_created_at
       ON apple_web_auth_completion_sessions(created_at_ms);
   `);
+  try {
+    db.exec('ALTER TABLE apple_web_auth_pending_sessions ADD COLUMN invite_code TEXT');
+  } catch {
+    // Existing databases already have the column, or the CREATE TABLE path just added it.
+  }
   tablesEnsured = true;
   return true;
 }
@@ -157,6 +171,7 @@ export function appleWebSignInConfigured(): boolean {
 export function createAppleWebAuthPendingSession(
   deviceId: string,
   deviceName: string | null,
+  inviteCode?: unknown,
   stateNonce = crypto.randomBytes(16).toString('hex'),
   rawNonce = crypto.randomBytes(32).toString('hex'),
 ): AppleWebPendingSession {
@@ -169,36 +184,36 @@ export function createAppleWebAuthPendingSession(
     const db = getDbOrNull();
     if (db) {
       db.prepare(`
-        INSERT INTO apple_web_auth_pending_sessions (state_nonce, nonce_hash, device_id, device_name, created_at_ms)
-        VALUES (?, ?, ?, ?, ?)
-      `).run(stateNonce, nonceHash, deviceId, deviceName, createdAt);
+        INSERT INTO apple_web_auth_pending_sessions (state_nonce, nonce_hash, device_id, device_name, invite_code, created_at_ms)
+        VALUES (?, ?, ?, ?, ?, ?)
+      `).run(stateNonce, nonceHash, deviceId, deviceName, typeof inviteCode === 'string' ? inviteCode : null, createdAt);
       return { state: `${APPLE_WEB_STATE_PREFIX}:${stateNonce}`, nonceHash };
     }
   }
 
   evictExpiredInMemory();
   evictOverflowInMemory(pendingInMemory);
-  pendingInMemory.set(stateNonce, { nonceHash, deviceId, deviceName, createdAt });
+  pendingInMemory.set(stateNonce, { nonceHash, deviceId, deviceName, inviteCode, createdAt });
   return { state: `${APPLE_WEB_STATE_PREFIX}:${stateNonce}`, nonceHash };
 }
 
 export function consumeAppleWebAuthPendingSession(
   stateNonce: string,
-): { nonceHash: string; deviceId: string; deviceName: string | null } | null {
+): { nonceHash: string; deviceId: string; deviceName: string | null; inviteCode?: unknown } | null {
   if (ensureTables()) {
     evictExpiredPersistent();
     const db = getDbOrNull();
     if (db) {
       const row = db.prepare(`
-        SELECT nonce_hash, device_id, device_name
+        SELECT nonce_hash, device_id, device_name, invite_code
         FROM apple_web_auth_pending_sessions
         WHERE state_nonce = ?
       `).get(stateNonce) as
-        | { nonce_hash: string; device_id: string; device_name: string | null }
+        | { nonce_hash: string; device_id: string; device_name: string | null; invite_code: string | null }
         | undefined;
       if (!row) return null;
       db.prepare('DELETE FROM apple_web_auth_pending_sessions WHERE state_nonce = ?').run(stateNonce);
-      return { nonceHash: row.nonce_hash, deviceId: row.device_id, deviceName: row.device_name };
+      return { nonceHash: row.nonce_hash, deviceId: row.device_id, deviceName: row.device_name, inviteCode: row.invite_code ?? undefined };
     }
   }
 
@@ -375,6 +390,7 @@ export function parseAppleUserHint(rawUser: unknown): AppleProfileHint {
 export function resolveAppleWebIdentityUser(
   payload: AppleWebIdentityPayload,
   profileHint: AppleProfileHint = {},
+  inviteCode?: unknown,
 ): User {
   const appleUserId = payload.sub;
   const email = payload.email || profileHint.email || undefined;
@@ -402,7 +418,7 @@ export function resolveAppleWebIdentityUser(
       email,
       firstName: profileHint.firstName || undefined,
       lastName: profileHint.lastName || undefined,
-    });
+    }, inviteCode);
   }
 
   return user;

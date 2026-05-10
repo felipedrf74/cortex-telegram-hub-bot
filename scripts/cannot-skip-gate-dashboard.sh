@@ -97,6 +97,7 @@ GATES=(
   "cache-coherence-registry|src/services/cache-coherence-registry.ts|cache-coherence-registry"
   "cached-route-handler|src/api/route-helpers/cached-route-handler.ts|cached-route-handler"
   "garmin-tenant-leak-and-apple-health-cascade|src/services/readiness-scorer.ts|garmin-tenant-leak-and-apple-health-cascade"
+  "google-drive-tenant-leak|src/services/google-drive.ts|google-drive-tenant-leak"
 )
 
 # Run the classifier once per gate and capture results into JSON.

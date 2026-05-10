@@ -56,6 +56,8 @@ const cacheStoreStats: CacheStoreStats = {
   lastErrorKey: null,
 };
 
+const CACHE_EXPIRED_DELETE_BATCH_SIZE = 10_000;
+
 function recordCacheError(kind: 'read' | 'write' | 'parse', operation: string, key?: string): void {
   if (kind === 'read') cacheStoreStats.readErrors += 1;
   if (kind === 'write') cacheStoreStats.writeErrors += 1;
@@ -104,6 +106,7 @@ export function initCacheStore(): void {
       )
     `);
     db.exec('CREATE INDEX IF NOT EXISTS idx_api_cache_expires ON api_cache(expires_at)');
+    db.exec('CREATE INDEX IF NOT EXISTS idx_api_cache_expires_key ON api_cache(expires_at, cache_key)');
   } catch (err) {
     cacheStoreStats.initFailures += 1;
     recordCacheError('write', 'initCacheStore');
@@ -349,10 +352,44 @@ export function clearExpired(): void {
   cacheStoreStats.expireSweepCount += 1;
   try {
     const now = new Date().toISOString();
-    const result = getDb().prepare('DELETE FROM api_cache WHERE expires_at < ?').run(now);
-    cacheStoreStats.expiredEntriesCleared += Number(result.changes || 0);
-    if (result.changes > 0) {
-      logger.debug({ cleared: result.changes }, 'Cleared expired cache entries');
+    const db = getDb();
+    let totalCleared = 0;
+    let safetyValveFired = false;
+
+    while (true) {
+      const result = db.prepare(`
+        DELETE FROM api_cache
+        WHERE rowid IN (
+          SELECT rowid
+          FROM api_cache
+          WHERE expires_at < ?
+          ORDER BY expires_at ASC, cache_key ASC
+          LIMIT ?
+        )
+      `).run(now, CACHE_EXPIRED_DELETE_BATCH_SIZE);
+      const cleared = Number(result.changes || 0);
+      totalCleared += cleared;
+      if (cleared >= CACHE_EXPIRED_DELETE_BATCH_SIZE) safetyValveFired = true;
+      if (cleared < CACHE_EXPIRED_DELETE_BATCH_SIZE) break;
+    }
+
+    cacheStoreStats.expiredEntriesCleared += totalCleared;
+    if (totalCleared > 0) {
+      logger.debug({ cleared: totalCleared }, 'Cleared expired cache entries');
+    }
+    if (safetyValveFired) {
+      logger.warn({ cleared: totalCleared, batchSize: CACHE_EXPIRED_DELETE_BATCH_SIZE }, 'api_cache expiry cleanup safety valve fired');
+      try {
+        db.prepare(`
+          INSERT INTO error_log (level, source, message, stack, context, alerted)
+          VALUES ('warning', 'job', ?, NULL, ?, 0)
+        `).run(
+          'api_cache expiry cleanup safety valve fired',
+          JSON.stringify({ cleared: totalCleared, batchSize: CACHE_EXPIRED_DELETE_BATCH_SIZE }),
+        );
+      } catch {
+        // Some focused test DBs don't create error_log.
+      }
     }
   } catch (err) {
     recordCacheError('write', 'clearExpired');

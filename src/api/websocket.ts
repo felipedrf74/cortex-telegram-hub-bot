@@ -19,6 +19,7 @@ import { generateRequestId, runWithContext } from '../utils/request-context';
 import { pushEvent } from '../portal/telemetry';
 import { getDb } from '../services/database';
 import { verifyIosJwt } from '../services/ios-jwt';
+import { resolveCurrentTenantIdForUser } from '../services/user-service';
 
 function getDomainHandlers(): Record<string, (message: string, userId?: number, tenantId?: number) => Promise<{ text: string; domain: DomainName }>> {
   const { handleSecretary } = require('../domains/secretary');
@@ -81,11 +82,18 @@ export function attachWebSocket(server: http.Server): void {
             return;
           }
           try {
-            const payload = verifyIosJwt(msg.token) as { userId: number; deviceId: string };
+            const payload = verifyIosJwt(msg.token) as { userId: number; tenantId?: number; deviceId: string };
             const db = getDb();
             const user = db.prepare('SELECT status FROM users WHERE id = ?').get(payload.userId) as { status?: string } | undefined;
             if (!user || (user.status && user.status !== 'active')) {
               throw new Error('inactive websocket user');
+            }
+            const canonicalTenantId = resolveCurrentTenantIdForUser(payload.userId);
+            const tokenTenantId = typeof payload.tenantId === 'number' && Number.isInteger(payload.tenantId)
+              ? payload.tenantId
+              : canonicalTenantId;
+            if (tokenTenantId !== canonicalTenantId) {
+              throw new Error('websocket tenant mismatch');
             }
             if (typeof payload.deviceId === 'string' && payload.deviceId.length > 0) {
               const device = db
@@ -94,11 +102,11 @@ export function attachWebSocket(server: http.Server): void {
               if (!device) throw new Error('revoked websocket device');
             }
             (ws as any).userId = payload.userId;
-            (ws as any).tenantId = payload.userId;
+            (ws as any).tenantId = canonicalTenantId;
             (ws as any).deviceId = payload.deviceId;
             (ws as any).authenticated = true;
-            ws.send(JSON.stringify({ type: 'auth_ok', userId: payload.userId, tenantId: payload.userId }));
-            logger.info({ userId: payload.userId, tenantId: payload.userId, platform: 'ios' }, 'WebSocket authenticated');
+            ws.send(JSON.stringify({ type: 'auth_ok', userId: payload.userId, tenantId: canonicalTenantId }));
+            logger.info({ userId: payload.userId, tenantId: canonicalTenantId, platform: 'ios' }, 'WebSocket authenticated');
             return;
           } catch {
             pushEvent({
@@ -117,9 +125,14 @@ export function attachWebSocket(server: http.Server): void {
         const userId = (ws as any).userId as number;
         const tenantId = (ws as any).tenantId as number;
         if (msg.type !== 'message' || !msg.text) return;
+        if (tenantId !== resolveCurrentTenantIdForUser(userId)) {
+          ws.send(JSON.stringify({ type: 'error', message: 'Tenant scope changed. Please reconnect.' }));
+          ws.close(4003, 'Tenant scope changed');
+          return;
+        }
 
         await runWithContext(
-          { requestId: generateRequestId(), source: 'http', userId },
+          { requestId: generateRequestId(), source: 'http', userId, tenantId },
           async () => {
             const messageId = `msg-${Date.now()}`;
 

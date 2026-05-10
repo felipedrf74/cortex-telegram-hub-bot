@@ -22,6 +22,7 @@ import { logger } from '../../utils/logger';
 import { storeCallback, getCallback } from '../../utils/callback-store';
 import { runContentDiscovery } from '../../services/content-discovery';
 import { saveIdea, getSavedIdeas } from '../../state/saved-ideas';
+import { getUserByTelegramId } from '../../services/user-service';
 import {
   addAndAnalyzeChannel,
   processAllChannelScopes,
@@ -79,7 +80,8 @@ async function sendOrSave(
   forceFile = false,
 ): Promise<void> {
   // Always try to save as DOCX and send as downloadable file
-  const result = await saveContentAsDocx(msg, command, topic, forceFile);
+  const userId = ctx.from?.id ? resolveCanonicalUserId(ctx.from.id) ?? undefined : undefined;
+  const result = await saveContentAsDocx(msg, command, topic, forceFile, userId);
   if (result) {
     // Send a clean short summary + the file + Drive link
     const plain = msg.replace(/<[^>]*>/g, '');
@@ -907,7 +909,8 @@ export function registerContentCommands(bot: Bot): void {
         await ctx.api.editMessageText(ctx.chat.id, statusMsg.message_id,
           '\u{1F4C4} Generating Word document...');
 
-        const filePath = await saveTranscriptAsDocx(transcript);
+        const userId = resolveCanonicalUserId(ctx.from!.id) ?? undefined;
+        const filePath = await saveTranscriptAsDocx(transcript, userId);
 
         // Send summary + file
         let caption = `\u{1F4DD} <b>${escapeHtml(transcript.title)}</b>\n`;
@@ -956,7 +959,7 @@ export function registerContentCommands(bot: Bot): void {
         await ctx.api.editMessageText(ctx.chat.id, statusMsg.message_id,
           '\u{1F4C4} Generating Word document...');
 
-        const filePath = await saveStudyAsDocx(result);
+        const filePath = await saveStudyAsDocx(result, canonicalUserId);
 
         let caption = `\u{1F52C} <b>Video Study: ${escapeHtml(result.title)}</b>\n`;
         caption += `\u{1F4FA} ${escapeHtml(result.channelName)}\n`;
@@ -1158,7 +1161,8 @@ export function registerContentCommands(bot: Bot): void {
             `Topic: ${textTopic}`;
           const contentResponse = await handleContent(repurposePrompt, ctx.from!.id, undefined, 8192);
           clearInterval(typingInterval);
-          const filePath = await saveScriptAsDocx(`Repurpose \u2014 ${textTopic}`, contentResponse.text);
+          const userId = resolveCanonicalUserId(ctx.from!.id) ?? undefined;
+          const filePath = await saveScriptAsDocx(`Repurpose \u2014 ${textTopic}`, contentResponse.text, userId);
           await ctx.replyWithDocument(new InputFile(filePath), {
             caption: `\u267B\uFE0F <b>Repurposed: ${escapeHtml(textTopic)}</b>\n\u{1F3AC} 3 Reels \u00B7 \u{1F4D6} Stories`,
             parse_mode: 'HTML',
@@ -1230,7 +1234,8 @@ export function registerContentCommands(bot: Bot): void {
           .replace(/^script_/, '').replace(/\.docx$/, '').replace(/_/g, ' ').trim()
           || 'repurposed content';
 
-        const filePath = await saveScriptAsDocx(`Repurpose \u2014 ${topic}`, contentResponse.text);
+        const userId = resolveCanonicalUserId(ctx.from!.id) ?? undefined;
+        const filePath = await saveScriptAsDocx(`Repurpose \u2014 ${topic}`, contentResponse.text, userId);
 
         const caption = `\u267B\uFE0F <b>Repurposed: ${escapeHtml(topic)}</b>\n` +
           `\u{1F3AC} 3 Reels \u00B7 \u{1F4D6} Stories`;
@@ -1320,7 +1325,8 @@ export function registerContentCommands(bot: Bot): void {
             ? await generateReelScript(topic)
             : await generateYouTubeScript(topic);
 
-          const filePath = await saveScriptAsDocx(topic.title, scriptText);
+          const userId = resolveCanonicalUserId(ctx.from!.id) ?? undefined;
+          const filePath = await saveScriptAsDocx(topic.title, scriptText, userId);
           markScriptGenerated(feedbackId, actorUserId, actorUserId);
 
           const emoji = topic.format === 'reel' ? '\u{1F3AC}' : '\u{1F3A5}';

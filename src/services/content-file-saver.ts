@@ -102,6 +102,7 @@ export async function saveContentAsDocx(
   command: string,
   topic: string,
   forceFile = false,
+  userId?: number,
 ): Promise<DocxResult | null> {
   if (!forceFile && content.length < FILE_THRESHOLD) return null;
 
@@ -144,7 +145,9 @@ export async function saveContentAsDocx(
 
     let driveUrl: string | undefined;
     try {
-      driveUrl = await uploadToDrive(filePath, filename, subfolder) || undefined;
+      driveUrl = userId != null
+        ? await uploadToDrive(userId, filePath, filename, subfolder) || undefined
+        : undefined;
     } catch {
       // Drive upload failure should not block local export.
     }

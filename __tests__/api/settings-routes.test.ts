@@ -32,6 +32,7 @@ interface MockRes {
   body: any;
   status(code: number): MockRes;
   json(body: any): MockRes;
+  send(body?: any): MockRes;
 }
 
 function mockRes(): MockRes {
@@ -40,6 +41,7 @@ function mockRes(): MockRes {
     body: null,
     status(code: number) { res.statusCode = code; return res; },
     json(body: any) { res.body = body; return res; },
+    send(body?: any) { res.body = body ?? null; return res; },
   };
   return res;
 }
@@ -82,6 +84,29 @@ async function dispatchPushToken(userId: number, token: string, deviceId = 'test
   const req = mockReq(userId, { token });
   (req as any).deviceId = deviceId;
   (req as any).method = 'POST';
+  (req as any).url = '/push-token';
+  (req as any).originalUrl = '/push-token';
+  (req as any).baseUrl = '';
+  (req as any).path = '/push-token';
+  const res = mockRes();
+
+  await new Promise<void>((resolve) => {
+    (router as any).handle(req, res, (err: any) => {
+      if (err) throw err;
+      resolve();
+    });
+    setImmediate(resolve);
+  });
+
+  return res;
+}
+
+async function dispatchDeletePushToken(userId: number, deviceId = 'test-device-id'): Promise<MockRes> {
+  const { settingsRoutes } = await import('../../src/api/routes/settings');
+  const router = settingsRoutes();
+  const req = mockReq(userId, {});
+  (req as any).deviceId = deviceId;
+  (req as any).method = 'DELETE';
   (req as any).url = '/push-token';
   (req as any).originalUrl = '/push-token';
   (req as any).baseUrl = '';
@@ -220,6 +245,20 @@ describe('Settings language route', () => {
 
     expect(row.user_id).toBe(1);
     expect(row.push_token).toBe('abc123token');
+  });
+
+  it('revokes the authenticated device push token idempotently on sign-out', async () => {
+    await dispatchPushToken(1, 'abc123token', 'signout-device');
+
+    const res = await dispatchDeletePushToken(1, 'signout-device');
+    const second = await dispatchDeletePushToken(1, 'signout-device');
+
+    expect(res.statusCode).toBe(204);
+    expect(second.statusCode).toBe(204);
+    const row = testDb.prepare(
+      'SELECT push_token FROM ios_devices WHERE user_id = ? AND device_id = ?',
+    ).get(1, 'signout-device') as { push_token: string | null };
+    expect(row.push_token).toBeNull();
   });
 
   it('fails closed on invalid tenant scope for push preferences read', async () => {

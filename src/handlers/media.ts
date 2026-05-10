@@ -14,6 +14,7 @@ import { enqueue } from './shared-state';
 import { handlePhotoMessage } from './photo';
 import { saveScriptAsDocx } from '../services/video-study';
 import { handleContent as handleContentDomain } from '../domains/content-creator';
+import { resolveCanonicalUserId } from '../services/user-service';
 import type { DomainHandlerFn } from './photo';
 
 /**
@@ -84,7 +85,8 @@ export function registerMediaHandlers(
           const topic = (doc.file_name || 'repurposed')
             .replace(/^script_/, '').replace(/\.docx$/, '').replace(/_/g, ' ').trim();
 
-          const filePath = await saveScriptAsDocx(`Repurpose — ${topic}`, contentResponse.text);
+          const userId = resolveCanonicalUserId(ctx.from!.id) ?? undefined;
+          const filePath = await saveScriptAsDocx(`Repurpose — ${topic}`, contentResponse.text, userId);
 
           await ctx.replyWithDocument(new InputFile(filePath), {
             caption: `♻️ <b>Repurposed: ${escapeHtml(topic)}</b>\n🎬 3 Reels · 📖 Stories`,

@@ -213,7 +213,7 @@ describe('Auth invite registration', () => {
     expect(res.statusCode).toBe(400);
     expect(res.body.ok).toBe(false);
     expect(res.body.error.code).toBe('BAD_REQUEST');
-    expect(res.body.error.message).toBe('deviceId e inviteCode são obrigatórios');
+    expect(res.body.error.message).toBe('deviceId é obrigatório');
   });
 
   it('resolves the owner invite code through the seeded owner bootstrap user instead of inline route mapping', async () => {
@@ -574,7 +574,7 @@ describe('Auth invite registration', () => {
 
     expect(res.statusCode).toBe(403);
     expect(res.body.ok).toBe(false);
-    expect(res.body.error.code).toBe('INVALID_INVITE');
+    expect(res.body.error.code).toBe('INVITE_REQUIRED');
   });
 
   it('rejects invalid invite codes during email/password registration', async () => {
@@ -589,6 +589,16 @@ describe('Auth invite registration', () => {
     expect(res.statusCode).toBe(403);
     expect(res.body.ok).toBe(false);
     expect(res.body.error.code).toBe('INVALID_INVITE');
+  });
+
+  it('requires invite code on legacy iOS invite registration', async () => {
+    const res = await dispatchAuth('/register', {
+      deviceId: 'ios-device-register-no-invite',
+    });
+
+    expect(res.statusCode).toBe(403);
+    expect(res.body.ok).toBe(false);
+    expect(res.body.error.code).toBe('INVITE_REQUIRED');
   });
 
   it('does not reveal whether an email already exists during email registration', async () => {

@@ -174,6 +174,7 @@ HAS_GLOBAL_COST_GUARDRAIL_REST=false
 HAS_CACHE_COHERENCE_REGISTRY=false
 HAS_CACHED_ROUTE_HANDLER=false
 HAS_GARMIN_APPLEHEALTH_CASCADE=false
+HAS_GOOGLE_DRIVE_TENANT_LEAK=false
 
 # Use grep-based detection so multiple flags can match a single file.
 # Bash `case` stops at the first match — that's wrong here because e.g.
@@ -248,6 +249,7 @@ match '^src/services/cost-guardrail\.ts$|^src/api/routes/(chat-message-request|t
 match '^src/services/cache-coherence-registry\.ts$|^__tests__/services/cache-coherence-registry\.test\.ts$' && HAS_CACHE_COHERENCE_REGISTRY=true
 match '^src/api/route-helpers/(cached-route-handler|provider-error-classifier)\.ts$|^src/api/routes/(calendar|content|dashboard|notifications|plan|tasks)\.ts$|^__tests__/api/cached-route-handler\.test\.ts$' && HAS_CACHED_ROUTE_HANDLER=true
 match '^src/services/(garmin|garmin-session-store|readiness-scorer)\.ts$|^src/services/wearable/(wearable-service|apple-health-adapter|types)\.ts$|^src/api/routes/(dashboard-data-fetchers|health-data)\.ts$|^__tests__/security/garmin-tenant-leak-and-apple-health-cascade\.test\.ts$' && HAS_GARMIN_APPLEHEALTH_CASCADE=true
+match '^src/services/(google-drive|google-auth)\.ts$|^__tests__/security/google-drive-tenant-leak\.test\.ts$|^scripts/cleanup-tainted-google-drive-sessions\.mjs$' && HAS_GOOGLE_DRIVE_TENANT_LEAK=true
 
 match '^scripts/(deploy|deploy-staging|promote-to-prod|rollback|restore)\.sh$' && HAS_DEPLOY_SCRIPT=true
 match '^\.husky/' && HAS_HOOK=true
@@ -422,6 +424,7 @@ $HAS_GLOBAL_COST_GUARDRAIL_REST && CANNOT_SKIP+=("cost-guardrail-global-rest")
 $HAS_CACHE_COHERENCE_REGISTRY && CANNOT_SKIP+=("cache-coherence-registry")
 $HAS_CACHED_ROUTE_HANDLER && CANNOT_SKIP+=("cached-route-handler")
 $HAS_GARMIN_APPLEHEALTH_CASCADE && CANNOT_SKIP+=("garmin-tenant-leak-and-apple-health-cascade")
+$HAS_GOOGLE_DRIVE_TENANT_LEAK && CANNOT_SKIP+=("google-drive-tenant-leak")
 
 # Tier 1 if anything non-doc is in scope
 if $HAS_NON_DOC; then
@@ -495,6 +498,7 @@ if $HAS_NON_DOC; then
     $HAS_CACHE_COHERENCE_REGISTRY && VITEST_GLOBS+=("__tests__/services/cache-coherence-registry.test.ts")
     $HAS_CACHED_ROUTE_HANDLER && VITEST_GLOBS+=("__tests__/api/cached-route-handler.test.ts")
     $HAS_GARMIN_APPLEHEALTH_CASCADE && VITEST_GLOBS+=("__tests__/security/garmin-tenant-leak-and-apple-health-cascade.test.ts")
+    $HAS_GOOGLE_DRIVE_TENANT_LEAK && VITEST_GLOBS+=("__tests__/security/google-drive-tenant-leak.test.ts")
     $HAS_CONTENT_PROMPT_CLEANLINESS && PYTEST_GLOBS+=("content-engine/tests/test_prompt_cleanliness.py")
     if [ "${#VITEST_GLOBS[@]}" -eq 0 ]; then
       # Backend src/test changed but no domain mapped — fall back to changed-files-only

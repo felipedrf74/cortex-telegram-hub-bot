@@ -11,6 +11,81 @@ Last sweep complete: 2026-05-07.
 Closeout dossier:
 `engine/docs/archive/2026-05/tech-debt-validation/sweep-closeout-dossier.md`.
 
+## 2026-05-10 P0 Tenant And Safety — Round A
+
+Closeout:
+`docs/archive/2026-05/p0-tenant-and-safety-2026-05/closeout.md`
+
+Verdict: **SOURCE_AND_LOCAL_VALIDATION_COMPLETE** on split Round A
+(Parts 1+2 only). Production and main were not touched; hostile QA and staging
+remain operator-gated before promote.
+
+Closed in source:
+- Google Drive now uses per-user OAuth for user-scoped uploads, with owner
+  bootstrap reserved for explicit system backup calls.
+- Closed-beta invites are enforced server-side across email/password, Apple,
+  Apple web session, Google, and Google web session registration flows.
+- Chat fastpath pending-task cache keys include both user and tenant scope.
+- iOS JWT/WebSocket tenant claims are validated and WebSocket messages
+  re-check tenant scope before processing.
+- iOS auth sign-in now uses an atomic scope barrier before repository loads.
+- Deep links, keychain tokens, APNs device bindings, and onboarding progress
+  are scoped or cleared on sign-out.
+- Sentry redaction now sanitizes request headers, request bodies, contexts, and
+  extra payloads.
+- `api_cache` cleanup has a 10k-row safety valve, warning telemetry, and a
+  supporting `(expires_at, cache_key)` index.
+
+Evidence:
+- Engine typecheck PASS.
+- Engine focused P0 tenant/safety suite PASS: 10 files / 119 tests.
+- Cannot-skip dashboard PASS: 34/34 with new `google-drive-tenant-leak` gate.
+- Mock lint PASS at strict baseline 827.
+- iOS Debug focused unit suite PASS: 53 tests / 0 failures.
+- iOS DeepLink scope UI regression PASS: 1 test / 0 failures.
+- iOS ReleaseWithTesting full unit suite PASS: 1,255 XCTest + 10 Swift Testing
+  / 0 failures.
+- iOS ReleaseWithTesting visual matrix PASS: 21/21 with 80 PNG screenshots.
+
+Operator-gated before production:
+- Deploy the engine branch to staging and run staging smoke.
+- Run Google Drive cleanup dry-run/delete evidence on staging.
+- Capture production Google Drive cleanup dry-run before promote.
+- Promote only after hostile QA returns `READY_FOR_LOCAL_QA`.
+
+Carryover:
+- Parts 3-5 from the original prompt (Felipe-volume performance,
+  second-pass performance, and accessibility hardening) are intentionally
+  deferred to `fix/perf-and-a11y-2026-05` after Round A hostile QA.
+
+## 2026-05-10 iOS Pre-TestFlight Validation + Wave 1 Runbook
+
+Release validation:
+`docs/archive/2026-05/ios-pre-testflight-validation/release-mode-validation.md`
+
+Operator runbook:
+`docs/release/wave1-testflight-cut-runbook.md`
+
+Verdict: **READY_FOR_OPERATOR_TESTFLIGHT_CUT**. iOS `origin/main` is bumped to
+`1.4.2 (16)` at `5981d10`. No TestFlight build was cut by Codex.
+
+Closed in source:
+- Task A `CachedResource` single-flight regression test is cherry-picked onto
+  iOS `main`.
+- Release clean simulator build passed with zero warnings/errors after the
+  AppIntents.framework link fix.
+- Release UI visual matrix passed 21/21 with 80 screenshot attachments.
+- Wave 1 TestFlight cut + invitation runbook is written for Felipe's
+  operator-physical App Store Connect flow.
+- Garmin tenant-isolation watcher state snapshot script is available for the
+  first-48-hours observation check.
+
+Operator-only next steps:
+- Felipe cuts the TestFlight archive/upload from Xcode.
+- Felipe runs the operator-physical smoke checklist from the runbook.
+- Felipe monitors the Garmin watcher for `matchedCount: 0` during the first
+  48 hours.
+
 ## 2026-05-10 Wave 1 Launch Readiness Sweep
 
 Closeout:
@@ -19,8 +94,9 @@ Closeout:
 Provider filesystem-session audit:
 `engine/docs/archive/2026-05/launch-readiness-sweep/provider-filesystem-session-audit.md`
 
-Verdict: **READY_FOR_HOSTILE_QA** on branch
-`launch-readiness-sweep-2026-05`.
+Verdict: **CLOSED IN PRODUCTION** on backend `4.14.147`
+(`95a42c80`). Hostile QA returned `READY_FOR_LOCAL_QA`; Felipe authorized the
+production promote on 2026-05-10.
 
 Closed in source:
 - iOS Phase 2B.4 P3 F-2: `CachedResource` now has a direct single-flight
@@ -39,9 +115,19 @@ Evidence:
 - Engine focused B+D PASS: 2 files / 14 tests.
 - Pre-commit focused engine slice PASS: 26 files / 249 tests.
 - Mock lint PASS at 826/827 strict baseline.
-- Staging smoke PASS: 17 passed / 0 failed / 17 total.
+- Staging re-smoke PASS: 17 passed / 0 failed / 19 total.
 - Staging watcher positive-path probe PASS:
-  `engine/docs/release/smoke-evidence/staging-garmin-tenant-isolation-watcher-20260509T233855Z.json`.
+  `engine/docs/release/smoke-evidence/staging-garmin-tenant-isolation-watcher-positive-20260509T235850Z.json`.
+- Staging watcher negative-path probe PASS:
+  `engine/docs/release/smoke-evidence/staging-garmin-tenant-isolation-watcher-negative-20260509T235904Z.json`.
+- Production health PASS:
+  `engine/docs/release/smoke-evidence/prod-health-launch-readiness-20260510T000541Z.json`.
+- Authenticated production snapshot returned version `4.14.147`:
+  `engine/docs/release/smoke-evidence/prod-snapshot-launch-readiness-auth-20260510T001015Z.json`.
+- Production watcher cold-start PASS: `matchedCount: 0`, no new watcher
+  warnings, no new operator alerts:
+  `engine/docs/release/smoke-evidence/prod-garmin-tenant-isolation-watcher-cold-start-20260510T001046Z.json`.
+- `origin/main` was fast-forwarded to production deploy commit `95a42c80`.
 
 Carryover opened by the audit:
 - P1/P2: Amazon and Uber invoice collectors use global filesystem browser

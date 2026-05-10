@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 const mockGet = vi.fn();
 const mockRun = vi.fn();
 const mockExec = vi.fn();
+const mockWarn = vi.fn();
 
 vi.mock('../../src/services/database', () => ({
   getDb: () => ({
@@ -21,7 +22,7 @@ vi.mock('../../src/utils/logger', () => ({
   logger: {
     debug: vi.fn(),
     info: vi.fn(),
-    warn: vi.fn(),
+    warn: mockWarn,
     error: vi.fn(),
   },
   LOGGER_REDACTION_PATHS: [],
@@ -33,6 +34,7 @@ describe('cache-store observability', () => {
     mockGet.mockReset();
     mockRun.mockReset();
     mockExec.mockReset();
+    mockWarn.mockReset();
     const { _resetCacheStoreStatsForTests } = await import('../../src/services/cache-store');
     _resetCacheStoreStatsForTests();
   });
@@ -124,5 +126,28 @@ describe('cache-store observability', () => {
     });
     expect(typeof envelope.freshUntilMonotonic).toBe('number');
     expect(envelope.freshUntilMonotonic).toBe(envelope.freshUntil);
+  });
+
+  it('deletes expired api_cache rows in bounded batches and warns when the safety valve fires', async () => {
+    mockRun
+      .mockReturnValueOnce({ changes: 10_000 })
+      .mockReturnValueOnce({ changes: 10_000 })
+      .mockReturnValueOnce({ changes: 9_000 })
+      .mockReturnValueOnce({ changes: 1 });
+
+    const { clearExpired, getCacheStoreStats } = await import('../../src/services/cache-store');
+
+    clearExpired();
+
+    expect(mockRun).toHaveBeenCalledTimes(4);
+    expect(mockRun.mock.calls.slice(0, 3).map((call) => call[1])).toEqual([10_000, 10_000, 10_000]);
+    expect(mockWarn).toHaveBeenCalledWith(
+      expect.objectContaining({ cleared: 29_000, batchSize: 10_000 }),
+      'api_cache expiry cleanup safety valve fired',
+    );
+    expect(getCacheStoreStats()).toMatchObject({
+      expireSweepCount: 1,
+      expiredEntriesCleared: 29_000,
+    });
   });
 });

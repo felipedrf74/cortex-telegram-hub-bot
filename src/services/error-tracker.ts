@@ -17,6 +17,7 @@
 
 import * as Sentry from '@sentry/node';
 import { logger } from '../utils/logger';
+import { sanitizeLogValue, stringifySanitizedLogContext } from '../utils/log-sanitizer';
 
 let _initialized = false;
 
@@ -26,6 +27,42 @@ export interface ErrorTrackerConfig {
   release?: string;
   tracesSampleRate?: number;
   debug?: boolean;
+}
+
+function sanitizeSentryValue<T>(value: T): T {
+  const sanitizedJson = stringifySanitizedLogContext(value);
+  if (sanitizedJson) {
+    try {
+      return JSON.parse(sanitizedJson) as T;
+    } catch {
+      // Fall through to the object sanitizer below.
+    }
+  }
+  return sanitizeLogValue(value) as T;
+}
+
+export function sanitizeSentryEvent(event: Sentry.ErrorEvent): Sentry.ErrorEvent {
+  if (event.user) {
+    delete event.user.ip_address;
+  }
+  if (event.request) {
+    if (event.request.headers) {
+      event.request.headers = sanitizeSentryValue(event.request.headers);
+    }
+    if (event.request.data != null) {
+      event.request.data = sanitizeSentryValue(event.request.data);
+    }
+    if ((event.request as any).cookies) {
+      (event.request as any).cookies = sanitizeSentryValue((event.request as any).cookies);
+    }
+  }
+  if (event.contexts) {
+    event.contexts = sanitizeSentryValue(event.contexts);
+  }
+  if (event.extra) {
+    event.extra = sanitizeSentryValue(event.extra);
+  }
+  return event;
 }
 
 /**
@@ -47,13 +84,7 @@ export function init(cfg: ErrorTrackerConfig): void {
     attachStacktrace: true,
     // Keep payload small on free tier (5K errors/month)
     maxBreadcrumbs: 30,
-    beforeSend(event) {
-      // Strip PII: remove user IP if Sentry auto-attaches it
-      if (event.user) {
-        delete event.user.ip_address;
-      }
-      return event;
-    },
+    beforeSend: sanitizeSentryEvent,
   });
 
   _initialized = true;
@@ -99,7 +130,7 @@ export function captureException(
     }
     if (context?.extra) {
       for (const [k, v] of Object.entries(context.extra)) {
-        scope.setExtra(k, v);
+        scope.setExtra(k, sanitizeSentryValue(v));
       }
     }
     Sentry.captureException(err);
@@ -121,7 +152,7 @@ export function captureMessage(
     scope.setLevel(level);
     if (extra) {
       for (const [k, v] of Object.entries(extra)) {
-        scope.setExtra(k, v);
+        scope.setExtra(k, sanitizeSentryValue(v));
       }
     }
     Sentry.captureMessage(message);

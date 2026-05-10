@@ -165,7 +165,10 @@ export class GoogleEmailNotVerifiedError extends Error {
   }
 }
 
-export function resolveGoogleIdentityUser(payload: GoogleIdentityPayload): User {
+export function resolveGoogleIdentityUser(
+  payload: GoogleIdentityPayload,
+  options: { inviteCode?: unknown } = {},
+): User {
   if (!payload.emailVerified) {
     logger.warn(
       {
@@ -255,7 +258,7 @@ export function resolveGoogleIdentityUser(payload: GoogleIdentityPayload): User 
   }
 
   if (!user) {
-    user = createGoogleUser(googleUserId, { email, name, picture });
+    user = createGoogleUser(googleUserId, { email, name, picture }, options.inviteCode);
   }
 
   return user;

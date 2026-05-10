@@ -54,6 +54,8 @@ export interface RequestContext {
   source: RequestSource;
   /** Telegram user ID or iOS user ID, when applicable. */
   userId?: number;
+  /** Active tenant scope for multi-tenant cache and routing guards. */
+  tenantId?: number;
   /**
    * Garmin reads in non-interactive contexts must never start credentials
    * login, because Garmin sends an MFA/security passcode email for each SSO
@@ -100,13 +102,14 @@ export function generateRequestId(): string {
  * X-Request-Id header, and content-engine logs the same ID.
  */
 export function runWithContext<T>(
-  ctx: { requestId?: string; source: RequestSource; userId?: number; garminSilent?: boolean },
+  ctx: { requestId?: string; source: RequestSource; userId?: number; tenantId?: number; garminSilent?: boolean },
   fn: () => T | Promise<T>,
 ): T | Promise<T> {
   const full: RequestContext = {
     requestId: ctx.requestId || generateRequestId(),
     source: ctx.source,
     userId: ctx.userId,
+    tenantId: ctx.tenantId,
     garminSilent: ctx.garminSilent,
     startedAt: Date.now(),
   };

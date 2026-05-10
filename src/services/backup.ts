@@ -96,8 +96,10 @@ export async function runDatabaseBackup(): Promise<string> {
   // retention + error handling. Audit ref: Weeks 2-4 off-site backup.
   try {
     const { uploadBackupToDrive, isGoogleDriveEnabled } = require('./google-drive');
-    if (isGoogleDriveEnabled()) {
-      const driveFileId = await uploadBackupToDrive(finalPath, path.basename(finalPath));
+    const { getOwnerBootstrapUserRefs } = require('./user-service');
+    const ownerUserId = getOwnerBootstrapUserRefs()[0];
+    if (ownerUserId != null && isGoogleDriveEnabled(ownerUserId)) {
+      const driveFileId = await uploadBackupToDrive(ownerUserId, finalPath, path.basename(finalPath));
       if (driveFileId) {
         logger.info(
           { driveFileId, backup: path.basename(finalPath) },

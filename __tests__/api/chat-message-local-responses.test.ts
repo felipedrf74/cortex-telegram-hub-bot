@@ -15,6 +15,8 @@ vi.mock('../../src/services/cache-store', () => ({
 
 vi.mock('../../src/api/routes/chat-fastpath', () => ({
   tryDeterministicChatCommand: (...args: unknown[]) => mockTryDeterministicChatCommand(...args),
+  getPendingTasksCacheKey: (userId?: number, tenantId?: number) =>
+    `u:${userId ?? 'unknown'}:t:${tenantId ?? userId ?? 'unknown'}:fastpath:pending-tasks`,
 }));
 
 vi.mock('../../src/services/user-service', () => ({

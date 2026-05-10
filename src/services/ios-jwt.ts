@@ -7,6 +7,7 @@ const DEFAULT_IOS_JWT_KID = 'ios-api-current';
 
 export interface IosJwtPayload {
   userId?: unknown;
+  tenantId?: unknown;
   deviceId?: unknown;
   [key: string]: unknown;
 }

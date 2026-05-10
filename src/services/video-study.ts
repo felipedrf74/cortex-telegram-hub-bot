@@ -632,7 +632,7 @@ function sanitizeFilename(name: string): string {
 /**
  * Save a transcript as a .docx Word file and return the file path.
  */
-export async function saveTranscriptAsDocx(transcript: TranscriptResult): Promise<string> {
+export async function saveTranscriptAsDocx(transcript: TranscriptResult, userId?: number): Promise<string> {
   const timestamped = formatTranscriptTimestamped(transcript.segments);
 
   const children: Paragraph[] = [
@@ -683,7 +683,7 @@ export async function saveTranscriptAsDocx(transcript: TranscriptResult): Promis
   const buffer = await Packer.toBuffer(doc);
   fs.writeFileSync(filePath, buffer);
 
-  uploadToDrive(filePath, filename, 'RESEARCH').catch(() => {});
+  if (userId != null) uploadToDrive(userId, filePath, filename, 'RESEARCH').catch(() => {});
 
   logger.info({ filePath, title: transcript.title }, 'Transcript saved as DOCX');
   return filePath;
@@ -692,7 +692,7 @@ export async function saveTranscriptAsDocx(transcript: TranscriptResult): Promis
 /**
  * Save a video study as a .docx Word file and return the file path.
  */
-export async function saveStudyAsDocx(result: VideoStudyResult): Promise<string> {
+export async function saveStudyAsDocx(result: VideoStudyResult, userId?: number): Promise<string> {
   const children: Paragraph[] = [
     new Paragraph({
       children: [new TextRun({ text: `Video Study: ${result.title}`, bold: true, size: 32 })],
@@ -751,7 +751,7 @@ export async function saveStudyAsDocx(result: VideoStudyResult): Promise<string>
   const buffer = await Packer.toBuffer(doc);
   fs.writeFileSync(filePath, buffer);
 
-  uploadToDrive(filePath, filename, 'IDEAS').catch(() => {});
+  if (userId != null) uploadToDrive(userId, filePath, filename, 'IDEAS').catch(() => {});
 
   logger.info({ filePath, title: result.title }, 'Video study saved as DOCX');
   return filePath;
@@ -760,7 +760,7 @@ export async function saveStudyAsDocx(result: VideoStudyResult): Promise<string>
 /**
  * Save a content script as a .docx Word file and return the file path.
  */
-export async function saveScriptAsDocx(topic: string, scriptText: string): Promise<string> {
+export async function saveScriptAsDocx(topic: string, scriptText: string, userId?: number): Promise<string> {
   const SCRIPTS_DIR = path.join(IDEAS_DIR, 'SCRIPTS');
   if (!fs.existsSync(SCRIPTS_DIR)) fs.mkdirSync(SCRIPTS_DIR, { recursive: true });
 
@@ -825,7 +825,7 @@ export async function saveScriptAsDocx(topic: string, scriptText: string): Promi
   const buffer = await Packer.toBuffer(doc);
   fs.writeFileSync(filePath, buffer);
 
-  uploadToDrive(filePath, filename, 'SCRIPTS').catch(() => {});
+  if (userId != null) uploadToDrive(userId, filePath, filename, 'SCRIPTS').catch(() => {});
 
   logger.info({ filePath, topic }, 'Script saved as DOCX');
   return filePath;

@@ -8,7 +8,7 @@ const PENDING_TTL_MS = 10 * 60 * 1000;
 const COMPLETION_TTL_MS = 10 * 60 * 1000;
 const MAX_RECORDS = 1000;
 
-const pendingInMemory = new Map<string, { deviceId: string; deviceName: string | null; createdAt: number }>();
+const pendingInMemory = new Map<string, { deviceId: string; deviceName: string | null; inviteCode?: unknown; createdAt: number }>();
 const completionInMemory = new Map<string, { payload: AuthSessionPayload; createdAt: number }>();
 
 let tablesEnsured = false;
@@ -34,6 +34,7 @@ function ensureTables(): boolean {
       nonce TEXT PRIMARY KEY,
       device_id TEXT NOT NULL,
       device_name TEXT,
+      invite_code TEXT,
       created_at_ms INTEGER NOT NULL
     );
     CREATE INDEX IF NOT EXISTS idx_google_auth_pending_sessions_created_at
@@ -47,6 +48,11 @@ function ensureTables(): boolean {
     CREATE INDEX IF NOT EXISTS idx_google_auth_completion_sessions_created_at
       ON google_auth_completion_sessions(created_at_ms);
   `);
+  try {
+    db.exec('ALTER TABLE google_auth_pending_sessions ADD COLUMN invite_code TEXT');
+  } catch {
+    // Existing databases already have the column, or the CREATE TABLE path just added it.
+  }
   tablesEnsured = true;
   return true;
 }
@@ -102,6 +108,7 @@ function evictOverflowPersistent(table: 'google_auth_pending_sessions' | 'google
 export function createGoogleAuthPendingSession(
   deviceId: string,
   deviceName: string | null,
+  inviteCode?: unknown,
   nonce = crypto.randomBytes(16).toString('hex'),
 ): string {
   const createdAt = now();
@@ -112,34 +119,34 @@ export function createGoogleAuthPendingSession(
     const db = getDbOrNull();
     if (db) {
       db.prepare(`
-        INSERT INTO google_auth_pending_sessions (nonce, device_id, device_name, created_at_ms)
-        VALUES (?, ?, ?, ?)
-      `).run(nonce, deviceId, deviceName, createdAt);
+        INSERT INTO google_auth_pending_sessions (nonce, device_id, device_name, invite_code, created_at_ms)
+        VALUES (?, ?, ?, ?, ?)
+      `).run(nonce, deviceId, deviceName, typeof inviteCode === 'string' ? inviteCode : null, createdAt);
       return nonce;
     }
   }
 
   evictExpiredInMemory();
   evictOverflowInMemory(pendingInMemory);
-  pendingInMemory.set(nonce, { deviceId, deviceName, createdAt });
+  pendingInMemory.set(nonce, { deviceId, deviceName, inviteCode, createdAt });
   return nonce;
 }
 
 export function consumeGoogleAuthPendingSession(
   nonce: string,
-): { deviceId: string; deviceName: string | null } | null {
+): { deviceId: string; deviceName: string | null; inviteCode?: unknown } | null {
   if (ensureTables()) {
     evictExpiredPersistent();
     const db = getDbOrNull();
     if (db) {
       const row = db.prepare(`
-        SELECT device_id, device_name
+        SELECT device_id, device_name, invite_code
         FROM google_auth_pending_sessions
         WHERE nonce = ?
-      `).get(nonce) as { device_id: string; device_name: string | null } | undefined;
+      `).get(nonce) as { device_id: string; device_name: string | null; invite_code: string | null } | undefined;
       if (!row) return null;
       db.prepare('DELETE FROM google_auth_pending_sessions WHERE nonce = ?').run(nonce);
-      return { deviceId: row.device_id, deviceName: row.device_name };
+      return { deviceId: row.device_id, deviceName: row.device_name, inviteCode: row.invite_code ?? undefined };
     }
   }
 

@@ -24,10 +24,14 @@ vi.mock('@sentry/node', () => ({
   flush: vi.fn().mockResolvedValue(true),
 }));
 
-vi.mock('../../src/utils/logger', () => ({
-  logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn(), fatal: vi.fn() },
-  LOGGER_REDACTION_PATHS: [],
-}));
+vi.mock('../../src/utils/logger', async () => {
+  const actual = await vi.importActual<typeof import('../../src/utils/logger')>('../../src/utils/logger');
+  return {
+    ...actual,
+    logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn(), fatal: vi.fn() },
+    LOGGER_REDACTION_PATHS: [],
+  };
+});
 
 import * as Sentry from '@sentry/node';
 
@@ -164,6 +168,74 @@ describe('Error Tracker', () => {
       errorTracker.captureException(new Error('ignored'));
 
       expect(SentryMock.withScope).not.toHaveBeenCalled();
+    });
+
+    it('redacts sensitive extra context before forwarding to Sentry scope', async () => {
+      const SentryMock = await import('@sentry/node');
+      errorTracker.init({ dsn: 'https://abc@sentry.io/123', environment: 'test' });
+
+      errorTracker.captureException(new Error('boom'), {
+        extra: {
+          request: {
+            headers: {
+              authorization: 'Bearer super-secret-token',
+              cookie: 'session=private-cookie',
+            },
+            data: {
+              prompt: 'private prompt',
+              safe: 'ok',
+            },
+          },
+        },
+      });
+
+      const scope = (SentryMock.withScope as any).mock.results[0].value;
+      const [extraKey, extraPayload] = (scope.setExtra as any).mock.calls[0];
+      expect(extraKey).toBe('request');
+      expect(JSON.stringify(extraPayload)).not.toContain('super-secret-token');
+      expect(JSON.stringify(extraPayload)).not.toContain('private-cookie');
+      expect(JSON.stringify(extraPayload)).not.toContain('private prompt');
+      expect(extraPayload.headers.authorization).toBe('[Redacted]');
+      expect(extraPayload.headers.cookie).toBe('[Redacted]');
+      expect(extraPayload.data.prompt).toBe('[Redacted]');
+      expect(extraPayload.data.safe).toBe('ok');
+    });
+  });
+
+  describe('sanitizeSentryEvent()', () => {
+    it('redacts request headers, body, contexts, extra, and user ip from Sentry events', async () => {
+      const event = errorTracker.sanitizeSentryEvent({
+        user: { id: 'user-1', ip_address: '203.0.113.10' },
+        request: {
+          headers: {
+            Authorization: 'Bearer event-secret-token',
+            'X-API-Key': 'sk-proj-private',
+          },
+          data: {
+            refreshToken: 'refresh-private',
+            field: 'safe',
+          },
+        },
+        contexts: {
+          auth: { cookie: 'session=private' },
+        },
+        extra: {
+          providerResponse: 'raw-provider-body',
+          retryAttempt: 1,
+        },
+      } as any);
+
+      const payload = JSON.stringify(event);
+      expect(payload).not.toContain('203.0.113.10');
+      expect(payload).not.toContain('event-secret-token');
+      expect(payload).not.toContain('sk-proj-private');
+      expect(payload).not.toContain('refresh-private');
+      expect(payload).not.toContain('session=private');
+      expect(payload).not.toContain('raw-provider-body');
+      expect((event.user as any).ip_address).toBeUndefined();
+      expect((event.request as any).headers.Authorization).toBe('[Redacted]');
+      expect((event.request as any).data.refreshToken).toBe('[Redacted]');
+      expect((event.extra as any).retryAttempt).toBe(1);
     });
   });
 

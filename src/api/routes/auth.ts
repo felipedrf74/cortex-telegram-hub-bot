@@ -16,7 +16,11 @@ import {
   getUserByAppleId, getUserByEmail, getUserById,
   createAppleUser, createEmailUser,
   resolveIosInviteRegistrationTarget,
+  ClosedBetaInviteRequiredError,
+  getClosedBetaInviteStatus,
+  resolveCurrentTenantIdForUser,
 } from '../../services/user-service';
+import { signIosJwt } from '../../services/ios-jwt';
 import { createAuthSessionAndRegisterDevice, grantBetaSandboxAccess, hashRefreshToken } from '../../services/ios-auth-session';
 import { createGoogleAuthPendingSession, consumeGoogleAuthCompletion } from '../../services/google-auth-session-store';
 import { consumeAppleSignInNonce, AppleSignInNonceError } from '../../services/apple-sign-in-nonce';
@@ -78,24 +82,27 @@ function authCopy(language: Lang, ptPT: string, ptBR: string, enUS: string): str
   return enUS;
 }
 
-function isValidIosEmailSignupInvite(inviteCode: unknown): boolean {
-  const normalized = String(inviteCode ?? '').trim().toLowerCase();
-  if (!normalized) return false;
-
-  const validCodes = [
-    config.ios.inviteCode,
-    config.ios.ownerCode,
-  ]
-    .map((code) => String(code ?? '').trim().toLowerCase())
-    .filter(Boolean);
-
-  return validCodes.includes(normalized);
-}
-
 function passwordResetDevTokenAllowed(): boolean {
   return process.env.PASSWORD_RESET_DEV_TOKEN === '1'
     && process.env.NODE_ENV !== 'production'
     && !config.isStaging;
+}
+
+function sendInviteGateError(res: Response, language: Lang, code: 'INVITE_REQUIRED' | 'INVALID_INVITE'): void {
+  sendError(res, code, authCopy(language,
+    code === 'INVITE_REQUIRED' ? 'Código de convite obrigatório' : 'Código de convite inválido',
+    code === 'INVITE_REQUIRED' ? 'Código de convite obrigatório' : 'Código de convite inválido',
+    code === 'INVITE_REQUIRED' ? 'Invite code is required' : 'Invalid invite code'), 403);
+}
+
+function sendClosedBetaInviteError(res: Response, language: Lang, err: ClosedBetaInviteRequiredError): void {
+  sendInviteGateError(res, language, err.code);
+}
+
+function inviteGateCode(inviteCode: unknown): 'INVITE_REQUIRED' | 'INVALID_INVITE' | null {
+  const status = getClosedBetaInviteStatus(inviteCode);
+  if (status === 'valid') return null;
+  return status === 'missing' ? 'INVITE_REQUIRED' : 'INVALID_INVITE';
 }
 
 function passwordResetRequestMinDelayMs(): number {
@@ -181,11 +188,16 @@ export function authRoutes(): Router {
     const language = resolveAuthLanguage(req);
     const { deviceId, deviceName, pushToken, inviteCode } = req.body;
 
-    if (!deviceId || !inviteCode) {
+    if (!deviceId) {
       sendError(res, 'BAD_REQUEST', authCopy(language,
-        'deviceId e inviteCode são obrigatórios',
-        'deviceId e inviteCode são obrigatórios',
-        'deviceId and inviteCode are required'));
+        'deviceId é obrigatório',
+        'deviceId é obrigatório',
+        'deviceId is required'));
+      return;
+    }
+    const inviteError = inviteGateCode(inviteCode);
+    if (inviteError) {
+      sendInviteGateError(res, language, inviteError);
       return;
     }
 
@@ -308,11 +320,11 @@ export function authRoutes(): Router {
       return;
     }
 
-    const accessToken = jwt.sign(
-      { userId: device.user_id, deviceId: device.device_id },
-      config.ios.jwtSecret,
-      { expiresIn: '7d' as any },
-    );
+    const accessToken = signIosJwt({
+      userId: device.user_id,
+      tenantId: resolveCurrentTenantIdForUser(device.user_id),
+      deviceId: device.device_id,
+    });
 
     // Rotate refresh token — current hash → previous, new hash issued.
     const newRefreshToken = crypto.randomBytes(64).toString('hex');
@@ -384,7 +396,7 @@ export function authRoutes(): Router {
   // ── Sign in with Apple ─────────────────────────────────────────────
   router.post('/register/apple', asyncHandler(async (req: Request, res: Response) => {
     const language = resolveAuthLanguage(req);
-    const { identityToken, rawNonce, deviceId, deviceName, firstName, lastName } = req.body;
+    const { identityToken, rawNonce, deviceId, deviceName, firstName, lastName, inviteCode } = req.body;
     if (!identityToken || !rawNonce || !deviceId) {
       sendError(res, 'BAD_REQUEST', authCopy(language,
         'identityToken, rawNonce e deviceId são obrigatórios',
@@ -482,11 +494,15 @@ export function authRoutes(): Router {
             return;
           }
         }
-        user = createAppleUser(appleUserId, { email, firstName, lastName });
+        user = createAppleUser(appleUserId, { email, firstName, lastName }, inviteCode);
       }
 
       issueTokensAndRegisterDevice(req, res, user.id, deviceId, deviceName || null, null, user);
     } catch (err: any) {
+      if (err instanceof ClosedBetaInviteRequiredError) {
+        sendClosedBetaInviteError(res, language, err);
+        return;
+      }
       if (err instanceof AppleSignInNonceError) {
         logger.warn(
           { event: 'auth', action: 'apple_sign_in', outcome: 'rejected', reason: 'nonce_failed', errorName: err.name },
@@ -516,7 +532,7 @@ export function authRoutes(): Router {
   // tokens must be verified against an Apple Services ID.
   router.post('/register/apple/start', asyncHandler(async (req: Request, res: Response) => {
     const language = resolveAuthLanguage(req);
-    const { deviceId, deviceName } = req.body;
+    const { deviceId, deviceName, inviteCode } = req.body;
     if (!deviceId) {
       sendError(res, 'BAD_REQUEST', authCopy(language,
         'deviceId é obrigatório',
@@ -533,7 +549,7 @@ export function authRoutes(): Router {
       return;
     }
 
-    const session = createAppleWebAuthPendingSession(deviceId, deviceName || null);
+    const session = createAppleWebAuthPendingSession(deviceId, deviceName || null, inviteCode);
     const url = buildAppleWebAuthorizeUrl(session);
     sendSuccess(res, {
       url,
@@ -569,7 +585,7 @@ export function authRoutes(): Router {
 
   router.post('/register/google/start', asyncHandler(async (req: Request, res: Response) => {
     const language = resolveAuthLanguage(req);
-    const { deviceId, deviceName, flow } = req.body;
+    const { deviceId, deviceName, flow, inviteCode } = req.body;
     if (!deviceId) {
       sendError(res, 'BAD_REQUEST', authCopy(language,
         'deviceId é obrigatório',
@@ -585,7 +601,7 @@ export function authRoutes(): Router {
       return;
     }
 
-    const nonce = createGoogleAuthPendingSession(deviceId, deviceName || null);
+    const nonce = createGoogleAuthPendingSession(deviceId, deviceName || null, inviteCode);
     const statePrefix = flow === 'web' ? 'web-auth' : 'ios-auth';
     const redirectBase = process.env.OAUTH_REDIRECT_BASE || 'https://api.nexushub.me';
     const params = new URLSearchParams({
@@ -638,7 +654,7 @@ export function authRoutes(): Router {
   //
   router.post('/register/google', asyncHandler(async (req: Request, res: Response) => {
     const language = resolveAuthLanguage(req);
-    const { code, codeVerifier, redirectURI, idToken, deviceId, deviceName } = req.body;
+    const { code, codeVerifier, redirectURI, idToken, deviceId, deviceName, inviteCode } = req.body;
     if (!deviceId) {
       sendError(res, 'BAD_REQUEST', authCopy(language,
         'deviceId é obrigatório',
@@ -712,10 +728,14 @@ export function authRoutes(): Router {
           'Either code+codeVerifier+redirectURI (PKCE) or idToken (legacy) is required'));
         return;
       }
-      const user = resolveGoogleIdentityUser(payload);
+      const user = resolveGoogleIdentityUser(payload, { inviteCode });
 
       issueTokensAndRegisterDevice(req, res, user.id, deviceId, deviceName || null, null, user);
     } catch (err: any) {
+      if (err instanceof ClosedBetaInviteRequiredError) {
+        sendClosedBetaInviteError(res, language, err);
+        return;
+      }
       // Closed-beta-auth-hardening (2026-05-04): the
       // GoogleAccountLinkRequiresVerificationError path is a
       // distinct 409 status so iOS can render "An account with this
@@ -773,11 +793,9 @@ export function authRoutes(): Router {
     // provisions invite-code sandbox users as a side effect. Email sign-up
     // only needs a side-effect-free validity check before creating the real
     // email user below.
-    if (!isValidIosEmailSignupInvite(inviteCode)) {
-      sendError(res, 'INVALID_INVITE', authCopy(language,
-        'Código de convite inválido',
-        'Código de convite inválido',
-        'Invalid invite code'), 403);
+    const inviteError = inviteGateCode(inviteCode);
+    if (inviteError) {
+      sendInviteGateError(res, language, inviteError);
       return;
     }
 

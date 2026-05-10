@@ -149,6 +149,35 @@ export function settingsRoutes(): Router {
     }
   });
 
+  /** DELETE /api/v1/settings/push-token */
+  router.delete('/push-token', async (req, res: Response) => {
+    const { userId } = req as AuthenticatedRequest;
+    if (!ensureValidSettingsUserScope(res, userId, 'settings_route_delete_push_token')) return;
+    const deviceId = (req as AuthenticatedRequest).deviceId;
+
+    try {
+      const db = getDb();
+      db.prepare(`
+        UPDATE ios_devices
+        SET push_token = NULL, last_active_at = datetime('now')
+        WHERE user_id = ? AND device_id = ?
+      `).run(userId, deviceId);
+      try {
+        db.prepare(`
+          UPDATE notification_device_tokens
+          SET revoked_at = COALESCE(revoked_at, datetime('now'))
+          WHERE user_id = ? AND revoked_at IS NULL
+        `).run(userId);
+      } catch {
+        // notification_device_tokens may not exist on older local test DBs.
+      }
+      res.status(204).send();
+    } catch (err: any) {
+      logger.error({ err }, 'iOS push-token revoke failed');
+      sendInternalError(res, 'Unable to revoke the push token right now.');
+    }
+  });
+
   /** POST /api/v1/settings/export — GDPR data export (Article 15: right of access) */
   router.post('/export', async (req, res: Response) => {
     const { userId, tenantId = userId } = req as AuthenticatedRequest;

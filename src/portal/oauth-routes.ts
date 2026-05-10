@@ -24,17 +24,17 @@ interface PortalOAuthServices {
   parseIOSGoogleAuthState: (state: string) => { nonce: string } | null;
   isWebGoogleAuthState: (state: string) => boolean;
   parseWebGoogleAuthState: (state: string) => { nonce: string } | null;
-  consumeGoogleAuthPendingSession: (nonce: string) => { deviceId: string; deviceName?: string | null } | null | undefined;
+  consumeGoogleAuthPendingSession: (nonce: string) => { deviceId: string; deviceName?: string | null; inviteCode?: unknown } | null | undefined;
   storeGoogleAuthCompletion: (payload: unknown) => string;
   exchangeGoogleCodeForIdentity: (code: string, redirectUri: string) => Promise<unknown>;
-  resolveGoogleIdentityUser: (payload: unknown) => { id: number };
+  resolveGoogleIdentityUser: (payload: unknown, options?: { inviteCode?: unknown }) => { id: number };
   isWebAppleAuthState: (state: string) => boolean;
   parseWebAppleAuthState: (state: string) => { nonce: string } | null;
-  consumeAppleWebAuthPendingSession: (nonce: string) => { nonceHash: string; deviceId: string; deviceName?: string | null } | null | undefined;
+  consumeAppleWebAuthPendingSession: (nonce: string) => { nonceHash: string; deviceId: string; deviceName?: string | null; inviteCode?: unknown } | null | undefined;
   storeAppleWebAuthCompletion: (payload: unknown) => string;
   verifyAppleWebIdentityToken: (identityToken: string, expectedNonceHash: string) => Promise<unknown>;
   parseAppleUserHint: (rawUser: unknown) => unknown;
-  resolveAppleWebIdentityUser: (payload: unknown, profileHint?: unknown) => { id: number };
+  resolveAppleWebIdentityUser: (payload: unknown, profileHint?: unknown, inviteCode?: unknown) => { id: number };
   createAuthSessionAndRegisterDevice: (params: {
     userId: number;
     deviceId: string;
@@ -297,7 +297,7 @@ export function registerPortalOAuthRoutes(app: Express, deps: PortalOAuthRouteDe
         }
 
         const payload = await services.exchangeGoogleCodeForIdentity(code, `${redirectBase}/oauth/google/callback`);
-        const user = services.resolveGoogleIdentityUser(payload);
+        const user = services.resolveGoogleIdentityUser(payload, { inviteCode: pending.inviteCode });
         const authPayload = services.createAuthSessionAndRegisterDevice({
           userId: user.id,
           deviceId: pending.deviceId,
@@ -325,7 +325,7 @@ export function registerPortalOAuthRoutes(app: Express, deps: PortalOAuthRouteDe
         }
 
         const payload = await services.exchangeGoogleCodeForIdentity(code, `${redirectBase}/oauth/google/callback`);
-        const user = services.resolveGoogleIdentityUser(payload);
+        const user = services.resolveGoogleIdentityUser(payload, { inviteCode: pending.inviteCode });
         const authPayload = services.createAuthSessionAndRegisterDevice({
           userId: user.id,
           deviceId: pending.deviceId,
@@ -404,7 +404,7 @@ export function registerPortalOAuthRoutes(app: Express, deps: PortalOAuthRouteDe
 
         const payload = await services.verifyAppleWebIdentityToken(idToken, pending.nonceHash);
         const profileHint = services.parseAppleUserHint(req.body?.user);
-        const user = services.resolveAppleWebIdentityUser(payload, profileHint);
+        const user = services.resolveAppleWebIdentityUser(payload, profileHint, pending.inviteCode);
         const authPayload = services.createAuthSessionAndRegisterDevice({
           userId: user.id,
           deviceId: pending.deviceId,

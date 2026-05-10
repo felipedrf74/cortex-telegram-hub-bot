@@ -184,6 +184,7 @@ describe('portal oauth routes', () => {
     expect(services.resolveAppleWebIdentityUser).toHaveBeenCalledWith(
       { sub: 'apple-user', nonce: 'nonce-hash' },
       { firstName: 'Apple', lastName: 'User' },
+      undefined,
     );
     expect(services.createAuthSessionAndRegisterDevice).toHaveBeenCalledWith(expect.objectContaining({
       userId: 43,

@@ -2,10 +2,10 @@
 
 Status: canonical
 Owner: release lead (Felipe)
-Last verified: 2026-05-09
+Last verified: 2026-05-10
 Update policy: update after merge / staging / production / deploy-gate changes. Live identity (branch/commit/version/migrations) auto-generated via engine/scripts/release-identity.sh --persist; do not type those by hand.
 
-Last updated: 2026-05-09
+Last updated: 2026-05-10
 
 > **Live identity** — branch / commit / version / migration count for the
 > current working tree are auto-generated. Do NOT type those values by
@@ -17,7 +17,19 @@ Last updated: 2026-05-09
 
 - Repo: `engine`
 - Workspace HEAD / version / migrations / dirty state: see `docs/release/release-identity.md`
-- Production status (last manual update 2026-05-09): promoted via `./scripts/promote-to-prod.sh`, health-checked, both `nexus-hub` and `content-engine` PM2 processes online at version `4.14.146`.
+- Production status (last manual update 2026-05-10): promoted via `./scripts/promote-to-prod.sh`, health-checked, both `nexus-hub` and `content-engine` PM2 processes online at version `4.14.147`.
+
+### 2026-05-10 Launch Readiness Production Promote
+
+- Scope: launch-readiness sweep production promote, including Garmin tenant-isolation watcher observability and Apple Health partial-data sufficiency regressions.
+- Production version: `4.14.147`.
+- Production deploy commit: `95a42c80`.
+- Production API health: `https://api.nexushub.me/health` returned `status: healthy`.
+- Production snapshot: authenticated `https://api.nexushub.me/api/snapshot` returned version `4.14.147`.
+- Production PM2: `nexus-hub` and `content-engine` online at `4.14.147`.
+- Production watcher cold-start: manual `garmin_tenant_isolation_watcher` invocation returned `matchedCount: 0`, `alerted: false`, with no new warning or operator-alert rows.
+- Main reconcile: `origin/main` was fast-forwarded to production deploy commit `95a42c80`.
+- Evidence lives under `engine/docs/release/smoke-evidence/`, and the closeout addendum lives at `docs/archive/2026-05/launch-readiness-sweep/closeout.md`.
 
 ### 2026-05-09 P0 Production Promote
 
@@ -83,6 +95,15 @@ Last updated: 2026-05-09
 
 ### iOS validation
 
+- 2026-05-10 pre-TestFlight release-mode validation is complete for the Wave 1
+  candidate: Task A single-flight regression test is on iOS `main`,
+  Release clean simulator build passed with zero warnings/errors,
+  Release UI visual matrix passed 21/21 with 80 screenshots, and iOS
+  `origin/main` is bumped to `1.4.2 (16)` at `5981d10`.
+  Evidence:
+  `docs/archive/2026-05/ios-pre-testflight-validation/release-mode-validation.md`.
+- Wave 1 TestFlight operator cut runbook is ready:
+  `docs/release/wave1-testflight-cut-runbook.md`.
 - Focused iOS Content/bootstrapping unit suite passed (**10 focused tests**).
 - Physical iPhone Felipe navigation/content smoke passed on device `00008150-000C0D5101D8401C`; the signed-in session was Felipe, so nexushubbot deep mutation workflow remains blocked until the device session is switched to `nexushubbot@gmail.com`.
 - Prior `xcodebuild build-for-testing` for Content Creation source: passed.

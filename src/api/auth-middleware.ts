@@ -14,6 +14,7 @@ import { getDb } from '../services/database';
 import { isValidTenantUserId, recordTenantScopeAnomaly } from '../services/tenant-scope-observability';
 import { verifyIosJwt } from '../services/ios-jwt';
 import { validateStagingFixtureJwtPayload } from '../services/staging-fixture-safety';
+import { resolveCurrentTenantIdForUser } from '../services/user-service';
 
 export interface AuthenticatedRequest extends Request {
   tenantId: number;
@@ -185,6 +186,22 @@ export function authMiddleware(req: Request, res: Response, next: NextFunction):
       return;
     }
 
+    const canonicalTenantId = resolveCurrentTenantIdForUser(payload.userId);
+    const tokenTenantId = typeof payload.tenantId === 'number' && Number.isInteger(payload.tenantId)
+      ? payload.tenantId
+      : canonicalTenantId;
+    if (tokenTenantId !== canonicalTenantId) {
+      recordTenantScopeAnomaly({
+        layer: 'delivery',
+        operation: 'ios_auth_jwt_tenant',
+        reason: 'tenant_mismatch',
+        userId: payload.userId,
+        details: { tokenTenantId, canonicalTenantId },
+      });
+      sendError(res, 'FORBIDDEN', 'JWT tenant scope no longer matches this user', 403);
+      return;
+    }
+
     const requestedTenant = readRequestedActiveTenant(req);
     if (requestedTenant) {
       if (!isValidTenantUserId(requestedTenant.tenantId)) {
@@ -202,7 +219,7 @@ export function authMiddleware(req: Request, res: Response, next: NextFunction):
         return;
       }
 
-      if (requestedTenant.tenantId !== payload.userId) {
+      if (requestedTenant.tenantId !== canonicalTenantId) {
         recordTenantScopeAnomaly({
           layer: 'delivery',
           operation: 'ios_auth_active_tenant',
@@ -211,7 +228,7 @@ export function authMiddleware(req: Request, res: Response, next: NextFunction):
           details: {
             header: requestedTenant.header,
             requestedTenantId: requestedTenant.tenantId,
-            canonicalTenantId: payload.userId,
+            canonicalTenantId,
           },
         });
         sendError(res, 'FORBIDDEN', 'Active tenant switching is not enabled for this session', 403);
@@ -226,7 +243,7 @@ export function authMiddleware(req: Request, res: Response, next: NextFunction):
     // has a membership-backed active-tenant model, fail closed above instead
     // of silently accepting or ignoring the requested tenant.
     const authenticatedDeviceId = typeof payload.deviceId === 'string' ? payload.deviceId : '';
-    (req as AuthenticatedRequest).tenantId = payload.userId;
+    (req as AuthenticatedRequest).tenantId = canonicalTenantId;
     (req as AuthenticatedRequest).userId = payload.userId;
     (req as AuthenticatedRequest).deviceId = authenticatedDeviceId;
 

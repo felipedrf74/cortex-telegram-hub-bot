@@ -6,6 +6,7 @@ import { logger } from '../utils/logger';
 import { logAudit } from './audit-trail';
 import { getStoredDailyCostLimitUsdForTier } from './plan-quotas';
 import type { User } from './user-service';
+import { resolveCurrentTenantIdForUser } from './user-service';
 import { signIosJwt } from './ios-jwt';
 
 // AUTH-O4 (closed-beta-auth-hardening, 2026-05-04): refresh-token at-rest
@@ -64,7 +65,8 @@ interface CreateAuthSessionInput {
 }
 
 export function createAuthSessionAndRegisterDevice(input: CreateAuthSessionInput): AuthSessionPayload {
-  const accessToken = signIosJwt({ userId: input.userId, deviceId: input.deviceId });
+  const tenantId = resolveCurrentTenantIdForUser(input.userId);
+  const accessToken = signIosJwt({ userId: input.userId, tenantId, deviceId: input.deviceId });
   const refreshToken = crypto.randomBytes(64).toString('hex');
   const refreshTokenHash = hashRefreshToken(refreshToken);
 
