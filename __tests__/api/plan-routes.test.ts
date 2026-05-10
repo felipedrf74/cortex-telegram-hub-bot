@@ -13,6 +13,15 @@ const mockClearCacheByPrefix = vi.fn();
 const mockGetUserById = vi.fn();
 const mockGetUserLanguageById = vi.fn();
 
+function expectCachePrefixesCleared(...prefixes: string[]) {
+  const cleared = mockClearCacheByPrefix.mock.calls.flatMap(([prefix]) => (
+    Array.isArray(prefix) ? prefix : [prefix]
+  ));
+  for (const prefix of prefixes) {
+    expect(cleared).toContain(prefix);
+  }
+}
+
 vi.mock('../../src/services/weekly-plan-orchestrator', () => ({
   composeWeeklyPlan: (...args: unknown[]) => mockComposeWeeklyPlan(...args),
 }));
@@ -373,8 +382,7 @@ describe('plan routes', () => {
     });
 
     expect(response.statusCode).toBe(200);
-    expect(mockClearCacheByPrefix).toHaveBeenCalledWith('plan:week:u:12:');
-    expect(mockClearCacheByPrefix).toHaveBeenCalledWith('plan:today:u:12:');
+    expectCachePrefixesCleared('plan:week:u:12:', 'plan:today:u:12:');
     expect(response.body.ok).toBe(true);
     expect(response.body.data.week.weekStart).toBe('2026-04-13');
     expect(response.body.data.today.date).toBe('2026-04-14');

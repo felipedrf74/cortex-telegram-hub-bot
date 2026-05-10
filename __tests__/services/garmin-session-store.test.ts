@@ -6,6 +6,15 @@ const mockClearCache = vi.fn();
 const mockClearCacheByPrefix = vi.fn();
 const mockCreateAndPushNotification = vi.fn().mockResolvedValue(undefined);
 
+function expectCachePrefixesCleared(...prefixes: string[]) {
+  const cleared = mockClearCacheByPrefix.mock.calls.flatMap(([prefix]) => (
+    Array.isArray(prefix) ? prefix : [prefix]
+  ));
+  for (const prefix of prefixes) {
+    expect(cleared).toContain(prefix);
+  }
+}
+
 vi.mock('../../src/services/database', () => ({
   getDb: () => ({
     prepare: () => ({
@@ -61,8 +70,7 @@ describe('garmin-session-store cache invalidation', () => {
 
     expect(mockClearCache).toHaveBeenCalledWith('readiness:86');
     expect(mockClearCache).toHaveBeenCalledWith('training-summary:86');
-    expect(mockClearCacheByPrefix).toHaveBeenCalledWith('dashboard:86:');
-    expect(mockClearCacheByPrefix).toHaveBeenCalledWith('dashboard-home:86:');
+    expectCachePrefixesCleared('dashboard:86:', 'dashboard-home:86:');
   });
 
   it('clears readiness and dashboard caches when Garmin needs reauth', async () => {
@@ -72,8 +80,7 @@ describe('garmin-session-store cache invalidation', () => {
 
     expect(mockClearCache).toHaveBeenCalledWith('readiness:86');
     expect(mockClearCache).toHaveBeenCalledWith('training-summary:86');
-    expect(mockClearCacheByPrefix).toHaveBeenCalledWith('dashboard:86:');
-    expect(mockClearCacheByPrefix).toHaveBeenCalledWith('dashboard-home:86:');
+    expectCachePrefixesCleared('dashboard:86:', 'dashboard-home:86:');
     expect(mockCreateAndPushNotification).toHaveBeenCalled();
   });
 
@@ -84,8 +91,7 @@ describe('garmin-session-store cache invalidation', () => {
 
     expect(mockClearCache).toHaveBeenCalledWith('readiness:86');
     expect(mockClearCache).toHaveBeenCalledWith('training-summary:86');
-    expect(mockClearCacheByPrefix).toHaveBeenCalledWith('dashboard:86:');
-    expect(mockClearCacheByPrefix).toHaveBeenCalledWith('dashboard-home:86:');
+    expectCachePrefixesCleared('dashboard:86:', 'dashboard-home:86:');
   });
 
   it('falls back to the canonical owner bootstrap user when no request user is present', async () => {

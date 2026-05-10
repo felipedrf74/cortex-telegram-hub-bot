@@ -32,6 +32,7 @@ describe('apple web sign-in session store', () => {
     const session = createAppleWebAuthPendingSession(
       'web-device',
       'Nexus Web',
+      undefined,
       'state-nonce',
       'raw-nonce-with-enough-entropy',
     );

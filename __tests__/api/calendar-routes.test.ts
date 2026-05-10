@@ -20,6 +20,15 @@ const mockClearCacheByPrefix = vi.fn();
 const mockGetFocusBlockRecommendation = vi.fn();
 const mockFilterCalendarEventsForTrainingScope = vi.fn();
 
+function expectCachePrefixesCleared(...prefixes: string[]) {
+  const cleared = mockClearCacheByPrefix.mock.calls.flatMap(([prefix]) => (
+    Array.isArray(prefix) ? prefix : [prefix]
+  ));
+  for (const prefix of prefixes) {
+    expect(cleared).toContain(prefix);
+  }
+}
+
 vi.mock('../../src/services/unified-calendar', () => ({
   getEvents: (...args: unknown[]) => mockGetEvents(...args),
   getEventsWithDiagnostics: (...args: unknown[]) => mockGetEventsWithDiagnostics(...args),
@@ -477,10 +486,12 @@ describe('Calendar API — mutation routes', () => {
       new_start: '2026-04-16T09:00:00.000Z',
       new_end: '2026-04-16T10:00:00.000Z',
     }, 'outlook', 12);
-    expect(mockClearCacheByPrefix).toHaveBeenCalledWith('u:12:calendar:');
-    expect(mockClearCacheByPrefix).toHaveBeenCalledWith('calendar:');
-    expect(mockClearCacheByPrefix).toHaveBeenCalledWith('plan:week:u:12:');
-    expect(mockClearCacheByPrefix).toHaveBeenCalledWith('plan:today:u:12:');
+    expectCachePrefixesCleared(
+      'u:12:calendar:',
+      'calendar:',
+      'plan:week:u:12:',
+      'plan:today:u:12:',
+    );
   });
 
   it('rejects event updates without a valid source', async () => {
@@ -502,9 +513,11 @@ describe('Calendar API — mutation routes', () => {
     expect(res.body.ok).toBe(true);
     expect(res.body.data.deleted).toBe(true);
     expect(mockDeleteEvent).toHaveBeenCalledWith('evt-2', 'google', 12);
-    expect(mockClearCacheByPrefix).toHaveBeenCalledWith('u:12:calendar:');
-    expect(mockClearCacheByPrefix).toHaveBeenCalledWith('plan:week:u:12:');
-    expect(mockClearCacheByPrefix).toHaveBeenCalledWith('plan:today:u:12:');
+    expectCachePrefixesCleared(
+      'u:12:calendar:',
+      'plan:week:u:12:',
+      'plan:today:u:12:',
+    );
   });
 
   it('rejects deletes without a valid source query', async () => {

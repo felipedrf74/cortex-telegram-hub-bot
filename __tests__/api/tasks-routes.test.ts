@@ -15,6 +15,15 @@ const mockClearCacheByPrefix = vi.fn();
 const mockLoggerError = vi.fn();
 const mockGetUserTimezone = vi.fn(() => 'Europe/Lisbon');
 
+function expectCachePrefixesCleared(...prefixes: string[]) {
+  const cleared = mockClearCacheByPrefix.mock.calls.flatMap(([prefix]) => (
+    Array.isArray(prefix) ? prefix : [prefix]
+  ));
+  for (const prefix of prefixes) {
+    expect(cleared).toContain(prefix);
+  }
+}
+
 vi.mock('../../src/api/routes/../../services/task-store/task-router', () => ({
   resolveTaskProvider: (...args: unknown[]) => mockResolveTaskProvider(...args),
   getTaskProviderForUser: (...args: unknown[]) => mockGetTaskProviderForUser(...args),
@@ -334,9 +343,7 @@ describe('Task routes sync provider metadata', () => {
         syncProvider: 'ms_todo',
       }),
     );
-    expect(mockClearCacheByPrefix).toHaveBeenCalledWith('dashboard-home:12:');
-    expect(mockClearCacheByPrefix).toHaveBeenCalledWith('plan:week:u:12:');
-    expect(mockClearCacheByPrefix).toHaveBeenCalledWith('plan:today:u:12:');
+    expectCachePrefixesCleared('dashboard-home:12:', 'plan:week:u:12:', 'plan:today:u:12:');
   });
 
   it('routes generic inbox task creation to the capture list before provider-default fallbacks', async () => {
@@ -619,7 +626,7 @@ describe('Task routes sync provider metadata', () => {
       expect.objectContaining({ id: 'step-1' }),
       expect.objectContaining({ id: 'step-2' }),
     ]);
-    expect(mockClearCacheByPrefix).toHaveBeenCalledWith('u:12:tasks:list-1:');
+    expectCachePrefixesCleared('u:12:tasks:list-1:');
   });
 
   it('normalizes update responses when the provider only returns a partial task payload', async () => {
@@ -784,7 +791,7 @@ describe('Task routes sync provider metadata', () => {
 
     expect(res.statusCode).toBe(200);
     expect(providerApi.deleteList).toHaveBeenCalledWith('list-2');
-    expect(mockClearCacheByPrefix).toHaveBeenCalledWith('u:12:tasks:list-2:');
+    expectCachePrefixesCleared('u:12:tasks:list-2:');
   });
 
   it('derives task due-date keys across the Lisbon DST boundary using configured timezone', () => {
