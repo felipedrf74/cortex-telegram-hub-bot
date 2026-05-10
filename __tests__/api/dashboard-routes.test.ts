@@ -15,6 +15,10 @@ const mockGoogleCalendarConfigured = vi.fn();
 const mockGoogleCalendarEvents = vi.fn();
 const mockOutlookCalendarConfigured = vi.fn();
 const mockOutlookCalendarEvents = vi.fn();
+const mockUnifiedCalendarEvents = vi.fn();
+const mockGetActivePlan = vi.fn();
+const mockGetCurrentWeek = vi.fn();
+const mockGetSessionsForWeek = vi.fn();
 const mockGetUserById = vi.fn((userId: number) => ({ id: userId, first_name: 'Felipe' }));
 const mockGetUserTimezone = vi.fn(() => 'Europe/Lisbon');
 const mockRuntimeStatus = vi.fn(() => ({
@@ -78,6 +82,24 @@ vi.mock('../../src/services/outlook-calendar', () => ({
   getEvents: (...args: unknown[]) => mockOutlookCalendarEvents(...args),
 }));
 
+vi.mock('../../src/services/unified-calendar', async () => {
+  const actual = await vi.importActual<typeof import('../../src/services/unified-calendar')>('../../src/services/unified-calendar');
+  return {
+    ...actual,
+    getEvents: (...args: unknown[]) => mockUnifiedCalendarEvents(...args),
+  };
+});
+
+vi.mock('../../src/services/training-plans', async () => {
+  const actual = await vi.importActual<typeof import('../../src/services/training-plans')>('../../src/services/training-plans');
+  return {
+    ...actual,
+    getActivePlan: (...args: unknown[]) => mockGetActivePlan(...args),
+    getCurrentWeek: (...args: unknown[]) => mockGetCurrentWeek(...args),
+    getSessionsForWeek: (...args: unknown[]) => mockGetSessionsForWeek(...args),
+  };
+});
+
 vi.mock('../../src/services/cost-guardrail', () => ({
   getDailyQuotaStatus: (...args: unknown[]) => mockGetDailyQuotaStatus(...args),
 }));
@@ -119,6 +141,7 @@ vi.mock('../../src/utils/logger', () => ({
 
 import { dashboardRoutes } from '../../src/api/routes/dashboard';
 import {
+  fetchTraining,
   mapDashboardTask,
   queryContentPipelineCounts,
 } from '../../src/api/routes/dashboard-data-fetchers';
@@ -225,6 +248,10 @@ describe('Dashboard API route', () => {
     mockGoogleCalendarEvents.mockReset();
     mockOutlookCalendarConfigured.mockReset();
     mockOutlookCalendarEvents.mockReset();
+    mockUnifiedCalendarEvents.mockReset();
+    mockGetActivePlan.mockReset();
+    mockGetCurrentWeek.mockReset();
+    mockGetSessionsForWeek.mockReset();
     mockGetUserById.mockReset();
     mockGetUserTimezone.mockReset();
     mockRuntimeStatus.mockReset();
@@ -238,6 +265,10 @@ describe('Dashboard API route', () => {
     mockGoogleCalendarEvents.mockResolvedValue([]);
     mockOutlookCalendarConfigured.mockReturnValue(false);
     mockOutlookCalendarEvents.mockResolvedValue([]);
+    mockUnifiedCalendarEvents.mockResolvedValue([]);
+    mockGetActivePlan.mockReturnValue(null);
+    mockGetCurrentWeek.mockReturnValue(null);
+    mockGetSessionsForWeek.mockReturnValue([]);
     mockGetUserById.mockImplementation((userId: number) => ({ id: userId, first_name: 'Felipe' }));
     mockGetUserTimezone.mockReturnValue('Europe/Lisbon');
     mockRuntimeStatus.mockReturnValue({
@@ -744,6 +775,78 @@ describe('Dashboard API route', () => {
     expect(res.statusCode).toBe(200);
     expect(mockGetCached).toHaveBeenCalledWith('dashboard-readiness:4');
     expect(res.body.data.training.bodyBattery).toBe(57);
+  });
+
+  it('caches freshly calculated dashboard readiness for five minutes', async () => {
+    mockCalculateReadiness.mockResolvedValue({
+      score: 74,
+      factors: {
+        bodyBattery: { current: 64 },
+      },
+    });
+
+    const res = await dispatch(4);
+
+    expect(res.statusCode).toBe(200);
+    expect(mockSetCache).toHaveBeenCalledWith(
+      'dashboard-readiness:4',
+      {
+        score: 74,
+        bodyBattery: 64,
+        reasonCode: null,
+      },
+      300,
+    );
+  });
+
+  it('serves a warm dashboard cache hit on a second read within the TTL window', async () => {
+    mockGetCachedSWR.mockReturnValueOnce(null);
+    const first = await dispatch(4);
+    expect(first.statusCode).toBe(200);
+    expect(mockSetCacheSWR).toHaveBeenCalledWith(
+      'dashboard:4:pt-BR',
+      first.body.data,
+      180,
+      300,
+    );
+
+    mockGetCachedSWR.mockReturnValueOnce({ value: first.body.data, fresh: true });
+    const second = await dispatch(4);
+
+    expect(second.statusCode).toBe(200);
+    expect(second.body.cached).toBe(true);
+    expect(second.body.data).toEqual(first.body.data);
+    expect(mockSetCacheSWR).toHaveBeenCalledTimes(1);
+  });
+
+  it('overlaps readiness calculation and training-event lookup when no plan session exists', async () => {
+    mockCalculateReadiness.mockImplementation(
+      () => new Promise((resolve) => setTimeout(() => resolve({
+        score: 82,
+        factors: { bodyBattery: { current: 68 } },
+      }), 100)),
+    );
+    mockUnifiedCalendarEvents.mockImplementation(
+      () => new Promise((resolve) => setTimeout(() => resolve([
+        {
+          id: 'training-event',
+          title: 'Gym strength',
+          start: { dateTime: todayAt(9) },
+          end: { dateTime: todayAt(10) },
+        },
+      ]), 100)),
+    );
+
+    const started = performance.now();
+    const training = await fetchTraining(4);
+    const elapsed = performance.now() - started;
+
+    expect(elapsed).toBeLessThan(170);
+    expect(training.readinessScore).toBe(82);
+    expect(training.bodyBattery).toBe(68);
+    expect(training.todaySession?.type).toBe('Gym strength');
+    expect(mockCalculateReadiness).toHaveBeenCalledTimes(1);
+    expect(mockUnifiedCalendarEvents).toHaveBeenCalledTimes(1);
   });
 
   it('falls back to stage-only content counts when the legacy status column is missing', () => {

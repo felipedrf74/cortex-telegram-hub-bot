@@ -11,6 +11,13 @@ import {
   getEvents as getOutlookCalendarEvents,
   isOutlookCalendarConfigured,
 } from '../../services/outlook-calendar';
+import { calculateReadiness } from '../../services/readiness-scorer';
+import {
+  getActivePlan,
+  getCurrentWeek,
+  getSessionsForWeek,
+} from '../../services/training-plans';
+import { getEvents as getUnifiedCalendarEvents } from '../../services/unified-calendar';
 import { getUserTimezoneById } from '../../services/user-service';
 
 export type DashboardSectionStatus = 'ready' | 'degraded' | 'unavailable';
@@ -21,10 +28,27 @@ export interface DashboardSectionHealth {
   warnings: string[];
 }
 
-const DASHBOARD_READINESS_CACHE_TTL = 60;
+const DASHBOARD_READINESS_CACHE_TTL = 300;
+
+type DashboardReadinessCacheEntry = {
+  score: number | null;
+  bodyBattery: number | null;
+  reasonCode?: string | null;
+};
+
+type DashboardReadinessTaskResult =
+  | { source: 'cache'; value: DashboardReadinessCacheEntry }
+  | { source: 'fresh'; value: any };
 
 function dashboardReadinessCacheKeyFor(userId: number): string {
   return `dashboard-readiness:${userId}`;
+}
+
+function settle<T>(promise: Promise<T>): Promise<PromiseSettledResult<T>> {
+  return promise.then(
+    (value) => ({ status: 'fulfilled', value } as PromiseFulfilledResult<T>),
+    (reason) => ({ status: 'rejected', reason } as PromiseRejectedResult),
+  );
 }
 
 function extractTime(dateInput: any, timezone = config.app.timezone || 'Europe/Lisbon'): string {
@@ -318,14 +342,40 @@ export async function fetchTraining(userId: number) {
   let bodyBatteryStatus: DashboardSectionStatus = 'ready';
   const warningCodes: string[] = [];
   const warnings: string[] = [];
+  const zone = getUserTimezoneById(userId);
+  const today = DateTime.now().setZone(zone);
+  const startOfDay = today.startOf('day');
+  const endOfDay = today.endOf('day');
 
   // Provider-agnostic readiness: calculateReadiness() handles Garmin → Apple Health → neutral
   // fallback internally. No need for the dashboard to branch by provider.
-  const cachedReadiness = getCached<{ score: number; bodyBattery: number | null; reasonCode?: string | null }>(
+  const cachedReadiness = getCached<DashboardReadinessCacheEntry>(
     dashboardReadinessCacheKeyFor(userId),
   );
-  if (cachedReadiness) {
-    if (isSyntheticNeutralCachedReadiness(cachedReadiness)) {
+
+  const readinessTask: Promise<DashboardReadinessTaskResult> = cachedReadiness
+    ? Promise.resolve({ source: 'cache' as const, value: cachedReadiness })
+    : (async () => {
+      const readiness = await calculateReadiness(userId);
+      return { source: 'fresh' as const, value: readiness };
+    })();
+
+  const calendarEventsTask = settle<any[]>(
+    getUnifiedCalendarEvents(
+      startOfDay.minus({ days: 1 }).toUTC().toISO()!,
+      endOfDay.plus({ days: 1 }).toUTC().toISO()!,
+      userId,
+    ),
+  );
+
+  const readinessResult = await settle(readinessTask);
+  if (readinessResult.status === 'fulfilled') {
+    const { source, value } = readinessResult.value;
+    const syntheticNeutral = source === 'cache'
+      ? isSyntheticNeutralCachedReadiness(value)
+      : isSyntheticNeutralReadiness(value);
+
+    if (syntheticNeutral) {
       readinessScore = null;
       bodyBattery = null;
       readinessStatus = 'unavailable';
@@ -335,10 +385,14 @@ export async function fetchTraining(userId: number) {
         'Wearable integration is missing, so readiness is using a neutral fallback right now.',
         'Body Battery is unavailable right now.',
       );
+    } else if (source === 'cache') {
+      readinessScore = value.score;
+      bodyBattery = value.bodyBattery;
     } else {
-      readinessScore = cachedReadiness.score;
-      bodyBattery = cachedReadiness.bodyBattery;
+      readinessScore = value?.score || null;
+      bodyBattery = normalizeBodyBattery(value?.factors?.bodyBattery?.current);
     }
+
     if (readinessScore == null) {
       readinessStatus = 'unavailable';
       warningCodes.push('READINESS_UNAVAILABLE');
@@ -349,81 +403,43 @@ export async function fetchTraining(userId: number) {
       warningCodes.push('BODY_BATTERY_UNAVAILABLE');
       warnings.push('Body Battery is unavailable right now.');
     }
-  } else {
-    try {
-      const { calculateReadiness } = require('../../services/readiness-scorer');
-      const readiness = await calculateReadiness(userId);
-      if (isSyntheticNeutralReadiness(readiness)) {
-        readinessScore = null;
-        bodyBattery = null;
-        readinessStatus = 'unavailable';
-        bodyBatteryStatus = 'unavailable';
-        warningCodes.push('WEARABLE_INTEGRATION_MISSING', 'BODY_BATTERY_UNAVAILABLE');
-        warnings.push(
-          'Wearable integration is missing, so readiness is using a neutral fallback right now.',
-          'Body Battery is unavailable right now.',
-        );
-      } else {
-        readinessScore = readiness?.score || null;
-        bodyBattery = normalizeBodyBattery(readiness?.factors?.bodyBattery?.current);
 
-        if (readinessScore == null) {
-          readinessStatus = 'unavailable';
-          warningCodes.push('READINESS_UNAVAILABLE');
-          warnings.push('Readiness data is unavailable right now.');
-        }
-        if (bodyBattery == null) {
-          bodyBatteryStatus = 'unavailable';
-          warningCodes.push('BODY_BATTERY_UNAVAILABLE');
-          warnings.push('Body Battery is unavailable right now.');
-        }
-      }
-
+    if (source === 'fresh') {
       setCache(
         dashboardReadinessCacheKeyFor(userId),
         {
           score: readinessScore,
           bodyBattery,
-          reasonCode: typeof readiness?.reasonCode === 'string' ? readiness.reasonCode : null,
+          reasonCode: typeof value?.reasonCode === 'string' ? value.reasonCode : null,
         },
         DASHBOARD_READINESS_CACHE_TTL,
       );
-    } catch {
-      readinessStatus = 'unavailable';
-      bodyBatteryStatus = 'unavailable';
-      warningCodes.push('READINESS_UNAVAILABLE', 'BODY_BATTERY_UNAVAILABLE');
-      warnings.push(
-        'Readiness data is unavailable right now.',
-        'Body Battery is unavailable right now.',
-      );
     }
+  } else {
+    readinessStatus = 'unavailable';
+    bodyBatteryStatus = 'unavailable';
+    warningCodes.push('READINESS_UNAVAILABLE', 'BODY_BATTERY_UNAVAILABLE');
+    warnings.push(
+      'Readiness data is unavailable right now.',
+      'Body Battery is unavailable right now.',
+    );
   }
 
   let todaySession: any = null;
   try {
-    const { getActivePlan, getCurrentWeek, getSessionsForWeek } = require('../../services/training-plans');
     const plan = getActivePlan(userId);
     const currentWeek = plan ? getCurrentWeek(plan.id) : null;
     const sessions = currentWeek ? getSessionsForWeek(currentWeek.id) : null;
     if (Array.isArray(sessions) && sessions.length > 0) {
-      const zone = getUserTimezoneById(userId);
       const todayDow = DateTime.now().setZone(zone).toFormat('cccc');
       todaySession = sessions.find((s: any) => s?.day_of_week === todayDow) || null;
     }
   } catch {}
 
   if (!todaySession) {
-    try {
-      const zone = getUserTimezoneById(userId);
-      const today = DateTime.now().setZone(zone);
-      const startOfDay = today.startOf('day');
-      const endOfDay = today.endOf('day');
-      const { getEvents } = require('../../services/unified-calendar');
-      const events = await getEvents(
-        startOfDay.minus({ days: 1 }).toUTC().toISO()!,
-        endOfDay.plus({ days: 1 }).toUTC().toISO()!,
-        userId,
-      );
+    const eventsResult = await calendarEventsTask;
+    if (eventsResult.status === 'fulfilled') {
+      const events = eventsResult.value;
       const keywords = ['run', 'gym', 'swim', 'bike', 'cycle', 'training', 'workout', 'strength'];
       const trainingEvent = (events || []).find((e: any) => {
         if (!eventOverlapsRange(e, startOfDay, endOfDay, zone)) return false;
@@ -436,7 +452,7 @@ export async function fetchTraining(userId: number) {
         const timeMatch = String(startRaw).match(/T(\d{2}:\d{2})/);
         todaySession = { type: title, time: timeMatch ? timeMatch[1] : null, duration: null, status: 'planned' };
       }
-    } catch {}
+    }
   }
 
   const status = mergeSectionStatuses([readinessStatus, bodyBatteryStatus]);
@@ -562,7 +578,7 @@ function isSyntheticNeutralReadiness(readiness: any): boolean {
   return reasoning.includes('no wearable connected');
 }
 
-function isSyntheticNeutralCachedReadiness(readiness: { score: number; bodyBattery: number | null; reasonCode?: string | null } | null): boolean {
+function isSyntheticNeutralCachedReadiness(readiness: DashboardReadinessCacheEntry | null): boolean {
   if (readiness?.reasonCode === 'WEARABLE_INTEGRATION_MISSING') return true;
   return readiness?.score === 60 && readiness?.bodyBattery === 0;
 }
