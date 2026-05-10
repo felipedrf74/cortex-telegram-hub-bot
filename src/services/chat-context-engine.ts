@@ -15,6 +15,7 @@ import {
   buildChatSkillRoutingPromptBlock,
 } from './chat-skill-orchestrator';
 import { getPreferredDisplayNameById } from './user-service';
+import { sanitizeForPromptInterpolation } from '../utils/prompt-sanitizer';
 
 export type ChatContextSource =
   | 'current_turn'
@@ -370,8 +371,8 @@ function buildMemoryItem(
     ownerUserId: memory.user_id,
     scope: (memory.visibility_scope as ChatVisibilityScope | undefined) ?? DEFAULT_CHAT_VISIBILITY_SCOPE,
     source: 'shared_memory',
-    sourceRef: memory.key,
-    content: `${memory.key}: ${truncateContextContent(memory.value, 420)} (source: ${memory.source_domain})`,
+    sourceRef: sanitizeForPromptInterpolation(memory.key),
+    content: `${sanitizeForPromptInterpolation(memory.key)}: ${sanitizeForPromptInterpolation(truncateContextContent(memory.value, 420))} (source: ${sanitizeForPromptInterpolation(memory.source_domain)})`,
     freshness,
     confidence,
     relevanceScore,

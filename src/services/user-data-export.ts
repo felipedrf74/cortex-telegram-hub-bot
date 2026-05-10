@@ -12,6 +12,9 @@
 import { getDb } from './database';
 import { getTransactions, getTaxEvents, getAnnualTaxSummary } from './finance-tracker';
 import type { Transaction, TaxEvent, AnnualTaxSummary } from './finance-tracker';
+import { getTokens, type OAuthProvider } from './oauth-store';
+import { clearGarminSession } from './garmin-session-store';
+import { logger } from '../utils/logger';
 
 // ── Finance Export (existing) ───────────────────────────────────────
 
@@ -61,6 +64,91 @@ export function deleteUserFinanceData(userId: number): { transactionsDeleted: nu
   };
 }
 
+type OAuthRevocationResult = {
+  provider: string;
+  attempted: boolean;
+  status: 'revoked' | 'already_revoked' | 'failed' | 'local_only';
+  statusCode?: number;
+};
+
+async function postFormRevocation(url: string, body: URLSearchParams): Promise<{ statusCode: number; ok: boolean }> {
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body,
+  });
+  return { statusCode: response.status, ok: response.ok || (response.status >= 400 && response.status < 500) };
+}
+
+/**
+ * Best-effort third-party credential revocation before local erasure.
+ *
+ * 4xx responses are treated as already-revoked/invalid-token success because
+ * the provider no longer accepts the credential. Network/5xx failures are
+ * logged and tolerated so Article 17 local deletion can still proceed.
+ */
+export async function revokeThirdPartyOAuthTokensForUser(userId: number): Promise<OAuthRevocationResult[]> {
+  const db = getDb();
+  const rows = safeAll(db, 'SELECT provider FROM user_oauth_tokens WHERE user_id = ?', userId) as Array<{ provider: OAuthProvider }>;
+  const results: OAuthRevocationResult[] = [];
+
+  for (const row of rows) {
+    const provider = row.provider;
+    const tokens = getTokens(userId, provider);
+    if (!tokens) continue;
+    try {
+      if (provider === 'google') {
+        const token = tokens.refreshToken || tokens.accessToken;
+        const result = await postFormRevocation('https://oauth2.googleapis.com/revoke', new URLSearchParams({ token }));
+        results.push({
+          provider,
+          attempted: true,
+          status: result.ok ? (result.statusCode >= 400 ? 'already_revoked' : 'revoked') : 'failed',
+          statusCode: result.statusCode,
+        });
+        continue;
+      }
+
+      if (provider === 'outlook') {
+        const tenantId = process.env.OUTLOOK_TENANT_ID || 'common';
+        const token = tokens.refreshToken || tokens.accessToken;
+        const result = await postFormRevocation(
+          `https://login.microsoftonline.com/${tenantId}/oauth2/v2.0/logout`,
+          new URLSearchParams({ token }),
+        );
+        results.push({
+          provider,
+          attempted: true,
+          status: result.ok ? (result.statusCode >= 400 ? 'already_revoked' : 'revoked') : 'failed',
+          statusCode: result.statusCode,
+        });
+        continue;
+      }
+
+      results.push({ provider, attempted: false, status: 'local_only' });
+    } catch (err) {
+      logger.warn({ err, userId, provider }, 'OAuth revocation failed during account deletion');
+      results.push({ provider, attempted: true, status: 'failed' });
+    }
+  }
+
+  const garminSession = safeGet(db, 'SELECT user_id FROM garmin_sessions WHERE user_id = ?', userId);
+  if (garminSession) {
+    // The Garmin integration in this codebase has no stable public revoke
+    // endpoint; remove the durable local session before deletion and record
+    // that this provider is local-only.
+    clearGarminSession(userId);
+    results.push({ provider: 'garmin', attempted: true, status: 'local_only' });
+  }
+
+  return results;
+}
+
+export async function deleteAllUserDataForAccountDeletion(userId: number): Promise<Record<string, number>> {
+  await revokeThirdPartyOAuthTokensForUser(userId);
+  return deleteAllUserData(userId);
+}
+
 export function countUserFinanceData(userId: number): { transactions: number; taxEvents: number } {
   const db = getDb();
   const txCount = db.prepare('SELECT COUNT(*) as cnt FROM finance_transactions WHERE user_id = ?').get(userId) as { cnt: number };
@@ -93,6 +181,10 @@ export interface FullUserExport {
   finance: UserFinanceExport;
   oauthConnections: Array<{ provider: string; connectedAt: string }>;
   settings: Array<{ key: string; value: string }>;
+  notificationDeviceTokens?: Array<{ environment: string; platform: string; appVersion: string | null; lastSeenAt: string; revokedAt: string | null }>;
+  garminSessions?: Array<{ lastRefreshedAt: string | null; createdAt: string; updatedAt: string }>;
+  agentSignals?: Array<{ sourceAgent: string; signalType: string; status: string; createdAt: string }>;
+  encryptionMeta?: Array<{ keyVersion: number; encryptedAt: string; updatedAt: string }>;
 }
 
 export function exportAllUserData(userId: number): FullUserExport {
@@ -139,6 +231,14 @@ export function exportAllUserData(userId: number): FullUserExport {
   // User settings from kv_store
   const settings = safeAll(db,
     "SELECT key, value FROM kv_store WHERE key LIKE ?", `config:${userId}:%`);
+  const notificationDeviceTokens = safeAll(db,
+    'SELECT environment, platform, app_version as appVersion, last_seen_at as lastSeenAt, revoked_at as revokedAt FROM notification_device_tokens WHERE user_id = ?', userId);
+  const garminSessions = safeAll(db,
+    'SELECT last_refreshed_at as lastRefreshedAt, created_at as createdAt, updated_at as updatedAt FROM garmin_sessions WHERE user_id = ?', userId);
+  const agentSignals = safeAll(db,
+    'SELECT source_agent as sourceAgent, signal_type as signalType, status, created_at as createdAt FROM agent_signals WHERE user_id = ? ORDER BY created_at', userId);
+  const encryptionMeta = safeAll(db,
+    'SELECT key_version as keyVersion, encrypted_at as encryptedAt, updated_at as updatedAt FROM user_encryption_meta WHERE user_id = ?', userId);
 
   return {
     exportedAt: new Date().toISOString(),
@@ -160,6 +260,10 @@ export function exportAllUserData(userId: number): FullUserExport {
     finance,
     oauthConnections: oauthRows.map((c: any) => ({ provider: c.provider, connectedAt: c.created_at })),
     settings: settings.map((s: any) => ({ key: s.key.replace(`config:${userId}:`, ''), value: s.value })),
+    notificationDeviceTokens,
+    garminSessions,
+    agentSignals,
+    encryptionMeta,
   };
 }
 
@@ -186,6 +290,10 @@ export function deleteAllUserData(userId: number): Record<string, number> {
     { table: 'user_encryption_meta', column: 'user_id' },
     { table: 'onboarding_sessions', column: 'user_id' },
     { table: 'user_profiles', column: 'user_id' },
+    { table: 'notification_device_tokens', column: 'user_id' },
+    { table: 'garmin_sessions', column: 'user_id' },
+    { table: 'garmin_user_tokens', column: 'user_id' },
+    { table: 'agent_signals', column: 'user_id' },
     { table: 'user_oauth_tokens', column: 'user_id' },
     { table: 'user_skill_overrides', column: 'user_id' },
     { table: 'api_usage', column: 'user_id' },
@@ -211,7 +319,7 @@ export function deleteAllUserData(userId: number): Record<string, number> {
 
     // Delete user record last
     try {
-      const userResult = db.prepare('DELETE FROM users WHERE telegram_id = ?').run(userId);
+      const userResult = db.prepare('DELETE FROM users WHERE id = ? OR telegram_id = ?').run(userId, userId);
       counts['users'] = userResult.changes;
     } catch {
       counts['users'] = 0;
