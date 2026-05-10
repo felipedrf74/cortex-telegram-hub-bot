@@ -20,26 +20,26 @@ Navigation:
 
 Source: `docs/release/decision-center-orchestration-apns-qa.md` verdict NOT_READY (2026-05-10)
 
-- [ ] **P0** — APNs sandbox/production environment ignored at send time. Fix `engine/src/services/apns-sender.ts:204-223, 464` to JOIN `notification_device_tokens` and use per-token `environment` instead of global `config.apns.environment`.
-- [ ] **P0** — User switch keeps old user's push tokens active (tenant-leak class). On `device_id` rebind, revoke prior `notification_device_tokens` rows for the previous user-id. Files: `engine/src/services/notification-orchestrator.ts:1073-1080`, `engine/src/api/routes/settings.ts:140-144`.
-- [ ] **P0** — iOS action-failure destroys the in-progress list and pretends nothing failed. Replace global `errorMessage` body short-circuit with per-card inline error; mark failed action as `failed`; keep retry button visible. File: `Nexus Hub IOS/.../NotificationDecisionCenterView.swift:26, 273-277, 709-714`.
-- [ ] **P0** — Claimed accessibility identifiers do NOT exist on Home: `home-decision-count-label`, `home-top-decision-preview`, `home-decision-all-clear-label`. Add them in `Nexus Hub IOS/.../DashboardHomePrimarySections.swift` (~line 212) and add UI test asserting each is reachable.
-- [ ] **P0** — Decision Center state NOT scope-discarded on user switch. Add `.onChange(of: appState.authenticatedScopeKey)` clearing handlers in `NotificationDecisionCenterView` (line 10) and `DashboardView` (line 366). Add scope-isolation test under `RepositoryScopeIsolationTests`.
+- [x] **P0** — APNs sandbox/production environment ignored at send time. Closed by Round E; see `docs/archive/2026-05/round-e-launch-blockers/closeout.md`.
+- [x] **P0** — User switch keeps old user's push tokens active (tenant-leak class). Closed by Round E; see `docs/archive/2026-05/round-e-launch-blockers/closeout.md`.
+- [x] **P0** — iOS action-failure destroys the in-progress list and pretends nothing failed. Closed by Round E; see `docs/archive/2026-05/round-e-launch-blockers/closeout.md`.
+- [x] **P0** — Claimed accessibility identifiers do NOT exist on Home. Closed by Round E; see `docs/archive/2026-05/round-e-launch-blockers/closeout.md`.
+- [x] **P0** — Decision Center state NOT scope-discarded on user switch. Closed by Round E; see `docs/archive/2026-05/round-e-launch-blockers/closeout.md`.
 
 ### Existing iOS Wave 1 launch blockers (sixth-pass opus audit findings still open)
 
 These were identified in the post-promote fifth-pass audit (`docs/archive/2026-05/p0-tenant-and-safety-and-perf-2026-05/post-promote-audit-fifth-pass.md`) and have NOT yet been worked on.
 
-- [ ] **P0 (App Store)** — iOS Sign in with Apple revocation listener missing. Add foreground `getCredentialState` check + subscribe to `ASAuthorizationAppleIDProvider.credentialRevokedNotification`; sign user out on revoke. File: `Nexus Hub IOS/.../AuthManager.swift`. Per Apple HIG, this is a hard rejection signal.
-- [ ] **P0 (GDPR)** — Account deletion missing 5 tables. Add `notification_device_tokens`, `garmin_sessions`, `agent_signals`, `user_encryption_meta`, and `kv_store user-scoped rows` to `engine/src/api/routes/settings.ts:265-319` deletion table list. Wrap in `db.transaction()`.
-- [ ] **P0 (GDPR)** — No third-party OAuth revocation on account deletion. Call Google/Outlook/Garmin revoke endpoints before local token deletion.
-- [ ] **P0 (LLM injection)** — Indirect prompt injection via stored task/event/memory titles. Add `sanitizeForPromptInterpolation()` helper. Apply at `engine/src/services/context-engine.ts:131-156`, `chat-context-engine.ts:374`. Reclassify `shared_memory_set` as destructive (require confirmation).
-- [ ] **P0 (lifecycle)** — iOS half-cleared keychain on mid-sign-out termination. Reorder `signOut()` so `authManager.logout()` runs FIRST + persist `signOutInProgress` flag. File: `AppState.swift:529-597`.
-- [ ] **P0 (tenant)** — iOS BackgroundSyncManager has no user-bound identity check. Add `lastSyncedUserId` AppStorage; refuse to sync if `currentUser?.id != lastSyncedUserId`. File: `BackgroundSyncManager.swift:92-165`.
+- [x] **P0 (App Store)** — iOS Sign in with Apple revocation listener missing. Closed by Round E; see `docs/archive/2026-05/round-e-launch-blockers/closeout.md`.
+- [x] **P0 (GDPR)** — Account deletion missing tables. Closed by Round E; see `docs/archive/2026-05/round-e-launch-blockers/closeout.md`.
+- [x] **P0 (GDPR)** — No third-party OAuth revocation on account deletion. Closed by Round E; see `docs/archive/2026-05/round-e-launch-blockers/closeout.md`.
+- [x] **P0 (LLM injection)** — Indirect prompt injection via stored task/event/memory titles. Closed by Round E; see `docs/archive/2026-05/round-e-launch-blockers/closeout.md`.
+- [x] **P0 (lifecycle)** — iOS half-cleared keychain on mid-sign-out termination. Closed by Round E; see `docs/archive/2026-05/round-e-launch-blockers/closeout.md`.
+- [x] **P0 (tenant)** — iOS BackgroundSyncManager has no user-bound identity check. Closed by Round E; see `docs/archive/2026-05/round-e-launch-blockers/closeout.md`.
 
 ### Infrastructure / CI gates
 
-- [ ] **P0 (CI gate bypass)** — Release classifier (`engine/scripts/changed-area-classifier.sh:307, 485`) doesn't recognize `decision-center.ts` / `decisions.ts`. Cannot-skip gate is silently bypassed for any future Decision Center change. Add area regex + VITEST_GLOBS entries.
+- [x] **P0 (CI gate bypass)** — Release classifier didn't recognize Decision Center files. Closed by Round E; see `docs/archive/2026-05/round-e-launch-blockers/closeout.md`.
 
 ---
 
@@ -49,37 +49,37 @@ These were identified in the post-promote fifth-pass audit (`docs/archive/2026-0
 
 Source: same hostile QA report
 
-- [ ] **P1** — Concurrent two-tap idempotency TOCTOU race in `engine/src/services/decision-center.ts:355, 715-721`. Wrap in `db.transaction()` with `INSERT OR IGNORE ... RETURNING`.
-- [ ] **P1** — Default idempotency key conflates distinct payloads. Require client `idempotencyKey` for mutating actions; iOS sends per-tap UUID.
-- [ ] **P1** — Fixtures route open to any authenticated user in non-production. Require internal-secret in ALL environments. Reorder override to put `tenantId` after spread. File: `engine/src/api/routes/decisions.ts:107, 113-120`.
-- [ ] **P1** — Migration 119 not idempotent on replay (bare ALTER COLUMN raises duplicate-column error). Wrap in PRAGMA-check pattern. File: `engine/migrations/119_decision_center_facade.sql:4-5`.
-- [ ] **P1** — `verifiedStatusEffect` trusts writer's return value, not fresh DB SELECT. Re-SELECT before assertion. File: `engine/src/services/decision-center.ts:745-746, 750-752, 782-801`.
-- [ ] **P1** — APNs `apns-collapse-id` never set on decision pushes. Set `decision:${decisionId}` for decision-derived payloads.
-- [ ] **P1** — APNs badge count never set. Compute `countOpenUrgentDecisionsForUser(userId, tenantId)` and pass to dispatch.
-- [ ] **P1** — Foreground APNs duplicates the in-app card. Suppress banner when Decision Center is foregrounded for matching `decisionId` payloads. File: `Nexus Hub IOS/.../AppDelegate.swift:108-118`.
+- [x] **P1** — Concurrent two-tap idempotency TOCTOU race. Closed by Round E; see `docs/archive/2026-05/round-e-launch-blockers/closeout.md`.
+- [x] **P1** — Default idempotency key conflates distinct payloads. Closed by Round E; see `docs/archive/2026-05/round-e-launch-blockers/closeout.md`.
+- [x] **P1** — Fixtures route open to any authenticated user in non-production. Closed by Round E; see `docs/archive/2026-05/round-e-launch-blockers/closeout.md`.
+- [x] **P1** — Migration 119 not idempotent on replay. Closed by Round E; see `docs/archive/2026-05/round-e-launch-blockers/closeout.md`.
+- [x] **P1** — `verifiedStatusEffect` trusts writer's return value, not fresh DB SELECT. Closed by Round E; see `docs/archive/2026-05/round-e-launch-blockers/closeout.md`.
+- [x] **P1** — APNs `apns-collapse-id` never set on decision pushes. Closed by Round E; see `docs/archive/2026-05/round-e-launch-blockers/closeout.md`.
+- [x] **P1** — APNs badge count never set. Closed by Round E; see `docs/archive/2026-05/round-e-launch-blockers/closeout.md`.
+- [x] **P1** — Foreground APNs duplicates the in-app card. Closed by Round E; see `docs/archive/2026-05/round-e-launch-blockers/closeout.md`.
 
 ### Decision Center missing test coverage (closeout claimed but absent)
 
-- [ ] **P1** — Two-user same-tenant isolation test (one user can't see another user's decisions in same tenant)
-- [ ] **P1** — Two-tenant same-userId boundary test
-- [ ] **P1** — Concurrent duplicate-action TOCTOU test (Promise.all)
-- [ ] **P1** — Expired/superseded/dismissed/already-actioned action denial tests (4 separate error branches)
-- [ ] **P1** — Read-back mismatch test (writer returns success but DB still has old state)
-- [ ] **P1** — APNs payload privacy test (sensitive content NOT in alert.body)
-- [ ] **P1** — Wrong-user notification action denial test
-- [ ] **P1** — Device-token registration with body-injected userId/tenantId test
+- [x] **P1** — Two-user same-tenant isolation test. Closed by Round E.
+- [x] **P1** — Two-tenant same-userId boundary test. Closed by Round E.
+- [x] **P1** — Concurrent duplicate-action TOCTOU test. Closed by Round E.
+- [x] **P1** — Expired/superseded/dismissed/already-actioned action denial tests. Closed by Round E.
+- [x] **P1** — Read-back mismatch test. Closed by Round E.
+- [x] **P1** — APNs payload privacy test. Closed by Round E.
+- [x] **P1** — Wrong-user notification action denial test. Closed by Round E.
+- [x] **P1** — Device-token registration with body-injected userId/tenantId test. Closed by Round E.
 
 ### Round C (P0/P1 follow-ups not yet started)
 
 Source: `docs/release/decision-center-orchestration-apns-qa.md` Round C prompt + sixth-pass opus audit findings
 
-- [ ] **P1** — iOS deep-link router scope-key awareness extension to action queueing path. (Round A Fix 1.3 covered `pendingTab`; verify `queueNotificationAction` scope check via `pendingUserScope`.)
+- [x] **P1** — iOS deep-link router scope-key awareness extension to action queueing path. Closed by Round E via pending notification action scope validation.
 - [ ] **P1** — iOS keychain user-scoped tokens (migrate global → user-scoped keys; first-launch migration).
 - [ ] **P1** — iOS APNs revoke device-to-user binding on sign-out (engine route + iOS call).
-- [ ] **P1** — Audit trail retention policy decision (delete vs retain for legal forensics; resolve contradiction in `engine/src/services/audit-trail.ts:6` vs `engine/src/api/routes/settings.ts:302`).
+- [x] **P1** — Audit trail retention policy decision. Closed by Round E; retain-with-pseudonymize/retain for legal proof documented.
 - [ ] **P1** — Push notification routed during sign-out gap. Gate `userNotificationCenter(_:didReceive:)` body on `currentUser?.id == notificationUserId`.
-- [ ] **P1** — Onboarding step UserDefaults user-scoped (mid-signOut-termination edge case). Scope key by user.
-- [ ] **P1** — Push token deletion chain on iOS account-deletion path. Call `deletePushToken()` BEFORE `deleteAccount()`.
+- [x] **P1** — Onboarding step UserDefaults user-scoped (mid-signOut-termination edge case). Closed by Round E.
+- [x] **P1** — Push token deletion chain on iOS account-deletion path. Closed by Round E.
 
 ### OPEN_ITEMS.md carry-overs
 
@@ -188,6 +188,21 @@ These are iOS spec trackers with mixed open/closed states. After verifying again
 - [ ] **P3** — Non-prod Google/Outlook OAuth credentials provisioning
 - [ ] **P3** — iOS fastlane setup (only if Felipe wants frequent automated cuts)
 - [ ] **P3** — Content portal smoke window
+
+---
+
+## Recently closed
+
+### Round E launch blockers — source and staging complete
+
+Closeout: `docs/archive/2026-05/round-e-launch-blockers/closeout.md`
+
+- [x] F-A Python content-engine `tenantId` source audit clean for Wave 1; downgraded to Wave 2 prep.
+- [x] Decision Center Round D P0: APNs environment, token rebind revocation, iOS action failure, Home a11y IDs, and scope-discard fixed.
+- [x] Decision Center Round D P1: idempotency transaction/keys, fixtures hardening, migration replay, DB read-back, classifier gate, APNs collapse/badge, and foreground duplicate suppression fixed.
+- [x] Decision Center missing coverage M-1 through M-8 added.
+- [x] App Store/GDPR/LLM P0/P1: Apple credential revocation, account deletion table coverage, OAuth revocation, audit retention policy, prompt sanitizer, destructive memory write reclassification, sign-out atomicity, background sync binding, push-token delete chain, and deep-link action scope validation fixed.
+- [x] Sentry/cache/onboarding carryovers: Sentry redaction pinned, api_cache safety valve covered, onboarding progress scoped by user, and strict mock lint restored below baseline.
 
 ---
 
