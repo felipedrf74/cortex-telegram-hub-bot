@@ -115,6 +115,8 @@ export const LOGGER_REDACTION_PATHS = [
   'err.response.data.destinationEmail',
 ] as const;
 
+const PINO_REDACTION_PATHS = [...LOGGER_REDACTION_PATHS];
+
 /**
  * Pino logger with a context-aware mixin (Quarter: distributed tracing).
  *
@@ -134,7 +136,7 @@ export const LOGGER_REDACTION_PATHS = [
 export const logger = pino({
   level: process.env.LOG_LEVEL || 'info',
   redact: {
-    paths: [...LOGGER_REDACTION_PATHS],
+    paths: PINO_REDACTION_PATHS,
     censor: '[Redacted]',
   },
   transport:

@@ -15,6 +15,7 @@ const mockGoogleCalendarConfigured = vi.fn();
 const mockGoogleCalendarEvents = vi.fn();
 const mockOutlookCalendarConfigured = vi.fn();
 const mockOutlookCalendarEvents = vi.fn();
+const mockUnifiedCalendarEvents = vi.fn();
 const mockGetUserById = vi.fn((userId: number) => ({ id: userId, first_name: 'Felipe' }));
 const mockGetUserTimezone = vi.fn(() => 'Europe/Lisbon');
 const mockRuntimeStatus = vi.fn(() => ({
@@ -78,6 +79,25 @@ vi.mock('../../src/services/outlook-calendar', () => ({
   getEvents: (...args: unknown[]) => mockOutlookCalendarEvents(...args),
 }));
 
+vi.mock('../../src/services/unified-calendar', () => ({
+  isAnyCalendarConfigured: vi.fn(() => true),
+  hasConnectedCalendarForUser: vi.fn(() => true),
+  hasWritableCalendarForUser: vi.fn(() => true),
+  getConfiguredSources: vi.fn(() => ['google']),
+  getEvents: (...args: unknown[]) => mockUnifiedCalendarEvents(...args),
+  getEventsWithDiagnostics: vi.fn(async () => ({
+    events: [],
+    status: 'ready',
+    sources: [],
+    diagnostics: [],
+  })),
+  createEvent: vi.fn(),
+  updateEvent: vi.fn(),
+  deleteEvent: vi.fn(),
+  eventFingerprint: vi.fn((event: any) => String(event?.id ?? event?.title ?? 'event')),
+  deduplicateEvents: vi.fn((events: any[]) => events),
+}));
+
 vi.mock('../../src/services/cost-guardrail', () => ({
   getDailyQuotaStatus: (...args: unknown[]) => mockGetDailyQuotaStatus(...args),
 }));
@@ -119,6 +139,7 @@ vi.mock('../../src/utils/logger', () => ({
 
 import { dashboardRoutes } from '../../src/api/routes/dashboard';
 import {
+  fetchTraining,
   mapDashboardTask,
   queryContentPipelineCounts,
 } from '../../src/api/routes/dashboard-data-fetchers';
@@ -225,6 +246,7 @@ describe('Dashboard API route', () => {
     mockGoogleCalendarEvents.mockReset();
     mockOutlookCalendarConfigured.mockReset();
     mockOutlookCalendarEvents.mockReset();
+    mockUnifiedCalendarEvents.mockReset();
     mockGetUserById.mockReset();
     mockGetUserTimezone.mockReset();
     mockRuntimeStatus.mockReset();
@@ -238,6 +260,7 @@ describe('Dashboard API route', () => {
     mockGoogleCalendarEvents.mockResolvedValue([]);
     mockOutlookCalendarConfigured.mockReturnValue(false);
     mockOutlookCalendarEvents.mockResolvedValue([]);
+    mockUnifiedCalendarEvents.mockResolvedValue([]);
     mockGetUserById.mockImplementation((userId: number) => ({ id: userId, first_name: 'Felipe' }));
     mockGetUserTimezone.mockReturnValue('Europe/Lisbon');
     mockRuntimeStatus.mockReturnValue({
@@ -505,6 +528,24 @@ describe('Dashboard API route', () => {
     expect(mockSetCacheSWR).toHaveBeenCalled();
   });
 
+  it('uses a 180 second fresh cache window for dashboard root and home reads', async () => {
+    await dispatch(4);
+    await dispatch(4, {}, '/home');
+
+    expect(mockSetCacheSWR).toHaveBeenCalledWith(
+      expect.stringMatching(/^dashboard:4:/),
+      expect.anything(),
+      180,
+      300,
+    );
+    expect(mockSetCacheSWR).toHaveBeenCalledWith(
+      expect.stringMatching(/^dashboard-home:4:/),
+      expect.anything(),
+      180,
+      300,
+    );
+  });
+
   it('returns 304 for identical cached dashboard data even though cached metadata differs', async () => {
     mockGetCachedSWR.mockReturnValueOnce(null);
     const first = await dispatch(4);
@@ -614,6 +655,50 @@ describe('Dashboard API route', () => {
     const homeRes = await dispatch(4, {}, '/home');
     expect(homeRes.statusCode).toBe(200);
     expect(homeRes.body.data.meta.reasonCodes).toContain('WEARABLE_INTEGRATION_MISSING');
+  });
+
+  it('starts dashboard readiness and training calendar fallback in parallel', async () => {
+    let resolveReadiness!: (value: any) => void;
+    let resolveEvents!: (value: any[]) => void;
+
+    const localCalculateReadiness = vi.fn((_userId: number) => new Promise((resolve) => {
+      resolveReadiness = resolve;
+    }));
+    const localUnifiedCalendarEvents = vi.fn((_start: string, _end: string, _userId: number) => new Promise<any[]>((resolve) => {
+      resolveEvents = resolve;
+    }));
+
+    const pending = fetchTraining(4, {
+      calculateReadiness: localCalculateReadiness,
+      getEvents: localUnifiedCalendarEvents,
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+
+    expect(localCalculateReadiness).toHaveBeenCalledTimes(1);
+    expect(localUnifiedCalendarEvents).toHaveBeenCalledTimes(1);
+
+    resolveReadiness({
+      score: 82,
+      factors: { bodyBattery: { current: 67 } },
+    });
+    resolveEvents([
+      {
+        id: 'training-event',
+        title: 'Strength workout',
+        start: { dateTime: todayAt(9) },
+        end: { dateTime: todayAt(10) },
+      },
+    ]);
+
+    const result = await pending;
+    expect(result.readinessScore).toBe(82);
+    expect(result.bodyBattery).toBe(67);
+    expect(result.todaySession?.type).toBe('Strength workout');
+    expect(mockSetCache).toHaveBeenCalledWith(
+      'dashboard-readiness:4',
+      expect.objectContaining({ score: 82, bodyBattery: 67 }),
+      300,
+    );
   });
 
   it('does not flag Google Calendar as unavailable when the current user has Google connected', async () => {

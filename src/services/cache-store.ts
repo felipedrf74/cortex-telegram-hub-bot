@@ -334,13 +334,21 @@ export function clearCache(key: string): void {
  * Used by mesh-priority invalidation where one high-priority signal
  * should expire multiple derived planning views at once.
  */
-export function clearCacheByPrefix(prefix: string): void {
-  cacheStoreStats.clearByPrefixCount += 1;
+export function clearCacheByPrefix(prefix: string | string[]): void {
+  const prefixes = (Array.isArray(prefix) ? prefix : [prefix])
+    .filter((value): value is string => typeof value === 'string' && value.length > 0);
+  const uniquePrefixes = [...new Set(prefixes)];
+  if (uniquePrefixes.length === 0) return;
+  cacheStoreStats.clearByPrefixCount += uniquePrefixes.length;
   try {
-    getDb().prepare('DELETE FROM api_cache WHERE cache_key LIKE ?').run(`${prefix}%`);
+    const where = uniquePrefixes.map(() => 'cache_key LIKE ?').join(' OR ');
+    getDb()
+      .prepare(`DELETE FROM api_cache WHERE ${where}`)
+      .run(...uniquePrefixes.map((value) => `${value}%`));
   } catch (err) {
-    recordCacheError('write', 'clearCacheByPrefix', prefix);
-    logger.debug({ err, prefix }, 'Cache clear by prefix failed');
+    const key = uniquePrefixes.join('|');
+    recordCacheError('write', 'clearCacheByPrefix', key);
+    logger.debug({ err, prefixes: uniquePrefixes }, 'Cache clear by prefix failed');
     // Best-effort
   }
 }

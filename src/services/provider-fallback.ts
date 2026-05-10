@@ -100,6 +100,17 @@ interface RequestProviderCallCounter {
 
 const requestProviderCallCounts = new Map<string, RequestProviderCallCounter>();
 
+class ProviderRunawayError extends Error {
+  readonly code = 'AI_PROVIDER_RUNAWAY_LIMIT';
+  readonly statusCode = 502;
+  readonly status = 502;
+
+  constructor(readonly metadata: SafeRoutingLogMetadata) {
+    super('AI provider runaway hard stop: too many provider attempts in one request');
+    this.name = 'ProviderRunawayError';
+  }
+}
+
 function fallbackReasonForError(err: any): FallbackReason {
   const status = err?.status ?? err?.statusCode ?? err?.error_code;
   const code = err?.code;
@@ -196,12 +207,15 @@ function trackRunawayProviderCalls(meta: SafeRoutingLogMetadata): SafeRoutingLog
     runawayThreshold: threshold,
   };
 
-  if (existing.count > threshold && !existing.warned) {
-    existing.warned = true;
-    logger.warn(
-      enriched,
-      'Potential runaway AI provider call loop detected',
-    );
+  if (existing.count > threshold) {
+    if (!existing.warned) {
+      existing.warned = true;
+      logger.warn(
+        enriched,
+        'Potential runaway AI provider call loop detected',
+      );
+    }
+    throw new ProviderRunawayError(enriched);
   }
 
   return enriched;

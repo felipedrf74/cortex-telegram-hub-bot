@@ -164,6 +164,7 @@ function performDashboardCacheInvalidation(
   families: DashboardCacheFamily[],
   userId?: number,
 ): void {
+  const prefixInvalidations: string[] = [];
   if (isFiniteUserId(userId)) {
     for (const family of families) {
       switch (family) {
@@ -171,29 +172,31 @@ function performDashboardCacheInvalidation(
           clearCache(`dashboard-readiness:${userId}`);
           break;
         case 'root':
-          clearCacheByPrefix(`dashboard:${userId}:`);
+          prefixInvalidations.push(`dashboard:${userId}:`);
           break;
         case 'home':
-          clearCacheByPrefix(`dashboard-home:${userId}:`);
+          prefixInvalidations.push(`dashboard-home:${userId}:`);
           break;
       }
     }
+    clearCacheByPrefix(prefixInvalidations);
     return;
   }
 
   for (const family of families) {
     switch (family) {
       case 'readiness':
-        clearCacheByPrefix('dashboard-readiness:');
+        prefixInvalidations.push('dashboard-readiness:');
         break;
       case 'root':
-        clearCacheByPrefix('dashboard:');
+        prefixInvalidations.push('dashboard:');
         break;
       case 'home':
-        clearCacheByPrefix('dashboard-home:');
+        prefixInvalidations.push('dashboard-home:');
         break;
     }
   }
+  clearCacheByPrefix(prefixInvalidations);
 }
 
 function invalidateDashboardCacheFamilies(
@@ -207,10 +210,10 @@ function invalidateDashboardCacheFamilies(
 export function invalidateCacheForEvent(event: CacheCoherenceEvent): void {
   switch (event.type) {
     case 'calendar.changed':
-      if (isFiniteUserId(event.userId)) {
-        clearCacheByPrefix(`u:${event.userId}:calendar:`);
-      }
-      clearCacheByPrefix('calendar:');
+      clearCacheByPrefix([
+        ...(isFiniteUserId(event.userId) ? [`u:${event.userId}:calendar:`] : []),
+        'calendar:',
+      ]);
       invalidateCacheForEvent(CacheCoherenceEvents.dashboardCoordination(event.userId));
       return;
 
@@ -298,14 +301,15 @@ export function invalidateCacheForEvent(event: CacheCoherenceEvent): void {
 
     case 'planning.changed':
       if (isFiniteUserId(event.userId)) {
-        clearCacheByPrefix(`plan:week:u:${event.userId}:`);
-        clearCacheByPrefix(`plan:today:u:${event.userId}:`);
+        clearCacheByPrefix([
+          `plan:week:u:${event.userId}:`,
+          `plan:today:u:${event.userId}:`,
+        ]);
         invalidateSharedDecisionContextCache(event.userId);
         invalidateContextCache(event.userId);
         return;
       }
-      clearCacheByPrefix('plan:week:u:');
-      clearCacheByPrefix('plan:today:u:');
+      clearCacheByPrefix(['plan:week:u:', 'plan:today:u:']);
       invalidateSharedDecisionContextCache();
       invalidateContextCache();
       return;
@@ -323,6 +327,7 @@ export function invalidateCacheForEvent(event: CacheCoherenceEvent): void {
     case 'task.changed': {
       const { userId, listIds = [], includeDerivedSurfaces = true } = event.options ?? {};
       const prefixes = isFiniteUserId(userId) ? [`u:${userId}:`, ''] : [''];
+      const listPrefixes: string[] = [];
 
       for (const prefix of prefixes) {
         clearCache(`${prefix}task-lists`);
@@ -334,9 +339,10 @@ export function invalidateCacheForEvent(event: CacheCoherenceEvent): void {
 
         for (const listId of listIds) {
           if (!listId) continue;
-          clearCacheByPrefix(`${prefix}tasks:${listId}:`);
+          listPrefixes.push(`${prefix}tasks:${listId}:`);
         }
       }
+      clearCacheByPrefix(listPrefixes);
 
       if (includeDerivedSurfaces) {
         invalidateCacheForEvent(CacheCoherenceEvents.dashboardCoordination(userId));
@@ -348,7 +354,7 @@ export function invalidateCacheForEvent(event: CacheCoherenceEvent): void {
       clearCache(`coach-briefing:${event.userId}`);
       clearCache(`training-summary:${event.userId}`);
       clearCache(`readiness:${event.userId}`);
-      clearCacheByPrefix(`training-home:${event.userId}:`);
+      clearCacheByPrefix([`training-home:${event.userId}:`]);
       invalidateCacheForEvent(CacheCoherenceEvents.dashboardAll(event.userId));
       invalidateCacheForEvent(CacheCoherenceEvents.planningChanged(event.userId));
       return;

@@ -237,6 +237,15 @@ describe('content topic routes', () => {
     expect(response.body.data.filmingRecommendation.confidence).toBe('high');
   });
 
+  it('uses a tight default topic limit when the client does not request one', async () => {
+    const { response } = await dispatch('GET', '/topics', {}, 77);
+
+    expect(response.statusCode).toBe(200);
+    expect(getTopics).toHaveBeenCalledWith(77, expect.objectContaining({
+      limit: 20,
+    }));
+  });
+
   it('creates topics, trims title, and invalidates dashboard coordination caches', async () => {
     const { response } = await dispatch('POST', '/topics', {
       title: '  Race recap  ',

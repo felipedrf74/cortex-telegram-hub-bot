@@ -200,15 +200,18 @@ describe('model routing observability and safety', () => {
     ]);
   });
 
-  it('detects runaway provider call loops per request without logging prompt text', async () => {
+  it('hard-stops runaway provider call loops per request without logging prompt text', async () => {
     process.env.AI_PROVIDER_RUNAWAY_CALL_THRESHOLD = '2';
     const { provider, gemini } = createProviderHarness();
     gemini.classify.mockResolvedValue({ domain: 'secretary', confidence: 0.9 });
 
-    await runWithContext({ requestId: 'req-runaway-test', source: 'http', userId: 99 }, async () => {
+    await expect(runWithContext({ requestId: 'req-runaway-test', source: 'http', userId: 99 }, async () => {
       await provider.classify('first private prompt');
       await provider.classify('second private prompt');
       await provider.classify('third private prompt');
+    })).rejects.toMatchObject({
+      code: 'AI_PROVIDER_RUNAWAY_LIMIT',
+      statusCode: 502,
     });
 
     expect((logger.warn as any).mock.calls).toContainEqual([
@@ -223,5 +226,6 @@ describe('model routing observability and safety', () => {
       'Potential runaway AI provider call loop detected',
     ]);
     expect(JSON.stringify((logger.warn as any).mock.calls)).not.toContain('third private prompt');
+    expect(gemini.classify).toHaveBeenCalledTimes(2);
   });
 });

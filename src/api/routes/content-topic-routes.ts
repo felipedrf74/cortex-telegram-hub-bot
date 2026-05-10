@@ -101,9 +101,7 @@ export function registerContentTopicRoutes(
     const from = typeof req.query.from === 'string' ? req.query.from : undefined;
     const to = typeof req.query.to === 'string' ? req.query.to : undefined;
     const scheduledOnly = req.query.scheduledOnly === 'true';
-    const limit = req.query.limit
-      ? Math.min(parseInt(String(req.query.limit), 10) || 100, 500)
-      : 100;
+    const limit = Math.min(parseInt(String(req.query.limit ?? ''), 10) || 20, 500);
 
     if (status && !CONTENT_TOPIC_STATUSES.includes(status)) {
       sendError(res, 'BAD_REQUEST', `status must be one of: ${CONTENT_TOPIC_STATUSES.join(', ')}`);

@@ -59,6 +59,8 @@ interface ActiveUserTarget {
   telegramId: number | null;
 }
 
+let remindersJobInFlight = false;
+
 /**
  * Distinguish the expected "users table not created yet on first boot"
  * case from real DB errors (permission denied, corruption, readonly fs).
@@ -716,40 +718,50 @@ export function startScheduler(bot?: any): void {
   // This eliminates ~6,700 wasted rows/week observed in production at 1
   // active user — see audit P0-2.
   cron.schedule('* * * * *', wrapJob('reminders', async () => {
-    const dueReminders = getDueReminders();
-    if (dueReminders.length === 0) return 'skipped';
-    for (const reminder of dueReminders) {
-      const targetUserId = (reminder as any).user_id as number;
-      try {
-        let msg = `⏰ <b>Reminder:</b> ${escapeHtml(reminder.message)}`;
-        if (reminder.recurring) msg += `\n<i>(Recurring: ${reminder.recurring})</i>`;
-        await safeSend(targetUserId, msg, { parse_mode: 'HTML' });
-      } catch (err) {
-        logger.error({ err, userId: targetUserId }, 'Failed to send reminder');
+    if (remindersJobInFlight) {
+      logger.warn({ job: 'reminders' }, 'Skipping reminder cron tick because previous tick is still running');
+      return 'skipped';
+    }
+
+    remindersJobInFlight = true;
+    try {
+      const dueReminders = getDueReminders();
+      if (dueReminders.length === 0) return 'skipped';
+      for (const reminder of dueReminders) {
+        const targetUserId = (reminder as any).user_id as number;
+        try {
+          let msg = `⏰ <b>Reminder:</b> ${escapeHtml(reminder.message)}`;
+          if (reminder.recurring) msg += `\n<i>(Recurring: ${reminder.recurring})</i>`;
+          await safeSend(targetUserId, msg, { parse_mode: 'HTML' });
+        } catch (err) {
+          logger.error({ err, userId: targetUserId }, 'Failed to send reminder');
+        }
+        // Parallel iOS notification. The Secretary Notification Orchestrator
+        // decides push vs in-app vs quiet-hours/digest; scheduler only emits
+        // the intent.
+        await createNotificationIntent({
+          userId: targetUserId,
+          tenantId: targetUserId,
+          sourceSkill: 'secretary',
+          type: 'reminder',
+          priority: 'active',
+          relatedEntityId: reminder.id,
+          relatedEntityType: 'reminder',
+          title: 'Reminder',
+          body: reminder.message,
+          sensitiveBody: reminder.message,
+          actionButtons: [
+            { id: 'mark_done', label: 'Done', style: 'primary' },
+            { id: 'snooze', label: 'Snooze', style: 'secondary' },
+          ],
+          deeplink: `nexus://notifications/reminder-${reminder.id}`,
+          dedupeKey: `secretary:reminder:${targetUserId}:${reminder.id}`,
+          privacyPolicy: 'sensitive',
+        });
+        markReminderFired(reminder.id);
       }
-      // Parallel iOS notification. The Secretary Notification Orchestrator
-      // decides push vs in-app vs quiet-hours/digest; scheduler only emits
-      // the intent.
-      await createNotificationIntent({
-        userId: targetUserId,
-        tenantId: targetUserId,
-        sourceSkill: 'secretary',
-        type: 'reminder',
-        priority: 'active',
-        relatedEntityId: reminder.id,
-        relatedEntityType: 'reminder',
-        title: 'Reminder',
-        body: reminder.message,
-        sensitiveBody: reminder.message,
-        actionButtons: [
-          { id: 'mark_done', label: 'Done', style: 'primary' },
-          { id: 'snooze', label: 'Snooze', style: 'secondary' },
-        ],
-        deeplink: `nexus://notifications/reminder-${reminder.id}`,
-        dedupeKey: `secretary:reminder:${targetUserId}:${reminder.id}`,
-        privacyPolicy: 'sensitive',
-      });
-      markReminderFired(reminder.id);
+    } finally {
+      remindersJobInFlight = false;
     }
   }));
 

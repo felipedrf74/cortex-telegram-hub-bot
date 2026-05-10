@@ -29,9 +29,9 @@ import { ensureCachedRouteTenantScope, handleCachedRoute, routeCacheKey } from '
 export { mapDashboardTask, queryContentPipelineCounts } from './dashboard-data-fetchers';
 export { buildHomeOrchestrationSummary } from './dashboard-home-input';
 
-const DASHBOARD_CACHE_TTL = 60;
+const DASHBOARD_CACHE_TTL = 180;
 const DASHBOARD_SWR_STALE = 300;
-const DASHBOARD_HOME_CACHE_TTL = 60;
+const DASHBOARD_HOME_CACHE_TTL = 180;
 const DASHBOARD_HOME_SWR_STALE = 300;
 const DASHBOARD_SECTION_TIMEOUT_MS = readPositiveIntEnv('DASHBOARD_SECTION_TIMEOUT_MS', 3000);
 const DASHBOARD_HOME_BRIEF_TIMEOUT_MS = readPositiveIntEnv('DASHBOARD_HOME_BRIEF_TIMEOUT_MS', 2500);

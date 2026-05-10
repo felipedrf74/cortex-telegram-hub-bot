@@ -18,6 +18,7 @@ import {
 } from './services/intelligence-bus';
 import { createPortalServer } from './portal/server';
 import { invalidatePlanningCaches } from './services/cache-coherence-registry';
+import { ensureActiveProvider } from './services/provider-registry';
 import { recordTenantScopeAnomaly } from './services/tenant-scope-observability';
 import {
   setDbProvider as setErrorDbProvider,
@@ -107,6 +108,15 @@ async function main(): Promise<void> {
     runStartupPromptValidation();
   } catch (err) {
     logger.warn({ err }, 'Prompt validation check threw — continuing boot');
+  }
+
+  try {
+    const activeProvider = ensureActiveProvider();
+    if (activeProvider) {
+      logger.info({ provider: activeProvider.name }, 'AI provider router cold-started');
+    }
+  } catch (err) {
+    logger.warn({ err }, 'AI provider router cold-start failed; lazy init will retry');
   }
 
   // Process-level error handlers were installed by ./boot at module load

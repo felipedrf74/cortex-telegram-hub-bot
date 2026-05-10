@@ -4,13 +4,14 @@ const mockGet = vi.fn();
 const mockRun = vi.fn();
 const mockExec = vi.fn();
 const mockWarn = vi.fn();
+const mockPrepare = vi.fn(() => ({
+  get: (...args: unknown[]) => mockGet(...args),
+  run: (...args: unknown[]) => mockRun(...args),
+}));
 
 vi.mock('../../src/services/database', () => ({
   getDb: () => ({
-    prepare: () => ({
-      get: (...args: unknown[]) => mockGet(...args),
-      run: (...args: unknown[]) => mockRun(...args),
-    }),
+    prepare: (...args: unknown[]) => mockPrepare(...args),
     exec: (...args: unknown[]) => mockExec(...args),
   }),
   initDatabase: vi.fn(),
@@ -35,6 +36,7 @@ describe('cache-store observability', () => {
     mockRun.mockReset();
     mockExec.mockReset();
     mockWarn.mockReset();
+    mockPrepare.mockClear();
     const { _resetCacheStoreStatsForTests } = await import('../../src/services/cache-store');
     _resetCacheStoreStatsForTests();
   });
@@ -109,6 +111,21 @@ describe('cache-store observability', () => {
       clearByPrefixCount: 1,
       expireSweepCount: 1,
       expiredEntriesCleared: 2,
+    });
+  });
+
+  it('clears multiple cache prefixes in one SQL statement', async () => {
+    mockRun.mockReturnValue({ changes: 4 });
+    const { clearCacheByPrefix, getCacheStoreStats } = await import('../../src/services/cache-store');
+
+    clearCacheByPrefix(['dashboard:42:', 'dashboard-home:42:', 'dashboard:42:']);
+
+    expect(mockPrepare).toHaveBeenCalledWith(
+      'DELETE FROM api_cache WHERE cache_key LIKE ? OR cache_key LIKE ?',
+    );
+    expect(mockRun).toHaveBeenCalledWith('dashboard:42:%', 'dashboard-home:42:%');
+    expect(getCacheStoreStats()).toMatchObject({
+      clearByPrefixCount: 2,
     });
   });
 

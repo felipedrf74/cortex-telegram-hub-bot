@@ -44,7 +44,13 @@ function clearKeys(): string[] {
 }
 
 function prefixKeys(): string[] {
-  return mockClearCacheByPrefix.mock.calls.map(([key]) => String(key));
+  return mockClearCacheByPrefix.mock.calls.flatMap(([key]) => (
+    Array.isArray(key) ? key.map(String) : [String(key)]
+  ));
+}
+
+function prefixCalls(): unknown[] {
+  return mockClearCacheByPrefix.mock.calls.map(([key]) => key);
 }
 
 describe('cache-coherence-registry', () => {
@@ -59,6 +65,10 @@ describe('cache-coherence-registry', () => {
   it('invalidates planning, shared decision, and daily context caches together', () => {
     invalidatePlanningCaches(42);
 
+    expect(prefixCalls()).toEqual([[
+      'plan:week:u:42:',
+      'plan:today:u:42:',
+    ]]);
     expect(prefixKeys()).toEqual([
       'plan:week:u:42:',
       'plan:today:u:42:',
@@ -196,6 +206,10 @@ describe('cache-coherence-registry', () => {
       'dashboard-home:42:',
       'plan:week:u:42:',
       'plan:today:u:42:',
+    ]);
+    expect(prefixCalls()[0]).toEqual([
+      'u:42:tasks:abc:',
+      'tasks:abc:',
     ]);
   });
 

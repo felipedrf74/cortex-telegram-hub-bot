@@ -21,7 +21,12 @@ export interface DashboardSectionHealth {
   warnings: string[];
 }
 
-const DASHBOARD_READINESS_CACHE_TTL = 60;
+interface FetchTrainingDeps {
+  calculateReadiness?: (userId: number) => Promise<any>;
+  getEvents?: (start: string, end: string, userId: number) => Promise<any[]>;
+}
+
+const DASHBOARD_READINESS_CACHE_TTL = 300;
 
 function dashboardReadinessCacheKeyFor(userId: number): string {
   return `dashboard-readiness:${userId}`;
@@ -311,49 +316,46 @@ export async function fetchTasks(userId: number) {
   };
 }
 
-export async function fetchTraining(userId: number) {
+export async function fetchTraining(userId: number, deps: FetchTrainingDeps = {}) {
   let readinessScore: number | null = null;
   let bodyBattery: number | null = null;
   let readinessStatus: DashboardSectionStatus = 'ready';
   let bodyBatteryStatus: DashboardSectionStatus = 'ready';
   const warningCodes: string[] = [];
   const warnings: string[] = [];
+  const zone = getUserTimezoneById(userId);
+  const today = DateTime.now().setZone(zone);
+  const startOfDay = today.startOf('day');
+  const endOfDay = today.endOf('day');
 
   // Provider-agnostic readiness: calculateReadiness() handles Garmin → Apple Health → neutral
   // fallback internally. No need for the dashboard to branch by provider.
   const cachedReadiness = getCached<{ score: number; bodyBattery: number | null; reasonCode?: string | null }>(
     dashboardReadinessCacheKeyFor(userId),
   );
-  if (cachedReadiness) {
-    if (isSyntheticNeutralCachedReadiness(cachedReadiness)) {
-      readinessScore = null;
-      bodyBattery = null;
-      readinessStatus = 'unavailable';
-      bodyBatteryStatus = 'unavailable';
-      warningCodes.push('WEARABLE_INTEGRATION_MISSING', 'BODY_BATTERY_UNAVAILABLE');
-      warnings.push(
-        'Wearable integration is missing, so readiness is using a neutral fallback right now.',
-        'Body Battery is unavailable right now.',
-      );
-    } else {
-      readinessScore = cachedReadiness.score;
-      bodyBattery = cachedReadiness.bodyBattery;
-    }
-    if (readinessScore == null) {
-      readinessStatus = 'unavailable';
-      warningCodes.push('READINESS_UNAVAILABLE');
-      warnings.push('Readiness data is unavailable right now.');
-    }
-    if (bodyBattery == null) {
-      bodyBatteryStatus = 'unavailable';
-      warningCodes.push('BODY_BATTERY_UNAVAILABLE');
-      warnings.push('Body Battery is unavailable right now.');
-    }
-  } else {
-    try {
-      const { calculateReadiness } = require('../../services/readiness-scorer');
+  const readinessPromise = cachedReadiness
+    ? Promise.resolve({ source: 'cache' as const, readiness: cachedReadiness })
+    : (async () => {
+      const calculateReadiness = deps.calculateReadiness
+        ?? require('../../services/readiness-scorer').calculateReadiness;
       const readiness = await calculateReadiness(userId);
-      if (isSyntheticNeutralReadiness(readiness)) {
+      return { source: 'fresh' as const, readiness };
+    })();
+  const eventsPromise = (async () => {
+    const getEvents = deps.getEvents
+      ?? require('../../services/unified-calendar').getEvents;
+    return await getEvents(
+      startOfDay.minus({ days: 1 }).toUTC().toISO()!,
+      endOfDay.plus({ days: 1 }).toUTC().toISO()!,
+      userId,
+    );
+  })();
+
+  const [readinessResult, eventsResult] = await Promise.allSettled([readinessPromise, eventsPromise]);
+  if (readinessResult.status === 'fulfilled') {
+    const { source, readiness } = readinessResult.value;
+    if (source === 'cache') {
+      if (isSyntheticNeutralCachedReadiness(readiness)) {
         readinessScore = null;
         bodyBattery = null;
         readinessStatus = 'unavailable';
@@ -364,21 +366,36 @@ export async function fetchTraining(userId: number) {
           'Body Battery is unavailable right now.',
         );
       } else {
-        readinessScore = readiness?.score || null;
-        bodyBattery = normalizeBodyBattery(readiness?.factors?.bodyBattery?.current);
-
-        if (readinessScore == null) {
-          readinessStatus = 'unavailable';
-          warningCodes.push('READINESS_UNAVAILABLE');
-          warnings.push('Readiness data is unavailable right now.');
-        }
-        if (bodyBattery == null) {
-          bodyBatteryStatus = 'unavailable';
-          warningCodes.push('BODY_BATTERY_UNAVAILABLE');
-          warnings.push('Body Battery is unavailable right now.');
-        }
+        readinessScore = readiness.score;
+        bodyBattery = readiness.bodyBattery;
       }
+    } else if (isSyntheticNeutralReadiness(readiness)) {
+      readinessScore = null;
+      bodyBattery = null;
+      readinessStatus = 'unavailable';
+      bodyBatteryStatus = 'unavailable';
+      warningCodes.push('WEARABLE_INTEGRATION_MISSING', 'BODY_BATTERY_UNAVAILABLE');
+      warnings.push(
+        'Wearable integration is missing, so readiness is using a neutral fallback right now.',
+        'Body Battery is unavailable right now.',
+      );
+    } else {
+      readinessScore = readiness?.score || null;
+      bodyBattery = normalizeBodyBattery(readiness?.factors?.bodyBattery?.current);
+    }
 
+    if (readinessScore == null) {
+      readinessStatus = 'unavailable';
+      warningCodes.push('READINESS_UNAVAILABLE');
+      warnings.push('Readiness data is unavailable right now.');
+    }
+    if (bodyBattery == null) {
+      bodyBatteryStatus = 'unavailable';
+      warningCodes.push('BODY_BATTERY_UNAVAILABLE');
+      warnings.push('Body Battery is unavailable right now.');
+    }
+
+    if (source === 'fresh') {
       setCache(
         dashboardReadinessCacheKeyFor(userId),
         {
@@ -388,15 +405,15 @@ export async function fetchTraining(userId: number) {
         },
         DASHBOARD_READINESS_CACHE_TTL,
       );
-    } catch {
-      readinessStatus = 'unavailable';
-      bodyBatteryStatus = 'unavailable';
-      warningCodes.push('READINESS_UNAVAILABLE', 'BODY_BATTERY_UNAVAILABLE');
-      warnings.push(
-        'Readiness data is unavailable right now.',
-        'Body Battery is unavailable right now.',
-      );
     }
+  } else {
+    readinessStatus = 'unavailable';
+    bodyBatteryStatus = 'unavailable';
+    warningCodes.push('READINESS_UNAVAILABLE', 'BODY_BATTERY_UNAVAILABLE');
+    warnings.push(
+      'Readiness data is unavailable right now.',
+      'Body Battery is unavailable right now.',
+    );
   }
 
   let todaySession: any = null;
@@ -406,24 +423,14 @@ export async function fetchTraining(userId: number) {
     const currentWeek = plan ? getCurrentWeek(plan.id) : null;
     const sessions = currentWeek ? getSessionsForWeek(currentWeek.id) : null;
     if (Array.isArray(sessions) && sessions.length > 0) {
-      const zone = getUserTimezoneById(userId);
-      const todayDow = DateTime.now().setZone(zone).toFormat('cccc');
+      const todayDow = today.toFormat('cccc');
       todaySession = sessions.find((s: any) => s?.day_of_week === todayDow) || null;
     }
   } catch {}
 
-  if (!todaySession) {
+  if (!todaySession && eventsResult.status === 'fulfilled') {
     try {
-      const zone = getUserTimezoneById(userId);
-      const today = DateTime.now().setZone(zone);
-      const startOfDay = today.startOf('day');
-      const endOfDay = today.endOf('day');
-      const { getEvents } = require('../../services/unified-calendar');
-      const events = await getEvents(
-        startOfDay.minus({ days: 1 }).toUTC().toISO()!,
-        endOfDay.plus({ days: 1 }).toUTC().toISO()!,
-        userId,
-      );
+      const events = eventsResult.value;
       const keywords = ['run', 'gym', 'swim', 'bike', 'cycle', 'training', 'workout', 'strength'];
       const trainingEvent = (events || []).find((e: any) => {
         if (!eventOverlapsRange(e, startOfDay, endOfDay, zone)) return false;
