@@ -1,0 +1,42 @@
+{
+  "generatedAt": "2026-05-10T21:54:57.890Z",
+  "verdict": "passed",
+  "apnsProbe": {
+    "sendResult": {
+      "sent": 2,
+      "failed": 0,
+      "skipped": 0,
+      "retriable": 0,
+      "unregistered": []
+    },
+    "requestCount": 2,
+    "hosts": [
+      "https://api.sandbox.push.apple.com:443",
+      "https://api.push.apple.com:443"
+    ],
+    "sandboxUsed": true,
+    "productionUsed": true,
+    "collapseApplied": true,
+    "tokenRows": [
+      {
+        "device_id": "round-e-production-1778450097836",
+        "environment": "production",
+        "revoked_at": null
+      },
+      {
+        "device_id": "round-e-sandbox-1778450097836",
+        "environment": "sandbox",
+        "revoked_at": null
+      }
+    ]
+  },
+  "wrongUserActionProbe": {
+    "decisionId": "nc_36fad1cc-158d-406e-ad47-547f62477305",
+    "wrongUser": {
+      "status": 404,
+      "code": "DECISION_NOT_FOUND",
+      "message": "Decision not found for authenticated user"
+    },
+    "executionCount": 0
+  }
+}

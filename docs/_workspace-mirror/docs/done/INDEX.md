@@ -19,6 +19,7 @@ If Felipe wants physical moves, that's a follow-up cleanup round after Wave 1 sh
 | P0 Garmin tenant leak + Apple Health cascade | `docs/archive/2026-05/p0-garmin-tenant-leak-and-applehealth-cascade/closeout.md` | READY_FOR_LOCAL_QA → promoted | engine 4.14.146, deploy commit `d05e3bac` | 5 contaminated production rows cleaned (users 25, 28, 29, 30, 86) |
 | P0 tenant + safety Round A | `docs/archive/2026-05/p0-tenant-and-safety-2026-05/closeout.md` | SOURCE_AND_LOCAL_VALIDATION_COMPLETE → promoted | engine 4.14.147, deploy commit `95a42c80` | google-drive per-user OAuth, iOS sign-in race, deep-link scope, keychain scoping, APNs revoke, chat-fastpath cache key, websocket tenantId, onboarding UserDefaults, Sentry redaction, api_cache safety valve, closed-beta gate verification |
 | P0 tenant + safety + perf Round B | `docs/archive/2026-05/p0-tenant-and-safety-and-perf-2026-05/closeout.md` | SOURCE_AND_STAGING_VALIDATION_COMPLETE → promoted | engine 4.14.148, deploy commit `8ceb99e1` | DASHBOARD_READINESS_CACHE_TTL 300s, fetchTraining parallelization, daily_context_cache index, reminder cron mutex, cache cascade batch, logger redaction once, /content/topics pagination, audit_trail compound index, provider router cold-start, iOS DateFormatter static, ReceiptReviewSheet image, weak-self timer, JSON decode off-main, Dynamic Type, reduce-motion, a11y labels |
+| Round E launch blockers | `docs/archive/2026-05/round-e-launch-blockers/closeout.md` | SOURCE_AND_STAGING_VALIDATION_COMPLETE | not promoted yet | F-A tenant source audit clean; Decision Center/APNs Round D fixes; App Store/GDPR/LLM hardening; Sentry/cache/onboarding carryovers; staging smoke 18/18 |
 | Launch-readiness sweep (Tasks A/B/C/D) | `docs/archive/2026-05/launch-readiness-sweep/closeout.md` | READY_FOR_LOCAL_QA → promoted | engine 4.14.147 base | iOS single-flight test (Task A on phase2b4), Apple Health partial sufficiency (Task B), Amazon/Uber audit memo (Task C), Garmin tenant isolation watcher (Task D) |
 | Tech-debt sweep | `engine/docs/archive/2026-05/tech-debt-validation/sweep-closeout-dossier.md` | source-closed and deployed | engine 4.14.134 | 27 codex-validation batches (workspace) + 5 batches (engine archive). State isolation, JWT rotation, PM2 recovery, Gemini SDK migration, mock hygiene, docs hygiene |
 
@@ -70,7 +71,7 @@ These are evidence artifacts (smoke probes, cleanup script outputs, etc.) under 
 
 ## Counts
 
-- Total done work-streams catalogued: **24**
+- Total done work-streams catalogued: **25**
 - Total closeout/hostile-QA artifacts: **~56 files** under `docs/archive/2026-05/` (workspace) + `engine/docs/archive/2026-05/` (engine mirror)
 - Plus 27 tech-debt-validation batch files + 5 engine-side batches
 
