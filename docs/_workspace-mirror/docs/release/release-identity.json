@@ -1,17 +1,17 @@
 {
-  "generatedAt": "2026-05-10T08:48:03Z",
+  "generatedAt": "2026-05-10T14:47:49Z",
   "backend": {
-    "path": "/Users/felipedominguez/Desktop/Custom Connectors/Cortex/cortex-telegram-hub-bot",
-    "branch": "ios-pre-testflight-validation-2026-05",
+    "path": "/Users/felipedominguez/Desktop/Nexus Hub/worktrees/p0-tenant-engine",
+    "branch": "fix/p0-tenant-and-safety-2026-05",
     "commit": "95a42c80",
-    "dirtyState": "dirty",
+    "dirtyState": "unknown",
     "packageVersion": "4.14.147",
-    "migrationCount": "121"
+    "migrationCount": "122"
   },
   "ios": {
     "path": "/Users/felipedominguez/Desktop/Nexus Hub IOS/Nexus Hub",
-    "branch": "main",
-    "commit": "5981d10",
+    "branch": "fix/p0-tenant-and-safety-2026-05",
+    "commit": "95a42c80",
     "dirtyState": "dirty"
   }
 }

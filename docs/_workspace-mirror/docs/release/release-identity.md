@@ -5,7 +5,7 @@
 
 | Area | Path | Branch | Commit | Dirty state | Version | Migrations |
 | --- | --- | --- | --- | --- | --- | --- |
-| Backend | `/Users/felipedominguez/Desktop/Custom Connectors/Cortex/cortex-telegram-hub-bot` | `ios-pre-testflight-validation-2026-05` | `95a42c80` | `dirty` | `4.14.147` | `121` |
-| iOS | `/Users/felipedominguez/Desktop/Nexus Hub IOS/Nexus Hub` | `main` | `5981d10` | `dirty` | n/a | n/a |
+| Backend | `/Users/felipedominguez/Desktop/Nexus Hub/worktrees/p0-tenant-engine` | `fix/p0-tenant-and-safety-2026-05` | `95a42c80` | `unknown` | `4.14.147` | `122` |
+| iOS | `/Users/felipedominguez/Desktop/Nexus Hub IOS/Nexus Hub` | `fix/p0-tenant-and-safety-2026-05` | `95a42c80` | `dirty` | n/a | n/a |
 
-Generated at: `2026-05-10T08:48:03Z`
+Generated at: `2026-05-10T14:47:49Z`
