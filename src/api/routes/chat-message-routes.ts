@@ -57,6 +57,11 @@ import {
 import { sendChatTierRequiredIfNeeded } from './chat-message-tier-gate';
 import { sendRetryableChatFailureResponseIfNeeded } from './chat-message-degraded-response';
 import { tryHandleChatReasoningAction } from '../../services/chat-reasoning-engine';
+import {
+  createDecisionIntent,
+  findDecisionByRelatedEntity,
+  performDecisionAction,
+} from '../../services/decision-center';
 
 type ChatRouteScopeGuard = (
   res: Response,
@@ -77,6 +82,12 @@ function normalizeIdempotencyKey(value: unknown): string | null {
 
 function buildUserMessageId(clientMessageId: string | null, fallbackTimestamp = Date.now()): string {
   return clientMessageId ? `msg-user-${clientMessageId}` : `msg-user-${fallbackTimestamp}`;
+}
+
+function isAcceptCurrentDecisionShortcut(text: string): boolean {
+  return /^(accept|approve|confirm|yes|sim|aceitar|aprovar|confirmar)\s+(this|current|the)?\s*(decision|choice|clarification|decisão|escolha)?$/i.test(text.trim())
+    || /\b(accept|approve|confirm)\s+this\s+decision\b/i.test(text)
+    || /\b(aceitar|aprovar|confirmar)\s+esta\s+decis[aã]o\b/i.test(text);
 }
 
 export function registerChatMessageRoutes(
@@ -333,6 +344,53 @@ export function registerChatMessageRoutes(
       });
       if (reasoningAction) {
         const response = reasoningAction.response;
+        if (response.routeMethod === 'confirmation-required' && response.metadata?.type === 'chat_action_confirmation_required') {
+          const lang = getUserLanguageById(userId);
+          const isPT = lang.startsWith('pt');
+          const involvedSkills = Array.isArray(response.metadata.involvedSkills)
+            ? response.metadata.involvedSkills.filter((skill): skill is any => typeof skill === 'string')
+            : ['secretary'];
+          const pendingConfirmation = trackPendingChatConfirmation({
+            userId,
+            tenantId,
+            actionSummary: normalizedText,
+            involvedSkills,
+            reasonCodes: Array.isArray(response.metadata.reasonCodes)
+              ? response.metadata.reasonCodes.filter((code): code is string => typeof code === 'string')
+              : ['destructive_action'],
+            sourceMessageId: userMessageId,
+          });
+          const decisionResult = await createDecisionIntent({
+            userId,
+            tenantId,
+            sourceSkill: 'chat',
+            type: 'decision_required',
+            priority: 'active',
+            relatedEntityId: pendingConfirmation.id,
+            relatedEntityType: 'chat_confirmation',
+            title: isPT ? 'Nexus precisa de confirmação' : 'Nexus needs confirmation',
+            body: pendingConfirmation.actionSummary,
+            sensitiveBody: pendingConfirmation.actionSummary,
+            actionButtons: [
+              { id: 'option_a', label: isPT ? 'Confirmar' : 'Confirm', style: 'primary' },
+              { id: 'option_b', label: isPT ? 'Não executar' : 'Do not run', style: 'secondary' },
+              { id: 'open_detail', label: isPT ? 'Abrir decisão' : 'Open decision', style: 'secondary' },
+            ],
+            deeplink: `nexus://notifications/${pendingConfirmation.id}`,
+            expiresAt: pendingConfirmation.expiresAt,
+            dedupeKey: `chat:confirmation:${tenantId}:${userId}:${pendingConfirmation.id}`,
+            requiresUserAction: true,
+            deliveryPolicy: 'in_app_only',
+            privacyPolicy: 'standard',
+          });
+          response.metadata.pendingConfirmation = {
+            id: pendingConfirmation.id,
+            actionSummary: pendingConfirmation.actionSummary,
+            expiresAt: pendingConfirmation.expiresAt,
+            sourceMessageId: pendingConfirmation.sourceMessageId,
+            decisionId: decisionResult.item?.decisionId ?? null,
+          };
+        }
         rememberChatActiveDomain(userId, response.domain, Date.now(), tenantId);
         persistExchange(userId, userMessageId, normalizedText, response.id, response, tenantId, {
           clientMessageId: scopedClientMessageId,
@@ -384,6 +442,43 @@ export function registerChatMessageRoutes(
         tenantId,
       });
 
+      if (isAcceptCurrentDecisionShortcut(normalizedTextLower)) {
+        const pending = getPendingChatConfirmation(userId, tenantId);
+        const decision = pending
+          ? findDecisionByRelatedEntity(userId, tenantId, 'chat_confirmation', pending.id)
+          : null;
+        if (pending && decision) {
+          const result = await performDecisionAction(decision.decisionId, 'option_a', userId, tenantId, {
+            idempotencyKey: normalizeIdempotencyKey(req.body?.idempotencyKey)
+              ?? `chat-confirm:${tenantId}:${userId}:${pending.id}:${Date.now()}`,
+          });
+          const response = {
+            id: `msg-${Date.now()}`,
+            text: getUserLanguageById(userId).startsWith('pt')
+              ? 'Confirmado. A decisão foi registada no Decision Center e verificada pelo servidor.'
+              : 'Confirmed. The decision was recorded in Decision Center and verified by the server.',
+            domain: 'chat',
+            routeMethod: 'decision-center-action',
+            confidence: 0.95,
+            buttons: null,
+            metadata: {
+              type: 'decision_center_chat_confirmation_actioned',
+              decisionId: result.item.decisionId,
+              actionId: result.actionId,
+              idempotent: result.idempotent,
+              verification: result.verification,
+            },
+            timestamp: new Date().toISOString(),
+          };
+          persistExchange(userId, userMessageId, normalizedText, response.id, response, tenantId, {
+            clientMessageId: scopedClientMessageId,
+            requestId: chatRequestId,
+          });
+          res.json(response);
+          return;
+        }
+      }
+
       if (preRoutingDecision.safety.requiresConfirmation && !preRoutingDecision.safety.explicitConfirmation) {
         const lang = getUserLanguageById(userId);
         const isPT = lang.startsWith('pt');
@@ -394,6 +489,29 @@ export function registerChatMessageRoutes(
           involvedSkills: preRoutingDecision.involvedSkills,
           reasonCodes: preRoutingDecision.safety.confirmationReasonCodes,
           sourceMessageId: userMessageId,
+        });
+        const decisionResult = await createDecisionIntent({
+          userId,
+          tenantId,
+          sourceSkill: 'chat',
+          type: 'decision_required',
+          priority: 'active',
+          relatedEntityId: pendingConfirmation.id,
+          relatedEntityType: 'chat_confirmation',
+          title: isPT ? 'Nexus precisa de confirmação' : 'Nexus needs confirmation',
+          body: pendingConfirmation.actionSummary,
+          sensitiveBody: pendingConfirmation.actionSummary,
+          actionButtons: [
+            { id: 'option_a', label: isPT ? 'Confirmar' : 'Confirm', style: 'primary' },
+            { id: 'option_b', label: isPT ? 'Não executar' : 'Do not run', style: 'secondary' },
+            { id: 'open_detail', label: isPT ? 'Abrir decisão' : 'Open decision', style: 'secondary' },
+          ],
+          deeplink: `nexus://notifications/${pendingConfirmation.id}`,
+          expiresAt: pendingConfirmation.expiresAt,
+          dedupeKey: `chat:confirmation:${tenantId}:${userId}:${pendingConfirmation.id}`,
+          requiresUserAction: true,
+          deliveryPolicy: 'in_app_only',
+          privacyPolicy: 'standard',
         });
         const sufficiency = buildChatResponseSufficiencyMetadata({
           actionStatus: 'needs_confirmation',
@@ -421,6 +539,7 @@ export function registerChatMessageRoutes(
               actionSummary: pendingConfirmation.actionSummary,
               expiresAt: pendingConfirmation.expiresAt,
               sourceMessageId: pendingConfirmation.sourceMessageId,
+              decisionId: decisionResult.item?.decisionId ?? null,
             },
           },
           timestamp: new Date().toISOString(),

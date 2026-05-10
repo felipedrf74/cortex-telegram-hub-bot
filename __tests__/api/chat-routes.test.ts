@@ -2491,8 +2491,39 @@ describe('Chat API routes', () => {
       type: 'chat_action_confirmation_required',
       involvedSkills: expect.arrayContaining(['secretary', 'training']),
     });
+    expect(res.body.metadata.pendingConfirmation.decisionId).toMatch(/^nc_/);
     expect(String(res.body.text)).toContain('explicit confirmation');
     expect(mockRouteMessage).not.toHaveBeenCalled();
+    expect(mockHandleSecretary).not.toHaveBeenCalled();
+  });
+
+  it('routes accept-this-decision chat confirmations through Decision Center action policy', async () => {
+    mockRouteMessage.mockResolvedValue({
+      domain: 'secretary',
+      method: 'keyword',
+      confidence: 0.9,
+      strippedMessage: 'cancel my training plan and clear the calendar',
+    });
+    mockGetUserLanguage.mockReturnValue('en-US');
+
+    const first = await dispatch('POST', '/message', 7001, {
+      text: 'cancel my training plan and clear the calendar',
+    });
+    const decisionId = first.body.metadata.pendingConfirmation.decisionId;
+    expect(decisionId).toMatch(/^nc_/);
+
+    const accept = await dispatch('POST', '/message', 7001, {
+      text: 'accept this decision',
+      idempotencyKey: 'chat-decision-accept',
+    });
+
+    expect(accept.statusCode).toBe(200);
+    expect(accept.body.routeMethod).toBe('decision-center-action');
+    expect(accept.body.metadata).toMatchObject({
+      type: 'decision_center_chat_confirmation_actioned',
+      decisionId,
+      actionId: 'option_a',
+    });
     expect(mockHandleSecretary).not.toHaveBeenCalled();
   });
 });

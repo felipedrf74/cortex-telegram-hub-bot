@@ -28,9 +28,13 @@ vi.mock('../../src/services/decision-center', () => ({
       this.details = details;
     }
   },
+  addDecisionDependency: vi.fn(),
   countOpenUrgentDecisionsForUser: (...args: unknown[]) => mockCountOpenUrgentDecisionsForUser(...args),
+  findDecisionByRelatedEntity: vi.fn(),
   getDecisionSummary: (...args: unknown[]) => mockGetDecisionSummary(...args),
   listDecisionItems: (...args: unknown[]) => mockListDecisionItems(...args),
+  listDecisionDependencies: vi.fn(),
+  runDecisionSourceStateSupersessionJob: vi.fn(),
   getDecisionItem: (...args: unknown[]) => mockGetDecisionItem(...args),
   performDecisionAction: (...args: unknown[]) => mockPerformDecisionAction(...args),
   createDecisionIntent: (...args: unknown[]) => mockCreateDecisionIntent(...args),

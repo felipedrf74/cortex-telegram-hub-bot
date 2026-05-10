@@ -6,19 +6,38 @@ const mocks = vi.hoisted(() => ({
   getDecisionSummary: vi.fn(),
   listDecisionItems: vi.fn(),
   getDecisionItem: vi.fn(),
+  getDecisionPreferences: vi.fn(),
   performDecisionAction: vi.fn(),
+  updateDecisionPreferences: vi.fn(),
   logPortalAdminMutation: vi.fn(),
 }));
 
 vi.mock('../../src/api/secret-guards', () => ({
+  allowLocalHealthBypass: vi.fn(),
+  allowLocalPortalBypass: vi.fn(),
+  bearerTokenMatches: vi.fn(),
+  computePortalActorSignature: vi.fn(),
+  createPortalSessionToken: vi.fn(),
+  extractBearerToken: vi.fn(),
+  extractPortalActorHint: vi.fn(),
+  getPortalAuthContext: vi.fn(),
+  isLoopbackRequest: vi.fn(),
   requirePortalAdminToken: mocks.requirePortalAdminToken,
+  requirePortalToken: vi.fn(),
+  requirePortalTokenByMethod: vi.fn(),
+  requirePortalWriteToken: vi.fn(),
+  secureSecretMatches: vi.fn(),
+  verifyPortalActorSignature: vi.fn(),
 }));
 
 vi.mock('../../src/portal/admin-target-user', () => ({
+  getPortalAdminTargetUserId: vi.fn(),
+  isOperatorScopedToUser: vi.fn(),
   requireOperatorTargetUser: (...args: unknown[]) => mocks.requireOperatorTargetUser(...args),
 }));
 
 vi.mock('../../src/portal/admin-audit', () => ({
+  buildPortalAdminAuditDetails: vi.fn(),
   logPortalAdminMutation: (...args: unknown[]) => mocks.logPortalAdminMutation(...args),
 }));
 
@@ -34,10 +53,24 @@ vi.mock('../../src/services/decision-center', () => ({
       this.details = details;
     }
   },
+  addDecisionDependency: vi.fn(),
+  buildSkillDecisionFixtureIntent: vi.fn(),
+  countOpenUrgentDecisionsForUser: vi.fn(),
+  createDecisionIntent: vi.fn(),
+  dismissDecision: vi.fn(),
+  ensureDecisionCenterTables: vi.fn(),
+  evaluateDecisionEligibility: vi.fn(),
+  findDecisionByRelatedEntity: vi.fn(),
   getDecisionSummary: (...args: unknown[]) => mocks.getDecisionSummary(...args),
   listDecisionItems: (...args: unknown[]) => mocks.listDecisionItems(...args),
+  listDecisionDependencies: vi.fn(),
+  markDecisionViewed: vi.fn(),
   getDecisionItem: (...args: unknown[]) => mocks.getDecisionItem(...args),
+  getDecisionPreferences: (...args: unknown[]) => mocks.getDecisionPreferences(...args),
   performDecisionAction: (...args: unknown[]) => mocks.performDecisionAction(...args),
+  runDecisionSourceStateSupersessionJob: vi.fn(),
+  snoozeDecision: vi.fn(),
+  updateDecisionPreferences: (...args: unknown[]) => mocks.updateDecisionPreferences(...args),
 }));
 
 vi.mock('../../src/utils/logger', () => ({
@@ -61,6 +94,9 @@ function makeApp() {
       }),
       post: vi.fn((route: string, ...handlers: Handler[]) => {
         routes.set(`POST ${route}`, handlers);
+      }),
+      put: vi.fn((route: string, ...handlers: Handler[]) => {
+        routes.set(`PUT ${route}`, handlers);
       }),
     },
   };
@@ -129,6 +165,16 @@ describe('portal Decision Center routes', () => {
     });
     mocks.listDecisionItems.mockReturnValue([sampleDecision()]);
     mocks.getDecisionItem.mockReturnValue(sampleDecision());
+    mocks.getDecisionPreferences.mockReturnValue({
+      decisionPreferences: {
+        pushEnabled: true,
+        urgentDecisionPushEnabled: true,
+        autoHideResolved: true,
+      },
+    });
+    mocks.updateDecisionPreferences.mockReturnValue({
+      profile: { pushEnabled: false },
+    });
     mocks.performDecisionAction.mockResolvedValue({
       actionId: 'mark_paid',
       status: 'succeeded',
@@ -197,5 +243,32 @@ describe('portal Decision Center routes', () => {
     }));
     expect(payload.statusCode).toBe(200);
     expect((payload.body as any).item.status).toBe('actioned');
+  });
+
+  it('exposes tenant-scoped Decision Center preferences behind the same visibility guard', () => {
+    const { app, routes } = makeApp();
+    registerPortalDecisionCenterRoutes(app as any);
+    const handler = routes.get('GET /api/users/:userId/decision-center/preferences')?.[2]!;
+    const { payload, res } = makeResponse();
+
+    handler({ params: { userId: '7' }, query: {} }, res);
+
+    expect(payload.statusCode).toBe(200);
+    expect(mocks.getDecisionPreferences).toHaveBeenCalledWith(7, 7);
+    expect((payload.body as any).preferences.decisionPreferences.pushEnabled).toBe(true);
+  });
+
+  it('updates portal Decision Center preferences through the canonical preferences service and audits it', () => {
+    const { app, routes } = makeApp();
+    registerPortalDecisionCenterRoutes(app as any);
+    const handler = routes.get('PUT /api/users/:userId/decision-center/preferences')?.[2]!;
+    const { payload, res } = makeResponse();
+
+    handler({ params: { userId: '7' }, query: {}, body: { pushEnabled: false } }, res);
+
+    expect(mocks.updateDecisionPreferences).toHaveBeenCalledWith(7, 7, { pushEnabled: false });
+    expect(mocks.logPortalAdminMutation).toHaveBeenCalledWith(expect.any(Object), 7, 'portal.decision_center.preferences', { tenantId: 7 });
+    expect(payload.statusCode).toBe(200);
+    expect((payload.body as any).preferences.profile.pushEnabled).toBe(false);
   });
 });

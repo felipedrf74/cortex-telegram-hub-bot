@@ -36,14 +36,17 @@ vi.mock('../../src/utils/logger', () => ({
 
 import { createContentWorkflowObject } from '../../src/services/content-editorial-workflow';
 import {
+  addDecisionDependency,
   buildSkillDecisionFixtureIntent,
   createDecisionIntent,
   ensureDecisionCenterTables,
   evaluateDecisionEligibility,
   getDecisionItem,
   getDecisionSummary,
+  listDecisionDependencies,
   listDecisionItems,
   performDecisionAction,
+  runDecisionSourceStateSupersessionJob,
 } from '../../src/services/decision-center';
 import { buildSkillNotificationFixtureIntent, ensureNotificationTables } from '../../src/services/notification-orchestrator';
 import { trackPendingChatConfirmation } from '../../src/services/chat-pending-confirmations';
@@ -233,9 +236,26 @@ describe('Decision Center facade', () => {
       secretaryAgendaItemId: 'agenda-42',
       lifecycleState: 'reflowed',
       decisionAction: 'reflowed',
+      rollbackAvailable: true,
+      rollbackActionId: 'undo_reflow',
     });
+    expect(result.item.rollbackAvailable).toBe(true);
+    expect(result.item.actions.map((action) => action.id)).toContain('undo_reflow');
     const agenda = testDb.prepare('SELECT lifecycle_state, decision_action FROM secretary_agenda_items WHERE agenda_item_id = ?').get('agenda-42') as any;
     expect(agenda).toMatchObject({ lifecycle_state: 'reflowed', decision_action: 'reflowed' });
+
+    const undo = await performDecisionAction(created.item!.decisionId, 'undo_reflow', 42, 42, {
+      idempotencyKey: 'undo-secretary-reflow',
+    });
+    expect(undo.status).toBe('succeeded');
+    expect(undo.verification.actualEffect).toMatchObject({
+      decisionStatus: 'read',
+      secretaryAgendaItemId: 'agenda-42',
+      lifecycleState: 'proposed',
+      decisionAction: 'deferred',
+    });
+    const restored = testDb.prepare('SELECT lifecycle_state, decision_action FROM secretary_agenda_items WHERE agenda_item_id = ?').get('agenda-42') as any;
+    expect(restored).toMatchObject({ lifecycle_state: 'proposed', decision_action: 'deferred' });
   });
 
   it('executes Finance payment decisions through tax-event state and read-back verification', async () => {
@@ -443,6 +463,104 @@ describe('Decision Center facade', () => {
     const created = await createDecisionIntent(buildSkillDecisionFixtureIntent('training', 41, { dedupeKey: 'missing-idempotency' }));
     await expect(performDecisionAction(created.item!.decisionId, 'open_detail', 41, 41))
       .rejects.toThrow(/idempotency key/i);
+  });
+
+  it('persists dependencies and blocks mutating actions until parent decisions resolve', async () => {
+    const parent = await createDecisionIntent(buildSkillDecisionFixtureIntent('training', 60, { dedupeKey: 'dependency-parent' }));
+    const { object, created: child } = await createContentApprovalDecision(60, 60, 'dependency-child');
+
+    addDecisionDependency({
+      decisionId: child.item!.decisionId,
+      dependsOnDecisionId: parent.item!.decisionId,
+      userId: 60,
+      tenantId: 60,
+    });
+
+    expect(listDecisionDependencies(child.item!.decisionId, 60, 60)).toHaveLength(1);
+    const blocked = getDecisionItem(child.item!.decisionId, 60, 60)!;
+    expect(blocked.dependsOnDecisionIds).toEqual([parent.item!.decisionId]);
+    expect(blocked.blockedByDecisionIds).toEqual([parent.item!.decisionId]);
+    await expect(performDecisionAction(child.item!.decisionId, 'approve_script', 60, 60, {
+      idempotencyKey: 'blocked-child-action',
+    })).rejects.toThrow(/blocking decision/i);
+
+    testDb.prepare(`UPDATE notification_center_items SET status = 'actioned' WHERE item_id = ?`).run(parent.item!.decisionId);
+    const unblocked = getDecisionItem(child.item!.decisionId, 60, 60)!;
+    expect(unblocked.blockedByDecisionIds).toHaveLength(0);
+    const result = await performDecisionAction(child.item!.decisionId, 'approve_script', 60, 60, {
+      idempotencyKey: 'unblocked-child-action',
+    });
+    expect(result.status).toBe('succeeded');
+    const workflow = testDb.prepare(`SELECT approval_state FROM content_domain_objects WHERE id = ?`).get(object.id) as { approval_state: string };
+    expect(workflow.approval_state).toBe('approved');
+  });
+
+  it('supersedes content decisions when approval resolves outside Decision Center', async () => {
+    const { object, created } = await createContentApprovalDecision(61, 61, 'content-supersession');
+    testDb.prepare(`
+      UPDATE content_domain_objects
+         SET approval_state = 'approved', approved_at = datetime('now')
+       WHERE id = ?
+    `).run(object.id);
+
+    const result = runDecisionSourceStateSupersessionJob({ userId: 61, tenantId: 61 });
+
+    expect(result.supersededCount).toBe(1);
+    expect(result.reasons.content_approval_resolved_elsewhere).toBe(1);
+    expect(getDecisionItem(created.item!.decisionId, 61, 61)?.status).toBe('superseded');
+  });
+
+  it('supersedes Secretary conflict decisions when the agenda item is resolved elsewhere', async () => {
+    ensureSecretaryAgendaFixtureTables();
+    testDb.prepare(`
+      INSERT INTO secretary_agenda_items (
+        agenda_item_id, source_intent_id, source_skill, source_action, intent_action,
+        source_entity_id, source_entity_type, owner_user_id, tenant_id,
+        lifecycle_state, provider_sync_state, version, title, start_at, end_at,
+        duration_minutes, decision_action, decision_reason_codes_json, decision_explanation,
+        source_shape_hash, scheduled_segments_json, created_at, updated_at
+      ) VALUES (
+        'agenda-61', 'intent-61', 'training', 'long_run', 'reschedule_this',
+        'session-61', 'training_session', 61, '61',
+        'proposed', 'not_synced', 1, 'Move long run',
+        '2026-05-11T08:00:00.000Z', '2026-05-11T10:00:00.000Z',
+        120, 'deferred', '[]', 'Needs user approval',
+        'hash-61', '[]', datetime('now'), datetime('now')
+      )
+    `).run();
+    const created = await createDecisionIntent(buildSkillDecisionFixtureIntent('secretary', 61, {
+      relatedEntityId: 'agenda-61',
+      relatedEntityType: 'secretary_agenda_item',
+      dedupeKey: 'secretary:supersession',
+    }));
+    testDb.prepare(`UPDATE secretary_agenda_items SET lifecycle_state = 'scheduled' WHERE agenda_item_id = 'agenda-61'`).run();
+
+    const result = runDecisionSourceStateSupersessionJob({ userId: 61, tenantId: 61 });
+
+    expect(result.supersededCount).toBe(1);
+    expect(result.reasons.calendar_conflict_resolved_elsewhere).toBe(1);
+    expect(getDecisionItem(created.item!.decisionId, 61, 61)?.status).toBe('superseded');
+  });
+
+  it('supersedes missing race date decisions after a manual training profile update', async () => {
+    testDb.exec(readFileSync('migrations/023_onboarding.sql', 'utf8'));
+    const created = await createDecisionIntent(buildSkillDecisionFixtureIntent('training', 62, {
+      relatedEntityId: 'triathlon-running',
+      relatedEntityType: 'training_profile',
+      title: 'Training plan needs race date',
+      body: 'Add a race date before plan generation.',
+      dedupeKey: 'training:race-date-supersession',
+    }));
+    testDb.prepare(`
+      INSERT INTO user_profiles (user_id, profile_type, data)
+      VALUES (62, 'triathlon-running', ?)
+    `).run(JSON.stringify({ target_race_date: '2026-10-18' }));
+
+    const result = runDecisionSourceStateSupersessionJob({ userId: 62, tenantId: 62 });
+
+    expect(result.supersededCount).toBe(1);
+    expect(result.reasons.training_race_date_added_elsewhere).toBe(1);
+    expect(getDecisionItem(created.item!.decisionId, 62, 62)?.status).toBe('superseded');
   });
 
   it('can replay migration 119 without duplicate-column failures', () => {

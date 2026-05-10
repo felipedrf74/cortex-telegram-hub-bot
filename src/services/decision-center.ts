@@ -105,6 +105,10 @@ export interface DecisionApiItem {
   updatedAt: string;
   snoozedUntil: string | null;
   actions: NotificationActionButton[];
+  dependsOnDecisionIds: string[];
+  blockedByDecisionIds: string[];
+  rollbackAvailable: boolean;
+  rollbackActionId: string | null;
 }
 
 export interface DecisionSummary {
@@ -170,6 +174,7 @@ const MUTATING_ACTIONS = new Set([
   'option_b',
   'mark_paid',
   'add_meal',
+  'undo_reflow',
 ]);
 
 export function ensureDecisionCenterTables(): void {
@@ -200,6 +205,20 @@ export function ensureDecisionCenterTables(): void {
       ON decision_action_executions(user_id, tenant_id, decision_id, action_id);
     CREATE INDEX IF NOT EXISTS idx_notification_center_decision_home
       ON notification_center_items(user_id, tenant_id, status, priority, created_at);
+    CREATE TABLE IF NOT EXISTS decision_dependencies (
+      dependency_id TEXT PRIMARY KEY,
+      decision_id TEXT NOT NULL,
+      depends_on_decision_id TEXT NOT NULL,
+      user_id INTEGER NOT NULL,
+      tenant_id INTEGER NOT NULL,
+      relationship TEXT NOT NULL DEFAULT 'blocks',
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      UNIQUE(decision_id, depends_on_decision_id, user_id, tenant_id, relationship)
+    );
+    CREATE INDEX IF NOT EXISTS idx_decision_dependencies_scope
+      ON decision_dependencies(user_id, tenant_id, decision_id, relationship);
+    CREATE INDEX IF NOT EXISTS idx_decision_dependencies_blocker
+      ON decision_dependencies(user_id, tenant_id, depends_on_decision_id, relationship);
   `);
 }
 
@@ -334,6 +353,32 @@ export function getDecisionItem(decisionId: string, userId: number, tenantId = u
   return formatDecisionItemForApi(record);
 }
 
+export function findDecisionByRelatedEntity(
+  userId: number,
+  tenantId: number,
+  relatedEntityType: string,
+  relatedEntityId: string,
+): DecisionApiItem | null {
+  assertScope(userId, tenantId, 'find_decision_by_related_entity', { relatedEntityType, relatedEntityId });
+  ensureDecisionCenterTables();
+  const row = getDb().prepare(`
+    SELECT items.*, intents.related_entity_id, intents.related_entity_type, intents.requires_user_action,
+           intents.decision_deadline, intents.privacy_policy, intents.delivery_policy
+      FROM notification_center_items items
+      JOIN notification_intents intents ON intents.intent_id = items.intent_id
+     WHERE items.user_id = ?
+       AND items.tenant_id = ?
+       AND intents.related_entity_type = ?
+       AND intents.related_entity_id = ?
+       AND items.status IN ('unread', 'read', 'failed', 'snoozed')
+     ORDER BY items.created_at DESC
+     LIMIT 1
+  `).get(userId, tenantId, relatedEntityType, relatedEntityId) as any;
+  if (!row) return null;
+  const record = mapDecisionRecord(row);
+  return isDecisionRecord(record) ? formatDecisionItemForApi(record) : null;
+}
+
 export function getDecisionSummary(userId: number, tenantId = userId, limit = 3): DecisionSummary {
   const items = listDecisionItems(userId, tenantId, { status: 'all', limit: 80 })
     .filter((item) => ['unread', 'read', 'snoozed', 'failed'].includes(item.status));
@@ -358,6 +403,115 @@ export function countOpenUrgentDecisionsForUser(userId: number, tenantId = userI
   return getDecisionSummary(userId, tenantId).badgeCount;
 }
 
+export function addDecisionDependency(input: {
+  decisionId: string;
+  dependsOnDecisionId: string;
+  userId: number;
+  tenantId?: number;
+  relationship?: 'blocks' | 'supersedes' | 'caused_by' | 'related';
+}): void {
+  const tenantId = input.tenantId ?? input.userId;
+  assertScope(input.userId, tenantId, 'add_decision_dependency', {
+    decisionId: input.decisionId,
+    dependsOnDecisionId: input.dependsOnDecisionId,
+  });
+  ensureDecisionCenterTables();
+  const current = getDecisionRecord(input.decisionId, input.userId, tenantId);
+  const blocker = getDecisionRecord(input.dependsOnDecisionId, input.userId, tenantId);
+  if (!current || !blocker) {
+    throw new DecisionActionError('DECISION_NOT_FOUND', 'Dependency decisions must both belong to the authenticated scope', 404);
+  }
+  getDb().prepare(`
+    INSERT OR IGNORE INTO decision_dependencies (
+      dependency_id, decision_id, depends_on_decision_id, user_id, tenant_id, relationship
+    ) VALUES (?, ?, ?, ?, ?, ?)
+  `).run(
+    `dep_${randomUUID()}`,
+    input.decisionId,
+    input.dependsOnDecisionId,
+    input.userId,
+    tenantId,
+    input.relationship ?? 'blocks',
+  );
+}
+
+export function listDecisionDependencies(decisionId: string, userId: number, tenantId = userId): Array<{
+  decisionId: string;
+  dependsOnDecisionId: string;
+  relationship: string;
+  blockerStatus: string | null;
+}> {
+  assertScope(userId, tenantId, 'list_decision_dependencies', { decisionId });
+  ensureDecisionCenterTables();
+  const rows = getDb().prepare(`
+    SELECT deps.decision_id,
+           deps.depends_on_decision_id,
+           deps.relationship,
+           blocker.status AS blocker_status
+      FROM decision_dependencies deps
+      LEFT JOIN notification_center_items blocker
+        ON blocker.item_id = deps.depends_on_decision_id
+       AND blocker.user_id = deps.user_id
+       AND blocker.tenant_id = deps.tenant_id
+     WHERE deps.decision_id = ?
+       AND deps.user_id = ?
+       AND deps.tenant_id = ?
+     ORDER BY deps.created_at ASC
+  `).all(decisionId, userId, tenantId) as Array<{
+    decision_id: string;
+    depends_on_decision_id: string;
+    relationship: string;
+    blocker_status: string | null;
+  }>;
+  return rows.map((row) => ({
+    decisionId: row.decision_id,
+    dependsOnDecisionId: row.depends_on_decision_id,
+    relationship: row.relationship,
+    blockerStatus: row.blocker_status,
+  }));
+}
+
+export function runDecisionSourceStateSupersessionJob(opts: { userId?: number; tenantId?: number } = {}): {
+  scannedCount: number;
+  supersededCount: number;
+  reasons: Record<string, number>;
+} {
+  ensureDecisionCenterTables();
+  const clauses = ["items.status IN ('unread', 'read', 'failed', 'snoozed')"];
+  const params: unknown[] = [];
+  if (opts.userId != null) {
+    clauses.push('items.user_id = ?');
+    params.push(opts.userId);
+  }
+  if (opts.tenantId != null) {
+    clauses.push('items.tenant_id = ?');
+    params.push(opts.tenantId);
+  }
+  const rows = getDb().prepare(`
+    SELECT items.*, intents.related_entity_id, intents.related_entity_type, intents.requires_user_action,
+           intents.decision_deadline, intents.privacy_policy, intents.delivery_policy
+      FROM notification_center_items items
+      JOIN notification_intents intents ON intents.intent_id = items.intent_id
+     WHERE ${clauses.join(' AND ')}
+  `).all(...params) as any[];
+
+  const reasons: Record<string, number> = {};
+  let supersededCount = 0;
+  for (const row of rows) {
+    const record = mapDecisionRecord(row);
+    const reason = sourceStateSupersessionReason(record);
+    if (!reason) continue;
+    supersedeDecision(record, reason);
+    supersededCount += 1;
+    reasons[reason] = (reasons[reason] ?? 0) + 1;
+  }
+
+  if (supersededCount > 0) {
+    logger.info({ supersededCount, reasons }, 'Decision Center source-state supersession job closed stale decisions');
+  }
+  return { scannedCount: rows.length, supersededCount, reasons };
+}
+
 export async function performDecisionAction(
   decisionId: string,
   actionId: string,
@@ -369,7 +523,8 @@ export async function performDecisionAction(
   ensureDecisionCenterTables();
   const record = getDecisionRecord(decisionId, userId, tenantId);
   if (!record || !isDecisionRecord(record)) throw new DecisionActionError('DECISION_NOT_FOUND', 'Decision not found for authenticated user', 404);
-  if (!record.actions.some((action) => action.id === actionId)) {
+  const availableActions = actionsForRecord(record);
+  if (!availableActions.some((action) => action.id === actionId)) {
     throw new DecisionActionError('DECISION_ACTION_NOT_ALLOWED', 'That action is not available for this decision', 400);
   }
   const idempotencyKey = opts.idempotencyKey?.trim();
@@ -386,9 +541,10 @@ export async function performDecisionAction(
   if (existing && existing.status === 'failed') {
     throw new DecisionActionError(existing.error_code || 'DECISION_ACTION_FAILED', 'Prior decision action attempt failed', 409, safeParseJson(existing.result_json, {}));
   }
-  guardActionable(record);
+  guardActionable(record, actionId);
+  guardDecisionDependencies(record, actionId);
 
-  const action = record.actions.find((candidate) => candidate.id === actionId)!;
+  const action = availableActions.find((candidate) => candidate.id === actionId)!;
   const claimed = claimExecution(record, actionId, idempotencyKey, executorSkillForAction(actionId, record));
   if (!claimed.isNew) {
     if (claimed.execution.status === 'succeeded') {
@@ -542,7 +698,9 @@ function priorityScoreFor(item: DecisionRecord): number {
 
 function formatDecisionItemForApi(item: DecisionRecord): DecisionApiItem {
   const safeTitle = safeTitleForItem(item);
-  const action = recommendedAction(item.actions);
+  const actions = actionsForRecord(item);
+  const dependencies = dependencyStateForRecord(item);
+  const action = recommendedAction(actions);
   const urgency = urgencyForPriority(item.priority, item.decisionDeadline, item.expiresAt);
   return {
     decisionId: item.itemId,
@@ -563,7 +721,7 @@ function formatDecisionItemForApi(item: DecisionRecord): DecisionApiItem {
     safePreviewBody: item.safeBody,
     recommendedActionLabel: action?.label ?? null,
     recommendedAction: action,
-    alternativeActions: item.actions.filter((candidate) => candidate.id !== action?.id),
+    alternativeActions: actions.filter((candidate) => candidate.id !== action?.id),
     whySummary: whySummaryForItem(item),
     whyDetails: whyDetailsForItem(item),
     relatedEntities: item.relatedEntityId && item.relatedEntityType
@@ -578,7 +736,11 @@ function formatDecisionItemForApi(item: DecisionRecord): DecisionApiItem {
     createdAt: item.createdAt,
     updatedAt: item.createdAt,
     snoozedUntil: item.snoozedUntil,
-    actions: item.actions,
+    actions,
+    dependsOnDecisionIds: dependencies.dependsOnDecisionIds,
+    blockedByDecisionIds: dependencies.blockedByDecisionIds,
+    rollbackAvailable: rollbackContractForRecord(item).available,
+    rollbackActionId: rollbackContractForRecord(item).actionId,
   };
 }
 
@@ -720,7 +882,45 @@ function isSnoozedUntilFuture(item: DecisionRecord): boolean {
   return Number.isFinite(untilMs) && untilMs > Date.now();
 }
 
-function guardActionable(record: DecisionRecord): void {
+function actionsForRecord(record: DecisionRecord): NotificationActionButton[] {
+  const actions = [...record.actions];
+  const rollback = rollbackContractForRecord(record);
+  if (
+    rollback.available
+    && rollback.actionId
+    && !actions.some((action) => action.id === rollback.actionId)
+  ) {
+    actions.unshift({
+      id: rollback.actionId,
+      label: 'Undo reflow',
+      style: 'secondary',
+    });
+  }
+  return actions;
+}
+
+function rollbackContractForRecord(record: DecisionRecord): { available: boolean; actionId: string | null } {
+  const actionId = typeof record.actionResult?.rollbackActionId === 'string'
+    ? record.actionResult.rollbackActionId
+    : null;
+  return {
+    available: record.status === 'actioned' && record.actionResult?.rollbackAvailable === true && !!actionId,
+    actionId,
+  };
+}
+
+function dependencyStateForRecord(record: DecisionRecord): { dependsOnDecisionIds: string[]; blockedByDecisionIds: string[] } {
+  const dependencies = listDecisionDependencies(record.itemId, record.userId, record.tenantId);
+  const unresolved = new Set(['unread', 'read', 'failed', 'snoozed']);
+  return {
+    dependsOnDecisionIds: dependencies.map((dependency) => dependency.dependsOnDecisionId),
+    blockedByDecisionIds: dependencies
+      .filter((dependency) => dependency.relationship === 'blocks' && dependency.blockerStatus && unresolved.has(dependency.blockerStatus))
+      .map((dependency) => dependency.dependsOnDecisionId),
+  };
+}
+
+function guardActionable(record: DecisionRecord, actionId: string): void {
   if (record.expiresAt && Date.parse(record.expiresAt) <= Date.now()) {
     getDb().prepare(`
       UPDATE notification_center_items SET status = 'expired'
@@ -731,7 +931,20 @@ function guardActionable(record: DecisionRecord): void {
   if (record.status === 'expired') throw new DecisionActionError('DECISION_EXPIRED', 'Decision expired and can no longer be actioned', 409);
   if (record.status === 'superseded') throw new DecisionActionError('DECISION_SUPERSEDED', 'Decision was superseded by newer state', 409);
   if (record.status === 'dismissed') throw new DecisionActionError('DECISION_DISMISSED', 'Decision was dismissed', 409);
-  if (record.status === 'actioned') throw new DecisionActionError('DECISION_ALREADY_ACTIONED', 'Decision was already actioned', 409);
+  if (record.status === 'actioned' && rollbackContractForRecord(record).actionId !== actionId) {
+    throw new DecisionActionError('DECISION_ALREADY_ACTIONED', 'Decision was already actioned', 409);
+  }
+}
+
+function guardDecisionDependencies(record: DecisionRecord, actionId: string): void {
+  if (actionId === 'open_detail' || actionId === 'dismiss' || actionId === 'snooze' || actionId === 'not_now' || actionId === 'undo_reflow') {
+    return;
+  }
+  const blockedByDecisionIds = dependencyStateForRecord(record).blockedByDecisionIds;
+  if (blockedByDecisionIds.length === 0) return;
+  throw new DecisionActionError('DECISION_DEPENDENCY_BLOCKED', 'Resolve the blocking decision before running this action.', 409, {
+    blockedByDecisionIds,
+  });
 }
 
 function getExistingExecution(decisionId: string, actionId: string, userId: number, tenantId: number, idempotencyKey: string): any | null {
@@ -849,6 +1062,10 @@ async function executeDecisionAction(
     return executeSecretaryAgendaDecision(record, action.id, userId, tenantId, payload);
   }
 
+  if (action.id === 'undo_reflow') {
+    return executeSecretaryReflowRollback(record, userId, tenantId);
+  }
+
   if (action.id === 'mark_paid') {
     return executeFinancePaymentDecision(record, userId, tenantId, payload);
   }
@@ -921,6 +1138,7 @@ function executeSecretaryAgendaDecision(
     throw new DecisionActionError('DECISION_RELATED_ENTITY_NOT_FOUND', 'Secretary agenda item was not found for this user.', 404);
   }
 
+  const rollback = secretaryAgendaRollbackSnapshot(agenda);
   const updates = buildSecretaryAgendaUpdates(actionId, agenda, payload);
   getDb().prepare(`
     UPDATE secretary_agenda_items
@@ -968,7 +1186,113 @@ function executeSecretaryAgendaDecision(
     decisionAction: verified!.decisionAction,
     startAt: verified!.startAt,
     endAt: verified!.endAt,
+    rollbackAvailable: true,
+    rollbackActionId: 'undo_reflow',
+    rollback,
   }, 'Secretary agenda decision was applied.');
+}
+
+function executeSecretaryReflowRollback(
+  record: DecisionRecord,
+  userId: number,
+  tenantId: number,
+): {
+  readBackOk: boolean;
+  expectedEffect: Record<string, unknown>;
+  actualEffect: Record<string, unknown>;
+  message: string;
+} {
+  const rollback = record.actionResult?.rollback;
+  if (!rollback || typeof rollback !== 'object' || Array.isArray(rollback)) {
+    throw new DecisionActionError('DECISION_ROLLBACK_UNAVAILABLE', 'This decision does not have a reversible Secretary reflow.', 409);
+  }
+  const snapshot = rollback as Record<string, unknown>;
+  if (snapshot.type !== 'secretary_agenda_item' || typeof snapshot.agendaItemId !== 'string') {
+    throw new DecisionActionError('DECISION_ROLLBACK_UNAVAILABLE', 'This rollback contract is not valid for Secretary reflow.', 409);
+  }
+  if (snapshot.agendaItemId !== record.relatedEntityId) {
+    throw new DecisionActionError('DECISION_ROLLBACK_UNAVAILABLE', 'Rollback target no longer matches the decision related entity.', 409);
+  }
+  const previous = snapshot.previous;
+  if (!previous || typeof previous !== 'object' || Array.isArray(previous)) {
+    throw new DecisionActionError('DECISION_ROLLBACK_UNAVAILABLE', 'Rollback is missing the prior Secretary state.', 409);
+  }
+  const prior = previous as Record<string, unknown>;
+  getDb().prepare(`
+    UPDATE secretary_agenda_items
+       SET lifecycle_state = ?,
+           decision_action = ?,
+           decision_reason_codes_json = ?,
+           decision_explanation = ?,
+           start_at = ?,
+           end_at = ?,
+           scheduled_segments_json = ?,
+           updated_at = datetime('now')
+     WHERE agenda_item_id = ?
+       AND owner_user_id = ?
+       AND tenant_id = ?
+  `).run(
+    stringOrDefault(prior.lifecycleState, 'proposed'),
+    stringOrNull(prior.decisionAction),
+    JSON.stringify(Array.isArray(prior.reasonCodes) ? prior.reasonCodes : []),
+    stringOrNull(prior.explanation),
+    stringOrNull(prior.startAt),
+    stringOrNull(prior.endAt),
+    JSON.stringify(Array.isArray(prior.scheduledSegments) ? prior.scheduledSegments : []),
+    snapshot.agendaItemId,
+    userId,
+    String(tenantId),
+  );
+
+  const verified = getSecretaryAgendaItemById({ agendaItemId: snapshot.agendaItemId, ownerUserId: userId, tenantId });
+  const expectedLifecycleState = stringOrDefault(prior.lifecycleState, 'proposed');
+  if (!verified || verified.lifecycleState !== expectedLifecycleState) {
+    throw new DecisionActionError('DECISION_READBACK_MISMATCH', 'Secretary rollback read-back verification failed', 409, {
+      expectedLifecycleState,
+      actualLifecycleState: verified?.lifecycleState ?? null,
+    });
+  }
+
+  getDb().prepare(`
+    UPDATE notification_center_items
+       SET status = 'read', action_result_json = ?
+     WHERE item_id = ? AND user_id = ? AND tenant_id = ?
+  `).run(JSON.stringify({
+    actionId: 'undo_reflow',
+    rollbackApplied: true,
+    secretaryAgendaItemId: snapshot.agendaItemId,
+    lifecycleState: verified.lifecycleState,
+    decisionAction: verified.decisionAction,
+  }), record.itemId, userId, tenantId);
+  markDecisionAction(record.decisionLogId, 'undo_reflow');
+
+  return {
+    readBackOk: true,
+    expectedEffect: { secretaryAgendaLifecycleState: expectedLifecycleState, decisionStatus: 'read' },
+    actualEffect: {
+      secretaryAgendaItemId: snapshot.agendaItemId,
+      lifecycleState: verified.lifecycleState,
+      decisionAction: verified.decisionAction,
+      decisionStatus: 'read',
+    },
+    message: 'Secretary reflow was undone and the decision was reopened.',
+  };
+}
+
+function secretaryAgendaRollbackSnapshot(agenda: SecretaryAgendaItem): Record<string, unknown> {
+  return {
+    type: 'secretary_agenda_item',
+    agendaItemId: agenda.agendaItemId,
+    previous: {
+      lifecycleState: agenda.lifecycleState,
+      decisionAction: agenda.decisionAction,
+      reasonCodes: agenda.decisionReasonCodes,
+      explanation: agenda.decisionExplanation,
+      startAt: agenda.startAt,
+      endAt: agenda.endAt,
+      scheduledSegments: agenda.scheduledSegments,
+    },
+  };
 }
 
 function buildSecretaryAgendaUpdates(
@@ -1255,10 +1579,107 @@ function markDecisionAction(decisionLogId: string | null, actionId: string): voi
   `).run(actionId, decisionLogId);
 }
 
+function sourceStateSupersessionReason(record: DecisionRecord): string | null {
+  if (!record.relatedEntityType || !record.relatedEntityId) return null;
+  if (record.sourceSkill === 'content' && record.relatedEntityType === 'content_workflow_object') {
+    const object = getContentWorkflowObject(record.userId, record.relatedEntityId, record.tenantId);
+    if (!object) return 'content_object_missing';
+    if (object.approvalState === 'approved' || object.approvalState === 'rejected') {
+      return 'content_approval_resolved_elsewhere';
+    }
+  }
+  if (record.sourceSkill === 'secretary' && record.relatedEntityType === 'secretary_agenda_item') {
+    const agenda = getSecretaryAgendaItemById({
+      agendaItemId: record.relatedEntityId,
+      ownerUserId: record.userId,
+      tenantId: record.tenantId,
+    });
+    if (!agenda) return 'secretary_agenda_missing';
+    if (['reflowed', 'scheduled', 'completed', 'canceled', 'superseded'].includes(agenda.lifecycleState)) {
+      return 'calendar_conflict_resolved_elsewhere';
+    }
+  }
+  if (record.sourceSkill === 'training') {
+    if (record.relatedEntityType === 'training_plan' && tableExists('fitness_training_plans')) {
+      const plan = getDb().prepare(`
+        SELECT status, updated_at FROM fitness_training_plans
+         WHERE id = ? AND user_id = ?
+         LIMIT 1
+      `).get(record.relatedEntityId, record.userId) as { status?: string; updated_at?: string } | undefined;
+      if (!plan) return 'training_plan_missing';
+      if (plan.status && ['superseded', 'cancelled', 'canceled', 'completed'].includes(plan.status)) {
+        return 'training_plan_changed_elsewhere';
+      }
+      if (plan.updated_at && Date.parse(plan.updated_at) > Date.parse(record.createdAt)) {
+        return 'training_plan_changed_elsewhere';
+      }
+    }
+    if (record.relatedEntityType === 'training_profile' && trainingRaceDatePresent(record.userId)) {
+      return 'training_race_date_added_elsewhere';
+    }
+    if (/race date/i.test(`${record.title} ${record.body} ${record.dedupeKey ?? ''}`) && trainingRaceDatePresent(record.userId)) {
+      return 'training_race_date_added_elsewhere';
+    }
+  }
+  return null;
+}
+
+function supersedeDecision(record: DecisionRecord, reason: string): void {
+  getDb().prepare(`
+    UPDATE notification_center_items
+       SET status = 'superseded',
+           action_result_json = ?
+     WHERE item_id = ?
+       AND user_id = ?
+       AND tenant_id = ?
+       AND status IN ('unread', 'read', 'failed', 'snoozed')
+  `).run(JSON.stringify({ supersededReason: reason, supersededAt: DateTime.utc().toISO() }), record.itemId, record.userId, record.tenantId);
+  if (record.decisionLogId) {
+    getDb().prepare(`
+      UPDATE notification_decision_logs
+         SET action_taken = COALESCE(action_taken, 'superseded')
+       WHERE decision_log_id = ?
+    `).run(record.decisionLogId);
+  }
+}
+
+function trainingRaceDatePresent(userId: number): boolean {
+  if (!tableExists('user_profiles')) return false;
+  const rows = getDb().prepare(`
+    SELECT data
+      FROM user_profiles
+     WHERE user_id = ?
+       AND profile_type IN ('fitness', 'training', 'triathlon-running')
+  `).all(userId) as Array<{ data: string }>;
+  for (const row of rows) {
+    const data = safeParseJson<Record<string, unknown>>(row.data, {});
+    const targetRaceDate = data.target_race_date ?? data.race_date;
+    if (typeof targetRaceDate === 'string' && /\d{4}-\d{2}-\d{2}/.test(targetRaceDate)) return true;
+  }
+  return false;
+}
+
+function tableExists(table: string): boolean {
+  const row = getDb().prepare(`
+    SELECT name FROM sqlite_master
+     WHERE type = 'table' AND name = ?
+     LIMIT 1
+  `).get(table) as { name: string } | undefined;
+  return !!row;
+}
+
 function executorSkillForAction(actionId: string, record: DecisionRecord): string {
   if (actionId === 'approve_script' || actionId === 'request_rewrite') return 'content';
   if (record.type === 'conflict_detected' || actionId.includes('reflow')) return 'secretary';
   return record.sourceSkill;
+}
+
+function stringOrDefault(value: unknown, fallback: string): string {
+  return typeof value === 'string' ? value : fallback;
+}
+
+function stringOrNull(value: unknown): string | null {
+  return typeof value === 'string' ? value : null;
 }
 
 function safeParseJson<T>(value: unknown, fallback: T): T {

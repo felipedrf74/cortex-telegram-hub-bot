@@ -34,3 +34,20 @@ CREATE INDEX IF NOT EXISTS idx_decision_action_scope
 
 CREATE INDEX IF NOT EXISTS idx_notification_center_decision_home
   ON notification_center_items(user_id, tenant_id, status, priority, created_at);
+
+CREATE TABLE IF NOT EXISTS decision_dependencies (
+  dependency_id TEXT PRIMARY KEY,
+  decision_id TEXT NOT NULL,
+  depends_on_decision_id TEXT NOT NULL,
+  user_id INTEGER NOT NULL,
+  tenant_id INTEGER NOT NULL,
+  relationship TEXT NOT NULL DEFAULT 'blocks',
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  UNIQUE(decision_id, depends_on_decision_id, user_id, tenant_id, relationship)
+);
+
+CREATE INDEX IF NOT EXISTS idx_decision_dependencies_scope
+  ON decision_dependencies(user_id, tenant_id, decision_id, relationship);
+
+CREATE INDEX IF NOT EXISTS idx_decision_dependencies_blocker
+  ON decision_dependencies(user_id, tenant_id, depends_on_decision_id, relationship);

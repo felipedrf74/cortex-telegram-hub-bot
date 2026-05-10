@@ -5,9 +5,11 @@ import { requirePortalAdminToken } from '../api/secret-guards';
 import {
   DecisionActionError,
   getDecisionItem,
+  getDecisionPreferences,
   getDecisionSummary,
   listDecisionItems,
   performDecisionAction,
+  updateDecisionPreferences,
   type DecisionApiItem,
   type DecisionUrgency,
 } from '../services/decision-center';
@@ -86,6 +88,10 @@ function sanitizePortalDecisionItem(item: DecisionApiItem): Record<string, unkno
       style: action.style,
       destructive: action.style === 'destructive',
     })),
+    dependsOnDecisionIds: item.dependsOnDecisionIds,
+    blockedByDecisionIds: item.blockedByDecisionIds,
+    rollbackAvailable: item.rollbackAvailable,
+    rollbackActionId: item.rollbackActionId,
   };
 }
 
@@ -166,6 +172,44 @@ export function registerPortalDecisionCenterRoutes(app: Express): void {
         return;
       }
       res.json({ ok: true, tenantId, item: sanitizePortalDecisionItem(item) });
+    } catch (err) {
+      sendDecisionError(res, err);
+    }
+  });
+
+  app.get('/api/users/:userId/decision-center/preferences', ...guards, (req: Request, res: Response) => {
+    try {
+      const userId = parsePositiveInteger(req.params.userId);
+      if (!userId) {
+        sendBadRequest(res, 'INVALID_USER_ID', 'invalid userId');
+        return;
+      }
+      const tenantId = resolveTenantId(req, userId);
+      if (!tenantId) {
+        sendForbiddenTenant(res);
+        return;
+      }
+      res.json({ ok: true, tenantId, preferences: getDecisionPreferences(userId, tenantId) });
+    } catch (err) {
+      sendDecisionError(res, err);
+    }
+  });
+
+  app.put('/api/users/:userId/decision-center/preferences', ...guards, (req: Request, res: Response) => {
+    try {
+      const userId = parsePositiveInteger(req.params.userId);
+      if (!userId) {
+        sendBadRequest(res, 'INVALID_USER_ID', 'invalid userId');
+        return;
+      }
+      const tenantId = resolveTenantId(req, userId);
+      if (!tenantId) {
+        sendForbiddenTenant(res);
+        return;
+      }
+      const preferences = updateDecisionPreferences(userId, tenantId, req.body ?? {});
+      logPortalAdminMutation(req, userId, 'portal.decision_center.preferences', { tenantId });
+      res.json({ ok: true, tenantId, preferences });
     } catch (err) {
       sendDecisionError(res, err);
     }
