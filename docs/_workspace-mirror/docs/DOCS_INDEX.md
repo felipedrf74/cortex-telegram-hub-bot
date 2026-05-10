@@ -34,6 +34,7 @@ Official working path: `/Users/felipedominguez/Desktop/Nexus Hub`
 | VPS cold-start runbook | canonical | `docs/runbooks/vps-cold-start.md` | Update after every DR drill, host image change, backup format change, or PM2/tunnel topology change. |
 | Cloudflared tunnel runbook | canonical | `docs/runbooks/cloudflared-tunnel.md` | Update when Cloudflare routes, tunnel credentials, cache rules, or local origin ports change. |
 | Secret rotation runbook | canonical | `docs/runbooks/secret-rotation.md` | Update when `.env.example` changes or a rotation drill reveals a missing verification step. |
+| Wave 1 TestFlight cut runbook | current | `docs/release/wave1-testflight-cut-runbook.md` | Update before each TestFlight cohort cut or when App Store Connect/TestFlight operator steps change. |
 | Archive index | archive | `docs/archive/ARCHIVE_INDEX.md` | Update when moving old reports into archive. |
 | Docs drift audit | generated command | `engine/npm run docs:audit` | Run before creating release docs or copying verdicts/test counts. |
 
