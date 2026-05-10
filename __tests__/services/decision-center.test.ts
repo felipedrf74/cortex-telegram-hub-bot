@@ -46,6 +46,7 @@ import {
   performDecisionAction,
 } from '../../src/services/decision-center';
 import { buildSkillNotificationFixtureIntent, ensureNotificationTables } from '../../src/services/notification-orchestrator';
+import { trackPendingChatConfirmation } from '../../src/services/chat-pending-confirmations';
 
 async function createContentApprovalDecision(userId: number, tenantId: number, dedupeKey: string) {
   const object = createContentWorkflowObject({
@@ -62,6 +63,28 @@ async function createContentApprovalDecision(userId: number, tenantId: number, d
     dedupeKey,
   }));
   return { object, created };
+}
+
+function ensureSecretaryAgendaFixtureTables(): void {
+  testDb.exec(readFileSync('migrations/083_secretary_agenda_ledger.sql', 'utf8'));
+  testDb.exec(readFileSync('migrations/098_secretary_decision_explanation.sql', 'utf8'));
+}
+
+function ensureFinanceFixtureTables(): void {
+  testDb.exec(readFileSync('migrations/022_finance_tables.sql', 'utf8'));
+  testDb.exec(`
+    ALTER TABLE finance_tax_events ADD COLUMN encrypted_gross_income TEXT;
+    ALTER TABLE finance_tax_events ADD COLUMN encrypted_deductions TEXT;
+    ALTER TABLE finance_tax_events ADD COLUMN encrypted_taxable_income TEXT;
+    ALTER TABLE finance_tax_events ADD COLUMN encrypted_tax_due TEXT;
+    ALTER TABLE finance_tax_events ADD COLUMN encrypted_inss_due TEXT;
+    ALTER TABLE finance_tax_events ADD COLUMN encrypted_notes TEXT;
+  `);
+}
+
+function ensureCookingFixtureTables(): void {
+  testDb.exec(readFileSync('migrations/024_cooking_tables.sql', 'utf8'));
+  testDb.exec(readFileSync('migrations/088_skill_memory_foundation.sql', 'utf8'));
 }
 
 describe('Decision Center facade', () => {
@@ -170,10 +193,141 @@ describe('Decision Center facade', () => {
     await expect(performDecisionAction(created.item!.decisionId, 'accept_reflow', 3, 3, {
       idempotencyKey: 'unsupported-tap',
     }))
-      .rejects.toThrow(/deterministic executor/);
+      .rejects.toThrow(/persisted Secretary agenda item/);
 
     const items = listDecisionItems(3, 3, { status: 'all' });
     expect(items[0].status).toBe('failed');
+  });
+
+  it('executes Secretary agenda reflow actions against persisted Secretary agenda state', async () => {
+    ensureSecretaryAgendaFixtureTables();
+    testDb.prepare(`
+      INSERT INTO secretary_agenda_items (
+        agenda_item_id, source_intent_id, source_skill, source_action, intent_action,
+        source_entity_id, source_entity_type, owner_user_id, tenant_id,
+        lifecycle_state, provider_sync_state, version, title, start_at, end_at,
+        duration_minutes, decision_action, decision_reason_codes_json, decision_explanation,
+        source_shape_hash, scheduled_segments_json, created_at, updated_at
+      ) VALUES (
+        'agenda-42', 'intent-42', 'training', 'long_run', 'reschedule_this',
+        'session-42', 'training_session', 42, '42',
+        'proposed', 'not_synced', 1, 'Move long run',
+        '2026-05-11T08:00:00.000Z', '2026-05-11T10:00:00.000Z',
+        120, 'deferred', '[]', 'Needs user approval',
+        'hash-42', '[]', datetime('now'), datetime('now')
+      )
+    `).run();
+    const created = await createDecisionIntent(buildSkillDecisionFixtureIntent('secretary', 42, {
+      relatedEntityId: 'agenda-42',
+      relatedEntityType: 'secretary_agenda_item',
+      dedupeKey: 'secretary:agenda-reflow',
+    }));
+
+    const result = await performDecisionAction(created.item!.decisionId, 'accept_reflow', 42, 42, {
+      idempotencyKey: 'accept-secretary-reflow',
+    });
+
+    expect(result.status).toBe('succeeded');
+    expect(result.verification.actualEffect).toMatchObject({
+      decisionStatus: 'actioned',
+      secretaryAgendaItemId: 'agenda-42',
+      lifecycleState: 'reflowed',
+      decisionAction: 'reflowed',
+    });
+    const agenda = testDb.prepare('SELECT lifecycle_state, decision_action FROM secretary_agenda_items WHERE agenda_item_id = ?').get('agenda-42') as any;
+    expect(agenda).toMatchObject({ lifecycle_state: 'reflowed', decision_action: 'reflowed' });
+  });
+
+  it('executes Finance payment decisions through tax-event state and read-back verification', async () => {
+    ensureFinanceFixtureTables();
+    testDb.prepare(`
+      INSERT INTO finance_tax_events (user_id, month, gross_income, deductions, taxable_income, tax_due, inss_due, status, darf_code)
+      VALUES (43, '2026-05', 5000, 0, 5000, 450, 0, 'pending', '0190')
+    `).run();
+    const created = await createDecisionIntent(buildSkillDecisionFixtureIntent('finance', 43, {
+      type: 'decision_required',
+      requiresUserAction: true,
+      relatedEntityId: '2026-05',
+      relatedEntityType: 'finance_tax_event',
+      dedupeKey: 'finance:tax-payment',
+    }));
+
+    const result = await performDecisionAction(created.item!.decisionId, 'mark_paid', 43, 43, {
+      idempotencyKey: 'mark-tax-paid',
+    });
+
+    expect(result.status).toBe('succeeded');
+    expect(result.verification.actualEffect).toMatchObject({
+      decisionStatus: 'actioned',
+      financeTaxMonth: '2026-05',
+      paymentStatus: 'paid',
+    });
+    const event = testDb.prepare('SELECT status, paid_at FROM finance_tax_events WHERE user_id = 43 AND month = ?').get('2026-05') as any;
+    expect(event.status).toBe('paid');
+    expect(event.paid_at).toBeTruthy();
+  });
+
+  it('executes Cooking meal decisions when a concrete meal slot payload is supplied', async () => {
+    ensureCookingFixtureTables();
+    const created = await createDecisionIntent(buildSkillNotificationFixtureIntent('cooking', 44, {
+      type: 'decision_required',
+      requiresUserAction: true,
+      actionButtons: [{ id: 'add_meal', label: 'Add meal', style: 'primary' }],
+      relatedEntityId: '2026-05-12:dinner',
+      relatedEntityType: 'meal_plan',
+      dedupeKey: 'cooking:add-meal',
+    }));
+
+    const result = await performDecisionAction(created.item!.decisionId, 'add_meal', 44, 44, {
+      idempotencyKey: 'add-meal',
+      payload: {
+        date: '2026-05-12',
+        mealType: 'dinner',
+        title: 'Recovery rice bowl',
+      },
+    });
+
+    expect(result.status).toBe('succeeded');
+    expect(result.verification.actualEffect).toMatchObject({
+      decisionStatus: 'actioned',
+      date: '2026-05-12',
+      mealType: 'dinner',
+      title: 'Recovery rice bowl',
+    });
+    const meal = testDb.prepare('SELECT title FROM meal_plans WHERE user_id = 44 AND date = ? AND meal_type = ?').get('2026-05-12', 'dinner') as any;
+    expect(meal.title).toBe('Recovery rice bowl');
+  });
+
+  it('executes Chat clarification decisions through the pending-confirmation store', async () => {
+    vi.useRealTimers();
+    const pending = trackPendingChatConfirmation({
+      userId: 45,
+      tenantId: 45,
+      actionSummary: 'Choose the content workflow',
+      involvedSkills: ['content'],
+      reasonCodes: ['ambiguous_action'],
+    });
+    const created = await createDecisionIntent(buildSkillNotificationFixtureIntent('chat', 45, {
+      actionButtons: [
+        { id: 'option_a', label: 'Use the content draft', style: 'primary' },
+        { id: 'option_b', label: 'Ask first', style: 'secondary' },
+      ],
+      relatedEntityId: pending.id,
+      relatedEntityType: 'chat_confirmation',
+      dedupeKey: 'chat:clarification',
+    }));
+
+    const result = await performDecisionAction(created.item!.decisionId, 'option_a', 45, 45, {
+      idempotencyKey: 'chat-option-a',
+    });
+
+    expect(result.status).toBe('succeeded');
+    expect(result.verification.actualEffect).toMatchObject({
+      decisionStatus: 'actioned',
+      chatConfirmationId: pending.id,
+      selectedOption: 'option_a',
+      involvedSkills: ['content'],
+    });
   });
 
   it('denies wrong-user decision list/detail/action access by scope', async () => {

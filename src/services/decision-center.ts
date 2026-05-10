@@ -33,6 +33,22 @@ import {
   decideContentApproval,
   getContentWorkflowObject,
 } from './content-editorial-workflow';
+import {
+  getSecretaryAgendaItemById,
+  type SecretaryAgendaItem,
+} from './secretary-scheduling-arbitrator';
+import {
+  getMealPlan,
+  setMealPlan,
+} from './cooking-chef';
+import {
+  getTaxEvents,
+  markTaxPaid,
+} from './finance-tracker';
+import {
+  clearPendingChatConfirmation,
+  getPendingChatConfirmation,
+} from './chat-pending-confirmations';
 import { isValidTenantUserId, recordTenantScopeAnomaly } from './tenant-scope-observability';
 import { logger } from '../utils/logger';
 
@@ -829,6 +845,22 @@ async function executeDecisionAction(
     return executeContentApprovalDecision(record, action.id, userId, tenantId);
   }
 
+  if (action.id === 'accept_reflow' || action.id === 'choose_another_time') {
+    return executeSecretaryAgendaDecision(record, action.id, userId, tenantId, payload);
+  }
+
+  if (action.id === 'mark_paid') {
+    return executeFinancePaymentDecision(record, userId, tenantId, payload);
+  }
+
+  if (action.id === 'add_meal') {
+    return executeCookingMealDecision(record, userId, tenantId, payload);
+  }
+
+  if (action.id === 'option_a' || action.id === 'option_b') {
+    return executeChatClarificationDecision(record, action.id, userId, tenantId);
+  }
+
   if (MUTATING_ACTIONS.has(action.id)) {
     throw new DecisionActionError(
       'UNSUPPORTED_DECISION_EXECUTOR',
@@ -859,6 +891,271 @@ function verifiedStatusEffect(record: DecisionRecord, expected: string, message:
     readBackOk,
     expectedEffect: { decisionStatus: expected },
     actualEffect: { decisionStatus: actual },
+    message,
+  };
+}
+
+function executeSecretaryAgendaDecision(
+  record: DecisionRecord,
+  actionId: string,
+  userId: number,
+  tenantId: number,
+  payload: Record<string, unknown>,
+): {
+  readBackOk: boolean;
+  expectedEffect: Record<string, unknown>;
+  actualEffect: Record<string, unknown>;
+  message: string;
+} {
+  if (record.sourceSkill !== 'secretary' || record.relatedEntityType !== 'secretary_agenda_item' || !record.relatedEntityId) {
+    throw new DecisionActionError(
+      'UNSUPPORTED_DECISION_EXECUTOR',
+      'Secretary reflow actions require a persisted Secretary agenda item before Nexus can run them.',
+      409,
+      { relatedEntityType: record.relatedEntityType },
+    );
+  }
+
+  const agenda = getSecretaryAgendaItemById({ agendaItemId: record.relatedEntityId, ownerUserId: userId, tenantId });
+  if (!agenda) {
+    throw new DecisionActionError('DECISION_RELATED_ENTITY_NOT_FOUND', 'Secretary agenda item was not found for this user.', 404);
+  }
+
+  const updates = buildSecretaryAgendaUpdates(actionId, agenda, payload);
+  getDb().prepare(`
+    UPDATE secretary_agenda_items
+       SET lifecycle_state = ?,
+           decision_action = ?,
+           decision_reason_codes_json = ?,
+           decision_explanation = ?,
+           start_at = COALESCE(?, start_at),
+           end_at = COALESCE(?, end_at),
+           scheduled_segments_json = ?,
+           updated_at = datetime('now')
+     WHERE agenda_item_id = ?
+       AND owner_user_id = ?
+       AND tenant_id = ?
+  `).run(
+    updates.lifecycleState,
+    updates.decisionAction,
+    JSON.stringify(updates.reasonCodes),
+    updates.explanation,
+    updates.startAt,
+    updates.endAt,
+    JSON.stringify(updates.startAt && updates.endAt ? [{ start: updates.startAt, end: updates.endAt, label: 'Decision Center choice' }] : agenda.scheduledSegments),
+    agenda.agendaItemId,
+    userId,
+    String(tenantId),
+  );
+
+  const verified = getSecretaryAgendaItemById({ agendaItemId: agenda.agendaItemId, ownerUserId: userId, tenantId });
+  const readBackOk = verified?.lifecycleState === updates.lifecycleState
+    && verified.decisionAction === updates.decisionAction
+    && (!updates.startAt || verified.startAt === updates.startAt)
+    && (!updates.endAt || verified.endAt === updates.endAt);
+  if (!readBackOk) {
+    throw new DecisionActionError('DECISION_READBACK_MISMATCH', 'Secretary reflow read-back verification failed', 409, {
+      expectedLifecycleState: updates.lifecycleState,
+      actualLifecycleState: verified?.lifecycleState ?? null,
+      expectedDecisionAction: updates.decisionAction,
+      actualDecisionAction: verified?.decisionAction ?? null,
+    });
+  }
+
+  return markDecisionActioned(record, actionId, {
+    secretaryAgendaItemId: agenda.agendaItemId,
+    lifecycleState: verified!.lifecycleState,
+    decisionAction: verified!.decisionAction,
+    startAt: verified!.startAt,
+    endAt: verified!.endAt,
+  }, 'Secretary agenda decision was applied.');
+}
+
+function buildSecretaryAgendaUpdates(
+  actionId: string,
+  agenda: SecretaryAgendaItem,
+  payload: Record<string, unknown>,
+): {
+  lifecycleState: string;
+  decisionAction: string;
+  reasonCodes: string[];
+  explanation: string;
+  startAt: string | null;
+  endAt: string | null;
+} {
+  if (actionId === 'choose_another_time') {
+    const startAt = typeof payload.startAt === 'string' ? payload.startAt : null;
+    const endAt = typeof payload.endAt === 'string' ? payload.endAt : null;
+    if (!startAt || !endAt || Date.parse(startAt) >= Date.parse(endAt)) {
+      throw new DecisionActionError('DECISION_ACTION_PAYLOAD_REQUIRED', 'Choosing another time requires valid startAt and endAt values.', 400);
+    }
+    return {
+      lifecycleState: 'reflowed',
+      decisionAction: 'reflowed',
+      reasonCodes: ['decision_center_user_selected_alternative_time'],
+      explanation: 'User selected an alternate time in Decision Center.',
+      startAt,
+      endAt,
+    };
+  }
+
+  if (!agenda.startAt || !agenda.endAt) {
+    throw new DecisionActionError('DECISION_ACTION_PAYLOAD_REQUIRED', 'Accepting reflow requires a Secretary agenda item with a proposed time.', 400);
+  }
+  return {
+    lifecycleState: 'reflowed',
+    decisionAction: 'reflowed',
+    reasonCodes: ['decision_center_user_accepted_reflow'],
+    explanation: 'User accepted Secretary reflow in Decision Center.',
+    startAt: null,
+    endAt: null,
+  };
+}
+
+function executeFinancePaymentDecision(
+  record: DecisionRecord,
+  userId: number,
+  tenantId: number,
+  payload: Record<string, unknown>,
+): {
+  readBackOk: boolean;
+  expectedEffect: Record<string, unknown>;
+  actualEffect: Record<string, unknown>;
+  message: string;
+} {
+  if (record.sourceSkill !== 'finance') {
+    throw new DecisionActionError('UNSUPPORTED_DECISION_EXECUTOR', 'Finance payment action can only run for Finance decisions.', 409);
+  }
+  if (tenantId !== userId) {
+    throw new DecisionActionError('UNSUPPORTED_DECISION_EXECUTOR', 'Finance payment actions require tenant-scoped finance tables before cross-tenant execution.', 409);
+  }
+  const month = typeof payload.month === 'string'
+    ? payload.month
+    : record.relatedEntityType === 'finance_tax_event'
+      ? record.relatedEntityId
+      : null;
+  if (!month || !/^\d{4}-\d{2}$/.test(month)) {
+    throw new DecisionActionError('DECISION_ACTION_PAYLOAD_REQUIRED', 'Finance payment decisions require a YYYY-MM tax event month.', 400);
+  }
+
+  if (!markTaxPaid(userId, month)) {
+    throw new DecisionActionError('DECISION_RELATED_ENTITY_NOT_FOUND', 'Finance tax event was not found for this user.', 404);
+  }
+  const year = Number(month.slice(0, 4));
+  const verified = getTaxEvents(userId, { year }).find((event) => event.month === month);
+  if (verified?.status !== 'paid') {
+    throw new DecisionActionError('DECISION_READBACK_MISMATCH', 'Finance payment read-back verification failed', 409, {
+      expectedStatus: 'paid',
+      actualStatus: verified?.status ?? null,
+    });
+  }
+
+  return markDecisionActioned(record, 'mark_paid', {
+    financeTaxMonth: month,
+    paymentStatus: verified.status,
+    paidAt: verified.paid_at,
+  }, 'Finance payment was confirmed.');
+}
+
+function executeCookingMealDecision(
+  record: DecisionRecord,
+  userId: number,
+  tenantId: number,
+  payload: Record<string, unknown>,
+): {
+  readBackOk: boolean;
+  expectedEffect: Record<string, unknown>;
+  actualEffect: Record<string, unknown>;
+  message: string;
+} {
+  if (record.sourceSkill !== 'cooking') {
+    throw new DecisionActionError('UNSUPPORTED_DECISION_EXECUTOR', 'Cooking meal action can only run for Cooking decisions.', 409);
+  }
+  const date = typeof payload.date === 'string' ? payload.date : null;
+  const mealType = typeof payload.mealType === 'string' ? payload.mealType : typeof payload.meal_type === 'string' ? payload.meal_type : null;
+  const title = typeof payload.title === 'string' ? payload.title.trim() : '';
+  if (!date || !/^\d{4}-\d{2}-\d{2}$/.test(date) || !mealType || !title) {
+    throw new DecisionActionError('DECISION_ACTION_PAYLOAD_REQUIRED', 'Cooking decisions require date, mealType, and title before Nexus can update the meal plan.', 400);
+  }
+
+  const meal = setMealPlan(userId, date, mealType, title, {
+    tenantId,
+    notes: typeof payload.notes === 'string' ? payload.notes : 'Added from Decision Center',
+  });
+  const verified = getMealPlan(userId, date, date, tenantId).find((candidate) => candidate.id === meal.id);
+  if (!verified || verified.title !== title || verified.meal_type !== mealType) {
+    throw new DecisionActionError('DECISION_READBACK_MISMATCH', 'Cooking meal read-back verification failed', 409, {
+      expectedTitle: title,
+      actualTitle: verified?.title ?? null,
+    });
+  }
+
+  return markDecisionActioned(record, 'add_meal', {
+    mealPlanId: verified.id,
+    date: verified.date,
+    mealType: verified.meal_type,
+    title: verified.title,
+  }, 'Cooking meal plan was updated.');
+}
+
+function executeChatClarificationDecision(
+  record: DecisionRecord,
+  actionId: string,
+  userId: number,
+  tenantId: number,
+): {
+  readBackOk: boolean;
+  expectedEffect: Record<string, unknown>;
+  actualEffect: Record<string, unknown>;
+  message: string;
+} {
+  if (record.sourceSkill !== 'chat') {
+    throw new DecisionActionError('UNSUPPORTED_DECISION_EXECUTOR', 'Chat clarification action can only run for Chat decisions.', 409);
+  }
+  const pending = getPendingChatConfirmation(userId, tenantId);
+  if (!pending || (record.relatedEntityId && pending.id !== record.relatedEntityId)) {
+    throw new DecisionActionError('DECISION_RELATED_ENTITY_NOT_FOUND', 'Chat clarification was not found or already expired.', 404);
+  }
+  clearPendingChatConfirmation(userId, tenantId);
+  if (getPendingChatConfirmation(userId, tenantId)) {
+    throw new DecisionActionError('DECISION_READBACK_MISMATCH', 'Chat clarification read-back verification failed', 409);
+  }
+
+  return markDecisionActioned(record, actionId, {
+    chatConfirmationId: pending.id,
+    selectedOption: actionId,
+    involvedSkills: pending.involvedSkills,
+  }, 'Chat clarification was recorded.');
+}
+
+function markDecisionActioned(
+  record: DecisionRecord,
+  actionId: string,
+  actualEffect: Record<string, unknown>,
+  message: string,
+): {
+  readBackOk: boolean;
+  expectedEffect: Record<string, unknown>;
+  actualEffect: Record<string, unknown>;
+  message: string;
+} {
+  getDb().prepare(`
+    UPDATE notification_center_items
+       SET status = 'actioned', actioned_at = datetime('now'), action_result_json = ?
+     WHERE item_id = ? AND user_id = ? AND tenant_id = ?
+  `).run(JSON.stringify({ actionId, ...actualEffect }), record.itemId, record.userId, record.tenantId);
+  markDecisionAction(record.decisionLogId, actionId);
+  const actualStatus = getDecisionRecord(record.itemId, record.userId, record.tenantId)?.status ?? null;
+  if (actualStatus !== 'actioned') {
+    throw new DecisionActionError('DECISION_READBACK_MISMATCH', 'Decision status read-back verification failed', 409, {
+      expectedStatus: 'actioned',
+      actualStatus,
+    });
+  }
+  return {
+    readBackOk: true,
+    expectedEffect: { decisionStatus: 'actioned' },
+    actualEffect: { decisionStatus: actualStatus, ...actualEffect },
     message,
   };
 }

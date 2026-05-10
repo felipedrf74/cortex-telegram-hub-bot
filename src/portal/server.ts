@@ -34,6 +34,7 @@ import { registerPortalActionRoutes } from './action-routes';
 import { registerPortalChatRoutes } from './chat-routes';
 import { registerPortalContentRoutes } from './content-routes';
 import { registerPortalCookingRoutes } from './cooking-routes';
+import { registerPortalDecisionCenterRoutes } from './decision-center-routes';
 import { registerPortalDocumentRoutes } from './document-routes';
 import { registerPortalFounderRoutes } from './founder-routes';
 import { registerPortalHealthRoutes } from './health-routes';
@@ -327,6 +328,8 @@ export function createPortalServer(bot?: any): http.Server {
   registerPortalContentRoutes(app);
 
   registerPortalCookingRoutes(app);
+
+  registerPortalDecisionCenterRoutes(app);
 
   registerPortalActionRoutes(app, bot);
 
