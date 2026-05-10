@@ -5,7 +5,7 @@
 
 | Area | Path | Branch | Commit | Dirty state | Version | Migrations |
 | --- | --- | --- | --- | --- | --- | --- |
-| Backend | `/Users/felipedominguez/Desktop/Nexus Hub/worktrees/p0-tenant-engine` | `fix/p0-tenant-and-safety-2026-05` | `95a42c80` | `unknown` | `4.14.147` | `122` |
-| iOS | `/Users/felipedominguez/Desktop/Nexus Hub IOS/Nexus Hub` | `fix/p0-tenant-and-safety-2026-05` | `95a42c80` | `dirty` | n/a | n/a |
+| Backend | `/Users/felipedominguez/Desktop/Nexus Hub/worktrees/perf-a11y-engine` | `fix/perf-and-a11y-2026-05` | `4b7c5537` | `unknown` | `4.14.147` | `123` |
+| iOS | `/Users/felipedominguez/Desktop/Nexus Hub IOS/Nexus Hub` | `fix/perf-and-a11y-2026-05` | `4b7c5537` | `dirty` | n/a | n/a |
 
-Generated at: `2026-05-10T14:47:49Z`
+Generated at: `2026-05-10T15:48:31Z`
