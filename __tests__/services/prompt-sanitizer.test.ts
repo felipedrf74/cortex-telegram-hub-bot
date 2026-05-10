@@ -5,10 +5,15 @@ let testDb: Database.Database;
 
 vi.mock('../../src/services/database', () => ({
   getDb: () => testDb,
+  initDatabase: vi.fn(),
+  closeDatabase: vi.fn(),
+  findUnexpectedMigrationPrefixCollisions: vi.fn(() => []),
+  assertNoUnexpectedMigrationPrefixCollisions: vi.fn(),
 }));
 
 vi.mock('../../src/utils/logger', () => ({
   logger: { debug: vi.fn(), warn: vi.fn(), info: vi.fn(), error: vi.fn() },
+  LOGGER_REDACTION_PATHS: [],
 }));
 
 describe('prompt sanitizer', () => {
