@@ -3,6 +3,7 @@ import Database from 'better-sqlite3';
 
 let testDb: Database.Database;
 let pushTokens: string[] = [];
+let apnsConfigured = false;
 const mockSendPushNotification = vi.fn();
 
 vi.mock('../../src/services/database', () => ({
@@ -15,7 +16,7 @@ vi.mock('../../src/services/database', () => ({
 
 vi.mock('../../src/services/apns-sender', () => ({
   getPushTokensForUser: vi.fn(() => pushTokens),
-  isApnsConfigured: vi.fn(() => false),
+  isApnsConfigured: vi.fn(() => apnsConfigured),
   sendPushNotification: (...args: unknown[]) => mockSendPushNotification(...args),
   deleteDeadPushToken: vi.fn(),
   closeApnsClient: vi.fn(),
@@ -58,6 +59,7 @@ describe('Secretary Notification Orchestrator', () => {
     vi.setSystemTime(new Date('2026-05-07T12:00:00.000Z'));
     testDb = new Database(':memory:');
     pushTokens = [];
+    apnsConfigured = false;
     mockSendPushNotification.mockReset();
     process.env.NOTIFICATION_DELIVERY_MODE = 'mock';
     ensureNotificationTables();
@@ -378,6 +380,106 @@ describe('Secretary Notification Orchestrator', () => {
     expect(revokeNotificationDeviceToken(token.tokenId, 7, 7)).toBe(true);
     const iosRow = testDb.prepare('SELECT push_token FROM ios_devices WHERE device_id = ?').get('iphone-7') as any;
     expect(iosRow.push_token).toBeNull();
+  });
+
+  it('revokes the prior user token row and cancels queued deliveries when a device is re-associated', () => {
+    registerNotificationDeviceToken({
+      userId: 70,
+      tenantId: 70,
+      token: 'token-user-a',
+      deviceId: 'shared-device',
+    });
+    testDb.prepare(`
+      INSERT INTO notification_decision_logs (
+        decision_log_id, notification_id, intent_id, user_id, tenant_id, source_skill,
+        source_entity_id, decision, priority, reason, dedupe_key, scheduled_for, sent_at,
+        delivery_attempt_ids_json
+      ) VALUES ('log-user-a', NULL, NULL, 70, 70, 'secretary', NULL, 'quiet_hours_delayed',
+        'active', 'queued for later', NULL, '2026-05-07T13:00:00.000Z', NULL, '[]')
+    `).run();
+
+    registerNotificationDeviceToken({
+      userId: 71,
+      tenantId: 71,
+      token: 'token-user-b',
+      deviceId: 'shared-device',
+    });
+
+    const stale = testDb.prepare(`
+      SELECT revoked_at FROM notification_device_tokens
+      WHERE user_id = 70 AND device_id = 'shared-device'
+    `).get() as { revoked_at: string | null };
+    expect(stale.revoked_at).toBeTruthy();
+
+    const queued = getNotificationDecisionLog('log-user-a', 70, 70);
+    expect(queued?.decision).toBe('blocked_missing_device_token');
+    expect(queued?.sentAt).toBeTruthy();
+  });
+
+  it('sends decision pushes with collapse id and urgent/today badge count', async () => {
+    process.env.NOTIFICATION_DELIVERY_MODE = 'apns';
+    apnsConfigured = true;
+    pushTokens = ['sandbox-token'];
+    mockSendPushNotification.mockResolvedValue({ sent: 1, failed: 0, skipped: 0, retriable: 0, unregistered: [] });
+
+    const decision = await createNotificationIntent(buildSkillNotificationFixtureIntent('secretary', 72, {
+      dedupeKey: 'decision-collapse-badge',
+    }));
+
+    expect(decision.decisionLog.decision).toBe('sent_push');
+    expect(mockSendPushNotification).toHaveBeenCalledWith(72, expect.objectContaining({
+      collapseId: `decision:${decision.item!.itemId}`,
+      badge: 1,
+      threadId: 'decision-center',
+    }));
+  });
+
+  it('does not attach decision collapse ids to regular reminder pushes', async () => {
+    process.env.NOTIFICATION_DELIVERY_MODE = 'apns';
+    apnsConfigured = true;
+    pushTokens = ['sandbox-token'];
+    mockSendPushNotification.mockResolvedValue({ sent: 1, failed: 0, skipped: 0, retriable: 0, unregistered: [] });
+
+    await createNotificationIntent(buildSkillNotificationFixtureIntent('cooking', 73, {
+      type: 'reminder',
+      requiresUserAction: false,
+      actionButtons: [{ id: 'open_detail', label: 'Open' }],
+      dedupeKey: 'regular-reminder-no-collapse',
+    }));
+
+    expect(mockSendPushNotification).toHaveBeenCalledWith(73, expect.not.objectContaining({
+      collapseId: expect.stringMatching(/^decision:/),
+    }));
+  });
+
+  it('keeps APNs payloads privacy-safe for sensitive decisions', async () => {
+    process.env.NOTIFICATION_DELIVERY_MODE = 'apns';
+    apnsConfigured = true;
+    pushTokens = ['sandbox-token'];
+    mockSendPushNotification.mockResolvedValue({ sent: 1, failed: 0, skipped: 0, retriable: 0, unregistered: [] });
+
+    const cases = [
+      { source: 'finance' as const, body: 'Pay $4,200 to Therapy Center', forbidden: ['$4,200', 'Therapy Center'] },
+      { source: 'training' as const, body: 'HRV dropped and soreness is high', forbidden: ['HRV', 'soreness'] },
+      { source: 'secretary' as const, body: 'Private calendar: Acquisition meeting', forbidden: ['Acquisition meeting'] },
+      { source: 'content' as const, body: 'Script body with private launch copy', forbidden: ['private launch copy'] },
+    ];
+
+    for (const [index, entry] of cases.entries()) {
+      await createNotificationIntent(buildSkillNotificationFixtureIntent(entry.source, 74 + index, {
+        title: entry.body,
+        body: entry.body,
+        sensitiveBody: entry.body,
+        privacyPolicy: entry.source === 'finance' ? 'financial' : entry.source === 'training' ? 'health' : entry.source === 'content' ? 'private_content' : 'standard',
+        dedupeKey: `privacy-apns-${entry.source}`,
+      }));
+      const payload = mockSendPushNotification.mock.calls.at(-1)?.[1] as Record<string, unknown>;
+      const serialized = JSON.stringify(payload);
+      expect(payload.title).toMatch(/decision|review|attention|update|reminder/i);
+      for (const forbidden of entry.forbidden) {
+        expect(serialized).not.toContain(forbidden);
+      }
+    }
   });
 
   it('scopes list, read, dismiss, and action operations by authenticated user and tenant', async () => {

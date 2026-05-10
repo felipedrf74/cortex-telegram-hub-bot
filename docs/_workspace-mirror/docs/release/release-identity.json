@@ -1,17 +1,17 @@
 {
-  "generatedAt": "2026-05-10T14:47:49Z",
+  "generatedAt": "2026-05-10T15:48:31Z",
   "backend": {
-    "path": "/Users/felipedominguez/Desktop/Nexus Hub/worktrees/p0-tenant-engine",
-    "branch": "fix/p0-tenant-and-safety-2026-05",
-    "commit": "95a42c80",
+    "path": "/Users/felipedominguez/Desktop/Nexus Hub/worktrees/perf-a11y-engine",
+    "branch": "fix/perf-and-a11y-2026-05",
+    "commit": "4b7c5537",
     "dirtyState": "unknown",
     "packageVersion": "4.14.147",
-    "migrationCount": "122"
+    "migrationCount": "123"
   },
   "ios": {
     "path": "/Users/felipedominguez/Desktop/Nexus Hub IOS/Nexus Hub",
-    "branch": "fix/p0-tenant-and-safety-2026-05",
-    "commit": "95a42c80",
+    "branch": "fix/perf-and-a11y-2026-05",
+    "commit": "4b7c5537",
     "dirtyState": "dirty"
   }
 }

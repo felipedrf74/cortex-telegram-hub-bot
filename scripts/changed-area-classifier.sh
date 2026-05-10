@@ -304,7 +304,7 @@ match '^src/services/scheduler|^src/services/cron|^src/services/job-|^__tests__/
 # Notification Orchestrator, privacy-safe payload shaping, decision logs,
 # device tokens, and action handling. Regressions here can leak tenant data,
 # spam users, or expose private lock-screen copy.
-match '^src/services/apns-|^src/services/notification|^src/api/routes/notifications|^src/api/routes/content-notification|^src/services/content-notification|^__tests__/services/apns-|^__tests__/services/notification-|^__tests__/services/content-notifications|^__tests__/api/notifications-|^__tests__/api/content-notification-|^__tests__/security/notification-' && HAS_NOTIFICATION=true
+match '^src/services/apns-|^src/services/notification|^src/services/decision-center|^src/api/routes/notifications|^src/api/routes/decisions|^src/api/routes/content-notification|^src/services/content-notification|^__tests__/services/apns-|^__tests__/services/notification-|^__tests__/services/decision-center|^__tests__/services/content-notifications|^__tests__/api/notifications-|^__tests__/api/decisions-routes|^__tests__/api/content-notification-|^__tests__/security/notification-' && HAS_NOTIFICATION=true
 
 # Health integration — Garmin, Apple Health, HealthKit, body-battery,
 # readiness, wearable cache isolation. Cross-user readiness leaks are
@@ -482,7 +482,7 @@ if $HAS_NON_DOC; then
     # Engineering-excellence hardening (2026-05-04): wire new flags.
     $HAS_LOGGER && VITEST_GLOBS+=("__tests__/utils/logger-*.test.ts" "__tests__/api/secret-guards.test.ts")
     $HAS_SCHEDULER && VITEST_GLOBS+=("__tests__/services/scheduler-*.test.ts")
-    $HAS_NOTIFICATION && VITEST_GLOBS+=("__tests__/services/apns-*.test.ts" "__tests__/services/notification-*.test.ts" "__tests__/services/content-notifications*.test.ts" "__tests__/api/notifications-*.test.ts" "__tests__/api/content-notification-*.test.ts" "__tests__/security/notification-*.test.ts" "__tests__/security/p0-chat-identity-isolation.test.ts")
+    $HAS_NOTIFICATION && VITEST_GLOBS+=("__tests__/services/apns-*.test.ts" "__tests__/services/notification-*.test.ts" "__tests__/services/decision-center.test.ts" "__tests__/services/content-notifications*.test.ts" "__tests__/api/notifications-*.test.ts" "__tests__/api/decisions-routes.test.ts" "__tests__/api/content-notification-*.test.ts" "__tests__/security/notification-*.test.ts" "__tests__/security/p0-chat-identity-isolation.test.ts")
     $HAS_HEALTH_INTEGRATION && VITEST_GLOBS+=("__tests__/services/garmin-*.test.ts" "__tests__/services/apple-health-*.test.ts" "__tests__/services/integration-health-*.test.ts" "__tests__/api/wearable-*.test.ts" "__tests__/api/health-data-*.test.ts" "__tests__/api/garmin-auth-*.test.ts" "__tests__/portal/integration-health-*.test.ts")
     $HAS_RATE_LIMIT && VITEST_GLOBS+=("__tests__/api/rate-limiter.test.ts" "__tests__/security/**/*.test.ts")
     $HAS_AUDIT && VITEST_GLOBS+=("__tests__/services/audit-trail.test.ts" "__tests__/api/authenticated-support-routes-scope.test.ts" "__tests__/portal/portal-admin-audit.test.ts" "__tests__/portal/portal-admin-data-routes.test.ts" "__tests__/portal/portal-admin-data-isolation.integration.test.ts")

@@ -10,6 +10,7 @@ import { normalizeLangHeader } from '../../services/secretary-fastpath';
 import { setUserLanguage } from '../../services/user-service';
 import { getDb } from '../../services/database';
 import { getPushPreferences, setPushPreference } from '../../services/report-document-store';
+import { registerNotificationDeviceToken } from '../../services/notification-orchestrator';
 import { isValidTenantUserId, recordTenantScopeAnomaly } from '../../services/tenant-scope-observability';
 
 function normalizeLanguageInput(language: unknown): 'pt-BR' | 'pt-PT' | 'en-US' | null {
@@ -111,37 +112,24 @@ export function settingsRoutes(): Router {
 
   /** POST /api/v1/settings/push-token */
   router.post('/push-token', async (req, res: Response) => {
-    const { userId } = req as AuthenticatedRequest;
+    const { userId, tenantId } = req as AuthenticatedRequest;
     if (!ensureValidSettingsUserScope(res, userId, 'settings_route_push_token')) return;
     const deviceId = (req as AuthenticatedRequest).deviceId;
-    const { token } = req.body;
+    const { token, environment, appVersion } = req.body;
 
     try {
       if (typeof token !== 'string' || token.trim().length === 0) {
         sendError(res, 'VALIDATION', 'token is required', 400);
         return;
       }
-      const db = getDb();
-      db.exec(`
-        CREATE TABLE IF NOT EXISTS ios_devices (
-          id INTEGER PRIMARY KEY AUTOINCREMENT,
-          user_id INTEGER NOT NULL,
-          device_id TEXT NOT NULL UNIQUE,
-          device_name TEXT,
-          push_token TEXT,
-          refresh_token TEXT NOT NULL,
-          last_active_at TEXT DEFAULT (datetime('now')),
-          created_at TEXT DEFAULT (datetime('now'))
-        )
-      `);
-      db.prepare(`
-        INSERT INTO ios_devices (user_id, device_id, device_name, push_token, refresh_token, last_active_at)
-        VALUES (?, ?, NULL, ?, '', datetime('now'))
-        ON CONFLICT(device_id) DO UPDATE SET
-          user_id = excluded.user_id,
-          push_token = excluded.push_token,
-          last_active_at = datetime('now')
-      `).run(userId, deviceId, token.trim());
+      registerNotificationDeviceToken({
+        userId,
+        tenantId,
+        token: token.trim(),
+        deviceId,
+        environment: environment === 'production' ? 'production' : 'sandbox',
+        appVersion: typeof appVersion === 'string' ? appVersion : null,
+      });
       sendSuccess(res, { updated: true });
     } catch (err: any) {
       logger.error({ err }, 'iOS push-token update failed');
