@@ -1,0 +1,710 @@
+{
+  "ok": true,
+  "userId": 1000009,
+  "baseUrl": "http://staging.localhost:18201/",
+  "startedAt": "2026-05-10T13:13:44.561Z",
+  "routes": [
+    {
+      "name": "dashboard-root",
+      "path": "/api/v1/dashboard",
+      "first": {
+        "route": "dashboard-root",
+        "method": "GET",
+        "path": "/api/v1/dashboard",
+        "status": 200,
+        "ok": true,
+        "elapsedMs": 51.5,
+        "cached": false,
+        "etag": "\"0f9c20de2e53608f7d25cdb2fb8f8003\"",
+        "cacheControl": "private, max-age=30",
+        "errorCode": null,
+        "readiness": {
+          "readinessText": null,
+          "bodyBatteryText": null,
+          "reasonCodes": []
+        },
+        "shapeOk": true,
+        "bodyPreview": "{\"ok\":true,\"data\":{\"greeting\":\"Good afternoon, Staging\",\"date\":\"2026-05-10\",\"dayOfWeek\":\"Sunday\",\"calendar\":{\"today\":[],\"upcoming\":[],\"status\":\"unavailable\",\"warningCodes\":[\"CALENDAR_INTEGRATION_MISSING\"],\"warnings\":[\"No calendar integration is connected yet.\"]},\"tasks\":{\"overdue\":0,\"dueToday\":0,\"to"
+      },
+      "second": {
+        "route": "dashboard-root",
+        "method": "GET",
+        "path": "/api/v1/dashboard",
+        "status": 200,
+        "ok": true,
+        "elapsedMs": 8.5,
+        "cached": true,
+        "etag": "\"0f9c20de2e53608f7d25cdb2fb8f8003\"",
+        "cacheControl": "private, max-age=30",
+        "errorCode": null,
+        "readiness": {
+          "readinessText": null,
+          "bodyBatteryText": null,
+          "reasonCodes": []
+        },
+        "shapeOk": true,
+        "bodyPreview": "{\"ok\":true,\"data\":{\"greeting\":\"Good afternoon, Staging\",\"date\":\"2026-05-10\",\"dayOfWeek\":\"Sunday\",\"calendar\":{\"today\":[],\"upcoming\":[],\"status\":\"unavailable\",\"warningCodes\":[\"CALENDAR_INTEGRATION_MISSING\"],\"warnings\":[\"No calendar integration is connected yet.\"]},\"tasks\":{\"overdue\":0,\"dueToday\":0,\"to"
+      },
+      "inferredCacheImproved": true
+    },
+    {
+      "name": "dashboard-home",
+      "path": "/api/v1/dashboard/home",
+      "first": {
+        "route": "dashboard-home",
+        "method": "GET",
+        "path": "/api/v1/dashboard/home",
+        "status": 200,
+        "ok": true,
+        "elapsedMs": 131.6,
+        "cached": false,
+        "etag": "\"8d82f9e08d10d4ccd378a73eaac6b4ea\"",
+        "cacheControl": "private, max-age=30",
+        "errorCode": null,
+        "readiness": {
+          "readinessText": "87",
+          "bodyBatteryText": "74%",
+          "reasonCodes": [
+            "CALENDAR_INTEGRATION_MISSING"
+          ]
+        },
+        "shapeOk": true,
+        "bodyPreview": "{\"ok\":true,\"data\":{\"meta\":{\"source\":\"server\",\"isFallback\":true,\"isPartial\":true,\"isStale\":false,\"generatedAt\":\"2026-05-10T13:13:44.864Z\",\"reasonCodes\":[\"CALENDAR_INTEGRATION_MISSING\"]},\"hero\":{\"state\":\"highPerformance\",\"eyebrow\":\"Day state\",\"title\":\"Today is ready to perform\",\"summary\":\"Energy, trai"
+      },
+      "second": {
+        "route": "dashboard-home",
+        "method": "GET",
+        "path": "/api/v1/dashboard/home",
+        "status": 200,
+        "ok": true,
+        "elapsedMs": 7.9,
+        "cached": true,
+        "etag": "\"8d82f9e08d10d4ccd378a73eaac6b4ea\"",
+        "cacheControl": "private, max-age=30",
+        "errorCode": null,
+        "readiness": {
+          "readinessText": "87",
+          "bodyBatteryText": "74%",
+          "reasonCodes": [
+            "CALENDAR_INTEGRATION_MISSING"
+          ]
+        },
+        "shapeOk": true,
+        "bodyPreview": "{\"ok\":true,\"data\":{\"meta\":{\"source\":\"server\",\"isFallback\":true,\"isPartial\":true,\"isStale\":false,\"generatedAt\":\"2026-05-10T13:13:44.864Z\",\"reasonCodes\":[\"CALENDAR_INTEGRATION_MISSING\"]},\"hero\":{\"state\":\"highPerformance\",\"eyebrow\":\"Day state\",\"title\":\"Today is ready to perform\",\"summary\":\"Energy, trai"
+      },
+      "inferredCacheImproved": true
+    },
+    {
+      "name": "calendar-today",
+      "path": "/api/v1/calendar/today",
+      "first": {
+        "route": "calendar-today",
+        "method": "GET",
+        "path": "/api/v1/calendar/today",
+        "status": 200,
+        "ok": true,
+        "elapsedMs": 6.9,
+        "cached": false,
+        "etag": "W/\"ea-/Xi7JzHREkmf3uZVwr9mMgUr4bM\"",
+        "cacheControl": null,
+        "errorCode": null,
+        "readiness": {
+          "readinessText": null,
+          "bodyBatteryText": null,
+          "reasonCodes": []
+        },
+        "shapeOk": true,
+        "bodyPreview": "{\"ok\":true,\"data\":{\"events\":[],\"date\":\"2026-05-10\",\"status\":\"unavailable\",\"warningCodes\":[\"CALENDAR_INTEGRATION_MISSING\"],\"warnings\":[\"No calendar integration is connected yet.\"]},\"cached\":false,\"timestamp\":\"2026-05-10T13:13:44.911Z\"}"
+      },
+      "second": {
+        "route": "calendar-today",
+        "method": "GET",
+        "path": "/api/v1/calendar/today",
+        "status": 200,
+        "ok": true,
+        "elapsedMs": 11.8,
+        "cached": false,
+        "etag": "W/\"ea-yEFiduJiZOeUkVfruPBjhPk79X8\"",
+        "cacheControl": null,
+        "errorCode": null,
+        "readiness": {
+          "readinessText": null,
+          "bodyBatteryText": null,
+          "reasonCodes": []
+        },
+        "shapeOk": true,
+        "bodyPreview": "{\"ok\":true,\"data\":{\"events\":[],\"date\":\"2026-05-10\",\"status\":\"unavailable\",\"warningCodes\":[\"CALENDAR_INTEGRATION_MISSING\"],\"warnings\":[\"No calendar integration is connected yet.\"]},\"cached\":false,\"timestamp\":\"2026-05-10T13:13:44.923Z\"}"
+      },
+      "inferredCacheImproved": false
+    },
+    {
+      "name": "calendar-events",
+      "path": "/api/v1/calendar/events",
+      "first": {
+        "route": "calendar-events",
+        "method": "GET",
+        "path": "/api/v1/calendar/events",
+        "status": 200,
+        "ok": true,
+        "elapsedMs": 7.3,
+        "cached": false,
+        "etag": "W/\"d6-nyj9ZFPemYjQKN48SG0JvN5BEfM\"",
+        "cacheControl": null,
+        "errorCode": null,
+        "readiness": {
+          "readinessText": null,
+          "bodyBatteryText": null,
+          "reasonCodes": []
+        },
+        "shapeOk": true,
+        "bodyPreview": "{\"ok\":true,\"data\":{\"events\":[],\"status\":\"unavailable\",\"warningCodes\":[\"CALENDAR_INTEGRATION_MISSING\"],\"warnings\":[\"No calendar integration is connected yet.\"]},\"cached\":false,\"timestamp\":\"2026-05-10T13:13:44.930Z\"}"
+      },
+      "second": {
+        "route": "calendar-events",
+        "method": "GET",
+        "path": "/api/v1/calendar/events",
+        "status": 200,
+        "ok": true,
+        "elapsedMs": 6.1,
+        "cached": false,
+        "etag": "W/\"d6-Zhx3iAaXaF7j9r2enLFP2aUweUI\"",
+        "cacheControl": null,
+        "errorCode": null,
+        "readiness": {
+          "readinessText": null,
+          "bodyBatteryText": null,
+          "reasonCodes": []
+        },
+        "shapeOk": true,
+        "bodyPreview": "{\"ok\":true,\"data\":{\"events\":[],\"status\":\"unavailable\",\"warningCodes\":[\"CALENDAR_INTEGRATION_MISSING\"],\"warnings\":[\"No calendar integration is connected yet.\"]},\"cached\":false,\"timestamp\":\"2026-05-10T13:13:44.936Z\"}"
+      },
+      "inferredCacheImproved": true
+    },
+    {
+      "name": "plan-today",
+      "path": "/api/v1/plan/today",
+      "first": {
+        "route": "plan-today",
+        "method": "GET",
+        "path": "/api/v1/plan/today",
+        "status": 200,
+        "ok": true,
+        "elapsedMs": 9.2,
+        "cached": false,
+        "etag": "\"2dea6601837fde18e4b5e1f0a5c65ff4\"",
+        "cacheControl": "private, max-age=30",
+        "errorCode": null,
+        "readiness": {
+          "readinessText": null,
+          "bodyBatteryText": null,
+          "reasonCodes": []
+        },
+        "shapeOk": true,
+        "bodyPreview": "{\"ok\":true,\"data\":{\"date\":\"2026-05-10\",\"generatedAt\":\"2026-05-10T13:13:44.864Z\",\"degraded\":false,\"gated\":{\"skills\":[]},\"garmin_stale\":false,\"conflicts\":[],\"creativeCopy\":{\"headline\":\"This week protects consistency first, then performance.\",\"note\":\"Training, cooking, and content align cleanly around "
+      },
+      "second": {
+        "route": "plan-today",
+        "method": "GET",
+        "path": "/api/v1/plan/today",
+        "status": 200,
+        "ok": true,
+        "elapsedMs": 8.7,
+        "cached": true,
+        "etag": "\"2dea6601837fde18e4b5e1f0a5c65ff4\"",
+        "cacheControl": "private, max-age=30",
+        "errorCode": null,
+        "readiness": {
+          "readinessText": null,
+          "bodyBatteryText": null,
+          "reasonCodes": []
+        },
+        "shapeOk": true,
+        "bodyPreview": "{\"ok\":true,\"data\":{\"date\":\"2026-05-10\",\"generatedAt\":\"2026-05-10T13:13:44.864Z\",\"degraded\":false,\"gated\":{\"skills\":[]},\"garmin_stale\":false,\"conflicts\":[],\"creativeCopy\":{\"headline\":\"This week protects consistency first, then performance.\",\"note\":\"Training, cooking, and content align cleanly around "
+      },
+      "inferredCacheImproved": true
+    },
+    {
+      "name": "plan-week",
+      "path": "/api/v1/plan/week",
+      "first": {
+        "route": "plan-week",
+        "method": "GET",
+        "path": "/api/v1/plan/week",
+        "status": 200,
+        "ok": true,
+        "elapsedMs": 6.8,
+        "cached": false,
+        "etag": "\"5c48b6d026dc9ab8c92eb7785f7c3efd\"",
+        "cacheControl": "private, max-age=30",
+        "errorCode": null,
+        "readiness": {
+          "readinessText": null,
+          "bodyBatteryText": null,
+          "reasonCodes": []
+        },
+        "shapeOk": true,
+        "bodyPreview": "{\"ok\":true,\"data\":{\"weekStart\":\"2026-05-04\",\"weekEnd\":\"2026-05-10\",\"generatedAt\":\"2026-05-10T13:13:44.862Z\",\"variant\":\"conservative\",\"degraded\":false,\"gated\":{\"skills\":[]},\"garmin_stale\":false,\"conflicts\":[],\"creativeCopy\":{\"headline\":\"This week protects consistency first, then performance.\",\"note\":"
+      },
+      "second": {
+        "route": "plan-week",
+        "method": "GET",
+        "path": "/api/v1/plan/week",
+        "status": 200,
+        "ok": true,
+        "elapsedMs": 134.7,
+        "cached": true,
+        "etag": "\"5c48b6d026dc9ab8c92eb7785f7c3efd\"",
+        "cacheControl": "private, max-age=30",
+        "errorCode": null,
+        "readiness": {
+          "readinessText": null,
+          "bodyBatteryText": null,
+          "reasonCodes": []
+        },
+        "shapeOk": true,
+        "bodyPreview": "{\"ok\":true,\"data\":{\"weekStart\":\"2026-05-04\",\"weekEnd\":\"2026-05-10\",\"generatedAt\":\"2026-05-10T13:13:44.862Z\",\"variant\":\"conservative\",\"degraded\":false,\"gated\":{\"skills\":[]},\"garmin_stale\":false,\"conflicts\":[],\"creativeCopy\":{\"headline\":\"This week protects consistency first, then performance.\",\"note\":"
+      },
+      "inferredCacheImproved": true
+    },
+    {
+      "name": "tasks-lists",
+      "path": "/api/v1/tasks/lists",
+      "first": {
+        "route": "tasks-lists",
+        "method": "GET",
+        "path": "/api/v1/tasks/lists",
+        "status": 200,
+        "ok": true,
+        "elapsedMs": 6.9,
+        "cached": false,
+        "etag": "W/\"b7-cuTZkgV/w0q/8cXsGli4dvNWQn4\"",
+        "cacheControl": null,
+        "errorCode": null,
+        "readiness": {
+          "readinessText": null,
+          "bodyBatteryText": null,
+          "reasonCodes": []
+        },
+        "shapeOk": true,
+        "bodyPreview": "{\"ok\":true,\"data\":{\"lists\":[{\"id\":\"20\",\"name\":\"Fixture Inbox\",\"taskCount\":1},{\"id\":\"21\",\"name\":\"Fixture Studio\",\"taskCount\":1}]},\"cached\":false,\"timestamp\":\"2026-05-10T13:13:45.117Z\"}"
+      },
+      "second": {
+        "route": "tasks-lists",
+        "method": "GET",
+        "path": "/api/v1/tasks/lists",
+        "status": 200,
+        "ok": true,
+        "elapsedMs": 6.4,
+        "cached": true,
+        "etag": "W/\"b6-11FXV7OjSTt5yFnNSTETfZm72mw\"",
+        "cacheControl": null,
+        "errorCode": null,
+        "readiness": {
+          "readinessText": null,
+          "bodyBatteryText": null,
+          "reasonCodes": []
+        },
+        "shapeOk": true,
+        "bodyPreview": "{\"ok\":true,\"data\":{\"lists\":[{\"id\":\"20\",\"name\":\"Fixture Inbox\",\"taskCount\":1},{\"id\":\"21\",\"name\":\"Fixture Studio\",\"taskCount\":1}]},\"cached\":true,\"timestamp\":\"2026-05-10T13:13:45.124Z\"}"
+      },
+      "inferredCacheImproved": true
+    },
+    {
+      "name": "tasks-working-set",
+      "path": "/api/v1/tasks/working-set",
+      "first": {
+        "route": "tasks-working-set",
+        "method": "GET",
+        "path": "/api/v1/tasks/working-set",
+        "status": 200,
+        "ok": true,
+        "elapsedMs": 10.3,
+        "cached": false,
+        "etag": "W/\"4f2-NGXoEtqMFzvZoIR6PpuPf2LfQts\"",
+        "cacheControl": null,
+        "errorCode": null,
+        "readiness": {
+          "readinessText": null,
+          "bodyBatteryText": null,
+          "reasonCodes": []
+        },
+        "shapeOk": true,
+        "bodyPreview": "{\"ok\":true,\"data\":{\"policyVersion\":\"task-working-set-v1\",\"provider\":\"nexus\",\"capabilities\":{\"supportsActiveStatusFiltering\":true,\"supportsCompletedRangeFiltering\":true,\"supportsCursorPagination\":false,\"supportsProviderSideListCounts\":false,\"maxPageSize\":100},\"lists\":[{\"id\":\"20\",\"name\":\"Fixture Inbox"
+      },
+      "second": {
+        "route": "tasks-working-set",
+        "method": "GET",
+        "path": "/api/v1/tasks/working-set",
+        "status": 200,
+        "ok": true,
+        "elapsedMs": 8.4,
+        "cached": false,
+        "etag": "W/\"4f2-Qr8WQoTjSxAgk7DnRWvm4WxGtks\"",
+        "cacheControl": null,
+        "errorCode": null,
+        "readiness": {
+          "readinessText": null,
+          "bodyBatteryText": null,
+          "reasonCodes": []
+        },
+        "shapeOk": true,
+        "bodyPreview": "{\"ok\":true,\"data\":{\"policyVersion\":\"task-working-set-v1\",\"provider\":\"nexus\",\"capabilities\":{\"supportsActiveStatusFiltering\":true,\"supportsCompletedRangeFiltering\":true,\"supportsCursorPagination\":false,\"supportsProviderSideListCounts\":false,\"maxPageSize\":100},\"lists\":[{\"id\":\"20\",\"name\":\"Fixture Inbox"
+      },
+      "inferredCacheImproved": true
+    },
+    {
+      "name": "tasks-filtered",
+      "path": "/api/v1/tasks/filtered?filter=all",
+      "first": {
+        "route": "tasks-filtered",
+        "method": "GET",
+        "path": "/api/v1/tasks/filtered?filter=all",
+        "status": 200,
+        "ok": true,
+        "elapsedMs": 7.1,
+        "cached": false,
+        "etag": "W/\"2bf-uLLIJSttolqN6OauYFdBsn9+1go\"",
+        "cacheControl": null,
+        "errorCode": null,
+        "readiness": {
+          "readinessText": null,
+          "bodyBatteryText": null,
+          "reasonCodes": []
+        },
+        "shapeOk": true,
+        "bodyPreview": "{\"ok\":true,\"data\":{\"tasks\":[{\"id\":\"19\",\"title\":\"Review staging fixture harness report\",\"body\":\"Synthetic task seeded for route-pipeline probes.\",\"importance\":\"high\",\"status\":\"notStarted\",\"dueDateTime\":\"2026-05-11T15:00:00.000Z\",\"listId\":\"20\",\"listName\":\"Fixture Inbox\",\"checklistItems\":[],\"createdDat"
+      },
+      "second": {
+        "route": "tasks-filtered",
+        "method": "GET",
+        "path": "/api/v1/tasks/filtered?filter=all",
+        "status": 200,
+        "ok": true,
+        "elapsedMs": 34.1,
+        "cached": true,
+        "etag": "W/\"2be-QNLRLivfzyAAic7b8nKXH/+D+kY\"",
+        "cacheControl": null,
+        "errorCode": null,
+        "readiness": {
+          "readinessText": null,
+          "bodyBatteryText": null,
+          "reasonCodes": []
+        },
+        "shapeOk": true,
+        "bodyPreview": "{\"ok\":true,\"data\":{\"tasks\":[{\"id\":\"19\",\"title\":\"Review staging fixture harness report\",\"body\":\"Synthetic task seeded for route-pipeline probes.\",\"importance\":\"high\",\"status\":\"notStarted\",\"dueDateTime\":\"2026-05-11T15:00:00.000Z\",\"listId\":\"20\",\"listName\":\"Fixture Inbox\",\"checklistItems\":[],\"createdDat"
+      },
+      "inferredCacheImproved": true
+    },
+    {
+      "name": "training-home",
+      "path": "/api/v1/training/home",
+      "first": {
+        "route": "training-home",
+        "method": "GET",
+        "path": "/api/v1/training/home",
+        "status": 200,
+        "ok": true,
+        "elapsedMs": 26,
+        "cached": false,
+        "etag": "W/\"dec-eQFCltfSVg3VLjg4cRzVNup1nO8\"",
+        "cacheControl": null,
+        "errorCode": null,
+        "readiness": {
+          "readinessText": null,
+          "bodyBatteryText": null,
+          "reasonCodes": []
+        },
+        "shapeOk": true,
+        "bodyPreview": "{\"ok\":true,\"data\":{\"meta\":{\"source\":\"server\",\"isFallback\":false,\"isPartial\":false,\"isStale\":false,\"generatedAt\":\"2026-05-10T13:13:45.214Z\",\"reasonCodes\":[]},\"hero\":{\"state\":\"ready\",\"eyebrow\":\"Today\",\"title\":\"Rest\",\"subtitle\":\"The coach is looking at your week, not only today.\",\"coachSentence\":\"Recov"
+      },
+      "second": {
+        "route": "training-home",
+        "method": "GET",
+        "path": "/api/v1/training/home",
+        "status": 200,
+        "ok": true,
+        "elapsedMs": 7.6,
+        "cached": true,
+        "etag": "W/\"deb-s71MdAqBL8cwKWazcz2740FD/dI\"",
+        "cacheControl": null,
+        "errorCode": null,
+        "readiness": {
+          "readinessText": null,
+          "bodyBatteryText": null,
+          "reasonCodes": []
+        },
+        "shapeOk": true,
+        "bodyPreview": "{\"ok\":true,\"data\":{\"meta\":{\"source\":\"server\",\"isFallback\":false,\"isPartial\":false,\"isStale\":false,\"generatedAt\":\"2026-05-10T13:13:45.214Z\",\"reasonCodes\":[]},\"hero\":{\"state\":\"ready\",\"eyebrow\":\"Today\",\"title\":\"Rest\",\"subtitle\":\"The coach is looking at your week, not only today.\",\"coachSentence\":\"Recov"
+      },
+      "inferredCacheImproved": true
+    },
+    {
+      "name": "finance-transactions",
+      "path": "/api/v1/finance/transactions",
+      "first": {
+        "route": "finance-transactions",
+        "method": "GET",
+        "path": "/api/v1/finance/transactions",
+        "status": 200,
+        "ok": true,
+        "elapsedMs": 6.8,
+        "cached": false,
+        "etag": "W/\"1ae-05/mCWafT7PXCxSh27Nh0gdxBlU\"",
+        "cacheControl": null,
+        "errorCode": null,
+        "readiness": {
+          "readinessText": null,
+          "bodyBatteryText": null,
+          "reasonCodes": []
+        },
+        "shapeOk": true,
+        "bodyPreview": "{\"ok\":true,\"data\":{\"transactions\":[{\"id\":20,\"user_id\":1000009,\"date\":\"2026-05-10\",\"category\":\"expense\",\"subcategory\":\"materials\",\"amount\":42.5,\"currency\":\"USD\",\"description\":\"Fixture yarn purchase\",\"receipt_ref\":\"staging-fixture\",\"created_at\":\"2026-05-10T13:13:44.643Z\",\"updated_at\":\"2026-05-10T13:13"
+      },
+      "second": {
+        "route": "finance-transactions",
+        "method": "GET",
+        "path": "/api/v1/finance/transactions",
+        "status": 200,
+        "ok": true,
+        "elapsedMs": 6.5,
+        "cached": false,
+        "etag": "W/\"1ae-M3oA3WSIeFq4MTAclLObaDibmvE\"",
+        "cacheControl": null,
+        "errorCode": null,
+        "readiness": {
+          "readinessText": null,
+          "bodyBatteryText": null,
+          "reasonCodes": []
+        },
+        "shapeOk": true,
+        "bodyPreview": "{\"ok\":true,\"data\":{\"transactions\":[{\"id\":20,\"user_id\":1000009,\"date\":\"2026-05-10\",\"category\":\"expense\",\"subcategory\":\"materials\",\"amount\":42.5,\"currency\":\"USD\",\"description\":\"Fixture yarn purchase\",\"receipt_ref\":\"staging-fixture\",\"created_at\":\"2026-05-10T13:13:44.643Z\",\"updated_at\":\"2026-05-10T13:13"
+      },
+      "inferredCacheImproved": true
+    },
+    {
+      "name": "cooking-recipes",
+      "path": "/api/v1/cooking/recipes",
+      "first": {
+        "route": "cooking-recipes",
+        "method": "GET",
+        "path": "/api/v1/cooking/recipes",
+        "status": 200,
+        "ok": true,
+        "elapsedMs": 7.6,
+        "cached": false,
+        "etag": "W/\"2d6-Zs6Z2F+/3XAl5jwb28eEsLrLd8k\"",
+        "cacheControl": null,
+        "errorCode": null,
+        "readiness": {
+          "readinessText": null,
+          "bodyBatteryText": null,
+          "reasonCodes": []
+        },
+        "shapeOk": true,
+        "bodyPreview": "{\"ok\":true,\"data\":{\"recipes\":[{\"id\":24,\"user_id\":1000009,\"title\":\"Fixture Lentil Soup\",\"ingredients\":[{\"name\":\"lentils\",\"quantity\":\"1\",\"unit\":\"cup\"}],\"instructions\":\"Simmer lentils with vegetables until tender.\",\"prep_time_min\":10,\"cook_time_min\":30,\"servings\":4,\"tags\":\"fixture,vegetarian\",\"source\":"
+      },
+      "second": {
+        "route": "cooking-recipes",
+        "method": "GET",
+        "path": "/api/v1/cooking/recipes",
+        "status": 200,
+        "ok": true,
+        "elapsedMs": 7.7,
+        "cached": false,
+        "etag": "W/\"2d6-bK4s5O/TvbNt/6qqU90mxcEXRas\"",
+        "cacheControl": null,
+        "errorCode": null,
+        "readiness": {
+          "readinessText": null,
+          "bodyBatteryText": null,
+          "reasonCodes": []
+        },
+        "shapeOk": true,
+        "bodyPreview": "{\"ok\":true,\"data\":{\"recipes\":[{\"id\":24,\"user_id\":1000009,\"title\":\"Fixture Lentil Soup\",\"ingredients\":[{\"name\":\"lentils\",\"quantity\":\"1\",\"unit\":\"cup\"}],\"instructions\":\"Simmer lentils with vegetables until tender.\",\"prep_time_min\":10,\"cook_time_min\":30,\"servings\":4,\"tags\":\"fixture,vegetarian\",\"source\":"
+      },
+      "inferredCacheImproved": false
+    },
+    {
+      "name": "content-home",
+      "path": "/api/v1/content/home",
+      "first": {
+        "route": "content-home",
+        "method": "GET",
+        "path": "/api/v1/content/home",
+        "status": 200,
+        "ok": true,
+        "elapsedMs": 26,
+        "cached": false,
+        "etag": "\"2c2f14b2cfd937c47577a3933599dad1\"",
+        "cacheControl": "private, max-age=120",
+        "errorCode": null,
+        "readiness": {
+          "readinessText": null,
+          "bodyBatteryText": null,
+          "reasonCodes": [
+            "PIPELINE_UNAVAILABLE",
+            "IDEAS_UNAVAILABLE"
+          ]
+        },
+        "shapeOk": true,
+        "bodyPreview": "{\"ok\":true,\"data\":{\"meta\":{\"source\":\"server\",\"isFallback\":true,\"isPartial\":true,\"isStale\":false,\"generatedAt\":\"2026-05-10T13:13:45.287Z\",\"reasonCodes\":[\"PIPELINE_UNAVAILABLE\",\"IDEAS_UNAVAILABLE\"]},\"hero\":{\"eyebrow\":\"NEXT MOVE\",\"title\":\"Protect the scheduled publish move\",\"subtitle\":\"Piece already sc"
+      },
+      "second": {
+        "route": "content-home",
+        "method": "GET",
+        "path": "/api/v1/content/home",
+        "status": 200,
+        "ok": true,
+        "elapsedMs": 9.4,
+        "cached": true,
+        "etag": "\"2c2f14b2cfd937c47577a3933599dad1\"",
+        "cacheControl": "private, max-age=120",
+        "errorCode": null,
+        "readiness": {
+          "readinessText": null,
+          "bodyBatteryText": null,
+          "reasonCodes": [
+            "PIPELINE_UNAVAILABLE",
+            "IDEAS_UNAVAILABLE"
+          ]
+        },
+        "shapeOk": true,
+        "bodyPreview": "{\"ok\":true,\"data\":{\"meta\":{\"source\":\"server\",\"isFallback\":true,\"isPartial\":true,\"isStale\":false,\"generatedAt\":\"2026-05-10T13:13:45.287Z\",\"reasonCodes\":[\"PIPELINE_UNAVAILABLE\",\"IDEAS_UNAVAILABLE\"]},\"hero\":{\"eyebrow\":\"NEXT MOVE\",\"title\":\"Protect the scheduled publish move\",\"subtitle\":\"Piece already sc"
+      },
+      "inferredCacheImproved": true
+    }
+  ],
+  "routeFailures": [],
+  "writes": [
+    {
+      "name": "cooking-write-dependent-read",
+      "write": {
+        "route": "cooking-write-recipe",
+        "method": "POST",
+        "path": "/api/v1/cooking/recipes",
+        "status": 201,
+        "ok": true,
+        "elapsedMs": 18.2,
+        "cached": false,
+        "etag": "W/\"2a1-FmplWNbcHIvQLCHrn8FTRXcLl4k\"",
+        "cacheControl": null,
+        "errorCode": null,
+        "readiness": {
+          "readinessText": null,
+          "bodyBatteryText": null,
+          "reasonCodes": []
+        },
+        "shapeOk": true,
+        "bodyPreview": "{\"ok\":true,\"data\":{\"recipe\":{\"id\":25,\"user_id\":1000009,\"title\":\"Fixture Cache Probe 1778418825188\",\"ingredients\":[{\"name\":\"oats\",\"quantity\":\"1\",\"unit\":\"cup\"}],\"instructions\":\"Combine oats with water.\",\"prep_time_min\":5,\"cook_time_min\":10,\"servings\":2,\"tags\":\"fixture,cache-probe\",\"source\":null,\"creat"
+      },
+      "dependentRead": {
+        "route": "cooking-recipes-after-write",
+        "method": "GET",
+        "path": "/api/v1/cooking/recipes",
+        "status": 200,
+        "ok": true,
+        "elapsedMs": 8.4,
+        "cached": false,
+        "etag": "W/\"524-QZnWV3QzPA1C/Scdk8DKh/E3dEU\"",
+        "cacheControl": null,
+        "errorCode": null,
+        "readiness": {
+          "readinessText": null,
+          "bodyBatteryText": null,
+          "reasonCodes": []
+        },
+        "shapeOk": true,
+        "bodyPreview": "{\"ok\":true,\"data\":{\"recipes\":[{\"id\":24,\"user_id\":1000009,\"title\":\"Fixture Lentil Soup\",\"ingredients\":[{\"name\":\"lentils\",\"quantity\":\"1\",\"unit\":\"cup\"}],\"instructions\":\"Simmer lentils with vegetables until tender.\",\"prep_time_min\":10,\"cook_time_min\":30,\"servings\":4,\"tags\":\"fixture,vegetarian\",\"source\":"
+      },
+      "changed": true
+    },
+    {
+      "name": "calendar-write-dependent-dashboard-read",
+      "write": {
+        "route": "calendar-write-event",
+        "method": "POST",
+        "path": "/api/v1/calendar/events",
+        "status": 400,
+        "ok": false,
+        "elapsedMs": 7.1,
+        "cached": null,
+        "etag": "W/\"8c-OwDkUIyU1MBTyjTIaqp7szNoZgs\"",
+        "cacheControl": null,
+        "errorCode": "CALENDAR_NOT_CONFIGURED",
+        "readiness": null,
+        "shapeOk": true,
+        "bodyPreview": "{\"ok\":false,\"error\":{\"code\":\"CALENDAR_NOT_CONFIGURED\",\"message\":\"No calendar provider is connected\"},\"timestamp\":\"2026-05-10T13:13:45.343Z\"}"
+      },
+      "dependentRead": {
+        "route": "dashboard-after-calendar-write",
+        "method": "GET",
+        "path": "/api/v1/dashboard",
+        "status": 200,
+        "ok": true,
+        "elapsedMs": 6.7,
+        "cached": true,
+        "etag": "\"0f9c20de2e53608f7d25cdb2fb8f8003\"",
+        "cacheControl": "private, max-age=30",
+        "errorCode": null,
+        "readiness": {
+          "readinessText": null,
+          "bodyBatteryText": null,
+          "reasonCodes": []
+        },
+        "shapeOk": true,
+        "bodyPreview": "{\"ok\":true,\"data\":{\"greeting\":\"Good afternoon, Staging\",\"date\":\"2026-05-10\",\"dayOfWeek\":\"Sunday\",\"calendar\":{\"today\":[],\"upcoming\":[],\"status\":\"unavailable\",\"warningCodes\":[\"CALENDAR_INTEGRATION_MISSING\"],\"warnings\":[\"No calendar integration is connected yet.\"]},\"tasks\":{\"overdue\":0,\"dueToday\":0,\"to"
+      },
+      "providerBacked": false,
+      "note": "Fixture user has no real calendar OAuth token; registry-level cache invalidation probe below covers the deployed invalidator path."
+    }
+  ],
+  "cacheCoherence": {
+    "ok": true,
+    "userId": 1000009,
+    "keys": [
+      "u:1000009:calendar:today:2026-05-10",
+      "u:1000009:calendar:events:2026-05-10:2026-05-10",
+      "dashboard:1000009:en-US",
+      "dashboard-home:1000009:en-US",
+      "plan:today:u:1000009:2026-05-10:route:en-US",
+      "plan:week:u:1000009:2026-05-10:route:en-US"
+    ],
+    "cooking": {
+      "before": {
+        "u:1000009:calendar:today:2026-05-10": true,
+        "u:1000009:calendar:events:2026-05-10:2026-05-10": true,
+        "dashboard:1000009:en-US": true,
+        "dashboard-home:1000009:en-US": true,
+        "plan:today:u:1000009:2026-05-10:route:en-US": true,
+        "plan:week:u:1000009:2026-05-10:route:en-US": true
+      },
+      "after": {
+        "u:1000009:calendar:today:2026-05-10": false,
+        "u:1000009:calendar:events:2026-05-10:2026-05-10": false,
+        "dashboard:1000009:en-US": false,
+        "dashboard-home:1000009:en-US": false,
+        "plan:today:u:1000009:2026-05-10:route:en-US": false,
+        "plan:week:u:1000009:2026-05-10:route:en-US": false
+      }
+    },
+    "calendar": {
+      "before": {
+        "u:1000009:calendar:today:2026-05-10": true,
+        "u:1000009:calendar:events:2026-05-10:2026-05-10": true,
+        "dashboard:1000009:en-US": true,
+        "dashboard-home:1000009:en-US": true,
+        "plan:today:u:1000009:2026-05-10:route:en-US": true,
+        "plan:week:u:1000009:2026-05-10:route:en-US": true
+      },
+      "after": {
+        "u:1000009:calendar:today:2026-05-10": false,
+        "u:1000009:calendar:events:2026-05-10:2026-05-10": false,
+        "dashboard:1000009:en-US": false,
+        "dashboard-home:1000009:en-US": false,
+        "plan:today:u:1000009:2026-05-10:route:en-US": false,
+        "plan:week:u:1000009:2026-05-10:route:en-US": false
+      }
+    }
+  },
+  "finishedAt": "2026-05-10T13:13:46.312Z"
+}
