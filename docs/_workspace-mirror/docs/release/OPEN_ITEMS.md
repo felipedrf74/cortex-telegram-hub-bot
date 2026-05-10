@@ -58,6 +58,56 @@ Carryover:
   second-pass performance, and accessibility hardening) are intentionally
   deferred to `fix/perf-and-a11y-2026-05` after Round A hostile QA.
 
+## 2026-05-10 Perf And Accessibility Hardening — Round B
+
+Closeout:
+`docs/archive/2026-05/p0-tenant-and-safety-and-perf-2026-05/closeout.md`
+
+Verdict: **SOURCE_AND_STAGING_VALIDATION_COMPLETE** on split Round B
+(Parts 3-5 only). Production, engine main, iOS main, and TestFlight were not
+touched.
+
+Closed in source:
+- Engine Home/dashboard cache TTLs were aligned for Felipe-volume usage:
+  dashboard/root and dashboard/home fresh TTLs are now 180 seconds, readiness
+  is now 300 seconds, and SWR remains 300 seconds.
+- Engine `fetchTraining()` now starts readiness and fallback calendar-event
+  reads in parallel.
+- Engine cache-coherence prefix cascades now batch related prefix clears.
+- Engine reminder cron ticks are single-flight guarded.
+- Engine provider fallback runaway detection now hard-stops with a clean 502.
+- Engine content topic default limit is tightened to 20 with a 500 hard cap.
+- Engine daily-context and audit-trail hot paths have new compound indexes.
+- iOS dashboard load and calendar warmup now run concurrently.
+- iOS Home Secretary calendar projections are cached between SwiftUI renders.
+- iOS dashboard-facing repository TTLs are aligned to 60 seconds.
+- iOS HTTP reads retry transient GET/PATCH/PUT failures with bounded jittered
+  backoff and decode JSON off the main actor.
+- iOS hot-path date formatters are cached, receipt preview images are
+  constrained/downscaled, hardcoded fonts named by the audit are semantic,
+  reduce-motion guards cover launch/Home/quick-add animations, and major
+  interactive surfaces have source-pinned accessibility labels.
+
+Evidence:
+- Engine typecheck PASS.
+- Engine focused Round B suite PASS: 6 files / 65 tests.
+- Engine pre-push focused suite PASS: 85 files / 832 tests.
+- Mock lint PASS at 827/827 strict baseline.
+- Cannot-skip dashboard PASS: 34/34.
+- Staging deploy PASS after fixing the worktree `node_modules` symlink
+  exclusion in `scripts/deploy-staging.sh`.
+- Staging smoke PASS: 20 tests / 0 failures.
+- Authenticated staging fixture probe PASS: 0 route failures; dashboard-home
+  improved from 91.6 ms first call to 8.3 ms cached call.
+- iOS Debug focused suite PASS: 45 tests / 0 failures.
+- iOS ReleaseWithTesting full unit suite PASS: 1,263 XCTest + 10 Swift Testing
+  / 0 failures.
+- iOS Release UI visual matrix PASS: 21/21 with 80 PNG screenshots.
+
+Carryover:
+- The staging fixture harness still needs a 100-calendar-event seeding mode to
+  produce repeatable Felipe-volume before/after wall-time evidence.
+
 ## 2026-05-10 iOS Pre-TestFlight Validation + Wave 1 Runbook
 
 Release validation:
