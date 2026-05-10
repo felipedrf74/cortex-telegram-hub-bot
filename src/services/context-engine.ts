@@ -28,6 +28,7 @@ import { logger } from '../utils/logger';
 import { now } from '../utils/date-parser';
 import { config } from '../config';
 import { resolveChatTenantId } from './chat-tenant-scope';
+import { sanitizeForPromptInterpolation } from '../utils/prompt-sanitizer';
 
 // ─── Cache primitives ──────────────────────────────────────────────────
 
@@ -131,7 +132,7 @@ export async function buildDailyContext(userId: number, tenantId?: number): Prom
       ).all(userId) as { title: string }[];
 
       if (dueToday.length > 0) {
-        parts.push(`Due today: ${dueToday.map((t) => t.title).join(', ')}`);
+        parts.push(`Due today: ${dueToday.map((t) => sanitizeForPromptInterpolation(t.title)).join(', ')}`);
       }
     }
   } catch (err) {
@@ -152,7 +153,7 @@ export async function buildDailyContext(userId: number, tenantId?: number): Prom
           const t = e.start?.dateTime || e.start;
           const timeMatch = String(t || '').match(/T(\d{2}:\d{2})/);
           const time = timeMatch ? timeMatch[1] : '?';
-          const title = e.summary || e.subject || e.title || '(untitled)';
+          const title = sanitizeForPromptInterpolation(e.summary || e.subject || e.title || '(untitled)');
           return `${time} ${title}`;
         });
         parts.push(`CALENDAR: ${events.length} events today`);
@@ -174,7 +175,7 @@ export async function buildDailyContext(userId: number, tenantId?: number): Prom
         const todayName = new Date().toLocaleDateString('en-US', { weekday: 'long' });
         const today = sessions?.find((s: any) => s.day_of_week === todayName);
         if (today) {
-          parts.push(`TRAINING: ${today.title || today.session_type} (${today.status})`);
+          parts.push(`TRAINING: ${sanitizeForPromptInterpolation(today.title || today.session_type)} (${sanitizeForPromptInterpolation(today.status)})`);
         } else {
           parts.push(`TRAINING: Rest day`);
         }

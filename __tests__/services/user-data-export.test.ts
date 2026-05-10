@@ -70,7 +70,8 @@ vi.mock('../../src/config', () => ({
 import { addTransaction, calculateAndStoreTax, markTaxPaid } from '../../src/services/finance-tracker';
 import {
   exportUserFinanceData, deleteUserFinanceData, countUserFinanceData,
-  exportAllUserData, deleteAllUserData,
+  exportAllUserData, deleteAllUserData, deleteAllUserDataForAccountDeletion,
+  revokeThirdPartyOAuthTokensForUser,
 } from '../../src/services/user-data-export';
 import { logAudit, getAuditTrail } from '../../src/services/audit-trail';
 
@@ -374,6 +375,43 @@ describe('deleteAllUserData', () => {
     expect(auditRows).toHaveLength(1);
   });
 
+  it('deletes Wave 1 notification, Garmin, agent-signal, encryption, and config rows while retaining audit trail', () => {
+    seedUser(testDb, 1);
+    logAudit({ userId: 1, actorId: 1, action: 'export', resource: 'all' });
+
+    testDb.prepare(`
+      INSERT INTO notification_device_tokens (
+        token_id, user_id, tenant_id, platform, token_hash, token_suffix, environment
+      )
+      VALUES ('dt_delete', 1, 1, 'ios', 'hash', 'suffix', 'sandbox')
+    `).run();
+    testDb.prepare(`
+      INSERT INTO garmin_sessions (user_id, oauth1_token_json, oauth2_token_json)
+      VALUES (1, '{}', '{}')
+    `).run();
+    testDb.prepare(`
+      INSERT INTO agent_signals (source_agent, signal_type, payload, priority, expires_at, user_id, tenant_id)
+      VALUES ('test', 'gdpr', '{}', 'normal', datetime('now', '+1 day'), 1, 1)
+    `).run();
+    testDb.prepare(`
+      INSERT INTO user_encryption_meta (user_id, key_version)
+      VALUES (1, 1)
+    `).run();
+    testDb.prepare(`
+      INSERT INTO kv_store (key, value)
+      VALUES ('config:1:timezone', '"UTC"')
+    `).run();
+
+    const counts = deleteAllUserData(1);
+
+    expect(counts.notification_device_tokens).toBe(1);
+    expect(counts.garmin_sessions).toBe(1);
+    expect(counts.agent_signals).toBe(1);
+    expect(counts.user_encryption_meta).toBe(1);
+    expect(counts.kv_store_settings).toBe(1);
+    expect(testDb.prepare('SELECT COUNT(*) as c FROM audit_trail WHERE user_id = 1').get()).toMatchObject({ c: 1 });
+  });
+
   it('returns correct counts per table', () => {
     seedUser(testDb, 1);
     seedUserData(testDb, 1);
@@ -389,6 +427,65 @@ describe('deleteAllUserData', () => {
     const counts = deleteAllUserData(999);
     expect(counts['conversations']).toBe(0);
     expect(counts['users']).toBe(0);
+  });
+});
+
+describe('account deletion OAuth revocation', () => {
+  beforeEach(() => {
+    testDb = createTestDb();
+    applyMigrations(testDb);
+  });
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    testDb.close();
+  });
+
+  it('best-effort revokes Google and Microsoft credentials before local deletion and removes Garmin locally', async () => {
+    seedUser(testDb, 1);
+    testDb.prepare(`
+      INSERT INTO user_oauth_tokens (user_id, provider, access_token, refresh_token, token_type, scopes)
+      VALUES
+        (1, 'google', 'google-access', 'google-refresh', 'Bearer', '[]'),
+        (1, 'outlook', 'outlook-access', 'outlook-refresh', 'Bearer', '[]')
+    `).run();
+    testDb.prepare(`
+      INSERT INTO garmin_sessions (user_id, oauth1_token_json, oauth2_token_json)
+      VALUES (1, '{}', '{}')
+    `).run();
+    const fetchMock = vi.fn(async () => new Response('', { status: 200 }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const revocations = await revokeThirdPartyOAuthTokensForUser(1);
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      'https://oauth2.googleapis.com/revoke',
+      expect.objectContaining({ method: 'POST' }),
+    );
+    expect(String(fetchMock.mock.calls[0][1]?.body)).toContain('google-refresh');
+    expect(String(fetchMock.mock.calls[1][0])).toContain('login.microsoftonline.com');
+    expect(String(fetchMock.mock.calls[1][1]?.body)).toContain('outlook-refresh');
+    expect(revocations).toEqual(expect.arrayContaining([
+      expect.objectContaining({ provider: 'google', status: 'revoked' }),
+      expect.objectContaining({ provider: 'outlook', status: 'revoked' }),
+      expect.objectContaining({ provider: 'garmin', status: 'local_only' }),
+    ]));
+    expect(testDb.prepare('SELECT 1 FROM garmin_sessions WHERE user_id = 1').get()).toBeUndefined();
+  });
+
+  it('account deletion calls revocation before erasing local OAuth rows', async () => {
+    seedUser(testDb, 1);
+    testDb.prepare(`
+      INSERT INTO user_oauth_tokens (user_id, provider, access_token, refresh_token, token_type, scopes)
+      VALUES (1, 'google', 'google-access', 'google-refresh', 'Bearer', '[]')
+    `).run();
+    const fetchMock = vi.fn(async () => new Response('', { status: 400 }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const counts = await deleteAllUserDataForAccountDeletion(1);
+
+    expect(fetchMock).toHaveBeenCalledOnce();
+    expect(counts.user_oauth_tokens).toBe(1);
+    expect(testDb.prepare('SELECT 1 FROM user_oauth_tokens WHERE user_id = 1').get()).toBeUndefined();
   });
 });
 

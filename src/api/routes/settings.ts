@@ -12,6 +12,7 @@ import { getDb } from '../../services/database';
 import { getPushPreferences, setPushPreference } from '../../services/report-document-store';
 import { registerNotificationDeviceToken } from '../../services/notification-orchestrator';
 import { isValidTenantUserId, recordTenantScopeAnomaly } from '../../services/tenant-scope-observability';
+import { deleteAllUserDataForAccountDeletion } from '../../services/user-data-export';
 
 function normalizeLanguageInput(language: unknown): 'pt-BR' | 'pt-PT' | 'en-US' | null {
   if (typeof language !== 'string') return null;
@@ -254,49 +255,7 @@ export function settingsRoutes(): Router {
     const { userId } = req as AuthenticatedRequest;
     if (!ensureValidSettingsUserScope(res, userId, 'settings_route_delete_account')) return;
     try {
-      const db = require('../../services/database').getDb();
-
-      // Delete ALL user data from every user-facing table.
-      // This list must stay in sync with migrations that add user_id columns.
-      // Last audited: April 2026 (added content learning store + reports tables).
-      const tables = [
-        // ── Core ──
-        'ios_devices', 'messages', 'onboarding_sessions', 'user_profiles',
-        'conversations', 'todos', 'notes', 'reminders', 'shared_memory',
-        'daily_context_cache',
-        // ── Content (learning store + pipeline) ──
-        'saved_ideas', 'content_topic_feedback', 'content_ref_channels',
-        'content_knowledge', 'content_patterns', 'content_research_briefs',
-        'content_scripts', 'content_performance', 'content_learned_patterns',
-        'content_pipeline', 'content_topics', 'content_notifications',
-        'book_library', 'video_transcripts', 'video_studies',
-        // ── Reports & notifications ──
-        'report_documents', 'push_preferences',
-        // ── Finance ──
-        'invoice_filings', 'invoice_vendors', 'invoice_queue',
-        'finance_transactions', 'finance_tax_events',
-        // ── Cooking ──
-        'recipes', 'meal_plans', 'shopping_lists',
-        // ── Training & health ──
-        'fitness_training_plans', 'training_completions',
-        'native_tasks', 'native_task_lists',
-        'apple_health_data', 'readiness_scores',
-        // ── Integrations ──
-        'webhook_subscriptions', 'webhook_events',
-        'user_oauth_tokens', 'garmin_user_tokens',
-        // ── Auth & billing ──
-        'email_verification_codes', 'subscriptions',
-        // ── Telemetry (user-scoped) ──
-        'api_usage', 'audit_trail', 'client_errors',
-        'user_skill_overrides',
-      ];
-      for (const table of tables) {
-        try {
-          db.prepare(`DELETE FROM ${table} WHERE user_id = ?`).run(userId);
-        } catch { /* table may not exist or no user_id column */ }
-      }
-      // Also delete the user row itself
-      try { db.prepare('DELETE FROM users WHERE id = ?').run(userId); } catch {}
+      await deleteAllUserDataForAccountDeletion(userId);
 
       logger.info({ userId, platform: 'ios' }, 'Account deleted (GDPR Article 17)');
       sendSuccess(res, { deleted: true, message: 'All data has been permanently deleted.' });
