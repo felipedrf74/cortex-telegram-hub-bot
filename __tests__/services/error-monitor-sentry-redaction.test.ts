@@ -9,19 +9,61 @@ vi.mock('../../src/services/database', () => ({
   initDatabase: vi.fn(),
   closeDatabase: vi.fn(),
   findUnexpectedMigrationPrefixCollisions: vi.fn(() => []),
+  assertNoUnexpectedMigrationPrefixCollisions: vi.fn(),
 }));
 
 vi.mock('../../src/services/error-tracker', () => ({
+  sanitizeSentryEvent: vi.fn((event) => event),
+  init: vi.fn(),
   captureException: mockCaptureException,
   isEnabled: () => true,
+  getStatus: vi.fn(() => ({ enabled: true, environment: 'test' })),
+  captureMessage: vi.fn(),
+  flush: vi.fn(async () => undefined),
 }));
 
 vi.mock('../../src/services/operator-alerts', () => ({
   recordOperatorAlert: vi.fn(),
+  listOperatorAlerts: vi.fn(() => []),
+  acknowledgeOperatorAlert: vi.fn(() => false),
+  resolveOperatorAlert: vi.fn(() => false),
+  retryOperatorAlertDelivery: vi.fn(() => false),
+  deliverOperatorAlert: vi.fn(async () => ({ status: 'not_configured' })),
+  processDueOperatorAlertDeliveries: vi.fn(async () => []),
+  getOperatorAlertDeliverySummary: vi.fn(() => ({
+    pending: 0,
+    delivered: 0,
+    failed: 0,
+    dead_letter: 0,
+    not_configured: 0,
+  })),
+  _setOperatorAlertDeliverySenderForTests: vi.fn(),
+  _setOperatorAlertDeliveryConfigForTests: vi.fn(),
 }));
 
 vi.mock('../../src/portal/telemetry', () => ({
   pushEvent: vi.fn(),
+  getRecentEvents: vi.fn(() => []),
+  registerJob: vi.fn(),
+  setJobEnabledChecker: vi.fn(),
+  isJobEnabled: vi.fn(() => true),
+  setJobFailureNotifier: vi.fn(),
+  wrapJob: vi.fn((_name: string, fn: () => Promise<void>) => fn),
+  getJobStatuses: vi.fn(() => []),
+  getJobMap: vi.fn(() => new Map()),
+  setBotRef: vi.fn(),
+  getBotRef: vi.fn(() => null),
+  isRestarting: vi.fn(() => false),
+  setIsRestarting: vi.fn(),
+  setBotPollingActive: vi.fn(),
+  isBotPollingActive: vi.fn(() => false),
+  recordMessageProcessed: vi.fn(),
+  getLastMessageAt: vi.fn(() => null),
+  recordGarminRefresh: vi.fn(),
+  getGarminRefreshStatus: vi.fn(() => ({ at: null, ok: false })),
+  setDbProvider: vi.fn(),
+  _resetTelemetryForTests: vi.fn(),
+  seedJobLastRunFromHistory: vi.fn(),
 }));
 
 vi.mock('../../src/utils/logger', () => ({

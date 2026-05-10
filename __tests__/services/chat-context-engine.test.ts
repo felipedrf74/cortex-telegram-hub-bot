@@ -9,10 +9,15 @@ vi.mock('../../src/services/database', () => ({
   initDatabase: vi.fn(),
   closeDatabase: vi.fn(),
   findUnexpectedMigrationPrefixCollisions: vi.fn(() => []),
+  assertNoUnexpectedMigrationPrefixCollisions: vi.fn(),
 }));
 
 vi.mock('../../src/services/shared-decision-context', () => ({
   buildSharedDecisionContext: (...args: unknown[]) => mockBuildSharedDecisionContext(...args),
+  buildSharedDecisionContracts: vi.fn(async () => ({})),
+  invalidateSharedContextForSkillChange: vi.fn(),
+  invalidateSharedDecisionContextCache: vi.fn(),
+  resetSharedDecisionContextCacheForTests: vi.fn(),
 }));
 
 import {

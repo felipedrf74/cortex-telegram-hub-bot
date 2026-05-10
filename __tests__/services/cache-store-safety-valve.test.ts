@@ -9,6 +9,7 @@ vi.mock('../../src/services/database', () => ({
   initDatabase: vi.fn(),
   closeDatabase: vi.fn(),
   findUnexpectedMigrationPrefixCollisions: vi.fn(() => []),
+  assertNoUnexpectedMigrationPrefixCollisions: vi.fn(),
 }));
 
 vi.mock('../../src/utils/logger', () => ({
@@ -17,6 +18,7 @@ vi.mock('../../src/utils/logger', () => ({
     info: vi.fn(),
     warn: mockWarn,
     error: vi.fn(),
+    fatal: vi.fn(),
   },
   LOGGER_REDACTION_PATHS: [],
 }));
