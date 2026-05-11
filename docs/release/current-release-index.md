@@ -2,45 +2,54 @@
 
 Status: canonical
 Owner: release lead (Felipe)
-Last verified: 2026-05-04
+Last verified: 2026-05-11
 Update policy: update when the current RC identity, deploy-gate evidence, or canonical-doc cross-references change. Run engine/scripts/release-identity.sh --persist to refresh auto-generated identity fields.
 
-Date: 2026-05-04
+Date: 2026-05-11
 
 ## Current Status
 
 Active production package:
 
 - source branch: `main`
-- production HEAD: `bc6e963` (version-bump for 4.14.127)
-- production version: `4.14.127`
+- production HEAD: `d46aa107` (version-bump for 4.14.149)
+- production version: `4.14.149`
 - release state: `docs/release/CURRENT_RELEASE_STATE.md` (backend) and `/Users/felipedominguez/Desktop/Nexus Hub/docs/release/CURRENT_RELEASE_STATE.md` (workspace)
 - official workspace root: `/Users/felipedominguez/Desktop/Nexus Hub`
 
-Commits in this release (4.14.126 -> 4.14.127):
+Commits in this release (4.14.148 -> 4.14.149):
 
-- `00a1d23 fix(auth): close beta replay and oauth state gaps`
-- `bc6e963 chore: bump version to 4.14.127 [deploy]`
+- `146f6cf7 docs(release): add final promote staging evidence`
+- `d46aa107 chore: bump version to 4.14.149 [deploy]`
 
 Scope:
 
-- Auth and registration closed-beta hardening: Apple nonce replay guard, Telegram OAuth nonce state, Google verified-email account creation/linking guard, email verification attempt cap, and auth-sensitive release classifier routing.
-- iOS auth hardening: Apple raw nonce generation, Keychain/session protections, server-side logout, and auth focused tests.
-- iOS navigation performance: interaction-first tab transitions, lighter tab press feedback, deferred warmups, and Home fallback-card rendering after the first bootstrap attempt so Home does not look blank during navigation.
+- Round E launch blockers: Apple revocation, GDPR deletion/revocation,
+  prompt-injection hardening, Sentry redaction, api_cache safety valve, and
+  onboarding isolation hardening.
+- Decision Center Round D' fixes and production promotion evidence.
+- iOS `main` pushed at `1.4.3(17)` for the Wave 1 Decision Center TestFlight
+  cut, without cutting TestFlight.
 
 Validated through promotion:
 
-- pre-push full vitest before source push: 445 files / 6691 tests passed
 - staging deploy: exit 0
-- staging smoke: 17/17 passed
-- local↔staging dist hash match preflight: passed
+- staging smoke: 19 passed / 0 failed / 21 total
 - deploy-time typecheck and build passed
-- deploy-time pre-push full vitest for version bump: 445 files / 6691 tests passed
-- prod deploy.sh: rsync -> npm ci -> pm2 start -> health wait -> `Deploy complete! v4.14.127`
-- promote-to-prod.sh: ✅ `PROMOTE COMPLETE`
-- post-deploy: PM2 `nexus-hub` and `content-engine` online, prod status portal reports `4.14.127`
-- iOS `main` pushed at `50d2fa7`
-- iOS validation before push: focused navigation/Home tests passed, and physical iPhone rapid bottom-tab switching UI test passed on iPhone Felipe.
+- deploy-time full vitest: 502 files / 7228 tests passed
+- promote-to-prod.sh: `PROMOTE COMPLETE`
+- post-deploy: PM2 `nexus-hub` and `content-engine` online, production
+  snapshot reports `4.14.149`
+- production Decision Center API smoke passed
+- production non-owner readiness probe returned user 28 readiness `78` and
+  body battery `65`
+- iOS `main` pushed at `b60b14c`, version `1.4.3(17)`, tag
+  `ios-1.4.3-build17`
+- iOS validation before push: Debug focused suite passed, Release visual matrix
+  passed with 21 tests / 80 PNG screenshots, ReleaseWithTesting full unit
+  suite passed, and clean Release build had 0 warnings / 0 errors
+- live APNs validation remains blocked because user `1` has no active
+  production-registered push token; no APNs send was claimed
 
 ## Previous Production Versions On This Branch
 

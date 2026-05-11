@@ -737,3 +737,109 @@ verifiably not fixed in source.
    live `apns-id` claim in place.
 8. Re-ran the focused backend suite after the docs/evidence correction to keep
    the closeout's test numbers tied to current source.
+
+## Production Promote, iOS Main, and APNs Token Gate Addendum
+
+Date: 2026-05-11
+
+Status: ENGINE_PRODUCTION_PROMOTED_IOS_MAIN_PUSHED_APNS_BLOCKED_WITH_EXACT_REASON
+
+### Branch Reconcile
+
+- Canonical production-bound engine branch:
+  `feature/decision-center-orchestration-apns`.
+- Reconcile decision: Round E had work not present on the Decision Center
+  branch, so the Round E-only commits were cherry-picked into
+  `feature/decision-center-orchestration-apns` before staging and promotion.
+- The Round E commit `7644b2e3` was not cherry-picked because its Decision
+  Center work was semantically superseded by the Round D / D' Decision Center
+  implementation already on the canonical branch.
+- Backup tags pushed before changes:
+  `backup/production-promote-engine-before-20260511-001837` and
+  `backup/production-promote-ios-before-20260511-001837`.
+
+### Engine Production Promote
+
+- Canonical branch was pushed to origin and then staged from the latest tip.
+- Final staging smoke evidence:
+  `docs/release/smoke-evidence/staging-smoke-146f6cf7-20260510T233345Z.json`
+  with 19 passed / 0 failed / 21 total.
+- Final staging Decision Center probe:
+  `docs/release/smoke-evidence/staging-decision-center-final-promote-20260510T233010Z.json`.
+- Final staging APNs mock environment-routing probe:
+  `docs/release/smoke-evidence/staging-apns-mock-env-routing-final-promote-20260510T233044Z.json`.
+- Pre-promote production Garmin cleanup dry-run:
+  `docs/release/smoke-evidence/prod-cleanup-pre-round-e-dry-run-20260510T233055Z.json`,
+  `matchedCount: 0`.
+- Production promote completed through `./scripts/promote-to-prod.sh`.
+- Production deploy commit: `d46aa107`.
+- Production version after promote: `4.14.149`.
+- Production health evidence:
+  `docs/release/smoke-evidence/prod-health-20260510T234415Z.json`.
+- Production snapshot evidence:
+  `docs/release/smoke-evidence/prod-snapshot-20260510T234415Z.json`.
+- Production PM2 health evidence:
+  `docs/release/smoke-evidence/prod-pm2-health-20260510T234415Z.json`.
+- Production Garmin tenant-isolation watcher/manual cleanup-substrate check:
+  `docs/release/smoke-evidence/prod-garmin-tenant-isolation-watcher-20260510T234415Z.json`,
+  `matchedCount: 0`.
+- Production Decision Center API smoke:
+  `docs/release/smoke-evidence/prod-decision-center-api-smoke-20260510T234511Z.json`,
+  `/api/v1/decisions/summary` and `/api/v1/decisions` returned 200 with the
+  expected scoped shapes.
+- Production non-owner readiness probe:
+  `docs/release/smoke-evidence/prod-non-owner-readiness-probe-user28-20260510T234511Z.json`.
+  User 28 returned readiness `78` and body battery `65`, not Felipe's prior
+  leaked values.
+- Engine `origin/main` was reconciled to production deploy commit `d46aa107`.
+
+### iOS Main and TestFlight Version Bump
+
+- Merge strategy: Option A, `git merge --no-ff feature/decision-center-orchestration-apns`
+  into iOS `main` from a clean worktree.
+- iOS main head after merge and version bump: `b60b14c`.
+- iOS version after bump: `1.4.3(17)`.
+- iOS tag pushed: `ios-1.4.3-build17`.
+- Debug clean build log:
+  `/Users/felipedominguez/Desktop/Nexus Hub IOS/worktrees/ios-main-decision-center-promote-20260511/validation-evidence/ios-debug-clean-build-20260510T234908Z.log`.
+- Debug focused Decision Center / scope-isolation result:
+  `/Users/felipedominguez/Desktop/Nexus Hub IOS/worktrees/ios-main-decision-center-promote-20260511/validation-evidence/ios-debug-decision-focused-20260510T234908Z.xcresult`.
+  The selected UI suite passed with 14 executed tests, 5 expected local-engine
+  skips, and 0 failures.
+- Release visual matrix result:
+  `/Users/felipedominguez/Desktop/Nexus Hub IOS/worktrees/ios-main-decision-center-promote-20260511/validation-evidence/ios-release-visual-matrix-20260510T235821Z.xcresult`.
+  Xcode reported 21 tests / 0 failures, with 80 exported PNG attachments at
+  `/Users/felipedominguez/Desktop/Nexus Hub IOS/worktrees/ios-main-decision-center-promote-20260511/validation-evidence/ios-release-visual-matrix-20260510T235821Z-attachments/`.
+- ReleaseWithTesting full unit result:
+  `/Users/felipedominguez/Desktop/Nexus Hub IOS/worktrees/ios-main-decision-center-promote-20260511/validation-evidence/ios-release-with-testing-unit-20260511T000748Z.xcresult`.
+  Result: 1267 XCTest tests + 10 Swift Testing checks, 0 failures.
+- Clean Release build log:
+  `/Users/felipedominguez/Desktop/Nexus Hub IOS/worktrees/ios-main-decision-center-promote-20260511/validation-evidence/ios-release-clean-build-20260511T000907Z.log`.
+  Result: build succeeded with 0 warnings and 0 errors.
+
+### Live APNs Validation
+
+- Production APNs credentials were present: `APNS_ENABLED`, `APNS_TEAM_ID`,
+  `APNS_KEY_ID`, `APNS_AUTH_KEY_P8`, `APNS_BUNDLE_ID`, and
+  `APNS_ENVIRONMENT` were all set.
+- Live APNs send to Felipe was not performed because production has no active
+  registered push token for `user_id = 1`.
+- Initial token lookup evidence:
+  `docs/release/smoke-evidence/prod-apns-token-lookup-user1-20260511T001055Z.json`.
+- Retry lookup evidence after Felipe was asked to open the app:
+  `docs/release/smoke-evidence/prod-apns-token-lookup-user1-retry-20260511T001120Z.json`.
+- Both lookup artifacts show no joined `ios_devices` /
+  `notification_device_tokens` row and no direct active device-token row for
+  `user_id = 1`. Recent device rows for user 1 have `has_push: 0`.
+- Therefore live APNs remains `BLOCKED_WITH_EXACT_REASON`: credentials are
+  configured, but Felipe's owner account has no production-registered active
+  device token. No APNs HTTP response, `apns-id`, or lock-screen confirmation
+  was claimed.
+- No raw APNs device token was logged.
+
+### Docs and Cleanup
+
+- Docs audit after production evidence: `npm run docs:audit`, PASS under the
+  ceiling with 464 issues.
+- TestFlight was not cut.
+- No local backend process or SSH tunnel was intentionally left running.

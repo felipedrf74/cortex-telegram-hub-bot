@@ -5,7 +5,7 @@
 
 | Area | Path | Branch | Commit | Dirty state | Version | Migrations |
 | --- | --- | --- | --- | --- | --- | --- |
-| Backend | `/Users/felipedominguez/Desktop/Nexus Hub/worktrees/perf-a11y-engine` | `fix/perf-and-a11y-2026-05` | `4b7c5537` | `unknown` | `4.14.147` | `123` |
-| iOS | `/Users/felipedominguez/Desktop/Nexus Hub IOS/Nexus Hub` | `fix/perf-and-a11y-2026-05` | `4b7c5537` | `dirty` | n/a | n/a |
+| Backend | `/Users/felipedominguez/Desktop/Custom Connectors/Cortex/cortex-telegram-hub-bot` | `feature/decision-center-orchestration-apns` | `d46aa107` | `dirty` | `4.14.149` | `124` |
+| iOS | `/Users/felipedominguez/Desktop/Nexus Hub IOS/Nexus Hub` | `feature/decision-center-orchestration-apns` | `1b3681a` | `dirty` | n/a | n/a |
 
-Generated at: `2026-05-10T15:48:31Z`
+Generated at: `2026-05-11T00:18:00Z`
