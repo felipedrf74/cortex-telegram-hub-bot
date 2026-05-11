@@ -67,7 +67,7 @@ export function decisionRoutes(): Router {
     if (!ensureValidTenantRouteScope(res, userId, 'decisions_route_list')) return;
     const tenantId = routeTenantId(authReq, userId);
     const limit = parseInt(String(req.query.limit || '80'), 10);
-    const status = typeof req.query.status === 'string' ? req.query.status : 'all';
+    const status = typeof req.query.status === 'string' ? req.query.status : undefined;
     const sourceSkill = typeof req.query.sourceSkill === 'string' ? req.query.sourceSkill as NotificationSourceSkill : undefined;
     const type = typeof req.query.type === 'string' ? req.query.type as NotificationIntentType : undefined;
     const urgency = typeof req.query.urgency === 'string' ? req.query.urgency as DecisionUrgency : undefined;

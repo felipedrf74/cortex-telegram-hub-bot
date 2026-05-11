@@ -188,6 +188,11 @@ describe('Decision routes', () => {
     expect(list.body.data.count).toBe(1);
     expect(mockListDecisionItems).toHaveBeenCalledWith(7, 7, expect.objectContaining({ status: 'all', limit: 10 }));
 
+    mockListDecisionItems.mockClear();
+    const activeList = await dispatch(router, 'GET', '/', { limit: 10 });
+    expect(activeList.statusCode).toBe(200);
+    expect(mockListDecisionItems).toHaveBeenCalledWith(7, 7, expect.objectContaining({ status: undefined, limit: 10 }));
+
     const detail = await dispatch(router, 'GET', '/nc_1');
     expect(detail.statusCode).toBe(200);
     expect(detail.body.data.item.decisionId).toBe('nc_1');
