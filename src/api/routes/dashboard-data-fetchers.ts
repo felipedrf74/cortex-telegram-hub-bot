@@ -367,7 +367,7 @@ export async function fetchTraining(userId: number, deps: FetchTrainingDeps = {}
         );
       } else {
         readinessScore = readiness.score;
-        bodyBattery = readiness.bodyBattery;
+        bodyBattery = normalizeBodyBattery(readiness.bodyBattery);
       }
     } else if (isSyntheticNeutralReadiness(readiness)) {
       readinessScore = null;

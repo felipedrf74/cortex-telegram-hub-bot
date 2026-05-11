@@ -831,6 +831,23 @@ describe('Dashboard API route', () => {
     expect(res.body.data.training.bodyBattery).toBe(57);
   });
 
+  it('does not render cached zero body battery as a real dashboard battery value', async () => {
+    mockGetCached.mockImplementation((key: string) => {
+      if (key === 'dashboard-readiness:4') {
+        return { score: 68, bodyBattery: 0 };
+      }
+      return null;
+    });
+
+    const res = await dispatch(4);
+
+    expect(res.statusCode).toBe(200);
+    expect(res.body.data.training.readinessScore).toBe(68);
+    expect(res.body.data.training.bodyBattery).toBeNull();
+    expect(res.body.data.training.bodyBatteryStatus).toBe('unavailable');
+    expect(res.body.data.training.warningCodes).toContain('BODY_BATTERY_UNAVAILABLE');
+  });
+
   it('falls back to stage-only content counts when the legacy status column is missing', () => {
     const db = {
       prepare(sql: string) {
