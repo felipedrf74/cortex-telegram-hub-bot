@@ -333,7 +333,9 @@ export async function fetchTraining(userId: number, deps: FetchTrainingDeps = {}
   const cachedReadiness = getCached<{ score: number; bodyBattery: number | null; reasonCode?: string | null }>(
     dashboardReadinessCacheKeyFor(userId),
   );
-  const readinessPromise = cachedReadiness
+  const shouldUseCachedReadiness = cachedReadiness
+    && (cachedReadiness.bodyBattery != null || isSyntheticNeutralCachedReadiness(cachedReadiness));
+  const readinessPromise = shouldUseCachedReadiness
     ? Promise.resolve({ source: 'cache' as const, readiness: cachedReadiness })
     : (async () => {
       const calculateReadiness = deps.calculateReadiness

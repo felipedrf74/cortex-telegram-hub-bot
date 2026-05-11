@@ -848,6 +848,31 @@ describe('Dashboard API route', () => {
     expect(res.body.data.training.warningCodes).toContain('BODY_BATTERY_UNAVAILABLE');
   });
 
+  it('refreshes cached missing body battery so Apple Health fallback can fill it', async () => {
+    mockGetCached.mockImplementation((key: string) => {
+      if (key === 'dashboard-readiness:4') {
+        return { score: 68, bodyBattery: null };
+      }
+      return null;
+    });
+    mockCalculateReadiness.mockResolvedValue({
+      score: 68,
+      factors: { bodyBattery: { current: 64 } },
+      recommendation: 'reduce_10pct',
+      reasoning: 'Garmin readiness with Apple Health body battery fallback',
+    });
+
+    const result = await fetchTraining(4, {
+      calculateReadiness: mockCalculateReadiness,
+      getEvents: mockUnifiedCalendarEvents,
+    });
+
+    expect(mockCalculateReadiness).toHaveBeenCalledWith(4);
+    expect(result.readinessScore).toBe(68);
+    expect(result.bodyBattery).toBe(64);
+    expect(result.bodyBatteryStatus).toBe('ready');
+  });
+
   it('falls back to stage-only content counts when the legacy status column is missing', () => {
     const db = {
       prepare(sql: string) {

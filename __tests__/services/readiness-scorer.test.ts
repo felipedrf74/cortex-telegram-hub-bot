@@ -160,6 +160,36 @@ describe('readiness-scorer — calculateReadiness', () => {
     `).run(userId, '{"token":"oauth1"}', '{"token":"oauth2"}');
   }
 
+  function seedAppleHealthData(
+    userId: number,
+    types: Array<'hrv' | 'sleep' | 'rhr' | 'summary'> = ['hrv', 'sleep', 'rhr', 'summary'],
+  ): void {
+    const today = new Date().toISOString().slice(0, 10);
+    const rows: Array<{ type: string; data: Record<string, unknown> }> = [];
+    if (types.includes('hrv')) rows.push({ type: 'hrv', data: { value: 60 } });
+    if (types.includes('sleep')) {
+      rows.push({
+        type: 'sleep',
+        data: { totalSleepSeconds: 28800, deepSleepSeconds: 5400, remSleepSeconds: 7200 },
+      });
+    }
+    if (types.includes('rhr')) rows.push({ type: 'resting_heart_rate', data: { value: 52 } });
+    if (types.includes('summary')) {
+      rows.push({
+        type: 'daily_summary',
+        data: { activeCalories: 120, exerciseMinutes: 20, steps: 3500 },
+      });
+    }
+
+    const insert = testDb.prepare(`
+      INSERT OR REPLACE INTO apple_health_data (user_id, data_type, date, data_json, source_name)
+      VALUES (?, ?, ?, ?, 'test')
+    `);
+    for (const row of rows) {
+      insert.run(userId, row.type, today, JSON.stringify(row.data));
+    }
+  }
+
   beforeEach(() => {
     testDb = createTestDb();
     applyMigrations(testDb);
@@ -353,6 +383,33 @@ describe('readiness-scorer — calculateReadiness', () => {
     expect(result.recommendation).toBe('full_intensity');
     expect(result.reasoning).toContain('WHOOP');
     expect(result.factors.bodyBattery.current).toBe(81);
+  });
+
+  it('uses Apple Health energy reserve when connected Garmin lacks body battery', async () => {
+    seedAppleHealthData(1);
+
+    mockGarmin.getHrvData.mockResolvedValue({ hrvSummary: { lastNightAvg: 55, weeklyAvg: 50 } });
+    mockGarmin.getSleepData.mockResolvedValue({ dailySleepDTO: { sleepTimeSeconds: 28800, overallSleepScore: 80 } });
+    mockGarmin.getBodyBatteryEvents.mockResolvedValue([]);
+    mockGarmin.getDailySummary.mockResolvedValue(null);
+    mockGarmin.getTrainingReadiness.mockResolvedValue({});
+    mockGarmin.getActivitiesByDate.mockResolvedValue([]);
+
+    const result = await calculateReadiness(1);
+    expect(result.factors.bodyBattery.current).toBeGreaterThan(0);
+    expect(result.factors.bodyBattery.morningPeak).toBeGreaterThan(0);
+    expect(result.reasoning).toContain('Apple Health filled Body Battery');
+  });
+
+  it('derives Apple Health body battery from activity-only HealthKit data', async () => {
+    mockGarmin.isGarminConfigured.mockReturnValue(false);
+    seedAppleHealthData(1, ['summary']);
+
+    const result = await calculateReadiness(1);
+    expect(result.score).toBeGreaterThan(0);
+    expect(result.reasoning).toContain('Apple Health');
+    expect(result.factors.bodyBattery.current).toBeGreaterThan(0);
+    expect(result.factors.bodyBattery.morningPeak).toBeGreaterThan(0);
   });
 
   it('does not synthesize a fake 50 body battery when Garmin events are missing', async () => {
