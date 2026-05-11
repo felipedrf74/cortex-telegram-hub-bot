@@ -176,6 +176,8 @@ const MUTATING_ACTIONS = new Set([
   'add_meal',
   'undo_reflow',
 ]);
+const CONTENT_APPROVAL_ACTION_IDS = new Set(['approve_script', 'request_rewrite']);
+const SECRETARY_REFLOW_ACTION_IDS = new Set(['accept_reflow', 'choose_another_time']);
 
 export function ensureDecisionCenterTables(): void {
   ensureNotificationTables();
@@ -313,8 +315,10 @@ export function listDecisionItems(
   if (opts.status && opts.status !== 'all') {
     clauses.push('items.status = ?');
     params.push(opts.status);
-  } else {
+  } else if (opts.status === 'all') {
     clauses.push("items.status NOT IN ('expired')");
+  } else {
+    clauses.push("items.status IN ('unread', 'read', 'failed', 'snoozed')");
   }
   if (opts.sourceSkill) {
     clauses.push('items.source_skill = ?');
@@ -342,6 +346,7 @@ export function listDecisionItems(
   return rows
     .map(mapDecisionRecord)
     .filter((item) => isDecisionRecord(item))
+    .filter((item) => !supersedeIfSourceStateStale(item))
     .filter((item) => !isSnoozedUntilFuture(item))
     .filter((item) => !opts.urgency || urgencyForPriority(item.priority, item.decisionDeadline, item.expiresAt) === opts.urgency)
     .map(formatDecisionItemForApi);
@@ -350,6 +355,10 @@ export function listDecisionItems(
 export function getDecisionItem(decisionId: string, userId: number, tenantId = userId): DecisionApiItem | null {
   const record = getDecisionRecord(decisionId, userId, tenantId);
   if (!record || !isDecisionRecord(record)) return null;
+  if (supersedeIfSourceStateStale(record)) {
+    const refreshed = getDecisionRecord(decisionId, userId, tenantId);
+    return refreshed ? formatDecisionItemForApi(refreshed) : null;
+  }
   return formatDecisionItemForApi(record);
 }
 
@@ -523,6 +532,15 @@ export async function performDecisionAction(
   ensureDecisionCenterTables();
   const record = getDecisionRecord(decisionId, userId, tenantId);
   if (!record || !isDecisionRecord(record)) throw new DecisionActionError('DECISION_NOT_FOUND', 'Decision not found for authenticated user', 404);
+  const supersededReason = supersedeIfSourceStateStale(record);
+  if (supersededReason) {
+    throw new DecisionActionError(
+      'DECISION_SUPERSEDED',
+      'Decision was superseded because the source item is no longer actionable.',
+      409,
+      { reason: supersededReason },
+    );
+  }
   const availableActions = actionsForRecord(record);
   if (!availableActions.some((action) => action.id === actionId)) {
     throw new DecisionActionError('DECISION_ACTION_NOT_ALLOWED', 'That action is not available for this decision', 400);
@@ -1495,10 +1513,14 @@ function executeContentApprovalDecision(
   actualEffect: Record<string, unknown>;
   message: string;
 } {
-  if (record.sourceSkill !== 'content' || !record.relatedEntityId) {
+  if (record.sourceSkill !== 'content') {
     throw new DecisionActionError('UNSUPPORTED_DECISION_EXECUTOR', 'Content approval decision is missing a content object.', 409);
   }
-  const object = getContentWorkflowObject(userId, record.relatedEntityId, tenantId);
+  const contentObjectId = contentWorkflowObjectIdForDecision(record);
+  if (!contentObjectId) {
+    throw new DecisionActionError('UNSUPPORTED_DECISION_EXECUTOR', 'Content approval decision is missing a content object.', 409);
+  }
+  const object = getContentWorkflowObject(userId, contentObjectId, tenantId);
   if (!object) {
     throw new DecisionActionError('DECISION_RELATED_ENTITY_NOT_FOUND', 'Content object was not found for this user.', 404);
   }
@@ -1580,15 +1602,19 @@ function markDecisionAction(decisionLogId: string | null, actionId: string): voi
 }
 
 function sourceStateSupersessionReason(record: DecisionRecord): string | null {
-  if (!record.relatedEntityType || !record.relatedEntityId) return null;
-  if (record.sourceSkill === 'content' && record.relatedEntityType === 'content_workflow_object') {
-    const object = getContentWorkflowObject(record.userId, record.relatedEntityId, record.tenantId);
+  if (record.sourceSkill === 'content' && recordHasAction(record, CONTENT_APPROVAL_ACTION_IDS)) {
+    const contentObjectId = contentWorkflowObjectIdForDecision(record);
+    if (!contentObjectId) return 'content_object_missing';
+    const object = getContentWorkflowObject(record.userId, contentObjectId, record.tenantId);
     if (!object) return 'content_object_missing';
     if (object.approvalState === 'approved' || object.approvalState === 'rejected') {
       return 'content_approval_resolved_elsewhere';
     }
   }
-  if (record.sourceSkill === 'secretary' && record.relatedEntityType === 'secretary_agenda_item') {
+  if (record.sourceSkill === 'secretary' && recordHasAction(record, SECRETARY_REFLOW_ACTION_IDS)) {
+    if (record.relatedEntityType !== 'secretary_agenda_item' || !record.relatedEntityId) {
+      return 'secretary_reflow_missing_agenda_item';
+    }
     const agenda = getSecretaryAgendaItemById({
       agendaItemId: record.relatedEntityId,
       ownerUserId: record.userId,
@@ -1622,6 +1648,14 @@ function sourceStateSupersessionReason(record: DecisionRecord): string | null {
     }
   }
   return null;
+}
+
+function supersedeIfSourceStateStale(record: DecisionRecord): string | null {
+  if (!['unread', 'read', 'failed', 'snoozed'].includes(record.status)) return null;
+  const reason = sourceStateSupersessionReason(record);
+  if (!reason) return null;
+  supersedeDecision(record, reason);
+  return reason;
 }
 
 function supersedeDecision(record: DecisionRecord, reason: string): void {
@@ -1666,6 +1700,37 @@ function tableExists(table: string): boolean {
      LIMIT 1
   `).get(table) as { name: string } | undefined;
   return !!row;
+}
+
+function recordHasAction(record: DecisionRecord, actionIds: Set<string>): boolean {
+  return record.actions.some((action) => actionIds.has(action.id));
+}
+
+function contentWorkflowObjectIdForDecision(record: DecisionRecord): string | null {
+  if (record.relatedEntityType === 'content_workflow_object' && record.relatedEntityId) {
+    return record.relatedEntityId;
+  }
+  if (record.relatedEntityType !== 'content_notification' || !record.relatedEntityId || !tableExists('content_notifications')) {
+    return null;
+  }
+  const row = getDb().prepare(`
+    SELECT data
+      FROM content_notifications
+     WHERE id = ?
+       AND user_id = ?
+     LIMIT 1
+  `).get(record.relatedEntityId, record.userId) as { data?: string } | undefined;
+  const data = safeParseJson<Record<string, unknown>>(row?.data, {});
+  return firstWorkflowObjectId(data);
+}
+
+function firstWorkflowObjectId(data: Record<string, unknown>): string | null {
+  for (const key of ['contentObjectId', 'workflowObjectId', 'objectId', 'draftId', 'ideaId']) {
+    const value = data[key];
+    if (typeof value === 'string' && value.trim()) return value.trim();
+    if (typeof value === 'number' && Number.isFinite(value)) return String(value);
+  }
+  return null;
 }
 
 function executorSkillForAction(actionId: string, record: DecisionRecord): string {

@@ -1208,8 +1208,7 @@ function fixtureBySkill(sourceSkill: NotificationSourceSkill, userId: number): N
         body: 'A schedule conflict needs your decision.',
         sensitiveBody: 'Calendar details hidden until you open Nexus.',
         actionButtons: [
-          { id: 'accept_reflow', label: 'Accept reflow', style: 'primary' },
-          { id: 'reject_reflow', label: 'Not now', style: 'secondary' },
+          { id: 'open_detail', label: 'Review', style: 'primary' },
         ],
         deeplink: 'nexus://secretary/conflict/conflict-demo',
         dedupeKey: `secretary:conflict:${userId}:demo`,
@@ -1881,16 +1880,10 @@ function defaultPrivacyPolicy(sourceSkill: NotificationSourceSkill): Notificatio
 
 function defaultActionsForType(type: NotificationIntentType): NotificationActionButton[] {
   if (type === 'approval_required') {
-    return [
-      { id: 'approve_script', label: 'Approve', style: 'primary' },
-      { id: 'request_rewrite', label: 'Rewrite', style: 'secondary' },
-    ];
+    return [{ id: 'open_detail', label: 'Review', style: 'primary' }];
   }
   if (type === 'conflict_detected' || type === 'reflow_suggestion') {
-    return [
-      { id: 'accept_reflow', label: 'Accept', style: 'primary' },
-      { id: 'reject_reflow', label: 'Not now', style: 'secondary' },
-    ];
+    return [{ id: 'open_detail', label: 'Review', style: 'primary' }];
   }
   if (type === 'reminder' || type === 'missed_item') {
     return [

@@ -188,18 +188,64 @@ describe('Decision Center facade', () => {
     expect(duplicate.status).toBe('idempotent');
   });
 
-  it('blocks unsupported mutating actions and leaves the decision failed instead of faking success', async () => {
-    const created = await createDecisionIntent(buildSkillDecisionFixtureIntent('secretary', 3, {
-      dedupeKey: 'secretary:unsupported',
+  it('executes legacy content notification decisions through their workflow object data', async () => {
+    testDb.exec(readFileSync('migrations/061_content_notifications.sql', 'utf8'));
+    const object = createContentWorkflowObject({
+      userId: 22,
+      tenantId: 22,
+      objectType: 'script',
+      title: 'Legacy notification draft',
+      editorialState: 'drafted',
+    });
+    const notification = testDb.prepare(`
+      INSERT INTO content_notifications (user_id, type, title, body, data)
+      VALUES (?, 'script_ready', 'Content review', 'Ready for approval', ?)
+    `).run(22, JSON.stringify({ contentObjectId: object.id }));
+    const created = await createDecisionIntent(buildSkillDecisionFixtureIntent('content', 22, {
+      tenantId: 22,
+      relatedEntityId: String(notification.lastInsertRowid),
+      relatedEntityType: 'content_notification',
+      dedupeKey: 'content:legacy-notification-approval',
     }));
 
+    const result = await performDecisionAction(created.item!.decisionId, 'approve_script', 22, 22, {
+      idempotencyKey: 'legacy-content-approval',
+    });
+
+    expect(result.status).toBe('succeeded');
+    expect(result.verification.actualEffect.contentObjectId).toBe(object.id);
+    expect(result.verification.actualEffect.contentApprovalState).toBe('approved');
+  });
+
+  it('supersedes stale content approval decisions whose source object is missing', async () => {
+    const created = await createDecisionIntent(buildSkillDecisionFixtureIntent('content', 23, {
+      tenantId: 23,
+      relatedEntityId: 'script-demo',
+      relatedEntityType: 'content_script',
+      dedupeKey: 'content:stale-script-demo',
+    }));
+
+    expect(listDecisionItems(23, 23)).toHaveLength(0);
+    expect(getDecisionItem(created.item!.decisionId, 23, 23)?.status).toBe('superseded');
+    await expect(performDecisionAction(created.item!.decisionId, 'approve_script', 23, 23, {
+      idempotencyKey: 'stale-content-approval',
+    })).rejects.toMatchObject({ code: 'DECISION_SUPERSEDED' });
+  });
+
+  it('supersedes stale Secretary reflow decisions that have no persisted agenda item', async () => {
+    const created = await createDecisionIntent(buildSkillDecisionFixtureIntent('secretary', 3, {
+      dedupeKey: 'secretary:unsupported',
+      relatedEntityId: 'conflict-demo',
+      relatedEntityType: 'calendar_conflict',
+      actionButtons: [{ id: 'accept_reflow', label: 'Reflow', style: 'primary' }],
+    }));
+
+    expect(listDecisionItems(3, 3)).toHaveLength(0);
+    expect(getDecisionItem(created.item!.decisionId, 3, 3)?.status).toBe('superseded');
     await expect(performDecisionAction(created.item!.decisionId, 'accept_reflow', 3, 3, {
       idempotencyKey: 'unsupported-tap',
     }))
-      .rejects.toThrow(/persisted Secretary agenda item/);
-
-    const items = listDecisionItems(3, 3, { status: 'all' });
-    expect(items[0].status).toBe('failed');
+      .rejects.toMatchObject({ code: 'DECISION_SUPERSEDED' });
   });
 
   it('executes Secretary agenda reflow actions against persisted Secretary agenda state', async () => {
@@ -224,6 +270,7 @@ describe('Decision Center facade', () => {
       relatedEntityId: 'agenda-42',
       relatedEntityType: 'secretary_agenda_item',
       dedupeKey: 'secretary:agenda-reflow',
+      actionButtons: [{ id: 'accept_reflow', label: 'Reflow', style: 'primary' }],
     }));
 
     const result = await performDecisionAction(created.item!.decisionId, 'accept_reflow', 42, 42, {
@@ -532,6 +579,7 @@ describe('Decision Center facade', () => {
       relatedEntityId: 'agenda-61',
       relatedEntityType: 'secretary_agenda_item',
       dedupeKey: 'secretary:supersession',
+      actionButtons: [{ id: 'accept_reflow', label: 'Reflow', style: 'primary' }],
     }));
     testDb.prepare(`UPDATE secretary_agenda_items SET lifecycle_state = 'scheduled' WHERE agenda_item_id = 'agenda-61'`).run();
 

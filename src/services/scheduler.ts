@@ -1153,8 +1153,7 @@ export function startScheduler(bot?: any): void {
           body: 'Schedule conflict needs review.',
           sensitiveBody: message.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim(),
           actionButtons: [
-            { id: 'accept_reflow', label: 'Reflow', style: 'primary' },
-            { id: 'open_detail', label: 'Review', style: 'secondary' },
+            { id: 'open_detail', label: 'Review', style: 'primary' },
           ],
           deeplink: 'nexus://secretary/conflict/daily',
           dedupeKey: `secretary:conflict_detection:${target.tenantId}:${startOfDay()}:${conflictSignature}`,

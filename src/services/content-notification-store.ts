@@ -173,18 +173,20 @@ export async function createAndPushNotification(opts: {
   // Emit to the Secretary Notification Orchestrator (non-blocking, non-fatal).
   try {
     const { createNotificationIntent } = await import('./notification-orchestrator');
+    const workflowObjectId = firstScalar(opts.data ?? {}, ['contentObjectId', 'workflowObjectId', 'objectId', 'draftId', 'ideaId']);
+    const canExecuteContentApproval = isContentApprovalNotification(opts.type) && !!workflowObjectId;
     const result = await createNotificationIntent({
       userId: opts.userId,
       tenantId: opts.userId,
       sourceSkill: 'content',
       type: mapContentTypeToIntentType(opts.type),
       priority: mapContentTypeToPriority(opts.type),
-      relatedEntityId: id,
-      relatedEntityType: 'content_notification',
+      relatedEntityId: canExecuteContentApproval ? workflowObjectId! : id,
+      relatedEntityType: canExecuteContentApproval ? 'content_workflow_object' : 'content_notification',
       title: opts.title,
       body: opts.body,
       sensitiveBody: opts.body,
-      actionButtons: mapContentTypeToActions(opts.type),
+      actionButtons: mapContentTypeToActions(opts.type, canExecuteContentApproval),
       deeplink: contentNotificationDeeplink(id, opts.data),
       dedupeKey: `content:${opts.type}:${id}`,
       requiresUserAction: opts.type === 'script_ready' || opts.type === 'content_action_required',
@@ -683,12 +685,19 @@ function mapContentTypeToPriority(type: NotificationType): import('./notificatio
   }
 }
 
-function mapContentTypeToActions(type: NotificationType): import('./notification-orchestrator').NotificationActionButton[] {
-  if (type === 'script_ready' || type === 'content_action_required') {
+function isContentApprovalNotification(type: NotificationType): boolean {
+  return type === 'script_ready' || type === 'content_action_required';
+}
+
+function mapContentTypeToActions(type: NotificationType, executableApproval = false): import('./notification-orchestrator').NotificationActionButton[] {
+  if (isContentApprovalNotification(type) && executableApproval) {
     return [
       { id: 'approve_script', label: 'Approve', style: 'primary' },
       { id: 'request_rewrite', label: 'Rewrite', style: 'secondary' },
     ];
+  }
+  if (isContentApprovalNotification(type)) {
+    return [{ id: 'open_detail', label: 'Review', style: 'primary' }];
   }
   return [{ id: 'open_detail', label: 'Open', style: 'primary' }];
 }
