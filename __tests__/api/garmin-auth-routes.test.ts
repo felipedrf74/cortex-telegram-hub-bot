@@ -8,14 +8,17 @@ import {
 const mockUpsertGarminSession = vi.fn();
 const mockMarkGarminConnectionActive = vi.fn();
 const mockClearGarminSession = vi.fn();
+const mockHasActiveGarminConnection = vi.fn();
 const mockDbGet = vi.fn();
 const mockDbRun = vi.fn();
-const mockLogin = vi.fn();
+const mockStartGarminInteractiveLogin = vi.fn();
+const mockVerifyGarminInteractiveLogin = vi.fn();
 
 vi.mock('../../src/services/garmin-session-store', () => ({
   upsertGarminSession: (...args: unknown[]) => mockUpsertGarminSession(...args),
   markGarminConnectionActive: (...args: unknown[]) => mockMarkGarminConnectionActive(...args),
   clearGarminSession: (...args: unknown[]) => mockClearGarminSession(...args),
+  hasActiveGarminConnection: (...args: unknown[]) => mockHasActiveGarminConnection(...args),
 }));
 
 vi.mock('../../src/services/database', () => ({
@@ -42,17 +45,9 @@ vi.mock('../../src/utils/logger', () => ({
   LOGGER_REDACTION_PATHS: [],
 }));
 
-vi.mock('garmin-connect', () => ({
-  GarminConnect: class MockGarminConnect {
-    client = {
-      oauth1Token: { token: 'oauth1' },
-      oauth2Token: { token: 'oauth2' },
-    };
-
-    async login() {
-      return mockLogin();
-    }
-  },
+vi.mock('../../src/services/garmin-interactive-auth', () => ({
+  startGarminInteractiveLogin: (...args: unknown[]) => mockStartGarminInteractiveLogin(...args),
+  verifyGarminInteractiveLogin: (...args: unknown[]) => mockVerifyGarminInteractiveLogin(...args),
 }));
 
 import { garminAuthRoutes } from '../../src/api/routes/garmin-auth';
@@ -122,10 +117,22 @@ describe('Garmin auth routes', () => {
     mockUpsertGarminSession.mockReset();
     mockMarkGarminConnectionActive.mockReset();
     mockClearGarminSession.mockReset();
+    mockHasActiveGarminConnection.mockReset();
     mockDbGet.mockReset();
     mockDbRun.mockReset();
-    mockLogin.mockReset();
-    mockLogin.mockResolvedValue(undefined);
+    mockStartGarminInteractiveLogin.mockReset();
+    mockVerifyGarminInteractiveLogin.mockReset();
+    mockHasActiveGarminConnection.mockReturnValue(true);
+    mockStartGarminInteractiveLogin.mockResolvedValue({
+      mfaRequired: false,
+      connected: true,
+      status: 'active',
+      email: 'athlete@example.com',
+      tokens: {
+        oauth1: { token: 'oauth1' },
+        oauth2: { token: 'oauth2' },
+      },
+    });
   });
 
   it('returns the manual reauth flow contract without triggering login', async () => {
@@ -153,7 +160,7 @@ describe('Garmin auth routes', () => {
       verifyEndpoint: '/api/v1/garmin/verify',
       credentialsRequired: true,
     });
-    expect(mockLogin).not.toHaveBeenCalled();
+    expect(mockStartGarminInteractiveLogin).not.toHaveBeenCalled();
   });
 
   it('fails closed on invalid tenant scope before starting Garmin reauth', async () => {
@@ -163,7 +170,7 @@ describe('Garmin auth routes', () => {
     expect(res.body.ok).toBe(false);
     expect(res.body.error.code).toBe('UNAUTHORIZED');
     expect(mockDbGet).not.toHaveBeenCalled();
-    expect(mockLogin).not.toHaveBeenCalled();
+    expect(mockStartGarminInteractiveLogin).not.toHaveBeenCalled();
     expect(getTenantScopeAnomalies(1)).toEqual([
       expect.objectContaining({
         layer: 'delivery',
@@ -194,11 +201,40 @@ describe('Garmin auth routes', () => {
     expect(mockMarkGarminConnectionActive).toHaveBeenCalledWith(12, 'athlete@example.com');
   });
 
-  it('sanitizes login failures instead of leaking Garmin provider internals', async () => {
-    mockLogin.mockRejectedValueOnce(new Error('garmin provider rejected credentials with trace'));
-    mockDbRun.mockImplementationOnce(() => {
-      throw new Error('garmin pending-session insert exploded');
+  it('stores a pending Garmin MFA state without marking the connection active', async () => {
+    mockStartGarminInteractiveLogin.mockResolvedValueOnce({
+      mfaRequired: true,
+      connected: false,
+      status: 'mfa_pending',
+      email: 'athlete@example.com',
+      verificationFlow: {
+        channel: 'email_code',
+        verifyEndpoint: '/api/v1/garmin/verify',
+        instructions: ['Check email', 'Enter code'],
+      },
     });
+
+    const res = await dispatch('POST', '/login', {
+      email: 'athlete@example.com',
+      password: 'secret',
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.body.ok).toBe(true);
+    expect(res.body.data).toMatchObject({
+      mfaRequired: true,
+      connected: false,
+      status: 'mfa_pending',
+    });
+    expect(mockDbRun).toHaveBeenCalledWith(expect.stringContaining('INSERT INTO garmin_user_tokens'), 12, 'athlete@example.com');
+    expect(mockUpsertGarminSession).not.toHaveBeenCalled();
+    expect(mockMarkGarminConnectionActive).not.toHaveBeenCalled();
+  });
+
+  it('sanitizes login failures instead of leaking Garmin provider internals', async () => {
+    mockStartGarminInteractiveLogin.mockRejectedValueOnce(
+      new Error('garmin provider rejected credentials with trace')
+    );
 
     const res = await dispatch('POST', '/login', {
       email: 'athlete@example.com',
@@ -209,7 +245,6 @@ describe('Garmin auth routes', () => {
     expect(res.body.ok).toBe(false);
     expect(res.body.error.code).toBe('AUTH_FAILED');
     expect(res.body.error.message).toBe('Garmin login failed');
-    expect(JSON.stringify(res.body)).not.toContain('garmin pending-session insert exploded');
     expect(JSON.stringify(res.body)).not.toContain('garmin provider rejected credentials');
   });
 
@@ -234,11 +269,33 @@ describe('Garmin auth routes', () => {
     expect(res.body.data.reauthEndpoint).toBe('/api/v1/garmin/reauth');
   });
 
-  it('sanitizes manual reauth failures instead of leaking provider internals', async () => {
-    mockLogin.mockRejectedValueOnce(new Error('garmin provider rejected manual reauth'));
-    mockDbRun.mockImplementationOnce(() => {
-      throw new Error('garmin manual reauth persistence exploded');
+  it('does not report connected when a row is active but no Garmin session material exists', async () => {
+    mockHasActiveGarminConnection.mockReturnValue(false);
+    mockDbGet.mockImplementation((sql: string) => {
+      if (sql.includes('SELECT garmin_email, status, last_refresh, last_used')) {
+        return {
+          garmin_email: 'athlete@example.com',
+          status: 'active',
+          last_refresh: '2026-04-14T08:00:00Z',
+          last_used: '2026-04-14T08:05:00Z',
+        };
+      }
+      return undefined;
     });
+
+    const res = await dispatch('GET', '/status');
+
+    expect(res.statusCode).toBe(200);
+    expect(res.body.ok).toBe(true);
+    expect(res.body.data.connected).toBe(false);
+    expect(res.body.data.status).toBe('needs_reauth');
+    expect(res.body.data.reauthEndpoint).toBe('/api/v1/garmin/reauth');
+  });
+
+  it('sanitizes manual reauth failures instead of leaking provider internals', async () => {
+    mockStartGarminInteractiveLogin.mockRejectedValueOnce(
+      new Error('garmin provider rejected manual reauth')
+    );
 
     const res = await dispatch('POST', '/reauth', {
       email: 'athlete@example.com',
@@ -249,8 +306,63 @@ describe('Garmin auth routes', () => {
     expect(res.body.ok).toBe(false);
     expect(res.body.error.code).toBe('AUTH_FAILED');
     expect(res.body.error.message).toBe('Garmin re-authentication failed');
-    expect(JSON.stringify(res.body)).not.toContain('garmin manual reauth persistence exploded');
     expect(JSON.stringify(res.body)).not.toContain('garmin provider rejected manual reauth');
+  });
+
+  it('persists Garmin session tokens only after interactive MFA verification succeeds', async () => {
+    mockDbGet.mockImplementation((sql: string) => {
+      if (sql.includes('SELECT garmin_email FROM garmin_user_tokens')) {
+        return { garmin_email: 'athlete@example.com' };
+      }
+      return undefined;
+    });
+    mockVerifyGarminInteractiveLogin.mockResolvedValueOnce({
+      email: 'athlete@example.com',
+      tokens: {
+        oauth1: { token: 'oauth1-after-mfa' },
+        oauth2: { token: 'oauth2-after-mfa' },
+      },
+    });
+
+    const res = await dispatch('POST', '/verify', { code: '123456' });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.body.ok).toBe(true);
+    expect(res.body.data).toMatchObject({
+      verified: true,
+      connected: true,
+      status: 'active',
+    });
+    expect(mockVerifyGarminInteractiveLogin).toHaveBeenCalledWith(12, '123456');
+    expect(mockUpsertGarminSession).toHaveBeenCalledWith(12, {
+      oauth1: { token: 'oauth1-after-mfa' },
+      oauth2: { token: 'oauth2-after-mfa' },
+    });
+    expect(mockMarkGarminConnectionActive).toHaveBeenCalledWith(12, 'athlete@example.com');
+  });
+
+  it('fails honestly when MFA verification does not persist a readable Garmin session', async () => {
+    mockHasActiveGarminConnection.mockReturnValue(false);
+    mockDbGet.mockImplementation((sql: string) => {
+      if (sql.includes('SELECT garmin_email FROM garmin_user_tokens')) {
+        return { garmin_email: 'athlete@example.com' };
+      }
+      return undefined;
+    });
+    mockVerifyGarminInteractiveLogin.mockResolvedValueOnce({
+      email: 'athlete@example.com',
+      tokens: {
+        oauth1: { token: 'oauth1-after-mfa' },
+        oauth2: { token: 'oauth2-after-mfa' },
+      },
+    });
+
+    const res = await dispatch('POST', '/verify', { code: '123456' });
+
+    expect(res.statusCode).toBe(502);
+    expect(res.body.ok).toBe(false);
+    expect(res.body.error.code).toBe('GARMIN_SESSION_NOT_VERIFIED');
+    expect(mockDbRun).toHaveBeenCalledWith(expect.stringContaining('UPDATE garmin_user_tokens'), 12);
   });
 
   it('sanitizes verify failures instead of leaking Garmin MFA internals', async () => {
@@ -260,9 +372,12 @@ describe('Garmin auth routes', () => {
       }
       return undefined;
     });
-    mockDbRun.mockImplementationOnce(() => {
-      throw new Error('garmin verify update exploded');
-    });
+    mockVerifyGarminInteractiveLogin.mockRejectedValueOnce(
+      Object.assign(new Error('garmin verify internal ticket trace'), {
+        code: 'VERIFY_FAILED',
+        statusCode: 400,
+      })
+    );
 
     const res = await dispatch('POST', '/verify', { code: '123456' });
 
@@ -270,7 +385,7 @@ describe('Garmin auth routes', () => {
     expect(res.body.ok).toBe(false);
     expect(res.body.error.code).toBe('VERIFY_FAILED');
     expect(res.body.error.message).toBe('Verification failed');
-    expect(JSON.stringify(res.body)).not.toContain('garmin verify update exploded');
+    expect(JSON.stringify(res.body)).not.toContain('garmin verify internal ticket trace');
   });
 
   it('sanitizes disconnect failures instead of leaking Garmin session internals', async () => {
