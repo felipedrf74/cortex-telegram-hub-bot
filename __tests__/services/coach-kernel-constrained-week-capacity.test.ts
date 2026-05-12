@@ -220,6 +220,11 @@ describe('coach-kernel constrained week capacity reconciliation', () => {
       'session_reflowed',
       'session_compressed',
     ]));
+    const reflow = placed.decisionReasons?.find((reason) => reason.code === 'session_reflowed');
+    expect(reflow?.text).toContain('Threshold Run moved from wednesday to monday');
+    expect(reflow?.before).toMatchObject({ dayOfWeek: 'wednesday', startTime: '06:30' });
+    expect(reflow?.after).toMatchObject({ dayOfWeek: 'monday', startTime: '06:30' });
+    expect(reflow?.preservedIntent).toBe('Preserved the key running threshold run intent.');
     const compression = placed.decisionReasons?.find((reason) => reason.code === 'session_compressed');
     expect(compression?.before).toMatchObject({ durationMinutes: 45 });
     expect(compression?.after).toMatchObject({ durationMinutes: 30, capacityMinutes: 30 });
