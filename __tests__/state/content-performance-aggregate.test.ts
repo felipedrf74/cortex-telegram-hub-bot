@@ -78,6 +78,49 @@ function insertScript(userId: number, tenantId: number, daysAgo = 0): void {
   `).run(userId, tenantId, userId, `Script for ${userId}-${Math.random()}`);
 }
 
+function insertPerformance(
+  userId: number,
+  tenantId: number,
+  opts: {
+    title: string;
+    views: number;
+    retentionPct: number;
+    likes?: number;
+    comments?: number;
+    subsGained?: number;
+    daysAgo?: number;
+    scopeStatus?: string;
+  },
+): void {
+  const dateExpr = opts.daysAgo === undefined || opts.daysAgo === 0
+    ? "datetime('now')"
+    : `datetime('now', '-${opts.daysAgo} days')`;
+  testDb.prepare(`
+    INSERT INTO content_performance (
+      user_id, tenant_id, owner_user_id, visibility_scope, lifecycle_state,
+      scope_status, created_by, updated_by, audit_metadata_json, selected_title,
+      video_url, views, retention_pct, likes, comments, subs_gained, logged_at
+    ) VALUES (
+      ?, ?, ?, 'user_private', 'active',
+      ?, ?, ?, '{}', ?,
+      NULL, ?, ?, ?, ?, ?, ${dateExpr}
+    )
+  `).run(
+    userId,
+    tenantId,
+    userId,
+    opts.scopeStatus ?? 'active',
+    userId,
+    userId,
+    opts.title,
+    opts.views,
+    opts.retentionPct,
+    opts.likes ?? 0,
+    opts.comments ?? 0,
+    opts.subsGained ?? 0,
+  );
+}
+
 describe('content-performance-aggregate (CONTENT-UI-O3)', () => {
   beforeEach(() => {
     testDb = new Database(':memory:');
@@ -91,6 +134,7 @@ describe('content-performance-aggregate (CONTENT-UI-O3)', () => {
     expect(a.scripts.total).toBe(0);
     expect(a.ideas.total).toBe(0);
     expect(a.radarFeedback.total).toBe(0);
+    expect(a.performance.total).toBe(0);
     expect(a.highlights).toEqual([]);
   });
 
@@ -158,12 +202,96 @@ describe('content-performance-aggregate (CONTENT-UI-O3)', () => {
     expect(a.scripts.last30d).toBe(1);
   });
 
+  it('aggregates live content_performance metrics and excludes inactive or out-of-scope rows', () => {
+    insertPerformance(USER_A, USER_A, {
+      title: 'High-retention training explainer',
+      views: 1000,
+      retentionPct: 60,
+      likes: 100,
+      comments: 20,
+      subsGained: 3,
+      daysAgo: 3,
+    });
+    insertPerformance(USER_A, USER_A, {
+      title: 'Lower-retention calendar clip',
+      views: 500,
+      retentionPct: 40,
+      likes: 20,
+      comments: 5,
+      subsGained: 1,
+      daysAgo: 10,
+    });
+    insertPerformance(USER_A, USER_A, {
+      title: 'Old but popular clip',
+      views: 9000,
+      retentionPct: 70,
+      likes: 800,
+      comments: 60,
+      subsGained: 20,
+      daysAgo: 45,
+    });
+    insertPerformance(USER_A, USER_A, {
+      title: 'Quarantined row',
+      views: 9999,
+      retentionPct: 90,
+      scopeStatus: 'quarantined',
+    });
+    insertPerformance(USER_B, USER_B, {
+      title: 'Other user row',
+      views: 9999,
+      retentionPct: 90,
+    });
+
+    const a = getContentPerformanceAggregate(USER_A, USER_A);
+
+    expect(a.performance.total).toBe(3);
+    expect(a.performance.last30d).toBe(2);
+    expect(a.performance.avgViewsLast30d).toBe(750);
+    expect(a.performance.avgRetentionLast30d).toBe(50);
+    expect(a.performance.totalLikesLast30d).toBe(120);
+    expect(a.performance.totalCommentsLast30d).toBe(25);
+    expect(a.performance.totalSubsGainedLast30d).toBe(4);
+    expect(a.performance.topByViews[0]).toMatchObject({
+      title: 'Old but popular clip',
+      views: 9000,
+      retentionPct: 70,
+    });
+    expect(a.highlights.some(h => h.includes('Published content is holding attention'))).toBe(true);
+  });
+
+  it('warns when recent published performance is under-retaining viewers', () => {
+    insertPerformance(USER_A, USER_A, {
+      title: 'Weak hook test',
+      views: 800,
+      retentionPct: 18,
+      daysAgo: 1,
+    });
+    insertPerformance(USER_A, USER_A, {
+      title: 'Weak pacing test',
+      views: 400,
+      retentionPct: 20,
+      daysAgo: 2,
+    });
+
+    const a = getContentPerformanceAggregate(USER_A, USER_A);
+
+    expect(a.performance.last30d).toBe(2);
+    expect(a.performance.avgRetentionLast30d).toBe(19);
+    expect(a.warnings.some(w => w.includes('under-retaining viewers'))).toBe(true);
+  });
+
   it('User A aggregate is invisible to User B', () => {
     insertTopic(USER_A, USER_A, 'published');
     recordRadarFeedback(USER_A, USER_A, { signalId: 'sa', action: 'accept' });
+    insertPerformance(USER_A, USER_A, {
+      title: 'A-only performance row',
+      views: 1000,
+      retentionPct: 60,
+    });
     const b = getContentPerformanceAggregate(USER_B, USER_B);
     expect(b.topics.total).toBe(0);
     expect(b.radarFeedback.total).toBe(0);
+    expect(b.performance.total).toBe(0);
   });
 
   it('returns empty aggregate for invalid userId', () => {

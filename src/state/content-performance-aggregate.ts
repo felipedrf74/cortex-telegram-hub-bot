@@ -10,6 +10,7 @@ import { logger } from '../utils/logger';
 //   - content_topics (status counts, last 30/90 day distribution)
 //   - content_scripts (count, last 30 days)
 //   - saved_ideas (count)
+//   - content_performance (published video metrics)
 //   - content_radar_feedback (accept vs reject counts)
 //
 // No new schema. The admin route exposes this for the portal Performance
@@ -39,6 +40,16 @@ export interface ContentPerformanceAggregate {
     topRejectedTopics: Array<{ topic: string; count: number }>;
     topAcceptedTopics: Array<{ topic: string; count: number }>;
   };
+  performance: {
+    total: number;
+    last30d: number;
+    avgViewsLast30d: number;
+    avgRetentionLast30d: number;
+    totalLikesLast30d: number;
+    totalCommentsLast30d: number;
+    totalSubsGainedLast30d: number;
+    topByViews: Array<{ title: string; views: number; retentionPct: number }>;
+  };
   highlights: string[]; // ready-rendered "what's working" phrases
   warnings: string[];   // ready-rendered "what's underperforming" phrases
 }
@@ -60,9 +71,28 @@ function emptyAggregate(tenantId: number, ownerUserId: number): ContentPerforman
       topRejectedTopics: [],
       topAcceptedTopics: [],
     },
+    performance: {
+      total: 0,
+      last30d: 0,
+      avgViewsLast30d: 0,
+      avgRetentionLast30d: 0,
+      totalLikesLast30d: 0,
+      totalCommentsLast30d: 0,
+      totalSubsGainedLast30d: 0,
+      topByViews: [],
+    },
     highlights: [],
     warnings: [],
   };
+}
+
+function normalizePerformanceTitle(value: unknown): string {
+  const cleaned = String(value ?? '')
+    .replace(/[\u0000-\u001F\u007F]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 120);
+  return cleaned || '(untitled)';
 }
 
 function safeQuery<T = Record<string, unknown>>(
@@ -230,6 +260,61 @@ export function getContentPerformanceAggregate(
     }));
   }, undefined, 'radarFeedback', { userId, tenantId: resolvedTenantId });
 
+  // ─── Published performance feedback ─────────────────────────────
+  safeQuery(() => {
+    const row = db.prepare(`
+      SELECT
+        COUNT(*) AS total,
+        SUM(CASE WHEN logged_at >= datetime('now', '-30 days') THEN 1 ELSE 0 END) AS last30d,
+        AVG(CASE WHEN logged_at >= datetime('now', '-30 days') THEN views ELSE NULL END) AS avg_views_last30d,
+        AVG(CASE WHEN logged_at >= datetime('now', '-30 days') THEN retention_pct ELSE NULL END) AS avg_retention_last30d,
+        SUM(CASE WHEN logged_at >= datetime('now', '-30 days') THEN likes ELSE 0 END) AS total_likes_last30d,
+        SUM(CASE WHEN logged_at >= datetime('now', '-30 days') THEN comments ELSE 0 END) AS total_comments_last30d,
+        SUM(CASE WHEN logged_at >= datetime('now', '-30 days') THEN subs_gained ELSE 0 END) AS total_subs_gained_last30d
+      FROM content_performance
+      WHERE COALESCE(tenant_id, user_id) = ?
+        AND COALESCE(owner_user_id, user_id) = ?
+        AND COALESCE(scope_status, 'active') = 'active'
+    `).get(resolvedTenantId, userId) as {
+      total: number | null;
+      last30d: number | null;
+      avg_views_last30d: number | null;
+      avg_retention_last30d: number | null;
+      total_likes_last30d: number | null;
+      total_comments_last30d: number | null;
+      total_subs_gained_last30d: number | null;
+    };
+    result.performance.total = Number(row?.total ?? 0);
+    result.performance.last30d = Number(row?.last30d ?? 0);
+    result.performance.avgViewsLast30d = Math.round(Number(row?.avg_views_last30d ?? 0));
+    result.performance.avgRetentionLast30d = Math.round(Number(row?.avg_retention_last30d ?? 0) * 10) / 10;
+    result.performance.totalLikesLast30d = Number(row?.total_likes_last30d ?? 0);
+    result.performance.totalCommentsLast30d = Number(row?.total_comments_last30d ?? 0);
+    result.performance.totalSubsGainedLast30d = Number(row?.total_subs_gained_last30d ?? 0);
+
+    const topRows = db.prepare(`
+      SELECT COALESCE(selected_title, video_url, 'Untitled performance item') AS title,
+             views,
+             retention_pct
+      FROM content_performance
+      WHERE COALESCE(tenant_id, user_id) = ?
+        AND COALESCE(owner_user_id, user_id) = ?
+        AND COALESCE(scope_status, 'active') = 'active'
+        AND logged_at >= datetime('now', '-90 days')
+      ORDER BY views DESC, retention_pct DESC, logged_at DESC
+      LIMIT 5
+    `).all(resolvedTenantId, userId) as Array<{
+      title: string | null;
+      views: number | null;
+      retention_pct: number | null;
+    }>;
+    result.performance.topByViews = topRows.map((item) => ({
+      title: normalizePerformanceTitle(item.title),
+      views: Number(item.views ?? 0),
+      retentionPct: Math.round(Number(item.retention_pct ?? 0) * 10) / 10,
+    }));
+  }, undefined, 'performance', { userId, tenantId: resolvedTenantId });
+
   // ─── Highlights / warnings ──────────────────────────────────────
   if (result.topics.publishedLast30d >= 4) {
     result.highlights.push(
@@ -250,6 +335,17 @@ export function getContentPerformanceAggregate(
       && result.radarFeedback.byAction.reject >= 5) {
     result.warnings.push(
       `Radar is under-fitting the profile — ${result.radarFeedback.byAction.reject} rejects vs ${result.radarFeedback.byAction.accept} accepts. Consider tightening pillars + banned topics.`,
+    );
+  }
+  if (result.performance.last30d > 0 && result.performance.avgRetentionLast30d >= 50) {
+    result.highlights.push(
+      `Published content is holding attention — ${result.performance.avgRetentionLast30d}% average retention across ${result.performance.last30d} recent performance entries.`,
+    );
+  }
+  if (result.performance.last30d > 0 && result.performance.avgRetentionLast30d > 0
+      && result.performance.avgRetentionLast30d < 25) {
+    result.warnings.push(
+      `Recent published content is under-retaining viewers at ${result.performance.avgRetentionLast30d}% average retention. Review hooks and pacing before scaling the next batch.`,
     );
   }
   if (result.topics.publishedLast30d === 0 && result.topics.total > 5) {

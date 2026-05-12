@@ -8,4 +8,4 @@
 | Backend | `/Users/felipedominguez/Desktop/Custom Connectors/Cortex/cortex-telegram-hub-bot` | `feature/decision-center-logic-v2` | `735b07bc` | `dirty` | `4.14.154` | `127` |
 | iOS | `/Users/felipedominguez/Desktop/Nexus Hub IOS/Nexus Hub` | `feature/decision-center-logic-v2` | `460850c` | `dirty` | n/a | n/a |
 
-Generated at: `2026-05-12T14:25:19Z`
+Generated at: `2026-05-12T14:26:00Z`
