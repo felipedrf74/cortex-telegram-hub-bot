@@ -17,6 +17,7 @@ import {
 } from '../../services/content-radar-preferences';
 import { getJobStatuses } from '../../portal/telemetry';
 import { getKnowledgeStats, getVoiceDna } from '../../services/content-dashboard-service';
+import { getPerformanceSummary, type PerformanceFeedback } from '../../services/content-learning-store';
 import { readSignals } from '../../services/intelligence-bus';
 import type { Lang } from '../../utils/i18n';
 
@@ -35,11 +36,11 @@ export function registerContentIntelligenceRoutes(
 ): void {
   /** GET /api/v1/content/intelligence — backstage agent summary for iOS */
   router.get('/intelligence', asyncHandler(async (req, res: Response) => {
-    const { userId } = req as unknown as AuthenticatedRequest;
+    const { userId, tenantId } = req as unknown as AuthenticatedRequest;
     if (!ensureValidContentRouteScope(res, userId, 'content_route_intelligence_summary')) return;
 
     const language = resolveContentLanguage(req, userId);
-    const context = readContentIntelligenceContext(userId, 'ios-content-intelligence', 25);
+    const context = readContentIntelligenceContext(userId, tenantId, 'ios-content-intelligence', 25);
 
     sendSuccess(res, buildContentIntelligenceSummary({
       language,
@@ -48,6 +49,7 @@ export function registerContentIntelligenceRoutes(
       autoresearchJob: context.autoresearchJob,
       discoverySignals: context.discoverySignals,
       optimizationSignals: context.optimizationSignals,
+      performanceSummary: context.performanceSummary,
       voiceEntries: context.voiceEntries,
       knowledgeStats: context.knowledgeStats,
     }));
@@ -55,11 +57,11 @@ export function registerContentIntelligenceRoutes(
 
   /** GET /api/v1/content/intelligence/detail — deeper backstage view for iOS */
   router.get('/intelligence/detail', asyncHandler(async (req, res: Response) => {
-    const { userId } = req as unknown as AuthenticatedRequest;
+    const { userId, tenantId } = req as unknown as AuthenticatedRequest;
     if (!ensureValidContentRouteScope(res, userId, 'content_route_intelligence_detail')) return;
 
     const language = resolveContentLanguage(req, userId);
-    const context = readContentIntelligenceContext(userId, 'ios-content-intelligence-detail', 6);
+    const context = readContentIntelligenceContext(userId, tenantId, 'ios-content-intelligence-detail', 6);
     const filmingRecommendation = localizeFilmingRecommendation(await getFilmingRecommendation(userId), language);
     const monitoredPillars = context.radarPreferences.topics.length > 0
       ? buildRadarTopicSummaries(context.radarPreferences.topics, context.discoverySignals)
@@ -73,6 +75,7 @@ export function registerContentIntelligenceRoutes(
       autoresearchJob: context.autoresearchJob,
       discoverySignals: context.discoverySignals,
       optimizationSignals: context.optimizationSignals,
+      performanceSummary: context.performanceSummary,
       voiceEntries: context.voiceEntries,
       knowledgeStats: context.knowledgeStats,
       filmingRecommendation,
@@ -85,6 +88,7 @@ export function registerContentIntelligenceRoutes(
 
 function readContentIntelligenceContext(
   userId: number,
+  tenantId: number | undefined,
   source: string,
   signalLimit: number,
 ) {
@@ -105,6 +109,7 @@ function readContentIntelligenceContext(
     userId,
     14,
   );
+  const performanceSummary = summarizePerformanceFeedback(getPerformanceSummary(userId, 30, tenantId ?? userId));
 
   return {
     reactionJob: jobs.get('reaction_radar'),
@@ -113,7 +118,42 @@ function readContentIntelligenceContext(
     radarPreferences,
     discoverySignals,
     optimizationSignals,
+    performanceSummary,
     voiceEntries: getVoiceDna(undefined, userId),
     knowledgeStats: getKnowledgeStats(undefined, userId),
   };
+}
+
+function summarizePerformanceFeedback(summary: ReturnType<typeof getPerformanceSummary>) {
+  const recentEntries = summary.entries.slice(0, 3).map(performanceEntryDigest);
+  const topEntry = summary.entries
+    .slice()
+    .sort((a, b) => performanceScore(b) - performanceScore(a))[0] ?? null;
+  return {
+    count: summary.count,
+    avgViews: summary.avgViews,
+    avgRetention: summary.avgRetention,
+    totalLikes: summary.totalLikes,
+    totalComments: summary.totalComments,
+    totalSubsGained: summary.totalSubsGained,
+    topEntry: topEntry ? performanceEntryDigest(topEntry) : null,
+    recentEntries,
+  };
+}
+
+function performanceEntryDigest(entry: PerformanceFeedback) {
+  return {
+    id: entry.id,
+    title: entry.selectedTitle ?? entry.hookUsed ?? null,
+    views: entry.views,
+    retentionPct: entry.retentionPct,
+    likes: entry.likes,
+    comments: entry.comments,
+    subsGained: entry.subsGained,
+    loggedAt: entry.loggedAt,
+  };
+}
+
+function performanceScore(entry: PerformanceFeedback): number {
+  return entry.views + entry.likes * 20 + entry.comments * 40 + entry.subsGained * 100 + entry.retentionPct * 10;
 }

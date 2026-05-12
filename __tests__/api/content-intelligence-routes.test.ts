@@ -85,6 +85,41 @@ vi.mock('../../src/services/content-scheduler', () => ({
   })),
 }));
 
+vi.mock('../../src/services/content-learning-store', () => ({
+  getPerformanceSummary: vi.fn(() => ({
+    count: 2,
+    avgViews: 3250,
+    avgRetention: 54.5,
+    totalLikes: 420,
+    totalComments: 62,
+    totalSubsGained: 11,
+    entries: [
+      {
+        id: 91,
+        selectedTitle: 'How I would build it solo',
+        hookUsed: 'Stop losing creator ideas',
+        views: 5000,
+        retentionPct: 61,
+        likes: 340,
+        comments: 52,
+        subsGained: 10,
+        loggedAt: '2026-04-24T09:05:00.000Z',
+      },
+      {
+        id: 92,
+        selectedTitle: 'Creator systems teardown',
+        hookUsed: 'The hidden cost of messy notes',
+        views: 1500,
+        retentionPct: 48,
+        likes: 80,
+        comments: 10,
+        subsGained: 1,
+        loggedAt: '2026-04-23T09:05:00.000Z',
+      },
+    ],
+  })),
+}));
+
 vi.mock('../../src/services/content-intelligence', () => ({
   getActiveContentPillars: vi.fn(() => [{ name: 'fallback pillar', keywordCount: 1 }]),
   getContentDeskItems: vi.fn(() => [{ title: 'Race story', body: 'Use the training signal.' }]),
@@ -105,6 +140,7 @@ import {
 import { getKnowledgeStats, getVoiceDna } from '../../src/services/content-dashboard-service';
 import { getFilmingRecommendation } from '../../src/services/content-scheduler';
 import { getContentDeskItems, localizeFilmingRecommendation } from '../../src/services/content-intelligence';
+import { getPerformanceSummary } from '../../src/services/content-learning-store';
 
 interface MockRes {
   statusCode: number;
@@ -128,6 +164,7 @@ function mockRes(): MockRes {
 function mockReq(method: string, path: string, userId: number | undefined = 41): Request {
   return {
     userId,
+    tenantId: userId,
     method,
     url: path,
     originalUrl: path,
@@ -205,9 +242,24 @@ describe('content intelligence routes', () => {
     expect(filterSignalsForRadarPreferences).toHaveBeenCalledWith(expect.any(Array), ['marathon']);
     expect(getVoiceDna).toHaveBeenCalledWith(undefined, 77);
     expect(getKnowledgeStats).toHaveBeenCalledWith(undefined, 77);
+    expect(getPerformanceSummary).toHaveBeenCalledWith(77, 30, 77);
     expect(response.body.data.discovery.activeCount).toBe(1);
     expect(response.body.data.script.status).toBe('ready');
     expect(response.body.data.optimization.status).toBe('syncing');
+    expect(response.body.data.optimization.performanceSummary).toMatchObject({
+      count: 2,
+      avgViews: 3250,
+      avgRetention: 54.5,
+      totalLikes: 420,
+      totalComments: 62,
+      totalSubsGained: 11,
+      topEntry: {
+        id: 91,
+        title: 'How I would build it solo',
+        views: 5000,
+        retentionPct: 61,
+      },
+    });
   });
 
   it('builds the detail response with filming, desk, and preferred-topic context', async () => {
@@ -230,6 +282,14 @@ describe('content intelligence routes', () => {
     expect(response.body.data.discovery.preferredTopics).toEqual(['marathon']);
     expect(response.body.data.discovery.monitoredPillars).toEqual([{ name: 'marathon', keywordCount: 1 }]);
     expect(response.body.data.schedule.filmingRecommendation.reason).toContain('pt-BR:');
+    expect(response.body.data.optimization.performanceSummary.recentEntries).toHaveLength(2);
+    expect(response.body.data.optimization.performanceSummary.recentEntries[0]).toMatchObject({
+      id: 91,
+      title: 'How I would build it solo',
+      likes: 340,
+      comments: 52,
+      subsGained: 10,
+    });
   });
 
   it('rejects invalid authenticated scope before reading intelligence state', async () => {

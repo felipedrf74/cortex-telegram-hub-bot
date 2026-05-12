@@ -60,6 +60,7 @@ vi.mock('../../src/portal/telemetry', () => ({
 import { contentRoutes } from '../../src/api/routes/content';
 import { getOrCreateUser, setUserLanguage } from '../../src/services/user-service';
 import { setDbProvider } from '../../src/services/intelligence-bus';
+import { logPerformanceFeedback } from '../../src/services/content-learning-store';
 
 function applyMigrations(db: Database.Database): void {
   db.exec(`CREATE TABLE IF NOT EXISTS _migrations (id INTEGER PRIMARY KEY, filename TEXT UNIQUE, applied_at TEXT DEFAULT (datetime('now')))`);
@@ -253,6 +254,27 @@ describe('Content API — intelligence detail', () => {
       recentOptimizationAt,
       user.id
     );
+    logPerformanceFeedback({
+      views: 8600,
+      retentionPct: 64,
+      likes: 720,
+      comments: 80,
+      subsGained: 18,
+      selectedTitle: 'Como reconstruir consistência de treino',
+      hookUsed: 'Pare de perder consistência',
+      userId: user.id,
+      tenantId: user.id,
+    });
+    logPerformanceFeedback({
+      views: 2400,
+      retentionPct: 47,
+      likes: 190,
+      comments: 18,
+      subsGained: 4,
+      selectedTitle: 'Recuperação sem drama',
+      userId: user.id,
+      tenantId: user.id,
+    });
 
     const response = await dispatch('/intelligence/detail', user.id);
 
@@ -302,6 +324,23 @@ describe('Content API — intelligence detail', () => {
       title: 'Treino',
       summary: 'Performance de Treino: Training is outperforming other pillars this week.',
     });
+    expect(response.body.data.optimization.performanceSummary).toMatchObject({
+      count: 2,
+      avgViews: 5500,
+      avgRetention: 55.5,
+      totalLikes: 910,
+      totalComments: 98,
+      totalSubsGained: 22,
+      topEntry: {
+        title: 'Como reconstruir consistência de treino',
+        views: 8600,
+        retentionPct: 64,
+        likes: 720,
+        comments: 80,
+        subsGained: 18,
+      },
+    });
+    expect(response.body.data.optimization.performanceSummary.recentEntries).toHaveLength(2);
   });
 
   it('applies creator radar preferences and english response language from X-Language', async () => {
