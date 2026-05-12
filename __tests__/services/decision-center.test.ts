@@ -180,6 +180,39 @@ describe('Decision Center facade', () => {
     expect(getDecisionSummary(80, 80).ctaLabel).toBe('All Clear');
   });
 
+  it('preserves supplied decision context so concrete Secretary decisions survive persistence', async () => {
+    const created = await createDecisionIntent(buildSkillDecisionFixtureIntent('secretary', 81, {
+      title: 'Schedule conflict',
+      body: 'Focus block overlaps with a fixed meeting.',
+      relatedEntityId: 'conflict-81',
+      relatedEntityType: 'calendar_conflict',
+      actionButtons: [{ id: 'open_detail', label: 'Open details', style: 'primary' }],
+      dedupeKey: 'secretary:contextual-conflict',
+      decisionContext: {
+        entityTitle: 'Focus block',
+        currentStartAt: '2026-05-10T13:00:00.000Z',
+        currentEndAt: '2026-05-10T14:00:00.000Z',
+        recommendedStartAt: '2026-05-10T15:00:00.000Z',
+        recommendedEndAt: '2026-05-10T16:00:00.000Z',
+        sourceState: 'conflict_detected',
+      },
+    }));
+
+    expect(created.item).not.toBeNull();
+    expect(created.item?.quality.status).toBe('pass');
+    expect(created.item?.problemStatement).toContain('Focus block');
+    expect(created.item?.recommendation).toContain('2026-05-10T15:00:00.000Z');
+
+    const listed = listDecisionItems(81, 81);
+    expect(listed).toHaveLength(1);
+    expect(listed[0].quality.status).toBe('pass');
+    expect(listed[0].problemStatement).toContain('Focus block');
+    expect(listed[0].whatWillChange[0]).toMatchObject({
+      item: 'Focus block',
+      targetSkill: 'secretary',
+    });
+  });
+
   it('executes content approval actions through Content and read-back verifies state', async () => {
     const object = createContentWorkflowObject({
       userId: 2,

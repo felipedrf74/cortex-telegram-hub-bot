@@ -19,7 +19,10 @@ import { isValidTenantUserId, recordTenantScopeAnomaly } from './tenant-scope-ob
 import { emitDomainEvent, runOutboxTransaction } from './event-outbox';
 import { enqueueJob } from './background-job-queue';
 import { consumeResourceBudget } from './resource-budgets';
-import { buildDecisionLogicV2 } from './decision-center-logic-v2';
+import {
+  buildDecisionLogicV2,
+  type DecisionLogicContext,
+} from './decision-center-logic-v2';
 
 export type NotificationSourceSkill =
   | 'secretary'
@@ -92,11 +95,12 @@ export interface NotificationIntentInput {
   decisionDeadline?: string | null;
   deliveryPolicy?: NotificationDeliveryPolicy;
   privacyPolicy?: NotificationPrivacyPolicy;
+  decisionContext?: DecisionLogicContext | null;
 }
 
 export interface NotificationIntentRecord extends Required<Omit<NotificationIntentInput,
   'intentId' | 'relatedEntityId' | 'relatedEntityType' | 'sensitiveBody' | 'actionButtons' | 'deeplink' | 'expiresAt' |
-  'quietHoursPolicy' | 'dedupeKey' | 'requiresUserAction' | 'decisionDeadline' | 'deliveryPolicy' | 'privacyPolicy'>> {
+  'quietHoursPolicy' | 'dedupeKey' | 'requiresUserAction' | 'decisionDeadline' | 'deliveryPolicy' | 'privacyPolicy' | 'decisionContext'>> {
   intentId: string;
   tenantId: number;
   relatedEntityId: string | null;
@@ -111,6 +115,7 @@ export interface NotificationIntentRecord extends Required<Omit<NotificationInte
   decisionDeadline: string | null;
   deliveryPolicy: NotificationDeliveryPolicy;
   privacyPolicy: NotificationPrivacyPolicy;
+  decisionContext: DecisionLogicContext | null;
   status: 'pending' | 'evaluated' | 'deduped' | 'suppressed';
   createdAt: string;
 }
@@ -321,6 +326,7 @@ export function ensureNotificationTables(): void {
       decision_deadline TEXT,
       delivery_policy TEXT NOT NULL DEFAULT 'auto',
       privacy_policy TEXT NOT NULL DEFAULT 'standard',
+      decision_context_json TEXT,
       status TEXT NOT NULL DEFAULT 'pending',
       created_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
@@ -421,6 +427,7 @@ export function ensureNotificationTables(): void {
     CREATE INDEX IF NOT EXISTS idx_ios_devices_user ON ios_devices(user_id);
   `);
   ensureColumn('notification_center_items', 'sensitive_body', 'TEXT');
+  ensureColumn('notification_intents', 'decision_context_json', 'TEXT');
 }
 
 export function getOrCreateNotificationProfile(userId: number, tenantId = userId): NotificationProfile {
@@ -1344,6 +1351,7 @@ function normalizeIntent(input: NotificationIntentInput): NotificationIntentReco
     decisionDeadline: input.decisionDeadline ?? null,
     deliveryPolicy: input.deliveryPolicy ?? 'auto',
     privacyPolicy: input.privacyPolicy ?? defaultPrivacyPolicy(input.sourceSkill),
+    decisionContext: normalizeDecisionContext(input.decisionContext ?? null),
     status: 'pending',
     createdAt: new Date().toISOString(),
   };
@@ -1355,8 +1363,8 @@ function persistIntent(intent: NotificationIntentRecord): NotificationIntentReco
     INSERT INTO notification_intents (
       intent_id, user_id, tenant_id, source_skill, type, priority, related_entity_id, related_entity_type,
       title, body, sensitive_body, action_buttons_json, deeplink, expires_at, quiet_hours_policy,
-      dedupe_key, requires_user_action, decision_deadline, delivery_policy, privacy_policy, status, created_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?)
+      dedupe_key, requires_user_action, decision_deadline, delivery_policy, privacy_policy, decision_context_json, status, created_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?)
   `).run(
     intent.intentId,
     intent.userId,
@@ -1378,6 +1386,7 @@ function persistIntent(intent: NotificationIntentRecord): NotificationIntentReco
     intent.decisionDeadline,
     intent.deliveryPolicy,
     intent.privacyPolicy,
+    intent.decisionContext ? JSON.stringify(intent.decisionContext) : null,
     intent.createdAt,
   );
   return intent;
@@ -1646,10 +1655,11 @@ function decisionPushQuality(
     expiresAt: intent.expiresAt,
     privacyClassification: intent.privacyPolicy,
     context: {
+      ...(intent.decisionContext ?? {}),
       deadlineAt: intent.decisionDeadline ?? intent.expiresAt ?? null,
-      explicitNoRelatedEntityReason: intent.type === 'sync_failure'
+      explicitNoRelatedEntityReason: intent.decisionContext?.explicitNoRelatedEntityReason ?? (intent.type === 'sync_failure'
         ? 'sync failure can be scoped to provider state rather than one entity'
-        : null,
+        : null),
     },
   }).quality;
 }
@@ -1805,9 +1815,36 @@ function mapIntent(row: any): NotificationIntentRecord {
     decisionDeadline: row.decision_deadline,
     deliveryPolicy: row.delivery_policy,
     privacyPolicy: row.privacy_policy,
+    decisionContext: normalizeDecisionContext(safeParseJSON(row.decision_context_json, null)),
     status: row.status,
     createdAt: row.created_at,
   };
+}
+
+function normalizeDecisionContext(input: DecisionLogicContext | null | undefined): DecisionLogicContext | null {
+  if (!input || typeof input !== 'object') return null;
+  const context: DecisionLogicContext = {};
+  assignContextString(context, 'entityTitle', input.entityTitle);
+  assignContextString(context, 'currentStartAt', input.currentStartAt);
+  assignContextString(context, 'currentEndAt', input.currentEndAt);
+  assignContextString(context, 'recommendedStartAt', input.recommendedStartAt);
+  assignContextString(context, 'recommendedEndAt', input.recommendedEndAt);
+  assignContextString(context, 'sourceState', input.sourceState);
+  assignContextString(context, 'explicitNoRelatedEntityReason', input.explicitNoRelatedEntityReason);
+  assignContextString(context, 'providerName', input.providerName);
+  assignContextString(context, 'deadlineAt', input.deadlineAt);
+  return Object.keys(context).length ? context : null;
+}
+
+function assignContextString<T extends keyof DecisionLogicContext>(
+  context: DecisionLogicContext,
+  key: T,
+  value: DecisionLogicContext[T] | null | undefined,
+): void {
+  if (typeof value !== 'string') return;
+  const trimmed = value.trim();
+  if (!trimmed) return;
+  context[key] = truncate(trimmed, 240) as DecisionLogicContext[T];
 }
 
 function mapCenterItem(row: any): NotificationCenterItem {

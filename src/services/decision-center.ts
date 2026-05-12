@@ -189,6 +189,7 @@ export interface HandledByNexusItem {
 interface DecisionRecord extends NotificationCenterItem {
   relatedEntityId: string | null;
   relatedEntityType: string | null;
+  decisionContext: DecisionLogicContext | null;
   requiresUserAction: boolean;
   decisionDeadline: string | null;
   privacyPolicy: NotificationPrivacyPolicy;
@@ -440,7 +441,7 @@ export function listDecisionItems(
 
   const rows = getDb().prepare(`
     SELECT items.*, intents.related_entity_id, intents.related_entity_type, intents.requires_user_action,
-           intents.decision_deadline, intents.privacy_policy, intents.delivery_policy
+           intents.decision_deadline, intents.privacy_policy, intents.delivery_policy, intents.decision_context_json
       FROM notification_center_items items
       JOIN notification_intents intents ON intents.intent_id = items.intent_id
      WHERE ${clauses.join(' AND ')}
@@ -481,7 +482,7 @@ export function findDecisionByRelatedEntity(
   ensureDecisionCenterTables();
   const row = getDb().prepare(`
     SELECT items.*, intents.related_entity_id, intents.related_entity_type, intents.requires_user_action,
-           intents.decision_deadline, intents.privacy_policy, intents.delivery_policy
+           intents.decision_deadline, intents.privacy_policy, intents.delivery_policy, intents.decision_context_json
       FROM notification_center_items items
       JOIN notification_intents intents ON intents.intent_id = items.intent_id
      WHERE items.user_id = ?
@@ -621,7 +622,7 @@ export function runDecisionSourceStateSupersessionJob(opts: { userId?: number; t
   }
   const rows = getDb().prepare(`
     SELECT items.*, intents.related_entity_id, intents.related_entity_type, intents.requires_user_action,
-           intents.decision_deadline, intents.privacy_policy, intents.delivery_policy
+           intents.decision_deadline, intents.privacy_policy, intents.delivery_policy, intents.decision_context_json
       FROM notification_center_items items
       JOIN notification_intents intents ON intents.intent_id = items.intent_id
      WHERE ${clauses.join(' AND ')}
@@ -1021,6 +1022,7 @@ function decisionLogicInputForRecord(record: DecisionRecord): Parameters<typeof 
 }
 
 function decisionContextForIntentInput(input: NotificationIntentInput): DecisionLogicContext {
+  const supplied = input.decisionContext ?? null;
   const relatedEntityType = input.relatedEntityType ?? null;
   if (input.sourceSkill === 'secretary' && relatedEntityType === 'secretary_agenda_item' && input.relatedEntityId != null) {
     const tenantId = input.tenantId ?? input.userId;
@@ -1029,8 +1031,9 @@ function decisionContextForIntentInput(input: NotificationIntentInput): Decision
       ownerUserId: input.userId,
       tenantId,
     });
-    if (agenda) return secretaryAgendaDecisionContext(agenda);
+    if (agenda) return mergeDecisionContext(supplied, secretaryAgendaDecisionContext(agenda));
   }
+  if (supplied) return supplied;
   if (input.sourceSkill === 'training' && /race date/i.test(`${input.title} ${input.body}`)) {
     return { explicitNoRelatedEntityReason: 'training profile is the affected entity' };
   }
@@ -1044,9 +1047,11 @@ function decisionContextForRecord(record: DecisionRecord): DecisionLogicContext 
       ownerUserId: record.userId,
       tenantId: record.tenantId,
     });
-    if (agenda) return secretaryAgendaDecisionContext(agenda);
+    if (agenda) return mergeDecisionContext(record.decisionContext, secretaryAgendaDecisionContext(agenda));
+    if (record.decisionContext) return record.decisionContext;
     return { explicitNoRelatedEntityReason: 'secretary agenda item is missing' };
   }
+  if (record.decisionContext) return record.decisionContext;
   if (record.sourceSkill === 'content') {
     const contentObjectId = contentWorkflowObjectIdForDecision(record);
     if (contentObjectId) {
@@ -1061,6 +1066,16 @@ function decisionContextForRecord(record: DecisionRecord): DecisionLogicContext 
     return { providerName: sourceLabel(record.sourceSkill), explicitNoRelatedEntityReason: 'sync failure is scoped to provider state' };
   }
   return {};
+}
+
+function mergeDecisionContext(
+  fallback: DecisionLogicContext | null | undefined,
+  authoritative: DecisionLogicContext,
+): DecisionLogicContext {
+  return {
+    ...(fallback ?? {}),
+    ...authoritative,
+  };
 }
 
 function secretaryAgendaDecisionContext(agenda: SecretaryAgendaItem): DecisionLogicContext {
@@ -1172,7 +1187,7 @@ function getDecisionRecord(decisionId: string, userId: number, tenantId = userId
   ensureDecisionCenterTables();
   const row = getDb().prepare(`
     SELECT items.*, intents.related_entity_id, intents.related_entity_type, intents.requires_user_action,
-           intents.decision_deadline, intents.privacy_policy, intents.delivery_policy
+           intents.decision_deadline, intents.privacy_policy, intents.delivery_policy, intents.decision_context_json
       FROM notification_center_items items
       JOIN notification_intents intents ON intents.intent_id = items.intent_id
      WHERE items.item_id = ? AND items.user_id = ? AND items.tenant_id = ?
@@ -1203,6 +1218,7 @@ function mapDecisionRecord(row: any): DecisionRecord {
     expiresAt: row.expires_at,
     relatedEntityId: row.related_entity_id,
     relatedEntityType: row.related_entity_type,
+    decisionContext: safeParseJson(row.decision_context_json, null),
     requiresUserAction: !!row.requires_user_action,
     decisionDeadline: row.decision_deadline,
     privacyPolicy: row.privacy_policy ?? 'standard',
