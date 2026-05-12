@@ -149,6 +149,25 @@ describe('training-session-description', () => {
       expect(text).not.toMatch(/Zone 2|walk breaks|HR drifts|session_prescription|mp3/i);
       expect(text).toContain('Keep elbows stacked');
     });
+
+    it('does not treat standalone "press" in an endurance title as strength evidence', () => {
+      const { sections, text } = buildRichSessionDescription({
+        ...baseInput,
+        sport: 'running',
+        session: {
+          sessionType: 'easy_run',
+          title: 'Press deeper into Zone 2',
+          durationMinutes: 35,
+          dayOfWeek: 'Friday',
+          description: 'Stay relaxed and keep the rhythm smooth.',
+        },
+      });
+
+      expect(sections.execution?.some((item) => item.label === 'RPE')).toBe(true);
+      expect(sections.exercises).toBeUndefined();
+      expect(text).toContain('EXECUTION:');
+      expect(text).not.toContain('EXERCISES:');
+    });
   });
 
   describe('free-text modality linter', () => {
@@ -166,6 +185,28 @@ describe('training-session-description', () => {
       expect(sections.execution?.some((item) => item.label === 'Pace')).toBe(true);
       expect(sections.notes).toBe('Run controlled.');
       expect(text).not.toMatch(/reps in reserve|calendar_busy_blocks|mp1/i);
+    });
+
+    it('removes plural strength and cycling cues from swimming notes', () => {
+      const { sections, text } = buildRichSessionDescription({
+        ...baseInput,
+        sport: 'swimming',
+        session: {
+          sessionType: 'threshold_swim',
+          title: 'Threshold Swim',
+          durationMinutes: 45,
+          dayOfWeek: 'Wednesday',
+          description: [
+            'Hold a smooth catch and controlled breathing.',
+            'Skip squats and deadlifts after the pool.',
+            'Use high cadence like a bike interval.',
+          ].join('\n'),
+        },
+      });
+
+      expect(sections.execution?.some((item) => item.label === 'Effort' || item.label === 'RPE')).toBe(true);
+      expect(sections.notes).toBe('Hold a smooth catch and controlled breathing.');
+      expect(text).not.toMatch(/squats|deadlifts|cadence/i);
     });
   });
 

@@ -718,7 +718,7 @@ function hasEnduranceOnlySessionType(sessionType: string): boolean {
 function hasStrengthSessionEvidence(session?: Pick<SessionInput, 'title' | 'exercises'>): boolean {
   if (!session) return false;
   const title = (session.title || '').toLowerCase();
-  const titleLooksStrength = /\b(strength|força|gym|lift|hypertrophy|hipertrofia|lower|upper|push|pull|legs|core|squat|deadlift|bench|press|mobility)\b/i
+  const titleLooksStrength = /\b(strength|força|gym|lift|hypertrophy|hipertrofia|lower|upper|push|pull|legs|core|squats?|deadlifts?|bench|mobility)\b|\b(bench|overhead|strict|push|shoulder|military)\s+press\b/i
     .test(title);
   if (titleLooksStrength) return true;
 
@@ -754,7 +754,7 @@ function isModalityMismatchedFreeText(line: string, sport: SportFamily): boolean
     case 'cycling':
       return /\b(squats?|lunges?|deadlifts?|bench press|reps in reserve|rir|hypertrophy)\b/i.test(value);
     case 'swimming':
-      return /\b(ftp|watts?|power zone|cadence|squat|deadlift)\b/i.test(value);
+      return /\b(ftp|watts?|power zone|cadence|squats?|lunges?|deadlifts?)\b/i.test(value);
     default:
       return false;
   }
