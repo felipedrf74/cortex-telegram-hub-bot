@@ -24,7 +24,6 @@ closable without explicit authorization and live credentials/devices.
 | ID | Severity | Area | Status | Next step |
 | --- | --- | --- | --- | --- |
 | PHASE2B5-CHAT-FASTPATH | P2 | chat architecture | PARKED / REOPEN TRIGGER ONLY | Reopen only if beta usage shows fastpath cache/coalescing bugs, a third real fastpath implementation appears, or a planned feature needs a unified iOS/Telegram/WebSocket fastpath. |
-| GAP-TRN-1 | P1 | training | OPEN / OWNER DECISION REQUIRED | Decide whether plan-linter blockers should become strict pre-persist or rollback-safe training batch behavior. |
 | GAP-CAL-1 | P1 | secretary | PARTIAL | Conflict-detection cron emits NotificationIntent, but broader Telegram-only cron migration remains open. |
 | GAP-FIN-2 | P1 | finance | OPEN / OWNER DECISION REQUIRED | Decide non-Brazil finance jurisdiction model and behavior contract. |
 | GAP-REL-6 | P1 | mock lint | OPEN / OWNER DECISION REQUIRED | Either authorize a larger mock-factory reduction batch or revise the <100-by-2026-08-01 commitment. |
@@ -34,6 +33,7 @@ closable without explicit authorization and live credentials/devices.
 
 | ID | Severity | Area | Closed | Evidence |
 | --- | --- | --- | --- | --- |
+| GAP-TRN-1 | P1 | training | 2026-05-12 | Engine `b35ed604` runs strict write-free plan-linter preflight before cancellation/persistence and returns `plan_quality_blocked` without plan/session/calendar writes; iOS `d337636` renders that state as failed/requires-review instead of created. Focused backend 36/36, route 31/31, broad Training 908/908, iOS focused 14/14, and broader iOS Training subset 85/85 passed. |
 | GAP-REL-1 | P1 | docs/identity | 2026-05-12 | Re-ran `engine/scripts/release-identity.sh markdown --persist --quiet`; `docs/release/release-identity.md` now points at backend `feature/decision-center-logic-v2` commit `9d34f3fd` and iOS `feature/decision-center-logic-v2` commit `460850c`. Docs audit rerun after mirror refresh. |
 | GAP-REL-2 | P1 | docs/release | 2026-05-12 | Reconciled workspace current release state so 4.14.149 Round E + Decision Center remains the active production truth and older 4.14.132 notes are marked historical. |
 | W1-FIN-COLLECTORS | P1/P2 | finance collectors | 2026-05-12 | Added collector-service owner-scope enforcement before Amazon/Uber global browser session or Playwright launch paths, preserving the existing Telegram command and owner-tier scheduler gates. Broad per-user collector sessions remain a separate future product/credential workstream. |

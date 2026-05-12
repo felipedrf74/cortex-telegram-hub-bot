@@ -382,6 +382,33 @@ Defer broader catalog/Secretary/Cooking expansion — those are workstreams
 of their own, not v2 polish.
 ```
 
+## Round 7 Codex closeout — 2026-05-12
+
+Verdict: READY_FOR_LOCAL_QA for the remaining Training consolidation items.
+
+### Closed items
+
+| ID | Verdict | Evidence |
+|---|---|---|
+| R6-NEW-001 | CLOSED | Swimming modality scrub plural variants were already closed in engine commit `f2355038`; the broader Training sweep was rerun after the strict-gate work. |
+| R6-NEW-002 | CLOSED | Standalone `press` no longer forces strength inference in engine commit `f2355038`; the broader Training sweep was rerun after the strict-gate work. |
+| R6-NEW-003 | CLOSED | Broader Training sweep rerun after the latest Training-impacting commit: 70 files / 908 tests passed. Commit hook reran a 72-file / 916-test Training/security set before `b35ed604`. |
+| GAP-TRN-1 | CLOSED IN SOURCE BRANCH | Engine commit `b35ed604` runs a strict, write-free `lintGeneratedTrainingPlanPreflight` before cancellation/persistence. Route tests prove blocked candidates do not create plan, session, or calendar rows. iOS commit `d337636` surfaces `plan_quality_blocked` as a failed/requires-review state, not a created plan. |
+
+### Additional validation
+
+- Backend focused strict gate: `npx vitest run __tests__/api/training-plan-generation.test.ts __tests__/api/training-plan-persistence.test.ts --reporter=default` -> 2 files / 36 tests passed.
+- Backend route proof: `npx vitest run __tests__/api/training-routes.test.ts --reporter=default` -> 1 file / 31 tests passed.
+- Backend broad Training sweep: `npx vitest run __tests__/services/training-*.test.ts __tests__/services/coach-kernel-*.test.ts __tests__/api/training-*.test.ts --reporter=default` -> 70 files / 908 tests passed.
+- Backend typecheck: `npx tsc --noEmit` -> pass.
+- iOS focused strict gate: `xcodebuild test -project "Nexus Hub.xcodeproj" -scheme "Nexus Hub" -sdk iphonesimulator -destination "platform=iOS Simulator,name=iPhone 17 Pro" -only-testing:"Nexus HubTests/TrainingViewModelObservationTests"` -> 14 tests passed.
+- iOS broader Training unit subset: `xcodebuild test -project "Nexus Hub.xcodeproj" -scheme "Nexus Hub" -sdk iphonesimulator -destination "platform=iOS Simulator,name=iPhone 17 Pro" -only-testing:"Nexus HubTests/TrainingViewModelObservationTests" -only-testing:"Nexus HubTests/PlanGenerateResponseExpertCoachTests" -only-testing:"Nexus HubTests/TrainingSecondarySectionsPresentationTests" -only-testing:"Nexus HubTests/TrainingPresentationTests" -only-testing:"Nexus HubTests/TrainingHomeContractResolverTests" -only-testing:"Nexus HubTests/TrainingLocalSmokeFixtureTests"` -> 85 tests passed.
+- Docs audit before report update: 529 markdown files / 482 warnings, command exited 0.
+
+### Remaining follow-ups
+
+No P1/P2 Training consolidation item remains from this prompt. Broader Cooking UX polish, full visual/manual Secretary reflow walkthrough, and app-wide performance profiling remain P3 follow-ups, not blockers for this source branch.
+
 ## Round 6 prompt / process improvements
 
 - **Architecture consolidation passes are easier to QA than feature passes.** The "no parallel v2 stack" property has a hard, falsifiable test: `find` for `*v2*` filenames + `git diff --name-only` for new files outside existing directories. If either returns content, the property fails. If both are empty, the property holds.
