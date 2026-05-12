@@ -39,6 +39,7 @@ import {
   addDecisionDependency,
   buildSkillDecisionFixtureIntent,
   createDecisionIntent,
+  DECISION_OUTCOME_LEDGER_RETENTION_POLICY,
   ensureDecisionCenterTables,
   evaluateDecisionEligibility,
   getDecisionItem,
@@ -640,6 +641,15 @@ describe('Decision Center facade', () => {
       failed_reason: 'DECISION_READBACK_MISMATCH',
       action_succeeded: 0,
       partial_failure: 1,
+    });
+  });
+
+  it('documents outcome ledger retention and aggregate-only admin reporting policy', () => {
+    expect(DECISION_OUTCOME_LEDGER_RETENTION_POLICY).toMatchObject({
+      rawOutcomeRetentionDays: 180,
+      aggregateRetentionDays: 730,
+      adminReportingScope: 'aggregate_only',
+      privateTextPolicy: 'never_store_raw_private_text',
     });
   });
 

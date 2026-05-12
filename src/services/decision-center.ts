@@ -68,6 +68,13 @@ export type DecisionClassification = 'decision' | 'notification' | 'task' | 'ins
 export type DecisionUrgency = 'urgent' | 'today' | 'this_week' | 'optional';
 export type DecisionActionStatus = 'succeeded' | 'failed' | 'blocked' | 'idempotent';
 
+export const DECISION_OUTCOME_LEDGER_RETENTION_POLICY = Object.freeze({
+  rawOutcomeRetentionDays: 180,
+  aggregateRetentionDays: 730,
+  adminReportingScope: 'aggregate_only',
+  privateTextPolicy: 'never_store_raw_private_text',
+});
+
 export interface DecisionEligibilityPolicyInput {
   sourceSkill: NotificationSourceSkill;
   type: NotificationIntentType;

@@ -20,6 +20,7 @@ export interface DecisionLogicContext {
   recommendedStartAt?: string | null;
   recommendedEndAt?: string | null;
   candidateSlots?: Array<{ startAt: string; endAt: string; label?: string | null }> | null;
+  reasonCodes?: string[] | null;
   sourceState?: string | null;
   explicitNoRelatedEntityReason?: string | null;
   providerName?: string | null;
@@ -151,6 +152,7 @@ const MUTATING_ACTION_IDS = new Set([
   'mark_paid',
   'add_meal',
   'undo_reflow',
+  'choose_priority',
 ]);
 
 const GENERIC_COPY_PATTERNS = [
@@ -179,6 +181,8 @@ const DECISION_CONFIDENCE_RUBRIC = {
   mediumFinanceEntity: 0.78,
   mediumCookingEntity: 0.74,
   mediumTrainingReview: 0.72,
+  mediumOvercapacityPriority: 0.76,
+  mediumOwnerAdminOps: 0.7,
   mediumGenericDecision: 0.55,
   lowContentMissingEntity: 0.5,
   lowCookingMissingEntity: 0.48,
@@ -343,7 +347,7 @@ export function evaluateAutopilotPolicy(input: DecisionLogicInput, logic: Decisi
   eligibility: AutomationEligibility;
   reason: string;
 } {
-  const hasRiskyAction = input.actions.some((action) => ['accept_reflow', 'choose_another_time', 'approve_script', 'request_rewrite', 'mark_paid', 'add_meal'].includes(action.id));
+  const hasRiskyAction = input.actions.some((action) => ['accept_reflow', 'choose_another_time', 'choose_priority', 'approve_script', 'request_rewrite', 'mark_paid', 'add_meal'].includes(action.id));
   if (hasRiskyAction) {
     return { eligibility: 'ask_first', reason: 'schedule, content, finance, cooking, and training changes require explicit user approval by default' };
   }
@@ -387,6 +391,8 @@ export function rankDecision(
 
 function recipeForInput(input: DecisionLogicInput): Omit<DecisionLogicV2, 'sourceSkill' | 'type' | 'privacyClassification' | 'visibilityScope' | 'notificationEligibility' | 'apnsInterruptionLevel' | 'collapseKey' | 'badgeContribution' | 'quality' | 'qualityScore'> {
   if (input.type === 'sync_failure') return syncFailureRecipe(input);
+  if (isOwnerAdminDecision(input)) return ownerAdminOpsRecipe(input);
+  if (isOvercapacityDecision(input)) return overcapacityRecipe(input);
   if (input.sourceSkill === 'secretary' || input.type === 'conflict_detected' || input.type === 'reflow_suggestion') {
     return secretaryRecipe(input);
   }
@@ -396,6 +402,83 @@ function recipeForInput(input: DecisionLogicInput): Omit<DecisionLogicV2, 'sourc
   if (input.sourceSkill === 'cooking') return cookingRecipe(input);
   if (input.sourceSkill === 'chat') return chatRecipe(input);
   return genericRecipe(input);
+}
+
+function overcapacityRecipe(input: DecisionLogicInput): Omit<DecisionLogicV2, 'sourceSkill' | 'type' | 'privacyClassification' | 'visibilityScope' | 'notificationEligibility' | 'apnsInterruptionLevel' | 'collapseKey' | 'badgeContribution' | 'quality' | 'qualityScore'> {
+  const contextLabel = input.context?.entityTitle?.trim() || 'This schedule window';
+  const primary = primaryAction(input.actions);
+  const hasMutatingChoice = input.actions.some(isMutatingAction);
+  return {
+    title: 'Overcapacity decision',
+    problemStatement: `${contextLabel} is over capacity and needs a priority choice before Nexus reflows anything.`,
+    recommendation: 'Choose the commitment Nexus should protect first, then let Secretary reflow only lower-priority items.',
+    expectedEffect: 'Secretary records the priority choice, updates the affected schedule plan, and verifies the persisted agenda state before closing the decision.',
+    impactIfIgnored: 'Nexus leaves the window unchanged, which can keep lower-priority work stacked against higher-priority commitments.',
+    primaryActionLabel: concreteActionLabel(primary, 'Choose priority'),
+    secondaryActionLabels: secondaryActionLabels(input.actions, primary),
+    whySummary: 'Secretary found more work than the window can safely hold, so Nexus needs your priority judgment before changing the plan.',
+    urgencyReason: input.priority === 'time_sensitive' ? 'The overcapacity affects today or a near deadline.' : 'The overcapacity affects upcoming schedule quality.',
+    confidence: DECISION_CONFIDENCE_RUBRIC.mediumOvercapacityPriority,
+    relatedEntityReason: null,
+    why: {
+      facts: [`Affected window: ${contextLabel}.`, 'At least one capacity rule marked this window as overloaded.'],
+      preferences: [],
+      rules: ['Capacity conflicts must go through Secretary, and priority choices ask the user before reflow.'],
+      tradeoffs: ['Protecting one commitment may move or delay lower-priority work.'],
+      uncertainty: [],
+    },
+    whatWillChange: [{
+      item: contextLabel,
+      effect: 'Apply the selected priority and reflow only lower-priority schedule items.',
+      targetSkill: 'secretary',
+      verificationMethod: 'Read secretary agenda state after the priority choice.',
+    }],
+    readBackVerifier: hasMutatingChoice ? 'secretary_agenda_item_state' : null,
+    automationEligibility: 'ask_first',
+    autopilotPolicy: 'Overcapacity priority decisions ask first; Nexus does not silently choose user priorities.',
+    safePreviewTitle: 'Overcapacity decision',
+    safePreviewBody: 'Open Nexus to choose what should stay protected.',
+    riskIfIgnored: 'high',
+  };
+}
+
+function ownerAdminOpsRecipe(input: DecisionLogicInput): Omit<DecisionLogicV2, 'sourceSkill' | 'type' | 'privacyClassification' | 'visibilityScope' | 'notificationEligibility' | 'apnsInterruptionLevel' | 'collapseKey' | 'badgeContribution' | 'quality' | 'qualityScore'> {
+  const target = input.context?.entityTitle?.trim() || 'An operational system item';
+  const primary = primaryAction(input.actions);
+  return {
+    title: 'Owner operations decision',
+    problemStatement: `${target} needs owner review before Nexus changes system behavior.`,
+    recommendation: 'Review the operational evidence and approve only through the owner/admin flow if the action is still valid.',
+    expectedEffect: 'Nexus records the owner/admin decision and leaves production behavior unchanged until an authorized action is verified.',
+    impactIfIgnored: 'The operational item stays open and no risky system change is applied automatically.',
+    primaryActionLabel: concreteActionLabel(primary, 'Review ops decision'),
+    secondaryActionLabels: secondaryActionLabels(input.actions, primary),
+    whySummary: 'Owner/admin operational decisions are scoped away from normal user cards and require explicit review.',
+    urgencyReason: input.priority === 'critical' || input.priority === 'time_sensitive'
+      ? 'The operational issue can affect reliability or release safety soon.'
+      : 'The operational issue requires owner attention before action.',
+    confidence: DECISION_CONFIDENCE_RUBRIC.mediumOwnerAdminOps,
+    relatedEntityReason: null,
+    why: {
+      facts: [`Operational item: ${target}.`],
+      preferences: [],
+      rules: ['System-admin decisions must not be shown as normal user decisions.', 'Nexus cannot auto-apply owner/admin operational changes by default.'],
+      tradeoffs: ['Keeping this explicit avoids hidden production or release changes.'],
+      uncertainty: [],
+    },
+    whatWillChange: [{
+      item: target,
+      effect: 'Record owner/admin review; any mutating follow-up must use its own verified executor.',
+      targetSkill: input.sourceSkill,
+      verificationMethod: 'Read owner/admin operation state or audit log after action.',
+    }],
+    readBackVerifier: input.actions.some(isMutatingAction) ? null : null,
+    automationEligibility: 'never',
+    autopilotPolicy: 'Owner/admin operational decisions never auto-handle by default.',
+    safePreviewTitle: 'Owner review needed',
+    safePreviewBody: 'Open Nexus to review an operational decision.',
+    riskIfIgnored: input.priority === 'critical' || input.priority === 'time_sensitive' ? 'high' : 'medium',
+  };
 }
 
 function secretaryRecipe(input: DecisionLogicInput): Omit<DecisionLogicV2, 'sourceSkill' | 'type' | 'privacyClassification' | 'visibilityScope' | 'notificationEligibility' | 'apnsInterruptionLevel' | 'collapseKey' | 'badgeContribution' | 'quality' | 'qualityScore'> {
@@ -715,6 +798,8 @@ function isVisiblePushCandidate(input: DecisionLogicInput): boolean {
 }
 
 function sectionForInput(input: DecisionLogicInput): DecisionRankResult['section'] {
+  if (isOwnerAdminDecision(input)) return 'needs_input';
+  if (isOvercapacityDecision(input)) return 'schedule_conflicts';
   if (input.type === 'conflict_detected' || input.type === 'reflow_suggestion') return 'schedule_conflicts';
   if (input.type === 'approval_required') return 'approvals';
   if (input.type === 'sync_failure') return 'waiting_on_systems';
@@ -747,9 +832,21 @@ function isMutatingAction(action: NotificationActionButton): boolean {
 
 function requiresSecretaryRecommendation(input: DecisionLogicInput): boolean {
   if (input.type === 'sync_failure') return false;
+  if (isOvercapacityDecision(input)) return false;
   return input.sourceSkill === 'secretary'
     || input.type === 'conflict_detected'
     || input.type === 'reflow_suggestion';
+}
+
+function isOvercapacityDecision(input: DecisionLogicInput): boolean {
+  return input.sourceSkill === 'secretary'
+    && (input.context?.reasonCodes ?? []).includes('overcapacity');
+}
+
+function isOwnerAdminDecision(input: DecisionLogicInput): boolean {
+  return input.visibilityScope === 'system_admin'
+    || (input.sourceSkill === 'system' && input.type === 'risk_warning' && input.relatedEntityType?.includes('ops'))
+    || (input.sourceSkill === 'security' && input.type === 'security_account' && input.visibilityScope === 'tenant_admin');
 }
 
 function hasDistinctSecretaryRecommendation(context: DecisionLogicContext | null | undefined): boolean {

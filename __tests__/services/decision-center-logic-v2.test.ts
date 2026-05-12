@@ -116,6 +116,58 @@ describe('Decision Center Logic v2', () => {
     expect(training.why.rules.join(' ')).toContain('Training');
   });
 
+  it('passes overcapacity priority decisions without requiring a slot reflow recommendation', () => {
+    const decision = buildDecisionLogicV2({
+      sourceSkill: 'secretary',
+      type: 'decision_required',
+      priority: 'time_sensitive',
+      title: 'Week over capacity',
+      body: 'This week has more commitments than available capacity.',
+      actions: [
+        { id: 'choose_priority', label: 'Protect long run', style: 'primary', mutating: true },
+        { id: 'open_detail', label: 'Review details', style: 'secondary' },
+      ],
+      relatedEntityType: 'capacity_window',
+      relatedEntityId: 'week-2026-W20',
+      privacyClassification: 'standard',
+      context: {
+        entityTitle: 'Week of May 18',
+        reasonCodes: ['overcapacity'],
+      },
+    });
+
+    expect(decision.quality.status).toBe('pass');
+    expect(decision.title).toBe('Overcapacity decision');
+    expect(decision.problemStatement).toContain('over capacity');
+    expect(decision.recommendation).toContain('protect first');
+    expect(decision.readBackVerifier).toBe('secretary_agenda_item_state');
+    expect(decision.autopilotPolicy).toContain('does not silently choose');
+    expect(decision.quality.missingFields).not.toContain('secretaryRecommendation');
+  });
+
+  it('passes owner/admin operational decisions only as scoped review items', () => {
+    const decision = buildDecisionLogicV2({
+      sourceSkill: 'system',
+      type: 'risk_warning',
+      priority: 'active',
+      title: 'Model fallback invalid',
+      body: 'A configured fallback needs owner review before release.',
+      actions: [{ id: 'open_detail', label: 'Review evidence', style: 'primary' }],
+      relatedEntityType: 'ops_model_fallback',
+      relatedEntityId: 'fallback-invalid',
+      privacyClassification: 'sensitive',
+      visibilityScope: 'system_admin',
+      context: { entityTitle: 'Model fallback policy' },
+    });
+
+    expect(decision.quality.status).toBe('pass');
+    expect(decision.visibilityScope).toBe('system_admin');
+    expect(decision.title).toBe('Owner operations decision');
+    expect(decision.safePreviewTitle).toBe('Owner review needed');
+    expect(decision.safePreviewBody).not.toContain('Model fallback policy');
+    expect(decision.automationEligibility).toBe('never');
+  });
+
   it('blocks mutating decisions without read-back verifier and privacy metadata', () => {
     const decision = buildDecisionLogicV2({
       sourceSkill: 'system',
