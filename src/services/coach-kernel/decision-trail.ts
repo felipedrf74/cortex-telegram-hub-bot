@@ -30,17 +30,28 @@ export function buildWeeklyDecisionNotes(plan: WeeklyPlan, athlete: AthleteState
   const trainingDays = new Set(activeSessions.map((session) => session.dayOfWeek)).size;
   const totalMinutes = activeSessions.reduce((sum, session) => sum + session.durationMinutes, 0);
   const sportBreakdown = formatSportBreakdown(activeSessions);
-  const compliancePct = Math.round(athlete.compliance.trailing14DayCompliance * 100);
   const readinessAction = readinessActionFor(athlete);
   const staleAutoNotesRemoved = plan.notes.filter((note) => !isAutoDecisionNote(note));
 
   return dedupeDecisionLines([
     `Weekly structure: ${activeSessions.length} sessions across ${trainingDays} training day${trainingDays === 1 ? '' : 's'} (${sportBreakdown}, ${totalMinutes} min total) for ${plan.discipline} focus in ${plan.phase} phase.`,
     `Readiness decision: ${athlete.readiness.level}/${athlete.readiness.score} ${readinessAction}.`,
-    `Adherence decision: ${compliancePct}% trailing 14-day compliance with ${athlete.compliance.consecutiveMisses} consecutive miss${athlete.compliance.consecutiveMisses === 1 ? '' : 'es'}.`,
+    adherenceDecisionNote(athlete),
     ...decisionReasonNotes(plan),
     ...staleAutoNotesRemoved,
   ]);
+}
+
+function adherenceDecisionNote(athlete: AthleteState): string {
+  const compliancePct = Math.round(athlete.compliance.trailing14DayCompliance * 100);
+  const misses = athlete.compliance.consecutiveMisses;
+  if (compliancePct <= 0) {
+    if (misses > 0) {
+      return `Adherence decision: reset week after ${misses} consecutive miss${misses === 1 ? '' : 'es'} — restart with one short, safe session instead of chasing missed volume.`;
+    }
+    return 'Adherence decision: fresh tracking week — use the next short session to establish the baseline.';
+  }
+  return `Adherence decision: ${compliancePct}% trailing 14-day compliance with ${misses} consecutive miss${misses === 1 ? '' : 'es'}.`;
 }
 
 function decisionReasonNotes(plan: WeeklyPlan): string[] {
