@@ -569,6 +569,14 @@ export async function buildSharedListNotificationForUser(userId: number): Promis
   return message || null;
 }
 
+function safeSharedListNotificationBody(message: string): string {
+  return message
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 500);
+}
+
 export async function buildConflictAlertForUser(userId: number): Promise<string | null> {
   if (!hasConnectedCalendarForUser(userId)) return null;
 
@@ -828,14 +836,40 @@ export function startScheduler(bot?: any): void {
     if ((currentHour >= 22 || currentHour < 7) && currentMinute % 15 !== 0) return;
 
     for (const target of getActiveUserTargets()) {
-      if (!target.telegramId) continue;
       const message = await buildSharedListNotificationForUser(target.tenantId);
       if (!message) continue;
 
+      const signature = createHash('sha256').update(message).digest('hex').slice(0, 16);
       try {
-        await safeSend(target.telegramId, message, { parse_mode: 'HTML' });
+        await createNotificationIntent({
+          userId: target.tenantId,
+          tenantId: target.tenantId,
+          sourceSkill: 'secretary',
+          type: 'missed_item',
+          priority: 'active',
+          relatedEntityId: `shared-list:${target.tenantId}:${signature}`,
+          relatedEntityType: 'shared_task_list',
+          title: 'Shared list update',
+          body: 'New shared tasks need your attention.',
+          sensitiveBody: safeSharedListNotificationBody(message),
+          actionButtons: [{ id: 'open_detail', label: 'Open tasks', style: 'primary' }],
+          deeplink: 'nexus://notifications/shared-list',
+          quietHoursPolicy: 'respect',
+          dedupeKey: `secretary:shared_list:${target.tenantId}:${startOfDay(now())}:${signature}`,
+          requiresUserAction: false,
+          deliveryPolicy: 'auto',
+          privacyPolicy: 'sensitive',
+        });
       } catch (err) {
-        logger.error({ err, userId: target.telegramId, tenantId: target.tenantId }, 'Failed to send shared list notification');
+        logger.error({ err, tenantId: target.tenantId }, 'Failed to create shared list notification intent');
+      }
+
+      if (target.telegramId) {
+        try {
+          await safeSend(target.telegramId, message, { parse_mode: 'HTML' });
+        } catch (err) {
+          logger.error({ err, userId: target.telegramId, tenantId: target.tenantId }, 'Failed to send shared list notification');
+        }
       }
     }
   }), { timezone: tz });

@@ -416,6 +416,52 @@ describe('scheduler tenant scoping', () => {
     );
   });
 
+  it('shared list cron creates NotificationIntent for active users without requiring Telegram', async () => {
+    const todayStr = new Date().toISOString().slice(0, 10);
+    const existing = { id: 'existing', title: 'Existing shared', listName: 'Shared', dueDateTime: null };
+    const newTask = { id: 'new-for-ios', title: 'New shared task', listName: 'Shared', dueDateTime: `${todayStr}T10:00:00.000Z` };
+
+    mockGetSharedListPendingTasks.mockResolvedValue({
+      success: true,
+      data: [existing],
+    });
+    await buildSharedListNotificationForUser(11);
+    await buildSharedListNotificationForUser(22);
+
+    mockGetSharedListPendingTasks.mockResolvedValue({
+      success: true,
+      data: [existing, newTask],
+    });
+    mockCreateNotificationIntent.mockClear();
+
+    startScheduler();
+    const sharedListJob = mockCronSchedule.mock.calls.find((call) => call[0] === '*/5 * * * *')?.[1] as (() => Promise<void>) | undefined;
+    expect(sharedListJob).toBeTypeOf('function');
+
+    await sharedListJob!();
+
+    expect(mockCreateNotificationIntent).toHaveBeenCalledWith(expect.objectContaining({
+      userId: 11,
+      tenantId: 11,
+      sourceSkill: 'secretary',
+      type: 'missed_item',
+      priority: 'active',
+      relatedEntityType: 'shared_task_list',
+      title: 'Shared list update',
+      body: 'New shared tasks need your attention.',
+      sensitiveBody: expect.stringContaining('New shared task'),
+      privacyPolicy: 'sensitive',
+      requiresUserAction: false,
+    }));
+    expect(mockCreateNotificationIntent).toHaveBeenCalledWith(expect.objectContaining({
+      userId: 22,
+      tenantId: 22,
+      sourceSkill: 'secretary',
+      type: 'missed_item',
+      relatedEntityType: 'shared_task_list',
+    }));
+  });
+
   it('buildConflictAlertForUser uses scoped calendar reads and only reports overlapping events', async () => {
     mockGetEvents.mockResolvedValue([
       { summary: 'Event A', start: '2026-04-18T09:00:00.000Z', end: '2026-04-18T10:00:00.000Z' },
