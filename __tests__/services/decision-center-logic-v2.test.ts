@@ -51,7 +51,9 @@ describe('Decision Center Logic v2', () => {
 
     expect(decision.quality.status).toBe('pass');
     expect(decision.problemStatement).toContain('Saturday long run');
-    expect(decision.recommendation).toContain('2026-05-17T08:00:00.000Z');
+    expect(decision.recommendation).toContain('Sun, May 17');
+    expect(decision.recommendation).not.toContain('2026-05-17T08:00:00.000Z');
+    expect(decision.problemStatement).not.toContain('2026-05-16T08:00:00.000Z');
     expect(decision.expectedEffect).toContain('verify');
     expect(decision.why.facts.length).toBeGreaterThan(0);
     expect(decision.whatWillChange[0]).toMatchObject({
@@ -125,7 +127,9 @@ describe('Decision Center Logic v2', () => {
       preferredWindowLabel: 'Weekend mornings',
     });
     expect(advice.feasibility).toBe('feasible');
-    expect(advice.bestAction).toContain('2026-05-17T08:00:00.000Z');
+    expect(advice.bestAction).toContain('Sun, May 17');
+    expect(advice.bestAction).not.toContain('2026-05-17T08:00:00.000Z');
+    expect(advice.recommendedStartAt).toBe('2026-05-17T08:00:00.000Z');
     expect(advice.whyTradeoffs.length).toBeGreaterThan(0);
 
     const missing = adviseSecretaryDecision({
@@ -136,6 +140,21 @@ describe('Decision Center Logic v2', () => {
     });
     expect(missing.feasibility).toBe('needs_enrichment');
     expect(missing.bestAction).toContain('Collect schedule context');
+  });
+
+  it('Secretary advisor refuses self-move slots that match the current window', () => {
+    const advice = adviseSecretaryDecision({
+      title: 'Long run',
+      currentStartAt: '2026-05-16T08:00:00.000Z',
+      currentEndAt: '2026-05-16T10:00:00.000Z',
+      availableSlots: [
+        { startAt: '2026-05-16T08:00:00.000Z', endAt: '2026-05-16T10:00:00.000Z', label: 'Current slot' },
+      ],
+    });
+
+    expect(advice.feasibility).toBe('needs_enrichment');
+    expect(advice.recommendedStartAt).toBeNull();
+    expect(advice.bestAction).toContain('Collect schedule context');
   });
 
   it('autopilot safely retries sync but does not move workouts or approve content by default', () => {
@@ -209,6 +228,8 @@ describe('Decision Center Logic v2', () => {
         entityTitle: 'Long run',
         currentStartAt: '2026-05-12T18:00:00.000Z',
         currentEndAt: '2026-05-12T20:00:00.000Z',
+        recommendedStartAt: '2026-05-12T20:30:00.000Z',
+        recommendedEndAt: '2026-05-12T22:00:00.000Z',
       },
     });
     const optional = buildDecisionLogicV2({
@@ -249,5 +270,101 @@ describe('Decision Center Logic v2', () => {
     expect(urgentRank.apnsEligible).toBe(true);
     expect(optionalRank.apnsEligible).toBe(false);
     vi.useRealTimers();
+  });
+
+  it('requires explicit mutating actions to declare read-back verification even for unknown action ids', () => {
+    const decision = buildDecisionLogicV2({
+      sourceSkill: 'system',
+      type: 'decision_required',
+      priority: 'active',
+      title: 'Confirm account update',
+      body: 'Confirm this scoped account update.',
+      actions: [{ id: 'confirm_account_update', label: 'Confirm update', style: 'primary', mutating: true }],
+      relatedEntityType: 'account_setting',
+      relatedEntityId: 'setting-1',
+      privacyClassification: 'sensitive',
+    });
+
+    expect(decision.quality.safeToShowUser).toBe(false);
+    expect(decision.quality.missingFields).toContain('readBackVerifier');
+  });
+
+  it('defaults rankDecision to no Home/APNs eligibility when quality is omitted', () => {
+    const ranked = rankDecision({
+      sourceSkill: 'secretary',
+      type: 'conflict_detected',
+      priority: 'time_sensitive',
+      title: 'Schedule conflict',
+      body: 'Conflict.',
+      actions: [{ id: 'open_detail', label: 'Open', style: 'primary' }],
+      relatedEntityType: 'secretary_agenda_item',
+      relatedEntityId: 'agenda',
+      privacyClassification: 'standard',
+    }, {
+      confidence: 0.9,
+      riskIfIgnored: 'high',
+      automationEligibility: 'ask_first',
+    });
+
+    expect(ranked.apnsEligible).toBe(false);
+    expect(ranked.homeVisible).toBe(false);
+  });
+
+  it('rejects generic titles even when the body is otherwise concrete', () => {
+    const decision = buildDecisionLogicV2({
+      sourceSkill: 'system',
+      type: 'decision_required',
+      priority: 'active',
+      title: 'Review',
+      body: 'Confirm whether this account setting should be updated.',
+      actions: [{ id: 'open_detail', label: 'Open details', style: 'primary' }],
+      relatedEntityType: 'account_setting',
+      relatedEntityId: 'setting-1',
+      privacyClassification: 'sensitive',
+    });
+
+    expect(decision.quality.safeToShowUser).toBe(false);
+    expect(decision.quality.missingFields).toContain('title');
+  });
+
+  it('pins recipe confidence tiers so tuning is visible in review', () => {
+    const cases = [
+      buildDecisionLogicV2({
+        sourceSkill: 'content',
+        type: 'approval_required',
+        priority: 'active',
+        title: 'Script ready',
+        body: 'A script is ready for approval.',
+        actions: [{ id: 'approve_script', label: 'Approve', style: 'primary' }],
+        relatedEntityType: 'content_workflow_object',
+        relatedEntityId: 'content-1',
+        privacyClassification: 'private_content',
+      }).confidence,
+      buildDecisionLogicV2({
+        sourceSkill: 'chat',
+        type: 'decision_required',
+        priority: 'active',
+        title: 'Choose option',
+        body: 'A chat action needs a choice.',
+        actions: [{ id: 'option_a', label: 'Option A', style: 'primary' }],
+        relatedEntityType: 'chat_confirmation',
+        relatedEntityId: 'chat-1',
+        privacyClassification: 'standard',
+      }).confidence,
+      buildDecisionLogicV2({
+        sourceSkill: 'secretary',
+        type: 'sync_failure',
+        priority: 'active',
+        title: 'Calendar sync incomplete',
+        body: 'Outlook sync did not complete.',
+        actions: [{ id: 'retry', label: 'Retry sync', style: 'primary' }],
+        relatedEntityType: null,
+        relatedEntityId: null,
+        privacyClassification: 'standard',
+        context: { providerName: 'Outlook', explicitNoRelatedEntityReason: 'sync failure is scoped to provider state' },
+      }).confidence,
+    ];
+
+    expect(cases).toEqual([0.88, 0.82, 0.78]);
   });
 });

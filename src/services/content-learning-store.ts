@@ -544,11 +544,19 @@ export function upsertLearnedPattern(opts: {
   const ownerScope = opts.userId === 0 ? 'system' : 'user';
   const scope = contentScopeForInsert(opts.userId, opts.tenantId);
 
-  // Try to update existing pattern first
-  const existing = db.prepare(`
-    SELECT id, frequency, examples FROM content_learned_patterns
-    WHERE category = ? AND pattern_text = ? AND user_id = ?
-  `).get(opts.category, opts.patternText, opts.userId) as any;
+  // Try to update an existing pattern first. User rows are scoped by both
+  // user and tenant so same numeric user IDs in different tenants cannot
+  // rewrite each other's learned patterns.
+  const existing = opts.userId === 0
+    ? db.prepare(`
+        SELECT id, frequency, examples FROM content_learned_patterns
+        WHERE category = ? AND pattern_text = ? AND user_id = 0
+      `).get(opts.category, opts.patternText) as any
+    : db.prepare(`
+        SELECT id, frequency, examples FROM content_learned_patterns
+        WHERE category = ? AND pattern_text = ?
+          AND ${contentScopePredicate()}
+      `).get(opts.category, opts.patternText, ...contentScopeParams(opts.userId, opts.tenantId)) as any;
 
   if (existing) {
     // Merge examples (deduplicate)

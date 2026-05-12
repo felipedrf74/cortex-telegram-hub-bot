@@ -19,10 +19,12 @@ export interface DecisionLogicContext {
   currentEndAt?: string | null;
   recommendedStartAt?: string | null;
   recommendedEndAt?: string | null;
+  candidateSlots?: Array<{ startAt: string; endAt: string; label?: string | null }> | null;
   sourceState?: string | null;
   explicitNoRelatedEntityReason?: string | null;
   providerName?: string | null;
   deadlineAt?: string | null;
+  timezone?: string | null;
 }
 
 export interface DecisionLogicInput {
@@ -106,6 +108,7 @@ export interface SecretaryDecisionAdvisorInput {
   availableSlots?: Array<{ startAt: string; endAt: string; label?: string }>;
   preferredWindowLabel?: string | null;
   reasonCodes?: string[];
+  timezone?: string | null;
 }
 
 export interface SecretaryDecisionAdvice {
@@ -118,6 +121,8 @@ export interface SecretaryDecisionAdvice {
   expectedEffect: string;
   impactIfIgnored: string;
   confidence: number;
+  recommendedStartAt: string | null;
+  recommendedEndAt: string | null;
   whyFacts: string[];
   whyPreferences: string[];
   whyRules: string[];
@@ -157,9 +162,33 @@ const GENERIC_COPY_PATTERNS = [
   /^a schedule conflict needs your decision/i,
   /^schedule conflict needs review$/i,
   /^review$/i,
+  /^decision details unavailable$/i,
   /^open nexus to view details/i,
   /^this item needs a decision before nexus acts/i,
+  /\bneeds (?:your )?attention\b/i,
+  /\bneeds your decision\b/i,
+  /\bopen nexus to view\b/i,
 ];
+
+const DECISION_CONFIDENCE_RUBRIC = {
+  highStructuredState: 0.9,
+  highEntityReadBack: 0.88,
+  highScheduleRecommendation: 0.86,
+  highChatConfirmation: 0.82,
+  highSyncRetry: 0.78,
+  mediumFinanceEntity: 0.78,
+  mediumCookingEntity: 0.74,
+  mediumTrainingReview: 0.72,
+  mediumGenericDecision: 0.55,
+  lowContentMissingEntity: 0.5,
+  lowCookingMissingEntity: 0.48,
+  lowFinanceMissingEntity: 0.46,
+  lowChatMissingEntity: 0.42,
+  lowAdvisorMissingContext: 0.38,
+  lowMissingScheduleContext: 0.34,
+} as const;
+
+const DECISION_QUALITY_REQUIRED_FIELD_COUNT = 14;
 
 export function buildDecisionLogicV2(input: DecisionLogicInput): DecisionLogicV2 {
   const recipe = recipeForInput(input);
@@ -190,8 +219,9 @@ export function evaluateDecisionQuality(
 ): DecisionQualityGateResult {
   const missingFields: string[] = [];
   const primary = primaryAction(input.actions);
-  const mutating = input.actions.some((action) => MUTATING_ACTION_IDS.has(action.id));
+  const mutating = input.actions.some(isMutatingAction);
 
+  requireConcrete(recipe.title, 'title', missingFields);
   requireConcrete(recipe.problemStatement, 'problemStatement', missingFields);
   requireConcrete(recipe.recommendation, 'recommendation', missingFields);
   requireConcrete(recipe.expectedEffect, 'expectedEffect', missingFields);
@@ -221,8 +251,8 @@ export function evaluateDecisionQuality(
     missingFields.push('concretePrimaryActionLabel');
   }
 
-  const filled = 13 - missingFields.length;
-  const score = Math.max(0, Math.min(100, Math.round((filled / 13) * 100)));
+  const filled = DECISION_QUALITY_REQUIRED_FIELD_COUNT - missingFields.length;
+  const score = Math.max(0, Math.min(100, Math.round((filled / DECISION_QUALITY_REQUIRED_FIELD_COUNT) * 100)));
   const status: DecisionQualityStatus = missingFields.length === 0
     ? 'pass'
     : missingFields.includes('concreteCopy') || missingFields.includes('relatedEntity') || missingFields.includes('readBackVerifier')
@@ -243,13 +273,16 @@ export function evaluateDecisionQuality(
 }
 
 export function adviseSecretaryDecision(input: SecretaryDecisionAdvisorInput): SecretaryDecisionAdvice {
-  const current = formatWindow(input.currentStartAt, input.currentEndAt);
-  const feasibleSlots = (input.availableSlots ?? []).filter((slot) => isValidWindow(slot.startAt, slot.endAt));
+  const current = formatDecisionWindow(input.currentStartAt, input.currentEndAt, input.timezone);
+  const feasibleSlots = (input.availableSlots ?? [])
+    .filter((slot) => isValidWindow(slot.startAt, slot.endAt))
+    .filter((slot) => !sameWindow(slot.startAt, slot.endAt, input.currentStartAt, input.currentEndAt));
   const best = feasibleSlots[0] ?? null;
   const title = input.title.trim() || 'schedule item';
+  const bestWindow = best ? formatDecisionWindow(best.startAt, best.endAt, input.timezone) : null;
   const conflictGraph = [
     current ? `${title} currently affects ${current}.` : `${title} is missing a concrete current schedule window.`,
-    best ? `A feasible alternative exists at ${formatWindow(best.startAt, best.endAt)}.` : 'No feasible alternative slot was supplied.',
+    bestWindow ? `A feasible alternative exists at ${bestWindow}.` : 'No feasible alternative slot was supplied.',
   ];
 
   if (!best) {
@@ -262,7 +295,9 @@ export function adviseSecretaryDecision(input: SecretaryDecisionAdvisorInput): S
       scheduleImpact: 'Nexus cannot safely reflow without a candidate slot.',
       expectedEffect: 'Decision remains internal until Secretary has a feasible recommendation.',
       impactIfIgnored: 'The conflict may remain unresolved.',
-      confidence: 0.38,
+      confidence: DECISION_CONFIDENCE_RUBRIC.lowAdvisorMissingContext,
+      recommendedStartAt: null,
+      recommendedEndAt: null,
       whyFacts: conflictGraph,
       whyPreferences: input.preferredWindowLabel ? [`Preference considered: ${input.preferredWindowLabel}.`] : [],
       whyRules: ['Secretary must not recommend impossible slots.'],
@@ -272,9 +307,9 @@ export function adviseSecretaryDecision(input: SecretaryDecisionAdvisorInput): S
   }
 
   return {
-    bestAction: `Move to ${formatWindow(best.startAt, best.endAt)}.`,
+    bestAction: `Use ${bestWindow}.`,
     alternatives: feasibleSlots.slice(1, 4).map((slot) => ({
-      label: slot.label ?? formatWindow(slot.startAt, slot.endAt) ?? 'Alternative slot',
+      label: slot.label ?? formatDecisionWindow(slot.startAt, slot.endAt, input.timezone) ?? 'Alternative slot',
       startAt: slot.startAt,
       endAt: slot.endAt,
       tradeoff: 'Alternative slot is feasible but lower priority than the recommended window.',
@@ -284,10 +319,12 @@ export function adviseSecretaryDecision(input: SecretaryDecisionAdvisorInput): S
     capacityImpact: input.reasonCodes?.includes('overcapacity')
       ? 'Reduces pressure on an over-capacity window.'
       : 'Keeps the schedule change bounded to the affected item.',
-    scheduleImpact: `Updates the affected schedule item to ${formatWindow(best.startAt, best.endAt)}.`,
+    scheduleImpact: `Updates the affected schedule item to ${bestWindow}.`,
     expectedEffect: `Secretary reflows the item and verifies the new window is persisted.`,
     impactIfIgnored: 'The conflict can keep blocking the plan or create a same-day collision.',
-    confidence: 0.86,
+    confidence: DECISION_CONFIDENCE_RUBRIC.highScheduleRecommendation,
+    recommendedStartAt: best.startAt,
+    recommendedEndAt: best.endAt,
     whyFacts: conflictGraph,
     whyPreferences: input.preferredWindowLabel ? [`Preference considered: ${input.preferredWindowLabel}.`] : [],
     whyRules: ['Schedule and capacity conflicts must go through Secretary before user-facing action.'],
@@ -328,10 +365,12 @@ export function rankDecision(
   const confidencePenalty = logic.confidence < 0.5 ? 15 : 0;
   const qualityPenalty = quality && !quality.safeToShowUser ? 40 : 0;
   const priorityScore = Math.max(0, urgency + deadlineBoost + riskBoost - confidencePenalty - qualityPenalty);
-  const apnsEligible = (quality?.safeForAPNs ?? true) && priorityScore >= 82 && input.priority !== 'passive';
+  const safeForAPNs = quality?.safeForAPNs ?? false;
+  const safeForHomePreview = quality?.safeForHomePreview ?? false;
+  const apnsEligible = safeForAPNs && priorityScore >= 82 && input.priority !== 'passive';
   return {
     priorityScore,
-    homeVisible: priorityScore >= 55 && (quality?.safeForHomePreview ?? true),
+    homeVisible: priorityScore >= 55 && safeForHomePreview,
     section: sectionForInput(input),
     apnsEligible,
     digestEligible: priorityScore < 55 || input.priority === 'passive',
@@ -341,6 +380,7 @@ export function rankDecision(
 }
 
 function recipeForInput(input: DecisionLogicInput): Omit<DecisionLogicV2, 'sourceSkill' | 'type' | 'privacyClassification' | 'visibilityScope' | 'notificationEligibility' | 'apnsInterruptionLevel' | 'collapseKey' | 'badgeContribution' | 'quality' | 'qualityScore'> {
+  if (input.type === 'sync_failure') return syncFailureRecipe(input);
   if (input.sourceSkill === 'secretary' || input.type === 'conflict_detected' || input.type === 'reflow_suggestion') {
     return secretaryRecipe(input);
   }
@@ -349,24 +389,24 @@ function recipeForInput(input: DecisionLogicInput): Omit<DecisionLogicV2, 'sourc
   if (input.sourceSkill === 'finance') return financeRecipe(input);
   if (input.sourceSkill === 'cooking') return cookingRecipe(input);
   if (input.sourceSkill === 'chat') return chatRecipe(input);
-  if (input.type === 'sync_failure') return syncFailureRecipe(input);
   return genericRecipe(input);
 }
 
 function secretaryRecipe(input: DecisionLogicInput): Omit<DecisionLogicV2, 'sourceSkill' | 'type' | 'privacyClassification' | 'visibilityScope' | 'notificationEligibility' | 'apnsInterruptionLevel' | 'collapseKey' | 'badgeContribution' | 'quality' | 'qualityScore'> {
   const context = input.context ?? {};
   const entityTitle = context.entityTitle?.trim() || null;
-  const window = formatWindow(context.recommendedStartAt ?? context.currentStartAt, context.recommendedEndAt ?? context.currentEndAt);
-  const hasConcreteAgenda = !!entityTitle && !!window;
+  const currentWindow = formatDecisionWindow(context.currentStartAt, context.currentEndAt, context.timezone);
+  const recommendedWindow = formatDecisionWindow(context.recommendedStartAt, context.recommendedEndAt, context.timezone);
+  const hasConcreteAgenda = !!entityTitle && !!recommendedWindow;
   const primary = primaryAction(input.actions);
   const title = hasConcreteAgenda ? 'Schedule conflict' : sanitizeTitle(input.title);
   return {
     title,
     problemStatement: hasConcreteAgenda
-      ? `${entityTitle} needs a schedule decision for ${window}.`
+      ? `${entityTitle} needs a schedule decision${currentWindow ? ` from ${currentWindow}` : ''} to ${recommendedWindow}.`
       : 'Secretary cannot show this schedule conflict until it has the affected item and candidate time.',
     recommendation: hasConcreteAgenda
-      ? `Use the proposed ${window} slot or choose another feasible time.`
+      ? `Use ${recommendedWindow} or choose another feasible time.`
       : 'Keep the decision internal and ask Secretary to enrich the conflict details.',
     expectedEffect: hasConcreteAgenda
       ? 'Secretary will persist the selected schedule change, verify the agenda item, and close the decision only after read-back succeeds.'
@@ -377,13 +417,13 @@ function secretaryRecipe(input: DecisionLogicInput): Omit<DecisionLogicV2, 'sour
     primaryActionLabel: concreteActionLabel(primary, hasConcreteAgenda ? 'Reflow' : 'Enrich details'),
     secondaryActionLabels: secondaryActionLabels(input.actions, primary),
     whySummary: hasConcreteAgenda
-      ? `Secretary found a schedule/capacity issue and has a concrete ${window} recommendation.`
+      ? `Secretary found a schedule/capacity issue and has a concrete ${recommendedWindow} recommendation.`
       : 'Secretary is missing the source agenda item required for a real recommendation.',
     urgencyReason: input.priority === 'time_sensitive' ? 'The decision affects a same-day or deadline-sensitive schedule item.' : 'The decision affects your schedule.',
-    confidence: hasConcreteAgenda ? 0.86 : 0.34,
+    confidence: hasConcreteAgenda ? DECISION_CONFIDENCE_RUBRIC.highScheduleRecommendation : DECISION_CONFIDENCE_RUBRIC.lowMissingScheduleContext,
     relatedEntityReason: hasConcreteAgenda ? null : input.context?.explicitNoRelatedEntityReason ?? null,
     why: {
-      facts: hasConcreteAgenda ? [`Affected item: ${entityTitle}.`, `Candidate window: ${window}.`] : ['No persisted Secretary agenda item was available.'],
+      facts: hasConcreteAgenda ? [`Affected item: ${entityTitle}.`, `Candidate window: ${recommendedWindow}.`] : ['No persisted Secretary agenda item was available.'],
       preferences: [],
       rules: ['Schedule, time, and capacity conflicts must be arbitrated by Secretary.'],
       tradeoffs: hasConcreteAgenda ? ['The proposed change is bounded to the affected item.'] : ['Hiding the card is safer than showing a vague decision.'],
@@ -391,7 +431,7 @@ function secretaryRecipe(input: DecisionLogicInput): Omit<DecisionLogicV2, 'sour
     },
     whatWillChange: hasConcreteAgenda ? [{
       item: entityTitle,
-      effect: `Move or confirm the agenda item at ${window}.`,
+      effect: `Move or confirm the agenda item at ${recommendedWindow}.`,
       targetSkill: 'secretary',
       verificationMethod: 'Read secretary_agenda_items after the action.',
     }] : [],
@@ -426,7 +466,7 @@ function trainingRecipe(input: DecisionLogicInput): Omit<DecisionLogicV2, 'sourc
       ? 'Race-specific training requires a target date before Nexus can safely phase the plan.'
       : 'Training changes can affect load and recovery, so Nexus asks before changing them.',
     urgencyReason: input.priority === 'time_sensitive' ? 'This blocks an imminent training plan update.' : 'This affects future training quality.',
-    confidence: isRaceDate ? 0.9 : 0.72,
+    confidence: isRaceDate ? DECISION_CONFIDENCE_RUBRIC.highStructuredState : DECISION_CONFIDENCE_RUBRIC.mediumTrainingReview,
     relatedEntityReason: isRaceDate ? input.context?.explicitNoRelatedEntityReason ?? 'training profile is the affected entity' : null,
     why: {
       facts: isRaceDate ? ['No target race date is available for the plan.'] : ['Training emitted an action-gated adjustment.'],
@@ -441,7 +481,7 @@ function trainingRecipe(input: DecisionLogicInput): Omit<DecisionLogicV2, 'sourc
       targetSkill: 'training',
       verificationMethod: isRaceDate ? 'Read the training profile after saving.' : 'Read the training plan after action.',
     }],
-    readBackVerifier: input.actions.some((action) => MUTATING_ACTION_IDS.has(action.id)) ? 'training_state' : null,
+    readBackVerifier: input.actions.some(isMutatingAction) ? 'training_state' : null,
     automationEligibility: 'ask_first',
     autopilotPolicy: 'Training load changes ask first.',
     safePreviewTitle: 'Training decision',
@@ -462,8 +502,8 @@ function contentRecipe(input: DecisionLogicInput): Omit<DecisionLogicV2, 'source
     secondaryActionLabels: secondaryActionLabels(input.actions, primaryAction(input.actions)),
     whySummary: 'Content publishing requires explicit approval before Nexus moves it forward.',
     urgencyReason: input.deadlineAt ? 'The approval has a deadline.' : 'The workflow is waiting for review.',
-    confidence: input.relatedEntityId ? 0.88 : 0.5,
-    relatedEntityReason: input.relatedEntityId ? null : null,
+    confidence: input.relatedEntityId ? DECISION_CONFIDENCE_RUBRIC.highEntityReadBack : DECISION_CONFIDENCE_RUBRIC.lowContentMissingEntity,
+    relatedEntityReason: null,
     why: {
       facts: [`Workflow item: ${contentTitle}.`, input.context?.sourceState ? `Current state: ${input.context.sourceState}.` : 'Current state is awaiting approval.'],
       preferences: [],
@@ -497,8 +537,8 @@ function financeRecipe(input: DecisionLogicInput): Omit<DecisionLogicV2, 'source
     secondaryActionLabels: secondaryActionLabels(input.actions, primaryAction(input.actions)),
     whySummary: 'Finance actions are privacy-sensitive and require explicit confirmation.',
     urgencyReason: input.priority === 'time_sensitive' ? 'The finance item is deadline-sensitive.' : 'The finance workflow is waiting for confirmation.',
-    confidence: input.relatedEntityId ? 0.78 : 0.46,
-    relatedEntityReason: input.relatedEntityId ? null : null,
+    confidence: input.relatedEntityId ? DECISION_CONFIDENCE_RUBRIC.mediumFinanceEntity : DECISION_CONFIDENCE_RUBRIC.lowFinanceMissingEntity,
+    relatedEntityReason: null,
     why: {
       facts: ['A finance workflow emitted an action-gated decision.'],
       preferences: [],
@@ -532,8 +572,8 @@ function cookingRecipe(input: DecisionLogicInput): Omit<DecisionLogicV2, 'source
     secondaryActionLabels: secondaryActionLabels(input.actions, primaryAction(input.actions)),
     whySummary: 'Cooking suggestions become decisions only when a real choice changes the plan.',
     urgencyReason: input.priority === 'time_sensitive' ? 'The meal choice affects today.' : 'The meal plan is waiting for confirmation.',
-    confidence: input.relatedEntityId ? 0.74 : 0.48,
-    relatedEntityReason: input.relatedEntityId ? null : null,
+    confidence: input.relatedEntityId ? DECISION_CONFIDENCE_RUBRIC.mediumCookingEntity : DECISION_CONFIDENCE_RUBRIC.lowCookingMissingEntity,
+    relatedEntityReason: null,
     why: {
       facts: ['Cooking emitted an action-gated meal decision.'],
       preferences: [],
@@ -567,8 +607,8 @@ function chatRecipe(input: DecisionLogicInput): Omit<DecisionLogicV2, 'sourceSki
     secondaryActionLabels: secondaryActionLabels(input.actions, primaryAction(input.actions)),
     whySummary: 'Chat cannot bypass Decision Center for ambiguous or mutating actions.',
     urgencyReason: 'The workflow is waiting for your answer.',
-    confidence: input.relatedEntityId ? 0.82 : 0.42,
-    relatedEntityReason: input.relatedEntityId ? null : null,
+    confidence: input.relatedEntityId ? DECISION_CONFIDENCE_RUBRIC.highChatConfirmation : DECISION_CONFIDENCE_RUBRIC.lowChatMissingEntity,
+    relatedEntityReason: null,
     why: {
       facts: ['A pending chat confirmation exists.'],
       preferences: [],
@@ -603,7 +643,7 @@ function syncFailureRecipe(input: DecisionLogicInput): Omit<DecisionLogicV2, 'so
     secondaryActionLabels: secondaryActionLabels(input.actions, primaryAction(input.actions)),
     whySummary: 'Retrying a failed sync is safe and reversible.',
     urgencyReason: input.priority === 'time_sensitive' ? 'The sync affects current-day planning.' : 'The provider state is stale.',
-    confidence: 0.78,
+    confidence: DECISION_CONFIDENCE_RUBRIC.highSyncRetry,
     relatedEntityReason: input.relatedEntityId ? null : 'sync failure can be scoped to provider state rather than one entity',
     why: {
       facts: [`Provider: ${provider}.`],
@@ -638,8 +678,8 @@ function genericRecipe(input: DecisionLogicInput): Omit<DecisionLogicV2, 'source
     secondaryActionLabels: secondaryActionLabels(input.actions, primaryAction(input.actions)),
     whySummary: 'This item needs user judgment before Nexus acts.',
     urgencyReason: input.priority === 'passive' ? 'Optional decision.' : 'Active decision.',
-    confidence: 0.55,
-    relatedEntityReason: input.relatedEntityId ? null : null,
+    confidence: DECISION_CONFIDENCE_RUBRIC.mediumGenericDecision,
+    relatedEntityReason: null,
     why: {
       facts: [input.body],
       preferences: [],
@@ -648,7 +688,7 @@ function genericRecipe(input: DecisionLogicInput): Omit<DecisionLogicV2, 'source
       uncertainty: [],
     },
     whatWillChange: [],
-    readBackVerifier: input.actions.some((action) => MUTATING_ACTION_IDS.has(action.id)) ? null : null,
+    readBackVerifier: input.actions.some(isMutatingAction) ? null : null,
     automationEligibility: 'never',
     autopilotPolicy: 'No autopilot rule applies.',
     safePreviewTitle: sanitizeTitle(input.title),
@@ -695,6 +735,10 @@ function concreteActionLabel(action: NotificationActionButton | null, fallback: 
   return action.label;
 }
 
+function isMutatingAction(action: NotificationActionButton): boolean {
+  return action.mutating === true || MUTATING_ACTION_IDS.has(action.id);
+}
+
 function sanitizeTitle(value: string): string {
   const trimmed = value.trim();
   if (!trimmed) return 'Decision needed';
@@ -721,9 +765,29 @@ function isGenericCopy(value: string | null | undefined): boolean {
   return GENERIC_COPY_PATTERNS.some((pattern) => pattern.test(normalized));
 }
 
-function formatWindow(startAt?: string | null, endAt?: string | null): string | null {
+export function formatDecisionWindow(startAt?: string | null, endAt?: string | null, timezone?: string | null): string | null {
   if (!startAt || !endAt || !isValidWindow(startAt, endAt)) return null;
-  return `${startAt} to ${endAt}`;
+  const zone = timezone || 'Europe/Lisbon';
+  const start = new Date(startAt);
+  const end = new Date(endAt);
+  const dateFormatter = new Intl.DateTimeFormat('en-US', {
+    timeZone: zone,
+    weekday: 'short',
+    month: 'short',
+    day: 'numeric',
+  });
+  const timeFormatter = new Intl.DateTimeFormat('en-US', {
+    timeZone: zone,
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  });
+  const startDate = dateFormatter.format(start);
+  const endDate = dateFormatter.format(end);
+  const startTime = timeFormatter.format(start);
+  const endTime = timeFormatter.format(end);
+  if (startDate === endDate) return `${startDate}, ${startTime}-${endTime}`;
+  return `${startDate}, ${startTime} to ${endDate}, ${endTime}`;
 }
 
 function isValidWindow(startAt?: string | null, endAt?: string | null): boolean {
@@ -731,6 +795,16 @@ function isValidWindow(startAt?: string | null, endAt?: string | null): boolean 
   const start = Date.parse(startAt);
   const end = Date.parse(endAt);
   return Number.isFinite(start) && Number.isFinite(end) && start < end;
+}
+
+function sameWindow(
+  startAt?: string | null,
+  endAt?: string | null,
+  otherStartAt?: string | null,
+  otherEndAt?: string | null,
+): boolean {
+  if (!startAt || !endAt || !otherStartAt || !otherEndAt) return false;
+  return Date.parse(startAt) === Date.parse(otherStartAt) && Date.parse(endAt) === Date.parse(otherEndAt);
 }
 
 function deadlineSoon(deadline: string | null | undefined): boolean {

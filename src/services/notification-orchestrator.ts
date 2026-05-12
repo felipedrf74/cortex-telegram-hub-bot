@@ -72,6 +72,7 @@ export interface NotificationActionButton {
   label: string;
   style?: 'primary' | 'secondary' | 'destructive';
   deeplink?: string;
+  mutating?: boolean;
 }
 
 export interface NotificationIntentInput {
@@ -1972,6 +1973,7 @@ function normalizeActions(actions: NotificationActionButton[]): NotificationActi
       label: action.label.trim(),
       style: action.style ?? 'secondary',
       deeplink: action.deeplink ?? undefined,
+      mutating: action.mutating === true ? true : undefined,
     }));
 }
 

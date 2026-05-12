@@ -54,6 +54,7 @@ import { logger } from '../utils/logger';
 import {
   adviseSecretaryDecision,
   buildDecisionLogicV2,
+  formatDecisionWindow,
   rankDecision,
   type AutomationEligibility,
   type DecisionLogicContext,
@@ -1034,7 +1035,7 @@ function decisionContextForIntentInput(input: NotificationIntentInput): Decision
       ownerUserId: input.userId,
       tenantId,
     });
-    if (agenda) return mergeDecisionContext(supplied, secretaryAgendaDecisionContext(agenda));
+    if (agenda) return secretaryAgendaDecisionContext(agenda, supplied);
   }
   if (supplied) return supplied;
   if (input.sourceSkill === 'training' && /race date/i.test(`${input.title} ${input.body}`)) {
@@ -1050,7 +1051,7 @@ function decisionContextForRecord(record: DecisionRecord): DecisionLogicContext 
       ownerUserId: record.userId,
       tenantId: record.tenantId,
     });
-    if (agenda) return mergeDecisionContext(record.decisionContext, secretaryAgendaDecisionContext(agenda));
+    if (agenda) return secretaryAgendaDecisionContext(agenda, record.decisionContext);
     if (record.decisionContext) return record.decisionContext;
     return { explicitNoRelatedEntityReason: 'secretary agenda item is missing' };
   }
@@ -1071,33 +1072,51 @@ function decisionContextForRecord(record: DecisionRecord): DecisionLogicContext 
   return {};
 }
 
-function mergeDecisionContext(
-  fallback: DecisionLogicContext | null | undefined,
-  authoritative: DecisionLogicContext,
-): DecisionLogicContext {
+function secretaryAgendaDecisionContext(agenda: SecretaryAgendaItem, supplied?: DecisionLogicContext | null): DecisionLogicContext {
+  const candidateSlots = secretaryCandidateSlots(agenda, supplied);
+  const currentStartAt = supplied?.currentStartAt ?? agenda.startAt ?? null;
+  const currentEndAt = supplied?.currentEndAt ?? agenda.endAt ?? null;
+  const advice = adviseSecretaryDecision({
+    title: agenda.title,
+    currentStartAt,
+    currentEndAt,
+    availableSlots: candidateSlots,
+    reasonCodes: agenda.decisionReasonCodes,
+    timezone: supplied?.timezone,
+  });
   return {
-    ...(fallback ?? {}),
-    ...authoritative,
+    ...(supplied ?? {}),
+    entityTitle: agenda.title,
+    currentStartAt,
+    currentEndAt,
+    recommendedStartAt: advice.recommendedStartAt,
+    recommendedEndAt: advice.recommendedEndAt,
+    candidateSlots,
+    sourceState: agenda.lifecycleState,
   };
 }
 
-function secretaryAgendaDecisionContext(agenda: SecretaryAgendaItem): DecisionLogicContext {
-  const advice = adviseSecretaryDecision({
-    title: agenda.title,
-    currentStartAt: agenda.startAt,
-    currentEndAt: agenda.endAt,
-    availableSlots: agenda.startAt && agenda.endAt ? [{ startAt: agenda.startAt, endAt: agenda.endAt, label: 'Proposed slot' }] : [],
-    reasonCodes: agenda.decisionReasonCodes,
-  });
-  const recommended = advice.alternatives[0] ?? null;
-  return {
-    entityTitle: agenda.title,
-    currentStartAt: agenda.startAt,
-    currentEndAt: agenda.endAt,
-    recommendedStartAt: recommended?.startAt ?? agenda.startAt,
-    recommendedEndAt: recommended?.endAt ?? agenda.endAt,
-    sourceState: agenda.lifecycleState,
+function secretaryCandidateSlots(
+  agenda: SecretaryAgendaItem,
+  supplied?: DecisionLogicContext | null,
+): Array<{ startAt: string; endAt: string; label?: string }> {
+  const slots: Array<{ startAt: string; endAt: string; label?: string }> = [];
+  const addSlot = (startAt?: string | null, endAt?: string | null, label?: string | null) => {
+    if (!startAt || !endAt) return;
+    if (!Number.isFinite(Date.parse(startAt)) || !Number.isFinite(Date.parse(endAt)) || Date.parse(startAt) >= Date.parse(endAt)) return;
+    if (slots.some((slot) => Date.parse(slot.startAt) === Date.parse(startAt) && Date.parse(slot.endAt) === Date.parse(endAt))) return;
+    slots.push({ startAt, endAt, label: label ?? undefined });
   };
+
+  for (const slot of supplied?.candidateSlots ?? []) {
+    addSlot(slot.startAt, slot.endAt, slot.label ?? 'Candidate slot');
+  }
+  addSlot(supplied?.recommendedStartAt, supplied?.recommendedEndAt, 'Recommended slot');
+  for (const segment of agenda.scheduledSegments ?? []) {
+    addSlot(segment.start, segment.end, segment.label ?? 'Secretary candidate');
+  }
+  addSlot(agenda.startAt, agenda.endAt, 'Proposed slot');
+  return slots;
 }
 
 function outcomeSummaryForRecord(record: DecisionRecord, logic: DecisionLogicV2): {
@@ -1119,7 +1138,7 @@ function outcomeSummaryForRecord(record: DecisionRecord, logic: DecisionLogicV2)
     if (record.sourceSkill === 'secretary') {
       const startAt = typeof record.actionResult.startAt === 'string' ? record.actionResult.startAt : null;
       const endAt = typeof record.actionResult.endAt === 'string' ? record.actionResult.endAt : null;
-      const window = startAt && endAt ? `${startAt} to ${endAt}` : 'the proposed window';
+      const window = formatDecisionWindow(startAt, endAt, record.decisionContext?.timezone) ?? 'the proposed window';
       return { outcomeSummary: `Done — Secretary applied ${window} and verified the agenda item.`, failureReason: null, retryActions: [] };
     }
     if (record.sourceSkill === 'content') {

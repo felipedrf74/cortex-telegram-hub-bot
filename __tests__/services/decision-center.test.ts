@@ -226,7 +226,8 @@ describe('Decision Center facade', () => {
     expect(created.item).not.toBeNull();
     expect(created.item?.quality.status).toBe('pass');
     expect(created.item?.problemStatement).toContain('Focus block');
-    expect(created.item?.recommendation).toContain('2026-05-10T15:00:00.000Z');
+    expect(created.item?.recommendation).toContain('Sun, May 10');
+    expect(created.item?.recommendation).not.toContain('2026-05-10T15:00:00.000Z');
 
     const listed = listDecisionItems(81, 81);
     expect(listed).toHaveLength(1);
@@ -236,6 +237,41 @@ describe('Decision Center facade', () => {
       item: 'Focus block',
       targetSkill: 'secretary',
     });
+  });
+
+  it('keeps Secretary decisions internal when the only candidate slot matches the current window', async () => {
+    ensureSecretaryAgendaFixtureTables();
+    testDb.prepare(`
+      INSERT INTO secretary_agenda_items (
+        agenda_item_id, source_intent_id, source_skill, source_action, intent_action,
+        source_entity_id, source_entity_type, owner_user_id, tenant_id,
+        lifecycle_state, provider_sync_state, version, title, start_at, end_at,
+        duration_minutes, decision_action, decision_reason_codes_json, decision_explanation,
+        source_shape_hash, scheduled_segments_json, created_at, updated_at
+      ) VALUES (
+        'agenda-self-move', 'intent-self-move', 'training', 'long_run', 'reschedule_this',
+        'session-self-move', 'training_session', 82, '82',
+        'proposed', 'not_synced', 1, 'Long run',
+        '2026-05-11T08:00:00.000Z', '2026-05-11T10:00:00.000Z',
+        120, 'deferred', '[]', 'Needs user approval',
+        'hash-self-move', '[]', datetime('now'), datetime('now')
+      )
+    `).run();
+
+    const created = await createDecisionIntent(buildSkillDecisionFixtureIntent('secretary', 82, {
+      relatedEntityId: 'agenda-self-move',
+      relatedEntityType: 'secretary_agenda_item',
+      dedupeKey: 'secretary:self-move',
+      actionButtons: [{ id: 'accept_reflow', label: 'Reflow', style: 'primary' }],
+      decisionContext: {
+        currentStartAt: '2026-05-11T08:00:00.000Z',
+        currentEndAt: '2026-05-11T10:00:00.000Z',
+      },
+    }));
+
+    expect(created.item).toBeNull();
+    expect(created.eligibility.reasons.join(' ')).toContain('quality_gate');
+    expect(listDecisionItems(82, 82)).toHaveLength(0);
   });
 
   it('executes content approval actions through Content and read-back verifies state', async () => {
@@ -348,6 +384,12 @@ describe('Decision Center facade', () => {
       relatedEntityType: 'secretary_agenda_item',
       dedupeKey: 'secretary:agenda-reflow',
       actionButtons: [{ id: 'accept_reflow', label: 'Reflow', style: 'primary' }],
+      decisionContext: {
+        currentStartAt: '2026-05-10T08:00:00.000Z',
+        currentEndAt: '2026-05-10T10:00:00.000Z',
+        recommendedStartAt: '2026-05-11T08:00:00.000Z',
+        recommendedEndAt: '2026-05-11T10:00:00.000Z',
+      },
     }));
 
     const result = await performDecisionAction(created.item!.decisionId, 'accept_reflow', 42, 42, {
@@ -685,6 +727,12 @@ describe('Decision Center facade', () => {
       relatedEntityType: 'secretary_agenda_item',
       dedupeKey: 'secretary:supersession',
       actionButtons: [{ id: 'accept_reflow', label: 'Reflow', style: 'primary' }],
+      decisionContext: {
+        currentStartAt: '2026-05-12T08:00:00.000Z',
+        currentEndAt: '2026-05-12T10:00:00.000Z',
+        recommendedStartAt: '2026-05-13T08:00:00.000Z',
+        recommendedEndAt: '2026-05-13T10:00:00.000Z',
+      },
     }));
     testDb.prepare(`UPDATE secretary_agenda_items SET lifecycle_state = 'scheduled' WHERE agenda_item_id = 'agenda-61'`).run();
 
