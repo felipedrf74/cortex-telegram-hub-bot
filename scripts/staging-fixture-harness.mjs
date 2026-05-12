@@ -2,7 +2,12 @@
 // Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
 
 import { fileURLToPath } from 'node:url';
-import { seedFixture, DEFAULT_FIXTURE_USER_ID, assertFixtureUserId } from './staging-fixture-seed.mjs';
+import {
+  DEFAULT_FIXTURE_USER_ID,
+  assertFixtureUserId,
+  normalizeFixtureCalendarEventCount,
+  seedFixture,
+} from './staging-fixture-seed.mjs';
 import { cleanupFixture } from './staging-fixture-cleanup.mjs';
 import { runFixtureProbes } from './staging-fixture-probes.mjs';
 
@@ -31,6 +36,16 @@ export function resolveTargetUrl(args = {}, env = process.env) {
     || 'https://staging-api.nexushub.me';
 }
 
+export function resolveFixtureCalendarEventCount(args = {}) {
+  if (args['felipe-volume-calendar'] === true) {
+    return normalizeFixtureCalendarEventCount(true);
+  }
+  if (args['calendar-events'] != null) {
+    return normalizeFixtureCalendarEventCount(args['calendar-events']);
+  }
+  return 0;
+}
+
 export function validateStagingTarget(rawUrl) {
   let url;
   try {
@@ -57,7 +72,7 @@ async function main() {
   const args = parseArgs(process.argv.slice(2));
   const action = String(args.action || '').toLowerCase();
   if (!['seed', 'probe', 'cleanup', 'all'].includes(action)) {
-    process.stderr.write('Usage: node scripts/staging-fixture-harness.mjs --action seed|probe|cleanup|all [--user-id 1000001] [--url https://staging-api.nexushub.me]\n');
+    process.stderr.write('Usage: node scripts/staging-fixture-harness.mjs --action seed|probe|cleanup|all [--user-id 1000001] [--url https://staging-api.nexushub.me] [--felipe-volume-calendar|--calendar-events 100]\n');
     process.exit(2);
   }
 
@@ -79,6 +94,7 @@ async function main() {
     route: args.route,
     tier: args.tier,
     seedAppleHealth: args['seed-apple-health'] === true,
+    calendarEventCount: resolveFixtureCalendarEventCount(args),
   };
 
   if (action === 'seed') {

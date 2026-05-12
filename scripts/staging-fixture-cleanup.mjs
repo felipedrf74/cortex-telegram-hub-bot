@@ -67,6 +67,7 @@ const tables = [
   'oauth_tokens',
   'user_oauth_tokens',
   'fitness_training_plans',
+  'staging_fixture_calendar_events',
 ];
 
 for (const table of tables) before[table] = countUserRows(table);

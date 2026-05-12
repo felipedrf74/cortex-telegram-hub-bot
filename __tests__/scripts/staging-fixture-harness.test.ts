@@ -24,6 +24,36 @@ describe('staging fixture harness safety boundaries', () => {
     expect(resolveTargetUrl({}, { PRODUCTION_URL: 'https://api.nexushub.me' })).toBe('https://api.nexushub.me');
   });
 
+  it('normalizes the Felipe-volume calendar fixture knobs without network work', async () => {
+    const { parseArgs, resolveFixtureCalendarEventCount } = await import('../../scripts/staging-fixture-harness.mjs');
+    const {
+      DEFAULT_FELIPE_VOLUME_CALENDAR_EVENT_COUNT,
+      MAX_FIXTURE_CALENDAR_EVENT_COUNT,
+      normalizeFixtureCalendarEventCount,
+    } = await import('../../scripts/staging-fixture-seed.mjs');
+
+    expect(resolveFixtureCalendarEventCount(parseArgs(['--felipe-volume-calendar']))).toBe(DEFAULT_FELIPE_VOLUME_CALENDAR_EVENT_COUNT);
+    expect(resolveFixtureCalendarEventCount(parseArgs(['--calendar-events', '100']))).toBe(100);
+    expect(resolveFixtureCalendarEventCount(parseArgs([]))).toBe(0);
+    expect(normalizeFixtureCalendarEventCount(true)).toBe(DEFAULT_FELIPE_VOLUME_CALENDAR_EVENT_COUNT);
+    expect(() => normalizeFixtureCalendarEventCount(MAX_FIXTURE_CALENDAR_EVENT_COUNT + 1)).toThrow(/Fixture calendar event count/);
+  });
+
+  it('builds a remote seed script that creates the fixture calendar table and requested volume', async () => {
+    const { buildRemoteSeedScript } = await import('../../scripts/staging-fixture-seed.mjs');
+
+    const script = buildRemoteSeedScript({
+      userId: STAGING_FIXTURE_USER_ID_MIN,
+      deviceId: 'staging-fixture-device-test',
+      calendarEventCount: 100,
+    });
+
+    expect(script).toContain('const calendarEventCount = 100;');
+    expect(script).toContain('CREATE TABLE IF NOT EXISTS staging_fixture_calendar_events');
+    expect(script).toContain('seedFixtureCalendarEvents(userId, calendarEventCount);');
+    expect(script).toContain('staging-fixture-cal-');
+  });
+
   it('recognizes only the reserved synthetic user-id range', () => {
     expect(isStagingFixtureUserId(STAGING_FIXTURE_USER_ID_MIN)).toBe(true);
     expect(isStagingFixtureUserId(STAGING_FIXTURE_USER_ID_MAX)).toBe(true);

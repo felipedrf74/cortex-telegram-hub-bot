@@ -1,9 +1,9 @@
 {
-  "generatedAt": "2026-05-12T14:05:31Z",
+  "generatedAt": "2026-05-12T14:25:19Z",
   "backend": {
     "path": "/Users/felipedominguez/Desktop/Custom Connectors/Cortex/cortex-telegram-hub-bot",
     "branch": "feature/decision-center-logic-v2",
-    "commit": "1a96cb32",
+    "commit": "735b07bc",
     "dirtyState": "dirty",
     "packageVersion": "4.14.154",
     "migrationCount": "127"

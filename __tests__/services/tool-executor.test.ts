@@ -38,6 +38,7 @@ vi.mock('../../src/services/microsoft-todo', () => ({
 vi.mock('../../src/services/unified-calendar', () => ({
   isAnyCalendarConfigured: vi.fn(),
   hasConnectedCalendarForUser: vi.fn(),
+  hasWritableCalendarForUser: vi.fn(),
   getEvents: vi.fn(),
   createEvent: vi.fn(),
   updateEvent: vi.fn(),
@@ -588,6 +589,8 @@ describe('executeToolCall — Calendar', () => {
   describe('when no calendar is configured', () => {
     beforeEach(() => {
       mockCal.isAnyCalendarConfigured.mockReturnValue(false);
+      mockCal.hasConnectedCalendarForUser.mockReturnValue(false);
+      mockCal.hasWritableCalendarForUser.mockReturnValue(false);
     });
 
     it.each(['get_calendar_events', 'create_calendar_event', 'update_calendar_event', 'delete_calendar_event'])(
@@ -604,6 +607,7 @@ describe('executeToolCall — Calendar', () => {
     beforeEach(() => {
       mockCal.isAnyCalendarConfigured.mockReturnValue(true);
       mockCal.hasConnectedCalendarForUser.mockReturnValue(true);
+      mockCal.hasWritableCalendarForUser.mockReturnValue(true);
     });
 
     it('get_calendar_events — delegates with date range', async () => {
@@ -1390,6 +1394,7 @@ describe('executeToolCall — chat authorization guard', () => {
 
   it('blocks destructive chat tool calls without explicit confirmation', async () => {
     mockCal.hasConnectedCalendarForUser.mockReturnValue(true);
+    mockCal.hasWritableCalendarForUser.mockReturnValue(true);
 
     const result = await runWithChatToolAuthorization({
       userId: AUTH_USER_ID,
@@ -1412,6 +1417,7 @@ describe('executeToolCall — chat authorization guard', () => {
 
   it('allows confirmed destructive chat tool calls inside the same tenant scope', async () => {
     mockCal.hasConnectedCalendarForUser.mockReturnValue(true);
+    mockCal.hasWritableCalendarForUser.mockReturnValue(true);
     mockCal.deleteEvent.mockResolvedValue(undefined as any);
 
     const result = await runWithChatToolAuthorization({

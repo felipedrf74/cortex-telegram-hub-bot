@@ -10,6 +10,8 @@ export const DEFAULT_FIXTURE_USER_ID = 1_000_001;
 export const FIXTURE_USER_ID_MIN = 1_000_000;
 export const FIXTURE_USER_ID_MAX = 1_099_999;
 export const DEFAULT_FIXTURE_DEVICE_ID = 'staging-fixture-device';
+export const DEFAULT_FELIPE_VOLUME_CALENDAR_EVENT_COUNT = 100;
+export const MAX_FIXTURE_CALENDAR_EVENT_COUNT = 250;
 
 export function assertFixtureUserId(userId) {
   if (!Number.isInteger(userId) || userId < FIXTURE_USER_ID_MIN || userId > FIXTURE_USER_ID_MAX) {
@@ -17,6 +19,18 @@ export function assertFixtureUserId(userId) {
     err.exitCode = 2;
     throw err;
   }
+}
+
+export function normalizeFixtureCalendarEventCount(value) {
+  if (value == null || value === false) return 0;
+  if (value === true) return DEFAULT_FELIPE_VOLUME_CALENDAR_EVENT_COUNT;
+  const count = Number(value);
+  if (!Number.isInteger(count) || count < 0 || count > MAX_FIXTURE_CALENDAR_EVENT_COUNT) {
+    const err = new Error(`Fixture calendar event count must be an integer between 0 and ${MAX_FIXTURE_CALENDAR_EVENT_COUNT}`);
+    err.exitCode = 2;
+    throw err;
+  }
+  return count;
 }
 
 export function tokenCachePath(userId) {
@@ -47,7 +61,8 @@ export function runRemoteNode(script, {
   });
 }
 
-export function buildRemoteSeedScript({ userId, deviceId, tier = 'max', seedAppleHealth = false }) {
+export function buildRemoteSeedScript({ userId, deviceId, tier = 'max', seedAppleHealth = false, calendarEventCount = 0 }) {
+  const normalizedCalendarEventCount = normalizeFixtureCalendarEventCount(calendarEventCount);
   return String.raw`
 const Database = require('better-sqlite3');
 const db = new Database(process.env.DATABASE_PATH || process.env.DB_PATH || './data/bot.db');
@@ -57,6 +72,7 @@ const userId = ${JSON.stringify(userId)};
 const deviceId = ${JSON.stringify(deviceId)};
 const tier = ${JSON.stringify(tier)};
 const seedAppleHealth = ${JSON.stringify(seedAppleHealth)};
+const calendarEventCount = ${JSON.stringify(normalizedCalendarEventCount)};
 const now = new Date();
 const today = now.toISOString().slice(0, 10);
 const tomorrow = new Date(now.getTime() + 86400000).toISOString().slice(0, 10);
@@ -80,6 +96,62 @@ function insert(table, values, mode = 'INSERT OR REPLACE') {
   const placeholders = names.map(() => '?').join(', ');
   const sql = mode + ' INTO ' + table + ' (' + names.join(', ') + ') VALUES (' + placeholders + ')';
   return db.prepare(sql).run(...entries.map(([, value]) => value));
+}
+
+function ensureFixtureCalendarTable() {
+  db.exec(\`
+    CREATE TABLE IF NOT EXISTS staging_fixture_calendar_events (
+      event_id TEXT PRIMARY KEY,
+      user_id INTEGER NOT NULL,
+      title TEXT NOT NULL,
+      start_at TEXT NOT NULL,
+      end_at TEXT NOT NULL,
+      description TEXT,
+      location TEXT,
+      categories_json TEXT,
+      color TEXT,
+      is_all_day INTEGER DEFAULT 0,
+      fixture_tag TEXT NOT NULL DEFAULT 'staging-fixture-harness',
+      created_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_staging_fixture_calendar_user_time
+      ON staging_fixture_calendar_events(user_id, start_at, end_at);
+  \`);
+}
+
+function seedFixtureCalendarEvents(targetUserId, count) {
+  ensureFixtureCalendarTable();
+  db.prepare('DELETE FROM staging_fixture_calendar_events WHERE user_id = ?').run(targetUserId);
+  if (count <= 0) return;
+
+  const base = new Date(now);
+  base.setUTCHours(7, 0, 0, 0);
+  const insertEvent = db.prepare(\`
+    INSERT INTO staging_fixture_calendar_events (
+      event_id, user_id, title, start_at, end_at, description, location,
+      categories_json, color, is_all_day, fixture_tag, created_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  \`);
+  for (let index = 0; index < count; index += 1) {
+    const dayOffset = index % 3;
+    const slot = Math.floor(index / 3);
+    const start = new Date(base.getTime() + dayOffset * 86400000 + slot * 20 * 60000);
+    const end = new Date(start.getTime() + 15 * 60000);
+    insertEvent.run(
+      'staging-fixture-cal-' + targetUserId + '-' + String(index + 1).padStart(3, '0'),
+      targetUserId,
+      'Fixture calendar volume event ' + String(index + 1).padStart(3, '0'),
+      start.toISOString(),
+      end.toISOString(),
+      'Synthetic staging fixture event for dashboard Felipe-volume route timing.',
+      index % 5 === 0 ? 'Fixture Studio' : null,
+      JSON.stringify(['staging-fixture', index % 2 === 0 ? 'work' : 'personal']),
+      index % 2 === 0 ? '#3498DB' : '#F97316',
+      0,
+      'staging-fixture-harness',
+      now.toISOString(),
+    );
+  }
 }
 
 function deleteUserData(targetUserId) {
@@ -125,6 +197,10 @@ function deleteUserData(targetUserId) {
     'user_oauth_tokens',
     'fitness_training_plans',
   ].forEach(delUser);
+
+  if (tableExists('staging_fixture_calendar_events')) {
+    run('DELETE FROM staging_fixture_calendar_events WHERE user_id = ?', targetUserId);
+  }
 
   if (tableExists('content_creator_profile')) {
     run('DELETE FROM content_creator_profile WHERE tenant_id = ? OR owner_user_id = ?', targetUserId, targetUserId);
@@ -448,6 +524,8 @@ db.transaction(() => {
   if (tableExists('api_cache')) {
     db.prepare('DELETE FROM api_cache WHERE cache_key LIKE ?').run('%' + userId + '%');
   }
+
+  seedFixtureCalendarEvents(userId, calendarEventCount);
 })();
 
 const token = signIosJwt({
@@ -458,7 +536,7 @@ const token = signIosJwt({
 }, { expiresIn: '30d' });
 
 const counts = {};
-for (const table of ['users', 'subscriptions', 'ios_devices', 'native_task_lists', 'native_tasks', 'recipes', 'finance_transactions', 'apple_health_data', 'content_topics', 'content_scripts', 'fitness_training_plans']) {
+for (const table of ['users', 'subscriptions', 'ios_devices', 'native_task_lists', 'native_tasks', 'recipes', 'finance_transactions', 'apple_health_data', 'content_topics', 'content_scripts', 'fitness_training_plans', 'staging_fixture_calendar_events']) {
   if (!tableExists(table)) continue;
   const hasUserId = columnsFor(table).has('user_id');
   const count = hasUserId
@@ -487,6 +565,7 @@ export function seedFixture(options = {}) {
     deviceId,
     tier: options.tier ?? 'max',
     seedAppleHealth: options.seedAppleHealth === true,
+    calendarEventCount: options.calendarEventCount ?? 0,
   }), options);
   const result = JSON.parse(raw);
   writeFileSync(tokenCachePath(userId), JSON.stringify({

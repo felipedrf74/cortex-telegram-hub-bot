@@ -5,6 +5,10 @@ import * as outlookCal from './outlook-calendar';
 import { logger } from '../utils/logger';
 import { config } from '../config';
 import { normalizeMicrosoftRecurrence, type NormalizedRecurrence } from './recurrence-utils';
+import {
+  getStagingFixtureCalendarEvents,
+  hasStagingFixtureCalendarEventsForUser,
+} from './staging-fixture-calendar';
 
 export type CalendarSource = 'google' | 'outlook';
 
@@ -59,7 +63,8 @@ export function hasConnectedCalendarForUser(userId?: number): boolean {
     return isAnyCalendarConfigured();
   }
   return googleCal.isGoogleCalendarConfigured(scopedUserId)
-    || outlookCal.isOutlookCalendarConfigured(scopedUserId);
+    || outlookCal.isOutlookCalendarConfigured(scopedUserId)
+    || hasStagingFixtureCalendarEventsForUser(scopedUserId);
 }
 
 export function hasWritableCalendarForUser(userId?: number): boolean {
@@ -120,6 +125,13 @@ export async function getEventsWithDiagnostics(
         const oEvents = await outlookCal.getEvents(startDate, endDate, scopedUserId ?? undefined);
         return oEvents.map((event) => ({ ...event, source: 'outlook' as const }));
       },
+    });
+  }
+
+  if (hasStagingFixtureCalendarEventsForUser(scopedUserId ?? undefined)) {
+    fetchers.push({
+      source: 'outlook',
+      run: async () => getStagingFixtureCalendarEvents(startDate, endDate, scopedUserId ?? undefined),
     });
   }
 

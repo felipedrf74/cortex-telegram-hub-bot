@@ -472,7 +472,7 @@ export async function executeToolCall(
 
       case 'create_calendar_event':
         if (userId != null
-          ? !unifiedCal.hasConnectedCalendarForUser(userId)
+          ? !unifiedCal.hasWritableCalendarForUser(userId)
           : !unifiedCal.isAnyCalendarConfigured()) {
           return { error: 'No calendar is configured.' };
         }
@@ -491,7 +491,7 @@ export async function executeToolCall(
 
       case 'update_calendar_event': {
         if (userId != null
-          ? !unifiedCal.hasConnectedCalendarForUser(userId)
+          ? !unifiedCal.hasWritableCalendarForUser(userId)
           : !unifiedCal.isAnyCalendarConfigured()) {
           return { error: 'No calendar is configured.' };
         }
@@ -508,7 +508,7 @@ export async function executeToolCall(
 
       case 'delete_calendar_event': {
         if (userId != null
-          ? !unifiedCal.hasConnectedCalendarForUser(userId)
+          ? !unifiedCal.hasWritableCalendarForUser(userId)
           : !unifiedCal.isAnyCalendarConfigured()) {
           return { error: 'No calendar is configured.' };
         }

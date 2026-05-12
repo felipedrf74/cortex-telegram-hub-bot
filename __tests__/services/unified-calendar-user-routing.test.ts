@@ -11,6 +11,8 @@ const mocks = vi.hoisted(() => ({
   outlookDeleteEvent: vi.fn(),
   outlookConfigured: vi.fn(),
   outlookEvents: vi.fn(),
+  fixtureConfigured: vi.fn(),
+  fixtureEvents: vi.fn(),
 }));
 
 vi.mock('../../src/services/google-calendar', () => ({
@@ -29,6 +31,11 @@ vi.mock('../../src/services/outlook-calendar', () => ({
   getEvents: (...args: unknown[]) => mocks.outlookEvents(...args),
 }));
 
+vi.mock('../../src/services/staging-fixture-calendar', () => ({
+  hasStagingFixtureCalendarEventsForUser: (...args: unknown[]) => mocks.fixtureConfigured(...args),
+  getStagingFixtureCalendarEvents: (...args: unknown[]) => mocks.fixtureEvents(...args),
+}));
+
 vi.mock('../../src/utils/logger', () => ({
   logger: {
     info: vi.fn(),
@@ -43,6 +50,7 @@ import {
   createEvent,
   getEvents,
   getEventsWithDiagnostics,
+  hasConnectedCalendarForUser,
   updateEvent,
   deleteEvent,
 } from '../../src/services/unified-calendar';
@@ -59,9 +67,12 @@ describe('UnifiedCalendar — per-user routing for calendar writes', () => {
     mocks.outlookDeleteEvent.mockReset();
     mocks.outlookConfigured.mockReset();
     mocks.outlookEvents.mockReset();
+    mocks.fixtureConfigured.mockReset();
+    mocks.fixtureEvents.mockReset();
 
     mocks.outlookConfigured.mockReturnValue(true);
     mocks.googleConfigured.mockReturnValue(false);
+    mocks.fixtureConfigured.mockReturnValue(false);
   });
 
   it('passes userId through when creating an Outlook event', async () => {
@@ -238,5 +249,39 @@ describe('UnifiedCalendar — per-user routing for calendar writes', () => {
       warningCodes: ['CALENDAR_INTEGRATION_MISSING'],
       sources: { configured: [], fulfilled: [], failed: [] },
     });
+  });
+
+  it('uses staging fixture calendar events as a read-only source for synthetic users', async () => {
+    mocks.googleConfigured.mockReturnValue(false);
+    mocks.outlookConfigured.mockReturnValue(false);
+    mocks.fixtureConfigured.mockImplementation((userId?: number) => userId === 1_000_001);
+    mocks.fixtureEvents.mockReturnValue([
+      {
+        id: 'staging-fixture-cal-1000001-001',
+        summary: 'Fixture calendar volume event 001',
+        start: '2026-04-27T09:00:00.000Z',
+        end: '2026-04-27T09:15:00.000Z',
+        source: 'outlook',
+      },
+    ]);
+
+    expect(hasConnectedCalendarForUser(1_000_001)).toBe(true);
+
+    const result = await getEventsWithDiagnostics(
+      '2026-04-27T00:00:00.000Z',
+      '2026-04-28T00:00:00.000Z',
+      1_000_001,
+    );
+
+    expect(result.status).toBe('ready');
+    expect(result.events).toHaveLength(1);
+    expect(result.events[0].id).toBe('staging-fixture-cal-1000001-001');
+    expect(mocks.googleEvents).not.toHaveBeenCalled();
+    expect(mocks.outlookEvents).not.toHaveBeenCalled();
+    expect(mocks.fixtureEvents).toHaveBeenCalledWith(
+      '2026-04-27T00:00:00.000Z',
+      '2026-04-28T00:00:00.000Z',
+      1_000_001,
+    );
   });
 });

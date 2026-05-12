@@ -31,7 +31,6 @@ closable without explicit authorization and live credentials/devices.
 | GAP-FIN-2 | P1 | finance | OPEN / OWNER DECISION REQUIRED | Decide non-Brazil finance jurisdiction model and behavior contract. |
 | GAP-REL-6 | P1 | mock lint | OPEN / OWNER DECISION REQUIRED | Either authorize a larger mock-factory reduction batch or revise the <100-by-2026-08-01 commitment. |
 | GAP-REL-7 | P1 | release gate | OPEN / OWNER DECISION REQUIRED | Decide whether two-account E5 becomes a hard CI/deploy gate or remains operator evidence. |
-| ROUND-B-FIXTURE | P2 | staging fixture | OPEN | Add a 100-calendar-event seeding mode to produce repeatable Felipe-volume before/after dashboard wall-time evidence. |
 
 ## Recently Closed
 
@@ -41,6 +40,7 @@ closable without explicit authorization and live credentials/devices.
 | GAP-REL-2 | P1 | docs/release | 2026-05-12 | Reconciled workspace current release state so 4.14.149 Round E + Decision Center remains the active production truth and older 4.14.132 notes are marked historical. |
 | W1-FIN-COLLECTORS | P1/P2 | finance collectors | 2026-05-12 | Added collector-service owner-scope enforcement before Amazon/Uber global browser session or Playwright launch paths, preserving the existing Telegram command and owner-tier scheduler gates. Broad per-user collector sessions remain a separate future product/credential workstream. |
 | GAP-CONT-1 | P0/P1 | content runtime | 2026-05-12 | Portal channel writes now reject client-supplied owned-channel markers unless ownership is server-verified, and YouTube creator analytics scope resolution ignores unverified manual metadata. Live performance analytics remains intentionally paused until user-scoped signal writes are implemented under GAP-CONT-3/GAP-CONT-4. |
+| ROUND-B-FIXTURE | P2 | staging fixture | 2026-05-12 | Added `--felipe-volume-calendar` / `--calendar-events 100` staging fixture mode. Synthetic reserved users can now seed 100 DB-backed read-only calendar events consumed by `unified-calendar`, calendar routes, and dashboard timing probes without real OAuth/provider writes. Operator still needs to run staging before/after evidence. |
 
 ## Authorization-Gated Codex Workstreams
 
