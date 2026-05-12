@@ -536,6 +536,35 @@ describe('Secretary Notification Orchestrator', () => {
     expect(() => performNotificationAction(valid.item!.itemId, 'mark_paid', 10, 10)).toThrow(/not allowed/);
   });
 
+  it('persists Decision Center context slots, timezone, locale, and reason codes for downstream enrichment', async () => {
+    const result = await createNotificationIntent(buildSkillNotificationFixtureIntent('secretary', 12, {
+      dedupeKey: 'secretary:context-normalization',
+      decisionContext: {
+        timezone: 'America/New_York',
+        locale: 'pt-BR',
+        candidateSlots: [
+          { startAt: '2026-05-08T14:00:00.000Z', endAt: '2026-05-08T15:00:00.000Z', label: '  Backup slot  ' },
+        ],
+        reasonCodes: [' training_schedule_request ', 'overcapacity'],
+      },
+    }));
+
+    const row = testDb.prepare('SELECT decision_context_json FROM notification_intents WHERE intent_id = ?').get(result.intent.intentId) as {
+      decision_context_json: string;
+    };
+    const context = JSON.parse(row.decision_context_json);
+    expect(context).toMatchObject({
+      timezone: 'America/New_York',
+      locale: 'pt-BR',
+      candidateSlots: [{
+        startAt: '2026-05-08T14:00:00.000Z',
+        endAt: '2026-05-08T15:00:00.000Z',
+        label: 'Backup slot',
+      }],
+      reasonCodes: ['training_schedule_request', 'overcapacity'],
+    });
+  });
+
   it('provides deterministic skill fixtures for all notification-producing domains', () => {
     for (const source of ['secretary', 'training', 'content', 'cooking', 'finance', 'security', 'chat', 'system'] as const) {
       const intent = buildSkillNotificationFixtureIntent(source, 11);

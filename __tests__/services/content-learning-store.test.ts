@@ -434,6 +434,43 @@ describe('content-learning-store: learned patterns', () => {
     expect(getLearnedPatterns(0)).toHaveLength(3);
   });
 
+  it('migration 122 removes colliding learned-pattern duplicates before creating the tenant unique index', () => {
+    const migrationDb = new Database(':memory:');
+    try {
+      migrationDb.exec(`
+        CREATE TABLE content_learned_patterns (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          category TEXT NOT NULL,
+          pattern_text TEXT NOT NULL,
+          examples JSON DEFAULT '[]',
+          confidence REAL DEFAULT 0.5,
+          frequency INTEGER DEFAULT 1,
+          source_agent TEXT,
+          first_detected_at TEXT NOT NULL DEFAULT (datetime('now')),
+          last_seen_at TEXT NOT NULL DEFAULT (datetime('now')),
+          user_id INTEGER NOT NULL DEFAULT 0,
+          tenant_id INTEGER,
+          owner_user_id INTEGER
+        );
+      `);
+      const insert = migrationDb.prepare(`
+        INSERT INTO content_learned_patterns (
+          category, pattern_text, frequency, first_detected_at, last_seen_at, user_id, tenant_id, owner_user_id
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      `);
+      insert.run('voice_addition', 'duplicate tenant pattern', 1, '2026-05-01T08:00:00.000Z', '2026-05-01T08:00:00.000Z', 42, 77, 42);
+      insert.run('voice_addition', 'duplicate tenant pattern', 4, '2026-05-02T08:00:00.000Z', '2026-05-02T08:00:00.000Z', 42, 77, 42);
+
+      migrationDb.exec(fs.readFileSync(path.join(MIGRATIONS_DIR, '122_content_learned_patterns_tenant_unique.sql'), 'utf8'));
+
+      const rows = migrationDb.prepare('SELECT frequency FROM content_learned_patterns').all() as Array<{ frequency: number }>;
+      expect(rows).toEqual([{ frequency: 4 }]);
+      expect(() => insert.run('voice_addition', 'duplicate tenant pattern', 2, '2026-05-03T08:00:00.000Z', '2026-05-03T08:00:00.000Z', 42, 77, 42)).toThrow();
+    } finally {
+      migrationDb.close();
+    }
+  });
+
   it('prefers user learned patterns over system rows with the same content key', () => {
     upsertLearnedPattern({ category: 'voice_addition', patternText: 'shared pattern', userId: 0 });
     upsertLearnedPattern({ category: 'voice_addition', patternText: 'shared pattern', userId: 42 });

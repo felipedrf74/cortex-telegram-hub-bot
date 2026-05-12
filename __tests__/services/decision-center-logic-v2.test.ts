@@ -3,6 +3,7 @@ import {
   adviseSecretaryDecision,
   buildDecisionLogicV2,
   evaluateAutopilotPolicy,
+  formatDecisionWindow,
   rankDecision,
 } from '../../src/services/decision-center-logic-v2';
 
@@ -26,6 +27,7 @@ describe('Decision Center Logic v2', () => {
     expect(decision.quality.safeForAPNs).toBe(false);
     expect(decision.quality.missingFields).toContain('concreteCopy');
     expect(decision.quality.missingFields).toContain('relatedEntity');
+    expect(decision.quality.qualityScore).toBe(76);
   });
 
   it('blocks Secretary conflicts without a distinct recommendation even when raw copy is specific', () => {
@@ -226,6 +228,33 @@ describe('Decision Center Logic v2', () => {
     expect(advice.feasibility).toBe('needs_enrichment');
     expect(advice.recommendedStartAt).toBeNull();
     expect(advice.bestAction).toContain('Collect schedule context');
+  });
+
+  it('formats decision windows with caller timezone and locale using cached Intl formatters', () => {
+    const utc = formatDecisionWindow(
+      '2026-05-17T08:00:00.000Z',
+      '2026-05-17T10:00:00.000Z',
+      'UTC',
+      'en-US',
+    );
+    const newYork = formatDecisionWindow(
+      '2026-05-17T08:00:00.000Z',
+      '2026-05-17T10:00:00.000Z',
+      'America/New_York',
+      'en-US',
+    );
+    const portuguese = formatDecisionWindow(
+      '2026-05-17T08:00:00.000Z',
+      '2026-05-17T10:00:00.000Z',
+      'Europe/Lisbon',
+      'pt-BR',
+    );
+
+    expect(utc).toContain('08:00-10:00');
+    expect(newYork).toContain('04:00-06:00');
+    expect(newYork).not.toBe(utc);
+    expect(portuguese).toContain('09:00-11:00');
+    expect(portuguese).not.toContain('Sun, May');
   });
 
   it('autopilot safely retries sync but does not move workouts or approve content by default', () => {

@@ -474,6 +474,7 @@ function persistDecision(input: {
     : input.intent.requestedDurationMinutes != null
       ? Math.round(Number(input.intent.requestedDurationMinutes))
       : null;
+  const scheduledSegments = decisionScheduledSegments(input.selectedSlot, input.alternativeSlots);
 
   const writeAgendaItem = db.transaction(() => {
     if (latest && latest.lifecycleState !== 'superseded') {
@@ -521,7 +522,7 @@ function persistDecision(input: {
       JSON.stringify(input.reasonCodes),
       input.explanation,
       sourceShapeHash,
-      JSON.stringify(input.selectedSlot ? [input.selectedSlot] : []),
+      JSON.stringify(scheduledSegments),
       input.nowIso,
       input.nowIso,
       input.intent.createdAt ?? null,
@@ -551,6 +552,27 @@ function persistDecision(input: {
   };
 }
 
+function decisionScheduledSegments(
+  selectedSlot: SecretaryTimeWindow | null,
+  alternativeSlots: SecretaryTimeWindow[],
+): SecretaryTimeWindow[] {
+  const segments: SecretaryTimeWindow[] = [];
+  const add = (slot?: SecretaryTimeWindow | null) => {
+    if (!slot?.start || !slot.end) return;
+    if (!Number.isFinite(Date.parse(slot.start)) || !Number.isFinite(Date.parse(slot.end)) || Date.parse(slot.start) >= Date.parse(slot.end)) return;
+    if (segments.some((existing) => existing.start === slot.start && existing.end === slot.end)) return;
+    segments.push({
+      start: slot.start,
+      end: slot.end,
+      ...(slot.label ? { label: slot.label } : {}),
+      ...(slot.hard != null ? { hard: slot.hard } : {}),
+    });
+  };
+  add(selectedSlot);
+  for (const slot of alternativeSlots) add(slot);
+  return segments.slice(0, 6);
+}
+
 function agendaSlotMatches(agendaItem: SecretaryAgendaItem, selectedSlot: SecretaryTimeWindow | null): boolean {
   if (!selectedSlot) return agendaItem.startAt === null && agendaItem.endAt === null;
   return agendaItem.startAt === selectedSlot.start && agendaItem.endAt === selectedSlot.end;
@@ -568,6 +590,9 @@ function decisionFromExisting(
   const selectedSlot = agendaItem.startAt && agendaItem.endAt
     ? { start: agendaItem.startAt, end: agendaItem.endAt }
     : null;
+  const alternativeSlots = agendaItem.scheduledSegments.filter((segment) => (
+    !selectedSlot || segment.start !== selectedSlot.start || segment.end !== selectedSlot.end
+  ));
   const resolvedStatus = agendaItem.decisionAction || status;
   return {
     status: resolvedStatus,
@@ -575,7 +600,7 @@ function decisionFromExisting(
     reasonCodes: agendaItem.decisionReasonCodes.length > 0 ? agendaItem.decisionReasonCodes : reasonCodes,
     explanation,
     selectedSlot,
-    alternativeSlots: [],
+    alternativeSlots,
     conflicts,
     downstreamImplications,
     confidence: confidenceFor(resolvedStatus, reasonCodes),

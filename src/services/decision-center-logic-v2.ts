@@ -26,6 +26,7 @@ export interface DecisionLogicContext {
   providerName?: string | null;
   deadlineAt?: string | null;
   timezone?: string | null;
+  locale?: string | null;
 }
 
 export interface DecisionLogicInput {
@@ -110,6 +111,7 @@ export interface SecretaryDecisionAdvisorInput {
   preferredWindowLabel?: string | null;
   reasonCodes?: string[];
   timezone?: string | null;
+  locale?: string | null;
 }
 
 export interface SecretaryDecisionAdvice {
@@ -192,7 +194,8 @@ const DECISION_CONFIDENCE_RUBRIC = {
   lowMissingScheduleContext: 0.34,
 } as const;
 
-const DECISION_QUALITY_REQUIRED_FIELD_COUNT = 14;
+const DECISION_QUALITY_REQUIRED_FIELD_COUNT = 17;
+const decisionWindowFormatterCache = new Map<string, Intl.DateTimeFormat>();
 
 export function buildDecisionLogicV2(input: DecisionLogicInput): DecisionLogicV2 {
   const recipe = recipeForInput(input);
@@ -283,13 +286,13 @@ export function evaluateDecisionQuality(
 }
 
 export function adviseSecretaryDecision(input: SecretaryDecisionAdvisorInput): SecretaryDecisionAdvice {
-  const current = formatDecisionWindow(input.currentStartAt, input.currentEndAt, input.timezone);
+  const current = formatDecisionWindow(input.currentStartAt, input.currentEndAt, input.timezone, input.locale);
   const feasibleSlots = (input.availableSlots ?? [])
     .filter((slot) => isValidWindow(slot.startAt, slot.endAt))
     .filter((slot) => !sameWindow(slot.startAt, slot.endAt, input.currentStartAt, input.currentEndAt));
   const best = feasibleSlots[0] ?? null;
   const title = input.title.trim() || 'schedule item';
-  const bestWindow = best ? formatDecisionWindow(best.startAt, best.endAt, input.timezone) : null;
+  const bestWindow = best ? formatDecisionWindow(best.startAt, best.endAt, input.timezone, input.locale) : null;
   const conflictGraph = [
     current ? `${title} currently affects ${current}.` : `${title} is missing a concrete current schedule window.`,
     bestWindow ? `A feasible alternative exists at ${bestWindow}.` : 'No feasible alternative slot was supplied.',
@@ -319,7 +322,7 @@ export function adviseSecretaryDecision(input: SecretaryDecisionAdvisorInput): S
   return {
     bestAction: `Use ${bestWindow}.`,
     alternatives: feasibleSlots.slice(1, 4).map((slot) => ({
-      label: slot.label ?? formatDecisionWindow(slot.startAt, slot.endAt, input.timezone) ?? 'Alternative slot',
+      label: slot.label ?? formatDecisionWindow(slot.startAt, slot.endAt, input.timezone, input.locale) ?? 'Alternative slot',
       startAt: slot.startAt,
       endAt: slot.endAt,
       tradeoff: 'Alternative slot is feasible but lower priority than the recommended window.',
@@ -472,7 +475,7 @@ function ownerAdminOpsRecipe(input: DecisionLogicInput): Omit<DecisionLogicV2, '
       targetSkill: input.sourceSkill,
       verificationMethod: 'Read owner/admin operation state or audit log after action.',
     }],
-    readBackVerifier: input.actions.some(isMutatingAction) ? null : null,
+    readBackVerifier: null,
     automationEligibility: 'never',
     autopilotPolicy: 'Owner/admin operational decisions never auto-handle by default.',
     safePreviewTitle: 'Owner review needed',
@@ -484,8 +487,8 @@ function ownerAdminOpsRecipe(input: DecisionLogicInput): Omit<DecisionLogicV2, '
 function secretaryRecipe(input: DecisionLogicInput): Omit<DecisionLogicV2, 'sourceSkill' | 'type' | 'privacyClassification' | 'visibilityScope' | 'notificationEligibility' | 'apnsInterruptionLevel' | 'collapseKey' | 'badgeContribution' | 'quality' | 'qualityScore'> {
   const context = input.context ?? {};
   const entityTitle = context.entityTitle?.trim() || null;
-  const currentWindow = formatDecisionWindow(context.currentStartAt, context.currentEndAt, context.timezone);
-  const recommendedWindow = formatDecisionWindow(context.recommendedStartAt, context.recommendedEndAt, context.timezone);
+  const currentWindow = formatDecisionWindow(context.currentStartAt, context.currentEndAt, context.timezone, context.locale);
+  const recommendedWindow = formatDecisionWindow(context.recommendedStartAt, context.recommendedEndAt, context.timezone, context.locale);
   const hasConcreteAgenda = !!entityTitle && !!recommendedWindow;
   const primary = primaryAction(input.actions);
   const title = hasConcreteAgenda ? 'Schedule conflict' : sanitizeTitle(input.title);
@@ -777,7 +780,7 @@ function genericRecipe(input: DecisionLogicInput): Omit<DecisionLogicV2, 'source
       uncertainty: [],
     },
     whatWillChange: [],
-    readBackVerifier: input.actions.some(isMutatingAction) ? null : null,
+    readBackVerifier: null,
     automationEligibility: 'never',
     autopilotPolicy: 'No autopilot rule applies.',
     safePreviewTitle: sanitizeTitle(input.title),
@@ -886,29 +889,55 @@ function isGenericCopy(value: string | null | undefined): boolean {
   return GENERIC_COPY_PATTERNS.some((pattern) => pattern.test(normalized));
 }
 
-export function formatDecisionWindow(startAt?: string | null, endAt?: string | null, timezone?: string | null): string | null {
+export function formatDecisionWindow(
+  startAt?: string | null,
+  endAt?: string | null,
+  timezone?: string | null,
+  locale?: string | null,
+): string | null {
   if (!startAt || !endAt || !isValidWindow(startAt, endAt)) return null;
-  const zone = timezone || 'Europe/Lisbon';
+  const zone = normalizeDecisionTimezone(timezone);
+  const normalizedLocale = normalizeDecisionLocale(locale);
   const start = new Date(startAt);
   const end = new Date(endAt);
-  const dateFormatter = new Intl.DateTimeFormat('en-US', {
-    timeZone: zone,
-    weekday: 'short',
-    month: 'short',
-    day: 'numeric',
-  });
-  const timeFormatter = new Intl.DateTimeFormat('en-US', {
-    timeZone: zone,
-    hour: '2-digit',
-    minute: '2-digit',
-    hour12: false,
-  });
+  const dateFormatter = decisionWindowFormatter(normalizedLocale, zone, 'date');
+  const timeFormatter = decisionWindowFormatter(normalizedLocale, zone, 'time');
   const startDate = dateFormatter.format(start);
   const endDate = dateFormatter.format(end);
   const startTime = timeFormatter.format(start);
   const endTime = timeFormatter.format(end);
   if (startDate === endDate) return `${startDate}, ${startTime}-${endTime}`;
   return `${startDate}, ${startTime} to ${endDate}, ${endTime}`;
+}
+
+function decisionWindowFormatter(locale: string, timeZone: string, kind: 'date' | 'time'): Intl.DateTimeFormat {
+  const key = `${locale}|${timeZone}|${kind}`;
+  const cached = decisionWindowFormatterCache.get(key);
+  if (cached) return cached;
+  const formatter = new Intl.DateTimeFormat(locale, kind === 'date'
+    ? { timeZone, weekday: 'short', month: 'short', day: 'numeric' }
+    : { timeZone, hour: '2-digit', minute: '2-digit', hour12: false });
+  decisionWindowFormatterCache.set(key, formatter);
+  return formatter;
+}
+
+function normalizeDecisionTimezone(timezone?: string | null): string {
+  const candidate = typeof timezone === 'string' && timezone.trim() ? timezone.trim() : 'UTC';
+  try {
+    new Intl.DateTimeFormat('en-US', { timeZone: candidate });
+    return candidate;
+  } catch {
+    return 'UTC';
+  }
+}
+
+function normalizeDecisionLocale(locale?: string | null): string {
+  const candidate = typeof locale === 'string' && locale.trim() ? locale.trim() : 'en-US';
+  try {
+    return Intl.DateTimeFormat.supportedLocalesOf([candidate])[0] ?? 'en-US';
+  } catch {
+    return 'en-US';
+  }
 }
 
 function isValidWindow(startAt?: string | null, endAt?: string | null): boolean {

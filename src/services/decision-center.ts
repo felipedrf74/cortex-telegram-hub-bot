@@ -1033,7 +1033,8 @@ function decisionLogicInputForRecord(record: DecisionRecord): Parameters<typeof 
 }
 
 function decisionContextForIntentInput(input: NotificationIntentInput): DecisionLogicContext {
-  const supplied = input.decisionContext ?? null;
+  const suppliedRaw = input.decisionContext ?? null;
+  const supplied = withUserDecisionContextDefaults(input.userId, suppliedRaw);
   const relatedEntityType = input.relatedEntityType ?? null;
   if (input.sourceSkill === 'secretary' && relatedEntityType === 'secretary_agenda_item' && input.relatedEntityId != null) {
     const tenantId = input.tenantId ?? input.userId;
@@ -1044,39 +1045,41 @@ function decisionContextForIntentInput(input: NotificationIntentInput): Decision
     });
     if (agenda) return secretaryAgendaDecisionContext(agenda, supplied);
   }
-  if (supplied) return supplied;
+  if (hasDecisionContextPayload(suppliedRaw)) return supplied;
   if (input.sourceSkill === 'training' && /race date/i.test(`${input.title} ${input.body}`)) {
-    return { explicitNoRelatedEntityReason: 'training profile is the affected entity' };
+    return withUserDecisionContextDefaults(input.userId, { explicitNoRelatedEntityReason: 'training profile is the affected entity' });
   }
-  return {};
+  return supplied;
 }
 
 function decisionContextForRecord(record: DecisionRecord): DecisionLogicContext {
+  const hasStoredContext = hasDecisionContextPayload(record.decisionContext);
+  const storedContext = withUserDecisionContextDefaults(record.userId, record.decisionContext);
   if (record.sourceSkill === 'secretary' && record.relatedEntityType === 'secretary_agenda_item' && record.relatedEntityId) {
     const agenda = getSecretaryAgendaItemById({
       agendaItemId: record.relatedEntityId,
       ownerUserId: record.userId,
       tenantId: record.tenantId,
     });
-    if (agenda) return secretaryAgendaDecisionContext(agenda, record.decisionContext);
-    if (record.decisionContext) return record.decisionContext;
-    return { explicitNoRelatedEntityReason: 'secretary agenda item is missing' };
+    if (agenda) return secretaryAgendaDecisionContext(agenda, storedContext);
+    if (hasStoredContext) return storedContext;
+    return withUserDecisionContextDefaults(record.userId, { explicitNoRelatedEntityReason: 'secretary agenda item is missing' });
   }
-  if (record.decisionContext) return record.decisionContext;
+  if (hasStoredContext) return storedContext;
   if (record.sourceSkill === 'content') {
     const contentObjectId = contentWorkflowObjectIdForDecision(record);
     if (contentObjectId) {
       const object = getContentWorkflowObject(record.userId, contentObjectId, record.tenantId);
-      if (object) return { entityTitle: object.title, sourceState: object.approvalState };
+      if (object) return withUserDecisionContextDefaults(record.userId, { entityTitle: object.title, sourceState: object.approvalState });
     }
   }
   if (record.sourceSkill === 'training' && /race date/i.test(`${record.title} ${record.body} ${record.dedupeKey ?? ''}`)) {
-    return { explicitNoRelatedEntityReason: 'training profile is the affected entity' };
+    return withUserDecisionContextDefaults(record.userId, { explicitNoRelatedEntityReason: 'training profile is the affected entity' });
   }
   if (record.type === 'sync_failure') {
-    return { providerName: sourceLabel(record.sourceSkill), explicitNoRelatedEntityReason: 'sync failure is scoped to provider state' };
+    return withUserDecisionContextDefaults(record.userId, { providerName: sourceLabel(record.sourceSkill), explicitNoRelatedEntityReason: 'sync failure is scoped to provider state' });
   }
-  return {};
+  return storedContext;
 }
 
 function secretaryAgendaDecisionContext(agenda: SecretaryAgendaItem, supplied?: DecisionLogicContext | null): DecisionLogicContext {
@@ -1088,8 +1091,9 @@ function secretaryAgendaDecisionContext(agenda: SecretaryAgendaItem, supplied?: 
     currentStartAt,
     currentEndAt,
     availableSlots: candidateSlots,
-    reasonCodes: agenda.decisionReasonCodes,
+    reasonCodes: supplied?.reasonCodes ?? agenda.decisionReasonCodes,
     timezone: supplied?.timezone,
+    locale: supplied?.locale,
   });
   return {
     ...(supplied ?? {}),
@@ -1099,8 +1103,61 @@ function secretaryAgendaDecisionContext(agenda: SecretaryAgendaItem, supplied?: 
     recommendedStartAt: advice.recommendedStartAt,
     recommendedEndAt: advice.recommendedEndAt,
     candidateSlots,
-    sourceState: agenda.lifecycleState,
+    reasonCodes: supplied?.reasonCodes ?? agenda.decisionReasonCodes,
+    sourceState: supplied?.sourceState ?? agenda.lifecycleState,
   };
+}
+
+function withUserDecisionContextDefaults(userId: number, context?: DecisionLogicContext | null): DecisionLogicContext {
+  const merged: DecisionLogicContext = { ...(context ?? {}) };
+  const defaults = userDecisionContextDefaults(userId);
+  if (!merged.timezone && defaults.timezone) merged.timezone = defaults.timezone;
+  if (!merged.locale && defaults.locale) merged.locale = defaults.locale;
+  return merged;
+}
+
+function hasDecisionContextPayload(context?: DecisionLogicContext | null): boolean {
+  if (!context || typeof context !== 'object') return false;
+  return Object.keys(context).some((key) => key !== 'timezone' && key !== 'locale');
+}
+
+function userDecisionContextDefaults(userId: number): Pick<DecisionLogicContext, 'timezone' | 'locale'> {
+  if (!Number.isFinite(userId) || userId <= 0) return {};
+  try {
+    const row = getDb().prepare('SELECT language, timezone FROM users WHERE id = ?').get(userId) as {
+      language?: string | null;
+      timezone?: string | null;
+    } | undefined;
+    const timezone = validateDecisionTimezone(row?.timezone);
+    const locale = validateDecisionLocale(row?.language);
+    return {
+      ...(timezone ? { timezone } : {}),
+      ...(locale ? { locale } : {}),
+    };
+  } catch {
+    return {};
+  }
+}
+
+function validateDecisionTimezone(timezone?: string | null): string | undefined {
+  if (typeof timezone !== 'string' || !timezone.trim()) return undefined;
+  const trimmed = timezone.trim();
+  try {
+    new Intl.DateTimeFormat('en-US', { timeZone: trimmed });
+    return trimmed;
+  } catch {
+    return undefined;
+  }
+}
+
+function validateDecisionLocale(locale?: string | null): string | undefined {
+  if (typeof locale !== 'string' || !locale.trim()) return undefined;
+  const trimmed = locale.trim();
+  try {
+    return Intl.DateTimeFormat.supportedLocalesOf([trimmed])[0] ?? undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 function secretaryCandidateSlots(
@@ -1145,7 +1202,8 @@ function outcomeSummaryForRecord(record: DecisionRecord, logic: DecisionLogicV2)
     if (record.sourceSkill === 'secretary') {
       const startAt = typeof record.actionResult.startAt === 'string' ? record.actionResult.startAt : null;
       const endAt = typeof record.actionResult.endAt === 'string' ? record.actionResult.endAt : null;
-      const window = formatDecisionWindow(startAt, endAt, record.decisionContext?.timezone) ?? 'the proposed window';
+      const context = decisionContextForRecord(record);
+      const window = formatDecisionWindow(startAt, endAt, context.timezone, context.locale) ?? 'the proposed window';
       return { outcomeSummary: `Done — Secretary applied ${window} and verified the agenda item.`, failureReason: null, retryActions: [] };
     }
     if (record.sourceSkill === 'content') {

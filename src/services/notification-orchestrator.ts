@@ -1832,7 +1832,40 @@ function normalizeDecisionContext(input: DecisionLogicContext | null | undefined
   assignContextString(context, 'explicitNoRelatedEntityReason', input.explicitNoRelatedEntityReason);
   assignContextString(context, 'providerName', input.providerName);
   assignContextString(context, 'deadlineAt', input.deadlineAt);
+  assignContextString(context, 'timezone', input.timezone);
+  assignContextString(context, 'locale', input.locale);
+  assignContextSlots(context, input.candidateSlots);
+  assignContextReasonCodes(context, input.reasonCodes);
   return Object.keys(context).length ? context : null;
+}
+
+function assignContextSlots(
+  context: DecisionLogicContext,
+  candidateSlots: DecisionLogicContext['candidateSlots'] | null | undefined,
+): void {
+  if (!Array.isArray(candidateSlots)) return;
+  const slots = candidateSlots
+    .map((slot) => ({
+      startAt: typeof slot?.startAt === 'string' ? slot.startAt.trim() : '',
+      endAt: typeof slot?.endAt === 'string' ? slot.endAt.trim() : '',
+      label: typeof slot?.label === 'string' && slot.label.trim() ? truncate(slot.label.trim(), 80) : null,
+    }))
+    .filter((slot) => slot.startAt && slot.endAt && Number.isFinite(Date.parse(slot.startAt)) && Number.isFinite(Date.parse(slot.endAt)) && Date.parse(slot.startAt) < Date.parse(slot.endAt))
+    .slice(0, 6);
+  if (slots.length > 0) context.candidateSlots = slots;
+}
+
+function assignContextReasonCodes(
+  context: DecisionLogicContext,
+  reasonCodes: DecisionLogicContext['reasonCodes'] | null | undefined,
+): void {
+  if (!Array.isArray(reasonCodes)) return;
+  const normalized = reasonCodes
+    .filter((code): code is string => typeof code === 'string')
+    .map((code) => code.trim())
+    .filter(Boolean)
+    .slice(0, 10);
+  if (normalized.length > 0) context.reasonCodes = normalized;
 }
 
 function assignContextString<T extends keyof DecisionLogicContext>(

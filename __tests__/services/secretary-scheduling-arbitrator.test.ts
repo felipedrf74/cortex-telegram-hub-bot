@@ -123,6 +123,50 @@ describe('secretary-scheduling-arbitrator', () => {
     expect(stored?.decisionExplanation).toBe(decision.explanation);
   });
 
+  it('persists selected and alternative candidate slots for Decision Center enrichment', () => {
+    const request = intent({
+      intentId: 'decision-center-candidates',
+      preferredWindows: [
+        timeWindow('2026-05-04T09:00:00.000Z', '2026-05-04T10:00:00.000Z', 'best'),
+        timeWindow('2026-05-04T10:00:00.000Z', '2026-05-04T11:00:00.000Z', 'backup'),
+      ],
+    });
+    const decision = submitSecretarySchedulingIntent(request, {
+      now: '2026-05-01T08:00:00.000Z',
+    });
+
+    expect(decision.selectedSlot).toMatchObject({
+      start: '2026-05-04T09:00:00.000Z',
+      end: '2026-05-04T10:00:00.000Z',
+    });
+    expect(decision.alternativeSlots).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        start: '2026-05-04T10:00:00.000Z',
+        end: '2026-05-04T11:00:00.000Z',
+      }),
+    ]));
+    expect(decision.agendaItem.scheduledSegments).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        start: '2026-05-04T09:00:00.000Z',
+        end: '2026-05-04T10:00:00.000Z',
+      }),
+      expect.objectContaining({
+        start: '2026-05-04T10:00:00.000Z',
+        end: '2026-05-04T11:00:00.000Z',
+      }),
+    ]));
+
+    const retry = submitSecretarySchedulingIntent(request, {
+      now: '2026-05-01T08:05:00.000Z',
+    });
+    expect(retry.agendaItem.agendaItemId).toBe(decision.agendaItem.agendaItemId);
+    expect(retry.alternativeSlots).toHaveLength(1);
+    expect(retry.alternativeSlots[0]).toMatchObject({
+      start: '2026-05-04T10:00:00.000Z',
+      end: '2026-05-04T11:00:00.000Z',
+    });
+  });
+
   it('places Cooking prep after an existing Training block instead of overlapping it', () => {
     submitSecretarySchedulingIntent(intent({
       intentId: 'training-block',

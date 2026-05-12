@@ -74,6 +74,10 @@ function ensureSecretaryAgendaFixtureTables(): void {
   testDb.exec(readFileSync('migrations/098_secretary_decision_explanation.sql', 'utf8'));
 }
 
+function ensureUserFixtureTable(): void {
+  testDb.exec(readFileSync('migrations/030_users.sql', 'utf8'));
+}
+
 function ensureFinanceFixtureTables(): void {
   testDb.exec(readFileSync('migrations/022_finance_tables.sql', 'utf8'));
   testDb.exec(`
@@ -273,6 +277,51 @@ describe('Decision Center facade', () => {
     expect(created.item).toBeNull();
     expect(created.eligibility.reasons.join(' ')).toContain('quality_gate');
     expect(listDecisionItems(82, 82)).toHaveLength(0);
+  });
+
+  it('derives Secretary recommendations from persisted alternatives using the user timezone', async () => {
+    ensureUserFixtureTable();
+    ensureSecretaryAgendaFixtureTables();
+    testDb.prepare(`
+      INSERT INTO users (id, telegram_id, first_name, language, timezone, status)
+      VALUES (83, 8300, 'Time Zone Owner', 'en-US', 'America/New_York', 'active')
+    `).run();
+    testDb.prepare(`
+      INSERT INTO secretary_agenda_items (
+        agenda_item_id, source_intent_id, source_skill, source_action, intent_action,
+        source_entity_id, source_entity_type, owner_user_id, tenant_id,
+        lifecycle_state, provider_sync_state, version, title, start_at, end_at,
+        duration_minutes, decision_action, decision_reason_codes_json, decision_explanation,
+        source_shape_hash, scheduled_segments_json, created_at, updated_at
+      ) VALUES (
+        'agenda-timezone-reflow', 'intent-timezone-reflow', 'training', 'long_run', 'reschedule_this',
+        'session-timezone', 'training_session', 83, '83',
+        'proposed', 'not_synced', 1, 'Long run',
+        '2026-05-11T08:00:00.000Z', '2026-05-11T10:00:00.000Z',
+        120, 'deferred', '["training_schedule_request"]', 'Needs user approval',
+        'hash-timezone', ?, datetime('now'), datetime('now')
+      )
+    `).run(JSON.stringify([
+      { start: '2026-05-11T08:00:00.000Z', end: '2026-05-11T10:00:00.000Z', label: 'Current slot' },
+      { start: '2026-05-11T14:00:00.000Z', end: '2026-05-11T16:00:00.000Z', label: 'Afternoon alternative' },
+    ]));
+
+    const created = await createDecisionIntent(buildSkillDecisionFixtureIntent('secretary', 83, {
+      relatedEntityId: 'agenda-timezone-reflow',
+      relatedEntityType: 'secretary_agenda_item',
+      dedupeKey: 'secretary:timezone-reflow',
+      actionButtons: [{ id: 'accept_reflow', label: 'Reflow', style: 'primary' }],
+    }));
+
+    expect(created.item).not.toBeNull();
+    expect(created.item?.quality.status).toBe('pass');
+    expect(created.item?.recommendation).toContain('10:00-12:00');
+    expect(created.item?.recommendation).not.toContain('15:00-17:00');
+
+    const listed = listDecisionItems(83, 83);
+    expect(listed).toHaveLength(1);
+    expect(listed[0].problemStatement).toContain('Long run');
+    expect(listed[0].recommendation).toContain('10:00-12:00');
   });
 
   it('executes content approval actions through Content and read-back verifies state', async () => {
