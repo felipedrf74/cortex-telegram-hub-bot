@@ -61,7 +61,15 @@ function sendDecisionError(res: Response, err: unknown): void {
   sendPortalInternalError(res, err, 'Portal Decision Center request failed', 'Portal: decision center request failed');
 }
 
+function shouldUseSafePortalCopy(item: DecisionApiItem): boolean {
+  return item.privacyClassification === 'financial'
+    || item.privacyClassification === 'health'
+    || item.privacyClassification === 'private_content'
+    || item.privacyClassification === 'sensitive';
+}
+
 function sanitizePortalDecisionItem(item: DecisionApiItem): Record<string, unknown> {
+  const safeCopyOnly = shouldUseSafePortalCopy(item);
   return {
     decisionId: item.decisionId,
     userId: item.userId,
@@ -70,16 +78,59 @@ function sanitizePortalDecisionItem(item: DecisionApiItem): Record<string, unkno
     type: item.type,
     status: item.status,
     urgency: item.urgency,
+    timingLabel: item.timingLabel,
     priorityScore: item.priorityScore,
+    groupKey: item.groupKey,
+    sectionKey: item.sectionKey,
+    displayMode: item.displayMode,
+    frontendActionState: item.frontendActionState,
+    impactLevel: item.impactLevel,
+    confidence: item.confidence,
     title: item.safePreviewTitle,
     summary: item.safePreviewBody,
+    problemStatement: safeCopyOnly ? item.safePreviewBody : item.problemStatement,
+    recommendation: item.recommendation,
+    expectedEffect: item.expectedEffect,
+    impactIfIgnored: item.impactIfIgnored,
     recommendedActionLabel: item.recommendedActionLabel,
+    primaryActionLabel: item.primaryActionLabel,
+    secondaryActionLabels: item.secondaryActionLabels,
     whySummary: item.whySummary,
     whyDetails: item.whyDetails,
+    alternatives: item.alternatives.map((alternative) => ({
+      id: alternative.id,
+      label: alternative.label,
+      rank: alternative.rank,
+      reason: alternative.reason,
+      actionId: alternative.actionId,
+      available: alternative.available,
+    })),
+    actionTruthTableEntry: item.actionTruthTableEntry,
+    sourceTraceSummary: item.sourceTraceSummary,
+    sourceTrace: {
+      originatingSkill: item.sourceTrace.originatingSkill,
+      originatingSignal: item.sourceTrace.originatingSignal,
+      sourceTimestamp: item.sourceTrace.sourceTimestamp,
+      enrichmentService: item.sourceTrace.enrichmentService,
+      orchestrator: item.sourceTrace.orchestrator,
+      executor: item.sourceTrace.executor,
+      verifier: item.sourceTrace.verifier,
+      relatedStateReadModels: item.sourceTrace.relatedStateReadModels,
+      confidenceSource: item.sourceTrace.confidenceSource,
+      dataFreshness: item.sourceTrace.dataFreshness,
+    },
+    relatedEntitiesSafe: item.relatedEntitiesSafe,
+    dependencyGraphSummary: item.dependencyGraphSummary,
     deadlineAt: item.deadlineAt,
     expiresAt: item.expiresAt,
     privacyClassification: item.privacyClassification,
     visibilityScope: item.visibilityScope,
+    quality: {
+      status: item.quality.status,
+      qualityScore: item.quality.qualityScore,
+      safeToShowUser: item.quality.safeToShowUser,
+      safeForFrontendAction: item.quality.safeForFrontendAction,
+    },
     createdAt: item.createdAt,
     updatedAt: item.updatedAt,
     actions: item.actions.map((action) => ({

@@ -40,14 +40,17 @@ import {
   buildSkillDecisionFixtureIntent,
   createDecisionIntent,
   DECISION_OUTCOME_LEDGER_RETENTION_POLICY,
+  dismissDecision,
   ensureDecisionCenterTables,
   evaluateDecisionEligibility,
   getDecisionItem,
+  getDecisionOutcomeMetrics,
   getDecisionSummary,
   listDecisionDependencies,
   listDecisionItems,
   performDecisionAction,
   runDecisionSourceStateSupersessionJob,
+  snoozeDecision,
 } from '../../src/services/decision-center';
 import { buildSkillNotificationFixtureIntent, ensureNotificationTables } from '../../src/services/notification-orchestrator';
 import { trackPendingChatConfirmation } from '../../src/services/chat-pending-confirmations';
@@ -843,6 +846,49 @@ describe('Decision Center facade', () => {
       adminReportingScope: 'aggregate_only',
       privateTextPolicy: 'never_store_raw_private_text',
     });
+  });
+
+  it('returns tenant-scoped aggregate outcome metrics without private decision text', async () => {
+    const { created: approved } = await createContentApprovalDecision(44, 44, 'metrics-private-draft');
+    const dismissed = await createDecisionIntent(buildSkillDecisionFixtureIntent('training', 44, {
+      tenantId: 44,
+      dedupeKey: 'metrics-dismiss',
+    }));
+    const snoozed = await createDecisionIntent(buildSkillDecisionFixtureIntent('chat', 44, {
+      tenantId: 44,
+      dedupeKey: 'metrics-snooze',
+    }));
+
+    await performDecisionAction(approved.item!.decisionId, 'approve_script', 44, 44, {
+      idempotencyKey: 'metrics-approve',
+    });
+    dismissDecision(dismissed.item!.decisionId, 44, 44);
+    snoozeDecision(snoozed.item!.decisionId, 44, 44, 30);
+
+    const metrics = getDecisionOutcomeMetrics(44, 44);
+
+    expect(metrics).toMatchObject({
+      userId: 44,
+      tenantId: 44,
+      totalOutcomes: 3,
+      acceptedCount: 1,
+      dismissedCount: 1,
+      snoozedCount: 1,
+      primaryActionCount: 3,
+      failedActionCount: 0,
+      partialFailureCount: 0,
+      primaryActionRate: 1,
+      dismissRate: 0.3333,
+      snoozeRate: 0.3333,
+      failedActionRate: 0,
+      partialFailureRate: 0,
+    });
+    expect(metrics.bySourceSkill.content).toBe(1);
+    expect(metrics.bySourceSkill.training).toBe(1);
+    expect(metrics.bySourceSkill.chat).toBe(1);
+    expect(JSON.stringify(metrics)).not.toContain('metrics-private-draft');
+    expect(JSON.stringify(metrics)).not.toContain('Draft');
+    expect(getDecisionOutcomeMetrics(44, 45).totalOutcomes).toBe(0);
   });
 
   it('requires client-supplied idempotency keys for decision actions', async () => {

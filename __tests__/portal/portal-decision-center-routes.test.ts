@@ -129,14 +129,77 @@ function sampleDecision(overrides: Record<string, unknown> = {}) {
     type: 'decision_required',
     status: 'unread',
     urgency: 'today',
+    timingLabel: 'Today',
     priorityScore: 90,
+    groupKey: 'finance:decision_required:tax-2026-05',
+    sectionKey: 'today',
+    displayMode: 'needs_input',
+    frontendActionState: 'enabled',
+    impactLevel: 'high',
+    confidence: 0.78,
     title: 'Pay $4,200 to Therapy Center',
     summary: 'Sensitive body',
     safePreviewTitle: 'Finance decision',
     safePreviewBody: 'Open Nexus to review this decision.',
+    problemStatement: 'Pay $4,200 to Therapy Center before Friday.',
+    recommendation: 'Confirm the finance item only if it is handled.',
+    expectedEffect: 'Finance state is updated and verified.',
+    impactIfIgnored: 'The finance reminder stays open.',
     recommendedActionLabel: 'Mark paid',
+    primaryActionLabel: 'Mark paid',
+    secondaryActionLabels: ['Open details'],
     whySummary: 'A timely choice is needed.',
     whyDetails: [{ label: 'Privacy', value: 'Safe preview only.' }],
+    alternatives: [
+      {
+        id: 'nc_1:mark_paid',
+        label: 'Mark paid',
+        rank: 'best',
+        reason: 'Only if already handled.',
+        actionId: 'mark_paid',
+        available: true,
+      },
+    ],
+    actionTruthTableEntry: {
+      actionType: 'mark_paid',
+      expectedMutation: 'Finance state is updated and verified.',
+      executor: 'finance',
+      verifier: 'finance_state',
+      successUi: 'Finance state updated.',
+      partialFailureUi: 'Nexus will show what changed and what still needs retry.',
+      failureUi: 'Nexus keeps the decision visible with a retry option and the server error.',
+      retryAvailable: true,
+      rollbackAvailable: false,
+      apnsActionAllowed: false,
+      highRiskConfirmationRequired: true,
+      analyticsEvent: 'decision_action:finance:mark_paid',
+    },
+    sourceTraceSummary: 'Finance signal -> Decision Center v2 -> finance_state',
+    sourceTrace: {
+      originatingSkill: 'finance',
+      originatingSignal: 'decision_required',
+      sourceEntityIds: ['finance_tax_event:tax-2026-05'],
+      sourceTimestamp: '2026-05-10T10:00:00.000Z',
+      enrichmentService: 'decision-center-logic-v2',
+      orchestrator: 'decision-center',
+      executor: 'finance',
+      verifier: 'finance_state',
+      relatedStateReadModels: ['finance_state'],
+      confidenceSource: 'structured-state-and-readback',
+      dataFreshness: 'live',
+    },
+    relatedEntitiesSafe: [{ type: 'finance_tax_event', label: 'Finance item' }],
+    dependencyGraphSummary: null,
+    quality: {
+      status: 'pass',
+      missingFields: [],
+      qualityScore: 92,
+      reason: 'concrete decision',
+      safeToShowUser: true,
+      safeForHomePreview: true,
+      safeForAPNs: false,
+      safeForFrontendAction: true,
+    },
     deadlineAt: null,
     expiresAt: null,
     privacyClassification: 'financial',
@@ -203,8 +266,48 @@ describe('portal Decision Center routes', () => {
 
     expect(payload.statusCode).toBe(200);
     expect((payload.body as any).items[0].title).toBe('Finance decision');
+    expect((payload.body as any).items[0].problemStatement).toBe('Open Nexus to review this decision.');
     expect(JSON.stringify(payload.body)).not.toContain('Therapy Center');
     expect(JSON.stringify(payload.body)).not.toContain('$4,200');
+  });
+
+  it('exposes v2 portal-safe decision metadata for admin parity', () => {
+    const { app, routes } = makeApp();
+    registerPortalDecisionCenterRoutes(app as any);
+    const handler = routes.get('GET /api/users/:userId/decision-center/decisions/:decisionId')?.[2]!;
+    const { payload, res } = makeResponse();
+
+    handler({ params: { userId: '7', decisionId: 'nc_1' }, query: {} }, res);
+
+    expect(payload.statusCode).toBe(200);
+    const item = (payload.body as any).item;
+    expect(item.displayMode).toBe('needs_input');
+    expect(item.frontendActionState).toBe('enabled');
+    expect(item.sectionKey).toBe('today');
+    expect(item.groupKey).toBe('finance:decision_required:tax-2026-05');
+    expect(item.impactLevel).toBe('high');
+    expect(item.primaryActionLabel).toBe('Mark paid');
+    expect(item.alternatives[0]).toMatchObject({ actionId: 'mark_paid', available: true });
+    expect(item.actionTruthTableEntry).toMatchObject({
+      actionType: 'mark_paid',
+      executor: 'finance',
+      verifier: 'finance_state',
+      apnsActionAllowed: false,
+    });
+    expect(item.sourceTrace).toMatchObject({
+      originatingSkill: 'finance',
+      originatingSignal: 'decision_required',
+      executor: 'finance',
+      verifier: 'finance_state',
+    });
+    expect(item.sourceTrace.sourceEntityIds).toBeUndefined();
+    expect(item.relatedEntitiesSafe).toEqual([{ type: 'finance_tax_event', label: 'Finance item' }]);
+    expect(item.quality).toEqual({
+      status: 'pass',
+      qualityScore: 92,
+      safeToShowUser: true,
+      safeForFrontendAction: true,
+    });
   });
 
   it('fails closed for cross-tenant portal reads until explicit tenant membership exists', () => {

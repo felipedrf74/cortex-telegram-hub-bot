@@ -83,6 +83,28 @@ export const DECISION_OUTCOME_LEDGER_RETENTION_POLICY = Object.freeze({
   privateTextPolicy: 'never_store_raw_private_text',
 });
 
+export interface DecisionOutcomeMetrics {
+  userId: number;
+  tenantId: number;
+  totalOutcomes: number;
+  acceptedCount: number;
+  dismissedCount: number;
+  snoozedCount: number;
+  askedNexusCount: number;
+  undoUsedCount: number;
+  primaryActionCount: number;
+  failedActionCount: number;
+  partialFailureCount: number;
+  autoHandledCount: number;
+  averageTimeToActionMs: number | null;
+  primaryActionRate: number;
+  dismissRate: number;
+  snoozeRate: number;
+  failedActionRate: number;
+  partialFailureRate: number;
+  bySourceSkill: Record<string, number>;
+}
+
 export interface DecisionEligibilityPolicyInput {
   sourceSkill: NotificationSourceSkill;
   type: NotificationIntentType;
@@ -713,6 +735,72 @@ export function runDecisionSourceStateSupersessionJob(opts: { userId?: number; t
     logger.info({ supersededCount, reasons }, 'Decision Center source-state supersession job closed stale decisions');
   }
   return { scannedCount: rows.length, supersededCount, reasons };
+}
+
+export function getDecisionOutcomeMetrics(userId: number, tenantId = userId): DecisionOutcomeMetrics {
+  assertScope(userId, tenantId, 'get_decision_outcome_metrics');
+  ensureDecisionCenterTables();
+  const totals = getDb().prepare(`
+    SELECT
+      COUNT(*) AS totalOutcomes,
+      COALESCE(SUM(accepted), 0) AS acceptedCount,
+      COALESCE(SUM(dismissed), 0) AS dismissedCount,
+      COALESCE(SUM(snoozed), 0) AS snoozedCount,
+      COALESCE(SUM(asked_nexus), 0) AS askedNexusCount,
+      COALESCE(SUM(undo_used), 0) AS undoUsedCount,
+      COALESCE(SUM(CASE WHEN action_taken IS NOT NULL AND action_taken != '' THEN 1 ELSE 0 END), 0) AS primaryActionCount,
+      COALESCE(SUM(CASE WHEN action_succeeded = 0 AND action_taken IS NOT NULL AND action_taken != '' THEN 1 ELSE 0 END), 0) AS failedActionCount,
+      COALESCE(SUM(partial_failure), 0) AS partialFailureCount,
+      COALESCE(SUM(CASE WHEN action_taken IN ('superseded', 'auto_dismiss_stale_decision') THEN 1 ELSE 0 END), 0) AS autoHandledCount,
+      AVG(time_to_action_ms) AS averageTimeToActionMs
+    FROM decision_outcome_ledger
+    WHERE user_id = ? AND tenant_id = ?
+  `).get(userId, tenantId) as {
+    totalOutcomes: number;
+    acceptedCount: number;
+    dismissedCount: number;
+    snoozedCount: number;
+    askedNexusCount: number;
+    undoUsedCount: number;
+    primaryActionCount: number;
+    failedActionCount: number;
+    partialFailureCount: number;
+    autoHandledCount: number;
+    averageTimeToActionMs: number | null;
+  };
+  const bySourceRows = getDb().prepare(`
+    SELECT source_skill AS sourceSkill, COUNT(*) AS count
+    FROM decision_outcome_ledger
+    WHERE user_id = ? AND tenant_id = ?
+    GROUP BY source_skill
+  `).all(userId, tenantId) as Array<{ sourceSkill: string; count: number }>;
+  const totalOutcomes = Number(totals.totalOutcomes ?? 0);
+  const rate = (count: number): number => totalOutcomes > 0 ? Number((count / totalOutcomes).toFixed(4)) : 0;
+  const bySourceSkill: Record<string, number> = {};
+  for (const row of bySourceRows) {
+    bySourceSkill[row.sourceSkill] = Number(row.count ?? 0);
+  }
+  return {
+    userId,
+    tenantId,
+    totalOutcomes,
+    acceptedCount: Number(totals.acceptedCount ?? 0),
+    dismissedCount: Number(totals.dismissedCount ?? 0),
+    snoozedCount: Number(totals.snoozedCount ?? 0),
+    askedNexusCount: Number(totals.askedNexusCount ?? 0),
+    undoUsedCount: Number(totals.undoUsedCount ?? 0),
+    primaryActionCount: Number(totals.primaryActionCount ?? 0),
+    failedActionCount: Number(totals.failedActionCount ?? 0),
+    partialFailureCount: Number(totals.partialFailureCount ?? 0),
+    autoHandledCount: Number(totals.autoHandledCount ?? 0),
+    averageTimeToActionMs: totals.averageTimeToActionMs == null ? null : Math.round(Number(totals.averageTimeToActionMs)),
+    primaryActionRate: rate(Number(totals.primaryActionCount ?? 0)),
+    dismissRate: rate(Number(totals.dismissedCount ?? 0)),
+    snoozeRate: rate(Number(totals.snoozedCount ?? 0)),
+    failedActionRate: rate(Number(totals.failedActionCount ?? 0)),
+    partialFailureRate: rate(Number(totals.partialFailureCount ?? 0)),
+    bySourceSkill,
+  };
 }
 
 export async function performDecisionAction(

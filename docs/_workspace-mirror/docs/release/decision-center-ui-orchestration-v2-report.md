@@ -6,7 +6,7 @@ Date: 2026-05-12
 
 READY_WITH_CONDITIONS.
 
-The core Decision Center UI/DTO behavior is implemented and locally validated for the current Decision Center v2 contract: timeline grouping, concrete cards, detail sections, source trace, other options, honest disabled states, action outcome confirmation, and handled-by-Nexus visibility. The remaining conditions are broader than this vertical slice: full permanent semantic fixture pack, portal parity, APNs/deeplink runtime validation, full cross-skill production integration, and release-device QA.
+The core Decision Center UI/DTO behavior is implemented and locally validated for the current Decision Center v2 contract: timeline grouping, concrete cards, detail sections, source trace, other options, honest disabled states, action outcome confirmation, handled-by-Nexus visibility, backend+iOS semantic fixture coverage, portal-safe v2 metadata, action truth-table coverage, and aggregate outcome metrics. The remaining conditions are broader than this vertical slice: APNs/deeplink runtime validation, full cross-skill production integration, and release-device QA.
 
 ## Executive Summary
 
@@ -16,10 +16,11 @@ The core Decision Center UI/DTO behavior is implemented and locally validated fo
 - Skill orchestration status: READY_WITH_CONDITIONS. Backend DTOs now expose richer orchestration metadata, while full production integration for every skill remains a staged follow-up.
 - Action behavior status: IMPLEMENTED_AND_VALIDATED for primary action success/failure display, dismiss, visible outcomes, disabled states, and the canonical backend action truth table.
 - Frontend validation status: IMPLEMENTED_AND_VALIDATED with focused iOS unit and UI tests on iPhone 17 Pro simulator.
-- Semantic fixture status: IMPLEMENTED_AND_VALIDATED for the backend semantic fixture pack. iOS fixtures remain focused on DTO/UI behavior, not the full cross-skill matrix.
+- Semantic fixture status: IMPLEMENTED_AND_VALIDATED for the backend semantic fixture pack and the iOS 14-scenario DTO/actionability matrix.
 - SourceTrace status: IMPLEMENTED_AND_VALIDATED for API DTO, Swift decoding, list/detail rendering, and tests.
 - Design system status: READY_WITH_CONDITIONS. Components are scoped to the Decision Center view; extraction into a broader design-system module is deferred.
-- Analytics status: DEFERRED_WITH_OWNER_DECISION_REQUIRED. No new analytics emitters were added in this pass.
+- Portal parity status: IMPLEMENTED_AND_VALIDATED for portal-safe v2 metadata, action-state, source-trace summary, and action truth-table fields with private-copy redaction.
+- Analytics status: IMPLEMENTED_AND_VALIDATED at aggregate outcome-metrics level; no raw private decision text is emitted or exposed.
 
 ## Workspace
 
@@ -41,12 +42,12 @@ The core Decision Center UI/DTO behavior is implemented and locally validated fo
 
 - Decision Product Architect: kept Decision Center as a judgment surface, not a notification feed; generic cards remain blocked or disabled.
 - Secretary Orchestration: exposed source trace, grouping, dependency summary, alternatives, and action truth-table metadata to let Secretary-backed decisions explain themselves.
-- Skill Recipe: validated current v2 recipes through existing backend tests; full fixture matrix remains a follow-up.
+- Skill Recipe: validated current v2 recipes through backend semantic fixtures and iOS DTO/actionability fixtures.
 - Backend Contract: extended list/detail DTO shape with UI metadata while preserving bounded reads and no provider/model calls on read endpoints.
 - iOS Interaction: added timeline list, filters, detail traceability, other-options sheet, outcome sheet, and handled section without changing bottom navigation.
 - Privacy/Tenant: safe previews, related safe entities, visibility scope, and user-switch state clearing remain contract-backed; no production data used.
 - APNs/Fatigue: DTO exposes safe preview and section metadata; real APNs/deeplink flow remains blocked by no-production rule.
-- Observability/Learning: existing outcome fields decode and render; new analytics emission deferred.
+- Observability/Learning: existing outcome ledger remains the source of truth; aggregate metrics now expose action/dismiss/snooze/failure rates without private text.
 - Design System: reused local SwiftUI styling and extracted small subviews in the Decision Center file; broader component extraction deferred.
 - Release/Test Gate: backend typecheck/focused tests, iOS unit tests, iOS UI behavior tests, and docs audit were run; no origin mutation.
 
@@ -72,10 +73,10 @@ The core Decision Center UI/DTO behavior is implemented and locally validated fo
 
 ## Semantic Fixture Pack
 
-- Backend fixture coverage: IMPLEMENTED_AND_VALIDATED for the enriched Decision API item in `decision-center.test.ts`.
-- iOS fixture coverage: IMPLEMENTED_AND_VALIDATED for DTO decoding and UI stub responses.
+- Backend fixture coverage: IMPLEMENTED_AND_VALIDATED for the 14-scenario permanent semantic fixture pack.
+- iOS fixture coverage: IMPLEMENTED_AND_VALIDATED for a matching 14-scenario DTO/actionability matrix across Secretary, Training, Content, Cooking, Finance, Chat, sync failure, invalid generic copy, handled history, owner/admin, overcapacity, superseded, offline/details-unavailable, and user-switch privacy-redaction cases.
 - Invalid generic fixture: VERIFIED_EXISTING_AND_VALIDATED by existing v2 quality-gate tests and disabled iOS details-unavailable behavior.
-- Full permanent matrix: DEFERRED_WITH_OWNER_DECISION_REQUIRED.
+- Full permanent matrix: IMPLEMENTED_AND_VALIDATED at backend DTO and iOS decoding/actionability level. A separate visual screenshot export for every fixture remains optional follow-up.
 
 ## Recipe Coverage Report
 
@@ -90,8 +91,8 @@ The core Decision Center UI/DTO behavior is implemented and locally validated fo
 
 ## Action Truth Table
 
-- Covered now: action truth-table DTO entry, analytics-event name, verifier summary, success/partial/failure outcome shell.
-- Gaps: full canonical action truth-table document and one test per implemented action type remain DEFERRED_WITH_OWNER_DECISION_REQUIRED.
+- Covered now: canonical backend action truth-table module, DTO action truth-table entry, analytics-event name, verifier summary, success/partial/failure outcome shell, disabled unsupported executor states, and tests across implemented/unsupported action inventory.
+- Gaps: none for the current deterministic action inventory. Wiring deterministic executors for currently-disabled `retry` and `choose_priority` remains future product work.
 
 ## Frontend Behavior Validation
 
@@ -99,7 +100,7 @@ The core Decision Center UI/DTO behavior is implemented and locally validated fo
 - Training/concrete conflict: PASS through network-backed Decision Center UI test and DTO fixture.
 - Partial failure: PASS at UI shell level through outcome state support; full provider-failure backend scenario deferred.
 - Handled by Nexus: PASS; handled section renders while active filter is selected.
-- Privacy: PASS at DTO safe-field level; broader cross-tenant visual fixture deferred.
+- Privacy: PASS at DTO safe-field level, iOS semantic fixture level, and portal-safe metadata level; broader cross-tenant visual fixture deferred.
 - User switch: VERIFIED_EXISTING_AND_VALIDATED through existing scope reset behavior.
 - Navigation/performance: PASS for focused UI navigation paths; no performance trace captured.
 - APNs/deeplink: BLOCKED_WITH_EXACT_REASON. Production APNs and deeplink payload validation were out of scope by non-production rule.
@@ -115,7 +116,7 @@ The core Decision Center UI/DTO behavior is implemented and locally validated fo
 
 ## Analytics and Learning
 
-- Metrics added: DEFERRED_WITH_OWNER_DECISION_REQUIRED.
+- Metrics added: IMPLEMENTED_AND_VALIDATED via tenant-scoped aggregate outcome metrics for action, dismiss, snooze, failure, partial-failure, auto-handled, and source-skill counts.
 - Outcome ledger: VERIFIED_EXISTING_AND_VALIDATED at existing contract level; no new production analytics writes added.
 - ML readiness: no ML behavior changes.
 
@@ -140,15 +141,13 @@ The core Decision Center UI/DTO behavior is implemented and locally validated fo
 
 ### P2
 
-- DCUIV2-P2-001: Full permanent semantic fixture pack is incomplete. Impact: future agents can regress non-covered skill states. Recommendation: create fixture matrix as a separate docs+test branch.
-- DCUIV2-P2-002: Portal parity not validated. Impact: web/admin surfaces may lag iOS contract. Recommendation: portal audit after iOS local QA.
-- DCUIV2-P2-003: Real APNs/deeplink path not validated. Impact: notification tap flow remains unproven. Recommendation: validate only during authorized APNs/TestFlight pass.
+- DCUIV2-P2-001: Real APNs/deeplink path not validated. Impact: notification tap flow remains unproven. Recommendation: validate only during authorized APNs/TestFlight pass.
 
 ### P3
 
 - DCUIV2-P3-001: Design-system extraction deferred. Impact: some Decision Center subviews still live in one SwiftUI file. Recommendation: extract after UX stabilizes.
 - DCUIV2-P3-002: Standalone screenshot export directory missing. Impact: xcresult inspection required for screenshots. Recommendation: add export script if visual review needs static PNGs.
-- DCUIV2-P3-003: Analytics metrics deferred. Impact: no new interaction telemetry from this pass. Recommendation: add safe metrics after local QA confirms UX.
+- DCUIV2-P3-003: Full deterministic executors for `retry` and `choose_priority` are intentionally disabled until product-specific services can verify them. Impact: those cards explain/wait but do not allow fake success. Recommendation: wire provider-sync and overcapacity-priority executors in separate product slices.
 
 ## Acceptance Gates
 
@@ -159,10 +158,10 @@ The core Decision Center UI/DTO behavior is implemented and locally validated fo
 - Specific outcome after action: PASS.
 - Partial failure state: PASS at UI state level; full provider-backed scenario deferred.
 - Handled section: PASS.
-- Semantic fixtures: PASS for backend semantic fixture pack; broader iOS visual fixture matrix remains a follow-up.
+- Semantic fixtures: PASS for backend semantic fixture pack and iOS DTO/actionability matrix.
 - Recipe coverage: READY_WITH_CONDITIONS.
 - SourceTrace: PASS.
-- Action truth table: PASS for implemented/unsupported backend action inventory.
+- Action truth table: PASS for implemented/unsupported backend action inventory and portal-safe metadata.
 - Frontend behavior tests: PASS.
 - User/tenant state safety: VERIFIED_EXISTING_AND_VALIDATED.
 - Backend tests: PASS.
