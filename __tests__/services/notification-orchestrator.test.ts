@@ -519,6 +519,7 @@ describe('Secretary Notification Orchestrator', () => {
     expect(action.item.status).toBe('actioned');
     const log = getNotificationDecisionLog(result.decisionLog.decisionLogId, 8, 8);
     expect(log?.actionTaken).toBe('approve_script');
+    expect(() => performNotificationAction(itemId, 'approve_script', 8, 8)).toThrow(/already actioned/);
   });
 
   it('rejects expired or invalid actions safely', async () => {

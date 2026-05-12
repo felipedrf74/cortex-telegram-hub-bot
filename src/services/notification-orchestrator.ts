@@ -1045,21 +1045,19 @@ export function performNotificationAction(
   }
   if (item.status === 'superseded') throw new Error('notification superseded');
   if (item.status === 'dismissed') throw new Error('notification dismissed');
+  if (item.status === 'actioned') throw new Error('notification already actioned');
   if (!item.actions.some((action) => action.id === actionId)) {
     throw new Error('action not allowed for notification');
   }
-  const idempotent = item.status === 'actioned';
-  if (!idempotent) {
-    getDb().prepare(`
-      UPDATE notification_center_items
-      SET status = 'actioned', actioned_at = datetime('now')
-      WHERE item_id = ? AND user_id = ? AND tenant_id = ?
-    `).run(itemId, userId, tenantId);
-  }
+  getDb().prepare(`
+    UPDATE notification_center_items
+    SET status = 'actioned', actioned_at = datetime('now')
+    WHERE item_id = ? AND user_id = ? AND tenant_id = ?
+  `).run(itemId, userId, tenantId);
   const updated = getNotificationCenterItem(itemId, userId, tenantId);
   if (!updated) throw new Error('notification action failed');
   markDecisionActionTaken(updated.decisionLogId, actionId);
-  return { item: updated, actionId, idempotent };
+  return { item: updated, actionId, idempotent: false };
 }
 
 function revokePriorActiveDeviceTokenOwners(
