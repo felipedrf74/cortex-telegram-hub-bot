@@ -22,6 +22,12 @@ describe('staging fixture harness safety boundaries', () => {
       reason: 'Refusing non-staging hostname example.com',
     });
     expect(validateStagingTarget('https://staging-api.nexushub.me').ok).toBe(true);
+    expect(validateStagingTarget('http://localhost:8201').ok).toBe(true);
+    expect(validateStagingTarget('http://127.0.0.1:8201').ok).toBe(true);
+    expect(validateStagingTarget('http://localhost:8200')).toEqual({
+      ok: false,
+      reason: 'Refusing localhost non-staging port 8200',
+    });
     expect(resolveTargetUrl({}, { PRODUCTION_URL: 'https://api.nexushub.me' })).toBe('https://api.nexushub.me');
   });
 

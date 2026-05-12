@@ -55,8 +55,15 @@ export function validateStagingTarget(rawUrl) {
   }
 
   const hostname = url.hostname.toLowerCase();
+  const port = url.port || (url.protocol === 'https:' ? '443' : '80');
   if (hostname === 'api.nexushub.me') {
     return { ok: false, reason: 'Refusing production API hostname api.nexushub.me' };
+  }
+  if (hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '::1') {
+    if (port === '8201') {
+      return { ok: true, url: url.toString() };
+    }
+    return { ok: false, reason: `Refusing localhost non-staging port ${port}` };
   }
   if (!hostname.includes('staging')) {
     return { ok: false, reason: `Refusing non-staging hostname ${hostname}` };
