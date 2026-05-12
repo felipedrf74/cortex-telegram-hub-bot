@@ -272,7 +272,7 @@ None.
 - Walk: cycling branch correctly uses `squats?|lunges?|deadlifts?` (with `s?`) after a fixture validator caught the plural-only oversight. Swimming branch still uses `\b(squat|deadlift)\b` without `s?`. A swim note containing "do not focus on squats here" would slip through the scrub (admittedly unlikely user-facing copy, but the inconsistency exists).
 - Impact: minor; swimming notes are less likely to mention strength than cycling notes are. No known production regression.
 - Recommendation: change swimming branch to `\b(ftp|watts?|power zone|cadence|squats?|deadlifts?)\b` for consistency with cycling. Add a corresponding fixture (`swim-session-modality-copy` with mis-injected `squats`) to exercise the path.
-- Status: OPEN (Wave 2 polish)
+- Status: CLOSED BY ROUND 7 (`f2355038`; broad Training sweep refreshed after `b35ed604`)
 
 #### R6-NEW-002 — Strength evidence inference favors title over `sessionType` enum
 
@@ -283,7 +283,7 @@ None.
 - Walk: when a session arrives with `sessionType: 'easy_run'` but `title: 'Upper Hypertrophy'` and strength exercises, `hasStrengthSessionEvidence` wins (correctly). But this means the inverse case — an upstream system that accurately sets `sessionType: 'easy_run'` for a session that happens to have "press" in the title (e.g., "Press deeper into Zone 2") — would be reclassified as strength incorrectly. The title regex word boundary on `press` matches that phrase.
 - Impact: edge case; unlikely in production. If it happens, the user sees an exercises section instead of running execution.
 - Recommendation: add a `hasEnduranceSessionEvidence` checker that's also weighted (distance_km/pace exercises beat strength title). Or scope the title regex more tightly (e.g., `bench\s+press` instead of `press`).
-- Status: OPEN (Wave 2 polish)
+- Status: CLOSED BY ROUND 7 (`f2355038`; broad Training sweep refreshed after `b35ed604`)
 
 #### R6-NEW-003 — Profile/roadmap/catalog regression coverage relies on pre-commit sweep not re-run in this QA
 
@@ -294,7 +294,7 @@ None.
 - Walk: Codex's report claims VERIFIED EXISTING for athlete profile + event/continuous roadmap + exercise catalog/substitution via the pre-commit broader Training sweep. I trust the run but did not independently reproduce it.
 - Impact: none today (Codex's sweep is documented with file/test counts). Future agents could re-run `__tests__/services/training-*` and `coach-kernel-*` broadly to refresh evidence.
 - Recommendation: when the next Training-impacting commit lands, re-run the broader Training sweep and pin counts in OPEN_ITEMS.
-- Status: ACKNOWLEDGED (process)
+- Status: CLOSED BY ROUND 7 (`b35ed604` commit hook reran 72 files / 916 tests; independent broad Training sweep reran 70 files / 908 tests)
 
 ## Safe fixes applied
 
@@ -350,7 +350,7 @@ This is the cleanest hostile-QA pass on a consolidation branch I've reviewed in 
 
 The 3 new R6 findings are all P3 polish items — none Wave-blocking.
 
-## Proposed Codex prompt for Round 7 (optional Wave 2 polish)
+## Historical Codex prompt for Round 7 (now closed)
 
 ```
 Three small Wave 2 polish items on feature/training-intelligence-orchestration-consolidation
