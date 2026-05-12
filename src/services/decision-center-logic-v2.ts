@@ -250,12 +250,18 @@ export function evaluateDecisionQuality(
   if (primary && isGenericCopy(primary.label) && isGenericCopy(recipe.primaryActionLabel)) {
     missingFields.push('concretePrimaryActionLabel');
   }
+  if (requiresSecretaryRecommendation(input) && !hasDistinctSecretaryRecommendation(input.context)) {
+    missingFields.push('secretaryRecommendation');
+  }
 
   const filled = DECISION_QUALITY_REQUIRED_FIELD_COUNT - missingFields.length;
   const score = Math.max(0, Math.min(100, Math.round((filled / DECISION_QUALITY_REQUIRED_FIELD_COUNT) * 100)));
   const status: DecisionQualityStatus = missingFields.length === 0
     ? 'pass'
-    : missingFields.includes('concreteCopy') || missingFields.includes('relatedEntity') || missingFields.includes('readBackVerifier')
+    : missingFields.includes('concreteCopy')
+      || missingFields.includes('relatedEntity')
+      || missingFields.includes('readBackVerifier')
+      || missingFields.includes('secretaryRecommendation')
       ? 'needs_enrichment'
       : 'blocked';
 
@@ -737,6 +743,24 @@ function concreteActionLabel(action: NotificationActionButton | null, fallback: 
 
 function isMutatingAction(action: NotificationActionButton): boolean {
   return action.mutating === true || MUTATING_ACTION_IDS.has(action.id);
+}
+
+function requiresSecretaryRecommendation(input: DecisionLogicInput): boolean {
+  if (input.type === 'sync_failure') return false;
+  return input.sourceSkill === 'secretary'
+    || input.type === 'conflict_detected'
+    || input.type === 'reflow_suggestion';
+}
+
+function hasDistinctSecretaryRecommendation(context: DecisionLogicContext | null | undefined): boolean {
+  if (!context?.recommendedStartAt || !context.recommendedEndAt) return false;
+  if (!isValidWindow(context.recommendedStartAt, context.recommendedEndAt)) return false;
+  return !sameWindow(
+    context.recommendedStartAt,
+    context.recommendedEndAt,
+    context.currentStartAt,
+    context.currentEndAt,
+  );
 }
 
 function sanitizeTitle(value: string): string {

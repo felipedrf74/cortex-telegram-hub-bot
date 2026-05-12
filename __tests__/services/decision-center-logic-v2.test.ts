@@ -28,6 +28,25 @@ describe('Decision Center Logic v2', () => {
     expect(decision.quality.missingFields).toContain('relatedEntity');
   });
 
+  it('blocks Secretary conflicts without a distinct recommendation even when raw copy is specific', () => {
+    const decision = buildDecisionLogicV2({
+      sourceSkill: 'secretary',
+      type: 'conflict_detected',
+      priority: 'time_sensitive',
+      title: 'Schedule conflict detected',
+      body: 'Two calendar items overlap this afternoon.',
+      safeBody: 'Open Nexus to review the schedule conflict.',
+      actions: [{ id: 'open_detail', label: 'Open details', style: 'primary' }],
+      relatedEntityType: 'calendar_conflict',
+      relatedEntityId: 'conflict-1',
+      privacyClassification: 'standard',
+    });
+
+    expect(decision.quality.status).toBe('needs_enrichment');
+    expect(decision.quality.safeToShowUser).toBe(false);
+    expect(decision.quality.missingFields).toContain('secretaryRecommendation');
+  });
+
   it('passes a concrete Secretary schedule conflict with recommendation, expected effect, and why details', () => {
     const decision = buildDecisionLogicV2({
       sourceSkill: 'secretary',
