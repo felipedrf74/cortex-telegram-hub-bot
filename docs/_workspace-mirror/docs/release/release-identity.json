@@ -1,17 +1,17 @@
 {
-  "generatedAt": "2026-05-12T14:45:37Z",
+  "generatedAt": "2026-05-12T22:42:37Z",
   "backend": {
     "path": "/Users/felipedominguez/Desktop/Custom Connectors/Cortex/cortex-telegram-hub-bot",
-    "branch": "feature/decision-center-logic-v2",
-    "commit": "631b087b",
+    "branch": "feature/training-intelligence-orchestration-consolidation",
+    "commit": "b35ed604",
     "dirtyState": "dirty",
-    "packageVersion": "4.14.154",
-    "migrationCount": "127"
+    "packageVersion": "4.14.156",
+    "migrationCount": "128"
   },
   "ios": {
     "path": "/Users/felipedominguez/Desktop/Nexus Hub IOS/Nexus Hub",
-    "branch": "feature/decision-center-logic-v2",
-    "commit": "460850c",
+    "branch": "feature/training-intelligence-orchestration-consolidation",
+    "commit": "d337636",
     "dirtyState": "dirty"
   }
 }
