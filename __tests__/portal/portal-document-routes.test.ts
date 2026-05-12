@@ -119,7 +119,7 @@ describe('portal document routes', () => {
         type: 'reminder',
         priority: 'time_sensitive',
         status: 'unread',
-        title: 'Finance reminder',
+        title: 'Pay $4,200 to Therapy Center',
         body: 'Raw invoice amount should not be serialized',
         safeBody: 'Finance reminder needs review.',
         deeplink: 'nexus://finance/reminder/1',
@@ -156,7 +156,7 @@ describe('portal document routes', () => {
         type: 'reminder',
         priority: 'time_sensitive',
         status: 'unread',
-        title: 'Finance reminder',
+        title: 'Finance decision',
         body: 'Finance reminder needs review.',
         deeplink: 'nexus://finance/reminder/1',
         actions: [{ id: 'mark_paid', label: 'Mark paid' }],
@@ -164,6 +164,8 @@ describe('portal document routes', () => {
         expiresAt: null,
       }],
     });
+    expect(JSON.stringify((res.json as any).mock.calls[0][0])).not.toContain('Therapy Center');
+    expect(JSON.stringify((res.json as any).mock.calls[0][0])).not.toContain('$4,200');
   });
 
   it('maps notification preference summaries for portal operators', () => {

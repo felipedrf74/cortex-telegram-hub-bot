@@ -21,6 +21,17 @@ function parseLimit(value: unknown, fallback: number): number {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
 }
 
+function safeDecisionCenterTitleForPortal(item: { sourceSkill?: string; type?: string }): string {
+  if (item.sourceSkill === 'finance') return 'Finance decision';
+  if (item.sourceSkill === 'training') return 'Training decision';
+  if (item.sourceSkill === 'content') return 'Content review';
+  if (item.sourceSkill === 'cooking') return 'Cooking decision';
+  if (item.type === 'conflict_detected' || item.type === 'reflow_suggestion') return 'Schedule decision';
+  if (item.type === 'approval_required') return 'Approval needed';
+  if (item.type === 'sync_failure') return 'Sync needs attention';
+  return 'Decision needed';
+}
+
 type PortalScopeResolution =
   | { ok: true; scope: PortalNotificationScope }
   | { ok: false; status: number; code: string; message: string };
@@ -83,7 +94,7 @@ export function registerPortalDocumentRoutes(app: Express): void {
           type: item.type,
           priority: item.priority,
           status: item.status,
-          title: item.title,
+          title: safeDecisionCenterTitleForPortal(item),
           body: item.safeBody,
           deeplink: item.deeplink,
           actions: item.actions.map((action) => ({ id: action.id, label: action.label })),

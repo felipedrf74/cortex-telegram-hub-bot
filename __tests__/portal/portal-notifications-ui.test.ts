@@ -160,7 +160,7 @@ describe('portal Notification Decision Center behavior', () => {
         type: 'reminder',
         priority: 'time_sensitive',
         status: 'unread',
-        title: 'Finance reminder',
+        title: 'Pay $2,400 to Therapy Center',
         body: 'Raw invoice amount $2,400 should not reach portal preview',
         safeBody: 'Finance reminder needs review.',
         sensitiveBody: 'Raw invoice amount $2,400 should stay behind auth detail',
@@ -200,7 +200,7 @@ describe('portal Notification Decision Center behavior', () => {
         type: 'reminder',
         priority: 'time_sensitive',
         status: 'unread',
-        title: 'Finance reminder',
+        title: 'Finance decision',
         body: 'Finance reminder needs review.',
         deeplink: 'nexus://finance/reminder/1',
         actions: [{ id: 'mark_paid', label: 'Mark paid' }],
@@ -209,6 +209,7 @@ describe('portal Notification Decision Center behavior', () => {
       }],
     });
     expect(JSON.stringify(res.json.mock.calls[0][0])).not.toContain('$2,400');
+    expect(JSON.stringify(res.json.mock.calls[0][0])).not.toContain('Therapy Center');
     expect(JSON.stringify(res.json.mock.calls[0][0])).not.toContain('sensitiveBody');
   });
 

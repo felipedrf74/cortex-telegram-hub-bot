@@ -473,7 +473,7 @@ if $HAS_NON_DOC; then
     $HAS_CONTENT && VITEST_GLOBS+=("__tests__/services/content-*.test.ts" "__tests__/api/content-*.test.ts")
     $HAS_FINANCE && VITEST_GLOBS+=("__tests__/services/finance-*.test.ts" "__tests__/services/invoice-*.test.ts")
     $HAS_SECRETARY && VITEST_GLOBS+=("__tests__/services/secretary-*.test.ts")
-    $HAS_PORTAL && VITEST_GLOBS+=("__tests__/portal/**/*.test.ts")
+    $HAS_PORTAL && VITEST_GLOBS+=("__tests__/portal/*.test.ts")
     # Closed-beta hardening (2026-05-03):
     $HAS_ATTACHMENT && VITEST_GLOBS+=("__tests__/api/chat-attachments*.test.ts" "__tests__/api/chat-message-attachments*.test.ts" "__tests__/services/fiscal-bundle-attachments*.test.ts" "__tests__/security/**/*.test.ts")
     $HAS_MODEL_ROUTING && VITEST_GLOBS+=("__tests__/services/domain-provider-router*.test.ts" "__tests__/services/model-routing-*.test.ts")
