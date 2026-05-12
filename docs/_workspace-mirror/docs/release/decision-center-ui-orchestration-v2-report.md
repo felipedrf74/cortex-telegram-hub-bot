@@ -23,7 +23,7 @@ The core Decision Center UI/DTO behavior is implemented and locally validated fo
 
 ## Workspace
 
-- Engine branch/commit: `feature/decision-center-ui-orchestration-v2` / `a2a2d6fc`
+- Engine branch/code commit: `feature/decision-center-ui-orchestration-v2` / `a2a2d6fc` plus later docs-only report commits on the same branch
 - iOS branch/commit: `feature/decision-center-ui-orchestration-v2` / `e75a17c`
 - Backup tags: `backup/decision-center-ui-v2-engine-before-20260512-165005`, `backup/decision-center-ui-v2-ios-before-20260512-165005`
 - Dirty state preserved: engine untracked smoke evidence files; iOS xcscheme drift, `build/`, and `docs/agents/`
