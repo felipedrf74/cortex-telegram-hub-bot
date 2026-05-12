@@ -5,7 +5,7 @@
 
 | Area | Path | Branch | Commit | Dirty state | Version | Migrations |
 | --- | --- | --- | --- | --- | --- | --- |
-| Backend | `/Users/felipedominguez/Desktop/Custom Connectors/Cortex/cortex-telegram-hub-bot` | `feature/decision-center-orchestration-apns` | `d46aa107` | `dirty` | `4.14.149` | `124` |
-| iOS | `/Users/felipedominguez/Desktop/Nexus Hub IOS/Nexus Hub` | `feature/decision-center-orchestration-apns` | `1b3681a` | `dirty` | n/a | n/a |
+| Backend | `/Users/felipedominguez/Desktop/Custom Connectors/Cortex/cortex-telegram-hub-bot` | `feature/codex-archive-rotation-open-items` | `12455c21` | `dirty` | `4.14.154` | `124` |
+| iOS | `/Users/felipedominguez/Desktop/Nexus Hub IOS/Nexus Hub` | `main` | `07a466d` | `dirty` | n/a | n/a |
 
-Generated at: `2026-05-11T00:18:00Z`
+Generated at: `2026-05-11T22:48:58Z`

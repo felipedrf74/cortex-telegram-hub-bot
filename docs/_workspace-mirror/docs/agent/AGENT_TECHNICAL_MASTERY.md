@@ -673,6 +673,13 @@ Each entry cites the file:line that proves the anti-pattern was real.
     `google-generativeai`** directly. Python proxies through TS at
     `/api/v1/internal/ai-complete`. Direct provider calls bypass the kill
     switch and the cost ledger.
+21. **Adding a new static import cycle.** Run
+    `engine/scripts/architecture-fitness-lint.sh` before merge. Existing
+    non-trivial cycles are fingerprinted in
+    `engine/scripts/.architecture-fitness-cycle-baseline.txt`; any new cycle
+    fails the architecture-fitness gate unless it is deliberately fixed or
+    baselined with an owner-reviewed reason. Prefer extracting shared DTOs or
+    contracts into `src/types/` over adapter-to-adapter imports.
 
 ---
 
@@ -717,6 +724,7 @@ Before opening a PR, verify:
 | Migrations | `engine/migrations/` (recent 3 files for pattern) + `engine/src/services/database.ts:144-190` |
 | Model routing | `engine/src/config.ts:164-187` + `engine/src/services/provider-fallback.ts` + `engine/src/services/domain-provider-router.ts` + `engine/src/portal/anthropic-hook.ts` |
 | Skills / sub-skills | `engine/docs/SKILL_ARCHITECTURE.md` + `engine/src/skills/skill-config.ts` + `engine/src/skills/skill-manager.ts` |
+| Engine domain services | ADR-0004 (`docs/adr/0004-engine-domain-folder-authority.md`) + the owning `engine/src/services/<domain>/` folder once it exists; keep `engine/src/skills/<domain>/` for prompts/toggles and `engine/src/domains/` dispatch-only |
 | Tools / tool dispatch | `engine/src/services/tool-executor.ts` + `engine/src/services/intelligence-bus.ts` |
 | Training / coach kernel | `engine/src/services/coach-kernel/` (start at `session-coherence.ts`) + `engine/src/services/training-coach-kernel-plan-generator.ts` |
 | Calendar / unified-calendar | `engine/src/services/unified-calendar.ts` + `engine/src/services/microsoft-todo.ts` |

@@ -182,3 +182,24 @@ Last updated: 2026-05-11
   `docs/archive/2026-05/engineering-excellence-architecture-standards/engineering-excellence-enrichment-report.md`.
   Codex validation:
   `docs/archive/2026-05/engineering-excellence-codex-validation/engineering-excellence-codex-validation.md`.
+
+## DRAFT — Pending Owner Authorization (architecture-fitness round)
+
+Local branches staged for owner-authorized push and PR creation:
+
+- `feature/codex-archive-rotation-open-items` — PENDING_PUSH
+- `feature/codex-handoff-archive` — PENDING_PUSH
+- `feature/codex-adr-0004-domain-folder-authority` — PENDING_PUSH
+- `feature/codex-dep-direction-lint` — PENDING_PUSH
+
+Prepared evidence:
+
+- PR plan:
+  `docs/archive/2026-05/ai-agent-friendly-codebase-review/pr-plan.md`
+- Pre-push verification log:
+  `docs/archive/2026-05/ai-agent-friendly-codebase-review/pre-push-verification-log.md`
+- Codex validation addendum:
+  `docs/archive/2026-05/ai-agent-friendly-codebase-review/codex-validation.md`
+
+No push, deploy, production data access, local server, simulator, database
+container, tunnel, or provider loop was performed in this preparation round.
