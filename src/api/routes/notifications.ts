@@ -49,6 +49,7 @@ import {
   type NotificationIntentInput,
   type NotificationSourceSkill,
 } from '../../services/notification-orchestrator';
+import { DecisionActionError, getDecisionItem, performDecisionAction } from '../../services/decision-center';
 
 type InboxItemKind = 'notification' | 'report' | 'email' | 'task' | 'event';
 type InboxAction = 'open_content' | 'open_report' | 'view_email' | 'open_tasks' | 'view_event';
@@ -1000,14 +1001,30 @@ export function notificationRoutes(): Router {
     const { userId } = authReq;
     if (!ensureValidNotificationsRouteScope(res, userId, 'notifications_route_center_action')) return;
     const tenantId = routeTenantId(authReq, userId);
+    const itemId = String(req.params.id || '');
+    const actionId = String(req.body?.actionId || '');
     try {
-      const result = performNotificationAction(String(req.params.id || ''), String(req.body?.actionId || ''), userId, tenantId);
+      const decision = getDecisionItem(itemId, userId, tenantId);
+      if (decision) {
+        const result = await performDecisionAction(itemId, actionId, userId, tenantId, {
+          idempotencyKey: typeof req.body?.idempotencyKey === 'string' ? req.body.idempotencyKey : undefined,
+          payload: typeof req.body?.payload === 'object' && req.body.payload ? req.body.payload : {},
+        });
+        sendSuccess(res, result);
+        return;
+      }
+
+      const result = performNotificationAction(itemId, actionId, userId, tenantId);
       sendSuccess(res, {
         actionId: result.actionId,
         idempotent: result.idempotent,
         item: formatCenterItemForApi(result.item),
       });
     } catch (err: any) {
+      if (err instanceof DecisionActionError) {
+        sendError(res, err.code, err.message, err.status, err.details);
+        return;
+      }
       logger.warn({ err, userId }, 'Notification action rejected');
       sendError(res, 'INVALID_NOTIFICATION_ACTION', 'Unable to apply notification action', 400);
     }

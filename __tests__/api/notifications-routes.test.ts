@@ -17,6 +17,8 @@ const mockGetNotificationDecisionLog = vi.fn();
 const mockMarkNotificationCenterItemRead = vi.fn();
 const mockDismissNotificationCenterItem = vi.fn();
 const mockPerformNotificationAction = vi.fn();
+const mockGetDecisionItem = vi.fn();
+const mockPerformDecisionAction = vi.fn();
 const mockIsConnected = vi.fn();
 const mockGetUnreadEmailsForUser = vi.fn();
 const mockReadOutlookEmailForUser = vi.fn();
@@ -26,6 +28,24 @@ const mockReadGmailEmailForUser = vi.fn();
 const mockGetOutlookEvents = vi.fn();
 const mockGetGoogleEvents = vi.fn();
 const mockListTasks = vi.fn();
+
+const decisionCenterMockTypes = vi.hoisted(() => {
+  class DecisionActionError extends Error {
+    code: string;
+    status: number;
+    details?: Record<string, unknown>;
+
+    constructor(code: string, message: string, status = 400, details?: Record<string, unknown>) {
+      super(message);
+      this.name = 'DecisionActionError';
+      this.code = code;
+      this.status = status;
+      this.details = details;
+    }
+  }
+
+  return { DecisionActionError };
+});
 
 vi.mock('../../src/services/content-notification-store', () => ({
   getNotifications: (...args: unknown[]) => mockGetNotifications(...args),
@@ -50,6 +70,14 @@ vi.mock('../../src/services/notification-orchestrator', () => ({
   dismissNotificationCenterItem: (...args: unknown[]) => mockDismissNotificationCenterItem(...args),
   performNotificationAction: (...args: unknown[]) => mockPerformNotificationAction(...args),
 }));
+
+vi.mock('../../src/services/decision-center', () => ({
+  DecisionActionError: decisionCenterMockTypes.DecisionActionError,
+  getDecisionItem: (...args: unknown[]) => mockGetDecisionItem(...args),
+  performDecisionAction: (...args: unknown[]) => mockPerformDecisionAction(...args),
+}));
+
+const DecisionActionError = decisionCenterMockTypes.DecisionActionError;
 
 vi.mock('../../src/services/oauth-store', () => ({
   isConnected: (...args: unknown[]) => mockIsConnected(...args),
@@ -201,6 +229,8 @@ describe('Notification inbox routes', () => {
     mockMarkNotificationCenterItemRead.mockReset();
     mockDismissNotificationCenterItem.mockReset();
     mockPerformNotificationAction.mockReset();
+    mockGetDecisionItem.mockReset();
+    mockPerformDecisionAction.mockReset();
     mockIsConnected.mockReset();
     mockGetUnreadEmailsForUser.mockReset();
     mockReadOutlookEmailForUser.mockReset();
@@ -229,6 +259,7 @@ describe('Notification inbox routes', () => {
     });
     mockRevokeNotificationDeviceToken.mockReturnValue(true);
     mockGetNotificationDecisionLog.mockReturnValue(null);
+    mockGetDecisionItem.mockReturnValue(null);
     mockIsConnected.mockReturnValue(false);
     mockGetUnreadEmailsForUser.mockResolvedValue({ count: 0, emails: [] });
     mockReadOutlookEmailForUser.mockResolvedValue(null);
@@ -386,6 +417,62 @@ describe('Notification inbox routes', () => {
     const revoke = await dispatch('DELETE', '/device-tokens/dt_test');
     expect(revoke.statusCode).toBe(200);
     expect(revoke.body.data.revoked).toBe(true);
+  });
+
+  it('forwards decision notification actions through the canonical Decision API path', async () => {
+    mockGetDecisionItem.mockReturnValue({
+      decisionId: 'nc_decision',
+      itemId: 'nc_decision',
+      status: 'unread',
+    });
+    mockPerformDecisionAction.mockResolvedValue({
+      actionId: 'approve_script',
+      status: 'succeeded',
+      idempotent: false,
+      item: { decisionId: 'nc_decision', status: 'actioned' },
+      verification: { readBackOk: true },
+    });
+
+    const action = await dispatch('POST', '/nc_decision/actions', {}, 7, {
+      actionId: 'approve_script',
+      idempotencyKey: 'tap-decision-1',
+      payload: { source: 'notification' },
+    });
+
+    expect(action.statusCode).toBe(200);
+    expect(action.body.data.status).toBe('succeeded');
+    expect(mockPerformDecisionAction).toHaveBeenCalledWith(
+      'nc_decision',
+      'approve_script',
+      7,
+      7,
+      {
+        idempotencyKey: 'tap-decision-1',
+        payload: { source: 'notification' },
+      },
+    );
+    expect(mockPerformNotificationAction).not.toHaveBeenCalled();
+  });
+
+  it('preserves Decision API error semantics on the legacy notification action route', async () => {
+    mockGetDecisionItem.mockReturnValue({
+      decisionId: 'nc_decision',
+      itemId: 'nc_decision',
+      status: 'unread',
+    });
+    mockPerformDecisionAction.mockRejectedValue(new DecisionActionError(
+      'IDEMPOTENCY_KEY_REQUIRED',
+      'Decision actions require an idempotency key',
+      400,
+    ));
+
+    const action = await dispatch('POST', '/nc_decision/actions', {}, 7, {
+      actionId: 'approve_script',
+    });
+
+    expect(action.statusCode).toBe(400);
+    expect(action.body.error.code).toBe('IDEMPOTENCY_KEY_REQUIRED');
+    expect(mockPerformNotificationAction).not.toHaveBeenCalled();
   });
 
   it('binds legacy /notifications/device-tokens registration to authenticated scope despite body injection', async () => {
