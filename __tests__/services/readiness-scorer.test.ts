@@ -412,6 +412,25 @@ describe('readiness-scorer — calculateReadiness', () => {
     expect(result.factors.bodyBattery.morningPeak).toBeGreaterThan(0);
   });
 
+  it.each([
+    ['hrvOnly', ['hrv']],
+    ['sleepOnly', ['sleep']],
+    ['rhrOnly', ['rhr']],
+    ['hrvSleep', ['hrv', 'sleep']],
+    ['hrvRhr', ['hrv', 'rhr']],
+    ['sleepRhr', ['sleep', 'rhr']],
+  ] as const)('derives Apple Health body battery from partial HealthKit data: %s', async (_caseName, types) => {
+    mockGarmin.isGarminConfigured.mockReturnValue(false);
+    seedAppleHealthData(1, [...types]);
+
+    const result = await calculateReadiness(1);
+
+    expect(result.reasoning).toContain('Apple Health');
+    expect(result.factors.bodyBattery.current).toBeGreaterThan(0);
+    expect(result.factors.bodyBattery.morningPeak).toBeGreaterThan(0);
+    expect(result.factors.bodyBattery.score).toBeGreaterThan(0);
+  });
+
   it('does not synthesize a fake 50 body battery when Garmin events are missing', async () => {
     mockGarmin.getHrvData.mockResolvedValue({ hrvSummary: { lastNightAvg: 55, weeklyAvg: 50 } });
     mockGarmin.getSleepData.mockResolvedValue({ dailySleepDTO: { sleepTimeSeconds: 28800, overallSleepScore: 80 } });
