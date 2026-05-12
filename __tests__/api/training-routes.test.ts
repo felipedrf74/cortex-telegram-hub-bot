@@ -1105,13 +1105,57 @@ describe('Training API routes', () => {
     expect(mockBuildCoachKernelTrainingPlan).not.toHaveBeenCalled();
   });
 
+  it('blocks race-specific generated plans before writes when the race date is missing', async () => {
+    mockGetProfile.mockImplementation((_userId: number, profile: string) => {
+      if (profile === 'fitness') return { experienceLevel: 'Intermediate', available_equipment: 'Full gym' };
+      if (profile === 'triathlon-running') return { target_race: 'Marathon' };
+      return null;
+    });
+    mockBuildCoachKernelTrainingPlan.mockReturnValue(makeKernelPlan([
+      {
+        weekNumber: 1,
+        focus: 'base',
+        intensityPct: 70,
+        sessions: [
+          {
+            dayOfWeek: 'Monday',
+            sessionType: 'run',
+            title: 'Base Run',
+            durationMinutes: 50,
+            description: 'Easy aerobic run.',
+            exercises: [],
+          },
+        ],
+      },
+    ]));
+
+    const res = await dispatch('POST', '/plan/generate', {}, {
+      objective: 'Lisbon Marathon',
+      preferredTime: '07:00',
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.body.ok).toBe(true);
+    expect(res.body.data.status).toBe('plan_quality_blocked');
+    expect(res.body.data.planLint.status).toBe('fail');
+    expect(res.body.data.planLint.blockers).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ ruleId: 'race_specific_plan_requires_race_date' }),
+      ]),
+    );
+    expect(mockCreatePlan).not.toHaveBeenCalled();
+    expect(mockCreateSession).not.toHaveBeenCalled();
+    expect(mockCreateEvent).not.toHaveBeenCalled();
+    expect(mockInvalidateCalendarCaches).not.toHaveBeenCalled();
+  });
+
   it('schedules same-day run and gym sessions at separate preferred times', async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     vi.setSystemTime(new Date('2026-04-12T12:00:00.000Z'));
 
     mockGetProfile.mockImplementation((_userId: number, profile: string) => {
       if (profile === 'fitness') return { experienceLevel: 'Intermediate', available_equipment: 'Full gym' };
-      if (profile === 'triathlon-running') return { target_race: 'Marathon' };
+      if (profile === 'triathlon-running') return { target_race: 'Marathon', target_race_date: '2026-10-18' };
       return null;
     });
     mockBuildCoachKernelTrainingPlan.mockReturnValue(makeKernelPlan([
@@ -1168,7 +1212,7 @@ describe('Training API routes', () => {
   it('returns profile quality and decision reasons from the generated plan payload', async () => {
     mockGetProfile.mockImplementation((_userId: number, profile: string) => {
       if (profile === 'fitness') return { experienceLevel: 'Intermediate', available_equipment: 'Full gym' };
-      if (profile === 'triathlon-running') return { target_race: 'Half marathon' };
+      if (profile === 'triathlon-running') return { target_race: 'Half marathon', target_race_date: '2026-10-18' };
       return null;
     });
     mockBuildCoachKernelTrainingPlan.mockReturnValue({
@@ -1283,7 +1327,12 @@ describe('Training API routes', () => {
         return { experienceLevel: 'Beginner (< 1 year)', available_equipment: 'Full gym', injuries: 'left knee irritation' };
       }
       if (profile === 'triathlon-running') {
-        return { recentRace: '10k', preferredRunsPerWeek: 4, injury_history: 'achilles flare-up' };
+        return {
+          recentRace: '10k',
+          preferredRunsPerWeek: 4,
+          injury_history: 'achilles flare-up',
+          target_race_date: '2026-10-18',
+        };
       }
       return null;
     });
@@ -1450,6 +1499,7 @@ describe('Training API routes', () => {
   it('falls back to the deterministic template when the coach kernel generation fails', async () => {
     mockGetProfile.mockImplementation((_userId: number, profile: string) => {
       if (profile === 'fitness') return { experienceLevel: 'Intermediate' };
+      if (profile === 'triathlon-running') return { currentMileage: 24 };
       return null;
     });
     mockBuildCoachKernelTrainingPlan.mockImplementation(() => {
@@ -1457,7 +1507,7 @@ describe('Training API routes', () => {
     });
 
     const res = await dispatch('POST', '/plan/generate', {}, {
-      objective: 'General running consistency block',
+      objective: 'General consistency block',
       preferredTime: '07:00',
       sessionsPerWeek: 5,
       strengthSessionsPerWeek: 1,

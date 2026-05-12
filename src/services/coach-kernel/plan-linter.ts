@@ -35,11 +35,11 @@
  * Caller decides whether to treat blockers as fatal (strict mode) or
  * advisor (default).
  *
- * Initial deployment is ADVISOR-ONLY: findings are logged + surfaced on
- * the API response, but a non-empty blocker list does NOT prevent plan
- * generation from succeeding. Once production telemetry shows
- * blocker-rate ≈ 0, a follow-up slice can flip the linter to strict on
- * the response path.
+ * The app-facing plan generation route now runs this as a strict,
+ * write-free preflight before cancelling or persisting a plan. The
+ * persistence layer still runs it again in advisor mode after writes so
+ * final scheduled-date evidence can be surfaced without throwing from a
+ * partially written plan.
  */
 
 export type PlanLintRuleId =

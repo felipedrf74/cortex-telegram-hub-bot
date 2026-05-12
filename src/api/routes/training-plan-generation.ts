@@ -35,7 +35,10 @@ import {
 } from './training-profile-requirements';
 import { buildDeterministicTrainingPlan } from './training-fallback-plan';
 import { fetchCurrentReadinessForPlan } from './training-read-models';
-import { persistGeneratedTrainingPlan } from './training-plan-persistence';
+import {
+  lintGeneratedTrainingPlanPreflight,
+  persistGeneratedTrainingPlan,
+} from './training-plan-persistence';
 import { cancelTrainingPlanForUser } from './training-plan-cancellation';
 import { enforceRequestedTrainingPlanVolume } from '../../services/training-plan-volume-enforcement';
 import * as trainingPlans from '../../services/training-plans';
@@ -43,6 +46,7 @@ import { findOrphanedOwnerships } from '../../services/training-plan-lifecycle';
 import { reconcileOrphanedTrainingAgendaEvents } from '../../services/training-agenda-reconciliation';
 import { logger } from '../../utils/logger';
 import type { CalendarSource } from '../../services/unified-calendar';
+import type { PlanLintResult } from '../../services/coach-kernel/plan-linter';
 
 export interface GenerateTrainingPlanForUserInput {
   userId: number;
@@ -80,6 +84,25 @@ export type TrainingPlanGenerationResult =
       eventsCreated: number;
       totalSessions: number;
       durationWeeks: number;
+    }
+  /**
+   * Strict Training quality gate. Returned before any existing plan is
+   * cancelled or any new plan/week/session rows are written.
+   */
+  | {
+      status: 'plan_quality_blocked';
+      data: {
+        status: 'plan_quality_blocked';
+        message: string;
+        planLint: PlanLintResult;
+        warnings: Array<{ code: string; message: string }>;
+        calendarFetchDegraded: boolean;
+        calendarFetchError?: string;
+        fallbackTemplateUsed: boolean;
+        goalMode: TrainingGoalMode | null;
+        trainingPriority: TrainingPriority | null;
+        raceDate: string | null;
+      };
     }
   /**
    * Slice 4.D.2 — saga abort. The pre-persist cancellation of the
@@ -404,11 +427,114 @@ export async function generateTrainingPlanForUser(
     equipmentAdaptation,
   );
 
+  // training-expert-coach-knowledge-engine (2026-05-12):
+  // Run the Training quality gate BEFORE the cancellation saga and
+  // persistence. A plan with deterministic blockers should not delete
+  // the user's current plan and should not write a new unsafe plan that
+  // iOS merely marks "requires review".
+  //
+  // Pass through the fields the linter needs for accurate rules:
+  //   • equipmentProfile — drives the equipment_compatibility rule.
+  //   • raceDate         — drives the no_fake_taper_without_event rule
+  //                        and the race_specific_plan_requires_race_date
+  //                        rule.
+  //   • isRaceSpecific   — derived from the objective; tells the linter
+  //                        whether to treat missing race date as a
+  //                        blocker.
+  // All three are best-effort: when absent, the relevant rules no-op.
+  const equipmentProfileLabel: string | undefined =
+    typeof gymProfile?.equipment_access === 'string'
+      ? String(gymProfile.equipment_access).toLowerCase().trim() || undefined
+      : typeof fitnessProfile?.available_equipment === 'string'
+        ? String(fitnessProfile.available_equipment).toLowerCase().trim() || undefined
+        : undefined;
+  const raceDateForLint: string | null =
+    normalizedRaceDate
+      ? normalizedRaceDate
+      : typeof runProfileForPlan?.target_race_date === 'string' && runProfileForPlan.target_race_date.trim()
+      ? runProfileForPlan.target_race_date
+      : null;
+  const isRaceSpecificForLint =
+    objectiveNeedsRunningProfile(objective) &&
+    /\b(marathon|half\s*marathon|10k|5k|race|ironman|70\.3|trail)\b/i.test(objective);
+
+  const persistenceInput = {
+    userId,
+    objective,
+    durationWeeks,
+    startDate: startStr,
+    endDate: endStr,
+    now,
+    planData,
+    preferencesJson: JSON.stringify({
+      preferredTime: normalizedPreferredTime,
+      preferredCardioTime: normalizedPreferredCardioTime,
+      preferredStrengthTime: normalizedPreferredStrengthTime,
+      sessionsPerWeek,
+      strengthSessionsPerWeek,
+      longWorkoutDay: longWorkoutDay || null,
+      notes: notes || null,
+      goalMode: normalizedGoalMode,
+      trainingPriority: normalizedTrainingPriority,
+      raceDate: normalizedRaceDate,
+      trainingCalendarSource: calendarSource || null,
+    }),
+    normalizedPreferredTime,
+    normalizedPreferredCardioTime,
+    normalizedPreferredStrengthTime,
+    busyWindows,
+    athleteProfiles: {
+      fitnessProfile,
+      gymProfile,
+      runProfile: runProfileForPlan,
+    },
+    calendarSource: calendarSource || undefined,
+    equipmentProfile: equipmentProfileLabel,
+    raceDate: raceDateForLint,
+    isRaceSpecific: isRaceSpecificForLint,
+  };
+
+  const preflightLint = lintGeneratedTrainingPlanPreflight(persistenceInput);
+  if (preflightLint.status === 'fail') {
+    logger.warn(
+      {
+        event: 'training_plan_quality_gate.blocked_pre_persist',
+        userId,
+        objective,
+        blockerRuleIds: preflightLint.blockers.map((b) => b.ruleId),
+        warningRuleIds: preflightLint.warnings.map((w) => w.ruleId),
+      },
+      'Training plan quality gate blocked plan before cancellation/persistence',
+    );
+    return {
+      status: 'plan_quality_blocked',
+      data: {
+        status: 'plan_quality_blocked',
+        message:
+          'Nexus blocked this plan before saving because it failed the Training quality gate. Review the coach warning, adjust the inputs, and generate again.',
+        planLint: preflightLint,
+        warnings: buildPlanWarnings({
+          calendarFetchDegraded,
+          calendarFetchError,
+          lintResult: preflightLint,
+        }),
+        calendarFetchDegraded,
+        ...(calendarFetchError ? { calendarFetchError } : {}),
+        fallbackTemplateUsed: usedFallbackTemplate,
+        goalMode: normalizedGoalMode,
+        trainingPriority: normalizedTrainingPriority,
+        raceDate: raceDateForLint,
+      },
+    };
+  }
+
   // Slice 4.D.2 — saga for pre-persist cancellation. The previous
   // silent catch produced a double-plan state when the local
   // hard-delete failed; the new saga inspects post-cancellation
   // database state and aborts the persist when the old plan rows
-  // are still present.
+  // are still present. This now runs only after the strict quality
+  // gate has passed, so a blocked candidate cannot delete the current
+  // plan.
   const cancellationOutcome = await runPrePersistCancellationSaga(userId);
 
   switch (cancellationOutcome.kind) {
@@ -448,68 +574,7 @@ export async function generateTrainingPlanForUser(
       break;
   }
 
-  // training-expert-coach-knowledge-engine (2026-05-03):
-  // The persister now runs the deterministic plan-linter in advisor
-  // mode. Pass through the fields the linter needs for accurate rules:
-  //   • equipmentProfile — drives the equipment_compatibility rule.
-  //   • raceDate         — drives the no_fake_taper_without_event rule
-  //                        and the race_specific_plan_requires_race_date
-  //                        rule.
-  //   • isRaceSpecific   — derived from the objective; tells the linter
-  //                        whether to treat missing race date as a
-  //                        blocker.
-  // All three are best-effort: when absent, the relevant rules no-op.
-  const equipmentProfileLabel: string | undefined =
-    typeof gymProfile?.equipment_access === 'string'
-      ? String(gymProfile.equipment_access).toLowerCase().trim() || undefined
-      : typeof fitnessProfile?.available_equipment === 'string'
-        ? String(fitnessProfile.available_equipment).toLowerCase().trim() || undefined
-        : undefined;
-  const raceDateForLint: string | null =
-    normalizedRaceDate
-      ? normalizedRaceDate
-      : typeof runProfileForPlan?.target_race_date === 'string' && runProfileForPlan.target_race_date.trim()
-      ? runProfileForPlan.target_race_date
-      : null;
-  const isRaceSpecificForLint =
-    objectiveNeedsRunningProfile(objective) &&
-    /\b(marathon|half\s*marathon|10k|5k|race|ironman|70\.3|trail)\b/i.test(objective);
-
-  const persistedPlan = await persistGeneratedTrainingPlan({
-    userId,
-    objective,
-    durationWeeks,
-    startDate: startStr,
-    endDate: endStr,
-    now,
-    planData,
-    preferencesJson: JSON.stringify({
-      preferredTime: normalizedPreferredTime,
-      preferredCardioTime: normalizedPreferredCardioTime,
-      preferredStrengthTime: normalizedPreferredStrengthTime,
-      sessionsPerWeek,
-      strengthSessionsPerWeek,
-      longWorkoutDay: longWorkoutDay || null,
-      notes: notes || null,
-      goalMode: normalizedGoalMode,
-      trainingPriority: normalizedTrainingPriority,
-      raceDate: normalizedRaceDate,
-      trainingCalendarSource: calendarSource || null,
-    }),
-    normalizedPreferredTime,
-    normalizedPreferredCardioTime,
-    normalizedPreferredStrengthTime,
-    busyWindows,
-    athleteProfiles: {
-      fitnessProfile,
-      gymProfile,
-      runProfile: runProfileForPlan,
-    },
-    calendarSource: calendarSource || undefined,
-    equipmentProfile: equipmentProfileLabel,
-    raceDate: raceDateForLint,
-    isRaceSpecific: isRaceSpecificForLint,
-  });
+  const persistedPlan = await persistGeneratedTrainingPlan(persistenceInput);
 
   // training-expert-coach-knowledge-engine (2026-05-03):
   // Surface plan-linter findings + calendar-degraded warning on the
@@ -526,21 +591,11 @@ export async function generateTrainingPlanForUser(
     warnings: [],
     suggestedFixes: [],
   };
-  const planWarnings: Array<{ code: string; message: string }> = [];
-  if (calendarFetchDegraded) {
-    planWarnings.push({
-      code: 'calendar_fetch_degraded',
-      message:
-        'Could not read your calendar to detect conflicts. The plan was generated ' +
-        'without conflict checks — please review the week before trusting it.',
-    });
-  }
-  for (const blocker of lintResult.blockers) {
-    planWarnings.push({ code: `lint_blocker_${blocker.ruleId}`, message: blocker.message });
-  }
-  for (const warning of lintResult.warnings) {
-    planWarnings.push({ code: `lint_warning_${warning.ruleId}`, message: warning.message });
-  }
+  const planWarnings = buildPlanWarnings({
+    calendarFetchDegraded,
+    calendarFetchError,
+    lintResult,
+  });
 
   return {
     status: 'created',
@@ -576,6 +631,29 @@ export async function generateTrainingPlanForUser(
         : `Plan created! ${persistedPlan.totalSessions} sessions scheduled across ${durationWeeks} weeks. ${persistedPlan.eventsCreated} calendar events created.`,
     },
   };
+}
+
+function buildPlanWarnings(input: {
+  calendarFetchDegraded: boolean;
+  calendarFetchError?: string;
+  lintResult: PlanLintResult;
+}): Array<{ code: string; message: string }> {
+  const planWarnings: Array<{ code: string; message: string }> = [];
+  if (input.calendarFetchDegraded) {
+    planWarnings.push({
+      code: 'calendar_fetch_degraded',
+      message:
+        'Could not read your calendar to detect conflicts. The plan was generated ' +
+        'without conflict checks — please review the week before trusting it.',
+    });
+  }
+  for (const blocker of input.lintResult.blockers) {
+    planWarnings.push({ code: `lint_blocker_${blocker.ruleId}`, message: blocker.message });
+  }
+  for (const warning of input.lintResult.warnings) {
+    planWarnings.push({ code: `lint_warning_${warning.ruleId}`, message: warning.message });
+  }
+  return planWarnings;
 }
 
 function unwrapOnboardingProfileData(profile: unknown): Record<string, any> | null {

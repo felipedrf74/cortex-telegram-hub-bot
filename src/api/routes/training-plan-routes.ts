@@ -152,6 +152,19 @@ export function registerTrainingPlanRoutes(
         return;
       }
 
+      if (result.status === 'plan_quality_blocked') {
+        logger.warn(
+          {
+            userId,
+            blockerRuleIds: result.data.planLint.blockers.map((b) => b.ruleId),
+            warningRuleIds: result.data.planLint.warnings.map((w) => w.ruleId),
+          },
+          'Training plan generation blocked by strict quality gate',
+        );
+        sendSuccess(res, result.data);
+        return;
+      }
+
       logger.info({
         userId,
         planId: result.planId,

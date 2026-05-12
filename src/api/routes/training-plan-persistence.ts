@@ -142,6 +142,27 @@ export interface PersistGeneratedTrainingPlanResult {
   lint: PlanLintResult;
 }
 
+/**
+ * Strict, write-free Training quality gate for the app-facing plan
+ * generation route. This reuses the canonical plan-linter + the same
+ * generated-plan-to-lint-week mapper as persistence, but deliberately
+ * supplies no calendar event rows because no sessions/events have been
+ * written yet. Schedule-date-only checks still run in the post-persist
+ * defense-in-depth pass; structural blockers such as missing race date,
+ * impossible equipment, and heavy-lower-before-long-run are caught before
+ * any old plan is cancelled or any new plan is persisted.
+ */
+export function lintGeneratedTrainingPlanPreflight(
+  input: PersistGeneratedTrainingPlanInput,
+): PlanLintResult {
+  return runPlanLintGuarded({
+    input,
+    weeks: input.planData.weeks ?? [],
+    calendarEvents: [],
+    mode: 'strict_preflight',
+  });
+}
+
 export async function persistGeneratedTrainingPlan(
   input: PersistGeneratedTrainingPlanInput,
 ): Promise<PersistGeneratedTrainingPlanResult> {
@@ -434,23 +455,17 @@ export async function persistGeneratedTrainingPlan(
   }
 
   // training-expert-coach-knowledge-engine (2026-05-03):
-  // Plan-level deterministic lint. Defense-in-depth pass that catches
-  // cross-week invariants no per-session check sees: past-dated active
-  // sessions, equipment-impossible exercises (a bodyweight-only user
-  // with a barbell session), 3+ consecutive leg-heavy days, heavy
-  // lower-body the day before a long run, taper labels without a race
-  // date, race-specific plans with no race date, and consecutive
-  // identical strength sessions. Initial deployment is ADVISOR mode:
-  // findings are logged + surfaced on the API response, but a non-empty
-  // blocker list does NOT prevent plan generation from succeeding. The
-  // entire pass is wrapped to ensure a linter bug never breaks plan
-  // persistence (paranoia: `lint.status === 'fail'` is far better than
-  // `persistGeneratedTrainingPlan` throwing).
+  // Plan-level deterministic lint. The app-facing generation route now
+  // runs a strict, write-free preflight before cancellation/persistence.
+  // This post-persist pass remains defense-in-depth/advisor mode so it
+  // can validate final scheduled dates and surface any residual findings
+  // without throwing after rows have already been written.
   const lint = runPlanLintGuarded({
     input,
     planId: plan.id,
     weeks: input.planData.weeks ?? [],
     calendarEvents,
+    mode: 'advisor',
   });
 
   return {
@@ -595,11 +610,13 @@ function buildPlanLintWeek(
 
 function runPlanLintGuarded(args: {
   input: PersistGeneratedTrainingPlanInput;
-  planId: number;
+  planId?: number;
   weeks: NonNullable<GeneratedTrainingPlan['weeks']>;
   calendarEvents: ReadonlyArray<{ sessionId: number; start: string; sessionIdentityKey: string }>;
+  mode?: 'advisor' | 'strict_preflight';
 }): PlanLintResult {
   try {
+    const mode = args.mode ?? 'advisor';
     const lintInput: PlanLintInput = {
       now: args.input.now,
       planId: args.planId,
@@ -610,45 +627,44 @@ function runPlanLintGuarded(args: {
       weeks: buildPlanLintWeeks(args.weeks, args.calendarEvents),
     };
     const lint = lintPlan(lintInput);
-    // TR-EC-O13 (closed-beta-auth-hardening, 2026-05-04): the
-    // backend stays in ADVISOR mode for now. The decision was made
-    // explicitly: a backend regression in lint logic must not lock
-    // users out (fail-soft); iOS instead enforces a "requiresReview"
-    // UI gate when `planLint.status === 'fail'`. To make the
-    // future flip-to-strict decision data-driven, every fail outcome
-    // emits a dedicated pino log line with a stable event surface so
-    // operators can dashboard the blocker rate.
-    //
-    // Threshold for flipping to strict (operator decision):
-    //   - lint.status === 'fail' rate < 1% over 14 days, AND
-    //   - no false-positive blockers reported by users in 7 days, AND
-    //   - iOS `planGenerationRequiresReview` gate has zero crash
-    //     reports.
+    // TR-EC-O13 follow-up (2026-05-12): the write-free app-facing route
+    // now treats blockers as strict before any side effects. Persistence
+    // still logs in advisor mode for residual schedule-date evidence.
     if (lint.status === 'fail') {
       logger.warn(
         {
-          event: 'plan_linter.blocker_present',
+          event: mode === 'strict_preflight'
+            ? 'plan_linter.preflight_blocker_present'
+            : 'plan_linter.blocker_present',
           userId: args.input.userId,
           planId: args.planId,
+          mode,
           status: lint.status,
           blockerCount: lint.blockers.length,
           blockerRuleIds: lint.blockers.map((b) => b.ruleId),
           warningCount: lint.warnings.length,
           warningRuleIds: lint.warnings.map((w) => w.ruleId),
         },
-        'plan-linter: blocker(s) present (advisor mode; iOS gates UI)',
+        mode === 'strict_preflight'
+          ? 'plan-linter: blocker(s) present before persistence; route must block writes'
+          : 'plan-linter: blocker(s) present (advisor mode; surfaced on response)',
       );
     } else if (lint.blockers.length > 0 || lint.warnings.length > 0) {
       logger.warn(
         {
-          event: 'plan_linter.findings',
+          event: mode === 'strict_preflight'
+            ? 'plan_linter.preflight_findings'
+            : 'plan_linter.findings',
           userId: args.input.userId,
           planId: args.planId,
+          mode,
           status: lint.status,
           blockerRuleIds: lint.blockers.map((b) => b.ruleId),
           warningRuleIds: lint.warnings.map((w) => w.ruleId),
         },
-        'persistGeneratedTrainingPlan: plan-linter findings (advisor mode)',
+        mode === 'strict_preflight'
+          ? 'training-plan-generation: preflight plan-linter findings'
+          : 'persistGeneratedTrainingPlan: plan-linter findings (advisor mode)',
       );
     }
     return lint;
@@ -659,8 +675,9 @@ function runPlanLintGuarded(args: {
         err,
         userId: args.input.userId,
         planId: args.planId,
+        mode: args.mode ?? 'advisor',
       },
-      'persistGeneratedTrainingPlan: plan-linter threw; defaulting to pass (advisor mode)',
+      'plan-linter threw; defaulting to pass so generation is not locked by linter failure',
     );
     return {
       status: 'pass',
