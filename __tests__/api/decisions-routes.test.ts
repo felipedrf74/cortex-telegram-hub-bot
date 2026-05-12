@@ -3,6 +3,7 @@ import type { Request } from 'express';
 
 const mockGetDecisionSummary = vi.fn();
 const mockListDecisionItems = vi.fn();
+const mockListHandledByNexusItems = vi.fn();
 const mockGetDecisionItem = vi.fn();
 const mockPerformDecisionAction = vi.fn();
 const mockCreateDecisionIntent = vi.fn();
@@ -33,6 +34,7 @@ vi.mock('../../src/services/decision-center', () => ({
   findDecisionByRelatedEntity: vi.fn(),
   getDecisionSummary: (...args: unknown[]) => mockGetDecisionSummary(...args),
   listDecisionItems: (...args: unknown[]) => mockListDecisionItems(...args),
+  listHandledByNexusItems: (...args: unknown[]) => mockListHandledByNexusItems(...args),
   listDecisionDependencies: vi.fn(),
   runDecisionSourceStateSupersessionJob: vi.fn(),
   getDecisionItem: (...args: unknown[]) => mockGetDecisionItem(...args),
@@ -150,6 +152,7 @@ describe('Decision routes', () => {
     delete process.env.INTERNAL_API_SECRET;
     mockGetDecisionSummary.mockReset();
     mockListDecisionItems.mockReset();
+    mockListHandledByNexusItems.mockReset();
     mockGetDecisionItem.mockReset();
     mockPerformDecisionAction.mockReset();
     mockCreateDecisionIntent.mockReset();
@@ -164,6 +167,7 @@ describe('Decision routes', () => {
 
     mockGetDecisionSummary.mockReturnValue({ openCount: 1, urgentCount: 0, todayCount: 1, ctaLabel: '1 Decision', previewItems: [], badgeCount: 1 });
     mockListDecisionItems.mockReturnValue([{ decisionId: 'nc_1', status: 'unread' }]);
+    mockListHandledByNexusItems.mockReturnValue([{ itemId: 'hbn_1', title: 'Handled sync', sourceSkill: 'secretary' }]);
     mockGetDecisionItem.mockReturnValue({ decisionId: 'nc_1', status: 'unread' });
     mockPerformDecisionAction.mockResolvedValue({ actionId: 'open_detail', idempotent: false, status: 'succeeded', item: { decisionId: 'nc_1', status: 'read' } });
     mockSnoozeDecision.mockReturnValue({ decisionId: 'nc_1', status: 'snoozed' });
@@ -200,6 +204,11 @@ describe('Decision routes', () => {
     const action = await dispatch(router, 'POST', '/nc_1/actions', {}, { actionId: 'open_detail', idempotencyKey: 'tap-1' });
     expect(action.statusCode).toBe(200);
     expect(mockPerformDecisionAction).toHaveBeenCalledWith('nc_1', 'open_detail', 7, 7, expect.objectContaining({ idempotencyKey: 'tap-1' }));
+
+    const handled = await dispatch(router, 'GET', '/handled', { limit: 5 });
+    expect(handled.statusCode).toBe(200);
+    expect(handled.body.data.items[0].itemId).toBe('hbn_1');
+    expect(mockListHandledByNexusItems).toHaveBeenCalledWith(7, 7, 5);
   });
 
   it('keeps public fixture creation gated in every environment unless internal secret is present', async () => {

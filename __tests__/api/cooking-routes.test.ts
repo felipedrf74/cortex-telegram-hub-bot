@@ -1032,7 +1032,7 @@ describe('Cooking API — shopping list item updates', () => {
     expect(notifications[0]).toMatchObject({
       sourceSkill: 'cooking',
       type: 'reminder',
-      safeBody: 'Cooking reminder — open Nexus to view details.',
+      safeBody: 'Cooking reminder — open Nexus to review the recommendation.',
     });
   });
 });

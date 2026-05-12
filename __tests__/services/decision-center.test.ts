@@ -136,8 +136,10 @@ describe('Decision Center facade', () => {
   });
 
   it('creates a bounded Home summary from scoped decision-worthy items only', async () => {
-    await createDecisionIntent(buildSkillDecisionFixtureIntent('secretary', 1, {
-      dedupeKey: 'secretary:decision',
+    await createDecisionIntent(buildSkillDecisionFixtureIntent('training', 1, {
+      relatedEntityId: 'triathlon-running',
+      relatedEntityType: 'training_profile',
+      dedupeKey: 'training:race-date-decision',
     }));
     await createDecisionIntent(buildSkillNotificationFixtureIntent('cooking', 1, {
       type: 'reminder',
@@ -148,14 +150,34 @@ describe('Decision Center facade', () => {
 
     const items = listDecisionItems(1, 1);
     expect(items).toHaveLength(1);
-    expect(items[0].sourceSkill).toBe('secretary');
+    expect(items[0].sourceSkill).toBe('training');
+    expect(items[0].problemStatement).toContain('race date');
+    expect(items[0].quality.status).toBe('pass');
 
     const summary = getDecisionSummary(1, 1);
     expect(summary.openCount).toBe(1);
-    expect(summary.urgentCount).toBe(1);
-    expect(summary.ctaLabel).toBe('Urgent Decision');
+    expect(summary.urgentCount).toBe(0);
+    expect(summary.ctaLabel).toBe('1 Decision');
     expect(summary.previewItems).toHaveLength(1);
     expect(summary.previewItems[0].safePreviewBody).not.toContain('Calendar details');
+  });
+
+  it('does not create user-facing items for generic screenshot-style decisions', async () => {
+    const created = await createDecisionIntent(buildSkillNotificationFixtureIntent('secretary', 80, {
+      title: 'Secretary',
+      body: 'Secretary needs your attention — open Nexus to view details.',
+      safeBody: 'Secretary needs your attention — open Nexus to view details.',
+      relatedEntityId: null,
+      relatedEntityType: null,
+      actionButtons: [{ id: 'open_detail', label: 'Review', style: 'primary' }],
+      requiresUserAction: true,
+      dedupeKey: 'secretary:generic-screenshot',
+    } as any));
+
+    expect(created.item).toBeNull();
+    expect(created.eligibility.reasons.join(' ')).toContain('quality_gate');
+    expect(listDecisionItems(80, 80)).toHaveLength(0);
+    expect(getDecisionSummary(80, 80).ctaLabel).toBe('All Clear');
   });
 
   it('executes content approval actions through Content and read-back verifies state', async () => {
@@ -179,6 +201,7 @@ describe('Decision Center facade', () => {
     expect(result.status).toBe('succeeded');
     expect(result.verification.readBackOk).toBe(true);
     expect(result.item.status).toBe('actioned');
+    expect(result.item.outcomeSummary).toContain('content workflow');
     expect(result.verification.actualEffect.contentApprovalState).toBe('approved');
 
     const duplicate = await performDecisionAction(created.item!.decisionId, 'approve_script', 2, 2, {
@@ -240,12 +263,8 @@ describe('Decision Center facade', () => {
       actionButtons: [{ id: 'accept_reflow', label: 'Reflow', style: 'primary' }],
     }));
 
+    expect(created.item).toBeNull();
     expect(listDecisionItems(3, 3)).toHaveLength(0);
-    expect(getDecisionItem(created.item!.decisionId, 3, 3)?.status).toBe('superseded');
-    await expect(performDecisionAction(created.item!.decisionId, 'accept_reflow', 3, 3, {
-      idempotencyKey: 'unsupported-tap',
-    }))
-      .rejects.toMatchObject({ code: 'DECISION_SUPERSEDED' });
   });
 
   it('executes Secretary agenda reflow actions against persisted Secretary agenda state', async () => {
@@ -411,7 +430,15 @@ describe('Decision Center facade', () => {
 
   it('isolates two users inside the same tenant for list, detail, and action access', async () => {
     await createDecisionIntent(buildSkillDecisionFixtureIntent('training', 10, { tenantId: 77, dedupeKey: 'u10:a' }));
-    await createDecisionIntent(buildSkillDecisionFixtureIntent('secretary', 10, { tenantId: 77, dedupeKey: 'u10:b' }));
+    await createDecisionIntent(buildSkillNotificationFixtureIntent('chat', 10, {
+      tenantId: 77,
+      type: 'decision_required',
+      requiresUserAction: true,
+      relatedEntityId: 'chat-confirmation-u10',
+      relatedEntityType: 'chat_confirmation',
+      actionButtons: [{ id: 'open_detail', label: 'Open', style: 'primary' }],
+      dedupeKey: 'u10:b',
+    }));
     const userB = await createDecisionIntent(buildSkillDecisionFixtureIntent('training', 11, { tenantId: 77, dedupeKey: 'u11:a' }));
 
     const userAItems = listDecisionItems(10, 77);
@@ -504,6 +531,16 @@ describe('Decision Center facade', () => {
       WHERE decision_id = ? AND idempotency_key = 'mismatch-tap'
     `).get(created.item!.decisionId) as { status: string; error_code: string };
     expect(execution).toMatchObject({ status: 'failed', error_code: 'DECISION_READBACK_MISMATCH' });
+    const ledger = testDb.prepare(`
+      SELECT failed_reason, action_succeeded, partial_failure
+      FROM decision_outcome_ledger
+      WHERE decision_id = ?
+    `).get(created.item!.decisionId) as { failed_reason: string; action_succeeded: number; partial_failure: number };
+    expect(ledger).toMatchObject({
+      failed_reason: 'DECISION_READBACK_MISMATCH',
+      action_succeeded: 0,
+      partial_failure: 1,
+    });
   });
 
   it('requires client-supplied idempotency keys for decision actions', async () => {
@@ -555,6 +592,16 @@ describe('Decision Center facade', () => {
     expect(result.supersededCount).toBe(1);
     expect(result.reasons.content_approval_resolved_elsewhere).toBe(1);
     expect(getDecisionItem(created.item!.decisionId, 61, 61)?.status).toBe('superseded');
+    const handled = testDb.prepare(`
+      SELECT title, action_taken, privacy_classification
+      FROM handled_by_nexus_items
+      WHERE decision_id = ?
+    `).get(created.item!.decisionId) as { title: string; action_taken: string; privacy_classification: string };
+    expect(handled).toMatchObject({
+      title: 'Content review',
+      action_taken: 'auto_dismiss_stale_decision',
+      privacy_classification: 'private_content',
+    });
   });
 
   it('supersedes Secretary conflict decisions when the agenda item is resolved elsewhere', async () => {

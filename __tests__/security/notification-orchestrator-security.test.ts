@@ -203,19 +203,19 @@ describe('notification orchestrator security behavior', () => {
       {
         sourceSkill: 'secretary' as const,
         body: 'Meeting with John Doe about Acme acquisition.',
-        expectedSafeBody: 'Secretary needs your attention — open Nexus to view details.',
+        expectedSafeBody: 'Schedule decision — open Nexus to review the recommendation.',
         leaked: 'John Doe',
       },
       {
         sourceSkill: 'security' as const,
         body: 'New login from 192.0.2.5 near Lisbon.',
-        expectedSafeBody: 'Account activity — open Nexus to view details.',
+        expectedSafeBody: 'Account activity — open Nexus to review the recommendation.',
         leaked: '192.0.2.5',
       },
       {
         sourceSkill: 'chat' as const,
         body: 'Private chat answer includes tomorrow’s legal call.',
-        expectedSafeBody: 'Nexus needs your attention — open Nexus to view details.',
+        expectedSafeBody: 'Nexus needs your choice — open Nexus to review the recommendation.',
         leaked: 'legal call',
       },
       {

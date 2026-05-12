@@ -90,19 +90,30 @@ describe('Secretary Notification Orchestrator', () => {
     expect(result.decisionLog.decision).toBe('blocked_user_preferences');
   });
 
-  it('creates an intent, center item, decision log, and mock delivery attempt', async () => {
+  it('creates a concrete decision intent, center item, decision log, and mock delivery attempt', async () => {
     pushTokens = ['sandbox-token'];
-    const result = await createNotificationIntent(buildSkillNotificationFixtureIntent('secretary', 1));
+    const result = await createNotificationIntent(buildSkillNotificationFixtureIntent('content', 1));
 
-    expect(result.intent.sourceSkill).toBe('secretary');
+    expect(result.intent.sourceSkill).toBe('content');
     expect(result.item?.status).toBe('unread');
     expect(result.decisionLog.decision).toBe('sent_push');
     expect(result.deliveryAttempts[0].status).toBe('mock_sent');
-    expect(result.pushPayload?.body).toBe('Secretary needs your attention — open Nexus to view details.');
+    expect(result.pushPayload?.body).toBe('Content item is ready for review.');
 
     const items = listNotificationCenterItems(1, 1);
     expect(items).toHaveLength(1);
     expect(items[0].userId).toBe(1);
+  });
+
+  it('blocks generic decision-shaped notifications from visible push', async () => {
+    pushTokens = ['sandbox-token'];
+    const result = await createNotificationIntent(buildSkillNotificationFixtureIntent('secretary', 1));
+
+    expect(result.item?.status).toBe('unread');
+    expect(result.decisionLog.decision).toBe('in_app_only');
+    expect(result.decisionLog.reason).toContain('decision quality gate blocked visible push');
+    expect(result.deliveryAttempts).toHaveLength(0);
+    expect(result.pushPayload?.body).toBe('Schedule decision — open Nexus to review the recommendation.');
   });
 
   it('handles missing device tokens without failing the durable notification', async () => {
@@ -163,11 +174,11 @@ describe('Secretary Notification Orchestrator', () => {
       privacyPolicy: 'public',
     }));
 
-    expect(secretary.pushPayload?.body).toBe('Secretary needs your attention — open Nexus to view details.');
+    expect(secretary.pushPayload?.body).toBe('Schedule decision — open Nexus to review the recommendation.');
     expect(secretary.pushPayload?.body).not.toContain('John Doe');
-    expect(security.pushPayload?.body).toBe('Account activity — open Nexus to view details.');
+    expect(security.pushPayload?.body).toBe('Account activity — open Nexus to review the recommendation.');
     expect(security.pushPayload?.body).not.toContain('192.0.2.5');
-    expect(chat.pushPayload?.body).toBe('Nexus needs your attention — open Nexus to view details.');
+    expect(chat.pushPayload?.body).toBe('Nexus needs your choice — open Nexus to review the recommendation.');
     expect(chat.pushPayload?.body).not.toContain('legal call');
     expect(financePublic.pushPayload?.body).toBe('Finance reminder needs review.');
     expect(financePublic.pushPayload?.body).not.toContain('Bank balance');
@@ -182,7 +193,7 @@ describe('Secretary Notification Orchestrator', () => {
     }));
 
     const item = listNotificationCenterItems(32, 32)[0];
-    expect(result.item?.safeBody).toBe('Secretary needs your attention — open Nexus to view details.');
+    expect(result.item?.safeBody).toBe('Schedule decision — open Nexus to review the recommendation.');
     expect(item.safeBody).not.toContain('John Doe');
     expect(item.sensitiveBody).toBe('Meeting with John Doe about Acme acquisition at 16:00.');
   });
@@ -350,9 +361,10 @@ describe('Secretary Notification Orchestrator', () => {
       allowCritical: false,
     });
 
-    const soon = await createNotificationIntent(buildSkillNotificationFixtureIntent('secretary', 6, {
+    const soon = await createNotificationIntent(buildSkillNotificationFixtureIntent('content', 6, {
+      priority: 'time_sensitive',
       decisionDeadline: new Date(Date.now() + 60 * 60_000).toISOString(),
-      dedupeKey: 'secretary:soon',
+      dedupeKey: 'content:soon',
     }));
     const critical = await createNotificationIntent(buildSkillNotificationFixtureIntent('security', 6, {
       priority: 'critical',
@@ -422,7 +434,14 @@ describe('Secretary Notification Orchestrator', () => {
     pushTokens = ['sandbox-token'];
     mockSendPushNotification.mockResolvedValue({ sent: 1, failed: 0, skipped: 0, retriable: 0, unregistered: [] });
 
-    const decision = await createNotificationIntent(buildSkillNotificationFixtureIntent('secretary', 72, {
+    const decision = await createNotificationIntent(buildSkillNotificationFixtureIntent('training', 72, {
+      type: 'decision_required',
+      priority: 'time_sensitive',
+      title: 'Training plan needs race date',
+      body: 'Add a race date before the next plan update.',
+      relatedEntityId: 'triathlon-running',
+      relatedEntityType: 'training_profile',
+      requiresUserAction: true,
       dedupeKey: 'decision-collapse-badge',
     }));
 

@@ -51,6 +51,17 @@ import {
 } from './chat-pending-confirmations';
 import { isValidTenantUserId, recordTenantScopeAnomaly } from './tenant-scope-observability';
 import { logger } from '../utils/logger';
+import {
+  adviseSecretaryDecision,
+  buildDecisionLogicV2,
+  rankDecision,
+  type AutomationEligibility,
+  type DecisionLogicContext,
+  type DecisionLogicV2,
+  type DecisionQualityGateResult,
+  type DecisionWhatWillChange,
+  type DecisionWhy,
+} from './decision-center-logic-v2';
 
 export type DecisionClassification = 'decision' | 'notification' | 'task' | 'insight' | 'ignore';
 export type DecisionUrgency = 'urgent' | 'today' | 'this_week' | 'optional';
@@ -94,6 +105,29 @@ export interface DecisionApiItem {
   alternativeActions: NotificationActionButton[];
   whySummary: string;
   whyDetails: Array<{ label: string; value: string }>;
+  problemStatement: string;
+  recommendation: string;
+  expectedEffect: string;
+  impactIfIgnored: string;
+  primaryActionLabel: string;
+  secondaryActionLabels: string[];
+  urgencyReason: string;
+  why: DecisionWhy;
+  actionPreview: DecisionWhatWillChange[];
+  whatWillChange: DecisionWhatWillChange[];
+  automationEligibility: AutomationEligibility;
+  autopilotPolicy: string;
+  readBackVerifier: string | null;
+  handledByNexus: boolean;
+  handledAt: string | null;
+  outcomeSummary: string | null;
+  failureReason: string | null;
+  retryActions: NotificationActionButton[];
+  notificationEligibility: string;
+  apnsInterruptionLevel: 'passive' | 'active' | 'time-sensitive';
+  collapseKey: string | null;
+  badgeContribution: boolean;
+  quality: DecisionQualityGateResult;
   relatedEntities: Array<{ type: string; id: string }>;
   deadlineAt: string | null;
   expiresAt: string | null;
@@ -134,6 +168,22 @@ export interface DecisionActionResult {
     actualEffect: Record<string, unknown>;
     message: string;
   };
+}
+
+export interface HandledByNexusItem {
+  itemId: string;
+  userId: number;
+  tenantId: number;
+  sourceSkill: NotificationSourceSkill;
+  title: string;
+  summary: string;
+  actionTaken: string;
+  whyBrief: string;
+  relatedEntities: Array<{ type: string; id: string }>;
+  rollbackAvailable: boolean;
+  changedRuleOption: string | null;
+  createdAt: string;
+  privacyClassification: NotificationPrivacyPolicy;
 }
 
 interface DecisionRecord extends NotificationCenterItem {
@@ -221,6 +271,52 @@ export function ensureDecisionCenterTables(): void {
       ON decision_dependencies(user_id, tenant_id, decision_id, relationship);
     CREATE INDEX IF NOT EXISTS idx_decision_dependencies_blocker
       ON decision_dependencies(user_id, tenant_id, depends_on_decision_id, relationship);
+    CREATE TABLE IF NOT EXISTS handled_by_nexus_items (
+      handled_item_id TEXT PRIMARY KEY,
+      decision_id TEXT,
+      user_id INTEGER NOT NULL,
+      tenant_id INTEGER NOT NULL,
+      source_skill TEXT NOT NULL,
+      title TEXT NOT NULL,
+      summary TEXT NOT NULL,
+      action_taken TEXT NOT NULL,
+      why_brief TEXT NOT NULL,
+      related_entities_json TEXT NOT NULL DEFAULT '[]',
+      rollback_available INTEGER NOT NULL DEFAULT 0,
+      changed_rule_option TEXT,
+      privacy_classification TEXT NOT NULL DEFAULT 'standard',
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_handled_by_nexus_scope_created
+      ON handled_by_nexus_items(user_id, tenant_id, created_at DESC);
+    CREATE TABLE IF NOT EXISTS decision_outcome_ledger (
+      outcome_id TEXT PRIMARY KEY,
+      decision_id TEXT NOT NULL,
+      user_id INTEGER NOT NULL,
+      tenant_id INTEGER NOT NULL,
+      source_skill TEXT NOT NULL,
+      type TEXT NOT NULL,
+      priority_score INTEGER NOT NULL DEFAULT 0,
+      confidence REAL NOT NULL DEFAULT 0,
+      automation_eligibility TEXT NOT NULL DEFAULT 'never',
+      action_shown TEXT,
+      action_taken TEXT,
+      accepted INTEGER NOT NULL DEFAULT 0,
+      dismissed INTEGER NOT NULL DEFAULT 0,
+      snoozed INTEGER NOT NULL DEFAULT 0,
+      ignored INTEGER NOT NULL DEFAULT 0,
+      asked_nexus INTEGER NOT NULL DEFAULT 0,
+      manually_corrected INTEGER NOT NULL DEFAULT 0,
+      undo_used INTEGER NOT NULL DEFAULT 0,
+      time_to_action_ms INTEGER,
+      action_succeeded INTEGER NOT NULL DEFAULT 0,
+      partial_failure INTEGER NOT NULL DEFAULT 0,
+      failed_reason TEXT,
+      feature_snapshot_json TEXT NOT NULL DEFAULT '{}',
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_decision_outcome_scope_created
+      ON decision_outcome_ledger(user_id, tenant_id, created_at DESC);
   `);
 }
 
@@ -265,6 +361,18 @@ export async function createDecisionIntent(input: NotificationIntentInput): Prom
   });
   if (eligibility.classification !== 'decision') {
     return { item: null, eligibility };
+  }
+
+  const quality = decisionLogicForIntentInput(input).quality;
+  if (!quality.safeToShowUser) {
+    return {
+      item: null,
+      eligibility: {
+        ...eligibility,
+        reasons: [...eligibility.reasons, `quality_gate:${quality.status}:${quality.missingFields.join(',')}`],
+        apnsEligible: false,
+      },
+    };
   }
 
   const result = await createNotificationIntent({
@@ -347,6 +455,7 @@ export function listDecisionItems(
     .map(mapDecisionRecord)
     .filter((item) => isDecisionRecord(item))
     .filter((item) => !supersedeIfSourceStateStale(item))
+    .filter((item) => decisionLogicForRecord(item).quality.safeToShowUser)
     .filter((item) => !isSnoozedUntilFuture(item))
     .filter((item) => !opts.urgency || urgencyForPriority(item.priority, item.decisionDeadline, item.expiresAt) === opts.urgency)
     .map(formatDecisionItemForApi);
@@ -410,6 +519,20 @@ export function getDecisionSummary(userId: number, tenantId = userId, limit = 3)
 
 export function countOpenUrgentDecisionsForUser(userId: number, tenantId = userId): number {
   return getDecisionSummary(userId, tenantId).badgeCount;
+}
+
+export function listHandledByNexusItems(userId: number, tenantId = userId, limit = 25): HandledByNexusItem[] {
+  assertScope(userId, tenantId, 'list_handled_by_nexus_items', { limit });
+  ensureDecisionCenterTables();
+  const rows = getDb().prepare(`
+    SELECT *
+      FROM handled_by_nexus_items
+     WHERE user_id = ?
+       AND tenant_id = ?
+     ORDER BY created_at DESC
+     LIMIT ?
+  `).all(userId, tenantId, Math.min(Math.max(limit, 1), 100)) as any[];
+  return rows.map(mapHandledByNexusItem);
 }
 
 export function addDecisionDependency(input: {
@@ -579,6 +702,13 @@ export async function performDecisionAction(
     markExecutionSucceeded(claimed.execution.action_execution_id, execution.expectedEffect, execution.actualEffect);
     const updated = getDecisionItem(decisionId, userId, tenantId);
     if (!updated) throw new DecisionActionError('DECISION_NOT_FOUND', 'Decision missing after action execution', 500);
+    recordDecisionOutcome(record, {
+      actionShown: action.id,
+      actionTaken: actionId,
+      accepted: action.style === 'primary',
+      actionSucceeded: true,
+      timeToActionMs: timeToActionMs(record),
+    });
     return {
       actionId,
       status: 'succeeded',
@@ -597,6 +727,14 @@ export async function performDecisionAction(
       : new DecisionActionError('DECISION_ACTION_FAILED', 'Decision action failed verification', 500);
     markExecutionFailed(claimed.execution.action_execution_id, error.code, error.details);
     markDecisionFailed(record, actionId, error.code);
+    recordDecisionOutcome(record, {
+      actionShown: actionId,
+      actionTaken: actionId,
+      actionSucceeded: false,
+      failedReason: error.code,
+      partialFailure: error.code === 'DECISION_READBACK_MISMATCH',
+      timeToActionMs: timeToActionMs(record),
+    });
     throw error;
   }
 }
@@ -612,6 +750,16 @@ export function snoozeDecision(decisionId: string, userId: number, tenantId = us
   `).run(until, decisionId, userId, tenantId);
   const item = getDecisionItem(decisionId, userId, tenantId);
   if (!item) throw new DecisionActionError('DECISION_NOT_FOUND', 'Decision not found after snooze', 404);
+  const record = getDecisionRecord(decisionId, userId, tenantId);
+  if (record) {
+    recordDecisionOutcome(record, {
+      actionShown: 'snooze',
+      actionTaken: 'snooze',
+      snoozed: true,
+      actionSucceeded: true,
+      timeToActionMs: timeToActionMs(record),
+    });
+  }
   return item;
 }
 
@@ -620,6 +768,16 @@ export function dismissDecision(decisionId: string, userId: number, tenantId = u
   if (!item) throw new DecisionActionError('DECISION_NOT_FOUND', 'Decision not found', 404);
   const decision = getDecisionItem(decisionId, userId, tenantId);
   if (!decision) throw new DecisionActionError('DECISION_NOT_FOUND', 'Decision not found after dismiss', 404);
+  const record = getDecisionRecord(decisionId, userId, tenantId);
+  if (record) {
+    recordDecisionOutcome(record, {
+      actionShown: 'dismiss',
+      actionTaken: 'dismiss',
+      dismissed: true,
+      actionSucceeded: true,
+      timeToActionMs: timeToActionMs(record),
+    });
+  }
   return decision;
 }
 
@@ -708,6 +866,9 @@ function isVisiblePushEligible(priority: NotificationPriority, type: Notificatio
 }
 
 function priorityScoreFor(item: DecisionRecord): number {
+  const logic = decisionLogicForRecord(item);
+  const ranked = rankDecision(decisionLogicInputForRecord(item), logic, logic.quality);
+  if (ranked.priorityScore > 0) return ranked.priorityScore;
   const urgencyScore = item.priority === 'critical' ? 100 : item.priority === 'time_sensitive' ? 90 : item.priority === 'active' ? 70 : 35;
   const deadline = item.decisionDeadline ?? item.expiresAt;
   const deadlineBoost = deadline && Date.parse(deadline) - Date.now() <= 24 * 3_600_000 ? 10 : 0;
@@ -715,11 +876,13 @@ function priorityScoreFor(item: DecisionRecord): number {
 }
 
 function formatDecisionItemForApi(item: DecisionRecord): DecisionApiItem {
-  const safeTitle = safeTitleForItem(item);
+  const logic = decisionLogicForRecord(item);
+  const safeTitle = logic.safePreviewTitle || safeTitleForItem(item);
   const actions = actionsForRecord(item);
   const dependencies = dependencyStateForRecord(item);
   const action = recommendedAction(actions);
   const urgency = urgencyForPriority(item.priority, item.decisionDeadline, item.expiresAt);
+  const outcome = outcomeSummaryForRecord(item, logic);
   return {
     decisionId: item.itemId,
     itemId: item.itemId,
@@ -733,21 +896,44 @@ function formatDecisionItemForApi(item: DecisionRecord): DecisionApiItem {
     status: item.status,
     urgency,
     priorityScore: priorityScoreFor(item),
-    title: item.title,
-    summary: item.safeBody,
+    title: logic.title,
+    summary: logic.problemStatement,
     safePreviewTitle: safeTitle,
-    safePreviewBody: item.safeBody,
-    recommendedActionLabel: action?.label ?? null,
+    safePreviewBody: logic.safePreviewBody || item.safeBody,
+    recommendedActionLabel: logic.primaryActionLabel || (action?.label ?? null),
     recommendedAction: action,
     alternativeActions: actions.filter((candidate) => candidate.id !== action?.id),
-    whySummary: whySummaryForItem(item),
-    whyDetails: whyDetailsForItem(item),
+    whySummary: logic.whySummary,
+    whyDetails: whyDetailsForItem(item, logic),
+    problemStatement: logic.problemStatement,
+    recommendation: logic.recommendation,
+    expectedEffect: logic.expectedEffect,
+    impactIfIgnored: logic.impactIfIgnored,
+    primaryActionLabel: logic.primaryActionLabel,
+    secondaryActionLabels: logic.secondaryActionLabels,
+    urgencyReason: logic.urgencyReason,
+    why: logic.why,
+    actionPreview: logic.whatWillChange,
+    whatWillChange: logic.whatWillChange,
+    automationEligibility: logic.automationEligibility,
+    autopilotPolicy: logic.autopilotPolicy,
+    readBackVerifier: logic.readBackVerifier,
+    handledByNexus: false,
+    handledAt: null,
+    outcomeSummary: outcome.outcomeSummary,
+    failureReason: outcome.failureReason,
+    retryActions: outcome.retryActions,
+    notificationEligibility: logic.notificationEligibility,
+    apnsInterruptionLevel: logic.apnsInterruptionLevel,
+    collapseKey: logic.collapseKey,
+    badgeContribution: logic.badgeContribution,
+    quality: logic.quality,
     relatedEntities: item.relatedEntityId && item.relatedEntityType
       ? [{ type: item.relatedEntityType, id: item.relatedEntityId }]
       : [],
     deadlineAt: item.decisionDeadline,
     expiresAt: item.expiresAt,
-    confidence: confidenceForItem(item),
+    confidence: logic.confidence,
     riskLevel: riskLevelForItem(item),
     privacyClassification: item.privacyPolicy,
     visibilityScope: visibilityScopeForItem(item),
@@ -770,30 +956,19 @@ function safeTitleForItem(item: DecisionRecord): string {
   return item.title;
 }
 
-function whySummaryForItem(item: DecisionRecord): string {
-  switch (item.type) {
-    case 'conflict_detected':
-      return 'Nexus found a schedule or capacity conflict that needs your choice.';
-    case 'approval_required':
-      return 'This item is paused until you approve or request a change.';
-    case 'reflow_suggestion':
-      return 'Secretary found a safer way to fit the work into your schedule.';
-    case 'sync_failure':
-      return 'A provider sync could not complete and needs a retry or review.';
-    case 'security_account':
-      return 'Account activity requires timely review.';
-    case 'decision_required':
-      return 'Nexus needs your judgment before it can continue.';
-    default:
-      return 'This item needs a decision before Nexus acts.';
-  }
-}
-
-function whyDetailsForItem(item: DecisionRecord): Array<{ label: string; value: string }> {
+function whyDetailsForItem(item: DecisionRecord, logic: DecisionLogicV2): Array<{ label: string; value: string }> {
   const details = [
     { label: 'Source', value: sourceLabel(item.sourceSkill) },
-    { label: 'Rule', value: 'Decision Center only shows items that require user judgment or approval.' },
+    { label: 'Recommendation', value: logic.recommendation },
+    { label: 'Expected effect', value: logic.expectedEffect },
+    { label: 'Rule', value: logic.why.rules[0] ?? 'Decision Center only shows items that require user judgment or approval.' },
   ];
+  for (const fact of logic.why.facts.slice(0, 3)) {
+    details.push({ label: 'Fact', value: fact });
+  }
+  for (const tradeoff of logic.why.tradeoffs.slice(0, 2)) {
+    details.push({ label: 'Tradeoff', value: tradeoff });
+  }
   if (item.decisionDeadline) {
     details.push({ label: 'Deadline', value: item.decisionDeadline });
   }
@@ -801,6 +976,149 @@ function whyDetailsForItem(item: DecisionRecord): Array<{ label: string; value: 
     details.push({ label: 'Privacy', value: 'Home and notifications use a safe preview; details require authenticated access.' });
   }
   return details;
+}
+
+function decisionLogicForIntentInput(input: NotificationIntentInput): DecisionLogicV2 {
+  return buildDecisionLogicV2({
+    sourceSkill: input.sourceSkill,
+    type: input.type,
+    priority: input.priority,
+    title: input.title,
+    body: input.body,
+    safeBody: input.body,
+    actions: input.actionButtons ?? [],
+    relatedEntityType: input.relatedEntityType ?? null,
+    relatedEntityId: input.relatedEntityId == null ? null : String(input.relatedEntityId),
+    deadlineAt: input.decisionDeadline ?? null,
+    expiresAt: input.expiresAt ?? null,
+    privacyClassification: input.privacyPolicy ?? privacyPolicyForSource(input.sourceSkill),
+    visibilityScope: 'user_private',
+    context: decisionContextForIntentInput(input),
+  });
+}
+
+function decisionLogicForRecord(record: DecisionRecord): DecisionLogicV2 {
+  return buildDecisionLogicV2(decisionLogicInputForRecord(record));
+}
+
+function decisionLogicInputForRecord(record: DecisionRecord): Parameters<typeof buildDecisionLogicV2>[0] {
+  return {
+    sourceSkill: record.sourceSkill,
+    type: record.type,
+    priority: record.priority,
+    title: record.title,
+    body: record.body,
+    safeBody: record.safeBody,
+    actions: actionsForRecord(record),
+    relatedEntityType: record.relatedEntityType,
+    relatedEntityId: record.relatedEntityId,
+    deadlineAt: record.decisionDeadline,
+    expiresAt: record.expiresAt,
+    privacyClassification: record.privacyPolicy,
+    visibilityScope: visibilityScopeForItem(record),
+    context: decisionContextForRecord(record),
+  };
+}
+
+function decisionContextForIntentInput(input: NotificationIntentInput): DecisionLogicContext {
+  const relatedEntityType = input.relatedEntityType ?? null;
+  if (input.sourceSkill === 'secretary' && relatedEntityType === 'secretary_agenda_item' && input.relatedEntityId != null) {
+    const tenantId = input.tenantId ?? input.userId;
+    const agenda = getSecretaryAgendaItemById({
+      agendaItemId: String(input.relatedEntityId),
+      ownerUserId: input.userId,
+      tenantId,
+    });
+    if (agenda) return secretaryAgendaDecisionContext(agenda);
+  }
+  if (input.sourceSkill === 'training' && /race date/i.test(`${input.title} ${input.body}`)) {
+    return { explicitNoRelatedEntityReason: 'training profile is the affected entity' };
+  }
+  return {};
+}
+
+function decisionContextForRecord(record: DecisionRecord): DecisionLogicContext {
+  if (record.sourceSkill === 'secretary' && record.relatedEntityType === 'secretary_agenda_item' && record.relatedEntityId) {
+    const agenda = getSecretaryAgendaItemById({
+      agendaItemId: record.relatedEntityId,
+      ownerUserId: record.userId,
+      tenantId: record.tenantId,
+    });
+    if (agenda) return secretaryAgendaDecisionContext(agenda);
+    return { explicitNoRelatedEntityReason: 'secretary agenda item is missing' };
+  }
+  if (record.sourceSkill === 'content') {
+    const contentObjectId = contentWorkflowObjectIdForDecision(record);
+    if (contentObjectId) {
+      const object = getContentWorkflowObject(record.userId, contentObjectId, record.tenantId);
+      if (object) return { entityTitle: object.title, sourceState: object.approvalState };
+    }
+  }
+  if (record.sourceSkill === 'training' && /race date/i.test(`${record.title} ${record.body} ${record.dedupeKey ?? ''}`)) {
+    return { explicitNoRelatedEntityReason: 'training profile is the affected entity' };
+  }
+  if (record.type === 'sync_failure') {
+    return { providerName: sourceLabel(record.sourceSkill), explicitNoRelatedEntityReason: 'sync failure is scoped to provider state' };
+  }
+  return {};
+}
+
+function secretaryAgendaDecisionContext(agenda: SecretaryAgendaItem): DecisionLogicContext {
+  const advice = adviseSecretaryDecision({
+    title: agenda.title,
+    currentStartAt: agenda.startAt,
+    currentEndAt: agenda.endAt,
+    availableSlots: agenda.startAt && agenda.endAt ? [{ startAt: agenda.startAt, endAt: agenda.endAt, label: 'Proposed slot' }] : [],
+    reasonCodes: agenda.decisionReasonCodes,
+  });
+  const recommended = advice.alternatives[0] ?? null;
+  return {
+    entityTitle: agenda.title,
+    currentStartAt: agenda.startAt,
+    currentEndAt: agenda.endAt,
+    recommendedStartAt: recommended?.startAt ?? agenda.startAt,
+    recommendedEndAt: recommended?.endAt ?? agenda.endAt,
+    sourceState: agenda.lifecycleState,
+  };
+}
+
+function outcomeSummaryForRecord(record: DecisionRecord, logic: DecisionLogicV2): {
+  outcomeSummary: string | null;
+  failureReason: string | null;
+  retryActions: NotificationActionButton[];
+} {
+  if (!record.actionResult) return { outcomeSummary: null, failureReason: null, retryActions: [] };
+  const actionId = typeof record.actionResult.actionId === 'string' ? record.actionResult.actionId : null;
+  const errorCode = typeof record.actionResult.errorCode === 'string' ? record.actionResult.errorCode : null;
+  if (record.status === 'failed' || errorCode) {
+    return {
+      outcomeSummary: 'Action failed. You can retry.',
+      failureReason: errorCode ?? 'Decision action failed.',
+      retryActions: actionsForRecord(record).filter((action) => action.style === 'primary' || action.id !== 'open_detail'),
+    };
+  }
+  if (record.status === 'actioned') {
+    if (record.sourceSkill === 'secretary') {
+      const startAt = typeof record.actionResult.startAt === 'string' ? record.actionResult.startAt : null;
+      const endAt = typeof record.actionResult.endAt === 'string' ? record.actionResult.endAt : null;
+      const window = startAt && endAt ? `${startAt} to ${endAt}` : 'the proposed window';
+      return { outcomeSummary: `Done — Secretary applied ${window} and verified the agenda item.`, failureReason: null, retryActions: [] };
+    }
+    if (record.sourceSkill === 'content') {
+      const state = typeof record.actionResult.approvalState === 'string' ? record.actionResult.approvalState : 'updated';
+      return { outcomeSummary: `Done — content workflow is ${state}.`, failureReason: null, retryActions: [] };
+    }
+    return { outcomeSummary: `Done — ${logic.expectedEffect}`, failureReason: null, retryActions: [] };
+  }
+  return { outcomeSummary: null, failureReason: null, retryActions: [] };
+}
+
+function privacyPolicyForSource(sourceSkill: NotificationSourceSkill): NotificationPrivacyPolicy {
+  if (sourceSkill === 'finance') return 'financial';
+  if (sourceSkill === 'training') return 'health';
+  if (sourceSkill === 'content') return 'private_content';
+  if (sourceSkill === 'security') return 'sensitive';
+  return 'standard';
 }
 
 function sourceLabel(source: NotificationSourceSkill): string {
@@ -1675,6 +1993,147 @@ function supersedeDecision(record: DecisionRecord, reason: string): void {
        WHERE decision_log_id = ?
     `).run(record.decisionLogId);
   }
+  recordHandledByNexus(record, {
+    actionTaken: 'auto_dismiss_stale_decision',
+    summary: 'Nexus hid an outdated decision after the source state changed.',
+    whyBrief: reason,
+    rollbackAvailable: false,
+  });
+  recordDecisionOutcome(record, {
+    actionShown: 'auto_dismiss_stale_decision',
+    actionTaken: 'superseded',
+    actionSucceeded: true,
+    timeToActionMs: timeToActionMs(record),
+  });
+}
+
+function recordHandledByNexus(record: DecisionRecord, input: {
+  actionTaken: string;
+  summary: string;
+  whyBrief: string;
+  rollbackAvailable: boolean;
+  changedRuleOption?: string | null;
+}): void {
+  ensureDecisionCenterTables();
+  const logic = decisionLogicForRecord(record);
+  getDb().prepare(`
+    INSERT INTO handled_by_nexus_items (
+      handled_item_id, decision_id, user_id, tenant_id, source_skill, title, summary,
+      action_taken, why_brief, related_entities_json, rollback_available, changed_rule_option,
+      privacy_classification
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    `hbn_${randomUUID()}`,
+    record.itemId,
+    record.userId,
+    record.tenantId,
+    record.sourceSkill,
+    logic.safePreviewTitle,
+    input.summary,
+    input.actionTaken,
+    input.whyBrief,
+    JSON.stringify(record.relatedEntityId && record.relatedEntityType ? [{ type: record.relatedEntityType, id: record.relatedEntityId }] : []),
+    input.rollbackAvailable ? 1 : 0,
+    input.changedRuleOption ?? null,
+    record.privacyPolicy,
+  );
+}
+
+function recordDecisionOutcome(record: DecisionRecord, input: {
+  actionShown?: string | null;
+  actionTaken?: string | null;
+  accepted?: boolean;
+  dismissed?: boolean;
+  snoozed?: boolean;
+  ignored?: boolean;
+  askedNexus?: boolean;
+  manuallyCorrected?: boolean;
+  undoUsed?: boolean;
+  timeToActionMs?: number | null;
+  actionSucceeded?: boolean;
+  partialFailure?: boolean;
+  failedReason?: string | null;
+}): void {
+  ensureDecisionCenterTables();
+  const logic = decisionLogicForRecord(record);
+  const featureSnapshot = {
+    urgency: urgencyForPriority(record.priority, record.decisionDeadline, record.expiresAt),
+    deadlineDistance: deadlineDistanceBucket(record.decisionDeadline ?? record.expiresAt),
+    riskLevel: logic.riskIfIgnored,
+    confidence: logic.confidence,
+    sourceSkill: record.sourceSkill,
+    decisionType: record.type,
+    privacyClassification: record.privacyPolicy,
+    relatedEntitiesCount: record.relatedEntityId ? 1 : 0,
+    optional: record.priority === 'passive',
+    qualityScore: logic.quality.qualityScore,
+  };
+  getDb().prepare(`
+    INSERT INTO decision_outcome_ledger (
+      outcome_id, decision_id, user_id, tenant_id, source_skill, type, priority_score,
+      confidence, automation_eligibility, action_shown, action_taken, accepted, dismissed,
+      snoozed, ignored, asked_nexus, manually_corrected, undo_used, time_to_action_ms,
+      action_succeeded, partial_failure, failed_reason, feature_snapshot_json
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    `dol_${randomUUID()}`,
+    record.itemId,
+    record.userId,
+    record.tenantId,
+    record.sourceSkill,
+    record.type,
+    priorityScoreFor(record),
+    logic.confidence,
+    logic.automationEligibility,
+    input.actionShown ?? null,
+    input.actionTaken ?? null,
+    input.accepted ? 1 : 0,
+    input.dismissed ? 1 : 0,
+    input.snoozed ? 1 : 0,
+    input.ignored ? 1 : 0,
+    input.askedNexus ? 1 : 0,
+    input.manuallyCorrected ? 1 : 0,
+    input.undoUsed ? 1 : 0,
+    input.timeToActionMs ?? null,
+    input.actionSucceeded ? 1 : 0,
+    input.partialFailure ? 1 : 0,
+    input.failedReason ?? null,
+    JSON.stringify(featureSnapshot),
+  );
+}
+
+function mapHandledByNexusItem(row: any): HandledByNexusItem {
+  return {
+    itemId: row.handled_item_id,
+    userId: row.user_id,
+    tenantId: row.tenant_id,
+    sourceSkill: row.source_skill,
+    title: row.title,
+    summary: row.summary,
+    actionTaken: row.action_taken,
+    whyBrief: row.why_brief,
+    relatedEntities: safeParseJson(row.related_entities_json, []),
+    rollbackAvailable: !!row.rollback_available,
+    changedRuleOption: row.changed_rule_option,
+    createdAt: row.created_at,
+    privacyClassification: row.privacy_classification,
+  };
+}
+
+function timeToActionMs(record: DecisionRecord): number | null {
+  const createdMs = Date.parse(record.createdAt);
+  if (!Number.isFinite(createdMs)) return null;
+  return Math.max(0, Date.now() - createdMs);
+}
+
+function deadlineDistanceBucket(deadline: string | null): string {
+  if (!deadline) return 'none';
+  const delta = Date.parse(deadline) - Date.now();
+  if (!Number.isFinite(delta)) return 'unknown';
+  if (delta <= 3_600_000) return 'within_1h';
+  if (delta <= 24 * 3_600_000) return 'within_24h';
+  if (delta <= 7 * 24 * 3_600_000) return 'within_week';
+  return 'later';
 }
 
 function trainingRaceDatePresent(userId: number): boolean {

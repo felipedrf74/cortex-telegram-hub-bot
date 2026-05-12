@@ -13,6 +13,7 @@ import {
   getDecisionItem,
   getDecisionPreferences,
   getDecisionSummary,
+  listHandledByNexusItems,
   listDecisionItems,
   markDecisionViewed,
   performDecisionAction,
@@ -143,6 +144,16 @@ export function decisionRoutes(): Router {
     } catch (err) {
       decisionError(res, err, 'INVALID_DECISION_PREFERENCES');
     }
+  }));
+
+  router.get('/handled', asyncHandler(async (req, res: Response) => {
+    const authReq = req as unknown as AuthenticatedRequest;
+    const { userId } = authReq;
+    if (!ensureValidTenantRouteScope(res, userId, 'decisions_route_handled')) return;
+    const tenantId = routeTenantId(authReq, userId);
+    const limit = parseInt(String(req.query.limit || '25'), 10);
+    const items = listHandledByNexusItems(userId, tenantId, limit);
+    sendSuccess(res, { count: items.length, items });
   }));
 
   router.get('/:id', asyncHandler(async (req, res: Response) => {

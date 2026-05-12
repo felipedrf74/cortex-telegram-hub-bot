@@ -19,6 +19,7 @@ import { isValidTenantUserId, recordTenantScopeAnomaly } from './tenant-scope-ob
 import { emitDomainEvent, runOutboxTransaction } from './event-outbox';
 import { enqueueJob } from './background-job-queue';
 import { consumeResourceBudget } from './resource-budgets';
+import { buildDecisionLogicV2 } from './decision-center-logic-v2';
 
 export type NotificationSourceSkill =
   | 'secretary'
@@ -686,23 +687,29 @@ export async function evaluateNotificationIntent(
   } else if (intent.deliveryPolicy === 'in_app_only' || !profile.pushEnabled) {
     decision = 'in_app_only';
     reason = intent.deliveryPolicy === 'in_app_only' ? 'delivery policy is in-app only' : 'push disabled by user preference';
-  } else if (!consumePushRateLimit(intent, effectivePriority)) {
-    decision = 'in_app_only';
-    reason = 'push rate limit reached for notification source; stored in-app only';
   } else {
-    const attempt = await attemptPushDelivery(intent, item.itemId, pushPayload, profile);
-    deliveryAttempts.push(attempt);
-    decision = attempt.status === 'blocked_missing_device_token'
-      ? 'blocked_missing_device_token'
-      : 'sent_push';
-    reason = attempt.status === 'mock_sent'
-      ? 'mock push provider accepted privacy-safe payload'
-      : attempt.status === 'sent'
-        ? 'APNs accepted privacy-safe payload'
-        : attempt.status === 'blocked_missing_credentials'
-          ? 'APNs credentials missing; durable in-app item created'
-          : 'no active device token; durable in-app item created';
-    sentAt = attempt.sentAt;
+    const decisionQuality = decisionPushQuality(intent, pushPayload);
+    if (decisionQuality && !decisionQuality.safeForAPNs) {
+      decision = 'in_app_only';
+      reason = `decision quality gate blocked visible push: ${decisionQuality.reason}`;
+    } else if (!consumePushRateLimit(intent, effectivePriority)) {
+      decision = 'in_app_only';
+      reason = 'push rate limit reached for notification source; stored in-app only';
+    } else {
+      const attempt = await attemptPushDelivery(intent, item.itemId, pushPayload, profile);
+      deliveryAttempts.push(attempt);
+      decision = attempt.status === 'blocked_missing_device_token'
+        ? 'blocked_missing_device_token'
+        : 'sent_push';
+      reason = attempt.status === 'mock_sent'
+        ? 'mock push provider accepted privacy-safe payload'
+        : attempt.status === 'sent'
+          ? 'APNs accepted privacy-safe payload'
+          : attempt.status === 'blocked_missing_credentials'
+            ? 'APNs credentials missing; durable in-app item created'
+            : 'no active device token; durable in-app item created';
+      sentAt = attempt.sentAt;
+    }
   }
 
   const log = persistDecisionLog({
@@ -1620,6 +1627,33 @@ function quietHoursDecision(
   return { delayed: false, scheduledFor: null, reason: 'no quiet hours delay' };
 }
 
+function decisionPushQuality(
+  intent: NotificationIntentRecord,
+  payload: { title: string; body: string },
+): ReturnType<typeof buildDecisionLogicV2>['quality'] | null {
+  if (!isDecisionIntentForPush(intent)) return null;
+  return buildDecisionLogicV2({
+    sourceSkill: intent.sourceSkill,
+    type: intent.type,
+    priority: intent.priority,
+    title: intent.title,
+    body: intent.body,
+    safeBody: payload.body,
+    actions: intent.actionButtons,
+    relatedEntityType: intent.relatedEntityType,
+    relatedEntityId: intent.relatedEntityId,
+    deadlineAt: intent.decisionDeadline,
+    expiresAt: intent.expiresAt,
+    privacyClassification: intent.privacyPolicy,
+    context: {
+      deadlineAt: intent.decisionDeadline ?? intent.expiresAt ?? null,
+      explicitNoRelatedEntityReason: intent.type === 'sync_failure'
+        ? 'sync failure can be scoped to provider state rather than one entity'
+        : null,
+    },
+  }).quality;
+}
+
 function buildPrivacySafeBody(intent: NotificationIntentRecord): string {
   if (intent.privacyPolicy === 'financial' || intent.sourceSkill === 'finance') {
     return 'Finance reminder needs review.';
@@ -1631,22 +1665,22 @@ function buildPrivacySafeBody(intent: NotificationIntentRecord): string {
     return 'Content item is ready for review.';
   }
   if (intent.privacyPolicy === 'sensitive') {
-    return `${safeNotificationTitle(intent)} — open Nexus to view details.`;
+    return `${safeNotificationTitle(intent)} — open Nexus to review the recommendation.`;
   }
   if (intent.privacyPolicy === 'public' && intent.sourceSkill === 'system') {
     return truncate(intent.body, 150);
   }
-  return `${safeNotificationTitle(intent)} — open Nexus to view details.`;
+  return `${safeNotificationTitle(intent)} — open Nexus to review the recommendation.`;
 }
 
 function safeNotificationTitle(intent: NotificationIntentRecord): string {
   switch (intent.sourceSkill) {
-    case 'secretary': return 'Secretary needs your attention';
+    case 'secretary': return intent.type === 'conflict_detected' || intent.type === 'reflow_suggestion' ? 'Schedule decision' : 'Secretary decision';
     case 'training': return 'Training update';
     case 'content': return 'Content review';
     case 'cooking': return 'Cooking reminder';
     case 'finance': return 'Finance reminder';
-    case 'chat': return 'Nexus needs your attention';
+    case 'chat': return 'Nexus needs your choice';
     case 'system': return 'System notification';
     case 'security': return 'Account activity';
     default: return truncate(intent.title, 60);
