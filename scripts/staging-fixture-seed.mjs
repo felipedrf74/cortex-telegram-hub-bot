@@ -63,7 +63,7 @@ export function runRemoteNode(script, {
 
 export function buildRemoteSeedScript({ userId, deviceId, tier = 'max', seedAppleHealth = false, calendarEventCount = 0 }) {
   const normalizedCalendarEventCount = normalizeFixtureCalendarEventCount(calendarEventCount);
-  return String.raw`
+  return `
 const Database = require('better-sqlite3');
 const db = new Database(process.env.DATABASE_PATH || process.env.DB_PATH || './data/bot.db');
 const { signIosJwt } = require('./dist/services/ios-jwt');
