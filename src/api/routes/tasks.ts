@@ -7,6 +7,7 @@ import { config } from '../../config';
 import { getCached, setCache, getCachedSWR, setCacheSWR, userCacheKey } from '../../services/cache-store';
 import { sendSuccess, sendError, sendInternalError } from '../response-helpers';
 import * as microsoftTodo from '../../services/microsoft-todo';
+import { getGraphClient } from '../../services/microsoft-auth';
 import { getTaskProviderForUser, resolveTaskProvider } from '../../services/task-store/task-router';
 import { resolveTaskCreationList, TaskListResolutionError } from '../../services/task-store/task-list-resolution';
 import { getOwnerBootstrapUser, getUserTimezoneById } from '../../services/user-service';
@@ -724,8 +725,7 @@ export function taskRoutes(): Router {
       //
       // TASK-M7: expanded to copy checklist items (previously lost on move)
       // and improved error handling so a partial success doesn't confuse the UI.
-      const { getGraphClient } = require('../../services/microsoft-auth');
-      const client = getGraphClient(req);
+      const client = getGraphClient();
 
       // Step 1: Read original task + checklist items in parallel
       const [original, checklistRes] = await Promise.all([
@@ -757,8 +757,23 @@ export function taskRoutes(): Router {
         );
       }
 
-      // Step 4: Delete from source list
-      await client.api(`/me/todo/lists/${listId}/tasks/${taskId}`).delete();
+      // Step 4: Delete from source list. If this half fails, roll back the
+      // copied task so Microsoft To Do does not retain both old and new rows.
+      try {
+        await client.api(`/me/todo/lists/${listId}/tasks/${taskId}`).delete();
+      } catch (deleteErr) {
+        if (newTask?.id) {
+          try {
+            await client.api(`/me/todo/lists/${targetListId}/tasks/${newTask.id}`).delete();
+          } catch (rollbackErr) {
+            logger.error(
+              { err: rollbackErr, listId, taskId, targetListId, newTaskId: newTask.id },
+              'Task move rollback failed after source delete failure',
+            );
+          }
+        }
+        throw deleteErr;
+      }
 
       invalidateTaskRouteCaches(listId, (req as any).userId);
       invalidateTaskRouteCaches(targetListId, (req as any).userId);

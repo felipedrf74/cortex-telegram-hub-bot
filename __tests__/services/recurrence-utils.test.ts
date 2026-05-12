@@ -3,6 +3,7 @@ import {
   expandRecurringTaskOccurrencesForRange,
   normalizeMicrosoftRecurrence,
   recurrenceToGoogleRRule,
+  realignMicrosoftRecurrenceForDueDate,
 } from '../../src/services/recurrence-utils';
 
 describe('recurrence-utils', () => {
@@ -83,5 +84,37 @@ describe('recurrence-utils', () => {
     expect(occurrences).toHaveLength(1);
     expect(occurrences[0].dueDate).toBe('2026-03-29T00:00:00.000Z');
     expect(occurrences[0].recurrenceInstanceDate).toBe('2026-03-29');
+  });
+
+  it('realigns single-day weekly recurrence when a recurring task is moved to another date', () => {
+    const recurrence = realignMicrosoftRecurrenceForDueDate(
+      {
+        pattern: { type: 'weekly', interval: 1, daysOfWeek: ['monday'] },
+        range: { type: 'noEnd', startDate: '2026-05-04' },
+      },
+      '2026-05-12T09:00:00.000Z',
+      'UTC',
+    );
+
+    expect(recurrence).toEqual({
+      pattern: { type: 'weekly', interval: 1, daysOfWeek: ['tuesday'] },
+      range: { type: 'noEnd', startDate: '2026-05-12' },
+    });
+  });
+
+  it('does not collapse multi-day weekly recurrence when only the due date changes', () => {
+    const recurrence = realignMicrosoftRecurrenceForDueDate(
+      {
+        pattern: { type: 'weekly', interval: 1, daysOfWeek: ['monday', 'wednesday'] },
+        range: { type: 'noEnd', startDate: '2026-05-04' },
+      },
+      '2026-05-12T09:00:00.000Z',
+      'UTC',
+    );
+
+    expect(recurrence).toEqual({
+      pattern: { type: 'weekly', interval: 1, daysOfWeek: ['monday', 'wednesday'] },
+      range: { type: 'noEnd', startDate: '2026-05-12' },
+    });
   });
 });

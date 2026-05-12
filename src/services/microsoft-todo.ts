@@ -3,7 +3,11 @@
 import { getGraphClient, isMicrosoftConfigured } from './microsoft-auth';
 import { config } from '../config';
 import { logger } from '../utils/logger';
-import { expandRecurringTaskOccurrencesForRange, type NormalizedRecurrence } from './recurrence-utils';
+import {
+  expandRecurringTaskOccurrencesForRange,
+  realignMicrosoftRecurrenceForDueDate,
+  type NormalizedRecurrence,
+} from './recurrence-utils';
 
 // ─── Types ──────────────────────────────────────────────────────────
 
@@ -37,6 +41,7 @@ export interface TodoTask {
   createdDateTime: string;
   completedDateTime?: string;
   checklistItems?: ChecklistItem[];
+  recurrence?: NormalizedRecurrence;
 }
 
 export interface ChecklistItem {
@@ -125,6 +130,7 @@ function parseTask(task: any, listId: string, listName: string): TodoTask {
     isReminderOn: task.isReminderOn || false,
     createdDateTime: task.createdDateTime || '',
     completedDateTime: normalizeMsGraphDateTime(task.completedDateTime),
+    recurrence: task.recurrence,
     // TASK-M8: include checklist items from the $expand=checklistItems response
     checklistItems: Array.isArray(task.checklistItems)
       ? task.checklistItems.map((ci: any) => ({
@@ -536,6 +542,12 @@ export async function updateTask(
       patch.dueDateTime = data.dueDateTime
         ? { dateTime: data.dueDateTime, timeZone: tz }
         : null;
+      if (data.dueDateTime) {
+        const alignedRecurrence = await recurrenceForMovedDueDate(client, listId, taskId, data.dueDateTime, tz);
+        if (alignedRecurrence) {
+          patch.recurrence = alignedRecurrence;
+        }
+      }
     }
 
     if (data.reminderDateTime !== undefined) {
@@ -559,6 +571,27 @@ export async function updateTask(
   } catch (err) {
     logger.error({ err, listId, taskId }, 'Failed to update To Do task');
     return { success: false, data: null as any, error: (err as Error).message };
+  }
+}
+
+async function recurrenceForMovedDueDate(
+  client: ReturnType<typeof getGraphClient>,
+  listId: string,
+  taskId: string,
+  dueDateTime: string,
+  timezone: string,
+): Promise<NormalizedRecurrence | undefined> {
+  try {
+    const current = await withRetry(() =>
+      client.api(`/me/todo/lists/${listId}/tasks/${taskId}`).get()
+    );
+    return realignMicrosoftRecurrenceForDueDate(current?.recurrence, dueDateTime, timezone);
+  } catch (err) {
+    logger.warn(
+      { err, listId, taskId },
+      'Could not inspect task recurrence before due date update; continuing without recurrence realignment',
+    );
+    return undefined;
   }
 }
 
@@ -840,16 +873,27 @@ export async function moveTask(
       client.api(`/me/todo/lists/${toListId}/tasks`).post(newTaskBody)
     );
 
-    // 3. Delete from old list — if this fails, log the duplicate but still return success
+    // 3. Delete from old list. If this half fails, roll back the copy so the
+    // provider does not retain duplicate active tasks.
     try {
       await withRetry(() =>
         client.api(`/me/todo/lists/${fromListId}/tasks/${taskId}`).delete()
       );
     } catch (deleteErr) {
-      logger.error(
-        { err: deleteErr, fromListId, taskId, newTaskId: created.id, toListId },
-        'moveTask: created in new list but failed to delete from old — duplicate exists',
-      );
+      if (created?.id) {
+        try {
+          await withRetry(() =>
+            client.api(`/me/todo/lists/${toListId}/tasks/${created.id}`).delete()
+          );
+        } catch (rollbackErr) {
+          logger.error(
+            { err: rollbackErr, fromListId, taskId, newTaskId: created.id, toListId },
+            'moveTask: rollback failed after source delete failure',
+          );
+        }
+      }
+      logger.error({ err: deleteErr, fromListId, taskId, newTaskId: created.id, toListId }, 'moveTask failed while deleting source task');
+      return { success: false, data: null as any, error: (deleteErr as Error).message };
     }
 
     return { success: true, data: parseTask(created, toListId, toListName) };

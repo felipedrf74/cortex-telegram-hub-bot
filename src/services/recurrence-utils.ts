@@ -42,6 +42,10 @@ const WEEKDAY_TO_LUXON: Record<string, number> = {
   sunday: 7,
 };
 
+const LUXON_TO_WEEKDAY: Record<number, string> = Object.fromEntries(
+  Object.entries(WEEKDAY_TO_LUXON).map(([name, weekday]) => [weekday, name]),
+);
+
 export function normalizeMicrosoftRecurrence(
   value: unknown,
   startDate: Date | string,
@@ -113,6 +117,41 @@ export function recurrenceToGoogleRRule(recurrence?: NormalizedRecurrence): stri
   }
 
   return `RRULE:${parts.join(';')}`;
+}
+
+export function realignMicrosoftRecurrenceForDueDate(
+  recurrence: unknown,
+  dueDateTime: string,
+  timezone = 'UTC',
+): NormalizedRecurrence | undefined {
+  if (!recurrence || typeof recurrence !== 'object' || !dueDateTime) return undefined;
+
+  const normalized = normalizeMicrosoftRecurrence(recurrence, dueDateTime);
+  if (!normalized) return undefined;
+
+  const dueLocal = parseTaskDue(dueDateTime, timezone);
+  if (!dueLocal.isValid) return undefined;
+
+  const aligned: NormalizedRecurrence = {
+    pattern: { ...normalized.pattern },
+    range: {
+      ...normalized.range,
+      startDate: dueLocal.toISODate() || normalized.range.startDate,
+    },
+  };
+
+  if (aligned.pattern.type === 'weekly') {
+    const days = aligned.pattern.daysOfWeek || [];
+    // Nexus-created weekly tasks recur on a single weekday. If the user moves
+    // that recurring task, realign the weekday as well as the range anchor so
+    // the old date no longer projects as a second task.
+    if (days.length <= 1) {
+      const weekday = LUXON_TO_WEEKDAY[dueLocal.weekday];
+      if (weekday) aligned.pattern.daysOfWeek = [weekday];
+    }
+  }
+
+  return aligned;
 }
 
 export function expandRecurringTaskOccurrencesForRange<T extends Record<string, any>>(

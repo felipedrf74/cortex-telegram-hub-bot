@@ -14,6 +14,7 @@ const mockClearCache = vi.fn();
 const mockClearCacheByPrefix = vi.fn();
 const mockLoggerError = vi.fn();
 const mockGetUserTimezone = vi.fn(() => 'Europe/Lisbon');
+const mockGetGraphClient = vi.fn();
 
 function expectCachePrefixesCleared(...prefixes: string[]) {
   const cleared = mockClearCacheByPrefix.mock.calls.flatMap(([prefix]) => (
@@ -56,6 +57,10 @@ vi.mock('../../src/services/cache-store', () => ({
   getCachedSWR: (...args: unknown[]) => mockGetCachedSWR(...args),
   setCacheSWR: (...args: unknown[]) => mockSetCacheSWR(...args),
   userCacheKey: (userId: number, key: string) => `u:${userId}:${key}`,
+}));
+
+vi.mock('../../src/services/microsoft-auth', () => ({
+  getGraphClient: (...args: unknown[]) => mockGetGraphClient(...args),
 }));
 
 vi.mock('../../src/services/user-service', () => ({
@@ -180,6 +185,7 @@ describe('Task routes sync provider metadata', () => {
     mockClearCache.mockReturnValue(undefined);
     mockClearCacheByPrefix.mockReturnValue(undefined);
     mockGetUserTimezone.mockReturnValue('Europe/Lisbon');
+    mockGetGraphClient.mockReturnValue(createTaskMoveGraphClient());
     providerApi.getLists.mockResolvedValue({
       success: true,
       data: [
@@ -719,6 +725,25 @@ describe('Task routes sync provider metadata', () => {
     expect(res.body.data.task.status).toBe('completed');
   });
 
+  it('rolls back copied task when Microsoft list move cannot delete the source task', async () => {
+    const calls: Array<{ method: string; path: string; body?: any }> = [];
+    mockGetGraphClient.mockReturnValue(createTaskMoveGraphClient({ calls, failSourceDelete: true }));
+
+    const res = await dispatch('POST', '/list-1/task-1/move', {
+      params: { listId: 'list-1', taskId: 'task-1' },
+      body: { targetListId: 'list-2' },
+    });
+
+    expect(res.statusCode).toBe(500);
+    expect(calls).toEqual([
+      expect.objectContaining({ method: 'GET', path: '/me/todo/lists/list-1/tasks/task-1' }),
+      expect.objectContaining({ method: 'GET', path: '/me/todo/lists/list-1/tasks/task-1/checklistItems' }),
+      expect.objectContaining({ method: 'POST', path: '/me/todo/lists/list-2/tasks' }),
+      expect.objectContaining({ method: 'DELETE', path: '/me/todo/lists/list-1/tasks/task-1' }),
+      expect.objectContaining({ method: 'DELETE', path: '/me/todo/lists/list-2/tasks/moved-task' }),
+    ]);
+  });
+
   it('coalesces concurrent complete requests for the same task', async () => {
     let releaseComplete: (() => void) | undefined;
     providerApi.completeTask.mockImplementationOnce(() => new Promise((resolve) => {
@@ -945,3 +970,46 @@ describe('Task routes sync provider metadata', () => {
     });
   });
 });
+
+function createTaskMoveGraphClient(options: {
+  calls?: Array<{ method: string; path: string; body?: any }>;
+  failSourceDelete?: boolean;
+} = {}) {
+  const calls = options.calls;
+  return {
+    api: (path: string) => {
+      const chain: any = {
+        get: async () => {
+          calls?.push({ method: 'GET', path });
+          if (path.endsWith('/checklistItems')) return { value: [] };
+          return {
+            id: 'task-1',
+            title: 'Inbox cleanup',
+            body: { content: 'Sort notes', contentType: 'text' },
+            importance: 'normal',
+            status: 'notStarted',
+            dueDateTime: { dateTime: '2026-05-11T09:00:00.0000000', timeZone: 'UTC' },
+          };
+        },
+        post: async (body: any) => {
+          calls?.push({ method: 'POST', path, body });
+          return {
+            id: 'moved-task',
+            title: body.title,
+            importance: body.importance,
+            status: body.status,
+            dueDateTime: body.dueDateTime,
+          };
+        },
+        delete: async () => {
+          calls?.push({ method: 'DELETE', path });
+          if (options.failSourceDelete && path === '/me/todo/lists/list-1/tasks/task-1') {
+            throw new Error('source delete failed');
+          }
+          return {};
+        },
+      };
+      return chain;
+    },
+  };
+}
