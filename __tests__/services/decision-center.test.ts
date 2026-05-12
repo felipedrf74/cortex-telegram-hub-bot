@@ -194,6 +194,58 @@ describe('Decision Center facade', () => {
     expect(summary.previewItems[0].safePreviewBody).not.toContain('Calendar details');
   });
 
+  it('localizes Home Decision Center CTA labels from the user locale', async () => {
+    ensureUserFixtureTable();
+    testDb.prepare(`
+      INSERT INTO users (id, telegram_id, first_name, language, timezone, status)
+      VALUES (84, 8400, 'Portuguese Owner', 'pt-BR', 'Europe/Lisbon', 'active')
+    `).run();
+
+    expect(getDecisionSummary(84, 84).ctaLabel).toBe('Tudo certo');
+
+    await createDecisionIntent(buildSkillDecisionFixtureIntent('training', 84, {
+      relatedEntityId: 'profile-pt',
+      relatedEntityType: 'training_profile',
+      dedupeKey: 'training:pt-summary',
+    }));
+    expect(getDecisionSummary(84, 84).ctaLabel).toBe('1 decisão');
+
+    await createDecisionIntent(buildSkillDecisionFixtureIntent('training', 84, {
+      priority: 'time_sensitive',
+      relatedEntityId: 'profile-pt-urgent',
+      relatedEntityType: 'training_profile',
+      dedupeKey: 'training:pt-summary-urgent',
+    }));
+    expect(getDecisionSummary(84, 84).ctaLabel).toBe('Decisão urgente');
+  });
+
+  it('localizes the Home CTA for non-urgent schedule conflicts', async () => {
+    ensureUserFixtureTable();
+    testDb.prepare(`
+      INSERT INTO users (id, telegram_id, first_name, language, timezone, status)
+      VALUES (85, 8500, 'Lisbon Owner', 'pt-PT', 'Europe/Lisbon', 'active')
+    `).run();
+
+    await createDecisionIntent(buildSkillDecisionFixtureIntent('secretary', 85, {
+      priority: 'active',
+      title: 'Schedule conflict',
+      body: 'Focus block overlaps with a fixed meeting.',
+      relatedEntityId: 'conflict-85',
+      relatedEntityType: 'calendar_conflict',
+      actionButtons: [{ id: 'open_detail', label: 'Open details', style: 'primary' }],
+      dedupeKey: 'secretary:pt-summary-conflict',
+      decisionContext: {
+        entityTitle: 'Bloco de foco',
+        currentStartAt: '2026-05-10T13:00:00.000Z',
+        currentEndAt: '2026-05-10T14:00:00.000Z',
+        recommendedStartAt: '2026-05-10T15:00:00.000Z',
+        recommendedEndAt: '2026-05-10T16:00:00.000Z',
+      },
+    }));
+
+    expect(getDecisionSummary(85, 85).ctaLabel).toBe('Conflito de agenda');
+  });
+
   it('does not create user-facing items for generic screenshot-style decisions', async () => {
     const created = await createDecisionIntent(buildSkillNotificationFixtureIntent('secretary', 80, {
       title: 'Secretary',

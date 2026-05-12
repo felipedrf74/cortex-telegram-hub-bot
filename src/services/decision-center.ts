@@ -521,6 +521,7 @@ export function getDecisionSummary(userId: number, tenantId = userId, limit = 3)
   const urgentCount = openItems.filter((item) => item.urgency === 'urgent').length;
   const todayCount = openItems.filter((item) => item.urgency === 'urgent' || item.urgency === 'today').length;
   const top = openItems[0] ?? null;
+  const locale = userDecisionContextDefaults(userId).locale;
   return {
     openCount: openItems.length,
     urgentCount,
@@ -528,7 +529,7 @@ export function getDecisionSummary(userId: number, tenantId = userId, limit = 3)
     topDecisionTitle: top?.safePreviewTitle ?? null,
     topDecisionSourceSkill: top?.sourceSkill ?? null,
     topDecisionUrgency: top?.urgency ?? null,
-    ctaLabel: ctaLabelForSummary(openItems.length, urgentCount, top),
+    ctaLabel: ctaLabelForSummary(openItems.length, urgentCount, top, locale),
     previewItems: openItems.slice(0, Math.min(Math.max(limit, 0), 3)),
     badgeCount: todayCount,
   };
@@ -1306,12 +1307,17 @@ function normalizeVisibilityScope(value: unknown): DecisionVisibilityScope | nul
     : null;
 }
 
-function ctaLabelForSummary(openCount: number, urgentCount: number, top: DecisionApiItem | null): string {
-  if (openCount === 0) return 'All Clear';
-  if (urgentCount > 0) return 'Urgent Decision';
-  if (top?.type === 'conflict_detected') return 'Schedule Conflict';
-  if (openCount === 1) return '1 Decision';
-  return `${openCount} Decisions`;
+function ctaLabelForSummary(openCount: number, urgentCount: number, top: DecisionApiItem | null, locale?: string | null): string {
+  const pt = isPortugueseLocale(locale);
+  if (openCount === 0) return pt ? 'Tudo certo' : 'All Clear';
+  if (urgentCount > 0) return pt ? 'Decisão urgente' : 'Urgent Decision';
+  if (top?.type === 'conflict_detected') return pt ? 'Conflito de agenda' : 'Schedule Conflict';
+  if (openCount === 1) return pt ? '1 decisão' : '1 Decision';
+  return pt ? `${openCount} decisões` : `${openCount} Decisions`;
+}
+
+function isPortugueseLocale(locale?: string | null): boolean {
+  return typeof locale === 'string' && locale.toLowerCase().startsWith('pt');
 }
 
 function getDecisionRecord(decisionId: string, userId: number, tenantId = userId): DecisionRecord | null {

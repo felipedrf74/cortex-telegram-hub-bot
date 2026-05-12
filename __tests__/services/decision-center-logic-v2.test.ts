@@ -462,7 +462,7 @@ describe('Decision Center Logic v2', () => {
     }
   });
 
-  it('localizes Secretary, Training, and sync recipe prose for Portuguese locales', () => {
+  it('localizes all Decision Center v2 recipe prose for Portuguese locales', () => {
     const secretary = buildDecisionLogicV2({
       sourceSkill: 'secretary',
       type: 'conflict_detected',
@@ -523,6 +523,132 @@ describe('Decision Center Logic v2', () => {
     });
     expect(sync.problemStatement).toContain('não foi concluída');
     expect(sync.whySummary).toContain('sincronização com falha');
+
+    const content = buildDecisionLogicV2({
+      sourceSkill: 'content',
+      type: 'approval_required',
+      priority: 'active',
+      title: 'Script ready',
+      body: 'A script is ready for approval.',
+      actions: [{ id: 'approve_script', label: 'Review', style: 'primary' }],
+      relatedEntityType: 'content_workflow_object',
+      relatedEntityId: 'content-pt',
+      privacyClassification: 'private_content',
+      context: {
+        entityTitle: 'Roteiro semanal',
+        locale: 'pt-PT',
+      },
+    });
+    expect(content.title).toBe('Revisão de conteúdo');
+    expect(content.problemStatement).toContain('pronto para aprovação');
+    expect(content.primaryActionLabel).toBe('Aprovar');
+    expect(content.safePreviewBody).toContain('aguarda aprovação');
+
+    const finance = buildDecisionLogicV2({
+      sourceSkill: 'finance',
+      type: 'decision_required',
+      priority: 'time_sensitive',
+      title: 'Payment due',
+      body: 'A payment needs confirmation.',
+      actions: [{ id: 'mark_paid', label: 'Review', style: 'primary' }],
+      relatedEntityType: 'finance_transaction',
+      relatedEntityId: 'finance-pt',
+      privacyClassification: 'financial',
+      context: { locale: 'pt-BR' },
+    });
+    expect(finance.title).toBe('Decisão financeira');
+    expect(finance.problemStatement).toContain('item financeiro');
+    expect(finance.primaryActionLabel).toBe('Confirmar');
+    expect(finance.safePreviewBody).toContain('decisão financeira');
+
+    const cooking = buildDecisionLogicV2({
+      sourceSkill: 'cooking',
+      type: 'decision_required',
+      priority: 'active',
+      title: 'Meal choice',
+      body: 'Choose a meal update.',
+      actions: [{ id: 'add_meal', label: 'Review', style: 'primary' }],
+      relatedEntityType: 'meal_plan',
+      relatedEntityId: 'meal-pt',
+      privacyClassification: 'standard',
+      context: { locale: 'pt-PT' },
+    });
+    expect(cooking.problemStatement).toContain('refeição');
+    expect(cooking.primaryActionLabel).toBe('Adicionar refeição');
+    expect(cooking.whatWillChange[0]?.verificationMethod).toContain('plano de refeições');
+
+    const chat = buildDecisionLogicV2({
+      sourceSkill: 'chat',
+      type: 'decision_required',
+      priority: 'active',
+      title: 'Choose option',
+      body: 'A chat action needs a choice.',
+      actions: [{ id: 'option_a', label: 'Review', style: 'primary' }],
+      relatedEntityType: 'chat_confirmation',
+      relatedEntityId: 'chat-pt',
+      privacyClassification: 'standard',
+      context: { locale: 'pt-BR' },
+    });
+    expect(chat.title).toContain('Nexus precisa');
+    expect(chat.problemStatement).toContain('ação do chat');
+    expect(chat.safePreviewBody).toContain('Abra o Nexus');
+
+    const generic = buildDecisionLogicV2({
+      sourceSkill: 'system',
+      type: 'decision_required',
+      priority: 'active',
+      title: 'Deployment choice',
+      body: 'A deployment choice needs review.',
+      safeBody: 'Resumo seguro.',
+      actions: [{ id: 'open_detail', label: 'Review', style: 'primary' }],
+      relatedEntityType: 'system_decision',
+      relatedEntityId: 'generic-pt',
+      privacyClassification: 'standard',
+      context: { locale: 'pt-PT' },
+    });
+    expect(generic.recommendation).toContain('Abra');
+    expect(generic.whySummary).toContain('julgamento do usuário');
+    expect(generic.safePreviewBody).toBe('Resumo seguro.');
+  });
+
+  it('localizes and redacts legacy fallback decisions when v2 is disabled', () => {
+    const previous = process.env.DECISION_CENTER_LOGIC_V2_ENABLED;
+    process.env.DECISION_CENTER_LOGIC_V2_ENABLED = 'false';
+    try {
+      const legacy = buildDecisionLogicV2({
+        sourceSkill: 'finance',
+        type: 'decision_required',
+        priority: 'active',
+        title: 'Pay $4,200 to Therapy Center',
+        body: 'Pay $4,200 to Therapy Center before Friday.',
+        actions: [{ id: 'mark_paid', label: 'Review', style: 'primary' }],
+        relatedEntityType: null,
+        relatedEntityId: null,
+        privacyClassification: 'financial',
+        context: {
+          locale: 'pt-BR',
+          explicitNoRelatedEntityReason: 'legacy fallback test',
+        },
+      });
+
+      const rendered = [
+        legacy.problemStatement,
+        legacy.safePreviewTitle,
+        legacy.safePreviewBody,
+        legacy.recommendation,
+        ...legacy.why.facts,
+      ].join(' ');
+      expect(legacy.problemStatement).toBe('Abra o Nexus para revisar esta decisão.');
+      expect(legacy.safePreviewTitle).toBe('Decisão financeira');
+      expect(legacy.safePreviewBody).toBe('Abra o Nexus para revisar esta decisão.');
+      expect(legacy.recommendation).toContain('Abra');
+      expect(rendered).not.toContain('4,200');
+      expect(rendered).not.toContain('Therapy Center');
+      expect(legacy.quality.safeForAPNs).toBe(false);
+    } finally {
+      if (previous == null) delete process.env.DECISION_CENTER_LOGIC_V2_ENABLED;
+      else process.env.DECISION_CENTER_LOGIC_V2_ENABLED = previous;
+    }
   });
 
   it('pins recipe confidence tiers so tuning is visible in review', () => {

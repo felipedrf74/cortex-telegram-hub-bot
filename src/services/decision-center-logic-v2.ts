@@ -251,32 +251,33 @@ export function buildDecisionLogicV2(input: DecisionLogicInput): DecisionLogicV2
 }
 
 function buildLegacyDecisionLogic(input: DecisionLogicInput): DecisionLogicV2 {
+  const pt = isPortugueseDecision(input);
   const primary = primaryAction(input.actions);
   const title = sanitizeTitle(input.title);
-  const body = input.body?.trim() || input.safeBody?.trim() || title;
+  const body = legacyBodyForDisplay(input, title, pt);
   const recipe: DecisionLogicRecipe = {
     title,
     problemStatement: body,
-    recommendation: 'Open the decision for details.',
-    expectedEffect: 'Nexus keeps the decision open until you choose an action.',
-    impactIfIgnored: 'The item remains unresolved.',
-    primaryActionLabel: concreteActionLabel(primary, 'Open'),
+    recommendation: pt ? 'Abra a decisão para revisar os detalhes.' : 'Open the decision for details.',
+    expectedEffect: pt ? 'O Nexus mantém a decisão aberta até você escolher uma ação.' : 'Nexus keeps the decision open until you choose an action.',
+    impactIfIgnored: pt ? 'O item permanece sem resolução.' : 'The item remains unresolved.',
+    primaryActionLabel: concreteActionLabel(primary, pt ? 'Abrir' : 'Open'),
     secondaryActionLabels: secondaryActionLabels(input.actions, primary),
-    whySummary: 'Decision Center is running in legacy compatibility mode.',
-    urgencyReason: input.priority === 'passive' ? 'Optional decision.' : 'Active decision.',
+    whySummary: pt ? 'O Decision Center está em modo de compatibilidade legado.' : 'Decision Center is running in legacy compatibility mode.',
+    urgencyReason: input.priority === 'passive' ? (pt ? 'Decisão opcional.' : 'Optional decision.') : (pt ? 'Decisão ativa.' : 'Active decision.'),
     confidence: DECISION_CONFIDENCE_RUBRIC.mediumGenericDecision,
-    relatedEntityReason: input.relatedEntityId ? null : input.context?.explicitNoRelatedEntityReason ?? 'legacy compatibility mode allows missing related entity',
+    relatedEntityReason: input.relatedEntityId ? null : input.context?.explicitNoRelatedEntityReason ?? (pt ? 'modo de compatibilidade legado permite entidade relacionada ausente' : 'legacy compatibility mode allows missing related entity'),
     why: {
       facts: [body],
       preferences: [],
-      rules: ['Decision Center Logic v2 quality enforcement is disabled by operator flag.'],
-      tradeoffs: ['This is a rollback mode; APNs visible delivery stays disabled for safety.'],
+      rules: [pt ? 'A validação de qualidade do Decision Center Logic v2 está desativada por flag de operador.' : 'Decision Center Logic v2 quality enforcement is disabled by operator flag.'],
+      tradeoffs: [pt ? 'Este é um modo de rollback; entrega APNs visível permanece desativada por segurança.' : 'This is a rollback mode; APNs visible delivery stays disabled for safety.'],
       uncertainty: [],
     },
     whatWillChange: [],
     readBackVerifier: null,
     automationEligibility: 'never',
-    autopilotPolicy: 'Legacy compatibility mode disables autopilot.',
+    autopilotPolicy: pt ? 'O modo de compatibilidade legado desativa autopilot.' : 'Legacy compatibility mode disables autopilot.',
     safePreviewTitle: safePreviewTitleForLegacy(input, title),
     safePreviewBody: safePreviewBodyForLegacy(input, body),
     riskIfIgnored: input.priority === 'critical' || input.priority === 'time_sensitive' ? 'high' : 'medium',
@@ -690,142 +691,150 @@ function trainingRecipe(input: DecisionLogicInput): DecisionLogicRecipe {
 }
 
 function contentRecipe(input: DecisionLogicInput): DecisionLogicRecipe {
-  const contentTitle = input.context?.entityTitle?.trim() || 'A content item';
+  const pt = isPortugueseDecision(input);
+  const contentTitle = input.context?.entityTitle?.trim() || (pt ? 'Um item de conteúdo' : 'A content item');
+  const primary = primaryAction(input.actions);
   return {
-    title: 'Content review',
-    problemStatement: `${contentTitle} is ready for approval or rewrite feedback.`,
-    recommendation: 'Approve it if it is ready, or request a rewrite with changes.',
-    expectedEffect: 'Content workflow state changes to approved or rewrite-requested only after read-back verifies the draft.',
-    impactIfIgnored: 'The content workflow remains paused and downstream publishing cannot proceed.',
-    primaryActionLabel: concreteActionLabel(primaryAction(input.actions), 'Approve'),
-    secondaryActionLabels: secondaryActionLabels(input.actions, primaryAction(input.actions)),
-    whySummary: 'Content publishing requires explicit approval before Nexus moves it forward.',
-    urgencyReason: input.deadlineAt ? 'The approval has a deadline.' : 'The workflow is waiting for review.',
+    title: pt ? 'Revisão de conteúdo' : 'Content review',
+    problemStatement: pt ? `${contentTitle} está pronto para aprovação ou feedback de reescrita.` : `${contentTitle} is ready for approval or rewrite feedback.`,
+    recommendation: pt ? 'Aprove se estiver pronto ou peça uma reescrita com mudanças.' : 'Approve it if it is ready, or request a rewrite with changes.',
+    expectedEffect: pt ? 'O estado do fluxo de conteúdo muda para aprovado ou reescrita solicitada apenas após o read-back verificar o rascunho.' : 'Content workflow state changes to approved or rewrite-requested only after read-back verifies the draft.',
+    impactIfIgnored: pt ? 'O fluxo de conteúdo permanece pausado e a publicação posterior não pode prosseguir.' : 'The content workflow remains paused and downstream publishing cannot proceed.',
+    primaryActionLabel: concreteActionLabel(primary, pt ? 'Aprovar' : 'Approve'),
+    secondaryActionLabels: secondaryActionLabels(input.actions, primary),
+    whySummary: pt ? 'Publicação de conteúdo exige aprovação explícita antes de o Nexus avançar.' : 'Content publishing requires explicit approval before Nexus moves it forward.',
+    urgencyReason: input.deadlineAt ? (pt ? 'A aprovação tem um prazo.' : 'The approval has a deadline.') : (pt ? 'O fluxo está aguardando revisão.' : 'The workflow is waiting for review.'),
     confidence: input.relatedEntityId ? DECISION_CONFIDENCE_RUBRIC.highEntityReadBack : DECISION_CONFIDENCE_RUBRIC.lowContentMissingEntity,
     relatedEntityReason: null,
     why: {
-      facts: [`Workflow item: ${contentTitle}.`, input.context?.sourceState ? `Current state: ${input.context.sourceState}.` : 'Current state is awaiting approval.'],
+      facts: pt ? [`Item do fluxo: ${contentTitle}.`, input.context?.sourceState ? `Estado atual: ${input.context.sourceState}.` : 'O estado atual aguarda aprovação.'] : [`Workflow item: ${contentTitle}.`, input.context?.sourceState ? `Current state: ${input.context.sourceState}.` : 'Current state is awaiting approval.'],
       preferences: [],
-      rules: ['Nexus does not publish or approve content without user approval.'],
-      tradeoffs: ['Approving moves work forward; rewrite keeps quality control before publishing.'],
+      rules: [pt ? 'O Nexus não publica nem aprova conteúdo sem aprovação do usuário.' : 'Nexus does not publish or approve content without user approval.'],
+      tradeoffs: [pt ? 'Aprovar avança o trabalho; reescrever mantém controle de qualidade antes da publicação.' : 'Approving moves work forward; rewrite keeps quality control before publishing.'],
       uncertainty: [],
     },
     whatWillChange: [{
       item: contentTitle,
-      effect: 'Update content approval state.',
+      effect: pt ? 'Atualizar o estado de aprovação do conteúdo.' : 'Update content approval state.',
       targetSkill: 'content',
-      verificationMethod: 'Read content workflow object approval state after action.',
+      verificationMethod: pt ? 'Ler o estado de aprovação do objeto de conteúdo após a ação.' : 'Read content workflow object approval state after action.',
     }],
     readBackVerifier: 'content_workflow_object_approval_state',
     automationEligibility: 'ask_first',
-    autopilotPolicy: 'Content publishing and approval ask first.',
-    safePreviewTitle: 'Content review',
-    safePreviewBody: 'A content item is waiting for approval.',
+    autopilotPolicy: pt ? 'Publicação e aprovação de conteúdo perguntam primeiro.' : 'Content publishing and approval ask first.',
+    safePreviewTitle: pt ? 'Revisão de conteúdo' : 'Content review',
+    safePreviewBody: pt ? 'Um item de conteúdo aguarda aprovação.' : 'A content item is waiting for approval.',
     riskIfIgnored: 'medium',
   };
 }
 
 function financeRecipe(input: DecisionLogicInput): DecisionLogicRecipe {
+  const pt = isPortugueseDecision(input);
+  const primary = primaryAction(input.actions);
   return {
-    title: 'Finance decision',
-    problemStatement: 'A finance item needs confirmation before Nexus marks it complete.',
-    recommendation: 'Confirm only if the payment or finance task is already handled.',
-    expectedEffect: 'Finance state is updated and verified without exposing private amounts in previews.',
-    impactIfIgnored: 'The finance reminder stays open and may continue to appear.',
-    primaryActionLabel: concreteActionLabel(primaryAction(input.actions), 'Confirm'),
-    secondaryActionLabels: secondaryActionLabels(input.actions, primaryAction(input.actions)),
-    whySummary: 'Finance actions are privacy-sensitive and require explicit confirmation.',
-    urgencyReason: input.priority === 'time_sensitive' ? 'The finance item is deadline-sensitive.' : 'The finance workflow is waiting for confirmation.',
+    title: pt ? 'Decisão financeira' : 'Finance decision',
+    problemStatement: pt ? 'Um item financeiro precisa de confirmação antes de o Nexus marcá-lo como concluído.' : 'A finance item needs confirmation before Nexus marks it complete.',
+    recommendation: pt ? 'Confirme apenas se o pagamento ou tarefa financeira já foi tratado.' : 'Confirm only if the payment or finance task is already handled.',
+    expectedEffect: pt ? 'O estado financeiro é atualizado e verificado sem expor valores privados em previews.' : 'Finance state is updated and verified without exposing private amounts in previews.',
+    impactIfIgnored: pt ? 'O lembrete financeiro fica aberto e pode continuar aparecendo.' : 'The finance reminder stays open and may continue to appear.',
+    primaryActionLabel: concreteActionLabel(primary, pt ? 'Confirmar' : 'Confirm'),
+    secondaryActionLabels: secondaryActionLabels(input.actions, primary),
+    whySummary: pt ? 'Ações financeiras são sensíveis à privacidade e exigem confirmação explícita.' : 'Finance actions are privacy-sensitive and require explicit confirmation.',
+    urgencyReason: input.priority === 'time_sensitive' ? (pt ? 'O item financeiro é sensível a prazo.' : 'The finance item is deadline-sensitive.') : (pt ? 'O fluxo financeiro aguarda confirmação.' : 'The finance workflow is waiting for confirmation.'),
     confidence: input.relatedEntityId ? DECISION_CONFIDENCE_RUBRIC.mediumFinanceEntity : DECISION_CONFIDENCE_RUBRIC.lowFinanceMissingEntity,
     relatedEntityReason: null,
     why: {
-      facts: ['A finance workflow emitted an action-gated decision.'],
+      facts: [pt ? 'Um fluxo financeiro emitiu uma decisão com ação controlada.' : 'A finance workflow emitted an action-gated decision.'],
       preferences: [],
-      rules: ['Finance actions never auto-complete by default.'],
-      tradeoffs: ['Confirmation keeps private financial state accurate.'],
-      uncertainty: input.relatedEntityId ? [] : ['The exact finance entity is missing.'],
+      rules: [pt ? 'Ações financeiras nunca são concluídas automaticamente por padrão.' : 'Finance actions never auto-complete by default.'],
+      tradeoffs: [pt ? 'A confirmação mantém o estado financeiro privado correto.' : 'Confirmation keeps private financial state accurate.'],
+      uncertainty: input.relatedEntityId ? [] : [pt ? 'A entidade financeira exata está ausente.' : 'The exact finance entity is missing.'],
     },
     whatWillChange: [{
-      item: 'Finance item',
-      effect: 'Mark the scoped finance item complete or paid.',
+      item: pt ? 'Item financeiro' : 'Finance item',
+      effect: pt ? 'Marcar o item financeiro escopado como concluído ou pago.' : 'Mark the scoped finance item complete or paid.',
       targetSkill: 'finance',
-      verificationMethod: 'Read finance state after action.',
+      verificationMethod: pt ? 'Ler o estado financeiro após a ação.' : 'Read finance state after action.',
     }],
     readBackVerifier: 'finance_state',
     automationEligibility: 'never',
-    autopilotPolicy: 'Finance actions always ask first by default.',
-    safePreviewTitle: 'Finance decision',
-    safePreviewBody: 'Open Nexus to review a finance decision.',
+    autopilotPolicy: pt ? 'Ações financeiras sempre perguntam primeiro por padrão.' : 'Finance actions always ask first by default.',
+    safePreviewTitle: pt ? 'Decisão financeira' : 'Finance decision',
+    safePreviewBody: pt ? 'Abra o Nexus para revisar uma decisão financeira.' : 'Open Nexus to review a finance decision.',
     riskIfIgnored: 'high',
   };
 }
 
 function cookingRecipe(input: DecisionLogicInput): DecisionLogicRecipe {
+  const pt = isPortugueseDecision(input);
+  const primary = primaryAction(input.actions);
   return {
-    title: 'Cooking decision',
-    problemStatement: 'A meal or fueling choice needs your confirmation before Nexus updates the plan.',
-    recommendation: 'Choose the meal update only if it fits your current plan and preferences.',
-    expectedEffect: 'Cooking updates the meal plan and verifies the saved meal slot.',
-    impactIfIgnored: 'The meal plan remains unchanged.',
-    primaryActionLabel: concreteActionLabel(primaryAction(input.actions), 'Add meal'),
-    secondaryActionLabels: secondaryActionLabels(input.actions, primaryAction(input.actions)),
-    whySummary: 'Cooking suggestions become decisions only when a real choice changes the plan.',
-    urgencyReason: input.priority === 'time_sensitive' ? 'The meal choice affects today.' : 'The meal plan is waiting for confirmation.',
+    title: pt ? 'Decisão de cozinha' : 'Cooking decision',
+    problemStatement: pt ? 'Uma escolha de refeição ou abastecimento precisa da sua confirmação antes de o Nexus atualizar o plano.' : 'A meal or fueling choice needs your confirmation before Nexus updates the plan.',
+    recommendation: pt ? 'Escolha a atualização de refeição apenas se ela combinar com seu plano e preferências atuais.' : 'Choose the meal update only if it fits your current plan and preferences.',
+    expectedEffect: pt ? 'Cozinha atualiza o plano de refeições e verifica o horário de refeição salvo.' : 'Cooking updates the meal plan and verifies the saved meal slot.',
+    impactIfIgnored: pt ? 'O plano de refeições permanece inalterado.' : 'The meal plan remains unchanged.',
+    primaryActionLabel: concreteActionLabel(primary, pt ? 'Adicionar refeição' : 'Add meal'),
+    secondaryActionLabels: secondaryActionLabels(input.actions, primary),
+    whySummary: pt ? 'Sugestões de cozinha viram decisões apenas quando uma escolha real altera o plano.' : 'Cooking suggestions become decisions only when a real choice changes the plan.',
+    urgencyReason: input.priority === 'time_sensitive' ? (pt ? 'A escolha de refeição afeta hoje.' : 'The meal choice affects today.') : (pt ? 'O plano de refeições aguarda confirmação.' : 'The meal plan is waiting for confirmation.'),
     confidence: input.relatedEntityId ? DECISION_CONFIDENCE_RUBRIC.mediumCookingEntity : DECISION_CONFIDENCE_RUBRIC.lowCookingMissingEntity,
     relatedEntityReason: null,
     why: {
-      facts: ['Cooking emitted an action-gated meal decision.'],
+      facts: [pt ? 'Cozinha emitiu uma decisão de refeição com ação controlada.' : 'Cooking emitted an action-gated meal decision.'],
       preferences: [],
-      rules: ['Meal plan writes need a concrete date, meal type, and title.'],
-      tradeoffs: ['Asking avoids silently changing food choices.'],
-      uncertainty: input.relatedEntityId ? [] : ['The concrete meal slot is missing.'],
+      rules: [pt ? 'Escritas no plano de refeições precisam de data, tipo de refeição e título concretos.' : 'Meal plan writes need a concrete date, meal type, and title.'],
+      tradeoffs: [pt ? 'Perguntar evita mudar escolhas alimentares em silêncio.' : 'Asking avoids silently changing food choices.'],
+      uncertainty: input.relatedEntityId ? [] : [pt ? 'O horário concreto da refeição está ausente.' : 'The concrete meal slot is missing.'],
     },
     whatWillChange: [{
-      item: 'Meal plan',
-      effect: 'Add or update a meal slot.',
+      item: pt ? 'Plano de refeições' : 'Meal plan',
+      effect: pt ? 'Adicionar ou atualizar um horário de refeição.' : 'Add or update a meal slot.',
       targetSkill: 'cooking',
-      verificationMethod: 'Read meal plan after action.',
+      verificationMethod: pt ? 'Ler o plano de refeições após a ação.' : 'Read meal plan after action.',
     }],
     readBackVerifier: 'meal_plan_state',
     automationEligibility: 'ask_first',
-    autopilotPolicy: 'Meal plan changes ask first unless the user opts into automation.',
-    safePreviewTitle: 'Cooking decision',
-    safePreviewBody: 'Open Nexus to review a meal choice.',
+    autopilotPolicy: pt ? 'Mudanças no plano de refeições perguntam primeiro, salvo opt-in de automação.' : 'Meal plan changes ask first unless the user opts into automation.',
+    safePreviewTitle: pt ? 'Decisão de cozinha' : 'Cooking decision',
+    safePreviewBody: pt ? 'Abra o Nexus para revisar uma escolha de refeição.' : 'Open Nexus to review a meal choice.',
     riskIfIgnored: 'low',
   };
 }
 
 function chatRecipe(input: DecisionLogicInput): DecisionLogicRecipe {
+  const pt = isPortugueseDecision(input);
+  const primary = primaryAction(input.actions);
   return {
-    title: 'Nexus needs your choice',
-    problemStatement: 'A chat action is ambiguous and needs your answer before Nexus continues.',
-    recommendation: 'Choose the option that matches your intent.',
-    expectedEffect: 'Nexus records the selected option and resumes the scoped workflow through Decision Center validation.',
-    impactIfIgnored: 'The chat action remains paused.',
-    primaryActionLabel: concreteActionLabel(primaryAction(input.actions), 'Choose option'),
-    secondaryActionLabels: secondaryActionLabels(input.actions, primaryAction(input.actions)),
-    whySummary: 'Chat cannot bypass Decision Center for ambiguous or mutating actions.',
-    urgencyReason: 'The workflow is waiting for your answer.',
+    title: pt ? 'O Nexus precisa da sua escolha' : 'Nexus needs your choice',
+    problemStatement: pt ? 'Uma ação do chat está ambígua e precisa da sua resposta antes de o Nexus continuar.' : 'A chat action is ambiguous and needs your answer before Nexus continues.',
+    recommendation: pt ? 'Escolha a opção que corresponde à sua intenção.' : 'Choose the option that matches your intent.',
+    expectedEffect: pt ? 'O Nexus registra a opção selecionada e retoma o fluxo escopado pela validação do Decision Center.' : 'Nexus records the selected option and resumes the scoped workflow through Decision Center validation.',
+    impactIfIgnored: pt ? 'A ação do chat permanece pausada.' : 'The chat action remains paused.',
+    primaryActionLabel: concreteActionLabel(primary, pt ? 'Escolher opção' : 'Choose option'),
+    secondaryActionLabels: secondaryActionLabels(input.actions, primary),
+    whySummary: pt ? 'O Chat não pode contornar o Decision Center para ações ambíguas ou mutáveis.' : 'Chat cannot bypass Decision Center for ambiguous or mutating actions.',
+    urgencyReason: pt ? 'O fluxo aguarda sua resposta.' : 'The workflow is waiting for your answer.',
     confidence: input.relatedEntityId ? DECISION_CONFIDENCE_RUBRIC.highChatConfirmation : DECISION_CONFIDENCE_RUBRIC.lowChatMissingEntity,
     relatedEntityReason: null,
     why: {
-      facts: ['A pending chat confirmation exists.'],
+      facts: [pt ? 'Existe uma confirmação de chat pendente.' : 'A pending chat confirmation exists.'],
       preferences: [],
-      rules: ['Ambiguous actions must be confirmed through deterministic Decision APIs.'],
-      tradeoffs: ['Confirmation avoids taking the wrong action.'],
-      uncertainty: input.relatedEntityId ? [] : ['The pending chat confirmation id is missing.'],
+      rules: [pt ? 'Ações ambíguas devem ser confirmadas por APIs determinísticas de decisão.' : 'Ambiguous actions must be confirmed through deterministic Decision APIs.'],
+      tradeoffs: [pt ? 'A confirmação evita executar a ação errada.' : 'Confirmation avoids taking the wrong action.'],
+      uncertainty: input.relatedEntityId ? [] : [pt ? 'O id da confirmação de chat pendente está ausente.' : 'The pending chat confirmation id is missing.'],
     },
     whatWillChange: [{
-      item: 'Chat confirmation',
-      effect: 'Record the selected option.',
+      item: pt ? 'Confirmação do chat' : 'Chat confirmation',
+      effect: pt ? 'Registrar a opção selecionada.' : 'Record the selected option.',
       targetSkill: 'chat',
-      verificationMethod: 'Read pending confirmation store after action.',
+      verificationMethod: pt ? 'Ler o armazenamento de confirmações pendentes após a ação.' : 'Read pending confirmation store after action.',
     }],
     readBackVerifier: 'chat_pending_confirmation_store',
     automationEligibility: 'ask_first',
-    autopilotPolicy: 'Chat ambiguity asks first.',
-    safePreviewTitle: 'Nexus needs your choice',
-    safePreviewBody: 'Open Nexus to choose how to continue.',
+    autopilotPolicy: pt ? 'Ambiguidade do chat pergunta primeiro.' : 'Chat ambiguity asks first.',
+    safePreviewTitle: pt ? 'O Nexus precisa da sua escolha' : 'Nexus needs your choice',
+    safePreviewBody: pt ? 'Abra o Nexus para escolher como continuar.' : 'Open Nexus to choose how to continue.',
     riskIfIgnored: 'medium',
   };
 }
@@ -868,31 +877,34 @@ function syncFailureRecipe(input: DecisionLogicInput): DecisionLogicRecipe {
 }
 
 function genericRecipe(input: DecisionLogicInput): DecisionLogicRecipe {
+  const pt = isPortugueseDecision(input);
+  const primary = primaryAction(input.actions);
+  const displayBody = input.safeBody?.trim() || input.body;
   return {
     title: sanitizeTitle(input.title),
-    problemStatement: input.body,
-    recommendation: 'Open the decision for details.',
-    expectedEffect: 'Nexus will keep the decision open until a deterministic action is available.',
-    impactIfIgnored: 'The item remains unresolved.',
-    primaryActionLabel: concreteActionLabel(primaryAction(input.actions), 'Open'),
-    secondaryActionLabels: secondaryActionLabels(input.actions, primaryAction(input.actions)),
-    whySummary: 'This item needs user judgment before Nexus acts.',
-    urgencyReason: input.priority === 'passive' ? 'Optional decision.' : 'Active decision.',
+    problemStatement: displayBody,
+    recommendation: pt ? 'Abra a decisão para revisar os detalhes.' : 'Open the decision for details.',
+    expectedEffect: pt ? 'O Nexus manterá a decisão aberta até haver uma ação determinística disponível.' : 'Nexus will keep the decision open until a deterministic action is available.',
+    impactIfIgnored: pt ? 'O item permanece sem resolução.' : 'The item remains unresolved.',
+    primaryActionLabel: concreteActionLabel(primary, pt ? 'Abrir' : 'Open'),
+    secondaryActionLabels: secondaryActionLabels(input.actions, primary),
+    whySummary: pt ? 'Este item precisa do julgamento do usuário antes de o Nexus agir.' : 'This item needs user judgment before Nexus acts.',
+    urgencyReason: input.priority === 'passive' ? (pt ? 'Decisão opcional.' : 'Optional decision.') : (pt ? 'Decisão ativa.' : 'Active decision.'),
     confidence: DECISION_CONFIDENCE_RUBRIC.mediumGenericDecision,
     relatedEntityReason: null,
     why: {
-      facts: [input.body],
+      facts: [displayBody],
       preferences: [],
-      rules: ['Decision Center requires concrete facts before showing user-facing cards.'],
+      rules: [pt ? 'O Decision Center exige fatos concretos antes de mostrar cartões ao usuário.' : 'Decision Center requires concrete facts before showing user-facing cards.'],
       tradeoffs: [],
       uncertainty: [],
     },
     whatWillChange: [],
     readBackVerifier: null,
     automationEligibility: 'never',
-    autopilotPolicy: 'No autopilot rule applies.',
+    autopilotPolicy: pt ? 'Nenhuma regra de autopilot se aplica.' : 'No autopilot rule applies.',
     safePreviewTitle: sanitizeTitle(input.title),
-    safePreviewBody: input.safeBody ?? input.body,
+    safePreviewBody: displayBody,
     riskIfIgnored: 'low',
   };
 }
@@ -984,21 +996,46 @@ function isPortugueseDecision(input: DecisionLogicInput): boolean {
 }
 
 function safePreviewTitleForLegacy(input: DecisionLogicInput, fallbackTitle: string): string {
-  if (input.privacyClassification === 'financial' || input.sourceSkill === 'finance') return 'Finance decision';
-  if (input.privacyClassification === 'health' || input.sourceSkill === 'training') return 'Training decision';
-  if (input.privacyClassification === 'private_content' || input.sourceSkill === 'content') return 'Content review';
-  if (input.privacyClassification === 'sensitive') return input.sourceSkill === 'security' ? 'Security decision' : 'Decision needed';
+  const pt = isPortugueseDecision(input);
+  if (input.privacyClassification === 'financial' || input.sourceSkill === 'finance') return pt ? 'Decisão financeira' : 'Finance decision';
+  if (input.privacyClassification === 'health' || input.sourceSkill === 'training') return pt ? 'Decisão de treino' : 'Training decision';
+  if (input.privacyClassification === 'private_content' || input.sourceSkill === 'content') return pt ? 'Revisão de conteúdo' : 'Content review';
+  if (input.privacyClassification === 'sensitive') return input.sourceSkill === 'security' ? (pt ? 'Decisão de segurança' : 'Security decision') : (pt ? 'Decisão necessária' : 'Decision needed');
+  if (fallbackTitle === 'Decision details unavailable') return pt ? 'Detalhes da decisão indisponíveis' : fallbackTitle;
   return fallbackTitle;
 }
 
 function safePreviewBodyForLegacy(input: DecisionLogicInput, fallbackBody: string): string {
+  const pt = isPortugueseDecision(input);
   if (input.privacyClassification === 'financial'
     || input.privacyClassification === 'health'
     || input.privacyClassification === 'private_content'
     || input.privacyClassification === 'sensitive') {
-    return 'Open Nexus to review this decision.';
+    return pt ? 'Abra o Nexus para revisar esta decisão.' : 'Open Nexus to review this decision.';
   }
   return input.safeBody?.trim() || fallbackBody;
+}
+
+function legacyBodyForDisplay(input: DecisionLogicInput, fallbackTitle: string, pt: boolean): string {
+  const safe = input.safeBody?.trim();
+  if (safe) return safe;
+  if (isSensitiveDecision(input)) {
+    return pt ? 'Abra o Nexus para revisar esta decisão.' : 'Open Nexus to review this decision.';
+  }
+  const body = input.body?.trim();
+  if (body && !isGenericCopy(body)) return body;
+  return fallbackTitle || (pt ? 'Decisão necessária' : 'Decision needed');
+}
+
+function isSensitiveDecision(input: DecisionLogicInput): boolean {
+  return input.privacyClassification === 'financial'
+    || input.privacyClassification === 'health'
+    || input.privacyClassification === 'private_content'
+    || input.privacyClassification === 'sensitive'
+    || input.sourceSkill === 'finance'
+    || input.sourceSkill === 'training'
+    || input.sourceSkill === 'content'
+    || input.sourceSkill === 'security';
 }
 
 function requireConcrete(value: string | null | undefined, field: string, missingFields: string[]): void {

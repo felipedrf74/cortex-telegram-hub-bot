@@ -148,7 +148,10 @@ quality gate, but visible APNs delivery remains disabled for those fallback
 items so vague or private copy is not pushed to lock screens. After toggling,
 restart the backend process, confirm `/api/v1/decisions/summary` still returns
 a valid shape, then open a follow-up bug to fix the specific v2 recipe/gate
-before re-enabling the flag.
+path before re-enabling. The fallback intentionally degrades UI intelligence:
+some items may show generic or less-enriched detail copy, and sensitive
+finance, training, content, or security decisions are reduced to safe "open
+Nexus" wording instead of rendering raw upstream text.
 
 ## Account Switching Telemetry
 

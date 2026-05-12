@@ -887,3 +887,169 @@ Verification:
 - No push, deploy, TestFlight cut, production data access, production APNs, DB, tunnel, or local backend process was used.
 
 Round 4 recommendation: proceed with local QA on the branch. Remaining non-blocking follow-up is to extend recipe localization beyond the first supported Portuguese paths as new skill recipes move from scaffolded to production-backed.
+
+---
+
+## Round 4 hostile QA — 2026-05-12 (Claude, post Codex closeout)
+
+Date: 2026-05-12
+Reviewer: Claude (opus, max effort)
+Scope: validate Codex's 1 engine commit (`9bfd9e7c`) + 1 iOS commit (`460850c`) that claim to close all 5 Round 3 polish items. Probe for new issues.
+
+### Round 4 hostile QA verdict
+
+**READY_FOR_LOCAL_QA** (unchanged from R3) — and the rollback contract is now testable.
+
+All 5 Round 3 findings are closed at source + test level. The legacy fallback design is particularly good: it preserves the `DecisionLogicV2` shape while hardcoding APNs/badge/autopilot off, so flipping the flag mid-incident degrades gracefully. One **partial close** (R4-NEW-001, PT localization scope, exactly matching Codex's own hedged claim) plus a Home CTA-label gap (R4-NEW-002) are the only Wave-2 carryovers.
+
+### Round 4 commits inspected
+
+- Engine `9bfd9e7c fix(decisions): close round four polish gaps` — 303 LoC in v2 logic + 24 LoC in `decision-center.ts` + 22 LoC in `notification-orchestrator.ts` + 18 LoC in OBSERVABILITY-ONCALL.md + 120 LoC of new tests.
+- iOS `460850c fix(ios): normalize body battery double decoding` — 2 lines across `Models/ServerStatus.swift` and `Models/TrainingSession.swift`: `Int(doubleVal.rounded())` → `Int(doubleVal)` (truncation toward zero matches the pinned test).
+
+### R3 closure verification (Claude's independent read)
+
+| ID | Severity | Verdict | Evidence |
+|---|---|---|---|
+| R3-NEW-001 owner/admin scope unreachable | P3 | **CONFIRMED CLOSED end-to-end** | `decision-center.ts:1035` now calls `visibilityScopeForIntentInput(input)` instead of hardcoded `'user_private'`. Read path `:1289` `visibilityScopeForItem` reads from `decisionContext` via `visibilityScopeFromContext`. `normalizeVisibilityScope:1301-1307` validates against the enum. `assignContextVisibilityScope` in `notification-orchestrator.ts` persists the scope on intent. Round-trip test at `decision-center.test.ts:251-279` (`threads owner/admin visibility scope through internal decision intents`) asserts the scope survives creation → list → detail. E2+E3. |
+| R3-NEW-002 iOS bodyBattery decoder rounds 58.7→59 | P3 (pre-existing) | **CONFIRMED CLOSED** | Both decoders truncate now. iOS test suite ran 11/11 PASS including the previously failing `test_DashboardResponse_bodyBattery_acceptsIntDoubleOrObject`. E5. |
+| R3-NEW-003 reserved offline state cosmetic | P3 | **CONFIRMED CLOSED** | `decision-center-logic-v2.ts:16-17` adds 2-line comment: `// Reserved for iOS offline/stale-cache handling; the server currently returns / persisted-state disables only and should not infer device connectivity.`. E1. |
+| R3-NEW-004 PT localization | P2 | **PARTIALLY CLOSED — see R4-NEW-001** | 5 of 10 recipes localized (Secretary, Training, Sync, Overcapacity, Owner/Admin). Content, Finance, Cooking, Chat, Generic, and Legacy fallback remain English-only. `isPortugueseDecision(input)` helper at `:982-984` reads `input.context?.locale`. Test at `:465-527` (`localizes Secretary, Training, and sync recipe prose for Portuguese locales`). Codex's "first DC v2 recipe paths" wording is honest about the partial close. E2. |
+| R3-NEW-005 feature flag | P3 | **CONFIRMED CLOSED** | `isDecisionLogicV2Enabled()` at `:223-228` reads `DECISION_CENTER_LOGIC_V2_ENABLED`, defaults true, disables on `0/false/off/disabled/no` (case-insensitive). `buildDecisionLogicV2:230-232` short-circuits to `buildLegacyDecisionLogic(input)` when disabled. Legacy fallback hardcodes `safeForAPNs: false`, `notificationEligibility: 'digest'`, `badgeContribution: false`, `automationEligibility: 'never'` — APNs and autopilot mechanically locked off when the flag flips. Test at `:438-464` (`keeps the v2 feature flag conservative when disabled`). Documented in `engine/docs/OBSERVABILITY-ONCALL.md`. E2. |
+
+### Independent verification
+
+- `npx tsc --noEmit` → **PASS** (exit 0).
+- Engine focused vitest (8 files, including arbitrator + content-learning-store + scheduler-user-scope): **154 / 154 PASS** in 7.89s. Codex reported 72/72 from a narrower 3-file gate; both are accurate.
+- iOS xcodebuild test on simulator A0B13967 (iPhone 17 Pro, iOS 26.4.1): **11 / 11 PASS** for `ModelDecodingTests/test_DashboardResponse_bodyBattery_acceptsIntDoubleOrObject` + `NotificationDecisionCenterTests`. **TEST SUCCEEDED**. E5.
+- `npm run docs:audit` → 525 files audited / 478 warnings (unchanged from R3; markdown-location warnings only).
+- xcresult preserved at `docs/release/qa-evidence/round4-ios-results.xcresult`.
+
+### Newly delivered Round 4 capabilities (Claude's assessment)
+
+- **Operator rollback flag** with full legacy passthrough. The cleverness: `buildLegacyDecisionLogic` constructs a `DecisionLogicV2` shape structurally identical to a real v2 decision, so iOS keeps decoding successfully; but the `quality` field hardcodes `safeForAPNs: false`, `safeForFrontendAction: !!primary`, and `safeToShowUser: true`. The orchestrator's existing `!safeForAPNs → in_app_only` gate then automatically disables visible push without any orchestrator changes. This is the right level of layering — flip one env var, no other code paths need to know.
+- **Visibility scope threading** through `NotificationIntentInput.visibilityScope` → `assignContextVisibilityScope` → persisted in `decisionContext` → `visibilityScopeFromContext` at read. Owner/admin emitters can now mark a decision and the read path routes to `ownerAdminOpsRecipe`.
+- **PT recipe copy** for Secretary, Training, Sync, Overcapacity, and Owner/Admin paths. Detection via `input.context?.locale.startsWith('pt')` so `pt-BR` and `pt-PT` both trigger.
+
+### New findings from Round 4 (hostile probe)
+
+#### R4-NEW-001 — PT localization is incomplete; 5 of 10 recipes + legacy fallback still English
+
+- Severity: **P2** (broader cohort UX; not Wave 1 blocking)
+- File: `src/services/decision-center-logic-v2.ts` recipes for `contentRecipe`, `financeRecipe`, `cookingRecipe`, `chatRecipe`, `genericRecipe`, plus `buildLegacyDecisionLogic` and helpers `safePreviewTitleForLegacy` / `safePreviewBodyForLegacy`.
+- Confidence: HIGH (directly inspected each recipe; none call `isPortugueseDecision`).
+- Evidence: E1.
+- Walk: For a PT user who triggers a Content approval, Finance reminder, Cooking decision, Chat clarification, or any generic decision, the iOS detail view receives English `problemStatement` / `recommendation` / `whySummary` wrapped in `L10n.isPT ? "O que aconteceu" : "What happened"` (Portuguese chrome). Inconsistent UX.
+- Impact: identical to the partially closed R3-NEW-004. Not a Wave 1 blocker because both Felipe and Jaqueline operate with mixed PT acceptable; problematic for any PT-only future cohort.
+- Recommendation: extend `isPortugueseDecision` usage to remaining recipes plus the legacy helpers. Mechanical.
+- Status: OPEN (Wave 2 polish)
+
+#### R4-NEW-002 — Home `ctaLabelForSummary` returns English-only labels regardless of user locale
+
+- Severity: **P3** (UX consistency)
+- File: `src/services/decision-center.ts:1310-1316`
+- Confidence: HIGH
+- Evidence: E1.
+- Walk: `ctaLabelForSummary(openCount, urgentCount, top)` returns hardcoded English: `'All Clear'`, `'Urgent Decision'`, `'Schedule Conflict'`, `'1 Decision'`, `'%d Decisions'`. iOS Home consumes `cta` from the API response and renders it directly.
+- Impact: PT users see the Home Decision Center count chip in English even when surrounded by PT navigation. Not a Wave 1 blocker.
+- Recommendation: thread user locale into `getDecisionSummary` and select PT/EN copy. Or move the strings into the iOS L10n layer and let the server return a structured `ctaKey` instead of a translated string.
+- Status: OPEN (Wave 2 polish)
+
+#### R4-NEW-003 — Legacy fallback mode shows raw upstream `body` text unchanged
+
+- Severity: **P3** (documentation gap; legacy mode is operator-toggled, APNs already gated)
+- File: `src/services/decision-center-logic-v2.ts:233-301` (`buildLegacyDecisionLogic`)
+- Confidence: MEDIUM
+- Evidence: E1.
+- Walk: when the flag is off, the legacy recipe sets `problemStatement: body` where `body = input.body?.trim() || input.safeBody?.trim() || title`. There's no quality gate sanitation. So the user sees whatever raw text the upstream emitter sent — including potentially raw ISO timestamps if the upstream embedded them.
+- Impact: acceptable for an incident rollback because (a) APNs is force-disabled, (b) the user is in-app authenticated. But the "clean decision copy" promise of v2 disappears in legacy mode.
+- Recommendation: add a paragraph to `engine/docs/OBSERVABILITY-ONCALL.md` next to the flag description noting that legacy mode shows raw upstream body text and disables autopilot + APNs visible delivery so operators know what UI degradation to expect.
+- Status: OPEN (Wave 2 doc-only)
+
+#### R4-NEW-004 — No upstream production emitter yet sets `visibilityScope: 'system_admin'`
+
+- Severity: **P3** (feature-incomplete; same pattern as R2-NEW-007 was originally)
+- File: every emitter — none calls `createDecisionIntent({ ..., visibilityScope: 'system_admin' })`.
+- Confidence: HIGH (grep `visibilityScope.*system_admin\|visibilityScope.*tenant_admin` across `src/` finds no production producer).
+- Evidence: E1.
+- Walk: `ownerAdminOpsRecipe` is now mechanically reachable, but no production cron / scheduler / monitor emits a decision with `visibilityScope: 'system_admin'`. The recipe is dead code until a real owner/admin emitter is added.
+- Impact: zero today. But when a future emitter wants to surface an ops decision (e.g., "restart PM2 worker", "rotate keys"), the wiring is ready and tested.
+- Recommendation: when the first real owner/admin signal source ships, route it through `createDecisionIntent({ visibilityScope: 'system_admin' })` and add an integration test that walks the recipe end-to-end.
+- Status: OPEN (Wave 2/3 feature work — scaffold is in place)
+
+### Round 4 cleanup status
+
+- Local engine: not started.
+- Simulators: shut down (`xcrun simctl list devices booted` returns empty).
+- Ports 8200 / 8201 / 8203: clear.
+- xcodebuild / vitest / tsx processes: none remain.
+- xcresult artifact preserved at `docs/release/qa-evidence/round4-ios-results.xcresult` (11/11 PASS).
+- Engine and iOS dirty state preserved per non-negotiables (xcscheme, build/, docs/agents/, smoke-evidence/).
+
+### Round 4 recommendation (Claude)
+
+**Continue with Wave 1 local QA and operator-physical pre-cut work.** No regressions from R3 verdict. The rollback flag adds real production safety — recommend exercising it once on staging before production promotion (run engine with `DECISION_CENTER_LOGIC_V2_ENABLED=false`, hit `/api/v1/decisions`, confirm the returned shape decodes on iOS without v2 fields breaking).
+
+### Proposed Codex prompt for Round 5 (optional Wave 2 polish)
+
+```
+Two small completion items + one doc on feature/decision-center-logic-v2
+(no push, no deploy, no TestFlight, preserve dirty xcscheme + build/ +
+docs/agents/ + smoke-evidence/).
+
+1) R4-NEW-001 (P2) — complete PT recipe coverage
+   - Apply isPortugueseDecision(input) to contentRecipe, financeRecipe,
+     cookingRecipe, chatRecipe, genericRecipe, AND the buildLegacyDecisionLogic
+     fallback helpers (safePreviewTitleForLegacy, safePreviewBodyForLegacy,
+     and the legacy recommendation/whySummary strings).
+   - Add one pin test per recipe asserting en-US and pt-PT output paths.
+
+2) R4-NEW-002 (P3) — Home CTA localization
+   - Thread user locale into ctaLabelForSummary (decision-center.ts:1310).
+   - Add Portuguese translations: 'All Clear' → 'Tudo certo',
+     'Urgent Decision' → 'Decisão urgente', 'Schedule Conflict' →
+     'Conflito de agenda', '1 Decision' → '1 decisão',
+     '%d Decisions' → '%d decisões'.
+   - Pin test verifying both locales for each branch.
+
+3) R4-NEW-003 (P3 doc-only) — document legacy-mode UI trade-offs in
+   engine/docs/OBSERVABILITY-ONCALL.md (single paragraph noting that legacy
+   mode shows the raw upstream body text unchanged and disables autopilot
+   and APNs visible delivery).
+
+Skip R4-NEW-004 — it's a feature work item, not a v2 polish item; defer
+until the first owner/admin emitter is needed.
+```
+
+### Round 4 prompt / process improvements
+
+- **Hedged-scope claims need scope enumeration.** Codex said "first Decision Center v2 recipe paths" which is accurate but vague. Better closeout format: list the 5 recipes that ARE localized and the 5 that are NOT, so the reviewer doesn't have to enumerate them.
+- **Layering the kill switch was the right call.** Codex built `buildLegacyDecisionLogic` to return the v2 shape with `safeForAPNs: false`, leveraging existing orchestrator behavior instead of adding parallel code paths. Pattern worth repeating: when adding a safety flag, find the existing gate the flag should flip rather than introducing a new branch.
+- **Round-trip tests for new contract fields catch contract drift.** `decision-center.test.ts:251-279` walks `visibilityScope` from input → record → list response. Without this test, R3-NEW-001's closure could have regressed silently because the recipe selection still works when scope is set on `input` even if persistence drops it. The round-trip test pins the entire chain.
+
+## Round 5 close-out — 2026-05-12 (Codex, post Round 4 QA)
+
+Status: **READY_FOR_LOCAL_QA**. This pass closes the three Round 4 polish items that were safe to implement without new architecture. R4-NEW-004 remains deliberately deferred because no real owner/admin signal emitter exists yet and adding a fake producer would weaken the product truth.
+
+### Round 4 finding closure
+
+| ID | Severity | Verdict | Evidence |
+|---|---|---|---|
+| R4-NEW-001 PT localization incomplete | P2 | **CLOSED** | `src/services/decision-center-logic-v2.ts` now localizes `contentRecipe`, `financeRecipe`, `cookingRecipe`, `chatRecipe`, `genericRecipe`, and `buildLegacyDecisionLogic`/legacy safe-preview helpers via `isPortugueseDecision(input)`. Test `decision-center-logic-v2.test.ts` now pins Portuguese output for all recipe families plus sensitive legacy fallback redaction. E2. |
+| R4-NEW-002 Home CTA labels English-only | P3 | **CLOSED** | `src/services/decision-center.ts` now derives locale from `userDecisionContextDefaults(userId).locale` and passes it into `ctaLabelForSummary`, which returns `Tudo certo`, `Decisão urgente`, `Conflito de agenda`, `1 decisão`, and `%d decisões` for Portuguese locales. Tests in `decision-center.test.ts` cover empty, one-decision, urgent, and non-urgent conflict CTA branches. E2. |
+| R4-NEW-003 legacy fallback raw body trade-off undocumented | P3 | **CLOSED** | `engine/docs/OBSERVABILITY-ONCALL.md` now documents that `DECISION_CENTER_LOGIC_V2_ENABLED=false` intentionally degrades UI intelligence and reduces sensitive finance/training/content/security fallback text to safe "open Nexus" wording while visible APNs stays disabled. E1. |
+| R4-NEW-004 no production `system_admin` emitter | P3 | **DEFERRED_WITH_OWNER_DECISION_REQUIRED** | The visibility-scope contract and owner/admin recipe are wired, but no real upstream production emitter owns an actionable system-admin signal yet. Deferred until the first real owner/admin operation source exists; no fake decision emitter was added. E1. |
+
+### Verification
+
+- `npx tsc --noEmit` -> **PASS**.
+- Narrow focused vitest: `decision-center-logic-v2`, `decision-center`, `notification-orchestrator` -> **3 files / 75 tests PASS**.
+- Broader Decision Center focused vitest: `decision-center-logic-v2`, `decision-center`, `notification-orchestrator`, `decisions-routes`, `notifications-routes`, `scheduler-user-scope`, `content-learning-store`, `secretary-scheduling-arbitrator` -> **8 files / 157 tests PASS**.
+- `npm run docs:audit` before writing this section -> 525 files audited / 479 warnings, including the pre-existing workspace mirror stale warning for this QA file.
+- `bash scripts/workspace-docs-mirror.sh`, then `npm run docs:audit` -> 525 files audited / 478 warnings; the mirror-stale warning is gone.
+
+### Notes
+
+- iOS was not touched in Round 5; the server now sends localized CTA and decision recipe copy through the existing v2 contract.
+- No push, deploy, TestFlight cut, production data, production APNs, or production calendars were used.
+- Pre-existing untracked staging smoke evidence files in `engine/docs/release/smoke-evidence/` were preserved.
