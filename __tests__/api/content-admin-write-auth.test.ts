@@ -215,6 +215,37 @@ describe('content admin write auth scopes', () => {
     });
   });
 
+  it('rejects portal attempts to mark reference channels as creator-owned without server-verified OAuth', async () => {
+    portalWriteTokenValue = 'portal-write-token';
+
+    const { contentAdminWriteRoutes } = await import('../../src/api/routes/content-admin-write');
+    const app = express();
+    app.use(express.json());
+    app.use('/api/v1/admin/content', contentAdminWriteRoutes());
+
+    const res = await fetchJson(
+      app,
+      'POST',
+      '/api/v1/admin/content/channels',
+      {
+        userId: 7,
+        tenantId: 7,
+        url: 'https://youtube.com/@owner-claim',
+        addedVia: 'youtube_oauth',
+      },
+      { Authorization: 'Bearer portal-write-token' },
+    );
+
+    expect(res.status).toBe(403);
+    expect(res.body).toMatchObject({
+      ok: false,
+      error: {
+        code: 'OWNED_CHANNEL_REQUIRES_OAUTH',
+      },
+    });
+    expect(mockDbRun).not.toHaveBeenCalled();
+  });
+
   it('allows the legacy full-access portal token during scoped-token migration only when fallback is enabled', async () => {
     portalTokenValue = 'legacy-portal-token';
     portalReadTokenValue = 'portal-read-token';

@@ -5,7 +5,7 @@
 
 | Area | Path | Branch | Commit | Dirty state | Version | Migrations |
 | --- | --- | --- | --- | --- | --- | --- |
-| Backend | `/Users/felipedominguez/Desktop/Custom Connectors/Cortex/cortex-telegram-hub-bot` | `feature/decision-center-logic-v2` | `9d34f3fd` | `dirty` | `4.14.154` | `127` |
+| Backend | `/Users/felipedominguez/Desktop/Custom Connectors/Cortex/cortex-telegram-hub-bot` | `feature/decision-center-logic-v2` | `1a96cb32` | `dirty` | `4.14.154` | `127` |
 | iOS | `/Users/felipedominguez/Desktop/Nexus Hub IOS/Nexus Hub` | `feature/decision-center-logic-v2` | `460850c` | `dirty` | n/a | n/a |
 
-Generated at: `2026-05-12T13:58:18Z`
+Generated at: `2026-05-12T14:05:31Z`

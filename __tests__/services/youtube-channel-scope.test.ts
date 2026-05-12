@@ -17,6 +17,7 @@ vi.mock('../../src/utils/logger', () => ({
 }));
 
 import {
+  isOwnedYoutubeChannelMarker,
   listUserScopedYoutubeChannelTargets,
   resolveUserScopedYoutubeChannelId,
 } from '../../src/services/youtube-channel-scope';
@@ -65,7 +66,7 @@ describe('user-scoped YouTube channel identity', () => {
       INSERT INTO content_ref_channels (user_id, tenant_id, channel_id, channel_url, status, added_via, source_metadata_json)
       VALUES
         (101, 501, 'UCownerA', 'https://youtube.com/@ownerA', 'active', 'youtube_oauth', '{}'),
-        (202, 602, 'UCownerB', 'https://youtube.com/@ownerB', 'active', 'manual', '{"role":"own_channel"}'),
+        (202, 602, 'UCownerB', 'https://youtube.com/@ownerB', 'active', 'manual', '{"role":"own_channel","ownershipVerified":true,"verifier":"youtube_oauth"}'),
         (303, 703, 'UCpending', 'https://youtube.com/@pending', 'pending', 'youtube_oauth', '{}')
     `).run();
 
@@ -91,5 +92,24 @@ describe('user-scoped YouTube channel identity', () => {
     ]);
     expect(resolveUserScopedYoutubeChannelId(101)).toBe('UCownerUnicode_日本');
     expect(resolveUserScopedYoutubeChannelId(Number.MAX_SAFE_INTEGER + 1)).toBeNull();
+  });
+
+  it('does not treat unverified manual metadata as creator-owned', () => {
+    testDb.prepare(`
+      INSERT INTO content_ref_channels (user_id, tenant_id, channel_id, channel_url, status, added_via, source_metadata_json)
+      VALUES
+        (101, 101, 'UCmanualClaim', 'https://youtube.com/@manual-claim', 'active', 'manual', '{"role":"own_channel"}'),
+        (101, 101, 'UCtextClaim', 'https://youtube.com/@text-claim', 'active', 'manual', '{"note":"authenticated_creator youtube_oauth"}')
+    `).run();
+
+    expect(listUserScopedYoutubeChannelTargets()).toEqual([]);
+    expect(resolveUserScopedYoutubeChannelId(101)).toBeNull();
+  });
+
+  it('recognizes protected owned-channel marker names for writer-side authorization', () => {
+    expect(isOwnedYoutubeChannelMarker('youtube_oauth')).toBe(true);
+    expect(isOwnedYoutubeChannelMarker('ios_own_channel')).toBe(true);
+    expect(isOwnedYoutubeChannelMarker('own_channel')).toBe(true);
+    expect(isOwnedYoutubeChannelMarker('portal')).toBe(false);
   });
 });

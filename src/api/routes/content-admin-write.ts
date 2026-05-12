@@ -39,6 +39,7 @@ import {
 import { getContentPerformanceAggregate } from '../../state/content-performance-aggregate';
 // CONTENT-UI-O4: portal canonical lifecycle alias
 import { summarizeCanonicalLifecycle } from '../../state/content-lifecycle';
+import { isOwnedYoutubeChannelMarker } from '../../services/youtube-channel-scope';
 
 function sendSuccess(res: Response, data: Record<string, unknown> = {}): void {
   res.json({ ok: true, ...data });
@@ -121,6 +122,13 @@ function parseBoolean(value: unknown): boolean {
 function parseLimit(value: unknown, fallback = 50, max = 100): number {
   const parsed = parsePositiveInt(value);
   return Math.min(Math.max(parsed ?? fallback, 1), max);
+}
+
+function normalizePortalChannelAddedVia(value: unknown): 'manual' | 'portal' | 'bot' | null {
+  const normalized = normalizeString(value, 64)?.toLowerCase();
+  if (!normalized) return 'portal';
+  if (normalized === 'manual' || normalized === 'portal' || normalized === 'bot') return normalized;
+  return null;
 }
 
 function buildPortalHistoricalComparisonHints(decision: ReturnType<typeof assessContentNovelty>): string[] {
@@ -465,9 +473,21 @@ export function contentAdminWriteRoutes(): Router {
     if (!url || typeof url !== 'string') {
       return sendError(res, 'BAD_REQUEST', 'url is required');
     }
+    if (isOwnedYoutubeChannelMarker(addedVia)) {
+      return sendError(
+        res,
+        'OWNED_CHANNEL_REQUIRES_OAUTH',
+        'Owned channel analytics require server-verified YouTube OAuth before a channel can be marked as creator-owned',
+        403,
+      );
+    }
+    const safeAddedVia = normalizePortalChannelAddedVia(addedVia);
+    if (!safeAddedVia) {
+      return sendError(res, 'BAD_REQUEST', 'addedVia must be one of manual, portal, or bot');
+    }
     try {
       const { addAndAnalyzeChannel } = await import('../../services/channel-learner');
-      const result = await addAndAnalyzeChannel(url.trim(), addedVia || 'portal', scope.userId, scope.tenantId);
+      const result = await addAndAnalyzeChannel(url.trim(), safeAddedVia, scope.userId, scope.tenantId);
       sendSuccess(res, {
         channel: { id: result.channel.id, name: result.channel.channel_name },
         analysis: {

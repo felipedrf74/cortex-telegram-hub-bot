@@ -9,13 +9,43 @@ export interface UserScopedYoutubeChannelTarget {
   channelId: string;
 }
 
-const OWN_CHANNEL_ADDED_VIA = new Set([
-  'own_channel',
-  'creator_channel',
-  'user_channel',
+const VERIFIED_OWN_CHANNEL_ADDED_VIA = new Set([
   'youtube_oauth',
   'ios_own_channel',
 ]);
+
+const OWN_CHANNEL_MARKERS = new Set([
+  'own_channel',
+  'creator_channel',
+  'user_channel',
+  ...VERIFIED_OWN_CHANNEL_ADDED_VIA,
+]);
+
+const VERIFIED_OWNERSHIP_MARKERS = new Set([
+  'youtube_oauth',
+  'ios_own_channel',
+  'server_verified_oauth',
+]);
+
+export function isOwnedYoutubeChannelMarker(value: unknown): boolean {
+  const normalized = String(value ?? '').trim().toLowerCase();
+  return OWN_CHANNEL_MARKERS.has(normalized);
+}
+
+function metadataHasVerifiedOwnership(value: string | null | undefined): boolean {
+  if (!value) return false;
+  try {
+    const parsed = JSON.parse(value) as Record<string, unknown>;
+    const role = String(parsed.role ?? parsed.kind ?? parsed.type ?? '').trim().toLowerCase();
+    const verifier = String(parsed.verifier ?? parsed.verifiedBy ?? parsed.source ?? '').trim().toLowerCase();
+    const ownershipVerified = parsed.ownershipVerified === true || parsed.ownership_verified === true;
+    return ownershipVerified
+      && (role === 'own_channel' || role === 'creator_channel' || role === 'user_channel')
+      && VERIFIED_OWNERSHIP_MARKERS.has(verifier);
+  } catch {
+    return false;
+  }
+}
 
 function hasColumn(table: string, column: string): boolean {
   try {
@@ -31,13 +61,9 @@ function rowLooksLikeOwnChannel(row: {
   source_metadata_json?: string | null;
 }): boolean {
   const addedVia = String(row.added_via ?? '').trim().toLowerCase();
-  if (OWN_CHANNEL_ADDED_VIA.has(addedVia)) return true;
+  if (VERIFIED_OWN_CHANNEL_ADDED_VIA.has(addedVia)) return true;
 
-  const metadata = String(row.source_metadata_json ?? '').toLowerCase();
-  return metadata.includes('own_channel')
-    || metadata.includes('creator_channel')
-    || metadata.includes('authenticated_creator')
-    || metadata.includes('youtube_oauth');
+  return metadataHasVerifiedOwnership(row.source_metadata_json);
 }
 
 export function listUserScopedYoutubeChannelTargets(): UserScopedYoutubeChannelTarget[] {

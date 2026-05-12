@@ -24,7 +24,6 @@ closable without explicit authorization and live credentials/devices.
 | ID | Severity | Area | Status | Next step |
 | --- | --- | --- | --- | --- |
 | PHASE2B5-CHAT-FASTPATH | P2 | chat architecture | PARKED / REOPEN TRIGGER ONLY | Reopen only if beta usage shows fastpath cache/coalescing bugs, a third real fastpath implementation appears, or a planned feature needs a unified iOS/Telegram/WebSocket fastpath. |
-| GAP-CONT-1 | P0/P1 | content runtime | PARTIAL | OAuth/owned-channel writer still needs owner authorization before live creator analytics can be considered enabled. |
 | GAP-TRN-1 | P1 | training | OPEN / OWNER DECISION REQUIRED | Decide whether plan-linter blockers should become strict pre-persist or rollback-safe training batch behavior. |
 | GAP-CONT-3 | P1 | content loop | OPEN / PRODUCT WORKSTREAM REQUIRED | Wire performance-feedback adaptation to live `content_performance` before claiming the radar loop is closed. |
 | GAP-CONT-4 | P1 | iOS content | PARTIAL | Add performance dashboard truth for views/retention/likes/comments; publishing calendar coverage alone is not complete. |
@@ -41,6 +40,7 @@ closable without explicit authorization and live credentials/devices.
 | GAP-REL-1 | P1 | docs/identity | 2026-05-12 | Re-ran `engine/scripts/release-identity.sh markdown --persist --quiet`; `docs/release/release-identity.md` now points at backend `feature/decision-center-logic-v2` commit `9d34f3fd` and iOS `feature/decision-center-logic-v2` commit `460850c`. Docs audit rerun after mirror refresh. |
 | GAP-REL-2 | P1 | docs/release | 2026-05-12 | Reconciled workspace current release state so 4.14.149 Round E + Decision Center remains the active production truth and older 4.14.132 notes are marked historical. |
 | W1-FIN-COLLECTORS | P1/P2 | finance collectors | 2026-05-12 | Added collector-service owner-scope enforcement before Amazon/Uber global browser session or Playwright launch paths, preserving the existing Telegram command and owner-tier scheduler gates. Broad per-user collector sessions remain a separate future product/credential workstream. |
+| GAP-CONT-1 | P0/P1 | content runtime | 2026-05-12 | Portal channel writes now reject client-supplied owned-channel markers unless ownership is server-verified, and YouTube creator analytics scope resolution ignores unverified manual metadata. Live performance analytics remains intentionally paused until user-scoped signal writes are implemented under GAP-CONT-3/GAP-CONT-4. |
 
 ## Authorization-Gated Codex Workstreams
 
