@@ -29,7 +29,18 @@ import {
 import { handleTaskExtraction } from '../photo';
 import { enqueue, isHtmlParseError } from '../shared-state';
 import { downloadTelegramFile } from '../telegram-file';
-import { resolveCanonicalUserId } from '../../services/user-service';
+import { isOwnerUserRef, resolveCanonicalUserId } from '../../services/user-service';
+
+function isOwnerScopedCollectorUser(userId: number): boolean {
+  return isOwnerUserRef(userId);
+}
+
+async function replyGlobalCollectorOwnerOnly(ctx: any, provider: 'Amazon' | 'Uber'): Promise<void> {
+  await ctx.reply(
+    `⚠️ ${provider} usa uma sessão global de recolha. ` +
+    'Por segurança multi-conta, este comando está limitado à conta owner até existirem credenciais por utilizador.',
+  );
+}
 
 export function registerFinanceCommands(bot: Bot): void {
   // /invoices [YYYY-MM] — Manual trigger for monthly invoice collection
@@ -191,6 +202,11 @@ export function registerFinanceCommands(bot: Bot): void {
         return;
       }
 
+      if (!isOwnerScopedCollectorUser(userId)) {
+        await replyGlobalCollectorOwnerOnly(ctx, 'Amazon');
+        return;
+      }
+
       if (!isAmazonConfigured()) {
         await ctx.reply(
           '\u26A0\uFE0F Amazon n\u00E3o configurado.\n' +
@@ -271,6 +287,11 @@ export function registerFinanceCommands(bot: Bot): void {
       const userId = resolveCanonicalUserId(ctx.from!.id);
       if (!userId) {
         await ctx.reply('⚠️ Não foi possível associar este comando a uma conta Nexus.');
+        return;
+      }
+
+      if (!isOwnerScopedCollectorUser(userId)) {
+        await replyGlobalCollectorOwnerOnly(ctx, 'Uber');
         return;
       }
 
