@@ -54,6 +54,8 @@ import { runEventBackboneCleanup } from '../tools/event-backbone-cleanup';
 import { expireStaleChatActionPlans } from './chat-reasoning-engine';
 import { runGarminTenantIsolationWatcher } from './garmin-tenant-isolation-watcher';
 import { runDecisionSourceStateSupersessionJob } from './decision-center';
+import { getActivePlan, getCurrentWeek, getWeeklyAdherence, computeAdjustmentRecommendation, updateWeekAdjustment, getWeeksForPlan } from './training-plans';
+import { calculateReadiness, persistReadinessScore } from './readiness-scorer';
 
 interface ActiveUserTarget {
   tenantId: number;
@@ -569,7 +571,7 @@ export async function buildSharedListNotificationForUser(userId: number): Promis
   return message || null;
 }
 
-function safeSharedListNotificationBody(message: string): string {
+function safeHtmlNotificationBody(message: string): string {
   return message
     .replace(/<[^>]+>/g, ' ')
     .replace(/\s+/g, ' ')
@@ -851,7 +853,7 @@ export function startScheduler(bot?: any): void {
           relatedEntityType: 'shared_task_list',
           title: 'Shared list update',
           body: 'New shared tasks need your attention.',
-          sensitiveBody: safeSharedListNotificationBody(message),
+          sensitiveBody: safeHtmlNotificationBody(message),
           actionButtons: [{ id: 'open_detail', label: 'Open tasks', style: 'primary' }],
           deeplink: 'nexus://notifications/shared-list',
           quietHoursPolicy: 'respect',
@@ -1270,9 +1272,6 @@ export function startScheduler(bot?: any): void {
 
   // ── Training Plan weekly auto-adjust (Sunday 19:00) ─────────────────
   cron.schedule('0 19 * * 0', wrapJob('training_plan_adjust', async () => {
-    const { getActivePlan, getCurrentWeek, getWeeklyAdherence, computeAdjustmentRecommendation, updateWeekAdjustment, getWeeksForPlan } = require('./training-plans');
-    const { calculateReadiness, persistReadinessScore } = require('./readiness-scorer');
-
     // ── Pre-authenticate Garmin silently BEFORE touching any Garmin API ──
     //
     // The cron has no interactive user to answer an MFA code, so the
@@ -1368,6 +1367,29 @@ export function startScheduler(bot?: any): void {
         } catch (err) {
           logger.error({ err, userId }, 'Failed to send training adjustment notification');
         }
+
+        try {
+          await createNotificationIntent({
+            userId,
+            tenantId: userId,
+            sourceSkill: 'training',
+            type: 'schedule_changed',
+            priority: 'active',
+            relatedEntityId: `training-plan-adjust:${plan.id}:${nextWeek.id}`,
+            relatedEntityType: 'training_week_adjustment',
+            title: 'Training week adjusted',
+            body: 'Nexus adjusted your next training week.',
+            sensitiveBody: safeHtmlNotificationBody(msg),
+            actionButtons: [{ id: 'open_detail', label: 'Open training', style: 'primary' }],
+            deeplink: `nexus://training/plan/${plan.id}`,
+            dedupeKey: `training:plan_adjust:${userId}:${plan.id}:${nextWeek.id}:${recommendation.adjustIntensity}`,
+            requiresUserAction: false,
+            deliveryPolicy: 'auto',
+            privacyPolicy: 'health',
+          });
+        } catch (err) {
+          logger.warn({ err, userId, planId: plan.id, weekId: nextWeek.id }, 'Training adjustment notification intent emit failed');
+        }
       }
 
       // ── Plan renewal check ───────────────────────────────────
@@ -1387,15 +1409,31 @@ export function startScheduler(bot?: any): void {
 
         try {
           await safeSend(userId, renewMsg, { parse_mode: 'HTML' });
-          // Send APNs notification
-          const { sendPushToUser } = require('./push-service');
-          sendPushToUser?.(userId, {
-            title: 'Plan Complete! 🔄',
-            body: `${plan.name} finished. Create your next training cycle.`,
-            data: { type: 'training_renewal', planId: String(plan.id) },
-          }).catch(() => {});
         } catch (err) {
-          logger.error({ err, userId }, 'Failed to send plan renewal notification');
+          logger.error({ err, userId }, 'Failed to send plan renewal Telegram notification');
+        }
+
+        try {
+          await createNotificationIntent({
+            userId,
+            tenantId: userId,
+            sourceSkill: 'training',
+            type: 'reminder',
+            priority: 'active',
+            relatedEntityId: `training-plan-renewal:${plan.id}`,
+            relatedEntityType: 'training_plan',
+            title: 'Training plan complete',
+            body: 'Your training plan is complete. Open Nexus to choose what comes next.',
+            sensitiveBody: safeHtmlNotificationBody(renewMsg),
+            actionButtons: [{ id: 'open_detail', label: 'Open training', style: 'primary' }],
+            deeplink: `nexus://training/plan/${plan.id}`,
+            dedupeKey: `training:plan_renewal:${userId}:${plan.id}`,
+            requiresUserAction: false,
+            deliveryPolicy: 'auto',
+            privacyPolicy: 'health',
+          });
+        } catch (err) {
+          logger.warn({ err, userId, planId: plan.id }, 'Training renewal notification intent emit failed');
         }
       }
       }); // runWithContext per-user scope end

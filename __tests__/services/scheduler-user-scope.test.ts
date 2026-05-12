@@ -26,6 +26,14 @@ const mockRunEventBackboneOnce = vi.hoisted(() => vi.fn());
 const mockRunEventBackboneCleanup = vi.hoisted(() => vi.fn());
 const mockExpireStaleChatActionPlans = vi.hoisted(() => vi.fn());
 const mockRunGarminTenantIsolationWatcher = vi.hoisted(() => vi.fn());
+const mockGetActivePlan = vi.hoisted(() => vi.fn());
+const mockGetCurrentWeek = vi.hoisted(() => vi.fn());
+const mockGetWeeklyAdherence = vi.hoisted(() => vi.fn());
+const mockComputeAdjustmentRecommendation = vi.hoisted(() => vi.fn());
+const mockUpdateWeekAdjustment = vi.hoisted(() => vi.fn());
+const mockGetWeeksForPlan = vi.hoisted(() => vi.fn());
+const mockCalculateReadiness = vi.hoisted(() => vi.fn());
+const mockPersistReadinessScore = vi.hoisted(() => vi.fn());
 
 vi.mock('node-cron', () => ({
   default: { schedule: (...args: unknown[]) => mockCronSchedule(...args) },
@@ -196,9 +204,17 @@ vi.mock('../../src/services/chat-reasoning-engine', () => ({
 }));
 vi.mock('../../src/services/training-plans', () => ({
   getActivePlans: vi.fn(() => []),
-  getActivePlan: vi.fn(() => null),
-  getCurrentWeek: vi.fn(),
+  getActivePlan: (...args: unknown[]) => mockGetActivePlan(...args),
+  getCurrentWeek: (...args: unknown[]) => mockGetCurrentWeek(...args),
+  getWeeklyAdherence: (...args: unknown[]) => mockGetWeeklyAdherence(...args),
+  computeAdjustmentRecommendation: (...args: unknown[]) => mockComputeAdjustmentRecommendation(...args),
+  updateWeekAdjustment: (...args: unknown[]) => mockUpdateWeekAdjustment(...args),
+  getWeeksForPlan: (...args: unknown[]) => mockGetWeeksForPlan(...args),
   getSessionsForWeek: vi.fn(() => []),
+}));
+vi.mock('../../src/services/readiness-scorer', () => ({
+  calculateReadiness: (...args: unknown[]) => mockCalculateReadiness(...args),
+  persistReadinessScore: (...args: unknown[]) => mockPersistReadinessScore(...args),
 }));
 
 import * as globalMail from '../../src/services/outlook-mail';
@@ -269,6 +285,14 @@ describe('scheduler tenant scoping', () => {
       dataCollectionMs: 1,
       analysisMs: 2,
     });
+    mockGetActivePlan.mockReturnValue(null);
+    mockGetCurrentWeek.mockReturnValue(null);
+    mockGetWeeklyAdherence.mockReturnValue({ completedSessions: 0, skippedSessions: 0 });
+    mockComputeAdjustmentRecommendation.mockReturnValue({ adjustIntensity: 100, reason: 'No adjustment' });
+    mockUpdateWeekAdjustment.mockReturnValue(true);
+    mockGetWeeksForPlan.mockReturnValue([]);
+    mockCalculateReadiness.mockResolvedValue({ score: 80, recommendation: 'Ready', factors: {} });
+    mockPersistReadinessScore.mockReturnValue(undefined);
   });
 
   it('getActiveUserIds returns canonical tenant ids from the users table', () => {
@@ -504,6 +528,81 @@ describe('scheduler tenant scoping', () => {
       tenantId: 22,
       sourceSkill: 'secretary',
       type: 'conflict_detected',
+    }));
+  });
+
+  it('training plan adjust cron emits NotificationIntent for native users after weekly adjustment', async () => {
+    mockGetActivePlan.mockReturnValue({ id: 501, name: 'Base plan', duration_weeks: 4 });
+    mockGetCurrentWeek.mockReturnValue({ id: 601, week_number: 2 });
+    mockGetWeeklyAdherence.mockReturnValue({
+      completedSessions: 3,
+      skippedSessions: 1,
+      totalSessions: 4,
+      adherenceRate: 75,
+      avgRpe: 6,
+      avgSoreness: 3,
+      avgEnergy: 7,
+    });
+    mockComputeAdjustmentRecommendation.mockReturnValue({ adjustIntensity: 80, reason: 'Adherence dipped this week' });
+    mockGetWeeksForPlan.mockReturnValue([{ id: 602, week_number: 3 }]);
+
+    startScheduler();
+    const trainingJob = mockCronSchedule.mock.calls.find((call) => call[0] === '0 19 * * 0')?.[1] as (() => Promise<void>) | undefined;
+    expect(trainingJob).toBeTypeOf('function');
+
+    await trainingJob!();
+
+    expect(mockUpdateWeekAdjustment).toHaveBeenCalledWith(602, 80, 'Adherence dipped this week');
+    expect(mockCreateNotificationIntent).toHaveBeenCalledWith(expect.objectContaining({
+      userId: 22,
+      tenantId: 22,
+      sourceSkill: 'training',
+      type: 'schedule_changed',
+      priority: 'active',
+      relatedEntityId: 'training-plan-adjust:501:602',
+      relatedEntityType: 'training_week_adjustment',
+      title: 'Training week adjusted',
+      body: 'Nexus adjusted your next training week.',
+      sensitiveBody: expect.stringContaining('Base plan'),
+      privacyPolicy: 'health',
+      requiresUserAction: false,
+    }));
+  });
+
+  it('training plan renewal cron emits NotificationIntent through the orchestrator instead of direct push only', async () => {
+    mockGetActivePlan.mockReturnValue({ id: 701, name: 'Race block', duration_weeks: 4 });
+    mockGetCurrentWeek.mockReturnValue({ id: 801, week_number: 4 });
+    mockGetWeeklyAdherence.mockReturnValue({
+      completedSessions: 4,
+      skippedSessions: 0,
+      totalSessions: 4,
+      adherenceRate: 100,
+      avgRpe: 5,
+      avgSoreness: 2,
+      avgEnergy: 8,
+    });
+    mockComputeAdjustmentRecommendation.mockReturnValue({ adjustIntensity: 100, reason: 'Maintain' });
+    mockGetWeeksForPlan.mockReturnValue([{ id: 801, week_number: 4 }]);
+
+    startScheduler();
+    const trainingJob = mockCronSchedule.mock.calls.find((call) => call[0] === '0 19 * * 0')?.[1] as (() => Promise<void>) | undefined;
+    expect(trainingJob).toBeTypeOf('function');
+
+    await trainingJob!();
+
+    expect(mockCreateNotificationIntent).toHaveBeenCalledWith(expect.objectContaining({
+      userId: 22,
+      tenantId: 22,
+      sourceSkill: 'training',
+      type: 'reminder',
+      priority: 'active',
+      relatedEntityId: 'training-plan-renewal:701',
+      relatedEntityType: 'training_plan',
+      title: 'Training plan complete',
+      body: 'Your training plan is complete. Open Nexus to choose what comes next.',
+      sensitiveBody: expect.stringContaining('Race block'),
+      privacyPolicy: 'health',
+      requiresUserAction: false,
     }));
   });
 
