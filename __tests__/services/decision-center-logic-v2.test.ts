@@ -435,6 +435,96 @@ describe('Decision Center Logic v2', () => {
     expect(decision.quality.missingFields).toContain('title');
   });
 
+  it('keeps the v2 feature flag conservative when disabled', () => {
+    const previous = process.env.DECISION_CENTER_LOGIC_V2_ENABLED;
+    process.env.DECISION_CENTER_LOGIC_V2_ENABLED = 'false';
+    try {
+      const decision = buildDecisionLogicV2({
+        sourceSkill: 'secretary',
+        type: 'conflict_detected',
+        priority: 'time_sensitive',
+        title: 'Secretary',
+        body: 'Secretary needs your attention — open Nexus to view details.',
+        actions: [{ id: 'open_detail', label: 'Review', style: 'primary' }],
+        relatedEntityType: null,
+        relatedEntityId: null,
+        privacyClassification: 'standard',
+      });
+
+      expect(decision.quality.status).toBe('pass');
+      expect(decision.quality.reason).toContain('disabled');
+      expect(decision.notificationEligibility).toBe('digest');
+      expect(decision.quality.safeForAPNs).toBe(false);
+      expect(decision.displayMode).toBe('needs_input');
+    } finally {
+      if (previous == null) delete process.env.DECISION_CENTER_LOGIC_V2_ENABLED;
+      else process.env.DECISION_CENTER_LOGIC_V2_ENABLED = previous;
+    }
+  });
+
+  it('localizes Secretary, Training, and sync recipe prose for Portuguese locales', () => {
+    const secretary = buildDecisionLogicV2({
+      sourceSkill: 'secretary',
+      type: 'conflict_detected',
+      priority: 'time_sensitive',
+      title: 'Long run conflict',
+      body: 'Saturday long run conflicts with another event.',
+      actions: [{ id: 'accept_reflow', label: 'Reorganizar', style: 'primary' }],
+      relatedEntityType: 'secretary_agenda_item',
+      relatedEntityId: 'agenda-pt',
+      privacyClassification: 'standard',
+      context: {
+        entityTitle: 'Longão de sábado',
+        currentStartAt: '2026-05-16T08:00:00.000Z',
+        currentEndAt: '2026-05-16T10:00:00.000Z',
+        recommendedStartAt: '2026-05-17T08:00:00.000Z',
+        recommendedEndAt: '2026-05-17T10:00:00.000Z',
+        locale: 'pt-PT',
+        timezone: 'Europe/Lisbon',
+      },
+    });
+    expect(secretary.problemStatement).toContain('precisa de uma decisão de agenda');
+    expect(secretary.recommendation).toContain('escolha outro horário viável');
+    expect(secretary.safePreviewBody).toContain('Abra o Nexus');
+
+    const training = buildDecisionLogicV2({
+      sourceSkill: 'training',
+      type: 'missing_input',
+      priority: 'active',
+      title: 'Training plan needs race date',
+      body: 'Race date is missing.',
+      actions: [{ id: 'open_detail', label: 'Adicionar data', style: 'primary' }],
+      relatedEntityType: null,
+      relatedEntityId: null,
+      privacyClassification: 'health',
+      context: {
+        explicitNoRelatedEntityReason: 'training profile is the affected entity',
+        locale: 'pt-BR',
+      },
+    });
+    expect(training.problemStatement).toContain('data da prova');
+    expect(training.primaryActionLabel).toContain('Adicionar');
+
+    const sync = buildDecisionLogicV2({
+      sourceSkill: 'secretary',
+      type: 'sync_failure',
+      priority: 'active',
+      title: 'Calendar sync incomplete',
+      body: 'Outlook sync did not complete.',
+      actions: [{ id: 'retry', label: 'Tentar sincronizar', style: 'primary' }],
+      relatedEntityType: null,
+      relatedEntityId: null,
+      privacyClassification: 'standard',
+      context: {
+        providerName: 'Outlook',
+        explicitNoRelatedEntityReason: 'sync failure is scoped to provider state',
+        locale: 'pt-PT',
+      },
+    });
+    expect(sync.problemStatement).toContain('não foi concluída');
+    expect(sync.whySummary).toContain('sincronização com falha');
+  });
+
   it('pins recipe confidence tiers so tuning is visible in review', () => {
     const cases = [
       buildDecisionLogicV2({

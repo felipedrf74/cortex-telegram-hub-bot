@@ -132,6 +132,24 @@ Typical actions:
 - Confirm whether the iOS app is showing a retryable degraded state.
 - Resolve after the backend dependency or route has recovered.
 
+## Decision Center Logic v2 Rollback Flag
+
+Decision Center Logic v2 is enabled by default. If a newly enriched decision
+path starts blocking local QA or produces unsafe frontend state, operators can
+temporarily set:
+
+```bash
+DECISION_CENTER_LOGIC_V2_ENABLED=false
+```
+
+This is a mitigation flag, not a long-term product mode. With the flag disabled,
+Decision Center returns legacy-compatible list/detail fields and skips the v2
+quality gate, but visible APNs delivery remains disabled for those fallback
+items so vague or private copy is not pushed to lock screens. After toggling,
+restart the backend process, confirm `/api/v1/decisions/summary` still returns
+a valid shape, then open a follow-up bug to fix the specific v2 recipe/gate
+before re-enabling the flag.
+
 ## Account Switching Telemetry
 
 iOS `POST /api/v1/auth/logout` and `POST /api/v1/auth/logout-all` emit

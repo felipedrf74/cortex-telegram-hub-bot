@@ -22,6 +22,7 @@ import { consumeResourceBudget } from './resource-budgets';
 import {
   buildDecisionLogicV2,
   type DecisionLogicContext,
+  type DecisionVisibilityScope,
 } from './decision-center-logic-v2';
 
 export type NotificationSourceSkill =
@@ -97,11 +98,12 @@ export interface NotificationIntentInput {
   deliveryPolicy?: NotificationDeliveryPolicy;
   privacyPolicy?: NotificationPrivacyPolicy;
   decisionContext?: DecisionLogicContext | null;
+  visibilityScope?: DecisionVisibilityScope | null;
 }
 
 export interface NotificationIntentRecord extends Required<Omit<NotificationIntentInput,
   'intentId' | 'relatedEntityId' | 'relatedEntityType' | 'sensitiveBody' | 'actionButtons' | 'deeplink' | 'expiresAt' |
-  'quietHoursPolicy' | 'dedupeKey' | 'requiresUserAction' | 'decisionDeadline' | 'deliveryPolicy' | 'privacyPolicy' | 'decisionContext'>> {
+  'quietHoursPolicy' | 'dedupeKey' | 'requiresUserAction' | 'decisionDeadline' | 'deliveryPolicy' | 'privacyPolicy' | 'decisionContext' | 'visibilityScope'>> {
   intentId: string;
   tenantId: number;
   relatedEntityId: string | null;
@@ -1350,7 +1352,10 @@ function normalizeIntent(input: NotificationIntentInput): NotificationIntentReco
     decisionDeadline: input.decisionDeadline ?? null,
     deliveryPolicy: input.deliveryPolicy ?? 'auto',
     privacyPolicy: input.privacyPolicy ?? defaultPrivacyPolicy(input.sourceSkill),
-    decisionContext: normalizeDecisionContext(input.decisionContext ?? null),
+    decisionContext: normalizeDecisionContext({
+      ...(input.decisionContext ?? {}),
+      ...(input.visibilityScope ? { visibilityScope: input.visibilityScope } : {}),
+    }),
     status: 'pending',
     createdAt: new Date().toISOString(),
   };
@@ -1834,9 +1839,22 @@ function normalizeDecisionContext(input: DecisionLogicContext | null | undefined
   assignContextString(context, 'deadlineAt', input.deadlineAt);
   assignContextString(context, 'timezone', input.timezone);
   assignContextString(context, 'locale', input.locale);
+  assignContextVisibilityScope(context, input.visibilityScope);
   assignContextSlots(context, input.candidateSlots);
   assignContextReasonCodes(context, input.reasonCodes);
   return Object.keys(context).length ? context : null;
+}
+
+function assignContextVisibilityScope(
+  context: DecisionLogicContext,
+  visibilityScope: DecisionLogicContext['visibilityScope'] | null | undefined,
+): void {
+  if (visibilityScope === 'user_private'
+    || visibilityScope === 'tenant_shared'
+    || visibilityScope === 'tenant_admin'
+    || visibilityScope === 'system_admin') {
+    context.visibilityScope = visibilityScope;
+  }
 }
 
 function assignContextSlots(

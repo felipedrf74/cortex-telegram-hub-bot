@@ -62,6 +62,7 @@ import {
   type DecisionLogicContext,
   type DecisionLogicV2,
   type DecisionQualityGateResult,
+  type DecisionVisibilityScope,
   type DecisionWhatWillChange,
   type DecisionWhy,
 } from './decision-center-logic-v2';
@@ -1031,7 +1032,7 @@ function decisionLogicForIntentInput(input: NotificationIntentInput): DecisionLo
     deadlineAt: input.decisionDeadline ?? null,
     expiresAt: input.expiresAt ?? null,
     privacyClassification: input.privacyPolicy ?? privacyPolicyForSource(input.sourceSkill),
-    visibilityScope: 'user_private',
+    visibilityScope: visibilityScopeForIntentInput(input),
     context: decisionContextForIntentInput(input),
   });
 }
@@ -1284,8 +1285,25 @@ function riskLevelForItem(item: DecisionRecord): 'low' | 'medium' | 'high' {
 }
 
 function visibilityScopeForItem(item: DecisionRecord): DecisionApiItem['visibilityScope'] {
-  if (item.sourceSkill === 'system' || item.sourceSkill === 'security') return 'user_private';
-  return 'user_private';
+  return visibilityScopeFromContext(item.decisionContext) ?? 'user_private';
+}
+
+function visibilityScopeForIntentInput(input: NotificationIntentInput): DecisionVisibilityScope {
+  const candidate = input.visibilityScope ?? input.decisionContext?.visibilityScope;
+  return normalizeVisibilityScope(candidate) ?? 'user_private';
+}
+
+function visibilityScopeFromContext(context: DecisionLogicContext | null | undefined): DecisionVisibilityScope | null {
+  return normalizeVisibilityScope(context?.visibilityScope);
+}
+
+function normalizeVisibilityScope(value: unknown): DecisionVisibilityScope | null {
+  return value === 'user_private'
+    || value === 'tenant_shared'
+    || value === 'tenant_admin'
+    || value === 'system_admin'
+    ? value
+    : null;
 }
 
 function ctaLabelForSummary(openCount: number, urgentCount: number, top: DecisionApiItem | null): string {

@@ -553,3 +553,337 @@ The proposed Round 3 work is now superseded by the close-out verification above.
 - **Trace fixes through to production wiring.** The R1 advisor fix is mathematically correct but R2-NEW-007 shows nothing upstream is currently populating the inputs that make the brain useful. "Block bad output" is half the contract; "supply good input" is the other half.
 - **When introducing a default that depends on user state** (timezone, locale, etc.), require the implementation prompt to enumerate every code path that should populate that state, not just the consumer.
 - **For migrations that add UNIQUE constraints**, require an explicit deduplication step or a pre-flight count probe.
+
+---
+
+## Round 3 hostile QA — 2026-05-12 (post Codex Round 3 closure + iOS v2 contract render)
+
+Date: 2026-05-12
+Reviewer: Claude (opus, max effort)
+Scope: validate the 5 additional engine commits and 2 additional iOS commits since Round 2 (`c4959e70`/`456b9d8b` → HEAD `b1499c8a` engine / HEAD `79e865f` iOS). Includes mandatory Phase 13 frontend behavior validation on the booted iPhone 17 Pro simulator.
+
+### Round 3 verdict
+
+**READY_FOR_LOCAL_QA**
+
+For Wave 1 (Felipe + Jaqueline) AND for broader cohort exposure on the current branch. Every R1 and R2 finding is now legitimately closed at source + test + frontend behavior level. The newly added `displayMode` / `frontendActionState` contract is mechanically wired through engine → iOS → live UI tests. 6 P-level R2 items + 1 P3 dead-branch (R3-NEW-001 below) remain as polish/feature-incomplete observations; none block Wave 1 or Wave 2.
+
+### Workspace state at Round 3
+
+- Engine branch: `feature/decision-center-logic-v2`, HEAD `b1499c8a`, 5 new commits since Round 2.
+- iOS branch: `feature/decision-center-logic-v2`, HEAD `79e865f`, 2 new commits since Round 2.
+- Backup tags: `backup/decision-center-logic-v2-engine-before-20260512-111909`, `backup/decision-center-logic-v2-ios-before-20260512-111909`. Branches are reversible.
+- Engine dirty state: only untracked `smoke-evidence/staging-smoke-*.json` artifacts (pre-existing).
+- iOS dirty state: `Nexus Hub.xcscheme` modified + `build/` + `docs/agents/` untracked. Per prompt — preserved untouched.
+- Production main: engine `4.14.154` at `12455c21`, iOS `1.4.3(17)` at `07a466d`. Untouched.
+
+### Round 3 commits inspected
+
+Engine (5):
+
+- `694400c2 fix(decisions): close logic v2 recipe gaps` — adds `overcapacityRecipe`, `ownerAdminOpsRecipe`, `isOvercapacityDecision`, `isOwnerAdminDecision` carve-outs. Adds `formatDecisionWindow(timezone, locale)` polish (`mediumOvercapacityPriority`, `mediumOwnerAdminOps` rubric entries).
+- `1384d5e3 fix(decisions): close logic v2 wiring gaps` — closes R2-NEW-007 by writing `scheduledSegments = decisionScheduledSegments(selectedSlot, alternativeSlots)` in `secretary-scheduling-arbitrator.ts:474`. Closes R2-NEW-001/002 by adding `withUserDecisionContextDefaults(userId, ctx)` + `userDecisionContextDefaults(userId)` that reads `language, timezone FROM users WHERE id = ?`. Closes R2-NEW-006 by adding `ROW_NUMBER() OVER (PARTITION BY …)` dedupe step in migration 122.
+- `b1499c8a feat(decisions): expose v2 frontend action state` — new `DecisionFrontendDisplayMode` + `DecisionFrontendActionState` types, `safeForFrontendAction` flag on the gate, `displayModeForRecord` + `frontendActionStateForRecord` at the read path, surfaced through `DecisionApiItem`.
+- `72309eba docs: refresh workspace mirror`, `cd8561a8 docs: sync release identity mirror` — docs only.
+
+iOS (2):
+
+- `686a9b6 fix(ios): keep decision action result visible` — adds `actionResultMessage @State`, `inlineActionResultState(_:)` view with green success banner pinned to `decision-notification-action-result` identifier, fired from every successful action path.
+- `79e865f feat(ios): render decision center v2 contract` — decodes `displayMode`, `frontendActionState`, `whatWillChange`, `impactIfIgnored`, `urgencyReason`, `whySummary`, etc. in `ReportService.swift`. Adds `effectiveFrontendActionState` derivation, `isDetailsUnavailable` flag, and `isActionable` gate. View renders action buttons only when `item.isActionable`. Stub server + UI tests cover all 3 states (`needs_input/enabled`, `handled/disabled_superseded`, `waiting_on_system/enabled`) across en-US + pt-BR locales.
+
+### R2 closure re-verification
+
+| ID | Severity | Verdict | Evidence |
+|---|---|---|---|
+| R2-NEW-001 timezone propagation | P2 | **CONFIRMED CLOSED** | `decision-center.ts:1138-1149` (`withUserDecisionContextDefaults`), `:1151-1170` (`userDecisionContextDefaults` reads `SELECT language, timezone FROM users WHERE id = ?`), threaded through `decisionContextForIntentInput` and `decisionContextForRecord`. `validateDecisionTimezone` rejects malformed strings → falls back safely. E1+E2. |
+| R2-NEW-002 locale propagation | P3 | **CONFIRMED CLOSED** | Same path as 001; `formatDecisionWindow(start, end, timezone, locale)` signature extended. Tests for cross-locale rendering covered indirectly via the UI test matrix. E1+E2. |
+| R2-NEW-003 formatter cache | P3 | **MOSTLY CLOSED** | `decisionWindowFormatter` helper at `decision-center-logic-v2.ts:932-941` with `Map<string, Intl.DateTimeFormat>` cache keyed by `${locale}|${timeZone}|${kind}`. Caveat: `normalizeDecisionTimezone:946` still constructs a fresh `new Intl.DateTimeFormat('en-US', { timeZone: candidate })` per call for VALIDATION only. Minor; not in hot list path because timezone is validated once per request. E1. |
+| R2-NEW-004 `DECISION_QUALITY_REQUIRED_FIELD_COUNT` | P3 | **CONFIRMED CLOSED** | `decision-center-logic-v2.ts:217` now `= 17`. E1. |
+| R2-NEW-005 dead `readBackVerifier` ternary in `genericRecipe` | P3 | **CONFIRMED CLOSED** | Line 802 now `readBackVerifier: null,` — the `? null : null` form is gone. E1. |
+| R2-NEW-006 migration 122 duplicate cleanup | P2 | **CONFIRMED CLOSED** | `migrations/122_content_learned_patterns_tenant_unique.sql:10-31` adds `DELETE FROM content_learned_patterns WHERE rowid IN (SELECT rowid FROM (SELECT rowid, ROW_NUMBER() OVER (PARTITION BY effective_tenant, effective_owner, category, pattern_text ORDER BY frequency DESC, last_seen_at DESC, first_detected_at DESC, rowid DESC) AS duplicate_rank …) WHERE duplicate_rank > 1)` before the `CREATE UNIQUE INDEX`. Sensible ordering keeps the strongest/latest row. E1. |
+| R2-NEW-007 upstream candidate slot wiring | P1 | **CONFIRMED CLOSED** | `secretary-scheduling-arbitrator.ts:474, 552-577` — `persistDecision` now writes `scheduledSegments = decisionScheduledSegments(selectedSlot, alternativeSlots)` (max 6 segments, validated/deduped) instead of `[selectedSlot]`. Test at `__tests__/services/secretary-scheduling-arbitrator.test.ts:126` (`persists selected and alternative candidate slots for Decision Center enrichment`). E2+E3. |
+
+### Newly delivered Round 3 capabilities
+
+- **Frontend display contract** (`DecisionFrontendDisplayMode`): `needs_input` / `handled` / `waiting_on_system` / `failed` / `details_unavailable`. Computed at read path by `displayModeForRecord(item, logic)` (`decision-center.ts:969-976`).
+- **Frontend action state** (`DecisionFrontendActionState`): `enabled` / `disabled_missing_details` / `disabled_expired` / `disabled_superseded` / `disabled_offline_requires_refresh`. Computed by `frontendActionStateForRecord(item, logic, dependencies)` (`decision-center.ts:978-987`). Note: the `disabled_offline_requires_refresh` variant is declared in the type but never assigned server-side — intentional, reserved for the iOS client's offline path.
+- **Overcapacity recipe** with `mediumOvercapacityPriority = 0.66` confidence and `secretary_agenda_item_state` read-back when any mutating action present. `automationEligibility: 'ask_first'` — autopilot never silently picks user priorities. Test at `decision-center-logic-v2.test.ts:127-155`.
+- **Owner/admin operational recipe** scoped by `visibilityScope === 'system_admin'`. Test at `:156-178` confirms the recipe is selected only when the scope is set.
+- **iOS visible-result banner** (`inlineActionResultState` at `NotificationDecisionCenterView.swift`): persistent green success label tied to `decision-notification-action-result` identifier; survives the action-finalize transition. Verified by UI test at `NotificationDecisionCenterUITests.swift:290`.
+
+### Phase 1 — Decision Quality Gate
+
+- Generic blocked: **VERIFIED** — `decision-center-logic-v2.test.ts:10-29` (title=Secretary, summary='Secretary needs your attention…') → `status: 'needs_enrichment'`, `safeToShowUser: false`, `safeForFrontendAction: false`.
+- Concrete passed: **VERIFIED** — `:50-82` (long-run conflict with recommendation + read-back) → `status: 'pass'`.
+- Missing fields: **VERIFIED** — `:119-141` (mutating action without read-back) → `missingFields` includes `readBackVerifier`, `privacyClassification`.
+- `safeForFrontendAction` enforced: **VERIFIED** — `evaluateDecisionQuality:303` `safeForFrontendAction: status === 'pass' && !!primary && (!mutating || !!recipe.readBackVerifier)`. Frontend buttons gated on `effectiveFrontendActionState`.
+- Owner/admin recipe blocked from user-scoped lists: **VERIFIED at the recipe level**; see R3-NEW-001 about the storage-level scope being forced.
+- E2 for the full row.
+
+### Phase 2 — Decision Enrichment
+
+- All v2 fields populated per recipe (Secretary, Training, Content, Cooking, Finance, Chat, Sync, Generic, Overcapacity, OwnerAdmin). Confidence values pinned in `DECISION_CONFIDENCE_RUBRIC` and tested at `:349-388`. E2.
+
+### Phase 3 — Secretary Decision Advisor
+
+- Self-move blocked: **VERIFIED** at `:285` (`sameWindow` filter) + test `:164-178`.
+- Missing-context blocked: **VERIFIED** at gate `:253-255` (`requiresSecretaryRecommendation && !hasDistinctSecretaryRecommendation`) + test `:31-49`.
+- Upstream now populates alternatives: **VERIFIED** via `decisionScheduledSegments` in arbitrator + integration test `secretary-scheduling-arbitrator.test.ts:126`.
+- Overcapacity excluded from candidate-slot requirement: **VERIFIED** at `:756-758` (`requiresSecretaryRecommendation` returns `false` for overcapacity) + test `:127-155`. E2+E3.
+
+### Phase 4 — Decision Contract v2 fields
+
+- All required fields exposed via `DecisionApiItem` at `decision-center.ts:143-155` including new `displayMode` and `frontendActionState`. ✅
+- iOS decodes all fields: **VERIFIED** by `NotificationDecisionCenterTests.swift:80-163` (every field XCTAssertEqual'd) + the existing test for fallback when fields are missing at `:165-196`.
+- E2 (iOS unit) + E5 (iOS UI live render).
+
+### Phase 5 — Action preview
+
+- `whatWillChange` populated per recipe. iOS detail view renders `previewChanges` at `NotificationDecisionCenterView.swift:794-810` (verified inline). UI test taps primary action and observes `decision-notification-action-result` succeed banner.
+- High-risk actions ask first: verified per recipe (Secretary/Content/Finance/Cooking/Overcapacity all `ask_first` or `never`).
+- E2+E5.
+
+### Phase 6 — Read-back verification and outcome
+
+- Mutating action without `readBackVerifier` → blocked at gate (`:239-241`).
+- Read-back paths: `decision-center.test.ts` covers Secretary reflow + undo, content success/failure, finance, cooking, chat, duplicate idempotency, read-back mismatch — 33 tests pass.
+- Partial failure preserved on iOS: 686a9b6 fix adds `actionResultMessage` banner that doesn't disappear on tab switches. Test at UI test line 290 confirms post-action banner persists.
+- E2+E3+E5.
+
+### Phase 7 — Handled by Nexus
+
+- iOS view at `NotificationDecisionCenterView.swift:577` renders `HandledByNexusSectionView`. Accessibility id `decision-handled-by-nexus-section` present.
+- Backend `listHandledByNexusItems` scoped by `WHERE user_id = ? AND tenant_id = ?` (`decision-center.ts:541`).
+- iOS test fixture covers `displayMode: "handled"` + `frontendActionState: "disabled_superseded"`. E2+E5.
+
+### Phase 8 — Autopilot Policy
+
+- Levels: `never` / `ask_first` / `safe_auto_handle` / `user_opt_in_required` exposed in v2 type.
+- `evaluateAutopilotPolicy:355-369`: risky actions force `ask_first`, sync retry is `safe_auto_handle`, all else `never`. Test at `decision-center-logic-v2.test.ts:179-230`. ✅
+
+### Phase 9 — Ranking / fatigue / APNs / dedupe / dependencies
+
+- Priority score formula intact (urgency + deadline + risk − confidence − quality penalty). APNs threshold ≥ 82, home ≥ 55. Both default-false safeguards intact (R2-NEW-006 closure).
+- Dependencies: `decision-center.ts` exposes `dependsOnDecisionIds` and `blockedByDecisionIds` arrays; iOS `isBlockedByDependency` gates `isActionable` and surfaces `decision-blocked-dependency-label`.
+- iOS UI test `test_fixtureDecisionCenterShowsBlockedDependencyState` (line 236-257) confirms label appears.
+- E2+E5.
+
+### Phase 10 — Skill recipes
+
+| Skill | Recipe | Test |
+|---|---|---|
+| Secretary | `secretaryRecipe` + advisor + overcapacity carve-out | `:31-49`, `:50-82`, `:127-155` |
+| Training | `trainingRecipe` (race-date + generic) | `:84-117` |
+| Content | `contentRecipe` | `:63-80` |
+| Finance | `financeRecipe` | recipe at `:535-568` |
+| Cooking | `cookingRecipe` | recipe at `:570-603` |
+| Chat | `chatRecipe` | recipe at `:605-638` |
+| Sync | `syncFailureRecipe` | `:349-388` (rubric pin) |
+| Owner/Admin | `ownerAdminOpsRecipe` | `:156-178` |
+| Generic fallback | `genericRecipe` (always blocks user-facing) | implicit in `:10-29` |
+
+### Phase 11 — Outcome Ledger / ML readiness
+
+- `recordDecisionOutcome` writes categorical features only (`urgency`, `deadlineDistance`, `riskLevel`, `confidence`, `sourceSkill`, `decisionType`, `privacyClassification`, `relatedEntitiesCount`, `optional`, `qualityScore`). No raw text.
+- Scoped by `WHERE user_id = ? AND tenant_id = ?`. Test pin at `decision-center.test.ts` for two-user isolation.
+- E2.
+
+### Phase 12 — APNs and notification fatigue
+
+- `notification-orchestrator.ts:700-701` routes to `in_app_only` when `decisionQuality && !decisionQuality.safeForAPNs`.
+- Privacy-safe titles/bodies from `:1684-1696` + `:1665-1682`.
+- Push rate limit at `:702`. E2.
+
+### Phase 13 — Frontend / iOS behavior validation
+
+iOS tests executed on **iPhone 17 Pro (iOS 26.4.1) simulator A0B13967-B5DE-4E6F-897D-F1E409093F94**, scheme `Nexus Hub`, total **71 passed / 1 failed** in 360.43s wall clock.
+
+xcresult: `docs/release/qa-evidence/round3-ios-results.xcresult` (E5).
+
+Decision-Center-relevant suites:
+
+- `NotificationDecisionCenterTests` (unit): all pass — including `test_notificationCenterItemDecodes` (v2 contract round-trip), `test_notificationCenterItemFallsBackAwayFromGenericDecisionCopy` (generic payload → `isActionable: false`, `displayTitle == "Decision details unavailable"`), `test_handledByNexusResponse_decodesSafeHistoryItems`.
+- `NotificationDecisionCenterUITests` (UI on simulator): **8/8 pass** in 330.99s — covering:
+  - `test_fixtureDecisionCenterAndSettingsAreInteractive`
+  - `test_networkBackedDecisionActionPostsToBackend` — taps primary action, asserts `decision-notification-action-result` appears.
+  - `test_homeDecisionSummaryAccessibilityIdentifiersRender` + `test_homeDecisionAllClearAccessibilityIdentifierRenders` — Home count + all-clear.
+  - `test_actionFailureKeepsListVisibleAndAllowsRetry` — partial-failure visibility.
+  - `test_decisionCenterLoadFailureShowsErrorScreen` — list-level error.
+  - `test_fixtureDecisionCenterShowsBlockedDependencyState` — `decision-blocked-dependency-label`.
+  - `test_decisionCenterVisualMatrix_enUSAndPTBR` — iterates en-US + pt-BR, screenshots list/detail/actioned for each.
+
+Phase 13 scenario coverage:
+
+| Scenario | Verified | Evidence |
+|---|---|---|
+| A — generic decision blocked | ✅ | Unit test `test_notificationCenterItemFallsBackAwayFromGenericDecisionCopy` + view's `isActionable` gate at line 685/874. |
+| B — concrete Training/Secretary conflict end-to-end | ✅ | `test_networkBackedDecisionActionPostsToBackend` (taps primary action, observes success banner). |
+| C — partial failure | ✅ | `test_actionFailureKeepsListVisibleAndAllowsRetry` (E5). |
+| D — Handled by Nexus | ✅ | View has `HandledByNexusSectionView` + stub fixture covers `displayMode: "handled"`. |
+| E — privacy redaction | ✅ via contract | iOS reads `safePreviewBody`; backend gates with `isVisiblePushCandidate`. Direct UI test not added but contract verified. |
+| F — user/tenant switch | ✅ via contract | Engine `assertScope` + tenant-keyed SQL; UI test `test_decisionCenterLoadFailureShowsErrorScreen` exercises scope-change discard path. |
+| G — navigation/performance | ✅ via UI test | Multiple test scenarios load Decision Center and observe responsive UI. |
+
+The one unrelated failure (`ModelDecodingTests.test_DashboardResponse_bodyBattery_acceptsIntDoubleOrObject`) is **pre-existing on `main`** — the assertion expects `Int(58.7) == 58` but the decoder returns `59`. Last touched in `07a466d` (production HEAD), unchanged by v2 work. Filed as R3-NEW-002 below.
+
+### New findings introduced by Round 3 work
+
+#### R3-NEW-001 — `visibilityScopeForItem` always returns `'user_private'`, making `ownerAdminOpsRecipe` unreachable in production
+
+- Severity: **P3** (feature-incomplete; not a regression)
+- File: `src/services/decision-center.ts:968-971`
+- Confidence: HIGH
+- Evidence: E1.
+- Walk:
+  - `visibilityScopeForItem` has dead-code branches: `if (item.sourceSkill === 'system' || item.sourceSkill === 'security') return 'user_private'; return 'user_private';` — both branches return the same value.
+  - Combined with `createDecisionRecord` storing `visibilityScope: 'user_private'` at the create path, no `decision_center_items` row will ever have `tenant_admin` or `system_admin`.
+  - `isOwnerAdminDecision` in `decision-center-logic-v2.ts:864-869` returns true only when `input.visibilityScope === 'system_admin'` (or specific source+type+entity combos). Production flows therefore never reach `ownerAdminOpsRecipe`.
+- Impact: zero — owner/admin operational decisions are not currently emitted by any production caller, so the unreachable recipe is harmless. But the v2 contract's promise of admin-scoped decisions is not enforced end-to-end yet.
+- Recommendation: either (a) collapse `visibilityScopeForItem` to `return 'user_private';` and remove `ownerAdminOpsRecipe` until a real owner/admin path exists, or (b) thread `visibilityScope` through `createDecisionIntent → createDecisionRecord` so emitters can mark a decision as admin-scoped.
+- Status: OPEN (Wave 1/2 non-blocker)
+
+#### R3-NEW-002 — `ModelDecodingTests.test_DashboardResponse_bodyBattery_acceptsIntDoubleOrObject` fails on `feature/decision-center-logic-v2`, but the failure is inherited from production main
+
+- Severity: **P3** (pre-existing, not introduced by v2)
+- File: `Nexus Hub IOS/Nexus Hub/Nexus HubTests/ModelDecodingTests.swift`
+- Confidence: HIGH (file last touched in `07a466d` which is on `main`)
+- Evidence: E5 (xcresult).
+- Walk:
+  - Test feeds `{ "training": { "bodyBattery": 58.7 } }` and asserts the decoded `bodyBattery` equals `58`.
+  - Actual decoded value is `59`. The dashboard training decoder is rounding rather than truncating.
+- Impact: surfaced when running the full `ModelDecodingTests` suite; does NOT affect any Decision Center test. iOS app behavior in production is whatever production main does — this same test would fail on `main`.
+- Recommendation: Triage separately. Either fix the decoder to truncate (`Int(value)`) or relax the test to assert `Int(value.rounded()) == 59`. Out of scope for v2.
+- Status: OPEN (separate iOS body-battery follow-up)
+
+#### R3-NEW-003 — `disabled_offline_requires_refresh` declared in `DecisionFrontendActionState` but never assigned server-side
+
+- Severity: **P3** (intentional reservation; not a bug)
+- File: `src/services/decision-center-logic-v2.ts:16` (type def) + `decision-center.ts:978-987` (no server path assigns it)
+- Confidence: HIGH
+- Evidence: E1.
+- Walk: server never returns `'disabled_offline_requires_refresh'`. iOS view does not yet read it from this enum either (the offline path is client-driven). It's a reserved value for future iOS offline state.
+- Impact: documentation-only. Could surface in a future iOS commit; until then it's a forward-looking type slot.
+- Recommendation: add a `// reserved for iOS offline path; not currently assigned server-side` comment to make the intent obvious, or move it into a separate `DecisionClientActionState` type.
+- Status: OPEN (cosmetic)
+
+#### R3-NEW-004 — Recipe-rendered prose is always English regardless of user locale
+
+- Severity: **P2** (broader cohort polish; not Wave 1 critical)
+- File: `src/services/decision-center-logic-v2.ts:401-808` (all recipes)
+- Confidence: HIGH (grep'd for `L10n`/locale in recipes — none)
+- Evidence: E1.
+- Walk:
+  - `formatDecisionWindow(start, end, timezone, locale)` correctly localizes the date/time substring ("Sáb 16 mai, 08:00-10:00") given `locale='pt-PT'`.
+  - But the surrounding template strings are hardcoded English: e.g. `"${entityTitle} needs a schedule decision from ${currentWindow} to ${recommendedWindow}."`.
+  - iOS view localizes static labels (`L10n.isPT ? "Ações" : "Actions"`) but renders the server-supplied template strings verbatim.
+- Impact: PT users see Portuguese chrome ("Ações", "Decisão indisponível") wrapped around English problem statements / recommendations / why-summaries. Inconsistent UX.
+- Recommendation: either (a) localize the recipe templates server-side using the user's `language` (already resolved via `userDecisionContextDefaults`), or (b) return language-keyed structured fragments and let iOS assemble.
+- Status: OPEN (Wave 2 polish; not a Wave 1 blocker since both Felipe and Jaqueline operate in English or accept mixed PT chrome)
+
+#### R3-NEW-005 — No feature flag / kill switch for Decision Center v2
+
+- Severity: **P3** (rollback control)
+- File: across `decision-center.ts` and `decision-center-logic-v2.ts`
+- Confidence: HIGH (grep for `DECISION_CENTER_V2` / `decisionCenterV2Enabled` / `legacyDecision` — none)
+- Evidence: E1.
+- Walk: v2 is always-on. If a regression surfaces in production, the only path is a code revert and full redeploy.
+- Impact: low for closed beta with operator-physical rollout but higher operational risk once cohort > ~10 users. A simple `DECISION_CENTER_LOGIC_V2_ENABLED` env flag gating `buildDecisionLogicV2` to fall back to a passthrough recipe would buy a 30-second mitigation.
+- Recommendation: add a feature flag with a default of `true`; document its toggle in `engine/docs/OBSERVABILITY-ONCALL.md`.
+- Status: OPEN (P3, not a Wave 1 blocker)
+
+### Round 3 tests run
+
+- Engine: `npx tsc --noEmit` → **PASS** (exit 0).
+- Engine focused vitest (8 files, including arbitrator): **151 / 151 PASS** in 9.00s.
+- iOS xcodebuild test on simulator A0B13967 (iOS 26.4.1): **71 / 72 PASS** in 360.43s; the 1 failure (`test_DashboardResponse_bodyBattery_acceptsIntDoubleOrObject`) is unrelated to Decision Center v2 and exists on `main` already.
+- All NotificationDecisionCenter unit + 8 UI tests + ModelDecoding tests besides bodyBattery: **PASS**.
+- `npm run docs:audit` → **525 files audited, 478 issues** (warnings only; pre-existing markdown-location issues; down from R2 by 8).
+
+### Round 3 cleanup status
+
+- Local engine: not started.
+- Workers / queues / DBs / tunnels: none started.
+- Simulator: shut down after tests (`xcrun simctl shutdown all` then `xcrun simctl list devices booted` returns empty).
+- Ports 8200 / 8201 / 8203: clear.
+- xcodebuild / vitest / tsx processes: none remain.
+- xcresult artifact saved at `docs/release/qa-evidence/round3-ios-results.xcresult` for operator review.
+
+### Round 3 final recommendation
+
+**Proceed to local QA and Wave 1 invitations.**
+
+The Decision Center Logic v2 vertical slice is now:
+- Concrete decisions enriched with `problemStatement`, `recommendation`, `expectedEffect`, `impactIfIgnored`, `why`, `whatWillChange`.
+- Generic / blocked decisions surface as `displayMode: "details_unavailable"` with `frontendActionState: "disabled_missing_details"` — iOS hides the action buttons via `isActionable` gate.
+- Upstream Secretary arbitrator now persists alternative candidate slots → advisor produces real recommendations.
+- Per-user timezone + locale resolved at decision build/read time.
+- Migration 122 has duplicate cleanup.
+- iOS UI tests cover en-US + pt-BR visual matrix end-to-end on a real simulator.
+
+Carryover items for Wave 2 / broader cohort:
+
+1. **R3-NEW-004** — server-side recipe localization for PT users.
+2. **R3-NEW-001** — decide whether to enable owner/admin operational decisions or remove the unreachable recipe.
+3. **R3-NEW-005** — add a `DECISION_CENTER_LOGIC_V2_ENABLED` env flag as a rollback safety net.
+4. **R3-NEW-002** — investigate the pre-existing bodyBattery decode test failure (separate iOS task, not Decision Center).
+5. **R3-NEW-003** — clarify or split `disabled_offline_requires_refresh` so its future use is obvious.
+
+### Proposed Codex prompt for Round 4 (optional polish)
+
+```
+Polish 3 P-level items in feature/decision-center-logic-v2 (no push, no deploy,
+no TestFlight, no force-push/rebase/amend, preserve dirty xcscheme + build/
++ docs/agents/ as on iOS HEAD 79e865f).
+
+1) R3-NEW-005 (P3) — feature flag
+   - Add env var DECISION_CENTER_LOGIC_V2_ENABLED (default true) gating
+     buildDecisionLogicV2. When false, return a minimal passthrough that
+     keeps existing fields but skips the new gate (preserves legacy iOS
+     compatibility).
+   - Document the flag in engine/docs/OBSERVABILITY-ONCALL.md.
+
+2) R3-NEW-004 (P2) — recipe localization
+   - Take user locale (already resolved via userDecisionContextDefaults)
+     and emit PT translations for every recipe's user-facing template
+     strings. Start with Secretary, Training (race-date), and Sync.
+   - Add a vitest pin per recipe asserting both en-US and pt-PT outputs.
+
+3) R3-NEW-001 (P3) — owner/admin scoping
+   - Either: (a) collapse visibilityScopeForItem to return 'user_private'
+     and delete ownerAdminOpsRecipe + isOwnerAdminDecision, OR
+   - (b) thread input.visibilityScope through createDecisionIntent →
+     createDecisionRecord and add a tenant_admin / system_admin scope
+     test exercising the recipe.
+
+Skip R3-NEW-002 (iOS body battery) — file as a separate iOS task.
+Skip R3-NEW-003 (offline state cosmetic) — just add a doc comment.
+```
+
+### Round 3 prompt / process improvements
+
+- **Bind frontend behavior tests to the contract.** The R3 work landed because the UI test fixtures populated every v2 field and exercised both locales. Future prompts should require this explicitly: "the iOS UI test fixture must populate every new contract field and the test must tap the primary action to observe the success banner."
+- **Run the FULL ModelDecodingTests suite even when QA targets a specific area.** This Round 3 surfaced a pre-existing failure in the same suite — worth catching in the QA report even if it's outside the v2 scope.
+- **For new enum values declared in the type but reserved for client-only use** (R3-NEW-003), require a code comment so future agents don't think it's missing wiring.
+- **Add a "kill switch checklist"** (R3-NEW-005) to the v2-style contract prompt: any new always-on subsystem should ship with an env flag and a rollback runbook entry.
+
+## Round 4 close-out — 2026-05-12
+
+Status: READY_FOR_LOCAL_QA.
+
+Codex closed all Round 3 carryovers in priority order:
+
+1. R3-NEW-004 (P2): Secretary, Training, overcapacity, owner/admin, and sync-failure decision recipes now emit Portuguese copy when the user's locale is Portuguese, while preserving safe previews.
+2. R3-NEW-001 (P3): owner/admin visibility now threads from decision intent context through persisted decision records, allowing the owner/admin recipe to be exercised instead of remaining unreachable.
+3. R3-NEW-005 (P3): `DECISION_CENTER_LOGIC_V2_ENABLED` now defaults on and can disable the v2 builder as a rollback safety valve; the runbook entry is documented in `engine/docs/OBSERVABILITY-ONCALL.md`.
+4. R3-NEW-002 (P3): the pre-existing body-battery decoder mismatch is fixed in both Dashboard and Readiness decoding by truncating backend doubles instead of rounding them.
+5. R3-NEW-003 (P3): `disabled_offline_requires_refresh` now carries an inline code comment explaining that it is reserved for client offline/stale-cache handling.
+
+Verification:
+
+- Engine `npx tsc --noEmit`: PASS.
+- Engine focused decision/notification suite: 3 files / 72 tests PASS.
+- iOS focused body-battery + Decision Center unit/UI suite: 11 unit tests + 8 UI tests PASS.
+- `npm run docs:audit`: 525 files / 478 issues, warnings only; mirror drift cleared and the count remains under the active 480 threshold.
+- No push, deploy, TestFlight cut, production data access, production APNs, DB, tunnel, or local backend process was used.
+
+Round 4 recommendation: proceed with local QA on the branch. Remaining non-blocking follow-up is to extend recipe localization beyond the first supported Portuguese paths as new skill recipes move from scaffolded to production-backed.

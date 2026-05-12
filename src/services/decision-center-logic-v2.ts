@@ -13,6 +13,8 @@ export type AutomationEligibility = 'never' | 'ask_first' | 'safe_auto_handle' |
 export type DecisionVisibilityScope = 'user_private' | 'tenant_shared' | 'tenant_admin' | 'system_admin';
 export type DecisionNotificationEligibility = 'none' | 'digest' | 'silent_refresh' | 'visible';
 export type DecisionFrontendDisplayMode = 'needs_input' | 'handled' | 'waiting_on_system' | 'failed' | 'details_unavailable';
+// Reserved for iOS offline/stale-cache handling; the server currently returns
+// persisted-state disables only and should not infer device connectivity.
 export type DecisionFrontendActionState = 'enabled' | 'disabled_missing_details' | 'disabled_expired' | 'disabled_superseded' | 'disabled_offline_requires_refresh';
 
 export interface DecisionLogicContext {
@@ -29,6 +31,7 @@ export interface DecisionLogicContext {
   deadlineAt?: string | null;
   timezone?: string | null;
   locale?: string | null;
+  visibilityScope?: DecisionVisibilityScope | null;
 }
 
 export interface DecisionLogicInput {
@@ -217,7 +220,16 @@ const DECISION_CONFIDENCE_RUBRIC = {
 const DECISION_QUALITY_REQUIRED_FIELD_COUNT = 17;
 const decisionWindowFormatterCache = new Map<string, Intl.DateTimeFormat>();
 
+export function isDecisionLogicV2Enabled(): boolean {
+  const value = process.env.DECISION_CENTER_LOGIC_V2_ENABLED;
+  if (value == null || value.trim() === '') return true;
+  return !['0', 'false', 'off', 'disabled', 'no'].includes(value.trim().toLowerCase());
+}
+
 export function buildDecisionLogicV2(input: DecisionLogicInput): DecisionLogicV2 {
+  if (!isDecisionLogicV2Enabled()) {
+    return buildLegacyDecisionLogic(input);
+  }
   const recipe = recipeForInput(input);
   const quality = evaluateDecisionQuality(input, recipe);
   const rank = rankDecision(input, recipe, quality);
@@ -234,6 +246,64 @@ export function buildDecisionLogicV2(input: DecisionLogicInput): DecisionLogicV2
     collapseKey: quality.safeForAPNs ? `${input.sourceSkill}:${input.type}:${input.relatedEntityId ?? 'none'}` : null,
     displayMode: quality.safeToShowUser ? 'needs_input' : 'details_unavailable',
     frontendActionState: quality.safeForFrontendAction ? 'enabled' : 'disabled_missing_details',
+    quality,
+  };
+}
+
+function buildLegacyDecisionLogic(input: DecisionLogicInput): DecisionLogicV2 {
+  const primary = primaryAction(input.actions);
+  const title = sanitizeTitle(input.title);
+  const body = input.body?.trim() || input.safeBody?.trim() || title;
+  const recipe: DecisionLogicRecipe = {
+    title,
+    problemStatement: body,
+    recommendation: 'Open the decision for details.',
+    expectedEffect: 'Nexus keeps the decision open until you choose an action.',
+    impactIfIgnored: 'The item remains unresolved.',
+    primaryActionLabel: concreteActionLabel(primary, 'Open'),
+    secondaryActionLabels: secondaryActionLabels(input.actions, primary),
+    whySummary: 'Decision Center is running in legacy compatibility mode.',
+    urgencyReason: input.priority === 'passive' ? 'Optional decision.' : 'Active decision.',
+    confidence: DECISION_CONFIDENCE_RUBRIC.mediumGenericDecision,
+    relatedEntityReason: input.relatedEntityId ? null : input.context?.explicitNoRelatedEntityReason ?? 'legacy compatibility mode allows missing related entity',
+    why: {
+      facts: [body],
+      preferences: [],
+      rules: ['Decision Center Logic v2 quality enforcement is disabled by operator flag.'],
+      tradeoffs: ['This is a rollback mode; APNs visible delivery stays disabled for safety.'],
+      uncertainty: [],
+    },
+    whatWillChange: [],
+    readBackVerifier: null,
+    automationEligibility: 'never',
+    autopilotPolicy: 'Legacy compatibility mode disables autopilot.',
+    safePreviewTitle: safePreviewTitleForLegacy(input, title),
+    safePreviewBody: safePreviewBodyForLegacy(input, body),
+    riskIfIgnored: input.priority === 'critical' || input.priority === 'time_sensitive' ? 'high' : 'medium',
+  };
+  const quality: DecisionQualityGateResult = {
+    status: 'pass',
+    missingFields: [],
+    qualityScore: 100,
+    reason: 'Decision Center Logic v2 is disabled; returning legacy-compatible decision fields',
+    safeToShowUser: true,
+    safeForHomePreview: true,
+    safeForAPNs: false,
+    safeForFrontendAction: !!primary,
+  };
+  return {
+    ...recipe,
+    qualityScore: quality.qualityScore,
+    sourceSkill: input.sourceSkill,
+    type: input.type,
+    privacyClassification: input.privacyClassification,
+    visibilityScope: input.visibilityScope ?? input.context?.visibilityScope ?? 'user_private',
+    notificationEligibility: 'digest',
+    apnsInterruptionLevel: 'active',
+    badgeContribution: false,
+    collapseKey: null,
+    displayMode: 'needs_input',
+    frontendActionState: primary ? 'enabled' : 'disabled_missing_details',
     quality,
   };
 }
@@ -427,83 +497,98 @@ function recipeForInput(input: DecisionLogicInput): DecisionLogicRecipe {
 }
 
 function overcapacityRecipe(input: DecisionLogicInput): DecisionLogicRecipe {
+  const pt = isPortugueseDecision(input);
   const contextLabel = input.context?.entityTitle?.trim() || 'This schedule window';
   const primary = primaryAction(input.actions);
   const hasMutatingChoice = input.actions.some(isMutatingAction);
   return {
-    title: 'Overcapacity decision',
-    problemStatement: `${contextLabel} is over capacity and needs a priority choice before Nexus reflows anything.`,
-    recommendation: 'Choose the commitment Nexus should protect first, then let Secretary reflow only lower-priority items.',
-    expectedEffect: 'Secretary records the priority choice, updates the affected schedule plan, and verifies the persisted agenda state before closing the decision.',
-    impactIfIgnored: 'Nexus leaves the window unchanged, which can keep lower-priority work stacked against higher-priority commitments.',
-    primaryActionLabel: concreteActionLabel(primary, 'Choose priority'),
+    title: pt ? 'Decisão de capacidade' : 'Overcapacity decision',
+    problemStatement: pt
+      ? `${contextLabel} está acima da capacidade e precisa de uma escolha de prioridade antes de o Nexus reorganizar algo.`
+      : `${contextLabel} is over capacity and needs a priority choice before Nexus reflows anything.`,
+    recommendation: pt
+      ? 'Escolha o compromisso que o Nexus deve proteger primeiro; depois a Secretary reorganiza apenas itens de menor prioridade.'
+      : 'Choose the commitment Nexus should protect first, then let Secretary reflow only lower-priority items.',
+    expectedEffect: pt
+      ? 'A Secretary registra a prioridade, atualiza o plano afetado e verifica o estado persistido da agenda antes de fechar a decisão.'
+      : 'Secretary records the priority choice, updates the affected schedule plan, and verifies the persisted agenda state before closing the decision.',
+    impactIfIgnored: pt
+      ? 'O Nexus deixa a janela sem alteração, mantendo trabalho de menor prioridade empilhado contra compromissos mais importantes.'
+      : 'Nexus leaves the window unchanged, which can keep lower-priority work stacked against higher-priority commitments.',
+    primaryActionLabel: concreteActionLabel(primary, pt ? 'Escolher prioridade' : 'Choose priority'),
     secondaryActionLabels: secondaryActionLabels(input.actions, primary),
-    whySummary: 'Secretary found more work than the window can safely hold, so Nexus needs your priority judgment before changing the plan.',
-    urgencyReason: input.priority === 'time_sensitive' ? 'The overcapacity affects today or a near deadline.' : 'The overcapacity affects upcoming schedule quality.',
+    whySummary: pt
+      ? 'A Secretary encontrou mais trabalho do que a janela comporta com segurança; o Nexus precisa do seu julgamento antes de mudar o plano.'
+      : 'Secretary found more work than the window can safely hold, so Nexus needs your priority judgment before changing the plan.',
+    urgencyReason: input.priority === 'time_sensitive'
+      ? (pt ? 'A sobrecarga afeta hoje ou um prazo próximo.' : 'The overcapacity affects today or a near deadline.')
+      : (pt ? 'A sobrecarga afeta a qualidade da agenda próxima.' : 'The overcapacity affects upcoming schedule quality.'),
     confidence: DECISION_CONFIDENCE_RUBRIC.mediumOvercapacityPriority,
     relatedEntityReason: null,
     why: {
-      facts: [`Affected window: ${contextLabel}.`, 'At least one capacity rule marked this window as overloaded.'],
+      facts: pt ? [`Janela afetada: ${contextLabel}.`, 'Pelo menos uma regra de capacidade marcou esta janela como sobrecarregada.'] : [`Affected window: ${contextLabel}.`, 'At least one capacity rule marked this window as overloaded.'],
       preferences: [],
-      rules: ['Capacity conflicts must go through Secretary, and priority choices ask the user before reflow.'],
-      tradeoffs: ['Protecting one commitment may move or delay lower-priority work.'],
+      rules: [pt ? 'Conflitos de capacidade passam pela Secretary, e escolhas de prioridade perguntam ao usuário antes de reorganizar.' : 'Capacity conflicts must go through Secretary, and priority choices ask the user before reflow.'],
+      tradeoffs: [pt ? 'Proteger um compromisso pode mover ou atrasar trabalho de menor prioridade.' : 'Protecting one commitment may move or delay lower-priority work.'],
       uncertainty: [],
     },
     whatWillChange: [{
       item: contextLabel,
-      effect: 'Apply the selected priority and reflow only lower-priority schedule items.',
+      effect: pt ? 'Aplicar a prioridade selecionada e reorganizar apenas itens de menor prioridade.' : 'Apply the selected priority and reflow only lower-priority schedule items.',
       targetSkill: 'secretary',
-      verificationMethod: 'Read secretary agenda state after the priority choice.',
+      verificationMethod: pt ? 'Ler o estado da agenda da Secretary após a escolha de prioridade.' : 'Read secretary agenda state after the priority choice.',
     }],
     readBackVerifier: hasMutatingChoice ? 'secretary_agenda_item_state' : null,
     automationEligibility: 'ask_first',
-    autopilotPolicy: 'Overcapacity priority decisions ask first; Nexus does not silently choose user priorities.',
-    safePreviewTitle: 'Overcapacity decision',
-    safePreviewBody: 'Open Nexus to choose what should stay protected.',
+    autopilotPolicy: pt ? 'Decisões de prioridade perguntam primeiro; o Nexus não escolhe prioridades do usuário em silêncio.' : 'Overcapacity priority decisions ask first; Nexus does not silently choose user priorities.',
+    safePreviewTitle: pt ? 'Decisão de capacidade' : 'Overcapacity decision',
+    safePreviewBody: pt ? 'Abra o Nexus para escolher o que deve ficar protegido.' : 'Open Nexus to choose what should stay protected.',
     riskIfIgnored: 'high',
   };
 }
 
 function ownerAdminOpsRecipe(input: DecisionLogicInput): DecisionLogicRecipe {
+  const pt = isPortugueseDecision(input);
   const target = input.context?.entityTitle?.trim() || 'An operational system item';
   const primary = primaryAction(input.actions);
   return {
-    title: 'Owner operations decision',
-    problemStatement: `${target} needs owner review before Nexus changes system behavior.`,
-    recommendation: 'Review the operational evidence and approve only through the owner/admin flow if the action is still valid.',
-    expectedEffect: 'Nexus records the owner/admin decision and leaves production behavior unchanged until an authorized action is verified.',
-    impactIfIgnored: 'The operational item stays open and no risky system change is applied automatically.',
-    primaryActionLabel: concreteActionLabel(primary, 'Review ops decision'),
+    title: pt ? 'Decisão operacional do proprietário' : 'Owner operations decision',
+    problemStatement: pt ? `${target} precisa de revisão do proprietário antes de o Nexus alterar o comportamento do sistema.` : `${target} needs owner review before Nexus changes system behavior.`,
+    recommendation: pt ? 'Revise a evidência operacional e aprove apenas pelo fluxo de proprietário/admin se a ação ainda for válida.' : 'Review the operational evidence and approve only through the owner/admin flow if the action is still valid.',
+    expectedEffect: pt ? 'O Nexus registra a decisão de proprietário/admin e mantém produção inalterada até uma ação autorizada ser verificada.' : 'Nexus records the owner/admin decision and leaves production behavior unchanged until an authorized action is verified.',
+    impactIfIgnored: pt ? 'O item operacional fica aberto e nenhuma mudança arriscada de sistema é aplicada automaticamente.' : 'The operational item stays open and no risky system change is applied automatically.',
+    primaryActionLabel: concreteActionLabel(primary, pt ? 'Revisar decisão operacional' : 'Review ops decision'),
     secondaryActionLabels: secondaryActionLabels(input.actions, primary),
-    whySummary: 'Owner/admin operational decisions are scoped away from normal user cards and require explicit review.',
+    whySummary: pt ? 'Decisões operacionais de proprietário/admin ficam fora dos cartões normais de usuário e exigem revisão explícita.' : 'Owner/admin operational decisions are scoped away from normal user cards and require explicit review.',
     urgencyReason: input.priority === 'critical' || input.priority === 'time_sensitive'
-      ? 'The operational issue can affect reliability or release safety soon.'
-      : 'The operational issue requires owner attention before action.',
+      ? (pt ? 'O problema operacional pode afetar confiabilidade ou segurança de release em breve.' : 'The operational issue can affect reliability or release safety soon.')
+      : (pt ? 'O problema operacional exige atenção do proprietário antes da ação.' : 'The operational issue requires owner attention before action.'),
     confidence: DECISION_CONFIDENCE_RUBRIC.mediumOwnerAdminOps,
     relatedEntityReason: null,
     why: {
-      facts: [`Operational item: ${target}.`],
+      facts: [pt ? `Item operacional: ${target}.` : `Operational item: ${target}.`],
       preferences: [],
-      rules: ['System-admin decisions must not be shown as normal user decisions.', 'Nexus cannot auto-apply owner/admin operational changes by default.'],
-      tradeoffs: ['Keeping this explicit avoids hidden production or release changes.'],
+      rules: pt ? ['Decisões de system-admin não devem aparecer como decisões normais de usuário.', 'O Nexus não aplica mudanças operacionais de proprietário/admin automaticamente por padrão.'] : ['System-admin decisions must not be shown as normal user decisions.', 'Nexus cannot auto-apply owner/admin operational changes by default.'],
+      tradeoffs: [pt ? 'Manter isto explícito evita mudanças ocultas em produção ou release.' : 'Keeping this explicit avoids hidden production or release changes.'],
       uncertainty: [],
     },
     whatWillChange: [{
       item: target,
-      effect: 'Record owner/admin review; any mutating follow-up must use its own verified executor.',
+      effect: pt ? 'Registrar revisão de proprietário/admin; qualquer mudança seguinte deve usar executor verificado próprio.' : 'Record owner/admin review; any mutating follow-up must use its own verified executor.',
       targetSkill: input.sourceSkill,
-      verificationMethod: 'Read owner/admin operation state or audit log after action.',
+      verificationMethod: pt ? 'Ler estado operacional ou log de auditoria após a ação.' : 'Read owner/admin operation state or audit log after action.',
     }],
     readBackVerifier: null,
     automationEligibility: 'never',
-    autopilotPolicy: 'Owner/admin operational decisions never auto-handle by default.',
-    safePreviewTitle: 'Owner review needed',
-    safePreviewBody: 'Open Nexus to review an operational decision.',
+    autopilotPolicy: pt ? 'Decisões operacionais de proprietário/admin nunca são tratadas automaticamente por padrão.' : 'Owner/admin operational decisions never auto-handle by default.',
+    safePreviewTitle: pt ? 'Revisão do proprietário necessária' : 'Owner review needed',
+    safePreviewBody: pt ? 'Abra o Nexus para revisar uma decisão operacional.' : 'Open Nexus to review an operational decision.',
     riskIfIgnored: input.priority === 'critical' || input.priority === 'time_sensitive' ? 'high' : 'medium',
   };
 }
 
 function secretaryRecipe(input: DecisionLogicInput): DecisionLogicRecipe {
+  const pt = isPortugueseDecision(input);
   const context = input.context ?? {};
   const entityTitle = context.entityTitle?.trim() || null;
   const currentWindow = formatDecisionWindow(context.currentStartAt, context.currentEndAt, context.timezone, context.locale);
@@ -512,91 +597,94 @@ function secretaryRecipe(input: DecisionLogicInput): DecisionLogicRecipe {
   const primary = primaryAction(input.actions);
   const title = hasConcreteAgenda ? 'Schedule conflict' : sanitizeTitle(input.title);
   return {
-    title,
+    title: hasConcreteAgenda ? (pt ? 'Conflito de agenda' : title) : title,
     problemStatement: hasConcreteAgenda
-      ? `${entityTitle} needs a schedule decision${currentWindow ? ` from ${currentWindow}` : ''} to ${recommendedWindow}.`
-      : 'Secretary cannot show this schedule conflict until it has the affected item and candidate time.',
+      ? (pt ? `${entityTitle} precisa de uma decisão de agenda${currentWindow ? ` de ${currentWindow}` : ''} para ${recommendedWindow}.` : `${entityTitle} needs a schedule decision${currentWindow ? ` from ${currentWindow}` : ''} to ${recommendedWindow}.`)
+      : (pt ? 'A Secretary não pode mostrar este conflito até ter o item afetado e o horário candidato.' : 'Secretary cannot show this schedule conflict until it has the affected item and candidate time.'),
     recommendation: hasConcreteAgenda
-      ? `Use ${recommendedWindow} or choose another feasible time.`
-      : 'Keep the decision internal and ask Secretary to enrich the conflict details.',
+      ? (pt ? `Use ${recommendedWindow} ou escolha outro horário viável.` : `Use ${recommendedWindow} or choose another feasible time.`)
+      : (pt ? 'Mantenha a decisão interna e peça para a Secretary enriquecer os detalhes do conflito.' : 'Keep the decision internal and ask Secretary to enrich the conflict details.'),
     expectedEffect: hasConcreteAgenda
-      ? 'Secretary will persist the selected schedule change, verify the agenda item, and close the decision only after read-back succeeds.'
-      : 'No user-facing action should run until Secretary has a persisted agenda item.',
+      ? (pt ? 'A Secretary persistirá a mudança de agenda selecionada, verificará o item e fechará a decisão apenas após read-back bem-sucedido.' : 'Secretary will persist the selected schedule change, verify the agenda item, and close the decision only after read-back succeeds.')
+      : (pt ? 'Nenhuma ação para o usuário deve rodar até a Secretary ter um item de agenda persistido.' : 'No user-facing action should run until Secretary has a persisted agenda item.'),
     impactIfIgnored: hasConcreteAgenda
-      ? 'The conflict can keep blocking your plan or collide with another commitment.'
-      : 'Showing this now would ask for judgment without enough context.',
-    primaryActionLabel: concreteActionLabel(primary, hasConcreteAgenda ? 'Reflow' : 'Enrich details'),
+      ? (pt ? 'O conflito pode continuar bloqueando seu plano ou colidir com outro compromisso.' : 'The conflict can keep blocking your plan or collide with another commitment.')
+      : (pt ? 'Mostrar isto agora pediria julgamento sem contexto suficiente.' : 'Showing this now would ask for judgment without enough context.'),
+    primaryActionLabel: concreteActionLabel(primary, hasConcreteAgenda ? (pt ? 'Reorganizar' : 'Reflow') : (pt ? 'Enriquecer detalhes' : 'Enrich details')),
     secondaryActionLabels: secondaryActionLabels(input.actions, primary),
     whySummary: hasConcreteAgenda
-      ? `Secretary found a schedule/capacity issue and has a concrete ${recommendedWindow} recommendation.`
-      : 'Secretary is missing the source agenda item required for a real recommendation.',
-    urgencyReason: input.priority === 'time_sensitive' ? 'The decision affects a same-day or deadline-sensitive schedule item.' : 'The decision affects your schedule.',
+      ? (pt ? `A Secretary encontrou um problema de agenda/capacidade e tem uma recomendação concreta para ${recommendedWindow}.` : `Secretary found a schedule/capacity issue and has a concrete ${recommendedWindow} recommendation.`)
+      : (pt ? 'A Secretary está sem o item de agenda de origem necessário para uma recomendação real.' : 'Secretary is missing the source agenda item required for a real recommendation.'),
+    urgencyReason: input.priority === 'time_sensitive'
+      ? (pt ? 'A decisão afeta um item de agenda de hoje ou sensível a prazo.' : 'The decision affects a same-day or deadline-sensitive schedule item.')
+      : (pt ? 'A decisão afeta sua agenda.' : 'The decision affects your schedule.'),
     confidence: hasConcreteAgenda ? DECISION_CONFIDENCE_RUBRIC.highScheduleRecommendation : DECISION_CONFIDENCE_RUBRIC.lowMissingScheduleContext,
     relatedEntityReason: hasConcreteAgenda ? null : input.context?.explicitNoRelatedEntityReason ?? null,
     why: {
-      facts: hasConcreteAgenda ? [`Affected item: ${entityTitle}.`, `Candidate window: ${recommendedWindow}.`] : ['No persisted Secretary agenda item was available.'],
+      facts: hasConcreteAgenda ? (pt ? [`Item afetado: ${entityTitle}.`, `Janela candidata: ${recommendedWindow}.`] : [`Affected item: ${entityTitle}.`, `Candidate window: ${recommendedWindow}.`]) : [pt ? 'Nenhum item de agenda persistido da Secretary estava disponível.' : 'No persisted Secretary agenda item was available.'],
       preferences: [],
-      rules: ['Schedule, time, and capacity conflicts must be arbitrated by Secretary.'],
-      tradeoffs: hasConcreteAgenda ? ['The proposed change is bounded to the affected item.'] : ['Hiding the card is safer than showing a vague decision.'],
-      uncertainty: hasConcreteAgenda ? [] : ['The exact conflict and alternative slot are unknown.'],
+      rules: [pt ? 'Conflitos de agenda, tempo e capacidade devem ser arbitrados pela Secretary.' : 'Schedule, time, and capacity conflicts must be arbitrated by Secretary.'],
+      tradeoffs: hasConcreteAgenda ? [pt ? 'A mudança proposta fica limitada ao item afetado.' : 'The proposed change is bounded to the affected item.'] : [pt ? 'Ocultar o cartão é mais seguro do que mostrar uma decisão vaga.' : 'Hiding the card is safer than showing a vague decision.'],
+      uncertainty: hasConcreteAgenda ? [] : [pt ? 'O conflito exato e o horário alternativo são desconhecidos.' : 'The exact conflict and alternative slot are unknown.'],
     },
     whatWillChange: hasConcreteAgenda ? [{
       item: entityTitle,
-      effect: `Move or confirm the agenda item at ${recommendedWindow}.`,
+      effect: pt ? `Mover ou confirmar o item de agenda em ${recommendedWindow}.` : `Move or confirm the agenda item at ${recommendedWindow}.`,
       targetSkill: 'secretary',
-      verificationMethod: 'Read secretary_agenda_items after the action.',
+      verificationMethod: pt ? 'Ler secretary_agenda_items após a ação.' : 'Read secretary_agenda_items after the action.',
     }] : [],
     readBackVerifier: hasConcreteAgenda ? 'secretary_agenda_item_state' : null,
     automationEligibility: 'ask_first',
-    autopilotPolicy: 'Schedule changes ask first unless the user explicitly opts into automation.',
-    safePreviewTitle: hasConcreteAgenda ? 'Schedule decision' : 'Decision details unavailable',
-    safePreviewBody: hasConcreteAgenda ? 'Open Nexus to review a concrete schedule recommendation.' : 'Nexus is enriching this decision before showing it.',
+    autopilotPolicy: pt ? 'Mudanças de agenda perguntam primeiro, salvo opt-in explícito para automação.' : 'Schedule changes ask first unless the user explicitly opts into automation.',
+    safePreviewTitle: hasConcreteAgenda ? (pt ? 'Decisão de agenda' : 'Schedule decision') : (pt ? 'Detalhes da decisão indisponíveis' : 'Decision details unavailable'),
+    safePreviewBody: hasConcreteAgenda ? (pt ? 'Abra o Nexus para revisar uma recomendação concreta de agenda.' : 'Open Nexus to review a concrete schedule recommendation.') : (pt ? 'O Nexus está enriquecendo esta decisão antes de mostrá-la.' : 'Nexus is enriching this decision before showing it.'),
     riskIfIgnored: hasConcreteAgenda ? 'high' : 'medium',
   };
 }
 
 function trainingRecipe(input: DecisionLogicInput): DecisionLogicRecipe {
+  const pt = isPortugueseDecision(input);
   const isRaceDate = /race date/i.test(`${input.title} ${input.body} ${input.relatedEntityType ?? ''}`);
   return {
-    title: isRaceDate ? 'Training plan needs race date' : 'Training decision',
+    title: isRaceDate ? (pt ? 'Plano de treino precisa da data da prova' : 'Training plan needs race date') : (pt ? 'Decisão de treino' : 'Training decision'),
     problemStatement: isRaceDate
-      ? 'Your training plan is missing the race date needed for a race-specific build.'
-      : 'Training needs your confirmation before it changes the plan.',
+      ? (pt ? 'Seu plano de treino não tem a data da prova necessária para uma preparação específica.' : 'Your training plan is missing the race date needed for a race-specific build.')
+      : (pt ? 'O treino precisa da sua confirmação antes de alterar o plano.' : 'Training needs your confirmation before it changes the plan.'),
     recommendation: isRaceDate
-      ? 'Add the race date, or choose continuous training if there is no target race yet.'
-      : 'Review the training adjustment before Nexus changes load or schedule.',
+      ? (pt ? 'Adicione a data da prova ou escolha treino contínuo se ainda não houver prova-alvo.' : 'Add the race date, or choose continuous training if there is no target race yet.')
+      : (pt ? 'Revise o ajuste de treino antes de o Nexus mudar carga ou agenda.' : 'Review the training adjustment before Nexus changes load or schedule.'),
     expectedEffect: isRaceDate
-      ? 'Training can generate the correct build, peak, and taper phases after the race date is saved.'
-      : 'Training updates only after the action is verified against the plan state.',
+      ? (pt ? 'O Treino pode gerar as fases corretas de construção, pico e polimento após salvar a data da prova.' : 'Training can generate the correct build, peak, and taper phases after the race date is saved.')
+      : (pt ? 'O Treino atualiza apenas após a ação ser verificada contra o estado do plano.' : 'Training updates only after the action is verified against the plan state.'),
     impactIfIgnored: isRaceDate
-      ? 'Nexus may keep the plan generic and avoid race-specific periodization.'
-      : 'The training adjustment remains paused.',
-    primaryActionLabel: isRaceDate ? 'Add race date' : concreteActionLabel(primaryAction(input.actions), 'Review training'),
+      ? (pt ? 'O Nexus pode manter o plano genérico e evitar periodização específica da prova.' : 'Nexus may keep the plan generic and avoid race-specific periodization.')
+      : (pt ? 'O ajuste de treino permanece pausado.' : 'The training adjustment remains paused.'),
+    primaryActionLabel: isRaceDate ? (pt ? 'Adicionar data da prova' : 'Add race date') : concreteActionLabel(primaryAction(input.actions), pt ? 'Revisar treino' : 'Review training'),
     secondaryActionLabels: secondaryActionLabels(input.actions, primaryAction(input.actions)),
     whySummary: isRaceDate
-      ? 'Race-specific training requires a target date before Nexus can safely phase the plan.'
-      : 'Training changes can affect load and recovery, so Nexus asks before changing them.',
-    urgencyReason: input.priority === 'time_sensitive' ? 'This blocks an imminent training plan update.' : 'This affects future training quality.',
+      ? (pt ? 'Treino específico para prova exige uma data-alvo antes de o Nexus fasear o plano com segurança.' : 'Race-specific training requires a target date before Nexus can safely phase the plan.')
+      : (pt ? 'Mudanças de treino podem afetar carga e recuperação, então o Nexus pergunta antes de alterar.' : 'Training changes can affect load and recovery, so Nexus asks before changing them.'),
+    urgencyReason: input.priority === 'time_sensitive' ? (pt ? 'Isto bloqueia uma atualização iminente do plano de treino.' : 'This blocks an imminent training plan update.') : (pt ? 'Isto afeta a qualidade futura do treino.' : 'This affects future training quality.'),
     confidence: isRaceDate ? DECISION_CONFIDENCE_RUBRIC.highStructuredState : DECISION_CONFIDENCE_RUBRIC.mediumTrainingReview,
     relatedEntityReason: isRaceDate ? input.context?.explicitNoRelatedEntityReason ?? 'training profile is the affected entity' : null,
     why: {
-      facts: isRaceDate ? ['No target race date is available for the plan.'] : ['Training emitted an action-gated adjustment.'],
+      facts: isRaceDate ? [pt ? 'Nenhuma data-alvo de prova está disponível para o plano.' : 'No target race date is available for the plan.'] : [pt ? 'O Treino emitiu um ajuste que exige ação.' : 'Training emitted an action-gated adjustment.'],
       preferences: [],
-      rules: ['Training load and plan changes should not be silently changed by default.'],
-      tradeoffs: isRaceDate ? ['Continuous training is safer than inventing a target race.'] : ['Asking preserves control over fatigue-sensitive changes.'],
+      rules: [pt ? 'Carga e plano de treino não devem ser alterados silenciosamente por padrão.' : 'Training load and plan changes should not be silently changed by default.'],
+      tradeoffs: isRaceDate ? [pt ? 'Treino contínuo é mais seguro do que inventar uma prova-alvo.' : 'Continuous training is safer than inventing a target race.'] : [pt ? 'Perguntar preserva controle sobre mudanças sensíveis à fadiga.' : 'Asking preserves control over fatigue-sensitive changes.'],
       uncertainty: [],
     },
     whatWillChange: [{
       item: isRaceDate ? 'Training profile' : 'Training plan',
-      effect: isRaceDate ? 'Save race date or switch to continuous plan.' : 'Apply the confirmed training adjustment.',
+      effect: isRaceDate ? (pt ? 'Salvar data da prova ou mudar para plano contínuo.' : 'Save race date or switch to continuous plan.') : (pt ? 'Aplicar o ajuste de treino confirmado.' : 'Apply the confirmed training adjustment.'),
       targetSkill: 'training',
-      verificationMethod: isRaceDate ? 'Read the training profile after saving.' : 'Read the training plan after action.',
+      verificationMethod: isRaceDate ? (pt ? 'Ler o perfil de treino após salvar.' : 'Read the training profile after saving.') : (pt ? 'Ler o plano de treino após a ação.' : 'Read the training plan after action.'),
     }],
     readBackVerifier: input.actions.some(isMutatingAction) ? 'training_state' : null,
     automationEligibility: 'ask_first',
-    autopilotPolicy: 'Training load changes ask first.',
-    safePreviewTitle: 'Training decision',
-    safePreviewBody: isRaceDate ? 'Training needs one missing input.' : 'Open Nexus to review the training decision.',
+    autopilotPolicy: pt ? 'Mudanças de carga de treino perguntam primeiro.' : 'Training load changes ask first.',
+    safePreviewTitle: pt ? 'Decisão de treino' : 'Training decision',
+    safePreviewBody: isRaceDate ? (pt ? 'O Treino precisa de uma informação faltante.' : 'Training needs one missing input.') : (pt ? 'Abra o Nexus para revisar a decisão de treino.' : 'Open Nexus to review the training decision.'),
     riskIfIgnored: isRaceDate ? 'medium' : 'high',
   };
 }
@@ -743,37 +831,38 @@ function chatRecipe(input: DecisionLogicInput): DecisionLogicRecipe {
 }
 
 function syncFailureRecipe(input: DecisionLogicInput): DecisionLogicRecipe {
+  const pt = isPortugueseDecision(input);
   const provider = input.context?.providerName ?? 'provider';
   return {
-    title: 'Sync needs retry',
-    problemStatement: `${provider} sync did not complete.`,
-    recommendation: 'Retry the sync in the background and keep the decision visible only if retry fails.',
-    expectedEffect: 'Nexus retries the provider sync and verifies the provider status.',
-    impactIfIgnored: 'Recent provider data may stay stale.',
-    primaryActionLabel: concreteActionLabel(primaryAction(input.actions), 'Retry sync'),
+    title: pt ? 'Sincronização precisa de nova tentativa' : 'Sync needs retry',
+    problemStatement: pt ? `A sincronização de ${provider} não foi concluída.` : `${provider} sync did not complete.`,
+    recommendation: pt ? 'Tente sincronizar em segundo plano e mantenha a decisão visível apenas se a nova tentativa falhar.' : 'Retry the sync in the background and keep the decision visible only if retry fails.',
+    expectedEffect: pt ? 'O Nexus tenta sincronizar o provedor e verifica o status do provedor.' : 'Nexus retries the provider sync and verifies the provider status.',
+    impactIfIgnored: pt ? 'Dados recentes do provedor podem continuar desatualizados.' : 'Recent provider data may stay stale.',
+    primaryActionLabel: concreteActionLabel(primaryAction(input.actions), pt ? 'Tentar sincronizar' : 'Retry sync'),
     secondaryActionLabels: secondaryActionLabels(input.actions, primaryAction(input.actions)),
-    whySummary: 'Retrying a failed sync is safe and reversible.',
-    urgencyReason: input.priority === 'time_sensitive' ? 'The sync affects current-day planning.' : 'The provider state is stale.',
+    whySummary: pt ? 'Tentar novamente uma sincronização com falha é seguro e reversível.' : 'Retrying a failed sync is safe and reversible.',
+    urgencyReason: input.priority === 'time_sensitive' ? (pt ? 'A sincronização afeta o planejamento do dia atual.' : 'The sync affects current-day planning.') : (pt ? 'O estado do provedor está desatualizado.' : 'The provider state is stale.'),
     confidence: DECISION_CONFIDENCE_RUBRIC.highSyncRetry,
     relatedEntityReason: input.relatedEntityId ? null : 'sync failure can be scoped to provider state rather than one entity',
     why: {
-      facts: [`Provider: ${provider}.`],
+      facts: [pt ? `Provedor: ${provider}.` : `Provider: ${provider}.`],
       preferences: [],
-      rules: ['Provider retries can be auto-handled when no user data changes.'],
-      tradeoffs: ['Retrying may recover data without interrupting the user.'],
+      rules: [pt ? 'Novas tentativas de provedor podem ser tratadas automaticamente quando não alteram dados do usuário.' : 'Provider retries can be auto-handled when no user data changes.'],
+      tradeoffs: [pt ? 'Tentar novamente pode recuperar dados sem interromper o usuário.' : 'Retrying may recover data without interrupting the user.'],
       uncertainty: [],
     },
     whatWillChange: [{
       item: `${provider} connection`,
-      effect: 'Retry sync.',
+      effect: pt ? 'Tentar sincronizar novamente.' : 'Retry sync.',
       targetSkill: input.sourceSkill,
-      verificationMethod: 'Read provider sync status after retry.',
+      verificationMethod: pt ? 'Ler o status de sincronização após a nova tentativa.' : 'Read provider sync status after retry.',
     }],
     readBackVerifier: 'provider_sync_state',
     automationEligibility: 'safe_auto_handle',
-    autopilotPolicy: 'Safe sync retries may auto-handle and show history.',
-    safePreviewTitle: 'Sync retry',
-    safePreviewBody: 'Nexus is checking a provider sync.',
+    autopilotPolicy: pt ? 'Novas tentativas seguras podem ser tratadas automaticamente e aparecer no histórico.' : 'Safe sync retries may auto-handle and show history.',
+    safePreviewTitle: pt ? 'Nova tentativa de sincronização' : 'Sync retry',
+    safePreviewBody: pt ? 'O Nexus está verificando uma sincronização de provedor.' : 'Nexus is checking a provider sync.',
     riskIfIgnored: 'medium',
   };
 }
@@ -866,9 +955,10 @@ function isOvercapacityDecision(input: DecisionLogicInput): boolean {
 }
 
 function isOwnerAdminDecision(input: DecisionLogicInput): boolean {
-  return input.visibilityScope === 'system_admin'
+  const visibilityScope = input.visibilityScope ?? input.context?.visibilityScope;
+  return visibilityScope === 'system_admin'
     || (input.sourceSkill === 'system' && input.type === 'risk_warning' && input.relatedEntityType?.includes('ops'))
-    || (input.sourceSkill === 'security' && input.type === 'security_account' && input.visibilityScope === 'tenant_admin');
+    || (input.sourceSkill === 'security' && input.type === 'security_account' && visibilityScope === 'tenant_admin');
 }
 
 function hasDistinctSecretaryRecommendation(context: DecisionLogicContext | null | undefined): boolean {
@@ -887,6 +977,28 @@ function sanitizeTitle(value: string): string {
   if (!trimmed) return 'Decision needed';
   if (isGenericCopy(trimmed)) return 'Decision details unavailable';
   return trimmed.length > 80 ? `${trimmed.slice(0, 79).trimEnd()}…` : trimmed;
+}
+
+function isPortugueseDecision(input: DecisionLogicInput): boolean {
+  return normalizeDecisionLocale(input.context?.locale).toLowerCase().startsWith('pt');
+}
+
+function safePreviewTitleForLegacy(input: DecisionLogicInput, fallbackTitle: string): string {
+  if (input.privacyClassification === 'financial' || input.sourceSkill === 'finance') return 'Finance decision';
+  if (input.privacyClassification === 'health' || input.sourceSkill === 'training') return 'Training decision';
+  if (input.privacyClassification === 'private_content' || input.sourceSkill === 'content') return 'Content review';
+  if (input.privacyClassification === 'sensitive') return input.sourceSkill === 'security' ? 'Security decision' : 'Decision needed';
+  return fallbackTitle;
+}
+
+function safePreviewBodyForLegacy(input: DecisionLogicInput, fallbackBody: string): string {
+  if (input.privacyClassification === 'financial'
+    || input.privacyClassification === 'health'
+    || input.privacyClassification === 'private_content'
+    || input.privacyClassification === 'sensitive') {
+    return 'Open Nexus to review this decision.';
+  }
+  return input.safeBody?.trim() || fallbackBody;
 }
 
 function requireConcrete(value: string | null | undefined, field: string, missingFields: string[]): void {
@@ -926,7 +1038,8 @@ export function formatDecisionWindow(
   const startTime = timeFormatter.format(start);
   const endTime = timeFormatter.format(end);
   if (startDate === endDate) return `${startDate}, ${startTime}-${endTime}`;
-  return `${startDate}, ${startTime} to ${endDate}, ${endTime}`;
+  const joiner = normalizedLocale.toLowerCase().startsWith('pt') ? 'a' : 'to';
+  return `${startDate}, ${startTime} ${joiner} ${endDate}, ${endTime}`;
 }
 
 function decisionWindowFormatter(locale: string, timeZone: string, kind: 'date' | 'time'): Intl.DateTimeFormat {

@@ -248,6 +248,36 @@ describe('Decision Center facade', () => {
     });
   });
 
+  it('threads owner/admin visibility scope through internal decision intents', async () => {
+    const created = await createDecisionIntent({
+      userId: 91,
+      tenantId: 91,
+      sourceSkill: 'system',
+      type: 'risk_warning',
+      priority: 'active',
+      title: 'Model fallback invalid',
+      body: 'A configured fallback needs owner review before release.',
+      requiresUserAction: true,
+      actionButtons: [{ id: 'open_detail', label: 'Review evidence', style: 'primary' }],
+      relatedEntityType: 'ops_model_fallback',
+      relatedEntityId: 'fallback-invalid',
+      privacyPolicy: 'sensitive',
+      visibilityScope: 'system_admin',
+      decisionContext: { entityTitle: 'Model fallback policy' },
+      dedupeKey: 'ops:model-fallback-invalid',
+    });
+
+    expect(created.item).not.toBeNull();
+    expect(created.item?.visibilityScope).toBe('system_admin');
+    expect(created.item?.title).toBe('Owner operations decision');
+    expect(created.item?.safePreviewTitle).toBe('Owner review needed');
+
+    const listed = listDecisionItems(91, 91);
+    expect(listed).toHaveLength(1);
+    expect(listed[0].visibilityScope).toBe('system_admin');
+    expect(listed[0].safePreviewBody).not.toContain('Model fallback policy');
+  });
+
   it('keeps Secretary decisions internal when the only candidate slot matches the current window', async () => {
     ensureSecretaryAgendaFixtureTables();
     testDb.prepare(`
