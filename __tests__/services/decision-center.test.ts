@@ -183,6 +183,8 @@ describe('Decision Center facade', () => {
     expect(items[0].sourceSkill).toBe('training');
     expect(items[0].problemStatement).toContain('race date');
     expect(items[0].quality.status).toBe('pass');
+    expect(items[0].displayMode).toBe('needs_input');
+    expect(items[0].frontendActionState).toBe('enabled');
 
     const summary = getDecisionSummary(1, 1);
     expect(summary.openCount).toBe(1);
@@ -230,6 +232,8 @@ describe('Decision Center facade', () => {
 
     expect(created.item).not.toBeNull();
     expect(created.item?.quality.status).toBe('pass');
+    expect(created.item?.displayMode).toBe('needs_input');
+    expect(created.item?.frontendActionState).toBe('enabled');
     expect(created.item?.problemStatement).toContain('Focus block');
     expect(created.item?.recommendation).toContain('Sun, May 10');
     expect(created.item?.recommendation).not.toContain('2026-05-10T15:00:00.000Z');

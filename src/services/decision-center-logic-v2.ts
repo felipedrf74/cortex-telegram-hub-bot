@@ -12,6 +12,8 @@ export type DecisionQualityStatus = 'pass' | 'needs_enrichment' | 'internal_only
 export type AutomationEligibility = 'never' | 'ask_first' | 'safe_auto_handle' | 'user_opt_in_required';
 export type DecisionVisibilityScope = 'user_private' | 'tenant_shared' | 'tenant_admin' | 'system_admin';
 export type DecisionNotificationEligibility = 'none' | 'digest' | 'silent_refresh' | 'visible';
+export type DecisionFrontendDisplayMode = 'needs_input' | 'handled' | 'waiting_on_system' | 'failed' | 'details_unavailable';
+export type DecisionFrontendActionState = 'enabled' | 'disabled_missing_details' | 'disabled_expired' | 'disabled_superseded' | 'disabled_offline_requires_refresh';
 
 export interface DecisionLogicContext {
   entityTitle?: string | null;
@@ -54,6 +56,7 @@ export interface DecisionQualityGateResult {
   safeToShowUser: boolean;
   safeForHomePreview: boolean;
   safeForAPNs: boolean;
+  safeForFrontendAction: boolean;
 }
 
 export interface DecisionWhy {
@@ -100,8 +103,25 @@ export interface DecisionLogicV2 {
   collapseKey: string | null;
   badgeContribution: boolean;
   riskIfIgnored: 'low' | 'medium' | 'high';
+  displayMode: DecisionFrontendDisplayMode;
+  frontendActionState: DecisionFrontendActionState;
   quality: DecisionQualityGateResult;
 }
+
+type DecisionLogicRecipe = Omit<DecisionLogicV2,
+  'sourceSkill'
+  | 'type'
+  | 'privacyClassification'
+  | 'visibilityScope'
+  | 'notificationEligibility'
+  | 'apnsInterruptionLevel'
+  | 'collapseKey'
+  | 'badgeContribution'
+  | 'quality'
+  | 'qualityScore'
+  | 'displayMode'
+  | 'frontendActionState'
+>;
 
 export interface SecretaryDecisionAdvisorInput {
   title: string;
@@ -212,17 +232,15 @@ export function buildDecisionLogicV2(input: DecisionLogicInput): DecisionLogicV2
     apnsInterruptionLevel: rank.apnsEligible && input.priority === 'time_sensitive' ? 'time-sensitive' : 'active',
     badgeContribution: rank.apnsEligible || input.priority === 'time_sensitive' || input.priority === 'critical',
     collapseKey: quality.safeForAPNs ? `${input.sourceSkill}:${input.type}:${input.relatedEntityId ?? 'none'}` : null,
+    displayMode: quality.safeToShowUser ? 'needs_input' : 'details_unavailable',
+    frontendActionState: quality.safeForFrontendAction ? 'enabled' : 'disabled_missing_details',
     quality,
   };
 }
 
 export function evaluateDecisionQuality(
   input: DecisionLogicInput,
-  recipe: Omit<DecisionLogicV2, 'sourceSkill' | 'type' | 'privacyClassification' | 'visibilityScope' | 'notificationEligibility' | 'apnsInterruptionLevel' | 'safePreviewTitle' | 'safePreviewBody' | 'collapseKey' | 'badgeContribution' | 'quality' | 'qualityScore'> & {
-    safePreviewTitle: string;
-    safePreviewBody: string;
-    notificationEligibility?: DecisionNotificationEligibility;
-  },
+  recipe: DecisionLogicRecipe,
 ): DecisionQualityGateResult {
   const missingFields: string[] = [];
   const primary = primaryAction(input.actions);
@@ -282,6 +300,7 @@ export function evaluateDecisionQuality(
     safeToShowUser: status === 'pass',
     safeForHomePreview: status === 'pass' && recipe.safePreviewTitle.trim().length > 0 && recipe.safePreviewBody.trim().length > 0,
     safeForAPNs: status === 'pass' && isVisiblePushCandidate(input),
+    safeForFrontendAction: status === 'pass' && !!primary && (!mutating || !!recipe.readBackVerifier),
   };
 }
 
@@ -392,7 +411,7 @@ export function rankDecision(
   };
 }
 
-function recipeForInput(input: DecisionLogicInput): Omit<DecisionLogicV2, 'sourceSkill' | 'type' | 'privacyClassification' | 'visibilityScope' | 'notificationEligibility' | 'apnsInterruptionLevel' | 'collapseKey' | 'badgeContribution' | 'quality' | 'qualityScore'> {
+function recipeForInput(input: DecisionLogicInput): DecisionLogicRecipe {
   if (input.type === 'sync_failure') return syncFailureRecipe(input);
   if (isOwnerAdminDecision(input)) return ownerAdminOpsRecipe(input);
   if (isOvercapacityDecision(input)) return overcapacityRecipe(input);
@@ -407,7 +426,7 @@ function recipeForInput(input: DecisionLogicInput): Omit<DecisionLogicV2, 'sourc
   return genericRecipe(input);
 }
 
-function overcapacityRecipe(input: DecisionLogicInput): Omit<DecisionLogicV2, 'sourceSkill' | 'type' | 'privacyClassification' | 'visibilityScope' | 'notificationEligibility' | 'apnsInterruptionLevel' | 'collapseKey' | 'badgeContribution' | 'quality' | 'qualityScore'> {
+function overcapacityRecipe(input: DecisionLogicInput): DecisionLogicRecipe {
   const contextLabel = input.context?.entityTitle?.trim() || 'This schedule window';
   const primary = primaryAction(input.actions);
   const hasMutatingChoice = input.actions.some(isMutatingAction);
@@ -445,7 +464,7 @@ function overcapacityRecipe(input: DecisionLogicInput): Omit<DecisionLogicV2, 's
   };
 }
 
-function ownerAdminOpsRecipe(input: DecisionLogicInput): Omit<DecisionLogicV2, 'sourceSkill' | 'type' | 'privacyClassification' | 'visibilityScope' | 'notificationEligibility' | 'apnsInterruptionLevel' | 'collapseKey' | 'badgeContribution' | 'quality' | 'qualityScore'> {
+function ownerAdminOpsRecipe(input: DecisionLogicInput): DecisionLogicRecipe {
   const target = input.context?.entityTitle?.trim() || 'An operational system item';
   const primary = primaryAction(input.actions);
   return {
@@ -484,7 +503,7 @@ function ownerAdminOpsRecipe(input: DecisionLogicInput): Omit<DecisionLogicV2, '
   };
 }
 
-function secretaryRecipe(input: DecisionLogicInput): Omit<DecisionLogicV2, 'sourceSkill' | 'type' | 'privacyClassification' | 'visibilityScope' | 'notificationEligibility' | 'apnsInterruptionLevel' | 'collapseKey' | 'badgeContribution' | 'quality' | 'qualityScore'> {
+function secretaryRecipe(input: DecisionLogicInput): DecisionLogicRecipe {
   const context = input.context ?? {};
   const entityTitle = context.entityTitle?.trim() || null;
   const currentWindow = formatDecisionWindow(context.currentStartAt, context.currentEndAt, context.timezone, context.locale);
@@ -536,7 +555,7 @@ function secretaryRecipe(input: DecisionLogicInput): Omit<DecisionLogicV2, 'sour
   };
 }
 
-function trainingRecipe(input: DecisionLogicInput): Omit<DecisionLogicV2, 'sourceSkill' | 'type' | 'privacyClassification' | 'visibilityScope' | 'notificationEligibility' | 'apnsInterruptionLevel' | 'collapseKey' | 'badgeContribution' | 'quality' | 'qualityScore'> {
+function trainingRecipe(input: DecisionLogicInput): DecisionLogicRecipe {
   const isRaceDate = /race date/i.test(`${input.title} ${input.body} ${input.relatedEntityType ?? ''}`);
   return {
     title: isRaceDate ? 'Training plan needs race date' : 'Training decision',
@@ -582,7 +601,7 @@ function trainingRecipe(input: DecisionLogicInput): Omit<DecisionLogicV2, 'sourc
   };
 }
 
-function contentRecipe(input: DecisionLogicInput): Omit<DecisionLogicV2, 'sourceSkill' | 'type' | 'privacyClassification' | 'visibilityScope' | 'notificationEligibility' | 'apnsInterruptionLevel' | 'collapseKey' | 'badgeContribution' | 'quality' | 'qualityScore'> {
+function contentRecipe(input: DecisionLogicInput): DecisionLogicRecipe {
   const contentTitle = input.context?.entityTitle?.trim() || 'A content item';
   return {
     title: 'Content review',
@@ -618,7 +637,7 @@ function contentRecipe(input: DecisionLogicInput): Omit<DecisionLogicV2, 'source
   };
 }
 
-function financeRecipe(input: DecisionLogicInput): Omit<DecisionLogicV2, 'sourceSkill' | 'type' | 'privacyClassification' | 'visibilityScope' | 'notificationEligibility' | 'apnsInterruptionLevel' | 'collapseKey' | 'badgeContribution' | 'quality' | 'qualityScore'> {
+function financeRecipe(input: DecisionLogicInput): DecisionLogicRecipe {
   return {
     title: 'Finance decision',
     problemStatement: 'A finance item needs confirmation before Nexus marks it complete.',
@@ -653,7 +672,7 @@ function financeRecipe(input: DecisionLogicInput): Omit<DecisionLogicV2, 'source
   };
 }
 
-function cookingRecipe(input: DecisionLogicInput): Omit<DecisionLogicV2, 'sourceSkill' | 'type' | 'privacyClassification' | 'visibilityScope' | 'notificationEligibility' | 'apnsInterruptionLevel' | 'collapseKey' | 'badgeContribution' | 'quality' | 'qualityScore'> {
+function cookingRecipe(input: DecisionLogicInput): DecisionLogicRecipe {
   return {
     title: 'Cooking decision',
     problemStatement: 'A meal or fueling choice needs your confirmation before Nexus updates the plan.',
@@ -688,7 +707,7 @@ function cookingRecipe(input: DecisionLogicInput): Omit<DecisionLogicV2, 'source
   };
 }
 
-function chatRecipe(input: DecisionLogicInput): Omit<DecisionLogicV2, 'sourceSkill' | 'type' | 'privacyClassification' | 'visibilityScope' | 'notificationEligibility' | 'apnsInterruptionLevel' | 'collapseKey' | 'badgeContribution' | 'quality' | 'qualityScore'> {
+function chatRecipe(input: DecisionLogicInput): DecisionLogicRecipe {
   return {
     title: 'Nexus needs your choice',
     problemStatement: 'A chat action is ambiguous and needs your answer before Nexus continues.',
@@ -723,7 +742,7 @@ function chatRecipe(input: DecisionLogicInput): Omit<DecisionLogicV2, 'sourceSki
   };
 }
 
-function syncFailureRecipe(input: DecisionLogicInput): Omit<DecisionLogicV2, 'sourceSkill' | 'type' | 'privacyClassification' | 'visibilityScope' | 'notificationEligibility' | 'apnsInterruptionLevel' | 'collapseKey' | 'badgeContribution' | 'quality' | 'qualityScore'> {
+function syncFailureRecipe(input: DecisionLogicInput): DecisionLogicRecipe {
   const provider = input.context?.providerName ?? 'provider';
   return {
     title: 'Sync needs retry',
@@ -759,7 +778,7 @@ function syncFailureRecipe(input: DecisionLogicInput): Omit<DecisionLogicV2, 'so
   };
 }
 
-function genericRecipe(input: DecisionLogicInput): Omit<DecisionLogicV2, 'sourceSkill' | 'type' | 'privacyClassification' | 'visibilityScope' | 'notificationEligibility' | 'apnsInterruptionLevel' | 'collapseKey' | 'badgeContribution' | 'quality' | 'qualityScore'> {
+function genericRecipe(input: DecisionLogicInput): DecisionLogicRecipe {
   return {
     title: sanitizeTitle(input.title),
     problemStatement: input.body,

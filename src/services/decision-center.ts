@@ -57,6 +57,8 @@ import {
   formatDecisionWindow,
   rankDecision,
   type AutomationEligibility,
+  type DecisionFrontendActionState,
+  type DecisionFrontendDisplayMode,
   type DecisionLogicContext,
   type DecisionLogicV2,
   type DecisionQualityGateResult,
@@ -141,6 +143,8 @@ export interface DecisionApiItem {
   expiresAt: string | null;
   confidence: number;
   riskLevel: 'low' | 'medium' | 'high';
+  displayMode: DecisionFrontendDisplayMode;
+  frontendActionState: DecisionFrontendActionState;
   privacyClassification: NotificationPrivacyPolicy;
   visibilityScope: 'user_private' | 'tenant_shared' | 'tenant_admin' | 'system_admin';
   createdAt: string;
@@ -947,6 +951,8 @@ function formatDecisionItemForApi(item: DecisionRecord): DecisionApiItem {
     expiresAt: item.expiresAt,
     confidence: logic.confidence,
     riskLevel: riskLevelForItem(item),
+    displayMode: displayModeForRecord(item, logic),
+    frontendActionState: frontendActionStateForRecord(item, logic, dependencies),
     privacyClassification: item.privacyPolicy,
     visibilityScope: visibilityScopeForItem(item),
     createdAt: item.createdAt,
@@ -958,6 +964,27 @@ function formatDecisionItemForApi(item: DecisionRecord): DecisionApiItem {
     rollbackAvailable: rollbackContractForRecord(item).available,
     rollbackActionId: rollbackContractForRecord(item).actionId,
   };
+}
+
+function displayModeForRecord(item: DecisionRecord, logic: DecisionLogicV2): DecisionFrontendDisplayMode {
+  if (!logic.quality.safeToShowUser) return 'details_unavailable';
+  if (item.status === 'failed') return 'failed';
+  if (item.status === 'actioned') return 'handled';
+  if (item.status === 'superseded' || item.status === 'dismissed') return 'handled';
+  if (item.type === 'sync_failure') return 'waiting_on_system';
+  return 'needs_input';
+}
+
+function frontendActionStateForRecord(
+  item: DecisionRecord,
+  logic: DecisionLogicV2,
+  dependencies: { blockedByDecisionIds: string[] },
+): DecisionFrontendActionState {
+  if (!logic.quality.safeForFrontendAction) return 'disabled_missing_details';
+  if (item.status === 'expired') return 'disabled_expired';
+  if (item.status === 'superseded' || item.status === 'dismissed' || item.status === 'actioned') return 'disabled_superseded';
+  if (dependencies.blockedByDecisionIds.length > 0) return 'disabled_missing_details';
+  return 'enabled';
 }
 
 function safeTitleForItem(item: DecisionRecord): string {

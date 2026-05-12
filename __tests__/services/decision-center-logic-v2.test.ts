@@ -25,6 +25,9 @@ describe('Decision Center Logic v2', () => {
     expect(decision.quality.status).toBe('needs_enrichment');
     expect(decision.quality.safeToShowUser).toBe(false);
     expect(decision.quality.safeForAPNs).toBe(false);
+    expect(decision.quality.safeForFrontendAction).toBe(false);
+    expect(decision.displayMode).toBe('details_unavailable');
+    expect(decision.frontendActionState).toBe('disabled_missing_details');
     expect(decision.quality.missingFields).toContain('concreteCopy');
     expect(decision.quality.missingFields).toContain('relatedEntity');
     expect(decision.quality.qualityScore).toBe(76);
@@ -71,6 +74,9 @@ describe('Decision Center Logic v2', () => {
     });
 
     expect(decision.quality.status).toBe('pass');
+    expect(decision.quality.safeForFrontendAction).toBe(true);
+    expect(decision.displayMode).toBe('needs_input');
+    expect(decision.frontendActionState).toBe('enabled');
     expect(decision.problemStatement).toContain('Saturday long run');
     expect(decision.recommendation).toContain('Sun, May 17');
     expect(decision.recommendation).not.toContain('2026-05-17T08:00:00.000Z');
@@ -184,6 +190,8 @@ describe('Decision Center Logic v2', () => {
     });
 
     expect(decision.quality.safeToShowUser).toBe(false);
+    expect(decision.quality.safeForFrontendAction).toBe(false);
+    expect(decision.frontendActionState).toBe('disabled_missing_details');
     expect(decision.quality.missingFields).toContain('readBackVerifier');
     expect(decision.quality.missingFields).toContain('privacyClassification');
   });
