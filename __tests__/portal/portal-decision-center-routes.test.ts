@@ -158,6 +158,7 @@ function sampleDecision(overrides: Record<string, unknown> = {}) {
         reason: 'Only if already handled.',
         actionId: 'mark_paid',
         available: true,
+        source: 'recipe',
       },
     ],
     actionTruthTableEntry: {
@@ -287,7 +288,7 @@ describe('portal Decision Center routes', () => {
     expect(item.groupKey).toBe('finance:decision_required:tax-2026-05');
     expect(item.impactLevel).toBe('high');
     expect(item.primaryActionLabel).toBe('Mark paid');
-    expect(item.alternatives[0]).toMatchObject({ actionId: 'mark_paid', available: true });
+    expect(item.alternatives[0]).toMatchObject({ actionId: 'mark_paid', available: true, source: 'recipe' });
     expect(item.actionTruthTableEntry).toMatchObject({
       actionType: 'mark_paid',
       executor: 'finance',

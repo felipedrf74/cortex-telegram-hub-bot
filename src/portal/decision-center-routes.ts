@@ -104,6 +104,7 @@ function sanitizePortalDecisionItem(item: DecisionApiItem): Record<string, unkno
       reason: alternative.reason,
       actionId: alternative.actionId,
       available: alternative.available,
+      source: alternative.source,
     })),
     actionTruthTableEntry: item.actionTruthTableEntry,
     sourceTraceSummary: item.sourceTraceSummary,

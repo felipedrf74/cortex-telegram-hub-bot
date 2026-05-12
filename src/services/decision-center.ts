@@ -87,10 +87,15 @@ export interface DecisionOutcomeMetrics {
   userId: number;
   tenantId: number;
   totalOutcomes: number;
+  decisionQualityScore: number | null;
+  decisionSpecificityScore: number | null;
+  decisionActionabilityScore: number | null;
   acceptedCount: number;
   dismissedCount: number;
   snoozedCount: number;
   askedNexusCount: number;
+  explanationOpenCount: number;
+  genericBlockedCount: number;
   undoUsedCount: number;
   primaryActionCount: number;
   failedActionCount: number;
@@ -100,6 +105,8 @@ export interface DecisionOutcomeMetrics {
   primaryActionRate: number;
   dismissRate: number;
   snoozeRate: number;
+  explanationOpenRate: number;
+  genericBlockedRate: number;
   failedActionRate: number;
   partialFailureRate: number;
   bySourceSkill: Record<string, number>;
@@ -205,6 +212,7 @@ export interface DecisionAlternativeOption {
   reason: string;
   actionId: string | null;
   available: boolean;
+  source: 'recipe' | 'system_default';
 }
 
 export interface DecisionSourceTrace {
@@ -402,6 +410,21 @@ export function ensureDecisionCenterTables(): void {
     );
     CREATE INDEX IF NOT EXISTS idx_decision_outcome_scope_created
       ON decision_outcome_ledger(user_id, tenant_id, created_at DESC);
+    CREATE TABLE IF NOT EXISTS decision_quality_gate_events (
+      event_id TEXT PRIMARY KEY,
+      user_id INTEGER NOT NULL,
+      tenant_id INTEGER NOT NULL,
+      source_skill TEXT NOT NULL,
+      type TEXT NOT NULL,
+      quality_status TEXT NOT NULL,
+      quality_score INTEGER NOT NULL DEFAULT 0,
+      missing_fields_json TEXT NOT NULL DEFAULT '[]',
+      reason TEXT NOT NULL,
+      generic_blocked INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_decision_quality_gate_scope_created
+      ON decision_quality_gate_events(user_id, tenant_id, created_at DESC);
   `);
 }
 
@@ -453,6 +476,7 @@ export async function createDecisionIntent(input: NotificationIntentInput): Prom
 
   const quality = decisionLogicForIntentInput(input).quality;
   if (!quality.safeToShowUser) {
+    recordDecisionQualityGateEvent(input, quality);
     return {
       item: null,
       eligibility: {
@@ -740,65 +764,123 @@ export function runDecisionSourceStateSupersessionJob(opts: { userId?: number; t
 export function getDecisionOutcomeMetrics(userId: number, tenantId = userId): DecisionOutcomeMetrics {
   assertScope(userId, tenantId, 'get_decision_outcome_metrics');
   ensureDecisionCenterTables();
-  const totals = getDb().prepare(`
+  const outcomeRows = getDb().prepare(`
     SELECT
-      COUNT(*) AS totalOutcomes,
-      COALESCE(SUM(accepted), 0) AS acceptedCount,
-      COALESCE(SUM(dismissed), 0) AS dismissedCount,
-      COALESCE(SUM(snoozed), 0) AS snoozedCount,
-      COALESCE(SUM(asked_nexus), 0) AS askedNexusCount,
-      COALESCE(SUM(undo_used), 0) AS undoUsedCount,
-      COALESCE(SUM(CASE WHEN action_taken IS NOT NULL AND action_taken != '' THEN 1 ELSE 0 END), 0) AS primaryActionCount,
-      COALESCE(SUM(CASE WHEN action_succeeded = 0 AND action_taken IS NOT NULL AND action_taken != '' THEN 1 ELSE 0 END), 0) AS failedActionCount,
-      COALESCE(SUM(partial_failure), 0) AS partialFailureCount,
-      COALESCE(SUM(CASE WHEN action_taken IN ('superseded', 'auto_dismiss_stale_decision') THEN 1 ELSE 0 END), 0) AS autoHandledCount,
-      AVG(time_to_action_ms) AS averageTimeToActionMs
+      source_skill AS sourceSkill,
+      confidence,
+      automation_eligibility AS automationEligibility,
+      action_shown AS actionShown,
+      action_taken AS actionTaken,
+      accepted,
+      dismissed,
+      snoozed,
+      asked_nexus AS askedNexus,
+      undo_used AS undoUsed,
+      time_to_action_ms AS timeToActionMs,
+      action_succeeded AS actionSucceeded,
+      partial_failure AS partialFailure,
+      feature_snapshot_json AS featureSnapshotJson
     FROM decision_outcome_ledger
     WHERE user_id = ? AND tenant_id = ?
-  `).get(userId, tenantId) as {
-    totalOutcomes: number;
-    acceptedCount: number;
-    dismissedCount: number;
-    snoozedCount: number;
-    askedNexusCount: number;
-    undoUsedCount: number;
-    primaryActionCount: number;
-    failedActionCount: number;
-    partialFailureCount: number;
-    autoHandledCount: number;
-    averageTimeToActionMs: number | null;
-  };
+  `).all(userId, tenantId) as Array<{
+    sourceSkill: string;
+    confidence: number;
+    automationEligibility: string;
+    actionShown: string | null;
+    actionTaken: string | null;
+    accepted: number;
+    dismissed: number;
+    snoozed: number;
+    askedNexus: number;
+    undoUsed: number;
+    timeToActionMs: number | null;
+    actionSucceeded: number;
+    partialFailure: number;
+    featureSnapshotJson: string;
+  }>;
+  const gateTotals = getDb().prepare(`
+    SELECT
+      COUNT(*) AS totalQualityGateEvents,
+      COALESCE(SUM(generic_blocked), 0) AS genericBlockedCount
+    FROM decision_quality_gate_events
+    WHERE user_id = ? AND tenant_id = ?
+  `).get(userId, tenantId) as { totalQualityGateEvents: number; genericBlockedCount: number };
   const bySourceRows = getDb().prepare(`
     SELECT source_skill AS sourceSkill, COUNT(*) AS count
     FROM decision_outcome_ledger
     WHERE user_id = ? AND tenant_id = ?
     GROUP BY source_skill
   `).all(userId, tenantId) as Array<{ sourceSkill: string; count: number }>;
-  const totalOutcomes = Number(totals.totalOutcomes ?? 0);
+  const totalOutcomes = outcomeRows.length;
+  const acceptedCount = outcomeRows.filter((row) => !!row.accepted).length;
+  const dismissedCount = outcomeRows.filter((row) => !!row.dismissed).length;
+  const snoozedCount = outcomeRows.filter((row) => !!row.snoozed).length;
+  const askedNexusCount = outcomeRows.filter((row) => !!row.askedNexus).length;
+  const undoUsedCount = outcomeRows.filter((row) => !!row.undoUsed).length;
+  const primaryActionCount = outcomeRows.filter((row) => !!row.actionTaken).length;
+  const failedActionCount = outcomeRows.filter((row) => row.actionSucceeded === 0 && !!row.actionTaken).length;
+  const partialFailureCount = outcomeRows.filter((row) => !!row.partialFailure).length;
+  const autoHandledCount = outcomeRows.filter((row) => row.actionTaken === 'superseded' || row.actionTaken === 'auto_dismiss_stale_decision').length;
+  const timeToActionValues = outcomeRows
+    .map((row) => row.timeToActionMs)
+    .filter((value): value is number => typeof value === 'number');
+  const average = (values: number[]): number | null => {
+    if (values.length === 0) return null;
+    return Math.round(values.reduce((sum, value) => sum + value, 0) / values.length);
+  };
+  const qualityScores = outcomeRows
+    .map((row) => Number((safeParseJson(row.featureSnapshotJson, {}) as Record<string, unknown>).qualityScore))
+    .filter((value) => Number.isFinite(value));
+  const specificityScores = outcomeRows.map((row) => {
+    const snapshot = safeParseJson(row.featureSnapshotJson, {}) as Record<string, unknown>;
+    let score = 20;
+    if (typeof snapshot.sourceSkill === 'string') score += 20;
+    if (typeof snapshot.decisionType === 'string') score += 20;
+    if (typeof snapshot.riskLevel === 'string') score += 15;
+    if (typeof snapshot.deadlineDistance === 'string' && snapshot.deadlineDistance !== 'none') score += 15;
+    if (Number(snapshot.relatedEntitiesCount ?? 0) > 0) score += 10;
+    return Math.min(score, 100);
+  });
+  const actionabilityScores = outcomeRows.map((row) => {
+    let score = row.actionShown ? 65 : 25;
+    if (row.actionTaken) score += 20;
+    if (row.automationEligibility && row.automationEligibility !== 'never') score += 10;
+    if (row.actionSucceeded === 1 || row.partialFailure === 1) score += 5;
+    return Math.min(score, 100);
+  });
   const rate = (count: number): number => totalOutcomes > 0 ? Number((count / totalOutcomes).toFixed(4)) : 0;
   const bySourceSkill: Record<string, number> = {};
   for (const row of bySourceRows) {
     bySourceSkill[row.sourceSkill] = Number(row.count ?? 0);
   }
+  const totalDecisionQualityAttempts = totalOutcomes + Number(gateTotals.totalQualityGateEvents ?? 0);
+  const genericBlockedCount = Number(gateTotals.genericBlockedCount ?? 0);
   return {
     userId,
     tenantId,
     totalOutcomes,
-    acceptedCount: Number(totals.acceptedCount ?? 0),
-    dismissedCount: Number(totals.dismissedCount ?? 0),
-    snoozedCount: Number(totals.snoozedCount ?? 0),
-    askedNexusCount: Number(totals.askedNexusCount ?? 0),
-    undoUsedCount: Number(totals.undoUsedCount ?? 0),
-    primaryActionCount: Number(totals.primaryActionCount ?? 0),
-    failedActionCount: Number(totals.failedActionCount ?? 0),
-    partialFailureCount: Number(totals.partialFailureCount ?? 0),
-    autoHandledCount: Number(totals.autoHandledCount ?? 0),
-    averageTimeToActionMs: totals.averageTimeToActionMs == null ? null : Math.round(Number(totals.averageTimeToActionMs)),
-    primaryActionRate: rate(Number(totals.primaryActionCount ?? 0)),
-    dismissRate: rate(Number(totals.dismissedCount ?? 0)),
-    snoozeRate: rate(Number(totals.snoozedCount ?? 0)),
-    failedActionRate: rate(Number(totals.failedActionCount ?? 0)),
-    partialFailureRate: rate(Number(totals.partialFailureCount ?? 0)),
+    decisionQualityScore: average(qualityScores),
+    decisionSpecificityScore: average(specificityScores),
+    decisionActionabilityScore: average(actionabilityScores),
+    acceptedCount,
+    dismissedCount,
+    snoozedCount,
+    askedNexusCount,
+    explanationOpenCount: askedNexusCount,
+    genericBlockedCount,
+    undoUsedCount,
+    primaryActionCount,
+    failedActionCount,
+    partialFailureCount,
+    autoHandledCount,
+    averageTimeToActionMs: average(timeToActionValues),
+    primaryActionRate: rate(primaryActionCount),
+    dismissRate: rate(dismissedCount),
+    snoozeRate: rate(snoozedCount),
+    explanationOpenRate: rate(askedNexusCount),
+    genericBlockedRate: totalDecisionQualityAttempts > 0 ? Number((genericBlockedCount / totalDecisionQualityAttempts).toFixed(4)) : 0,
+    failedActionRate: rate(failedActionCount),
+    partialFailureRate: rate(partialFailureCount),
     bySourceSkill,
   };
 }
@@ -1232,6 +1314,7 @@ function alternativesForRecord(
       reason: logic.whySummary,
       actionId: primary.id,
       available: frontendActionStateForRecord(item, logic, dependencyStateForRecord(item), primary) === 'enabled',
+      source: 'recipe',
     });
   }
   for (const action of actions.filter((candidate) => candidate.id !== primary?.id && candidate.id !== 'open_detail')) {
@@ -1244,6 +1327,7 @@ function alternativesForRecord(
         : 'Available as a lower-friction alternative if the recommendation does not fit.',
       actionId: action.id,
       available: frontendActionStateForRecord(item, logic, dependencyStateForRecord(item), action) === 'enabled',
+      source: 'recipe',
     });
   }
   if (!alternatives.some((option) => option.actionId === 'snooze')) {
@@ -1254,6 +1338,7 @@ function alternativesForRecord(
       reason: 'Use this if the decision is real but not worth interrupting this window.',
       actionId: 'snooze',
       available: item.status === 'unread' || item.status === 'read' || item.status === 'failed',
+      source: 'system_default',
     });
   }
   if (!alternatives.some((option) => option.actionId === 'dismiss')) {
@@ -1264,6 +1349,7 @@ function alternativesForRecord(
       reason: 'Dismiss only when the recommendation no longer matters; Nexus records that outcome for future ranking.',
       actionId: 'dismiss',
       available: item.status === 'unread' || item.status === 'read' || item.status === 'failed',
+      source: 'system_default',
     });
   }
   return alternatives.slice(0, 5);
@@ -2588,6 +2674,31 @@ function recordDecisionOutcome(record: DecisionRecord, input: {
     input.partialFailure ? 1 : 0,
     input.failedReason ?? null,
     JSON.stringify(featureSnapshot),
+  );
+}
+
+function recordDecisionQualityGateEvent(input: NotificationIntentInput, quality: DecisionQualityGateResult): void {
+  ensureDecisionCenterTables();
+  const genericBlocked = quality.status === 'blocked'
+    || quality.status === 'needs_enrichment'
+    || quality.reason.toLowerCase().includes('generic')
+    || quality.missingFields.some((field) => field.toLowerCase().includes('concrete'));
+  getDb().prepare(`
+    INSERT INTO decision_quality_gate_events (
+      event_id, user_id, tenant_id, source_skill, type, quality_status,
+      quality_score, missing_fields_json, reason, generic_blocked
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    `dqg_${randomUUID()}`,
+    input.userId,
+    input.tenantId ?? input.userId,
+    input.sourceSkill,
+    input.type,
+    quality.status,
+    quality.qualityScore,
+    JSON.stringify(quality.missingFields),
+    quality.reason,
+    genericBlocked ? 1 : 0,
   );
 }
 

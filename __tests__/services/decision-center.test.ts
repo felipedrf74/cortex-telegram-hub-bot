@@ -309,6 +309,9 @@ describe('Decision Center facade', () => {
       dependencyGraphSummary: null,
     });
     expect(listed[0].alternatives.some((option) => option.rank === 'best')).toBe(true);
+    expect(listed[0].alternatives.find((option) => option.rank === 'best')?.source).toBe('recipe');
+    expect(listed[0].alternatives.find((option) => option.actionId === 'snooze')?.source).toBe('system_default');
+    expect(listed[0].alternatives.find((option) => option.actionId === 'dismiss')?.source).toBe('system_default');
     expect(listed[0].relatedEntitiesSafe[0]).toMatchObject({ type: 'calendar_conflict' });
     expect(listed[0].sourceTrace).toMatchObject({
       originatingSkill: 'secretary',
@@ -864,6 +867,20 @@ describe('Decision Center facade', () => {
     });
     dismissDecision(dismissed.item!.decisionId, 44, 44);
     snoozeDecision(snoozed.item!.decisionId, 44, 44, 30);
+    const generic = await createDecisionIntent({
+      userId: 44,
+      tenantId: 44,
+      sourceSkill: 'secretary',
+      type: 'conflict_detected',
+      priority: 'active',
+      title: 'Secretary',
+      body: 'Secretary needs your attention.',
+      actionButtons: [{ id: 'open_detail', label: 'Review', style: 'primary' }],
+      requiresUserAction: true,
+      privacyPolicy: 'standard',
+      dedupeKey: 'metrics-generic-blocked',
+    });
+    expect(generic.item).toBeNull();
 
     const metrics = getDecisionOutcomeMetrics(44, 44);
 
@@ -871,18 +888,28 @@ describe('Decision Center facade', () => {
       userId: 44,
       tenantId: 44,
       totalOutcomes: 3,
+      decisionQualityScore: expect.any(Number),
+      decisionSpecificityScore: expect.any(Number),
+      decisionActionabilityScore: expect.any(Number),
       acceptedCount: 1,
       dismissedCount: 1,
       snoozedCount: 1,
+      explanationOpenCount: 0,
+      genericBlockedCount: 1,
       primaryActionCount: 3,
       failedActionCount: 0,
       partialFailureCount: 0,
       primaryActionRate: 1,
       dismissRate: 0.3333,
       snoozeRate: 0.3333,
+      explanationOpenRate: 0,
+      genericBlockedRate: 0.25,
       failedActionRate: 0,
       partialFailureRate: 0,
     });
+    expect(metrics.decisionQualityScore).toBeGreaterThan(50);
+    expect(metrics.decisionSpecificityScore).toBeGreaterThan(50);
+    expect(metrics.decisionActionabilityScore).toBeGreaterThan(50);
     expect(metrics.bySourceSkill.content).toBe(1);
     expect(metrics.bySourceSkill.training).toBe(1);
     expect(metrics.bySourceSkill.chat).toBe(1);
