@@ -323,11 +323,14 @@ export function ensureDecisionCenterTables(): void {
 
 export function evaluateDecisionEligibility(input: DecisionEligibilityPolicyInput): DecisionEligibilityResult {
   const reasons: string[] = [];
-  const requiresUserAction = !!input.requiresUserAction || (input.actionButtons ?? []).some((action) => action.id !== 'open_detail');
+  const requiresUserAction = input.requiresUserAction === true;
   const urgency = urgencyForPriority(input.priority);
 
   if (NON_DECISION_TYPES.has(input.type) && !requiresUserAction) {
     reasons.push(`${input.type} is routine notification/insight, not a user decision`);
+    if ((input.actionButtons ?? []).some((action) => action.id !== 'open_detail')) {
+      reasons.push('notification action buttons do not imply a user decision without explicit requiresUserAction');
+    }
     return { classification: input.type === 'insight' ? 'insight' : 'notification', reasons, apnsEligible: false, urgency };
   }
 

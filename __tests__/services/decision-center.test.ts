@@ -115,6 +115,17 @@ describe('Decision Center facade', () => {
       actionButtons: [{ id: 'open_detail', label: 'Open' }],
     }).classification).toBe('notification');
 
+    const reminderWithActionChip = evaluateDecisionEligibility({
+      sourceSkill: 'finance',
+      type: 'reminder',
+      priority: 'time_sensitive',
+      requiresUserAction: false,
+      actionButtons: [{ id: 'mark_paid', label: 'Mark paid' }],
+    });
+    expect(reminderWithActionChip.classification).toBe('notification');
+    expect(reminderWithActionChip.apnsEligible).toBe(false);
+    expect(reminderWithActionChip.reasons.join(' ')).toContain('do not imply a user decision');
+
     const conflict = evaluateDecisionEligibility({
       sourceSkill: 'secretary',
       type: 'conflict_detected',
@@ -133,6 +144,20 @@ describe('Decision Center facade', () => {
     });
     expect(insight.classification).toBe('insight');
     expect(insight.apnsEligible).toBe(false);
+  });
+
+  it('does not create Decision Center items from routine reminders just because they have action chips', async () => {
+    const created = await createDecisionIntent(buildSkillNotificationFixtureIntent('finance', 1, {
+      type: 'reminder',
+      requiresUserAction: false,
+      actionButtons: [{ id: 'mark_paid', label: 'Mark paid', style: 'primary' }],
+      dedupeKey: 'finance:routine-action-chip',
+    }));
+
+    expect(created.item).toBeNull();
+    expect(created.eligibility.classification).toBe('notification');
+    expect(listDecisionItems(1, 1)).toHaveLength(0);
+    expect(getDecisionSummary(1, 1).ctaLabel).toBe('All Clear');
   });
 
   it('creates a bounded Home summary from scoped decision-worthy items only', async () => {
