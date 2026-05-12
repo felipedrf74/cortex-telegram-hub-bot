@@ -106,6 +106,7 @@ export interface DecisionApiItem {
   type: NotificationIntentType;
   status: string;
   urgency: DecisionUrgency;
+  timingLabel: string | null;
   priorityScore: number;
   title: string;
   summary: string;
@@ -120,12 +121,14 @@ export interface DecisionApiItem {
   recommendation: string;
   expectedEffect: string;
   impactIfIgnored: string;
+  impactLevel: 'low' | 'medium' | 'high';
   primaryActionLabel: string;
   secondaryActionLabels: string[];
   urgencyReason: string;
   why: DecisionWhy;
   actionPreview: DecisionWhatWillChange[];
   whatWillChange: DecisionWhatWillChange[];
+  alternatives: DecisionAlternativeOption[];
   automationEligibility: AutomationEligibility;
   autopilotPolicy: string;
   readBackVerifier: string | null;
@@ -140,10 +143,18 @@ export interface DecisionApiItem {
   badgeContribution: boolean;
   quality: DecisionQualityGateResult;
   relatedEntities: Array<{ type: string; id: string }>;
+  relatedEntitiesSafe: Array<{ type: string; label: string }>;
+  sourceTraceSummary: string;
+  sourceTrace: DecisionSourceTrace;
+  dependencyGraphSummary: string | null;
+  actionTruthTableEntry: DecisionActionTruthTableEntry | null;
+  askNexusContext: DecisionAskNexusContext;
   deadlineAt: string | null;
   expiresAt: string | null;
   confidence: number;
   riskLevel: 'low' | 'medium' | 'high';
+  groupKey: string;
+  sectionKey: DecisionTimelineSectionKey;
   displayMode: DecisionFrontendDisplayMode;
   frontendActionState: DecisionFrontendActionState;
   privacyClassification: NotificationPrivacyPolicy;
@@ -158,10 +169,58 @@ export interface DecisionApiItem {
   rollbackActionId: string | null;
 }
 
+export type DecisionTimelineSectionKey = 'urgent' | 'today' | 'tomorrow' | 'this_week' | 'waiting_on_systems' | 'handled' | 'history';
+
+export interface DecisionAlternativeOption {
+  id: string;
+  label: string;
+  rank: 'best' | 'good' | 'not_recommended';
+  reason: string;
+  actionId: string | null;
+  available: boolean;
+}
+
+export interface DecisionSourceTrace {
+  originatingSkill: NotificationSourceSkill;
+  originatingSignal: NotificationIntentType;
+  sourceEntityIds: string[];
+  sourceTimestamp: string;
+  enrichmentService: string;
+  orchestrator: string;
+  executor: string | null;
+  verifier: string | null;
+  relatedStateReadModels: string[];
+  confidenceSource: string;
+  dataFreshness: 'live' | 'cached' | 'unknown';
+}
+
+export interface DecisionActionTruthTableEntry {
+  actionType: string;
+  expectedMutation: string;
+  executor: string;
+  verifier: string | null;
+  successUi: string;
+  partialFailureUi: string;
+  failureUi: string;
+  retryAvailable: boolean;
+  rollbackAvailable: boolean;
+  apnsActionAllowed: boolean;
+  highRiskConfirmationRequired: boolean;
+  analyticsEvent: string;
+}
+
+export interface DecisionAskNexusContext {
+  decisionId: string;
+  sourceSkill: NotificationSourceSkill;
+  type: NotificationIntentType;
+  prompt: string;
+}
+
 export interface DecisionSummary {
   openCount: number;
   urgentCount: number;
   todayCount: number;
+  handledTodayCount: number;
   topDecisionTitle: string | null;
   topDecisionSourceSkill: NotificationSourceSkill | null;
   topDecisionUrgency: DecisionUrgency | null;
@@ -522,10 +581,14 @@ export function getDecisionSummary(userId: number, tenantId = userId, limit = 3)
   const todayCount = openItems.filter((item) => item.urgency === 'urgent' || item.urgency === 'today').length;
   const top = openItems[0] ?? null;
   const locale = userDecisionContextDefaults(userId).locale;
+  const handledTodayCount = listHandledByNexusItems(userId, tenantId, 25)
+    .filter((item) => DateTime.fromISO(item.createdAt).hasSame(DateTime.utc(), 'day'))
+    .length;
   return {
     openCount: openItems.length,
     urgentCount,
     todayCount,
+    handledTodayCount,
     topDecisionTitle: top?.safePreviewTitle ?? null,
     topDecisionSourceSkill: top?.sourceSkill ?? null,
     topDecisionUrgency: top?.urgency ?? null,
@@ -901,6 +964,9 @@ function formatDecisionItemForApi(item: DecisionRecord): DecisionApiItem {
   const action = recommendedAction(actions);
   const urgency = urgencyForPriority(item.priority, item.decisionDeadline, item.expiresAt);
   const outcome = outcomeSummaryForRecord(item, logic);
+  const riskLevel = riskLevelForItem(item);
+  const sectionKey = sectionKeyForRecord(item, urgency, logic);
+  const rollback = rollbackContractForRecord(item);
   return {
     decisionId: item.itemId,
     itemId: item.itemId,
@@ -913,6 +979,7 @@ function formatDecisionItemForApi(item: DecisionRecord): DecisionApiItem {
     type: item.type,
     status: item.status,
     urgency,
+    timingLabel: timingLabelForRecord(item, urgency),
     priorityScore: priorityScoreFor(item),
     title: logic.title,
     summary: logic.problemStatement,
@@ -927,12 +994,14 @@ function formatDecisionItemForApi(item: DecisionRecord): DecisionApiItem {
     recommendation: logic.recommendation,
     expectedEffect: logic.expectedEffect,
     impactIfIgnored: logic.impactIfIgnored,
+    impactLevel: riskLevel,
     primaryActionLabel: logic.primaryActionLabel,
     secondaryActionLabels: logic.secondaryActionLabels,
     urgencyReason: logic.urgencyReason,
     why: logic.why,
     actionPreview: logic.whatWillChange,
     whatWillChange: logic.whatWillChange,
+    alternatives: alternativesForRecord(item, logic, actions),
     automationEligibility: logic.automationEligibility,
     autopilotPolicy: logic.autopilotPolicy,
     readBackVerifier: logic.readBackVerifier,
@@ -949,10 +1018,18 @@ function formatDecisionItemForApi(item: DecisionRecord): DecisionApiItem {
     relatedEntities: item.relatedEntityId && item.relatedEntityType
       ? [{ type: item.relatedEntityType, id: item.relatedEntityId }]
       : [],
+    relatedEntitiesSafe: relatedEntitiesSafeForRecord(item, logic),
+    sourceTraceSummary: sourceTraceSummaryForRecord(item, logic),
+    sourceTrace: sourceTraceForRecord(item, logic),
+    dependencyGraphSummary: dependencyGraphSummaryForRecord(dependencies),
+    actionTruthTableEntry: action ? actionTruthTableEntryForRecord(item, action, logic, rollback) : null,
+    askNexusContext: askNexusContextForRecord(item, logic),
     deadlineAt: item.decisionDeadline,
     expiresAt: item.expiresAt,
     confidence: logic.confidence,
-    riskLevel: riskLevelForItem(item),
+    riskLevel,
+    groupKey: groupKeyForRecord(item),
+    sectionKey,
     displayMode: displayModeForRecord(item, logic),
     frontendActionState: frontendActionStateForRecord(item, logic, dependencies),
     privacyClassification: item.privacyPolicy,
@@ -963,8 +1040,8 @@ function formatDecisionItemForApi(item: DecisionRecord): DecisionApiItem {
     actions,
     dependsOnDecisionIds: dependencies.dependsOnDecisionIds,
     blockedByDecisionIds: dependencies.blockedByDecisionIds,
-    rollbackAvailable: rollbackContractForRecord(item).available,
-    rollbackActionId: rollbackContractForRecord(item).actionId,
+    rollbackAvailable: rollback.available,
+    rollbackActionId: rollback.actionId,
   };
 }
 
@@ -1017,6 +1094,189 @@ function whyDetailsForItem(item: DecisionRecord, logic: DecisionLogicV2): Array<
     details.push({ label: 'Privacy', value: 'Home and notifications use a safe preview; details require authenticated access.' });
   }
   return details;
+}
+
+function timingLabelForRecord(item: DecisionRecord, urgency: DecisionUrgency): string | null {
+  const timestamp = item.decisionDeadline ?? item.expiresAt ?? null;
+  if (!timestamp) {
+    if (urgency === 'urgent') return 'Urgent';
+    if (urgency === 'today') return 'Today';
+    if (urgency === 'this_week') return 'This week';
+    return null;
+  }
+  const parsed = DateTime.fromISO(timestamp, { zone: 'utc' });
+  if (!parsed.isValid) return urgency === 'urgent' ? 'Urgent' : null;
+  const now = DateTime.utc();
+  if (parsed.hasSame(now, 'day')) return 'Today';
+  if (parsed.hasSame(now.plus({ days: 1 }), 'day')) return 'Tomorrow';
+  if (parsed <= now.plus({ days: 7 })) return 'This week';
+  return parsed.toFormat('LLL d');
+}
+
+function sectionKeyForRecord(item: DecisionRecord, urgency: DecisionUrgency, logic: DecisionLogicV2): DecisionTimelineSectionKey {
+  const displayMode = displayModeForRecord(item, logic);
+  if (displayMode === 'waiting_on_system') return 'waiting_on_systems';
+  if (displayMode === 'handled' || item.status === 'actioned' || item.status === 'superseded' || item.status === 'dismissed') return 'handled';
+  if (urgency === 'urgent') return 'urgent';
+  const timestamp = item.decisionDeadline ?? item.expiresAt ?? null;
+  if (timestamp) {
+    const parsed = DateTime.fromISO(timestamp, { zone: 'utc' });
+    if (parsed.isValid) {
+      const now = DateTime.utc();
+      if (parsed.hasSame(now, 'day')) return 'today';
+      if (parsed.hasSame(now.plus({ days: 1 }), 'day')) return 'tomorrow';
+      if (parsed <= now.plus({ days: 7 })) return 'this_week';
+    }
+  }
+  if (urgency === 'today') return 'today';
+  return 'this_week';
+}
+
+function groupKeyForRecord(item: DecisionRecord): string {
+  if (item.relatedEntityType && item.relatedEntityId) return `${item.sourceSkill}:${item.relatedEntityType}:${item.relatedEntityId}`;
+  return `${item.sourceSkill}:${item.type}:${item.dedupeKey ?? item.itemId}`;
+}
+
+function alternativesForRecord(
+  item: DecisionRecord,
+  logic: DecisionLogicV2,
+  actions: NotificationActionButton[],
+): DecisionAlternativeOption[] {
+  const alternatives: DecisionAlternativeOption[] = [];
+  const primary = recommendedAction(actions);
+  if (primary) {
+    alternatives.push({
+      id: `${item.itemId}:recommended`,
+      label: logic.primaryActionLabel || primary.label,
+      rank: 'best',
+      reason: logic.whySummary,
+      actionId: primary.id,
+      available: frontendActionStateForRecord(item, logic, dependencyStateForRecord(item)) === 'enabled',
+    });
+  }
+  for (const action of actions.filter((candidate) => candidate.id !== primary?.id && candidate.id !== 'open_detail')) {
+    alternatives.push({
+      id: `${item.itemId}:${action.id}`,
+      label: action.label,
+      rank: action.style === 'destructive' ? 'not_recommended' : 'good',
+      reason: action.style === 'destructive'
+        ? 'This option changes or rejects the recommendation, so Nexus keeps it explicit.'
+        : 'Available as a lower-friction alternative if the recommendation does not fit.',
+      actionId: action.id,
+      available: frontendActionStateForRecord(item, logic, dependencyStateForRecord(item)) === 'enabled',
+    });
+  }
+  if (!alternatives.some((option) => option.actionId === 'snooze')) {
+    alternatives.push({
+      id: `${item.itemId}:snooze`,
+      label: 'Snooze',
+      rank: 'good',
+      reason: 'Use this if the decision is real but not worth interrupting this window.',
+      actionId: 'snooze',
+      available: item.status === 'unread' || item.status === 'read' || item.status === 'failed',
+    });
+  }
+  if (!alternatives.some((option) => option.actionId === 'dismiss')) {
+    alternatives.push({
+      id: `${item.itemId}:dismiss`,
+      label: 'Dismiss',
+      rank: 'not_recommended',
+      reason: 'Dismiss only when the recommendation no longer matters; Nexus records that outcome for future ranking.',
+      actionId: 'dismiss',
+      available: item.status === 'unread' || item.status === 'read' || item.status === 'failed',
+    });
+  }
+  return alternatives.slice(0, 5);
+}
+
+function relatedEntitiesSafeForRecord(item: DecisionRecord, logic: DecisionLogicV2): Array<{ type: string; label: string }> {
+  if (!item.relatedEntityType || !item.relatedEntityId) {
+    return logic.relatedEntityReason ? [{ type: 'reason', label: logic.relatedEntityReason }] : [];
+  }
+  const sensitive = item.privacyPolicy === 'financial' || item.privacyPolicy === 'sensitive';
+  return [{
+    type: item.relatedEntityType,
+    label: sensitive ? `${sourceLabel(item.sourceSkill)} item` : `${sourceLabel(item.sourceSkill)} ${item.relatedEntityType.replace(/_/g, ' ')}`,
+  }];
+}
+
+function sourceTraceSummaryForRecord(item: DecisionRecord, logic: DecisionLogicV2): string {
+  const entity = item.relatedEntityType ? item.relatedEntityType.replace(/_/g, ' ') : 'source state';
+  const verifier = logic.readBackVerifier ?? 'non-mutating decision';
+  return `${sourceLabel(item.sourceSkill)} ${entity} -> Decision Center v2 -> ${verifier}`;
+}
+
+function sourceTraceForRecord(item: DecisionRecord, logic: DecisionLogicV2): DecisionSourceTrace {
+  const sourceEntityIds = item.relatedEntityType && item.relatedEntityId
+    ? [`${item.relatedEntityType}:${item.relatedEntityId}`]
+    : [];
+  return {
+    originatingSkill: item.sourceSkill,
+    originatingSignal: item.type,
+    sourceEntityIds,
+    sourceTimestamp: item.createdAt,
+    enrichmentService: 'decision-center-logic-v2',
+    orchestrator: item.sourceSkill === 'secretary' || item.type === 'conflict_detected'
+      ? 'secretary-decision-advisor'
+      : 'decision-center-facade',
+    executor: actionsForRecord(item).length > 0 ? executorSkillForAction(actionsForRecord(item)[0].id, item) : null,
+    verifier: logic.readBackVerifier,
+    relatedStateReadModels: relatedStateReadModelsForRecord(item),
+    confidenceSource: logic.confidence >= 0.8 ? 'structured-state-and-readback' : 'partial-structured-state',
+    dataFreshness: item.status === 'snoozed' ? 'cached' : 'live',
+  };
+}
+
+function relatedStateReadModelsForRecord(item: DecisionRecord): string[] {
+  const models = ['notification_center_items', 'notification_intents'];
+  if (item.sourceSkill === 'secretary') models.push('secretary_agenda_items');
+  if (item.sourceSkill === 'content') models.push('content_workflow_objects');
+  if (item.sourceSkill === 'cooking') models.push('cooking_meal_plans');
+  if (item.sourceSkill === 'finance') models.push('finance_tax_events');
+  return models;
+}
+
+function dependencyGraphSummaryForRecord(dependencies: { dependsOnDecisionIds: string[]; blockedByDecisionIds: string[] }): string | null {
+  if (dependencies.blockedByDecisionIds.length > 0) {
+    return `Blocked by ${dependencies.blockedByDecisionIds.length} unresolved decision${dependencies.blockedByDecisionIds.length === 1 ? '' : 's'}.`;
+  }
+  if (dependencies.dependsOnDecisionIds.length > 0) {
+    return `Related to ${dependencies.dependsOnDecisionIds.length} upstream decision${dependencies.dependsOnDecisionIds.length === 1 ? '' : 's'}.`;
+  }
+  return null;
+}
+
+function actionTruthTableEntryForRecord(
+  item: DecisionRecord,
+  action: NotificationActionButton,
+  logic: DecisionLogicV2,
+  rollback: { available: boolean },
+): DecisionActionTruthTableEntry {
+  const mutating = action.id !== 'open_detail';
+  const verifier = mutating ? logic.readBackVerifier : null;
+  return {
+    actionType: action.id,
+    expectedMutation: mutating ? logic.expectedEffect : 'Open detail only; no backend mutation.',
+    executor: executorSkillForAction(action.id, item),
+    verifier,
+    successUi: outcomeSummaryForRecord({ ...item, status: 'actioned' }, logic).outcomeSummary ?? `Done — ${logic.expectedEffect}`,
+    partialFailureUi: 'Nexus will show what changed and what still needs retry.',
+    failureUi: 'Nexus keeps the decision visible with a retry option and the server error.',
+    retryAvailable: mutating,
+    rollbackAvailable: rollback.available,
+    apnsActionAllowed: logic.notificationEligibility === 'visible' && logic.quality.safeForAPNs && logic.riskIfIgnored !== 'high',
+    highRiskConfirmationRequired: logic.riskIfIgnored === 'high' || item.priority === 'critical' || item.priority === 'time_sensitive',
+    analyticsEvent: `decision_action:${item.sourceSkill}:${action.id}`,
+  };
+}
+
+function askNexusContextForRecord(item: DecisionRecord, logic: DecisionLogicV2): DecisionAskNexusContext {
+  return {
+    decisionId: item.itemId,
+    sourceSkill: item.sourceSkill,
+    type: item.type,
+    prompt: `Explain this ${sourceLabel(item.sourceSkill)} decision, the recommendation, and what changes if I approve: ${logic.safePreviewTitle || logic.title}`,
+  };
 }
 
 function decisionLogicForIntentInput(input: NotificationIntentInput): DecisionLogicV2 {

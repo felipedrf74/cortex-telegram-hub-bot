@@ -298,6 +298,26 @@ describe('Decision Center facade', () => {
       item: 'Focus block',
       targetSkill: 'secretary',
     });
+    expect(listed[0]).toMatchObject({
+      sectionKey: 'urgent',
+      groupKey: 'secretary:calendar_conflict:conflict-81',
+      impactLevel: 'high',
+      sourceTraceSummary: expect.stringContaining('Decision Center v2'),
+      dependencyGraphSummary: null,
+    });
+    expect(listed[0].alternatives.some((option) => option.rank === 'best')).toBe(true);
+    expect(listed[0].relatedEntitiesSafe[0]).toMatchObject({ type: 'calendar_conflict' });
+    expect(listed[0].sourceTrace).toMatchObject({
+      originatingSkill: 'secretary',
+      originatingSignal: 'conflict_detected',
+      enrichmentService: 'decision-center-logic-v2',
+    });
+    expect(listed[0].actionTruthTableEntry).toMatchObject({
+      actionType: 'open_detail',
+      verifier: null,
+      analyticsEvent: 'decision_action:secretary:open_detail',
+    });
+    expect(listed[0].askNexusContext.prompt).toContain('Secretary');
   });
 
   it('threads owner/admin visibility scope through internal decision intents', async () => {
