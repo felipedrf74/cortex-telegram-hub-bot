@@ -35,6 +35,7 @@ import {
   contentScopePredicate,
   ensureContentTenantScopeColumns,
 } from './content-tenant-scope';
+import { recordContentPerformanceMemory } from './content-memory-profile';
 
 const CONTENT_OWNER_SCOPE_SQL = "COALESCE(owner_scope, CASE WHEN user_id = 0 THEN 'system' ELSE 'user' END)";
 
@@ -331,6 +332,34 @@ export function logPerformanceFeedback(opts: {
     scope.updatedBy,
     scope.auditMetadataJson,
   );
+  const performanceMemory = derivePerformanceMemory(opts);
+  if (performanceMemory) {
+    try {
+      recordContentPerformanceMemory({
+        tenantId: scope.tenantId,
+        userId: opts.userId,
+        scope: 'user_private',
+        source: 'content_performance_feedback',
+        confidence: performanceMemory.confidence,
+        successfulTopics: performanceMemory.successfulTopics,
+        weakTopics: performanceMemory.weakTopics,
+        successfulHooks: performanceMemory.successfulHooks,
+        successfulFormats: performanceMemory.successfulFormats,
+        rejectedPatterns: performanceMemory.rejectedPatterns,
+        audienceResponseSignals: performanceMemory.audienceResponseSignals,
+      });
+    } catch (error) {
+      logger.warn(
+        {
+          feedbackId: result.lastInsertRowid,
+          userId: opts.userId,
+          tenantId: scope.tenantId,
+          error: error instanceof Error ? error.message : String(error),
+        },
+        'Performance feedback stored but content memory update failed',
+      );
+    }
+  }
   logger.info({ feedbackId: result.lastInsertRowid }, 'Performance feedback stored');
   return Number(result.lastInsertRowid);
 }
@@ -393,6 +422,103 @@ function mapPerformance(row: any): PerformanceFeedback {
     userId: row.user_id,
     loggedAt: row.logged_at,
   };
+}
+
+function derivePerformanceMemory(opts: {
+  views: number;
+  retentionPct: number;
+  likes?: number;
+  comments?: number;
+  subsGained?: number;
+  hookUsed?: string;
+  selectedTitle?: string;
+  finalScriptVariant?: string;
+  publishedHashtags?: string[];
+  analysis?: any;
+}): {
+  successfulTopics?: string[];
+  weakTopics?: string[];
+  successfulHooks?: string[];
+  successfulFormats?: string[];
+  rejectedPatterns?: string[];
+  audienceResponseSignals: string[];
+  confidence: number;
+} | null {
+  const views = Math.max(0, Number(opts.views) || 0);
+  const retentionPct = Math.max(0, Math.min(100, Number(opts.retentionPct) || 0));
+  const likes = Math.max(0, Number(opts.likes ?? 0) || 0);
+  const comments = Math.max(0, Number(opts.comments ?? 0) || 0);
+  const subsGained = Math.max(0, Number(opts.subsGained ?? 0) || 0);
+  const highSignal = (
+    (retentionPct >= 55 && views >= 500)
+    || views >= 5000
+    || likes >= 300
+    || comments >= 50
+    || subsGained >= 10
+  );
+  const weakSignal = (
+    (views >= 250 && retentionPct > 0 && retentionPct < 25)
+    || (views >= 1000 && likes < 10 && comments === 0)
+  );
+  if (!highSignal && !weakSignal) return null;
+
+  const title = sanitizeMemoryText(opts.selectedTitle);
+  const hook = sanitizeMemoryText(opts.hookUsed);
+  const hashtags = (opts.publishedHashtags ?? [])
+    .map((tag) => sanitizeMemoryText(String(tag).replace(/^#/, '')))
+    .filter((tag): tag is string => Boolean(tag))
+    .slice(0, 3);
+  const format = extractPerformanceFormat(opts);
+  const audienceResponseSignals = [
+    views >= 5000 ? 'views_high' : views >= 1000 ? 'views_moderate' : null,
+    retentionPct >= 55 ? 'retention_high' : retentionPct < 25 && retentionPct > 0 ? 'retention_low' : null,
+    likes >= 300 ? 'likes_high' : null,
+    comments >= 50 ? 'comments_high' : null,
+    subsGained >= 10 ? 'subscriber_gain_high' : null,
+  ].filter((signal): signal is string => Boolean(signal));
+
+  if (highSignal) {
+    const successfulTopics = [...new Set([title, ...hashtags].filter((item): item is string => Boolean(item)))].slice(0, 4);
+    return {
+      successfulTopics,
+      successfulHooks: hook ? [hook] : undefined,
+      successfulFormats: format ? [format] : undefined,
+      audienceResponseSignals,
+      confidence: retentionPct >= 55 && views >= 1000 ? 0.82 : 0.72,
+    };
+  }
+
+  const weakTopics = [...new Set([title, ...hashtags].filter((item): item is string => Boolean(item)))].slice(0, 4);
+  return {
+    weakTopics,
+    rejectedPatterns: hook ? [hook] : undefined,
+    audienceResponseSignals,
+    confidence: views >= 1000 ? 0.72 : 0.62,
+  };
+}
+
+function sanitizeMemoryText(value?: string | null): string | undefined {
+  const cleaned = String(value ?? '')
+    .replace(/[\u0000-\u001F\u007F]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 160);
+  return cleaned || undefined;
+}
+
+function extractPerformanceFormat(opts: { finalScriptVariant?: string; analysis?: any }): string | undefined {
+  const candidates = [
+    opts.analysis?.format,
+    opts.analysis?.platform,
+    opts.analysis?.contentFormat,
+    opts.finalScriptVariant,
+  ];
+  const knownFormats = new Set(['youtube', 'reel', 'short', 'shorts', 'tiktok', 'newsletter', 'carousel', 'thread', 'article']);
+  for (const candidate of candidates) {
+    const normalized = sanitizeMemoryText(candidate)?.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '');
+    if (normalized && knownFormats.has(normalized)) return normalized;
+  }
+  return undefined;
 }
 
 // ═══════════════════════════════════════════════════════════════════

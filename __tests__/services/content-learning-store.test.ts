@@ -61,6 +61,7 @@ import {
   getLearnedPatterns,
   getArtifactChain,
 } from '../../src/services/content-learning-store';
+import { buildContentCreativeProfileContext } from '../../src/services/content-memory-profile';
 
 // ═══════════════════════════════════════════════════════════════════
 // 1. Script Text Durable Storage
@@ -234,6 +235,79 @@ describe('content-learning-store: performance feedback', () => {
     logPerformanceFeedback({ views: 100, retentionPct: 50, userId: 1 });
     const summary = getPerformanceSummary(1, 30);
     expect(summary.count).toBe(1);
+  });
+
+  it('turns strong performance feedback into user-scoped content memory', () => {
+    logPerformanceFeedback({
+      views: 8000,
+      retentionPct: 62,
+      likes: 450,
+      comments: 80,
+      subsGained: 14,
+      hookUsed: 'Stop losing creator ideas',
+      selectedTitle: 'Build a content operating system',
+      publishedHashtags: ['#systems', '#creatorops'],
+      analysis: { format: 'youtube' },
+      userId: 42,
+      tenantId: 42,
+    });
+
+    const context = buildContentCreativeProfileContext({ tenantId: 42, userId: 42 });
+
+    expect(context.appliedMemoryKeys).toEqual(expect.arrayContaining([
+      'performance.successful_topics',
+      'performance.successful_hooks',
+      'performance.successful_formats',
+      'performance.audience_response_signals',
+    ]));
+    expect(context.contextBlock).toContain('Build a content operating system');
+    expect(context.contextBlock).toContain('Stop losing creator ideas');
+    expect(context.contextBlock).toContain('views_high');
+    expect(context.contextBlock).toContain('retention_high');
+  });
+
+  it('turns weak performance feedback into avoid/rework memory', () => {
+    logPerformanceFeedback({
+      views: 1200,
+      retentionPct: 18,
+      likes: 4,
+      comments: 0,
+      hookUsed: 'Generic productivity hack',
+      selectedTitle: 'Daily routine hacks for busy founders',
+      publishedHashtags: ['#routine'],
+      userId: 42,
+      tenantId: 42,
+    });
+
+    const context = buildContentCreativeProfileContext({ tenantId: 42, userId: 42 });
+
+    expect(context.appliedMemoryKeys).toEqual(expect.arrayContaining([
+      'performance.weak_topics',
+      'pattern.rejected_content_patterns',
+      'performance.audience_response_signals',
+    ]));
+    expect(context.contextBlock).toContain('Daily routine hacks for busy founders');
+    expect(context.contextBlock).toContain('Generic productivity hack');
+    expect(context.contextBlock).toContain('retention_low');
+  });
+
+  it('keeps performance-derived memory scoped to the feedback user and tenant', () => {
+    logPerformanceFeedback({
+      views: 9000,
+      retentionPct: 70,
+      hookUsed: 'Private winning hook',
+      selectedTitle: 'Tenant A private winning topic',
+      userId: 42,
+      tenantId: 42,
+    });
+
+    const ownerContext = buildContentCreativeProfileContext({ tenantId: 42, userId: 42 });
+    const otherUserContext = buildContentCreativeProfileContext({ tenantId: 42, userId: 43 });
+    const otherTenantContext = buildContentCreativeProfileContext({ tenantId: 84, userId: 42 });
+
+    expect(ownerContext.contextBlock).toContain('Tenant A private winning topic');
+    expect(otherUserContext.contextBlock).not.toContain('Tenant A private winning topic');
+    expect(otherTenantContext.contextBlock).not.toContain('Tenant A private winning topic');
   });
 });
 
