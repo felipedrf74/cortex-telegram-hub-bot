@@ -752,7 +752,7 @@ function isModalityMismatchedFreeText(line: string, sport: SportFamily): boolean
     case 'running':
       return /\b(hypertrophy|reps in reserve|rir|sets?\s*[x×]\s*reps|barbell|dumbbell)\b/i.test(value);
     case 'cycling':
-      return /\b(squat|lunge|deadlift|bench press|reps in reserve|rir|hypertrophy)\b/i.test(value);
+      return /\b(squats?|lunges?|deadlifts?|bench press|reps in reserve|rir|hypertrophy)\b/i.test(value);
     case 'swimming':
       return /\b(ftp|watts?|power zone|cadence|squat|deadlift)\b/i.test(value);
     default:
