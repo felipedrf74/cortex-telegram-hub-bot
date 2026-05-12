@@ -29,10 +29,11 @@ import {
 import { handleTaskExtraction } from '../photo';
 import { enqueue, isHtmlParseError } from '../shared-state';
 import { downloadTelegramFile } from '../telegram-file';
-import { isOwnerUserRef, resolveCanonicalUserId } from '../../services/user-service';
+import { resolveCanonicalUserId } from '../../services/user-service';
+import { isGlobalInvoiceCollectorOwnerUser } from '../../services/invoice-collector-scope';
 
 function isOwnerScopedCollectorUser(userId: number): boolean {
-  return isOwnerUserRef(userId);
+  return isGlobalInvoiceCollectorOwnerUser(userId);
 }
 
 async function replyGlobalCollectorOwnerOnly(ctx: any, provider: 'Amazon' | 'Uber'): Promise<void> {

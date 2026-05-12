@@ -7,6 +7,7 @@ import { config } from '../config';
 import { logger } from '../utils/logger';
 import { filePdf, PT_MONTHS, isInvoiceFilingConfigured } from './invoice-filer';
 import { recordFiling, isDuplicate, isEmailAlreadyFiled } from '../state/invoice-filings';
+import { assertGlobalInvoiceCollectorOwnerScope } from './invoice-collector-scope';
 
 // ─── Types ──────────────────────────────────────────────────────────
 
@@ -923,6 +924,8 @@ export async function collectAmazonInvoices(
   sendScreenshot?: (buffer: Buffer) => Promise<void>,
   waitForReply?: (timeoutMs: number) => Promise<string>,
 ): Promise<AmazonCollectionResult> {
+  assertGlobalInvoiceCollectorOwnerScope('Amazon', userId);
+
   const startTime = Date.now();
   const OVERALL_TIMEOUT_MS = 5 * 60 * 1000; // 5-minute hard limit
   const monthFolder = `${PT_MONTHS[month]}-${year}`;

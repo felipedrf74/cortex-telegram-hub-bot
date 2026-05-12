@@ -2,7 +2,7 @@
 
 Status: canonical
 Owner: release lead (Felipe)
-Last verified: 2026-05-11
+Last verified: 2026-05-12
 Update policy: keep only current carryovers here. Historical closed, fixed, and
 deferred rows for the 2026-05 sweep live in
 `docs/release/OPEN_ITEMS_ARCHIVE_2026-05.md`. Rotate monthly with
@@ -23,7 +23,6 @@ closable without explicit authorization and live credentials/devices.
 
 | ID | Severity | Area | Status | Next step |
 | --- | --- | --- | --- | --- |
-| W1-FIN-COLLECTORS | P1/P2 | finance collectors | OPEN | Amazon and Uber invoice collectors still use global filesystem browser sessions/credentials for manual Telegram commands. Run a focused tenant-safety round before broad multi-user finance rollout. |
 | PHASE2B5-CHAT-FASTPATH | P2 | chat architecture | PARKED / REOPEN TRIGGER ONLY | Reopen only if beta usage shows fastpath cache/coalescing bugs, a third real fastpath implementation appears, or a planned feature needs a unified iOS/Telegram/WebSocket fastpath. |
 | GAP-CONT-1 | P0/P1 | content runtime | PARTIAL | OAuth/owned-channel writer still needs owner authorization before live creator analytics can be considered enabled. |
 | GAP-TRN-1 | P1 | training | OPEN / OWNER DECISION REQUIRED | Decide whether plan-linter blockers should become strict pre-persist or rollback-safe training batch behavior. |
@@ -41,6 +40,7 @@ closable without explicit authorization and live credentials/devices.
 | --- | --- | --- | --- | --- |
 | GAP-REL-1 | P1 | docs/identity | 2026-05-12 | Re-ran `engine/scripts/release-identity.sh markdown --persist --quiet`; `docs/release/release-identity.md` now points at backend `feature/decision-center-logic-v2` commit `9d34f3fd` and iOS `feature/decision-center-logic-v2` commit `460850c`. Docs audit rerun after mirror refresh. |
 | GAP-REL-2 | P1 | docs/release | 2026-05-12 | Reconciled workspace current release state so 4.14.149 Round E + Decision Center remains the active production truth and older 4.14.132 notes are marked historical. |
+| W1-FIN-COLLECTORS | P1/P2 | finance collectors | 2026-05-12 | Added collector-service owner-scope enforcement before Amazon/Uber global browser session or Playwright launch paths, preserving the existing Telegram command and owner-tier scheduler gates. Broad per-user collector sessions remain a separate future product/credential workstream. |
 
 ## Authorization-Gated Codex Workstreams
 

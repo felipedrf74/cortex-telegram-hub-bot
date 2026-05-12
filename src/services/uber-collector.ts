@@ -7,6 +7,7 @@ import { config } from '../config';
 import { logger } from '../utils/logger';
 import { filePdf, PT_MONTHS, isInvoiceFilingConfigured } from './invoice-filer';
 import { recordFiling, isDuplicate } from '../state/invoice-filings';
+import { assertGlobalInvoiceCollectorOwnerScope } from './invoice-collector-scope';
 
 // ─── Types ──────────────────────────────────────────────────────────
 
@@ -826,6 +827,8 @@ export async function collectUberInvoices(
   sendScreenshot?: (buffer: Buffer) => Promise<void>,
   waitForReply?: (timeoutMs: number) => Promise<string>,
 ): Promise<UberCollectionResult> {
+  assertGlobalInvoiceCollectorOwnerScope('Uber', userId);
+
   const startTime = Date.now();
   const OVERALL_TIMEOUT_MS = 8 * 60 * 1000; // 8 min (two portals)
   const monthFolder = `${PT_MONTHS[month]}-${year}`;
