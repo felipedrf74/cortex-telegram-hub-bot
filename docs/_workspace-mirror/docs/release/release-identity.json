@@ -1,9 +1,9 @@
 {
-  "generatedAt": "2026-05-12T10:50:09Z",
+  "generatedAt": "2026-05-12T13:56:01Z",
   "backend": {
     "path": "/Users/felipedominguez/Desktop/Custom Connectors/Cortex/cortex-telegram-hub-bot",
     "branch": "feature/decision-center-logic-v2",
-    "commit": "1384d5e3",
+    "commit": "9d34f3fd",
     "dirtyState": "dirty",
     "packageVersion": "4.14.154",
     "migrationCount": "127"
@@ -11,7 +11,7 @@
   "ios": {
     "path": "/Users/felipedominguez/Desktop/Nexus Hub IOS/Nexus Hub",
     "branch": "feature/decision-center-logic-v2",
-    "commit": "686a9b6",
+    "commit": "460850c",
     "dirtyState": "dirty"
   }
 }

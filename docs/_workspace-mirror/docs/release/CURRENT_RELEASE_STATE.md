@@ -2,10 +2,10 @@
 
 Status: canonical
 Owner: release lead (Felipe)
-Last verified: 2026-05-11
+Last verified: 2026-05-12
 Update policy: update after merge / staging / production / deploy-gate changes. Live identity (branch/commit/version/migrations) auto-generated via engine/scripts/release-identity.sh --persist; do not type those by hand.
 
-Last updated: 2026-05-11
+Last updated: 2026-05-12
 
 > **Live identity** — branch / commit / version / migration count for the
 > current working tree are auto-generated. Do NOT type those values by
@@ -71,30 +71,12 @@ Last updated: 2026-05-11
 - Non-owner readiness verification: user `28` calculated from Apple Health with readiness `84` and body battery `78`, not the leaked Felipe pair.
 - Evidence lives under `engine/docs/release/smoke-evidence/` and the closeout addendum lives at `docs/archive/2026-05/p0-garmin-tenant-leak-and-applehealth-cascade/closeout.md`.
 
-### Commits in this release (4.14.131 -> 4.14.132)
+### Earlier Release Notes
 
-- Source merge: Content Creation radar/reference sync fallback, portal user-login/config fixes, and Apple web sign-in merged to backend `main` at `4f0b6f1`.
-- Deploy bump: backend package version advanced to `4.14.132` at `130d574`.
-- iOS source merge: Content Creation radar/reference sync and navigation bootstrap fixes merged to iOS `main` at `de220ad`.
-
-### Scope of this release
-
-- **Content Creation radar resilience**: `/api/v1/content/discover` now returns iOS-decodable idea objects and falls back to user-scoped saved radar topics when live discovery is unavailable.
-- **Content Creation reference sync**: iOS tolerates snake_case/camelCase/alias channel payloads and backend reference tests pin user-scoped behavior so seed/operator references do not leak as user data.
-- **Portal login/config fixes**: portal user login and configuration surfaces gained explicit error states, and Apple web sign-in support is live in the backend.
-- **iOS navigation bootstrap**: Home/tab warmup no longer waits on deep Content backstage detail, reducing first-open and tab-switch contention.
-
-### Validation
-
-- Backend focused content validation: `npx tsc --noEmit` passed and focused content/security slice passed (**7 files / 79 tests**).
-- Backend full validation: `npm run verify` passed locally and in deploy gates (**455 files / 6829 tests**).
-- Deploy-time validation: typecheck passed and build passed.
-- Staging deploy: passed.
-- Staging smoke: **17/17 passed**.
-- Production health check (deploy.sh built-in): passed.
-- Production version assertion: `4.14.132` ✓
-- PM2 nexus-hub: online ✓
-- PM2 content-engine: online ✓
+Earlier 4.14.132 content, portal, and Apple web sign-in release notes are
+historical and no longer represent the active production release. Current
+production truth is the 4.14.149 Round E + Decision Center promote above; live
+working-tree identity is generated in `docs/release/release-identity.md`.
 
 ## iOS
 
@@ -127,9 +109,11 @@ Last updated: 2026-05-11
   candidate: Task A single-flight regression test is on iOS `main`,
   Release clean simulator build passed with zero warnings/errors,
   Release UI visual matrix passed 21/21 with 80 screenshots, and iOS
-  `origin/main` is bumped to `1.4.2 (16)` at `5981d10`.
+  `origin/main` was bumped to `1.4.2 (16)` at `5981d10`.
   Evidence:
   `docs/archive/2026-05/ios-pre-testflight-validation/release-mode-validation.md`.
+- 2026-05-11 Decision Center source was merged to iOS `main`, bumped to
+  `1.4.3(17)`, pushed at `b60b14c`, and tagged `ios-1.4.3-build17`.
 - Wave 1 TestFlight operator cut runbook is ready:
   `docs/release/wave1-testflight-cut-runbook.md`.
 - Focused iOS Content/bootstrapping unit suite passed (**10 focused tests**).
@@ -176,7 +160,8 @@ Last updated: 2026-05-11
 
 - Official working path: `/Users/felipedominguez/Desktop/Nexus Hub`
 - Docs audit command: `cd engine && npm run docs:audit`
-- Latest docs audit before this update: completed on 2026-05-05 with pre-existing warnings only.
+- Latest docs audit before this update: completed on 2026-05-12 with
+  pre-existing warnings only.
 - Engineering excellence standards are being validated on local feature
   branches. Claude report:
   `docs/archive/2026-05/engineering-excellence-architecture-standards/engineering-excellence-enrichment-report.md`.

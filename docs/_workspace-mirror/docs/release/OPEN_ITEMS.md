@@ -31,11 +31,16 @@ closable without explicit authorization and live credentials/devices.
 | GAP-CONT-4 | P1 | iOS content | PARTIAL | Add performance dashboard truth for views/retention/likes/comments; publishing calendar coverage alone is not complete. |
 | GAP-CAL-1 | P1 | secretary | PARTIAL | Conflict-detection cron emits NotificationIntent, but broader Telegram-only cron migration remains open. |
 | GAP-FIN-2 | P1 | finance | OPEN / OWNER DECISION REQUIRED | Decide non-Brazil finance jurisdiction model and behavior contract. |
-| GAP-REL-1 | P1 | docs/identity | OPEN / REVALIDATE | Re-run release identity generation and docs audit; previous row cited stale workspace release identity. |
-| GAP-REL-2 | P1 | docs/release | OPEN / REVALIDATE | Reconcile engine/workspace current release docs after latest production deploys. |
 | GAP-REL-6 | P1 | mock lint | OPEN / OWNER DECISION REQUIRED | Either authorize a larger mock-factory reduction batch or revise the <100-by-2026-08-01 commitment. |
 | GAP-REL-7 | P1 | release gate | OPEN / OWNER DECISION REQUIRED | Decide whether two-account E5 becomes a hard CI/deploy gate or remains operator evidence. |
 | ROUND-B-FIXTURE | P2 | staging fixture | OPEN | Add a 100-calendar-event seeding mode to produce repeatable Felipe-volume before/after dashboard wall-time evidence. |
+
+## Recently Closed
+
+| ID | Severity | Area | Closed | Evidence |
+| --- | --- | --- | --- | --- |
+| GAP-REL-1 | P1 | docs/identity | 2026-05-12 | Re-ran `engine/scripts/release-identity.sh markdown --persist --quiet`; `docs/release/release-identity.md` now points at backend `feature/decision-center-logic-v2` commit `9d34f3fd` and iOS `feature/decision-center-logic-v2` commit `460850c`. Docs audit rerun after mirror refresh. |
+| GAP-REL-2 | P1 | docs/release | 2026-05-12 | Reconciled workspace current release state so 4.14.149 Round E + Decision Center remains the active production truth and older 4.14.132 notes are marked historical. |
 
 ## Authorization-Gated Codex Workstreams
 
