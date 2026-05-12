@@ -87,12 +87,12 @@ Source: `docs/release/OPEN_ITEMS.md`
 
 - [ ] **P1 (HOSTILE-CONT-F1)** — OAuth/owned-channel writer required before live creator analytics enabled (owner decision)
 - [ ] **P1 (GAP-TRN-1)** — Training plan-linter blockers remain advisor-only (owner decision: promote to strict)
-- [ ] **P1 (GAP-CONT-3)** — Performance-feedback adaptation loop is silent dead-end (`engine/src/services/content-performance-aggregate.ts` reads wrong table)
-- [ ] **P1 (GAP-CONT-4)** — Performance dashboard remains OPEN: ContentIntelligenceView lacks views/retention/likes/comments
+- [x] **P1 (GAP-CONT-3)** — Performance-feedback adaptation loop wired to live `content_performance` metrics in the backend aggregate.
+- [x] **P1 (GAP-CONT-4)** — Performance dashboard truth verified: ContentIntelligenceView renders views/retention/likes/comments/subscribers/top performer from `performanceSummary`.
 - [ ] **P1 (GAP-CAL-1-C)** — Broader Telegram-only cron migration intentionally unbatched
 - [ ] **P1 (GAP-FIN-2)** — Non-BR tax jurisdiction model (owner decision)
-- [ ] **P1 (GAP-REL-1)** — Workspace `release-identity.md` is stale (4.14.132 vs 4.14.148 prod). Auto-regenerator needed.
-- [ ] **P1 (GAP-REL-2)** — Engine `docs/release/CURRENT_RELEASE_STATE.md` frozen at 4.14.127 (8 releases unsynced)
+- [x] **P1 (GAP-REL-1)** — Workspace `release-identity.md` reconciled through the generated release-identity workflow.
+- [x] **P1 (GAP-REL-2)** — Current release state reconciled to the active 4.14.149 Round E + Decision Center production truth.
 - [ ] **P1 (GAP-REL-6)** — Mock-lint trajectory off-target: ~70 months at 10/month vs `<100 by 2026-08-01` (owner decision)
 - [ ] **P1 (GAP-REL-7)** — Two-account E5 release gate hardening (owner decision)
 
