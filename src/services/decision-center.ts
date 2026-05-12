@@ -52,6 +52,11 @@ import {
 import { isValidTenantUserId, recordTenantScopeAnomaly } from './tenant-scope-observability';
 import { logger } from '../utils/logger';
 import {
+  buildDecisionActionTruthTableEntry,
+  isDecisionActionExecutable,
+  type DecisionActionTruthTableEntry,
+} from './decision-center-action-truth-table';
+import {
   adviseSecretaryDecision,
   buildDecisionLogicV2,
   formatDecisionWindow,
@@ -192,21 +197,6 @@ export interface DecisionSourceTrace {
   relatedStateReadModels: string[];
   confidenceSource: string;
   dataFreshness: 'live' | 'cached' | 'unknown';
-}
-
-export interface DecisionActionTruthTableEntry {
-  actionType: string;
-  expectedMutation: string;
-  executor: string;
-  verifier: string | null;
-  successUi: string;
-  partialFailureUi: string;
-  failureUi: string;
-  retryAvailable: boolean;
-  rollbackAvailable: boolean;
-  apnsActionAllowed: boolean;
-  highRiskConfirmationRequired: boolean;
-  analyticsEvent: string;
 }
 
 export interface DecisionAskNexusContext {
@@ -1031,7 +1021,7 @@ function formatDecisionItemForApi(item: DecisionRecord): DecisionApiItem {
     groupKey: groupKeyForRecord(item),
     sectionKey,
     displayMode: displayModeForRecord(item, logic),
-    frontendActionState: frontendActionStateForRecord(item, logic, dependencies),
+    frontendActionState: frontendActionStateForRecord(item, logic, dependencies, action),
     privacyClassification: item.privacyPolicy,
     visibilityScope: visibilityScopeForItem(item),
     createdAt: item.createdAt,
@@ -1058,8 +1048,10 @@ function frontendActionStateForRecord(
   item: DecisionRecord,
   logic: DecisionLogicV2,
   dependencies: { blockedByDecisionIds: string[] },
+  action: NotificationActionButton | null = recommendedAction(actionsForRecord(item)),
 ): DecisionFrontendActionState {
   if (!logic.quality.safeForFrontendAction) return 'disabled_missing_details';
+  if (!action || !isDecisionActionExecutable(action.id)) return 'disabled_missing_details';
   if (item.status === 'expired') return 'disabled_expired';
   if (item.status === 'superseded' || item.status === 'dismissed' || item.status === 'actioned') return 'disabled_superseded';
   if (dependencies.blockedByDecisionIds.length > 0) return 'disabled_missing_details';
@@ -1151,7 +1143,7 @@ function alternativesForRecord(
       rank: 'best',
       reason: logic.whySummary,
       actionId: primary.id,
-      available: frontendActionStateForRecord(item, logic, dependencyStateForRecord(item)) === 'enabled',
+      available: frontendActionStateForRecord(item, logic, dependencyStateForRecord(item), primary) === 'enabled',
     });
   }
   for (const action of actions.filter((candidate) => candidate.id !== primary?.id && candidate.id !== 'open_detail')) {
@@ -1163,7 +1155,7 @@ function alternativesForRecord(
         ? 'This option changes or rejects the recommendation, so Nexus keeps it explicit.'
         : 'Available as a lower-friction alternative if the recommendation does not fit.',
       actionId: action.id,
-      available: frontendActionStateForRecord(item, logic, dependencyStateForRecord(item)) === 'enabled',
+      available: frontendActionStateForRecord(item, logic, dependencyStateForRecord(item), action) === 'enabled',
     });
   }
   if (!alternatives.some((option) => option.actionId === 'snooze')) {
@@ -1252,22 +1244,17 @@ function actionTruthTableEntryForRecord(
   logic: DecisionLogicV2,
   rollback: { available: boolean },
 ): DecisionActionTruthTableEntry {
-  const mutating = action.id !== 'open_detail';
-  const verifier = mutating ? logic.readBackVerifier : null;
-  return {
-    actionType: action.id,
-    expectedMutation: mutating ? logic.expectedEffect : 'Open detail only; no backend mutation.',
-    executor: executorSkillForAction(action.id, item),
-    verifier,
-    successUi: outcomeSummaryForRecord({ ...item, status: 'actioned' }, logic).outcomeSummary ?? `Done — ${logic.expectedEffect}`,
-    partialFailureUi: 'Nexus will show what changed and what still needs retry.',
-    failureUi: 'Nexus keeps the decision visible with a retry option and the server error.',
-    retryAvailable: mutating,
+  return buildDecisionActionTruthTableEntry({
+    actionId: action.id,
+    sourceSkill: item.sourceSkill,
+    expectedEffect: logic.expectedEffect,
+    readBackVerifier: logic.readBackVerifier,
+    outcomeSummary: outcomeSummaryForRecord({ ...item, status: 'actioned' }, logic).outcomeSummary,
     rollbackAvailable: rollback.available,
-    apnsActionAllowed: logic.notificationEligibility === 'visible' && logic.quality.safeForAPNs && logic.riskIfIgnored !== 'high',
-    highRiskConfirmationRequired: logic.riskIfIgnored === 'high' || item.priority === 'critical' || item.priority === 'time_sensitive',
-    analyticsEvent: `decision_action:${item.sourceSkill}:${action.id}`,
-  };
+    notificationCanAct: logic.notificationEligibility === 'visible' && logic.quality.safeForAPNs,
+    riskIfIgnored: logic.riskIfIgnored,
+    priority: item.priority,
+  });
 }
 
 function askNexusContextForRecord(item: DecisionRecord, logic: DecisionLogicV2): DecisionAskNexusContext {

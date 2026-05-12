@@ -320,6 +320,43 @@ describe('Decision Center facade', () => {
     expect(listed[0].askNexusContext.prompt).toContain('Secretary');
   });
 
+  it('disables user-facing actions when a recipe has no deterministic executor yet', async () => {
+    const created = await createDecisionIntent({
+      userId: 86,
+      tenantId: 86,
+      sourceSkill: 'secretary',
+      type: 'sync_failure',
+      priority: 'active',
+      title: 'Calendar sync incomplete',
+      body: 'Outlook sync did not complete.',
+      actionButtons: [{ id: 'retry', label: 'Retry sync', style: 'primary', mutating: true }],
+      relatedEntityType: null,
+      relatedEntityId: null,
+      requiresUserAction: true,
+      privacyPolicy: 'standard',
+      decisionContext: {
+        providerName: 'Outlook',
+        explicitNoRelatedEntityReason: 'sync failure is scoped to provider state',
+      },
+      dedupeKey: 'unsupported-retry-action',
+    });
+
+    expect(created.item).toBeTruthy();
+    const listed = listDecisionItems(86, 86);
+    expect(listed).toHaveLength(1);
+    expect(listed[0].displayMode).toBe('waiting_on_system');
+    expect(listed[0].frontendActionState).toBe('disabled_missing_details');
+    expect(listed[0].recommendedAction?.id).toBe('retry');
+    expect(listed[0].alternatives.find((option) => option.actionId === 'retry')?.available).toBe(false);
+    expect(listed[0].actionTruthTableEntry).toMatchObject({
+      actionType: 'retry',
+      executor: 'provider-sync',
+      successUi: 'Action unavailable until a deterministic executor is wired.',
+      retryAvailable: false,
+      apnsActionAllowed: false,
+    });
+  });
+
   it('threads owner/admin visibility scope through internal decision intents', async () => {
     const created = await createDecisionIntent({
       userId: 91,

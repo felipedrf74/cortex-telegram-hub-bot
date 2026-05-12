@@ -14,9 +14,9 @@ The core Decision Center UI/DTO behavior is implemented and locally validated fo
 - Generic decision issue status: VERIFIED_EXISTING_AND_VALIDATED through the existing Decision Center v2 quality gate and iOS details-unavailable/action-disabled behavior.
 - Home CTA status: VERIFIED_EXISTING_AND_VALIDATED. Existing Home count/preview identifiers remain covered by UI tests; this pass did not redesign Home.
 - Skill orchestration status: READY_WITH_CONDITIONS. Backend DTOs now expose richer orchestration metadata, while full production integration for every skill remains a staged follow-up.
-- Action behavior status: IMPLEMENTED_AND_VALIDATED for primary action success/failure display, dismiss, visible outcomes, and disabled states. Full action truth-table coverage remains a follow-up artifact.
+- Action behavior status: IMPLEMENTED_AND_VALIDATED for primary action success/failure display, dismiss, visible outcomes, disabled states, and the canonical backend action truth table.
 - Frontend validation status: IMPLEMENTED_AND_VALIDATED with focused iOS unit and UI tests on iPhone 17 Pro simulator.
-- Semantic fixture status: READY_WITH_CONDITIONS. Backend and iOS deterministic fixtures were extended for the v2 DTO; the full permanent 14-scenario fixture pack is deferred.
+- Semantic fixture status: IMPLEMENTED_AND_VALIDATED for the backend semantic fixture pack. iOS fixtures remain focused on DTO/UI behavior, not the full cross-skill matrix.
 - SourceTrace status: IMPLEMENTED_AND_VALIDATED for API DTO, Swift decoding, list/detail rendering, and tests.
 - Design system status: READY_WITH_CONDITIONS. Components are scoped to the Decision Center view; extraction into a broader design-system module is deferred.
 - Analytics status: DEFERRED_WITH_OWNER_DECISION_REQUIRED. No new analytics emitters were added in this pass.
@@ -159,10 +159,10 @@ The core Decision Center UI/DTO behavior is implemented and locally validated fo
 - Specific outcome after action: PASS.
 - Partial failure state: PASS at UI state level; full provider-backed scenario deferred.
 - Handled section: PASS.
-- Semantic fixtures: READY_WITH_CONDITIONS.
+- Semantic fixtures: PASS for backend semantic fixture pack; broader iOS visual fixture matrix remains a follow-up.
 - Recipe coverage: READY_WITH_CONDITIONS.
 - SourceTrace: PASS.
-- Action truth table: READY_WITH_CONDITIONS.
+- Action truth table: PASS for implemented/unsupported backend action inventory.
 - Frontend behavior tests: PASS.
 - User/tenant state safety: VERIFIED_EXISTING_AND_VALIDATED.
 - Backend tests: PASS.
