@@ -11,6 +11,7 @@ import { config } from '../config';
 import { logger } from '../utils/logger';
 import { trackedCreate } from '../portal/anthropic-hook';
 import { completeVisionOneShotWithFallback } from './gemini-provider';
+import { sanitizeForPromptInterpolation } from '../utils/prompt-sanitizer';
 
 const client = new Anthropic({
   apiKey: config.anthropic.apiKey,
@@ -128,7 +129,7 @@ export async function analyzeInvoiceImage(
   mediaType: 'image/jpeg' | 'image/png' | 'image/webp',
   caption?: string
 ): Promise<InvoiceAnalysisResult> {
-  const captionCtx = caption ? `\nCaption from user: "${caption}"` : '';
+  const captionCtx = caption ? `\nCaption from user: ${sanitizeForPromptInterpolation(caption)}` : '';
   const userPrompt = `Analyze this image.${captionCtx}`;
 
   let rawText: string;

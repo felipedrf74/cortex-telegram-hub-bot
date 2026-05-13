@@ -894,14 +894,16 @@ export function startScheduler(bot?: any): void {
       { table: 'job_history',       days: 30, tsCol: 'ts' },
       { table: 'error_log',         days: 60, tsCol: 'ts' },
       { table: 'client_errors',     days: 90, tsCol: 'ts' },
+      { table: 'api_usage',         days: 180, tsCol: 'ts' },
+      { table: 'email_log',         days: 60, tsCol: 'ts' },
     ];
     for (const { table, days, tsCol } of retentionTargets) {
       try {
         const { getDb } = require('./database');
         const db = getDb();
         const result = db
-          .prepare(`DELETE FROM ${table} WHERE ${tsCol} < datetime('now', '-${days} days')`)
-          .run();
+          .prepare(`DELETE FROM ${table} WHERE ${tsCol} < datetime('now', '-' || ? || ' days')`)
+          .run(days);
         if (result.changes > 0) {
           logger.info({ table, days, deleted: result.changes }, 'Retention cleanup');
         }
@@ -1601,7 +1603,7 @@ export function startScheduler(bot?: any): void {
   cron.schedule('0 * * * *', wrapJob('expire_signals', async () => {
     const expired = expireStaleSignals();
     if (expired > 0) logger.info({ expired }, 'Expired stale intelligence bus signals');
-  }));
+  }), { timezone: tz });
 
   // Run signal expiry on startup
   expireStaleSignals();
@@ -1615,7 +1617,7 @@ export function startScheduler(bot?: any): void {
   cron.schedule('*/5 * * * *', wrapJob('integration_health', async () => {
     const { runHealthProbes } = require('./integration-health');
     await runHealthProbes();
-  }));
+  }), { timezone: tz });
 
   cron.schedule('45 6 * * *', wrapJob('garmin_tenant_isolation_watcher', async () => {
     await runGarminTenantIsolationWatcher();
@@ -1634,7 +1636,7 @@ export function startScheduler(bot?: any): void {
       },
       'Operator alert delivery cycle complete',
     );
-  }));
+  }), { timezone: tz });
 
   // Seed SEO keywords (only if table is empty)
   try {
@@ -1666,7 +1668,7 @@ export function startScheduler(bot?: any): void {
   const DST_SKIP_JOBS = new Set([
     'reminders', 'shared_list', 'garmin_keepalive', 'invoice_queue', 'expire_signals',
   ]);
-  cron.schedule('2,17,32,47 * * * *', async () => {
+  cron.schedule('2,17,32,47 * * * *', wrapJob('dst_watchdog', async () => {
     const jobMap = getJobMap();
     const nowMs = Date.now();
     for (const [name, status] of jobMap) {
@@ -1694,7 +1696,7 @@ export function startScheduler(bot?: any): void {
         // ignore parse errors for unusual cron expressions
       }
     }
-  });
+  }), { timezone: tz });
 
   registerJob('notification_release', 'Notification delayed/digest release', '*/15 * * * *', 'system');
   cron.schedule('*/15 * * * *', wrapJob('notification_release', async () => {
@@ -1702,19 +1704,19 @@ export function startScheduler(bot?: any): void {
     if (result.inspected > 0) {
       logger.info(result, 'Notification delayed/digest release completed');
     }
-  }));
+  }), { timezone: tz });
 
   cron.schedule('*/15 * * * *', wrapJob('decision_source_supersession', async () => {
     const result = runDecisionSourceStateSupersessionJob();
     if (result.supersededCount === 0) return 'skipped';
     logger.info(result, 'Decision source-state supersession completed');
-  }));
+  }), { timezone: tz });
 
   cron.schedule('15 * * * *', wrapJob('chat_action_plan_expiry', async () => {
     const expired = expireStaleChatActionPlans();
     if (expired === 0) return 'skipped';
     logger.info({ expired }, 'Expired stale chat action plans');
-  }));
+  }), { timezone: tz });
 
   cron.schedule('* * * * *', wrapJob('event_backbone_worker', async () => {
     if (process.env.EVENT_BACKBONE_WORKER_DISABLED === '1') {
@@ -1739,7 +1741,7 @@ export function startScheduler(bot?: any): void {
     }
     if (touched === 0) return 'skipped';
     logger.info(result, 'Event backbone worker processed pending work');
-  }));
+  }), { timezone: tz });
 
   cron.schedule('10 0 * * *', wrapJob('event_backbone_cleanup', async () => {
     if (process.env.EVENT_BACKBONE_CLEANUP_DISABLED === '1') {
@@ -1766,7 +1768,7 @@ export function startScheduler(bot?: any): void {
       },
       'Event backbone retention cleanup completed',
     );
-  }));
+  }), { timezone: tz });
 
   logger.info(
     `Scheduler started: reminders, daily briefing (${config.todo.digestTime}), end-of-day (21:00), weekly (Fri 17:00), shared list (*/5), content (16:43), invoices (1st 09:00/09:15/09:30), fiscal-bundle (daily 08:10 due-check), conflict (19:30), fossa (bi-weekly Mon 07:30), garmin-keepalive (*/30), coach (${config.garmin.coachTime}), invoice-queue (*/15), channel-relearn (Sun 03:00), tue-reels (Tue 09:00), thu-youtube (Thu 09:00), fri-weekly (Fri 18:30), pipeline-agent (20:00), notification-release (*/15), decision-source-supersession (*/15), chat-action-plan-expiry (hourly), event-backbone-worker (* * * * *), event-backbone-cleanup (00:10), expire-signals (hourly), db-backup (${config.backup.time}), dst-watchdog (*/15)`

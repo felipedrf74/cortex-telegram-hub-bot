@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import Database from 'better-sqlite3';
+import { readFileSync } from 'node:fs';
 
 let testDb: Database.Database;
 let pushTokens: string[] = [];
@@ -211,6 +212,44 @@ describe('Secretary Notification Orchestrator', () => {
     expect(second.item?.itemId).toBe(first.item?.itemId);
     expect(second.decisionLog.decision).toBe('deduped');
     expect(listNotificationCenterItems(4, 4)).toHaveLength(1);
+  });
+
+  it('enforces active dedupe keys at the database layer', () => {
+    testDb.exec(readFileSync('migrations/125_notification_dedupe_unique.sql', 'utf8'));
+
+    testDb.prepare(`
+      INSERT INTO notification_intents (
+        intent_id, user_id, tenant_id, source_skill, type, priority,
+        title, body, action_buttons_json, dedupe_key, status
+      ) VALUES (?, 401, 401, 'training', 'decision_required', 'active',
+        'Training decision', 'Training decision', '[]',
+        'training:dedupe-db', 'pending')
+    `).run('intent-db-1');
+    expect(() => testDb.prepare(`
+      INSERT INTO notification_intents (
+        intent_id, user_id, tenant_id, source_skill, type, priority,
+        title, body, action_buttons_json, dedupe_key, status
+      ) VALUES (?, 401, 401, 'training', 'decision_required', 'active',
+        'Training decision duplicate', 'Training decision duplicate',
+        '[]', 'training:dedupe-db', 'pending')
+    `).run('intent-db-2')).toThrow(/UNIQUE/);
+
+    testDb.prepare(`
+      INSERT INTO notification_center_items (
+        item_id, intent_id, user_id, tenant_id, title, body, safe_body,
+        source_skill, type, priority, status, actions_json, dedupe_key
+      ) VALUES (?, 'intent-db-1', 401, 401, 'Training decision',
+        'Training decision', 'Training decision', 'training',
+        'decision_required', 'active', 'unread', '[]', 'training:center-dedupe')
+    `).run('item-db-1');
+    expect(() => testDb.prepare(`
+      INSERT INTO notification_center_items (
+        item_id, intent_id, user_id, tenant_id, title, body, safe_body,
+        source_skill, type, priority, status, actions_json, dedupe_key
+      ) VALUES (?, 'intent-db-1', 401, 401, 'Training decision duplicate',
+        'Training decision duplicate', 'Training decision duplicate', 'training',
+        'decision_required', 'active', 'unread', '[]', 'training:center-dedupe')
+    `).run('item-db-2')).toThrow(/UNIQUE/);
   });
 
   it('holds passive notifications for digest and delays active items during quiet hours', async () => {

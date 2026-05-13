@@ -256,6 +256,42 @@ describe('garmin passive auth safety', () => {
     expect(mockFetchOauthConsumer).not.toHaveBeenCalled();
   });
 
+  it('namespaces SSO and rate-limit persistence paths by user id', async () => {
+    const { _garminPersistencePathsForTests } = await import('../../src/services/garmin');
+
+    const userA = _garminPersistencePathsForTests(12);
+    const userB = _garminPersistencePathsForTests(34);
+
+    expect(userA.ssoCookies).toBe('/tmp/garmin-tests/12/sso_cookies.json');
+    expect(userA.rateLimit).toBe('/tmp/garmin-tests/12/rate_limit.json');
+    expect(userB.ssoCookies).toBe('/tmp/garmin-tests/34/sso_cookies.json');
+    expect(userB.rateLimit).toBe('/tmp/garmin-tests/34/rate_limit.json');
+    expect(userA).not.toEqual(userB);
+  });
+
+  it('does not write Garmin debug HTML unless GARMIN_DEBUG_DUMP is enabled', async () => {
+    delete process.env.GARMIN_DEBUG_DUMP;
+    const { _writeGarminDebugDumpForTests } = await import('../../src/services/garmin');
+
+    const path = _writeGarminDebugDumpForTests('step3', '<html>private</html>');
+
+    expect(path).toBeNull();
+    expect(mockWriteFileSync).not.toHaveBeenCalled();
+  });
+
+  it('logs Garmin read failures before returning an empty value', async () => {
+    mockGetUserSettings.mockRejectedValue(new Error('stored tokens expired'));
+    const { getDailySummary } = await import('../../src/services/garmin');
+
+    const summary = await getDailySummary('2026-04-15', { silent: true });
+
+    expect(summary).toBeNull();
+    expect(mockLoggerWarn).toHaveBeenCalledWith(
+      expect.objectContaining({ err: expect.any(Error), url: expect.stringContaining('/usersummary-service/') }),
+      'Garmin read failed, returning empty',
+    );
+  });
+
   it('treats daily summary 403 as missing data instead of starting auth recovery', async () => {
     mockGetUserSettings.mockResolvedValue({ displayName: 'Athlete' });
     mockGarminGet.mockRejectedValue(new Error('ERROR: (403), Forbidden, {"message":null,"error":"ForbiddenException"}'));

@@ -32,6 +32,28 @@ function parsePositiveInt(value: unknown, fallback: number, max: number): number
   return Math.min(parsed, max);
 }
 
+function parseOptionalPositiveInt(value: unknown): number | undefined {
+  const parsed = parseInt(String(value ?? ''), 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
+}
+
+function parseRequiredSignalScope(req: Request, res: Response): { userId: number; tenantId: number } | null {
+  const headers = req.headers ?? {};
+  const tenantId = parseOptionalPositiveInt(req.query.tenantId ?? headers['x-nexus-tenant-id']);
+  const userId = parseOptionalPositiveInt(req.query.userId ?? headers['x-nexus-user-id']) ?? tenantId;
+  if (!tenantId || !userId) {
+    res.status(400).json({
+      ok: false,
+      error: {
+        code: 'TENANT_SCOPE_REQUIRED',
+        message: 'tenantId is required for scoped signal reads',
+      },
+    });
+    return null;
+  }
+  return { userId, tenantId };
+}
+
 export function registerPortalIntelligenceRoutes(app: Express): void {
   app.get('/api/agents', (_req: Request, res: Response) => {
     try {
@@ -44,13 +66,15 @@ export function registerPortalIntelligenceRoutes(app: Express): void {
 
   app.get('/api/signals', (req: Request, res: Response) => {
     try {
+      const scope = parseRequiredSignalScope(req, res);
+      if (!scope) return;
       const limit = parsePositiveInt(req.query.limit, 50, 200);
       const typeFilter = req.query.type ? String(req.query.type) : undefined;
-      let signals = getSignalLog(limit);
+      let signals = getSignalLog(limit, scope.userId, scope.tenantId);
       if (typeFilter) {
         signals = signals.filter((signal) => signal.signal_type === typeFilter);
       }
-      res.json({ ok: true, signals, activeCount: getActiveSignalCount() });
+      res.json({ ok: true, signals, activeCount: getActiveSignalCount(scope.userId, scope.tenantId) });
     } catch (err) {
       sendPortalInternalError(res, err, 'Portal request failed', 'Portal: request failed');
     }
@@ -63,7 +87,13 @@ export function registerPortalIntelligenceRoutes(app: Express): void {
         res.status(400).json({ ok: false, message: 'Invalid ID' });
         return;
       }
-      dismissSignal(id);
+      const scope = parseRequiredSignalScope(req, res);
+      if (!scope) return;
+      const changes = dismissSignal(id, scope.userId, scope.tenantId);
+      if (changes === 0) {
+        res.status(404).json({ ok: false, message: 'Signal not found in requested scope' });
+        return;
+      }
       clearPortalSnapshotCache();
       res.json({ ok: true, message: 'Signal dismissed' });
     } catch (err) {
@@ -91,6 +121,8 @@ export function registerPortalIntelligenceRoutes(app: Express): void {
 
   app.get('/api/signals/ranked', (req: Request, res: Response) => {
     try {
+      const scope = parseRequiredSignalScope(req, res);
+      if (!scope) return;
       const types = String(req.query.types || '')
         .split(',')
         .map((type) => type.trim())
@@ -98,6 +130,8 @@ export function registerPortalIntelligenceRoutes(app: Express): void {
       const requestedTypes = (types.length > 0 ? types : DEFAULT_RANKED_SIGNAL_TYPES) as SignalType[];
       const ranked = readRankedSignals('portal-inspector', requestedTypes, {
         limit: parsePositiveInt(req.query.limit, 20, 200),
+        userId: scope.userId,
+        tenantId: scope.tenantId,
         pillar: (req.query.pillar as string) || undefined,
         format: (req.query.format as string) || undefined,
         minConfidence: parseFloat(String(req.query.minConfidence || '0.1')),

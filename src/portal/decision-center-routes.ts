@@ -46,6 +46,24 @@ function sendForbiddenTenant(res: Response): void {
   });
 }
 
+function sanitizeDecisionErrorDetails(details?: Record<string, unknown>): Record<string, unknown> | undefined {
+  if (!details) return undefined;
+  const sanitized: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(details)) {
+    if (key === 'originalMessage') continue;
+    if (Array.isArray(value)) {
+      sanitized[key] = value.map((entry) => (
+        entry && typeof entry === 'object' ? sanitizeDecisionErrorDetails(entry as Record<string, unknown>) : entry
+      ));
+      continue;
+    }
+    sanitized[key] = value && typeof value === 'object'
+      ? sanitizeDecisionErrorDetails(value as Record<string, unknown>)
+      : value;
+  }
+  return sanitized;
+}
+
 function sendDecisionError(res: Response, err: unknown): void {
   if (err instanceof DecisionActionError) {
     res.status(err.status).json({
@@ -53,7 +71,7 @@ function sendDecisionError(res: Response, err: unknown): void {
       error: {
         code: err.code,
         message: err.message,
-        details: err.details,
+        details: sanitizeDecisionErrorDetails(err.details),
       },
     });
     return;

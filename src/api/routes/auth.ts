@@ -872,7 +872,12 @@ export function authRoutes(): Router {
             created_at = datetime('now')
         `).run(user.id, email.toLowerCase(), code, expiresAt, 0);
         // Fire-and-forget — don't block registration on email delivery
-        sendVerificationCode(email, code, firstName).catch(() => {});
+        sendVerificationCode(email, code, firstName).catch((err: unknown) => {
+          logger.error(
+            { err, userId: user.id, email: user.email },
+            'Verification email send failed',
+          );
+        });
       }
     } catch { /* email service not available — non-fatal */ }
 

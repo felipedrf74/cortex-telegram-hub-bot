@@ -22,6 +22,7 @@ import { resolveCanonicalUserId } from './user-service';
 import { logger } from '../utils/logger';
 import { resolveChatTenantId } from './chat-tenant-scope';
 import { authorizeChatToolCall, formatToolAuthorizationFailure } from './chat-tool-authorization';
+import { sanitizeForPromptInterpolation } from '../utils/prompt-sanitizer';
 
 // ─── Phase 3 Slice A — profile field whitelist ───────────────────
 //
@@ -165,6 +166,49 @@ function normalizeAttendeeEmails(raw: unknown): string[] | undefined {
     .map((value) => (typeof value === 'string' ? value.trim() : ''))
     .filter((value) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value));
   return cleaned.length > 0 ? [...new Set(cleaned)] : undefined;
+}
+
+function escapeToolResultXml(text: string): string {
+  return text
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+}
+
+export function wrapToolResultContent(text: string): string {
+  const sanitized = JSON.parse(sanitizeForPromptInterpolation(text)) as string;
+  return `<untrusted_tool_result>${escapeToolResultXml(sanitized)}</untrusted_tool_result>`;
+}
+
+const UNTRUSTED_TOOL_RESULT_FIELDS = new Set([
+  'title',
+  'displayName',
+  'name',
+  'subject',
+  'body',
+  'snippet',
+  'bodyPreview',
+  'description',
+  'summary',
+  'content',
+  'message',
+  'location',
+]);
+
+function wrapUntrustedToolResult<T>(value: T): T {
+  if (Array.isArray(value)) {
+    return value.map((item) => wrapUntrustedToolResult(item)) as T;
+  }
+  if (!value || typeof value !== 'object') return value;
+  const output: Record<string, unknown> = {};
+  for (const [key, fieldValue] of Object.entries(value as Record<string, unknown>)) {
+    if (typeof fieldValue === 'string' && UNTRUSTED_TOOL_RESULT_FIELDS.has(key)) {
+      output[key] = wrapToolResultContent(fieldValue);
+    } else {
+      output[key] = wrapUntrustedToolResult(fieldValue);
+    }
+  }
+  return output as T;
 }
 
 function coerceUserRef(raw: unknown): number | null {
@@ -320,9 +364,10 @@ export async function executeToolCall(
       case 'ms_todo_get_tasks': {
         const taskCtx = getTaskProviderContext();
         if (!taskCtx.ok) return { error: taskCtx.error };
-        return await taskCtx.provider.getTasks(input.list_id, input.list_name, {
+        const tasks = await taskCtx.provider.getTasks(input.list_id, input.list_name, {
           status: input.status,
         });
+        return wrapUntrustedToolResult(tasks);
       }
 
       case 'ms_todo_create_task': {
@@ -420,7 +465,7 @@ export async function executeToolCall(
         const taskCtx = getTaskProviderContext();
         if (!taskCtx.ok) return { error: taskCtx.error };
         if (typeof taskCtx.provider.searchTasks === 'function') {
-          return await taskCtx.provider.searchTasks(input.query);
+          return wrapUntrustedToolResult(await taskCtx.provider.searchTasks(input.query));
         }
         return { error: 'The active task provider does not support task search.' };
       }
@@ -429,7 +474,7 @@ export async function executeToolCall(
         const taskCtx = getTaskProviderContext();
         if (!taskCtx.ok) return { error: taskCtx.error };
         if (typeof taskCtx.provider.getTasksDueInRange === 'function') {
-          return await taskCtx.provider.getTasksDueInRange(input.start_date, input.end_date);
+          return wrapUntrustedToolResult(await taskCtx.provider.getTasksDueInRange(input.start_date, input.end_date));
         }
         return { error: 'The active task provider does not support due-date range lookups.' };
       }
@@ -449,7 +494,7 @@ export async function executeToolCall(
         if (typeof taskCtx.provider.getChecklistItems !== 'function') {
           return { error: 'The active task provider does not support checklist items.' };
         }
-        return await taskCtx.provider.getChecklistItems(input.list_id, input.task_id);
+        return wrapUntrustedToolResult(await taskCtx.provider.getChecklistItems(input.list_id, input.task_id));
       }
 
       case 'ms_todo_add_checklist_item': {
@@ -468,7 +513,7 @@ export async function executeToolCall(
           : !unifiedCal.isAnyCalendarConfigured()) {
           return { error: 'No calendar is configured. Set Google or Outlook credentials.' };
         }
-        return await unifiedCal.getEvents(input.start_date, input.end_date, userId);
+        return wrapUntrustedToolResult(await unifiedCal.getEvents(input.start_date, input.end_date, userId));
 
       case 'create_calendar_event':
         if (userId != null
@@ -557,9 +602,9 @@ export async function executeToolCall(
           : !outlookMail.isOutlookMailConfigured()) {
           return { error: 'Outlook is not configured. Set OUTLOOK_CLIENT_ID, OUTLOOK_CLIENT_SECRET, and OUTLOOK_REFRESH_TOKEN.' };
         }
-        return userId != null
+        return wrapUntrustedToolResult(userId != null
           ? await outlookMail.searchEmailsForUser(userId, input.query, input.max_results || 10)
-          : await outlookMail.searchEmails(input.query, input.max_results || 10);
+          : await outlookMail.searchEmails(input.query, input.max_results || 10));
 
       case 'read_outlook_email':
         if (userId != null
@@ -567,9 +612,9 @@ export async function executeToolCall(
           : !outlookMail.isOutlookMailConfigured()) {
           return { error: 'Outlook is not configured.' };
         }
-        return userId != null
+        return wrapUntrustedToolResult(userId != null
           ? await outlookMail.readEmailForUser(userId, input.message_id)
-          : await outlookMail.readEmail(input.message_id);
+          : await outlookMail.readEmail(input.message_id));
 
       case 'send_outlook_email':
         if (userId != null
@@ -621,10 +666,10 @@ export async function executeToolCall(
         }
         if (userId != null) {
           const { count: unreadCount, emails: unreadEmails } = await outlookMail.getUnreadEmailsForUser(userId, input.max_results || 10);
-          return { unread_count: unreadCount, recent_unread: unreadEmails };
+          return { unread_count: unreadCount, recent_unread: wrapUntrustedToolResult(unreadEmails) };
         }
         const { count: unreadCount, emails: unreadEmails } = await outlookMail.getUnreadEmails(input.max_results || 10);
-        return { unread_count: unreadCount, recent_unread: unreadEmails };
+        return { unread_count: unreadCount, recent_unread: wrapUntrustedToolResult(unreadEmails) };
       }
 
       // ── Shared memory tools (cross-domain context) ──

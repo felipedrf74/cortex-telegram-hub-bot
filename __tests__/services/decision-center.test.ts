@@ -1046,4 +1046,21 @@ describe('Decision Center facade', () => {
       testDb.exec(sql);
     }).not.toThrow();
   });
+
+  it('logs unexpected action failures without serializing original messages', () => {
+    const source = readFileSync('src/services/decision-center.ts', 'utf8');
+    expect(source).toContain("'Decision action failed'");
+    expect(source).toContain('logger.error');
+    expect(source).toContain('originalCode');
+    expect(source).toContain('originalErrorLogged');
+    expect(source).not.toContain('originalMessage:');
+    expect(source).toContain('markExecutionFailed(claimed.execution.action_execution_id, error.code, error.details)');
+
+    const apiRoute = readFileSync('src/api/routes/decisions.ts', 'utf8');
+    const portalRoute = readFileSync('src/portal/decision-center-routes.ts', 'utf8');
+    expect(apiRoute).toContain('sanitizeDecisionErrorDetails(err.details)');
+    expect(portalRoute).toContain('sanitizeDecisionErrorDetails(err.details)');
+    expect(apiRoute).toContain("key === 'originalMessage'");
+    expect(portalRoute).toContain("key === 'originalMessage'");
+  });
 });

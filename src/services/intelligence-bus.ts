@@ -634,12 +634,37 @@ export function markConsumed(signalId: number, consumer: string): void {
 /**
  * Dismiss a signal (manual override from Mission Control).
  */
-export function dismissSignal(signalId: number): void {
+export function dismissSignal(signalId: number, userId?: number, tenantId?: number): number {
   const d = db();
-  if (!d) return;
+  if (!d) return 0;
   try {
-    d.prepare("UPDATE agent_signals SET status = 'dismissed' WHERE id = ?").run(signalId);
-  } catch { /* non-critical */ }
+    const hasTenantColumn = tableHasColumn(d, 'agent_signals', 'tenant_id');
+    if (hasTenantColumn) {
+      const scopedTenantId = resolveSignalTenantId(userId, tenantId);
+      if (scopedTenantId === undefined || userId === undefined) return 0;
+      const result = d.prepare(`
+        UPDATE agent_signals
+        SET status = 'dismissed'
+        WHERE id = ?
+          AND tenant_id = ?
+          AND (user_id IS NULL OR user_id = ?)
+      `).run(signalId, scopedTenantId, userId);
+      return (result as any).changes ?? 0;
+    }
+    if (userId !== undefined) {
+      const result = d.prepare(`
+        UPDATE agent_signals
+        SET status = 'dismissed'
+        WHERE id = ?
+          AND (user_id IS NULL OR user_id = ?)
+      `).run(signalId, userId);
+      return (result as any).changes ?? 0;
+    }
+    const result = d.prepare("UPDATE agent_signals SET status = 'dismissed' WHERE id = ? AND user_id IS NULL").run(signalId);
+    return (result as any).changes ?? 0;
+  } catch {
+    return 0;
+  }
 }
 
 /**
@@ -665,11 +690,31 @@ export function expireStaleSignals(): number {
 /**
  * Get count of active signals.
  */
-export function getActiveSignalCount(): number {
+export function getActiveSignalCount(userId?: number, tenantId?: number): number {
   const d = db();
   if (!d) return 0;
   try {
-    const row = d.prepare("SELECT COUNT(*) as cnt FROM agent_signals WHERE status = 'active'").get() as any;
+    const hasTenantColumn = tableHasColumn(d, 'agent_signals', 'tenant_id');
+    const clauses = ["status = 'active'"];
+    const params: any[] = [];
+    if (hasTenantColumn) {
+      const scopedTenantId = resolveSignalTenantId(userId, tenantId);
+      if (scopedTenantId !== undefined) {
+        clauses.push('tenant_id = ?');
+        params.push(scopedTenantId);
+        clauses.push(userId !== undefined ? '(user_id IS NULL OR user_id = ?)' : 'user_id IS NULL');
+        if (userId !== undefined) params.push(userId);
+      } else {
+        clauses.push('tenant_id IS NULL');
+        clauses.push('user_id IS NULL');
+      }
+    } else if (userId !== undefined) {
+      clauses.push('(user_id IS NULL OR user_id = ?)');
+      params.push(userId);
+    } else {
+      clauses.push('user_id IS NULL');
+    }
+    const row = d.prepare(`SELECT COUNT(*) as cnt FROM agent_signals WHERE ${clauses.join(' AND ')}`).get(...params) as any;
     return row?.cnt ?? 0;
   } catch {
     return 0;
@@ -679,15 +724,37 @@ export function getActiveSignalCount(): number {
 /**
  * Get recent signal log (for Mission Control).
  */
-export function getSignalLog(limit = 100): AgentSignal[] {
+export function getSignalLog(limit = 100, userId?: number, tenantId?: number): AgentSignal[] {
   const d = db();
   if (!d) return [];
   try {
+    const hasTenantColumn = tableHasColumn(d, 'agent_signals', 'tenant_id');
+    const clauses: string[] = [];
+    const params: any[] = [];
+    if (hasTenantColumn) {
+      const scopedTenantId = resolveSignalTenantId(userId, tenantId);
+      if (scopedTenantId !== undefined) {
+        clauses.push('tenant_id = ?');
+        params.push(scopedTenantId);
+        clauses.push(userId !== undefined ? '(user_id IS NULL OR user_id = ?)' : 'user_id IS NULL');
+        if (userId !== undefined) params.push(userId);
+      } else {
+        clauses.push('tenant_id IS NULL');
+        clauses.push('user_id IS NULL');
+      }
+    } else if (userId !== undefined) {
+      clauses.push('(user_id IS NULL OR user_id = ?)');
+      params.push(userId);
+    } else {
+      clauses.push('user_id IS NULL');
+    }
+    params.push(limit);
     const rows = d.prepare(`
       SELECT * FROM agent_signals
+      WHERE ${clauses.join(' AND ')}
       ORDER BY created_at DESC
       LIMIT ?
-    `).all(limit) as any[];
+    `).all(...params) as any[];
     return rows.map(parseSignalRow);
   } catch {
     return [];

@@ -130,7 +130,7 @@ describe('content admin write auth scopes', () => {
     app.use(express.json());
     app.use('/api/v1/admin/content', contentAdminWriteRoutes());
 
-    const readRes = await fetchJson(app, 'GET', '/api/v1/admin/content/pillars', undefined, {
+    const readRes = await fetchJson(app, 'GET', '/api/v1/admin/content/pillars?userId=1&tenantId=1', undefined, {
       Authorization: 'Bearer portal-read-token',
     });
     expect(readRes.status).toBe(200);
@@ -282,7 +282,7 @@ describe('content admin write auth scopes', () => {
     const res = await fetchJson(
       app,
       'GET',
-      '/api/v1/admin/content/pillars',
+      '/api/v1/admin/content/pillars?userId=7&tenantId=7',
       undefined,
       { Authorization: 'Bearer portal-write-token' },
     );

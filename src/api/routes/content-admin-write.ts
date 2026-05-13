@@ -692,10 +692,17 @@ export function contentAdminWriteRoutes(): Router {
   // ═══════════════════════════════════════════════════════════════════
 
   /** GET /pillars — list all pillars (convenience endpoint) */
-  router.get('/pillars', (_req: Request, res: Response) => {
+  router.get('/pillars', (req: Request, res: Response) => {
+    const scope = resolvePortalContentScope(req, res, true);
+    if (!scope) return;
     try {
       const db = getDb();
-      const rows = db.prepare('SELECT * FROM config_pillars ORDER BY name ASC').all();
+      ensureContentTenantScopeColumns(db);
+      const rows = db.prepare(`
+        SELECT * FROM config_pillars
+        WHERE ${contentScopePredicate()}
+        ORDER BY name ASC
+      `).all(...contentScopeParams(scope.userId, scope.tenantId));
       // Parse keywords JSON for each row
       const pillars = (rows as any[]).map((r) => ({
         ...r,
@@ -710,23 +717,39 @@ export function contentAdminWriteRoutes(): Router {
 
   /** POST /pillars — add a new pillar */
   router.post('/pillars', (req: Request, res: Response) => {
-    const { name, keywords, weight, language, userId } = req.body;
+    const scope = resolvePortalContentScope(req, res, true);
+    if (!scope) return;
+    const { name, keywords, weight, language } = req.body;
     if (!name || !keywords || !Array.isArray(keywords)) {
       return sendError(res, 'BAD_REQUEST', 'name (string) and keywords (string[]) are required');
     }
     try {
       const db = getDb();
+      ensureContentTenantScopeColumns(db);
+      const insertScope = contentScopeForInsert(scope.userId, scope.tenantId);
       const info = db.prepare(`
-        INSERT INTO config_pillars (name, keywords, weight, language, user_id)
-        VALUES (?, ?, ?, ?, ?)
+        INSERT INTO config_pillars (
+          name, keywords, weight, language, user_id,
+          tenant_id, owner_user_id, visibility_scope, lifecycle_state, scope_status,
+          created_by, updated_by, audit_metadata_json
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `).run(
         name.trim().toLowerCase(),
         JSON.stringify(keywords),
         weight ?? 1.0,
         language ?? 'pt-BR',
-        userId ?? 0,
+        scope.userId,
+        insertScope.tenantId,
+        insertScope.ownerUserId,
+        insertScope.visibilityScope,
+        insertScope.lifecycleState,
+        insertScope.scopeStatus,
+        insertScope.createdBy,
+        insertScope.updatedBy,
+        insertScope.auditMetadataJson,
       );
-      sendSuccess(res, { id: info.lastInsertRowid });
+      sendSuccess(res, { id: info.lastInsertRowid, scope });
     } catch (err: any) {
       if (err.code === 'SQLITE_CONSTRAINT_UNIQUE') {
         return sendError(res, 'DUPLICATE', `Pillar "${name}" already exists for this user`);
@@ -738,12 +761,15 @@ export function contentAdminWriteRoutes(): Router {
 
   /** PATCH /pillars/:id — update a pillar's keywords or weight */
   router.patch('/pillars/:id', (req: Request, res: Response) => {
+    const scope = resolvePortalContentScope(req, res, true);
+    if (!scope) return;
     const id = parseInt(String(req.params.id), 10);
     if (isNaN(id)) return sendError(res, 'BAD_REQUEST', 'Invalid pillar id');
     try {
       const db = getDb();
-      const sets: string[] = ["updated_at = datetime('now')"];
-      const params: unknown[] = [];
+      ensureContentTenantScopeColumns(db);
+      const sets: string[] = ["updated_at = datetime('now')", 'updated_by = ?'];
+      const params: unknown[] = [scope.userId];
 
       if (req.body.name !== undefined) { sets.push('name = ?'); params.push(req.body.name.trim().toLowerCase()); }
       if (req.body.keywords !== undefined) { sets.push('keywords = ?'); params.push(JSON.stringify(req.body.keywords)); }
@@ -751,11 +777,16 @@ export function contentAdminWriteRoutes(): Router {
       if (req.body.language !== undefined) { sets.push('language = ?'); params.push(req.body.language); }
       if (req.body.enabled !== undefined) { sets.push('enabled = ?'); params.push(req.body.enabled ? 1 : 0); }
 
-      if (sets.length === 1) return sendError(res, 'BAD_REQUEST', 'No fields to update');
+      if (sets.length === 2) return sendError(res, 'BAD_REQUEST', 'No fields to update');
 
-      params.push(id);
-      const info = db.prepare(`UPDATE config_pillars SET ${sets.join(', ')} WHERE id = ?`).run(...params);
-      if (info.changes === 0) return sendError(res, 'NOT_FOUND', 'Pillar not found', 404);
+      params.push(id, ...contentScopeParams(scope.userId, scope.tenantId));
+      const info = db.prepare(`
+        UPDATE config_pillars
+        SET ${sets.join(', ')}
+        WHERE id = ?
+          AND ${contentScopePredicate()}
+      `).run(...params);
+      if (info.changes === 0) return sendError(res, 'NOT_FOUND', 'Pillar not found in requested scope', 404);
       sendSuccess(res, { updated: true });
     } catch (err: any) {
       logger.error({ err }, 'Portal: update pillar failed');
@@ -765,12 +796,19 @@ export function contentAdminWriteRoutes(): Router {
 
   /** DELETE /pillars/:id — remove a pillar */
   router.delete('/pillars/:id', (req: Request, res: Response) => {
+    const scope = resolvePortalContentScope(req, res, true);
+    if (!scope) return;
     const id = parseInt(String(req.params.id), 10);
     if (isNaN(id)) return sendError(res, 'BAD_REQUEST', 'Invalid pillar id');
     try {
       const db = getDb();
-      const info = db.prepare('DELETE FROM config_pillars WHERE id = ?').run(id);
-      if (info.changes === 0) return sendError(res, 'NOT_FOUND', 'Pillar not found', 404);
+      ensureContentTenantScopeColumns(db);
+      const info = db.prepare(`
+        DELETE FROM config_pillars
+        WHERE id = ?
+          AND ${contentScopePredicate()}
+      `).run(id, ...contentScopeParams(scope.userId, scope.tenantId));
+      if (info.changes === 0) return sendError(res, 'NOT_FOUND', 'Pillar not found in requested scope', 404);
       sendSuccess(res, { removed: true });
     } catch (err: any) {
       logger.error({ err }, 'Portal: delete pillar failed');

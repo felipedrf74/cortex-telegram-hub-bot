@@ -250,7 +250,7 @@ Then merge: `server-sync/* → develop → main → deploy.sh`
 | SERVER_USER | ✅ dominguez | |
 | SERVER_SSH_KEY | ✅ Configured | |
 | NOTION_TOKEN | ✅ Configured | |
-| NOTION_RELEASES_DB | ✅ 332ad49d-23e7-8134-b413-d8d3cc3f1a4a | |
+| NOTION_RELEASES_DB | ✅ Configured | Stored in secret manager; do not copy database IDs into docs |
 
 ## Future: Re-enabling Auto-Deploy
 

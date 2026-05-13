@@ -55,6 +55,7 @@ import { config } from '../config';
 import { logger } from '../utils/logger';
 import { getDb } from './database';
 import { isValidTenantUserId, recordTenantScopeAnomaly } from './tenant-scope-observability';
+import { recordOperatorAlert } from './operator-alerts';
 
 // ────────────────────────────────────────────────────────────────────
 // Types
@@ -249,8 +250,22 @@ export function getPushTokensForUser(userId: number): PushTokenTarget[] {
     }));
   } catch (err) {
     logger.error({ err, userId }, '[apns-sender] Failed to load push tokens for user');
-    return [];
+    throw err;
   }
+}
+
+function recordPushTokenLoadFailure(userId: number, err: unknown): void {
+  recordOperatorAlert({
+    severity: 'warning',
+    source: 'apns',
+    dedupeKey: `APNS_TOKEN_LOAD_FAILED:${userId}`,
+    title: 'APNs token load failed',
+    detail: 'Nexus could not load device push tokens from the database.',
+    owner: 'ops',
+    suspectedArea: 'notifications',
+    userImpact: 'Push notifications may not be delivered for this user until database token reads recover.',
+    metadata: { code: 'APNS_TOKEN_LOAD_FAILED', userId, errorName: err instanceof Error ? err.name : typeof err },
+  });
 }
 
 /**
@@ -471,11 +486,23 @@ export async function sendPushNotification(
           'See specs/09-APNS-SETUP.md or the deploy handoff doc for setup steps.',
       );
     }
-    const tokens = getPushTokensForUser(userId);
+    let tokens: PushTokenTarget[] = [];
+    try {
+      tokens = getPushTokensForUser(userId);
+    } catch (err) {
+      recordPushTokenLoadFailure(userId, err);
+      return { sent: 0, failed: 0, skipped: 0, retriable: 0, unregistered: [] };
+    }
     return { sent: 0, failed: 0, skipped: tokens.length, retriable: 0, unregistered: [] };
   }
 
-  const tokens = getPushTokensForUser(userId);
+  let tokens: PushTokenTarget[] = [];
+  try {
+    tokens = getPushTokensForUser(userId);
+  } catch (err) {
+    recordPushTokenLoadFailure(userId, err);
+    return { sent: 0, failed: 0, skipped: 0, retriable: 0, unregistered: [] };
+  }
   if (tokens.length === 0) {
     return { sent: 0, failed: 0, skipped: 0, retriable: 0, unregistered: [] };
   }

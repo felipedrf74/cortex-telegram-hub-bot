@@ -41,9 +41,27 @@ function isInternalDecisionIntentRequest(req: AuthenticatedRequest): boolean {
   return Boolean(expected) && secureSecretMatches(expected, provided);
 }
 
+function sanitizeDecisionErrorDetails(details?: Record<string, unknown>): Record<string, unknown> | undefined {
+  if (!details) return undefined;
+  const sanitized: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(details)) {
+    if (key === 'originalMessage') continue;
+    if (Array.isArray(value)) {
+      sanitized[key] = value.map((entry) => (
+        entry && typeof entry === 'object' ? sanitizeDecisionErrorDetails(entry as Record<string, unknown>) : entry
+      ));
+      continue;
+    }
+    sanitized[key] = value && typeof value === 'object'
+      ? sanitizeDecisionErrorDetails(value as Record<string, unknown>)
+      : value;
+  }
+  return sanitized;
+}
+
 function decisionError(res: Response, err: unknown, fallbackCode = 'DECISION_ERROR'): void {
   if (err instanceof DecisionActionError) {
-    sendError(res, err.code, err.message, err.status, err.details);
+    sendError(res, err.code, err.message, err.status, sanitizeDecisionErrorDetails(err.details));
     return;
   }
   logger.warn({ err }, 'Decision route rejected request');

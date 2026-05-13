@@ -965,7 +965,14 @@ export async function performDecisionAction(
   } catch (err) {
     const error = err instanceof DecisionActionError
       ? err
-      : new DecisionActionError('DECISION_ACTION_FAILED', 'Decision action failed verification', 500);
+      : new DecisionActionError('DECISION_ACTION_FAILED', 'Decision action failed verification', 500, {
+          originalCode: err && typeof err === 'object' && 'code' in err ? String((err as any).code) : 'UNKNOWN',
+          originalErrorLogged: true,
+        });
+    logger.error(
+      { err, decisionId, actionId, userId, tenantId },
+      'Decision action failed',
+    );
     markExecutionFailed(claimed.execution.action_execution_id, error.code, error.details);
     markDecisionFailed(record, actionId, error.code);
     recordDecisionOutcome(record, {

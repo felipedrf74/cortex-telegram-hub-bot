@@ -24,6 +24,7 @@ import {
   sanitizeLogValue,
   stringifySanitizedLogContext,
 } from '../utils/log-sanitizer';
+import { getCurrentContext } from '../utils/request-context';
 
 // ── Types ────────────────────────────────────────────────────────
 
@@ -47,6 +48,8 @@ export interface ErrorLogEntry {
   stack: string | null;
   context: string | null;
   alerted: number;
+  user_id?: number | null;
+  tenant_id?: number | null;
 }
 
 export interface ErrorTrends {
@@ -62,6 +65,7 @@ export interface ErrorTrends {
 
 type DbProvider = () => any;
 let _getDb: DbProvider | null = null;
+let _errorLogHasScopeColumns: boolean | null = null;
 
 // ── Boot Buffer ──────────────────────────────────────────────────
 // Errors that fire BEFORE setDbProvider() is called (e.g. config validation
@@ -79,6 +83,7 @@ const BOOT_BUFFER_MAX = 100;
 
 export function setDbProvider(fn: DbProvider): void {
   _getDb = fn;
+  _errorLogHasScopeColumns = null;
   // Flush any errors that were buffered before the DB came online.
   if (_bootBuffer.length > 0) {
     const buffered = _bootBuffer.splice(0);
@@ -98,11 +103,38 @@ export function setDbProvider(fn: DbProvider): void {
 /** Internal: write a record to error_log. Caller guarantees _getDb is set. */
 function persistToDb(record: ErrorRecord): void {
   if (!_getDb) return;
+  const db = _getDb();
+  if (_errorLogHasScopeColumns == null) {
+    try {
+      const columns = db.prepare("PRAGMA table_info('error_log')").all() as Array<{ name: string }>;
+      _errorLogHasScopeColumns = columns.some((column) => column.name === 'user_id') &&
+        columns.some((column) => column.name === 'tenant_id');
+    } catch {
+      _errorLogHasScopeColumns = false;
+    }
+  }
   const contextJson = record.context ? stringifySanitizedLogContext(record.context) : null;
   const message = sanitizeLogText(record.message);
   const stack = record.stack ? sanitizeLogText(record.stack) : null;
   const shouldAlertFlag = record.level !== 'warning';
-  _getDb().prepare(`
+  const ctx = getCurrentContext();
+  if (_errorLogHasScopeColumns) {
+    db.prepare(`
+      INSERT INTO error_log (level, source, message, stack, context, alerted, user_id, tenant_id)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      record.level,
+      record.source,
+      message.slice(0, 2000),
+      stack?.slice(0, 4000) ?? null,
+      contextJson,
+      shouldAlertFlag && _alertFn ? 1 : 0,
+      ctx?.userId ?? null,
+      ctx?.tenantId ?? ctx?.userId ?? null,
+    );
+    return;
+  }
+  db.prepare(`
     INSERT INTO error_log (level, source, message, stack, context, alerted)
     VALUES (?, ?, ?, ?, ?, ?)
   `).run(
