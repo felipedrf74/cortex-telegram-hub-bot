@@ -499,7 +499,7 @@ function dismissSupersededSignals(userId: number, draft: MeshSignalDraft): void 
     );
 
   for (const signal of activeSignals) {
-    dismissSignal(signal.id);
+    dismissSignal(signal.id, userId, userId);
   }
 }
 

@@ -148,7 +148,7 @@ function dismissStaleAdherenceSignals(
 ): void {
   const stale = signals.filter((signal) => signal.id !== keepId);
   for (const signal of stale) {
-    dismissSignal(signal.id);
+    dismissSignal(signal.id, userId, userId);
   }
   if (stale.length > 0) {
     logger.info(

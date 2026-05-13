@@ -350,16 +350,16 @@ describe('publishAdherenceSignalsForUser', () => {
 
     testDb.prepare(`
       INSERT INTO agent_signals
-        (source_agent, signal_type, payload, priority, expires_at, user_id)
+        (source_agent, signal_type, payload, priority, expires_at, tenant_id, user_id)
       VALUES
-        ('session.analytics', 'low_adherence', ?, 'urgent', datetime('now', '+1 day'), ?)
+        ('session.analytics', 'low_adherence', ?, 'urgent', datetime('now', '+1 day'), ?, ?)
     `).run(JSON.stringify({
       completed: 0,
       planned: 7,
       adherence_pct: 0,
       week_start: ref.minus({ weeks: 1 }).startOf('week').toISO(),
       week_end: ref.minus({ weeks: 1 }).endOf('week').toISO(),
-    }), 1010);
+    }), 1010, 1010);
 
     const result = publishAdherenceSignalsForUser(1010, ref);
     expect(result.action).toBe('published_low');
@@ -389,16 +389,16 @@ describe('publishAdherenceSignalsForUser', () => {
 
     testDb.prepare(`
       INSERT INTO agent_signals
-        (source_agent, signal_type, payload, priority, expires_at, user_id)
+        (source_agent, signal_type, payload, priority, expires_at, tenant_id, user_id)
       VALUES
-        ('session.analytics', 'low_adherence', ?, 'urgent', datetime('now', '+1 day'), ?)
+        ('session.analytics', 'low_adherence', ?, 'urgent', datetime('now', '+1 day'), ?, ?)
     `).run(JSON.stringify({
       completed: 0,
       planned: 5,
       adherence_pct: 0,
       week_start: ref.startOf('week').toISO(),
       week_end: ref.endOf('week').toISO(),
-    }), 1011);
+    }), 1011, 1011);
 
     const result = publishAdherenceSignalsForUser(1011, ref);
     expect(result.action).toBe('skipped_neutral');
@@ -416,16 +416,16 @@ describe('publishAdherenceSignalsForUser', () => {
   it('dismisses stale adherence signals when there is no longer an active plan', () => {
     testDb.prepare(`
       INSERT INTO agent_signals
-        (source_agent, signal_type, payload, priority, expires_at, user_id)
+        (source_agent, signal_type, payload, priority, expires_at, tenant_id, user_id)
       VALUES
-        ('session.analytics', 'low_adherence', ?, 'urgent', datetime('now', '+1 day'), ?)
+        ('session.analytics', 'low_adherence', ?, 'urgent', datetime('now', '+1 day'), ?, ?)
     `).run(JSON.stringify({
       completed: 0,
       planned: 7,
       adherence_pct: 0,
       week_start: '2026-04-06T00:00:00.000+01:00',
       week_end: '2026-04-12T23:59:59.999+01:00',
-    }), 1012);
+    }), 1012, 1012);
 
     const result = publishAdherenceSignalsForUser(1012);
     expect(result.action).toBe('skipped_no_plan');
