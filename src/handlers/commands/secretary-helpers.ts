@@ -20,6 +20,7 @@ import {
   getUnreadCountForUser,
 } from '../../services/outlook-mail';
 import { getTaskProviderForUser, resolveTaskProvider } from '../../services/task-store/task-router';
+import { listSecretaryAgendaItems } from '../../services/secretary-scheduling-arbitrator';
 import {
   formatMsTodoSummary, splitMessage, escapeHtml,
 } from '../../utils/telegram-formatter';
@@ -338,6 +339,11 @@ export async function handleDayOverview(ctx: Context): Promise<void> {
           const src = (e as any).source === 'outlook' ? ' 📧' : '';
           msg += `${formatTime(e.start)} - ${formatTime(e.end)}  ${escapeHtml(e.summary)}${src}\n`;
         }
+        const moveMarkers = secretaryMoveMarkersForDay(tenantUserId ?? undefined);
+        if (moveMarkers.length > 0) {
+          msg += '\n';
+          for (const marker of moveMarkers) msg += `${marker}\n`;
+        }
       }
     } catch (err) {
       logger.warn({ err }, 'Day overview: failed to fetch calendar events');
@@ -365,6 +371,34 @@ export async function handleDayOverview(ctx: Context): Promise<void> {
   const dayParts = splitMessage(msg);
   for (const part of dayParts) {
     await ctx.reply(part, { parse_mode: 'HTML' });
+  }
+}
+
+function secretaryMoveMarkersForDay(userId?: number): string[] {
+  if (!userId) return [];
+  try {
+    const dayStart = new Date(startOfDay()).getTime();
+    const dayEnd = new Date(endOfDay()).getTime();
+    const freshAfter = now().minus({ hours: 24 }).toMillis();
+    return listSecretaryAgendaItems({ ownerUserId: userId, tenantId: userId })
+      .filter((item) => item.startAt && ['reflowed', 'compressed'].includes(item.lifecycleState))
+      .filter((item) => {
+        const start = new Date(item.startAt!).getTime();
+        const updated = new Date(item.updatedAt).getTime();
+        return start >= dayStart && start <= dayEnd && updated >= freshAfter;
+      })
+      .slice(0, 3)
+      .map((item) => {
+        const reason = item.decisionReasonCodes.includes('compressed_to_fit_capacity')
+          ? 'compressed to fit capacity'
+          : item.decisionReasonCodes.includes('reflowed_to_feasible_slot')
+            ? 'moved to a feasible slot'
+            : 'adjusted by Secretary';
+        return `↪ ${formatTime(item.startAt!)} ${escapeHtml(item.title)} — ${escapeHtml(reason)}.`;
+      });
+  } catch (err) {
+    logger.warn({ err, userId }, 'Day overview: failed to read Secretary move markers');
+    return [];
   }
 }
 

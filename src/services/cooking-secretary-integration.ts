@@ -1,9 +1,11 @@
 // Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
 
 import {
+  previewSecretarySchedulingIntent,
   submitSecretarySchedulingIntent,
   type SecretarySchedulingDecision,
   type SecretarySchedulingIntent,
+  type SecretarySchedulingPreview,
 } from './secretary-scheduling-arbitrator';
 
 export interface CookingMealPrepSecretaryInput {
@@ -21,6 +23,12 @@ export function submitCookingMealPrepSchedulingIntent(
   input: CookingMealPrepSecretaryInput,
 ): SecretarySchedulingDecision {
   return submitSecretarySchedulingIntent(buildCookingMealPrepSchedulingIntent(input));
+}
+
+export function previewCookingMealPrepSchedulingIntent(
+  input: CookingMealPrepSecretaryInput,
+): SecretarySchedulingPreview {
+  return previewSecretarySchedulingIntent(buildCookingMealPrepSchedulingIntent(input));
 }
 
 export function buildCookingMealPrepSchedulingIntent(
@@ -52,4 +60,3 @@ export function buildCookingMealPrepSchedulingIntent(
     updatedAt: new Date().toISOString(),
   };
 }
-

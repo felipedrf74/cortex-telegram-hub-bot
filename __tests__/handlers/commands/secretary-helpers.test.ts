@@ -31,6 +31,11 @@ vi.mock('../../../src/services/unified-calendar', () => ({
   isAnyCalendarConfigured: vi.fn(() => false),
 }));
 
+const mockListSecretaryAgendaItems = vi.fn();
+vi.mock('../../../src/services/secretary-scheduling-arbitrator', () => ({
+  listSecretaryAgendaItems: (...args: unknown[]) => mockListSecretaryAgendaItems(...args),
+}));
+
 const mockIsOutlookMailConfiguredForUser = vi.fn();
 const mockGetUnreadCountForUser = vi.fn();
 vi.mock('../../../src/services/outlook-mail', () => ({
@@ -63,6 +68,7 @@ vi.mock('../../../src/utils/date-parser', () => ({
       if (format.includes('LLL dd')) return 'Apr 14';
       return 'Friday, April 17 2026';
     }),
+    minus: vi.fn(() => ({ toMillis: vi.fn(() => new Date('2026-04-16T08:00:00').getTime()) })),
     startOf: vi.fn(() => ({ toFormat: vi.fn(() => 'Apr 14') })),
     endOf: vi.fn(() => ({ toFormat: vi.fn(() => 'Apr 20 2026') })),
   })),
@@ -140,6 +146,7 @@ describe('secretary helper tenant routing', () => {
       { id: 1, message: 'Scoped reminder', remind_at: '2026-04-17T08:00:00', status: 'active' },
     ]);
     mockHasConnectedCalendarForUser.mockReturnValue(true);
+    mockListSecretaryAgendaItems.mockReturnValue([]);
     mockGetEvents.mockResolvedValue([
       {
         id: 'evt-1',
@@ -188,6 +195,23 @@ describe('secretary helper tenant routing', () => {
     expect(provider.getAllPendingTasks).toHaveBeenCalled();
     expect(mockGetEvents).toHaveBeenCalledWith('2026-04-17T00:00:00', '2026-04-17T23:59:59', 1042);
     expect(mockGetEvents).toHaveBeenCalledWith('2026-04-14T00:00:00', '2026-04-20T23:59:59', 1042);
+  });
+
+  it('adds Secretary move markers to the day overview when a recent reflow exists', async () => {
+    mockListSecretaryAgendaItems.mockReturnValueOnce([{
+      agendaItemId: 'sec-1',
+      title: 'Long run',
+      startAt: '2026-04-17T09:00:00',
+      updatedAt: '2026-04-17T08:00:00',
+      lifecycleState: 'reflowed',
+      decisionReasonCodes: ['reflowed_to_feasible_slot'],
+    }]);
+    const ctx = makeCtx();
+
+    await handleDayOverview(ctx);
+
+    expect(mockListSecretaryAgendaItems).toHaveBeenCalledWith({ ownerUserId: 1042, tenantId: 1042 });
+    expect(ctx.reply).toHaveBeenCalledWith(expect.stringContaining('↪ 09:00 Long run — moved to a feasible slot.'), { parse_mode: 'HTML' });
   });
 
   it('routes undo, delete, and pending edits through the scoped provider', async () => {

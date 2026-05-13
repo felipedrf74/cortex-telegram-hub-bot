@@ -693,6 +693,7 @@ export function startScheduler(bot?: any): void {
   registerJob('uber_collection',    'Uber Collection',       '30 9 1 * *',      'invoices');
   registerJob('fossa_email',        'Fossa Email',           '30 7 * * 1',      'secretary');
   registerJob('conflict_detection', 'Conflict Detection',    '30 19 * * *',     'secretary');
+  registerJob('secretary_agenda_sync', 'Secretary Agenda → Calendar Sync', '*/5 * * * *', 'secretary');
   registerJob('garmin_keepalive',   'Garmin Keep-Alive',     '*/30 * * * *',    'triathlon');
   registerJob('garmin_coach',       'Garmin Coach',          coachCron,         'triathlon');
   registerJob('garmin_tenant_isolation_watcher', 'Garmin Tenant Isolation Watcher', '45 6 * * *', 'triathlon');
@@ -996,6 +997,84 @@ export function startScheduler(bot?: any): void {
       }
     } catch (err) {
       logger.warn({ err }, 'Task sync cron failed (sync engine may not be loaded yet)');
+    }
+  }), { timezone: tz });
+
+  // ── Secretary agenda → calendar sync (every 5 min) ────────────────
+  // Closes the orphaned-selectedSlot gap: arbitrator persists an agenda item
+  // with selectedSlot but no cron previously pushed it to Google/Outlook.
+  // Per-user fan-out picks the user's connected calendar source(s) via
+  // hasConnectedCalendarForUser; runs the unified-calendar adapter against
+  // the agenda store. Wave 1 batch cap is 50 items/user/run with the
+  // existing provider_sync_state state machine (see
+  // secretary-agenda-provider-sync.ts:97 for the state enum). Outlook
+  // rate limits aggressively, so retry budget is per-item not per-tick.
+  // Wave 2 escalation: raise to */15 + isCronJobEnabled gate if 429s spike.
+  cron.schedule('*/5 * * * *', wrapJob('secretary_agenda_sync', async () => {
+    try {
+      const { syncSecretaryAgendaItemsToProvider } = require('./secretary-agenda-provider-sync');
+      const { createUnifiedCalendarSecretaryProviderAdapter } = require('./secretary-unified-calendar-provider-adapter');
+      const googleCal = require('./google-calendar');
+      const outlookCal = require('./outlook-calendar');
+      const users = getActiveUserIds();
+      if (users.length === 0) return 'skipped';
+
+      const PER_USER_CAP = 50;
+      const CONCURRENCY = 4;
+      let syncedTotal = 0;
+      let readbackFailedTotal = 0;
+
+      // Per-user fan-out with bounded concurrency. Outlook + Google rate-limit
+      // at the request layer (429 with Retry-After), so we keep concurrency low.
+      // Each user's failure is isolated by the inner try/catch.
+      for (let i = 0; i < users.length; i += CONCURRENCY) {
+        const batch = users.slice(i, i + CONCURRENCY);
+        const settled = await Promise.allSettled(
+          batch.map(async (userId) => {
+            const sources: Array<'google' | 'outlook'> = [];
+            if (googleCal.isGoogleCalendarConfigured(userId)) sources.push('google');
+            if (outlookCal.isOutlookCalendarConfigured(userId)) sources.push('outlook');
+            if (sources.length === 0) return { userId, synced: 0, readbackFailed: 0, skipped: true };
+
+            let userSynced = 0;
+            let userReadbackFailed = 0;
+            for (const source of sources) {
+              try {
+                const adapter = createUnifiedCalendarSecretaryProviderAdapter(source);
+                const results = await syncSecretaryAgendaItemsToProvider(
+                  { ownerUserId: userId, tenantId: userId, includeInactive: false },
+                  adapter,
+                );
+                // Bound the work this tick: take at most PER_USER_CAP results.
+                // Remaining items will be picked up next tick because
+                // `provider_sync_state` filtering inside the sync function
+                // already short-circuits already-synced rows.
+                const bounded = results.slice(0, PER_USER_CAP);
+                for (const r of bounded) {
+                  if (r.providerSyncState === 'synced') userSynced += 1;
+                  if (r.providerSyncState === 'readback_failed') userReadbackFailed += 1;
+                }
+              } catch (err) {
+                logger.warn({ err, userId, source }, '[scheduler] secretary_agenda_sync per-user/source failure');
+              }
+            }
+            return { userId, synced: userSynced, readbackFailed: userReadbackFailed };
+          }),
+        );
+        for (const s of settled) {
+          if (s.status === 'fulfilled' && !s.value.skipped) {
+            syncedTotal += s.value.synced;
+            readbackFailedTotal += s.value.readbackFailed;
+          } else if (s.status === 'rejected') {
+            logger.warn({ reason: s.reason }, '[scheduler] secretary_agenda_sync batch rejection');
+          }
+        }
+      }
+      if (syncedTotal > 0 || readbackFailedTotal > 0) {
+        logger.info({ syncedTotal, readbackFailedTotal, userCount: users.length }, '[scheduler] secretary_agenda_sync complete');
+      }
+    } catch (err) {
+      logger.warn({ err }, '[scheduler] secretary_agenda_sync cron failed');
     }
   }), { timezone: tz });
 

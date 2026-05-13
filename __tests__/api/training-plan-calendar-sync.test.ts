@@ -18,6 +18,7 @@ const mocks = vi.hoisted(() => ({
   findReusableOwnershipBySessionIdentity: vi.fn(),
   recordCalendarOwnership: vi.fn(),
   markCalendarOwnershipDeleted: vi.fn(),
+  previewSecretarySchedulingIntent: vi.fn(),
   submitSecretarySchedulingIntent: vi.fn(),
   loggerDebug: vi.fn(),
   loggerInfo: vi.fn(),
@@ -57,6 +58,7 @@ vi.mock('../../src/services/training-plan-lifecycle', () => ({
 }));
 
 vi.mock('../../src/services/secretary-scheduling-arbitrator', () => ({
+  previewSecretarySchedulingIntent: (...args: unknown[]) => mocks.previewSecretarySchedulingIntent(...args),
   submitSecretarySchedulingIntent: (...args: unknown[]) => mocks.submitSecretarySchedulingIntent(...args),
 }));
 
@@ -146,6 +148,17 @@ describe('training-plan-calendar-sync', () => {
     mocks.findReusableOwnershipBySessionIdentity.mockReturnValue(null);
     mocks.recordCalendarOwnership.mockReturnValue({ ok: true, created: true, ownershipId: 99 });
     mocks.markCalendarOwnershipDeleted.mockReturnValue({ ok: true, rowsAffected: 1 });
+    mocks.previewSecretarySchedulingIntent.mockImplementation((intent: any) => ({
+      status: 'scheduled',
+      reasonCodes: ['scheduled_in_available_window'],
+      recommendedSlot: intent.preferredWindows[0],
+      alternatives: [],
+      confidence: 'high',
+      wouldReflow: false,
+      wouldCompress: false,
+      reasoningTrail: [],
+      noPersist: true,
+    }));
     mocks.submitSecretarySchedulingIntent.mockImplementation((intent: any) => ({
       status: 'scheduled',
       reasonCodes: ['scheduled_in_available_window'],
@@ -338,7 +351,7 @@ describe('training-plan-calendar-sync', () => {
     expect(mocks.deleteEvent).toHaveBeenCalledWith('evt-old-google', 'google', 42);
   });
 
-  it('submits Secretary scheduling intent before creating a legacy calendar event and uses the selected slot', async () => {
+  it('previews then submits Secretary scheduling intent before creating a legacy calendar event and uses the selected slot', async () => {
     mocks.getActivePlan.mockReturnValue({
       id: 44,
       user_id: 12,
@@ -363,6 +376,22 @@ describe('training-plan-calendar-sync', () => {
     }]);
     mocks.createEvent.mockResolvedValueOnce({ id: 'evt-tempo', source: 'google' });
     mocks.getPlanVersion.mockReturnValue(2);
+    mocks.previewSecretarySchedulingIntent.mockImplementationOnce((intent: any) => ({
+      status: 'scheduled',
+      reasonCodes: ['scheduled_in_available_window'],
+      recommendedSlot: {
+        start: '2026-05-04T13:00:00.000Z',
+        end: '2026-05-04T13:45:00.000Z',
+        label: 'secretary-adjusted-slot',
+        hard: true,
+      },
+      alternatives: [],
+      confidence: 'high',
+      wouldReflow: false,
+      wouldCompress: false,
+      reasoningTrail: [],
+      noPersist: true,
+    }));
     mocks.submitSecretarySchedulingIntent.mockImplementationOnce((intent: any) => ({
       status: 'scheduled',
       reasonCodes: ['scheduled_in_available_window'],
@@ -402,7 +431,7 @@ describe('training-plan-calendar-sync', () => {
       expect(result.data.eventsCreated).toBe(1);
       expect(result.data.sessionsFailed).toBe(0);
     }
-    expect(mocks.submitSecretarySchedulingIntent).toHaveBeenCalledWith(
+    expect(mocks.previewSecretarySchedulingIntent).toHaveBeenCalledWith(
       expect.objectContaining({
         intentId: 'training:44:2:321',
         sourceSkill: 'training',
@@ -415,6 +444,12 @@ describe('training-plan-calendar-sync', () => {
       }),
       expect.objectContaining({ now: '2026-05-01T00:00:00.000Z' }),
     );
+    expect(mocks.submitSecretarySchedulingIntent).toHaveBeenCalledWith(
+      expect.objectContaining({ intentId: 'training:44:2:321' }),
+      expect.objectContaining({ now: '2026-05-01T00:00:00.000Z' }),
+    );
+    expect(mocks.previewSecretarySchedulingIntent.mock.invocationCallOrder[0])
+      .toBeLessThan(mocks.submitSecretarySchedulingIntent.mock.invocationCallOrder[0]);
     expect(mocks.submitSecretarySchedulingIntent.mock.invocationCallOrder[0])
       .toBeLessThan(mocks.createEvent.mock.invocationCallOrder[0]);
     expect(mocks.createEvent).toHaveBeenCalledWith(
@@ -449,17 +484,16 @@ describe('training-plan-calendar-sync', () => {
       calendar_source: null,
       description: '',
     }]);
-    mocks.submitSecretarySchedulingIntent.mockReturnValueOnce({
+    mocks.previewSecretarySchedulingIntent.mockReturnValueOnce({
       status: 'unscheduled',
       reasonCodes: ['no_valid_slot'],
-      selectedSlot: null,
-      agendaItem: { agendaItemId: 'sec-421', lifecycleState: 'unscheduled' },
-      explanation: 'No valid slot',
-      alternativeSlots: [],
-      conflicts: ['calendar_conflict'],
-      downstreamImplications: [],
+      recommendedSlot: null,
+      alternatives: [],
       confidence: 'medium',
-      feedback: {},
+      wouldReflow: false,
+      wouldCompress: false,
+      reasoningTrail: [],
+      noPersist: true,
     });
 
     const result = await syncTrainingPlanCalendar(12, new Date('2026-05-01T00:00:00.000Z'));
@@ -470,6 +504,7 @@ describe('training-plan-calendar-sync', () => {
       expect(result.data.sessionsFailed).toBe(1);
     }
     expect(mocks.createEvent).not.toHaveBeenCalled();
+    expect(mocks.submitSecretarySchedulingIntent).not.toHaveBeenCalled();
     expect(mocks.updateSession).toHaveBeenCalledWith(421, {
       status: 'unscheduled',
       calendar_event_id: null,
