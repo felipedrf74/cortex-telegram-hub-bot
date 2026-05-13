@@ -88,8 +88,15 @@ describe('C1: previewSecretarySchedulingIntent', () => {
       tenantId: TENANT_ID,
       includeInactive: false,
     });
-    // Active items only (excludes 'canceled'/'superseded'); preview must be cleaned up
+    // Active items only (excludes 'canceled'/'superseded'); preview must be clean.
     expect(items.length).toBe(0);
+    const allItems = listSecretaryAgendaItems({
+      ownerUserId: OWNER_USER_ID,
+      tenantId: TENANT_ID,
+      includeInactive: true,
+    });
+    // C1 hardening: preview is now truly non-persisting, not write-then-cancel.
+    expect(allItems.length).toBe(0);
   });
 
   it('preview-then-submit produces exactly ONE active persisted agenda item', () => {

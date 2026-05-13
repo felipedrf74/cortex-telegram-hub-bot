@@ -24,6 +24,8 @@ import { logger } from '../utils/logger';
 import { cancelRemindersForAgendaItem } from '../state/reminders';
 import { filterKnownReasonCodes, type SecretaryReasonCode } from './secretary-reason-codes';
 import { emitSecretaryFeedback } from './secretary-feedback-bus';
+import './training-secretary-feedback-consumer';
+import './secretary-source-skill-feedback-consumers';
 
 export type SecretarySourceSkill = 'secretary' | 'training' | 'cooking' | 'finance' | 'content';
 
@@ -206,6 +208,9 @@ export interface SecretarySourceSkillFeedback {
   sourceSkill: SecretarySourceSkill;
   sourceIntentId: string;
   agendaItemId: string;
+  ownerUserId: number;
+  tenantId: string;
+  agendaVersion: number;
   status: SecretarySchedulingDecisionStatus;
   reasonCodes: SecretaryReasonCode[];
   scheduledStart: string | null;
@@ -295,6 +300,8 @@ export interface SecretarySchedulingOptions {
   now?: string;
 }
 
+type SecretaryScheduleMode = 'persist' | 'preview';
+
 type NormalizedWindow = {
   startMs: number;
   endMs: number;
@@ -377,27 +384,11 @@ export function previewSecretarySchedulingIntent(
   options: SecretarySchedulingOptions = {},
 ): SecretarySchedulingPreview {
   ensureSecretaryAgendaDecisionExplanationColumn();
-  // Use the canonical scheduleOne machinery; the preview marker is
-  // attached after the fact. No `persist=false` branch inside scheduleOne
-  // because that would entangle persistence concerns with the hot
-  // arbitration path — instead we materialize a decision and discard the
-  // persisted agenda item via the existing rollback path.
-  const previewIntent: SecretarySchedulingIntent = {
-    ...intent,
-    intentId: `__preview__:${intent.intentId}:${Date.now()}`,
-  };
-  const decision = scheduleOne(previewIntent, options, []);
-  // Soft-cleanup: mark the synthetic agenda item as cancelled so it
-  // doesn't surface in lists. The agendaItemId is keyed on intentId so
-  // the preview's row cannot collide with a real submit later.
-  try {
-    const db = getDb();
-    db.prepare(
-      "UPDATE secretary_agenda_items SET lifecycle_state = 'canceled' WHERE agenda_item_id = ?",
-    ).run(decision.agendaItem.agendaItemId);
-  } catch (err) {
-    logger.warn({ err, agendaItemId: decision.agendaItem.agendaItemId }, '[secretary-arbitrator] preview cleanup failed');
-  }
+  // Use the canonical scheduleOne machinery in read-only preview mode. The
+  // decision is fully shaped (including feedback/trail), but no agenda row is
+  // inserted, superseded, or canceled. Preview is a hint; submit remains the
+  // contract.
+  const decision = scheduleOne(intent, options, [], 'preview');
   return {
     status: decision.status,
     recommendedSlot: decision.selectedSlot,
@@ -532,6 +523,7 @@ function scheduleOne(
   intent: SecretarySchedulingIntent,
   options: SecretarySchedulingOptions,
   acceptedBusyWindows: SecretaryTimeWindow[],
+  mode: SecretaryScheduleMode = 'persist',
 ): SecretarySchedulingDecision {
   const nowIso = normalizeNow(options.now);
   // W-E: collect reasoning breadcrumbs as we go. Privacy-safe — only
@@ -561,6 +553,7 @@ function scheduleOne(
       conflicts: [],
       downstreamImplications: downstreamFor(intent, validation.includes('missing_duration') ? 'needs_more_context' : 'rejected'),
       reasoningTrail: trail,
+      persist: mode === 'persist',
     });
   }
 
@@ -632,6 +625,7 @@ function scheduleOne(
       latest,
       sourceShapeHash,
       reasoningTrail: trail,
+      persist: mode === 'persist',
     });
   }
 
@@ -669,6 +663,7 @@ function scheduleOne(
         latest,
         sourceShapeHash,
         reasoningTrail: trail,
+        persist: mode === 'persist',
       });
     }
   }
@@ -701,6 +696,7 @@ function scheduleOne(
     latest,
     sourceShapeHash,
     reasoningTrail: trail,
+    persist: mode === 'persist',
   });
 }
 
@@ -722,15 +718,22 @@ function persistDecision(input: {
    * `capReasoningTrail` before persistence so row width stays bounded.
    */
   reasoningTrail?: ReasoningTrailNode[];
+  /**
+   * C1 preview mode: build the same decision shape without writing or
+   * superseding `secretary_agenda_items`.
+   */
+  persist?: boolean;
 }): SecretarySchedulingDecision {
   const db = getDb();
   const tenantId = normalizeTenantId(input.intent.tenantId);
   const latest = input.latest ?? findLatestAgendaItemForIntent(input.intent);
   const sourceShapeHash = input.sourceShapeHash ?? computeSourceShapeHash(input.intent);
   const cappedTrail = capReasoningTrail(input.reasoningTrail ?? []);
+  const shouldPersist = input.persist !== false;
 
   if (
-    latest
+    shouldPersist
+    && latest
     && latest.sourceShapeHash === sourceShapeHash
     && latest.lifecycleState !== 'superseded'
     && agendaSlotMatches(latest, input.selectedSlot)
@@ -739,6 +742,10 @@ function persistDecision(input: {
       input.intent, latest, input.status, input.reasonCodes, input.explanation,
       input.conflicts, input.downstreamImplications, cappedTrail,
     );
+  }
+
+  if (!shouldPersist) {
+    return decisionFromPreview(input, sourceShapeHash, cappedTrail, latest);
   }
 
   const version = latest ? latest.version + 1 : 1;
@@ -828,6 +835,78 @@ function persistDecision(input: {
     confidence: confidenceFor(input.status, input.reasonCodes),
     feedback: buildFeedback(input.intent, agendaItem, input.status, input.reasonCodes, input.downstreamImplications),
     reasoningTrail: cappedTrail,
+  };
+}
+
+function decisionFromPreview(
+  input: {
+    intent: SecretarySchedulingIntent;
+    nowIso: string;
+    status: SecretarySchedulingDecisionStatus;
+    lifecycleState: SecretaryAgendaLifecycleState;
+    reasonCodes: SecretaryReasonCode[];
+    explanation: string;
+    selectedSlot: SecretaryTimeWindow | null;
+    alternativeSlots: SecretaryTimeWindow[];
+    conflicts: string[];
+    downstreamImplications: string[];
+  },
+  sourceShapeHash: string,
+  reasoningTrail: ReasoningTrailNode[],
+  latest: SecretaryAgendaItem | null,
+): SecretarySchedulingDecision {
+  const startAt = input.selectedSlot?.start ?? null;
+  const endAt = input.selectedSlot?.end ?? null;
+  const durationMinutes = input.selectedSlot
+    ? minutesBetween(input.selectedSlot.start, input.selectedSlot.end)
+    : input.intent.requestedDurationMinutes != null
+      ? Math.round(Number(input.intent.requestedDurationMinutes))
+      : null;
+  const agendaItem: SecretaryAgendaItem = {
+    agendaItemId: `sec_preview_${sha256(`${input.intent.ownerUserId}:${normalizeTenantId(input.intent.tenantId)}:${input.intent.sourceSkill}:${input.intent.intentId}:${sourceShapeHash}`).slice(0, 24)}`,
+    sourceIntentId: input.intent.intentId,
+    sourceSkill: input.intent.sourceSkill,
+    sourceAction: input.intent.sourceAction ?? null,
+    intentAction: input.intent.action ?? defaultActionForStatus(input.status),
+    sourceEntityId: input.intent.sourceEntityId != null ? String(input.intent.sourceEntityId) : null,
+    sourceEntityType: input.intent.sourceEntityType ?? null,
+    ownerUserId: input.intent.ownerUserId,
+    tenantId: normalizeTenantId(input.intent.tenantId),
+    lifecycleState: input.lifecycleState,
+    providerSyncState: 'not_synced',
+    providerEventId: null,
+    providerSource: null,
+    version: latest ? latest.version + 1 : 1,
+    title: input.intent.title.trim(),
+    startAt,
+    endAt,
+    durationMinutes,
+    decisionAction: input.status,
+    decisionReasonCodes: [...input.reasonCodes],
+    decisionExplanation: input.explanation,
+    sourceShapeHash,
+    scheduledSegments: decisionScheduledSegments(input.selectedSlot, input.alternativeSlots),
+    cancellationReason: null,
+    supersededByAgendaItemId: null,
+    createdAt: input.nowIso,
+    updatedAt: input.nowIso,
+    completedAt: null,
+    sourceCreatedAt: input.intent.createdAt ?? null,
+    sourceUpdatedAt: input.intent.updatedAt ?? null,
+    reasoningTrail,
+  };
+  return {
+    status: input.status,
+    agendaItem,
+    reasonCodes: input.reasonCodes,
+    explanation: input.explanation,
+    selectedSlot: input.selectedSlot,
+    alternativeSlots: input.alternativeSlots,
+    conflicts: input.conflicts,
+    downstreamImplications: input.downstreamImplications,
+    confidence: confidenceFor(input.status, input.reasonCodes),
+    feedback: buildFeedback(input.intent, agendaItem, input.status, input.reasonCodes, input.downstreamImplications),
+    reasoningTrail,
   };
 }
 
@@ -1236,6 +1315,9 @@ function buildFeedback(
     sourceSkill: intent.sourceSkill,
     sourceIntentId: intent.intentId,
     agendaItemId: agendaItem.agendaItemId,
+    ownerUserId: agendaItem.ownerUserId,
+    tenantId: agendaItem.tenantId,
+    agendaVersion: agendaItem.version,
     status,
     reasonCodes: [...reasonCodes],
     scheduledStart: agendaItem.startAt,

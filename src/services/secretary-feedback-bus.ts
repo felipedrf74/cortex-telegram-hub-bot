@@ -22,14 +22,14 @@ import type {
  * arbitrator calls `emitSecretaryFeedback` after persist; each consumer
  * runs in a try/catch so one bad handler never breaks arbitration.
  *
- * Wave 1 consumers (in scope, separate commits):
+ * Wave 1 consumers:
  * - Training (writes "compressed_session +recovery_debt" hint into the
  *   training_feedback_decisions table)
  *
- * Wave 2 consumers (deferred):
- * - Cooking (workflow context update for compressed prep blocks)
- * - Finance (telemetry only, no UI surface yet)
- * - Content (publish window adjustments)
+ * Wave 2 consumers:
+ * - Cooking / Finance / Content persist compact, tenant-scoped feedback in
+ *   secretary_source_skill_feedback so their next deterministic read/model
+ *   pass can refresh user-facing copy without reparsing agenda rows.
  *
  * Idempotency: handlers receive `(agendaItemId, version)` as part of the
  * feedback shape; consumers dedupe by `(agendaItemId, sourceIntentId)`.
