@@ -23,6 +23,7 @@ import { getDb } from './database';
 import { logger } from '../utils/logger';
 import { cancelRemindersForAgendaItem } from '../state/reminders';
 import { filterKnownReasonCodes, type SecretaryReasonCode } from './secretary-reason-codes';
+import { emitSecretaryFeedback } from './secretary-feedback-bus';
 
 export type SecretarySourceSkill = 'secretary' | 'training' | 'cooking' | 'finance' | 'content';
 
@@ -263,7 +264,11 @@ export function submitSecretarySchedulingIntent(
   options: SecretarySchedulingOptions = {},
 ): SecretarySchedulingDecision {
   ensureSecretaryAgendaDecisionExplanationColumn();
-  return scheduleOne(intent, options, []);
+  const decision = scheduleOne(intent, options, []);
+  // W-B: emit feedback to registered consumers. Synchronous emit; bad
+  // consumers are caught inside the bus so arbitration is never blocked.
+  emitSecretaryFeedback(decision.feedback);
+  return decision;
 }
 
 /**
@@ -345,6 +350,9 @@ export function arbitrateSecretarySchedulingIntents(
     if (decision.selectedSlot && ['scheduled', 'reflowed', 'compressed'].includes(decision.status)) {
       acceptedBusyWindows.push(decision.selectedSlot);
     }
+    // W-B: emit feedback per decision (not at end of batch) so consumers
+    // can react incrementally if needed.
+    emitSecretaryFeedback(decision.feedback);
   }
 
   const feedbackBySourceSkill = buildFeedbackBySourceSkill(decisions);
