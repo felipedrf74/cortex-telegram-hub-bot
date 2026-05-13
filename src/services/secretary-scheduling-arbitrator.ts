@@ -77,6 +77,22 @@ export interface SecretaryTimeWindow {
   hard?: boolean;
 }
 
+/**
+ * Training goal phase used for dynamic priority weighting (C3 workstream).
+ * Matches the `BlockPhase` type from `coach-kernel/types.ts:5-12` but kept as
+ * a string union here to avoid a Secretary→coach-kernel hard dependency at
+ * the type level. Training callers should pass `inferPhase(athlete, weekStart)`
+ * from `coach-kernel/planner-engine.ts:59`.
+ */
+export type SecretaryGoalPhase =
+  | 'base'
+  | 'build'
+  | 'peak'
+  | 'taper'
+  | 'race'
+  | 'deload'
+  | 'maintenance';
+
 export interface SecretarySchedulingIntent {
   intentId: string;
   action?: SecretarySchedulingIntentAction;
@@ -104,6 +120,17 @@ export interface SecretarySchedulingIntent {
   energyCost?: number | null;
   reason?: string | null;
   context?: string | null;
+  /**
+   * Optional goal-phase signal for dynamic priority weighting (C3 workstream).
+   * When set, Secretary up-weights or down-weights the source skill's base
+   * priority during arbitration:
+   *  - training: build +2, peak +3, taper -2, race -4, deload -3 (else 0)
+   *  - other skills: 0 (signal ignored)
+   * Phase = null/undefined → boost = 0 (graceful default, no behavior change).
+   * Finance deadline boost (+18) dominates phase boost so a tax deadline
+   * still outranks Training in race week.
+   */
+  goalPhase?: SecretaryGoalPhase | null;
   createdAt?: string;
   updatedAt?: string;
 }
@@ -830,7 +857,34 @@ function scoreIntent(intent: SecretarySchedulingIntent): number {
           : 45;
   const deadlineBoost = intent.deadline && Number.isFinite(Date.parse(intent.deadline)) ? 18 : 0;
   const fixedBoost = intent.flexibility === 'fixed' ? 8 : 0;
-  return base + SKILL_PRIORITY_WEIGHT[intent.sourceSkill] + deadlineBoost + fixedBoost;
+  const phaseBoost = phaseBoostFor(intent.sourceSkill, intent.goalPhase ?? null);
+  return base + SKILL_PRIORITY_WEIGHT[intent.sourceSkill] + deadlineBoost + fixedBoost + phaseBoost;
+}
+
+/**
+ * Dynamic priority phase boost (C3 workstream).
+ *
+ * Training is the only skill that adapts to goal phase today; other skills
+ * pass `goalPhase` through harmlessly with a 0 boost. Finance's deadline
+ * boost (+18) remains the dominant signal so a tax deadline still outranks
+ * Training even in race week (race phase = -4 + base 12 = 8 < Finance 16).
+ *
+ * Phase = null/undefined → 0 (graceful default; pre-C3 behavior).
+ */
+function phaseBoostFor(sourceSkill: SecretarySourceSkill, phase: SecretaryGoalPhase | null): number {
+  if (phase == null) return 0;
+  if (sourceSkill !== 'training') return 0;
+  switch (phase) {
+    case 'build': return 2;
+    case 'peak': return 3;
+    case 'taper': return -2;
+    case 'race': return -4;
+    case 'deload': return -3;
+    case 'base':
+    case 'maintenance':
+      return 0;
+    default: return 0;
+  }
 }
 
 function priorityReasonCodes(intent: SecretarySchedulingIntent): SecretaryReasonCode[] {
