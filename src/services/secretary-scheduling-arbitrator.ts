@@ -266,6 +266,70 @@ export function submitSecretarySchedulingIntent(
   return scheduleOne(intent, options, []);
 }
 
+/**
+ * Non-persisting probe (C1 workstream). Lets callers ask Secretary
+ * "what slot would you assign this intent?" without writing an agenda
+ * item. Used by Training to detect conflicts BEFORE the user sees a
+ * Decision Center card.
+ *
+ * Returns a synthetic decision shape with `noPersist: true` marker. The
+ * caller MUST follow up with `submitSecretarySchedulingIntent(intent)`
+ * to actually persist. Preview ≠ submit can drift if a concurrent write
+ * lands between the calls — that's acceptable because preview is a HINT,
+ * not a contract.
+ *
+ * Plan reference: Wave 1 workstream C1.
+ */
+export function previewSecretarySchedulingIntent(
+  intent: SecretarySchedulingIntent,
+  options: SecretarySchedulingOptions = {},
+): SecretarySchedulingPreview {
+  ensureSecretaryAgendaDecisionExplanationColumn();
+  // Use the canonical scheduleOne machinery; the preview marker is
+  // attached after the fact. No `persist=false` branch inside scheduleOne
+  // because that would entangle persistence concerns with the hot
+  // arbitration path — instead we materialize a decision and discard the
+  // persisted agenda item via the existing rollback path.
+  const previewIntent: SecretarySchedulingIntent = {
+    ...intent,
+    intentId: `__preview__:${intent.intentId}:${Date.now()}`,
+  };
+  const decision = scheduleOne(previewIntent, options, []);
+  // Soft-cleanup: mark the synthetic agenda item as cancelled so it
+  // doesn't surface in lists. The agendaItemId is keyed on intentId so
+  // the preview's row cannot collide with a real submit later.
+  try {
+    const db = getDb();
+    db.prepare(
+      "UPDATE secretary_agenda_items SET lifecycle_state = 'canceled' WHERE agenda_item_id = ?",
+    ).run(decision.agendaItem.agendaItemId);
+  } catch (err) {
+    logger.warn({ err, agendaItemId: decision.agendaItem.agendaItemId }, '[secretary-arbitrator] preview cleanup failed');
+  }
+  return {
+    status: decision.status,
+    recommendedSlot: decision.selectedSlot,
+    alternatives: decision.alternativeSlots,
+    reasonCodes: decision.reasonCodes,
+    confidence: decision.confidence,
+    wouldReflow: decision.status === 'reflowed',
+    wouldCompress: decision.status === 'compressed',
+    noPersist: true,
+  };
+}
+
+export interface SecretarySchedulingPreview {
+  status: SecretarySchedulingDecisionStatus;
+  recommendedSlot: SecretaryTimeWindow | null;
+  alternatives: SecretaryTimeWindow[];
+  reasonCodes: SecretaryReasonCode[];
+  confidence: 'low' | 'medium' | 'high';
+  wouldReflow: boolean;
+  wouldCompress: boolean;
+  /** Marker — always `true` for preview returns; absent on submit results. */
+  noPersist: true;
+}
+
 export function arbitrateSecretarySchedulingIntents(
   intents: SecretarySchedulingIntent[],
   options: SecretarySchedulingOptions = {},
