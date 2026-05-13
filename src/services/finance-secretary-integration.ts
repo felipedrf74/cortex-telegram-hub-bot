@@ -1,9 +1,11 @@
 // Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
 
 import {
+  previewSecretarySchedulingIntent,
   submitSecretarySchedulingIntent,
   type SecretarySchedulingDecision,
   type SecretarySchedulingIntent,
+  type SecretarySchedulingPreview,
   type SecretaryTimeWindow,
 } from './secretary-scheduling-arbitrator';
 
@@ -31,6 +33,12 @@ export function submitFinanceSchedulingIntent(
   input: FinanceSecretarySchedulingInput,
 ): SecretarySchedulingDecision {
   return submitSecretarySchedulingIntent(buildFinanceSchedulingIntent(input));
+}
+
+export function previewFinanceSchedulingIntent(
+  input: FinanceSecretarySchedulingInput,
+): SecretarySchedulingPreview {
+  return previewSecretarySchedulingIntent(buildFinanceSchedulingIntent(input));
 }
 
 export function buildFinanceSchedulingIntent(
@@ -62,4 +70,3 @@ export function buildFinanceSchedulingIntent(
     updatedAt: new Date().toISOString(),
   };
 }
-

@@ -45,6 +45,7 @@ import {
   type SecretaryProviderEventInput,
 } from '../../src/services/secretary-agenda-provider-sync';
 import { getActiveReminders, setReminder } from '../../src/state/reminders';
+import { logger } from '../../src/utils/logger';
 
 const TENANT_ID = 'tenant-calendar-lifecycle';
 const OWNER_USER_ID = 74;
@@ -65,11 +66,15 @@ class MockSecretaryProvider implements SecretaryAgendaProviderAdapter {
   updateInputs: Array<{ eventId: string; input: SecretaryProviderEventInput }> = [];
   deletedEventIds: string[] = [];
   createFailuresRemaining = 0;
+  createAttempts = 0;
+  createFailureFactory: (() => unknown) | null = null;
   private sequence = 1;
 
   async createEvent(input: SecretaryProviderEventInput): Promise<SecretaryProviderEvent> {
+    this.createAttempts += 1;
     if (this.createFailuresRemaining > 0) {
       this.createFailuresRemaining -= 1;
+      if (this.createFailureFactory) throw this.createFailureFactory();
       throw new Error('simulated provider create failure');
     }
     this.createInputs.push(input);
@@ -357,6 +362,51 @@ describe('secretary-agenda-provider-sync', () => {
     expect(provider.createInputs).toHaveLength(1);
     expect(stored?.providerSyncState).toBe('synced');
     expect(stored?.lifecycleState).toBe('synced');
+  });
+
+  it('bulk sync uses an explicit retry budget and honors Retry-After for transient failures', async () => {
+    const provider = new MockSecretaryProvider();
+    provider.createFailuresRemaining = 1;
+    provider.createFailureFactory = () => ({
+      response: {
+        headers: {
+          'retry-after': '0',
+        },
+      },
+    });
+    const decision = submitSecretarySchedulingIntent(intent({
+      intentId: 'bulk-retry-after',
+      sourceEntityId: 'session-bulk-retry',
+    }));
+
+    const results = await syncSecretaryAgendaItemsToProvider({
+      ownerUserId: OWNER_USER_ID,
+      tenantId: TENANT_ID,
+      includeInactive: false,
+    }, provider);
+    const stored = getSecretaryAgendaItemById({
+      agendaItemId: decision.agendaItem.agendaItemId,
+      ownerUserId: OWNER_USER_ID,
+      tenantId: TENANT_ID,
+    });
+
+    expect(results).toHaveLength(1);
+    expect(results[0]).toMatchObject({
+      action: 'created',
+      providerSyncState: 'synced',
+    });
+    expect(provider.createAttempts).toBe(2);
+    expect(provider.createInputs).toHaveLength(1);
+    expect(stored?.providerSyncState).toBe('synced');
+    expect(logger.warn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        agendaItemId: decision.agendaItem.agendaItemId,
+        providerSource: 'google',
+        retryBudget: 2,
+        delayMs: 0,
+      }),
+      'Secretary agenda provider sync retrying after transient failure',
+    );
   });
 
   it('marks provider sync failures as failed_sync and keeps them retryable', async () => {

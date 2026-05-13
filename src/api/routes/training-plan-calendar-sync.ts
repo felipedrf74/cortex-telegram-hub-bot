@@ -26,8 +26,10 @@ import {
   parseTrainingIdentityMarker,
 } from '../../services/training-session-identity';
 import {
+  previewSecretarySchedulingIntent,
   submitSecretarySchedulingIntent,
   type SecretarySchedulingDecision,
+  type SecretarySchedulingPreview,
   type SecretarySchedulingIntent,
 } from '../../services/secretary-scheduling-arbitrator';
 import {
@@ -554,18 +556,38 @@ export async function syncTrainingPlanCalendar(
     }
     let secretaryWindow: { start: string; end: string } | null = null;
     try {
-      const secretaryDecision = submitSecretarySchedulingIntent(
-        buildTrainingSyncSecretaryIntent({
-          userId,
-          tenantId: Number((plan as any).tenant_id ?? userId),
-          planId: plan.id,
-          planVersion,
-          item,
-          start: window.start,
-          end: window.end,
-        }),
-        { now: now.toISOString() },
-      );
+      const secretaryIntent = buildTrainingSyncSecretaryIntent({
+        userId,
+        tenantId: Number((plan as any).tenant_id ?? userId),
+        planId: plan.id,
+        planVersion,
+        item,
+        start: window.start,
+        end: window.end,
+      });
+      const secretaryPreview = previewSecretarySchedulingIntent(secretaryIntent, { now: now.toISOString() });
+      const previewWindow = selectedTrainingSyncSecretaryWindow(secretaryPreview);
+      if (!previewWindow) {
+        trainingPlans.updateSession(item.sessionId, {
+          status: 'unscheduled',
+          calendar_event_id: null,
+          calendar_source: null,
+        });
+        sessionsFailed += 1;
+        logger.warn(
+          {
+            userId,
+            planId: plan.id,
+            planVersion,
+            sessionId: item.sessionId,
+            secretaryStatus: secretaryPreview.status,
+            reasonCodes: secretaryPreview.reasonCodes,
+          },
+          'syncTrainingPlanCalendar: Secretary preview did not return a schedulable Training slot',
+        );
+        continue;
+      }
+      const secretaryDecision = submitSecretarySchedulingIntent(secretaryIntent, { now: now.toISOString() });
       secretaryWindow = selectedTrainingSyncSecretaryWindow(secretaryDecision);
       if (!secretaryWindow) {
         trainingPlans.updateSession(item.sessionId, {
@@ -836,10 +858,11 @@ function buildTrainingSyncSecretaryIntent(input: {
   };
 }
 
-function selectedTrainingSyncSecretaryWindow(decision: SecretarySchedulingDecision): { start: string; end: string } | null {
+function selectedTrainingSyncSecretaryWindow(decision: SecretarySchedulingDecision | SecretarySchedulingPreview): { start: string; end: string } | null {
   if (!['scheduled', 'reflowed', 'compressed'].includes(decision.status)) return null;
-  if (!decision.selectedSlot?.start || !decision.selectedSlot?.end) return null;
-  return { start: decision.selectedSlot.start, end: decision.selectedSlot.end };
+  const slot = 'selectedSlot' in decision ? decision.selectedSlot : decision.recommendedSlot;
+  if (!slot?.start || !slot?.end) return null;
+  return { start: slot.start, end: slot.end };
 }
 
 function consumeMatchingExistingTrainingEvent(

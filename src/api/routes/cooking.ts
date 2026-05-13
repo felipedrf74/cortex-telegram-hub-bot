@@ -77,7 +77,10 @@ import {
 import { createEvent as createCalendarEvent, isAnyCalendarConfigured } from '../../services/unified-calendar';
 import { getActivePlans, getCurrentWeek, getSessionsForWeek, getWeeksForPlan, type TrainingSession } from '../../services/training-plans';
 import { invalidateCookingDerivedCaches } from '../../services/cache-coherence-registry';
-import { submitCookingMealPrepSchedulingIntent } from '../../services/cooking-secretary-integration';
+import {
+  previewCookingMealPrepSchedulingIntent,
+  submitCookingMealPrepSchedulingIntent,
+} from '../../services/cooking-secretary-integration';
 import { runOutboxTransaction } from '../../services/event-outbox';
 import { consumeResourceBudget } from '../../services/resource-budgets';
 import { createNotificationIntent } from '../../services/notification-orchestrator';
@@ -1334,7 +1337,7 @@ export function cookingRoutes(): Router {
       // offset works correctly.
       const startIso = startDt.toISO() || startDt.toFormat("yyyy-LL-dd'T'HH:mm:ss");
       const endIso = endDt.toISO() || endDt.toFormat("yyyy-LL-dd'T'HH:mm:ss");
-      const secretaryDecision = submitCookingMealPrepSchedulingIntent({
+      const secretaryInput = {
         userId,
         tenantId: tenantId ?? userId,
         week,
@@ -1343,7 +1346,20 @@ export function cookingRoutes(): Router {
         endIso,
         durationMinutes: duration,
         mealCount: meals.length,
-      });
+      };
+      const secretaryPreview = previewCookingMealPrepSchedulingIntent(secretaryInput);
+      if (!['scheduled', 'reflowed', 'compressed'].includes(secretaryPreview.status) || !secretaryPreview.recommendedSlot) {
+        sendError(
+          res,
+          'COOKING_PREP_NO_VALID_SLOT',
+          'Secretary could not find a valid meal prep slot.',
+          409,
+          { reasonCodes: secretaryPreview.reasonCodes },
+        );
+        return;
+      }
+
+      const secretaryDecision = submitCookingMealPrepSchedulingIntent(secretaryInput);
       if (!['scheduled', 'reflowed', 'compressed'].includes(secretaryDecision.status) || !secretaryDecision.selectedSlot) {
         sendError(
           res,
