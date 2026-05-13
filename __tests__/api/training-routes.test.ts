@@ -1118,7 +1118,7 @@ describe('Training API routes', () => {
         intensityPct: 70,
         sessions: [
           {
-            dayOfWeek: 'Monday',
+            dayOfWeek: 'Wednesday',
             sessionType: 'run',
             title: 'Base Run',
             durationMinutes: 50,
@@ -1151,7 +1151,7 @@ describe('Training API routes', () => {
 
   it('schedules same-day run and gym sessions at separate preferred times', async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
-    vi.setSystemTime(new Date('2026-04-12T12:00:00.000Z'));
+    vi.setSystemTime(new Date('2026-04-15T06:00:00.000Z'));
 
     mockGetProfile.mockImplementation((_userId: number, profile: string) => {
       if (profile === 'fitness') return { experienceLevel: 'Intermediate', available_equipment: 'Full gym' };
@@ -1165,7 +1165,7 @@ describe('Training API routes', () => {
         intensityPct: 70,
         sessions: [
           {
-            dayOfWeek: 'Monday',
+            dayOfWeek: 'Wednesday',
             sessionType: 'run',
             title: 'Base Run',
             durationMinutes: 50,
@@ -1173,7 +1173,7 @@ describe('Training API routes', () => {
             exercises: [],
           },
           {
-            dayOfWeek: 'Monday',
+            dayOfWeek: 'Wednesday',
             sessionType: 'gym',
             title: 'Runner Strength',
             durationMinutes: 40,
@@ -1406,6 +1406,9 @@ describe('Training API routes', () => {
       sessionsPerWeek: 5,
       strengthSessionsPerWeek: 1,
       preferredTime: '07:00',
+      goalMode: 'event_based',
+      trainingPriority: 'running',
+      raceDate: '2026-10-18',
     });
 
     expect(res.statusCode).toBe(201);
@@ -1415,6 +1418,9 @@ describe('Training API routes', () => {
       sessionsPerWeek: 5,
       strengthSessionsPerWeek: 1,
       preferredTime: '07:00',
+      goalMode: 'event_based',
+      trainingPriority: 'running',
+      raceDate: '2026-10-18',
     }));
     expect(mockGetEvents).toHaveBeenCalledWith(expect.any(String), expect.any(String), 12);
 

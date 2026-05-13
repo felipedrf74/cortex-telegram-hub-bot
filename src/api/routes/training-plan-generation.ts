@@ -229,10 +229,11 @@ export async function generateTrainingPlanForUser(
   const normalizedGoalMode = normalizeGoalMode(goalMode);
   const normalizedTrainingPriority = normalizeTrainingPriority(trainingPriority);
   const normalizedRaceDate = normalizeIsoDate(raceDate);
-  const runProfileForPlan = normalizedRaceDate
+  const effectiveRaceDate = normalizedRaceDate ?? resolveProfileRaceDate(runProfile);
+  const runProfileForPlan = effectiveRaceDate
     ? {
         ...(runProfile ?? {}),
-        target_race_date: normalizedRaceDate,
+        target_race_date: effectiveRaceDate,
         target_race: typeof runProfile?.target_race === 'string' && runProfile.target_race.trim()
           ? runProfile.target_race
           : objective,
@@ -391,7 +392,7 @@ export async function generateTrainingPlanForUser(
         notes: typeof notes === 'string' ? notes.trim() : null,
         goalMode: normalizedGoalMode,
         trainingPriority: normalizedTrainingPriority,
-        raceDate: normalizedRaceDate,
+        raceDate: effectiveRaceDate,
         fitnessProfile,
         gymProfile,
         runProfile: runProfileForPlan,
@@ -423,6 +424,7 @@ export async function generateTrainingPlanForUser(
       preferredCardioTime: normalizedPreferredCardioTime,
       preferredStrengthTime: normalizedPreferredStrengthTime,
       startDate: startStr,
+      longWorkoutDay: normalizedLongWorkoutDay,
     }),
     equipmentAdaptation,
   );
@@ -449,8 +451,8 @@ export async function generateTrainingPlanForUser(
         ? String(fitnessProfile.available_equipment).toLowerCase().trim() || undefined
         : undefined;
   const raceDateForLint: string | null =
-    normalizedRaceDate
-      ? normalizedRaceDate
+    effectiveRaceDate
+      ? effectiveRaceDate
       : typeof runProfileForPlan?.target_race_date === 'string' && runProfileForPlan.target_race_date.trim()
       ? runProfileForPlan.target_race_date
       : null;
@@ -476,7 +478,7 @@ export async function generateTrainingPlanForUser(
       notes: notes || null,
       goalMode: normalizedGoalMode,
       trainingPriority: normalizedTrainingPriority,
-      raceDate: normalizedRaceDate,
+      raceDate: effectiveRaceDate,
       trainingCalendarSource: calendarSource || null,
     }),
     normalizedPreferredTime,
@@ -710,4 +712,12 @@ function normalizeIsoDate(raw: unknown): string | null {
   if (typeof raw !== 'string') return null;
   const trimmed = raw.trim();
   return /^\d{4}-\d{2}-\d{2}$/.test(trimmed) ? trimmed : null;
+}
+
+function resolveProfileRaceDate(profile: Record<string, any> | null | undefined): string | null {
+  if (!profile) return null;
+  return normalizeIsoDate(profile.target_race_date)
+    ?? normalizeIsoDate(profile.targetRaceDate)
+    ?? normalizeIsoDate(profile.race_date)
+    ?? normalizeIsoDate(profile.raceDate);
 }

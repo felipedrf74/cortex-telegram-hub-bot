@@ -35,7 +35,7 @@ describe('training-plan-volume-enforcement', () => {
     expect(sessions.filter((session) => session.sessionType !== 'gym').every((session) => session.preferredStartTime === '07:00')).toBe(true);
   });
 
-  it('uses a rolling seven-day window when week one starts mid-week', () => {
+  it('keeps week one anchored to the remaining calendar week when the plan starts mid-week', () => {
     const result = enforceRequestedTrainingPlanVolume(
       { sport: 'hybrid', weeks: [{ weekNumber: 1, sessions: [] }] },
       {
@@ -52,7 +52,9 @@ describe('training-plan-volume-enforcement', () => {
     expect(sessions).toHaveLength(6);
     expect(sessions.filter((session) => session.sessionType === 'gym')).toHaveLength(4);
     expect(days.has('wednesday')).toBe(true);
-    expect(days.has('monday') || days.has('tuesday')).toBe(true);
+    expect(days.has('monday')).toBe(false);
+    expect(days.has('tuesday')).toBe(false);
+    expect([...days].every((day) => ['wednesday', 'thursday', 'friday', 'saturday', 'sunday'].includes(day))).toBe(true);
   });
 
   it('preserves five requested strength sessions instead of trimming to the old four-session cap', () => {
@@ -64,6 +66,7 @@ describe('training-plan-volume-enforcement', () => {
         preferredCardioTime: '07:00',
         preferredStrengthTime: '12:00',
         startDate: '2026-04-27',
+        longWorkoutDay: 'Saturday',
       },
     );
 
@@ -74,6 +77,8 @@ describe('training-plan-volume-enforcement', () => {
     expect(sessions).toHaveLength(11);
     expect(strengthSessions).toHaveLength(5);
     expect(sessions.filter((session) => session.sessionType === 'run')).toHaveLength(6);
+    expect(new Set(sessions.map((session) => session.dayOfWeek.toLowerCase())).size).toBeLessThanOrEqual(6);
+    expect(sessions.some((session) => session.dayOfWeek.toLowerCase() === 'sunday')).toBe(false);
     expect(new Set(strengthDays).size).toBe(5);
     expect(strengthSessions.every((session) => session.preferredStartTime === '12:00')).toBe(true);
   });
@@ -140,7 +145,7 @@ describe('training-plan-volume-enforcement', () => {
     expect(new Set(strengthDays).size).toBe(strengthDays.length);
   });
 
-  it('does not compress Sunday-start plans into one overloaded day', () => {
+  it('does not wrap Sunday-start week-one plans into the prior six days', () => {
     const result = enforceRequestedTrainingPlanVolume(
       { sport: 'running', weeks: [{ weekNumber: 1, sessions: [] }] },
       {
@@ -160,9 +165,8 @@ describe('training-plan-volume-enforcement', () => {
       sessionsByDay.set(session.dayOfWeek, daySessions);
     }
 
-    expect(sessions).toHaveLength(5);
-    expect(sessions.filter((session) => session.sessionType === 'gym')).toHaveLength(2);
-    expect(sessions.filter((session) => session.sessionType === 'run')).toHaveLength(3);
+    expect(sessions).toHaveLength(2);
+    expect(sessions.every((session) => session.dayOfWeek === 'Sunday')).toBe(true);
     expect([...sessionsByDay.values()].every((daySessions) =>
       daySessions.filter((session) => session.sessionType === 'gym').length <= 1
     )).toBe(true);
