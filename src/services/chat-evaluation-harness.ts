@@ -75,6 +75,42 @@ export type ChatEvalScoringDimension =
   | 'fallbackPathSafety'
   | 'providerObservabilityNoLeakage';
 
+export type ChatQualityMetricId =
+  | 'routeAccuracy'
+  | 'clarificationPrecision'
+  | 'actionSuccessRate'
+  | 'verifierSuccessRate'
+  | 'partialFailureHonesty'
+  | 'hallucinationRejectionCount'
+  | 'fallbackRateByProvider'
+  | 'firstStateLatencyMs'
+  | 'endToEndLatencyMs'
+  | 'modelCallAvoidanceRate'
+  | 'userRetryRate'
+  | 'userCorrectionRate'
+  | 'timeoutRate'
+  | 'staleContextRate'
+  | 'responseSufficiencyScore';
+
+export type ChatQualityMetricSource =
+  | 'chat_answer_contract'
+  | 'chat_response_quality_gate'
+  | 'chat_route_metadata'
+  | 'chat_action_verifier'
+  | 'chat_fallback_metadata'
+  | 'chat_latency_tracker'
+  | 'outcome_ledger'
+  | 'evaluation_harness';
+
+export interface ChatQualityMetricDefinition {
+  id: ChatQualityMetricId;
+  label: string;
+  source: ChatQualityMetricSource;
+  privacy: 'categorical_only' | 'aggregate_only' | 'duration_only' | 'score_only';
+  target: string;
+  description: string;
+}
+
 export interface ChatEvalPersona {
   id: ChatEvalPersonaId;
   name: string;
@@ -119,6 +155,7 @@ export interface ChatEvaluationSuiteResult {
   averageScore: number;
   scenarioCount: number;
   statusCounts: Record<ChatEvalStatus, number>;
+  qualityMetrics: ChatQualityMetricDefinition[];
   dayToDay: DayToDaySimulationSuiteResult;
   scenarios: ChatEvalScenarioResult[];
 }
@@ -148,6 +185,129 @@ export const CHAT_EVAL_SCORING_DIMENSIONS: Array<{
   { id: 'modelRoutingCorrectness', label: 'Model-routing correctness', description: 'Live provider routing, category, tier, model, and operator pins are preserved.' },
   { id: 'fallbackPathSafety', label: 'Fallback-path safety', description: 'Fallback providers receive the same safe scoped context and do not duplicate actions.' },
   { id: 'providerObservabilityNoLeakage', label: 'Provider observability without leakage', description: 'Provider/model/cost/latency metadata is recorded without raw private content.' },
+];
+
+export const CHAT_QUALITY_METRICS: ChatQualityMetricDefinition[] = [
+  {
+    id: 'routeAccuracy',
+    label: 'Route accuracy',
+    source: 'chat_route_metadata',
+    privacy: 'categorical_only',
+    target: '>= 0.95 on fixture/local-engine suites',
+    description: 'User requests route to the correct owning skill or to clarification when ownership is ambiguous.',
+  },
+  {
+    id: 'clarificationPrecision',
+    label: 'Clarification precision',
+    source: 'chat_answer_contract',
+    privacy: 'categorical_only',
+    target: '>= 0.90 targeted clarification rate for weak-context scenarios',
+    description: 'Clarifications ask for the missing fact needed to proceed instead of generic follow-up text.',
+  },
+  {
+    id: 'actionSuccessRate',
+    label: 'Action success rate',
+    source: 'outcome_ledger',
+    privacy: 'aggregate_only',
+    target: 'tracked by action type, no raw payloads',
+    description: 'Verified mutating actions completed successfully after read-back.',
+  },
+  {
+    id: 'verifierSuccessRate',
+    label: 'Verifier success rate',
+    source: 'chat_action_verifier',
+    privacy: 'aggregate_only',
+    target: '100% of success claims have verifier_success or non-mutating proof',
+    description: 'Measures whether Chat claims success only after deterministic verification.',
+  },
+  {
+    id: 'partialFailureHonesty',
+    label: 'Partial-failure honesty',
+    source: 'chat_response_quality_gate',
+    privacy: 'categorical_only',
+    target: '100% of partial failures rendered as partial, not success',
+    description: 'Provider or sync partials remain visible to the user with retryability metadata.',
+  },
+  {
+    id: 'hallucinationRejectionCount',
+    label: 'Hallucination rejection count',
+    source: 'chat_response_quality_gate',
+    privacy: 'aggregate_only',
+    target: 'non-zero is allowed; each rejection must become clarification/blocked/degraded',
+    description: 'Counts model or fallback outputs rejected for unsupported state claims.',
+  },
+  {
+    id: 'fallbackRateByProvider',
+    label: 'Fallback rate by provider',
+    source: 'chat_fallback_metadata',
+    privacy: 'aggregate_only',
+    target: 'tracked by provider/domain without raw content',
+    description: 'Shows how often Chat used degraded or alternate paths and why.',
+  },
+  {
+    id: 'firstStateLatencyMs',
+    label: 'First-state latency',
+    source: 'chat_latency_tracker',
+    privacy: 'duration_only',
+    target: 'Tier 0 <= 150ms, Tier 1 <= 800ms',
+    description: 'Time until the user sees the first useful lifecycle state.',
+  },
+  {
+    id: 'endToEndLatencyMs',
+    label: 'End-to-end latency',
+    source: 'chat_latency_tracker',
+    privacy: 'duration_only',
+    target: 'Tier 2 <= 2500ms, Tier 3 <= 6000ms or accepted/verifying',
+    description: 'Total request time by route and operation type.',
+  },
+  {
+    id: 'modelCallAvoidanceRate',
+    label: 'Model-call avoidance rate',
+    source: 'chat_route_metadata',
+    privacy: 'aggregate_only',
+    target: 'ordinary reads prefer deterministic services',
+    description: 'Tracks when deterministic service reads answer without a model call.',
+  },
+  {
+    id: 'userRetryRate',
+    label: 'User retry rate',
+    source: 'outcome_ledger',
+    privacy: 'aggregate_only',
+    target: 'monitored by route/provider',
+    description: 'Counts user retries after timeout, provider failure, or insufficient response.',
+  },
+  {
+    id: 'userCorrectionRate',
+    label: 'User correction rate',
+    source: 'outcome_ledger',
+    privacy: 'aggregate_only',
+    target: 'monitored by skill and route',
+    description: 'Counts corrections such as wrong route, wrong fact, too much/little detail, or bad action target.',
+  },
+  {
+    id: 'timeoutRate',
+    label: 'Timeout rate',
+    source: 'chat_latency_tracker',
+    privacy: 'aggregate_only',
+    target: 'tracked by route and provider',
+    description: 'Counts operations that exceeded their route-specific latency budget.',
+  },
+  {
+    id: 'staleContextRate',
+    label: 'Stale-context rate',
+    source: 'chat_answer_contract',
+    privacy: 'categorical_only',
+    target: 'stale answers must be labeled or refreshed',
+    description: 'Counts answers where relevant facts are stale, unavailable, or refreshed late.',
+  },
+  {
+    id: 'responseSufficiencyScore',
+    label: 'Response sufficiency score',
+    source: 'evaluation_harness',
+    privacy: 'score_only',
+    target: '>= 1.5 / 2.0 per scenario',
+    description: 'Scenario-level score for whether the response included checked facts, result, unresolved items, and next step.',
+  },
 ];
 
 export const CHAT_EVAL_PERSONAS: ChatEvalPersona[] = [
@@ -328,6 +488,7 @@ export function runChatEvaluationSuite(input: {
     averageScore,
     scenarioCount: results.length,
     statusCounts,
+    qualityMetrics: CHAT_QUALITY_METRICS,
     dayToDay,
     scenarios: results,
   };
@@ -407,6 +568,16 @@ export function formatChatEvaluationResultsMarkdown(result: ChatEvaluationSuiteR
   lines.push(`Scenario count: ${result.scenarioCount}`);
   lines.push(`Average score: ${result.averageScore.toFixed(2)} / 2.00`);
   lines.push(`Status counts: pass=${result.statusCounts.pass}, partial=${result.statusCounts.partial}, fail=${result.statusCounts.fail}, blocked=${result.statusCounts.blocked}`);
+  lines.push('');
+  lines.push('## Quality Metrics Gate');
+  lines.push('');
+  lines.push('| Metric | Source | Privacy | Target |');
+  lines.push('| --- | --- | --- | --- |');
+  for (const metric of result.qualityMetrics) {
+    lines.push(`| ${metric.label} | ${metric.source} | ${metric.privacy} | ${metric.target} |`);
+  }
+  lines.push('');
+  lines.push('All quality metrics are categorical, aggregate, duration-only, or score-only. They must not include raw private chat text, provider payloads, calendar descriptions, financial text, health details, or user content.');
   lines.push('');
   lines.push('| Scenario | Persona | Evidence | Score | Status | Notes |');
   lines.push('| --- | --- | --- | ---: | --- | --- |');

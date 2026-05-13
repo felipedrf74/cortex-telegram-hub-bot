@@ -10,6 +10,7 @@ export const CHAT_DOMAIN_HANDLER_TIMEOUT_MS = 40_000;
 export type ChatDomainExecutionResult = {
   text: string;
   domain: DomainName;
+  metadata?: Record<string, unknown> | null;
 };
 
 export type ChatMessageResponseEnvelope = {
@@ -19,7 +20,7 @@ export type ChatMessageResponseEnvelope = {
   routeMethod: RouteResult['method'];
   confidence: number;
   buttons: InlineButton[][] | null;
-  metadata: null;
+  metadata: Record<string, unknown> | null;
   timestamp: string;
 };
 
@@ -47,12 +48,14 @@ export function buildChatHandlerResponseEnvelope({
   route,
   result,
   buttons,
+  metadata = null,
   timestamp = new Date().toISOString(),
   id = `msg-${Date.now()}`,
 }: {
   route: RouteResult;
   result: ChatDomainExecutionResult;
   buttons: InlineButton[][] | null;
+  metadata?: Record<string, unknown> | null;
   timestamp?: string;
   id?: string;
 }): ChatMessageResponseEnvelope {
@@ -63,7 +66,7 @@ export function buildChatHandlerResponseEnvelope({
     routeMethod: route.method,
     confidence: route.confidence,
     buttons,
-    metadata: null,
+    metadata,
     timestamp,
   };
 }

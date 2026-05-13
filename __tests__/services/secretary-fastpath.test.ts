@@ -20,8 +20,10 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 // ─── Mocks (must be defined BEFORE the import that uses them) ───────
 
 vi.mock('../../src/services/unified-calendar', () => ({
+  createEvent: vi.fn(),
   getEvents: vi.fn(),
   hasConnectedCalendarForUser: vi.fn(() => true),
+  hasWritableCalendarForUser: vi.fn(() => true),
 }));
 
 vi.mock('../../src/services/microsoft-todo', () => ({
@@ -73,6 +75,10 @@ vi.mock('../../src/utils/logger', () => ({
   LOGGER_REDACTION_PATHS: [],
 }));
 
+vi.mock('../../src/services/cache-coherence-registry', () => ({
+  invalidateCalendarCaches: vi.fn(),
+}));
+
 // Import AFTER mocks so the module picks them up
 import {
   tryFastpath,
@@ -85,6 +91,7 @@ import * as mailPressure from '../../src/services/unified-mail-pressure';
 import * as reminders from '../../src/state/reminders';
 import * as registry from '../../src/skills/registry';
 import * as dailyBrief from '../../src/services/daily-brief-orchestrator';
+import * as cacheCoherence from '../../src/services/cache-coherence-registry';
 
 const UID = 42;
 
@@ -95,9 +102,18 @@ beforeEach(() => {
   resetFastpathMetrics();
   // Default everything to "configured + sub-skill enabled"
   vi.mocked(calendar.hasConnectedCalendarForUser).mockReturnValue(true);
+  vi.mocked(calendar.hasWritableCalendarForUser).mockReturnValue(true);
   vi.mocked(mailPressure.isAnyMailConfiguredForUser).mockReturnValue(true);
   vi.mocked(registry.isSubmoduleEnabled).mockReturnValue(true);
   // Default empty fixtures
+  vi.mocked(calendar.createEvent).mockResolvedValue({
+    id: 'evt-1',
+    summary: 'Created event',
+    title: 'Created event',
+    start: '2026-05-16T09:00:00.000+01:00',
+    end: '2026-05-16T13:00:00.000+01:00',
+    source: 'outlook',
+  } as any);
   vi.mocked(calendar.getEvents).mockResolvedValue([]);
   mockTaskGetAllPendingTasks.mockResolvedValue({ success: true, data: [] });
   mockTaskGetDefaultList.mockReset();
@@ -136,11 +152,12 @@ beforeEach(() => {
 // ════════════════════════════════════════════════════════════════════
 
 describe('secretary-fastpath / pattern matching', () => {
-  it('exposes 8 registered patterns', () => {
+  it('exposes 9 registered patterns', () => {
     const patterns = getFastpathPatterns();
     expect(patterns).toEqual(
       expect.arrayContaining([
         'day_overview',
+        'create_calendar_event',
         'daily_priority',
         'week_overview',
         'show_tasks',
@@ -150,10 +167,11 @@ describe('secretary-fastpath / pattern matching', () => {
         'quick_add_task',
       ]),
     );
-    expect(patterns).toHaveLength(8);
+    expect(patterns).toHaveLength(9);
   });
 
   it.each([
+    ['Colocar no calendario evento no proximo sabado, 16/5, das 9h as 13h. Volei Lucas, convide o felipedrf@hotmail.com', 'create_calendar_event'],
     ["what's my day?", 'day_overview'],
     ['what is my day', 'day_overview'],
     ['o que tenho hoje', 'day_overview'],
@@ -340,6 +358,99 @@ describe('secretary-fastpath / day_overview handler', () => {
     // Even with calendar errored out, we still get a valid response with tasks
     expect(result.matched).toBe(true);
     expect(result.response!.text).toContain('TAREFAS:');
+  });
+});
+
+// ════════════════════════════════════════════════════════════════════
+// create_calendar_event handler
+// ════════════════════════════════════════════════════════════════════
+
+describe('secretary-fastpath / create_calendar_event handler', () => {
+  it('creates a Portuguese calendar event with explicit date, time range, title, and attendee without AI', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-05-13T12:00:00.000Z'));
+    try {
+      vi.mocked(calendar.createEvent).mockResolvedValueOnce({
+        id: 'evt-volley',
+        summary: 'Volei Lucas',
+        start: '2026-05-16T09:00:00.000+01:00',
+        end: '2026-05-16T13:00:00.000+01:00',
+        source: 'outlook',
+      } as any);
+
+      const result = await tryFastpath(
+        UID,
+        'Colocar no calendario evento no proximo sabado, 16/5, das 9h as 13h. Volei Lucas, convide o felipedrf@hotmail.com',
+        'pt-PT',
+      );
+
+      expect(result.matched).toBe(true);
+      expect(result.patternId).toBe('create_calendar_event');
+      expect(calendar.createEvent).toHaveBeenCalledWith(
+        {
+          title: 'Volei Lucas',
+          start: '2026-05-16T09:00:00.000+01:00',
+          end: '2026-05-16T13:00:00.000+01:00',
+          attendees: ['felipedrf@hotmail.com'],
+        },
+        undefined,
+        UID,
+      );
+      expect(cacheCoherence.invalidateCalendarCaches).toHaveBeenCalledWith(UID);
+      expect(result.response?.text).toContain('Agendei no Outlook');
+      expect(result.response?.text).toContain('Volei Lucas');
+      expect(result.response?.text).toContain('felipedrf@hotmail.com');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('returns an honest calendar-unavailable message instead of falling through to a timeout', async () => {
+    vi.mocked(calendar.hasWritableCalendarForUser).mockReturnValueOnce(false);
+
+    const result = await tryFastpath(
+      UID,
+      'Adicionar evento no calendário amanhã das 9h às 10h Consulta',
+      'pt-PT',
+    );
+
+    expect(result.matched).toBe(true);
+    expect(result.patternId).toBe('create_calendar_event');
+    expect(calendar.createEvent).not.toHaveBeenCalled();
+    expect(result.response?.text).toContain('calendário ligado');
+  });
+
+  it('falls back to the connected default calendar when a colloquial Google request has no writable Google path', async () => {
+    vi.mocked(calendar.createEvent)
+      .mockRejectedValueOnce(new Error('google not connected'))
+      .mockResolvedValueOnce({
+        id: 'evt-school',
+        summary: 'Atividade Escola Sunny',
+        start: '2026-05-15T09:30:00.000+01:00',
+        end: '2026-05-15T10:30:00.000+01:00',
+        source: 'outlook',
+      } as any);
+
+    const result = await tryFastpath(
+      UID,
+      'Colocar na agenda do google para o dia 15/5 das 9:30 as 10:30 Atividade Escola Sunny',
+      'pt-PT',
+    );
+
+    expect(result.matched).toBe(true);
+    expect(calendar.createEvent).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({ title: 'Atividade Escola Sunny' }),
+      'google',
+      UID,
+    );
+    expect(calendar.createEvent).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({ title: 'Atividade Escola Sunny' }),
+      undefined,
+      UID,
+    );
+    expect(result.response?.text).toContain('Agendei no Outlook');
   });
 });
 

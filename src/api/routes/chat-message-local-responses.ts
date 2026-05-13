@@ -4,6 +4,7 @@ import type { InlineButton } from '../../adapters/message-adapter';
 import type { DomainName } from '../../domains/types';
 import { getCached, setCache } from '../../services/cache-store';
 import { resolveChatTenantId } from '../../services/chat-tenant-scope';
+import { tryFastpath } from '../../services/secretary-fastpath';
 import { getPreferredDisplayNameById, getUserLanguageById } from '../../services/user-service';
 import { tryDeterministicChatCommand } from './chat-fastpath';
 
@@ -107,24 +108,32 @@ export async function tryBuildFastPathChatResponse(
   tenantId?: number,
 ): Promise<LocalChatResponse | null> {
   const fastPath = await tryDeterministicChatCommand(normalizedText, userId, tenantId);
-  if (!fastPath) {
+  const secretaryFastPath = fastPath
+    ? null
+    : await tryFastpath(userId, normalizedText, getUserLanguageById(userId));
+  const resolvedFastPath = fastPath ?? (
+    secretaryFastPath?.matched && secretaryFastPath.response
+      ? { text: secretaryFastPath.response.text, domain: secretaryFastPath.response.domain, buttons: undefined }
+      : null
+  );
+  if (!resolvedFastPath) {
     return null;
   }
 
   const response: ChatMessageRouteResponse = {
     id: `msg-${Date.now()}`,
-    text: fastPath.text,
-    domain: fastPath.domain,
+    text: resolvedFastPath.text,
+    domain: resolvedFastPath.domain,
     routeMethod: 'fast-path',
     confidence: 1.0,
-    buttons: fastPath.buttons ?? null,
-    metadata: null,
+    buttons: resolvedFastPath.buttons ?? null,
+    metadata: secretaryFastPath?.matched ? { patternId: secretaryFastPath.patternId ?? null } : null,
     timestamp: new Date().toISOString(),
   };
 
   return {
     response,
-    conversationDomain: fastPath.domain,
+    conversationDomain: resolvedFastPath.domain,
     cacheable: isCacheableChatCommand(normalizedTextLower),
   };
 }

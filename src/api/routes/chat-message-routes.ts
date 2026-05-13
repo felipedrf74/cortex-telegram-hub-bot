@@ -58,6 +58,18 @@ import { sendChatTierRequiredIfNeeded } from './chat-message-tier-gate';
 import { sendRetryableChatFailureResponseIfNeeded } from './chat-message-degraded-response';
 import { tryHandleChatReasoningAction } from '../../services/chat-reasoning-engine';
 import {
+  buildNexusAnswerContract,
+  createChatLatencyTracker,
+  metadataGroundingFacts,
+  type ChatLatencyTracker,
+  type NexusAnswerContract,
+  type NexusChatActionability,
+  type NexusChatVerificationStatus,
+} from '../../services/chat-answer-contract';
+import { buildChatGroundingEnvelope } from '../../services/chat-grounding-layer';
+import { applyChatFallbackPolicy } from '../../services/chat-fallback-policy';
+import { applyChatResponseQualityGate } from '../../services/chat-response-quality-gate';
+import {
   createDecisionIntent,
   findDecisionByRelatedEntity,
   performDecisionAction,
@@ -88,6 +100,220 @@ function isAcceptCurrentDecisionShortcut(text: string): boolean {
   return /^(accept|approve|confirm|yes|sim|aceitar|aprovar|confirmar)\s+(this|current|the)?\s*(decision|choice|clarification|decisão|escolha)?$/i.test(text.trim())
     || /\b(accept|approve|confirm)\s+this\s+decision\b/i.test(text)
     || /\b(aceitar|aprovar|confirmar)\s+esta\s+decis[aã]o\b/i.test(text);
+}
+
+function buildChatAnswerMetadata(input: {
+  normalizedText: string;
+  responseText: string;
+  userId: number;
+  tenantId: number;
+  chatRequestId: string;
+  routeMethod: string;
+  domain: any;
+  confidence: number;
+  tracker: ChatLatencyTracker;
+  latencyTier: Parameters<ChatLatencyTracker['snapshot']>[0];
+  activeContext?: any;
+  route?: any;
+  routingDecision?: ReturnType<typeof analyzeChatSkillOrchestration>;
+  existingMetadata?: Record<string, unknown> | null;
+  actionability?: NexusChatActionability;
+  verificationStatus?: NexusChatVerificationStatus;
+  fallback?: Partial<NexusAnswerContract['fallback']>;
+}): { text: string; metadata: Record<string, unknown>; contract: NexusAnswerContract } {
+  try {
+    const grounding = buildChatGroundingEnvelope({
+      message: input.normalizedText,
+      userId: input.userId,
+      tenantId: input.tenantId,
+      route: input.route,
+      routedDomain: input.domain,
+      activeContextDomain: input.activeContext?.domain ?? null,
+      involvedSkills: input.routingDecision?.involvedSkills,
+      contextSources: contextSourcesFromMetadata(input.existingMetadata),
+    });
+    const contract = buildNexusAnswerContract({
+      intent: grounding.capability.intent,
+      ownerSkill: grounding.capability.ownerSkill,
+      routeMethod: input.routeMethod,
+      confidence: input.confidence,
+      groundingFacts: grounding.groundingFacts,
+      missingFacts: grounding.missingFacts,
+      staleness: grounding.staleness,
+      riskLevel: grounding.capability.riskLevel,
+      actionability: input.actionability ?? grounding.capability.actionability,
+      verificationStatus: input.verificationStatus ?? 'not_required',
+      fallback: input.fallback,
+      userFacingSummary: input.responseText.slice(0, 240),
+      nextBestActions: grounding.missingFacts.length > 0
+        ? [{ id: 'clarify_missing_facts', label: 'Clarify missing details', kind: 'ask', targetSkill: grounding.capability.ownerSkill }]
+        : [],
+      traceId: input.chatRequestId,
+      latency: input.tracker.snapshot(input.latencyTier, grounding.capability.capability.latencyBudgetMs),
+    });
+    const fallbackPolicy = applyChatFallbackPolicy(contract);
+    const gated = applyChatResponseQualityGate({ text: input.responseText, contract: fallbackPolicy.contract });
+    return {
+      text: gated.text,
+      contract: gated.contract,
+      metadata: {
+        ...(input.existingMetadata ?? {}),
+        type: (input.existingMetadata?.type as string | undefined) ?? 'nexus_answer',
+        chatReasoning: gated.contract,
+        groundingFacts: metadataGroundingFacts(gated.contract.groundingFacts),
+        responseQuality: {
+          status: gated.status,
+          issues: [...fallbackPolicy.issues, ...gated.issues],
+          score: gated.score,
+        },
+        fallbackPolicy: fallbackPolicy.policy,
+      },
+    };
+  } catch (err) {
+    logger.error(
+      { err, chatRequestId: input.chatRequestId, userId: input.userId, tenantId: input.tenantId },
+      'Chat answer metadata build failed; returning original response text',
+    );
+    const contract = buildNexusAnswerContract({
+      intent: 'chat.answer',
+      ownerSkill: 'chat',
+      routeMethod: input.routeMethod,
+      confidence: Math.min(input.confidence, 0.5),
+      actionability: 'answer_only',
+      verificationStatus: 'not_required',
+      fallback: {
+        fallbackType: 'deterministic_summary',
+        fallbackReason: 'answer_contract_build_failed',
+        retryable: false,
+        userActionRequired: false,
+        operatorActionRequired: true,
+      },
+      userFacingSummary: input.responseText.slice(0, 240),
+      traceId: input.chatRequestId,
+      latency: input.tracker.snapshot(input.latencyTier),
+    });
+    return {
+      text: input.responseText,
+      contract,
+      metadata: {
+        ...(input.existingMetadata ?? {}),
+        type: (input.existingMetadata?.type as string | undefined) ?? 'nexus_answer',
+        chatReasoning: contract,
+        responseQuality: {
+          status: 'blocked',
+          issues: ['answer_contract_build_failed'],
+          score: 0.2,
+        },
+      },
+    };
+  }
+}
+
+function contextSourcesFromMetadata(metadata: Record<string, unknown> | null | undefined): Array<{ source: string; freshness?: string; confidence?: number; reason?: string }> {
+  if (!metadata) return [];
+  const sources: Array<{ source: string; freshness?: string; confidence?: number; reason?: string }> = [];
+  const type = typeof metadata.type === 'string' ? metadata.type : undefined;
+  if (type) {
+    sources.push({
+      source: `metadata.${type}`,
+      freshness: 'fresh',
+      confidence: 0.85,
+      reason: `Backend returned scoped ${type} metadata for this answer.`,
+    });
+  }
+  if (typeof metadata.verificationStatus === 'string') {
+    sources.push({
+      source: 'metadata.verification_status',
+      freshness: 'fresh',
+      confidence: 0.9,
+      reason: `Backend verifier reported ${metadata.verificationStatus}.`,
+    });
+  }
+  if (metadata.responseSufficiency && typeof metadata.responseSufficiency === 'object') {
+    sources.push({
+      source: 'metadata.response_sufficiency',
+      freshness: 'fresh',
+      confidence: 0.8,
+      reason: 'Response sufficiency metadata was available.',
+    });
+  }
+  return sources;
+}
+
+function enrichChatResponseForContract<T extends {
+  text: string;
+  domain?: any;
+  routeMethod?: string;
+  confidence?: number;
+  metadata?: unknown;
+}>(response: T, input: {
+  normalizedText: string;
+  userId: number;
+  tenantId: number;
+  chatRequestId: string;
+  tracker: ChatLatencyTracker;
+  latencyTier: Parameters<ChatLatencyTracker['snapshot']>[0];
+  fallbackDomain?: any;
+  fallbackRouteMethod?: string;
+  fallbackConfidence?: number;
+  actionability?: NexusChatActionability;
+  verificationStatus?: NexusChatVerificationStatus;
+  fallback?: Partial<NexusAnswerContract['fallback']>;
+}): T {
+  const existingMetadata = response.metadata && typeof response.metadata === 'object'
+    ? response.metadata as Record<string, unknown>
+    : null;
+  const enriched = buildChatAnswerMetadata({
+    normalizedText: input.normalizedText,
+    responseText: response.text,
+    userId: input.userId,
+    tenantId: input.tenantId,
+    chatRequestId: input.chatRequestId,
+    routeMethod: response.routeMethod ?? input.fallbackRouteMethod ?? 'deterministic',
+    domain: response.domain ?? input.fallbackDomain ?? 'chat',
+    confidence: response.confidence ?? input.fallbackConfidence ?? 1,
+    tracker: input.tracker,
+    latencyTier: input.latencyTier,
+    existingMetadata,
+    actionability: input.actionability,
+    verificationStatus: input.verificationStatus,
+    fallback: input.fallback,
+  });
+  return {
+    ...response,
+    text: enriched.text,
+    metadata: enriched.metadata,
+  } as T;
+}
+
+function actionabilityForReasoningStatus(status: string): NexusChatActionability {
+  switch (status) {
+    case 'completed':
+    case 'partial_failure':
+    case 'failed':
+      return 'execute';
+    case 'needs_clarification':
+      return 'clarify';
+    case 'needs_confirmation':
+      return 'preview';
+    case 'deferred':
+      return 'blocked';
+    case 'in_progress':
+      return 'execute';
+    default:
+      return 'answer_only';
+  }
+}
+
+function verificationForReasoningMetadata(metadata: Record<string, unknown> | undefined, status: string): NexusChatVerificationStatus {
+  const verification = typeof metadata?.verificationStatus === 'string' ? metadata.verificationStatus : undefined;
+  if (verification === 'verified') return 'verified';
+  if (verification === 'partial_failure') return 'partial_failure';
+  if (status === 'failed') return 'failed';
+  if (status === 'needs_confirmation' || status === 'needs_clarification') return 'pending';
+  if (status === 'deferred') return 'blocked';
+  if (status === 'completed') return 'verified';
+  return 'not_required';
 }
 
 export function registerChatMessageRoutes(
@@ -139,6 +365,7 @@ export function registerChatMessageRoutes(
     const releaseCostLock = await acquireCostLock(userId);
     try {
       const requestStartedAt = Date.now();
+      const latency = createChatLatencyTracker(requestStartedAt);
       const chatRequestId = getCurrentRequestId() || (req as any).requestId || `chat-${Date.now()}`;
       const scopedClientMessageId = normalizeIdempotencyKey(
         clientMessageId ?? idempotencyKey ?? req.header('x-idempotency-key') ?? req.header('x-client-message-id'),
@@ -213,7 +440,7 @@ export function registerChatMessageRoutes(
             { chatRequestId, tenantId, userId, clientMessageId: scopedClientMessageId, lifecycleState: claim.existingLifecycleState },
             'iOS chat idempotent retry found an in-flight message claim',
           );
-          res.status(202).json({
+          const response = enrichChatResponseForContract({
             id: `msg-${requestStartedAt}`,
             text: 'I am still processing that request. I will reuse the original result instead of running the action again.',
             domain: 'secretary',
@@ -226,7 +453,17 @@ export function registerChatMessageRoutes(
               replayOfUserMessageId: claim.messageId,
             },
             timestamp: new Date(requestStartedAt).toISOString(),
+          }, {
+            normalizedText,
+            userId,
+            tenantId,
+            chatRequestId,
+            tracker: latency,
+            latencyTier: 'tier4_long_running',
+            actionability: 'degraded',
+            verificationStatus: 'pending',
           });
+          res.status(202).json(response);
           return;
         }
       }
@@ -243,17 +480,28 @@ export function registerChatMessageRoutes(
         },
         'iOS chat request started',
       );
+      latency.mark('request_validated');
       // Check cache for known deterministic commands (saves $0.02-0.05 per hit)
       if (normalizedText && normalizedAttachments.length === 0) {
         const cached = getCachedChatCommandResponse(userId, normalizedTextLower, tenantId);
         if (cached) {
           logger.debug({ cmdLength: normalizedText.length, platform: 'ios', tenantId, userId }, 'Returning cached chat command');
-          persistExchange(userId, userMessageId, normalizedText, cached.id, cached, tenantId, {
+          const cachedResponse = enrichChatResponseForContract(cached, {
+            normalizedText,
+            userId,
+            tenantId,
+            chatRequestId,
+            tracker: latency,
+            latencyTier: 'tier0_local',
+            actionability: 'answer_only',
+            verificationStatus: 'not_required',
+          });
+          persistExchange(userId, userMessageId, normalizedText, cachedResponse.id, cachedResponse, tenantId, {
             clientMessageId: scopedClientMessageId,
             requestId: chatRequestId,
           });
-          syncConversationStateForShortcut(userId, cached.domain, normalizedText, cached.text, tenantId);
-          res.json(cached);
+          syncConversationStateForShortcut(userId, cachedResponse.domain, normalizedText, cachedResponse.text, tenantId);
+          res.json(cachedResponse);
           return;
         }
       }
@@ -271,18 +519,37 @@ export function registerChatMessageRoutes(
           language: lang,
         });
         rememberChatActiveDomain(userId, result.conversationDomain, Date.now(), tenantId);
-        persistExchange(userId, userMessageId, result.userText, result.response.id, result.response, tenantId, {
+        const response = enrichChatResponseForContract(result.response, {
+          normalizedText,
+          userId,
+          tenantId,
+          chatRequestId,
+          tracker: latency,
+          latencyTier: result.degraded ? 'tier4_long_running' : 'tier2_verified_write',
+          fallbackDomain: result.conversationDomain,
+          fallbackRouteMethod: 'attachment',
+          actionability: result.degraded ? 'degraded' : 'answer_only',
+          verificationStatus: result.degraded ? 'failed' : 'not_required',
+          fallback: result.degraded ? {
+            fallbackType: 'deterministic_summary',
+            fallbackReason: result.degradedReason ?? 'attachment_processing_degraded',
+            retryable: true,
+            userActionRequired: false,
+            operatorActionRequired: false,
+          } : undefined,
+        });
+        persistExchange(userId, userMessageId, result.userText, response.id, response, tenantId, {
           clientMessageId: scopedClientMessageId,
           requestId: chatRequestId,
         });
-        syncConversationStateForShortcut(userId, result.conversationDomain, result.userText, result.response.text, tenantId);
+        syncConversationStateForShortcut(userId, result.conversationDomain, result.userText, response.text, tenantId);
         if (result.degraded) {
           logger.warn(
             { err: result.error, chatRequestId, userId, reason: result.degradedReason, platform: 'ios' },
             'iOS chat attachment degraded',
           );
         }
-        res.json(result.response);
+        res.json(response);
         return;
       }
 
@@ -293,7 +560,19 @@ export function registerChatMessageRoutes(
       // user's real account identity.
       const identityResponse = tryBuildAuthenticatedIdentityResponse(normalizedText, normalizedTextLower, userId);
       if (identityResponse) {
-        const { response, conversationDomain } = identityResponse;
+        const { conversationDomain } = identityResponse;
+        const response = enrichChatResponseForContract(identityResponse.response, {
+          normalizedText,
+          userId,
+          tenantId,
+          chatRequestId,
+          tracker: latency,
+          latencyTier: 'tier1_fast_read',
+          fallbackDomain: conversationDomain,
+          fallbackRouteMethod: 'authenticated-identity',
+          actionability: 'answer_only',
+          verificationStatus: 'not_required',
+        });
         rememberChatActiveDomain(userId, conversationDomain, Date.now(), tenantId);
         persistExchange(userId, userMessageId, normalizedText, response.id, response, tenantId, {
           clientMessageId: scopedClientMessageId,
@@ -313,17 +592,29 @@ export function registerChatMessageRoutes(
       const fastPath = await tryBuildFastPathChatResponse(normalizedText, normalizedTextLower, userId, tenantId);
       if (fastPath) {
         const { response: fastResponse, conversationDomain } = fastPath;
+        const response = enrichChatResponseForContract(fastResponse, {
+          normalizedText,
+          userId,
+          tenantId,
+          chatRequestId,
+          tracker: latency,
+          latencyTier: 'tier1_fast_read',
+          fallbackDomain: conversationDomain,
+          fallbackRouteMethod: 'fast-path',
+          actionability: 'answer_only',
+          verificationStatus: 'not_required',
+        });
         // Track domain for conversation continuity even on fast-path.
         rememberChatActiveDomain(userId, conversationDomain, Date.now(), tenantId);
         // Cache deterministic responses for the next 60 seconds.
-        maybeCacheChatCommandResponse(userId, normalizedTextLower, fastResponse, tenantId);
-        persistExchange(userId, userMessageId, normalizedText, fastResponse.id, fastResponse, tenantId, {
+        maybeCacheChatCommandResponse(userId, normalizedTextLower, response, tenantId);
+        persistExchange(userId, userMessageId, normalizedText, response.id, response, tenantId, {
           clientMessageId: scopedClientMessageId,
           requestId: chatRequestId,
         });
-        syncConversationStateForShortcut(userId, conversationDomain, normalizedText, fastResponse.text, tenantId);
+        syncConversationStateForShortcut(userId, conversationDomain, normalizedText, response.text, tenantId);
         logger.info({ cmdLength: normalizedText.length, platform: 'ios', mode: 'fast-path', tenantId, userId }, 'iOS chat fast-path hit');
-        res.json(fastResponse);
+        res.json(response);
         return;
       }
 
@@ -343,7 +634,25 @@ export function registerChatMessageRoutes(
         locale: getUserLanguageById(userId) || undefined,
       });
       if (reasoningAction) {
+        latency.mark('reasoning_engine_completed');
         const response = reasoningAction.response;
+        const enriched = buildChatAnswerMetadata({
+          normalizedText,
+          responseText: response.text,
+          userId,
+          tenantId,
+          chatRequestId,
+          routeMethod: response.routeMethod,
+          domain: response.domain,
+          confidence: response.confidence,
+          tracker: latency,
+          latencyTier: response.metadata?.verificationStatus ? 'tier2_verified_write' : 'tier1_fast_read',
+          existingMetadata: response.metadata,
+          actionability: actionabilityForReasoningStatus(reasoningAction.status),
+          verificationStatus: verificationForReasoningMetadata(response.metadata, reasoningAction.status),
+        });
+        response.text = enriched.text;
+        response.metadata = enriched.metadata;
         if (response.routeMethod === 'confirmation-required' && response.metadata?.type === 'chat_action_confirmation_required') {
           const lang = getUserLanguageById(userId);
           const isPT = lang.startsWith('pt');
@@ -419,12 +728,24 @@ export function registerChatMessageRoutes(
       const trainingPlanShortcut = tryBuildTrainingPlanShortcutResponse(normalizedText, normalizedTextLower, userId);
       if (trainingPlanShortcut) {
         const { response: planResponse, conversationDomain } = trainingPlanShortcut;
-        persistExchange(userId, userMessageId, normalizedText, planResponse.id, planResponse, tenantId, {
+        const response = enrichChatResponseForContract(planResponse, {
+          normalizedText,
+          userId,
+          tenantId,
+          chatRequestId,
+          tracker: latency,
+          latencyTier: 'tier1_fast_read',
+          fallbackDomain: conversationDomain,
+          fallbackRouteMethod: 'training-plan-shortcut',
+          actionability: 'preview',
+          verificationStatus: 'not_required',
+        });
+        persistExchange(userId, userMessageId, normalizedText, response.id, response, tenantId, {
           clientMessageId: scopedClientMessageId,
           requestId: chatRequestId,
         });
-        syncConversationStateForShortcut(userId, conversationDomain, normalizedText, planResponse.text, tenantId);
-        res.json(planResponse);
+        syncConversationStateForShortcut(userId, conversationDomain, normalizedText, response.text, tenantId);
+        res.json(response);
         return;
       }
 
@@ -452,7 +773,7 @@ export function registerChatMessageRoutes(
             idempotencyKey: normalizeIdempotencyKey(req.body?.idempotencyKey)
               ?? `chat-confirm:${tenantId}:${userId}:${pending.id}:${Date.now()}`,
           });
-          const response = {
+          const response = enrichChatResponseForContract({
             id: `msg-${Date.now()}`,
             text: getUserLanguageById(userId).startsWith('pt')
               ? 'Confirmado. A decisão foi registada no Decision Center e verificada pelo servidor.'
@@ -469,7 +790,16 @@ export function registerChatMessageRoutes(
               verification: result.verification,
             },
             timestamp: new Date().toISOString(),
-          };
+          }, {
+            normalizedText,
+            userId,
+            tenantId,
+            chatRequestId,
+            tracker: latency,
+            latencyTier: 'tier2_verified_write',
+            actionability: 'execute',
+            verificationStatus: 'verified',
+          });
           persistExchange(userId, userMessageId, normalizedText, response.id, response, tenantId, {
             clientMessageId: scopedClientMessageId,
             requestId: chatRequestId,
@@ -518,7 +848,7 @@ export function registerChatMessageRoutes(
           requiresConfirmation: true,
           unresolvedBlockers: ['target_identity_required'],
         });
-        const confirmationResponse = {
+        const confirmationResponse = enrichChatResponseForContract({
           id: `msg-${Date.now()}`,
           text: isPT
             ? 'Antes de executar isso, preciso de confirmação explícita. Confirme a ação exata que quer que eu faça, incluindo o item/plano/evento afetado. Não vou apagar, cancelar, enviar ou limpar nada sem essa confirmação.'
@@ -543,7 +873,16 @@ export function registerChatMessageRoutes(
             },
           },
           timestamp: new Date().toISOString(),
-        };
+        }, {
+          normalizedText,
+          userId,
+          tenantId,
+          chatRequestId,
+          tracker: latency,
+          latencyTier: 'tier2_verified_write',
+          actionability: 'preview',
+          verificationStatus: 'pending',
+        });
         rememberChatActiveDomain(userId, confirmationResponse.domain, Date.now(), tenantId);
         persistExchange(userId, userMessageId, normalizedText, confirmationResponse.id, confirmationResponse, tenantId, {
           clientMessageId: scopedClientMessageId,
@@ -565,6 +904,7 @@ export function registerChatMessageRoutes(
       // classification cost was orphaned under user_id=0 and the
       // per-user cap (isUserOverDailyCap) couldn't see the spend.
       const rawRoute = await routeMessage(normalizedText, activeContext, userId, tenantId);
+      latency.mark('routed');
       const routingDecision = analyzeChatSkillOrchestration({
         message: normalizedText,
         activeContext,
@@ -615,7 +955,20 @@ export function registerChatMessageRoutes(
         activeContext,
       });
       if (shortcutResult) {
-        const { response, conversationDomain } = shortcutResult;
+        const { conversationDomain } = shortcutResult;
+        const response = enrichChatResponseForContract(shortcutResult.response, {
+          normalizedText,
+          userId,
+          tenantId,
+          chatRequestId,
+          tracker: latency,
+          latencyTier: 'tier1_fast_read',
+          fallbackDomain: conversationDomain,
+          fallbackRouteMethod: route.method,
+          fallbackConfidence: route.confidence,
+          actionability: 'answer_only',
+          verificationStatus: 'not_required',
+        });
         persistExchange(userId, userMessageId, normalizedText, response.id, response, tenantId, {
           clientMessageId: scopedClientMessageId,
           requestId: chatRequestId,
@@ -633,6 +986,7 @@ export function registerChatMessageRoutes(
           ? pendingConfirmation ? 'pending_confirmation' : 'explicit_current_turn'
           : 'none',
       }, () => executeChatDomainHandler(handler, route.strippedMessage, userId, tenantId));
+      latency.mark('domain_handler_completed');
       if (routingDecision.safety.explicitConfirmation) {
         clearPendingChatConfirmation(userId, tenantId);
       }
@@ -644,7 +998,30 @@ export function registerChatMessageRoutes(
       const lang = getUserLanguageById(userId);
       const buttons = buildDefaultButtonsForChatDomain(result.domain || route.domain, lang, userId, requestStartedAt, tenantId);
 
-      const response = buildChatHandlerResponseEnvelope({ route, result, buttons });
+      const enriched = buildChatAnswerMetadata({
+        normalizedText,
+        responseText: result.text,
+        userId,
+        tenantId,
+        chatRequestId,
+        routeMethod: route.method,
+        domain: result.domain || route.domain,
+        confidence: route.confidence,
+        tracker: latency,
+        latencyTier: 'tier3_model_assisted',
+        activeContext,
+        route,
+        routingDecision,
+        existingMetadata: result.metadata && typeof result.metadata === 'object'
+          ? result.metadata as Record<string, unknown>
+          : null,
+      });
+      const response = buildChatHandlerResponseEnvelope({
+        route,
+        result: { ...result, text: enriched.text },
+        buttons,
+        metadata: enriched.metadata,
+      });
 
       if (isNewUserFlow) {
         logger.debug(
