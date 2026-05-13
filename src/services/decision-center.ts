@@ -35,6 +35,7 @@ import {
 } from './content-editorial-workflow';
 import {
   getSecretaryAgendaItemById,
+  type ReasoningTrailNode,
   type SecretaryAgendaItem,
 } from './secretary-scheduling-arbitrator';
 import {
@@ -227,6 +228,16 @@ export interface DecisionSourceTrace {
   relatedStateReadModels: string[];
   confidenceSource: string;
   dataFreshness: 'live' | 'cached' | 'unknown';
+  /**
+   * C2 workstream: ordered reasoning breadcrumbs from the Secretary
+   * scheduling arbitrator. Only populated for `secretary_agenda_item`
+   * related entities; empty for non-secretary decisions. iOS Codable
+   * decoder treats this as optional.
+   *
+   * Privacy: nodes carry ONLY enum codes + ISO slot strings + numeric
+   * weights. Never user copy. Pinned by W-E privacy test.
+   */
+  reasoningTrail?: ReasoningTrailNode[];
 }
 
 export interface DecisionAskNexusContext {
@@ -1383,6 +1394,11 @@ function sourceTraceForRecord(item: DecisionRecord, logic: DecisionLogicV2): Dec
   const sourceEntityIds = item.relatedEntityType && item.relatedEntityId
     ? [`${item.relatedEntityType}:${item.relatedEntityId}`]
     : [];
+  // C2: when the decision is anchored on a Secretary agenda item, surface
+  // its persisted reasoning trail. Use the same owner-scoped read used by
+  // `decisionContextForRecord` so cross-tenant leaks are impossible
+  // (lookup tuple = agendaItemId + ownerUserId + tenantId).
+  const reasoningTrail = reasoningTrailForRecord(item);
   return {
     originatingSkill: item.sourceSkill,
     originatingSignal: item.type,
@@ -1397,7 +1413,30 @@ function sourceTraceForRecord(item: DecisionRecord, logic: DecisionLogicV2): Dec
     relatedStateReadModels: relatedStateReadModelsForRecord(item),
     confidenceSource: logic.confidence >= 0.8 ? 'structured-state-and-readback' : 'partial-structured-state',
     dataFreshness: item.status === 'snoozed' ? 'cached' : 'live',
+    ...(reasoningTrail && reasoningTrail.length > 0 ? { reasoningTrail } : {}),
   };
+}
+
+/**
+ * Read the persisted Secretary reasoning trail for a decision record.
+ *
+ * Returns `null` when:
+ * - the record isn't anchored on a `secretary_agenda_item`, OR
+ * - the agenda item is missing / doesn't match the owner+tenant scope, OR
+ * - the persisted column is empty (e.g. legacy rows from before W-E).
+ *
+ * The owner+tenant scope is enforced by `getSecretaryAgendaItemById` itself,
+ * so a cross-tenant decisionId cannot leak another user's trail.
+ */
+function reasoningTrailForRecord(item: DecisionRecord): ReasoningTrailNode[] | null {
+  if (item.relatedEntityType !== 'secretary_agenda_item' || !item.relatedEntityId) return null;
+  const agenda = getSecretaryAgendaItemById({
+    agendaItemId: item.relatedEntityId,
+    ownerUserId: item.userId,
+    tenantId: item.tenantId,
+  });
+  if (!agenda) return null;
+  return agenda.reasoningTrail.length > 0 ? agenda.reasoningTrail : null;
 }
 
 function relatedStateReadModelsForRecord(item: DecisionRecord): string[] {

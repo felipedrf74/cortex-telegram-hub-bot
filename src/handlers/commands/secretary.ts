@@ -26,7 +26,9 @@ import {
   splitMessage, escapeHtml, formatChecklistItems, formatAllTasks, formatCompletedTasks,
 } from '../../utils/telegram-formatter';
 import { startOfDay, endOfDay, startOfWeek, endOfWeek, formatDateTime } from '../../utils/date-parser';
-import { getUserLanguage } from '../../services/user-service';
+import { getUserByTelegramId, getUserLanguage, resolveCurrentTenantIdForUser } from '../../services/user-service';
+import { listSecretaryAgendaItems } from '../../services/secretary-scheduling-arbitrator';
+import { formatReasoningTrailForTelegram } from '../../services/secretary-reasoning-trail-formatter';
 import { t } from '../../utils/i18n';
 import { logger } from '../../utils/logger';
 import type { DomainHandlerFn } from '../photo';
@@ -739,6 +741,51 @@ export function registerSecretaryCommands(
     enqueue(ctx.from!.id, async () => {
       await ctx.replyWithChatAction('typing');
       await handleWeekOverview(ctx);
+    });
+  });
+
+  // ── Secretary reasoning (C2) ──
+
+  /**
+   * `/why_last` — print the reasoning trail for the user's most recent
+   * Secretary scheduling decision. Reads from `secretary_agenda_items`
+   * scoped by `(ownerUserId, tenantId)` so cross-tenant leaks are
+   * impossible by construction.
+   *
+   * Output is short structured copy (PT-PT or EN per user language) and
+   * carries NO PII from the trail nodes — they're already enum + slot only
+   * (pinned by W-E privacy test).
+   */
+  bot.command('why_last', async (ctx) => {
+    enqueue(ctx.from!.id, async () => {
+      await ctx.replyWithChatAction('typing');
+      const telegramId = ctx.from!.id;
+      const user = getUserByTelegramId(telegramId);
+      if (!user) {
+        await ctx.reply(t('generic_error', getUserLanguage(telegramId)));
+        return;
+      }
+      const tenantId = resolveCurrentTenantIdForUser(user.id);
+      const items = listSecretaryAgendaItems({
+        ownerUserId: user.id,
+        tenantId,
+        includeInactive: true,
+      });
+      if (items.length === 0) {
+        const lang = getUserLanguage(telegramId);
+        await ctx.reply(
+          lang === 'pt-PT' || lang === 'pt-BR'
+            ? '🤔 Ainda não tenho decisões recentes para explicar.'
+            : '🤔 No recent Secretary decisions to explain yet.',
+        );
+        return;
+      }
+      // Pick the most recently updated agenda item (any lifecycle state) —
+      // that's the latest decision the user might be wondering about.
+      const latest = [...items].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))[0];
+      const lang = getUserLanguage(telegramId);
+      const formatted = formatReasoningTrailForTelegram(latest, lang);
+      await ctx.reply(formatted, { parse_mode: 'HTML' });
     });
   });
 }
