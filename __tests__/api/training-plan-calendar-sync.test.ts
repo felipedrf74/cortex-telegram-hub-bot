@@ -2,6 +2,8 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const mocks = vi.hoisted(() => ({
   getActivePlan: vi.fn(),
+  getPlanById: vi.fn(),
+  getSessionById: vi.fn(),
   getWeeksForPlan: vi.fn(),
   getSessionsForWeek: vi.fn(),
   linkSessionToCalendar: vi.fn(),
@@ -27,6 +29,8 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock('../../src/services/training-plans', () => ({
   getActivePlan: mocks.getActivePlan,
+  getPlanById: mocks.getPlanById,
+  getSessionById: mocks.getSessionById,
   getWeeksForPlan: mocks.getWeeksForPlan,
   getSessionsForWeek: mocks.getSessionsForWeek,
   linkSessionToCalendar: mocks.linkSessionToCalendar,
@@ -38,7 +42,7 @@ vi.mock('../../src/services/unified-calendar', () => ({
   createEvent: mocks.createEvent,
   updateEvent: mocks.updateEvent,
   deleteEvent: mocks.deleteEvent,
-  getEvents: mocks.getEvents,
+  getEventsForSources: mocks.getEvents,
 }));
 
 vi.mock('../../src/services/oauth-store', () => ({
@@ -71,7 +75,10 @@ vi.mock('../../src/utils/logger', () => ({
   LOGGER_REDACTION_PATHS: [],
 }));
 
-import { syncTrainingPlanCalendar } from '../../src/api/routes/training-plan-calendar-sync';
+import {
+  previewTrainingSessionReflow,
+  syncTrainingPlanCalendar,
+} from '../../src/api/routes/training-plan-calendar-sync';
 import {
   appendTrainingIdentityMarker,
   buildTrainingSessionIdentityKey,
@@ -136,6 +143,8 @@ describe('training-plan-calendar-sync', () => {
     delete process.env.TRAINING_CALENDAR_SYNC_ENABLED;
     delete process.env.TRAINING_CALENDAR_SYNC_DISABLED;
     mocks.getEvents.mockResolvedValue([]);
+    mocks.getPlanById.mockReset();
+    mocks.getSessionById.mockReset();
     mocks.updateEvent.mockResolvedValue({ id: 'evt-updated', source: 'google' });
     mocks.linkSessionToCalendar.mockReturnValue(true);
     mocks.updateSession.mockReturnValue(true);
@@ -187,6 +196,62 @@ describe('training-plan-calendar-sync', () => {
     }));
   });
 
+  it('previews a conflict reflow destination before mutating the session or provider', async () => {
+    mocks.isConnected.mockImplementation((_userId: number, provider: string) => provider === 'outlook');
+    mocks.getPlanById.mockReturnValue({
+      id: 7,
+      user_id: 42,
+      start_date: '2026-04-20T00:00:00.000Z',
+      preferences_json: JSON.stringify({
+        preferredTime: '12:00',
+        preferredCardioTime: '07:00',
+        preferredStrengthTime: '18:00',
+      }),
+    });
+    mocks.getWeeksForPlan.mockReturnValue([{ id: 70, week_number: 1 }]);
+    mocks.getSessionById.mockReturnValue({
+      id: 100,
+      week_id: 70,
+      plan_id: 7,
+      day_of_week: 'Monday',
+      session_type: 'gym',
+      title: 'Strength + Core',
+      duration_minutes: 40,
+      description: 'Lifting day.',
+      status: 'scheduled',
+      calendar_event_id: null,
+      calendar_source: null,
+      session_identity_key: null,
+      session_shape_hash: null,
+      intensity_text: null,
+      exercises_json: null,
+      description_json: null,
+    });
+    mocks.getEvents.mockResolvedValue([
+      {
+        id: 'busy-outlook',
+        source: 'outlook',
+        summary: 'Focus block',
+        start: '2026-04-20T17:00:00.000Z',
+        end: '2026-04-20T18:00:00.000Z',
+      },
+    ]);
+
+    const result = await previewTrainingSessionReflow(42, 100, 'outlook');
+
+    expect(result.status).toBe('preview');
+    if (result.status === 'preview') {
+      expect(result.data.provider).toBe('outlook');
+      expect(result.data.current.start).toBeTruthy();
+      expect(result.data.proposed.start).not.toBe(result.data.current.start);
+      expect(result.data.proposed.start).toBeTruthy();
+      expect(result.data.whyThisSlot).toContain('before Nexus changes');
+    }
+    expect(mocks.updateSession).not.toHaveBeenCalled();
+    expect(mocks.createEvent).not.toHaveBeenCalled();
+    expect(mocks.updateEvent).not.toHaveBeenCalled();
+  });
+
   it('returns no_active_plan when the user has no plan', async () => {
     mocks.getActivePlan.mockReturnValue(null);
 
@@ -229,6 +294,24 @@ describe('training-plan-calendar-sync', () => {
       expect(result.data.sessionsAlreadySynced).toBe(0);
       expect(result.data.sessionsFailed).toBe(0);
       expect(result.data.message).toBe('2 sessions added to your calendar.');
+      expect(result.data.sessionResults).toEqual([
+        expect.objectContaining({
+          sessionId: 100,
+          provider: 'google',
+          eventId: 'evt-mon',
+          status: 'created',
+          reason: 'provider_event_created',
+          retryable: false,
+        }),
+        expect.objectContaining({
+          sessionId: 101,
+          provider: 'google',
+          eventId: 'evt-wed',
+          status: 'created',
+          reason: 'provider_event_created',
+          retryable: false,
+        }),
+      ]);
     }
     expect(mocks.createEvent).toHaveBeenCalledTimes(2);
     expect(mocks.createEvent).toHaveBeenCalledWith(expect.any(Object), 'google', 42);

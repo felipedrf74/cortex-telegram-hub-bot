@@ -97,6 +97,69 @@ function compactCoachSessionTitle(session: any, language: Lang): string {
   return raw;
 }
 
+function buildCoachReportResponse(
+  snapshot: Record<string, any>,
+  language: Lang,
+): Record<string, unknown> {
+  const briefing = String(snapshot.briefing || '').trim();
+  const recommendations = Array.isArray(snapshot.recommendations) ? snapshot.recommendations : [];
+  const primaryRecommendation = recommendations
+    .map((rec: any) => String(rec?.summary || rec?.reason || '').trim())
+    .find(Boolean);
+  const garminData = snapshot.garminData && typeof snapshot.garminData === 'object'
+    ? snapshot.garminData as Record<string, unknown>
+    : null;
+  const signals = [
+    typeof garminData?.sleepScore === 'number' ? `Sleep score ${garminData.sleepScore}` : null,
+    typeof garminData?.bodyBattery === 'number' ? `Body Battery ${garminData.bodyBattery}` : null,
+    snapshot.degraded ? trainingCopy(language, 'Dados parciais', 'Dados parciais', 'Partial data') : null,
+  ].filter(Boolean);
+
+  const sections = [
+    {
+      key: 'coach_summary',
+      title: trainingCopy(language, 'Resumo do coach', 'Resumo do coach', 'Coach summary'),
+      body: briefing || trainingCopy(language, 'Relatório do coach disponível.', 'Relatório do coach disponível.', 'Coach report available.'),
+    },
+    {
+      key: 'recommendation',
+      title: trainingCopy(language, 'Recomendação', 'Recomendação', 'Recommendation'),
+      body: primaryRecommendation || trainingCopy(language, 'Segue o plano com atenção à recuperação de hoje.', 'Siga o plano com atenção à recuperação de hoje.', 'Follow the plan with attention to today’s recovery.'),
+    },
+    {
+      key: 'signals_used',
+      title: trainingCopy(language, 'Sinais usados', 'Sinais usados', 'Signals used'),
+      body: signals.length > 0
+        ? signals.join(' · ')
+        : trainingCopy(language, 'Sinais recentes limitados; Nexus está a ser conservador.', 'Sinais recentes limitados; Nexus está sendo conservador.', 'Recent signals are limited; Nexus is staying conservative.'),
+    },
+    {
+      key: 'confidence_uncertainty',
+      title: trainingCopy(language, 'Confiança e incerteza', 'Confiança e incerteza', 'Confidence and uncertainty'),
+      body: snapshot.degraded
+        ? trainingCopy(language, 'Confiança média/baixa porque alguns dados não estavam frescos.', 'Confiança média/baixa porque alguns dados não estavam frescos.', 'Medium-low confidence because some data was not fresh.')
+        : trainingCopy(language, 'Confiança média: usa o plano atual e sinais disponíveis.', 'Confiança média: usa o plano atual e sinais disponíveis.', 'Medium confidence: based on the current plan and available signals.'),
+    },
+    {
+      key: 'sources_details',
+      title: trainingCopy(language, 'Detalhes', 'Detalhes', 'Details'),
+      body: snapshot.restoredFromReport
+        ? trainingCopy(language, 'Restaurado do último relatório do coach.', 'Restaurado do último relatório do coach.', 'Restored from the latest coach report.')
+        : trainingCopy(language, 'Gerado a partir do estado atual do treino.', 'Gerado a partir do estado atual do treino.', 'Generated from current Training state.'),
+      collapsed: true,
+    },
+  ];
+
+  return {
+    ...snapshot,
+    report: {
+      sections,
+      sanitized: true,
+      structured: true,
+    },
+  };
+}
+
 async function buildDeterministicCoachFallback(
   userId: number,
   language: Lang,
@@ -348,6 +411,65 @@ export function trainingRoutes(): Router {
         degraded: true,
         warnings: ['Coach briefing unavailable.'],
       });
+    } finally {
+      releaseCostLock();
+    }
+  });
+
+  router.post('/coach/report', async (req, res: Response) => {
+    const { userId } = req as AuthenticatedRequest;
+    const forceRefresh = req.body?.refresh === true;
+    const cacheKey = `coach-briefing:${userId}`;
+    const language = resolveTrainingLanguage(req as AuthenticatedRequest, userId);
+
+    if (!forceRefresh) {
+      const cached = getCached<Record<string, unknown>>(cacheKey);
+      if (cached) {
+        const payload = syncCoachStateForUser(userId, cached);
+        sendSuccess(res, buildCoachReportResponse(payload, language), { cached: true });
+        return;
+      }
+      const restored = restoreCoachBriefingFromLatestReport(userId);
+      if (restored) {
+        const payload = syncCoachStateForUser(userId, restored);
+        setCache(cacheKey, payload, COACH_BRIEFING_TTL);
+        sendSuccess(res, buildCoachReportResponse(payload, language), { cached: true });
+        return;
+      }
+    }
+
+    const releaseCostLock = await acquireCostLock(userId);
+    try {
+      const guardrail = enforceCostGuardrails(userId);
+      if (guardrail.block) {
+        rejectTrainingCostGuardrail(res, guardrail);
+        return;
+      }
+
+      const briefing = await generateCoachBriefing(userId);
+      const payload = syncCoachStateForUser(userId, {
+        briefing: briefing?.message || 'No coach briefing available.',
+        recommendations: briefing?.recommendations || [],
+        garminData: null as unknown,
+        cachedAt: new Date().toISOString(),
+      });
+      setCache(cacheKey, payload, COACH_BRIEFING_TTL);
+      sendSuccess(res, buildCoachReportResponse(payload, language));
+    } catch (err: any) {
+      logger.error({ err, userId }, 'iOS training/coach/report failed');
+      const fallback = await buildDeterministicCoachFallback(userId, language).catch(() => null);
+      if (fallback) {
+        const payload = syncCoachStateForUser(userId, fallback);
+        sendSuccess(res, buildCoachReportResponse(payload, language));
+        return;
+      }
+      sendSuccess(res, buildCoachReportResponse({
+        briefing: trainingCopy(language, 'Relatório do coach indisponível.', 'Relatório do coach indisponível.', 'Coach report unavailable.'),
+        recommendations: [],
+        garminData: null,
+        degraded: true,
+        warnings: ['Coach report unavailable.'],
+      }, language));
     } finally {
       releaseCostLock();
     }

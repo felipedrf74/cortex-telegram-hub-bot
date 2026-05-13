@@ -160,6 +160,7 @@ export function buildCoachKernelTrainingPlan(input: CoachKernelTrainingPlanInput
       durationWeeks: input.durationWeeks,
       weekStart,
       races: athlete.goals.raceCalendar,
+      goalMode: input.goalMode,
     });
 
     const weekReadiness = readinessForPlannedWeek(rollingAthlete.readiness, weekNumber);
@@ -515,6 +516,7 @@ export function buildAthleteStateFromTrainingProfiles(input: CoachKernelTraining
         durationWeeks: input.durationWeeks,
         weekStart: input.startDate,
         races: raceCalendar,
+        goalMode: input.goalMode,
       }),
       weekIndex: 1,
       totalWeeks: input.durationWeeks,
@@ -1717,7 +1719,10 @@ function resolveWeekPhase(args: {
   durationWeeks: number;
   weekStart: string;
   races: RaceEvent[];
+  goalMode?: TrainingGoalMode | null;
 }): BlockPhase {
+  if (args.goalMode === 'maintenance') return 'maintenance';
+
   const nextRace = [...args.races]
     .map((race) => ({
       ...race,
@@ -1730,6 +1735,13 @@ function resolveWeekPhase(args: {
     if (nextRace.diffDays <= 7) return 'race';
     if (nextRace.diffDays <= 21) return 'taper';
     if (nextRace.diffDays <= 42) return 'peak';
+    if (nextRace.diffDays <= 98) return 'build';
+    return 'base';
+  }
+
+  if (args.goalMode === 'return_to_training') {
+    if (args.weekNumber === args.durationWeeks) return 'deload';
+    return args.weekNumber <= 2 ? 'base' : 'build';
   }
 
   if (args.weekNumber === args.durationWeeks) return 'deload';

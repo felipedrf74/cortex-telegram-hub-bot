@@ -95,18 +95,39 @@ export async function getEvents(startDate: string, endDate: string, userId?: num
   return result.events;
 }
 
+export async function getEventsForSources(
+  startDate: string,
+  endDate: string,
+  userId: number | undefined,
+  sources: CalendarSource[],
+): Promise<UnifiedCalendarEvent[]> {
+  const result = await getEventsWithDiagnostics(startDate, endDate, userId, { sources });
+  if (result.status === 'unavailable' && result.sources.configured.length > 0) {
+    throw new UnifiedCalendarUnavailableError(
+      result.warnings[0] || 'Calendar data is unavailable right now.',
+      result.warningCodes,
+      result.warnings,
+    );
+  }
+  return result.events;
+}
+
 export async function getEventsWithDiagnostics(
   startDate: string,
   endDate: string,
   userId?: number,
+  options?: { sources?: CalendarSource[] },
 ): Promise<UnifiedCalendarFetchResult> {
   const scopedUserId = resolveScopedUserId(userId);
+  const allowedSources = options?.sources?.length
+    ? new Set<CalendarSource>(options.sources)
+    : null;
   const fetchers: Array<{
     source: CalendarSource;
     run: () => Promise<UnifiedCalendarEvent[]>;
   }> = [];
 
-  if (googleCal.isGoogleCalendarConfigured(scopedUserId ?? undefined)) {
+  if ((!allowedSources || allowedSources.has('google')) && googleCal.isGoogleCalendarConfigured(scopedUserId ?? undefined)) {
     fetchers.push({
       source: 'google',
       run: async () => {
@@ -118,7 +139,7 @@ export async function getEventsWithDiagnostics(
 
   // CHAT-M2: pass userId to isOutlookCalendarConfigured() so per-user
   // OAuth tokens (from iOS) are checked, not just the global owner token.
-  if (outlookCal.isOutlookCalendarConfigured(scopedUserId ?? undefined)) {
+  if ((!allowedSources || allowedSources.has('outlook')) && outlookCal.isOutlookCalendarConfigured(scopedUserId ?? undefined)) {
     fetchers.push({
       source: 'outlook',
       run: async () => {
@@ -128,7 +149,7 @@ export async function getEventsWithDiagnostics(
     });
   }
 
-  if (hasStagingFixtureCalendarEventsForUser(scopedUserId ?? undefined)) {
+  if ((!allowedSources || allowedSources.has('outlook')) && hasStagingFixtureCalendarEventsForUser(scopedUserId ?? undefined)) {
     fetchers.push({
       source: 'outlook',
       run: async () => getStagingFixtureCalendarEvents(startDate, endDate, scopedUserId ?? undefined),

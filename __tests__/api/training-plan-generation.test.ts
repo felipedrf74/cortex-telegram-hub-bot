@@ -35,6 +35,7 @@ vi.mock('../../src/services/onboarding', () => ({
 
 vi.mock('../../src/services/unified-calendar', () => ({
   getEvents: (...args: unknown[]) => mockGetEvents(...args),
+  getEventsForSources: (...args: unknown[]) => mockGetEvents(...args),
   // Identity-safety / test-isolation: vitest config has `singleFork: true`,
   // so a partial mock on this module leaks `undefined` exports to later
   // test files (e.g., `training-plan-calendar-sync.test.ts` re-mocks but
@@ -470,6 +471,34 @@ describe('generateTrainingPlanForUser', () => {
     expect(JSON.parse(persistInput.preferencesJson)).toMatchObject({
       trainingCalendarSource: 'google',
     });
+  });
+
+  it('returns a non-mutating preview using the selected calendar source', async () => {
+    const result = await generateTrainingPlanForUser({
+      userId: 12,
+      objective: 'Lisbon Marathon',
+      calendarSource: 'outlook',
+      previewOnly: true,
+    });
+
+    expect(result.status).toBe('preview');
+    if (result.status === 'preview') {
+      expect(result.data).toMatchObject({
+        status: 'preview',
+        calendarSource: 'outlook',
+        phaseRoadmap: [
+          expect.objectContaining({
+            weekNumber: 1,
+            phase: 'base',
+          }),
+        ],
+      });
+      expect(result.data.totalSessions).toBeGreaterThan(0);
+      expect(result.data.phaseRoadmap[0].sessionCount).toBeGreaterThan(0);
+    }
+    expect(mockGetEvents).toHaveBeenCalledWith(expect.any(String), expect.any(String), 12, ['outlook']);
+    expect(mockCancelTrainingPlanForUser).not.toHaveBeenCalled();
+    expect(mockPersistGeneratedTrainingPlan).not.toHaveBeenCalled();
   });
 
   it('falls back to the deterministic template when the coach kernel fails', async () => {

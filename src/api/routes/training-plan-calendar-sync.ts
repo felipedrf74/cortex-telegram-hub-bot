@@ -1,7 +1,7 @@
 // Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
 
 import * as trainingPlans from '../../services/training-plans';
-import { deleteEvent, getEvents, updateEvent, type CalendarSource, type UnifiedCalendarEvent } from '../../services/unified-calendar';
+import { deleteEvent, getEventsForSources, updateEvent, type CalendarSource, type UnifiedCalendarEvent } from '../../services/unified-calendar';
 import {
   buildBusyWindows,
   normalizePreferredTime,
@@ -65,6 +65,63 @@ export type TrainingPlanCalendarSyncResult =
         sessionsLinked: number;
         sessionsFailed: number;
         message: string;
+        sessionResults?: TrainingCalendarSessionSyncResult[];
+      };
+    };
+
+export interface TrainingCalendarSessionSyncResult {
+  sessionId: number;
+  title: string;
+  provider: CalendarSource | null;
+  eventId: string | null;
+  attemptedAt: string;
+  status: 'already_synced' | 'linked' | 'created' | 'failed' | 'skipped';
+  reason: string;
+  retryable: boolean;
+  start?: string;
+  end?: string;
+}
+
+export type TrainingSessionReflowPreviewResult =
+  | {
+      status: 'not_found' | 'forbidden' | 'no_calendar' | 'blocked';
+      data: {
+        message: string;
+        reason?: string;
+        sessionId?: number;
+        provider?: CalendarSource | null;
+      };
+    }
+  | {
+      status: 'preview';
+      data: {
+        sessionId: number;
+        title: string;
+        provider: CalendarSource;
+        current: { start: string; end: string; dayOfWeek: string; status: string };
+        proposed: { start: string; end: string; dayOfWeek: string };
+        whyThisSlot: string;
+        whatThisProtects: string[];
+        tradeoffs: string[];
+        reasonCodes: string[];
+        confidence: 'low' | 'medium' | 'high';
+      };
+    };
+
+export type TrainingSessionReflowConfirmResult =
+  | Exclude<TrainingSessionReflowPreviewResult, { status: 'preview' }>
+  | {
+      status: 'confirmed' | 'partial_failure';
+      data: {
+        sessionId: number;
+        title: string;
+        provider: CalendarSource;
+        eventId: string | null;
+        movedFrom: { start: string; end: string; dayOfWeek: string; status: string };
+        movedTo: { start: string; end: string; dayOfWeek: string };
+        verified: boolean;
+        message: string;
+        retryable: boolean;
       };
     };
 
@@ -139,6 +196,334 @@ function sessionDateFor(planStart: Date, weekNumber: number, dayOfWeek: string):
   const sessionDate = new Date(weekStart);
   sessionDate.setDate(sessionDate.getDate() + daysUntil);
   return sessionDate;
+}
+
+type ReflowSessionScope = {
+  plan: trainingPlans.TrainingPlan;
+  week: trainingPlans.TrainingWeek;
+  session: trainingPlans.TrainingSession;
+  sessionDate: Date;
+  preferences: PlanPreferences;
+};
+
+function resolveOwnedSessionScope(
+  userId: number,
+  sessionId: number,
+): ReflowSessionScope | null | 'forbidden' {
+  const session = trainingPlans.getSessionById(sessionId);
+  if (!session) return null;
+  const plan = trainingPlans.getPlanById(session.plan_id);
+  if (!plan || plan.user_id !== userId) return 'forbidden';
+  const week = trainingPlans.getWeeksForPlan(plan.id).find((candidate) => candidate.id === session.week_id);
+  if (!week) return null;
+  const sessionDate = sessionDateFor(new Date(plan.start_date), week.week_number, session.day_of_week);
+  if (!sessionDate) return null;
+  return {
+    plan,
+    week,
+    session,
+    sessionDate,
+    preferences: readPlanPreferences(plan),
+  };
+}
+
+async function sourceScopedBusyWindowsForSession(input: {
+  userId: number;
+  source: CalendarSource;
+  sessionDate: Date;
+  existingEventId: string | null;
+}): Promise<{ events: UnifiedCalendarEvent[]; busyWindows: BusyWindow[] }> {
+  const start = new Date(input.sessionDate);
+  start.setDate(start.getDate() - 1);
+  const end = new Date(input.sessionDate);
+  end.setDate(end.getDate() + 2);
+  const events = await getEventsForSources(
+    start.toISOString().slice(0, 10),
+    end.toISOString().slice(0, 10),
+    input.userId,
+    [input.source],
+  );
+  const busyEvents = (events || []).filter((event) => event.id !== input.existingEventId);
+  return {
+    events,
+    busyWindows: buildBusyWindows(busyEvents),
+  };
+}
+
+function currentWindowForSession(
+  scope: ReflowSessionScope,
+  events: UnifiedCalendarEvent[],
+): { start: Date; end: Date; dayOfWeek: string; status: string } {
+  const linkedEvent = scope.session.calendar_event_id
+    ? events.find((event) => event.id === scope.session.calendar_event_id)
+    : null;
+  if (linkedEvent) {
+    const start = new Date(linkedEvent.start);
+    const end = new Date(linkedEvent.end);
+    if (Number.isFinite(start.getTime()) && Number.isFinite(end.getTime())) {
+      return {
+        start,
+        end,
+        dayOfWeek: DAY_NAMES[start.getDay()],
+        status: String(scope.session.status || 'scheduled'),
+      };
+    }
+  }
+  const fallback = preferredWindowForItem({
+    sessionType: scope.session.session_type || 'training',
+    durationMinutes: scope.session.duration_minutes || 60,
+    sessionDate: scope.sessionDate,
+  }, scope.preferences);
+  return {
+    ...fallback,
+    dayOfWeek: scope.session.day_of_week,
+    status: String(scope.session.status || 'scheduled'),
+  };
+}
+
+function reasonCodesForReflowPreview(preferredTimeUnavailable: boolean): string[] {
+  return preferredTimeUnavailable
+    ? ['reflowed_to_available_window', 'preferred_time_unavailable']
+    : ['scheduled_in_available_window'];
+}
+
+function reflowPreviewMessage(title: string, proposed: Date): string {
+  return `${title} can move to ${proposed.toISOString()} before Nexus changes the plan or calendar.`;
+}
+
+export async function previewTrainingSessionReflow(
+  userId: number,
+  sessionId: number,
+  requestedCalendarSource?: CalendarSource | null,
+): Promise<TrainingSessionReflowPreviewResult> {
+  const scope = resolveOwnedSessionScope(userId, sessionId);
+  if (scope === 'forbidden') {
+    return { status: 'forbidden', data: { message: 'This training session does not belong to the current user.', sessionId } };
+  }
+  if (!scope) {
+    return { status: 'not_found', data: { message: 'Training session not found.', sessionId } };
+  }
+
+  const calendarSource = resolveTrainingCalendarSource({
+    userId,
+    requestedSource: requestedCalendarSource ?? undefined,
+    planPreferencesJson: scope.plan.preferences_json,
+    linkedSources: [scope.session.calendar_source],
+  });
+  if (!calendarSource) {
+    return {
+      status: 'no_calendar',
+      data: {
+        message: 'No writable calendar provider is connected for this training session.',
+        provider: null,
+        sessionId,
+      },
+    };
+  }
+
+  const { events, busyWindows } = await sourceScopedBusyWindowsForSession({
+    userId,
+    source: calendarSource,
+    sessionDate: scope.sessionDate,
+    existingEventId: scope.session.calendar_event_id || null,
+  });
+  const current = currentWindowForSession(scope, events);
+  const preferredTime = preferredTimeForSessionType(
+    scope.session.session_type || 'training',
+    scope.preferences.preferredTime,
+    scope.preferences.preferredCardioTime,
+    scope.preferences.preferredStrengthTime,
+  );
+  const scheduled = scheduleSessionWindow(
+    scope.sessionDate,
+    scope.session.duration_minutes || 60,
+    preferredTime,
+    busyWindows,
+    [],
+  );
+  if (scheduled.noAvailableSlot) {
+    return {
+      status: 'blocked',
+      data: {
+        message: 'Nexus could not find a safe free slot for this training session.',
+        reason: scheduled.unavailableReason || 'no_available_slot',
+        provider: calendarSource,
+        sessionId,
+      },
+    };
+  }
+
+  const intent = buildTrainingSyncSecretaryIntent({
+    userId,
+    tenantId: userId,
+    planId: scope.plan.id,
+    planVersion: getPlanVersion(scope.plan.id) ?? 1,
+    item: {
+      sessionId: scope.session.id,
+      sessionIdentityKey: scope.session.session_identity_key || buildTrainingSessionIdentityKey({
+        planId: scope.plan.id,
+        weekNumber: scope.week.week_number,
+        dayOfWeek: scope.session.day_of_week,
+        sessionType: scope.session.session_type || 'training',
+        ordinal: 1,
+      }),
+      sessionShapeHash: scope.session.session_shape_hash || computeTrainingSessionShapeHash({
+        sessionType: scope.session.session_type || 'training',
+        title: scope.session.title || 'Training session',
+        durationMinutes: scope.session.duration_minutes || 60,
+        intensityText: scope.session.intensity_text || null,
+        exercises: scope.session.exercises_json || [],
+        descriptionSections: scope.session.description_json || null,
+      }),
+      title: scope.session.title || 'Training session',
+      durationMinutes: scope.session.duration_minutes || 60,
+    },
+    start: scheduled.start,
+    end: scheduled.end,
+  });
+  const secretaryPreview = previewSecretarySchedulingIntent(intent);
+  const selected = selectedTrainingSyncSecretaryWindow(secretaryPreview);
+  const proposedStart = selected ? new Date(selected.start) : scheduled.start;
+  const proposedEnd = selected ? new Date(selected.end) : scheduled.end;
+
+  return {
+    status: 'preview',
+    data: {
+      sessionId,
+      title: scope.session.title || 'Training session',
+      provider: calendarSource,
+      current: {
+        start: current.start.toISOString(),
+        end: current.end.toISOString(),
+        dayOfWeek: current.dayOfWeek,
+        status: current.status,
+      },
+      proposed: {
+        start: proposedStart.toISOString(),
+        end: proposedEnd.toISOString(),
+        dayOfWeek: DAY_NAMES[proposedStart.getDay()],
+      },
+      whyThisSlot: reflowPreviewMessage(scope.session.title || 'Training session', proposedStart),
+      whatThisProtects: ['calendar truth', 'weekly training consistency'],
+      tradeoffs: scheduled.preferredTimeUnavailable
+        ? ['This is outside your closest preferred time window.']
+        : [],
+      reasonCodes: secretaryPreview.reasonCodes.length > 0
+        ? secretaryPreview.reasonCodes
+        : reasonCodesForReflowPreview(scheduled.preferredTimeUnavailable),
+      confidence: secretaryPreview.confidence,
+    },
+  };
+}
+
+export async function confirmTrainingSessionReflow(input: {
+  userId: number;
+  sessionId: number;
+  proposedStartAt?: string | null;
+  proposedEndAt?: string | null;
+  requestedCalendarSource?: CalendarSource | null;
+}): Promise<TrainingSessionReflowConfirmResult> {
+  const preview = await previewTrainingSessionReflow(input.userId, input.sessionId, input.requestedCalendarSource);
+  if (preview.status !== 'preview') return preview;
+
+  const proposedStart = new Date(input.proposedStartAt || preview.data.proposed.start);
+  const proposedEnd = new Date(input.proposedEndAt || preview.data.proposed.end);
+  if (!Number.isFinite(proposedStart.getTime()) || !Number.isFinite(proposedEnd.getTime()) || proposedEnd <= proposedStart) {
+    return {
+      status: 'blocked',
+      data: {
+        message: 'The proposed reflow time is invalid.',
+        reason: 'invalid_proposed_window',
+        provider: preview.data.provider,
+        sessionId: input.sessionId,
+      },
+    };
+  }
+
+  const scope = resolveOwnedSessionScope(input.userId, input.sessionId);
+  if (scope === 'forbidden') return { status: 'forbidden', data: { message: 'This training session does not belong to the current user.', sessionId: input.sessionId } };
+  if (!scope) return { status: 'not_found', data: { message: 'Training session not found.', sessionId: input.sessionId } };
+
+  const eventPayload = {
+    title: `${emojiForTrainingSession(scope.session.session_type)} ${scope.session.title || 'Training session'} (${scope.session.duration_minutes || 60}min)`,
+    start: proposedStart.toISOString(),
+    end: proposedEnd.toISOString(),
+    description: appendTrainingIdentityMarker(scope.session.description || '', {
+      planId: scope.plan.id,
+      planVersion: getPlanVersion(scope.plan.id) ?? 1,
+      sessionId: scope.session.id,
+      sessionIdentityKey: scope.session.session_identity_key || `training:${scope.session.id}`,
+      sessionShapeHash: scope.session.session_shape_hash || `shape:${scope.session.id}`,
+    }),
+  };
+
+  let eventId = scope.session.calendar_event_id || null;
+  try {
+    if (eventId && scope.session.calendar_source === preview.data.provider) {
+      await updateEvent({
+        event_id: eventId,
+        new_title: eventPayload.title,
+        new_start: eventPayload.start,
+        new_end: eventPayload.end,
+        new_description: eventPayload.description,
+      }, preview.data.provider, input.userId);
+    } else {
+      const created = await createTrainingCalendarEvent(eventPayload, preview.data.provider, input.userId, {
+        userId: input.userId,
+        sessionId: input.sessionId,
+        title: scope.session.title || 'Training session',
+      });
+      eventId = created?.id || eventId;
+    }
+  } catch (err) {
+    logger.warn({ err, userId: input.userId, sessionId: input.sessionId, provider: preview.data.provider }, 'Training session reflow provider write failed');
+  }
+
+  const updated = trainingPlans.updateSession(input.sessionId, {
+    day_of_week: DAY_NAMES[proposedStart.getDay()],
+    status: 'reflowed',
+    calendar_event_id: eventId,
+    calendar_source: preview.data.provider,
+  });
+  const readBack = trainingPlans.getSessionById(input.sessionId);
+  const verified = Boolean(
+    updated
+    && readBack
+    && readBack.day_of_week === DAY_NAMES[proposedStart.getDay()]
+    && readBack.status === 'reflowed'
+    && (!eventId || readBack.calendar_event_id === eventId)
+  );
+
+  if (eventId) {
+    recordTrainingCalendarOwnership({
+      planId: scope.plan.id,
+      planVersion: getPlanVersion(scope.plan.id) ?? 1,
+      sessionId: input.sessionId,
+      tenantId: input.userId,
+      userId: input.userId,
+      eventId,
+      source: preview.data.provider,
+      sessionIdentityKey: scope.session.session_identity_key,
+      sessionShapeHash: scope.session.session_shape_hash,
+    });
+  }
+
+  return {
+    status: verified ? 'confirmed' : 'partial_failure',
+    data: {
+      sessionId: input.sessionId,
+      title: preview.data.title,
+      provider: preview.data.provider,
+      eventId,
+      movedFrom: preview.data.current,
+      movedTo: preview.data.proposed,
+      verified,
+      message: verified
+        ? `Moved ${preview.data.title} to ${preview.data.proposed.start}.`
+        : `Nexus updated what it could, but could not fully verify ${preview.data.title}.`,
+      retryable: !verified,
+    },
+  };
 }
 
 /**
@@ -298,7 +683,7 @@ export async function syncTrainingPlanCalendar(
   let calendarEvents: UnifiedCalendarEvent[] = [];
   let calendarFetchSucceeded = false;
   try {
-    const events = await getEvents(startStr, endStr, userId);
+    const events = await getEventsForSources(startStr, endStr, userId, [calendarSource]);
     calendarEvents = events || [];
     const replacedLinkedEventKeys = new Set(
       candidates
@@ -320,6 +705,8 @@ export async function syncTrainingPlanCalendar(
   const scheduledWindows: BusyWindow[] = [];
   const consumedExistingEventKeys = new Set<string>();
   const pending: SyncCandidate[] = [];
+  const sessionResults: TrainingCalendarSessionSyncResult[] = [];
+  const attemptedAt = now.toISOString();
   let alreadySynced = 0;
   let ownershipRelinked = 0;
   for (const item of candidates) {
@@ -353,6 +740,7 @@ export async function syncTrainingPlanCalendar(
           ownershipToRelink.calendar_source,
         );
         ownershipRelinked += 1;
+        sessionResults.push(syncResult(item, ownershipToRelink.calendar_source as CalendarSource, 'linked', 'ownership_relinked_without_provider_read', false, ownershipToRelink.calendar_event_id, attemptedAt));
         continue;
       }
 
@@ -382,6 +770,7 @@ export async function syncTrainingPlanCalendar(
           sessionShapeHash: item.sessionShapeHash,
         });
         ownershipRelinked += 1;
+        sessionResults.push(syncResult(item, ownedEvent.source, 'linked', 'existing_owned_event_relinked', false, ownedEvent.id, attemptedAt, ownedEvent.start, ownedEvent.end));
         const eventStart = new Date(ownedEvent.start);
         const eventEnd = new Date(ownedEvent.end);
         if (Number.isFinite(eventStart.getTime()) && Number.isFinite(eventEnd.getTime())) {
@@ -403,6 +792,7 @@ export async function syncTrainingPlanCalendar(
 
     if (!calendarFetchSucceeded) {
       alreadySynced += 1;
+      sessionResults.push(syncResult(item, item.calendarSource as CalendarSource | null, 'already_synced', 'provider_read_unavailable_existing_link_preserved', true, item.calendarEventId, attemptedAt));
       continue;
     }
 
@@ -432,6 +822,7 @@ export async function syncTrainingPlanCalendar(
         sessionShapeHash: item.sessionShapeHash,
       });
       alreadySynced += 1;
+      sessionResults.push(syncResult(item, linkedEvent.source, 'already_synced', 'verified_existing_provider_event', false, linkedEvent.id, attemptedAt, linkedEvent.start, linkedEvent.end));
       const eventStart = new Date(linkedEvent.start);
       const eventEnd = new Date(linkedEvent.end);
       if (Number.isFinite(eventStart.getTime()) && Number.isFinite(eventEnd.getTime())) {
@@ -470,6 +861,7 @@ export async function syncTrainingPlanCalendar(
         sessionsAlreadySynced: alreadySynced,
         sessionsLinked: ownershipRelinked,
         sessionsFailed: 0,
+        sessionResults,
         message:
           ownershipRelinked > 0
             ? `${ownershipRelinked} existing ${ownershipRelinked === 1 ? 'session was' : 'sessions were'} linked to your calendar.`
@@ -501,6 +893,7 @@ export async function syncTrainingPlanCalendar(
         sessionShapeHash: item.sessionShapeHash,
       });
       sessionsLinked += 1;
+      sessionResults.push(syncResult(item, existingEvent.source, 'linked', 'matching_existing_event_linked', false, existingEvent.id, attemptedAt, existingEvent.start, existingEvent.end));
       const eventStart = new Date(existingEvent.start);
       const eventEnd = new Date(existingEvent.end);
       if (Number.isFinite(eventStart.getTime()) && Number.isFinite(eventEnd.getTime())) {
@@ -552,6 +945,7 @@ export async function syncTrainingPlanCalendar(
         },
         'syncTrainingPlanCalendar: session left unscheduled because no valid calendar slot remained',
       );
+      sessionResults.push(syncResult(item, calendarSource, 'failed', 'no_available_slot', true, null, attemptedAt));
       continue;
     }
     let secretaryWindow: { start: string; end: string } | null = null;
@@ -585,6 +979,7 @@ export async function syncTrainingPlanCalendar(
           },
           'syncTrainingPlanCalendar: Secretary preview did not return a schedulable Training slot',
         );
+        sessionResults.push(syncResult(item, calendarSource, 'failed', 'secretary_no_schedulable_slot', true, null, attemptedAt));
         continue;
       }
       const secretaryDecision = submitSecretarySchedulingIntent(secretaryIntent, { now: now.toISOString() });
@@ -607,6 +1002,7 @@ export async function syncTrainingPlanCalendar(
           },
           'syncTrainingPlanCalendar: Secretary did not return a schedulable Training slot',
         );
+        sessionResults.push(syncResult(item, calendarSource, 'failed', 'secretary_no_confirmed_slot', true, null, attemptedAt));
         continue;
       }
     } catch (err) {
@@ -616,6 +1012,7 @@ export async function syncTrainingPlanCalendar(
         { err, userId, planId: plan.id, planVersion, sessionId: item.sessionId },
         'syncTrainingPlanCalendar: Secretary scheduling intent failed for session',
       );
+      sessionResults.push(syncResult(item, calendarSource, 'failed', 'secretary_scheduling_failed', true, null, attemptedAt));
       continue;
     }
 
@@ -667,6 +1064,7 @@ export async function syncTrainingPlanCalendar(
         staleEvent: item.staleLinkedEvent,
       });
       eventsCreated += 1;
+      sessionResults.push(syncResult(item, event.source, 'created', 'provider_event_created', false, event.id, attemptedAt, secretaryWindow.start, secretaryWindow.end));
     } catch (err) {
       sessionsFailed += 1;
       if (!firstError) firstError = err as Error;
@@ -674,6 +1072,7 @@ export async function syncTrainingPlanCalendar(
         { err, userId, sessionId: item.sessionId, day: item.dayOfWeek },
         'syncTrainingPlanCalendar: createEvent failed for session',
       );
+      sessionResults.push(syncResult(item, calendarSource, 'failed', 'provider_event_create_failed', true, null, attemptedAt, secretaryWindow.start, secretaryWindow.end));
     }
   }
 
@@ -728,7 +1127,33 @@ export async function syncTrainingPlanCalendar(
       sessionsLinked,
       sessionsFailed,
       message,
+      sessionResults,
     },
+  };
+}
+
+function syncResult(
+  item: { sessionId: number; title: string },
+  provider: CalendarSource | null,
+  status: TrainingCalendarSessionSyncResult['status'],
+  reason: string,
+  retryable: boolean,
+  eventId: string | null,
+  attemptedAt: string,
+  start?: string,
+  end?: string,
+): TrainingCalendarSessionSyncResult {
+  return {
+    sessionId: item.sessionId,
+    title: item.title,
+    provider,
+    eventId,
+    attemptedAt,
+    status,
+    reason,
+    retryable,
+    ...(start ? { start } : {}),
+    ...(end ? { end } : {}),
   };
 }
 

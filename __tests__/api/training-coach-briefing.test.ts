@@ -73,6 +73,58 @@ describe('training coach briefing helpers', () => {
     expect(mockSetCache).not.toHaveBeenCalled();
   });
 
+  it('sanitizes raw coach report markers, ids, and timing traces before caching state', async () => {
+    const { getCoachBriefingSnapshot } = await import('../../src/api/routes/training-coach-briefing');
+    mockGetCached.mockReturnValue({
+      briefing: [
+        'A light walk protects tomorrow.',
+        'RECOMMENDATION KEY:',
+        'KEEP = execute as planned',
+        '<!-- COACH_RECS_START -->',
+        '[DEBUG] selected provider path',
+        '[TRACE] calendar scan returned 9 raw rows',
+        'Google API: 503 provider unavailable',
+        'Outlook provider: auth failed',
+        '"eventId": "_60q30c1g60o30e1i60o4ac1g60rj8gpl88r-j2c1h84s34h9g60s30c1g60o30c1g6sr-j2h216sqjgha184s48gpg64o30c1g60o30c1g60o32c1g60o30c1g6os32"',
+        'Data: 1.3s | Analysis: 12.4s',
+      ].join('\n'),
+      recommendations: [],
+    });
+
+    const snapshot = getCoachBriefingSnapshot(12);
+
+    expect(snapshot?.briefing).toBe('A light walk protects tomorrow.');
+    expect(mockSetLastCoachState).toHaveBeenCalledWith(12, [], 'A light walk protects tomorrow.');
+  });
+
+  it('drops provider error strings and bracketed debug tags from restored report summaries', async () => {
+    const { getCoachBriefingSnapshot } = await import('../../src/api/routes/training-coach-briefing');
+    mockGetCached.mockReturnValue(null);
+    mockGetLatestByType.mockReturnValue({
+      createdAt: new Date().toISOString(),
+      summary: 'Fallback summary.',
+      documentJson: {
+        message: [
+          'Keep today easy and protect the next key session.',
+          '[WARN] Google API: 503 during calendar scan',
+          'Microsoft Graph API: failed with status: 500',
+          'HTTP code: 503',
+        ].join('\n'),
+        recommendations: [],
+      },
+    });
+
+    const snapshot = getCoachBriefingSnapshot(12);
+
+    expect(snapshot?.briefing).toBe('Keep today easy and protect the next key session.');
+    expect(snapshot?.briefing).not.toMatch(/\[WARN\]|Google API|Microsoft Graph|HTTP code/i);
+    expect(mockSetCache).toHaveBeenCalledWith(
+      'coach-briefing:12',
+      expect.objectContaining({ briefing: 'Keep today easy and protect the next key session.' }),
+      21600,
+    );
+  });
+
   it('restores the latest coach report when the cache misses and respects tenant scope', async () => {
     const { getCoachBriefingSnapshot } = await import('../../src/api/routes/training-coach-briefing');
     mockGetCached.mockReturnValue(null);

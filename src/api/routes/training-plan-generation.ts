@@ -13,7 +13,7 @@ import {
   adaptTrainingPlanToAvailableEquipment,
   buildTrainingEquipmentAdaptation,
 } from '../../services/training-plan-equipment-adaptation';
-import { getEvents } from '../../services/unified-calendar';
+import { getEvents, getEventsForSources } from '../../services/unified-calendar';
 import {
   applyTrainingPlanCoordination,
   buildTrainingPlanCoordination,
@@ -70,12 +70,40 @@ export interface GenerateTrainingPlanForUserInput {
    */
   twoADayPreference?: 'never' | 'optional' | 'preferred' | null;
   calendarSource?: CalendarSource | null;
+  previewOnly?: boolean;
 }
 
 export type TrainingPlanGenerationResult =
   | {
       status: 'needs_profile';
       data: Record<string, unknown>;
+    }
+  | {
+      status: 'preview';
+      data: {
+        status: 'preview';
+        planName: string | null;
+        sport: string | null;
+        objective: string;
+        durationWeeks: number;
+        totalSessions: number;
+        calendarSource: CalendarSource | null;
+        phaseRoadmap: Array<{
+          weekNumber: number;
+          phase: string;
+          sessionCount: number;
+          keySessions: string[];
+        }>;
+        planLint: PlanLintResult;
+        warnings: Array<{ code: string; message: string }>;
+        blockers: Array<{ code: string; message: string }>;
+        calendarFetchDegraded: boolean;
+        calendarFetchError?: string;
+        fallbackTemplateUsed: boolean;
+        goalMode: TrainingGoalMode | null;
+        trainingPriority: TrainingPriority | null;
+        raceDate: string | null;
+      };
     }
   | {
       status: 'created';
@@ -220,6 +248,7 @@ export async function generateTrainingPlanForUser(
     raceDate,
     twoADayPreference,
     calendarSource,
+    previewOnly = false,
   } = input;
   const durationWeeks = input.durationWeeks ?? 4;
 
@@ -287,7 +316,9 @@ export async function generateTrainingPlanForUser(
   let calendarFetchDegraded = false;
   let calendarFetchError: string | undefined;
   try {
-    const events = await getEvents(startStr, endStr, userId);
+    const events = calendarSource
+      ? await getEventsForSources(startStr, endStr, userId, [calendarSource])
+      : await getEvents(startStr, endStr, userId);
     busyWindows = buildBusyWindows(events || []);
   } catch (err) {
     calendarFetchDegraded = true;
@@ -497,6 +528,38 @@ export async function generateTrainingPlanForUser(
   };
 
   const preflightLint = lintGeneratedTrainingPlanPreflight(persistenceInput);
+  if (previewOnly) {
+    return {
+      status: 'preview',
+      data: {
+        status: 'preview',
+        planName: typeof planData.planName === 'string' ? planData.planName : null,
+        sport: typeof planData.sport === 'string' ? planData.sport : null,
+        objective,
+        durationWeeks,
+        totalSessions: countSchedulablePlanSessions(planData),
+        calendarSource: calendarSource || null,
+        phaseRoadmap: buildPlanPhaseRoadmap(planData),
+        planLint: preflightLint,
+        warnings: buildPlanWarnings({
+          calendarFetchDegraded,
+          calendarFetchError,
+          lintResult: preflightLint,
+        }),
+        blockers: preflightLint.blockers.map((blocker) => ({
+          code: blocker.ruleId,
+          message: blocker.message,
+        })),
+        calendarFetchDegraded,
+        ...(calendarFetchError ? { calendarFetchError } : {}),
+        fallbackTemplateUsed: usedFallbackTemplate,
+        goalMode: normalizedGoalMode,
+        trainingPriority: normalizedTrainingPriority,
+        raceDate: raceDateForLint,
+      },
+    };
+  }
+
   if (preflightLint.status === 'fail') {
     logger.warn(
       {
@@ -611,8 +674,21 @@ export async function generateTrainingPlanForUser(
       sport: planData.sport,
       objective,
       durationWeeks,
+      calendarSource: calendarSource || null,
+      phaseRoadmap: buildPlanPhaseRoadmap(planData),
       totalSessions: persistedPlan.totalSessions,
       eventsCreated: persistedPlan.eventsCreated,
+      calendarSync: {
+        provider: calendarSource || null,
+        sessionsAttempted: persistedPlan.totalSessions,
+        eventsCreated: persistedPlan.eventsCreated,
+        sessionsFailed: Math.max(0, persistedPlan.totalSessions - persistedPlan.eventsCreated),
+        status: persistedPlan.eventsCreated >= persistedPlan.totalSessions
+          ? 'synced'
+          : persistedPlan.eventsCreated > 0
+            ? 'partial'
+            : 'not_synced',
+      },
       preferredCardioTime: normalizedPreferredCardioTime,
       preferredStrengthTime: normalizedPreferredStrengthTime,
       weeks: persistedPlan.weekSummaries,
@@ -633,6 +709,42 @@ export async function generateTrainingPlanForUser(
         : `Plan created! ${persistedPlan.totalSessions} sessions scheduled across ${durationWeeks} weeks. ${persistedPlan.eventsCreated} calendar events created.`,
     },
   };
+}
+
+function countSchedulablePlanSessions(planData: any): number {
+  return (Array.isArray(planData?.weeks) ? planData.weeks : []).reduce((sum: number, week: any) => {
+    const sessions = Array.isArray(week?.sessions) ? week.sessions : [];
+    return sum + sessions.filter((session: any) => {
+      const type = String(session?.sessionType || '').toLowerCase();
+      const status = String(session?.scheduleState || '').toLowerCase();
+      return type !== 'rest' && status !== 'dropped' && status !== 'deferred';
+    }).length;
+  }, 0);
+}
+
+function buildPlanPhaseRoadmap(planData: any): Array<{
+  weekNumber: number;
+  phase: string;
+  sessionCount: number;
+  keySessions: string[];
+}> {
+  return (Array.isArray(planData?.weeks) ? planData.weeks : []).map((week: any, index: number) => {
+    const sessions = Array.isArray(week?.sessions) ? week.sessions : [];
+    const activeSessions = sessions.filter((session: any) =>
+      String(session?.sessionType || '').toLowerCase() !== 'rest'
+      && String(session?.scheduleState || '').toLowerCase() !== 'dropped'
+    );
+    const keySessions = activeSessions
+      .map((session: any) => String(session?.title || '').trim())
+      .filter((title: string) => title.length > 0)
+      .slice(0, 3);
+    return {
+      weekNumber: Number(week?.weekNumber) || index + 1,
+      phase: String(week?.focus || 'base'),
+      sessionCount: activeSessions.length,
+      keySessions,
+    };
+  });
 }
 
 function buildPlanWarnings(input: {

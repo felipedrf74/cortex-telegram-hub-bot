@@ -570,6 +570,41 @@ describe('Training API routes', () => {
     expect(mockGenerateCoachBriefing).not.toHaveBeenCalled();
   });
 
+  it('returns a structured sanitized coach report without raw debug fragments', async () => {
+    mockGetCached.mockImplementation((key: string) => {
+      if (key === 'coach-briefing:12') {
+        return {
+          briefing: [
+            'Keep today controlled.',
+            'COACH_RECS_START',
+            'eventId: "_60q30c1g60o30e1i60o4ac1g60rj8gpl88rj2c1h84s34h9g60s30c1g60o30c1g6srj2h216sqjgha184s48gpg64o30c1g60o30c1g60o32c1g60o30c1g6os32"',
+            'Analysis: 12.4s',
+          ].join('\n'),
+          recommendations: [{ summary: 'Keep effort easy and protect tomorrow.' }],
+          garminData: { sleepScore: 68, bodyBattery: 55 },
+        };
+      }
+      return null;
+    });
+
+    const res = await dispatch('POST', '/coach/report');
+
+    expect(res.statusCode).toBe(200);
+    expect(res.body.ok).toBe(true);
+    expect(res.body.data.report.structured).toBe(true);
+    expect(res.body.data.report.sections.map((section: any) => section.key)).toEqual([
+      'coach_summary',
+      'recommendation',
+      'signals_used',
+      'confidence_uncertainty',
+      'sources_details',
+    ]);
+    const serialized = JSON.stringify(res.body.data);
+    expect(serialized).not.toMatch(/COACH_RECS_START|_60q30c1g60o30e1i60o4ac1g60rj8gpl88rj2c1h84s34h9g60s30c1g60o30c1g6srj2h216sqjgha184s48gpg64o30c1g60o30c1g60o32c1g60o30c1g6os32|Analysis: 12\.4s/);
+    expect(serialized).toContain('Keep effort easy');
+    expect(mockGenerateCoachBriefing).not.toHaveBeenCalled();
+  });
+
   it('returns render-ready training home state without triggering a fresh coach generation', async () => {
     mockGetActivePlan.mockReturnValue({
       id: 44,
@@ -1207,6 +1242,81 @@ describe('Training API routes', () => {
     expect(runStart.getTime()).toBeLessThan(gymStart.getTime());
     expect((gymStart.getTime() - runStart.getTime()) / 60000).toBeGreaterThanOrEqual(300);
     expect(mockInvalidateCalendarCaches).toHaveBeenCalledWith(12);
+  });
+
+  it('replays confirmed plan creation by idempotency key instead of creating a duplicate plan', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    vi.setSystemTime(new Date('2026-04-15T06:00:00.000Z'));
+
+    mockGetProfile.mockImplementation((_userId: number, profile: string) => {
+      if (profile === 'fitness') return { experienceLevel: 'Intermediate', available_equipment: 'Full gym' };
+      return null;
+    });
+    mockBuildCoachKernelTrainingPlan.mockReturnValue(makeKernelPlan([
+      {
+        weekNumber: 1,
+        focus: 'base',
+        intensityPct: 70,
+        sessions: [
+          {
+            dayOfWeek: 'Wednesday',
+            sessionType: 'gym',
+            title: 'Strength + Core Support',
+            durationMinutes: 40,
+            description: 'Controlled strength work.',
+            exercises: [],
+          },
+        ],
+      },
+    ]));
+
+    const body = {
+      objective: 'General fitness',
+      preferredTime: '12:00',
+      sessionsPerWeek: 3,
+      strengthSessionsPerWeek: 3,
+      idempotencyKey: 'plan-create-abc',
+    };
+
+    const first = await dispatch('POST', '/plan/generate', {}, body);
+    const createPlanCountAfterFirst = mockCreatePlan.mock.calls.length;
+    const createSessionCountAfterFirst = mockCreateSession.mock.calls.length;
+    const createEventCountAfterFirst = mockCreateEvent.mock.calls.length;
+    const second = await dispatch('POST', '/plan/generate', {}, body);
+
+    expect(first.statusCode).toBe(201);
+    expect(second.statusCode).toBe(201);
+    expect(second.body.data).toEqual(first.body.data);
+    expect(createPlanCountAfterFirst).toBeGreaterThan(0);
+    expect(createSessionCountAfterFirst).toBeGreaterThan(0);
+    expect(createEventCountAfterFirst).toBeGreaterThan(0);
+    expect(mockCreatePlan).toHaveBeenCalledTimes(createPlanCountAfterFirst);
+    expect(mockCreateSession).toHaveBeenCalledTimes(createSessionCountAfterFirst);
+    expect(mockCreateEvent).toHaveBeenCalledTimes(createEventCountAfterFirst);
+  });
+
+  it('rejects reused plan creation idempotency keys with different inputs', async () => {
+    mockGetProfile.mockImplementation((_userId: number, profile: string) => {
+      if (profile === 'fitness') return { experienceLevel: 'Intermediate', available_equipment: 'Full gym' };
+      return null;
+    });
+    mockBuildCoachKernelTrainingPlan.mockReturnValue(makeKernelPlan());
+
+    const first = await dispatch('POST', '/plan/generate', {}, {
+      objective: 'General fitness',
+      sessionsPerWeek: 3,
+      idempotencyKey: 'plan-create-conflict',
+    });
+    const second = await dispatch('POST', '/plan/generate', {}, {
+      objective: 'General fitness with extra cycling',
+      sessionsPerWeek: 4,
+      idempotencyKey: 'plan-create-conflict',
+    });
+
+    expect(first.statusCode).toBe(201);
+    expect(second.statusCode).toBe(409);
+    expect(second.body.error.code).toBe('IDEMPOTENCY_KEY_REUSED');
+    expect(mockCreatePlan).toHaveBeenCalledTimes(1);
   });
 
   it('returns profile quality and decision reasons from the generated plan payload', async () => {

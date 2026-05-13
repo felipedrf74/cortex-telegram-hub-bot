@@ -42,6 +42,8 @@
  * partially written plan.
  */
 
+import { getTrainingCoachRuleById } from './coach-rules';
+
 export type PlanLintRuleId =
   | 'no_past_active_sessions'
   | 'equipment_compatibility'
@@ -167,6 +169,15 @@ const GYM_EQUIPMENT_TOKENS = [
 ];
 
 const TAPER_FOCUS_PATTERNS = /\btaper\b|\brace\s*week\b|\bpeak\b|\bevent\s*week\b/i;
+
+const PLAN_LINT_COACH_RULE_MAP: Partial<Record<PlanLintRuleId, string>> = {
+  equipment_compatibility: 'strength-progressive-overload-with-deloads',
+  no_three_consecutive_leg_heavy_days: 'hybrid-interference-protect-key-sessions',
+  no_heavy_lower_before_long_run: 'hybrid-interference-protect-key-sessions',
+  no_fake_taper_without_event: 'endurance-periodization-by-goal-horizon',
+  race_specific_plan_requires_race_date: 'endurance-periodization-by-goal-horizon',
+  no_consecutive_identical_strength_sessions: 'strength-progressive-overload-with-deloads',
+};
 
 function toDate(value: string | Date | null | undefined): Date | null {
   if (!value) return null;
@@ -475,6 +486,22 @@ const SUGGESTED_FIXES: Record<PlanLintRuleId, string> = {
     'Bump strength variant index by `weekIndex` (slice 4.B/4.C) before the next regenerate.',
 };
 
+function attachCoachRuleEvidence(finding: PlanLintFinding): PlanLintFinding {
+  const coachRuleId = PLAN_LINT_COACH_RULE_MAP[finding.ruleId];
+  if (!coachRuleId) return finding;
+  const coachRule = getTrainingCoachRuleById(coachRuleId);
+  if (!coachRule) return finding;
+  return {
+    ...finding,
+    evidence: {
+      ...finding.evidence,
+      coachRuleId: coachRule.id,
+      sourceAnchors: coachRule.sourceAnchors,
+      userFacingPrinciple: coachRule.userFacingPrinciple,
+    },
+  };
+}
+
 /**
  * Run every plan-lint rule against the input, collect findings, classify
  * them by severity, and produce a stable status verdict.
@@ -483,7 +510,7 @@ export function lintPlan(input: PlanLintInput): PlanLintResult {
   const findings: PlanLintFinding[] = [];
   for (const rule of RULES) {
     const finding = rule(input);
-    if (finding) findings.push(finding);
+    if (finding) findings.push(attachCoachRuleEvidence(finding));
   }
   const blockers = findings.filter((f) => f.severity === 'blocker');
   const warnings = findings.filter((f) => f.severity === 'warning');
