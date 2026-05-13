@@ -167,6 +167,12 @@ export interface SecretaryAgendaItem {
   completedAt: string | null;
   sourceCreatedAt: string | null;
   sourceUpdatedAt: string | null;
+  /**
+   * Persisted reasoning trail (W-E). Read from `reasoning_trail_json`
+   * column. Always an array — empty when the row predates the trail
+   * column or when persistence was skipped.
+   */
+  reasoningTrail: ReasoningTrailNode[];
 }
 
 export interface SecretarySchedulingDecision {
@@ -186,6 +192,14 @@ export interface SecretarySchedulingDecision {
   downstreamImplications: string[];
   confidence: 'low' | 'medium' | 'high';
   feedback: SecretarySourceSkillFeedback;
+  /**
+   * Ordered breadcrumbs the arbitrator left while making this decision
+   * (W-E workstream). Capped at 12 nodes via `capReasoningTrail`; preserves
+   * outcome markers (`chosen`/`rejected`/`deferred`/`unscheduled`) over
+   * setup nodes when overflowing. Privacy: enum + slot + weight only,
+   * never user copy.
+   */
+  reasoningTrail: ReasoningTrailNode[];
 }
 
 export interface SecretarySourceSkillFeedback {
@@ -198,6 +212,74 @@ export interface SecretarySourceSkillFeedback {
   scheduledEnd: string | null;
   shouldRefreshSource: boolean;
   downstreamImplications: string[];
+}
+
+/**
+ * Reasoning-trail node kinds (W-E workstream).
+ *
+ * Each scheduling decision emits an ordered list of breadcrumbs that
+ * Secretary used to arrive at the outcome. Surfaced through Decision Center
+ * detail (C2) and Telegram `/why_last` so users get a "why moved my run?"
+ * answer.
+ *
+ * Privacy: trail nodes carry ONLY enum codes + structured slot objects +
+ * numeric weights. NEVER free-text titles, NEVER user descriptions. The
+ * single `detail` field is a short structured tag (e.g. `dur:60`,
+ * `weight:14`) — not user copy.
+ */
+export type ReasoningTrailNodeKind =
+  | 'validation'
+  | 'candidate'
+  | 'busy_block'
+  | 'priority'
+  | 'phase_boost'
+  | 'compression'
+  | 'reflow'
+  | 'considered'
+  | 'chosen'
+  | 'rejected'
+  | 'deferred'
+  | 'unscheduled';
+
+export interface ReasoningTrailNode {
+  kind: ReasoningTrailNodeKind;
+  reasonCode?: SecretaryReasonCode;
+  slot?: { start: string; end: string };
+  weight?: number;
+  /**
+   * Short structured tag, NOT free-text. Examples: `dur:60`, `min:45`,
+   * `cand_count:3`, `busy_count:5`. Cap 32 chars; never contains user copy.
+   */
+  detail?: string;
+}
+
+/** Hard cap on stored trail length to bound row width. */
+const REASONING_TRAIL_MAX_NODES = 12;
+
+/**
+ * Cap a trail at `REASONING_TRAIL_MAX_NODES` while preserving terminal
+ * `chosen`/`rejected`/`deferred`/`unscheduled` nodes — these are the
+ * outcome markers users actually want to see. Earlier `considered`/`candidate`
+ * nodes are dropped first.
+ */
+function capReasoningTrail(trail: ReasoningTrailNode[]): ReasoningTrailNode[] {
+  if (trail.length <= REASONING_TRAIL_MAX_NODES) return trail;
+  const terminal = trail.filter((node) =>
+    node.kind === 'chosen' || node.kind === 'rejected' || node.kind === 'deferred' || node.kind === 'unscheduled',
+  );
+  const remaining = REASONING_TRAIL_MAX_NODES - terminal.length;
+  if (remaining <= 0) {
+    // Edge case: more than 12 terminal nodes (shouldn't happen). Keep the
+    // last 12 terminal nodes.
+    return terminal.slice(-REASONING_TRAIL_MAX_NODES);
+  }
+  const nonTerminal = trail.filter((node) =>
+    node.kind !== 'chosen' && node.kind !== 'rejected' && node.kind !== 'deferred' && node.kind !== 'unscheduled',
+  );
+  // Keep the first `remaining` non-terminal nodes (decision setup is more
+  // useful than mid-flow considerations when overflowing) plus all terminal
+  // nodes appended.
+  return [...nonTerminal.slice(0, remaining), ...terminal];
 }
 
 export interface SecretarySchedulingBatchResult {
@@ -256,6 +338,11 @@ function ensureSecretaryAgendaDecisionExplanationColumn(db = getDb()): void {
   const columns = db.prepare('PRAGMA table_info(secretary_agenda_items)').all() as Array<{ name: string }>;
   if (!columns.some((column) => column.name === 'decision_explanation')) {
     db.exec('ALTER TABLE secretary_agenda_items ADD COLUMN decision_explanation TEXT');
+  }
+  // W-E: reasoning trail. Idempotent PRAGMA add. Persisted as JSON-encoded
+  // ReasoningTrailNode[]. NULL when row predates this column.
+  if (!columns.some((column) => column.name === 'reasoning_trail_json')) {
+    db.exec('ALTER TABLE secretary_agenda_items ADD COLUMN reasoning_trail_json TEXT');
   }
 }
 
@@ -319,6 +406,9 @@ export function previewSecretarySchedulingIntent(
     confidence: decision.confidence,
     wouldReflow: decision.status === 'reflowed',
     wouldCompress: decision.status === 'compressed',
+    // W-E: preview returns the trail so callers (Training, Decision Center)
+    // can render "if you pick this slot, here's why" copy without a submit.
+    reasoningTrail: decision.reasoningTrail,
     noPersist: true,
   };
 }
@@ -331,6 +421,12 @@ export interface SecretarySchedulingPreview {
   confidence: 'low' | 'medium' | 'high';
   wouldReflow: boolean;
   wouldCompress: boolean;
+  /**
+   * W-E reasoning trail attached to the preview decision. Same shape +
+   * cap as a real submit; useful for "what would Secretary explain?"
+   * before the user accepts a Decision Center card.
+   */
+  reasoningTrail: ReasoningTrailNode[];
   /** Marker — always `true` for preview returns; absent on submit results. */
   noPersist: true;
 }
@@ -438,14 +534,23 @@ function scheduleOne(
   acceptedBusyWindows: SecretaryTimeWindow[],
 ): SecretarySchedulingDecision {
   const nowIso = normalizeNow(options.now);
+  // W-E: collect reasoning breadcrumbs as we go. Privacy-safe — only
+  // enum codes, slot ISO strings, and numeric weights/counts.
+  const trail: ReasoningTrailNode[] = [];
   const validation = validateIntent(intent);
   if (validation.length > 0) {
+    for (const code of validation) {
+      trail.push({ kind: 'validation', reasonCode: code });
+    }
+    const validationStatus: SecretarySchedulingDecisionStatus =
+      validation.includes('invalid_source_skill') || validation.includes('invalid_owner_scope')
+        ? 'rejected'
+        : 'needs_more_context';
+    trail.push({ kind: validationStatus === 'rejected' ? 'rejected' : 'unscheduled' });
     return persistDecision({
       intent,
       nowIso,
-      status: validation.includes('invalid_source_skill') || validation.includes('invalid_owner_scope')
-        ? 'rejected'
-        : 'needs_more_context',
+      status: validationStatus,
       lifecycleState: validation.includes('invalid_source_skill') || validation.includes('invalid_owner_scope')
         ? 'unscheduled'
         : 'proposed',
@@ -455,6 +560,7 @@ function scheduleOne(
       alternativeSlots: [],
       conflicts: [],
       downstreamImplications: downstreamFor(intent, validation.includes('missing_duration') ? 'needs_more_context' : 'rejected'),
+      reasoningTrail: trail,
     });
   }
 
@@ -463,6 +569,25 @@ function scheduleOne(
   const duration = Math.max(1, Math.round(Number(intent.requestedDurationMinutes)));
   const busyWindows = buildBusyWindows(intent, options, acceptedBusyWindows);
   const candidateWindows = normalizeWindows(intent.preferredWindows ?? []);
+  // W-E: priority weight + phase boost are inputs to arbitration ordering;
+  // log them so users can see "why this won over the cooking intent".
+  trail.push({
+    kind: 'priority',
+    weight: SKILL_PRIORITY_WEIGHT[intent.sourceSkill],
+    detail: `skill:${intent.sourceSkill}`,
+  });
+  const phaseBoost = phaseBoostFor(intent.sourceSkill, intent.goalPhase ?? null);
+  if (phaseBoost !== 0) {
+    trail.push({
+      kind: 'phase_boost',
+      weight: phaseBoost,
+      detail: `phase:${intent.goalPhase ?? 'none'}`,
+    });
+  }
+  trail.push({ kind: 'candidate', detail: `cand:${candidateWindows.length}` });
+  if (busyWindows.length > 0) {
+    trail.push({ kind: 'busy_block', detail: `busy:${busyWindows.length}` });
+  }
   const exactSlot = findFirstAvailableSlot(candidateWindows, busyWindows, duration);
 
   if (exactSlot) {
@@ -476,6 +601,23 @@ function scheduleOne(
       ? ['reflowed_to_available_window', ...slotReasonCodes(intent, exactSlot)]
       : ['scheduled_in_available_window', ...slotReasonCodes(intent, exactSlot)];
 
+    const selectedSlot = slotToWindow(exactSlot);
+    if (reflowed) {
+      trail.push({ kind: 'reflow', reasonCode: 'reflowed_to_available_window' });
+    }
+    // Capture alternatives as `considered` before the `chosen` marker so the
+    // cap-policy preserves the chosen tail.
+    const alternatives = candidateWindowsToAlternatives(candidateWindows, exactSlot);
+    for (const alt of alternatives) {
+      trail.push({ kind: 'considered', slot: { start: alt.start, end: alt.end } });
+    }
+    trail.push({
+      kind: 'chosen',
+      slot: { start: selectedSlot.start, end: selectedSlot.end },
+      reasonCode: reflowed ? 'reflowed_to_available_window' : 'scheduled_in_available_window',
+      detail: `dur:${minutesBetween(selectedSlot.start, selectedSlot.end)}`,
+    });
+
     return persistDecision({
       intent,
       nowIso,
@@ -483,12 +625,13 @@ function scheduleOne(
       lifecycleState: reflowed ? 'reflowed' : 'scheduled',
       reasonCodes,
       explanation: explainDecision(intent, status, reasonCodes),
-      selectedSlot: slotToWindow(exactSlot),
-      alternativeSlots: candidateWindowsToAlternatives(candidateWindows, exactSlot),
+      selectedSlot,
+      alternativeSlots: alternatives,
       conflicts: conflictSummaries(busyWindows),
       downstreamImplications: downstreamFor(intent, status),
       latest,
       sourceShapeHash,
+      reasoningTrail: trail,
     });
   }
 
@@ -500,6 +643,18 @@ function scheduleOne(
     const compressedSlot = findLargestAvailableSlot(candidateWindows, busyWindows, minimumDuration, duration);
     if (compressedSlot) {
       const reasonCodes: SecretaryReasonCode[] = ['compressed_to_fit_capacity', ...slotReasonCodes(intent, compressedSlot)];
+      const selectedSlot = slotToWindow(compressedSlot);
+      trail.push({ kind: 'compression', reasonCode: 'compressed_to_fit_capacity', detail: `min:${minimumDuration}` });
+      const alternatives = candidateWindowsToAlternatives(candidateWindows, compressedSlot);
+      for (const alt of alternatives) {
+        trail.push({ kind: 'considered', slot: { start: alt.start, end: alt.end } });
+      }
+      trail.push({
+        kind: 'chosen',
+        slot: { start: selectedSlot.start, end: selectedSlot.end },
+        reasonCode: 'compressed_to_fit_capacity',
+        detail: `dur:${minutesBetween(selectedSlot.start, selectedSlot.end)}`,
+      });
       return persistDecision({
         intent,
         nowIso,
@@ -507,12 +662,13 @@ function scheduleOne(
         lifecycleState: 'compressed',
         reasonCodes,
         explanation: explainDecision(intent, 'compressed', reasonCodes),
-        selectedSlot: slotToWindow(compressedSlot),
-        alternativeSlots: candidateWindowsToAlternatives(candidateWindows, compressedSlot),
+        selectedSlot,
+        alternativeSlots: alternatives,
         conflicts: conflictSummaries(busyWindows),
         downstreamImplications: downstreamFor(intent, 'compressed'),
         latest,
         sourceShapeHash,
+        reasoningTrail: trail,
       });
     }
   }
@@ -526,6 +682,10 @@ function scheduleOne(
     candidateWindows.length === 0 ? 'missing_availability' : 'no_valid_slot',
     ...priorityReasonCodes(intent),
   ];
+  trail.push({
+    kind: status === 'deferred' ? 'deferred' : 'unscheduled',
+    reasonCode: status === 'deferred' ? 'deferred_due_to_current_capacity' : 'unscheduled_no_capacity',
+  });
 
   return persistDecision({
     intent,
@@ -540,6 +700,7 @@ function scheduleOne(
     downstreamImplications: downstreamFor(intent, status),
     latest,
     sourceShapeHash,
+    reasoningTrail: trail,
   });
 }
 
@@ -556,11 +717,17 @@ function persistDecision(input: {
   downstreamImplications: string[];
   latest?: SecretaryAgendaItem | null;
   sourceShapeHash?: string;
+  /**
+   * W-E: optional reasoning trail collected by `scheduleOne`. Capped via
+   * `capReasoningTrail` before persistence so row width stays bounded.
+   */
+  reasoningTrail?: ReasoningTrailNode[];
 }): SecretarySchedulingDecision {
   const db = getDb();
   const tenantId = normalizeTenantId(input.intent.tenantId);
   const latest = input.latest ?? findLatestAgendaItemForIntent(input.intent);
   const sourceShapeHash = input.sourceShapeHash ?? computeSourceShapeHash(input.intent);
+  const cappedTrail = capReasoningTrail(input.reasoningTrail ?? []);
 
   if (
     latest
@@ -568,7 +735,10 @@ function persistDecision(input: {
     && latest.lifecycleState !== 'superseded'
     && agendaSlotMatches(latest, input.selectedSlot)
   ) {
-    return decisionFromExisting(input.intent, latest, input.status, input.reasonCodes, input.explanation, input.conflicts, input.downstreamImplications);
+    return decisionFromExisting(
+      input.intent, latest, input.status, input.reasonCodes, input.explanation,
+      input.conflicts, input.downstreamImplications, cappedTrail,
+    );
   }
 
   const version = latest ? latest.version + 1 : 1;
@@ -581,6 +751,7 @@ function persistDecision(input: {
       ? Math.round(Number(input.intent.requestedDurationMinutes))
       : null;
   const scheduledSegments = decisionScheduledSegments(input.selectedSlot, input.alternativeSlots);
+  const reasoningTrailJson = cappedTrail.length > 0 ? JSON.stringify(cappedTrail) : null;
 
   const writeAgendaItem = db.transaction(() => {
     if (latest && latest.lifecycleState !== 'superseded') {
@@ -606,8 +777,8 @@ function persistDecision(input: {
         version, title, start_at, end_at, duration_minutes, decision_action,
         decision_reason_codes_json, decision_explanation, source_shape_hash, scheduled_segments_json,
         cancellation_reason, superseded_by_agenda_item_id, created_at, updated_at,
-        completed_at, source_created_at, source_updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'not_synced', NULL, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?, ?, NULL, ?, ?)
+        completed_at, source_created_at, source_updated_at, reasoning_trail_json
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'not_synced', NULL, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?, ?, NULL, ?, ?, ?)
     `).run(
       agendaItemId,
       input.intent.intentId,
@@ -633,6 +804,7 @@ function persistDecision(input: {
       input.nowIso,
       input.intent.createdAt ?? null,
       input.intent.updatedAt ?? null,
+      reasoningTrailJson,
     );
   });
 
@@ -655,6 +827,7 @@ function persistDecision(input: {
     downstreamImplications: input.downstreamImplications,
     confidence: confidenceFor(input.status, input.reasonCodes),
     feedback: buildFeedback(input.intent, agendaItem, input.status, input.reasonCodes, input.downstreamImplications),
+    reasoningTrail: cappedTrail,
   };
 }
 
@@ -692,6 +865,7 @@ function decisionFromExisting(
   explanation: string,
   conflicts: string[],
   downstreamImplications: string[],
+  fallbackTrail: ReasoningTrailNode[] = [],
 ): SecretarySchedulingDecision {
   const selectedSlot = agendaItem.startAt && agendaItem.endAt
     ? { start: agendaItem.startAt, end: agendaItem.endAt }
@@ -705,6 +879,12 @@ function decisionFromExisting(
   const persistedReasonCodes = agendaItem.decisionReasonCodes.length > 0
     ? filterKnownReasonCodes(agendaItem.decisionReasonCodes)
     : reasonCodes;
+  // W-E: prefer the persisted trail from the agenda item (canonical row
+  // truth); fall back to the in-flight trail from this scheduleOne pass when
+  // the row predates the column or persistence was skipped.
+  const reasoningTrail = agendaItem.reasoningTrail.length > 0
+    ? agendaItem.reasoningTrail
+    : fallbackTrail;
   return {
     status: resolvedStatus,
     agendaItem,
@@ -716,6 +896,7 @@ function decisionFromExisting(
     downstreamImplications,
     confidence: confidenceFor(resolvedStatus, persistedReasonCodes),
     feedback: buildFeedback(intent, agendaItem, resolvedStatus, persistedReasonCodes, downstreamImplications),
+    reasoningTrail,
   };
 }
 
@@ -1167,6 +1348,9 @@ function rowToAgendaItem(row: any): SecretaryAgendaItem {
     completedAt: row.completed_at ?? null,
     sourceCreatedAt: row.source_created_at ?? null,
     sourceUpdatedAt: row.source_updated_at ?? null,
+    // W-E: legacy rows (pre-column-add) decode to []. The PRAGMA add is
+    // idempotent so this is the only place that needs to be defensive.
+    reasoningTrail: safeParseArray<ReasoningTrailNode>(row.reasoning_trail_json),
   };
 }
 
