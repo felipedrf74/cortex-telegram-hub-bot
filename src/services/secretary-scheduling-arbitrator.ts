@@ -22,6 +22,7 @@ import crypto from 'crypto';
 import { getDb } from './database';
 import { logger } from '../utils/logger';
 import { cancelRemindersForAgendaItem } from '../state/reminders';
+import { filterKnownReasonCodes, type SecretaryReasonCode } from './secretary-reason-codes';
 
 export type SecretarySourceSkill = 'secretary' | 'training' | 'cooking' | 'finance' | 'content';
 
@@ -143,7 +144,13 @@ export interface SecretaryAgendaItem {
 export interface SecretarySchedulingDecision {
   status: SecretarySchedulingDecisionStatus;
   agendaItem: SecretaryAgendaItem;
-  reasonCodes: string[];
+  /**
+   * Reason codes for the arbitration outcome. Producers emit
+   * `SecretaryReasonCode` (compiler-enforced); historical legacy rows from
+   * pre-W-A persistence may contain unknown strings — consumers use
+   * `isKnownReasonCode` from `./secretary-reason-codes` to branch safely.
+   */
+  reasonCodes: SecretaryReasonCode[];
   explanation: string;
   selectedSlot: SecretaryTimeWindow | null;
   alternativeSlots: SecretaryTimeWindow[];
@@ -158,7 +165,7 @@ export interface SecretarySourceSkillFeedback {
   sourceIntentId: string;
   agendaItemId: string;
   status: SecretarySchedulingDecisionStatus;
-  reasonCodes: string[];
+  reasonCodes: SecretaryReasonCode[];
   scheduledStart: string | null;
   scheduledEnd: string | null;
   shouldRefreshSource: boolean;
@@ -366,7 +373,7 @@ function scheduleOne(
       && latest.endAt
       && (Date.parse(latest.startAt) !== exactSlot.startMs || Date.parse(latest.endAt) !== exactSlot.endMs);
     const status: SecretarySchedulingDecisionStatus = reflowed ? 'reflowed' : 'scheduled';
-    const reasonCodes = reflowed
+    const reasonCodes: SecretaryReasonCode[] = reflowed
       ? ['reflowed_to_available_window', ...slotReasonCodes(intent, exactSlot)]
       : ['scheduled_in_available_window', ...slotReasonCodes(intent, exactSlot)];
 
@@ -393,7 +400,7 @@ function scheduleOne(
     );
     const compressedSlot = findLargestAvailableSlot(candidateWindows, busyWindows, minimumDuration, duration);
     if (compressedSlot) {
-      const reasonCodes = ['compressed_to_fit_capacity', ...slotReasonCodes(intent, compressedSlot)];
+      const reasonCodes: SecretaryReasonCode[] = ['compressed_to_fit_capacity', ...slotReasonCodes(intent, compressedSlot)];
       return persistDecision({
         intent,
         nowIso,
@@ -415,7 +422,7 @@ function scheduleOne(
   const status: SecretarySchedulingDecisionStatus = hasFutureDeadline && (intent.flexibility ?? 'flexible') === 'flexible'
     ? 'deferred'
     : 'unscheduled';
-  const reasonCodes = [
+  const reasonCodes: SecretaryReasonCode[] = [
     status === 'deferred' ? 'deferred_due_to_current_capacity' : 'unscheduled_no_capacity',
     candidateWindows.length === 0 ? 'missing_availability' : 'no_valid_slot',
     ...priorityReasonCodes(intent),
@@ -442,7 +449,7 @@ function persistDecision(input: {
   nowIso: string;
   status: SecretarySchedulingDecisionStatus;
   lifecycleState: SecretaryAgendaLifecycleState;
-  reasonCodes: string[];
+  reasonCodes: SecretaryReasonCode[];
   explanation: string;
   selectedSlot: SecretaryTimeWindow | null;
   alternativeSlots: SecretaryTimeWindow[];
@@ -582,7 +589,7 @@ function decisionFromExisting(
   intent: SecretarySchedulingIntent,
   agendaItem: SecretaryAgendaItem,
   status: SecretarySchedulingDecisionStatus,
-  reasonCodes: string[],
+  reasonCodes: SecretaryReasonCode[],
   explanation: string,
   conflicts: string[],
   downstreamImplications: string[],
@@ -594,22 +601,27 @@ function decisionFromExisting(
     !selectedSlot || segment.start !== selectedSlot.start || segment.end !== selectedSlot.end
   ));
   const resolvedStatus = agendaItem.decisionAction || status;
+  // Coerce legacy DB-shape `string[]` to typed reason codes at the read boundary;
+  // unknown legacy values are filtered out (see secretary-reason-codes.ts W-A).
+  const persistedReasonCodes = agendaItem.decisionReasonCodes.length > 0
+    ? filterKnownReasonCodes(agendaItem.decisionReasonCodes)
+    : reasonCodes;
   return {
     status: resolvedStatus,
     agendaItem,
-    reasonCodes: agendaItem.decisionReasonCodes.length > 0 ? agendaItem.decisionReasonCodes : reasonCodes,
+    reasonCodes: persistedReasonCodes,
     explanation,
     selectedSlot,
     alternativeSlots,
     conflicts,
     downstreamImplications,
-    confidence: confidenceFor(resolvedStatus, reasonCodes),
-    feedback: buildFeedback(intent, agendaItem, resolvedStatus, reasonCodes, downstreamImplications),
+    confidence: confidenceFor(resolvedStatus, persistedReasonCodes),
+    feedback: buildFeedback(intent, agendaItem, resolvedStatus, persistedReasonCodes, downstreamImplications),
   };
 }
 
-function validateIntent(intent: SecretarySchedulingIntent): string[] {
-  const reasonCodes: string[] = [];
+function validateIntent(intent: SecretarySchedulingIntent): SecretaryReasonCode[] {
+  const reasonCodes: SecretaryReasonCode[] = [];
   if (!Number.isFinite(intent.ownerUserId) || intent.ownerUserId <= 0) reasonCodes.push('invalid_owner_scope');
   if (!normalizeTenantId(intent.tenantId)) reasonCodes.push('invalid_tenant_scope');
   if (!VALID_SOURCE_SKILLS.has(intent.sourceSkill)) reasonCodes.push('invalid_source_skill');
@@ -821,8 +833,8 @@ function scoreIntent(intent: SecretarySchedulingIntent): number {
   return base + SKILL_PRIORITY_WEIGHT[intent.sourceSkill] + deadlineBoost + fixedBoost;
 }
 
-function priorityReasonCodes(intent: SecretarySchedulingIntent): string[] {
-  const codes: string[] = [];
+function priorityReasonCodes(intent: SecretarySchedulingIntent): SecretaryReasonCode[] {
+  const codes: SecretaryReasonCode[] = [];
   if (intent.priority === 'urgent' || intent.priority === 'high' || Number(intent.priority) >= 70) {
     codes.push('high_priority_intent');
   }
@@ -834,7 +846,7 @@ function priorityReasonCodes(intent: SecretarySchedulingIntent): string[] {
   return codes;
 }
 
-function slotReasonCodes(intent: SecretarySchedulingIntent, slot: CandidateSlot): string[] {
+function slotReasonCodes(intent: SecretarySchedulingIntent, slot: CandidateSlot): SecretaryReasonCode[] {
   const codes = priorityReasonCodes(intent);
   if (slot.durationMinutes < Number(intent.requestedDurationMinutes)) codes.push('duration_reduced');
   if (intent.flexibility === 'fixed') codes.push('fixed_intent_respected');
@@ -852,7 +864,7 @@ function hasDeadlineAfterWindows(deadline: string | null | undefined, windows: N
 function explainDecision(
   intent: SecretarySchedulingIntent,
   status: SecretarySchedulingDecisionStatus,
-  reasonCodes: string[],
+  reasonCodes: readonly SecretaryReasonCode[],
 ): string {
   const title = intent.title.trim() || 'This item';
   switch (status) {
@@ -910,7 +922,7 @@ function buildFeedback(
   intent: SecretarySchedulingIntent,
   agendaItem: SecretaryAgendaItem,
   status: SecretarySchedulingDecisionStatus,
-  reasonCodes: string[],
+  reasonCodes: readonly SecretaryReasonCode[],
   downstreamImplications: string[],
 ): SecretarySourceSkillFeedback {
   return {
@@ -918,7 +930,7 @@ function buildFeedback(
     sourceIntentId: intent.intentId,
     agendaItemId: agendaItem.agendaItemId,
     status,
-    reasonCodes,
+    reasonCodes: [...reasonCodes],
     scheduledStart: agendaItem.startAt,
     scheduledEnd: agendaItem.endAt,
     shouldRefreshSource: ['reflowed', 'compressed', 'deferred', 'unscheduled', 'needs_more_context'].includes(status),
@@ -940,7 +952,7 @@ function buildFeedbackBySourceSkill(decisions: SecretarySchedulingDecision[]): R
   return empty;
 }
 
-function confidenceFor(status: SecretarySchedulingDecisionStatus, reasonCodes: string[]): 'low' | 'medium' | 'high' {
+function confidenceFor(status: SecretarySchedulingDecisionStatus, reasonCodes: readonly SecretaryReasonCode[]): 'low' | 'medium' | 'high' {
   if (status === 'scheduled' || status === 'reflowed') return 'high';
   if (status === 'compressed' || status === 'deferred') return 'medium';
   if (reasonCodes.includes('missing_duration') || reasonCodes.includes('missing_availability')) return 'low';
