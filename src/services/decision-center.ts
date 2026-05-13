@@ -1199,7 +1199,7 @@ function formatDecisionItemForApi(item: DecisionRecord): DecisionApiItem {
     relatedEntitiesSafe: relatedEntitiesSafeForRecord(item, logic),
     sourceTraceSummary: sourceTraceSummaryForRecord(item, logic),
     sourceTrace: sourceTraceForRecord(item, logic),
-    dependencyGraphSummary: dependencyGraphSummaryForRecord(dependencies),
+    dependencyGraphSummary: dependencyGraphSummaryForRecord(dependencies, userDecisionContextDefaults(item.userId).locale),
     actionTruthTableEntry: action ? actionTruthTableEntryForRecord(item, action, logic, rollback) : null,
     askNexusContext: askNexusContextForRecord(item, logic),
     deadlineAt: item.decisionDeadline,
@@ -1448,11 +1448,23 @@ function relatedStateReadModelsForRecord(item: DecisionRecord): string[] {
   return models;
 }
 
-function dependencyGraphSummaryForRecord(dependencies: { dependsOnDecisionIds: string[]; blockedByDecisionIds: string[] }): string | null {
+function dependencyGraphSummaryForRecord(
+  dependencies: { dependsOnDecisionIds: string[]; blockedByDecisionIds: string[] },
+  locale?: string | null,
+): string | null {
+  const pt = String(locale ?? '').toLowerCase().startsWith('pt');
   if (dependencies.blockedByDecisionIds.length > 0) {
+    if (pt) {
+      const count = dependencies.blockedByDecisionIds.length;
+      return `Bloqueado por ${count} decisão${count === 1 ? '' : 'ões'} por resolver.`;
+    }
     return `Blocked by ${dependencies.blockedByDecisionIds.length} unresolved decision${dependencies.blockedByDecisionIds.length === 1 ? '' : 's'}.`;
   }
   if (dependencies.dependsOnDecisionIds.length > 0) {
+    if (pt) {
+      const count = dependencies.dependsOnDecisionIds.length;
+      return `Relacionado com ${count} decisão${count === 1 ? '' : 'ões'} anterior${count === 1 ? '' : 'es'}.`;
+    }
     return `Related to ${dependencies.dependsOnDecisionIds.length} upstream decision${dependencies.dependsOnDecisionIds.length === 1 ? '' : 's'}.`;
   }
   return null;
@@ -1601,6 +1613,8 @@ function secretaryAgendaDecisionContext(agenda: SecretaryAgendaItem, supplied?: 
     candidateSlots,
     reasonCodes: supplied?.reasonCodes ?? agenda.decisionReasonCodes,
     sourceState: supplied?.sourceState ?? agenda.lifecycleState,
+    providerSyncState: agenda.providerSyncState,
+    providerSyncUpdatedAt: agenda.updatedAt,
   };
 }
 

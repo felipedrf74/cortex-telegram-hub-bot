@@ -7,6 +7,8 @@ import type {
   NotificationPrivacyPolicy,
   NotificationSourceSkill,
 } from './notification-orchestrator';
+import { apnsBodyMoved, apnsBodyNeedsChoice } from './secretary-apns-anchoring';
+import type { Lang } from '../utils/i18n';
 
 export type DecisionQualityStatus = 'pass' | 'needs_enrichment' | 'internal_only' | 'blocked';
 export type AutomationEligibility = 'never' | 'ask_first' | 'safe_auto_handle' | 'user_opt_in_required';
@@ -28,6 +30,8 @@ export interface DecisionLogicContext {
   sourceState?: string | null;
   explicitNoRelatedEntityReason?: string | null;
   providerName?: string | null;
+  providerSyncState?: string | null;
+  providerSyncUpdatedAt?: string | null;
   deadlineAt?: string | null;
   timezone?: string | null;
   locale?: string | null;
@@ -339,7 +343,13 @@ export function evaluateDecisionQuality(
     missingFields.push('confidence');
   }
   const rawCopyGeneric = isGenericCopy(input.title) || isGenericCopy(input.safeBody ?? input.body);
-  const enrichedCopyStillWeak = recipe.confidence < 0.6 || isGenericCopy(recipe.problemStatement) || isGenericCopy(recipe.whySummary);
+  const lowConfidenceButConcreteSecretary = input.sourceSkill === 'secretary'
+    && input.relatedEntityType === 'secretary_agenda_item'
+    && !isGenericCopy(recipe.problemStatement)
+    && !isGenericCopy(recipe.whySummary);
+  const enrichedCopyStillWeak = (!lowConfidenceButConcreteSecretary && recipe.confidence < 0.6)
+    || isGenericCopy(recipe.problemStatement)
+    || isGenericCopy(recipe.whySummary);
   if ((rawCopyGeneric && enrichedCopyStillWeak) || isGenericCopy(recipe.problemStatement) || isGenericCopy(recipe.whySummary)) {
     missingFields.push('concreteCopy');
   }
@@ -502,6 +512,10 @@ function overcapacityRecipe(input: DecisionLogicInput): DecisionLogicRecipe {
   const contextLabel = input.context?.entityTitle?.trim() || 'This schedule window';
   const primary = primaryAction(input.actions);
   const hasMutatingChoice = input.actions.some(isMutatingAction);
+  const safePreviewBody = secretaryAnchoredSafePreviewBody(
+    input,
+    pt ? 'Abra o Nexus para escolher o que deve ficar protegido.' : 'Open Nexus to choose what should stay protected.',
+  );
   return {
     title: pt ? 'Decisão de capacidade' : 'Overcapacity decision',
     problemStatement: pt
@@ -543,7 +557,7 @@ function overcapacityRecipe(input: DecisionLogicInput): DecisionLogicRecipe {
     automationEligibility: 'ask_first',
     autopilotPolicy: pt ? 'Decisões de prioridade perguntam primeiro; o Nexus não escolhe prioridades do usuário em silêncio.' : 'Overcapacity priority decisions ask first; Nexus does not silently choose user priorities.',
     safePreviewTitle: pt ? 'Decisão de capacidade' : 'Overcapacity decision',
-    safePreviewBody: pt ? 'Abra o Nexus para escolher o que deve ficar protegido.' : 'Open Nexus to choose what should stay protected.',
+    safePreviewBody,
     riskIfIgnored: 'high',
   };
 }
@@ -595,6 +609,10 @@ function secretaryRecipe(input: DecisionLogicInput): DecisionLogicRecipe {
   const currentWindow = formatDecisionWindow(context.currentStartAt, context.currentEndAt, context.timezone, context.locale);
   const recommendedWindow = formatDecisionWindow(context.recommendedStartAt, context.recommendedEndAt, context.timezone, context.locale);
   const hasConcreteAgenda = !!entityTitle && !!recommendedWindow;
+  const confidence = hasConcreteAgenda
+    ? secretaryConfidenceWithSyncFreshness(DECISION_CONFIDENCE_RUBRIC.highScheduleRecommendation, context)
+    : DECISION_CONFIDENCE_RUBRIC.lowMissingScheduleContext;
+  const syncUncertainty = secretarySyncFreshnessUncertainty(context, pt);
   const primary = primaryAction(input.actions);
   const title = hasConcreteAgenda ? 'Schedule conflict' : sanitizeTitle(input.title);
   return {
@@ -619,14 +637,14 @@ function secretaryRecipe(input: DecisionLogicInput): DecisionLogicRecipe {
     urgencyReason: input.priority === 'time_sensitive'
       ? (pt ? 'A decisão afeta um item de agenda de hoje ou sensível a prazo.' : 'The decision affects a same-day or deadline-sensitive schedule item.')
       : (pt ? 'A decisão afeta sua agenda.' : 'The decision affects your schedule.'),
-    confidence: hasConcreteAgenda ? DECISION_CONFIDENCE_RUBRIC.highScheduleRecommendation : DECISION_CONFIDENCE_RUBRIC.lowMissingScheduleContext,
+    confidence,
     relatedEntityReason: hasConcreteAgenda ? null : input.context?.explicitNoRelatedEntityReason ?? null,
     why: {
       facts: hasConcreteAgenda ? (pt ? [`Item afetado: ${entityTitle}.`, `Janela candidata: ${recommendedWindow}.`] : [`Affected item: ${entityTitle}.`, `Candidate window: ${recommendedWindow}.`]) : [pt ? 'Nenhum item de agenda persistido da Secretary estava disponível.' : 'No persisted Secretary agenda item was available.'],
       preferences: [],
       rules: [pt ? 'Conflitos de agenda, tempo e capacidade devem ser arbitrados pela Secretary.' : 'Schedule, time, and capacity conflicts must be arbitrated by Secretary.'],
       tradeoffs: hasConcreteAgenda ? [pt ? 'A mudança proposta fica limitada ao item afetado.' : 'The proposed change is bounded to the affected item.'] : [pt ? 'Ocultar o cartão é mais seguro do que mostrar uma decisão vaga.' : 'Hiding the card is safer than showing a vague decision.'],
-      uncertainty: hasConcreteAgenda ? [] : [pt ? 'O conflito exato e o horário alternativo são desconhecidos.' : 'The exact conflict and alternative slot are unknown.'],
+      uncertainty: hasConcreteAgenda ? syncUncertainty : [pt ? 'O conflito exato e o horário alternativo são desconhecidos.' : 'The exact conflict and alternative slot are unknown.'],
     },
     whatWillChange: hasConcreteAgenda ? [{
       item: entityTitle,
@@ -638,9 +656,51 @@ function secretaryRecipe(input: DecisionLogicInput): DecisionLogicRecipe {
     automationEligibility: 'ask_first',
     autopilotPolicy: pt ? 'Mudanças de agenda perguntam primeiro, salvo opt-in explícito para automação.' : 'Schedule changes ask first unless the user explicitly opts into automation.',
     safePreviewTitle: hasConcreteAgenda ? (pt ? 'Decisão de agenda' : 'Schedule decision') : (pt ? 'Detalhes da decisão indisponíveis' : 'Decision details unavailable'),
-    safePreviewBody: hasConcreteAgenda ? (pt ? 'Abra o Nexus para revisar uma recomendação concreta de agenda.' : 'Open Nexus to review a concrete schedule recommendation.') : (pt ? 'O Nexus está enriquecendo esta decisão antes de mostrá-la.' : 'Nexus is enriching this decision before showing it.'),
+    safePreviewBody: hasConcreteAgenda
+      ? secretaryAnchoredSafePreviewBody(
+        input,
+        pt ? 'Abra o Nexus para revisar uma recomendação concreta de agenda.' : 'Open Nexus to review a concrete schedule recommendation.',
+      )
+      : (pt ? 'O Nexus está enriquecendo esta decisão antes de mostrá-la.' : 'Nexus is enriching this decision before showing it.'),
     riskIfIgnored: hasConcreteAgenda ? 'high' : 'medium',
   };
+}
+
+function secretaryConfidenceWithSyncFreshness(
+  baseConfidence: number,
+  context: DecisionLogicContext,
+): number {
+  const state = String(context.providerSyncState ?? '').toLowerCase();
+  if (!state || state === 'synced' || state === 'deleted') return baseConfidence;
+  const updatedAt = Date.parse(String(context.providerSyncUpdatedAt ?? ''));
+  if (!Number.isFinite(updatedAt)) return Math.min(baseConfidence, DECISION_CONFIDENCE_RUBRIC.mediumGenericDecision);
+  const ageMinutes = (Date.now() - updatedAt) / 60_000;
+  if (ageMinutes > 60) return Math.min(baseConfidence, DECISION_CONFIDENCE_RUBRIC.lowContentMissingEntity);
+  if (ageMinutes > 15) return Math.min(baseConfidence, DECISION_CONFIDENCE_RUBRIC.mediumOwnerAdminOps);
+  return baseConfidence;
+}
+
+function secretarySyncFreshnessUncertainty(context: DecisionLogicContext, pt: boolean): string[] {
+  const state = String(context.providerSyncState ?? '').toLowerCase();
+  if (!state || state === 'synced' || state === 'deleted') return [];
+  const updatedAt = Date.parse(String(context.providerSyncUpdatedAt ?? ''));
+  if (!Number.isFinite(updatedAt)) {
+    return [pt
+      ? 'A confirmação externa do calendário ainda não tem uma marca temporal fiável.'
+      : 'External calendar confirmation does not yet have a reliable timestamp.'];
+  }
+  const ageMinutes = (Date.now() - updatedAt) / 60_000;
+  if (ageMinutes > 60) {
+    return [pt
+      ? 'A sincronização externa do calendário está atrasada há mais de uma hora.'
+      : 'External calendar sync is more than an hour stale.'];
+  }
+  if (ageMinutes > 15) {
+    return [pt
+      ? 'A sincronização externa do calendário está atrasada há mais de 15 minutos.'
+      : 'External calendar sync is more than 15 minutes stale.'];
+  }
+  return [];
 }
 
 function trainingRecipe(input: DecisionLogicInput): DecisionLogicRecipe {
@@ -993,6 +1053,52 @@ function sanitizeTitle(value: string): string {
 
 function isPortugueseDecision(input: DecisionLogicInput): boolean {
   return normalizeDecisionLocale(input.context?.locale).toLowerCase().startsWith('pt');
+}
+
+function decisionLang(input: DecisionLogicInput): Lang {
+  const normalizedLocale = normalizeDecisionLocale(input.context?.locale).toLowerCase();
+  if (normalizedLocale === 'pt-br') return 'pt-BR';
+  if (normalizedLocale.startsWith('pt')) return 'pt-PT';
+  return 'en-US';
+}
+
+function secretaryAnchoredSafePreviewBody(input: DecisionLogicInput, fallback: string): string {
+  const context = input.context;
+  if (!context?.recommendedStartAt || !isValidIsoDate(context.recommendedStartAt)) return fallback;
+  const timezone = normalizeDecisionTimezone(context.timezone);
+  const lang = decisionLang(input);
+  const recommendedStart = new Date(context.recommendedStartAt);
+  const duration = decisionDurationMinutes(context.recommendedStartAt, context.recommendedEndAt)
+    ?? decisionDurationMinutes(context.currentStartAt, context.currentEndAt)
+    ?? 45;
+  const referenceNow = context.currentStartAt && isValidIsoDate(context.currentStartAt)
+    ? new Date(context.currentStartAt)
+    : recommendedStart;
+
+  if (context.currentStartAt && isValidIsoDate(context.currentStartAt)) {
+    return apnsBodyMoved(
+      new Date(context.currentStartAt),
+      recommendedStart,
+      duration,
+      timezone,
+      lang,
+      referenceNow,
+    );
+  }
+
+  return apnsBodyNeedsChoice(recommendedStart, duration, timezone, lang, referenceNow);
+}
+
+function decisionDurationMinutes(startAt?: string | null, endAt?: string | null): number | null {
+  if (!startAt || !endAt) return null;
+  const start = Date.parse(startAt);
+  const end = Date.parse(endAt);
+  if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) return null;
+  return Math.max(1, Math.round((end - start) / 60_000));
+}
+
+function isValidIsoDate(value?: string | null): boolean {
+  return !!value && Number.isFinite(Date.parse(value));
 }
 
 function safePreviewTitleForLegacy(input: DecisionLogicInput, fallbackTitle: string): string {

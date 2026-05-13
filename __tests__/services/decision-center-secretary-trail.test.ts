@@ -167,4 +167,61 @@ describe('C2: Decision Center sourceTrace.reasoningTrail', () => {
     const leak = getDecisionItem(created.item!.decisionId, USER_B, USER_B);
     expect(leak).toBeNull();
   });
+
+  it('degrades confidence when external calendar sync is stale', async () => {
+    const decision = submitSecretarySchedulingIntent(trainingIntent('intent-c6-stale-sync', USER_A));
+    testDb.prepare(`
+      UPDATE secretary_agenda_items
+         SET provider_sync_state = 'not_synced',
+             updated_at = ?
+       WHERE agenda_item_id = ?
+    `).run('2026-05-10T08:30:00.000Z', decision.agendaItem.agendaItemId);
+
+    const created = await createDecisionIntent(buildSkillDecisionFixtureIntent('secretary', USER_A, {
+      relatedEntityId: decision.agendaItem.agendaItemId,
+      relatedEntityType: 'secretary_agenda_item',
+      dedupeKey: `secretary:c6:${decision.agendaItem.agendaItemId}`,
+      decisionContext: {
+        currentStartAt: '2026-05-20T15:00:00.000Z',
+        currentEndAt: '2026-05-20T16:00:00.000Z',
+        recommendedStartAt: decision.selectedSlot!.start,
+      },
+    }));
+
+    expect(created.item).not.toBeNull();
+    const apiItem = getDecisionItem(created.item!.decisionId, USER_A, USER_A);
+    expect(apiItem).not.toBeNull();
+    expect(apiItem!.confidence).toBeLessThan(0.86);
+    expect(apiItem!.confidence).toBeLessThanOrEqual(0.5);
+    expect(apiItem!.why.uncertainty.join(' ')).toMatch(/more than an hour stale/i);
+  });
+
+  it('degrades confidence when external calendar sync is more than 15 minutes stale', async () => {
+    const decision = submitSecretarySchedulingIntent(trainingIntent('intent-c6-stale-sync-15m', USER_A));
+    testDb.prepare(`
+      UPDATE secretary_agenda_items
+         SET provider_sync_state = 'not_synced',
+             updated_at = ?
+       WHERE agenda_item_id = ?
+    `).run('2026-05-10T09:30:00.000Z', decision.agendaItem.agendaItemId);
+
+    const created = await createDecisionIntent(buildSkillDecisionFixtureIntent('secretary', USER_A, {
+      relatedEntityId: decision.agendaItem.agendaItemId,
+      relatedEntityType: 'secretary_agenda_item',
+      dedupeKey: `secretary:c6-15m:${decision.agendaItem.agendaItemId}`,
+      decisionContext: {
+        currentStartAt: '2026-05-20T15:00:00.000Z',
+        currentEndAt: '2026-05-20T16:00:00.000Z',
+        recommendedStartAt: decision.selectedSlot!.start,
+      },
+    }));
+
+    expect(created.item).not.toBeNull();
+    const apiItem = getDecisionItem(created.item!.decisionId, USER_A, USER_A);
+    expect(apiItem).not.toBeNull();
+    expect(apiItem!.confidence).toBeLessThan(0.86);
+    expect(apiItem!.confidence).toBeGreaterThan(0.5);
+    expect(apiItem!.confidence).toBeLessThanOrEqual(0.7);
+    expect(apiItem!.why.uncertainty.join(' ')).toMatch(/more than 15 minutes stale/i);
+  });
 });
