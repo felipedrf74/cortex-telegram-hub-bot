@@ -446,7 +446,13 @@ function buildReasoning(
   adjustmentSummary: TrainingTodayAdjustmentSummary | null,
   language: Lang,
 ): CoachReasoningModel | null {
-  const metrics = reasoningMetrics(input.readiness, input.weeklyAdherence, language);
+  const metrics = reasoningMetrics(
+    input.readiness,
+    input.weeklyAdherence,
+    language,
+    input.hasActivePlan,
+    input.weekSessions.length,
+  );
   const signals = reasoningSignals(state, input.signals, adjustmentSummary, language);
   if (metrics.length === 0 && signals.length === 0 && !adjustmentSummary) return null;
 
@@ -653,9 +659,7 @@ function buildWeekProtection(
     );
   }
   const adherencePercent = Math.round(input.weeklyAdherence * 100);
-  impacts.push(
-    tPT(language, `Aderência semanal em ${adherencePercent}%`, `Aderência semanal em ${adherencePercent}%`, `Weekly adherence at ${adherencePercent}%`),
-  );
+  impacts.push(adherenceImpactLine(adherencePercent, language));
   if (protectedSession && protectedSession.id !== tomorrow?.id) {
     impacts.push(
       tPT(
@@ -797,7 +801,7 @@ function buildWeekJourney(
       'Onde você está agora e o que continua protegido',
       'Where you are now and what stays protected',
     ),
-    adherenceText: `${Math.round(input.weeklyAdherence * 100)}% ${tPT(language, 'aderência semanal', 'aderência semanal', 'weekly adherence')}`,
+    adherenceText: weekJourneyAdherenceText(input.weeklyAdherence, language),
     days,
   };
 }
@@ -1211,7 +1215,13 @@ function secondaryAction(
   }
 }
 
-function reasoningMetrics(readiness: ReadinessInput | null, adherence: number, language: Lang): TrainingReasoningMetric[] {
+function reasoningMetrics(
+  readiness: ReadinessInput | null,
+  adherence: number,
+  language: Lang,
+  hasActivePlan: boolean,
+  weekSessionCount: number,
+): TrainingReasoningMetric[] {
   const metrics: TrainingReasoningMetric[] = [];
   if (readiness) {
     if (typeof readiness.factors.sleepScore === 'number') {
@@ -1243,13 +1253,65 @@ function reasoningMetrics(readiness: ReadinessInput | null, adherence: number, l
     }
   }
 
-  metrics.push({
-    id: 'adherence',
-    label: tPT(language, 'Aderência', 'Aderência', 'Adherence'),
-    value: `${Math.round(adherence * 100)}%`,
-    tint: adherence >= 0.8 ? 'success' : adherence >= 0.6 ? 'warning' : 'error',
-  });
+  if (hasActivePlan || weekSessionCount > 0 || adherence > 0) {
+    metrics.push({
+      id: 'adherence',
+      label: tPT(language, 'Aderência', 'Aderência', 'Adherence'),
+      ...adherenceMetricPresentation(adherence, language),
+    });
+  }
   return metrics.slice(0, 4);
+}
+
+function adherenceMetricPresentation(
+  adherence: number,
+  language: Lang,
+): Pick<TrainingReasoningMetric, 'value' | 'tint'> {
+  const percent = Number.isFinite(adherence)
+    ? Math.max(0, Math.min(100, Math.round(adherence * 100)))
+    : 0;
+  if (percent <= 0) {
+    return {
+      value: tPT(language, 'Reinício', 'Recomeço', 'Start'),
+      tint: 'info',
+    };
+  }
+  return {
+    value: `${percent}%`,
+    tint: adherence >= 0.8 ? 'success' : adherence >= 0.6 ? 'warning' : 'warning',
+  };
+}
+
+function adherenceImpactLine(adherencePercent: number, language: Lang): string {
+  if (adherencePercent <= 0) {
+    return tPT(
+      language,
+      'Aderência: semana pronta para reiniciar com uma sessão simples.',
+      'Aderência: semana pronta para recomeçar com uma sessão simples.',
+      'Adherence: ready to restart with one simple session this week.',
+    );
+  }
+  return tPT(
+    language,
+    `Aderência semanal em ${adherencePercent}%`,
+    `Aderência semanal em ${adherencePercent}%`,
+    `Weekly adherence at ${adherencePercent}%`,
+  );
+}
+
+function weekJourneyAdherenceText(adherence: number, language: Lang): string {
+  const percent = Number.isFinite(adherence)
+    ? Math.max(0, Math.min(100, Math.round(adherence * 100)))
+    : 0;
+  if (percent <= 0) {
+    return tPT(
+      language,
+      'Pronto para reiniciar esta semana',
+      'Pronto para recomeçar esta semana',
+      'Ready to restart this week',
+    );
+  }
+  return `${percent}% ${tPT(language, 'aderência semanal', 'aderência semanal', 'weekly adherence')}`;
 }
 
 function reasoningSignals(

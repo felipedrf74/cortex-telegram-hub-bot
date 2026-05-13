@@ -785,6 +785,35 @@ export async function releaseDueNotificationDeliveries(now = new Date()): Promis
       regularRows.push(row);
     }
   }
+  const updateReleasedLogs = db.transaction((updates: Array<{
+    row: any;
+    decision: NotificationDecision;
+    reason: string;
+    sentAt: string | null;
+    attemptIds: string[];
+  }>) => {
+    const stmt = db.prepare(`
+      UPDATE notification_decision_logs
+      SET decision = ?,
+          reason = ?,
+          sent_at = ?,
+          delivery_attempt_ids_json = ?
+      WHERE decision_log_id = ?
+        AND user_id = ?
+        AND tenant_id = ?
+    `);
+    for (const update of updates) {
+      stmt.run(
+        update.decision,
+        update.reason,
+        update.sentAt,
+        JSON.stringify(update.attemptIds),
+        update.row.decision_log_id,
+        update.row.user_id,
+        update.row.tenant_id,
+      );
+    }
+  });
 
   for (const group of digestGroups.values()) {
     try {
@@ -803,26 +832,13 @@ export async function releaseDueNotificationDeliveries(now = new Date()): Promis
           : attempt.status === 'blocked_missing_credentials'
             ? 'digest notification due but APNs credentials are missing'
             : 'digest notification due but no active device token is available';
-      for (const row of group) {
-        db.prepare(`
-          UPDATE notification_decision_logs
-          SET decision = ?,
-              reason = ?,
-              sent_at = ?,
-              delivery_attempt_ids_json = ?
-          WHERE decision_log_id = ?
-            AND user_id = ?
-            AND tenant_id = ?
-        `).run(
-          decision,
-          reason,
-          attempt.sentAt,
-          JSON.stringify([attempt.attemptId]),
-          row.decision_log_id,
-          row.user_id,
-          row.tenant_id,
-        );
-      }
+      updateReleasedLogs(group.map((row) => ({
+        row,
+        decision,
+        reason,
+        sentAt: attempt.sentAt,
+        attemptIds: [attempt.attemptId],
+      })));
       if (attempt.status === 'sent' || attempt.status === 'mock_sent') released += group.length;
       else blocked += group.length;
     } catch (err) {
@@ -854,24 +870,13 @@ export async function releaseDueNotificationDeliveries(now = new Date()): Promis
           : attempt.status === 'blocked_missing_credentials'
             ? 'delayed notification released but APNs credentials are missing'
             : 'delayed notification released but no active device token is available';
-      db.prepare(`
-        UPDATE notification_decision_logs
-        SET decision = ?,
-            reason = ?,
-            sent_at = ?,
-            delivery_attempt_ids_json = ?
-        WHERE decision_log_id = ?
-          AND user_id = ?
-          AND tenant_id = ?
-      `).run(
+      updateReleasedLogs([{
+        row,
         decision,
         reason,
-        attempt.sentAt,
-        JSON.stringify([attempt.attemptId]),
-        row.decision_log_id,
-        row.user_id,
-        row.tenant_id,
-      );
+        sentAt: attempt.sentAt,
+        attemptIds: [attempt.attemptId],
+      }]);
       if (attempt.status === 'sent' || attempt.status === 'mock_sent') released += 1;
       else blocked += 1;
     } catch (err) {

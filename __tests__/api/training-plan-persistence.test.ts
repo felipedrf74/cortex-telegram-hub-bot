@@ -47,7 +47,10 @@ vi.mock('../../src/utils/logger', () => ({
   LOGGER_REDACTION_PATHS: [],
 }));
 
-import { persistGeneratedTrainingPlan } from '../../src/api/routes/training-plan-persistence';
+import {
+  lintGeneratedTrainingPlanPreflight,
+  persistGeneratedTrainingPlan,
+} from '../../src/api/routes/training-plan-persistence';
 
 describe('training-plan-persistence', () => {
   beforeEach(() => {
@@ -658,6 +661,54 @@ describe('training-plan-persistence', () => {
       expect(eventStart.getMinutes()).toBe(30);
     });
 
+    it('plan-linter strict preflight: catches equipment blockers without writing plan rows', () => {
+      const lint = lintGeneratedTrainingPlanPreflight({
+        userId: 12,
+        objective: 'Beginner bodyweight',
+        durationWeeks: 1,
+        startDate: '2026-04-19',
+        endDate: '2026-04-26',
+        now: new Date('2026-04-19T08:00:00.000Z'),
+        preferencesJson: '{}',
+        normalizedPreferredTime: '12:00',
+        normalizedPreferredCardioTime: '07:00',
+        normalizedPreferredStrengthTime: '12:30',
+        busyWindows: [],
+        equipmentProfile: 'bodyweight',
+        planData: {
+          weeks: [
+            {
+              weekNumber: 1,
+              sessions: [
+                {
+                  dayOfWeek: 'Monday',
+                  sessionType: 'gym',
+                  title: 'Lift A',
+                  durationMinutes: 45,
+                  exercises: [{ name: 'Barbell Back Squat' }],
+                },
+              ],
+            },
+          ],
+        },
+      });
+
+      expect(lint.status).toBe('fail');
+      expect(lint.blockers[0]?.ruleId).toBe('equipment_compatibility');
+      expect(mockCreatePlan).not.toHaveBeenCalled();
+      expect(mockCreateWeek).not.toHaveBeenCalled();
+      expect(mockCreateSession).not.toHaveBeenCalled();
+      expect(mockCreateEvent).not.toHaveBeenCalled();
+      expect(mockLoggerWarn).toHaveBeenCalledWith(
+        expect.objectContaining({
+          event: 'plan_linter.preflight_blocker_present',
+          mode: 'strict_preflight',
+          status: 'fail',
+        }),
+        'plan-linter: blocker(s) present before persistence; route must block writes',
+      );
+    });
+
     it('plan-linter advisor: surfaces equipment-incompatibility on bodyweight profile + barbell session', async () => {
       const result = await persistGeneratedTrainingPlan({
         userId: 12,
@@ -704,9 +755,10 @@ describe('training-plan-persistence', () => {
       expect(mockLoggerWarn).toHaveBeenCalledWith(
         expect.objectContaining({
           event: 'plan_linter.blocker_present',
+          mode: 'advisor',
           status: 'fail',
         }),
-        'plan-linter: blocker(s) present (advisor mode; iOS gates UI)',
+        'plan-linter: blocker(s) present (advisor mode; surfaced on response)',
       );
     });
 

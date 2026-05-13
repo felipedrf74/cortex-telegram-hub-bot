@@ -149,6 +149,19 @@ describe('buildTrainingHomeViewState', () => {
     expect(state.weekProtection?.kernelAdjustments).toEqual([]);
   });
 
+  it('frames a zero-adherence active week as a restart instead of a failure score', () => {
+    const state = buildTrainingHomeViewState(baseInput({
+      weeklyAdherence: 0,
+    }), 'pt-BR');
+
+    const adherenceMetric = state.reasoning?.metrics.find((metric) => metric.id === 'adherence');
+    expect(adherenceMetric?.value).toBe('Recomeço');
+    expect(adherenceMetric?.tint).toBe('info');
+    expect(state.weekProtection?.impactLines.join(' ')).not.toContain('0%');
+    expect(state.weekProtection?.impactLines.join(' ')).toContain('recomeçar');
+    expect(state.weekJourney?.adherenceText).toContain('recomeçar');
+  });
+
   it('classifies stale-Garmin with an active plan as lowConfidence and surfaces the COACH_STALE reason code', () => {
     // Stale-wearable-with-plan is a distinct degraded state. It
     // deliberately falls into 'lowConfidence' (not 'ready' or

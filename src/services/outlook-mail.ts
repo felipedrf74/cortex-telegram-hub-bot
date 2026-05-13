@@ -1,5 +1,6 @@
 // Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
 
+import crypto from 'node:crypto';
 import {
   getGraphClient,
   getGraphClientForUser,
@@ -15,10 +16,19 @@ import { pushEvent } from '../portal/telemetry';
 function logEmailSend(recipient: string, subject: string, status: 'sent' | 'failed', source?: string, errorMessage?: string): void {
   try {
     const { getDb } = require('./database');
+    const recipientHash = crypto
+      .createHash('sha256')
+      .update(recipient.trim().toLowerCase())
+      .digest('hex')
+      .slice(0, 16);
+    const trimmedSubject = subject.trim();
+    const subjectSummary = trimmedSubject.length > 40
+      ? `${trimmedSubject.slice(0, 40)}… (${trimmedSubject.length} chars)`
+      : `${trimmedSubject} (${trimmedSubject.length} chars)`;
     getDb().prepare(`
       INSERT INTO email_log (recipient, subject, status, source, error_message)
       VALUES (?, ?, ?, ?, ?)
-    `).run(recipient, subject, status, source ?? null, errorMessage ?? null);
+    `).run(recipientHash, subjectSummary, status, source ?? null, errorMessage ?? null);
   } catch {
     // table may not exist yet — swallow
   }

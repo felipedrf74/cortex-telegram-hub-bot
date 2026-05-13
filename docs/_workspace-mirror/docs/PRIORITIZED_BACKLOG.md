@@ -86,7 +86,7 @@ Source: `docs/release/decision-center-orchestration-apns-qa.md` Round C prompt +
 Source: `docs/release/OPEN_ITEMS.md`
 
 - [ ] **P1 (HOSTILE-CONT-F1)** — OAuth/owned-channel writer required before live creator analytics enabled (owner decision)
-- [ ] **P1 (GAP-TRN-1)** — Training plan-linter blockers remain advisor-only (owner decision: promote to strict)
+- [x] **P1 (GAP-TRN-1)** — Training plan-linter blockers now run as strict write-free preflight before app-facing plan-generation side effects; closed by engine `b35ed604` and iOS `d337636`.
 - [x] **P1 (GAP-CONT-3)** — Performance-feedback adaptation loop wired to live `content_performance` metrics in the backend aggregate.
 - [x] **P1 (GAP-CONT-4)** — Performance dashboard truth verified: ContentIntelligenceView renders views/retention/likes/comments/subscribers/top performer from `performanceSummary`.
 - [ ] **P1 (GAP-CAL-1-C)** — Broader Telegram-only cron migration intentionally unbatched

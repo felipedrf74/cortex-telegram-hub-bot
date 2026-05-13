@@ -78,6 +78,30 @@ describe('coach-kernel decision trail', () => {
     expect(notes.filter((note) => note.startsWith('Plan adjustment:'))).toHaveLength(1);
   });
 
+  it('uses reset-focused adherence wording instead of exposing 0% as a failure score', () => {
+    const plan: WeeklyPlan = {
+      notes: [],
+      athleteId: sampleHybridAthlete.profile.athleteId,
+      weekStart: '2026-05-04',
+      discipline: 'hybrid',
+      phase: 'base',
+      sessions: [],
+      guardrailResults: [],
+    };
+    const notes = buildWeeklyDecisionNotes(plan, {
+      ...sampleHybridAthlete,
+      compliance: {
+        trailing14DayCompliance: 0,
+        consecutiveMisses: 3,
+      },
+    });
+
+    const adherenceNote = notes.find((note) => note.startsWith('Adherence decision:'));
+    expect(adherenceNote).toContain('reset week');
+    expect(adherenceNote).toContain('restart with one short, safe session');
+    expect(adherenceNote).not.toContain('0%');
+  });
+
   it('surfaces recovery-driven volume explanations as structured decision reasons', () => {
     const athlete: AthleteState = {
       ...sampleHybridAthlete,

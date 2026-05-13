@@ -57,12 +57,14 @@ vi.mock('../../src/utils/logger', () => ({
 type MockPushTokenRow = string | { token: string; environment?: 'sandbox' | 'production'; deviceId?: string | null };
 const mockPushTokensForUser: Record<number, MockPushTokenRow[]> = {};
 const mockPushTokenDeletions: string[] = [];
+let mockPushTokenSelectError: Error | null = null;
 
 vi.mock('../../src/services/database', () => ({
   getDb: () => ({
     prepare: (sql: string) => ({
       all: (...args: unknown[]) => {
         if (sql.includes('SELECT DISTINCT') && sql.includes('push_token')) {
+          if (mockPushTokenSelectError) throw mockPushTokenSelectError;
           const userId = Number(args[args.length - 1]);
           return (mockPushTokensForUser[userId] || []).map((entry) => {
             if (typeof entry === 'string') {
@@ -119,6 +121,7 @@ let mockHttp2Responses: ScriptedResponse[] = [];
 const mockHttp2Requests: Array<{ headers: Record<string, string>; body: string }> = [];
 const mockHttp2Hosts: string[] = [];
 let mockHttp2Connected = false;
+const mockRecordOperatorAlert = vi.fn();
 
 vi.mock('node:http2', () => ({
   default: {
@@ -179,6 +182,10 @@ vi.mock('node:http2', () => ({
   },
 }));
 
+vi.mock('../../src/services/operator-alerts', () => ({
+  recordOperatorAlert: (...args: unknown[]) => mockRecordOperatorAlert(...args),
+}));
+
 // ── Import the module under test AFTER mocks are set up ────────────
 import {
   isApnsConfigured,
@@ -211,6 +218,8 @@ beforeEach(() => {
     delete mockPushTokensForUser[Number(k)];
   }
   mockPushTokenDeletions.length = 0;
+  mockPushTokenSelectError = null;
+  mockRecordOperatorAlert.mockReset();
   vi.mocked(logger.warn).mockClear();
   vi.mocked(logger.error).mockClear();
   vi.mocked(logger.info).mockClear();
@@ -486,6 +495,19 @@ describe('sendPushNotification (gating)', () => {
     expect(result.sent).toBe(0);
     expect(result.failed).toBe(0);
     expect(result.skipped).toBe(0);
+  });
+
+  it('records an operator alert when push token loading fails', async () => {
+    mockPushTokenSelectError = new Error('database unavailable');
+
+    const result = await sendPushNotification(1, { title: 'T', body: 'B' });
+
+    expect(result).toEqual({ sent: 0, failed: 0, skipped: 0, retriable: 0, unregistered: [] });
+    expect(mockRecordOperatorAlert).toHaveBeenCalledWith(expect.objectContaining({
+      source: 'apns',
+      dedupeKey: 'APNS_TOKEN_LOAD_FAILED:1',
+      metadata: expect.objectContaining({ code: 'APNS_TOKEN_LOAD_FAILED', userId: 1 }),
+    }));
   });
 });
 

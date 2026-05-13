@@ -160,7 +160,7 @@ export function buildRichSessionDescription(input: SessionDescriptionInput): Ric
 // ── Section assembly ───────────────────────────────────────────────
 
 function buildSections(input: SessionDescriptionInput): SessionSections {
-  const sport = sportFamilyForSession(input.session.sessionType, input.sport);
+  const sport = sportFamilyForSession(input.session.sessionType, input.sport, input.session);
 
   return {
     header: {
@@ -174,7 +174,7 @@ function buildSections(input: SessionDescriptionInput): SessionSections {
     warmup: buildWarmup(input.session.sessionType, sport),
     cooldown: buildCooldown(input.session.sessionType, sport),
     important: buildImportant(input, sport),
-    notes: cleanFreeText(input.session.description),
+    notes: cleanFreeText(input.session.description, sport),
     totalMinutesText: buildTotalMinutesText(input.session.durationMinutes),
   };
 }
@@ -579,11 +579,21 @@ function buildTotalMinutesText(durationMinutes: number): string {
   return `~${durationMinutes} min total`;
 }
 
-function cleanFreeText(text: string | null | undefined): string | undefined {
+function cleanFreeText(text: string | null | undefined, sport: SportFamily): string | undefined {
   const trimmed = (text || '').trim();
   if (!trimmed) return undefined;
+
+  const cleaned = trimmed
+    .split(/\n+/)
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0)
+    .filter((line) => !isRawCoachDebugLine(line))
+    .filter((line) => !isModalityMismatchedFreeText(line, sport))
+    .join('\n\n');
+  if (!cleaned) return undefined;
+
   // Collapse runs of blank lines but preserve paragraph breaks.
-  return trimmed.replace(/\n{3,}/g, '\n\n');
+  return cleaned.replace(/\n{3,}/g, '\n\n');
 }
 
 // ── Text serializer ────────────────────────────────────────────────
@@ -676,8 +686,13 @@ export function renderSectionsAsText(sections: SessionSections): string {
 
 type SportFamily = 'running' | 'cycling' | 'swimming' | 'strength' | 'other';
 
-function sportFamilyForSession(sessionType: string, planSport: string): SportFamily {
+function sportFamilyForSession(
+  sessionType: string,
+  planSport: string,
+  session?: Pick<SessionInput, 'title' | 'exercises'>,
+): SportFamily {
   const t = (sessionType || '').toLowerCase();
+  if (hasStrengthSessionEvidence(session) && !hasEnduranceOnlySessionType(t)) return 'strength';
   if (t.includes('run') || t === 'brick') return 'running';
   if (t.includes('ride') || t.includes('cycle') || t.includes('bike')) return 'cycling';
   if (t.includes('swim')) return 'swimming';
@@ -690,6 +705,59 @@ function sportFamilyForSession(sessionType: string, planSport: string): SportFam
   if (s === 'swimming' || s === 'swim') return 'swimming';
   if (s === 'strength' || s === 'gym' || s === 'lifting') return 'strength';
   return 'other';
+}
+
+function hasEnduranceOnlySessionType(sessionType: string): boolean {
+  return sessionType === 'brick'
+    || sessionType.includes('ride')
+    || sessionType.includes('cycle')
+    || sessionType.includes('bike')
+    || sessionType.includes('swim');
+}
+
+function hasStrengthSessionEvidence(session?: Pick<SessionInput, 'title' | 'exercises'>): boolean {
+  if (!session) return false;
+  const title = (session.title || '').toLowerCase();
+  const titleLooksStrength = /\b(strength|força|gym|lift|hypertrophy|hipertrofia|lower|upper|push|pull|legs|core|squats?|deadlifts?|bench|mobility)\b|\b(bench|overhead|strict|push|shoulder|military)\s+press\b/i
+    .test(title);
+  if (titleLooksStrength) return true;
+
+  const exercises = session.exercises ?? [];
+  if (exercises.length === 0) return false;
+  const strengthPrescriptions = exercises.filter((ex) =>
+    ex.sets != null
+    || ex.reps != null
+    || ex.rpe != null
+    || ex.rest_sec != null
+    || Boolean(ex.rest)
+  ).length;
+  const endurancePrescriptions = exercises.filter((ex) =>
+    ex.distance_km != null
+    || Boolean(ex.pace)
+  ).length;
+  return strengthPrescriptions > 0 && endurancePrescriptions === 0;
+}
+
+function isRawCoachDebugLine(line: string): boolean {
+  return /\b(calendar_busy_blocks|session_prescription|fueling_gap_risk|coach_decision|decision_trail|source_trace)\b/i.test(line)
+    || /\bmp\d+\b/i.test(line)
+    || /·\s*mp\d+/i.test(line);
+}
+
+function isModalityMismatchedFreeText(line: string, sport: SportFamily): boolean {
+  const value = line.toLowerCase();
+  switch (sport) {
+    case 'strength':
+      return /\b(zone\s*2|walk breaks?|conversational|pace|\/km|hr drift|heart rate drift)\b/i.test(value);
+    case 'running':
+      return /\b(hypertrophy|reps in reserve|rir|sets?\s*[x×]\s*reps|barbell|dumbbell)\b/i.test(value);
+    case 'cycling':
+      return /\b(squats?|lunges?|deadlifts?|bench press|reps in reserve|rir|hypertrophy)\b/i.test(value);
+    case 'swimming':
+      return /\b(ftp|watts?|power zone|cadence|squats?|lunges?|deadlifts?)\b/i.test(value);
+    default:
+      return false;
+  }
 }
 
 type RunIntent = 'easy' | 'long' | 'tempo' | 'threshold' | 'interval' | 'recovery';

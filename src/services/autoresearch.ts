@@ -21,6 +21,7 @@ import { loadPrompt, writePrompt, getPromptPath } from '../utils/prompt-loader';
 import { getEvalTarget, getAllTargets, EvalTarget, EvalCriterion, TestInput } from './eval-criteria';
 import { trackedCreate } from '../portal/anthropic-hook';
 import { completeOneShotWithFallback } from './gemini-provider';
+import { sanitizeForPromptInterpolation } from '../utils/prompt-sanitizer';
 
 const client = new Anthropic({
   apiKey: config.anthropic.apiKey,
@@ -77,8 +78,8 @@ async function generateOutput(
   target: EvalTarget,
 ): Promise<string> {
   const userContent = testInput.stateContext
-    ? `[Current State]\n${testInput.stateContext}\n\n${testInput.userMessage}`
-    : testInput.userMessage;
+    ? `[Current State]\n${sanitizeForPromptInterpolation(testInput.stateContext)}\n\n${sanitizeForPromptInterpolation(testInput.userMessage)}`
+    : sanitizeForPromptInterpolation(testInput.userMessage);
 
   // Provider-aware: try Gemini/OpenAI first, fall back to Anthropic
   const { text } = await completeOneShotWithFallback(
@@ -239,7 +240,7 @@ async function proposeMutation(
   const weakCriterion = target.criteria.find((c) => c.id === evalResult.weakestCriterion);
   const failingExamples = evalResult.details
     .filter((d) => d.criteria.some((c) => c.criterionId === evalResult.weakestCriterion && !c.passed))
-    .map((d) => `Input: "${target.testInputs.find(t => t.id === d.inputId)?.userMessage}"\nOutput snippet: ${d.output.slice(0, 300)}`)
+    .map((d) => `Input: ${sanitizeForPromptInterpolation(target.testInputs.find(t => t.id === d.inputId)?.userMessage)}\nOutput snippet: ${sanitizeForPromptInterpolation(d.output.slice(0, 300))}`)
     .slice(0, 2)
     .join('\n---\n');
 

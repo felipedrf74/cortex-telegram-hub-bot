@@ -13,6 +13,7 @@ import { getPushPreferences, setPushPreference } from '../../services/report-doc
 import { registerNotificationDeviceToken } from '../../services/notification-orchestrator';
 import { isValidTenantUserId, recordTenantScopeAnomaly } from '../../services/tenant-scope-observability';
 import { deleteAllUserDataForAccountDeletion } from '../../services/user-data-export';
+import { logAudit } from '../../services/audit-trail';
 
 function normalizeLanguageInput(language: unknown): 'pt-BR' | 'pt-PT' | 'en-US' | null {
   if (typeof language !== 'string') return null;
@@ -172,15 +173,27 @@ export function settingsRoutes(): Router {
     const { userId, tenantId = userId } = req as AuthenticatedRequest;
     if (!ensureValidSettingsUserScope(res, userId, 'settings_route_export')) return;
     try {
-      const db = require('../../services/database').getDb();
+      const db = getDb();
 
       // Collect ALL user data — every table that stores user-owned content.
       // This list must stay in sync with the DELETE /account table list.
       const userData: Record<string, any> = {};
 
-      // Helper: safe query that returns [] if table doesn't exist
+      // Helper: safe query that returns [] if table doesn't exist, and surfaces
+      // real export gaps instead of silently returning an incomplete archive.
+      const exportErrors: string[] = [];
       const safeAll = (sql: string, ...params: any[]) => {
-        try { return db.prepare(sql).all(...params); } catch { return []; }
+        try {
+          return db.prepare(sql).all(...params);
+        } catch (err) {
+          const table = /\bFROM\s+([a-zA-Z0-9_]+)/i.exec(sql)?.[1] ?? 'unknown';
+          exportErrors.push(table);
+          logger.error(
+            { err, table, sql: sql.slice(0, 80) },
+            'GDPR export query failed',
+          );
+          return [];
+        }
       };
 
       // ── Core data ──
@@ -239,9 +252,27 @@ export function settingsRoutes(): Router {
 
       userData.exportedAt = new Date().toISOString();
       userData.userId = userId;
+      if (exportErrors.length > 0) {
+        userData._exportErrors = [...new Set(exportErrors)];
+      }
       userData._systemNotes = {
         sharedSeedData: 'Tables content_ref_channels, book_library, content_knowledge, and content_learned_patterns may contain explicit system-owned rows (owner_scope=system) that serve as shared reference data (e.g., default books, seed channels). These rows are not user-generated and are excluded from this export.',
       };
+
+      const tableCounts = Object.fromEntries(
+        Object.entries(userData)
+          .filter(([, value]) => Array.isArray(value))
+          .map(([key, value]) => [key, (value as unknown[]).length]),
+      );
+      logAudit({
+        userId,
+        tenantId,
+        actorId: userId,
+        action: 'export',
+        resource: 'account',
+        details: { tableCounts, exportErrors: [...new Set(exportErrors)] },
+        ipAddress: req.ip,
+      });
 
       sendSuccess(res, userData);
     } catch (err: any) {
@@ -255,7 +286,15 @@ export function settingsRoutes(): Router {
     const { userId } = req as AuthenticatedRequest;
     if (!ensureValidSettingsUserScope(res, userId, 'settings_route_delete_account')) return;
     try {
-      await deleteAllUserDataForAccountDeletion(userId);
+      const tableCounts = await deleteAllUserDataForAccountDeletion(userId);
+      logAudit({
+        userId,
+        actorId: userId,
+        action: 'delete',
+        resource: 'account',
+        details: { tableCounts },
+        ipAddress: req.ip,
+      });
 
       logger.info({ userId, platform: 'ios' }, 'Account deleted (GDPR Article 17)');
       sendSuccess(res, { deleted: true, message: 'All data has been permanently deleted.' });

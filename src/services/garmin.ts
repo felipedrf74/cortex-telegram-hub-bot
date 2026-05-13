@@ -188,14 +188,70 @@ let _mfaNotifier: ((message: string) => Promise<void>) | null = null;
 
 // ─── SSO cookie persistence (avoids MFA on re-login) ────────────────
 const GARMIN_TOKEN_PATH = config?.garmin?.tokenPath || './data/garmin-tokens';
-const SSO_COOKIES_FILE = `${GARMIN_TOKEN_PATH}/sso_cookies.json`;
+const LEGACY_SSO_COOKIES_FILE = `${GARMIN_TOKEN_PATH}/sso_cookies.json`;
+const LEGACY_RATE_LIMIT_FILE = `${GARMIN_TOKEN_PATH}/rate_limit_until.txt`;
+const warnedLegacyGarminPersistence = new Set<string>();
+
+function garminPersistenceUserId(): number {
+  const contextUserId = getCurrentContext()?.userId;
+  if (Number.isFinite(contextUserId) && Number(contextUserId) > 0) return Number(contextUserId);
+  const resolved = resolveGarminUserId();
+  return Number.isFinite(resolved) && Number(resolved) > 0 ? Number(resolved) : 0;
+}
+
+function garminUserTokenDir(userId = garminPersistenceUserId()): string {
+  return userId > 0 ? `${GARMIN_TOKEN_PATH}/${userId}` : GARMIN_TOKEN_PATH;
+}
+
+function ssoCookiesFile(userId = garminPersistenceUserId()): string {
+  return `${garminUserTokenDir(userId)}/sso_cookies.json`;
+}
+
+function rateLimitFile(userId = garminPersistenceUserId()): string {
+  return `${garminUserTokenDir(userId)}/rate_limit.json`;
+}
+
+export function _garminPersistencePathsForTests(userId: number): { ssoCookies: string; rateLimit: string } {
+  return {
+    ssoCookies: ssoCookiesFile(userId),
+    rateLimit: rateLimitFile(userId),
+  };
+}
+
+export function _writeGarminDebugDumpForTests(kind: string, html: string): string | null {
+  return writeGarminDebugDump(kind, html);
+}
+
+function warnLegacyGarminPersistenceOnce(kind: string, userId: number): void {
+  const key = `${kind}:${userId || 'unknown'}`;
+  if (warnedLegacyGarminPersistence.has(key)) return;
+  warnedLegacyGarminPersistence.add(key);
+  logger.warn({ kind, userId: userId || null }, 'Garmin: using legacy global persistence file; per-user migration needed');
+}
+
+function writeGarminDebugDump(kind: string, html: string): string | null {
+  if (process.env.GARMIN_DEBUG_DUMP !== 'true') return null;
+  try {
+    const userId = garminPersistenceUserId();
+    const dir = './data/private';
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+    const filePath = `${dir}/garmin-debug-${userId || 'unknown'}-${Date.now()}-${kind}.html`;
+    fs.writeFileSync(filePath, html, { mode: 0o600 });
+    logger.warn({ filePath, userId: userId || null, kind }, 'Garmin: debug HTML dumped to private path');
+    return filePath;
+  } catch (err) {
+    logger.warn({ err, kind }, 'Garmin: failed to write debug HTML dump');
+    return null;
+  }
+}
 
 function saveSsoCookies(cookieJar: Record<string, string>): void {
   try {
-    const dir = GARMIN_TOKEN_PATH;
+    const userId = garminPersistenceUserId();
+    const dir = garminUserTokenDir(userId);
     if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-    fs.writeFileSync(SSO_COOKIES_FILE, JSON.stringify(cookieJar, null, 2));
-    logger.info('Garmin: SSO cookies saved to disk');
+    fs.writeFileSync(ssoCookiesFile(userId), JSON.stringify(cookieJar, null, 2));
+    logger.info({ userId: userId || null }, 'Garmin: SSO cookies saved to per-user disk path');
   } catch (err) {
     logger.warn({ err }, 'Garmin: failed to save SSO cookies');
   }
@@ -203,8 +259,16 @@ function saveSsoCookies(cookieJar: Record<string, string>): void {
 
 function loadSsoCookies(): Record<string, string> | null {
   try {
-    if (fs.existsSync(SSO_COOKIES_FILE)) {
-      const data = JSON.parse(fs.readFileSync(SSO_COOKIES_FILE, 'utf-8'));
+    const userId = garminPersistenceUserId();
+    const scopedFile = ssoCookiesFile(userId);
+    const fileToRead = fs.existsSync(scopedFile)
+      ? scopedFile
+      : fs.existsSync(LEGACY_SSO_COOKIES_FILE)
+        ? LEGACY_SSO_COOKIES_FILE
+        : null;
+    if (fileToRead) {
+      if (fileToRead === LEGACY_SSO_COOKIES_FILE) warnLegacyGarminPersistenceOnce('sso_cookies', userId);
+      const data = JSON.parse(fs.readFileSync(fileToRead, 'utf-8'));
       if (data && typeof data === 'object' && Object.keys(data).length > 0) {
         logger.info({ cookieCount: Object.keys(data).length }, 'Garmin: loaded saved SSO cookies');
         return data as Record<string, string>;
@@ -217,12 +281,20 @@ function loadSsoCookies(): Record<string, string> | null {
 }
 
 // ─── Rate-limit backoff (persisted to disk to survive restarts) ──────
-const RATE_LIMIT_FILE = `${GARMIN_TOKEN_PATH}/rate_limit_until.txt`;
-
 function _loadRateLimitedUntil(): number {
   try {
-    if (fs.existsSync(RATE_LIMIT_FILE)) {
-      const ts = parseInt(fs.readFileSync(RATE_LIMIT_FILE, 'utf-8').trim(), 10);
+    const userId = garminPersistenceUserId();
+    const scopedFile = rateLimitFile(userId);
+    const fileToRead = fs.existsSync(scopedFile)
+      ? scopedFile
+      : fs.existsSync(LEGACY_RATE_LIMIT_FILE)
+        ? LEGACY_RATE_LIMIT_FILE
+        : null;
+    if (fileToRead) {
+      if (fileToRead === LEGACY_RATE_LIMIT_FILE) warnLegacyGarminPersistenceOnce('rate_limit', userId);
+      const raw = fs.readFileSync(fileToRead, 'utf-8').trim();
+      const parsed = raw.startsWith('{') ? JSON.parse(raw).rateLimitedUntil : raw;
+      const ts = parseInt(String(parsed), 10);
       if (!isNaN(ts) && ts > Date.now()) return ts;
     }
   } catch { /* ignore */ }
@@ -238,9 +310,10 @@ function isRateLimited(): boolean {
 function setRateLimited(durationMs = 2 * 60 * 60 * 1000): void {
   _rateLimitedUntil = Date.now() + durationMs;
   try {
-    const dir = GARMIN_TOKEN_PATH;
+    const userId = garminPersistenceUserId();
+    const dir = garminUserTokenDir(userId);
     if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-    fs.writeFileSync(RATE_LIMIT_FILE, String(_rateLimitedUntil));
+    fs.writeFileSync(rateLimitFile(userId), JSON.stringify({ rateLimitedUntil: _rateLimitedUntil }));
   } catch { /* best-effort */ }
   logger.warn({ backoffMinutes: durationMs / 60000, until: new Date(_rateLimitedUntil).toISOString() }, 'Garmin: rate-limited by Cloudflare, backing off');
 }
@@ -469,8 +542,8 @@ async function loginWithMfa(client: InstanceType<typeof GarminConnect>): Promise
       logger.info('Garmin MFA: login page re-shown, probing MFA endpoint directly');
     } else {
       // Save HTML for debugging
-      try { fs.writeFileSync('/tmp/garmin-step3-debug.html', step3Html); } catch { /* ignore */ }
-      throw new Error('Garmin login failed — no ticket and no MFA challenge detected. Debug HTML saved to /tmp/garmin-step3-debug.html');
+      writeGarminDebugDump('step3', step3Html);
+      throw new Error('Garmin login failed — no ticket and no MFA challenge detected');
     }
   }
 
@@ -565,11 +638,11 @@ async function loginWithMfa(client: InstanceType<typeof GarminConnect>): Promise
 
   if (!ticketMatch) {
     // Save for debugging
-    try { fs.writeFileSync('/tmp/garmin-mfa-debug.html', mfaHtml); } catch { /* ignore */ }
+    writeGarminDebugDump('mfa', mfaHtml);
     const errDetail = mfaRes.status >= 400
       ? `HTTP ${mfaRes.status} — code may be wrong or session expired`
       : 'no ticket in response';
-    throw new Error(`Garmin MFA failed — ${errDetail}. Debug HTML saved to /tmp/garmin-mfa-debug.html`);
+    throw new Error(`Garmin MFA failed — ${errDetail}`);
   }
 
   const ticket = ticketMatch[1];
@@ -1194,46 +1267,55 @@ async function safeGet<T = unknown>(url: string, opts: GarminReadOptions = {}): 
   }
 }
 
+function logGarminReadFallback(err: unknown, url: string, opts: GarminReadOptions): void {
+  const resolvedUserId = getCurrentContext()?.userId ?? garminPersistenceUserId();
+  const userId = resolvedUserId || null;
+  logger.warn(
+    { err, userId, url: url.split('?')[0], silent: opts.silent ?? getCurrentContext()?.garminSilent ?? _silentMode },
+    'Garmin read failed, returning empty',
+  );
+}
+
 // ─── Public API methods ───────────────────────────────────────────────
 
 export async function getDailySummary(date: string, opts: GarminReadOptions = {}): Promise<GarminDailySummary | null> {
   try { return await safeGet<GarminDailySummary>(URLS.userSummary(date), opts); }
-  catch { return null; }
+  catch (err) { logGarminReadFallback(err, URLS.userSummary(date), opts); return null; }
 }
 
 export async function getSleepData(date: string, opts: GarminReadOptions = {}): Promise<unknown> {
   try { return await safeGet(URLS.sleepData(date), opts); }
-  catch { return null; }
+  catch (err) { logGarminReadFallback(err, URLS.sleepData(date), opts); return null; }
 }
 
 export async function getStressSummary(date: string, opts: GarminReadOptions = {}): Promise<unknown> {
   try { return await safeGet(URLS.stressSummary(date), opts); }
-  catch { return null; }
+  catch (err) { logGarminReadFallback(err, URLS.stressSummary(date), opts); return null; }
 }
 
 export async function getHeartRateSummary(date: string, opts: GarminReadOptions = {}): Promise<unknown> {
   try { return await safeGet(URLS.heartRateSummary(date), opts); }
-  catch { return null; }
+  catch (err) { logGarminReadFallback(err, URLS.heartRateSummary(date), opts); return null; }
 }
 
 export async function getHrvData(date: string, opts: GarminReadOptions = {}): Promise<unknown> {
   try { return await safeGet(URLS.hrvData(date), opts); }
-  catch { return null; }
+  catch (err) { logGarminReadFallback(err, URLS.hrvData(date), opts); return null; }
 }
 
 export async function getTrainingReadiness(date: string, opts: GarminReadOptions = {}): Promise<unknown> {
   try { return await safeGet(URLS.trainingReadiness(date), opts); }
-  catch { return null; }
+  catch (err) { logGarminReadFallback(err, URLS.trainingReadiness(date), opts); return null; }
 }
 
 export async function getTrainingStatus(date: string, opts: GarminReadOptions = {}): Promise<unknown> {
   try { return await safeGet(URLS.trainingStatus(date), opts); }
-  catch { return null; }
+  catch (err) { logGarminReadFallback(err, URLS.trainingStatus(date), opts); return null; }
 }
 
 export async function getBodyBatteryEvents(date: string, opts: GarminReadOptions = {}): Promise<unknown> {
   try { return await safeGet(URLS.bodyBatteryEvents(date), opts); }
-  catch { return null; }
+  catch (err) { logGarminReadFallback(err, URLS.bodyBatteryEvents(date), opts); return null; }
 }
 
 export async function getBodyBatteryEventsForUser(userId: number, date: string): Promise<unknown> {
@@ -1242,7 +1324,7 @@ export async function getBodyBatteryEventsForUser(userId: number, date: string):
 
 export async function getRhr(date: string, opts: GarminReadOptions = {}): Promise<unknown> {
   try { return await safeGet(URLS.rhr(date), opts); }
-  catch { return null; }
+  catch (err) { logGarminReadFallback(err, URLS.rhr(date), opts); return null; }
 }
 
 export async function getActivitiesByDate(
@@ -1253,7 +1335,7 @@ export async function getActivitiesByDate(
   try {
     const result = await safeGet<GarminActivity[]>(URLS.activitiesByDate(startDate, endDate), opts);
     return Array.isArray(result) ? result : [];
-  } catch { return []; }
+  } catch (err) { logGarminReadFallback(err, URLS.activitiesByDate(startDate, endDate), opts); return []; }
 }
 
 export async function getActivitiesByDateForUser(
@@ -1266,24 +1348,24 @@ export async function getActivitiesByDateForUser(
 
 export async function getActivityDetails(activityId: number, opts: GarminReadOptions = {}): Promise<unknown> {
   try { return await safeGet(URLS.activityDetails(activityId), opts); }
-  catch { return null; }
+  catch (err) { logGarminReadFallback(err, URLS.activityDetails(activityId), opts); return null; }
 }
 
 export async function getActivitySplits(activityId: number, opts: GarminReadOptions = {}): Promise<unknown> {
   try { return await safeGet(URLS.activitySplits(activityId), opts); }
-  catch { return null; }
+  catch (err) { logGarminReadFallback(err, URLS.activitySplits(activityId), opts); return null; }
 }
 
 export async function getActivityExerciseSets(activityId: number, opts: GarminReadOptions = {}): Promise<unknown> {
   try { return await safeGet(URLS.activityExerciseSets(activityId), opts); }
-  catch { return null; }
+  catch (err) { logGarminReadFallback(err, URLS.activityExerciseSets(activityId), opts); return null; }
 }
 
 export async function getTrainingEffect(activityId: number, opts: GarminReadOptions = {}): Promise<unknown> {
   try {
     const details = await safeGet<Record<string, unknown>>(URLS.trainingEffect(activityId), opts);
     return details?.summaryDTO ?? details;
-  } catch { return null; }
+  } catch (err) { logGarminReadFallback(err, URLS.trainingEffect(activityId), opts); return null; }
 }
 
 export async function getScheduledWorkouts(
@@ -1294,37 +1376,37 @@ export async function getScheduledWorkouts(
   try {
     const result = await safeGet<unknown[]>(URLS.scheduledWorkouts(startDate, endDate), opts);
     return Array.isArray(result) ? result : [];
-  } catch { return []; }
+  } catch (err) { logGarminReadFallback(err, URLS.scheduledWorkouts(startDate, endDate), opts); return []; }
 }
 
 export async function getTrainingPlanWorkouts(date: string, opts: GarminReadOptions = {}): Promise<unknown> {
   try { return await safeGet(URLS.trainingPlanWorkouts(date), opts); }
-  catch { return null; }
+  catch (err) { logGarminReadFallback(err, URLS.trainingPlanWorkouts(date), opts); return null; }
 }
 
 export async function getWorkoutDetail(workoutId: number, opts: GarminReadOptions = {}): Promise<unknown> {
   try { return await safeGet(URLS.workoutDetail(workoutId), opts); }
-  catch { return null; }
+  catch (err) { logGarminReadFallback(err, URLS.workoutDetail(workoutId), opts); return null; }
 }
 
 export async function getWeeklyStress(date: string, weeks = 1, opts: GarminReadOptions = {}): Promise<unknown> {
   try { return await safeGet(URLS.weeklyStress(date, weeks), opts); }
-  catch { return null; }
+  catch (err) { logGarminReadFallback(err, URLS.weeklyStress(date, weeks), opts); return null; }
 }
 
 export async function getWeeklyIntensityMinutes(date: string, weeks = 1, opts: GarminReadOptions = {}): Promise<unknown> {
   try { return await safeGet(URLS.weeklyIntensityMinutes(date, weeks), opts); }
-  catch { return null; }
+  catch (err) { logGarminReadFallback(err, URLS.weeklyIntensityMinutes(date, weeks), opts); return null; }
 }
 
 export async function getRacePredictions(opts: GarminReadOptions = {}): Promise<unknown> {
   try { return await safeGet(URLS.racePredictions(), opts); }
-  catch { return null; }
+  catch (err) { logGarminReadFallback(err, URLS.racePredictions(), opts); return null; }
 }
 
 export async function getActiveGoals(opts: GarminReadOptions = {}): Promise<unknown> {
   try { return await safeGet(URLS.goals('active'), opts); }
-  catch { return null; }
+  catch (err) { logGarminReadFallback(err, URLS.goals('active'), opts); return null; }
 }
 
 // ─── Composite: Fetch all daily coach data in parallel ────────────────

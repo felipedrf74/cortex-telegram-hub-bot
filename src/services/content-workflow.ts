@@ -18,6 +18,7 @@ import { buildAngleDiversityBlock, isDuplicateIdea } from './content-dedup';
 import { getWorkflowEligibleIdeas, markIdeaPromoted } from '../state/saved-ideas';
 import { readSignals } from './intelligence-bus';
 import { loadPromptWithConfig } from '../utils/prompt-loader';
+import { sanitizeForPromptInterpolation } from '../utils/prompt-sanitizer';
 import { getUserLanguage } from './user-service';
 import { buildAuthorizedContentReferenceContext } from './content-reference-context';
 import {
@@ -179,22 +180,22 @@ export function buildTasteProfileBlock(userId: number, tenantId: number): string
   if (approved.length > 0) {
     block += 'Topics the authenticated creator APPROVED:\n';
     for (const r of approved.slice(0, 15)) {
-      block += `  • "${r.topic}" (${r.niche || 'general'})\n`;
+      block += `  • ${sanitizeForPromptInterpolation(r.topic)} (${sanitizeForPromptInterpolation(r.niche || 'general')})\n`;
     }
   }
 
   if (rejected.length > 0) {
     block += '\nTopics the authenticated creator REJECTED (avoid similar):\n';
     for (const r of rejected.slice(0, 15)) {
-      block += `  • "${r.topic}" (${r.niche || 'general'})\n`;
+      block += `  • ${sanitizeForPromptInterpolation(r.topic)} (${sanitizeForPromptInterpolation(r.niche || 'general')})\n`;
     }
   }
 
   // Summary stats
   const approvedNiches = [...new Set(approved.map((r) => r.niche).filter(Boolean))];
   const rejectedNiches = [...new Set(rejected.map((r) => r.niche).filter(Boolean))];
-  block += `\nPreferred pillars: ${approvedNiches.join(', ') || 'varied'}`;
-  block += `\nAvoided pillars: ${rejectedNiches.join(', ') || 'none'}\n`;
+  block += `\nPreferred pillars: ${approvedNiches.map((niche) => sanitizeForPromptInterpolation(niche)).join(', ') || 'varied'}`;
+  block += `\nAvoided pillars: ${rejectedNiches.map((niche) => sanitizeForPromptInterpolation(niche)).join(', ') || 'none'}\n`;
 
   return block;
 }

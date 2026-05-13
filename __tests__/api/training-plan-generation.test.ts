@@ -17,6 +17,7 @@ const mockReadSecretaryMeshContext = vi.fn();
 const mockBuildCoachKernelTrainingPlan = vi.fn();
 const mockBuildDeterministicTrainingPlan = vi.fn();
 const mockFetchCurrentReadinessForPlan = vi.fn();
+const mockLintGeneratedTrainingPlanPreflight = vi.fn();
 const mockPersistGeneratedTrainingPlan = vi.fn();
 const mockCancelTrainingPlanForUser = vi.fn();
 // Slice 4.D.2 — saga inspects post-cancellation state via these.
@@ -87,6 +88,9 @@ vi.mock('../../src/api/routes/training-read-models', () => ({
 }));
 
 vi.mock('../../src/api/routes/training-plan-persistence', () => ({
+  lintGeneratedTrainingPlanPreflight: (...args: unknown[]) => (
+    mockLintGeneratedTrainingPlanPreflight(...args)
+  ),
   persistGeneratedTrainingPlan: (...args: unknown[]) => mockPersistGeneratedTrainingPlan(...args),
 }));
 
@@ -165,6 +169,7 @@ describe('generateTrainingPlanForUser', () => {
     mockBuildCoachKernelTrainingPlan.mockReset();
     mockBuildDeterministicTrainingPlan.mockReset();
     mockFetchCurrentReadinessForPlan.mockReset();
+    mockLintGeneratedTrainingPlanPreflight.mockReset();
     mockPersistGeneratedTrainingPlan.mockReset();
     mockCancelTrainingPlanForUser.mockReset();
     mockGetActivePlans.mockReset();
@@ -203,6 +208,12 @@ describe('generateTrainingPlanForUser', () => {
     mockBuildCoachKernelTrainingPlan.mockReturnValue(makePlan());
     mockBuildDeterministicTrainingPlan.mockReturnValue(makePlan('Fallback Plan'));
     mockFetchCurrentReadinessForPlan.mockResolvedValue({ score: 76 });
+    mockLintGeneratedTrainingPlanPreflight.mockReturnValue({
+      status: 'pass',
+      blockers: [],
+      warnings: [],
+      suggestedFixes: [],
+    });
     mockPersistGeneratedTrainingPlan.mockResolvedValue({
       planId: 9001,
       totalSessions: 4,
@@ -527,6 +538,57 @@ describe('generateTrainingPlanForUser', () => {
       expect.arrayContaining([
         expect.objectContaining({ code: 'calendar_fetch_degraded' }),
       ]),
+    );
+  });
+
+  it('blocks failed plan-linter preflight before cancellation or persistence', async () => {
+    mockLintGeneratedTrainingPlanPreflight.mockReturnValueOnce({
+      status: 'fail',
+      blockers: [
+        {
+          ruleId: 'equipment_compatibility',
+          severity: 'blocker',
+          message: 'Barbell work is incompatible with a bodyweight-only profile.',
+          affectedSessions: [{ weekNumber: 1, dayOfWeek: 'monday', title: 'Lower Body Strength' }],
+        },
+      ],
+      warnings: [],
+      suggestedFixes: [
+        {
+          findingRuleId: 'equipment_compatibility',
+          action: 'Substitute barbell work for bodyweight variants.',
+        },
+      ],
+    });
+
+    const result = await generateTrainingPlanForUser({
+      userId: 12,
+      objective: 'Build consistency',
+      sessionsPerWeek: 5,
+      strengthSessionsPerWeek: 2,
+    });
+
+    expect(result.status).toBe('plan_quality_blocked');
+    if (result.status === 'plan_quality_blocked') {
+      expect(result.data.planLint.status).toBe('fail');
+      expect(result.data.warnings).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            code: 'lint_blocker_equipment_compatibility',
+            message: 'Barbell work is incompatible with a bodyweight-only profile.',
+          }),
+        ]),
+      );
+      expect(result.data.message).toContain('blocked this plan before saving');
+    }
+    expect(mockCancelTrainingPlanForUser).not.toHaveBeenCalled();
+    expect(mockPersistGeneratedTrainingPlan).not.toHaveBeenCalled();
+    expect(mockLoggerWarn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        event: 'training_plan_quality_gate.blocked_pre_persist',
+        blockerRuleIds: ['equipment_compatibility'],
+      }),
+      expect.stringContaining('blocked plan before cancellation/persistence'),
     );
   });
 

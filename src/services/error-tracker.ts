@@ -76,16 +76,24 @@ export function init(cfg: ErrorTrackerConfig): void {
     return;
   }
 
-  Sentry.init({
+  const sentryOptions: Sentry.NodeOptions & {
+    replaysSessionSampleRate: number;
+    replaysOnErrorSampleRate: number;
+  } = {
     dsn: cfg.dsn,
     environment: cfg.environment,
     release: cfg.release,
     tracesSampleRate: cfg.tracesSampleRate ?? 0,
+    sendDefaultPii: false,
+    replaysSessionSampleRate: 0,
+    replaysOnErrorSampleRate: 0,
     attachStacktrace: true,
     // Keep payload small on free tier (5K errors/month)
     maxBreadcrumbs: 30,
     beforeSend: sanitizeSentryEvent,
-  });
+  };
+
+  Sentry.init(sentryOptions);
 
   _initialized = true;
   logger.info({ environment: cfg.environment, release: cfg.release }, 'Sentry: initialized');

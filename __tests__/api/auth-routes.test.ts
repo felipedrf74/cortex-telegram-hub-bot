@@ -145,6 +145,13 @@ describe('Auth invite registration', () => {
     vi.resetModules();
   });
 
+  it('logs asynchronous verification email send failures instead of swallowing them', () => {
+    const source = fs.readFileSync(path.resolve(__dirname, '../../src/api/routes/auth.ts'), 'utf8');
+    expect(source).toContain('Verification email send failed');
+    expect(source).toContain('userId: user.id');
+    expect(source).toContain('email: user.email');
+  });
+
   it('provisions beta invite users with active max-tier sandbox access', async () => {
     const res = await dispatchRegisterInvite({
       deviceId: 'beta-device-1234',

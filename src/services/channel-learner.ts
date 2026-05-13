@@ -50,6 +50,7 @@ import {
   contentScopePredicate,
   ensureContentTenantScopeColumns,
 } from './content-tenant-scope';
+import { sanitizeForPromptInterpolation } from '../utils/prompt-sanitizer';
 
 const client = new Anthropic({
   apiKey: config.anthropic.apiKey,
@@ -305,12 +306,12 @@ function buildChannelLearnerExtractionPromptFromContext(
   const videoSummary = videos.map((v, i) => {
     const views = v.viewCount > 1000 ? `${(v.viewCount / 1000).toFixed(1)}K` : v.viewCount;
     const likes = v.likeCount > 1000 ? `${(v.likeCount / 1000).toFixed(1)}K` : v.likeCount;
-    return `${i + 1}. "${v.title}"
+    return `${i + 1}. ${sanitizeForPromptInterpolation(v.title)}
    Views: ${views} | Likes: ${likes} | Comments: ${v.commentCount} | Duration: ${v.duration}
-   Desc: ${v.description.substring(0, 200)}${v.description.length > 200 ? '...' : ''}`;
+   Desc: ${sanitizeForPromptInterpolation(v.description.substring(0, 200))}${v.description.length > 200 ? '...' : ''}`;
   }).join('\n\n');
 
-  let prompt = `Analyze the YouTube channel "${channelName}" based on their ${videos.length} most recent videos.
+  let prompt = `Analyze the YouTube channel ${sanitizeForPromptInterpolation(channelName)} based on their ${videos.length} most recent videos.
 
 AUTHENTICATED CREATOR CONTEXT:
 ${creator.block}
@@ -324,7 +325,7 @@ ${videoSummary}`;
 
 TRANSCRIPTS FROM TOP-PERFORMING VIDEOS:
 (Use these to extract EXACT hook phrases, transition words, storytelling beats, and pacing patterns — not just title-level patterns)
-${transcriptData}`;
+${sanitizeForPromptInterpolation(transcriptData)}`;
   }
 
   prompt += `
@@ -467,9 +468,9 @@ async function synthesizeKnowledge(userId?: number): Promise<void> {
 
     // Build context for Claude
     const context = [...byChannel.entries()].map(([name, pats]) => {
-      return `From "${name}":\n${pats.map((p) => {
+      return `From ${sanitizeForPromptInterpolation(name)}:\n${pats.map((p) => {
         const examples = JSON.parse(p.examples) as string[];
-        return `  - ${p.pattern_text} (confidence: ${p.confidence})\n    Examples: ${examples.join('; ')}`;
+        return `  - ${sanitizeForPromptInterpolation(p.pattern_text)} (confidence: ${p.confidence})\n    Examples: ${examples.map((example) => sanitizeForPromptInterpolation(example)).join('; ')}`;
       }).join('\n')}`;
     }).join('\n\n');
 
@@ -497,7 +498,7 @@ async function synthesizeKnowledge(userId?: number): Promise<void> {
     // (~18 calls/wk avg) so cumulative savings here are meaningful even
     // though per-call cost is small.
     try {
-      const userPrompt = `Synthesize the "${category}" patterns from ${byChannel.size} creators:\n\n${context}`;
+      const userPrompt = `Synthesize the ${sanitizeForPromptInterpolation(category)} patterns from ${byChannel.size} creators:\n\n${context}`;
       const { text: synthText } = await completeOneShotWithFallback(
         synthesisSystemPrompt,
         userPrompt,

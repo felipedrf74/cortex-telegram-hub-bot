@@ -81,7 +81,12 @@ export class SQLiteStorage implements StorageProvider {
 
     this.db = new Database(dbPath);
     this.db.pragma('journal_mode = WAL');
+    this.db.pragma('synchronous = NORMAL');
     this.db.pragma('foreign_keys = ON');
+    this.db.pragma('cache_size = -65536');
+    this.db.pragma('mmap_size = 268435456');
+    this.db.pragma('temp_store = MEMORY');
+    this.db.pragma('wal_autocheckpoint = 1000');
     // Wait up to 5s for write locks to release before throwing SQLITE_BUSY.
     // Default is 0 (immediate fail) which is fine at 1 user but causes
     // sporadic write failures under any concurrent load.

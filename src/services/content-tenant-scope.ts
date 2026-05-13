@@ -62,6 +62,7 @@ const scopedTables = [
   'content_creator_profile',
   // CONTENT-UI-O2: per-signal radar feedback (accept/reject/save/create_brief)
   'content_radar_feedback',
+  'config_pillars',
 ];
 
 const ensured = new WeakSet<object>();

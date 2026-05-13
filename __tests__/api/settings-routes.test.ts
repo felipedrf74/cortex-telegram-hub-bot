@@ -124,6 +124,53 @@ async function dispatchDeletePushToken(userId: number, deviceId = 'test-device-i
   return res;
 }
 
+async function dispatchAccountExport(userId: number): Promise<MockRes> {
+  const { settingsRoutes } = await import('../../src/api/routes/settings');
+  const router = settingsRoutes();
+  const req = mockReq(userId, {});
+  (req as any).tenantId = userId;
+  (req as any).ip = '203.0.113.10';
+  (req as any).method = 'POST';
+  (req as any).url = '/export';
+  (req as any).originalUrl = '/export';
+  (req as any).baseUrl = '';
+  (req as any).path = '/export';
+  const res = mockRes();
+
+  await new Promise<void>((resolve) => {
+    (router as any).handle(req, res, (err: any) => {
+      if (err) throw err;
+      resolve();
+    });
+    setImmediate(resolve);
+  });
+
+  return res;
+}
+
+async function dispatchAccountDelete(userId: number): Promise<MockRes> {
+  const { settingsRoutes } = await import('../../src/api/routes/settings');
+  const router = settingsRoutes();
+  const req = mockReq(userId, {});
+  (req as any).ip = '203.0.113.10';
+  (req as any).method = 'DELETE';
+  (req as any).url = '/account';
+  (req as any).originalUrl = '/account';
+  (req as any).baseUrl = '';
+  (req as any).path = '/account';
+  const res = mockRes();
+
+  await new Promise<void>((resolve) => {
+    (router as any).handle(req, res, (err: any) => {
+      if (err) throw err;
+      resolve();
+    });
+    setImmediate(resolve);
+  });
+
+  return res;
+}
+
 async function dispatchPushPreferencesGet(userId: number): Promise<MockRes> {
   const { settingsRoutes } = await import('../../src/api/routes/settings');
   const router = settingsRoutes();
@@ -259,6 +306,38 @@ describe('Settings language route', () => {
       'SELECT push_token FROM ios_devices WHERE user_id = ? AND device_id = ?',
     ).get(1, 'signout-device') as { push_token: string | null };
     expect(row.push_token).toBeNull();
+  });
+
+  it('audit-logs account export with table counts', async () => {
+    const res = await dispatchAccountExport(1);
+
+    expect(res.statusCode).toBe(200);
+    expect(res.body.ok).toBe(true);
+    const audit = testDb.prepare(`
+      SELECT action, resource, details, ip_address
+      FROM audit_trail
+      WHERE user_id = ? AND action = 'export' AND resource = 'account'
+    `).get(1) as { action: string; resource: string; details: string; ip_address: string };
+    expect(audit).toBeTruthy();
+    expect(audit.ip_address).toBe('203.0.113.10');
+    expect(JSON.parse(audit.details).tableCounts).toBeDefined();
+  });
+
+  it('audit-logs account deletion after cascade so the row survives erasure', async () => {
+    const res = await dispatchAccountDelete(1);
+
+    expect(res.statusCode).toBe(200);
+    expect(res.body.ok).toBe(true);
+    const user = testDb.prepare('SELECT id FROM users WHERE id = ?').get(1);
+    expect(user).toBeUndefined();
+    const audit = testDb.prepare(`
+      SELECT action, resource, details, ip_address
+      FROM audit_trail
+      WHERE user_id = ? AND action = 'delete' AND resource = 'account'
+    `).get(1) as { action: string; resource: string; details: string; ip_address: string };
+    expect(audit).toBeTruthy();
+    expect(audit.ip_address).toBe('203.0.113.10');
+    expect(JSON.parse(audit.details).tableCounts).toBeDefined();
   });
 
   it('fails closed on invalid tenant scope for push preferences read', async () => {
