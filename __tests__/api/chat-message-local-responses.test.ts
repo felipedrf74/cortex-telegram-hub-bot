@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 const mockGetCached = vi.fn();
 const mockSetCache = vi.fn();
 const mockTryDeterministicChatCommand = vi.fn();
+const mockTrySecretaryFastpath = vi.fn();
 const mockGetUserLanguageById = vi.fn();
 const mockGetPreferredDisplayNameById = vi.fn();
 
@@ -17,6 +18,10 @@ vi.mock('../../src/api/routes/chat-fastpath', () => ({
   tryDeterministicChatCommand: (...args: unknown[]) => mockTryDeterministicChatCommand(...args),
   getPendingTasksCacheKey: (userId?: number, tenantId?: number) =>
     `u:${userId ?? 'unknown'}:t:${tenantId ?? userId ?? 'unknown'}:fastpath:pending-tasks`,
+}));
+
+vi.mock('../../src/services/secretary-fastpath', () => ({
+  tryFastpath: (...args: unknown[]) => mockTrySecretaryFastpath(...args),
 }));
 
 vi.mock('../../src/services/user-service', () => ({
@@ -41,10 +46,12 @@ describe('chat message local response helpers', () => {
     mockGetCached.mockReset();
     mockSetCache.mockReset();
     mockTryDeterministicChatCommand.mockReset();
+    mockTrySecretaryFastpath.mockReset();
     mockGetUserLanguageById.mockReset();
     mockGetPreferredDisplayNameById.mockReset();
     mockGetUserLanguageById.mockReturnValue('en-US');
     mockGetPreferredDisplayNameById.mockReturnValue('');
+    mockTrySecretaryFastpath.mockResolvedValue({ matched: false });
   });
 
   afterEach(() => {
@@ -143,6 +150,44 @@ describe('chat message local response helpers', () => {
     mockTryDeterministicChatCommand.mockResolvedValue(null);
 
     await expect(tryBuildFastPathChatResponse('hello', 'hello', 42)).resolves.toBeNull();
+  });
+
+  it('maps natural-language Secretary fast paths before the AI quota/model route', async () => {
+    mockTryDeterministicChatCommand.mockResolvedValue(null);
+    mockGetUserLanguageById.mockReturnValue('pt-PT');
+    mockTrySecretaryFastpath.mockResolvedValue({
+      matched: true,
+      patternId: 'create_calendar_event',
+      response: {
+        text: 'Pronto ✅ Agendei no Outlook:\n• 📅 16/05/2026, 09:00–13:00 — Volei Lucas',
+        domain: 'secretary',
+      },
+    });
+
+    const result = await tryBuildFastPathChatResponse(
+      'Colocar no calendario evento no proximo sabado, 16/5, das 9h as 13h. Volei Lucas',
+      'colocar no calendario evento no proximo sabado, 16/5, das 9h as 13h. volei lucas',
+      42,
+      42,
+    );
+
+    expect(mockTrySecretaryFastpath).toHaveBeenCalledWith(
+      42,
+      'Colocar no calendario evento no proximo sabado, 16/5, das 9h as 13h. Volei Lucas',
+      'pt-PT',
+    );
+    expect(result).toMatchObject({
+      conversationDomain: 'secretary',
+      cacheable: false,
+      response: {
+        text: expect.stringContaining('Agendei no Outlook'),
+        domain: 'secretary',
+        routeMethod: 'fast-path',
+        confidence: 1,
+        buttons: null,
+        metadata: { patternId: 'create_calendar_event' },
+      },
+    });
   });
 
   it('answers identity questions from the authenticated user profile, not a founder prompt default', () => {

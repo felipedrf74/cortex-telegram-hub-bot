@@ -7,6 +7,13 @@ import { logger } from '../../utils/logger';
 import { getLastChatActiveDomain } from './chat-message-context';
 import { isRetryableAIProviderError } from './chat-content-refinement';
 import {
+  buildNexusAnswerContract,
+  createChatLatencyTracker,
+  metadataGroundingFacts,
+} from '../../services/chat-answer-contract';
+import { applyChatFallbackPolicy } from '../../services/chat-fallback-policy';
+import { buildChatGroundingEnvelope } from '../../services/chat-grounding-layer';
+import {
   persistExchange,
   syncConversationStateForShortcut,
 } from './chat-persistence';
@@ -26,6 +33,38 @@ export async function sendRetryableChatFailureResponseIfNeeded(opts: {
   const degraded = await buildAITemporarilyBusyResponse(degradedDomain, userId);
   const timestamp = new Date().toISOString();
   const assistantMessageId = `msg-${Date.now()}`;
+  const tracker = createChatLatencyTracker(Date.now());
+  tracker.mark('retryable_provider_failure');
+  const grounding = buildChatGroundingEnvelope({
+    message: normalizedText,
+    userId,
+    tenantId: tenantId ?? userId,
+    routedDomain: degraded.domain,
+  });
+  const contract = buildNexusAnswerContract({
+    intent: grounding.capability.intent,
+    ownerSkill: grounding.capability.ownerSkill,
+    routeMethod: 'degraded',
+    confidence: 0.1,
+    groundingFacts: grounding.groundingFacts,
+    missingFacts: grounding.missingFacts,
+    staleness: grounding.staleness,
+    riskLevel: grounding.capability.riskLevel,
+    actionability: 'degraded',
+    verificationStatus: 'failed',
+    fallback: {
+      fallbackType: 'degraded_response',
+      fallbackReason: 'retryable_ai_provider_failure',
+      retryable: true,
+      sourceFreshness: grounding.staleness,
+      userActionRequired: false,
+      operatorActionRequired: false,
+    },
+    userFacingSummary: degraded.text,
+    traceId: chatRequestId,
+    latency: tracker.snapshot('tier4_long_running', grounding.capability.capability.latencyBudgetMs),
+  });
+  const fallbackPolicy = applyChatFallbackPolicy(contract);
 
   logger.warn(
     { err, platform: 'ios', chatRequestId, userId, degradedDomain },
@@ -39,7 +78,15 @@ export async function sendRetryableChatFailureResponseIfNeeded(opts: {
     routeMethod: 'degraded',
     confidence: 0.1,
     buttons: null,
-    metadata: { degraded: true, retryable: true },
+    metadata: {
+      type: 'nexus_answer',
+      degraded: true,
+      retryable: true,
+      chatReasoning: fallbackPolicy.contract,
+      groundingFacts: metadataGroundingFacts(fallbackPolicy.contract.groundingFacts),
+      fallback: fallbackPolicy.contract.fallback,
+      fallbackPolicy: fallbackPolicy.policy,
+    },
     timestamp,
   };
   if (tenantId) {

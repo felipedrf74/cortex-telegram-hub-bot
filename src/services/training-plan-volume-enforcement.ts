@@ -23,6 +23,7 @@ export interface TrainingPlanVolumeRequest {
   preferredCardioTime: string;
   preferredStrengthTime: string;
   startDate: string;
+  longWorkoutDay?: string | null;
 }
 
 export function enforceRequestedTrainingPlanVolume(
@@ -44,7 +45,11 @@ export function enforceRequestedTrainingPlanVolume(
 
   cloned.weeks = cloned.weeks.map((week) => {
     const weekNumber = typeof week.weekNumber === 'number' ? week.weekNumber : 1;
-    const allowedDays = allowedDaysForWeek(request.startDate, weekNumber);
+    const allowedDays = constrainTrainingDays(
+      allowedDaysForWeek(request.startDate, weekNumber),
+      requestedPrimarySessions,
+      request.longWorkoutDay,
+    );
     const activeTarget = Math.min(requestedTotal, Math.max(1, allowedDays.length * 2));
     const strengthTarget = Math.min(
       activeTarget,
@@ -77,10 +82,28 @@ function allowedDaysForWeek(startDate: string, weekNumber: number): string[] {
   if (weekNumber !== 1) return [...DAY_ORDER];
   const startIndex = dayIndexFromIsoDate(startDate);
   if (startIndex < 0) return [...DAY_ORDER];
-  return [
-    ...DAY_ORDER.slice(startIndex),
-    ...DAY_ORDER.slice(0, startIndex),
-  ];
+  return DAY_ORDER.slice(startIndex);
+}
+
+function constrainTrainingDays(
+  allowedDays: readonly string[],
+  requestedTrainingDays: number,
+  longWorkoutDay: unknown,
+): string[] {
+  const budget = clamp(Math.round(requestedTrainingDays || 5), 1, 7);
+  const normalizedAllowed = allowedDays.filter((day) => DAY_ORDER.includes(day as typeof DAY_ORDER[number]));
+  if (normalizedAllowed.length <= budget) return [...normalizedAllowed];
+
+  const protectedLongDay = normalizeDay(longWorkoutDay);
+  const restPreference = ['sunday', 'monday', 'friday', 'thursday', 'tuesday', 'wednesday', 'saturday'];
+  const days = [...normalizedAllowed];
+  for (const restDay of restPreference) {
+    if (days.length <= budget) break;
+    if (restDay === protectedLongDay) continue;
+    const index = days.indexOf(restDay);
+    if (index >= 0) days.splice(index, 1);
+  }
+  return days.slice(0, budget);
 }
 
 function dayIndexFromIsoDate(value: string): number {
@@ -358,7 +381,7 @@ function countStrength(sessions: CoordinatedTrainingSession[]): number {
   return sessions.filter(isStrengthSession).length;
 }
 
-function normalizeDay(value: string | null | undefined): string | null {
+function normalizeDay(value: unknown): string | null {
   const normalized = String(value || '').trim().toLowerCase();
   return DAY_ORDER.includes(normalized as typeof DAY_ORDER[number]) ? normalized : null;
 }

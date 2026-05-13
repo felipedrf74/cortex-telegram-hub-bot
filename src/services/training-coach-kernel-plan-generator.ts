@@ -162,8 +162,10 @@ export function buildCoachKernelTrainingPlan(input: CoachKernelTrainingPlanInput
       races: athlete.goals.raceCalendar,
     });
 
+    const weekReadiness = readinessForPlannedWeek(rollingAthlete.readiness, weekNumber);
     const weekAthlete: AthleteState = {
       ...rollingAthlete,
+      readiness: weekReadiness,
       currentBlock: {
         ...rollingAthlete.currentBlock,
         phase,
@@ -211,6 +213,28 @@ export function buildCoachKernelTrainingPlan(input: CoachKernelTrainingPlanInput
       ...goalModeReasons,
       ...rawWeeklyPlans.flatMap((plan) => plan.decisionReasons ?? []),
     ]),
+  };
+}
+
+function readinessForPlannedWeek(
+  readiness: AthleteState['readiness'],
+  weekNumber: number,
+): AthleteState['readiness'] {
+  if (weekNumber <= 1) return readiness;
+  const hasMaterialPain = (readiness.painFlags ?? []).some((flag) =>
+    flag.severity === 'moderate' || flag.severity === 'high'
+  );
+  if (hasMaterialPain) return readiness;
+  if (readiness.level !== 'red' && readiness.level !== 'orange') return readiness;
+
+  return {
+    ...readiness,
+    level: 'yellow',
+    score: Math.max(readiness.score ?? 0, 70),
+    notes: Array.from(new Set([
+      ...(readiness.notes ?? []),
+      'Future weeks use neutral readiness until new recovery data arrives.',
+    ])),
   };
 }
 
@@ -812,7 +836,11 @@ function resolveRaceCalendar(
   runProfile?: Record<string, any> | null,
   requestRaceDate?: string | null,
 ): RaceEvent[] {
-  const raceDate = normalizeRaceDate(requestRaceDate) ?? normalizeRaceDate(runProfile?.target_race_date);
+  const raceDate = normalizeRaceDate(requestRaceDate)
+    ?? normalizeRaceDate(runProfile?.target_race_date)
+    ?? normalizeRaceDate(runProfile?.targetRaceDate)
+    ?? normalizeRaceDate(runProfile?.race_date)
+    ?? normalizeRaceDate(runProfile?.raceDate);
   if (!raceDate) return [];
 
   const subtype = normalizeRaceSubtype(runProfile?.target_race, objective);

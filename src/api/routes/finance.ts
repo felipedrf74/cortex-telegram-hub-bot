@@ -50,6 +50,10 @@ import { acquireCostLock, enforceCostGuardrails } from '../../services/cost-guar
 import { analyzeInvoiceImage } from '../../services/invoice-filer';
 import { ensureValidTenantRouteScope } from '../tenant-route-scope';
 import { createNotificationIntent } from '../../services/notification-orchestrator';
+import {
+  previewFinanceSchedulingIntent,
+  submitFinanceSchedulingIntent,
+} from '../../services/finance-secretary-integration';
 
 export function financeRoutes(): Router {
   const router = Router();
@@ -402,6 +406,34 @@ export function financeRoutes(): Router {
       const event = calculateAndStoreTax(userId, month);
       invalidateFinanceDerivedCaches(userId);
       if (event.status !== 'paid' && (event.tax_due > 0 || event.inss_due > 0)) {
+        const reminderWindow = financeTaxReminderWindow(String(month));
+        if (reminderWindow) {
+          try {
+            const secretaryInput = {
+              userId,
+              tenantId,
+              kind: 'bill_reminder' as const,
+              entityId: month,
+              title: `Review tax payment for ${month}`,
+              deadline: reminderWindow.end,
+              preferredWindows: [reminderWindow],
+              durationMinutes: 15,
+              priority: 'high' as const,
+              context: 'Finance tax calculation created a payment reminder candidate. Amount details remain in Finance.',
+            };
+            const preview = previewFinanceSchedulingIntent(secretaryInput);
+            if (['scheduled', 'reflowed', 'compressed'].includes(preview.status) && preview.recommendedSlot) {
+              submitFinanceSchedulingIntent(secretaryInput);
+            } else {
+              logger.warn(
+                { userId, tenantId, month, status: preview.status, reasonCodes: preview.reasonCodes },
+                'Finance tax reminder was not placed by Secretary preview',
+              );
+            }
+          } catch (secretaryErr) {
+            logger.warn({ err: secretaryErr, userId, tenantId, month }, 'Finance Secretary reminder scheduling failed');
+          }
+        }
         try {
           await createNotificationIntent({
             userId,
@@ -662,6 +694,22 @@ export function financeRoutes(): Router {
   }));
 
   return router;
+}
+
+function financeTaxReminderWindow(month: string): { start: string; end: string; label: string; hard: boolean } | null {
+  const match = /^(\d{4})-(\d{2})$/.exec(month);
+  if (!match) return null;
+  const year = Number(match[1]);
+  const monthNumber = Number(match[2]);
+  if (!Number.isInteger(year) || !Number.isInteger(monthNumber) || monthNumber < 1 || monthNumber > 12) return null;
+  const start = new Date(Date.UTC(year, monthNumber - 1, 20, 9, 0, 0, 0));
+  const end = new Date(Date.UTC(year, monthNumber - 1, 20, 9, 30, 0, 0));
+  return {
+    start: start.toISOString(),
+    end: end.toISOString(),
+    label: 'finance tax reminder window',
+    hard: false,
+  };
 }
 
 function stableMutationFingerprint(value: Record<string, unknown>): string {

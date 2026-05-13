@@ -197,6 +197,7 @@ vi.mock('../../src/services/user-service', () => ({
 }));
 
 vi.mock('../../src/services/secretary-fastpath', () => ({
+  tryFastpath: vi.fn(async () => ({ matched: false })),
   normalizeLangHeader: (value: string) => {
     const normalized = value.toLowerCase();
     if (normalized.startsWith('pt-pt') || normalized.startsWith('pt_pt')) return 'pt-PT';
@@ -716,8 +717,16 @@ describe('Chat API routes', () => {
     });
 
     expect(messageRes.statusCode, JSON.stringify(messageRes.body)).toBe(200);
-    expect(messageRes.body.text).toBe('Scheduled.');
+    expect(messageRes.body.text).toContain('cannot honestly mark it done');
     expect(messageRes.body.routeMethod).toBe('classifier');
+    expect(messageRes.body.metadata.chatReasoning).toMatchObject({
+      version: 'nexus_answer_contract.v1',
+      ownerSkill: 'secretary',
+      actionability: 'clarify',
+      verificationStatus: 'pending',
+      missingFacts: expect.arrayContaining(['read_back_verification']),
+    });
+    expect(messageRes.body.metadata.responseQuality.issues).toContain('unverified_success_claim');
 
     const historyRes = await dispatch('GET', '/history?limit=10', 7001);
     expect(historyRes.statusCode).toBe(200);
@@ -728,7 +737,7 @@ describe('Chat API routes', () => {
     });
     expect(historyRes.body.messages[1]).toMatchObject({
       role: 'assistant',
-      text: 'Scheduled.',
+      text: expect.stringContaining('cannot honestly mark it done'),
       domain: 'secretary',
       routeMethod: 'classifier',
       confidence: 0.93,
@@ -853,6 +862,12 @@ describe('Chat API routes', () => {
         type: 'authenticated_identity',
         userId: 7001,
         hasDisplayName: true,
+        chatReasoning: {
+          version: 'nexus_answer_contract.v1',
+          ownerSkill: 'secretary',
+          routeMethod: 'authenticated-identity',
+          verificationStatus: 'not_required',
+        },
       },
     });
     expect(messageRes.body.text).toContain('Jaqueline');
@@ -924,6 +939,10 @@ describe('Chat API routes', () => {
       metadata: {
         idempotencyInProgress: true,
         replayOfUserMessageId: 'msg-user-ios-client-in-flight',
+        chatReasoning: {
+          actionability: 'degraded',
+          verificationStatus: 'pending',
+        },
       },
     });
     expect(mockHandleSecretary).not.toHaveBeenCalled();
@@ -1159,6 +1178,12 @@ describe('Chat API routes', () => {
 
     expect(messageRes.statusCode, JSON.stringify(messageRes.body)).toBe(200);
     expect(messageRes.body.buttons).toEqual([[{ text: '📅 Today', callbackData: 'cmd:/day' }]]);
+    expect(messageRes.body.metadata.chatReasoning).toMatchObject({
+      version: 'nexus_answer_contract.v1',
+      ownerSkill: 'tasks',
+      routeMethod: 'fast-path',
+      actionability: 'answer_only',
+    });
 
     const historyRes = await dispatch('GET', '/history?limit=10', 7001);
     expect(historyRes.body.messages[1]).toMatchObject({
@@ -2174,6 +2199,12 @@ describe('Chat API routes', () => {
       inssDue: 908.86,
       status: 'pending',
       derived: false,
+      chatReasoning: {
+        version: 'nexus_answer_contract.v1',
+        ownerSkill: 'finance',
+        routeMethod: 'finance-state-shortcut',
+        actionability: 'answer_only',
+      },
     });
   });
 

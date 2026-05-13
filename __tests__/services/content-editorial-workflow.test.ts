@@ -441,6 +441,42 @@ describe('Content editorial workflow lifecycle', () => {
     ]));
   });
 
+  it('previews Content scheduling and does not persist an agenda item when no slot fits', () => {
+    const item = createContentWorkflowObject({
+      userId: 501,
+      tenantId: 101,
+      objectType: 'content_calendar_item',
+      title: 'Cut launch reel',
+      editorialState: 'approved',
+    });
+
+    const decision = requestContentScheduleThroughSecretary({
+      userId: 501,
+      tenantId: 101,
+      objectId: item.id,
+      title: item.title,
+      durationMinutes: 75,
+      minimumDurationMinutes: 75,
+      preferredWindows: [
+        { start: '2026-05-01T10:00:00.000Z', end: '2026-05-01T10:15:00.000Z', label: 'too short', hard: true },
+      ],
+      priority: 'high',
+      reason: 'Schedule approved editorial production block.',
+      approvalConfirmed: true,
+    });
+
+    const updated = getContentWorkflowObject(501, item.id, 101);
+    const agendaItems = listSecretaryAgendaItems({ ownerUserId: 501, tenantId: 101 });
+
+    expect(decision.status).toBe('unscheduled');
+    expect(decision.selectedSlot).toBeNull();
+    expect(updated).toMatchObject({
+      editorialState: 'approved',
+      secretaryAgendaItemId: null,
+    });
+    expect(agendaItems).toHaveLength(0);
+  });
+
   it('denies workflow mutation outside the owner user scope', () => {
     const draft = createDraft();
 

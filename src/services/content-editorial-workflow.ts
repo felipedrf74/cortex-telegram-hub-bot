@@ -32,7 +32,7 @@ import type {
   SecretarySchedulingIntent,
   SecretaryTimeWindow,
 } from './secretary-scheduling-arbitrator';
-import { submitSecretarySchedulingIntent } from './secretary-scheduling-arbitrator';
+import { previewSecretarySchedulingIntent, submitSecretarySchedulingIntent } from './secretary-scheduling-arbitrator';
 
 export const CONTENT_EDITORIAL_STATES = [
   'idea',
@@ -1164,6 +1164,67 @@ export function requestContentScheduleThroughSecretary(
     throw new Error(`Content scheduling requires approval: ${approval.reasonCodes.join(',')}`);
   }
   const intent = buildContentSecretarySchedulingIntent(input);
+  const preview = previewSecretarySchedulingIntent(intent);
+  if (!isAcceptedSecretarySchedule(preview.status) || !preview.recommendedSlot) {
+    return {
+      status: preview.status,
+      agendaItem: {
+        agendaItemId: `preview:${intent.intentId}`,
+        sourceIntentId: intent.intentId,
+        sourceSkill: 'content',
+        sourceAction: intent.sourceAction ?? null,
+        intentAction: intent.action ?? 'find_time_for_this',
+        sourceEntityId: String(intent.sourceEntityId ?? ''),
+        sourceEntityType: intent.sourceEntityType ?? null,
+        ownerUserId: intent.ownerUserId,
+        tenantId: String(intent.tenantId),
+        lifecycleState: 'unscheduled',
+        providerSyncState: 'not_synced',
+        providerEventId: null,
+        providerSource: null,
+        version: 0,
+        title: intent.title,
+        startAt: null,
+        endAt: null,
+        durationMinutes: intent.requestedDurationMinutes ?? null,
+        decisionAction: preview.status,
+        decisionReasonCodes: preview.reasonCodes,
+        decisionExplanation: 'Preview found no feasible Content slot.',
+        sourceShapeHash: '',
+        scheduledSegments: [],
+        cancellationReason: null,
+        supersededByAgendaItemId: null,
+        createdAt: intent.createdAt ?? new Date().toISOString(),
+        updatedAt: intent.updatedAt ?? new Date().toISOString(),
+        completedAt: null,
+        sourceCreatedAt: intent.createdAt ?? null,
+        sourceUpdatedAt: intent.updatedAt ?? null,
+        reasoningTrail: preview.reasoningTrail,
+      },
+      reasonCodes: preview.reasonCodes,
+      explanation: 'Secretary preview found no feasible Content slot.',
+      selectedSlot: null,
+      alternativeSlots: preview.alternatives,
+      conflicts: [],
+      downstreamImplications: ['content should ask for another production window before scheduling.'],
+      confidence: preview.confidence,
+      feedback: {
+        sourceSkill: 'content',
+        sourceIntentId: intent.intentId,
+        agendaItemId: `preview:${intent.intentId}`,
+        ownerUserId: intent.ownerUserId,
+        tenantId: String(intent.tenantId),
+        agendaVersion: 0,
+        status: preview.status,
+        reasonCodes: preview.reasonCodes,
+        scheduledStart: null,
+        scheduledEnd: null,
+        shouldRefreshSource: true,
+        downstreamImplications: ['content should ask for another production window before scheduling.'],
+      },
+      reasoningTrail: preview.reasoningTrail,
+    };
+  }
   const decision = submitSecretarySchedulingIntent(intent);
   const accepted = isAcceptedSecretarySchedule(decision.status);
   const toState = accepted ? 'scheduled' : object.editorialState;

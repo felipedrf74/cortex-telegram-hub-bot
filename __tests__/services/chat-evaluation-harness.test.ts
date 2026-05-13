@@ -3,10 +3,12 @@ import {
   CHAT_EVAL_PERSONAS,
   CHAT_EVAL_SCENARIOS,
   CHAT_EVAL_SCORING_DIMENSIONS,
+  CHAT_QUALITY_METRICS,
   formatChatEvaluationResultsMarkdown,
   runChatEvaluationSuite,
   type ChatEvalScenarioId,
   type ChatEvalScoringDimension,
+  type ChatQualityMetricId,
 } from '../../src/services/chat-evaluation-harness';
 
 describe('chat evaluation harness', () => {
@@ -93,6 +95,40 @@ describe('chat evaluation harness', () => {
     }
   });
 
+  it('promotes Nexus-wide chat quality metrics without raw private payload collection', () => {
+    const metricIds = new Set(CHAT_QUALITY_METRICS.map((metric) => metric.id));
+    const expected: ChatQualityMetricId[] = [
+      'routeAccuracy',
+      'clarificationPrecision',
+      'actionSuccessRate',
+      'verifierSuccessRate',
+      'partialFailureHonesty',
+      'hallucinationRejectionCount',
+      'fallbackRateByProvider',
+      'firstStateLatencyMs',
+      'endToEndLatencyMs',
+      'modelCallAvoidanceRate',
+      'userRetryRate',
+      'userCorrectionRate',
+      'timeoutRate',
+      'staleContextRate',
+      'responseSufficiencyScore',
+    ];
+
+    for (const metricId of expected) {
+      expect(metricIds.has(metricId)).toBe(true);
+    }
+    expect(CHAT_QUALITY_METRICS).toHaveLength(expected.length);
+    expect(CHAT_QUALITY_METRICS.every((metric) => (
+      metric.privacy === 'categorical_only'
+      || metric.privacy === 'aggregate_only'
+      || metric.privacy === 'duration_only'
+      || metric.privacy === 'score_only'
+    ))).toBe(true);
+    expect(CHAT_QUALITY_METRICS.some((metric) => metric.id === 'verifierSuccessRate' && metric.source === 'chat_action_verifier')).toBe(true);
+    expect(CHAT_QUALITY_METRICS.some((metric) => metric.id === 'hallucinationRejectionCount' && metric.source === 'chat_response_quality_gate')).toBe(true);
+  });
+
   it('runs the fixture evaluation baseline and marks live-only gates partial instead of fake pass', () => {
     const result = runChatEvaluationSuite({ generatedAt: '2026-04-29T00:00:00.000Z' });
 
@@ -102,6 +138,7 @@ describe('chat evaluation harness', () => {
     expect(result.statusCounts.fail).toBe(0);
     expect(result.statusCounts.blocked).toBe(0);
     expect(result.statusCounts.partial).toBeGreaterThanOrEqual(2);
+    expect(result.qualityMetrics).toEqual(CHAT_QUALITY_METRICS);
     expect(result.scenarios.find((scenario) => scenario.id === 'provider_fallback')?.status).toBe('partial');
     expect(result.scenarios.find((scenario) => scenario.id === 'operator_pinned_model')?.status).toBe('partial');
     expect(result.scenarios.find((scenario) => scenario.id === 'streaming_interruption')?.status).toBe('partial');
@@ -130,8 +167,12 @@ describe('chat evaluation harness', () => {
     const markdown = formatChatEvaluationResultsMarkdown(result);
 
     expect(markdown).toContain('Overall: PASS');
+    expect(markdown).toContain('## Quality Metrics Gate');
+    expect(markdown).toContain('Verifier success rate');
+    expect(markdown).toContain('raw private chat text');
     expect(markdown).toContain('Provider fallback case');
     expect(markdown).toContain('Fixture pass means');
-    expect(markdown).not.toContain('raw private');
+    expect(markdown).not.toContain('felipedrf74');
+    expect(markdown).not.toContain('vieira.jaqueline');
   });
 });

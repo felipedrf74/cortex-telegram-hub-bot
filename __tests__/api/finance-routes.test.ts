@@ -116,6 +116,7 @@ import {
 } from '../../src/services/finance-tracker';
 import { analyzeInvoiceImage } from '../../src/services/invoice-filer';
 import { listNotificationCenterItems } from '../../src/services/notification-orchestrator';
+import { listSecretaryAgendaItems } from '../../src/services/secretary-scheduling-arbitrator';
 
 function applyMigrations(db: Database.Database): void {
   db.exec(`CREATE TABLE IF NOT EXISTS _migrations (id INTEGER PRIMARY KEY, filename TEXT UNIQUE, applied_at TEXT DEFAULT (datetime('now')))`);
@@ -243,6 +244,14 @@ describe('Finance API — tax routes', () => {
       safeBody: 'Finance reminder needs review.',
     });
     expect(notifications[0].sensitiveBody).toContain('Tax event 2024-04');
+    const agendaItems = listSecretaryAgendaItems({ ownerUserId: user.id, tenantId: user.id });
+    expect(agendaItems).toHaveLength(1);
+    expect(agendaItems[0]).toMatchObject({
+      sourceSkill: 'finance',
+      sourceAction: 'bill_reminder',
+      sourceEntityId: '2024-04',
+      providerSyncState: 'not_synced',
+    });
   });
 
   it('returns preferredCurrency with monthly summary for dashboard consumers', async () => {

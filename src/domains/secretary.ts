@@ -419,6 +419,81 @@ function secretaryStateContextCopy(language: string) {
     overdueLabel: (count: number) => localizeSecretaryContext(language, `${count} atrasadas`, `${count} atrasadas`, `${count} overdue`),
     dueTodayLabel: (count: number) => localizeSecretaryContext(language, `${count} para hoje`, `${count} para hoje`, `${count} due today`),
     unreadMailLabel: (count: number) => localizeSecretaryContext(language, `${count} por ler`, `${count} não lidos`, `${count} unread`),
+    // ── M8 PT-PT/PT-BR sweep over strings introduced in Wave 1 ──
+    // M2 (agenda → provider sync): cron summary lines that may surface in
+    // Daily Brief / Decision Center footers.
+    syncedToCalendarLabel: localizeSecretaryContext(
+      language,
+      'Sincronizado ao calendário',
+      'Sincronizado ao calendário',
+      'Synced to calendar',
+    ),
+    awaitingCalendarSyncLabel: localizeSecretaryContext(
+      language,
+      'A aguardar sincronização do calendário',
+      'Aguardando sincronização do calendário',
+      'Awaiting calendar sync',
+    ),
+    calendarOfflineLabel: localizeSecretaryContext(
+      language,
+      'Calendário offline',
+      'Calendário offline',
+      'Calendar offline',
+    ),
+    // C2 (reasoning trail surface): user-facing rendering of trail nodes.
+    secretaryReasoningHeader: localizeSecretaryContext(
+      language,
+      'Porque Secretary decidiu',
+      'Porque Secretary decidiu',
+      'Why Secretary decided',
+    ),
+    secretaryDecisionStatusLabel: localizeSecretaryContext(
+      language,
+      'Estado',
+      'Estado',
+      'Status',
+    ),
+    secretaryChoseLabel: localizeSecretaryContext(
+      language,
+      'Escolhido',
+      'Escolhido',
+      'Chosen',
+    ),
+    secretaryConsideredLabel: localizeSecretaryContext(
+      language,
+      'Considerado',
+      'Considerado',
+      'Considered',
+    ),
+    // C8 (weekly notes): one-line summary woven into coach-kernel notes.
+    secretaryWeeklyContributionLabel: localizeSecretaryContext(
+      language,
+      'Secretary',
+      'Secretary',
+      'Secretary',
+    ),
+    secretaryCompressedSessionsLabel: (count: number) => localizeSecretaryContext(
+      language,
+      `comprimiu ${count} sessão${count === 1 ? '' : 'ões'}`,
+      `comprimiu ${count} sessão${count === 1 ? '' : 'ões'}`,
+      `compressed ${count} session${count === 1 ? '' : 's'}`,
+    ),
+    secretaryReflowedLabel: (count: number) => localizeSecretaryContext(
+      language,
+      `realocou ${count}`,
+      `realocou ${count}`,
+      `reflowed ${count}`,
+    ),
+    secretaryLongRunProtectedLabel: localizeSecretaryContext(
+      language,
+      'corrida longa protegida',
+      'corrida longa protegida',
+      'long run protected',
+    ),
+    // M5 (APNs anchoring): day-anchor words used by secretary-apns-anchoring.ts.
+    apnsTodayAnchor: localizeSecretaryContext(language, 'Hoje', 'Hoje', 'Today'),
+    apnsTomorrowAnchor: localizeSecretaryContext(language, 'Amanhã', 'Amanhã', 'Tomorrow'),
+    apnsMinUnit: localizeSecretaryContext(language, 'min', 'min', 'min'),
   };
 }
 

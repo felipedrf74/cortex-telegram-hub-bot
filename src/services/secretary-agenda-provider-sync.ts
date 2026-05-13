@@ -67,6 +67,7 @@ export interface SecretaryAgendaProviderSyncResult {
   providerSyncState: SecretaryProviderSyncState;
   deletedDuplicateEventIds: string[];
   reasonCode: string;
+  retryAfterMs?: number | null;
 }
 
 export interface SecretaryAgendaProviderSyncScope {
@@ -74,6 +75,16 @@ export interface SecretaryAgendaProviderSyncScope {
   tenantId: string | number;
   includeInactive?: boolean;
 }
+
+export interface SecretaryAgendaProviderSyncOptions {
+  retryBudget?: number;
+  baseBackoffMs?: number;
+  maxBackoffMs?: number;
+}
+
+const DEFAULT_PROVIDER_RETRY_BUDGET = 2;
+const DEFAULT_PROVIDER_RETRY_BASE_MS = 250;
+const DEFAULT_PROVIDER_RETRY_MAX_MS = 2_000;
 
 const ACTIVE_PROVIDER_STATES = new Set([
   'scheduled',
@@ -172,6 +183,7 @@ export async function syncSecretaryAgendaItemToProvider(
 export async function syncSecretaryAgendaItemsToProvider(
   scope: SecretaryAgendaProviderSyncScope,
   adapter: SecretaryAgendaProviderAdapter,
+  options: SecretaryAgendaProviderSyncOptions = {},
 ): Promise<SecretaryAgendaProviderSyncResult[]> {
   const items = listSecretaryAgendaItems({
     ownerUserId: scope.ownerUserId,
@@ -180,13 +192,42 @@ export async function syncSecretaryAgendaItemsToProvider(
   });
   const results: SecretaryAgendaProviderSyncResult[] = [];
   for (const item of items) {
-    results.push(await syncSecretaryAgendaItemToProvider({
+    results.push(await syncSecretaryAgendaItemToProviderWithRetry({
       agendaItemId: item.agendaItemId,
       ownerUserId: scope.ownerUserId,
       tenantId: scope.tenantId,
-    }, adapter));
+    }, adapter, options));
   }
   return results;
+}
+
+async function syncSecretaryAgendaItemToProviderWithRetry(
+  scope: {
+    agendaItemId: string;
+    ownerUserId: number;
+    tenantId: string | number;
+  },
+  adapter: SecretaryAgendaProviderAdapter,
+  options: SecretaryAgendaProviderSyncOptions,
+): Promise<SecretaryAgendaProviderSyncResult> {
+  const retryBudget = Math.max(0, options.retryBudget ?? DEFAULT_PROVIDER_RETRY_BUDGET);
+  let attempt = 0;
+  let latest = await syncSecretaryAgendaItemToProvider(scope, adapter);
+  while (isRetryableProviderSyncResult(latest) && attempt < retryBudget) {
+    const delayMs = providerRetryDelayMs(latest.retryAfterMs, attempt, options);
+    logger.warn({
+      agendaItemId: latest.agendaItemId,
+      providerSource: latest.providerSource,
+      providerSyncState: latest.providerSyncState,
+      attempt: attempt + 1,
+      retryBudget,
+      delayMs,
+    }, 'Secretary agenda provider sync retrying after transient failure');
+    await sleep(delayMs);
+    latest = await syncSecretaryAgendaItemToProvider(scope, adapter);
+    attempt += 1;
+  }
+  return latest;
 }
 
 async function upsertProviderEvent(
@@ -258,7 +299,10 @@ async function upsertProviderEvent(
       providerSource: adapter.source,
       providerSyncState,
     }, 'Secretary agenda provider sync failed');
-    return result(agendaItem, 'failed', agendaItem.providerEventId ?? canonical?.eventId ?? null, adapter.source, providerSyncState, deletedDuplicateEventIds, 'provider_sync_failed');
+    return {
+      ...result(agendaItem, 'failed', agendaItem.providerEventId ?? canonical?.eventId ?? null, adapter.source, providerSyncState, deletedDuplicateEventIds, 'provider_sync_failed'),
+      retryAfterMs: retryAfterMs(error),
+    };
   }
 }
 
@@ -290,7 +334,10 @@ async function cleanupProviderEvent(
       agendaItemId: agendaItem.agendaItemId,
       providerSource: adapter.source,
     }, 'Secretary agenda provider cleanup failed');
-    return result(agendaItem, 'failed', agendaItem.providerEventId, adapter.source, 'delete_failed', deletedDuplicateEventIds, 'provider_delete_failed');
+    return {
+      ...result(agendaItem, 'failed', agendaItem.providerEventId, adapter.source, 'delete_failed', deletedDuplicateEventIds, 'provider_delete_failed'),
+      retryAfterMs: retryAfterMs(error),
+    };
   }
 }
 
@@ -417,6 +464,67 @@ function result(
     deletedDuplicateEventIds,
     reasonCode,
   };
+}
+
+function isRetryableProviderSyncResult(result: SecretaryAgendaProviderSyncResult): boolean {
+  return result.action === 'failed'
+    && (result.providerSyncState === 'create_failed'
+      || result.providerSyncState === 'update_failed'
+      || result.providerSyncState === 'delete_failed');
+}
+
+function providerRetryDelayMs(
+  retryAfter: number | null | undefined,
+  attempt: number,
+  options: SecretaryAgendaProviderSyncOptions,
+): number {
+  if (typeof retryAfter === 'number' && Number.isFinite(retryAfter) && retryAfter >= 0) {
+    return retryAfter;
+  }
+  const base = Math.max(0, options.baseBackoffMs ?? DEFAULT_PROVIDER_RETRY_BASE_MS);
+  const max = Math.max(base, options.maxBackoffMs ?? DEFAULT_PROVIDER_RETRY_MAX_MS);
+  return Math.min(max, base * (2 ** attempt));
+}
+
+function retryAfterMs(error: unknown): number | null {
+  const retryAfter = retryAfterHeader(error);
+  if (!retryAfter) return null;
+  const seconds = Number(retryAfter);
+  if (Number.isFinite(seconds) && seconds >= 0) return Math.round(seconds * 1000);
+  const timestamp = Date.parse(retryAfter);
+  if (!Number.isFinite(timestamp)) return null;
+  return Math.max(0, timestamp - Date.now());
+}
+
+function retryAfterHeader(error: unknown): string | null {
+  const candidate = error as {
+    retryAfter?: unknown;
+    response?: { headers?: unknown };
+    headers?: unknown;
+  } | null;
+  const direct = candidate?.retryAfter;
+  if (typeof direct === 'string' || typeof direct === 'number') return String(direct);
+  return headerValue(candidate?.response?.headers, 'retry-after')
+    ?? headerValue(candidate?.headers, 'retry-after');
+}
+
+function headerValue(headers: unknown, key: string): string | null {
+  if (!headers) return null;
+  if (typeof (headers as { get?: unknown }).get === 'function') {
+    const value = (headers as { get: (name: string) => unknown }).get(key);
+    return typeof value === 'string' || typeof value === 'number' ? String(value) : null;
+  }
+  if (typeof headers === 'object') {
+    const record = headers as Record<string, unknown>;
+    const value = record[key] ?? record[key.toLowerCase()] ?? record[key.toUpperCase()];
+    return typeof value === 'string' || typeof value === 'number' ? String(value) : null;
+  }
+  return null;
+}
+
+function sleep(ms: number): Promise<void> {
+  if (!Number.isFinite(ms) || ms <= 0) return Promise.resolve();
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function unique(values: string[]): string[] {

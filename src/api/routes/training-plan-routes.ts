@@ -70,6 +70,9 @@ export function registerTrainingPlanRoutes(
       strengthSessionsPerWeek = 2,
       longWorkoutDay,
       notes,
+      goalMode,
+      trainingPriority,
+      raceDate,
       twoADayPreference,
       calendarSource,
     } = req.body;
@@ -118,6 +121,9 @@ export function registerTrainingPlanRoutes(
         strengthSessionsPerWeek,
         longWorkoutDay,
         notes,
+        goalMode,
+        trainingPriority,
+        raceDate,
         twoADayPreference: typeof twoADayPreference === 'string'
           && (twoADayPreference === 'never' || twoADayPreference === 'optional' || twoADayPreference === 'preferred')
           ? twoADayPreference

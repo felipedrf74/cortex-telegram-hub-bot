@@ -27,7 +27,13 @@
  * are common phrasings missing from the dictionary that should be added.
  */
 
-import { getEvents, hasConnectedCalendarForUser } from './unified-calendar';
+import {
+  createEvent,
+  getEvents,
+  hasConnectedCalendarForUser,
+  hasWritableCalendarForUser,
+  type CalendarSource,
+} from './unified-calendar';
 import type { TodoTask } from './microsoft-todo';
 import { getRemindersForToday, setReminder } from '../state/reminders';
 import {
@@ -39,11 +45,12 @@ import type { DomainName, DomainResponse } from '../domains/types';
 import { logger } from '../utils/logger';
 import { isSubmoduleEnabled } from '../skills/registry';
 import type { Lang } from '../utils/i18n';
-import { DateTime } from 'luxon';
+import { DateTime, type WeekdayNumbers } from 'luxon';
 import { getUserLanguage, getUserTimezone } from './user-service';
 import { getTaskProviderForUser } from './task-store/task-router';
 import { composeDailyBrief } from './daily-brief-orchestrator';
 import { getUnreadMailSummaryForUser, isAnyMailConfiguredForUser } from './unified-mail-pressure';
+import { invalidateCalendarCaches } from './cache-coherence-registry';
 
 // ─── Types ──────────────────────────────────────────────────────────
 
@@ -75,6 +82,165 @@ const SECRETARY: DomainName = 'secretary';
 function getScopedTaskProvider(userId: number) {
   if (!userId) return null;
   return getTaskProviderForUser(userId);
+}
+
+type ParsedCalendarCreate = {
+  title: string;
+  start: string;
+  end: string;
+  attendees: string[];
+  target?: CalendarSource;
+};
+
+const EMAIL_PATTERN = /[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi;
+const TIME_RANGE_PATTERN = /(?:\bdas?\s*)?(\d{1,2})(?:(?:[:.](\d{2}))|h(\d{2})?)?\s*(?:às|as|a|até|ate|to|-|–)\s*(\d{1,2})(?:(?:[:.](\d{2}))|h(\d{2})?)?/i;
+const NUMERIC_DATE_PATTERN = /\b(\d{1,2})[\/.-](\d{1,2})(?:[\/.-](\d{2,4}))?\b/;
+
+function foldText(value: string): string {
+  return value
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase();
+}
+
+function uniqueEmails(text: string): string[] {
+  return Array.from(new Set((text.match(EMAIL_PATTERN) ?? []).map((email) => email.toLowerCase())));
+}
+
+function resolveCalendarTarget(text: string): CalendarSource | undefined {
+  const folded = foldText(text);
+  if (/\boutlook\b/.test(folded)) return 'outlook';
+  if (/\bgoogle\b/.test(folded)) return 'google';
+  return undefined;
+}
+
+function resolveCalendarCreateDate(text: string, timezone: string): DateTime | null {
+  const base = DateTime.now().setZone(timezone);
+  const numeric = text.match(NUMERIC_DATE_PATTERN);
+  if (numeric) {
+    const day = Number(numeric[1]);
+    const month = Number(numeric[2]);
+    const rawYear = numeric[3] ? Number(numeric[3]) : base.year;
+    const year = rawYear < 100 ? 2000 + rawYear : rawYear;
+    let candidate = DateTime.fromObject({ year, month, day }, { zone: timezone });
+    if (!candidate.isValid) return null;
+    if (!numeric[3] && candidate.startOf('day') < base.startOf('day')) {
+      candidate = candidate.plus({ years: 1 });
+    }
+    return candidate;
+  }
+
+  const folded = foldText(text);
+  if (/\b(hoje|today)\b/.test(folded)) return base.startOf('day');
+  if (/\b(amanha|tomorrow)\b/.test(folded)) return base.plus({ days: 1 }).startOf('day');
+
+  const weekdays: Array<[RegExp, WeekdayNumbers]> = [
+    [/\b(monday|segunda(?:-feira)?)\b/, 1],
+    [/\b(tuesday|terca(?:-feira)?)\b/, 2],
+    [/\b(wednesday|quarta(?:-feira)?)\b/, 3],
+    [/\b(thursday|quinta(?:-feira)?)\b/, 4],
+    [/\b(friday|sexta(?:-feira)?)\b/, 5],
+    [/\b(saturday|sabado)\b/, 6],
+    [/\b(sunday|domingo)\b/, 7],
+  ];
+  for (const [pattern, weekday] of weekdays) {
+    if (!pattern.test(folded)) continue;
+    let candidate = base.set({ weekday }).startOf('day');
+    if (candidate <= base.startOf('day')) candidate = candidate.plus({ weeks: 1 });
+    return candidate;
+  }
+
+  return null;
+}
+
+function parseCalendarTimeRange(text: string): { hour: number; minute: number; endHour: number; endMinute: number; match: RegExpMatchArray } | null {
+  const match = text.match(TIME_RANGE_PATTERN);
+  if (!match) return null;
+
+  const hour = Number(match[1]);
+  const minute = match[2] || match[3] ? Number(match[2] ?? match[3]) : 0;
+  const endHour = Number(match[4]);
+  const endMinute = match[5] || match[6] ? Number(match[5] ?? match[6]) : 0;
+  if (
+    Number.isNaN(hour) || Number.isNaN(minute) || Number.isNaN(endHour) || Number.isNaN(endMinute)
+    || hour < 0 || hour > 23 || endHour < 0 || endHour > 23
+    || minute < 0 || minute > 59 || endMinute < 0 || endMinute > 59
+  ) {
+    return null;
+  }
+  return { hour, minute, endHour, endMinute, match };
+}
+
+function extractCalendarTitle(text: string, rangeMatch: RegExpMatchArray): string {
+  const rangeEnd = (rangeMatch.index ?? 0) + rangeMatch[0].length;
+  let title = text.slice(rangeEnd);
+  title = title
+    .replace(EMAIL_PATTERN, '')
+    .replace(/\b(?:convide|convida|convidar|invite|invites?|add)\b\s+(?:o|a|os|as|the)?\s*/gi, '')
+    .replace(/\b(?:para|for)\b\s*$/gi, '')
+    .replace(/^[\s,.;:—-]+/, '')
+    .replace(/[\s,.;:—-]+$/, '')
+    .trim();
+
+  if (title) return title;
+
+  return text
+    .replace(EMAIL_PATTERN, '')
+    .replace(TIME_RANGE_PATTERN, '')
+    .replace(NUMERIC_DATE_PATTERN, '')
+    .replace(/\b(?:colocar|coloca|põe|poe|adicionar|adiciona|criar|cria|agendar|agenda|schedule|add|create)\b/gi, '')
+    .replace(/\b(?:no|na|em|in|on|para|for|do|da|the|meu|minha|my|proximo|próximo|next|calendario|calendário|calendar|agenda|evento|event|google|outlook|hoje|today|amanha|amanhã|tomorrow|segunda|terca|terça|quarta|quinta|sexta|sabado|sábado|domingo|monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b/gi, '')
+    .replace(/\b(?:convide|convida|convidar|invite|invites?|add)\b\s+(?:o|a|os|as|the)?\s*/gi, '')
+    .replace(/\s+/g, ' ')
+    .replace(/^[\s,.;:—-]+/, '')
+    .replace(/[\s,.;:—-]+$/, '')
+    .trim();
+}
+
+function parseCalendarCreateRequest(text: string, timezone: string): ParsedCalendarCreate | null {
+  const date = resolveCalendarCreateDate(text, timezone);
+  const timeRange = parseCalendarTimeRange(text);
+  if (!date || !timeRange) return null;
+
+  const start = date.set({
+    hour: timeRange.hour,
+    minute: timeRange.minute,
+    second: 0,
+    millisecond: 0,
+  });
+  let end = date.set({
+    hour: timeRange.endHour,
+    minute: timeRange.endMinute,
+    second: 0,
+    millisecond: 0,
+  });
+  if (end <= start) end = end.plus({ days: 1 });
+
+  const title = extractCalendarTitle(text, timeRange.match) || 'Evento';
+  return {
+    title,
+    start: start.toISO()!,
+    end: end.toISO()!,
+    attendees: uniqueEmails(text),
+    target: resolveCalendarTarget(text),
+  };
+}
+
+function formatCalendarCreateSuccess(
+  lang: Lang,
+  event: { source?: CalendarSource; title?: string; summary?: string; start: string; end: string },
+  attendees: string[],
+): string {
+  const zoneLabel = event.source === 'google' ? 'Google' : event.source === 'outlook' ? 'Outlook' : 'Google/Outlook';
+  const start = DateTime.fromISO(event.start).toFormat('dd/MM/yyyy, HH:mm');
+  const end = DateTime.fromISO(event.end).toFormat('HH:mm');
+  const attendeeLine = attendees.length > 0
+    ? `\n• ${lang.startsWith('pt') ? 'Convite' : 'Invite'}: ${attendees.map(escapeHtml).join(', ')}`
+    : '';
+  const title = escapeHtml(event.title || event.summary || 'Evento');
+  return lang.startsWith('pt')
+    ? `Pronto ✅ Agendei no ${zoneLabel}:\n• 📅 ${start}–${end} — ${title}${attendeeLine}`
+    : `Done ✅ Scheduled in ${zoneLabel}:\n• 📅 ${start}–${end} — ${title}${attendeeLine}`;
 }
 
 // ─── Bilingual copy table ───────────────────────────────────────────
@@ -406,6 +572,70 @@ export function resetFastpathMetrics(): void {
 //   4. Add a test in __tests__/services/secretary-fastpath.test.ts
 
 const FASTPATH_PATTERNS: PatternEntry[] = [
+  // ── Calendar Event Create ───────────────────────────────────────
+  // "Colocar no calendário evento no próximo sábado, 16/5, das 9h às 13h. Volei Lucas, convide o ..."
+  // "Add calendar event tomorrow 9:00 to 10:00 School activity invite ..."
+  {
+    id: 'create_calendar_event',
+    pattern: /^(?=.*\b(?:calend[aá]rio|calendar|agenda|evento|event)\b)(?=.*\b\d{1,2}(?:(?::|\.)\d{2}|h\d{0,2})?\s*(?:às|as|a|até|ate|to|-|–)\s*\d{1,2}(?:(?::|\.)\d{2}|h\d{0,2})?\b)(?:colocar|coloca|p[õo]e|poe|adicionar|adiciona|criar|cria|agendar|agenda|schedule|add|create)\b[\s\S]+$/i,
+    requires: 'calendar',
+    handler: async (userId, match, lang) => {
+      const text = match.input ?? match[0];
+      const timezone = getUserTimezone(userId);
+      const parsed = parseCalendarCreateRequest(text, timezone);
+      if (!parsed) {
+        return {
+          text: lang.startsWith('pt')
+            ? 'Preciso da data, hora de início, hora de fim e título para criar o evento.'
+            : 'I need the date, start time, end time, and title to create the event.',
+          domain: SECRETARY,
+        };
+      }
+
+      if (!hasWritableCalendarForUser(userId)) {
+        return {
+          text: lang.startsWith('pt')
+            ? '⚠️ Não encontrei um calendário ligado para criar o evento. Liga Google Calendar ou Outlook em Definições > Ligações.'
+            : '⚠️ I could not find a connected calendar to create the event. Connect Google Calendar or Outlook in Settings > Connections.',
+          domain: SECRETARY,
+        };
+      }
+
+      try {
+        const eventInput = {
+          title: parsed.title,
+          start: parsed.start,
+          end: parsed.end,
+          attendees: parsed.attendees,
+        };
+        let event: Awaited<ReturnType<typeof createEvent>>;
+        try {
+          event = await createEvent(eventInput, parsed.target, userId);
+        } catch (err) {
+          if (!parsed.target) throw err;
+          logger.warn(
+            { err, userId, requestedSource: parsed.target, title: parsed.title },
+            'fastpath create_calendar_event requested source failed, retrying default connected calendar',
+          );
+          event = await createEvent(eventInput, undefined, userId);
+        }
+        invalidateCalendarCaches(userId);
+        return {
+          text: formatCalendarCreateSuccess(lang, event, parsed.attendees),
+          domain: SECRETARY,
+        };
+      } catch (err) {
+        logger.warn({ err, userId, title: parsed.title, attendeeCount: parsed.attendees.length }, 'fastpath create_calendar_event failed');
+        return {
+          text: lang.startsWith('pt')
+            ? '⚠️ Não consegui criar o evento no calendário agora. Tenta novamente dentro de instantes.'
+            : '⚠️ I could not create the calendar event right now. Please try again shortly.',
+          domain: SECRETARY,
+        };
+      }
+    },
+  },
+
   // ── Day Overview ────────────────────────────────────────────────
   // "what's my day", "o que tenho hoje", "/day", "today", "hoje", "mostra meu dia"
   {

@@ -649,6 +649,7 @@ describe('executeToolCall — Calendar', () => {
         end: '2026-04-01T07:00:00',
         description: '2km open water',
         categories: ['sport'],
+        attendees: ['coach@example.com', ' bad-email ', 'friend@example.com'],
         calendar_source: 'google',
         recurrence: {
           pattern: { type: 'weekly', interval: 1, daysOfWeek: ['monday'] },
@@ -663,7 +664,7 @@ describe('executeToolCall — Calendar', () => {
           end: '2026-04-01T07:00:00',
           description: '2km open water',
           categories: ['sport'],
-          attendees: undefined,
+          attendees: ['coach@example.com', 'friend@example.com'],
           location: undefined,
           recurrence: {
             pattern: { type: 'weekly', interval: 1, daysOfWeek: ['monday'] },

@@ -79,6 +79,8 @@ describe('Decision Center Logic v2', () => {
     expect(decision.frontendActionState).toBe('enabled');
     expect(decision.problemStatement).toContain('Saturday long run');
     expect(decision.recommendation).toContain('Sun, May 17');
+    expect(decision.safePreviewBody).toMatch(/Tomorrow|Sun|May|8:00/);
+    expect(decision.safePreviewBody).not.toContain('Open Nexus');
     expect(decision.recommendation).not.toContain('2026-05-17T08:00:00.000Z');
     expect(decision.problemStatement).not.toContain('2026-05-16T08:00:00.000Z');
     expect(decision.expectedEffect).toContain('verify');
@@ -141,6 +143,10 @@ describe('Decision Center Logic v2', () => {
       context: {
         entityTitle: 'Week of May 18',
         reasonCodes: ['overcapacity'],
+        recommendedStartAt: '2026-05-18T15:00:00.000Z',
+        recommendedEndAt: '2026-05-18T15:45:00.000Z',
+        timezone: 'UTC',
+        locale: 'en-US',
       },
     });
 
@@ -150,6 +156,7 @@ describe('Decision Center Logic v2', () => {
     expect(decision.recommendation).toContain('protect first');
     expect(decision.readBackVerifier).toBe('secretary_agenda_item_state');
     expect(decision.autopilotPolicy).toContain('does not silently choose');
+    expect(decision.safePreviewBody).toMatch(/Today 3:00 PM \(45 min\)/);
     expect(decision.quality.missingFields).not.toContain('secretaryRecommendation');
   });
 
@@ -485,7 +492,9 @@ describe('Decision Center Logic v2', () => {
     });
     expect(secretary.problemStatement).toContain('precisa de uma decisão de agenda');
     expect(secretary.recommendation).toContain('escolha outro horário viável');
-    expect(secretary.safePreviewBody).toContain('Abra o Nexus');
+    expect(secretary.safePreviewBody).toMatch(/Amanhã|17\/05/);
+    expect(secretary.safePreviewBody).toContain('09:00');
+    expect(secretary.safePreviewBody).not.toContain('Abra o Nexus');
 
     const training = buildDecisionLogicV2({
       sourceSkill: 'training',
