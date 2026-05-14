@@ -362,6 +362,12 @@ const CONTENT_SKILL: SkillDefinition = {
       cronJobs: ['tuesday_reels', 'thursday_youtube', 'friday_weekly'],
     },
     {
+      name: 'creator-agency',
+      description: 'Structured creator-agency strategy, competitor study, script, creative direction, compliance, and experiment planning',
+      enabledByDefault: true,
+      tools: [],
+    },
+    {
       name: 'meme-scout',
       description: 'Discovers meme-worthy content for social engagement (experimental)',
       enabledByDefault: false,

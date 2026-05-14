@@ -77,6 +77,13 @@
       "cronJobs": ["tuesday_reels", "thursday_youtube", "friday_weekly"]
     },
     {
+      "module_name": "creator-agency",
+      "description": "Structured creator-agency strategy, competitor study, script, creative direction, compliance, and experiment planning",
+      "enabled_by_default": true,
+      "tools": [],
+      "cronJobs": []
+    },
+    {
       "module_name": "meme-scout",
       "description": "Discovers meme-worthy content for social engagement (experimental)",
       "enabled_by_default": false,

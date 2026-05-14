@@ -21,6 +21,7 @@ import { registerContentReferenceRoutes } from './content-reference-routes';
 import { registerContentScriptRoutes } from './content-script-routes';
 import { registerContentTopicRoutes } from './content-topic-routes';
 import { registerContentCreatorProfileRoutes } from './content-creator-profile-routes';
+import { registerContentAgencyRoutes } from './content-agency-routes';
 import {
   getFilmingRecommendation,
   getTopics,
@@ -156,6 +157,7 @@ export function contentRoutes(): Router {
   registerContentLearningRoutes(router, resolveContentLanguage, ensureValidContentRouteScope);
   // CONTENT-UI-O1 + O2: unified per-tenant creator profile + radar feedback
   registerContentCreatorProfileRoutes(router, ensureValidContentRouteScope);
+  registerContentAgencyRoutes(router, ensureValidContentRouteScope);
 
   return router;
 }

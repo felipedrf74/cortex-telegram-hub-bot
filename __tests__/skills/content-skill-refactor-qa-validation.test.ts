@@ -107,17 +107,18 @@ describe('QA: Content sub-skill structure', () => {
     'performance-intel',
     'pipeline-tracker',
     'topic-scheduler',
+    'creator-agency',
     'meme-scout',
   ];
 
-  it('has exactly 9 agent sub-skills + notes + shared-memory = 11 total', () => {
+  it('has exactly 10 agent sub-skills + notes + shared-memory = 12 total', () => {
     const names = content.subSkills.map(s => s.name);
     for (const agent of EXPECTED_AGENT_SUBSKILLS) {
       expect(names).toContain(agent);
     }
     expect(names).toContain('notes');
     expect(names).toContain('shared-memory');
-    expect(names.length).toBe(11);
+    expect(names.length).toBe(12);
   });
 
   it('only meme-scout is disabled by default', () => {
