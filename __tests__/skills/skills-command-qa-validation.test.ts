@@ -134,7 +134,7 @@ describe('QA: Sub-module counts match skill-config', () => {
     // Phase 1: 4 sport persona sub-skills (gym/running/cycle/swim) + 6 shared capability sub-skills
     // (training-plans, calendar, reminders, notes, shared-memory, recovery)
     triathlon: 10,
-    content: 11,   // notes, shared-memory, research-pipeline, script-generator, seo-tracker, reaction-radar, voice-evolution, performance-intel, pipeline-tracker, topic-scheduler, meme-scout
+    content: 12,   // notes, shared-memory, research-pipeline, script-generator, seo-tracker, reaction-radar, voice-evolution, performance-intel, pipeline-tracker, topic-scheduler, creator-agency, meme-scout
     finance: 4,    // expenses, tax, notes, shared-memory
     cooking: 7,    // recipes, meal-planning, shopping, pantry, preferences, notes, shared-memory
   };

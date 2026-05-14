@@ -329,7 +329,9 @@ describe('script-pipeline: iOS API route', () => {
     expect(routeUtilitySource).toContain('renderMode,');
     expect(routeUtilitySource).toContain('durationMs:');
     expect(routeUtilitySource).toContain('degraded: result.degraded ?? false');
-    expect(routeUtilitySource).toContain('warnings: result.warnings ?? []');
+    expect(routeUtilitySource).toContain('const warnings = Array.from(new Set([');
+    expect(routeUtilitySource).toContain('...scriptQuality.complianceWarnings');
+    expect(routeUtilitySource).toContain('warnings,');
   });
 
   it('iOS /script route validates topic parameter', () => {

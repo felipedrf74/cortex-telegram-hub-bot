@@ -60,9 +60,10 @@ export function buildScriptShortcutText(
 ): string {
   const isPT = language.startsWith('pt');
   const sections: string[] = [];
+  const inputScript = sanitizeScriptBody(result.script || '');
   const scriptQuality = analyzeAndImproveScript({
     topic: result.topic,
-    script: result.script || '',
+    script: inputScript,
     hook: result.hook,
     titleOptions: result.title_options,
     cta: result.cta,
@@ -76,10 +77,7 @@ export function buildScriptShortcutText(
       sources: result.sources_used,
     }),
   });
-  const sanitizedScript = makeChatSafeScriptText(
-    sanitizeScriptBody(scriptQuality.revisedScript || ''),
-    isPT,
-  );
+  const sanitizedScript = makeChatSafeScriptText(sanitizeScriptBody(scriptQuality.revisedScript || inputScript), isPT);
   const normalizedScript = sanitizedScript || result.hook?.trim() || '';
   const normalizedCta = (result.cta || scriptQuality.structuredOutput.cta)?.trim() || '';
   const lowerScript = normalizedScript.toLowerCase();

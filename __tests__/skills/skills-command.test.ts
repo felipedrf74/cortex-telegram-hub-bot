@@ -138,10 +138,10 @@ describe('/skills command — getAllSkillStatuses()', () => {
     ]);
   });
 
-  it('content has 11 sub-modules (v2.0.0 with granular agent sub-skills)', () => {
+  it('content has 12 sub-modules (v2.0.0 with granular agent sub-skills + creator agency)', () => {
     const skills = getAllSkillStatuses();
     const content = skills.find(s => s.name === 'content')!;
-    expect(content.subSkills).toHaveLength(11);
+    expect(content.subSkills).toHaveLength(12);
   });
 
   it('sub-skills have toolCount >= 0 (agent and persona sub-skills may have no tools)', () => {

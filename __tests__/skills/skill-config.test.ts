@@ -170,7 +170,7 @@ describe('SkillConfig — content skill', () => {
     expect(cnt.version).toBe('2.0.0');
   });
 
-  it('has all 11 granular sub-skills', () => {
+  it('has all 12 granular sub-skills', () => {
     const subNames = cnt.subSkills.map(s => s.name);
     expect(subNames).toContain('notes');
     expect(subNames).toContain('shared-memory');
@@ -182,8 +182,9 @@ describe('SkillConfig — content skill', () => {
     expect(subNames).toContain('performance-intel');
     expect(subNames).toContain('pipeline-tracker');
     expect(subNames).toContain('topic-scheduler');
+    expect(subNames).toContain('creator-agency');
     expect(subNames).toContain('meme-scout');
-    expect(cnt.subSkills.length).toBe(11);
+    expect(cnt.subSkills.length).toBe(12);
   });
 
   it('meme-scout is disabled by default', () => {
@@ -263,7 +264,8 @@ describe('SkillConfig — getSubSkillNames()', () => {
     expect(names).toContain('notes');
     expect(names).toContain('pipeline-tracker');
     expect(names).toContain('reaction-radar');
-    expect(names.length).toBe(11);
+    expect(names).toContain('creator-agency');
+    expect(names.length).toBe(12);
   });
 
   it('returns empty array for unknown skills', () => {
