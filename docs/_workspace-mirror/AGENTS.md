@@ -68,3 +68,8 @@ npm run docs:audit
 - Do not hardcode a model/provider. Nexus uses live model routing.
 - Do not weaken tenant, auth, provider, calendar, or memory isolation checks.
 - Data lookups and operational flows use REST, not fake chat commands.
+- After full iOS simulator test runs, clean up simulator processes unless the
+  user explicitly needs them left open. Prefer
+  `ios/scripts/ios-single-simulator-test.sh`; otherwise run
+  `xcrun simctl shutdown all`, quit Simulator.app, and trim
+  `SimulatorTrampoline` / CoreSimulator residue before handoff.
