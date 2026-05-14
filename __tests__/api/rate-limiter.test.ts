@@ -17,11 +17,24 @@ import {
   _resetRateLimiterForTests,
 } from '../../src/api/rate-limiter';
 
-function mockReq(opts: { userId?: number; ip?: string; method?: string } = {}): Request {
+function mockReq(opts: {
+  userId?: number;
+  ip?: string;
+  remoteAddress?: string;
+  method?: string;
+  headers?: Record<string, string>;
+  originalUrl?: string;
+  baseUrl?: string;
+  path?: string;
+} = {}): Request {
   return {
     method: opts.method,
+    headers: opts.headers || {},
+    originalUrl: opts.originalUrl,
+    baseUrl: opts.baseUrl,
+    path: opts.path,
     ip: opts.ip,
-    socket: { remoteAddress: opts.ip || '203.0.113.1' },
+    socket: { remoteAddress: opts.remoteAddress || opts.ip || '203.0.113.1' },
     userId: opts.userId,
   } as unknown as Request;
 }
@@ -93,6 +106,170 @@ describe('rate-limiter — two-bucket behavior', () => {
     expect(next).toHaveBeenCalledOnce();
     expect((res as any).headers['X-RateLimit-Bucket']).toBe('ip');
     expect((res as any).headers['X-RateLimit-Limit']).toBe(30);
+  });
+
+  it('uses Cloudflare visitor IP only when the immediate peer is local/private', () => {
+    const next = vi.fn();
+
+    for (let i = 0; i < 30; i++) {
+      rateLimitMiddleware(
+        mockReq({
+          ip: '127.0.0.1',
+          remoteAddress: '127.0.0.1',
+          headers: { 'cf-connecting-ip': '198.51.100.10' },
+        }),
+        mockRes(),
+        next,
+      );
+    }
+
+    const blocked = mockRes();
+    rateLimitMiddleware(
+      mockReq({
+        ip: '127.0.0.1',
+        remoteAddress: '127.0.0.1',
+        headers: { 'cf-connecting-ip': '198.51.100.10' },
+      }),
+      blocked,
+      next,
+    );
+    expect((blocked as any).statusCode).toBe(429);
+
+    const neighbor = mockRes();
+    rateLimitMiddleware(
+      mockReq({
+        ip: '127.0.0.1',
+        remoteAddress: '127.0.0.1',
+        headers: { 'cf-connecting-ip': '198.51.100.11' },
+      }),
+      neighbor,
+      next,
+    );
+    expect((neighbor as any).statusCode).toBe(200);
+    expect((neighbor as any).headers['X-RateLimit-Remaining']).toBe(29);
+  });
+
+  it('ignores spoofed Cloudflare visitor headers from a public direct peer', () => {
+    const next = vi.fn();
+
+    for (let i = 0; i < 30; i++) {
+      rateLimitMiddleware(
+        mockReq({
+          ip: '198.51.100.200',
+          remoteAddress: '198.51.100.200',
+          headers: { 'cf-connecting-ip': `203.0.113.${i + 1}` },
+        }),
+        mockRes(),
+        next,
+      );
+    }
+
+    const blocked = mockRes();
+    rateLimitMiddleware(
+      mockReq({
+        ip: '198.51.100.200',
+        remoteAddress: '198.51.100.200',
+        headers: { 'cf-connecting-ip': '203.0.113.200' },
+      }),
+      blocked,
+      next,
+    );
+
+    expect((blocked as any).statusCode).toBe(429);
+    expect((blocked as any).headers['X-RateLimit-Bucket']).toBe('ip');
+  });
+
+  it('gives portal /api calls a higher bucket separate from generic unauthenticated traffic', () => {
+    const next = vi.fn();
+
+    for (let i = 0; i < 31; i++) {
+      const res = mockRes();
+      rateLimitMiddleware(
+        mockReq({
+          ip: '198.51.100.88',
+          originalUrl: '/api/snapshot',
+          baseUrl: '/api',
+          path: '/snapshot',
+        }),
+        res,
+        next,
+      );
+      expect((res as any).statusCode).toBe(200);
+      expect((res as any).headers['X-RateLimit-Bucket']).toBe('portal-ip');
+      expect((res as any).headers['X-RateLimit-Limit']).toBe(180);
+    }
+  });
+
+  it('still throttles portal /api calls after the portal bucket is exhausted', () => {
+    const next = vi.fn();
+    const ip = '198.51.100.89';
+
+    for (let i = 0; i < 180; i++) {
+      rateLimitMiddleware(
+        mockReq({ ip, originalUrl: '/api/snapshot', baseUrl: '/api', path: '/snapshot' }),
+        mockRes(),
+        next,
+      );
+    }
+
+    const blocked = mockRes();
+    rateLimitMiddleware(
+      mockReq({ ip, originalUrl: '/api/snapshot', baseUrl: '/api', path: '/snapshot' }),
+      blocked,
+      next,
+    );
+
+    expect((blocked as any).statusCode).toBe(429);
+    expect((blocked as any).headers['X-RateLimit-Bucket']).toBe('portal-ip');
+    expect((blocked as any).headers['Retry-After']).toBe(60);
+  });
+
+  it('gives auth OAuth/browser routes their own bucket separate from portal reads', () => {
+    const next = vi.fn();
+    const ip = '198.51.100.90';
+
+    for (let i = 0; i < 90; i++) {
+      const res = mockRes();
+      rateLimitMiddleware(
+        mockReq({
+          ip,
+          method: 'POST',
+          originalUrl: '/api/v1/auth/register/google/start',
+          baseUrl: '/api/v1/auth',
+          path: '/register/google/start',
+        }),
+        res,
+        next,
+      );
+      expect((res as any).statusCode).toBe(200);
+      expect((res as any).headers['X-RateLimit-Bucket']).toBe('auth-ip');
+      expect((res as any).headers['X-RateLimit-Limit']).toBe(90);
+    }
+
+    const blockedAuth = mockRes();
+    rateLimitMiddleware(
+      mockReq({
+        ip,
+        method: 'POST',
+        originalUrl: '/api/v1/auth/register/google/start',
+        baseUrl: '/api/v1/auth',
+        path: '/register/google/start',
+      }),
+      blockedAuth,
+      next,
+    );
+    expect((blockedAuth as any).statusCode).toBe(429);
+    expect((blockedAuth as any).headers['X-RateLimit-Bucket']).toBe('auth-ip');
+
+    const portal = mockRes();
+    rateLimitMiddleware(
+      mockReq({ ip, originalUrl: '/api/snapshot', baseUrl: '/api', path: '/snapshot' }),
+      portal,
+      next,
+    );
+    expect((portal as any).statusCode).toBe(200);
+    expect((portal as any).headers['X-RateLimit-Bucket']).toBe('portal-ip');
+    expect((portal as any).headers['X-RateLimit-Remaining']).toBe(179);
   });
 
   it('throttles unauthenticated traffic at 31 requests in a window with 429 + Retry-After', () => {
