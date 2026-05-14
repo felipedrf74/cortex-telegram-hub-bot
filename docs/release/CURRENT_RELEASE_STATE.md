@@ -2,72 +2,65 @@
 
 Status: canonical
 Owner: backend release lead (Felipe)
-Last verified: 2026-05-11
+Last verified: 2026-05-14
 Update policy: update after backend deploy or staging change. Workspace-level entry point is docs/release/CURRENT_RELEASE_STATE.md.
 
-Last updated: 2026-05-11
+Last updated: 2026-05-14
 
 ## Active Production Release
 
-- Source branch: `feature/decision-center-orchestration-apns`
-- Production HEAD: `d46aa107`
-- Production version: `4.14.149`
-- iOS main was pushed at `b60b14c` with version `1.4.3(17)` and tag
-  `ios-1.4.3-build17`.
+- Source branch: `main`
+- Production HEAD: `633d37a6`
+- Production version: `4.14.162`
+- Source implementation commit: `feb1b022`
+- iOS Chat card-hiding source changes remain local/TestFlight scope until a
+  separate signed iOS release is cut.
 - Official workspace root: `/Users/felipedominguez/Desktop/Nexus Hub`
 
 ## Scope
 
-Round E launch blockers plus Decision Center Round D' source-verified fixes:
+Chat General Action Intelligence production promote:
 
-- Apple revocation, GDPR account deletion/revocation, prompt injection,
-  Sentry redaction, api_cache safety valve, and onboarding isolation hardening.
-- Decision Center close-out fixes, including verified inline action failure,
-  Home accessibility identifiers, scope discard, and honest APNs evidence.
-- Decision Center APIs are live on production and respond with scoped summary
-  and list shapes.
-- Non-owner production readiness probe confirmed real Apple Health-derived
-  values for user `28`, not Felipe's prior leaked readiness/body-battery pair.
+- Natural-language Chat action candidates now go through a canonical action
+  registry and planner before Gmail/email/read-only fast paths.
+- The Portuguese regression command
+  `Cria um evento na agenda do Gmail chamado igreja das 10 ao meio-dia e meio nesse domingo`
+  resolves to Google Calendar event creation, not Gmail unread count.
+- Durable action state uses `chat_action_runs` idempotency with provider/local
+  read-back before verified success.
+- Deterministic executors cover Calendar, Tasks, Content, Cooking, Finance,
+  Connections, Training, Notifications, and Decision Center paths where a safe
+  verified contract exists. Unsupported mutation surfaces fail closed.
+- Model-assisted planner arguments recursively strip user/tenant/account/owner
+  identity aliases from nested objects and arrays before dispatch.
 
 ## Validation Before Promotion
 
 - Pre-promote staging deploy: PASS.
-- Pre-promote staging smoke: 19 passed / 0 failed / 21 total.
-- Deploy-time validation: full vitest PASS, 502 files / 7228 tests.
+- Pre-promote staging smoke: 17 passed / 0 failed / 17 total.
+- Deploy-time validation: full vitest PASS, 533 files / 7534 tests.
 - Deploy-time build: PASS.
-- Production promote: completed at `4.14.149`.
-- Production health: API health healthy, portal snapshot version `4.14.149`,
-  PM2 `nexus-hub` and `content-engine` online at `4.14.149`.
-- Production Garmin watcher/manual cleanup-substrate check returned
-  `matchedCount: 0`.
-- Live APNs validation remains blocked with exact reason: production APNs
-  credentials are present, but Felipe `user_id = 1` has no active registered
-  production push token. No APNs send or `apns-id` was claimed.
+- Production promote: completed at `4.14.162`.
+- Production health: API health healthy, portal snapshot version `4.14.162`,
+  PM2 `nexus-hub` and `content-engine` online at `4.14.162`.
+- Real Google Calendar provider mutation/read-back from TestFlight remains
+  blocked until an authenticated device/session with Calendar write scope is
+  available and owner approval is given to create/delete a live provider event.
 
 ## Evidence
 
 - Final staging smoke:
-  - `docs/release/smoke-evidence/staging-smoke-146f6cf7-20260510T233345Z.json`
-- Production health/snapshot/PM2:
-  - `docs/release/smoke-evidence/prod-health-20260510T234415Z.json`
-  - `docs/release/smoke-evidence/prod-snapshot-20260510T234415Z.json`
-  - `docs/release/smoke-evidence/prod-pm2-health-20260510T234415Z.json`
-- Production Decision Center and readiness probes:
-  - `docs/release/smoke-evidence/prod-decision-center-api-smoke-20260510T234511Z.json`
-  - `docs/release/smoke-evidence/prod-garmin-tenant-isolation-watcher-20260510T234415Z.json`
-  - `docs/release/smoke-evidence/prod-non-owner-readiness-probe-user28-20260510T234511Z.json`
-- Live APNs token lookup evidence:
-  - `docs/release/smoke-evidence/prod-apns-token-lookup-user1-20260511T001055Z.json`
-  - `docs/release/smoke-evidence/prod-apns-token-lookup-user1-retry-20260511T001120Z.json`
-- Closeout addendum:
-  - `docs/archive/2026-05/decision-center-orchestration-apns/closeout.md`
+  - `docs/release/smoke-evidence/staging-smoke-feb1b022-20260514T172558Z.json`
+  - `docs/release/smoke-evidence/staging-smoke-feb1b022-20260514T172629Z.json`
+- Deployment transcript showed production content engine OK, status portal OK,
+  bot online, and PM2 online for production `nexus-hub` and `content-engine`.
 
 ## Required Post-Promotion Checks
 
 Production-safe follow-ups:
 
-- Felipe must cut TestFlight from iOS `main` manually; no TestFlight build was
-  cut during this promote.
-- Felipe must launch the production/TestFlight app on the owner account and
-  allow/register push notifications before live APNs can be validated for
-  `user_id = 1`.
+- Cut a signed iOS/TestFlight build if the local Chat structured-card hiding
+  changes should reach devices.
+- Run an owner-approved live Google Calendar mutation/read-back smoke from an
+  authenticated device/session before claiming live provider calendar creation
+  end-to-end.

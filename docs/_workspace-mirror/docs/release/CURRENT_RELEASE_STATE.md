@@ -17,12 +17,30 @@ Last updated: 2026-05-14
 
 - Repo: `engine`
 - Workspace HEAD / version / migrations / dirty state: see `docs/release/release-identity.md`
-- Production status (last manual update 2026-05-11): promoted via `./scripts/promote-to-prod.sh`, health-checked, both `nexus-hub` and `content-engine` PM2 processes online at version `4.14.149`.
+- Production status (last manual update 2026-05-14): promoted via `./scripts/promote-to-prod.sh`, health-checked, both `nexus-hub` and `content-engine` PM2 processes online at version `4.14.162`.
 
-### 2026-05-14 Chat General Action Intelligence Local Validation
+### 2026-05-14 Chat General Action Intelligence Production Promote
 
-- Scope: local source implementation only; not yet staged, production-promoted,
-  or TestFlight/live-provider validated.
+- Scope: backend source pushed to `origin/main`, staged, smoke-tested, and
+  production-promoted. iOS source changes for normal Chat card hiding remain
+  local source/TestFlight scope until a separate signed iOS release is cut.
+- Production version: `4.14.162`.
+- Production deploy commit: `633d37a6`.
+- Source implementation commit: `feb1b022`.
+- Staging deploy before promote: PASS. Staging smoke passed **17/17** with
+  evidence at
+  `engine/docs/release/smoke-evidence/staging-smoke-feb1b022-20260514T172558Z.json`.
+- Pre-promote staging smoke passed **17/17** with evidence at
+  `engine/docs/release/smoke-evidence/staging-smoke-feb1b022-20260514T172629Z.json`.
+- Deploy-time validation passed: backend `npm run verify` passed
+  **533 test files / 7,534 tests**, deploy-time build passed, production env
+  validation passed, production backup included `bot.db`, dependencies updated,
+  native modules rebuilt, and owner bootstrap preflight passed.
+- Production health passed: content engine health OK, status portal snapshot OK
+  at version `4.14.162`, bot online, and PM2 showed both `nexus-hub` and
+  `content-engine` online after restart. A direct production health check after
+  deploy returned `status: healthy`, `server.status: online`, and
+  `database: connected`.
 - Chat now routes natural-language action candidates through the existing
   backend Chat route and iOS WebSocket message path before read-only fast
   paths, using a canonical action registry, deterministic parsers for obvious
@@ -66,13 +84,14 @@ Last updated: 2026-05-14
   planner stays ahead of Gmail/read-only fast paths; and unknown future chat
   metadata is silent in normal iOS UI instead of rendering a `Resposta
   estruturada` fallback card.
-- Verification performed locally: backend `npm run verify` passed
+- Verification performed before promotion: backend `npm run verify` passed
   (**533 test files / 7,534 tests**), focused Chat action sweep passed
   (**5 files / 201 tests**), iOS `ChatStructuredCardRenderingTests` passed
-  (**12 tests**), and `npm run docs:audit` exited 0 with the existing warnings
-  baseline.
+  (**12 tests**), staging smoke passed **17/17** twice, production health
+  passed, and `npm run docs:audit` exited 0 with the existing warnings
+  baseline before the promote.
 - Blocked validation: real Google Calendar provider mutation/read-back from
-  TestFlight was not run in this local pass because it requires an authenticated
+  TestFlight was not run in this pass because it requires an authenticated
   device/session with Calendar write scope and owner approval to create/delete a
   live provider event.
 - Blocked execution scope: outbound email draft/send remains blocked because
@@ -141,7 +160,7 @@ Last updated: 2026-05-14
 
 Earlier 4.14.132 content, portal, and Apple web sign-in release notes are
 historical and no longer represent the active production release. Current
-production truth is the 4.14.149 Round E + Decision Center promote above; live
+production truth is the 4.14.162 Chat General Action Intelligence promote above; live
 working-tree identity is generated in `docs/release/release-identity.md`.
 
 ## iOS
@@ -214,7 +233,10 @@ working-tree identity is generated in `docs/release/release-identity.md`.
 
 - No production data was used for validation.
 - Production data was not modified except by the normal deployment process.
-- Production now runs one deploy-bump commit ahead of staging (`4.14.132` vs `4.14.131`). The code change was staged and smoke-tested before promote; run `./scripts/deploy-staging.sh` if staging should match the production version label exactly.
+- Production now runs one deploy-bump commit ahead of staging (`4.14.162` vs
+  `4.14.161`). The code change was staged and smoke-tested before promote; run
+  `./scripts/deploy-staging.sh` if staging should match the production version
+  label exactly.
 - Post-promotion production-safe checks still recommended:
   - readiness/body battery isolation across Felipe / Jaqueline / nexushubbot
   - Garmin connection visibility per user
