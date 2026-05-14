@@ -13,8 +13,8 @@ Last updated: 2026-05-14
 - Production HEAD: `633d37a6`
 - Production version: `4.14.162`
 - Source implementation commit: `feb1b022`
-- iOS Chat card-hiding source changes remain local/TestFlight scope until a
-  separate signed iOS release is cut.
+- iOS Chat card-hiding source changes are pushed to iOS `main` at `e7cfc8b`;
+  a separate signed iOS/TestFlight release is still required to reach devices.
 - Official workspace root: `/Users/felipedominguez/Desktop/Nexus Hub`
 
 ## Scope
@@ -59,8 +59,8 @@ Chat General Action Intelligence production promote:
 
 Production-safe follow-ups:
 
-- Cut a signed iOS/TestFlight build if the local Chat structured-card hiding
-  changes should reach devices.
+- Cut a signed iOS/TestFlight build from iOS `main` if the Chat
+  structured-card hiding changes should reach devices.
 - Run an owner-approved live Google Calendar mutation/read-back smoke from an
   authenticated device/session before claiming live provider calendar creation
   end-to-end.

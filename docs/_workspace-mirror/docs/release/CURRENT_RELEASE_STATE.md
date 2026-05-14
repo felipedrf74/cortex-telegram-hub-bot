@@ -22,8 +22,9 @@ Last updated: 2026-05-14
 ### 2026-05-14 Chat General Action Intelligence Production Promote
 
 - Scope: backend source pushed to `origin/main`, staged, smoke-tested, and
-  production-promoted. iOS source changes for normal Chat card hiding remain
-  local source/TestFlight scope until a separate signed iOS release is cut.
+  production-promoted. iOS source changes for normal Chat card hiding are
+  pushed to iOS `main` at `e7cfc8b`; signed TestFlight/App Store distribution
+  remains a separate release action.
 - Production version: `4.14.162`.
 - Production deploy commit: `633d37a6`.
 - Source implementation commit: `feb1b022`.
@@ -73,7 +74,9 @@ Last updated: 2026-05-14
 - iOS Chat hides `nexus_answer` developer trace, fallback policy, grounding
   facts, latency, raw HTML, and unsupported structured-response cards by
   default; typed `chat_action_*` cards render verified, blocked, partial,
-  input-needed, and confirmation-needed states.
+  input-needed, and confirmation-needed states. Source is pushed at iOS commit
+  `e7cfc8b`, but this UI change is not live on devices until the next signed
+  TestFlight/App Store build.
 - Claude Code follow-up conditions are closed locally: missing required action
   fields now generate targeted clarifications such as asking for the calendar
   event title instead of a generic safety prompt; model-assisted planner args
