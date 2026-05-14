@@ -10,7 +10,7 @@ import {
   findCompletedAssistantForClientMessage,
   listChatMessages,
 } from '../../services/chat-history-store';
-import { getUserLanguageById } from '../../services/user-service';
+import { getUserLanguageById, getUserTimezoneById } from '../../services/user-service';
 import { acquireCostLock } from '../../services/cost-guardrail';
 import { getCurrentRequestId } from '../../utils/request-context';
 import {
@@ -27,6 +27,7 @@ import {
   analyzeChatSkillOrchestration,
   applyChatSkillRoutingDecision,
   buildChatSkillRoutingLogContext,
+  type NexusSkillId,
 } from '../../services/chat-skill-orchestrator';
 import { runWithChatToolAuthorization } from '../../services/chat-tool-authorization';
 import {
@@ -57,6 +58,10 @@ import {
 import { sendChatTierRequiredIfNeeded } from './chat-message-tier-gate';
 import { sendRetryableChatFailureResponseIfNeeded } from './chat-message-degraded-response';
 import { tryHandleChatReasoningAction } from '../../services/chat-reasoning-engine';
+import {
+  executeConfirmedChatActionRuns,
+  tryHandleChatActionPlan,
+} from '../../services/chat-action-planner';
 import {
   buildNexusAnswerContract,
   createChatLatencyTracker,
@@ -100,6 +105,15 @@ function isAcceptCurrentDecisionShortcut(text: string): boolean {
   return /^(accept|approve|confirm|yes|sim|aceitar|aprovar|confirmar)\s+(this|current|the)?\s*(decision|choice|clarification|decisão|escolha)?$/i.test(text.trim())
     || /\b(accept|approve|confirm)\s+this\s+decision\b/i.test(text)
     || /\b(aceitar|aprovar|confirmar)\s+esta\s+decis[aã]o\b/i.test(text);
+}
+
+function mapActionPlannerSkillToNexusSkill(skill: string): NexusSkillId {
+  if (skill === 'secretary_calendar' || skill === 'mail' || skill === 'tasks') return 'secretary';
+  if (skill === 'training') return 'training';
+  if (skill === 'cooking') return 'cooking';
+  if (skill === 'finance') return 'finance';
+  if (skill === 'content') return 'content';
+  return 'tools';
 }
 
 function buildChatAnswerMetadata(input: {
@@ -481,6 +495,92 @@ export function registerChatMessageRoutes(
         'iOS chat request started',
       );
       latency.mark('request_validated');
+
+      // ── General Action Planner ─────────────────────────────────
+      // Natural-language write intents must be routed before read-only
+      // fast paths. Example: "agenda do Gmail" with event semantics means
+      // Google Calendar, not Gmail unread count.
+      if (normalizedText && normalizedAttachments.length === 0) {
+        const actionResult = await tryHandleChatActionPlan({
+          text: normalizedText,
+          userId,
+          tenantId,
+          conversationId: scopedClientMessageId ?? chatRequestId,
+          messageId: userMessageId,
+          channel: 'ios',
+          locale: getUserLanguageById(userId) || undefined,
+          timezone: getUserTimezoneById(userId),
+        });
+        if (actionResult) {
+          latency.mark('action_planner_completed');
+          const response = actionResult.response;
+          if (actionResult.status === 'needs_confirmation') {
+            const lang = getUserLanguageById(userId);
+            const isPT = lang.startsWith('pt');
+            const involvedSkills = [...new Set(actionResult.plan.steps.map((step) => mapActionPlannerSkillToNexusSkill(step.skill)))];
+            const reasonCodes = [...new Set(actionResult.plan.steps.map((step) => `${step.risk}_requires_confirmation`))];
+            const pendingConfirmation = trackPendingChatConfirmation({
+              userId,
+              tenantId,
+              actionSummary: response.text || normalizedText,
+              involvedSkills,
+              reasonCodes,
+              sourceMessageId: userMessageId,
+            });
+            const decisionResult = await createDecisionIntent({
+              userId,
+              tenantId,
+              sourceSkill: 'chat',
+              type: 'decision_required',
+              priority: 'active',
+              relatedEntityId: pendingConfirmation.id,
+              relatedEntityType: 'chat_confirmation',
+              title: isPT ? 'Nexus precisa de confirmação' : 'Nexus needs confirmation',
+              body: pendingConfirmation.actionSummary,
+              sensitiveBody: pendingConfirmation.actionSummary,
+              actionButtons: [
+                { id: 'option_a', label: isPT ? 'Confirmar' : 'Confirm', style: 'primary' },
+                { id: 'option_b', label: isPT ? 'Não executar' : 'Do not run', style: 'secondary' },
+                { id: 'open_detail', label: isPT ? 'Abrir decisão' : 'Open decision', style: 'secondary' },
+              ],
+              deeplink: `nexus://notifications/${pendingConfirmation.id}`,
+              expiresAt: pendingConfirmation.expiresAt,
+              dedupeKey: `chat:action-confirmation:${tenantId}:${userId}:${pendingConfirmation.id}`,
+              requiresUserAction: true,
+              deliveryPolicy: 'in_app_only',
+              privacyPolicy: 'standard',
+            });
+            response.metadata.pendingConfirmation = {
+              id: pendingConfirmation.id,
+              actionSummary: pendingConfirmation.actionSummary,
+              expiresAt: pendingConfirmation.expiresAt,
+              sourceMessageId: pendingConfirmation.sourceMessageId,
+              decisionId: decisionResult.item?.decisionId ?? null,
+            };
+          }
+          rememberChatActiveDomain(userId, response.domain, Date.now(), tenantId);
+          persistExchange(userId, userMessageId, normalizedText, response.id, response, tenantId, {
+            clientMessageId: scopedClientMessageId,
+            requestId: chatRequestId,
+          });
+          syncConversationStateForShortcut(userId, response.domain, normalizedText, response.text, tenantId);
+          logger.info(
+            {
+              chatRequestId,
+              tenantId,
+              userId,
+              routeMethod: response.routeMethod,
+              actionStatus: actionResult.status,
+              planner: actionResult.plan.planner,
+              involvedSkills: actionResult.plan.steps.map((step) => step.skill),
+            },
+            'iOS chat action planner handled request',
+          );
+          res.status(actionResult.status === 'needs_confirmation' || actionResult.status === 'needs_clarification' ? 202 : 200).json(response);
+          return;
+        }
+      }
+
       // Check cache for known deterministic commands (saves $0.02-0.05 per hit)
       if (normalizedText && normalizedAttachments.length === 0) {
         const cached = getCachedChatCommandResponse(userId, normalizedTextLower, tenantId);
@@ -773,6 +873,35 @@ export function registerChatMessageRoutes(
             idempotencyKey: normalizeIdempotencyKey(req.body?.idempotencyKey)
               ?? `chat-confirm:${tenantId}:${userId}:${pending.id}:${Date.now()}`,
           });
+          const confirmedAction = await executeConfirmedChatActionRuns({
+            text: pending.actionSummary,
+            userId,
+            tenantId,
+            conversationId: scopedClientMessageId ?? chatRequestId,
+            messageId: userMessageId,
+            sourceMessageId: pending.sourceMessageId,
+            channel: 'ios',
+            locale: getUserLanguageById(userId) || undefined,
+            timezone: getUserTimezoneById(userId),
+          });
+          if (confirmedAction) {
+            clearPendingChatConfirmation(userId, tenantId);
+            const response = confirmedAction.response;
+            response.metadata.confirmationDecision = {
+              decisionId: result.item.decisionId,
+              actionId: result.actionId,
+              idempotent: result.idempotent,
+              verification: result.verification,
+            };
+            rememberChatActiveDomain(userId, response.domain, Date.now(), tenantId);
+            persistExchange(userId, userMessageId, normalizedText, response.id, response, tenantId, {
+              clientMessageId: scopedClientMessageId,
+              requestId: chatRequestId,
+            });
+            syncConversationStateForShortcut(userId, response.domain, normalizedText, response.text, tenantId);
+            res.status(confirmedAction.status === 'needs_confirmation' || confirmedAction.status === 'needs_clarification' ? 202 : 200).json(response);
+            return;
+          }
           const response = enrichChatResponseForContract({
             id: `msg-${Date.now()}`,
             text: getUserLanguageById(userId).startsWith('pt')

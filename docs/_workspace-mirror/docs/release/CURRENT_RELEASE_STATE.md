@@ -2,10 +2,10 @@
 
 Status: canonical
 Owner: release lead (Felipe)
-Last verified: 2026-05-12
+Last verified: 2026-05-14
 Update policy: update after merge / staging / production / deploy-gate changes. Live identity (branch/commit/version/migrations) auto-generated via engine/scripts/release-identity.sh --persist; do not type those by hand.
 
-Last updated: 2026-05-12
+Last updated: 2026-05-14
 
 > **Live identity** — branch / commit / version / migration count for the
 > current working tree are auto-generated. Do NOT type those values by
@@ -18,6 +18,72 @@ Last updated: 2026-05-12
 - Repo: `engine`
 - Workspace HEAD / version / migrations / dirty state: see `docs/release/release-identity.md`
 - Production status (last manual update 2026-05-11): promoted via `./scripts/promote-to-prod.sh`, health-checked, both `nexus-hub` and `content-engine` PM2 processes online at version `4.14.149`.
+
+### 2026-05-14 Chat General Action Intelligence Local Validation
+
+- Scope: local source implementation only; not yet staged, production-promoted,
+  or TestFlight/live-provider validated.
+- Chat now routes natural-language action candidates through the existing
+  backend Chat route and iOS WebSocket message path before read-only fast
+  paths, using a canonical action registry, deterministic parsers for obvious
+  commands, LLM structured-planning fallback for complex/multistep requests,
+  deterministic service executors, and read-back-gated responses.
+- The Portuguese regression command
+  `Cria um evento na agenda do Gmail chamado igreja das 10 ao meio-dia e meio nesse domingo`
+  resolves to Google Calendar event creation, not Gmail unread count. If Google
+  Calendar write access is not connected, the route returns a clear provider
+  readiness message instead of falling through to mail or generic chat.
+- Durable action state uses `chat_action_runs` with user/tenant/conversation/
+  message/action hash idempotency. External-side-effect previews now create a
+  pending chat confirmation and Decision Center item with exact title, provider,
+  date/time, and invite-risk details instead of leaking a loose confirmation
+  prompt. Confirming that pending action resumes the original durable run,
+  executes the deterministic service, includes attendees only after
+  confirmation, verifies by provider read-back, and returns verified success
+  only when the read-back fields match.
+- Deterministic executor coverage now includes calendar create/update/move/
+  delete/read, mail unread/inbox reads, task create/update/complete/delete/
+  checklist/reminder, Content brief/script/rewrite package creation, Content
+  schedule-work and pipeline handoff with local read-back, Cooking grocery/
+  support/fueling reads and meal-plan slot writes, Finance summary/reminder,
+  receipt categorization, local tax mark-paid, Connections status/reconnect
+  guidance, Training coach summary/session explain/reflow preview/reflow
+  confirm, Notification preference/intent, and Decision Center choose/dismiss/
+  snooze/follow-up. Registry actions that still lack a safe verified chat
+  executor fail closed with `blocked` and no mutation instead of returning
+  model-only success.
+- iOS Chat hides `nexus_answer` developer trace, fallback policy, grounding
+  facts, latency, raw HTML, and unsupported structured-response cards by
+  default; typed `chat_action_*` cards render verified, blocked, partial,
+  input-needed, and confirmation-needed states.
+- Claude Code follow-up conditions are closed locally: missing required action
+  fields now generate targeted clarifications such as asking for the calendar
+  event title instead of a generic safety prompt; model-assisted planner args
+  recursively strip model-supplied identity aliases such as `userId`,
+  `tenantId`, `accountId`, `ownerId`, `uid`, `user`, and case variants from
+  nested objects/arrays before any executor can see them; REST and WebSocket
+  ordering are source-pinned with formatting-tolerant checks so the action
+  planner stays ahead of Gmail/read-only fast paths; and unknown future chat
+  metadata is silent in normal iOS UI instead of rendering a `Resposta
+  estruturada` fallback card.
+- Verification performed locally: backend `npm run verify` passed
+  (**533 test files / 7,534 tests**), focused Chat action sweep passed
+  (**5 files / 201 tests**), iOS `ChatStructuredCardRenderingTests` passed
+  (**12 tests**), and `npm run docs:audit` exited 0 with the existing warnings
+  baseline.
+- Blocked validation: real Google Calendar provider mutation/read-back from
+  TestFlight was not run in this local pass because it requires an authenticated
+  device/session with Calendar write scope and owner approval to create/delete a
+  live provider event.
+- Blocked execution scope: outbound email draft/send remains blocked because
+  Chat does not yet have a unified provider draft/sent read-back contract;
+  Training whole-plan adjustment remains blocked because it lacks a direct
+  preview/confirm/read-back contract for Chat; Connections retry-sync remains
+  blocked because provider-specific sync executors do not yet expose a
+  deterministic read-back contract; true external finance/Stripe payment,
+  refund, invoice, or subscription mutations remain blocked by confirmation/
+  stronger-gate policy and no live provider mutation is enabled from Chat in
+  this local pass. Local tax mark-paid is supported and verified separately.
 
 ### 2026-05-11 Round E + Decision Center Production Promote
 

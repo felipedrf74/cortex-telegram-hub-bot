@@ -18,7 +18,7 @@ Navigation:
 
 ### Decision Center hostile QA findings (Round D)
 
-Source: `docs/release/decision-center-orchestration-apns-qa.md` verdict NOT_READY (2026-05-10)
+Source: historical Decision Center APNs hostile QA, removed from `docs/release/` during the 2026-05-13 cleanup after Round E closure. Closure evidence now lives in `docs/archive/2026-05/round-e-launch-blockers/closeout.md`.
 
 - [x] **P0** — APNs sandbox/production environment ignored at send time. Closed by Round E; see `docs/archive/2026-05/round-e-launch-blockers/closeout.md`.
 - [x] **P0** — User switch keeps old user's push tokens active (tenant-leak class). Closed by Round E; see `docs/archive/2026-05/round-e-launch-blockers/closeout.md`.
@@ -71,7 +71,7 @@ Source: same hostile QA report
 
 ### Round C (P0/P1 follow-ups not yet started)
 
-Source: `docs/release/decision-center-orchestration-apns-qa.md` Round C prompt + sixth-pass opus audit findings
+Source: historical Decision Center Round C prompt + sixth-pass opus audit findings; the old release QA markdown was removed during the 2026-05-13 cleanup after Round E closure.
 
 - [x] **P1** — iOS deep-link router scope-key awareness extension to action queueing path. Closed by Round E via pending notification action scope validation.
 - [ ] **P1** — iOS keychain user-scoped tokens (migrate global → user-scoped keys; first-launch migration).

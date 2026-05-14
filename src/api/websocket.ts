@@ -19,8 +19,9 @@ import { generateRequestId, runWithContext } from '../utils/request-context';
 import { pushEvent } from '../portal/telemetry';
 import { getDb } from '../services/database';
 import { verifyIosJwt } from '../services/ios-jwt';
-import { resolveCurrentTenantIdForUser } from '../services/user-service';
+import { getUserLanguageById, getUserTimezoneById, resolveCurrentTenantIdForUser } from '../services/user-service';
 import { config } from '../config';
+import { tryHandleChatActionPlan } from '../services/chat-action-planner';
 
 const WEBSOCKET_RATE_WINDOW_MS = 60_000;
 const DEFAULT_ALLOWED_WEBSOCKET_ORIGINS = [
@@ -93,6 +94,31 @@ function getDomainHandlers(): Record<string, (message: string, userId?: number, 
     finance: handleFinance,
     cooking: handleCooking,
   };
+}
+
+async function streamTextFrame(
+  ws: WebSocket,
+  input: {
+    text: string;
+    messageId: string;
+    userId: number;
+    tenantId: number;
+  },
+): Promise<void> {
+  const chunkSize = 20;
+  for (let i = 0; i < input.text.length; i += chunkSize) {
+    const chunk = input.text.slice(i, i + chunkSize);
+    if (ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({
+        type: 'chunk',
+        text: chunk,
+        messageId: input.messageId,
+        userId: input.userId,
+        tenantId: input.tenantId,
+      }));
+    }
+    await new Promise(resolve => setTimeout(resolve, 30));
+  }
 }
 
 /**
@@ -215,6 +241,53 @@ export function attachWebSocket(server: http.Server): void {
           async () => {
             const messageId = `msg-${Date.now()}`;
 
+            const actionResult = await tryHandleChatActionPlan({
+              text: String(msg.text),
+              userId,
+              tenantId,
+              conversationId: typeof msg.clientMessageId === 'string' && msg.clientMessageId.trim()
+                ? msg.clientMessageId.trim()
+                : messageId,
+              messageId,
+              channel: 'ios',
+              locale: getUserLanguageById(userId) || undefined,
+              timezone: getUserTimezoneById(userId),
+            });
+            if (actionResult) {
+              const response = actionResult.response;
+              if (ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({
+                  type: 'status',
+                  messageId,
+                  status: response.metadata?.actionStatus ?? actionResult.status,
+                  metadata: {
+                    type: response.metadata?.type,
+                    actionStatus: response.metadata?.actionStatus,
+                    involvedSkills: response.metadata?.involvedSkills,
+                  },
+                  userId,
+                  tenantId,
+                }));
+              }
+              await streamTextFrame(ws, {
+                text: response.text,
+                messageId,
+                userId,
+                tenantId,
+              });
+              if (ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({
+                  type: 'done',
+                  messageId,
+                  domain: response.domain,
+                  userId,
+                  tenantId,
+                  metadata: response.metadata,
+                }));
+              }
+              return;
+            }
+
             const route = await routeMessage(msg.text, undefined, userId, tenantId);
 
         // ─── Phase 1 Slice C — Tier gate for iOS WebSocket stream ───
@@ -274,23 +347,7 @@ export function attachWebSocket(server: http.Server): void {
             // since the domain handlers return full text at once
             const result = await handler(route.strippedMessage, userId, tenantId);
 
-            // Stream the response in chunks
-            const fullText = result.text;
-            const chunkSize = 20; // characters per chunk
-            for (let i = 0; i < fullText.length; i += chunkSize) {
-              const chunk = fullText.slice(i, i + chunkSize);
-              if (ws.readyState === WebSocket.OPEN) {
-                ws.send(JSON.stringify({
-                  type: 'chunk',
-                  text: chunk,
-                  messageId,
-                  userId,
-                  tenantId,
-                }));
-              }
-              // Small delay between chunks for visual streaming effect
-              await new Promise(resolve => setTimeout(resolve, 30));
-            }
+            await streamTextFrame(ws, { text: result.text, messageId, userId, tenantId });
 
             // Send completion
             if (ws.readyState === WebSocket.OPEN) {

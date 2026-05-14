@@ -1,53 +1,33 @@
 # Training Cross-Skill Staging Smoke Results
 
-Last updated: 2026-05-03
+- Run ID: `training-cross-skill-smoke-20260513225117-jykchn`
+- Started: `2026-05-13T22:51:17.793Z`
+- Finished: `2026-05-13T22:51:17.794Z`
+- Dry run: `false`
+- Staging user ID: `not configured`
 
-## Production Promotion Evidence
+## Prerequisites
 
-- Release source commit: `3bf9a37 fix(training): harden local coach profile and equipment planning`
-- Production deploy commit: `9f503a0 chore: bump version to 4.14.124 [deploy]`
-- Staging host/version during smoke: `4.14.123`
-- Staging test user: `24`
-- Fixture/provider mode: staging test fixtures only; no production data or production calendars
-- Evidence JSON: `docs/release/smoke-evidence/training-cross-skill-staging-remote-3bf9a37-20260503T151447Z.json`
+- Status: **blocked**
+- Missing: `STAGING=true or NODE_ENV=staging`, `TRAINING_CROSS_SKILL_STAGING_SMOKE=1`, `TRAINING_CROSS_SKILL_STAGING_USER_ID=<staging test user id>`, `DATABASE_PATH=<staging database path>`
 
-## Local Attempt
+## Local Fixture Contract Checks
 
-The first local invocation was intentionally treated as blocked because local shell prerequisites were not configured for staging DB access:
+| Flow | Expected | Actual | Status | Evidence |
+| --- | --- | --- | --- | --- |
+| local_fixture_contracts | Fixture contexts exercise Secretary, Cooking, Finance, Content, and signal-prompt plumbing without staging writes. | All checks passed. | pass | maxHardSessionsPerWeek=1<br>protectFocusDay=wednesday<br>protectFilmingDay=thursday<br>prompt=<cross_skill_state sport="hybrid"> - CALENDAR CONFLICT - Board review overlaps training. Reflow the session and resync agenda before claiming the schedule is final. - FUELING GAP - hard training lacks meal coverage on 2026-05-05. Move/lower the hard work or ask Cooking to cover prep; do not repeat generic fueling warnings. - FINANCE CONSTRAINT - budget mode is tight / training spend: selective. Avoid paid gear, subscriptions, and supplement asks unless explicitly needed. - CONTENT COMMITMENT due 2026-05-07 - account for creator workload before adding hard doubles or high-friction training. </cross_skill_state> |
+| secretary_conflict | Secretary pressure creates reflow/modular guidance instead of Training locking an impossible schedule. | All checks passed. | pass | - Start week 1 conservatively and only progress once recovery and meal support look stable. - Cap truly hard sessions at 1 per week until the plan earns more load. - Keep week-to-week intensity jumps within 6 points unless there is a clear deload or race-specific reason not to. - Anchor the longest session on Saturday unless the calendar makes the adjacent day clearly safer. - Keep Thursday lower-fatigue when possible because Content currently prefers that day for filming. - Avoid recommending new paid equipment, premium classes, or supplement-dependent strategies; prefer current equipment and lower-friction execution. - Keep non-key training locally executable and stripped of optional spend-heavy complexity while training spend mode stays selective. - Treat supplements as pause rather than as a requirement for the plan to work. - Do not stack multiple hard sessions until meal support exists for the hardest training days. - Favor repeatable session structure because meal execution still needs cleanup this week. - Avoid back-to-back impact-heavy run days; use lower-impact aerobic support or mobility between them when needed. - Protect the day after the longest session as recovery-biased unless the plan has a compelling reason to do otherwise. - Travel is currently flagged on Friday, so keep the plan modular and avoid placing the biggest session on those days. - Bias toward modular sub-60-minute sessions on non-key days because Secretary shows real calendar or admin pressure this week. - Keep Wednesday lighter when possible because Secretary is protecting that day for focus or admin work. |
+| cooking_fueling_gap | Cooking fueling gaps are specific, actionable, and deduped. | All checks passed. | pass | <cross_skill_state sport="hybrid"> - CALENDAR CONFLICT - Board review overlaps training. Reflow the session and resync agenda before claiming the schedule is final. - FUELING GAP - hard training lacks meal coverage on 2026-05-05. Move/lower the hard work or ask Cooking to cover prep; do not repeat generic fueling warnings. - FINANCE CONSTRAINT - budget mode is tight / training spend: selective. Avoid paid gear, subscriptions, and supplement asks unless explicitly needed. - CONTENT COMMITMENT due 2026-05-07 - account for creator workload before adding hard doubles or high-friction training. </cross_skill_state> |
+| finance_budget_constraint | Finance constraints reduce paid gear/supplement pressure and cap optional spend-heavy work. | All checks passed. | pass | strengthSessionTarget=2<br>- Start week 1 conservatively and only progress once recovery and meal support look stable. - Cap truly hard sessions at 1 per week until the plan earns more load. - Keep week-to-week intensity jumps within 6 points unless there is a clear deload or race-specific reason not to. - Anchor the longest session on Saturday unless the calendar makes the adjacent day clearly safer. - Keep Thursday lower-fatigue when possible because Content currently prefers that day for filming. - Avoid recommending new paid equipment, premium classes, or supplement-dependent strategies; prefer current equipment and lower-friction execution. - Keep non-key training locally executable and stripped of optional spend-heavy complexity while training spend mode stays selective. - Treat supplements as pause rather than as a requirement for the plan to work. - Do not stack multiple hard sessions until meal support exists for the hardest training days. - Favor repeatable session structure because meal execution still needs cleanup this week. - Avoid back-to-back impact-heavy run days; use lower-impact aerobic support or mobility between them when needed. - Protect the day after the longest session as recovery-biased unless the plan has a compelling reason to do otherwise. - Travel is currently flagged on Friday, so keep the plan modular and avoid placing the biggest session on those days. - Bias toward modular sub-60-minute sessions on non-key days because Secretary shows real calendar or admin pressure this week. - Keep Wednesday lighter when possible because Secretary is protecting that day for focus or admin work. |
+| content_workload | Content workload/filming windows are visible to Training as schedule friction. | All checks passed. | pass | - Start week 1 conservatively and only progress once recovery and meal support look stable. - Cap truly hard sessions at 1 per week until the plan earns more load. - Keep week-to-week intensity jumps within 6 points unless there is a clear deload or race-specific reason not to. - Anchor the longest session on Saturday unless the calendar makes the adjacent day clearly safer. - Keep Thursday lower-fatigue when possible because Content currently prefers that day for filming. - Avoid recommending new paid equipment, premium classes, or supplement-dependent strategies; prefer current equipment and lower-friction execution. - Keep non-key training locally executable and stripped of optional spend-heavy complexity while training spend mode stays selective. - Treat supplements as pause rather than as a requirement for the plan to work. - Do not stack multiple hard sessions until meal support exists for the hardest training days. - Favor repeatable session structure because meal execution still needs cleanup this week. - Avoid back-to-back impact-heavy run days; use lower-impact aerobic support or mobility between them when needed. - Protect the day after the longest session as recovery-biased unless the plan has a compelling reason to do otherwise. - Travel is currently flagged on Friday, so keep the plan modular and avoid placing the biggest session on those days. - Bias toward modular sub-60-minute sessions on non-key days because Secretary shows real calendar or admin pressure this week. - Keep Wednesday lighter when possible because Secretary is protecting that day for focus or admin work. |
+| training_content_milestone | Training can expose a content-capture opportunity for Content Creation when supported. | All checks passed. | pass | {"angle":"Staying consistent during a constrained travel week","title":"Travel-week training win","date":"2026-05-07"} |
 
-- Missing `STAGING=true` or `NODE_ENV=staging`
-- Missing `TRAINING_CROSS_SKILL_STAGING_SMOKE=1`
-- Missing `TRAINING_CROSS_SKILL_STAGING_USER_ID`
-- Missing `DATABASE_PATH`
+## Staging Runtime Checks
 
-Blocked evidence is retained at:
-
-- `docs/release/smoke-evidence/training-cross-skill-staging-3bf9a37-20260503T150605Z.json`
-
-## Remote Staging Runtime Smoke
-
-The smoke was rerun on the staging host with staging DB access and `TRAINING_CROSS_SKILL_STAGING_USER_ID=24`.
-
-| Flow | Result | Evidence |
-| --- | --- | --- |
-| Prerequisites | PASS | staging-mode process, staging DB, and isolated staging user configured |
-| Local fixture contracts | PASS | Secretary, Cooking, Finance, Content, and signal-prompt fixture contracts passed |
-| Secretary conflict | PASS | staging Secretary context exposed schedule pressure and Training produced reflow/modular guidance |
-| Cooking fueling gap | PASS | Cooking meal/fueling signals were visible and deduped for Training constraints |
-| Finance budget constraint | PASS | Finance affordability/spend posture constrained paid equipment and supplement pressure |
-| Content workload | PASS | Content workload/filming signal was visible as schedule friction |
-| Training content milestone | PASS | `content_capture_opportunity` was exposed as a user-scoped Training mesh signal |
-| Shared context scope | PASS | all peer contexts were scoped to staging user `24`; no unrelated tenant/user data appeared |
-
-## Cleanup
-
-Staging fixture cleanup was verified after the remote smoke:
-
-- `financeRowsRemoved: 4`
-- `planIdsRemoved: [4]`
-- `activeFixturePlans: 0`
-- `activeFixtureFinanceRows: 0`
+| Flow | Expected | Actual | Status | Evidence |
+| --- | --- | --- | --- | --- |
+| staging_prerequisites | A staging-mode process, staging database, and isolated staging test user are configured. | Blocked: STAGING=true or NODE_ENV=staging, TRAINING_CROSS_SKILL_STAGING_SMOKE=1, TRAINING_CROSS_SKILL_STAGING_USER_ID=<staging test user id>, DATABASE_PATH=<staging database path> | blocked | STAGING=true or NODE_ENV=staging<br>TRAINING_CROSS_SKILL_STAGING_SMOKE=1<br>TRAINING_CROSS_SKILL_STAGING_USER_ID=<staging test user id><br>DATABASE_PATH=<staging database path> |
 
 ## Interpretation
 
-All requested Training cross-skill staging runtime flows passed after running the smoke in the correct staging context. The earlier local blocked evidence remains useful because it documents why the smoke must run with staging DB prerequisites rather than from an unconfigured local shell.
+Real staging validation was **not** run because prerequisites are missing. The local fixture checks only prove harness and contract behavior; they are not a staging pass.

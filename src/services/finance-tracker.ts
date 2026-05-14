@@ -579,6 +579,30 @@ export function deleteTransaction(userId: number, transactionId: number): boolea
   return result.changes > 0;
 }
 
+export function updateTransactionCategory(
+  userId: number,
+  transactionId: number,
+  category: string,
+  opts?: { subcategory?: string | null },
+): Transaction | null {
+  const db = getDb();
+  const existing = db.prepare(
+    'SELECT id FROM finance_transactions WHERE id = ? AND user_id = ?',
+  ).get(transactionId, userId) as { id: number } | undefined;
+  if (!existing) return null;
+  db.prepare(`
+    UPDATE finance_transactions
+       SET category = ?,
+           subcategory = ?,
+           updated_at = datetime('now')
+     WHERE id = ?
+       AND user_id = ?
+  `).run(category, opts?.subcategory ?? null, transactionId, userId);
+  const row = db.prepare('SELECT * FROM finance_transactions WHERE id = ? AND user_id = ?')
+    .get(transactionId, userId) as any;
+  return row ? decryptTransaction(row) : null;
+}
+
 // ── Monthly Summary ────────────────────────────────────────────────
 
 export function getMonthlySummary(userId: number, month: string): MonthlySummary {

@@ -1,4 +1,6 @@
 import { describe, expect, it } from 'vitest';
+import fs from 'fs';
+import path from 'path';
 
 import { consumeWebSocketMessageBudget, isAllowedWebSocketOrigin } from '../../src/api/websocket';
 
@@ -32,5 +34,17 @@ describe('WebSocket security boundary helpers', () => {
     expect(consumeWebSocketMessageBudget(state, 1_200, 2)).toBe(false);
 
     expect(consumeWebSocketMessageBudget(state, 62_000, 2)).toBe(true);
+  });
+
+  it('routes WebSocket chat messages through the action planner before generic routing', () => {
+    const source = fs.readFileSync(path.resolve(__dirname, '../../src/api/websocket.ts'), 'utf8');
+    const plannerIndex = source.indexOf('tryHandleChatActionPlan({');
+    const routerIndex = source.indexOf('const route = await routeMessage');
+
+    expect(plannerIndex).toBeGreaterThan(-1);
+    expect(routerIndex).toBeGreaterThan(-1);
+    expect(plannerIndex).toBeLessThan(routerIndex);
+    expect(source).toContain("type: 'status'");
+    expect(source).toContain('metadata: response.metadata');
   });
 });

@@ -22,6 +22,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 vi.mock('../../src/services/unified-calendar', () => ({
   createEvent: vi.fn(),
   getEvents: vi.fn(),
+  getEventsForSources: vi.fn(),
   hasConnectedCalendarForUser: vi.fn(() => true),
   hasWritableCalendarForUser: vi.fn(() => true),
 }));
@@ -114,6 +115,14 @@ beforeEach(() => {
     end: '2026-05-16T13:00:00.000+01:00',
     source: 'outlook',
   } as any);
+  vi.mocked(calendar.getEventsForSources).mockResolvedValue([{
+    id: 'evt-1',
+    summary: 'Created event',
+    title: 'Created event',
+    start: '2026-05-16T09:00:00.000+01:00',
+    end: '2026-05-16T13:00:00.000+01:00',
+    source: 'outlook',
+  } as any]);
   vi.mocked(calendar.getEvents).mockResolvedValue([]);
   mockTaskGetAllPendingTasks.mockResolvedValue({ success: true, data: [] });
   mockTaskGetDefaultList.mockReset();
@@ -366,7 +375,7 @@ describe('secretary-fastpath / day_overview handler', () => {
 // ════════════════════════════════════════════════════════════════════
 
 describe('secretary-fastpath / create_calendar_event handler', () => {
-  it('creates a Portuguese calendar event with explicit date, time range, title, and attendee without AI', async () => {
+  it('requires confirmation for a Portuguese calendar event with an attendee invite', async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date('2026-05-13T12:00:00.000Z'));
     try {
@@ -386,18 +395,9 @@ describe('secretary-fastpath / create_calendar_event handler', () => {
 
       expect(result.matched).toBe(true);
       expect(result.patternId).toBe('create_calendar_event');
-      expect(calendar.createEvent).toHaveBeenCalledWith(
-        {
-          title: 'Volei Lucas',
-          start: '2026-05-16T09:00:00.000+01:00',
-          end: '2026-05-16T13:00:00.000+01:00',
-          attendees: ['felipedrf@hotmail.com'],
-        },
-        undefined,
-        UID,
-      );
-      expect(cacheCoherence.invalidateCalendarCaches).toHaveBeenCalledWith(UID);
-      expect(result.response?.text).toContain('Agendei no Outlook');
+      expect(calendar.createEvent).not.toHaveBeenCalled();
+      expect(cacheCoherence.invalidateCalendarCaches).not.toHaveBeenCalled();
+      expect(result.response?.text).toContain('confirmação');
       expect(result.response?.text).toContain('Volei Lucas');
       expect(result.response?.text).toContain('felipedrf@hotmail.com');
     } finally {
@@ -421,6 +421,7 @@ describe('secretary-fastpath / create_calendar_event handler', () => {
   });
 
   it('falls back to the connected default calendar when a colloquial Google request has no writable Google path', async () => {
+    vi.mocked(calendar.createEvent).mockReset();
     vi.mocked(calendar.createEvent)
       .mockRejectedValueOnce(new Error('google not connected'))
       .mockResolvedValueOnce({
@@ -430,6 +431,13 @@ describe('secretary-fastpath / create_calendar_event handler', () => {
         end: '2026-05-15T10:30:00.000+01:00',
         source: 'outlook',
       } as any);
+    vi.mocked(calendar.getEventsForSources).mockResolvedValueOnce([{
+      id: 'evt-school',
+      summary: 'Atividade Escola Sunny',
+      start: '2026-05-15T09:30:00.000+01:00',
+      end: '2026-05-15T10:30:00.000+01:00',
+      source: 'outlook',
+    } as any]);
 
     const result = await tryFastpath(
       UID,

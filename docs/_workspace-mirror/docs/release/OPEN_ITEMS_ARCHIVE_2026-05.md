@@ -1675,7 +1675,7 @@ These remain because I cannot perform real-device validation from the audit harn
   - ~~iOS UI tests in nightly workflow~~ → **DONE** as `ios/.github/workflows/ios-nightly.yml` (commit `945567d`). Runs `Nexus HubUITests` on macos-latest at 05:45 UTC daily; UDID-pinned, sequential, simulator-log capture on failure, 14-day artifact retention.
 - Training mobility-variant exercise catalogs: the 2026-05-03 fix now keeps mobility recovery sessions honest by shrinking duration to estimated content (~13 min for empty-block sessions). A follow-up could add a small mobility-exercise catalog (cat-cow, hip flexor, thoracic rotation, etc.) so the variant claims a richer 18-25 min and delivers it.
 - Training cycling/hybrid progression depth (TR-P2-CYCLING from `engine/docs/training/training-final-deep-audit-report.md`).
-- Production-safe TestFlight smoke for Training mutation + Garmin readiness + task-list read-back across Felipe/Jaqueline/nexushubbot. Scripted checklist: `docs/release/training-recovery-fix-testflight-checklist.md`.
+- Production-safe TestFlight smoke for Training mutation + Garmin readiness + task-list read-back across Felipe/Jaqueline/nexushubbot. The old scripted checklist was removed during the 2026-05-13 cleanup after `docs/release/wave1-testflight-cut-runbook.md` became the retained runbook.
 
 ## P3
 

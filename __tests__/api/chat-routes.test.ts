@@ -13,6 +13,13 @@ const MIGRATIONS_DIR = path.resolve(__dirname, '../../migrations');
 
 let testDb: Database.Database;
 
+const calendarMocks = vi.hoisted(() => ({
+  createEvent: vi.fn(),
+  getEventsForSources: vi.fn(),
+  isGoogleCalendarConfigured: vi.fn(() => false),
+  isOutlookCalendarConfigured: vi.fn(() => false),
+}));
+
 const mockRouteMessage = vi.fn();
 const mockKeywordMatch = vi.fn(() => null);
 const mockTryDeterministicChatCommand = vi.fn();
@@ -183,6 +190,7 @@ vi.mock('../../src/services/anthropic', () => ({
 vi.mock('../../src/services/cache-store', () => ({
   getCached: vi.fn(() => null),
   setCache: vi.fn(),
+  clearCacheByPrefix: vi.fn(),
 }));
 
 vi.mock('../../src/services/user-service', () => ({
@@ -192,6 +200,7 @@ vi.mock('../../src/services/user-service', () => ({
   getPreferredDisplayName: (...args: unknown[]) => mockGetPreferredDisplayName(...args),
   getPreferredDisplayNameById: (...args: unknown[]) => mockGetPreferredDisplayName(...args),
   getUserTimezone: () => 'Europe/Lisbon',
+  getUserTimezoneById: () => 'Europe/Lisbon',
   getUserById: (userId: number) => ({ id: userId, tier: 'pro' }),
   getUserByTelegramId: (userId: number) => ({ id: userId, tier: 'pro' }),
 }));
@@ -321,6 +330,31 @@ vi.mock('../../src/domains/domain-handler', () => ({
 vi.mock('../../src/services/garmin-coach', () => ({
   applyCoachRecommendations: (...args: unknown[]) => mockApplyCoachRecommendations(...args),
 }));
+
+vi.mock('../../src/services/google-calendar', async () => {
+  const actual = await vi.importActual<any>('../../src/services/google-calendar');
+  return {
+    ...actual,
+    isGoogleCalendarConfigured: (...args: unknown[]) => calendarMocks.isGoogleCalendarConfigured(...args),
+  };
+});
+
+vi.mock('../../src/services/outlook-calendar', async () => {
+  const actual = await vi.importActual<any>('../../src/services/outlook-calendar');
+  return {
+    ...actual,
+    isOutlookCalendarConfigured: (...args: unknown[]) => calendarMocks.isOutlookCalendarConfigured(...args),
+  };
+});
+
+vi.mock('../../src/services/unified-calendar', async () => {
+  const actual = await vi.importActual<any>('../../src/services/unified-calendar');
+  return {
+    ...actual,
+    createEvent: (...args: unknown[]) => calendarMocks.createEvent(...args),
+    getEventsForSources: (...args: unknown[]) => calendarMocks.getEventsForSources(...args),
+  };
+});
 
 vi.mock('../../src/utils/logger', () => ({
   logger: {
@@ -478,6 +512,12 @@ describe('Chat API routes', () => {
     mockGetLastCoachState.mockReset();
     mockApplyCoachRecommendations.mockReset();
     mockClearChatHistory.mockReset();
+    calendarMocks.createEvent.mockReset();
+    calendarMocks.getEventsForSources.mockReset();
+    calendarMocks.isGoogleCalendarConfigured.mockReset();
+    calendarMocks.isOutlookCalendarConfigured.mockReset();
+    calendarMocks.isGoogleCalendarConfigured.mockReturnValue(false);
+    calendarMocks.isOutlookCalendarConfigured.mockReturnValue(false);
 
     mockTryDeterministicChatCommand.mockResolvedValue(null);
     mockKeywordMatch.mockReturnValue(null);
@@ -742,6 +782,106 @@ describe('Chat API routes', () => {
       routeMethod: 'classifier',
       confidence: 0.93,
     });
+  });
+
+  it('runs the action planner before Gmail unread or generic chat for Gmail-agenda event creation', async () => {
+    mockGetUserLanguage.mockReturnValue('pt-PT');
+
+    const messageRes = await dispatch('POST', '/message', 7001, {
+      text: 'Cria um evento na agenda do Gmail chamado igreja das 10 ao meio-dia e meio nesse domingo',
+      clientMessageId: 'pt-gmail-agenda-event-1',
+    }, {
+      'x-language': 'pt-PT',
+    });
+
+    expect(messageRes.statusCode, JSON.stringify(messageRes.body)).toBe(200);
+    expect(messageRes.body.domain).toBe('secretary');
+    expect(messageRes.body.routeMethod).toBe('chat-action-deterministic');
+    expect(messageRes.body.metadata).toMatchObject({
+      type: 'chat_action_blocked',
+      actionStatus: 'blocked',
+      involvedSkills: ['secretary_calendar'],
+    });
+    expect(messageRes.body.text).toContain('Google Calendar');
+    expect(JSON.stringify(messageRes.body)).not.toMatch(/927|e-mails não lidos|unread|auth\.scope|chat\.skill_capability_registry|<b>|<\/b>|Resposta estruturada/i);
+    expect(mockRouteMessage).not.toHaveBeenCalled();
+    expect(mockCompleteOneShotWithFallback).not.toHaveBeenCalled();
+  });
+
+  it('durably tracks action-planner confirmations for external side effects', async () => {
+    mockGetUserLanguage.mockReturnValue('pt-PT');
+
+    const messageRes = await dispatch('POST', '/message', 7001, {
+      text: 'Cria um evento no Google Calendar chamado reunião das 9 às 10 amanhã e convida ana@example.com',
+      clientMessageId: 'calendar-attendee-confirmation-1',
+    }, {
+      'x-language': 'pt-PT',
+    });
+
+    expect(messageRes.statusCode, JSON.stringify(messageRes.body)).toBe(202);
+    expect(messageRes.body.routeMethod).toBe('chat-action-deterministic');
+    expect(messageRes.body.metadata).toMatchObject({
+      type: 'chat_action_needs_confirmation',
+      actionStatus: 'needs_confirmation',
+      pendingConfirmation: {
+        sourceMessageId: 'msg-user-calendar-attendee-confirmation-1',
+        decisionId: expect.any(String),
+      },
+    });
+    expect(JSON.stringify(messageRes.body)).not.toMatch(/auth\.scope|chat\.skill_capability_registry|raw|debug|<b>|<\/b>/i);
+    expect(mockRouteMessage).not.toHaveBeenCalled();
+  });
+
+  it('executes a confirmed action-planner calendar invite from the durable pending run', async () => {
+    mockGetUserLanguage.mockReturnValue('pt-PT');
+    calendarMocks.isGoogleCalendarConfigured.mockReturnValue(true);
+    const createdEvent = {
+      id: 'google-event-confirmed-1',
+      summary: 'reunião',
+      start: '2026-05-15T09:00:00+01:00',
+      end: '2026-05-15T10:00:00+01:00',
+      source: 'google',
+    };
+    calendarMocks.getEventsForSources
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([createdEvent]);
+    calendarMocks.createEvent.mockResolvedValue(createdEvent);
+
+    const first = await dispatch('POST', '/message', 7001, {
+      text: 'Cria um evento no Google Calendar chamado reunião das 9 às 10 amanhã e convida ana@example.com',
+      clientMessageId: 'calendar-attendee-confirmation-exec-1',
+    }, {
+      'x-language': 'pt-PT',
+    });
+
+    expect(first.statusCode, JSON.stringify(first.body)).toBe(202);
+    expect(first.body.metadata.type).toBe('chat_action_needs_confirmation');
+
+    const accept = await dispatch('POST', '/message', 7001, {
+      text: 'confirmar esta decisão',
+      idempotencyKey: 'calendar-attendee-confirmation-exec-accept',
+    }, {
+      'x-language': 'pt-PT',
+    });
+
+    expect(accept.statusCode, JSON.stringify(accept.body)).toBe(200);
+    expect(accept.body.routeMethod).toBe('chat-action-mixed');
+    expect(accept.body.metadata).toMatchObject({
+      type: 'chat_action_verified_success',
+      actionStatus: 'verified_success',
+      verificationStatus: 'verified_success',
+      confirmationDecision: {
+        actionId: 'option_a',
+      },
+    });
+    expect(accept.body.text).toContain('Feito — criei');
+    expect(calendarMocks.createEvent).toHaveBeenCalledTimes(1);
+    expect(calendarMocks.createEvent.mock.calls[0][0]).toMatchObject({
+      title: 'reunião',
+      attendees: ['ana@example.com'],
+    });
+    expect(calendarMocks.getEventsForSources).toHaveBeenCalledTimes(2);
+    expect(JSON.stringify(accept.body)).not.toMatch(/auth\.scope|chat\.skill_capability_registry|raw|debug|<b>|<\/b>|Resposta estruturada/i);
   });
 
   it('routes task-with-subtasks messages through Chat Reasoning Engine before the AI/tool loop', async () => {

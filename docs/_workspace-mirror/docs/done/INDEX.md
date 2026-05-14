@@ -53,7 +53,7 @@ If Felipe wants physical moves, that's a follow-up cleanup round after Wave 1 sh
 | Engineering excellence codex-validation | `docs/archive/2026-05/engineering-excellence-codex-validation/` + `-20260504/` | codex-validated | |
 | Engineering excellence architecture standards | `docs/archive/2026-05/engineering-excellence-architecture-standards/engineering-excellence-enrichment-report.md` | shipped | |
 | Closed-beta gap analysis | `docs/archive/2026-05/closed-beta-gap-analysis/all-skills-gap-analysis-report.md` | baseline; all P0/P1 closed in OPEN_ITEMS | |
-| Workspace release docs (training recovery, event backbone, claude.md sync) | `docs/release/training-recovery-fix-testflight-checklist.md`, `docs/release/event-backbone-readmodels-delta-sync-report.md`, `docs/release/staged-claude-md-update-after-2026-05-deploy.md` | superseded by Wave1 runbook + later remediation | |
+| Workspace release docs (training recovery, event backbone, claude.md sync) | `docs/release/event-backbone-readmodels-delta-sync-report.md`, `docs/release/staged-claude-md-update-after-2026-05-deploy.md`; the old training recovery checklist was removed during the 2026-05-13 cleanup | superseded by Wave1 runbook + later remediation | |
 | Engine training release archive | `engine/docs/release/archive/2026-04/training/` (8 files) | resolved per 4.14.x production releases | |
 | Engine cooking-training pre-v2 archive | `engine/docs/release/archive/2026-05-01-pre-v2/cooking-training/` (5 files) | resolved | |
 | Engine nexus-hub-rc pre-v2 archive | `engine/docs/release/archive/2026-05-01-pre-v2/nexus-hub-rc/` (4 files) | resolved | |

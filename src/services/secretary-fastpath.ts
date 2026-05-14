@@ -30,6 +30,7 @@
 import {
   createEvent,
   getEvents,
+  getEventsForSources,
   hasConnectedCalendarForUser,
   hasWritableCalendarForUser,
   type CalendarSource,
@@ -51,6 +52,7 @@ import { getTaskProviderForUser } from './task-store/task-router';
 import { composeDailyBrief } from './daily-brief-orchestrator';
 import { getUnreadMailSummaryForUser, isAnyMailConfiguredForUser } from './unified-mail-pressure';
 import { invalidateCalendarCaches } from './cache-coherence-registry';
+import { parseNaturalLanguageCalendarEvent } from './calendar-natural-language-parser';
 
 // ─── Types ──────────────────────────────────────────────────────────
 
@@ -198,6 +200,17 @@ function extractCalendarTitle(text: string, rangeMatch: RegExpMatchArray): strin
 }
 
 function parseCalendarCreateRequest(text: string, timezone: string): ParsedCalendarCreate | null {
+  const parsedNatural = parseNaturalLanguageCalendarEvent(text, { timezone });
+  if (parsedNatural) {
+    return {
+      title: parsedNatural.title,
+      start: parsedNatural.startDateTime,
+      end: parsedNatural.endDateTime,
+      attendees: parsedNatural.attendees,
+      target: parsedNatural.provider,
+    };
+  }
+
   const date = resolveCalendarCreateDate(text, timezone);
   const timeRange = parseCalendarTimeRange(text);
   if (!date || !timeRange) return null;
@@ -241,6 +254,30 @@ function formatCalendarCreateSuccess(
   return lang.startsWith('pt')
     ? `Pronto ✅ Agendei no ${zoneLabel}:\n• 📅 ${start}–${end} — ${title}${attendeeLine}`
     : `Done ✅ Scheduled in ${zoneLabel}:\n• 📅 ${start}–${end} — ${title}${attendeeLine}`;
+}
+
+function calendarCreateReadBackMatches(
+  event: { id?: string; source?: CalendarSource; title?: string; summary?: string; start: string; end: string },
+  expected: { title: string; start: string; end: string },
+): boolean {
+  const title = String(event.title || event.summary || '').trim().toLowerCase();
+  const expectedTitle = expected.title.trim().toLowerCase();
+  const startDelta = Math.abs(DateTime.fromISO(event.start).toMillis() - DateTime.fromISO(expected.start).toMillis());
+  const endDelta = Math.abs(DateTime.fromISO(event.end).toMillis() - DateTime.fromISO(expected.end).toMillis());
+  return title === expectedTitle && startDelta < 60_000 && endDelta < 60_000;
+}
+
+async function verifyCalendarCreateReadBack(
+  userId: number,
+  event: Awaited<ReturnType<typeof createEvent>>,
+  expected: { title: string; start: string; end: string },
+): Promise<boolean> {
+  if (!event.source) return false;
+  const readBack = await getEventsForSources(expected.start, expected.end, userId, [event.source]).catch(() => []);
+  return readBack.some((candidate) => {
+    if (event.id && candidate.id === event.id) return true;
+    return calendarCreateReadBackMatches(candidate, expected);
+  });
 }
 
 // ─── Bilingual copy table ───────────────────────────────────────────
@@ -577,7 +614,7 @@ const FASTPATH_PATTERNS: PatternEntry[] = [
   // "Add calendar event tomorrow 9:00 to 10:00 School activity invite ..."
   {
     id: 'create_calendar_event',
-    pattern: /^(?=.*\b(?:calend[aá]rio|calendar|agenda|evento|event)\b)(?=.*\b\d{1,2}(?:(?::|\.)\d{2}|h\d{0,2})?\s*(?:às|as|a|até|ate|to|-|–)\s*\d{1,2}(?:(?::|\.)\d{2}|h\d{0,2})?\b)(?:colocar|coloca|p[õo]e|poe|adicionar|adiciona|criar|cria|agendar|agenda|schedule|add|create)\b[\s\S]+$/i,
+    pattern: /^(?=.*\b(?:calend[aá]rio|calendar|agenda|evento|event)\b)(?:colocar|coloca|p[õo]e|poe|mete|adicionar|adiciona|criar|cria|agendar|agenda|marcar|marca|schedule|add|create|book)\b[\s\S]+$/i,
     requires: 'calendar',
     handler: async (userId, match, lang) => {
       const text = match.input ?? match[0];
@@ -601,6 +638,15 @@ const FASTPATH_PATTERNS: PatternEntry[] = [
         };
       }
 
+      if (parsed.attendees.length > 0) {
+        return {
+          text: lang.startsWith('pt')
+            ? `Preciso da tua confirmação antes de criar “${escapeHtml(parsed.title)}”, porque isso pode enviar convite para ${parsed.attendees.map(escapeHtml).join(', ')}.`
+            : `I need your confirmation before creating “${escapeHtml(parsed.title)}” because it may send an invite to ${parsed.attendees.map(escapeHtml).join(', ')}.`,
+          domain: SECRETARY,
+        };
+      }
+
       try {
         const eventInput = {
           title: parsed.title,
@@ -618,6 +664,15 @@ const FASTPATH_PATTERNS: PatternEntry[] = [
             'fastpath create_calendar_event requested source failed, retrying default connected calendar',
           );
           event = await createEvent(eventInput, undefined, userId);
+        }
+        const verified = await verifyCalendarCreateReadBack(userId, event, eventInput);
+        if (!verified) {
+          return {
+            text: lang.startsWith('pt')
+              ? '⚠️ Enviei o pedido ao calendário, mas ainda não consegui verificar o evento por leitura de volta. Não vou marcar como concluído até conseguir confirmar.'
+              : '⚠️ I sent the request to the calendar, but I could not verify the event by reading it back yet. I will not mark it complete until I can confirm it.',
+            domain: SECRETARY,
+          };
         }
         invalidateCalendarCaches(userId);
         return {
