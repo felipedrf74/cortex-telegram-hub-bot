@@ -63,7 +63,7 @@
     "express": "^5.2.1",
     "garmin-connect": "^1.6.2",
     "googleapis": "^171.4.0",
-    "grammy": "^1.41.1",
+    "grammy": "^1.42.0",
     "jsonwebtoken": "^9.0.3",
     "luxon": "^3.7.2",
     "mammoth": "^1.12.0",
