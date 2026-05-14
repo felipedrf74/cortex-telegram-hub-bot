@@ -56,7 +56,8 @@ describe('chat script shortcut response helpers', () => {
 
     expect(text).toContain('Roteiro curto • Duração estimada: 0:45');
     expect(text).toContain('Plan recovery before you chase intensity.');
-    expect(text).toContain('Fecho sugerido: Save this.');
+    expect(text).toContain('FIRST 3 SECONDS:');
+    expect(text).toContain('VISUAL DIRECTION:');
     expect(text).not.toContain('CTA:');
   });
 
@@ -106,6 +107,11 @@ describe('chat script shortcut response helpers', () => {
       cta: '',
       degraded: false,
       warnings: [],
+      scriptQuality: {
+        overallScore: expect.any(Number),
+        revisionActions: expect.any(Array),
+        complianceWarnings: expect.any(Array),
+      },
       sourcesUsed: [],
     });
   });

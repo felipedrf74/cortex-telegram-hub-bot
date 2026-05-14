@@ -114,7 +114,7 @@ describe('content script route contract utilities', () => {
 
     expect(response).toMatchObject({
       topic: 'Creator OS',
-      script: 'Open with the constraint.',
+      script: expect.stringContaining('FIRST 3 SECONDS:'),
       hook: 'Stop treating content as captions.',
       titleOptions: ['A', 'B'],
       sourcesUsed: [{
@@ -130,9 +130,26 @@ describe('content script route contract utilities', () => {
       durationMs: 1200,
       hashtags: [],
       caption: '',
-      cta: '',
+      cta: 'Pick one action from this video and measure the result this week.',
       degraded: false,
       warnings: [],
+      scriptQuality: {
+        overallScore: expect.any(Number),
+        hookScore: expect.any(Number),
+        retentionScore: expect.any(Number),
+        proofScore: expect.any(Number),
+        platformFitScore: expect.any(Number),
+        voiceFitScore: expect.any(Number),
+        ctaScore: expect.any(Number),
+        structureScore: expect.any(Number),
+        complianceWarnings: expect.any(Array),
+        revisionActions: expect.any(Array),
+        blockers: expect.any(Array),
+      },
+      scriptStructure: {
+        firstThreeSeconds: expect.stringContaining('Stop treating content as captions'),
+        cta: expect.any(String),
+      },
       generation: {
         mode: 'deep',
         cacheHit: false,
@@ -169,8 +186,43 @@ describe('content script route contract utilities', () => {
     expect(response.usageImpact).toBe('none');
     expect(response.hashtags).toEqual([]);
     expect(response.caption).toBe('');
-    expect(response.cta).toBe('');
+    expect(response.cta).toContain('Save this');
     expect(response.degraded).toBe(true);
     expect(response.warnings).toEqual(['cached fallback']);
+    expect(response.scriptQuality.overallScore).toBeGreaterThanOrEqual(90);
+  });
+
+  it('attaches script quality to fresh, cached, degraded, and regenerated-style responses', () => {
+    const variants = [
+      { name: 'fresh', cacheHit: false, generationMode: 'standard' as const, degraded: false },
+      { name: 'cached', cacheHit: true, generationMode: 'standard' as const, degraded: false },
+      { name: 'degraded', cacheHit: false, generationMode: 'quick' as const, degraded: true },
+      { name: 'regenerated', cacheHit: false, generationMode: 'deep' as const, degraded: false },
+    ];
+
+    for (const variant of variants) {
+      const response = buildScriptSuccessResponse({
+        result: {
+          topic: `${variant.name} script`,
+          script: 'Today we are going to talk about a creator workflow.\nProof appears before the second beat.\nSave this.',
+          hook: '',
+          cta: '',
+          degraded: variant.degraded,
+          warnings: variant.degraded ? ['AI generation was unavailable; returned a templated degraded script grounded in the available research.'] : [],
+        },
+        format: 'Reel',
+        renderMode: 'structured',
+        scriptStyle: 'detailed',
+        generationMode: variant.generationMode,
+        startMs: Date.now() - 100,
+        cacheHit: variant.cacheHit,
+      });
+
+      expect(response.scriptQuality.overallScore, variant.name).toBeGreaterThanOrEqual(90);
+      expect(response.scriptQuality.revisionActions, variant.name).toContain('weak_intro_rewritten_to_first_three_seconds_hook');
+      expect(response.scriptStructure.firstThreeSeconds, variant.name).not.toMatch(/^Today we are going to talk/i);
+      expect(response.generation.cacheHit, variant.name).toBe(variant.cacheHit);
+      expect(response.degraded, variant.name).toBe(variant.degraded);
+    }
   });
 });

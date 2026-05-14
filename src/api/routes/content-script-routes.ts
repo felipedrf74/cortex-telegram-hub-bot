@@ -24,6 +24,7 @@ import {
 import { resolveScriptTopicContext } from './content-topic-context';
 import { getAllKnowledge } from '../../state/content-references';
 import { getScript } from '../../services/content-engine';
+import { buildScriptPreflightBrief } from '../../services/content-script-quality';
 import { buildAuthorizedContentReferenceContext } from '../../services/content-reference-context';
 import {
   buildContentGenerationPackage,
@@ -183,6 +184,16 @@ export function registerContentScriptRoutes(
       );
       const elapsedMs = Date.now() - startMs;
       const cacheHit = !shouldForceRefresh && elapsedMs < 500;
+      const preflightBrief = buildScriptPreflightBrief({
+        topic: topic.trim(),
+        niche: scriptTopicContext?.niche || niche || 'general',
+        format: normalizedFormat,
+        language: targetLanguage,
+        cta: result.cta,
+        targetDurationSeconds: durationPreset.targetDurationSeconds,
+        sources: result.sources_used,
+        voiceMemory,
+      });
       const generationQuality = evaluateContentGenerationQuality({
         package: generationPackage,
         outputText: result.script,
@@ -197,6 +208,7 @@ export function registerContentScriptRoutes(
         generationMode: genMode,
         startMs,
         cacheHit,
+        preflightBrief,
         generationQuality: {
           formatFit: generationQuality.formatFit,
           voiceFit: generationQuality.voiceFit,

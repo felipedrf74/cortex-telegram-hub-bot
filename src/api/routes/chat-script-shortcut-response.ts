@@ -2,6 +2,7 @@
 
 import type { ScriptResponse } from '../../services/content-engine';
 import { sanitizeScriptBody } from './chat-content-refinement';
+import { analyzeAndImproveScript, buildScriptPreflightBrief } from '../../services/content-script-quality';
 
 export type ChatScriptShortcutLanguage = 'pt-BR' | 'pt-PT' | 'en-US';
 export type ChatScriptShortcutFormat = 'Reel' | 'YouTube';
@@ -59,9 +60,28 @@ export function buildScriptShortcutText(
 ): string {
   const isPT = language.startsWith('pt');
   const sections: string[] = [];
-  const sanitizedScript = sanitizeScriptBody(result.script || '');
+  const scriptQuality = analyzeAndImproveScript({
+    topic: result.topic,
+    script: result.script || '',
+    hook: result.hook,
+    titleOptions: result.title_options,
+    cta: result.cta,
+    sources: result.sources_used,
+    format,
+    preflightBrief: buildScriptPreflightBrief({
+      topic: result.topic,
+      format,
+      language,
+      cta: result.cta,
+      sources: result.sources_used,
+    }),
+  });
+  const sanitizedScript = makeChatSafeScriptText(
+    sanitizeScriptBody(scriptQuality.revisedScript || ''),
+    isPT,
+  );
   const normalizedScript = sanitizedScript || result.hook?.trim() || '';
-  const normalizedCta = result.cta?.trim() || '';
+  const normalizedCta = (result.cta || scriptQuality.structuredOutput.cta)?.trim() || '';
   const lowerScript = normalizedScript.toLowerCase();
 
   if (result.degraded) {
@@ -94,6 +114,15 @@ export function buildScriptShortcutText(
   return sections.filter(Boolean).join('\n\n');
 }
 
+function makeChatSafeScriptText(script: string, isPT: boolean): string {
+  const closingLabel = isPT ? 'FECHO SUGERIDO:' : 'SUGGESTED CLOSING LINE:';
+  const nextActionText = isPT ? 'próxima ação' : 'next action';
+  return script
+    .replace(/^CTA:\s*$/gim, closingLabel)
+    .replace(/^(\d+\.\s*)CTA:\s*/gim, `$1${closingLabel} `)
+    .replace(/\bCTA\b/g, nextActionText);
+}
+
 export function buildScriptUnavailableResponse(language: ChatScriptShortcutLanguage): string {
   if (language === 'en-US') {
     return 'I could not generate the structured script right now because the content engine is temporarily unavailable. Please try again in a minute.';
@@ -109,6 +138,15 @@ export function buildScriptShortcutMetadata(
   format: ChatScriptShortcutFormat,
 ): Record<string, unknown> {
   const sources = Array.isArray(result.sources_used) ? result.sources_used : [];
+  const scriptQuality = analyzeAndImproveScript({
+    topic: result.topic,
+    script: result.script || '',
+    hook: result.hook,
+    titleOptions: result.title_options,
+    cta: result.cta,
+    sources,
+    format,
+  });
 
   return {
     type: 'content_script',
@@ -122,6 +160,19 @@ export function buildScriptShortcutMetadata(
     estimatedDuration: result.estimated_duration,
     degraded: result.degraded ?? false,
     warnings: result.warnings ?? [],
+    scriptQuality: {
+      hookScore: scriptQuality.hookScore,
+      retentionScore: scriptQuality.retentionScore,
+      proofScore: scriptQuality.proofScore,
+      platformFitScore: scriptQuality.platformFitScore,
+      voiceFitScore: scriptQuality.voiceFitScore,
+      ctaScore: scriptQuality.ctaScore,
+      structureScore: scriptQuality.structureScore,
+      overallScore: scriptQuality.overallScore,
+      complianceWarnings: scriptQuality.complianceWarnings,
+      revisionActions: scriptQuality.revisionActions,
+      blockers: scriptQuality.blockers,
+    },
     sourcesUsed: sources.map((source) => ({
       title: source.title,
       url: source.url,

@@ -17,6 +17,8 @@ interface CliOptions {
   outDir?: string;
   failUnder?: number;
   persistDb?: string;
+  iosExtractionScore?: number;
+  realProviderSampleScore?: number;
 }
 
 function readPackageVersion(): string {
@@ -69,6 +71,14 @@ function parseArgs(argv: string[]): CliOptions {
       const parsed = Number(next);
       if (Number.isFinite(parsed)) options.failUnder = parsed;
       i++;
+    } else if (arg === '--ios-extraction-score' && next) {
+      const parsed = Number(next);
+      if (Number.isFinite(parsed)) options.iosExtractionScore = parsed;
+      i++;
+    } else if (arg === '--real-provider-sample-score' && next) {
+      const parsed = Number(next);
+      if (Number.isFinite(parsed)) options.realProviderSampleScore = parsed;
+      i++;
     } else if (arg === '--persist-db') {
       if (next && !next.startsWith('--')) {
         options.persistDb = next;
@@ -92,6 +102,8 @@ function timestamp(): string {
 function main(): void {
   const options = parseArgs(process.argv.slice(2));
   const mode = options.mode ?? parseMode(process.env.CONTENT_EVAL_MODE) ?? 'fixture';
+  const envIosExtractionScore = Number(process.env.CONTENT_EVAL_IOS_EXTRACTION_SCORE);
+  const envRealProviderSampleScore = Number(process.env.CONTENT_EVAL_REAL_PROVIDER_SAMPLE_SCORE);
   const outDir = options.outDir ?? 'reports/content-eval';
   const baseName = `content-eval-${timestamp()}`;
   const jsonPath = options.json ?? path.join(outDir, `${baseName}.json`);
@@ -100,6 +112,8 @@ function main(): void {
   const result = runContentDayToDayEvaluation({
     mode,
     generatedAt: new Date().toISOString(),
+    iosExtractionScore: options.iosExtractionScore ?? (Number.isFinite(envIosExtractionScore) ? envIosExtractionScore : null),
+    realProviderSampleScore: options.realProviderSampleScore ?? (Number.isFinite(envRealProviderSampleScore) ? envRealProviderSampleScore : null),
     engine: {
       packageVersion: readPackageVersion(),
       gitBranch: gitValue('git branch --show-current'),

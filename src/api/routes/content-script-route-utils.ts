@@ -1,6 +1,12 @@
 // Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
 
 import { buildGenerationMeta, type GenerationMode } from './content-generation-meta';
+import {
+  analyzeAndImproveScript,
+  buildScriptPreflightBrief,
+  type ScriptPreflightBrief,
+  type ScriptQualityReport,
+} from '../../services/content-script-quality';
 
 export type ScriptRenderMode = 'structured' | 'chat';
 export type ScriptFormat = 'YouTube' | 'Reel';
@@ -152,6 +158,7 @@ export function buildScriptSuccessResponse(params: {
   startMs: number;
   cacheHit: boolean;
   generationQuality?: Record<string, unknown>;
+  preflightBrief?: ScriptPreflightBrief;
 }) {
   const {
     result,
@@ -162,14 +169,34 @@ export function buildScriptSuccessResponse(params: {
     startMs,
     cacheHit,
     generationQuality,
+    preflightBrief,
   } = params;
 
   const sources = Array.isArray(result.sources_used) ? result.sources_used : [];
-
-  return {
+  const scriptQuality = analyzeAndImproveScript({
     topic: result.topic,
     script: result.script,
     hook: result.hook,
+    titleOptions: result.title_options,
+    cta: result.cta,
+    sources,
+    format,
+    preflightBrief: preflightBrief ?? buildScriptPreflightBrief({
+      topic: result.topic,
+      format,
+      cta: result.cta,
+      sources,
+    }),
+  });
+  const warnings = Array.from(new Set([
+    ...(result.warnings ?? []),
+    ...scriptQuality.complianceWarnings,
+  ]));
+
+  return {
+    topic: result.topic,
+    script: scriptQuality.revisedScript,
+    hook: scriptQuality.structuredOutput.firstThreeSeconds || result.hook,
     titleOptions: result.title_options,
     sourcesUsed: sources.map((source) => ({
       title: source.title,
@@ -184,10 +211,12 @@ export function buildScriptSuccessResponse(params: {
     durationMs: result.duration_ms,
     hashtags: result.hashtags ?? [],
     caption: result.caption ?? '',
-    cta: result.cta ?? '',
+    cta: result.cta || scriptQuality.structuredOutput.cta,
     degraded: result.degraded ?? false,
-    warnings: result.warnings ?? [],
+    warnings,
     generationQuality,
+    scriptQuality: publicScriptQualityReport(scriptQuality),
+    scriptStructure: scriptQuality.structuredOutput,
     generation: buildGenerationMeta({
       mode: generationMode,
       startMs,
@@ -199,5 +228,21 @@ export function buildScriptSuccessResponse(params: {
     generationMode,
     cacheHit,
     usageImpact: cacheHit ? 'none' : generationMode === 'deep' ? 'high' : generationMode,
+  };
+}
+
+function publicScriptQualityReport(report: ScriptQualityReport): Omit<ScriptQualityReport, 'revisedScript' | 'structuredOutput'> {
+  return {
+    hookScore: report.hookScore,
+    retentionScore: report.retentionScore,
+    proofScore: report.proofScore,
+    platformFitScore: report.platformFitScore,
+    voiceFitScore: report.voiceFitScore,
+    ctaScore: report.ctaScore,
+    structureScore: report.structureScore,
+    overallScore: report.overallScore,
+    complianceWarnings: report.complianceWarnings,
+    revisionActions: report.revisionActions,
+    blockers: report.blockers,
   };
 }

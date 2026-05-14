@@ -3,6 +3,7 @@ import {
   CONTENT_PERSONA_BANK,
   CONTENT_QUALITY_RUBRIC,
   CONTENT_SCENARIO_BANK,
+  evaluateContentEvalTextQuality,
   formatContentEvalResultsMarkdown,
   runContentDayToDayEvaluation,
 } from '../../src/services/content-day-to-day-evaluation';
@@ -39,9 +40,49 @@ describe('Content day-to-day evaluation harness', () => {
       'same_style_as_last_week',
       'remove_unsupported_claims',
       'weekly_content_plan',
+      'competitor_transcripts_to_agency_package',
+      'weak_script_rewrite',
+      'analytics_bottleneck_diagnosis',
+      'brand_positioning_calendar',
+      'viral_competitor_pattern_originality',
+      'branded_content_disclosure_gate',
+      'prompt_injected_transcript_guard',
     ]));
     expect(CONTENT_SCENARIO_BANK.every((scenario) => scenario.turns.length >= 3)).toBe(true);
     expect(CONTENT_SCENARIO_BANK.every((scenario) => scenario.requiredWorkflow.length > 0)).toBe(true);
+  });
+
+  it('adds Creator Agency scenarios that test originality, compliance, analytics, and critical-user usefulness', () => {
+    const scenarioById = new Map(CONTENT_SCENARIO_BANK.map((scenario) => [scenario.id, scenario]));
+    const requiredAgencyScenarios = [
+      'competitor_transcripts_to_agency_package',
+      'weak_script_rewrite',
+      'analytics_bottleneck_diagnosis',
+      'brand_positioning_calendar',
+      'viral_competitor_pattern_originality',
+      'branded_content_disclosure_gate',
+      'prompt_injected_transcript_guard',
+    ];
+
+    for (const id of requiredAgencyScenarios) {
+      const scenario = scenarioById.get(id as any);
+      expect(scenario, id).toBeDefined();
+      expect(scenario?.requiredWorkflow).toContain('critical_user_review');
+      expect(scenario?.requiredDimensions.length).toBeGreaterThanOrEqual(3);
+      expect(scenario?.expectedFailureProtections.length).toBeGreaterThanOrEqual(3);
+    }
+    expect(scenarioById.get('competitor_transcripts_to_agency_package')?.requiredWorkflow).toEqual(expect.arrayContaining([
+      'competitor_pattern_study',
+      'transcript_pattern_study',
+      'generate_hook_bank',
+      'generate_script_variants',
+      'creative_direction',
+      'compliance_review',
+      'experiment_plan',
+    ]));
+    expect(scenarioById.get('analytics_bottleneck_diagnosis')?.expectedFailureProtections).toContain('unsupported_analytics_claim');
+    expect(scenarioById.get('branded_content_disclosure_gate')?.expectedFailureProtections).toContain('missing_disclosure');
+    expect(scenarioById.get('prompt_injected_transcript_guard')?.expectedFailureProtections).toContain('raw_prompt_artifact');
   });
 
   it('scores content quality by rubric dimensions rather than exact wording', () => {
@@ -52,17 +93,92 @@ describe('Content day-to-day evaluation harness', () => {
     const rubricIds = CONTENT_QUALITY_RUBRIC.map((dimension) => dimension.id).sort();
 
     expect(result.aggregate.caseCount).toBeGreaterThanOrEqual(10);
-    expect(result.aggregate.overallScore).toBeGreaterThanOrEqual(85);
+    expect(result.aggregate.caseCount).toBeGreaterThanOrEqual(20);
+    expect(result.aggregate.overallScore).toBeGreaterThanOrEqual(95);
+    expect(result.aggregate.minScore).toBeGreaterThanOrEqual(92);
+    expect(result.aggregate.laneScores.fixtureScore).toBeGreaterThanOrEqual(95);
+    expect(result.aggregate.laneScores.localEngineScore).toBeGreaterThanOrEqual(94);
+    expect(result.aggregate.laneScores.scriptQualityScore).toBeGreaterThanOrEqual(94);
+    expect(result.aggregate.laneScores.criticalUserScore).toBeGreaterThanOrEqual(92);
+    expect(result.aggregate.releaseGate).toBe('PASS_WITH_CONDITIONS');
     expect(result.aggregate.criticalFailureCount).toBe(0);
     expect(result.passed).toBe(true);
 
     for (const testCase of result.cases) {
       expect(Object.keys(testCase.dimensionScores).sort()).toEqual(rubricIds);
+      expect(testCase.penalties).toEqual([]);
       expect(testCase.output.transcript.length).toBeGreaterThanOrEqual(3);
       expect(testCase.output.providerTrace.productionDataUsed).toBe(false);
       expect(testCase.output.providerTrace.preservesLiveRouting).toBe(true);
       expect(testCase.output.providerTrace.category).toBe('content_day_to_day_eval');
     }
+  });
+
+  it('can report a clean PASS only after fixture, runtime, provider sample, and iOS extraction lanes are supplied', () => {
+    const result = runContentDayToDayEvaluation({
+      mode: 'fixture',
+      iosExtractionScore: 96,
+      realProviderSampleScore: 95,
+    });
+
+    expect(result.aggregate.releaseGate).toBe('PASS');
+    expect(result.aggregate.laneScores).toMatchObject({
+      iosExtractionScore: 96,
+      realProviderSampleScore: 95,
+    });
+  });
+
+  it('clamps external lane scores so invalid evidence cannot inflate the aggregate above 100', () => {
+    const result = runContentDayToDayEvaluation({
+      mode: 'fixture',
+      iosExtractionScore: 999,
+      realProviderSampleScore: 999,
+    });
+
+    expect(result.aggregate.overallScore).toBeLessThanOrEqual(100);
+    expect(result.aggregate.laneScores.iosExtractionScore).toBe(100);
+    expect(result.aggregate.laneScores.realProviderSampleScore).toBe(100);
+    expect(result.aggregate.releaseGate).toBe('PASS');
+  });
+
+  it('fails when supplied external lane evidence is below the release quality floor', () => {
+    const result = runContentDayToDayEvaluation({
+      mode: 'fixture',
+      iosExtractionScore: 70,
+      realProviderSampleScore: 60,
+    });
+
+    expect(result.aggregate.overallScore).toBeLessThan(95);
+    expect(result.aggregate.releaseGate).toBe('FAIL');
+    expect(result.passed).toBe(false);
+  });
+
+  it('penalizes low-value or unsafe output instead of letting averages hide it', () => {
+    const penalties = evaluateContentEvalTextQuality({
+      text: [
+        'Post consistently.',
+        'Copy this exact competitor script.',
+        'This will get a 40% lift and guaranteed views.',
+        '```json {"INTERNAL_ID":"raw"}',
+      ].join('\n'),
+      audienceFit: false,
+      hookStrength: 'weak',
+      referenceRequired: true,
+      referencesUsed: 0,
+      clarificationAsked: false,
+      nextActionsProvided: false,
+    });
+
+    expect(penalties.map((penalty) => penalty.id)).toEqual(expect.arrayContaining([
+      'generic_filler',
+      'missing_audience',
+      'weak_hook',
+      'no_proof_or_example',
+      'unclear_cta',
+      'copied_structure_or_wording',
+      'unsupported_metric_or_platform_claim',
+      'raw_artifact',
+    ]));
   });
 
   it('keeps tenant and brand context partitioned during tenant-switch scenarios', () => {
@@ -85,6 +201,29 @@ describe('Content day-to-day evaluation harness', () => {
     expect(repeatCase?.failures).not.toContain('duplicate_idea');
   });
 
+  it('simulates skeptical creator extraction from agency outputs, not only screen taps', () => {
+    const result = runContentDayToDayEvaluation({ mode: 'fixture' });
+    const competitorCase = result.cases.find((testCase) => testCase.scenarioId === 'competitor_transcripts_to_agency_package');
+    const analyticsCase = result.cases.find((testCase) => testCase.scenarioId === 'analytics_bottleneck_diagnosis');
+    const injectionCase = result.cases.find((testCase) => testCase.scenarioId === 'prompt_injected_transcript_guard');
+
+    expect(competitorCase).toBeDefined();
+    expect(competitorCase?.score).toBeGreaterThanOrEqual(85);
+    expect(competitorCase?.failures).not.toContain('copied_competitor_wording');
+    expect(competitorCase?.output.transcript.map((turn) => turn.assistantOutcome).join('\n')).toMatch(/pattern-level|original angles|without copying/i);
+    expect(competitorCase?.output.transcript.flatMap((turn) => turn.safetyNotes)).toEqual(expect.arrayContaining([
+      'competitor_or_transcript_text_marked_untrusted',
+      'originality_required_different_angle_proof_story_execution',
+      'disclosure_copyright_claim_review_required',
+    ]));
+
+    expect(analyticsCase?.output.transcript.map((turn) => turn.assistantOutcome).join('\n')).toMatch(/high CTR plus low retention/i);
+    expect(analyticsCase?.failures).not.toContain('unsupported_analytics_claim');
+
+    expect(injectionCase?.output.transcript.flatMap((turn) => turn.safetyNotes)).toContain('competitor_or_transcript_text_marked_untrusted');
+    expect(injectionCase?.failures).not.toContain('raw_prompt_artifact');
+  });
+
   it('renders a baseline report with failure taxonomy and release conditions', () => {
     const result = runContentDayToDayEvaluation({
       mode: 'fixture',
@@ -95,6 +234,7 @@ describe('Content day-to-day evaluation harness', () => {
     expect(markdown).toContain('# Content Day-to-Day Evaluation Baseline Results');
     expect(markdown).toContain('Failure Taxonomy Counts');
     expect(markdown).toContain('Release gate');
-    expect(markdown).toContain('full local Nexus engine smoke remains required');
+    expect(markdown).toContain('Script quality score');
+    expect(markdown).toContain('iOS visible-text extraction');
   });
 });
