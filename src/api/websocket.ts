@@ -20,6 +20,65 @@ import { pushEvent } from '../portal/telemetry';
 import { getDb } from '../services/database';
 import { verifyIosJwt } from '../services/ios-jwt';
 import { resolveCurrentTenantIdForUser } from '../services/user-service';
+import { config } from '../config';
+
+const WEBSOCKET_RATE_WINDOW_MS = 60_000;
+const DEFAULT_ALLOWED_WEBSOCKET_ORIGINS = [
+  'https://nexushub.me',
+  'https://www.nexushub.me',
+  'https://api.nexushub.me',
+];
+
+function normalizedAllowedWebSocketOrigins(): Set<string> {
+  const configured = (process.env.IOS_WS_ALLOWED_ORIGINS || '')
+    .split(',')
+    .map((origin) => origin.trim())
+    .filter(Boolean);
+  const origins = configured.length > 0 ? configured : DEFAULT_ALLOWED_WEBSOCKET_ORIGINS;
+  return new Set(origins.map((origin) => {
+    try {
+      return new URL(origin).origin.toLowerCase();
+    } catch {
+      return origin.toLowerCase();
+    }
+  }));
+}
+
+export function isAllowedWebSocketOrigin(originHeader: string | string[] | undefined): boolean {
+  const origin = Array.isArray(originHeader) ? originHeader[0] : originHeader;
+  if (!origin) return true; // Native iOS clients normally omit Origin.
+  if (origin.trim().toLowerCase() === 'null') return false;
+
+  let parsed: URL;
+  try {
+    parsed = new URL(origin);
+  } catch {
+    return false;
+  }
+
+  const normalized = parsed.origin.toLowerCase();
+  if (normalizedAllowedWebSocketOrigins().has(normalized)) return true;
+
+  const isLocalDevelopment = process.env.NODE_ENV !== 'production' && process.env.STAGING !== 'true';
+  if (isLocalDevelopment && (parsed.hostname === 'localhost' || parsed.hostname === '127.0.0.1')) {
+    return parsed.protocol === 'http:' || parsed.protocol === 'https:';
+  }
+
+  return false;
+}
+
+export function consumeWebSocketMessageBudget(
+  state: { messageTimestamps?: number[] },
+  now = Date.now(),
+  limit = config.ios.rateLimit,
+): boolean {
+  const safeLimit = Math.max(1, Math.floor(limit || 1));
+  const current = Array.isArray(state.messageTimestamps) ? state.messageTimestamps : [];
+  const recent = current.filter((timestamp) => Number.isFinite(timestamp) && now - timestamp < WEBSOCKET_RATE_WINDOW_MS);
+  recent.push(now);
+  state.messageTimestamps = recent;
+  return recent.length <= safeLimit;
+}
 
 function getDomainHandlers(): Record<string, (message: string, userId?: number, tenantId?: number) => Promise<{ text: string; domain: DomainName }>> {
   const { handleSecretary } = require('../domains/secretary');
@@ -52,6 +111,13 @@ export function attachWebSocket(server: http.Server): void {
       return;
     }
 
+    if (!isAllowedWebSocketOrigin(request.headers.origin)) {
+      logger.warn({ origin: request.headers.origin }, 'WebSocket upgrade rejected due to untrusted Origin');
+      socket.write('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n');
+      socket.destroy();
+      return;
+    }
+
     // Accept connection without auth — auth happens via first message payload
     // (JWT in URL query params appears in server access logs, which is a security risk)
     wss.handleUpgrade(request, socket, head, (ws) => {
@@ -65,6 +131,19 @@ export function attachWebSocket(server: http.Server): void {
 
     ws.on('message', async (data) => {
       try {
+        if (!consumeWebSocketMessageBudget(ws as any)) {
+          pushEvent({
+            ts: new Date().toISOString(),
+            type: 'auth',
+            summary: 'iOS WS rate limit exceeded',
+            detail: 'WebSocket message rate limit exceeded',
+            domain: 'secretary',
+          });
+          ws.send(JSON.stringify({ type: 'error', code: 'RATE_LIMITED', message: 'Too many messages. Please reconnect and try again.' }));
+          ws.close(1008, 'Rate limited');
+          return;
+        }
+
         const msg = JSON.parse(data.toString());
 
         // First message must be auth: { type: "auth", token: "jwt" }
@@ -170,7 +249,17 @@ export function attachWebSocket(server: http.Server): void {
                 }
               }
             } catch (err) {
-              logger.warn({ err }, 'iOS WebSocket tier gate check failed — falling through (fail-open)');
+              logger.warn({ err, userId, tenantId, domain: route.domain }, 'iOS WebSocket tier gate check failed — fail-closed');
+              if (ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({
+                  type: 'error',
+                  code: 'ACCESS_CHECK_UNAVAILABLE',
+                  message: 'Nexus could not verify access for this request. Please reconnect and try again.',
+                  details: { domain: route.domain },
+                }));
+                ws.close(1011, 'Access check unavailable');
+              }
+              return;
             }
 
             const handlers = getDomainHandlers();

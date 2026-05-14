@@ -20,6 +20,10 @@ non-trivial changes.
 | **Security and data isolation** | `security-and-data-isolation-standard.md` | Any change to auth, session, tenant scope, prompt context, memory, tool call authorization, or audit logging. |
 | **Runtime, observability, ops** | `runtime-and-observability-standard.md` | Any change to logging, alerts, health checks, deploy/rollback scripts, or PM2 process model. |
 | **Testing and QA harness** | `testing-and-qa-harness-standard.md` | Any test addition, classifier change, smoke script change, or evidence-claim review. |
+| **Security threat model** | `../security/nexus-security-threat-model.md` | Any security scan, new deployed surface, new provider, new trust boundary, or incident review. |
+| **Security control matrix** | `../security/security-control-matrix.md` | Any auth, API, iOS storage, WebSocket, provider, CI, infra, logging, backup, or incident-response hardening. |
+| **Security operations runbook** | `../security/security-operations-runbook.md` | Any live infrastructure, backup, secret, incident, Cloudflare, VPS, or operator procedure change. |
+| **Security hardening implementation status** | `../security/security-hardening-implementation-status.md` | Security wave closeout, blocked-item review, or hostile QA handoff. |
 
 ## Companion canonical docs
 

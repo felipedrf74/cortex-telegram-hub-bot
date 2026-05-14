@@ -86,6 +86,13 @@ const approvedCurrentFiles = new Set([
   // owner-scope boundary. Approve the exact file rather than all
   // docs/security/** so future security notes still need DOCS_INDEX routing.
   path.join(backendRoot, 'docs', 'security', 'content-references-scope-audit.md'),
+  // Security hardening baseline docs are current only when individually
+  // registered here and routed through docs/DOCS_INDEX.md.
+  path.join(backendRoot, 'docs', 'security', 'nexus-security-threat-model.md'),
+  path.join(backendRoot, 'docs', 'security', 'security-control-matrix.md'),
+  path.join(backendRoot, 'docs', 'security', 'security-operations-runbook.md'),
+  path.join(backendRoot, 'docs', 'security', 'security-hardening-implementation-status.md'),
+  path.join(backendRoot, 'docs', 'security', 'security-hardening-claude-qa-prompt.md'),
 ]);
 
 const verdictPattern =

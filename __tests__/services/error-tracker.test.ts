@@ -237,6 +237,44 @@ describe('Error Tracker', () => {
       expect((event.request as any).data.refreshToken).toBe('[Redacted]');
       expect((event.extra as any).retryAttempt).toBe(1);
     });
+
+    it('redacts privacy-sensitive app domains before Sentry export', async () => {
+      const event = errorTracker.sanitizeSentryEvent({
+        request: {
+          data: {
+            email: 'felipe@example.com',
+            eventTitle: 'Private medical appointment',
+            health: { hrv: 42, sleep: '4h 20m' },
+            finance: { amount: 1234, merchant: 'Private Vendor' },
+            providerError: 'Google API 503 contained raw calendar text',
+            safeStatus: 'degraded',
+          },
+        },
+        extra: {
+          calendarText: 'Focus block with private invitee',
+          bodyBattery: 12,
+          retryable: true,
+        },
+      } as any);
+
+      const payload = JSON.stringify(event);
+      for (const leaked of [
+        'felipe@example.com',
+        'Private medical appointment',
+        '4h 20m',
+        'Private Vendor',
+        'Google API 503',
+        'Focus block with private invitee',
+      ]) {
+        expect(payload).not.toContain(leaked);
+      }
+      expect((event.request as any).data.email).toBe('[Redacted]');
+      expect((event.request as any).data.eventTitle).toBe('[Redacted]');
+      expect((event.request as any).data.health).toBe('[Redacted]');
+      expect((event.request as any).data.finance).toBe('[Redacted]');
+      expect((event.extra as any).calendarText).toBe('[Redacted]');
+      expect((event.extra as any).retryable).toBe(true);
+    });
   });
 
   describe('captureMessage()', () => {

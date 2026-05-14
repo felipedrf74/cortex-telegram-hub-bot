@@ -129,19 +129,26 @@ describe('chat message tier gate', () => {
     });
   });
 
-  it('fails open if the tier lookup path throws', () => {
+  it('fails closed if the tier lookup path throws', () => {
     const err = new Error('db locked');
     mockGetUserById.mockImplementation(() => {
       throw err;
     });
 
     const res = mockRes();
-    expect(sendChatTierRequiredIfNeeded(res, 42, 'content')).toBe(false);
+    expect(sendChatTierRequiredIfNeeded(res, 42, 'content')).toBe(true);
 
     expect(mockLoggerWarn).toHaveBeenCalledWith(
-      { err },
-      'iOS tier gate check failed — falling through (fail-open)',
+      { err, userId: 42, domain: 'content' },
+      'iOS tier gate check failed — fail-closed',
     );
-    expect(res.status).not.toHaveBeenCalled();
+    expect(res.statusCode).toBe(503);
+    expect(res.body).toEqual({
+      error: {
+        code: 'ACCESS_CHECK_UNAVAILABLE',
+        message: 'Nexus could not verify access for this request. Please try again.',
+        details: { domain: 'content' },
+      },
+    });
   });
 });

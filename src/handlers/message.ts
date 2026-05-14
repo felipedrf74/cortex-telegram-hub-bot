@@ -195,7 +195,12 @@ export async function handleDomainMessage(
         }
       }
     } catch (err) {
-      logger.warn({ err }, 'tier gate check failed — falling through (fail-open)');
+      logger.warn({ err, userId, domain: route.domain }, 'tier gate check failed — fail-closed');
+      await ctx.reply(
+        'Nexus could not verify access for this request. Please try again.',
+        { parse_mode: 'HTML' },
+      );
+      return;
     }
 
     const handler = domainHandlers[route.domain];

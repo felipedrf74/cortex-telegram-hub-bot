@@ -40,7 +40,14 @@ export function sendChatTierRequiredIfNeeded(
     });
     return true;
   } catch (err) {
-    logger.warn({ err }, 'iOS tier gate check failed — falling through (fail-open)');
-    return false;
+    logger.warn({ err, userId, domain }, 'iOS tier gate check failed — fail-closed');
+    res.status(503).json({
+      error: {
+        code: 'ACCESS_CHECK_UNAVAILABLE',
+        message: 'Nexus could not verify access for this request. Please try again.',
+        details: { domain },
+      },
+    });
+    return true;
   }
 }

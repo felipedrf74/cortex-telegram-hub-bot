@@ -46,4 +46,22 @@ describe('logger redaction policy', () => {
       'err.response.data.context',
     ]));
   });
+
+  it('redacts calendar text fields without redacting operational identifiers', () => {
+    expect(LOGGER_REDACTION_PATHS).toEqual(expect.arrayContaining([
+      'calendar',
+      'calendarText',
+      'eventTitle',
+      'eventDescription',
+      'eventBody',
+      'body.calendarText',
+    ]));
+    expect(LOGGER_REDACTION_PATHS).not.toEqual(expect.arrayContaining([
+      'tenantId',
+      'userId',
+      'traceId',
+      'reqId',
+      'retryCount',
+    ]));
+  });
 });

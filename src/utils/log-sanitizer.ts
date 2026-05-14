@@ -5,7 +5,7 @@ const MAX_DEPTH = 8;
 const MAX_ARRAY_ITEMS = 50;
 const MAX_OBJECT_KEYS = 100;
 
-const SENSITIVE_KEY_RE = /(?:^|[_-])(?:authorization|cookie|token|access[_-]?token|refresh[_-]?token|id[_-]?token|secret|client[_-]?secret|password|api[_-]?key|provider[_-]?key|prompt|system[_-]?prompt|raw[_-]?prompt|completion|response[_-]?text|messages?|memory|references?|draft|script|voice[_-]?profile|source[_-]?(?:snippet|text|content)s?|attachment[_-]?content|file[_-]?content|tool[_-]?output|provider[_-]?response)(?:$|[_-])/i;
+const SENSITIVE_KEY_RE = /(?:^|[_-])(?:authorization|cookie|token|access[_-]?token|refresh[_-]?token|id[_-]?token|secret|client[_-]?secret|password|api[_-]?key|provider[_-]?key|email|destination[_-]?email|phone|address|prompt|system[_-]?prompt|raw[_-]?prompt|completion|response[_-]?text|messages?|memory|references?|draft|script|voice[_-]?profile|calendar|event[_-]?(?:title|description|body|text|content)?|health|hrv|heart[_-]?rate|body[_-]?battery|sleep|finance|amount|merchant|vendor|tax[_-]?due|gross[_-]?income|source[_-]?(?:snippet|text|content)s?|attachment[_-]?content|file[_-]?content|tool[_-]?output|provider[_-]?(?:response|error|message))(?:$|[_-])/i;
 
 const TEXT_PATTERNS: Array<[RegExp, string]> = [
   [/\bBearer\s+[A-Za-z0-9._~+/=-]{8,}/gi, `Bearer ${REDACTION}`],
@@ -14,6 +14,7 @@ const TEXT_PATTERNS: Array<[RegExp, string]> = [
     /\b(access_token|refresh_token|id_token|client_secret|api_key|token|secret|password|authorization|cookie)=([^&\s]+)/gi,
     `$1=${REDACTION}`,
   ],
+  [/\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/gi, '[RedactedEmail]'],
   [
     /(["']?(?:access_token|refresh_token|id_token|client_secret|api_key|token|secret|password|authorization|cookie)["']?\s*[:=]\s*["'])([^"'\n]{4,})(["'])/gi,
     `$1${REDACTION}$3`,
@@ -33,7 +34,8 @@ export function sanitizeLogText(value: string): string {
 }
 
 export function isSensitiveLogKey(key: string): boolean {
-  return SENSITIVE_KEY_RE.test(key);
+  const camelSeparated = key.replace(/([a-z0-9])([A-Z])/g, '$1_$2');
+  return SENSITIVE_KEY_RE.test(key) || SENSITIVE_KEY_RE.test(camelSeparated);
 }
 
 export function sanitizeLogValue(value: unknown, key = '', depth = 0): unknown {

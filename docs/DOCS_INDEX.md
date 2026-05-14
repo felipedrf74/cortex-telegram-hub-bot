@@ -21,6 +21,11 @@ This is the backend repo's markdown routing map for Codex and Claude Code.
 | Engineering standards index | canonical | `docs/engineering/ENGINEERING_STANDARDS_INDEX.md` | Update when a new backend engineering standard is added. |
 | Backend API contract standard | canonical | `docs/engineering/backend-api-contract-standard.md` | Update when REST contract conventions change. |
 | Security and data isolation standard | canonical | `docs/engineering/security-and-data-isolation-standard.md` | Update when threat model or permanent gates change. |
+| Nexus security threat model | canonical | `docs/security/nexus-security-threat-model.md` | Update when deployed surfaces, trust boundaries, or attacker-controlled inputs change. |
+| Security control matrix | canonical | `docs/security/security-control-matrix.md` | Update when route families, mobile storage, providers, or release security gates change. |
+| Security operations runbook | canonical | `docs/security/security-operations-runbook.md` | Update after infrastructure, backup, incident response, or secret-rotation process changes. |
+| Security hardening implementation status | current | `docs/security/security-hardening-implementation-status.md` | Update after each hardening wave or QA finding closure. |
+| Security hardening Claude QA prompt | current handoff | `docs/security/security-hardening-claude-qa-prompt.md` | Update when the hardening review scope or evidence changes. |
 | Content references scope audit | current | `docs/security/content-references-scope-audit.md` | Update when `src/state/content-references.ts` owner-scope, admin-gating, or prompt-reference semantics change. |
 | iOS JWT rotation runbook | canonical | `docs/engineering/jwt-rotation-runbook.md` | Update when iOS JWT signing or verification semantics change. |
 | Google GenAI migration plan | canonical | `docs/engineering/genai-migration-plan.md` | Update when a Google SDK migration phase lands or the SDK API surface changes. |
