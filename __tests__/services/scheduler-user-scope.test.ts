@@ -646,7 +646,7 @@ describe('scheduler tenant scoping', () => {
 
   it('chat action plan expiry is wired through the scheduler and skips no-op runs', async () => {
     startScheduler();
-    const expiryJob = mockCronSchedule.mock.calls.find((call) => call[0] === '15 * * * *')?.[1] as (() => Promise<unknown>) | undefined;
+    const expiryJob = mockCronSchedule.mock.calls.find((call) => call[0] === '*/2 * * * *')?.[1] as (() => Promise<unknown>) | undefined;
     expect(expiryJob).toBeTypeOf('function');
 
     const result = await expiryJob!();

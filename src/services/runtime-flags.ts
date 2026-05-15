@@ -4,6 +4,11 @@ import { config } from '../config';
 
 type RuntimeEnv = NodeJS.ProcessEnv;
 const DEFAULT_AI_CALL_TIMEOUT_MS = 30_000;
+export type ChatHybridPlannerMode = 'off' | 'shadow' | 'active';
+export interface RuntimeFlagScope {
+  userId?: number | string | null;
+  tenantId?: number | string | null;
+}
 
 function parseOptionalBoolean(raw: string | undefined): boolean | null {
   if (raw === undefined || raw.trim() === '') return null;
@@ -64,4 +69,39 @@ export function isSecretaryHaikuRoutingEnabled(env: RuntimeEnv = process.env): b
 
 export function areModelProviderCallsDisabled(env: RuntimeEnv = process.env): boolean {
   return env.NEXUS_LOCAL_ALLOW_MODEL_CALLS === '0' || env.NEXUS_MODEL_FIXTURE_MODE === '1';
+}
+
+function scopedEnvValue(env: RuntimeEnv, key: string, scope?: RuntimeFlagScope): string | undefined {
+  const userId = scope?.userId != null ? String(scope.userId).replace(/[^0-9A-Za-z_-]/g, '') : '';
+  const tenantId = scope?.tenantId != null ? String(scope.tenantId).replace(/[^0-9A-Za-z_-]/g, '') : '';
+  return (userId ? env[`${key}_USER_${userId}`] : undefined)
+    ?? (tenantId ? env[`${key}_TENANT_${tenantId}`] : undefined)
+    ?? env[key];
+}
+
+export function getChatHybridPlannerMode(env: RuntimeEnv = process.env, scope?: RuntimeFlagScope): ChatHybridPlannerMode {
+  const raw = scopedEnvValue(env, 'CHAT_HYBRID_PLANNER_ENABLED', scope)?.trim().toLowerCase();
+  if (raw === 'false' || raw === 'off' || raw === '0') return 'off';
+  if (raw === 'shadow' || env.CHAT_HYBRID_SHADOW_MODE === 'true') return 'shadow';
+  return 'active';
+}
+
+export function isChatHybridPlannerEnabled(env: RuntimeEnv = process.env, scope?: RuntimeFlagScope): boolean {
+  return getChatHybridPlannerMode(env, scope) !== 'off';
+}
+
+export function isChatLlmTier1Enabled(env: RuntimeEnv = process.env, scope?: RuntimeFlagScope): boolean {
+  return scopedEnvValue(env, 'CHAT_LLM_TIER1_ENABLED', scope) === 'true';
+}
+
+export function isChatLlmTier2Enabled(env: RuntimeEnv = process.env, scope?: RuntimeFlagScope): boolean {
+  return scopedEnvValue(env, 'CHAT_LLM_TIER2_ENABLED', scope) !== 'false';
+}
+
+export function isChatEscalationReviewerEnabled(env: RuntimeEnv = process.env, scope?: RuntimeFlagScope): boolean {
+  return scopedEnvValue(env, 'CHAT_ESCALATION_REVIEWER_ENABLED', scope) === 'true';
+}
+
+export function isChatOpenSurfaceHandoffEnabled(env: RuntimeEnv = process.env, scope?: RuntimeFlagScope): boolean {
+  return scopedEnvValue(env, 'CHAT_OPEN_SURFACE_HANDOFF_ENABLED', scope) !== 'false';
 }

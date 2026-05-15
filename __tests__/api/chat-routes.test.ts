@@ -1,6 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import Database from 'better-sqlite3';
+import express from 'express';
 import fs from 'fs';
+import http from 'http';
 import path from 'path';
 import type { Request, Response } from 'express';
 import { Settings } from 'luxon';
@@ -377,6 +379,8 @@ vi.mock('../../src/utils/callback-store', () => ({
 }));
 
 import { chatRoutes } from '../../src/api/routes/chat';
+import { authMiddleware } from '../../src/api/auth-middleware';
+import { upsertPendingChatAction } from '../../src/services/chat-action-state';
 
 function applyMigrations(db: Database.Database): void {
   db.exec(`CREATE TABLE IF NOT EXISTS _migrations (id INTEGER PRIMARY KEY, filename TEXT UNIQUE, applied_at TEXT DEFAULT (datetime('now')))`);
@@ -397,7 +401,10 @@ function applyMigrations(db: Database.Database): void {
 interface MockRes {
   statusCode: number;
   body: any;
+  headers: Record<string, string>;
   status(code: number): MockRes;
+  setHeader(name: string, value: string): MockRes;
+  getHeader(name: string): string | undefined;
   json(body: any): MockRes;
 }
 
@@ -405,7 +412,15 @@ function mockRes(): MockRes {
   const r: MockRes = {
     statusCode: 200,
     body: null,
+    headers: {},
     status(code: number) { r.statusCode = code; return r; },
+    setHeader(name: string, value: string) {
+      r.headers[name.toLowerCase()] = value;
+      return r;
+    },
+    getHeader(name: string) {
+      return r.headers[name.toLowerCase()];
+    },
     json(body: any) { r.body = body; return r; },
   };
   return r;
@@ -459,6 +474,60 @@ async function dispatch(
   });
 
   return res;
+}
+
+async function requestApp(
+  app: express.Express,
+  method: 'GET' | 'POST' | 'DELETE',
+  url: string,
+  headers: Record<string, string> = {},
+  body?: unknown,
+): Promise<{ statusCode: number; body: any; headers: Record<string, string | string[] | undefined> }> {
+  return new Promise((resolve, reject) => {
+    const server = http.createServer(app);
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', () => {
+      const address = server.address();
+      if (!address || typeof address === 'string') {
+        server.close();
+        reject(new Error('failed to start test server'));
+        return;
+      }
+
+      const payload = body ? JSON.stringify(body) : undefined;
+      const req = http.request(
+        {
+          host: '127.0.0.1',
+          port: address.port,
+          path: url,
+          method,
+          headers: {
+            'Content-Type': 'application/json',
+            ...(payload ? { 'Content-Length': Buffer.byteLength(payload).toString() } : {}),
+            ...headers,
+          },
+        },
+        (res) => {
+          let data = '';
+          res.on('data', (chunk) => { data += chunk; });
+          res.on('end', () => {
+            server.close();
+            resolve({
+              statusCode: res.statusCode ?? 0,
+              body: data ? JSON.parse(data) : null,
+              headers: res.headers,
+            });
+          });
+        },
+      );
+      req.on('error', (err) => {
+        server.close();
+        reject(err);
+      });
+      if (payload) req.write(payload);
+      req.end();
+    });
+  });
 }
 
 describe('Chat API routes', () => {
@@ -2696,5 +2765,97 @@ describe('Chat API routes', () => {
       actionId: 'option_a',
     });
     expect(mockHandleSecretary).not.toHaveBeenCalled();
+  });
+
+  function expectNoStorePendingActionHeaders(res: MockRes): void {
+    expect(res.headers['cache-control']).toBe('no-store, max-age=0, must-revalidate');
+    expect(res.headers.pragma).toBe('no-cache');
+    expect(res.headers.expires).toBe('0');
+    expect(res.headers.vary).toBe('Authorization');
+  }
+
+  function seedPendingActionForHeaderTest() {
+    return upsertPendingChatAction({
+      userId: 7001,
+      tenantId: 7001,
+      conversationId: `chat-route-cache-headers-${Date.now()}`,
+      skill: 'training',
+      action: 'training_plan_create',
+      collectedSlots: { goal: 'sub-19 5K', sessionsPerWeek: 4 },
+      missingSlots: [],
+      riskClass: 'R1',
+      locale: 'en-US',
+      timezone: 'Europe/Lisbon',
+      originatingSurface: 'ios',
+      nowIso: new Date().toISOString(),
+    });
+  }
+
+  it.each([
+    {
+      label: '200',
+      expectedStatus: 200,
+      run: async () => {
+        const pending = seedPendingActionForHeaderTest();
+        return dispatch('GET', `/actions/${pending.id}`, 7001);
+      },
+    },
+    {
+      label: '400',
+      expectedStatus: 400,
+      run: () => dispatch('GET', '/actions/!!invalid!!', 7001),
+    },
+    {
+      label: '401',
+      expectedStatus: 401,
+      run: () => dispatch('GET', '/actions/missing_action', undefined as any),
+    },
+    {
+      label: '403',
+      expectedStatus: 403,
+      run: () => dispatch('GET', '/actions/missing_action', 7001, undefined, {}, 7002),
+    },
+    {
+      label: '404',
+      expectedStatus: 404,
+      run: () => dispatch('GET', '/actions/missing_action', 7001),
+    },
+  ])('sets pending-action no-store headers on runtime $label responses', async ({ expectedStatus, run }) => {
+    const response = await run();
+    expect(response.statusCode).toBe(expectedStatus);
+    expectNoStorePendingActionHeaders(response);
+  });
+
+  it('sets no-store headers on app-level auth middleware rejection before the chat router', async () => {
+    const app = express();
+    app.use(express.json());
+    app.use(authMiddleware);
+    app.use('/chat', chatRoutes());
+
+    const response = await requestApp(app, 'GET', '/chat/actions/missing_action', {
+      Authorization: 'Bearer not-a-valid-token',
+    });
+
+    expect(response.statusCode).toBe(401);
+    expect(response.headers['cache-control']).toBe('no-store, max-age=0, must-revalidate');
+    expect(response.headers.pragma).toBe('no-cache');
+    expect(response.headers.expires).toBe('0');
+    expect(response.body.error.code).toBe('UNAUTHORIZED');
+  });
+
+  it('sets pending-action no-store headers before auth, validation, and lookup returns', () => {
+    const source = fs.readFileSync(path.resolve(__dirname, '../../src/api/routes/chat-message-routes.ts'), 'utf-8');
+    const routeStart = source.indexOf("router.get('/actions/:pendingActionId'");
+    const routeEnd = source.indexOf("  /**\n   * POST /api/v1/chat/message", routeStart);
+    const routeSource = source.slice(routeStart, routeEnd);
+
+    expect(routeSource).toContain("asyncHandler(async (req, res: Response) =>");
+    expect(routeSource).toContain("res.setHeader('Cache-Control', 'no-store, max-age=0, must-revalidate')");
+    expect(routeSource).toContain("res.setHeader('Pragma', 'no-cache')");
+    expect(routeSource).toContain("res.setHeader('Expires', '0')");
+    expect(routeSource).toContain("res.setHeader('Vary', 'Authorization')");
+    expect(routeSource.indexOf("res.setHeader('Cache-Control'")).toBeLessThan(routeSource.indexOf('ensureValidChatRouteScope'));
+    expect(routeSource.indexOf("res.setHeader('Cache-Control'")).toBeLessThan(routeSource.indexOf('res.status(400)'));
+    expect(routeSource.indexOf("res.setHeader('Cache-Control'")).toBeLessThan(routeSource.indexOf('res.status(404)'));
   });
 });

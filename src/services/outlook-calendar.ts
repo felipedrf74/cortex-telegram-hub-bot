@@ -235,8 +235,9 @@ export async function createEvent(data: {
   attendees?: string[];
   location?: string;
   recurrence?: NormalizedRecurrence;
-}, userId?: number): Promise<CalendarEvent> {
+}, userId?: number, options?: { signal?: AbortSignal }): Promise<CalendarEvent> {
   try {
+    if (options?.signal?.aborted) throw new Error('provider_write_aborted');
     const client = userId
       ? getGraphClientForUser(userId)
       : getGraphClient();
@@ -280,7 +281,9 @@ export async function createEvent(data: {
       },
       'Creating Outlook calendar event',
     );
-    const response = await client.api('/me/events').post(postBody);
+    const request = client.api('/me/events');
+    if (options?.signal) request.option('signal', options.signal);
+    const response = await request.post(postBody);
 
     return {
       id: response.id || '',
@@ -303,8 +306,9 @@ export async function updateEvent(data: {
   new_end?: string;
   new_title?: string;
   new_description?: string;
-}, userId?: number): Promise<CalendarEvent> {
+}, userId?: number, options?: { signal?: AbortSignal }): Promise<CalendarEvent> {
   try {
+    if (options?.signal?.aborted) throw new Error('provider_write_aborted');
     const client = userId
       ? getGraphClientForUser(userId)
       : getGraphClient();
@@ -320,7 +324,9 @@ export async function updateEvent(data: {
     if (data.new_start) patch.start = { dateTime: data.new_start, timeZone: config.app.timezone };
     if (data.new_end) patch.end = { dateTime: data.new_end, timeZone: config.app.timezone };
 
-    const response = await client.api(`/me/events/${data.event_id}`).patch(patch);
+    const request = client.api(`/me/events/${data.event_id}`);
+    if (options?.signal) request.option('signal', options.signal);
+    const response = await request.patch(patch);
 
     return {
       id: response.id || data.event_id,
@@ -337,12 +343,15 @@ export async function updateEvent(data: {
   }
 }
 
-export async function deleteEvent(eventId: string, userId?: number): Promise<void> {
+export async function deleteEvent(eventId: string, userId?: number, options?: { signal?: AbortSignal }): Promise<void> {
   try {
+    if (options?.signal?.aborted) throw new Error('provider_write_aborted');
     const client = userId
       ? getGraphClientForUser(userId)
       : getGraphClient();
-    await client.api(`/me/events/${eventId}`).delete();
+    const request = client.api(`/me/events/${eventId}`);
+    if (options?.signal) request.option('signal', options.signal);
+    await request.delete();
   } catch (err) {
     logger.error({ err }, 'Failed to delete Outlook calendar event');
     throw err;

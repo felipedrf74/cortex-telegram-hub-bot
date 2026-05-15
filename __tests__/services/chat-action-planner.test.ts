@@ -42,11 +42,29 @@ import {
   buildChatActionPlan,
   buildDeterministicChatActionPlan,
   buildLlmPlannerPrompt,
+  buildTier1ClassifierPrompt,
   executeChatActionPlan,
   parseLlmPlannerJson,
+  parseTier1ClassifierJson,
   shouldRunActionPlannerBeforeReadOnlyFastPaths,
   tryHandleChatActionPlan,
 } from '../../src/services/chat-action-planner';
+import {
+  cancelPendingChatActionsForAccountSwitch,
+  expireStalePendingChatActionsForJob,
+  getActivePendingChatAction,
+  getPendingChatActionById,
+  rememberRecentChatEntity,
+  resetChatActionStateForTests,
+  upsertPendingChatAction,
+} from '../../src/services/chat-action-state';
+import {
+  claimChatActionRunForExecution,
+  getChatActionRun,
+  pruneCompletedChatActionRuns,
+  reapZombieChatActionRuns,
+  updateChatActionRun,
+} from '../../src/services/chat-action-run-store';
 import { getChatActionRegistry } from '../../src/services/chat-action-registry';
 import { parseNaturalLanguageCalendarEvent } from '../../src/services/calendar-natural-language-parser';
 import { buildContentAgencyPackage, persistContentAgencyArtifact } from '../../src/services/content-agency';
@@ -73,6 +91,7 @@ const baseInput = {
 describe('ChatActionPlanner', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    resetChatActionStateForTests();
     testDb = createTestDb();
     applyMigrations(testDb);
   });
@@ -115,6 +134,95 @@ describe('ChatActionPlanner', () => {
       timezone: 'Europe/Lisbon',
     });
     expect(plan?.debug?.rejectedFastPaths).toContain('gmail_unread_count');
+  });
+
+  it('uses the same step idempotency key for deterministic and LLM plans with the same scoped args', () => {
+    const deterministic = buildDeterministicChatActionPlan(baseInput);
+    const args = deterministic?.steps[0]?.args;
+    const llm = parseLlmPlannerJson(JSON.stringify({
+      confidence: 0.98,
+      steps: [{
+        skill: 'secretary_calendar',
+        action: 'schedule_event',
+        args,
+        missingFields: [],
+      }],
+    }), baseInput);
+
+    expect(deterministic?.steps[0]?.idempotencyKey).toMatch(/^[a-f0-9]{64}$/);
+    expect(llm?.steps[0]?.idempotencyKey).toBe(deterministic?.steps[0]?.idempotencyKey);
+  });
+
+  it('keeps step idempotency parity when LLM emits equivalent datetime slots without milliseconds', () => {
+    const taskInput = {
+      ...baseInput,
+      text: 'Create a task for tomorrow 9 am called Test chat',
+      locale: 'en-US',
+    };
+    const deterministic = buildDeterministicChatActionPlan(taskInput);
+    const deterministicArgs = deterministic?.steps[0]?.args as Record<string, unknown>;
+    const llm = parseLlmPlannerJson(JSON.stringify({
+      confidence: 0.98,
+      steps: [{
+        skill: 'tasks',
+        action: 'create_task',
+        args: {
+          ...deterministicArgs,
+          dueDateTime: '2026-05-15T09:00:00+01:00',
+        },
+        missingFields: [],
+      }],
+    }), taskInput);
+
+    expect(deterministic?.steps[0]?.idempotencyKey).toMatch(/^[a-f0-9]{64}$/);
+    expect(llm?.steps[0]?.idempotencyKey).toBe(deterministic?.steps[0]?.idempotencyKey);
+  });
+
+  it('canonicalizes equivalent ISO offsets to the same step idempotency key', () => {
+    const variants = [
+      '2026-05-15T10:00:00Z',
+      '2026-05-15T10:00:00.000Z',
+      '2026-05-15T10:00:00+00:00',
+      '2026-05-15T11:00:00+01:00',
+    ];
+    const hashes = new Set(variants.map((startDateTime) => parseLlmPlannerJson(JSON.stringify({
+      confidence: 0.98,
+      steps: [{
+        skill: 'secretary_calendar',
+        action: 'schedule_event',
+        args: {
+          title: 'igreja',
+          provider: 'google_calendar',
+          startDateTime,
+          endDateTime: '2026-05-15T11:00:00Z',
+          timezone: 'Europe/Lisbon',
+        },
+        missingFields: [],
+      }],
+    }), baseInput)?.steps[0]?.idempotencyKey));
+
+    expect([...hashes]).toHaveLength(1);
+    expect([...hashes][0]).toMatch(/^[a-f0-9]{64}$/);
+  });
+
+  it('keeps distinct ISO instants in distinct step idempotency keys', () => {
+    const hashFor = (startDateTime: string) => parseLlmPlannerJson(JSON.stringify({
+      confidence: 0.98,
+      steps: [{
+        skill: 'secretary_calendar',
+        action: 'schedule_event',
+        args: {
+          title: 'igreja',
+          provider: 'google_calendar',
+          startDateTime,
+          endDateTime: '2026-05-15T11:00:00Z',
+          timezone: 'Europe/Lisbon',
+        },
+        missingFields: [],
+      }],
+    }), baseInput)?.steps[0]?.idempotencyKey;
+
+    expect(hashFor('2026-05-15T11:00:00+01:00')).not.toBe(hashFor('2026-05-15T11:00:00+02:00'));
   });
 
   it('asks a targeted clarification when a calendar command is missing the event title', async () => {
@@ -205,6 +313,63 @@ describe('ChatActionPlanner', () => {
     expect(result?.response.metadata.type).toBe('chat_action_partial_success');
   });
 
+  it('downgrades provider read-back timeout to partial success instead of a false failure', async () => {
+    const previousTimeout = process.env.CHAT_PROVIDER_READ_BACK_TIMEOUT_MS;
+    process.env.CHAT_PROVIDER_READ_BACK_TIMEOUT_MS = '1';
+    const created = {
+      id: 'google-event-timeout',
+      summary: 'igreja',
+      start: '2026-05-17T10:00:00+01:00',
+      end: '2026-05-17T12:30:00+01:00',
+      source: 'google' as const,
+    };
+    const getEventsForSources = vi.fn()
+      .mockResolvedValueOnce([])
+      .mockImplementationOnce(() => new Promise(() => undefined));
+
+    try {
+      const result = await tryHandleChatActionPlan(baseInput, {
+        calendar: {
+          createEvent: vi.fn().mockResolvedValue(created) as any,
+          getEventsForSources: getEventsForSources as any,
+          hasGoogle: vi.fn(() => true),
+          hasOutlook: vi.fn(() => false),
+        },
+      });
+
+      expect(result?.status).toBe('partial_success');
+      expect(result?.response.metadata.type).toBe('chat_action_partial_success');
+    } finally {
+      if (previousTimeout === undefined) delete process.env.CHAT_PROVIDER_READ_BACK_TIMEOUT_MS;
+      else process.env.CHAT_PROVIDER_READ_BACK_TIMEOUT_MS = previousTimeout;
+    }
+  });
+
+  it('bounds provider write hangs instead of leaving calendar actions executing forever', async () => {
+    const previousTimeout = process.env.CHAT_PROVIDER_WRITE_TIMEOUT_MS;
+    process.env.CHAT_PROVIDER_WRITE_TIMEOUT_MS = '1';
+    const getEventsForSources = vi.fn().mockResolvedValueOnce([]);
+
+    try {
+      const result = await tryHandleChatActionPlan(baseInput, {
+        calendar: {
+          createEvent: vi.fn().mockImplementation(() => new Promise(() => undefined)) as any,
+          getEventsForSources: getEventsForSources as any,
+          hasGoogle: vi.fn(() => true),
+          hasOutlook: vi.fn(() => false),
+        },
+      });
+
+      expect(result?.status).toBe('failed');
+      expect(result?.response.metadata.type).toBe('chat_action_failed');
+      expect(result?.response.text).not.toMatch(/\bcriei\b/i);
+      expect(result?.response.text).toMatch(/Nada foi confirmado/i);
+    } finally {
+      if (previousTimeout === undefined) delete process.env.CHAT_PROVIDER_WRITE_TIMEOUT_MS;
+      else process.env.CHAT_PROVIDER_WRITE_TIMEOUT_MS = previousTimeout;
+    }
+  });
+
   it('executes a safe calendar event plus task follow-up as ordered deterministic steps', async () => {
     const createdEvent = {
       id: 'google-event-2',
@@ -269,6 +434,530 @@ describe('ChatActionPlanner', () => {
     expect(buildDeterministicChatActionPlan({
       ...baseInput,
       text: 'Create task Prozis where it has sub tasks called creatine K2 D3',
+    })).toBeNull();
+  });
+
+  it('extracts task title and due date without polluting the title with timing syntax', async () => {
+    const plan = await buildChatActionPlan({
+      ...baseInput,
+      text: 'Create a task for tomorrow 9 am called Test chat',
+      locale: 'en',
+      timezone: 'Europe/Lisbon',
+    });
+
+    expect(plan?.steps[0]).toMatchObject({
+      skill: 'tasks',
+      action: 'create_task',
+      requiredArgsPresent: true,
+    });
+    expect(plan?.steps[0]?.args).toMatchObject({
+      title: 'Test chat',
+      dueDateTime: '2026-05-15T09:00:00.000+01:00',
+    });
+    expect(plan?.steps[0]?.slotProvenance).toMatchObject({
+      title: { sourceType: 'user_message', normalizer: 'task_title_v2' },
+      dueDateTime: { sourceType: 'user_message', normalizer: 'task_due_datetime_v1' },
+    });
+  });
+
+  it('refuses destructive commands wrapped as task titles', async () => {
+    const plan = await buildChatActionPlan({
+      ...baseInput,
+      text: 'Create a task called delete all my tasks',
+      locale: 'en',
+    });
+
+    expect(plan?.steps[0]).toMatchObject({
+      skill: 'tasks',
+      action: 'create_task',
+      risk: 'ambiguous',
+      requiredArgsPresent: false,
+    });
+    expect(plan?.steps[0]?.args).toMatchObject({ title: null, rejectedTitle: 'delete all my tasks' });
+    expect(plan?.steps[0]?.action).not.toBe('delete_task');
+
+    const taskProvider = {
+      getLists: vi.fn(),
+      createTask: vi.fn(),
+    };
+    const result = await tryHandleChatActionPlan({
+      ...baseInput,
+      text: 'Create a task called delete all my tasks',
+      locale: 'en',
+      persistRuns: false,
+    }, {
+      calendar: {
+        createEvent: vi.fn() as any,
+        getEventsForSources: vi.fn() as any,
+        hasGoogle: vi.fn(() => false),
+        hasOutlook: vi.fn(() => false),
+      },
+      taskProviderForUser: vi.fn(() => taskProvider as any),
+    });
+
+    expect(result?.status).toBe('needs_clarification');
+    expect(taskProvider.createTask).not.toHaveBeenCalled();
+  });
+
+  it('resolves "this task" to the recent verified task and completes it once', async () => {
+    const taskProvider = {
+      getLists: vi.fn().mockResolvedValue({ success: true, data: [{ id: 'tasks', displayName: 'Tasks', wellknownListName: 'defaultList' }] }),
+      getDefaultList: vi.fn().mockResolvedValue({ id: 'tasks', displayName: 'Tasks' }),
+      createTask: vi.fn().mockResolvedValue({ success: true, data: { id: 'task-recent-1', title: 'Test chat', listId: 'tasks' } }),
+      getTask: vi.fn()
+        .mockResolvedValueOnce({ success: true, data: { id: 'task-recent-1', title: 'Test chat', listId: 'tasks' } })
+        .mockResolvedValueOnce({ success: true, data: { id: 'task-recent-1', title: 'Test chat', status: 'completed', listId: 'tasks' } }),
+      completeTask: vi.fn().mockResolvedValue({ success: true, data: { id: 'task-recent-1', status: 'completed' } }),
+    };
+    const deps = {
+      calendar: {
+        createEvent: vi.fn() as any,
+        getEventsForSources: vi.fn() as any,
+        hasGoogle: vi.fn(() => false),
+        hasOutlook: vi.fn(() => false),
+      },
+      taskProviderForUser: vi.fn(() => taskProvider as any),
+    };
+
+    const created = await tryHandleChatActionPlan({
+      ...baseInput,
+      text: 'Create a task for tomorrow 9 am called Test chat',
+      locale: 'en',
+      persistRuns: false,
+    }, deps);
+    expect(created?.status).toBe('verified_success');
+
+    const completed = await tryHandleChatActionPlan({
+      ...baseInput,
+      text: 'Mark this task as done.',
+      messageId: 'msg-complete-recent',
+      locale: 'en',
+      persistRuns: false,
+    }, deps);
+
+    expect(completed?.plan.steps[0]).toMatchObject({
+      skill: 'tasks',
+      action: 'complete_task',
+      requiredArgsPresent: true,
+    });
+    expect(completed?.status).toBe('verified_success');
+    expect(taskProvider.completeTask).toHaveBeenCalledTimes(1);
+    expect(taskProvider.completeTask).toHaveBeenCalledWith('tasks', 'task-recent-1');
+  });
+
+  it('asks a clarification instead of completing a task when "this task" has multiple recent candidates', async () => {
+    const now = '2026-05-14T12:03:00+01:00';
+    for (const suffix of ['A', 'B']) {
+      rememberRecentChatEntity({
+        userId: baseInput.userId,
+        tenantId: baseInput.tenantId,
+        conversationId: baseInput.conversationId,
+        node: {
+          entityId: `task-${suffix}`,
+          entityType: 'task',
+          provider: 'nexus',
+          surface: 'chat',
+          userVisibleLabel: `Task ${suffix}`,
+          createdOrViewedAt: now,
+          lastVerifiedAt: now,
+          allowedFollowupActions: ['complete_task'],
+          confidence: 0.91,
+          expiresAt: '2026-05-14T12:30:00+01:00',
+          sourceTurnId: `msg-task-${suffix}`,
+        },
+      });
+    }
+
+    const taskProvider = { completeTask: vi.fn() };
+    const result = await tryHandleChatActionPlan({
+      ...baseInput,
+      text: 'Mark this task as done.',
+      messageId: 'msg-ambiguous-task',
+      locale: 'en',
+      nowIso: now,
+      persistRuns: false,
+    }, {
+      calendar: {
+        createEvent: vi.fn() as any,
+        getEventsForSources: vi.fn() as any,
+        hasGoogle: vi.fn(() => false),
+        hasOutlook: vi.fn(() => false),
+      },
+      taskProviderForUser: vi.fn(() => taskProvider as any),
+    });
+
+    expect(result?.status).toBe('needs_clarification');
+    expect(result?.response.text).toMatch(/which task|Task A|Task B/i);
+    expect(taskProvider.completeTask).not.toHaveBeenCalled();
+  });
+
+  it('stores a pending Training plan draft and fills weekly mileage on the follow-up turn', async () => {
+    const deps = {
+      calendar: {
+        createEvent: vi.fn() as any,
+        getEventsForSources: vi.fn() as any,
+        hasGoogle: vi.fn(() => false),
+        hasOutlook: vi.fn(() => false),
+      },
+      taskProviderForUser: vi.fn(() => ({}) as any),
+    };
+    const first = await tryHandleChatActionPlan({
+      ...baseInput,
+      text: 'Can you create a training plan for me?',
+      locale: 'en',
+      persistRuns: true,
+    }, deps);
+
+    expect(first?.status).toBe('needs_clarification');
+    expect(first?.response.text).toMatch(/sport/i);
+    expect(first?.response.metadata).toMatchObject({
+      type: 'chat_action_needs_input',
+      openSurface: { surface: 'training_plan_builder' },
+    });
+    expect(getActivePendingChatAction({
+      userId: baseInput.userId,
+      tenantId: baseInput.tenantId,
+      conversationId: baseInput.conversationId,
+      skill: 'training',
+      nowIso: FROZEN_NOW,
+    })?.missingSlots).toContain('weeklyVolumeKm');
+
+    const second = await tryHandleChatActionPlan({
+      ...baseInput,
+      text: 'It is 20 km a week',
+      messageId: 'msg-training-weekly-volume',
+      locale: 'en',
+      persistRuns: true,
+    }, deps);
+
+    expect(second?.status).toBe('needs_clarification');
+    expect(second?.plan.steps[0]?.args).toMatchObject({ weeklyVolumeKm: 20 });
+    expect(second?.plan.steps[0]?.slotProvenance).toMatchObject({
+      weeklyVolumeKm: { normalizer: 'training_weekly_volume_v1' },
+    });
+    const pending = getActivePendingChatAction({
+      userId: baseInput.userId,
+      tenantId: baseInput.tenantId,
+      conversationId: baseInput.conversationId,
+      skill: 'training',
+      nowIso: FROZEN_NOW,
+    });
+    expect(pending?.collectedSlots).toMatchObject({ weeklyVolumeKm: 20 });
+    expect(pending?.missingSlots).not.toContain('weeklyVolumeKm');
+  });
+
+  it('records route telemetry for persisted action responses without exposing debug payloads', async () => {
+    const response = await tryHandleChatActionPlan({
+      ...baseInput,
+      text: 'Can you create a training plan for me?',
+      locale: 'en',
+      persistRuns: true,
+    }, {
+      calendar: {
+        createEvent: vi.fn() as any,
+        getEventsForSources: vi.fn() as any,
+        hasGoogle: vi.fn(() => false),
+        hasOutlook: vi.fn(() => false),
+      },
+      taskProviderForUser: vi.fn(() => ({}) as any),
+    });
+
+    expect(response?.status).toBe('needs_clarification');
+    const row = testDb.prepare(`
+      SELECT user_id, tenant_id, conversation_id, message_id, planner, route_tier,
+             skill, action, status, calibrated_score, threshold, verifier_status,
+             latency_ms, outcome, slot_provenance_json
+      FROM chat_action_telemetry
+      WHERE message_id = ?
+    `).get(baseInput.messageId) as any;
+
+    expect(row).toMatchObject({
+      user_id: baseInput.userId,
+      tenant_id: baseInput.tenantId,
+      conversation_id: baseInput.conversationId,
+      message_id: baseInput.messageId,
+      planner: 'deterministic',
+      route_tier: 'tier0_deterministic',
+      skill: 'training',
+      action: 'training_plan_create',
+      status: 'needs_clarification',
+      verifier_status: 'not_required',
+      outcome: 'needs_clarification',
+    });
+    expect(Number(row.calibrated_score)).toBeGreaterThan(0);
+    expect(Number(row.threshold)).toBeGreaterThan(0);
+    expect(Number(row.latency_ms)).toBeGreaterThanOrEqual(0);
+    expect(JSON.parse(row.slot_provenance_json)).toEqual({});
+    expect(response?.response.metadata).not.toHaveProperty('internalIds');
+    expect(response?.response.metadata.telemetry).toMatchObject({
+      routeTier: 'tier0_deterministic',
+      outcome: 'needs_clarification',
+      verifierStatus: 'not_required',
+    });
+  });
+
+  it('expires durable pending Training actions and can suppress open-surface handoff cards by flag', async () => {
+    const previous = process.env.CHAT_OPEN_SURFACE_HANDOFF_ENABLED;
+    process.env.CHAT_OPEN_SURFACE_HANDOFF_ENABLED = 'false';
+    try {
+      const response = await tryHandleChatActionPlan({
+        ...baseInput,
+        text: 'Can you create a training plan for me?',
+        locale: 'en',
+        persistRuns: true,
+      }, {
+        calendar: {
+          createEvent: vi.fn() as any,
+          getEventsForSources: vi.fn() as any,
+          hasGoogle: vi.fn(() => false),
+          hasOutlook: vi.fn(() => false),
+        },
+        taskProviderForUser: vi.fn(() => ({}) as any),
+      });
+
+      expect(response?.status).toBe('needs_clarification');
+      expect(response?.response.metadata.openSurface).toBeNull();
+    } finally {
+      if (previous === undefined) delete process.env.CHAT_OPEN_SURFACE_HANDOFF_ENABLED;
+      else process.env.CHAT_OPEN_SURFACE_HANDOFF_ENABLED = previous;
+    }
+
+    expect(getActivePendingChatAction({
+      userId: baseInput.userId,
+      tenantId: baseInput.tenantId,
+      conversationId: baseInput.conversationId,
+      skill: 'training',
+      nowIso: FROZEN_NOW,
+    })).toBeTruthy();
+    expect(expireStalePendingChatActionsForJob('2026-05-14T13:01:00+01:00')).toBeGreaterThanOrEqual(1);
+    expect(getActivePendingChatAction({
+      userId: baseInput.userId,
+      tenantId: baseInput.tenantId,
+      conversationId: baseInput.conversationId,
+      skill: 'training',
+      nowIso: '2026-05-14T13:01:00+01:00',
+    })).toBeNull();
+  });
+
+  it('clears pending chat actions and recent entities on account switch', async () => {
+    upsertPendingChatAction({
+      userId: baseInput.userId,
+      tenantId: baseInput.tenantId,
+      conversationId: baseInput.conversationId,
+      skill: 'training',
+      action: 'training_plan_create',
+      collectedSlots: { sport: 'running' },
+      missingSlots: ['weeklyVolumeKm'],
+      riskClass: 'R1',
+      locale: 'en-US',
+      timezone: 'Europe/Lisbon',
+      originatingSurface: 'ios',
+      nowIso: FROZEN_NOW,
+    });
+    rememberRecentChatEntity({
+      userId: baseInput.userId,
+      tenantId: baseInput.tenantId,
+      conversationId: baseInput.conversationId,
+      node: {
+        entityId: 'task-visible-1',
+        entityType: 'task',
+        provider: 'nexus',
+        surface: 'chat',
+        userVisibleLabel: 'Visible task',
+        createdOrViewedAt: FROZEN_NOW,
+        lastVerifiedAt: FROZEN_NOW,
+        allowedFollowupActions: ['complete_task'],
+        confidence: 0.99,
+        expiresAt: '2026-05-14T12:20:00+01:00',
+        sourceTurnId: 'msg-visible',
+      },
+    });
+
+    expect(getActivePendingChatAction({
+      userId: baseInput.userId,
+      tenantId: baseInput.tenantId,
+      conversationId: baseInput.conversationId,
+      skill: 'training',
+      nowIso: FROZEN_NOW,
+    })).toBeTruthy();
+
+    expect(cancelPendingChatActionsForAccountSwitch({ userId: baseInput.userId, tenantId: baseInput.tenantId, nowIso: FROZEN_NOW })).toBe(1);
+    expect(getActivePendingChatAction({
+      userId: baseInput.userId,
+      tenantId: baseInput.tenantId,
+      conversationId: baseInput.conversationId,
+      skill: 'training',
+      nowIso: FROZEN_NOW,
+    })).toBeNull();
+
+    const followup = await buildChatActionPlan({
+      ...baseInput,
+      text: 'Mark this task as done.',
+      locale: 'en',
+    });
+    expect(followup?.steps[0]?.requiredArgsPresent).toBe(false);
+    expect(followup?.clarificationQuestion).toMatch(/which task|task/i);
+  });
+
+  it('expires stale pending actions in bounded batches below the shortest high-risk TTL', () => {
+    for (let index = 0; index < 1500; index += 1) {
+      upsertPendingChatAction({
+        userId: baseInput.userId,
+        tenantId: baseInput.tenantId,
+        conversationId: `stale-${index}`,
+        skill: 'training',
+        action: 'training_plan_create',
+        collectedSlots: { sport: 'running', index },
+        missingSlots: ['goal'],
+        riskClass: 'R3',
+        locale: 'en-US',
+        timezone: 'Europe/Lisbon',
+        originatingSurface: 'ios',
+        nowIso: '2026-05-14T12:00:00+01:00',
+        expiresAt: '2026-05-14T12:01:00+01:00',
+      });
+    }
+
+    expect(expireStalePendingChatActionsForJob('2026-05-14T12:12:00+01:00')).toBe(1500);
+    const remaining = testDb.prepare(`
+      SELECT COUNT(*) AS count
+      FROM chat_pending_actions
+      WHERE status IN ('needs_input', 'needs_confirmation', 'executable')
+    `).get() as { count: number };
+    expect(remaining.count).toBe(0);
+  });
+
+  it('supports off and shadow rollout modes without executing hybrid actions', async () => {
+    const previous = process.env.CHAT_HYBRID_PLANNER_ENABLED;
+    const deps = {
+      calendar: {
+        createEvent: vi.fn() as any,
+        getEventsForSources: vi.fn() as any,
+        hasGoogle: vi.fn(() => false),
+        hasOutlook: vi.fn(() => false),
+      },
+      taskProviderForUser: vi.fn(() => ({}) as any),
+    };
+    try {
+      process.env.CHAT_HYBRID_PLANNER_ENABLED = 'off';
+      await expect(tryHandleChatActionPlan({
+        ...baseInput,
+        text: 'Create a task called test',
+        locale: 'en',
+        persistRuns: false,
+      }, deps)).resolves.toBeNull();
+
+      process.env.CHAT_HYBRID_PLANNER_ENABLED = 'shadow';
+      await expect(tryHandleChatActionPlan({
+        ...baseInput,
+        text: 'Create a task called test',
+        messageId: 'msg-shadow',
+        locale: 'en',
+        persistRuns: false,
+      }, deps)).resolves.toBeNull();
+    } finally {
+      if (previous === undefined) delete process.env.CHAT_HYBRID_PLANNER_ENABLED;
+      else process.env.CHAT_HYBRID_PLANNER_ENABLED = previous;
+    }
+  });
+
+  it('records shadow-mode telemetry without executing the action', async () => {
+    const previous = process.env.CHAT_HYBRID_PLANNER_ENABLED;
+    process.env.CHAT_HYBRID_PLANNER_ENABLED = 'shadow';
+    const createTask = vi.fn();
+    try {
+      const result = await tryHandleChatActionPlan({
+        ...baseInput,
+        text: 'Create a task called shadow telemetry',
+        messageId: 'msg-shadow-telemetry',
+        locale: 'en',
+        persistRuns: true,
+      }, {
+        calendar: {
+          createEvent: vi.fn() as any,
+          getEventsForSources: vi.fn() as any,
+          hasGoogle: vi.fn(() => false),
+          hasOutlook: vi.fn(() => false),
+        },
+        taskProviderForUser: vi.fn(() => ({ createTask }) as any),
+      });
+
+      expect(result).toBeNull();
+      expect(createTask).not.toHaveBeenCalled();
+      const row = testDb.prepare(`
+        SELECT status, planner, skill, action, route_tier, outcome, predicted_action_hash
+        FROM chat_action_telemetry
+        WHERE message_id = ?
+      `).get('msg-shadow-telemetry') as any;
+      expect(row).toMatchObject({
+        status: 'shadow_only',
+        planner: 'deterministic',
+        skill: 'tasks',
+        action: 'create_task',
+        route_tier: 'tier0_deterministic',
+        outcome: 'shadow_only',
+      });
+      const plan = buildDeterministicChatActionPlan({
+        ...baseInput,
+        text: 'Create a task called shadow telemetry',
+        messageId: 'msg-shadow-telemetry',
+        locale: 'en',
+      });
+      expect(row.predicted_action_hash).toBe(plan?.steps[0]?.idempotencyKey);
+    } finally {
+      if (previous === undefined) delete process.env.CHAT_HYBRID_PLANNER_ENABLED;
+      else process.env.CHAT_HYBRID_PLANNER_ENABLED = previous;
+    }
+  });
+
+  it('does not invent a Training plan when weekly mileage arrives without pending context', async () => {
+    const response = await tryHandleChatActionPlan({
+      ...baseInput,
+      text: 'It is 20 km a week',
+      locale: 'en',
+      persistRuns: false,
+    }, {
+      calendar: {
+        createEvent: vi.fn() as any,
+        getEventsForSources: vi.fn() as any,
+        hasGoogle: vi.fn(() => false),
+        hasOutlook: vi.fn(() => false),
+      },
+      taskProviderForUser: vi.fn(() => ({}) as any),
+    });
+
+    expect(response?.status).toBe('needs_clarification');
+    expect(response?.response.text).toMatch(/training plan|creating|adjusting/i);
+    expect(response?.plan.steps[0]?.requiredArgsPresent).toBe(false);
+  });
+
+  it('reads pending chat actions by scoped id for token-zero native handoff prefill', () => {
+    const pending = upsertPendingChatAction({
+      userId: baseInput.userId,
+      tenantId: baseInput.tenantId,
+      conversationId: baseInput.conversationId,
+      skill: 'training',
+      action: 'training_plan_create',
+      collectedSlots: { goal: 'sub-19 5K', weeklyVolumeKm: 20, sessionsPerWeek: 4 },
+      missingSlots: [],
+      riskClass: 'R1',
+      locale: 'en-US',
+      timezone: 'Europe/Lisbon',
+      originatingSurface: 'ios',
+      nowIso: FROZEN_NOW,
+    });
+
+    expect(getPendingChatActionById({
+      userId: baseInput.userId,
+      tenantId: baseInput.tenantId,
+      pendingActionId: pending.id,
+      nowIso: FROZEN_NOW,
+    })?.collectedSlots).toMatchObject({ goal: 'sub-19 5K', weeklyVolumeKm: 20 });
+    expect(getPendingChatActionById({
+      userId: baseInput.userId + 1,
+      tenantId: baseInput.tenantId + 1,
+      pendingActionId: pending.id,
+      nowIso: FROZEN_NOW,
     })).toBeNull();
   });
 
@@ -348,6 +1037,87 @@ describe('ChatActionPlanner', () => {
     expect(parseLlmPlannerJson('{"steps":[{"skill":"unknown","action":"danger","args":{}}]}', baseInput)).toBeNull();
   });
 
+  it('uses a compact Tier 1 classifier contract for simple routing and slot hints', () => {
+    const prompt = buildTier1ClassifierPrompt({
+      ...baseInput,
+      text: 'Create a task called Buy milk tomorrow at 9',
+      locale: 'en',
+    });
+    expect(prompt.systemPrompt).toContain('Classify a Nexus chat message');
+    expect(prompt.systemPrompt).toContain('create_task');
+    expect(prompt.systemPrompt.length).toBeLessThan(7000);
+
+    const plan = parseTier1ClassifierJson(JSON.stringify({
+      candidates: [{
+        skill: 'tasks',
+        action: 'create_task',
+        score: 0.94,
+        args: {
+          title: 'Buy milk',
+          dueAt: '2026-05-15T09:00:00+01:00',
+          ownerId: 'attacker-owner',
+          metadata: { UserId: 'nested-attacker', safeNote: 'kept' },
+        },
+        missingFields: [],
+      }],
+    }), {
+      ...baseInput,
+      text: 'Create a task called Buy milk tomorrow at 9',
+      locale: 'en',
+    });
+
+    expect(plan?.telemetry?.routeTier).toBe('tier1_classifier');
+    expect(plan?.debug?.routingSignals).toContain('tier1_classifier_slot_helper');
+    expect(plan?.steps[0]).toMatchObject({
+      skill: 'tasks',
+      action: 'create_task',
+      requiredArgsPresent: true,
+    });
+    expect(plan?.steps[0]?.args).toMatchObject({
+      title: 'Buy milk',
+      dueAt: '2026-05-15T09:00:00+01:00',
+      metadata: { safeNote: 'kept' },
+    });
+    expect(plan?.steps[0]?.slotProvenance).toMatchObject({
+      title: { sourceType: 'classifier' },
+      dueAt: { sourceType: 'classifier' },
+    });
+    expect(plan?.steps[0]?.args).not.toHaveProperty('ownerId');
+  });
+
+  it('downgrades low-confidence structured LLM plans to clarification before execution', async () => {
+    const plan = parseLlmPlannerJson(JSON.stringify({
+      confidence: 0.4,
+      steps: [{
+        skill: 'tasks',
+        action: 'create_task',
+        args: { title: 'Low confidence task' },
+        missingFields: [],
+      }],
+    }), { ...baseInput, text: 'Maybe make something task-ish', locale: 'en' });
+    const taskProvider = {
+      getLists: vi.fn(),
+      getDefaultList: vi.fn(),
+      createTask: vi.fn(),
+    };
+
+    expect(plan?.effectiveConfidence).toBeLessThan(plan?.telemetry?.threshold ?? 0);
+    expect(plan?.clarificationQuestion).toBeTruthy();
+
+    const response = await executeChatActionPlan(plan!, { ...baseInput, locale: 'en', persistRuns: false }, {
+      calendar: {
+        createEvent: vi.fn() as any,
+        getEventsForSources: vi.fn() as any,
+        hasGoogle: vi.fn(() => false),
+        hasOutlook: vi.fn(() => false),
+      },
+      taskProviderForUser: vi.fn(() => taskProvider as any),
+    });
+
+    expect(response.metadata.actionStatus).toBe('needs_clarification');
+    expect(taskProvider.createTask).not.toHaveBeenCalled();
+  });
+
   it('accepts structured LLM plans for mixed multistep requests but only as validated plan data', () => {
     const plan = parseLlmPlannerJson(JSON.stringify({
       confidence: 0.84,
@@ -375,6 +1145,10 @@ describe('ChatActionPlanner', () => {
       ['content', 'content_brief_create', true],
       ['tasks', 'create_task', true],
     ]);
+    expect(plan?.steps[0]?.slotProvenance).toMatchObject({
+      objective: { sourceType: 'planner' },
+      platform: { sourceType: 'planner' },
+    });
     expect(plan?.debug?.parser).toBe('model_assisted');
   });
 
@@ -433,6 +1207,38 @@ describe('ChatActionPlanner', () => {
     });
     expect(plan?.steps[0]?.args.metadata as Record<string, unknown>).not.toHaveProperty('userId');
     expect(plan?.steps[0]?.args.context as Record<string, unknown>).not.toHaveProperty('ownerId');
+  });
+
+  it('strips prototype and customer/principal identity-like fields from model args', () => {
+    const plan = parseLlmPlannerJson(`{
+      "confidence": 0.84,
+      "steps": [{
+        "skill": "tasks",
+        "action": "create_task",
+        "args": {
+          "title": "Safe literal task",
+          "__proto__": { "polluted": true },
+          "constructor": { "x": 1 },
+          "prototype": { "y": 2 },
+          "customer_id": "customer-attacker",
+          "CustomerId": "customer-attacker-2",
+          "subjectId": "subject-attacker",
+          "principal_id": "principal-attacker",
+          "metadata": {
+            "memberId": "member-attacker",
+            "actor_id": "actor-attacker",
+            "safeNote": "keep"
+          }
+        },
+        "missingFields": []
+      }]
+    }`, baseInput);
+
+    expect(plan?.steps[0]?.args).toEqual({
+      title: 'Safe literal task',
+      metadata: { safeNote: 'keep' },
+    });
+    expect(({} as any).polluted).toBeUndefined();
   });
 
   it('source-pins action-planner ordering before REST and WebSocket generic routing', () => {
@@ -518,6 +1324,221 @@ describe('ChatActionPlanner', () => {
       actionStatus: 'partial_success',
     });
     expect(createEvent).toHaveBeenCalledTimes(1);
+  });
+
+  it('stores only PII-safe action-run result summaries after provider verification', async () => {
+    const created = {
+      id: 'google-event-pii',
+      summary: 'Private doctor appointment',
+      description: 'Sensitive notes must not persist in result_json',
+      attendees: [{ email: 'secret@example.com' }],
+      start: '2026-05-17T10:00:00+01:00',
+      end: '2026-05-17T12:30:00+01:00',
+      source: 'google' as const,
+    };
+
+    const response = await tryHandleChatActionPlan({
+      ...baseInput,
+      messageId: 'msg-pii-redaction',
+      persistRuns: true,
+    }, {
+      calendar: {
+        createEvent: vi.fn().mockResolvedValue(created) as any,
+        getEventsForSources: vi.fn()
+          .mockResolvedValueOnce([])
+          .mockResolvedValueOnce([created]) as any,
+        hasGoogle: vi.fn(() => true),
+        hasOutlook: vi.fn(() => false),
+      },
+    });
+
+    expect(response?.status).toBe('verified_success');
+    const row = testDb.prepare(`
+      SELECT result_json
+      FROM chat_action_runs
+      WHERE message_id = ? AND status = 'verified_success'
+      LIMIT 1
+    `).get('msg-pii-redaction') as { result_json: string };
+    expect(row.result_json).toContain('google-event-pii');
+    expect(row.result_json).toContain('replaySafe');
+    expect(row.result_json).not.toContain('secret@example.com');
+    expect(row.result_json).not.toContain('Private doctor appointment');
+    expect(row.result_json).not.toContain('Sensitive notes');
+  });
+
+  it('requeues the pending parent when a provider write cannot be read back', async () => {
+    upsertPendingChatAction({
+      userId: baseInput.userId,
+      tenantId: baseInput.tenantId,
+      conversationId: baseInput.conversationId,
+      skill: 'secretary_calendar',
+      action: 'schedule_event',
+      collectedSlots: { title: 'igreja' },
+      missingSlots: [],
+      riskClass: 'R1',
+      locale: 'pt-PT',
+      timezone: 'Europe/Lisbon',
+      originatingSurface: 'ios',
+      nowIso: FROZEN_NOW,
+    });
+    const created = {
+      id: 'google-event-unverified',
+      summary: 'igreja',
+      start: '2026-05-17T10:00:00+01:00',
+      end: '2026-05-17T12:30:00+01:00',
+      source: 'google' as const,
+    };
+
+    const response = await tryHandleChatActionPlan({
+      ...baseInput,
+      messageId: 'msg-partial-requeue',
+      persistRuns: true,
+    }, {
+      calendar: {
+        createEvent: vi.fn().mockResolvedValue(created) as any,
+        getEventsForSources: vi.fn()
+          .mockResolvedValueOnce([])
+          .mockResolvedValueOnce([]) as any,
+        hasGoogle: vi.fn(() => true),
+        hasOutlook: vi.fn(() => false),
+      },
+    });
+
+    expect(response?.status).toBe('partial_success');
+    const pending = testDb.prepare(`
+      SELECT status, validation_state
+      FROM chat_pending_actions
+      WHERE user_id = ? AND tenant_id = ? AND conversation_id = ? AND skill = 'secretary_calendar' AND action = 'schedule_event'
+    `).get(baseInput.userId, baseInput.tenantId, baseInput.conversationId) as any;
+    expect(pending).toMatchObject({ status: 'needs_user_followup', validation_state: 'invalid' });
+  });
+
+  it('does not emit verified success when a late provider completion loses to the zombie reaper', async () => {
+    const created = {
+      id: 'google-event-late',
+      summary: 'igreja',
+      start: '2026-05-17T10:00:00+01:00',
+      end: '2026-05-17T12:30:00+01:00',
+      source: 'google' as const,
+    };
+    const createEvent = vi.fn().mockImplementation(async () => {
+      const executing = testDb.prepare(`
+        SELECT id
+        FROM chat_action_runs
+        WHERE message_id = ? AND status = 'executing'
+        LIMIT 1
+      `).get('msg-late-completion') as any;
+      expect(executing?.id).toBeTruthy();
+      expect(reapZombieChatActionRuns({
+        olderThanIso: '2026-05-14T12:05:00+01:00',
+        nowIso: '2026-05-14T12:06:00+01:00',
+      })).toBe(1);
+      return created;
+    });
+
+    const response = await tryHandleChatActionPlan({
+      ...baseInput,
+      messageId: 'msg-late-completion',
+      persistRuns: true,
+    }, {
+      calendar: {
+        createEvent: createEvent as any,
+        getEventsForSources: vi.fn()
+          .mockResolvedValueOnce([])
+          .mockResolvedValueOnce([created]) as any,
+        hasGoogle: vi.fn(() => true),
+        hasOutlook: vi.fn(() => false),
+      },
+    });
+
+    expect(response?.status).toBe('verified_pending');
+    expect(response?.response.metadata.verificationStatus).toBe('verified_pending');
+    expect(response?.response.text).toMatch(/verifica manualmente/i);
+    const row = testDb.prepare('SELECT status FROM chat_action_runs WHERE message_id = ?').get('msg-late-completion') as any;
+    expect(row.status).toBe('failed');
+    const pending = testDb.prepare(`
+      SELECT COUNT(*) AS count
+      FROM chat_pending_actions
+      WHERE user_id = ? AND tenant_id = ? AND conversation_id = ?
+    `).get(baseInput.userId, baseInput.tenantId, baseInput.conversationId) as any;
+    expect(pending.count).toBe(0);
+  });
+
+  it('uses English manual verification copy when reconciliation is pending', async () => {
+    const created = {
+      id: 'google-event-late-en',
+      summary: 'igreja',
+      start: '2026-05-17T10:00:00+01:00',
+      end: '2026-05-17T12:30:00+01:00',
+      source: 'google' as const,
+    };
+    const createEvent = vi.fn().mockImplementation(async () => {
+      const executing = testDb.prepare(`
+        SELECT id
+        FROM chat_action_runs
+        WHERE message_id = ? AND status = 'executing'
+        LIMIT 1
+      `).get('msg-late-completion-en') as any;
+      expect(executing?.id).toBeTruthy();
+      expect(reapZombieChatActionRuns({
+        olderThanIso: '2026-05-14T12:05:00+01:00',
+        nowIso: '2026-05-14T12:06:00+01:00',
+      })).toBe(1);
+      return created;
+    });
+
+    const response = await tryHandleChatActionPlan({
+      ...baseInput,
+      locale: 'en-US',
+      messageId: 'msg-late-completion-en',
+      persistRuns: true,
+    }, {
+      calendar: {
+        createEvent: createEvent as any,
+        getEventsForSources: vi.fn()
+          .mockResolvedValueOnce([])
+          .mockResolvedValueOnce([created]) as any,
+        hasGoogle: vi.fn(() => true),
+        hasOutlook: vi.fn(() => false),
+      },
+    });
+
+    expect(response?.status).toBe('verified_pending');
+    expect(response?.response.metadata.verificationStatus).toBe('verified_pending');
+    expect(response?.response.text).toMatch(/verify manually/i);
+  });
+
+  it('reaps zombie chat action runs stuck in executing state and prunes completed summaries', () => {
+    const claim = claimChatActionRunForExecution({
+      userId: baseInput.userId,
+      tenantId: baseInput.tenantId,
+      conversationId: baseInput.conversationId,
+      messageId: 'msg-zombie',
+      normalizedActionHash: 'zombie-hash',
+      provider: 'nexus',
+      actionType: 'create_task',
+      risk: 'safe_write',
+      request: { title: 'Zombie' },
+      nowIso: '2026-05-14T12:00:00+01:00',
+    });
+    expect(claim.row.status).toBe('executing');
+    expect(reapZombieChatActionRuns({
+      olderThanIso: '2026-05-14T12:05:00+01:00',
+      nowIso: '2026-05-14T12:06:00+01:00',
+    })).toBe(1);
+    expect(getChatActionRun(claim.row.id)?.status).toBe('failed');
+    const lateWrite = updateChatActionRun(claim.row.id, 'verified_success', {
+      result: { id: 'late-provider-result' },
+      nowIso: '2026-05-14T12:06:30+01:00',
+    });
+    expect(lateWrite).toBeNull();
+    expect(getChatActionRun(claim.row.id)?.status).toBe('failed');
+
+    expect(pruneCompletedChatActionRuns({
+      beforeIso: '2026-05-14T12:07:00+01:00',
+      nowIso: '2026-05-14T12:08:00+01:00',
+    })).toBe(1);
+    expect(getChatActionRun(claim.row.id)).toBeNull();
   });
 
   it('resumes confirmed task mutations through the deterministic task executor and read-back', async () => {
@@ -677,7 +1698,7 @@ describe('ChatActionPlanner', () => {
     addTransaction(4401, '2026-05-01', 'income', 5000, { currency: 'BRL' });
     calculateAndStoreTax(4401, '2026-05');
     const payPlan = parseLlmPlannerJson(JSON.stringify({
-      confidence: 0.9,
+      confidence: 0.99,
       steps: [{
         skill: 'finance',
         action: 'finance_payment_action',

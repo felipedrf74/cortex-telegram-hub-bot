@@ -1,0 +1,96 @@
+# Nexus Hub — local Docker sandbox
+#
+# Boots Node engine + Python content engine on Felipe's Mac for pre-staging
+# testing. Mirrors prod ports (8200 / 8100) so the iOS Simulator can hit
+# http://127.0.0.1:8200 with no app-side config changes.
+#
+# Bind to 127.0.0.1 (not 0.0.0.0) on the host so this sandbox never leaks
+# onto the LAN — Felipe's Mac stays a single-user dev box.
+#
+# Usage:
+#   ./scripts/local-up.sh        # build + start, wait for healthy
+#   ./scripts/local-smoke.sh     # 5-check contract
+#   ./scripts/local-down.sh      # clean shutdown, keeps data/
+#   ./scripts/local-reset.sh     # full wipe (drops DB + named volumes)
+#
+# DO NOT use this compose file for anything reachable from the LAN — it
+# trusts loopback and has development defaults that would be unsafe on a
+# public network.
+
+services:
+  content-engine:
+    build:
+      context: .
+      dockerfile: Dockerfile.python
+    image: nexus-hub-content-engine:local
+    container_name: nexus-hub-content-engine
+    env_file:
+      - path: .env.local
+        required: false
+    environment:
+      # uvicorn binds 0.0.0.0 inside the container so the Node service can
+      # reach it by service name on the compose network.
+      CONTENT_ENGINE_PORT: "8100"
+    ports:
+      - "127.0.0.1:${NEXUS_LOCAL_PORT_PY:-8100}:8100"
+    volumes:
+      - ./content-engine:/engine:cached
+      - content_engine_venv:/engine/.venv
+      - ./logs:/engine/logs
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8100/health"]
+      interval: 10s
+      timeout: 5s
+      start_period: 20s
+      retries: 6
+    restart: unless-stopped
+
+  nexus-hub:
+    build:
+      context: .
+      dockerfile: Dockerfile.node
+    image: nexus-hub-node:local
+    container_name: nexus-hub-node
+    depends_on:
+      content-engine:
+        condition: service_healthy
+    env_file:
+      - path: .env.local
+        required: false
+    environment:
+      NODE_ENV: development
+      PORTAL_PORT: "8200"
+      PORTAL_BIND: "0.0.0.0"
+      # Override the Node side's content-engine URL so it points at the
+      # compose service name (not 127.0.0.1, which inside this container
+      # would mean Node itself).
+      CONTENT_ENGINE_BASE_URL: "http://content-engine:8100"
+      # Force watch-mode polling — inotify often doesn't propagate cleanly
+      # across macOS bind mounts. Costs a tiny bit of CPU, gains reliable
+      # hot reload.
+      CHOKIDAR_USEPOLLING: "true"
+    ports:
+      - "127.0.0.1:${NEXUS_LOCAL_PORT_TS:-8200}:8200"
+    volumes:
+      - ./src:/app/src:cached
+      - ./migrations:/app/migrations:cached
+      - ./prompts:/app/prompts:cached
+      - ./data:/app/data
+      - ./logs:/app/logs
+      - ./tsconfig.json:/app/tsconfig.json:ro
+      - nexus_node_modules:/app/node_modules
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8200/health"]
+      interval: 10s
+      timeout: 5s
+      start_period: 45s
+      retries: 12
+    restart: unless-stopped
+
+volumes:
+  # Keep node_modules inside the container — macOS bind-mount of a large
+  # node_modules tree is the slowest part of a Docker dev loop.
+  nexus_node_modules:
+    name: nexus_hub_local_node_modules
+  content_engine_venv:
+    name: nexus_hub_local_content_engine_venv

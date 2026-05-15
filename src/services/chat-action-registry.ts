@@ -23,6 +23,8 @@ export type ChatActionRisk =
   | 'admin_security'
   | 'ambiguous';
 
+export type ChatActionRiskClass = 'R0' | 'R1' | 'R2' | 'R3' | 'R4';
+
 export type ChatActionName =
   | 'schedule_event'
   | 'update_event'
@@ -42,6 +44,7 @@ export type ChatActionName =
   | 'set_task_reminder'
   | 'training_explain_session'
   | 'training_coach_report'
+  | 'training_plan_create'
   | 'training_reflow_preview'
   | 'training_reflow_confirm'
   | 'training_adjust_plan'
@@ -82,14 +85,22 @@ export type ChatProvider =
 export interface ChatActionDefinition {
   skill: ChatActionSkill;
   action: ChatActionName;
+  version?: string;
   readableIntents: string[];
   requiredFields: string[];
   optionalFields: string[];
+  slotExtractors?: string[];
+  slotValidators?: string[];
   providerDependencies: ChatProvider[];
   risk: ChatActionRisk;
+  riskClass?: ChatActionRiskClass;
   confirmationPolicy: 'none' | 'clarify' | 'confirm' | 'strong_confirm';
+  executionPolicy?: 'read_only' | 'idempotent_write' | 'preview_then_confirm' | 'blocked';
   executor: string;
   verifier: 'provider_read_back' | 'local_read_back' | 'none';
+  verificationPolicy?: 'provider_readback_required' | 'local_readback_required' | 'not_required';
+  uiSurfaces?: string[];
+  examples?: Array<{ text: string; expectedSlots?: Record<string, unknown> }>;
   supportedCards: string[];
 }
 
@@ -100,6 +111,7 @@ const STATUS_CARDS = [
   'needs_confirmation',
   'executing',
   'verified_success',
+  'verified_pending',
   'partial_success',
   'failed',
   'blocked',
@@ -107,6 +119,7 @@ const STATUS_CARDS = [
   'undo',
   'connect_provider',
   'open_skill',
+  'open_surface',
 ];
 
 export const CHAT_ACTION_REGISTRY: ChatActionDefinition[] = [
@@ -122,6 +135,12 @@ export const CHAT_ACTION_REGISTRY: ChatActionDefinition[] = [
     executor: 'unified_calendar.createEvent',
     verifier: 'provider_read_back',
     supportedCards: STATUS_CARDS,
+    examples: [
+      {
+        text: 'Cria um evento na agenda do Gmail chamado igreja das 10 ao meio-dia e meio nesse domingo',
+        expectedSlots: { title: 'igreja', provider: 'google_calendar' },
+      },
+    ],
   },
   {
     skill: 'secretary_calendar',
@@ -243,12 +262,13 @@ export const CHAT_ACTION_REGISTRY: ChatActionDefinition[] = [
   ...([
     ['tasks', 'create_task', 'safe_write', 'none', 'task_store.createTask', 'local_read_back', ['title']],
     ['tasks', 'update_task', 'safe_write', 'confirm', 'task_store.updateTask', 'local_read_back', ['taskId', 'changedFields']],
-    ['tasks', 'complete_task', 'safe_write', 'confirm', 'task_store.updateTask', 'local_read_back', ['taskId']],
+    ['tasks', 'complete_task', 'safe_write', 'none', 'task_store.updateTask', 'local_read_back', ['taskId']],
     ['tasks', 'delete_task', 'destructive', 'confirm', 'task_store.deleteTask', 'local_read_back', ['taskId']],
     ['tasks', 'create_checklist', 'safe_write', 'none', 'task_store.createTaskWithChecklist', 'local_read_back', ['title', 'items']],
     ['tasks', 'set_task_reminder', 'safe_write', 'confirm', 'task_store.updateTask', 'local_read_back', ['taskId', 'reminderAt']],
     ['training', 'training_explain_session', 'read_only', 'none', 'training.sessionExplain', 'none', ['sessionId']],
     ['training', 'training_coach_report', 'read_only', 'none', 'training.coachReport', 'none', ['dateRange']],
+    ['training', 'training_plan_create', 'safe_write', 'clarify', 'training.planBuilderHandoff', 'none', ['sport', 'goal', 'durationWeeks', 'startDate', 'weeklyVolumeKm']],
     ['training', 'training_reflow_preview', 'safe_write', 'confirm', 'training.reflowPreview', 'local_read_back', ['sessionId']],
     ['training', 'training_reflow_confirm', 'safe_write', 'confirm', 'training.reflowConfirm', 'local_read_back', ['sessionId']],
     ['training', 'training_adjust_plan', 'safe_write', 'confirm', 'training.adjustPlan', 'local_read_back', ['planId', 'changeRequest']],
@@ -291,7 +311,24 @@ export const CHAT_ACTION_REGISTRY: ChatActionDefinition[] = [
 ];
 
 export function getChatActionRegistry(): ChatActionDefinition[] {
-  return CHAT_ACTION_REGISTRY.map((entry) => ({ ...entry, supportedCards: [...entry.supportedCards] }));
+  return CHAT_ACTION_REGISTRY.map((entry) => ({
+    ...entry,
+    version: entry.version ?? '2026-05-14',
+    riskClass: entry.riskClass ?? riskClassForRisk(entry.risk),
+    slotExtractors: entry.slotExtractors ?? ['deterministic_patterns', 'llm_allowed'],
+    slotValidators: entry.slotValidators ?? entry.requiredFields.map((field) => `${field}_required`),
+    executionPolicy: entry.executionPolicy ?? (entry.risk === 'read_only' ? 'read_only' : entry.risk === 'ambiguous' ? 'blocked' : 'idempotent_write'),
+    verificationPolicy: entry.verificationPolicy ?? (
+      entry.verifier === 'provider_read_back'
+        ? 'provider_readback_required'
+        : entry.verifier === 'local_read_back'
+          ? 'local_readback_required'
+          : 'not_required'
+    ),
+    uiSurfaces: entry.uiSurfaces ?? defaultUiSurfaces(entry.skill, entry.action),
+    supportedCards: [...entry.supportedCards],
+    examples: entry.examples ? [...entry.examples] : [],
+  }));
 }
 
 export function findChatActionDefinition(skill: ChatActionSkill, action: ChatActionName): ChatActionDefinition | null {
@@ -305,19 +342,37 @@ export function selectRegistrySubsetForMessage(text: string): ChatActionDefiniti
   if (hasMailReadIntent(text) || /\b(email|mail|gmail|outlook mail|inbox|caixa de entrada)\b/.test(folded)) selected.add('mail');
   if (/\b(task|todo|tarefa|subtarefa|checklist|lembrete|reminder)\b/.test(folded)) selected.add('tasks');
   if (/\b(treino|training|plan[o]? de treino|corrida|gym|ginasio)\b/.test(folded)) selected.add('training');
-  if (/\b(content|conteudo|conteudo|script|reel|tiktok|youtube|brief)\b/.test(folded)) selected.add('content');
-  if (/\b(cozinha|meal|refeicao|comida|grocery|compras|fueling)\b/.test(folded)) selected.add('cooking');
-  if (/\b(finance|financas|pagamento|stripe|invoice|fatura|recibo)\b/.test(folded)) selected.add('finance');
+  if (/\b(content|conteudo|conteudo|script|roteiro|reel|tiktok|youtube|brief)\b/.test(folded)) selected.add('content');
+  if (/\b(cozinha|meal|refeicao|jantar|almoco|ceia|lanche|comida|grocery|compras|fueling)\b/.test(folded)) selected.add('cooking');
+  if (/\b(finance|financas|financeiro|financeira|pagamento|stripe|invoice|fatura|recibo|receipt)\b/.test(folded)) selected.add('finance');
   if (/\b(connection|conexao|ligacao|google|outlook|garmin|health)\b/.test(folded)) selected.add('connections');
-  if (/\b(notification|notificacao|alerta|push)\b/.test(folded)) selected.add('notifications');
+  if (/\b(notification|notificacao|notificacoes|alerta|push)\b/.test(folded)) selected.add('notifications');
   if (/\b(decision|decisao|escolha|snooze|adiar)\b/.test(folded)) selected.add('decision_center');
   if (selected.size === 0) return [];
-  return CHAT_ACTION_REGISTRY.filter((entry) => selected.has(entry.skill));
+  return getChatActionRegistry().filter((entry) => selected.has(entry.skill));
 }
 
 export function messageHasActionCandidate(text: string): boolean {
   const subset = selectRegistrySubsetForMessage(text);
   if (subset.length === 0) return false;
   const folded = foldCalendarText(text);
-  return /\b(cria|criar|marca|marcar|agenda|agendar|adiciona|adicionar|coloca|mete|poe|faz|apaga|apagar|remove|delete|move|mover|send|enviar|create|add|schedule|complete|concluir|reflow|ajusta|adjust|publish|publicar|paga|pay|rotate|revoke|revogar)\b/.test(folded);
+  return /\b(cria|criar|gera|gerar|marca|marcar|agenda|agendar|adiciona|adicionar|coloca|mete|poe|faz|apaga|apagar|remove|delete|move|mover|send|enviar|draft|create|add|generate|schedule|complete|concluir|reflow|ajusta|ajustar|atualiza|atualizar|adjust|update|publish|publicar|paga|pay|refund|categorize|rotate|revoke|revoga|revogar|mostra|mostrar|show|list|listar|resume|summary|relatorio|relatório|explain|explica|help|ajuda|check|retry|reconnect|snooze|dismiss|follow)\b/.test(folded);
+}
+
+function riskClassForRisk(risk: ChatActionRisk): ChatActionRiskClass {
+  if (risk === 'read_only') return 'R0';
+  if (risk === 'safe_write') return 'R1';
+  if (risk === 'external_side_effect') return 'R2';
+  if (risk === 'destructive' || risk === 'financial' || risk === 'admin_security') return 'R3';
+  return 'R4';
+}
+
+function defaultUiSurfaces(skill: ChatActionSkill, action: ChatActionName): string[] {
+  if (skill === 'training' && action === 'training_plan_create') return ['training_plan_builder'];
+  if (skill === 'content') return ['script_studio', 'content_pipeline'];
+  if (skill === 'tasks') return ['task_detail'];
+  if (skill === 'secretary_calendar') return ['calendar_event'];
+  if (skill === 'finance') return ['finance_review'];
+  if (skill === 'cooking') return ['cooking_meal_plan'];
+  return [skill];
 }

@@ -31,15 +31,29 @@ import {
 import {
   buildNormalizedActionHash,
   claimChatActionRun,
+  claimChatActionRunForExecution,
   listPendingChatActionRuns,
   updateChatActionRun,
   type ChatActionRunRow,
   type ChatActionRunStatus,
 } from './chat-action-run-store';
+import {
+  cancelPendingChatActions,
+  getActivePendingChatAction,
+  makeSlotProvenance,
+  markPendingChatActionNeedsUserFollowup,
+  recordChatActionTelemetry,
+  rememberRecentChatEntity,
+  resolveRecentChatEntity,
+  upsertPendingChatAction,
+  type ChatActionRiskClass,
+  type ChatActionTelemetry,
+  type ChatSlotProvenance,
+} from './chat-action-state';
 import { invalidateCalendarCaches } from './cache-coherence-registry';
 import { getTaskProviderForUser } from './task-store/task-router';
 import { resolveTaskCreationList } from './task-store/task-list-resolution';
-import { completeOneShotWithFallback } from './gemini-provider';
+import { completeOneShot, isGeminiProviderConfigured } from './gemini-provider';
 import {
   buildContentAgencyPackage,
   getContentAgencyProject,
@@ -77,10 +91,25 @@ import {
   snoozeDecision,
 } from './decision-center';
 import { logger } from '../utils/logger';
+import {
+  getChatHybridPlannerMode,
+  isChatEscalationReviewerEnabled,
+  isChatLlmTier1Enabled,
+  isChatLlmTier2Enabled,
+  isChatOpenSurfaceHandoffEnabled,
+} from './runtime-flags';
 
 export type ChatActionStatus = ChatActionRunStatus;
 
 export type ChatPlanStepType = ChatActionName | 'answer' | 'clarification';
+
+const CHAT_LLM_TIER2_GEMINI_MODEL = 'gemini-2.5-flash';
+const CHAT_LLM_TIER2_OPENAI_FALLBACK_MODEL = 'gpt-5.4-nano';
+const CHAT_LLM_TIER1_GEMINI_MODEL = 'gemini-2.5-flash-lite';
+const CHAT_LLM_TIER3_GEMINI_MODEL = 'gemini-2.5-flash';
+const CHAT_LLM_TIER3_OPENAI_FALLBACK_MODEL = 'gpt-5.4-mini';
+const DEFAULT_PROVIDER_READ_BACK_TIMEOUT_MS = 3_500;
+const DEFAULT_PROVIDER_WRITE_TIMEOUT_MS = 10_000;
 
 export interface ChatActionPlan {
   schemaVersion: 1;
@@ -97,6 +126,8 @@ export interface ChatActionPlan {
   requiresConfirmation: boolean;
   clarificationQuestion?: string;
   confidence: number;
+  effectiveConfidence?: number;
+  telemetry?: ChatActionTelemetry;
   debug?: {
     routingSignals: string[];
     rejectedFastPaths: string[];
@@ -111,8 +142,10 @@ export interface ChatPlanStep {
   type: ChatPlanStepType;
   action: ChatActionName;
   risk: ChatActionRisk;
+  riskClass?: ChatActionRiskClass;
   provider?: ChatProvider;
   args: Record<string, unknown>;
+  slotProvenance?: Record<string, ChatSlotProvenance>;
   requiredArgsPresent: boolean;
   idempotencyKey: string;
   dependsOnStepIds?: string[];
@@ -121,6 +154,14 @@ export interface ChatPlanStep {
     method: 'provider_read_back' | 'local_read_back' | 'none';
     expectedFields?: Record<string, unknown>;
   };
+}
+
+interface ChatStepExecutionResult {
+  step: ChatPlanStep;
+  status: ChatActionRunStatus;
+  result?: unknown;
+  error?: string;
+  runUpdateAccepted?: boolean;
 }
 
 export interface ChatPlannerInput {
@@ -134,6 +175,7 @@ export interface ChatPlannerInput {
   timezone: string;
   nowIso?: string;
   persistRuns?: boolean;
+  routeStartedAtMs?: number;
 }
 
 export interface ChatActionRouteResponse {
@@ -195,8 +237,8 @@ export function shouldRunActionPlannerBeforeReadOnlyFastPaths(text: string): boo
   const folded = foldCalendarText(text);
   if (hasMailReadIntent(text) && !messageHasActionCandidate(text)) return false;
   return messageHasActionCandidate(text) && (
-    /\b(send|enviar|reply|responder|publish|publicar|delete|apagar|cancel|cancelar|remove|remover|paga|pay|stripe|refund|reembolso|admin|security|seguranca|revogar|revoke)\b/.test(folded)
-    || /\b(script|roteiro|brief|conteudo|content|meal|refeicao|compras|grocery|finance|orcamento|budget|conexao|connection|notificacao|notification|decision|decisao|treino|training)\b/.test(folded)
+    /\b(send|enviar|draft|reply|responder|publish|publicar|delete|apaga|apagar|cancel|cancelar|remove|remover|paga|pay|stripe|refund|reembolso|admin|security|seguranca|revoga|revogar|revoke|reconnect)\b/.test(folded)
+    || /\b(script|roteiro|brief|conteudo|content|meal|refeicao|jantar|almoco|ceia|lanche|compras|grocery|fueling|finance|financeiro|financeira|orcamento|budget|receipt|categorize|conexao|connection|sync|notificacao|notificacoes|notification|decision|decisao|treino|training)\b/.test(folded)
   );
 }
 
@@ -204,11 +246,28 @@ export async function tryHandleChatActionPlan(
   input: ChatPlannerInput,
   deps: ChatActionPlannerDeps = {},
 ): Promise<{ plan: ChatActionPlan; response: ChatActionRouteResponse; status: ChatActionStatus } | null> {
-  if (!shouldRunActionPlannerBeforeReadOnlyFastPaths(input.text)) return null;
-  const plan = await buildChatActionPlan(input);
+  const routeStartedAtMs = Date.now();
+  const plannerMode = getChatHybridPlannerMode(process.env, { userId: input.userId, tenantId: input.tenantId });
+  if (plannerMode === 'off') return null;
+  const plan = await buildChatActionPlan({ ...input, routeStartedAtMs });
   if (!plan) return null;
+  if (plannerMode === 'shadow') {
+    logger.info({
+      userId: input.userId,
+      tenantId: input.tenantId,
+      conversationId: input.conversationId,
+      messageId: input.messageId,
+      planner: plan.planner,
+      actions: plan.steps.map((step) => ({ skill: step.skill, action: step.action, riskClass: step.riskClass })),
+      effectiveConfidence: plan.effectiveConfidence ?? plan.confidence,
+      routeTier: plan.telemetry?.routeTier,
+      threshold: plan.telemetry?.threshold,
+    }, 'chat hybrid planner shadow candidate');
+    recordShadowTelemetry(plan, input, routeStartedAtMs);
+    return null;
+  }
   const resolvedDeps = { ...DEFAULT_DEPS, ...deps };
-  const response = await executeChatActionPlan(plan, input, resolvedDeps);
+  const response = await executeChatActionPlan(plan, { ...input, routeStartedAtMs }, resolvedDeps);
   return { plan, response, status: String(response.metadata.actionStatus || 'planned') as ChatActionStatus };
 }
 
@@ -251,14 +310,30 @@ export async function executeConfirmedChatActionRuns(
 }
 
 export async function buildChatActionPlan(input: ChatPlannerInput): Promise<ChatActionPlan | null> {
+  const cancellation = buildPendingCancellationPlan(input);
+  if (cancellation) return cancellation;
+
+  const pendingContinuation = buildPendingSlotContinuationPlan(input);
+  if (pendingContinuation) return pendingContinuation;
+
+  const recentFollowUp = buildRecentEntityFollowUpPlan(input);
+  if (recentFollowUp) return recentFollowUp;
+
+  if (!shouldRunActionPlannerBeforeReadOnlyFastPaths(input.text)) return null;
+
   const deterministic = buildDeterministicChatActionPlan(input);
   if (deterministic) return deterministic;
 
   const folded = foldCalendarText(input.text);
   const looksComplex = /(?:\be\b|\band\b|\+|,).{8,}/.test(folded) || selectRegistrySubsetForMessage(input.text).length > 1;
+  const tier1Plan = await tryBuildTier1ClassifierPlan(input);
+  if (tier1Plan) return tier1Plan;
+
   if (looksComplex || messageHasActionCandidate(input.text)) {
     const llmPlan = await tryBuildLlmStructuredPlan(input);
     if (llmPlan) return llmPlan;
+    const reviewerPlan = await tryBuildEscalationReviewerPlan(input);
+    if (reviewerPlan) return reviewerPlan;
   }
 
   if (messageHasActionCandidate(input.text)) {
@@ -267,6 +342,150 @@ export async function buildChatActionPlan(input: ChatPlannerInput): Promise<Chat
       : 'I need a few more details to do that. What title, date, time, and destination should I use?');
   }
   return null;
+}
+
+function buildPendingCancellationPlan(input: ChatPlannerInput): ChatActionPlan | null {
+  const folded = foldCalendarText(input.text);
+  if (!/\b(cancel|cancelar|never mind|nevermind|esquece|deixa|forget it)\b/.test(folded)) return null;
+  const cancelled = cancelPendingChatActions({
+    userId: input.userId,
+    tenantId: input.tenantId,
+    conversationId: input.conversationId,
+    nowIso: input.nowIso,
+  });
+  if (cancelled <= 0) return null;
+  return buildMessageOnlyPlan(input, input.locale?.startsWith('pt')
+    ? 'Está cancelado. Não vou continuar essa ação pendente.'
+    : 'Cancelled. I will not continue that pending action.', 'pending_action_cancelled');
+}
+
+function buildPendingSlotContinuationPlan(input: ChatPlannerInput): ChatActionPlan | null {
+  const pending = getActivePendingChatAction({
+    userId: input.userId,
+    tenantId: input.tenantId,
+    conversationId: input.conversationId,
+    skill: 'training',
+    nowIso: input.nowIso,
+  });
+  const weeklyVolume = extractWeeklyVolumeKm(input.text);
+
+  if (!pending) {
+    if (weeklyVolume == null) return null;
+    return buildNeedsInputPlan(input, {
+      skill: 'training',
+      action: 'training_plan_create',
+      question: input.locale?.startsWith('pt')
+        ? 'Posso usar esse volume semanal num plano de treino. Estás a criar ou ajustar um plano?'
+        : 'I can use that weekly volume for a training plan. Are we creating or adjusting a plan?',
+      args: { weeklyVolumeKm: weeklyVolume },
+      routingSignals: ['standalone_training_slot_without_pending_action'],
+    });
+  }
+
+  const collected = { ...pending.collectedSlots };
+  const provenance: Record<string, ChatSlotProvenance> = {};
+  if (weeklyVolume != null && pending.missingSlots.includes('weeklyVolumeKm')) {
+    collected.weeklyVolumeKm = weeklyVolume;
+    provenance.weeklyVolumeKm = makeSlotProvenance({
+      slot: 'weeklyVolumeKm',
+      value: weeklyVolume,
+      rawText: input.text,
+      turnId: input.messageId,
+      sourceType: 'user_message',
+      normalizer: 'training_weekly_volume_v1',
+      confidence: 0.96,
+    });
+  }
+
+  const extracted = extractTrainingPlanSlots(input);
+  for (const [slot, value] of Object.entries(extracted.slots)) {
+    if (value == null || value === '') continue;
+    if (!pending.missingSlots.includes(slot) && collected[slot] != null) continue;
+    collected[slot] = value;
+    provenance[slot] = extracted.provenance[slot];
+  }
+
+  if (Object.keys(provenance).length === 0) {
+    return buildNeedsInputPlan(input, {
+      skill: 'training',
+      action: 'training_plan_create',
+      question: buildTargetedClarificationQuestion(input, [makeTrainingPlanStep(input, pending.collectedSlots, pending.missingSlots, {})]),
+      args: pending.collectedSlots,
+      routingSignals: ['pending_training_action_unmatched_answer'],
+    });
+  }
+
+  const missing = missingTrainingPlanSlots(collected);
+  const step = makeTrainingPlanStep(input, collected, missing, provenance);
+  return buildPlanFromSteps(input, [step], ['pending_training_plan_slot_fill', ...Object.keys(provenance).map((slot) => `slot:${slot}`)], missing.length === 0 ? 0.94 : 0.88);
+}
+
+function buildRecentEntityFollowUpPlan(input: ChatPlannerInput): ChatActionPlan | null {
+  const folded = foldCalendarText(input.text);
+  if (!/\b(mark|complete|done|finish|concluir|conclui|feito|terminar|marca)\b/.test(folded)) return null;
+  if (!/\b(this task|that task|it|this|that|essa tarefa|esta tarefa|isso)\b/.test(folded)) return null;
+  const resolved = resolveRecentChatEntity({
+    userId: input.userId,
+    tenantId: input.tenantId,
+    conversationId: input.conversationId,
+    entityType: 'task',
+    action: 'complete_task',
+    nowIso: input.nowIso,
+  });
+  if (resolved.status === 'single') {
+    const entity = resolved.candidates[0];
+    const args = {
+      taskId: entity.entityId,
+      listId: typeof entity.metadata?.listId === 'string' ? entity.metadata.listId : undefined,
+      listName: typeof entity.metadata?.listName === 'string' ? entity.metadata.listName : undefined,
+      title: entity.userVisibleLabel,
+    };
+    if (!args.listId) {
+      return buildNeedsInputPlan(input, {
+        skill: 'tasks',
+        action: 'complete_task',
+        question: input.locale?.startsWith('pt')
+          ? `Qual tarefa devo concluir: ${entity.userVisibleLabel}?`
+          : `Which task should I mark done: ${entity.userVisibleLabel}?`,
+        args: {},
+        routingSignals: ['recent_entity_followup', 'task_reference_missing_list'],
+      });
+    }
+    const step = makeStep(input, {
+      skill: 'tasks',
+      action: 'complete_task',
+      risk: 'safe_write',
+      provider: 'nexus',
+      args,
+      slotProvenance: {
+        taskId: makeSlotProvenance({
+          slot: 'taskId',
+          value: entity.entityId,
+          rawText: input.text,
+          turnId: input.messageId,
+          sourceType: 'visible_card',
+          normalizer: 'recent_entity_graph_v1',
+          confidence: entity.confidence,
+        }),
+      },
+      requiredArgsPresent: Boolean(args.taskId && args.listId),
+    });
+    return buildPlanFromSteps(input, [step], ['recent_entity_followup', 'task_reference_resolved'], 0.94);
+  }
+  const options = resolved.candidates.map((candidate) => candidate.userVisibleLabel).filter(Boolean).slice(0, 3);
+  return buildNeedsInputPlan(input, {
+    skill: 'tasks',
+    action: 'complete_task',
+    question: input.locale?.startsWith('pt')
+      ? options.length > 0
+        ? `Qual tarefa devo concluir: ${options.join(', ')}?`
+        : 'Qual tarefa devo concluir?'
+      : options.length > 0
+        ? `Which task should I mark done: ${options.join(', ')}?`
+        : 'Which task should I mark done?',
+    args: {},
+    routingSignals: [resolved.status === 'ambiguous' ? 'ambiguous_recent_task_reference' : 'missing_recent_task_reference'],
+  });
 }
 
 export function buildDeterministicChatActionPlan(input: ChatPlannerInput): ChatActionPlan | null {
@@ -293,10 +512,12 @@ export function buildDeterministicChatActionPlan(input: ChatPlannerInput): ChatA
       type: 'schedule_event',
       action: 'schedule_event',
       risk: calendar.attendees.length > 0 ? 'external_side_effect' : 'safe_write',
+      riskClass: riskClassForRisk(calendar.attendees.length > 0 ? 'external_side_effect' : 'safe_write'),
       provider,
       args,
+      slotProvenance: buildCalendarSlotProvenance(input, calendar, provider),
       requiredArgsPresent: true,
-      idempotencyKey: buildNormalizedActionHash({ action: 'schedule_event', args }),
+      idempotencyKey: buildStepIdempotencyKey(input, 'schedule_event', args),
       verification: {
         required: true,
         method: 'provider_read_back',
@@ -424,7 +645,7 @@ function parseContentActionStep(input: ChatPlannerInput, folded: string): ChatPl
 }
 
 function parseCookingActionStep(input: ChatPlannerInput, folded: string, now: DateTime): ChatPlanStep | null {
-  if (!/\b(cooking|cozinha|meal|refeicao|refeicoes|grocery|compras|shopping|comida|fueling)\b/.test(folded)) return null;
+  if (!/\b(cooking|cozinha|meal|refeicao|refeicoes|jantar|almoco|ceia|lanche|grocery|compras|shopping|comida|fueling)\b/.test(folded)) return null;
   const nextWeek = /\b(next week|proxima semana|próxima semana)\b/.test(folded);
   const weekStart = now.plus({ weeks: nextWeek ? 1 : 0 }).startOf('week').toISODate();
   if (/\b(grocery|shopping list|lista de compras|compras)\b/.test(folded)) {
@@ -437,7 +658,8 @@ function parseCookingActionStep(input: ChatPlannerInput, folded: string, now: Da
       requiredArgsPresent: Boolean(weekStart),
     });
   }
-  if (/\b(meal plan|plano de refeicoes|plano de refeições|ementa)\b/.test(folded)) {
+  if (/\b(meal plan|plano de refeicoes|plano de refeições|ementa)\b/.test(folded)
+    || /\b(planear|planejar|plan|cria|criar|gera|gerar)\b.*\b(jantar|almoco|refeicao|meal)\b/.test(folded)) {
     return makeStep(input, {
       skill: 'cooking',
       action: 'cooking_meal_plan',
@@ -458,7 +680,7 @@ function parseCookingActionStep(input: ChatPlannerInput, folded: string, now: Da
 }
 
 function parseFinanceActionStep(input: ChatPlannerInput, folded: string, now: DateTime): ChatPlanStep | null {
-  if (!/\b(finance|financas|finanças|budget|orcamento|orçamento|fatura|invoice|pagamento|payment|stripe|gastei|spend|recibo)\b/.test(folded)) return null;
+  if (!/\b(finance|financas|finanças|financeiro|financeira|budget|orcamento|orçamento|fatura|invoice|pagamento|payment|stripe|gastei|spend|recibo)\b/.test(folded)) return null;
   if (/\b(pay|paga|payment|pagamento|stripe|refund|reembolso|invoice action)\b/.test(folded)) {
     return makeStep(input, {
       skill: 'finance',
@@ -514,6 +736,12 @@ function parseConnectionsActionStep(input: ChatPlannerInput, folded: string): Ch
 
 function parseTrainingActionStep(input: ChatPlannerInput, folded: string): ChatPlanStep | null {
   if (!/\b(training|treino|plano de treino|coach|corrida|gym|ginasio|ginásio|session|sessao|sessão|reflow|ajusta|adjust)\b/.test(folded)) return null;
+  if (/\b(create|build|generate|make|cria|criar|gera|gerar|monta|montar|faz|fazer)\b/.test(folded)
+    && /\b(training plan|plano de treino|plan[o]?\b|programa de treino)\b/.test(folded)) {
+    const extracted = extractTrainingPlanSlots(input);
+    const missing = missingTrainingPlanSlots(extracted.slots);
+    return makeTrainingPlanStep(input, extracted.slots, missing, extracted.provenance);
+  }
   if (/\b(reflow|remarca|reagenda|adjust|ajusta|alterar plano|muda o plano)\b/.test(folded)) {
     return makeStep(input, {
       skill: 'training',
@@ -544,8 +772,178 @@ function parseTrainingActionStep(input: ChatPlannerInput, folded: string): ChatP
   });
 }
 
+const TRAINING_PLAN_REQUIRED_SLOTS = ['sport', 'goal', 'durationWeeks', 'startDate', 'weeklyVolumeKm'] as const;
+
+function makeTrainingPlanStep(
+  input: ChatPlannerInput,
+  slots: Record<string, unknown>,
+  missing: string[],
+  slotProvenance: Record<string, ChatSlotProvenance>,
+): ChatPlanStep {
+  return makeStep(input, {
+    skill: 'training',
+    action: 'training_plan_create',
+    risk: 'safe_write',
+    provider: 'nexus',
+    args: {
+      sport: slots.sport ?? null,
+      goal: slots.goal ?? null,
+      durationWeeks: slots.durationWeeks ?? null,
+      startDate: slots.startDate ?? null,
+      weeklyVolumeKm: slots.weeklyVolumeKm ?? null,
+      constraints: Array.isArray(slots.constraints) ? slots.constraints : [],
+    },
+    slotProvenance,
+    requiredArgsPresent: missing.length === 0,
+  });
+}
+
+function extractTrainingPlanSlots(input: ChatPlannerInput): {
+  slots: Record<string, unknown>;
+  provenance: Record<string, ChatSlotProvenance>;
+} {
+  const text = input.text;
+  const folded = foldCalendarText(text);
+  const slots: Record<string, unknown> = {};
+  const provenance: Record<string, ChatSlotProvenance> = {};
+  const weeklyVolume = extractWeeklyVolumeKm(text);
+  if (weeklyVolume != null) {
+    slots.weeklyVolumeKm = weeklyVolume;
+    provenance.weeklyVolumeKm = makeSlotProvenance({
+      slot: 'weeklyVolumeKm',
+      value: weeklyVolume,
+      rawText: text,
+      turnId: input.messageId,
+      sourceType: 'user_message',
+      normalizer: 'training_weekly_volume_v1',
+      confidence: 0.96,
+    });
+  }
+
+  const sportMatch = folded.match(/\b(running|run|corrida|cycling|ciclismo|bike|swim|swimming|natacao|natação|triathlon|triathlon|gym|ginasio|ginásio|strength|forca|força)\b/);
+  if (sportMatch) {
+    const sport = normalizeTrainingSport(sportMatch[1]);
+    slots.sport = sport;
+    provenance.sport = makeSlotProvenance({
+      slot: 'sport',
+      value: sport,
+      rawText: sportMatch[0],
+      turnId: input.messageId,
+      spanStart: sportMatch.index ?? null,
+      spanEnd: sportMatch.index != null ? sportMatch.index + sportMatch[0].length : null,
+      sourceType: 'user_message',
+      normalizer: 'training_sport_v1',
+      confidence: 0.9,
+    });
+  }
+
+  const durationMatch = text.match(/\b(\d{1,2})\s*(?:weeks?|semanas?)\b/i);
+  if (durationMatch) {
+    const weeks = Number(durationMatch[1]);
+    if (Number.isInteger(weeks) && weeks > 0 && weeks <= 52) {
+      slots.durationWeeks = weeks;
+      provenance.durationWeeks = makeSlotProvenance({
+        slot: 'durationWeeks',
+        value: weeks,
+        rawText: durationMatch[0],
+        turnId: input.messageId,
+        spanStart: durationMatch.index ?? null,
+        spanEnd: durationMatch.index != null ? durationMatch.index + durationMatch[0].length : null,
+        sourceType: 'user_message',
+        normalizer: 'training_duration_weeks_v1',
+        confidence: 0.95,
+      });
+    }
+  }
+
+  const start = extractTrainingStartDate(input);
+  if (start) {
+    slots.startDate = start.value;
+    provenance.startDate = start.provenance;
+  }
+
+  const goalMatch = text.match(/\b(?:goal is|goal|objetivo(?:\s+é)?|para|to)\s+(.+?)(?=$|\.|,|\s+\b(?:in|em|for|por)\s+\d{1,2}\s*(?:weeks?|semanas?)\b)/i);
+  const goal = cleanupTrainingGoal(goalMatch?.[1] ?? inferTrainingGoalFromText(text));
+  if (goal) {
+    slots.goal = goal;
+    provenance.goal = makeSlotProvenance({
+      slot: 'goal',
+      value: goal,
+      rawText: goalMatch?.[1] ?? goal,
+      turnId: input.messageId,
+      spanStart: goalMatch?.index ?? null,
+      spanEnd: goalMatch?.index != null ? goalMatch.index + goalMatch[0].length : null,
+      sourceType: 'user_message',
+      normalizer: 'training_goal_v1',
+      confidence: goalMatch ? 0.86 : 0.72,
+    });
+  }
+
+  return { slots, provenance };
+}
+
+function missingTrainingPlanSlots(slots: Record<string, unknown>): string[] {
+  return TRAINING_PLAN_REQUIRED_SLOTS.filter((slot) => slots[slot] == null || slots[slot] === '');
+}
+
+function extractWeeklyVolumeKm(text: string): number | null {
+  const match = text.match(/\b(\d+(?:[.,]\d+)?)\s*(?:km|kilometers?|quil[oó]metros?)\b(?:\s*(?:a|per|por)\s*(?:week|semana))?/i);
+  if (!match || !/\b(week|semana)\b/i.test(text)) return null;
+  const value = Number(match[1].replace(',', '.'));
+  return Number.isFinite(value) && value >= 0 && value <= 500 ? value : null;
+}
+
+function extractTrainingStartDate(input: ChatPlannerInput): { value: string; provenance: ChatSlotProvenance } | null {
+  const now = DateTime.fromISO(input.nowIso ?? new Date().toISOString()).setZone(input.timezone);
+  const match = input.text.match(/\b(?:start(?:ing)?|começar|inicio|início)\s+(today|tomorrow|hoje|amanh[ãa]|next week|pr[oó]xima semana)\b/i);
+  if (!match) return null;
+  const folded = foldCalendarText(match[1]);
+  const date = folded === 'tomorrow' || folded === 'amanha'
+    ? now.plus({ days: 1 })
+    : folded.includes('next week') || folded.includes('proxima semana')
+      ? now.plus({ weeks: 1 }).startOf('week')
+      : now;
+  const value = date.toISODate();
+  if (!value) return null;
+  return {
+    value,
+    provenance: makeSlotProvenance({
+      slot: 'startDate',
+      value,
+      rawText: match[0],
+      turnId: input.messageId,
+      spanStart: match.index ?? null,
+      spanEnd: match.index != null ? match.index + match[0].length : null,
+      sourceType: 'user_message',
+      normalizer: 'training_start_date_v1',
+      confidence: 0.9,
+    }),
+  };
+}
+
+function normalizeTrainingSport(raw: string): string {
+  const folded = foldCalendarText(raw);
+  if (/\b(run|running|corrida)\b/.test(folded)) return 'running';
+  if (/\b(cycling|ciclismo|bike)\b/.test(folded)) return 'cycling';
+  if (/\b(swim|swimming|natacao)\b/.test(folded)) return 'swimming';
+  if (/\b(triathlon)\b/.test(folded)) return 'triathlon';
+  if (/\b(gym|ginasio|strength|forca)\b/.test(folded)) return 'strength';
+  return folded;
+}
+
+function inferTrainingGoalFromText(text: string): string | null {
+  const match = text.match(/\b(sub[-\s]?\d+\s*(?:minute|min)?\s*5k|5k|10k|marathon|meia maratona|half marathon|triathlon|ironman|build general fitness|general fitness)\b/i);
+  return match?.[0] ?? null;
+}
+
+function cleanupTrainingGoal(goal: string | null | undefined): string | null {
+  if (!goal) return null;
+  const cleaned = goal.replace(/[.?!]+$/g, '').trim();
+  return cleaned.length >= 2 ? cleaned : null;
+}
+
 function parseNotificationActionStep(input: ChatPlannerInput, folded: string): ChatPlanStep | null {
-  if (!/\b(notification|notificacao|notificação|alerta|push)\b/.test(folded)) return null;
+  if (!/\b(notification|notificacao|notificacoes|notificação|notificações|alerta|push)\b/.test(folded)) return null;
   return makeStep(input, {
     skill: 'notifications',
     action: /\b(preference|preferencia|preferência|desativa|disable|ativa|enable)\b/.test(folded)
@@ -577,6 +975,7 @@ function parseDecisionActionStep(input: ChatPlannerInput, folded: string): ChatP
 }
 
 function buildPlanFromSteps(input: ChatPlannerInput, steps: ChatPlanStep[], routingSignals: string[], confidence: number): ChatActionPlan {
+  const effectiveConfidence = calibratePlanConfidence(steps, confidence);
   return {
     schemaVersion: 1,
     userId: String(input.userId),
@@ -594,12 +993,169 @@ function buildPlanFromSteps(input: ChatPlannerInput, steps: ChatPlanStep[], rout
       ? buildTargetedClarificationQuestion(input, steps)
       : undefined,
     confidence,
+    effectiveConfidence,
+    telemetry: {
+      routeTier: 'tier0_deterministic',
+      candidates: steps.map((step) => ({ skill: step.skill, action: step.action, score: effectiveConfidence })),
+      calibratedScore: effectiveConfidence,
+      threshold: thresholdForSteps(steps),
+      verifierStatus: steps.some((step) => step.verification.required) ? 'pending' : 'not_required',
+    },
     debug: {
       routingSignals,
       rejectedFastPaths: [],
       parser: 'deterministic',
     },
   };
+}
+
+function buildNeedsInputPlan(input: ChatPlannerInput, opts: {
+  skill: ChatActionSkill;
+  action: ChatActionName;
+  question: string;
+  args: Record<string, unknown>;
+  routingSignals: string[];
+}): ChatActionPlan {
+  const step = makeStep(input, {
+    skill: opts.skill,
+    action: opts.action,
+    risk: 'ambiguous',
+    provider: 'nexus',
+    args: opts.args,
+    requiredArgsPresent: false,
+  });
+  return {
+    schemaVersion: 1,
+    userId: String(input.userId),
+    tenantId: String(input.tenantId),
+    conversationId: input.conversationId,
+    messageId: input.messageId,
+    locale: input.locale || 'pt-BR',
+    timezone: input.timezone,
+    channel: input.channel,
+    createdAt: input.nowIso ?? new Date().toISOString(),
+    planner: 'deterministic',
+    steps: [step],
+    requiresConfirmation: false,
+    clarificationQuestion: opts.question,
+    confidence: 0.72,
+    effectiveConfidence: 0.72,
+    telemetry: {
+      routeTier: 'tier0_deterministic',
+      candidates: [{ skill: opts.skill, action: opts.action, score: 0.72 }],
+      calibratedScore: 0.72,
+      threshold: 0.86,
+      verifierStatus: 'not_required',
+      outcome: 'needs_input',
+    },
+    debug: {
+      routingSignals: opts.routingSignals,
+      rejectedFastPaths: [],
+      parser: 'deterministic',
+    },
+  };
+}
+
+function buildMessageOnlyPlan(input: ChatPlannerInput, text: string, signal: string): ChatActionPlan {
+  const args = { text };
+  const step: ChatPlanStep = {
+    stepId: `step-${randomUUID()}`,
+    skill: 'connections',
+    type: 'answer',
+    action: 'connections_status',
+    risk: 'read_only',
+    riskClass: 'R0',
+    provider: 'none',
+    args,
+    requiredArgsPresent: true,
+    idempotencyKey: buildStepIdempotencyKey(input, 'connections_status', args),
+    verification: { required: false, method: 'none' },
+  };
+  return {
+    schemaVersion: 1,
+    userId: String(input.userId),
+    tenantId: String(input.tenantId),
+    conversationId: input.conversationId,
+    messageId: input.messageId,
+    locale: input.locale || 'pt-BR',
+    timezone: input.timezone,
+    channel: input.channel,
+    createdAt: input.nowIso ?? new Date().toISOString(),
+    planner: 'deterministic',
+    steps: [step],
+    requiresConfirmation: false,
+    confidence: 0.99,
+    effectiveConfidence: 0.99,
+    telemetry: {
+      routeTier: 'tier0_deterministic',
+      candidates: [{ skill: 'connections', action: 'connections_status', score: 0.99 }],
+      calibratedScore: 0.99,
+      threshold: 0.7,
+      verifierStatus: 'not_required',
+      outcome: signal,
+    },
+    debug: { routingSignals: [signal], rejectedFastPaths: [], parser: 'deterministic' },
+  };
+}
+
+function buildStepIdempotencyKey(
+  input: Pick<ChatPlannerInput, 'userId' | 'tenantId'>,
+  action: string,
+  args: Record<string, unknown>,
+): string {
+  return buildNormalizedActionHash({
+    userId: input.userId,
+    tenantId: input.tenantId,
+    action,
+    args: normalizeHashArgs(args),
+  });
+}
+
+function normalizeHashArgs(value: unknown, keyHint?: string): unknown {
+  if (typeof value === 'string' && keyHint && isHashDateTimeKey(keyHint)) {
+    const parsed = DateTime.fromISO(value, { setZone: true });
+    if (parsed.isValid) return parsed.toUTC().toISO({ suppressMilliseconds: true });
+  }
+  if (Array.isArray(value)) return value.map((entry) => normalizeHashArgs(entry, keyHint));
+  if (value && typeof value === 'object') {
+    const normalized = Object.create(null) as Record<string, unknown>;
+    for (const [key, entry] of Object.entries(value as Record<string, unknown>)) {
+      if (entry !== undefined) normalized[key] = normalizeHashArgs(entry, key);
+    }
+    return normalized;
+  }
+  return value;
+}
+
+function isHashDateTimeKey(keyHint: string): boolean {
+  const normalized = keyHint.replace(/[^a-z0-9]/gi, '').toLowerCase();
+  return new Set([
+    'date',
+    'time',
+    'datetime',
+    'due',
+    'dueat',
+    'duedate',
+    'duedatetime',
+    'startat',
+    'startdate',
+    'starttime',
+    'startdatetime',
+    'endat',
+    'enddate',
+    'endtime',
+    'enddatetime',
+    'scheduledat',
+    'scheduleddate',
+    'scheduleddatetime',
+    'remindat',
+    'reminderat',
+    'deadline',
+    'createdat',
+    'updatedat',
+    'expiresat',
+    'racedate',
+  ]).has(normalized);
 }
 
 function makeStep(
@@ -610,6 +1166,7 @@ function makeStep(
     risk: ChatActionRisk;
     provider?: ChatProvider;
     args: Record<string, unknown>;
+    slotProvenance?: Record<string, ChatSlotProvenance>;
     requiredArgsPresent: boolean;
   },
 ): ChatPlanStep {
@@ -620,10 +1177,12 @@ function makeStep(
     type: actionToStepType(opts.action),
     action: opts.action,
     risk: opts.risk,
+    riskClass: riskClassForRisk(opts.risk),
     provider: opts.provider ?? definition?.providerDependencies[0] ?? 'nexus',
     args: opts.args,
+    slotProvenance: opts.slotProvenance,
     requiredArgsPresent: opts.requiredArgsPresent,
-    idempotencyKey: buildNormalizedActionHash({ action: opts.action, args: opts.args }),
+    idempotencyKey: buildStepIdempotencyKey(input, opts.action, opts.args),
     verification: {
       required: definition?.verifier !== 'none',
       method: definition?.verifier ?? 'none',
@@ -643,6 +1202,14 @@ const FORBIDDEN_MODEL_ARG_KEYS = new Set([
   'owneruserid',
   'ownerid',
   'owner',
+  'proto',
+  'prototype',
+  'constructor',
+  'customerid',
+  'subjectid',
+  'principalid',
+  'memberid',
+  'actorid',
 ]);
 
 function sanitizePlannerArgs(args: Record<string, unknown>): Record<string, unknown> {
@@ -656,7 +1223,7 @@ function sanitizePlannerArgValue(value: unknown): unknown {
   }
   if (!isRecord(value)) return value;
 
-  const sanitized: Record<string, unknown> = {};
+  const sanitized = Object.create(null) as Record<string, unknown>;
   for (const [key, child] of Object.entries(value)) {
     if (isForbiddenModelArgKey(key)) continue;
     sanitized[key] = sanitizePlannerArgValue(child);
@@ -683,6 +1250,9 @@ function buildTargetedClarificationQuestion(input: ChatPlannerInput, steps: Chat
   if (!step) return defaultClarification(input);
   const missing = missingRequiredFieldsForStep(step);
   const pt = input.locale?.startsWith('pt');
+  if (step.action === 'complete_task' && (missing.includes('taskId') || missing.includes('listId'))) {
+    return pt ? 'Qual tarefa devo concluir?' : 'Which task should I mark done?';
+  }
   if (missing.length === 1) {
     return targetedFieldQuestion(step, missing[0], pt);
   }
@@ -721,6 +1291,16 @@ function targetedFieldQuestion(step: ChatPlanStep, field: string, pt?: boolean):
         return 'Qual é a decisão?';
       case 'sessionId':
         return 'Qual é a sessão de treino?';
+      case 'sport':
+        return 'Qual modalidade deve orientar o plano de treino?';
+      case 'goal':
+        return 'Qual é o objetivo principal do plano de treino?';
+      case 'durationWeeks':
+        return 'Quantas semanas deve durar o plano?';
+      case 'startDate':
+        return 'Quando queres começar o plano?';
+      case 'weeklyVolumeKm':
+        return 'Quantos quilómetros por semana estás a fazer agora?';
       case 'receiptId':
         return 'Qual recibo ou transação devo usar?';
       case 'category':
@@ -755,6 +1335,16 @@ function targetedFieldQuestion(step: ChatPlanStep, field: string, pt?: boolean):
       return 'Which decision should I use?';
     case 'sessionId':
       return 'Which training session should I use?';
+    case 'sport':
+      return 'Which sport should the training plan focus on?';
+    case 'goal':
+      return 'What is the main goal for the training plan?';
+    case 'durationWeeks':
+      return 'How many weeks should the plan last?';
+    case 'startDate':
+      return 'When should the plan start?';
+    case 'weeklyVolumeKm':
+      return 'What is your current weekly mileage in km?';
     case 'receiptId':
       return 'Which receipt or transaction should I use?';
     case 'category':
@@ -782,6 +1372,11 @@ function fieldLabel(field: string, pt?: boolean): string {
     body: ['mensagem', 'message'],
     decisionId: ['decisão', 'decision'],
     sessionId: ['sessão de treino', 'training session'],
+    sport: ['modalidade', 'sport'],
+    goal: ['objetivo', 'goal'],
+    durationWeeks: ['duração em semanas', 'duration in weeks'],
+    startDate: ['data de início', 'start date'],
+    weeklyVolumeKm: ['volume semanal em km', 'weekly mileage in km'],
     receiptId: ['recibo ou transação', 'receipt or transaction'],
     category: ['categoria', 'category'],
     packageId: ['pacote de content', 'content package'],
@@ -827,26 +1422,171 @@ function parseSimpleTaskStep(input: ChatPlannerInput, text: string | null): Chat
   const folded = foldCalendarText(text);
   if (hasLegacySubtaskIntent(text)) return null;
   if (!/\b(cria|criar|adiciona|adicionar|create|add)\b/.test(folded) || !/\b(task|tarefa|todo|lembrete)\b/.test(folded)) return null;
-  const titleMatch = text.match(/\b(?:tarefa|task|todo|lembrete)\s+(?:para\s+|chamad[oa]\s+|called\s+|named\s+)?["“]?(.+?)["”]?(?=$|[,.!?])/i);
-  const title = titleMatch?.[1]?.trim();
+  const titleSlot = extractTaskTitleSlot(input, text);
+  const title = titleSlot?.value.trim();
   if (!title) return null;
-  const args = { title, list: null, dueDateTime: null, notes: null };
+  const dueSlot = extractTaskDueDateTimeSlot(input, text);
+  const unsafeTitle = isUnsafeTaskTitle(title);
+  const args = unsafeTitle
+    ? { title: null, rejectedTitle: title, list: null, dueDateTime: dueSlot?.value ?? null, notes: null }
+    : { title, list: null, dueDateTime: dueSlot?.value ?? null, notes: null };
+  const slotProvenance: Record<string, ChatSlotProvenance> = {
+    title: makeSlotProvenance({
+      slot: 'title',
+      value: title,
+      rawText: titleSlot?.rawText ?? title,
+      turnId: input.messageId,
+      spanStart: titleSlot?.spanStart ?? null,
+      spanEnd: titleSlot?.spanEnd ?? null,
+      sourceType: 'user_message',
+      normalizer: 'task_title_v2',
+      confidence: titleSlot?.confidence ?? 0.9,
+    }),
+  };
+  if (dueSlot) {
+    slotProvenance.dueDateTime = makeSlotProvenance({
+      slot: 'dueDateTime',
+      value: dueSlot.value,
+      rawText: dueSlot.rawText,
+      turnId: input.messageId,
+      spanStart: dueSlot.spanStart,
+      spanEnd: dueSlot.spanEnd,
+      sourceType: 'user_message',
+      normalizer: 'task_due_datetime_v1',
+      confidence: dueSlot.confidence,
+    });
+  }
   return {
     stepId: `step-${randomUUID()}`,
     skill: 'tasks',
     type: 'create_task',
     action: 'create_task',
-    risk: 'safe_write',
+    risk: unsafeTitle ? 'ambiguous' : 'safe_write',
+    riskClass: unsafeTitle ? 'R4' : 'R1',
     provider: 'nexus',
     args,
-    requiredArgsPresent: true,
-    idempotencyKey: buildNormalizedActionHash({ action: 'create_task', args }),
+    slotProvenance,
+    requiredArgsPresent: !unsafeTitle,
+    idempotencyKey: buildStepIdempotencyKey(input, 'create_task', args),
     verification: {
       required: true,
       method: 'local_read_back',
-      expectedFields: { title },
+      expectedFields: unsafeTitle ? {} : { title },
     },
   };
+}
+
+function isUnsafeTaskTitle(title: string): boolean {
+  const folded = foldCalendarText(title);
+  return /\b(delete|remove|erase|wipe|apaga|apagar|elimina|eliminar|remove)\b.*\b(all|todos|todas|everything|tasks|tarefas|events|eventos|emails?)\b/.test(folded)
+    || /\b(send|envia|enviar)\b.*\b(all|todos|todas|emails?|mensagens)\b/.test(folded)
+    || /\b(delete|apaga|apagar)\b.*\b(church|igreja|event|evento)\b/.test(folded);
+}
+
+function extractTaskTitleSlot(input: ChatPlannerInput, text: string): { value: string; rawText: string; spanStart: number; spanEnd: number; confidence: number } | null {
+  const explicitPatterns = [
+    /\b(?:called|named|titled|with\s+title|chamad[oa]|com\s+o\s+t[ií]tulo|t[ií]tulo)\s*[:\-]?\s*["“]?([\s\S]+?)["”]?(?=$|[.!?]\s*$)/i,
+  ];
+  for (const pattern of explicitPatterns) {
+    const match = pattern.exec(text);
+    const raw = match?.[1]?.trim();
+    if (!match || !raw) continue;
+    const cleaned = cleanupTaskTitle(raw, input);
+    if (cleaned.length > 0) {
+      const start = match.index + match[0].indexOf(match[1]);
+      return { value: cleaned, rawText: raw, spanStart: start, spanEnd: start + match[1].length, confidence: 0.97 };
+    }
+  }
+
+  const taskNoun = /\b(?:task|tarefa|todo|lembrete)\b/i.exec(text);
+  if (!taskNoun) return null;
+  let rest = text.slice(taskNoun.index + taskNoun[0].length).trim();
+  rest = rest.replace(/^(?:to|for|para)\s+/i, '');
+  rest = stripLeadingTaskTemporalPhrase(rest, input);
+  const cleaned = cleanupTaskTitle(rest, input);
+  if (cleaned.length === 0) return null;
+  const start = text.indexOf(rest);
+  return { value: cleaned, rawText: rest, spanStart: start >= 0 ? start : taskNoun.index, spanEnd: start >= 0 ? start + rest.length : text.length, confidence: 0.82 };
+}
+
+function cleanupTaskTitle(title: string, input: ChatPlannerInput): string {
+  let cleaned = title.trim()
+    .replace(/^["“]|["”]$/g, '')
+    .replace(/[.?!]+$/g, '')
+    .trim();
+  cleaned = stripTaskTemporalPhrase(cleaned, input).trim();
+  cleaned = cleaned
+    .replace(/\s+(?:tomorrow|amanh[ãa]|today|hoje)(?:\s+(?:at|[àa]s?|as|pelas?|by|para\s+as?)\s*)?(?:\d{1,2}h(?:\d{2})?|\d{1,2}(?::\d{2})?\s*(?:am|pm)?)\s*$/i, '')
+    .trim();
+  cleaned = cleaned
+    .replace(/\s+\b(?:please|por favor)\b$/i, '')
+    .replace(/\s{2,}/g, ' ')
+    .trim();
+  return cleaned;
+}
+
+function stripLeadingTaskTemporalPhrase(text: string, input: ChatPlannerInput): string {
+  const folded = foldCalendarText(text);
+  if (!/^(today|tomorrow|amanha|amanhã|hoje|next|proxim[ao]|próxim[ao]|\d{1,2}[\/-]\d{1,2})\b/.test(folded)) return text;
+  return text
+    .replace(/^(?:today|tomorrow|amanh[ãa]|hoje)(?:\s+(?:at|às?|as|pelas?)\s*)?(?:\d{1,2}(?::\d{2})?\s*(?:am|pm)?|\d{1,2}h(?:\d{2})?)?\s*/i, '')
+    .replace(/^(?:next|pr[oó]xim[ao])\s+\w+\s*/i, '')
+    .trim();
+}
+
+function stripTaskTemporalPhrase(title: string, input: ChatPlannerInput): string {
+  const due = extractTaskDueDateTimeSlot(input, title);
+  if (!due) return title;
+  return `${title.slice(0, due.spanStart)} ${title.slice(due.spanEnd)}`.replace(/\s{2,}/g, ' ').trim();
+}
+
+function extractTaskDueDateTimeSlot(input: ChatPlannerInput, text: string): { value: string; rawText: string; spanStart: number; spanEnd: number; confidence: number } | null {
+  const now = DateTime.fromISO(input.nowIso ?? new Date().toISOString()).setZone(input.timezone);
+  const patterns = [
+    /\b(?:for|para|due|vence|pra|p[ao]ra)?\s*(?<date>tomorrow|amanh[ãa]|today|hoje)\b\s+(?:at|às?|as|pelas?|by|para\s+as)?\s*(?<time>\d{1,2}h(?:\d{2})?|\d{1,2}(?::\d{2})?\s*(?:am|pm)?)\b/i,
+    /\b(?<date>tomorrow|amanh[ãa]|today|hoje)\b(?:\s+(?:at|às?|as|pelas?|by|para)\s*)?(?<time>\d{1,2}h(?:\d{2})?|\d{1,2}(?::\d{2})?\s*(?:am|pm)?)?/i,
+    /\b(?:for|para|due|vence|pra|p[ao]ra)\s+(?<date>tomorrow|amanh[ãa]|today|hoje)\b(?:\s+(?:at|às?|as|pelas?)\s*)?(?<time>\d{1,2}h(?:\d{2})?|\d{1,2}(?::\d{2})?\s*(?:am|pm)?)?/i,
+    /\b(?:at|às?|as|pelas?)\s*(?<time>\d{1,2}h(?:\d{2})?|\d{1,2}(?::\d{2})?\s*(?:am|pm)?)\b/i,
+  ];
+  for (const pattern of patterns) {
+    const match = pattern.exec(text);
+    if (!match?.groups) continue;
+    const raw = match[0];
+    const dateWord = foldCalendarText(String(match.groups.date || ''));
+    let date = now;
+    if (dateWord === 'tomorrow' || dateWord === 'amanha') date = now.plus({ days: 1 });
+    if (!dateWord && /\b(?:at|às?|as|pelas?)\b/i.test(raw)) date = now;
+    const parsedTime = parseTaskClockTime(match.groups.time || raw);
+    if (!parsedTime) continue;
+    const value = date.set({
+      hour: parsedTime.hour,
+      minute: parsedTime.minute,
+      second: 0,
+      millisecond: 0,
+    }).toISO();
+    if (!value) continue;
+    return {
+      value,
+      rawText: raw.trim(),
+      spanStart: match.index,
+      spanEnd: match.index + raw.length,
+      confidence: dateWord ? 0.94 : 0.78,
+    };
+  }
+  return null;
+}
+
+function parseTaskClockTime(rawInput: unknown): { hour: number; minute: number } | null {
+  const raw = String(rawInput || '').trim().toLowerCase();
+  const match = raw.match(/\b(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\b/) || raw.match(/\b(\d{1,2})h(\d{2})?\b/);
+  if (!match) return null;
+  let hour = Number(match[1]);
+  const minute = Number(match[2] || 0);
+  const meridiem = match[3];
+  if (!Number.isInteger(hour) || hour < 0 || hour > 23 || !Number.isInteger(minute) || minute < 0 || minute > 59) return null;
+  if (meridiem === 'pm' && hour < 12) hour += 12;
+  if (meridiem === 'am' && hour === 12) hour = 0;
+  return { hour, minute };
 }
 
 function extractTaskClause(text: string): string | null {
@@ -872,10 +1612,11 @@ function buildClarificationPlan(input: ChatPlannerInput, question: string): Chat
       type: 'clarification',
       action: 'schedule_event',
       risk: 'ambiguous',
+      riskClass: 'R4',
       provider: 'none',
       args: {},
       requiredArgsPresent: false,
-      idempotencyKey: buildNormalizedActionHash({ action: 'clarification', text: input.text }),
+      idempotencyKey: buildStepIdempotencyKey(input, 'schedule_event', { text: input.text }),
       verification: { required: false, method: 'none' },
     }],
     requiresConfirmation: false,
@@ -887,10 +1628,12 @@ function buildClarificationPlan(input: ChatPlannerInput, question: string): Chat
 export function buildLlmPlannerPrompt(input: ChatPlannerInput): { systemPrompt: string; userPrompt: string } {
   const subset = selectRegistrySubsetForMessage(input.text);
   const registry = subset.length > 0 ? subset : getChatActionRegistry().filter((entry) => entry.skill === 'tasks' || entry.skill === 'secretary_calendar');
+  const examples = retrievePlannerExamples(input, registry).slice(0, 6);
   return {
     systemPrompt: [
       'You convert Nexus chat messages into a compact JSON action plan proposal.',
       'Return JSON only. Do not execute anything. Do not invent userId, tenantId, provider objects, or success.',
+      'Allowed output types: action_plan, needs_input, needs_confirmation, open_surface, ambiguous_reference, unsupported, blocked_by_policy, no_action_chat_response.',
       'Use only these actions and required fields. Mark missing fields explicitly.',
       JSON.stringify(registry.map((entry) => ({
         skill: entry.skill,
@@ -898,8 +1641,11 @@ export function buildLlmPlannerPrompt(input: ChatPlannerInput): { systemPrompt: 
         requiredFields: entry.requiredFields,
         optionalFields: entry.optionalFields,
         risk: entry.risk,
+        riskClass: entry.riskClass,
         confirmationPolicy: entry.confirmationPolicy,
+        uiSurfaces: entry.uiSurfaces,
       }))),
+      examples.length > 0 ? `Relevant examples: ${JSON.stringify(examples)}` : '',
     ].join('\n'),
     userPrompt: JSON.stringify({
       text: input.text,
@@ -907,6 +1653,7 @@ export function buildLlmPlannerPrompt(input: ChatPlannerInput): { systemPrompt: 
       timezone: input.timezone,
       now: input.nowIso ?? new Date().toISOString(),
       expectedShape: {
+        outputType: 'action_plan',
         steps: [{ skill: 'tasks', action: 'create_task', args: {}, missingFields: [], confidence: 0.0 }],
         confidence: 0.0,
       },
@@ -914,15 +1661,57 @@ export function buildLlmPlannerPrompt(input: ChatPlannerInput): { systemPrompt: 
   };
 }
 
-export function parseLlmPlannerJson(raw: string, input: ChatPlannerInput): ChatActionPlan | null {
-  let parsed: any;
+export function buildTier1ClassifierPrompt(input: ChatPlannerInput): { systemPrompt: string; userPrompt: string } {
+  const subset = selectRegistrySubsetForMessage(input.text);
+  const registry = (subset.length > 0 ? subset : getChatActionRegistry())
+    .filter((entry) => entry.risk !== 'destructive' && entry.risk !== 'financial' && entry.risk !== 'admin_security')
+    .slice(0, 8);
+  const examples = retrievePlannerExamples(input, registry).slice(0, 4);
+  return {
+    systemPrompt: [
+      'Classify a Nexus chat message into the smallest likely skill/action candidate set.',
+      'Return JSON only. Do not execute anything. Do not invent trusted IDs or claim success.',
+      'Use Tier 1 only for simple routing and slot hints. Complex/multistep messages may return needsTier2=true.',
+      JSON.stringify(registry.map((entry) => ({
+        skill: entry.skill,
+        action: entry.action,
+        requiredFields: entry.requiredFields,
+        optionalFields: entry.optionalFields,
+        risk: entry.risk,
+        riskClass: entry.riskClass,
+      }))),
+      examples.length > 0 ? `Relevant examples: ${JSON.stringify(examples)}` : '',
+    ].join('\n'),
+    userPrompt: JSON.stringify({
+      text: input.text,
+      locale: input.locale || 'pt-BR',
+      timezone: input.timezone,
+      now: input.nowIso ?? new Date().toISOString(),
+      expectedShape: {
+        candidates: [{ skill: 'tasks', action: 'create_task', score: 0.0, args: {}, missingFields: [] }],
+        needsTier2: false,
+      },
+    }),
+  };
+}
+
+function parsePlannerJsonObject(raw: string): any | null {
   try {
-    parsed = JSON.parse(raw);
+    return JSON.parse(raw);
   } catch {
     const fence = raw.match(/```(?:json)?\s*([\s\S]*?)```/i);
     if (!fence) return null;
-    try { parsed = JSON.parse(fence[1]); } catch { return null; }
+    try { return JSON.parse(fence[1]); } catch { return null; }
   }
+}
+
+type PlannerJsonParseOptions = {
+  routeTier?: ChatActionTelemetry['routeTier'];
+  routingSignal?: string;
+};
+
+export function parseLlmPlannerJson(raw: string, input: ChatPlannerInput, options: PlannerJsonParseOptions = {}): ChatActionPlan | null {
+  const parsed = parsePlannerJsonObject(raw);
   if (!parsed || !Array.isArray(parsed.steps) || parsed.steps.length === 0) return null;
   const steps: ChatPlanStep[] = [];
   for (const candidate of parsed.steps.slice(0, 5)) {
@@ -935,16 +1724,19 @@ export function parseLlmPlannerJson(raw: string, input: ChatPlannerInput): ChatA
       ? candidate.missingFields.filter((field: unknown): field is string => typeof field === 'string')
       : definition.requiredFields.filter((field) => args[field] == null || args[field] === '');
     const risk = definition.risk;
+    const slotProvenance = buildLlmSlotProvenance(input, args, definition.requiredFields, provenanceSourceForRouteTier(options.routeTier));
     steps.push({
       stepId: `step-${randomUUID()}`,
       skill,
       type: actionToStepType(action),
       action,
       risk,
+      riskClass: riskClassForRisk(risk),
       provider: normalizeProvider(args.provider),
       args,
+      slotProvenance,
       requiredArgsPresent: missing.length === 0,
-      idempotencyKey: buildNormalizedActionHash({ action, args }),
+      idempotencyKey: buildStepIdempotencyKey(input, action, args),
       verification: {
         required: definition.verifier !== 'none',
         method: definition.verifier,
@@ -953,7 +1745,11 @@ export function parseLlmPlannerJson(raw: string, input: ChatPlannerInput): ChatA
     });
   }
   const requiresConfirmation = steps.some(stepRequiresConfirmation);
-  const needsClarification = steps.some((step) => !step.requiredArgsPresent);
+  const confidence = clampConfidence(Number(parsed.confidence ?? Math.min(...steps.map((step) => step.requiredArgsPresent ? 0.72 : 0.45))));
+  const effectiveConfidence = calibratePlanConfidence(steps, confidence);
+  const threshold = thresholdForSteps(steps);
+  const belowCalibratedThreshold = effectiveConfidence < threshold;
+  const needsClarification = steps.some((step) => !step.requiredArgsPresent) || belowCalibratedThreshold;
   return {
     schemaVersion: 1,
     userId: String(input.userId),
@@ -968,32 +1764,234 @@ export function parseLlmPlannerJson(raw: string, input: ChatPlannerInput): ChatA
     steps,
     requiresConfirmation,
     clarificationQuestion: needsClarification ? buildTargetedClarificationQuestion(input, steps) : undefined,
-    confidence: clampConfidence(Number(parsed.confidence ?? Math.min(...steps.map((step) => step.requiredArgsPresent ? 0.72 : 0.45)))),
+    confidence,
+    effectiveConfidence,
+    telemetry: {
+      routeTier: options.routeTier ?? 'tier2_structured_planner',
+      candidates: steps.map((step) => ({ skill: step.skill, action: step.action, score: effectiveConfidence })),
+      calibratedScore: effectiveConfidence,
+      threshold,
+      verifierStatus: steps.some((step) => step.verification.required) ? 'pending' : 'not_required',
+      failureReason: belowCalibratedThreshold ? 'below_calibrated_threshold' : undefined,
+    },
     debug: {
-      routingSignals: ['llm_structured_planner'],
+      routingSignals: [options.routingSignal ?? 'llm_structured_planner'],
       rejectedFastPaths: [],
       parser: 'model_assisted',
     },
   };
 }
 
+export function parseTier1ClassifierJson(raw: string, input: ChatPlannerInput): ChatActionPlan | null {
+  const parsed = parsePlannerJsonObject(raw);
+  if (!parsed || parsed.needsTier2 === true || !Array.isArray(parsed.candidates) || parsed.candidates.length === 0) return null;
+  const sorted = parsed.candidates
+    .filter((candidate: any) => candidate && typeof candidate.skill === 'string' && typeof candidate.action === 'string')
+    .sort((a: any, b: any) => Number(b.score ?? 0) - Number(a.score ?? 0));
+  const top = sorted[0];
+  if (!top || Number(top.score ?? 0) < 0.72) return null;
+  const draft = {
+    confidence: Number(top.score ?? parsed.confidence ?? 0.72),
+    steps: [{
+      skill: top.skill,
+      action: top.action,
+      args: typeof top.args === 'object' && top.args ? top.args : {},
+      missingFields: Array.isArray(top.missingFields) ? top.missingFields : undefined,
+    }],
+  };
+  const plan = parseLlmPlannerJson(JSON.stringify(draft), input, {
+    routeTier: 'tier1_classifier',
+    routingSignal: 'tier1_classifier_slot_helper',
+  });
+  if (!plan) return null;
+  const threshold = plan.telemetry?.threshold ?? thresholdForSteps(plan.steps);
+  if (plan.steps.every((step) => step.requiredArgsPresent) && (plan.effectiveConfidence ?? plan.confidence) < threshold) {
+    return null;
+  }
+  if (plan.telemetry) {
+    plan.telemetry.candidates = sorted.slice(0, 3).map((candidate: any) => ({
+      skill: candidate.skill,
+      action: candidate.action,
+      score: clampConfidence(Number(candidate.score ?? 0)),
+    })).filter((candidate: any) => Boolean(findChatActionDefinition(candidate.skill, candidate.action)));
+  }
+  return plan;
+}
+
 async function tryBuildLlmStructuredPlan(input: ChatPlannerInput): Promise<ChatActionPlan | null> {
+  if (!isChatLlmTier2Enabled(process.env, { userId: input.userId, tenantId: input.tenantId })) return null;
   const prompt = buildLlmPlannerPrompt(input);
   try {
-    const result = await completeOneShotWithFallback(
-      prompt.systemPrompt,
-      prompt.userPrompt,
-      'chat_action_planner',
-      async () => { throw new Error('anthropic_action_planner_disabled'); },
-      { temperature: 0, maxTokens: 900, jsonMode: true, userId: input.userId, tenantId: input.tenantId, timeoutMs: 3500 },
-    );
+    const result = await completeStructuredPlannerWithCascade(prompt, input);
     const plan = parseLlmPlannerJson(result.text, input);
     if (plan?.debug) plan.debug.modelProvider = result.provider;
+    if (plan?.telemetry) {
+      plan.telemetry.modelProvider = result.provider;
+      plan.telemetry.model = result.model;
+      plan.telemetry.estimatedTokenCostUsd = estimatePlannerCallCostUsd(result.model, prompt.systemPrompt, prompt.userPrompt, result.text);
+    }
     return plan;
   } catch (err) {
     logger.debug({ err, userId: input.userId, tenantId: input.tenantId }, 'chat action llm structured planner unavailable');
     return null;
   }
+}
+
+async function tryBuildTier1ClassifierPlan(input: ChatPlannerInput): Promise<ChatActionPlan | null> {
+  if (!isChatLlmTier1Enabled(process.env, { userId: input.userId, tenantId: input.tenantId })) return null;
+  const prompt = buildTier1ClassifierPrompt(input);
+  try {
+    if (!isGeminiProviderConfigured()) return null;
+    const text = await completeOneShot(
+      prompt.systemPrompt,
+      prompt.userPrompt,
+      'chat_action_tier1_classifier',
+      {
+        model: CHAT_LLM_TIER1_GEMINI_MODEL,
+        temperature: 0,
+        maxTokens: 450,
+        jsonMode: true,
+        userId: input.userId,
+        tenantId: input.tenantId,
+        timeoutMs: 1800,
+      },
+    );
+    const plan = parseTier1ClassifierJson(text, input);
+    if (plan?.debug) plan.debug.modelProvider = 'gemini';
+    if (plan?.telemetry) {
+      plan.telemetry.modelProvider = 'gemini';
+      plan.telemetry.model = CHAT_LLM_TIER1_GEMINI_MODEL;
+      plan.telemetry.estimatedTokenCostUsd = estimatePlannerCallCostUsd(CHAT_LLM_TIER1_GEMINI_MODEL, prompt.systemPrompt, prompt.userPrompt, text);
+    }
+    return plan;
+  } catch (err) {
+    logger.debug({ err, userId: input.userId, tenantId: input.tenantId }, 'chat action tier1 classifier unavailable');
+    return null;
+  }
+}
+
+async function tryBuildEscalationReviewerPlan(input: ChatPlannerInput): Promise<ChatActionPlan | null> {
+  if (!isChatEscalationReviewerEnabled(process.env, { userId: input.userId, tenantId: input.tenantId })) return null;
+  const basePrompt = buildLlmPlannerPrompt(input);
+  const prompt = {
+    systemPrompt: [
+      basePrompt.systemPrompt,
+      'Escalation reviewer mode: only return a plan when the request is supported, semantically clear, and safer than asking a clarification. Otherwise return unsupported or needs_input.',
+      'Never approve destructive, financial, admin, or external-side-effect execution without confirmation.',
+    ].join('\n'),
+    userPrompt: basePrompt.userPrompt,
+  };
+  try {
+    const result = await completeEscalationReviewerWithCascade(prompt, input);
+    const plan = parseLlmPlannerJson(result.text, input, {
+      routeTier: 'tier3_reviewer',
+      routingSignal: 'tier3_escalation_reviewer',
+    });
+    if (plan?.debug) plan.debug.modelProvider = result.provider;
+    if (plan?.telemetry) {
+      plan.telemetry.modelProvider = result.provider;
+      plan.telemetry.model = result.model;
+      plan.telemetry.estimatedTokenCostUsd = estimatePlannerCallCostUsd(result.model, prompt.systemPrompt, prompt.userPrompt, result.text);
+    }
+    return plan;
+  } catch (err) {
+    logger.debug({ err, userId: input.userId, tenantId: input.tenantId }, 'chat action escalation reviewer unavailable');
+    return null;
+  }
+}
+
+async function completeStructuredPlannerWithCascade(
+  prompt: { systemPrompt: string; userPrompt: string },
+  input: ChatPlannerInput,
+): Promise<{ text: string; provider: 'gemini' | 'openai'; model: string }> {
+  if (isGeminiProviderConfigured()) {
+    try {
+      const text = await completeOneShot(
+        prompt.systemPrompt,
+        prompt.userPrompt,
+        'chat_action_planner',
+        {
+          model: CHAT_LLM_TIER2_GEMINI_MODEL,
+          temperature: 0,
+          maxTokens: 900,
+          jsonMode: true,
+          userId: input.userId,
+          tenantId: input.tenantId,
+          timeoutMs: 3500,
+        },
+      );
+      return { text, provider: 'gemini', model: CHAT_LLM_TIER2_GEMINI_MODEL };
+    } catch (err) {
+      logger.warn({ err, userId: input.userId, tenantId: input.tenantId }, 'Gemini chat action planner failed, trying OpenAI nano fallback');
+    }
+  }
+
+  const openai = require('./openai-provider') as typeof import('./openai-provider');
+  if (!openai.isOpenAIConfigured()) {
+    throw new Error('chat action planner OpenAI fallback not configured');
+  }
+  const text = await openai.completeOneShot(
+    prompt.systemPrompt,
+    prompt.userPrompt,
+    'chat_action_planner_openai_fallback',
+    {
+      model: CHAT_LLM_TIER2_OPENAI_FALLBACK_MODEL,
+      temperature: 0,
+      maxTokens: 900,
+      jsonMode: true,
+      userId: input.userId,
+      tenantId: input.tenantId,
+      timeoutMs: 3500,
+    },
+  );
+  return { text, provider: 'openai', model: CHAT_LLM_TIER2_OPENAI_FALLBACK_MODEL };
+}
+
+async function completeEscalationReviewerWithCascade(
+  prompt: { systemPrompt: string; userPrompt: string },
+  input: ChatPlannerInput,
+): Promise<{ text: string; provider: 'gemini' | 'openai'; model: string }> {
+  if (isGeminiProviderConfigured()) {
+    try {
+      const text = await completeOneShot(
+        prompt.systemPrompt,
+        prompt.userPrompt,
+        'chat_action_escalation_reviewer',
+        {
+          model: CHAT_LLM_TIER3_GEMINI_MODEL,
+          temperature: 0,
+          maxTokens: 900,
+          jsonMode: true,
+          userId: input.userId,
+          tenantId: input.tenantId,
+          timeoutMs: 4500,
+        },
+      );
+      return { text, provider: 'gemini', model: CHAT_LLM_TIER3_GEMINI_MODEL };
+    } catch (err) {
+      logger.warn({ err, userId: input.userId, tenantId: input.tenantId }, 'Gemini chat action reviewer failed, trying OpenAI mini fallback');
+    }
+  }
+
+  const openai = require('./openai-provider') as typeof import('./openai-provider');
+  if (!openai.isOpenAIConfigured()) {
+    throw new Error('chat action escalation reviewer OpenAI fallback not configured');
+  }
+  const text = await openai.completeOneShot(
+    prompt.systemPrompt,
+    prompt.userPrompt,
+    'chat_action_escalation_openai_fallback',
+    {
+      model: CHAT_LLM_TIER3_OPENAI_FALLBACK_MODEL,
+      temperature: 0,
+      maxTokens: 900,
+      jsonMode: true,
+      userId: input.userId,
+      tenantId: input.tenantId,
+      timeoutMs: 4500,
+    },
+  );
+  return { text, provider: 'openai', model: CHAT_LLM_TIER3_OPENAI_FALLBACK_MODEL };
 }
 
 export async function executeChatActionPlan(
@@ -1008,6 +2006,7 @@ export async function executeChatActionPlan(
       type: 'chat_action_needs_input',
       actionStatus: 'needs_clarification',
       clarification: { question: plan.clarificationQuestion || defaultClarification(input), reason: 'missing_required_fields' },
+      openSurface: openSurfacePayloadForStep(plan.steps[0], null, input),
     });
   }
 
@@ -1024,8 +2023,12 @@ export async function executeChatActionPlan(
     });
   }
 
-  const results: Array<{ step: ChatPlanStep; status: ChatActionRunStatus; result?: unknown; error?: string }> = [];
+  const results: ChatStepExecutionResult[] = [];
   for (const step of plan.steps) {
+    if (step.type === 'answer') {
+      results.push({ step, status: 'verified_success', result: { text: String((step.args as any).text || '') } });
+      continue;
+    }
     if (step.dependsOnStepIds?.some((dep) => results.some((result) => result.step.stepId === dep && result.status !== 'verified_success'))) {
       results.push({ step, status: 'blocked', error: 'dependency_failed' });
       break;
@@ -1122,6 +2125,10 @@ export async function executeChatActionPlan(
       results.push(executeTrainingExplainSessionStep(step, input));
       continue;
     }
+    if (step.action === 'training_plan_create') {
+      results.push(executeTrainingPlanCreateStep(step, plan, input, input.persistRuns !== false));
+      continue;
+    }
     if (step.action === 'training_reflow_preview' || step.action === 'training_reflow_confirm') {
       results.push(await executeTrainingReflowStep(step, plan, input, input.persistRuns !== false, options.confirmed === true));
       continue;
@@ -1141,6 +2148,8 @@ export async function executeChatActionPlan(
     results.push({ step, status: 'blocked', error: unsupportedChatExecutorReason(step) });
     break;
   }
+
+  requeuePartialSuccessPendingParents(input, plan, results);
 
   const needsConfirmation = results.find((result) => result.status === 'needs_confirmation');
   if (needsConfirmation) {
@@ -1163,6 +2172,16 @@ export async function executeChatActionPlan(
       type: failed.status === 'blocked' ? 'chat_action_blocked' : 'chat_action_failed',
       actionStatus: failed.status,
       error: { message: failureCopy(input, failed.error), retryable: failed.status !== 'blocked' },
+      actionResults: sanitizeActionResults(results),
+    });
+  }
+  const verifiedPending = results.find((result) => result.status === 'verified_pending');
+  if (verifiedPending) {
+    return buildActionResponse(input, plan, 'verified_pending', verifiedPendingCopy(input, verifiedPending), {
+      type: 'chat_action_verified_pending',
+      actionStatus: 'verified_pending',
+      verificationStatus: 'verified_pending',
+      openSurface: openSurfacePayloadForStep(verifiedPending.step, verifiedPending.result, input),
       actionResults: sanitizeActionResults(results),
     });
   }
@@ -1202,6 +2221,7 @@ function rowToConfirmedStep(row: ChatActionRunRow): ChatPlanStep | null {
     type: actionToStepType(action),
     action,
     risk: row.risk,
+    riskClass: riskClassForRisk(row.risk),
     provider,
     args,
     requiredArgsPresent: registryEntry.requiredFields.every((field) => args[field] != null && args[field] !== ''),
@@ -1217,6 +2237,23 @@ function rowToConfirmedStep(row: ChatActionRunRow): ChatPlanStep | null {
 function persistPlanStatus(plan: ChatActionPlan, input: ChatPlannerInput, status: ChatActionRunStatus): void {
   if (input.persistRuns === false) return;
   for (const step of plan.steps) {
+    if (status === 'needs_clarification' && step.action === 'training_plan_create') {
+      const args = step.args as Record<string, unknown>;
+      upsertPendingChatAction({
+        userId: input.userId,
+        tenantId: input.tenantId,
+        conversationId: input.conversationId,
+        skill: 'training',
+        action: 'training_plan_create',
+        collectedSlots: args,
+        missingSlots: missingTrainingPlanSlots(args),
+        riskClass: 'R1',
+        locale: input.locale || plan.locale,
+        timezone: input.timezone,
+        originatingSurface: input.channel,
+        nowIso: plan.createdAt,
+      });
+    }
     const claim = claimChatActionRun({
       userId: input.userId,
       tenantId: input.tenantId,
@@ -1229,11 +2266,45 @@ function persistPlanStatus(plan: ChatActionPlan, input: ChatPlannerInput, status
       request: step.args,
       nowIso: plan.createdAt,
     });
-    updateChatActionRun(claim.row.id, status, {
+    const accepted = updateChatActionRun(claim.row.id, status, {
       error: status === 'needs_clarification' ? { reason: 'missing_required_fields' } : undefined,
       verification: status === 'needs_confirmation' ? { required: true, reason: 'risk_policy' } : undefined,
     });
+    if (!accepted) {
+      logger.warn({
+        runId: claim.row.id,
+        userId: input.userId,
+        tenantId: input.tenantId,
+        attemptedStatus: status,
+      }, 'chat action plan status update rejected by terminal run state');
+    }
   }
+}
+
+type ClaimedActionRun = ReturnType<typeof claimChatActionRunForExecution>;
+
+function updateClaimedActionRun(
+  claim: ClaimedActionRun | null,
+  status: ChatActionRunStatus,
+  update?: Parameters<typeof updateChatActionRun>[2],
+): boolean {
+  if (!claim) return true;
+  const row = updateChatActionRun(claim.row.id, status, update);
+  return row !== null;
+}
+
+function reconciliationPendingResult(step: ChatPlanStep, attemptedStatus: ChatActionRunStatus): ChatStepExecutionResult {
+  return {
+    step,
+    status: 'verified_pending',
+    error: 'action_run_reconciliation_pending',
+    result: {
+      verified: false,
+      attemptedStatus,
+      reason: 'terminal_run_state_rejected_late_update',
+    },
+    runUpdateAccepted: false,
+  };
 }
 
 async function executeCalendarCreateStep(
@@ -1263,7 +2334,7 @@ async function executeCalendarCreateStep(
   }
 
   const claim = persistRuns
-    ? claimChatActionRun({
+    ? claimChatActionRunForExecution({
       userId: input.userId,
       tenantId: input.tenantId,
       conversationId: input.conversationId,
@@ -1283,10 +2354,8 @@ async function executeCalendarCreateStep(
       result: claim.row.result_json ? JSON.parse(claim.row.result_json) : { replayed: true, providerObjectId: claim.row.provider_object_id },
     };
   }
-  if (claim) updateChatActionRun(claim.row.id, 'executing');
-
   try {
-    const created = await calendar.createEvent({
+    const created = await withProviderWriteTimeout((signal) => calendar.createEvent({
       title: String(args.title),
       start: String(args.startDateTime),
       end: String(args.endDateTime),
@@ -1296,9 +2365,35 @@ async function executeCalendarCreateStep(
       location: typeof args.location === 'string' ? args.location : undefined,
       description: typeof args.notes === 'string' ? args.notes : undefined,
       recurrence: args.recurrence ?? undefined,
-    }, provider as CalendarSource, input.userId);
+    }, provider as CalendarSource, input.userId, { signal }));
     if (claim) updateChatActionRun(claim.row.id, 'verifying', { result: created, providerObjectId: created.id ?? null });
-    const readBack = await calendar.getEventsForSources(args.startDateTime, args.endDateTime, input.userId, [provider as CalendarSource]);
+    let readBack: UnifiedCalendarEvent[];
+    try {
+      readBack = await withProviderReadBackTimeout(
+        calendar.getEventsForSources(args.startDateTime, args.endDateTime, input.userId, [provider as CalendarSource]),
+      );
+    } catch (readBackErr) {
+      if (claim) {
+        const accepted = updateClaimedActionRun(claim, 'partial_success', {
+          providerObjectId: created.id ?? null,
+          verification: {
+            verified: false,
+            reason: readBackErr instanceof Error ? readBackErr.message : 'provider_read_back_failed',
+          },
+        });
+        if (!accepted) return reconciliationPendingResult(step, 'partial_success');
+        markPendingChatActionNeedsUserFollowup({
+          userId: input.userId,
+          tenantId: input.tenantId,
+          conversationId: input.conversationId,
+          skill: step.skill,
+          action: step.action,
+          nowIso: plan.createdAt,
+        });
+      }
+      invalidateCalendarCaches(input.userId);
+      return { step, status: 'partial_success', result: { created, verified: false }, error: 'provider_read_back_failed' };
+    }
     const verified = readBack.find((event) => calendarEventMatches(event, {
       title: String(args.title),
       start: String(args.startDateTime),
@@ -1307,15 +2402,26 @@ async function executeCalendarCreateStep(
       id: created.id,
     }));
     if (!verified) {
-      if (claim) updateChatActionRun(claim.row.id, 'partial_success', {
+      if (claim) {
+        const accepted = updateClaimedActionRun(claim, 'partial_success', {
         providerObjectId: created.id ?? null,
         verification: { verified: false, reason: 'provider_read_back_mismatch' },
-      });
+        });
+        if (!accepted) return reconciliationPendingResult(step, 'partial_success');
+        markPendingChatActionNeedsUserFollowup({
+          userId: input.userId,
+          tenantId: input.tenantId,
+          conversationId: input.conversationId,
+          skill: step.skill,
+          action: step.action,
+          nowIso: plan.createdAt,
+        });
+      }
       return { step, status: 'partial_success', result: { created, verified: false }, error: 'provider_read_back_mismatch' };
     }
     invalidateCalendarCaches(input.userId);
     const result = { event: verified, providerObjectId: created.id, verified: true };
-    if (claim) updateChatActionRun(claim.row.id, 'verified_success', {
+    if (!updateClaimedActionRun(claim, 'verified_success', {
       result,
       providerObjectId: created.id ?? verified.id ?? null,
       verification: {
@@ -1323,7 +2429,7 @@ async function executeCalendarCreateStep(
         expected: step.verification.expectedFields,
         actual: { title: (verified as any).title || verified.summary, start: verified.start, end: verified.end, provider: verified.source },
       },
-    });
+    })) return reconciliationPendingResult(step, 'verified_success');
     return { step, status: 'verified_success', result };
   } catch (err) {
     if (claim) updateChatActionRun(claim.row.id, 'failed', { error: { message: err instanceof Error ? err.message : String(err) } });
@@ -1345,12 +2451,10 @@ async function executeCalendarUpdateStep(
 
   const eventId = typeof args.eventId === 'string' ? args.eventId.trim() : '';
   if (!eventId) return { step, status: 'blocked', error: 'calendar_event_id_required' };
-  const claim = claimActionRunForStep(step, plan, input, persistRuns);
+  const claim = claimActionRunForStepExecution(step, plan, input, persistRuns);
   if (claim && !claim.acquired && claim.row.status === 'verified_success') {
     return { step, status: 'verified_success', result: claim.row.result_json ? JSON.parse(claim.row.result_json) : { replayed: true } };
   }
-  if (claim) updateChatActionRun(claim.row.id, 'executing');
-
   try {
     const updatePayload = {
       event_id: eventId,
@@ -1359,21 +2463,32 @@ async function executeCalendarUpdateStep(
       new_title: typeof args.title === 'string' ? args.title : typeof args.newTitle === 'string' ? args.newTitle : undefined,
       new_description: typeof args.notes === 'string' ? args.notes : typeof args.description === 'string' ? args.description : undefined,
     };
-    const updated = await updateEvent(updatePayload, source, input.userId);
+    const updated = await withProviderWriteTimeout((signal) => updateEvent(updatePayload, source, input.userId, { signal }));
     if (claim) updateChatActionRun(claim.row.id, 'verifying', { result: updated, providerObjectId: updated.id ?? eventId });
     const readStart = updatePayload.new_start || updated.start;
     const readEnd = updatePayload.new_end || updated.end;
-    const readBack = readStart && readEnd
-      ? await getEventsForSources(readStart, readEnd, input.userId, [source])
-      : [];
+    let readBack: UnifiedCalendarEvent[] = [];
+    if (readStart && readEnd) {
+      try {
+        readBack = await withProviderReadBackTimeout(getEventsForSources(readStart, readEnd, input.userId, [source]));
+      } catch (readBackErr) {
+        if (!updateClaimedActionRun(claim, 'partial_success', {
+          result: { event: updated, verified: false },
+          providerObjectId: updated.id ?? eventId,
+          verification: { verified: false, reason: readBackErr instanceof Error ? readBackErr.message : 'provider_read_back_failed' },
+        })) return reconciliationPendingResult(step, 'partial_success');
+        invalidateCalendarCaches(input.userId);
+        return { step, status: 'partial_success', result: { event: updated, verified: false }, error: 'provider_read_back_failed' };
+      }
+    }
     const verified = readBack.some((event) => event.id === (updated.id ?? eventId));
     const result = { event: updated, verified };
     const status: ChatActionRunStatus = verified ? 'verified_success' : 'partial_success';
-    if (claim) updateChatActionRun(claim.row.id, status, {
+    if (!updateClaimedActionRun(claim, status, {
       result,
       providerObjectId: updated.id ?? eventId,
       verification: { verified, expected: step.verification.expectedFields },
-    });
+    })) return reconciliationPendingResult(step, status);
     invalidateCalendarCaches(input.userId);
     return { step, status, result, error: verified ? undefined : 'provider_read_back_mismatch' };
   } catch (err) {
@@ -1397,24 +2512,33 @@ async function executeCalendarDeleteStep(
   const readEnd = typeof args.endDateTime === 'string' ? args.endDateTime : null;
   if (!readStart || !readEnd) return { step, status: 'blocked', error: 'calendar_delete_requires_read_back_window' };
 
-  const claim = claimActionRunForStep(step, plan, input, persistRuns);
+  const claim = claimActionRunForStepExecution(step, plan, input, persistRuns);
   if (claim && !claim.acquired && claim.row.status === 'verified_success') {
     return { step, status: 'verified_success', result: claim.row.result_json ? JSON.parse(claim.row.result_json) : { replayed: true } };
   }
-  if (claim) updateChatActionRun(claim.row.id, 'executing');
-
   try {
-    await deleteEvent(eventId, source, input.userId);
+    await withProviderWriteTimeout((signal) => deleteEvent(eventId, source, input.userId, { signal }));
     if (claim) updateChatActionRun(claim.row.id, 'verifying', { providerObjectId: eventId });
-    const readBack = await getEventsForSources(readStart, readEnd, input.userId, [source]);
+    let readBack: UnifiedCalendarEvent[];
+    try {
+      readBack = await withProviderReadBackTimeout(getEventsForSources(readStart, readEnd, input.userId, [source]));
+    } catch (readBackErr) {
+      if (!updateClaimedActionRun(claim, 'partial_success', {
+        result: { eventId, verified: false },
+        providerObjectId: eventId,
+        verification: { verified: false, reason: readBackErr instanceof Error ? readBackErr.message : 'provider_read_back_failed' },
+      })) return reconciliationPendingResult(step, 'partial_success');
+      invalidateCalendarCaches(input.userId);
+      return { step, status: 'partial_success', result: { eventId, verified: false }, error: 'provider_read_back_failed' };
+    }
     const verified = !readBack.some((event) => event.id === eventId);
     const result = { eventId, verified };
     const status: ChatActionRunStatus = verified ? 'verified_success' : 'partial_success';
-    if (claim) updateChatActionRun(claim.row.id, status, {
+    if (!updateClaimedActionRun(claim, status, {
       result,
       providerObjectId: eventId,
       verification: { verified, expected: { eventId, absentInWindow: { start: readStart, end: readEnd } } },
-    });
+    })) return reconciliationPendingResult(step, status);
     invalidateCalendarCaches(input.userId);
     return { step, status, result, error: verified ? undefined : 'provider_read_back_mismatch' };
   } catch (err) {
@@ -1456,7 +2580,7 @@ async function executeTaskCreateStep(
   if (typeof provider.createTask !== 'function') return { step, status: 'blocked', error: 'task_provider_not_writable' };
   const args = step.args as any;
   const claim = persistRuns
-    ? claimChatActionRun({
+    ? claimChatActionRunForExecution({
       userId: input.userId,
       tenantId: input.tenantId,
       conversationId: input.conversationId,
@@ -1472,16 +2596,14 @@ async function executeTaskCreateStep(
   if (claim && !claim.acquired && claim.row.status === 'verified_success') {
     return { step, status: 'verified_success', result: claim.row.result_json ? JSON.parse(claim.row.result_json) : { replayed: true } };
   }
-  if (claim) updateChatActionRun(claim.row.id, 'executing');
-
   try {
     const list = await resolveTaskCreationList(provider, typeof args.list === 'string' ? args.list : null);
     if (!list?.id) throw new Error('missing_task_list');
-    const created = await provider.createTask(String(list.id), list.displayName || list.name || 'Tasks', {
+    const created = await withProviderWriteTimeout(() => provider.createTask(String(list.id), list.displayName || list.name || 'Tasks', {
       title: String(args.title),
       body: typeof args.notes === 'string' ? args.notes : undefined,
       dueDateTime: typeof args.dueDateTime === 'string' ? args.dueDateTime : undefined,
-    });
+    }));
     if (!created?.success || !created.data?.id) throw new Error('task_create_failed');
     const readBack = typeof provider.getTask === 'function'
       ? await provider.getTask(String(list.id), String(created.data.id), list.displayName || list.name || 'Tasks')
@@ -1489,11 +2611,36 @@ async function executeTaskCreateStep(
     const verified = !readBack || (readBack.success !== false && String(readBack.data?.title || readBack.data?.subject || created.data.title || '').trim() === String(args.title).trim());
     const result = { task: created.data, verified };
     const status: ChatActionRunStatus = verified ? 'verified_success' : 'partial_success';
-    if (claim) updateChatActionRun(claim.row.id, status, {
+    if (!updateClaimedActionRun(claim, status, {
       result,
       providerObjectId: String(created.data.id),
       verification: { verified, expected: step.verification.expectedFields },
-    });
+    })) return reconciliationPendingResult(step, status);
+    if (verified) {
+      const now = new Date().toISOString();
+      rememberRecentChatEntity({
+        userId: input.userId,
+        tenantId: input.tenantId,
+        conversationId: input.conversationId,
+        node: {
+          entityId: String(created.data.id),
+          entityType: 'task',
+          provider: 'nexus',
+          surface: 'chat',
+          userVisibleLabel: String(args.title),
+          createdOrViewedAt: now,
+          lastVerifiedAt: now,
+          allowedFollowupActions: ['complete_task', 'update_task', 'delete_task'],
+          confidence: 0.96,
+          expiresAt: new Date(Date.now() + 30 * 60 * 1000).toISOString(),
+          sourceTurnId: input.messageId,
+          metadata: {
+            listId: String(list.id),
+            listName: list.displayName || list.name || 'Tasks',
+          },
+        },
+      });
+    }
     return { step, status, result };
   } catch (err) {
     if (claim) updateChatActionRun(claim.row.id, 'failed', { error: { message: err instanceof Error ? err.message : String(err) } });
@@ -1510,33 +2657,33 @@ async function executeTaskMutationStep(
 ): Promise<{ step: ChatPlanStep; status: ChatActionRunStatus; result?: unknown; error?: string }> {
   const provider = taskProviderForUser(input.userId);
   const args = step.args as any;
-  const claim = claimActionRunForStep(step, plan, input, persistRuns);
+  const claim = claimActionRunForStepExecution(step, plan, input, persistRuns);
   if (claim && !claim.acquired && claim.row.status === 'verified_success') {
     return { step, status: 'verified_success', result: claim.row.result_json ? JSON.parse(claim.row.result_json) : { replayed: true } };
   }
-  if (claim) updateChatActionRun(claim.row.id, 'executing');
-
   try {
     if (step.action === 'create_checklist') {
       if (typeof provider.createTask !== 'function') throw new Error('task_provider_not_writable');
       const list = await resolveTaskCreationList(provider, typeof args.list === 'string' ? args.list : null);
       if (!list?.id) throw new Error('missing_task_list');
-      const created = await provider.createTask(String(list.id), list.displayName || list.name || 'Tasks', {
+      const created = await withProviderWriteTimeout(() => provider.createTask(String(list.id), list.displayName || list.name || 'Tasks', {
         title: String(args.title),
         body: typeof args.notes === 'string' ? args.notes : undefined,
-      });
+      }));
       if (!created?.success || !created.data?.id) throw new Error('task_create_failed');
       const items = Array.isArray(args.items) ? args.items.filter((item: unknown): item is string => typeof item === 'string' && item.trim().length > 0) : [];
       const added: unknown[] = [];
       for (const item of items) {
         if (typeof provider.addChecklistItem !== 'function') break;
-        const addedItem = await provider.addChecklistItem(String(list.id), String(created.data.id), item);
+        const addedItem = await withProviderWriteTimeout(() => provider.addChecklistItem(String(list.id), String(created.data.id), item));
         added.push(addedItem?.data ?? addedItem);
       }
       const verified = items.length === 0 || added.length === items.length;
       const result = { task: created.data, checklistItems: added, verified };
       const status: ChatActionRunStatus = verified ? 'verified_success' : 'partial_success';
-      if (claim) updateChatActionRun(claim.row.id, status, { result, providerObjectId: String(created.data.id), verification: { verified } });
+      if (!updateClaimedActionRun(claim, status, { result, providerObjectId: String(created.data.id), verification: { verified } })) {
+        return reconciliationPendingResult(step, status);
+      }
       return { step, status, result, error: verified ? undefined : 'checklist_provider_partial' };
     }
 
@@ -1544,10 +2691,10 @@ async function executeTaskMutationStep(
     if (!target) return { step, status: 'blocked', error: 'task_target_not_found_or_ambiguous' };
     if (step.action === 'complete_task') {
       if (typeof provider.completeTask !== 'function') throw new Error('task_provider_cannot_complete');
-      await provider.completeTask(target.listId, target.taskId);
+      await withProviderWriteTimeout(() => provider.completeTask(target.listId, target.taskId));
     } else if (step.action === 'delete_task') {
       if (typeof provider.deleteTask !== 'function') throw new Error('task_provider_cannot_delete');
-      await provider.deleteTask(target.listId, target.taskId);
+      await withProviderWriteTimeout(() => provider.deleteTask(target.listId, target.taskId));
     } else {
       if (typeof provider.updateTask !== 'function') throw new Error('task_provider_cannot_update');
       const changed = typeof args.changedFields === 'object' && args.changedFields ? args.changedFields as Record<string, unknown> : {};
@@ -1561,7 +2708,7 @@ async function executeTaskMutationStep(
             ? args.dueDateTime
             : changed.dueDateTime,
       };
-      await provider.updateTask(target.listId, target.taskId, updates, target.listName);
+      await withProviderWriteTimeout(() => provider.updateTask(target.listId, target.taskId, updates, target.listName));
     }
 
     const readBack = typeof provider.getTask === 'function'
@@ -1572,11 +2719,11 @@ async function executeTaskMutationStep(
       : !readBack || readBack.success !== false;
     const result = { taskId: target.taskId, listId: target.listId, verified, task: readBack?.data ?? null };
     const status: ChatActionRunStatus = verified ? 'verified_success' : 'partial_success';
-    if (claim) updateChatActionRun(claim.row.id, status, {
+    if (!updateClaimedActionRun(claim, status, {
       result,
       providerObjectId: target.taskId,
       verification: { verified, expected: step.verification.expectedFields },
-    });
+    })) return reconciliationPendingResult(step, status);
     return { step, status, result, error: verified ? undefined : 'local_read_back_mismatch' };
   } catch (err) {
     if (claim) updateChatActionRun(claim.row.id, 'failed', { error: { message: err instanceof Error ? err.message : String(err) } });
@@ -1591,7 +2738,7 @@ function executeContentAgencyStep(
   persistRuns: boolean,
 ): { step: ChatPlanStep; status: ChatActionRunStatus; result?: unknown; error?: string } {
   const args = step.args as any;
-  const claim = persistRuns ? claimChatActionRun({
+  const claim = persistRuns ? claimChatActionRunForExecution({
     userId: input.userId,
     tenantId: input.tenantId,
     conversationId: input.conversationId,
@@ -1606,8 +2753,6 @@ function executeContentAgencyStep(
   if (claim && !claim.acquired && claim.row.status === 'verified_success') {
     return { step, status: 'verified_success', result: claim.row.result_json ? JSON.parse(claim.row.result_json) : { replayed: true } };
   }
-  if (claim) updateChatActionRun(claim.row.id, 'executing');
-
   try {
     const pkg = buildContentAgencyPackage({
       userId: input.userId,
@@ -1634,11 +2779,11 @@ function executeContentAgencyStep(
       verified,
     };
     const status: ChatActionRunStatus = verified ? 'verified_success' : 'partial_success';
-    if (claim) updateChatActionRun(claim.row.id, status, {
+    if (!updateClaimedActionRun(claim, status, {
       result,
       providerObjectId: pkg.id,
       verification: { verified, expected: { packageId: pkg.id } },
-    });
+    })) return reconciliationPendingResult(step, status);
     return { step, status, result };
   } catch (err) {
     if (claim) updateChatActionRun(claim.row.id, 'failed', { error: { message: err instanceof Error ? err.message : String(err) } });
@@ -1656,11 +2801,10 @@ function executeContentScheduleWorkStep(
   const title = typeof args.title === 'string' && args.title.trim() ? args.title.trim() : null;
   const dateTime = typeof args.dateTime === 'string' && args.dateTime.trim() ? DateTime.fromISO(args.dateTime, { zone: input.timezone }) : null;
   if (!title || !dateTime?.isValid) return { step, status: 'blocked', error: 'content_schedule_requires_title_and_datetime' };
-  const claim = claimActionRunForStep(step, plan, input, persistRuns);
+  const claim = claimActionRunForStepExecution(step, plan, input, persistRuns);
   if (claim && !claim.acquired && claim.row.status === 'verified_success') {
     return { step, status: 'verified_success', result: claim.row.result_json ? JSON.parse(claim.row.result_json) : { replayed: true } };
   }
-  if (claim) updateChatActionRun(claim.row.id, 'executing');
   try {
     const topic = addTopic(input.userId, title, {
       notes: typeof args.notes === 'string' ? args.notes : 'Created from Chat action.',
@@ -1672,11 +2816,11 @@ function executeContentScheduleWorkStep(
     const verified = Boolean(readBack && readBack.title === title && readBack.scheduled_date === dateTime.toISODate());
     const result = { topic: readBack ?? topic, verified };
     const status: ChatActionRunStatus = verified ? 'verified_success' : 'partial_success';
-    if (claim) updateChatActionRun(claim.row.id, status, {
+    if (!updateClaimedActionRun(claim, status, {
       result,
       providerObjectId: String(topic.id),
       verification: { verified, expected: { title, date: dateTime.toISODate() } },
-    });
+    })) return reconciliationPendingResult(step, status);
     return { step, status, result, error: verified ? undefined : 'local_read_back_mismatch' };
   } catch (err) {
     if (claim) updateChatActionRun(claim.row.id, 'failed', { error: { message: err instanceof Error ? err.message : String(err) } });
@@ -1692,11 +2836,10 @@ function executeContentPipelineHandoffStep(
 ): { step: ChatPlanStep; status: ChatActionRunStatus; result?: unknown; error?: string } {
   const packageId = typeof (step.args as any).packageId === 'string' ? String((step.args as any).packageId).trim() : '';
   if (!packageId) return { step, status: 'blocked', error: 'content_pipeline_package_id_required' };
-  const claim = claimActionRunForStep(step, plan, input, persistRuns);
+  const claim = claimActionRunForStepExecution(step, plan, input, persistRuns);
   if (claim && !claim.acquired && claim.row.status === 'verified_success') {
     return { step, status: 'verified_success', result: claim.row.result_json ? JSON.parse(claim.row.result_json) : { replayed: true } };
   }
-  if (claim) updateChatActionRun(claim.row.id, 'executing');
   try {
     const handoff = handoffContentAgencyPackageToPipeline({
       userId: input.userId,
@@ -1705,12 +2848,12 @@ function executeContentPipelineHandoffStep(
     });
     const verified = handoff.status === 'created' || handoff.status === 'already_exists';
     const status: ChatActionRunStatus = verified ? 'verified_success' : handoff.status === 'blocked' ? 'blocked' : 'failed';
-    if (claim) updateChatActionRun(claim.row.id, status, {
+    if (!updateClaimedActionRun(claim, status, {
       result: handoff,
       providerObjectId: handoff.pipelineId != null ? String(handoff.pipelineId) : packageId,
       verification: { verified, expected: { packageId }, actual: { status: handoff.status, pipelineId: handoff.pipelineId } },
       error: verified ? undefined : { reason: handoff.blockers[0] ?? handoff.status },
-    });
+    })) return reconciliationPendingResult(step, status);
     return { step, status, result: handoff, error: verified ? undefined : handoff.blockers[0] ?? 'content_pipeline_handoff_failed' };
   } catch (err) {
     if (claim) updateChatActionRun(claim.row.id, 'failed', { error: { message: err instanceof Error ? err.message : String(err) } });
@@ -1726,7 +2869,7 @@ function executeCookingGroceryListStep(
 ): { step: ChatPlanStep; status: ChatActionRunStatus; result?: unknown; error?: string } {
   const args = step.args as any;
   const weekStart = String(args.weekStart || '');
-  const claim = persistRuns ? claimChatActionRun({
+  const claim = persistRuns ? claimChatActionRunForExecution({
     userId: input.userId,
     tenantId: input.tenantId,
     conversationId: input.conversationId,
@@ -1741,18 +2884,17 @@ function executeCookingGroceryListStep(
   if (claim && !claim.acquired && claim.row.status === 'verified_success') {
     return { step, status: 'verified_success', result: claim.row.result_json ? JSON.parse(claim.row.result_json) : { replayed: true } };
   }
-  if (claim) updateChatActionRun(claim.row.id, 'executing');
   try {
     const list = generateShoppingList(input.userId, weekStart, input.tenantId);
     const readBack = getShoppingList(input.userId, weekStart, input.tenantId);
     const verified = readBack?.week_start === list.week_start;
     const result = { weekStart, itemCount: list.items.length, items: list.items.slice(0, 12), verified: Boolean(verified) };
     const status: ChatActionRunStatus = verified ? 'verified_success' : 'partial_success';
-    if (claim) updateChatActionRun(claim.row.id, status, {
+    if (!updateClaimedActionRun(claim, status, {
       result,
       providerObjectId: `shopping-list:${weekStart}`,
       verification: { verified, expected: { weekStart } },
-    });
+    })) return reconciliationPendingResult(step, status);
     return { step, status, result };
   } catch (err) {
     if (claim) updateChatActionRun(claim.row.id, 'failed', { error: { message: err instanceof Error ? err.message : String(err) } });
@@ -1773,11 +2915,10 @@ function executeCookingMealPlanStep(
   if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || !mealType || !title) {
     return { step, status: 'blocked', error: 'cooking_meal_plan_requires_date_meal_type_and_title' };
   }
-  const claim = claimActionRunForStep(step, plan, input, persistRuns);
+  const claim = claimActionRunForStepExecution(step, plan, input, persistRuns);
   if (claim && !claim.acquired && claim.row.status === 'verified_success') {
     return { step, status: 'verified_success', result: claim.row.result_json ? JSON.parse(claim.row.result_json) : { replayed: true } };
   }
-  if (claim) updateChatActionRun(claim.row.id, 'executing');
   try {
     const meal = setMealPlan(input.userId, date, mealType, title, {
       notes: typeof args.notes === 'string' ? args.notes : 'Created from Chat action.',
@@ -1788,11 +2929,11 @@ function executeCookingMealPlanStep(
     const verified = Boolean(readBack && readBack.title === title && readBack.meal_type === mealType);
     const result = { meal: readBack ?? meal, verified };
     const status: ChatActionRunStatus = verified ? 'verified_success' : 'partial_success';
-    if (claim) updateChatActionRun(claim.row.id, status, {
+    if (!updateClaimedActionRun(claim, status, {
       result,
       providerObjectId: String(meal.id),
       verification: { verified, expected: { date, mealType, title } },
-    });
+    })) return reconciliationPendingResult(step, status);
     return { step, status, result, error: verified ? undefined : 'local_read_back_mismatch' };
   } catch (err) {
     if (claim) updateChatActionRun(claim.row.id, 'failed', { error: { message: err instanceof Error ? err.message : String(err) } });
@@ -1882,11 +3023,10 @@ function executeFinanceCategorizeReceiptStep(
   if (!Number.isInteger(transactionId) || transactionId <= 0 || !category) {
     return { step, status: 'blocked', error: 'finance_categorization_requires_transaction_and_category' };
   }
-  const claim = claimActionRunForStep(step, plan, input, persistRuns);
+  const claim = claimActionRunForStepExecution(step, plan, input, persistRuns);
   if (claim && !claim.acquired && claim.row.status === 'verified_success') {
     return { step, status: 'verified_success', result: claim.row.result_json ? JSON.parse(claim.row.result_json) : { replayed: true } };
   }
-  if (claim) updateChatActionRun(claim.row.id, 'executing');
   try {
     const updated = updateTransactionCategory(input.userId, transactionId, category, {
       subcategory: typeof args.subcategory === 'string' ? args.subcategory : null,
@@ -1898,11 +3038,11 @@ function executeFinanceCategorizeReceiptStep(
     const verified = updated.category === category;
     const result = { transactionId, category: updated.category, subcategory: updated.subcategory, verified };
     const status: ChatActionRunStatus = verified ? 'verified_success' : 'partial_success';
-    if (claim) updateChatActionRun(claim.row.id, status, {
+    if (!updateClaimedActionRun(claim, status, {
       result,
       providerObjectId: String(transactionId),
       verification: { verified, expected: { transactionId, category } },
-    });
+    })) return reconciliationPendingResult(step, status);
     return { step, status, result, error: verified ? undefined : 'local_read_back_mismatch' };
   } catch (err) {
     if (claim) updateChatActionRun(claim.row.id, 'failed', { error: { message: err instanceof Error ? err.message : String(err) } });
@@ -1925,11 +3065,10 @@ function executeFinancePaymentActionStep(
   if (!/^\d{4}-\d{2}$/.test(month)) {
     return { step, status: 'blocked', error: 'finance_payment_month_required' };
   }
-  const claim = claimActionRunForStep(step, plan, input, persistRuns);
+  const claim = claimActionRunForStepExecution(step, plan, input, persistRuns);
   if (claim && !claim.acquired && claim.row.status === 'verified_success') {
     return { step, status: 'verified_success', result: claim.row.result_json ? JSON.parse(claim.row.result_json) : { replayed: true } };
   }
-  if (claim) updateChatActionRun(claim.row.id, 'executing');
   try {
     const ok = markTaxPaid(input.userId, month);
     if (!ok) {
@@ -1941,11 +3080,11 @@ function executeFinancePaymentActionStep(
     const verified = readBack?.status === 'paid';
     const result = { month, status: readBack?.status ?? null, verified };
     const status: ChatActionRunStatus = verified ? 'verified_success' : 'partial_success';
-    if (claim) updateChatActionRun(claim.row.id, status, {
+    if (!updateClaimedActionRun(claim, status, {
       result,
       providerObjectId: `finance_tax_event:${month}`,
       verification: { verified, expected: { month, status: 'paid' } },
-    });
+    })) return reconciliationPendingResult(step, status);
     return { step, status, result, error: verified ? undefined : 'local_read_back_mismatch' };
   } catch (err) {
     if (claim) updateChatActionRun(claim.row.id, 'failed', { error: { message: err instanceof Error ? err.message : String(err) } });
@@ -2028,6 +3167,52 @@ function executeTrainingExplainSessionStep(
   }
 }
 
+function executeTrainingPlanCreateStep(
+  step: ChatPlanStep,
+  plan: ChatActionPlan,
+  input: ChatPlannerInput,
+  persistRuns: boolean,
+): { step: ChatPlanStep; status: ChatActionRunStatus; result?: unknown; error?: string } {
+  const args = step.args as Record<string, unknown>;
+  const missing = missingTrainingPlanSlots(args);
+  const pending = upsertPendingChatAction({
+    userId: input.userId,
+    tenantId: input.tenantId,
+    conversationId: input.conversationId,
+    skill: 'training',
+    action: 'training_plan_create',
+    collectedSlots: args,
+    missingSlots: missing,
+    riskClass: 'R1',
+    locale: input.locale || 'pt-BR',
+    timezone: input.timezone,
+    originatingSurface: input.channel,
+    nowIso: plan.createdAt,
+  });
+  const claim = claimActionRunForStepExecution(step, plan, input, persistRuns);
+  if (!updateClaimedActionRun(claim, 'verified_pending', {
+    result: {
+      pendingActionId: pending.id,
+      missingSlots: missing,
+      collectedSlots: args,
+      openSurface: 'training_plan_builder',
+    },
+    providerObjectId: pending.id,
+    verification: { verified: false, reason: 'ui_handoff_required', pendingActionId: pending.id },
+  })) return reconciliationPendingResult(step, 'verified_pending');
+  return {
+    step,
+    status: 'verified_pending',
+    result: {
+      pendingActionId: pending.id,
+      missingSlots: missing,
+      collectedSlots: args,
+      openSurface: 'training_plan_builder',
+      verified: false,
+    },
+  };
+}
+
 async function executeTrainingReflowStep(
   step: ChatPlanStep,
   plan: ChatActionPlan,
@@ -2039,40 +3224,40 @@ async function executeTrainingReflowStep(
   const sessionId = Number(args.sessionId);
   if (!Number.isInteger(sessionId) || sessionId <= 0) return { step, status: 'blocked', error: 'training_session_id_required' };
   const source = calendarSourceFromProvider(args.provider ?? step.provider);
-  const claim = claimActionRunForStep(step, plan, input, persistRuns);
+  const claim = claimActionRunForStepExecution(step, plan, input, persistRuns);
   if (claim && !claim.acquired && claim.row.status === 'verified_success') {
     return { step, status: 'verified_success', result: claim.row.result_json ? JSON.parse(claim.row.result_json) : { replayed: true } };
   }
-  if (claim) updateChatActionRun(claim.row.id, 'executing');
   try {
     if (step.action === 'training_reflow_preview') {
-      const preview = await previewTrainingSessionReflow(input.userId, sessionId, source);
+      const preview = await withProviderWriteTimeout(() => previewTrainingSessionReflow(input.userId, sessionId, source));
       const verified = preview.status === 'preview';
       const status: ChatActionRunStatus = verified ? 'verified_success' : preview.status === 'blocked' || preview.status === 'forbidden' || preview.status === 'no_calendar' ? 'blocked' : 'failed';
-      if (claim) updateChatActionRun(claim.row.id, status, {
+      if (!updateClaimedActionRun(claim, status, {
         result: preview,
         providerObjectId: String(sessionId),
         verification: { verified, expected: { sessionId } },
-      });
+      })) return reconciliationPendingResult(step, status);
       return { step, status, result: preview, error: verified ? undefined : preview.data.reason ?? preview.status };
     }
     if (!confirmed) {
       return { step, status: 'needs_confirmation', error: 'confirmation_required' };
     }
-    const confirmedReflow = await confirmTrainingSessionReflow({
+    const confirmedReflow = await withProviderWriteTimeout((signal) => confirmTrainingSessionReflow({
       userId: input.userId,
       sessionId,
       proposedStartAt: typeof args.proposedStartAt === 'string' ? args.proposedStartAt : typeof args.startDateTime === 'string' ? args.startDateTime : null,
       proposedEndAt: typeof args.proposedEndAt === 'string' ? args.proposedEndAt : typeof args.endDateTime === 'string' ? args.endDateTime : null,
       requestedCalendarSource: source,
-    });
+      signal,
+    }));
     const verified = confirmedReflow.status === 'confirmed' && confirmedReflow.data.verified === true;
     const status: ChatActionRunStatus = verified ? 'verified_success' : confirmedReflow.status === 'partial_failure' ? 'partial_success' : 'blocked';
-    if (claim) updateChatActionRun(claim.row.id, status, {
+    if (!updateClaimedActionRun(claim, status, {
       result: confirmedReflow,
       providerObjectId: 'data' in confirmedReflow && 'eventId' in confirmedReflow.data ? confirmedReflow.data.eventId ?? String(sessionId) : String(sessionId),
       verification: { verified, expected: { sessionId } },
-    });
+    })) return reconciliationPendingResult(step, status);
     return { step, status, result: confirmedReflow, error: verified ? undefined : (confirmedReflow.data as any).reason ?? confirmedReflow.status };
   } catch (err) {
     if (claim) updateChatActionRun(claim.row.id, 'failed', { error: { message: err instanceof Error ? err.message : String(err) } });
@@ -2135,11 +3320,10 @@ async function executeNotificationMutationStep(
   persistRuns: boolean,
 ): Promise<{ step: ChatPlanStep; status: ChatActionRunStatus; result?: unknown; error?: string }> {
   const args = step.args as any;
-  const claim = claimActionRunForStep(step, plan, input, persistRuns);
+  const claim = claimActionRunForStepExecution(step, plan, input, persistRuns);
   if (claim && !claim.acquired && claim.row.status === 'verified_success') {
     return { step, status: 'verified_success', result: claim.row.result_json ? JSON.parse(claim.row.result_json) : { replayed: true } };
   }
-  if (claim) updateChatActionRun(claim.row.id, 'executing');
   try {
     if (step.action === 'notification_update_preference') {
       const patch = typeof args.preference === 'object' && args.preference ? args.preference as Record<string, unknown> : {};
@@ -2149,10 +3333,10 @@ async function executeNotificationMutationStep(
       const verified = JSON.stringify(profile) === JSON.stringify(readBack);
       const result = { profile: readBack, verified };
       const status: ChatActionRunStatus = verified ? 'verified_success' : 'partial_success';
-      if (claim) updateChatActionRun(claim.row.id, status, { result, verification: { verified } });
+      if (!updateClaimedActionRun(claim, status, { result, verification: { verified } })) return reconciliationPendingResult(step, status);
       return { step, status, result, error: verified ? undefined : 'local_read_back_mismatch' };
     }
-    const created = await createNotificationIntent({
+    const created = await withProviderWriteTimeout(() => createNotificationIntent({
       userId: input.userId,
       tenantId: input.tenantId,
       sourceSkill: 'chat',
@@ -2165,11 +3349,13 @@ async function executeNotificationMutationStep(
       deliveryPolicy: 'in_app_only',
       privacyPolicy: 'standard',
       requiresUserAction: false,
-    });
+    }));
     const verified = created.intent?.intentId != null;
     const result = { intentId: created.intent.intentId, notificationId: created.item?.itemId ?? null, verified };
     const status: ChatActionRunStatus = verified ? 'verified_success' : 'partial_success';
-    if (claim) updateChatActionRun(claim.row.id, status, { result, providerObjectId: created.intent.intentId, verification: { verified } });
+    if (!updateClaimedActionRun(claim, status, { result, providerObjectId: created.intent.intentId, verification: { verified } })) {
+      return reconciliationPendingResult(step, status);
+    }
     return { step, status, result, error: verified ? undefined : 'local_read_back_mismatch' };
   } catch (err) {
     if (claim) updateChatActionRun(claim.row.id, 'failed', { error: { message: err instanceof Error ? err.message : String(err) } });
@@ -2186,11 +3372,10 @@ async function executeDecisionCenterStep(
   const args = step.args as any;
   const decisionId = typeof args.decisionId === 'string' ? args.decisionId.trim() : '';
   if (!decisionId) return { step, status: 'blocked', error: 'decision_id_required' };
-  const claim = claimActionRunForStep(step, plan, input, persistRuns);
+  const claim = claimActionRunForStepExecution(step, plan, input, persistRuns);
   if (claim && !claim.acquired && claim.row.status === 'verified_success') {
     return { step, status: 'verified_success', result: claim.row.result_json ? JSON.parse(claim.row.result_json) : { replayed: true } };
   }
-  if (claim) updateChatActionRun(claim.row.id, 'executing');
   try {
     let result: unknown;
     if (step.action === 'decision_dismiss') {
@@ -2201,10 +3386,10 @@ async function executeDecisionCenterStep(
     } else if (step.action === 'decision_choose') {
       const choice = typeof args.choice === 'string' ? args.choice : typeof args.actionId === 'string' ? args.actionId : '';
       if (!choice) return { step, status: 'blocked', error: 'decision_choice_required' };
-      result = await performDecisionAction(decisionId, choice, input.userId, input.tenantId, {
+      result = await withProviderWriteTimeout(() => performDecisionAction(decisionId, choice, input.userId, input.tenantId, {
         idempotencyKey: step.idempotencyKey,
         payload: typeof args.payload === 'object' && args.payload ? args.payload as Record<string, unknown> : {},
-      });
+      }));
     } else {
       result = getDecisionItem(decisionId, input.userId, input.tenantId);
     }
@@ -2212,7 +3397,9 @@ async function executeDecisionCenterStep(
     const verified = Boolean(readBack);
     const status: ChatActionRunStatus = verified ? 'verified_success' : 'partial_success';
     const payload = { result, item: readBack, verified };
-    if (claim) updateChatActionRun(claim.row.id, status, { result: payload, providerObjectId: decisionId, verification: { verified } });
+    if (!updateClaimedActionRun(claim, status, { result: payload, providerObjectId: decisionId, verification: { verified } })) {
+      return reconciliationPendingResult(step, status);
+    }
     return { step, status, result: payload, error: verified ? undefined : 'local_read_back_mismatch' };
   } catch (err) {
     if (claim) updateChatActionRun(claim.row.id, 'failed', { error: { message: err instanceof Error ? err.message : String(err) } });
@@ -2238,6 +3425,56 @@ function calendarEventMatches(event: UnifiedCalendarEvent, expected: { title: st
     && Math.abs(DateTime.fromISO(event.end).toMillis() - DateTime.fromISO(expected.end).toMillis()) < 60_000;
 }
 
+function getProviderReadBackTimeoutMs(): number {
+  const raw = process.env.CHAT_PROVIDER_READ_BACK_TIMEOUT_MS;
+  const parsed = raw ? Number.parseInt(raw, 10) : NaN;
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_PROVIDER_READ_BACK_TIMEOUT_MS;
+}
+
+function getProviderWriteTimeoutMs(): number {
+  const raw = process.env.CHAT_PROVIDER_WRITE_TIMEOUT_MS;
+  const parsed = raw ? Number.parseInt(raw, 10) : NaN;
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_PROVIDER_WRITE_TIMEOUT_MS;
+}
+
+async function withProviderWriteTimeout<T>(
+  operation: ((signal: AbortSignal) => Promise<T> | T) | Promise<T> | T,
+  timeoutMs = getProviderWriteTimeoutMs(),
+): Promise<T> {
+  const controller = new AbortController();
+  let timer: NodeJS.Timeout | null = null;
+  try {
+    const promise = typeof operation === 'function'
+      ? Promise.resolve((operation as (signal: AbortSignal) => Promise<T> | T)(controller.signal))
+      : Promise.resolve(operation);
+    return await Promise.race([
+      promise,
+      new Promise<T>((_, reject) => {
+        timer = setTimeout(() => {
+          controller.abort();
+          reject(new Error('provider_write_timeout'));
+        }, timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+async function withProviderReadBackTimeout<T>(operation: Promise<T>, timeoutMs = getProviderReadBackTimeoutMs()): Promise<T> {
+  let timer: NodeJS.Timeout | null = null;
+  try {
+    return await Promise.race([
+      operation,
+      new Promise<T>((_, reject) => {
+        timer = setTimeout(() => reject(new Error('provider_read_back_timeout')), timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
 function calendarSourceFromProvider(provider: unknown): CalendarSource | null {
   if (provider === 'google' || provider === 'google_calendar') return 'google';
   if (provider === 'outlook' || provider === 'outlook_calendar') return 'outlook';
@@ -2252,6 +3489,27 @@ function claimActionRunForStep(
 ): ReturnType<typeof claimChatActionRun> | null {
   if (!persistRuns) return null;
   return claimChatActionRun({
+    userId: input.userId,
+    tenantId: input.tenantId,
+    conversationId: input.conversationId,
+    messageId: input.messageId,
+    normalizedActionHash: step.idempotencyKey,
+    provider: step.provider,
+    actionType: step.action,
+    risk: step.risk,
+    request: step.args,
+    nowIso: plan.createdAt,
+  });
+}
+
+function claimActionRunForStepExecution(
+  step: ChatPlanStep,
+  plan: ChatActionPlan,
+  input: ChatPlannerInput,
+  persistRuns: boolean,
+): ReturnType<typeof claimChatActionRun> | null {
+  if (!persistRuns) return null;
+  return claimChatActionRunForExecution({
     userId: input.userId,
     tenantId: input.tenantId,
     conversationId: input.conversationId,
@@ -2314,6 +3572,33 @@ function buildActionResponse(
   text: string,
   metadata: Record<string, unknown>,
 ): ChatActionRouteResponse {
+  const responseTelemetry = finalizeTelemetryForResponse(plan, status, metadata, input);
+  if (input.persistRuns !== false) {
+    const firstStep = plan.steps[0];
+    try {
+      recordChatActionTelemetry({
+        userId: input.userId,
+        tenantId: input.tenantId,
+        conversationId: input.conversationId,
+        messageId: input.messageId,
+        planner: plan.planner,
+        status,
+        skill: firstStep?.skill ?? null,
+        action: firstStep?.action ?? null,
+        telemetry: responseTelemetry,
+        nowIso: input.nowIso,
+      });
+    } catch (err) {
+      logger.debug({
+        err,
+        userId: input.userId,
+        tenantId: input.tenantId,
+        conversationId: input.conversationId,
+        messageId: input.messageId,
+      }, 'chat action telemetry record skipped');
+    }
+  }
+
   return {
     id: `msg-${Date.now()}-${randomUUID().slice(0, 8)}`,
     text,
@@ -2326,6 +3611,8 @@ function buildActionResponse(
       schemaVersion: 1,
       actionStatus: status,
       actionPlanner: plan.planner,
+      effectiveConfidence: plan.effectiveConfidence ?? plan.confidence,
+      telemetry: safeTelemetry(responseTelemetry),
       involvedSkills: [...new Set(plan.steps.map((step) => step.skill))],
       // Developer trace is persisted server-side through action runs/logs; normal UI gets only this safe summary.
     },
@@ -2333,8 +3620,73 @@ function buildActionResponse(
   };
 }
 
+function recordShadowTelemetry(plan: ChatActionPlan, input: ChatPlannerInput, routeStartedAtMs: number): void {
+  if (input.persistRuns === false) return;
+  const firstStep = plan.steps[0];
+  try {
+    recordChatActionTelemetry({
+      userId: input.userId,
+      tenantId: input.tenantId,
+      conversationId: input.conversationId,
+      messageId: input.messageId,
+      planner: plan.planner,
+      status: 'shadow_only',
+      skill: firstStep?.skill ?? null,
+      action: firstStep?.action ?? null,
+      telemetry: {
+        ...(plan.telemetry ?? {
+          routeTier: 'tier0_deterministic',
+          candidates: firstStep ? [{ skill: firstStep.skill, action: firstStep.action, score: plan.effectiveConfidence ?? plan.confidence }] : [],
+          calibratedScore: plan.effectiveConfidence ?? plan.confidence,
+          threshold: thresholdForSteps(plan.steps),
+        }),
+        latencyMs: Date.now() - routeStartedAtMs,
+        outcome: 'shadow_only',
+        predictedActionHash: firstStep?.idempotencyKey,
+        slotProvenanceSummary: summarizeSlotProvenance(plan),
+      },
+      nowIso: input.nowIso,
+    });
+  } catch (err) {
+    logger.debug({ err, userId: input.userId, tenantId: input.tenantId }, 'chat action shadow telemetry skipped');
+  }
+}
+
+function requeuePartialSuccessPendingParents(
+  input: ChatPlannerInput,
+  plan: ChatActionPlan,
+  results: Array<{ step: ChatPlanStep; status: ChatActionRunStatus; result?: unknown; error?: string }>,
+): void {
+  if (input.persistRuns === false) return;
+  for (const result of results) {
+    if (result.status !== 'partial_success') continue;
+    try {
+      markPendingChatActionNeedsUserFollowup({
+        userId: input.userId,
+        tenantId: input.tenantId,
+        conversationId: input.conversationId,
+        skill: result.step.skill,
+        action: result.step.action,
+        nowIso: plan.createdAt,
+      });
+    } catch (err) {
+      logger.debug({
+        err,
+        userId: input.userId,
+        tenantId: input.tenantId,
+        conversationId: input.conversationId,
+        skill: result.step.skill,
+        action: result.step.action,
+      }, 'chat action pending parent requeue skipped');
+    }
+  }
+}
+
 function successCopy(input: ChatPlannerInput, results: Array<{ step: ChatPlanStep; status: ChatActionRunStatus; result?: unknown }>): string {
   const first = results[0];
+  if (first?.step.type === 'answer') {
+    return String((first.result as any)?.text || (first.step.args as any).text || '');
+  }
   if (first?.step.action === 'schedule_event') {
     const args = first.step.args as any;
     const provider = args.provider === 'outlook_calendar' ? 'Outlook Calendar' : 'Google Calendar';
@@ -2471,6 +3823,11 @@ function successCopy(input: ChatPlannerInput, results: Array<{ step: ChatPlanSte
   if (first?.step.action === 'training_reflow_confirm') {
     return input.locale?.startsWith('pt') ? 'Feito — reagendei a sessão de treino e verifiquei a alteração.' : 'Done — I reflowed the training session and verified the change.';
   }
+  if (first?.step.action === 'training_plan_create') {
+    return input.locale?.startsWith('pt')
+      ? 'Rascunho pronto — já tenho os dados essenciais para abrir o Training Plan Builder.'
+      : 'Draft ready — I have the essential details for the Training Plan Builder.';
+  }
   if (first?.step.action?.startsWith('notification_')) {
     return input.locale?.startsWith('pt') ? 'Feito — atualizei e verifiquei a área de notificações.' : 'Done — I updated and verified Notifications.';
   }
@@ -2478,6 +3835,28 @@ function successCopy(input: ChatPlannerInput, results: Array<{ step: ChatPlanSte
     return input.locale?.startsWith('pt') ? 'Feito — atualizei a decisão e verifiquei o estado.' : 'Done — I updated the decision and verified its state.';
   }
   return input.locale?.startsWith('pt') ? 'Feito — concluí e verifiquei a ação.' : 'Done — I completed and verified the action.';
+}
+
+function verifiedPendingCopy(input: ChatPlannerInput, result: { step: ChatPlanStep; result?: unknown; error?: string }): string {
+  if (result.error === 'action_run_reconciliation_pending') {
+    return input.locale?.startsWith('pt')
+      ? 'Tentei criar isto no teu fornecedor, mas não consegui confirmar. Verifica manualmente para garantir.'
+      : "I tried to create this on your provider, but I couldn't confirm it landed. Please verify manually.";
+  }
+  if (result.step.action === 'training_plan_create') {
+    const missing = Array.isArray((result.result as any)?.missingSlots) ? (result.result as any).missingSlots : [];
+    if (missing.length > 0) {
+      return input.locale?.startsWith('pt')
+        ? 'Guardei o rascunho do plano de treino e ainda preciso de mais alguns detalhes.'
+        : 'I saved the training plan draft and still need a few details.';
+    }
+    return input.locale?.startsWith('pt')
+      ? 'Rascunho pronto — posso abrir o Training Plan Builder com estes dados.'
+      : 'Draft ready — I can open the Training Plan Builder with these details.';
+  }
+  return input.locale?.startsWith('pt')
+    ? 'Guardei o estado e deixei pronto para continuar.'
+    : 'I saved the state and it is ready to continue.';
 }
 
 function failureCopy(input: ChatPlannerInput, reason?: string): string {
@@ -2630,6 +4009,30 @@ function actionButtonsForResults(results: Array<{ step: ChatPlanStep }>): string
   return [];
 }
 
+function openSurfacePayloadForStep(step: ChatPlanStep, result: unknown, input: ChatPlannerInput): Record<string, unknown> | null {
+  if (!isChatOpenSurfaceHandoffEnabled(process.env, { userId: input.userId, tenantId: input.tenantId })) return null;
+  if (step.action === 'training_plan_create') {
+    return {
+      surface: 'training_plan_builder',
+      pendingActionId: (result as any)?.pendingActionId ?? null,
+      prefill: {
+        sport: (step.args as any).sport ?? null,
+        goal: (step.args as any).goal ?? null,
+        durationWeeks: (step.args as any).durationWeeks ?? null,
+        startDate: (step.args as any).startDate ?? null,
+        weeklyVolumeKm: (step.args as any).weeklyVolumeKm ?? null,
+        constraints: (step.args as any).constraints ?? [],
+      },
+    };
+  }
+  if (step.skill === 'content') return { surface: 'script_studio', prefill: step.args };
+  if (step.skill === 'tasks') return { surface: 'task_detail', prefill: step.args };
+  if (step.skill === 'secretary_calendar') return { surface: 'calendar_event', prefill: step.args };
+  if (step.skill === 'finance') return { surface: 'finance_review', prefill: step.args };
+  if (step.skill === 'cooking') return { surface: 'cooking_meal_plan', prefill: step.args };
+  return null;
+}
+
 function sanitizeActionResults(results: Array<{ step: ChatPlanStep; status: ChatActionRunStatus; result?: unknown; error?: string }>): Array<Record<string, unknown>> {
   return results.map((result) => ({
     stepId: result.step.stepId,
@@ -2640,6 +4043,110 @@ function sanitizeActionResults(results: Array<{ step: ChatPlanStep; status: Chat
     title: typeof (result.step.args as any).title === 'string' ? (result.step.args as any).title : undefined,
     error: result.error,
   }));
+}
+
+function safeTelemetry(telemetry: ChatActionTelemetry): Record<string, unknown> {
+  return {
+    routeTier: telemetry.routeTier,
+    candidates: telemetry.candidates.slice(0, 4),
+    calibratedScore: telemetry.calibratedScore,
+    threshold: telemetry.threshold,
+    modelProvider: telemetry.modelProvider,
+    model: telemetry.model,
+    estimatedTokenCostUsd: telemetry.estimatedTokenCostUsd,
+    verifierStatus: telemetry.verifierStatus,
+    latencyMs: telemetry.latencyMs,
+    outcome: telemetry.outcome,
+    failureReason: telemetry.failureReason,
+    slotProvenanceSummary: telemetry.slotProvenanceSummary,
+  };
+}
+
+function finalizeTelemetryForResponse(
+  plan: ChatActionPlan,
+  status: ChatActionStatus,
+  metadata: Record<string, unknown>,
+  input: ChatPlannerInput,
+): ChatActionTelemetry {
+  const base = plan.telemetry ?? {
+    routeTier: 'tier0_deterministic' as const,
+    candidates: plan.steps.map((step) => ({
+      skill: step.skill,
+      action: step.action,
+      score: plan.effectiveConfidence ?? plan.confidence,
+    })),
+    calibratedScore: plan.effectiveConfidence ?? plan.confidence,
+    threshold: thresholdForSteps(plan.steps),
+  };
+  return {
+    ...base,
+    verifierStatus: verifierStatusForActionStatus(status, plan),
+    latencyMs: input.routeStartedAtMs ? Math.max(0, Date.now() - input.routeStartedAtMs) : base.latencyMs,
+    outcome: status,
+    failureReason: failureReasonForTelemetry(status, metadata) ?? base.failureReason,
+    slotProvenanceSummary: summarizeSlotProvenance(plan),
+  };
+}
+
+function verifierStatusForActionStatus(status: ChatActionStatus, plan: ChatActionPlan): ChatActionTelemetry['verifierStatus'] {
+  const requiresVerification = plan.steps.some((step) => step.verification.required);
+  if (!requiresVerification) return 'not_required';
+  if (status === 'verified_success') return 'verified';
+  if (status === 'verified_pending' || status === 'needs_confirmation' || status === 'needs_clarification' || status === 'planned' || status === 'executing' || status === 'verifying') return 'pending';
+  if (status === 'partial_success') return 'mismatch';
+  return 'failed';
+}
+
+function failureReasonForTelemetry(status: ChatActionStatus, metadata: Record<string, unknown>): string | undefined {
+  if (status === 'verified_success' || status === 'verified_pending' || status === 'needs_confirmation' || status === 'needs_clarification') return undefined;
+  const error = metadata.error;
+  if (typeof error === 'string') return error.slice(0, 120);
+  if (error && typeof error === 'object') {
+    const code = (error as Record<string, unknown>).code;
+    if (typeof code === 'string') return code.slice(0, 120);
+  }
+  const reason = metadata.reason;
+  if (typeof reason === 'string') return reason.slice(0, 120);
+  return status;
+}
+
+function summarizeSlotProvenance(plan: ChatActionPlan): Record<string, unknown> {
+  const summary: Record<string, unknown> = {};
+  for (const step of plan.steps) {
+    if (!step.slotProvenance) continue;
+    const stepSummary: Record<string, unknown> = {};
+    for (const [slot, provenance] of Object.entries(step.slotProvenance)) {
+      stepSummary[slot] = {
+        sourceType: provenance.sourceType,
+        normalizer: provenance.normalizer,
+        confidence: provenance.confidence,
+        validation: provenance.validation,
+      };
+    }
+    if (Object.keys(stepSummary).length > 0) {
+      summary[`${step.skill}.${step.action}.${step.stepId}`] = stepSummary;
+    }
+  }
+  return summary;
+}
+
+function estimatePlannerCallCostUsd(model: string, systemPrompt: string, userPrompt: string, outputText: string): number {
+  const inputTokens = estimateTokens(systemPrompt) + estimateTokens(userPrompt);
+  const outputTokens = estimateTokens(outputText);
+  const rates = plannerModelRates(model);
+  return Number((((inputTokens / 1_000_000) * rates.input) + ((outputTokens / 1_000_000) * rates.output)).toFixed(8));
+}
+
+function estimateTokens(text: string): number {
+  return Math.max(1, Math.ceil(text.length / 4));
+}
+
+function plannerModelRates(model: string): { input: number; output: number } {
+  if (model.startsWith('gemini-2.5-flash-lite')) return { input: 0.10, output: 0.40 };
+  if (model.startsWith('gemini-2.5-flash')) return { input: 0.30, output: 2.50 };
+  if (model.startsWith('gpt-5.4-nano') || model.startsWith('gpt-5-nano')) return { input: 0.20, output: 1.25 };
+  if (model.startsWith('gpt-5.4-mini') || model.startsWith('gpt-5-mini')) return { input: 0.75, output: 4.50 };
+  return { input: 0.30, output: 2.50 };
 }
 
 function actionToStepType(action: ChatActionName): ChatPlanStepType {
@@ -2674,6 +4181,91 @@ function stepRequiresConfirmation(step: ChatPlanStep): boolean {
     || definition?.confirmationPolicy === 'strong_confirm';
 }
 
+function riskClassForRisk(risk: ChatActionRisk): ChatActionRiskClass {
+  if (risk === 'read_only') return 'R0';
+  if (risk === 'safe_write') return 'R1';
+  if (risk === 'external_side_effect') return 'R2';
+  if (risk === 'destructive' || risk === 'financial' || risk === 'admin_security') return 'R3';
+  return 'R4';
+}
+
+function thresholdForSteps(steps: ChatPlanStep[]): number {
+  const riskiest = steps.reduce<ChatActionRiskClass>((current, step) => {
+    const candidate = step.riskClass ?? riskClassForRisk(step.risk);
+    return riskRank(candidate) > riskRank(current) ? candidate : current;
+  }, 'R0');
+  if (riskiest === 'R3') return 0.98;
+  if (riskiest === 'R2') return 0.96;
+  if (riskiest === 'R1') return 0.9;
+  if (riskiest === 'R4') return 1;
+  return 0.75;
+}
+
+function calibratePlanConfidence(steps: ChatPlanStep[], baseConfidence: number): number {
+  let score = clampConfidence(baseConfidence);
+  for (const step of steps) {
+    const missingPenalty = step.requiredArgsPresent ? 0 : 0.28;
+    const provenancePenalty = provenanceCoverage(step) >= 0.9 ? 0 : 0.08;
+    const riskPenalty = step.riskClass === 'R4' ? 0.35 : 0;
+    score = Math.min(score, clampConfidence(score - missingPenalty - provenancePenalty - riskPenalty));
+  }
+  return Number(score.toFixed(3));
+}
+
+function provenanceCoverage(step: ChatPlanStep): number {
+  const definition = findChatActionDefinition(step.skill, step.action);
+  const required = definition?.requiredFields ?? [];
+  if (required.length === 0) return 1;
+  const provenance = step.slotProvenance ?? {};
+  const present = required.filter((field) => step.args[field] != null && step.args[field] !== '');
+  if (present.length === 0) return 0;
+  const withProvenance = present.filter((field) => provenance[field]?.validation === 'passed');
+  return withProvenance.length / present.length;
+}
+
+function riskRank(risk: ChatActionRiskClass): number {
+  return { R0: 0, R1: 1, R2: 2, R3: 3, R4: 4 }[risk];
+}
+
+function buildCalendarSlotProvenance(input: ChatPlannerInput, calendar: NonNullable<ReturnType<typeof parseNaturalLanguageCalendarEvent>>, provider: ChatProvider): Record<string, ChatSlotProvenance> {
+  const rawText = input.text;
+  return {
+    title: makeSlotProvenance({ slot: 'title', value: calendar.title, rawText, turnId: input.messageId, normalizer: 'calendar_nlp_v1', confidence: calendar.confidence }),
+    provider: makeSlotProvenance({ slot: 'provider', value: provider, rawText, turnId: input.messageId, normalizer: 'calendar_provider_alias_v1', confidence: 0.98 }),
+    startDateTime: makeSlotProvenance({ slot: 'startDateTime', value: calendar.startDateTime, rawText, turnId: input.messageId, normalizer: 'calendar_nlp_v1', confidence: calendar.confidence }),
+    endDateTime: makeSlotProvenance({ slot: 'endDateTime', value: calendar.endDateTime, rawText, turnId: input.messageId, normalizer: 'calendar_nlp_v1', confidence: calendar.confidence }),
+    timezone: makeSlotProvenance({ slot: 'timezone', value: calendar.timezone, rawText: null, turnId: input.messageId, sourceType: 'safe_default', normalizer: 'user_timezone', confidence: 1 }),
+  };
+}
+
+function buildLlmSlotProvenance(
+  input: ChatPlannerInput,
+  args: Record<string, unknown>,
+  requiredFields: string[],
+  sourceType: ChatSlotProvenance['sourceType'] = 'planner',
+): Record<string, ChatSlotProvenance> {
+  const provenance: Record<string, ChatSlotProvenance> = {};
+  for (const field of [...new Set([...requiredFields, ...Object.keys(args)])]) {
+    if (args[field] == null || args[field] === '') continue;
+    provenance[field] = makeSlotProvenance({
+      slot: field,
+      value: args[field],
+      rawText: input.text,
+      turnId: input.messageId,
+      sourceType,
+      normalizer: 'llm_structured_planner_v1',
+      confidence: 0.72,
+    });
+  }
+  return provenance;
+}
+
+function provenanceSourceForRouteTier(routeTier?: ChatActionTelemetry['routeTier']): ChatSlotProvenance['sourceType'] {
+  if (routeTier === 'tier1_classifier') return 'classifier';
+  if (routeTier === 'tier3_reviewer') return 'reviewer';
+  return 'planner';
+}
+
 function inferContentPlatform(folded: string): string {
   if (/\btiktok\b/.test(folded)) return 'tiktok';
   if (/\b(reels?|instagram)\b/.test(folded)) return 'instagram_reel';
@@ -2706,4 +4298,39 @@ function extractTopic(text: string): string | null {
     if (topic && topic.length >= 3) return topic;
   }
   return null;
+}
+
+function retrievePlannerExamples(input: ChatPlannerInput, registry: ReturnType<typeof getChatActionRegistry>): Array<Record<string, unknown>> {
+  const folded = foldCalendarText(input.text);
+  const examples: Array<Record<string, unknown>> = [];
+  for (const entry of registry) {
+    for (const example of entry.examples ?? []) {
+      examples.push({ skill: entry.skill, action: entry.action, ...example });
+    }
+  }
+  if (/\b(called|named|titled|chamado|t[ií]tulo)\b/.test(folded)) {
+    examples.push({
+      text: 'Create a task for tomorrow 9 am called Test chat',
+      expected: { skill: 'tasks', action: 'create_task', title: 'Test chat', dueDateTime: 'tomorrow 09:00' },
+    });
+  }
+  if (/\b(agenda do gmail|gmail agenda)\b/.test(folded)) {
+    examples.push({
+      text: 'Cria um evento na agenda do Gmail chamado igreja das 10 ao meio-dia e meio nesse domingo',
+      expected: { skill: 'secretary_calendar', action: 'schedule_event', provider: 'google_calendar', title: 'igreja' },
+    });
+  }
+  if (/\b(km|week|semana)\b/.test(folded) && /\b(training|treino|running|corrida)\b/.test(folded)) {
+    examples.push({
+      text: 'It is 20 km a week',
+      expected: { skill: 'training', action: 'training_plan_create', slot: 'weeklyVolumeKm', value: 20, requiresPendingAction: true },
+    });
+  }
+  const seen = new Set<string>();
+  return examples.filter((example) => {
+    const key = JSON.stringify(example);
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  }).slice(0, 6);
 }

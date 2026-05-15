@@ -32,7 +32,7 @@ jobs:
       version: ${{ steps.version.outputs.version }}
       is_rollback: ${{ steps.check.outputs.is_rollback }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           fetch-depth: 0
 
@@ -61,7 +61,7 @@ jobs:
     needs: pre-deploy
     steps:
       - name: Create backup on server
-        uses: appleboy/ssh-action@v1
+        uses: appleboy/ssh-action@0ff4204d59e8e51228ff73bce53f80d53301dee2 # v1
         with:
           host: ${{ secrets.SERVER_HOST }}
           username: ${{ secrets.SERVER_USER }}
@@ -84,10 +84,10 @@ jobs:
     runs-on: ubuntu-latest
     needs: [pre-deploy, backup]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: '20'
           cache: 'npm'
@@ -98,7 +98,7 @@ jobs:
           npm run build
 
       - name: Stop services
-        uses: appleboy/ssh-action@v1
+        uses: appleboy/ssh-action@0ff4204d59e8e51228ff73bce53f80d53301dee2 # v1
         with:
           host: ${{ secrets.SERVER_HOST }}
           username: ${{ secrets.SERVER_USER }}
@@ -109,7 +109,7 @@ jobs:
             ${{ env.PM2 }} stop content-engine 2>/dev/null || true
 
       - name: Sync files
-        uses: burnett01/rsync-deployments@7.0.1
+        uses: burnett01/rsync-deployments@796cf0d5e4b535745ce49d7429f77cf39e25ef39 # 7.0.1
         with:
           switches: -avz --delete --exclude='.env' --exclude='data/' --exclude='logs/' --exclude='node_modules/' --exclude='content-engine/.venv/' --exclude='content-engine/data/' --exclude='.git/'
           path: ./
@@ -119,7 +119,7 @@ jobs:
           remote_key: ${{ secrets.SERVER_SSH_KEY }}
 
       - name: Install deps & start
-        uses: appleboy/ssh-action@v1
+        uses: appleboy/ssh-action@0ff4204d59e8e51228ff73bce53f80d53301dee2 # v1
         with:
           host: ${{ secrets.SERVER_HOST }}
           username: ${{ secrets.SERVER_USER }}
@@ -141,7 +141,7 @@ jobs:
         run: sleep 10
 
       - name: Check services
-        uses: appleboy/ssh-action@v1
+        uses: appleboy/ssh-action@0ff4204d59e8e51228ff73bce53f80d53301dee2 # v1
         with:
           host: ${{ secrets.SERVER_HOST }}
           username: ${{ secrets.SERVER_USER }}
@@ -162,7 +162,7 @@ jobs:
     needs: [pre-deploy, health-check]
     if: always()
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
       - name: Update Notion release log
         if: ${{ secrets.NOTION_TOKEN != '' }}

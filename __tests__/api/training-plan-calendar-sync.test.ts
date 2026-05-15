@@ -314,7 +314,7 @@ describe('training-plan-calendar-sync', () => {
       ]);
     }
     expect(mocks.createEvent).toHaveBeenCalledTimes(2);
-    expect(mocks.createEvent).toHaveBeenCalledWith(expect.any(Object), 'google', 42);
+    expect(mocks.createEvent).toHaveBeenCalledWith(expect.any(Object), 'google', 42, undefined);
     expect(mocks.linkSessionToCalendar).toHaveBeenCalledWith(100, 'evt-mon', 'google');
     expect(mocks.linkSessionToCalendar).toHaveBeenCalledWith(101, 'evt-wed', 'google');
     expect(mocks.recordCalendarOwnership).toHaveBeenCalledWith(expect.objectContaining({
@@ -359,7 +359,7 @@ describe('training-plan-calendar-sync', () => {
 
     await syncTrainingPlanCalendar(42, now);
 
-    expect(mocks.createEvent).toHaveBeenCalledWith(expect.any(Object), 'outlook', 42);
+    expect(mocks.createEvent).toHaveBeenCalledWith(expect.any(Object), 'outlook', 42, undefined);
     expect(mocks.linkSessionToCalendar).toHaveBeenCalledWith(100, 'evt-outlook', 'outlook');
   });
 
@@ -381,7 +381,7 @@ describe('training-plan-calendar-sync', () => {
 
     await syncTrainingPlanCalendar(42, now, 'google');
 
-    expect(mocks.createEvent).toHaveBeenCalledWith(expect.any(Object), 'google', 42);
+    expect(mocks.createEvent).toHaveBeenCalledWith(expect.any(Object), 'google', 42, undefined);
     expect(mocks.updatePlanPreferences).toHaveBeenCalledWith(
       7,
       JSON.stringify({ preferredTime: '12:00', trainingCalendarSource: 'google' }),
@@ -425,7 +425,7 @@ describe('training-plan-calendar-sync', () => {
 
     await syncTrainingPlanCalendar(42, now);
 
-    expect(mocks.createEvent).toHaveBeenCalledWith(expect.any(Object), 'outlook', 42);
+    expect(mocks.createEvent).toHaveBeenCalledWith(expect.any(Object), 'outlook', 42, undefined);
     expect(mocks.createEvent.mock.calls[0][0]).toMatchObject({
       start: '2026-04-20T11:00:00.000Z',
       end: '2026-04-20T11:40:00.000Z',
@@ -544,6 +544,7 @@ describe('training-plan-calendar-sync', () => {
       }),
       'google',
       12,
+      undefined,
     );
     expect(mocks.linkSessionToCalendar).toHaveBeenCalledWith(321, 'evt-tempo', 'google');
   });

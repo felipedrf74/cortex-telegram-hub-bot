@@ -106,7 +106,7 @@ export async function createEvent(data: {
   attendees?: string[];
   location?: string;
   recurrence?: NormalizedRecurrence;
-}, userId?: number): Promise<CalendarEvent> {
+}, userId?: number, options?: { signal?: AbortSignal }): Promise<CalendarEvent> {
   try {
     const calendar = getCalendar(userId);
     const attendees = (data.attendees || [])
@@ -126,7 +126,7 @@ export async function createEvent(data: {
           ...(rrule ? { recurrence: [rrule] } : {}),
           ...(attendees.length > 0 ? { attendees: attendees.map((email) => ({ email })) } : {}),
         },
-      }),
+      }, options?.signal ? { signal: options.signal } : undefined),
       GOOGLE_API_TIMEOUT_MS,
     );
 
@@ -151,7 +151,7 @@ export async function updateEvent(data: {
   new_end?: string;
   new_title?: string;
   new_description?: string;
-}, userId?: number): Promise<CalendarEvent> {
+}, userId?: number, options?: { signal?: AbortSignal }): Promise<CalendarEvent> {
   try {
     const calendar = getCalendar(userId);
     const requestBody: calendar_v3.Schema$Event = {};
@@ -166,7 +166,7 @@ export async function updateEvent(data: {
         calendarId: 'primary',
         eventId: data.event_id,
         requestBody,
-      }),
+      }, options?.signal ? { signal: options.signal } : undefined),
       GOOGLE_API_TIMEOUT_MS,
     );
 
@@ -185,14 +185,14 @@ export async function updateEvent(data: {
   }
 }
 
-export async function deleteEvent(eventId: string, userId?: number): Promise<void> {
+export async function deleteEvent(eventId: string, userId?: number, options?: { signal?: AbortSignal }): Promise<void> {
   try {
     const calendar = getCalendar(userId);
     await withTimeout(
       calendar.events.delete({
         calendarId: 'primary',
         eventId,
-      }),
+      }, options?.signal ? { signal: options.signal } : undefined),
       GOOGLE_API_TIMEOUT_MS,
     );
   } catch (err) {

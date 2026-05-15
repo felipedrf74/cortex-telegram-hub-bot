@@ -3,6 +3,8 @@ dist/
 data/
 .env
 .env.*
+# Local Docker sandbox env template — tracked; private .env.local is not.
+!.env.local.example
 *.db
 *.db-journal
 *.db-wal

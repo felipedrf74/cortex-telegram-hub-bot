@@ -178,3 +178,17 @@ case "$VITEST_MODE" in
     echo "✅ Tests passed (full, unknown mode fallback)"
     ;;
 esac
+
+# ── Local Docker sandbox nudge (soft, non-blocking) ────────────────
+# Print a friendly warning if the local-dev sandbox isn't running.
+# This is intentionally not a gate — staging+prod still have their own
+# smoke gates. Goal: remind Felipe to ./scripts/local-smoke.sh before
+# pushing. Disable with NEXUS_PRECOMMIT_SKIP_SANDBOX_NUDGE=1.
+if [ "${NEXUS_PRECOMMIT_SKIP_SANDBOX_NUDGE:-0}" != "1" ] \
+   && [ -f "$ROOT/docker-compose.local.yml" ]; then
+  if ! docker compose -f "$ROOT/docker-compose.local.yml" ps --status running --quiet 2>/dev/null | grep -q .; then
+    echo "💡 Local sandbox isn't running. Before pushing, consider:"
+    echo "     ./scripts/local-up.sh && ./scripts/local-smoke.sh"
+    echo "   (Soft nudge only — this hook does not block.)"
+  fi
+fi

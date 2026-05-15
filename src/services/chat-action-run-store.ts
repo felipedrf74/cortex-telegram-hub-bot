@@ -3,6 +3,7 @@
 import { createHash, randomUUID } from 'crypto';
 import { getDb } from './database';
 import type { ChatActionRisk } from './chat-action-registry';
+import { logger } from '../utils/logger';
 
 export type ChatActionRunStatus =
   | 'planned'
@@ -11,9 +12,11 @@ export type ChatActionRunStatus =
   | 'executing'
   | 'verifying'
   | 'verified_success'
+  | 'verified_pending'
   | 'partial_success'
   | 'failed'
-  | 'blocked';
+  | 'blocked'
+  | 'cancelled';
 
 export interface ChatActionRunRow {
   id: string;
@@ -95,6 +98,16 @@ export function claimChatActionRun(input: ClaimChatActionRunInput): { acquired: 
   return { acquired: row.id === id, row };
 }
 
+export function claimChatActionRunForExecution(input: ClaimChatActionRunInput): { acquired: boolean; row: ChatActionRunRow } {
+  const db = getDb();
+  return db.transaction(() => {
+    const claim = claimChatActionRun(input);
+    if (!claim.acquired) return claim;
+    const row = updateChatActionRun(claim.row.id, 'executing', { nowIso: input.nowIso }) ?? claim.row;
+    return { acquired: true, row };
+  })();
+}
+
 export function updateChatActionRun(
   id: string,
   status: ChatActionRunStatus,
@@ -109,8 +122,15 @@ export function updateChatActionRun(
 ): ChatActionRunRow | null {
   const db = getDb();
   const now = update?.nowIso ?? new Date().toISOString();
-  const completedAt = ['verified_success', 'partial_success', 'failed', 'blocked'].includes(status) ? now : null;
-  db.prepare(`
+  const completedAt = ['verified_success', 'verified_pending', 'partial_success', 'failed', 'blocked', 'cancelled'].includes(status) ? now : null;
+  const safeResult = update?.result === undefined
+    ? undefined
+    : sanitizeChatActionRunResult(update.result, {
+      providerObjectId: update.providerObjectId ?? undefined,
+      status,
+    });
+
+  const result = db.prepare(`
     UPDATE chat_action_runs
     SET status = ?,
         result_json = COALESCE(?, result_json),
@@ -121,9 +141,10 @@ export function updateChatActionRun(
         updated_at = ?,
         completed_at = COALESCE(?, completed_at)
     WHERE id = ?
+      AND status NOT IN ('failed', 'cancelled')
   `).run(
     status,
-    update?.result === undefined ? null : JSON.stringify(update.result),
+    safeResult === undefined ? null : JSON.stringify(safeResult),
     update?.providerObjectId ?? null,
     update?.providerTransactionId ?? null,
     update?.verification === undefined ? null : JSON.stringify(update.verification),
@@ -132,6 +153,22 @@ export function updateChatActionRun(
     completedAt,
     id,
   );
+  if (Number(result.changes ?? 0) === 0) {
+    const current = getChatActionRun(id);
+    if (current && (current.status === 'failed' || current.status === 'cancelled')) {
+      logger.warn({
+        runId: id,
+        attemptedStatus: status,
+        currentStatus: current.status,
+      }, 'late chat action run write rejected by terminal status guard');
+      return null;
+    }
+    logger.warn({
+      runId: id,
+      attemptedStatus: status,
+      currentStatus: current?.status ?? 'missing',
+    }, 'chat action run update did not match an active row');
+  }
   return getChatActionRun(id);
 }
 
@@ -165,6 +202,56 @@ export function listPendingChatActionRuns(input: {
   `).all(...params) as ChatActionRunRow[];
 }
 
+export function reapZombieChatActionRuns(input: {
+  olderThanIso?: string;
+  nowIso?: string;
+  limit?: number;
+} = {}): number {
+  const db = getDb();
+  const now = input.nowIso ?? new Date().toISOString();
+  const olderThan = input.olderThanIso ?? new Date(Date.parse(now) - 5 * 60 * 1000).toISOString();
+  const limit = Math.max(1, Math.min(1000, input.limit ?? 500));
+  const result = db.prepare(`
+    UPDATE chat_action_runs
+    SET status = 'failed',
+        error_json = COALESCE(error_json, ?),
+        updated_at = ?,
+        completed_at = COALESCE(completed_at, ?)
+    WHERE id IN (
+      SELECT id
+      FROM chat_action_runs
+      WHERE status = 'executing'
+        AND updated_at <= ?
+      ORDER BY updated_at ASC
+      LIMIT ?
+    )
+  `).run(JSON.stringify({ reason: 'orphaned_executing' }), now, now, olderThan, limit);
+  return Number(result.changes ?? 0);
+}
+
+export function pruneCompletedChatActionRuns(input: {
+  beforeIso?: string;
+  nowIso?: string;
+  limit?: number;
+} = {}): number {
+  const now = input.nowIso ?? new Date().toISOString();
+  const before = input.beforeIso ?? new Date(Date.parse(now) - 90 * 24 * 60 * 60 * 1000).toISOString();
+  const limit = Math.max(1, Math.min(1000, input.limit ?? 500));
+  const result = getDb().prepare(`
+    DELETE FROM chat_action_runs
+    WHERE id IN (
+      SELECT id
+      FROM chat_action_runs
+      WHERE completed_at IS NOT NULL
+        AND completed_at <= ?
+        AND status IN ('verified_success', 'verified_pending', 'partial_success', 'failed', 'blocked', 'cancelled')
+      ORDER BY completed_at ASC
+      LIMIT ?
+    )
+  `).run(before, limit);
+  return Number(result.changes ?? 0);
+}
+
 function stableJson(value: unknown): string {
   if (value == null) return JSON.stringify(value);
   if (Array.isArray(value)) return `[${value.map(stableJson).join(',')}]`;
@@ -173,4 +260,58 @@ function stableJson(value: unknown): string {
     return `{${Object.keys(record).sort().map((key) => `${JSON.stringify(key)}:${stableJson(record[key])}`).join(',')}}`;
   }
   return JSON.stringify(value);
+}
+
+function sanitizeChatActionRunResult(result: unknown, context: { providerObjectId?: string | null; status: ChatActionRunStatus }): Record<string, unknown> {
+  if (!result || typeof result !== 'object') {
+    return { status: context.status, valueType: typeof result };
+  }
+  const record = result as Record<string, unknown>;
+  const event = isRecord(record.event) ? record.event : null;
+  const task = isRecord(record.task) ? record.task : null;
+  const intentId = typeof record.intentId === 'string' ? record.intentId : null;
+  const providerObjectId =
+    context.providerObjectId
+    ?? stringValue(record.providerObjectId)
+    ?? stringValue(record.packageId)
+    ?? stringValue(record.pendingActionId)
+    ?? stringValue(record.eventId)
+    ?? stringValue(record.taskId)
+    ?? stringValue(record.topicId)
+    ?? stringValue(record.weekStart)
+    ?? stringValue(event?.id)
+    ?? stringValue(task?.id)
+    ?? intentId
+    ?? null;
+  return {
+    status: context.status,
+    verified: typeof record.verified === 'boolean'
+      ? record.verified
+      : isRecord(record.verification) && typeof record.verification.verified === 'boolean'
+        ? record.verification.verified
+        : undefined,
+    providerObjectId,
+    source: stringValue(record.provider) ?? stringValue(record.source) ?? stringValue(event?.source),
+    resultType: inferResultType(record),
+    replaySafe: true,
+  };
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value != null && typeof value === 'object' && !Array.isArray(value);
+}
+
+function stringValue(value: unknown): string | null {
+  return typeof value === 'string' && value.trim().length > 0 ? value : null;
+}
+
+function inferResultType(record: Record<string, unknown>): string {
+  if ('event' in record || 'eventId' in record) return 'calendar_event';
+  if ('task' in record || 'taskId' in record) return 'task';
+  if ('packageId' in record || 'firstScript' in record) return 'content_package';
+  if ('intentId' in record || 'notificationId' in record) return 'notification_intent';
+  if ('pendingActionId' in record) return 'pending_action';
+  if ('meal' in record || 'weekStart' in record) return 'cooking';
+  if ('item' in record || 'decisionId' in record) return 'decision';
+  return 'action_result';
 }

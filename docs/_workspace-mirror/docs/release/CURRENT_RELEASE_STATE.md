@@ -19,6 +19,45 @@ Last updated: 2026-05-14
 - Workspace HEAD / version / migrations / dirty state: see `docs/release/release-identity.md`
 - Production status (last manual update 2026-05-14): promoted via `./scripts/promote-to-prod.sh`, health-checked, both `nexus-hub` and `content-engine` PM2 processes online at version `4.14.162`.
 
+### 2026-05-14 Chat Hybrid Action Intelligence Local Implementation
+
+- Scope: local backend and iOS source implementation only. No staging deploy,
+  production promote, TestFlight build, or live provider mutation was performed
+  in this pass.
+- Chat hybrid action coordination now has explicit Tier 0/Tier 1/Tier 2/Tier 3
+  runtime paths: deterministic engine first, optional Gemini Flash-Lite Tier 1
+  classifier/slot helper, Gemini Flash Tier 2 structured planner with OpenAI
+  nano fallback, and flag-gated escalation reviewer with Gemini Flash / OpenAI
+  mini. Anthropic remains out of the normal runtime path.
+- Durable hybrid action state now includes `chat_pending_actions` for
+  pending-slot/confirmation lifecycle and `chat_action_telemetry` for safe
+  routing/eval metadata. The telemetry row stores route tier, calibrated score,
+  threshold, provider/model, verifier status, latency, outcome, and failure
+  reason plus a safe slot-provenance summary without raw model output or
+  private user content.
+- Implemented behavior fixes: task title/date extraction for
+  `Create a task for tomorrow 9 am called Test chat`; command-like task titles
+  remain harmless titles; recent/visible task follow-up can resolve
+  `Mark this task as done`; Training plan creation creates a pending draft and
+  weekly-mileage follow-up such as `It is 20 km a week` fills only an active
+  Training pending slot; standalone weekly-mileage statements ask for context;
+  `agenda do Gmail` event semantics continue routing to Google Calendar.
+- iOS Chat can decode and render typed `verified_pending` action cards with
+  safe `open_surface` callbacks for Training Plan Builder, Content Script
+  Studio, and Task Detail. Unknown/future metadata remains silent by default
+  instead of exposing a structured-response fallback.
+- Verification in this local pass: backend TypeScript check passed, focused
+  backend hybrid chat suite passed **4 files / 51 tests**, including the new
+  fixed CI smoke corpus of **156** action-routing cases; full backend
+  `npm run verify` passed **536 test files / 7,566 tests**; focused iOS card
+  and route suite passed **55 tests**, simulator cleanup was run after iOS
+  tests, and `npm run docs:audit` exited 0 with the existing warnings baseline.
+- Not complete by local code alone: the nightly **1,000-3,000** labeled eval
+  suite, production precision dashboard, and real canary metrics require a
+  labeled corpus and deployed telemetry volume. Live Google Calendar provider
+  mutation/read-back validation requires owner approval because it creates and
+  verifies real provider events.
+
 ### 2026-05-14 Chat General Action Intelligence Production Promote
 
 - Scope: backend source pushed to `origin/main`, staged, smoke-tested, and

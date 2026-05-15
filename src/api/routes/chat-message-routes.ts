@@ -36,7 +36,7 @@ import {
   trackPendingChatConfirmation,
 } from '../../services/chat-pending-confirmations';
 import { buildChatResponseSufficiencyMetadata } from '../../services/chat-response-sufficiency';
-import { sendInternalError } from '../response-helpers';
+import { asyncHandler, sendInternalError } from '../response-helpers';
 import {
   persistExchange,
   syncConversationStateForShortcut,
@@ -50,6 +50,7 @@ import {
   tryBuildFastPathChatResponse,
   tryBuildTrainingPlanShortcutResponse,
 } from './chat-message-local-responses';
+import { parseContentScriptShortcut } from './chat-shortcut-parsers';
 import {
   normalizeChatMessageRequest,
   persistChatLanguagePreference,
@@ -62,6 +63,7 @@ import {
   executeConfirmedChatActionRuns,
   tryHandleChatActionPlan,
 } from '../../services/chat-action-planner';
+import { getPendingChatActionById } from '../../services/chat-action-state';
 import {
   buildNexusAnswerContract,
   createChatLatencyTracker,
@@ -335,6 +337,54 @@ export function registerChatMessageRoutes(
   ensureValidChatRouteScope: ChatRouteScopeGuard,
 ): void {
   /**
+   * GET /api/v1/chat/actions/:pendingActionId
+   * Returns a scoped pending action for token-zero skill handoff prefill.
+   */
+  router.get('/actions/:pendingActionId', asyncHandler(async (req, res: Response) => {
+    res.setHeader('Cache-Control', 'no-store, max-age=0, must-revalidate');
+    res.setHeader('Pragma', 'no-cache');
+    res.setHeader('Expires', '0');
+    res.setHeader('Vary', 'Authorization');
+
+    const { userId, tenantId = userId } = req as unknown as AuthenticatedRequest;
+    if (!ensureValidChatRouteScope(res, userId, tenantId, 'chat_pending_action_read')) {
+      return;
+    }
+    const pendingActionId = String(req.params.pendingActionId || '').trim();
+    if (!/^[A-Za-z0-9_-]{1,128}$/.test(pendingActionId)) {
+      res.status(400).json({ error: { code: 'BAD_REQUEST', message: 'Invalid pending action id' } });
+      return;
+    }
+    const action = getPendingChatActionById({
+      userId,
+      tenantId,
+      pendingActionId,
+    });
+    if (!action) {
+      res.status(404).json({ error: { code: 'NOT_FOUND', message: 'Pending action not found' } });
+      return;
+    }
+    res.json({
+      ok: true,
+      data: {
+        id: action.id,
+        schemaVersion: action.schemaVersion,
+        skill: action.skill,
+        action: action.action,
+        status: action.status,
+        collectedSlots: action.collectedSlots,
+        missingSlots: action.missingSlots,
+        riskClass: action.riskClass,
+        locale: action.locale,
+        timezone: action.timezone,
+        originatingSurface: action.originatingSurface,
+        expiresAt: action.expiresAt,
+      },
+      timestamp: new Date().toISOString(),
+    });
+  }));
+
+  /**
    * POST /api/v1/chat/message
    * Send a message — equivalent to typing in Telegram.
    * Routes through Router → Domain Handler → returns AI response.
@@ -500,7 +550,7 @@ export function registerChatMessageRoutes(
       // Natural-language write intents must be routed before read-only
       // fast paths. Example: "agenda do Gmail" with event semantics means
       // Google Calendar, not Gmail unread count.
-      if (normalizedText && normalizedAttachments.length === 0) {
+      if (normalizedText && normalizedAttachments.length === 0 && !parseContentScriptShortcut(normalizedText)) {
         const actionResult = await tryHandleChatActionPlan({
           text: normalizedText,
           userId,

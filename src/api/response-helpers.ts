@@ -155,6 +155,20 @@ export function sendError(
   status = 400,
   details?: Record<string, unknown>,
 ): void {
+  const existingCacheControl = typeof res.getHeader === 'function'
+    ? res.getHeader('Cache-Control')
+    : undefined;
+  const existingPragma = typeof res.getHeader === 'function'
+    ? res.getHeader('Pragma')
+    : undefined;
+  const existingExpires = typeof res.getHeader === 'function'
+    ? res.getHeader('Expires')
+    : undefined;
+  if (!existingCacheControl && !existingPragma && !existingExpires && typeof res.setHeader === 'function') {
+    res.setHeader('Cache-Control', 'no-store, max-age=0, must-revalidate');
+    res.setHeader('Pragma', 'no-cache');
+    res.setHeader('Expires', '0');
+  }
   if (status >= 500 || code === 'SERVICE_UNAVAILABLE') {
     const reqId = getCurrentRequestId();
     logger.warn?.(
@@ -273,7 +287,7 @@ export function asyncHandler<T extends (req: any, res: Response) => Promise<void
       if (res.headersSent) return;
       // Return a stable client-safe message. The real error details live
       // in error_log + Sentry keyed by reqId; do not leak err.message.
-      res.status(500).json(apiError('INTERNAL', 'Internal server error'));
+      sendInternalError(res);
     }
   };
 }

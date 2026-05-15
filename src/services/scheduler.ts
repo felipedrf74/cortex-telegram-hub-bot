@@ -52,6 +52,8 @@ import { processDueOperatorAlertDeliveries, recordOperatorAlert } from './operat
 import { runEventBackboneOnce } from './event-backbone-worker';
 import { runEventBackboneCleanup } from '../tools/event-backbone-cleanup';
 import { expireStaleChatActionPlans } from './chat-reasoning-engine';
+import { expireStalePendingChatActionsForJob } from './chat-action-state';
+import { pruneCompletedChatActionRuns, reapZombieChatActionRuns } from './chat-action-run-store';
 import { runGarminTenantIsolationWatcher } from './garmin-tenant-isolation-watcher';
 import { runDecisionSourceStateSupersessionJob } from './decision-center';
 import { getActivePlan, getCurrentWeek, getWeeklyAdherence, computeAdjustmentRecommendation, updateWeekAdjustment, getWeeksForPlan } from './training-plans';
@@ -1791,10 +1793,24 @@ export function startScheduler(bot?: any): void {
     logger.info(result, 'Decision source-state supersession completed');
   }), { timezone: tz });
 
-  cron.schedule('15 * * * *', wrapJob('chat_action_plan_expiry', async () => {
+  cron.schedule('*/2 * * * *', wrapJob('chat_action_plan_expiry', async () => {
     const expired = expireStaleChatActionPlans();
-    if (expired === 0) return 'skipped';
-    logger.info({ expired }, 'Expired stale chat action plans');
+    const expiredPendingActions = expireStalePendingChatActionsForJob();
+    const totalExpired = expired + expiredPendingActions;
+    if (totalExpired === 0) return 'skipped';
+    logger.info({ expired, expiredPendingActions }, 'Expired stale chat action plans');
+  }), { timezone: tz });
+
+  cron.schedule('*/5 * * * *', wrapJob('chat_action_run_zombie_reaper', async () => {
+    const reaped = reapZombieChatActionRuns();
+    if (reaped === 0) return 'skipped';
+    logger.warn({ reaped }, 'Reaped orphaned chat action runs stuck in executing status');
+  }), { timezone: tz });
+
+  cron.schedule('20 0 * * *', wrapJob('chat_action_run_retention', async () => {
+    const deleted = pruneCompletedChatActionRuns();
+    if (deleted === 0) return 'skipped';
+    logger.info({ deleted, retentionDays: 90 }, 'Pruned retained chat action run summaries');
   }), { timezone: tz });
 
   cron.schedule('* * * * *', wrapJob('event_backbone_worker', async () => {
@@ -1850,7 +1866,7 @@ export function startScheduler(bot?: any): void {
   }), { timezone: tz });
 
   logger.info(
-    `Scheduler started: reminders, daily briefing (${config.todo.digestTime}), end-of-day (21:00), weekly (Fri 17:00), shared list (*/5), content (16:43), invoices (1st 09:00/09:15/09:30), fiscal-bundle (daily 08:10 due-check), conflict (19:30), fossa (bi-weekly Mon 07:30), garmin-keepalive (*/30), coach (${config.garmin.coachTime}), invoice-queue (*/15), channel-relearn (Sun 03:00), tue-reels (Tue 09:00), thu-youtube (Thu 09:00), fri-weekly (Fri 18:30), pipeline-agent (20:00), notification-release (*/15), decision-source-supersession (*/15), chat-action-plan-expiry (hourly), event-backbone-worker (* * * * *), event-backbone-cleanup (00:10), expire-signals (hourly), db-backup (${config.backup.time}), dst-watchdog (*/15)`
+    `Scheduler started: reminders, daily briefing (${config.todo.digestTime}), end-of-day (21:00), weekly (Fri 17:00), shared list (*/5), content (16:43), invoices (1st 09:00/09:15/09:30), fiscal-bundle (daily 08:10 due-check), conflict (19:30), fossa (bi-weekly Mon 07:30), garmin-keepalive (*/30), coach (${config.garmin.coachTime}), invoice-queue (*/15), channel-relearn (Sun 03:00), tue-reels (Tue 09:00), thu-youtube (Thu 09:00), fri-weekly (Fri 18:30), pipeline-agent (20:00), notification-release (*/15), decision-source-supersession (*/15), chat-action-plan-expiry (*/2), chat-action-run-zombie-reaper (*/5), chat-action-run-retention (00:20), event-backbone-worker (* * * * *), event-backbone-cleanup (00:10), expire-signals (hourly), db-backup (${config.backup.time}), dst-watchdog (*/15)`
   );
 }
 

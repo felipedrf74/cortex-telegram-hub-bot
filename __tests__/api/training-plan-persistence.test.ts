@@ -220,6 +220,7 @@ describe('training-plan-persistence', () => {
       }),
       undefined,
       12,
+      undefined,
     );
     expect(mockCreateEvent.mock.calls[0][0].description).toContain('[NEXUS_TRAINING_IDENTITY');
     expect(mockLinkSessionToCalendar).toHaveBeenCalledTimes(2);

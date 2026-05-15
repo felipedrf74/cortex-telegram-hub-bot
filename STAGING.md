@@ -2,6 +2,20 @@
 
 > Quarter audit item: Staging environment + Blue-green deploy.
 
+> **Before you push to staging:** run the local Docker sandbox smoke
+> first. `./scripts/local-up.sh && ./scripts/local-smoke.sh` catches
+> boot regressions and broken `/api/v1/*` envelopes before they reach
+> the remote box. Full runbook: `docs/local-dev/README.md`. The local
+> sandbox is a pre-staging filter, not a replacement — staging-smoke
+> still runs as the promote-to-prod gate.
+>
+> **Hybrid chat canary flags:** per-user and per-tenant overrides such as
+> `CHAT_HYBRID_PLANNER_ENABLED_USER_<id>` and
+> `CHAT_HYBRID_PLANNER_ENABLED_TENANT_<id>` are environment-variable
+> overrides. They are scoped and safe for canaries, but not runtime-mutable;
+> changing them requires updating the staging/prod environment and restarting
+> the PM2 process.
+
 ## What Staging Is
 
 A second, isolated install of Nexus Hub running on the same VPS as production,

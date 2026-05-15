@@ -211,6 +211,23 @@ Direct `./scripts/deploy.sh` exists for trivial hotfixes but the default is alwa
 - Bug fixes include a failing-test-before-fix whenever reasonable.
 - `_resetDecryptCacheForTests()` in `beforeEach` if the test uses `oauth-store` — the decrypted-token LRU is module-scoped.
 
+### Local-dev sandbox
+
+Default loop for testing changes before staging:
+
+1. **Boot:** `./scripts/local-up.sh` (Docker; idempotent — no-op if already running).
+2. **Smoke:** `./scripts/local-smoke.sh` (5-check contract; matches `staging-smoke.sh` minus PM2 checks).
+3. **iOS Simulator:** `./scripts/sim-local.sh` or select the "Nexus Hub Local Dev" Xcode scheme.
+4. **Tear down:** `./scripts/local-down.sh` (keeps `data/`) or `./scripts/local-reset.sh --yes` (full wipe).
+
+**Cockpit** — for button-driven sandbox control instead of typing
+shell commands: `./scripts/cockpit.sh` opens a browser cockpit at
+`http://127.0.0.1:8210` with all of the above plus live container
+status, today's AI spend, container log streaming, dev JWT minting,
+and a focused vitest runner. Details: `scripts/cockpit/README.md`.
+
+The pre-commit hook prints a soft warning when the sandbox isn't running. It never blocks. Full runbook at `docs/local-dev/README.md`. Doesn't replace staging — runs in parallel to the `deploy-staging.sh` / `promote-to-prod.sh` chain.
+
 ### Forbidden
 
 - ❌ Modifying `.env`, `data/`, `content-engine/.venv/`

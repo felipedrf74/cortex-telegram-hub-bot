@@ -8,9 +8,11 @@ const mocks = vi.hoisted(() => {
     get: vi.fn(),
     query: vi.fn(),
     header: vi.fn(),
+    option: vi.fn(),
   };
   ownerRequest.query.mockReturnValue(ownerRequest);
   ownerRequest.header.mockReturnValue(ownerRequest);
+  ownerRequest.option.mockReturnValue(ownerRequest);
 
   const userRequest = {
     post: vi.fn(),
@@ -19,9 +21,11 @@ const mocks = vi.hoisted(() => {
     get: vi.fn(),
     query: vi.fn(),
     header: vi.fn(),
+    option: vi.fn(),
   };
   userRequest.query.mockReturnValue(userRequest);
   userRequest.header.mockReturnValue(userRequest);
+  userRequest.option.mockReturnValue(userRequest);
 
   const ownerClient = {
     api: vi.fn(() => ownerRequest),
@@ -71,10 +75,12 @@ describe('OutlookCalendar — per-user Graph client for writes', () => {
     mocks.ownerRequest.post.mockReset();
     mocks.ownerRequest.patch.mockReset();
     mocks.ownerRequest.delete.mockReset();
+    mocks.ownerRequest.option.mockClear();
     mocks.ownerClient.api.mockClear();
     mocks.userRequest.post.mockReset();
     mocks.userRequest.patch.mockReset();
     mocks.userRequest.delete.mockReset();
+    mocks.userRequest.option.mockClear();
     mocks.userClient.api.mockClear();
     mocks.getGraphClient.mockClear();
     mocks.getGraphClientForUser.mockClear();
@@ -97,6 +103,25 @@ describe('OutlookCalendar — per-user Graph client for writes', () => {
     expect(mocks.getGraphClientForUser).toHaveBeenCalledWith(77);
     expect(mocks.getGraphClient).not.toHaveBeenCalled();
     expect(mocks.userClient.api).toHaveBeenCalledWith('/me/events');
+  });
+
+  it('threads AbortSignal into per-user Graph create requests', async () => {
+    const controller = new AbortController();
+    const aborted = vi.fn();
+    mocks.userRequest.post.mockImplementation(async () => {
+      expect(mocks.userRequest.option).toHaveBeenCalledWith('signal', controller.signal);
+      controller.signal.addEventListener('abort', aborted);
+      controller.abort();
+      throw new Error('aborted');
+    });
+
+    await expect(createEvent({
+      title: 'Session',
+      start: '2026-04-16T09:00:00.000Z',
+      end: '2026-04-16T10:00:00.000Z',
+    }, 77, { signal: controller.signal })).rejects.toThrow('aborted');
+
+    expect(aborted).toHaveBeenCalledTimes(1);
   });
 
   it('uses the per-user Graph client when updating an event with userId', async () => {

@@ -191,6 +191,10 @@ function isApprovedCurrentOrArchive(file) {
   // ENG-EXC-O8 (2026-05-04): the workspace docs mirror inside engine/.
   if (normalized.startsWith(path.join(backendRoot, 'docs', '_workspace-mirror') + path.sep)) return true;
   if (normalized.startsWith(path.join(backendRoot, 'docs', 'release') + path.sep)) return true;
+  // Local-dev sandbox runbook (2026-05-14): docs/local-dev/ is a known
+  // taxonomy for Docker-based local development. Same allowlist pattern
+  // as docs/runbooks, docs/release, docs/engineering above.
+  if (normalized.startsWith(path.join(backendRoot, 'docs', 'local-dev') + path.sep)) return true;
   if (normalized.startsWith(path.join(backendRoot, 'docs') + path.sep) && path.dirname(normalized) === path.join(backendRoot, 'docs')) return true;
   if (normalized.startsWith(iosSpecsRoot + path.sep)) return true;
   return false;

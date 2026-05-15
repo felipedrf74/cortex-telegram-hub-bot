@@ -297,6 +297,9 @@ export function deleteAllUserData(userId: number): Record<string, number> {
     { table: 'user_oauth_tokens', column: 'user_id' },
     { table: 'user_skill_overrides', column: 'user_id' },
     { table: 'api_usage', column: 'user_id' },
+    { table: 'chat_action_runs', column: 'user_id' },
+    { table: 'chat_pending_actions', column: 'user_id' },
+    { table: 'chat_action_telemetry', column: 'user_id' },
   ];
 
   const deleteAll = db.transaction(() => {

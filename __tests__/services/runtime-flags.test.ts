@@ -5,9 +5,15 @@ import {
   areGlobalInvoiceVendorsEnabled,
   canUseAnthropicRuntimeFallback,
   getAICallTimeoutMs,
+  getChatHybridPlannerMode,
   getGeminiDomainAllowlist,
   getGeminiIncludeSecretaryEnvOverride,
   getGeminiRoutingEnvOverride,
+  isChatEscalationReviewerEnabled,
+  isChatHybridPlannerEnabled,
+  isChatLlmTier1Enabled,
+  isChatLlmTier2Enabled,
+  isChatOpenSurfaceHandoffEnabled,
   isAnthropicRuntimeEnabled,
   isSecretaryHaikuRoutingEnabled,
   isTelegramLegacyDeliveryEnabled,
@@ -62,5 +68,49 @@ describe('runtime-flags', () => {
     expect(isSecretaryHaikuRoutingEnabled({ SECRETARY_HAIKU_ROUTING_ENABLED: 'true' })).toBe(true);
     expect(isSecretaryHaikuRoutingEnabled({ SECRETARY_HAIKU_ROUTING_ENABLED: 'false' })).toBe(false);
     expect(isSecretaryHaikuRoutingEnabled({})).toBe(false);
+  });
+
+  it('parses chat hybrid planner rollout flags conservatively', () => {
+    expect(getChatHybridPlannerMode({})).toBe('active');
+    expect(getChatHybridPlannerMode({ CHAT_HYBRID_PLANNER_ENABLED: 'false' })).toBe('off');
+    expect(getChatHybridPlannerMode({ CHAT_HYBRID_PLANNER_ENABLED: 'off' })).toBe('off');
+    expect(getChatHybridPlannerMode({ CHAT_HYBRID_PLANNER_ENABLED: 'shadow' })).toBe('shadow');
+    expect(getChatHybridPlannerMode({ CHAT_HYBRID_SHADOW_MODE: 'true' })).toBe('shadow');
+    expect(isChatHybridPlannerEnabled({ CHAT_HYBRID_PLANNER_ENABLED: '0' })).toBe(false);
+    expect(isChatHybridPlannerEnabled({ CHAT_HYBRID_PLANNER_ENABLED: 'shadow' })).toBe(true);
+  });
+
+  it('keeps chat LLM tiers and surface handoff independently switchable', () => {
+    expect(isChatLlmTier1Enabled({})).toBe(false);
+    expect(isChatLlmTier1Enabled({ CHAT_LLM_TIER1_ENABLED: 'true' })).toBe(true);
+    expect(isChatLlmTier2Enabled({})).toBe(true);
+    expect(isChatLlmTier2Enabled({ CHAT_LLM_TIER2_ENABLED: 'false' })).toBe(false);
+    expect(isChatEscalationReviewerEnabled({})).toBe(false);
+    expect(isChatEscalationReviewerEnabled({ CHAT_ESCALATION_REVIEWER_ENABLED: 'true' })).toBe(true);
+    expect(isChatOpenSurfaceHandoffEnabled({})).toBe(true);
+    expect(isChatOpenSurfaceHandoffEnabled({ CHAT_OPEN_SURFACE_HANDOFF_ENABLED: 'false' })).toBe(false);
+  });
+
+  it('supports scoped chat rollout overrides for owner/beta canaries', () => {
+    expect(getChatHybridPlannerMode({
+      CHAT_HYBRID_PLANNER_ENABLED: 'off',
+      CHAT_HYBRID_PLANNER_ENABLED_USER_42: 'shadow',
+    }, { userId: 42, tenantId: 99 })).toBe('shadow');
+    expect(getChatHybridPlannerMode({
+      CHAT_HYBRID_PLANNER_ENABLED: 'off',
+      CHAT_HYBRID_PLANNER_ENABLED_TENANT_99: 'active',
+    }, { userId: 41, tenantId: 99 })).toBe('active');
+    expect(isChatLlmTier1Enabled({
+      CHAT_LLM_TIER1_ENABLED: 'false',
+      CHAT_LLM_TIER1_ENABLED_TENANT_99: 'true',
+    }, { tenantId: 99 })).toBe(true);
+    expect(isChatLlmTier2Enabled({
+      CHAT_LLM_TIER2_ENABLED: 'true',
+      CHAT_LLM_TIER2_ENABLED_USER_42: 'false',
+    }, { userId: 42 })).toBe(false);
+    expect(isChatOpenSurfaceHandoffEnabled({
+      CHAT_OPEN_SURFACE_HANDOFF_ENABLED: 'true',
+      CHAT_OPEN_SURFACE_HANDOFF_ENABLED_USER_42: 'false',
+    }, { userId: 42 })).toBe(false);
   });
 });

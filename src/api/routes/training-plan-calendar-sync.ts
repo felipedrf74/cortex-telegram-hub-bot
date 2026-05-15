@@ -422,6 +422,7 @@ export async function confirmTrainingSessionReflow(input: {
   proposedStartAt?: string | null;
   proposedEndAt?: string | null;
   requestedCalendarSource?: CalendarSource | null;
+  signal?: AbortSignal;
 }): Promise<TrainingSessionReflowConfirmResult> {
   const preview = await previewTrainingSessionReflow(input.userId, input.sessionId, input.requestedCalendarSource);
   if (preview.status !== 'preview') return preview;
@@ -466,13 +467,13 @@ export async function confirmTrainingSessionReflow(input: {
         new_start: eventPayload.start,
         new_end: eventPayload.end,
         new_description: eventPayload.description,
-      }, preview.data.provider, input.userId);
+      }, preview.data.provider, input.userId, { signal: input.signal });
     } else {
       const created = await createTrainingCalendarEvent(eventPayload, preview.data.provider, input.userId, {
         userId: input.userId,
         sessionId: input.sessionId,
         title: scope.session.title || 'Training session',
-      });
+      }, { signal: input.signal });
       eventId = created?.id || eventId;
     }
   } catch (err) {

@@ -89,11 +89,11 @@ describe('UnifiedCalendar — per-user routing for calendar writes', () => {
       end: '2026-04-16T10:00:00.000Z',
     }, 'outlook', 42);
 
-    expect(mocks.outlookCreateEvent).toHaveBeenCalledWith({
+    expect(mocks.outlookCreateEvent).toHaveBeenCalledWith(expect.objectContaining({
       title: 'Coach call',
       start: '2026-04-16T09:00:00.000Z',
       end: '2026-04-16T10:00:00.000Z',
-    }, 42);
+    }), 42, undefined);
   });
 
   it('passes userId through when updating an Outlook event', async () => {
@@ -112,7 +112,7 @@ describe('UnifiedCalendar — per-user routing for calendar writes', () => {
     expect(mocks.outlookUpdateEvent).toHaveBeenCalledWith({
       event_id: 'evt-outlook-2',
       new_title: 'Updated title',
-    }, 42);
+    }, 42, undefined);
   });
 
   it('passes userId through when deleting an Outlook event', async () => {
@@ -120,7 +120,7 @@ describe('UnifiedCalendar — per-user routing for calendar writes', () => {
 
     await deleteEvent('evt-outlook-3', 'outlook', 42);
 
-    expect(mocks.outlookDeleteEvent).toHaveBeenCalledWith('evt-outlook-3', 42);
+    expect(mocks.outlookDeleteEvent).toHaveBeenCalledWith('evt-outlook-3', 42, undefined);
   });
 
   it('passes userId through when creating a Google event', async () => {
@@ -139,11 +139,11 @@ describe('UnifiedCalendar — per-user routing for calendar writes', () => {
       end: '2026-04-16T10:00:00.000Z',
     }, 'google', 42);
 
-    expect(mocks.googleCreateEvent).toHaveBeenCalledWith({
+    expect(mocks.googleCreateEvent).toHaveBeenCalledWith(expect.objectContaining({
       title: 'Strength block',
       start: '2026-04-16T09:00:00.000Z',
       end: '2026-04-16T10:00:00.000Z',
-    }, 42);
+    }), 42, undefined);
   });
 
   it('passes userId through when updating a Google event', async () => {
@@ -164,7 +164,7 @@ describe('UnifiedCalendar — per-user routing for calendar writes', () => {
     expect(mocks.googleUpdateEvent).toHaveBeenCalledWith({
       event_id: 'evt-google-2',
       new_title: 'Updated session',
-    }, 42);
+    }, 42, undefined);
   });
 
   it('passes userId through when deleting a Google event', async () => {
@@ -174,7 +174,7 @@ describe('UnifiedCalendar — per-user routing for calendar writes', () => {
 
     await deleteEvent('evt-google-3', 'google', 42);
 
-    expect(mocks.googleDeleteEvent).toHaveBeenCalledWith('evt-google-3', 42);
+    expect(mocks.googleDeleteEvent).toHaveBeenCalledWith('evt-google-3', 42, undefined);
   });
 
   it('does not fall back to owner calendar providers for an authenticated user with no connected calendar', async () => {

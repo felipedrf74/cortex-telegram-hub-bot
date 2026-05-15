@@ -55,6 +55,7 @@ import {
   sendPasswordResetEmail,
   isEmailConfigured,
 } from '../../services/email-sender';
+import { cancelPendingChatActionsForAccountSwitch } from '../../services/chat-action-state';
 import { normalizeLangHeader } from '../../services/secretary-fastpath';
 import type { Lang } from '../../utils/i18n';
 
@@ -1384,7 +1385,7 @@ export function authRoutes(): Router {
   // Both return 200 even when no matching device row exists, so iOS
   // can retry safely and does not need branching logic on the client.
   router.post('/logout', verifyJwt, asyncHandler(async (req: Request, res: Response) => {
-    const { userId, deviceId } = req as AuthenticatedRequest;
+    const { userId, tenantId, deviceId } = req as AuthenticatedRequest;
     const db = getDb();
 
     const result = db.prepare(
@@ -1395,13 +1396,14 @@ export function authRoutes(): Router {
       SET revoked_at = datetime('now')
       WHERE user_id = ? AND device_id = ? AND revoked_at IS NULL
     `).run(userId, deviceId);
+    const pendingChatActionsCancelled = cancelPendingChatActionsForAccountSwitch({ userId, tenantId });
 
     logAudit({
       userId,
       actorId: userId,
       action: 'access',
       resource: 'auth.logout',
-      details: { deviceId, devicesRevoked: result.changes, notificationTokensRevoked: notificationTokenResult.changes },
+      details: { deviceId, devicesRevoked: result.changes, notificationTokensRevoked: notificationTokenResult.changes, pendingChatActionsCancelled },
       ipAddress: (req.ip || req.socket?.remoteAddress) ?? undefined,
     });
 
@@ -1412,9 +1414,11 @@ export function authRoutes(): Router {
         outcome: 'success',
         surface: 'ios',
         userId,
+        tenantId,
         deviceId,
         devicesRevoked: result.changes,
         notificationTokensRevoked: notificationTokenResult.changes,
+        pendingChatActionsCancelled,
       },
       'iOS session signed out',
     );
@@ -1422,6 +1426,7 @@ export function authRoutes(): Router {
       signedOut: true,
       devicesRevoked: result.changes,
       notificationTokensRevoked: notificationTokenResult.changes,
+      pendingChatActionsCancelled,
     });
   }));
 
@@ -1435,13 +1440,14 @@ export function authRoutes(): Router {
       SET revoked_at = datetime('now')
       WHERE user_id = ? AND revoked_at IS NULL
     `).run(userId);
+    const pendingChatActionsCancelled = cancelPendingChatActionsForAccountSwitch({ userId });
 
     logAudit({
       userId,
       actorId: userId,
       action: 'access',
       resource: 'auth.logout_all',
-      details: { devicesRevoked: result.changes, notificationTokensRevoked: notificationTokenResult.changes },
+      details: { devicesRevoked: result.changes, notificationTokensRevoked: notificationTokenResult.changes, pendingChatActionsCancelled },
       ipAddress: (req.ip || req.socket?.remoteAddress) ?? undefined,
     });
 
@@ -1454,6 +1460,7 @@ export function authRoutes(): Router {
         userId,
         devicesRevoked: result.changes,
         notificationTokensRevoked: notificationTokenResult.changes,
+        pendingChatActionsCancelled,
       },
       'iOS sessions signed out across all devices',
     );
@@ -1461,6 +1468,7 @@ export function authRoutes(): Router {
       signedOut: true,
       devicesRevoked: result.changes,
       notificationTokensRevoked: notificationTokenResult.changes,
+      pendingChatActionsCancelled,
     });
   }));
 

@@ -29,6 +29,7 @@ export async function createTrainingCalendarEvent(
   target: CalendarSource | undefined,
   userId: number,
   context: WriteContext,
+  options?: { signal?: AbortSignal },
 ): Promise<UnifiedCalendarEvent> {
   assertTrainingCalendarWritesEnabled();
 
@@ -37,8 +38,9 @@ export async function createTrainingCalendarEvent(
 
   while (true) {
     try {
-      const event = await createEvent(data, target, userId);
-      await sleep(trainingCalendarWriteSpacingMs());
+      if (options?.signal?.aborted) throw new Error('provider_write_aborted');
+      const event = await createEvent(data, target, userId, options);
+      await sleep(trainingCalendarWriteSpacingMs(), options?.signal);
       return event;
     } catch (err) {
       if (!isCalendarRateLimitError(err) || attempt >= retryDelays.length) {
@@ -58,7 +60,7 @@ export async function createTrainingCalendarEvent(
         },
         'Training calendar write rate-limited - retrying',
       );
-      await sleep(retryDelayMs);
+      await sleep(retryDelayMs, options?.signal);
     }
   }
 }
@@ -132,7 +134,14 @@ function isTestRuntime(): boolean {
   return process.env.NODE_ENV === 'test' || Boolean(process.env.VITEST_WORKER_ID);
 }
 
-function sleep(ms: number): Promise<void> {
+function sleep(ms: number, signal?: AbortSignal): Promise<void> {
+  if (signal?.aborted) return Promise.reject(new Error('provider_write_aborted'));
   if (ms <= 0) return Promise.resolve();
-  return new Promise((resolve) => setTimeout(resolve, ms));
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(resolve, ms);
+    signal?.addEventListener('abort', () => {
+      clearTimeout(timer);
+      reject(new Error('provider_write_aborted'));
+    }, { once: true });
+  });
 }

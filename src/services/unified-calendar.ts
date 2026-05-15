@@ -243,6 +243,7 @@ export async function createEvent(
   },
   target?: CalendarSource,
   userId?: number,
+  options?: { signal?: AbortSignal },
 ): Promise<UnifiedCalendarEvent> {
   const scopedUserId = resolveScopedUserId(userId);
   // Per-user source resolution: check which provider the requesting
@@ -273,10 +274,10 @@ export async function createEvent(
   const eventData = { ...data, recurrence };
 
   if (source === 'outlook') {
-    const event = await outlookCal.createEvent(eventData, scopedUserId ?? undefined);
+    const event = await outlookCal.createEvent(eventData, scopedUserId ?? undefined, options);
     return { ...event, source: 'outlook' };
   } else {
-    const event = await googleCal.createEvent(eventData, scopedUserId ?? undefined);
+    const event = await googleCal.createEvent(eventData, scopedUserId ?? undefined, options);
     return { ...event, source: 'google' };
   }
 }
@@ -285,21 +286,22 @@ export async function updateEvent(
   data: { event_id: string; new_start?: string; new_end?: string; new_title?: string; new_description?: string },
   source: CalendarSource,
   userId?: number,
+  options?: { signal?: AbortSignal },
 ): Promise<UnifiedCalendarEvent> {
   if (source === 'outlook') {
-    const event = await outlookCal.updateEvent(data, userId);
+    const event = await outlookCal.updateEvent(data, userId, options);
     return { ...event, source: 'outlook' };
   } else {
-    const event = await googleCal.updateEvent(data, userId);
+    const event = await googleCal.updateEvent(data, userId, options);
     return { ...event, source: 'google' };
   }
 }
 
-export async function deleteEvent(eventId: string, source: CalendarSource, userId?: number): Promise<void> {
+export async function deleteEvent(eventId: string, source: CalendarSource, userId?: number, options?: { signal?: AbortSignal }): Promise<void> {
   if (source === 'outlook') {
-    await outlookCal.deleteEvent(eventId, userId);
+    await outlookCal.deleteEvent(eventId, userId, options);
   } else {
-    await googleCal.deleteEvent(eventId, userId);
+    await googleCal.deleteEvent(eventId, userId, options);
   }
 }
 
