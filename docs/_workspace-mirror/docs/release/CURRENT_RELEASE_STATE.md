@@ -2,10 +2,10 @@
 
 Status: canonical
 Owner: release lead (Felipe)
-Last verified: 2026-05-14
+Last verified: 2026-05-15
 Update policy: update after merge / staging / production / deploy-gate changes. Live identity (branch/commit/version/migrations) auto-generated via engine/scripts/release-identity.sh --persist; do not type those by hand.
 
-Last updated: 2026-05-14
+Last updated: 2026-05-15
 
 > **Live identity** — branch / commit / version / migration count for the
 > current working tree are auto-generated. Do NOT type those values by
@@ -17,7 +17,73 @@ Last updated: 2026-05-14
 
 - Repo: `engine`
 - Workspace HEAD / version / migrations / dirty state: see `docs/release/release-identity.md`
-- Production status (last manual update 2026-05-14): promoted via `./scripts/promote-to-prod.sh`, health-checked, both `nexus-hub` and `content-engine` PM2 processes online at version `4.14.162`.
+- Production status (last manual update 2026-05-15): promoted via `./scripts/promote-to-prod.sh`, health-checked, both `nexus-hub` and `content-engine` PM2 processes online at version `4.14.164`.
+
+### 2026-05-15 Chat Hybrid Action Intelligence Hardened Production Promote
+
+- Scope: Claude Code QA Round 8 close-out for Nexus Chat Hybrid Action
+  Intelligence, including backend action-routing hardening, planner/evaluation
+  gate tests, provider mutation timeout/cancellation guards, pending-action
+  handoff API, iOS Plan Builder handoff/prefill behavior, and source-pushed
+  iOS card/rendering safeguards.
+- Production version: `4.14.164`.
+- Production deploy commit: `f03fccd8`.
+- Source implementation commit before deploy bump: `cc17b75c`.
+- iOS source commit pushed to `origin/main`: `835a985`.
+- Initial staging deploy and smoke before promotion passed on `cc17b75c`.
+  Staging smoke passed **17/17** with evidence at
+  `engine/docs/release/smoke-evidence/staging-smoke-cc17b75c-20260515T141251Z.json`
+  and again during promote at
+  `engine/docs/release/smoke-evidence/staging-smoke-cc17b75c-20260515T141312Z.json`.
+- Production promote passed through `./scripts/promote-to-prod.sh`.
+  Deploy-time validation passed: backend `npm run verify` passed
+  **536 test files / 7,610 tests**, deploy-time build passed, production env
+  validation passed, production backup included `bot.db`, dependencies updated,
+  native modules rebuilt, owner bootstrap preflight passed, and production
+  PM2 showed both `nexus-hub` and `content-engine` online after restart.
+- Production health passed after deploy: `https://api.nexushub.me/health`
+  returned `status: healthy`, `server.status: online`, and
+  `database: connected` at version `4.14.164`; the deploy script also verified
+  content-engine health, status portal snapshot, bot online, and PM2 online
+  status.
+- Staging was re-aligned after the deploy bump so staging and production both
+  run `4.14.164`. Final staging smoke passed **17/17** with evidence at
+  `engine/docs/release/smoke-evidence/staging-smoke-f03fccd8-20260515T142054Z.json`.
+- Backend verification before promotion: TypeScript check passed; focused
+  hybrid-chat/route/provider suite passed **5 files / 152 tests**; targeted
+  collateral calendar/scheduler suite passed **4 files / 67 tests**; full
+  backend `npm run verify` passed **536 test files / 7,610 tests** locally;
+  backend pre-commit focused suite passed **173 files / 2,052 tests**; backend
+  pre-push and deploy-time full suites both passed **536 test files / 7,610
+  tests**.
+- iOS verification: full simulator scheme test passed with **117 executed
+  tests, 15 skipped, 0 failures** using a single simulator destination, plus
+  focused Training screenshot-pack, Task optimistic diff, release-hardening,
+  notification fallback, UI network-backed, and workspace landing-state checks.
+  Mandatory simulator shutdown/cleanup commands were run afterward; launchd
+  respawned CoreSimulator background services, but no simulator devices
+  remained booted.
+- Implemented hardening includes honest macro action precision calculation,
+  real-planner smoke-corpus feeder inputs, non-vacuous gate-positive bypass
+  assertions, refusal false-positive counters, derived safety metrics,
+  datetime hash canonicalization to UTC plus distinct-instant discrimination,
+  app-level auth/header route tests, async error no-store behavior, provider
+  write/read-back timeouts, AbortSignal forwarding for Google/Outlook writes,
+  late-write reconciliation handling, PII-safe action-run summaries, bounded
+  expiry/reaper/retention jobs, account-switch pending-action cleanup, and
+  durable shadow/live prediction hash parity.
+- iOS Chat action handoff now validates pending action IDs, fetches pending
+  actions through REST instead of fake chat commands, pre-fills Training Plan
+  Builder fields from scoped pending slots, clears stale handoff state on
+  dismissal, preserves structured cards through unknown verification statuses,
+  and keeps internal/debug metadata silent in normal UI.
+- Not completed by code/deploy alone: the measured production **>=98% macro
+  precision** claim still requires labeled production/canary telemetry over a
+  real observation window; signed TestFlight two-account walkthrough and live
+  provider mutation/read-back validation still require an authenticated device
+  and explicit owner approval because they create/read real external provider
+  state. Those are validation prerequisites outside this local/prod deploy
+  execution, not remaining source-code tasks.
 
 ### 2026-05-14 Chat Hybrid Action Intelligence Local Implementation
 

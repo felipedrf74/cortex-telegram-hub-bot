@@ -1,17 +1,17 @@
 {
-  "generatedAt": "2026-05-14T17:54:58Z",
+  "generatedAt": "2026-05-15T14:21:29Z",
   "backend": {
     "path": "/Users/felipedominguez/Desktop/Custom Connectors/Cortex/cortex-telegram-hub-bot",
     "branch": "main",
-    "commit": "3e88f297",
+    "commit": "f03fccd8",
     "dirtyState": "dirty",
-    "packageVersion": "4.14.162",
-    "migrationCount": "135"
+    "packageVersion": "4.14.164",
+    "migrationCount": "139"
   },
   "ios": {
     "path": "/Users/felipedominguez/Desktop/Nexus Hub IOS/Nexus Hub",
     "branch": "main",
-    "commit": "bfdd4d1",
-    "dirtyState": "dirty"
+    "commit": "835a985",
+    "dirtyState": "clean"
   }
 }
