@@ -33,7 +33,21 @@ echo "Content engine port: 127.0.0.1:${NEXUS_LOCAL_PORT_PY:-8100}"
 echo "DB path on host:     $ROOT/data/"
 echo ""
 
-docker compose -f docker-compose.local.yml up --build -d
+if ! docker compose -f docker-compose.local.yml up --build -d; then
+  echo ""
+  echo "WARN: Docker rebuild failed. This is often a transient npm/Docker network issue." >&2
+  echo "      Trying to boot the last known local images without rebuilding..." >&2
+
+  if docker image inspect nexus-hub-node:local >/dev/null 2>&1 \
+    && docker image inspect nexus-hub-content-engine:local >/dev/null 2>&1; then
+    docker compose -f docker-compose.local.yml up -d --no-build
+    echo "WARN: Sandbox started from existing local images." >&2
+    echo "      If package.json or Dockerfile changed, rerun local-up once the network is stable." >&2
+  else
+    echo "ERROR: No existing local images are available for fallback startup." >&2
+    exit 1
+  fi
+fi
 
 "$ROOT/scripts/wait-for-health.sh"
 

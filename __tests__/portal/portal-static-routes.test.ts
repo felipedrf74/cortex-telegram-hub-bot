@@ -76,7 +76,12 @@ describe('portal static routes', () => {
     // The `/auth/password-reset` mount was added 2026-05-04 as the
     // AUTH-O2 follow-up: closes the gap where the email link from
     // /api/v1/auth/password-reset/request had no destination.
+    //
+    // The immutable brand asset is intentionally first because it is
+    // an exact static file route and should not inherit dashboard
+    // no-store headers.
     expect(Array.from(routes.keys())).toEqual([
+      '/assets/nexus-mark.png',
       '/landing-preview',
       '/auth/password-reset',
       '/user',

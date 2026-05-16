@@ -1,21 +1,43 @@
 {
   "name": "training",
-  "version": "1.0.0",
-  "description": "Training orchestration layer for the existing triathlon coaching system",
+  "version": "3.0.0",
+  "description": "Multisport coaching — gym, running, cycling, swimming, training plans, recovery",
   "author": "Felipe Dominguez",
   "domain": "triathlon",
   "manifestVersion": 2,
+  "_reconciled": "2026-05-15: aligned with canonical src/skills/skill-config.ts:168-275 (TRIATHLON_SKILL.subSkills). Earlier manifest listed garmin-coach/readiness/load-forecast/race-prep/training-signals which never matched the runtime skill-config; reconciled per audit §4 finding.",
   "subSkills": [
     {
-      "module_name": "garmin-coach",
-      "description": "Wearable-backed readiness and coach briefing context",
+      "module_name": "gym",
+      "description": "Strength coach — powerlifting, hypertrophy, general fitness. Specialized persona for lifting-focused users.",
       "enabled_by_default": true,
       "tools": [],
-      "cronJobs": ["garmin_coach"]
+      "cronJobs": []
+    },
+    {
+      "module_name": "running",
+      "description": "Endurance running coach — 5k/10k/half/marathon periodization, pace work, injury-aware progression.",
+      "enabled_by_default": true,
+      "tools": [],
+      "cronJobs": []
+    },
+    {
+      "module_name": "cycle",
+      "description": "Cycling coach — FTP-based zone training, road/gravel/trainer workouts, event preparation.",
+      "enabled_by_default": true,
+      "tools": [],
+      "cronJobs": []
+    },
+    {
+      "module_name": "swim",
+      "description": "Swim coach — stroke technique, CSS/threshold pace work, pool and open water.",
+      "enabled_by_default": true,
+      "tools": [],
+      "cronJobs": []
     },
     {
       "module_name": "training-plans",
-      "description": "Structured plan CRUD and scheduled session state",
+      "description": "Shared training-plan CRUD used by all sport sub-skills",
       "enabled_by_default": true,
       "tools": [
         "create_training_plan",
@@ -29,29 +51,41 @@
       "cronJobs": ["training_plan_adjust"]
     },
     {
-      "module_name": "readiness",
-      "description": "Daily readiness, recovery, and stale-snapshot fallback",
+      "module_name": "calendar",
+      "description": "Calendar event management for training schedule",
       "enabled_by_default": true,
-      "tools": [],
+      "tools": [
+        "get_calendar_events",
+        "create_calendar_event",
+        "update_calendar_event",
+        "delete_calendar_event"
+      ],
       "cronJobs": []
     },
     {
-      "module_name": "load-forecast",
-      "description": "Forward load and interference outlook derived from existing training signals",
+      "module_name": "reminders",
+      "description": "Training reminders",
       "enabled_by_default": true,
-      "tools": [],
+      "tools": ["set_reminder"],
       "cronJobs": []
     },
     {
-      "module_name": "race-prep",
-      "description": "Race-week taper and event preparation heuristics",
+      "module_name": "notes",
+      "description": "Training notes and search",
       "enabled_by_default": true,
-      "tools": [],
+      "tools": ["save_note", "search_notes"],
       "cronJobs": []
     },
     {
-      "module_name": "training-signals",
-      "description": "Cross-skill training signals consumed by the mesh",
+      "module_name": "shared-memory",
+      "description": "Cross-domain shared facts (race dates, training state) plus chat-triggered athlete profile onboarding",
+      "enabled_by_default": true,
+      "tools": ["shared_memory_set", "shared_memory_remove", "save_athlete_profile_field"],
+      "cronJobs": []
+    },
+    {
+      "module_name": "recovery",
+      "description": "Shared recovery protocols, deload logic, soreness tracking",
       "enabled_by_default": true,
       "tools": [],
       "cronJobs": []

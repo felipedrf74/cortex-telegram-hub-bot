@@ -15,7 +15,8 @@ const json = args.has('--json');
 const defaultWorkspace = path.resolve(backendRoot, '..', '..', '..', 'Nexus Hub');
 const workspaceRoot = path.resolve(process.env.NEXUS_WORKSPACE_ROOT || defaultWorkspace);
 const iosRoot = path.join(workspaceRoot, 'ios');
-const iosSpecsRoot = path.join(workspaceRoot, 'ios-specs');
+const defaultIosSpecsRoot = path.resolve(workspaceRoot, '..', 'Nexus Hub IOS', 'specs');
+const iosSpecsRoot = path.resolve(process.env.NEXUS_IOS_SPECS_ROOT || defaultIosSpecsRoot);
 
 const ignoredDirs = new Set([
   '.build',
@@ -24,6 +25,7 @@ const ignoredDirs = new Set([
   '.git',
   '.local',
   '.next',
+  '.pytest_cache',
   '.venv',
   'DerivedData',
   'Pods',
@@ -43,6 +45,11 @@ const currentVerdictFiles = new Set([
   path.join(workspaceRoot, 'docs', 'release', 'CURRENT_RELEASE_STATE.md'),
   path.join(workspaceRoot, 'docs', 'release', 'OPEN_ITEMS.md'),
   path.join(backendRoot, 'docs', 'qa', 'QA_BACKEND_REPORT.md'),
+  // Phases 0-15 QA artifacts are intentionally current while this registry
+  // verification branch is active. Keep the allowlist exact so ad-hoc QA
+  // reports still have to move to archive or a canonical report surface.
+  path.join(backendRoot, 'docs', 'qa', 'PHASES_0_15_CODEX_QA_PROMPT.md'),
+  path.join(backendRoot, 'docs', 'qa', 'PHASES_0_15_QA_REPORT.md'),
   path.join(backendRoot, 'docs', 'release', 'CURRENT_RELEASE_STATE.md'),
   path.join(backendRoot, 'docs', 'release', 'current-release-index.md'),
   path.join(iosRoot, 'docs', 'qa', 'QA_IOS_REPORT.md'),
@@ -66,10 +73,21 @@ const canonicalFiles = new Set([
   path.join(workspaceRoot, 'docs', 'agent', 'AGENT_TECHNICAL_MASTERY.md'),
   path.join(backendRoot, 'CLAUDE.md'),
   path.join(backendRoot, 'README.md'),
+  // Root docs registered in docs/DOCUMENTATION-MAP.md as canonical live or
+  // active supporting docs. Keep this exact instead of allowing every root
+  // Markdown file, because TASK-* files are explicitly historical.
+  path.join(backendRoot, 'BRANCHING.md'),
+  path.join(backendRoot, 'CHANGELOG.md'),
+  path.join(backendRoot, 'DEPLOY.md'),
+  path.join(backendRoot, 'DOCUMENTATION.md'),
+  path.join(backendRoot, 'STAGING.md'),
   path.join(backendRoot, 'content-engine', 'README.md'),
   path.join(backendRoot, 'docs', 'DOCS_INDEX.md'),
   path.join(backendRoot, 'docs', 'DOCUMENTATION-MAP.md'),
   path.join(backendRoot, 'docs', 'qa', 'QA_BACKEND_REPORT.md'),
+  path.join(backendRoot, 'docs', 'qa', 'PHASES_0_15_CODEX_QA_PROMPT.md'),
+  path.join(backendRoot, 'docs', 'qa', 'PHASES_0_15_IOS_CONTRACT_FIXTURES.md'),
+  path.join(backendRoot, 'docs', 'qa', 'PHASES_0_15_QA_REPORT.md'),
   path.join(iosRoot, 'README.md'),
   path.join(iosRoot, 'AGENTS.md'),
   path.join(iosRoot, 'CLAUDE.md'),
@@ -353,7 +371,9 @@ function commitExistsInKnownRepo(hash) {
 function resolveMarkdownRef(file, ref) {
   if (!ref || /^[a-z]+:/i.test(ref)) return null;
   const withoutAnchor = ref.split('#')[0];
-  if (withoutAnchor.includes('*') || withoutAnchor.startsWith('~')) return null;
+  if (withoutAnchor.includes('*')
+    || withoutAnchor.startsWith('~')
+    || /[<>{}]/.test(withoutAnchor)) return null;
   if (!withoutAnchor.endsWith('.md')) return null;
   if (path.isAbsolute(withoutAnchor)) return withoutAnchor;
   const local = path.resolve(path.dirname(file), withoutAnchor);
@@ -364,7 +384,26 @@ function resolveMarkdownRef(file, ref) {
   if (fs.existsSync(iosRelative)) return iosRelative;
   const workspaceRelative = path.resolve(workspaceRoot, withoutAnchor);
   if (fs.existsSync(workspaceRelative)) return workspaceRelative;
+  if (withoutAnchor.startsWith('Nexus Hub IOS/specs/')) {
+    const iosSpec = path.resolve(iosSpecsRoot, withoutAnchor.replace(/^Nexus Hub IOS\/specs\//, ''));
+    if (fs.existsSync(iosSpec)) return iosSpec;
+  }
+  if (/^\d{2}-[^/]+\.md$/.test(withoutAnchor)) {
+    const iosSpec = path.resolve(iosSpecsRoot, withoutAnchor);
+    if (fs.existsSync(iosSpec)) return iosSpec;
+  }
   return local;
+}
+
+function maskFencedCodeBlocks(content) {
+  return content.replace(/```[\s\S]*?```/g, (match) => '\n'.repeat(match.split('\n').length - 1));
+}
+
+function maskOperationalIds(content) {
+  return content
+    // Simulator/device destinations and UUIDs are hex-like, but they are not
+    // Git commits. Preserve line count while avoiding stale-SHA noise.
+    .replace(/\b[0-9a-f]{8}-[0-9a-f-]{8,}\b/gi, (match) => 'X'.repeat(match.length));
 }
 
 const roots = [
@@ -393,6 +432,7 @@ const auditedMarkdownFiles = markdownFiles.filter((file) => !isWorkspaceMirror(f
 
 for (const file of auditedMarkdownFiles) {
   const content = fs.readFileSync(file, 'utf8');
+  const scannableContent = maskOperationalIds(maskFencedCodeBlocks(content));
 
   validateEngineeringFrontmatter(file, content);
 
@@ -406,40 +446,40 @@ for (const file of auditedMarkdownFiles) {
     );
   }
 
-  if (!isArchive(file) && verdictPattern.test(content) && !currentVerdictFiles.has(file)) {
-    const match = content.match(verdictPattern);
+  if (!isArchive(file) && verdictPattern.test(scannableContent) && !currentVerdictFiles.has(file)) {
+    const match = scannableContent.match(verdictPattern);
     addIssue(
       'warn',
       'duplicate-or-scattered-current-verdict',
       file,
-      match?.index == null ? 1 : lineNumber(content, match.index),
+      match?.index == null ? 1 : lineNumber(scannableContent, match.index),
       'Verdict-like language outside the approved current verdict docs can create drift.',
     );
   }
 
-  if (!isArchive(file) && testCountPattern.test(content) && !currentVerdictFiles.has(file)) {
-    const match = content.match(testCountPattern);
+  if (!isArchive(file) && testCountPattern.test(scannableContent) && !currentVerdictFiles.has(file)) {
+    const match = scannableContent.match(testCountPattern);
     addIssue(
       'warn',
       'test-count-literal-outside-current-report',
       file,
-      match?.index == null ? 1 : lineNumber(content, match.index),
+      match?.index == null ? 1 : lineNumber(scannableContent, match.index),
       'Literal test counts drift quickly; keep active counts in current release/QA docs or generated artifacts.',
     );
   }
 
   const gitRoot = gitRootFor(file);
   if (gitRoot && !isArchive(file)) {
-    const hashes = [...new Set(content.match(commitHashPattern) || [])]
+    const hashes = [...new Set(scannableContent.match(commitHashPattern) || [])]
       .filter((hash) => hash.length >= 7 && isLikelyCommitHash(hash));
     for (const hash of hashes) {
       if (!commitExists(gitRoot, hash) && !commitExistsInKnownRepo(hash)) {
-        const index = content.indexOf(hash);
+        const index = scannableContent.indexOf(hash);
         addIssue(
           'warn',
           'commit-hash-not-found-in-own-repo',
           file,
-          index === -1 ? 1 : lineNumber(content, index),
+          index === -1 ? 1 : lineNumber(scannableContent, index),
           `Commit hash ${hash} was not found in ${path.basename(gitRoot)}; verify it is not stale or cross-repo.`,
         );
       }
@@ -447,7 +487,7 @@ for (const file of auditedMarkdownFiles) {
   }
 
   if (!isArchive(file) && isCurrentLike(file)) {
-    for (const match of content.matchAll(markdownLinkPattern)) {
+    for (const match of scannableContent.matchAll(markdownLinkPattern)) {
       const ref = match[1] || match[2];
       const resolved = resolveMarkdownRef(file, ref);
       if (resolved && !fs.existsSync(resolved)) {
@@ -455,7 +495,7 @@ for (const file of auditedMarkdownFiles) {
           'warn',
           'broken-markdown-reference',
           file,
-          lineNumber(content, match.index ?? 0),
+          lineNumber(scannableContent, match.index ?? 0),
           `Referenced markdown file does not exist: ${ref}`,
         );
       }

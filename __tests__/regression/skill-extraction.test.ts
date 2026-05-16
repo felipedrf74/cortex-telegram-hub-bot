@@ -852,8 +852,11 @@ describe('REGRESSION: Tool execution through skill interface', () => {
       seedDefaultSkills();
 
       const statuses = getAllSkillStatuses();
-      expect(statuses.length).toBe(5);
-      expect(statuses.map(s => s.name).sort()).toEqual(['content', 'cooking', 'finance', 'secretary', 'triathlon']);
+      expect(statuses.length).toBe(8);
+      expect(statuses.map(s => s.name).sort()).toEqual([
+        'connections', 'content', 'cooking', 'decision_center', 'finance',
+        'notifications', 'secretary', 'triathlon',
+      ]);
     });
   });
 
@@ -869,7 +872,7 @@ describe('REGRESSION: Tool execution through skill interface', () => {
       const secondCount = getAll().length;
 
       expect(firstCount).toBe(secondCount);
-      expect(firstCount).toBe(5); // secretary, triathlon, content, finance, cooking
+      expect(firstCount).toBe(8); // 5 domain skills + 3 platform skills (connections, notifications, decision_center) promoted 2026-05-15
     });
 
     it('re-seeding preserves user toggle state', async () => {

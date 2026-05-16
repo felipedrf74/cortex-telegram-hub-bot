@@ -321,20 +321,20 @@ describe('SkillConfig — dynamic skill registration', () => {
     registerSkill(ACCOUNTING_SKILL);
     const names = getRegisteredDomainNames();
     expect(names).toContain('accounting');
-    expect(names).toHaveLength(6);
+    expect(names).toHaveLength(9); // 8 defaults + 1 dynamic
   });
 
   it('registered skill appears in getAllSkillDefinitions', () => {
     registerSkill(ACCOUNTING_SKILL);
     const defs = getAllSkillDefinitions();
-    expect(defs).toHaveLength(6);
+    expect(defs).toHaveLength(9); // 8 defaults + 1 dynamic
     expect(defs.map(d => d.name)).toContain('accounting');
   });
 
   it('registered skill appears in getPatternRoutes', () => {
     registerSkill(ACCOUNTING_SKILL);
     const routes = getPatternRoutes();
-    expect(routes).toHaveLength(6);
+    expect(routes).toHaveLength(9); // 8 defaults + 1 dynamic
     const accounting = routes.find(r => r.domain === 'accounting')!;
     expect(accounting.patterns[0].test('/ledger check')).toBe(true);
   });
@@ -342,7 +342,7 @@ describe('SkillConfig — dynamic skill registration', () => {
   it('registered skill appears in getKeywordRoutes', () => {
     registerSkill(ACCOUNTING_SKILL);
     const routes = getKeywordRoutes();
-    expect(routes).toHaveLength(6);
+    expect(routes).toHaveLength(9); // 8 defaults + 1 dynamic
     const accounting = routes.find(r => r.domain === 'accounting')!;
     expect(accounting.pattern.test('reconcile the ledger')).toBe(true);
     expect(accounting.priority).toBe(0); // non-secretary = high priority
@@ -351,7 +351,7 @@ describe('SkillConfig — dynamic skill registration', () => {
   it('registered skill appears in getClassificationHints', () => {
     registerSkill(ACCOUNTING_SKILL);
     const hints = getClassificationHints();
-    expect(hints).toHaveLength(6);
+    expect(hints).toHaveLength(9); // 8 defaults + 1 dynamic
     expect(hints.map(h => h.label)).toContain('accounting');
   });
 
@@ -383,7 +383,7 @@ describe('SkillConfig — dynamic skill registration', () => {
     const removed = unregisterSkill('accounting');
     expect(removed).toBe(true);
     expect(getSkillDefinition('accounting')).toBeUndefined();
-    expect(getRegisteredDomainNames()).toHaveLength(5);
+    expect(getRegisteredDomainNames()).toHaveLength(8); // 8 defaults
   });
 
   it('unregisterSkill returns false for default skills', () => {
@@ -404,9 +404,9 @@ describe('SkillConfig — dynamic skill registration', () => {
 
   it('_resetRegistry restores defaults only', () => {
     registerSkill(ACCOUNTING_SKILL);
-    expect(getRegisteredDomainNames()).toHaveLength(6);
+    expect(getRegisteredDomainNames()).toHaveLength(9); // 8 defaults + 1 dynamic
     _resetRegistry();
-    expect(getRegisteredDomainNames()).toHaveLength(5);
+    expect(getRegisteredDomainNames()).toHaveLength(8); // 8 defaults
     expect(getSkillDefinition('accounting')).toBeUndefined();
     expect(getSkillDefinition('secretary')).toBeDefined();
   });

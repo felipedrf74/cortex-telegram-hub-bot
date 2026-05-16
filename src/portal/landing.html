@@ -165,14 +165,9 @@
     .brand__mark {
       width: 28px;
       height: 28px;
-      border-radius: var(--r-sm);
-      background: var(--brand-500);
-      color: var(--bg-canvas);
-      display: grid;
-      place-items: center;
-      font-weight: 700;
-      font-size: 15px;
-      letter-spacing: -0.02em;
+      display: block;
+      object-fit: contain;
+      filter: drop-shadow(0 0 12px var(--brand-alpha-40));
     }
     .nav__links {
       display: none;
@@ -1100,7 +1095,7 @@
   <nav class="nav">
     <div class="container nav__inner">
       <a href="#" class="brand" aria-label="Nexus Hub">
-        <span class="brand__mark">N</span>
+        <img class="brand__mark" src="/assets/nexus-mark.png" alt="" aria-hidden="true">
         <span>Nexus Hub</span>
       </a>
       <div class="nav__links">
@@ -1532,7 +1527,7 @@
   <footer class="footer">
     <div class="container footer__inner">
       <div class="footer__brand">
-        <span class="brand__mark" style="width: 22px; height: 22px; font-size: 12px;">N</span>
+        <img class="brand__mark" src="/assets/nexus-mark.png" alt="" aria-hidden="true" style="width: 22px; height: 22px;">
         <span data-i18n-html="footer.copyright">© 2026 Nexus Hub · Feito por <a href="mailto:felipe@nexushub.me" style="color: var(--text-secondary);">Felipe Dominguez</a></span>
       </div>
       <div class="footer__links">

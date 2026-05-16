@@ -35,39 +35,12 @@ const CACHEABLE_COMMANDS = new Set([
 
 const CHAT_CMD_TTL = 60; // seconds
 
-const IDENTITY_QUESTION_PATTERNS = [
-  /\bwho am i\b/,
-  /\bwho am i signed in as\b/,
-  /\bwhat(?:'s| is) my name\b/,
-  /\bdo you know who i am\b/,
-  /\bwhich account am i using\b/,
-  /\bwhich user am i\b/,
-  /\bquem sou eu\b/,
-  /\bquem eu sou\b/,
-  /\bquem sou\b/,
-  /\bqual e o meu nome\b/,
-  /\bqual e meu nome\b/,
-  /\bcomo me chamo\b/,
-  /\bsabes quem sou\b/,
-  /\bvoce sabe quem eu sou\b/,
-  /\bque conta estou a usar\b/,
-  /\bqual usuario sou eu\b/,
-];
-
-function normalizeIdentityQuestion(text: string): string {
-  return text
-    .toLowerCase()
-    .normalize('NFD')
-    .replace(/[\u0300-\u036f]/g, '')
-    .replace(/[?!.,;:()[\]{}"']/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim();
-}
-
-export function isAuthenticatedIdentityQuestion(text: string): boolean {
-  const normalized = normalizeIdentityQuestion(text);
-  return IDENTITY_QUESTION_PATTERNS.some((pattern) => pattern.test(normalized));
-}
+// Phase 14 batch 76 (2026-05-16): identity-question detector extracted to
+// `src/services/identity-question-detector.ts` and re-exported here for
+// backwards-compatibility with existing importers. The extracted module
+// also adds Spanish identity-question coverage (Phase 14 ES expansion).
+import { isAuthenticatedIdentityQuestion } from '../../services/identity-question-detector';
+export { isAuthenticatedIdentityQuestion };
 
 function cacheKey(userId: number, normalizedTextLower: string, tenantId?: number): string {
   const scopedTenantId = resolveChatTenantId(userId, tenantId);

@@ -46,7 +46,7 @@ import type { DomainName, DomainResponse } from '../domains/types';
 import { logger } from '../utils/logger';
 import { isSubmoduleEnabled } from '../skills/registry';
 import type { Lang } from '../utils/i18n';
-import { DateTime, type WeekdayNumbers } from 'luxon';
+import { DateTime } from 'luxon';
 import { getUserLanguage, getUserTimezone } from './user-service';
 import { getTaskProviderForUser } from './task-store/task-router';
 import { composeDailyBrief } from './daily-brief-orchestrator';
@@ -94,111 +94,6 @@ type ParsedCalendarCreate = {
   target?: CalendarSource;
 };
 
-const EMAIL_PATTERN = /[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi;
-const TIME_RANGE_PATTERN = /(?:\bdas?\s*)?(\d{1,2})(?:(?:[:.](\d{2}))|h(\d{2})?)?\s*(?:às|as|a|até|ate|to|-|–)\s*(\d{1,2})(?:(?:[:.](\d{2}))|h(\d{2})?)?/i;
-const NUMERIC_DATE_PATTERN = /\b(\d{1,2})[\/.-](\d{1,2})(?:[\/.-](\d{2,4}))?\b/;
-
-function foldText(value: string): string {
-  return value
-    .normalize('NFD')
-    .replace(/[\u0300-\u036f]/g, '')
-    .toLowerCase();
-}
-
-function uniqueEmails(text: string): string[] {
-  return Array.from(new Set((text.match(EMAIL_PATTERN) ?? []).map((email) => email.toLowerCase())));
-}
-
-function resolveCalendarTarget(text: string): CalendarSource | undefined {
-  const folded = foldText(text);
-  if (/\boutlook\b/.test(folded)) return 'outlook';
-  if (/\bgoogle\b/.test(folded)) return 'google';
-  return undefined;
-}
-
-function resolveCalendarCreateDate(text: string, timezone: string): DateTime | null {
-  const base = DateTime.now().setZone(timezone);
-  const numeric = text.match(NUMERIC_DATE_PATTERN);
-  if (numeric) {
-    const day = Number(numeric[1]);
-    const month = Number(numeric[2]);
-    const rawYear = numeric[3] ? Number(numeric[3]) : base.year;
-    const year = rawYear < 100 ? 2000 + rawYear : rawYear;
-    let candidate = DateTime.fromObject({ year, month, day }, { zone: timezone });
-    if (!candidate.isValid) return null;
-    if (!numeric[3] && candidate.startOf('day') < base.startOf('day')) {
-      candidate = candidate.plus({ years: 1 });
-    }
-    return candidate;
-  }
-
-  const folded = foldText(text);
-  if (/\b(hoje|today)\b/.test(folded)) return base.startOf('day');
-  if (/\b(amanha|tomorrow)\b/.test(folded)) return base.plus({ days: 1 }).startOf('day');
-
-  const weekdays: Array<[RegExp, WeekdayNumbers]> = [
-    [/\b(monday|segunda(?:-feira)?)\b/, 1],
-    [/\b(tuesday|terca(?:-feira)?)\b/, 2],
-    [/\b(wednesday|quarta(?:-feira)?)\b/, 3],
-    [/\b(thursday|quinta(?:-feira)?)\b/, 4],
-    [/\b(friday|sexta(?:-feira)?)\b/, 5],
-    [/\b(saturday|sabado)\b/, 6],
-    [/\b(sunday|domingo)\b/, 7],
-  ];
-  for (const [pattern, weekday] of weekdays) {
-    if (!pattern.test(folded)) continue;
-    let candidate = base.set({ weekday }).startOf('day');
-    if (candidate <= base.startOf('day')) candidate = candidate.plus({ weeks: 1 });
-    return candidate;
-  }
-
-  return null;
-}
-
-function parseCalendarTimeRange(text: string): { hour: number; minute: number; endHour: number; endMinute: number; match: RegExpMatchArray } | null {
-  const match = text.match(TIME_RANGE_PATTERN);
-  if (!match) return null;
-
-  const hour = Number(match[1]);
-  const minute = match[2] || match[3] ? Number(match[2] ?? match[3]) : 0;
-  const endHour = Number(match[4]);
-  const endMinute = match[5] || match[6] ? Number(match[5] ?? match[6]) : 0;
-  if (
-    Number.isNaN(hour) || Number.isNaN(minute) || Number.isNaN(endHour) || Number.isNaN(endMinute)
-    || hour < 0 || hour > 23 || endHour < 0 || endHour > 23
-    || minute < 0 || minute > 59 || endMinute < 0 || endMinute > 59
-  ) {
-    return null;
-  }
-  return { hour, minute, endHour, endMinute, match };
-}
-
-function extractCalendarTitle(text: string, rangeMatch: RegExpMatchArray): string {
-  const rangeEnd = (rangeMatch.index ?? 0) + rangeMatch[0].length;
-  let title = text.slice(rangeEnd);
-  title = title
-    .replace(EMAIL_PATTERN, '')
-    .replace(/\b(?:convide|convida|convidar|invite|invites?|add)\b\s+(?:o|a|os|as|the)?\s*/gi, '')
-    .replace(/\b(?:para|for)\b\s*$/gi, '')
-    .replace(/^[\s,.;:—-]+/, '')
-    .replace(/[\s,.;:—-]+$/, '')
-    .trim();
-
-  if (title) return title;
-
-  return text
-    .replace(EMAIL_PATTERN, '')
-    .replace(TIME_RANGE_PATTERN, '')
-    .replace(NUMERIC_DATE_PATTERN, '')
-    .replace(/\b(?:colocar|coloca|põe|poe|adicionar|adiciona|criar|cria|agendar|agenda|schedule|add|create)\b/gi, '')
-    .replace(/\b(?:no|na|em|in|on|para|for|do|da|the|meu|minha|my|proximo|próximo|next|calendario|calendário|calendar|agenda|evento|event|google|outlook|hoje|today|amanha|amanhã|tomorrow|segunda|terca|terça|quarta|quinta|sexta|sabado|sábado|domingo|monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b/gi, '')
-    .replace(/\b(?:convide|convida|convidar|invite|invites?|add)\b\s+(?:o|a|os|as|the)?\s*/gi, '')
-    .replace(/\s+/g, ' ')
-    .replace(/^[\s,.;:—-]+/, '')
-    .replace(/[\s,.;:—-]+$/, '')
-    .trim();
-}
-
 function parseCalendarCreateRequest(text: string, timezone: string): ParsedCalendarCreate | null {
   const parsedNatural = parseNaturalLanguageCalendarEvent(text, { timezone });
   if (parsedNatural) {
@@ -210,33 +105,7 @@ function parseCalendarCreateRequest(text: string, timezone: string): ParsedCalen
       target: parsedNatural.provider,
     };
   }
-
-  const date = resolveCalendarCreateDate(text, timezone);
-  const timeRange = parseCalendarTimeRange(text);
-  if (!date || !timeRange) return null;
-
-  const start = date.set({
-    hour: timeRange.hour,
-    minute: timeRange.minute,
-    second: 0,
-    millisecond: 0,
-  });
-  let end = date.set({
-    hour: timeRange.endHour,
-    minute: timeRange.endMinute,
-    second: 0,
-    millisecond: 0,
-  });
-  if (end <= start) end = end.plus({ days: 1 });
-
-  const title = extractCalendarTitle(text, timeRange.match) || 'Evento';
-  return {
-    title,
-    start: start.toISO()!,
-    end: end.toISO()!,
-    attendees: uniqueEmails(text),
-    target: resolveCalendarTarget(text),
-  };
+  return null;
 }
 
 function formatCalendarCreateSuccess(

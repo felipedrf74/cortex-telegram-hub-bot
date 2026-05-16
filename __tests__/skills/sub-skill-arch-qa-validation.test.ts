@@ -94,20 +94,32 @@ describe('Sub-Skill Architecture — tool name contract', () => {
 });
 
 describe('Sub-Skill Architecture — domain coverage', () => {
-  it('DefaultDomainName type defines exactly 5 domains', () => {
-    expect(domainTypesTs).toContain("'secretary' | 'triathlon' | 'content' | 'finance' | 'cooking'");
+  it('DefaultDomainName type defines exactly 8 domains (5 domain skills + 3 platform skills promoted 2026-05-15)', () => {
+    // The type was reformatted to a multi-line union when promoting connections,
+    // notifications, and decision_center. Assert each domain literal appears.
+    expect(domainTypesTs).toContain("'secretary'");
+    expect(domainTypesTs).toContain("'triathlon'");
+    expect(domainTypesTs).toContain("'content'");
+    expect(domainTypesTs).toContain("'finance'");
+    expect(domainTypesTs).toContain("'cooking'");
+    expect(domainTypesTs).toContain("'connections'");
+    expect(domainTypesTs).toContain("'notifications'");
+    expect(domainTypesTs).toContain("'decision_center'");
   });
 
   it('DomainName type is extensible (accepts any string)', () => {
     expect(domainTypesTs).toContain('DefaultDomainName | (string & {})');
   });
 
-  it('DEFAULT_SKILLS has entries for all 5 domains', () => {
+  it('DEFAULT_SKILLS has entries for all 8 domains', () => {
     expect(skillConfigTs).toContain("secretary: SECRETARY_SKILL");
     expect(skillConfigTs).toContain("triathlon: TRIATHLON_SKILL");
     expect(skillConfigTs).toContain("content: CONTENT_SKILL");
     expect(skillConfigTs).toContain("finance: FINANCE_SKILL");
     expect(skillConfigTs).toContain("cooking: COOKING_SKILL");
+    expect(skillConfigTs).toContain("connections: CONNECTIONS_SKILL");
+    expect(skillConfigTs).toContain("notifications: NOTIFICATIONS_SKILL");
+    expect(skillConfigTs).toContain("decision_center: DECISION_CENTER_SKILL");
   });
 
   it('DEFAULT_SKILLS is typed as Record<DefaultDomainName, SkillDefinition>', () => {
@@ -120,6 +132,9 @@ describe('Sub-Skill Architecture — domain coverage', () => {
     expect(skillConfigTs).toContain("name: 'content'");
     expect(skillConfigTs).toContain("name: 'finance'");
     expect(skillConfigTs).toContain("name: 'cooking'");
+    expect(skillConfigTs).toContain("name: 'connections'");
+    expect(skillConfigTs).toContain("name: 'notifications'");
+    expect(skillConfigTs).toContain("name: 'decision_center'");
   });
 });
 

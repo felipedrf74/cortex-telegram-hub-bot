@@ -209,15 +209,8 @@ a { color: inherit; text-decoration: none; }
 .brand-mark {
   width: 24px;
   height: 24px;
-  border-radius: var(--radius-md);
-  background: linear-gradient(135deg, var(--accent), var(--accent-active));
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 14px;
-  font-weight: 700;
-  color: #fff;
-  box-shadow: 0 0 16px rgba(255, 107, 53, 0.4);
+  object-fit: contain;
+  filter: drop-shadow(0 0 12px rgba(255, 107, 53, 0.38));
 }
 .brand-version {
   font-family: var(--font-mono);
@@ -1317,7 +1310,7 @@ table.legacy th {
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18M3 12h18M3 18h18"/></svg>
       </button>
       <div class="brand">
-        <div class="brand-mark">N</div>
+        <img class="brand-mark" src="/assets/nexus-mark.png" alt="" aria-hidden="true">
         <span>Nexus Hub</span>
         <span class="brand-version mono" id="app-version">v—</span>
       </div>

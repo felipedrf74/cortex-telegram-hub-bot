@@ -12,6 +12,10 @@ import { getDailyContext } from '../services/context-engine';
 import { buildSharedDecisionContext } from '../services/shared-decision-context';
 import { buildChatPromptContextBlock } from '../services/chat-context-engine';
 import { buildAIUnavailableResponse, canUseDirectAnthropicFallback } from './ai-unavailable';
+// Phase 13 batch 71 (2026-05-16): training intent detector moved to the
+// per-skill module (was inline regex in this file). Closes Phase 0 audit
+// MERGE-2 for domain-handler.ts.
+import { isTrainingPrescriptionIntent } from '../services/skills/training/intent-detectors';
 import {
   callDomain as callDirectAnthropicDomain,
   continueWithToolResults as continueDirectAnthropicWithToolResults,
@@ -110,9 +114,8 @@ function buildOnboardingPendingBlock(userId: number, message: string): string {
   return lines.join('\n');
 }
 
-function isTrainingPrescriptionIntent(message: string): boolean {
-  return /\b(create|build|generate|make|design|write|prescribe|give\s+me|what\s+(?:workout|session)\s+should\s+i\s+do|how\s+should\s+i\s+train|new\s+training\s+plan|training\s+plan|workout\s+plan|tempo\s+run|ftp\s+test|freestyle|deadlift|bench\s+press|squat|5x5|css|cria|crie|gera|gerar|monta|monte|faz|fa[çc]a|prescreve|prescreva|me\s+d[aá]|que\s+treino\s+devo\s+fazer|qual\s+treino\s+devo\s+fazer|como\s+devo\s+treinar|plano\s+de\s+treino)\b/i.test(message);
-}
+// Phase 13 batch 71: `isTrainingPrescriptionIntent` moved to
+// `src/services/skills/training/intent-detectors.ts` and imported above.
 
 // ─── Last Coach Briefing State (per-user, in-memory) ─────────────────
 

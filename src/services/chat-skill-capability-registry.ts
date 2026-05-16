@@ -1,7 +1,16 @@
 // Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
+//
+// Phase 13 batch 69 (2026-05-16): per-skill metadata merged into the
+// action registry's `SKILL_METADATA` table. This file now imports the
+// shared metadata for the 9 overlapping skills (everything except
+// 'owner_admin' and 'chat' — those stay inline because they're not
+// part of `ChatActionSkill`). The routing helpers (`inferSkillFromText`,
+// `inferIntent`, etc.) stay here because they consume the broader
+// `NexusChatOwnerSkill` type.
 
 import type { DomainName } from '../domains/types';
 import type { NexusChatActionability, NexusChatOwnerSkill, NexusChatRiskLevel } from './chat-answer-contract';
+import { SKILL_METADATA, type ChatActionSkill } from './chat-action-registry';
 
 export interface ChatSkillCapability {
   skill: NexusChatOwnerSkill;
@@ -26,137 +35,136 @@ export interface ChatSkillCapabilityResolution {
   involvedSkills: NexusChatOwnerSkill[];
 }
 
+// Phase 13 batch 69: maps `NexusChatOwnerSkill` ('secretary') to the
+// corresponding `ChatActionSkill` ('secretary_calendar') so we can pull
+// per-skill metadata from the action registry's SKILL_METADATA table.
+const SHARED_METADATA_SKILL: Partial<Record<NexusChatOwnerSkill, ChatActionSkill>> = {
+  secretary: 'secretary_calendar',
+  tasks: 'tasks',
+  training: 'training',
+  cooking: 'cooking',
+  finance: 'finance',
+  content: 'content',
+  decision_center: 'decision_center',
+  connections: 'connections',
+  notifications: 'notifications',
+};
+
+function metadataFor(skill: NexusChatOwnerSkill) {
+  const mapped = SHARED_METADATA_SKILL[skill];
+  return mapped ? SKILL_METADATA[mapped] : null;
+}
+
+// Phase 13 batch 69: capability rows now read displayName / responseCardType /
+// latencyBudgetMs / privacyPolicy from the shared SKILL_METADATA table.
+// Capability-specific fields (readableFacts, executableActions, requiredFields,
+// confirmationPolicy, verifier, fallbackPolicy) stay inline because they have
+// no per-action counterpart in the action registry.
+function buildCapability(
+  skill: NexusChatOwnerSkill,
+  capabilitySpecific: Pick<ChatSkillCapability,
+    'readableFacts' | 'executableActions' | 'requiredFields'
+    | 'confirmationPolicy' | 'verifier' | 'fallbackPolicy'>,
+  inlineMetadata?: Pick<ChatSkillCapability, 'displayName' | 'responseCardType' | 'latencyBudgetMs' | 'privacyPolicy'>,
+): ChatSkillCapability {
+  const shared = metadataFor(skill);
+  return {
+    skill,
+    displayName: shared?.displayName ?? inlineMetadata?.displayName ?? skill,
+    responseCardType: shared?.responseCardType ?? inlineMetadata?.responseCardType ?? 'answer',
+    latencyBudgetMs: shared?.latencyBudgetMs ?? inlineMetadata?.latencyBudgetMs ?? 3000,
+    privacyPolicy: shared?.privacyPolicy ?? inlineMetadata?.privacyPolicy ?? 'safe_preview',
+    ...capabilitySpecific,
+  };
+}
+
 const CAPABILITIES: ChatSkillCapability[] = [
-  {
-    skill: 'secretary',
-    displayName: 'Secretary',
+  buildCapability('secretary', {
     readableFacts: ['calendar.events', 'agenda.items', 'availability.windows', 'schedule.conflicts'],
     executableActions: ['schedule_event', 'move_event', 'retry_calendar_sync', 'create_agenda_item'],
     requiredFields: ['title', 'startAt'],
     confirmationPolicy: 'external_write',
     verifier: 'provider_read_back',
     fallbackPolicy: 'provider_degraded',
-    privacyPolicy: 'private_detail',
-    responseCardType: 'calendar_action',
-    latencyBudgetMs: 2500,
-  },
-  {
-    skill: 'tasks',
-    displayName: 'Tasks',
+  }),
+  buildCapability('tasks', {
     readableFacts: ['task.lists', 'task.items', 'task.provider_sync'],
     executableActions: ['create_task', 'update_task', 'complete_task', 'create_recurring_task'],
     requiredFields: ['title'],
     confirmationPolicy: 'high_risk',
     verifier: 'read_back',
     fallbackPolicy: 'provider_degraded',
-    privacyPolicy: 'private_detail',
-    responseCardType: 'task_action',
-    latencyBudgetMs: 1800,
-  },
-  {
-    skill: 'training',
-    displayName: 'Training',
+  }),
+  buildCapability('training', {
     readableFacts: ['training.today', 'training.week', 'training.plan', 'training.readiness'],
     executableActions: ['explain_session', 'move_workout', 'replace_exercise', 'request_coach_analysis'],
     requiredFields: ['sessionOrPlanReference'],
     confirmationPolicy: 'external_write',
     verifier: 'read_back',
     fallbackPolicy: 'decision_center',
-    privacyPolicy: 'private_detail',
-    responseCardType: 'training_action',
-    latencyBudgetMs: 2200,
-  },
-  {
-    skill: 'cooking',
-    displayName: 'Cooking',
+  }),
+  buildCapability('cooking', {
     readableFacts: ['meal.plan', 'grocery.list', 'fueling.support'],
     executableActions: ['add_meal_support', 'skip_meal_support', 'create_grocery_list'],
     requiredFields: ['mealOrSessionReference'],
     confirmationPolicy: 'high_risk',
     verifier: 'read_back',
     fallbackPolicy: 'clarify',
-    privacyPolicy: 'private_detail',
-    responseCardType: 'cooking_action',
-    latencyBudgetMs: 2000,
-  },
-  {
-    skill: 'finance',
-    displayName: 'Finance',
+  }),
+  buildCapability('finance', {
     readableFacts: ['receipt.status', 'budget.summary', 'payment.reminders'],
     executableActions: ['categorize_receipt', 'create_payment_reminder', 'mark_paid'],
     requiredFields: ['financeEntityReference'],
     confirmationPolicy: 'always',
     verifier: 'read_back',
     fallbackPolicy: 'clarify',
-    privacyPolicy: 'sensitive_redacted',
-    responseCardType: 'finance_action',
-    latencyBudgetMs: 2200,
-  },
-  {
-    skill: 'content',
-    displayName: 'Content',
+  }),
+  buildCapability('content', {
     readableFacts: ['script.status', 'idea.status', 'publish.window'],
     executableActions: ['approve_script', 'request_rewrite', 'schedule_content_work'],
     requiredFields: ['contentEntityReference'],
     confirmationPolicy: 'high_risk',
     verifier: 'read_back',
     fallbackPolicy: 'deterministic_summary',
-    privacyPolicy: 'private_detail',
-    responseCardType: 'content_action',
-    latencyBudgetMs: 2400,
-  },
-  {
-    skill: 'decision_center',
-    displayName: 'Decision Center',
+  }),
+  buildCapability('decision_center', {
     readableFacts: ['decision.item', 'decision.outcome', 'decision.alternatives'],
     executableActions: ['choose_option', 'dismiss_decision', 'snooze_decision'],
     requiredFields: ['decisionId'],
     confirmationPolicy: 'high_risk',
     verifier: 'decision_outcome',
     fallbackPolicy: 'clarify',
-    privacyPolicy: 'safe_preview',
-    responseCardType: 'decision_action',
-    latencyBudgetMs: 1800,
-  },
-  {
-    skill: 'connections',
-    displayName: 'Connections',
+  }),
+  buildCapability('connections', {
     readableFacts: ['provider.status', 'oauth.state', 'sync.health'],
     executableActions: ['retry_sync', 'open_connection'],
     requiredFields: ['provider'],
     confirmationPolicy: 'never',
     verifier: 'provider_read_back',
     fallbackPolicy: 'provider_degraded',
-    privacyPolicy: 'safe_preview',
-    responseCardType: 'provider_status',
-    latencyBudgetMs: 1500,
-  },
-  {
-    skill: 'notifications',
-    displayName: 'Notifications',
+  }),
+  buildCapability('notifications', {
     readableFacts: ['notification.intent', 'apns.status', 'preference.state'],
     executableActions: ['explain_notification', 'update_preference'],
     requiredFields: ['notificationReference'],
     confirmationPolicy: 'high_risk',
     verifier: 'read_back',
     fallbackPolicy: 'blocked',
-    privacyPolicy: 'safe_preview',
-    responseCardType: 'notification_action',
-    latencyBudgetMs: 1400,
-  },
-  {
-    skill: 'owner_admin',
-    displayName: 'Owner/Admin',
+  }),
+  // 'owner_admin' has no matching ChatActionSkill — keep metadata inline.
+  buildCapability('owner_admin', {
     readableFacts: ['release.health', 'provider.ops', 'model.routing'],
     executableActions: ['acknowledge_ops_decision'],
     requiredFields: ['opsDecisionId'],
     confirmationPolicy: 'always',
     verifier: 'decision_outcome',
     fallbackPolicy: 'blocked',
-    privacyPolicy: 'owner_admin_only',
+  }, {
+    displayName: 'Owner/Admin',
     responseCardType: 'owner_admin_action',
     latencyBudgetMs: 2000,
-  },
+    privacyPolicy: 'owner_admin_only',
+  }),
 ];
 
 const SKILL_BY_DOMAIN: Partial<Record<DomainName, NexusChatOwnerSkill>> = {

@@ -145,7 +145,7 @@ describe('SkillManager — seedDefaultSkills()', () => {
     seedDefaultSkills();
 
     const skills = registry.getAll();
-    expect(skills).toHaveLength(5);
+    expect(skills).toHaveLength(8);
   });
 
   it('preserves user toggles on re-seed', () => {
@@ -524,10 +524,13 @@ describe('SkillManager — getAllSkillStatuses()', () => {
   });
   afterEach(() => { testDb.close(); });
 
-  it('returns status for all five skills', () => {
+  it('returns status for all eight skills (5 domain skills + 3 platform skills promoted 2026-05-15)', () => {
     const statuses = getAllSkillStatuses();
-    expect(statuses).toHaveLength(5);
-    expect(statuses.map(s => s.name)).toEqual(expect.arrayContaining(['secretary', 'triathlon', 'content', 'finance', 'cooking']));
+    expect(statuses).toHaveLength(8);
+    expect(statuses.map(s => s.name)).toEqual(expect.arrayContaining([
+      'secretary', 'triathlon', 'content', 'finance', 'cooking',
+      'connections', 'notifications', 'decision_center',
+    ]));
   });
 });
 
