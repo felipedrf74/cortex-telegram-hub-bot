@@ -4,6 +4,8 @@ import type { InlineButton } from '../../adapters/message-adapter';
 import type { DomainName } from '../../domains/types';
 import type { RouteResult } from '../../router';
 import type { ChatDomainHandler } from './chat-message-context';
+import type { ChatResponseBlock } from '../../services/chat-response-blocks';
+import type { ChatResponseCard } from '../../services/chat-response-cards';
 
 export const CHAT_DOMAIN_HANDLER_TIMEOUT_MS = 40_000;
 
@@ -22,6 +24,12 @@ export type ChatMessageResponseEnvelope = {
   buttons: InlineButton[][] | null;
   metadata: Record<string, unknown> | null;
   timestamp: string;
+  // Phase 16 batch 83 (2026-05-17): typed block + card envelope. Optional
+  // for the rollout window; iOS prefers these when present and falls back
+  // to `text` + `metadata.type` for older builds. Telegram/WhatsApp
+  // adapters consume the legacy `text` field via downgradeBlocksToText.
+  responseBlocks?: ChatResponseBlock[];
+  responseCards?: ChatResponseCard[];
 };
 
 export async function executeChatDomainHandler(

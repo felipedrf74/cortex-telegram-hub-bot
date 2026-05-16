@@ -31,6 +31,10 @@ import {
 } from '../../services/chat-skill-orchestrator';
 import { runWithChatToolAuthorization } from '../../services/chat-tool-authorization';
 import {
+  buildBlocksFromMarkdown,
+  type ChatResponseBlock,
+} from '../../services/chat-response-blocks';
+import {
   clearPendingChatConfirmation,
   getPendingChatConfirmation,
   trackPendingChatConfirmation,
@@ -262,6 +266,7 @@ function enrichChatResponseForContract<T extends {
   routeMethod?: string;
   confidence?: number;
   metadata?: unknown;
+  responseBlocks?: ChatResponseBlock[];
 }>(response: T, input: {
   normalizedText: string;
   userId: number;
@@ -295,10 +300,18 @@ function enrichChatResponseForContract<T extends {
     verificationStatus: input.verificationStatus,
     fallback: input.fallback,
   });
+  // Phase 16 batch 85 (2026-05-17): always emit responseBlocks alongside
+  // text. The action-planner path already populates it; this branch fills
+  // it for LLM domain handlers, fast-path, identity, and shortcut
+  // responses that produce text without going through buildActionResponse.
+  // We respect a caller-provided value if present (action planner emits it
+  // already with planner-specific structure).
+  const responseBlocks = response.responseBlocks ?? buildBlocksFromMarkdown(enriched.text);
   return {
     ...response,
     text: enriched.text,
     metadata: enriched.metadata,
+    responseBlocks,
   } as T;
 }
 

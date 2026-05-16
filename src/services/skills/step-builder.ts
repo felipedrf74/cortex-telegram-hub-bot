@@ -18,6 +18,7 @@ import { DateTime } from 'luxon';
 import {
   findChatActionDefinition,
   riskClassForRisk,
+  runSlotValidators,
   type ChatActionName,
   type ChatActionRisk,
   type ChatActionSkill,
@@ -47,6 +48,30 @@ export interface MakeStepOptions {
 export function makeStep(input: StepKeyInputs, opts: MakeStepOptions): ChatPlanStep {
   const definition = findChatActionDefinition(opts.skill, opts.action);
   const args = sanitizeLlmPromptValue(opts.args) as Record<string, unknown>;
+  // Phase 16 batch 81 (2026-05-17): Tier-0 validation parity. Before this,
+  // deterministic parsers' hand-rolled `requiredArgsPresent` flag was the
+  // sole source of truth at construction time, and typed validators only
+  // ran in the LLM-structured path (chat-action-planner.ts:2106). Now
+  // makeStep also runs validators and AND-combines: a step claims its
+  // slots are present only when both the parser AND the typed validator
+  // agree. Two carve-outs to preserve parser-as-source-of-truth where
+  // intentional:
+  //   1. Refusal plans (rejectionReason in args) keep their deliberate
+  //      false; validators must not flip that.
+  //   2. Parsers that deliberately set a required field to `null` use
+  //      that as an executor-stage placeholder (e.g. decision_snooze
+  //      uses `until: null` so the executor can confirm or default).
+  //      Treat that as the parser's known-intent and trust their flag.
+  let requiredArgsPresent = opts.requiredArgsPresent;
+  if (definition && requiredArgsPresent && !args.rejectionReason) {
+    const hasIntentionalNullPlaceholder = (definition.requiredFields ?? []).some(
+      (f) => f in args && args[f] === null,
+    );
+    if (!hasIntentionalNullPlaceholder) {
+      const validatorResult = runSlotValidators(definition, args);
+      if (!validatorResult.ok) requiredArgsPresent = false;
+    }
+  }
   return {
     stepId: `step-${randomUUID()}`,
     skill: opts.skill,
@@ -57,7 +82,7 @@ export function makeStep(input: StepKeyInputs, opts: MakeStepOptions): ChatPlanS
     provider: opts.provider ?? definition?.providerDependencies[0] ?? 'nexus',
     args,
     slotProvenance: opts.slotProvenance,
-    requiredArgsPresent: opts.requiredArgsPresent,
+    requiredArgsPresent,
     idempotencyKey: buildStepIdempotencyKey(input, opts.action, args),
     verification: {
       required: definition?.verifier !== 'none',

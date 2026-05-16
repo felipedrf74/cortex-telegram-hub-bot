@@ -62,6 +62,11 @@ import {
   runWithChatToolAuthorization,
 } from './chat-tool-authorization';
 import {
+  buildBlocksFromMarkdown,
+  type ChatResponseBlock,
+} from './chat-response-blocks';
+import type { ChatResponseCard } from './chat-response-cards';
+import {
   actionToStepType,
   buildStepIdempotencyKey,
   makeStep,
@@ -221,6 +226,13 @@ export interface ChatActionRouteResponse {
   buttons: null;
   metadata: Record<string, unknown>;
   timestamp: string;
+  // Phase 16 batch 83/84 (2026-05-17): typed block + card envelope.
+  // Optional during the rollout window — older iOS builds keep using
+  // `text` + `metadata.type`. Telegram/WhatsApp adapters consume `text`
+  // via downgradeBlocksToText, which is what the producers serialized
+  // before parsing into blocks here.
+  responseBlocks?: ChatResponseBlock[];
+  responseCards?: ChatResponseCard[];
 }
 
 type CalendarProviderDeps = {
@@ -2457,6 +2469,17 @@ export async function executeChatActionPlan(
       results.push({ step, status: 'blocked', error: 'dependency_failed' });
       break;
     }
+    // Phase 16 batch 82 (2026-05-17): executionPolicy enforcement. Before
+    // this the `executionPolicy` field on ChatActionDefinition was declared
+    // but never read at runtime — an action marked `'blocked'` (the
+    // registry default for `risk: 'ambiguous'`) would reach the action
+    // dispatch unchallenged. Now we short-circuit before per-action
+    // executors when policy says blocked.
+    const stepDefinition = findChatActionDefinition(step.skill, step.action);
+    if (stepDefinition?.executionPolicy === 'blocked') {
+      results.push({ step, status: 'blocked', error: 'execution_policy_blocked' });
+      break;
+    }
     if (step.action === 'schedule_event') {
       results.push(await executeCalendarCreateStep(step, plan, input, deps.calendar, input.persistRuns !== false, options.confirmed === true));
       continue;
@@ -4065,6 +4088,18 @@ function buildActionResponse(
     }
   }
 
+  // Phase 16 batch 84 (2026-05-17): emit responseBlocks alongside `text`.
+  // Builds typed blocks from the producer's existing markdown/prose so
+  // iOS can render natively instead of falling back to MarkdownRenderer
+  // (the bleed-asterisk path). The legacy `text` field stays for older
+  // iOS builds + Telegram/WhatsApp adapters during the rollout window.
+  // Phase 16 batch 86 (2026-05-17): emit responseCards for the three
+  // currently-typed card kinds (refusal, clarification, confirmation)
+  // when the metadata indicates them. Card payloads come from the
+  // existing metadata fields — no new server-side state.
+  const responseBlocks = buildBlocksFromMarkdown(text);
+  const responseCards = buildResponseCardsFromMetadata(metadata);
+
   return {
     id: `msg-${Date.now()}-${randomUUID().slice(0, 8)}`,
     text,
@@ -4088,7 +4123,49 @@ function buildActionResponse(
       // Developer trace is persisted server-side through action runs/logs; normal UI gets only this safe summary.
     },
     timestamp: new Date().toISOString(),
+    responseBlocks,
+    responseCards,
   };
+}
+
+// Phase 16 batch 86 (2026-05-17): derive typed responseCards from
+// existing metadata. Refusal / clarification / confirmation are the
+// three card kinds emitted at the action-planner boundary today; the
+// remaining 12 kinds in ChatResponseCardKind are populated by their
+// dedicated executors (calendar agenda, task creation, etc.) — those
+// extend this function as block-builder migration lands in Batches 84+.
+function buildResponseCardsFromMetadata(metadata: Record<string, unknown>): ChatResponseCard[] | undefined {
+  const cards: ChatResponseCard[] = [];
+  const refusal = metadata.refusal as { reason?: string; message?: string } | undefined;
+  if (refusal && typeof refusal.message === 'string') {
+    cards.push({
+      kind: 'refusalCard',
+      reason: typeof refusal.reason === 'string' ? refusal.reason : 'unknown',
+      message: refusal.message,
+    });
+  }
+  const clarification = metadata.clarification as { question?: string; reason?: string } | undefined;
+  if (clarification && typeof clarification.question === 'string') {
+    cards.push({
+      kind: 'clarificationCard',
+      question: clarification.question,
+      reason: clarification.reason === 'missing_required_fields'
+        || clarification.reason === 'ambiguous_intent'
+        || clarification.reason === 'low_confidence'
+        ? clarification.reason
+        : undefined,
+    });
+  }
+  const confirmation = metadata.actionConfirmation as { title?: string; message?: string; destructive?: boolean } | undefined;
+  if (confirmation && typeof confirmation.message === 'string' && typeof confirmation.title === 'string') {
+    cards.push({
+      kind: 'confirmationCard',
+      title: confirmation.title,
+      message: confirmation.message,
+      destructive: Boolean(confirmation.destructive),
+    });
+  }
+  return cards.length > 0 ? cards : undefined;
 }
 
 function recordShadowTelemetry(plan: ChatActionPlan, input: ChatPlannerInput, routeStartedAtMs: number): void {

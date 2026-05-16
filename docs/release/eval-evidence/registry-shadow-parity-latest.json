@@ -1,5 +1,5 @@
 {
-  "generatedAt": "2026-05-16T23:06:10.995Z",
+  "generatedAt": "2026-05-16T23:47:53.539Z",
   "source": "chat-action-registry-shadow-parity.test.ts",
   "totals": {
     "tested": 253,
@@ -2825,7 +2825,7 @@
         "planResolved": true,
         "skill": "cooking",
         "action": "cooking_fueling_support",
-        "requiredArgsPresent": true
+        "requiredArgsPresent": false
       },
       "parity": "match",
       "mismatchReasons": []
@@ -2841,7 +2841,7 @@
         "planResolved": true,
         "skill": "cooking",
         "action": "cooking_fueling_support",
-        "requiredArgsPresent": true
+        "requiredArgsPresent": false
       },
       "parity": "match",
       "mismatchReasons": []
@@ -2857,7 +2857,7 @@
         "planResolved": true,
         "skill": "cooking",
         "action": "cooking_fueling_support",
-        "requiredArgsPresent": true
+        "requiredArgsPresent": false
       },
       "parity": "match",
       "mismatchReasons": []
