@@ -203,7 +203,10 @@ interface DayNamesCopy {
 
 type Copy = Record<CopyKey, string> & DayNamesCopy;
 
-const COPY: Record<Lang, Copy> = {
+// Phase 16 batch 80 (2026-05-16): Lang now includes 'es-ES'. The fast-path
+// copy is not yet translated to Spanish; ES users fall back to en-US via
+// copyForLang() below. Full ES translation is a Phase 16 follow-up.
+const COPY: Partial<Record<Lang, Copy>> = {
   'pt-BR': {
     agendaHeader: 'AGENDA:',
     agendaEmpty: 'Sem eventos hoje',
@@ -321,7 +324,7 @@ const COPY: Record<Lang, Copy> = {
 };
 
 function copyForLang(lang: Lang): Copy {
-  return COPY[lang];
+  return COPY[lang] ?? COPY['en-US'] ?? COPY['pt-BR']!;
 }
 
 /**
@@ -1062,5 +1065,9 @@ export function normalizeLangHeader(
   if (lower.startsWith('pt-pt') || lower.startsWith('pt_pt')) return 'pt-PT';
   if (lower.startsWith('pt')) return 'pt-BR';
   if (lower.startsWith('en')) return 'en-US';
+  // Phase 16 batch 80 (2026-05-16): preserve es-ES instead of collapsing
+  // to pt-BR. The earlier collapse silently disabled ES branches in the
+  // chat planner for HTTP Accept-Language: es-* requests.
+  if (lower.startsWith('es')) return 'es-ES';
   return 'pt-BR';
 }

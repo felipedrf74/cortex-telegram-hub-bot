@@ -58,6 +58,10 @@ import {
 import { buildLlmSafePromptSlice } from './build-llm-safe-prompt-slice';
 import { redactSensitivePromptText } from './llm-prompt-safety';
 import {
+  getCurrentChatToolAuthorizationContext,
+  runWithChatToolAuthorization,
+} from './chat-tool-authorization';
+import {
   actionToStepType,
   buildStepIdempotencyKey,
   makeStep,
@@ -2391,7 +2395,36 @@ export async function executeChatActionPlan(
   deps: Required<ChatActionPlannerDeps>,
   options: ChatActionExecutionOptions = {},
 ): Promise<ChatActionRouteResponse> {
+  // Phase 16 batch 80 (2026-05-16): wrap execution in
+  // runWithChatToolAuthorization. Before this fix the action planner reached
+  // destructive providers (createEvent, updateEvent, deleteEvent, mail send)
+  // without the tool-authorization gate at chat-tool-authorization.ts:156-164;
+  // the gate was only wired into the legacy tool-call surface at
+  // chat-message-routes.ts:1160. Re-entrant calls already inside an auth
+  // context fall through (AsyncLocalStorage scope continues unchanged).
+  if (!getCurrentChatToolAuthorizationContext()) {
+    return runWithChatToolAuthorization({
+      userId: input.userId,
+      tenantId: input.tenantId,
+      confirmedDestructiveAction: options.confirmed === true,
+      confirmationSource: options.confirmed === true ? 'explicit_current_turn' : 'none',
+    }, () => executeChatActionPlan(plan, input, deps, options));
+  }
   if (plan.clarificationQuestion || plan.steps.some((step) => !step.requiredArgsPresent)) {
+    // Phase 16 batch 80 (2026-05-16): refusal-vs-clarification distinction.
+    // Refused plans (built by buildSafetyRefusalPlan with rejectionReason
+    // populated) now take a distinct branch with metadata.actionStatus
+    // 'refused' and metadata.type 'chat_action_refused'.
+    const refusalReason = refusalReasonForPlan(plan);
+    if (refusalReason) {
+      persistPlanStatus(plan, input, 'blocked');
+      const refusalMessage = refusalCopyForReason(refusalReason, input);
+      return buildActionResponse(input, plan, 'blocked', refusalMessage, {
+        type: 'chat_action_refused',
+        actionStatus: 'refused',
+        refusal: { reason: refusalReason, message: refusalMessage },
+      });
+    }
     persistPlanStatus(plan, input, 'needs_clarification');
     return buildActionResponse(input, plan, 'needs_clarification', plan.clarificationQuestion || defaultClarification(input), {
       type: 'chat_action_needs_input',
@@ -4042,7 +4075,12 @@ function buildActionResponse(
     metadata: {
       ...metadata,
       schemaVersion: 1,
-      actionStatus: status,
+      // Phase 16 batch 80 (2026-05-16): callers may provide a more specific
+      // actionStatus (e.g. 'refused') that should NOT be overwritten by the
+      // persisted ChatActionStatus (e.g. 'blocked'). Honor caller-provided
+      // metadata.actionStatus when present; fall back to the persisted status
+      // otherwise. The persisted status keeps DB schema compatibility.
+      actionStatus: (typeof metadata.actionStatus === 'string' && metadata.actionStatus.length > 0) ? metadata.actionStatus : status,
       actionPlanner: plan.planner,
       effectiveConfidence: plan.effectiveConfidence ?? plan.confidence,
       telemetry: safeTelemetry(responseTelemetry),
@@ -4374,6 +4412,43 @@ function confirmationCopy(plan: ChatActionPlan, input: ChatPlannerInput): string
 
 function defaultClarification(input: ChatPlannerInput): string {
   return input.locale?.startsWith('pt') ? 'Preciso só de mais um detalhe para continuar.' : 'I need one more detail before I continue.';
+}
+
+// Phase 16 batch 80 (2026-05-16): refusal helpers. Refused plans previously
+// shared metadata.type with clarification requests; iOS rendered them
+// identically. These helpers route refused plans to distinct copy + a
+// dedicated metadata.type so the iOS layer can show a refusal card instead
+// of a "needs more info" prompt.
+function refusalReasonForPlan(plan: ChatActionPlan): string | null {
+  for (const step of plan.steps) {
+    const reason = (step.args as { rejectionReason?: unknown })?.rejectionReason;
+    if (typeof reason === 'string' && reason.length > 0) return reason;
+  }
+  return null;
+}
+
+function refusalCopyForReason(reason: string, input: ChatPlannerInput): string {
+  const locale = input.locale ?? 'en-US';
+  const isPt = locale.startsWith('pt');
+  const isEs = locale.startsWith('es');
+  if (reason === 'prompt_injection_marker_detected') {
+    if (isPt) return 'Não vou seguir instruções embutidas em mensagens. Reformule o pedido sem usar comandos como "ignore o anterior".';
+    if (isEs) return 'No voy a seguir instrucciones embebidas en mensajes. Reformula la solicitud sin comandos como "ignora lo anterior".';
+    return "I won't follow embedded instructions in messages. Try rephrasing without commands like \"ignore previous\".";
+  }
+  if (reason === 'sensitive_data_exfiltration_detected') {
+    if (isPt) return 'Não posso compartilhar esse tipo de detalhe. Posso ajudar com algo mais específico?';
+    if (isEs) return 'No puedo compartir ese tipo de detalle. ¿Puedo ayudarte con algo más específico?';
+    return "I can't share that kind of detail. Can I help with something more specific?";
+  }
+  if (reason === 'bulk_destructive_request_detected') {
+    if (isPt) return 'Não vou executar isso — afeta itens demais. Tente um escopo menor ou nomeie o item específico.';
+    if (isEs) return 'No voy a ejecutarlo — afecta demasiados elementos. Prueba con un alcance más pequeño o nombra el elemento específico.';
+    return "I won't run that — it would affect too many items. Try a smaller scope or name the specific item.";
+  }
+  if (isPt) return 'Não posso seguir com esse pedido.';
+  if (isEs) return 'No puedo seguir con esa solicitud.';
+  return "I can't proceed with that request.";
 }
 
 function domainForPlan(plan: ChatActionPlan): ChatActionRouteResponse['domain'] {

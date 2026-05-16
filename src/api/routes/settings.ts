@@ -19,8 +19,14 @@ function normalizeLanguageInput(language: unknown): 'pt-BR' | 'pt-PT' | 'en-US' 
   if (typeof language !== 'string') return null;
   const normalized = language.trim().toLowerCase();
   if (!normalized) return null;
+  // Phase 16 batch 80 (2026-05-16): settings endpoint only accepts the three
+  // fully-translated app languages. `normalizeLangHeader` now also returns
+  // 'es-ES' for `Accept-Language: es-*` on the chat surface, but the user
+  // settings page does not yet expose Spanish as a selectable preference.
   if (!normalized.startsWith('pt') && !normalized.startsWith('en')) return null;
-  return normalizeLangHeader(language);
+  const result = normalizeLangHeader(language);
+  if (result === 'pt-BR' || result === 'pt-PT' || result === 'en-US') return result;
+  return null;
 }
 
 export function settingsRoutes(): Router {
