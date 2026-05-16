@@ -72,16 +72,22 @@ afterEach(() => {
 // ── Skill completeness ────────────────────────────────────────────
 
 describe('QA: /skills lists all domains', () => {
-  it('getAllSkillStatuses returns all 5 default domains', () => {
+  it('getAllSkillStatuses returns all 8 default domains (5 domain skills + 3 platform skills promoted 2026-05-15)', () => {
     const skills = getAllSkillStatuses();
-    expect(skills).toHaveLength(5);
+    expect(skills).toHaveLength(8);
     const names = skills.map(s => s.name).sort();
-    expect(names).toEqual(['content', 'cooking', 'finance', 'secretary', 'triathlon']);
+    expect(names).toEqual([
+      'connections', 'content', 'cooking', 'decision_center', 'finance',
+      'notifications', 'secretary', 'triathlon',
+    ]);
   });
 
-  it('DEFAULT_SKILLS has all 5 domains', () => {
+  it('DEFAULT_SKILLS has all 8 domains', () => {
     const keys = Object.keys(DEFAULT_SKILLS).sort();
-    expect(keys).toEqual(['content', 'cooking', 'finance', 'secretary', 'triathlon']);
+    expect(keys).toEqual([
+      'connections', 'content', 'cooking', 'decision_center', 'finance',
+      'notifications', 'secretary', 'triathlon',
+    ]);
   });
 
   it('each skill has a description', () => {

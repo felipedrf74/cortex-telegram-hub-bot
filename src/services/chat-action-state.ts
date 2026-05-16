@@ -98,6 +98,31 @@ export interface ChatActionTelemetryRecordInput {
   nowIso?: string;
 }
 
+export interface ChatActionTelemetryRecord {
+  id: string;
+  userId: number;
+  tenantId: number;
+  conversationId: string;
+  messageId: string;
+  planner: string;
+  routeTier: ChatActionTelemetry['routeTier'];
+  skill: ChatActionSkill | null;
+  action: ChatActionName | null;
+  status: string;
+  calibratedScore: number | null;
+  threshold: number | null;
+  modelProvider: ChatActionTelemetry['modelProvider'] | null;
+  model: string | null;
+  estimatedTokenCostUsd: number | null;
+  verifierStatus: ChatActionTelemetry['verifierStatus'] | null;
+  latencyMs: number | null;
+  outcome: string | null;
+  failureReason: string | null;
+  predictedActionHash: string | null;
+  slotProvenanceSummary: Record<string, unknown> | null;
+  createdAt: string;
+}
+
 interface PendingRow {
   id: string;
   user_id: number;
@@ -442,6 +467,34 @@ export function recordChatActionTelemetry(input: ChatActionTelemetryRecordInput)
   );
 }
 
+export function listChatActionTelemetryForScope(input: {
+  userId: number;
+  tenantId: number;
+  conversationId?: string | null;
+  messageId?: string | null;
+  limit?: number;
+}): ChatActionTelemetryRecord[] {
+  const clauses = ['user_id = ?', 'tenant_id = ?'];
+  const params: Array<number | string> = [input.userId, input.tenantId];
+  if (input.conversationId) {
+    clauses.push('conversation_id = ?');
+    params.push(input.conversationId);
+  }
+  if (input.messageId) {
+    clauses.push('message_id = ?');
+    params.push(input.messageId);
+  }
+  params.push(Math.max(1, Math.min(500, input.limit ?? 100)));
+  const rows = getDb().prepare(`
+    SELECT *
+    FROM chat_action_telemetry
+    WHERE ${clauses.join(' AND ')}
+    ORDER BY created_at DESC, id DESC
+    LIMIT ?
+  `).all(...params) as Array<Record<string, unknown>>;
+  return rows.map(rowToTelemetry);
+}
+
 function rowToPending(row: PendingRow): PendingChatAction {
   return {
     id: row.id,
@@ -467,6 +520,33 @@ function rowToPending(row: PendingRow): PendingChatAction {
     validationState: row.validation_state,
     confirmationState: row.confirmation_state,
     cancellationState: row.cancellation_state,
+  };
+}
+
+function rowToTelemetry(row: Record<string, unknown>): ChatActionTelemetryRecord {
+  return {
+    id: String(row.id),
+    userId: Number(row.user_id),
+    tenantId: Number(row.tenant_id),
+    conversationId: String(row.conversation_id),
+    messageId: String(row.message_id),
+    planner: String(row.planner),
+    routeTier: String(row.route_tier) as ChatActionTelemetry['routeTier'],
+    skill: typeof row.skill === 'string' ? row.skill as ChatActionSkill : null,
+    action: typeof row.action === 'string' ? row.action as ChatActionName : null,
+    status: String(row.status),
+    calibratedScore: row.calibrated_score == null ? null : Number(row.calibrated_score),
+    threshold: row.threshold == null ? null : Number(row.threshold),
+    modelProvider: typeof row.model_provider === 'string' ? row.model_provider as ChatActionTelemetry['modelProvider'] : null,
+    model: typeof row.model === 'string' ? row.model : null,
+    estimatedTokenCostUsd: row.estimated_token_cost_usd == null ? null : Number(row.estimated_token_cost_usd),
+    verifierStatus: typeof row.verifier_status === 'string' ? row.verifier_status as ChatActionTelemetry['verifierStatus'] : null,
+    latencyMs: row.latency_ms == null ? null : Number(row.latency_ms),
+    outcome: typeof row.outcome === 'string' ? row.outcome : null,
+    failureReason: typeof row.failure_reason === 'string' ? row.failure_reason : null,
+    predictedActionHash: typeof row.predicted_action_hash === 'string' ? row.predicted_action_hash : null,
+    slotProvenanceSummary: typeof row.slot_provenance_json === 'string' ? parseJsonRecord(row.slot_provenance_json) : null,
+    createdAt: String(row.created_at),
   };
 }
 

@@ -480,6 +480,149 @@ const COOKING_SKILL: SkillDefinition = {
   ],
 };
 
+// ── Platform skills (system-level surfaces, promoted from chat-action layer) ─
+//
+// Promoted 2026-05-15 per the Skill Interaction Catalog audit §4 (orphan-skill
+// promotion). These three skills were already first-class in `ChatActionSkill`
+// (chat-action-registry.ts) but were not surfaced as user-facing skills in the
+// catalog. They have empty `tools: []` arrays because their action surface is
+// owned by the chat-action registry (executor strings dispatched server-side),
+// not by the legacy Anthropic tool-call surface. Each sub-skill maps to a
+// concern area that may eventually expose Anthropic tools as the platform
+// matures.
+
+const CONNECTIONS_SKILL: SkillDefinition = {
+  name: 'connections',
+  description: 'Provider integrations — Google, Microsoft, Apple, Garmin, Health — OAuth state, sync health, reconnection guidance',
+  version: '1.0.0',
+  requiredTier: 'free',
+  routing: {
+    patternRoutes: [
+      /^\/(connections?|integrations?|sync|reconnect|providers?)\b/i,
+    ],
+    keywordRoute: /\b(connection|conex[aã]o|conex[oõ]es|integration|integra[cç][aã]o|provider|provedor|reconnect|reconectar|sync|sincroniza(?:r|[cç][aã]o)|google|outlook|microsoft|apple|garmin|healthkit|health(?:\s+app)?|sa[uú]de|reauth(?:enticate)?|reautent(?:icar|ica[cç][aã]o)?|token\s+(?:expired|expirou)|disconnect(?:ed)?|desconect(?:ado|ada))\b/i,
+    classificationHint: {
+      label: 'connections',
+      description: 'provider integration health and management: OAuth status, reconnection guidance, sync errors, token expiry, Google/Outlook/Microsoft/Apple/Garmin/Health account state',
+      examples: [
+        'Is Google Calendar still connected?',
+        'My Outlook sync failed, what should I do?',
+        'Reconectar a conta da Garmin',
+      ],
+    },
+  },
+  subSkills: [
+    {
+      name: 'oauth-state',
+      description: 'OAuth token health and refresh state for connected providers (Google, Microsoft, Apple, Garmin, Health)',
+      enabledByDefault: true,
+      tools: [],
+    },
+    {
+      name: 'sync-health',
+      description: 'Provider sync status — Google Calendar, Outlook Mail, Garmin activities, HealthKit, etc.',
+      enabledByDefault: true,
+      tools: [],
+    },
+    {
+      name: 'reconnection-guidance',
+      description: 'Guided reconnect flow when a provider auth breaks (token revoked, scope changed, password rotated)',
+      enabledByDefault: true,
+      tools: [],
+    },
+  ],
+};
+
+const NOTIFICATIONS_SKILL: SkillDefinition = {
+  name: 'notifications',
+  description: 'Push notifications — APNs token management, delivery, per-channel preferences, notification intents',
+  version: '1.0.0',
+  requiredTier: 'free',
+  routing: {
+    patternRoutes: [
+      /^\/(notif(?:ication)?s?|alerts?|push|quiet)\b/i,
+    ],
+    keywordRoute: /\b(notification|notifica[cç][aã]o|notifica[cç][oõ]es|alerta|alert|push|notify|notificar|silenciar|mute|quiet\s+hours?|do\s+not\s+disturb|n[aã]o\s+perturbar|preferences?|prefer[eê]ncias)\b/i,
+    classificationHint: {
+      label: 'notifications',
+      description: 'push notification management: APNs status, delivery checks, quiet hours, per-channel preferences, notification intents and triggers',
+      examples: [
+        'Are my notifications working?',
+        'Mute training notifications during work hours',
+        'Por que recebi essa notificação?',
+      ],
+    },
+  },
+  subSkills: [
+    {
+      name: 'apns-orchestration',
+      description: 'APNs token management and safe delivery — device token registration, delivery state, token-expiry handling',
+      enabledByDefault: true,
+      tools: [],
+    },
+    {
+      name: 'preferences',
+      description: 'Per-channel notification preferences — quiet hours, mute lists, frequency caps',
+      enabledByDefault: true,
+      tools: [],
+    },
+    {
+      name: 'intents',
+      description: 'Notification intent system — declarative "when to fire" rules for training reminders, calendar alerts, decision-center prompts, etc.',
+      enabledByDefault: true,
+      tools: [],
+    },
+  ],
+};
+
+const DECISION_CENTER_SKILL: SkillDefinition = {
+  name: 'decision_center',
+  description: 'Decision Center — choices, dismissals, snoozes, follow-ups for high-stakes decisions surfaced by other skills',
+  version: '1.0.0',
+  requiredTier: 'free',
+  routing: {
+    patternRoutes: [
+      /^\/(decis(?:ion)?s?|choices?|snooze|dismiss(?:ed)?|followup)\b/i,
+    ],
+    keywordRoute: /\b(decision|decis[aã]o|decis[oõ]es|escolha|escolhas|choose|escolher|dismiss(?:ed)?|dispensar|descartar|snooze|adiar|adiamento|follow.?up|acompanhamento|pending\s+(?:decision|escolha)|decis[aã]o\s+pendente)\b/i,
+    classificationHint: {
+      label: 'decision_center',
+      description: 'decision orchestration: review pending high-stakes choices, snooze for later, dismiss, schedule follow-ups',
+      examples: [
+        'What decisions need my input?',
+        'Snooze that decision for tomorrow',
+        'Tenho decisões pendentes?',
+      ],
+    },
+  },
+  subSkills: [
+    {
+      name: 'choice-flow',
+      description: 'Present pending decision options and capture user choice with confirmation',
+      enabledByDefault: true,
+      tools: [],
+    },
+    {
+      name: 'dismissals',
+      description: 'Track dismissed decisions and prevent re-prompting',
+      enabledByDefault: true,
+      tools: [],
+    },
+    {
+      name: 'snoozes',
+      description: 'Snooze decisions with a TTL — they re-surface after the snooze expires',
+      enabledByDefault: true,
+      tools: [],
+    },
+    {
+      name: 'follow-ups',
+      description: 'Schedule a follow-up reminder for decisions that need revisiting',
+      enabledByDefault: true,
+      tools: [],
+    },
+  ],
+};
+
 // ── Exports ──────────────────────────────────────────────────────
 
 /** The built-in skill definitions, keyed by default domain name. */
@@ -489,6 +632,9 @@ export const DEFAULT_SKILLS: Record<DefaultDomainName, SkillDefinition> = {
   content: CONTENT_SKILL,
   finance: FINANCE_SKILL,
   cooking: COOKING_SKILL,
+  connections: CONNECTIONS_SKILL,
+  notifications: NOTIFICATIONS_SKILL,
+  decision_center: DECISION_CENTER_SKILL,
 };
 
 // ── Runtime Skill Registry ──────────────────────────────────────

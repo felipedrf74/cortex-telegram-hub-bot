@@ -32,6 +32,15 @@ const DOMAIN_PATTERNS: Record<DefaultDomainName, RegExp[]> = {
   cooking: [
     /^\/(cook|recipe|recipes|meal|mealplan|shopping|shoppinglist|menu)\b/i,
   ],
+  connections: [
+    /^\/(connections?|integrations?|sync|reconnect|providers?)\b/i,
+  ],
+  notifications: [
+    /^\/(notif(?:ication)?s?|alerts?|push|quiet)\b/i,
+  ],
+  decision_center: [
+    /^\/(decis(?:ion)?s?|choices?|snooze|dismiss(?:ed)?|followup)\b/i,
+  ],
 };
 
 export function patternMatch(message: string): DomainName | null {

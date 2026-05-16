@@ -58,7 +58,6 @@ used as live implementation truth.
 - `/Users/felipedominguez/Desktop/Custom Connectors/Cortex/cortex-telegram-hub-bot/TASK-integration-tests.md`
 - `/Users/felipedominguez/Desktop/Custom Connectors/Cortex/cortex-telegram-hub-bot/TASK-openai-provider.md`
 - `/Users/felipedominguez/Desktop/Custom Connectors/Cortex/cortex-telegram-hub-bot/TASK-telegram-adapter.md`
-- `/Users/felipedominguez/Desktop/Custom Connectors/Cortex/cortex-telegram-hub-bot/TASK-whatsapp-adapter.md`
 
 ## Maintenance Rule
 When a backend Markdown file stops matching current runtime truth:

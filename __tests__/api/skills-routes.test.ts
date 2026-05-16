@@ -215,7 +215,7 @@ describe('Skills API — GET /catalog', () => {
 
     const data = res.body.data;
     expect(data.userTier).toBe('pro');
-    expect(data.skills).toHaveLength(5); // secretary, content, cooking, finance, triathlon
+    expect(data.skills).toHaveLength(8); // 5 domain skills + 3 platform skills (connections, notifications, decision_center) promoted 2026-05-15
 
     // Every parent should be accessible for pro
     for (const skill of data.skills) {

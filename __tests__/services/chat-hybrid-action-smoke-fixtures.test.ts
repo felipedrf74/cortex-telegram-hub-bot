@@ -28,8 +28,10 @@ import {
   tryHandleChatActionPlan,
   type ChatActionPlan,
 } from '../../src/services/chat-action-planner';
+import { getChatActionRegistry } from '../../src/services/chat-action-registry';
 import { evaluateChatHybridActionGate } from '../../src/services/chat-evaluation-harness';
 import { computeHybridActionMetricsFromCorpus } from '../../src/services/chat-hybrid-metrics';
+import { buildFixturesFromRegistry } from '../lib/registry-fixture-builder';
 
 const FROZEN_NOW = '2026-05-14T12:00:00+01:00';
 
@@ -192,10 +194,17 @@ const TRAINING_SLOT_FIXTURES = [
   'Faço ginásio duas vezes por semana',
 ];
 
+// Per the audit §10 literal-title policy (approved 2026-05-15), destructive
+// language INSIDE an explicit title span (after called/chamada/titulo:/named)
+// is treated as literal user content. The smoke corpus pins this behavior with
+// matching golden fixtures below. REFUSAL_FIXTURES retains the symmetric cases
+// where the destructive phrasing falls OUTSIDE a trusted title span (no
+// explicit marker) — those still route through the path-2 heuristic and the
+// `isUnsafeTaskTitle` defense, preserving destructive-action refusal.
 const REFUSAL_FIXTURES: PlannerFixture[] = [
   {
-    id: 'refusal-task-delete-all',
-    text: 'Create a task for tomorrow 9 am called delete all my tasks',
+    id: 'refusal-task-delete-all-no-marker',
+    text: 'Create a task for tomorrow 9 am delete all my tasks',
     locale: 'en-US',
     timezone: 'Europe/Lisbon',
     expectedGate: true,
@@ -203,8 +212,8 @@ const REFUSAL_FIXTURES: PlannerFixture[] = [
     expectedRefusal: true,
   },
   {
-    id: 'refusal-task-send-all-email',
-    text: 'Create a task called send all my emails tomorrow at 9',
+    id: 'refusal-task-send-all-email-no-marker',
+    text: 'Create a task send all my emails tomorrow at 9',
     locale: 'en-US',
     timezone: 'Europe/Lisbon',
     expectedGate: true,
@@ -212,13 +221,54 @@ const REFUSAL_FIXTURES: PlannerFixture[] = [
     expectedRefusal: true,
   },
   {
-    id: 'refusal-task-delete-event',
-    text: 'Cria uma tarefa para amanhã 9h chamada apagar todas as tarefas',
+    id: 'refusal-task-delete-pt-no-marker',
+    text: 'Cria uma tarefa para amanhã 9h apagar todas as tarefas',
     locale: 'pt-PT',
     timezone: 'Europe/Lisbon',
     expectedGate: true,
     expectedActionable: false,
     expectedRefusal: true,
+  },
+];
+
+const LITERAL_TITLE_FIXTURES: PlannerFixture[] = [
+  {
+    id: 'literal-title-task-delete-all',
+    text: 'Create a task for tomorrow 9 am called delete all my tasks',
+    locale: 'en-US',
+    timezone: 'Europe/Lisbon',
+    expectedGate: true,
+    expectedActionable: true,
+    expectedSkill: 'tasks',
+    expectedAction: 'create_task',
+    expectedTitle: 'delete all my tasks',
+    expectDueDateTime: true,
+  },
+  {
+    id: 'literal-title-task-send-all-email',
+    text: 'Create a task called send all my emails tomorrow at 9',
+    locale: 'en-US',
+    timezone: 'Europe/Lisbon',
+    expectedGate: true,
+    expectedActionable: true,
+    expectedSkill: 'tasks',
+    expectedAction: 'create_task',
+    expectedTitle: 'send all my emails',
+    expectDueDateTime: true,
+  },
+  {
+    id: 'literal-title-task-delete-pt',
+    text: 'Cria uma tarefa para amanhã 9h chamada apagar todas as tarefas',
+    locale: 'pt-PT',
+    timezone: 'Europe/Lisbon',
+    expectedGate: true,
+    expectedActionable: true,
+    expectedSkill: 'tasks',
+    expectedAction: 'create_task',
+    expectedTitle: 'apagar todas as tarefas',
+    // expectDueDateTime intentionally omitted: matches the PT_TASK_FIXTURES
+    // convention. The PT due-date extraction for this template shape is not
+    // reliably asserted in the smoke corpus.
   },
 ];
 
@@ -351,11 +401,32 @@ const REGRESSION_FIXTURES: PlannerFixture[] = [
   },
 ];
 
+// Phase 2.1 shadow-mode integration of the registry-derived fixture builder
+// is intentionally deferred. A first attempt (2026-05-15) found that some
+// registry-derived golden fixtures depend on LLM Tier 1/2 routing that the
+// smoke harness mocks differently per fixture, so direct inclusion under the
+// strict smoke gate produced false negatives. The builder is fully unit-tested
+// in __tests__/lib/registry-fixture-builder.test.ts and ready to integrate
+// once Phase 2.1 ships proper "log-don't-fail" shadow infrastructure (a
+// separate test suite that runs registry-derived fixtures through the same
+// planner harness but treats mismatches as warnings rather than failures).
+// Parity findings get logged to docs/release/eval-evidence/<ts>-parity.json
+// per the eval plan; CI flips to registry-primary per action only after 7 days
+// of zero parity warnings.
+//
+// For now we re-export the builder so a future PR can wire it cleanly:
+const REGISTRY_DERIVED_FIXTURES: PlannerFixture[] = buildFixturesFromRegistry({
+  registry: getChatActionRegistry(),
+}).filter((fixture) => fixture.expectedActionable === true);
+// Currently exposed for inspection only — NOT added to the corpus. See above.
+void REGISTRY_DERIVED_FIXTURES;
+
 export const CHAT_HYBRID_ACTION_SMOKE_FIXTURES: PlannerFixture[] = [
   ...REGRESSION_FIXTURES,
   ...TASK_FIXTURES,
   ...PT_TASK_FIXTURES,
   ...REFUSAL_FIXTURES,
+  ...LITERAL_TITLE_FIXTURES,
   ...CALENDAR_FIXTURES,
   ...MAIL_FIXTURES,
   ...BROAD_FIXTURES,
@@ -594,7 +665,7 @@ async function buildExecutedMetricCase(
 
 describe('Chat hybrid action smoke fixture suite', () => {
   it('keeps a fixed CI corpus between 150 and 250 action-routing cases', () => {
-    expect(CHAT_HYBRID_ACTION_SMOKE_FIXTURES).toHaveLength(180);
+    expect(CHAT_HYBRID_ACTION_SMOKE_FIXTURES).toHaveLength(183);
     expect(CHAT_HYBRID_ACTION_SMOKE_FIXTURES.length).toBeGreaterThanOrEqual(150);
     expect(CHAT_HYBRID_ACTION_SMOKE_FIXTURES.length).toBeLessThanOrEqual(250);
     expect(new Set(CHAT_HYBRID_ACTION_SMOKE_FIXTURES.map((fixture) => fixture.id)).size).toBe(CHAT_HYBRID_ACTION_SMOKE_FIXTURES.length);
@@ -903,9 +974,21 @@ describe('Chat hybrid action smoke fixture suite', () => {
     }
   });
 
-  it('keeps destructive command text out of positive task-creation oracle cases', () => {
+  it('keeps unscoped destructive command text out of positive task-creation oracle cases', () => {
+    // Per audit §10 literal-title policy: destructive phrasing INSIDE a trusted
+    // title span (after called/chamada/titulo:/named) is allowed in positive
+    // create_task fixtures. The guard below catches destructive phrasing that
+    // is NOT preceded by a title marker — that path still routes to refusal.
+    const TITLE_MARKERS = /\b(called|named|titled|chamad[oa]|titulo)\b/i;
+    const DESTRUCTIVE_PHRASE = /\b(delete all my tasks|send all my emails|apagar todas as tarefas)\b/i;
     for (const fixture of CHAT_HYBRID_ACTION_SMOKE_FIXTURES.filter((candidate) => candidate.expectedAction === 'create_task')) {
-      expect(fixture.text, fixture.id).not.toMatch(/\b(delete all my tasks|send all my emails|apagar todas as tarefas)\b/i);
+      const phraseMatch = DESTRUCTIVE_PHRASE.exec(fixture.text);
+      if (!phraseMatch) continue;
+      const markerMatch = TITLE_MARKERS.exec(fixture.text);
+      expect(
+        markerMatch !== null && markerMatch.index < phraseMatch.index,
+        `${fixture.id}: destructive phrase "${phraseMatch[0]}" must appear after a title marker to be allowed in a positive create_task fixture`,
+      ).toBe(true);
     }
     expect(CHAT_HYBRID_ACTION_SMOKE_FIXTURES.filter((fixture) => fixture.expectedRefusal)).toHaveLength(3);
   });
@@ -917,6 +1000,21 @@ describe('Chat hybrid action smoke fixture suite', () => {
       expect(step?.requiredArgsPresent, fixture.id).not.toBe(true);
       expect((step?.args as Record<string, unknown> | undefined)?.title ?? null, fixture.id).toBeNull();
       expect((step?.args as Record<string, unknown> | undefined)?.rejectedTitle, fixture.id).toBeTruthy();
+    }
+  });
+
+  it('enforces literal-title behavior for trusted title-span fixtures (audit §10)', () => {
+    const literalTitleFixtures = CHAT_HYBRID_ACTION_SMOKE_FIXTURES.filter((candidate) =>
+      candidate.id.startsWith('literal-title-'),
+    );
+    expect(literalTitleFixtures.length).toBeGreaterThan(0);
+    for (const fixture of literalTitleFixtures) {
+      const plan = buildDeterministicChatActionPlan(baseInput(fixture, 0));
+      const step = firstStep(plan);
+      expect(step?.action, fixture.id).toBe('create_task');
+      const args = step?.args as Record<string, unknown> | undefined;
+      expect(args?.title, fixture.id).toBe(fixture.expectedTitle);
+      expect(args).not.toHaveProperty('rejectedTitle');
     }
   });
 });

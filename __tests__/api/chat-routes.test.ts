@@ -814,6 +814,14 @@ describe('Chat API routes', () => {
   });
 
   it('persists text chat exchanges and returns them through history', async () => {
+    // Phase 1 batch 4 (2026-05-15): bare "schedule a meeting" used to fall
+    // through to the classifier (now mocked), which produced the
+    // unverified-success-claim quality-gate copy. The calendar parser was
+    // extended (audit §11 routing fixes) to recognise "meeting" as a calendar
+    // noun and the registry-subset fallback now emits a low-confidence
+    // schedule_event step → HTTP 202 needs_clarification. The persistence
+    // contract is independent of the routing tier; assert it against the
+    // clarification response instead.
     mockRouteMessage.mockResolvedValue({
       domain: 'secretary',
       method: 'classifier',
@@ -825,17 +833,13 @@ describe('Chat API routes', () => {
       text: 'schedule a meeting',
     });
 
-    expect(messageRes.statusCode, JSON.stringify(messageRes.body)).toBe(200);
-    expect(messageRes.body.text).toContain('cannot honestly mark it done');
-    expect(messageRes.body.routeMethod).toBe('classifier');
-    expect(messageRes.body.metadata.chatReasoning).toMatchObject({
-      version: 'nexus_answer_contract.v1',
-      ownerSkill: 'secretary',
-      actionability: 'clarify',
-      verificationStatus: 'pending',
-      missingFacts: expect.arrayContaining(['read_back_verification']),
+    expect(messageRes.statusCode, JSON.stringify(messageRes.body)).toBe(202);
+    expect(messageRes.body.metadata).toMatchObject({
+      type: 'chat_action_needs_input',
+      actionStatus: 'needs_clarification',
     });
-    expect(messageRes.body.metadata.responseQuality.issues).toContain('unverified_success_claim');
+    expect(messageRes.body.routeMethod).toBe('chat-action-deterministic');
+    expect(messageRes.body.metadata.involvedSkills).toContain('secretary_calendar');
 
     const historyRes = await dispatch('GET', '/history?limit=10', 7001);
     expect(historyRes.statusCode).toBe(200);
@@ -846,10 +850,8 @@ describe('Chat API routes', () => {
     });
     expect(historyRes.body.messages[1]).toMatchObject({
       role: 'assistant',
-      text: expect.stringContaining('cannot honestly mark it done'),
       domain: 'secretary',
-      routeMethod: 'classifier',
-      confidence: 0.93,
+      routeMethod: 'chat-action-deterministic',
     });
   });
 

@@ -15,6 +15,7 @@ import { isOutlookCalendarConfigured } from './outlook-calendar';
 import {
   parseNaturalLanguageCalendarEvent,
   hasCalendarWriteIntent,
+  hasCalendarReadIntent,
   hasMailReadIntent,
   foldCalendarText,
 } from './calendar-natural-language-parser';
@@ -22,8 +23,12 @@ import {
   findChatActionDefinition,
   getChatActionRegistry,
   messageHasActionCandidate,
+  riskClassForRisk,
+  runSlotValidators,
   selectRegistrySubsetForMessage,
+  type SlotValidationResult,
   type ChatActionName,
+  type ChatActionDefinition,
   type ChatActionRisk,
   type ChatActionSkill,
   type ChatProvider,
@@ -50,6 +55,31 @@ import {
   type ChatActionTelemetry,
   type ChatSlotProvenance,
 } from './chat-action-state';
+import { buildLlmSafePromptSlice } from './build-llm-safe-prompt-slice';
+import { redactSensitivePromptText } from './llm-prompt-safety';
+import {
+  actionToStepType,
+  buildStepIdempotencyKey,
+  makeStep,
+  pickExpectedFields,
+} from './skills/step-builder';
+import { parseConnectionsActionStep } from './skills/connections/parser';
+import { parseContentActionStep } from './skills/content/parser';
+import { parseCookingActionStep } from './skills/cooking/parser';
+import { parseDecisionActionStep } from './skills/decision_center/parser';
+import { parseFinanceActionStep } from './skills/finance/parser';
+import { parseMailActionStep } from './skills/mail/parser';
+import { parseNotificationActionStep } from './skills/notifications/parser';
+import { hasPastTenseSignal } from './skills/past-tense-detector';
+import { extractTopic, inferContentPlatform, inferProviderName } from './skills/text-extractors';
+import {
+  extractTrainingPlanSlots,
+  extractWeeklyVolumeKm,
+  makeTrainingPlanStep,
+  missingTrainingPlanSlots,
+  TRAINING_PLAN_REQUIRED_SLOTS,
+} from './skills/training/helpers';
+import { parseTrainingActionStep } from './skills/training/parser';
 import { invalidateCalendarCaches } from './cache-coherence-registry';
 import { getTaskProviderForUser } from './task-store/task-router';
 import { resolveTaskCreationList } from './task-store/task-list-resolution';
@@ -223,8 +253,11 @@ function hasLegacySubtaskIntent(text: string): boolean {
 function hasSimpleTaskWriteIntent(text: string): boolean {
   const folded = foldCalendarText(text);
   return !hasLegacySubtaskIntent(text)
-    && /\b(cria|criar|adiciona|adicionar|create|add)\b/.test(folded)
-    && /\b(task|tarefa|todo|lembrete)\b/.test(folded);
+    // Phase 2 batch 10: PT-BR "bota" (colloquial) and "coloca" (BR + PT)
+    // join the create-verb set so "Bota uma tarefa..." routes correctly.
+    // Phase 8 batch 43 (2026-05-15): Spanish "crea"/"crear" added.
+    && /\b(cria|criar|adiciona|adicionar|create|add|bota[r]?|coloca[r]?|p[oõ]e[r]?|mete[r]?|crea[r]?)\b/.test(folded)
+    && /\b(task|tarefa|todo|lembrete|tarea[s]?)\b/.test(folded);
 }
 
 export function shouldRunActionPlannerBeforeReadOnlyFastPaths(text: string): boolean {
@@ -233,6 +266,10 @@ export function shouldRunActionPlannerBeforeReadOnlyFastPaths(text: string): boo
     return false;
   }
   if (hasCalendarWriteIntent(text)) return true;
+  // Calendar read intent (e.g., "What's on my agenda today", "Mostra a agenda
+  // de domingo", "agenda do Gmail") routes to summarize_agenda via the new
+  // parseSummarizeAgendaIntent path; let the planner run.
+  if (hasCalendarReadIntent(text)) return true;
   if (hasSimpleTaskWriteIntent(text)) return true;
   const folded = foldCalendarText(text);
   if (hasMailReadIntent(text) && !messageHasActionCandidate(text)) return false;
@@ -315,6 +352,27 @@ export async function buildChatActionPlan(input: ChatPlannerInput): Promise<Chat
 
   const pendingContinuation = buildPendingSlotContinuationPlan(input);
   if (pendingContinuation) return pendingContinuation;
+  // Phase 7 close-out (2026-05-15): cooking pending-meal-plan continuation.
+  // Mirrors the training-plan continuation: when the user has a pending
+  // cooking_meal_plan and the new turn supplies dietary constraints
+  // ("high-protein, vegetarian", "low-carb, no fish"), apply them as
+  // additional args and re-emit the plan step.
+  const cookingPendingContinuation = buildPendingCookingMealPlanContinuation(input);
+  if (cookingPendingContinuation) return cookingPendingContinuation;
+  // Phase 8 batch 38 (2026-05-15): mail draft refinement continuation.
+  const mailPendingContinuation = buildPendingMailDraftContinuation(input);
+  if (mailPendingContinuation) return mailPendingContinuation;
+  // Phase 8 batch 38: decision_choose with sub-options continuation.
+  const decisionPendingContinuation = buildPendingDecisionChooseContinuation(input);
+  if (decisionPendingContinuation) return decisionPendingContinuation;
+  // Phase 8 batch 38: finance categorize-receipt category continuation.
+  const financePendingContinuation = buildPendingFinanceCategorizeContinuation(input);
+  if (financePendingContinuation) return financePendingContinuation;
+  // Phase 9 batch 44 (2026-05-16): content brief / script-create pending
+  // continuation. Turn 1 invokes the brief / script intent; turn 2 supplies
+  // additional spec (audience, platform-specific tone, length target).
+  const contentPendingContinuation = buildPendingContentSpecContinuation(input);
+  if (contentPendingContinuation) return contentPendingContinuation;
 
   const recentFollowUp = buildRecentEntityFollowUpPlan(input);
   if (recentFollowUp) return recentFollowUp;
@@ -357,6 +415,216 @@ function buildPendingCancellationPlan(input: ChatPlannerInput): ChatActionPlan |
   return buildMessageOnlyPlan(input, input.locale?.startsWith('pt')
     ? 'Está cancelado. Não vou continuar essa ação pendente.'
     : 'Cancelled. I will not continue that pending action.', 'pending_action_cancelled');
+}
+
+// Phase 9 batch 44 (2026-05-16): content brief / script-create pending
+// continuation. When a pending content brief or script-create action is
+// active, treat the next user turn as additional spec — audience, tone,
+// length, format, hook style — and re-emit the action with the spec
+// applied. Mirrors the cooking/mail/decision/finance continuation pattern.
+function buildPendingContentSpecContinuation(input: ChatPlannerInput): ChatActionPlan | null {
+  const pending = getActivePendingChatAction({
+    userId: input.userId,
+    tenantId: input.tenantId,
+    conversationId: input.conversationId,
+    skill: 'content',
+    nowIso: input.nowIso,
+  });
+  if (!pending) return null;
+  if (pending.action !== 'content_brief_create' && pending.action !== 'content_script_create') {
+    return null;
+  }
+  const folded = foldCalendarText(input.text);
+  // Recognise content-spec vocabulary: audience tokens, tone adjectives,
+  // length targets, format hints. Includes EN + PT phrasings.
+  const specPattern = /\b(audience|tone|length|hook|short|long|brief|punchy|inspirational|educational|tutorial|comedic|professional|casual|formal|under\s+\d+\s+(?:seconds?|words?|minutes?)|\d+\s+(?:seconds?|words?|minutes?)|pubico|p[uú]blico|tom|gancho|curto|longo|inspirador|educacional|tutorial|coloquial|profissional|abaixo\s+de\s+\d+|menos\s+de\s+\d+)\b/i;
+  if (!specPattern.test(folded)) return null;
+  const specs = (folded.match(new RegExp(specPattern.source, 'gi')) ?? [])
+    .map((s) => s.trim().toLowerCase())
+    .filter((s, idx, arr) => arr.indexOf(s) === idx)
+    .slice(0, 8);
+  const collected = { ...pending.collectedSlots, specs };
+  const step = makeStep(input, {
+    skill: 'content',
+    action: pending.action,
+    risk: 'safe_write',
+    provider: 'nexus',
+    args: collected,
+    requiredArgsPresent: true,
+  });
+  return buildPlanFromSteps(
+    input,
+    [step],
+    [`pending_content_${pending.action}_spec_fill`, `specs:${specs.length}`],
+    0.9,
+  );
+}
+
+// Phase 8 batch 38 (2026-05-15): mail draft refinement continuation.
+// When a pending draft_email action is active and the user provides
+// refinement directives ("shorter", "friendlier", "include the timeline"),
+// apply them as refinement instructions and re-emit the draft action.
+function buildPendingMailDraftContinuation(input: ChatPlannerInput): ChatActionPlan | null {
+  const pending = getActivePendingChatAction({
+    userId: input.userId,
+    tenantId: input.tenantId,
+    conversationId: input.conversationId,
+    skill: 'mail',
+    nowIso: input.nowIso,
+  });
+  if (!pending || pending.action !== 'draft_email') return null;
+  const folded = foldCalendarText(input.text);
+  // Recognise refinement directives: tone (friendlier, shorter, formal),
+  // content additions ("include the timeline", "mention the discount"),
+  // style edits (bullet points, line breaks).
+  // Phase 10 batch 52 (2026-05-16): Spanish refinement directives.
+  // ES uses "más" (with accent) where PT uses "mais"; "amistoso/a"
+  // replaces "amigável"; "incluye"/"añade"/"quita" cover include/add/
+  // remove verbs. Adjectives are gender-inflected (corto/corta, etc.).
+  const refinementPattern = /\b(shorter|longer|friendlier|formal|casual|punchier|tighter|crisper|softer|include\s+\w+|mention\s+\w+|add\s+\w+|remove\s+\w+|bullet\s+points|line\s+breaks|mais\s+(?:curto|longo|formal|amig[aá]vel|direto)|m[aá]s\s+(?:cort[oa]|larg[oa]|formal|amistos[oa]|direct[oa]|breve|simple)|incluir?\s+\w+|incluy[ae]\s+\w+|menciona[r]?\s+\w+|adiciona[r]?\s+\w+|a[nñ]ade\s+\w+|quita\s+\w+|elimina\s+\w+)\b/i;
+  if (!refinementPattern.test(folded)) return null;
+  const refinements = (folded.match(new RegExp(refinementPattern.source, 'gi')) ?? [])
+    .map((s) => s.trim().toLowerCase())
+    .filter((s, idx, arr) => arr.indexOf(s) === idx)
+    .slice(0, 8);
+  const collected = { ...pending.collectedSlots, refinements };
+  const step = makeStep(input, {
+    skill: 'mail',
+    action: 'draft_email',
+    risk: 'safe_write',
+    provider: 'gmail',
+    args: collected,
+    requiredArgsPresent: true,
+  });
+  return buildPlanFromSteps(
+    input,
+    [step],
+    ['pending_mail_draft_refinement', `refinements:${refinements.length}`],
+    0.9,
+  );
+}
+
+// Phase 8 batch 38: decision_choose with sub-options continuation.
+// When a pending decision_choose is active and the user provides a choice
+// ("A", "option B", "vou de C"), apply as the choice arg.
+function buildPendingDecisionChooseContinuation(input: ChatPlannerInput): ChatActionPlan | null {
+  const pending = getActivePendingChatAction({
+    userId: input.userId,
+    tenantId: input.tenantId,
+    conversationId: input.conversationId,
+    skill: 'decision_center',
+    nowIso: input.nowIso,
+  });
+  if (!pending || pending.action !== 'decision_choose') return null;
+  // Recognise standalone choice tokens: "A", "B", "Option C", "opção 2",
+  // "vou de B", "go with A".
+  // Phase 10 batch 52 (2026-05-16): Spanish "Opción B" / "elijo C" /
+  // "me quedo con A" / "voy con D" added.
+  const choiceMatch =
+    input.text.match(/\b(?:option|op[cç][aã]o|opci[oó]n)\s+([a-zA-Z0-9]+)/i)
+    || input.text.match(/\b(?:vou\s+de|go\s+with|i'?ll\s+go\s+with|let'?s\s+go\s+with|pick|choose|escolho|elijo|voy\s+con|me\s+quedo\s+con)\s+(?:option\s+|opci[oó]n\s+|la\s+|el\s+)?([a-zA-Z0-9]+)/i)
+    || input.text.match(/^\s*([A-D]|\d)\s*[.!]?\s*$/i);
+  if (!choiceMatch?.[1]) return null;
+  const choice = choiceMatch[1].toUpperCase();
+  const collected = { ...pending.collectedSlots, choice };
+  const step = makeStep(input, {
+    skill: 'decision_center',
+    action: 'decision_choose',
+    risk: 'safe_write',
+    provider: 'nexus',
+    args: collected,
+    requiredArgsPresent: true,
+  });
+  return buildPlanFromSteps(
+    input,
+    [step],
+    ['pending_decision_choose_slot_fill', `choice:${choice}`],
+    0.92,
+  );
+}
+
+// Phase 8 batch 38: finance categorize-receipt category continuation.
+// When a pending finance_categorize_receipt is active and the user supplies
+// the category in a short follow-up ("office supplies", "travel", "meals"),
+// apply as the category arg.
+function buildPendingFinanceCategorizeContinuation(input: ChatPlannerInput): ChatActionPlan | null {
+  const pending = getActivePendingChatAction({
+    userId: input.userId,
+    tenantId: input.tenantId,
+    conversationId: input.conversationId,
+    skill: 'finance',
+    nowIso: input.nowIso,
+  });
+  if (!pending || pending.action !== 'finance_categorize_receipt') return null;
+  // Recognise short category replies (1–4 words) common in receipt
+  // categorization. The category vocabulary intentionally biases toward
+  // business-expense buckets used in Stripe / accounting tooling.
+  const folded = foldCalendarText(input.text);
+  const categoryPattern = /\b(office\s+supplies?|travel|meals?\s*(?:and\s+entertainment)?|transportation|software|hardware|marketing|advertising|professional\s+services?|utilities|rent|insurance|equipment|subscriptions?|training|education|material(?:\s+de\s+escrit[oó]rio)?|despesas?\s+de\s+(?:viagem|escrit[oó]rio|transporte|marketing)|alimenta[cç][aã]o|transporte|softwares?|publicidade|servi[cç]os?\s+profissionais|materiais?|formaca[ao]|treinamento)\b/i;
+  const match = folded.match(categoryPattern);
+  if (!match) return null;
+  // Use the first matched category as the canonical value (lowercased).
+  const category = match[0].toLowerCase().trim();
+  const collected = { ...pending.collectedSlots, category };
+  const step = makeStep(input, {
+    skill: 'finance',
+    action: 'finance_categorize_receipt',
+    risk: 'safe_write',
+    provider: 'nexus',
+    args: collected,
+    requiredArgsPresent: Boolean((collected as Record<string, unknown>).receiptId),
+  });
+  return buildPlanFromSteps(
+    input,
+    [step],
+    ['pending_finance_categorize_receipt_slot_fill', `category:${category}`],
+    0.9,
+  );
+}
+
+// Phase 7 close-out (2026-05-15): cooking pending-meal-plan continuation.
+// When a pending cooking_meal_plan action is active, treat the next user
+// turn as dietary constraints / preferences and re-emit the action with
+// those constraints applied.
+function buildPendingCookingMealPlanContinuation(input: ChatPlannerInput): ChatActionPlan | null {
+  const pending = getActivePendingChatAction({
+    userId: input.userId,
+    tenantId: input.tenantId,
+    conversationId: input.conversationId,
+    skill: 'cooking',
+    nowIso: input.nowIso,
+  });
+  if (!pending) return null;
+  // Extract dietary-constraint signals from the user text. Pattern includes
+  // common diet preferences ("vegetarian", "vegan", "high-protein", "keto",
+  // "low-carb", "no fish", "gluten-free") plus PT-BR/PT-PT equivalents
+  // ("vegetariano", "rico em proteína", "sem peixe", "sem glúten").
+  const folded = foldCalendarText(input.text);
+  // Phase 10 batch 52 (2026-05-16): Spanish dietary constraints — ES uses
+  // gender-inflected adjectives (vegetariana/vegetariano, vegana/vegano),
+  // "alta/alto en proteína" for high-protein, "bajo en carbohidratos",
+  // and "sin <food>" for exclusions.
+  const constraintPattern = /\b(vegetarian|vegan|high[\s-]?protein|low[\s-]?carb|keto|paleo|mediterranean|mediterr[aá]nea?|whole30|gluten[\s-]?free|dairy[\s-]?free|nut[\s-]?free|no\s+(?:fish|pork|beef|red\s+meat|dairy|gluten|sugar|carbs?)|vegetarian[oa]|vegan[oa]|rico\s+em\s+prote[ií]na|alt[oa]\s+en\s+prote[ií]na|baixo\s+em\s+carbo|baj[oa]\s+en\s+carbo|sem\s+(?:peixe|carne|gluten|glúten|laticínios?|lactose|açúcar)|sin\s+(?:pescado|carne|gluten|gl[uú]ten|l[aá]cteos?|lactosa|az[uú]car))\b/i;
+  if (!constraintPattern.test(folded)) return null;
+  const constraints = (folded.match(new RegExp(constraintPattern.source, 'gi')) ?? [])
+    .map((s) => s.trim().toLowerCase())
+    .filter((s, idx, arr) => arr.indexOf(s) === idx)
+    .slice(0, 8);
+  const collected = { ...pending.collectedSlots, constraints };
+  const step = makeStep(input, {
+    skill: 'cooking',
+    action: 'cooking_meal_plan',
+    risk: 'safe_write',
+    provider: 'nexus',
+    args: collected,
+    requiredArgsPresent: true,
+  });
+  return buildPlanFromSteps(
+    input,
+    [step],
+    ['pending_cooking_meal_plan_continuation', `constraints:${constraints.length}`],
+    0.9,
+  );
 }
 
 function buildPendingSlotContinuationPlan(input: ChatPlannerInput): ChatActionPlan | null {
@@ -491,6 +759,35 @@ function buildRecentEntityFollowUpPlan(input: ChatPlannerInput): ChatActionPlan 
 export function buildDeterministicChatActionPlan(input: ChatPlannerInput): ChatActionPlan | null {
   const locale = input.locale || 'pt-BR';
   const nowIso = input.nowIso ?? new Date().toISOString();
+  // Phase 2 batch 7 (2026-05-15): top-of-planner prompt-injection refusal.
+  // The §10.1 marker check already runs inside parseSimpleTaskStep for task
+  // titles. Phase 2 extends it: any embedded LLM-instruction syntax anywhere
+  // in the message gates ALL deterministic parsers. The planner emits a
+  // refusal-shape step (requiredArgsPresent: false, rejectedRequest in args)
+  // for the would-be skill instead of letting a mutation parser claim and
+  // dispatch. Refused before parseNaturalLanguageCalendarEvent so a calendar
+  // write with embedded injection doesn't slip through the schedule_event path.
+  const injectionRefusal = parsePromptInjectionRefusal(input);
+  if (injectionRefusal) return injectionRefusal;
+  const sensitiveDataRefusal = parseSensitiveDataExfiltrationRefusal(input);
+  if (sensitiveDataRefusal) return sensitiveDataRefusal;
+  const bulkDestructiveRefusal = parseBulkDestructiveRefusal(input);
+  if (bulkDestructiveRefusal) return bulkDestructiveRefusal;
+  // Phase 3 batch 12 (2026-05-15): past-tense lookalike gate. Decline to
+  // claim messages that describe past mutations ("I scheduled my dentist
+  // yesterday", "Já paguei a fatura", "Acabei de mandar o email"). Returns
+  // null so the message falls through to conversational tiers instead of
+  // triggering a new mutation. Distinct from the injection refusal (which
+  // emits a refusal-shape step) — past-tense descriptions don't need to be
+  // "refused", they just shouldn't be treated as action requests.
+  if (hasPastTenseSignal(input.text)) return null;
+  const foldedInput = foldCalendarText(input.text);
+  const earlyContentSchedule = parseContentActionStep(input, foldedInput);
+  if (earlyContentSchedule?.action === 'content_schedule_work'
+    && !/\b(?:na\s+agenda|agenda\s+(?:do|da)\s+(?:google|gmail))\b/.test(foldedInput)
+    && !/\b(event|evento|meeting|reuni[aã]o|appointment|compromisso|cita[s]?)\b/.test(foldedInput)) {
+    return buildPlanFromSteps(input, [earlyContentSchedule], ['content_action_intent', 'deterministic_skill_parser', 'content_schedule_preflight'], 0.8);
+  }
   const calendar = parseNaturalLanguageCalendarEvent(input.text, { timezone: input.timezone, nowIso });
   if (calendar) {
     const provider = calendar.provider === 'outlook' ? 'outlook_calendar' : 'google_calendar';
@@ -553,8 +850,35 @@ export function buildDeterministicChatActionPlan(input: ChatPlannerInput): ChatA
       },
     };
   }
+  if (hasCalendarWriteIntent(input.text)) {
+    return buildIncompleteCalendarCreatePlan(input);
+  }
 
+  // Phase 1 batch 4 (2026-05-15): create_checklist runs BEFORE the legacy
+  // subtask guard. The legacy guard was written when the planner had no
+  // checklist parser and "checklist" intents needed to fall back to a higher
+  // tier; now that we own the intent deterministically, we claim it first.
+  const checklist = parseCreateChecklistIntent(input);
+  if (checklist) return checklist;
   if (hasLegacySubtaskIntent(input.text)) return null;
+  // Calendar read-intent short-circuit: "What's on my agenda today" /
+  // "Agenda de hoje" / "agenda do Gmail" route to summarize_agenda BEFORE
+  // task or broad-skill parsing. Without this, the bare Portuguese noun
+  // "agenda" gets misinterpreted as a write verb downstream. Surfaced by
+  // the registry shadow-parity report 2026-05-15.
+  const agendaSummary = parseSummarizeAgendaIntent(input);
+  if (agendaSummary) return agendaSummary;
+  // Phase 1 batch 4: check_calendar_conflicts runs before calendar mutations
+  // because "Am I free at 3pm" must beat a generic "delete" verb if both
+  // appear; in practice they don't, but precedence here protects future regex.
+  const checkConflicts = parseCheckCalendarConflictsIntent(input);
+  if (checkConflicts) return checkConflicts;
+  const calendarMutation = parseCalendarMutationIntent(input);
+  if (calendarMutation) return calendarMutation;
+  const completeTaskByMark = parseCompleteTaskByMarkIntent(input);
+  if (completeTaskByMark) return completeTaskByMark;
+  const taskMutation = parseTaskMutationIntent(input);
+  if (taskMutation) return taskMutation;
   const task = parseSimpleTaskIntent(input);
   if (task) return task;
   const broadAction = parseBroadSkillActionIntent(input);
@@ -562,13 +886,384 @@ export function buildDeterministicChatActionPlan(input: ChatPlannerInput): ChatA
   return null;
 }
 
+// Phase 2 batch 7 (2026-05-15): top-of-planner prompt-injection refusal.
+// Emits a refusal-shape step (`requiredArgsPresent: false`,
+// `args.rejectedRequest = <original text>`) instead of letting a mutation
+// parser claim. The skill+action is inferred from the registry subset so the
+// downstream UI surfaces the right card.
+function parsePromptInjectionRefusal(input: ChatPlannerInput): ChatActionPlan | null {
+  if (!containsPromptInjectionMarker(input.text)) return null;
+  return buildSafetyRefusalPlan(input, 'prompt_injection_marker_detected', [
+    'prompt_injection_refusal',
+    'deterministic_safety_gate',
+  ]);
+}
+
+function parseSensitiveDataExfiltrationRefusal(input: ChatPlannerInput): ChatActionPlan | null {
+  if (!containsSensitiveDataExfiltrationRequest(input.text)) return null;
+  return buildSafetyRefusalPlan(input, 'sensitive_data_exfiltration_detected', [
+    'sensitive_data_exfiltration_refusal',
+    'deterministic_safety_gate',
+  ], { skill: 'mail', action: 'send_email' });
+}
+
+function parseBulkDestructiveRefusal(input: ChatPlannerInput): ChatActionPlan | null {
+  if (!containsBulkDestructiveRequest(input.text)) return null;
+  return buildSafetyRefusalPlan(input, 'bulk_destructive_request_detected', [
+    'bulk_destructive_refusal',
+    'deterministic_safety_gate',
+  ], { skill: 'tasks', action: 'delete_task' });
+}
+
+function buildIncompleteCalendarCreatePlan(input: ChatPlannerInput): ChatActionPlan {
+  const isPortuguese = input.locale?.startsWith('pt');
+  const isSpanish = input.locale?.startsWith('es');
+  return buildNeedsInputPlan(input, {
+    skill: 'secretary_calendar',
+    action: 'schedule_event',
+    question: isPortuguese
+      ? 'Para agendar isso, preciso do horário e do título do evento.'
+      : isSpanish
+        ? 'Para programar eso, necesito la hora y el título del evento.'
+        : 'To schedule that, I need the event time and title.',
+    args: { rawRequest: input.text },
+    routingSignals: ['calendar_write_intent_incomplete', 'deterministic_calendar_parser'],
+  });
+}
+
+function buildSafetyRefusalPlan(
+  input: ChatPlannerInput,
+  rejectionReason: string,
+  routingSignals: string[],
+  fallback?: { skill: ChatActionSkill; action: ChatActionName },
+): ChatActionPlan | null {
+  // Infer the would-be skill from the registry subset. If the subset is empty
+  // (the message doesn't look like any action), return null and let the rest
+  // of the planner drop the message naturally — there is nothing to refuse.
+  const subset = selectRegistrySubsetForMessage(input.text);
+  const primary = subset[0] ?? (fallback
+    ? getChatActionRegistry().find((entry) => entry.skill === fallback.skill && entry.action === fallback.action)
+    : undefined);
+  if (!primary) return null;
+  const step = makeStep(input, {
+    skill: primary.skill,
+    action: primary.action,
+    risk: 'ambiguous',
+    provider: primary.providerDependencies[0] ?? 'nexus',
+    args: {
+      rejectedRequest: input.text,
+      rejectionReason,
+      ...(rejectionReason === 'bulk_destructive_request_detected' ? { rejectedTitle: input.text } : {}),
+    },
+    requiredArgsPresent: false,
+  });
+  return buildPlanFromSteps(
+    input,
+    [step],
+    routingSignals,
+    0.55,
+  );
+}
+
+function containsSensitiveDataExfiltrationRequest(text: string): boolean {
+  const folded = foldCalendarText(text);
+  const mailOrExportIntent = /\b(send|draft|email|e-mail|forward|share|export|manda|envia|enviar|encaminha|reenviar)\b/.test(folded);
+  const collectionIntent = /\b(all|every|todos|todas|containing|include|inclui|incluir|contendo|contenga|contener)\b/.test(folded);
+  const sensitivePayload = /\b(provider\s+tokens?|access\s+tokens?|refresh\s+tokens?|oauth|api\s+keys?|client\s+secrets?|payment\s+confirmations?|stripe\s+receipts?|customer\s+emails?|backup\s+keys?|passwords?|senhas?|credenciais|credentials?)\b/.test(folded);
+  return mailOrExportIntent && collectionIntent && sensitivePayload;
+}
+
+function containsBulkDestructiveRequest(text: string): boolean {
+  const folded = foldCalendarText(text);
+  if (/\b(create|add|cria|criar|adiciona|adicionar|crea|crear)\b.*\b(called|named|titled|chamad[oa]|llamad[ao]|titulad[ao])\b/.test(folded)) {
+    return false;
+  }
+  const destructiveVerb = /\b(delete|remove|erase|wipe|cancel|apaga|apagar|elimina|eliminar|borra|borrar|cancela|cancelar)\b/.test(folded);
+  const bulkTarget = /\b(every|all|everything|entire|history|todos|todas|todo\s+o|toda\s+a|todos\s+os|todas\s+as|cada|hist[oó]rico|todas\s+las|todos\s+los)\b/.test(folded);
+  const object = /\b(tasks?|tarefas?|tareas?|events?|eventos?|calendar|calend[aá]rio|emails?|messages?|mensagens|correos?)\b/.test(folded);
+  return destructiveVerb && bulkTarget && object;
+}
+
+function parseSummarizeAgendaIntent(input: ChatPlannerInput): ChatActionPlan | null {
+  if (!hasCalendarReadIntent(input.text)) return null;
+  const folded = foldCalendarText(input.text);
+  // Provider hint: "agenda do gmail" routes to google_calendar by behaviour
+  // case #5 (audit §11). Default is unscoped; the engine consults connected
+  // providers downstream when no hint is given.
+  const provider = /\b(gmail|google)\b/.test(folded)
+    ? 'google_calendar'
+    : /\boutlook\b/.test(folded)
+      ? 'outlook_calendar'
+      : undefined;
+  const args: Record<string, unknown> = { date: 'today' };
+  if (provider) args.provider = provider;
+  const step = makeStep(input, {
+    skill: 'secretary_calendar',
+    action: 'summarize_agenda',
+    risk: 'read_only',
+    provider: provider ?? 'nexus',
+    args,
+    requiredArgsPresent: true,
+  });
+  return buildPlanFromSteps(input, [step], ['calendar_read_intent', 'summarize_agenda_short_circuit'], 0.82);
+}
+
+function parseCompleteTaskByMarkIntent(input: ChatPlannerInput): ChatActionPlan | null {
+  const folded = foldCalendarText(input.text);
+  // Portuguese / English mark-as-done patterns that signal complete_task
+  // without a "create/cria" verb. Surfaced by the registry shadow-parity
+  // report 2026-05-15 — previously fell through to the generic-fallback
+  // first-action-in-subset path and incorrectly emitted create_task.
+  const isMarkAsDone =
+    /\b(marca|marcar|marc[aá]\-?la)\s+(?:essa|esta|a|essa\s+tarefa|esta\s+tarefa|isso)\s+(?:tarefa\s+)?(?:como\s+)?(?:feita|conclu[ií]da|pronta|done|complete[da]?)\b/.test(folded)
+    || /\b(mark|set)\s+(?:this|that|the)\s+task\s+(?:as\s+)?(?:done|complete[d]?)\b/.test(folded)
+    || /\b(concluir|conclui|finaliza|finalizar)\s+(?:essa|esta|a)\s+tarefa\b/.test(folded)
+    // Phase 7 close-out: informal "tick off" / "check off" complete verbs.
+    || /\b(tick|check)\s+off\s+(?:the|this|that|my)\s+\w+\s+task\b/.test(folded)
+    // Phase 9 batch 48: Spanish "marca esa tarea como hecha".
+    || /\b(marca|marcar)\s+(?:esa|esta|la)\s+tarea\s+(?:como\s+)?(?:hecha|hecho|completada|completado|terminada|terminado|lista)\b/.test(folded);
+  if (!isMarkAsDone) return null;
+  const step = makeStep(input, {
+    skill: 'tasks',
+    action: 'complete_task',
+    risk: 'safe_write',
+    provider: 'nexus',
+    // taskId resolution happens via the recent-entity follow-up plan upstream
+    // (buildRecentEntityFollowUpPlan in buildChatActionPlan). Here we mark the
+    // step as not-yet-resolved; the engine will ask for clarification when
+    // multiple recent tasks are candidates.
+    args: { taskId: null },
+    requiredArgsPresent: false,
+  });
+  return buildPlanFromSteps(input, [step], ['task_complete_by_mark_intent', 'deterministic_task_parser'], 0.78);
+}
+
+// Phase 1 batch 4 (2026-05-15): task mutation intents — delete/update/reminder.
+// Pattern mirrors parseCompleteTaskByMarkIntent: identify the mutation verb,
+// claim the action with `taskId: null`, and defer resolution to the
+// recent-entity follow-up path. Must run AFTER parseSimpleTaskIntent only
+// when the user explicitly references an existing task — guarded by NO
+// create-verb anywhere in the message so "create a task called delete all my
+// tasks" continues to route to create_task.
+function parseTaskMutationIntent(input: ChatPlannerInput): ChatActionPlan | null {
+  const folded = foldCalendarText(input.text);
+  // Phase 9 batch 48 (2026-05-16): Spanish `tarea` accepted in outer gate.
+  if (!/\b(task|tarefa|todo|lembrete|tarea[s]?)\b/.test(folded)) return null;
+  // Defer to parseSimpleTaskIntent when a create-verb opens the message. The
+  // literal-title policy (audit §10) means create wins over the embedded
+  // delete/update verb inside a title span — "Create a task called delete all
+  // my tasks" stays a create. We use ^-anchored detection so "delete the laundry
+  // task" (no leading create) still routes here.
+  if (/^\s*(?:cria[r]?|criar|adiciona[r]?|adicionar|create|add|new)\b/i.test(input.text)
+    && /\b(cria[r]?|criar|adiciona[r]?|adicionar|create|add|new)\b\s+(?:um[a]?|uma|a|o|new)?\s*(?:task|tarefa|todo|lembrete)\b/.test(folded)) {
+    return null;
+  }
+
+  // Set-reminder must be checked BEFORE update/delete because "definir um
+  // lembrete na tarefa" contains both `lembrete` and the noun `tarefa`, and we
+  // want it routed to set_task_reminder, not finance_create_reminder via the
+  // broad-skill subset. Includes PT verb forms `define`/`defina`/`definir`.
+  if (/\b(set\s+(?:a\s+)?reminder|defin[aeio](?:r|m|ndo)?\s+(?:um\s+)?lembrete|remind\s+me\s+(?:about|on)|lembra[r]?\s+(?:me\s+)?(?:d[aoe]|sobre|na)|pon(?:er|me)?\s+(?:un\s+)?recordatorio|programa[r]?\s+(?:un\s+)?recordatorio)\b.*\b(task|tarefa|tarea)\b/.test(folded)
+    || /\b(?:task|tarefa|tarea)\b.*\b(set\s+(?:a\s+)?reminder|defin[aeio](?:r|m|ndo)?\s+(?:um\s+)?lembrete|pon(?:er|me)?\s+(?:un\s+)?recordatorio|programa[r]?\s+(?:un\s+)?recordatorio)\b/.test(folded)) {
+    return buildTaskMutationPlan(input, 'set_task_reminder', 'safe_write');
+  }
+  // Delete: verb appears followed (anywhere) by tarefa/task.
+  // Phase 2 batch 10: PT-BR "deleta"/"exclui" added to the verb set so
+  // "Deleta a tarefa" routes correctly. The English verbs cover BR+PT
+  // mixed usage too.
+  // Phase 9 batch 48: Spanish "borra"/"borrar" added; "tarea" accepted.
+  if (/\b(delete|remove|apaga[r]?|elimina[r]?|deleta[r]?|excluir?|exclui[mr]?|borra[r]?)\b[^.]*\b(tarefa|task|tarea)\b/.test(folded)) {
+    return buildTaskMutationPlan(input, 'delete_task', 'destructive');
+  }
+  // Update / change / edit: verb followed by tarefa/task somewhere later.
+  // Phase 3 batch 15: PT-BR `muda[r]?` (BR colloquial for "altera/change")
+  // added so "Muda a tarefa pra terça" routes correctly.
+  // Phase 9 batch 48: Spanish "cambia/cambiar" added; "tarea" accepted.
+  if (/\b(update|change|edit|rename|atualiza[r]?|altera[r]?|modifica[r]?|renomeia[r]?|muda[r]?|cambia[r]?)\b[^.]*\b(tarefa|task|tarea)\b/.test(folded)) {
+    return buildTaskMutationPlan(input, 'update_task', 'safe_write');
+  }
+  return null;
+}
+
+function buildTaskMutationPlan(
+  input: ChatPlannerInput,
+  action: 'delete_task' | 'update_task' | 'set_task_reminder',
+  risk: ChatActionRisk,
+): ChatActionPlan {
+  const step = makeStep(input, {
+    skill: 'tasks',
+    action,
+    risk,
+    provider: 'nexus',
+    args: action === 'set_task_reminder'
+      ? { taskId: null, reminderAt: null }
+      : { taskId: null },
+    requiredArgsPresent: false,
+  });
+  return buildPlanFromSteps(input, [step], [`task_${action}_intent`, 'deterministic_task_parser'], 0.76);
+}
+
+// Phase 1 batch 4: create_checklist intent. Distinct from create_task by the
+// explicit "checklist" object plus enumerated items. We route deterministically
+// when the user provides items inline; otherwise we defer to broader parsers.
+function parseCreateChecklistIntent(input: ChatPlannerInput): ChatActionPlan | null {
+  const folded = foldCalendarText(input.text);
+  // Phase 12 batch 66 (2026-05-16): Spanish "crea[r]?" / "a[nñ]ade"
+  // added to create-verb set. Checklist noun unchanged — Spanish uses
+  // the loan word "checklist".
+  if (!/\b(create|cria[r]?|crea[r]?|adiciona[r]?|a[nñ]ade|monta[r]?|fa[czc]a?[r]?|build|new)\b/.test(folded)) return null;
+  if (!/\b(checklist|lista\s+de\s+verifica[cç][aã]o|sub-?tarefas?|subtarefas?)\b/.test(folded)) return null;
+  const title = extractTopicFromChecklist(input.text) || 'Checklist';
+  const items = extractChecklistItems(input.text);
+  const step = makeStep(input, {
+    skill: 'tasks',
+    action: 'create_checklist',
+    risk: 'safe_write',
+    provider: 'nexus',
+    args: { title, items },
+    requiredArgsPresent: Boolean(title && items.length > 0),
+  });
+  return buildPlanFromSteps(input, [step], ['create_checklist_intent', 'deterministic_task_parser'], 0.74);
+}
+
+function extractTopicFromChecklist(text: string): string | null {
+  // "create a checklist for trip prep with passport, tickets" → "trip prep"
+  // "cria uma checklist para a viagem com passaporte, bilhetes" → "a viagem"
+  const match = text.match(/\b(?:checklist|sub-?tarefas?|subtarefas?)\s+(?:for|para|sobre|de|do|da)\s+([^,.:;]+?)(?:\s+with\b|\s+com\b|[,.:;]|$)/i);
+  return match?.[1]?.trim() || null;
+}
+
+function extractChecklistItems(text: string): string[] {
+  // Items after "with" / "com" / ":" — comma-or-semicolon separated.
+  // Phase 12 batch 66: Spanish "y" added as a list conjunction.
+  const match = text.match(/\b(?:with|com|con)\s+(.+)$/i) || text.match(/:\s*(.+)$/);
+  if (!match) return [];
+  return match[1]
+    .split(/[,;]\s*|\s+e\s+|\s+y\s+|\s+and\s+/i)
+    .map((item) => item.trim().replace(/[.?!]+$/g, ''))
+    .filter((item) => item.length > 0 && item.length < 80)
+    .slice(0, 20);
+}
+
+// Phase 1 batch 4: calendar mutation intents — update/move/delete event.
+// Mirrors parseTaskMutationIntent: claim the action with `eventId: null` and
+// let the recent-entity follow-up resolve which event the user means.
+// Must run BEFORE parseNaturalLanguageCalendarEvent at the top of the planner
+// would not match these (because they lack a full title+time tuple), but we
+// still defer to that path when both a clear event title AND new time are
+// present — the calendar-write parser handles "schedule a meeting" cleanly.
+function parseCalendarMutationIntent(input: ChatPlannerInput): ChatActionPlan | null {
+  const folded = foldCalendarText(input.text);
+  // Gate: must explicitly reference a calendar object.
+  // Phase 8 batch 43: Spanish "reunion"/"cita" added alongside PT-EN nouns.
+  const hasCalObject = /\b(event|evento|meeting|reuni[aã]o|reunion[es]?|cita[s]?|appointment|compromisso|consulta|consult|dentist|dentista|standup|sync|sincronia|catch[\s-]?up|agenda|appointment)\b/.test(folded);
+  if (!hasCalObject) return null;
+
+  // Delete / cancel intent.
+  // Phase 3 batch 16 (2026-05-15): "drop the X" added as informal cancel verb.
+  if (/\b(cancel|delete|remove|apaga[r]?|cancela[r]?|elimina[r]?|drop)\b/.test(folded)) {
+    return buildCalendarMutationPlan(input, 'delete_event', 'destructive');
+  }
+  // Move / reschedule intent.
+  // Phase 12 batch 66 (2026-05-16): Spanish "mueve" (imperative of mover)
+  // and "reprograma[r]?" (reschedule) added.
+  if (/\b(move|reschedule|push|reagenda[r]?|remarca[r]?|mover|mueve[r]?|reprograma[r]?|adia[r]?)\b/.test(folded)) {
+    return buildCalendarMutationPlan(input, 'move_event', 'safe_write');
+  }
+  // Update / change intent.
+  // Phase 11 batch 58 (2026-05-16): Spanish "cambia[r]?" (the most common
+  // ES verb for "change") added. "modifica[r]?" already covered both PT
+  // and ES forms.
+  if (/\b(update|change|edit|atualiza[r]?|altera[r]?|modifica[r]?|cambia[r]?|rename|renomeia[r]?)\b/.test(folded)) {
+    return buildCalendarMutationPlan(input, 'update_event', 'safe_write');
+  }
+  return null;
+}
+
+function buildCalendarMutationPlan(
+  input: ChatPlannerInput,
+  action: 'update_event' | 'move_event' | 'delete_event',
+  risk: ChatActionRisk,
+): ChatActionPlan {
+  const folded = foldCalendarText(input.text);
+  const provider = /\b(outlook)\b/.test(folded) ? 'outlook_calendar' : 'google_calendar';
+  const args: Record<string, unknown> = { eventId: null, provider };
+  if (action === 'move_event') {
+    args.startDateTime = null;
+    args.endDateTime = null;
+  } else if (action === 'update_event') {
+    args.changedFields = null;
+  }
+  const step = makeStep(input, {
+    skill: 'secretary_calendar',
+    action,
+    risk,
+    provider,
+    args,
+    requiredArgsPresent: false,
+  });
+  return buildPlanFromSteps(input, [step], [`calendar_${action}_intent`, 'deterministic_calendar_parser'], 0.76);
+}
+
+// Phase 1 batch 4: check_calendar_conflicts — state-free intent that needs only
+// a time range. Claims when the user asks "am I free at X" / "estou livre em
+// X". Distinct from summarize_agenda (which asks for the day's events) by
+// asking whether a specific slot is busy.
+function parseCheckCalendarConflictsIntent(input: ChatPlannerInput): ChatActionPlan | null {
+  const folded = foldCalendarText(input.text);
+  const isFreeBusyQuestion =
+    /\b(am\s+i\s+free|do\s+i\s+have\s+(?:anything|something)|do\s+i\s+have\s+free\s+time|check\s+(?:my\s+|for\s+)?(?:conflict|availability))\b/.test(folded)
+    // Phase 3 batch 15: PT-BR "tô livre" / "tô disponivel" (BR contraction
+    // of "estou") added alongside PT-PT phrasings.
+    || /\b((?:estou|t[oô])\s+(?:livre|disponivel)|tenho\s+(?:algo|alguma\s+coisa)\s+(?:no|na|em)|verifica[r]?\s+(?:conflitos?|disponibilidade))\b/.test(folded)
+    // Phase 12 batch 66 (2026-05-16): Spanish "estoy libre"/"estoy
+    // disponible" added (ES uses "estoy" with 'y', distinct from
+    // PT-PT "estou" with 'u').
+    || /\bestoy\s+(?:libre|disponible)\b/.test(folded);
+  if (!isFreeBusyQuestion) return null;
+  const calendar = parseNaturalLanguageCalendarEvent(input.text, {
+    timezone: input.timezone,
+    nowIso: input.nowIso ?? new Date().toISOString(),
+  });
+  const provider = /\b(outlook)\b/.test(folded) ? 'outlook_calendar' : 'google_calendar';
+  const args: Record<string, unknown> = {
+    provider,
+    startDateTime: calendar?.startDateTime ?? null,
+    endDateTime: calendar?.endDateTime ?? null,
+  };
+  const step = makeStep(input, {
+    skill: 'secretary_calendar',
+    action: 'check_calendar_conflicts',
+    risk: 'read_only',
+    provider,
+    args,
+    requiredArgsPresent: Boolean(args.startDateTime && args.endDateTime),
+  });
+  return buildPlanFromSteps(input, [step], ['check_calendar_conflicts_intent', 'deterministic_calendar_parser'], 0.78);
+}
+
 function parseBroadSkillActionIntent(input: ChatPlannerInput): ChatActionPlan | null {
   const folded = foldCalendarText(input.text);
   const locale = input.locale || 'pt-BR';
   const now = DateTime.fromISO(input.nowIso ?? new Date().toISOString()).setZone(input.timezone);
 
+  // Notifications and decisions run FIRST among the broad-skill parsers because
+  // "create a notification when my Stripe revenue passes X" mentions both
+  // notifications (the matrix object) and Stripe (an embedded modifier). The
+  // matrix-object parser must win. Same shape for "disable training
+  // notifications" — notifications is the object, training is a qualifier.
+  // (2026-05-15 batch 6 routing-gap fix.)
+  const notificationStep = parseNotificationActionStep(input, folded);
+  if (notificationStep) return buildPlanFromSteps(input, [notificationStep], ['notification_action_intent', 'deterministic_skill_parser'], 0.78);
+
+  const decisionStep = parseDecisionActionStep(input, folded);
+  if (decisionStep) return buildPlanFromSteps(input, [decisionStep], ['decision_action_intent', 'deterministic_skill_parser'], 0.77);
+
   const contentStep = parseContentActionStep(input, folded);
   if (contentStep) return buildPlanFromSteps(input, [contentStep], ['content_action_intent', 'deterministic_skill_parser'], 0.78);
+
+  const mailStep = parseMailActionStep(input, folded);
+  if (mailStep) return buildPlanFromSteps(input, [mailStep], ['mail_action_intent', 'deterministic_skill_parser'], 0.77);
 
   const cookingStep = parseCookingActionStep(input, folded, now);
   if (cookingStep) return buildPlanFromSteps(input, [cookingStep], ['cooking_action_intent', 'deterministic_skill_parser'], 0.76);
@@ -581,12 +1276,6 @@ function parseBroadSkillActionIntent(input: ChatPlannerInput): ChatActionPlan | 
 
   const trainingStep = parseTrainingActionStep(input, folded);
   if (trainingStep) return buildPlanFromSteps(input, [trainingStep], ['training_action_intent', 'deterministic_skill_parser'], 0.72);
-
-  const notificationStep = parseNotificationActionStep(input, folded);
-  if (notificationStep) return buildPlanFromSteps(input, [notificationStep], ['notification_action_intent', 'deterministic_skill_parser'], 0.7);
-
-  const decisionStep = parseDecisionActionStep(input, folded);
-  if (decisionStep) return buildPlanFromSteps(input, [decisionStep], ['decision_action_intent', 'deterministic_skill_parser'], 0.7);
 
   if (messageHasActionCandidate(input.text)) {
     const subset = selectRegistrySubsetForMessage(input.text);
@@ -606,373 +1295,28 @@ function parseBroadSkillActionIntent(input: ChatPlannerInput): ChatActionPlan | 
   return null;
 }
 
-function parseContentActionStep(input: ChatPlannerInput, folded: string): ChatPlanStep | null {
-  if (!/\b(content|conteudo|script|roteiro|brief|reel|tiktok|youtube|post|video)\b/.test(folded)) return null;
-  const platform = inferContentPlatform(folded);
-  const topic = extractTopic(input.text) || input.text.trim();
-  if (/\b(script|roteiro)\b/.test(folded)) {
-    return makeStep(input, {
-      skill: 'content',
-      action: 'content_script_create',
-      risk: 'safe_write',
-      provider: 'nexus',
-      args: {
-        topic,
-        platform,
-        format: platform === 'youtube' ? 'long_form_video' : platform === 'carousel' ? 'carousel' : 'short_form_video',
-        objective: 'Create a usable creator script from chat.',
-      },
-      requiredArgsPresent: Boolean(topic && platform !== 'generic'),
-    });
-  }
-  if (/\b(brief|campanha|campaign|ideia|idea|conteudo|content)\b/.test(folded)) {
-    return makeStep(input, {
-      skill: 'content',
-      action: 'content_brief_create',
-      risk: 'safe_write',
-      provider: 'nexus',
-      args: {
-        objective: topic,
-        goal: topic,
-        platform,
-        format: platform === 'youtube' ? 'long_form_video' : platform === 'carousel' ? 'carousel' : 'short_form_video',
-        audience: null,
-      },
-      requiredArgsPresent: Boolean(topic && platform !== 'generic'),
-    });
-  }
-  return null;
-}
+// parseContentActionStep moved to skills/content/parser.ts on 2026-05-15
+// (planner-split, audit implementation plan Phase 0).
+// parseCookingActionStep moved to skills/cooking/parser.ts on 2026-05-15.
+// parseFinanceActionStep moved to skills/finance/parser.ts on 2026-05-15.
+// parseMailActionStep added at skills/mail/parser.ts on 2026-05-15 (Phase 1
+// batch 3): the broad-skill subset fallback couldn't disambiguate
+// mail_unread_count / mail_inbox_summary / draft_email / send_email; the
+// new parser performs verb-class inspection to claim the right action.
+// parseConnectionsActionStep moved to skills/connections/parser.ts on
+// 2026-05-15 (planner-split, audit implementation plan Phase 0).
 
-function parseCookingActionStep(input: ChatPlannerInput, folded: string, now: DateTime): ChatPlanStep | null {
-  if (!/\b(cooking|cozinha|meal|refeicao|refeicoes|jantar|almoco|ceia|lanche|grocery|compras|shopping|comida|fueling)\b/.test(folded)) return null;
-  const nextWeek = /\b(next week|proxima semana|próxima semana)\b/.test(folded);
-  const weekStart = now.plus({ weeks: nextWeek ? 1 : 0 }).startOf('week').toISODate();
-  if (/\b(grocery|shopping list|lista de compras|compras)\b/.test(folded)) {
-    return makeStep(input, {
-      skill: 'cooking',
-      action: 'cooking_grocery_list',
-      risk: 'safe_write',
-      provider: 'nexus',
-      args: { weekStart },
-      requiredArgsPresent: Boolean(weekStart),
-    });
-  }
-  if (/\b(meal plan|plano de refeicoes|plano de refeições|ementa)\b/.test(folded)
-    || /\b(planear|planejar|plan|cria|criar|gera|gerar)\b.*\b(jantar|almoco|refeicao|meal)\b/.test(folded)) {
-    return makeStep(input, {
-      skill: 'cooking',
-      action: 'cooking_meal_plan',
-      risk: 'safe_write',
-      provider: 'nexus',
-      args: { dateRange: nextWeek ? 'next_week' : 'this_week', rawRequest: input.text },
-      requiredArgsPresent: false,
-    });
-  }
-  return makeStep(input, {
-    skill: 'cooking',
-    action: /\b(fuel|fueling|pre treino|pre-treino)\b/.test(folded) ? 'cooking_fueling_support' : 'cooking_meal_support',
-    risk: 'read_only',
-    provider: 'nexus',
-    args: { mealContext: input.text },
-    requiredArgsPresent: true,
-  });
-}
+// parseTrainingActionStep moved to skills/training/parser.ts on 2026-05-15
+// (planner-split, audit implementation plan Phase 0). Training helpers
+// (slot extraction, validation, step construction) moved to
+// skills/training/helpers.ts and re-imported above for the planner's pending-
+// action continuation and action-run execution paths.
 
-function parseFinanceActionStep(input: ChatPlannerInput, folded: string, now: DateTime): ChatPlanStep | null {
-  if (!/\b(finance|financas|finanças|financeiro|financeira|budget|orcamento|orçamento|fatura|invoice|pagamento|payment|stripe|gastei|spend|recibo)\b/.test(folded)) return null;
-  if (/\b(pay|paga|payment|pagamento|stripe|refund|reembolso|invoice action)\b/.test(folded)) {
-    return makeStep(input, {
-      skill: 'finance',
-      action: 'finance_payment_action',
-      risk: 'financial',
-      provider: 'stripe',
-      args: { rawRequest: input.text },
-      requiredArgsPresent: false,
-    });
-  }
-  if (/\b(reminder|lembrete)\b/.test(folded)) {
-    return makeStep(input, {
-      skill: 'finance',
-      action: 'finance_create_reminder',
-      risk: 'safe_write',
-      provider: 'nexus',
-      args: { title: extractTopic(input.text) || input.text.trim(), dueDate: null },
-      requiredArgsPresent: false,
-    });
-  }
-  return makeStep(input, {
-    skill: 'finance',
-    action: 'finance_summary',
-    risk: 'read_only',
-    provider: 'nexus',
-    args: { month: now.toFormat('yyyy-MM') },
-    requiredArgsPresent: true,
-  });
-}
+// parseNotificationActionStep moved to skills/notifications/parser.ts on
+// 2026-05-15 (planner-split, audit implementation plan Phase 0).
 
-function parseConnectionsActionStep(input: ChatPlannerInput, folded: string): ChatPlanStep | null {
-  if (!/\b(connection|connections|conexao|conexoes|ligacao|ligacoes|sync|sincroniza|reconnect|reconectar|google|outlook|garmin)\b/.test(folded)) return null;
-  const provider = inferProviderName(folded);
-  if (/\b(retry|sincroniza|sync|reconnect|reconectar|refresh)\b/.test(folded)) {
-    return makeStep(input, {
-      skill: 'connections',
-      action: 'connections_retry_sync',
-      risk: 'safe_write',
-      provider: 'nexus',
-      args: { provider },
-      requiredArgsPresent: Boolean(provider),
-    });
-  }
-  return makeStep(input, {
-    skill: 'connections',
-    action: 'connections_status',
-    risk: 'read_only',
-    provider: 'nexus',
-    args: { provider },
-    requiredArgsPresent: true,
-  });
-}
-
-function parseTrainingActionStep(input: ChatPlannerInput, folded: string): ChatPlanStep | null {
-  if (!/\b(training|treino|plano de treino|coach|corrida|gym|ginasio|ginásio|session|sessao|sessão|reflow|ajusta|adjust)\b/.test(folded)) return null;
-  if (/\b(create|build|generate|make|cria|criar|gera|gerar|monta|montar|faz|fazer)\b/.test(folded)
-    && /\b(training plan|plano de treino|plan[o]?\b|programa de treino)\b/.test(folded)) {
-    const extracted = extractTrainingPlanSlots(input);
-    const missing = missingTrainingPlanSlots(extracted.slots);
-    return makeTrainingPlanStep(input, extracted.slots, missing, extracted.provenance);
-  }
-  if (/\b(reflow|remarca|reagenda|adjust|ajusta|alterar plano|muda o plano)\b/.test(folded)) {
-    return makeStep(input, {
-      skill: 'training',
-      action: 'training_adjust_plan',
-      risk: 'safe_write',
-      provider: 'nexus',
-      args: { changeRequest: input.text, planId: null },
-      requiredArgsPresent: false,
-    });
-  }
-  if (/\b(coach|report|relatorio|relatório|briefing)\b/.test(folded)) {
-    return makeStep(input, {
-      skill: 'training',
-      action: 'training_coach_report',
-      risk: 'read_only',
-      provider: 'nexus',
-      args: { dateRange: 'current' },
-      requiredArgsPresent: true,
-    });
-  }
-  return makeStep(input, {
-    skill: 'training',
-    action: 'training_explain_session',
-    risk: 'read_only',
-    provider: 'nexus',
-    args: { sessionId: null, rawRequest: input.text },
-    requiredArgsPresent: false,
-  });
-}
-
-const TRAINING_PLAN_REQUIRED_SLOTS = ['sport', 'goal', 'durationWeeks', 'startDate', 'weeklyVolumeKm'] as const;
-
-function makeTrainingPlanStep(
-  input: ChatPlannerInput,
-  slots: Record<string, unknown>,
-  missing: string[],
-  slotProvenance: Record<string, ChatSlotProvenance>,
-): ChatPlanStep {
-  return makeStep(input, {
-    skill: 'training',
-    action: 'training_plan_create',
-    risk: 'safe_write',
-    provider: 'nexus',
-    args: {
-      sport: slots.sport ?? null,
-      goal: slots.goal ?? null,
-      durationWeeks: slots.durationWeeks ?? null,
-      startDate: slots.startDate ?? null,
-      weeklyVolumeKm: slots.weeklyVolumeKm ?? null,
-      constraints: Array.isArray(slots.constraints) ? slots.constraints : [],
-    },
-    slotProvenance,
-    requiredArgsPresent: missing.length === 0,
-  });
-}
-
-function extractTrainingPlanSlots(input: ChatPlannerInput): {
-  slots: Record<string, unknown>;
-  provenance: Record<string, ChatSlotProvenance>;
-} {
-  const text = input.text;
-  const folded = foldCalendarText(text);
-  const slots: Record<string, unknown> = {};
-  const provenance: Record<string, ChatSlotProvenance> = {};
-  const weeklyVolume = extractWeeklyVolumeKm(text);
-  if (weeklyVolume != null) {
-    slots.weeklyVolumeKm = weeklyVolume;
-    provenance.weeklyVolumeKm = makeSlotProvenance({
-      slot: 'weeklyVolumeKm',
-      value: weeklyVolume,
-      rawText: text,
-      turnId: input.messageId,
-      sourceType: 'user_message',
-      normalizer: 'training_weekly_volume_v1',
-      confidence: 0.96,
-    });
-  }
-
-  const sportMatch = folded.match(/\b(running|run|corrida|cycling|ciclismo|bike|swim|swimming|natacao|natação|triathlon|triathlon|gym|ginasio|ginásio|strength|forca|força)\b/);
-  if (sportMatch) {
-    const sport = normalizeTrainingSport(sportMatch[1]);
-    slots.sport = sport;
-    provenance.sport = makeSlotProvenance({
-      slot: 'sport',
-      value: sport,
-      rawText: sportMatch[0],
-      turnId: input.messageId,
-      spanStart: sportMatch.index ?? null,
-      spanEnd: sportMatch.index != null ? sportMatch.index + sportMatch[0].length : null,
-      sourceType: 'user_message',
-      normalizer: 'training_sport_v1',
-      confidence: 0.9,
-    });
-  }
-
-  const durationMatch = text.match(/\b(\d{1,2})\s*(?:weeks?|semanas?)\b/i);
-  if (durationMatch) {
-    const weeks = Number(durationMatch[1]);
-    if (Number.isInteger(weeks) && weeks > 0 && weeks <= 52) {
-      slots.durationWeeks = weeks;
-      provenance.durationWeeks = makeSlotProvenance({
-        slot: 'durationWeeks',
-        value: weeks,
-        rawText: durationMatch[0],
-        turnId: input.messageId,
-        spanStart: durationMatch.index ?? null,
-        spanEnd: durationMatch.index != null ? durationMatch.index + durationMatch[0].length : null,
-        sourceType: 'user_message',
-        normalizer: 'training_duration_weeks_v1',
-        confidence: 0.95,
-      });
-    }
-  }
-
-  const start = extractTrainingStartDate(input);
-  if (start) {
-    slots.startDate = start.value;
-    provenance.startDate = start.provenance;
-  }
-
-  const goalMatch = text.match(/\b(?:goal is|goal|objetivo(?:\s+é)?|para|to)\s+(.+?)(?=$|\.|,|\s+\b(?:in|em|for|por)\s+\d{1,2}\s*(?:weeks?|semanas?)\b)/i);
-  const goal = cleanupTrainingGoal(goalMatch?.[1] ?? inferTrainingGoalFromText(text));
-  if (goal) {
-    slots.goal = goal;
-    provenance.goal = makeSlotProvenance({
-      slot: 'goal',
-      value: goal,
-      rawText: goalMatch?.[1] ?? goal,
-      turnId: input.messageId,
-      spanStart: goalMatch?.index ?? null,
-      spanEnd: goalMatch?.index != null ? goalMatch.index + goalMatch[0].length : null,
-      sourceType: 'user_message',
-      normalizer: 'training_goal_v1',
-      confidence: goalMatch ? 0.86 : 0.72,
-    });
-  }
-
-  return { slots, provenance };
-}
-
-function missingTrainingPlanSlots(slots: Record<string, unknown>): string[] {
-  return TRAINING_PLAN_REQUIRED_SLOTS.filter((slot) => slots[slot] == null || slots[slot] === '');
-}
-
-function extractWeeklyVolumeKm(text: string): number | null {
-  const match = text.match(/\b(\d+(?:[.,]\d+)?)\s*(?:km|kilometers?|quil[oó]metros?)\b(?:\s*(?:a|per|por)\s*(?:week|semana))?/i);
-  if (!match || !/\b(week|semana)\b/i.test(text)) return null;
-  const value = Number(match[1].replace(',', '.'));
-  return Number.isFinite(value) && value >= 0 && value <= 500 ? value : null;
-}
-
-function extractTrainingStartDate(input: ChatPlannerInput): { value: string; provenance: ChatSlotProvenance } | null {
-  const now = DateTime.fromISO(input.nowIso ?? new Date().toISOString()).setZone(input.timezone);
-  const match = input.text.match(/\b(?:start(?:ing)?|começar|inicio|início)\s+(today|tomorrow|hoje|amanh[ãa]|next week|pr[oó]xima semana)\b/i);
-  if (!match) return null;
-  const folded = foldCalendarText(match[1]);
-  const date = folded === 'tomorrow' || folded === 'amanha'
-    ? now.plus({ days: 1 })
-    : folded.includes('next week') || folded.includes('proxima semana')
-      ? now.plus({ weeks: 1 }).startOf('week')
-      : now;
-  const value = date.toISODate();
-  if (!value) return null;
-  return {
-    value,
-    provenance: makeSlotProvenance({
-      slot: 'startDate',
-      value,
-      rawText: match[0],
-      turnId: input.messageId,
-      spanStart: match.index ?? null,
-      spanEnd: match.index != null ? match.index + match[0].length : null,
-      sourceType: 'user_message',
-      normalizer: 'training_start_date_v1',
-      confidence: 0.9,
-    }),
-  };
-}
-
-function normalizeTrainingSport(raw: string): string {
-  const folded = foldCalendarText(raw);
-  if (/\b(run|running|corrida)\b/.test(folded)) return 'running';
-  if (/\b(cycling|ciclismo|bike)\b/.test(folded)) return 'cycling';
-  if (/\b(swim|swimming|natacao)\b/.test(folded)) return 'swimming';
-  if (/\b(triathlon)\b/.test(folded)) return 'triathlon';
-  if (/\b(gym|ginasio|strength|forca)\b/.test(folded)) return 'strength';
-  return folded;
-}
-
-function inferTrainingGoalFromText(text: string): string | null {
-  const match = text.match(/\b(sub[-\s]?\d+\s*(?:minute|min)?\s*5k|5k|10k|marathon|meia maratona|half marathon|triathlon|ironman|build general fitness|general fitness)\b/i);
-  return match?.[0] ?? null;
-}
-
-function cleanupTrainingGoal(goal: string | null | undefined): string | null {
-  if (!goal) return null;
-  const cleaned = goal.replace(/[.?!]+$/g, '').trim();
-  return cleaned.length >= 2 ? cleaned : null;
-}
-
-function parseNotificationActionStep(input: ChatPlannerInput, folded: string): ChatPlanStep | null {
-  if (!/\b(notification|notificacao|notificacoes|notificação|notificações|alerta|push)\b/.test(folded)) return null;
-  return makeStep(input, {
-    skill: 'notifications',
-    action: /\b(preference|preferencia|preferência|desativa|disable|ativa|enable)\b/.test(folded)
-      ? 'notification_update_preference'
-      : 'notification_create_intent',
-    risk: 'safe_write',
-    provider: 'nexus',
-    args: { title: extractTopic(input.text) || input.text.trim(), trigger: null },
-    requiredArgsPresent: false,
-  });
-}
-
-function parseDecisionActionStep(input: ChatPlannerInput, folded: string): ChatPlanStep | null {
-  if (!/\b(decision|decisao|decisão|escolha|snooze|adiar|dismiss|dispensar)\b/.test(folded)) return null;
-  const decisionId = input.text.match(/\b(?:decision|decis[aã]o)\s*#?:?\s*([a-zA-Z0-9._:-]+)/i)?.[1] ?? null;
-  const action: ChatActionName = /\b(snooze|adiar)\b/.test(folded)
-    ? 'decision_snooze'
-    : /\b(dismiss|dispensar|ignorar)\b/.test(folded)
-      ? 'decision_dismiss'
-      : 'decision_follow_up';
-  return makeStep(input, {
-    skill: 'decision_center',
-    action,
-    risk: action === 'decision_follow_up' ? 'safe_write' : 'safe_write',
-    provider: 'nexus',
-    args: { decisionId, until: action === 'decision_snooze' ? null : undefined },
-    requiredArgsPresent: Boolean(decisionId),
-  });
-}
+// parseDecisionActionStep moved to skills/decision_center/parser.ts on
+// 2026-05-15 (first per-skill parser extraction, planner-split foundation).
 
 function buildPlanFromSteps(input: ChatPlannerInput, steps: ChatPlanStep[], routingSignals: string[], confidence: number): ChatActionPlan {
   const effectiveConfidence = calibratePlanConfidence(steps, confidence);
@@ -1098,98 +1442,10 @@ function buildMessageOnlyPlan(input: ChatPlannerInput, text: string, signal: str
   };
 }
 
-function buildStepIdempotencyKey(
-  input: Pick<ChatPlannerInput, 'userId' | 'tenantId'>,
-  action: string,
-  args: Record<string, unknown>,
-): string {
-  return buildNormalizedActionHash({
-    userId: input.userId,
-    tenantId: input.tenantId,
-    action,
-    args: normalizeHashArgs(args),
-  });
-}
-
-function normalizeHashArgs(value: unknown, keyHint?: string): unknown {
-  if (typeof value === 'string' && keyHint && isHashDateTimeKey(keyHint)) {
-    const parsed = DateTime.fromISO(value, { setZone: true });
-    if (parsed.isValid) return parsed.toUTC().toISO({ suppressMilliseconds: true });
-  }
-  if (Array.isArray(value)) return value.map((entry) => normalizeHashArgs(entry, keyHint));
-  if (value && typeof value === 'object') {
-    const normalized = Object.create(null) as Record<string, unknown>;
-    for (const [key, entry] of Object.entries(value as Record<string, unknown>)) {
-      if (entry !== undefined) normalized[key] = normalizeHashArgs(entry, key);
-    }
-    return normalized;
-  }
-  return value;
-}
-
-function isHashDateTimeKey(keyHint: string): boolean {
-  const normalized = keyHint.replace(/[^a-z0-9]/gi, '').toLowerCase();
-  return new Set([
-    'date',
-    'time',
-    'datetime',
-    'due',
-    'dueat',
-    'duedate',
-    'duedatetime',
-    'startat',
-    'startdate',
-    'starttime',
-    'startdatetime',
-    'endat',
-    'enddate',
-    'endtime',
-    'enddatetime',
-    'scheduledat',
-    'scheduleddate',
-    'scheduleddatetime',
-    'remindat',
-    'reminderat',
-    'deadline',
-    'createdat',
-    'updatedat',
-    'expiresat',
-    'racedate',
-  ]).has(normalized);
-}
-
-function makeStep(
-  input: ChatPlannerInput,
-  opts: {
-    skill: ChatActionSkill;
-    action: ChatActionName;
-    risk: ChatActionRisk;
-    provider?: ChatProvider;
-    args: Record<string, unknown>;
-    slotProvenance?: Record<string, ChatSlotProvenance>;
-    requiredArgsPresent: boolean;
-  },
-): ChatPlanStep {
-  const definition = findChatActionDefinition(opts.skill, opts.action);
-  return {
-    stepId: `step-${randomUUID()}`,
-    skill: opts.skill,
-    type: actionToStepType(opts.action),
-    action: opts.action,
-    risk: opts.risk,
-    riskClass: riskClassForRisk(opts.risk),
-    provider: opts.provider ?? definition?.providerDependencies[0] ?? 'nexus',
-    args: opts.args,
-    slotProvenance: opts.slotProvenance,
-    requiredArgsPresent: opts.requiredArgsPresent,
-    idempotencyKey: buildStepIdempotencyKey(input, opts.action, opts.args),
-    verification: {
-      required: definition?.verifier !== 'none',
-      method: definition?.verifier ?? 'none',
-      expectedFields: pickExpectedFields(opts.args, definition?.requiredFields ?? []),
-    },
-  };
-}
+// makeStep, buildStepIdempotencyKey, normalizeHashArgs, isHashDateTimeKey,
+// actionToStepType, and pickExpectedFields moved to src/services/skills/
+// step-builder.ts on 2026-05-15 (planner-split foundation, audit
+// implementation plan Phase 0). They are imported at the top of this file.
 
 const FORBIDDEN_MODEL_ARG_KEYS = new Set([
   'userid',
@@ -1210,6 +1466,33 @@ const FORBIDDEN_MODEL_ARG_KEYS = new Set([
   'principalid',
   'memberid',
   'actorid',
+  'providertoken',
+  'provideraccesstoken',
+  'providerrefreshtoken',
+  'accesstoken',
+  'refreshtoken',
+  'oauthtoken',
+  'oauthcredentials',
+  'oauthcredential',
+  'clientsecret',
+  'apikey',
+  'rawsystemprompt',
+  'systemprompt',
+  'developerprompt',
+  'internalprompt',
+  'systeminstructions',
+  'reasoning',
+  'internalreasoning',
+  'debug',
+  'debugcard',
+  'debugcards',
+  'internaldebug',
+  'internaldebugcard',
+  'nexusanswer',
+  'structuredresponse',
+  'rawmodeloutput',
+  'modeltrace',
+  'tooltrace',
 ]);
 
 function sanitizePlannerArgs(args: Record<string, unknown>): Record<string, unknown> {
@@ -1221,6 +1504,7 @@ function sanitizePlannerArgValue(value: unknown): unknown {
   if (Array.isArray(value)) {
     return value.map((item) => sanitizePlannerArgValue(item));
   }
+  if (typeof value === 'string') return redactSensitivePromptText(value);
   if (!isRecord(value)) return value;
 
   const sanitized = Object.create(null) as Record<string, unknown>;
@@ -1421,12 +1705,31 @@ function parseSimpleTaskStep(input: ChatPlannerInput, text: string | null): Chat
   if (!text) return null;
   const folded = foldCalendarText(text);
   if (hasLegacySubtaskIntent(text)) return null;
-  if (!/\b(cria|criar|adiciona|adicionar|create|add)\b/.test(folded) || !/\b(task|tarefa|todo|lembrete)\b/.test(folded)) return null;
+  // Phase 2 batch 10: PT-BR colloquial create-verbs ("bota", "coloca", "põe",
+  // "mete") added so "Bota uma tarefa chamada X" routes through the simple-
+  // task parser instead of falling through.
+  // Phase 8 batch 43 (2026-05-15): Spanish "crea"/"crear" + "tarea" added
+  // for minimum Spanish coverage.
+  // Phase 9 batch 48 (2026-05-16): Spanish "añade"/"añadir" added.
+  if (!/\b(cria|criar|adiciona|adicionar|create|add|bota[r]?|coloca[r]?|p[oõ]e[r]?|mete[r]?|crea[r]?|a[nñ]ade|a[nñ]adir|agreg[ae][r]?)\b/.test(folded) || !/\b(task|tarefa|todo|lembrete|tarea[s]?)\b/.test(folded)) return null;
   const titleSlot = extractTaskTitleSlot(input, text);
   const title = titleSlot?.value.trim();
   if (!title) return null;
   const dueSlot = extractTaskDueDateTimeSlot(input, text);
-  const unsafeTitle = isUnsafeTaskTitle(title);
+  // Literal-title policy (audit §10, approved 2026-05-15 by Felipe): when the
+  // title span comes from an explicit title marker (called/chamada/titulo:/named/
+  // quoted-string — extractTaskTitleSlot returns confidence ≥ 0.95 for those),
+  // treat the title as user-provided content, even if it contains destructive
+  // verbs. Outside trusted spans (heuristic fallback at confidence < 0.95),
+  // the unsafe-title defense still applies.
+  //
+  // Prompt-injection markers (§10.1 point 4) override the literal-title policy:
+  // explicit LLM-instruction syntax (`ignore previous instructions`,
+  // `<|im_start|>`, `[INST]`, etc.) refuses regardless of trusted-span status.
+  const fromTrustedTitleSpan = (titleSlot?.confidence ?? 0) >= 0.95;
+  const hasInjectionMarker = containsPromptInjectionMarker(title);
+  const destructiveOutsideTitleSpan = !fromTrustedTitleSpan && isUnsafeTaskTitle(title);
+  const unsafeTitle = hasInjectionMarker || destructiveOutsideTitleSpan;
   const args = unsafeTitle
     ? { title: null, rejectedTitle: title, list: null, dueDateTime: dueSlot?.value ?? null, notes: null }
     : { title, list: null, dueDateTime: dueSlot?.value ?? null, notes: null };
@@ -1483,9 +1786,35 @@ function isUnsafeTaskTitle(title: string): boolean {
     || /\b(delete|apaga|apagar)\b.*\b(church|igreja|event|evento)\b/.test(folded);
 }
 
+// Audit §10.1 point 4: prompt-injection markers (LLM-instruction syntax) are
+// NOT covered by the literal-title policy. These markers must refuse
+// regardless of whether they appear inside a trusted title span. Distinct from
+// `isUnsafeTaskTitle`, which catches destructive natural-language vocabulary.
+function containsPromptInjectionMarker(title: string): boolean {
+  return /\bignore\s+(?:previous|all|prior)\s+instructions?\b/i.test(title)
+    || /\bdisregard\s+(?:previous|all|prior)\s+instructions?\b/i.test(title)
+    || /\bforget\s+(?:everything|all|previous|prior)\b/i.test(title)
+    || /\b(?:you\s+are\s+now|act\s+as|new\s+instructions)\b/i.test(title)
+    || /<\|im_(?:start|end)\|>/i.test(title)
+    || /\[\/?(?:INST|SYS|SYSTEM)\]/i.test(title)
+    || /<\|(?:system|user|assistant)\|>/i.test(title)
+    || /\bsystem\s+prompt\s*:/i.test(title)
+    // Phase 2 batch 7 (2026-05-15): Portuguese injection markers. The same
+    // refusal contract applies — these phrasings target the LLM rather than
+    // describing what the user wants. Limited to forms that are unambiguous
+    // attacks (i.e., not casual usage of "ignora" in everyday conversation,
+    // which the trailing "instruções/regras/contexto" disambiguates).
+    || /\bignor[ae]\s+(?:as\s+|todas\s+as\s+|qualquer\s+)?instru[cç][oõ]es\s+anteriores\b/i.test(title)
+    || /\bdesconsiderar?\s+(?:as\s+)?instru[cç][oõ]es\s+(?:anteriores|pr[eé]vias)\b/i.test(title)
+    || /\besquec[ae]\s+(?:tudo|as\s+instru[cç][oõ]es|o\s+que\s+eu\s+disse|o\s+contexto)\b/i.test(title)
+    || /\bvoc[eê]\s+(?:agora\s+)?[eé]\s+(?:um\s+)?(?:admin|administrador|root)\b/i.test(title)
+    || /\bnov[ao]s?\s+instru[cç][oõ]es\s*:/i.test(title)
+    || /\bage?\s+como\s+(?:admin|administrador|sistema)\b/i.test(title);
+}
+
 function extractTaskTitleSlot(input: ChatPlannerInput, text: string): { value: string; rawText: string; spanStart: number; spanEnd: number; confidence: number } | null {
   const explicitPatterns = [
-    /\b(?:called|named|titled|with\s+title|chamad[oa]|com\s+o\s+t[ií]tulo|t[ií]tulo)\s*[:\-]?\s*["“]?([\s\S]+?)["”]?(?=$|[.!?]\s*$)/i,
+    /\b(?:called|named|titled|with\s+title|chamad[oa]|com\s+o\s+t[ií]tulo|t[ií]tulo|llamad[oa]|titulada)\s*[:\-]?\s*["“]?([\s\S]+?)["”]?(?=$|[.!?]\s*$)/i,
   ];
   for (const pattern of explicitPatterns) {
     const match = pattern.exec(text);
@@ -1627,28 +1956,27 @@ function buildClarificationPlan(input: ChatPlannerInput, question: string): Chat
 
 export function buildLlmPlannerPrompt(input: ChatPlannerInput): { systemPrompt: string; userPrompt: string } {
   const subset = selectRegistrySubsetForMessage(input.text);
-  const registry = subset.length > 0 ? subset : getChatActionRegistry().filter((entry) => entry.skill === 'tasks' || entry.skill === 'secretary_calendar');
+  const candidateRegistry = subset.length > 0 ? subset : getChatActionRegistry().filter((entry) => entry.skill === 'tasks' || entry.skill === 'secretary_calendar');
+  const registry = limitLlmPlannerRegistryForPrompt(input.text, candidateRegistry);
   const examples = retrievePlannerExamples(input, registry).slice(0, 6);
+  // SECURITY: registry entries are filtered through buildLlmSafePromptSlice so
+  // executor/verifier dispatch keys, raw R0-R4 risk codes, uiSurfaces, version,
+  // status, owner, priority, slotExtractors, slotValidators, responseCardType,
+  // privacyPolicy, latencyBudgetMs, fallbackPolicy, supportedCards, and any
+  // prompt_injection/adversarial examples never reach LLM context. See
+  // `__tests__/services/chat-action-prompt-safety.test.ts` for the contract.
+  const safeRegistryView = registry.map(buildLlmSafePromptSlice);
   return {
     systemPrompt: [
       'You convert Nexus chat messages into a compact JSON action plan proposal.',
       'Return JSON only. Do not execute anything. Do not invent userId, tenantId, provider objects, or success.',
       'Allowed output types: action_plan, needs_input, needs_confirmation, open_surface, ambiguous_reference, unsupported, blocked_by_policy, no_action_chat_response.',
       'Use only these actions and required fields. Mark missing fields explicitly.',
-      JSON.stringify(registry.map((entry) => ({
-        skill: entry.skill,
-        action: entry.action,
-        requiredFields: entry.requiredFields,
-        optionalFields: entry.optionalFields,
-        risk: entry.risk,
-        riskClass: entry.riskClass,
-        confirmationPolicy: entry.confirmationPolicy,
-        uiSurfaces: entry.uiSurfaces,
-      }))),
+      JSON.stringify(safeRegistryView),
       examples.length > 0 ? `Relevant examples: ${JSON.stringify(examples)}` : '',
     ].join('\n'),
     userPrompt: JSON.stringify({
-      text: input.text,
+      text: redactSensitivePromptText(input.text),
       locale: input.locale || 'pt-BR',
       timezone: input.timezone,
       now: input.nowIso ?? new Date().toISOString(),
@@ -1661,29 +1989,81 @@ export function buildLlmPlannerPrompt(input: ChatPlannerInput): { systemPrompt: 
   };
 }
 
+const MAX_LLM_PLANNER_REGISTRY_ACTIONS = 11;
+
+function limitLlmPlannerRegistryForPrompt(
+  text: string,
+  registry: ChatActionDefinition[],
+): ChatActionDefinition[] {
+  if (registry.length <= MAX_LLM_PLANNER_REGISTRY_ACTIONS) return registry;
+  const folded = foldCalendarText(text);
+  const ranked = registry
+    .map((entry, index) => ({
+      entry,
+      index,
+      key: `${entry.skill}.${entry.action}`,
+      score: scoreRegistryEntryForPrompt(folded, entry),
+    }))
+    .sort((a, b) => b.score - a.score || a.index - b.index);
+  const selected = new Map<string, ChatActionDefinition>();
+  const bySkill = new Map<ChatActionSkill, typeof ranked>();
+  for (const item of ranked) {
+    const bucket = bySkill.get(item.entry.skill) ?? [];
+    bucket.push(item);
+    bySkill.set(item.entry.skill, bucket);
+  }
+  for (const items of bySkill.values()) {
+    if (selected.size >= MAX_LLM_PLANNER_REGISTRY_ACTIONS) break;
+    selected.set(items[0].key, items[0].entry);
+  }
+  for (const item of ranked) {
+    if (selected.size >= MAX_LLM_PLANNER_REGISTRY_ACTIONS) break;
+    selected.set(item.key, item.entry);
+  }
+  return [...selected.values()];
+}
+
+function scoreRegistryEntryForPrompt(foldedText: string, entry: ChatActionDefinition): number {
+  let score = 0;
+  const actionTokens = entry.action.split('_').filter((token) => token.length >= 3);
+  const skillTokens = entry.skill.split('_').filter((token) => token.length >= 3);
+  for (const token of [...actionTokens, ...skillTokens]) {
+    if (foldedText.includes(token)) score += 2;
+  }
+  for (const intent of entry.readableIntents) {
+    const foldedIntent = foldCalendarText(intent);
+    if (foldedText.includes(foldedIntent)) score += 4;
+    for (const token of foldedIntent.split(/\s+/).filter((part) => part.length >= 4)) {
+      if (foldedText.includes(token)) score += 1;
+    }
+  }
+  for (const field of [...entry.requiredFields, ...entry.optionalFields]) {
+    const foldedField = field.replace(/([a-z])([A-Z])/g, '$1 $2').toLowerCase();
+    if (foldedText.includes(foldedField)) score += 1;
+  }
+  return score;
+}
+
 export function buildTier1ClassifierPrompt(input: ChatPlannerInput): { systemPrompt: string; userPrompt: string } {
   const subset = selectRegistrySubsetForMessage(input.text);
+  // Tier 1 deliberately suppresses high-risk actions (destructive/financial/
+  // admin_security) — that filter runs on the raw `risk` field BEFORE mapping
+  // to the safe view, since the safe view exposes only a coarse riskLabel.
   const registry = (subset.length > 0 ? subset : getChatActionRegistry())
     .filter((entry) => entry.risk !== 'destructive' && entry.risk !== 'financial' && entry.risk !== 'admin_security')
     .slice(0, 8);
   const examples = retrievePlannerExamples(input, registry).slice(0, 4);
+  const safeRegistryView = registry.map(buildLlmSafePromptSlice);
   return {
     systemPrompt: [
       'Classify a Nexus chat message into the smallest likely skill/action candidate set.',
       'Return JSON only. Do not execute anything. Do not invent trusted IDs or claim success.',
       'Use Tier 1 only for simple routing and slot hints. Complex/multistep messages may return needsTier2=true.',
-      JSON.stringify(registry.map((entry) => ({
-        skill: entry.skill,
-        action: entry.action,
-        requiredFields: entry.requiredFields,
-        optionalFields: entry.optionalFields,
-        risk: entry.risk,
-        riskClass: entry.riskClass,
-      }))),
+      JSON.stringify(safeRegistryView),
       examples.length > 0 ? `Relevant examples: ${JSON.stringify(examples)}` : '',
     ].join('\n'),
     userPrompt: JSON.stringify({
-      text: input.text,
+      text: redactSensitivePromptText(input.text),
       locale: input.locale || 'pt-BR',
       timezone: input.timezone,
       now: input.nowIso ?? new Date().toISOString(),
@@ -1720,11 +2100,22 @@ export function parseLlmPlannerJson(raw: string, input: ChatPlannerInput, option
     const definition = findChatActionDefinition(skill, action);
     if (!definition) return null;
     const args = sanitizePlannerArgs(typeof candidate.args === 'object' && candidate.args ? candidate.args as Record<string, unknown> : {});
-    const missing = Array.isArray(candidate.missingFields)
+    const modelMissing = Array.isArray(candidate.missingFields)
       ? candidate.missingFields.filter((field: unknown): field is string => typeof field === 'string')
-      : definition.requiredFields.filter((field) => args[field] == null || args[field] === '');
+      : [];
+    const validation = runSlotValidators(definition, args, {
+      locale: input.locale,
+      timezone: input.timezone,
+      nowIso: input.nowIso,
+    });
+    const invalidFields = Object.keys(validation.errors ?? {});
+    const missing = [...new Set([
+      ...modelMissing,
+      ...(validation.missing ?? []),
+      ...invalidFields,
+    ])];
     const risk = definition.risk;
-    const slotProvenance = buildLlmSlotProvenance(input, args, definition.requiredFields, provenanceSourceForRouteTier(options.routeTier));
+    const slotProvenance = buildLlmSlotProvenance(input, args, definition.requiredFields, provenanceSourceForRouteTier(options.routeTier), validation);
     steps.push({
       stepId: `step-${randomUUID()}`,
       skill,
@@ -1735,7 +2126,7 @@ export function parseLlmPlannerJson(raw: string, input: ChatPlannerInput, option
       provider: normalizeProvider(args.provider),
       args,
       slotProvenance,
-      requiredArgsPresent: missing.length === 0,
+      requiredArgsPresent: missing.length === 0 && validation.ok,
       idempotencyKey: buildStepIdempotencyKey(input, action, args),
       verification: {
         required: definition.verifier !== 'none',
@@ -2307,6 +2698,55 @@ function reconciliationPendingResult(step: ChatPlanStep, attemptedStatus: ChatAc
   };
 }
 
+function replayDuplicateClaimedActionRun(claim: ClaimedActionRun | null, step: ChatPlanStep): ChatStepExecutionResult | null {
+  if (!claim || claim.acquired) return null;
+  const row = claim.row;
+  const result = parseStoredRunResult(row);
+  if (row.status === 'verified_success') {
+    return { step, status: 'verified_success', result };
+  }
+  if (row.status === 'partial_success') {
+    return { step, status: 'partial_success', result, error: 'idempotent_retry_existing_partial_success' };
+  }
+  if (row.status === 'verified_pending') {
+    return { step, status: 'verified_pending', result, error: 'idempotent_retry_existing_verified_pending' };
+  }
+  if (row.status === 'failed' || row.status === 'blocked') {
+    return { step, status: row.status, result, error: `idempotent_retry_existing_${row.status}` };
+  }
+  if (row.status === 'executing' || row.status === 'verifying' || row.status === 'planned') {
+    return {
+      step,
+      status: 'verified_pending',
+      result: {
+        ...result,
+        currentStatus: row.status,
+      },
+      error: 'idempotent_retry_already_in_progress',
+    };
+  }
+  return null;
+}
+
+function parseStoredRunResult(row: ChatActionRunRow): Record<string, unknown> {
+  const parsed = (() => {
+    try {
+      const value = row.result_json ? JSON.parse(row.result_json) : {};
+      return value && typeof value === 'object' && !Array.isArray(value)
+        ? value as Record<string, unknown>
+        : {};
+    } catch {
+      return {};
+    }
+  })();
+  return {
+    ...parsed,
+    replayed: true,
+    providerObjectId: row.provider_object_id ?? parsed.providerObjectId ?? null,
+    previousStatus: row.status,
+  };
+}
+
 async function executeCalendarCreateStep(
   step: ChatPlanStep,
   plan: ChatActionPlan,
@@ -2327,12 +2767,6 @@ async function executeCalendarCreateStep(
     return { step, status: 'needs_confirmation', error: 'attendees_require_confirmation' };
   }
 
-  const conflicts = await calendar.getEventsForSources(args.startDateTime, args.endDateTime, input.userId, [provider as CalendarSource])
-    .catch(() => [] as UnifiedCalendarEvent[]);
-  if (!confirmed && conflicts.some((event) => overlaps(args.startDateTime, args.endDateTime, event.start, event.end))) {
-    return { step, status: 'needs_confirmation', error: 'calendar_conflict_requires_confirmation' };
-  }
-
   const claim = persistRuns
     ? claimChatActionRunForExecution({
       userId: input.userId,
@@ -2347,13 +2781,17 @@ async function executeCalendarCreateStep(
       nowIso: plan.createdAt,
     })
     : null;
-  if (claim && !claim.acquired && claim.row.status === 'verified_success') {
-    return {
-      step,
-      status: 'verified_success',
-      result: claim.row.result_json ? JSON.parse(claim.row.result_json) : { replayed: true, providerObjectId: claim.row.provider_object_id },
-    };
+  const duplicate = replayDuplicateClaimedActionRun(claim, step);
+  if (duplicate) return duplicate;
+
+  const conflicts = await withProviderReadBackTimeout(
+    calendar.getEventsForSources(args.startDateTime, args.endDateTime, input.userId, [provider as CalendarSource]),
+  )
+    .catch(() => [] as UnifiedCalendarEvent[]);
+  if (!confirmed && conflicts.some((event) => overlaps(args.startDateTime, args.endDateTime, event.start, event.end))) {
+    return { step, status: 'needs_confirmation', error: 'calendar_conflict_requires_confirmation' };
   }
+
   try {
     const created = await withProviderWriteTimeout((signal) => calendar.createEvent({
       title: String(args.title),
@@ -2593,9 +3031,8 @@ async function executeTaskCreateStep(
       nowIso: plan.createdAt,
     })
     : null;
-  if (claim && !claim.acquired && claim.row.status === 'verified_success') {
-    return { step, status: 'verified_success', result: claim.row.result_json ? JSON.parse(claim.row.result_json) : { replayed: true } };
-  }
+  const duplicate = replayDuplicateClaimedActionRun(claim, step);
+  if (duplicate) return duplicate;
   try {
     const list = await resolveTaskCreationList(provider, typeof args.list === 'string' ? args.list : null);
     if (!list?.id) throw new Error('missing_task_list');
@@ -2658,9 +3095,8 @@ async function executeTaskMutationStep(
   const provider = taskProviderForUser(input.userId);
   const args = step.args as any;
   const claim = claimActionRunForStepExecution(step, plan, input, persistRuns);
-  if (claim && !claim.acquired && claim.row.status === 'verified_success') {
-    return { step, status: 'verified_success', result: claim.row.result_json ? JSON.parse(claim.row.result_json) : { replayed: true } };
-  }
+  const duplicate = replayDuplicateClaimedActionRun(claim, step);
+  if (duplicate) return duplicate;
   try {
     if (step.action === 'create_checklist') {
       if (typeof provider.createTask !== 'function') throw new Error('task_provider_not_writable');
@@ -2916,9 +3352,8 @@ function executeCookingMealPlanStep(
     return { step, status: 'blocked', error: 'cooking_meal_plan_requires_date_meal_type_and_title' };
   }
   const claim = claimActionRunForStepExecution(step, plan, input, persistRuns);
-  if (claim && !claim.acquired && claim.row.status === 'verified_success') {
-    return { step, status: 'verified_success', result: claim.row.result_json ? JSON.parse(claim.row.result_json) : { replayed: true } };
-  }
+  const duplicate = replayDuplicateClaimedActionRun(claim, step);
+  if (duplicate) return duplicate;
   try {
     const meal = setMealPlan(input.userId, date, mealType, title, {
       notes: typeof args.notes === 'string' ? args.notes : 'Created from Chat action.',
@@ -3024,9 +3459,8 @@ function executeFinanceCategorizeReceiptStep(
     return { step, status: 'blocked', error: 'finance_categorization_requires_transaction_and_category' };
   }
   const claim = claimActionRunForStepExecution(step, plan, input, persistRuns);
-  if (claim && !claim.acquired && claim.row.status === 'verified_success') {
-    return { step, status: 'verified_success', result: claim.row.result_json ? JSON.parse(claim.row.result_json) : { replayed: true } };
-  }
+  const duplicate = replayDuplicateClaimedActionRun(claim, step);
+  if (duplicate) return duplicate;
   try {
     const updated = updateTransactionCategory(input.userId, transactionId, category, {
       subcategory: typeof args.subcategory === 'string' ? args.subcategory : null,
@@ -3066,9 +3500,8 @@ function executeFinancePaymentActionStep(
     return { step, status: 'blocked', error: 'finance_payment_month_required' };
   }
   const claim = claimActionRunForStepExecution(step, plan, input, persistRuns);
-  if (claim && !claim.acquired && claim.row.status === 'verified_success') {
-    return { step, status: 'verified_success', result: claim.row.result_json ? JSON.parse(claim.row.result_json) : { replayed: true } };
-  }
+  const duplicate = replayDuplicateClaimedActionRun(claim, step);
+  if (duplicate) return duplicate;
   try {
     const ok = markTaxPaid(input.userId, month);
     if (!ok) {
@@ -3687,6 +4120,11 @@ function successCopy(input: ChatPlannerInput, results: Array<{ step: ChatPlanSte
   if (first?.step.type === 'answer') {
     return String((first.result as any)?.text || (first.step.args as any).text || '');
   }
+  if ((first?.result as any)?.replayed === true) {
+    return input.locale?.startsWith('pt')
+      ? 'Esse pedido já foi tratado, por isso não criei uma duplicação.'
+      : 'I already handled that request, so I did not create a duplicate.';
+  }
   if (first?.step.action === 'schedule_event') {
     const args = first.step.args as any;
     const provider = args.provider === 'outlook_calendar' ? 'Outlook Calendar' : 'Google Calendar';
@@ -4099,6 +4537,13 @@ function verifierStatusForActionStatus(status: ChatActionStatus, plan: ChatActio
 
 function failureReasonForTelemetry(status: ChatActionStatus, metadata: Record<string, unknown>): string | undefined {
   if (status === 'verified_success' || status === 'verified_pending' || status === 'needs_confirmation' || status === 'needs_clarification') return undefined;
+  const actionResults = metadata.actionResults;
+  if (Array.isArray(actionResults)) {
+    const firstError = actionResults
+      .map((result) => result && typeof result === 'object' ? (result as Record<string, unknown>).error : null)
+      .find((error): error is string => typeof error === 'string' && error.length > 0);
+    if (firstError) return firstError.slice(0, 120);
+  }
   const error = metadata.error;
   if (typeof error === 'string') return error.slice(0, 120);
   if (error && typeof error === 'object') {
@@ -4149,9 +4594,7 @@ function plannerModelRates(model: string): { input: number; output: number } {
   return { input: 0.30, output: 2.50 };
 }
 
-function actionToStepType(action: ChatActionName): ChatPlanStepType {
-  return action;
-}
+// actionToStepType and pickExpectedFields moved to skills/step-builder.ts.
 
 function normalizeProvider(value: unknown): ChatProvider | undefined {
   if (typeof value !== 'string') return undefined;
@@ -4161,32 +4604,23 @@ function normalizeProvider(value: unknown): ChatProvider | undefined {
   return undefined;
 }
 
-function pickExpectedFields(args: Record<string, unknown>, fields: string[]): Record<string, unknown> {
-  const expected: Record<string, unknown> = {};
-  for (const field of fields) {
-    if (args[field] != null && args[field] !== '') expected[field] = args[field];
-  }
-  return expected;
-}
-
 function clampConfidence(value: number): number {
   if (!Number.isFinite(value)) return 0.4;
   return Math.max(0, Math.min(1, value));
 }
 
 function stepRequiresConfirmation(step: ChatPlanStep): boolean {
+  if (
+    step.risk === 'ambiguous' &&
+    step.requiredArgsPresent === false &&
+    typeof step.args?.rejectionReason === 'string'
+  ) {
+    return false;
+  }
   const definition = findChatActionDefinition(step.skill, step.action);
   return ['external_side_effect', 'destructive', 'financial', 'admin_security'].includes(step.risk)
     || definition?.confirmationPolicy === 'confirm'
     || definition?.confirmationPolicy === 'strong_confirm';
-}
-
-function riskClassForRisk(risk: ChatActionRisk): ChatActionRiskClass {
-  if (risk === 'read_only') return 'R0';
-  if (risk === 'safe_write') return 'R1';
-  if (risk === 'external_side_effect') return 'R2';
-  if (risk === 'destructive' || risk === 'financial' || risk === 'admin_security') return 'R3';
-  return 'R4';
 }
 
 function thresholdForSteps(steps: ChatPlanStep[]): number {
@@ -4243,8 +4677,11 @@ function buildLlmSlotProvenance(
   args: Record<string, unknown>,
   requiredFields: string[],
   sourceType: ChatSlotProvenance['sourceType'] = 'planner',
+  validation?: SlotValidationResult,
 ): Record<string, ChatSlotProvenance> {
   const provenance: Record<string, ChatSlotProvenance> = {};
+  const failedSlots = new Set(Object.keys(validation?.errors ?? {}));
+  const missingSlots = new Set(validation?.missing ?? []);
   for (const field of [...new Set([...requiredFields, ...Object.keys(args)])]) {
     if (args[field] == null || args[field] === '') continue;
     provenance[field] = makeSlotProvenance({
@@ -4255,6 +4692,7 @@ function buildLlmSlotProvenance(
       sourceType,
       normalizer: 'llm_structured_planner_v1',
       confidence: 0.72,
+      validation: failedSlots.has(field) || missingSlots.has(field) ? 'failed' : 'passed',
     });
   }
   return provenance;
@@ -4266,46 +4704,23 @@ function provenanceSourceForRouteTier(routeTier?: ChatActionTelemetry['routeTier
   return 'planner';
 }
 
-function inferContentPlatform(folded: string): string {
-  if (/\btiktok\b/.test(folded)) return 'tiktok';
-  if (/\b(reels?|instagram)\b/.test(folded)) return 'instagram_reel';
-  if (/\b(shorts?|youtube shorts?)\b/.test(folded)) return 'youtube_shorts';
-  if (/\byoutube\b/.test(folded)) return 'youtube';
-  if (/\b(carousel|carrossel)\b/.test(folded)) return 'carousel';
-  if (/\bblog\b/.test(folded)) return 'blog';
-  if (/\bnewsletter\b/.test(folded)) return 'newsletter';
-  return 'generic';
-}
-
-function inferProviderName(folded: string): string | null {
-  if (/\b(google|gmail)\b/.test(folded)) return 'google';
-  if (/\b(outlook|microsoft)\b/.test(folded)) return 'outlook';
-  if (/\bgarmin\b/.test(folded)) return 'garmin';
-  if (/\b(apple health|healthkit|saude|saúde)\b/.test(folded)) return 'apple_health';
-  if (/\bstripe\b/.test(folded)) return 'stripe';
-  return null;
-}
-
-function extractTopic(text: string): string | null {
-  const patterns = [
-    /\b(?:sobre|about|on|para|for|de)\s+(.+)$/i,
-    /\b(?:chamad[oa]|called|named|titulo|título)\s+["“]?(.+?)["”]?$/i,
-    /:\s*(.+)$/i,
-  ];
-  for (const pattern of patterns) {
-    const match = text.match(pattern);
-    const topic = match?.[1]?.trim().replace(/[.?!]+$/g, '');
-    if (topic && topic.length >= 3) return topic;
-  }
-  return null;
-}
+// inferContentPlatform, inferProviderName, and extractTopic moved to
+// skills/text-extractors.ts on 2026-05-15 (planner-split, audit implementation
+// plan Phase 0).
 
 function retrievePlannerExamples(input: ChatPlannerInput, registry: ReturnType<typeof getChatActionRegistry>): Array<Record<string, unknown>> {
   const folded = foldCalendarText(input.text);
   const examples: Array<Record<string, unknown>> = [];
   for (const entry of registry) {
-    for (const example of entry.examples ?? []) {
-      examples.push({ skill: entry.skill, action: entry.action, ...example });
+    const safe = buildLlmSafePromptSlice(entry);
+    for (const example of safe.examples) {
+      examples.push({
+        skill: safe.skill,
+        action: safe.action,
+        text: example.text,
+        locale: example.locale,
+        expectedSlots: example.expectedSlots,
+      });
     }
   }
   if (/\b(called|named|titled|chamado|t[ií]tulo)\b/.test(folded)) {

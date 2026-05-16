@@ -129,7 +129,23 @@ export function createPasswordResetPageHandler(portalDir = __dirname) {
   };
 }
 
+export function createPortalBrandAssetHandler(portalDir = __dirname) {
+  return (_req: Request, res: Response): void => {
+    const imagePath = path.join(portalDir, 'assets', 'nexus-mark.png');
+    if (!fs.existsSync(imagePath)) {
+      res.status(404).send('Brand asset not found');
+      return;
+    }
+
+    res.set('Cache-Control', 'public, max-age=31536000, immutable');
+    res.set('X-Content-Type-Options', 'nosniff');
+    res.type('png').sendFile(imagePath);
+  };
+}
+
 export function registerPortalStaticRoutes(app: Express, portalDir = __dirname): void {
+  app.get('/assets/nexus-mark.png', createPortalBrandAssetHandler(portalDir));
+
   app.get('/landing-preview', createLandingPreviewHandler(portalDir));
 
   const servePasswordResetPage = createPasswordResetPageHandler(portalDir);

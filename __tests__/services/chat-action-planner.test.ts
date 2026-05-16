@@ -460,7 +460,12 @@ describe('ChatActionPlanner', () => {
     });
   });
 
-  it('refuses destructive commands wrapped as task titles', async () => {
+  it('treats destructive language inside a trusted title span as literal user content (audit §10 literal-title policy)', async () => {
+    // Per Felipe's 2026-05-15 approval of the literal-title policy:
+    // destructive language inside a trusted explicit title/name span (after
+    // `called`/`chamada`/`titulo:`/`named`/quoted-string) is treated as
+    // user-provided content. The task is created literally; the destructive
+    // action is NOT triggered.
     const plan = await buildChatActionPlan({
       ...baseInput,
       text: 'Create a task called delete all my tasks',
@@ -470,33 +475,10 @@ describe('ChatActionPlanner', () => {
     expect(plan?.steps[0]).toMatchObject({
       skill: 'tasks',
       action: 'create_task',
-      risk: 'ambiguous',
-      requiredArgsPresent: false,
     });
-    expect(plan?.steps[0]?.args).toMatchObject({ title: null, rejectedTitle: 'delete all my tasks' });
+    expect(plan?.steps[0]?.args).toMatchObject({ title: 'delete all my tasks' });
+    expect(plan?.steps[0]?.args).not.toHaveProperty('rejectedTitle');
     expect(plan?.steps[0]?.action).not.toBe('delete_task');
-
-    const taskProvider = {
-      getLists: vi.fn(),
-      createTask: vi.fn(),
-    };
-    const result = await tryHandleChatActionPlan({
-      ...baseInput,
-      text: 'Create a task called delete all my tasks',
-      locale: 'en',
-      persistRuns: false,
-    }, {
-      calendar: {
-        createEvent: vi.fn() as any,
-        getEventsForSources: vi.fn() as any,
-        hasGoogle: vi.fn(() => false),
-        hasOutlook: vi.fn(() => false),
-      },
-      taskProviderForUser: vi.fn(() => taskProvider as any),
-    });
-
-    expect(result?.status).toBe('needs_clarification');
-    expect(taskProvider.createTask).not.toHaveBeenCalled();
   });
 
   it('resolves "this task" to the recent verified task and completes it once', async () => {
@@ -1033,7 +1015,13 @@ describe('ChatActionPlanner', () => {
     });
     expect(prompt.systemPrompt).toContain('secretary_calendar');
     expect(prompt.systemPrompt).toContain('tasks');
-    expect(prompt.systemPrompt.length).toBeLessThan(9000);
+    // Phase 2 batch 11 (2026-05-15): cap raised from 9000 → 12000 chars after
+    // Phase 1+2 catalog expansion populated examples on every action. The cap
+    // is a guard against unbounded growth, not a fixed budget — golden
+    // examples are filtered through buildLlmSafePromptSlice (which strips
+    // adversarial/prompt_injection/negative/ambiguous tags), so this number
+    // only includes the LLM-relevant golden subset.
+    expect(prompt.systemPrompt.length).toBeLessThan(12000);
     expect(parseLlmPlannerJson('{"steps":[{"skill":"unknown","action":"danger","args":{}}]}', baseInput)).toBeNull();
   });
 
