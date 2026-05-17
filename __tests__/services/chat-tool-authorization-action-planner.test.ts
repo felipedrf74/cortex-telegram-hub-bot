@@ -15,11 +15,18 @@
 // caller already provides a context, the inner call does not double-wrap
 // (the existing context is preserved).
 
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
+import {
+  executeChatActionPlan,
+  type ChatActionPlan,
+  type ChatPlannerInput,
+} from '../../src/services/chat-action-planner';
 import {
   getCurrentChatToolAuthorizationContext,
   runWithChatToolAuthorization,
 } from '../../src/services/chat-tool-authorization';
+
+const NOW = '2026-05-16T12:00:00+01:00';
 
 describe('chat tool authorization AsyncLocalStorage scoping', () => {
   it('runWithChatToolAuthorization establishes the auth context for its callback', async () => {
@@ -103,6 +110,85 @@ describe('chat tool authorization AsyncLocalStorage scoping', () => {
     expect(captured).toEqual({
       userId: 5,
       tenantId: 5,
+      confirmedDestructiveAction: true,
+      confirmationSource: 'explicit_current_turn',
+    });
+  });
+
+  it('executeChatActionPlan preserves an existing auth context during re-entrant execution', async () => {
+    const input: ChatPlannerInput = {
+      text: 'create task call dentist',
+      userId: 999,
+      tenantId: 999,
+      conversationId: 'conv-auth-reentry',
+      messageId: 'msg-auth-reentry',
+      channel: 'api',
+      locale: 'en-US',
+      timezone: 'Europe/Lisbon',
+      nowIso: NOW,
+      persistRuns: false,
+    };
+    const plan: ChatActionPlan = {
+      schemaVersion: 1,
+      userId: String(input.userId),
+      tenantId: String(input.tenantId),
+      conversationId: input.conversationId,
+      messageId: input.messageId,
+      locale: input.locale,
+      timezone: input.timezone,
+      channel: input.channel,
+      createdAt: NOW,
+      planner: 'deterministic',
+      confidence: 0.9,
+      requiresConfirmation: false,
+      steps: [
+        {
+          stepId: 'task-auth-reentry',
+          skill: 'tasks',
+          action: 'create_task',
+          type: 'tasks.create_task',
+          risk: 'safe_write',
+          riskClass: 'R1',
+          provider: 'nexus',
+          args: { title: 'call dentist' },
+          requiredArgsPresent: true,
+          slotProvenance: {},
+          idempotencyKey: 'auth-reentry-idem',
+          verification: { required: false, method: 'read_back', expectedFields: ['title'] },
+        } as unknown as ChatActionPlan['steps'][number],
+      ],
+      routingSignals: ['auth-reentry:test'],
+    };
+    let providerContext: ReturnType<typeof getCurrentChatToolAuthorizationContext>;
+    const taskProvider = {
+      getLists: vi.fn(async () => ({ success: true, data: [{ id: 'tasks', displayName: 'Tasks' }] })),
+      getDefaultList: vi.fn(async () => ({ id: 'tasks', displayName: 'Tasks' })),
+      createTask: vi.fn(async () => {
+        providerContext = getCurrentChatToolAuthorizationContext();
+        return { success: true, data: { id: 'task-auth-reentry', title: 'call dentist', listId: 'tasks' } };
+      }),
+      getTask: vi.fn(async () => ({ success: true, data: { id: 'task-auth-reentry', title: 'call dentist' } })),
+    };
+
+    await runWithChatToolAuthorization(
+      {
+        userId: 1,
+        tenantId: 1,
+        confirmedDestructiveAction: true,
+        confirmationSource: 'explicit_current_turn',
+      },
+      async () => {
+        const response = await executeChatActionPlan(plan, input, {
+          calendar: {} as never,
+          taskProviderForUser: vi.fn(() => taskProvider as never),
+        } as never);
+        expect(response.metadata.actionStatus).toBe('verified_success');
+      },
+    );
+
+    expect(providerContext).toMatchObject({
+      userId: 1,
+      tenantId: 1,
       confirmedDestructiveAction: true,
       confirmationSource: 'explicit_current_turn',
     });

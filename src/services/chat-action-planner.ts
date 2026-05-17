@@ -148,6 +148,8 @@ const CHAT_LLM_TIER1_GEMINI_MODEL = 'gemini-2.5-flash-lite';
 const CHAT_LLM_TIER3_GEMINI_MODEL = 'gemini-2.5-flash';
 const CHAT_LLM_TIER3_OPENAI_FALLBACK_MODEL = 'gpt-5.4-mini';
 const DEFAULT_PROVIDER_READ_BACK_TIMEOUT_MS = 3_500;
+export const BROAD_SKILL_SLOT_COMPLETENESS_BONUS = 0.005;
+export const BROAD_SKILL_MIN_PRIORITY_GAP = 0.01;
 const DEFAULT_PROVIDER_WRITE_TIMEOUT_MS = 10_000;
 
 export interface ChatActionPlan {
@@ -1275,10 +1277,10 @@ function parseBroadSkillActionIntent(input: ChatPlannerInput): ChatActionPlan | 
   // smallest priority gap of 0.01) so when two parsers at the same
   // base weight both match, the more-confident extraction wins.
   //
-  // The score = baseWeight + (requiredArgsPresent ? 0.005 : 0). The
+  // The score = baseWeight + (requiredArgsPresent ? bonus : 0). The
   // bonus is intentionally smaller than the smallest inter-skill priority
-  // gap (0.01 between adjacent skills) so it only tie-breaks within a
-  // priority tier; it never demotes a higher-priority skill.
+  // gap between adjacent skills so it only tie-breaks within a priority
+  // tier; it never demotes a higher-priority skill.
   const candidates: Array<{
     step: ChatPlanStep;
     routingSignals: string[];
@@ -1287,7 +1289,7 @@ function parseBroadSkillActionIntent(input: ChatPlannerInput): ChatActionPlan | 
   }> = [];
   function consider(step: ChatPlanStep | null, baseWeight: number, signals: string[]) {
     if (!step) return;
-    const score = baseWeight + (step.requiredArgsPresent ? 0.005 : 0);
+    const score = baseWeight + (step.requiredArgsPresent ? BROAD_SKILL_SLOT_COMPLETENESS_BONUS : 0);
     candidates.push({ step, routingSignals: signals, confidence: baseWeight, score });
   }
 

@@ -119,10 +119,25 @@ describe('buildBlocksFromMarkdown', () => {
     ]);
   });
 
-  it('collapses consecutive non-blank prose lines into a single paragraph', () => {
+  it('preserves consecutive non-blank prose lines as soft breaks in a single paragraph', () => {
     const md = 'Line one\nLine two\nLine three';
     const blocks = buildBlocksFromMarkdown(md);
-    expect(blocks).toEqual([{ kind: 'paragraph', text: 'Line one Line two Line three' }]);
+    expect(blocks).toEqual([{ kind: 'paragraph', text: 'Line one\nLine two\nLine three' }]);
+  });
+
+  it('parses markdown tables and preserves empty cells', () => {
+    const md = '| Day | Session | Note |\n| --- | --- | --- |\n| Mon | Run | Easy |\n| Tue | Strength | |';
+    const blocks = buildBlocksFromMarkdown(md);
+    expect(blocks).toEqual([
+      {
+        kind: 'table',
+        header: ['Day', 'Session', 'Note'],
+        rows: [
+          ['Mon', 'Run', 'Easy'],
+          ['Tue', 'Strength', ''],
+        ],
+      },
+    ]);
   });
 });
 

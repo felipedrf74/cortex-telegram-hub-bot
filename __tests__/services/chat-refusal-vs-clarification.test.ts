@@ -53,9 +53,11 @@ vi.mock('../../src/services/database', () => ({
   initDatabase: vi.fn(),
   closeDatabase: vi.fn(),
   findUnexpectedMigrationPrefixCollisions: vi.fn(() => []),
+  assertNoUnexpectedMigrationPrefixCollisions: vi.fn(),
 }));
 
 vi.mock('../../src/api/routes/training-plan-calendar-sync', () => ({
+  syncTrainingPlanCalendar: vi.fn(),
   previewTrainingSessionReflow: vi.fn(),
   confirmTrainingSessionReflow: vi.fn(),
 }));
@@ -68,7 +70,7 @@ import {
 
 const NOW = '2026-05-16T12:00:00+01:00';
 
-function makeRefusedPlan(reason: string, locale: 'en-US' | 'pt-BR' | 'es-ES'): {
+function makeRefusedPlan(reason: string, locale: 'en-US' | 'pt-BR' | 'pt-PT' | 'es-ES'): {
   plan: ChatActionPlan;
   input: ChatPlannerInput;
 } {
@@ -157,10 +159,24 @@ describe('refusal vs clarification distinction in executeChatActionPlan', () => 
     expect(response.text).toMatch(/não vou seguir instruções/i);
   });
 
+  it('emits Portuguese refusal copy for pt-PT users', async () => {
+    const { plan, input } = makeRefusedPlan('prompt_injection_marker_detected', 'pt-PT');
+    const response = await executeChatActionPlan(plan, input, {} as never);
+    expect(response.text).toMatch(/não vou seguir instruções/i);
+  });
+
   it('emits Spanish refusal copy for es-ES users (Phase 16 batch 80)', async () => {
     const { plan, input } = makeRefusedPlan('prompt_injection_marker_detected', 'es-ES');
     const response = await executeChatActionPlan(plan, input, {} as never);
     expect(response.text).toMatch(/no voy a seguir instrucciones/i);
+  });
+
+  it('honors refused metadata.actionStatus over the persisted blocked status', async () => {
+    const { plan, input } = makeRefusedPlan('prompt_injection_marker_detected', 'en-US');
+    const response = await executeChatActionPlan(plan, input, {} as never);
+    expect(response.metadata.type).toBe('chat_action_refused');
+    expect(response.metadata.actionStatus).toBe('refused');
+    expect(response.metadata.actionStatus).not.toBe('blocked');
   });
 
   it('emits distinct copy for bulk-destructive refusal reason', async () => {

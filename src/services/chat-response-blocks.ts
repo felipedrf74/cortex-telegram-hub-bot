@@ -102,6 +102,7 @@ export function divider(): ChatResponseBlock {
  * - `- foo` / `* foo` lines → bulletList block
  * - `1. foo` / `2. bar` lines → numberedList block
  * - ```` ```lang\ncode\n``` ```` → codeBlock
+ * - `| h | h2 |\n|---|---|\n| c | c2 |` → table block
  * - `> info: text` → alert (level info|warn|error|success keyword)
  * - blank lines split paragraphs
  *
@@ -150,6 +151,22 @@ export function buildBlocksFromMarkdown(text: string): ChatResponseBlock[] {
       i++;
       continue;
     }
+    // Markdown table. We only treat a pipe row as a table when it is
+    // followed by a separator row, which avoids hijacking ordinary prose
+    // that happens to contain a pipe character.
+    const tableHeader = parseMarkdownTableRow(line);
+    if (tableHeader && i + 1 < lines.length && isMarkdownTableSeparator(lines[i + 1])) {
+      const rows: string[][] = [];
+      i += 2;
+      while (i < lines.length) {
+        const row = parseMarkdownTableRow(lines[i]);
+        if (!row) break;
+        rows.push(row);
+        i++;
+      }
+      blocks.push({ kind: 'table', header: tableHeader, rows });
+      continue;
+    }
     // Bullet list
     if (/^[-*•]\s+/.test(line)) {
       const items: BlockText[] = [];
@@ -181,7 +198,8 @@ export function buildBlocksFromMarkdown(text: string): ChatResponseBlock[] {
       i++;
       continue;
     }
-    // Otherwise: paragraph (collapse consecutive non-blank lines).
+    // Otherwise: paragraph. Preserve soft line breaks instead of collapsing
+    // them so markdown → blocks → text round trips do not lose information.
     const paragraphLines: string[] = [line];
     let j = i + 1;
     while (
@@ -197,10 +215,26 @@ export function buildBlocksFromMarkdown(text: string): ChatResponseBlock[] {
       paragraphLines.push(lines[j]);
       j++;
     }
-    blocks.push({ kind: 'paragraph', text: parseInlineEmphasis(paragraphLines.join(' ').trim()) });
+    blocks.push({ kind: 'paragraph', text: parseInlineEmphasis(paragraphLines.join('\n').trim()) });
     i = j;
   }
   return blocks;
+}
+
+function parseMarkdownTableRow(line: string): string[] | null {
+  const trimmed = line.trim();
+  if (!trimmed.startsWith('|') || !trimmed.endsWith('|')) return null;
+  const cells = trimmed
+    .slice(1, -1)
+    .split('|')
+    .map((cell) => cell.trim());
+  return cells.length >= 2 ? cells : null;
+}
+
+function isMarkdownTableSeparator(line: string): boolean {
+  const cells = parseMarkdownTableRow(line);
+  if (!cells) return false;
+  return cells.every((cell) => /^:?-{3,}:?$/.test(cell.trim()));
 }
 
 /**

@@ -51,14 +51,18 @@ vi.mock('../../src/services/database', () => ({
   initDatabase: vi.fn(),
   closeDatabase: vi.fn(),
   findUnexpectedMigrationPrefixCollisions: vi.fn(() => []),
+  assertNoUnexpectedMigrationPrefixCollisions: vi.fn(),
 }));
 
 vi.mock('../../src/api/routes/training-plan-calendar-sync', () => ({
+  syncTrainingPlanCalendar: vi.fn(),
   previewTrainingSessionReflow: vi.fn(),
   confirmTrainingSessionReflow: vi.fn(),
 }));
 
 import {
+  BROAD_SKILL_MIN_PRIORITY_GAP,
+  BROAD_SKILL_SLOT_COMPLETENESS_BONUS,
   buildChatActionPlan,
   type ChatPlannerInput,
 } from '../../src/services/chat-action-planner';
@@ -118,8 +122,6 @@ describe('score-based intent picking (Phase 16 batch 89 second half)', () => {
     // than the smallest priority gap (0.01) between adjacent skills,
     // otherwise the tie-break can demote a higher-priority skill. Pin
     // these numbers so a future refactor that bumps the bonus is caught.
-    const TIE_BREAK_BONUS = 0.005;
-    const SMALLEST_PRIORITY_GAP = 0.01;
-    expect(TIE_BREAK_BONUS).toBeLessThan(SMALLEST_PRIORITY_GAP);
+    expect(BROAD_SKILL_SLOT_COMPLETENESS_BONUS).toBeLessThan(BROAD_SKILL_MIN_PRIORITY_GAP);
   });
 });
