@@ -1263,35 +1263,49 @@ function parseBroadSkillActionIntent(input: ChatPlannerInput): ChatActionPlan | 
   const locale = input.locale || 'pt-BR';
   const now = DateTime.fromISO(input.nowIso ?? new Date().toISOString()).setZone(input.timezone);
 
-  // Notifications and decisions run FIRST among the broad-skill parsers because
-  // "create a notification when my Stripe revenue passes X" mentions both
-  // notifications (the matrix object) and Stripe (an embedded modifier). The
-  // matrix-object parser must win. Same shape for "disable training
-  // notifications" — notifications is the object, training is a qualifier.
-  // (2026-05-15 batch 6 routing-gap fix.)
-  const notificationStep = parseNotificationActionStep(input, folded);
-  if (notificationStep) return buildPlanFromSteps(input, [notificationStep], ['notification_action_intent', 'deterministic_skill_parser'], 0.78);
+  // Phase 16 batch 89 second half (2026-05-17): score-based intent picking.
+  //
+  // Before this batch the dispatch was first-match priority — each parser
+  // returned `step | null` and the first non-null result won. The original
+  // Phase 6 batch 6 routing-gap fix established a hand-coded priority
+  // ordering (notifications/decisions ahead of training because "disable
+  // training notifications" should pick notifications). Score-based
+  // picking preserves that ordering as scoreboard weights AND adds slot-
+  // completeness as a TIE-BREAKER (small enough not to cross the
+  // smallest priority gap of 0.01) so when two parsers at the same
+  // base weight both match, the more-confident extraction wins.
+  //
+  // The score = baseWeight + (requiredArgsPresent ? 0.005 : 0). The
+  // bonus is intentionally smaller than the smallest inter-skill priority
+  // gap (0.01 between adjacent skills) so it only tie-breaks within a
+  // priority tier; it never demotes a higher-priority skill.
+  const candidates: Array<{
+    step: ChatPlanStep;
+    routingSignals: string[];
+    confidence: number;
+    score: number;
+  }> = [];
+  function consider(step: ChatPlanStep | null, baseWeight: number, signals: string[]) {
+    if (!step) return;
+    const score = baseWeight + (step.requiredArgsPresent ? 0.005 : 0);
+    candidates.push({ step, routingSignals: signals, confidence: baseWeight, score });
+  }
 
-  const decisionStep = parseDecisionActionStep(input, folded);
-  if (decisionStep) return buildPlanFromSteps(input, [decisionStep], ['decision_action_intent', 'deterministic_skill_parser'], 0.77);
+  consider(parseNotificationActionStep(input, folded), 0.78, ['notification_action_intent', 'deterministic_skill_parser']);
+  consider(parseDecisionActionStep(input, folded), 0.77, ['decision_action_intent', 'deterministic_skill_parser']);
+  consider(parseContentActionStep(input, folded), 0.78, ['content_action_intent', 'deterministic_skill_parser']);
+  consider(parseMailActionStep(input, folded), 0.77, ['mail_action_intent', 'deterministic_skill_parser']);
+  consider(parseCookingActionStep(input, folded, now), 0.76, ['cooking_action_intent', 'deterministic_skill_parser']);
+  consider(parseFinanceActionStep(input, folded, now), 0.75, ['finance_action_intent', 'deterministic_skill_parser']);
+  consider(parseConnectionsActionStep(input, folded), 0.74, ['connections_action_intent', 'deterministic_skill_parser']);
+  consider(parseTrainingActionStep(input, folded), 0.72, ['training_action_intent', 'deterministic_skill_parser']);
 
-  const contentStep = parseContentActionStep(input, folded);
-  if (contentStep) return buildPlanFromSteps(input, [contentStep], ['content_action_intent', 'deterministic_skill_parser'], 0.78);
-
-  const mailStep = parseMailActionStep(input, folded);
-  if (mailStep) return buildPlanFromSteps(input, [mailStep], ['mail_action_intent', 'deterministic_skill_parser'], 0.77);
-
-  const cookingStep = parseCookingActionStep(input, folded, now);
-  if (cookingStep) return buildPlanFromSteps(input, [cookingStep], ['cooking_action_intent', 'deterministic_skill_parser'], 0.76);
-
-  const financeStep = parseFinanceActionStep(input, folded, now);
-  if (financeStep) return buildPlanFromSteps(input, [financeStep], ['finance_action_intent', 'deterministic_skill_parser'], 0.75);
-
-  const connectionsStep = parseConnectionsActionStep(input, folded);
-  if (connectionsStep) return buildPlanFromSteps(input, [connectionsStep], ['connections_action_intent', 'deterministic_skill_parser'], 0.74);
-
-  const trainingStep = parseTrainingActionStep(input, folded);
-  if (trainingStep) return buildPlanFromSteps(input, [trainingStep], ['training_action_intent', 'deterministic_skill_parser'], 0.72);
+  if (candidates.length > 0) {
+    // Stable sort: highest score wins; first declared wins on tie to
+    // preserve the historic priority ordering.
+    const best = candidates.reduce((a, b) => (b.score > a.score ? b : a));
+    return buildPlanFromSteps(input, [best.step], best.routingSignals, best.confidence);
+  }
 
   if (messageHasActionCandidate(input.text)) {
     const subset = selectRegistrySubsetForMessage(input.text);
