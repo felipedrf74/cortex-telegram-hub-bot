@@ -117,7 +117,7 @@ describe('script-pipeline: cache key hardening', () => {
     );
 
     expect(engineSource).toContain('export function buildScriptCacheKey');
-    expect(engineSource).toContain("'script-v7'");
+    expect(engineSource).toContain("'script-v8'");
     expect(engineSource).toContain('`duration:${maxDuration}`');
     expect(engineSource).toContain('`target:${targetDurationSeconds ?? maxDuration * 60}`');
     expect(engineSource).toContain('`mode:${mode}`');
@@ -321,7 +321,7 @@ describe('script-pipeline: iOS API route', () => {
     // The /script route delegates structured response shaping to
     // content-script-route-utils.ts after the route extraction pass.
     expect(routeUtilitySource).toContain('topic: result.topic');
-    expect(routeUtilitySource).toContain('script: result.script');
+    expect(routeUtilitySource).toContain('script: scriptQuality.revisedScript');
     expect(routeUtilitySource).toContain('hook: result.hook');
     expect(routeUtilitySource).toContain('titleOptions:');
     expect(routeUtilitySource).toContain('sourcesUsed:');
@@ -331,7 +331,8 @@ describe('script-pipeline: iOS API route', () => {
     expect(routeUtilitySource).toContain('degraded: result.degraded ?? false');
     expect(routeUtilitySource).toContain('const warnings = Array.from(new Set([');
     expect(routeUtilitySource).toContain('...scriptQuality.complianceWarnings');
-    expect(routeUtilitySource).toContain('warnings,');
+    expect(routeUtilitySource).toContain('warnings: publicQualityWarnings');
+    expect(routeUtilitySource).toContain('sourceSummary: sourcePackage?.sourceSummaries ?? []');
   });
 
   it('iOS /script route validates topic parameter', () => {

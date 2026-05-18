@@ -1,8 +1,17 @@
+from typing import Literal
+
 from pydantic import BaseModel, Field
 from .research import ContentBrief, SourceReference, TrendingTopic
 
 
-class DeepSearchRequest(BaseModel):
+class AttributionFields(BaseModel):
+    """Server-trusted attribution propagated by the TypeScript backend."""
+    user_id: int | None = Field(default=None)
+    tenant_id: int | None = Field(default=None)
+    internal_attribution_token: str | None = Field(default=None)
+
+
+class DeepSearchRequest(AttributionFields):
     """Request body for /deepsearch endpoint."""
     query: str = Field(min_length=1)
     niches: list[str] = Field(default_factory=list)  # empty = search all niches
@@ -27,7 +36,7 @@ class SourcesResponse(BaseModel):
     sources: list[SourceReference]
 
 
-class HotNewsRequest(BaseModel):
+class HotNewsRequest(AttributionFields):
     """Request body for /hotnews when caller has authenticated creator context."""
     language: str = Field(default="en-US")
     creator_profile: str | None = Field(default=None)
@@ -56,7 +65,7 @@ class ReactionResponse(BaseModel):
 
 # ── Phase 3: Creative Intelligence ────────────────────────────────
 
-class HooksRequest(BaseModel):
+class HooksRequest(AttributionFields):
     """Request body for /hooks endpoint."""
     topic: str = Field(min_length=1)
     niche: str = Field(default="general")
@@ -82,7 +91,7 @@ class ScriptRequest(BaseModel):
     topic: str = Field(min_length=1)
     niche: str = Field(default="general")
     format: str = Field(default="YouTube")
-    mode: str = Field(default="standard")
+    mode: Literal["draft", "quick", "standard", "deep"] = Field(default="draft")
     language: str = Field(default="pt-BR")
     render_mode: str = Field(default="structured")
     script_style: str = Field(default="detailed")
@@ -94,6 +103,7 @@ class ScriptRequest(BaseModel):
     creator_profile: str | None = Field(default=None)
     user_id: int | None = Field(default=None)
     tenant_id: int | None = Field(default=None)
+    internal_attribution_token: str | None = Field(default=None)
     force_refresh: bool = Field(default=False)
     regeneration_seed: str | None = Field(default=None)
 
@@ -113,9 +123,22 @@ class ScriptResponse(BaseModel):
     cta: str = ""                                 # call to action text
     degraded: bool = False
     warnings: list[str] = Field(default_factory=list)
+    generation_mode: str | None = Field(default=None)
+    cache_status: str | None = Field(default=None)
+    research_artifact_id: str | None = Field(default=None)
+    source_package_id: str | None = Field(default=None)
+    voice_card_version: str | None = Field(default=None)
+    quality_score: int | None = Field(default=None)
+    quality_warnings: list[str] = Field(default_factory=list)
+    budget_state: str | None = Field(default=None)
+    expand_options: list[dict] = Field(default_factory=list)
+    estimated_cost: dict | None = Field(default=None)
+    actual_cost: dict | None = Field(default=None)
+    prompt_budget: dict | None = Field(default=None)
+    research_route: dict | None = Field(default=None)
 
 
-class TitlesRequest(BaseModel):
+class TitlesRequest(AttributionFields):
     """Request body for /titles endpoint."""
     topic: str = Field(min_length=1)
     niche: str = Field(default="general")
@@ -133,7 +156,7 @@ class TitlesResponse(BaseModel):
     duration_ms: int
 
 
-class ThumbnailRequest(BaseModel):
+class ThumbnailRequest(AttributionFields):
     """Request body for /thumbnail endpoint."""
     title: str = Field(min_length=1)
     topic: str = Field(default="")
@@ -150,7 +173,7 @@ class ThumbnailResponse(BaseModel):
     duration_ms: int
 
 
-class CaptionRequest(BaseModel):
+class CaptionRequest(AttributionFields):
     """Request body for /caption endpoint."""
     topic: str = Field(min_length=1)
     niche: str = Field(default="general")
@@ -170,7 +193,7 @@ class CaptionResponse(BaseModel):
 
 # ── Phase 4: Strategic Intelligence ───────────────────────────────
 
-class CompetitorRequest(BaseModel):
+class CompetitorRequest(AttributionFields):
     """Request body for /competitor endpoint."""
     channel: str = Field(min_length=1)            # YouTube channel URL, handle, or 'auto'
     max_videos: int = Field(default=10, ge=1, le=50)
@@ -186,7 +209,7 @@ class CompetitorResponse(BaseModel):
     duration_ms: int
 
 
-class GapsRequest(BaseModel):
+class GapsRequest(AttributionFields):
     """Request body for /gaps endpoint."""
     niche: str = Field(default="fitness")
     max_gaps: int = Field(default=10, ge=1, le=20)
@@ -199,7 +222,7 @@ class GapsResponse(BaseModel):
     duration_ms: int
 
 
-class SeoRequest(BaseModel):
+class SeoRequest(AttributionFields):
     """Request body for /seo endpoint."""
     topic: str = Field(min_length=1)
     platform: str = Field(default="YouTube")
@@ -215,7 +238,7 @@ class SeoResponse(BaseModel):
     duration_ms: int
 
 
-class RepurposeRequest(BaseModel):
+class RepurposeRequest(AttributionFields):
     """Request body for /repurpose endpoint."""
     topic: str = Field(min_length=1)
     original_format: str = Field(default="YouTube")
@@ -233,7 +256,7 @@ class RepurposeResponse(BaseModel):
 
 # ── Phase 5: Learning System ─────────────────────────────────────
 
-class FeedbackRequest(BaseModel):
+class FeedbackRequest(AttributionFields):
     """Request body for /feedback endpoint."""
     video_url: str = Field(min_length=1)
     views: int = Field(ge=0)

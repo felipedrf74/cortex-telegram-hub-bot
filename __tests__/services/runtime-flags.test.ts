@@ -14,6 +14,11 @@ import {
   isChatLlmTier1Enabled,
   isChatLlmTier2Enabled,
   isChatOpenSurfaceHandoffEnabled,
+  isContentDeepResearchDisabled,
+  isContentForceDraftOnlyEnabled,
+  isContentFreshResearchDisabled,
+  isContentFullLongformDisabled,
+  isContentModelQualityAuditDisabled,
   isAnthropicRuntimeEnabled,
   isSecretaryHaikuRoutingEnabled,
   isTelegramLegacyDeliveryEnabled,
@@ -112,5 +117,23 @@ describe('runtime-flags', () => {
       CHAT_OPEN_SURFACE_HANDOFF_ENABLED: 'true',
       CHAT_OPEN_SURFACE_HANDOFF_ENABLED_USER_42: 'false',
     }, { userId: 42 })).toBe(false);
+  });
+
+  it('supports scoped content cost-control kill switches', () => {
+    const env = {
+      CONTENT_FORCE_DRAFT_ONLY: 'false',
+      CONTENT_FORCE_DRAFT_ONLY_USER_42: 'true',
+      CONTENT_DISABLE_FRESH_RESEARCH: 'true',
+      CONTENT_DISABLE_DEEP_RESEARCH_TENANT_99: 'true',
+      CONTENT_DISABLE_FULL_YOUTUBE_LONGFORM: 'true',
+      CONTENT_DISABLE_MODEL_QUALITY_AUDIT_USER_42: 'true',
+    };
+
+    expect(isContentForceDraftOnlyEnabled(env, { userId: 42, tenantId: 1 })).toBe(true);
+    expect(isContentForceDraftOnlyEnabled(env, { userId: 7, tenantId: 1 })).toBe(false);
+    expect(isContentFreshResearchDisabled(env, { userId: 7, tenantId: 1 })).toBe(true);
+    expect(isContentDeepResearchDisabled(env, { userId: 7, tenantId: 99 })).toBe(true);
+    expect(isContentFullLongformDisabled(env, { userId: 7, tenantId: 1 })).toBe(true);
+    expect(isContentModelQualityAuditDisabled(env, { userId: 42, tenantId: 1 })).toBe(true);
   });
 });

@@ -78,8 +78,14 @@ describe('Python claude_client.py — routes through TS AI proxy', () => {
   it('can forward scoped user and tenant metadata to the backend proxy', () => {
     expect(src).toContain('user_id: int | None = None');
     expect(src).toContain('tenant_id: int | None = None');
-    expect(src).toContain('body["userId"] = user_id');
-    expect(src).toContain('body["tenantId"] = tenant_id');
+    expect(src).toContain('attribution_token: str | None = None');
+    expect(src).toContain('_ATTRIBUTION_CONTEXT');
+    expect(src).toContain('effective_user_id = user_id if user_id is not None else context.get("user_id")');
+    expect(src).toContain('effective_tenant_id = tenant_id if tenant_id is not None else context.get("tenant_id")');
+    expect(src).toContain('effective_attribution_token = attribution_token or context.get("attribution_token")');
+    expect(src).toContain('body["userId"] = effective_user_id');
+    expect(src).toContain('body["tenantId"] = effective_tenant_id');
+    expect(src).toContain('body["attributionToken"] = effective_attribution_token');
   });
 
   it('blocks AI proxy calls in local fixture mode', () => {
@@ -239,7 +245,8 @@ describe('Python script_writer.py — JSON metadata parsing', () => {
   });
 
   it('passes category to ask_claude', () => {
-    expect(src).toContain('category="content_engine_script"');
+    expect(src).toContain('category=f"content_engine_script_{normalized_mode}"');
+    expect(src).toContain('attribution_token=req.internal_attribution_token');
   });
 
   it('returns a degraded fallback script when AI generation fails', () => {
@@ -267,7 +274,7 @@ describe('Python script_writer.py — JSON metadata parsing', () => {
     expect(src).toContain('def _build_system_prompt(req: ScriptRequest) -> str:');
     expect(src).toContain('CREATOR CONTEXT FOR THIS REQUEST:');
     expect(src).toContain('Never assume a founder persona');
-    expect(src).toContain('temperature=SCRIPT_TEMPERATURE');
+    expect(src).toContain('temperature=0.62 if normalized_mode == "draft" else SCRIPT_TEMPERATURE');
     expect(src).not.toContain('SYSTEM_PROMPT =');
     expect(src).not.toContain('from services.creator_profile import get_profile');
     expect(src).not.toContain('as if Felipe is talking to camera');
@@ -280,7 +287,7 @@ describe('Python script_writer.py — JSON metadata parsing', () => {
     expect(src).toContain('def _clean_chat_script');
     expect(src).toContain('def _is_usable_key_point');
     expect(src).toContain('if render_mode == "chat"');
-    expect(src).toContain('RENDER MODE RULES:');
+    expect(src).toContain('format_and_quality_rules');
     expect(src).toContain('Do NOT use production tags such as [SFX:]');
     expect(src).toContain('SHOW ON SCREEN');
     expect(src).toContain('re.sub(r"\\[(?:SFX|EDIT|CUT TO|PLAY CLIP):[^\\]]+\\]"');
@@ -292,7 +299,7 @@ describe('Python script_writer.py — JSON metadata parsing', () => {
     expect(src).toContain('def _script_quality_guidance');
     expect(src).toContain('def _strip_inline_markdown_emphasis');
     expect(src).toContain('def _clean_script_dividers');
-    expect(src).toContain('OUTPUT STYLE RULES:');
+    expect(src).toContain('format_and_quality_rules');
     expect(src).toContain('SCRIPT QUALITY BAR:');
     expect(src).toContain('Do not reuse the same hook/title/script skeleton');
     expect(src).toContain('Do NOT use decorative dividers or labels');
@@ -300,11 +307,13 @@ describe('Python script_writer.py — JSON metadata parsing', () => {
     expect(src).toContain('Voice DNA memory was available, but the AI writer was unavailable');
   });
 
-  it('uses shallow quick research on quick mode cache misses instead of always deep searching', () => {
-    expect(src).toContain('normalized_mode = (getattr(req, "mode", "standard") or "standard").strip().lower()');
-    expect(src).toContain('if normalized_mode == "quick":');
-    expect(src).toContain('research = await orchestrator.quick_search(req.topic, max_results=3)');
-    expect(src).toContain('research = await orchestrator.deep_search(req.topic, max_results=5)');
+  it('uses compact research by default and reserves deep search for explicit deep mode', () => {
+    expect(src).toContain('def _normalize_generation_mode');
+    expect(src).toContain('return normalized if normalized in {"draft", "quick", "standard", "deep"} else "draft"');
+    expect(src).toContain('if not research_route["allowDeepSearch"]');
+    expect(src).toContain('research = await orchestrator.quick_search(req.topic, max_results=max_briefs)');
+    expect(src).toContain('research = await orchestrator.deep_search(req.topic, max_results=max_briefs)');
+    expect(src).toContain('compile_prompt(normalized_mode');
   });
 
   it('injects first-party topic context into the generation prompt', () => {
@@ -322,12 +331,13 @@ describe('Python requests.py — script render mode contract', () => {
   });
 
   it('ScriptRequest exposes mode and topic_context for richer script generation', () => {
-    expect(src).toContain('mode: str = Field(default="standard")');
+    expect(src).toContain('mode: Literal["draft", "quick", "standard", "deep"] = Field(default="draft")');
     expect(src).toContain('script_style: str = Field(default="detailed")');
     expect(src).toContain('topic_context: dict | None = Field(default=None)');
     expect(src).toContain('creator_profile: str | None = Field(default=None)');
     expect(src).toContain('force_refresh: bool = Field(default=False)');
     expect(src).toContain('regeneration_seed: str | None = Field(default=None)');
+    expect(src).toContain('internal_attribution_token: str | None = Field(default=None)');
   });
 });
 

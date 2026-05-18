@@ -71,6 +71,26 @@ export function areModelProviderCallsDisabled(env: RuntimeEnv = process.env): bo
   return env.NEXUS_LOCAL_ALLOW_MODEL_CALLS === '0' || env.NEXUS_MODEL_FIXTURE_MODE === '1';
 }
 
+export function isContentForceDraftOnlyEnabled(env: RuntimeEnv = process.env, scope?: RuntimeFlagScope): boolean {
+  return scopedEnvValue(env, 'CONTENT_FORCE_DRAFT_ONLY', scope) === 'true';
+}
+
+export function isContentFreshResearchDisabled(env: RuntimeEnv = process.env, scope?: RuntimeFlagScope): boolean {
+  return scopedEnvValue(env, 'CONTENT_DISABLE_FRESH_RESEARCH', scope) === 'true';
+}
+
+export function isContentDeepResearchDisabled(env: RuntimeEnv = process.env, scope?: RuntimeFlagScope): boolean {
+  return scopedEnvValue(env, 'CONTENT_DISABLE_DEEP_RESEARCH', scope) === 'true';
+}
+
+export function isContentFullLongformDisabled(env: RuntimeEnv = process.env, scope?: RuntimeFlagScope): boolean {
+  return scopedEnvValue(env, 'CONTENT_DISABLE_FULL_YOUTUBE_LONGFORM', scope) === 'true';
+}
+
+export function isContentModelQualityAuditDisabled(env: RuntimeEnv = process.env, scope?: RuntimeFlagScope): boolean {
+  return scopedEnvValue(env, 'CONTENT_DISABLE_MODEL_QUALITY_AUDIT', scope) === 'true';
+}
+
 function scopedEnvValue(env: RuntimeEnv, key: string, scope?: RuntimeFlagScope): string | undefined {
   const userId = scope?.userId != null ? String(scope.userId).replace(/[^0-9A-Za-z_-]/g, '') : '';
   const tenantId = scope?.tenantId != null ? String(scope.tenantId).replace(/[^0-9A-Za-z_-]/g, '') : '';

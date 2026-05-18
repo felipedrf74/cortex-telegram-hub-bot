@@ -10,7 +10,7 @@ from pydantic import ValidationError
 
 from models.requests import DeepSearchResponse, ScriptRequest
 from models.research import ContentBrief, SearchResult, SourceReference
-from services import creator_profile, orchestrator
+from services import claude_client, creator_profile, orchestrator
 from services.creative import script_writer
 
 
@@ -85,6 +85,53 @@ def test_creator_profile_short_mode_returns_short_value(monkeypatch):
 
     assert creator_profile.get_profile(short=True) == "tenant-42 short voice"
     assert creator_profile.get_profile(short=False) == "tenant-42 long voice"
+
+
+async def test_ai_proxy_uses_request_scoped_attribution_context(monkeypatch):
+    captured = {}
+
+    class StubResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"text": "ok", "provider": "stub"}
+
+    class StubClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return None
+
+        async def post(self, url, json, headers):
+            captured["url"] = url
+            captured["json"] = json
+            captured["headers"] = headers
+            return StubResponse()
+
+    monkeypatch.setattr(claude_client, "_FIXTURE_MODE", False)
+    monkeypatch.setattr(claude_client, "_INTERNAL_SECRET", "test-secret")
+    monkeypatch.setattr(claude_client.httpx, "AsyncClient", StubClient)
+
+    token = claude_client.set_attribution_context(
+        user_id=7,
+        tenant_id=44,
+        attribution_token="signed-token",
+    )
+    try:
+        text = await claude_client.ask_claude("prompt", category="content_engine_hook")
+    finally:
+        claude_client.reset_attribution_context(token)
+
+    assert text == "ok"
+    assert captured["json"]["userId"] == 7
+    assert captured["json"]["tenantId"] == 44
+    assert captured["json"]["attributionToken"] == "signed-token"
+    assert captured["json"]["category"] == "content_engine_hook"
 
 
 class StubSearcher:
@@ -244,16 +291,121 @@ async def test_script_writer_happy_path_threads_tenant_scope(monkeypatch, assert
         creator_profile="CREATOR PROFILE: tenant-42 saved profile",
         tenant_id=42,
         user_id=42,
+        internal_attribution_token="signed-token",
     )
 
     response = await script_writer.generate(req, ScriptOrchestrator())
 
     assert response.script == "tenant-42 spoken script"
+    assert response.generation_mode == "draft"
+    assert response.prompt_budget["maxTokens"] == 1600
+    assert response.research_route["route"] == "evergreen_cached"
+    assert response.expand_options[0]["action"] == "expand_full"
+    assert response.estimated_cost["estimatedOutputTokens"] <= 1800
     assert captured["kwargs"]["tenant_id"] == 42
     assert captured["kwargs"]["user_id"] == 42
+    assert captured["kwargs"]["category"] == "content_engine_script_draft"
+    assert captured["kwargs"]["max_tokens"] <= 1800
+    assert captured["kwargs"]["attribution_token"] == "signed-token"
     assert "tenant-42 launch" in captured["prompt"]
+    assert "[creator_voice_card]" in captured["prompt"]
     assert "tenant-99" not in captured["prompt"]
     assert_no_founder_identity(captured["prompt"], response.model_dump())
+
+
+async def test_script_writer_standard_mode_uses_compact_research_not_deepsearch(monkeypatch):
+    captured = {"quick": 0, "deep": 0}
+
+    class RecordingOrchestrator:
+        async def quick_search(self, *args, **kwargs):
+            captured["quick"] += 1
+            return research_response()
+
+        async def deep_search(self, *args, **kwargs):
+            captured["deep"] += 1
+            return research_response()
+
+    async def fake_ask(prompt, **kwargs):
+        captured["prompt"] = prompt
+        captured["kwargs"] = kwargs
+        return (
+            "tenant-42 standard script\n"
+            "---METADATA---\n"
+            '{"hook":"tenant hook","titles":["title"],"hashtags":[],"caption":"caption","cta":"cta"}'
+        )
+
+    monkeypatch.setattr(script_writer, "ask_claude", fake_ask)
+    req = ScriptRequest(topic="evergreen content idea", mode="standard", tenant_id=42, user_id=42)
+
+    response = await script_writer.generate(req, RecordingOrchestrator())
+
+    assert captured["quick"] == 1
+    assert captured["deep"] == 0
+    assert captured["kwargs"]["category"] == "content_engine_script_standard"
+    assert response.generation_mode == "standard"
+    assert response.research_route["allowDeepSearch"] is False
+
+
+async def test_script_writer_health_adjacent_topics_route_to_high_risk_review(monkeypatch):
+    captured = {"quick": 0, "deep": 0}
+
+    class RecordingOrchestrator:
+        async def quick_search(self, *args, **kwargs):
+            captured["quick"] += 1
+            return research_response()
+
+        async def deep_search(self, *args, **kwargs):
+            captured["deep"] += 1
+            return research_response()
+
+    async def fake_ask(prompt, **kwargs):
+        return (
+            "tenant-42 safety draft\n"
+            "---METADATA---\n"
+            '{"hook":"tenant hook","titles":["title"],"hashtags":[],"caption":"caption","cta":"cta"}'
+        )
+
+    monkeypatch.setattr(script_writer, "ask_claude", fake_ask)
+    req = ScriptRequest(topic="should I take ibuprofen for migraines?", mode="standard", tenant_id=42, user_id=42)
+
+    response = await script_writer.generate(req, RecordingOrchestrator())
+
+    assert captured["quick"] == 1
+    assert captured["deep"] == 0
+    assert response.research_route["route"] == "high_risk_review"
+    assert response.research_route["allowDeepSearch"] is False
+
+
+async def test_script_writer_deep_mode_is_explicit_deepsearch(monkeypatch):
+    captured = {"quick": 0, "deep": 0}
+
+    class RecordingOrchestrator:
+        async def quick_search(self, *args, **kwargs):
+            captured["quick"] += 1
+            return research_response()
+
+        async def deep_search(self, *args, **kwargs):
+            captured["deep"] += 1
+            return research_response()
+
+    async def fake_ask(prompt, **kwargs):
+        captured["kwargs"] = kwargs
+        return (
+            "tenant-42 deep script\n"
+            "---METADATA---\n"
+            '{"hook":"tenant hook","titles":["title"],"hashtags":[],"caption":"caption","cta":"cta"}'
+        )
+
+    monkeypatch.setattr(script_writer, "ask_claude", fake_ask)
+    req = ScriptRequest(topic="latest launch today", mode="deep", tenant_id=42, user_id=42)
+
+    response = await script_writer.generate(req, RecordingOrchestrator())
+
+    assert captured["quick"] == 0
+    assert captured["deep"] == 1
+    assert captured["kwargs"]["category"] == "content_engine_script_deep"
+    assert response.generation_mode == "deep"
+    assert response.research_route["allowDeepSearch"] is True
 
 
 async def test_script_writer_missing_creator_profile_degrades_neutrally(monkeypatch, assert_no_founder_identity):
@@ -273,6 +425,11 @@ async def test_script_writer_missing_creator_profile_degrades_neutrally(monkeypa
 def test_script_writer_rejects_missing_topic():
     with pytest.raises(ValidationError):
         ScriptRequest(topic="")
+
+
+def test_script_writer_rejects_unsupported_generation_mode():
+    with pytest.raises(ValidationError):
+        ScriptRequest(topic="tenant-42 launch", mode="expensive_unbounded")
 
 
 def test_script_writer_system_prompt_is_founder_neutral(assert_no_founder_identity):

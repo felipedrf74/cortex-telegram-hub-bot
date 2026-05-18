@@ -15,6 +15,7 @@ from models.requests import (
     ReportResponse,
 )
 from services.orchestrator import ResearchOrchestrator
+from services.claude_client import set_attribution_context, reset_attribution_context
 
 router = APIRouter(prefix="/api/v1", tags=["research"])
 
@@ -29,6 +30,18 @@ def get_orchestrator() -> ResearchOrchestrator:
     return _orchestrator
 
 
+async def _with_ai_attribution(req, operation):
+    token = set_attribution_context(
+        user_id=getattr(req, "user_id", None),
+        tenant_id=getattr(req, "tenant_id", None),
+        attribution_token=getattr(req, "internal_attribution_token", None),
+    )
+    try:
+        return await operation()
+    finally:
+        reset_attribution_context(token)
+
+
 # ── Phase 1: Research Core ────────────────────────────────────────
 
 @router.post("/deepsearch", response_model=DeepSearchResponse)
@@ -37,12 +50,15 @@ async def deep_search(
     orch: ResearchOrchestrator = Depends(get_orchestrator),
 ) -> DeepSearchResponse:
     """Full research pipeline: parallel search → score → content briefs."""
-    return await orch.deep_search(
-        query=req.query,
-        niches=req.niches if req.niches else None,
-        max_results=req.max_results,
-        creator_profile=req.creator_profile,
-        language=req.language,
+    return await _with_ai_attribution(
+        req,
+        lambda: orch.deep_search(
+            query=req.query,
+            niches=req.niches if req.niches else None,
+            max_results=req.max_results,
+            creator_profile=req.creator_profile,
+            language=req.language,
+        ),
     )
 
 
@@ -71,7 +87,10 @@ async def hot_news_with_context(
     orch: ResearchOrchestrator = Depends(get_orchestrator),
 ) -> HotNewsResponse:
     """What's trending right now, scoped to the authenticated creator context."""
-    return await orch.hot_news(creator_profile=req.creator_profile, language=req.language)
+    return await _with_ai_attribution(
+        req,
+        lambda: orch.hot_news(creator_profile=req.creator_profile, language=req.language),
+    )
 
 
 # ── Phase 2: Visual + Social ─────────────────────────────────────
@@ -100,7 +119,7 @@ async def reaction_search(
 async def generate_hooks(req: HooksRequest) -> HooksResponse:
     """Generate scroll-stopping hooks for a topic."""
     from services.creative import hook_generator
-    return await hook_generator.generate(req)
+    return await _with_ai_attribution(req, lambda: hook_generator.generate(req))
 
 
 @router.post("/script", response_model=ScriptResponse)
@@ -110,28 +129,28 @@ async def generate_script(
 ) -> ScriptResponse:
     """Generate a full video script with research baked in."""
     from services.creative import script_writer
-    return await script_writer.generate(req, orch)
+    return await _with_ai_attribution(req, lambda: script_writer.generate(req, orch))
 
 
 @router.post("/titles", response_model=TitlesResponse)
 async def generate_titles(req: TitlesRequest) -> TitlesResponse:
     """Generate A/B title variants for a topic."""
     from services.creative import title_tester
-    return await title_tester.generate(req)
+    return await _with_ai_attribution(req, lambda: title_tester.generate(req))
 
 
 @router.post("/thumbnail", response_model=ThumbnailResponse)
 async def generate_thumbnail(req: ThumbnailRequest) -> ThumbnailResponse:
     """Generate thumbnail concepts with visual direction."""
     from services.creative import thumbnail_gen
-    return await thumbnail_gen.generate(req)
+    return await _with_ai_attribution(req, lambda: thumbnail_gen.generate(req))
 
 
 @router.post("/caption", response_model=CaptionResponse)
 async def generate_caption(req: CaptionRequest) -> CaptionResponse:
     """Generate Instagram caption + optimised hashtags."""
     from services.creative import caption_writer
-    return await caption_writer.generate(req)
+    return await _with_ai_attribution(req, lambda: caption_writer.generate(req))
 
 
 # ── Phase 4: Strategic Intelligence ──────────────────────────────
@@ -140,7 +159,7 @@ async def generate_caption(req: CaptionRequest) -> CaptionResponse:
 async def analyze_competitor(req: CompetitorRequest) -> CompetitorResponse:
     """Reverse-engineer a competitor channel."""
     from services.intelligence import competitor_analyzer
-    return await competitor_analyzer.analyze(req)
+    return await _with_ai_attribution(req, lambda: competitor_analyzer.analyze(req))
 
 
 @router.post("/gaps", response_model=GapsResponse)
@@ -150,7 +169,7 @@ async def find_gaps(
 ) -> GapsResponse:
     """Find content gaps — high demand, low supply."""
     from services.intelligence import gap_finder
-    return await gap_finder.find(req, orch)
+    return await _with_ai_attribution(req, lambda: gap_finder.find(req, orch))
 
 
 @router.post("/seo", response_model=SeoResponse)
@@ -160,14 +179,14 @@ async def seo_analysis(
 ) -> SeoResponse:
     """Keyword analysis + content recommendations."""
     from services.intelligence import seo_engine
-    return await seo_engine.analyze(req, orch)
+    return await _with_ai_attribution(req, lambda: seo_engine.analyze(req, orch))
 
 
 @router.post("/repurpose", response_model=RepurposeResponse)
 async def repurpose(req: RepurposeRequest) -> RepurposeResponse:
     """Turn 1 content piece into a full content ecosystem."""
     from services.creative import repurpose_engine
-    return await repurpose_engine.generate(req)
+    return await _with_ai_attribution(req, lambda: repurpose_engine.generate(req))
 
 
 # ── Phase 5: Learning System ─────────────────────────────────────
@@ -176,7 +195,7 @@ async def repurpose(req: RepurposeRequest) -> RepurposeResponse:
 async def log_feedback(req: FeedbackRequest) -> FeedbackResponse:
     """Log content performance and get analysis."""
     from services.learning import feedback_loop
-    return await feedback_loop.log_and_analyze(req)
+    return await _with_ai_attribution(req, lambda: feedback_loop.log_and_analyze(req))
 
 
 @router.get("/report", response_model=ReportResponse)

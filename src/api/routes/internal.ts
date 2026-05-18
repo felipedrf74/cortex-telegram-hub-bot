@@ -10,10 +10,11 @@
  * from the same .env file. If the secret is unset, the routes reject all
  * requests.
  *
- * `ai-complete` deliberately strips body-supplied userId/tenantId and bills
- * as system usage (`user_id=0`, `tenant_id=0`) until a server-side service
- * identity/tenant allowlist exists for the Python engine. Internal callers
- * must not be able to spoof end-user or tenant attribution through this proxy.
+ * `ai-complete` strips body-supplied userId/tenantId unless the Python engine
+ * forwards a short-lived attribution token minted by the TS content route.
+ * That keeps normal callers from spoofing user/tenant billing while allowing
+ * content-engine work that originated from an authenticated request to be
+ * attributed to the real user and tenant.
  *
  * Mount BEFORE authMiddleware in router.ts.
  */
@@ -32,6 +33,7 @@ import { getPerformanceSummary } from '../../services/content-learning-store';
 import { isAnthropicRuntimeEnabled } from '../../services/runtime-flags';
 import { getEffectiveDomainModel } from '../../services/model-config';
 import { completeOneShotWithFallback } from '../../services/gemini-provider';
+import { verifyInternalAttributionToken } from '../../services/internal-attribution';
 
 function resolveInternalAiTimeoutMs(category: string, maxTokens: number): number | undefined {
   const normalized = String(category || '').toLowerCase();
@@ -91,6 +93,9 @@ export function internalRoutes(): Router {
         inputTokens, outputTokens,
         cacheReadTokens = 0, cacheWriteTokens = 0,
         durationMs,
+        userId,
+        tenantId,
+        attributionToken,
       } = req.body;
 
       if (!category || !model || inputTokens == null || outputTokens == null) {
@@ -110,6 +115,18 @@ export function internalRoutes(): Router {
         (outputTokens / 1_000_000) * rates.out +
         (cacheReadTokens / 1_000_000) * rates.cacheRead +
         (cacheWriteTokens / 1_000_000) * rates.cacheWrite;
+      const suppliedUserId = normalizeOptionalScopeId(userId);
+      const suppliedTenantId = normalizeOptionalScopeId(tenantId);
+      const verifiedAttribution = verifyInternalAttributionToken(attributionToken, category);
+      const scopedUserId = verifiedAttribution?.userId ?? 0;
+      const scopedTenantId = verifiedAttribution?.tenantId ?? 0;
+      if ((suppliedUserId || suppliedTenantId) && !verifiedAttribution) {
+        logger.warn({
+          category,
+          suppliedUserId: suppliedUserId ?? null,
+          suppliedTenantId: suppliedTenantId ?? null,
+        }, 'Ignoring body-supplied internal usage attribution; billing as system usage');
+      }
 
       // Write to api_usage table (same as anthropic-hook.ts)
       const { getDb } = require('../../services/database');
@@ -117,17 +134,19 @@ export function internalRoutes(): Router {
         INSERT INTO api_usage
           (category, model, user_id, input_tokens, output_tokens,
            cache_read_tokens, cache_write_tokens, cost_usd, duration_ms)
-        VALUES (?, ?, 0, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
       `).run(
         category, model,
+        scopedUserId,
         inputTokens, outputTokens,
         cacheReadTokens, cacheWriteTokens,
         cost, durationMs ?? 0,
       );
 
-      // Write to usage_metering aggregate (user_id=0 for system/content-engine calls)
+      // Write to usage_metering aggregate. Signed attribution preserves the
+      // real user; unsigned legacy calls remain system-scoped.
       const { recordUsage } = require('../../services/usage-metering');
-      recordUsage(0, inputTokens, outputTokens, cost, false);
+      recordUsage(scopedUserId, inputTokens, outputTokens, cost, false);
 
       // Push telemetry event
       const { pushEvent } = require('../../portal/telemetry');
@@ -140,7 +159,7 @@ export function internalRoutes(): Router {
       });
 
       logger.info(
-        { category, model, inputTokens, outputTokens, cost: cost.toFixed(4) },
+        { category, model, inputTokens, outputTokens, cost: cost.toFixed(4), userId: scopedUserId, tenantId: scopedTenantId },
         'Python usage reported',
       );
 
@@ -166,8 +185,9 @@ export function internalRoutes(): Router {
   //   maxTokens?: number,    // default 4096
   //   temperature?: number,  // default 0.7
   //   jsonMode?: boolean,    // if true, instructs model to return JSON
-  //   userId?: number,       // optional scoped usage attribution
-  //   tenantId?: number,     // optional scoped usage attribution
+  //   userId?: number,       // ignored unless attributionToken verifies
+  //   tenantId?: number,     // ignored unless attributionToken verifies
+  //   attributionToken?: string,
   // }
   //
   // Response: { text: string, provider: string }
@@ -179,6 +199,7 @@ export function internalRoutes(): Router {
         jsonMode = false,
         userId,
         tenantId,
+        attributionToken,
       } = req.body;
 
       if (!prompt || !category) {
@@ -191,14 +212,24 @@ export function internalRoutes(): Router {
         : prompt;
       const suppliedUserId = normalizeOptionalScopeId(userId);
       const suppliedTenantId = normalizeOptionalScopeId(tenantId);
-      const scopedUserId = 0;
-      const scopedTenantId = 0;
-      if (suppliedUserId || suppliedTenantId) {
+      const verifiedAttribution = verifyInternalAttributionToken(attributionToken, category);
+      const scopedUserId = verifiedAttribution?.userId ?? 0;
+      const scopedTenantId = verifiedAttribution?.tenantId ?? 0;
+      if ((suppliedUserId || suppliedTenantId) && !verifiedAttribution) {
         logger.warn({
           category,
           suppliedUserId: suppliedUserId ?? null,
           suppliedTenantId: suppliedTenantId ?? null,
         }, 'Ignoring body-supplied internal AI attribution; billing as system usage');
+      }
+      if (verifiedAttribution && (suppliedUserId !== verifiedAttribution.userId || suppliedTenantId !== verifiedAttribution.tenantId)) {
+        logger.warn({
+          category,
+          suppliedUserId: suppliedUserId ?? null,
+          suppliedTenantId: suppliedTenantId ?? null,
+          scopedUserId,
+          scopedTenantId,
+        }, 'Internal AI attribution token verified; body scope ignored in favor of signed claims');
       }
 
       const { text, provider } = await completeOneShotWithFallback(

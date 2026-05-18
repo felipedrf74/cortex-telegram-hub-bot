@@ -17,12 +17,13 @@ describe('content script route contract utilities', () => {
   });
 
   it('normalizes generation and render modes without trusting arbitrary client values', () => {
+    expect(resolveScriptGenerationMode('draft')).toBe('draft');
     expect(resolveScriptGenerationMode('quick')).toBe('quick');
     expect(resolveScriptGenerationMode('standard')).toBe('standard');
     expect(resolveScriptGenerationMode('deep')).toBe('deep');
-    expect(resolveScriptGenerationMode('deep ')).toBe('standard');
-    expect(resolveScriptGenerationMode('expensive')).toBe('standard');
-    expect(resolveScriptGenerationMode(undefined)).toBe('standard');
+    expect(resolveScriptGenerationMode('deep ')).toBe('deep');
+    expect(resolveScriptGenerationMode('expensive')).toBe('draft');
+    expect(resolveScriptGenerationMode(undefined)).toBe('draft');
 
     expect(resolveScriptRenderMode('chat')).toBe('chat');
     expect(resolveScriptRenderMode(' STRUCTURED ')).toBe('structured');
@@ -161,6 +162,125 @@ describe('content script route contract utilities', () => {
       cacheHit: false,
       usageImpact: 'high',
     });
+  });
+
+  it('attaches draft-first cost, prompt, research, and expansion metadata', () => {
+    const response = buildScriptSuccessResponse({
+      result: {
+        topic: 'Token-smart content',
+        script: 'Draft pack body with one concrete hook and one CTA. Save this.',
+        hook: 'Most content teams overpay for first drafts.',
+        title_options: ['Draft first'],
+        sources_used: [],
+        duration_ms: 100,
+      },
+      format: 'YouTube',
+      renderMode: 'structured',
+      scriptStyle: 'bullets',
+      generationMode: 'draft',
+      startMs: Date.now() - 100,
+      cacheHit: false,
+      promptBudget: {
+        prompt: 'stable',
+        tokenEstimate: 900,
+        maxTokens: 1600,
+        overBudget: false,
+        cacheablePrefixHash: 'prefix-hash',
+        sections: [{
+          sectionName: 'creator_voice_card',
+          text: 'voice',
+          required: true,
+          cacheable: true,
+          source: 'content_knowledge',
+          maxChars: 900,
+          tokenEstimate: 100,
+          truncated: false,
+        }],
+      },
+      estimatedCost: {
+        estimatedInputTokens: 900,
+        estimatedOutputTokens: 1200,
+        estimatedCostUsd: 0.00175,
+        costConfidence: 'high',
+      },
+      researchRoute: {
+        route: 'evergreen_cached',
+        reason: 'evergreen_or_draft_default',
+        allowDeepSearch: false,
+      },
+      budgetState: 'healthy',
+      qualityGate: {
+        qualityScore: 88,
+        qualityWarnings: ['needs_expansion'],
+        needsExpansion: true,
+        needsResearchRefresh: false,
+      },
+    });
+
+    expect(response.generationMode).toBe('draft');
+    expect(response.usageImpact).toBe('low');
+    expect(response.generation.researchUsed).toBe(false);
+    expect(response.contentCost.estimatedBeforeCall.estimatedCostUsd).toBe(0.00175);
+    expect(response.promptBudget.cacheablePrefixHash).toBe('prefix-hash');
+    expect(response.research).toMatchObject({
+      route: 'evergreen_cached',
+      allowDeepSearch: false,
+      sourceSummary: [],
+    });
+    expect(response.qualityScore).toBe(88);
+    expect(response.qualityWarnings).toContain('Draft needs expansion before publishing.');
+    expect(response.expandOptions.map((option) => option.action)).toContain('expand_full');
+    expect(response.requestedMode).toBe('draft');
+    expect(response.appliedMode).toBe('draft');
+    expect(response.downgradeReason).toBe('none');
+    expect('sourcePackageId' in response.research).toBe(false);
+    expect('researchArtifactId' in response.research).toBe(false);
+  });
+
+  it('prefers the actual engine prompt budget over the TypeScript estimate for cache metadata', () => {
+    const response = buildScriptSuccessResponse({
+      result: {
+        topic: 'Prompt parity',
+        script: 'Draft pack body with enough specific content to pass.',
+        prompt_budget: {
+          tokenEstimate: 111,
+          maxTokens: 1600,
+          overBudget: false,
+          cacheablePrefixHash: 'python-prefix',
+          sections: [{
+            sectionName: 'creator_voice_card',
+            tokenEstimate: 20,
+            required: true,
+            cacheable: true,
+            source: 'content_knowledge',
+            truncated: false,
+          }],
+        },
+      },
+      format: 'YouTube',
+      renderMode: 'structured',
+      scriptStyle: 'bullets',
+      requestedMode: 'deep',
+      generationMode: 'draft',
+      downgradeReason: 'deep_research_disabled',
+      startMs: Date.now() - 100,
+      cacheHit: false,
+      promptBudget: {
+        prompt: 'ts-estimate',
+        tokenEstimate: 999,
+        maxTokens: 3200,
+        overBudget: false,
+        cacheablePrefixHash: 'ts-prefix',
+        sections: [],
+      },
+    });
+
+    expect(response.promptBudget.cacheablePrefixHash).toBe('python-prefix');
+    expect(response.contentCost.providerCache.cacheablePrefixHash).toBe('python-prefix');
+    expect(response.promptBudget.sections[0].source).toBe('voice');
+    expect(response.requestedMode).toBe('deep');
+    expect(response.appliedMode).toBe('draft');
+    expect(response.downgradeReason).toBe('deep_research_disabled');
   });
 
   it('keeps cache-hit responses cheap and tolerates missing optional engine fields', () => {

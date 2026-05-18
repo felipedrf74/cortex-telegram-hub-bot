@@ -7,6 +7,7 @@ import { getCurrentRequestId, generateRequestId } from '../utils/request-context
 import { maybeSaveToFile, saveContentAsDocx } from './content-file-saver';
 import type { AgentSignal } from './intelligence-bus';
 import { buildCurrentCreatorProfilePayload } from './content-engine-profile-payload';
+import { createInternalAttributionToken } from './internal-attribution';
 import { requireTenantIdParam } from './tenant-scope';
 
 export { maybeSaveToFile, saveContentAsDocx } from './content-file-saver';
@@ -99,6 +100,19 @@ export interface ScriptResponse {
   cta?: string;
   degraded?: boolean;
   warnings?: string[];
+  generation_mode?: string;
+  cache_status?: string;
+  research_artifact_id?: string;
+  source_package_id?: string;
+  voice_card_version?: string;
+  quality_score?: number;
+  quality_warnings?: string[];
+  budget_state?: string;
+  expand_options?: Array<{ id: string; label: string; action: string }>;
+  estimated_cost?: Record<string, unknown>;
+  actual_cost?: Record<string, unknown>;
+  prompt_budget?: Record<string, unknown>;
+  research_route?: Record<string, unknown>;
 }
 
 export interface ScriptTopicContext {
@@ -184,10 +198,6 @@ const HEALTH_CHECK_INTERVAL_MS = 60_000; // 1 minute between probes
 const CIRCUIT_BREAKER_THRESHOLD = 3;     // 3 consecutive failures → fail-fast
 const CIRCUIT_BREAKER_COOLDOWN_MS = 5 * 60_000; // 5 minutes
 
-/**
- * Check if the Python content-engine is healthy.
- * Returns cached result if checked recently.
- */
 export async function isContentEngineHealthy(): Promise<boolean> {
   if (Date.now() - _lastHealthCheck < HEALTH_CHECK_INTERVAL_MS) return _isHealthy;
   try {
@@ -204,10 +214,6 @@ export async function isContentEngineHealthy(): Promise<boolean> {
   return _isHealthy;
 }
 
-/**
- * Retry wrapper with exponential backoff.
- * Retries up to 3 times with delays: 2s, 4s, 8s.
- */
 async function withRetry<T>(fn: () => Promise<T>, maxRetries = 3): Promise<T> {
   // Circuit breaker: fail-fast if engine has been down
   if (_consecutiveFailures >= CIRCUIT_BREAKER_THRESHOLD) {
@@ -242,19 +248,7 @@ async function engineFetch<T>(path: string, options?: RequestInit, timeoutMs = 3
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
 
-  // Distributed tracing: propagate the current requestId to the Python
-  // content-engine via X-Request-Id (Quarter audit item). When this fetch
-  // happens inside a request context (Telegram message, HTTP request,
-  // or cron tick), getCurrentRequestId() returns the same ID that the
-  // upstream is logging. The Python service has matching middleware in
-  // content-engine/main.py that reads X-Request-Id and threads it through
-  // its own contextvars-backed logging filter. Result: a single grep on
-  // the requestId surfaces every log line from both services for one
-  // logical operation.
-  //
-  // If we're outside any context (rare — startup work or unwrapped
-  // background code) we still generate one so the content-engine call
-  // is traceable from the Python side at least.
+  // Propagate request tracing to the Python content-engine.
   const requestId = getCurrentRequestId() || generateRequestId();
 
   try {
@@ -327,17 +321,19 @@ export async function getHooks(topic: string, niche = 'general', count = 8): Pro
 //
 // Mode controls three levers: cache behavior, signal window, and timeout.
 //
+//   Draft:    compact draft pack, cache-first, no signals, 45s timeout (~70-85% cheaper)
 //   Quick:    cache-first (48h), no signals, 60s timeout  (~$0.003 cached, ~$0.005 fresh)
-//   Standard: cache 24h, 30-day signals, 180s timeout     (~$0.01-0.02)
-//   Deep:     skip cache, 90-day signals, 300s timeout     (~$0.02-0.05)
+//   Standard: cache 24h, compact signal window, 120s timeout (~$0.01-0.02)
+//   Deep:     skip cache, explicit deep research, 300s timeout (~$0.02-0.05)
 
-export type ScriptGenerationMode = 'quick' | 'standard' | 'deep';
+export type ScriptGenerationMode = 'draft' | 'quick' | 'standard' | 'deep';
 export type ScriptRenderMode = 'structured' | 'chat';
 export type ScriptStyle = 'detailed' | 'bullets';
 
 const MODE_CONFIG: Record<ScriptGenerationMode, { cacheTtl: number; signalDays: number; timeoutMs: number }> = {
+  draft:    { cacheTtl: 48 * 3600, signalDays: 0,  timeoutMs: 45_000 },
   quick:    { cacheTtl: 48 * 3600, signalDays: 0,  timeoutMs: 60_000 },
-  standard: { cacheTtl: 24 * 3600, signalDays: 30, timeoutMs: 180_000 },
+  standard: { cacheTtl: 24 * 3600, signalDays: 14, timeoutMs: 120_000 },
   deep:     { cacheTtl: 0,         signalDays: 90, timeoutMs: 300_000 },
 };
 
@@ -466,7 +462,7 @@ export function buildScriptCacheKey(
   maxDuration = 8,
   format = 'YouTube',
   targetDurationSeconds?: number | null,
-  mode: ScriptGenerationMode = 'standard',
+  mode: ScriptGenerationMode = 'draft',
   brandVoice?: string | null,
   language?: string | null,
   renderMode: ScriptRenderMode = 'structured',
@@ -480,7 +476,7 @@ export function buildScriptCacheKey(
     ? 'global'
     : String(requireTenantIdParam(tenantId, 'buildScriptCacheKey'));
   const parts = [
-    'script-v7',
+    'script-v8',
     topic.toLowerCase().trim(),
     niche,
     format,
@@ -502,7 +498,7 @@ export function buildScriptCacheKey(
 
 export async function getScript(
   topic: string, niche = 'general', maxDuration = 8, format = 'YouTube',
-  mode: ScriptGenerationMode = 'standard',
+  mode: ScriptGenerationMode = 'draft',
   brandVoice?: string | null,
   language = 'pt-BR',
   renderMode: ScriptRenderMode = 'structured',
@@ -563,7 +559,7 @@ export async function getScript(
       // CONT-M1: null-coalesce in case readSignals returns null/undefined
       const raw = readSignals('script-engine', [...signalTypes], 100, userId, cfg.signalDays) || [];
       const ranked = rankScriptSignals(raw, topic, niche, scriptContext);
-      const signalLimit = mode === 'deep' ? 10 : 6;
+      const signalLimit = mode === 'deep' ? 10 : 4;
       contextSignals = ranked.slice(0, signalLimit).map(s => ({
         type: s.signal_type,
         source: s.source_agent,
@@ -592,6 +588,11 @@ export async function getScript(
       creator_profile: creatorProfile || undefined,
       user_id: userId ?? undefined,
       tenant_id: tenantId ?? undefined,
+      internal_attribution_token: createInternalAttributionToken({
+        userId: userId ?? 0,
+        tenantId: tenantId ?? userId ?? 0,
+        category: `content_engine_script_${mode}`,
+      }) ?? undefined,
       force_refresh: forceRefresh || undefined,
       regeneration_seed: regenerationSeed || undefined,
     }),

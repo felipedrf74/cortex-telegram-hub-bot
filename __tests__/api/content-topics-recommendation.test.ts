@@ -28,6 +28,10 @@ vi.mock('../../src/config', () => ({
     telegram: { allowedUserIds: [111111] },
     app: { timezone: 'Europe/Lisbon' },
     contentEngine: { enabled: false, port: 8100 },
+    anthropic: { apiKey: '' },
+    gemini: { apiKey: '', model: 'gemini-2.5-flash-lite' },
+    openai: { apiKey: '' },
+    aiSafety: { callTimeoutMs: 1000 },
   },
 }));
 

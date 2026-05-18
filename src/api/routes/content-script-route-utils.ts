@@ -7,6 +7,15 @@ import {
   type ScriptPreflightBrief,
   type ScriptQualityReport,
 } from '../../services/content-script-quality';
+import type {
+  CompiledContentPrompt,
+  ContentBudgetState,
+  ContentCostEstimate,
+  ContentQualityGateResult,
+  CreatorVoiceCard,
+  ResearchRoute,
+  SourcePackage,
+} from '../../services/content-token-economy';
 
 export type ScriptRenderMode = 'structured' | 'chat';
 export type ScriptFormat = 'YouTube' | 'Reel';
@@ -37,12 +46,36 @@ export interface ContentScriptEngineResult {
   cta?: string;
   degraded?: boolean;
   warnings?: string[];
+  generation_mode?: string;
+  cache_status?: string;
+  research_artifact_id?: string;
+  source_package_id?: string;
+  voice_card_version?: string;
+  quality_score?: number;
+  quality_warnings?: string[];
+  budget_state?: string;
+  expand_options?: Array<{ id: string; label: string; action: string }>;
+  estimated_cost?: Record<string, unknown>;
+  actual_cost?: Record<string, unknown>;
+  prompt_budget?: Record<string, unknown>;
+  research_route?: Record<string, unknown>;
 }
 
+export type ContentModeDowngradeReason =
+  | 'none'
+  | 'budget_constrained'
+  | 'force_draft_only'
+  | 'deep_research_disabled'
+  | 'fresh_research_disabled'
+  | 'longform_disabled'
+  | 'high_risk_draft_only';
+
 export function resolveScriptGenerationMode(mode: unknown): GenerationMode {
-  return mode === 'quick' || mode === 'standard' || mode === 'deep'
-    ? mode
-    : 'standard';
+  if (typeof mode !== 'string') return 'draft';
+  const normalized = mode.trim().toLowerCase();
+  return normalized === 'draft' || normalized === 'quick' || normalized === 'standard' || normalized === 'deep'
+    ? normalized
+    : 'draft';
 }
 
 export function resolveScriptRenderMode(renderMode: unknown): ScriptRenderMode {
@@ -154,22 +187,42 @@ export function buildScriptSuccessResponse(params: {
   format: ScriptFormat;
   renderMode: ScriptRenderMode;
   scriptStyle: ScriptStyle;
+  requestedMode?: GenerationMode;
   generationMode: GenerationMode;
+  downgradeReason?: ContentModeDowngradeReason;
   startMs: number;
   cacheHit: boolean;
   generationQuality?: Record<string, unknown>;
   preflightBrief?: ScriptPreflightBrief;
+  promptBudget?: CompiledContentPrompt;
+  creatorVoiceCard?: CreatorVoiceCard;
+  sourcePackage?: SourcePackage;
+  publicSourcePackageIds?: { sourcePackageId: string; researchArtifactId: string };
+  researchRoute?: { route: ResearchRoute; reason: string; allowDeepSearch: boolean };
+  estimatedCost?: ContentCostEstimate;
+  budgetState?: ContentBudgetState;
+  qualityGate?: ContentQualityGateResult;
 }) {
   const {
     result,
     format,
     renderMode,
     scriptStyle,
+    requestedMode,
     generationMode,
+    downgradeReason,
     startMs,
     cacheHit,
     generationQuality,
     preflightBrief,
+    promptBudget,
+    creatorVoiceCard,
+    sourcePackage,
+    publicSourcePackageIds,
+    researchRoute,
+    estimatedCost,
+    budgetState,
+    qualityGate,
   } = params;
 
   const sources = Array.isArray(result.sources_used) ? result.sources_used : [];
@@ -191,7 +244,27 @@ export function buildScriptSuccessResponse(params: {
   const warnings = Array.from(new Set([
     ...(result.warnings ?? []),
     ...scriptQuality.complianceWarnings,
+    ...(qualityGate?.qualityWarnings ?? []),
   ]));
+  const effectiveQualityScore = qualityGate?.qualityScore
+    ?? (typeof result.quality_score === 'number' ? result.quality_score : scriptQuality.overallScore);
+  const expandOptions = result.expand_options ?? defaultExpandOptions(generationMode);
+  const enginePromptBudget = normalizeEnginePromptBudget(result.prompt_budget);
+  const publicPromptBudget = enginePromptBudget ?? (promptBudget ? {
+    tokenEstimate: promptBudget.tokenEstimate,
+    maxTokens: promptBudget.maxTokens,
+    overBudget: promptBudget.overBudget,
+    cacheablePrefixHash: promptBudget.cacheablePrefixHash,
+    sections: promptBudget.sections.map((section) => ({
+      sectionName: section.sectionName,
+      tokenEstimate: section.tokenEstimate,
+      required: section.required,
+      cacheable: section.cacheable,
+      source: publicPromptSectionSource(section.source),
+      truncated: section.truncated,
+    })),
+  } : null);
+  const publicQualityWarnings = warnings.map(publicQualityWarningText);
 
   return {
     topic: result.topic,
@@ -213,8 +286,35 @@ export function buildScriptSuccessResponse(params: {
     caption: result.caption ?? '',
     cta: result.cta || scriptQuality.structuredOutput.cta,
     degraded: result.degraded ?? false,
-    warnings,
+    warnings: publicQualityWarnings,
     generationQuality,
+    contentCost: {
+      estimatedBeforeCall: estimatedCost,
+      actualAfterCall: result.actual_cost ?? null,
+      providerCache: {
+        status: result.cache_status ?? (cacheHit ? 'hit' : 'miss'),
+        cacheablePrefixHash: publicPromptBudget?.cacheablePrefixHash ?? null,
+        cacheCreationTokens: null,
+        cacheReadTokens: null,
+      },
+    },
+    promptBudget: publicPromptBudget,
+    research: {
+      route: researchRoute?.route ?? (result.research_route as any)?.route ?? null,
+      reason: researchRoute?.reason ?? (result.research_route as any)?.reason ?? null,
+      allowDeepSearch: researchRoute?.allowDeepSearch ?? (result.research_route as any)?.allowDeepSearch ?? null,
+      freshnessClass: sourcePackage?.freshnessClass ?? null,
+      ...(publicSourcePackageIds ? {
+        sourcePackageId: publicSourcePackageIds.sourcePackageId,
+        researchArtifactId: publicSourcePackageIds.researchArtifactId,
+      } : {}),
+      sourceSummary: sourcePackage?.sourceSummaries ?? [],
+    },
+    voiceCardVersion: result.voice_card_version ?? creatorVoiceCard?.voiceCardVersion ?? null,
+    qualityScore: effectiveQualityScore,
+    qualityWarnings: publicQualityWarnings,
+    budgetState: result.budget_state ?? budgetState ?? 'healthy',
+    expandOptions,
     scriptQuality: publicScriptQualityReport(scriptQuality),
     scriptStructure: scriptQuality.structuredOutput,
     generation: buildGenerationMeta({
@@ -222,13 +322,116 @@ export function buildScriptSuccessResponse(params: {
       startMs,
       cacheHit,
       provider: 'content-engine',
-      researchUsed: generationMode !== 'quick' && !cacheHit,
+      researchUsed: generationMode !== 'draft' && generationMode !== 'quick' && !cacheHit,
     }),
     // Backward compat — keep old fields until iOS migrates.
     generationMode,
+    requestedMode: requestedMode ?? generationMode,
+    appliedMode: generationMode,
+    downgradeReason: downgradeReason ?? 'none',
     cacheHit,
-    usageImpact: cacheHit ? 'none' : generationMode === 'deep' ? 'high' : generationMode,
+    usageImpact: cacheHit ? 'none' : generationMode === 'deep' ? 'high' : generationMode === 'draft' ? 'low' : generationMode,
   };
+}
+
+function normalizeEnginePromptBudget(value: Record<string, unknown> | undefined): null | {
+  tokenEstimate?: number;
+  maxTokens?: number;
+  overBudget?: boolean;
+  cacheablePrefixHash?: string;
+  sections?: Array<{
+    sectionName?: string;
+    tokenEstimate?: number;
+    required?: boolean;
+    cacheable?: boolean;
+    source?: string;
+    truncated?: boolean;
+  }>;
+} {
+  if (!value || typeof value !== 'object') return null;
+  const sections = Array.isArray(value.sections)
+    ? value.sections
+      .filter((section): section is Record<string, unknown> => Boolean(section) && typeof section === 'object')
+      .map((section) => ({
+        sectionName: typeof section.sectionName === 'string' ? section.sectionName : undefined,
+        tokenEstimate: typeof section.tokenEstimate === 'number' ? section.tokenEstimate : undefined,
+        required: typeof section.required === 'boolean' ? section.required : undefined,
+        cacheable: typeof section.cacheable === 'boolean' ? section.cacheable : undefined,
+        source: publicPromptSectionSource(typeof section.source === 'string' ? section.source : undefined),
+        truncated: typeof section.truncated === 'boolean' ? section.truncated : undefined,
+      }))
+    : undefined;
+  return {
+    tokenEstimate: typeof value.tokenEstimate === 'number' ? value.tokenEstimate : undefined,
+    maxTokens: typeof value.maxTokens === 'number' ? value.maxTokens : undefined,
+    overBudget: typeof value.overBudget === 'boolean' ? value.overBudget : undefined,
+    cacheablePrefixHash: typeof value.cacheablePrefixHash === 'string' ? value.cacheablePrefixHash : undefined,
+    sections,
+  };
+}
+
+function publicPromptSectionSource(source: string | undefined): string {
+  switch ((source || '').trim()) {
+    case 'code':
+      return 'policy';
+    case 'content-domain-ontology':
+      return 'schema';
+    case 'content_knowledge':
+      return 'voice';
+    case 'request':
+      return 'user_brief';
+    case 'content-research-router':
+      return 'research_policy';
+    case 'cost-guardrail':
+      return 'budget_policy';
+    case 'retrieval':
+      return 'source_package';
+    default:
+      return source ? 'content_context' : 'unknown';
+  }
+}
+
+function publicQualityWarningText(code: string): string {
+  switch (code) {
+    case 'output_too_thin':
+    case 'needs_expansion':
+      return 'Draft needs expansion before publishing.';
+    case 'weak_hook':
+      return 'Hook may need a stronger opening.';
+    case 'missing_clear_cta':
+      return 'Add a clearer next action.';
+    case 'high_risk_without_sources':
+      return 'Sensitive claims need source review.';
+    case 'unsupported_absolute_claim_review':
+      return 'Avoid absolute claims unless sourced.';
+    case 'unsafe_prompt_artifact_review':
+      return 'Removed unsafe prompt-like wording from the review path.';
+    case 'no_source_package_available':
+      return 'No reusable source package was available.';
+    case 'source_package_over_budget':
+      return 'Source package was compressed for budget.';
+    case 'duplicate_source_removed_or_review_required':
+      return 'Duplicate source evidence needs review.';
+    case 'source_note_too_long':
+      return 'Source notes were shortened for budget.';
+    default:
+      return code.replace(/[_-]+/g, ' ');
+  }
+}
+
+function defaultExpandOptions(mode: GenerationMode): Array<{ id: string; label: string; action: string }> {
+  if (mode !== 'draft') {
+    return [
+      { id: 'rewrite-hook', label: 'Rewrite hook', action: 'rewrite_hook' },
+      { id: 'refresh-research', label: 'Refresh research', action: 'refresh_research' },
+    ];
+  }
+  return [
+    { id: 'expand-full', label: 'Expand to full script', action: 'expand_full' },
+    { id: 'expand-intro', label: 'Expand intro', action: 'expand_section:intro' },
+    { id: 'rewrite-hook', label: 'Rewrite hook', action: 'rewrite_hook' },
+    { id: 'refresh-research', label: 'Refresh research', action: 'refresh_research' },
+  ];
 }
 
 function publicScriptQualityReport(report: ScriptQualityReport): Omit<ScriptQualityReport, 'revisedScript' | 'structuredOutput'> {

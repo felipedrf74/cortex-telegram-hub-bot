@@ -25,6 +25,8 @@ import json
 import logging
 import os
 import re
+from contextvars import ContextVar
+from typing import Any
 
 import httpx
 
@@ -48,6 +50,27 @@ _FIXTURE_MODE = (
     os.environ.get("CONTENT_ENGINE_FIXTURE_MODE") == "1"
     or os.environ.get("NEXUS_LOCAL_ALLOW_MODEL_CALLS") == "0"
 )
+_ATTRIBUTION_CONTEXT: ContextVar[dict[str, Any] | None] = ContextVar(
+    "content_engine_attribution_context",
+    default=None,
+)
+
+
+def set_attribution_context(
+    user_id: int | None = None,
+    tenant_id: int | None = None,
+    attribution_token: str | None = None,
+):
+    """Install request-scoped user/tenant attribution for downstream AI calls."""
+    return _ATTRIBUTION_CONTEXT.set({
+        "user_id": user_id,
+        "tenant_id": tenant_id,
+        "attribution_token": attribution_token,
+    })
+
+
+def reset_attribution_context(token) -> None:
+    _ATTRIBUTION_CONTEXT.reset(token)
 
 
 def _strip_markdown_json_fence(raw: str) -> str:
@@ -137,6 +160,7 @@ async def ask_claude(
     json_mode: bool = False,
     user_id: int | None = None,
     tenant_id: int | None = None,
+    attribution_token: str | None = None,
 ) -> str:
     """Send a prompt through the TS AI proxy and return the text response.
 
@@ -153,6 +177,11 @@ async def ask_claude(
             "communicate with the TS backend's AI proxy."
         )
 
+    context = _ATTRIBUTION_CONTEXT.get() or {}
+    effective_user_id = user_id if user_id is not None else context.get("user_id")
+    effective_tenant_id = tenant_id if tenant_id is not None else context.get("tenant_id")
+    effective_attribution_token = attribution_token or context.get("attribution_token")
+
     body = {
         "prompt": prompt,
         "system": system,
@@ -161,10 +190,12 @@ async def ask_claude(
         "temperature": temperature,
         "jsonMode": json_mode,
     }
-    if user_id is not None:
-        body["userId"] = user_id
-    if tenant_id is not None:
-        body["tenantId"] = tenant_id
+    if effective_user_id is not None:
+        body["userId"] = effective_user_id
+    if effective_tenant_id is not None:
+        body["tenantId"] = effective_tenant_id
+    if effective_attribution_token:
+        body["attributionToken"] = effective_attribution_token
 
     async with httpx.AsyncClient(timeout=300.0) as client:
         try:
@@ -206,6 +237,7 @@ async def ask_claude_json(
     category: str = "content_engine",
     user_id: int | None = None,
     tenant_id: int | None = None,
+    attribution_token: str | None = None,
 ) -> dict | list:
     """Send a prompt through the AI proxy and parse the response as JSON.
 
@@ -218,6 +250,7 @@ async def ask_claude_json(
         max_tokens=max_tokens, temperature=temperature,
         category=category, json_mode=True,
         user_id=user_id, tenant_id=tenant_id,
+        attribution_token=attribution_token,
     )
 
     cleaned = _extract_json_candidate(raw)

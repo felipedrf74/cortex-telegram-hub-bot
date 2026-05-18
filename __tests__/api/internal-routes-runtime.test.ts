@@ -202,6 +202,49 @@ describe('internal routes runtime hardening', () => {
     });
   });
 
+  it('uses signed internal attribution tokens for scoped content-engine billing', async () => {
+    vi.doMock('../../src/services/gemini-provider', () => ({
+      completeOneShotWithFallback: vi.fn(async (_system, _prompt, _category, _fallback, options) => {
+        capturedAiOptions = options;
+        return { text: '{"ok":true}', provider: 'gemini' };
+      }),
+    }));
+    const { createInternalAttributionToken } = await import('../../src/services/internal-attribution');
+    const token = createInternalAttributionToken({
+      userId: 123,
+      tenantId: 456,
+      category: 'content_engine_script_draft',
+    });
+    expect(token).toBeTruthy();
+
+    const { internalRoutes } = await import('../../src/api/routes/internal');
+    const app = express();
+    app.use(express.json());
+    app.use('/api/v1/internal', internalRoutes());
+
+    const res = await fetchJson(app, '/api/v1/internal/ai-complete', {
+      method: 'POST',
+      headers: {
+        'x-internal-secret': 'test-internal-secret',
+        'content-type': 'application/json',
+      },
+      body: {
+        prompt: 'write a scoped draft',
+        category: 'content_engine_script_draft',
+        userId: 999,
+        tenantId: 999,
+        attributionToken: token,
+      },
+    });
+
+    expect(res.status).toBe(200);
+    expect(capturedAiOptions).toMatchObject({
+      userId: 123,
+      tenantId: 456,
+      jsonMode: false,
+    });
+  });
+
   it('fails closed when the owner bootstrap tenant is unavailable', async () => {
     ownerTarget = null;
     const { internalRoutes } = await import('../../src/api/routes/internal');

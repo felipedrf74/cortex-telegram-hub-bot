@@ -40,9 +40,12 @@ describe('Internal Routes — structural', () => {
   it('ai-complete strips body-supplied user and tenant metadata before provider usage attribution', () => {
     expect(routesSrc).toContain('userId?: number');
     expect(routesSrc).toContain('tenantId?: number');
-    expect(routesSrc).toContain('const scopedUserId = 0;');
-    expect(routesSrc).toContain('const scopedTenantId = 0;');
+    expect(routesSrc).toContain('attributionToken?: string');
+    expect(routesSrc).toContain('verifyInternalAttributionToken');
+    expect(routesSrc).toContain('const scopedUserId = verifiedAttribution?.userId ?? 0;');
+    expect(routesSrc).toContain('const scopedTenantId = verifiedAttribution?.tenantId ?? 0;');
     expect(routesSrc).toContain('Ignoring body-supplied internal AI attribution; billing as system usage');
+    expect(routesSrc).toContain('body scope ignored in favor of signed claims');
     expect(routesSrc).toContain('userId: scopedUserId');
     expect(routesSrc).toContain('tenantId: scopedTenantId');
   });
@@ -68,6 +71,14 @@ describe('Internal Routes — structural', () => {
 
   it('records usage via recordUsage from usage-metering', () => {
     expect(routesSrc).toContain('recordUsage');
+  });
+
+  it('report-usage uses signed attribution instead of hardcoding system billing', () => {
+    expect(routesSrc).toContain('verifyInternalAttributionToken(attributionToken, category)');
+    expect(routesSrc).toContain('VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)');
+    expect(routesSrc).toContain('recordUsage(scopedUserId');
+    expect(routesSrc).not.toContain('VALUES (?, ?, 0, ?, ?, ?, ?, ?, ?)');
+    expect(routesSrc).not.toContain('recordUsage(0, inputTokens');
   });
 
   it('pushes telemetry events', () => {

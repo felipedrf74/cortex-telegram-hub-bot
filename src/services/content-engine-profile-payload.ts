@@ -3,18 +3,23 @@
 import { getContentCreatorProfile } from '../state/content-creator-profile';
 import { logger } from '../utils/logger';
 import { getCurrentContext } from '../utils/request-context';
+import { createInternalAttributionToken } from './internal-attribution';
 
 export function buildCurrentCreatorProfilePayload(languageHint?: string | null): {
   language: string;
   creator_profile?: string;
+  user_id?: number;
+  tenant_id?: number;
+  internal_attribution_token?: string;
 } {
   const context = getCurrentContext();
   const fallbackLanguage = String(languageHint || 'en-US').trim() || 'en-US';
   if (!context?.userId) {
     return { language: fallbackLanguage };
   }
+  const tenantId = context.tenantId ?? context.userId;
   try {
-    const profile = getContentCreatorProfile(context.userId, context.userId);
+    const profile = getContentCreatorProfile(context.userId, tenantId);
     const language = profile.languagePreference?.trim() || fallbackLanguage;
     const lines = [
       'Creator scope: current authenticated Nexus Hub user only.',
@@ -32,6 +37,13 @@ export function buildCurrentCreatorProfilePayload(languageHint?: string | null):
     return {
       language,
       creator_profile: lines.join('\n').slice(0, 6000),
+      user_id: context.userId,
+      tenant_id: tenantId,
+      internal_attribution_token: createInternalAttributionToken({
+        userId: context.userId,
+        tenantId,
+        category: 'content_engine_creator_context',
+      }) ?? undefined,
     };
   } catch (err) {
     logger.warn({ err, userId: context.userId }, 'content-engine creator profile payload unavailable');
