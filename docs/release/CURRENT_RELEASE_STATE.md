@@ -2,20 +2,48 @@
 
 Status: canonical
 Owner: backend release lead (Felipe)
-Last verified: 2026-05-14
+Last verified: 2026-05-18
 Update policy: update after backend deploy or staging change. Workspace-level entry point is docs/release/CURRENT_RELEASE_STATE.md.
 
-Last updated: 2026-05-14
+Last updated: 2026-05-18
 
 ## Active Production Release
 
 - Source branch: `main`
-- Production HEAD: `633d37a6`
-- Production version: `4.14.162`
-- Source implementation commit: `feb1b022`
+- Production HEAD: `1587fc5d`
+- Production version: `4.14.171`
+- Source implementation commit: `0df40622`
 - iOS Chat card-hiding source changes are pushed to iOS `main` at `e7cfc8b`;
   a separate signed iOS/TestFlight release is still required to reach devices.
 - Official workspace root: `/Users/felipedominguez/Desktop/Nexus Hub`
+
+## 2026-05-18 Beta Registry And Stripe Billing Promote
+
+- Scope: double opt-in beta registry, waitlist email validation, confirmed-only
+  portal approval, 30-day DB invite emails, DB invite redemption, long-lived
+  static reviewer-code expiry, expired beta-trial paywall handling, public
+  website Stripe Checkout routes, webhook idempotency, verified-user checkout
+  claim flow, and Pro/Max monthly USD/BRL Stripe price mapping.
+- Production version: `4.14.171`.
+- Production deploy commit: `1587fc5d`.
+- Source implementation commit before deploy bump: `0df40622`.
+- Staging deploy passed, followed by a five-minute soak and staging smoke
+  **18/18** at
+  `docs/release/smoke-evidence/staging-smoke-0df40622-20260518T194456Z.json`;
+  promote-time staging smoke passed **18/18** again at
+  `docs/release/smoke-evidence/staging-smoke-0df40622-20260518T194531Z.json`.
+- Deploy-time validation passed: backend `npm run verify` passed
+  **618 test files / 9,172 tests**, deploy-time build passed, production env
+  validation passed, production backup included `bot.db`, dependencies updated,
+  native modules rebuilt, owner bootstrap preflight passed, and production PM2
+  showed both `nexus-hub` and `content-engine` online after restart.
+- Production health passed after deploy: `https://api.nexushub.me/health`
+  returned `status: healthy`, `server.status: online`, and
+  `database: connected`.
+- Operator note: the Cloudflare Pages direct upload for `https://nexushub.me`
+  did not run in this shell because Wrangler has no non-interactive
+  `CLOUDFLARE_API_TOKEN`. The synced static files are present under
+  `/Users/felipedominguez/Desktop/nexushub-landing-deploy`.
 
 ## Scope
 

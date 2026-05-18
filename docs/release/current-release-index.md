@@ -2,81 +2,61 @@
 
 Status: canonical
 Owner: release lead (Felipe)
-Last verified: 2026-05-15
+Last verified: 2026-05-18
 Update policy: update when the current RC identity, deploy-gate evidence, or canonical-doc cross-references change. Run engine/scripts/release-identity.sh --persist to refresh auto-generated identity fields.
 
-Date: 2026-05-15
+Date: 2026-05-18
 
 ## Current Status
 
 Active production package:
 
 - source branch: `main`
-- production HEAD: `f03fccd8` (version-bump for 4.14.164)
-- production version: `4.14.164`
-- runtime source commit: `cc17b75c` (`Harden hybrid chat action release gates`)
-- latest `origin/main`: `f1247c8c` (docs/evidence-only after deploy)
+- production HEAD: `1587fc5d` (version-bump for 4.14.171)
+- production version: `4.14.171`
+- runtime source commit: `0df40622` (`feat(beta): add double opt-in registry and Stripe checkout`)
+- latest `origin/main`: pending fast-forward to `1587fc5d` plus release-doc evidence
 - release state: `docs/release/CURRENT_RELEASE_STATE.md` (backend) and `/Users/felipedominguez/Desktop/Nexus Hub/docs/release/CURRENT_RELEASE_STATE.md` (workspace)
 - official workspace root: `/Users/felipedominguez/Desktop/Nexus Hub`
 
-Commits in this release (4.14.163 -> 4.14.164):
+Commits in this release (4.14.170 -> 4.14.171):
 
-- `cc17b75c Harden hybrid chat action release gates`
-- `f03fccd8 chore: bump version to 4.14.164 [deploy]`
-- `797ac7c5 docs: record 4.14.164 release evidence`
-- `f1247c8c docs: refresh release identity mirror`
+- `0df40622 feat(beta): add double opt-in registry and Stripe checkout`
+- `1587fc5d chore: bump version to 4.14.171 [deploy]`
 
 Scope:
 
-- Nexus Chat Hybrid Action Intelligence hardening across planner, action
-  state store, run-store, registry, evaluation harness, and hybrid metrics:
-  honest macro-action precision math, real planner smoke-corpus feeder,
-  derived safety metrics, refusal false-positive gate, non-vacuous
-  gate-positive bypass assertions, planner exception/null-return fail-loud
-  tests.
-- LLM-output trust boundary hardening: recursive arg sanitization,
-  prototype-pollution defense, identity/provider/tool/object-ID stripping,
-  provider readiness/risk/confirmation/read-back validation, atomic
-  action-run claim/executing transition, late-write reconciliation, zombie
-  reaper, retention prune, bounded pending-expiry sweep, PII-safe
-  action-run result summaries, shadow telemetry and prediction hashes, UTC
-  datetime hash canonicalization with parity tests, provider write/read-back
-  timeouts with AbortSignal forwarding.
-- New pending-action REST handoff endpoint with auth/tenant scope and
-  no-store headers; app-level route/header/error tests.
-- iOS source push at `835a985` delivers Plan Builder direct REST handoff,
-  prefill reducer, dismissal cleanup, stale-fetch guard, unknown
-  `verificationStatus` fallback, source pins, and structured metadata
-  rendering safeguards.
-- This release also bundles `src/adapters/whatsapp-adapter.ts` (369 lines)
-  as a NON-RUNTIME scaffold: not exported from `src/adapters/index.ts`, no
-  imports, no portal/config wiring, no tests. Treat as inert reference
-  surface, not shipped functionality, until a future release explicitly
-  wires it.
+- Double opt-in beta registry: normalized email, syntax/disposable/MX
+  validation, hashed expiring confirmation tokens, confirmed-only portal
+  approval, 30-day invite emails, DB invite redemption, and long-lived static
+  reviewer-code policy.
+- Billing launch foundation: public website checkout endpoint, authenticated
+  checkout endpoint hardening, server-side plan/currency to Stripe Price
+  mapping for Pro/Max monthly USD/BRL, webhook idempotency, unknown-price
+  fail-closed behavior, and verified-user claim flow for public checkout
+  ownership.
+- Email and logging hardening from hostile QA: transactional names and reset
+  URLs are escaped; raw names/emails/invite codes are not logged.
+- Static landing source and deploy folder are synced locally with real
+  waitlist fetch handling, pricing copy, and Cloudflare Pages `_headers`.
+  The live `nexushub.me` direct upload is still pending a
+  `CLOUDFLARE_API_TOKEN` in the deploy shell.
 
 Validated through promotion:
 
 - staging deploy: exit 0
-- staging smoke: 17 passed / 0 failed / 17 total (pre-promote and
-  post-promote realignment both green)
+- five-minute staging soak: completed
+- staging smoke: 18 passed / 0 failed / 18 total
+- promote-time staging smoke: 18 passed / 0 failed / 18 total
 - deploy-time typecheck and build passed
-- full backend verify: 536 files / 7,610 tests
-- iOS scheme tests: 117 executed / 15 skipped / 0 failures on the iPhone 17
-  Pro simulator
+- full backend verify: 618 files / 9,172 tests
+- deploy-time pre-push full Vitest after version bump also passed
 - promote-to-prod.sh: `PROMOTE COMPLETE`
 - post-deploy: PM2 `nexus-hub` and `content-engine` online, production
-  snapshot reports `4.14.164`
+  snapshot reports `4.14.171`
 - production `/health` (`api.nexushub.me/health`): healthy after deploy
-- iOS `main` pushed at `835a985`
-- workspace `docs:audit` after mirror refresh: no workspace-mirror-stale
-  findings beyond baseline warnings
-- still-open operator/device gates: signed TestFlight two-account
-  walkthrough, real Gmail/Outlook/Google Calendar/Health provider mutation
-  and read-back validation, APNs token + safe delivery proof,
-  Garmin MFA/live-session window, HealthKit/Apple Watch device truth,
-  App Store metadata review, and an honest labeled-canary/production
-  telemetry window before declaring the ≥98% macro-precision target as
-  measured production truth
+- still-open operator gate: Cloudflare Pages direct upload for
+  `https://nexushub.me` needs non-interactive Cloudflare credentials
 
 ## Previous Production Versions On This Branch
 
