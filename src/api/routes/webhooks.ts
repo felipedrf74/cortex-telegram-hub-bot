@@ -126,6 +126,8 @@ export function createWebhookRouter(bot?: Bot): Router {
         handleSubscriptionUpdated,
         handleSubscriptionDeleted,
         handleInvoicePaymentFailed,
+        hasProcessedStripeWebhookEvent,
+        markStripeWebhookEventProcessed,
       } = require('../../services/stripe-service');
 
       if (!isStripeConfigured()) {
@@ -141,6 +143,11 @@ export function createWebhookRouter(bot?: Bot): Router {
         signature,
         config.stripe?.webhookSecret || '',
       );
+
+      if (hasProcessedStripeWebhookEvent(event.id)) {
+        res.status(200).json({ received: true, duplicate: true });
+        return;
+      }
 
       switch (event.type) {
         case 'checkout.session.completed':
@@ -158,6 +165,8 @@ export function createWebhookRouter(bot?: Bot): Router {
         default:
           logger.debug({ type: event.type }, 'Stripe webhook event not handled');
       }
+
+      markStripeWebhookEventProcessed(event.id, event.type);
 
       res.status(200).json({ received: true });
     } catch (err: any) {

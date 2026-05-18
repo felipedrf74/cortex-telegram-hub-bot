@@ -21,10 +21,15 @@ vi.mock('../../src/services/database', () => ({
   initDatabase: vi.fn(),
   closeDatabase: vi.fn(),
   findUnexpectedMigrationPrefixCollisions: vi.fn(() => []),
+  assertNoUnexpectedMigrationPrefixCollisions: vi.fn(),
 }));
-vi.mock('../../src/services/user-service', () => ({
-  isOwnerUserRef: (...args: [number]) => mockIsOwnerUserRef(...args),
-}));
+vi.mock('../../src/services/user-service', async () => {
+  const actual = await vi.importActual<typeof import('../../src/services/user-service')>('../../src/services/user-service');
+  return {
+    ...actual,
+    isOwnerUserRef: (...args: [number]) => mockIsOwnerUserRef(...args),
+  };
+});
 
 // Import under test AFTER mocks so the mocked modules are resolved.
 import {
@@ -151,6 +156,20 @@ describe('getEffectiveEntitlement', () => {
     const ent = getEffectiveEntitlement(12);
     expect(ent.source).toBe('beta');
     expect(ent.plan).toBe('max');
+  });
+
+  it('treats expired beta trial rows as free', () => {
+    mockSubscriptionRow({
+      plan: 'max',
+      status: 'trialing',
+      provider: 'beta',
+      current_period_end: '2026-01-01T00:00:00.000Z',
+    });
+
+    const ent = getEffectiveEntitlement(12);
+    expect(ent.source).toBe('free');
+    expect(ent.plan).toBe('free');
+    expect(ent.status).toBe('expired');
   });
 
   it('degrades canceled subscription to free with status=expired', () => {

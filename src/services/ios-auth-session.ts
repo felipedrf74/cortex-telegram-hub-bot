@@ -1,6 +1,7 @@
 // Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
 
 import crypto from 'crypto';
+import { config } from '../config';
 import { getDb } from './database';
 import { logger } from '../utils/logger';
 import { logAudit } from './audit-trail';
@@ -210,10 +211,17 @@ export function backfillLegacyRefreshTokenHashes(): { inspectedRows: number; has
   return { inspectedRows: rows.length, hashedRows, clearedPlaintextRows };
 }
 
-export function grantBetaSandboxAccess(userId: number): void {
+export function grantBetaSandboxAccess(userId: number, expiresAt?: string | Date | null): void {
   const db = getDb();
   const periodStart = new Date().toISOString();
-  const periodEnd = new Date(Date.now() + (365 * 24 * 60 * 60 * 1000)).toISOString();
+  const suppliedExpiry = expiresAt instanceof Date
+    ? expiresAt
+    : expiresAt
+      ? new Date(expiresAt)
+      : null;
+  const periodEnd = suppliedExpiry && !Number.isNaN(suppliedExpiry.getTime())
+    ? suppliedExpiry.toISOString()
+    : new Date(Date.now() + (((config as any).ios?.betaInviteExpiresDays ?? 30) * 24 * 60 * 60 * 1000)).toISOString();
 
   db.prepare(`
     UPDATE users
@@ -242,7 +250,7 @@ export function grantBetaSandboxAccess(userId: number): void {
       current_period_end,
       updated_at
     )
-    VALUES (?, 'max', 'yearly', 'trialing', 'none', ?, ?, datetime('now'))
+    VALUES (?, 'max', 'monthly', 'trialing', 'beta', ?, ?, datetime('now'))
     ON CONFLICT(user_id) DO UPDATE SET
       plan = excluded.plan,
       period = excluded.period,

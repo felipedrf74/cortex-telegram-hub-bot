@@ -31,12 +31,12 @@ interface MockRes {
   json(body: any): MockRes;
 }
 
-function mockRes(): MockRes {
+function mockRes(onJson?: () => void): MockRes {
   const res: MockRes = {
     statusCode: 200,
     body: null,
     status(code: number) { res.statusCode = code; return res; },
-    json(body: any) { res.body = body; return res; },
+    json(body: any) { res.body = body; onJson?.(); return res; },
   };
   return res;
 }
@@ -60,14 +60,23 @@ async function dispatchAuth(path: string, body: any, options: { method?: string;
   (req as any).originalUrl = path;
   (req as any).baseUrl = '';
   (req as any).path = path;
-  const res = mockRes();
-
-  await new Promise<void>((resolve) => {
-    (router as any).handle(req, res, (err: any) => {
-      if (err) throw err;
+  let res!: MockRes;
+  await new Promise<void>((resolve, reject) => {
+    let settled = false;
+    const finish = () => {
+      if (settled) return;
+      settled = true;
       resolve();
+    };
+    res = mockRes(finish);
+    (router as any).handle(req, res, (err: any) => {
+      if (err) {
+        reject(err);
+        return;
+      }
+      finish();
     });
-    setImmediate(resolve);
+    setTimeout(finish, 1000);
   });
 
   return res;
@@ -149,7 +158,7 @@ describe('Auth invite registration', () => {
     const source = fs.readFileSync(path.resolve(__dirname, '../../src/api/routes/auth.ts'), 'utf8');
     expect(source).toContain('Verification email send failed');
     expect(source).toContain('userId: user.id');
-    expect(source).toContain('email: user.email');
+    expect(source).toContain('emailHash: hashEmail');
   });
 
   it('provisions beta invite users with active max-tier sandbox access', async () => {
@@ -178,20 +187,46 @@ describe('Auth invite registration', () => {
     expect(user.daily_cost_limit_usd).toBeGreaterThanOrEqual(0.6);
 
     const subscription = testDb.prepare(
-      'SELECT plan, status, provider, period FROM subscriptions WHERE user_id = ?'
+      'SELECT plan, status, provider, period, current_period_end FROM subscriptions WHERE user_id = ?'
     ).get(res.body.data.user.id) as {
       plan: string;
       status: string;
       provider: string;
       period: string;
+      current_period_end: string;
     };
 
     expect(subscription).toMatchObject({
       plan: 'max',
       status: 'trialing',
-      provider: 'none',
-      period: 'yearly',
+      provider: 'beta',
+      period: 'monthly',
     });
+    const days = (Date.parse(subscription.current_period_end) - Date.now()) / 86400000;
+    expect(days).toBeGreaterThan(364);
+    expect(days).toBeLessThanOrEqual(366);
+  });
+
+  it('provisions database invite users with the invite expiration date', async () => {
+    const expiresAt = new Date(Date.now() + 30 * 86400000).toISOString();
+    testDb.prepare(`
+      INSERT INTO invite_codes (code, created_by, max_uses, used_count, expires_at)
+      VALUES ('DB_INVITE_30D', 0, 1, 0, ?)
+    `).run(expiresAt);
+
+    const res = await dispatchRegisterInvite({
+      deviceId: 'db-invite-device-1234',
+      deviceName: 'Beta Tester',
+      inviteCode: 'DB_INVITE_30D',
+    });
+
+    expect(res.statusCode).toBe(201);
+    const subscription = testDb.prepare(
+      'SELECT current_period_end FROM subscriptions WHERE user_id = ?',
+    ).get(res.body.data.user.id) as { current_period_end: string };
+    const days = (Date.parse(subscription.current_period_end) - Date.now()) / 86400000;
+    expect(days).toBeGreaterThan(29);
+    expect(days).toBeLessThanOrEqual(31);
   });
 
   it('accepts invite codes case-insensitively for iOS keyboard compatibility', async () => {
@@ -626,6 +661,32 @@ describe('Auth invite registration', () => {
     expect(res.body.ok).toBe(false);
     expect(res.body.error.code).toBe('REGISTRATION_REJECTED');
     expect(res.body.error.code).not.toBe('EMAIL_EXISTS');
+  });
+
+  it('grants static beta access during email/password registration', async () => {
+    const res = await dispatchAuth('/register/email', {
+      email: 'static-beta@example.com',
+      password: 'correct-horse-battery',
+      firstName: 'Static',
+      deviceId: 'ios-device-register-static-beta',
+      inviteCode: 'LOCALBETA_TEST',
+    });
+
+    expect(res.statusCode).toBe(201);
+    const sub = testDb.prepare(`
+      SELECT plan, status, provider, current_period_end
+      FROM subscriptions
+      WHERE user_id = ?
+    `).get(res.body.data.user.id) as {
+      plan: string;
+      status: string;
+      provider: string;
+      current_period_end: string;
+    };
+    expect(sub).toMatchObject({ plan: 'max', status: 'trialing', provider: 'beta' });
+    const days = (Date.parse(sub.current_period_end) - Date.now()) / 86400000;
+    expect(days).toBeGreaterThan(364);
+    expect(days).toBeLessThanOrEqual(366);
   });
 
   it('caps email verification code guesses and locks the active code', async () => {

@@ -12,6 +12,7 @@ import { config } from '../config';
 import { logger } from '../utils/logger';
 import crypto from 'crypto';
 import type { Lang } from '../utils/i18n';
+import { hashEmail } from '../utils/identity';
 import { getStoredDailyCostLimitUsdForTier } from './plan-quotas';
 
 // ─── Types ──────────────────────────────────────────────────────────
@@ -57,7 +58,7 @@ export interface UserTarget {
 
 export type IosInviteResolution =
   | { kind: 'owner'; user: User }
-  | { kind: 'sandbox'; user: User }
+  | { kind: 'sandbox'; user: User; inviteExpiresAt?: string | null }
   | { kind: 'owner_unavailable' }
   | { kind: 'invalid' };
 
@@ -74,17 +75,23 @@ export class ClosedBetaInviteRequiredError extends Error {
 }
 
 export function getClosedBetaInviteStatus(inviteCode: unknown): ClosedBetaInviteStatus {
-  const normalized = String(inviteCode ?? '').trim().toLowerCase();
+  const rawCode = String(inviteCode ?? '').trim();
+  const normalized = rawCode.toLowerCase();
   if (!normalized) return 'missing';
 
   const validCodes = [
-    config.ios.inviteCode,
-    config.ios.ownerCode,
+    (config as any).ios?.inviteCode,
+    (config as any).ios?.ownerCode,
   ]
     .map((code) => String(code ?? '').trim().toLowerCase())
     .filter(Boolean);
 
-  return validCodes.includes(normalized) ? 'valid' : 'invalid';
+  if (validCodes.includes(normalized)) return 'valid';
+  try {
+    return peekInviteCode(rawCode).valid ? 'valid' : 'invalid';
+  } catch {
+    return 'invalid';
+  }
 }
 
 export function assertClosedBetaInviteForNewUser(inviteCode: unknown): void {
@@ -361,9 +368,10 @@ export function getOrCreateInviteSandboxUser(deviceId: string): User {
 }
 
 export function resolveIosInviteRegistrationTarget(inviteCode: string, deviceId: string): IosInviteResolution {
-  const normalizedInviteCode = String(inviteCode).trim().toLowerCase();
-  const ownerCode = (config.ios.ownerCode || '').trim().toLowerCase();
-  const betaCode = (config.ios.inviteCode || '').trim().toLowerCase();
+  const rawInviteCode = String(inviteCode).trim();
+  const normalizedInviteCode = rawInviteCode.toLowerCase();
+  const ownerCode = ((config as any).ios?.ownerCode || '').trim().toLowerCase();
+  const betaCode = ((config as any).ios?.inviteCode || '').trim().toLowerCase();
 
   if (ownerCode && normalizedInviteCode === ownerCode) {
     const user = getOwnerBootstrapUser();
@@ -371,7 +379,21 @@ export function resolveIosInviteRegistrationTarget(inviteCode: string, deviceId:
   }
 
   if (betaCode && normalizedInviteCode === betaCode) {
-    return { kind: 'sandbox', user: getOrCreateInviteSandboxUser(deviceId) };
+    const days = (config as any).ios?.staticInviteExpiresDays ?? 365;
+    return {
+      kind: 'sandbox',
+      user: getOrCreateInviteSandboxUser(deviceId),
+      inviteExpiresAt: new Date(Date.now() + days * 86400000).toISOString(),
+    };
+  }
+
+  const consumed = validateAndConsumeInviteCode(rawInviteCode);
+  if (consumed.valid) {
+    return {
+      kind: 'sandbox',
+      user: getOrCreateInviteSandboxUser(deviceId),
+      inviteExpiresAt: consumed.expiresAt ?? null,
+    };
   }
 
   return { kind: 'invalid' };
@@ -482,10 +504,10 @@ export function createAppleUser(appleUserId: string, profile: {
     getStoredDailyCostLimitUsdForTier('free'),
   );
   const user = getUserByAppleId(appleUserId)!;
-  logger.info({ appleUserId, email: profile.email }, 'New Apple user registered');
+  logger.info({ appleUserId, emailHash: profile.email ? hashEmail(profile.email, 16) : null }, 'New Apple user registered');
   // AUTH-O6 (closed-beta-auth-hardening, 2026-05-04): emit auth.user_created
   // audit row so operators can dashboard registration volume + provider mix.
-  emitUserCreatedAudit(user.id, 'apple', { appleUserId, email: profile.email });
+  emitUserCreatedAudit(user.id, 'apple', { appleUserId, emailHash: profile.email ? hashEmail(profile.email, 16) : null });
   return user;
 }
 
@@ -511,8 +533,8 @@ export function createGoogleUser(googleUserId: string, profile: {
     getStoredDailyCostLimitUsdForTier('free'),
   );
   const user = getUserByGoogleId(googleUserId)!;
-  logger.info({ googleUserId, email: profile.email }, 'New Google user registered');
-  emitUserCreatedAudit(user.id, 'google', { googleUserId, email: profile.email });
+  logger.info({ googleUserId, emailHash: hashEmail(profile.email, 16) }, 'New Google user registered');
+  emitUserCreatedAudit(user.id, 'google', { googleUserId, emailHash: hashEmail(profile.email, 16) });
   return user;
 }
 
@@ -530,8 +552,8 @@ export function createEmailUser(email: string, passwordHash: string, profile: {
     VALUES (?, ?, ?, 0, 'email', 'free', 40, 100000, ?)
   `).run(email.toLowerCase(), passwordHash, profile.firstName, getStoredDailyCostLimitUsdForTier('free'));
   const user = getUserByEmail(email)!;
-  logger.info({ email }, 'New email user registered');
-  emitUserCreatedAudit(user.id, 'email', { email });
+  logger.info({ emailHash: hashEmail(email, 16) }, 'New email user registered');
+  emitUserCreatedAudit(user.id, 'email', { emailHash: hashEmail(email, 16) });
   return user;
 }
 
@@ -734,7 +756,7 @@ export function setUserLimits(telegramId: number, limits: {
 
 export function createInviteCode(createdBy: number, maxUses = 1, expiresInDays?: number): string {
   const db = getDb();
-  const code = crypto.randomBytes(4).toString('hex').toUpperCase(); // 8-char hex
+  const code = crypto.randomBytes(16).toString('base64url');
   const expiresAt = expiresInDays
     ? new Date(Date.now() + expiresInDays * 86400000).toISOString()
     : null;
@@ -744,11 +766,45 @@ export function createInviteCode(createdBy: number, maxUses = 1, expiresInDays?:
     VALUES (?, ?, ?, ?)
   `).run(code, createdBy, maxUses, expiresAt);
 
-  logger.info({ code, createdBy, maxUses, expiresAt }, 'Invite code created');
+  logger.info({ codeSuffix: code.slice(-4), createdBy, maxUses, expiresAt }, 'Invite code created');
   return code;
 }
 
-export function validateAndConsumeInviteCode(code: string): { valid: boolean; skillPreset?: Record<string, boolean> } {
+export function peekInviteCode(code: string): {
+  valid: boolean;
+  expiresAt?: string | null;
+  skillPreset?: Record<string, boolean>;
+} {
+  const trimmed = String(code ?? '').trim();
+  if (!trimmed) return { valid: false };
+  const db = getDb();
+  const invite = db.prepare(`
+    SELECT skill_preset, expires_at
+    FROM invite_codes
+    WHERE code = ?
+      AND used_count < max_uses
+      AND (expires_at IS NULL OR expires_at > datetime('now'))
+  `).get(trimmed) as any;
+  if (!invite) return { valid: false };
+
+  let skillPreset: Record<string, boolean> | undefined;
+  if (invite.skill_preset) {
+    try { skillPreset = JSON.parse(invite.skill_preset); } catch { /* ignore */ }
+  }
+
+  const result: { valid: true; expiresAt?: string | null; skillPreset?: Record<string, boolean> } = { valid: true };
+  if (invite.expires_at) result.expiresAt = invite.expires_at;
+  if (skillPreset) result.skillPreset = skillPreset;
+  return result;
+}
+
+export function validateAndConsumeInviteCode(code: string): {
+  valid: boolean;
+  expiresAt?: string | null;
+  skillPreset?: Record<string, boolean>;
+} {
+  const trimmed = String(code ?? '').trim();
+  if (!trimmed) return { valid: false };
   const db = getDb();
 
   const result = db.prepare(`
@@ -757,18 +813,52 @@ export function validateAndConsumeInviteCode(code: string): { valid: boolean; sk
     WHERE code = ?
       AND used_count < max_uses
       AND (expires_at IS NULL OR expires_at > datetime('now'))
-  `).run(code);
+  `).run(trimmed);
 
   if (result.changes === 0) return { valid: false };
 
   // Get the skill_preset from the consumed code
-  const invite = db.prepare('SELECT skill_preset FROM invite_codes WHERE code = ?').get(code) as any;
+  const invite = db.prepare('SELECT skill_preset, expires_at FROM invite_codes WHERE code = ?').get(trimmed) as any;
+  try {
+    db.prepare(`
+      UPDATE waitlist
+         SET status = 'signed_up',
+             email_delivery_status = 'invite_redeemed'
+       WHERE invite_code = ?
+    `).run(trimmed);
+  } catch { /* waitlist table may not exist in older local fixtures */ }
   let skillPreset: Record<string, boolean> | undefined;
   if (invite?.skill_preset) {
     try { skillPreset = JSON.parse(invite.skill_preset); } catch { /* ignore */ }
   }
 
-  return { valid: true, skillPreset };
+  const response: { valid: true; expiresAt?: string | null; skillPreset?: Record<string, boolean> } = { valid: true };
+  if (invite?.expires_at) response.expiresAt = invite.expires_at;
+  if (skillPreset) response.skillPreset = skillPreset;
+  return response;
+}
+
+export function consumeDatabaseInviteForUser(inviteCode: unknown): {
+  consumed: boolean;
+  expiresAt?: string | null;
+  skillPreset?: Record<string, boolean>;
+} {
+  const rawCode = String(inviteCode ?? '').trim();
+  if (!rawCode) return { consumed: false };
+
+  const normalized = rawCode.toLowerCase();
+  const staticCodes = [
+    (config as any).ios?.inviteCode,
+    (config as any).ios?.ownerCode,
+  ].map((code) => String(code ?? '').trim().toLowerCase()).filter(Boolean);
+  if (staticCodes.includes(normalized)) return { consumed: false };
+
+  const result = validateAndConsumeInviteCode(rawCode);
+  if (!result.valid) return { consumed: false };
+  const consumed: { consumed: true; expiresAt?: string | null; skillPreset?: Record<string, boolean> } = { consumed: true };
+  if (result.expiresAt) consumed.expiresAt = result.expiresAt;
+  if (result.skillPreset) consumed.skillPreset = result.skillPreset;
+  return consumed;
 }
 
 export function listInviteCodes(): InviteCode[] {

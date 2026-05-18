@@ -197,7 +197,9 @@ export function getEffectiveEntitlement(userId: number | null | undefined): User
   }
 
   const subscriptionExpiresAt = sub?.current_period_end ?? null;
-  const isActiveSub = sub?.status === 'active' || sub?.status === 'trialing';
+  const periodEndMs = subscriptionExpiresAt ? Date.parse(subscriptionExpiresAt) : NaN;
+  const hasExpiredPeriod = Number.isFinite(periodEndMs) && periodEndMs <= Date.now();
+  const isActiveSub = (sub?.status === 'active' || sub?.status === 'trialing') && !hasExpiredPeriod;
 
   if (sub && isActiveSub) {
     const plan = normalizePlan(sub.plan);
@@ -275,7 +277,8 @@ export function getEffectiveEntitlement(userId: number | null | undefined): User
 
   // Rule 6 — no privileged state → Free
   const status: EntitlementStatus =
-    sub?.status === 'past_due' ? 'past_due'
+    hasExpiredPeriod ? 'expired'
+      : sub?.status === 'past_due' ? 'past_due'
       : sub?.status === 'expired' || sub?.status === 'canceled' ? 'expired'
         : 'none';
   return freeEntitlement({ userId, source: 'free', status, evaluatedAt, isOwner: false, isFounder: false });

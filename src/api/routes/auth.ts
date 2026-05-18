@@ -18,6 +18,7 @@ import {
   resolveIosInviteRegistrationTarget,
   ClosedBetaInviteRequiredError,
   getClosedBetaInviteStatus,
+  consumeDatabaseInviteForUser,
   resolveCurrentTenantIdForUser,
 } from '../../services/user-service';
 import { signIosJwt } from '../../services/ios-jwt';
@@ -178,6 +179,21 @@ function issueTokensAndRegisterDevice(
   sendSuccess(res, payload, { status: 201 });
 }
 
+function consumeInviteAndGrantBeta(userId: number, inviteCode: unknown): void {
+  const consumed = consumeDatabaseInviteForUser(inviteCode);
+  if (consumed.consumed) {
+    grantBetaSandboxAccess(userId, consumed.expiresAt ?? null);
+    return;
+  }
+
+  const normalized = String(inviteCode ?? '').trim().toLowerCase();
+  const betaCode = ((config as any).ios?.inviteCode || '').trim().toLowerCase();
+  if (betaCode && normalized === betaCode) {
+    const days = (config as any).ios?.staticInviteExpiresDays ?? 365;
+    grantBetaSandboxAccess(userId, new Date(Date.now() + days * 86400000));
+  }
+}
+
 export function authRoutes(): Router {
   const router = Router();
 
@@ -222,7 +238,7 @@ export function authRoutes(): Router {
       // Beta/reviewer users must be able to exercise the full AI surface.
       // Provision them with a local Max-tier subscription so app review and
       // closed-beta QA do not hit the paywall immediately after sign-in.
-      grantBetaSandboxAccess(inviteTarget.user.id);
+      grantBetaSandboxAccess(inviteTarget.user.id, inviteTarget.inviteExpiresAt ?? null);
     }
 
     issueTokensAndRegisterDevice(
@@ -498,6 +514,7 @@ export function authRoutes(): Router {
         user = createAppleUser(appleUserId, { email, firstName, lastName }, inviteCode);
       }
 
+      consumeInviteAndGrantBeta(user.id, inviteCode);
       issueTokensAndRegisterDevice(req, res, user.id, deviceId, deviceName || null, null, user);
     } catch (err: any) {
       if (err instanceof ClosedBetaInviteRequiredError) {
@@ -730,6 +747,7 @@ export function authRoutes(): Router {
         return;
       }
       const user = resolveGoogleIdentityUser(payload, { inviteCode });
+      consumeInviteAndGrantBeta(user.id, inviteCode);
 
       issueTokensAndRegisterDevice(req, res, user.id, deviceId, deviceName || null, null, user);
     } catch (err: any) {
@@ -854,6 +872,7 @@ export function authRoutes(): Router {
     // Hash password with bcrypt (cost factor 12)
     const passwordHash = await bcrypt.hash(password, 12);
     const user = createEmailUser(email, passwordHash, { firstName });
+    consumeInviteAndGrantBeta(user.id, inviteCode);
 
     // Auto-send verification code after registration
     try {
@@ -875,7 +894,7 @@ export function authRoutes(): Router {
         // Fire-and-forget — don't block registration on email delivery
         sendVerificationCode(email, code, firstName).catch((err: unknown) => {
           logger.error(
-            { err, userId: user.id, email: user.email },
+            { err, userId: user.id, emailHash: hashEmail(user.email || email, 16) },
             'Verification email send failed',
           );
         });

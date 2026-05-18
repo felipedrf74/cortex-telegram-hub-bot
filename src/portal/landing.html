@@ -6,7 +6,7 @@
      April 9 2026 rewrite: positioning pivoted from "AI + ADHD" to the
      "Hybrid Operator" target user (self-employed person who trains seriously,
      tracks macros, and runs their own business ops). New business model is
-     Option G: Pro $25/mo + Max $45/mo, with Content Creator Pack and AI Coach
+     Option G: Pro $14.99/mo + Max $24.99/mo, with Content Creator Pack and AI Coach
      Pack as add-ons for Pro users. The old Founder/Free/Ultra 3-tier structure
      is gone. FAQ, integrations grid, 3-step how-it-works are also gone —
      replaced by a Skills grid, cross-domain scenarios, and a profile quiz. -->
@@ -618,7 +618,7 @@
 
     /* ─── PRICING + TOGGLES ──────────────────────────────────── */
     /* Two segmented controls stacked above the tier cards:
-       monthly↔annual (period) and USD↔BRL (currency). Both
+       monthly-only (period) and USD↔BRL (currency). Both
        write to data-* attributes on the .pricing container and
        the JS walks [data-price] nodes to swap the displayed amount.
        Segmented pill pattern matches the language toggle for
@@ -787,8 +787,13 @@
       justify-content: center;
       height: 44px;
       border-radius: var(--r-md);
+      border: 0;
+      width: 100%;
+      cursor: pointer;
+      font-family: inherit;
       font-weight: 600;
       font-size: 14px;
+      text-decoration: none;
       transition: all var(--duration-fast) var(--ease-out);
     }
     .tier__cta--primary {
@@ -807,6 +812,9 @@
     }
     .tier__cta--secondary:hover {
       border-color: var(--border-strong);
+    }
+    .tier__cta + .tier__cta {
+      margin-top: var(--s-3);
     }
 
     /* ─── BETA BANNER (overlays pricing) ─────────────────────── */
@@ -1332,17 +1340,13 @@
         Grátis durante o beta. Os preços abaixo entram em vigor quando o beta fecha.
       </p>
 
-      <!-- Pricing toggles: monthly↔annual + USD↔BRL.
+      <!-- Pricing toggles: monthly-only + USD↔BRL.
            State is held in the data-period and data-currency attrs on
            this wrapper. The initPricingToggle() / initCurrencyToggle()
            JS handlers walk [data-price-*] nodes and swap the number. -->
       <div class="pricing-controls" data-period="monthly" data-currency="USD" id="pricing-section">
         <div class="seg-toggle" role="group" aria-label="Billing period">
           <button type="button" class="seg-toggle__btn" data-period="monthly" aria-pressed="true" data-i18n="pricing.toggle_monthly">Mensal</button>
-          <button type="button" class="seg-toggle__btn" data-period="annual" aria-pressed="false">
-            <span data-i18n="pricing.toggle_annual">Anual</span>
-            <span class="seg-toggle__badge" data-i18n="pricing.toggle_discount">−20%</span>
-          </button>
         </div>
         <div class="seg-toggle" role="group" aria-label="Currency">
           <button type="button" class="seg-toggle__btn" data-currency="USD" aria-pressed="true">USD</button>
@@ -1357,10 +1361,10 @@
           <div class="tier__tagline" data-i18n="pricing.pro_tagline">Todas as 5 skills. Limites confortáveis em IA.</div>
           <div class="tier__price">
             <span class="tier__price-currency" data-price-symbol>$</span>
-            <span class="tier__price-amount" data-price-tier="pro">25</span>
+            <span class="tier__price-amount" data-price-tier="pro">14.99</span>
             <span class="tier__price-period" data-i18n="pricing.per_month">/mês</span>
           </div>
-          <div class="tier__price-alt" data-price-alt-tier="pro" data-i18n="pricing.pro_alt_monthly_usd">ou $240/ano ($20/mês efetivo)</div>
+          <div class="tier__price-alt" data-price-alt-tier="pro" data-i18n="pricing.pro_alt_monthly_usd">também em BRL por R$69,99/mês</div>
           <ul class="tier__features">
             <li data-i18n="pricing.pro_f1">Todas as 5 skills desbloqueadas</li>
             <li data-i18n="pricing.pro_f2">Secretary, Finance, Cooking: uso ilimitado</li>
@@ -1369,6 +1373,7 @@
             <li data-i18n="pricing.pro_f5">OCR de recibos via foto</li>
             <li data-i18n="pricing.pro_f6">App iOS + portal web</li>
           </ul>
+          <button type="button" class="tier__cta tier__cta--primary" data-checkout-plan="pro" data-i18n="pricing.pro_checkout">Assinar Pro</button>
           <a href="#waitlist" class="tier__cta tier__cta--secondary" data-intent="pro" data-i18n="pricing.pro_cta">Entrar no beta — grátis</a>
         </div>
 
@@ -1379,10 +1384,10 @@
           <div class="tier__tagline" data-i18n="pricing.max_tagline">Tudo desbloqueado. O OS completo.</div>
           <div class="tier__price">
             <span class="tier__price-currency" data-price-symbol>$</span>
-            <span class="tier__price-amount" data-price-tier="max">45</span>
+            <span class="tier__price-amount" data-price-tier="max">24.99</span>
             <span class="tier__price-period" data-i18n="pricing.per_month">/mês</span>
           </div>
-          <div class="tier__price-alt" data-price-alt-tier="max" data-i18n="pricing.max_alt_monthly_usd">ou $432/ano ($36/mês efetivo)</div>
+          <div class="tier__price-alt" data-price-alt-tier="max" data-i18n="pricing.max_alt_monthly_usd">também em BRL por R$119,99/mês</div>
           <ul class="tier__features">
             <li data-i18n="pricing.max_f1">Tudo do Pro</li>
             <li data-i18n="pricing.max_f2">Content + Training: IA ILIMITADA</li>
@@ -1390,7 +1395,8 @@
             <li data-i18n="pricing.max_f4">Suporte prioritário por e-mail</li>
             <li data-i18n="pricing.max_f5">Acesso antecipado a novas skills</li>
           </ul>
-          <a href="#waitlist" class="tier__cta tier__cta--primary" data-intent="max" data-i18n="pricing.max_cta">Entrar no beta — grátis</a>
+          <button type="button" class="tier__cta tier__cta--primary" data-checkout-plan="max" data-i18n="pricing.max_checkout">Assinar Max</button>
+          <a href="#waitlist" class="tier__cta tier__cta--secondary" data-intent="max" data-i18n="pricing.max_cta">Entrar no beta — grátis</a>
         </div>
       </div>
 
@@ -1453,7 +1459,7 @@
       </div>
 
       <div class="packs-math" data-i18n-html="packs.math">
-        💡 <strong>Pro + ambos os packs = $52/mês.</strong> <strong>Max = $45/mês.</strong> A matemática escolhe Max.
+        💡 <strong>Max inclui os packs por $24.99/mês.</strong> <strong>Pro começa em $14.99/mês.</strong>
       </div>
     </div>
   </section>
@@ -1589,8 +1595,8 @@
         'form.email_label': 'Endereço de e-mail',
         'form.cta': 'Entrar no beta →',
         'form.reserving': 'Entrando...',
-        'form.success_founder': '✓ Dentro — você é o #{slot} no beta. Confira seu e-mail em alguns minutos.',
-        'form.success_general': '✓ Estás na lista de espera. Falamos em breve.',
+        'form.success_founder': '✓ Pedido recebido. Confirma o e-mail para manter a vaga #{slot} no beta.',
+        'form.success_general': '✓ Pedido recebido. Confirma o e-mail para entrar na lista.',
         'form.exhausted': '✓ Beta deste mês fechado. Estás na lista de espera geral na posição {position}.',
         'form.error_generic': 'Algo deu errado. Tenta novamente.',
         'form.error_network': 'Erro de rede. Tenta de novo daqui a um instante.',
@@ -1643,36 +1649,36 @@
         // Pricing
         'pricing.label': 'Preços',
         'pricing.title': 'Uma só assinatura. Cancele as outras cinco.',
-        'pricing.subtitle': 'Grátis durante o beta. Os preços abaixo entram em vigor quando o beta fecha.',
+        'pricing.subtitle': 'Grátis durante o beta aprovado. Depois, continua com assinatura mensal.',
         'pricing.toggle_monthly': 'Mensal',
-        'pricing.toggle_annual': 'Anual',
-        'pricing.toggle_discount': '−20%',
         'pricing.per_month': '/mês',
         'pricing.pro_name': 'Pro',
         'pricing.pro_tagline': 'Todas as 5 skills. Limites confortáveis em IA.',
-        'pricing.pro_alt_monthly_usd': 'ou $240/ano ($20/mês efetivo)',
-        'pricing.pro_alt_annual_usd': 'cobrado anualmente · poupa $60/ano',
-        'pricing.pro_alt_monthly_brl': 'ou R$1.188/ano (R$99/mês efetivo)',
-        'pricing.pro_alt_annual_brl': 'cobrado anualmente · poupa R$240/ano',
+        'pricing.pro_alt_monthly_usd': 'também em BRL por R$69,99/mês',
+        'pricing.pro_alt_annual_usd': 'mensal apenas',
+        'pricing.pro_alt_monthly_brl': 'também em USD por $14.99/mês',
+        'pricing.pro_alt_annual_brl': 'mensal apenas',
         'pricing.pro_f1': 'Todas as 5 skills desbloqueadas',
         'pricing.pro_f2': 'Secretary, Finance, Cooking: uso ilimitado',
         'pricing.pro_f3': 'Content + Training: 10 chamadas de IA/dia (fair use)',
         'pricing.pro_f4': 'Integrações Garmin, Google Calendar, Outlook',
         'pricing.pro_f5': 'OCR de recibos via foto',
         'pricing.pro_f6': 'App iOS + portal web',
+        'pricing.pro_checkout': 'Assinar Pro',
         'pricing.pro_cta': 'Entrar no beta — grátis',
         'pricing.max_badge': 'Maior valor',
         'pricing.max_name': 'Max',
         'pricing.max_tagline': 'Tudo desbloqueado. O OS completo.',
-        'pricing.max_alt_monthly_usd': 'ou $432/ano ($36/mês efetivo)',
-        'pricing.max_alt_annual_usd': 'cobrado anualmente · poupa $108/ano',
-        'pricing.max_alt_monthly_brl': 'ou R$2.088/ano (R$174/mês efetivo)',
-        'pricing.max_alt_annual_brl': 'cobrado anualmente · poupa R$540/ano',
+        'pricing.max_alt_monthly_usd': 'também em BRL por R$119,99/mês',
+        'pricing.max_alt_annual_usd': 'mensal apenas',
+        'pricing.max_alt_monthly_brl': 'também em USD por $24.99/mês',
+        'pricing.max_alt_annual_brl': 'mensal apenas',
         'pricing.max_f1': 'Tudo do Pro',
         'pricing.max_f2': 'Content + Training: IA ILIMITADA',
         'pricing.max_f3': 'Ambos os Power Packs incluídos',
         'pricing.max_f4': 'Suporte prioritário por e-mail',
         'pricing.max_f5': 'Acesso antecipado a novas skills',
+        'pricing.max_checkout': 'Assinar Max',
         'pricing.max_cta': 'Entrar no beta — grátis',
 
         // Beta banner
@@ -1690,7 +1696,10 @@
         'packs.content_desc': 'Scripts ilimitados, pesquisa profunda no YouTube, análise de canais de referência, extração de Voice DNA dos seus vídeos passados.',
         'packs.coach_name': 'AI Coach Pack',
         'packs.coach_desc': 'Briefings ilimitados do coach Garmin, planos de treino adaptativos, previsão de tempo de prova, análise de progressão de carga.',
-        'packs.math': '💡 <strong>Pro + ambos os packs = $52/mês.</strong> <strong>Max = $45/mês.</strong> A matemática escolhe Max.',
+        'packs.math': '💡 <strong>Max inclui os packs por $24.99/mês.</strong> <strong>Pro começa em $14.99/mês.</strong>',
+        'checkout.email_prompt': 'Qual e-mail deve receber a assinatura?',
+        'checkout.starting': 'Abrindo checkout...',
+        'checkout.error': 'Não foi possível abrir o checkout. Tenta novamente.',
 
         // Profile quiz
         'quiz.label': 'Personaliza',
@@ -1745,8 +1754,8 @@
         'form.email_label': 'Email address',
         'form.cta': 'Join the beta →',
         'form.reserving': 'Joining...',
-        'form.success_founder': "✓ You're in — beta #{slot}. Check your email in a few minutes.",
-        'form.success_general': "✓ You're on the waitlist. We'll be in touch.",
+        'form.success_founder': "✓ Request received. Confirm your email to keep beta slot #{slot}.",
+        'form.success_general': "✓ Request received. Confirm your email to join the list.",
         'form.exhausted': "✓ This month's beta is full. You're on the general waitlist at position {position}.",
         'form.error_generic': 'Something went wrong. Try again.',
         'form.error_network': 'Network error. Try again in a moment.',
@@ -1799,36 +1808,36 @@
         // Pricing
         'pricing.label': 'Pricing',
         'pricing.title': 'One subscription. Cancel the other five.',
-        'pricing.subtitle': "Free during the beta. The prices below lock in when beta closes.",
+        'pricing.subtitle': 'Free during an approved beta. Continue afterward with a monthly subscription.',
         'pricing.toggle_monthly': 'Monthly',
-        'pricing.toggle_annual': 'Annual',
-        'pricing.toggle_discount': '−20%',
         'pricing.per_month': '/mo',
         'pricing.pro_name': 'Pro',
         'pricing.pro_tagline': 'All 5 skills. Comfortable AI limits.',
-        'pricing.pro_alt_monthly_usd': 'or $240/yr ($20/mo effective)',
-        'pricing.pro_alt_annual_usd': 'billed annually · save $60/yr',
-        'pricing.pro_alt_monthly_brl': 'ou R$1,188/ano (R$99/mês effective)',
-        'pricing.pro_alt_annual_brl': 'billed annually · save R$240/yr',
+        'pricing.pro_alt_monthly_usd': 'also available in BRL at R$69.99/mo',
+        'pricing.pro_alt_annual_usd': 'monthly only',
+        'pricing.pro_alt_monthly_brl': 'also available in USD at $14.99/mo',
+        'pricing.pro_alt_annual_brl': 'monthly only',
         'pricing.pro_f1': 'All 5 skills unlocked',
         'pricing.pro_f2': 'Secretary, Finance, Cooking: unlimited usage',
         'pricing.pro_f3': 'Content + Training: 10 AI calls/day (fair use)',
         'pricing.pro_f4': 'Garmin, Google Calendar, Outlook integrations',
         'pricing.pro_f5': 'Photo-to-receipt OCR',
         'pricing.pro_f6': 'iOS app + web portal',
+        'pricing.pro_checkout': 'Subscribe Pro',
         'pricing.pro_cta': 'Join the beta — free',
         'pricing.max_badge': 'Best value',
         'pricing.max_name': 'Max',
         'pricing.max_tagline': 'Everything unlocked. The full OS.',
-        'pricing.max_alt_monthly_usd': 'or $432/yr ($36/mo effective)',
-        'pricing.max_alt_annual_usd': 'billed annually · save $108/yr',
-        'pricing.max_alt_monthly_brl': 'or R$2,088/yr (R$174/mo effective)',
-        'pricing.max_alt_annual_brl': 'billed annually · save R$540/yr',
+        'pricing.max_alt_monthly_usd': 'also available in BRL at R$119.99/mo',
+        'pricing.max_alt_annual_usd': 'monthly only',
+        'pricing.max_alt_monthly_brl': 'also available in USD at $24.99/mo',
+        'pricing.max_alt_annual_brl': 'monthly only',
         'pricing.max_f1': 'Everything in Pro',
         'pricing.max_f2': 'Content + Training: UNLIMITED AI',
         'pricing.max_f3': 'Both Power Packs included',
         'pricing.max_f4': 'Priority email support',
         'pricing.max_f5': 'Early access to new skills',
+        'pricing.max_checkout': 'Subscribe Max',
         'pricing.max_cta': 'Join the beta — free',
 
         // Beta banner
@@ -1846,7 +1855,10 @@
         'packs.content_desc': 'Unlimited scripts, deep YouTube research, reference-channel analysis, Voice DNA extraction from your past videos.',
         'packs.coach_name': 'AI Coach Pack',
         'packs.coach_desc': 'Unlimited Garmin coach briefings, adaptive training plans, race-time prediction, load progression analysis.',
-        'packs.math': "💡 <strong>Pro + both packs = $52/mo.</strong> <strong>Max = $45/mo.</strong> The math picks Max.",
+        'packs.math': '💡 <strong>Max includes both packs for $24.99/mo.</strong> <strong>Pro starts at $14.99/mo.</strong>',
+        'checkout.email_prompt': 'Which email should receive the subscription?',
+        'checkout.starting': 'Opening checkout...',
+        'checkout.error': 'Could not open checkout. Please try again.',
 
         // Profile quiz
         'quiz.label': 'Personalize',
@@ -1965,11 +1977,11 @@
     }
 
     // ════════════════════════════════════════════════════════════
-    // PRICING TOGGLES (monthly↔annual + USD↔BRL)
+    // PRICING TOGGLES (monthly-only + USD↔BRL)
     // ════════════════════════════════════════════════════════════
     //
     // The pricing section holds TWO independent segmented controls:
-    // billing period (monthly | annual) and currency (USD | BRL). State
+    // billing period (monthly) and currency (USD | BRL). State
     // lives on the #pricing-section wrapper as data-period and
     // data-currency attributes, which are read by applyPricingState()
     // to update every [data-price-tier] and [data-price-symbol] node.
@@ -1977,10 +1989,8 @@
     // Price matrix (intentionally hard-coded — these are strategic
     // numbers from the Option G pricing brainstorm, not server-driven):
     //
-    //   USD monthly: Pro $25, Max $45, Content $15, Coach $12
-    //   USD annual:  Pro $20, Max $36, Content $12, Coach $9   (−20%)
-    //   BRL monthly: Pro R$119, Max R$219, Content R$69, Coach R$59
-    //   BRL annual:  Pro R$99, Max R$174, Content R$55, Coach R$47
+    //   USD monthly: Pro $14.99, Max $24.99, Content $15, Coach $12
+    //   BRL monthly: Pro R$69.99, Max R$119.99, Content R$69, Coach R$59
     //
     // When these need to change, edit PRICING_TABLE below and the
     // PT/EN alt-text keys above — nothing else.
@@ -1988,13 +1998,11 @@
     const PRICING_TABLE = {
       USD: {
         symbol: '$',
-        monthly: { pro: 25, max: 45, contentPack: 15, coachPack: 12 },
-        annual:  { pro: 20, max: 36, contentPack: 12, coachPack:  9 },
+        monthly: { pro: 14.99, max: 24.99, contentPack: 15, coachPack: 12 },
       },
       BRL: {
         symbol: 'R$',
-        monthly: { pro: 119, max: 219, contentPack: 69, coachPack: 59 },
-        annual:  { pro:  99, max: 174, contentPack: 55, coachPack: 47 },
+        monthly: { pro: 69.99, max: 119.99, contentPack: 69, coachPack: 59 },
       },
     };
 
@@ -2141,6 +2149,52 @@
       }
       return 'https://api.nexushub.me';
     })();
+
+    function getPricingCurrency() {
+      const wrap = document.getElementById('pricing-section');
+      return (wrap?.getAttribute('data-currency') || 'USD').toLowerCase();
+    }
+
+    function initCheckoutButtons() {
+      document.querySelectorAll('[data-checkout-plan]').forEach((btn) => {
+        btn.addEventListener('click', async () => {
+          const plan = btn.getAttribute('data-checkout-plan');
+          const typedEmail = document.querySelector('input[name="email"]')?.value?.trim();
+          const email = typedEmail || window.prompt(tr('checkout.email_prompt'));
+          if (!plan || !email) return;
+
+          const originalText = btn.textContent;
+          btn.disabled = true;
+          btn.textContent = tr('checkout.starting');
+
+          try {
+            const response = await fetch(API_BASE + '/billing/checkout', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              credentials: 'omit',
+              body: JSON.stringify({
+                email,
+                plan,
+                currency: getPricingCurrency(),
+                successUrl: `${location.origin}${location.pathname}?checkout=success`,
+                cancelUrl: `${location.origin}${location.pathname}?checkout=canceled`,
+              }),
+            });
+            const data = await response.json();
+            if (response.ok && data?.ok && data.url) {
+              location.href = data.url;
+              return;
+            }
+            window.alert(data?.error || tr('checkout.error'));
+          } catch {
+            window.alert(tr('checkout.error'));
+          } finally {
+            btn.disabled = false;
+            btn.textContent = originalText;
+          }
+        });
+      });
+    }
 
     // ════════════════════════════════════════════════════════════
     // BETA COUNTER (renamed from founder stats)
@@ -2312,6 +2366,7 @@
       // Forms
       attachFormHandler('hero-form', 'hero-form-message');
       attachFormHandler('final-form', 'final-form-message');
+      initCheckoutButtons();
 
       // Live beta counter
       loadBetaStats();

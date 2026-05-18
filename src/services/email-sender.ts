@@ -6,7 +6,7 @@
  * Used for: email verification codes, password reset, and notifications.
  * Resend free tier: 100 emails/day — sufficient for beta.
  *
- * All emails are sent from support@nexushub.me (or the configured sender).
+ * All emails are sent from welcome@nexushub.me (or the configured sender).
  */
 
 import { Resend } from 'resend';
@@ -33,6 +33,19 @@ export function isEmailConfigured(): boolean {
 
 function emailLogHash(email: string): string {
   return hashEmail(email, 16);
+}
+
+function transactionalFrom(): string {
+  return process.env.RESEND_FROM || 'Nexus Hub <welcome@nexushub.me>';
+}
+
+function escapeHtml(value: string): string {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
 }
 
 export function isFiscalBundleDeliveryConfigured(): boolean {
@@ -76,13 +89,13 @@ function writeFiscalBundlePreview(data: {
     }, null, 2));
 
     logger.info({
-      to: data.to,
+      toHash: emailLogHash(data.to),
       previewPath: filePath,
       attachmentCount: data.attachments.length,
     }, 'Fiscal bundle email preview written');
     return true;
   } catch (err) {
-    logger.error({ err, to: data.to }, 'Failed to write fiscal bundle email preview');
+    logger.error({ err, toHash: emailLogHash(data.to) }, 'Failed to write fiscal bundle email preview');
     return false;
   }
 }
@@ -100,7 +113,7 @@ export async function sendFiscalBundleEmail(data: {
     }
 
     const resend = getResend();
-    const from = process.env.RESEND_FROM || 'Nexus Hub <noreply@nexushub.me>';
+    const from = transactionalFrom();
 
     await resend.emails.send({
       from,
@@ -116,12 +129,12 @@ export async function sendFiscalBundleEmail(data: {
     });
 
     logger.info({
-      to: data.to,
+      toHash: emailLogHash(data.to),
       attachmentCount: data.attachments.length,
     }, 'Fiscal bundle email sent');
     return true;
   } catch (err) {
-    logger.error({ err, to: data.to }, 'Failed to send fiscal bundle email');
+    logger.error({ err, toHash: emailLogHash(data.to) }, 'Failed to send fiscal bundle email');
     return false;
   }
 }
@@ -136,7 +149,8 @@ export async function sendVerificationCode(
 ): Promise<boolean> {
   try {
     const resend = getResend();
-    const from = process.env.RESEND_FROM || 'Nexus Hub <noreply@nexushub.me>';
+    const from = transactionalFrom();
+    const safeFirstName = escapeHtml(firstName);
 
     await resend.emails.send({
       from,
@@ -151,7 +165,7 @@ export async function sendVerificationCode(
             Verifique seu e-mail
           </h1>
           <p style="font-size: 15px; color: #A1A1A6; text-align: center; margin-bottom: 32px;">
-            Olá ${firstName}, use o código abaixo para verificar sua conta:
+            Olá ${safeFirstName}, use o código abaixo para verificar sua conta:
           </p>
           <div style="background: #18181B; border: 1px solid rgba(255,255,255,0.06); border-radius: 12px; padding: 24px; text-align: center; margin-bottom: 32px;">
             <span style="font-family: 'JetBrains Mono', monospace; font-size: 36px; font-weight: 700; letter-spacing: 8px; color: #FF6B35;">${code}</span>
@@ -168,10 +182,10 @@ export async function sendVerificationCode(
       `,
     });
 
-    logger.info({ to, firstName }, 'Verification email sent');
+    logger.info({ toHash: emailLogHash(to), nameLen: firstName.length }, 'Verification email sent');
     return true;
   } catch (err) {
-    logger.error({ err, to }, 'Failed to send verification email');
+    logger.error({ err, toHash: emailLogHash(to) }, 'Failed to send verification email');
     return false;
   }
 }
@@ -196,7 +210,9 @@ export async function sendPasswordResetEmail(
 ): Promise<boolean> {
   try {
     const resend = getResend();
-    const from = process.env.RESEND_FROM || 'Nexus Hub <noreply@nexushub.me>';
+    const from = transactionalFrom();
+    const safeFirstName = escapeHtml(firstName);
+    const safeResetUrl = escapeHtml(resetUrl);
 
     await resend.emails.send({
       from,
@@ -211,10 +227,10 @@ export async function sendPasswordResetEmail(
             Reset your password
           </h1>
           <p style="font-size: 15px; color: #A1A1A6; text-align: center; margin-bottom: 32px;">
-            Hi ${firstName}, tap the button below to set a new password.
+            Hi ${safeFirstName}, tap the button below to set a new password.
           </p>
           <div style="text-align: center; margin-bottom: 32px;">
-            <a href="${resetUrl}"
+            <a href="${safeResetUrl}"
                style="display: inline-block; background: #FF6B35; color: #0A0A0B; padding: 14px 28px; border-radius: 12px; font-weight: 700; font-size: 16px; text-decoration: none;">
               Reset password
             </a>
@@ -235,6 +251,95 @@ export async function sendPasswordResetEmail(
     return true;
   } catch (err) {
     logger.error({ err, toHash: emailLogHash(to) }, 'Failed to send password reset email');
+    return false;
+  }
+}
+
+export async function sendBetaWaitlistConfirmation(
+  to: string,
+  confirmationUrl: string,
+): Promise<boolean> {
+  try {
+    const safeUrl = escapeHtml(confirmationUrl);
+    const resend = getResend();
+    const from = transactionalFrom();
+
+    await resend.emails.send({
+      from,
+      to,
+      subject: 'Confirm your Nexus Hub beta request',
+      html: `
+        <div style="font-family: -apple-system, BlinkMacSystemFont, 'Inter', sans-serif; max-width: 560px; margin: 0 auto; padding: 40px 24px; background: #0A0A0B; color: #EDEDEF;">
+          <h1 style="font-size: 24px; font-weight: 800; margin-bottom: 12px; color: #EDEDEF;">Confirm your beta request</h1>
+          <p style="font-size: 15px; line-height: 1.55; color: #A1A1A6; margin-bottom: 28px;">
+            Tap the button below to confirm that this email belongs to you. We only review confirmed beta requests.
+          </p>
+          <p style="margin-bottom: 32px;">
+            <a href="${safeUrl}" style="display: inline-block; background: #FF6B35; color: #0A0A0B; padding: 14px 22px; border-radius: 10px; font-weight: 800; text-decoration: none;">
+              Confirm beta request
+            </a>
+          </p>
+          <p style="font-size: 13px; color: #6E6E76;">
+            This link expires in 24 hours. If you did not request Nexus Hub beta access, you can ignore this email.
+          </p>
+          <p style="font-size: 11px; color: #48484F; margin-top: 32px;">Nexus Hub · nexushub.me</p>
+        </div>
+      `,
+      text: `Confirm your Nexus Hub beta request: ${confirmationUrl}\n\nThis link expires in 24 hours.`,
+    });
+
+    logger.info({ toHash: emailLogHash(to) }, 'Beta waitlist confirmation email sent');
+    return true;
+  } catch (err) {
+    logger.error({ err, toHash: emailLogHash(to) }, 'Failed to send beta waitlist confirmation email');
+    return false;
+  }
+}
+
+export async function sendBetaInviteEmail(data: {
+  to: string;
+  code: string;
+  expiresAt: string;
+}): Promise<boolean> {
+  try {
+    const resend = getResend();
+    const from = transactionalFrom();
+    const safeCode = escapeHtml(data.code);
+    const expiry = new Date(data.expiresAt);
+    const expiryText = Number.isNaN(expiry.getTime())
+      ? data.expiresAt
+      : expiry.toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' });
+
+    await resend.emails.send({
+      from,
+      to: data.to,
+      subject: 'Your Nexus Hub beta invitation',
+      html: `
+        <div style="font-family: -apple-system, BlinkMacSystemFont, 'Inter', sans-serif; max-width: 560px; margin: 0 auto; padding: 40px 24px; background: #0A0A0B; color: #EDEDEF;">
+          <h1 style="font-size: 24px; font-weight: 800; margin-bottom: 12px; color: #EDEDEF;">Welcome to Nexus Hub beta</h1>
+          <p style="font-size: 15px; line-height: 1.55; color: #A1A1A6; margin-bottom: 24px;">
+            Your access code is ready. Use it in the Nexus Hub app before ${escapeHtml(expiryText)} to start the beta trial.
+          </p>
+          <div style="background: #18181B; border: 1px solid rgba(255,255,255,0.08); border-radius: 12px; padding: 22px; margin-bottom: 24px;">
+            <div style="font-family: 'JetBrains Mono', monospace; font-size: 24px; line-height: 1.35; font-weight: 800; color: #FF6B35; word-break: break-all;">${safeCode}</div>
+          </div>
+          <p style="font-size: 13px; color: #6E6E76;">
+            The beta invitation expires on ${escapeHtml(expiryText)}. After the beta window ends, continued access requires a Nexus Hub subscription.
+          </p>
+          <p style="font-size: 11px; color: #48484F; margin-top: 32px;">Nexus Hub · nexushub.me</p>
+        </div>
+      `,
+      text: `Welcome to Nexus Hub beta.\n\nInvite code: ${data.code}\nExpires: ${expiryText}\n\nAfter the beta window ends, continued access requires a Nexus Hub subscription.`,
+    });
+
+    logger.info({
+      toHash: emailLogHash(data.to),
+      codeSuffix: data.code.slice(-4),
+      expiresAt: data.expiresAt,
+    }, 'Beta invite email sent');
+    return true;
+  } catch (err) {
+    logger.error({ err, toHash: emailLogHash(data.to) }, 'Failed to send beta invite email');
     return false;
   }
 }

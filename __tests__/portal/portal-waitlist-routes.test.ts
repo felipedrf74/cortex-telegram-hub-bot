@@ -5,29 +5,53 @@ const hoisted = vi.hoisted(() => ({
   requirePortalAdminToken: vi.fn(),
   getDb: vi.fn(),
   createInviteCode: vi.fn(),
+  isEmailConfigured: vi.fn(),
+  sendBetaInviteEmail: vi.fn(),
   loggerError: vi.fn(),
   logPortalAdminMutation: vi.fn(),
   sendPortalInternalError: vi.fn(),
 }));
 
 vi.mock('../../src/api/routes/waitlist', () => ({
+  MAX_FOUNDER_SLOTS: 100,
+  _resetRateLimiterForTests: vi.fn(),
   countFounderSlots: (...args: unknown[]) => hoisted.countFounderSlots(...args),
+  createWaitlistRouter: vi.fn(),
 }));
 
-vi.mock('../../src/api/secret-guards', () => ({
-  requirePortalAdminToken: hoisted.requirePortalAdminToken,
-}));
+vi.mock('../../src/api/secret-guards', async () => {
+  const actual = await vi.importActual<typeof import('../../src/api/secret-guards')>('../../src/api/secret-guards');
+  return {
+    ...actual,
+    requirePortalAdminToken: hoisted.requirePortalAdminToken,
+  };
+});
 
 vi.mock('../../src/services/database', () => ({
   getDb: (...args: unknown[]) => hoisted.getDb(...args),
   initDatabase: vi.fn(),
   closeDatabase: vi.fn(),
   findUnexpectedMigrationPrefixCollisions: vi.fn(() => []),
+  assertNoUnexpectedMigrationPrefixCollisions: vi.fn(),
 }));
 
-vi.mock('../../src/services/user-service', () => ({
-  createInviteCode: (...args: unknown[]) => hoisted.createInviteCode(...args),
+vi.mock('../../src/services/email-sender', () => ({
+  isEmailConfigured: (...args: unknown[]) => hoisted.isEmailConfigured(...args),
+  sendBetaInviteEmail: (...args: unknown[]) => hoisted.sendBetaInviteEmail(...args),
+  isFiscalBundleDeliveryConfigured: vi.fn(() => false),
+  sendBetaWaitlistConfirmation: vi.fn(),
+  sendFiscalBundleEmail: vi.fn(),
+  sendPasswordResetEmail: vi.fn(),
+  sendVerificationCode: vi.fn(),
 }));
+
+vi.mock('../../src/services/user-service', async () => {
+  const actual = await vi.importActual<typeof import('../../src/services/user-service')>('../../src/services/user-service');
+  return {
+    ...actual,
+    createInviteCode: (...args: unknown[]) => hoisted.createInviteCode(...args),
+  };
+});
 
 vi.mock('../../src/utils/logger', () => ({
   logger: {
@@ -36,9 +60,13 @@ vi.mock('../../src/utils/logger', () => ({
   LOGGER_REDACTION_PATHS: [],
 }));
 
-vi.mock('../../src/portal/admin-audit', () => ({
-  logPortalAdminMutation: (...args: unknown[]) => hoisted.logPortalAdminMutation(...args),
-}));
+vi.mock('../../src/portal/admin-audit', async () => {
+  const actual = await vi.importActual<typeof import('../../src/portal/admin-audit')>('../../src/portal/admin-audit');
+  return {
+    ...actual,
+    logPortalAdminMutation: (...args: unknown[]) => hoisted.logPortalAdminMutation(...args),
+  };
+});
 
 vi.mock('../../src/portal/http', () => ({
   sendPortalInternalError: (...args: unknown[]) => hoisted.sendPortalInternalError(...args),
@@ -113,6 +141,8 @@ describe('portal waitlist routes', () => {
     vi.clearAllMocks();
     hoisted.countFounderSlots.mockReturnValue(17);
     hoisted.createInviteCode.mockReturnValue('INVITE-123');
+    hoisted.isEmailConfigured.mockReturnValue(true);
+    hoisted.sendBetaInviteEmail.mockResolvedValue(true);
     hoisted.getDb.mockReturnValue(makeDb().db);
   });
 
@@ -155,7 +185,7 @@ describe('portal waitlist routes', () => {
     });
   });
 
-  it('approves a founder waitlist entry, tags the invite, and records an audit event', () => {
+  it('approves a confirmed founder waitlist entry, sends the invite, and records an audit event', async () => {
     const req = { params: { id: '42' }, body: { expiresInDays: 14 } };
     const recorder = makeDb({
       selectedRow: {
@@ -164,6 +194,7 @@ describe('portal waitlist routes', () => {
         intent: 'founder',
         status: 'pending',
         founder_slot: 3,
+        email_confirmed_at: '2026-05-18T12:00:00.000Z',
       },
     });
     hoisted.getDb.mockReturnValue(recorder.db);
@@ -172,34 +203,41 @@ describe('portal waitlist routes', () => {
     const handler = routes.get('POST /api/waitlist/:id/approve')?.[2]!;
     const { payload, res } = makeResponse();
 
-    handler(req, res);
+    await handler(req, res);
 
     expect(hoisted.createInviteCode).toHaveBeenCalledWith(0, 1, 14);
+    expect(hoisted.sendBetaInviteEmail).toHaveBeenCalledWith({
+      to: 'founder@example.com',
+      code: 'INVITE-123',
+      expiresAt: expect.any(String),
+    });
     expect(recorder.calls).toContainEqual({
       sql: 'UPDATE invite_codes SET skill_preset = ? WHERE code = ?',
       args: [JSON.stringify({ tier: 'founder', founderSlot: 3 }), 'INVITE-123'],
     });
     expect(hoisted.logPortalAdminMutation).toHaveBeenCalledWith(req, 0, 'waitlist.approve', {
       waitlistId: 42,
-      email: 'founder@example.com',
+      emailHash: expect.any(String),
       intent: 'founder',
-      inviteCode: 'INVITE-123',
+      inviteCodeSuffix: '-123',
+      inviteExpiresAt: expect.any(String),
     });
     expect(payload.body).toEqual({
       ok: true,
       code: 'INVITE-123',
       email: 'founder@example.com',
       intent: 'founder',
+      expiresAt: expect.any(String),
     });
   });
 
-  it('rejects invalid waitlist ids before approving or mutating state', () => {
+  it('rejects invalid waitlist ids before approving or mutating state', async () => {
     const { app, routes } = makeApp();
     registerPortalWaitlistRoutes(app as any);
     const handler = routes.get('POST /api/waitlist/:id/approve')?.[2]!;
     const { payload, res } = makeResponse();
 
-    handler({ params: { id: 'bad' }, body: {} }, res);
+    await handler({ params: { id: 'bad' }, body: {} }, res);
 
     expect(payload.statusCode).toBe(400);
     expect(payload.body).toEqual({ ok: false, message: 'invalid waitlist id' });
@@ -207,7 +245,7 @@ describe('portal waitlist routes', () => {
     expect(hoisted.createInviteCode).not.toHaveBeenCalled();
   });
 
-  it('does not re-approve non-pending entries unless forced', () => {
+  it('does not re-approve non-pending entries unless forced', async () => {
     const recorder = makeDb({
       selectedRow: {
         id: 42,
@@ -222,7 +260,7 @@ describe('portal waitlist routes', () => {
     const handler = routes.get('POST /api/waitlist/:id/approve')?.[2]!;
     const { payload, res } = makeResponse();
 
-    handler({ params: { id: '42' }, body: {} }, res);
+    await handler({ params: { id: '42' }, body: {} }, res);
 
     expect(payload.statusCode).toBe(400);
     expect(payload.body).toEqual({
@@ -230,6 +268,30 @@ describe('portal waitlist routes', () => {
       error: 'Already approved. Pass {"force": true} to re-approve.',
     });
     expect(hoisted.createInviteCode).not.toHaveBeenCalled();
+  });
+
+  it('requires email confirmation before approval', async () => {
+    const recorder = makeDb({
+      selectedRow: {
+        id: 42,
+        email: 'founder@example.com',
+        intent: 'founder',
+        status: 'pending',
+        email_confirmed_at: null,
+      },
+    });
+    hoisted.getDb.mockReturnValue(recorder.db);
+    const { app, routes } = makeApp();
+    registerPortalWaitlistRoutes(app as any);
+    const handler = routes.get('POST /api/waitlist/:id/approve')?.[2]!;
+    const { payload, res } = makeResponse();
+
+    await handler({ params: { id: '42' }, body: {} }, res);
+
+    expect(payload.statusCode).toBe(400);
+    expect(payload.body).toEqual({ ok: false, error: 'Email must be confirmed before approval.' });
+    expect(hoisted.createInviteCode).not.toHaveBeenCalled();
+    expect(hoisted.sendBetaInviteEmail).not.toHaveBeenCalled();
   });
 
   it('rejects and marks invited entries with admin audit events', () => {

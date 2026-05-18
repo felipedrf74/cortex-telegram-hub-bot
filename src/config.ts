@@ -429,6 +429,7 @@ export const config = {
   waitlist: {
     ipSalt: process.env.WAITLIST_IP_SALT || '',
     warnOnEphemeralIpSalt: process.env.NODE_ENV === 'production' || IS_STAGING,
+    confirmationTtlHours: optionalInt('WAITLIST_CONFIRMATION_TTL_HOURS', 24, { min: 1 }),
   },
   // ── Health Check ──────────────────────────────────────────────────
   health: {
@@ -458,6 +459,8 @@ export const config = {
     readRateLimit: optionalInt('IOS_API_READ_RATE_LIMIT', 300, { min: 1 }),
     inviteCode: process.env.IOS_INVITE_CODE || '',
     ownerCode: process.env.IOS_OWNER_CODE || '',
+    betaInviteExpiresDays: optionalInt('BETA_INVITE_EXPIRES_DAYS', 30, { min: 1 }),
+    staticInviteExpiresDays: optionalInt('IOS_STATIC_INVITE_EXPIRES_DAYS', 365, { min: 1 }),
   },
   mesh: {
     enabled: process.env.NEXUS_MULTISKILL_MESH === 'on',

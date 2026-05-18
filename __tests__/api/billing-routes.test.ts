@@ -2,23 +2,32 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Request } from 'express';
 
 const mockHandleAppleTransaction = vi.fn();
+const mockCreateCheckoutSessionForPlan = vi.fn();
+const mockCreatePortalSession = vi.fn();
+const mockClaimWebsiteStripeSubscriptionForUser = vi.fn();
 
-vi.mock('../../src/services/stripe-service', () => ({
-  isStripeConfigured: vi.fn(() => true),
-  getSubscriptionStatus: vi.fn(() => ({
-    plan: 'free',
-    period: 'monthly',
-    status: 'inactive',
-    provider: 'none',
-    currentPeriodEnd: null,
-    cancelAtPeriodEnd: false,
-    isActive: false,
-    isPro: false,
-  })),
-  createCheckoutSession: vi.fn(),
-  createPortalSession: vi.fn(),
-  handleAppleTransaction: (...args: unknown[]) => mockHandleAppleTransaction(...args),
-}));
+vi.mock('../../src/services/stripe-service', async () => {
+  const actual = await vi.importActual<typeof import('../../src/services/stripe-service')>('../../src/services/stripe-service');
+  return {
+    ...actual,
+    isStripeConfigured: vi.fn(() => true),
+    getSubscriptionStatus: vi.fn(() => ({
+      plan: 'free',
+      period: 'monthly',
+      status: 'inactive',
+      provider: 'none',
+      currentPeriodEnd: null,
+      cancelAtPeriodEnd: false,
+      isActive: false,
+      isPro: false,
+    })),
+    createCheckoutSession: vi.fn(),
+    createCheckoutSessionForPlan: (...args: unknown[]) => mockCreateCheckoutSessionForPlan(...args),
+    createPortalSession: (...args: unknown[]) => mockCreatePortalSession(...args),
+    claimWebsiteStripeSubscriptionForUser: (...args: unknown[]) => mockClaimWebsiteStripeSubscriptionForUser(...args),
+    handleAppleTransaction: (...args: unknown[]) => mockHandleAppleTransaction(...args),
+  };
+});
 
 vi.mock('../../src/utils/logger', () => ({
   logger: {
@@ -98,6 +107,80 @@ function buildFakeJws(payload: Record<string, unknown>): string {
 describe('billing routes', () => {
   beforeEach(() => {
     mockHandleAppleTransaction.mockReset();
+    mockCreateCheckoutSessionForPlan.mockReset();
+    mockCreatePortalSession.mockReset();
+    mockClaimWebsiteStripeSubscriptionForUser.mockReset();
+  });
+
+  it('creates checkout from server-side plan/currency mapping', async () => {
+    mockCreateCheckoutSessionForPlan.mockResolvedValueOnce('https://checkout.stripe.test/session');
+
+    const res = await dispatch('POST', '/checkout', { plan: 'max', currency: 'brl' }, 99);
+
+    expect(res.statusCode).toBe(200);
+    expect(res.body.ok).toBe(true);
+    expect(res.body.data.url).toBe('https://checkout.stripe.test/session');
+    expect(mockCreateCheckoutSessionForPlan).toHaveBeenCalledWith(
+      99,
+      'max',
+      'brl',
+      'https://nexushub.me/?checkout=success',
+      'https://nexushub.me/?checkout=canceled',
+    );
+  });
+
+  it('sanitizes authenticated checkout and portal redirect URLs', async () => {
+    mockCreateCheckoutSessionForPlan.mockResolvedValueOnce('https://checkout.stripe.test/session');
+    mockCreatePortalSession.mockResolvedValueOnce('https://billing.stripe.test/session');
+
+    const checkout = await dispatch('POST', '/checkout', {
+      plan: 'pro',
+      currency: 'usd',
+      successUrl: 'https://evil.example/success',
+      cancelUrl: 'https://www.nexushub.me/cancel',
+    }, 99);
+    const portal = await dispatch('POST', '/portal', {
+      returnUrl: 'https://evil.example/account',
+    }, 99);
+
+    expect(checkout.statusCode).toBe(200);
+    expect(portal.statusCode).toBe(200);
+    expect(mockCreateCheckoutSessionForPlan).toHaveBeenCalledWith(
+      99,
+      'pro',
+      'usd',
+      'https://nexushub.me/?checkout=success',
+      'https://www.nexushub.me/cancel',
+    );
+    expect(mockCreatePortalSession).toHaveBeenCalledWith(99, 'https://nexushub.me/');
+  });
+
+  it('claims a verified website checkout for the authenticated user', async () => {
+    mockClaimWebsiteStripeSubscriptionForUser.mockReturnValueOnce(true);
+
+    const res = await dispatch('POST', '/claim-website-checkout', undefined, 99);
+
+    expect(res.statusCode).toBe(200);
+    expect(res.body).toMatchObject({ ok: true, data: { claimed: true } });
+    expect(mockClaimWebsiteStripeSubscriptionForUser).toHaveBeenCalledWith(99);
+  });
+
+  it('returns 404 when no verified website checkout can be claimed', async () => {
+    mockClaimWebsiteStripeSubscriptionForUser.mockReturnValueOnce(false);
+
+    const res = await dispatch('POST', '/claim-website-checkout', undefined, 99);
+
+    expect(res.statusCode).toBe(404);
+    expect(res.body.ok).toBe(false);
+    expect(res.body.error.code).toBe('NO_CLAIMABLE_SUBSCRIPTION');
+  });
+
+  it('rejects unknown checkout plan values before Stripe is called', async () => {
+    const res = await dispatch('POST', '/checkout', { plan: 'ultra', currency: 'usd' }, 99);
+
+    expect(res.statusCode).toBe(400);
+    expect(res.body.ok).toBe(false);
+    expect(mockCreateCheckoutSessionForPlan).not.toHaveBeenCalled();
   });
 
   it('sanitizes apple verification failures instead of leaking internals', async () => {

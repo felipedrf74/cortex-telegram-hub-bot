@@ -17,8 +17,13 @@
 
 import { Router, Request, Response } from 'express';
 import express from 'express';
+import crypto from 'crypto';
+import { config } from '../../config';
 import { getDb } from '../../services/database';
+import { isEmailConfigured, sendBetaWaitlistConfirmation } from '../../services/email-sender';
+import { validatePublicEmail } from '../../services/waitlist-email-validation';
 import { hashWaitlistIpAddress } from '../../services/waitlist-ip-hash';
+import { hashEmail } from '../../utils/identity';
 import { logger } from '../../utils/logger';
 
 // ─── Rate limiting (anti-spam) ──────────────────────────────────────
@@ -37,9 +42,22 @@ import { logger } from '../../utils/logger';
 const WINDOW_MS = 60 * 60 * 1000;    // 1 hour
 const MAX_PER_WINDOW = 3;
 const ipTimestamps = new Map<string, number[]>();
+const emailTimestamps = new Map<string, number[]>();
+
+function pruneRateLimitMap(map: Map<string, number[]>, now: number): void {
+  for (const [key, timestamps] of map.entries()) {
+    const recent = timestamps.filter((ts) => now - ts < WINDOW_MS);
+    if (recent.length === 0) {
+      map.delete(key);
+    } else if (recent.length !== timestamps.length) {
+      map.set(key, recent);
+    }
+  }
+}
 
 function checkRateLimit(ipHash: string): boolean {
   const now = Date.now();
+  pruneRateLimitMap(ipTimestamps, now);
   const timestamps = ipTimestamps.get(ipHash) || [];
   // Drop timestamps older than the window
   const recent = timestamps.filter((ts) => now - ts < WINDOW_MS);
@@ -52,24 +70,14 @@ function checkRateLimit(ipHash: string): boolean {
 /** Test-only: clear the rate limiter between runs. */
 export function _resetRateLimiterForTests(): void {
   ipTimestamps.clear();
+  emailTimestamps.clear();
 }
 
 // ─── Validation ─────────────────────────────────────────────────────
 
-// RFC 5322 is insane. This regex matches the realistic subset that actual
-// email providers accept — it's intentionally stricter than RFC to catch
-// typos ("foo@bar" with no TLD) while still accepting every deliverable
-// address I've seen in production.
-const EMAIL_REGEX = /^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$/;
 const MAX_EMAIL_LENGTH = 254;   // RFC 5321 hard limit
 const MAX_USE_CASE_LENGTH = 500;
 const MAX_SOURCE_LENGTH = 100;
-
-function isValidEmail(email: string): boolean {
-  if (!email || typeof email !== 'string') return false;
-  if (email.length > MAX_EMAIL_LENGTH) return false;
-  return EMAIL_REGEX.test(email);
-}
 
 function sanitizeString(value: unknown, maxLen: number): string | null {
   if (value === undefined || value === null) return null;
@@ -81,14 +89,17 @@ function sanitizeString(value: unknown, maxLen: number): string | null {
 // ─── IP hashing ─────────────────────────────────────────────────────
 
 function hashIp(req: Request): string {
-  // Honor X-Forwarded-For if present (Cloudflare sets this when we're
-  // behind a tunnel), else fall back to the direct socket IP.
+  const cloudflareIp = req.headers['cf-connecting-ip'];
   const forwarded = req.headers['x-forwarded-for'];
-  const ip = Array.isArray(forwarded)
-    ? forwarded[0]
-    : typeof forwarded === 'string'
-      ? forwarded.split(',')[0].trim()
-      : req.socket.remoteAddress || 'unknown';
+  const ip = typeof cloudflareIp === 'string'
+    ? cloudflareIp.trim()
+    : Array.isArray(cloudflareIp) && typeof cloudflareIp[0] === 'string'
+      ? cloudflareIp[0].trim()
+      : Array.isArray(forwarded)
+        ? forwarded[0]
+        : typeof forwarded === 'string'
+          ? forwarded.split(',')[0].trim()
+          : req.socket.remoteAddress || 'unknown';
   return hashWaitlistIpAddress(ip);
 }
 
@@ -144,6 +155,54 @@ function applyCors(req: Request, res: Response): void {
   }
 }
 
+function checkEmailRateLimit(emailHash: string): boolean {
+  const now = Date.now();
+  pruneRateLimitMap(emailTimestamps, now);
+  const timestamps = emailTimestamps.get(emailHash) || [];
+  const recent = timestamps.filter((ts) => now - ts < WINDOW_MS);
+  if (recent.length >= 5) return false;
+  recent.push(now);
+  emailTimestamps.set(emailHash, recent);
+  return true;
+}
+
+function hashToken(token: string): string {
+  return crypto.createHash('sha256').update(token, 'utf8').digest('hex');
+}
+
+function buildWaitlistConfirmationUrl(token: string): string {
+  const base =
+    process.env.PUBLIC_API_BASE_URL
+    || process.env.OAUTH_REDIRECT_BASE
+    || 'https://api.nexushub.me';
+  return `${base.replace(/\/+$/, '')}/waitlist/confirm?token=${encodeURIComponent(token)}`;
+}
+
+function confirmationSuccessHtml(): string {
+  return `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Nexus Hub beta confirmed</title>
+  <style>
+    body { margin: 0; min-height: 100vh; display: grid; place-items: center; background: #0a0a0b; color: #ededf0; font-family: -apple-system, BlinkMacSystemFont, Inter, sans-serif; }
+    main { width: min(520px, calc(100vw - 40px)); }
+    h1 { font-size: 32px; margin: 0 0 12px; }
+    p { color: #a1a1a6; line-height: 1.55; }
+    a { color: #ff6b35; font-weight: 700; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Beta request confirmed</h1>
+    <p>Your email is confirmed. Our team will review the request and, if approved, you will receive your invite code by email.</p>
+    <p><a href="https://nexushub.me">Return to nexushub.me</a></p>
+  </main>
+</body>
+</html>`;
+}
+
 // ─── Router ─────────────────────────────────────────────────────────
 
 export function createWaitlistRouter(): Router {
@@ -181,7 +240,7 @@ export function createWaitlistRouter(): Router {
    *   position?: number       — only when intent === 'general' (queue position)
    * }
    */
-  router.post('/', json, (req: Request, res: Response) => {
+  router.post('/', json, async (req: Request, res: Response) => {
     const ipHash = hashIp(req);
 
     // Rate limit BEFORE any DB work so a hostile loop is cheap to reject
@@ -191,9 +250,21 @@ export function createWaitlistRouter(): Router {
     }
 
     const body = req.body || {};
-    const email = sanitizeString(body.email, MAX_EMAIL_LENGTH)?.toLowerCase();
-    if (!email || !isValidEmail(email)) {
+    const validation = await validatePublicEmail(body.email);
+    if (!validation.ok || !validation.normalizedEmail) {
       res.status(400).json({ ok: false, error: 'Please enter a valid email address.' });
+      return;
+    }
+    const email = validation.normalizedEmail;
+    const emailHash = hashEmail(email);
+
+    if (!checkEmailRateLimit(emailHash)) {
+      res.status(429).json({ ok: false, error: 'Too many signups for this email. Try again later.' });
+      return;
+    }
+
+    if (!isEmailConfigured()) {
+      res.status(503).json({ ok: false, error: 'Email delivery is not configured yet. Please try again later.' });
       return;
     }
 
@@ -204,6 +275,11 @@ export function createWaitlistRouter(): Router {
     const utmMedium = sanitizeString(body.utm_medium, MAX_SOURCE_LENGTH);
     const utmCampaign = sanitizeString(body.utm_campaign, MAX_SOURCE_LENGTH);
     const userAgent = sanitizeString(req.headers['user-agent'], 500);
+    const confirmationToken = crypto.randomBytes(32).toString('base64url');
+    const confirmationTokenHash = hashToken(confirmationToken);
+    const confirmationExpiresAt = new Date(
+      Date.now() + config.waitlist.confirmationTtlHours * 60 * 60 * 1000,
+    ).toISOString();
 
     try {
       const db = getDb();
@@ -248,7 +324,16 @@ export function createWaitlistRouter(): Router {
                use_case = COALESCE(?, use_case),
                utm_source = COALESCE(?, utm_source),
                utm_medium = COALESCE(?, utm_medium),
-               utm_campaign = COALESCE(?, utm_campaign)
+               utm_campaign = COALESCE(?, utm_campaign),
+               email_hash = ?,
+               confirmation_token_hash = ?,
+               confirmation_expires_at = ?,
+               email_delivery_status = 'confirmation_pending',
+               last_email_error = NULL,
+               status = CASE
+                 WHEN status IN ('invited', 'signed_up', 'rejected') THEN status
+                 ELSE 'pending'
+               END
              WHERE id = ?`,
           ).run(
             intent,
@@ -258,6 +343,9 @@ export function createWaitlistRouter(): Router {
             utmSource,
             utmMedium,
             utmCampaign,
+            emailHash,
+            confirmationTokenHash,
+            confirmationExpiresAt,
             existing.id,
           );
           return {
@@ -271,14 +359,16 @@ export function createWaitlistRouter(): Router {
         // New entry
         const info = db.prepare(
           `INSERT INTO waitlist (
-             email, intent, source, use_case,
+             email, email_hash, intent, source, use_case,
              utm_source, utm_medium, utm_campaign,
-             ip_hash, user_agent, founder_slot
-           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+             ip_hash, user_agent, founder_slot,
+             confirmation_token_hash, confirmation_expires_at, email_delivery_status
+           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         ).run(
-          email, intent, source, useCase,
+          email, emailHash, intent, source, useCase,
           utmSource, utmMedium, utmCampaign,
           ipHash, userAgent, founderSlot,
+          confirmationTokenHash, confirmationExpiresAt, 'confirmation_pending',
         );
 
         // General position = row count of all 'general'-intent rows up to now
@@ -309,9 +399,22 @@ export function createWaitlistRouter(): Router {
         return;
       }
 
+      const confirmationUrl = buildWaitlistConfirmationUrl(confirmationToken);
+      const delivered = await sendBetaWaitlistConfirmation(email, confirmationUrl);
+      if (!delivered) {
+        db.prepare(
+          `UPDATE waitlist
+              SET email_delivery_status = 'confirmation_failed',
+                  last_email_error = 'send_failed'
+            WHERE email = ?`,
+        ).run(email);
+        res.status(502).json({ ok: false, error: 'Could not send confirmation email. Please try again.' });
+        return;
+      }
+
       logger.info(
-        { email, intent, founderSlot: result.founderSlot, source },
-        'Waitlist signup',
+        { emailHash, intent, founderSlot: result.founderSlot, source },
+        'Waitlist confirmation email queued',
       );
 
       res.json({
@@ -319,10 +422,48 @@ export function createWaitlistRouter(): Router {
         intent: result.intent,
         founderSlot: result.founderSlot,
         position: 'position' in result ? result.position : undefined,
+        status: 'confirmation_required',
+        message: 'Check your email to confirm your beta request.',
       });
     } catch (err: any) {
-      logger.error({ err, email }, 'Waitlist signup failed');
+      logger.error({ err, emailHash }, 'Waitlist signup failed');
       res.status(500).json({ ok: false, error: 'Something went wrong. Please try again.' });
+    }
+  });
+
+  router.get('/confirm', (req: Request, res: Response) => {
+    const token = typeof req.query.token === 'string' ? req.query.token : '';
+    if (!token || token.length < 32) {
+      res.status(400).type('text/plain').send('Invalid confirmation link.');
+      return;
+    }
+
+    try {
+      const db = getDb();
+      const tokenHash = hashToken(token);
+      const result = db.prepare(`
+        UPDATE waitlist
+           SET email_confirmed_at = COALESCE(email_confirmed_at, datetime('now')),
+               confirmation_token_hash = NULL,
+               confirmation_expires_at = NULL,
+               email_delivery_status = 'confirmed',
+               status = CASE
+                 WHEN status IN ('invited', 'signed_up', 'rejected') THEN status
+                 ELSE 'pending'
+               END
+         WHERE confirmation_token_hash = ?
+           AND confirmation_expires_at > datetime('now')
+      `).run(tokenHash);
+
+      if (result.changes === 0) {
+        res.status(410).type('text/plain').send('This confirmation link is invalid or expired.');
+        return;
+      }
+
+      res.type('html').send(confirmationSuccessHtml());
+    } catch (err) {
+      logger.error({ err }, 'Waitlist confirmation failed');
+      res.status(500).type('text/plain').send('Could not confirm this request. Please try again.');
     }
   });
 

@@ -18,6 +18,7 @@ vi.mock('../../src/services/database', () => ({
   initDatabase: vi.fn(),
   closeDatabase: vi.fn(),
   findUnexpectedMigrationPrefixCollisions: vi.fn(() => []),
+  assertNoUnexpectedMigrationPrefixCollisions: vi.fn(),
 }));
 
 vi.mock('../../src/utils/logger', () => ({
@@ -55,7 +56,7 @@ import {
   setUserTier, seedOwnerUser,
   createEmailUser,
   sanitizeDisplayName, getPreferredDisplayName,
-  createInviteCode, validateAndConsumeInviteCode, listInviteCodes, deleteInviteCode,
+  createInviteCode, validateAndConsumeInviteCode, peekInviteCode, listInviteCodes, deleteInviteCode,
 } from '../../src/services/user-service';
 
 import { t, detectLanguageFromTelegram } from '../../src/utils/i18n';
@@ -307,8 +308,16 @@ describe('user-service', () => {
   describe('invite codes', () => {
     it('creates and validates a code', () => {
       const code = createInviteCode(111111);
-      expect(code).toHaveLength(8);
+      expect(code.length).toBeGreaterThanOrEqual(22);
       expect(validateAndConsumeInviteCode(code)).toEqual({ valid: true });
+    });
+
+    it('peeks expiring database invite codes without consuming them', () => {
+      const code = createInviteCode(111111, 1, 30);
+      const peeked = peekInviteCode(code);
+      expect(peeked.valid).toBe(true);
+      expect(peeked.expiresAt).toBeTruthy();
+      expect(validateAndConsumeInviteCode(code).valid).toBe(true);
     });
 
     it('code exhausted after max uses', () => {

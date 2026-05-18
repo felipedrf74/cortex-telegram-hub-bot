@@ -17,12 +17,13 @@ import { sendSuccess, sendError, asyncHandler } from '../response-helpers';
 import {
   isStripeConfigured,
   getSubscriptionStatus,
-  createCheckoutSession,
+  createCheckoutSessionForPlan,
   createPortalSession,
   handleAppleTransaction,
+  claimWebsiteStripeSubscriptionForUser,
 } from '../../services/stripe-service';
-import { config } from '../../config';
 import { verifyAppleJws } from '../../services/apple-jws-verifier';
+import { safeCheckoutUrl } from './public-billing';
 
 export function billingRoutes(): Router {
   const router = Router();
@@ -67,7 +68,7 @@ export function billingRoutes(): Router {
   /**
    * POST /api/v1/billing/checkout
    * Creates a Stripe Checkout Session and returns the URL.
-   * Body: { priceId: string, successUrl?: string, cancelUrl?: string }
+   * Body: { plan: 'pro'|'max', currency: 'usd'|'brl', successUrl?: string, cancelUrl?: string }
    */
   router.post('/checkout', asyncHandler(async (req: Request, res: Response) => {
     if (!isStripeConfigured()) {
@@ -76,39 +77,31 @@ export function billingRoutes(): Router {
     }
 
     const userId = (req as any).userId;
-    const { priceId } = req.body;
+    const plan = req.body.plan || 'pro';
+    const currency = req.body.currency || 'usd';
 
-    if (!priceId) {
-      sendError(res, 'BAD_REQUEST', 'priceId is required');
+    if (!['pro', 'max'].includes(String(plan).toLowerCase())) {
+      sendError(res, 'BAD_REQUEST', 'plan must be pro or max');
+      return;
+    }
+    if (!['usd', 'brl'].includes(String(currency).toLowerCase())) {
+      sendError(res, 'BAD_REQUEST', 'currency must be usd or brl');
       return;
     }
 
-    // Validate that the priceId is one of our known prices (USD + BRL + EUR)
-    const validPrices = [
-      config.stripe.priceProMonthly,
-      config.stripe.priceProYearly,
-      config.stripe.priceMaxMonthly,
-      config.stripe.priceMaxYearly,
-      config.stripe.priceProMonthlyBrl,
-      config.stripe.priceProYearlyBrl,
-      config.stripe.priceMaxMonthlyBrl,
-      config.stripe.priceMaxYearlyBrl,
-      config.stripe.priceProMonthlyEur,
-      config.stripe.priceProYearlyEur,
-      config.stripe.priceMaxMonthlyEur,
-      config.stripe.priceMaxYearlyEur,
-    ].filter(Boolean);
+    const successUrl = safeCheckoutUrl(req.body.successUrl, 'https://nexushub.me/?checkout=success');
+    const cancelUrl = safeCheckoutUrl(req.body.cancelUrl, 'https://nexushub.me/?checkout=canceled');
 
-    if (!validPrices.includes(priceId)) {
-      sendError(res, 'INVALID_PRICE', 'Unknown price ID', 400);
-      return;
+    try {
+      const url = await createCheckoutSessionForPlan(userId, plan, currency, successUrl, cancelUrl);
+      sendSuccess(res, { url });
+    } catch (err: any) {
+      if (err?.message === 'PRICE_NOT_CONFIGURED') {
+        sendError(res, 'NOT_CONFIGURED', 'Requested Stripe price is not configured', 503);
+        return;
+      }
+      throw err;
     }
-
-    const successUrl = req.body.successUrl || 'https://nexushub.me/?checkout=success';
-    const cancelUrl = req.body.cancelUrl || 'https://nexushub.me/?checkout=canceled';
-
-    const url = await createCheckoutSession(userId, priceId, successUrl, cancelUrl);
-    sendSuccess(res, { url });
   }));
 
   /**
@@ -123,7 +116,7 @@ export function billingRoutes(): Router {
     }
 
     const userId = (req as any).userId;
-    const returnUrl = req.body.returnUrl || 'https://nexushub.me/';
+    const returnUrl = safeCheckoutUrl(req.body.returnUrl, 'https://nexushub.me/');
 
     try {
       const url = await createPortalSession(userId, returnUrl);
@@ -135,6 +128,26 @@ export function billingRoutes(): Router {
         throw err;
       }
     }
+  }));
+
+  /**
+   * POST /api/v1/billing/claim-website-checkout
+   * Claims a website checkout created before the user signed in.
+   * Requires the Nexus email to be verified before attaching billing state.
+   */
+  router.post('/claim-website-checkout', asyncHandler(async (req: Request, res: Response) => {
+    const userId = (req as any).userId;
+    const claimed = claimWebsiteStripeSubscriptionForUser(userId);
+    if (!claimed) {
+      sendError(
+        res,
+        'NO_CLAIMABLE_SUBSCRIPTION',
+        'No claimable website subscription was found for this verified email.',
+        404,
+      );
+      return;
+    }
+    sendSuccess(res, { claimed: true });
   }));
 
   /**

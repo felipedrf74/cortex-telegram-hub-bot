@@ -159,6 +159,17 @@ export function createPortalServer(bot?: any): http.Server {
     logger.warn({ err }, 'Waitlist router failed to mount (non-fatal)');
   }
 
+  // ── Public website checkout (landing page Stripe handoff) ──────────
+  // Mounted at root /billing so nexushub.me can start Stripe Checkout
+  // without a Nexus account session. Authenticated billing stays under
+  // /api/v1/billing and never trusts client-supplied price IDs.
+  try {
+    const { createPublicBillingRouter } = require('../api/routes/public-billing');
+    app.use('/billing', createPublicBillingRouter());
+  } catch (err) {
+    logger.warn({ err }, 'Public billing router failed to mount (non-fatal)');
+  }
+
   // ── iOS API (mounted before the global JSON parser) ──────────────────
   if (config.ios?.enabled) {
     // Initialize SQLite-backed cache store (survives restarts)
