@@ -164,6 +164,21 @@ HAS_CHAT_REASONING=false      # Chat ActionFrame parsing/execution/eval harness
 HAS_IOS_NAVIGATION=false      # tab/navigation/view-model responsiveness
 HAS_IOS_DTO=false             # app-facing DTO/decoder contract changes
 HAS_IOS_NOTIFICATION=false    # APNs/local notifications/Decision Center UI
+# Test-infra plan Phase A (2026-05-18): per-feature iOS flags so the
+# focused runner can scope simulator tests to the change. Decision Center
+# stays as HAS_IOS_NOTIFICATION above; this set covers the OTHER feature
+# surfaces the iOS UI test classes were grouped around.
+HAS_IOS_HOME=false            # Dashboard / DayDial / QuickPill surfaces
+HAS_IOS_DECISION_CENTER=false # explicit decision-center subset of notification
+HAS_IOS_TRAINING=false        # Training / cardio / focus block UI
+HAS_IOS_CONTENT=false         # Content creator / script / pipeline UI
+HAS_IOS_COOKING=false         # Cooking / recipe UI
+HAS_IOS_FINANCE=false         # Finance UI
+HAS_IOS_CHAT=false            # Chat / message / response-block UI
+HAS_IOS_SETTINGS=false        # Settings / Connections / provider preferences
+HAS_IOS_TASKS=false           # Tasks / new task / checklist
+HAS_IOS_CALENDAR=false        # Calendar event / repo / presentation
+HAS_IOS_SHARED_BEHAVIOR=false # xcodeproj / xcconfig / Package.swift → full UI suite
 HAS_APPLE_NOTIFICATION_WEBHOOK=false
 HAS_TRAINING_ENTITLEMENT=false
 HAS_CONTENT_PROMPT_CLEANLINESS=false
@@ -370,7 +385,43 @@ while IFS= read -r f; do
     *Service.swift|*Repository.swift|*DTO*|*Contract*|*Decoder*|*Response*.swift|*ContractDecoderResilienceTests.swift|*HomeViewStateContractDecodingTests.swift|*TrainingHomeViewStateContractDecodingTests.swift|*ContentHomeContractDecodingTests.swift|*PlanGenerateResponse*Tests.swift) HAS_IOS_DTO=true ;;
   esac
   case "$f" in
-    *Notification*|*DecisionCenter*|*InboxView.swift|*DeepLinkRouter.swift|*Notification*Tests.swift|*Notification*UITests.swift|*DecisionCenter*Tests.swift|*DecisionCenter*UITests.swift) HAS_IOS_NOTIFICATION=true; HAS_IOS_SRC=true ;;
+    *Notification*|*InboxView.swift|*DeepLinkRouter.swift|*Notification*Tests.swift|*Notification*UITests.swift) HAS_IOS_NOTIFICATION=true; HAS_IOS_SRC=true ;;
+  esac
+  # Test-infra plan Phase A (2026-05-18): per-feature path mapping.
+  case "$f" in
+    *Views/Dashboard/*|*ViewModels/DashboardViewModel*|*Models/DayDial*|*HomeWeekNavigationPerformance*|*AppShellVisualSnapshot*|*HealthDaySnapshot*) HAS_IOS_HOME=true; HAS_IOS_SRC=true ;;
+  esac
+  case "$f" in
+    *DecisionCenter*|*NotificationDecisionCenter*|*decision-center*) HAS_IOS_DECISION_CENTER=true; HAS_IOS_NOTIFICATION=true; HAS_IOS_SRC=true ;;
+  esac
+  case "$f" in
+    *Views/Training/*|*ViewModels/Training*|*Models/CardioProgression*|*Models/FocusBlockRecommendation*|*Models/AthleteProfile*|*TrainingFixtureBypass*|*TrainingValidation*) HAS_IOS_TRAINING=true; HAS_IOS_SRC=true ;;
+  esac
+  case "$f" in
+    *Views/Content/*|*ViewModels/Content*|*Models/ContentIdea*|*Models/ScriptGenerationMode*|*ContentCreationLive*) HAS_IOS_CONTENT=true; HAS_IOS_SRC=true ;;
+  esac
+  case "$f" in
+    *Views/Cooking/*|*Views/Recipe*|*ViewModels/Cooking*|*ViewModels/Recipe*) HAS_IOS_COOKING=true; HAS_IOS_SRC=true ;;
+  esac
+  case "$f" in
+    *Views/Finance/*|*ViewModels/Finance*) HAS_IOS_FINANCE=true; HAS_IOS_SRC=true ;;
+  esac
+  case "$f" in
+    *Views/Chat/*|*Models/Message.swift|*Models/ChatResponse*|*MessageBubble*|*MarkdownRenderer*|*BlockRenderer*|*StructuredCards*|*ChatResponseBlockPresentation*) HAS_IOS_CHAT=true; HAS_IOS_SRC=true ;;
+  esac
+  case "$f" in
+    *Views/Settings/*|*Core/Services/SettingsService*|*ConnectionsView*|*ProviderPreferences*) HAS_IOS_SETTINGS=true; HAS_IOS_SRC=true ;;
+  esac
+  case "$f" in
+    *Views/Tasks/*|*NewTaskSheet*|*Models/NexusTask*) HAS_IOS_TASKS=true; HAS_IOS_SRC=true ;;
+  esac
+  case "$f" in
+    *Core/Services/CalendarService*|*Core/Repositories/CalendarRepository*|*Models/CalendarEvent*|*CalendarEventPresentation*|*Views/Calendar/*) HAS_IOS_CALENDAR=true; HAS_IOS_SRC=true ;;
+  esac
+  # Shared-behavior risk for iOS: project files, xcconfigs, Swift packages →
+  # force the full UI suite because the change can affect any view.
+  case "$f" in
+    *Nexus\ Hub.xcodeproj/*|*xcshareddata/*|*.xcconfig|*Package.swift|*Package.resolved) HAS_IOS_SHARED_BEHAVIOR=true; HAS_IOS_SRC=true ;;
   esac
 done <<EOF
 $CHANGED
@@ -546,15 +597,66 @@ fi
 # ── XCTest mode ────────────────────────────────────────
 XCTEST_MODE="skip"
 XCTEST_CLASSES=()
-if $HAS_IOS_SRC; then
+if $HAS_IOS_SHARED_BEHAVIOR; then
+  # Test-infra plan Phase A (2026-05-18): shared-behavior escalation —
+  # xcodeproj/xcconfig/Package.swift changes can affect any view; run the
+  # full UI bundle. The iOS-side runner reads `mode: "full"` and skips
+  # the per-class -only-testing args.
+  XCTEST_MODE="full"
+elif $HAS_IOS_SRC; then
   XCTEST_MODE="focused"
   $HAS_IOS_UI && XCTEST_CLASSES+=("Nexus HubUITests/*")
-  $HAS_IOS_AUTH && XCTEST_CLASSES+=("Nexus HubTests/AppleSignInNonceTests" "Nexus HubTests/KeychainHelperTests" "Nexus HubTests/AuthManagerFixtureLeakTests" "Nexus HubTests/AuthManagerPersistenceTests" "Nexus HubTests/AuthUserPresentationTests" "Nexus HubTests/GoogleAuthCallbackResolverTests")
+  $HAS_IOS_AUTH && XCTEST_CLASSES+=("Nexus HubTests/AppleSignInNonceTests" "Nexus HubTests/KeychainHelperTests" "Nexus HubTests/AuthManagerFixtureLeakTests" "Nexus HubTests/AuthManagerPersistenceTests" "Nexus HubTests/AuthUserPresentationTests" "Nexus HubTests/GoogleAuthCallbackResolverTests" "Nexus HubUITests/AuthenticationFlowUITests" "Nexus HubUITests/InterruptedOnboardingUITests" "Nexus HubUITests/TwoAccountSwitchUITests")
   $HAS_IOS_NAVIGATION && XCTEST_CLASSES+=("Nexus HubTests/NavigationPerformanceSourcePinsTests" "Nexus HubTests/MainTabViewBadgeMemoizationTests" "Nexus HubUITests/AppWideResponsivenessUITests" "Nexus HubUITests/HomeWeekNavigationPerformanceUITests")
-  $HAS_IOS_DTO && XCTEST_CLASSES+=("Nexus HubTests/ContractDecoderResilienceTests" "Nexus HubTests/HomeViewStateContractDecodingTests" "Nexus HubTests/TrainingHomeViewStateContractDecodingTests" "Nexus HubTests/ContentHomeContractDecodingTests")
+  $HAS_IOS_DTO && XCTEST_CLASSES+=("Nexus HubTests/ContractDecoderResilienceTests" "Nexus HubTests/HomeViewStateContractDecodingTests" "Nexus HubTests/TrainingHomeViewStateContractDecodingTests" "Nexus HubTests/ContentHomeContractDecodingTests" "Nexus HubTests/ModelDecodingTests")
   $HAS_IOS_NOTIFICATION && XCTEST_CLASSES+=("Nexus HubTests/NotificationManagerTests" "Nexus HubTests/DeepLinkRouterTests" "Nexus HubTests/NotificationDecisionCenterTests" "Nexus HubUITests/NotificationDecisionCenterUITests")
+  # Test-infra plan Phase A (2026-05-18): per-feature XCTest classes. These
+  # are the classes whose source files are owned by each feature, mapped
+  # via grep over the iOS test-target file system. The "Nexus HubTests/*"
+  # entries cover the unit suite; "Nexus HubUITests/*" entries cover the
+  # simulator UI tests. Unknown classes are filtered by the iOS runner
+  # via the Bundle/<TestClass>.swift existence check.
+  $HAS_IOS_HOME && XCTEST_CLASSES+=("Nexus HubUITests/HomeWeekNavigationPerformanceUITests" "Nexus HubUITests/AppShellVisualSnapshotUITests" "Nexus HubTests/NavigationPerformanceSourcePinsTests" "Nexus HubTests/HealthDaySnapshotPayloadTests" "Nexus HubTests/HomeViewStateContractDecodingTests")
+  $HAS_IOS_DECISION_CENTER && XCTEST_CLASSES+=("Nexus HubUITests/NotificationDecisionCenterUITests" "Nexus HubTests/NotificationDecisionCenterTests")
+  $HAS_IOS_TRAINING && XCTEST_CLASSES+=("Nexus HubUITests/TrainingFixtureBypassUITests" "Nexus HubUITests/TrainingValidationUITests" "Nexus HubTests/TrainingHomeViewStateContractDecodingTests")
+  $HAS_IOS_CONTENT && XCTEST_CLASSES+=("Nexus HubUITests/ContentCreationLiveWorkflowUITests" "Nexus HubTests/ContentHomeContractDecodingTests")
+  $HAS_IOS_CHAT && XCTEST_CLASSES+=("Nexus HubTests/ChatResponseBlockPresentationTests" "Nexus HubTests/MessageBubbleRecipeParsingTests" "Nexus HubTests/ChatRichStateDecodingTests" "Nexus HubTests/ChatStructuredCardRenderingTests" "Nexus HubTests/ChatViewModelFastpathTests" "Nexus HubTests/ChatRepositoryTests")
+  $HAS_IOS_SETTINGS && XCTEST_CLASSES+=("Nexus HubTests/ModelDecodingTests")
+  $HAS_IOS_TASKS && XCTEST_CLASSES+=("Nexus HubUITests/NewTaskSheetCreateTaskUITests")
+  $HAS_IOS_CALENDAR && XCTEST_CLASSES+=("Nexus HubTests/CalendarEventPresentationTests" "Nexus HubTests/ModelDecodingTests")
+  # Always-on safety pins (every focused iOS run still covers the
+  # contract-decoder and auth-persistence stability tests).
   XCTEST_CLASSES+=("Nexus HubTests/ContractDecoderResilienceTests")
   XCTEST_CLASSES+=("Nexus HubTests/AuthManagerPersistenceTests")
+fi
+
+# ── Migration collision detection (test-infra plan Phase H-3) ──────
+# When a changed migration shares a numeric prefix with a sibling
+# worktree's migration, the second branch to merge will fail boot
+# (assertNoUnexpectedMigrationPrefixCollisions at database.ts:53-63
+# throws). Surface the collision in the classifier JSON so pre-commit
+# can warn before the boot-time failure. Only scans LOCAL sibling
+# worktrees — the immediate risk surface. Full remote-branch scan is
+# deferred to Phase 18+.
+MIGRATION_COLLISIONS=()
+if $HAS_MIGRATION; then
+  ROOT="$(git rev-parse --show-toplevel 2>/dev/null || echo "")"
+  ADDED_MIGRATIONS=$(echo "$CHANGED" | grep -E '^migrations/[0-9]+_.*\.sql$' | sed 's|^migrations/||' || true)
+  if [ -n "$ROOT" ] && [ -n "$ADDED_MIGRATIONS" ]; then
+    WORKTREES=$(git worktree list --porcelain 2>/dev/null | awk '/^worktree / {print $2}' | grep -v "^${ROOT}$" || true)
+    while IFS= read -r m; do
+      [ -z "$m" ] && continue
+      prefix="${m%%_*}"
+      while IFS= read -r wt; do
+        [ -z "$wt" ] && continue
+        [ -d "$wt/migrations" ] || continue
+        other=$(ls "$wt/migrations/" 2>/dev/null | grep -E "^${prefix}_.*\.sql$" | grep -v "^${m}\$" | head -1 || true)
+        if [ -n "$other" ]; then
+          MIGRATION_COLLISIONS+=("${m} collides with ${other} in $(basename "$wt")")
+        fi
+      done <<<"$WORKTREES"
+    done <<<"$ADDED_MIGRATIONS"
+  fi
 fi
 
 # ── Staging smoke ──────────────────────────────────────
@@ -623,6 +725,22 @@ emit_json() {
   export CLAS_IOS_AUTH="$HAS_IOS_AUTH"
   export CLAS_IOS_TEST="$HAS_IOS_TEST"
   export CLAS_IOS_UI="$HAS_IOS_UI"
+  # Test-infra plan Phase A (2026-05-18): per-feature iOS flags.
+  export CLAS_IOS_HOME="$HAS_IOS_HOME"
+  export CLAS_IOS_DECISION_CENTER="$HAS_IOS_DECISION_CENTER"
+  export CLAS_IOS_TRAINING="$HAS_IOS_TRAINING"
+  export CLAS_IOS_CONTENT="$HAS_IOS_CONTENT"
+  export CLAS_IOS_COOKING="$HAS_IOS_COOKING"
+  export CLAS_IOS_FINANCE="$HAS_IOS_FINANCE"
+  export CLAS_IOS_CHAT="$HAS_IOS_CHAT"
+  export CLAS_IOS_SETTINGS="$HAS_IOS_SETTINGS"
+  export CLAS_IOS_TASKS="$HAS_IOS_TASKS"
+  export CLAS_IOS_CALENDAR="$HAS_IOS_CALENDAR"
+  export CLAS_IOS_SHARED_BEHAVIOR="$HAS_IOS_SHARED_BEHAVIOR"
+  export CLAS_IOS_NOTIFICATION="$HAS_IOS_NOTIFICATION"
+  # Test-infra plan Phase H-3: surface migration prefix collisions
+  # against sibling local worktrees so pre-commit warns before boot fail.
+  export CLAS_MIGRATION_COLLISIONS="$(IFS=$'\n'; echo "${MIGRATION_COLLISIONS[*]+${MIGRATION_COLLISIONS[*]}}")"
   export CLAS_DEPLOY_SCRIPT="$HAS_DEPLOY_SCRIPT"
   export CLAS_HOOK="$HAS_HOOK"
   export CLAS_CI_WORKFLOW="$HAS_CI_WORKFLOW"
@@ -677,6 +795,13 @@ const payload = {
     mode: process.env.CLAS_XMODE,
     classes: lines('CLAS_XCTEST'),
   },
+  // Test-infra plan Phase H-3 (2026-05-18): migration prefix collisions
+  // against sibling local worktrees. Each entry is a human-readable line:
+  // "<this migration> collides with <other migration> in <worktree-name>".
+  // Pre-commit consumes this to warn before the boot-time collision throw.
+  migrations: {
+    collisions: lines('CLAS_MIGRATION_COLLISIONS'),
+  },
   stagingSmoke: {
     generic: flag('CLAS_SS_GENERIC'),
     domains: lines('CLAS_SS_DOMAINS'),
@@ -705,6 +830,18 @@ const payload = {
     iosAuth: flag('CLAS_IOS_AUTH'),
     iosTest: flag('CLAS_IOS_TEST'),
     iosUi: flag('CLAS_IOS_UI'),
+    // Test-infra plan Phase A: per-feature iOS flags.
+    iosHome: flag('CLAS_IOS_HOME'),
+    iosDecisionCenter: flag('CLAS_IOS_DECISION_CENTER'),
+    iosTraining: flag('CLAS_IOS_TRAINING'),
+    iosContent: flag('CLAS_IOS_CONTENT'),
+    iosCooking: flag('CLAS_IOS_COOKING'),
+    iosFinance: flag('CLAS_IOS_FINANCE'),
+    iosChat: flag('CLAS_IOS_CHAT'),
+    iosSettings: flag('CLAS_IOS_SETTINGS'),
+    iosTasks: flag('CLAS_IOS_TASKS'),
+    iosCalendar: flag('CLAS_IOS_CALENDAR'),
+    iosSharedBehavior: flag('CLAS_IOS_SHARED_BEHAVIOR'),
     deployScript: flag('CLAS_DEPLOY_SCRIPT'),
     hook: flag('CLAS_HOOK'),
     ciWorkflow: flag('CLAS_CI_WORKFLOW'),
@@ -726,6 +863,10 @@ const payload = {
     deployConfig: flag('CLAS_DEPLOY_CONFIG'),
     iosNavigation: flag('CLAS_IOS_NAVIGATION'),
     iosDto: flag('CLAS_IOS_DTO'),
+    // Test-infra plan Phase A (2026-05-18): expose iosNotification too —
+    // the HAS_IOS_NOTIFICATION variable existed but was never surfaced in
+    // the JSON flags, so callers couldn't gate on it directly.
+    iosNotification: flag('CLAS_IOS_NOTIFICATION'),
     appleNotificationWebhook: flag('CLAS_APPLE_NOTIFICATION_WEBHOOK'),
     trainingEntitlement: flag('CLAS_TRAINING_ENTITLEMENT'),
     contentPromptCleanliness: flag('CLAS_CONTENT_PROMPT_CLEANLINESS'),

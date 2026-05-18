@@ -379,6 +379,261 @@ describe('changed-area-classifier engineering-excellence enrichments (2026-05-04
   });
 });
 
+// Test-infra plan Phase A + E (2026-05-18): per-feature iOS classification.
+// These tests pin the mapping from iOS source paths → XCTest classes so a
+// future agent who renames a UI test class without updating the classifier
+// gets a test failure instead of a silently-shrunk test suite.
+describe('changed-area-classifier per-feature iOS mapping', () => {
+  it('routes Home dashboard changes into only Home-relevant XCTest classes (not Training, Decision Center, etc.)', () => {
+    const raw = execFileSync(
+      'bash',
+      [
+        'scripts/changed-area-classifier.sh',
+        '--json',
+        '--files',
+        'Nexus Hub/Views/Dashboard/DashboardView.swift',
+      ],
+      { encoding: 'utf8' },
+    );
+    const result = JSON.parse(raw) as {
+      flags: Record<string, boolean>;
+      xctest: { mode: string; classes: string[] };
+    };
+
+    expect(result.flags.iosHome).toBe(true);
+    expect(result.flags.iosTraining).toBe(false);
+    expect(result.flags.iosDecisionCenter).toBe(false);
+    expect(result.flags.iosContent).toBe(false);
+    expect(result.flags.iosCooking).toBe(false);
+    expect(result.flags.iosFinance).toBe(false);
+    expect(result.flags.iosChat).toBe(false);
+    expect(result.flags.iosSharedBehavior).toBe(false);
+
+    expect(result.xctest.mode).toBe('focused');
+    expect(result.xctest.classes).toContain('Nexus HubUITests/HomeWeekNavigationPerformanceUITests');
+    expect(result.xctest.classes).toContain('Nexus HubUITests/AppShellVisualSnapshotUITests');
+    expect(result.xctest.classes).toContain('Nexus HubTests/NavigationPerformanceSourcePinsTests');
+    expect(result.xctest.classes).toContain('Nexus HubTests/HealthDaySnapshotPayloadTests');
+    // Unrelated UI suites must NOT be selected for a Home-only diff.
+    expect(result.xctest.classes).not.toContain('Nexus HubUITests/TrainingFixtureBypassUITests');
+    expect(result.xctest.classes).not.toContain('Nexus HubUITests/TrainingValidationUITests');
+    expect(result.xctest.classes).not.toContain('Nexus HubUITests/ContentCreationLiveWorkflowUITests');
+    expect(result.xctest.classes).not.toContain('Nexus HubUITests/NewTaskSheetCreateTaskUITests');
+  });
+
+  it('routes Decision Center changes into NotificationDecisionCenterUITests only', () => {
+    const raw = execFileSync(
+      'bash',
+      [
+        'scripts/changed-area-classifier.sh',
+        '--json',
+        '--files',
+        'Nexus Hub/Views/DecisionCenter/NotificationDecisionCenterView.swift',
+      ],
+      { encoding: 'utf8' },
+    );
+    const result = JSON.parse(raw) as {
+      flags: Record<string, boolean>;
+      xctest: { classes: string[] };
+    };
+
+    expect(result.flags.iosDecisionCenter).toBe(true);
+    expect(result.flags.iosNotification).toBe(true);
+    expect(result.flags.iosHome).toBe(false);
+    expect(result.xctest.classes).toContain('Nexus HubUITests/NotificationDecisionCenterUITests');
+    expect(result.xctest.classes).not.toContain('Nexus HubUITests/TrainingFixtureBypassUITests');
+    expect(result.xctest.classes).not.toContain('Nexus HubUITests/HomeWeekNavigationPerformanceUITests');
+  });
+
+  it('routes Chat / message changes into Chat-only XCTest classes', () => {
+    const raw = execFileSync(
+      'bash',
+      [
+        'scripts/changed-area-classifier.sh',
+        '--json',
+        '--files',
+        'Nexus Hub/Models/Message.swift',
+      ],
+      { encoding: 'utf8' },
+    );
+    const result = JSON.parse(raw) as {
+      flags: Record<string, boolean>;
+      xctest: { classes: string[] };
+    };
+
+    expect(result.flags.iosChat).toBe(true);
+    expect(result.flags.iosHome).toBe(false);
+    expect(result.xctest.classes).toContain('Nexus HubTests/ChatResponseBlockPresentationTests');
+    expect(result.xctest.classes).toContain('Nexus HubTests/ChatRichStateDecodingTests');
+    expect(result.xctest.classes).toContain('Nexus HubTests/MessageBubbleRecipeParsingTests');
+    expect(result.xctest.classes).not.toContain('Nexus HubUITests/HomeWeekNavigationPerformanceUITests');
+  });
+
+  it('routes Training view changes into Training-only XCTest classes', () => {
+    const raw = execFileSync(
+      'bash',
+      [
+        'scripts/changed-area-classifier.sh',
+        '--json',
+        '--files',
+        'Nexus Hub/ViewModels/TrainingViewModel.swift',
+      ],
+      { encoding: 'utf8' },
+    );
+    const result = JSON.parse(raw) as {
+      flags: Record<string, boolean>;
+      xctest: { classes: string[] };
+    };
+
+    expect(result.flags.iosTraining).toBe(true);
+    expect(result.flags.iosHome).toBe(false);
+    // ViewModel.swift also matches HAS_IOS_NAVIGATION pattern (existing
+    // legacy: any *ViewModel.swift fires HAS_IOS_NAVIGATION). So both
+    // Training UI tests AND Navigation tests fire — accept either.
+    expect(result.xctest.classes).toContain('Nexus HubUITests/TrainingFixtureBypassUITests');
+    expect(result.xctest.classes).toContain('Nexus HubUITests/TrainingValidationUITests');
+    expect(result.xctest.classes).not.toContain('Nexus HubUITests/NotificationDecisionCenterUITests');
+    expect(result.xctest.classes).not.toContain('Nexus HubUITests/ContentCreationLiveWorkflowUITests');
+  });
+
+  it('routes Settings/Connections changes into Settings XCTest classes only', () => {
+    const raw = execFileSync(
+      'bash',
+      [
+        'scripts/changed-area-classifier.sh',
+        '--json',
+        '--files',
+        'Nexus Hub/Views/Settings/ConnectionsView.swift',
+      ],
+      { encoding: 'utf8' },
+    );
+    const result = JSON.parse(raw) as {
+      flags: Record<string, boolean>;
+      xctest: { classes: string[] };
+    };
+
+    expect(result.flags.iosSettings).toBe(true);
+    expect(result.flags.iosHome).toBe(false);
+    expect(result.xctest.classes).toContain('Nexus HubTests/ModelDecodingTests');
+    expect(result.xctest.classes).not.toContain('Nexus HubUITests/TrainingFixtureBypassUITests');
+  });
+
+  it('routes Calendar service/repo changes into Calendar XCTest classes', () => {
+    const raw = execFileSync(
+      'bash',
+      [
+        'scripts/changed-area-classifier.sh',
+        '--json',
+        '--files',
+        'Nexus Hub/Core/Services/CalendarService.swift',
+      ],
+      { encoding: 'utf8' },
+    );
+    const result = JSON.parse(raw) as {
+      flags: Record<string, boolean>;
+      xctest: { classes: string[] };
+    };
+
+    expect(result.flags.iosCalendar).toBe(true);
+    expect(result.flags.iosHome).toBe(false);
+    expect(result.xctest.classes).toContain('Nexus HubTests/CalendarEventPresentationTests');
+    expect(result.xctest.classes).toContain('Nexus HubTests/ModelDecodingTests');
+  });
+
+  it('escalates Xcode project / xcconfig changes to xctest.mode = full (shared behavior)', () => {
+    const raw = execFileSync(
+      'bash',
+      [
+        'scripts/changed-area-classifier.sh',
+        '--json',
+        '--files',
+        'Nexus Hub.xcodeproj/project.pbxproj',
+      ],
+      { encoding: 'utf8' },
+    );
+    const result = JSON.parse(raw) as {
+      flags: Record<string, boolean>;
+      xctest: { mode: string };
+    };
+
+    expect(result.flags.iosSharedBehavior).toBe(true);
+    expect(result.xctest.mode).toBe('full');
+  });
+
+  it('emits empty xctest.classes when no iOS files touched (no false-positive iOS routing)', () => {
+    const raw = execFileSync(
+      'bash',
+      [
+        'scripts/changed-area-classifier.sh',
+        '--json',
+        '--files',
+        'src/services/secretary-fastpath.ts',
+      ],
+      { encoding: 'utf8' },
+    );
+    const result = JSON.parse(raw) as {
+      flags: Record<string, boolean>;
+      xctest: { mode: string; classes: string[] };
+    };
+
+    expect(result.flags.iosHome).toBe(false);
+    expect(result.flags.iosSrc).toBe(false);
+    expect(result.xctest.mode).toBe('skip');
+    expect(result.xctest.classes).toEqual([]);
+  });
+});
+
+// Test-infra plan Phase H-3 (2026-05-18): migration prefix collision
+// detection. The classifier now surfaces migrations that share a numeric
+// prefix with a sibling local worktree's migrations, so pre-commit can
+// warn before the boot-time assertNoUnexpectedMigrationPrefixCollisions
+// throw at database.ts:53-63.
+describe('changed-area-classifier migration collision detection (Phase H-3)', () => {
+  it('emits an empty migrations.collisions array when no migrations changed', () => {
+    const raw = execFileSync(
+      'bash',
+      [
+        'scripts/changed-area-classifier.sh',
+        '--json',
+        '--files',
+        'src/services/secretary-fastpath.ts',
+      ],
+      { encoding: 'utf8' },
+    );
+    const result = JSON.parse(raw) as {
+      migrations: { collisions: string[] };
+    };
+
+    expect(result.migrations).toBeDefined();
+    expect(result.migrations.collisions).toEqual([]);
+  });
+
+  it('exposes migrations.collisions as a string array on the JSON payload', () => {
+    // A migration in the diff but no sibling worktree collision → empty
+    // array. This pins the shape of the field so consumers (pre-commit,
+    // CI) can rely on it.
+    const raw = execFileSync(
+      'bash',
+      [
+        'scripts/changed-area-classifier.sh',
+        '--json',
+        '--files',
+        'migrations/999_test_only_should_not_collide.sql',
+      ],
+      { encoding: 'utf8' },
+    );
+    const result = JSON.parse(raw) as {
+      flags: Record<string, boolean>;
+      migrations: { collisions: string[] };
+    };
+
+    expect(result.flags.migration).toBe(true);
+    expect(Array.isArray(result.migrations.collisions)).toBe(true);
+    // The collisions array CAN be empty (no sibling worktree has a 999_*
+    // migration in real life). The shape contract is what we pin.
+  });
+});
+
 describe('changed-area-classifier cannot-skip dashboard wiring (ENG-EXC-O3)', () => {
   // The dashboard spawns 23 sequential bash + node child processes (one
   // per gate). Under full-sweep load (300+ test files in singleFork
