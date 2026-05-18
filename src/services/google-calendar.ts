@@ -148,7 +148,7 @@ export async function createEvent(data: {
   }
 }
 
-function withGoogleCategoryTags(description: string | undefined, categories: string[] | undefined): string | undefined {
+export function withGoogleCategoryTags(description: string | undefined, categories: string[] | undefined): string | undefined {
   const cleanCategories = (categories || [])
     .map((value) => typeof value === 'string' ? value.trim().toLowerCase() : '')
     .filter(Boolean);

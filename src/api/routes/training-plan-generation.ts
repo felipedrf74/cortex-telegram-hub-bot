@@ -50,6 +50,7 @@ import type { PlanLintResult } from '../../services/coach-kernel/plan-linter';
 
 export interface GenerateTrainingPlanForUserInput {
   userId: number;
+  tenantId?: number;
   objective: string;
   durationWeeks?: number;
   preferredTime?: string;
@@ -235,6 +236,7 @@ export async function generateTrainingPlanForUser(
 ): Promise<TrainingPlanGenerationResult> {
   const {
     userId,
+    tenantId = input.userId,
     objective,
     preferredTime = '12:00',
     preferredCardioTime,
@@ -493,6 +495,7 @@ export async function generateTrainingPlanForUser(
 
   const persistenceInput = {
     userId,
+    tenantId,
     objective,
     durationWeeks,
     startDate: startStr,

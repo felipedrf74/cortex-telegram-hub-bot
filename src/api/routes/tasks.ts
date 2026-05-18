@@ -195,6 +195,7 @@ export function taskRoutes(): Router {
         // to avoid a duplicate list round-trip on Felipe-sized accounts.
         preferProviderPendingSnapshot: provider !== 'ms_todo',
       });
+      setCache(userCacheKey(userId, 'fastpath:pending-tasks'), activeSnapshot.pendingTasks, TASKS_CACHE_TTL);
       const lists = formatTaskLists(rawLists, activeSnapshot.countByListId);
       const defaultList = resolveDefaultTaskList(lists);
       const defaultListName = defaultList?.name || 'Tasks';

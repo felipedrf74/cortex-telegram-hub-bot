@@ -76,6 +76,7 @@ vi.mock('../../src/utils/logger', () => ({
 }));
 
 import {
+  confirmTrainingSessionReflow,
   previewTrainingSessionReflow,
   syncTrainingPlanCalendar,
 } from '../../src/api/routes/training-plan-calendar-sync';
@@ -252,6 +253,60 @@ describe('training-plan-calendar-sync', () => {
     expect(mocks.updateEvent).not.toHaveBeenCalled();
   });
 
+  it('does not update local session state when reflow provider write fails', async () => {
+    mocks.isConnected.mockImplementation((_userId: number, provider: string) => provider === 'google');
+    mocks.getPlanById.mockReturnValue({
+      id: 7,
+      user_id: 42,
+      tenant_id: 700,
+      start_date: '2026-04-20T00:00:00.000Z',
+      preferences_json: JSON.stringify({
+        preferredTime: '12:00',
+        preferredCardioTime: '07:00',
+        preferredStrengthTime: '18:00',
+      }),
+    });
+    mocks.getWeeksForPlan.mockReturnValue([{ id: 70, week_number: 1 }]);
+    mocks.getSessionById.mockReturnValue({
+      id: 100,
+      week_id: 70,
+      plan_id: 7,
+      day_of_week: 'Monday',
+      session_type: 'gym',
+      title: 'Strength + Core',
+      duration_minutes: 40,
+      description: 'Lifting day.',
+      status: 'scheduled',
+      calendar_event_id: 'evt-existing',
+      calendar_source: 'google',
+      session_identity_key: null,
+      session_shape_hash: null,
+      intensity_text: null,
+      exercises_json: null,
+      description_json: null,
+    });
+    mocks.updateEvent.mockRejectedValueOnce(new Error('google unavailable'));
+
+    const result = await confirmTrainingSessionReflow({
+      userId: 42,
+      tenantId: 700,
+      sessionId: 100,
+      requestedCalendarSource: 'google',
+      proposedStartAt: '2026-04-20T18:30:00.000Z',
+      proposedEndAt: '2026-04-20T19:10:00.000Z',
+    });
+
+    expect(result.status).toBe('partial_failure');
+    if (result.status === 'partial_failure') {
+      expect(result.data.verified).toBe(false);
+      expect(result.data.retryable).toBe(true);
+      expect(result.data.message).toContain('left at its current time');
+    }
+    expect(mocks.updateEvent).toHaveBeenCalled();
+    expect(mocks.updateSession).not.toHaveBeenCalled();
+    expect(mocks.recordCalendarOwnership).not.toHaveBeenCalled();
+  });
+
   it('returns no_active_plan when the user has no plan', async () => {
     mocks.getActivePlan.mockReturnValue(null);
 
@@ -314,7 +369,12 @@ describe('training-plan-calendar-sync', () => {
       ]);
     }
     expect(mocks.createEvent).toHaveBeenCalledTimes(2);
-    expect(mocks.createEvent).toHaveBeenCalledWith(expect.any(Object), 'google', 42, undefined);
+    expect(mocks.createEvent).toHaveBeenCalledWith(
+      expect.any(Object),
+      'google',
+      42,
+      expect.objectContaining({ tenantId: 42 }),
+    );
     expect(mocks.linkSessionToCalendar).toHaveBeenCalledWith(100, 'evt-mon', 'google');
     expect(mocks.linkSessionToCalendar).toHaveBeenCalledWith(101, 'evt-wed', 'google');
     expect(mocks.recordCalendarOwnership).toHaveBeenCalledWith(expect.objectContaining({
@@ -359,7 +419,12 @@ describe('training-plan-calendar-sync', () => {
 
     await syncTrainingPlanCalendar(42, now);
 
-    expect(mocks.createEvent).toHaveBeenCalledWith(expect.any(Object), 'outlook', 42, undefined);
+    expect(mocks.createEvent).toHaveBeenCalledWith(
+      expect.any(Object),
+      'outlook',
+      42,
+      expect.objectContaining({ tenantId: 42 }),
+    );
     expect(mocks.linkSessionToCalendar).toHaveBeenCalledWith(100, 'evt-outlook', 'outlook');
   });
 
@@ -381,7 +446,12 @@ describe('training-plan-calendar-sync', () => {
 
     await syncTrainingPlanCalendar(42, now, 'google');
 
-    expect(mocks.createEvent).toHaveBeenCalledWith(expect.any(Object), 'google', 42, undefined);
+    expect(mocks.createEvent).toHaveBeenCalledWith(
+      expect.any(Object),
+      'google',
+      42,
+      expect.objectContaining({ tenantId: 42 }),
+    );
     expect(mocks.updatePlanPreferences).toHaveBeenCalledWith(
       7,
       JSON.stringify({ preferredTime: '12:00', trainingCalendarSource: 'google' }),
@@ -425,7 +495,12 @@ describe('training-plan-calendar-sync', () => {
 
     await syncTrainingPlanCalendar(42, now);
 
-    expect(mocks.createEvent).toHaveBeenCalledWith(expect.any(Object), 'outlook', 42, undefined);
+    expect(mocks.createEvent).toHaveBeenCalledWith(
+      expect.any(Object),
+      'outlook',
+      42,
+      expect.objectContaining({ tenantId: 42 }),
+    );
     expect(mocks.createEvent.mock.calls[0][0]).toMatchObject({
       start: '2026-04-20T11:00:00.000Z',
       end: '2026-04-20T11:40:00.000Z',
@@ -544,7 +619,7 @@ describe('training-plan-calendar-sync', () => {
       }),
       'google',
       12,
-      undefined,
+      expect.objectContaining({ tenantId: 1200 }),
     );
     expect(mocks.linkSessionToCalendar).toHaveBeenCalledWith(321, 'evt-tempo', 'google');
   });

@@ -142,6 +142,12 @@ interface PlanPreferences {
   preferredStrengthTime: string;
 }
 
+function tenantIdForTrainingPlan(plan: trainingPlans.TrainingPlan, fallbackTenantId: number): number {
+  const rawTenantId = (plan as { tenant_id?: unknown }).tenant_id;
+  const parsed = typeof rawTenantId === 'number' ? rawTenantId : Number(rawTenantId);
+  return Number.isFinite(parsed) && parsed > 0 ? Math.trunc(parsed) : fallbackTenantId;
+}
+
 function readPlanPreferences(plan: trainingPlans.TrainingPlan): PlanPreferences {
   // Defaults mirror generateTrainingPlanForUser's defaults so a plan
   // created before preferences_json was populated still gets the same
@@ -295,6 +301,7 @@ export async function previewTrainingSessionReflow(
   userId: number,
   sessionId: number,
   requestedCalendarSource?: CalendarSource | null,
+  tenantId = userId,
 ): Promise<TrainingSessionReflowPreviewResult> {
   const scope = resolveOwnedSessionScope(userId, sessionId);
   if (scope === 'forbidden') {
@@ -304,8 +311,10 @@ export async function previewTrainingSessionReflow(
     return { status: 'not_found', data: { message: 'Training session not found.', sessionId } };
   }
 
+  const effectiveTenantId = tenantIdForTrainingPlan(scope.plan, tenantId);
   const calendarSource = resolveTrainingCalendarSource({
     userId,
+    tenantId: effectiveTenantId,
     requestedSource: requestedCalendarSource ?? undefined,
     planPreferencesJson: scope.plan.preferences_json,
     linkedSources: [scope.session.calendar_source],
@@ -355,7 +364,7 @@ export async function previewTrainingSessionReflow(
 
   const intent = buildTrainingSyncSecretaryIntent({
     userId,
-    tenantId: userId,
+    tenantId: effectiveTenantId,
     planId: scope.plan.id,
     planVersion: getPlanVersion(scope.plan.id) ?? 1,
     item: {
@@ -418,13 +427,14 @@ export async function previewTrainingSessionReflow(
 
 export async function confirmTrainingSessionReflow(input: {
   userId: number;
+  tenantId?: number;
   sessionId: number;
   proposedStartAt?: string | null;
   proposedEndAt?: string | null;
   requestedCalendarSource?: CalendarSource | null;
   signal?: AbortSignal;
 }): Promise<TrainingSessionReflowConfirmResult> {
-  const preview = await previewTrainingSessionReflow(input.userId, input.sessionId, input.requestedCalendarSource);
+  const preview = await previewTrainingSessionReflow(input.userId, input.sessionId, input.requestedCalendarSource, input.tenantId ?? input.userId);
   if (preview.status !== 'preview') return preview;
 
   const proposedStart = new Date(input.proposedStartAt || preview.data.proposed.start);
@@ -444,6 +454,7 @@ export async function confirmTrainingSessionReflow(input: {
   const scope = resolveOwnedSessionScope(input.userId, input.sessionId);
   if (scope === 'forbidden') return { status: 'forbidden', data: { message: 'This training session does not belong to the current user.', sessionId: input.sessionId } };
   if (!scope) return { status: 'not_found', data: { message: 'Training session not found.', sessionId: input.sessionId } };
+  const effectiveTenantId = tenantIdForTrainingPlan(scope.plan, input.tenantId ?? input.userId);
 
   const eventPayload = {
     title: `${emojiForTrainingSession(scope.session.session_type)} ${scope.session.title || 'Training session'} (${scope.session.duration_minutes || 60}min)`,
@@ -471,6 +482,7 @@ export async function confirmTrainingSessionReflow(input: {
     } else {
       const created = await createTrainingCalendarEvent(eventPayload, preview.data.provider, input.userId, {
         userId: input.userId,
+        tenantId: effectiveTenantId,
         sessionId: input.sessionId,
         title: scope.session.title || 'Training session',
       }, { signal: input.signal });
@@ -478,6 +490,20 @@ export async function confirmTrainingSessionReflow(input: {
     }
   } catch (err) {
     logger.warn({ err, userId: input.userId, sessionId: input.sessionId, provider: preview.data.provider }, 'Training session reflow provider write failed');
+    return {
+      status: 'partial_failure',
+      data: {
+        sessionId: input.sessionId,
+        title: preview.data.title,
+        provider: preview.data.provider,
+        eventId,
+        movedFrom: preview.data.current,
+        movedTo: preview.data.proposed,
+        verified: false,
+        message: `Nexus could not move ${preview.data.title} in your calendar. The session was left at its current time.`,
+        retryable: true,
+      },
+    };
   }
 
   const updated = trainingPlans.updateSession(input.sessionId, {
@@ -500,7 +526,7 @@ export async function confirmTrainingSessionReflow(input: {
       planId: scope.plan.id,
       planVersion: getPlanVersion(scope.plan.id) ?? 1,
       sessionId: input.sessionId,
-      tenantId: input.userId,
+      tenantId: effectiveTenantId,
       userId: input.userId,
       eventId,
       source: preview.data.provider,
@@ -550,6 +576,7 @@ export async function syncTrainingPlanCalendar(
   userId: number,
   now: Date = new Date(),
   requestedCalendarSource?: CalendarSource | null,
+  tenantId = userId,
 ): Promise<TrainingPlanCalendarSyncResult> {
   const plan = trainingPlans.getActivePlan(userId);
   if (!plan) {
@@ -567,6 +594,7 @@ export async function syncTrainingPlanCalendar(
   const preferences = readPlanPreferences(plan);
   const planStart = new Date(plan.start_date);
   const planVersion = getPlanVersion(plan.id) ?? 1;
+  const effectiveTenantId = tenantIdForTrainingPlan(plan, tenantId);
 
   // Walk every week / session up front so we can skip past or finished
   // sessions, then verify existing calendar links against the provider.
@@ -655,6 +683,7 @@ export async function syncTrainingPlanCalendar(
 
   const calendarSource = resolveTrainingCalendarSource({
     userId,
+    tenantId: effectiveTenantId,
     requestedSource: requestedCalendarSource ?? undefined,
     planPreferencesJson: plan.preferences_json,
     linkedSources: candidates.map((candidate) => candidate.calendarSource),
@@ -715,14 +744,14 @@ export async function syncTrainingPlanCalendar(
       planId: plan.id,
       planVersion,
       sessionId: item.sessionId,
-      tenantId: userId,
+      tenantId: effectiveTenantId,
       userId,
     });
     const reusableOwnership = existingOwnership
       ? null
       : findReusableOwnershipBySessionIdentity({
         planId: plan.id,
-        tenantId: userId,
+        tenantId: effectiveTenantId,
         userId,
         sessionIdentityKey: item.sessionIdentityKey,
         sessionShapeHash: item.sessionShapeHash,
@@ -763,7 +792,7 @@ export async function syncTrainingPlanCalendar(
           planId: plan.id,
           planVersion,
           sessionId: item.sessionId,
-          tenantId: userId,
+          tenantId: effectiveTenantId,
           userId,
           eventId: ownedEvent.id,
           source: ownedEvent.source,
@@ -815,7 +844,7 @@ export async function syncTrainingPlanCalendar(
         planId: plan.id,
         planVersion,
         sessionId: item.sessionId,
-        tenantId: userId,
+        tenantId: effectiveTenantId,
         userId,
         eventId: linkedEvent.id,
         source: linkedEvent.source,
@@ -886,7 +915,7 @@ export async function syncTrainingPlanCalendar(
         planId: plan.id,
         planVersion,
         sessionId: item.sessionId,
-        tenantId: userId,
+        tenantId: effectiveTenantId,
         userId,
         eventId: existingEvent.id,
         source: existingEvent.source,
@@ -953,7 +982,7 @@ export async function syncTrainingPlanCalendar(
     try {
       const secretaryIntent = buildTrainingSyncSecretaryIntent({
         userId,
-        tenantId: Number((plan as any).tenant_id ?? userId),
+        tenantId: effectiveTenantId,
         planId: plan.id,
         planVersion,
         item,
@@ -1041,6 +1070,7 @@ export async function syncTrainingPlanCalendar(
         userId,
         {
           userId,
+          tenantId: effectiveTenantId,
           sessionId: item.sessionId,
           title: item.title,
         },
@@ -1050,7 +1080,7 @@ export async function syncTrainingPlanCalendar(
         planId: plan.id,
         planVersion,
         sessionId: item.sessionId,
-        tenantId: userId,
+        tenantId: effectiveTenantId,
         userId,
         eventId: event.id,
         source: event.source,

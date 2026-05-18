@@ -105,3 +105,29 @@ export function isChatEscalationReviewerEnabled(env: RuntimeEnv = process.env, s
 export function isChatOpenSurfaceHandoffEnabled(env: RuntimeEnv = process.env, scope?: RuntimeFlagScope): boolean {
   return scopedEnvValue(env, 'CHAT_OPEN_SURFACE_HANDOFF_ENABLED', scope) !== 'false';
 }
+
+function scopedFlagEnabledByDefault(env: RuntimeEnv, key: string, scope?: RuntimeFlagScope): boolean {
+  const raw = scopedEnvValue(env, key, scope)?.trim().toLowerCase();
+  if (raw === 'false' || raw === 'off' || raw === '0') return false;
+  return true;
+}
+
+export function isHomeDayDialV1Enabled(env: RuntimeEnv = process.env, scope?: RuntimeFlagScope): boolean {
+  return scopedFlagEnabledByDefault(env, 'HOME_DAY_DIAL_V1_ENABLED', scope);
+}
+
+export function isProviderPreferencesV1Enabled(env: RuntimeEnv = process.env, scope?: RuntimeFlagScope): boolean {
+  return scopedFlagEnabledByDefault(env, 'PROVIDER_PREFERENCES_V1_ENABLED', scope);
+}
+
+export function isHomeFocusPillV1Enabled(env: RuntimeEnv = process.env, scope?: RuntimeFlagScope): boolean {
+  return scopedFlagEnabledByDefault(env, 'HOME_FOCUS_PILL_V1_ENABLED', scope);
+}
+
+export function isDecisionStreakV1Enabled(env: RuntimeEnv = process.env, scope?: RuntimeFlagScope): boolean {
+  return scopedFlagEnabledByDefault(env, 'DECISION_STREAK_V1_ENABLED', scope);
+}
+
+export function isSecretaryOrchestrationSnapshotV1Enabled(env: RuntimeEnv = process.env, scope?: RuntimeFlagScope): boolean {
+  return scopedFlagEnabledByDefault(env, 'SECRETARY_ORCHESTRATION_SNAPSHOT_V1_ENABLED', scope);
+}

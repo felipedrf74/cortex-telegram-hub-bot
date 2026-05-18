@@ -292,6 +292,7 @@ export async function createEvent(data: {
       end: response.end?.dateTime || data.end,
       description: response.bodyPreview || undefined,
       htmlLink: response.webLink || undefined,
+      categories: Array.isArray(response.categories) ? response.categories : data.categories,
       isAllDay: !!response.isAllDay,
     };
   } catch (err) {

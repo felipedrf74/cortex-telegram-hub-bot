@@ -59,6 +59,12 @@ interface HealthSyncPayload {
     totalDistance?: number;
     source: string;
   }>;
+  sleepIntervals?: Array<{
+    stage?: string;
+    start?: string;
+    end?: string;
+    durationMinutes?: number;
+  }>;
 }
 
 function sendSuccess(res: Response, data: Record<string, unknown> = {}): void {
@@ -166,6 +172,7 @@ export function healthDataRoutes(): Router {
           totalMinutes: payload.totalSleepMinutes ?? 0,
           deepMinutes: payload.deepSleepMinutes ?? 0,
           remMinutes: payload.remSleepMinutes ?? 0,
+          intervals: normalizeSleepIntervals(payload.sleepIntervals),
         }));
         typesUpserted++;
       }
@@ -302,4 +309,33 @@ export function healthDataRoutes(): Router {
   });
 
   return router;
+}
+
+function normalizeSleepIntervals(payloadIntervals: HealthSyncPayload['sleepIntervals']): Array<{
+  stage: string;
+  start: string;
+  end: string;
+  durationMinutes: number | null;
+}> {
+  if (!Array.isArray(payloadIntervals)) return [];
+  return payloadIntervals
+    .map((interval) => {
+      const stage = typeof interval?.stage === 'string' ? interval.stage.trim() : '';
+      const start = typeof interval?.start === 'string' ? interval.start.trim() : '';
+      const end = typeof interval?.end === 'string' ? interval.end.trim() : '';
+      if (!stage || !start || !end) return null;
+      const startDate = new Date(start);
+      const endDate = new Date(end);
+      if (Number.isNaN(startDate.getTime()) || Number.isNaN(endDate.getTime()) || endDate <= startDate) return null;
+      return {
+        stage,
+        start: startDate.toISOString(),
+        end: endDate.toISOString(),
+        durationMinutes: Number.isFinite(Number(interval.durationMinutes))
+          ? Math.round(Number(interval.durationMinutes))
+          : null,
+      };
+    })
+    .filter((interval): interval is { stage: string; start: string; end: string; durationMinutes: number | null } => !!interval)
+    .slice(0, 40);
 }

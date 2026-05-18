@@ -1376,7 +1376,7 @@ export function cookingRoutes(): Router {
         start: secretaryDecision.selectedSlot.start,
         end: secretaryDecision.selectedSlot.end,
         description,
-      }, undefined, userId);
+      }, undefined, userId, { tenantId: tenantId ?? userId });
 
       logger.info(
         { userId, week, eventId: event.id, mealCount: meals.length, source: event.source },

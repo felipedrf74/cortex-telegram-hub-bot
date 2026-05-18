@@ -55,8 +55,8 @@ const RANGE_SWR_STALE = 300;
 // Phase 17 hostile-QA fix (2026-05-18): in-flight idempotency for
 // POST /focus-blocks to stop duplicate writes from rapid double-taps.
 const focusBlockInFlight = new Set<string>();
-function focusBlockIdempotencyKey(userId: number, startIso: string, mode: string): string {
-  return `${userId}:${startIso}:${mode}`;
+function focusBlockIdempotencyKey(userId: number, tenantId: number | undefined, startIso: string, mode: string): string {
+  return `${userId}:${tenantId ?? userId}:${startIso}:${mode}`;
 }
 
 export function calendarRoutes(): Router {
@@ -357,7 +357,7 @@ export function calendarRoutes(): Router {
     // Phase 17 hostile-QA fix (2026-05-18): per-user, per-slot idempotency
     // guard. Two rapid double-taps on the iOS Focus pill would otherwise
     // race the precheck and create two events with identical start/end.
-    const idempotencyKey = focusBlockIdempotencyKey(userId, start.toISOString(), mode);
+    const idempotencyKey = focusBlockIdempotencyKey(userId, tenantId, start.toISOString(), mode);
     if (focusBlockInFlight.has(idempotencyKey)) {
       sendError(res, 'FOCUS_BLOCK_DUPLICATE', 'A focus block for this slot is already being created.', 409);
       return;
@@ -404,7 +404,11 @@ export function calendarRoutes(): Router {
           userId,
         );
       } catch (createErr: unknown) {
-        sendError(res, 'CALENDAR_CREATE_FAILED', createErr instanceof Error ? createErr.message : 'Calendar provider failed to create the focus block.', 502);
+        logger.warn(
+          { err: createErr, userId, tenantId, source, mode, start: start.toISOString(), end: end.toISOString() },
+          'Focus block calendar provider write failed',
+        );
+        sendError(res, 'CALENDAR_CREATE_FAILED', 'Calendar provider failed to create the focus block.', 502);
         return;
       }
       invalidateCalendarCaches(userId);

@@ -9,6 +9,7 @@ import {
   getStagingFixtureCalendarEvents,
   hasStagingFixtureCalendarEventsForUser,
 } from './staging-fixture-calendar';
+import { resolveCalendarWritePreference } from './provider-preferences';
 
 export type CalendarSource = 'google' | 'outlook';
 
@@ -243,7 +244,7 @@ export async function createEvent(
   },
   target?: CalendarSource,
   userId?: number,
-  options?: { signal?: AbortSignal },
+  options?: { signal?: AbortSignal; tenantId?: number },
 ): Promise<UnifiedCalendarEvent> {
   const scopedUserId = resolveScopedUserId(userId);
   // Per-user source resolution: check which provider the requesting
@@ -252,8 +253,7 @@ export async function createEvent(
   let source = target;
   if (!source) {
     if (scopedUserId != null) {
-      if (outlookCal.isOutlookCalendarConfigured(scopedUserId)) source = 'outlook';
-      else if (googleCal.isGoogleCalendarConfigured(scopedUserId)) source = 'google';
+      source = resolveCalendarWritePreference(scopedUserId, options?.tenantId ?? scopedUserId).source ?? undefined;
     }
     // Fall back to global config check (owner / Telegram codepath)
     if (!source) {

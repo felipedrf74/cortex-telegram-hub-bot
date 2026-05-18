@@ -10,6 +10,7 @@ const mockGetEventsWithDiagnostics = vi.fn();
 const mockCreateEvent = vi.fn();
 const mockUpdateEvent = vi.fn();
 const mockDeleteEvent = vi.fn();
+const mockGetEventsForSources = vi.fn();
 const mockIsAnyCalendarConfigured = vi.fn();
 const mockHasConnectedCalendarForUser = vi.fn();
 const mockHasWritableCalendarForUser = vi.fn();
@@ -32,6 +33,7 @@ function expectCachePrefixesCleared(...prefixes: string[]) {
 vi.mock('../../src/services/unified-calendar', () => ({
   getEvents: (...args: unknown[]) => mockGetEvents(...args),
   getEventsWithDiagnostics: (...args: unknown[]) => mockGetEventsWithDiagnostics(...args),
+  getEventsForSources: (...args: unknown[]) => mockGetEventsForSources(...args),
   createEvent: (...args: unknown[]) => mockCreateEvent(...args),
   updateEvent: (...args: unknown[]) => mockUpdateEvent(...args),
   deleteEvent: (...args: unknown[]) => mockDeleteEvent(...args),
@@ -60,6 +62,10 @@ vi.mock('../../src/services/focus-planner', () => ({
 
 vi.mock('../../src/services/training-calendar-scope', () => ({
   filterCalendarEventsForTrainingScope: (...args: unknown[]) => mockFilterCalendarEventsForTrainingScope(...args),
+}));
+
+vi.mock('../../src/services/health-sleep-agenda', () => ({
+  getAppleHealthSleepAgendaEvents: vi.fn(() => []),
 }));
 
 vi.mock('../../src/utils/logger', () => ({
@@ -112,6 +118,7 @@ function mockReq(method: string, url: string, body?: Record<string, unknown>, us
     headers: {},
     body: body ?? {},
     userId,
+    tenantId: userId,
   } as any;
 }
 
@@ -139,6 +146,7 @@ describe('Calendar API — mutation routes', () => {
     clearTenantScopeAnomaliesForTests();
     mockGetEvents.mockReset();
     mockGetEventsWithDiagnostics.mockReset();
+    mockGetEventsForSources.mockReset();
     mockCreateEvent.mockReset();
     mockUpdateEvent.mockReset();
     mockDeleteEvent.mockReset();
@@ -163,6 +171,7 @@ describe('Calendar API — mutation routes', () => {
       warnings: [],
       sources: { configured: ['google'], fulfilled: ['google'], failed: [] },
     });
+    mockGetEventsForSources.mockResolvedValue([]);
     mockFilterCalendarEventsForTrainingScope.mockImplementation((events) => events);
   });
 
@@ -526,5 +535,54 @@ describe('Calendar API — mutation routes', () => {
     expect(res.statusCode).toBe(400);
     expect(res.body.error.code).toBe('VALIDATION');
     expect(mockDeleteEvent).not.toHaveBeenCalled();
+  });
+
+  it('guards duplicate in-flight focus block creates from rapid double taps', async () => {
+    let releaseCreate!: () => void;
+    mockCreateEvent.mockImplementationOnce(() => new Promise((resolve) => {
+      releaseCreate = () => resolve({
+        id: 'focus-1',
+        summary: 'Focus time',
+        start: '2026-05-18T14:00:00.000Z',
+        end: '2026-05-18T14:30:00.000Z',
+        source: 'google',
+      });
+    }));
+
+    const body = {
+      source: 'google',
+      start: '2026-05-18T14:00:00.000Z',
+      durationMinutes: 30,
+      mode: 'focus',
+    };
+    const first = dispatch('POST', '/focus-blocks', body, 12);
+    for (let i = 0; i < 5 && mockCreateEvent.mock.calls.length === 0; i += 1) {
+      await new Promise((resolve) => setImmediate(resolve));
+    }
+
+    const duplicate = await dispatch('POST', '/focus-blocks', body, 12);
+    expect(duplicate.statusCode).toBe(409);
+    expect(duplicate.body.error.code).toBe('FOCUS_BLOCK_DUPLICATE');
+
+    releaseCreate();
+    const created = await first;
+    expect(created.statusCode).toBe(201);
+    expect(mockCreateEvent).toHaveBeenCalledTimes(1);
+  });
+
+  it('returns a sanitized 502 when focus block provider create fails', async () => {
+    mockCreateEvent.mockRejectedValueOnce(new Error('raw upstream token refresh body'));
+
+    const res = await dispatch('POST', '/focus-blocks', {
+      source: 'google',
+      start: '2026-05-18T14:00:00.000Z',
+      durationMinutes: 30,
+      mode: 'focus',
+    }, 12);
+
+    expect(res.statusCode).toBe(502);
+    expect(res.body.error.code).toBe('CALENDAR_CREATE_FAILED');
+    expect(res.body.error.message).toBe('Calendar provider failed to create the focus block.');
+    expect(JSON.stringify(res.body)).not.toContain('raw upstream');
   });
 });

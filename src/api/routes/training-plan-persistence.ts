@@ -92,6 +92,7 @@ const INACTIVE_SCHEDULE_STATES = new Set<PersistableSessionScheduleState>([
 
 export interface PersistGeneratedTrainingPlanInput {
   userId: number;
+  tenantId?: number;
   objective: string;
   durationWeeks: number;
   startDate: string;
@@ -166,6 +167,7 @@ export function lintGeneratedTrainingPlanPreflight(
 export async function persistGeneratedTrainingPlan(
   input: PersistGeneratedTrainingPlanInput,
 ): Promise<PersistGeneratedTrainingPlanResult> {
+  const tenantId = input.tenantId ?? input.userId;
   const plan = trainingPlans.createPlan({
     user_id: input.userId,
     name: input.planData.planName || `${input.objective} Plan`,
@@ -362,7 +364,7 @@ export async function persistGeneratedTrainingPlan(
       planId: plan.id,
       planVersion: planVersionForOwnership,
       sessionId: eventPayload.sessionId,
-      tenantId: input.userId,
+      tenantId,
       userId: input.userId,
     });
     if (existing) {
@@ -376,6 +378,7 @@ export async function persistGeneratedTrainingPlan(
       const secretaryDecision = submitSecretarySchedulingIntent(
         buildTrainingSecretaryIntent({
           userId: input.userId,
+          tenantId,
           planId: plan.id,
           planVersion: planVersionForOwnership,
           eventPayload,
@@ -408,6 +411,7 @@ export async function persistGeneratedTrainingPlan(
         input.userId,
         {
           userId: input.userId,
+          tenantId,
           sessionId: eventPayload.sessionId,
           title: eventPayload.title,
         },
@@ -421,7 +425,7 @@ export async function persistGeneratedTrainingPlan(
         planId: plan.id,
         planVersion: planVersionForOwnership,
         sessionId: eventPayload.sessionId,
-        tenantId: input.userId,
+        tenantId,
         userId: input.userId,
         eventId: event.id,
         source: event.source,
@@ -690,6 +694,7 @@ function runPlanLintGuarded(args: {
 
 function buildTrainingSecretaryIntent(input: {
   userId: number;
+  tenantId: number;
   planId: number;
   planVersion: number;
   eventPayload: {
@@ -709,7 +714,7 @@ function buildTrainingSecretaryIntent(input: {
     sourceEntityId: input.eventPayload.sessionId,
     sourceEntityType: 'training_session',
     ownerUserId: input.userId,
-    tenantId: input.userId,
+    tenantId: input.tenantId,
     title: input.eventPayload.title,
     requestedDurationMinutes: durationMinutes,
     minimumDurationMinutes: Math.min(durationMinutes, Math.max(20, Math.round(durationMinutes * 0.75))),

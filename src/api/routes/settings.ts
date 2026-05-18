@@ -14,6 +14,12 @@ import { registerNotificationDeviceToken } from '../../services/notification-orc
 import { isValidTenantUserId, recordTenantScopeAnomaly } from '../../services/tenant-scope-observability';
 import { deleteAllUserDataForAccountDeletion } from '../../services/user-data-export';
 import { logAudit } from '../../services/audit-trail';
+import {
+  getProviderPreferences,
+  normalizePrimaryCalendarProvider,
+  normalizePrimaryMailProvider,
+  setProviderPreferences,
+} from '../../services/provider-preferences';
 
 function normalizeLanguageInput(language: unknown): 'pt-BR' | 'pt-PT' | 'en-US' | null {
   if (typeof language !== 'string') return null;
@@ -94,6 +100,61 @@ export function settingsRoutes(): Router {
       sendSuccess(res, { connections });
     } catch {
       sendSuccess(res, { connections: [] });
+    }
+  });
+
+  /** GET /api/v1/settings/provider-preferences */
+  router.get('/provider-preferences', async (req, res: Response) => {
+    const { userId, tenantId = userId } = req as AuthenticatedRequest;
+    if (!ensureValidSettingsUserScope(res, userId, 'settings_route_provider_preferences_get')) return;
+    try {
+      sendSuccess(res, getProviderPreferences(userId, tenantId));
+    } catch (err: any) {
+      logger.error({ err, userId, tenantId }, 'iOS provider preferences load failed');
+      sendInternalError(res, 'Unable to load provider preferences right now.');
+    }
+  });
+
+  /** PATCH /api/v1/settings/provider-preferences */
+  router.patch('/provider-preferences', async (req, res: Response) => {
+    const { userId, tenantId = userId } = req as AuthenticatedRequest;
+    if (!ensureValidSettingsUserScope(res, userId, 'settings_route_provider_preferences_patch')) return;
+    const mail = Object.prototype.hasOwnProperty.call(req.body ?? {}, 'primaryMailProvider')
+      ? normalizePrimaryMailProvider(req.body?.primaryMailProvider)
+      : undefined;
+    const calendar = Object.prototype.hasOwnProperty.call(req.body ?? {}, 'primaryCalendarProvider')
+      ? normalizePrimaryCalendarProvider(req.body?.primaryCalendarProvider)
+      : undefined;
+
+    if (mail === null) {
+      sendError(res, 'VALIDATION', 'primaryMailProvider must be auto, gmail, or outlook', 400);
+      return;
+    }
+    if (calendar === null) {
+      sendError(res, 'VALIDATION', 'primaryCalendarProvider must be auto, google, or outlook', 400);
+      return;
+    }
+
+    try {
+      const preferences = setProviderPreferences(userId, tenantId, {
+        ...(mail ? { primaryMailProvider: mail } : {}),
+        ...(calendar ? { primaryCalendarProvider: calendar } : {}),
+      });
+      logAudit({
+        userId,
+        actorId: userId,
+        action: 'access',
+        resource: 'settings.provider_preferences',
+        details: {
+          primaryMailProvider: preferences.primaryMailProvider,
+          primaryCalendarProvider: preferences.primaryCalendarProvider,
+          warningCodes: preferences.warningCodes,
+        },
+      });
+      sendSuccess(res, preferences);
+    } catch (err: any) {
+      logger.error({ err, userId, tenantId }, 'iOS provider preferences update failed');
+      sendInternalError(res, 'Unable to save provider preferences right now.');
     }
   });
 

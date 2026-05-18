@@ -1,6 +1,7 @@
 // Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
 
 import { isConnected } from './oauth-store';
+import { resolveCalendarWritePreference } from './provider-preferences';
 import type { CalendarSource } from './unified-calendar';
 
 const TRAINING_CALENDAR_SOURCES: readonly CalendarSource[] = ['outlook', 'google'];
@@ -54,6 +55,7 @@ export function validateRequestedTrainingCalendarSource(
 
 export function resolveTrainingCalendarSource(input: {
   userId: number;
+  tenantId?: number;
   requestedSource?: CalendarSource | null;
   planPreferencesJson?: string | null;
   linkedSources?: Array<unknown>;
@@ -74,9 +76,24 @@ export function resolveTrainingCalendarSource(input: {
     }
   }
 
-  // Match unified-calendar.createEvent's authenticated-user default.
+  // Match unified-calendar.createEvent's authenticated-user default, including
+  // tenant-scoped provider preferences. If the user explicitly selected a
+  // preferred provider and it is unavailable, do not silently switch providers.
+  const preference = resolveCalendarWritePreference(input.userId, input.tenantId ?? input.userId);
+  if (preference.source && isTrainingCalendarSourceConnected(input.userId, preference.source)) {
+    return preference.source;
+  }
+  if (preference.requested !== 'auto') {
+    return undefined;
+  }
+
+  // In auto mode, preserve Training's legacy connected-source fallback. Some
+  // training flows are still backed by the OAuth store directly, and treating
+  // those as disconnected would strand already-valid Training agenda sync.
   for (const source of TRAINING_CALENDAR_SOURCES) {
-    if (isTrainingCalendarSourceConnected(input.userId, source)) return source;
+    if (isTrainingCalendarSourceConnected(input.userId, source)) {
+      return source;
+    }
   }
   return undefined;
 }

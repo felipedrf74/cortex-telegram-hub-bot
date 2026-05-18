@@ -267,6 +267,42 @@ describe('Decision Center facade', () => {
     expect(getDecisionSummary(80, 80).ctaLabel).toBe('All Clear');
   });
 
+  it('counts current decision streaks beyond the 14-day display window', () => {
+    const insert = testDb.prepare(`
+      INSERT INTO decision_queue_daily_rollups (
+        user_id, tenant_id, local_date, timezone, reached_zero_at,
+        final_open_count, best_observed_open_count
+      ) VALUES (?, ?, ?, 'UTC', ?, 0, 0)
+    `);
+    for (let daysAgo = 0; daysAgo < 30; daysAgo += 1) {
+      const date = new Date(Date.UTC(2026, 4, 10 - daysAgo)).toISOString().slice(0, 10);
+      insert.run(90, 90, date, `${date}T22:00:00.000Z`);
+    }
+
+    const summary = getDecisionSummary(90, 90);
+
+    expect(summary.gamification?.currentStreakDays).toBe(30);
+    expect(summary.gamification?.bestStreakDays).toBeGreaterThanOrEqual(30);
+    expect(summary.gamification?.last14Days).toHaveLength(14);
+  });
+
+  it('treats missing decision rollup days as best-streak breaks', () => {
+    const insert = testDb.prepare(`
+      INSERT INTO decision_queue_daily_rollups (
+        user_id, tenant_id, local_date, timezone, reached_zero_at,
+        final_open_count, best_observed_open_count
+      ) VALUES (?, ?, ?, 'UTC', ?, 0, 0)
+    `);
+    for (const date of ['2026-05-01', '2026-05-02', '2026-05-03', '2026-05-09', '2026-05-10']) {
+      insert.run(91, 91, date, `${date}T22:00:00.000Z`);
+    }
+
+    const summary = getDecisionSummary(91, 91);
+
+    expect(summary.gamification?.currentStreakDays).toBe(2);
+    expect(summary.gamification?.bestStreakDays).toBe(3);
+  });
+
   it('preserves supplied decision context so concrete Secretary decisions survive persistence', async () => {
     const created = await createDecisionIntent(buildSkillDecisionFixtureIntent('secretary', 81, {
       title: 'Schedule conflict',

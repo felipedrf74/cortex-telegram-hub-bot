@@ -17,6 +17,7 @@ type CalendarEventPayload = {
 
 type WriteContext = {
   userId: number;
+  tenantId?: number;
   sessionId?: number;
   title?: string;
 };
@@ -39,7 +40,10 @@ export async function createTrainingCalendarEvent(
   while (true) {
     try {
       if (options?.signal?.aborted) throw new Error('provider_write_aborted');
-      const event = await createEvent(data, target, userId, options);
+      const event = await createEvent(data, target, userId, {
+        ...options,
+        tenantId: context.tenantId ?? userId,
+      });
       await sleep(trainingCalendarWriteSpacingMs(), options?.signal);
       return event;
     } catch (err) {

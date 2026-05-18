@@ -13,6 +13,7 @@ const mocks = vi.hoisted(() => ({
   outlookEvents: vi.fn(),
   fixtureConfigured: vi.fn(),
   fixtureEvents: vi.fn(),
+  resolveCalendarWritePreference: vi.fn(),
 }));
 
 vi.mock('../../src/services/google-calendar', () => ({
@@ -34,6 +35,10 @@ vi.mock('../../src/services/outlook-calendar', () => ({
 vi.mock('../../src/services/staging-fixture-calendar', () => ({
   hasStagingFixtureCalendarEventsForUser: (...args: unknown[]) => mocks.fixtureConfigured(...args),
   getStagingFixtureCalendarEvents: (...args: unknown[]) => mocks.fixtureEvents(...args),
+}));
+
+vi.mock('../../src/services/provider-preferences', () => ({
+  resolveCalendarWritePreference: (...args: unknown[]) => mocks.resolveCalendarWritePreference(...args),
 }));
 
 vi.mock('../../src/utils/logger', () => ({
@@ -69,10 +74,18 @@ describe('UnifiedCalendar — per-user routing for calendar writes', () => {
     mocks.outlookEvents.mockReset();
     mocks.fixtureConfigured.mockReset();
     mocks.fixtureEvents.mockReset();
+    mocks.resolveCalendarWritePreference.mockReset();
 
     mocks.outlookConfigured.mockReturnValue(true);
     mocks.googleConfigured.mockReturnValue(false);
     mocks.fixtureConfigured.mockReturnValue(false);
+    mocks.resolveCalendarWritePreference.mockReturnValue({
+      source: null,
+      requested: 'auto',
+      warningCode: 'CALENDAR_INTEGRATION_MISSING',
+      warning: 'No writable calendar provider is connected.',
+      availability: { google: false, outlook: false },
+    });
   });
 
   it('passes userId through when creating an Outlook event', async () => {
@@ -144,6 +157,35 @@ describe('UnifiedCalendar — per-user routing for calendar writes', () => {
       start: '2026-04-16T09:00:00.000Z',
       end: '2026-04-16T10:00:00.000Z',
     }), 42, undefined);
+  });
+
+  it('uses tenant-scoped provider preferences for implicit calendar writes', async () => {
+    mocks.outlookConfigured.mockReturnValue(false);
+    mocks.googleConfigured.mockReturnValue(true);
+    mocks.resolveCalendarWritePreference.mockReturnValue({
+      source: 'google',
+      requested: 'google',
+      warningCode: null,
+      warning: null,
+      availability: { google: true, outlook: false },
+    });
+    mocks.googleCreateEvent.mockResolvedValue({
+      id: 'evt-tenant-pref',
+      summary: 'Tenant preference focus',
+      start: '2026-04-16T09:00:00.000Z',
+      end: '2026-04-16T10:00:00.000Z',
+    });
+
+    await createEvent({
+      title: 'Tenant preference focus',
+      start: '2026-04-16T09:00:00.000Z',
+      end: '2026-04-16T10:00:00.000Z',
+    }, undefined, 42, { tenantId: 7 });
+
+    expect(mocks.resolveCalendarWritePreference).toHaveBeenCalledWith(42, 7);
+    expect(mocks.googleCreateEvent).toHaveBeenCalledWith(expect.objectContaining({
+      title: 'Tenant preference focus',
+    }), 42, { tenantId: 7 });
   });
 
   it('passes userId through when updating a Google event', async () => {

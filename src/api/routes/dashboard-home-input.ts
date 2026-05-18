@@ -195,7 +195,7 @@ function buildSecretaryPreviewItems(
   });
 }
 
-function buildSecretarySummary(opts: {
+export function buildSecretarySummary(opts: {
   events: Array<{ title?: string; start?: string; end?: string }>;
   tasksDue: number;
   overdueTasks: number;
@@ -212,7 +212,7 @@ function buildSecretarySummary(opts: {
     );
   }
 
-  if (opts.tasksStatus !== 'ready' || opts.calendarStatus === 'degraded') {
+  if (opts.tasksStatus !== 'ready' || opts.calendarStatus !== 'ready') {
     return localizePT(
       opts.language,
       'Ainda estou a confirmar tarefas e agenda antes de chamar o dia de limpo.',

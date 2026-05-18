@@ -8,7 +8,7 @@ import { getRuntimeStatus } from '../../services/runtime-status';
 import { getCachedSWR, setCacheSWR } from '../../services/cache-store';
 import { sendInternalError } from '../response-helpers';
 import { normalizeLangHeader } from '../../services/secretary-fastpath';
-import { getPreferredDisplayNameById, getUserLanguageById } from '../../services/user-service';
+import { getPreferredDisplayNameById, getUserLanguageById, getUserTimezoneById } from '../../services/user-service';
 import { getDailyQuotaStatus } from '../../services/cost-guardrail';
 import { composeDailyBrief } from '../../services/daily-brief-orchestrator';
 import { buildDashboardHomeViewState } from '../../services/dashboard-home-view-state';
@@ -22,6 +22,14 @@ import {
   fetchTraining,
 } from './dashboard-data-fetchers';
 import { buildDashboardHomeInput } from './dashboard-home-input';
+import { buildHomeDayDial } from '../../services/home-day-dial';
+import {
+  isDecisionStreakV1Enabled,
+  isHomeDayDialV1Enabled,
+  isHomeFocusPillV1Enabled,
+  isProviderPreferencesV1Enabled,
+  isSecretaryOrchestrationSnapshotV1Enabled,
+} from '../../services/runtime-flags';
 import { timedAsync, timedSync, type RouteTiming } from '../route-timing';
 import { sendConditionalApiSuccess } from '../conditional-cache';
 import { ensureCachedRouteTenantScope, handleCachedRoute, routeCacheKey } from '../route-helpers/cached-route-handler';
@@ -242,6 +250,8 @@ async function buildDashboardPayload(userId: number, language: Lang, timings: Ro
 
   const runtime = getRuntimeStatus();
   const quota = getDailyQuotaStatus(userId);
+  const featureFlags = buildHomeFeatureFlags(userId);
+  const timezone = getUserTimezoneById(userId);
 
   return {
     greeting: displayName ? `${greeting}, ${displayName}` : greeting,
@@ -249,6 +259,15 @@ async function buildDashboardPayload(userId: number, language: Lang, timings: Ro
     dayOfWeek: localizedWeekday(now, language),
     calendar,
     tasks,
+    featureFlags,
+    dayDial: featureFlags.homeDayDialV1
+      ? buildHomeDayDial({
+          userId,
+          calendarEvents: calendar.today ?? [],
+          date: now.toLocaleDateString('en-CA', { timeZone: timezone }),
+          timezone,
+        })
+      : null,
     training,
     content,
     quota: {
@@ -266,6 +285,17 @@ async function buildDashboardPayload(userId: number, language: Lang, timings: Ro
       databaseStatus: runtime.databaseStatus,
       lastMessageAt: runtime.lastMessageAt,
     },
+  };
+}
+
+function buildHomeFeatureFlags(userId: number) {
+  const scope = { userId, tenantId: userId };
+  return {
+    homeDayDialV1: isHomeDayDialV1Enabled(process.env, scope),
+    providerPreferencesV1: isProviderPreferencesV1Enabled(process.env, scope),
+    homeFocusPillV1: isHomeFocusPillV1Enabled(process.env, scope),
+    decisionStreakV1: isDecisionStreakV1Enabled(process.env, scope),
+    secretaryOrchestrationSnapshotV1: isSecretaryOrchestrationSnapshotV1Enabled(process.env, scope),
   };
 }
 

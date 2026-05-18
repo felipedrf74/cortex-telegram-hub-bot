@@ -43,7 +43,7 @@ export function registerTrainingPlanRoutes(
   const { invalidateTrainingScreenCaches } = options;
 
   router.post('/plan/preview', async (req, res: Response) => {
-    const { userId } = req as AuthenticatedRequest;
+    const { userId, tenantId } = req as AuthenticatedRequest;
     if (!isTrainingPlanGenerationEnabled()) {
       sendError(
         res,
@@ -91,6 +91,7 @@ export function registerTrainingPlanRoutes(
     try {
       const result = await generateTrainingPlanForUser({
         userId,
+        tenantId: tenantId ?? userId,
         objective,
         durationWeeks,
         preferredTime,
@@ -143,7 +144,7 @@ export function registerTrainingPlanRoutes(
    * Body: { objective: string, durationWeeks?: number, preferredTime?: string }
    */
   router.post('/plan/generate', async (req, res: Response) => {
-    const { userId } = req as AuthenticatedRequest;
+    const { userId, tenantId } = req as AuthenticatedRequest;
     if (!isTrainingPlanGenerationEnabled()) {
       sendError(
         res,
@@ -256,6 +257,7 @@ export function registerTrainingPlanRoutes(
     try {
       const result = await generateTrainingPlanForUser({
         userId,
+        tenantId: tenantId ?? userId,
         objective,
         durationWeeks,
         preferredTime,
@@ -365,7 +367,7 @@ export function registerTrainingPlanRoutes(
    * missing provider links are repaired instead of silently no-oping.
    */
   router.post('/plan/sync-calendar', async (req, res: Response) => {
-    const { userId } = req as AuthenticatedRequest;
+    const { userId, tenantId } = req as AuthenticatedRequest;
     if (!isTrainingCalendarWritesEnabled()) {
       sendError(
         res,
@@ -389,7 +391,7 @@ export function registerTrainingPlanRoutes(
         return;
       }
 
-      const result = await syncTrainingPlanCalendar(userId, new Date(), calendarSourceValidation.source);
+      const result = await syncTrainingPlanCalendar(userId, new Date(), calendarSourceValidation.source, tenantId ?? userId);
       if (result.status === 'no_active_plan') {
         sendSuccess(res, result.data);
         return;
@@ -413,7 +415,7 @@ export function registerTrainingPlanRoutes(
   });
 
   router.post('/sessions/:id/reflow-preview', async (req, res: Response) => {
-    const { userId } = req as unknown as AuthenticatedRequest;
+    const { userId, tenantId } = req as unknown as AuthenticatedRequest;
     const sessionId = Number(req.params.id);
     if (!Number.isFinite(sessionId) || sessionId <= 0) {
       sendError(res, 'VALIDATION', 'session id is required', 400);
@@ -432,7 +434,7 @@ export function registerTrainingPlanRoutes(
         return;
       }
 
-      const result = await previewTrainingSessionReflow(userId, sessionId, calendarSourceValidation.source);
+      const result = await previewTrainingSessionReflow(userId, sessionId, calendarSourceValidation.source, tenantId ?? userId);
       if (result.status === 'forbidden') {
         sendError(res, 'FORBIDDEN', result.data.message, 403, result.data);
         return;
@@ -453,7 +455,7 @@ export function registerTrainingPlanRoutes(
   });
 
   router.post('/sessions/:id/reflow-confirm', async (req, res: Response) => {
-    const { userId } = req as unknown as AuthenticatedRequest;
+    const { userId, tenantId } = req as unknown as AuthenticatedRequest;
     const sessionId = Number(req.params.id);
     if (!Number.isFinite(sessionId) || sessionId <= 0) {
       sendError(res, 'VALIDATION', 'session id is required', 400);
@@ -484,6 +486,7 @@ export function registerTrainingPlanRoutes(
 
       const result = await confirmTrainingSessionReflow({
         userId,
+        tenantId: tenantId ?? userId,
         sessionId,
         proposedStartAt: typeof req.body?.proposedStartAt === 'string' ? req.body.proposedStartAt : null,
         proposedEndAt: typeof req.body?.proposedEndAt === 'string' ? req.body.proposedEndAt : null,
