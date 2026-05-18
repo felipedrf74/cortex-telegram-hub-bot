@@ -15,7 +15,7 @@ Active production package:
 - production HEAD: `1587fc5d` (version-bump for 4.14.171)
 - production version: `4.14.171`
 - runtime source commit: `0df40622` (`feat(beta): add double opt-in registry and Stripe checkout`)
-- latest `origin/main`: pending fast-forward to `1587fc5d` plus release-doc evidence
+- latest `origin/main`: `e5b29a69` (release evidence after deploy)
 - release state: `docs/release/CURRENT_RELEASE_STATE.md` (backend) and `/Users/felipedominguez/Desktop/Nexus Hub/docs/release/CURRENT_RELEASE_STATE.md` (workspace)
 - official workspace root: `/Users/felipedominguez/Desktop/Nexus Hub`
 
