@@ -52,6 +52,7 @@ import {
 } from './chat-pending-confirmations';
 import { isValidTenantUserId, recordTenantScopeAnomaly } from './tenant-scope-observability';
 import { logger } from '../utils/logger';
+import { isDecisionStreakV1Enabled } from './runtime-flags';
 import {
   buildDecisionActionTruthTableEntry,
   isDecisionActionExecutable,
@@ -258,6 +259,20 @@ export interface DecisionSummary {
   ctaLabel: string;
   previewItems: DecisionApiItem[];
   badgeCount: number;
+  gamification: DecisionGamificationSummary | null;
+}
+
+export interface DecisionGamificationSummary {
+  currentStreakDays: number;
+  bestStreakDays: number;
+  last14Days: Array<{
+    date: string;
+    cleared: boolean;
+    reachedZeroAt: string | null;
+  }>;
+  decisionsLeft: number;
+  hoursLeftToday: number;
+  atRisk: boolean;
 }
 
 export interface DecisionActionResult {
@@ -436,6 +451,20 @@ export function ensureDecisionCenterTables(): void {
     );
     CREATE INDEX IF NOT EXISTS idx_decision_quality_gate_scope_created
       ON decision_quality_gate_events(user_id, tenant_id, created_at DESC);
+    CREATE TABLE IF NOT EXISTS decision_queue_daily_rollups (
+      user_id INTEGER NOT NULL,
+      tenant_id INTEGER NOT NULL,
+      local_date TEXT NOT NULL,
+      timezone TEXT NOT NULL,
+      reached_zero_at TEXT,
+      final_open_count INTEGER NOT NULL DEFAULT 0,
+      best_observed_open_count INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+      PRIMARY KEY (user_id, tenant_id, local_date)
+    );
+    CREATE INDEX IF NOT EXISTS idx_decision_queue_daily_rollups_scope_date
+      ON decision_queue_daily_rollups(user_id, tenant_id, local_date DESC);
   `);
 }
 
@@ -631,6 +660,9 @@ export function getDecisionSummary(userId: number, tenantId = userId, limit = 3)
   const handledTodayCount = listHandledByNexusItems(userId, tenantId, 25)
     .filter((item) => DateTime.fromISO(item.createdAt).hasSame(DateTime.utc(), 'day'))
     .length;
+  const gamification = isDecisionStreakV1Enabled(process.env, { userId, tenantId })
+    ? updateAndReadDecisionGamification(userId, tenantId, openItems.length)
+    : null;
   return {
     openCount: openItems.length,
     urgentCount,
@@ -642,11 +674,107 @@ export function getDecisionSummary(userId: number, tenantId = userId, limit = 3)
     ctaLabel: ctaLabelForSummary(openItems.length, urgentCount, top, locale),
     previewItems: openItems.slice(0, Math.min(Math.max(limit, 0), 3)),
     badgeCount: todayCount,
+    gamification,
   };
 }
 
 export function countOpenUrgentDecisionsForUser(userId: number, tenantId = userId): number {
   return getDecisionSummary(userId, tenantId).badgeCount;
+}
+
+function updateAndReadDecisionGamification(userId: number, tenantId: number, openCount: number): DecisionGamificationSummary {
+  ensureDecisionCenterTables();
+  const defaults = userDecisionContextDefaults(userId);
+  const timezone = defaults.timezone || 'UTC';
+  const now = DateTime.now().setZone(timezone);
+  const today = now.toISODate()!;
+  const reachedZeroAt = openCount === 0 ? now.toUTC().toISO()! : null;
+  getDb().prepare(`
+    INSERT INTO decision_queue_daily_rollups (
+      user_id, tenant_id, local_date, timezone, reached_zero_at,
+      final_open_count, best_observed_open_count, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
+    ON CONFLICT(user_id, tenant_id, local_date) DO UPDATE SET
+      timezone = excluded.timezone,
+      reached_zero_at = COALESCE(decision_queue_daily_rollups.reached_zero_at, excluded.reached_zero_at),
+      final_open_count = excluded.final_open_count,
+      best_observed_open_count = MIN(decision_queue_daily_rollups.best_observed_open_count, excluded.best_observed_open_count),
+      updated_at = datetime('now')
+  `).run(userId, tenantId, today, timezone, reachedZeroAt, openCount, openCount);
+
+  const since = now.minus({ days: 13 }).toISODate()!;
+  const rows = getDb().prepare(`
+    SELECT local_date, reached_zero_at
+      FROM decision_queue_daily_rollups
+     WHERE user_id = ? AND tenant_id = ? AND local_date >= ?
+     ORDER BY local_date ASC
+  `).all(userId, tenantId, since) as Array<{ local_date: string; reached_zero_at: string | null }>;
+  const rowByDate = new Map(rows.map((row) => [row.local_date, row]));
+  const last14Days = Array.from({ length: 14 }, (_, idx) => {
+    const date = now.minus({ days: 13 - idx }).toISODate()!;
+    const row = rowByDate.get(date);
+    return {
+      date,
+      cleared: !!row?.reached_zero_at,
+      reachedZeroAt: row?.reached_zero_at ?? null,
+    };
+  });
+  const allRows = getDb().prepare(`
+    SELECT local_date, reached_zero_at
+      FROM decision_queue_daily_rollups
+     WHERE user_id = ? AND tenant_id = ?
+     ORDER BY local_date ASC
+  `).all(userId, tenantId) as Array<{ local_date: string; reached_zero_at: string | null }>;
+  const clearedByDate = new Map<string, boolean>();
+  for (const row of allRows) {
+    clearedByDate.set(row.local_date, !!row.reached_zero_at);
+  }
+  // Phase 17 hostile-QA fix (2026-05-18): walk back over the full clearedByDate
+  // index, not a fixed 14-day window. The previous code silently capped
+  // currentStreakDays at 14 because last14Days has exactly 14 entries —
+  // a user with a 30-day clear streak saw 14 forever. Cap at 365 days as
+  // a safety bound; a streak longer than a year would re-engage the cap
+  // intentionally.
+  let currentStreakDays = 0;
+  for (let i = 0; i < 365; i += 1) {
+    const date = now.minus({ days: i }).toISODate();
+    if (date && clearedByDate.get(date) === true) {
+      currentStreakDays += 1;
+    } else {
+      break;
+    }
+  }
+  // Phase 17 hostile-QA fix (2026-05-18): treat missing rollup rows as
+  // streak breaks. The previous loop iterated only existing rows, so a
+  // user who skipped the app for a week then cleared decisions appeared
+  // to have a contiguous streak across the gap. Walk a contiguous date
+  // range from the earliest row through today.
+  let bestStreakDays = 0;
+  if (allRows.length > 0) {
+    const startDate = DateTime.fromISO(allRows[0].local_date, { zone: timezone }).startOf('day');
+    const endDate = now.startOf('day');
+    let cursor = startDate;
+    let running = 0;
+    while (cursor <= endDate) {
+      const dateKey = cursor.toISODate()!;
+      if (clearedByDate.get(dateKey) === true) {
+        running += 1;
+        if (running > bestStreakDays) bestStreakDays = running;
+      } else {
+        running = 0;
+      }
+      cursor = cursor.plus({ days: 1 });
+    }
+  }
+  const hoursLeftToday = Math.max(0, Math.round(now.endOf('day').diff(now, 'hours').hours * 10) / 10);
+  return {
+    currentStreakDays,
+    bestStreakDays,
+    last14Days,
+    decisionsLeft: openCount,
+    hoursLeftToday,
+    atRisk: openCount > 0 && hoursLeftToday <= 4,
+  };
 }
 
 export function listHandledByNexusItems(userId: number, tenantId = userId, limit = 25): HandledByNexusItem[] {

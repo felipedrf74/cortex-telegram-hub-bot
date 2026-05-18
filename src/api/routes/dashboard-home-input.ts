@@ -15,7 +15,12 @@ import { isSkillEnabled } from '../../services/user-skill-access';
 import type { Lang } from '../../utils/i18n';
 import { dedupeStrings } from './dashboard-data-fetchers';
 
-type DashboardSectionStatus = DashboardHomeBuildInput['trainingStatus'];
+// Phase 17 hostile-QA fix (2026-05-18): 'stale' added so the Secretary
+// all-clear gate at buildSecretarySummary line 200 can distinguish
+// fresh-ready from stale-snapshot (provider-fetch failed; cached data).
+// The trainingStatus alias used previously was narrower and lost the
+// 'stale' discriminator on the way through the dashboard-home pipeline.
+type DashboardSectionStatus = 'ready' | 'stale' | 'degraded' | 'unavailable';
 
 interface DashboardCalendarEvent {
   id?: string;
@@ -26,6 +31,9 @@ interface DashboardCalendarEvent {
 }
 
 interface DashboardHomeSource {
+  featureFlags?: {
+    secretaryOrchestrationSnapshotV1?: boolean;
+  };
   calendar?: {
     today?: DashboardCalendarEvent[];
     status?: DashboardSectionStatus;
@@ -88,7 +96,11 @@ export function buildDashboardHomeInput(opts: {
     trainingTitle: localizeTrainingTitle(brief?.day.training.title, dashboard.training?.todaySession?.type, language),
     trainingTime: dashboard.training?.todaySession?.time ?? null,
     trainingDurationMinutes: dashboard.training?.todaySession?.duration ?? brief?.day.training.durationMinutes ?? null,
-    trainingStatus: dashboard.training?.status ?? 'unavailable',
+    // Training view-state type only supports ready|degraded|unavailable;
+    // collapse the wider 'stale' (Phase 17) into 'degraded' for training.
+    trainingStatus: dashboard.training?.status === 'stale'
+      ? 'degraded'
+      : (dashboard.training?.status ?? 'unavailable'),
     contentHeadline: buildContentHeadline(dashboard, brief, language),
     contentSubline: buildContentSubline(brief, language),
     cookingHeadline: buildCookingHeadline(brief, language),
@@ -104,6 +116,14 @@ export function buildDashboardHomeInput(opts: {
       tasksDue,
       overdueTasks,
       hasCalendarUnavailable: calendarUnavailable,
+      // Phase 17 hostile-QA fix (2026-05-18): pass real statuses through.
+      // The previous code forced 'ready' when the flag was OFF, which made
+      // the rollback path LIE — degraded providers were silently reported
+      // as ready, and buildSecretarySummary at line 200 fell through to
+      // "all clear" copy. The flag at dashboard.ts:298 controls whether
+      // the truth fields are populated; do NOT zero out the input here.
+      calendarStatus: dashboard.calendar?.status ?? 'ready',
+      tasksStatus: dashboard.tasks?.status ?? 'ready',
       language,
     }),
     meta,
@@ -180,6 +200,8 @@ function buildSecretarySummary(opts: {
   tasksDue: number;
   overdueTasks: number;
   hasCalendarUnavailable: boolean;
+  calendarStatus: DashboardSectionStatus;
+  tasksStatus: DashboardSectionStatus;
   language: Lang;
 }): string {
   if (opts.hasCalendarUnavailable) {
@@ -187,6 +209,14 @@ function buildSecretarySummary(opts: {
       opts.language,
       'A agenda precisa de integração antes de coordenar o resto do dia.',
       'Your calendar needs integration before the rest of the day can coordinate.',
+    );
+  }
+
+  if (opts.tasksStatus !== 'ready' || opts.calendarStatus === 'degraded') {
+    return localizePT(
+      opts.language,
+      'Ainda estou a confirmar tarefas e agenda antes de chamar o dia de limpo.',
+      'I am still confirming tasks and calendar before calling the day clear.',
     );
   }
 

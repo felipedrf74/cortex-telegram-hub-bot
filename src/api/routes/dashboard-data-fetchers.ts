@@ -2,7 +2,7 @@
 
 import { config } from '../../config';
 import { DateTime } from 'luxon';
-import { getCached, setCache } from '../../services/cache-store';
+import { getCached, getCachedSWR, setCache } from '../../services/cache-store';
 import {
   getEvents as getGoogleCalendarEvents,
   isGoogleCalendarConfigured,
@@ -12,8 +12,13 @@ import {
   isOutlookCalendarConfigured,
 } from '../../services/outlook-calendar';
 import { getUserTimezoneById } from '../../services/user-service';
+import { getAppleHealthSleepAgendaEvents } from '../../services/health-sleep-agenda';
 
-export type DashboardSectionStatus = 'ready' | 'degraded' | 'unavailable';
+// Phase 17 hostile-QA fix (2026-05-18): 'stale' added so the dashboard
+// can distinguish "snapshot last fetch failed; serving cached data"
+// from fully-ready data. Secretary's all-clear gate (dashboard-home-
+// input.ts:200) treats anything != 'ready' as "still confirming".
+export type DashboardSectionStatus = 'ready' | 'stale' | 'degraded' | 'unavailable';
 
 export interface DashboardSectionHealth {
   status: DashboardSectionStatus;
@@ -130,7 +135,7 @@ export function mapCalendarEvent(e: any, source: string, timezone = config.app.t
     ...(rawStart ? { rawStart } : {}),
     ...(rawEnd ? { rawEnd } : {}),
     source,
-    category: coerceNullableString(Array.isArray(e?.categories) ? e.categories[0] : null),
+    category: coerceNullableString(e?.category ?? (Array.isArray(e?.categories) ? e.categories[0] : null)),
     color: coerceNullableString(e?.color),
     isAllDay: !!e?.isAllDay,
   };
@@ -226,13 +231,23 @@ async function fetchCalendarForUser(userId?: number) {
     }
   });
 
-  const allEvents = allProviderEvents.sort((a, b) => a.start.localeCompare(b.start));
+  const sleepEvents = userId
+    ? getAppleHealthSleepAgendaEvents({
+        userId,
+        start: actualStart.toUTC().toISO()!,
+        end: actualEnd.toUTC().toISO()!,
+        timezone: zone,
+      }).map((event) => mapCalendarEvent(event, 'apple_health', zone))
+    : [];
+
+  const allEvents = [...allProviderEvents, ...sleepEvents].sort((a, b) => a.start.localeCompare(b.start));
+  const localHealthSources = sleepEvents.length > 0 ? 1 : 0;
   return {
     today: allEvents.filter((event) => eventOverlapsRange(event, actualStart, actualEnd, zone)),
     upcoming: [],
     ...buildSectionHealth(
-      fulfilledProviders,
-      fetchers.length,
+      fulfilledProviders + localHealthSources,
+      fetchers.length + localHealthSources,
       warningCodes,
       warnings,
       'CALENDAR_UNAVAILABLE',
@@ -266,6 +281,42 @@ function parseCalendarBoundary(input: any, zone: string): DateTime {
 }
 
 export async function fetchTasks(userId: number) {
+  const cachedWorkingSet = getCachedSWR<any>(`u:${userId}:tasks-working-set`);
+  if (cachedWorkingSet?.value?.smartCounts) {
+    const snapshot = cachedWorkingSet.value;
+    const topTasks = Array.isArray(snapshot.activePage?.tasks)
+      ? snapshot.activePage.tasks.slice(0, 5).map((t: any, index: number) => mapDashboardTask(t, index))
+      : [];
+    return {
+      overdue: Number(snapshot.smartCounts.overdue || 0),
+      dueToday: Number(snapshot.smartCounts.dueToday || 0),
+      totalPending: Array.isArray(snapshot.activePage?.tasks)
+        ? Math.max(Number(snapshot.activePage.tasks.length || 0), sumActiveCounts(snapshot.activeCountsByList))
+        : sumActiveCounts(snapshot.activeCountsByList),
+      topTasks,
+      snapshot: {
+        source: 'tasks-working-set',
+        freshness: snapshot.freshness ?? null,
+        cached: true,
+      },
+      // Phase 17 hostile-QA fix (2026-05-18): propagate 'stale' as a
+      // first-class state, not collapsed into 'ready'. tasks.ts:248-256
+      // sets state='stale' on provider failure; Secretary's gate at
+      // dashboard-home-input.ts:200 must see that distinction to avoid
+      // calling a day clear while tasks are stale.
+      status: snapshot.freshness?.state === 'degraded'
+        ? 'degraded' as const
+        : snapshot.freshness?.state === 'stale'
+          ? 'stale' as const
+          : 'ready' as const,
+      warningCodes: Array.isArray(snapshot.freshness?.reasonCodes)
+        && (snapshot.freshness.state === 'degraded' || snapshot.freshness.state === 'stale')
+        ? snapshot.freshness.reasonCodes
+        : [],
+      warnings: [],
+    };
+  }
+
   const { getTaskProviderForUser } = require('../../services/task-store/task-router');
   const todo = getTaskProviderForUser(userId);
   const allTasksResult = await todo.getAllPendingTasks();
@@ -310,10 +361,21 @@ export async function fetchTasks(userId: number) {
     dueToday,
     totalPending: tasks.length,
     topTasks,
+    snapshot: {
+      source: 'provider-pending',
+      freshness: { state: 'fresh', generatedAt: new Date().toISOString(), reasonCodes: [] },
+      cached: false,
+    },
     status: 'ready' as const,
     warningCodes: [],
     warnings: [],
   };
+}
+
+function sumActiveCounts(value: unknown): number {
+  if (!value || typeof value !== 'object') return 0;
+  return Object.values(value as Record<string, unknown>)
+    .reduce((sum: number, count: unknown) => sum + (Number.isFinite(Number(count)) ? Number(count) : 0), 0);
 }
 
 export async function fetchTraining(userId: number, deps: FetchTrainingDeps = {}) {

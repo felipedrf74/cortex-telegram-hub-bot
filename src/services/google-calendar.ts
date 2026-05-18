@@ -103,6 +103,7 @@ export async function createEvent(data: {
   start: string;
   end: string;
   description?: string;
+  categories?: string[];
   attendees?: string[];
   location?: string;
   recurrence?: NormalizedRecurrence;
@@ -113,6 +114,7 @@ export async function createEvent(data: {
       .map((email) => email.trim())
       .filter((email) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email));
     const rrule = recurrenceToGoogleRRule(data.recurrence);
+    const description = withGoogleCategoryTags(data.description, data.categories);
     const response = await withTimeout(
       calendar.events.insert({
         calendarId: 'primary',
@@ -121,7 +123,7 @@ export async function createEvent(data: {
           summary: data.title,
           start: { dateTime: data.start, timeZone: config.app.timezone },
           end: { dateTime: data.end, timeZone: config.app.timezone },
-          description: data.description,
+          description,
           location: data.location,
           ...(rrule ? { recurrence: [rrule] } : {}),
           ...(attendees.length > 0 ? { attendees: attendees.map((email) => ({ email })) } : {}),
@@ -135,7 +137,8 @@ export async function createEvent(data: {
       summary: response.data.summary || data.title,
       start: response.data.start?.dateTime || data.start,
       end: response.data.end?.dateTime || data.end,
-      description: response.data.description || undefined,
+      description: response.data.description || description || undefined,
+      categories: data.categories,
       htmlLink: response.data.htmlLink || undefined,
       isAllDay: !response.data.start?.dateTime && !!response.data.start?.date,
     };
@@ -143,6 +146,26 @@ export async function createEvent(data: {
     logger.error({ err }, 'Failed to create calendar event');
     throw err;
   }
+}
+
+function withGoogleCategoryTags(description: string | undefined, categories: string[] | undefined): string | undefined {
+  const cleanCategories = (categories || [])
+    .map((value) => typeof value === 'string' ? value.trim().toLowerCase() : '')
+    .filter(Boolean);
+  if (cleanCategories.length === 0) return description;
+  const unique = [...new Set(cleanCategories)];
+  const tag = `Nexus category: ${unique.join(', ')}`;
+  const base = description?.trim();
+  // Phase 17 hostile-QA fix (2026-05-18): the route layer calls
+  // withNexusCategoryDescription, which appends `Nexus category: …`. When
+  // the unified path then routes through createEvent here, this function
+  // appended a SECOND identical tag — two `Nexus category: focus` lines
+  // visible in the Google event description. Detect any pre-existing
+  // `Nexus category: …` line in the description and skip the duplicate.
+  if (base && /^Nexus category:\s*/im.test(base)) {
+    return base;
+  }
+  return base ? `${base}\n\n${tag}` : tag;
 }
 
 export async function updateEvent(data: {

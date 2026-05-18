@@ -23,6 +23,7 @@ import {
 } from '../../services/google-gmail';
 import { getEvents as getOutlookEvents } from '../../services/outlook-calendar';
 import { getEvents as getGoogleEvents } from '../../services/google-calendar';
+import { resolveMailReadPreference } from '../../services/provider-preferences';
 import { logger } from '../../utils/logger';
 import { config } from '../../config';
 import { secureSecretMatches } from '../secret-guards';
@@ -319,7 +320,7 @@ function compareInboxItems(a: UnifiedInboxItem, b: UnifiedInboxItem): number {
   return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
 }
 
-async function buildUnifiedInbox(userId: number, limit: number): Promise<{
+async function buildUnifiedInbox(userId: number, tenantId: number, limit: number): Promise<{
   totalUnread: number;
   count: number;
   items: UnifiedInboxItem[];
@@ -335,6 +336,11 @@ async function buildUnifiedInbox(userId: number, limit: number): Promise<{
   const todayStr = now.toISODate()!;
   const outlookConnected = isConnected(userId, 'outlook');
   const googleConnected = isConnected(userId, 'google');
+  // Phase 17 hostile-QA fix (2026-05-18): pass real tenantId from the route
+  // scope so cross-tenant users read their persisted mail preference
+  // instead of falling back to the (userId, userId) default which silently
+  // reverts to 'auto'.
+  const mailPreference = resolveMailReadPreference(userId, tenantId);
 
   const fetchers: Array<{
     key: string;
@@ -467,7 +473,7 @@ async function buildUnifiedInbox(userId: number, limit: number): Promise<{
     },
   ];
 
-  if (outlookConnected) {
+  if (mailPreference.sources.includes('outlook')) {
     fetchers.push(
       {
         key: 'outlook-email',
@@ -534,7 +540,7 @@ async function buildUnifiedInbox(userId: number, limit: number): Promise<{
     );
   }
 
-  if (googleConnected) {
+  if (mailPreference.sources.includes('gmail')) {
     fetchers.push(
       {
         key: 'gmail',
@@ -613,6 +619,10 @@ async function buildUnifiedInbox(userId: number, limit: number): Promise<{
   ));
   const warningCodes: string[] = [];
   const warnings: string[] = [];
+  if (mailPreference.warningCode) {
+    warningCodes.push(mailPreference.warningCode);
+    warnings.push(mailPreference.warning || 'Preferred mail provider is unavailable.');
+  }
   if (!outlookConnected && !googleConnected) {
     warningCodes.push('MAIL_INTEGRATION_MISSING');
     warnings.push('No mail integration is connected yet.');
@@ -655,13 +665,15 @@ async function buildUnifiedInbox(userId: number, limit: number): Promise<{
   };
 }
 
-async function buildUnifiedInboxSummary(userId: number): Promise<{
+async function buildUnifiedInboxSummary(userId: number, tenantId: number): Promise<{
   unreadCount: number;
   warningCodes: string[];
   warnings: string[];
 }> {
   const outlookConnected = isConnected(userId, 'outlook');
   const googleConnected = isConnected(userId, 'google');
+  // Phase 17 hostile-QA fix (2026-05-18): pass real tenantId.
+  const mailPreference = resolveMailReadPreference(userId, tenantId);
   const fetchers: Array<{
     key: string;
     warningCode: string;
@@ -688,7 +700,7 @@ async function buildUnifiedInboxSummary(userId: number): Promise<{
     },
   ];
 
-  if (outlookConnected) {
+  if (mailPreference.sources.includes('outlook')) {
     fetchers.push({
       key: 'outlook-email',
       warningCode: 'OUTLOOK_MAIL_UNAVAILABLE',
@@ -700,7 +712,7 @@ async function buildUnifiedInboxSummary(userId: number): Promise<{
     });
   }
 
-  if (googleConnected) {
+  if (mailPreference.sources.includes('gmail')) {
     fetchers.push({
       key: 'gmail',
       warningCode: 'GMAIL_UNAVAILABLE',
@@ -720,6 +732,10 @@ async function buildUnifiedInboxSummary(userId: number): Promise<{
   ));
   const warningCodes: string[] = [];
   const warnings: string[] = [];
+  if (mailPreference.warningCode) {
+    warningCodes.push(mailPreference.warningCode);
+    warnings.push(mailPreference.warning || 'Preferred mail provider is unavailable.');
+  }
   if (!outlookConnected && !googleConnected) {
     warningCodes.push('MAIL_INTEGRATION_MISSING');
     warnings.push('No mail integration is connected yet.');
@@ -1039,7 +1055,9 @@ export function notificationRoutes(): Router {
    * Ordered by urgency first, recency second.
    */
   router.get('/inbox', asyncHandler(async (req, res: Response) => {
-    const { userId } = req as unknown as AuthenticatedRequest;
+    const authReq = req as unknown as AuthenticatedRequest;
+    const { userId } = authReq;
+    const tenantId = routeTenantId(authReq, userId);
     if (!ensureValidNotificationsRouteScope(res, userId, 'notifications_route_inbox')) return;
     const limit = parseInt(String(req.query.limit || '30'), 10);
     const cacheKey = routeCacheKey('unified-inbox', userId, limit);
@@ -1048,7 +1066,7 @@ export function notificationRoutes(): Router {
       ttlSeconds: INBOX_CACHE_TTL,
       staleSeconds: INBOX_SWR_STALE,
       refreshContext: { source: 'notifications_route', operation: 'inbox_swr_refresh', userId },
-      fetchFresh: () => buildUnifiedInbox(userId, limit),
+      fetchFresh: () => buildUnifiedInbox(userId, tenantId, limit),
       send: (inbox, meta) => sendSuccess(res, inbox, { cached: meta.cached }),
     });
   }));
@@ -1097,7 +1115,9 @@ export function notificationRoutes(): Router {
    * Unified unread count for the Home bell badge.
    */
   router.get('/unread-count', asyncHandler(async (req, res: Response) => {
-    const { userId } = req as unknown as AuthenticatedRequest;
+    const authReq = req as unknown as AuthenticatedRequest;
+    const { userId } = authReq;
+    const tenantId = routeTenantId(authReq, userId);
     if (!ensureValidNotificationsRouteScope(res, userId, 'notifications_route_unread_count')) return;
     const cacheKey = routeCacheKey('unified-inbox-unread', userId);
     await handleCachedRoute<{ unreadCount: number; warningCodes: string[]; warnings: string[] }>({
@@ -1105,7 +1125,7 @@ export function notificationRoutes(): Router {
       ttlSeconds: INBOX_SUMMARY_CACHE_TTL,
       staleSeconds: INBOX_SUMMARY_SWR_STALE,
       refreshContext: { source: 'notifications_route', operation: 'inbox_swr_refresh', userId },
-      fetchFresh: () => buildUnifiedInboxSummary(userId),
+      fetchFresh: () => buildUnifiedInboxSummary(userId, tenantId),
       send: (summary, meta) => sendSuccess(res, summary, { cached: meta.cached }),
     });
   }));
