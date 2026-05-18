@@ -256,6 +256,22 @@ export function asyncHandler<T extends (req: any, res: Response) => Promise<void
     try {
       await handler(req, res);
     } catch (err: any) {
+      // 2026-05-18 (skill-hardening QA P1 follow-up): TenantScopeError
+      // thrown by `assertTenantScope` / `requireTenantIdParam` is a
+      // *client* error (the request lacked a valid tenant tuple), not a
+      // server fault. Translate to a stable 401 with the original code
+      // BEFORE the captureError telemetry path, so we don't pollute
+      // error_log + Sentry with auth-shape failures.
+      //
+      // Detect by class name only — checking instanceof would create a
+      // circular import with `src/services/tenant-scope.ts`.
+      if (err?.name === 'TenantScopeError' && typeof err?.status === 'number') {
+        if (!res.headersSent) {
+          sendError(res, err.code ?? 'UNAUTHORIZED', err.message ?? 'Invalid tenant scope', err.status);
+        }
+        return;
+      }
+
       // Record in error_log + Sentry + Telegram before responding. We
       // intentionally swallow errors from `captureError` itself to avoid
       // an observability bug blocking a normal error response.

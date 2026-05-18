@@ -12,7 +12,7 @@ export function syncRoutes(): Router {
   const router = Router();
 
   router.get('/changes', (req, res: Response) => {
-    const { userId, tenantId = userId, deviceId } = req as AuthenticatedRequest;
+    const { userId, tenantId, deviceId } = req as AuthenticatedRequest;
     if (!ensureScope(res, userId, tenantId, 'sync_route_changes')) return;
     if (typeof deviceId !== 'string' || deviceId.trim().length === 0) {
       sendError(res, 'MISSING_DEVICE_ID', 'Authenticated device id is required for delta sync', 400);

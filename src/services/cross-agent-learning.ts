@@ -28,6 +28,7 @@ import {
   type SignalType, type AgentSignal, type MeshPriority, type SignalPriority,
 } from './intelligence-bus';
 import { config } from '../config';
+import { requireTenantIdParam } from './tenant-scope';
 import {
   classifyIngredientAisle,
   getMealPlan,
@@ -358,7 +359,7 @@ export function createEmptySecretaryMeshContext(opts: { userId: number; weekStar
   };
 }
 
-export function createEmptyFinanceMeshContext(opts: { userId: number; weekStart?: string }): FinanceMeshContext {
+export function createEmptyFinanceMeshContext(opts: { userId: number; tenantId?: number; weekStart?: string }): FinanceMeshContext {
   const window = resolveWeekWindow(opts.weekStart);
   const month = window.start.toFormat('yyyy-MM');
   const year = window.start.year;
@@ -549,6 +550,9 @@ export function formatContextForPrompt(ctx: AgentContext): string {
  * multiple agents. Called weekly (after Performance Agent runs).
  */
 export function produceLearningDigest(userId?: number, tenantId?: number): number {
+  const scopedTenantId = userId == null
+    ? undefined
+    : requireTenantIdParam(tenantId, 'produceLearningDigest');
   const voiceSignals = readSignals('learning-digest', ['voice_pattern'], 10, userId, undefined, tenantId);
   const pillarSignals = readSignals('learning-digest', ['pillar_performance'], 5, userId, undefined, tenantId);
   const hookSignals = readSignals('learning-digest', ['hook_effectiveness'], 10, userId, undefined, tenantId);
@@ -590,7 +594,8 @@ export function produceLearningDigest(userId?: number, tenantId?: number): numbe
   return writeSignal({
     source_agent: 'learning-digest',
     signal_type: 'learning_digest',
-    tenant_id: tenantId ?? userId,
+    user_id: userId,
+    tenant_id: scopedTenantId,
     payload: digest,
     priority: 'normal',
   });
@@ -1493,6 +1498,7 @@ export async function readSecretaryMeshContext(opts: {
 
 export async function readFinanceMeshContext(opts: {
   userId: number;
+  tenantId?: number;
   weekStart?: string;
 }): Promise<FinanceMeshContext> {
   if (!isValidTenantUserId(opts.userId)) {
@@ -1503,7 +1509,7 @@ export async function readFinanceMeshContext(opts: {
   const window = resolveWeekWindow(opts.weekStart);
   const month = window.start.toFormat('yyyy-MM');
   const year = window.start.year;
-  const monthlySummary = safely(() => getMonthlySummary(opts.userId, month), {
+  const monthlySummary = safely(() => getMonthlySummary(opts.userId, month, { tenantId: opts.tenantId }), {
     month,
     totalIncome: 0,
     totalExpenses: 0,
@@ -1512,7 +1518,7 @@ export async function readFinanceMeshContext(opts: {
     transactionCount: 0,
   });
   const preferredCurrency = getPreferredCurrencyForUser(opts.userId);
-  const budgetView = safely(() => getMonthlyBudgetView(opts.userId, month), {
+  const budgetView = safely(() => getMonthlyBudgetView(opts.userId, month, { tenantId: opts.tenantId }), {
     month,
     basisCurrency: preferredCurrency,
     currencies: [preferredCurrency],

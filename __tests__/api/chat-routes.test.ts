@@ -313,7 +313,8 @@ vi.mock('../../src/services/finance-tracker', () => ({
   getMonthlySummary: (...args: unknown[]) => mockGetMonthlySummary(...args),
   getMonthlyBudgetView: (...args: unknown[]) => mockGetMonthlyBudgetView(...args),
   getTaxEvents: (...args: unknown[]) => mockGetTaxEvents(...args),
-  calculateMonthlyTax: (...args: unknown[]) => mockCalculateMonthlyTax(...args),
+  calculatePortugueseMonthlyTax: (...args: unknown[]) => mockCalculateMonthlyTax(...args),
+  calculateMonthlyTax: vi.fn(() => { throw new Error("Brazilian tax engine removed; see finance-tax-pt"); }),
   formatCurrencyAmount: (currency: string, amount: number) => `${currency} ${amount.toFixed(2)}`,
 }));
 

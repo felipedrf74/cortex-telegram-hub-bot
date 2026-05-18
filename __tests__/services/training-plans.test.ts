@@ -76,6 +76,7 @@ import {
   createSession,
   getSessionsForWeek,
   getSessionById,
+  getSessionByCalendarEvent,
   updateSession,
   markSessionCompleted,
   markSessionSkipped,
@@ -245,6 +246,26 @@ describe('Session CRUD', () => {
     weekId = week.id;
   });
 
+  it('refuses to create a session when the plan has no explicit tenant scope', () => {
+    testDb.prepare(`
+      INSERT INTO fitness_training_plans
+        (id, user_id, tenant_id, name, sport, goal, duration_weeks, periodization, start_date, end_date, status)
+      VALUES (99, 42, 0, 'Legacy bad scope', 'running', 'base', 4, 'base', '2026-04-01', '2026-04-29', 'active')
+    `).run();
+    testDb.prepare(`
+      INSERT INTO training_weeks (id, plan_id, week_number, focus, intensity_pct)
+      VALUES (99, 99, 1, 'base', 100)
+    `).run();
+
+    expect(() => createSession({
+      week_id: 99,
+      plan_id: 99,
+      day_of_week: 'Monday',
+      session_type: 'run',
+      title: 'Bad scope run',
+    })).toThrow(/TRAINING_PLAN_TENANT_SCOPE_MISSING/);
+  });
+
   it('creates a session', () => {
     const session = createSession({
       week_id: weekId, plan_id: planId,
@@ -285,6 +306,18 @@ describe('Session CRUD', () => {
     expect(found!.intensity_text).toBe('RPE 8');
   });
 
+  it('rejects runtime update keys that are not training_session columns', () => {
+    const s = createSession({ week_id: weekId, plan_id: planId, day_of_week: 'Monday', session_type: 'strength', title: 'Original' });
+
+    expect(() => updateSession(s.id, {
+      "status = 'completed' WHERE 1=1 --": 'completed',
+    } as any)).toThrow(/TRAINING_SESSION_UPDATE_INVALID_FIELD/);
+
+    const found = getSessionById(s.id);
+    expect(found!.status).toBe('pending');
+    expect(found!.title).toBe('Original');
+  });
+
   it('marks session completed', () => {
     const s = createSession({ week_id: weekId, plan_id: planId, day_of_week: 'Monday', session_type: 'strength', title: 'Test' });
     markSessionCompleted(s.id);
@@ -308,6 +341,42 @@ describe('Session CRUD', () => {
     const found = getSessionById(s.id);
     expect(found!.calendar_event_id).toBe('AAMk123');
     expect(found!.calendar_source).toBe('outlook');
+  });
+
+  it('scopes calendar event lookups by training plan owner when event ids collide', () => {
+    const userAPlan = getPlanById(planId)!;
+    const userAWeek = createWeek({ plan_id: userAPlan.id, week_number: 2 });
+    const userASession = createSession({
+      week_id: userAWeek.id,
+      plan_id: userAPlan.id,
+      day_of_week: 'Tuesday',
+      session_type: 'running',
+      title: 'User A Run',
+      calendar_event_id: 'shared-event-id',
+      calendar_source: 'outlook',
+    });
+    const userBPlan = createPlan({
+      user_id: 99,
+      name: 'Other Plan',
+      sport: 'running',
+      duration_weeks: 4,
+      start_date: '2026-04-01',
+      end_date: '2026-04-29',
+    });
+    const userBWeek = createWeek({ plan_id: userBPlan.id, week_number: 1 });
+    createSession({
+      week_id: userBWeek.id,
+      plan_id: userBPlan.id,
+      day_of_week: 'Wednesday',
+      session_type: 'running',
+      title: 'User B Run',
+      calendar_event_id: 'shared-event-id',
+      calendar_source: 'outlook',
+    });
+
+    const found = getSessionByCalendarEvent('shared-event-id', 'outlook', { userId: 42, tenantId: 42 });
+    expect(found?.id).toBe(userASession.id);
+    expect(found?.title).toBe('User A Run');
   });
 });
 

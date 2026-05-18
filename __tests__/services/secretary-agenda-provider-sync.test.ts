@@ -216,6 +216,21 @@ describe('secretary-agenda-provider-sync', () => {
     expect(stored?.sourceShapeHash).toHaveLength(32);
   });
 
+  it('fails loudly when provider mapping update misses the scoped agenda row', async () => {
+    class DeletingProvider extends MockSecretaryProvider {
+      async createEvent(input: SecretaryProviderEventInput): Promise<SecretaryProviderEvent> {
+        const event = await super.createEvent(input);
+        testDb.prepare('DELETE FROM secretary_agenda_items WHERE agenda_item_id = ?').run(input.agendaItemId);
+        return event;
+      }
+    }
+    const provider = new DeletingProvider();
+    const decision = submitSecretarySchedulingIntent(intent());
+
+    await expect(syncOne(decision.agendaItem.agendaItemId, provider))
+      .rejects.toThrow(/SECRETARY_PROVIDER_MAPPING_UPDATE_MISSED/);
+  });
+
   it('updates and moves an existing provider event by exact event ID', async () => {
     const provider = new MockSecretaryProvider();
     const decision = submitSecretarySchedulingIntent(intent());

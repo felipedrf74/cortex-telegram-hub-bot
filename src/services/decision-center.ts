@@ -1130,11 +1130,12 @@ export function snoozeDecision(decisionId: string, userId: number, tenantId = us
   assertScope(userId, tenantId, 'snooze_decision', { decisionId });
   ensureDecisionCenterTables();
   const until = DateTime.utc().plus({ minutes: Math.min(Math.max(minutes, 5), 10_080) }).toISO();
-  getDb().prepare(`
+  const update = getDb().prepare(`
     UPDATE notification_center_items
        SET status = 'snoozed', snoozed_until = ?, read_at = COALESCE(read_at, datetime('now'))
      WHERE item_id = ? AND user_id = ? AND tenant_id = ? AND status IN ('unread', 'read', 'failed', 'snoozed')
   `).run(until, decisionId, userId, tenantId);
+  assertDecisionScopedUpdateApplied(update, 'snooze_decision', { decisionId, userId, tenantId });
   const item = getDecisionItem(decisionId, userId, tenantId);
   if (!item) throw new DecisionActionError('DECISION_NOT_FOUND', 'Decision not found after snooze', 404);
   const record = getDecisionRecord(decisionId, userId, tenantId);
@@ -1210,6 +1211,20 @@ export class DecisionActionError extends Error {
     this.status = status;
     this.details = details;
   }
+}
+
+function assertDecisionScopedUpdateApplied(
+  result: { changes: number },
+  operation: string,
+  details: Record<string, unknown>,
+): void {
+  if (result.changes > 0) return;
+  throw new DecisionActionError(
+    'DECISION_READBACK_MISMATCH',
+    'Decision scoped update did not affect any rows',
+    409,
+    { operation, ...details },
+  );
 }
 
 function ensureColumn(table: string, column: string, ddl: string): void {
@@ -2021,10 +2036,15 @@ function dependencyStateForRecord(record: DecisionRecord): { dependsOnDecisionId
 
 function guardActionable(record: DecisionRecord, actionId: string): void {
   if (record.expiresAt && Date.parse(record.expiresAt) <= Date.now()) {
-    getDb().prepare(`
+    const expire = getDb().prepare(`
       UPDATE notification_center_items SET status = 'expired'
       WHERE item_id = ? AND user_id = ? AND tenant_id = ?
     `).run(record.itemId, record.userId, record.tenantId);
+    assertDecisionScopedUpdateApplied(expire, 'expire_decision', {
+      decisionId: record.itemId,
+      userId: record.userId,
+      tenantId: record.tenantId,
+    });
     throw new DecisionActionError('DECISION_EXPIRED', 'Decision expired and can no longer be actioned', 409);
   }
   if (record.status === 'expired') throw new DecisionActionError('DECISION_EXPIRED', 'Decision expired and can no longer be actioned', 409);
@@ -2239,7 +2259,7 @@ function executeSecretaryAgendaDecision(
 
   const rollback = secretaryAgendaRollbackSnapshot(agenda);
   const updates = buildSecretaryAgendaUpdates(actionId, agenda, payload);
-  getDb().prepare(`
+  const agendaUpdate = getDb().prepare(`
     UPDATE secretary_agenda_items
        SET lifecycle_state = ?,
            decision_action = ?,
@@ -2264,6 +2284,11 @@ function executeSecretaryAgendaDecision(
     userId,
     String(tenantId),
   );
+  assertDecisionScopedUpdateApplied(agendaUpdate, 'secretary_agenda_decision_update', {
+    agendaItemId: agenda.agendaItemId,
+    userId,
+    tenantId,
+  });
 
   const verified = getSecretaryAgendaItemById({ agendaItemId: agenda.agendaItemId, ownerUserId: userId, tenantId });
   const readBackOk = verified?.lifecycleState === updates.lifecycleState
@@ -2317,7 +2342,7 @@ function executeSecretaryReflowRollback(
     throw new DecisionActionError('DECISION_ROLLBACK_UNAVAILABLE', 'Rollback is missing the prior Secretary state.', 409);
   }
   const prior = previous as Record<string, unknown>;
-  getDb().prepare(`
+  const agendaUpdate = getDb().prepare(`
     UPDATE secretary_agenda_items
        SET lifecycle_state = ?,
            decision_action = ?,
@@ -2342,6 +2367,11 @@ function executeSecretaryReflowRollback(
     userId,
     String(tenantId),
   );
+  assertDecisionScopedUpdateApplied(agendaUpdate, 'secretary_reflow_rollback_agenda_update', {
+    agendaItemId: snapshot.agendaItemId,
+    userId,
+    tenantId,
+  });
 
   const verified = getSecretaryAgendaItemById({ agendaItemId: snapshot.agendaItemId, ownerUserId: userId, tenantId });
   const expectedLifecycleState = stringOrDefault(prior.lifecycleState, 'proposed');
@@ -2352,7 +2382,7 @@ function executeSecretaryReflowRollback(
     });
   }
 
-  getDb().prepare(`
+  const decisionUpdate = getDb().prepare(`
     UPDATE notification_center_items
        SET status = 'read', action_result_json = ?
      WHERE item_id = ? AND user_id = ? AND tenant_id = ?
@@ -2363,6 +2393,11 @@ function executeSecretaryReflowRollback(
     lifecycleState: verified.lifecycleState,
     decisionAction: verified.decisionAction,
   }), record.itemId, userId, tenantId);
+  assertDecisionScopedUpdateApplied(decisionUpdate, 'secretary_reflow_rollback_decision_update', {
+    decisionId: record.itemId,
+    userId,
+    tenantId,
+  });
   markDecisionAction(record.decisionLogId, 'undo_reflow');
 
   return {
@@ -2449,9 +2484,6 @@ function executeFinancePaymentDecision(
   if (record.sourceSkill !== 'finance') {
     throw new DecisionActionError('UNSUPPORTED_DECISION_EXECUTOR', 'Finance payment action can only run for Finance decisions.', 409);
   }
-  if (tenantId !== userId) {
-    throw new DecisionActionError('UNSUPPORTED_DECISION_EXECUTOR', 'Finance payment actions require tenant-scoped finance tables before cross-tenant execution.', 409);
-  }
   const month = typeof payload.month === 'string'
     ? payload.month
     : record.relatedEntityType === 'finance_tax_event'
@@ -2461,11 +2493,11 @@ function executeFinancePaymentDecision(
     throw new DecisionActionError('DECISION_ACTION_PAYLOAD_REQUIRED', 'Finance payment decisions require a YYYY-MM tax event month.', 400);
   }
 
-  if (!markTaxPaid(userId, month)) {
+  if (!markTaxPaid(userId, month, { tenantId })) {
     throw new DecisionActionError('DECISION_RELATED_ENTITY_NOT_FOUND', 'Finance tax event was not found for this user.', 404);
   }
   const year = Number(month.slice(0, 4));
-  const verified = getTaxEvents(userId, { year }).find((event) => event.month === month);
+  const verified = getTaxEvents(userId, { year, tenantId }).find((event) => event.month === month);
   if (verified?.status !== 'paid') {
     throw new DecisionActionError('DECISION_READBACK_MISMATCH', 'Finance payment read-back verification failed', 409, {
       expectedStatus: 'paid',
@@ -2562,11 +2594,17 @@ function markDecisionActioned(
   actualEffect: Record<string, unknown>;
   message: string;
 } {
-  getDb().prepare(`
+  const decisionUpdate = getDb().prepare(`
     UPDATE notification_center_items
        SET status = 'actioned', actioned_at = datetime('now'), action_result_json = ?
      WHERE item_id = ? AND user_id = ? AND tenant_id = ?
   `).run(JSON.stringify({ actionId, ...actualEffect }), record.itemId, record.userId, record.tenantId);
+  assertDecisionScopedUpdateApplied(decisionUpdate, 'mark_decision_actioned', {
+    decisionId: record.itemId,
+    userId: record.userId,
+    tenantId: record.tenantId,
+    actionId,
+  });
   markDecisionAction(record.decisionLogId, actionId);
   const actualStatus = getDecisionRecord(record.itemId, record.userId, record.tenantId)?.status ?? null;
   if (actualStatus !== 'actioned') {
@@ -2628,11 +2666,17 @@ function executeContentApprovalDecision(
     });
   }
 
-  getDb().prepare(`
+  const decisionUpdate = getDb().prepare(`
     UPDATE notification_center_items
        SET status = 'actioned', actioned_at = datetime('now'), action_result_json = ?
      WHERE item_id = ? AND user_id = ? AND tenant_id = ?
   `).run(JSON.stringify({ contentObjectId: object.id, approvalState: verified?.approvalState }), record.itemId, userId, tenantId);
+  assertDecisionScopedUpdateApplied(decisionUpdate, 'content_approval_decision_update', {
+    decisionId: record.itemId,
+    userId,
+    tenantId,
+    actionId,
+  });
   markDecisionAction(record.decisionLogId, actionId);
   return {
     readBackOk,
@@ -2665,11 +2709,18 @@ function markExecutionFailed(executionId: string, errorCode: string, details?: R
 }
 
 function markDecisionFailed(record: DecisionRecord, actionId: string, errorCode: string): void {
-  getDb().prepare(`
+  const decisionUpdate = getDb().prepare(`
     UPDATE notification_center_items
        SET status = 'failed', action_result_json = ?
      WHERE item_id = ? AND user_id = ? AND tenant_id = ? AND status IN ('unread', 'read', 'failed')
   `).run(JSON.stringify({ actionId, errorCode }), record.itemId, record.userId, record.tenantId);
+  assertDecisionScopedUpdateApplied(decisionUpdate, 'mark_decision_failed', {
+    decisionId: record.itemId,
+    userId: record.userId,
+    tenantId: record.tenantId,
+    actionId,
+    errorCode,
+  });
   logger.warn({ decisionId: record.itemId, userId: record.userId, tenantId: record.tenantId, actionId, errorCode }, 'Decision action failed without closing decision as actioned');
 }
 
@@ -2740,7 +2791,7 @@ function supersedeIfSourceStateStale(record: DecisionRecord): string | null {
 }
 
 function supersedeDecision(record: DecisionRecord, reason: string): void {
-  getDb().prepare(`
+  const decisionUpdate = getDb().prepare(`
     UPDATE notification_center_items
        SET status = 'superseded',
            action_result_json = ?
@@ -2749,6 +2800,12 @@ function supersedeDecision(record: DecisionRecord, reason: string): void {
        AND tenant_id = ?
        AND status IN ('unread', 'read', 'failed', 'snoozed')
   `).run(JSON.stringify({ supersededReason: reason, supersededAt: DateTime.utc().toISO() }), record.itemId, record.userId, record.tenantId);
+  assertDecisionScopedUpdateApplied(decisionUpdate, 'supersede_decision', {
+    decisionId: record.itemId,
+    userId: record.userId,
+    tenantId: record.tenantId,
+    reason,
+  });
   if (record.decisionLogId) {
     getDb().prepare(`
       UPDATE notification_decision_logs

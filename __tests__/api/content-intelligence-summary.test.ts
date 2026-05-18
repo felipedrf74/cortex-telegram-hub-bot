@@ -112,18 +112,31 @@ function mockRes(): MockRes {
   return response;
 }
 
-function mockReq(userId: number, headers: Record<string, string> = {}): Request {
+function mockReq(
+  userId: number,
+  headers: Record<string, string> = {},
+  tenantIdOverride?: number | null | undefined,
+): Request {
   return {
     userId,
+    // 2026-05-18 follow-up QA P3-2: allow caller to override tenantId
+    // independently from userId so we can exercise the assertTenantScope
+    // catch path with a valid userId + invalid tenantId.
+    tenantId: tenantIdOverride === undefined ? userId : tenantIdOverride,
     header(name: string) {
       return headers[name.toLowerCase()] ?? headers[name] ?? undefined;
     },
   } as any;
 }
 
-async function dispatch(url: string, userId: number, headers: Record<string, string> = {}): Promise<MockRes> {
+async function dispatch(
+  url: string,
+  userId: number,
+  headers: Record<string, string> = {},
+  tenantIdOverride?: number | null | undefined,
+): Promise<MockRes> {
   const router = contentRoutes();
-  const request = mockReq(userId, headers);
+  const request = mockReq(userId, headers, tenantIdOverride);
   const parsed = new URL(url, 'http://test.local');
   (request as any).method = 'GET';
   (request as any).url = parsed.pathname + parsed.search;
@@ -303,5 +316,44 @@ describe('Content API — intelligence summary', () => {
         }),
       ]),
     );
+  });
+
+  // ─────────────────────────────────────────────────────────────────────
+  // QA regression pin (skill-hardening 2026-05-18 follow-up, P3-2):
+  // Pin the assertTenantScope catch path (valid userId + invalid tenantId)
+  // separately from the ensureValidContentRouteScope path (invalid userId).
+  // ─────────────────────────────────────────────────────────────────────
+
+  it('returns 401 (not 500) when assertTenantScope rejects valid-user + tenantId=0', async () => {
+    const response = await dispatch('/intelligence', 42, {}, 0);
+
+    expect(response.statusCode).toBe(401);
+    expect(response.body.ok).toBe(false);
+    expect(response.body.error.code).toBe('UNAUTHORIZED');
+    // See content-intelligence-detail.test.ts: tenantId=0 categorises as
+    // 'invalid_user_scope' per the current reason-derivation logic.
+    expect(getTenantScopeAnomalies()).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          layer: 'delivery',
+          operation: 'content_route_intelligence_summary',
+          userId: 42,
+        }),
+      ]),
+    );
+  });
+
+  it('returns 401 when assertTenantScope rejects valid-user + negative tenant', async () => {
+    const response = await dispatch('/intelligence', 42, {}, -7);
+
+    expect(response.statusCode).toBe(401);
+    expect(response.body.error.code).toBe('UNAUTHORIZED');
+  });
+
+  it('returns 401 when assertTenantScope rejects valid-user + undefined tenant', async () => {
+    const response = await dispatch('/intelligence', 42, {}, null);
+
+    expect(response.statusCode).toBe(401);
+    expect(response.body.error.code).toBe('UNAUTHORIZED');
   });
 });

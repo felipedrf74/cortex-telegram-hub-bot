@@ -77,7 +77,7 @@ const SECRETARY_SKILL: SkillDefinition = {
     classificationHint: {
       label: 'secretary',
       description: 'scheduling, calendar, appointments, to-do lists, reminders, email, time management, weekly planning, daily overview, operational follow-through for finance/content asks, invoices, general life coordination',
-      examples: ['what meetings do I have?', 'remind me to pay DARF tomorrow', 'schedule a filming block for Thursday'],
+      examples: ['what meetings do I have?', 'remind me to pay my tax estimate tomorrow', 'schedule a filming block for Thursday'],
     },
   },
   subSkills: [
@@ -378,7 +378,7 @@ const CONTENT_SKILL: SkillDefinition = {
 
 const FINANCE_SKILL: SkillDefinition = {
   name: 'finance',
-  description: 'Personal finance — expense tracking, DARF/Carnê-Leão tax calculation',
+  description: 'Personal finance — expense tracking, Portugal IRS / IVA tax estimates',
   version: '1.0.0',
   routing: {
     patternRoutes: [
@@ -387,8 +387,8 @@ const FINANCE_SKILL: SkillDefinition = {
     keywordRoute: /\b(despesas?|gastos?|or[çc]amento|imposto|carn[eê]-le[aã]o|DARF|receita\s+federal|nota\s+fiscal|budget|expenses?|tax(?:es)?|income\s+tax|financial|freelancer?\s+tax|dedu[çc][aã]o|faturamento|NF(?:-?e)?)\b/i,
     classificationHint: {
       label: 'finance',
-      description: 'expenses, budgets, income tax, DARF, Carnê-Leão, freelancer taxes, receipts, financial planning, deductions',
-      examples: ['log an expense of R$50', 'calculate my tax this month', 'show my budget'],
+      description: 'expenses, budgets, Portugal income tax, IVA, withholding, freelancer taxes, receipts, financial planning, deductions',
+      examples: ['log an expense of €50', 'calculate my tax this month', 'show my budget'],
     },
   },
   subSkills: [
@@ -400,7 +400,7 @@ const FINANCE_SKILL: SkillDefinition = {
     },
     {
       name: 'tax',
-      description: 'DARF/Carnê-Leão tax calculation and annual summary',
+      description: 'Portugal IRS / IVA tax estimates and annual summary',
       enabledByDefault: true,
       tools: ['finance_calculate_tax', 'finance_get_tax_events', 'finance_mark_tax_paid', 'finance_annual_summary'],
     },

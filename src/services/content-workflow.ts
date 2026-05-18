@@ -1,6 +1,6 @@
 // Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
 
-import Anthropic from '@anthropic-ai/sdk';
+import type Anthropic from '@anthropic-ai/sdk';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
@@ -27,8 +27,9 @@ import {
   contentScopePredicate,
   ensureContentTenantScopeColumns,
 } from './content-tenant-scope';
+import { createLazyAnthropicClient } from './anthropic-lazy-client';
 
-const client = new Anthropic({ apiKey: config.anthropic.apiKey });
+const client = createLazyAnthropicClient();
 
 const IDEAS_DIR = path.join(os.homedir(), 'Desktop', 'IDEAS');
 
@@ -306,7 +307,7 @@ export async function generateTopicCandidates(
     // Anthropic fallback — preserves the existing pause_turn handling for
     // trending mode (web search calls can pause and need a continuation).
     async () => {
-      const response = await trackedCreate(client, {
+      const response = await trackedCreate(client.get(), {
         model: config.anthropic.classifierModel, // Haiku
         max_tokens: 4096,
         system: cachedSystem,
@@ -317,7 +318,7 @@ export async function generateTopicCandidates(
       let finalResponse = response;
       if (response.stop_reason === 'pause_turn') {
         logger.info({ format }, 'Content workflow topic generation paused, continuing...');
-        finalResponse = await trackedCreate(client, {
+        finalResponse = await trackedCreate(client.get(), {
           model: config.anthropic.classifierModel,
           max_tokens: 4096,
           system: cachedSystem,

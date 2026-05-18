@@ -51,10 +51,10 @@ export function cookingScopeForInsert(
 export function cookingPrivateScopePredicate(alias?: string): string {
   const c = (name: string) => alias ? `${alias}.${name}` : name;
   return `(
-    COALESCE(${c('scope_status')}, 'active') = 'active'
-    AND COALESCE(${c('visibility_scope')}, 'user_private') = 'user_private'
-    AND COALESCE(${c('tenant_id')}, ${c('user_id')}) = ?
-    AND COALESCE(${c('owner_user_id')}, ${c('user_id')}) = ?
+    ${c('scope_status')} = 'active'
+    AND ${c('visibility_scope')} = 'user_private'
+    AND ${c('tenant_id')} = ?
+    AND ${c('owner_user_id')} = ?
   )`;
 }
 

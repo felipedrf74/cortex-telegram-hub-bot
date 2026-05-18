@@ -36,6 +36,7 @@ import {
   resolveTrainingCalendarSource,
   withTrainingCalendarSourcePreference,
 } from '../../services/training-calendar-source';
+import { requireTenantIdParam } from '../../services/tenant-scope';
 
 export type TrainingPlanCalendarSyncResult =
   | {
@@ -301,8 +302,9 @@ export async function previewTrainingSessionReflow(
   userId: number,
   sessionId: number,
   requestedCalendarSource?: CalendarSource | null,
-  tenantId = userId,
+  tenantId?: number,
 ): Promise<TrainingSessionReflowPreviewResult> {
+  const validatedTenantId = requireTenantIdParam(tenantId, 'previewTrainingSessionReflow');
   const scope = resolveOwnedSessionScope(userId, sessionId);
   if (scope === 'forbidden') {
     return { status: 'forbidden', data: { message: 'This training session does not belong to the current user.', sessionId } };
@@ -311,7 +313,7 @@ export async function previewTrainingSessionReflow(
     return { status: 'not_found', data: { message: 'Training session not found.', sessionId } };
   }
 
-  const effectiveTenantId = tenantIdForTrainingPlan(scope.plan, tenantId);
+  const effectiveTenantId = tenantIdForTrainingPlan(scope.plan, validatedTenantId);
   const calendarSource = resolveTrainingCalendarSource({
     userId,
     tenantId: effectiveTenantId,
@@ -434,7 +436,8 @@ export async function confirmTrainingSessionReflow(input: {
   requestedCalendarSource?: CalendarSource | null;
   signal?: AbortSignal;
 }): Promise<TrainingSessionReflowConfirmResult> {
-  const preview = await previewTrainingSessionReflow(input.userId, input.sessionId, input.requestedCalendarSource, input.tenantId ?? input.userId);
+  const validatedTenantId = requireTenantIdParam(input.tenantId, 'confirmTrainingSessionReflow');
+  const preview = await previewTrainingSessionReflow(input.userId, input.sessionId, input.requestedCalendarSource, validatedTenantId);
   if (preview.status !== 'preview') return preview;
 
   const proposedStart = new Date(input.proposedStartAt || preview.data.proposed.start);
@@ -454,7 +457,7 @@ export async function confirmTrainingSessionReflow(input: {
   const scope = resolveOwnedSessionScope(input.userId, input.sessionId);
   if (scope === 'forbidden') return { status: 'forbidden', data: { message: 'This training session does not belong to the current user.', sessionId: input.sessionId } };
   if (!scope) return { status: 'not_found', data: { message: 'Training session not found.', sessionId: input.sessionId } };
-  const effectiveTenantId = tenantIdForTrainingPlan(scope.plan, input.tenantId ?? input.userId);
+  const effectiveTenantId = tenantIdForTrainingPlan(scope.plan, validatedTenantId);
 
   const eventPayload = {
     title: `${emojiForTrainingSession(scope.session.session_type)} ${scope.session.title || 'Training session'} (${scope.session.duration_minutes || 60}min)`,
@@ -576,9 +579,10 @@ export async function syncTrainingPlanCalendar(
   userId: number,
   now: Date = new Date(),
   requestedCalendarSource?: CalendarSource | null,
-  tenantId = userId,
+  tenantId?: number,
 ): Promise<TrainingPlanCalendarSyncResult> {
-  const plan = trainingPlans.getActivePlan(userId);
+  const validatedTenantId = requireTenantIdParam(tenantId, 'syncTrainingPlanCalendar');
+  const plan = trainingPlans.getActivePlan(userId, validatedTenantId);
   if (!plan) {
     return {
       status: 'no_active_plan',
@@ -594,7 +598,7 @@ export async function syncTrainingPlanCalendar(
   const preferences = readPlanPreferences(plan);
   const planStart = new Date(plan.start_date);
   const planVersion = getPlanVersion(plan.id) ?? 1;
-  const effectiveTenantId = tenantIdForTrainingPlan(plan, tenantId);
+  const effectiveTenantId = tenantIdForTrainingPlan(plan, validatedTenantId);
 
   // Walk every week / session up front so we can skip past or finished
   // sessions, then verify existing calendar links against the provider.

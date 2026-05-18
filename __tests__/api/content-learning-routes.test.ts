@@ -92,6 +92,10 @@ function mockReq(
 ): Request {
   return {
     userId,
+    // 2026-05-18 (skill-hardening QA P1 follow-up): mirror iosAuthMiddleware
+    // setting tenantId alongside userId. Routes no longer have the
+    // `tenantId = userId` destructuring default.
+    tenantId: userId,
     method,
     url: path,
     originalUrl: path,

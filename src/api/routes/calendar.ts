@@ -55,8 +55,8 @@ const RANGE_SWR_STALE = 300;
 // Phase 17 hostile-QA fix (2026-05-18): in-flight idempotency for
 // POST /focus-blocks to stop duplicate writes from rapid double-taps.
 const focusBlockInFlight = new Set<string>();
-function focusBlockIdempotencyKey(userId: number, tenantId: number | undefined, startIso: string, mode: string): string {
-  return `${userId}:${tenantId ?? userId}:${startIso}:${mode}`;
+function focusBlockIdempotencyKey(userId: number, tenantId: number, startIso: string, mode: string): string {
+  return `${userId}:${tenantId}:${startIso}:${mode}`;
 }
 
 export function calendarRoutes(): Router {

@@ -163,7 +163,7 @@ export async function syncSecretaryAgendaItemToProvider(
   }
 
   if (!agendaItem.startAt || !agendaItem.endAt) {
-    updateProviderMapping(agendaItem.agendaItemId, {
+    updateProviderMapping(agendaItem, {
       providerSyncState: 'create_failed',
     });
     return {
@@ -244,7 +244,7 @@ async function upsertProviderEvent(
       const current = await readProviderEvent(agendaItem, adapter, input);
       if (current) {
         const updated = await adapter.updateEvent(agendaItem.providerEventId, input);
-        updateProviderMapping(agendaItem.agendaItemId, {
+        updateProviderMapping(agendaItem, {
           providerEventId: updated.eventId,
           providerSource: updated.source,
           providerSyncState: 'synced',
@@ -254,7 +254,7 @@ async function upsertProviderEvent(
 
       if (canonical) {
         const updated = await adapter.updateEvent(canonical.eventId, input);
-        updateProviderMapping(agendaItem.agendaItemId, {
+        updateProviderMapping(agendaItem, {
           providerEventId: updated.eventId,
           providerSource: updated.source,
           providerSyncState: 'synced',
@@ -263,7 +263,7 @@ async function upsertProviderEvent(
       }
 
       const recreated = await adapter.createEvent(input);
-      updateProviderMapping(agendaItem.agendaItemId, {
+      updateProviderMapping(agendaItem, {
         providerEventId: recreated.eventId,
         providerSource: recreated.source,
         providerSyncState: 'synced',
@@ -273,7 +273,7 @@ async function upsertProviderEvent(
 
     if (canonical) {
       const updated = await adapter.updateEvent(canonical.eventId, input);
-      updateProviderMapping(agendaItem.agendaItemId, {
+      updateProviderMapping(agendaItem, {
         providerEventId: updated.eventId,
         providerSource: updated.source,
         providerSyncState: 'synced',
@@ -282,7 +282,7 @@ async function upsertProviderEvent(
     }
 
     const created = await adapter.createEvent(input);
-    updateProviderMapping(agendaItem.agendaItemId, {
+    updateProviderMapping(agendaItem, {
       providerEventId: created.eventId,
       providerSource: created.source,
       providerSyncState: 'synced',
@@ -292,7 +292,7 @@ async function upsertProviderEvent(
     const providerSyncState: SecretaryProviderSyncState = agendaItem.providerEventId || canonical
       ? 'update_failed'
       : 'create_failed';
-    updateProviderMapping(agendaItem.agendaItemId, { providerSyncState });
+    updateProviderMapping(agendaItem, { providerSyncState });
     logger.warn({
       err: error instanceof Error ? error.message : String(error),
       agendaItemId: agendaItem.agendaItemId,
@@ -323,12 +323,12 @@ async function cleanupProviderEvent(
       await adapter.deleteEvent(eventId, input);
       if (eventId !== agendaItem.providerEventId) deletedDuplicateEventIds.push(eventId);
     }
-    updateProviderMapping(agendaItem.agendaItemId, {
+    updateProviderMapping(agendaItem, {
       providerSyncState: 'deleted',
     });
     return result(agendaItem, idsToDelete.length > 0 ? 'deleted' : 'skipped', agendaItem.providerEventId, adapter.source, 'deleted', deletedDuplicateEventIds, idsToDelete.length > 0 ? 'provider_event_deleted' : 'no_provider_event_to_delete');
   } catch (error) {
-    updateProviderMapping(agendaItem.agendaItemId, { providerSyncState: 'delete_failed' });
+    updateProviderMapping(agendaItem, { providerSyncState: 'delete_failed' });
     logger.warn({
       err: error instanceof Error ? error.message : String(error),
       agendaItemId: agendaItem.agendaItemId,
@@ -414,7 +414,7 @@ function toProviderEventInput(agendaItem: SecretaryAgendaItem): SecretaryProvide
 }
 
 function updateProviderMapping(
-  agendaItemId: string,
+  agendaItem: Pick<SecretaryAgendaItem, 'agendaItemId' | 'ownerUserId' | 'tenantId'>,
   patch: {
     providerEventId?: string | null;
     providerSource?: SecretaryCalendarProviderSource | null;
@@ -428,7 +428,7 @@ function updateProviderMapping(
       : FAILED_PROVIDER_SYNC_STATES.has(patch.providerSyncState)
         ? 'failed_sync'
         : null);
-  getDb().prepare(`
+  const result = getDb().prepare(`
     UPDATE secretary_agenda_items
     SET provider_event_id = COALESCE(?, provider_event_id),
         provider_source = COALESCE(?, provider_source),
@@ -436,14 +436,21 @@ function updateProviderMapping(
         lifecycle_state = COALESCE(?, lifecycle_state),
         updated_at = ?
     WHERE agenda_item_id = ?
+      AND owner_user_id = ?
+      AND tenant_id = ?
   `).run(
     patch.providerEventId ?? null,
     patch.providerSource ?? null,
     patch.providerSyncState,
     lifecycleState,
     new Date().toISOString(),
-    agendaItemId,
+    agendaItem.agendaItemId,
+    agendaItem.ownerUserId,
+    String(agendaItem.tenantId),
   );
+  if (result.changes === 0) {
+    throw new Error(`SECRETARY_PROVIDER_MAPPING_UPDATE_MISSED: ${agendaItem.agendaItemId}`);
+  }
 }
 
 function result(

@@ -8,10 +8,16 @@ export type TenantScopeAnomalyLayer =
   | 'shared_decision_context'
   | 'mesh_context'
   | 'orchestration'
-  | 'delivery';
+  | 'delivery'
+  // 2026-05-18 (skill-hardening QA): service-layer anomaly for functions
+  // that received an invalid/missing tenantId (e.g., `requireTenantIdParam`).
+  // Surfaces the bug at the service boundary even when the route layer
+  // forgot to assert scope.
+  | 'service';
 
 export type TenantScopeAnomalyReason =
   | 'missing_user_scope'
+  | 'missing_tenant_scope'
   | 'invalid_user_scope'
   | 'unexpected_user_scope'
   | 'tenant_mismatch';

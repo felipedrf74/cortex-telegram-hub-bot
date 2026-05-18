@@ -701,8 +701,8 @@ describe('Cooking API — shopping list item updates', () => {
       { name: 'Rice', quantity: '300', unit: 'g' },
     ], { tenantId: 101, prepTime: 40, cookTime: 40 });
     setMealPlan(user.id, '2026-05-04', 'dinner', 'Big dinner prep', { recipeId: recipe.id, tenantId: 101 });
-    addTransaction(user.id, '2026-05-01', 'income', 1000, { currency: 'EUR' });
-    addTransaction(user.id, '2026-05-02', 'groceries', 900, { currency: 'EUR' });
+    addTransaction(user.id, '2026-05-01', 'income', 1000, { currency: 'EUR', tenantId: 101 });
+    addTransaction(user.id, '2026-05-02', 'groceries', 900, { currency: 'EUR', tenantId: 101 });
     const decision = submitSecretarySchedulingIntent({
       intentId: `secretary:busy:test:${user.id}:101`,
       sourceSkill: 'secretary',

@@ -91,6 +91,7 @@ import { getSharedMemorySummary } from '../../src/state/shared-memory';
 import { executeToolCall } from '../../src/services/tool-executor';
 import { now } from '../../src/utils/date-parser';
 import { callDomain, continueWithToolResults } from '../../src/services/anthropic';
+import { setCookingPreferenceMemory } from '../../src/services/cooking-preferences';
 
 // Use the provider-routed mocks (domain-handler now calls getActiveProvider().callDomain)
 const mockCallDomain = mockCallDomainFn;
@@ -275,6 +276,19 @@ describe('buildSimpleStateContext', () => {
 
     const ctx = await buildSimpleStateContext('triathlon', 42);
     expect(ctx).toContain('[Shared] A-race: Ironman');
+  });
+
+  it('injects Cooking safety preferences into the cooking prompt context', async () => {
+    ensureUser(88);
+    setCookingPreferenceMemory(88, { kind: 'allergy', value: 'marisco' }, 88);
+    setCookingPreferenceMemory(88, { kind: 'dietary_restriction', value: 'vegetariano' }, 88);
+
+    const ctx = await buildSimpleStateContext('cooking', 88, 'planeia jantar', 88);
+
+    expect(ctx).toContain('<cooking_safety_preferences>');
+    expect(ctx).toContain('Allergies: marisco');
+    expect(ctx).toContain('Restrictions: vegetariano');
+    expect(ctx).toContain('Treat these as hard constraints');
   });
 });
 

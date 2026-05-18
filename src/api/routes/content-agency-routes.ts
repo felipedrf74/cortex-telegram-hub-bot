@@ -20,6 +20,7 @@ import {
   validateContentAgencyRuleCoverage,
   validateContentAgencyRuntimeRuleCoverage,
 } from '../../services/content-agency-rules';
+import { assertTenantScope, requireMutationScope, TenantScopeError } from '../../services/tenant-scope';
 
 interface ContentAgencyResponseContract {
   tenantId: number | null;
@@ -44,6 +45,25 @@ type EnsureValidContentRouteScope = (
   operation: string,
   details?: Record<string, unknown>,
 ) => userId is number;
+
+function routeContentAgencyTenantId(
+  req: AuthenticatedRequest,
+  res: Response,
+  operation: string,
+  mutationTable?: string,
+): number | null {
+  try {
+    return (mutationTable
+      ? requireMutationScope(req, mutationTable, operation)
+      : assertTenantScope(req, operation)).tenantId;
+  } catch (err) {
+    if (err instanceof TenantScopeError) {
+      sendError(res, err.code, err.message, err.status);
+      return null;
+    }
+    throw err;
+  }
+}
 
 function toStringArray(value: unknown): string[] {
   return Array.isArray(value)
@@ -113,14 +133,17 @@ export function registerContentAgencyRoutes(
   }));
 
   router.post('/agency/brief', asyncHandler(async (req, res: Response) => {
-    const { userId, tenantId } = req as unknown as AuthenticatedRequest;
+    const authReq = req as unknown as AuthenticatedRequest;
+    const { userId } = authReq;
     if (!ensureValidContentRouteScope(res, userId, 'content_agency_brief_create')) return;
+    const tenantId = routeContentAgencyTenantId(authReq, res, 'content_agency_brief_create', 'content_agency_artifacts');
+    if (tenantId == null) return;
 
     try {
       const brief = buildContentAgencyBrief({
         ...(req.body && typeof req.body === 'object' ? req.body : {}),
         userId,
-        tenantId: tenantId ?? userId,
+        tenantId,
       });
       persistContentAgencyArtifact('brief', brief);
       sendSuccess(res, { brief, contract: buildResponseContract(brief) }, { status: 201 });
@@ -131,18 +154,21 @@ export function registerContentAgencyRoutes(
   }));
 
   router.post('/agency/competitor-study', asyncHandler(async (req, res: Response) => {
-    const { userId, tenantId } = req as unknown as AuthenticatedRequest;
+    const authReq = req as unknown as AuthenticatedRequest;
+    const { userId } = authReq;
     if (!ensureValidContentRouteScope(res, userId, 'content_agency_competitor_study')) return;
+    const tenantId = routeContentAgencyTenantId(authReq, res, 'content_agency_competitor_study', 'content_agency_artifacts');
+    if (tenantId == null) return;
 
     try {
       const fallbackBrief = buildContentAgencyBrief({
         ...(req.body?.brief && typeof req.body.brief === 'object' ? req.body.brief : {}),
         userId,
-        tenantId: tenantId ?? userId,
+        tenantId,
       });
       const study = buildContentAgencyCompetitorStudy({
         userId,
-        tenantId: tenantId ?? userId,
+        tenantId,
         brief: req.body?.brief ?? fallbackBrief,
         competitors: Array.isArray(req.body?.competitors) ? req.body.competitors : [],
       });
@@ -155,18 +181,21 @@ export function registerContentAgencyRoutes(
   }));
 
   router.post('/agency/transcript-study', asyncHandler(async (req, res: Response) => {
-    const { userId, tenantId } = req as unknown as AuthenticatedRequest;
+    const authReq = req as unknown as AuthenticatedRequest;
+    const { userId } = authReq;
     if (!ensureValidContentRouteScope(res, userId, 'content_agency_transcript_study')) return;
+    const tenantId = routeContentAgencyTenantId(authReq, res, 'content_agency_transcript_study', 'content_agency_artifacts');
+    if (tenantId == null) return;
 
     try {
       const fallbackBrief = buildContentAgencyBrief({
         ...(req.body?.brief && typeof req.body.brief === 'object' ? req.body.brief : {}),
         userId,
-        tenantId: tenantId ?? userId,
+        tenantId,
       });
       const study = buildContentAgencyTranscriptStudy({
         userId,
-        tenantId: tenantId ?? userId,
+        tenantId,
         transcript: typeof req.body?.transcript === 'string' ? req.body.transcript : '',
         title: typeof req.body?.title === 'string' ? req.body.title : null,
       });
@@ -179,20 +208,23 @@ export function registerContentAgencyRoutes(
   }));
 
   router.post('/agency/package', asyncHandler(async (req, res: Response) => {
-    const { userId, tenantId } = req as unknown as AuthenticatedRequest;
+    const authReq = req as unknown as AuthenticatedRequest;
+    const { userId } = authReq;
     if (!ensureValidContentRouteScope(res, userId, 'content_agency_package_create')) return;
+    const tenantId = routeContentAgencyTenantId(authReq, res, 'content_agency_package_create', 'content_agency_artifacts');
+    if (tenantId == null) return;
 
     try {
       const pkg = buildContentAgencyPackage({
         ...(req.body && typeof req.body === 'object' ? req.body : {}),
         userId,
-        tenantId: tenantId ?? userId,
+        tenantId,
       });
       persistContentAgencyArtifact('package', pkg);
       persistContentAgencyArtifact('compliance_review', {
         id: `${pkg.id}_compliance`,
         userId,
-        tenantId: tenantId ?? userId,
+        tenantId,
         visibilityScope: pkg.visibilityScope,
         platform: pkg.platform,
         format: pkg.format,
@@ -205,7 +237,7 @@ export function registerContentAgencyRoutes(
       persistContentAgencyArtifact('experiment_run', {
         id: `${pkg.id}_experiment`,
         userId,
-        tenantId: tenantId ?? userId,
+        tenantId,
         visibilityScope: pkg.visibilityScope,
         platform: pkg.platform,
         format: pkg.format,
@@ -218,7 +250,7 @@ export function registerContentAgencyRoutes(
       persistContentAgencyArtifact('quality_review', {
         id: `${pkg.id}_quality`,
         userId,
-        tenantId: tenantId ?? userId,
+        tenantId,
         visibilityScope: pkg.visibilityScope,
         platform: pkg.platform,
         format: pkg.format,
@@ -235,8 +267,11 @@ export function registerContentAgencyRoutes(
   }));
 
   router.post('/agency/score', asyncHandler(async (req, res: Response) => {
-    const { userId, tenantId } = req as unknown as AuthenticatedRequest;
+    const authReq = req as unknown as AuthenticatedRequest;
+    const { userId } = authReq;
     if (!ensureValidContentRouteScope(res, userId, 'content_agency_score')) return;
+    const tenantId = routeContentAgencyTenantId(authReq, res, 'content_agency_score', 'content_agency_artifacts');
+    if (tenantId == null) return;
 
     try {
       const pkg = req.body?.package;
@@ -257,7 +292,7 @@ export function registerContentAgencyRoutes(
       persistContentAgencyArtifact('quality_review', {
         id: `${pkg.id ?? 'package'}_quality_rescore`,
         userId,
-        tenantId: tenantId ?? userId,
+        tenantId,
         visibilityScope: pkg.visibilityScope ?? 'user_private',
         platform: pkg.platform,
         format: pkg.format,
@@ -274,13 +309,16 @@ export function registerContentAgencyRoutes(
   }));
 
   router.get('/agency/projects/:id', asyncHandler(async (req, res: Response) => {
-    const { userId, tenantId } = req as unknown as AuthenticatedRequest;
+    const authReq = req as unknown as AuthenticatedRequest;
+    const { userId } = authReq;
     const projectId = req.params.id;
     if (!ensureValidContentRouteScope(res, userId, 'content_agency_project_get', { projectId })) return;
+    const tenantId = routeContentAgencyTenantId(authReq, res, 'content_agency_project_get');
+    if (tenantId == null) return;
 
     const project = getContentAgencyProject({
       userId,
-      tenantId: tenantId ?? userId,
+      tenantId,
       id: projectId,
     });
     if (!project) {
@@ -291,21 +329,24 @@ export function registerContentAgencyRoutes(
   }));
 
   router.post('/agency/projects/:id/handoff', asyncHandler(async (req, res: Response) => {
-    const { userId, tenantId } = req as unknown as AuthenticatedRequest;
+    const authReq = req as unknown as AuthenticatedRequest;
+    const { userId } = authReq;
     const projectId = req.params.id;
     if (!ensureValidContentRouteScope(res, userId, 'content_agency_pipeline_handoff', { projectId })) return;
+    const tenantId = routeContentAgencyTenantId(authReq, res, 'content_agency_pipeline_handoff', 'content_pipeline');
+    if (tenantId == null) return;
 
     try {
       const result = handoffContentAgencyPackageToPipeline({
         userId,
-        tenantId: tenantId ?? userId,
+        tenantId,
         packageId: projectId,
       });
       if (result.status === 'not_found') {
         sendError(res, 'NOT_FOUND', 'Content agency package not found', 404, {
           handoff: result,
           contract: buildResponseContract(result, {
-            tenantId: tenantId ?? userId,
+            tenantId,
             userId,
             blockers: result.blockers,
             warnings: result.warnings,
@@ -320,7 +361,7 @@ export function registerContentAgencyRoutes(
         sendError(res, 'CONTENT_AGENCY_HANDOFF_BLOCKED', 'Resolve blockers before moving this package to the pipeline.', 409, {
           handoff: result,
           contract: buildResponseContract(result, {
-            tenantId: tenantId ?? userId,
+            tenantId,
             userId,
             blockers: result.blockers,
             warnings: result.warnings,
@@ -334,7 +375,7 @@ export function registerContentAgencyRoutes(
       sendSuccess(res, {
         handoff: result,
         contract: buildResponseContract(result, {
-          tenantId: tenantId ?? userId,
+          tenantId,
           userId,
           visibilityScope: 'user_private',
           warnings: result.warnings,

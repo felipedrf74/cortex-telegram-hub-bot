@@ -423,7 +423,7 @@ export const TOOLS: Anthropic.Tool[] = [
       date: { type: 'string', description: 'ISO date YYYY-MM-DD' },
       category: { type: 'string', enum: ['income', 'expense', 'deduction'], description: 'Transaction type' },
       amount: { type: 'number', description: 'Amount in the original currency (always positive). Do not convert unless the user asks.' },
-      currency: { type: 'string', description: 'ISO currency code like BRL, EUR, or USD. Preserve the user-stated currency; default to BRL only if unspecified.' },
+      currency: { type: 'string', description: 'ISO currency code like EUR, USD, or BRL. Preserve the user-stated currency; default to EUR only if unspecified.' },
       subcategory: { type: 'string', description: 'e.g. freelance, rent, software, health, education' },
       description: { type: 'string', description: 'Brief description of the transaction' },
     }, required: ['date', 'category', 'amount'] },
@@ -450,7 +450,7 @@ export const TOOLS: Anthropic.Tool[] = [
     }, required: ['month'] },
   },
   {
-    name: 'finance_calculate_tax', description: 'Calculate Carnê-Leão / DARF tax for a month using IRPF progressive table',
+    name: 'finance_calculate_tax', description: 'Calculate a Portugal IRS / IVA monthly tax estimate using the current Portuguese ruleset',
     input_schema: { type: 'object' as const, properties: {
       month: { type: 'string', description: 'Month in YYYY-MM format. Uses stored transactions for income/deductions.' },
     }, required: ['month'] },
@@ -463,13 +463,13 @@ export const TOOLS: Anthropic.Tool[] = [
     } },
   },
   {
-    name: 'finance_mark_tax_paid', description: 'Mark a monthly DARF as paid',
+    name: 'finance_mark_tax_paid', description: 'Mark a monthly Portugal tax estimate as paid',
     input_schema: { type: 'object' as const, properties: {
       month: { type: 'string', description: 'Month in YYYY-MM format' },
     }, required: ['month'] },
   },
   {
-    name: 'finance_annual_summary', description: 'Get annual tax summary for IRPF declaration — totals for income, INSS, deductions, tax, payment status',
+    name: 'finance_annual_summary', description: 'Get annual Portugal tax summary — totals for income, deductions, IRS estimate, IVA estimate, withholding estimate, and payment status',
     input_schema: { type: 'object' as const, properties: {
       year: { type: 'number', description: 'Year (e.g. 2024)' },
     }, required: ['year'] },

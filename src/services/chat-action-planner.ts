@@ -3482,7 +3482,7 @@ function executeFinanceSummaryStep(
 ): { step: ChatPlanStep; status: ChatActionRunStatus; result?: unknown; error?: string } {
   const month = String((step.args as any).month || DateTime.now().setZone(input.timezone).toFormat('yyyy-MM'));
   try {
-    const summary = getMonthlySummary(input.userId, month);
+    const summary = getMonthlySummary(input.userId, month, { tenantId: input.tenantId });
     const currency = getPreferredCurrencyForUser(input.userId);
     return { step, status: 'verified_success', result: { month, summary, currency } };
   } catch {
@@ -3536,6 +3536,7 @@ function executeFinanceCategorizeReceiptStep(
   try {
     const updated = updateTransactionCategory(input.userId, transactionId, category, {
       subcategory: typeof args.subcategory === 'string' ? args.subcategory : null,
+      tenantId: input.tenantId,
     });
     if (!updated) {
       if (claim) updateChatActionRun(claim.row.id, 'blocked', { error: { reason: 'finance_transaction_not_found_or_unauthorized' } });
@@ -3575,13 +3576,13 @@ function executeFinancePaymentActionStep(
   const duplicate = replayDuplicateClaimedActionRun(claim, step);
   if (duplicate) return duplicate;
   try {
-    const ok = markTaxPaid(input.userId, month);
+    const ok = markTaxPaid(input.userId, month, { tenantId: input.tenantId });
     if (!ok) {
       if (claim) updateChatActionRun(claim.row.id, 'blocked', { error: { reason: 'finance_tax_event_not_found_or_unauthorized' } });
       return { step, status: 'blocked', error: 'finance_tax_event_not_found_or_unauthorized' };
     }
     const year = Number(month.slice(0, 4));
-    const readBack = getTaxEvents(input.userId, { year, limit: 24 }).find((event) => event.month === month);
+    const readBack = getTaxEvents(input.userId, { year, limit: 24, tenantId: input.tenantId }).find((event) => event.month === month);
     const verified = readBack?.status === 'paid';
     const result = { month, status: readBack?.status ?? null, verified };
     const status: ChatActionRunStatus = verified ? 'verified_success' : 'partial_success';
@@ -3735,7 +3736,7 @@ async function executeTrainingReflowStep(
   }
   try {
     if (step.action === 'training_reflow_preview') {
-      const preview = await withProviderWriteTimeout(() => previewTrainingSessionReflow(input.userId, sessionId, source));
+      const preview = await withProviderWriteTimeout(() => previewTrainingSessionReflow(input.userId, sessionId, source, input.tenantId));
       const verified = preview.status === 'preview';
       const status: ChatActionRunStatus = verified ? 'verified_success' : preview.status === 'blocked' || preview.status === 'forbidden' || preview.status === 'no_calendar' ? 'blocked' : 'failed';
       if (!updateClaimedActionRun(claim, status, {
@@ -3750,6 +3751,7 @@ async function executeTrainingReflowStep(
     }
     const confirmedReflow = await withProviderWriteTimeout((signal) => confirmTrainingSessionReflow({
       userId: input.userId,
+      tenantId: input.tenantId,
       sessionId,
       proposedStartAt: typeof args.proposedStartAt === 'string' ? args.proposedStartAt : typeof args.startDateTime === 'string' ? args.startDateTime : null,
       proposedEndAt: typeof args.proposedEndAt === 'string' ? args.proposedEndAt : typeof args.endDateTime === 'string' ? args.endDateTime : null,

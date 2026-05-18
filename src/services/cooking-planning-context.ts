@@ -56,7 +56,7 @@ export function buildCookingFinanceBudgetContext(input: DateRangeInput): Cooking
   const affordability = new Set<string>();
 
   for (const month of monthKeys) {
-    const view = getMonthlyBudgetView(input.userId, month);
+    const view = getMonthlyBudgetView(input.userId, month, { tenantId: input.tenantId });
     integrities.add(view.integrity);
     affordability.add(view.affordability);
     notes.push(...view.notes);

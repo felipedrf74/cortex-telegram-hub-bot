@@ -7,6 +7,7 @@ import { getCurrentRequestId, generateRequestId } from '../utils/request-context
 import { maybeSaveToFile, saveContentAsDocx } from './content-file-saver';
 import type { AgentSignal } from './intelligence-bus';
 import { buildCurrentCreatorProfilePayload } from './content-engine-profile-payload';
+import { requireTenantIdParam } from './tenant-scope';
 
 export { maybeSaveToFile, saveContentAsDocx } from './content-file-saver';
 
@@ -263,6 +264,7 @@ async function engineFetch<T>(path: string, options?: RequestInit, timeoutMs = 3
       headers: {
         'Content-Type': 'application/json',
         'X-Request-Id': requestId,
+        'X-Internal-Secret': config.contentEngine.internalApiSecret,
         ...options?.headers,
       },
     });
@@ -474,6 +476,9 @@ export function buildScriptCacheKey(
   regenerationSeed?: string | null,
   tenantId?: number,
 ): string {
+  const tenantKey = tenantId == null && userId == null
+    ? 'global'
+    : String(requireTenantIdParam(tenantId, 'buildScriptCacheKey'));
   const parts = [
     'script-v7',
     topic.toLowerCase().trim(),
@@ -488,7 +493,7 @@ export function buildScriptCacheKey(
     `style:${normalizeScriptStyle(scriptStyle)}`,
     `ctx:${hashScriptContext(scriptContext)}`,
     `scope:${userId ?? 'global'}`,
-    `tenant:${tenantId ?? userId ?? 'global'}`,
+    `tenant:${tenantKey}`,
   ];
   const seedHash = hashRegenerationSeed(regenerationSeed);
   if (seedHash) parts.push(`regen:${seedHash}`);

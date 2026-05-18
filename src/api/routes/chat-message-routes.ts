@@ -359,7 +359,7 @@ export function registerChatMessageRoutes(
     res.setHeader('Expires', '0');
     res.setHeader('Vary', 'Authorization');
 
-    const { userId, tenantId = userId } = req as unknown as AuthenticatedRequest;
+    const { userId, tenantId } = req as unknown as AuthenticatedRequest;
     if (!ensureValidChatRouteScope(res, userId, tenantId, 'chat_pending_action_read')) {
       return;
     }
@@ -407,7 +407,7 @@ export function registerChatMessageRoutes(
    * accept the raw message text including the / prefix.
    */
   router.post('/message', async (req, res: Response) => {
-    const { userId, tenantId = userId } = req as AuthenticatedRequest;
+    const { userId, tenantId } = req as AuthenticatedRequest;
     const {
       normalizedText,
       normalizedTextLower,
@@ -1143,6 +1143,7 @@ export function registerChatMessageRoutes(
         route,
         normalizedText,
         userId,
+        tenantId,
         userLanguage: getUserLanguageById(userId),
         activeContext,
       });

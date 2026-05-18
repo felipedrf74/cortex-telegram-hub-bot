@@ -238,7 +238,7 @@ describe('training-plan-calendar-sync', () => {
       },
     ]);
 
-    const result = await previewTrainingSessionReflow(42, 100, 'outlook');
+    const result = await previewTrainingSessionReflow(42, 100, 'outlook', 42);
 
     expect(result.status).toBe('preview');
     if (result.status === 'preview') {
@@ -310,7 +310,7 @@ describe('training-plan-calendar-sync', () => {
   it('returns no_active_plan when the user has no plan', async () => {
     mocks.getActivePlan.mockReturnValue(null);
 
-    const result = await syncTrainingPlanCalendar(42, now);
+    const result = await syncTrainingPlanCalendar(42, now, undefined, 42);
 
     expect(result.status).toBe('no_active_plan');
     expect(mocks.createEvent).not.toHaveBeenCalled();
@@ -340,7 +340,7 @@ describe('training-plan-calendar-sync', () => {
       .mockResolvedValueOnce({ id: 'evt-mon', source: 'google' })
       .mockResolvedValueOnce({ id: 'evt-wed', source: 'google' });
 
-    const result = await syncTrainingPlanCalendar(42, now);
+    const result = await syncTrainingPlanCalendar(42, now, undefined, 42);
 
     expect(result.status).toBe('synced');
     if (result.status === 'synced') {
@@ -417,7 +417,7 @@ describe('training-plan-calendar-sync', () => {
     ]);
     mocks.createEvent.mockResolvedValueOnce({ id: 'evt-outlook', source: 'outlook' });
 
-    await syncTrainingPlanCalendar(42, now);
+    await syncTrainingPlanCalendar(42, now, undefined, 42);
 
     expect(mocks.createEvent).toHaveBeenCalledWith(
       expect.any(Object),
@@ -444,7 +444,7 @@ describe('training-plan-calendar-sync', () => {
     ]);
     mocks.createEvent.mockResolvedValueOnce({ id: 'evt-google', source: 'google' });
 
-    await syncTrainingPlanCalendar(42, now, 'google');
+    await syncTrainingPlanCalendar(42, now, 'google', 42);
 
     expect(mocks.createEvent).toHaveBeenCalledWith(
       expect.any(Object),
@@ -493,7 +493,7 @@ describe('training-plan-calendar-sync', () => {
     ]);
     mocks.createEvent.mockResolvedValueOnce({ id: 'evt-new-outlook', source: 'outlook' });
 
-    await syncTrainingPlanCalendar(42, now);
+    await syncTrainingPlanCalendar(42, now, undefined, 42);
 
     expect(mocks.createEvent).toHaveBeenCalledWith(
       expect.any(Object),
@@ -582,7 +582,7 @@ describe('training-plan-calendar-sync', () => {
       },
     }));
 
-    const result = await syncTrainingPlanCalendar(12, new Date('2026-05-01T00:00:00.000Z'));
+    const result = await syncTrainingPlanCalendar(12, new Date('2026-05-01T00:00:00.000Z'), undefined, 12);
 
     expect(result.status).toBe('synced');
     if (result.status === 'synced') {
@@ -655,7 +655,7 @@ describe('training-plan-calendar-sync', () => {
       noPersist: true,
     });
 
-    const result = await syncTrainingPlanCalendar(12, new Date('2026-05-01T00:00:00.000Z'));
+    const result = await syncTrainingPlanCalendar(12, new Date('2026-05-01T00:00:00.000Z'), undefined, 12);
 
     expect(result.status).toBe('synced');
     if (result.status === 'synced') {
@@ -697,7 +697,7 @@ describe('training-plan-calendar-sync', () => {
       })
       .mockResolvedValueOnce({ id: 'evt-retry', source: 'google' });
 
-    const result = await syncTrainingPlanCalendar(42, now);
+    const result = await syncTrainingPlanCalendar(42, now, undefined, 42);
 
     expect(result.status).toBe('synced');
     if (result.status === 'synced') {
@@ -732,7 +732,7 @@ describe('training-plan-calendar-sync', () => {
     ]);
     mocks.createEvent.mockResolvedValueOnce({ id: 'evt-new', source: 'google' });
 
-    const result = await syncTrainingPlanCalendar(42, now);
+    const result = await syncTrainingPlanCalendar(42, now, undefined, 42);
 
     expect(result.status).toBe('synced');
     if (result.status === 'synced') {
@@ -757,7 +757,7 @@ describe('training-plan-calendar-sync', () => {
     mocks.getEvents.mockResolvedValue([]);
     mocks.createEvent.mockResolvedValueOnce({ id: 'evt-repaired', source: 'google' });
 
-    const result = await syncTrainingPlanCalendar(42, now);
+    const result = await syncTrainingPlanCalendar(42, now, undefined, 42);
 
     expect(result.status).toBe('synced');
     if (result.status === 'synced') {
@@ -795,7 +795,7 @@ describe('training-plan-calendar-sync', () => {
     ]);
     mocks.createEvent.mockResolvedValueOnce({ id: 'evt-repaired-time', source: 'google' });
 
-    const result = await syncTrainingPlanCalendar(42, now);
+    const result = await syncTrainingPlanCalendar(42, now, undefined, 42);
 
     expect(result.status).toBe('synced');
     if (result.status === 'synced') {
@@ -841,7 +841,7 @@ describe('training-plan-calendar-sync', () => {
       },
     ]);
 
-    const result = await syncTrainingPlanCalendar(42, now);
+    const result = await syncTrainingPlanCalendar(42, now, undefined, 42);
 
     expect(result.status).toBe('synced');
     if (result.status === 'synced') {
@@ -884,7 +884,7 @@ describe('training-plan-calendar-sync', () => {
     ]);
     mocks.createEvent.mockResolvedValueOnce({ id: 'new-identity-run', source: 'google' });
 
-    const result = await syncTrainingPlanCalendar(42, now);
+    const result = await syncTrainingPlanCalendar(42, now, undefined, 42);
 
     expect(result.status).toBe('synced');
     if (result.status === 'synced') {
@@ -929,7 +929,7 @@ describe('training-plan-calendar-sync', () => {
       },
     ]);
 
-    const result = await syncTrainingPlanCalendar(42, now);
+    const result = await syncTrainingPlanCalendar(42, now, undefined, 42);
 
     expect(result.status).toBe('synced');
     if (result.status === 'synced') {
@@ -988,7 +988,7 @@ describe('training-plan-calendar-sync', () => {
       },
     ]);
 
-    const result = await syncTrainingPlanCalendar(42, now);
+    const result = await syncTrainingPlanCalendar(42, now, undefined, 42);
 
     expect(result.status).toBe('synced');
     if (result.status === 'synced') {
@@ -1031,7 +1031,7 @@ describe('training-plan-calendar-sync', () => {
       { id: 3302, day_of_week: 'Wednesday', session_type: 'run', title: 'Deferred Run', duration_minutes: 35, description: '', status: 'deferred', calendar_event_id: null },
     ]);
 
-    const result = await syncTrainingPlanCalendar(42, now);
+    const result = await syncTrainingPlanCalendar(42, now, undefined, 42);
 
     expect(result.status).toBe('synced');
     if (result.status === 'synced') {
@@ -1065,7 +1065,7 @@ describe('training-plan-calendar-sync', () => {
       },
     ]);
 
-    const result = await syncTrainingPlanCalendar(42, now);
+    const result = await syncTrainingPlanCalendar(42, now, undefined, 42);
 
     expect(result.status).toBe('synced');
     if (result.status === 'synced') {
@@ -1114,7 +1114,7 @@ describe('training-plan-calendar-sync', () => {
     ]);
     mocks.createEvent.mockResolvedValueOnce({ id: 'new-shape-lift', source: 'google' });
 
-    const result = await syncTrainingPlanCalendar(42, now);
+    const result = await syncTrainingPlanCalendar(42, now, undefined, 42);
 
     expect(result.status).toBe('synced');
     if (result.status === 'synced') {
@@ -1149,7 +1149,7 @@ describe('training-plan-calendar-sync', () => {
     mocks.isTrainingCalendarEventUnclaimed.mockReturnValue(false);
     mocks.createEvent.mockResolvedValueOnce({ id: 'evt-new-run', source: 'google' });
 
-    const result = await syncTrainingPlanCalendar(42, now);
+    const result = await syncTrainingPlanCalendar(42, now, undefined, 42);
 
     expect(result.status).toBe('synced');
     if (result.status === 'synced') {
@@ -1187,7 +1187,7 @@ describe('training-plan-calendar-sync', () => {
       ]);
     mocks.createEvent.mockResolvedValueOnce({ id: 'evt-fri', source: 'google' });
 
-    const result = await syncTrainingPlanCalendar(42, now);
+    const result = await syncTrainingPlanCalendar(42, now, undefined, 42);
 
     expect(result.status).toBe('synced');
     if (result.status === 'synced') {
@@ -1214,7 +1214,7 @@ describe('training-plan-calendar-sync', () => {
     ]);
     mocks.createEvent.mockRejectedValue(new Error('No calendar provider is connected'));
 
-    const result = await syncTrainingPlanCalendar(42, now);
+    const result = await syncTrainingPlanCalendar(42, now, undefined, 42);
 
     expect(result.status).toBe('no_calendar');
     if (result.status === 'no_calendar') {
@@ -1241,7 +1241,7 @@ describe('training-plan-calendar-sync', () => {
       .mockResolvedValueOnce({ id: 'evt-mon', source: 'google' })
       .mockRejectedValueOnce(new Error('rate-limited'));
 
-    const result = await syncTrainingPlanCalendar(42, now);
+    const result = await syncTrainingPlanCalendar(42, now, undefined, 42);
 
     expect(result.status).toBe('synced');
     if (result.status === 'synced') {
@@ -1265,7 +1265,7 @@ describe('training-plan-calendar-sync', () => {
     mocks.getEvents.mockRejectedValue(new Error('calendar listing unavailable'));
     mocks.createEvent.mockResolvedValueOnce({ id: 'evt', source: 'google' });
 
-    const result = await syncTrainingPlanCalendar(42, now);
+    const result = await syncTrainingPlanCalendar(42, now, undefined, 42);
 
     expect(result.status).toBe('synced');
     if (result.status === 'synced') {

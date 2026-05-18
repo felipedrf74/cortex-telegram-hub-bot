@@ -12,6 +12,7 @@ import { logger } from '../utils/logger';
 import { trackedCreate } from '../portal/anthropic-hook';
 import { completeVisionOneShotWithFallback } from './gemini-provider';
 import { sanitizeForPromptInterpolation } from '../utils/prompt-sanitizer';
+import { centsToNumber, parseUserAmount } from './money';
 
 const client = new Anthropic({
   apiKey: config.anthropic.apiKey,
@@ -202,8 +203,11 @@ export async function analyzeInvoiceImage(
     // suspicious based on item count, auto-correct when possible.
     if (parsed.totalAmount && parsed.itemsSum) {
       const parseAmount = (s: string): number => {
-        const cleaned = s.replace(/[€$R£\s]/g, '').replace(',', '.');
-        return parseFloat(cleaned) || 0;
+        try {
+          return centsToNumber(parseUserAmount(s, 'EUR'));
+        } catch {
+          return 0;
+        }
       };
       const total = parseAmount(parsed.totalAmount);
       const itemSum = parseAmount(parsed.itemsSum);
@@ -221,7 +225,13 @@ export async function analyzeInvoiceImage(
 
     // Suspicious: few items but very high total (e.g., 1 item at €438)
     if (parsed.itemCount != null && parsed.itemCount <= 3 && parsed.totalAmount) {
-      const total = parseFloat(parsed.totalAmount.replace(/[€$R£\s]/g, '').replace(',', '.')) || 0;
+      const total = (() => {
+        try {
+          return centsToNumber(parseUserAmount(parsed.totalAmount, 'EUR'));
+        } catch {
+          return 0;
+        }
+      })();
       if (total > 200) {
         parsed.confidence = Math.min(parsed.confidence, 0.6);
         if (!parsed.validationNote) {

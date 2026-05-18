@@ -17,6 +17,7 @@ import {
   resolveCookingTenantId,
 } from './cooking-tenant-scope';
 import { buildCookingPreferenceReadModel } from './cooking-preferences';
+import { matchesCookingAllergenText } from './cooking-allergen-vocabulary';
 
 // ── Types ──────────────────────────────────────────────────────────
 
@@ -65,6 +66,25 @@ export interface MealPlan {
   notes: string | null;
   created_at: string;
 }
+
+/**
+ * Surface-level warning attached to a meal-plan write. Hard rejections (allergy
+ * / dietary violations) still throw — `MealPlanIssue` carries the cases where
+ * the slot was persisted but the user should see a confirmation prompt before
+ * cooking. Plan §C9 (skill-hardening 2026-05-17) requires this for expired
+ * pantry items: the slot is saved, but iOS should render a "the pantry item
+ * you listed is expired — buy fresh?" interstitial.
+ */
+export interface MealPlanIssue {
+  code: 'pantry_expired';
+  ingredientName: string;
+  pantryItemId: number;
+  pantryFreshnessStatus: string;
+  pantryExpiresAt: string | null;
+  message: string;
+}
+
+export type MealPlanWriteResult = MealPlan & { issues?: MealPlanIssue[] };
 
 export interface ShoppingList {
   id: number;
@@ -393,7 +413,7 @@ export function setMealPlan(
   mealType: string,
   title: string,
   opts?: { recipeId?: number; notes?: string; tenantId?: number | null },
-): MealPlan {
+): MealPlanWriteResult {
   const db = getCookingDb();
   const scope = cookingScopeForInsert(userId, opts?.tenantId, 'user_private', 'planned');
   const linkedRecipe = opts?.recipeId ? getRecipeById(userId, opts.recipeId, opts?.tenantId) : null;
@@ -404,10 +424,36 @@ export function setMealPlan(
     title,
     opts?.notes,
   ]);
+
+  // C9 / skill-hardening 2026-05-17: surface expired-pantry warnings to the
+  // caller. The slot still gets persisted (the user explicitly asked to
+  // schedule it); the issue list lets iOS prompt for confirmation before
+  // cook-time. Allergy/dietary violations remain hard throws above.
+  const issues: MealPlanIssue[] = [];
+  if (linkedRecipe && Array.isArray(linkedRecipe.ingredients) && linkedRecipe.ingredients.length > 0) {
+    const pantryByName = new Map(
+      getPantryItems(userId, { tenantId: opts?.tenantId, includeExpired: true, limit: 250 })
+        .map((item) => [item.normalized_name, item] as const),
+    );
+    for (const ingredient of linkedRecipe.ingredients) {
+      if (!ingredient || typeof ingredient.name !== 'string') continue;
+      const pantryMatch = pantryByName.get(normalizePantryName(ingredient.name));
+      if (pantryMatch && pantryMatch.freshness_status === 'expired') {
+        issues.push({
+          code: 'pantry_expired',
+          ingredientName: ingredient.name,
+          pantryItemId: pantryMatch.id,
+          pantryFreshnessStatus: pantryMatch.freshness_status,
+          pantryExpiresAt: pantryMatch.expires_at,
+          message: `Pantry item "${pantryMatch.name}" is expired — verify before cooking or replace from shopping list.`,
+        });
+      }
+    }
+  }
   const existingScope = db.prepare(
-    'SELECT tenant_id FROM meal_plans WHERE user_id = ? AND date = ? AND meal_type = ?',
-  ).get(userId, date, mealType) as { tenant_id: number | null } | undefined;
-  if (existingScope && Number(existingScope.tenant_id ?? userId) !== scope.tenantId) {
+    'SELECT tenant_id FROM meal_plans WHERE tenant_id = ? AND user_id = ? AND date = ? AND meal_type = ?',
+  ).get(scope.tenantId, userId, date, mealType) as { tenant_id: number | null } | undefined;
+  if (existingScope && Number(existingScope.tenant_id) !== scope.tenantId) {
     throw new Error('COOKING_SCOPE_CONFLICT: meal plan slot belongs to a different tenant');
   }
   db.prepare(`
@@ -417,7 +463,7 @@ export function setMealPlan(
       date, meal_type, recipe_id, title, notes
     )
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    ON CONFLICT(user_id, date, meal_type) DO UPDATE SET
+    ON CONFLICT(tenant_id, user_id, date, meal_type) DO UPDATE SET
       tenant_id = excluded.tenant_id,
       owner_user_id = excluded.owner_user_id,
       visibility_scope = excluded.visibility_scope,
@@ -445,9 +491,11 @@ export function setMealPlan(
     opts?.notes ?? null,
   );
 
-  return db.prepare(
+  const persisted = db.prepare(
     `SELECT * FROM meal_plans WHERE date = ? AND meal_type = ? AND ${cookingPrivateScopePredicate()}`,
   ).get(date, mealType, ...cookingScopeParams(userId, opts?.tenantId)) as MealPlan;
+
+  return issues.length > 0 ? { ...persisted, issues } : persisted;
 }
 
 export function getMealPlan(userId: number, startDate: string, endDate: string, tenantId?: number | null): MealPlan[] {
@@ -853,9 +901,9 @@ export function generateShoppingList(userId: number, weekStart: string, tenantId
 
   // Upsert shopping list
   const existingScope = db.prepare(
-    'SELECT tenant_id FROM shopping_lists WHERE user_id = ? AND week_start = ?',
-  ).get(userId, weekStart) as { tenant_id: number | null } | undefined;
-  if (existingScope && Number(existingScope.tenant_id ?? userId) !== scope.tenantId) {
+    'SELECT tenant_id FROM shopping_lists WHERE tenant_id = ? AND user_id = ? AND week_start = ?',
+  ).get(scope.tenantId, userId, weekStart) as { tenant_id: number | null } | undefined;
+  if (existingScope && Number(existingScope.tenant_id) !== scope.tenantId) {
     throw new Error('COOKING_SCOPE_CONFLICT: shopping list belongs to a different tenant');
   }
 
@@ -865,7 +913,7 @@ export function generateShoppingList(userId: number, weekStart: string, tenantId
       created_by, updated_by, audit_metadata_json, week_start, items
     )
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    ON CONFLICT(user_id, week_start) DO UPDATE SET
+    ON CONFLICT(tenant_id, user_id, week_start) DO UPDATE SET
       tenant_id = excluded.tenant_id,
       owner_user_id = excluded.owner_user_id,
       visibility_scope = excluded.visibility_scope,
@@ -1103,34 +1151,16 @@ function assertAllergySafeText(
   if (allergies.length === 0) return;
 
   const haystacks = values
-    .map((value) => normalizeAllergyText(value ?? ''))
+    .map((value) => String(value ?? '').trim())
     .filter(Boolean);
   const conflict = allergies
     .map((allergy) => String(allergy ?? '').trim())
     .filter(Boolean)
-    .find((allergy) => haystacks.some((haystack) => allergyMatchesText(allergy, haystack)));
+    .find((allergy) => haystacks.some((haystack) => matchesCookingAllergenText(allergy, haystack)));
 
   if (conflict) {
     throw new Error(`COOKING_SAFETY_BLOCKED: ${surface} contains allergy "${conflict}"`);
   }
-}
-
-function allergyMatchesText(allergy: string, normalizedHaystack: string): boolean {
-  const needles = replacementNeedles(normalizeAllergyText(allergy));
-  return needles.some((needle) => {
-    if (!needle) return false;
-    const escaped = needle.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    const boundary = new RegExp(`(^|[^a-z0-9])${escaped}([^a-z0-9]|$)`, 'i');
-    return boundary.test(normalizedHaystack);
-  });
-}
-
-function normalizeAllergyText(value: string): string {
-  return String(value ?? '')
-    .trim()
-    .toLowerCase()
-    .replace(/[_-]+/g, ' ')
-    .replace(/\s+/g, ' ');
 }
 
 function ingredientNameMatches(candidate: string, originalIngredient: string): boolean {

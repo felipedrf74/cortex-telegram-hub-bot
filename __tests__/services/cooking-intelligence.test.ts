@@ -93,6 +93,22 @@ describe('cooking intelligence assessment', () => {
     ]));
   });
 
+  it('blocks meals that conflict with Portuguese allergen clusters', () => {
+    const assessment = assessCookingMealPlan({
+      meals: [meal({ title: 'Arroz de camarão' })],
+      recipesById: new Map([[10, recipe({ ingredients: [{ name: 'Camarão', quantity: '200', unit: 'g' }] })]]),
+      preferences: { allergies: ['marisco'] },
+    });
+
+    expect(assessment.status).toBe('blocked');
+    expect(assessment.issues).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        code: 'ALLERGY_CONFLICT',
+        ingredient: 'Camarão',
+      }),
+    ]));
+  });
+
   it('suggests dietary-safe substitutions without violating the active restriction', () => {
     const assessment = assessCookingMealPlan({
       meals: [meal({ title: 'Chicken dinner' })],
@@ -112,6 +128,28 @@ describe('cooking intelligence assessment', () => {
       ]),
     }));
     expect(assessment.substitutionSuggestions.map((suggestion) => suggestion.suggestedIngredient)).not.toContain('turkey');
+  });
+
+  it('enforces Portuguese vegetarian and vegan restrictions', () => {
+    const vegetarian = assessCookingMealPlan({
+      meals: [meal({ title: 'Bacalhau no forno' })],
+      recipesById: new Map([[10, recipe({ ingredients: [{ name: 'Bacalhau', quantity: '200', unit: 'g' }] })]]),
+      preferences: { dietaryRestrictions: ['vegetariano'] },
+    });
+    const vegan = assessCookingMealPlan({
+      meals: [meal({ title: 'Queijo fresco' })],
+      recipesById: new Map([[10, recipe({ ingredients: [{ name: 'Queijo fresco', quantity: '100', unit: 'g' }] })]]),
+      preferences: { dietaryRestrictions: ['vegana'] },
+    });
+
+    expect(vegetarian.status).toBe('blocked');
+    expect(vegetarian.issues).toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: 'DIETARY_RESTRICTION_CONFLICT', ingredient: 'Bacalhau' }),
+    ]));
+    expect(vegan.status).toBe('blocked');
+    expect(vegan.issues).toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: 'DIETARY_RESTRICTION_CONFLICT', ingredient: 'Queijo fresco' }),
+    ]));
   });
 
   it('detects missing groceries while respecting available pantry items', () => {

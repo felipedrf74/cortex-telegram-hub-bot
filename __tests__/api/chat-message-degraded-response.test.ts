@@ -101,6 +101,7 @@ describe('chat message degraded response', () => {
       err,
       res,
       userId: 42,
+      tenantId: 420,
       normalizedText: 'quanto gastei este mês?',
       chatRequestId: 'chat-2',
     });
@@ -127,12 +128,14 @@ describe('chat message degraded response', () => {
       'quanto gastei este mês?',
       expect.stringMatching(/^msg-/),
       expect.objectContaining({ domain: 'finance', routeMethod: 'degraded' }),
+      420,
     );
     expect(mockSyncConversationStateForShortcut).toHaveBeenCalledWith(
       42,
       'finance',
       'quanto gastei este mês?',
       'O assistente financeiro está temporariamente indisponível.',
+      420,
     );
   });
 
@@ -144,6 +147,7 @@ describe('chat message degraded response', () => {
       err: new Error('timeout'),
       res: firstRes,
       userId: 42,
+      tenantId: 420,
       normalizedText: 'faz mais curto',
       chatRequestId: 'chat-3',
     });
@@ -153,11 +157,75 @@ describe('chat message degraded response', () => {
       err: new Error('timeout'),
       res: secondRes,
       userId: 42,
+      tenantId: 420,
       normalizedText: 'faz isto',
       chatRequestId: 'chat-4',
     });
 
     expect(mockBuildAITemporarilyBusyResponse).toHaveBeenNthCalledWith(1, 'content', 42);
     expect(mockBuildAITemporarilyBusyResponse).toHaveBeenNthCalledWith(2, 'secretary', 42);
+  });
+
+  // ─────────────────────────────────────────────────────────────────────
+  // QA regression pins (skill-hardening 2026-05-18 follow-up, P3-1):
+  // The previous QA flagged that the test only assertions a positive-path
+  // tenantId, so a regression that replaced `validatedTenantId` with
+  // `tenantId ?? userId` would slip through. These tests pin the actual
+  // throw path on missing/invalid tenantId.
+  // ─────────────────────────────────────────────────────────────────────
+
+  it('throws TenantScopeError when tenantId is undefined (no silent fallback)', async () => {
+    const err = new Error('overloaded');
+    const res = mockRes();
+    await expect(sendRetryableChatFailureResponseIfNeeded({
+      err,
+      res,
+      userId: 42,
+      // tenantId intentionally omitted
+      normalizedText: 'olá',
+      chatRequestId: 'chat-missing-tenant',
+    })).rejects.toMatchObject({
+      name: 'TenantScopeError',
+      code: 'TENANT_SCOPE_REQUIRED',
+      status: 400,
+    });
+
+    // Neither persistence helper should have been invoked.
+    expect(mockPersistExchange).not.toHaveBeenCalled();
+    expect(mockSyncConversationStateForShortcut).not.toHaveBeenCalled();
+    // No degraded body should have been sent.
+    expect(res.json).not.toHaveBeenCalled();
+  });
+
+  it('throws TenantScopeError when tenantId is 0 (invalid positive-integer check)', async () => {
+    const err = new Error('overloaded');
+    const res = mockRes();
+    await expect(sendRetryableChatFailureResponseIfNeeded({
+      err,
+      res,
+      userId: 42,
+      tenantId: 0,
+      normalizedText: 'olá',
+      chatRequestId: 'chat-zero-tenant',
+    })).rejects.toMatchObject({
+      name: 'TenantScopeError',
+      code: 'TENANT_SCOPE_REQUIRED',
+    });
+    expect(mockPersistExchange).not.toHaveBeenCalled();
+  });
+
+  it('throws TenantScopeError when tenantId is negative', async () => {
+    const err = new Error('overloaded');
+    const res = mockRes();
+    await expect(sendRetryableChatFailureResponseIfNeeded({
+      err,
+      res,
+      userId: 42,
+      tenantId: -1,
+      normalizedText: 'olá',
+      chatRequestId: 'chat-negative-tenant',
+    })).rejects.toMatchObject({
+      name: 'TenantScopeError',
+    });
   });
 });

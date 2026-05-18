@@ -11,9 +11,12 @@ import { getDb } from './database';
 import { logger } from '../utils/logger';
 
 export type AuditAction =
+  | 'create'
+  | 'update'
   | 'export'
   | 'delete'
   | 'access'
+  | 'mutation_scope'
   | 'encrypt'
   | 'decrypt'
   /**
@@ -22,7 +25,18 @@ export type AuditAction =
    * any future ops role) has a replayable log of every privileged
    * admin action that could change a user's entitlement.
    */
-  | 'admin_mutation';
+  | 'admin_mutation'
+  /**
+   * 2026-05-18 (skill-hardening QA P0-4): fiscal-record-impacting actions
+   * wired into `src/api/routes/invoices.ts`. Portuguese tax retention
+   * rules require an audit row for every fiscal mutation. These cover the
+   * 5 invoice routes that previously had no `audit_trail` wiring.
+   */
+  | 'fiscal_profile_update'
+  | 'fiscal_bundle_send'
+  | 'invoice_vendor_create'
+  | 'invoice_vendor_disable'
+  | 'invoice_scan_on_demand';
 
 export interface AuditEntry {
   userId: number;

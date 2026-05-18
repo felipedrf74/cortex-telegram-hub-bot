@@ -113,10 +113,12 @@ async function dispatch(
   url: string,
   userId: number,
   body?: any,
+  tenantId = userId,
 ): Promise<MockRes> {
   const router = invoicesRoutes();
   const req = {
     userId,
+    tenantId,
     body,
     method,
     url,

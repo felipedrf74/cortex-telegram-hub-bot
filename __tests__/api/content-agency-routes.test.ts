@@ -42,7 +42,7 @@ function mockReq(
   path: string,
   body: Record<string, unknown> = {},
   userId: number | undefined = 501,
-  tenantId: number | undefined = 101,
+  tenantId: number | undefined,
 ): Request {
   return {
     userId,
@@ -80,10 +80,12 @@ async function dispatch(
   userId: number | undefined = 501,
   tenantId: number | undefined = 101,
   ensureValidScope = makeEnsureValidScope(),
+  scope: { tenantId?: number } = {},
 ): Promise<{ response: MockRes; ensureValidScope: ReturnType<typeof makeEnsureValidScope> }> {
   const router = Router();
   registerContentAgencyRoutes(router, ensureValidScope);
-  const req = mockReq(method, path, body, userId, tenantId);
+  const scopedTenantId = Object.prototype.hasOwnProperty.call(scope, 'tenantId') ? scope.tenantId : tenantId;
+  const req = mockReq(method, path, body, userId, scopedTenantId);
   const res = mockRes();
 
   await new Promise<void>((resolve, reject) => {
@@ -167,6 +169,19 @@ describe('content agency routes', () => {
     const rows = testDb.prepare('SELECT user_id, tenant_id, agency_id FROM content_agency_briefs').all() as any[];
     expect(rows).toHaveLength(1);
     expect(rows[0]).toMatchObject({ user_id: 501, tenant_id: 101, agency_id: response.body.data.brief.id });
+  });
+
+  it('rejects content agency mutations that arrive without tenant scope', async () => {
+    const { response } = await dispatch('POST', '/agency/brief', {
+      goal: 'build a YouTube content system',
+      audience: 'technical founders',
+      offer: 'download an operator checklist',
+      platform: 'YouTube',
+    }, 501, 101, makeEnsureValidScope(), { tenantId: undefined });
+
+    expect(response.statusCode).toBe(401);
+    expect(response.body.error.code).toBe('UNAUTHORIZED');
+    expect(testDb.prepare('SELECT COUNT(*) AS count FROM content_agency_briefs').get()).toMatchObject({ count: 0 });
   });
 
   it('creates an agency package, scores it, and reads it back only for the owning scope', async () => {

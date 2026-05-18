@@ -269,7 +269,8 @@ describe('dynamic routing integration with classifier', () => {
     expect(hints).toContain('scheduling');
     expect(hints).toContain('gym workouts');
     expect(hints).toContain('YouTube');
-    expect(hints).toContain('DARF');
+    expect(hints).toContain('Portugal income tax');
+    expect(hints).toContain('IVA');
     expect(hints).toContain('recipes');
   });
 });

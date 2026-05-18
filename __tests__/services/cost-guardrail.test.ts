@@ -58,7 +58,7 @@ function applyMigrations(db: Database.Database): void {
 }
 
 import { checkQuota } from '../../src/services/usage-metering';
-import { checkGlobalCostGuardrail, isUserOverDailyCap, getUserDailySpend } from '../../src/services/cost-guardrail';
+import { checkGlobalCostGuardrail, isUserOverDailyCap, getUserDailySpend, getSpendByProvider } from '../../src/services/cost-guardrail';
 
 describe('checkQuota', () => {
   beforeEach(() => {
@@ -337,6 +337,39 @@ describe('getUserDailySpend', () => {
     const result = getUserDailySpend(7);
     expect(result.totalUsd).toBeCloseTo(0.4, 2);
     expect(result.messageCount).toBe(3);
+  });
+});
+
+describe('getSpendByProvider', () => {
+  beforeEach(() => {
+    testDb = new Database(':memory:');
+    testDb.pragma('journal_mode = WAL');
+    applyMigrations(testDb);
+  });
+
+  afterEach(() => {
+    testDb?.close();
+  });
+
+  it('can scope provider spend by user and tenant', () => {
+    const stmt = testDb.prepare(`
+      INSERT INTO api_usage (category, model, tenant_id, user_id, provider, input_tokens, output_tokens, cost_usd, duration_ms)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+    stmt.run('domain_training', 'claude-sonnet', 7, 7, 'anthropic', 100, 50, 0.11, 10);
+    stmt.run('domain_training', 'gemini-flash', 8, 8, 'gemini', 100, 50, 0.23, 10);
+    stmt.run('domain_training', 'gpt-4.1', 7, 99, 'openai', 100, 50, 0.31, 10);
+
+    expect(getSpendByProvider(undefined, { userId: 7, tenantId: 7 })).toMatchObject({
+      anthropic: 0.11,
+      openai: 0,
+      gemini: 0,
+    });
+    expect(getSpendByProvider(undefined, { tenantId: 7 })).toMatchObject({
+      anthropic: 0.11,
+      openai: 0.31,
+      gemini: 0,
+    });
   });
 });
 

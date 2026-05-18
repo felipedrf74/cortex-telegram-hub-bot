@@ -105,7 +105,7 @@ export function settingsRoutes(): Router {
 
   /** GET /api/v1/settings/provider-preferences */
   router.get('/provider-preferences', async (req, res: Response) => {
-    const { userId, tenantId = userId } = req as AuthenticatedRequest;
+    const { userId, tenantId } = req as AuthenticatedRequest;
     if (!ensureValidSettingsUserScope(res, userId, 'settings_route_provider_preferences_get')) return;
     try {
       sendSuccess(res, getProviderPreferences(userId, tenantId));
@@ -117,7 +117,7 @@ export function settingsRoutes(): Router {
 
   /** PATCH /api/v1/settings/provider-preferences */
   router.patch('/provider-preferences', async (req, res: Response) => {
-    const { userId, tenantId = userId } = req as AuthenticatedRequest;
+    const { userId, tenantId } = req as AuthenticatedRequest;
     if (!ensureValidSettingsUserScope(res, userId, 'settings_route_provider_preferences_patch')) return;
     const mail = Object.prototype.hasOwnProperty.call(req.body ?? {}, 'primaryMailProvider')
       ? normalizePrimaryMailProvider(req.body?.primaryMailProvider)
@@ -237,7 +237,7 @@ export function settingsRoutes(): Router {
 
   /** POST /api/v1/settings/export — GDPR data export (Article 15: right of access) */
   router.post('/export', async (req, res: Response) => {
-    const { userId, tenantId = userId } = req as AuthenticatedRequest;
+    const { userId, tenantId } = req as AuthenticatedRequest;
     if (!ensureValidSettingsUserScope(res, userId, 'settings_route_export')) return;
     try {
       const db = getDb();

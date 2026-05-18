@@ -1,6 +1,12 @@
 // Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
 
 import type { Ingredient, MealPlan, Recipe, ShoppingList } from './cooking-chef';
+import {
+  containsCookingSafetyTerm,
+  matchesCookingAllergenText,
+  normalizeCookingSafetyText,
+  violatesCookingDietaryRestrictionText,
+} from './cooking-allergen-vocabulary';
 
 export type CookingConstraintSeverity = 'info' | 'warning' | 'blocker';
 
@@ -105,18 +111,19 @@ const SUBSTITUTION_RULES: Array<{
   role: CookingSubstitutionSuggestion['cookingRole'];
   alternatives: string[];
 }> = [
-  { terms: ['peanut', 'peanuts', 'peanut sauce', 'peanut butter'], role: 'sauce', alternatives: ['sunflower seed butter', 'roasted chickpeas'] },
-  { terms: ['shellfish', 'shrimp', 'prawn', 'crab', 'lobster'], role: 'protein', alternatives: ['tofu', 'white beans', 'chicken'] },
-  { terms: ['chicken', 'turkey'], role: 'protein', alternatives: ['tofu', 'tempeh', 'chickpeas', 'white beans'] },
-  { terms: ['beef', 'steak', 'pork', 'bacon'], role: 'protein', alternatives: ['lentils', 'black beans', 'tofu', 'turkey'] },
-  { terms: ['fish', 'salmon', 'tuna', 'cod'], role: 'protein', alternatives: ['chickpeas', 'tofu', 'chicken'] },
-  { terms: ['egg', 'eggs'], role: 'protein', alternatives: ['tofu scramble', 'chickpea flour'] },
-  { terms: ['milk', 'cream', 'yogurt'], role: 'dairy', alternatives: ['oat milk', 'coconut yogurt'] },
-  { terms: ['cheese'], role: 'dairy', alternatives: ['nutritional yeast', 'avocado'] },
-  { terms: ['butter'], role: 'fat', alternatives: ['olive oil', 'avocado oil'] },
-  { terms: ['wheat', 'flour', 'bread', 'pasta'], role: 'carb', alternatives: ['rice noodles', 'quinoa', 'corn tortillas'] },
-  { terms: ['rice'], role: 'carb', alternatives: ['quinoa', 'potatoes', 'cauliflower rice'] },
-  { terms: ['mushroom', 'mushrooms'], role: 'vegetable', alternatives: ['zucchini', 'eggplant', 'bell pepper'] },
+  { terms: ['peanut', 'peanuts', 'peanut sauce', 'peanut butter', 'amendoim', 'manteiga de amendoim'], role: 'sauce', alternatives: ['sunflower seed butter', 'roasted chickpeas'] },
+  { terms: ['tree nut', 'tree nuts', 'almond', 'walnut', 'cashew', 'hazelnut', 'frutos secos', 'amêndoa', 'noz', 'caju', 'avelã'], role: 'fat', alternatives: ['sunflower seeds', 'pumpkin seeds', 'avocado'] },
+  { terms: ['shellfish', 'shrimp', 'prawn', 'crab', 'lobster', 'marisco', 'camarão', 'gambas', 'caranguejo', 'lagosta'], role: 'protein', alternatives: ['tofu', 'white beans', 'chicken'] },
+  { terms: ['chicken', 'turkey', 'frango', 'peru'], role: 'protein', alternatives: ['tofu', 'tempeh', 'chickpeas', 'white beans'] },
+  { terms: ['beef', 'steak', 'pork', 'bacon', 'carne', 'bife', 'porco'], role: 'protein', alternatives: ['lentils', 'black beans', 'tofu', 'turkey'] },
+  { terms: ['fish', 'salmon', 'tuna', 'cod', 'peixe', 'salmão', 'atum', 'bacalhau'], role: 'protein', alternatives: ['chickpeas', 'tofu', 'chicken'] },
+  { terms: ['egg', 'eggs', 'ovo', 'ovos'], role: 'protein', alternatives: ['tofu scramble', 'chickpea flour'] },
+  { terms: ['milk', 'cream', 'yogurt', 'leite', 'natas', 'iogurte'], role: 'dairy', alternatives: ['oat milk', 'coconut yogurt'] },
+  { terms: ['cheese', 'queijo'], role: 'dairy', alternatives: ['nutritional yeast', 'avocado'] },
+  { terms: ['butter', 'manteiga'], role: 'fat', alternatives: ['olive oil', 'avocado oil'] },
+  { terms: ['wheat', 'flour', 'bread', 'pasta', 'trigo', 'farinha', 'pão', 'massa'], role: 'carb', alternatives: ['rice noodles', 'quinoa', 'corn tortillas'] },
+  { terms: ['rice', 'arroz'], role: 'carb', alternatives: ['quinoa', 'potatoes', 'cauliflower rice'] },
+  { terms: ['mushroom', 'mushrooms', 'cogumelo', 'cogumelos'], role: 'vegetable', alternatives: ['zucchini', 'eggplant', 'bell pepper'] },
 ];
 
 export function assessCookingMealPlan(input: CookingPlanAssessmentInput): CookingPlanAssessment {
@@ -173,7 +180,7 @@ function addRestrictionIssues(
   ingredientsByMealId: Map<number, Ingredient[]>,
   preferences?: CookingPreferenceProfile,
 ): void {
-  const allergies = normalizeTerms(preferences?.allergies ?? []);
+  const allergies = uniqueStrings((preferences?.allergies ?? []).map((value) => String(value ?? '').trim()).filter(Boolean));
   const restrictions = normalizeTerms(preferences?.dietaryRestrictions ?? []);
   const dislikes = normalizeTerms(preferences?.dislikedIngredients ?? []);
   if (allergies.length === 0 && restrictions.length === 0 && dislikes.length === 0) return;
@@ -187,8 +194,8 @@ function addRestrictionIssues(
     ].join(' | ');
 
     for (const allergy of allergies) {
-      if (containsTerm(haystack, allergy)) {
-        const matchedIngredient = findIngredientContainingTerm(ingredients, allergy) ?? allergy;
+      if (matchesCookingAllergenText(allergy, haystack)) {
+        const matchedIngredient = findIngredientContainingAllergen(ingredients, allergy) ?? allergy;
         issues.push({
           code: 'ALLERGY_CONFLICT',
           severity: 'blocker',
@@ -495,8 +502,8 @@ function buildSubstitutionImpact(reason: CookingSubstitutionSuggestion['reason']
 }
 
 function candidateConflictsWithPreferences(candidate: string, preferences: CookingPreferenceProfile): boolean {
-  for (const allergy of normalizeTerms(preferences.allergies ?? [])) {
-    if (containsTerm(candidate, allergy)) return true;
+  for (const allergy of preferences.allergies ?? []) {
+    if (matchesCookingAllergenText(allergy, candidate)) return true;
   }
   for (const restriction of normalizeTerms(preferences.dietaryRestrictions ?? [])) {
     if (violatesDietaryRestriction(candidate, restriction)) return true;
@@ -529,6 +536,10 @@ function findIngredientContainingTerm(ingredients: Ingredient[], term: string): 
   return ingredients.find((ingredient) => containsTerm(ingredient.name, term))?.name ?? null;
 }
 
+function findIngredientContainingAllergen(ingredients: Ingredient[], allergy: string): string | null {
+  return ingredients.find((ingredient) => matchesCookingAllergenText(allergy, ingredient.name))?.name ?? null;
+}
+
 function findIngredientViolatingRestriction(ingredients: Ingredient[], restriction: string): string | null {
   return ingredients.find((ingredient) => violatesDietaryRestriction(ingredient.name, restriction))?.name ?? null;
 }
@@ -557,18 +568,11 @@ function normalizePantry(items: CookingPantryItem[], todayIso: string): Map<stri
 }
 
 function violatesDietaryRestriction(haystack: string, restriction: string): boolean {
-  if (restriction === 'vegetarian') return containsAnyTerm(haystack, ['beef', 'chicken', 'pork', 'turkey', 'fish', 'salmon', 'tuna', 'shrimp']);
-  if (restriction === 'vegan') return containsAnyTerm(haystack, ['beef', 'chicken', 'pork', 'turkey', 'fish', 'salmon', 'tuna', 'shrimp', 'egg', 'milk', 'cheese', 'butter', 'yogurt', 'honey']);
-  if (restriction === 'gluten_free' || restriction === 'gluten-free') return containsAnyTerm(haystack, ['wheat', 'flour', 'bread', 'pasta', 'seitan']);
-  return containsTerm(haystack, restriction);
-}
-
-function containsAnyTerm(haystack: string, terms: string[]): boolean {
-  return terms.some((term) => containsTerm(haystack, term));
+  return violatesCookingDietaryRestrictionText(haystack, restriction);
 }
 
 function containsTerm(haystack: string, term: string): boolean {
-  return normalizeName(haystack).includes(normalizeName(term));
+  return containsCookingSafetyTerm(haystack, term);
 }
 
 function normalizeTerms(values: string[]): string[] {
@@ -576,7 +580,7 @@ function normalizeTerms(values: string[]): string[] {
 }
 
 function normalizeName(value: string): string {
-  return String(value ?? '').trim().toLowerCase();
+  return normalizeCookingSafetyText(value);
 }
 
 function uniqueStrings(values: string[]): string[] {

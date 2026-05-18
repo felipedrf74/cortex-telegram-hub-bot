@@ -48,7 +48,7 @@ export function registerChatCallbackRoutes(
    * Handle inline button presses (equivalent to Telegram callback queries).
    */
   router.post('/callback', async (req, res: Response) => {
-    const { userId, tenantId = userId } = req as AuthenticatedRequest;
+    const { userId, tenantId } = req as AuthenticatedRequest;
     const { callbackData, messageId } = req.body;
 
     if (!ensureValidChatRouteScope(res, userId, tenantId, 'chat_route_callback', {

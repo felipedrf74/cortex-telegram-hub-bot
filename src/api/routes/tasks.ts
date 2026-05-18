@@ -12,6 +12,7 @@ import { getTaskProviderForUser, resolveTaskProvider } from '../../services/task
 import { resolveTaskCreationList, TaskListResolutionError } from '../../services/task-store/task-list-resolution';
 import { getOwnerBootstrapUser, getUserTimezoneById } from '../../services/user-service';
 import { ensureValidTenantRouteScope } from '../tenant-route-scope';
+import { assertTenantScope } from '../../services/tenant-scope';
 import { invalidateTaskCaches } from '../../services/cache-coherence-registry';
 import { normalizeMicrosoftRecurrence } from '../../services/recurrence-utils';
 import { consumeResourceBudget } from '../../services/resource-budgets';
@@ -138,10 +139,15 @@ export function taskRoutes(): Router {
    * paginated list reads.
    */
   router.get('/working-set', async (req, res: Response) => {
-    const userId = (req as any).userId;
-    const tenantId = (req as any).tenantId ?? userId;
-    if (typeof userId !== 'number' || userId <= 0 || typeof tenantId !== 'number' || tenantId <= 0) {
-      sendError(res, 'UNAUTHORIZED', 'Authenticated user required', 401);
+    // 2026-05-18 (skill-hardening QA P1-1): replaced `?? userId` fallback
+    // with assertTenantScope so a missing tenantId 401s instead of silently
+    // co-mingling tenants under the user's own scope.
+    let userId: number;
+    let tenantId: number;
+    try {
+      ({ userId, tenantId } = assertTenantScope(req as any, 'tasks_working_set'));
+    } catch (err: any) {
+      sendError(res, err?.code ?? 'UNAUTHORIZED', err?.message ?? 'Authenticated user required', err?.status ?? 401);
       return;
     }
 

@@ -11,6 +11,7 @@ import { getDb } from './database';
 import { logger } from '../utils/logger';
 import { createEvent as createCalendarEvent, hasWritableCalendarForUser } from './unified-calendar';
 import { publishTrainingSessionScheduled } from './training-signals';
+import { config } from '../config';
 
 // ─── Phase 1 Slice B helper ─────────────────────────────────────────
 
@@ -29,6 +30,7 @@ function normalizeSportForSignals(sport: string): 'gym' | 'running' | 'cycling' 
 export interface TrainingPlan {
   id: number;
   user_id: number;
+  tenant_id?: number | null;
   name: string;
   sport: string;
   goal: string | null;
@@ -101,6 +103,7 @@ export interface TrainingSession {
   id: number;
   week_id: number;
   plan_id: number;
+  tenant_id?: number | null;
   day_of_week: string;
   session_type: string;
   title: string;
@@ -158,6 +161,7 @@ export interface TrainingCompletion {
 
 export interface CreatePlanInput {
   user_id: number;
+  tenant_id?: number | null;
   name: string;
   sport: string;
   goal?: string;
@@ -213,6 +217,20 @@ export interface LogCompletionInput {
   notes?: string;
 }
 
+const TRAINING_SESSION_UPDATE_COLUMNS = new Set([
+  'day_of_week',
+  'title',
+  'exercises_json',
+  'duration_minutes',
+  'intensity_text',
+  'description',
+  'status',
+  'calendar_event_id',
+  'calendar_source',
+  'session_identity_key',
+  'session_shape_hash',
+]);
+
 const DAY_NAME_MAP: Record<string, string> = {
   monday: 'Monday',
   tuesday: 'Tuesday',
@@ -232,12 +250,13 @@ function canonicalDayOfWeek(value: string): string {
 
 export function createPlan(input: CreatePlanInput): TrainingPlan {
   const db = getDb();
+  const tenantId = input.tenant_id && input.tenant_id > 0 ? input.tenant_id : input.user_id;
   const result = db.prepare(`
     INSERT INTO fitness_training_plans
-      (user_id, name, sport, goal, duration_weeks, periodization, start_date, end_date, preferences_json)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      (user_id, tenant_id, name, sport, goal, duration_weeks, periodization, start_date, end_date, preferences_json)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
-    input.user_id, input.name, input.sport, input.goal ?? null,
+    input.user_id, tenantId, input.name, input.sport, input.goal ?? null,
     input.duration_weeks, input.periodization ?? 'linear',
     input.start_date, input.end_date, input.preferences_json ?? null,
   );
@@ -246,8 +265,33 @@ export function createPlan(input: CreatePlanInput): TrainingPlan {
     .get(result.lastInsertRowid) as TrainingPlan;
 }
 
-export function getActivePlan(userId: number): TrainingPlan | null {
+/**
+ * 2026-05-18 (skill-hardening QA P0-3): both `getActivePlan` and
+ * `getActivePlans` were querying `WHERE user_id = ? AND status = 'active'`
+ * without filtering by tenant_id, despite migration 140 adding the column.
+ * That made the tenant-id work on these tables cosmetic — cross-tenant
+ * reads were silently allowed when the caller forgot to scope.
+ *
+ * The fix is additive: tenantId remains optional for back-compat (~25
+ * existing call sites), but when provided we filter by both user_id AND
+ * tenant_id. Unscoped callers now log a warning so the remaining sites
+ * can be migrated one-by-one to thread tenantId from `assertTenantScope`.
+ * The follow-up plan should remove the optional-tenantId branch entirely
+ * once all callers are updated.
+ */
+export function getActivePlan(userId: number, tenantId?: number): TrainingPlan | null {
   const db = getDb();
+  if (typeof tenantId === 'number' && tenantId > 0) {
+    return (db.prepare(`
+      SELECT * FROM fitness_training_plans
+      WHERE user_id = ? AND tenant_id = ? AND status = 'active'
+      ORDER BY created_at DESC LIMIT 1
+    `).get(userId, tenantId) as TrainingPlan | undefined) ?? null;
+  }
+  logger.warn(
+    { userId, op: 'getActivePlan' },
+    'training.getActivePlan called without tenantId; falling back to userId-only scope (P0-3 follow-up)',
+  );
   return (db.prepare(`
     SELECT * FROM fitness_training_plans
     WHERE user_id = ? AND status = 'active'
@@ -259,9 +303,22 @@ export function getActivePlan(userId: number): TrainingPlan | null {
  * Get ALL active plans for a user — supports multi-sport planning.
  * Each plan targets a different sport (gym, running, cycling, swim).
  * Used by the cross-plan interference check and the plan renewal logic.
+ *
+ * See `getActivePlan` for the tenant_id scoping rationale.
  */
-export function getActivePlans(userId: number): TrainingPlan[] {
+export function getActivePlans(userId: number, tenantId?: number): TrainingPlan[] {
   const db = getDb();
+  if (typeof tenantId === 'number' && tenantId > 0) {
+    return db.prepare(`
+      SELECT * FROM fitness_training_plans
+      WHERE user_id = ? AND tenant_id = ? AND status = 'active'
+      ORDER BY sport, created_at DESC
+    `).all(userId, tenantId) as TrainingPlan[];
+  }
+  logger.warn(
+    { userId, op: 'getActivePlans' },
+    'training.getActivePlans called without tenantId; falling back to userId-only scope (P0-3 follow-up)',
+  );
   return db.prepare(`
     SELECT * FROM fitness_training_plans
     WHERE user_id = ? AND status = 'active'
@@ -437,15 +494,20 @@ export function updateWeekAdjustment(weekId: number, intensityPct: number, reaso
 export function createSession(input: CreateSessionInput): TrainingSession {
   const db = getDb();
   const normalizedDay = canonicalDayOfWeek(input.day_of_week);
+  const tenantId = (db.prepare('SELECT tenant_id AS tenantId FROM fitness_training_plans WHERE id = ?')
+    .get(input.plan_id) as { tenantId?: number | null } | undefined)?.tenantId ?? null;
+  if (!Number.isFinite(tenantId) || Number(tenantId) <= 0) {
+    throw new Error(`TRAINING_PLAN_TENANT_SCOPE_MISSING: ${input.plan_id}`);
+  }
   const result = db.prepare(`
     INSERT INTO training_sessions
-      (week_id, plan_id, day_of_week, session_type, title, description,
+      (week_id, plan_id, tenant_id, day_of_week, session_type, title, description,
        description_json, exercises_json, duration_minutes, intensity_text,
        calendar_event_id, calendar_source, session_identity_key, session_shape_hash,
        preferred_time_unavailable, status)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
-    input.week_id, input.plan_id, normalizedDay, input.session_type,
+    input.week_id, input.plan_id, tenantId, normalizedDay, input.session_type,
     input.title, input.description ?? null, input.description_json ?? null,
     input.exercises_json ?? null,
     input.duration_minutes ?? null, input.intensity_text ?? null,
@@ -486,6 +548,9 @@ export function updateSession(
 
   for (const [key, value] of Object.entries(updates)) {
     if (value !== undefined) {
+      if (!TRAINING_SESSION_UPDATE_COLUMNS.has(key)) {
+        throw new Error(`TRAINING_SESSION_UPDATE_INVALID_FIELD: ${key}`);
+      }
       setClauses.push(`${key} = ?`);
       values.push(value);
     }
@@ -513,21 +578,40 @@ export function linkSessionToCalendar(sessionId: number, eventId: string, source
   return updateSession(sessionId, { calendar_event_id: eventId, calendar_source: source });
 }
 
-export function getSessionByCalendarEvent(eventId: string, source?: string | null): TrainingSession | null {
+export interface TrainingSessionCalendarLookupScope {
+  userId?: number | null;
+  tenantId?: number | null;
+}
+
+export function getSessionByCalendarEvent(
+  eventId: string,
+  source?: string | null,
+  scope?: TrainingSessionCalendarLookupScope,
+): TrainingSession | null {
   const db = getDb();
-  const row = source
-    ? db.prepare(`
-      SELECT * FROM training_sessions
-      WHERE calendar_event_id = ? AND calendar_source = ?
-      ORDER BY updated_at DESC, id DESC
-      LIMIT 1
-    `).get(eventId, source)
-    : db.prepare(`
-      SELECT * FROM training_sessions
-      WHERE calendar_event_id = ?
-      ORDER BY updated_at DESC, id DESC
-      LIMIT 1
-    `).get(eventId);
+  const clauses = ['ts.calendar_event_id = ?'];
+  const values: any[] = [eventId];
+
+  if (source) {
+    clauses.push('ts.calendar_source = ?');
+    values.push(source);
+  }
+  if (scope?.userId != null) {
+    clauses.push('ftp.user_id = ?');
+    values.push(scope.userId);
+  }
+  if (scope?.tenantId != null) {
+    clauses.push('ftp.tenant_id = ?');
+    values.push(scope.tenantId);
+  }
+
+  const row = db.prepare(`
+    SELECT ts.* FROM training_sessions ts
+    JOIN fitness_training_plans ftp ON ftp.id = ts.plan_id
+    WHERE ${clauses.join(' AND ')}
+    ORDER BY ts.updated_at DESC, ts.id DESC
+    LIMIT 1
+  `).get(...values);
 
   return (row as TrainingSession | undefined) ?? null;
 }
@@ -535,11 +619,17 @@ export function getSessionByCalendarEvent(eventId: string, source?: string | nul
 export function syncSessionWithCoachRecommendation(rec: {
   eventId: string;
   source?: string | null;
+  userId?: number | null;
+  tenantId?: number | null;
+  timezone?: string | null;
   action: 'KEEP' | 'MODIFY' | 'SWAP' | 'REST';
   newTitle?: string | null;
   newStart?: string | null;
 }): boolean {
-  const session = getSessionByCalendarEvent(rec.eventId, rec.source);
+  const session = getSessionByCalendarEvent(rec.eventId, rec.source, {
+    userId: rec.userId,
+    tenantId: rec.tenantId,
+  });
   if (!session) return false;
 
   const updates: Partial<Pick<TrainingSession, 'day_of_week' | 'title' | 'status'>> = {};
@@ -551,9 +641,24 @@ export function syncSessionWithCoachRecommendation(rec: {
   if (rec.newStart) {
     const movedAt = new Date(rec.newStart);
     if (!Number.isNaN(movedAt.getTime())) {
+      // 2026-05-18 (skill-hardening QA P1-3): the previous fallback chain
+      // included a `|| 'Europe/Lisbon'` literal, which violated plan §3.7's
+      // ground rule against single-tenant locale hardcodes. The caller
+      // (`syncSessionWithCoachRecommendation`) is now responsible for
+      // passing the user's timezone via `rec.timezone`; if missing we fall
+      // back to `config.app.timezone` (the system default) and surface a
+      // warning to logs so the gap is visible to ops. We never bake the
+      // founder's TZ into the fallback chain.
+      if (!rec.timezone && !config.app.timezone) {
+        logger.warn(
+          { eventId: rec.eventId, source: rec.source },
+          'training.coach-recommendation: no user TZ + no config TZ; defaulting to UTC',
+        );
+      }
+      const timeZone = rec.timezone || config.app.timezone || 'UTC';
       updates.day_of_week = movedAt.toLocaleDateString('en-US', {
         weekday: 'long',
-        timeZone: 'Europe/Lisbon',
+        timeZone,
       });
     }
   }

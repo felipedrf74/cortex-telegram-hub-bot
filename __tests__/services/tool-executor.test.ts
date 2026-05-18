@@ -107,7 +107,8 @@ vi.mock('../../src/services/finance-tracker', () => ({
   deleteTransaction: vi.fn(),
   getMonthlySummary: vi.fn(),
   calculateAndStoreTax: vi.fn(),
-  calculateMonthlyTax: vi.fn(),
+  calculatePortugueseMonthlyTax: vi.fn(),
+  calculateMonthlyTax: vi.fn(() => { throw new Error("Brazilian tax engine removed; see finance-tax-pt"); }),
   getTaxEvents: vi.fn(),
   markTaxPaid: vi.fn(),
   getAnnualTaxSummary: vi.fn(),
@@ -1086,7 +1087,7 @@ describe('executeToolCall — Finance', () => {
     mockFinance.addTransaction.mockReset();
     mockFinance.deleteTransaction.mockReset();
     mockFinance.calculateAndStoreTax.mockReset();
-    mockFinance.calculateMonthlyTax.mockReset();
+    mockFinance.calculatePortugueseMonthlyTax.mockReset();
     mockFinance.markTaxPaid.mockReset();
   });
 
@@ -1119,6 +1120,7 @@ describe('executeToolCall — Finance', () => {
       subcategory: 'meals',
       description: 'Lunch',
       currency: 'EUR',
+      tenantId: 77,
     });
     expect(result).toEqual({
       success: true,
@@ -1146,7 +1148,7 @@ describe('executeToolCall — Finance', () => {
       gross_income: 2500,
       deductions: 200,
     } as any);
-    mockFinance.calculateMonthlyTax.mockReturnValue({
+    mockFinance.calculatePortugueseMonthlyTax.mockReturnValue({
       effectiveRate: 12.5,
       bracket: 'mid',
     } as any);

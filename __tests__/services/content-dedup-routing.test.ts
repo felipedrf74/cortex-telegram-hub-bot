@@ -78,7 +78,7 @@ describe('content dedup provider routing', () => {
     seedIdea(42, 'Creator workflow for endurance athletes');
     seedIdea(77, 'Private tenant B launch plan');
 
-    const result = await isDuplicateIdea('Race week content workflow', 'framework', 42);
+    const result = await isDuplicateIdea('Race week content workflow', 'framework', 42, 42);
 
     expect(result.isDuplicate).toBe(false);
     expect(completeOneShotWithFallback).toHaveBeenCalledTimes(1);
@@ -104,11 +104,56 @@ describe('content dedup provider routing', () => {
     seedIdea(77, 'User B topic two');
     seedIdea(77, 'User B topic three');
 
-    await isDuplicateIdea('Shared title', 'opinion', 42);
-    await isDuplicateIdea('Shared title', 'opinion', 77);
+    await isDuplicateIdea('Shared title', 'opinion', 42, 42);
+    await isDuplicateIdea('Shared title', 'opinion', 77, 77);
 
     expect(completeOneShotWithFallback).toHaveBeenCalledTimes(2);
     expect(completeOneShotWithFallback.mock.calls[0][1]).toContain('User A topic one');
     expect(completeOneShotWithFallback.mock.calls[1][1]).toContain('User B topic one');
+  });
+
+  // ─────────────────────────────────────────────────────────────────────
+  // QA regression pin (skill-hardening 2026-05-18 follow-up, P3-3):
+  // The previous QA found there was no direct lock on the tenant-scope
+  // contract for `isDuplicateIdea` — only positive-path coverage. These
+  // tests pin the throw paths so a future regression that loosens
+  // `resolveRequiredContentDedupScope` (e.g., adds back a userId fallback)
+  // surfaces immediately.
+  // ─────────────────────────────────────────────────────────────────────
+
+  it('throws when userId is provided but tenantId is missing', async () => {
+    await expect(isDuplicateIdea('Shared title', 'opinion', 42, undefined as any))
+      .rejects.toMatchObject({
+        name: 'TenantScopeError',
+      });
+
+    // No AI fan-out should have happened — refusal must precede the cascade.
+    expect(completeOneShotWithFallback).not.toHaveBeenCalled();
+  });
+
+  it('throws when userId is provided but tenantId is 0', async () => {
+    await expect(isDuplicateIdea('Shared title', 'opinion', 42, 0 as any))
+      .rejects.toMatchObject({
+        name: 'TenantScopeError',
+      });
+    expect(completeOneShotWithFallback).not.toHaveBeenCalled();
+  });
+
+  it('throws when userId is provided but tenantId is negative', async () => {
+    await expect(isDuplicateIdea('Shared title', 'opinion', 42, -1 as any))
+      .rejects.toMatchObject({
+        name: 'TenantScopeError',
+      });
+    expect(completeOneShotWithFallback).not.toHaveBeenCalled();
+  });
+
+  it('throws when userId is 0 (invalid) even with valid tenantId', async () => {
+    // Note: the userId branch in `resolveRequiredContentDedupScope` throws a
+    // plain Error (not a TenantScopeError) because it predates the helper.
+    // Pinning the message so a future refactor doesn't silently weaken the
+    // check.
+    await expect(isDuplicateIdea('Shared title', 'opinion', 0 as any, 42 as any))
+      .rejects.toThrow(/Content dedup requires authenticated user scope/);
+    expect(completeOneShotWithFallback).not.toHaveBeenCalled();
   });
 });

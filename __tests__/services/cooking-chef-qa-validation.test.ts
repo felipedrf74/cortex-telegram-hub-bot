@@ -56,6 +56,7 @@ import {
   setMealPlan, getMealPlan, deleteMealPlan,
   generateShoppingList, getShoppingList,
 } from '../../src/services/cooking-chef';
+import { cookingPrivateScopePredicate } from '../../src/services/cooking-tenant-scope';
 import type { Ingredient } from '../../src/services/cooking-chef';
 
 // ── Migration schema integrity ────────────────────────────────────
@@ -92,28 +93,41 @@ describe('QA: Cooking migration schema', () => {
     expect(names).toContain('updated_at');
   });
 
-  it('meal_plans has UNIQUE constraint on (user_id, date, meal_type)', () => {
-    testDb.prepare("INSERT INTO meal_plans (user_id, date, meal_type, title) VALUES (1, '2024-06-15', 'dinner', 'A')").run();
+  it('meal_plans has tenant-aware UNIQUE constraint on (tenant_id, user_id, date, meal_type)', () => {
+    testDb.prepare("INSERT INTO meal_plans (tenant_id, owner_user_id, user_id, date, meal_type, title) VALUES (10, 1, 1, '2024-06-15', 'dinner', 'A')").run();
     expect(() => {
-      testDb.prepare("INSERT INTO meal_plans (user_id, date, meal_type, title) VALUES (1, '2024-06-15', 'dinner', 'B')").run();
+      testDb.prepare("INSERT INTO meal_plans (tenant_id, owner_user_id, user_id, date, meal_type, title) VALUES (10, 1, 1, '2024-06-15', 'dinner', 'B')").run();
     }).toThrow();
+    expect(() => {
+      testDb.prepare("INSERT INTO meal_plans (tenant_id, owner_user_id, user_id, date, meal_type, title) VALUES (20, 1, 1, '2024-06-15', 'dinner', 'Tenant B')").run();
+    }).not.toThrow();
   });
 
-  it('shopping_lists has UNIQUE constraint on (user_id, week_start)', () => {
-    testDb.prepare("INSERT INTO shopping_lists (user_id, week_start, items) VALUES (1, '2024-06-17', '[]')").run();
+  it('shopping_lists has tenant-aware UNIQUE constraint on (tenant_id, user_id, week_start)', () => {
+    testDb.prepare("INSERT INTO shopping_lists (tenant_id, owner_user_id, user_id, week_start, items) VALUES (10, 1, 1, '2024-06-17', '[]')").run();
     expect(() => {
-      testDb.prepare("INSERT INTO shopping_lists (user_id, week_start, items) VALUES (1, '2024-06-17', '[]')").run();
+      testDb.prepare("INSERT INTO shopping_lists (tenant_id, owner_user_id, user_id, week_start, items) VALUES (10, 1, 1, '2024-06-17', '[]')").run();
     }).toThrow();
+    expect(() => {
+      testDb.prepare("INSERT INTO shopping_lists (tenant_id, owner_user_id, user_id, week_start, items) VALUES (20, 1, 1, '2024-06-17', '[]')").run();
+    }).not.toThrow();
+  });
+
+  it('runtime private-scope predicate requires explicit tenant columns without tenant/user fallback', () => {
+    const predicate = cookingPrivateScopePredicate();
+    expect(predicate).toContain('tenant_id = ?');
+    expect(predicate).toContain('owner_user_id = ?');
+    expect(predicate).not.toMatch(/COALESCE\([^)]*tenant_id[^)]*user_id/i);
   });
 
   it('recipes.servings defaults to 1', () => {
-    testDb.prepare("INSERT INTO recipes (user_id, title, ingredients) VALUES (1, 'Test', '[]')").run();
+    testDb.prepare("INSERT INTO recipes (tenant_id, owner_user_id, user_id, title, ingredients) VALUES (1, 1, 1, 'Test', '[]')").run();
     const row = testDb.prepare('SELECT servings FROM recipes WHERE title = ?').get('Test') as any;
     expect(row.servings).toBe(1);
   });
 
   it('shopping_lists.status defaults to active', () => {
-    testDb.prepare("INSERT INTO shopping_lists (user_id, week_start, items) VALUES (1, '2024-06-17', '[]')").run();
+    testDb.prepare("INSERT INTO shopping_lists (tenant_id, owner_user_id, user_id, week_start, items) VALUES (10, 1, 1, '2024-06-17', '[]')").run();
     const row = testDb.prepare("SELECT status FROM shopping_lists WHERE week_start = '2024-06-17'").get() as any;
     expect(row.status).toBe('active');
   });

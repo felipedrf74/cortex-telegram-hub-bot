@@ -29,7 +29,7 @@ export function registerChatHistoryRoutes(
    * Fetch conversation history.
    */
   router.get('/history', async (req, res: Response) => {
-    const { userId, tenantId = userId } = req as AuthenticatedRequest;
+    const { userId, tenantId } = req as AuthenticatedRequest;
     const limit = Math.min(parseInt(req.query.limit as string || '50', 10), 100);
     const before = req.query.before as string | undefined;
 
@@ -53,7 +53,7 @@ export function registerChatHistoryRoutes(
    * Clears persisted chat history and per-domain conversation context.
    */
   router.delete('/history', async (req, res: Response) => {
-    const { userId, tenantId = userId } = req as AuthenticatedRequest;
+    const { userId, tenantId } = req as AuthenticatedRequest;
 
     if (!ensureValidChatRouteScope(res, userId, tenantId, 'chat_route_clear_history')) {
       return;

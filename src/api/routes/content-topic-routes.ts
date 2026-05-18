@@ -92,7 +92,7 @@ export function registerContentTopicRoutes(
    * topics are hidden unless the caller passes ?status=cancelled.
    */
   router.get('/topics', asyncHandler(async (req, res: Response) => {
-    const { userId, tenantId = userId } = req as unknown as AuthenticatedRequest;
+    const { userId, tenantId } = req as unknown as AuthenticatedRequest;
     if (!ensureValidContentRouteScope(res, userId, 'content_route_topics_list')) return;
 
     const status = typeof req.query.status === 'string'
@@ -147,7 +147,7 @@ export function registerContentTopicRoutes(
    * to 'planned' server-side.
    */
   router.post('/topics', asyncHandler(async (req, res: Response) => {
-    const { userId, tenantId = userId } = req as unknown as AuthenticatedRequest;
+    const { userId, tenantId } = req as unknown as AuthenticatedRequest;
     if (!ensureValidContentRouteScope(res, userId, 'content_route_topics_create')) return;
 
     const { title, notes, scheduledDate, scheduledDateTime, status } = req.body;
@@ -215,7 +215,7 @@ export function registerContentTopicRoutes(
    * `scheduledDate` and `notes` accept explicit null to clear.
    */
   router.patch('/topics/:id', asyncHandler(async (req, res: Response) => {
-    const { userId, tenantId = userId } = req as unknown as AuthenticatedRequest;
+    const { userId, tenantId } = req as unknown as AuthenticatedRequest;
     const topicId = parseContentTopicId(req.params.id);
     if (!ensureValidContentRouteScope(res, userId, 'content_route_topics_update', { topicId })) return;
 
@@ -304,7 +304,7 @@ export function registerContentTopicRoutes(
    * status='cancelled' instead.
    */
   router.delete('/topics/:id', asyncHandler(async (req, res: Response) => {
-    const { userId, tenantId = userId } = req as unknown as AuthenticatedRequest;
+    const { userId, tenantId } = req as unknown as AuthenticatedRequest;
     const topicId = parseContentTopicId(req.params.id);
     if (!ensureValidContentRouteScope(res, userId, 'content_route_topics_delete', { topicId })) return;
 

@@ -359,7 +359,9 @@ export async function persistGeneratedTrainingPlan(
   const planVersionForOwnership = getPlanVersion(plan.id) ?? 1;
   let eventsCreated = 0;
   let eventsAlreadyOwned = 0;
-  for (const eventPayload of calendarEvents) {
+  const createCalendarEventWithOwnership = async (
+    eventPayload: (typeof calendarEvents)[number],
+  ): Promise<'created' | 'already_owned' | 'skipped' | 'failed'> => {
     const existing = findExistingOwnership({
       planId: plan.id,
       planVersion: planVersionForOwnership,
@@ -371,8 +373,7 @@ export async function persistGeneratedTrainingPlan(
       // A previous run of this loop already created + recorded the
       // event for this session. Skip to avoid duplicate calendar
       // entries on retry. The session row was already linked then.
-      eventsAlreadyOwned++;
-      continue;
+      return 'already_owned';
     }
     try {
       const secretaryDecision = submitSecretarySchedulingIntent(
@@ -395,10 +396,10 @@ export async function persistGeneratedTrainingPlan(
             sessionId: eventPayload.sessionId,
             secretaryStatus: secretaryDecision.status,
             reasonCodes: secretaryDecision.reasonCodes,
-          },
-          'Secretary did not return a schedulable Training slot; skipping calendar event create',
-        );
-        continue;
+        },
+        'Secretary did not return a schedulable Training slot; skipping calendar event create',
+      );
+        return 'skipped';
       }
       const event = await createTrainingCalendarEvent(
         {
@@ -432,7 +433,7 @@ export async function persistGeneratedTrainingPlan(
         sessionIdentityKey: eventPayload.sessionIdentityKey,
         sessionShapeHash: eventPayload.sessionShapeHash,
       });
-      eventsCreated++;
+      return 'created';
     } catch (err) {
       logger.warn(
         {
@@ -444,6 +445,28 @@ export async function persistGeneratedTrainingPlan(
         },
         'Failed to create calendar event for session',
       );
+      return 'failed';
+    }
+  };
+
+  const calendarEventBatches = chunkArray(calendarEvents, 5);
+  for (const batch of calendarEventBatches) {
+    const settled = await Promise.allSettled(batch.map(createCalendarEventWithOwnership));
+    for (const result of settled) {
+      if (result.status === 'rejected') {
+        logger.warn(
+          {
+            err: result.reason,
+            userId: input.userId,
+            planId: plan.id,
+            planVersion: planVersionForOwnership,
+          },
+          'Unexpected failure while batching training calendar event creation',
+        );
+        continue;
+      }
+      if (result.value === 'created') eventsCreated++;
+      if (result.value === 'already_owned') eventsAlreadyOwned++;
     }
   }
   if (eventsAlreadyOwned > 0) {
@@ -673,22 +696,47 @@ function runPlanLintGuarded(args: {
     }
     return lint;
   } catch (err) {
+    const mode = args.mode ?? 'advisor';
     logger.warn(
       {
         event: 'plan_linter.threw',
         err,
         userId: args.input.userId,
         planId: args.planId,
-        mode: args.mode ?? 'advisor',
+        mode,
       },
-      'plan-linter threw; defaulting to pass so generation is not locked by linter failure',
+      mode === 'strict_preflight'
+        ? 'plan-linter threw during strict preflight; blocking persistence until the plan can be verified'
+        : 'plan-linter threw during advisor pass; surfacing warning instead of hiding the failure',
     );
-    return {
-      status: 'pass',
-      blockers: [],
-      warnings: [],
-      suggestedFixes: [],
+    const finding: PlanLintFinding = {
+      ruleId: 'plan_linter_exception',
+      severity: mode === 'strict_preflight' ? 'blocker' : 'warning',
+      message: 'The training quality gate could not verify this plan. Try again before saving it.',
+      affectedSessions: [],
+      evidence: {
+        errorClass: err instanceof Error ? err.name : typeof err,
+      },
     };
+    return mode === 'strict_preflight'
+      ? {
+          status: 'fail',
+          blockers: [finding],
+          warnings: [],
+          suggestedFixes: [{
+            findingRuleId: 'plan_linter_exception',
+            action: 'Regenerate the plan after the linter failure is resolved.',
+          }],
+        }
+      : {
+          status: 'pass_with_warnings',
+          blockers: [],
+          warnings: [finding],
+          suggestedFixes: [{
+            findingRuleId: 'plan_linter_exception',
+            action: 'Review the plan manually because the advisor linter could not complete.',
+          }],
+        };
   }
 }
 
@@ -737,6 +785,15 @@ function selectedTrainingSecretaryWindow(decision: SecretarySchedulingDecision):
   if (!['scheduled', 'reflowed', 'compressed'].includes(decision.status)) return null;
   if (!decision.selectedSlot?.start || !decision.selectedSlot?.end) return null;
   return { start: decision.selectedSlot.start, end: decision.selectedSlot.end };
+}
+
+function chunkArray<T>(items: readonly T[], size: number): T[][] {
+  const safeSize = Math.max(1, Math.floor(size));
+  const chunks: T[][] = [];
+  for (let index = 0; index < items.length; index += safeSize) {
+    chunks.push(items.slice(index, index + safeSize));
+  }
+  return chunks;
 }
 
 function inactiveScheduleState(session: GeneratedTrainingSession): PersistableSessionScheduleState | null {

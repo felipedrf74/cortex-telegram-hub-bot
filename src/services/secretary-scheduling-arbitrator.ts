@@ -357,6 +357,7 @@ export function submitSecretarySchedulingIntent(
   intent: SecretarySchedulingIntent,
   options: SecretarySchedulingOptions = {},
 ): SecretarySchedulingDecision {
+  assertSecretaryTenantScope(intent);
   ensureSecretaryAgendaDecisionExplanationColumn();
   const decision = scheduleOne(intent, options, []);
   // W-B: emit feedback to registered consumers. Synchronous emit; bad
@@ -383,6 +384,7 @@ export function previewSecretarySchedulingIntent(
   intent: SecretarySchedulingIntent,
   options: SecretarySchedulingOptions = {},
 ): SecretarySchedulingPreview {
+  assertSecretaryTenantScope(intent);
   ensureSecretaryAgendaDecisionExplanationColumn();
   // Use the canonical scheduleOne machinery in read-only preview mode. The
   // decision is fully shaped (including feedback/trail), but no agenda row is
@@ -426,6 +428,7 @@ export function arbitrateSecretarySchedulingIntents(
   intents: SecretarySchedulingIntent[],
   options: SecretarySchedulingOptions = {},
 ): SecretarySchedulingBatchResult {
+  for (const intent of intents) assertSecretaryTenantScope(intent);
   ensureSecretaryAgendaDecisionExplanationColumn();
   const ordered = [...intents].sort(compareIntentPriority);
   const acceptedBusyWindows: SecretaryTimeWindow[] = [];
@@ -993,6 +996,12 @@ function validateIntent(intent: SecretarySchedulingIntent): SecretaryReasonCode[
     reasonCodes.push('missing_availability');
   }
   return reasonCodes;
+}
+
+function assertSecretaryTenantScope(intent: SecretarySchedulingIntent): void {
+  if (!normalizeTenantId(intent.tenantId)) {
+    throw new Error('SECRETARY_INVALID_TENANT_SCOPE: tenantId is required for agenda persistence');
+  }
 }
 
 function findLatestAgendaItemForIntent(intent: SecretarySchedulingIntent): SecretaryAgendaItem | null {

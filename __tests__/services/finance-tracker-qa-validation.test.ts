@@ -2,7 +2,7 @@
  * QA Validation Tests — Finance Tracker (per-user data isolation + tax calculation)
  *
  * Validates the finance-tracker.ts module, migration 022_finance_tables,
- * tax brackets, per-user isolation, and edge cases.
+ * Portugal tax estimate, per-user isolation, and edge cases.
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
@@ -51,6 +51,7 @@ vi.mock('../../src/services/database', () => ({
 
 import {
   calculateMonthlyTax,
+  calculatePortugueseMonthlyTax,
   addTransaction,
   getTransactions,
   deleteTransaction,
@@ -59,9 +60,6 @@ import {
   getTaxEvents,
   markTaxPaid,
   IRPF_BRACKETS,
-  INSS_CEILING,
-  INSS_RATE,
-  INSS_MAX_BASE,
 } from '../../src/services/finance-tracker';
 
 describe('Finance Tracker — QA Validation', () => {
@@ -93,17 +91,17 @@ describe('Finance Tracker — QA Validation', () => {
       expect(colNames).toContain('updated_at');
     });
 
-    it('finance_tax_events has UNIQUE(user_id, month) constraint', () => {
+    it('finance_tax_events has UNIQUE(tenant_id, user_id, month) constraint', () => {
       testDb.prepare(`
-        INSERT INTO finance_tax_events (user_id, month, gross_income, deductions, taxable_income, tax_due, inss_due)
-        VALUES (1, '2024-01', 5000, 0, 5000, 500, 100)
+        INSERT INTO finance_tax_events (tenant_id, user_id, month, gross_income, deductions, taxable_income, tax_due, inss_due)
+        VALUES (1, 1, '2024-01', 5000, 0, 5000, 500, 100)
       `).run();
 
-      // Inserting same user_id + month should fail
+      // Inserting same tenant_id + user_id + month should fail.
       expect(() => {
         testDb.prepare(`
-          INSERT INTO finance_tax_events (user_id, month, gross_income, deductions, taxable_income, tax_due, inss_due)
-          VALUES (1, '2024-01', 6000, 0, 6000, 600, 120)
+          INSERT INTO finance_tax_events (tenant_id, user_id, month, gross_income, deductions, taxable_income, tax_due, inss_due)
+          VALUES (1, 1, '2024-01', 6000, 0, 6000, 600, 120)
         `).run();
       }).toThrow();
     });
@@ -118,92 +116,108 @@ describe('Finance Tracker — QA Validation', () => {
       expect(names).toContain('idx_finance_tax_user_month');
     });
 
-    it('finance_transactions defaults currency to BRL', () => {
+    it('finance_transactions defaults currency to EUR after Portugal migration', () => {
       testDb.prepare(`
-        INSERT INTO finance_transactions (user_id, date, category, amount)
-        VALUES (1, '2024-01-15', 'income', 5000)
+        INSERT INTO finance_transactions (tenant_id, user_id, date, category, amount)
+        VALUES (1, 1, '2024-01-15', 'income', 5000)
       `).run();
       const row = testDb.prepare('SELECT currency FROM finance_transactions WHERE id = 1').get() as any;
-      expect(row.currency).toBe('BRL');
+      expect(row.currency).toBe('EUR');
+    });
+
+    it('finance tables carry tenant scope and tenant-unique tax months', () => {
+      const txColumns = testDb.prepare("PRAGMA table_info('finance_transactions')").all() as any[];
+      const taxColumns = testDb.prepare("PRAGMA table_info('finance_tax_events')").all() as any[];
+      expect(txColumns.map((col) => col.name)).toContain('tenant_id');
+      expect(taxColumns.map((col) => col.name)).toContain('tenant_id');
+
+      testDb.prepare(`
+        INSERT INTO finance_tax_events (tenant_id, user_id, month, gross_income, deductions, taxable_income, tax_due, inss_due)
+        VALUES (10, 1, '2026-05', 1000, 0, 1000, 100, 0)
+      `).run();
+      testDb.prepare(`
+        INSERT INTO finance_tax_events (tenant_id, user_id, month, gross_income, deductions, taxable_income, tax_due, inss_due)
+        VALUES (11, 1, '2026-05', 1000, 0, 1000, 100, 0)
+      `).run();
+      expect(() => testDb.prepare(`
+        INSERT INTO finance_tax_events (tenant_id, user_id, month, gross_income, deductions, taxable_income, tax_due, inss_due)
+        VALUES (10, 1, '2026-05', 1000, 0, 1000, 100, 0)
+      `).run()).toThrow();
     });
 
     it('finance_tax_events defaults status to pending', () => {
       testDb.prepare(`
-        INSERT INTO finance_tax_events (user_id, month, gross_income, deductions, taxable_income, tax_due, inss_due)
-        VALUES (1, '2024-01', 5000, 0, 5000, 500, 100)
+        INSERT INTO finance_tax_events (tenant_id, user_id, month, gross_income, deductions, taxable_income, tax_due, inss_due)
+        VALUES (1, 1, '2024-01', 5000, 0, 5000, 500, 100)
       `).run();
       const row = testDb.prepare('SELECT status FROM finance_tax_events WHERE id = 1').get() as any;
       expect(row.status).toBe('pending');
     });
   });
 
-  // ── Brazilian Tax Calculation ───────────────────────────────────
+  // ── Portugal Tax Calculation ───────────────────────────────────
 
-  describe('IRPF tax calculation', () => {
+  describe('Portugal tax calculation', () => {
+    it('legacy Brazilian monthly tax entry point throws instead of serving runtime calculations', () => {
+      expect(() => calculateMonthlyTax()).toThrow(/Brazilian tax engine removed; see finance-tax-pt/);
+    });
+
     it('zero income results in zero tax', () => {
-      const result = calculateMonthlyTax(0);
+      const result = calculatePortugueseMonthlyTax(0);
       expect(result.taxDue).toBe(0);
       expect(result.inssDue).toBe(0);
       expect(result.effectiveRate).toBe(0);
       expect(result.bracket).toBe('Isento');
     });
 
-    it('income in exempt bracket (< R$2,259.20) pays no tax', () => {
-      const result = calculateMonthlyTax(2000);
-      expect(result.taxDue).toBe(0);
-      expect(result.bracket).toBe('Isento');
-      expect(result.inssDue).toBeGreaterThan(0); // INSS is still due
+    it('Portugal monthly estimate uses annualized brackets and no Brazilian INSS', () => {
+      const result = calculatePortugueseMonthlyTax(2000);
+      expect(result.ruleset).toBe('pt-irs-2026-mainland-estimate');
+      expect(result.taxDue).toBe(364.27);
+      expect(result.bracket).toBe('31.1%');
+      expect(result.inssDue).toBe(0);
+      expect(result.ptInvoiceCode).toBe('PT-IRS-ESTIMATE');
     });
 
-    it('income in first taxable bracket (7.5%) calculates correctly', () => {
-      // R$3,000 gross
-      // INSS: 3000 * 0.20 = 600
-      // Taxable: 3000 - 600 = 2400
-      // Tax: 2400 * 0.075 - 169.44 = 10.56
-      const result = calculateMonthlyTax(3000);
-      expect(result.inssDue).toBe(600);
-      expect(result.taxableIncome).toBe(2400);
-      expect(result.taxDue).toBe(10.56);
-      expect(result.bracket).toBe('7.5%');
+    it('Portugal estimate includes IVA while leaving taxable income as IRS base', () => {
+      const result = calculatePortugueseMonthlyTax(3000);
+      expect(result.inssDue).toBe(0);
+      expect(result.taxableIncome).toBe(3000);
+      expect(result.ivaDue).toBe(690);
+      expect(result.taxDue).toBeGreaterThan(0);
     });
 
-    it('high income uses highest bracket (27.5%)', () => {
-      const result = calculateMonthlyTax(20000);
-      expect(result.bracket).toBe('27.5%');
+    it('high income uses highest Portugal bracket (48%)', () => {
+      const result = calculatePortugueseMonthlyTax(20000);
+      expect(result.bracket).toBe('48.0%');
       expect(result.taxDue).toBeGreaterThan(0);
       expect(result.effectiveRate).toBeGreaterThan(0);
     });
 
-    it('INSS is capped at maximum base', () => {
-      // Income above INSS_MAX_BASE should cap INSS contribution
-      const result = calculateMonthlyTax(15000);
-      const maxInss = Math.round(INSS_MAX_BASE * INSS_RATE * 100) / 100;
-      expect(result.inssDue).toBe(maxInss);
-    });
-
     it('deductions reduce taxable income', () => {
-      const withoutDeductions = calculateMonthlyTax(5000, 0);
-      const withDeductions = calculateMonthlyTax(5000, 1000);
+      const withoutDeductions = calculatePortugueseMonthlyTax(5000, 0);
+      const withDeductions = calculatePortugueseMonthlyTax(5000, 1000);
       expect(withDeductions.taxableIncome).toBeLessThan(withoutDeductions.taxableIncome);
       expect(withDeductions.taxDue).toBeLessThan(withoutDeductions.taxDue);
     });
 
     it('deductions cannot make taxable income negative', () => {
-      const result = calculateMonthlyTax(1000, 5000);
+      const result = calculatePortugueseMonthlyTax(1000, 5000);
       expect(result.taxableIncome).toBe(0);
       expect(result.taxDue).toBe(0);
     });
 
-    it('IRPF_BRACKETS array covers all income levels', () => {
+    it('legacy Brazilian bracket constants are quarantined and not used by calculatePortugueseMonthlyTax', () => {
       expect(IRPF_BRACKETS.length).toBe(5);
       expect(IRPF_BRACKETS[0].rate).toBe(0);
       expect(IRPF_BRACKETS[IRPF_BRACKETS.length - 1].upTo).toBe(Infinity);
+      expect(calculatePortugueseMonthlyTax(3000).bracket).not.toBe('7.5%');
     });
 
     it('effective rate increases with income (progressive taxation)', () => {
-      const low = calculateMonthlyTax(3000);
-      const mid = calculateMonthlyTax(8000);
-      const high = calculateMonthlyTax(20000);
+      const low = calculatePortugueseMonthlyTax(3000);
+      const mid = calculatePortugueseMonthlyTax(8000);
+      const high = calculatePortugueseMonthlyTax(20000);
       expect(high.effectiveRate).toBeGreaterThan(mid.effectiveRate);
       expect(mid.effectiveRate).toBeGreaterThan(low.effectiveRate);
     });

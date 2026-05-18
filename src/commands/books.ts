@@ -144,6 +144,7 @@ async function extractAndStore(title: string, author: string, scope?: PortalBook
       headers: {
         'Content-Type': 'application/json',
         'X-Request-Id': requestId,
+        'X-Internal-Secret': config.contentEngine.internalApiSecret,
       },
       body: JSON.stringify({ title, author, creator_profile: creatorProfile, language }),
       signal: controller.signal,

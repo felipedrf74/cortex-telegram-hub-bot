@@ -13,6 +13,7 @@ import {
 } from '../../services/chat-answer-contract';
 import { applyChatFallbackPolicy } from '../../services/chat-fallback-policy';
 import { buildChatGroundingEnvelope } from '../../services/chat-grounding-layer';
+import { requireTenantIdParam } from '../../services/tenant-scope';
 import {
   persistExchange,
   syncConversationStateForShortcut,
@@ -29,7 +30,12 @@ export async function sendRetryableChatFailureResponseIfNeeded(opts: {
   const { err, res, userId, tenantId, normalizedText, chatRequestId } = opts;
   if (!isRetryableAIProviderError(err)) return false;
 
-  const degradedDomain = keywordMatch(normalizedText) || getLastChatActiveDomain(userId, Date.now(), tenantId) || 'secretary';
+  // 2026-05-18 (skill-hardening QA P1-1): require validated tenantId; the
+  // previous `?? userId` fallback could mis-attribute degraded-response
+  // events across tenants. Route layer must call assertTenantScope first.
+  const validatedTenantId = requireTenantIdParam(tenantId, 'sendRetryableChatFailureResponse');
+
+  const degradedDomain = keywordMatch(normalizedText) || getLastChatActiveDomain(userId, Date.now(), validatedTenantId) || 'secretary';
   const degraded = await buildAITemporarilyBusyResponse(degradedDomain, userId);
   const timestamp = new Date().toISOString();
   const assistantMessageId = `msg-${Date.now()}`;
@@ -38,7 +44,7 @@ export async function sendRetryableChatFailureResponseIfNeeded(opts: {
   const grounding = buildChatGroundingEnvelope({
     message: normalizedText,
     userId,
-    tenantId: tenantId ?? userId,
+    tenantId: validatedTenantId,
     routedDomain: degraded.domain,
   });
   const contract = buildNexusAnswerContract({
@@ -89,13 +95,8 @@ export async function sendRetryableChatFailureResponseIfNeeded(opts: {
     },
     timestamp,
   };
-  if (tenantId) {
-    persistExchange(userId, `msg-user-${Date.now()}`, normalizedText, assistantMessageId, response, tenantId);
-    syncConversationStateForShortcut(userId, degraded.domain, normalizedText, degraded.text, tenantId);
-  } else {
-    persistExchange(userId, `msg-user-${Date.now()}`, normalizedText, assistantMessageId, response);
-    syncConversationStateForShortcut(userId, degraded.domain, normalizedText, degraded.text);
-  }
+  persistExchange(userId, `msg-user-${Date.now()}`, normalizedText, assistantMessageId, response, validatedTenantId);
+  syncConversationStateForShortcut(userId, degraded.domain, normalizedText, degraded.text, validatedTenantId);
   res.json(response);
   return true;
 }

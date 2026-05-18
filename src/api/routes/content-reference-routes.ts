@@ -55,7 +55,7 @@ export function registerContentReferenceRoutes(
 
   /** GET /api/v1/content/books — user's book library (own + global) */
   router.get('/books', asyncHandler(async (req, res: Response) => {
-    const { userId, tenantId = userId } = req as unknown as AuthenticatedRequest;
+    const { userId, tenantId } = req as unknown as AuthenticatedRequest;
     if (!ensureValidContentRouteScope(res, userId, 'content_route_books_list')) return;
 
     const db = getDb();
@@ -75,7 +75,7 @@ export function registerContentReferenceRoutes(
 
   /** POST /api/v1/content/books — add a book to user's library */
   router.post('/books', asyncHandler(async (req, res: Response) => {
-    const { userId, tenantId = userId } = req as unknown as AuthenticatedRequest;
+    const { userId, tenantId } = req as unknown as AuthenticatedRequest;
     if (!ensureValidContentRouteScope(res, userId, 'content_route_books_create')) return;
 
     const { title, author } = req.body;
@@ -109,7 +109,7 @@ export function registerContentReferenceRoutes(
 
   /** DELETE /api/v1/content/books/:id */
   router.delete('/books/:id', asyncHandler(async (req, res: Response) => {
-    const { userId, tenantId = userId } = req as unknown as AuthenticatedRequest;
+    const { userId, tenantId } = req as unknown as AuthenticatedRequest;
     const id = parseInt(String(req.params.id), 10);
     if (!ensureValidContentRouteScope(res, userId, 'content_route_books_delete', { bookId: id })) return;
 
@@ -130,7 +130,7 @@ export function registerContentReferenceRoutes(
 
   /** GET /api/v1/content/channels — user's channels (own + global) */
   router.get('/channels', asyncHandler(async (req, res: Response) => {
-    const { userId, tenantId = userId } = req as unknown as AuthenticatedRequest;
+    const { userId, tenantId } = req as unknown as AuthenticatedRequest;
     if (!ensureValidContentRouteScope(res, userId, 'content_route_channels_list')) return;
 
     const channels = getAllChannels(userId, tenantId);
@@ -139,7 +139,7 @@ export function registerContentReferenceRoutes(
 
   /** POST /api/v1/content/channels — add a channel */
   router.post('/channels', asyncHandler(async (req, res: Response) => {
-    const { userId, tenantId = userId } = req as unknown as AuthenticatedRequest;
+    const { userId, tenantId } = req as unknown as AuthenticatedRequest;
     if (!ensureValidContentRouteScope(res, userId, 'content_route_channels_create')) return;
 
     const { url } = req.body;
@@ -151,7 +151,7 @@ export function registerContentReferenceRoutes(
 
   /** DELETE /api/v1/content/channels/:id */
   router.delete('/channels/:id', asyncHandler(async (req, res: Response) => {
-    const { userId, tenantId = userId } = req as unknown as AuthenticatedRequest;
+    const { userId, tenantId } = req as unknown as AuthenticatedRequest;
     const id = parseInt(String(req.params.id), 10);
     if (!ensureValidContentRouteScope(res, userId, 'content_route_channels_delete', { channelId: id })) return;
 
@@ -171,7 +171,7 @@ export function registerContentReferenceRoutes(
 
   /** GET /api/v1/content/voice-dna — user's voice DNA entries */
   router.get('/voice-dna', asyncHandler(async (req, res: Response) => {
-    const { userId, tenantId = userId } = req as unknown as AuthenticatedRequest;
+    const { userId, tenantId } = req as unknown as AuthenticatedRequest;
     if (!ensureValidContentRouteScope(res, userId, 'content_route_voice_dna_list')) return;
 
     const entries = getVoiceDna(undefined, userId, tenantId).map((entry) => ({
@@ -188,7 +188,7 @@ export function registerContentReferenceRoutes(
 
   /** POST /api/v1/content/voice-dna — upsert a voice DNA entry */
   router.post('/voice-dna', asyncHandler(async (req, res: Response) => {
-    const { userId, tenantId = userId } = req as unknown as AuthenticatedRequest;
+    const { userId, tenantId } = req as unknown as AuthenticatedRequest;
     if (!ensureValidContentRouteScope(res, userId, 'content_route_voice_dna_upsert')) return;
 
     const { category, payload } = req.body;

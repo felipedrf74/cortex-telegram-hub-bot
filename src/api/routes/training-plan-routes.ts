@@ -91,7 +91,7 @@ export function registerTrainingPlanRoutes(
     try {
       const result = await generateTrainingPlanForUser({
         userId,
-        tenantId: tenantId ?? userId,
+        tenantId,
         objective,
         durationWeeks,
         preferredTime,
@@ -257,7 +257,7 @@ export function registerTrainingPlanRoutes(
     try {
       const result = await generateTrainingPlanForUser({
         userId,
-        tenantId: tenantId ?? userId,
+        tenantId,
         objective,
         durationWeeks,
         preferredTime,
@@ -391,7 +391,7 @@ export function registerTrainingPlanRoutes(
         return;
       }
 
-      const result = await syncTrainingPlanCalendar(userId, new Date(), calendarSourceValidation.source, tenantId ?? userId);
+      const result = await syncTrainingPlanCalendar(userId, new Date(), calendarSourceValidation.source, tenantId);
       if (result.status === 'no_active_plan') {
         sendSuccess(res, result.data);
         return;
@@ -434,7 +434,7 @@ export function registerTrainingPlanRoutes(
         return;
       }
 
-      const result = await previewTrainingSessionReflow(userId, sessionId, calendarSourceValidation.source, tenantId ?? userId);
+      const result = await previewTrainingSessionReflow(userId, sessionId, calendarSourceValidation.source, tenantId);
       if (result.status === 'forbidden') {
         sendError(res, 'FORBIDDEN', result.data.message, 403, result.data);
         return;
@@ -486,7 +486,7 @@ export function registerTrainingPlanRoutes(
 
       const result = await confirmTrainingSessionReflow({
         userId,
-        tenantId: tenantId ?? userId,
+        tenantId,
         sessionId,
         proposedStartAt: typeof req.body?.proposedStartAt === 'string' ? req.body.proposedStartAt : null,
         proposedEndAt: typeof req.body?.proposedEndAt === 'string' ? req.body.proposedEndAt : null,

@@ -44,7 +44,7 @@ describe('training-calendar-event-writer', () => {
       },
       'google',
       42,
-      { userId: 42, sessionId: 7, title: 'Training' },
+      { userId: 42, tenantId: 42, sessionId: 7, title: 'Training' },
     );
 
     expect(event).toEqual({ id: 'evt-1', source: 'google' });
@@ -62,7 +62,7 @@ describe('training-calendar-event-writer', () => {
       },
       'google',
       42,
-      { userId: 42, sessionId: 7, title: 'Training' },
+      { userId: 42, tenantId: 42, sessionId: 7, title: 'Training' },
     )).rejects.toBeInstanceOf(TrainingOperationDisabledError);
 
     expect(mocks.createEvent).not.toHaveBeenCalled();

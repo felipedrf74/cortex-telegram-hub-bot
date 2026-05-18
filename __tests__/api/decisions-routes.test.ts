@@ -102,7 +102,9 @@ function mockReq(
   userId = 7,
   body: Record<string, any> = {},
   headers: Record<string, string> = {},
+  scope: { tenantId?: number } = {},
 ): Request {
+  const tenantId = Object.prototype.hasOwnProperty.call(scope, 'tenantId') ? scope.tenantId : userId;
   return {
     method,
     url: path,
@@ -117,13 +119,21 @@ function mockReq(
       return headers[name.toLowerCase()] ?? headers[name];
     },
     userId,
-    tenantId: userId,
+    tenantId,
     deviceId: 'iphone-test',
   } as any;
 }
 
-async function dispatch(router: ReturnType<typeof decisionRoutes>, method: string, path: string, query = {}, body = {}, headers = {}): Promise<MockRes> {
-  const req = mockReq(method, path, query, 7, body, headers);
+async function dispatch(
+  router: ReturnType<typeof decisionRoutes>,
+  method: string,
+  path: string,
+  query = {},
+  body = {},
+  headers = {},
+  scope: { tenantId?: number } = {},
+): Promise<MockRes> {
+  const req = mockReq(method, path, query, 7, body, headers, scope);
   let resolveResponse!: () => void;
   let rejectResponse!: (err: Error) => void;
   const responseDone = new Promise<void>((resolve, reject) => {
@@ -209,6 +219,16 @@ describe('Decision routes', () => {
     expect(handled.statusCode).toBe(200);
     expect(handled.body.data.items[0].itemId).toBe('hbn_1');
     expect(mockListHandledByNexusItems).toHaveBeenCalledWith(7, 7, 5);
+  });
+
+  it('rejects decision routes that arrive without authenticated tenant scope', async () => {
+    const router = decisionRoutes();
+
+    const response = await dispatch(router, 'GET', '/summary', {}, {}, {}, { tenantId: undefined });
+
+    expect(response.statusCode).toBe(401);
+    expect(response.body.error.code).toBe('UNAUTHORIZED');
+    expect(mockGetDecisionSummary).not.toHaveBeenCalled();
   });
 
   it('keeps public fixture creation gated in every environment unless internal secret is present', async () => {

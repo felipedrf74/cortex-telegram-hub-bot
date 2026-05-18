@@ -159,7 +159,7 @@ export function registerTriathlonCommands(bot: Bot): void {
       const rec = cbData.recommendation as CoachRecommendation;
       await ctx.editMessageText(`\u23F3 Aplicando: ${escapeHtml(rec.summary)}...`, { parse_mode: 'HTML' });
       try {
-        await applyCoachRecommendation(rec);
+        await applyCoachRecommendation(rec, { userId: ctx.from?.id, tenantId: ctx.from?.id });
         await ctx.editMessageText(
           `\u2705 <b>Altera\u00E7\u00E3o aplicada:</b>\n${escapeHtml(rec.summary)}\n\n\u{1F4C5} O evento <b>${escapeHtml(rec.originalTitle)}</b> foi atualizado no calend\u00E1rio.`,
           { parse_mode: 'HTML' },
@@ -185,7 +185,7 @@ export function registerTriathlonCommands(bot: Bot): void {
       const appliedSummaries: string[] = [];
       for (const rec of recs) {
         try {
-          await applyCoachRecommendation(rec);
+          await applyCoachRecommendation(rec, { userId: ctx.from?.id, tenantId: ctx.from?.id });
           successCount++;
           appliedSummaries.push(rec.summary);
         } catch (err) {

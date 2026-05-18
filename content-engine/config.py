@@ -18,7 +18,9 @@ class EngineConfig:
     anthropic_api_key: str = ""
     reddit_client_id: str = ""
     reddit_client_secret: str = ""
+    internal_api_secret: str = ""
     fixture_mode: bool = False
+    env: str = "development"
 
     # ── Timeouts (seconds) ────────────────────────────────────────────
     searcher_timeout: float = 10.0
@@ -49,8 +51,19 @@ class EngineConfig:
 
 def load_config() -> EngineConfig:
     """Build config from environment variables."""
+    env = os.environ.get("ENV") or os.environ.get("NODE_ENV") or "development"
+    internal_api_secret = os.environ.get("INTERNAL_API_SECRET", "")
     if _fixture_mode_enabled():
-        return EngineConfig(fixture_mode=True)
+        return EngineConfig(
+            fixture_mode=True,
+            internal_api_secret=internal_api_secret,
+            env=env,
+        )
+
+    if env == "production" and not internal_api_secret:
+        raise RuntimeError(
+            "INTERNAL_API_SECRET must be set before starting the content engine in production."
+        )
 
     return EngineConfig(
         serpapi_key=os.environ.get("SERPAPI_API_KEY", ""),
@@ -59,6 +72,8 @@ def load_config() -> EngineConfig:
         anthropic_api_key=os.environ.get("ANTHROPIC_API_KEY", ""),
         reddit_client_id=os.environ.get("REDDIT_CLIENT_ID", ""),
         reddit_client_secret=os.environ.get("REDDIT_CLIENT_SECRET", ""),
+        internal_api_secret=internal_api_secret,
+        env=env,
     )
 
 

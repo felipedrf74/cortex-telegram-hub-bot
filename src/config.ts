@@ -292,6 +292,7 @@ export const config = {
   contentEngine: {
     enabled: (process.env.CONTENT_ENGINE_ENABLED || 'false') === 'true',
     port: optionalInt('CONTENT_ENGINE_PORT', 8100, { min: 1, max: 65535 }),
+    internalApiSecret: process.env.INTERNAL_API_SECRET || '',
   },
   // ── Database Backup ─────────────────────────────────────────────────
   backup: {

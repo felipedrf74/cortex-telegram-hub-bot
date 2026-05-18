@@ -935,6 +935,7 @@ export async function executeToolCall(
           subcategory: input.subcategory,
           description: input.description,
           currency: input.currency,
+          tenantId,
         });
         invalidateFinanceDerivedCaches(uid);
         return {
@@ -952,14 +953,14 @@ export async function executeToolCall(
         const uid = scope.userId;
         return financeTracker.getTransactions(uid, {
           startDate: input.start_date, endDate: input.end_date,
-          category: input.category, limit: input.limit,
+          category: input.category, limit: input.limit, tenantId,
         });
       }
       case 'finance_delete_transaction': {
         const scope = requireTenantToolUserId(toolName, userId, undefined, tenantId);
         if (!scope.ok) return { error: scope.error };
         const uid = scope.userId;
-        const deleted = financeTracker.deleteTransaction(uid, input.transaction_id);
+        const deleted = financeTracker.deleteTransaction(uid, input.transaction_id, { tenantId });
         if (deleted) invalidateFinanceDerivedCaches(uid);
         return deleted ? { success: true } : { error: 'Transaction not found or unauthorized' };
       }
@@ -967,14 +968,14 @@ export async function executeToolCall(
         const scope = requireTenantToolUserId(toolName, userId, undefined, tenantId);
         if (!scope.ok) return { error: scope.error };
         const uid = scope.userId;
-        return financeTracker.getMonthlySummary(uid, input.month);
+        return financeTracker.getMonthlySummary(uid, input.month, { tenantId });
       }
       case 'finance_calculate_tax': {
         const scope = requireTenantToolUserId(toolName, userId, undefined, tenantId);
         if (!scope.ok) return { error: scope.error };
         const uid = scope.userId;
-        const taxEvent = financeTracker.calculateAndStoreTax(uid, input.month);
-        const breakdown = financeTracker.calculateMonthlyTax(taxEvent.gross_income, taxEvent.deductions);
+        const taxEvent = financeTracker.calculateAndStoreTax(uid, input.month, { tenantId });
+        const breakdown = financeTracker.calculatePortugueseMonthlyTax(taxEvent.gross_income, taxEvent.deductions);
         invalidateFinanceDerivedCaches(uid);
         return { ...taxEvent, effectiveRate: breakdown.effectiveRate, bracket: breakdown.bracket };
       }
@@ -982,13 +983,13 @@ export async function executeToolCall(
         const scope = requireTenantToolUserId(toolName, userId, undefined, tenantId);
         if (!scope.ok) return { error: scope.error };
         const uid = scope.userId;
-        return financeTracker.getTaxEvents(uid, { year: input.year, limit: input.limit });
+        return financeTracker.getTaxEvents(uid, { year: input.year, limit: input.limit, tenantId });
       }
       case 'finance_mark_tax_paid': {
         const scope = requireTenantToolUserId(toolName, userId, undefined, tenantId);
         if (!scope.ok) return { error: scope.error };
         const uid = scope.userId;
-        const marked = financeTracker.markTaxPaid(uid, input.month);
+        const marked = financeTracker.markTaxPaid(uid, input.month, { tenantId });
         if (marked) invalidateFinanceDerivedCaches(uid);
         return marked ? { success: true, month: input.month, status: 'paid' } : { error: 'Tax event not found' };
       }
@@ -996,7 +997,7 @@ export async function executeToolCall(
         const scope = requireTenantToolUserId(toolName, userId, undefined, tenantId);
         if (!scope.ok) return { error: scope.error };
         const uid = scope.userId;
-        const summary = financeTracker.getAnnualTaxSummary(uid, input.year);
+        const summary = financeTracker.getAnnualTaxSummary(uid, input.year, { tenantId });
         return {
           year: summary.year,
           totalGrossIncome: summary.totalGrossIncome,

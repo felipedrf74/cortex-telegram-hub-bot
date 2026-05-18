@@ -1738,7 +1738,7 @@ describe('ChatActionPlanner', () => {
     const previewResponse = await executeChatActionPlan(previewPlan!, { ...baseInput, persistRuns: false }, deps, { confirmed: true });
 
     expect(previewResponse.metadata.actionStatus).toBe('verified_success');
-    expect(previewTrainingSessionReflow).toHaveBeenCalledWith(baseInput.userId, 501, null);
+    expect(previewTrainingSessionReflow).toHaveBeenCalledWith(baseInput.userId, 501, null, baseInput.tenantId);
     expect(confirmTrainingSessionReflow).not.toHaveBeenCalled();
 
     const confirmPlan = parseLlmPlannerJson(JSON.stringify({

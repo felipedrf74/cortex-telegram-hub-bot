@@ -52,8 +52,8 @@ describe('cooking planning context bridge', () => {
   });
 
   it('derives a prorated Cooking grocery budget from Finance monthly headroom', () => {
-    addTransaction(7, '2026-05-01', 'income', 1000, { currency: 'EUR', description: 'creator income' });
-    addTransaction(7, '2026-05-03', 'groceries', 900, { currency: 'EUR', description: 'prior grocery and bills' });
+    addTransaction(7, '2026-05-01', 'income', 1000, { tenantId: 70, currency: 'EUR', description: 'creator income' });
+    addTransaction(7, '2026-05-03', 'groceries', 900, { tenantId: 70, currency: 'EUR', description: 'prior grocery and bills' });
 
     const context = buildCookingFinanceBudgetContext({
       userId: 7,

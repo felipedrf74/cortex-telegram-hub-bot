@@ -329,6 +329,10 @@ function mockReq(
     },
     body,
     userId,
+    // 2026-05-18 (skill-hardening QA P1 follow-up): mirror iosAuthMiddleware
+    // setting tenantId alongside userId. The training routes no longer
+    // have the `tenantId = userId` destructuring default.
+    tenantId: userId,
   } as any;
 }
 

@@ -6,18 +6,18 @@
  * similar ideas across scoped content sources.
  */
 
-import Anthropic from '@anthropic-ai/sdk';
 import { config } from '../config';
 import { getDb } from './database';
 import { completeOneShotWithFallback } from './gemini-provider';
 import { trackedCreate } from '../portal/anthropic-hook';
 import { logger } from '../utils/logger';
+import { createLazyAnthropicClient } from './anthropic-lazy-client';
 import {
   contentScopeParams,
   contentScopePredicate,
   ensureContentTenantScopeColumns,
-  resolveContentTenantId,
 } from './content-tenant-scope';
+import { requireTenantIdParam } from './tenant-scope';
 
 interface DedupResult {
   isDuplicate: boolean;
@@ -29,10 +29,10 @@ interface DedupResult {
 const dedupCache = new Map<string, { result: DedupResult; expiresAt: number }>();
 const CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
 
-const anthropicClient = new Anthropic({ apiKey: config.anthropic.apiKey });
+const anthropicClient = createLazyAnthropicClient();
 
 function getCacheKey(idea: string, angle?: string, userId?: number, tenantId?: number): string {
-  return `t:${tenantId ?? userId ?? 'global'}|u:${userId ?? 'global'}|${idea.toLowerCase().trim()}|${angle ?? ''}`;
+  return `t:${tenantId ?? 'global'}|u:${userId ?? 'global'}|${idea.toLowerCase().trim()}|${angle ?? ''}`;
 }
 
 function getCached(key: string): DedupResult | null {
@@ -73,7 +73,7 @@ function resolveRequiredContentDedupScope(
   const resolvedUserId = Number(uid);
   return {
     userId: resolvedUserId,
-    tenantId: resolveContentTenantId(resolvedUserId, tenantId),
+    tenantId: requireTenantIdParam(tenantId, 'contentDedup'),
   };
 }
 
@@ -154,7 +154,7 @@ Respond with JSON only: { "isDuplicate": boolean, "similarTo": string | null, "c
       prompt,
       'content_dedup',
       async () => {
-        const response = await trackedCreate(anthropicClient, {
+        const response = await trackedCreate(anthropicClient.get(), {
           model: config.anthropic.classifierModel,
           max_tokens: 256,
           temperature: 0.1,

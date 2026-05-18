@@ -103,8 +103,9 @@ function mockReq(
   path: string,
   userId = 12,
   body?: any,
+  scope: { tenantId?: number } = {},
 ): Request {
-  return {
+  const req: any = {
     method,
     url: path,
     originalUrl: path,
@@ -115,6 +116,14 @@ function mockReq(
     headers: {},
     body,
     userId,
+  };
+  if (Object.prototype.hasOwnProperty.call(scope, 'tenantId')) {
+    req.tenantId = scope.tenantId;
+  } else {
+    req.tenantId = userId;
+  }
+  return {
+    ...req,
   } as any;
 }
 
@@ -123,10 +132,17 @@ async function dispatch(
   path: string,
   userIdOrBody?: any,
   body?: any,
+  scope: { tenantId?: number } = {},
 ): Promise<MockRes> {
   const router = invoicesRoutes();
   const hasExplicitUser = typeof userIdOrBody === 'number';
-  const req = mockReq(method, path, hasExplicitUser ? userIdOrBody : 12, hasExplicitUser ? body : userIdOrBody);
+  const req = mockReq(
+    method,
+    path,
+    hasExplicitUser ? userIdOrBody : 12,
+    hasExplicitUser ? body : userIdOrBody,
+    scope,
+  );
   const res = mockRes();
 
   await new Promise<void>((resolve) => {
@@ -197,18 +213,18 @@ describe('Invoices API routes', () => {
   });
 
   it('fails closed on invalid tenant scope before loading the fiscal profile', async () => {
-    const res = await dispatch('GET', '/profile', 0);
+    const res = await dispatch('GET', '/profile', 12, undefined, { tenantId: undefined });
 
     expect(res.statusCode, JSON.stringify(res.body)).toBe(401);
     expect(res.body.ok).toBe(false);
     expect(res.body.error.code).toBe('UNAUTHORIZED');
-    expect(mockGetFiscalCollectionSummary).not.toHaveBeenCalledWith(0);
+    expect(mockGetFiscalCollectionSummary).not.toHaveBeenCalledWith(12);
     expect(getTenantScopeAnomalies(1)).toEqual([
       expect.objectContaining({
         layer: 'delivery',
         operation: 'invoices_route',
-        reason: 'invalid_user_scope',
-        userId: 0,
+        reason: 'missing_tenant_scope',
+        userId: 12,
       }),
     ]);
   });

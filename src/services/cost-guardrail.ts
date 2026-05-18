@@ -17,6 +17,7 @@
 import { getDb } from './database';
 import { config } from '../config';
 import { logger } from '../utils/logger';
+import crypto from 'crypto';
 import {
   getEffectiveDailyCostLimitUsd,
   getUsageLevelForPlan,
@@ -63,7 +64,7 @@ function todayKey(): string {
 // Typical users should land materially below cap, especially because
 // token-zero routes avoid AI spend entirely for deterministic lookups.
 // No free tier — unsubscribed users are blocked from AI entirely.
-const DEFAULT_DAILY_CAP_USD = parseFloat(process.env.PER_USER_DAILY_USD_CAP || '0.00');
+const DEFAULT_DAILY_CAP_USD = Number(process.env.PER_USER_DAILY_USD_CAP || '0.00');
 
 export interface DailyQuotaStatus {
   over: boolean;
@@ -358,16 +359,75 @@ export function enforceCostGuardrails(userId: number): CostGuardrailDecision {
 //   req C: (fresh request)    → over=false (spent=0.004)
 //   req C: writes $0.002 (spent=0.006)  ← exceeds cap $0.005
 //
-// The mutex serializes check+spend PER USER so any pending AI call
-// completes (and writes its usage row) before the next one checks
-// the cap. Across users, execution is still concurrent.
-//
-// Implementation: a Map<userId, Promise> where each new caller
-// chains on the previous tail. Node's single-threaded event loop
-// makes this lock-free; the replace-then-await ordering guarantees
-// no two callers can observe an empty chain concurrently.
+// The mutex serializes check+spend PER USER so any pending AI call completes
+// and writes its usage row before the next one checks the cap. Because PM2 can
+// run multiple Node processes, the lock is SQLite-backed instead of a
+// process-local Map. If SQLite locking is unavailable, callers fail closed.
 
-const userCostLocks = new Map<number, Promise<unknown>>();
+const SQLITE_COST_LOCK_TTL_MS = 120_000;
+const SQLITE_COST_LOCK_WAIT_MS = 30_000;
+const SQLITE_COST_LOCK_POLL_MS = 25;
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function tryGetCostLockDb(): ReturnType<typeof getDb> | null {
+  try {
+    return getDb() ?? null;
+  } catch {
+    return null;
+  }
+}
+
+function ensureCostLockTable(db: ReturnType<typeof getDb>): void {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS cost_guardrail_locks (
+      lock_key TEXT PRIMARY KEY,
+      owner_token TEXT NOT NULL,
+      acquired_at_ms INTEGER NOT NULL,
+      expires_at_ms INTEGER NOT NULL
+    );
+  `);
+}
+
+async function acquireSqliteUserCostLock(userId: number): Promise<(() => void) | null> {
+  const db = tryGetCostLockDb();
+  if (!db) {
+    throw new Error('COST_GUARDRAIL_LOCK_UNAVAILABLE');
+  }
+
+  ensureCostLockTable(db);
+  const lockKey = `user:${userId}`;
+  const ownerToken = crypto.randomUUID();
+  const startedAt = Date.now();
+
+  while (Date.now() - startedAt < SQLITE_COST_LOCK_WAIT_MS) {
+    const nowMs = Date.now();
+    db.prepare('DELETE FROM cost_guardrail_locks WHERE lock_key = ? AND expires_at_ms <= ?')
+      .run(lockKey, nowMs);
+    const result = db.prepare(`
+      INSERT OR IGNORE INTO cost_guardrail_locks (lock_key, owner_token, acquired_at_ms, expires_at_ms)
+      VALUES (?, ?, ?, ?)
+    `).run(lockKey, ownerToken, nowMs, nowMs + SQLITE_COST_LOCK_TTL_MS);
+    if (result.changes > 0) {
+      let released = false;
+      return () => {
+        if (released) return;
+        released = true;
+        try {
+          db.prepare('DELETE FROM cost_guardrail_locks WHERE lock_key = ? AND owner_token = ?')
+            .run(lockKey, ownerToken);
+        } catch (err) {
+          logger.warn({ err, userId }, 'Cost guardrail SQLite lock release failed');
+        }
+      };
+    }
+    await sleep(SQLITE_COST_LOCK_POLL_MS);
+  }
+
+  throw new Error(`COST_GUARDRAIL_LOCK_TIMEOUT: ${lockKey}`);
+}
 
 /**
  * Run `fn` with exclusive per-user ordering against any other
@@ -396,18 +456,11 @@ export async function withUserCostLock<T>(
     // a real user's request.
     return fn();
   }
-  const prior = userCostLocks.get(userId) ?? Promise.resolve();
-  // Swallow prior errors — a previous caller's failure must not chain-
-  // fail the next caller. We care only about ordering, not outcome.
-  const next = prior.catch(() => { /* swallow */ }).then(fn);
-  userCostLocks.set(userId, next);
+  const releaseSqliteLock = await acquireSqliteUserCostLock(userId);
   try {
-    return await next;
+    return await fn();
   } finally {
-    // Clean up the entry only if no one chained onto us while we ran.
-    if (userCostLocks.get(userId) === next) {
-      userCostLocks.delete(userId);
-    }
+    releaseSqliteLock?.();
   }
 }
 
@@ -432,28 +485,14 @@ export async function acquireCostLock(userId: number): Promise<() => void> {
   if (!Number.isFinite(userId) || userId <= 0) {
     return () => { /* no-op for invalid userId */ };
   }
-  let releaseGate: () => void = () => {};
-  const gate = new Promise<void>((resolve) => { releaseGate = resolve; });
-  const prior = userCostLocks.get(userId) ?? Promise.resolve();
-  const next = prior.catch(() => { /* swallow */ }).then(() => gate);
-  userCostLocks.set(userId, next);
-  // Wait for our turn: the prior caller must release before we proceed.
-  await prior.catch(() => { /* swallow */ });
-  let released = false;
-  return () => {
-    if (released) return;
-    released = true;
-    releaseGate();
-    // Clean up if no one chained behind us while we held the lock.
-    if (userCostLocks.get(userId) === next) {
-      userCostLocks.delete(userId);
-    }
-  };
+  const releaseSqliteLock = await acquireSqliteUserCostLock(userId);
+  return releaseSqliteLock ?? (() => { /* unreachable; acquire throws on unavailable DB */ });
 }
 
 /** Test-only: drop every in-flight per-user lock. */
 export function _resetUserCostLocksForTests(): void {
-  userCostLocks.clear();
+  // Kept for backwards-compatible tests; SQLite lock rows are released by
+  // test DB teardown or explicit release functions.
 }
 
 /**
@@ -477,17 +516,30 @@ export function getUserDailySpend(userId: number): { totalUsd: number; messageCo
  * Get today's spend breakdown by provider.
  * Returns: { anthropic: number, openai: number, gemini: number }
  */
-export function getSpendByProvider(date?: string): Record<string, number> {
+export function getSpendByProvider(
+  date?: string,
+  scope: { userId?: number | null; tenantId?: number | null } = {},
+): Record<string, number> {
   try {
     const db = getDb();
     // Use parameterized query to prevent SQL injection
     const filterDate = date || new Date().toISOString().slice(0, 10);
+    const predicates = ['ts >= date(?)'];
+    const params: any[] = [filterDate];
+    if (scope.userId != null) {
+      predicates.push('user_id = ?');
+      params.push(scope.userId);
+    }
+    if (scope.tenantId != null) {
+      predicates.push('tenant_id = ?');
+      params.push(scope.tenantId);
+    }
     const rows = db.prepare(`
       SELECT COALESCE(provider, 'anthropic') as provider, COALESCE(SUM(cost_usd), 0) as total
       FROM api_usage
-      WHERE ts >= date(?)
+      WHERE ${predicates.join(' AND ')}
       GROUP BY provider
-    `).all(filterDate) as { provider: string; total: number }[];
+    `).all(...params) as { provider: string; total: number }[];
 
     const result: Record<string, number> = { anthropic: 0, openai: 0, gemini: 0 };
     for (const row of rows) {

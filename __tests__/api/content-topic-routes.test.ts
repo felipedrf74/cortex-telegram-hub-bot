@@ -141,6 +141,13 @@ function mockReq(
   const parsed = new URL(path, 'http://test.local');
   return {
     userId,
+    // 2026-05-18 (skill-hardening QA P1 follow-up): mirror iosAuthMiddleware
+    // by setting tenantId alongside userId. Routes no longer have the
+    // `tenantId = userId` destructuring default, so missing tenantId in
+    // the request now yields `tenantId: undefined` instead of the user-id
+    // fallback. Tests should reflect production where the middleware
+    // ALWAYS sets both fields.
+    tenantId: userId,
     method,
     url: parsed.pathname + parsed.search,
     originalUrl: parsed.pathname + parsed.search,

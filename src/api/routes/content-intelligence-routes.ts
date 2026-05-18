@@ -2,7 +2,7 @@
 
 import { Router, Response } from 'express';
 import { AuthenticatedRequest } from '../auth-middleware';
-import { asyncHandler, sendSuccess } from '../response-helpers';
+import { asyncHandler, sendError, sendSuccess } from '../response-helpers';
 import { buildContentIntelligenceDetail, buildContentIntelligenceSummary } from './content-intelligence-route-utils';
 import { getFilmingRecommendation } from '../../services/content-scheduler';
 import {
@@ -19,6 +19,7 @@ import { getJobStatuses } from '../../portal/telemetry';
 import { getKnowledgeStats, getVoiceDna } from '../../services/content-dashboard-service';
 import { getPerformanceSummary, type PerformanceFeedback } from '../../services/content-learning-store';
 import { readSignals } from '../../services/intelligence-bus';
+import { assertTenantScope, requireTenantIdParam, TenantScopeError } from '../../services/tenant-scope';
 import type { Lang } from '../../utils/i18n';
 
 type ResolveContentLanguage = (req: Pick<AuthenticatedRequest, 'header'>, userId: number) => Lang;
@@ -36,8 +37,14 @@ export function registerContentIntelligenceRoutes(
 ): void {
   /** GET /api/v1/content/intelligence — backstage agent summary for iOS */
   router.get('/intelligence', asyncHandler(async (req, res: Response) => {
-    const { userId, tenantId } = req as unknown as AuthenticatedRequest;
-    if (!ensureValidContentRouteScope(res, userId, 'content_route_intelligence_summary')) return;
+    const scope = requireContentIntelligenceScope(
+      req as AuthenticatedRequest,
+      res,
+      'content_route_intelligence_summary',
+      ensureValidContentRouteScope,
+    );
+    if (!scope) return;
+    const { userId, tenantId } = scope;
 
     const language = resolveContentLanguage(req, userId);
     const context = readContentIntelligenceContext(userId, tenantId, 'ios-content-intelligence', 25);
@@ -57,8 +64,14 @@ export function registerContentIntelligenceRoutes(
 
   /** GET /api/v1/content/intelligence/detail — deeper backstage view for iOS */
   router.get('/intelligence/detail', asyncHandler(async (req, res: Response) => {
-    const { userId, tenantId } = req as unknown as AuthenticatedRequest;
-    if (!ensureValidContentRouteScope(res, userId, 'content_route_intelligence_detail')) return;
+    const scope = requireContentIntelligenceScope(
+      req as AuthenticatedRequest,
+      res,
+      'content_route_intelligence_detail',
+      ensureValidContentRouteScope,
+    );
+    if (!scope) return;
+    const { userId, tenantId } = scope;
 
     const language = resolveContentLanguage(req, userId);
     const context = readContentIntelligenceContext(userId, tenantId, 'ios-content-intelligence-detail', 6);
@@ -86,12 +99,34 @@ export function registerContentIntelligenceRoutes(
   }));
 }
 
+function requireContentIntelligenceScope(
+  req: AuthenticatedRequest,
+  res: Response,
+  operation: string,
+  ensureValidContentRouteScope: EnsureValidContentRouteScope,
+): { userId: number; tenantId: number } | null {
+  if (!ensureValidContentRouteScope(res, req.userId, operation)) return null;
+  try {
+    return assertTenantScope(req, operation);
+  } catch (err) {
+    if (err instanceof TenantScopeError) {
+      sendError(res, err.code, err.message, err.status);
+      return null;
+    }
+    throw err;
+  }
+}
+
 function readContentIntelligenceContext(
   userId: number,
   tenantId: number | undefined,
   source: string,
   signalLimit: number,
 ) {
+  // 2026-05-18 (skill-hardening QA P1-1): require validated tenantId; the
+  // previous `?? userId` fallback could mis-attribute performance summary
+  // across tenants. Route caller must call assertTenantScope first.
+  const validatedTenantId = requireTenantIdParam(tenantId, 'readContentIntelligenceContext');
   const jobs = new Map(getJobStatuses().map((job) => [job.name, job]));
   const allDiscoverySignals = readSignals(
     source,
@@ -109,7 +144,7 @@ function readContentIntelligenceContext(
     userId,
     14,
   );
-  const performanceSummary = summarizePerformanceFeedback(getPerformanceSummary(userId, 30, tenantId ?? userId));
+  const performanceSummary = summarizePerformanceFeedback(getPerformanceSummary(userId, 30, validatedTenantId));
 
   return {
     reactionJob: jobs.get('reaction_radar'),

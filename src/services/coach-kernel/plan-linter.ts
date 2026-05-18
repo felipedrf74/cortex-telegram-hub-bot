@@ -51,7 +51,8 @@ export type PlanLintRuleId =
   | 'no_heavy_lower_before_long_run'
   | 'no_fake_taper_without_event'
   | 'race_specific_plan_requires_race_date'
-  | 'no_consecutive_identical_strength_sessions';
+  | 'no_consecutive_identical_strength_sessions'
+  | 'plan_linter_exception';
 
 export type PlanLintSeverity = 'blocker' | 'warning' | 'info';
 
@@ -484,6 +485,8 @@ const SUGGESTED_FIXES: Record<PlanLintRuleId, string> = {
     'Block plan generation until race date is provided; emit follow-up question through training-profile-requirements.',
   no_consecutive_identical_strength_sessions:
     'Bump strength variant index by `weekIndex` (slice 4.B/4.C) before the next regenerate.',
+  plan_linter_exception:
+    'Retry after the quality gate can complete; do not persist strict-preflight plans that could not be linted.',
 };
 
 function attachCoachRuleEvidence(finding: PlanLintFinding): PlanLintFinding {

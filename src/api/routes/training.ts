@@ -487,7 +487,7 @@ export function trainingRoutes(): Router {
    * "Concluir" button work (it's an optimistic UX signal, not a DB invariant).
    */
   router.post('/complete', async (req, res: Response) => {
-    const { userId, tenantId = userId } = req as AuthenticatedRequest;
+    const { userId, tenantId } = req as AuthenticatedRequest;
     const { sessionId, notes, rpe } = req.body;
     if (!consumeTrainingWriteBudget(res, tenantId, userId, 'training_session_complete')) return;
 
@@ -576,7 +576,7 @@ export function trainingRoutes(): Router {
    * the planned session still happened.
    */
   router.post('/skip', async (req, res: Response) => {
-    const { userId, tenantId = userId } = req as AuthenticatedRequest;
+    const { userId, tenantId } = req as AuthenticatedRequest;
     const { sessionId } = req.body;
     if (!consumeTrainingWriteBudget(res, tenantId, userId, 'training_session_skip')) return;
 

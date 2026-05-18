@@ -25,7 +25,7 @@ import { getDomainSystemPrompt } from './anthropic';
 import { trackedCreate } from '../portal/anthropic-hook';
 import { completeOneShotWithFallback } from './gemini-provider';
 import { getLastCoachState } from '../domains/domain-handler';
-import { isOwnerUserRef } from './user-service';
+import { getUserTimezoneById, isOwnerUserRef } from './user-service';
 import { getDb } from './database';
 
 const client = new Anthropic({
@@ -165,13 +165,27 @@ export interface CoachBriefingOptions {
   garminSilent?: boolean;
 }
 
+export interface CoachRecommendationApplyScope {
+  userId?: number | null;
+  tenantId?: number | null;
+}
+
 /**
  * Apply a single coach recommendation to the calendar.
  * REST recommendations intentionally keep the slot visible on the calendar
  * instead of deleting it outright so the athlete still sees the cancelled plan.
  */
-export async function applyCoachRecommendation(rec: CoachRecommendation): Promise<void> {
+export async function applyCoachRecommendation(
+  rec: CoachRecommendation,
+  scope: CoachRecommendationApplyScope = {},
+): Promise<void> {
   if (rec.action === 'KEEP') return;
+  const scopedRec = {
+    ...rec,
+    userId: scope.userId,
+    tenantId: scope.tenantId ?? scope.userId,
+    timezone: scope.userId ? getUserTimezoneById(scope.userId) : undefined,
+  };
 
   if (rec.action === 'REST') {
     await updateCalendarEvent(
@@ -182,7 +196,7 @@ export async function applyCoachRecommendation(rec: CoachRecommendation): Promis
       rec.source,
     );
     try {
-      syncSessionWithCoachRecommendation(rec);
+      syncSessionWithCoachRecommendation(scopedRec);
     } catch (err) {
       logger.warn({ err, eventId: rec.eventId }, 'Coach apply updated the calendar but failed to sync the training session state');
     }
@@ -202,7 +216,7 @@ export async function applyCoachRecommendation(rec: CoachRecommendation): Promis
   await updateCalendarEvent(updateData, rec.source);
 
   try {
-    syncSessionWithCoachRecommendation(rec);
+    syncSessionWithCoachRecommendation(scopedRec);
   } catch (err) {
     logger.warn({ err, eventId: rec.eventId }, 'Coach apply updated the calendar but failed to sync the training session state');
   }
@@ -240,7 +254,7 @@ export async function applyCoachRecommendations(
   }
 
   for (const rec of selected) {
-    await applyCoachRecommendation(rec);
+    await applyCoachRecommendation(rec, { userId, tenantId: userId });
   }
 
   return {

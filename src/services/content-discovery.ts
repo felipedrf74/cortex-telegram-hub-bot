@@ -1,6 +1,6 @@
 // Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
 
-import Anthropic from '@anthropic-ai/sdk';
+import type Anthropic from '@anthropic-ai/sdk';
 import fs from 'fs';
 import path from 'path';
 import { config } from '../config';
@@ -12,8 +12,10 @@ import { saveIdea } from '../state/saved-ideas';
 import { isDuplicateIdea } from './content-dedup';
 import { getUserLanguage } from './user-service';
 import { isValidTenantUserId } from './tenant-scope-observability';
+import { createLazyAnthropicClient } from './anthropic-lazy-client';
+import { requireTenantIdParam } from './tenant-scope';
 
-const client = new Anthropic({ apiKey: config.anthropic.apiKey });
+const client = createLazyAnthropicClient();
 
 // Broad interest buckets — let the actual topic energy decide the mix.
 const CONTENT_NICHES = [
@@ -83,10 +85,10 @@ export async function runContentDiscovery(options: RunContentDiscoveryOptions): 
     throw new Error('userId required: content discovery must run with a positive integer user/tenant scope');
   }
   const { userId } = options;
-  const tenantId = options.tenantId ?? userId;
-  if (!isValidTenantUserId(userId) || !isValidTenantUserId(tenantId)) {
+  if (!isValidTenantUserId(userId)) {
     throw new Error('userId required: content discovery must run with a positive integer user/tenant scope');
   }
+  const tenantId = requireTenantIdParam(options.tenantId, 'runContentDiscovery');
 
   const today = now();
   const dateStr = today.toFormat('yyyy-MM-dd');
@@ -143,7 +145,7 @@ Remember: follow the creator configuration for audience fit, but keep the ideas 
       { type: 'text', text: systemPrompt, cache_control: { type: 'ephemeral' } },
     ];
 
-    const response = await trackedCreate(client, {
+    const response = await trackedCreate(client.get(), {
       model: config.anthropic.classifierModel, // Haiku — structured templated output doesn't need Sonnet
       max_tokens: 4096,
       system: cachedSystem,
@@ -161,7 +163,7 @@ Remember: follow the creator configuration for audience fit, but keep the ideas 
     let finalResponse = response;
     if (response.stop_reason === 'pause_turn') {
       logger.info('Content discovery paused, continuing...');
-      finalResponse = await trackedCreate(client, {
+      finalResponse = await trackedCreate(client.get(), {
         model: config.anthropic.classifierModel,
         max_tokens: 4096,
         system: cachedSystem,

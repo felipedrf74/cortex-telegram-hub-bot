@@ -82,20 +82,26 @@ function ensureUserFixtureTable(): void {
 }
 
 function ensureFinanceFixtureTables(): void {
+  testDb.exec(readFileSync('migrations/004_invoice_filings.sql', 'utf8'));
   testDb.exec(readFileSync('migrations/022_finance_tables.sql', 'utf8'));
+  testDb.exec(readFileSync('migrations/025_finance_encryption.sql', 'utf8'));
   testDb.exec(`
-    ALTER TABLE finance_tax_events ADD COLUMN encrypted_gross_income TEXT;
-    ALTER TABLE finance_tax_events ADD COLUMN encrypted_deductions TEXT;
-    ALTER TABLE finance_tax_events ADD COLUMN encrypted_taxable_income TEXT;
-    ALTER TABLE finance_tax_events ADD COLUMN encrypted_tax_due TEXT;
-    ALTER TABLE finance_tax_events ADD COLUMN encrypted_inss_due TEXT;
-    ALTER TABLE finance_tax_events ADD COLUMN encrypted_notes TEXT;
+    ALTER TABLE invoice_filings ADD COLUMN user_id INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE invoice_vendors ADD COLUMN user_id INTEGER NOT NULL DEFAULT 0;
   `);
+  testDb.exec(readFileSync('migrations/067_fiscal_collection_profiles.sql', 'utf8'));
+  testDb.exec(readFileSync('migrations/136_finance_transaction_soft_delete.sql', 'utf8'));
+  testDb.exec(readFileSync('migrations/138_finance_tenant_id.sql', 'utf8'));
+  testDb.exec(readFileSync('migrations/144_finance_money_to_cents.sql', 'utf8'));
+  testDb.exec(readFileSync('migrations/145_finance_tax_pt_invoice_code.sql', 'utf8'));
+  testDb.exec(readFileSync('migrations/146_finance_eur_tenant_rebuild.sql', 'utf8'));
 }
 
 function ensureCookingFixtureTables(): void {
   testDb.exec(readFileSync('migrations/024_cooking_tables.sql', 'utf8'));
+  testDb.exec(readFileSync('migrations/102_cooking_tenant_scope_and_intelligence.sql', 'utf8'));
   testDb.exec(readFileSync('migrations/088_skill_memory_foundation.sql', 'utf8'));
+  testDb.exec(readFileSync('migrations/141_cooking_meal_plan_tenant_uniques.sql', 'utf8'));
 }
 
 describe('Decision Center facade', () => {
@@ -662,8 +668,8 @@ describe('Decision Center facade', () => {
   it('executes Finance payment decisions through tax-event state and read-back verification', async () => {
     ensureFinanceFixtureTables();
     testDb.prepare(`
-      INSERT INTO finance_tax_events (user_id, month, gross_income, deductions, taxable_income, tax_due, inss_due, status, darf_code)
-      VALUES (43, '2026-05', 5000, 0, 5000, 450, 0, 'pending', '0190')
+      INSERT INTO finance_tax_events (tenant_id, user_id, month, gross_income, deductions, taxable_income, tax_due, inss_due, status, darf_code)
+      VALUES (43, 43, '2026-05', 5000, 0, 5000, 450, 0, 'pending', '0190')
     `).run();
     const created = await createDecisionIntent(buildSkillDecisionFixtureIntent('finance', 43, {
       type: 'decision_required',
@@ -876,6 +882,44 @@ describe('Decision Center facade', () => {
       action_succeeded: 0,
       partial_failure: 1,
     });
+  });
+
+  it('rejects snooze when the scoped decision update misses the row', async () => {
+    const created = await createDecisionIntent(buildSkillDecisionFixtureIntent('training', 41, {
+      dedupeKey: 'snooze-stale-row',
+    }));
+    testDb.prepare(`UPDATE notification_center_items SET status = 'dismissed' WHERE item_id = ?`)
+      .run(created.item!.decisionId);
+
+    expect(() => snoozeDecision(created.item!.decisionId, 41, 41, 30))
+      .toThrow(/scoped update/i);
+  });
+
+  it('marks execution failed when the final decision action update is ignored', async () => {
+    const { created } = await createContentApprovalDecision(42, 42, 'ignored-final-decision-update');
+    const decisionId = created.item!.decisionId.replace(/'/g, "''");
+    testDb.exec(`
+      CREATE TRIGGER ignore_actioned_decision_update
+      BEFORE UPDATE OF status ON notification_center_items
+      WHEN NEW.item_id = '${decisionId}' AND NEW.status = 'actioned'
+      BEGIN
+        SELECT RAISE(IGNORE);
+      END;
+    `);
+
+    await expect(performDecisionAction(created.item!.decisionId, 'approve_script', 42, 42, {
+      idempotencyKey: 'ignored-final-update',
+    })).rejects.toThrow(/scoped update/i);
+
+    const execution = testDb.prepare(`
+      SELECT status, error_code
+      FROM decision_action_executions
+      WHERE decision_id = ? AND idempotency_key = 'ignored-final-update'
+    `).get(created.item!.decisionId) as { status: string; error_code: string };
+    expect(execution).toMatchObject({ status: 'failed', error_code: 'DECISION_READBACK_MISMATCH' });
+    const rawDecision = testDb.prepare(`SELECT status FROM notification_center_items WHERE item_id = ?`)
+      .get(created.item!.decisionId) as { status: string };
+    expect(rawDecision.status).toBe('failed');
   });
 
   it('documents outcome ledger retention and aggregate-only admin reporting policy', () => {

@@ -84,6 +84,7 @@ import {
 import { runOutboxTransaction } from '../../services/event-outbox';
 import { consumeResourceBudget } from '../../services/resource-budgets';
 import { createNotificationIntent } from '../../services/notification-orchestrator';
+import { assertTenantScope } from '../../services/tenant-scope';
 import { readTrainingContextAll } from '../../services/training-signals';
 import { getReadiness as getWearableReadiness } from '../../services/wearable/wearable-service';
 import { DateTime } from 'luxon';
@@ -1248,7 +1249,7 @@ export function cookingRoutes(): Router {
    * endpoint.
    */
   router.post('/meal-plan/create-prep-event', asyncHandler(async (req, res: Response) => {
-    const { userId, tenantId } = req as AuthenticatedRequest;
+    const { userId, tenantId } = assertTenantScope(req as AuthenticatedRequest, 'cooking_meal_prep_event');
     const { week, dayOfWeek, startHour, durationMinutes } = req.body;
 
     if (!week || typeof week !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(week)) {
@@ -1339,7 +1340,7 @@ export function cookingRoutes(): Router {
       const endIso = endDt.toISO() || endDt.toFormat("yyyy-LL-dd'T'HH:mm:ss");
       const secretaryInput = {
         userId,
-        tenantId: tenantId ?? userId,
+        tenantId,
         week,
         title,
         startIso,
@@ -1376,7 +1377,7 @@ export function cookingRoutes(): Router {
         start: secretaryDecision.selectedSlot.start,
         end: secretaryDecision.selectedSlot.end,
         description,
-      }, undefined, userId, { tenantId: tenantId ?? userId });
+      }, undefined, userId, { tenantId });
 
       logger.info(
         { userId, week, eventId: event.id, mealCount: meals.length, source: event.source },
@@ -1385,7 +1386,7 @@ export function cookingRoutes(): Router {
       try {
         await createNotificationIntent({
           userId,
-          tenantId: tenantId ?? userId,
+          tenantId,
           sourceSkill: 'cooking',
           type: 'reminder',
           priority: 'active',

@@ -227,16 +227,17 @@ function tryBuildFinanceShortcutResponse(input: {
   route: RouteResult;
   normalizedText: string;
   userId: number;
+  tenantId?: number;
   userLanguage: string;
 }): ChatShortcutRouteResult | null {
-  const { route, normalizedText, userId, userLanguage } = input;
+  const { route, normalizedText, userId, tenantId, userLanguage } = input;
   const financeStateShortcut = parseFinanceStateShortcut(normalizedText);
   if (!financeStateShortcut) {
     return null;
   }
 
   const requestedLanguage = resolveFinanceShortcutLanguage(userLanguage);
-  const shortcut = buildFinanceStateShortcutResponse(financeStateShortcut, userId, requestedLanguage);
+  const shortcut = buildFinanceStateShortcutResponse(financeStateShortcut, userId, requestedLanguage, tenantId);
   return buildShortcutResponse({
     text: shortcut.text,
     domain: 'finance',
@@ -250,6 +251,7 @@ export async function tryBuildChatMessageShortcutResponse(input: {
   route: RouteResult;
   normalizedText: string;
   userId: number;
+  tenantId?: number;
   userLanguage: string;
   activeContext: ActiveChatContext;
 }): Promise<ChatShortcutRouteResult | null> {

@@ -78,9 +78,11 @@ export function registerPortalOperationsRoutes(app: Express, deps: PortalOperati
     }
   });
 
-  app.get('/api/spend-by-provider', (_req: Request, res: Response) => {
+  app.get('/api/spend-by-provider', (req: Request, res: Response) => {
     try {
-      res.json(getSpendByProvider());
+      const userId = parsePositiveInteger(req.query.userId);
+      const tenantId = parsePositiveInteger(req.query.tenantId);
+      res.json(getSpendByProvider(undefined, { userId, tenantId }));
     } catch {
       res.json({ anthropic: 0, openai: 0, gemini: 0 });
     }

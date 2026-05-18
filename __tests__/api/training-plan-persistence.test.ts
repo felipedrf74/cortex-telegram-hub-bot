@@ -9,6 +9,7 @@ const mockLinkSessionToCalendar = vi.fn();
 const mockCreateEvent = vi.fn();
 const mockLoggerWarn = vi.fn();
 const mockLoggerInfo = vi.fn();
+const mockLintPlan = vi.fn();
 // Slice 4.D — the lifecycle module hits the real DB. Mocked here so
 // the existing persistence-layer unit test can keep its in-memory
 // stub shape. The pure logic of the lifecycle module is exercised by
@@ -47,6 +48,17 @@ vi.mock('../../src/utils/logger', () => ({
   LOGGER_REDACTION_PATHS: [],
 }));
 
+vi.mock('../../src/services/coach-kernel/plan-linter', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../src/services/coach-kernel/plan-linter')>();
+  return {
+    ...actual,
+    lintPlan: (...args: unknown[]) => {
+      const implementation = mockLintPlan.getMockImplementation();
+      return implementation ? mockLintPlan(...args) : actual.lintPlan(...(args as [any]));
+    },
+  };
+});
+
 import {
   lintGeneratedTrainingPlanPreflight,
   persistGeneratedTrainingPlan,
@@ -68,6 +80,7 @@ describe('training-plan-persistence', () => {
     mockCreateEvent.mockReset();
     mockLoggerWarn.mockReset();
     mockLoggerInfo.mockReset();
+    mockLintPlan.mockReset();
     mockGetPlanVersion.mockReset();
     mockFindExistingOwnership.mockReset();
     mockRecordCalendarOwnership.mockReset();
@@ -272,6 +285,96 @@ describe('training-plan-persistence', () => {
     expect(mockLoggerWarn.mock.calls[0]?.[0]).not.toHaveProperty('title');
   });
 
+  it('creates training calendar events in batches of five', async () => {
+    let inFlight = 0;
+    let maxInFlight = 0;
+    let eventCounter = 0;
+    mockCreateEvent.mockImplementation(async () => {
+      inFlight += 1;
+      maxInFlight = Math.max(maxInFlight, inFlight);
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      inFlight -= 1;
+      eventCounter += 1;
+      return { id: `evt-${eventCounter}`, source: 'google' };
+    });
+
+    const result = await persistGeneratedTrainingPlan({
+      userId: 12,
+      objective: 'Busy build',
+      durationWeeks: 1,
+      startDate: '2026-04-19',
+      endDate: '2026-04-26',
+      now: new Date('2026-04-19T00:00:00.000Z'),
+      preferencesJson: '{}',
+      normalizedPreferredTime: '12:00',
+      normalizedPreferredCardioTime: '07:00',
+      normalizedPreferredStrengthTime: '12:30',
+      busyWindows: [],
+      planData: {
+        weeks: [
+          {
+            weekNumber: 1,
+            sessions: [
+              { dayOfWeek: 'Monday', sessionType: 'run', title: 'Run 1', durationMinutes: 35 },
+              { dayOfWeek: 'Tuesday', sessionType: 'run', title: 'Run 2', durationMinutes: 35 },
+              { dayOfWeek: 'Wednesday', sessionType: 'gym', title: 'Lift 1', durationMinutes: 45 },
+              { dayOfWeek: 'Thursday', sessionType: 'run', title: 'Run 3', durationMinutes: 35 },
+              { dayOfWeek: 'Friday', sessionType: 'gym', title: 'Lift 2', durationMinutes: 45 },
+              { dayOfWeek: 'Saturday', sessionType: 'run', title: 'Run 4', durationMinutes: 50 },
+            ],
+          },
+        ],
+      },
+    });
+
+    expect(result.totalSessions).toBe(6);
+    expect(result.eventsCreated).toBe(6);
+    expect(mockCreateEvent).toHaveBeenCalledTimes(6);
+    expect(maxInFlight).toBe(5);
+  });
+
+  it('persists a mocked 16-week calendar plan under the batching SLA', async () => {
+    let eventCounter = 0;
+    mockCreateEvent.mockImplementation(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      eventCounter += 1;
+      return { id: `evt-${eventCounter}`, source: 'google' };
+    });
+
+    const dayNames = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+    const weeks = Array.from({ length: 16 }, (_, weekIndex) => ({
+      weekNumber: weekIndex + 1,
+      sessions: dayNames.map((dayOfWeek, sessionIndex) => ({
+        dayOfWeek,
+        sessionType: sessionIndex % 3 === 2 ? 'gym' : 'run',
+        title: `W${weekIndex + 1} Session ${sessionIndex + 1}`,
+        durationMinutes: sessionIndex === 5 ? 60 : 40,
+      })),
+    }));
+
+    const startedAt = performance.now();
+    const result = await persistGeneratedTrainingPlan({
+      userId: 12,
+      objective: '16-week batching SLA',
+      durationWeeks: 16,
+      startDate: '2026-04-19',
+      endDate: '2026-08-09',
+      now: new Date('2026-04-19T00:00:00.000Z'),
+      preferencesJson: '{}',
+      normalizedPreferredTime: '12:00',
+      normalizedPreferredCardioTime: '07:00',
+      normalizedPreferredStrengthTime: '12:30',
+      busyWindows: [],
+      planData: { weeks },
+    });
+    const elapsedMs = performance.now() - startedAt;
+
+    expect(result.totalSessions).toBe(96);
+    expect(result.eventsCreated).toBe(96);
+    expect(mockCreateEvent).toHaveBeenCalledTimes(96);
+    expect(elapsedMs).toBeLessThan(8_000);
+  });
+
   it('does not persist standalone mobility sessions as calendar workouts', async () => {
     const result = await persistGeneratedTrainingPlan({
       userId: 12,
@@ -456,7 +559,7 @@ describe('training-plan-persistence', () => {
     expect(mockLinkSessionToCalendar).not.toHaveBeenCalled();
   });
 
-  it('creates calendar events sequentially to avoid provider write bursts', async () => {
+  it('creates small calendar event sets in the same bounded batch', async () => {
     let resolveFirst!: (value: { id: string; source: string }) => void;
     mockCreateEvent
       .mockImplementationOnce(() => new Promise((resolve) => {
@@ -490,7 +593,7 @@ describe('training-plan-persistence', () => {
     });
 
     await Promise.resolve();
-    expect(mockCreateEvent).toHaveBeenCalledTimes(1);
+    expect(mockCreateEvent).toHaveBeenCalledTimes(2);
 
     resolveFirst({ id: 'evt-1', source: 'google' });
     const result = await pending;
@@ -707,6 +810,98 @@ describe('training-plan-persistence', () => {
           status: 'fail',
         }),
         'plan-linter: blocker(s) present before persistence; route must block writes',
+      );
+    });
+
+    it('plan-linter strict preflight: fails closed when the linter throws', () => {
+      mockLintPlan.mockImplementation(() => {
+        throw new Error('synthetic lint failure');
+      });
+
+      const lint = lintGeneratedTrainingPlanPreflight({
+        userId: 12,
+        objective: 'Beginner bodyweight',
+        durationWeeks: 1,
+        startDate: '2026-04-19',
+        endDate: '2026-04-26',
+        now: new Date('2026-04-19T08:00:00.000Z'),
+        preferencesJson: '{}',
+        normalizedPreferredTime: '12:00',
+        normalizedPreferredCardioTime: '07:00',
+        normalizedPreferredStrengthTime: '12:30',
+        busyWindows: [],
+        planData: {
+          weeks: [
+            {
+              weekNumber: 1,
+              sessions: [
+                {
+                  dayOfWeek: 'Monday',
+                  sessionType: 'run',
+                  title: 'Easy Run',
+                  durationMinutes: 45,
+                },
+              ],
+            },
+          ],
+        },
+      });
+
+      expect(lint.status).toBe('fail');
+      expect(lint.blockers[0]?.ruleId).toBe('plan_linter_exception');
+      expect(lint.suggestedFixes[0]?.findingRuleId).toBe('plan_linter_exception');
+      expect(mockLoggerWarn).toHaveBeenCalledWith(
+        expect.objectContaining({
+          event: 'plan_linter.threw',
+          mode: 'strict_preflight',
+        }),
+        'plan-linter threw during strict preflight; blocking persistence until the plan can be verified',
+      );
+      expect(mockCreatePlan).not.toHaveBeenCalled();
+    });
+
+    it('plan-linter advisor: surfaces linter exceptions as warnings instead of silent pass', async () => {
+      mockLintPlan.mockImplementation(() => {
+        throw new Error('synthetic lint failure');
+      });
+
+      const result = await persistGeneratedTrainingPlan({
+        userId: 12,
+        objective: 'Beginner bodyweight',
+        durationWeeks: 1,
+        startDate: '2026-04-19',
+        endDate: '2026-04-26',
+        now: new Date('2026-04-19T08:00:00.000Z'),
+        preferencesJson: '{}',
+        normalizedPreferredTime: '12:00',
+        normalizedPreferredCardioTime: '07:00',
+        normalizedPreferredStrengthTime: '12:30',
+        busyWindows: [],
+        planData: {
+          weeks: [
+            {
+              weekNumber: 1,
+              sessions: [
+                {
+                  dayOfWeek: 'Monday',
+                  sessionType: 'run',
+                  title: 'Easy Run',
+                  durationMinutes: 45,
+                },
+              ],
+            },
+          ],
+        },
+      });
+
+      expect(result.lint.status).toBe('pass_with_warnings');
+      expect(result.lint.warnings[0]?.ruleId).toBe('plan_linter_exception');
+      expect(mockLoggerWarn).toHaveBeenCalledWith(
+        expect.objectContaining({
+          event: 'plan_linter.threw',
+          mode: 'advisor',
+        }),
+        'plan-linter threw during advisor pass; surfacing warning instead of hiding the failure',
       );
     });
 

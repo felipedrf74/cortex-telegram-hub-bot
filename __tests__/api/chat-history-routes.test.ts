@@ -53,6 +53,9 @@ function mockReq(method: 'GET' | 'DELETE', url: string, userId: number): Request
 
   return {
     userId,
+    // 2026-05-18 (skill-hardening QA P1 follow-up): mirror iosAuthMiddleware
+    // setting tenantId alongside userId.
+    tenantId: userId,
     method,
     url,
     originalUrl: url,

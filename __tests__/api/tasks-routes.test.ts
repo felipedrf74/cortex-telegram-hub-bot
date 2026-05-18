@@ -112,6 +112,7 @@ function mockReq(
   path: string,
   options: {
     userId?: number;
+    tenantId?: number;
     query?: Record<string, any>;
     params?: Record<string, string>;
     body?: Record<string, any>;
@@ -128,6 +129,7 @@ function mockReq(
     body: options.body || {},
     headers: {},
     userId: options.userId ?? 12,
+    tenantId: options.tenantId ?? options.userId ?? 12,
   } as any;
 }
 

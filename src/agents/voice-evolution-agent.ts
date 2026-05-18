@@ -11,7 +11,7 @@
  * Produces: voice_pattern, voice_phrase_trend
  */
 
-import Anthropic from '@anthropic-ai/sdk';
+import type Anthropic from '@anthropic-ai/sdk';
 import { writeSignal, readSignals, logAgentRun } from '../services/intelligence-bus';
 import { buildAgentContext } from '../services/cross-agent-learning';
 import { getDb } from '../services/database';
@@ -21,8 +21,9 @@ import { trackedCreate } from '../portal/anthropic-hook';
 import { completeOneShotWithFallback } from '../services/gemini-provider';
 import { getActiveUserTargets, type UserTarget } from '../services/user-service';
 import { contentScopeParams, contentScopePredicate, ensureContentTenantScopeColumns } from '../services/content-tenant-scope';
+import { createLazyAnthropicClient } from '../services/anthropic-lazy-client';
 
-const client = new Anthropic({ apiKey: config.anthropic.apiKey, maxRetries: 2 });
+const client = createLazyAnthropicClient({ maxRetries: 2 });
 
 const ANALYSIS_PROMPT = `You are analyzing the voice evolution of the authenticated content creator (resolved from the active user/tenant target).
 
@@ -205,7 +206,7 @@ async function runVoiceEvolutionForTarget(target: UserTarget): Promise<{ signals
       prompt,
       'voice_evolution',
       async () => {
-        const response = await trackedCreate(client, {
+        const response = await trackedCreate(client.get(), {
           model: config.anthropic.model,
           max_tokens: 4096,
           messages: [{ role: 'user', content: prompt }],

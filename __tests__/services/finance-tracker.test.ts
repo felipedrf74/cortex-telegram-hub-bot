@@ -2,7 +2,7 @@
  * Tests for src/services/finance-tracker.ts
  *
  * Validates:
- * - IRPF progressive tax calculation (Carnê-Leão brackets)
+ * - Portuguese IRS/IVA estimate calculation
  * - Transaction CRUD (add, get, delete)
  * - Monthly summary aggregation
  * - Tax event persistence and marking as paid
@@ -76,9 +76,11 @@ import { vi } from 'vitest';
 import { logger } from '../../src/utils/logger';
 import {
   calculateMonthlyTax,
+  calculatePortugueseMonthlyTax,
   addTransaction,
   getTransactions,
   deleteTransaction,
+  updateTransactionCategory,
   getMonthlyBudgetView,
   getMonthlySummary,
   calculateAndStoreTax,
@@ -86,79 +88,51 @@ import {
   markTaxPaid,
   getAnnualTaxSummary,
   parseReceiptAmount,
-  IRPF_BRACKETS,
 } from '../../src/services/finance-tracker';
 
 // ═══════════════════════════════════════════════════════════════════
 // TAX CALCULATION TESTS (pure functions, no DB needed)
 // ═══════════════════════════════════════════════════════════════════
 
-describe('calculateMonthlyTax — IRPF progressive brackets', () => {
-  it('returns zero tax for income below first bracket', () => {
-    const result = calculateMonthlyTax(2000);
-    expect(result.taxDue).toBe(0);
-    expect(result.bracket).toBe('Isento');
-    expect(result.effectiveRate).toBe(0);
+describe('calculatePortugueseMonthlyTax — Portugal IRS/IVA estimate', () => {
+  it('keeps the old Brazilian tax entry point quarantined behind a throwing guard', () => {
+    expect(() => calculateMonthlyTax()).toThrow(/Brazilian tax engine removed; see finance-tax-pt/);
   });
 
-  it('calculates 7.5% bracket correctly', () => {
-    const result = calculateMonthlyTax(3500);
-    // INSS: 3500 * 0.20 = 700
-    // Taxable: 3500 - 700 = 2800 (in 7.5% bracket: up to 2826.65)
-    // Tax: 2800 * 0.075 - 169.44 = 40.56
-    expect(result.inssDue).toBe(700);
-    expect(result.taxableIncome).toBe(2800);
-    expect(result.taxDue).toBe(40.56);
-    expect(result.bracket).toBe('7.5%');
+  it('uses the Portugal ruleset instead of Brazilian INSS/DARF math', () => {
+    const result = calculatePortugueseMonthlyTax(1000);
+    expect(result.ruleset).toBe('pt-irs-2026-mainland-estimate');
+    expect(result.inssDue).toBe(0);
+    expect(result.ptInvoiceCode).toBe('PT-IRS-ESTIMATE');
+    expect(result.ivaDue).toBe(230);
+    expect(result.taxDue).toBeGreaterThan(0);
   });
 
-  it('calculates 15% bracket correctly', () => {
-    const result = calculateMonthlyTax(5000);
-    // INSS: 5000 * 0.20 = 1000
-    // Taxable: 5000 - 1000 = 4000 (in 15% bracket: up to 3751.05)
-    // Wait, 4000 > 3751.05 → actually in 22.5% bracket
-    // Tax: 4000 * 0.225 - 662.77 = 237.23
-    expect(result.inssDue).toBe(1000);
-    expect(result.taxableIncome).toBe(4000);
-    expect(result.taxDue).toBe(237.23);
-    expect(result.bracket).toBe('22.5%');
-  });
-
-  it('calculates 27.5% bracket for high income', () => {
-    const result = calculateMonthlyTax(15000);
-    // INSS: min(15000, 7786.02) * 0.20 = 1557.204 → rounded 1557.2
-    // Taxable: 15000 - 1557.2 = 13442.8
-    // Tax: 13442.8 * 0.275 - 896.00 = 3696.77 - 896.00 = 2800.77
-    expect(result.inssDue).toBe(1557.2);
-    expect(result.taxableIncome).toBe(13442.8);
-    expect(result.taxDue).toBe(2800.77);
-    expect(result.bracket).toBe('27.5%');
+  it('uses annualized Portuguese brackets for monthly estimates', () => {
+    const result = calculatePortugueseMonthlyTax(1500);
+    expect(result.taxableIncome).toBe(1500);
+    expect(result.bracket).toBe('24.1%');
+    expect(result.taxDue).toBe(238.46);
   });
 
   it('applies deductions to reduce taxable income', () => {
-    const noDeductions = calculateMonthlyTax(5000, 0);
-    const withDeductions = calculateMonthlyTax(5000, 500);
+    const noDeductions = calculatePortugueseMonthlyTax(5000, 0);
+    const withDeductions = calculatePortugueseMonthlyTax(5000, 500);
     expect(withDeductions.taxDue).toBeLessThan(noDeductions.taxDue);
     expect(withDeductions.deductions).toBe(500);
   });
 
   it('returns zero tax for zero income', () => {
-    const result = calculateMonthlyTax(0);
+    const result = calculatePortugueseMonthlyTax(0);
     expect(result.taxDue).toBe(0);
     expect(result.inssDue).toBe(0);
     expect(result.effectiveRate).toBe(0);
   });
 
-  it('caps INSS at ceiling', () => {
-    const result = calculateMonthlyTax(20000);
-    // INSS max base = 7786.02 → INSS = 7786.02 * 0.20 = 1557.20
-    expect(result.inssDue).toBe(1557.2);
-  });
-
   it('calculates effective rate as tax/gross ratio', () => {
-    const result = calculateMonthlyTax(10000);
+    const result = calculatePortugueseMonthlyTax(10000);
     expect(result.effectiveRate).toBeGreaterThan(0);
-    expect(result.effectiveRate).toBeLessThan(27.5);
+    expect(result.effectiveRate).toBeLessThan(48);
     // Verify: effectiveRate = taxDue / grossIncome * 100
     const expected = Math.round((result.taxDue / 10000) * 10000) / 100;
     expect(result.effectiveRate).toBe(expected);
@@ -186,9 +160,42 @@ describe('Transaction CRUD', () => {
     expect(tx.date).toBe('2024-06-15');
     expect(tx.category).toBe('income');
     expect(tx.amount).toBe(5000);
+    expect(tx.amount_cents).toBe(500000);
     expect(tx.subcategory).toBe('freelance');
     expect(tx.description).toBe('June contract payment');
-    expect(tx.currency).toBe('BRL');
+    expect(tx.currency).toBe('EUR');
+    const row = testDb.prepare('SELECT amount, amount_cents FROM finance_transactions WHERE id = ?').get(tx.id) as {
+      amount: number;
+      amount_cents: number;
+    };
+    expect(row).toEqual({ amount: 5000, amount_cents: 500000 });
+  });
+
+  it('writes an audit row when creating a transaction', () => {
+    const tx = addTransaction(1, '2024-06-15', 'income', 5000, {
+      subcategory: 'freelance',
+      description: 'June contract payment',
+      currency: 'EUR',
+    });
+
+    const row = testDb.prepare(`
+      SELECT action, resource, details FROM audit_trail
+      WHERE user_id = 1 AND tenant_id = 1 AND resource = 'finance.transaction'
+    `).get() as { action: string; resource: string; details: string };
+    const details = JSON.parse(row.details);
+
+    expect(row.action).toBe('create');
+    expect(row.resource).toBe('finance.transaction');
+    expect(details.source).toBe('finance_tracker');
+    expect(details.after).toMatchObject({
+      id: tx.id,
+      amount: 5000,
+      amountCents: 500000,
+      currency: 'EUR',
+      category: 'income',
+      receiptRefPresent: false,
+    });
+    expect(JSON.stringify(details)).not.toContain('June contract payment');
   });
 
   it('does not log raw category or amount when adding a transaction', () => {
@@ -241,11 +248,53 @@ describe('Transaction CRUD', () => {
     const tx = addTransaction(1, '2024-06-01', 'expense', 100);
     expect(deleteTransaction(1, tx.id)).toBe(true);
     expect(getTransactions(1)).toHaveLength(0);
+    const tombstone = testDb.prepare('SELECT deleted_at, delete_reason FROM finance_transactions WHERE id = ?').get(tx.id) as {
+      deleted_at: string | null;
+      delete_reason: string | null;
+    };
+    expect(tombstone.deleted_at).toBeTruthy();
+    expect(tombstone.delete_reason).toBe('user_requested');
+  });
+
+  it('writes before and after audit rows when updating and deleting a transaction', () => {
+    const tx = addTransaction(1, '2024-06-01', 'expense', 100, { subcategory: 'food' });
+
+    const updated = updateTransactionCategory(1, tx.id, 'deduction', { subcategory: 'health' });
+    expect(updated?.category).toBe('deduction');
+    expect(deleteTransaction(1, tx.id)).toBe(true);
+
+    const rows = testDb.prepare(`
+      SELECT action, details FROM audit_trail
+      WHERE user_id = 1 AND tenant_id = 1 AND resource = 'finance.transaction'
+      ORDER BY id ASC
+    `).all() as { action: string; details: string }[];
+
+    expect(rows.map((row) => row.action)).toEqual(['create', 'update', 'delete']);
+    const updateDetails = JSON.parse(rows[1].details);
+    expect(updateDetails.before).toMatchObject({ category: 'expense', subcategory: 'food' });
+    expect(updateDetails.after).toMatchObject({ category: 'deduction', subcategory: 'health' });
+    const deleteDetails = JSON.parse(rows[2].details);
+    expect(deleteDetails.before).toMatchObject({ deletedAt: null });
+    expect(deleteDetails.after.deleteReason).toBe('user_requested');
+    expect(deleteDetails.after.deletedAt).toBeTruthy();
   });
 
   it('delete returns false for wrong user', () => {
     const tx = addTransaction(1, '2024-06-01', 'expense', 100);
     expect(deleteTransaction(2, tx.id)).toBe(false); // user 2 can't delete user 1's tx
+  });
+
+  it('excludes soft-deleted transactions from summaries and future category updates', () => {
+    const tx = addTransaction(1, '2024-06-01', 'expense', 100);
+    addTransaction(1, '2024-06-02', 'income', 500);
+
+    expect(deleteTransaction(1, tx.id)).toBe(true);
+    expect(updateTransactionCategory(1, tx.id, 'deduction')).toBeNull();
+
+    const summary = getMonthlySummary(1, '2024-06');
+    expect(summary.transactionCount).toBe(1);
+    expect(summary.totalExpenses).toBe(0);
+    expect(summary.totalIncome).toBe(500);
   });
 
   it('isolates transactions between users', () => {
@@ -256,6 +305,16 @@ describe('Transaction CRUD', () => {
     expect(getTransactions(2)).toHaveLength(1);
     expect(getTransactions(1)[0].amount).toBe(5000);
     expect(getTransactions(2)[0].amount).toBe(3000);
+  });
+
+  it('isolates same-user transactions between tenants', () => {
+    addTransaction(1, '2024-06-01', 'income', 5000, { tenantId: 10 });
+    addTransaction(1, '2024-06-02', 'income', 3000, { tenantId: 11 });
+
+    expect(getTransactions(1, { tenantId: 10 })).toHaveLength(1);
+    expect(getTransactions(1, { tenantId: 10 })[0].amount).toBe(5000);
+    expect(getTransactions(1, { tenantId: 11 })).toHaveLength(1);
+    expect(getTransactions(1, { tenantId: 11 })[0].amount).toBe(3000);
   });
 });
 
@@ -324,9 +383,13 @@ describe('Tax event persistence', () => {
     expect(taxEvent.gross_income).toBe(8000);
     expect(taxEvent.deductions).toBe(500);
     expect(taxEvent.tax_due).toBeGreaterThan(0);
-    expect(taxEvent.inss_due).toBeGreaterThan(0);
+    expect(taxEvent.inss_due).toBe(0);
     expect(taxEvent.status).toBe('pending');
-    expect(taxEvent.darf_code).toBe('0190');
+    expect(taxEvent.darf_code).toBeNull();
+    expect(taxEvent.pt_invoice_code).toBe('PT-IRS-ESTIMATE');
+    expect(taxEvent.iva_due).toBe(1840);
+    expect(taxEvent.withholding_due).toBe(0);
+    expect(taxEvent.ruleset).toBe('pt-irs-2026-mainland-estimate');
   });
 
   it('upserts tax event on recalculation', () => {
@@ -375,6 +438,21 @@ describe('Tax event persistence', () => {
   it('markTaxPaid returns false for non-existent event', () => {
     expect(markTaxPaid(1, '2099-01')).toBe(false);
   });
+
+  it('isolates same-user tax events between tenants', () => {
+    addTransaction(1, '2024-06-15', 'income', 5000, { tenantId: 10 });
+    addTransaction(1, '2024-06-15', 'income', 3000, { tenantId: 11 });
+
+    const tenant10 = calculateAndStoreTax(1, '2024-06', { tenantId: 10 });
+    const tenant11 = calculateAndStoreTax(1, '2024-06', { tenantId: 11 });
+
+    expect(tenant10.gross_income).toBe(5000);
+    expect(tenant11.gross_income).toBe(3000);
+    expect(getTaxEvents(1, { year: 2024, tenantId: 10 })).toHaveLength(1);
+    expect(getTaxEvents(1, { year: 2024, tenantId: 11 })).toHaveLength(1);
+    expect(markTaxPaid(1, '2024-06', { tenantId: 10 })).toBe(true);
+    expect(getTaxEvents(1, { year: 2024, tenantId: 11 })[0].status).toBe('pending');
+  });
 });
 
 // ═══════════════════════════════════════════════════════════════════
@@ -401,7 +479,7 @@ describe('getAnnualTaxSummary', () => {
     expect(summary.year).toBe(2024);
     expect(summary.totalGrossIncome).toBe(24000);
     expect(summary.totalDeductions).toBe(500);
-    expect(summary.totalInssDue).toBeGreaterThan(0);
+    expect(summary.totalInssDue).toBe(0);
     expect(summary.totalTaxDue).toBeGreaterThan(0);
     expect(summary.monthsPending).toBe(3);
     expect(summary.monthsPaid).toBe(0);
@@ -438,7 +516,7 @@ describe('getAnnualTaxSummary', () => {
 
     const summary = getAnnualTaxSummary(1, 2024);
     expect(summary.effectiveAnnualRate).toBeGreaterThan(0);
-    expect(summary.effectiveAnnualRate).toBeLessThan(27.5);
+    expect(summary.effectiveAnnualRate).toBeLessThan(48);
     const expected = Math.round((summary.totalTaxDue / summary.totalGrossIncome) * 10000) / 100;
     expect(summary.effectiveAnnualRate).toBe(expected);
   });

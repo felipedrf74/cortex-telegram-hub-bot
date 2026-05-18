@@ -78,7 +78,7 @@ export const SKILL_CATALOG: SkillDefinition[] = [
     requiresOAuth: false,
     subSkills: [
       { id: 'expenses', label: 'Expense Tracking', description: 'Log and categorize expenses' },
-      { id: 'tax', label: 'Tax Calculation', description: 'DARF, Carnê-Leão' },
+      { id: 'tax', label: 'Tax Calculation', description: 'Portugal IRS / IVA estimates' },
       { id: 'invoices', label: 'Invoice Filing', description: 'Auto-file receipts and invoices' },
     ],
   },

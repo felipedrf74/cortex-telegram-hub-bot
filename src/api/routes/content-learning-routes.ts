@@ -57,7 +57,7 @@ export function registerContentLearningRoutes(
    * Body: { format: "reel" | "youtube", sourceJob?: string }
    */
   router.post('/topics/generate', asyncHandler(async (req, res: Response) => {
-    const { userId, tenantId = userId } = req as unknown as AuthenticatedRequest;
+    const { userId, tenantId } = req as unknown as AuthenticatedRequest;
     const requestLanguage = resolveContentLanguage(req as AuthenticatedRequest, userId);
     const { format = 'reel', sourceJob = 'manual' } = req.body;
 
@@ -81,7 +81,7 @@ export function registerContentLearningRoutes(
    * Body: { sentiment: "approved" | "skipped" | "rejected" }
    */
   router.post('/topics/:feedbackId/feedback', asyncHandler(async (req, res: Response) => {
-    const { userId, tenantId = userId } = req as unknown as AuthenticatedRequest;
+    const { userId, tenantId } = req as unknown as AuthenticatedRequest;
     const { feedbackId } = req.params;
     const { sentiment } = req.body;
 
@@ -126,7 +126,7 @@ export function registerContentLearningRoutes(
    * List pending topic candidates awaiting user feedback.
    */
   router.get('/topics/pending', asyncHandler(async (req, res: Response) => {
-    const { userId, tenantId = userId } = req as unknown as AuthenticatedRequest;
+    const { userId, tenantId } = req as unknown as AuthenticatedRequest;
     const db = getDb();
     ensureContentTenantScopeColumns(db);
 
@@ -148,7 +148,7 @@ export function registerContentLearningRoutes(
    * Returns structured data — iOS renders as a grouped approval UI.
    */
   router.post('/weekly-package', asyncHandler(async (req, res: Response) => {
-    const { userId, tenantId = userId } = req as unknown as AuthenticatedRequest;
+    const { userId, tenantId } = req as unknown as AuthenticatedRequest;
     const startMs = Date.now();
 
     const { generateWeeklyPackage } = await import('../../services/content-workflow');
@@ -165,7 +165,7 @@ export function registerContentLearningRoutes(
    * The iOS app uses this for the "Your Content DNA" card in the Content tab.
    */
   router.get('/taste-profile', asyncHandler(async (req, res: Response) => {
-    const { userId, tenantId = userId } = req as unknown as AuthenticatedRequest;
+    const { userId, tenantId } = req as unknown as AuthenticatedRequest;
     const db = getDb();
     ensureContentTenantScopeColumns(db);
 
@@ -189,7 +189,7 @@ export function registerContentLearningRoutes(
    * Replaces the Python content-engine feedback.json file.
    */
   router.post('/performance', asyncHandler(async (req, res: Response) => {
-    const { userId, tenantId = userId } = req as unknown as AuthenticatedRequest;
+    const { userId, tenantId } = req as unknown as AuthenticatedRequest;
     const {
       pipelineId,
       videoUrl,
@@ -232,7 +232,7 @@ export function registerContentLearningRoutes(
    * Query: ?days=30 (default 30)
    */
   router.get('/performance', asyncHandler(async (req, res: Response) => {
-    const { userId, tenantId = userId } = req as unknown as AuthenticatedRequest;
+    const { userId, tenantId } = req as unknown as AuthenticatedRequest;
     const days = parseInt(String(req.query.days || '30'), 10);
 
     const { getPerformanceSummary } = await import('../../services/content-learning-store');
@@ -248,7 +248,7 @@ export function registerContentLearningRoutes(
    * Query: ?category=voice_addition (optional filter)
    */
   router.get('/learned-patterns', asyncHandler(async (req, res: Response) => {
-    const { userId, tenantId = userId } = req as unknown as AuthenticatedRequest;
+    const { userId, tenantId } = req as unknown as AuthenticatedRequest;
     const category = req.query.category as string | undefined;
 
     const { getLearnedPatterns } = await import('../../services/content-learning-store');
@@ -266,7 +266,7 @@ export function registerContentLearningRoutes(
    * Ownership-gated: the pipeline must belong to the authenticated user.
    */
   router.get('/artifact-chain/:pipelineId', asyncHandler(async (req, res: Response) => {
-    const { userId, tenantId = userId } = req as unknown as AuthenticatedRequest;
+    const { userId, tenantId } = req as unknown as AuthenticatedRequest;
     const pipelineId = parseInt(req.params.pipelineId, 10);
 
     if (Number.isNaN(pipelineId)) {
@@ -310,7 +310,7 @@ export function registerContentLearningRoutes(
     const limit = parseInt(String(req.query.limit || '10'), 10);
 
     const { getRecentScripts } = await import('../../services/content-learning-store');
-    const { tenantId = userId } = req as unknown as AuthenticatedRequest;
+    const { tenantId } = req as unknown as AuthenticatedRequest;
     const scripts = getRecentScripts(userId, days, limit, tenantId);
 
     sendSuccess(res, buildRecentScriptsResponse(scripts));

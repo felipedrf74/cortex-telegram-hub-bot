@@ -126,7 +126,41 @@ describe('Python config.py — local fixture resource controls', () => {
     expect(src).toContain('CONTENT_ENGINE_FIXTURE_MODE');
     expect(src).toContain('NEXUS_LOCAL_ALLOW_MODEL_CALLS');
     expect(src).toContain('fixture_mode: bool = False');
-    expect(src).toContain('return EngineConfig(fixture_mode=True)');
+    expect(src).toContain('fixture_mode=True');
+    expect(src).toContain('internal_api_secret=internal_api_secret');
+  });
+
+  it('requires INTERNAL_API_SECRET before production startup', () => {
+    expect(src).toContain('internal_api_secret: str = ""');
+    expect(src).toContain('INTERNAL_API_SECRET');
+    expect(src).toContain('ENV');
+    expect(src).toContain('INTERNAL_API_SECRET must be set before starting the content engine in production.');
+  });
+});
+
+describe('Python main.py — inbound internal auth', () => {
+  const src = readEngineFile('main.py');
+
+  it('protects all non-health routes with x-internal-secret', () => {
+    expect(src).toContain('class InternalSecretMiddleware');
+    expect(src).toContain('request.url.path == "/health"');
+    expect(src).toContain('x-internal-secret');
+    expect(src).toContain('secrets.compare_digest');
+    expect(src).toContain('"UNAUTHORIZED"');
+  });
+});
+
+describe('TypeScript content-engine callers — outbound internal auth', () => {
+  it('forwards INTERNAL_API_SECRET from the shared content-engine client', () => {
+    const src = fs.readFileSync(path.join(__dirname, '..', '..', 'src', 'services', 'content-engine.ts'), 'utf-8');
+    expect(src).toContain('X-Internal-Secret');
+    expect(src).toContain('config.contentEngine.internalApiSecret');
+  });
+
+  it('forwards INTERNAL_API_SECRET from book extraction calls', () => {
+    const src = fs.readFileSync(path.join(__dirname, '..', '..', 'src', 'commands', 'books.ts'), 'utf-8');
+    expect(src).toContain('X-Internal-Secret');
+    expect(src).toContain('config.contentEngine.internalApiSecret');
   });
 });
 

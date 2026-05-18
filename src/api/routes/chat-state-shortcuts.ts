@@ -6,7 +6,7 @@ import { getLearnedPatterns, getPerformanceSummary } from '../../services/conten
 import { getAllVendors as getAllInvoiceVendors } from '../../services/invoice-collector';
 import { getFilingsForMonth } from '../../state/invoice-filings';
 import { getSubscriptionStatus } from '../../services/stripe-service';
-import { calculateMonthlyTax, formatCurrencyAmount, getMonthlyBudgetView, getMonthlySummary, getTaxEvents } from '../../services/finance-tracker';
+import { calculatePortugueseMonthlyTax, formatCurrencyAmount, getMonthlyBudgetView, getMonthlySummary, getTaxEvents } from '../../services/finance-tracker';
 import { getFiscalCollectionSummary } from '../../services/fiscal-bundle';
 import {
   getActiveContentPillars,
@@ -441,7 +441,9 @@ export function buildFinanceStateShortcutResponse(
   shortcut: FinanceStateShortcut,
   userId: number,
   language: ShortcutLanguage,
+  tenantId?: number,
 ): { text: string; metadata: Record<string, unknown> } {
+  const financeScope = tenantId && Number.isInteger(tenantId) && tenantId > 0 ? { tenantId } : undefined;
   switch (shortcut) {
     case 'missing_bills': {
       const now = DateTime.now().setZone('Europe/Lisbon');
@@ -554,8 +556,8 @@ export function buildFinanceStateShortcutResponse(
       const now = DateTime.now().setZone('Europe/Lisbon');
       const month = now.toFormat('yyyy-MM');
       const monthLabel = formatFinanceMonthLabel(month, language);
-      const summary = getMonthlySummary(userId, month);
-      const budgetView = getMonthlyBudgetView(userId, month);
+      const summary = getMonthlySummary(userId, month, financeScope);
+      const budgetView = getMonthlyBudgetView(userId, month, financeScope);
       const remaining = Math.max(summary.totalIncome - summary.totalExpenses, 0);
       const remainingRatio = summary.totalIncome > 0
         ? Math.round((remaining / summary.totalIncome) * 100)
@@ -633,17 +635,38 @@ export function buildFinanceStateShortcutResponse(
       };
     }
     case 'next_tax_due': {
-      const pendingEvent = getTaxEvents(userId, { limit: 24 }).find((event) => String(event.status).toLowerCase() !== 'paid') ?? null;
+      const pendingEvent = getTaxEvents(userId, { limit: 24, tenantId }).find((event) => String(event.status).toLowerCase() !== 'paid') ?? null;
       if (pendingEvent) {
+        const invoiceCode = typeof pendingEvent.pt_invoice_code === 'string' && pendingEvent.pt_invoice_code.trim()
+          ? pendingEvent.pt_invoice_code
+          : null;
+        const ivaLine = typeof pendingEvent.iva_due === 'number' && pendingEvent.iva_due > 0
+          ? (language === 'en-US'
+            ? `\n• IVA estimate: ${formatViews(pendingEvent.iva_due, language)}`
+            : `\n• IVA estimado: ${formatViews(pendingEvent.iva_due, language)}`)
+          : '';
+        const withholdingLine = typeof pendingEvent.withholding_due === 'number' && pendingEvent.withholding_due > 0
+          ? (language === 'en-US'
+            ? `\n• Withholding estimate: ${formatViews(pendingEvent.withholding_due, language)}`
+            : `\n• Retenção estimada: ${formatViews(pendingEvent.withholding_due, language)}`)
+          : '';
+        const invoiceLine = invoiceCode
+          ? (language === 'en-US'
+            ? `\n• PT invoice code: ${invoiceCode}`
+            : `\n• Código de fatura PT: ${invoiceCode}`)
+          : '';
         return {
           text: language === 'en-US'
-            ? `The next stored tax due is the ${pendingEvent.month} Carnê-Leão / DARF 0190 entry.\n\n• Tax due: ${formatViews(pendingEvent.tax_due, language)}\n• INSS due: ${formatViews(pendingEvent.inss_due, language)}\n• Status: ${pendingEvent.status}`
-            : `O próximo imposto registado em aberto é a entrada de Carnê-Leão / DARF 0190 de ${pendingEvent.month}.\n\n• Imposto devido: ${formatViews(pendingEvent.tax_due, language)}\n• INSS devido: ${formatViews(pendingEvent.inss_due, language)}\n• Estado: ${pendingEvent.status}`,
+            ? `The next stored Portugal tax estimate is the ${pendingEvent.month} IRS / IVA entry.\n\n• IRS estimate: ${formatViews(pendingEvent.tax_due, language)}${ivaLine}${withholdingLine}${invoiceLine}\n• Status: ${pendingEvent.status}`
+            : `A próxima estimativa fiscal portuguesa registada em aberto é a entrada de IRS / IVA de ${pendingEvent.month}.\n\n• IRS estimado: ${formatViews(pendingEvent.tax_due, language)}${ivaLine}${withholdingLine}${invoiceLine}\n• Estado: ${pendingEvent.status}`,
           metadata: {
             type: 'finance_tax_snapshot',
             month: pendingEvent.month,
             taxDue: pendingEvent.tax_due,
             inssDue: pendingEvent.inss_due,
+            ivaDue: pendingEvent.iva_due ?? null,
+            withholdingDue: pendingEvent.withholding_due ?? null,
+            ptInvoiceCode: invoiceCode,
             status: pendingEvent.status,
             derived: false,
           },
@@ -652,18 +675,21 @@ export function buildFinanceStateShortcutResponse(
 
       const now = DateTime.now().setZone('Europe/Lisbon');
       const month = now.toFormat('yyyy-MM');
-      const summary = getMonthlySummary(userId, month);
+      const summary = getMonthlySummary(userId, month, financeScope);
       if (summary.totalIncome > 0 || summary.totalDeductions > 0) {
-        const preview = calculateMonthlyTax(summary.totalIncome, summary.totalDeductions);
+        const preview = calculatePortugueseMonthlyTax(summary.totalIncome, summary.totalDeductions);
         return {
           text: language === 'en-US'
-            ? `I do not see a stored pending tax event, but the current ${month} numbers point to this preview.\n\n• Gross income: ${formatViews(summary.totalIncome, language)}\n• Deductions: ${formatViews(summary.totalDeductions, language)}\n• Estimated DARF 0190: ${formatViews(preview.taxDue, language)}`
-            : `Não vejo um evento fiscal pendente já registado, mas os números atuais de ${month} apontam para esta prévia.\n\n• Rendimento bruto: ${formatViews(summary.totalIncome, language)}\n• Deduções: ${formatViews(summary.totalDeductions, language)}\n• DARF 0190 estimado: ${formatViews(preview.taxDue, language)}`,
+            ? `I do not see a stored pending tax event, but the current ${month} numbers point to this Portugal tax preview.\n\n• Gross income: ${formatViews(summary.totalIncome, language)}\n• Deductions: ${formatViews(summary.totalDeductions, language)}\n• Estimated IRS: ${formatViews(preview.taxDue, language)}\n• Estimated IVA: ${formatViews(preview.ivaDue ?? 0, language)}`
+            : `Não vejo um evento fiscal pendente já registado, mas os números atuais de ${month} apontam para esta prévia fiscal portuguesa.\n\n• Rendimento bruto: ${formatViews(summary.totalIncome, language)}\n• Deduções: ${formatViews(summary.totalDeductions, language)}\n• IRS estimado: ${formatViews(preview.taxDue, language)}\n• IVA estimado: ${formatViews(preview.ivaDue ?? 0, language)}`,
           metadata: {
             type: 'finance_tax_snapshot',
             month,
             taxDue: preview.taxDue,
             inssDue: preview.inssDue,
+            ivaDue: preview.ivaDue,
+            withholdingDue: preview.withholdingDue,
+            ptInvoiceCode: preview.ptInvoiceCode,
             status: 'preview',
             derived: true,
           },
@@ -672,8 +698,8 @@ export function buildFinanceStateShortcutResponse(
 
       return {
         text: language === 'en-US'
-          ? 'I do not see any stored pending tax event right now, and there is not enough logged income yet to preview the next DARF confidently.'
-          : 'Não vejo nenhum evento fiscal pendente registado neste momento, e ainda não há rendimento suficiente registado para prever o próximo DARF com confiança.',
+          ? 'I do not see any stored pending tax event right now, and there is not enough logged income yet to preview the next Portugal tax estimate confidently.'
+          : 'Não vejo nenhum evento fiscal pendente registado neste momento, e ainda não há rendimento suficiente registado para prever a próxima estimativa fiscal portuguesa com confiança.',
         metadata: {
           type: 'finance_tax_snapshot',
           month: null,
@@ -759,8 +785,8 @@ export function buildFinanceStateShortcutResponse(
       const now = DateTime.now().setZone('Europe/Lisbon');
       const month = now.toFormat('yyyy-MM');
       const monthLabel = formatFinanceMonthLabel(month, language);
-      const summary = getMonthlySummary(userId, month);
-      const budgetView = getMonthlyBudgetView(userId, month);
+      const summary = getMonthlySummary(userId, month, financeScope);
+      const budgetView = getMonthlyBudgetView(userId, month, financeScope);
       const recurringLine = budgetView.recurringExpenseEstimate > 0
         ? (language === 'en-US'
           ? `\n• Still likely in recurring commitments this month: ${formatCurrencyAmount(budgetView.basisCurrency, budgetView.recurringExpenseEstimate)}`

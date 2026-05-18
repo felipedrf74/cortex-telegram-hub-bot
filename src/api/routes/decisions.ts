@@ -27,12 +27,31 @@ import {
   type NotificationIntentType,
   type NotificationSourceSkill,
 } from '../../services/notification-orchestrator';
-import { isValidTenantUserId } from '../../services/tenant-scope-observability';
+import { assertTenantScope, requireMutationScope, TenantScopeError } from '../../services/tenant-scope';
 import { logger } from '../../utils/logger';
 
-function routeTenantId(req: AuthenticatedRequest, userId: number): number {
-  const candidate = req.tenantId;
-  return isValidTenantUserId(candidate) ? candidate : userId;
+function routeTenantId(
+  req: AuthenticatedRequest,
+  res: Response,
+  userId: number,
+  operation: string,
+  mutationTable?: string,
+): number | null {
+  try {
+    const scope = mutationTable
+      ? requireMutationScope(req, mutationTable, operation)
+      : assertTenantScope(req, operation);
+    if (scope.userId === userId) return scope.tenantId;
+    logger.warn({ userId, scopedUserId: scope.userId, operation }, 'Decision route rejected mismatched authenticated user scope');
+    sendError(res, 'UNAUTHORIZED', 'Invalid authenticated user scope', 401);
+  } catch (err) {
+    if (err instanceof TenantScopeError) {
+      sendError(res, err.code, err.message, err.status);
+      return null;
+    }
+    throw err;
+  }
+  return null;
 }
 
 function isInternalDecisionIntentRequest(req: AuthenticatedRequest): boolean {
@@ -75,7 +94,8 @@ export function decisionRoutes(): Router {
     const authReq = req as unknown as AuthenticatedRequest;
     const { userId } = authReq;
     if (!ensureValidTenantRouteScope(res, userId, 'decisions_route_summary')) return;
-    const tenantId = routeTenantId(authReq, userId);
+    const tenantId = routeTenantId(authReq, res, userId, 'decisions_route');
+    if (tenantId == null) return;
     const limit = parseInt(String(req.query.limit || '3'), 10);
     sendSuccess(res, getDecisionSummary(userId, tenantId, limit));
   }));
@@ -84,7 +104,8 @@ export function decisionRoutes(): Router {
     const authReq = req as unknown as AuthenticatedRequest;
     const { userId } = authReq;
     if (!ensureValidTenantRouteScope(res, userId, 'decisions_route_list')) return;
-    const tenantId = routeTenantId(authReq, userId);
+    const tenantId = routeTenantId(authReq, res, userId, 'decisions_route');
+    if (tenantId == null) return;
     const limit = parseInt(String(req.query.limit || '80'), 10);
     const status = typeof req.query.status === 'string' ? req.query.status : undefined;
     const sourceSkill = typeof req.query.sourceSkill === 'string' ? req.query.sourceSkill as NotificationSourceSkill : undefined;
@@ -106,7 +127,8 @@ export function decisionRoutes(): Router {
       sendError(res, 'FORBIDDEN', 'Decision intents are internal service events', 403);
       return;
     }
-    const tenantId = routeTenantId(authReq, userId);
+    const tenantId = routeTenantId(authReq, res, userId, 'decisions_route_create_intent', 'notification_center_items');
+    if (tenantId == null) return;
     try {
       const result = await createDecisionIntent({
         ...(req.body ?? {}),
@@ -127,7 +149,8 @@ export function decisionRoutes(): Router {
       sendError(res, 'FORBIDDEN', 'Decision fixtures are internal service events', 403);
       return;
     }
-    const tenantId = routeTenantId(authReq, userId);
+    const tenantId = routeTenantId(authReq, res, userId, 'decisions_route_fixture_intent', 'notification_center_items');
+    if (tenantId == null) return;
     try {
       const result = await createDecisionIntent(buildSkillDecisionFixtureIntent(
         String(req.params.sourceSkill || 'secretary') as NotificationSourceSkill,
@@ -148,7 +171,8 @@ export function decisionRoutes(): Router {
     const authReq = req as unknown as AuthenticatedRequest;
     const { userId } = authReq;
     if (!ensureValidTenantRouteScope(res, userId, 'decisions_route_get_preferences')) return;
-    const tenantId = routeTenantId(authReq, userId);
+    const tenantId = routeTenantId(authReq, res, userId, 'decisions_route');
+    if (tenantId == null) return;
     sendSuccess(res, getDecisionPreferences(userId, tenantId));
   }));
 
@@ -156,7 +180,8 @@ export function decisionRoutes(): Router {
     const authReq = req as unknown as AuthenticatedRequest;
     const { userId } = authReq;
     if (!ensureValidTenantRouteScope(res, userId, 'decisions_route_update_preferences')) return;
-    const tenantId = routeTenantId(authReq, userId);
+    const tenantId = routeTenantId(authReq, res, userId, 'decisions_route_update_preferences', 'notification_profiles');
+    if (tenantId == null) return;
     try {
       sendSuccess(res, updateDecisionPreferences(userId, tenantId, req.body ?? {}));
     } catch (err) {
@@ -168,7 +193,8 @@ export function decisionRoutes(): Router {
     const authReq = req as unknown as AuthenticatedRequest;
     const { userId } = authReq;
     if (!ensureValidTenantRouteScope(res, userId, 'decisions_route_handled')) return;
-    const tenantId = routeTenantId(authReq, userId);
+    const tenantId = routeTenantId(authReq, res, userId, 'decisions_route');
+    if (tenantId == null) return;
     const limit = parseInt(String(req.query.limit || '25'), 10);
     const items = listHandledByNexusItems(userId, tenantId, limit);
     sendSuccess(res, { count: items.length, items });
@@ -178,7 +204,8 @@ export function decisionRoutes(): Router {
     const authReq = req as unknown as AuthenticatedRequest;
     const { userId } = authReq;
     if (!ensureValidTenantRouteScope(res, userId, 'decisions_route_detail', { decisionId: req.params.id })) return;
-    const tenantId = routeTenantId(authReq, userId);
+    const tenantId = routeTenantId(authReq, res, userId, 'decisions_route');
+    if (tenantId == null) return;
     const item = getDecisionItem(String(req.params.id || ''), userId, tenantId);
     if (!item) {
       sendError(res, 'NOT_FOUND', 'Decision not found', 404);
@@ -191,7 +218,8 @@ export function decisionRoutes(): Router {
     const authReq = req as unknown as AuthenticatedRequest;
     const { userId } = authReq;
     if (!ensureValidTenantRouteScope(res, userId, 'decisions_route_viewed', { decisionId: req.params.id })) return;
-    const tenantId = routeTenantId(authReq, userId);
+    const tenantId = routeTenantId(authReq, res, userId, 'decisions_route_viewed', 'notification_center_items');
+    if (tenantId == null) return;
     try {
       sendSuccess(res, { item: markDecisionViewed(String(req.params.id || ''), userId, tenantId) });
     } catch (err) {
@@ -203,7 +231,8 @@ export function decisionRoutes(): Router {
     const authReq = req as unknown as AuthenticatedRequest;
     const { userId } = authReq;
     if (!ensureValidTenantRouteScope(res, userId, 'decisions_route_snooze', { decisionId: req.params.id })) return;
-    const tenantId = routeTenantId(authReq, userId);
+    const tenantId = routeTenantId(authReq, res, userId, 'decisions_route_snooze', 'notification_center_items');
+    if (tenantId == null) return;
     try {
       sendSuccess(res, { item: snoozeDecision(String(req.params.id || ''), userId, tenantId, Number(req.body?.minutes ?? 60)) });
     } catch (err) {
@@ -215,7 +244,8 @@ export function decisionRoutes(): Router {
     const authReq = req as unknown as AuthenticatedRequest;
     const { userId } = authReq;
     if (!ensureValidTenantRouteScope(res, userId, 'decisions_route_dismiss', { decisionId: req.params.id })) return;
-    const tenantId = routeTenantId(authReq, userId);
+    const tenantId = routeTenantId(authReq, res, userId, 'decisions_route_dismiss', 'notification_center_items');
+    if (tenantId == null) return;
     try {
       sendSuccess(res, { item: dismissDecision(String(req.params.id || ''), userId, tenantId) });
     } catch (err) {
@@ -227,7 +257,8 @@ export function decisionRoutes(): Router {
     const authReq = req as unknown as AuthenticatedRequest;
     const { userId } = authReq;
     if (!ensureValidTenantRouteScope(res, userId, 'decisions_route_action', { decisionId: req.params.id })) return;
-    const tenantId = routeTenantId(authReq, userId);
+    const tenantId = routeTenantId(authReq, res, userId, 'decisions_route_action', 'notification_center_items');
+    if (tenantId == null) return;
     try {
       const result = await performDecisionAction(
         String(req.params.id || ''),
@@ -255,7 +286,8 @@ export function deviceTokenRoutes(): Router {
     const authReq = req as unknown as AuthenticatedRequest;
     const { userId } = authReq;
     if (!ensureValidTenantRouteScope(res, userId, 'device_tokens_route_register')) return;
-    const tenantId = routeTenantId(authReq, userId);
+    const tenantId = routeTenantId(authReq, res, userId, 'device_tokens_route_register', 'notification_device_tokens');
+    if (tenantId == null) return;
     try {
       const token = registerNotificationDeviceToken({
         userId,
@@ -284,7 +316,8 @@ export function deviceTokenRoutes(): Router {
     const authReq = req as unknown as AuthenticatedRequest;
     const { userId } = authReq;
     if (!ensureValidTenantRouteScope(res, userId, 'device_tokens_route_revoke')) return;
-    const tenantId = routeTenantId(authReq, userId);
+    const tenantId = routeTenantId(authReq, res, userId, 'device_tokens_route_revoke', 'notification_device_tokens');
+    if (tenantId == null) return;
     sendSuccess(res, { revoked: revokeNotificationDeviceToken(String(req.params.tokenId || ''), userId, tenantId) });
   }));
 

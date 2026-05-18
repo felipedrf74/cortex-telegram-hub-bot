@@ -75,6 +75,16 @@ function intent(overrides: Partial<SecretarySchedulingIntent> = {}): SecretarySc
 }
 
 describe('secretary-scheduling-arbitrator', () => {
+  it('hard-fails missing tenant scope before persisting agenda rows', () => {
+    expect(() => submitSecretarySchedulingIntent(intent({ tenantId: '  ' }))).toThrow(/SECRETARY_INVALID_TENANT_SCOPE/);
+    expect(() => arbitrateSecretarySchedulingIntents([intent({ tenantId: '' })])).toThrow(/SECRETARY_INVALID_TENANT_SCOPE/);
+    expect(listSecretaryAgendaItems({
+      ownerUserId: OWNER_USER_ID,
+      tenantId: TENANT_ID,
+      includeInactive: true,
+    })).toHaveLength(0);
+  });
+
   it('schedules a Training intent through Secretary with source attribution and lifecycle state', () => {
     const decision = submitSecretarySchedulingIntent(intent(), {
       now: '2026-05-01T08:00:00.000Z',

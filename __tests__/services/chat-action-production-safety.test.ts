@@ -423,8 +423,8 @@ describe('chat action production safety: tenant isolation, idempotency, retries,
       expect(secondPending.id).toBe(firstPending.id);
       expect(testDb.prepare('SELECT COUNT(*) AS count FROM chat_pending_actions WHERE user_id = ? AND tenant_id = ? AND conversation_id = ?').get(userA, tenantA, 'conv-pending-idempotent')).toMatchObject({ count: 1 });
 
-      addTransaction(userA, '2026-05-01', 'income', 5000, { currency: 'BRL' });
-      calculateAndStoreTax(userA, '2026-05');
+      addTransaction(userA, '2026-05-01', 'income', 5000, { currency: 'EUR', tenantId: tenantA });
+      calculateAndStoreTax(userA, '2026-05', { tenantId: tenantA });
       const paymentPlan = parseLlmPlannerJson(JSON.stringify({
         confidence: 0.99,
         steps: [{
@@ -441,8 +441,8 @@ describe('chat action production safety: tenant isolation, idempotency, retries,
       expect(paymentFirst.metadata.actionStatus).toBe('verified_success');
       expect(paymentSecond.metadata.actionStatus).toBe('verified_success');
       expect(paymentSecond.text).toMatch(/already handled|did not create a duplicate/i);
-      expect(getTaxEvents(userA, { year: 2026 }).filter((event) => event.month === '2026-05')).toHaveLength(1);
-      expect(getTaxEvents(userA, { year: 2026 }).find((event) => event.month === '2026-05')).toMatchObject({ status: 'paid' });
+      expect(getTaxEvents(userA, { year: 2026, tenantId: tenantA }).filter((event) => event.month === '2026-05')).toHaveLength(1);
+      expect(getTaxEvents(userA, { year: 2026, tenantId: tenantA }).find((event) => event.month === '2026-05')).toMatchObject({ status: 'paid' });
 
       const sendEmailPlan = parseLlmPlannerJson(JSON.stringify({
         confidence: 0.99,

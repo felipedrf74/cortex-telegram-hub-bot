@@ -148,8 +148,18 @@ function mockRes(): MockRes {
   return r;
 }
 
-function mockReq(userId: number, body?: any): Request {
-  return { userId, body } as any;
+interface MockTenantScope {
+  tenantId?: number;
+}
+
+function mockReq(userId: number, body?: any, scope: MockTenantScope = {}): Request {
+  const req: any = { userId, body };
+  if (Object.prototype.hasOwnProperty.call(scope, 'tenantId')) {
+    req.tenantId = scope.tenantId;
+  } else {
+    req.tenantId = userId;
+  }
+  return req as Request;
 }
 
 async function dispatch(
@@ -157,9 +167,10 @@ async function dispatch(
   url: string,
   userId: number,
   body?: any,
+  scope: MockTenantScope = {},
 ): Promise<MockRes> {
   const router = financeRoutes();
-  const req = mockReq(userId, body);
+  const req = mockReq(userId, body, scope);
   (req as any).method = method;
   (req as any).url = url;
   (req as any).originalUrl = url;
@@ -276,7 +287,7 @@ describe('Finance API — tax routes', () => {
   });
 
   it('fails closed on invalid tenant scope before loading transactions', async () => {
-    const res = await dispatch('GET', '/transactions', 0);
+    const res = await dispatch('GET', '/transactions', 22010, undefined, { tenantId: undefined });
 
     expect(res.statusCode, JSON.stringify(res.body)).toBe(401);
     expect(res.body.ok).toBe(false);
@@ -285,8 +296,8 @@ describe('Finance API — tax routes', () => {
       expect.objectContaining({
         layer: 'delivery',
         operation: 'finance_route',
-        reason: 'invalid_user_scope',
-        userId: 0,
+        reason: 'missing_tenant_scope',
+        userId: 22010,
       }),
     ]);
   });
@@ -364,6 +375,24 @@ describe('Finance API — tax routes', () => {
     expect(res.statusCode).toBe(201);
     expect(res.body.ok).toBe(true);
     expect(mockInvalidateFinanceDerivedCaches).toHaveBeenCalledWith(user.id);
+  });
+
+  it('accepts cent-backed transaction amounts from iOS clients', async () => {
+    const user = getOrCreateUser(22014, { username: 'finance-cents-route' });
+
+    const res = await dispatch('POST', '/transactions', user.id, {
+      date: '2024-04-16',
+      category: 'expense',
+      amount_cents: 1234,
+      currency: 'EUR',
+    });
+
+    expect(res.statusCode).toBe(201);
+    expect(res.body.data.transaction).toMatchObject({
+      amount: 12.34,
+      amount_cents: 1234,
+      currency: 'EUR',
+    });
   });
 
   it('returns 404 when marking a missing tax event as paid', async () => {

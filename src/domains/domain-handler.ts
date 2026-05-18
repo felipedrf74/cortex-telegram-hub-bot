@@ -34,6 +34,8 @@ import {
   getCardioProgression,
   formatCardioProgressionForPrompt,
 } from '../services/progression-analytics';
+import { buildCookingPreferenceReadModel } from '../services/cooking-preferences';
+import { buildCookingPreferenceMemorySummary } from '../services/cooking-intelligence';
 import type { AIToolResultMessage } from '../services/ai-provider';
 import { logger } from '../utils/logger';
 import { AITimeoutError } from '../utils/timeout';
@@ -370,6 +372,25 @@ export async function buildSimpleStateContext(
   // Cross-domain shared context
   const sharedCtx = hasUserScope ? getSharedMemorySummary(userId, tenantId) : '';
   if (sharedCtx) parts.push(sharedCtx);
+
+  if (domain === 'cooking' && hasUserScope) {
+    try {
+      const cookingPreferences = buildCookingPreferenceReadModel(userId, tenantId).profile;
+      const cookingSummary = buildCookingPreferenceMemorySummary(cookingPreferences);
+      if (cookingSummary) {
+        parts.push(
+          [
+            '<cooking_safety_preferences>',
+            cookingSummary,
+            'Treat these as hard constraints for allergies and dietary restrictions. Do not suggest, cook, buy, or substitute ingredients that conflict with them.',
+            '</cooking_safety_preferences>',
+          ].join('\n'),
+        );
+      }
+    } catch (err) {
+      logger.warn({ err, userId, tenantId }, 'Cooking preference context unavailable; continuing without preference block');
+    }
+  }
 
   if (hasUserScope) {
     const decisionCtx = await buildSharedDecisionContext(domain, userId, tenantId);
