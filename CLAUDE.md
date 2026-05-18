@@ -2,22 +2,35 @@
 
 ## Agent Bootloader - Read First
 
-This file is a repo-local bootloader. Before creating or updating markdown,
-read:
+This file is a repo-local bootloader. Before creating or updating markdown
+OR starting a new feature, read **in order**:
 
 0. Start from the official workspace:
    `/Users/felipedominguez/Desktop/Nexus Hub`
 1. `/Users/felipedominguez/Desktop/Nexus Hub/docs/DOCS_INDEX.md`
 2. `/Users/felipedominguez/Desktop/Nexus Hub/docs/agent/OPERATING_CONTEXT.md`
-3. `docs/DOCS_INDEX.md`
-4. `docs/release/current-release-index.md`
-5. `docs/qa/QA_BACKEND_REPORT.md`
+3. `/Users/felipedominguez/Desktop/Nexus Hub/docs/release/CURRENT_RELEASE_STATE.md`
+4. **`/Users/felipedominguez/Desktop/Nexus Hub/docs/release/feature-delivery-ledger.md`** — canonical "what's shipped, who owns it, what tests cover it". Check whether your task overlaps an `in_worktree` row owned by another branch BEFORE forking code (test-infra plan Phase G, 2026-05-18).
+5. **The most-recent file under `docs/agents/handoffs/`** (this repo) — the previous agent's session handoff. Read first to know pending follow-ups, open questions, and the next agent's first 3 actions (Phase H-5 template).
+6. `docs/DOCS_INDEX.md`
+7. `docs/release/current-release-index.md`
+8. `docs/qa/QA_BACKEND_REPORT.md`
 
 Do not create a new scattered final report when a current/canonical doc already
 exists. Update the current doc and link any one-off evidence from the current
 index. Historical reports are evidence, not active truth, unless the current
 release index links them. Run `npm run docs:audit` before creating release docs
 or copying verdicts, commit hashes, or test counts.
+
+**On delivery, update the Feature Delivery Ledger row(s) for the flag(s) you
+touched** (status, owner_worktree, current_version, commits, tests, evidence,
+last_verified). The ledger is the source of truth for "is this feature shipped";
+pre-commit nudges when `src/services/runtime-flags.ts` is touched without a
+matching ledger edit.
+
+**At session end, write a handoff** at `docs/agents/handoffs/<YYYY-MM-DD>-<slug>.md`
+using `docs/agents/handoff-template.md` as the boilerplate. The next agent
+reads this file as step 5 above.
 
 **You are working directly on the single-source-of-truth backend for Nexus Hub, a multi-domain AI personal assistant.** Do not assume a multi-agent orchestration, queue system, or "role" — those files were removed in Phase 0 (April 2026). There is one codebase, one main branch, one human owner (Felipe), and one deploy path.
 
@@ -210,6 +223,35 @@ Direct `./scripts/deploy.sh` exists for trivial hotfixes but the default is alwa
 - SQLite tests use `:memory:`.
 - Bug fixes include a failing-test-before-fix whenever reasonable.
 - `_resetDecryptCacheForTests()` in `beforeEach` if the test uses `oauth-store` — the decrypted-token LRU is module-scoped.
+
+**Scoped backend tests** — the pre-commit hook runs only the tests
+mapped from your diff (via `scripts/changed-area-classifier.sh`).
+Touch `src/services/secretary-*.ts` → only `__tests__/services/secretary-*.test.ts`
+runs (~10 s). Touch `vitest.config.ts`/`package.json`/`tsconfig.json` →
+full suite ("shared-behavior risk"). Set `NEXUS_PRECOMMIT_FULL_VITEST=1`
+to force the full suite.
+
+**Scoped iOS tests** (test-infra plan Phases A-H, 2026-05-18) — the iOS
+repo's `scripts/ios-changed-area-runner.sh` reads this classifier's
+`xctest.{mode,classes}` output and runs only the XCTest classes mapped
+to your iOS file changes. A Home-only iOS diff runs ~7 classes (~3 min)
+instead of the 118-test full suite (~25 min). Cached green classes are
+skipped (~0 s on re-runs at the same source sha). Escape hatches:
+`NEXUS_IOS_FOCUSED=0`, `NEXUS_IOS_NO_CACHE=1`, `NEXUS_IOS_PRECOMMIT_SKIP=1`.
+
+**Multi-agent / multi-worktree coordination**:
+- `scripts/worktree-inventory.sh` (Phase H-2) — enumerate worktrees by
+  age + merge state + disk usage. `--stale` filters >30-day-old branches.
+  `--prune-merged` interactively removes merged branches.
+- The classifier emits `migrations.collisions[]` (Phase H-3) — surfaces
+  migration prefix collisions against sibling local worktrees BEFORE
+  the boot-time `assertNoUnexpectedMigrationPrefixCollisions` throws.
+- `scripts/gate-dashboard-parity.sh` (Phase H-4) — compares local
+  cannot-skip gate count to `origin/main` and warns if behind.
+- iOS uses `simctl clone` per worktree (Phase C): each worktree gets
+  its own `iPhone 17 Pro — <slug>` simulator. Two agents can run
+  `xcodebuild test` concurrently without `shutdown all` killing each
+  other. Opt out with `IOS_SIM_PER_WORKTREE=0`.
 
 ### Local-dev sandbox
 
