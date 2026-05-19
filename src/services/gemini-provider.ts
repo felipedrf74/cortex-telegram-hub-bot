@@ -68,15 +68,22 @@ export function isGeminiProviderConfigured(): boolean {
 
 const GEMINI_COST_PER_MTK: Record<string, { in: number; out: number }> = {
   'gemini-3.1-pro':         { in: 2.00, out: 12.00 },
-  'gemini-3-flash':         { in: 0.50, out: 3.00 },
+  'gemini-3-flash':         { in: 0.50, out: 3.00 },  // historical rows only; not a selectable API model
   'gemini-2.5-flash':       { in: 0.30, out: 2.50 },
   'gemini-2.5-flash-lite':  { in: 0.10, out: 0.40 },
   'gemini-2.0-flash':       { in: 0.10, out: 0.40 },  // legacy, deprecated June 2026
   'gemini-1.5-pro':         { in: 1.25, out: 5.00 },  // legacy
 };
 
-function computeGeminiCost(model: string, usage: { promptTokenCount: number; candidatesTokenCount: number }): number {
-  const key = Object.keys(GEMINI_COST_PER_MTK).find(k => model.startsWith(k)) ?? 'gemini-2.5-flash';
+export function resolveGeminiCostModelKey(model: string): string {
+  return Object.keys(GEMINI_COST_PER_MTK)
+    .sort((a, b) => b.length - a.length)
+    .find(k => model.startsWith(k))
+    ?? 'gemini-2.5-flash';
+}
+
+export function computeGeminiCost(model: string, usage: { promptTokenCount: number; candidatesTokenCount: number }): number {
+  const key = resolveGeminiCostModelKey(model);
   const rates = GEMINI_COST_PER_MTK[key];
   return (usage.promptTokenCount / 1_000_000) * rates.in +
          (usage.candidatesTokenCount / 1_000_000) * rates.out;
@@ -138,7 +145,7 @@ function logGeminiUsage(
  * Returns plain text. Throws on Gemini errors so the caller can fall
  * back to Anthropic if it wants to.
  *
- * Default model is `config.gemini.model` (gemini-3-flash). For high-stakes
+ * Default model is `config.gemini.model` (gemini-2.5-flash). For high-stakes
  * analytical calls (e.g. coach_analysis with ~12K input tokens), this is
  * ~5.5× cheaper per call than Claude Sonnet 4.6 with comparable quality.
  */
@@ -591,7 +598,7 @@ function toGeminiFunctionDeclarations(tools: Anthropic.Tool[]): FunctionDeclarat
  * resolve it to the actual SDK model identifier here.
  *
  * Tier mapping:
- *   - heavy → config.gemini.model            (gemini-3-flash)
+ *   - heavy → config.gemini.model            (gemini-2.5-flash)
  *   - light → config.gemini.classifierModel  (gemini-2.5-flash-lite)
  *
  * When tier is omitted, falls back to getModelRouting() which returns

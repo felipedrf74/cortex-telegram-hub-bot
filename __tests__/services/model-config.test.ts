@@ -357,6 +357,11 @@ describe('model-config', () => {
         expect(MODEL_OPTIONS[provider].classifier.length).toBeGreaterThan(0);
       }
     });
+
+    it('exposes the runtime OpenAI nano default in both portal pickers', () => {
+      expect(MODEL_OPTIONS.openai.chat).toContain('gpt-5.4-nano');
+      expect(MODEL_OPTIONS.openai.classifier).toContain('gpt-5.4-nano');
+    });
   });
 
   describe('VALID_ROLES', () => {

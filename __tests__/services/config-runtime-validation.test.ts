@@ -62,6 +62,15 @@ describe('runtime config validation', () => {
     expect(config.invoices.minConfidence).toBe(0.9);
   });
 
+  it('defaults generic chat routing to OpenAI nano with Gemini fallback', async () => {
+    vi.stubEnv('AI_CHAT_PRIMARY', '');
+    vi.stubEnv('AI_CHAT_FALLBACK', '');
+
+    const { config } = await loadConfigFresh();
+
+    expect(config.providerRouting.chat).toEqual({ primary: 'openai', fallback: 'gemini' });
+  });
+
   it('exposes public waitlist IP salt through central config', async () => {
     vi.stubEnv('WAITLIST_IP_SALT', 'stable-waitlist-secret');
 

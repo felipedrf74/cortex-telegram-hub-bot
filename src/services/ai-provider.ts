@@ -128,7 +128,7 @@ export function getModelRouting(
  *     these. Providers that don't use tools (or that get an empty
  *     array) should call without tools.
  *   - modelTier: Layer 4. Abstract tier the provider should use:
- *     'heavy' = the full reasoning model (Sonnet/gemini-3-flash)
+ *     'heavy' = the full reasoning model (Sonnet/gemini-2.5-flash)
  *     'light' = the cheap model (Haiku/gemini-2.5-flash-lite)
  *     Providers map this to their own concrete model names.
  *   - maxTokensOverride: explicit max-tokens cap (existing field —
