@@ -242,7 +242,7 @@ export function getFilteredToolsForMessage(
 // rather than a concrete model name. Each provider then maps the tier
 // to its own model:
 //   - Anthropic: heavy → Sonnet 4.6, light → Haiku 4.5  (~3× cost diff)
-//   - Gemini:    heavy → gemini-3-flash, light → gemini-2.5-flash-lite  (~5× cost diff)
+//   - Gemini:    heavy → gemini-2.5-flash, light → gemini-2.5-flash-lite  (~5× cost diff)
 //   - OpenAI:    heavy → gpt-5, light → gpt-5-mini  (when configured)
 //
 // Naming the function in provider-agnostic terms (`secretaryNeedsHeavyModel`
@@ -277,7 +277,7 @@ const COMPLEX_PATTERNS: RegExp[] = [
 
 /**
  * Decide whether a secretary message needs the heavier reasoning tier
- * (Sonnet / gemini-3-flash) or whether the lighter model (Haiku /
+ * (Sonnet / gemini-2.5-flash) or whether the lighter model (Haiku /
  * gemini-2.5-flash-lite) is enough.
  *
  * Pure function — no AI calls, no I/O. Safe to call on every message.
@@ -358,7 +358,7 @@ export function planSecretaryOptimization(
   const modelTier: ModelTier = secretaryNeedsHeavyModel(currentMessage) ? 'heavy' : 'light';
 
   // Layer 5: only trim history when we're using the light tier. The
-  // heavy tier keeps the full history because Sonnet/gemini-3-flash use
+  // heavy tier keeps the full history because Sonnet/gemini-2.5-flash use
   // it for reasoning continuity across multi-step plans.
   const slicedHistory = modelTier === 'light' ? history.slice(-4) : history;
 

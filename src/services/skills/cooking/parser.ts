@@ -21,7 +21,14 @@ export function parseCookingActionStep(
   // Phase 11 batch 58 (2026-05-16): Spanish verb infinitive "cenar" +
   // pre-workout context "entrenamiento" added so fueling-support
   // questions reach the parser.
-  if (!/\b(cooking|cozinha|meals?|refeic[aã]o|refeicoes|refeic[oõ]es|jantar|almoco|ceia|lanche|grocery|compras?|shopping|comida[s]?|fueling|pre[\s-]?treino|pre[\s-]?workout|pre[\s-]?entrenamiento|antes\s+del?\s+entrenamiento|fuel\s+for|caf[eé]\s+da\s+manh[aã]|cafe\s+da\s+manha|pequeno[\s-]almo[cç]o|que\s+tal|card[aá]pio|ementa|menu|men[uú]|cena[s]?|cenar|almorzar|desayunar|almuerzo[s]?|desayuno[s]?|dinner|lunch|breakfast|snack|supper|brunch)\b/.test(folded)) return null;
+  if (!/\b(cooking|cozinha|meals?|refeic[aã]o|refeicoes|refeic[oõ]es|jantar|almoco|ceia|lanche|grocery|compras?|shopping|comida[s]?|fueling|pre[\s-]?treino|pre[\s-]?workout|pre[\s-]?entrenamiento|antes\s+del?\s+entrenamiento|fuel\s+for|caf[eé]\s+da\s+manh[aã]|cafe\s+da\s+manha|pequeno[\s-]almo[cç]o|que\s+tal|card[aá]pio|ementa|menu|men[uú]|recipe|receita|receitas|cena[s]?|cenar|almorzar|desayunar|almuerzo[s]?|desayuno[s]?|dinner|lunch|breakfast|snack|supper|brunch)\b/.test(folded)) return null;
+  // Recipe recommendation is generic skill advice, not a Nexus write/read
+  // action. Let the Cooking domain answer directly unless the request also
+  // asks to save it into meal planning or grocery state.
+  if (/\b(recipe|receita|receitas)\b/.test(folded)
+    && !/\b(card[aá]pio|ementa|meal\s+plan|plano\s+de\s+refeic[oõ]es|lista\s+de\s+compras|grocery|shopping|compras|guardar|save|salvar|adiciona|add)\b/.test(folded)) {
+    return null;
+  }
   const nextWeek = /\b(next week|proxima semana|próxima semana)\b/.test(folded);
   const weekStart = now.plus({ weeks: nextWeek ? 1 : 0 }).startOf('week').toISODate();
   // Phase 10 batch 51: Spanish "lista de la compra" added (the ES form
