@@ -23,6 +23,7 @@ function session(overrides: Partial<PlanLintSession>): PlanLintSession {
     dayOfWeek: 'monday',
     sessionType: 'run',
     title: 'Easy Run',
+    description: 'Warm-up, steady aerobic main set, and cooldown.',
     durationMinutes: 45,
     status: 'scheduled',
     ...overrides,
@@ -91,6 +92,139 @@ describe('coach-kernel/plan-linter', () => {
         ])],
       }));
       expect(result.status).toBe('pass');
+    });
+  });
+
+  describe('rule: week_one_has_active_training', () => {
+    it('blocks a plan whose first week is empty while later weeks have active sessions', () => {
+      const result = lintPlan(input({
+        weeks: [
+          week(1, [
+            session({
+              dayOfWeek: 'monday',
+              title: 'Could Not Place',
+              status: 'unscheduled',
+            }),
+          ]),
+          week(2, [
+            session({
+              dayOfWeek: 'tuesday',
+              title: 'First Scheduled Run',
+              scheduledDate: '2026-04-28T07:00:00.000Z',
+            }),
+          ]),
+        ],
+      }));
+
+      expect(result.status).toBe('fail');
+      expect(result.blockers[0]?.ruleId).toBe('week_one_has_active_training');
+      expect(result.blockers[0]?.message).toContain('Week 1 has zero active training sessions');
+    });
+
+    it('passes when week one has at least one active training session', () => {
+      const result = lintPlan(input({
+        weeks: [
+          week(1, [
+            session({
+              dayOfWeek: 'friday',
+              title: 'Week 1 Easy Run',
+              scheduledDate: '2026-04-24T07:00:00.000Z',
+            }),
+          ]),
+          week(2, [
+            session({
+              dayOfWeek: 'tuesday',
+              title: 'Week 2 Easy Run',
+              scheduledDate: '2026-04-28T07:00:00.000Z',
+            }),
+          ]),
+        ],
+      }));
+
+      expect(result.status).toBe('pass');
+    });
+  });
+
+  describe('rule: no_sessions_outside_plan_window', () => {
+    it('blocks hidden week leakage beyond the requested duration', () => {
+      const result = lintPlan(input({
+        durationWeeks: 4,
+        startDate: '2026-04-22',
+        weeks: [
+          week(1, [session({ dayOfWeek: 'wednesday', scheduledDate: '2026-04-22T07:00:00.000Z' })]),
+          week(5, [
+            session({
+              dayOfWeek: 'tuesday',
+              title: 'Leaked Week 5 Move Suggestion',
+              scheduledDate: '2026-05-19T07:00:00.000Z',
+            }),
+          ]),
+        ],
+      }));
+
+      expect(result.status).toBe('fail');
+      expect(result.blockers[0]?.ruleId).toBe('no_sessions_outside_plan_window');
+      expect(result.blockers[0]?.evidence).toMatchObject({
+        durationWeeks: 4,
+        offendingWeeks: [5],
+      });
+    });
+
+    it('blocks active scheduled dates after the plan end even when week numbers look valid', () => {
+      const result = lintPlan(input({
+        durationWeeks: 4,
+        startDate: '2026-04-22',
+        weeks: [
+          week(1, [session({ dayOfWeek: 'wednesday', scheduledDate: '2026-04-22T07:00:00.000Z' })]),
+          week(4, [
+            session({
+              dayOfWeek: 'sunday',
+              title: 'Out Of Window',
+              scheduledDate: '2026-05-21T07:00:00.000Z',
+            }),
+          ]),
+        ],
+      }));
+
+      expect(result.status).toBe('fail');
+      expect(result.blockers[0]?.ruleId).toBe('no_sessions_outside_plan_window');
+    });
+
+    it('treats the plan end as an exclusive boundary', () => {
+      const insideWindow = lintPlan(input({
+        durationWeeks: 4,
+        startDate: '2026-04-22',
+        weeks: [
+          week(1, [session({ dayOfWeek: 'wednesday', scheduledDate: '2026-04-22T07:00:00.000Z' })]),
+          week(4, [
+            session({
+              dayOfWeek: 'tuesday',
+              title: 'Last Safe Evening Run',
+              scheduledDate: '2026-05-19T12:00:00.000Z',
+            }),
+          ]),
+        ],
+      }));
+
+      expect(insideWindow.status).toBe('pass');
+
+      const outsideWindow = lintPlan(input({
+        durationWeeks: 4,
+        startDate: '2026-04-22',
+        weeks: [
+          week(1, [session({ dayOfWeek: 'wednesday', scheduledDate: '2026-04-22T07:00:00.000Z' })]),
+          week(4, [
+            session({
+              dayOfWeek: 'wednesday',
+              title: 'Hidden Week 5 Boundary Leak',
+              scheduledDate: '2026-05-20T00:00:00.000Z',
+            }),
+          ]),
+        ],
+      }));
+
+      expect(outsideWindow.status).toBe('fail');
+      expect(outsideWindow.blockers[0]?.ruleId).toBe('no_sessions_outside_plan_window');
     });
   });
 
@@ -356,6 +490,38 @@ describe('coach-kernel/plan-linter', () => {
           }),
         ])],
       }));
+      expect(result.status).toBe('pass');
+    });
+  });
+
+  describe('rule: session_prescription_completeness', () => {
+    it('warns when an active workout only has a label and no executable detail', () => {
+      const result = lintPlan(input({
+        weeks: [week(1, [
+          session({
+            title: 'Run',
+            description: '',
+            exerciseTokens: [],
+            durationMinutes: undefined,
+          }),
+        ])],
+      }));
+
+      expect(result.status).toBe('pass_with_warnings');
+      expect(result.warnings[0]?.ruleId).toBe('session_prescription_completeness');
+    });
+
+    it('passes a simple run prescription with duration and description', () => {
+      const result = lintPlan(input({
+        weeks: [week(1, [
+          session({
+            title: 'Easy Run',
+            durationMinutes: 40,
+            description: '10 min warm-up, 25 min easy aerobic, 5 min cooldown.',
+          }),
+        ])],
+      }));
+
       expect(result.status).toBe('pass');
     });
   });

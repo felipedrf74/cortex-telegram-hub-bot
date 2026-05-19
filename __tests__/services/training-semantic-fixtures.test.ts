@@ -29,6 +29,12 @@ const REQUIRED_FIXTURE_IDS = [
   'user-switch-training-plan-isolation',
   'calendar-sync-partial-summary',
   'duplicate-decision-trail-dedupe',
+  'no-wearable-honest-readiness',
+  'stale-provider-readiness-label',
+  'week-one-empty-quality-block',
+  'hidden-week-five-move-block',
+  'plan-cancel-owned-calendar-cleanup',
+  'duplicate-preview-create-prevention',
 ] as const;
 
 const GENERIC_OR_DEBUG_COPY =
@@ -103,6 +109,8 @@ describe('training semantic fixture matrix', () => {
     expect(lintBacked.map((fixture) => fixture.id)).toEqual([
       'beginner-no-equipment',
       'continuous-no-event-deload',
+      'week-one-empty-quality-block',
+      'hidden-week-five-move-block',
     ]);
 
     for (const fixture of lintBacked) {
@@ -110,12 +118,23 @@ describe('training semantic fixture matrix', () => {
       if (fixture.expected.gateStatus === 'pass') {
         expect(result.status, fixture.id).not.toBe('fail');
         expect(result.blockers, fixture.id).toHaveLength(0);
+      } else if (fixture.expected.gateStatus === 'needs_repair') {
+        expect(result.status, fixture.id).toBe('fail');
+        expect(result.blockers.length, fixture.id).toBeGreaterThan(0);
       }
     }
 
     const continuous = lintBacked.find((fixture) => fixture.id === 'continuous-no-event-deload');
     expect(lintPlan(continuous!.planLintInput!).warnings.map((warning) => warning.ruleId)).not.toContain(
       'no_fake_taper_without_event',
+    );
+    const weekOne = lintBacked.find((fixture) => fixture.id === 'week-one-empty-quality-block');
+    expect(lintPlan(weekOne!.planLintInput!).blockers.map((blocker) => blocker.ruleId)).toContain(
+      'week_one_has_active_training',
+    );
+    const hiddenWeekFive = lintBacked.find((fixture) => fixture.id === 'hidden-week-five-move-block');
+    expect(lintPlan(hiddenWeekFive!.planLintInput!).blockers.map((blocker) => blocker.ruleId)).toContain(
+      'no_sessions_outside_plan_window',
     );
   });
 

@@ -28,6 +28,12 @@
  *      profile-incomplete cases that slipped through.)
  *   7. **No two consecutive identical strength sessions.**   (variety
  *      — backstops slice 4.B/4.C catalog rotation.)
+ *   8. **Week 1 cannot be empty when later weeks contain work.**
+ *      (prevents a plan from "starting" unscheduled while weeks 2+ sync.)
+ *   9. **No sessions outside the actual plan window.**       (prevents
+ *      hidden Week 5 / out-of-window move suggestions in 4-week plans.)
+ *  10. **Active sessions need executable prescription basics.**
+ *      (duration plus detail/equipment blocks, not just a label.)
  *
  * Output shape mirrors `GuardrailResult` so the existing decision-trail
  * infrastructure can absorb findings without a parallel notification
@@ -52,7 +58,10 @@ export type PlanLintRuleId =
   | 'no_fake_taper_without_event'
   | 'race_specific_plan_requires_race_date'
   | 'no_consecutive_identical_strength_sessions'
-  | 'plan_linter_exception';
+  | 'plan_linter_exception'
+  | 'week_one_has_active_training'
+  | 'no_sessions_outside_plan_window'
+  | 'session_prescription_completeness';
 
 export type PlanLintSeverity = 'blocker' | 'warning' | 'info';
 
@@ -103,6 +112,7 @@ export interface PlanLintSession {
   sessionType: string;
   title: string;
   durationMinutes?: number;
+  description?: string;
   /** Persistence status. Past-day-floor + capacity-reconciliation produce these. */
   status?:
     | 'scheduled'
@@ -137,6 +147,8 @@ export interface PlanLintInput {
   /** Mark the plan as race-specific so rule 6 can fire on missing race date. */
   isRaceSpecific?: boolean;
   raceDate?: string | Date | null;
+  /** Intended plan duration. Used to block Week 5 leakage in a 4-week plan. */
+  durationWeeks?: number;
   /** Vocab as produced by `training-plan-equipment-adaptation.ts`. Used by rule 2. */
   equipmentProfile?: EquipmentProfileLabel;
   weeks: PlanLintWeek[];
@@ -178,6 +190,9 @@ const PLAN_LINT_COACH_RULE_MAP: Partial<Record<PlanLintRuleId, string>> = {
   no_fake_taper_without_event: 'endurance-periodization-by-goal-horizon',
   race_specific_plan_requires_race_date: 'endurance-periodization-by-goal-horizon',
   no_consecutive_identical_strength_sessions: 'strength-progressive-overload-with-deloads',
+  week_one_has_active_training: 'endurance-periodization-by-goal-horizon',
+  no_sessions_outside_plan_window: 'endurance-periodization-by-goal-horizon',
+  session_prescription_completeness: 'coach-communication-no-raw-dumps',
 };
 
 function toDate(value: string | Date | null | undefined): Date | null {
@@ -199,6 +214,15 @@ function makeAffected(weekNumber: number, session: PlanLintSession): PlanLintAff
     dayOfWeek: session.dayOfWeek,
     title: session.title,
   };
+}
+
+function isActiveSession(session: PlanLintSession): boolean {
+  return !!session.status && ACTIVE_STATUSES.has(session.status);
+}
+
+function isRestLikeSession(session: PlanLintSession): boolean {
+  const token = `${session.sessionType} ${session.title}`.toLowerCase();
+  return /\b(rest|recovery|mobility|off)\b/.test(token);
 }
 
 const DAY_ORDER = ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday'];
@@ -460,14 +484,117 @@ function ruleNoConsecutiveIdenticalStrengthSessions(input: PlanLintInput): PlanL
   };
 }
 
+function ruleWeekOneHasActiveTraining(input: PlanLintInput): PlanLintFinding | null {
+  const totalActiveTraining = input.weeks.reduce((count, week) => {
+    return count + week.sessions.filter((session) => isActiveSession(session) && !isRestLikeSession(session)).length;
+  }, 0);
+  if (totalActiveTraining === 0) return null;
+
+  const weekOne = input.weeks.find((week) => week.weekNumber === 1);
+  const weekOneActive = weekOne?.sessions.filter(
+    (session) => isActiveSession(session) && !isRestLikeSession(session),
+  ) ?? [];
+  if (weekOneActive.length > 0) return null;
+
+  return {
+    ruleId: 'week_one_has_active_training',
+    severity: 'blocker',
+    message:
+      `Week 1 has zero active training sessions while the plan contains ${totalActiveTraining} ` +
+      `active session${totalActiveTraining === 1 ? '' : 's'} later. ` +
+      `Do not save a plan whose first week is empty; reflow or keep the whole plan in preview.`,
+    affectedSessions: [{ weekNumber: 1, title: 'Week 1' }],
+    evidence: { totalActiveTraining },
+  };
+}
+
+function ruleNoSessionsOutsidePlanWindow(input: PlanLintInput): PlanLintFinding | null {
+  const durationWeeks = typeof input.durationWeeks === 'number' && Number.isFinite(input.durationWeeks)
+    ? Math.max(0, Math.floor(input.durationWeeks))
+    : undefined;
+  if (!durationWeeks || durationWeeks <= 0) return null;
+
+  const offenders: PlanLintAffectedSession[] = [];
+  const offendingWeeks: number[] = [];
+  for (const week of input.weeks) {
+    if (week.weekNumber < 1 || week.weekNumber > durationWeeks) {
+      offendingWeeks.push(week.weekNumber);
+      for (const session of week.sessions) {
+        offenders.push(makeAffected(week.weekNumber, session));
+      }
+      if (week.sessions.length === 0) {
+        offenders.push({ weekNumber: week.weekNumber, title: `Week ${week.weekNumber}` });
+      }
+    }
+  }
+
+  const start = toDate(input.startDate);
+  if (start) {
+    const startDay = startOfDay(start);
+    const endExclusive = new Date(startDay.getTime() + durationWeeks * 7 * 24 * 60 * 60 * 1000);
+    for (const week of input.weeks) {
+      for (const session of week.sessions) {
+        if (!isActiveSession(session)) continue;
+        const scheduledDate = toDate(session.scheduledDate);
+        if (!scheduledDate) continue;
+        const sessionDay = startOfDay(scheduledDate);
+        if (sessionDay.getTime() < startDay.getTime() || sessionDay.getTime() >= endExclusive.getTime()) {
+          offenders.push(makeAffected(week.weekNumber, session));
+        }
+      }
+    }
+  }
+
+  if (offenders.length === 0) return null;
+  return {
+    ruleId: 'no_sessions_outside_plan_window',
+    severity: 'blocker',
+    message:
+      `Training plan contains sessions outside its ${durationWeeks}-week window. ` +
+      `Move suggestions and scheduled sessions must stay inside the actual plan dates.`,
+    affectedSessions: offenders,
+    evidence: {
+      durationWeeks,
+      offendingWeeks: [...new Set(offendingWeeks)],
+      startDate: input.startDate,
+    },
+  };
+}
+
+function ruleSessionPrescriptionCompleteness(input: PlanLintInput): PlanLintFinding | null {
+  const offenders: PlanLintAffectedSession[] = [];
+  for (const week of input.weeks) {
+    for (const session of week.sessions) {
+      if (!isActiveSession(session) || isRestLikeSession(session)) continue;
+      const hasDuration = typeof session.durationMinutes === 'number' && session.durationMinutes > 0;
+      const hasDetail =
+        (typeof session.description === 'string' && session.description.trim().length >= 12) ||
+        (Array.isArray(session.exerciseTokens) && session.exerciseTokens.length > 0);
+      if (!hasDuration || !hasDetail) offenders.push(makeAffected(week.weekNumber, session));
+    }
+  }
+  if (offenders.length === 0) return null;
+  return {
+    ruleId: 'session_prescription_completeness',
+    severity: 'warning',
+    message:
+      `Active training sessions need executable prescription basics: duration plus description, intervals, ` +
+      `or exercise detail. Avoid saving label-only workouts.`,
+    affectedSessions: offenders,
+  };
+}
+
 const RULES: Array<(input: PlanLintInput) => PlanLintFinding | null> = [
   ruleNoPastActiveSessions,
+  ruleWeekOneHasActiveTraining,
+  ruleNoSessionsOutsidePlanWindow,
   ruleEquipmentCompatibility,
   ruleNoThreeConsecutiveLegHeavyDays,
   ruleNoHeavyLowerBeforeLongRun,
   ruleNoFakeTaperWithoutEvent,
   ruleRaceSpecificRequiresRaceDate,
   ruleNoConsecutiveIdenticalStrengthSessions,
+  ruleSessionPrescriptionCompleteness,
 ];
 
 const SUGGESTED_FIXES: Record<PlanLintRuleId, string> = {
@@ -487,6 +614,12 @@ const SUGGESTED_FIXES: Record<PlanLintRuleId, string> = {
     'Bump strength variant index by `weekIndex` (slice 4.B/4.C) before the next regenerate.',
   plan_linter_exception:
     'Retry after the quality gate can complete; do not persist strict-preflight plans that could not be linted.',
+  week_one_has_active_training:
+    'Re-run scheduling with Week 1 protected; if no legal slot exists, ask the user before saving.',
+  no_sessions_outside_plan_window:
+    'Clamp move suggestions to the requested plan window and keep later weeks in a new plan preview.',
+  session_prescription_completeness:
+    'Regenerate missing warm-up/main/cooldown or strength set/rep/rest details before surfacing the session.',
 };
 
 function attachCoachRuleEvidence(finding: PlanLintFinding): PlanLintFinding {

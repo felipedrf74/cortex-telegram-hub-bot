@@ -86,7 +86,7 @@ vi.mock('../../src/services/database', () => ({
   findUnexpectedMigrationPrefixCollisions: vi.fn(() => []),
 }));
 
-import { generateCoachBriefing } from '../../src/services/garmin-coach';
+import { generateCoachBriefing, resolveCoachAnalysisMeteringScope } from '../../src/services/garmin-coach';
 
 describe('garmin-coach user scoping', () => {
   beforeEach(() => {
@@ -154,6 +154,67 @@ describe('garmin-coach user scoping', () => {
       '2026-04-18T23:59:59.999Z',
       42,
     );
+  });
+
+  it('attributes coach explanation LLM cost to the scoped user and tenant', async () => {
+    await generateCoachBriefing(42);
+
+    expect(resolveCoachAnalysisMeteringScope(42)).toEqual({
+      actor: 'user',
+      userId: 42,
+      tenantId: 42,
+    });
+    expect(mockTryComplete).toHaveBeenCalledTimes(1);
+    const [, , category, fallback, options] = mockTryComplete.mock.calls[0];
+    expect(category).toBe('coach_analysis');
+    expect(options).toMatchObject({ maxTokens: 2500, userId: 42, tenantId: 42 });
+
+    await fallback();
+    expect(mockTrackedCreate).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.anything(),
+      'coach_analysis',
+      { userId: 42, tenantId: 42 },
+    );
+  });
+
+  it('preserves active tenant scope for coach explanation metering', async () => {
+    await generateCoachBriefing(77, { tenantId: 77, meteringUserId: 42 });
+
+    expect(resolveCoachAnalysisMeteringScope(42, 77)).toEqual({
+      actor: 'user',
+      userId: 42,
+      tenantId: 77,
+    });
+    const [, , category, fallback, options] = mockTryComplete.mock.calls[0];
+    expect(category).toBe('coach_analysis');
+    expect(options).toMatchObject({ maxTokens: 2500, userId: 42, tenantId: 77 });
+
+    await fallback();
+    expect(mockTrackedCreate).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.anything(),
+      'coach_analysis',
+      { userId: 42, tenantId: 77 },
+    );
+  });
+
+  it('classifies owner-bootstrap coach analysis as a system metering actor', () => {
+    expect(resolveCoachAnalysisMeteringScope()).toEqual({
+      actor: 'system',
+      userId: 0,
+      tenantId: 0,
+    });
+    expect(resolveCoachAnalysisMeteringScope(null)).toEqual({
+      actor: 'system',
+      userId: 0,
+      tenantId: 0,
+    });
+    expect(resolveCoachAnalysisMeteringScope(0)).toEqual({
+      actor: 'system',
+      userId: 0,
+      tenantId: 0,
+    });
   });
 
   it('still allows Garmin for owner-scoped users', async () => {

@@ -142,6 +142,10 @@ export interface ReadinessSnapshot {
   capturedAt: string;
   level: ReadinessLevel;
   score: number;
+  confidence?: 'fresh_wearable' | 'stale_provider' | 'manual_check_in' | 'no_data';
+  dataSource?: 'wearable' | 'manual' | 'fallback';
+  isStale?: boolean;
+  reasonCode?: string;
   sleepHours?: number;
   hrvStatus?: 'low' | 'normal' | 'high';
   energyReserve?: number;

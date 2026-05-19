@@ -33,6 +33,25 @@ const client = new Anthropic({
   maxRetries: 3,
 });
 
+export type CoachAnalysisMeteringActor = 'user' | 'system';
+
+export interface CoachAnalysisMeteringScope {
+  actor: CoachAnalysisMeteringActor;
+  userId: number;
+  tenantId: number;
+}
+
+export function resolveCoachAnalysisMeteringScope(userId?: number | null, tenantId?: number | null): CoachAnalysisMeteringScope {
+  if (typeof userId === 'number' && Number.isSafeInteger(userId) && userId > 0) {
+    return {
+      actor: 'user',
+      userId,
+      tenantId: typeof tenantId === 'number' && Number.isSafeInteger(tenantId) && tenantId > 0 ? tenantId : userId,
+    };
+  }
+  return { actor: 'system', userId: 0, tenantId: 0 };
+}
+
 // ─── Coaching analysis prompt ─────────────────────────────────────────
 
 const COACH_ANALYSIS_PROMPT = `You are analyzing daily health and training data for this athlete. Respond ONLY with the structured coach briefing — no preamble, no explanations outside the template.
@@ -163,6 +182,10 @@ export interface CoachBriefingOptions {
    * Telegram `/coach` may leave this false so the interactive MFA flow works.
    */
   garminSilent?: boolean;
+  /** Active tenant/data-owner scope. Defaults to `userId` for legacy callers. */
+  tenantId?: number;
+  /** Authenticated actor to charge when generating for an active tenant. */
+  meteringUserId?: number;
 }
 
 export interface CoachRecommendationApplyScope {
@@ -470,6 +493,7 @@ ${payloadStr}
     // matches Sonnet quality for analytical prompts of this shape.
     // Falls back to Anthropic if Gemini is not configured or fails. See
     // audit P0-8.
+    const meteringScope = resolveCoachAnalysisMeteringScope(opts.meteringUserId ?? userId, opts.tenantId ?? userId);
     const { text: rawText, provider: analysisProvider } = await completeOneShotWithFallback(
       systemPrompt,
       userPrompt,
@@ -490,18 +514,18 @@ ${payloadStr}
             },
           ],
           messages: [{ role: 'user', content: userPrompt }],
-        }, 'coach_analysis');
+        }, 'coach_analysis', { userId: meteringScope.userId, tenantId: meteringScope.tenantId });
         return response.content
           .filter((c): c is Anthropic.TextBlock => c.type === 'text')
           .map((c) => c.text)
           .join('');
       },
-      { maxTokens: 2500 },
+      { maxTokens: 2500, userId: meteringScope.userId, tenantId: meteringScope.tenantId },
     );
 
     const analysisMs = Date.now() - analysisStart;
     logger.info(
-      { provider: analysisProvider, analysisMs },
+      { provider: analysisProvider, analysisMs, meteringActor: meteringScope.actor },
       `Coach analysis completed via ${analysisProvider}`,
     );
 

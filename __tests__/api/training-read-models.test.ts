@@ -355,6 +355,10 @@ describe('training-read-models', () => {
     const mapped = await fetchCurrentReadinessForPlan(42);
     expect(mapped).toEqual({
       score: 81,
+      confidence: 'fresh_wearable',
+      dataSource: 'wearable',
+      isStale: false,
+      reasonCode: null,
       sleepHours: 7.5,
       hrvStatus: 'high',
       energyReserve: 78,
@@ -364,6 +368,30 @@ describe('training-read-models', () => {
     mockReadinessResult = { score: 0, factors: {} };
     const missing = await fetchCurrentReadinessForPlan(42);
     expect(missing).toBeNull();
+  });
+
+  it('maps missing wearable integration into an honest no-data readiness input', async () => {
+    mockReadinessResult = {
+      score: 50,
+      recommendation: 'normal',
+      reasonCode: 'WEARABLE_INTEGRATION_MISSING',
+      reasoning: 'No wearable provider is connected; using neutral readiness.',
+      factors: {},
+    };
+
+    const mapped = await fetchCurrentReadinessForPlan(42);
+
+    expect(mapped).toEqual({
+      score: 50,
+      confidence: 'no_data',
+      dataSource: 'fallback',
+      isStale: false,
+      reasonCode: 'WEARABLE_INTEGRATION_MISSING',
+      sleepHours: undefined,
+      hrvStatus: undefined,
+      energyReserve: undefined,
+      reasoning: 'No wearable provider is connected; using neutral readiness.',
+    });
   });
 
   // ─── Bug fix 2026-04-28 (no-plan create-CTA) ────────────────────────

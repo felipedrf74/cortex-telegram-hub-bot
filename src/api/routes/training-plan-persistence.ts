@@ -613,6 +613,9 @@ function buildPlanLintWeek(
       durationMinutes: typeof sessionData.durationMinutes === 'number'
         ? sessionData.durationMinutes
         : undefined,
+      description: typeof sessionData.description === 'string'
+        ? sessionData.description
+        : undefined,
       status,
       // scheduledDate is best resolved from the calendarEvents list when
       // the persister produced an event, since that's the actual date
@@ -648,6 +651,7 @@ function runPlanLintGuarded(args: {
       now: args.input.now,
       planId: args.planId,
       startDate: args.input.startDate,
+      durationWeeks: args.input.durationWeeks,
       isRaceSpecific: args.input.isRaceSpecific,
       raceDate: args.input.raceDate ?? null,
       equipmentProfile: args.input.equipmentProfile,
