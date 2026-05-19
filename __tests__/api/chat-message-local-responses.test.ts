@@ -175,6 +175,7 @@ describe('chat message local response helpers', () => {
       42,
       'Colocar no calendario evento no proximo sabado, 16/5, das 9h as 13h. Volei Lucas',
       'pt-PT',
+      42,
     );
     expect(result).toMatchObject({
       conversationDomain: 'secretary',
