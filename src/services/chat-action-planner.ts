@@ -4757,8 +4757,10 @@ function estimateTokens(text: string): number {
 function plannerModelRates(model: string): { input: number; output: number } {
   if (model.startsWith('gemini-2.5-flash-lite')) return { input: 0.10, output: 0.40 };
   if (model.startsWith('gemini-2.5-flash')) return { input: 0.30, output: 2.50 };
-  if (model.startsWith('gpt-5.4-nano') || model.startsWith('gpt-5-nano')) return { input: 0.20, output: 1.25 };
-  if (model.startsWith('gpt-5.4-mini') || model.startsWith('gpt-5-mini')) return { input: 0.75, output: 4.50 };
+  if (model.startsWith('gpt-5.4-nano')) return { input: 0.20, output: 1.25 };
+  if (model.startsWith('gpt-5-nano')) return { input: 0.05, output: 0.40 };
+  if (model.startsWith('gpt-5.4-mini')) return { input: 0.75, output: 4.50 };
+  if (model.startsWith('gpt-5-mini')) return { input: 0.25, output: 2.00 };
   return { input: 0.30, output: 2.50 };
 }
 
