@@ -547,6 +547,10 @@ export async function fetchCurrentReadinessForPlan(userId: number): Promise<Coac
 
     return {
       score: readiness.score,
+      confidence: readiness.reasonCode === 'WEARABLE_INTEGRATION_MISSING' ? 'no_data' : 'fresh_wearable',
+      dataSource: readiness.reasonCode === 'WEARABLE_INTEGRATION_MISSING' ? 'fallback' : 'wearable',
+      isStale: false,
+      reasonCode: readiness.reasonCode ?? null,
       sleepHours,
       hrvStatus,
       energyReserve,

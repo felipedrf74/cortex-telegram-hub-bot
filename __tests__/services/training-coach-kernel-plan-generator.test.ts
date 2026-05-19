@@ -78,6 +78,9 @@ describe('buildCoachKernelTrainingPlan — side effects', () => {
 
     expect(athlete.readiness.level).toBe('yellow');
     expect(athlete.readiness.score).toBe(70);
+    expect(athlete.readiness.confidence).toBe('no_data');
+    expect(athlete.readiness.dataSource).toBe('fallback');
+    expect(athlete.readiness.reasonCode).toBe('NO_READINESS_INPUT');
     expect(athlete.readiness.hrvStatus).toBeUndefined();
   });
 
@@ -284,9 +287,76 @@ describe('buildCoachKernelTrainingPlan — side effects', () => {
     expect(athlete.readiness.hrvStatus).toBe('low');
     expect(athlete.readiness.sleepHours).toBe(5.5);
     expect(athlete.readiness.energyReserve).toBe(32);
+    expect(athlete.readiness.confidence).toBe('fresh_wearable');
+    expect(athlete.readiness.dataSource).toBe('wearable');
+    expect(athlete.readiness.isStale).toBe(false);
     // The reasoning line flows through as a planner note so downstream
     // briefings can surface "why" without re-deriving from factors.
     expect(athlete.readiness.notes?.some((note) => note.includes('Low HRV'))).toBe(true);
+  });
+
+  it('surfaces stale readiness confidence instead of pretending data is fresh', () => {
+    const athlete = buildAthleteStateFromTrainingProfiles({
+      userId: 503,
+      objective: '10k base',
+      durationWeeks: 4,
+      startDate: '2026-04-13',
+      sessionsPerWeek: 4,
+      strengthSessionsPerWeek: 1,
+      preferredTime: '06:30',
+      preferredCardioTime: '06:30',
+      preferredStrengthTime: '18:00',
+      longWorkoutDay: null,
+      notes: null,
+      fitnessProfile: null,
+      gymProfile: null,
+      runProfile: null,
+      currentReadiness: {
+        score: 62,
+        confidence: 'stale_provider',
+        dataSource: 'wearable',
+        isStale: true,
+        reasonCode: 'PROVIDER_STALE',
+        reasoning: 'Last wearable sync is stale.',
+      },
+    });
+
+    expect(athlete.readiness.confidence).toBe('stale_provider');
+    expect(athlete.readiness.isStale).toBe(true);
+    expect(athlete.readiness.reasonCode).toBe('PROVIDER_STALE');
+    expect(athlete.readiness.notes?.some((note) => note.includes('provider data is stale'))).toBe(true);
+  });
+
+  it('preserves manual check-in confidence instead of upgrading it to wearable truth', () => {
+    const athlete = buildAthleteStateFromTrainingProfiles({
+      userId: 511,
+      objective: '10k base',
+      durationWeeks: 4,
+      startDate: '2026-04-13',
+      sessionsPerWeek: 4,
+      strengthSessionsPerWeek: 1,
+      preferredTime: '06:30',
+      preferredCardioTime: '06:30',
+      preferredStrengthTime: '18:00',
+      longWorkoutDay: null,
+      notes: null,
+      fitnessProfile: null,
+      gymProfile: null,
+      runProfile: null,
+      currentReadiness: {
+        score: 63,
+        confidence: 'manual_check_in',
+        dataSource: 'manual',
+        reasonCode: 'MANUAL_CHECK_IN',
+        reasoning: 'User reported tired legs after a hard work week.',
+      },
+    });
+
+    expect(athlete.readiness.score).toBe(63);
+    expect(athlete.readiness.confidence).toBe('manual_check_in');
+    expect(athlete.readiness.dataSource).toBe('manual');
+    expect(athlete.readiness.reasonCode).toBe('MANUAL_CHECK_IN');
+    expect(athlete.readiness.notes?.some((note) => note.includes('tired legs'))).toBe(true);
   });
 
   it('maps score bands onto ReadinessLevel deterministically', () => {
@@ -368,5 +438,58 @@ describe('buildCoachKernelTrainingPlan — side effects', () => {
     // Wednesday of week 2 — should resolve to 2026-04-20.
     const midWeek2 = getWeeklyPlanCoveringDate(101, '2026-04-22');
     expect(midWeek2?.weekStart).toBe('2026-04-20');
+  });
+
+  it('uses rolling base/build/deload phases without fake tapering when no event date exists', () => {
+    const plan = buildCoachKernelTrainingPlan({
+      userId: 601,
+      objective: 'General running base',
+      durationWeeks: 4,
+      startDate: '2026-05-04',
+      sessionsPerWeek: 4,
+      strengthSessionsPerWeek: 1,
+      preferredTime: '07:00',
+      preferredCardioTime: '07:00',
+      preferredStrengthTime: '12:30',
+      longWorkoutDay: 'Saturday',
+      notes: null,
+      fitnessProfile: { experience_level: 'intermediate', available_equipment: 'Dumbbells' },
+      gymProfile: { equipment_access: 'Dumbbells' },
+      runProfile: { weekly_mileage_km: '30' },
+      goalMode: 'continuous',
+    });
+
+    expect(plan.weeks?.map((week) => week.focus)).toEqual(['base', 'base', 'build', 'deload']);
+    expect(plan.weeks?.map((week) => week.focus)).not.toContain('taper');
+    expect(plan.decisionReasons?.map((reason) => reason.code)).toContain('continuous_plan_no_taper');
+  });
+
+  it('derives base/build/peak/taper/race phases from a real event date', () => {
+    const plan = buildCoachKernelTrainingPlan({
+      userId: 602,
+      objective: 'Lisbon Marathon',
+      durationWeeks: 16,
+      startDate: '2026-05-04',
+      sessionsPerWeek: 5,
+      strengthSessionsPerWeek: 2,
+      preferredTime: '07:00',
+      preferredCardioTime: '07:00',
+      preferredStrengthTime: '12:30',
+      longWorkoutDay: 'Sunday',
+      notes: null,
+      fitnessProfile: { experience_level: 'advanced', available_equipment: 'Full gym' },
+      gymProfile: { equipment_access: 'Full gym' },
+      runProfile: { weekly_mileage_km: '45' },
+      goalMode: 'event_based',
+      raceDate: '2026-08-23',
+    });
+
+    const phases = plan.weeks?.map((week) => week.focus) ?? [];
+    expect(phases[0]).toBe('base');
+    expect(phases).toContain('build');
+    expect(phases).toContain('peak');
+    expect(phases).toContain('taper');
+    expect(phases[15]).toBe('race');
+    expect(plan.decisionReasons?.map((reason) => reason.code)).not.toContain('event_based_missing_race_date');
   });
 });

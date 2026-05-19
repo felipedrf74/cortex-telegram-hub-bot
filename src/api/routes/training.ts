@@ -417,21 +417,22 @@ export function trainingRoutes(): Router {
   });
 
   router.post('/coach/report', async (req, res: Response) => {
-    const { userId } = req as AuthenticatedRequest;
+    const { userId, tenantId = userId } = req as AuthenticatedRequest;
+    const dataUserId = tenantId;
     const forceRefresh = req.body?.refresh === true;
-    const cacheKey = `coach-briefing:${userId}`;
+    const cacheKey = `coach-briefing:${dataUserId}`;
     const language = resolveTrainingLanguage(req as AuthenticatedRequest, userId);
 
     if (!forceRefresh) {
       const cached = getCached<Record<string, unknown>>(cacheKey);
       if (cached) {
-        const payload = syncCoachStateForUser(userId, cached);
+        const payload = syncCoachStateForUser(dataUserId, cached);
         sendSuccess(res, buildCoachReportResponse(payload, language), { cached: true });
         return;
       }
-      const restored = restoreCoachBriefingFromLatestReport(userId);
+      const restored = restoreCoachBriefingFromLatestReport(dataUserId);
       if (restored) {
-        const payload = syncCoachStateForUser(userId, restored);
+        const payload = syncCoachStateForUser(dataUserId, restored);
         setCache(cacheKey, payload, COACH_BRIEFING_TTL);
         sendSuccess(res, buildCoachReportResponse(payload, language), { cached: true });
         return;
@@ -446,8 +447,8 @@ export function trainingRoutes(): Router {
         return;
       }
 
-      const briefing = await generateCoachBriefing(userId);
-      const payload = syncCoachStateForUser(userId, {
+      const briefing = await generateCoachBriefing(dataUserId, { tenantId: dataUserId, meteringUserId: userId });
+      const payload = syncCoachStateForUser(dataUserId, {
         briefing: briefing?.message || 'No coach briefing available.',
         recommendations: briefing?.recommendations || [],
         garminData: null as unknown,
@@ -456,10 +457,10 @@ export function trainingRoutes(): Router {
       setCache(cacheKey, payload, COACH_BRIEFING_TTL);
       sendSuccess(res, buildCoachReportResponse(payload, language));
     } catch (err: any) {
-      logger.error({ err, userId }, 'iOS training/coach/report failed');
-      const fallback = await buildDeterministicCoachFallback(userId, language).catch(() => null);
+      logger.error({ err, userId, tenantId: dataUserId }, 'iOS training/coach/report failed');
+      const fallback = await buildDeterministicCoachFallback(dataUserId, language).catch(() => null);
       if (fallback) {
-        const payload = syncCoachStateForUser(userId, fallback);
+        const payload = syncCoachStateForUser(dataUserId, fallback);
         sendSuccess(res, buildCoachReportResponse(payload, language));
         return;
       }

@@ -314,6 +314,7 @@ function mockReq(
   body?: any,
   userId = 12,
   headers: Record<string, string> = {},
+  tenantId = userId,
 ): Request {
   return {
     method,
@@ -329,6 +330,7 @@ function mockReq(
     },
     body,
     userId,
+    tenantId,
   } as any;
 }
 
@@ -339,9 +341,10 @@ async function dispatch(
   body?: any,
   userId = 12,
   headers: Record<string, string> = {},
+  tenantId = userId,
 ): Promise<MockRes> {
   const router = trainingRoutes();
-  const req = mockReq(method, path, query, body, userId, headers);
+  const req = mockReq(method, path, query, body, userId, headers, tenantId);
   const res = mockRes();
 
   await new Promise<void>((resolve) => {
@@ -603,6 +606,21 @@ describe('Training API routes', () => {
     expect(serialized).not.toMatch(/COACH_RECS_START|_60q30c1g60o30e1i60o4ac1g60rj8gpl88rj2c1h84s34h9g60s30c1g60o30c1g6srj2h216sqjgha184s48gpg64o30c1g60o30c1g60o32c1g60o30c1g6os32|Analysis: 12\.4s/);
     expect(serialized).toContain('Keep effort easy');
     expect(mockGenerateCoachBriefing).not.toHaveBeenCalled();
+  });
+
+  it('generates coach reports against the active tenant while billing the authenticated actor', async () => {
+    const res = await dispatch('POST', '/coach/report', {}, { refresh: true }, 12, {}, 34);
+
+    expect(res.statusCode).toBe(200);
+    expect(mockGenerateCoachBriefing).toHaveBeenCalledWith(34, {
+      tenantId: 34,
+      meteringUserId: 12,
+    });
+    expect(mockSetCache).toHaveBeenCalledWith(
+      'coach-briefing:34',
+      expect.any(Object),
+      expect.any(Number),
+    );
   });
 
   it('returns render-ready training home state without triggering a fresh coach generation', async () => {

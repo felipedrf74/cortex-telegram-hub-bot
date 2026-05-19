@@ -129,14 +129,16 @@ export function registerTrainingPlanRoutes(
   /**
    * POST /api/v1/training/plan/generate
    *
-   * Token-efficient training plan generation. One AI call produces a
-   * full monthly plan — replaces the 70+ tool-call chat flow with a
-   * single structured JSON generation + bulk insert.
+   * Token-efficient training plan generation. The current path is
+   * deterministic by default: the coach kernel and Training quality gate
+   * produce the plan through REST instead of routing operational work
+   * through chat. AI remains reserved for explanation/coaching surfaces,
+   * not schedule truth.
    *
    * Flow:
    *   1. Read user's fitness profile from onboarding answers
    *   2. Fetch calendar events for the next 4 weeks → find free slots
-   *   3. One Gemini call → get structured plan JSON
+   *   3. Coach-kernel build + quality gate
    *   4. Bulk insert: plan + weeks + sessions + calendar events
    *   5. Return plan summary to iOS
    *
@@ -236,8 +238,9 @@ export function registerTrainingPlanRoutes(
       return;
     }
 
-    // TOCTOU-safe cost window — serialize check + AI + api_usage row
-    // per user. See acquireCostLock docs in services/cost-guardrail.ts.
+    // TOCTOU-safe cost window for any downstream AI-backed fallback or
+    // future explanation call. The normal plan path is deterministic and
+    // should not create a training-plan api_usage row.
     const releaseCostLock = await acquireCostLock(userId);
     const guardrail = enforceCostGuardrails(userId);
     if (guardrail.block) {

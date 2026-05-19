@@ -41,6 +41,15 @@ import { logger } from '../utils/logger';
 export interface CoachKernelReadinessInput {
   /** 0..100 composite score from `calculateReadiness`. */
   score: number;
+  /**
+   * Honest confidence/source label used by coach explanations. Fresh
+   * wearable data may influence load; stale/no-data branches must be
+   * surfaced as degraded rather than pretending precision.
+   */
+  confidence?: ReadinessSnapshot['confidence'];
+  dataSource?: ReadinessSnapshot['dataSource'];
+  isStale?: boolean;
+  reasonCode?: string | null;
   /** Hours slept last night if known — the readiness-scorer exposes this
    *  via `factors.sleep.durationHours`. Leave undefined to keep the
    *  planner's default. */
@@ -559,6 +568,12 @@ function buildReadinessSnapshot(input: CoachKernelTrainingPlanInput, constraints
   const notes = compact([
     hasHighInjury ? 'Injury-aware progression enabled.' : null,
     typeof input.notes === 'string' && input.notes.trim().length > 0 ? input.notes.trim() : null,
+    input.currentReadiness?.confidence === 'no_data'
+      ? 'Readiness confidence: no fresh wearable/manual data; using conservative defaults.'
+      : null,
+    input.currentReadiness?.isStale === true
+      ? 'Readiness confidence: provider data is stale; avoid aggressive progression.'
+      : null,
     typeof input.currentReadiness?.reasoning === 'string' && input.currentReadiness.reasoning.trim().length > 0
       ? `Readiness: ${input.currentReadiness.reasoning.trim()}`
       : null,
@@ -570,6 +585,10 @@ function buildReadinessSnapshot(input: CoachKernelTrainingPlanInput, constraints
       capturedAt: new Date().toISOString(),
       level: scoreToReadinessLevel(score, hasHighInjury),
       score,
+      confidence: input.currentReadiness.confidence ?? 'fresh_wearable',
+      dataSource: input.currentReadiness.dataSource ?? 'wearable',
+      isStale: input.currentReadiness.isStale === true,
+      reasonCode: input.currentReadiness.reasonCode ?? undefined,
       sleepHours: input.currentReadiness.sleepHours,
       hrvStatus: input.currentReadiness.hrvStatus,
       energyReserve: input.currentReadiness.energyReserve,
@@ -584,6 +603,10 @@ function buildReadinessSnapshot(input: CoachKernelTrainingPlanInput, constraints
     capturedAt: new Date().toISOString(),
     level: hasHighInjury ? 'orange' : 'yellow',
     score: hasHighInjury ? 58 : 70,
+    confidence: 'no_data',
+    dataSource: 'fallback',
+    isStale: false,
+    reasonCode: 'NO_READINESS_INPUT',
     painFlags,
     notes,
   };
