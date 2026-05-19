@@ -51,6 +51,51 @@ vi.mock('../../src/services/unified-mail-pressure', () => ({
 vi.mock('../../src/services/daily-brief-orchestrator', () => ({
   composeDailyBrief: vi.fn(),
 }));
+vi.mock('../../src/services/decision-center', () => ({
+  getDecisionSummary: vi.fn(() => ({
+    openCount: 1,
+    urgentCount: 0,
+    todayCount: 1,
+    handledTodayCount: 2,
+    topDecisionTitle: 'Schedule decision',
+    topDecisionSourceSkill: 'secretary',
+    topDecisionUrgency: 'today',
+    topDecisionWhy: 'A focus block moved.',
+    topSuggestion: null,
+    ctaLabel: '1 Decision',
+    badgeCount: 1,
+    gamification: null,
+    previewItems: [{
+      decisionId: 'dc_1',
+      safePreviewTitle: 'Schedule decision',
+      title: 'Schedule decision',
+      recommendedActionLabel: 'Accept',
+      whySummary: 'A focus block moved.',
+    }],
+  })),
+  listHandledByNexusItems: vi.fn(() => [{
+    itemId: 'handled_1',
+    title: 'Calendar sync retried',
+    actionTaken: 'retry_calendar_sync',
+    whyBrief: 'Safe retry with no plan mutation.',
+  }]),
+}));
+vi.mock('../../src/services/report-document-store', () => ({
+  getRecentReports: vi.fn(() => [{
+    id: 10,
+    type: 'morning_briefing',
+    title: 'Morning Briefing',
+    summary: 'Three decisions are clear.',
+    createdAt: '2026-05-19T08:00:00.000Z',
+  }]),
+  getLatestByType: vi.fn(() => ({
+    id: 10,
+    type: 'morning_briefing',
+    title: 'Morning Briefing',
+    summary: 'Three decisions are clear.',
+    createdAt: '2026-05-19T08:00:00.000Z',
+  })),
+}));
 
 vi.mock('../../src/state/reminders', () => ({
   getRemindersForToday: vi.fn(() => []),
@@ -93,6 +138,7 @@ import * as reminders from '../../src/state/reminders';
 import * as registry from '../../src/skills/registry';
 import * as dailyBrief from '../../src/services/daily-brief-orchestrator';
 import * as cacheCoherence from '../../src/services/cache-coherence-registry';
+import * as decisionCenter from '../../src/services/decision-center';
 
 const UID = 42;
 
@@ -161,7 +207,7 @@ beforeEach(() => {
 // ════════════════════════════════════════════════════════════════════
 
 describe('secretary-fastpath / pattern matching', () => {
-  it('exposes 9 registered patterns', () => {
+  it('exposes registered patterns including Decision Center and reports', () => {
     const patterns = getFastpathPatterns();
     expect(patterns).toEqual(
       expect.arrayContaining([
@@ -174,9 +220,12 @@ describe('secretary-fastpath / pattern matching', () => {
         'overdue_tasks',
         'set_reminder',
         'quick_add_task',
+        'decision_center_summary',
+        'handled_by_nexus_summary',
+        'latest_report',
       ]),
     );
-    expect(patterns).toHaveLength(9);
+    expect(patterns).toHaveLength(12);
   });
 
   it.each([
@@ -208,8 +257,23 @@ describe('secretary-fastpath / pattern matching', () => {
   it.each([
     ["what's my priority today?", 'daily_priority'],
     ['what should i do first today?', 'daily_priority'],
+    ['what should I focus on now?', 'daily_priority'],
     ['o que faço primeiro', 'daily_priority'],
     ['qual a prioridade hoje?', 'daily_priority'],
+  ])('matches "%s" → %s', async (input, expectedPattern) => {
+    const result = await tryFastpath(UID, input);
+    expect(result.matched).toBe(true);
+    expect(result.patternId).toBe(expectedPattern);
+  });
+
+  it.each([
+    ['what needs my decision?', 'decision_center_summary'],
+    ['decision center', 'decision_center_summary'],
+    ['o que precisa da minha decisão?', 'decision_center_summary'],
+    ['what did Nexus handle?', 'handled_by_nexus_summary'],
+    ['handled by Nexus', 'handled_by_nexus_summary'],
+    ['latest report', 'latest_report'],
+    ['morning briefing', 'latest_report'],
   ])('matches "%s" → %s', async (input, expectedPattern) => {
     const result = await tryFastpath(UID, input);
     expect(result.matched).toBe(true);
@@ -633,6 +697,48 @@ describe('secretary-fastpath / quick_add_task handler', () => {
 });
 
 // ════════════════════════════════════════════════════════════════════
+// Decision Center / Reports handlers
+// ════════════════════════════════════════════════════════════════════
+
+describe('secretary-fastpath / decision and report handlers', () => {
+  it('answers Decision Center summary without AI', async () => {
+    const result = await tryFastpath(UID, 'what needs my decision?', 'en-US');
+
+    expect(result.matched).toBe(true);
+    expect(result.patternId).toBe('decision_center_summary');
+    expect(result.response?.text).toContain('Decision Center');
+    expect(result.response?.text).toContain('1 open');
+    expect(result.response?.text).toContain('Schedule decision');
+  });
+
+  it('threads tenant scope into Decision Center fastpaths', async () => {
+    const result = await tryFastpath(UID, 'what needs my decision?', 'en-US', 99);
+
+    expect(result.matched).toBe(true);
+    expect(vi.mocked(decisionCenter.getDecisionSummary)).toHaveBeenCalledWith(UID, 99, 3);
+  });
+
+  it('answers handled-by-Nexus history without AI', async () => {
+    const result = await tryFastpath(UID, 'what did Nexus handle?', 'en-US', 99);
+
+    expect(result.matched).toBe(true);
+    expect(result.patternId).toBe('handled_by_nexus_summary');
+    expect(result.response?.text).toContain('Handled by Nexus');
+    expect(result.response?.text).toContain('Calendar sync retried');
+    expect(vi.mocked(decisionCenter.listHandledByNexusItems)).toHaveBeenCalledWith(UID, 99, 5);
+  });
+
+  it('answers latest report without AI', async () => {
+    const result = await tryFastpath(UID, 'latest report', 'en-US');
+
+    expect(result.matched).toBe(true);
+    expect(result.patternId).toBe('latest_report');
+    expect(result.response?.text).toContain('Latest report');
+    expect(result.response?.text).toContain('Morning Briefing');
+  });
+});
+
+// ════════════════════════════════════════════════════════════════════
 // Sub-skill gating
 // ════════════════════════════════════════════════════════════════════
 
@@ -685,6 +791,28 @@ describe('secretary-fastpath / metrics', () => {
     expect(m.hitRate).toBeCloseTo(2 / 3, 2);
     expect(m.hitsByPattern.day_overview).toBe(1);
     expect(m.hitsByPattern.show_tasks).toBe(1);
+    expect(m.missesByReason.no_pattern).toBe(1);
+  });
+
+  it('tracks skipped subskills and handler errors as miss reasons', async () => {
+    vi.mocked(registry.isSubmoduleEnabled).mockImplementation(
+      (_d, sub) => sub !== 'tasks',
+    );
+    const gated = await tryFastpath(UID, 'show my tasks');
+    expect(gated.missReason).toBe('subskill_disabled:tasks');
+
+    vi.mocked(registry.isSubmoduleEnabled).mockReturnValue(true);
+    mockTaskGetAllPendingTasks.mockImplementation(() => {
+      throw new Error('Unexpected sync throw');
+    });
+    const failed = await tryFastpath(UID, 'show my tasks');
+    expect(failed.missReason).toBe('handler_error');
+
+    const m = getFastpathMetrics();
+    expect(m.skippedBySubskill.tasks).toBe(1);
+    expect(m.handlerFailuresByPattern.show_tasks).toBe(1);
+    expect(m.missesByReason['subskill_disabled:tasks']).toBe(1);
+    expect(m.missesByReason.handler_error).toBe(1);
   });
 
   it('avgLatencyMs is non-negative', async () => {

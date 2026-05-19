@@ -9,6 +9,7 @@ import {
   getRecentReports,
   getReportById,
   getUnreadReportCount,
+  isReportType,
   markReportRead,
   type ReportType,
 } from '../../services/report-document-store';
@@ -42,6 +43,34 @@ export function reportRoutes(): Router {
     return false;
   }
 
+  function normalizedReportType(res: Response, raw: unknown, required = false): ReportType | undefined | null {
+    if (raw == null || raw === '') {
+      if (!required) return undefined;
+      sendError(res, 'VALIDATION', 'type query parameter is required', 400);
+      return null;
+    }
+    if (!isReportType(raw)) {
+      sendError(res, 'VALIDATION', 'Invalid report type', 400, { type: raw });
+      return null;
+    }
+    return raw;
+  }
+
+  function normalizedLimit(res: Response, raw: unknown, fallback: number): number | null {
+    if (raw == null || raw === '') return fallback;
+    const value = String(raw).trim();
+    if (!/^\d+$/.test(value)) {
+      sendError(res, 'VALIDATION', 'limit must be a positive integer', 400, { limit: raw });
+      return null;
+    }
+    const parsed = Number(value);
+    if (!Number.isSafeInteger(parsed) || parsed <= 0) {
+      sendError(res, 'VALIDATION', 'limit must be a positive integer', 400, { limit: raw });
+      return null;
+    }
+    return Math.min(parsed, 100);
+  }
+
   /**
    * GET /api/v1/reports
    *
@@ -51,8 +80,10 @@ export function reportRoutes(): Router {
   router.get('/', asyncHandler(async (req, res: Response) => {
     const { userId } = req as unknown as AuthenticatedRequest;
     if (!ensureValidReportsRouteScope(res, userId, 'reports_route_list')) return;
-    const type = req.query.type as ReportType | undefined;
-    const limit = parseInt(String(req.query.limit || '20'), 10);
+    const type = normalizedReportType(res, req.query.type);
+    if (type === null) return;
+    const limit = normalizedLimit(res, req.query.limit, 20);
+    if (limit === null) return;
 
     const reports = getRecentReports(userId, { type, limit });
     const unreadCount = getUnreadReportCount(userId);
@@ -80,12 +111,8 @@ export function reportRoutes(): Router {
   router.get('/latest', asyncHandler(async (req, res: Response) => {
     const { userId } = req as unknown as AuthenticatedRequest;
     if (!ensureValidReportsRouteScope(res, userId, 'reports_route_latest', { type: req.query.type ?? null })) return;
-    const type = req.query.type as ReportType;
-
-    if (!type) {
-      sendError(res, 'VALIDATION', 'type query parameter is required', 400);
-      return;
-    }
+    const type = normalizedReportType(res, req.query.type, true);
+    if (!type) return;
 
     const report = getLatestByType(userId, type);
 

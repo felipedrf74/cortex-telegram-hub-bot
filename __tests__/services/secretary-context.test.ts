@@ -113,6 +113,7 @@ import * as garmin from '../../src/services/garmin';
 import * as anthropic from '../../src/services/anthropic';
 import * as taskRouter from '../../src/services/task-store/task-router';
 import * as dailyBrief from '../../src/services/daily-brief-orchestrator';
+import * as sharedDecision from '../../src/services/shared-decision-context';
 import { resetFastpathMetrics } from '../../src/services/secretary-fastpath';
 
 const UID = 99;
@@ -197,6 +198,8 @@ describe('Layer 2: smart context — lazy data fetching', () => {
     expect(mailPressure.getUnreadMailSummaryForUser).not.toHaveBeenCalled();
     expect(garmin.getActivitiesByDateForUser).not.toHaveBeenCalled();
     expect(garmin.getBodyBatteryEventsForUser).not.toHaveBeenCalled();
+    expect(sharedDecision.buildSharedDecisionContext).not.toHaveBeenCalled();
+    expect(sharedDecision.buildSharedDecisionContracts).not.toHaveBeenCalled();
   });
 
   it('"plan my Tuesday" → fetches calendar (and reminders, paired with calendar)', async () => {
@@ -208,6 +211,8 @@ describe('Layer 2: smart context — lazy data fetching', () => {
     expect(garmin.getActivitiesByDateForUser).not.toHaveBeenCalled();
     // Tasks should NOT be fetched — no task keywords
     expect(todo.getAllPendingTasks).not.toHaveBeenCalled();
+    expect(sharedDecision.buildSharedDecisionContext).toHaveBeenCalled();
+    expect(sharedDecision.buildSharedDecisionContracts).toHaveBeenCalled();
   });
 
   it('"send email to John about the project" → fetches email AND calendar (meeting cross-link)', async () => {

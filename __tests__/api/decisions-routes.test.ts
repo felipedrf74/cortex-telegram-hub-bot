@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Request } from 'express';
 
 const mockGetDecisionSummary = vi.fn();
+const mockGetDecisionOverview = vi.fn();
 const mockListDecisionItems = vi.fn();
 const mockListHandledByNexusItems = vi.fn();
 const mockGetDecisionItem = vi.fn();
@@ -33,6 +34,7 @@ vi.mock('../../src/services/decision-center', () => ({
   countOpenUrgentDecisionsForUser: (...args: unknown[]) => mockCountOpenUrgentDecisionsForUser(...args),
   findDecisionByRelatedEntity: vi.fn(),
   getDecisionSummary: (...args: unknown[]) => mockGetDecisionSummary(...args),
+  getDecisionOverview: (...args: unknown[]) => mockGetDecisionOverview(...args),
   listDecisionItems: (...args: unknown[]) => mockListDecisionItems(...args),
   listHandledByNexusItems: (...args: unknown[]) => mockListHandledByNexusItems(...args),
   listDecisionDependencies: vi.fn(),
@@ -161,6 +163,7 @@ describe('Decision routes', () => {
     process.env.NODE_ENV = ORIGINAL_NODE_ENV;
     delete process.env.INTERNAL_API_SECRET;
     mockGetDecisionSummary.mockReset();
+    mockGetDecisionOverview.mockReset();
     mockListDecisionItems.mockReset();
     mockListHandledByNexusItems.mockReset();
     mockGetDecisionItem.mockReset();
@@ -176,6 +179,19 @@ describe('Decision routes', () => {
     mockRevokeNotificationDeviceToken.mockReset();
 
     mockGetDecisionSummary.mockReturnValue({ openCount: 1, urgentCount: 0, todayCount: 1, ctaLabel: '1 Decision', previewItems: [], badgeCount: 1 });
+    mockGetDecisionOverview.mockReturnValue({
+      count: 1,
+      openCount: 1,
+      handledCount: 1,
+      staleCount: 0,
+      supersededCount: 0,
+      generatedAt: '2026-05-19T10:00:00.000Z',
+      summary: { openCount: 1, urgentCount: 0, todayCount: 1, ctaLabel: '1 Decision', previewItems: [], badgeCount: 1 },
+      topSuggestion: { decisionId: 'nc_1', title: 'Schedule decision', actionLabel: 'Accept' },
+      partial: { items: true, handled: true, summary: true },
+      items: [{ decisionId: 'nc_1', status: 'unread' }],
+      handled: [{ itemId: 'hbn_1', title: 'Handled sync', sourceSkill: 'secretary' }],
+    });
     mockListDecisionItems.mockReturnValue([{ decisionId: 'nc_1', status: 'unread' }]);
     mockListHandledByNexusItems.mockReturnValue([{ itemId: 'hbn_1', title: 'Handled sync', sourceSkill: 'secretary' }]);
     mockGetDecisionItem.mockReturnValue({ decisionId: 'nc_1', status: 'unread' });
@@ -196,6 +212,11 @@ describe('Decision routes', () => {
     expect(summary.statusCode).toBe(200);
     expect(summary.body.data.ctaLabel).toBe('1 Decision');
     expect(mockGetDecisionSummary).toHaveBeenCalledWith(7, 7, 3);
+
+    const overview = await dispatch(router, 'GET', '/overview', { limit: 20, handledLimit: 4 });
+    expect(overview.statusCode).toBe(200);
+    expect(overview.body.data.topSuggestion.title).toBe('Schedule decision');
+    expect(mockGetDecisionOverview).toHaveBeenCalledWith(7, 7, { limit: 20, handledLimit: 4 });
 
     const list = await dispatch(router, 'GET', '/', { limit: 10, status: 'all' });
     expect(list.statusCode).toBe(200);
@@ -219,6 +240,29 @@ describe('Decision routes', () => {
     expect(handled.statusCode).toBe(200);
     expect(handled.body.data.items[0].itemId).toBe('hbn_1');
     expect(mockListHandledByNexusItems).toHaveBeenCalledWith(7, 7, 5);
+  });
+
+  it('validates overview pagination before calling the service', async () => {
+    const router = decisionRoutes();
+
+    const invalidLimit = await dispatch(router, 'GET', '/overview', { limit: 'many' });
+    expect(invalidLimit.statusCode).toBe(400);
+    expect(invalidLimit.body.error.code).toBe('VALIDATION');
+    expect(mockGetDecisionOverview).not.toHaveBeenCalled();
+
+    const partialNumericLimit = await dispatch(router, 'GET', '/overview', { limit: '20abc' });
+    expect(partialNumericLimit.statusCode).toBe(400);
+    expect(partialNumericLimit.body.error.code).toBe('VALIDATION');
+    expect(mockGetDecisionOverview).not.toHaveBeenCalled();
+
+    const invalidHandledLimit = await dispatch(router, 'GET', '/overview', { handledLimit: '-1' });
+    expect(invalidHandledLimit.statusCode).toBe(400);
+    expect(invalidHandledLimit.body.error.code).toBe('VALIDATION');
+    expect(mockGetDecisionOverview).not.toHaveBeenCalled();
+
+    const clamped = await dispatch(router, 'GET', '/overview', { limit: '500', handledLimit: '500' });
+    expect(clamped.statusCode).toBe(200);
+    expect(mockGetDecisionOverview).toHaveBeenCalledWith(7, 7, { limit: 100, handledLimit: 25 });
   });
 
   it('rejects decision routes that arrive without authenticated tenant scope', async () => {

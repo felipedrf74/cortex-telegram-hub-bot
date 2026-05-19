@@ -122,6 +122,12 @@ async function buildStateContext(message: string = '', userId?: number, tenantId
     garmin: intent.ambiguous || intent.garmin,
     planner: intent.ambiguous || /\b(plan|prioriti[sz]e|priority|first|focus|fit|reschedul|schedule|organi[sz]e|tradeoff|handoff|what should i do|what do i do first|how do i fit|o que faço primeiro|o que devo fazer primeiro|o que devo priorizar(?: hoje)?|o que priorizo(?: hoje)?|qual(?: é| a)? prioridade(?: hoje)?|prioriza o meu dia|priorizar o meu dia|prioriza meu dia|priorizar meu dia|organiza o meu dia|organiza meu dia|como encaixo)\b/i.test(message),
   };
+  const needsSharedDecisionContext = hasUserScope && needs.planner;
+  const promptBudgetChars = needs.planner
+    ? 2000
+    : intent.ambiguous
+      ? 1500
+      : 700;
   const taskProvider = hasUserScope && needs.tasks && tasksEnabled
     ? getTaskProviderForUser(scopedUserId)
     : null;
@@ -138,23 +144,47 @@ async function buildStateContext(message: string = '', userId?: number, tenantId
   // Cache key = userId + context shape — prevents cross-user leakage
   const shape = `${needs.tasks ? 't' : ''}${needs.calendar ? 'c' : ''}${needs.email ? 'e' : ''}${needs.reminders ? 'r' : ''}${needs.garmin ? 'g' : ''}${needs.planner ? 'p' : ''}`;
   const scopedTenantKey = hasUserScope ? (typeof tenantId === 'number' && tenantId > 0 ? tenantId : scopedUserId) : 'anon';
-  const appendPromptContext = async (baseContext: string): Promise<string> => {
+  const appendPromptContext = async (baseContext: string, cacheHit: boolean): Promise<string> => {
     if (!hasUserScope) return baseContext;
+    if (!needs.planner) {
+      logger.debug({
+        userId: scopedUserId,
+        tenantId: scopedTenantKey,
+        cacheShape: shape,
+        cacheHit,
+        promptBudgetChars: 0,
+        promptContextAttached: false,
+        estimatedContextChars: baseContext.length,
+        estimatedInputTokens: Math.ceil(baseContext.length / 4),
+      }, 'Secretary state context assembled without broad prompt context');
+      return baseContext;
+    }
     const promptContext = await buildChatPromptContextBlock({
       domain: DOMAIN,
       message,
       userId: scopedUserId,
       tenantId,
-      budgetChars: 2000,
+      budgetChars: promptBudgetChars,
     });
-    return promptContext ? `${baseContext}\n${promptContext}` : baseContext;
+    const combined = promptContext ? `${baseContext}\n${promptContext}` : baseContext;
+    logger.debug({
+      userId: scopedUserId,
+      tenantId: scopedTenantKey,
+      cacheShape: shape,
+      cacheHit,
+      promptBudgetChars,
+      promptContextAttached: !!promptContext,
+      estimatedContextChars: combined.length,
+      estimatedInputTokens: Math.ceil(combined.length / 4),
+    }, 'Secretary state context assembled from cache');
+    return combined;
   };
 
   const cacheKey = `${scopedTenantKey}:${hasUserScope ? scopedUserId : 'anon'}:${shape}:${contextLanguage}`;
 
   const cached = _stateContextCache.get(cacheKey);
   if (cached && Date.now() < cached.expiresAt) {
-    return appendPromptContext(cached.value);
+    return appendPromptContext(cached.value, true);
   }
 
   const timezone = getUserTimezone(scopedUserId);
@@ -188,8 +218,8 @@ async function buildStateContext(message: string = '', userId?: number, tenantId
     hasUserScope && needs.planner
       ? composeDailyBrief({ userId: scopedUserId, language: contextLanguage }).catch(() => null)
       : Promise.resolve(null),
-    hasUserScope ? buildSharedDecisionContext(DOMAIN, scopedUserId, tenantId).catch(() => '') : Promise.resolve(''),
-    hasUserScope ? buildSharedDecisionContracts(DOMAIN, scopedUserId, tenantId).catch(() => ({} as SharedDecisionContracts)) : Promise.resolve({} as SharedDecisionContracts),
+    needsSharedDecisionContext ? buildSharedDecisionContext(DOMAIN, scopedUserId, tenantId).catch(() => '') : Promise.resolve(''),
+    needsSharedDecisionContext ? buildSharedDecisionContracts(DOMAIN, scopedUserId, tenantId).catch(() => ({} as SharedDecisionContracts)) : Promise.resolve({} as SharedDecisionContracts),
   ]);
 
   // Microsoft To Do — compact summary (details available via tools)
@@ -341,7 +371,26 @@ async function buildStateContext(message: string = '', userId?: number, tenantId
     if (oldest) _stateContextCache.delete(oldest);
   }
   _stateContextCache.set(cacheKey, { value: result, expiresAt: Date.now() + STATE_CONTEXT_TTL });
-  return appendPromptContext(result);
+  const finalContext = await appendPromptContext(result, false);
+  logger.debug({
+    userId: scopedUserId,
+    tenantId: scopedTenantKey,
+    cacheShape: shape,
+    cacheHit: false,
+    promptBudgetChars,
+    selectedSources: {
+      tasks: !!taskProvider,
+      calendar: hasCalendar,
+      email: hasMail,
+      reminders: hasUserScope && needs.reminders && remindersEnabled,
+      garmin: hasGarmin,
+      planner: hasUserScope && needs.planner,
+      sharedDecisionContext: needsSharedDecisionContext,
+    },
+    estimatedContextChars: finalContext.length,
+    estimatedInputTokens: Math.ceil(finalContext.length / 4),
+  }, 'Secretary state context assembled');
+  return finalContext;
 }
 
 function renderSharedDecisionContracts(contracts: SharedDecisionContracts): string {
@@ -505,7 +554,7 @@ export async function handleSecretary(message: string, userId?: number, tenantId
   // Identical Telegram-HTML output to the AI path; users can't tell the
   // difference. Errors fall through to the AI path automatically.
   // See src/services/secretary-fastpath.ts for the pattern dictionary.
-  const fastpath = hasUserScope ? await tryFastpath(userId, message) : { matched: false, response: null };
+  const fastpath = hasUserScope ? await tryFastpath(userId, message, undefined, tenantId ?? userId) : { matched: false, response: null };
   if (fastpath.matched && fastpath.response && hasUserScope) {
     // Record in conversation history so the next AI turn has context
     // about what the user just asked. Tag the assistant message with the

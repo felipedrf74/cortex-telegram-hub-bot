@@ -89,6 +89,26 @@ describe('report-document-store: creation', () => {
     expect(reports[0].sourceJob).toBe('garmin_coach');
   });
 
+  it('stores Decision Center briefing documents', () => {
+    const id = storeReport({
+      userId: 1,
+      type: 'decision_briefing',
+      title: 'Decision Center Briefing',
+      summary: '1 open decision, 2 handled by Nexus.',
+      documentJson: {
+        summary: { openCount: 1, handledCount: 2 },
+        openDecisions: [{ decisionId: 'dc_1', title: 'Schedule decision' }],
+        handledByNexus: [{ itemId: 'handled_1', title: 'Calendar sync retried' }],
+      },
+    });
+
+    const report = getReportById(id, 1);
+
+    expect(report?.type).toBe('decision_briefing');
+    expect(report?.documentJson.openDecisions).toHaveLength(1);
+    expect(report?.documentJson.handledByNexus).toHaveLength(1);
+  });
+
   it('fails closed on invalid tenant scope and records the anomaly', () => {
     const id = storeReport({
       userId: 0,

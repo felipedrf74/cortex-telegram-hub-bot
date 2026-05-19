@@ -53,6 +53,8 @@ import { composeDailyBrief } from './daily-brief-orchestrator';
 import { getUnreadMailSummaryForUser, isAnyMailConfiguredForUser } from './unified-mail-pressure';
 import { invalidateCalendarCaches } from './cache-coherence-registry';
 import { parseNaturalLanguageCalendarEvent } from './calendar-natural-language-parser';
+import { getDecisionSummary, listHandledByNexusItems } from './decision-center';
+import { getRecentReports, getLatestByType, type ReportType } from './report-document-store';
 
 // ─── Types ──────────────────────────────────────────────────────────
 
@@ -62,6 +64,8 @@ export interface FastpathResult {
   response?: DomainResponse;
   /** Which pattern matched (for metrics). */
   patternId?: string;
+  /** Why the fastpath fell through to the AI path. */
+  missReason?: string;
 }
 
 interface PatternEntry {
@@ -72,7 +76,7 @@ interface PatternEntry {
    * pick localized copy. May throw — caller catches and falls through
    * to the AI pipeline.
    */
-  handler: (userId: number, match: RegExpMatchArray, lang: Lang) => Promise<DomainResponse>;
+  handler: (userId: number, match: RegExpMatchArray, lang: Lang, tenantId: number) => Promise<DomainResponse>;
   /** Optional sub-skill the pattern depends on. If disabled, the pattern is skipped. */
   requires?: 'tasks' | 'calendar' | 'email' | 'reminders';
 }
@@ -433,6 +437,9 @@ interface FastpathMetrics {
   totalAttempts: number;
   totalHits: number;
   hitsByPattern: Record<string, number>;
+  missesByReason: Record<string, number>;
+  handlerFailuresByPattern: Record<string, number>;
+  skippedBySubskill: Record<string, number>;
   totalLatencyMs: number;
 }
 
@@ -440,8 +447,15 @@ const _metrics: FastpathMetrics = {
   totalAttempts: 0,
   totalHits: 0,
   hitsByPattern: {},
+  missesByReason: {},
+  handlerFailuresByPattern: {},
+  skippedBySubskill: {},
   totalLatencyMs: 0,
 };
+
+function recordFastpathMiss(reason: string): void {
+  _metrics.missesByReason[reason] = (_metrics.missesByReason[reason] || 0) + 1;
+}
 
 export function getFastpathMetrics(): Readonly<FastpathMetrics> & {
   hitRate: number;
@@ -452,6 +466,9 @@ export function getFastpathMetrics(): Readonly<FastpathMetrics> & {
   return {
     ..._metrics,
     hitsByPattern: { ..._metrics.hitsByPattern },
+    missesByReason: { ..._metrics.missesByReason },
+    handlerFailuresByPattern: { ..._metrics.handlerFailuresByPattern },
+    skippedBySubskill: { ..._metrics.skippedBySubskill },
     hitRate,
     avgLatencyMs,
   };
@@ -463,6 +480,84 @@ export function resetFastpathMetrics(): void {
   _metrics.totalHits = 0;
   _metrics.totalLatencyMs = 0;
   for (const k of Object.keys(_metrics.hitsByPattern)) delete _metrics.hitsByPattern[k];
+  for (const k of Object.keys(_metrics.missesByReason)) delete _metrics.missesByReason[k];
+  for (const k of Object.keys(_metrics.handlerFailuresByPattern)) delete _metrics.handlerFailuresByPattern[k];
+  for (const k of Object.keys(_metrics.skippedBySubskill)) delete _metrics.skippedBySubskill[k];
+}
+
+function reportTypeFromMessage(message: string): ReportType | null {
+  const normalized = message
+    .normalize('NFD')
+    .replace(/\p{Diacritic}/gu, '')
+    .toLowerCase();
+  if (/\b(coach|treino|training)\b/.test(normalized)) return 'coach_briefing';
+  if (/\b(weekly|week|semana|semanal)\b/.test(normalized)) return 'weekly_review';
+  if (/\b(evening|end of day|fim do dia|noite|resumo)\b/.test(normalized)) return 'evening_summary';
+  if (/\b(morning|manha|manha|briefing)\b/.test(normalized)) return 'morning_briefing';
+  return null;
+}
+
+function formatDecisionSummaryFastpath(userId: number, tenantId: number, lang: Lang): DomainResponse {
+  const cta = getDecisionSummary(userId, tenantId, 3);
+  const pt = lang.startsWith('pt');
+  const lines = [
+    pt ? '🧭 <b>Centro de decisões</b>' : '🧭 <b>Decision Center</b>',
+    pt
+      ? `${cta.openCount} abertas · ${cta.urgentCount} urgentes · ${cta.handledTodayCount} tratadas hoje`
+      : `${cta.openCount} open · ${cta.urgentCount} urgent · ${cta.handledTodayCount} handled today`,
+  ];
+  if (cta.previewItems.length > 0) {
+    lines.push('');
+    for (const item of cta.previewItems.slice(0, 3)) {
+      const label = item.recommendedActionLabel ? ` — ${item.recommendedActionLabel}` : '';
+      lines.push(`▸ ${escapeHtml(item.safePreviewTitle || item.title)}${escapeHtml(label)}`);
+      if (item.whySummary) lines.push(`  ${escapeHtml(item.whySummary)}`);
+    }
+  } else {
+    lines.push(pt ? 'Tudo limpo agora.' : 'All clear right now.');
+  }
+  return { text: lines.join('\n').trim(), domain: SECRETARY };
+}
+
+function formatHandledByNexusFastpath(userId: number, tenantId: number, lang: Lang): DomainResponse {
+  const pt = lang.startsWith('pt');
+  const handled = listHandledByNexusItems(userId, tenantId, 5);
+  const lines = [pt ? '✅ <b>Tratado pelo Nexus</b>' : '✅ <b>Handled by Nexus</b>'];
+  if (handled.length === 0) {
+    lines.push(pt ? 'Nada tratado automaticamente hoje.' : 'Nothing auto-handled recently.');
+  } else {
+    for (const item of handled) {
+      lines.push(`▸ ${escapeHtml(item.title)} — ${escapeHtml(item.actionTaken)}`);
+      if (item.whyBrief) lines.push(`  ${escapeHtml(item.whyBrief)}`);
+    }
+  }
+  return { text: lines.join('\n').trim(), domain: SECRETARY };
+}
+
+function formatLatestReportFastpath(userId: number, message: string, lang: Lang): DomainResponse {
+  const pt = lang.startsWith('pt');
+  const requestedType = reportTypeFromMessage(message);
+  const report = requestedType
+    ? getLatestByType(userId, requestedType)
+    : getRecentReports(userId, { limit: 1 })[0] ?? null;
+  if (!report) {
+    return {
+      text: pt ? 'Não encontrei nenhum relatório recente.' : 'I could not find a recent report.',
+      domain: SECRETARY,
+    };
+  }
+  const created = DateTime.fromISO(report.createdAt, { zone: 'utc' });
+  const createdLabel = created.isValid
+    ? created.setZone(getUserTimezone(userId)).toFormat('dd/MM HH:mm')
+    : report.createdAt;
+  return {
+    text: [
+      pt ? '📄 <b>Relatório mais recente</b>' : '📄 <b>Latest report</b>',
+      `${escapeHtml(report.title)} · ${createdLabel}`,
+      report.summary ? escapeHtml(report.summary) : null,
+    ].filter(Boolean).join('\n'),
+    domain: SECRETARY,
+  };
 }
 
 // ─── Pattern Dictionary ─────────────────────────────────────────────
@@ -661,7 +756,7 @@ const FASTPATH_PATTERNS: PatternEntry[] = [
   // "what's my week", "show my week", "/week", "esta semana", "minha semana"
   {
     id: 'daily_priority',
-    pattern: /^(?:what(?:'s| is)? my priority(?: today)?|what should i do first(?: today)?|prioriti[sz]e my day|o que faço primeiro|o que devo fazer primeiro|o que devo priorizar(?: hoje)?|o que priorizo(?: hoje)?|qual(?: é| a)? prioridade(?: hoje)?|prioriza o meu dia|priorizar o meu dia|prioriza meu dia|priorizar meu dia)[\s?!.]*$/i,
+    pattern: /^(?:what(?:'s| is)? my priority(?: today)?|what should i do first(?: today)?|what should i focus on(?: now| today)?|what do i focus on(?: now| today)?|focus me(?: now| today)?|prioriti[sz]e my day|o que faço primeiro|o que devo fazer primeiro|o que devo priorizar(?: hoje)?|o que priorizo(?: hoje)?|qual(?: é| a)? prioridade(?: hoje)?|prioriza o meu dia|priorizar o meu dia|prioriza meu dia|priorizar meu dia|em que devo focar(?: agora| hoje)?)[\s?!.]*$/i,
     handler: async (_userId, _match, lang) => {
       const c = copyForLang(lang);
       const brief = await composeDailyBrief({ userId: _userId, language: lang });
@@ -699,6 +794,30 @@ const FASTPATH_PATTERNS: PatternEntry[] = [
       }
       return { text: lines.join('\n').trim(), domain: SECRETARY };
     },
+  },
+
+  // ── Decision Center Summary ────────────────────────────────────
+  // "what needs my decision", "decision center", "o que precisa da minha decisão"
+  {
+    id: 'decision_center_summary',
+    pattern: /^(?:what (?:needs|requires) my (?:decision|input|approval)|what decisions? (?:need|needs) me|what do i need to decide|show (?:my )?(?:decisions|decision center)|decision center|centro de decis(?:a|ã)o(?:es)?|o que precisa da minha decis(?:a|ã)o|que decis(?:o|õ)es precisam de mim|mostra(?:r)? decis(?:o|õ)es)[\s?!.]*$/i,
+    handler: async (userId, _match, lang, tenantId) => formatDecisionSummaryFastpath(userId, tenantId, lang),
+  },
+
+  // ── Handled By Nexus Summary ───────────────────────────────────
+  // "what did Nexus handle", "handled by Nexus", "o que o Nexus tratou"
+  {
+    id: 'handled_by_nexus_summary',
+    pattern: /^(?:what did nexus handle|what has nexus handled|handled by nexus|show handled(?: by nexus)?|o que o nexus tratou|tratado pelo nexus|mostra(?:r)? tratado(?: pelo nexus)?)[\s?!.]*$/i,
+    handler: async (userId, _match, lang, tenantId) => formatHandledByNexusFastpath(userId, tenantId, lang),
+  },
+
+  // ── Latest Report / Briefing ───────────────────────────────────
+  // "latest report", "morning briefing", "último relatório"
+  {
+    id: 'latest_report',
+    pattern: /^(?:latest report|show (?:my )?(?:latest )?report|(?:morning|evening|weekly|coach) briefing|today'?s briefing|ultimo relatorio|último relatório|relatorio mais recente|relatório mais recente|briefing da manh(?:a|ã)|resumo do dia|revis(?:a|ã)o semanal)[\s?!.]*$/i,
+    handler: async (userId, match, lang) => formatLatestReportFastpath(userId, match.input ?? match[0], lang),
   },
 
   {
@@ -1001,13 +1120,18 @@ export async function tryFastpath(
   userId: number,
   message: string,
   langOverride?: Lang,
+  tenantId = userId,
 ): Promise<FastpathResult> {
   _metrics.totalAttempts++;
   const trimmed = message.trim();
-  if (!trimmed) return { matched: false };
+  if (!trimmed) {
+    recordFastpathMiss('empty_message');
+    return { matched: false, missReason: 'empty_message' };
+  }
 
   const startedAt = Date.now();
   const lang = resolveLang(userId, langOverride);
+  let skippedSubskill: string | null = null;
 
   for (const entry of FASTPATH_PATTERNS) {
     const match = trimmed.match(entry.pattern);
@@ -1015,31 +1139,37 @@ export async function tryFastpath(
 
     // Sub-skill gate — skip patterns whose required sub-skill is off
     if (entry.requires && !isSubmoduleEnabled('secretary', entry.requires)) {
+      skippedSubskill = entry.requires;
+      _metrics.skippedBySubskill[entry.requires] = (_metrics.skippedBySubskill[entry.requires] || 0) + 1;
       logger.debug({ pattern: entry.id, requires: entry.requires }, 'Fastpath pattern skipped — sub-skill disabled');
       continue;
     }
 
     try {
-      const response = await entry.handler(userId, match, lang);
+      const response = await entry.handler(userId, match, lang, tenantId);
       const latency = Date.now() - startedAt;
       _metrics.totalHits++;
       _metrics.totalLatencyMs += latency;
       _metrics.hitsByPattern[entry.id] = (_metrics.hitsByPattern[entry.id] || 0) + 1;
       logger.info(
-        { userId, pattern: entry.id, lang, latencyMs: latency },
+        { userId, tenantId, pattern: entry.id, lang, latencyMs: latency },
         'Secretary fastpath matched',
       );
       return { matched: true, response, patternId: entry.id };
     } catch (err) {
+      _metrics.handlerFailuresByPattern[entry.id] = (_metrics.handlerFailuresByPattern[entry.id] || 0) + 1;
+      recordFastpathMiss('handler_error');
       logger.warn(
-        { err, userId, pattern: entry.id },
+        { err, userId, tenantId, pattern: entry.id },
         'Fastpath handler failed — falling through to AI',
       );
-      return { matched: false };
+      return { matched: false, missReason: 'handler_error' };
     }
   }
 
-  return { matched: false };
+  const missReason = skippedSubskill ? `subskill_disabled:${skippedSubskill}` : 'no_pattern';
+  recordFastpathMiss(missReason);
+  return { matched: false, missReason };
 }
 
 /** Get all registered fastpath pattern IDs (for portal display + tests). */

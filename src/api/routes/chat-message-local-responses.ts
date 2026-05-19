@@ -83,7 +83,7 @@ export async function tryBuildFastPathChatResponse(
   const fastPath = await tryDeterministicChatCommand(normalizedText, userId, tenantId);
   const secretaryFastPath = fastPath
     ? null
-    : await tryFastpath(userId, normalizedText, getUserLanguageById(userId));
+    : await tryFastpath(userId, normalizedText, getUserLanguageById(userId), tenantId ?? userId);
   const resolvedFastPath = fastPath ?? (
     secretaryFastPath?.matched && secretaryFastPath.response
       ? { text: secretaryFastPath.response.text, domain: secretaryFastPath.response.domain, buttons: undefined }

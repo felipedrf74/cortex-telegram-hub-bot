@@ -69,6 +69,7 @@ import {
   type DecisionLogicContext,
   type DecisionLogicV2,
   type DecisionQualityGateResult,
+  type SecretaryAvailableSlot,
   type DecisionVisibilityScope,
   type DecisionWhatWillChange,
   type DecisionWhy,
@@ -188,6 +189,7 @@ export interface DecisionApiItem {
   deadlineAt: string | null;
   expiresAt: string | null;
   confidence: number;
+  analysis: DecisionAnalysisBundle;
   riskLevel: 'low' | 'medium' | 'high';
   groupKey: string;
   sectionKey: DecisionTimelineSectionKey;
@@ -203,6 +205,19 @@ export interface DecisionApiItem {
   blockedByDecisionIds: string[];
   rollbackAvailable: boolean;
   rollbackActionId: string | null;
+}
+
+export interface DecisionAnalysisBundle {
+  confidence: number;
+  confidenceLabel: 'high' | 'medium' | 'low';
+  sourceFreshness: 'live' | 'fresh' | 'stale' | 'unknown';
+  freshnessLabel: string;
+  whyNow: string;
+  expectedOutcome: string;
+  costOfDelay: string;
+  tradeoffs: string[];
+  uncertainty: string[];
+  rollbackConfidence: 'high' | 'medium' | 'low' | 'none';
 }
 
 export type DecisionTimelineSectionKey = 'urgent' | 'today' | 'tomorrow' | 'this_week' | 'waiting_on_systems' | 'handled' | 'history';
@@ -256,10 +271,41 @@ export interface DecisionSummary {
   topDecisionTitle: string | null;
   topDecisionSourceSkill: NotificationSourceSkill | null;
   topDecisionUrgency: DecisionUrgency | null;
+  topDecisionWhy: string | null;
+  topSuggestion: DecisionCenterTopSuggestion | null;
   ctaLabel: string;
   previewItems: DecisionApiItem[];
   badgeCount: number;
   gamification: DecisionGamificationSummary | null;
+}
+
+export interface DecisionCenterTopSuggestion {
+  decisionId: string;
+  title: string;
+  actionLabel: string | null;
+  whyNow: string;
+  expectedOutcome: string;
+  riskIfIgnored: string;
+  sourceSkill: NotificationSourceSkill;
+  urgency: DecisionUrgency;
+}
+
+export interface DecisionCenterOverview {
+  count: number;
+  openCount: number;
+  handledCount: number;
+  staleCount: number;
+  supersededCount: number;
+  generatedAt: string;
+  summary: DecisionSummary;
+  topSuggestion: DecisionCenterTopSuggestion | null;
+  partial: {
+    items: boolean;
+    handled: boolean;
+    summary: boolean;
+  };
+  items: DecisionApiItem[];
+  handled: HandledByNexusItem[];
 }
 
 export interface DecisionGamificationSummary {
@@ -650,14 +696,25 @@ export function findDecisionByRelatedEntity(
 }
 
 export function getDecisionSummary(userId: number, tenantId = userId, limit = 3): DecisionSummary {
-  const items = listDecisionItems(userId, tenantId, { status: 'all', limit: 80 })
-    .filter((item) => ['unread', 'read', 'snoozed', 'failed'].includes(item.status));
-  const openItems = items.filter((item) => item.status !== 'snoozed' || !item.snoozedUntil);
+  const items = listDecisionItems(userId, tenantId, { status: 'all', limit: 80 });
+  const handled = listHandledByNexusItems(userId, tenantId, 25);
+  return buildDecisionSummaryFromSections(userId, tenantId, items, handled, limit);
+}
+
+function buildDecisionSummaryFromSections(
+  userId: number,
+  tenantId: number,
+  items: DecisionApiItem[],
+  handled: HandledByNexusItem[],
+  limit = 3,
+): DecisionSummary {
+  const activeItems = items.filter((item) => ['unread', 'read', 'snoozed', 'failed', 'open'].includes(item.status));
+  const openItems = activeItems.filter((item) => item.status !== 'snoozed' || !item.snoozedUntil);
   const urgentCount = openItems.filter((item) => item.urgency === 'urgent').length;
   const todayCount = openItems.filter((item) => item.urgency === 'urgent' || item.urgency === 'today').length;
   const top = openItems[0] ?? null;
   const locale = userDecisionContextDefaults(userId).locale;
-  const handledTodayCount = listHandledByNexusItems(userId, tenantId, 25)
+  const handledTodayCount = handled
     .filter((item) => DateTime.fromISO(item.createdAt).hasSame(DateTime.utc(), 'day'))
     .length;
   const gamification = isDecisionStreakV1Enabled(process.env, { userId, tenantId })
@@ -671,10 +728,149 @@ export function getDecisionSummary(userId: number, tenantId = userId, limit = 3)
     topDecisionTitle: top?.safePreviewTitle ?? null,
     topDecisionSourceSkill: top?.sourceSkill ?? null,
     topDecisionUrgency: top?.urgency ?? null,
+    topDecisionWhy: top?.whySummary ?? top?.analysis?.whyNow ?? null,
+    topSuggestion: top ? topSuggestionForItem(top) : null,
     ctaLabel: ctaLabelForSummary(openItems.length, urgentCount, top, locale),
     previewItems: openItems.slice(0, Math.min(Math.max(limit, 0), 3)),
     badgeCount: todayCount,
     gamification,
+  };
+}
+
+function emptyDecisionSummary(userId: number): DecisionSummary {
+  const locale = userDecisionContextDefaults(userId).locale;
+  return {
+    openCount: 0,
+    urgentCount: 0,
+    todayCount: 0,
+    handledTodayCount: 0,
+    topDecisionTitle: null,
+    topDecisionSourceSkill: null,
+    topDecisionUrgency: null,
+    topDecisionWhy: null,
+    topSuggestion: null,
+    ctaLabel: ctaLabelForSummary(0, 0, null, locale),
+    previewItems: [],
+    badgeCount: 0,
+    gamification: null,
+  };
+}
+
+function shouldRethrowDecisionOverviewError(err: unknown): boolean {
+  return err instanceof DecisionActionError;
+}
+
+function logDecisionOverviewSectionFailure(section: 'items' | 'handled' | 'summary', err: unknown, userId: number, tenantId: number): void {
+  logger.warn({ err, userId, tenantId, section }, 'Decision Center overview section failed');
+}
+
+function openDecisionItemsForOverview(items: DecisionApiItem[]): DecisionApiItem[] {
+  return items.filter((item) => ['unread', 'read', 'snoozed', 'failed', 'open'].includes(item.status));
+}
+
+export function getDecisionOverview(
+  userId: number,
+  tenantId = userId,
+  opts: { limit?: number; handledLimit?: number } = {},
+): DecisionCenterOverview {
+  const limit = Math.min(Math.max(opts.limit ?? 80, 0), 100);
+  const handledLimit = Math.min(Math.max(opts.handledLimit ?? 10, 0), 25);
+  const itemReadLimit = Math.max(limit, 80);
+  const handledReadLimit = Math.max(handledLimit, 25);
+  let allItems: DecisionApiItem[] = [];
+  let handledForSummary: HandledByNexusItem[] = [];
+  let itemsAvailable = true;
+  let handledAvailable = true;
+  let summaryAvailable = true;
+
+  try {
+    allItems = listDecisionItems(userId, tenantId, { status: 'all', limit: itemReadLimit });
+  } catch (err) {
+    if (shouldRethrowDecisionOverviewError(err)) throw err;
+    itemsAvailable = false;
+    summaryAvailable = false;
+    logDecisionOverviewSectionFailure('items', err, userId, tenantId);
+  }
+
+  try {
+    handledForSummary = listHandledByNexusItems(userId, tenantId, handledReadLimit);
+  } catch (err) {
+    if (shouldRethrowDecisionOverviewError(err)) throw err;
+    handledAvailable = false;
+    summaryAvailable = false;
+    logDecisionOverviewSectionFailure('handled', err, userId, tenantId);
+  }
+
+  const allOpenItems = openDecisionItemsForOverview(allItems);
+  const items = itemsAvailable ? allOpenItems.slice(0, limit) : [];
+  const handled = handledAvailable ? handledForSummary.slice(0, handledLimit) : [];
+  let summary = emptyDecisionSummary(userId);
+  if (summaryAvailable) {
+    try {
+      summary = buildDecisionSummaryFromSections(userId, tenantId, allItems, handledForSummary, 3);
+    } catch (err) {
+      if (shouldRethrowDecisionOverviewError(err)) throw err;
+      summaryAvailable = false;
+      logDecisionOverviewSectionFailure('summary', err, userId, tenantId);
+    }
+  }
+  const staleCount = allOpenItems.filter((item) => item.analysis.sourceFreshness === 'stale' || item.sourceTrace?.dataFreshness === 'cached').length;
+  const supersededCount = allItems.filter((item) => ['superseded', 'dismissed', 'actioned'].includes(item.status)).length;
+  const topSuggestion = summary.topSuggestion ?? (allOpenItems[0] ? topSuggestionForItem(allOpenItems[0]) : null);
+  return {
+    count: items.length,
+    openCount: allOpenItems.filter((item) => ['unread', 'read', 'failed', 'open'].includes(item.status)).length,
+    handledCount: handled.length,
+    staleCount,
+    supersededCount,
+    generatedAt: DateTime.utc().toISO()!,
+    summary,
+    topSuggestion,
+    partial: {
+      items: itemsAvailable,
+      handled: handledAvailable,
+      summary: summaryAvailable,
+    },
+    items,
+    handled,
+  };
+}
+
+export function buildDecisionCenterReportDocument(userId: number, tenantId = userId): Record<string, unknown> {
+  const overview = getDecisionOverview(userId, tenantId, { limit: 20, handledLimit: 10 });
+  return {
+    type: 'decision_briefing',
+    generatedAt: overview.generatedAt,
+    summary: {
+      openCount: overview.openCount,
+      urgentCount: overview.summary.urgentCount,
+      handledCount: overview.handledCount,
+      staleCount: overview.staleCount,
+      supersededCount: overview.supersededCount,
+      ctaLabel: overview.summary.ctaLabel,
+    },
+    topSuggestion: overview.topSuggestion,
+    openDecisions: overview.items.slice(0, 8).map((item) => ({
+      decisionId: item.decisionId,
+      title: item.safePreviewTitle || item.title,
+      whyNow: item.analysis.whyNow,
+      expectedOutcome: item.analysis.expectedOutcome,
+      costOfDelay: item.analysis.costOfDelay,
+      confidenceLabel: item.analysis.confidenceLabel,
+      sourceFreshness: item.analysis.sourceFreshness,
+      actionLabel: item.recommendedActionLabel,
+      urgency: item.urgency,
+      sourceSkill: item.sourceSkill,
+    })),
+    handledByNexus: overview.handled.slice(0, 8).map((item) => ({
+      itemId: item.itemId,
+      title: item.title,
+      summary: item.summary,
+      actionTaken: item.actionTaken,
+      whyBrief: item.whyBrief,
+      rollbackAvailable: item.rollbackAvailable,
+    })),
+    unresolvedRisk: overview.topSuggestion?.riskIfIgnored ?? null,
   };
 }
 
@@ -1348,6 +1544,7 @@ function formatDecisionItemForApi(item: DecisionRecord): DecisionApiItem {
     deadlineAt: item.decisionDeadline,
     expiresAt: item.expiresAt,
     confidence: logic.confidence,
+    analysis: analysisForRecord(item, logic),
     riskLevel,
     groupKey: groupKeyForRecord(item),
     sectionKey,
@@ -1557,6 +1754,75 @@ function sourceTraceForRecord(item: DecisionRecord, logic: DecisionLogicV2): Dec
     confidenceSource: logic.confidence >= 0.8 ? 'structured-state-and-readback' : 'partial-structured-state',
     dataFreshness: item.status === 'snoozed' ? 'cached' : 'live',
     ...(reasoningTrail && reasoningTrail.length > 0 ? { reasoningTrail } : {}),
+  };
+}
+
+function analysisForRecord(item: DecisionRecord, logic: DecisionLogicV2): DecisionAnalysisBundle {
+  const context = decisionContextForRecord(item);
+  const sourceFreshness = sourceFreshnessForRecord(item, context);
+  const confidenceLabel = logic.confidence >= 0.8 ? 'high' : logic.confidence >= 0.6 ? 'medium' : 'low';
+  const rollbackConfidence = !rollbackContractForRecord(item).available
+    ? 'none'
+    : logic.readBackVerifier
+      ? 'high'
+      : logic.confidence >= 0.7
+        ? 'medium'
+        : 'low';
+  return {
+    confidence: logic.confidence,
+    confidenceLabel,
+    sourceFreshness,
+    freshnessLabel: freshnessLabel(sourceFreshness, context),
+    whyNow: logic.urgencyReason || logic.whySummary,
+    expectedOutcome: logic.expectedEffect,
+    costOfDelay: logic.impactIfIgnored,
+    tradeoffs: logic.why.tradeoffs.slice(0, 3),
+    uncertainty: logic.why.uncertainty.slice(0, 3),
+    rollbackConfidence,
+  };
+}
+
+function sourceFreshnessForRecord(item: DecisionRecord, context: DecisionLogicContext): DecisionAnalysisBundle['sourceFreshness'] {
+  if (item.status === 'snoozed') return 'stale';
+  const state = String(context.providerSyncState ?? '').toLowerCase();
+  if (state && state !== 'synced' && state !== 'deleted') {
+    const updatedAt = Date.parse(String(context.providerSyncUpdatedAt ?? ''));
+    if (!Number.isFinite(updatedAt)) return 'unknown';
+    const ageMinutes = (Date.now() - updatedAt) / 60_000;
+    return ageMinutes > 15 ? 'stale' : 'fresh';
+  }
+  if (context.providerSyncUpdatedAt) {
+    const updatedAt = Date.parse(String(context.providerSyncUpdatedAt));
+    if (!Number.isFinite(updatedAt)) return 'unknown';
+    return (Date.now() - updatedAt) / 60_000 <= 15 ? 'fresh' : 'live';
+  }
+  return item.relatedEntityId ? 'live' : 'unknown';
+}
+
+function freshnessLabel(freshness: DecisionAnalysisBundle['sourceFreshness'], context: DecisionLogicContext): string {
+  switch (freshness) {
+    case 'live':
+      return 'Live read model';
+    case 'fresh':
+      return context.providerSyncUpdatedAt ? `Fresh as of ${context.providerSyncUpdatedAt}` : 'Fresh provider state';
+    case 'stale':
+      return context.providerSyncUpdatedAt ? `Provider state may be stale since ${context.providerSyncUpdatedAt}` : 'Stale state; refresh before acting';
+    case 'unknown':
+    default:
+      return 'Freshness unknown';
+  }
+}
+
+function topSuggestionForItem(item: DecisionApiItem): DecisionCenterTopSuggestion {
+  return {
+    decisionId: item.decisionId,
+    title: item.safePreviewTitle || item.title,
+    actionLabel: item.recommendedActionLabel ?? item.primaryActionLabel ?? null,
+    whyNow: item.analysis?.whyNow ?? item.whySummary ?? item.urgencyReason,
+    expectedOutcome: item.analysis?.expectedOutcome ?? item.expectedEffect,
+    riskIfIgnored: item.analysis?.costOfDelay ?? item.impactIfIgnored,
+    sourceSkill: item.sourceSkill,
+    urgency: item.urgency,
   };
 }
 
@@ -1816,17 +2082,27 @@ function validateDecisionLocale(locale?: string | null): string | undefined {
 function secretaryCandidateSlots(
   agenda: SecretaryAgendaItem,
   supplied?: DecisionLogicContext | null,
-): Array<{ startAt: string; endAt: string; label?: string }> {
-  const slots: Array<{ startAt: string; endAt: string; label?: string }> = [];
-  const addSlot = (startAt?: string | null, endAt?: string | null, label?: string | null) => {
+): SecretaryAvailableSlot[] {
+  const slots: SecretaryAvailableSlot[] = [];
+  const addSlot = (
+    startAt?: string | null,
+    endAt?: string | null,
+    label?: string | null,
+    metadata?: Partial<SecretaryAvailableSlot> | null,
+  ) => {
     if (!startAt || !endAt) return;
     if (!Number.isFinite(Date.parse(startAt)) || !Number.isFinite(Date.parse(endAt)) || Date.parse(startAt) >= Date.parse(endAt)) return;
     if (slots.some((slot) => Date.parse(slot.startAt) === Date.parse(startAt) && Date.parse(slot.endAt) === Date.parse(endAt))) return;
-    slots.push({ startAt, endAt, label: label ?? undefined });
+    slots.push({
+      ...(metadata ?? {}),
+      startAt,
+      endAt,
+      label: label ?? metadata?.label ?? undefined,
+    });
   };
 
   for (const slot of supplied?.candidateSlots ?? []) {
-    addSlot(slot.startAt, slot.endAt, slot.label ?? 'Candidate slot');
+    addSlot(slot.startAt, slot.endAt, slot.label ?? 'Candidate slot', slot);
   }
   addSlot(supplied?.recommendedStartAt, supplied?.recommendedEndAt, 'Recommended slot');
   for (const segment of agenda.scheduledSegments ?? []) {

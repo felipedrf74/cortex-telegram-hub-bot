@@ -245,6 +245,39 @@ describe('Decision Center Logic v2', () => {
     expect(advice.bestAction).toContain('Collect schedule context');
   });
 
+  it('Secretary advisor ranks preferred feasible slots over first insertion order', () => {
+    const advice = adviseSecretaryDecision({
+      title: 'Focus block',
+      currentStartAt: '2026-05-20T09:00:00.000Z',
+      currentEndAt: '2026-05-20T11:00:00.000Z',
+      availableSlots: [
+        { startAt: '2026-05-20T12:00:00.000Z', endAt: '2026-05-20T14:00:00.000Z', label: 'Open midday buffer' },
+        { startAt: '2026-05-20T15:00:00.000Z', endAt: '2026-05-20T17:00:00.000Z', label: 'Preferred afternoon focus' },
+      ],
+      preferredWindowLabel: 'afternoon focus',
+      reasonCodes: ['overcapacity'],
+    });
+
+    expect(advice.recommendedStartAt).toBe('2026-05-20T15:00:00.000Z');
+    expect(advice.whyTradeoffs[0]).toContain('matches the preferred window');
+    expect(advice.alternatives[0].startAt).toBe('2026-05-20T12:00:00.000Z');
+  });
+
+  it('Secretary advisor penalizes protected slot metadata even when labels are generic', () => {
+    const advice = adviseSecretaryDecision({
+      title: 'Focus block',
+      currentStartAt: '2026-05-20T09:00:00.000Z',
+      currentEndAt: '2026-05-20T11:00:00.000Z',
+      availableSlots: [
+        { startAt: '2026-05-20T12:00:00.000Z', endAt: '2026-05-20T14:00:00.000Z', label: 'Slot A', classification: 'sleep' },
+        { startAt: '2026-05-20T15:00:00.000Z', endAt: '2026-05-20T17:00:00.000Z', label: 'Slot B' },
+      ],
+    });
+
+    expect(advice.recommendedStartAt).toBe('2026-05-20T15:00:00.000Z');
+    expect(advice.alternatives[0].tradeoff).toContain('touches a protected window');
+  });
+
   it('formats decision windows with caller timezone and locale using cached Intl formatters', () => {
     const utc = formatDecisionWindow(
       '2026-05-17T08:00:00.000Z',

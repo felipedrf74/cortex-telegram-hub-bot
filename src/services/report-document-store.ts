@@ -30,7 +30,21 @@ export type ReportType =
   | 'evening_summary'
   | 'weekly_review'
   | 'coach_briefing'
+  | 'decision_briefing'
   | 'coach_phase'; // persistent training coach narrative state across weeks
+
+export const REPORT_TYPES: readonly ReportType[] = [
+  'morning_briefing',
+  'evening_summary',
+  'weekly_review',
+  'coach_briefing',
+  'decision_briefing',
+  'coach_phase',
+];
+
+export function isReportType(value: unknown): value is ReportType {
+  return typeof value === 'string' && (REPORT_TYPES as readonly string[]).includes(value);
+}
 
 export interface ReportDocument {
   id: number;
@@ -468,6 +482,7 @@ function mapReportTypeToSourceSkill(type: ReportType): import('./notification-or
     case 'coach_briefing':
     case 'coach_phase':
       return 'training';
+    case 'decision_briefing':
     case 'morning_briefing':
     case 'evening_summary':
     case 'weekly_review':
@@ -480,6 +495,7 @@ function mapReportTypeToIntentType(type: ReportType): import('./notification-orc
   switch (type) {
     case 'weekly_review':
       return 'weekly_review';
+    case 'decision_briefing':
     case 'morning_briefing':
     case 'evening_summary':
       return 'daily_digest';
@@ -495,6 +511,7 @@ function mapReportTypeToPriority(type: ReportType): import('./notification-orche
     case 'coach_briefing':
     case 'coach_phase':
       return 'active';
+    case 'decision_briefing':
     case 'morning_briefing':
     case 'evening_summary':
     case 'weekly_review':

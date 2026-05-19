@@ -25,7 +25,7 @@ export interface DecisionLogicContext {
   currentEndAt?: string | null;
   recommendedStartAt?: string | null;
   recommendedEndAt?: string | null;
-  candidateSlots?: Array<{ startAt: string; endAt: string; label?: string | null }> | null;
+  candidateSlots?: SecretaryAvailableSlot[] | null;
   reasonCodes?: string[] | null;
   sourceState?: string | null;
   explicitNoRelatedEntityReason?: string | null;
@@ -130,11 +130,30 @@ type DecisionLogicRecipe = Omit<DecisionLogicV2,
   | 'frontendActionState'
 >;
 
+export interface SecretaryAvailableSlot {
+  startAt: string;
+  endAt: string;
+  label?: string | null;
+  classification?: string | null;
+  blockType?: string | null;
+  kind?: string | null;
+  isProtected?: boolean | null;
+  protected?: boolean | null;
+  metadata?: {
+    classification?: string | null;
+    blockType?: string | null;
+    kind?: string | null;
+    type?: string | null;
+    isProtected?: boolean | null;
+    protected?: boolean | null;
+  } | null;
+}
+
 export interface SecretaryDecisionAdvisorInput {
   title: string;
   currentStartAt?: string | null;
   currentEndAt?: string | null;
-  availableSlots?: Array<{ startAt: string; endAt: string; label?: string }>;
+  availableSlots?: SecretaryAvailableSlot[];
   preferredWindowLabel?: string | null;
   reasonCodes?: string[];
   timezone?: string | null;
@@ -158,6 +177,12 @@ export interface SecretaryDecisionAdvice {
   whyRules: string[];
   whyTradeoffs: string[];
   automationEligibility: AutomationEligibility;
+}
+
+export interface SecretaryDecisionSlotScore {
+  slot: SecretaryAvailableSlot;
+  score: number;
+  reasons: string[];
 }
 
 export interface DecisionRankResult {
@@ -390,7 +415,8 @@ export function adviseSecretaryDecision(input: SecretaryDecisionAdvisorInput): S
   const feasibleSlots = (input.availableSlots ?? [])
     .filter((slot) => isValidWindow(slot.startAt, slot.endAt))
     .filter((slot) => !sameWindow(slot.startAt, slot.endAt, input.currentStartAt, input.currentEndAt));
-  const best = feasibleSlots[0] ?? null;
+  const rankedSlots = rankSecretaryDecisionSlots(input, feasibleSlots);
+  const best = rankedSlots[0]?.slot ?? null;
   const title = input.title.trim() || 'schedule item';
   const bestWindow = best ? formatDecisionWindow(best.startAt, best.endAt, input.timezone, input.locale) : null;
   const conflictGraph = [
@@ -421,11 +447,13 @@ export function adviseSecretaryDecision(input: SecretaryDecisionAdvisorInput): S
 
   return {
     bestAction: `Use ${bestWindow}.`,
-    alternatives: feasibleSlots.slice(1, 4).map((slot) => ({
+    alternatives: rankedSlots.slice(1, 4).map(({ slot, reasons }) => ({
       label: slot.label ?? formatDecisionWindow(slot.startAt, slot.endAt, input.timezone, input.locale) ?? 'Alternative slot',
       startAt: slot.startAt,
       endAt: slot.endAt,
-      tradeoff: 'Alternative slot is feasible but lower priority than the recommended window.',
+      tradeoff: reasons.length > 0
+        ? `Feasible but lower ranked: ${reasons.join('; ')}.`
+        : 'Alternative slot is feasible but lower priority than the recommended window.',
     })),
     feasibility: 'feasible',
     conflictGraph,
@@ -441,9 +469,92 @@ export function adviseSecretaryDecision(input: SecretaryDecisionAdvisorInput): S
     whyFacts: conflictGraph,
     whyPreferences: input.preferredWindowLabel ? [`Preference considered: ${input.preferredWindowLabel}.`] : [],
     whyRules: ['Schedule and capacity conflicts must go through Secretary before user-facing action.'],
-    whyTradeoffs: ['The recommended slot resolves the conflict with the smallest known schedule change.'],
+    whyTradeoffs: [
+      rankedSlots[0]?.reasons.length
+        ? `The recommended slot scored highest because ${rankedSlots[0].reasons.join('; ')}.`
+        : 'The recommended slot resolves the conflict with the smallest known schedule change.',
+    ],
     automationEligibility: 'ask_first',
   };
+}
+
+export function rankSecretaryDecisionSlots(
+  input: SecretaryDecisionAdvisorInput,
+  slots: SecretaryAvailableSlot[],
+): SecretaryDecisionSlotScore[] {
+  return slots
+    .map((slot, index) => scoreSecretaryDecisionSlot(input, slot, index))
+    .sort((a, b) => b.score - a.score || Date.parse(a.slot.startAt) - Date.parse(b.slot.startAt));
+}
+
+export function scoreSecretaryDecisionSlot(
+  input: SecretaryDecisionAdvisorInput,
+  slot: SecretaryAvailableSlot,
+  originalIndex = 0,
+): SecretaryDecisionSlotScore {
+  const reasons: string[] = [];
+  let score = Math.max(0, 80 - originalIndex);
+  const startMillis = Date.parse(slot.startAt);
+  const endMillis = Date.parse(slot.endAt);
+  const currentStartMillis = Date.parse(String(input.currentStartAt ?? ''));
+
+  if (Number.isFinite(startMillis)) {
+    const hoursFromNow = (startMillis - Date.now()) / 3_600_000;
+    if (hoursFromNow >= 0 && hoursFromNow <= 48) {
+      score += 8;
+      reasons.push('near enough to resolve the conflict promptly');
+    } else if (hoursFromNow > 48) {
+      score -= 4;
+      reasons.push('later than the closest recovery window');
+    }
+    if (Number.isFinite(currentStartMillis) && startMillis >= currentStartMillis) {
+      score += 5;
+      reasons.push('does not move the item earlier than its current window');
+    }
+  }
+
+  if (Number.isFinite(startMillis) && Number.isFinite(endMillis) && Number.isFinite(Date.parse(String(input.currentEndAt ?? '')))) {
+    const proposedDuration = endMillis - startMillis;
+    const currentDuration = Date.parse(String(input.currentEndAt)) - Date.parse(String(input.currentStartAt));
+    if (Math.abs(proposedDuration - currentDuration) <= 10 * 60_000) {
+      score += 7;
+      reasons.push('preserves the original duration');
+    }
+  }
+
+  const preferred = input.preferredWindowLabel?.trim().toLowerCase();
+  const label = slot.label?.trim().toLowerCase() ?? '';
+  if (preferred && label.includes(preferred)) {
+    score += 34;
+    reasons.push('matches the preferred window');
+  }
+  if (slotTouchesProtectedWindow(slot)) {
+    score -= 12;
+    reasons.push('touches a protected window');
+  }
+  if (input.reasonCodes?.includes('overcapacity') && /\b(open|free|buffer)\b/i.test(label)) {
+    score += 10;
+    reasons.push('uses an open buffer while resolving overcapacity');
+  }
+
+  return { slot, score, reasons };
+}
+
+function slotTouchesProtectedWindow(slot: SecretaryAvailableSlot): boolean {
+  if (slot.isProtected === true || slot.protected === true || slot.metadata?.isProtected === true || slot.metadata?.protected === true) {
+    return true;
+  }
+  const signals = [
+    slot.classification,
+    slot.blockType,
+    slot.kind,
+    slot.metadata?.classification,
+    slot.metadata?.blockType,
+    slot.metadata?.kind,
+    slot.metadata?.type,
+    slot.label,
+  ].filter((value): value is string => typeof value === 'string' && value.trim().length > 0);
+  return signals.some((value) => /\b(protected|focus|deep work|family|sleep)\b/i.test(value));
 }
 
 export function evaluateAutopilotPolicy(input: DecisionLogicInput, logic: DecisionLogicV2): {

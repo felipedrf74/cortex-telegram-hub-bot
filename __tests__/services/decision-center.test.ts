@@ -37,6 +37,7 @@ vi.mock('../../src/utils/logger', () => ({
 import { createContentWorkflowObject } from '../../src/services/content-editorial-workflow';
 import {
   addDecisionDependency,
+  buildDecisionCenterReportDocument,
   buildSkillDecisionFixtureIntent,
   createDecisionIntent,
   DECISION_OUTCOME_LEDGER_RETENTION_POLICY,
@@ -44,6 +45,7 @@ import {
   ensureDecisionCenterTables,
   evaluateDecisionEligibility,
   getDecisionItem,
+  getDecisionOverview,
   getDecisionOutcomeMetrics,
   getDecisionSummary,
   listDecisionDependencies,
@@ -194,13 +196,53 @@ describe('Decision Center facade', () => {
     expect(items[0].quality.status).toBe('pass');
     expect(items[0].displayMode).toBe('needs_input');
     expect(items[0].frontendActionState).toBe('enabled');
+    expect(items[0].analysis.confidenceLabel).toMatch(/high|medium|low/);
+    expect(items[0].analysis.whyNow).toBeTruthy();
 
     const summary = getDecisionSummary(1, 1);
     expect(summary.openCount).toBe(1);
     expect(summary.urgentCount).toBe(0);
     expect(summary.ctaLabel).toBe('1 Decision');
+    expect(summary.topSuggestion?.title).toBeTruthy();
     expect(summary.previewItems).toHaveLength(1);
     expect(summary.previewItems[0].safePreviewBody).not.toContain('Calendar details');
+
+    const overview = getDecisionOverview(1, 1, { limit: 20, handledLimit: 5 });
+    expect(overview.openCount).toBe(1);
+    expect(overview.partial).toEqual({ items: true, handled: true, summary: true });
+    expect(overview.topSuggestion?.expectedOutcome).toBeTruthy();
+
+    const report = buildDecisionCenterReportDocument(1, 1);
+    expect(report.type).toBe('decision_briefing');
+    expect((report.openDecisions as unknown[])).toHaveLength(1);
+  });
+
+  it('keeps Decision Center overview renderable when handled history is unavailable', async () => {
+    await createDecisionIntent(buildSkillDecisionFixtureIntent('training', 1, {
+      relatedEntityId: 'triathlon-running-partial',
+      relatedEntityType: 'training_profile',
+      dedupeKey: 'training:race-date-decision-partial',
+    }));
+
+    const originalPrepare = testDb.prepare.bind(testDb);
+    const prepareSpy = vi.spyOn(testDb, 'prepare').mockImplementation(((sql: string) => {
+      if (sql.includes('FROM handled_by_nexus_items')) {
+        throw new Error('handled history unavailable');
+      }
+      return originalPrepare(sql);
+    }) as typeof testDb.prepare);
+
+    try {
+      const overview = getDecisionOverview(1, 1, { limit: 20, handledLimit: 5 });
+
+      expect(overview.partial).toEqual({ items: true, handled: false, summary: false });
+      expect(overview.items).toHaveLength(1);
+      expect(overview.handled).toEqual([]);
+      expect(overview.topSuggestion?.title).toBeTruthy();
+      expect(overview.summary.previewItems).toEqual([]);
+    } finally {
+      prepareSpy.mockRestore();
+    }
   });
 
   it('localizes Home Decision Center CTA labels from the user locale', async () => {

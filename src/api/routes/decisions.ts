@@ -10,6 +10,7 @@ import {
   createDecisionIntent,
   DecisionActionError,
   dismissDecision,
+  getDecisionOverview,
   getDecisionItem,
   getDecisionPreferences,
   getDecisionSummary,
@@ -87,6 +88,21 @@ function decisionError(res: Response, err: unknown, fallbackCode = 'DECISION_ERR
   sendError(res, fallbackCode, 'Unable to process decision request', 400);
 }
 
+function positiveIntQuery(res: Response, raw: unknown, fallback: number, name: string, max: number): number | null {
+  if (raw == null || raw === '') return fallback;
+  const value = String(raw).trim();
+  if (!/^\d+$/.test(value)) {
+    sendError(res, 'VALIDATION', `${name} must be a positive integer`, 400, { [name]: raw });
+    return null;
+  }
+  const parsed = Number(value);
+  if (!Number.isSafeInteger(parsed) || parsed <= 0) {
+    sendError(res, 'VALIDATION', `${name} must be a positive integer`, 400, { [name]: raw });
+    return null;
+  }
+  return Math.min(parsed, max);
+}
+
 export function decisionRoutes(): Router {
   const router = Router();
 
@@ -98,6 +114,19 @@ export function decisionRoutes(): Router {
     if (tenantId == null) return;
     const limit = parseInt(String(req.query.limit || '3'), 10);
     sendSuccess(res, getDecisionSummary(userId, tenantId, limit));
+  }));
+
+  router.get('/overview', asyncHandler(async (req, res: Response) => {
+    const authReq = req as unknown as AuthenticatedRequest;
+    const { userId } = authReq;
+    if (!ensureValidTenantRouteScope(res, userId, 'decisions_route_overview')) return;
+    const tenantId = routeTenantId(authReq, res, userId, 'decisions_route');
+    if (tenantId == null) return;
+    const limit = positiveIntQuery(res, req.query.limit, 80, 'limit', 100);
+    if (limit == null) return;
+    const handledLimit = positiveIntQuery(res, req.query.handledLimit, 10, 'handledLimit', 25);
+    if (handledLimit == null) return;
+    sendSuccess(res, getDecisionOverview(userId, tenantId, { limit, handledLimit }));
   }));
 
   router.get('/', asyncHandler(async (req, res: Response) => {
