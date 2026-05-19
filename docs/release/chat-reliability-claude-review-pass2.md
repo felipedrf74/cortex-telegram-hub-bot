@@ -97,6 +97,14 @@ Make Nexus Chat more trustworthy across all skills without creating Chat v2. The
 - Pending confirmation storage remains in-memory and user+tenant keyed. It is not cross-tenant, but a future pass should add an atomic consume primitive to reduce duplicate-tab confirmation races.
 - Local-read turns now include a strict no-invention grounding instruction. A stricter "do not call the model when required scoped context is empty" policy still needs skill-specific semantics because "no matching local rows" is a valid answer for many local-read requests.
 
+## Follow-Up Tickets
+
+| Ticket | Priority | Scope | Reason |
+| --- | --- | --- | --- |
+| CHAT-REL-FU-01 | Medium | Add atomic consume semantics for pending chat confirmations. | Current storage is tenant-scoped and safe against cross-tenant use, but duplicate-tab accepts can still race across async executor boundaries. |
+| CHAT-REL-FU-02 | Medium | Define per-skill empty-local-context behavior. | This pass prevents invented local facts through prompt grounding; fully skipping the model needs skill-specific semantics for "no local rows" versus "local source unavailable." |
+| CHAT-REL-FU-03 | Low | Wire provider-native prompt caching and dashboard consumption. | `cacheablePrefixHash` is metadata only until Gemini/OpenAI cache primitives and portal reporting consume it. |
+
 ## Claude Code QA Prompt
 
 You are Claude Code performing an independent QA review of the Nexus Chat reliability branch after Codex's pass-2 fixes.
