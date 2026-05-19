@@ -116,6 +116,46 @@ describe('internal routes runtime hardening', () => {
     expect(getPerformanceSummary).toHaveBeenCalledWith(42, 7);
   });
 
+  it('uses signed attribution tenant id for scoped performance summaries', async () => {
+    const { createInternalAttributionToken } = await import('../../src/services/internal-attribution');
+    const token = createInternalAttributionToken({
+      userId: 7,
+      tenantId: 77,
+      category: 'content_engine_report',
+    });
+    const { internalRoutes } = await import('../../src/api/routes/internal');
+    const app = express();
+    app.use(express.json());
+    app.use('/api/v1/internal', internalRoutes());
+
+    const res = await fetchJson(app, '/api/v1/internal/performance-summary?days=7&tenantId=77', {
+      headers: {
+        'x-internal-secret': 'test-internal-secret',
+        'x-internal-attribution-token': token!,
+      },
+    });
+
+    expect(res.status).toBe(200);
+    expect(getPerformanceSummary).toHaveBeenCalledWith(77, 7);
+  });
+
+  it('rejects scoped performance summaries without signed attribution', async () => {
+    const { internalRoutes } = await import('../../src/api/routes/internal');
+    const app = express();
+    app.use(express.json());
+    app.use('/api/v1/internal', internalRoutes());
+
+    const res = await fetchJson(app, '/api/v1/internal/performance-summary?days=7&tenantId=77', {
+      headers: {
+        'x-internal-secret': 'test-internal-secret',
+      },
+    });
+
+    expect(res.status).toBe(403);
+    expect(res.body.error.code).toBe('FORBIDDEN');
+    expect(getPerformanceSummary).not.toHaveBeenCalled();
+  });
+
   it('rejects non-loopback internal requests before accepting a valid secret', async () => {
     vi.doMock('../../src/api/secret-guards', async (importOriginal) => {
       const actual = await importOriginal<typeof import('../../src/api/secret-guards')>();

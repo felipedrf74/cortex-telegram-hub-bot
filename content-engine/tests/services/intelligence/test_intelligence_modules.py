@@ -62,6 +62,9 @@ async def test_gap_finder_happy_path_threads_research_context(assert_no_founder_
     response = await gap_finder.find(GapsRequest(niche="fitness", max_gaps=3), orchestrator)
 
     assert response.gaps[0]["topic"] == "tenant-42 recovery routine"
+    assert response.operation_trace
+    assert response.cost_tier == "medium"
+    assert response.reuse_status == "fresh"
     assert len(orchestrator.calls) == 5
     assert all(max_per_searcher == 3 for _, max_per_searcher in orchestrator.calls)
     assert "beginner hybrid training plan" in captured["prompt"]
@@ -107,7 +110,14 @@ async def test_gap_finder_ai_failure_returns_degraded_error_shape():
     response = await gap_finder.find(GapsRequest(niche="fitness", max_gaps=2), RecordingOrchestrator())
 
     assert response.gaps[0]["gap_type"] == "error"
-    assert "tenant-42 claude outage" in response.gaps[0]["error"]
+    # 2026-05-18 phase2-qa P2: previously the raw exception message
+    # ("tenant-42 claude outage", or the AI proxy template
+    # `f"AI proxy error {status} for category={category}"`) leaked to the
+    # client via `str(e)`. Now redacted to a stable code so internal
+    # infrastructure detail (status codes, category names, tenant markers)
+    # never surfaces to iOS. The negative assertion below pins the fix.
+    assert response.gaps[0]["error"] == "provider_unavailable"
+    assert "tenant-42" not in response.gaps[0]["error"]
 
 
 async def test_gap_finder_raw_malformed_output_returns_empty_list():
@@ -230,6 +240,8 @@ async def test_competitor_no_youtube_key_uses_claude_only_prompt(monkeypatch, as
     response = await competitor_analyzer.analyze(CompetitorRequest(channel="tenant-42 channel", max_videos=3))
 
     assert response.analysis["channel"] == "tenant-42 channel"
+    assert response.operation_trace
+    assert response.cost_tier == "medium"
     assert "tenant-42 channel" in captured["prompt"]
     assert "Recent videos:" not in captured["prompt"]
     assert "tenant-99" not in captured["prompt"]
@@ -261,7 +273,6 @@ async def test_competitor_with_videos_includes_recent_titles(monkeypatch):
     response = await competitor_analyzer.analyze(CompetitorRequest(channel="tenant-42 channel", max_videos=2))
 
     assert response.analysis["top_performer"] == "tenant-42 calendar reset"
-    assert "Recent videos:" in captured["prompt"]
     assert "tenant-42 calendar reset" in captured["prompt"]
 
 
@@ -439,7 +450,7 @@ async def test_competitor_fetch_skips_stats_when_recent_search_has_no_video_ids(
     assert len(calls) == 2
 
 
-async def test_competitor_analyze_uses_expected_claude_budget(monkeypatch):
+async def test_competitor_analyze_uses_compact_claude_budget(monkeypatch):
     captured = {}
 
     async def fake_fetch(*args, **kwargs):
@@ -454,7 +465,7 @@ async def test_competitor_analyze_uses_expected_claude_budget(monkeypatch):
 
     await competitor_analyzer.analyze(CompetitorRequest(channel="tenant-42 channel"))
 
-    assert captured["kwargs"]["max_tokens"] == 4096
+    assert captured["kwargs"]["max_tokens"] == 1800
 
 
 async def test_competitor_fetch_http_status_errors_are_not_swallowed(monkeypatch):

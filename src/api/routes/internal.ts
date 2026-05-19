@@ -292,12 +292,20 @@ export function internalRoutes(): Router {
   router.get('/performance-summary', (req: Request, res: Response) => {
     try {
       const days = parseInt(req.query.days as string, 10) || 30;
+      const requestedTenantId = normalizeOptionalScopeId(req.query.tenantId);
+      const attributionToken = req.headers['x-internal-attribution-token'] as string | undefined;
+      const verifiedAttribution = verifyInternalAttributionToken(attributionToken, 'content_engine_report');
+      if (requestedTenantId && !verifiedAttribution) {
+        sendError(res, 'FORBIDDEN', 'Signed attribution is required for scoped performance summary', 403);
+        return;
+      }
       const ownerTarget = getOwnerBootstrapTarget();
-      if (!ownerTarget?.tenantId) {
+      const scopedTenantId = verifiedAttribution?.tenantId ?? ownerTarget?.tenantId;
+      if (!scopedTenantId) {
         sendError(res, 'SERVICE_UNAVAILABLE', 'Owner bootstrap target unavailable', 503);
         return;
       }
-      const summary = getPerformanceSummary(ownerTarget.tenantId, days);
+      const summary = getPerformanceSummary(scopedTenantId, days);
       res.json({
         entries: summary.entries.map((e: any) => ({
           views: e.views,

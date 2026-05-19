@@ -58,6 +58,27 @@ describe('internal attribution tokens', () => {
     )).toBeNull();
   });
 
+  it('allows the direct json-repair child category without opening sibling categories', () => {
+    vi.stubEnv('INTERNAL_ATTRIBUTION_SECRET', 'test-secret');
+    const token = createInternalAttributionToken({
+      userId: 42,
+      tenantId: 77,
+      category: 'content_engine_report',
+      nowMs: Date.parse('2026-05-18T12:00:00Z'),
+    });
+
+    expect(verifyInternalAttributionToken(
+      token,
+      'content_engine_report_json_repair',
+      Date.parse('2026-05-18T12:00:10Z'),
+    )).toMatchObject({ userId: 42, tenantId: 77, category: 'content_engine_report' });
+    expect(verifyInternalAttributionToken(
+      token,
+      'content_engine_feedback_json_repair',
+      Date.parse('2026-05-18T12:00:10Z'),
+    )).toBeNull();
+  });
+
   it('fails closed when identity or signing secret is missing', () => {
     expect(createInternalAttributionToken({
       userId: 0,

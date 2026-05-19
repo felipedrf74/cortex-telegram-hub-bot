@@ -82,7 +82,8 @@ export function verifyInternalAttributionToken(token: unknown, expectedCategory:
     const tenantId = normalizeId(claims.tenantId);
     const category = String(claims.category || '').trim();
     if (!userId || !tenantId || !category) return null;
-    if (category !== expectedCategory) return null;
+    const expectedIsJsonRepair = expectedCategory === `${category}_json_repair`;
+    if (category !== expectedCategory && !expectedIsJsonRepair) return null;
     if (!Number.isFinite(claims.expiresAt) || claims.expiresAt < Math.floor(nowMs / 1000)) return null;
     return { ...claims, userId, tenantId, category };
   } catch {

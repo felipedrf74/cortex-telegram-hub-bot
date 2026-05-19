@@ -277,6 +277,113 @@ describe('content learning routes', () => {
     });
   });
 
+  it('records generated variant feedback through direct REST learning path', async () => {
+    const { response } = await dispatch('POST', '/variant-feedback', {
+      topic: 'AI scripting workflow',
+      variantKind: 'hook',
+      variantText: 'Most creators waste tokens before they write.',
+      sentiment: 'approved',
+      angle: 'cost control',
+      format: 'YouTube',
+    }, 77);
+
+    expect(response.statusCode).toBe(200);
+    expect(response.body.data).toEqual(expect.objectContaining({
+      topic: 'AI scripting workflow',
+      variantKind: 'hook',
+      sentiment: 'approved',
+      accepted: true,
+    }));
+
+    const row = testDb.prepare(`
+      SELECT topic, hook, variant_kind, feedback_sentiment, accepted
+      FROM content_idea_memory
+      WHERE user_id = ? AND tenant_id = ?
+    `).get(77, 77) as any;
+    expect(row).toEqual(expect.objectContaining({
+      topic: 'AI scripting workflow',
+      hook: 'Most creators waste tokens before they write.',
+      variant_kind: 'hook',
+      feedback_sentiment: 'approved',
+      accepted: 1,
+    }));
+  });
+
+  it('validates generated variant feedback before writing memory', async () => {
+    const { response } = await dispatch('POST', '/variant-feedback', {
+      topic: 'AI scripting workflow',
+      variantKind: 'unknown',
+      variantText: 'A weak title',
+      sentiment: 'approved',
+    }, 77);
+
+    expect(response.statusCode).toBe(400);
+    expect(response.body.error.code).toBe('VALIDATION');
+    expect(mocks.invalidateContentDerivedCaches).not.toHaveBeenCalled();
+  });
+
+  // ─────────────────────────────────────────────────────────────────────
+  // QA regression pins (phase2-qa P1 #5 / Agent B section H gap):
+  // The original Phase 2 suite missed three negative cases that protect
+  // tenant isolation on /variant-feedback. Pin them so a future regression
+  // that loosens regex or scope is caught by tests.
+  // ─────────────────────────────────────────────────────────────────────
+
+  it('rejects malformed sourcePackageId at the regex stage with 400 (no SQL probe)', async () => {
+    const { response } = await dispatch('POST', '/variant-feedback', {
+      topic: 'AI scripting workflow',
+      variantKind: 'hook',
+      variantText: 'A neutral hook.',
+      sentiment: 'approved',
+      sourcePackageId: "sp_abc'; DROP TABLE users--",
+    }, 77);
+
+    expect(response.statusCode).toBe(400);
+    expect(response.body.error.code).toBe('VALIDATION');
+    expect(mocks.invalidateContentDerivedCaches).not.toHaveBeenCalled();
+  });
+
+  it('rejects a sourcePackageId not owned by the caller with 404 (no existence disclosure)', async () => {
+    // A well-formed sourcePackageId that does not exist in this tenant's
+    // scope must 404, not 200. The same response covers both "doesn't
+    // exist at all" and "owned by another tenant" — that ambiguity is
+    // intentional to prevent existence disclosure across tenants.
+    const otherTenantPackageId = 'sp_0000000000000000_aaaaaaaaaaaaaaaa';
+
+    const { response } = await dispatch('POST', '/variant-feedback', {
+      topic: 'AI scripting workflow',
+      variantKind: 'hook',
+      variantText: 'Neutral content.',
+      sentiment: 'approved',
+      sourcePackageId: otherTenantPackageId,
+    }, 77);
+
+    expect(response.statusCode).toBe(404);
+    expect(response.body.error.code).toBe('NOT_FOUND');
+    expect(mocks.invalidateContentDerivedCaches).not.toHaveBeenCalled();
+  });
+
+  it('rejects body-supplied userId/tenantId attempting to override authenticated scope', async () => {
+    // Caller authenticates as 77; tries to pass body identity 999.
+    // Backend must ignore body identity entirely and either honor auth (77)
+    // or reject. Either way, no row should be written for user_id=999.
+    const { response } = await dispatch('POST', '/variant-feedback', {
+      topic: 'Identity override test',
+      variantKind: 'hook',
+      variantText: 'Should not write as user 999',
+      sentiment: 'approved',
+      userId: 999,
+      tenantId: 999,
+    }, 77);
+
+    expect(response.statusCode).toBe(200);
+    const stolenRow = testDb.prepare(`
+      SELECT COUNT(*) as n FROM content_idea_memory
+      WHERE user_id = 999 OR tenant_id = 999
+    `).get() as { n: number };
+    expect(stolenRow.n).toBe(0);
+  });
+
   it('returns pending topics scoped to the authenticated user', async () => {
     seedTopicFeedback(41, 'My pending topic');
     seedTopicFeedback(99, 'Other pending topic');

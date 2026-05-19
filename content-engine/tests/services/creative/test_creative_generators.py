@@ -76,6 +76,11 @@ async def test_happy_path_returns_expected_shape(case, assert_no_founder_identit
 
     assert value
     assert response.duration_ms >= 0
+    assert response.operation_trace
+    assert response.operation_trace["inputTokens"] > 0
+    assert response.cost_tier in {"low", "medium"}
+    assert response.reuse_status == "fresh"
+    assert response.next_actions
     assert "tenant-42 launch plan" in captured["prompt"]
     assert "tenant-99" not in captured["prompt"]
     assert_no_founder_identity(captured["prompt"], captured.get("system", ""), value)
@@ -222,7 +227,10 @@ async def test_repurpose_engine_passes_system_prompt_and_large_token_budget(monk
 
     assert "- Original format: Podcast" in captured["prompt"]
     assert captured["kwargs"]["system"] == repurpose_engine.SYSTEM_PROMPT
-    assert captured["kwargs"]["max_tokens"] == 6000
+    # 2026-05-18 phase2-qa P2: was 2200, now 1900 to match documented
+    # OPERATION_BUDGETS["repurpose"] = ("quick", 1900). 16% honest-pricing
+    # gap closed between iOS budget metadata and actual model output cap.
+    assert captured["kwargs"]["max_tokens"] == 1900
 
 
 async def test_repurpose_engine_non_list_model_output_is_wrapped(monkeypatch):

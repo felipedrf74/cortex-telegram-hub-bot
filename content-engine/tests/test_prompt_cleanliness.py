@@ -141,7 +141,7 @@ async def test_feedback_prompt_uses_request_profile_without_founder_defaults(mon
 async def test_report_prompt_uses_request_profile_without_founder_defaults(monkeypatch):
     captured = await capture_json(monkeypatch, report_gen, {"videos_published": 1})
 
-    async def fake_history(_days):
+    async def fake_history(_days, **_kwargs):
         return [{"views": 1000, "retentionPct": 60, "likes": 50, "comments": 4, "subsGained": 3, "hookUsed": "calm hook"}]
 
     monkeypatch.setattr(report_gen, "_fetch_performance_history", fake_history)

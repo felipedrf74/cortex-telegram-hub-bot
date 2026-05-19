@@ -46,4 +46,19 @@ describe('content engine profile payload', () => {
     expect(claims?.userId).toBe(7);
     expect(claims?.tenantId).toBe(44);
   });
+
+  it('mints attribution tokens for the operation category that will be billed', async () => {
+    vi.stubEnv('INTERNAL_ATTRIBUTION_SECRET', 'payload-secret');
+    const { buildCurrentCreatorProfilePayload } = await import('../../src/services/content-engine-profile-payload');
+
+    const payload = await runWithContext(
+      { source: 'http', userId: 7, tenantId: 44 },
+      () => buildCurrentCreatorProfilePayload('en-US', 'content_engine_report'),
+    );
+
+    expect(verifyInternalAttributionToken(payload.internal_attribution_token, 'content_engine_creator_context')).toBeNull();
+    const claims = verifyInternalAttributionToken(payload.internal_attribution_token, 'content_engine_report');
+    expect(claims?.userId).toBe(7);
+    expect(claims?.tenantId).toBe(44);
+  });
 });

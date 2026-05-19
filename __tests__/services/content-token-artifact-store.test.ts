@@ -7,6 +7,7 @@ import {
   getContentSourcePackage,
   listRecentContentIdeaMemory,
   persistContentArtifacts,
+  recordContentVariantFeedback,
 } from '../../src/services/content-token-artifact-store';
 
 describe('content token artifact store', () => {
@@ -109,5 +110,48 @@ describe('content token artifact store', () => {
     expect(getContentSourcePackage({ tenantId: 45, userId: 7 }, sourcePackage.sourcePackageId, testDb)).toBeNull();
     expect(getContentSourcePackage({ tenantId: 44, userId: 8 }, sourcePackage.sourcePackageId, testDb)).toBeNull();
     expect(getContentResearchArtifact({ tenantId: 45, userId: 7 }, sourcePackage.researchArtifactId, testDb)).toBeNull();
+  });
+
+  it('records accepted and rejected generated variants for future novelty control', () => {
+    const testDb = openDb();
+    recordContentVariantFeedback({
+      tenantId: 44,
+      userId: 7,
+      topic: 'AI scripting workflow',
+      variantKind: 'hook',
+      variantText: 'Most creators waste tokens before they write.',
+      sentiment: 'approved',
+      angle: 'cost control',
+      format: 'YouTube',
+    }, testDb);
+    recordContentVariantFeedback({
+      tenantId: 44,
+      userId: 7,
+      topic: 'AI scripting workflow',
+      variantKind: 'title',
+      variantText: 'Generic AI tips for everyone',
+      sentiment: 'rejected',
+      angle: 'generic',
+      format: 'YouTube',
+      notes: 'Too broad',
+    }, testDb);
+
+    const memory = listRecentContentIdeaMemory({ tenantId: 44, userId: 7 }, 5, testDb);
+    expect(memory).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        topic: 'AI scripting workflow',
+        hook: 'Generic AI tips for everyone',
+        variant_kind: 'title',
+        feedback_sentiment: 'rejected',
+        accepted: 0,
+      }),
+      expect.objectContaining({
+        topic: 'AI scripting workflow',
+        hook: 'Most creators waste tokens before they write.',
+        variant_kind: 'hook',
+        feedback_sentiment: 'approved',
+        accepted: 1,
+      }),
+    ]));
   });
 });

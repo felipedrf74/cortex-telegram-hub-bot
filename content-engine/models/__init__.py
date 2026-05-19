@@ -13,6 +13,7 @@ from .requests import (
     SeoRequest, SeoResponse,
     RepurposeRequest, RepurposeResponse,
     FeedbackRequest, FeedbackResponse,
+    ReportRequest,
     ReportResponse,
 )
 
@@ -31,5 +32,6 @@ __all__ = [
     "SeoRequest", "SeoResponse",
     "RepurposeRequest", "RepurposeResponse",
     "FeedbackRequest", "FeedbackResponse",
+    "ReportRequest",
     "ReportResponse",
 ]

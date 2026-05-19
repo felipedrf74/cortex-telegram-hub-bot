@@ -20,6 +20,10 @@ import {
 } from './content-learning-route-utils';
 import { invalidTopicGeneratorFormatMessage } from './content-script-utils';
 import type { Lang } from '../../utils/i18n';
+import {
+  getContentSourcePackage,
+  recordContentVariantFeedback,
+} from '../../services/content-token-artifact-store';
 
 type ContentTopicGeneratorFormat = 'reel' | 'youtube';
 type ResolveContentLanguage = (req: Pick<AuthenticatedRequest, 'header'>, userId: number) => Lang;
@@ -32,6 +36,17 @@ type EnsureValidContentRouteScope = (
 
 const VALID_TOPIC_GENERATOR_FORMATS = new Set<ContentTopicGeneratorFormat>(['reel', 'youtube']);
 const VALID_FEEDBACK_SENTIMENTS = ['approved', 'skipped', 'rejected'] as const;
+const VALID_VARIANT_KINDS = new Set([
+  'hook',
+  'title',
+  'caption',
+  'cta',
+  'angle',
+  'thumbnail',
+  'script',
+  'section',
+  'repurpose',
+]);
 
 function isTopicGeneratorFormat(format: unknown): format is ContentTopicGeneratorFormat {
   return typeof format === 'string' && VALID_TOPIC_GENERATOR_FORMATS.has(format as ContentTopicGeneratorFormat);
@@ -118,6 +133,74 @@ export function registerContentLearningRoutes(
     updateFeedback(id, sentiment, userId, tenantId);
     invalidateContentDerivedCaches(userId);
     sendSuccess(res, { feedbackId: id, sentiment, title: topicRow.topic });
+  }));
+
+  /**
+   * POST /api/v1/content/variant-feedback
+   *
+   * Records the user's accept/reject signal for generated hooks, titles,
+   * captions, CTAs, thumbnail concepts, or script sections. This is a
+   * direct REST learning path; it never routes through chat or triggers
+   * generation.
+   *
+   * Body: {
+   *   topic: string,
+   *   variantText: string,
+   *   sentiment: "approved" | "skipped" | "rejected",
+   *   variantKind?: "hook" | "title" | "caption" | "cta" | ...
+   *   sourcePackageId?: string,
+   *   angle?: string,
+   *   format?: string,
+   *   notes?: string
+   * }
+   */
+  router.post('/variant-feedback', asyncHandler(async (req, res: Response) => {
+    const { userId, tenantId } = req as unknown as AuthenticatedRequest;
+    const routeTenantId = typeof tenantId === 'number' ? tenantId : userId;
+    const topic = cleanFeedbackString(req.body?.topic, 240);
+    const variantText = cleanFeedbackString(req.body?.variantText, 360);
+    const sentiment = req.body?.sentiment;
+    const variantKind = cleanFeedbackString(req.body?.variantKind, 64) || 'script';
+    const sourcePackageId = cleanFeedbackString(req.body?.sourcePackageId, 80);
+
+    if (!topic || !variantText) {
+      sendError(res, 'VALIDATION', 'topic and variantText are required', 400);
+      return;
+    }
+    if (!sentiment || !VALID_FEEDBACK_SENTIMENTS.includes(sentiment)) {
+      sendError(res, 'VALIDATION', `sentiment must be one of: ${VALID_FEEDBACK_SENTIMENTS.join(', ')}`, 400);
+      return;
+    }
+    if (!VALID_VARIANT_KINDS.has(variantKind)) {
+      sendError(res, 'VALIDATION', `variantKind must be one of: ${Array.from(VALID_VARIANT_KINDS).join(', ')}`, 400);
+      return;
+    }
+    if (sourcePackageId) {
+      if (!/^sp_[a-f0-9]{16}_[a-f0-9]{16}$/i.test(sourcePackageId)) {
+        sendError(res, 'VALIDATION', 'invalid sourcePackageId', 400);
+        return;
+      }
+      if (!getContentSourcePackage({ tenantId: routeTenantId, userId }, sourcePackageId)) {
+        sendError(res, 'NOT_FOUND', 'source package not found', 404);
+        return;
+      }
+    }
+
+    const recorded = recordContentVariantFeedback({
+      tenantId: routeTenantId,
+      userId,
+      topic,
+      variantText,
+      sentiment,
+      variantKind,
+      sourcePackageId,
+      angle: cleanFeedbackString(req.body?.angle, 160),
+      format: cleanFeedbackString(req.body?.format, 64),
+      notes: cleanFeedbackString(req.body?.notes, 320),
+    });
+
+    invalidateContentDerivedCaches(userId);
+    sendSuccess(res, recorded);
   }));
 
   /**
@@ -315,4 +398,14 @@ export function registerContentLearningRoutes(
 
     sendSuccess(res, buildRecentScriptsResponse(scripts));
   }));
+}
+
+function cleanFeedbackString(value: unknown, maxChars: number): string | null {
+  if (typeof value !== 'string') return null;
+  const cleaned = value
+    .replace(/[\u0000-\u001F\u007F]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, maxChars);
+  return cleaned || null;
 }

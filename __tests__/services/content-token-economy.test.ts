@@ -2,12 +2,20 @@
 
 import { describe, expect, it } from 'vitest';
 import {
+  buildClaimLedger,
+  buildContentAgentSignalDigest,
+  buildContentArtifactRefs,
+  buildContentNextActions,
+  buildContentOperationTrace,
   buildCreatorVoiceCard,
   buildSourcePackage,
   budgetStateFromQuota,
+  compileContentOperationPrompt,
   compileContentPrompt,
   estimateContentGenerationCost,
+  estimateContentOperationCost,
   lintSourcePackage,
+  noveltyCheck,
   qualityGateContent,
   routeContentResearch,
 } from '../../src/services/content-token-economy';
@@ -198,5 +206,118 @@ describe('content token economy', () => {
       'high_risk_without_sources',
       'unsafe_prompt_artifact_review',
     ]));
+  });
+
+  it.each([
+    ['hook_pack', 700, 'low'],
+    ['title_pack', 750, 'low'],
+    ['caption_pack', 950, 'low'],
+    ['thumbnail_pack', 850, 'low'],
+    ['repurpose', 1900, 'medium'],
+    ['competitor_insight', 2600, 'medium'],
+    ['seo_insight', 2300, 'medium'],
+    ['gap_insight', 2400, 'medium'],
+    ['book_source', 4200, 'high'],
+  ] as const)('compiles %s with operation-specific budget and stable prefix', (operation, maxTokens, costTier) => {
+    const voiceCard = buildCreatorVoiceCard({
+      tenantId: 42,
+      userId: 7,
+      language: 'en-US',
+      niche: 'creator ops',
+      voiceMemory: '[brand_voice] Short practical sentences.',
+    });
+    const sourcePackage = buildSourcePackage({
+      topic: 'token-smart content',
+      language: 'en-US',
+      format: 'YouTube',
+      mode: 'draft',
+      sources: [{ title: 'Source A', relevance_note: 'Reuse source evidence.', source_type: 'article' }],
+    });
+    const compiled = compileContentOperationPrompt({
+      operation,
+      topic: 'token-smart content',
+      language: 'en-US',
+      reusableContext: { voiceCard, sourcePackage },
+    });
+    const compiledAgain = compileContentOperationPrompt({
+      operation,
+      topic: 'token-smart content',
+      language: 'en-US',
+      reusableContext: { voiceCard, sourcePackage },
+    });
+    const estimate = estimateContentOperationCost({ operation, promptTokens: compiled.tokenEstimate });
+
+    expect(compiled.maxTokens).toBe(maxTokens);
+    expect(compiled.cacheablePrefixHash).toBe(compiledAgain.cacheablePrefixHash);
+    expect(compiled.prompt).toContain('[source_package]');
+    expect(estimate.costTier).toBe(costTier);
+  });
+
+  it('builds artifact refs, next actions, operation traces, and compact agent signals', () => {
+    const voiceCard = buildCreatorVoiceCard({
+      tenantId: 5,
+      userId: 9,
+      language: 'pt-BR',
+      niche: 'content ops',
+      voiceMemory: '[hook_style] Open with the constraint.',
+    });
+    const sourcePackage = buildSourcePackage({
+      topic: 'artifact reuse',
+      language: 'pt-BR',
+      format: 'YouTube',
+      mode: 'draft',
+      sources: [{ title: 'Reuse memo', relevance_note: 'Artifacts reduce repeated research.', source_type: 'memo' }],
+    });
+    const prompt = compileContentOperationPrompt({
+      operation: 'title_pack',
+      topic: 'artifact reuse',
+      language: 'pt-BR',
+      reusableContext: {
+        voiceCard,
+        sourcePackage,
+        agentDigest: buildContentAgentSignalDigest({
+          recentHooks: ['Stop rebuilding the same prompt'],
+          recentAngles: ['artifact reuse', 'artifact reuse'],
+        }),
+      },
+    });
+    const trace = buildContentOperationTrace({
+      operation: 'title_pack',
+      prompt,
+      userId: 9,
+      tenantId: 5,
+      cacheStatus: 'miss',
+    });
+    const refs = buildContentArtifactRefs({ voiceCard, sourcePackage });
+    const actions = buildContentNextActions({ mode: 'draft', budgetState: 'healthy', hasSourcePackage: true });
+
+    expect(trace).toMatchObject({ operation: 'title_pack', costTier: 'low', userId: 9, tenantId: 5 });
+    expect(refs.map((ref) => ref.type)).toEqual(expect.arrayContaining(['voice_card', 'source_package', 'research_artifact']));
+    expect(actions.map((action) => action.action)).toEqual(expect.arrayContaining(['hook_pack', 'title_pack', 'caption_pack', 'thumbnail_pack']));
+    expect(prompt.prompt).not.toMatch(/raw agent log|debug/i);
+  });
+
+  it('classifies claims and flags repeated hooks or angles without full history prompts', () => {
+    const sourcePackage = buildSourcePackage({
+      topic: 'proof-first scripts',
+      language: 'en-US',
+      format: 'YouTube',
+      mode: 'draft',
+      sources: [{ title: 'Proof memo', relevance_note: 'Creators who reuse artifacts cut repeated research work.', source_type: 'memo' }],
+    });
+    const ledger = buildClaimLedger({
+      text: 'Creators who reuse artifacts cut repeated research work. This always doubles retention.',
+      sourcePackage,
+    });
+    const novelty = noveltyCheck({
+      hook: 'Stop rebuilding the same prompt',
+      angle: 'Artifact reuse',
+      recentHooks: ['Stop rebuilding the same prompt'],
+      recentAngles: ['Artifact reuse'],
+    });
+
+    expect(ledger.map((entry) => entry.support)).toEqual(expect.arrayContaining(['source_backed', 'unverified']));
+    expect(novelty.repeated).toBe(true);
+    expect(novelty.warnings).toEqual(expect.arrayContaining(['repeated_hook_detected', 'repeated_angle_detected']));
   });
 });

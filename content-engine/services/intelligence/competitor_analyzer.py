@@ -13,6 +13,7 @@ from config import cfg
 from models.requests import CompetitorRequest, CompetitorResponse
 from services.claude_client import ask_claude_json
 from services.creator_context import creator_profile_block, language_instruction
+from services.creative.operation_prompt_compilers import OperationPromptInput, build_operation_metadata, compile_operation_prompt
 
 logger = logging.getLogger("content-engine.competitor")
 
@@ -100,40 +101,30 @@ Use the creator profile only to tailor useful, scoped recommendations. Do not as
 
     videos = await _fetch_channel_videos(req.channel, req.max_videos)
 
-    if not videos:
-        # Fallback: Claude-only analysis from general knowledge
-        prompt = f"""Analyze the YouTube channel/creator "{req.channel}" as a competitor.
-Provide insights on: title patterns, content mix, upload frequency, engagement style, strengths, weaknesses.
-Return JSON with keys: channel, title_patterns (array), content_mix (object), upload_frequency, avg_views_estimate, strengths (array), weaknesses (array), actionable_insights (array).
-Language: {req.language} for insights."""
-    else:
-        video_summary = "\n".join(
-            f"- \"{v['title']}\" | {v['views']:,} views | {v['likes']:,} likes | {v['published_at'][:10]}"
-            for v in videos[:15]
-        )
-        prompt = f"""Analyze this competitor's recent YouTube videos:
+    video_summary = [
+        f"{v['title']} | {v['views']:,} views | {v['likes']:,} likes | {v['published_at'][:10]}"
+        for v in videos[:12]
+    ]
+    compiled = compile_operation_prompt(OperationPromptInput(
+        operation="competitor_insight",
+        topic=req.channel,
+        language=req.language,
+        creator_profile=creator_profile_block(req),
+        source_summary=video_summary,
+        user_instruction=f"Analyze competitor channel={req.channel}; max_videos={req.max_videos}.",
+        format_contract=(
+            "Return JSON object with channel, title_patterns, content_mix, upload_frequency, "
+            "avg_views, top_performer, strengths, weaknesses, actionable_insights. "
+            "If no recent videos are supplied, mark confidence as low and avoid invented metrics."
+        ),
+    ))
 
-Channel: {req.channel}
-Recent videos:
-{video_summary}
-
-Provide a competitor analysis with:
-1. title_patterns: common patterns in their titles (array of pattern descriptions)
-2. content_mix: breakdown by type (reaction, tutorial, commentary, etc.)
-3. upload_frequency: how often they post
-4. avg_views: average views across these videos
-5. top_performer: which video did best and why
-6. strengths: what they do well (array)
-7. weaknesses: content gaps or weaknesses (array)
-8. actionable_insights: specific things the authenticated creator can learn/adapt (array)
-
-Return as JSON object. Insights in {req.language}."""
-
-    analysis = await ask_claude_json(prompt, system=system_prompt, max_tokens=4096)
+    analysis = await ask_claude_json(compiled.prompt, system=system_prompt, max_tokens=1800)
 
     duration_ms = int((time.monotonic() - start) * 1000)
     return CompetitorResponse(
         channel=req.channel,
         analysis=analysis if isinstance(analysis, dict) else {"raw": analysis},
         duration_ms=duration_ms,
+        **build_operation_metadata(req, "competitor_insight", compiled),
     )

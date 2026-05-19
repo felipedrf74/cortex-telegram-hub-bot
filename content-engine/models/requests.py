@@ -9,6 +9,24 @@ class AttributionFields(BaseModel):
     user_id: int | None = Field(default=None)
     tenant_id: int | None = Field(default=None)
     internal_attribution_token: str | None = Field(default=None)
+    source_package_id: str | None = Field(default=None)
+    voice_card_version: str | None = Field(default=None)
+    draft_id: str | None = Field(default=None)
+    script_id: str | None = Field(default=None)
+    reuse_policy: Literal["prefer_reuse", "force_refresh", "no_research"] | None = Field(default=None)
+    quality_tier: Literal["fast", "standard", "strict"] | None = Field(default=None)
+    operation_mode: Literal["draft", "pack", "rewrite", "expand", "research_refresh"] | None = Field(default=None)
+
+
+class ContentOperationMetadata(BaseModel):
+    operation_trace: dict | None = Field(default=None)
+    artifact_refs: list[dict] = Field(default_factory=list)
+    next_actions: list[dict] = Field(default_factory=list)
+    reuse_status: str | None = Field(default=None)
+    cost_tier: str | None = Field(default=None)
+    quality_report: dict | None = Field(default=None)
+    claim_ledger: list[dict] = Field(default_factory=list)
+    agent_signals_used: list[dict] = Field(default_factory=list)
 
 
 class DeepSearchRequest(AttributionFields):
@@ -76,7 +94,7 @@ class HooksRequest(AttributionFields):
     creator_profile: str | None = Field(default=None)
 
 
-class HooksResponse(BaseModel):
+class HooksResponse(ContentOperationMetadata):
     """Response from /hooks — generated hooks for a topic."""
     topic: str
     niche: str
@@ -149,7 +167,7 @@ class TitlesRequest(AttributionFields):
     creator_profile: str | None = Field(default=None)
 
 
-class TitlesResponse(BaseModel):
+class TitlesResponse(ContentOperationMetadata):
     """Response from /titles — A/B title variants."""
     topic: str
     titles: list[dict]                            # {title, strategy, score, why}
@@ -166,7 +184,7 @@ class ThumbnailRequest(AttributionFields):
     creator_profile: str | None = Field(default=None)
 
 
-class ThumbnailResponse(BaseModel):
+class ThumbnailResponse(ContentOperationMetadata):
     """Response from /thumbnail — thumbnail concept descriptions."""
     title: str
     concepts: list[dict]                          # {layout, colors, text, expression, why}
@@ -183,7 +201,7 @@ class CaptionRequest(AttributionFields):
     creator_profile: str | None = Field(default=None)
 
 
-class CaptionResponse(BaseModel):
+class CaptionResponse(ContentOperationMetadata):
     """Response from /caption — Instagram caption + hashtags."""
     topic: str
     caption: str
@@ -202,7 +220,7 @@ class CompetitorRequest(AttributionFields):
     creator_profile: str | None = Field(default=None)
 
 
-class CompetitorResponse(BaseModel):
+class CompetitorResponse(ContentOperationMetadata):
     """Response from /competitor — competitor analysis."""
     channel: str
     analysis: dict                                # {title_patterns, upload_freq, engagement, ...}
@@ -215,7 +233,7 @@ class GapsRequest(AttributionFields):
     max_gaps: int = Field(default=10, ge=1, le=20)
 
 
-class GapsResponse(BaseModel):
+class GapsResponse(ContentOperationMetadata):
     """Response from /gaps — content gap analysis."""
     niche: str
     gaps: list[dict]                              # {topic, gap_type, search_volume, opportunity, ...}
@@ -231,7 +249,7 @@ class SeoRequest(AttributionFields):
     creator_profile: str | None = Field(default=None)
 
 
-class SeoResponse(BaseModel):
+class SeoResponse(ContentOperationMetadata):
     """Response from /seo — keyword analysis."""
     topic: str
     clusters: list[dict]                          # {keyword, volume, difficulty, content_type, ...}
@@ -247,7 +265,7 @@ class RepurposeRequest(AttributionFields):
     creator_profile: str | None = Field(default=None)
 
 
-class RepurposeResponse(BaseModel):
+class RepurposeResponse(ContentOperationMetadata):
     """Response from /repurpose — content atomization plan."""
     topic: str
     outputs: list[dict]                           # {format, platform, content, posting_delay, ...}
@@ -276,6 +294,13 @@ class FeedbackResponse(BaseModel):
     status: str
     analysis: dict                                # {vs_average, insights, learnings}
     duration_ms: int
+
+
+class ReportRequest(AttributionFields):
+    """Request body for /report when called from an authenticated TS route."""
+    period: str = Field(default="week")
+    language: str = Field(default="en-US")
+    creator_profile: str | None = Field(default=None)
 
 
 class ReportResponse(BaseModel):

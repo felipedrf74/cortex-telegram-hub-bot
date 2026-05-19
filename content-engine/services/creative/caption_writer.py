@@ -25,6 +25,7 @@ import logging
 from models.requests import CaptionRequest, CaptionResponse
 from services.claude_client import ask_claude_json
 from services.creator_context import creator_profile_block
+from services.creative.operation_prompt_compilers import OperationPromptInput, build_operation_metadata, compile_operation_prompt
 
 logger = logging.getLogger("content-engine.caption")
 
@@ -70,18 +71,16 @@ async def generate(req: CaptionRequest) -> CaptionResponse:
     creator_block = creator_profile_block(req)
     system_prompt = _build_system_prompt(creator_block)
 
-    prompt = f"""Write an Instagram caption for the authenticated creator's post:
-- Topic: {req.topic}
-- Niche: {req.niche}
-- Platform: {req.platform}
+    compiled = compile_operation_prompt(OperationPromptInput(
+        operation="caption_pack",
+        topic=req.topic,
+        language=req.language,
+        creator_profile=creator_block,
+        user_instruction=f"Write for niche={req.niche}, platform={req.platform}.",
+        format_contract='Return JSON with caption and hashtags. Include 15-20 hashtags. Caption should be 5-7 lines.',
+    ))
 
-The caption should sound like the authenticated creator talking to their saved target audience (use the audience profile and voice from creator memory; do not assume a default demographic, language, persona, or worldview).
-Be true to the creator's saved tone and end with a question that fits their audience.
-
-Return JSON: {{"caption": "...", "hashtags": ["tag1", "tag2", ...]}}
-Include 15-20 hashtags. Caption should be 5-7 lines."""
-
-    result = await ask_claude_json(prompt, system=system_prompt)
+    result = await ask_claude_json(compiled.prompt, system=system_prompt, max_tokens=850)
     caption = result.get("caption", "") if isinstance(result, dict) else ""
     hashtags = result.get("hashtags", []) if isinstance(result, dict) else []
 
@@ -91,4 +90,5 @@ Include 15-20 hashtags. Caption should be 5-7 lines."""
         caption=caption,
         hashtags=hashtags,
         duration_ms=duration_ms,
+        **build_operation_metadata(req, "caption_pack", compiled),
     )

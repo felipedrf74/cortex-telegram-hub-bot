@@ -230,6 +230,32 @@ describe('content script route contract utilities', () => {
     expect(response.qualityScore).toBe(88);
     expect(response.qualityWarnings).toContain('Draft needs expansion before publishing.');
     expect(response.expandOptions.map((option) => option.action)).toContain('expand_full');
+    expect(response.nextActions.map((option: any) => option.action)).toEqual(expect.arrayContaining([
+      'hook_pack',
+      'title_pack',
+      'caption_pack',
+      'thumbnail_pack',
+    ]));
+    expect(response.operationTrace).toMatchObject({
+      operation: 'script_draft',
+      costTier: 'low',
+      cacheStatus: 'miss',
+    });
+    // 2026-05-18 phase2-qa P2: previously `reuseStatus` defaulted to
+    // 'reused' even when there was no source package and no cache hit —
+    // misleading iOS into showing "Reused" for a fresh draft. This fixture
+    // has hasReusableSourcePackage=false + cacheHit=false, so the honest
+    // value is 'fresh'.
+    expect(response.reuseStatus).toBe('fresh');
+    expect(response.costTier).toBe('low');
+    expect(response.qualityReport).toMatchObject({
+      score: 88,
+      needsExpansion: true,
+      needsResearchRefresh: false,
+    });
+    expect(response.artifactRefs).toEqual([]);
+    expect(response.claimLedger).toEqual(expect.any(Array));
+    expect(response.agentSignalsUsed).toEqual(expect.any(Array));
     expect(response.requestedMode).toBe('draft');
     expect(response.appliedMode).toBe('draft');
     expect(response.downgradeReason).toBe('none');

@@ -16,6 +16,7 @@ from pydantic import BaseModel
 
 from services.claude_client import ask_claude_json, MODEL
 from services.creator_context import creator_profile_block, language_instruction
+from services.creative.operation_prompt_compilers import OperationPromptInput, build_operation_metadata, compile_operation_prompt
 from config import cfg
 
 import httpx
@@ -72,6 +73,25 @@ async def extract_book(
     creator_profile: str | None = None,
     language: str = "en-US",
 ) -> BookDNA:
+    book, _metadata = await extract_book_with_metadata(title, author, creator_profile=creator_profile, language=language)
+    return book
+
+
+class _BookOperationRequest:
+    source_package_id = None
+    voice_card_version = None
+    draft_id = None
+    script_id = None
+    reuse_policy = None
+    quality_tier = "standard"
+
+
+async def extract_book_with_metadata(
+    title: str,
+    author: str,
+    creator_profile: str | None = None,
+    language: str = "en-US",
+) -> tuple[BookDNA, dict]:
     """Research a book via web search and extract structured knowledge."""
     start = time.monotonic()
 
@@ -106,6 +126,16 @@ async def extract_book(
         # of asking the model to hallucinate book content.
         logger.warning("No web search results for '%s' by %s — returning partial result", title, author)
         duration_ms = int((time.monotonic() - start) * 1000)
+        compiled = compile_operation_prompt(OperationPromptInput(
+            operation="book_source",
+            topic=f"{title} by {author}",
+            language=language,
+            creator_profile=creator_profile or "",
+            source_summary=[],
+            format_contract="No source data available; return low-confidence metadata only.",
+        ))
+        metadata = build_operation_metadata(_BookOperationRequest(), "book_source", compiled)
+        metadata["quality_report"]["warnings"].append("no_source_data")
         return BookDNA(
             title=title,
             author=author,
@@ -117,7 +147,7 @@ async def extract_book(
             counter_arguments=[],
             related_thinkers=[],
             personal_notes=[f"⚠️ Extraction skipped — no research data available ({duration_ms}ms)"],
-        )
+        ), metadata
 
     # Phase 2: Claude Sonnet synthesis
     context = type("BookCreatorContext", (), {
@@ -137,12 +167,7 @@ Focus on frameworks, provocative ideas, and counter-arguments that align with th
 
 Return ONLY valid JSON, no markdown wrapping."""
 
-    prompt = f"""Research the book "{title}" by {author}.
-
-WEB RESEARCH FINDINGS:
-{research_context}
-
-Extract and return a JSON object with these exact fields:
+    schema = f"""Extract and return a JSON object with these exact fields:
 {{
     "title": "{title}",
     "author": "{author}",
@@ -170,12 +195,23 @@ Extract and return a JSON object with these exact fields:
 
 Extract 3-6 key frameworks and 4-8 quotable ideas. Focus on what's USEFUL for the authenticated creator's content, not academic completeness.
 Do not assume any political, religious, dietary, national, or founder-specific angle unless the supplied creator profile asks for it."""
+    compiled = compile_operation_prompt(OperationPromptInput(
+        operation="book_source",
+        topic=f"{title} by {author}",
+        language=language,
+        creator_profile=creator_profile_block(context),
+        source_summary=[
+            f"{r['title']} — {r['snippet']} Source: {r['link']}"
+            for r in all_results[:16]
+        ],
+        format_contract=schema,
+    ))
 
     result = await ask_claude_json(
-        prompt,
+        compiled.prompt,
         system=system_prompt,
         model=MODEL,
-        max_tokens=6000,
+        max_tokens=2800,
         temperature=0.5,
         category="content_engine_book",
     )
@@ -195,7 +231,7 @@ Do not assume any political, religious, dietary, national, or founder-specific a
             counter_arguments=result.get("counter_arguments", []),
             related_thinkers=result.get("related_thinkers", []),
             personal_notes=result.get("personal_notes", []),
-        )
+        ), build_operation_metadata(_BookOperationRequest(), "book_source", compiled)
     else:
         # Fallback — return minimal
         return BookDNA(
@@ -208,4 +244,4 @@ Do not assume any political, religious, dietary, national, or founder-specific a
             counter_arguments=[],
             related_thinkers=[],
             personal_notes=[],
-        )
+        ), build_operation_metadata(_BookOperationRequest(), "book_source", compiled)

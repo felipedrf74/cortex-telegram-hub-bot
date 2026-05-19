@@ -26,6 +26,27 @@ export interface PersistedContentArtifacts {
   sourcePackageId?: string;
 }
 
+export type ContentVariantFeedbackSentiment = 'approved' | 'skipped' | 'rejected';
+
+export interface RecordContentVariantFeedbackInput extends ContentArtifactScope {
+  topic: string;
+  variantText: string;
+  sentiment: ContentVariantFeedbackSentiment;
+  variantKind?: string | null;
+  sourcePackageId?: string | null;
+  angle?: string | null;
+  format?: string | null;
+  notes?: string | null;
+}
+
+export interface RecordedContentVariantFeedback {
+  topic: string;
+  variantKind: string;
+  sentiment: ContentVariantFeedbackSentiment;
+  accepted: boolean;
+  sourcePackageId: string | null;
+}
+
 export interface PublicSourcePackage {
   sourcePackageId: string;
   researchArtifactId: string;
@@ -134,6 +155,9 @@ export function ensureContentTokenArtifactTables(db: Database.Database = getDb()
       angle TEXT,
       format TEXT,
       source_package_id TEXT,
+      variant_kind TEXT,
+      feedback_sentiment TEXT NOT NULL DEFAULT 'generated',
+      feedback_notes TEXT,
       accepted INTEGER NOT NULL DEFAULT 0,
       used_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
       UNIQUE(tenant_id, user_id, topic_hash, hook_hash)
@@ -142,6 +166,9 @@ export function ensureContentTokenArtifactTables(db: Database.Database = getDb()
     CREATE INDEX IF NOT EXISTS idx_content_idea_memory_recent
       ON content_idea_memory(tenant_id, user_id, used_at DESC);
   `);
+  ensureColumn(db, 'content_idea_memory', 'variant_kind', 'TEXT');
+  ensureColumn(db, 'content_idea_memory', 'feedback_sentiment', "TEXT NOT NULL DEFAULT 'generated'");
+  ensureColumn(db, 'content_idea_memory', 'feedback_notes', 'TEXT');
 }
 
 export function persistContentArtifacts(
@@ -355,14 +382,95 @@ export function listRecentContentIdeaMemory(
   scope: ContentArtifactScope,
   limit = 5,
   db: Database.Database = getDb(),
-): Array<{ topic: string; hook: string | null; angle: string | null; format: string | null }> {
+): Array<{
+  topic: string;
+  hook: string | null;
+  angle: string | null;
+  format: string | null;
+  variant_kind?: string | null;
+  feedback_sentiment?: string | null;
+  accepted?: number | null;
+}> {
   ensureContentTokenArtifactTables(db);
   return db.prepare(`
-    SELECT topic, hook, angle, format FROM content_idea_memory
+    SELECT topic, hook, angle, format, variant_kind, feedback_sentiment, accepted FROM content_idea_memory
     WHERE tenant_id = ? AND user_id = ?
     ORDER BY used_at DESC
     LIMIT ?
   `).all(scope.tenantId, scope.userId, Math.max(1, Math.min(12, limit))) as any[];
+}
+
+export function recordContentVariantFeedback(
+  input: RecordContentVariantFeedbackInput,
+  db: Database.Database = getDb(),
+): RecordedContentVariantFeedback {
+  ensureContentTokenArtifactTables(db);
+  const topic = sanitizeMemoryValue(input.topic, 240);
+  const variantText = sanitizeMemoryValue(input.variantText, 360);
+  if (!topic || !variantText) {
+    throw new Error('topic and variantText are required');
+  }
+
+  const variantKind = sanitizeMemoryValue(input.variantKind || 'script', 64) || 'script';
+  const angle = sanitizeMemoryValue(input.angle, 160);
+  const format = sanitizeMemoryValue(input.format, 64);
+  const notes = sanitizeMemoryValue(input.notes, 320);
+  const sourcePackageId = sanitizeMemoryValue(input.sourcePackageId, 80);
+  const topicHash = sourcePackageId
+    ? shortHash(`${input.tenantId}:${input.userId}:${sourcePackageId}:${topic}`)
+    : shortHash(topic);
+  const accepted = input.sentiment === 'approved' ? 1 : 0;
+  const now = new Date().toISOString();
+
+  db.prepare(`
+    INSERT INTO content_idea_memory (
+      tenant_id, user_id, topic_hash, hook_hash, topic, hook, angle, format,
+      source_package_id, variant_kind, feedback_sentiment, feedback_notes,
+      accepted, used_at
+    )
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(tenant_id, user_id, topic_hash, hook_hash) DO UPDATE SET
+      topic = excluded.topic,
+      hook = excluded.hook,
+      angle = excluded.angle,
+      format = excluded.format,
+      source_package_id = excluded.source_package_id,
+      variant_kind = excluded.variant_kind,
+      feedback_sentiment = excluded.feedback_sentiment,
+      feedback_notes = excluded.feedback_notes,
+      accepted = excluded.accepted,
+      used_at = excluded.used_at
+  `).run(
+    input.tenantId,
+    input.userId,
+    topicHash,
+    shortHash(`${variantKind}:${variantText}`),
+    topic,
+    variantText,
+    angle,
+    format,
+    sourcePackageId,
+    variantKind,
+    input.sentiment,
+    notes,
+    accepted,
+    now,
+  );
+
+  return {
+    topic,
+    variantKind,
+    sentiment: input.sentiment,
+    accepted: accepted === 1,
+    sourcePackageId: sourcePackageId || null,
+  };
+}
+
+function ensureColumn(db: Database.Database, table: string, column: string, definition: string): void {
+  const rows = db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
+  if (!rows.some((row) => row.name === column)) {
+    db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+  }
 }
 
 function stableJson(value: unknown): string {
@@ -405,4 +513,14 @@ function coerceSource(value: unknown): SourceReference | null {
 
 function shortHash(value: string): string {
   return crypto.createHash('sha256').update(value).digest('hex').slice(0, 16);
+}
+
+function sanitizeMemoryValue(value: unknown, maxChars: number): string | null {
+  if (typeof value !== 'string') return null;
+  const cleaned = value
+    .replace(/[\u0000-\u001F\u007F]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, maxChars);
+  return cleaned || null;
 }

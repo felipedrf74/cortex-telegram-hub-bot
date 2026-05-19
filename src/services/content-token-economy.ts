@@ -7,6 +7,91 @@ import type { DailyQuotaStatus } from './cost-guardrail';
 export type ExtendedScriptGenerationMode = ScriptGenerationMode | 'draft';
 export type ContentBudgetState = 'healthy' | 'watch' | 'constrained' | 'exhausted';
 export type ResearchRoute = 'creator_only' | 'evergreen_cached' | 'fresh_compact' | 'deep_explicit' | 'high_risk_review' | 'unsupported';
+export type ContentOperationKind =
+  | 'script_draft'
+  | 'script_expand'
+  | 'script_rewrite'
+  | 'hook_pack'
+  | 'title_pack'
+  | 'caption_pack'
+  | 'thumbnail_pack'
+  | 'cta_pack'
+  | 'shorts_cutdown'
+  | 'repurpose'
+  | 'competitor_insight'
+  | 'seo_insight'
+  | 'gap_insight'
+  | 'book_source';
+export type ContentCostTier = 'low' | 'medium' | 'high';
+export type ContentReuseStatus = 'fresh' | 'reused' | 'cached' | 'refreshed';
+
+export interface ContentArtifactRef {
+  type: 'voice_card' | 'source_package' | 'research_artifact' | 'draft' | 'script' | 'idea_memory' | 'agent_signal';
+  id: string;
+  version?: string | null;
+  source: 'request' | 'stored' | 'generated' | 'cache';
+  expiresAt?: string | null;
+}
+
+export interface ContentOperationTrace {
+  operation: ContentOperationKind;
+  provider: string;
+  model: string;
+  estimatedInputTokens: number;
+  estimatedOutputTokens: number;
+  estimatedCostUsd: number;
+  costTier: ContentCostTier;
+  cacheStatus: string;
+  cacheablePrefixHash: string | null;
+  latencyMs: number | null;
+  userId?: number;
+  tenantId?: number;
+}
+
+export interface ContentReusableContext {
+  voiceCard?: CreatorVoiceCard | null;
+  sourcePackage?: SourcePackage | null;
+  priorDraft?: string | null;
+  recentHooks?: string[];
+  recentAngles?: string[];
+  acceptedOutputs?: string[];
+  rejectedOutputs?: string[];
+  agentDigest?: ContentAgentSignalDigest | null;
+}
+
+export interface ContentNextAction {
+  id: string;
+  label: string;
+  action: string;
+  operation: ContentOperationKind;
+  costTier: ContentCostTier;
+  reusePolicy: 'prefer_reuse' | 'force_refresh' | 'no_research';
+}
+
+export interface ContentAgentSignalDigest {
+  summary: string;
+  signals: Array<{
+    key: string;
+    value: string;
+    confidence: 'low' | 'medium' | 'high';
+    source: 'idea_memory' | 'performance' | 'creator_profile' | 'manual' | 'computed';
+    freshness: 'fresh' | 'recent' | 'stale';
+    expiresAt?: string | null;
+  }>;
+  tokenEstimate: number;
+}
+
+export interface ContentClaimLedgerEntry {
+  claim: string;
+  support: 'source_backed' | 'creator_memory_backed' | 'unverified';
+  sourceRef?: string | null;
+}
+
+export interface ContentNoveltyResult {
+  repeated: boolean;
+  warnings: string[];
+  matchedRecentItems: string[];
+}
 
 export interface ContentPromptSection {
   sectionName: string;
@@ -92,6 +177,28 @@ const OUTPUT_BUDGETS: Record<ExtendedScriptGenerationMode, number> = {
   deep: 7000,
 };
 
+const OPERATION_CONFIG: Record<ContentOperationKind, {
+  promptMode: ExtendedScriptGenerationMode;
+  maxPromptTokens: number;
+  outputTokens: number;
+  costTier: ContentCostTier;
+}> = {
+  script_draft: { promptMode: 'draft', maxPromptTokens: 1600, outputTokens: 1200, costTier: 'low' },
+  script_expand: { promptMode: 'quick', maxPromptTokens: 2200, outputTokens: 1800, costTier: 'medium' },
+  script_rewrite: { promptMode: 'draft', maxPromptTokens: 1200, outputTokens: 900, costTier: 'low' },
+  hook_pack: { promptMode: 'draft', maxPromptTokens: 700, outputTokens: 450, costTier: 'low' },
+  title_pack: { promptMode: 'draft', maxPromptTokens: 750, outputTokens: 500, costTier: 'low' },
+  caption_pack: { promptMode: 'draft', maxPromptTokens: 950, outputTokens: 700, costTier: 'low' },
+  thumbnail_pack: { promptMode: 'draft', maxPromptTokens: 850, outputTokens: 650, costTier: 'low' },
+  cta_pack: { promptMode: 'draft', maxPromptTokens: 650, outputTokens: 350, costTier: 'low' },
+  shorts_cutdown: { promptMode: 'quick', maxPromptTokens: 1500, outputTokens: 1100, costTier: 'medium' },
+  repurpose: { promptMode: 'quick', maxPromptTokens: 1900, outputTokens: 1800, costTier: 'medium' },
+  competitor_insight: { promptMode: 'standard', maxPromptTokens: 2600, outputTokens: 1800, costTier: 'medium' },
+  seo_insight: { promptMode: 'standard', maxPromptTokens: 2300, outputTokens: 1500, costTier: 'medium' },
+  gap_insight: { promptMode: 'standard', maxPromptTokens: 2400, outputTokens: 1500, costTier: 'medium' },
+  book_source: { promptMode: 'deep', maxPromptTokens: 4200, outputTokens: 2600, costTier: 'high' },
+};
+
 export function estimateContentTokens(value: string): number {
   const normalized = value.replace(/\s+/g, ' ').trim();
   if (!normalized) return 0;
@@ -144,6 +251,166 @@ export function compileContentPrompt(input: {
     cacheablePrefixHash: stableHash(cacheablePrefix),
     sections: compiledSections,
   };
+}
+
+export function compileContentOperationPrompt(input: {
+  operation: ContentOperationKind;
+  topic: string;
+  language: string;
+  reusableContext?: ContentReusableContext;
+  sourceSummary?: string[];
+  formatContract?: string;
+  outputSchema?: string;
+  draftContext?: string | null;
+  userInstruction?: string | null;
+}): CompiledContentPrompt {
+  const config = OPERATION_CONFIG[input.operation];
+  const sourcePackage = input.reusableContext?.sourcePackage ?? null;
+  const voiceCard = input.reusableContext?.voiceCard ?? null;
+  const agentDigest = input.reusableContext?.agentDigest ?? null;
+  const sourceSummary = input.sourceSummary ?? sourcePackage?.sourceSummaries ?? [];
+  const sections: ContentPromptSection[] = [
+    {
+      sectionName: 'system_policy',
+      text: [
+        'Nexus Content operation prompt.',
+        'Use only the authenticated creator context supplied here.',
+        'Reuse artifacts when present. Do not rerun research or invent sources.',
+        'Return user-safe output only; do not expose provider diagnostics or internal metadata.',
+      ].join('\n'),
+      required: true,
+      cacheable: true,
+      source: 'code',
+      maxChars: 900,
+    },
+    {
+      sectionName: 'output_contract',
+      text: input.outputSchema || defaultOperationSchema(input.operation),
+      required: true,
+      cacheable: true,
+      source: 'content-domain-ontology',
+      maxChars: 900,
+    },
+    {
+      sectionName: 'creator_voice_card',
+      text: voiceCard?.promptText ?? 'No stored creator voice card. Use a neutral, topic-led creator voice.',
+      required: true,
+      cacheable: true,
+      source: 'content_knowledge',
+      maxChars: 1100,
+    },
+    {
+      sectionName: 'agent_signal_digest',
+      text: agentDigest?.summary ?? '',
+      required: false,
+      cacheable: true,
+      source: 'content_agent_signal_digest',
+      maxChars: 700,
+    },
+    {
+      sectionName: 'topic_brief',
+      text: [
+        `Operation: ${input.operation}`,
+        `Topic: ${input.topic}`,
+        `Language: ${input.language}`,
+        input.userInstruction ? `User instruction: ${input.userInstruction}` : '',
+      ].filter(Boolean).join('\n'),
+      required: true,
+      cacheable: false,
+      source: 'request',
+      maxChars: 900,
+    },
+    {
+      sectionName: 'source_package',
+      text: sourceSummary.length
+        ? sourceSummary.map((line) => `- ${line}`).join('\n')
+        : 'No source package supplied. Avoid factual claims that need citations.',
+      required: false,
+      cacheable: false,
+      source: 'retrieval',
+      maxChars: input.operation === 'book_source' ? 1800 : 900,
+    },
+    {
+      sectionName: 'draft_context',
+      text: input.draftContext || input.reusableContext?.priorDraft || '',
+      required: false,
+      cacheable: false,
+      source: 'request',
+      maxChars: input.operation === 'script_expand' ? 2400 : 1400,
+    },
+    {
+      sectionName: 'format_contract',
+      text: input.formatContract || defaultOperationFormatContract(input.operation),
+      required: true,
+      cacheable: false,
+      source: 'content-domain-ontology',
+      maxChars: 900,
+    },
+    {
+      sectionName: 'budget_hints',
+      text: `Prompt budget ${config.maxPromptTokens} tokens; output budget ${config.outputTokens} tokens; cost tier ${config.costTier}.`,
+      required: true,
+      cacheable: false,
+      source: 'cost-guardrail',
+      maxChars: 220,
+    },
+  ];
+  const compiled = compileContentPrompt({ mode: config.promptMode, sections });
+  return {
+    ...compiled,
+    maxTokens: config.maxPromptTokens,
+    overBudget: compiled.tokenEstimate > config.maxPromptTokens,
+  };
+}
+
+function defaultOperationSchema(operation: ContentOperationKind): string {
+  switch (operation) {
+    case 'hook_pack':
+      return 'Return JSON: {"hooks":[{"text":"","pattern":"","risk":"","why":""}],"qualityWarnings":[]}.';
+    case 'title_pack':
+      return 'Return JSON: {"titles":[{"title":"","label":"","why":""}],"qualityWarnings":[]}.';
+    case 'caption_pack':
+      return 'Return JSON: {"captions":[{"platform":"","caption":"","cta":""}],"qualityWarnings":[]}.';
+    case 'thumbnail_pack':
+      return 'Return JSON: {"concepts":[{"visual":"","thumbnailText":"","composition":"","promise":""}],"qualityWarnings":[]}.';
+    case 'cta_pack':
+      return 'Return JSON: {"ctas":[{"style":"","text":"","bestFor":""}],"qualityWarnings":[]}.';
+    case 'shorts_cutdown':
+      return 'Return JSON: {"beats":[{"timebox":"","line":"","visual":""}],"qualityWarnings":[]}.';
+    case 'competitor_insight':
+      return 'Return JSON: {"patterns":[],"gaps":[],"moves":[],"qualityWarnings":[]}.';
+    case 'seo_insight':
+      return 'Return JSON: {"clusters":[{"keyword":"","intent":"","opportunity":""}],"qualityWarnings":[]}.';
+    case 'gap_insight':
+      return 'Return JSON: {"gaps":[{"topic":"","angle":"","whyNow":""}],"qualityWarnings":[]}.';
+    case 'book_source':
+      return 'Return JSON: {"referenceDna":{"thesis":"","frameworks":[],"claimBoundaries":[],"contentAngles":[]},"qualityWarnings":[]}.';
+    default:
+      return 'Return concise user-facing content and qualityWarnings as JSON where possible.';
+  }
+}
+
+function defaultOperationFormatContract(operation: ContentOperationKind): string {
+  switch (operation) {
+    case 'hook_pack':
+      return '8-12 short hooks, grouped by pattern. Flag repeated or risky angles.';
+    case 'title_pack':
+      return '10 titles with curiosity, clarity, and search labels. No clickbait unsupported by the draft.';
+    case 'caption_pack':
+      return 'Short, medium, LinkedIn-style, Instagram-style, and CTA variants. Preserve language.';
+    case 'thumbnail_pack':
+      return '3-5 visual concepts with composition, thumbnail text, and emotional promise.';
+    case 'repurpose':
+      return 'Chunk by target platform. Reuse the existing draft/source package instead of restating the full script.';
+    case 'competitor_insight':
+    case 'seo_insight':
+    case 'gap_insight':
+      return 'Use summarized data only. Prefer deterministic scoring and send only top candidates to the model.';
+    case 'book_source':
+      return 'Extract a reusable ReferenceDNA card once; avoid full book/source dumps in future prompts.';
+    default:
+      return 'Keep output compact, grounded, and easy to reuse in the next Content action.';
+  }
 }
 
 function splitVoiceLines(value: string, pattern: RegExp, limit: number): string[] {
@@ -282,6 +549,196 @@ export function estimateContentGenerationCost(input: {
     estimatedCostUsd: Number(((input.promptTokens / 1000) * blendedInputPer1k + (outputTokens / 1000) * blendedOutputPer1k).toFixed(6)),
     costConfidence: input.mode === 'deep' ? 'medium' : 'high',
   };
+}
+
+export function estimateContentOperationCost(input: {
+  operation: ContentOperationKind;
+  promptTokens: number;
+}): ContentCostEstimate & { costTier: ContentCostTier } {
+  const config = OPERATION_CONFIG[input.operation];
+  const estimate = estimateContentGenerationCost({
+    mode: config.promptMode,
+    promptTokens: input.promptTokens,
+    outputTokens: config.outputTokens,
+  });
+  return { ...estimate, costTier: config.costTier };
+}
+
+export function buildContentOperationTrace(input: {
+  operation: ContentOperationKind;
+  prompt: { tokenEstimate: number; cacheablePrefixHash?: string | null };
+  provider?: string;
+  model?: string;
+  cacheStatus?: string;
+  latencyMs?: number | null;
+  userId?: number;
+  tenantId?: number;
+}): ContentOperationTrace {
+  const estimate = estimateContentOperationCost({
+    operation: input.operation,
+    promptTokens: input.prompt.tokenEstimate,
+  });
+  return {
+    operation: input.operation,
+    provider: input.provider || 'content-engine',
+    model: input.model || 'routed',
+    estimatedInputTokens: estimate.estimatedInputTokens,
+    estimatedOutputTokens: estimate.estimatedOutputTokens,
+    estimatedCostUsd: estimate.estimatedCostUsd,
+    costTier: estimate.costTier,
+    cacheStatus: input.cacheStatus || 'unknown',
+    cacheablePrefixHash: input.prompt.cacheablePrefixHash || null,
+    latencyMs: input.latencyMs ?? null,
+    userId: input.userId,
+    tenantId: input.tenantId,
+  };
+}
+
+export function buildContentArtifactRefs(input: {
+  voiceCard?: CreatorVoiceCard | null;
+  sourcePackage?: SourcePackage | null;
+  draftId?: string | null;
+  scriptId?: string | null;
+  agentDigest?: ContentAgentSignalDigest | null;
+}): ContentArtifactRef[] {
+  const refs: ContentArtifactRef[] = [];
+  if (input.voiceCard) {
+    refs.push({
+      type: 'voice_card',
+      id: `voice_${input.voiceCard.creatorId}_${input.voiceCard.voiceCardVersion}`,
+      version: input.voiceCard.voiceCardVersion,
+      source: 'generated',
+      expiresAt: null,
+    });
+  }
+  if (input.sourcePackage) {
+    refs.push({
+      type: 'source_package',
+      id: input.sourcePackage.sourcePackageId,
+      version: input.sourcePackage.topicHash,
+      source: 'stored',
+      expiresAt: input.sourcePackage.expiresAt,
+    });
+    refs.push({
+      type: 'research_artifact',
+      id: input.sourcePackage.researchArtifactId,
+      version: input.sourcePackage.topicHash,
+      source: 'stored',
+      expiresAt: input.sourcePackage.expiresAt,
+    });
+  }
+  if (input.draftId) refs.push({ type: 'draft', id: input.draftId, source: 'request', expiresAt: null });
+  if (input.scriptId) refs.push({ type: 'script', id: input.scriptId, source: 'request', expiresAt: null });
+  if (input.agentDigest?.signals.length) {
+    refs.push({ type: 'agent_signal', id: stableHash(input.agentDigest.summary), source: 'generated', expiresAt: null });
+  }
+  return refs;
+}
+
+export function buildContentNextActions(input: {
+  mode: ExtendedScriptGenerationMode;
+  budgetState?: ContentBudgetState;
+  hasSourcePackage?: boolean;
+}): ContentNextAction[] {
+  if (input.budgetState === 'exhausted') {
+    return [
+      { id: 'rewrite-hook', label: 'Rewrite hook', action: 'rewrite_hook', operation: 'script_rewrite', costTier: 'low', reusePolicy: 'prefer_reuse' },
+    ];
+  }
+  const base: ContentNextAction[] = [
+    { id: 'hook-pack', label: 'Hook pack', action: 'hook_pack', operation: 'hook_pack', costTier: 'low', reusePolicy: 'prefer_reuse' },
+    { id: 'title-pack', label: 'Title pack', action: 'title_pack', operation: 'title_pack', costTier: 'low', reusePolicy: 'prefer_reuse' },
+    { id: 'caption-pack', label: 'Caption pack', action: 'caption_pack', operation: 'caption_pack', costTier: 'low', reusePolicy: 'prefer_reuse' },
+    { id: 'thumbnail-pack', label: 'Thumbnail pack', action: 'thumbnail_pack', operation: 'thumbnail_pack', costTier: 'low', reusePolicy: 'prefer_reuse' },
+  ];
+  if (input.mode === 'draft') {
+    base.unshift({ id: 'expand-full', label: 'Expand full script', action: 'expand_full', operation: 'script_expand', costTier: 'medium', reusePolicy: 'prefer_reuse' });
+  }
+  base.push({ id: 'refresh-research', label: 'Refresh research', action: 'refresh_research', operation: 'script_draft', costTier: 'medium', reusePolicy: 'force_refresh' });
+  return input.hasSourcePackage ? base : base.filter((action) => action.action !== 'refresh_research');
+}
+
+export function buildClaimLedger(input: {
+  text: string;
+  sourcePackage?: SourcePackage | null;
+  voiceCard?: CreatorVoiceCard | null;
+}): ContentClaimLedgerEntry[] {
+  const sentences = input.text
+    .split(/(?<=[.!?])\s+/)
+    .map((sentence) => sentence.trim())
+    .filter((sentence) => sentence.length > 24 && /(\d|%|research|study|estudo|dados|people|users|clientes|sempre|always|never|nunca)/i.test(sentence))
+    .slice(0, 12);
+  const sourceText = (input.sourcePackage?.sourceSummaries ?? []).join(' ').toLowerCase();
+  const voiceText = input.voiceCard?.promptText.toLowerCase() ?? '';
+  return sentences.map((claim) => {
+    const terms = claim.toLowerCase().split(/\W+/).filter((term) => term.length > 4).slice(0, 8);
+    const sourceMatches = terms.filter((term) => sourceText.includes(term)).length;
+    const voiceMatches = terms.filter((term) => voiceText.includes(term)).length;
+    if (sourceMatches >= 2) {
+      return { claim, support: 'source_backed', sourceRef: input.sourcePackage?.sourcePackageId ?? null };
+    }
+    if (voiceMatches >= 2) {
+      return { claim, support: 'creator_memory_backed', sourceRef: input.voiceCard?.voiceCardVersion ?? null };
+    }
+    return { claim, support: 'unverified', sourceRef: null };
+  });
+}
+
+export function buildContentAgentSignalDigest(input: {
+  recentHooks?: string[];
+  recentAngles?: string[];
+  acceptedOutputs?: string[];
+  rejectedOutputs?: string[];
+}): ContentAgentSignalDigest {
+  const signals: ContentAgentSignalDigest['signals'] = [];
+  const topHook = input.recentHooks?.find(Boolean);
+  if (topHook) signals.push({ key: 'recent_hook', value: topHook.slice(0, 140), confidence: 'medium', source: 'idea_memory', freshness: 'recent' });
+  const overused = (input.recentAngles ?? []).find((angle, index, all) => all.findIndex((other) => other.toLowerCase() === angle.toLowerCase()) !== index);
+  if (overused) signals.push({ key: 'overused_angle', value: overused.slice(0, 140), confidence: 'high', source: 'computed', freshness: 'fresh' });
+  if (input.acceptedOutputs?.length) signals.push({ key: 'accepted_pattern', value: input.acceptedOutputs[0].slice(0, 140), confidence: 'medium', source: 'performance', freshness: 'recent' });
+  if (input.rejectedOutputs?.length) signals.push({ key: 'avoid_pattern', value: input.rejectedOutputs[0].slice(0, 140), confidence: 'medium', source: 'performance', freshness: 'recent' });
+  const summary = signals.length
+    ? signals.map((signal) => `${signal.key}: ${signal.value}`).join('\n').slice(0, 700)
+    : 'No reliable agent signal digest yet. Use only the current topic, voice card, and source package.';
+  return { summary, signals, tokenEstimate: estimateContentTokens(summary) };
+}
+
+export function noveltyCheck(input: {
+  hook?: string | null;
+  angle?: string | null;
+  recentHooks?: string[];
+  recentAngles?: string[];
+}): ContentNoveltyResult {
+  const warnings: string[] = [];
+  const matchedRecentItems: string[] = [];
+  const hook = (input.hook || '').trim().toLowerCase();
+  const angle = (input.angle || '').trim().toLowerCase();
+  for (const recent of input.recentHooks ?? []) {
+    if (hook && similarityBucket(hook) === similarityBucket(recent)) {
+      warnings.push('repeated_hook_detected');
+      matchedRecentItems.push(recent);
+      break;
+    }
+  }
+  for (const recent of input.recentAngles ?? []) {
+    if (angle && similarityBucket(angle) === similarityBucket(recent)) {
+      warnings.push('repeated_angle_detected');
+      matchedRecentItems.push(recent);
+      break;
+    }
+  }
+  return { repeated: warnings.length > 0, warnings, matchedRecentItems };
+}
+
+function similarityBucket(value: string): string {
+  return value
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}\s]/gu, ' ')
+    .split(/\s+/)
+    .filter((word) => word.length > 3)
+    .slice(0, 8)
+    .sort()
+    .join('|');
 }
 
 export function budgetStateFromQuota(quota: Pick<DailyQuotaStatus, 'over' | 'usageFraction'>): ContentBudgetState {

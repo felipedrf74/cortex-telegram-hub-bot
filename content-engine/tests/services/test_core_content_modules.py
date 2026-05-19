@@ -331,7 +331,7 @@ async def test_feedback_loop_non_dict_analysis_is_wrapped(monkeypatch):
 
 
 async def test_report_generator_no_data_returns_degraded_message(monkeypatch):
-    async def fake_history(days):
+    async def fake_history(days, **_kwargs):
         return []
 
     monkeypatch.setattr(report_gen, "_fetch_performance_history", fake_history)
@@ -346,7 +346,7 @@ async def test_report_generator_no_data_returns_degraded_message(monkeypatch):
 async def test_report_generator_with_history_summarizes_metrics(monkeypatch, assert_no_founder_identity):
     captured = {}
 
-    async def fake_history(days):
+    async def fake_history(days, **_kwargs):
         assert days == 30
         return [
             {

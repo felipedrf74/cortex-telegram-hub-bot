@@ -7,6 +7,7 @@ import logging
 from models.requests import ThumbnailRequest, ThumbnailResponse
 from services.claude_client import ask_claude_json
 from services.creator_context import creator_profile_block, language_instruction
+from services.creative.operation_prompt_compilers import OperationPromptInput, build_operation_metadata, compile_operation_prompt
 
 logger = logging.getLogger("content-engine.thumbnail")
 
@@ -48,18 +49,19 @@ SYSTEM_PROMPT = _build_system_prompt(_NeutralPromptRequest())
 async def generate(req: ThumbnailRequest) -> ThumbnailResponse:
     start = time.monotonic()
 
-    prompt = f"""Generate 3 thumbnail concepts for the authenticated creator's video:
-- Video title: {req.title}
-- Topic: {req.topic or req.title}
-- Niche: {req.niche}
+    compiled = compile_operation_prompt(OperationPromptInput(
+        operation="thumbnail_pack",
+        topic=req.topic or req.title,
+        language=req.language,
+        creator_profile=creator_profile_block(req),
+        user_instruction=f"Video title: {req.title}. Niche: {req.niche}.",
+        format_contract=(
+            'Return JSON array of 3 concepts with layout, background_color, text_overlay, '
+            'facial_expression, additional_elements, why_it_works. Rank by predicted CTR.'
+        ),
+    ))
 
-Target audience: use the authenticated creator's saved target audience profile (do not assume a default demographic). Thumbnails should convey authority, boldness, and the creator's saved brand identity.
-
-Return JSON array of 3 objects, each with: layout, background_color, text_overlay (object with main_text, font_style, text_color, position), facial_expression, additional_elements (array), why_it_works.
-
-Rank by predicted CTR (best first)."""
-
-    result = await ask_claude_json(prompt, system=_build_system_prompt(req))
+    result = await ask_claude_json(compiled.prompt, system=_build_system_prompt(req), max_tokens=850)
     concepts = result if isinstance(result, list) else [result]
 
     duration_ms = int((time.monotonic() - start) * 1000)
@@ -67,4 +69,5 @@ Rank by predicted CTR (best first)."""
         title=req.title,
         concepts=concepts[:3],
         duration_ms=duration_ms,
+        **build_operation_metadata(req, "thumbnail_pack", compiled),
     )

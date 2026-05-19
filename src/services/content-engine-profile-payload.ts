@@ -5,7 +5,10 @@ import { logger } from '../utils/logger';
 import { getCurrentContext } from '../utils/request-context';
 import { createInternalAttributionToken } from './internal-attribution';
 
-export function buildCurrentCreatorProfilePayload(languageHint?: string | null): {
+export function buildCurrentCreatorProfilePayload(
+  languageHint?: string | null,
+  attributionCategory = 'content_engine_creator_context',
+): {
   language: string;
   creator_profile?: string;
   user_id?: number;
@@ -42,7 +45,7 @@ export function buildCurrentCreatorProfilePayload(languageHint?: string | null):
       internal_attribution_token: createInternalAttributionToken({
         userId: context.userId,
         tenantId,
-        category: 'content_engine_creator_context',
+        category: attributionCategory,
       }) ?? undefined,
     };
   } catch (err) {

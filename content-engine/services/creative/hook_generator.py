@@ -10,6 +10,7 @@ import logging
 from models.requests import HooksRequest, HooksResponse
 from services.claude_client import ask_claude_json
 from services.creator_context import creator_profile_block, language_instruction
+from services.creative.operation_prompt_compilers import OperationPromptInput, build_operation_metadata, compile_operation_prompt
 
 logger = logging.getLogger("content-engine.hooks")
 
@@ -65,28 +66,23 @@ async def generate(req: HooksRequest) -> HooksResponse:
     start = time.monotonic()
     warnings: list[str] = []
 
-    prompt = f"""Generate {req.count} unique hooks for the following:
-- Topic: {req.topic}
-- Niche: {req.niche}
-- Format: {req.format}
-
-These hooks are for the authenticated creator's saved target audience (use the saved audience profile; do not assume a default demographic). They should sound in the authenticated creator's saved brand voice and tone.
-
-For each hook, provide:
-1. "text": the hook text in the requested language (max 15 words, conversational)
-2. "trigger_type": which viral trigger it uses (use Operator Hook Formulas when applicable)
-3. "sfx": suggested SFX marker (e.g. "vine-boom", "metal-pipe", "fahhh", "record-scratch", "among-us")
-4. "edit_cue": suggested edit technique (e.g. "zoom-punch", "deadpan-stare", "speed-ramp", "text-popup")
-5. "score": estimated effectiveness 1-10
-6. "why": one sentence explaining why this hook works for the creator's saved target audience
-
-Return as a JSON array of objects. Example:
-[{{"text": "...", "trigger_type": "bold_claim", "sfx": "vine-boom", "edit_cue": "zoom-punch", "score": 8, "why": "..."}}]"""
+    compiled = compile_operation_prompt(OperationPromptInput(
+        operation="hook_pack",
+        topic=req.topic,
+        language=req.language,
+        creator_profile=creator_profile_block(req),
+        user_instruction=f"Generate {req.count} hooks for niche={req.niche}, format={req.format}.",
+        format_contract=(
+            'Return a JSON array of hook objects with text, trigger_type, sfx, edit_cue, score, and why. '
+            'Each hook must be max 15 words, conversational, and in the requested language.'
+        ),
+    ))
 
     result = await ask_claude_json(
-        prompt,
+        compiled.prompt,
         system=_build_system_prompt(req),
         category="content_engine_hooks",
+        max_tokens=650,
     )
 
     degraded = False
@@ -112,4 +108,5 @@ Return as a JSON array of objects. Example:
         duration_ms=duration_ms,
         degraded=degraded,
         warnings=warnings,
+        **build_operation_metadata(req, "hook_pack", compiled),
     )

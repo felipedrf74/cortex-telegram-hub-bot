@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from models.requests import (
     DeepSearchRequest, DeepSearchResponse, SourcesResponse, HotNewsRequest, HotNewsResponse,
     TrendingResponse, ReactionResponse,
@@ -12,10 +12,12 @@ from models.requests import (
     SeoRequest, SeoResponse,
     RepurposeRequest, RepurposeResponse,
     FeedbackRequest, FeedbackResponse,
+    ReportRequest,
     ReportResponse,
 )
 from services.orchestrator import ResearchOrchestrator
 from services.claude_client import set_attribution_context, reset_attribution_context
+from services.creative.operation_prompt_compilers import classify_operation_topic
 
 router = APIRouter(prefix="/api/v1", tags=["research"])
 
@@ -40,6 +42,32 @@ async def _with_ai_attribution(req, operation):
         return await operation()
     finally:
         reset_attribution_context(token)
+
+
+def _creative_topic_guard(topic: str, operation: str) -> None:
+    decision = classify_operation_topic(topic)
+    if decision["route"] == "unsupported":
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "error": {
+                    "code": "CONTENT_UNSUPPORTED_TOPIC",
+                    "message": "This content request cannot be generated safely.",
+                    "details": {"operation": operation, "researchRoute": decision},
+                }
+            },
+        )
+    if decision["route"] == "high_risk_review":
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "error": {
+                    "code": "CONTENT_HIGH_RISK_REVIEW_REQUIRED",
+                    "message": "This topic requires sourced review before creative generation.",
+                    "details": {"operation": operation, "researchRoute": decision},
+                }
+            },
+        )
 
 
 # ── Phase 1: Research Core ────────────────────────────────────────
@@ -119,6 +147,7 @@ async def reaction_search(
 async def generate_hooks(req: HooksRequest) -> HooksResponse:
     """Generate scroll-stopping hooks for a topic."""
     from services.creative import hook_generator
+    _creative_topic_guard(req.topic, "hook_pack")
     return await _with_ai_attribution(req, lambda: hook_generator.generate(req))
 
 
@@ -136,6 +165,7 @@ async def generate_script(
 async def generate_titles(req: TitlesRequest) -> TitlesResponse:
     """Generate A/B title variants for a topic."""
     from services.creative import title_tester
+    _creative_topic_guard(req.topic, "title_pack")
     return await _with_ai_attribution(req, lambda: title_tester.generate(req))
 
 
@@ -143,6 +173,7 @@ async def generate_titles(req: TitlesRequest) -> TitlesResponse:
 async def generate_thumbnail(req: ThumbnailRequest) -> ThumbnailResponse:
     """Generate thumbnail concepts with visual direction."""
     from services.creative import thumbnail_gen
+    _creative_topic_guard(req.topic or req.title, "thumbnail_pack")
     return await _with_ai_attribution(req, lambda: thumbnail_gen.generate(req))
 
 
@@ -150,6 +181,7 @@ async def generate_thumbnail(req: ThumbnailRequest) -> ThumbnailResponse:
 async def generate_caption(req: CaptionRequest) -> CaptionResponse:
     """Generate Instagram caption + optimised hashtags."""
     from services.creative import caption_writer
+    _creative_topic_guard(req.topic, "caption_pack")
     return await _with_ai_attribution(req, lambda: caption_writer.generate(req))
 
 
@@ -159,6 +191,7 @@ async def generate_caption(req: CaptionRequest) -> CaptionResponse:
 async def analyze_competitor(req: CompetitorRequest) -> CompetitorResponse:
     """Reverse-engineer a competitor channel."""
     from services.intelligence import competitor_analyzer
+    _creative_topic_guard(req.channel, "competitor_insight")
     return await _with_ai_attribution(req, lambda: competitor_analyzer.analyze(req))
 
 
@@ -169,6 +202,7 @@ async def find_gaps(
 ) -> GapsResponse:
     """Find content gaps — high demand, low supply."""
     from services.intelligence import gap_finder
+    _creative_topic_guard(req.niche, "gap_insight")
     return await _with_ai_attribution(req, lambda: gap_finder.find(req, orch))
 
 
@@ -179,6 +213,7 @@ async def seo_analysis(
 ) -> SeoResponse:
     """Keyword analysis + content recommendations."""
     from services.intelligence import seo_engine
+    _creative_topic_guard(req.topic, "seo_insight")
     return await _with_ai_attribution(req, lambda: seo_engine.analyze(req, orch))
 
 
@@ -186,6 +221,7 @@ async def seo_analysis(
 async def repurpose(req: RepurposeRequest) -> RepurposeResponse:
     """Turn 1 content piece into a full content ecosystem."""
     from services.creative import repurpose_engine
+    _creative_topic_guard(req.topic, "repurpose")
     return await _with_ai_attribution(req, lambda: repurpose_engine.generate(req))
 
 
@@ -207,3 +243,19 @@ async def weekly_report(
     """Weekly or monthly content performance report."""
     from services.learning import report_gen
     return await report_gen.generate(period, creator_profile=creator_profile, language=language)
+
+
+@router.post("/report", response_model=ReportResponse)
+async def weekly_report_with_context(req: ReportRequest) -> ReportResponse:
+    """Weekly or monthly content performance report with signed request attribution."""
+    from services.learning import report_gen
+    return await _with_ai_attribution(
+        req,
+        lambda: report_gen.generate(
+            req.period,
+            creator_profile=req.creator_profile,
+            language=req.language,
+            tenant_id=req.tenant_id,
+            attribution_token=req.internal_attribution_token,
+        ),
+    )

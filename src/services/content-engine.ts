@@ -273,7 +273,7 @@ async function engineFetch<T>(path: string, options?: RequestInit, timeoutMs = 3
 }
 
 export async function deepSearch(query: string, niches?: string[], maxResults = 10): Promise<DeepSearchResponse> {
-  const creatorPayload = buildCurrentCreatorProfilePayload();
+  const creatorPayload = buildCurrentCreatorProfilePayload(null, 'content_engine_deepsearch');
   return withRetry(() => engineFetch<DeepSearchResponse>('/deepsearch', {
     method: 'POST',
     body: JSON.stringify({ query, niches: niches || [], max_results: maxResults, ...creatorPayload }),
@@ -285,7 +285,7 @@ export async function getSources(query: string): Promise<SourcesResponse> {
 }
 
 export async function getHotNews(): Promise<HotNewsResponse> {
-  const creatorPayload = buildCurrentCreatorProfilePayload();
+  const creatorPayload = buildCurrentCreatorProfilePayload(null, 'content_engine');
   return engineFetch<HotNewsResponse>('/hotnews', {
     method: 'POST',
     body: JSON.stringify(creatorPayload),
@@ -310,7 +310,7 @@ export async function getReaction(topic: string): Promise<ReactionResponse> {
 // ── Phase 3 API ─────────────────────────────────────────────────────
 
 export async function getHooks(topic: string, niche = 'general', count = 8): Promise<HooksResponse> {
-  const creatorPayload = buildCurrentCreatorProfilePayload();
+  const creatorPayload = buildCurrentCreatorProfilePayload(null, 'content_engine_hooks');
   return engineFetch<HooksResponse>('/hooks', {
     method: 'POST',
     body: JSON.stringify({ topic, niche, count, ...creatorPayload }),
@@ -611,7 +611,7 @@ export async function getScript(
 }
 
 export async function getTitles(topic: string, niche = 'general', count = 10): Promise<TitlesResponse> {
-  const creatorPayload = buildCurrentCreatorProfilePayload();
+  const creatorPayload = buildCurrentCreatorProfilePayload(null, 'content_engine');
   return engineFetch<TitlesResponse>('/titles', {
     method: 'POST',
     body: JSON.stringify({ topic, niche, count, ...creatorPayload }),
@@ -619,7 +619,7 @@ export async function getTitles(topic: string, niche = 'general', count = 10): P
 }
 
 export async function getThumbnail(title: string, niche = 'general'): Promise<ThumbnailResponse> {
-  const creatorPayload = buildCurrentCreatorProfilePayload();
+  const creatorPayload = buildCurrentCreatorProfilePayload(null, 'content_engine');
   return engineFetch<ThumbnailResponse>('/thumbnail', {
     method: 'POST',
     body: JSON.stringify({ title, niche, ...creatorPayload }),
@@ -627,7 +627,7 @@ export async function getThumbnail(title: string, niche = 'general'): Promise<Th
 }
 
 export async function getCaption(topic: string, niche = 'general'): Promise<CaptionResponse> {
-  const creatorPayload = buildCurrentCreatorProfilePayload();
+  const creatorPayload = buildCurrentCreatorProfilePayload(null, 'content_engine');
   return engineFetch<CaptionResponse>('/caption', {
     method: 'POST',
     body: JSON.stringify({ topic, niche, ...creatorPayload }),
@@ -637,7 +637,7 @@ export async function getCaption(topic: string, niche = 'general'): Promise<Capt
 // ── Phase 4 API ─────────────────────────────────────────────────────
 
 export async function getCompetitor(channel: string, maxVideos = 10): Promise<CompetitorResponse> {
-  const creatorPayload = buildCurrentCreatorProfilePayload();
+  const creatorPayload = buildCurrentCreatorProfilePayload(null, 'content_engine');
   return engineFetch<CompetitorResponse>('/competitor', {
     method: 'POST',
     body: JSON.stringify({ channel, max_videos: maxVideos, ...creatorPayload }),
@@ -645,14 +645,15 @@ export async function getCompetitor(channel: string, maxVideos = 10): Promise<Co
 }
 
 export async function getGaps(niche = 'fitness', maxGaps = 10): Promise<GapsResponse> {
+  const creatorPayload = buildCurrentCreatorProfilePayload(null, 'content_engine');
   return engineFetch<GapsResponse>('/gaps', {
     method: 'POST',
-    body: JSON.stringify({ niche, max_gaps: maxGaps }),
+    body: JSON.stringify({ niche, max_gaps: maxGaps, ...creatorPayload }),
   }, 60_000);
 }
 
 export async function getSeo(topic: string): Promise<SeoResponse> {
-  const creatorPayload = buildCurrentCreatorProfilePayload();
+  const creatorPayload = buildCurrentCreatorProfilePayload(null, 'content_engine');
   return engineFetch<SeoResponse>('/seo', {
     method: 'POST',
     body: JSON.stringify({ topic, ...creatorPayload }),
@@ -660,7 +661,7 @@ export async function getSeo(topic: string): Promise<SeoResponse> {
 }
 
 export async function getRepurpose(topic: string, originalFormat = 'YouTube'): Promise<RepurposeResponse> {
-  const creatorPayload = buildCurrentCreatorProfilePayload();
+  const creatorPayload = buildCurrentCreatorProfilePayload(null, 'content_engine');
   return engineFetch<RepurposeResponse>('/repurpose', {
     method: 'POST',
     body: JSON.stringify({ topic, original_format: originalFormat, ...creatorPayload }),
@@ -679,7 +680,7 @@ export async function logFeedback(data: {
   hook_used?: string;
   notes?: string;
 }): Promise<FeedbackResponse> {
-  const creatorPayload = buildCurrentCreatorProfilePayload();
+  const creatorPayload = buildCurrentCreatorProfilePayload(null, 'content_engine_feedback');
   return engineFetch<FeedbackResponse>('/feedback', {
     method: 'POST',
     body: JSON.stringify({ ...data, ...creatorPayload }),
@@ -687,7 +688,11 @@ export async function logFeedback(data: {
 }
 
 export async function getReport(period = 'week'): Promise<ReportResponse> {
-  return engineFetch<ReportResponse>(`/report?period=${encodeURIComponent(period)}`);
+  const creatorPayload = buildCurrentCreatorProfilePayload(null, 'content_engine_report');
+  return engineFetch<ReportResponse>('/report', {
+    method: 'POST',
+    body: JSON.stringify({ period, ...creatorPayload }),
+  }, 45_000);
 }
 
 // Re-export for any remaining backward-compat imports:

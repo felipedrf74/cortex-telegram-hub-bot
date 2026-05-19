@@ -9,6 +9,7 @@ import time
 import logging
 from models.requests import GapsRequest, GapsResponse
 from services.claude_client import ask_claude_json
+from services.creative.operation_prompt_compilers import OperationPromptInput, build_operation_metadata, compile_operation_prompt
 
 logger = logging.getLogger("content-engine.gaps")
 
@@ -75,24 +76,36 @@ async def find(req: GapsRequest, orchestrator) -> GapsResponse:
         for s in research_summaries
     )
 
-    prompt = f"""Analyze these content research results for the "{req.niche}" niche and identify content gaps:
-
-{context}
-
-Based on this data and the current creator-platform landscape,
-identify the top {req.max_gaps} content gaps — topics where there's demand but insufficient supply.
-
-Return JSON array of gap objects with: topic, gap_type, search_demand, existing_content_quality, opportunity_score, suggested_angle, suggested_title."""
+    compiled = compile_operation_prompt(OperationPromptInput(
+        operation="gap_insight",
+        topic=req.niche,
+        language="en-US",
+        source_summary=[
+            f"{s['topic']}: {s['result_count']} results; {', '.join(s['sample_titles'][:2])}"
+            for s in research_summaries
+        ],
+        user_instruction=f"Find top {req.max_gaps} gaps for niche={req.niche}.",
+        format_contract=(
+            f"Analyze these summarized research results for the {req.niche} niche:\n{context}\n\n"
+            "Return JSON array with topic, gap_type, search_demand, existing_content_quality, opportunity_score, suggested_angle, suggested_title."
+        ),
+    ))
 
     try:
-        gaps = await ask_claude_json(prompt, system=SYSTEM_PROMPT)
+        gaps = await ask_claude_json(compiled.prompt, system=SYSTEM_PROMPT, max_tokens=1600)
     except Exception as e:
+        # 2026-05-18 phase2-qa P2: do NOT leak the raw exception message to
+        # the client. The internal proxy error format
+        # (`f"AI proxy error {status} for category={category}"`) and any
+        # downstream provider trace must not reach iOS. Log to server, return
+        # a stable client-facing code.
         logger.error("Claude call failed in gap_finder: %s", e)
         duration_ms = int((time.monotonic() - start) * 1000)
         return GapsResponse(
             niche=req.niche,
-            gaps=[{"topic": "Analysis unavailable", "gap_type": "error", "error": str(e)}],
+            gaps=[{"topic": "Analysis unavailable", "gap_type": "error", "error": "provider_unavailable"}],
             duration_ms=duration_ms,
+            **build_operation_metadata(req, "gap_insight", compiled),
         )
 
     # Handle non-JSON / malformed response
@@ -108,4 +121,5 @@ Return JSON array of gap objects with: topic, gap_type, search_demand, existing_
         niche=req.niche,
         gaps=gaps_list[:req.max_gaps],
         duration_ms=duration_ms,
+        **build_operation_metadata(req, "gap_insight", compiled),
     )

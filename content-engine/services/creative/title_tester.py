@@ -7,6 +7,7 @@ import logging
 from models.requests import TitlesRequest, TitlesResponse
 from services.claude_client import ask_claude_json
 from services.creator_context import creator_profile_block, language_instruction
+from services.creative.operation_prompt_compilers import OperationPromptInput, build_operation_metadata, compile_operation_prompt
 
 logger = logging.getLogger("content-engine.titles")
 
@@ -52,24 +53,19 @@ async def generate(req: TitlesRequest) -> TitlesResponse:
     start = time.monotonic()
 
     char_target = "50-60" if req.platform == "YouTube" else "30-40"
-    prompt = f"""Generate {req.count} title variants for the authenticated creator's channel:
-- Topic: {req.topic}
-- Niche: {req.niche}
-- Platform: {req.platform} (ideal length: {char_target} characters)
+    compiled = compile_operation_prompt(OperationPromptInput(
+        operation="title_pack",
+        topic=req.topic,
+        language=req.language,
+        creator_profile=creator_profile_block(req),
+        user_instruction=f"Generate {req.count} titles for niche={req.niche}, platform={req.platform}.",
+        format_contract=(
+            f"Platform: {req.platform} (ideal length: {char_target} characters). "
+            'Return a JSON array with title, strategy, score, why, and char_count. Sort by score descending.'
+        ),
+    ))
 
-Titles should sound in the authenticated creator's saved brand voice and tone. Audience: use the creator's saved target audience profile from creator memory (do not assume a default demographic).
-Titles should stay grounded in the actual topic. Do NOT force politics, training, or reaction framing when the topic points somewhere else.
-
-Return JSON array where each object has:
-- "title": the title in the requested language
-- "strategy": which strategy was used
-- "score": 0-100 effectiveness score
-- "why": one sentence on why it works for the creator's saved target audience
-- "char_count": number of characters
-
-Sort by score descending."""
-
-    result = await ask_claude_json(prompt, system=_build_system_prompt(req))
+    result = await ask_claude_json(compiled.prompt, system=_build_system_prompt(req), max_tokens=700)
     titles = result if isinstance(result, list) else [result]
 
     duration_ms = int((time.monotonic() - start) * 1000)
@@ -77,4 +73,5 @@ Sort by score descending."""
         topic=req.topic,
         titles=titles[:req.count],
         duration_ms=duration_ms,
+        **build_operation_metadata(req, "title_pack", compiled),
     )

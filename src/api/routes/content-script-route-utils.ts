@@ -16,6 +16,14 @@ import type {
   ResearchRoute,
   SourcePackage,
 } from '../../services/content-token-economy';
+import {
+  buildClaimLedger,
+  buildContentAgentSignalDigest,
+  buildContentArtifactRefs,
+  buildContentNextActions,
+  buildContentOperationTrace,
+  type ContentOperationKind,
+} from '../../services/content-token-economy';
 
 export type ScriptRenderMode = 'structured' | 'chat';
 export type ScriptFormat = 'YouTube' | 'Reel';
@@ -265,6 +273,52 @@ export function buildScriptSuccessResponse(params: {
     })),
   } : null);
   const publicQualityWarnings = warnings.map(publicQualityWarningText);
+  const hasReusableSourcePackage = Boolean(sourcePackage || publicSourcePackageIds);
+  const nextActions = buildContentNextActions({
+    mode: generationMode,
+    budgetState: (result.budget_state as ContentBudgetState | undefined) ?? budgetState,
+    hasSourcePackage: hasReusableSourcePackage,
+  });
+  const artifactRefs = buildContentArtifactRefs({
+    voiceCard: creatorVoiceCard ?? null,
+    sourcePackage: sourcePackage ?? null,
+  });
+  const operationKind: ContentOperationKind = generationMode === 'draft' ? 'script_draft' : 'script_expand';
+  const operationTrace = buildContentOperationTrace({
+    operation: operationKind,
+    prompt: {
+      tokenEstimate: publicPromptBudget?.tokenEstimate ?? promptBudget?.tokenEstimate ?? 0,
+      cacheablePrefixHash: publicPromptBudget?.cacheablePrefixHash ?? promptBudget?.cacheablePrefixHash ?? null,
+    },
+    provider: 'content-engine',
+    model: result.actual_cost?.model as string || 'routed',
+    cacheStatus: result.cache_status ?? (cacheHit ? 'hit' : 'miss'),
+    latencyMs: typeof result.duration_ms === 'number' ? result.duration_ms : Date.now() - startMs,
+  });
+  const claimLedger = buildClaimLedger({
+    text: scriptQuality.revisedScript,
+    sourcePackage: sourcePackage ?? null,
+    voiceCard: creatorVoiceCard ?? null,
+  });
+  // 2026-05-18 phase2-qa P1: `agentSignalsUsed` previously synthesized a
+  // digest from the script's OWN output (its hook + title_options), which
+  // is a misleading label — those aren't input signals consumed, they're
+  // the artefacts that were just produced. The real intelligence-bus
+  // signals (`context_signals`) that flow INTO the Python engine are not
+  // currently returned in `result`, so we cannot honestly populate this
+  // field yet. Return an empty digest; iOS already renders this as a
+  // count-only row so the visible change is "0 signals" instead of a
+  // fabricated count. Follow-up: plumb the actual `contextSignals` array
+  // back from `content-engine.ts:560` so the count reflects reality.
+  const agentSignalDigest = { signals: [] as ReturnType<typeof buildContentAgentSignalDigest>['signals'] };
+  // 2026-05-18 phase2-qa P2: previously defaulted to 'reused' even when
+  // nothing was reused (no source package, non-deep mode). Now honestly
+  // reports 'fresh' for that case.
+  const reuseStatus = cacheHit
+    ? 'cached'
+    : hasReusableSourcePackage
+      ? 'reused'
+      : 'fresh';
 
   return {
     topic: result.topic,
@@ -315,6 +369,19 @@ export function buildScriptSuccessResponse(params: {
     qualityWarnings: publicQualityWarnings,
     budgetState: result.budget_state ?? budgetState ?? 'healthy',
     expandOptions,
+    nextActions,
+    artifactRefs,
+    operationTrace,
+    claimLedger,
+    agentSignalsUsed: agentSignalDigest.signals,
+    reuseStatus,
+    costTier: operationTrace.costTier,
+    qualityReport: {
+      score: effectiveQualityScore,
+      warnings: publicQualityWarnings,
+      needsExpansion: qualityGate?.needsExpansion ?? generationMode === 'draft',
+      needsResearchRefresh: qualityGate?.needsResearchRefresh ?? false,
+    },
     scriptQuality: publicScriptQualityReport(scriptQuality),
     scriptStructure: scriptQuality.structuredOutput,
     generation: buildGenerationMeta({
@@ -423,6 +490,8 @@ function defaultExpandOptions(mode: GenerationMode): Array<{ id: string; label: 
   if (mode !== 'draft') {
     return [
       { id: 'rewrite-hook', label: 'Rewrite hook', action: 'rewrite_hook' },
+      { id: 'title-pack', label: 'Title pack', action: 'title_pack' },
+      { id: 'caption-pack', label: 'Caption pack', action: 'caption_pack' },
       { id: 'refresh-research', label: 'Refresh research', action: 'refresh_research' },
     ];
   }
@@ -430,6 +499,9 @@ function defaultExpandOptions(mode: GenerationMode): Array<{ id: string; label: 
     { id: 'expand-full', label: 'Expand to full script', action: 'expand_full' },
     { id: 'expand-intro', label: 'Expand intro', action: 'expand_section:intro' },
     { id: 'rewrite-hook', label: 'Rewrite hook', action: 'rewrite_hook' },
+    { id: 'title-pack', label: 'Title pack', action: 'title_pack' },
+    { id: 'thumbnail-pack', label: 'Thumbnail pack', action: 'thumbnail_pack' },
+    { id: 'caption-pack', label: 'Caption pack', action: 'caption_pack' },
     { id: 'refresh-research', label: 'Refresh research', action: 'refresh_research' },
   ];
 }

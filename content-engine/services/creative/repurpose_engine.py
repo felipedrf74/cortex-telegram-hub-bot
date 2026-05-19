@@ -9,6 +9,7 @@ import logging
 from models.requests import RepurposeRequest, RepurposeResponse
 from services.claude_client import ask_claude_json
 from services.creator_context import creator_profile_block, language_instruction
+from services.creative.operation_prompt_compilers import OperationPromptInput, build_operation_metadata, compile_operation_prompt
 
 logger = logging.getLogger("content-engine.repurpose")
 
@@ -64,15 +65,24 @@ SYSTEM_PROMPT = _build_system_prompt(_NeutralPromptRequest())
 async def generate(req: RepurposeRequest) -> RepurposeResponse:
     start = time.monotonic()
 
-    prompt = f"""Create a content atomization plan for the authenticated creator:
-- Topic: {req.topic}
-- Original format: {req.original_format}
+    compiled = compile_operation_prompt(OperationPromptInput(
+        operation="repurpose",
+        topic=req.topic,
+        language=req.language,
+        creator_profile=creator_profile_block(req),
+        user_instruction=f"- Original format: {req.original_format}",
+        format_contract=(
+            'Generate a compact ecosystem: 3 Reels, 1 Carousel, 3 Stories, 2 Tweets, 1 Community Post. '
+            'Return JSON array with format, platform, content, posting_delay, notes.'
+        ),
+    ))
 
-Generate the full ecosystem: 3 Reels, 1 Carousel, 5 Stories, 3 Tweets, 2 Community Posts.
-All in the authenticated creator's saved brand voice and tone. Audience: use the creator's saved target audience profile from the authenticated creator memory (do not assume a default demographic, language, or persona). Include [SFX:...] and [EDIT:...] markers in all video content.
-Return JSON array of objects with: format, platform, content, posting_delay, notes."""
-
-    result = await ask_claude_json(prompt, system=_build_system_prompt(req), max_tokens=6000)
+    # 2026-05-18 phase2-qa P2: align model output cap with the documented
+    # operation budget. `OPERATION_BUDGETS["repurpose"] = ("quick", 1900)`
+    # but this call previously sent max_tokens=2200 — a 16% honesty gap
+    # between the budget metadata iOS sees and what the model is allowed to
+    # emit. Use the same number both places.
+    result = await ask_claude_json(compiled.prompt, system=_build_system_prompt(req), max_tokens=1900)
     outputs = result if isinstance(result, list) else [result]
 
     duration_ms = int((time.monotonic() - start) * 1000)
@@ -80,4 +90,5 @@ Return JSON array of objects with: format, platform, content, posting_delay, not
         topic=req.topic,
         outputs=outputs,
         duration_ms=duration_ms,
+        **build_operation_metadata(req, "repurpose", compiled),
     )

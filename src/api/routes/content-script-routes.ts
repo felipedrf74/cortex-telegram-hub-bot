@@ -34,9 +34,14 @@ import {
 } from '../../services/content-generation-quality';
 import {
   budgetStateFromQuota,
+  buildClaimLedger,
+  buildContentNextActions,
+  buildContentOperationTrace,
   buildCreatorVoiceCard,
   buildSourcePackage,
   compileContentPrompt,
+  type ContentBudgetState,
+  type ContentOperationKind,
   estimateContentGenerationCost,
   lintSourcePackage,
   qualityGateContent,
@@ -367,7 +372,18 @@ export function registerContentScriptRoutes(
         tenantId,
       );
       const elapsedMs = Date.now() - startMs;
-      const cacheHit = !shouldForceRefresh && elapsedMs < 500;
+      // 2026-05-18 phase2-qa P1: previously `cacheHit = elapsedMs < 500` —
+      // a TIMING HEURISTIC that fakes "cache hit" for any sub-500ms
+      // generation. This propagated into `operationTrace.cacheStatus`,
+      // `contentCost.providerCache.status`, `reuseStatus`, and
+      // `usageImpact` — polluting every cost dashboard built on those
+      // signals. Now: trust the Python engine's `result.cache_status`
+      // as the only source of truth. If the engine ever genuinely serves
+      // from a cache it can emit `cache_status: "hit"`; otherwise we
+      // honestly report `'miss'`. The TS-level `cache-store.ts` layer is
+      // a separate concern; if we want to surface TS-cache hits we'll
+      // instrument that call path explicitly in a follow-up.
+      const cacheHit = result.cache_status === 'hit';
       const sourcePackage = buildSourcePackage({
         topic: topic.trim(),
         language: targetLanguage,
@@ -768,6 +784,19 @@ function buildScriptEditResponse(input: {
 }): Record<string, unknown> {
   const estimatedInputTokens = Math.ceil((input.topic.length + input.script.length) / 4);
   const estimatedOutputTokens = Math.min(input.kind === 'expand' ? 1800 : 900, Math.max(300, Math.ceil(input.script.length / 6)));
+  const operation: ContentOperationKind = input.kind === 'expand'
+    ? 'script_expand'
+    : input.kind === 'research_refresh'
+      ? 'script_draft'
+      : 'script_rewrite';
+  const operationTrace = buildContentOperationTrace({
+    operation,
+    prompt: { tokenEstimate: estimatedInputTokens, cacheablePrefixHash: null },
+    provider: input.provider,
+    model: 'routed',
+    cacheStatus: input.kind === 'research_refresh' ? 'refreshed' : 'reused',
+    latencyMs: Date.now() - input.startMs,
+  });
   return {
     topic: input.topic,
     script: input.script,
@@ -809,6 +838,23 @@ function buildScriptEditResponse(input: {
     qualityWarnings: input.warnings,
     budgetState: input.budgetState,
     expandOptions: defaultEditExpandOptions(input.action),
+    nextActions: buildContentNextActions({
+      mode: 'draft',
+      budgetState: input.budgetState as ContentBudgetState,
+      hasSourcePackage: input.sourceSummary.length > 0,
+    }),
+    artifactRefs: [],
+    operationTrace,
+    claimLedger: buildClaimLedger({ text: input.script }),
+    agentSignalsUsed: [],
+    reuseStatus: input.kind === 'research_refresh' ? 'refreshed' : 'reused',
+    costTier: operationTrace.costTier,
+    qualityReport: {
+      score: null,
+      warnings: input.warnings,
+      needsExpansion: input.kind !== 'expand',
+      needsResearchRefresh: input.kind === 'research_refresh',
+    },
     degraded: false,
     warnings: input.warnings,
     model: input.provider,
@@ -825,6 +871,8 @@ function defaultEditExpandOptions(action: string): Array<{ id: string; label: st
   return [
     { id: 'expand-full', label: 'Expand full', action: 'expand_full' },
     { id: 'rewrite-hook', label: 'Rewrite hook', action: 'rewrite_hook' },
+    { id: 'title-pack', label: 'Title pack', action: 'title_pack' },
+    { id: 'caption-pack', label: 'Caption pack', action: 'caption_pack' },
     { id: 'refresh-research', label: 'Refresh research', action: 'refresh_research' },
   ];
 }
@@ -870,6 +918,14 @@ function isRewriteAction(action: string): boolean {
     'rewrite',
     'rewrite_hook',
     'rewrite_caption',
+    'hook_pack',
+    'title_pack',
+    'caption_pack',
+    'thumbnail_pack',
+    'cta_pack',
+    'shorts_cutdown',
+    'repurpose_linkedin',
+    'repurpose_reels',
     'make_punchier',
     'make_educational',
     'make_portuguese',
