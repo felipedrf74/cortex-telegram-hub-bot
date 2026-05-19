@@ -8,13 +8,14 @@
 // race date, race-specific plan with no race date, consecutive identical
 // strength sessions).
 
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   lintPlan,
   type PlanLintInput,
   type PlanLintSession,
   type PlanLintWeek,
 } from '../../src/services/coach-kernel/plan-linter';
+import { logger } from '../../src/utils/logger';
 
 const NOW = new Date('2026-04-22T08:00:00.000Z'); // Wednesday
 
@@ -43,6 +44,10 @@ function input(overrides: Partial<PlanLintInput> = {}): PlanLintInput {
 }
 
 describe('coach-kernel/plan-linter', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
   describe('rule: no_past_active_sessions', () => {
     it('passes when every active session is dated today or later', () => {
       const result = lintPlan(input({
@@ -143,6 +148,29 @@ describe('coach-kernel/plan-linter', () => {
 
       expect(result.status).toBe('pass');
     });
+
+    it('counts coded recovery_run session types as active training', () => {
+      const result = lintPlan(input({
+        weeks: [
+          week(1, [
+            session({
+              sessionType: 'recovery_run',
+              title: 'Easy Reset',
+              scheduledDate: '2026-04-24T07:00:00.000Z',
+            }),
+          ]),
+          week(2, [
+            session({
+              title: 'Week 2 Easy Run',
+              scheduledDate: '2026-04-28T07:00:00.000Z',
+            }),
+          ]),
+        ],
+      }));
+
+      expect(result.status).toBe('pass');
+      expect(result.blockers.some((finding) => finding.ruleId === 'week_one_has_active_training')).toBe(false);
+    });
   });
 
   describe('rule: no_sessions_outside_plan_window', () => {
@@ -225,6 +253,35 @@ describe('coach-kernel/plan-linter', () => {
 
       expect(outsideWindow.status).toBe('fail');
       expect(outsideWindow.blockers[0]?.ruleId).toBe('no_sessions_outside_plan_window');
+    });
+
+    it('logs when the window check is skipped because durationWeeks is missing or invalid', () => {
+      const debugSpy = vi.spyOn(logger, 'debug').mockImplementation(() => undefined);
+
+      const result = lintPlan(input({
+        durationWeeks: 0,
+        startDate: '2026-04-22',
+        weeks: [
+          week(1, [session({ scheduledDate: '2026-04-22T07:00:00.000Z' })]),
+          week(5, [
+            session({
+              title: 'Potentially Hidden Week',
+              scheduledDate: '2026-05-19T07:00:00.000Z',
+            }),
+          ]),
+        ],
+      }));
+
+      expect(result.blockers.some((finding) => finding.ruleId === 'no_sessions_outside_plan_window')).toBe(false);
+      expect(debugSpy).toHaveBeenCalledWith(
+        expect.objectContaining({
+          ruleId: 'no_sessions_outside_plan_window',
+          durationWeeks: 0,
+          startDate: '2026-04-22',
+          weekNumbers: [1, 5],
+        }),
+        expect.stringContaining('skipped window check'),
+      );
     });
   });
 

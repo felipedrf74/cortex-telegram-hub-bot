@@ -48,6 +48,7 @@
  * partially written plan.
  */
 
+import { logger } from '../../utils/logger';
 import { getTrainingCoachRuleById } from './coach-rules';
 
 export type PlanLintRuleId =
@@ -222,6 +223,9 @@ function isActiveSession(session: PlanLintSession): boolean {
 
 function isRestLikeSession(session: PlanLintSession): boolean {
   const token = `${session.sessionType} ${session.title}`.toLowerCase();
+  // Word-boundary matching is intentional: a coded training type such
+  // as `recovery_run` stays active, while standalone rest/recovery rows
+  // remain exempt from active-session and prescription checks.
   return /\b(rest|recovery|mobility|off)\b/.test(token);
 }
 
@@ -512,7 +516,20 @@ function ruleNoSessionsOutsidePlanWindow(input: PlanLintInput): PlanLintFinding 
   const durationWeeks = typeof input.durationWeeks === 'number' && Number.isFinite(input.durationWeeks)
     ? Math.max(0, Math.floor(input.durationWeeks))
     : undefined;
-  if (!durationWeeks || durationWeeks <= 0) return null;
+  if (!durationWeeks || durationWeeks <= 0) {
+    if (input.startDate || input.weeks.some((week) => week.weekNumber > 1)) {
+      logger.debug(
+        {
+          ruleId: 'no_sessions_outside_plan_window',
+          durationWeeks: input.durationWeeks,
+          startDate: input.startDate,
+          weekNumbers: input.weeks.map((week) => week.weekNumber),
+        },
+        'Training plan lint skipped window check because durationWeeks is missing or invalid',
+      );
+    }
+    return null;
+  }
 
   const offenders: PlanLintAffectedSession[] = [];
   const offendingWeeks: number[] = [];

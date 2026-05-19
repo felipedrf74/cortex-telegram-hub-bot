@@ -41,6 +41,9 @@ export interface CoachAnalysisMeteringScope {
   tenantId: number;
 }
 
+export const COACH_ANALYSIS_SYSTEM_METERING_USER_ID = 0;
+export const COACH_ANALYSIS_SYSTEM_METERING_TENANT_ID = 0;
+
 export function resolveCoachAnalysisMeteringScope(userId?: number | null, tenantId?: number | null): CoachAnalysisMeteringScope {
   if (typeof userId === 'number' && Number.isSafeInteger(userId) && userId > 0) {
     return {
@@ -49,7 +52,11 @@ export function resolveCoachAnalysisMeteringScope(userId?: number | null, tenant
       tenantId: typeof tenantId === 'number' && Number.isSafeInteger(tenantId) && tenantId > 0 ? tenantId : userId,
     };
   }
-  return { actor: 'system', userId: 0, tenantId: 0 };
+  return {
+    actor: 'system',
+    userId: COACH_ANALYSIS_SYSTEM_METERING_USER_ID,
+    tenantId: COACH_ANALYSIS_SYSTEM_METERING_TENANT_ID,
+  };
 }
 
 // ─── Coaching analysis prompt ─────────────────────────────────────────

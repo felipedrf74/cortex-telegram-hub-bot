@@ -63,7 +63,19 @@ The work should improve plan creation reliability, quality gates, readiness tran
 8. Closed the feasible LLM-cost attribution gap:
    - `generateCoachBriefing` now passes `{ userId, tenantId }` to Gemini-first `completeOneShotWithFallback` and Anthropic fallback `trackedCreate`.
    - The user/tenant metering contract is pinned by `garmin-coach-user-scope.test.ts`.
+   - Follow-up QA fix: coach-analysis metering now uses an explicit `CoachAnalysisMeteringScope` with `actor: "user" | "system"` so owner/bootstrap calls are attributed as system scope instead of silently looking like anonymous user traffic.
    - Plan creation and adaptation remain deterministic zero-provider-cost paths; coach explanation is the metered Training AI surface under the existing `coach_analysis` category.
+
+9. Closed Claude's follow-up QA items:
+   - Added a direct `training-read-models.test.ts` regression for the no-wearable `WEARABLE_INTEGRATION_MISSING -> no_data/fallback` read-model branch.
+   - Added source-contract coverage for the coach-analysis metering actor helper.
+   - Added runtime iOS cancellation overlay coverage so the cleanup UI is not only source-grep pinned.
+   - Resolved the remaining optional P3 metering polish by replacing magic `0` system ids with named `COACH_ANALYSIS_SYSTEM_METERING_USER_ID` / `COACH_ANALYSIS_SYSTEM_METERING_TENANT_ID` constants and expanding invalid-id tests.
+   - Resolved Claude's round-3 P3 housekeeping/polish findings:
+     - Restored the unrelated `registry-shadow-parity-latest.json` timestamp drift so it is no longer part of the Training diff.
+     - Added an observable `logger.debug` when the plan-window rule sees window evidence but `durationWeeks` is missing/invalid.
+     - Added an explicit comment and regression test clarifying that coded `recovery_run` session types remain active training, while standalone recovery/rest rows remain rest-like.
+     - Documented and source-pinned that `NEXUS_UI_TEST_SLOW_TRAINING_CANCEL_MS=0` clamps to a 1 ms floor; omit the toggle env var when no artificial delay is needed.
 
 ### iOS
 
@@ -89,6 +101,8 @@ The work should improve plan creation reliability, quality gates, readiness tran
    - Source-pin test for approved conflict action language.
    - Source-pin test for cancellation cleanup progress contracts.
    - Formatter tests proving fractional, offset, and invalid date strings do not leak to UI.
+   - UI test proving a rich fixture cancel flow shows the cleanup overlay, including calendar-block cleanup copy, while cancellation is in progress.
+   - Resolved the remaining optional P3 test-hook polish by making the DEBUG-only cancel delay millisecond-tunable via `NEXUS_UI_TEST_SLOW_TRAINING_CANCEL_MS` and pinning that the old hardcoded nanosecond literal is gone.
 
 ## Files Changed
 
@@ -119,6 +133,7 @@ The work should improve plan creation reliability, quality gates, readiness tran
 - `Nexus Hub/Views/Training/TrainingReflowTimeFormatter.swift`
 - `Nexus HubTests/TrainingUIRevampSourcePinsTests.swift`
 - `Nexus HubTests/TrainingReflowTimeFormatterTests.swift`
+- `Nexus HubUITests/TrainingFixtureBypassUITests.swift`
 
 ## Expected Behavior
 
@@ -136,6 +151,8 @@ The work should improve plan creation reliability, quality gates, readiness tran
 - Manual check-in input remains `manual_check_in` / `manual`.
 - Existing cancellation, calendar ownership, and reconciliation behavior remains intact.
 - The operational plan-generation route stays deterministic by default and does not call LLM providers directly.
+- Coach-analysis metering distinguishes real user calls from system/bootstrap calls through `meteringActor`.
+- System/bootstrap coach-analysis metering uses named constants for the system user/tenant ids instead of raw magic numbers.
 
 ### iOS
 
@@ -146,6 +163,8 @@ The work should improve plan creation reliability, quality gates, readiness tran
 - Invalid or malformed reflow timestamps fall back to “suggested time” / “horário sugerido”.
 - Conflict-resolution actions read as clear user choices: next available, choose another slot, keep unscheduled.
 - Cancellation shows cleanup progress before completion.
+- The cancellation cleanup overlay is visible to UI tests with stable accessibility identifiers for the overlay and calendar-cleanup row.
+- The DEBUG-only cancellation delay is configurable in milliseconds for UI tests and remains compiled out of release builds.
 
 ## Tests / Checks Already Performed
 
@@ -171,12 +190,37 @@ Result after final contract pass: PASS, 4 files / 52 tests.
 
 ```bash
 npx vitest run \
+  __tests__/api/training-read-models.test.ts \
   __tests__/services/garmin-coach-user-scope.test.ts \
   __tests__/services/training-skill-hardening-source-contract.test.ts \
   __tests__/api/training-plan-generation-source-contract.test.ts
 ```
 
-Result after final cost-attribution pass: PASS, 3 files / 12 tests.
+Result after optional P3 closure pass: PASS, 4 files / 27 tests.
+
+```bash
+npm run typecheck && npx vitest run \
+  __tests__/services/coach-kernel-plan-linter.test.ts \
+  __tests__/services/training-skill-hardening-source-contract.test.ts \
+  __tests__/services/garmin-coach-user-scope.test.ts \
+  __tests__/api/training-plan-generation-source-contract.test.ts \
+  __tests__/api/training-read-models.test.ts
+```
+
+Result after Claude round-3 P3 cleanup pass: PASS, 5 files / 59 tests.
+
+```bash
+npx vitest run \
+  __tests__/services/training-coach-kernel-plan-generator.test.ts \
+  __tests__/services/coach-kernel-plan-linter.test.ts \
+  __tests__/api/training-plan-generation-source-contract.test.ts \
+  __tests__/services/training-skill-hardening-source-contract.test.ts \
+  __tests__/api/training-read-models.test.ts \
+  __tests__/services/garmin-coach-user-scope.test.ts \
+  __tests__/services/training-semantic-fixtures.test.ts
+```
+
+Result after Claude round-3 P3 cleanup pass: PASS, 7 files / 79 tests.
 
 ```bash
 npx vitest run \
@@ -203,7 +247,7 @@ Result after the final cost-attribution patch: PASS, 15 files / 226 tests.
 npx vitest run
 ```
 
-Result after final Training hardening pass: PASS, 608 files / 9019 tests.
+Result after final Training hardening and QA-fix pass: PASS, 608 files / 9025 tests.
 
 ### iOS
 
@@ -225,38 +269,40 @@ xcodebuild -project "Nexus Hub.xcodeproj" -scheme "Nexus Hub" -sdk iphonesimulat
 Result: PASS.
 
 ```bash
-IOS_SIM_UDID=BD5CFDE5-33A7-45E2-AF82-0E2A6A7D8187 \
-IOS_SHUTDOWN_OTHER_SIMS=0 \
-IOS_QUIT_SIMULATOR_APP=0 \
-IOS_TRIM_SIMULATOR_PROCESSES=0 \
-IOS_ALLOW_MULTIPLE_BOOTED=1 \
-scripts/ios-single-simulator-test.sh
+xcodebuild test -project "Nexus Hub.xcodeproj" -scheme "Nexus Hub" -sdk iphonesimulator \
+  -destination "platform=iOS Simulator,id=BD5CFDE5-33A7-45E2-AF82-0E2A6A7D8187" \
+  -only-testing:"Nexus HubTests/TrainingUIRevampSourcePinsTests/test_cancelPlanShowsCleanupProgressContracts" \
+  -only-testing:"Nexus HubUITests/TrainingFixtureBypassUITests/test_richFixture_cancelPlanShowsCalendarCleanupOverlay"
 ```
 
-Result: PARTIAL/PASS-WITH-RETRY evidence. The helper executed 86 UI tests with 1 expected skip and 0 assertion failures in the final selected suite, but the overall xcodebuild session exited 65 because four earlier UI tests were reported as `Test crashed with signal term` during simulator process turnover:
+Result after optional P3 closure pass: PASS, targeted unit + UI overlay tests.
 
-- `AuthenticationFlowUITests.test_emailRegister_then_login_then_signOut_then_relogin`
-- `ContentCreationLiveWorkflowUITests.test_contentAgencyFixtureOutputIsActionableCleanAndExtractable`
-- `NotificationDecisionCenterUITests.test_actionFailureKeepsListVisibleAndAllowsRetry`
-- `NotificationDecisionCenterUITests.test_decisionCenterLoadFailureShowsErrorScreen`
+```bash
+xcodebuild test -project "Nexus Hub.xcodeproj" -scheme "Nexus Hub" -sdk iphonesimulator \
+  -destination "platform=iOS Simulator,id=BD5CFDE5-33A7-45E2-AF82-0E2A6A7D8187" \
+  -only-testing:"Nexus HubTests"
+```
 
-Those four were rerun immediately on the same dedicated simulator:
+Result after final QA-fix pass: PASS, 1406 XCTest tests plus 10 Swift Testing tests.
 
 ```bash
 IOS_SIM_UDID=BD5CFDE5-33A7-45E2-AF82-0E2A6A7D8187 \
-IOS_SHUTDOWN_OTHER_SIMS=0 \
-IOS_QUIT_SIMULATOR_APP=0 \
-IOS_TRIM_SIMULATOR_PROCESSES=0 \
-IOS_ALLOW_MULTIPLE_BOOTED=1 \
 IOS_KEEP_SIM_BOOTED=1 \
-scripts/ios-single-simulator-test.sh \
-  -only-testing:"Nexus HubUITests/AuthenticationFlowUITests/test_emailRegister_then_login_then_signOut_then_relogin" \
-  -only-testing:"Nexus HubUITests/ContentCreationLiveWorkflowUITests/test_contentAgencyFixtureOutputIsActionableCleanAndExtractable" \
-  -only-testing:"Nexus HubUITests/NotificationDecisionCenterUITests/test_actionFailureKeepsListVisibleAndAllowsRetry" \
-  -only-testing:"Nexus HubUITests/NotificationDecisionCenterUITests/test_decisionCenterLoadFailureShowsErrorScreen"
+IOS_TRIM_SIMULATOR_PROCESSES=0 \
+scripts/ios-single-simulator-test.sh
 ```
 
-Result: PASS, 4 UI tests / 0 failures. Treat the long helper exit as simulator/process instability, not an asserted product failure, but Claude should independently verify whether this retry standard is acceptable for release sign-off.
+Result after final QA-fix pass: PASS. Unit phase passed, UI phase passed 118 tests with 15 expected skips and 0 failures. The dedicated simulator was then shut down with `xcrun simctl shutdown BD5CFDE5-33A7-45E2-AF82-0E2A6A7D8187` to avoid disturbing other active simulator sessions.
+
+```bash
+xcodebuild test -project "Nexus Hub.xcodeproj" -scheme "Nexus Hub" -sdk iphonesimulator \
+  -destination "platform=iOS Simulator,id=BD5CFDE5-33A7-45E2-AF82-0E2A6A7D8187" \
+  -only-testing:"Nexus HubTests/TrainingUIRevampSourcePinsTests/test_cancelPlanShowsCleanupProgressContracts"
+```
+
+Result after the final optional DEBUG-hook polish: PASS. This rerun pins `NEXUS_UI_TEST_SLOW_TRAINING_CANCEL_MS` and confirms the old `700_000_000` nanosecond literal is absent from the Training cancel hook.
+
+The same source-pin test was rerun after documenting the 1 ms lower-bound behavior for `NEXUS_UI_TEST_SLOW_TRAINING_CANCEL_MS=0`; result: PASS.
 
 ### Workspace Docs Audit
 
@@ -284,6 +330,7 @@ Local code/test-backed implementation is complete for this worktree slice:
 - iOS conflict move labels use approved UX copy and the friendly formatter instead of raw timestamps.
 - Token-Zero was preserved for touched Training surfaces: no fake chat command path was added.
 - Cost savings are enforced at the route/source-contract level: operational scheduling and adaptation stay deterministic with no direct provider call/API-usage write in the plan-generation module. Coach explanation calls are metered under `coach_analysis` with scoped `userId`/`tenantId`, and the generate route keeps the existing cost lock/guardrail around any future AI-backed explanation/fallback work.
+- Claude's follow-up QA fixes are complete: direct no-wearable read-model test, explicit user/system coach-analysis metering actor, named system metering constants, runtime iOS cancellation cleanup overlay proof, and millisecond-tunable DEBUG-only cancel delay.
 
 Rollout-gated items are explicitly not proven locally:
 
@@ -291,7 +338,7 @@ Rollout-gated items are explicitly not proven locally:
 - TestFlight walkthroughs for Felipe/Jaqueline cannot be performed from this local worktree.
 - Shadow/active rollout gates and production promotion are intentionally not done in this branch.
 - Production dashboard validation of the new scoped coach-analysis rows remains rollout-gated; the local code path now passes user/tenant metering context, and deterministic plan/adaptation paths remain zero-provider-cost.
-- The full iOS helper was run on a dedicated simulator to avoid clobbering another active Codex simulator session. The dedicated rerun proved the four signal-term reports pass in isolation, but the long helper's xcodebuild process still exited 65.
+- The full iOS helper was run on a dedicated simulator to avoid clobbering another active Codex simulator session. That closure run passed cleanly; no signal-term failures remained. After the final optional DEBUG-hook polish, the targeted source-pin and runtime overlay tests were rerun instead of the full helper because the delta only tunes the DEBUG UI-test delay and source contracts.
 
 ## Areas Claude Should Inspect Carefully
 
@@ -310,11 +357,18 @@ Rollout-gated items are explicitly not proven locally:
 11. Confirm no operational Training UI action was implemented by sending fake chat commands. The visible “Ask Nexus” button may route the user to Chat, but must not synthesize and send a fake operational command.
 12. Confirm `training-plan-generation.ts` has no direct LLM/Gemini/OpenAI/api_usage scheduling path and that `training-plan-routes.ts` keeps `acquireCostLock` / `enforceCostGuardrails` around future AI explanation/fallback work.
 13. Confirm `generateCoachBriefing` passes scoped `userId`/`tenantId` into both Gemini-first and Anthropic-fallback `coach_analysis` metering.
-14. Confirm coach-kernel knowledge is loaded from reusable docs/templates (`run`, `bike`, `swim`, `strength`, hybrid rules, marathon periodization, LLM tool contract), not reintroduced as prompt-only logic.
-15. Confirm deterministic adaptation/feedback and “what changed” surfaces still flow through `planner-engine`, `feedback-analysis`, `training-history`, and `training-home-view-state`.
-16. Confirm Training-scoped cross-skill signals include Secretary/calendar, Cooking/fueling, Finance/budget, adherence, and plan drift.
-17. Confirm the semantic fixture corpus additions are representative and not decorative names.
-18. Confirm existing cancellation/calendar ownership tests still prove owned calendar rows are deleted/reconciled and tenant-scoped.
+14. Confirm coach-analysis metering distinguishes `actor: "user"` from `actor: "system"` and does not conflate system/bootstrap calls with real anonymous user traffic.
+15. Confirm coach-kernel knowledge is loaded from reusable docs/templates (`run`, `bike`, `swim`, `strength`, hybrid rules, marathon periodization, LLM tool contract), not reintroduced as prompt-only logic.
+16. Confirm deterministic adaptation/feedback and “what changed” surfaces still flow through `planner-engine`, `feedback-analysis`, `training-history`, and `training-home-view-state`.
+17. Confirm Training-scoped cross-skill signals include Secretary/calendar, Cooking/fueling, Finance/budget, adherence, and plan drift.
+18. Confirm the semantic fixture corpus additions are representative and not decorative names.
+19. Confirm existing cancellation/calendar ownership tests still prove owned calendar rows are deleted/reconciled and tenant-scoped.
+20. Confirm the iOS cancellation overlay UI test is a real interaction test, not only a source-pin assertion, and that the DEBUG-only slow-cancel hook is excluded from release behavior.
+21. Confirm `COACH_ANALYSIS_SYSTEM_METERING_USER_ID` and `COACH_ANALYSIS_SYSTEM_METERING_TENANT_ID` are used for system actor attribution instead of raw magic-number ids.
+22. Confirm `NEXUS_UI_TEST_SLOW_TRAINING_CANCEL_MS` tunes only the DEBUG UI-test delay and the prior `700_000_000` literal is absent from the Training cancel hook.
+23. Confirm `ruleNoSessionsOutsidePlanWindow` logs a debug breadcrumb instead of silently no-oping when `durationWeeks` is missing/invalid but the input contains plan-window evidence.
+24. Confirm `recovery_run` coded session types intentionally count as active training and the linter comment prevents future accidental substring broadening.
+25. Confirm the unrelated `registry-shadow-parity-latest.json` timestamp drift is absent from the final Training diff.
 
 ## Edge Cases To Verify
 
@@ -328,12 +382,19 @@ Rollout-gated items are explicitly not proven locally:
 - Repeated taps on preview/create while `isGeneratingPlan` is true.
 - Edit/discard preview should reset the old deterministic create key.
 - Cancel plan progress should be visible and should not imply provider cleanup finished before the backend says so.
+- System/bootstrap coach-analysis calls should be attributable as system metering and not pollute real user cost rows.
+- System/bootstrap coach-analysis calls with `undefined`, `null`, `0`, negative, or fractional user ids should all route to the named system metering constants.
+- Cancellation overlay accessibility identifiers should remain stable for `weekly-plan-cancel-progress-overlay` and `weekly-plan-cancel-calendar-cleanup-row`.
+- Invalid or missing `NEXUS_UI_TEST_SLOW_TRAINING_CANCEL_MS` should fall back to the default test delay; huge values should be bounded by the implementation.
+- `NEXUS_UI_TEST_SLOW_TRAINING_CANCEL_MS=0` should clamp to 1 ms; tests that need no artificial delay should omit `NEXUS_UI_TEST_SLOW_TRAINING_CANCEL`.
+- Missing or zero `durationWeeks` should not create a false blocker, but should now emit a debug breadcrumb when there is a start date or week numbers that make the skipped window check meaningful.
+- `recovery_run` should satisfy Week 1 active-training checks when it is encoded as a session type with an underscore and not as a standalone rest row.
 
 ## Known Risks / Assumptions
 
 - This is a local hardening slice, not a production rollout. Real provider validation remains required for Outlook/Google calendar event deletion and real TestFlight walkthroughs.
-- Full backend `npx vitest run` passed: 608 files / 9019 tests.
-- Full iOS helper was attempted on an isolated simulator. It produced a code 65 from four `signal term` reports during the long run, and those exact four tests passed when rerun immediately in isolation. Claude should classify whether this is acceptable simulator instability or requires another clean full helper pass.
+- Full backend `npx vitest run` passed: 608 files / 9025 tests.
+- Full iOS helper passed on an isolated simulator before the final optional DEBUG-hook polish: UI phase 118 tests, 15 expected skips, 0 failures, after unit tests also passed. After the final polish, targeted unit/UI tests passed. The dedicated simulator was shut down by UDID only when cleanup was performed, so other active simulator sessions were not disturbed.
 - The repo has unrelated pre-existing `V2` symbols in Decision Center, MarkdownV2, and historical docs. QA should grep specifically for Training V2 / CoachKernelV2 pollution, not fail on unrelated existing V2 terms.
 
 ## Output Format

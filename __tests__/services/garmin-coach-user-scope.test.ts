@@ -86,7 +86,12 @@ vi.mock('../../src/services/database', () => ({
   findUnexpectedMigrationPrefixCollisions: vi.fn(() => []),
 }));
 
-import { generateCoachBriefing, resolveCoachAnalysisMeteringScope } from '../../src/services/garmin-coach';
+import {
+  COACH_ANALYSIS_SYSTEM_METERING_TENANT_ID,
+  COACH_ANALYSIS_SYSTEM_METERING_USER_ID,
+  generateCoachBriefing,
+  resolveCoachAnalysisMeteringScope,
+} from '../../src/services/garmin-coach';
 
 describe('garmin-coach user scoping', () => {
   beforeEach(() => {
@@ -200,20 +205,26 @@ describe('garmin-coach user scoping', () => {
   });
 
   it('classifies owner-bootstrap coach analysis as a system metering actor', () => {
-    expect(resolveCoachAnalysisMeteringScope()).toEqual({
+    const systemScope = {
       actor: 'system',
-      userId: 0,
-      tenantId: 0,
+      userId: COACH_ANALYSIS_SYSTEM_METERING_USER_ID,
+      tenantId: COACH_ANALYSIS_SYSTEM_METERING_TENANT_ID,
+    };
+
+    expect(resolveCoachAnalysisMeteringScope()).toEqual({
+      ...systemScope,
     });
     expect(resolveCoachAnalysisMeteringScope(null)).toEqual({
-      actor: 'system',
-      userId: 0,
-      tenantId: 0,
+      ...systemScope,
     });
     expect(resolveCoachAnalysisMeteringScope(0)).toEqual({
-      actor: 'system',
-      userId: 0,
-      tenantId: 0,
+      ...systemScope,
+    });
+    expect(resolveCoachAnalysisMeteringScope(-1)).toEqual({
+      ...systemScope,
+    });
+    expect(resolveCoachAnalysisMeteringScope(1.5)).toEqual({
+      ...systemScope,
     });
   });
 
