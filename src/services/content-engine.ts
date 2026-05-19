@@ -60,8 +60,6 @@ export interface HotNewsResponse {
   generated_at: string;
 }
 
-// ── Phase 2: Visual + Social ──────────────────────────────────────────
-
 export interface TrendingResponse {
   topics: TrendingTopic[];
   niche: string;
@@ -74,8 +72,6 @@ export interface ReactionResponse {
   briefs: ContentBrief[];
   duration_ms: number;
 }
-
-// ── Phase 3: Creative Intelligence ────────────────────────────────────
 
 export interface HooksResponse {
   topic: string;
@@ -145,8 +141,6 @@ export interface CaptionResponse {
   duration_ms: number;
 }
 
-// ── Phase 4: Strategic Intelligence ───────────────────────────────────
-
 export interface CompetitorResponse {
   channel: string;
   analysis: Record<string, unknown>;
@@ -171,8 +165,6 @@ export interface RepurposeResponse {
   duration_ms: number;
 }
 
-// ── Phase 5: Learning System ──────────────────────────────────────────
-
 export interface FeedbackResponse {
   status: string;
   analysis: Record<string, unknown>;
@@ -185,11 +177,7 @@ export interface ReportResponse {
   duration_ms: number;
 }
 
-// ── HTTP Client ─────────────────────────────────────────────────────
-
 const BASE_URL = `http://localhost:${config.contentEngine.port}/api/v1`;
-
-// ── Health check + Circuit Breaker ─────────────────────────────────
 
 let _lastHealthCheck = 0;
 let _isHealthy = true;
@@ -296,8 +284,6 @@ export function isContentEngineConfigured(): boolean {
   return config.contentEngine.enabled;
 }
 
-// ── Phase 2 API ─────────────────────────────────────────────────────
-
 export async function getTrending(niche?: string): Promise<TrendingResponse> {
   const qs = niche ? `?niche=${encodeURIComponent(niche)}` : '';
   return engineFetch<TrendingResponse>(`/trending${qs}`);
@@ -307,8 +293,6 @@ export async function getReaction(topic: string): Promise<ReactionResponse> {
   return engineFetch<ReactionResponse>(`/reaction?topic=${encodeURIComponent(topic)}`);
 }
 
-// ── Phase 3 API ─────────────────────────────────────────────────────
-
 export async function getHooks(topic: string, niche = 'general', count = 8): Promise<HooksResponse> {
   const creatorPayload = buildCurrentCreatorProfilePayload(null, 'content_engine_hooks');
   return engineFetch<HooksResponse>('/hooks', {
@@ -317,10 +301,7 @@ export async function getHooks(topic: string, niche = 'general', count = 8): Pro
   }, 45_000);
 }
 
-// ── Generation Mode Configuration ──────────────────────────────────
-//
 // Mode controls three levers: cache behavior, signal window, and timeout.
-//
 //   Draft:    compact draft pack, cache-first, no signals, 45s timeout (~70-85% cheaper)
 //   Quick:    cache-first (48h), no signals, 60s timeout  (~$0.003 cached, ~$0.005 fresh)
 //   Standard: cache 24h, compact signal window, 120s timeout (~$0.01-0.02)
@@ -634,8 +615,6 @@ export async function getCaption(topic: string, niche = 'general'): Promise<Capt
   }, 45_000);
 }
 
-// ── Phase 4 API ─────────────────────────────────────────────────────
-
 export async function getCompetitor(channel: string, maxVideos = 10): Promise<CompetitorResponse> {
   const creatorPayload = buildCurrentCreatorProfilePayload(null, 'content_engine');
   return engineFetch<CompetitorResponse>('/competitor', {
@@ -667,8 +646,6 @@ export async function getRepurpose(topic: string, originalFormat = 'YouTube'): P
     body: JSON.stringify({ topic, original_format: originalFormat, ...creatorPayload }),
   }, 60_000);
 }
-
-// ── Phase 5 API ─────────────────────────────────────────────────────
 
 export async function logFeedback(data: {
   video_url: string;
