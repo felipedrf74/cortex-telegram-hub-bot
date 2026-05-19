@@ -39,11 +39,16 @@ describe('WebSocket security boundary helpers', () => {
   it('routes WebSocket chat messages through the action planner before generic routing', () => {
     const source = fs.readFileSync(path.resolve(__dirname, '../../src/api/websocket.ts'), 'utf8');
     const plannerIndex = source.indexOf('tryHandleChatActionPlan({');
-    const routerIndex = source.indexOf('const route = await routeMessage');
+    const routerIndex = source.indexOf('const rawRoute = await routeMessage');
 
     expect(plannerIndex).toBeGreaterThan(-1);
     expect(routerIndex).toBeGreaterThan(-1);
     expect(plannerIndex).toBeLessThan(routerIndex);
+    expect(source).toContain('inferChatTurnContract');
+    expect(source).toContain('analyzeChatSkillOrchestration');
+    expect(source).toContain('buildChatInternetResearchAnswer');
+    expect(source).toContain('buildSimpleStateContext(researchDomain, userId, messageText, tenantId)');
+    expect(source).toContain("preTurnContract?.riskClass === 'destructive'");
     expect(source).toContain("type: 'status'");
     expect(source).toContain('metadata: response.metadata');
   });

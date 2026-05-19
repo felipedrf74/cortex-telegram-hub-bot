@@ -29,6 +29,26 @@ export type NexusChatActionability =
 export type NexusChatRiskLevel = 'low' | 'medium' | 'high';
 export type NexusChatVerificationStatus = 'not_required' | 'pending' | 'verified' | 'partial_failure' | 'failed' | 'blocked';
 export type NexusChatStaleness = 'fresh' | 'recent' | 'stale' | 'unknown';
+export type NexusChatRouteKind =
+  | 'local_read'
+  | 'action'
+  | 'generic_skill_answer'
+  | 'internet_research'
+  | 'clarification'
+  | 'repair';
+export type NexusChatGroundingRequirement = 'none' | 'local' | 'web' | 'local_and_web';
+export type NexusChatExpectedResponseShape =
+  | 'recipe'
+  | 'agenda_summary'
+  | 'task_options'
+  | 'training_advice'
+  | 'content_draft'
+  | 'finance_summary'
+  | 'connection_status'
+  | 'notification_summary'
+  | 'decision_summary'
+  | 'direct_answer';
+export type NexusChatLanguage = 'pt' | 'en' | 'mixed';
 
 export interface NexusGroundingFact {
   statement: string;
@@ -67,6 +87,11 @@ export interface NexusAnswerContract {
   version: 'nexus_answer_contract.v1';
   intent: string;
   ownerSkill: NexusChatOwnerSkill;
+  routeKind: NexusChatRouteKind;
+  groundingRequirement: NexusChatGroundingRequirement;
+  expectedResponseShape: NexusChatExpectedResponseShape;
+  language: NexusChatLanguage;
+  ambiguityReasons: string[];
   routeMethod: string;
   confidence: number;
   groundingFacts: NexusGroundingFact[];
@@ -118,6 +143,11 @@ export function buildNexusAnswerContract(input: {
   missingFacts?: string[];
   staleness?: NexusChatStaleness;
   riskLevel?: NexusChatRiskLevel;
+  routeKind?: NexusChatRouteKind;
+  groundingRequirement?: NexusChatGroundingRequirement;
+  expectedResponseShape?: NexusChatExpectedResponseShape;
+  language?: NexusChatLanguage;
+  ambiguityReasons?: string[];
   actionability?: NexusChatActionability;
   verificationStatus?: NexusChatVerificationStatus;
   fallback?: Partial<NexusChatFallbackMetadata>;
@@ -131,6 +161,11 @@ export function buildNexusAnswerContract(input: {
     version: 'nexus_answer_contract.v1',
     intent: normalizeShortText(input.intent, 'general_chat'),
     ownerSkill: input.ownerSkill,
+    routeKind: input.routeKind ?? inferRouteKind(input.actionability, input.missingFacts),
+    groundingRequirement: input.groundingRequirement ?? inferGroundingRequirement(input.actionability, input.missingFacts, input.ownerSkill),
+    expectedResponseShape: input.expectedResponseShape ?? 'direct_answer',
+    language: input.language ?? 'en',
+    ambiguityReasons: [...new Set((input.ambiguityReasons ?? []).filter(Boolean))],
     routeMethod: normalizeShortText(input.routeMethod, 'unknown'),
     confidence: clamp01(input.confidence ?? 0.5),
     groundingFacts: input.groundingFacts ?? [],
@@ -174,6 +209,10 @@ export function summarizeContractForLog(contract: NexusAnswerContract): Record<s
     intent: contract.intent,
     ownerSkill: contract.ownerSkill,
     routeMethod: contract.routeMethod,
+    routeKind: contract.routeKind,
+    groundingRequirement: contract.groundingRequirement,
+    expectedResponseShape: contract.expectedResponseShape,
+    language: contract.language,
     actionability: contract.actionability,
     verificationStatus: contract.verificationStatus,
     fallbackUsed: contract.fallbackUsed,
@@ -183,6 +222,27 @@ export function summarizeContractForLog(contract: NexusAnswerContract): Record<s
     latencyTier: contract.latency.tier,
     durationMs: contract.latency.durationMs,
   };
+}
+
+function inferRouteKind(
+  actionability: NexusChatActionability | undefined,
+  missingFacts: string[] | undefined,
+): NexusChatRouteKind {
+  if (actionability === 'execute' || actionability === 'preview' || actionability === 'decision_center') return 'action';
+  if (actionability === 'clarify') return 'clarification';
+  if ((missingFacts ?? []).length > 0) return 'local_read';
+  return 'generic_skill_answer';
+}
+
+function inferGroundingRequirement(
+  actionability: NexusChatActionability | undefined,
+  missingFacts: string[] | undefined,
+  ownerSkill: NexusChatOwnerSkill,
+): NexusChatGroundingRequirement {
+  if (actionability === 'execute' || actionability === 'preview' || actionability === 'decision_center') return 'local';
+  if ((missingFacts ?? []).length > 0) return 'local';
+  if (['secretary', 'tasks', 'finance', 'connections', 'notifications', 'decision_center'].includes(ownerSkill)) return 'local';
+  return 'none';
 }
 
 function deriveStaleness(facts: NexusGroundingFact[]): NexusChatStaleness {

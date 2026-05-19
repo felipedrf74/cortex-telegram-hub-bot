@@ -75,11 +75,20 @@ import {
   type ChatLatencyTracker,
   type NexusAnswerContract,
   type NexusChatActionability,
+  type NexusChatOwnerSkill,
   type NexusChatVerificationStatus,
 } from '../../services/chat-answer-contract';
+import { inferChatTurnContract, type ChatTurnContract } from '../../services/chat-turn-contract';
+import { buildChatInternetResearchAnswer } from '../../services/chat-internet-research';
 import { buildChatGroundingEnvelope } from '../../services/chat-grounding-layer';
 import { applyChatFallbackPolicy } from '../../services/chat-fallback-policy';
 import { applyChatResponseQualityGate } from '../../services/chat-response-quality-gate';
+import { buildSimpleStateContext } from '../../domains/domain-handler';
+import {
+  isChatQualityGateEnabled,
+  isChatResearchRouterEnabled,
+  isChatTurnContractEnabled,
+} from '../../services/runtime-flags';
 import {
   createDecisionIntent,
   findDecisionByRelatedEntity,
@@ -122,6 +131,49 @@ function mapActionPlannerSkillToNexusSkill(skill: string): NexusSkillId {
   return 'tools';
 }
 
+function domainForTurnContractSkill(skill: NexusChatOwnerSkill): string | null {
+  switch (skill) {
+    case 'secretary':
+    case 'tasks':
+    case 'connections':
+    case 'notifications':
+    case 'decision_center':
+      return 'secretary';
+    case 'training':
+      return 'triathlon';
+    case 'content':
+    case 'finance':
+    case 'cooking':
+      return skill;
+    default:
+      return null;
+  }
+}
+
+function shouldApplyTurnContractRouteHint(contract: ChatTurnContract, route: { domain: string; confidence: number }): boolean {
+  if (contract.routeKind === 'action') return false;
+  if (contract.riskClass === 'high' || contract.riskClass === 'destructive') return false;
+  if (contract.skill === 'chat' || contract.skill === 'system' || contract.skill === 'owner_admin') return false;
+  const hintedDomain = domainForTurnContractSkill(contract.skill);
+  if (!hintedDomain || route.domain === hintedDomain) return false;
+  return contract.confidence >= 0.8;
+}
+
+function applyTurnContractRouteHint<T extends { domain: string; method: string; confidence: number }>(
+  route: T,
+  contract: ChatTurnContract,
+): T {
+  if (!shouldApplyTurnContractRouteHint(contract, route)) return route;
+  const hintedDomain = domainForTurnContractSkill(contract.skill);
+  if (!hintedDomain) return route;
+  return {
+    ...route,
+    domain: hintedDomain,
+    method: `${route.method}+turn-contract`,
+    confidence: Math.max(route.confidence, contract.confidence),
+  };
+}
+
 function buildChatAnswerMetadata(input: {
   normalizedText: string;
   responseText: string;
@@ -142,6 +194,15 @@ function buildChatAnswerMetadata(input: {
   fallback?: Partial<NexusAnswerContract['fallback']>;
 }): { text: string; metadata: Record<string, unknown>; contract: NexusAnswerContract } {
   try {
+    const rolloutScope = { userId: input.userId, tenantId: input.tenantId };
+    const turnContract = isChatTurnContractEnabled(process.env, rolloutScope)
+      ? inferChatTurnContract({
+        message: input.normalizedText,
+        routedDomain: input.domain,
+        activeContextDomain: input.activeContext?.domain ?? null,
+        involvedSkills: input.routingDecision?.involvedSkills,
+      })
+      : null;
     const grounding = buildChatGroundingEnvelope({
       message: input.normalizedText,
       userId: input.userId,
@@ -154,13 +215,18 @@ function buildChatAnswerMetadata(input: {
     });
     const contract = buildNexusAnswerContract({
       intent: grounding.capability.intent,
-      ownerSkill: grounding.capability.ownerSkill,
+      ownerSkill: turnContract?.skill ?? grounding.capability.ownerSkill,
+      routeKind: turnContract?.routeKind,
+      groundingRequirement: turnContract?.groundingRequired,
+      expectedResponseShape: turnContract?.expectedResponseShape,
+      language: turnContract?.language,
+      ambiguityReasons: turnContract?.ambiguityReasons,
       routeMethod: input.routeMethod,
-      confidence: input.confidence,
+      confidence: Math.min(input.confidence, turnContract?.confidence ?? 1),
       groundingFacts: grounding.groundingFacts,
       missingFacts: grounding.missingFacts,
       staleness: grounding.staleness,
-      riskLevel: grounding.capability.riskLevel,
+      riskLevel: turnContract?.riskClass === 'destructive' ? 'high' : turnContract?.riskClass,
       actionability: input.actionability ?? grounding.capability.actionability,
       verificationStatus: input.verificationStatus ?? 'not_required',
       fallback: input.fallback,
@@ -171,8 +237,11 @@ function buildChatAnswerMetadata(input: {
       traceId: input.chatRequestId,
       latency: input.tracker.snapshot(input.latencyTier, grounding.capability.capability.latencyBudgetMs),
     });
+    const qualityGateEnabled = isChatQualityGateEnabled(process.env, rolloutScope);
     const fallbackPolicy = applyChatFallbackPolicy(contract);
-    const gated = applyChatResponseQualityGate({ text: input.responseText, contract: fallbackPolicy.contract });
+    const gated = qualityGateEnabled
+      ? applyChatResponseQualityGate({ text: input.responseText, contract: fallbackPolicy.contract })
+      : { text: input.responseText, contract: fallbackPolicy.contract, status: 'pass' as const, issues: [], score: 1 };
     return {
       text: gated.text,
       contract: gated.contract,
@@ -180,11 +249,13 @@ function buildChatAnswerMetadata(input: {
         ...(input.existingMetadata ?? {}),
         type: (input.existingMetadata?.type as string | undefined) ?? 'nexus_answer',
         chatReasoning: gated.contract,
+        ...(turnContract ? { chatTurnContract: turnContract } : {}),
         groundingFacts: metadataGroundingFacts(gated.contract.groundingFacts),
         responseQuality: {
           status: gated.status,
           issues: [...fallbackPolicy.issues, ...gated.issues],
           score: gated.score,
+          qualityGateDisabled: !qualityGateEnabled,
         },
         fallbackPolicy: fallbackPolicy.policy,
       },
@@ -925,6 +996,92 @@ export function registerChatMessageRoutes(
         userId,
         tenantId,
       });
+      const turnContractEnabled = isChatTurnContractEnabled(process.env, { userId, tenantId });
+      const preTurnContract = turnContractEnabled
+        ? inferChatTurnContract({
+          message: normalizedText,
+          activeContextDomain: activeContext?.domain ?? null,
+          involvedSkills: preRoutingDecision.involvedSkills,
+        })
+        : null;
+
+      if (
+        isChatResearchRouterEnabled(process.env, { userId, tenantId })
+        && preTurnContract?.routeKind === 'internet_research'
+        && (preTurnContract.groundingRequired === 'web' || preTurnContract.groundingRequired === 'local_and_web')
+      ) {
+        const researchDomain = domainForTurnContractSkill(preTurnContract.skill) ?? 'chat';
+        const localContext = preTurnContract.groundingRequired === 'local_and_web' && researchDomain !== 'chat'
+          ? await buildSimpleStateContext(researchDomain, userId, normalizedText, tenantId)
+          : null;
+        const research = await buildChatInternetResearchAnswer({
+          message: normalizedText,
+          language: preTurnContract.language,
+          skill: preTurnContract.skill,
+          expectedResponseShape: preTurnContract.expectedResponseShape,
+          userId,
+          tenantId,
+          groundingRequired: preTurnContract.groundingRequired,
+          localContext,
+        });
+        latency.mark('internet_research_completed');
+        const response = enrichChatResponseForContract({
+          id: `msg-${Date.now()}`,
+          text: research.text,
+          domain: researchDomain,
+          routeMethod: 'internet-research',
+          confidence: research.degraded ? 0.55 : preTurnContract.confidence,
+          buttons: null,
+          metadata: {
+            type: 'chat_internet_research',
+            webSources: research.sources,
+            degraded: research.degraded,
+            degradedReason: research.degradedReason ?? null,
+            routeKind: preTurnContract.routeKind,
+            groundingRequired: preTurnContract.groundingRequired,
+            contextCompiler: research.context ?? null,
+          },
+          timestamp: new Date().toISOString(),
+        }, {
+          normalizedText,
+          userId,
+          tenantId,
+          chatRequestId,
+          tracker: latency,
+          latencyTier: 'tier4_long_running',
+          fallbackDomain: researchDomain,
+          fallbackRouteMethod: 'internet-research',
+          fallbackConfidence: research.degraded ? 0.55 : preTurnContract.confidence,
+          actionability: research.degraded ? 'degraded' : 'answer_only',
+          verificationStatus: research.sources.length > 0 ? 'verified' : 'not_required',
+          fallback: research.degraded ? {
+            fallbackType: 'model_unavailable',
+            fallbackReason: research.degradedReason ?? 'web_research_unavailable',
+            retryable: true,
+            userActionRequired: false,
+            operatorActionRequired: false,
+          } : undefined,
+        });
+        rememberChatActiveDomain(userId, response.domain, Date.now(), tenantId);
+        persistExchange(userId, userMessageId, normalizedText, response.id, response, tenantId, {
+          clientMessageId: scopedClientMessageId,
+          requestId: chatRequestId,
+        });
+        syncConversationStateForShortcut(userId, response.domain, normalizedText, response.text, tenantId);
+        logger.info(
+          {
+            chatRequestId,
+            tenantId,
+            userId,
+            skill: preTurnContract.skill,
+            sourceCount: research.sources.length,
+            degraded: research.degraded,
+          },
+          'iOS chat handled selective internet research turn',
+        );
+        res.json(response);
+        return;
+      }
 
       if (isAcceptCurrentDecisionShortcut(normalizedTextLower)) {
         const pending = getPendingChatConfirmation(userId, tenantId);
@@ -1097,17 +1254,18 @@ export function registerChatMessageRoutes(
       // per-user cap (isUserOverDailyCap) couldn't see the spend.
       const rawRoute = await routeMessage(normalizedText, activeContext, userId, tenantId);
       latency.mark('routed');
+      const contractAwareRoute = preTurnContract ? applyTurnContractRouteHint(rawRoute, preTurnContract) : rawRoute;
       const routingDecision = analyzeChatSkillOrchestration({
         message: normalizedText,
         activeContext,
-        routedDomain: rawRoute.domain,
+        routedDomain: contractAwareRoute.domain,
         userId,
         tenantId,
       });
       const pendingConfirmation = routingDecision.safety.explicitConfirmation
         ? getPendingChatConfirmation(userId, tenantId)
         : null;
-      const route = applyChatSkillRoutingDecision(rawRoute, routingDecision);
+      const route = applyChatSkillRoutingDecision(contractAwareRoute, routingDecision);
       logger.info(
         {
           chatRequestId,
@@ -1117,6 +1275,7 @@ export function registerChatMessageRoutes(
           platform: 'ios',
           orchestration: buildChatSkillRoutingLogContext(routingDecision),
           rawDomain: rawRoute.domain,
+          contractHintedDomain: contractAwareRoute.domain !== rawRoute.domain ? contractAwareRoute.domain : null,
         },
         'iOS message routed',
       );

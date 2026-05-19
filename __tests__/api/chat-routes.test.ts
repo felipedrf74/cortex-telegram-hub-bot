@@ -46,6 +46,8 @@ const mockAddToConversation = vi.fn();
 const mockSyncLastAssistantConversationMessage = vi.fn();
 const mockClearAllConversations = vi.fn();
 const mockCompleteOneShotWithFallback = vi.fn();
+const mockCompleteOneShotWithSearch = vi.fn();
+const mockBuildSimpleStateContext = vi.fn(async () => 'Scoped Nexus state for research prompt');
 const mockHandleSecretary = vi.fn(async () => ({ text: 'Scheduled.', domain: 'secretary' as const }));
 const mockGetScript = vi.fn();
 const mockGetActiveContentPillars = vi.fn(() => []);
@@ -323,10 +325,12 @@ vi.mock('../../src/services/fiscal-bundle', () => ({
 
 vi.mock('../../src/services/gemini-provider', () => ({
   completeOneShotWithFallback: (...args: unknown[]) => mockCompleteOneShotWithFallback(...args),
+  completeOneShotWithSearch: (...args: unknown[]) => mockCompleteOneShotWithSearch(...args),
 }));
 
 vi.mock('../../src/domains/domain-handler', () => ({
   getLastCoachState: (...args: unknown[]) => mockGetLastCoachState(...args),
+  buildSimpleStateContext: (...args: unknown[]) => mockBuildSimpleStateContext(...args),
 }));
 
 vi.mock('../../src/services/garmin-coach', () => ({
@@ -553,6 +557,8 @@ describe('Chat API routes', () => {
     mockSyncLastAssistantConversationMessage.mockReset();
     mockClearAllConversations.mockReset();
     mockCompleteOneShotWithFallback.mockReset();
+    mockCompleteOneShotWithSearch.mockReset();
+    mockBuildSimpleStateContext.mockReset();
     mockHandleSecretary.mockReset();
     mockGetScript.mockReset();
     mockGetActiveContentPillars.mockReset();
@@ -624,6 +630,11 @@ describe('Chat API routes', () => {
       text: 'Tighter revised draft.',
       provider: 'gemini',
     });
+    mockCompleteOneShotWithSearch.mockResolvedValue({
+      text: 'Use current sources and avoid private-state claims.',
+      sources: ['https://example.com/source'],
+    });
+    mockBuildSimpleStateContext.mockResolvedValue('Scoped Nexus state for research prompt');
     mockGetActiveContentPillars.mockReturnValue([]);
     mockGetContentDeskItems.mockReturnValue([]);
     mockGetNextContentExecutionHint.mockResolvedValue(null);
@@ -1518,6 +1529,125 @@ describe('Chat API routes', () => {
       7001,
       7001,
     );
+  });
+
+  it('uses the chat turn contract to correct generic recipe routing before the domain handler', async () => {
+    mockRouteMessage.mockResolvedValue({
+      domain: 'secretary',
+      method: 'keyword',
+      confidence: 0.62,
+      strippedMessage: 'me indique uma receita de kibe de forno para 3 pessoas',
+    });
+    mockHandleSecretary.mockResolvedValue({ text: 'Should not run.', domain: 'secretary' });
+    const { handleCooking } = await import('../../src/domains/cooking');
+    vi.mocked(handleCooking).mockClear();
+    vi.mocked(handleCooking).mockResolvedValue({
+      text: [
+        'Kibe de forno para 3 pessoas',
+        '',
+        'Ingredientes: 250g de trigo para kibe, 350g de carne moída, cebola, hortelã e sal.',
+        '',
+        'Modo de preparo:',
+        '1. Hidrate o trigo por 20 minutos.',
+        '2. Misture com a carne e temperos.',
+        '3. Asse por 35 minutos a 180°C.',
+        '',
+        'Rende 3 porções.',
+      ].join('\n'),
+      domain: 'cooking',
+    });
+
+    const messageRes = await dispatch('POST', '/message', 7001, {
+      text: 'me indique uma receita de kibe de forno para 3 pessoas',
+    }, {
+      'x-language': 'pt-BR',
+    });
+
+    expect(messageRes.statusCode, JSON.stringify(messageRes.body)).toBe(200);
+    expect(messageRes.body.domain).toBe('cooking');
+    expect(messageRes.body.metadata.chatTurnContract).toMatchObject({
+      skill: 'cooking',
+      routeKind: 'generic_skill_answer',
+      groundingRequired: 'none',
+      expectedResponseShape: 'recipe',
+    });
+    expect(vi.mocked(handleCooking)).toHaveBeenCalledTimes(1);
+    expect(mockHandleSecretary).not.toHaveBeenCalled();
+  });
+
+  it('does not apply turn-contract route hints when the feature flag is disabled', async () => {
+    const previous = process.env.CHAT_TURN_CONTRACT_ENABLED;
+    process.env.CHAT_TURN_CONTRACT_ENABLED = 'false';
+    try {
+      mockRouteMessage.mockResolvedValue({
+        domain: 'secretary',
+        method: 'keyword',
+        confidence: 0.62,
+        strippedMessage: 'me indique uma receita de kibe de forno para 3 pessoas',
+      });
+      mockHandleSecretary.mockResolvedValue({ text: 'Legacy secretary route.', domain: 'secretary' });
+      const { handleCooking } = await import('../../src/domains/cooking');
+      vi.mocked(handleCooking).mockClear();
+
+      const messageRes = await dispatch('POST', '/message', 7001, {
+        text: 'me indique uma receita de kibe de forno para 3 pessoas',
+      }, {
+        'x-language': 'pt-BR',
+      });
+
+      expect(messageRes.statusCode, JSON.stringify(messageRes.body)).toBe(200);
+      expect(messageRes.body.domain).toBe('secretary');
+      expect(mockHandleSecretary).toHaveBeenCalledTimes(1);
+      expect(vi.mocked(handleCooking)).not.toHaveBeenCalled();
+    } finally {
+      if (previous === undefined) {
+        delete process.env.CHAT_TURN_CONTRACT_ENABLED;
+      } else {
+        process.env.CHAT_TURN_CONTRACT_ENABLED = previous;
+      }
+    }
+  });
+
+  it('routes local-and-web high-risk turns through research instead of weak generic routing', async () => {
+    mockRouteMessage.mockClear();
+    mockCompleteOneShotWithSearch.mockResolvedValueOnce({
+      text: 'Do not train through knee pain. Use current sports-medicine guidance and seek professional care if pain persists.',
+      sources: ['https://sportsmedicine.example/knee-pain'],
+    });
+
+    const messageRes = await dispatch('POST', '/message', 7001, {
+      text: 'I have knee pain, should I train today?',
+    }, {
+      'x-language': 'en-US',
+    });
+
+    expect(messageRes.statusCode, JSON.stringify(messageRes.body)).toBe(200);
+    expect(messageRes.body.domain).toBe('triathlon');
+    expect(messageRes.body.routeMethod).toBe('internet-research');
+    expect(messageRes.body.text).toContain('Sources consulted: https://sportsmedicine.example/knee-pain');
+    expect(messageRes.body.metadata.chatTurnContract).toMatchObject({
+      skill: 'training',
+      routeKind: 'internet_research',
+      groundingRequired: 'local_and_web',
+      riskClass: 'high',
+    });
+    expect(mockRouteMessage).not.toHaveBeenCalled();
+    expect(mockBuildSimpleStateContext).toHaveBeenCalledWith(
+      'triathlon',
+      7001,
+      'I have knee pain, should I train today?',
+      7001,
+    );
+    expect(mockCompleteOneShotWithSearch).toHaveBeenCalledWith(
+      expect.stringContaining('<stable_system_policy>'),
+      expect.stringContaining('Scoped Nexus state for research prompt'),
+      'chat_internet_research',
+      expect.objectContaining({
+        userId: 7001,
+        tenantId: 7001,
+      }),
+    );
+    expect(mockCompleteOneShotWithSearch.mock.calls[0]?.[1]).toContain('I have knee pain, should I train today?');
   });
 
   it('applies coach callbacks and clears buttons from the persisted message', async () => {
