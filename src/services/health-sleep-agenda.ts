@@ -10,6 +10,12 @@ export interface AppleHealthSleepSegment {
   minutes: number;
 }
 
+export interface AppleHealthSleepCycle {
+  start: string;
+  end: string;
+  minutes: number;
+}
+
 export interface AppleHealthSleepAgendaEvent {
   id: string;
   title: string;
@@ -29,18 +35,58 @@ export function getAppleHealthSleepAgendaEvents(input: {
   end: string;
   timezone: string;
 }): AppleHealthSleepAgendaEvent[] {
-  return getAppleHealthSleepSegments(input).map((segment) => ({
-    id: `apple-health-sleep:${input.userId}:${segment.start}:${segment.end}`,
+  return getAppleHealthSleepCycles(input).map((cycle) => ({
+    id: `apple-health-sleep:${input.userId}:${cycle.start}:${cycle.end}`,
     title: 'Sleep',
     summary: 'Sleep',
-    start: segment.start,
-    end: segment.end,
+    start: cycle.start,
+    end: cycle.end,
     source: 'apple_health',
     category: 'sleep',
     categories: ['sleep'],
     color: '#5E5CE6',
     isAllDay: false,
   }));
+}
+
+export function getAppleHealthSleepCycles(input: {
+  userId: number;
+  start: string;
+  end: string;
+  timezone: string;
+}): AppleHealthSleepCycle[] {
+  const segments = getAppleHealthSleepSegments(input)
+    .map((segment) => ({
+      start: DateTime.fromISO(segment.start, { setZone: true }),
+      end: DateTime.fromISO(segment.end, { setZone: true }),
+    }))
+    .filter((segment) => segment.start.isValid && segment.end.isValid && segment.end > segment.start)
+    .sort((a, b) => a.start.toMillis() - b.start.toMillis());
+
+  const cycles: Array<{ start: DateTime; end: DateTime }> = [];
+  const maxStageGapMinutes = 6 * 60;
+
+  for (const segment of segments) {
+    const current = cycles[cycles.length - 1];
+    if (!current) {
+      cycles.push({ ...segment });
+      continue;
+    }
+
+    const gapMinutes = segment.start.diff(current.end, 'minutes').minutes;
+    if (gapMinutes <= maxStageGapMinutes) {
+      if (segment.end > current.end) current.end = segment.end;
+      continue;
+    }
+
+    cycles.push({ ...segment });
+  }
+
+  return cycles.map((cycle) => ({
+    start: cycle.start.toUTC().toISO()!,
+    end: cycle.end.toUTC().toISO()!,
+    minutes: Math.round(cycle.end.diff(cycle.start, 'minutes').minutes),
+  })).filter((cycle) => cycle.minutes > 0);
 }
 
 export function getAppleHealthSleepSegments(input: {

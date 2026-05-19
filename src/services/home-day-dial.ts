@@ -2,7 +2,7 @@
 
 import { DateTime } from 'luxon';
 import { getUserTimezoneById } from './user-service';
-import { getAppleHealthSleepSegments } from './health-sleep-agenda';
+import { getAppleHealthSleepCycles } from './health-sleep-agenda';
 
 export type DayDialSegmentKind = 'meet' | 'focus' | 'train' | 'eat' | 'sleep' | 'open';
 
@@ -75,22 +75,22 @@ export function buildHomeDayDial(input: {
     });
   }
 
-  const sleepSegments = getAppleHealthSleepSegments({
+  const sleepCycles = getAppleHealthSleepCycles({
     userId: input.userId,
     start: dayStart.toUTC().toISO()!,
     end: dayEnd.toUTC().toISO()!,
     timezone,
   });
-  segments.push(...sleepSegments.map((segment) => ({
+  segments.push(...sleepCycles.map((cycle) => ({
     kind: 'sleep' as const,
-    start: segment.start,
-    end: segment.end,
-    minutes: segment.minutes,
+    start: cycle.start,
+    end: cycle.end,
+    minutes: cycle.minutes,
     title: 'Sleep',
   })));
   const warningCodes: string[] = [];
   const warnings: string[] = [];
-  if (sleepSegments.length === 0) {
+  if (sleepCycles.length === 0) {
     warningCodes.push('SLEEP_DATA_UNAVAILABLE');
     warnings.push('Sleep data is unavailable for this day.');
   }
@@ -112,7 +112,7 @@ export function buildHomeDayDial(input: {
       kind,
       minutes,
       hours: Math.round((minutes / 60) * 10) / 10,
-      ...(kind === 'sleep' && sleepSegments.length === 0 ? { unavailable: true } : {}),
+      ...(kind === 'sleep' && sleepCycles.length === 0 ? { unavailable: true } : {}),
     };
   });
 

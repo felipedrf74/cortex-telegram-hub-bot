@@ -218,6 +218,16 @@ describe('Home orchestration focus helpers', () => {
           {
             stage: 'asleepDeep',
             start: '2026-05-16T23:00:00.000Z',
+            end: '2026-05-17T02:00:00.000Z',
+          },
+          {
+            stage: 'awake',
+            start: '2026-05-17T02:00:00.000Z',
+            end: '2026-05-17T02:10:00.000Z',
+          },
+          {
+            stage: 'asleepREM',
+            start: '2026-05-17T02:10:00.000Z',
             end: '2026-05-17T06:30:00.000Z',
           },
         ],
@@ -263,12 +273,17 @@ describe('Home orchestration focus helpers', () => {
           {
             stage: 'asleepCore',
             start: '2026-05-16T23:30:00.000Z',
-            end: '2026-05-17T06:45:00.000Z',
+            end: '2026-05-17T02:00:00.000Z',
           },
           {
             stage: 'awake',
             start: '2026-05-17T02:00:00.000Z',
             end: '2026-05-17T02:05:00.000Z',
+          },
+          {
+            stage: 'asleepREM',
+            start: '2026-05-17T02:05:00.000Z',
+            end: '2026-05-17T06:45:00.000Z',
           },
         ],
       }),
