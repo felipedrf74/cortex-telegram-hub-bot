@@ -79,6 +79,29 @@ Deployment topology:
 6. Trigger a full refund and verify the credit status becomes `refunded`.
 7. Trigger a partial refund and a dispute, then verify operator alerts were created.
 
+### Staging webhook delivery via Stripe CLI
+
+`api-staging.nexushub.me` is not a public DNS target in the current staging topology, so staging webhook delivery uses Stripe CLI forwarding on `serverdominguez` instead of a Dashboard endpoint.
+
+1. Start or restart the listener on the staging host:
+
+   ```bash
+   setsid /tmp/start-stripe-listen.sh > /tmp/stripe-listen.log 2>&1 < /dev/null & disown
+   sleep 5
+   grep -oE 'whsec_[a-z0-9]+' /tmp/stripe-listen.log | head -1
+   ```
+
+2. Copy the printed `whsec_...` into the staging runtime as `STRIPE_WEBHOOK_SECRET`.
+3. Restart staging so the app picks up the new listener secret:
+
+   ```bash
+   pm2 restart nexus-hub-staging --update-env
+   ```
+
+4. Use `/tmp/stripe-webhook-post.js` for signed synthetic webhook smoke when a real hosted Checkout browser flow is not required. The helper posts to `http://localhost:8201/webhooks/stripe` and signs with the active staging `STRIPE_WEBHOOK_SECRET`.
+
+This is staging-only. Production must use a real Stripe Dashboard webhook endpoint.
+
 Useful test cards:
 
 - Success: `4242 4242 4242 4242`
@@ -96,5 +119,29 @@ Webhook behavior:
 Follow-up ticket:
 
 - `STRIPE-NP-FOLLOWUP-001`: build a reconciliation script that compares Stripe successful Nexus Points PaymentIntents/refunds/disputes with internal `nexus_point_credits` and operator alerts.
+
+## Production live-mode setup
+
+Production Stripe Nexus Points must remain disabled until the live Dashboard setup is complete and Felipe approves the first live-mode smoke.
+
+1. In Stripe Dashboard, switch to LIVE mode.
+2. Create the three live products/prices:
+   - `Nexus Points Small`, `$5 USD`, SKU `me.nexushub.points.small`.
+   - `Nexus Points Medium`, `$10 USD`, SKU `me.nexushub.points.medium`.
+   - `Nexus Points Large`, `$20 USD`, SKU `me.nexushub.points.large`.
+3. Copy the live `price_...` ids into the production secret store:
+   - `STRIPE_PRICE_ID_POINTS_SMALL`
+   - `STRIPE_PRICE_ID_POINTS_MEDIUM`
+   - `STRIPE_PRICE_ID_POINTS_LARGE`
+4. Create a live webhook endpoint:
+   - URL: `https://api.nexushub.me/webhooks/stripe`
+   - Events: `checkout.session.completed`, `checkout.session.async_payment_succeeded`, `charge.refunded`, `charge.dispute.created`, plus existing subscription events (`customer.subscription.updated`, `customer.subscription.deleted`, `invoice.payment_failed`).
+5. Copy the live `whsec_...` into production as `STRIPE_WEBHOOK_SECRET`.
+6. Confirm production `STRIPE_SECRET_KEY` is already the intended `sk_live_...` key. Do not overwrite it casually.
+7. Leave `STRIPE_NEXUS_POINTS_ENABLED=false` until:
+   - staging Stripe test-mode smoke passes,
+   - the live prices/webhook are configured,
+   - Felipe approves live-mode go.
+8. First live smoke: Felipe buys the `$5` Small package with a real card, verifies the credit appears, then refunds himself to verify the live refund path.
 
 Production should stay disabled until Felipe signs off after staging soak.

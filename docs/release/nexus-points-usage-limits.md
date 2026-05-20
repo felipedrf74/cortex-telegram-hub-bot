@@ -255,3 +255,42 @@ Completion gate status:
 - Stripe test-mode smoke is blocked until staging runtime has Stripe test `price_...` ids and webhook secret configured in Stripe Dashboard. This cannot be completed from the repo without external Stripe Dashboard setup.
 - Production promote is intentionally blocked until Stripe test-mode smoke passes. Promoting without that payment smoke would violate the payment release gate.
 - Live Stripe smoke is blocked until Felipe signs off on live-mode enablement and performs the first real $5 purchase/refund verification.
+
+## Stripe Staging Smoke Pass 2
+
+Date: 2026-05-20
+
+Implementation:
+
+- `c14951a3` fixed the portal-admin checkout body-limit asymmetry by applying the same 8KB ceiling used by website checkout.
+- `c14951a3` maps Stripe Checkout idempotency parameter conflicts to HTTP `409 IDEMPOTENCY_CONFLICT` instead of an internal `500`.
+- `767b08bd` committed the previously blocked Stripe smoke evidence file so the staging deploy ran from a clean committed tree.
+
+Local verification before staging:
+
+- `npx tsc --noEmit` passed.
+- Focused gate passed: `npx vitest run __tests__/services/stripe-nexus-points-service.test.ts __tests__/api/webhooks.test.ts __tests__/api/website-cors.test.ts __tests__/api/billing-routes.test.ts __tests__/portal/portal-user-routes.test.ts __tests__/portal/portal-admin-scope.test.ts __tests__/services/config-runtime-validation.test.ts __tests__/services/nexus-points.test.ts __tests__/services/cost-guardrail.test.ts __tests__/services/cost-validation.test.ts __tests__/security/billing-apple-notifications-jws-verify.test.ts` -> 11 files / 130 tests passed.
+- `npm run verify` passed: 614 files / 9,108 tests.
+- `STAGING=true npx tsx src/tools/chat-model-bakeoff.ts` passed with 109 fixtures / 218 bilingual turns.
+- `npx tsx src/tools/model-pricing-report.ts` passed with no unknown `api_usage` models; the local no-DB usage scan reported all registry entries as unused.
+- `npx tsx scripts/chat-cost-scenarios.ts` passed; local `data/bot.db` is absent, so it emitted the expected zero-row report.
+
+Staging verification:
+
+- `./scripts/deploy-staging.sh` passed from clean commit `767b08bd`.
+- After a five-minute soak, `./scripts/staging-smoke.sh` passed 21/21 checks; evidence: `docs/release/smoke-evidence/staging-smoke-767b08bd-20260520T215435Z.json`.
+- Stripe synthetic webhook smoke passed:
+  - Small/Medium/Large purchase webhooks created three `provider='stripe'` Nexus Point credits with correct points/USD and 30-day expiry.
+  - Duplicate `checkout.session.completed` replay granted no duplicate credit (`duplicateSmallCount=1`).
+  - Full refund on Medium set status to `refunded` and remaining points/USD to zero.
+  - Partial refund on Large left the credit active and created one `stripe_nexus_partial_refund:<chargeId>` operator alert.
+  - Dispute on Small left the credit active and created one `stripe_nexus_dispute:<disputeId>` operator alert.
+  - Non-Nexus refund/dispute events left the Stripe Nexus Points alert count unchanged.
+  - Portal 50KB body returns `413 PAYLOAD_TOO_LARGE`.
+  - Same-minute same user/package/source with different note returns `409 IDEMPOTENCY_CONFLICT`.
+
+Remaining manual gates:
+
+- Browser CSP/CORS check: open the real deployed website origin (`nexushub.me` / staging equivalent) with DevTools and exercise the Stripe checkout XHR. Confirm no CSP or CORS console errors.
+- Render-side HTML escape check: create a staging credit/alert note like `<img src=x onerror=alert(1)>`, open the portal render surface, and confirm the text is escaped and no script/event handler executes.
+- Production live-mode setup: create live Stripe prices and the live `https://api.nexushub.me/webhooks/stripe` endpoint, update production secrets, keep `STRIPE_NEXUS_POINTS_ENABLED=false` until Felipe approves live-mode go, then run the first real `$5` purchase/refund smoke.
