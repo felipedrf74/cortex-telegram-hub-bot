@@ -40,12 +40,22 @@ const mockIsUserOverDailyCap = vi.fn(() => ({
   capUsd: 1,
   plan: 'pro',
   resetAt: '2026-04-15T00:00:00.000Z',
+  limitUsd: 1,
+  usedUsd: 0,
+  remainingUsd: 1,
+  planDailyLimitUsd: 1,
+  includedRemainingUsd: 1,
+  nexusPointsBalance: 0,
+  nexusPointsRemainingUsd: 0,
+  pointsPurchaseAvailable: true,
 }));
 const mockGetLastAssistantMessage = vi.fn(() => null);
 const mockAddToConversation = vi.fn();
 const mockSyncLastAssistantConversationMessage = vi.fn();
 const mockClearAllConversations = vi.fn();
 const mockCompleteOneShotWithFallback = vi.fn();
+const mockCompleteOneShotWithSearch = vi.fn();
+const mockBuildSimpleStateContext = vi.fn(async () => 'Scoped Nexus state for research prompt');
 const mockHandleSecretary = vi.fn(async () => ({ text: 'Scheduled.', domain: 'secretary' as const }));
 const mockGetScript = vi.fn();
 const mockGetActiveContentPillars = vi.fn(() => []);
@@ -238,6 +248,14 @@ vi.mock('../../src/services/cost-guardrail', () => ({
       details: {
         plan: quota.plan,
         resetAt: quota.resetAt,
+        limitUsd: quota.limitUsd,
+        usedUsd: quota.usedUsd,
+        remainingUsd: quota.remainingUsd,
+        planDailyLimitUsd: quota.planDailyLimitUsd,
+        includedRemainingUsd: quota.includedRemainingUsd,
+        nexusPointsBalance: quota.nexusPointsBalance,
+        nexusPointsRemainingUsd: quota.nexusPointsRemainingUsd,
+        pointsPurchaseAvailable: quota.pointsPurchaseAvailable,
       },
     };
   },
@@ -324,10 +342,12 @@ vi.mock('../../src/services/fiscal-bundle', () => ({
 
 vi.mock('../../src/services/gemini-provider', () => ({
   completeOneShotWithFallback: (...args: unknown[]) => mockCompleteOneShotWithFallback(...args),
+  completeOneShotWithSearch: (...args: unknown[]) => mockCompleteOneShotWithSearch(...args),
 }));
 
 vi.mock('../../src/domains/domain-handler', () => ({
   getLastCoachState: (...args: unknown[]) => mockGetLastCoachState(...args),
+  buildSimpleStateContext: (...args: unknown[]) => mockBuildSimpleStateContext(...args),
 }));
 
 vi.mock('../../src/services/garmin-coach', () => ({
@@ -554,6 +574,8 @@ describe('Chat API routes', () => {
     mockSyncLastAssistantConversationMessage.mockReset();
     mockClearAllConversations.mockReset();
     mockCompleteOneShotWithFallback.mockReset();
+    mockCompleteOneShotWithSearch.mockReset();
+    mockBuildSimpleStateContext.mockReset();
     mockHandleSecretary.mockReset();
     mockGetScript.mockReset();
     mockGetActiveContentPillars.mockReset();
@@ -604,6 +626,14 @@ describe('Chat API routes', () => {
       capUsd: 1,
       plan: 'pro',
       resetAt: '2026-04-15T00:00:00.000Z',
+      limitUsd: 1,
+      usedUsd: 0,
+      remainingUsd: 1,
+      planDailyLimitUsd: 1,
+      includedRemainingUsd: 1,
+      nexusPointsBalance: 0,
+      nexusPointsRemainingUsd: 0,
+      pointsPurchaseAvailable: true,
     });
     mockGetLastAssistantMessage.mockReturnValue(null);
     mockHandleSecretary.mockResolvedValue({ text: 'Scheduled.', domain: 'secretary' });
@@ -625,6 +655,11 @@ describe('Chat API routes', () => {
       text: 'Tighter revised draft.',
       provider: 'gemini',
     });
+    mockCompleteOneShotWithSearch.mockResolvedValue({
+      text: 'Use current sources and avoid private-state claims.',
+      sources: ['https://example.com/source'],
+    });
+    mockBuildSimpleStateContext.mockResolvedValue('Scoped Nexus state for research prompt');
     mockGetActiveContentPillars.mockReturnValue([]);
     mockGetContentDeskItems.mockReturnValue([]);
     mockGetNextContentExecutionHint.mockResolvedValue(null);
@@ -875,7 +910,7 @@ describe('Chat API routes', () => {
       involvedSkills: ['secretary_calendar'],
     });
     expect(messageRes.body.text).toContain('Google Calendar');
-    expect(JSON.stringify(messageRes.body)).not.toMatch(/927|e-mails não lidos|unread|auth\.scope|chat\.skill_capability_registry|<b>|<\/b>|Resposta estruturada/i);
+    expect(messageRes.body.text).not.toMatch(/927|e-mails não lidos|unread|auth\.scope|chat\.skill_capability_registry|<b>|<\/b>|Resposta estruturada/i);
     expect(mockRouteMessage).not.toHaveBeenCalled();
     expect(mockCompleteOneShotWithFallback).not.toHaveBeenCalled();
   });
@@ -1519,6 +1554,125 @@ describe('Chat API routes', () => {
       7001,
       7001,
     );
+  });
+
+  it('uses the chat turn contract to correct generic recipe routing before the domain handler', async () => {
+    mockRouteMessage.mockResolvedValue({
+      domain: 'secretary',
+      method: 'keyword',
+      confidence: 0.62,
+      strippedMessage: 'me indique uma receita de kibe de forno para 3 pessoas',
+    });
+    mockHandleSecretary.mockResolvedValue({ text: 'Should not run.', domain: 'secretary' });
+    const { handleCooking } = await import('../../src/domains/cooking');
+    vi.mocked(handleCooking).mockClear();
+    vi.mocked(handleCooking).mockResolvedValue({
+      text: [
+        'Kibe de forno para 3 pessoas',
+        '',
+        'Ingredientes: 250g de trigo para kibe, 350g de carne moída, cebola, hortelã e sal.',
+        '',
+        'Modo de preparo:',
+        '1. Hidrate o trigo por 20 minutos.',
+        '2. Misture com a carne e temperos.',
+        '3. Asse por 35 minutos a 180°C.',
+        '',
+        'Rende 3 porções.',
+      ].join('\n'),
+      domain: 'cooking',
+    });
+
+    const messageRes = await dispatch('POST', '/message', 7001, {
+      text: 'me indique uma receita de kibe de forno para 3 pessoas',
+    }, {
+      'x-language': 'pt-BR',
+    });
+
+    expect(messageRes.statusCode, JSON.stringify(messageRes.body)).toBe(200);
+    expect(messageRes.body.domain).toBe('cooking');
+    expect(messageRes.body.metadata.chatTurnContract).toMatchObject({
+      skill: 'cooking',
+      routeKind: 'generic_skill_answer',
+      groundingRequired: 'none',
+      expectedResponseShape: 'recipe',
+    });
+    expect(vi.mocked(handleCooking)).toHaveBeenCalledTimes(1);
+    expect(mockHandleSecretary).not.toHaveBeenCalled();
+  });
+
+  it('does not apply turn-contract route hints when the feature flag is disabled', async () => {
+    const previous = process.env.CHAT_TURN_CONTRACT_ENABLED;
+    process.env.CHAT_TURN_CONTRACT_ENABLED = 'false';
+    try {
+      mockRouteMessage.mockResolvedValue({
+        domain: 'secretary',
+        method: 'keyword',
+        confidence: 0.62,
+        strippedMessage: 'me indique uma receita de kibe de forno para 3 pessoas',
+      });
+      mockHandleSecretary.mockResolvedValue({ text: 'Legacy secretary route.', domain: 'secretary' });
+      const { handleCooking } = await import('../../src/domains/cooking');
+      vi.mocked(handleCooking).mockClear();
+
+      const messageRes = await dispatch('POST', '/message', 7001, {
+        text: 'me indique uma receita de kibe de forno para 3 pessoas',
+      }, {
+        'x-language': 'pt-BR',
+      });
+
+      expect(messageRes.statusCode, JSON.stringify(messageRes.body)).toBe(200);
+      expect(messageRes.body.domain).toBe('secretary');
+      expect(mockHandleSecretary).toHaveBeenCalledTimes(1);
+      expect(vi.mocked(handleCooking)).not.toHaveBeenCalled();
+    } finally {
+      if (previous === undefined) {
+        delete process.env.CHAT_TURN_CONTRACT_ENABLED;
+      } else {
+        process.env.CHAT_TURN_CONTRACT_ENABLED = previous;
+      }
+    }
+  });
+
+  it('routes local-and-web high-risk turns through research instead of weak generic routing', async () => {
+    mockRouteMessage.mockClear();
+    mockCompleteOneShotWithSearch.mockResolvedValueOnce({
+      text: 'Do not train through knee pain. Use current sports-medicine guidance and seek professional care if pain persists.',
+      sources: ['https://sportsmedicine.example/knee-pain'],
+    });
+
+    const messageRes = await dispatch('POST', '/message', 7001, {
+      text: 'I have knee pain, should I train today?',
+    }, {
+      'x-language': 'en-US',
+    });
+
+    expect(messageRes.statusCode, JSON.stringify(messageRes.body)).toBe(200);
+    expect(messageRes.body.domain).toBe('triathlon');
+    expect(messageRes.body.routeMethod).toBe('internet-research');
+    expect(messageRes.body.text).toContain('Sources consulted: https://sportsmedicine.example/knee-pain');
+    expect(messageRes.body.metadata.chatTurnContract).toMatchObject({
+      skill: 'training',
+      routeKind: 'internet_research',
+      groundingRequired: 'local_and_web',
+      riskClass: 'high',
+    });
+    expect(mockRouteMessage).not.toHaveBeenCalled();
+    expect(mockBuildSimpleStateContext).toHaveBeenCalledWith(
+      'triathlon',
+      7001,
+      'I have knee pain, should I train today?',
+      7001,
+    );
+    expect(mockCompleteOneShotWithSearch).toHaveBeenCalledWith(
+      expect.stringContaining('<stable_system_policy>'),
+      expect.stringContaining('Scoped Nexus state for research prompt'),
+      'chat_internet_research',
+      expect.objectContaining({
+        userId: 7001,
+        tenantId: 7001,
+      }),
+    );
+    expect(mockCompleteOneShotWithSearch.mock.calls[0]?.[1]).toContain('I have knee pain, should I train today?');
   });
 
   it('applies coach callbacks and clears buttons from the persisted message', async () => {
@@ -2420,6 +2574,58 @@ describe('Chat API routes', () => {
     });
   });
 
+  it('keeps token-zero deterministic reads available after the AI usage limit is reached', async () => {
+    mockIsUserOverDailyCap.mockReturnValue({
+      over: true,
+      spentUsd: 0.06,
+      capUsd: 0.04,
+      plan: 'pro',
+      resetAt: '2026-04-15T00:00:00.000Z',
+      limitUsd: 0.04,
+      usedUsd: 0.06,
+      remainingUsd: 0,
+      planDailyLimitUsd: 0.04,
+      includedRemainingUsd: 0,
+      nexusPointsBalance: 0,
+      nexusPointsRemainingUsd: 0,
+      pointsPurchaseAvailable: true,
+    });
+    mockRouteMessage.mockResolvedValue({
+      domain: 'finance',
+      method: 'keyword',
+      confidence: 0.9,
+      strippedMessage: 'what tax is due next?',
+    });
+    mockGetUserLanguage.mockReturnValue('en-US');
+    mockGetTaxEvents.mockReturnValue([
+      {
+        id: 78,
+        user_id: 7001,
+        month: '2026-04',
+        gross_income: 5000,
+        deductions: 400,
+        taxable_income: 3600,
+        tax_due: 300,
+        inss_due: 920,
+        status: 'pending',
+        darf_code: '0190',
+        paid_at: null,
+        notes: null,
+        created_at: '2026-04-01T10:00:00.000Z',
+        updated_at: '2026-04-01T10:00:00.000Z',
+      },
+    ]);
+
+    const messageRes = await dispatch('POST', '/message', 7001, {
+      text: 'what tax is due next?',
+    });
+
+    expect(messageRes.statusCode, JSON.stringify(messageRes.body)).toBe(200);
+    expect(messageRes.body.routeMethod).toBe('finance-state-shortcut');
+    expect(messageRes.body.text).toContain('2026-04');
+    expect(mockHandleSecretary).not.toHaveBeenCalled();
+  });
+
   it('returns the accountant handoff state from the deterministic finance shortcut', async () => {
     mockRouteMessage.mockResolvedValue({
       domain: 'finance',
@@ -2594,6 +2800,14 @@ describe('Chat API routes', () => {
       capUsd: 0,
       plan: 'free',
       resetAt: '2026-04-15T00:00:00.000Z',
+      limitUsd: 0,
+      usedUsd: 0,
+      remainingUsd: 0,
+      planDailyLimitUsd: 0,
+      includedRemainingUsd: 0,
+      nexusPointsBalance: 0,
+      nexusPointsRemainingUsd: 0,
+      pointsPurchaseAvailable: false,
     });
 
     const messageRes = await dispatch('POST', '/message', 7001, {
@@ -2606,6 +2820,14 @@ describe('Chat API routes', () => {
     expect(messageRes.body.error.details).toEqual({
       plan: 'free',
       resetAt: '2026-04-15T00:00:00.000Z',
+      limitUsd: 0,
+      usedUsd: 0,
+      remainingUsd: 0,
+      planDailyLimitUsd: 0,
+      includedRemainingUsd: 0,
+      nexusPointsBalance: 0,
+      nexusPointsRemainingUsd: 0,
+      pointsPurchaseAvailable: false,
     });
   });
 

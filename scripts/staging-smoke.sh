@@ -387,6 +387,82 @@ if [ "$DOMAIN_PROBES_ENABLED" = "1" ] && [ -x "$LOCAL_DIR/scripts/changed-area-c
   fi
 fi
 
+# Cloudflare edge contract. This is opt-in until the dashboard WAF rule exists:
+# it must allow AI/monitor user-agents to /public-status, while keeping the
+# same user-agents blocked everywhere else.
+EDGE_VERIFY_ENABLED="${NEXUS_SMOKE_EDGE_VERIFY:-0}"
+# Default to the production API hostname because that is the public surface
+# external AI fetchers hit today. If/when api-staging.nexushub.me has a live
+# DNS route and matching WAF exception, override with NEXUS_SMOKE_EDGE_HOST.
+EDGE_HOST="${NEXUS_SMOKE_EDGE_HOST:-https://api.nexushub.me}"
+
+test_edge_status_ok() {
+  local name="$1"
+  local url="$2"
+  local ua="$3"
+  local http_code body body_file
+  body_file="$(mktemp)"
+  http_code=$(curl -s -A "$ua" -o "$body_file" -w '%{http_code}' --max-time 15 "$url" 2>/dev/null || echo "000")
+  body=$(cat "$body_file" 2>/dev/null || echo "")
+  rm -f "$body_file"
+
+  if [ "$http_code" != "200" ]; then
+    echo "  ❌ $name — expected 200, got $http_code (WAF allowlist missing or wrong scope)"
+    FAIL=$((FAIL + 1))
+    FAILED_TESTS+=("$name (http $http_code)")
+    evidence_record "$name" "failed" "http_code=$http_code expected=200 ua=$ua"
+    [ "$VERBOSE" = true ] && echo "     Body: $(echo "$body" | head -c 200)"
+    return 1
+  fi
+
+  if echo "$body" | grep -q '"status":"ok"'; then
+    echo "  ✅ $name — 200 with status=ok"
+    PASS=$((PASS + 1))
+    evidence_record "$name" "passed" "http_code=200 ua=$ua"
+  else
+    echo "  ❌ $name — 200 but wrong body shape (expected {\"status\":\"ok\",...})"
+    FAIL=$((FAIL + 1))
+    FAILED_TESTS+=("$name (shape)")
+    evidence_record "$name" "failed" "body_shape ua=$ua"
+    [ "$VERBOSE" = true ] && echo "     Body: $(echo "$body" | head -c 200)"
+  fi
+}
+
+test_edge_blocked() {
+  local name="$1"
+  local url="$2"
+  local ua="$3"
+  local http_code
+  http_code=$(curl -s -A "$ua" -o /dev/null -w '%{http_code}' --max-time 15 "$url" 2>/dev/null || echo "000")
+
+  if [ "$http_code" = "200" ]; then
+    echo "  ❌ $name — got 200, expected block; WAF allowlist is too broad"
+    FAIL=$((FAIL + 1))
+    FAILED_TESTS+=("$name (allowlist too broad)")
+    evidence_record "$name" "failed" "http_code=200 ua=$ua scope=too_broad"
+  else
+    echo "  ✅ $name — blocked at edge (http $http_code), allowlist is scoped"
+    PASS=$((PASS + 1))
+    evidence_record "$name" "passed" "http_code=$http_code ua=$ua scope=correct"
+  fi
+}
+
+if [ "$EDGE_VERIFY_ENABLED" = "1" ]; then
+  echo ""
+  echo "🛡  Cloudflare edge contract"
+  test_edge_status_ok "edge: ClaudeBot UA -> /public-status (allowed)" \
+    "$EDGE_HOST/public-status" "ClaudeBot/1.0 (+https://www.anthropic.com)"
+  test_edge_status_ok "edge: UptimeRobot UA -> /public-status (allowed)" \
+    "$EDGE_HOST/public-status" "Mozilla/5.0+(compatible; UptimeRobot/2.0)"
+  test_edge_blocked "edge: ClaudeBot UA -> /health (must stay blocked)" \
+    "$EDGE_HOST/health" "ClaudeBot/1.0 (+https://www.anthropic.com)"
+else
+  echo ""
+  echo "🛡  Cloudflare edge contract — skipped (set NEXUS_SMOKE_EDGE_VERIFY=1 to enable)"
+  echo "    Enable after the WAF allowlist rule is configured in the Cloudflare dashboard."
+  echo "    See: docs/runbooks/cloudflared-tunnel.md -> Edge Protection And AI Crawler Policy"
+fi
+
 # ── Smoke-evidence JSON ───────────────────────────────
 # Write a JSON file recording: branch, SHA, timestamps, per-check results.
 # Audits and `promote-to-prod.sh` can read this instead of re-running the

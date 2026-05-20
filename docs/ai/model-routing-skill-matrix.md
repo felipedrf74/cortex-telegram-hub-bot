@@ -1,10 +1,10 @@
 # Model Routing Skill Matrix
 
-Generated: 2026-04-29 02:05 WEST
+Generated: 2026-05-19
 
 ## Summary Matrix
 
-Live env note: staging and production currently set `AI_CHAT_FALLBACK=anthropic` and `AI_TOOL_USE_FALLBACK=anthropic`, while `ANTHROPIC_ENABLED` was not present in the non-secret env grep. The provider registry skips Anthropic when gated off, so effective fallback should resolve to the next usable provider, typically OpenAI. Classifier-specific env vars were not present, so classifier uses code defaults.
+Live env note: the older staging/production env grep set `AI_CHAT_FALLBACK=anthropic` and `AI_TOOL_USE_FALLBACK=anthropic`, while `ANTHROPIC_ENABLED` was not present. The provider registry skips Anthropic when gated off. Current code defaults generic chat to OpenAI -> Gemini and keeps classifier/tool-use Gemini -> OpenAI unless env overrides are present.
 
 | Area | Primary path | Default provider behavior | Model selection | Notes |
 | --- | --- | --- | --- | --- |
@@ -12,20 +12,28 @@ Live env note: staging and production currently set `AI_CHAT_FALLBACK=anthropic`
 | General Chat domain handling | `domains/domain-handler.ts` | Active `TaskRoutingProvider` | `getModelRouting` plus model-config overrides | Persists conversation after final domain response. |
 | Secretary | `domains/secretary.ts` | OpenAI -> Gemini through domain-specific pair | Chat tier by default | Direct Anthropic fallback only if routing provider unavailable and Anthropic gate enabled. |
 | Training/Triathlon | `domains/domain-handler.ts`, legacy `services/plan-generator.ts` | Gemini -> OpenAI in default task state | Classifier tier unless overridden; Anthropic direct path in legacy generator | Training context is injected into Anthropic direct call path and provider-backed domain calls through shared context. |
-| Content Creation | Chat domain, shortcuts, content engine | Gemini -> OpenAI for Chat; Gemini Search -> Anthropic gated for discovery; TS proxy for Python engine | Classifier tier for domain calls unless overridden | Content shortcuts can bypass domain routing for deterministic REST responses. |
+| Content Creation | Chat domain, shortcuts, content engine | Gemini -> OpenAI for Chat domains; Gemini Search -> Anthropic gated for discovery; TS proxy for Python engine | Classifier tier for domain calls unless overridden | Content shortcuts can bypass domain routing for deterministic REST responses. |
 | Finance | Chat domain, image/invoice tools | Gemini -> OpenAI for domain; vision paths vary | Classifier tier unless overridden | Invoice analysis currently tries Anthropic first before fallback helper. |
-| Cooking | Chat domain | Gemini -> OpenAI in default task state | Classifier tier unless overridden | No cooking-specific provider override found beyond domain provider router. |
+| Cooking | Chat domain | Gemini -> OpenAI through domain provider router | Classifier tier unless overridden | Cooking recipes are nano candidates behind quality gates and domain experiment overrides. |
 | Tool continuations | `TaskRoutingProvider.continueWithToolResults` | Same resolved pair as initial domain call | Same optimization decision recomputed | Critical for stable tools/history across providers. |
 | Vision/image classification | `classifyAndExtractImage` | Gemini vision -> OpenAI vision -> Anthropic gated; GIF direct Anthropic | Vision helper options | Provider fallback does not use task router. |
 | Python content engine | `/api/v1/internal/ai-complete` | Gemini -> OpenAI -> Anthropic gated | One-shot helper options | `claude_client.py` name is compatibility-only. |
 | Streaming | `OpenAIProvider.streamDomain` | OpenAI-only | OpenAI model | Not part of central fallback/circuit breaker layer. |
+
+Live chat surfaces that enter this matrix:
+
+- iOS REST Chat: `src/api/routes/chat-message-routes.ts`
+- Telegram text Chat: `src/handlers/message.ts`
+- WebSocket Chat: `src/api/websocket.ts`
+
+All three surfaces now infer a chat turn contract before domain execution. The contract may correct weak generic routing, but it must not downgrade action, destructive, high-risk, or local-read flows. Selective web research is allowed only when the contract requires web/current information; `local_and_web` turns must carry scoped local state into the research prompt.
 
 ## Task Type Matrix
 
 | Task type | Resolving function | Default primary | Default fallback | Anthropic path |
 | --- | --- | --- | --- | --- |
 | classify | `config.providerRouting.classify`; main Chat uses one-shot wrapper | Gemini | OpenAI | Only if thunk supplied and `ANTHROPIC_ENABLED=true`. |
-| chat | `resolveTaskType(domain)` for non-tool domains | Gemini | OpenAI | Only if env/operator routing points to Anthropic and gate is enabled, or via guarded direct fallback. |
+| chat | `resolveTaskType(domain)` for non-tool domains | OpenAI | Gemini | Domain provider routing keeps Content/Finance/Cooking on Gemini-first baselines unless overridden. |
 | tool-use | `resolveTaskType(secretary|triathlon)` | Gemini | OpenAI | Same as chat; Secretary domain overrides to OpenAI -> Gemini. |
 | tool continuation | Same as initial domain call | Same resolved pair as initial route | Same resolved pair fallback | Same constraints as initial call. |
 | vision/image | Vision helper, not task router | Gemini for common images | OpenAI | Anthropic gated fallback; GIF may go direct Anthropic. |
@@ -35,10 +43,10 @@ Live env note: staging and production currently set `AI_CHAT_FALLBACK=anthropic`
 | Domain | Task type | Domain provider router default | Effective default cascade | Model tier default | Important caveat |
 | --- | --- | --- | --- | --- | --- |
 | Secretary | tool-use | OpenAI primary, Gemini fallback | OpenAI -> Gemini | Chat tier | `GEMINI_INCLUDE_SECRETARY=true` means keep Secretary on OpenAI, despite the flag name. |
-| Triathlon/Training | tool-use | Gemini primary, Anthropic fallback map | Gemini -> OpenAI | Classifier tier | Domain fallback map is not used when domain primary equals task primary. |
-| Content | chat | Gemini primary, Anthropic fallback map | Gemini -> OpenAI | Classifier tier | Content discovery and content-engine have separate one-shot/proxy paths. |
-| Finance | chat | Gemini primary, Anthropic fallback map | Gemini -> OpenAI | Classifier tier | Invoice vision path does not follow this domain matrix. |
-| Cooking | chat | Gemini primary, Anthropic fallback map | Gemini -> OpenAI | Classifier tier | Domain-level model override still available. |
+| Triathlon/Training | tool-use | Gemini primary, OpenAI fallback | Gemini -> OpenAI | Classifier tier | Keep Gemini baseline until safe-coaching eval proves a nano/mini split. |
+| Content | chat | Gemini primary, OpenAI fallback | Gemini -> OpenAI | Classifier tier | Content discovery and content-engine have separate one-shot/proxy paths. |
+| Finance | chat | Gemini primary, OpenAI fallback | Gemini -> OpenAI | Classifier tier | Invoice vision path does not follow this domain matrix. |
+| Cooking | chat | Gemini primary, OpenAI fallback | Gemini -> OpenAI | Classifier tier | Domain-level experiment override can canary recipes to OpenAI nano. |
 
 ## Skill Call Site Notes
 
@@ -54,7 +62,7 @@ Live env note: staging and production currently set `AI_CHAT_FALLBACK=anthropic`
 
 - Domain Chat path is provider-routed.
 - `resolveTaskType('triathlon')` maps to `tool-use`.
-- Default provider cascade is Gemini -> OpenAI unless task routing env changes.
+- Default provider cascade is Gemini -> OpenAI for Training/Triathlon because domain provider routing overrides the generic OpenAI-first chat task default.
 - Legacy `services/plan-generator.ts` imports direct `callDomain` from `anthropic.ts`; that path is still guarded by the Anthropic runtime gate and bypasses `TaskRoutingProvider`.
 - Training-specific deterministic coach engine work is separate from Chat provider routing.
 
@@ -75,7 +83,7 @@ Live env note: staging and production currently set `AI_CHAT_FALLBACK=anthropic`
 ### Cooking
 
 - Domain Chat path is provider-routed.
-- Default provider cascade is Gemini -> OpenAI.
+- Default provider cascade is Gemini -> OpenAI for Cooking because domain provider routing overrides the generic OpenAI-first chat task default.
 - No separate cooking one-shot provider path was found in this audit.
 
 ### Chat/classifier
@@ -83,6 +91,8 @@ Live env note: staging and production currently set `AI_CHAT_FALLBACK=anthropic`
 - Active context is included in classifier input.
 - Low-confidence classifier results preserve active conversation domain.
 - The classifier path does not use `TaskRoutingProvider.classify`, but it still uses the Gemini/OpenAI/Anthropic-gated fallback helper.
+- Unrouted/dynamic Chat domains use the task-level `providerRouting.chat` pair. Known in-app domains use the domain provider router matrix above.
+- Contract and context metadata are exposed for audit/eval, but portal dashboards should not treat `cacheablePrefixHash` as proof of provider prompt-cache savings.
 
 ## Operator Override Matrix
 

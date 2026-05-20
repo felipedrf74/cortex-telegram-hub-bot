@@ -1,15 +1,15 @@
 # Model Routing Current State
 
-Generated: 2026-04-29 02:05 WEST  
-Audited branch: `feature/chat-tenant-secure-routing-intelligence` at base commit `a3f1b78`
+Generated: 2026-05-19
+Audited branch: `codex/chat-reliability`
 
 ## Executive Summary
 
 Nexus does not have a fixed production Chat model. The runtime has a configurable provider-routing stack with task-type defaults, domain-level provider routing, provider/model overrides, environment flags, portal/operator controls, circuit breakers, and fallback gates.
 
-Current code defaults are Gemini-first for the generic task routes, with OpenAI as the default fallback and Anthropic reachable only when explicitly configured and enabled. Domain routing then overlays domain-specific provider choices, most notably Secretary on OpenAI by default and non-Secretary skill domains on Gemini by default.
+Current code defaults are mixed by task fit: classifier and tool-use are Gemini-first, while generic direct chat is OpenAI-first (`gpt-5.4-nano`) with Gemini fallback. Anthropic is reachable only when explicitly configured and enabled. Domain routing then overlays domain-specific provider choices, most notably Secretary on OpenAI by default and non-Secretary skill domains on Gemini by default.
 
-This audit changed no routing behavior. It documents the current architecture so future Chat work preserves provider agnosticism instead of hardcoding GPT, Gemini, Claude, or any single provider.
+This audit documents the current architecture so future Chat work preserves provider agnosticism instead of hardcoding GPT, Gemini, Claude, or any single provider.
 
 ## Live Environment Snapshot
 
@@ -33,7 +33,7 @@ Important interpretation:
    - Defines task-type routing defaults for `classify`, `chat`, and `toolUse`.
    - Defaults:
      - classify: `gemini -> openai`
-     - chat: `gemini -> openai`
+    - chat: `openai -> gemini`
      - toolUse: `gemini -> openai`
    - Environment overrides:
      - `AI_CLASSIFY_PRIMARY`, `AI_CLASSIFY_FALLBACK`
@@ -59,10 +59,10 @@ Important interpretation:
    - Defines skill-domain provider routing.
    - Defaults:
      - Secretary: OpenAI primary, Gemini fallback
-     - Triathlon/Training: Gemini primary
-     - Content: Gemini primary
-     - Finance: Gemini primary
-     - Cooking: Gemini primary
+     - Triathlon/Training: Gemini primary, OpenAI fallback
+     - Content: Gemini primary, OpenAI fallback
+     - Finance: Gemini primary, OpenAI fallback
+     - Cooking: Gemini primary, OpenAI fallback
    - Feature flags and persisted operator settings can disable Gemini routing or narrow allowed Gemini domains.
 
 5. `src/services/model-config.ts`
@@ -73,7 +73,12 @@ Important interpretation:
      - `config.ts` default
    - Persists overrides in `kv_store` as `model_override:${provider}:${role}`.
 
-6. `src/services/ai-provider.ts`
+6. `src/services/model-pricing.ts`
+   - Central source of truth for provider/model input, output, cache-read, cache-write, and Batch discount prices.
+   - Provider usage logging, the internal Python usage report endpoint, Chat action planner estimates, bake-off reports, and cost scenarios read from this registry.
+   - Unknown production model names are not silently priced as another model. They are recorded as unresolved rows, charged at the Sonnet-4.6 sentinel ceiling rate, and alert ops until pricing is added.
+
+7. `src/services/ai-provider.ts`
    - Defines the provider-agnostic interface.
    - Resolves model tier for domain calls.
    - Secretary uses chat-tier models by default.
@@ -86,11 +91,11 @@ The effective default cascade depends on route type and whether the domain provi
 | Route | Default cascade | Notes |
 | --- | --- | --- |
 | Task `classify` | Gemini -> OpenAI | Main Chat classifier uses a one-shot Gemini/OpenAI/Anthropic-gated wrapper rather than `TaskRoutingProvider.classify`. |
-| Task `chat` | Code default: Gemini -> OpenAI. Live env requests Gemini -> Anthropic, but Anthropic is skipped unless enabled, so effective fallback should resolve to OpenAI when configured. | Used for non-tool domain calls unless a domain-specific primary differs. |
-| Task `toolUse` | Code default: Gemini -> OpenAI. Live env requests Gemini -> Anthropic, with the same Anthropic-gate caveat. | Used for Secretary and Triathlon/Training task type unless domain routing overrides it. |
+| Task `chat` | Code default: OpenAI -> Gemini. Live env may still request Gemini -> Anthropic, but Anthropic is skipped unless enabled, so effective fallback should resolve to another usable provider when configured. | Used for non-tool domain calls unless a domain-specific primary differs. |
+| Task `toolUse` | Code default: Gemini -> OpenAI. Live env may still request Gemini -> Anthropic, with the same Anthropic-gate caveat. | Used for Secretary and Triathlon/Training task type unless domain routing overrides it. |
 | Secretary domain | OpenAI -> Gemini | Domain primary differs from task primary, so the domain-specific pair is used. |
-| Triathlon/Training domain | Gemini -> OpenAI in the default state | Domain primary equals task primary, so the task fallback is used; the domain fallback map to Anthropic does not apply unless task routing changes. |
-| Content/Finance/Cooking domains | Gemini -> OpenAI in the default state | Same nuance as Triathlon/Training. |
+| Triathlon/Training domain | Gemini -> OpenAI | Domain routing keeps Training Gemini-first while preserving OpenAI fallback. |
+| Content/Finance/Cooking domains | Gemini -> OpenAI | Domain routing keeps these baseline domains Gemini-first despite generic chat defaulting to OpenAI. |
 | One-shot helpers | Gemini -> OpenAI -> Anthropic gated | Uses `completeOneShotWithFallback`; Anthropic thunk executes only if enabled. |
 | Vision helper | Gemini -> OpenAI -> Anthropic gated | Uses `completeVisionOneShotWithFallback` for most image paths. |
 | Content discovery with web search | Gemini Search -> Anthropic gated | Uses Gemini Google Search grounding first; falls back to Anthropic web search. |
@@ -114,13 +119,13 @@ Actual classifier behavior:
 
 Generic non-tool domain calls use the active `TaskRoutingProvider` and `resolveTaskType(domain)`. Domains other than Secretary and Triathlon/Training resolve to `chat`.
 
-Default task cascade: Gemini -> OpenAI.
+Default task cascade: OpenAI -> Gemini. Domain-specific routing keeps Content/Finance/Cooking on Gemini-first baselines unless an operator or experiment override changes them. Unrouted or dynamic Chat domains now fall back to the task-level `providerRouting.chat` pair instead of inheriting a hardcoded domain route.
 
 ### toolUse
 
 Secretary and Triathlon/Training resolve to `tool-use`.
 
-Default task cascade: Gemini -> OpenAI, but Secretary has a domain-specific OpenAI -> Gemini pair. `TaskRoutingProvider` computes Secretary optimization once, before provider selection, and passes filtered tools/model tier/history slicing to whichever provider executes.
+Default task cascade: Gemini -> OpenAI, but Secretary has a domain-specific OpenAI -> Gemini pair. Triathlon keeps the Gemini -> OpenAI default unless an operator override changes it. `TaskRoutingProvider` computes Secretary optimization once, before provider selection, and passes filtered tools/model tier/history slicing to whichever provider executes.
 
 ### tool continuation
 
@@ -196,6 +201,13 @@ Quality risks remain:
 - Some direct one-shot helpers do not carry full Chat history. That is acceptable for focused tasks but should not be used as a substitute for multi-turn Chat domain handling.
 - `AIProvider.callDomain` and `continueWithToolResults` do not currently accept tenant ID, and provider usage logging is inconsistent about user ID. This does not by itself leak prompt context, but it weakens auditability and future tenant-aware cost controls.
 
+Current chat-reliability branch coverage:
+
+- iOS REST Chat (`src/api/routes/chat-message-routes.ts`) infers a chat turn contract before domain execution and uses it for route hints, destructive/high-risk guardrails, selective internet research, and local-and-web context assembly.
+- Telegram text Chat (`src/handlers/message.ts`) runs the same contract/orchestration layer before dispatching to domain handlers. Destructive turns are blocked before model/tool execution.
+- WebSocket Chat (`src/api/websocket.ts`) now runs the same contract/orchestration layer before streaming a domain response. Selective internet research streams a deterministic answer and destructive turns are refused before handler execution.
+- Domain handler context inclusion still uses the contract only to decide whether scoped state is required. The full response contract is assembled at the API/chat surface.
+
 ## Internal AI Completion And Python Content Engine
 
 The Python content engine module `content-engine/services/claude_client.py` is now a compatibility wrapper. It calls the TypeScript backend endpoint:
@@ -224,9 +236,9 @@ These paths still have provider-aware fallback behavior, but they do not use `Ta
 
 - `classifyWithClaude` is a historical name; it now routes through Gemini/OpenAI/Anthropic-gated fallback.
 - `content-engine/services/claude_client.py` is a compatibility filename; it calls the TS provider proxy.
-- Domain-router comments mention `Gemini 3 Flash` and Anthropic fallback broadly, but current defaults are `gemini-2.5-flash` and task fallbacks default to OpenAI.
+- Historical Domain-router comments used to mention `Gemini 3 Flash`; current executable defaults are `gemini-2.5-flash`, `gemini-2.5-flash-lite`, and `gpt-5.4-nano`.
 - `GEMINI_INCLUDE_SECRETARY` is semantically misleading. In current code, true keeps Secretary on OpenAI; false sends Secretary toward Anthropic as an emergency path.
-- `MODEL_OPTIONS.openai.chat` does not include the `config.ts` default `gpt-5.4-nano`; the classifier options include `gpt-5-nano` but not `gpt-5.4-nano`.
+- `MODEL_OPTIONS.openai.chat` and classifier options now expose `gpt-5.4-nano`; keep this list in sync with `src/config.ts`.
 - Portal `/api/model-intelligence` hardcodes copy saying Secretary is currently on GPT-5.4 nano and queries `category = 'secretary'`, but actual category names include provider/domain variants such as `openai_domain_secretary` and `domain_secretary`.
 
 ## Observability
@@ -239,6 +251,8 @@ What exists:
 - Portal `/api/provider-stats` and `/api/model-intelligence` surfaces.
 - `api_usage` rows with category, provider, model, token counts, cost, duration, and user ID when provided.
 - Telemetry events for provider calls.
+- Chat responses can persist `chatTurnContract`, `contextCompiler`, route kind, grounding, risk, and research metadata.
+- `cacheablePrefixHash` is emitted by the context compiler for prompt-cache observability and future cache-key validation.
 
 Gaps:
 
@@ -247,6 +261,8 @@ Gaps:
 - Tool continuation calls through Gemini/OpenAI also generally log `user_id=0`.
 - Streaming is OpenAI-only and not represented in the central task-routing fallback layer.
 - There is no single request trace joining Chat request ID, provider choice, model, fallback path, tool calls, cost, latency, tenant, and final response.
+- `cacheablePrefixHash` is not consumed by Gemini/OpenAI SDK calls yet, so prompt-caching savings remain theoretical until provider-specific cache primitives are wired and measured.
+- Bilingual fixture token ceilings are enforced by eval/bake-off tests, not by live prompt compilation.
 
 ## Security And Tenant Notes
 

@@ -135,8 +135,22 @@ describe('portal static routes', () => {
     expect(payload.body).toBe('<html>user login</html>');
     expect(payload.headers['Cache-Control']).toBe('no-cache, no-store, must-revalidate');
     expect(payload.headers['Content-Security-Policy']).toContain("connect-src 'self'");
+    expect(payload.headers['Content-Security-Policy']).toContain('https://api.nexushub.me');
+    expect(payload.headers['Content-Security-Policy']).toContain('https://*.nexushub-landing.pages.dev');
     expect(payload.headers['Content-Security-Policy']).toContain("frame-ancestors 'none'");
     expect(JSON.stringify(payload)).not.toContain('PORTAL_TOKEN');
+  });
+
+  it('keeps portal Stripe Nexus Points note fields bounded and alert rendering escaped', () => {
+    const htmlPath = path.resolve(__dirname, '../../src/portal/portal.html');
+    const html = fs.readFileSync(htmlPath, 'utf8');
+
+    expect(html).toContain('id="slideout-points-note"');
+    expect(html).toContain('maxlength="280"');
+    expect(html).toContain("esc(a.title)");
+    expect(html).toContain("esc(a.userImpact || a.detail || '—')");
+    expect(html).toContain("esc(a.source)");
+    expect(html).toContain("esc(a.lastDeliveryError)");
   });
 
   it('user login page includes live Apple and Google browser sign-in flows', () => {

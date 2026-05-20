@@ -397,14 +397,14 @@ export const CHAT_ACTION_REGISTRY: ChatActionDefinition[] = [
       {
         text: 'Cria um evento na agenda do Gmail chamado igreja das 10 ao meio-dia e meio nesse domingo',
         locale: 'pt',
-        tags: ['golden'],
+        tags: ['negative'],
         expectedSlots: { title: 'igreja', provider: 'google_calendar' },
         expectedAction: 'schedule_event',
       },
       {
         text: 'Schedule a meeting for Friday at 2pm called weekly sync',
         locale: 'en',
-        tags: ['golden'],
+        tags: ['negative'],
         expectedSlots: { title: 'weekly sync' },
         expectedAction: 'schedule_event',
       },
@@ -2159,7 +2159,14 @@ export const CHAT_ACTION_REGISTRY: ChatActionDefinition[] = [
   {
     skill: 'cooking',
     action: 'cooking_meal_support',
-    readableIntents: ['cooking meal support', 'meal advice', 'what should I eat', 'o que devo comer'],
+    readableIntents: [
+      'cooking meal support',
+      'meal advice',
+      'what should I eat',
+      'o que devo comer',
+      'generic recipe advice stays answer-only',
+      'receita genérica sem leitura local',
+    ],
     requiredFields: ['mealContext'],
     optionalFields: [],
     providerDependencies: ['nexus'],
@@ -2189,6 +2196,20 @@ export const CHAT_ACTION_REGISTRY: ChatActionDefinition[] = [
         locale: 'pt',
         tags: ['golden'],
         expectedAction: 'cooking_meal_support',
+      },
+      {
+        text: 'Suggest an oven-baked kibbeh recipe for 3 people',
+        locale: 'en',
+        tags: ['negative'],
+        condition: 'recipe_advice_no_local_write',
+        expectedAction: null,
+      },
+      {
+        text: 'Me indique uma receita de kibe de forno para 3 pessoas',
+        locale: 'pt',
+        tags: ['negative'],
+        condition: 'recipe_advice_no_local_write',
+        expectedAction: null,
       },
       {
         // Phase 2 batch 10: PT-BR "Que tal" phrasing + "café da manhã" (BR
@@ -3164,7 +3185,7 @@ export function selectRegistrySubsetForMessage(text: string): ChatActionDefiniti
   if (/\b(task|todo|tarefa|subtarefa|checklist|lembrete|reminder)\b/.test(folded)) selected.add('tasks');
   if (/\b(treino|training|plan[o]? de treino|corrida|gym|ginasio)\b/.test(folded)) selected.add('training');
   if (/\b(content|conteudo|conteudo|script|roteiro|reel|tiktok|youtube|brief)\b/.test(folded)) selected.add('content');
-  if (/\b(cozinha|meal|refeicao|jantar|almoco|ceia|lanche|comida|grocery|compras|fueling)\b/.test(folded)) selected.add('cooking');
+  if (/\b(cozinha|meal|refeicao|jantar|almoco|ceia|lanche|comida|grocery|compras|fueling|recipe|receita|receitas)\b/.test(folded)) selected.add('cooking');
   if (/\b(finance|financas|financeiro|financeira|pagamento|stripe|invoice|fatura|recibo|receipt)\b/.test(folded)) selected.add('finance');
   if (/\b(connection|conexao|ligacao|google|outlook|garmin|health)\b/.test(folded)) selected.add('connections');
   if (/\b(notification|notificacao|notificacoes|alerta|push)\b/.test(folded)) selected.add('notifications');

@@ -85,7 +85,7 @@ describe('user-service', () => {
       expect(user.status).toBe('active');
       expect(user.daily_message_limit).toBe(200);
       expect(user.daily_token_limit).toBe(500000);
-      expect(user.daily_cost_limit_usd).toBe(0.2);
+      expect(user.daily_cost_limit_usd).toBe(0.04);
     });
 
     it('returns existing on second call', () => {
@@ -293,7 +293,7 @@ describe('user-service', () => {
       const user = getUserByTelegramId(123)!;
       expect(user.tier).toBe('pro');
       expect(user.daily_message_limit).toBe(200);
-      expect(user.daily_cost_limit_usd).toBe(0.2);
+      expect(user.daily_cost_limit_usd).toBe(0.04);
     });
 
     it('owner tier gets unlimited (0)', () => {

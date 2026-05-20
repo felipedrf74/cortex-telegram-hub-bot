@@ -646,6 +646,16 @@ describe('routeMessage — Three-Tier Routing Integration', () => {
       expect(mockClassifyMessage).not.toHaveBeenCalled();
     });
 
+    it('generic Portuguese recipe requests route to cooking without model classification', async () => {
+      mockClassifyMessage.mockResolvedValue({ domain: 'secretary', confidence: 0.91 });
+      const context = { domain: 'secretary' as const, lastAssistantMessage: 'Here is your task summary.' };
+
+      const result = await routeMessage('me indique uma receita de kibe de forno para 3 pessoas', context);
+      expect(result.method).toBe('keyword');
+      expect(result.domain).toBe('cooking');
+      expect(mockClassifyMessage).not.toHaveBeenCalled();
+    });
+
     it('full polite Portuguese cooking phrasing still breaks out of an active secretary thread', async () => {
       mockClassifyMessage.mockResolvedValue({ domain: 'secretary', confidence: 0.91 });
       const context = { domain: 'secretary' as const, lastAssistantMessage: 'Here is your task summary.' };

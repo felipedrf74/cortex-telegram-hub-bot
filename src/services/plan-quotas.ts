@@ -1,4 +1,7 @@
 // Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
+import { config } from '../config';
+import { getDb } from './database';
+import { isOwnerUserRef } from './user-service';
 
 /**
  * Central plan-quota registry + portal override layer.
@@ -30,8 +33,8 @@ export const FREE_DAILY_COST_CAP_USD = 0.005;
 
 const DEFAULT_EFFECTIVE_DAILY_COST_LIMITS: Record<BillingPlan, number> = {
   free: FREE_DAILY_COST_CAP_USD,
-  pro: 0.2,
-  max: 0.6,
+  pro: 0.04,
+  max: 0.06,
   owner: 100,
   beta: 100,
 };
@@ -58,8 +61,8 @@ const portalAllowedSkills: Partial<Record<BillingPlan, ReadonlySet<string>>> = {
 
 const STORED_DAILY_COST_LIMITS: Record<'free' | 'pro' | 'max' | 'owner', number> = {
   free: FREE_DAILY_COST_CAP_USD,
-  pro: 0.2,
-  max: 0.6,
+  pro: 0.04,
+  max: 0.06,
   owner: 0,
 };
 
@@ -85,6 +88,67 @@ export function getStoredDailyCostLimitUsdForTier(tier: 'free' | 'pro' | 'max' |
 
 export function getUsageLevelForPlan(plan: BillingPlan): UsageLevel {
   return PLAN_USAGE_LEVELS[plan];
+}
+
+function isStagingRuntime(): boolean {
+  return process.env.STAGING === 'true' || process.env.NODE_ENV === 'staging';
+}
+
+function stagingBypassTierAllowlist(): Set<string> {
+  return new Set(
+    (process.env.NEXUS_STAGING_BILLING_BYPASS_TIERS || 'owner,beta')
+      .split(',')
+      .map((tier) => tier.trim().toLowerCase())
+      .filter(Boolean),
+  );
+}
+
+/**
+ * Resolve the billing plan from canonical server-side state.
+ *
+ * Keep this helper as the only plan resolver used by quota enforcement and
+ * Nexus Points settlement so both paths agree on the included daily budget.
+ */
+export function resolveBillingPlanForUser(userId: number): BillingPlan {
+  const db = getDb();
+
+  let isOwner = isOwnerUserRef(userId);
+  let userTier: string | null = null;
+
+  try {
+    const user = db.prepare(
+      'SELECT telegram_id, tier FROM users WHERE id = ?'
+    ).get(userId) as { telegram_id: number | null; tier: string | null } | undefined;
+    userTier = user?.tier ?? null;
+    if (user?.tier === 'owner') isOwner = true;
+  } catch {
+    userTier = null;
+  }
+
+  if (isOwner) return 'owner';
+
+  if (!config.billing.paywallEnabled && isStagingRuntime()) {
+    const allowlist = stagingBypassTierAllowlist();
+    if (userTier && allowlist.has(userTier.toLowerCase())) return 'beta';
+  }
+
+  try {
+    const sub = db.prepare(
+      'SELECT plan, status FROM subscriptions WHERE user_id = ?'
+    ).get(userId) as { plan: string; status: string } | undefined;
+
+    if (sub && ['active', 'trialing'].includes(sub.status) && (sub.plan === 'pro' || sub.plan === 'max')) {
+      return sub.plan;
+    }
+  } catch {
+    // Fall back to the users table below.
+  }
+
+  if (userTier === 'beta') return 'beta';
+  if (userTier === 'max') return 'max';
+  if (userTier === 'pro') return 'pro';
+
+  return 'free';
 }
 
 /**

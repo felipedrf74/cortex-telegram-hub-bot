@@ -34,6 +34,7 @@ import { isAnthropicRuntimeEnabled } from '../../services/runtime-flags';
 import { getEffectiveDomainModel } from '../../services/model-config';
 import { completeOneShotWithFallback } from '../../services/gemini-provider';
 import { verifyInternalAttributionToken } from '../../services/internal-attribution';
+import { computeModelUsageCostUsd, recordUnresolvedModelPricingAlert } from '../../services/model-pricing';
 
 function resolveInternalAiTimeoutMs(category: string, maxTokens: number): number | undefined {
   const normalized = String(category || '').toLowerCase();
@@ -103,18 +104,6 @@ export function internalRoutes(): Router {
         return;
       }
 
-      // Compute cost using the same pricing table as anthropic-hook.ts
-      const COST_PER_MTK: Record<string, { in: number; out: number; cacheRead: number; cacheWrite: number }> = {
-        'claude-sonnet-4-6':         { in: 3.00, out: 15.00, cacheRead: 0.30, cacheWrite: 3.75 },
-        'claude-haiku-4-5-20251001': { in: 0.80, out: 4.00,  cacheRead: 0.08, cacheWrite: 1.00 },
-      };
-
-      const rates = COST_PER_MTK[model] ?? COST_PER_MTK['claude-sonnet-4-6'];
-      const cost =
-        (inputTokens / 1_000_000) * rates.in +
-        (outputTokens / 1_000_000) * rates.out +
-        (cacheReadTokens / 1_000_000) * rates.cacheRead +
-        (cacheWriteTokens / 1_000_000) * rates.cacheWrite;
       const suppliedUserId = normalizeOptionalScopeId(userId);
       const suppliedTenantId = normalizeOptionalScopeId(tenantId);
       const verifiedAttribution = verifyInternalAttributionToken(attributionToken, category);
@@ -128,20 +117,47 @@ export function internalRoutes(): Router {
         }, 'Ignoring body-supplied internal usage attribution; billing as system usage');
       }
 
+      const priced = computeModelUsageCostUsd(model, {
+        inputTokens,
+        outputTokens,
+        cacheReadTokens,
+        cacheWriteTokens,
+      }, 'anthropic');
+      if (!priced.pricingResolved) {
+        recordUnresolvedModelPricingAlert({ model, provider: 'anthropic', category, userId: scopedUserId });
+      }
+      const cost = priced.costUsd;
+      const pricingStatus = priced.pricingResolved ? 'resolved' : 'unresolved';
+
       // Write to api_usage table (same as anthropic-hook.ts)
       const { getDb } = require('../../services/database');
-      getDb().prepare(`
-        INSERT INTO api_usage
-          (category, model, user_id, input_tokens, output_tokens,
-           cache_read_tokens, cache_write_tokens, cost_usd, duration_ms)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `).run(
-        category, model,
-        scopedUserId,
-        inputTokens, outputTokens,
-        cacheReadTokens, cacheWriteTokens,
-        cost, durationMs ?? 0,
-      );
+      try {
+        getDb().prepare(`
+          INSERT INTO api_usage
+            (category, model, user_id, input_tokens, output_tokens,
+             cache_read_tokens, cache_write_tokens, cost_usd, duration_ms,
+             provider, pricing_status, pricing_model_key)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'anthropic', ?, ?)
+        `).run(
+          category, model, scopedUserId,
+          inputTokens, outputTokens,
+          cacheReadTokens, cacheWriteTokens,
+          cost, durationMs ?? 0,
+          pricingStatus, priced.pricingModelKey,
+        );
+      } catch {
+        getDb().prepare(`
+          INSERT INTO api_usage
+            (category, model, user_id, input_tokens, output_tokens,
+             cache_read_tokens, cache_write_tokens, cost_usd, duration_ms)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `).run(
+          category, model, scopedUserId,
+          inputTokens, outputTokens,
+          cacheReadTokens, cacheWriteTokens,
+          cost, durationMs ?? 0,
+        );
+      }
 
       // Write to usage_metering aggregate. Signed attribution preserves the
       // real user; unsigned legacy calls remain system-scoped.
@@ -247,7 +263,7 @@ export function internalRoutes(): Router {
             max_tokens: maxTokens,
             system: system || undefined,
             messages: [{ role: 'user', content: userPrompt }],
-          }, category);
+          }, category, { userId: scopedUserId, tenantId: scopedTenantId });
           return response.content
             .filter((b: any) => b.type === 'text')
             .map((b: any) => b.text)

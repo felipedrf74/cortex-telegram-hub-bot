@@ -101,13 +101,13 @@ const SCHEDULING_PATTERNS = [
 ];
 
 const ACTION_PATTERNS = [
-  /\b(create|add|make|build|generate|schedule|move|reschedule|cancel|delete|remove|clear|send|reply|mark|update|change|apply|save|remember)\b/i,
-  /\b(cria|crie|adiciona|faz|gera|agenda|move|muda|remarca|cancela|apaga|remove|limpa|envia|responde|marca|atualiza|aplica|guarda|lembra)\b/i,
+  /\b(create|add|make|build|generate|schedule|move|reschedule|cancel|delete|remove|eliminate|clear|send|reply|mark|update|change|apply|save|remember)\b/i,
+  /\b(cria|crie|adiciona|faz|gera|agenda|move|muda|remarca|cancela|cancelar|cancele|cancelem|apaga|apagar|apague|apaguem|remove|remover|remova|removam|elimina|eliminar|elimine|eliminem|exclui|excluir|exclua|excluam|limpa|envia|responde|marca|atualiza|aplica|guarda|lembra)\b/i,
 ];
 
 const DESTRUCTIVE_PATTERNS = [
-  /\b(cancel|delete|remove|clear|wipe|discard|send\s+(?:the\s+)?email|reply\s+to|mark\s+.*\s+paid|cancel\s+my\s+plan|clear\s+(?:the\s+)?calendar)\b/i,
-  /\b(cancela|apaga|remove|limpa|descarta|envia\s+(?:o\s+)?email|responde|marca\s+.*\s+pago)\b/i,
+  /\b(cancel|delete|remove|eliminate|clear|wipe|discard|send\s+(?:the\s+)?email|reply\s+to|mark\s+.*\s+paid|cancel\s+my\s+plan|clear\s+(?:the\s+)?calendar)\b/i,
+  /\b(cancela|cancelar|cancele|cancelem|apaga|apagar|apague|apaguem|remove|remover|remova|removam|elimina|eliminar|elimine|eliminem|exclui|excluir|exclua|excluam|limpa|descarta|envia\s+(?:o\s+)?email|responde|marca\s+.*\s+pago)\b/i,
 ];
 
 const EXPLANATION_PATTERNS = [/\b(why|explain|what\s+are\s+you\s+basing|based\s+on\s+what|por\s+qu[eê]|explica|baseaste)\b/i];

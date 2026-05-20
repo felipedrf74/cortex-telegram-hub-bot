@@ -62,6 +62,15 @@ describe('runtime config validation', () => {
     expect(config.invoices.minConfidence).toBe(0.9);
   });
 
+  it('defaults generic chat routing to OpenAI nano with Gemini fallback', async () => {
+    vi.stubEnv('AI_CHAT_PRIMARY', '');
+    vi.stubEnv('AI_CHAT_FALLBACK', '');
+
+    const { config } = await loadConfigFresh();
+
+    expect(config.providerRouting.chat).toEqual({ primary: 'openai', fallback: 'gemini' });
+  });
+
   it('exposes public waitlist IP salt through central config', async () => {
     vi.stubEnv('WAITLIST_IP_SALT', 'stable-waitlist-secret');
 
@@ -90,5 +99,59 @@ describe('runtime config validation', () => {
 
     expect(config.billing.paywallEnabled).toBe(false);
     expect(config.billing.allowUnsafePaywallBypass).toBe(true);
+  });
+
+  it('allows Stripe Nexus Points to stay disabled without point price ids', async () => {
+    vi.stubEnv('STRIPE_NEXUS_POINTS_ENABLED', 'false');
+    vi.stubEnv('STRIPE_SECRET_KEY', '');
+    vi.stubEnv('STRIPE_WEBHOOK_SECRET', '');
+
+    const { config } = await loadConfigFresh();
+
+    expect(config.stripe.nexusPoints.enabled).toBe(false);
+    expect(config.stripe.nexusPoints.priceIds.small).toBe('');
+  });
+
+  it('fails fast when Stripe Nexus Points are enabled without required env vars', async () => {
+    vi.stubEnv('STRIPE_NEXUS_POINTS_ENABLED', 'true');
+    vi.stubEnv('STRIPE_SECRET_KEY', 'sk_test');
+    vi.stubEnv('STRIPE_WEBHOOK_SECRET', '');
+    vi.stubEnv('STRIPE_PRICE_ID_POINTS_SMALL', 'price_small');
+    vi.stubEnv('STRIPE_PRICE_ID_POINTS_MEDIUM', '');
+    vi.stubEnv('STRIPE_PRICE_ID_POINTS_LARGE', 'price_large');
+    vi.stubEnv('PORTAL_ADMIN_ACTOR_SIGNATURE_SECRET', 'signed-actors');
+
+    await expect(loadConfigFresh()).rejects.toThrow(
+      'STRIPE_NEXUS_POINTS_ENABLED=true but required env vars are missing: STRIPE_WEBHOOK_SECRET, STRIPE_PRICE_ID_POINTS_MEDIUM',
+    );
+  });
+
+  it('requires signed portal actor attribution when Stripe Nexus Points are enabled', async () => {
+    vi.stubEnv('STRIPE_NEXUS_POINTS_ENABLED', 'true');
+    vi.stubEnv('STRIPE_SECRET_KEY', 'sk_test');
+    vi.stubEnv('STRIPE_WEBHOOK_SECRET', 'whsec_test');
+    vi.stubEnv('STRIPE_PRICE_ID_POINTS_SMALL', 'price_small');
+    vi.stubEnv('STRIPE_PRICE_ID_POINTS_MEDIUM', 'price_medium');
+    vi.stubEnv('STRIPE_PRICE_ID_POINTS_LARGE', 'price_large');
+    vi.stubEnv('PORTAL_ADMIN_ACTOR_SIGNATURE_SECRET', '');
+
+    await expect(loadConfigFresh()).rejects.toThrow(
+      'STRIPE_NEXUS_POINTS_ENABLED requires PORTAL_ADMIN_ACTOR_SIGNATURE_SECRET to be set so admin-issued purchases have signed attribution.',
+    );
+  });
+
+  it('refuses live Stripe secret keys outside production when Nexus Points are enabled', async () => {
+    vi.stubEnv('NODE_ENV', 'staging');
+    vi.stubEnv('STRIPE_NEXUS_POINTS_ENABLED', 'true');
+    vi.stubEnv('STRIPE_SECRET_KEY', 'sk_live_accidental');
+    vi.stubEnv('STRIPE_WEBHOOK_SECRET', 'whsec_test');
+    vi.stubEnv('STRIPE_PRICE_ID_POINTS_SMALL', 'price_small');
+    vi.stubEnv('STRIPE_PRICE_ID_POINTS_MEDIUM', 'price_medium');
+    vi.stubEnv('STRIPE_PRICE_ID_POINTS_LARGE', 'price_large');
+    vi.stubEnv('PORTAL_ADMIN_ACTOR_SIGNATURE_SECRET', 'signed-actors');
+
+    await expect(loadConfigFresh()).rejects.toThrow(
+      'STRIPE_SECRET_KEY appears to be a live key (sk_live_*) but NODE_ENV is not production.',
+    );
   });
 });

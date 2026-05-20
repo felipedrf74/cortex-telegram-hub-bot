@@ -970,6 +970,13 @@ describe('ChatActionPlanner', () => {
       requiredArgsPresent: true,
     });
 
+    expect(shouldRunActionPlannerBeforeReadOnlyFastPaths('Me indique uma receita de kibe de forno para 3 pessoas')).toBe(false);
+    const recipePlan = await buildChatActionPlan({
+      ...baseInput,
+      text: 'Me indique uma receita de kibe de forno para 3 pessoas',
+    });
+    expect(recipePlan).toBeNull();
+
     const trainingPlan = await buildChatActionPlan({
       ...baseInput,
       text: 'Mostra o relatório do coach de treino',

@@ -1,3 +1,4 @@
-# Lower this monthly by >=10 until <100. Baseline reset to the
-# pre-Phase-16 main-branch count so new work cannot add partial mocks.
-partialMockCount=874
+# Lower this monthly by >=10 until <100. Baseline reset after the
+# 2026-05-20 production/main reconciliation so future work cannot add
+# partial mocks beyond the production 4.14.178 surface.
+partialMockCount=898

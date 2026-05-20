@@ -20,6 +20,19 @@ import {
 } from './shared-state';
 import type { DomainHandlerFn } from './photo';
 import { runTelegramDomainHandlerWithToolAuthorization } from './chat-tool-auth-context';
+import {
+  analyzeChatSkillOrchestration,
+  applyChatSkillRoutingDecision,
+  buildChatSkillRoutingLogContext,
+} from '../services/chat-skill-orchestrator';
+import { inferChatTurnContract, type ChatTurnContract } from '../services/chat-turn-contract';
+import {
+  isChatResearchRouterEnabled,
+  isChatTurnContractEnabled,
+} from '../services/runtime-flags';
+import { buildChatInternetResearchAnswer } from '../services/chat-internet-research';
+import { buildSimpleStateContext } from '../domains/domain-handler';
+import type { NexusChatOwnerSkill } from '../services/chat-answer-contract';
 
 /**
  * The core natural language handler — routes non-command messages through
@@ -137,8 +150,43 @@ export async function handleDomainMessage(
       }
     } catch { /* cost guardrail not available — allow */ }
 
-    const route = await routeMessage(text, activeContext);
-    logger.info({ domain: route.domain, method: route.method, confidence: route.confidence }, 'Message routed');
+    const tenantId = userId;
+    const preRoutingDecision = analyzeChatSkillOrchestration({
+      message: text,
+      activeContext,
+      userId,
+      tenantId,
+    });
+    const turnContractEnabled = isChatTurnContractEnabled(process.env, { userId, tenantId });
+    const preTurnContract = turnContractEnabled
+      ? inferChatTurnContract({
+        message: text,
+        activeContextDomain: activeContext?.domain ?? null,
+        involvedSkills: preRoutingDecision.involvedSkills,
+      })
+      : null;
+
+    const rawRoute = await routeMessage(text, activeContext);
+    const contractAwareRoute = preTurnContract ? applyTelegramTurnContractRouteHint(rawRoute, preTurnContract) : rawRoute;
+    const routingDecision = analyzeChatSkillOrchestration({
+      message: text,
+      activeContext,
+      routedDomain: contractAwareRoute.domain,
+      userId,
+      tenantId,
+    });
+    const route = applyChatSkillRoutingDecision(contractAwareRoute, routingDecision);
+    logger.info(
+      {
+        domain: route.domain,
+        method: route.method,
+        confidence: route.confidence,
+        orchestration: buildChatSkillRoutingLogContext(routingDecision),
+        contractSkill: preTurnContract?.skill ?? null,
+        contractRouteKind: preTurnContract?.routeKind ?? null,
+      },
+      'Message routed',
+    );
 
     // Track last active domain for photo routing and conversation continuity
     if (userId) lastActiveDomain.set(userId, { domain: route.domain, timestamp: Date.now() });
@@ -203,6 +251,64 @@ export async function handleDomainMessage(
       return;
     }
 
+    if (preTurnContract?.riskClass === 'destructive' || routingDecision.safety.destructive) {
+      await ctx.reply(
+        preTurnContract?.language === 'pt' || preTurnContract?.language === 'mixed'
+          ? 'Não vou executar ações destrutivas pelo Telegram sem uma confirmação verificada no Nexus. Abre o app/Decision Center para rever e confirmar com segurança.'
+          : 'I will not execute destructive actions from Telegram without verified Nexus confirmation. Open the app or Decision Center to review and confirm safely.',
+        { parse_mode: 'HTML' },
+      );
+      logger.warn(
+        { userId, tenantId, domain: route.domain, riskClass: preTurnContract?.riskClass ?? null },
+        'Telegram destructive chat turn blocked by reliability guardrail',
+      );
+      return;
+    }
+
+    if (
+      userId
+      && isChatResearchRouterEnabled(process.env, { userId, tenantId })
+      && preTurnContract?.routeKind === 'internet_research'
+      && (preTurnContract.groundingRequired === 'web' || preTurnContract.groundingRequired === 'local_and_web')
+    ) {
+      const researchDomain = domainForTelegramTurnContractSkill(preTurnContract.skill) ?? route.domain;
+      const localContext = preTurnContract.groundingRequired === 'local_and_web'
+        ? await buildSimpleStateContext(researchDomain, userId, text, tenantId)
+        : null;
+      const research = await buildChatInternetResearchAnswer({
+        message: text,
+        language: preTurnContract.language,
+        skill: preTurnContract.skill,
+        expectedResponseShape: preTurnContract.expectedResponseShape,
+        userId,
+        tenantId: userId,
+        groundingRequired: preTurnContract.groundingRequired,
+        localContext,
+      });
+      if (userId) lastActiveDomain.set(userId, { domain: researchDomain, timestamp: Date.now() });
+      const parts = splitMessage(research.text);
+      for (const part of parts) {
+        try {
+          await ctx.reply(part, { parse_mode: 'HTML' });
+        } catch (err) {
+          if (isHtmlParseError(err)) await ctx.reply(part.replace(/<[^>]*>/g, ''));
+          else throw err;
+        }
+      }
+      logger.info(
+        {
+          userId,
+          tenantId,
+          domain: researchDomain,
+          skill: preTurnContract.skill,
+          sourceCount: research.sources.length,
+          degraded: research.degraded,
+        },
+        'Telegram chat handled selective internet research turn',
+      );
+      return;
+    }
+
     const handler = domainHandlers[route.domain];
     const response = await runTelegramDomainHandlerWithToolAuthorization(
       userId,
@@ -222,4 +328,47 @@ export async function handleDomainMessage(
     logger.error({ err }, 'Failed to handle domain message');
     await ctx.reply('⚠️ Something went wrong processing your message. Please try again.');
   }
+}
+
+function domainForTelegramTurnContractSkill(skill: NexusChatOwnerSkill): DomainName | null {
+  switch (skill) {
+    case 'secretary':
+    case 'tasks':
+    case 'connections':
+    case 'notifications':
+    case 'decision_center':
+      return 'secretary';
+    case 'training':
+      return 'triathlon';
+    case 'content':
+    case 'finance':
+    case 'cooking':
+      return skill;
+    default:
+      return null;
+  }
+}
+
+function shouldApplyTelegramTurnContractRouteHint(contract: ChatTurnContract, route: { domain: string; confidence: number }): boolean {
+  if (contract.routeKind === 'action') return false;
+  if (contract.riskClass === 'high' || contract.riskClass === 'destructive') return false;
+  if (contract.skill === 'chat' || contract.skill === 'system' || contract.skill === 'owner_admin') return false;
+  const hintedDomain = domainForTelegramTurnContractSkill(contract.skill);
+  if (!hintedDomain || route.domain === hintedDomain) return false;
+  return contract.confidence >= 0.8;
+}
+
+function applyTelegramTurnContractRouteHint<T extends { domain: string; method: string; confidence: number }>(
+  route: T,
+  contract: ChatTurnContract,
+): T {
+  if (!shouldApplyTelegramTurnContractRouteHint(contract, route)) return route;
+  const hintedDomain = domainForTelegramTurnContractSkill(contract.skill);
+  if (!hintedDomain) return route;
+  return {
+    ...route,
+    domain: hintedDomain,
+    method: `${route.method}+turn-contract`,
+    confidence: Math.max(route.confidence, contract.confidence),
+  };
 }

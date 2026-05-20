@@ -125,7 +125,7 @@ Remember: follow the creator configuration for audience fit, but keep the ideas 
         systemPrompt,
         userMessage,
         'content_discovery',
-        { maxTokens: 4096, temperature: 0.7 },
+        { maxTokens: 4096, temperature: 0.7, userId, tenantId },
       );
       fullContent = text;
       // Gemini reports sources via groundingChunks instead of a
@@ -157,7 +157,7 @@ Remember: follow the creator configuration for audience fit, but keep the ideas 
           max_uses: 5,
         } as any,
       ],
-    } as any, 'content_discovery');
+    } as any, 'content_discovery', { userId, tenantId });
 
     // Handle pause_turn — Claude may need to continue after a long search session
     let finalResponse = response;
@@ -178,7 +178,7 @@ Remember: follow the creator configuration for audience fit, but keep the ideas 
             max_uses: 5,
           } as any,
         ],
-      } as any, 'content_discovery_continuation');
+      } as any, 'content_discovery_continuation', { userId, tenantId });
     }
 
     // Extract text content (skip search result blocks)

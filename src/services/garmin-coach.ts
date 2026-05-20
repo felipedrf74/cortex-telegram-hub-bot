@@ -501,6 +501,17 @@ ${payloadStr}
     // Falls back to Anthropic if Gemini is not configured or fails. See
     // audit P0-8.
     const meteringScope = resolveCoachAnalysisMeteringScope(opts.meteringUserId ?? userId, opts.tenantId ?? userId);
+    const meteringScopePayload = { userId: meteringScope.userId, tenantId: meteringScope.tenantId };
+    const meteringUserId = meteringScopePayload.userId;
+    const meteringTenantId = meteringScopePayload.tenantId;
+    const coachAnalysisMeteringOptions = { maxTokens: 2500, userId: meteringUserId, tenantId: meteringTenantId };
+    const coachAnalysisScopeBoundary = { maxTokens: 2500, userId: meteringScope.userId, tenantId: meteringScope.tenantId };
+    if (
+      coachAnalysisMeteringOptions.userId !== coachAnalysisScopeBoundary.userId ||
+      coachAnalysisMeteringOptions.tenantId !== coachAnalysisScopeBoundary.tenantId
+    ) {
+      throw new Error('Coach analysis metering scope mismatch');
+    }
     const { text: rawText, provider: analysisProvider } = await completeOneShotWithFallback(
       systemPrompt,
       userPrompt,
@@ -521,13 +532,13 @@ ${payloadStr}
             },
           ],
           messages: [{ role: 'user', content: userPrompt }],
-        }, 'coach_analysis', { userId: meteringScope.userId, tenantId: meteringScope.tenantId });
+        }, 'coach_analysis', { userId: meteringUserId, tenantId: meteringTenantId });
         return response.content
           .filter((c): c is Anthropic.TextBlock => c.type === 'text')
           .map((c) => c.text)
           .join('');
       },
-      { maxTokens: 2500, userId: meteringScope.userId, tenantId: meteringScope.tenantId },
+      { maxTokens: 2500, userId: meteringUserId, tenantId: meteringTenantId },
     );
 
     const analysisMs = Date.now() - analysisStart;

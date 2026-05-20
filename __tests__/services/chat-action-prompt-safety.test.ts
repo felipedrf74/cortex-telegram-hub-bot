@@ -279,10 +279,23 @@ describe('buildLlmSafePromptSlice', () => {
       expect(calendarEvent).toBeTruthy();
       if (!calendarEvent || !calendarEvent.examples || calendarEvent.examples.length === 0) return;
       const safe = buildLlmSafePromptSlice(calendarEvent);
+      const firstRetainedExample = calendarEvent.examples.find((example) => {
+        const tags = Array.isArray(example.tags) ? example.tags : [];
+        return !tags.some((tag) =>
+          ['prompt_injection', 'adversarial', 'negative', 'ambiguous'].includes(tag),
+        );
+      });
+      expect(firstRetainedExample).toBeTruthy();
       expect(safe.examples.length).toBeGreaterThan(0);
-      const first = safe.examples[0];
-      if (calendarEvent.examples[0].expectedSlots) {
-        expect(first.expectedSlots).toEqual(calendarEvent.examples[0].expectedSlots);
+      const safeWithSlots = safe.examples.find((example) => example.expectedSlots);
+      const retainedWithSlots = calendarEvent.examples.find((example) => {
+        const tags = Array.isArray(example.tags) ? example.tags : [];
+        return Boolean(example.expectedSlots) && !tags.some((tag) =>
+          ['prompt_injection', 'adversarial', 'negative', 'ambiguous'].includes(tag),
+        );
+      });
+      if (retainedWithSlots) {
+        expect(safeWithSlots?.expectedSlots).toEqual(retainedWithSlots.expectedSlots);
       }
     });
 

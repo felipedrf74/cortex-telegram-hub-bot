@@ -160,7 +160,7 @@ Respond with JSON only: { "isDuplicate": boolean, "similarTo": string | null, "c
           temperature: 0.1,
           system: systemPrompt,
           messages: [{ role: 'user', content: prompt }],
-        }, 'content_dedup');
+        }, 'content_dedup', { userId: uid, tenantId: tid });
         return response.content
           .filter((block: any) => block.type === 'text')
           .map((block: any) => block.text)

@@ -288,8 +288,8 @@ export const MODEL_OPTIONS: Record<ProviderName, { chat: string[]; classifier: s
     classifier: ['claude-haiku-4-5-20251001', 'claude-sonnet-4-6'],
   },
   openai: {
-    chat: ['gpt-5', 'gpt-5-mini', 'gpt-5.4', 'gpt-4.1-mini', 'o4-mini'],
-    classifier: ['gpt-5-nano', 'gpt-5-mini', 'gpt-4.1-nano'],
+    chat: ['gpt-5.4-nano', 'gpt-5.4-mini', 'gpt-5', 'gpt-5-mini', 'gpt-5.4', 'gpt-4.1-mini', 'o4-mini'],
+    classifier: ['gpt-5.4-nano', 'gpt-5-nano', 'gpt-5-mini', 'gpt-4.1-nano'],
   },
   gemini: {
     // Only models that exist on Google's API as of 2026-04. gemini-2.5-pro

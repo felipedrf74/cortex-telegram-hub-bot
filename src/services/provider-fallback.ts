@@ -690,7 +690,10 @@ export class TaskRoutingProvider implements AIProvider {
 
     // Check domain-specific provider routing (e.g., cooking→Gemini)
     try {
-      const { getProviderForDomain, getFallbackForDomain } = require('./domain-provider-router');
+      const { getProviderForDomain, getFallbackForDomain, hasDomainProviderRoute } = require('./domain-provider-router');
+      if (typeof hasDomainProviderRoute === 'function' && !hasDomainProviderRoute(domain)) {
+        return { taskType, pair: defaultPair, pairSource: 'task_default', operatorOverrideApplied: false };
+      }
       const domainProvider = getProviderForDomain(domain);
       const domainFallback = getFallbackForDomain(domain);
 

@@ -546,3 +546,88 @@ describe('GET /health/detailed', () => {
     expect(res.status).toBe(200);
   });
 });
+
+describe('GET /public-status', () => {
+  beforeEach(() => {
+    mockPolling = true;
+    mockRestarting = false;
+    mockLastMessage = new Date().toISOString();
+    mockDbOk = true;
+  });
+
+  it('returns 200 with minimal payload when service is healthy', async () => {
+    const { server, port } = await startServer();
+    activeServer = server;
+
+    const res = await fetch(`http://127.0.0.1:${port}/public-status`);
+    expect(res.status).toBe(200);
+
+    const body = await res.json();
+    expect(body).toEqual({
+      status: 'ok',
+      service: 'nexushub-api',
+      timestamp: expect.any(String),
+    });
+    expect(new Date(body.timestamp).toISOString()).toBe(body.timestamp);
+  });
+
+  it('still returns 200 with the same payload when the database is down', async () => {
+    mockDbOk = false;
+
+    const { server, port } = await startServer();
+    activeServer = server;
+
+    const res = await fetch(`http://127.0.0.1:${port}/public-status`);
+    expect(res.status).toBe(200);
+
+    const body = await res.json();
+    expect(body).toMatchObject({
+      status: 'ok',
+      service: 'nexushub-api',
+    });
+  });
+
+  it('does not leak memory, bot internals, database state, or providers', async () => {
+    const { server, port } = await startServer();
+    activeServer = server;
+
+    const res = await fetch(`http://127.0.0.1:${port}/public-status`);
+    const body = await res.json();
+
+    expect(Object.keys(body).sort()).toEqual(['service', 'status', 'timestamp']);
+    expect(body).not.toHaveProperty('memory');
+    expect(body).not.toHaveProperty('bot');
+    expect(body).not.toHaveProperty('database');
+    expect(body).not.toHaveProperty('databaseProbe');
+    expect(body).not.toHaveProperty('uptime');
+    expect(body).not.toHaveProperty('server');
+    expect(body).not.toHaveProperty('providers');
+    expect(body).not.toHaveProperty('integrations');
+    expect(body).not.toHaveProperty('crons');
+    expect(body).not.toHaveProperty('errors');
+    expect(body).not.toHaveProperty('pm2');
+    expect(body).not.toHaveProperty('cache');
+    expect(body).not.toHaveProperty('sentry');
+  });
+
+  it('sets permissive cache, CORS, and robots headers for AI fetchers', async () => {
+    const { server, port } = await startServer();
+    activeServer = server;
+
+    const res = await fetch(`http://127.0.0.1:${port}/public-status`);
+
+    expect(res.headers.get('cache-control')).toBe('public, max-age=60');
+    expect(res.headers.get('access-control-allow-origin')).toBe('*');
+    expect(res.headers.get('x-robots-tag')).toBe('all');
+  });
+
+  it('does not require authentication', async () => {
+    healthToken = 'a-non-empty-token';
+
+    const { server, port } = await startServer();
+    activeServer = server;
+
+    const res = await fetch(`http://127.0.0.1:${port}/public-status`);
+    expect(res.status).toBe(200);
+  });
+});

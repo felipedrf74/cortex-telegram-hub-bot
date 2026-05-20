@@ -230,6 +230,65 @@ describe('buildSimpleStateContext', () => {
     expect(ctx).toContain('due: 2026-04-01');
   });
 
+  it('does not attach scoped Nexus context to generic Cooking recipe requests', async () => {
+    vi.mocked(listTodos).mockReturnValue([
+      { id: 2, title: 'Meal prep local state', priority: 'medium', due_date: null, domain: 'cooking', description: null, status: 'pending', tags: null, created_at: '', updated_at: '', completed_at: null },
+    ] as any);
+    vi.mocked(getSharedMemorySummary).mockReturnValue('[Shared] local cooking preference');
+
+    const ctx = await buildSimpleStateContext('cooking', 42, 'Me indique uma receita de kibe de forno para 3 pessoas');
+
+    expect(ctx).toContain('Monday, March 30 2026');
+    expect(ctx).not.toContain('Cooking to-dos');
+    expect(ctx).not.toContain('Meal prep local state');
+    expect(ctx).not.toContain('[Shared] local cooking preference');
+  });
+
+  it('does not attach scoped Nexus context to generic Finance explanation requests', async () => {
+    vi.mocked(listTodos).mockReturnValue([
+      { id: 3, title: 'Review local budget', priority: 'high', due_date: null, domain: 'finance', description: null, status: 'pending', tags: null, created_at: '', updated_at: '', completed_at: null },
+    ] as any);
+    vi.mocked(getSharedMemorySummary).mockReturnValue('[Shared] local finance state');
+
+    const ctx = await buildSimpleStateContext('finance', 42, 'Explain deductible expense categories');
+
+    expect(ctx).toContain('Monday, March 30 2026');
+    expect(ctx).not.toContain('Finance to-dos');
+    expect(ctx).not.toContain('Review local budget');
+    expect(ctx).not.toContain('[Shared] local finance state');
+  });
+
+  it('includes scoped Nexus context when Cooking asks for local meal-plan state', async () => {
+    vi.mocked(listTodos).mockReturnValue([
+      { id: 4, title: 'Plan local meals', priority: 'medium', due_date: null, domain: 'cooking', description: null, status: 'pending', tags: null, created_at: '', updated_at: '', completed_at: null },
+    ] as any);
+    vi.mocked(getSharedMemorySummary).mockReturnValue('[Shared] local cooking preference');
+
+    const ctx = await buildSimpleStateContext('cooking', 42, 'What meals did I plan this week?');
+
+    expect(ctx).toContain('Cooking to-dos');
+    expect(ctx).toContain('Plan local meals');
+    expect(ctx).toContain('[Shared] local cooking preference');
+  });
+
+  it('marks empty scoped local-read context so the model cannot invent local facts', async () => {
+    const ctx = await buildSimpleStateContext('secretary', 42, 'show my latest tasks');
+
+    expect(ctx).toContain('Local grounding rule: answer only from scoped Nexus facts listed above.');
+    expect(ctx).toContain('say no matching local records were found instead of inventing it.');
+  });
+
+  it('keeps scoped training context for prescription requests even before local grounding is inferred', async () => {
+    vi.mocked(listTodos).mockReturnValue([
+      { id: 5, title: 'Finish run profile', priority: 'high', due_date: null, domain: 'triathlon', description: null, status: 'pending', tags: null, created_at: '', updated_at: '', completed_at: null },
+    ] as any);
+
+    const ctx = await buildSimpleStateContext('triathlon', 42, 'Build me a running workout for tomorrow');
+
+    expect(ctx).toContain('Triathlon to-dos');
+    expect(ctx).toContain('Finish run profile');
+  });
+
   it('includes coach recommendations for triathlon domain with userId', async () => {
     const recs = [{
       action: 'MODIFY', eventId: 'evt1', source: 'outlook',

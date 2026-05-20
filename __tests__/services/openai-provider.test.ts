@@ -11,6 +11,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 // ─── Mock OpenAI SDK ────────────────────────────────────────────────
 
 const mockCreate = vi.fn();
+const mockSettleNexusPointOverageForUser = vi.fn();
 
 vi.mock('openai', () => {
   return {
@@ -62,6 +63,10 @@ vi.mock('../../src/services/database', () => ({
 
 vi.mock('../../src/portal/telemetry', () => ({
   pushEvent: vi.fn(),
+}));
+
+vi.mock('../../src/services/nexus-points', () => ({
+  settleNexusPointOverageForUser: (...args: unknown[]) => mockSettleNexusPointOverageForUser(...args),
 }));
 
 // ─── Imports ─────────────────────────────────────────────────────────
@@ -441,8 +446,39 @@ describe('OpenAIProvider', () => {
         0, // user_id
         150,
         50,
+        expect.any(Number), // cache_read_tokens
         expect.any(Number),
         expect.any(Number),
+        'resolved',
+        'gpt-4o',
+      );
+    });
+
+    it('persists OpenAI cached prompt tokens when the SDK reports them', async () => {
+      mockCreate.mockResolvedValueOnce({
+        choices: [{ message: { content: 'Cached ok' }, finish_reason: 'stop' }],
+        model: 'gpt-4o',
+        usage: {
+          prompt_tokens: 150,
+          completion_tokens: 50,
+          prompt_tokens_details: { cached_tokens: 40 },
+        },
+      });
+
+      await provider.callDomain('content', [], 'hi', '');
+
+      expect(mockDbRun).toHaveBeenCalledWith(
+        'openai_domain_content',
+        'gpt-4o',
+        0,
+        0,
+        150,
+        50,
+        40,
+        expect.any(Number),
+        expect.any(Number),
+        'resolved',
+        'gpt-4o',
       );
     });
 
@@ -474,8 +510,8 @@ describe('OpenAIProvider', () => {
 
       // gpt-4o-mini: 1M input tokens × $0.15/MTK = $0.15.
       // 0=category, 1=model, 2=tenant_id, 3=user_id, 4=input, 5=output,
-      // 6=cost, 7=duration.
-      const costArg = mockDbRun.mock.calls[0]?.[6];
+      // 6=cache_read_tokens, 7=cost, 8=duration.
+      const costArg = mockDbRun.mock.calls[0]?.[7];
       expect(costArg).toBeCloseTo(0.15, 2);
     });
 
@@ -489,8 +525,8 @@ describe('OpenAIProvider', () => {
       await provider.callDomain('secretary', [], 'test', '');
 
       // gpt-4o: 1M in × $2.50 + 1M out × $10.00 = $12.50.
-      // Cost moved to position 6 after tenant_id and user_id were inserted.
-      const costArg = mockDbRun.mock.calls[0]?.[6];
+      // Cost moved to position 7 after tenant_id, user_id, and cache_read_tokens were inserted.
+      const costArg = mockDbRun.mock.calls[0]?.[7];
       expect(costArg).toBeCloseTo(12.50, 2);
     });
 
@@ -511,6 +547,9 @@ describe('OpenAIProvider', () => {
         expect.any(Number),
         expect.any(Number),
         expect.any(Number),
+        expect.any(Number),
+        'resolved',
+        'gpt-4o-mini',
       );
     });
 
@@ -531,6 +570,9 @@ describe('OpenAIProvider', () => {
         expect.any(Number),
         expect.any(Number),
         expect.any(Number),
+        expect.any(Number),
+        'resolved',
+        'gpt-4o',
       );
     });
 
@@ -544,6 +586,43 @@ describe('OpenAIProvider', () => {
 
       const result = await provider.callDomain('content', [], 'test', '');
       expect(result.text).toBe('works');
+    });
+
+    it('records streaming usage and settles Nexus Points for the actual user', async () => {
+      async function* stream() {
+        yield { choices: [{ delta: { content: 'Hi' }, finish_reason: null }] };
+        yield {
+          choices: [{ delta: {}, finish_reason: 'stop' }],
+          usage: {
+            prompt_tokens: 120,
+            completion_tokens: 20,
+            prompt_tokens_details: { cached_tokens: 30 },
+          },
+        };
+      }
+      mockDbRun.mockReturnValueOnce({ lastInsertRowid: 777 });
+      mockCreate.mockResolvedValueOnce(stream());
+
+      const iterator = provider.streamDomain('content', [], 'hello', '', { userId: 42, tenantId: 77 });
+      const first = await iterator.next();
+      const done = await iterator.next();
+
+      expect(first).toEqual({ done: false, value: 'Hi' });
+      expect(done.done).toBe(true);
+      expect(mockDbRun).toHaveBeenCalledWith(
+        'openai_stream_content',
+        'gpt-4o-mini',
+        77,
+        42,
+        120,
+        20,
+        30,
+        expect.any(Number),
+        expect.any(Number),
+        'resolved',
+        'gpt-4o-mini',
+      );
+      expect(mockSettleNexusPointOverageForUser).toHaveBeenCalledWith(42, 777);
     });
   });
 

@@ -11,7 +11,7 @@
  * Protected by authMiddleware (JWT required).
  */
 
-import { Router, Request, Response } from 'express';
+import express, { Router, Request, Response, NextFunction } from 'express';
 import { logger } from '../../utils/logger';
 import { sendSuccess, sendError, asyncHandler } from '../response-helpers';
 import {
@@ -24,6 +24,46 @@ import {
 } from '../../services/stripe-service';
 import { verifyAppleJws } from '../../services/apple-jws-verifier';
 import { safeCheckoutUrl } from './public-billing';
+import { buildQuotaUsagePayload, isUserOverDailyCap } from '../../services/cost-guardrail';
+import {
+  grantNexusPoints,
+  isNexusPointProductId,
+  listNexusPointPackages,
+} from '../../services/nexus-points';
+import {
+  createNexusPointsCheckoutSession,
+  isStripeNexusPointsIdempotencyConflictError,
+  isStripeNexusPointsConfigured,
+} from '../../services/stripe-nexus-points-service';
+import { logAudit } from '../../services/audit-trail';
+
+const STRIPE_NEXUS_CHECKOUT_BODY_LIMIT_BYTES = 8 * 1024;
+const STRIPE_NEXUS_CHECKOUT_BODY_FIELDS = new Set(['packageId']);
+
+function rejectOversizedStripeNexusCheckoutBody(req: Request, res: Response, next: NextFunction): void {
+  const rawLength = req.headers['content-length'];
+  const contentLength = Array.isArray(rawLength) ? Number(rawLength[0]) : Number(rawLength || 0);
+  if (Number.isFinite(contentLength) && contentLength > STRIPE_NEXUS_CHECKOUT_BODY_LIMIT_BYTES) {
+    sendError(res, 'PAYLOAD_TOO_LARGE', 'Request body is too large', 413);
+    return;
+  }
+  next();
+}
+
+function unexpectedStripeCheckoutBodyFields(body: unknown): string[] {
+  if (!body || typeof body !== 'object' || Array.isArray(body)) return [];
+  return Object.keys(body as Record<string, unknown>)
+    .filter((key) => !STRIPE_NEXUS_CHECKOUT_BODY_FIELDS.has(key));
+}
+
+function buildBillingStatusPayload(userId: number): Record<string, unknown> {
+  const status = getSubscriptionStatus(userId);
+  const usage = isUserOverDailyCap(userId);
+  return {
+    ...status,
+    ...buildQuotaUsagePayload(usage),
+  };
+}
 
 export function billingRoutes(): Router {
   const router = Router();
@@ -35,8 +75,7 @@ export function billingRoutes(): Router {
    */
   router.get('/status', asyncHandler(async (req: Request, res: Response) => {
     const userId = (req as any).userId;
-    const status = getSubscriptionStatus(userId);
-    sendSuccess(res, status);
+    sendSuccess(res, buildBillingStatusPayload(userId));
   }));
 
   /**
@@ -53,7 +92,6 @@ export function billingRoutes(): Router {
    */
   router.get('/usage', asyncHandler(async (req: Request, res: Response) => {
     const userId = (req as any).userId;
-    const { isUserOverDailyCap } = require('../../services/cost-guardrail');
     const usage = isUserOverDailyCap(userId);
     sendSuccess(res, {
       plan: usage.plan,
@@ -62,6 +100,7 @@ export function billingRoutes(): Router {
       isOverLimit: usage.over,
       resetsAt: usage.resetAt,
       boostAvailable: usage.boostAvailable,
+      ...buildQuotaUsagePayload(usage),
     });
   }));
 
@@ -151,6 +190,63 @@ export function billingRoutes(): Router {
   }));
 
   /**
+   * POST /api/v1/billing/nexus-points/stripe-checkout
+   * Web-only Nexus Points Checkout. Identity comes from JWT auth middleware;
+   * body-supplied identity or attribution fields are rejected by design.
+   */
+  router.post('/nexus-points/stripe-checkout', rejectOversizedStripeNexusCheckoutBody, express.json({ limit: '8kb' }), asyncHandler(async (req: Request, res: Response) => {
+    if (!isStripeNexusPointsConfigured()) {
+      sendError(res, 'STRIPE_NOT_CONFIGURED', 'Stripe Nexus Points checkout is not configured', 503);
+      return;
+    }
+
+    const unexpectedFields = unexpectedStripeCheckoutBodyFields(req.body);
+    if (unexpectedFields.length > 0) {
+      sendError(res, 'UNEXPECTED_BODY_FIELDS', 'Unexpected body fields are not allowed for Stripe Nexus Points checkout', 400, {
+        fields: unexpectedFields,
+      });
+      return;
+    }
+
+    const userId = (req as any).userId;
+    const tenantId = (req as any).tenantId || userId;
+    const packageId = String(req.body?.packageId ?? '').trim();
+    if (!isNexusPointProductId(packageId)) {
+      sendError(res, 'BAD_REQUEST', 'packageId must be a known Nexus Points package', 400);
+      return;
+    }
+
+    let session;
+    try {
+      session = await createNexusPointsCheckoutSession({
+        userId,
+        tenantId,
+        packageId,
+        source: 'web',
+      });
+    } catch (err) {
+      if (isStripeNexusPointsIdempotencyConflictError(err)) {
+        sendError(res, 'IDEMPOTENCY_CONFLICT', err.message, 409);
+        return;
+      }
+      throw err;
+    }
+    logAudit({
+      tenantId,
+      userId,
+      actorId: userId,
+      action: 'billing.nexus_points.checkout_started',
+      resource: 'billing.nexus_points.stripe_checkout',
+      details: {
+        sessionId: session.sessionId,
+        packageId,
+        source: 'web',
+      },
+    });
+    sendSuccess(res, session);
+  }));
+
+  /**
    * POST /api/v1/billing/apple-verify
    * Verifies a StoreKit 2 JWS transaction from the iOS app.
    * Body: { jwsTransaction: string }
@@ -237,7 +333,8 @@ export function billingRoutes(): Router {
       }
 
       // ── Step 4: Extract and validate required fields ──
-      const originalTransactionId = payload.originalTransactionId || payload.transactionId;
+      const transactionId = payload.transactionId || payload.originalTransactionId;
+      const originalTransactionId = payload.originalTransactionId || transactionId;
       const productId = payload.productId;
 
       if (!originalTransactionId || !productId) {
@@ -256,6 +353,7 @@ export function billingRoutes(): Router {
       const knownProducts = [
         'me.nexushub.pro.monthly', 'me.nexushub.pro.yearly',
         'me.nexushub.max.monthly', 'me.nexushub.max.yearly',
+        ...listNexusPointPackages().map((pkg) => pkg.productId),
       ];
       if (!knownProducts.includes(productId)) {
         logger.warn({ userId, productId }, 'Apple verify: unknown product ID');
@@ -268,7 +366,7 @@ export function billingRoutes(): Router {
         ? new Date(payload.expiresDate).toISOString()
         : null;
 
-      if (expiresDate) {
+      if (expiresDate && !isNexusPointProductId(productId)) {
         const expiryMs = new Date(expiresDate).getTime();
         // Allow 24h grace period for clock skew and renewal processing
         if (expiryMs < Date.now() - 86400000) {
@@ -279,6 +377,36 @@ export function billingRoutes(): Router {
       }
 
       // ── Step 7: Process the verified transaction ──
+      if (isNexusPointProductId(productId)) {
+        const grant = grantNexusPoints({
+          userId,
+          provider: 'apple',
+          providerTransactionId: String(transactionId),
+          productId,
+          source: 'apple_iap',
+        });
+        logger.info({
+          userId,
+          productId,
+          transactionId,
+          granted: grant.granted,
+          creditId: grant.creditId,
+          environment: env || 'unknown',
+        }, 'Apple Nexus Points transaction verified and processed');
+
+        sendSuccess(res, {
+          ...buildBillingStatusPayload(userId),
+          nexusPointsPurchase: {
+            granted: grant.granted,
+            productId,
+            points: grant.package.points,
+            usdAllowance: grant.package.usdAllowance,
+            expiresInDays: 30,
+          },
+        });
+        return;
+      }
+
       handleAppleTransaction(userId, String(originalTransactionId), productId, expiresDate);
 
       logger.info({
@@ -288,8 +416,7 @@ export function billingRoutes(): Router {
         environment: env || 'unknown',
       }, 'Apple transaction verified and processed');
 
-      const status = getSubscriptionStatus(userId);
-      sendSuccess(res, status);
+      sendSuccess(res, buildBillingStatusPayload(userId));
     } catch (err: any) {
       logger.error({ err, userId }, 'Apple transaction verification failed');
       sendError(res, 'VERIFICATION_FAILED', 'Failed to verify Apple transaction', 400);

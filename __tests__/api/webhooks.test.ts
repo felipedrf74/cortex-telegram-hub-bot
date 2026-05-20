@@ -24,12 +24,47 @@ vi.mock('../../src/config', () => ({
       clientSecret: 'test_secret',
       webhookSecret: 'webhook_test_secret',
     },
+    stripe: {
+      secretKey: 'sk_test_webhook',
+      webhookSecret: 'whsec_test_webhook',
+      nexusPoints: { enabled: true },
+    },
   },
 }));
 
 const serviceMocks = vi.hoisted(() => ({
   syncProvider: vi.fn().mockResolvedValue({ tasksUpserted: 0, errors: [] }),
   invalidateTaskCaches: vi.fn(),
+  stripeConstructEvent: vi.fn(),
+  stripeCtor: vi.fn(function StripeMock(this: any) {
+    this.webhooks = { constructEvent: (...args: unknown[]) => serviceMocks.stripeConstructEvent(...args) };
+    return this;
+  }),
+  handleCheckoutCompleted: vi.fn(),
+  handleSubscriptionUpdated: vi.fn(),
+  handleSubscriptionDeleted: vi.fn(),
+  handleInvoicePaymentFailed: vi.fn(),
+  hasProcessedStripeWebhookEvent: vi.fn(),
+  markStripeWebhookEventProcessed: vi.fn(),
+  handleStripeNexusPointsEvent: vi.fn(),
+}));
+
+vi.mock('stripe', () => ({
+  default: serviceMocks.stripeCtor,
+}));
+
+vi.mock('../../src/services/stripe-service', () => ({
+  isStripeConfigured: vi.fn(() => true),
+  handleCheckoutCompleted: (...args: unknown[]) => serviceMocks.handleCheckoutCompleted(...args),
+  handleSubscriptionUpdated: (...args: unknown[]) => serviceMocks.handleSubscriptionUpdated(...args),
+  handleSubscriptionDeleted: (...args: unknown[]) => serviceMocks.handleSubscriptionDeleted(...args),
+  handleInvoicePaymentFailed: (...args: unknown[]) => serviceMocks.handleInvoicePaymentFailed(...args),
+  hasProcessedStripeWebhookEvent: (...args: unknown[]) => serviceMocks.hasProcessedStripeWebhookEvent(...args),
+  markStripeWebhookEventProcessed: (...args: unknown[]) => serviceMocks.markStripeWebhookEventProcessed(...args),
+}));
+
+vi.mock('../../src/services/stripe-nexus-points-service', () => ({
+  handleStripeNexusPointsEvent: (...args: unknown[]) => serviceMocks.handleStripeNexusPointsEvent(...args),
 }));
 
 // Mock the dependent services so the async processor doesn't crash
@@ -138,6 +173,15 @@ beforeEach(() => {
   _resetDeliveryCacheForTests();
   serviceMocks.syncProvider.mockClear();
   serviceMocks.invalidateTaskCaches.mockClear();
+  serviceMocks.stripeConstructEvent.mockReset();
+  serviceMocks.handleCheckoutCompleted.mockReset();
+  serviceMocks.handleSubscriptionUpdated.mockReset();
+  serviceMocks.handleSubscriptionDeleted.mockReset();
+  serviceMocks.handleInvoicePaymentFailed.mockReset();
+  serviceMocks.hasProcessedStripeWebhookEvent.mockReset();
+  serviceMocks.hasProcessedStripeWebhookEvent.mockReturnValue(false);
+  serviceMocks.markStripeWebhookEventProcessed.mockReset();
+  serviceMocks.handleStripeNexusPointsEvent.mockReset();
 });
 
 afterEach(() => {
@@ -266,5 +310,89 @@ describe('POST /webhooks/todoist', () => {
 
     await new Promise<void>((resolve) => server.close(() => resolve()));
     expect(res.status).toBe(400);
+  });
+});
+
+async function postStripeWebhook(rawBody: string, signature = 'sig_test'): Promise<{ status: number; body: any }> {
+  const app = express();
+  app.use('/webhooks', createWebhookRouter());
+
+  const server = app.listen(0);
+  const port = (server.address() as any).port;
+  const response = await new Promise<{ status: number; body: any }>((resolve, reject) => {
+    const req = http.request(
+      {
+        hostname: '127.0.0.1',
+        port,
+        method: 'POST',
+        path: '/webhooks/stripe',
+        headers: {
+          'Content-Type': 'application/json',
+          'Content-Length': String(Buffer.byteLength(rawBody)),
+          'Stripe-Signature': signature,
+        },
+      },
+      (res) => {
+        let data = '';
+        res.on('data', (chunk) => (data += chunk));
+        res.on('end', () => {
+          try { resolve({ status: res.statusCode || 0, body: data ? JSON.parse(data) : null }); }
+          catch { resolve({ status: res.statusCode || 0, body: data }); }
+        });
+      },
+    );
+    req.on('error', reject);
+    req.write(rawBody);
+    req.end();
+  });
+  await new Promise<void>((resolve) => server.close(() => resolve()));
+  return response;
+}
+
+describe('POST /webhooks/stripe', () => {
+  it('routes Nexus Points checkout events before subscription fallback', async () => {
+    const event = { id: 'evt_points', type: 'checkout.session.completed', data: { object: { id: 'cs_points', mode: 'payment' } } };
+    serviceMocks.stripeConstructEvent.mockReturnValue(event);
+    serviceMocks.handleStripeNexusPointsEvent.mockResolvedValue(true);
+
+    const res = await postStripeWebhook(JSON.stringify({ id: 'evt_points' }));
+    expect(res.status).toBe(200);
+    expect(serviceMocks.stripeConstructEvent).toHaveBeenCalledWith(expect.any(Buffer), 'sig_test', 'whsec_test_webhook');
+    expect(serviceMocks.handleStripeNexusPointsEvent).toHaveBeenCalledWith(event);
+    expect(serviceMocks.handleCheckoutCompleted).not.toHaveBeenCalled();
+  });
+
+  it('preserves subscription checkout handling when Nexus Points handler declines the event', async () => {
+    const session = { id: 'cs_sub', mode: 'subscription' };
+    const event = { id: 'evt_sub', type: 'checkout.session.completed', data: { object: session } };
+    serviceMocks.stripeConstructEvent.mockReturnValue(event);
+    serviceMocks.handleStripeNexusPointsEvent.mockResolvedValue(false);
+
+    const res = await postStripeWebhook(JSON.stringify({ id: 'evt_sub' }));
+
+    expect(res.status).toBe(200);
+    expect(serviceMocks.handleCheckoutCompleted).toHaveBeenCalledWith(session);
+  });
+
+  it('returns 400 for invalid Stripe signatures', async () => {
+    serviceMocks.stripeConstructEvent.mockImplementation(() => {
+      throw new Error('bad signature');
+    });
+
+    const res = await postStripeWebhook(JSON.stringify({ id: 'evt_bad' }), 'bad_sig');
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/Webhook signature verification failed/);
+  });
+
+  it('returns 500 for valid Stripe events that fail during processing', async () => {
+    const event = { id: 'evt_processing', type: 'charge.dispute.created', data: { object: { id: 'du_1' } } };
+    serviceMocks.stripeConstructEvent.mockReturnValue(event);
+    serviceMocks.handleStripeNexusPointsEvent.mockRejectedValue(new Error('database temporarily unavailable'));
+
+    const res = await postStripeWebhook(JSON.stringify({ id: 'evt_processing' }));
+
+    expect(res.status).toBe(500);
+    expect(res.body.error).toMatch(/processing failed/);
   });
 });

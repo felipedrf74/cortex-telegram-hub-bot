@@ -128,7 +128,8 @@ VALIDATION — Cross-check the total:
 export async function analyzeInvoiceImage(
   imageBase64: string,
   mediaType: 'image/jpeg' | 'image/png' | 'image/webp',
-  caption?: string
+  caption?: string,
+  options?: { userId?: number; tenantId?: number },
 ): Promise<InvoiceAnalysisResult> {
   const captionCtx = caption ? `\nCaption from user: ${sanitizeForPromptInterpolation(caption)}` : '';
   const userPrompt = `Analyze this image.${captionCtx}`;
@@ -151,7 +152,7 @@ export async function analyzeInvoiceImage(
           { type: 'text', text: userPrompt },
         ],
       }],
-    }, 'invoice_filing');
+    }, 'invoice_filing', options);
     rawText = response.content
       .filter((b): b is Anthropic.TextBlock => b.type === 'text')
       .map((b) => b.text)
@@ -177,13 +178,13 @@ export async function analyzeInvoiceImage(
               { type: 'text', text: userPrompt },
             ],
           }],
-        }, 'invoice_filing');
+        }, 'invoice_filing', options);
         return response.content
           .filter((b): b is Anthropic.TextBlock => b.type === 'text')
           .map((b) => b.text)
           .join('');
       },
-      { maxTokens: 400, temperature: 0 },
+      { maxTokens: 400, temperature: 0, userId: options?.userId, tenantId: options?.tenantId },
     );
     rawText = fallback.text;
     usedProvider = fallback.provider;

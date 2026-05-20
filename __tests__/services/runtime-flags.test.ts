@@ -6,14 +6,21 @@ import {
   canUseAnthropicRuntimeFallback,
   getAICallTimeoutMs,
   getChatHybridPlannerMode,
+  getDomainProviderExperimentOverrides,
   getGeminiDomainAllowlist,
   getGeminiIncludeSecretaryEnvOverride,
   getGeminiRoutingEnvOverride,
   isChatEscalationReviewerEnabled,
+  isChatBilingualEvalGateEnabled,
+  isChatContextCompilerEnabled,
   isChatHybridPlannerEnabled,
   isChatLlmTier1Enabled,
   isChatLlmTier2Enabled,
   isChatOpenSurfaceHandoffEnabled,
+  isChatQualityGateEnabled,
+  isChatResearchRouterEnabled,
+  isChatSkillResponsePolicyEnabled,
+  isChatTurnContractEnabled,
   isContentDeepResearchDisabled,
   isContentForceDraftOnlyEnabled,
   isContentFreshResearchDisabled,
@@ -67,6 +74,9 @@ describe('runtime-flags', () => {
     expect(
       getGeminiDomainAllowlist({ GEMINI_DOMAINS: 'triathlon, content , finance,, cooking ' }),
     ).toEqual(['triathlon', 'content', 'finance', 'cooking']);
+    expect(
+      getDomainProviderExperimentOverrides({ AI_DOMAIN_PROVIDER_OVERRIDES: 'cooking=openai, finance = openai, broken, content=gemini' }),
+    ).toEqual({ cooking: 'openai', finance: 'openai', content: 'gemini' });
   });
 
   it('treats secretary haiku routing as an explicit opt-in only', () => {
@@ -135,5 +145,24 @@ describe('runtime-flags', () => {
     expect(isContentDeepResearchDisabled(env, { userId: 7, tenantId: 99 })).toBe(true);
     expect(isContentFullLongformDisabled(env, { userId: 7, tenantId: 1 })).toBe(true);
     expect(isContentModelQualityAuditDisabled(env, { userId: 42, tenantId: 1 })).toBe(true);
+  });
+
+  it('keeps chat reliability rollout flags on by default with scoped rollback support', () => {
+    expect(isChatTurnContractEnabled({})).toBe(true);
+    expect(isChatSkillResponsePolicyEnabled({})).toBe(true);
+    expect(isChatContextCompilerEnabled({})).toBe(true);
+    expect(isChatResearchRouterEnabled({})).toBe(true);
+    expect(isChatQualityGateEnabled({})).toBe(true);
+    expect(isChatBilingualEvalGateEnabled({})).toBe(true);
+
+    expect(isChatTurnContractEnabled({ CHAT_TURN_CONTRACT_ENABLED: 'false' })).toBe(false);
+    expect(isChatResearchRouterEnabled({
+      CHAT_RESEARCH_ROUTER_ENABLED: 'true',
+      CHAT_RESEARCH_ROUTER_ENABLED_USER_42: 'false',
+    }, { userId: 42, tenantId: 99 })).toBe(false);
+    expect(isChatQualityGateEnabled({
+      CHAT_QUALITY_GATE_ENABLED: 'true',
+      CHAT_QUALITY_GATE_ENABLED_TENANT_99: 'false',
+    }, { userId: 42, tenantId: 99 })).toBe(false);
   });
 });

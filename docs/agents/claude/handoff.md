@@ -470,7 +470,7 @@ multi-tenant + billing correctness.
   never, if the user never paid). Now default is `tier='free'`.
 - **Portal was NOT the source of truth for per-plan caps** — every
   value was hardcoded in `src/services/plan-quotas.ts`. Admins had
-  to redeploy to change Pro's $0.20 cap. Migration 075 adds a
+  to redeploy to change Pro's cap. Migration 075 adds a
   `plan_configs` table. `GET /api/plans` + `PUT /api/plans/:planId`
   are the portal-facing CRUD. Boot hydrates from DB; runtime edits
   go straight to both DB and in-memory override.

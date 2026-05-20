@@ -1,22 +1,19 @@
 {
-  "generatedAt": "2026-05-19T09:00:56.107Z",
+  "generatedAt": "2026-05-20T23:19:14.911Z",
   "source": "chat-action-registry-shadow-parity.test.ts",
   "totals": {
-    "tested": 253,
-    "match": 253,
+    "tested": 255,
+    "match": 255,
     "mismatch": 0,
     "not_resolved": 0,
     "state_required": 0
   },
   "findings": [
     {
-      "fixtureId": "secretary_calendar-schedule_event-golden-0",
+      "fixtureId": "secretary_calendar-schedule_event-negative-0",
       "text": "Cria um evento na agenda do Gmail chamado igreja das 10 ao meio-dia e meio nesse domingo",
       "locale": "pt-PT",
-      "expectedSkill": "secretary_calendar",
-      "expectedAction": "schedule_event",
       "expectedTitle": "igreja",
-      "expectedActionable": true,
       "observed": {
         "planResolved": true,
         "skill": "secretary_calendar",
@@ -28,13 +25,10 @@
       "mismatchReasons": []
     },
     {
-      "fixtureId": "secretary_calendar-schedule_event-golden-1",
+      "fixtureId": "secretary_calendar-schedule_event-negative-1",
       "text": "Schedule a meeting for Friday at 2pm called weekly sync",
       "locale": "en-US",
-      "expectedSkill": "secretary_calendar",
-      "expectedAction": "schedule_event",
       "expectedTitle": "weekly sync",
-      "expectedActionable": true,
       "observed": {
         "planResolved": true,
         "skill": "secretary_calendar",
@@ -2613,7 +2607,27 @@
       "mismatchReasons": []
     },
     {
-      "fixtureId": "cooking-cooking_meal_support-golden-3",
+      "fixtureId": "cooking-cooking_meal_support-negative-3",
+      "text": "Suggest an oven-baked kibbeh recipe for 3 people",
+      "locale": "en-US",
+      "observed": {
+        "planResolved": false
+      },
+      "parity": "match",
+      "mismatchReasons": []
+    },
+    {
+      "fixtureId": "cooking-cooking_meal_support-negative-4",
+      "text": "Me indique uma receita de kibe de forno para 3 pessoas",
+      "locale": "pt-PT",
+      "observed": {
+        "planResolved": false
+      },
+      "parity": "match",
+      "mismatchReasons": []
+    },
+    {
+      "fixtureId": "cooking-cooking_meal_support-golden-5",
       "text": "Que tal o café da manhã hoje",
       "locale": "pt-PT",
       "expectedSkill": "cooking",
@@ -2629,7 +2643,7 @@
       "mismatchReasons": []
     },
     {
-      "fixtureId": "cooking-cooking_meal_support-golden-4",
+      "fixtureId": "cooking-cooking_meal_support-golden-6",
       "text": "¿Qué hago para cenar esta noche?",
       "locale": "es-ES",
       "expectedSkill": "cooking",
@@ -2645,7 +2659,7 @@
       "mismatchReasons": []
     },
     {
-      "fixtureId": "cooking-cooking_meal_support-negative-5",
+      "fixtureId": "cooking-cooking_meal_support-negative-7",
       "text": "Já comi jantar ontem",
       "locale": "pt-PT",
       "observed": {

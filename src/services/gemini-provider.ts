@@ -44,6 +44,8 @@ import { withTimeout } from '../utils/timeout';
 import { getAICallTimeoutMs, isAnthropicRuntimeEnabled } from './runtime-flags';
 import { buildScopedStateContextPrefix } from './provider-state-context';
 import { getDomainModelOverride, type DomainModelRole } from './model-config';
+import { computeModelUsageCostUsd, recordUnresolvedModelPricingAlert, resolveModelPricing } from './model-pricing';
+import { settleNexusPointOverageForUser } from './nexus-points';
 
 // ─── Client (lazy init — only created if API key is set) ────────────
 
@@ -66,32 +68,48 @@ export function isGeminiProviderConfigured(): boolean {
 
 // ─── Cost per million tokens ────────────────────────────────────────
 
-const GEMINI_COST_PER_MTK: Record<string, { in: number; out: number }> = {
-  'gemini-3.1-pro':         { in: 2.00, out: 12.00 },
-  'gemini-3-flash':         { in: 0.50, out: 3.00 },
-  'gemini-2.5-flash':       { in: 0.30, out: 2.50 },
-  'gemini-2.5-flash-lite':  { in: 0.10, out: 0.40 },
-  'gemini-2.0-flash':       { in: 0.10, out: 0.40 },  // legacy, deprecated June 2026
-  'gemini-1.5-pro':         { in: 1.25, out: 5.00 },  // legacy
-};
-
-function computeGeminiCost(model: string, usage: { promptTokenCount: number; candidatesTokenCount: number }): number {
-  const key = Object.keys(GEMINI_COST_PER_MTK).find(k => model.startsWith(k)) ?? 'gemini-2.5-flash';
-  const rates = GEMINI_COST_PER_MTK[key];
-  return (usage.promptTokenCount / 1_000_000) * rates.in +
-         (usage.candidatesTokenCount / 1_000_000) * rates.out;
+export function resolveGeminiCostModelKey(model: string): string {
+  return resolveModelPricing(model, 'gemini')?.model ?? 'pricing-unresolved';
 }
 
-function logGeminiUsage(
+const warnedUnresolvedModels = new Set<string>();
+
+function warnUnresolvedGeminiPricing(model: string, category: string, userId: number): void {
+  const key = `${model}:${category}`;
+  if (warnedUnresolvedModels.has(key)) return;
+  warnedUnresolvedModels.add(key);
+  recordUnresolvedModelPricingAlert({ provider: 'gemini', model, category, userId });
+}
+
+export function computeGeminiCost(model: string, usage: { promptTokenCount: number; candidatesTokenCount: number; cachedContentTokenCount?: number }): number {
+  return computeModelUsageCostUsd(model, {
+    inputTokens: usage.promptTokenCount,
+    outputTokens: usage.candidatesTokenCount,
+    cacheReadTokens: usage.cachedContentTokenCount ?? 0,
+  }, 'gemini').costUsd;
+}
+
+async function logGeminiUsage(
   model: string,
   category: string,
-  usage: { promptTokenCount: number; candidatesTokenCount: number },
+  usage: { promptTokenCount: number; candidatesTokenCount: number; cachedContentTokenCount?: number },
   durationMs: number,
   userId: number = 0,
   tenantId: number = userId,
-): void {
+): Promise<void> {
+  const cacheReadTokens = usage.cachedContentTokenCount ?? 0;
+  const priced = computeModelUsageCostUsd(model, {
+    inputTokens: usage.promptTokenCount,
+    outputTokens: usage.candidatesTokenCount,
+    cacheReadTokens,
+  }, 'gemini');
+  if (!priced.pricingResolved) {
+    warnUnresolvedGeminiPricing(model, category, userId);
+  }
+  const cost = priced.costUsd;
+  const pricingStatus = priced.pricingResolved ? 'resolved' : 'unresolved';
+  let apiUsageId: number | null = null;
   try {
-    const cost = computeGeminiCost(model, usage);
     const db = getDb();
     // April 9 2026: persist `user_id` into the INSERT. Previously
     // omitted, so every Gemini row silently had user_id=0 via the
@@ -100,10 +118,11 @@ function logGeminiUsage(
     // Per-user cost enforcement (cost-guardrail.isUserOverDailyCap)
     // was effectively disabled until both INSERT statements were
     // updated.
-    db.prepare(`
-      INSERT INTO api_usage (category, model, tenant_id, user_id, input_tokens, output_tokens, cost_usd, duration_ms, provider)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'gemini')
-    `).run(category, model, tenantId, userId, usage.promptTokenCount, usage.candidatesTokenCount, cost, durationMs);
+    const result = db.prepare(`
+      INSERT INTO api_usage (category, model, tenant_id, user_id, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, cost_usd, duration_ms, provider, pricing_status, pricing_model_key)
+      VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?, 'gemini', ?, ?)
+    `).run(category, model, tenantId, userId, usage.promptTokenCount, usage.candidatesTokenCount, cacheReadTokens, cost, durationMs, pricingStatus, priced.pricingModelKey);
+    apiUsageId = Number((result as { lastInsertRowid?: number | bigint } | undefined)?.lastInsertRowid ?? 0);
 
     pushEvent({
       ts: new Date().toISOString(),
@@ -111,14 +130,16 @@ function logGeminiUsage(
       summary: `Gemini ${model}: ${usage.promptTokenCount}+${usage.candidatesTokenCount} tokens ($${cost.toFixed(4)})`,
       durationMs,
     });
+    await settleNexusPointOverageForUser(userId, apiUsageId);
   } catch (err) {
     try {
-      const cost = computeGeminiCost(model, usage);
       const db = getDb();
-      db.prepare(`
-        INSERT INTO api_usage (category, model, user_id, input_tokens, output_tokens, cost_usd, duration_ms, provider)
-        VALUES (?, ?, ?, ?, ?, ?, ?, 'gemini')
-      `).run(category, model, userId, usage.promptTokenCount, usage.candidatesTokenCount, cost, durationMs);
+      const result = db.prepare(`
+        INSERT INTO api_usage (category, model, user_id, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, cost_usd, duration_ms, provider)
+        VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?, 'gemini')
+      `).run(category, model, userId, usage.promptTokenCount, usage.candidatesTokenCount, cacheReadTokens, cost, durationMs);
+      apiUsageId = Number((result as { lastInsertRowid?: number | bigint } | undefined)?.lastInsertRowid ?? 0);
+      await settleNexusPointOverageForUser(userId, apiUsageId);
     } catch (fallbackErr) {
       logger.warn({ err: fallbackErr }, 'Failed to log Gemini usage');
     }
@@ -138,7 +159,7 @@ function logGeminiUsage(
  * Returns plain text. Throws on Gemini errors so the caller can fall
  * back to Anthropic if it wants to.
  *
- * Default model is `config.gemini.model` (gemini-3-flash). For high-stakes
+ * Default model is `config.gemini.model` (gemini-2.5-flash). For high-stakes
  * analytical calls (e.g. coach_analysis with ~12K input tokens), this is
  * ~5.5× cheaper per call than Claude Sonnet 4.6 with comparable quality.
  */
@@ -203,12 +224,13 @@ export async function completeOneShot(
 
   const usage = result.response.usageMetadata;
   if (usage) {
-    logGeminiUsage(
+    await logGeminiUsage(
       model,
       category,
       {
         promptTokenCount: usage.promptTokenCount ?? 0,
         candidatesTokenCount: usage.candidatesTokenCount ?? 0,
+        cachedContentTokenCount: usage.cachedContentTokenCount ?? 0,
       },
       durationMs,
       options?.userId ?? 0,
@@ -279,12 +301,13 @@ export async function completeOneShotWithSearch(
 
   const usage = result.response.usageMetadata;
   if (usage) {
-    logGeminiUsage(
+    await logGeminiUsage(
       model,
       category,
       {
         promptTokenCount: usage.promptTokenCount ?? 0,
         candidatesTokenCount: usage.candidatesTokenCount ?? 0,
+        cachedContentTokenCount: usage.cachedContentTokenCount ?? 0,
       },
       durationMs,
       options?.userId ?? 0,
@@ -369,12 +392,13 @@ export async function completeVisionOneShot(
 
   const usage = result.response.usageMetadata;
   if (usage) {
-    logGeminiUsage(
+    await logGeminiUsage(
       model,
       category,
       {
         promptTokenCount: usage.promptTokenCount ?? 0,
         candidatesTokenCount: usage.candidatesTokenCount ?? 0,
+        cachedContentTokenCount: usage.cachedContentTokenCount ?? 0,
       },
       durationMs,
       options?.userId ?? 0,
@@ -591,7 +615,7 @@ function toGeminiFunctionDeclarations(tools: Anthropic.Tool[]): FunctionDeclarat
  * resolve it to the actual SDK model identifier here.
  *
  * Tier mapping:
- *   - heavy → config.gemini.model            (gemini-3-flash)
+ *   - heavy → config.gemini.model            (gemini-2.5-flash)
  *   - light → config.gemini.classifierModel  (gemini-2.5-flash-lite)
  *
  * When tier is omitted, falls back to getModelRouting() which returns
@@ -749,9 +773,10 @@ export class GeminiProvider implements AIProvider {
 
     const usage = result.response.usageMetadata;
     if (usage) {
-      logGeminiUsage(routing.model, usageCategory, {
+      await logGeminiUsage(routing.model, usageCategory, {
         promptTokenCount: usage.promptTokenCount ?? 0,
         candidatesTokenCount: usage.candidatesTokenCount ?? 0,
+        cachedContentTokenCount: usage.cachedContentTokenCount ?? 0,
       }, durationMs, usageContext?.userId ?? 0, usageContext?.tenantId ?? usageContext?.userId ?? 0);
     }
 
@@ -785,9 +810,10 @@ ${message}`;
 
       const usage = result.response.usageMetadata;
       if (usage) {
-        logGeminiUsage(config.gemini.classifierModel, 'gemini_classify', {
+        await logGeminiUsage(config.gemini.classifierModel, 'gemini_classify', {
           promptTokenCount: usage.promptTokenCount ?? 0,
           candidatesTokenCount: usage.candidatesTokenCount ?? 0,
+          cachedContentTokenCount: usage.cachedContentTokenCount ?? 0,
         }, durationMs);
       }
 

@@ -185,10 +185,29 @@ function runMigrations(): void {
   for (const file of files) {
     if (applied.has(file)) continue;
     const sql = fs.readFileSync(path.join(migrationsDir, file), 'utf-8');
-    db.exec(sql);
+    db.exec(filterAlreadyAppliedAddColumnStatements(sql));
     db.prepare('INSERT INTO _migrations (filename) VALUES (?)').run(file);
     logger.info({ migration: file }, 'Migration applied');
   }
+}
+
+function filterAlreadyAppliedAddColumnStatements(sql: string): string {
+  return sql
+    .split('\n')
+    .filter((line) => {
+      const match = line.trim().match(/^ALTER\s+TABLE\s+([A-Za-z_][\w]*)\s+ADD\s+COLUMN\s+([A-Za-z_][\w]*)\b/i);
+      if (!match) return true;
+      const [, table, column] = match;
+      try {
+        const columns = db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
+        if (!columns.some((entry) => entry.name === column)) return true;
+        logger.warn({ table, column }, 'Migration ADD COLUMN already applied; skipping duplicate column statement');
+        return false;
+      } catch {
+        return true;
+      }
+    })
+    .join('\n');
 }
 
 export function closeDatabase(): void {

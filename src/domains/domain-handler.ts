@@ -11,6 +11,8 @@ import { ensureActiveProvider, getActiveProvider } from '../services/provider-re
 import { getDailyContext } from '../services/context-engine';
 import { buildSharedDecisionContext } from '../services/shared-decision-context';
 import { buildChatPromptContextBlock } from '../services/chat-context-engine';
+import { inferChatTurnContract } from '../services/chat-turn-contract';
+import { isChatContextCompilerEnabled } from '../services/runtime-flags';
 import { buildAIUnavailableResponse, canUseDirectAnthropicFallback } from './ai-unavailable';
 // Phase 13 batch 71 (2026-05-16): training intent detector moved to the
 // per-skill module (was inline regex in this file). Closes Phase 0 audit
@@ -227,10 +229,11 @@ export async function buildSimpleStateContext(
   tenantId?: number,
 ): Promise<string> {
   const hasUserScope = typeof userId === 'number';
+  const includeScopedContext = shouldIncludeScopedStateContext(domain, hasUserScope, message);
   const parts: string[] = [];
   parts.push(`Today: ${now().toFormat('cccc, LLLL dd yyyy, HH:mm')} (Europe/Lisbon)`);
 
-  const todos = hasUserScope ? listTodos(userId, { domain, status: 'pending' }) : [];
+  const todos = includeScopedContext ? listTodos(userId!, { domain, status: 'pending' }) : [];
   if (todos.length > 0) {
     const label = domain.charAt(0).toUpperCase() + domain.slice(1);
     parts.push(`\n${label} to-dos (${todos.length}):`);
@@ -242,7 +245,7 @@ export async function buildSimpleStateContext(
   }
 
   // Inject last coach recommendations for triathlon domain
-  if (domain === 'triathlon' && userId) {
+  if (includeScopedContext && domain === 'triathlon' && userId) {
     const coachState = getLastCoachState(userId);
     if (coachState && coachState.recommendations.length > 0) {
       parts.push(`\n[COACH RECOMMENDATIONS — ${new Date(coachState.timestamp).toISOString()}]`);
@@ -276,7 +279,7 @@ export async function buildSimpleStateContext(
   }
 
   // Active training plan context for triathlon domain
-  if (domain === 'triathlon' && userId) {
+  if (includeScopedContext && domain === 'triathlon' && userId) {
     try {
       const planSummary = getActivePlanSummary(userId);
       if (planSummary) parts.push(`\n${planSummary}`);
@@ -291,7 +294,7 @@ export async function buildSimpleStateContext(
   // <athlete_profile> block the coach persona can reference directly.
   // Empty string when the user hasn't completed any — we don't add
   // noise to the prompt.
-  if (domain === 'triathlon' && userId) {
+  if (includeScopedContext && domain === 'triathlon' && userId) {
     try {
       const profileBlock = formatAthleteProfileBlock(userId);
       if (profileBlock) parts.push(`\n${profileBlock}`);
@@ -308,7 +311,7 @@ export async function buildSimpleStateContext(
   //
   // This runs AFTER the athlete_profile block so the coach sees both
   // "what you already know" and "what's still missing" in one pass.
-  if (domain === 'triathlon' && userId && message) {
+  if (includeScopedContext && domain === 'triathlon' && userId && message) {
     try {
       const onboardingBlock = buildOnboardingPendingBlock(userId, message);
       if (onboardingBlock) parts.push(`\n${onboardingBlock}`);
@@ -323,7 +326,7 @@ export async function buildSimpleStateContext(
   // plus running + cycling weekly volume. Each sport independently
   // returns empty string when the user has no data, so the block
   // only shows up for the sports the user actually trains.
-  if (domain === 'triathlon' && userId) {
+  if (includeScopedContext && domain === 'triathlon' && userId) {
     try {
       const strength = getStrengthProgression(userId, 8);
       const running = getCardioProgression(userId, 'running', 8);
@@ -370,7 +373,7 @@ export async function buildSimpleStateContext(
   }
 
   // Cross-domain shared context
-  const sharedCtx = hasUserScope ? getSharedMemorySummary(userId, tenantId) : '';
+  const sharedCtx = includeScopedContext ? getSharedMemorySummary(userId!, tenantId) : '';
   if (sharedCtx) parts.push(sharedCtx);
 
   if (domain === 'cooking' && hasUserScope) {
@@ -392,8 +395,8 @@ export async function buildSimpleStateContext(
     }
   }
 
-  if (hasUserScope) {
-    const decisionCtx = await buildSharedDecisionContext(domain, userId, tenantId);
+  if (includeScopedContext) {
+    const decisionCtx = await buildSharedDecisionContext(domain, userId!, tenantId);
     if (decisionCtx) parts.push(`\n${decisionCtx}`);
   }
 
@@ -402,25 +405,38 @@ export async function buildSimpleStateContext(
   // 5+ speculative tool calls the AI used to make to gather "what's my
   // day looking like?" before answering. Cost: ~500 tokens per message
   // instead of ~1350. See src/services/context-engine.ts.
-  if (hasUserScope) {
-    const dailyContext = getDailyContext(userId, tenantId);
+  if (includeScopedContext) {
+    const dailyContext = getDailyContext(userId!, tenantId);
     if (dailyContext) {
       parts.push('\n--- Daily Context ---\n' + dailyContext);
     }
   }
 
-  if (hasUserScope) {
+  if (includeScopedContext) {
     const promptContext = await buildChatPromptContextBlock({
       domain,
       message: message ?? '',
-      userId,
+      userId: userId!,
       tenantId,
       budgetChars: 1800,
     });
     if (promptContext) parts.push(`\n${promptContext}`);
   }
 
+  if (includeScopedContext) {
+    parts.push('\nLocal grounding rule: answer only from scoped Nexus facts listed above. If the requested local item is absent, say no matching local records were found instead of inventing it.');
+  }
+
   return parts.join('\n');
+}
+
+function shouldIncludeScopedStateContext(domain: DomainName, hasUserScope: boolean, message?: string): boolean {
+  if (!hasUserScope) return false;
+  if (!isChatContextCompilerEnabled()) return true;
+  if (!message || !message.trim()) return true;
+  if (domain === 'triathlon' && isTrainingPrescriptionIntent(message)) return true;
+  const contract = inferChatTurnContract({ message, routedDomain: domain });
+  return contract.groundingRequired !== 'none';
 }
 
 /**

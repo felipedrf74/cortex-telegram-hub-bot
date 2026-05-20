@@ -63,6 +63,18 @@ export function getGeminiDomainAllowlist(env: RuntimeEnv = process.env): string[
     .filter(Boolean);
 }
 
+export function getDomainProviderExperimentOverrides(env: RuntimeEnv = process.env): Record<string, string> {
+  const raw = env.AI_DOMAIN_PROVIDER_OVERRIDES;
+  if (!raw?.trim()) return {};
+  const overrides: Record<string, string> = {};
+  for (const entry of raw.split(',')) {
+    const [domain, provider] = entry.split('=').map((part) => part?.trim());
+    if (!domain || !provider) continue;
+    overrides[domain] = provider;
+  }
+  return overrides;
+}
+
 export function isSecretaryHaikuRoutingEnabled(env: RuntimeEnv = process.env): boolean {
   return env.SECRETARY_HAIKU_ROUTING_ENABLED === 'true';
 }
@@ -150,4 +162,28 @@ export function isDecisionStreakV1Enabled(env: RuntimeEnv = process.env, scope?:
 
 export function isSecretaryOrchestrationSnapshotV1Enabled(env: RuntimeEnv = process.env, scope?: RuntimeFlagScope): boolean {
   return scopedFlagEnabledByDefault(env, 'SECRETARY_ORCHESTRATION_SNAPSHOT_V1_ENABLED', scope);
+}
+
+export function isChatTurnContractEnabled(env: RuntimeEnv = process.env, scope?: RuntimeFlagScope): boolean {
+  return scopedEnvValue(env, 'CHAT_TURN_CONTRACT_ENABLED', scope) !== 'false';
+}
+
+export function isChatSkillResponsePolicyEnabled(env: RuntimeEnv = process.env, scope?: RuntimeFlagScope): boolean {
+  return scopedEnvValue(env, 'CHAT_SKILL_RESPONSE_POLICY_ENABLED', scope) !== 'false';
+}
+
+export function isChatContextCompilerEnabled(env: RuntimeEnv = process.env, scope?: RuntimeFlagScope): boolean {
+  return scopedEnvValue(env, 'CHAT_CONTEXT_COMPILER_ENABLED', scope) !== 'false';
+}
+
+export function isChatResearchRouterEnabled(env: RuntimeEnv = process.env, scope?: RuntimeFlagScope): boolean {
+  return scopedEnvValue(env, 'CHAT_RESEARCH_ROUTER_ENABLED', scope) !== 'false';
+}
+
+export function isChatQualityGateEnabled(env: RuntimeEnv = process.env, scope?: RuntimeFlagScope): boolean {
+  return scopedEnvValue(env, 'CHAT_QUALITY_GATE_ENABLED', scope) !== 'false';
+}
+
+export function isChatBilingualEvalGateEnabled(env: RuntimeEnv = process.env, scope?: RuntimeFlagScope): boolean {
+  return scopedEnvValue(env, 'CHAT_BILINGUAL_EVAL_GATE_ENABLED', scope) !== 'false';
 }

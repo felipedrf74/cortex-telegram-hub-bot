@@ -104,7 +104,7 @@ const CAPABILITIES: ChatSkillCapability[] = [
     fallbackPolicy: 'decision_center',
   }),
   buildCapability('cooking', {
-    readableFacts: ['meal.plan', 'grocery.list', 'fueling.support'],
+    readableFacts: ['recipe.advice', 'meal.plan', 'grocery.list', 'fueling.support', 'pantry.preferences'],
     executableActions: ['add_meal_support', 'skip_meal_support', 'create_grocery_list'],
     requiredFields: ['mealOrSessionReference'],
     confirmationPolicy: 'high_risk',

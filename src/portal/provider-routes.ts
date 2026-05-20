@@ -3,6 +3,7 @@
 import express, { type Express, type Request, type Response } from 'express';
 import { requirePortalAdminToken } from '../api/secret-guards';
 import { sendPortalInternalError } from './http';
+import { resolveModelPricing } from '../services/model-pricing';
 
 const VALID_DOMAINS = new Set(['secretary', 'triathlon', 'content', 'finance', 'cooking']);
 const VALID_MODEL_PROVIDERS = new Set(['anthropic', 'openai', 'gemini']);
@@ -258,10 +259,14 @@ export function registerPortalProviderRoutes(app: Express, deps: PortalProviderR
         FROM api_usage WHERE category = 'secretary' AND ts >= date('now', '-7 days')
       `).get?.() as any;
       if (secretarySpend?.cost > 0) {
+        const secretaryPricing = resolveModelPricing('gpt-5.4-nano', 'openai');
+        const rateCopy = secretaryPricing
+          ? `$${secretaryPricing.inputUsdPerMillion}/$${secretaryPricing.outputUsdPerMillion} per 1M tokens`
+          : 'pricing unresolved';
         insights.push({
           type: 'info',
           title: 'Secretary domain cost',
-          detail: `$${secretarySpend.cost.toFixed(2)} / ${secretarySpend.calls} calls this week. Currently on GPT-5.4 nano ($0.20/$1.25 per 1M tokens).`,
+          detail: `$${secretarySpend.cost.toFixed(2)} / ${secretarySpend.calls} calls this week. Currently on GPT-5.4 nano (${rateCopy}).`,
         });
       }
 

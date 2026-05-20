@@ -93,6 +93,7 @@ import { invalidateCalendarCaches } from './cache-coherence-registry';
 import { getTaskProviderForUser } from './task-store/task-router';
 import { resolveTaskCreationList } from './task-store/task-list-resolution';
 import { completeOneShot, isGeminiProviderConfigured } from './gemini-provider';
+import { computeModelUsageCostUsd } from './model-pricing';
 import {
   buildContentAgencyPackage,
   getContentAgencyProject,
@@ -2251,7 +2252,7 @@ async function tryBuildLlmStructuredPlan(input: ChatPlannerInput): Promise<ChatA
     if (plan?.telemetry) {
       plan.telemetry.modelProvider = result.provider;
       plan.telemetry.model = result.model;
-      plan.telemetry.estimatedTokenCostUsd = estimatePlannerCallCostUsd(result.model, prompt.systemPrompt, prompt.userPrompt, result.text);
+      plan.telemetry.estimatedTokenCostUsd = estimatePlannerCallCostUsd(result.provider, result.model, prompt.systemPrompt, prompt.userPrompt, result.text);
     }
     return plan;
   } catch (err) {
@@ -2284,7 +2285,7 @@ async function tryBuildTier1ClassifierPlan(input: ChatPlannerInput): Promise<Cha
     if (plan?.telemetry) {
       plan.telemetry.modelProvider = 'gemini';
       plan.telemetry.model = CHAT_LLM_TIER1_GEMINI_MODEL;
-      plan.telemetry.estimatedTokenCostUsd = estimatePlannerCallCostUsd(CHAT_LLM_TIER1_GEMINI_MODEL, prompt.systemPrompt, prompt.userPrompt, text);
+      plan.telemetry.estimatedTokenCostUsd = estimatePlannerCallCostUsd('gemini', CHAT_LLM_TIER1_GEMINI_MODEL, prompt.systemPrompt, prompt.userPrompt, text);
     }
     return plan;
   } catch (err) {
@@ -2314,7 +2315,7 @@ async function tryBuildEscalationReviewerPlan(input: ChatPlannerInput): Promise<
     if (plan?.telemetry) {
       plan.telemetry.modelProvider = result.provider;
       plan.telemetry.model = result.model;
-      plan.telemetry.estimatedTokenCostUsd = estimatePlannerCallCostUsd(result.model, prompt.systemPrompt, prompt.userPrompt, result.text);
+      plan.telemetry.estimatedTokenCostUsd = estimatePlannerCallCostUsd(result.provider, result.model, prompt.systemPrompt, prompt.userPrompt, result.text);
     }
     return plan;
   } catch (err) {
@@ -4745,23 +4746,18 @@ function summarizeSlotProvenance(plan: ChatActionPlan): Record<string, unknown> 
   return summary;
 }
 
-function estimatePlannerCallCostUsd(model: string, systemPrompt: string, userPrompt: string, outputText: string): number {
+function estimatePlannerCallCostUsd(provider: 'gemini' | 'openai', model: string, systemPrompt: string, userPrompt: string, outputText: string): number {
   const inputTokens = estimateTokens(systemPrompt) + estimateTokens(userPrompt);
   const outputTokens = estimateTokens(outputText);
-  const rates = plannerModelRates(model);
-  return Number((((inputTokens / 1_000_000) * rates.input) + ((outputTokens / 1_000_000) * rates.output)).toFixed(8));
+  const priced = computeModelUsageCostUsd(model, { inputTokens, outputTokens }, provider);
+  if (!priced.pricingResolved) {
+    logger.warn({ model, inputTokens, outputTokens }, 'Chat action planner cost estimate has unresolved model pricing');
+  }
+  return Number(priced.costUsd.toFixed(8));
 }
 
 function estimateTokens(text: string): number {
   return Math.max(1, Math.ceil(text.length / 4));
-}
-
-function plannerModelRates(model: string): { input: number; output: number } {
-  if (model.startsWith('gemini-2.5-flash-lite')) return { input: 0.10, output: 0.40 };
-  if (model.startsWith('gemini-2.5-flash')) return { input: 0.30, output: 2.50 };
-  if (model.startsWith('gpt-5.4-nano') || model.startsWith('gpt-5-nano')) return { input: 0.20, output: 1.25 };
-  if (model.startsWith('gpt-5.4-mini') || model.startsWith('gpt-5-mini')) return { input: 0.75, output: 4.50 };
-  return { input: 0.30, output: 2.50 };
 }
 
 // actionToStepType and pickExpectedFields moved to skills/step-builder.ts.

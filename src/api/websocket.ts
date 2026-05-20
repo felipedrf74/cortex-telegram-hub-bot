@@ -22,6 +22,19 @@ import { verifyIosJwt } from '../services/ios-jwt';
 import { getUserLanguageById, getUserTimezoneById, resolveCurrentTenantIdForUser } from '../services/user-service';
 import { config } from '../config';
 import { tryHandleChatActionPlan } from '../services/chat-action-planner';
+import {
+  analyzeChatSkillOrchestration,
+  applyChatSkillRoutingDecision,
+  buildChatSkillRoutingLogContext,
+} from '../services/chat-skill-orchestrator';
+import { inferChatTurnContract, type ChatTurnContract } from '../services/chat-turn-contract';
+import { buildChatInternetResearchAnswer } from '../services/chat-internet-research';
+import {
+  isChatResearchRouterEnabled,
+  isChatTurnContractEnabled,
+} from '../services/runtime-flags';
+import { buildSimpleStateContext } from '../domains/domain-handler';
+import type { NexusChatOwnerSkill } from '../services/chat-answer-contract';
 
 const WEBSOCKET_RATE_WINDOW_MS = 60_000;
 const DEFAULT_ALLOWED_WEBSOCKET_ORIGINS = [
@@ -288,7 +301,39 @@ export function attachWebSocket(server: http.Server): void {
               return;
             }
 
-            const route = await routeMessage(msg.text, undefined, userId, tenantId);
+            const messageText = String(msg.text);
+            const preRoutingDecision = analyzeChatSkillOrchestration({
+              message: messageText,
+              userId,
+              tenantId,
+            });
+            const preTurnContract = isChatTurnContractEnabled(process.env, { userId, tenantId })
+              ? inferChatTurnContract({
+                message: messageText,
+                involvedSkills: preRoutingDecision.involvedSkills,
+              })
+              : null;
+            const rawRoute = await routeMessage(messageText, undefined, userId, tenantId);
+            const contractAwareRoute = preTurnContract ? applyWebSocketTurnContractRouteHint(rawRoute, preTurnContract) : rawRoute;
+            const routingDecision = analyzeChatSkillOrchestration({
+              message: messageText,
+              routedDomain: contractAwareRoute.domain,
+              userId,
+              tenantId,
+            });
+            const route = applyChatSkillRoutingDecision(contractAwareRoute, routingDecision);
+            logger.info(
+              {
+                userId,
+                tenantId,
+                domain: route.domain,
+                method: route.method,
+                orchestration: buildChatSkillRoutingLogContext(routingDecision),
+                contractSkill: preTurnContract?.skill ?? null,
+                contractRouteKind: preTurnContract?.routeKind ?? null,
+              },
+              'iOS WebSocket message routed',
+            );
 
         // ─── Phase 1 Slice C — Tier gate for iOS WebSocket stream ───
         // Same gate as the REST chat endpoint. We emit an 'error' frame
@@ -332,6 +377,74 @@ export function attachWebSocket(server: http.Server): void {
                 }));
                 ws.close(1011, 'Access check unavailable');
               }
+              return;
+            }
+
+            if (preTurnContract?.riskClass === 'destructive' || routingDecision.safety.destructive) {
+              const text = preTurnContract?.language === 'pt' || preTurnContract?.language === 'mixed'
+                ? 'Não vou executar ações destrutivas por streaming sem uma confirmação verificada no Nexus. Abre o app/Decision Center para rever e confirmar com segurança.'
+                : 'I will not execute destructive streaming actions without verified Nexus confirmation. Open the app or Decision Center to review and confirm safely.';
+              await streamTextFrame(ws, { text, messageId, userId, tenantId });
+              if (ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({
+                  type: 'done',
+                  messageId,
+                  domain: route.domain,
+                  userId,
+                  tenantId,
+                  metadata: {
+                    type: 'chat_destructive_guardrail',
+                    riskClass: preTurnContract?.riskClass ?? 'destructive',
+                    routeKind: preTurnContract?.routeKind ?? 'action',
+                  },
+                }));
+              }
+              logger.warn({ userId, tenantId, domain: route.domain }, 'iOS WebSocket destructive chat turn blocked');
+              return;
+            }
+
+            if (
+              isChatResearchRouterEnabled(process.env, { userId, tenantId })
+              && preTurnContract?.routeKind === 'internet_research'
+              && (preTurnContract.groundingRequired === 'web' || preTurnContract.groundingRequired === 'local_and_web')
+            ) {
+              const researchDomain = domainForWebSocketTurnContractSkill(preTurnContract.skill) ?? route.domain;
+              const localContext = preTurnContract.groundingRequired === 'local_and_web'
+                ? await buildSimpleStateContext(researchDomain, userId, messageText, tenantId)
+                : null;
+              const research = await buildChatInternetResearchAnswer({
+                message: messageText,
+                language: preTurnContract.language,
+                skill: preTurnContract.skill,
+                expectedResponseShape: preTurnContract.expectedResponseShape,
+                userId,
+                tenantId,
+                groundingRequired: preTurnContract.groundingRequired,
+                localContext,
+              });
+              await streamTextFrame(ws, { text: research.text, messageId, userId, tenantId });
+              if (ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({
+                  type: 'done',
+                  messageId,
+                  domain: researchDomain,
+                  userId,
+                  tenantId,
+                  metadata: {
+                    type: 'chat_internet_research',
+                    webSources: research.sources,
+                    degraded: research.degraded,
+                    degradedReason: research.degradedReason ?? null,
+                    routeKind: preTurnContract.routeKind,
+                    groundingRequired: preTurnContract.groundingRequired,
+                    contextCompiler: research.context ?? null,
+                  },
+                }));
+              }
+              logger.info(
+                { userId, tenantId, domain: researchDomain, sourceCount: research.sources.length, degraded: research.degraded },
+                'iOS WebSocket handled selective internet research turn',
+              );
               return;
             }
 
@@ -392,4 +505,47 @@ export function attachWebSocket(server: http.Server): void {
   });
 
   logger.info('WebSocket server attached on /ws');
+}
+
+function domainForWebSocketTurnContractSkill(skill: NexusChatOwnerSkill): DomainName | null {
+  switch (skill) {
+    case 'secretary':
+    case 'tasks':
+    case 'connections':
+    case 'notifications':
+    case 'decision_center':
+      return 'secretary';
+    case 'training':
+      return 'triathlon';
+    case 'content':
+    case 'finance':
+    case 'cooking':
+      return skill;
+    default:
+      return null;
+  }
+}
+
+function shouldApplyWebSocketTurnContractRouteHint(contract: ChatTurnContract, route: { domain: string; confidence: number }): boolean {
+  if (contract.routeKind === 'action') return false;
+  if (contract.riskClass === 'high' || contract.riskClass === 'destructive') return false;
+  if (contract.skill === 'chat' || contract.skill === 'system' || contract.skill === 'owner_admin') return false;
+  const hintedDomain = domainForWebSocketTurnContractSkill(contract.skill);
+  if (!hintedDomain || route.domain === hintedDomain) return false;
+  return contract.confidence >= 0.8;
+}
+
+function applyWebSocketTurnContractRouteHint<T extends { domain: string; method: string; confidence: number }>(
+  route: T,
+  contract: ChatTurnContract,
+): T {
+  if (!shouldApplyWebSocketTurnContractRouteHint(contract, route)) return route;
+  const hintedDomain = domainForWebSocketTurnContractSkill(contract.skill);
+  if (!hintedDomain) return route;
+  return {
+    ...route,
+    domain: hintedDomain,
+    method: `${route.method}+turn-contract`,
+    confidence: Math.max(route.confidence, contract.confidence),
+  };
 }

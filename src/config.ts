@@ -150,21 +150,16 @@ export const config = {
   // ── Provider Fallback Routing ─────────────────────────────────────
   // Per-task-type primary/fallback. Values: 'anthropic' | 'openai' | 'gemini'
   //
-  // Defaults are now GEMINI-first for every task type (April 2026 cost
-  // migration). Anthropic is retained as the reliability fallback because
-  // Sonnet 4.6's tool-use chain is still more deterministic on edge cases.
+  // Defaults are mixed by task fit. Classifier and tool-use stay Gemini-first,
+  // while generic chat defaults to OpenAI GPT-5.4 nano with Gemini fallback.
   // Previous defaults had chat+toolUse primary=anthropic, which was a
-  // correct choice at the time but stale by the time the Gemini migration
-  // shipped — the env vars in prod .env (AI_*_PRIMARY=gemini) were the
-  // only thing keeping the runtime on Gemini. If an operator removes
-  // those env vars on a fresh deploy (staging first-run, for instance),
-  // the old defaults would silently revert cost back to Anthropic. This
-  // change makes the Gemini-first behavior the code default too, so the
-  // env vars are an OVERRIDE not a LIFELINE.
+  // correct choice at the time but stale by the time the Gemini migration and
+  // GPT nano review shipped. The env vars are an override, not a lifeline.
   providerRouting: {
-    // April 9 2026 — fallback defaults flipped from 'anthropic' to
-    // 'openai'. Gemini stays primary (the post-cost-migration default).
-    // When Gemini fails, the router now tries GPT instead of Claude.
+    // May 2026 — generic chat uses GPT-5.4 nano by default because it is
+    // cheaper than Gemini Flash on the chat token mix and stronger on
+    // structured/instruction-following answers. Domain routing below still
+    // pins Training/Content/Finance/Cooking to their safer Gemini baselines.
     // Anthropic is only reachable when BOTH an explicit env var points
     // at it AND `ANTHROPIC_ENABLED=true` is set in the environment —
     // see `anthropic-hook.trackedCreate` for the hard gate.
@@ -173,8 +168,8 @@ export const config = {
       fallback: process.env.AI_CLASSIFY_FALLBACK || 'openai',
     },
     chat: {
-      primary: process.env.AI_CHAT_PRIMARY || 'gemini',
-      fallback: process.env.AI_CHAT_FALLBACK || 'openai',
+      primary: process.env.AI_CHAT_PRIMARY || 'openai',
+      fallback: process.env.AI_CHAT_FALLBACK || 'gemini',
     },
     toolUse: {
       primary: process.env.AI_TOOL_USE_PRIMARY || 'gemini',
@@ -508,6 +503,16 @@ export const config = {
     priceProYearlyEur: process.env.STRIPE_PRICE_PRO_YEARLY_EUR || '',
     priceMaxMonthlyEur: process.env.STRIPE_PRICE_MAX_MONTHLY_EUR || '',
     priceMaxYearlyEur: process.env.STRIPE_PRICE_MAX_YEARLY_EUR || '',
+    nexusPoints: {
+      enabled: (process.env.STRIPE_NEXUS_POINTS_ENABLED || 'false') === 'true',
+      priceIds: {
+        small: process.env.STRIPE_PRICE_ID_POINTS_SMALL || '',
+        medium: process.env.STRIPE_PRICE_ID_POINTS_MEDIUM || '',
+        large: process.env.STRIPE_PRICE_ID_POINTS_LARGE || '',
+      },
+      webSuccessUrl: process.env.STRIPE_NEXUS_POINTS_SUCCESS_URL || 'https://nexushub.me/user?nexusPointsCheckout=success',
+      webCancelUrl: process.env.STRIPE_NEXUS_POINTS_CANCEL_URL || 'https://nexushub.me/user?nexusPointsCheckout=canceled',
+    },
   },
   billing: {
     paywallEnabled: PAYWALL_ENABLED,
@@ -546,4 +551,32 @@ if (config.ios.enabled && !config.ios.jwtSecret) {
 }
 if (config.ios.enabled && !config.ios.inviteCode) {
   throw new Error('IOS_API_ENABLED=true but IOS_INVITE_CODE is not set.');
+}
+
+if (config.stripe.nexusPoints.enabled) {
+  const missingStripeNexusPointsEnv = [
+    ['STRIPE_SECRET_KEY', config.stripe.secretKey],
+    ['STRIPE_WEBHOOK_SECRET', config.stripe.webhookSecret],
+    ['STRIPE_PRICE_ID_POINTS_SMALL', config.stripe.nexusPoints.priceIds.small],
+    ['STRIPE_PRICE_ID_POINTS_MEDIUM', config.stripe.nexusPoints.priceIds.medium],
+    ['STRIPE_PRICE_ID_POINTS_LARGE', config.stripe.nexusPoints.priceIds.large],
+  ]
+    .filter(([, value]) => !value)
+    .map(([key]) => key);
+
+  if (missingStripeNexusPointsEnv.length > 0) {
+    throw new Error(
+      `STRIPE_NEXUS_POINTS_ENABLED=true but required env vars are missing: ${missingStripeNexusPointsEnv.join(', ')}`,
+    );
+  }
+  if (!config.portal.adminActorSignatureSecret) {
+    throw new Error(
+      'STRIPE_NEXUS_POINTS_ENABLED requires PORTAL_ADMIN_ACTOR_SIGNATURE_SECRET to be set so admin-issued purchases have signed attribution.',
+    );
+  }
+  if (process.env.NODE_ENV !== 'production' && /^sk_live_/.test(config.stripe.secretKey)) {
+    throw new Error(
+      'STRIPE_SECRET_KEY appears to be a live key (sk_live_*) but NODE_ENV is not production. Refusing to start to prevent accidental live charges in staging.',
+    );
+  }
 }

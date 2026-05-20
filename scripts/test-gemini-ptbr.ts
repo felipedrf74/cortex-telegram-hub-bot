@@ -1,6 +1,6 @@
 #!/usr/bin/env npx tsx
 /**
- * Validates Gemini 3 Flash quality with Portuguese (PT-BR) messages.
+ * Validates Gemini 2.5 Flash quality with Portuguese (PT-BR) messages.
  * Run: npx tsx scripts/test-gemini-ptbr.ts
  *
  * Tests 5 domain messages in Portuguese, verifies responses are in PT-BR,
@@ -8,6 +8,7 @@
  */
 
 import { GoogleGenerativeAI } from '../src/services/gemini-adapter';
+import { computeModelUsageCostUsd } from '../src/services/model-pricing';
 
 const API_KEY = process.env.GEMINI_API_KEY;
 if (!API_KEY) {
@@ -16,7 +17,7 @@ if (!API_KEY) {
 }
 
 const genAI = new GoogleGenerativeAI(API_KEY);
-const model = genAI.getGenerativeModel({ model: 'gemini-3-flash' });
+const model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash' });
 
 const testMessages = [
   { domain: 'cooking', text: 'Me dá uma receita de churrasco para 4 pessoas' },
@@ -27,7 +28,7 @@ const testMessages = [
 ];
 
 async function runTest() {
-  console.log('\n═══ GEMINI 3 FLASH — Portuguese Quality Check ═══\n');
+  console.log('\n═══ GEMINI 2.5 FLASH — Portuguese Quality Check ═══\n');
   let correct = 0;
 
   for (const { domain, text } of testMessages) {
@@ -48,7 +49,10 @@ async function runTest() {
 
       const inputTokens = usage?.promptTokenCount || 0;
       const outputTokens = usage?.candidatesTokenCount || 0;
-      const cost = (inputTokens / 1_000_000) * 0.50 + (outputTokens / 1_000_000) * 3.00;
+      const cost = computeModelUsageCostUsd('gemini-2.5-flash', {
+        inputTokens,
+        outputTokens,
+      }, 'gemini').costUsd;
 
       console.log(`[${domain.toUpperCase().padEnd(10)}] ${isPT ? '✅' : '❌'} PT-BR | ${durationMs}ms | ${inputTokens}+${outputTokens} tokens | $${cost.toFixed(6)}`);
       console.log(`  Q: ${text}`);
@@ -60,7 +64,7 @@ async function runTest() {
   }
 
   console.log(`\n═══ Result: ${correct}/5 responses in Portuguese ═══`);
-  if (correct >= 4) console.log('✅ Gemini 3 Flash handles PT-BR well!');
+  if (correct >= 4) console.log('✅ Gemini 2.5 Flash handles PT-BR well!');
   else console.log('⚠️ Some responses may not be in Portuguese — consider prompt tuning.');
 }
 

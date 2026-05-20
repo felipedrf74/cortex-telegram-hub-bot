@@ -2,15 +2,15 @@
 
 Status: canonical
 Owner: backend cost-guardrail lead (Felipe)
-Last verified: 2026-05-04
+Last verified: 2026-05-20
 Update policy: update when iOS quota contract fields or per-tier daily caps change.
 
 This document defines the iOS-facing quota contract for AI-backed endpoints
 plus the canonical entitlement resolver that gates every paid route.
 
-**Last substantive update: 2026-04-21** (tenant/entitlement/portal hardening
-pass — Free cap changed from `$0.00` to `$0.005`, centralized entitlement
-resolver added, portal plan-config overrides added).
+**Last substantive update: 2026-05-20** (Nexus Points usage limits — Pro and
+Max daily AI budgets lowered to margin-safe defaults, per-user AI budget
+overrides added, and paid 30-day Nexus Point allowances added).
 
 ---
 
@@ -19,8 +19,8 @@ resolver added, portal plan-config overrides added).
 | Plan    | Daily cost cap | Daily tokens | Daily messages | Allowed skills                                      |
 |---------|---------------:|-------------:|---------------:|-----------------------------------------------------|
 | `free`  |       `$0.005` |     `100000` |           `40` | `secretary` only                                    |
-| `pro`   |        `$0.20` |     `500000` |          `200` | `secretary, training, content, cooking, finance`    |
-| `max`   |        `$0.60` |     `500000` |          `500` | `secretary, training, content, cooking, finance`    |
+| `pro`   |        `$0.04` |     `500000` |          `200` | `secretary, training, content, cooking, finance`    |
+| `max`   |        `$0.06` |     `500000` |          `500` | `secretary, training, content, cooking, finance`    |
 | `owner` |      `$100.00` |   unlimited  |     unlimited  | all                                                 |
 
 - **Free is the default** for any account without an active paid subscription.
@@ -33,6 +33,25 @@ resolver added, portal plan-config overrides added).
 - Owner and staging-beta bypass caps internally.
 - These caps are conservative because production is Gemini-first and
   token-zero for deterministic lookups.
+- Pro at `$19.99` and Max at `$24.99` keep included AI cost below 10% of
+  subscription revenue before fixed costs, Apple cuts, and support overhead.
+
+### Nexus Points
+
+Nexus Points are the user-facing paid usage unit. App copy should refer to
+Nexus Points, not raw provider tokens.
+
+| Package | Product ID | Price | Points | AI allowance | Expiry |
+|---------|------------|------:|-------:|-------------:|--------|
+| Small   | `me.nexushub.points.small`  | `$5`  |  `300` | `$0.30` | 30 days |
+| Medium  | `me.nexushub.points.medium` | `$10` |  `600` | `$0.60` | 30 days |
+| Large   | `me.nexushub.points.large`  | `$20` | `1200` | `$1.20` | 30 days |
+
+`1 Nexus Point = $0.001` of internal AI provider cost allowance. Included
+daily budget is consumed first; active non-expired Nexus Points are debited
+only for AI spend above the daily included cap, FIFO by earliest expiry.
+Paid AI remains hard-blocked when both included budget and active Nexus
+Points are exhausted.
 
 ### Portal overrides
 
@@ -68,13 +87,17 @@ getEffectiveEntitlement(userId: number): UserEntitlement
 
 **Precedence** (highest wins):
 
-1. `owner` — `isOwnerUserRef(userId)` returns true, OR `PAYWALL_ENABLED=false`
-   globally bypasses paywall (beta/staging only).
+1. `owner` — `isOwnerUserRef(userId)` returns true.
 2. `founder` — `subscriptions.provider === 'founder'` AND `status === 'active'`.
 3. `apple` — `subscriptions.provider === 'apple'` AND `status IN ('active','trialing')`.
 4. `stripe` — `subscriptions.provider === 'stripe'` AND `status IN ('active','trialing')`.
 5. `beta` — `status === 'trialing'` AND any non-canonical provider (staging sandboxes).
 6. `free` — anything else, including missing row, canceled row, or DB error.
+
+When `PAYWALL_ENABLED=false`, the high-cap staging bypass is available only in
+staging runtimes and only for owner/beta allowlisted tiers
+(`NEXUS_STAGING_BILLING_BYPASS_TIERS`, default `owner,beta`). It is not a
+global bypass for every user in that environment.
 
 **Fail-closed**: DB error returns `{ plan: 'free', source: 'error', ... }`.
 Never allow access on exception.
@@ -133,16 +156,23 @@ Denied requests return HTTP `403 FORBIDDEN` with:
 {
   "quota": {
     "used_usd": 0.12,
-    "limit_usd": 0.20,
-    "remaining_usd": 0.08,
+    "limit_usd": 0.04,
+    "remaining_usd": 0.02,
     "plan": "pro",
-    "resetAt": "2026-04-22T00:00:00.000Z"
+    "resetAt": "2026-05-21T00:00:00.000Z",
+    "includedRemainingUsd": 0.02,
+    "nexusPointsBalance": 300,
+    "nexusPointsRemainingUsd": 0.30,
+    "nexusPointsExpiringSoon": 0,
+    "totalRemainingUsd": 0.32,
+    "pointsPurchaseAvailable": true
   }
 }
 ```
 
 For Free users, `limit_usd` is `0.005`. iOS must render the quota banner
-regardless of tier — the difference is only in the numeric cap.
+regardless of tier — the difference is only in the numeric cap and whether
+paid Nexus Point purchases are available.
 
 All timestamps are ISO-8601 UTC.
 
@@ -150,21 +180,29 @@ All timestamps are ISO-8601 UTC.
 
 ## Quota exceeded contract
 
-Any AI-invoking iOS route must check quota before spending tokens. When the
-user is over cap, the route returns HTTP `402 Payment Required`:
+Any AI-invoking iOS route must check quota before spending tokens. Chat
+acquires the per-user cost lock first, then runs the quota gate, then allows
+token-zero deterministic shortcut reads, and only then reaches any LLM-backed
+planner/reasoning/provider path. When the user is over cap, the route returns
+HTTP `429 Too Many Requests`:
 
 ```json
 {
   "ok": false,
   "error": {
     "code": "QUOTA_EXCEEDED",
-    "message": "Daily AI quota reached for the free plan. Resets at 2026-04-22T00:00:00.000Z.",
+    "message": "Daily AI quota reached for the free plan. Resets at 2026-05-21T00:00:00.000Z.",
     "details": {
       "plan": "free",
-      "resetAt": "2026-04-22T00:00:00.000Z"
+      "resetAt": "2026-05-21T00:00:00.000Z",
+      "includedRemainingUsd": 0,
+      "nexusPointsBalance": 0,
+      "nexusPointsRemainingUsd": 0,
+      "totalRemainingUsd": 0,
+      "pointsPurchaseAvailable": true
     }
   },
-  "timestamp": "2026-04-21T21:00:00.000Z"
+  "timestamp": "2026-05-20T21:00:00.000Z"
 }
 ```
 
@@ -179,6 +217,13 @@ Quota enforcement applies only to AI-backed routes. Deterministic token-zero
 routes must remain available even when quota is exhausted — the user can
 still see their tasks, calendar, and readiness even after the daily $0.005
 on Free has been spent.
+
+Provider usage rows are the accounting source of truth. Nexus Point settlement
+is awaited while the caller still holds the per-user cost lock, scoped to the
+specific `api_usage.id`, and idempotent via `nexus_point_debits.api_usage_id`.
+Rows with unresolved model pricing are charged at the unresolved sentinel
+ceiling and marked `pricing_status='unresolved'`; historical rows predating the
+pricing registry are `pricing_status='legacy'`.
 
 ---
 

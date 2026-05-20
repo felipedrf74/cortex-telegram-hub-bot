@@ -1,6 +1,6 @@
 {
   "name": "@nexushub/core",
-  "version": "4.14.176",
+  "version": "4.14.178",
   "description": "Nexus Hub — AI-powered creator operating system with multi-domain routing",
   "main": "dist/index.js",
   "scripts": {
@@ -22,6 +22,7 @@
     "preflight:owner-bootstrap": "node dist/tools/owner-bootstrap-preflight.js --strict",
     "portal:session:mint": "node dist/tools/portal-session-token.js",
     "chat:eval": "node dist/tools/chat-evaluation-harness.js",
+    "chat:model-bakeoff": "node dist/tools/chat-model-bakeoff.js",
     "fiscal:vendors:audit": "node dist/tools/invoice-vendor-cleanup.js",
     "fiscal:vendors:repair": "node dist/tools/invoice-vendor-cleanup.js --apply",
     "docs:audit": "node scripts/audit-docs.mjs",

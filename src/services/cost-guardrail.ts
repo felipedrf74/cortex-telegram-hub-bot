@@ -21,11 +21,13 @@ import crypto from 'crypto';
 import {
   getEffectiveDailyCostLimitUsd,
   getUsageLevelForPlan,
+  resolveBillingPlanForUser,
   type BillingPlan,
   type UsageLevel,
 } from './plan-quotas';
-import { isOwnerUserRef } from './user-service';
 import { recordOperatorAlert } from './operator-alerts';
+import { getNexusPointBalance, listNexusPointPackages, usdToPoints } from './nexus-points';
+import { getActiveUserAiBudgetOverride } from './ai-budget-overrides';
 
 // ── Telegram Alert Callback ──────────────────────────────────────
 
@@ -58,8 +60,8 @@ function todayKey(): string {
 // ~$0.0026–$0.0076. Caps are sized so that a fully-utilized month still
 // leaves room for platform fees, support, retries, and provider mix drift.
 //
-//   Pro ($25/mo): $0.20/day × 30 = $6.00/mo AI COGS
-//   Max ($45/mo): $0.60/day × 30 = $18.00/mo AI COGS
+//   Pro ($19.99/mo): $0.04/day × 30 = $1.20/mo AI COGS
+//   Max ($24.99/mo): $0.06/day × 30 = $1.80/mo AI COGS
 //
 // Typical users should land materially below cap, especially because
 // token-zero routes avoid AI spend entirely for deterministic lookups.
@@ -78,6 +80,15 @@ export interface DailyQuotaStatus {
   limitUsd: number;
   usedUsd: number;
   remainingUsd: number;
+  planDailyLimitUsd: number;
+  includedRemainingUsd: number;
+  nexusPointsBalance: number;
+  nexusPointsRemainingUsd: number;
+  nexusPointsExpiringSoon: number;
+  nexusPointsExpiringSoonUsd: number;
+  nextCreditExpiryAt: string | null;
+  totalRemainingUsd: number;
+  pointsPurchaseAvailable: boolean;
   resetAt: string;
 }
 
@@ -93,67 +104,40 @@ function getQuotaResetAt(now = new Date()): string {
   )).toISOString();
 }
 
-function resolvePlanFromSubscriptionState(userId: number): BillingPlan {
-  const db = getDb();
-
-  if (!config.billing.paywallEnabled) {
-    return 'beta';
-  }
-
-  let isOwner = isOwnerUserRef(userId);
-  let userTier: string | null = null;
-
-  if (!isOwner) {
-    try {
-      const user = db.prepare(
-        'SELECT telegram_id, tier FROM users WHERE id = ?'
-      ).get(userId) as { telegram_id: number | null; tier: string | null } | undefined;
-      userTier = user?.tier ?? null;
-      if (user?.tier === 'owner') {
-        isOwner = true;
-      }
-    } catch {
-      userTier = null;
-    }
-  }
-
-  if (isOwner) {
-    return 'owner';
-  }
-
-  try {
-    const sub = db.prepare(
-      'SELECT plan, status FROM subscriptions WHERE user_id = ?'
-    ).get(userId) as { plan: string; status: string } | undefined;
-
-    if (sub && ['active', 'trialing'].includes(sub.status) && (sub.plan === 'pro' || sub.plan === 'max')) {
-      return sub.plan;
-    }
-  } catch {
-    // Fall back to the users table below.
-  }
-
-  if (userTier === 'max') return 'max';
-  if (userTier === 'pro') return 'pro';
-
-  return 'free';
-}
-
 export function getDailyQuotaStatus(userId: number): DailyQuotaStatus {
   try {
     const db = getDb();
-    const plan = resolvePlanFromSubscriptionState(userId);
-    const capUsd = getEffectiveDailyCostLimitUsd(plan as BillingPlan);
+    const plan = resolveBillingPlanForUser(userId);
+    const userOverride = getActiveUserAiBudgetOverride(userId);
+    const capUsd = userOverride?.dailyCostUsd ?? getEffectiveDailyCostLimitUsd(plan as BillingPlan);
     const usageLevel = getUsageLevelForPlan(plan as BillingPlan);
+    const nexusPoints = getNexusPointBalance(userId);
 
     const row = db.prepare(`
       SELECT COALESCE(SUM(cost_usd), 0) as total, COUNT(*) as calls
       FROM api_usage WHERE user_id = ? AND ts >= date('now')
     `).get(userId) as { total: number; calls: number };
+    let debitedTodayUsd = 0;
+    try {
+      const debitRow = db.prepare(`
+        SELECT COALESCE(SUM(usd_cost_debited), 0) AS debited
+        FROM nexus_point_debits
+        WHERE user_id = ? AND created_at >= date('now')
+      `).get(userId) as { debited: number };
+      debitedTodayUsd = debitRow.debited || 0;
+    } catch {
+      debitedTodayUsd = 0;
+    }
 
+    const includedRemainingUsd = capUsd > 0 ? Math.max(capUsd - row.total, 0) : 0;
+    const unsettledOverageUsd = Math.max(row.total - capUsd - debitedTodayUsd, 0);
+    const nexusPointsRemainingUsd = Math.max(nexusPoints.usdBalance - unsettledOverageUsd, 0);
+    const nexusPointsRemaining = Math.max(nexusPoints.pointsBalance - usdToPoints(unsettledOverageUsd), 0);
+    const totalRemainingUsd = includedRemainingUsd + nexusPointsRemainingUsd;
     const fraction = capUsd > 0 ? Math.min(row.total / capUsd, 1.0) : 1.0;
-    const over = capUsd <= 0 ? true : row.total >= capUsd;
-    const remainingUsd = capUsd > 0 ? Math.max(capUsd - row.total, 0) : 0;
+    const over = totalRemainingUsd <= 0 && row.total >= capUsd;
+    const remainingUsd = Math.max(totalRemainingUsd, 0);
+    const pointsPurchaseAvailable = plan === 'pro' || plan === 'max' || plan === 'beta';
 
     return {
       over,
@@ -166,11 +150,17 @@ export function getDailyQuotaStatus(userId: number): DailyQuotaStatus {
       limitUsd: capUsd,
       usedUsd: row.total,
       remainingUsd,
+      planDailyLimitUsd: capUsd,
+      includedRemainingUsd,
+      nexusPointsBalance: Math.round(nexusPointsRemaining * 1000) / 1000,
+      nexusPointsRemainingUsd,
+      nexusPointsExpiringSoon: nexusPoints.pointsExpiringSoon,
+      nexusPointsExpiringSoonUsd: nexusPoints.usdExpiringSoon,
+      nextCreditExpiryAt: nexusPoints.nextCreditExpiryAt,
+      totalRemainingUsd,
       resetAt: getQuotaResetAt(),
-      // AI Boost IAP product not yet configured in App Store Connect.
-      // Setting false hides the CTA button in the iOS usage meter.
-      // Re-enable when the product is live: row.total >= capUsd && plan !== 'owner'
-      boostAvailable: false,
+      boostAvailable: pointsPurchaseAvailable,
+      pointsPurchaseAvailable,
     };
   } catch {
     return {
@@ -180,17 +170,51 @@ export function getDailyQuotaStatus(userId: number): DailyQuotaStatus {
       limitUsd: DEFAULT_DAILY_CAP_USD,
       usedUsd: 0,
       remainingUsd: DEFAULT_DAILY_CAP_USD,
+      planDailyLimitUsd: DEFAULT_DAILY_CAP_USD,
+      includedRemainingUsd: DEFAULT_DAILY_CAP_USD,
+      nexusPointsBalance: 0,
+      nexusPointsRemainingUsd: 0,
+      nexusPointsExpiringSoon: 0,
+      nexusPointsExpiringSoonUsd: 0,
+      nextCreditExpiryAt: null,
+      totalRemainingUsd: DEFAULT_DAILY_CAP_USD,
+      pointsPurchaseAvailable: false,
       resetAt: getQuotaResetAt(),
     };
   }
 }
 
-export function buildQuotaExceededMessage(quota: Pick<DailyQuotaStatus, 'plan' | 'limitUsd' | 'resetAt'>): string {
+export function buildQuotaExceededMessage(quota: Pick<DailyQuotaStatus, 'plan' | 'limitUsd' | 'resetAt' | 'pointsPurchaseAvailable'>): string {
   if (quota.plan === 'free' || quota.limitUsd <= 0) {
     return 'AI access is not available on the free plan. Upgrade to Pro or Max to continue.';
   }
 
-  return `Daily AI quota reached for the ${quota.plan} plan. Resets at ${quota.resetAt}.`;
+  const points = quota.pointsPurchaseAvailable ? ' Buy Nexus Points for more AI usage, or wait for the daily reset.' : '';
+  return `Daily AI quota reached for the ${quota.plan} plan. Resets at ${quota.resetAt}.${points}`;
+}
+
+export function buildQuotaUsagePayload(quota: DailyQuotaStatus): Record<string, unknown> {
+  return {
+    plan: quota.plan,
+    resetAt: quota.resetAt,
+    limitUsd: quota.limitUsd,
+    usedUsd: quota.usedUsd,
+    remainingUsd: quota.remainingUsd,
+    planDailyLimitUsd: quota.planDailyLimitUsd,
+    includedRemainingUsd: quota.includedRemainingUsd,
+    nexusPointsBalance: quota.nexusPointsBalance,
+    nexusPointsRemainingUsd: quota.nexusPointsRemainingUsd,
+    nexusPointsExpiringSoon: quota.nexusPointsExpiringSoon,
+    nexusPointsExpiringSoonUsd: quota.nexusPointsExpiringSoonUsd,
+    nextCreditExpiryAt: quota.nextCreditExpiryAt,
+    totalRemainingUsd: quota.totalRemainingUsd,
+    pointsPurchaseAvailable: quota.pointsPurchaseAvailable,
+    nexusPointPackages: listNexusPointPackages(),
+  };
+}
+
+export function buildQuotaExceededPayload(quota: DailyQuotaStatus): Record<string, unknown> {
+  return buildQuotaUsagePayload(quota);
 }
 
 export type CostGuardrailDecision =
@@ -327,10 +351,7 @@ export function enforceCostGuardrails(userId: number): CostGuardrailDecision {
       global,
       quota,
       details: {
-        plan: quota.plan,
-        resetAt: quota.resetAt,
-        limitUsd: quota.limitUsd,
-        usedUsd: quota.usedUsd,
+        ...buildQuotaExceededPayload(quota),
       },
     };
   }

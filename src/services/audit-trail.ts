@@ -19,6 +19,7 @@ export type AuditAction =
   | 'mutation_scope'
   | 'encrypt'
   | 'decrypt'
+  | 'billing.nexus_points.checkout_started'
   /**
    * Portal admin mutation — founder grant/revoke, user tier change,
    * skill override, plan-config edit. Added 2026-04-21 so Felipe (or

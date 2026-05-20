@@ -96,6 +96,32 @@ describe('nexus chat answer contract', () => {
     expect(result.text).not.toMatch(/Agendei|✅/);
   });
 
+  it('quality gate catches unverified destructive success claims without relying on Pronto/Done prefixes', () => {
+    const contract = buildNexusAnswerContract({
+      intent: 'secretary.delete',
+      ownerSkill: 'secretary',
+      routeMethod: 'model',
+      actionability: 'execute',
+      verificationStatus: 'pending',
+      groundingFacts: [],
+      missingFacts: [],
+      confidence: 0.8,
+      language: 'pt',
+    });
+
+    for (const text of [
+      'Apaguei todas as tarefas antigas.',
+      'Removi todos os eventos.',
+      'Cancelei a reunião.',
+      'Deleted all matching tasks.',
+    ]) {
+      const result = applyChatResponseQualityGate({ text, contract });
+      expect(result.status, text).toBe('repaired');
+      expect(result.issues, text).toContain('unverified_success_claim');
+      expect(result.text, text).not.toContain(text);
+    }
+  });
+
   it('quality gate strips raw backend/debug details from user-facing text', () => {
     const resolved = resolveChatSkillCapability({
       message: 'explain my training',
@@ -151,6 +177,87 @@ describe('nexus chat answer contract', () => {
     expect(result.contract.actionability).toBe('clarify');
     expect(result.contract.missingFacts).toContain('scoped_state_read');
     expect(result.text).toContain('current scoped read');
+  });
+
+  it('quality gate allows generic Cooking recipes with concrete quantities and times without scoped read', () => {
+    const contract = buildNexusAnswerContract({
+      intent: 'cooking.answer',
+      ownerSkill: 'cooking',
+      routeMethod: 'keyword',
+      routeKind: 'generic_skill_answer',
+      groundingRequirement: 'none',
+      expectedResponseShape: 'recipe',
+      language: 'pt',
+      actionability: 'answer_only',
+      verificationStatus: 'not_required',
+      groundingFacts: [{
+        statement: 'Cooking owns generic recipe advice.',
+        source: 'chat.skill_capability_registry',
+        freshness: 'fresh',
+        confidence: 0.9,
+        safeForUser: true,
+      }],
+    });
+
+    const result = applyChatResponseQualityGate({
+      text: [
+        '**Kibe de forno para 3 pessoas**',
+        '',
+        '**Ingredientes:** 250g de trigo para kibe, 350g de carne moída, cebola, hortelã, sal e azeite.',
+        '',
+        '**Modo de preparo:**',
+        '1. Hidrate o trigo por 20 minutos e escorra bem.',
+        '2. Misture com a carne, cebola e temperos.',
+        '3. Asse a 180°C por 35 a 40 minutos.',
+        '',
+        'Rende 3 porções.',
+      ].join('\n'),
+      contract,
+    });
+
+    expect(result.status).toBe('pass');
+    expect(result.issues).toEqual([]);
+    expect(result.text).toContain('Kibe de forno');
+    expect(result.text).not.toContain('scoped read');
+  });
+
+  it('quality gate repairs recipe answers into user-visible recipe structure', () => {
+    const contract = buildNexusAnswerContract({
+      intent: 'cooking.answer',
+      ownerSkill: 'cooking',
+      routeMethod: 'keyword',
+      routeKind: 'generic_skill_answer',
+      groundingRequirement: 'none',
+      expectedResponseShape: 'recipe',
+      language: 'pt',
+      actionability: 'answer_only',
+      verificationStatus: 'not_required',
+      groundingFacts: [{
+        statement: 'Cooking owns generic recipe advice.',
+        source: 'chat.skill_capability_registry',
+        freshness: 'fresh',
+        confidence: 0.9,
+        safeForUser: true,
+      }],
+    });
+
+    const result = applyChatResponseQualityGate({
+      text: 'Kibe de forno é uma boa opção para jantar. Tempere bem e asse até ficar dourado.',
+      contract,
+    });
+
+    expect(result.status).toBe('repaired');
+    expect(result.issues).toContain('recipe_missing_structure');
+    expect(result.contract.actionability).toBe('answer_only');
+    expect(result.contract.missingFacts).not.toContain('recipe_structure');
+    expect(result.text).toContain('Rende:');
+    expect(result.text).toContain('Ingredientes');
+    expect(result.text).toContain('Modo de preparo');
+    expect(result.text).toContain('Kibe de forno é uma boa opção para jantar');
+    expect(result.text).toContain('Tempere bem e asse até ficar dourado');
+    expect(result.text).toContain('preservei os detalhes da resposta original');
+    expect(result.text).not.toMatch(/Reescreva|Rewrite it/);
+    expect(result.text).not.toContain('dados atuais do Nexus');
   });
 
   it('metadata-backed context sources count as scoped grounding', () => {

@@ -45,6 +45,40 @@ import { handleAppleNotification } from '../services/stripe-service';
 import { captureMessage } from '../services/error-tracker';
 import { logger } from '../utils/logger';
 
+const WEBSITE_CORS_ALLOWLIST = new Set([
+  'https://nexushub.me',
+  'https://www.nexushub.me',
+]);
+const WEBSITE_CORS_ALLOWLIST_REGEX = /^https:\/\/[a-z0-9-]+\.nexushub-landing\.pages\.dev$/;
+const WEBSITE_CORS_METHODS = new Set(['GET', 'POST', 'OPTIONS']);
+
+function isWebsiteCorsRoute(path: string): boolean {
+  return path === '/auth'
+    || path.startsWith('/auth/')
+    || path === '/billing/status'
+    || path === '/billing/usage'
+    || path === '/billing/nexus-points/stripe-checkout';
+}
+
+function applyWebsiteCors(req: express.Request, res: express.Response): boolean {
+  if (!isWebsiteCorsRoute(req.path)) return false;
+  const origin = req.headers.origin;
+  if (typeof origin !== 'string') return false;
+  if (!WEBSITE_CORS_ALLOWLIST.has(origin) && !WEBSITE_CORS_ALLOWLIST_REGEX.test(origin)) {
+    return false;
+  }
+  const requestedMethod = String(req.headers['access-control-request-method'] || req.method || '').toUpperCase();
+  if (req.method === 'OPTIONS' && requestedMethod && !WEBSITE_CORS_METHODS.has(requestedMethod)) {
+    return false;
+  }
+  res.set('Access-Control-Allow-Origin', origin);
+  res.set('Vary', 'Origin');
+  res.set('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+  res.set('Access-Control-Allow-Headers', 'Authorization, Content-Type');
+  res.set('Access-Control-Max-Age', '600');
+  return true;
+}
+
 /**
  * Creates the iOS API router.
  * Mount on the existing portal Express app: `app.use('/api/v1', createApiRouter())`
@@ -79,7 +113,7 @@ export function createApiRouter(): Router {
         cooking: 'GET/POST/DELETE /api/v1/cooking/{recipes|meal-plan|shopping-list}',
         finance: 'GET/POST/DELETE /api/v1/finance/{transactions|monthly-summary|tax/events|tax/calculate}',
         invoices: 'GET/POST/DELETE /api/v1/invoices/{vendors|scan-now} — vendor config + on-demand collection',
-        billing: 'GET /api/v1/billing/status, POST /api/v1/billing/{checkout|portal|apple-verify}',
+        billing: 'GET /api/v1/billing/status, POST /api/v1/billing/{checkout|portal|apple-verify|nexus-points/stripe-checkout}',
         plan: 'GET /api/v1/plan/{week|today}, POST /api/v1/plan/recompute — multiskill mesh (feature-flagged)',
         summaries: 'GET /api/v1/summaries/{home|week|training|content|notifications} — fast app read models',
         decisions: 'GET /api/v1/decisions/summary, GET/POST/PATCH /api/v1/decisions — user-scoped decision orchestration',
@@ -87,6 +121,15 @@ export function createApiRouter(): Router {
       },
       auth_note: 'POST /auth/register with inviteCode to get a JWT. Include as Authorization: Bearer <token> on all other endpoints.',
     });
+  });
+
+  router.use((req, res, next) => {
+    const corsApplied = applyWebsiteCors(req, res);
+    if (req.method === 'OPTIONS' && corsApplied) {
+      res.status(204).end();
+      return;
+    }
+    next();
   });
 
   // Public routes (no JWT required).
