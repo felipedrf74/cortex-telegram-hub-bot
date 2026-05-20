@@ -1,6 +1,6 @@
 // Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
 
-import express, { Request, Response } from 'express';
+import express, { NextFunction, Request, Response } from 'express';
 import { requirePortalAdminToken } from '../api/secret-guards';
 import { getDb } from '../services/database';
 import { listUsers, setUserStatusById } from '../services/user-service';
@@ -10,6 +10,7 @@ import { sendPortalInternalError } from './http';
 import { clearUserAiBudgetOverride, setUserAiBudgetOverride } from '../services/ai-budget-overrides';
 import {
   createNexusPointsCheckoutSession,
+  isStripeNexusPointsIdempotencyConflictError,
   isStripeNexusPointsConfigured,
 } from '../services/stripe-nexus-points-service';
 import { isNexusPointProductId, listNexusPointPackages } from '../services/nexus-points';
@@ -17,6 +18,7 @@ import { getPortalAuthContext } from '../api/secret-guards';
 
 const VALID_TIERS = new Set(['free', 'pro', 'max', 'owner']);
 const STRIPE_NEXUS_POINTS_PORTAL_NOTE_MAX_LENGTH = 280;
+const STRIPE_NEXUS_POINTS_PORTAL_BODY_LIMIT_BYTES = 8 * 1024;
 
 function parsePositiveUserId(value: unknown): number | null {
   const userId = Number(value);
@@ -43,6 +45,16 @@ function sanitizePortalCheckoutNote(value: unknown): string {
     .slice(0, STRIPE_NEXUS_POINTS_PORTAL_NOTE_MAX_LENGTH);
 }
 
+function rejectOversizedPortalStripeCheckoutBody(req: Request, res: Response, next: NextFunction): void {
+  const rawLength = req.headers['content-length'];
+  const contentLength = Array.isArray(rawLength) ? Number(rawLength[0]) : Number(rawLength || 0);
+  if (Number.isFinite(contentLength) && contentLength > STRIPE_NEXUS_POINTS_PORTAL_BODY_LIMIT_BYTES) {
+    res.status(413).json({ ok: false, error: { code: 'PAYLOAD_TOO_LARGE', message: 'Request body is too large' } });
+    return;
+  }
+  next();
+}
+
 export function registerPortalUserRoutes(app: express.Express): void {
   app.get('/api/users', (_req: Request, res: Response) => {
     try {
@@ -60,7 +72,7 @@ export function registerPortalUserRoutes(app: express.Express): void {
     });
   });
 
-  app.post('/api/users/:userId/billing/nexus-points/stripe-checkout', requirePortalAdminToken, requireOperatorTargetUser('userId'), express.json(), async (req: Request, res: Response) => {
+  app.post('/api/users/:userId/billing/nexus-points/stripe-checkout', requirePortalAdminToken, requireOperatorTargetUser('userId'), rejectOversizedPortalStripeCheckoutBody, express.json({ limit: '8kb' }), async (req: Request, res: Response) => {
     try {
       if (!isStripeNexusPointsConfigured()) {
         res.status(503).json({ ok: false, error: { code: 'STRIPE_NOT_CONFIGURED', message: 'Stripe Nexus Points checkout is not configured' } });
@@ -83,14 +95,23 @@ export function registerPortalUserRoutes(app: express.Express): void {
       }
       const auth = getPortalAuthContext(req);
       const actor = auth?.actorHint || auth?.matchedCredential || 'portal-admin';
-      const session = await createNexusPointsCheckoutSession({
-        userId,
-        tenantId: userId,
-        packageId,
-        source: 'portal',
-        note,
-        actor,
-      });
+      let session;
+      try {
+        session = await createNexusPointsCheckoutSession({
+          userId,
+          tenantId: userId,
+          packageId,
+          source: 'portal',
+          note,
+          actor,
+        });
+      } catch (err) {
+        if (isStripeNexusPointsIdempotencyConflictError(err)) {
+          res.status(409).json({ ok: false, error: { code: 'IDEMPOTENCY_CONFLICT', message: err.message } });
+          return;
+        }
+        throw err;
+      }
       logPortalAdminMutation(req, userId, 'billing.nexus_points.stripe_checkout', {
         packageId,
         note,

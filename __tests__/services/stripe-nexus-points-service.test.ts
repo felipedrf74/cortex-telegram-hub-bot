@@ -71,6 +71,7 @@ import {
   _resetStripeNexusPointsClientForTests,
   createNexusPointsCheckoutSession,
   handleStripeNexusPointsEvent,
+  isStripeNexusPointsIdempotencyConflictError,
   processStripeNexusPointsWebhookEvent,
   resolvePackageIdForStripePriceId,
 } from '../../src/services/stripe-nexus-points-service';
@@ -212,6 +213,34 @@ describe('stripe-nexus-points-service', () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it('maps Stripe idempotency conflicts to a typed checkout conflict error', async () => {
+    hoisted.stripeCreate.mockRejectedValueOnce({
+      type: 'StripeIdempotencyError',
+      rawType: 'idempotency_error',
+      statusCode: 400,
+      message: 'Keys for idempotent requests can only be used with the same parameters.',
+    });
+
+    let caught: unknown;
+    try {
+      await createNexusPointsCheckoutSession({
+        userId: 42,
+        tenantId: 42,
+        packageId: 'me.nexushub.points.small',
+        source: 'portal',
+        note: 'changed note',
+      });
+    } catch (err) {
+      caught = err;
+    }
+
+    expect(isStripeNexusPointsIdempotencyConflictError(caught)).toBe(true);
+    expect(caught).toMatchObject({
+      code: 'IDEMPOTENCY_CONFLICT',
+      statusCode: 409,
+    });
   });
 
   it('reuses an existing Stripe customer and otherwise sends user email without logging it', async () => {

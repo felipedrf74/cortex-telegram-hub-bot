@@ -54,6 +54,16 @@ export interface NexusPointsCheckoutSessionResult {
   checkoutUrl: string;
 }
 
+export class StripeNexusPointsIdempotencyConflictError extends Error {
+  readonly code = 'IDEMPOTENCY_CONFLICT';
+  readonly statusCode = 409;
+
+  constructor() {
+    super('A different Stripe Nexus Points checkout was created with the same key in the current minute window. Wait ~60s before creating another checkout for this user/package/source.');
+    this.name = 'StripeNexusPointsIdempotencyConflictError';
+  }
+}
+
 let stripeClient: StripeInstance | null = null;
 
 export function _resetStripeNexusPointsClientForTests(): void {
@@ -82,6 +92,13 @@ export function isStripeNexusPointsConfigured(): boolean {
     && config.stripe.nexusPoints.priceIds.medium
     && config.stripe.nexusPoints.priceIds.large
   );
+}
+
+export function isStripeNexusPointsIdempotencyConflictError(
+  err: unknown,
+): err is StripeNexusPointsIdempotencyConflictError {
+  return err instanceof StripeNexusPointsIdempotencyConflictError
+    || !!(err && typeof err === 'object' && (err as any).code === 'IDEMPOTENCY_CONFLICT');
 }
 
 export function resolvePackageIdForStripePriceId(priceId: string): NexusPointPackageId | null {
@@ -150,9 +167,26 @@ export async function createNexusPointsCheckoutSession(
     sessionParams.customer_creation = 'if_required';
   }
 
-  const session = await stripe.checkout.sessions.create(sessionParams, {
-    idempotencyKey: buildCheckoutIdempotencyKey(input),
-  });
+  let session: any;
+  try {
+    session = await stripe.checkout.sessions.create(sessionParams, {
+      idempotencyKey: buildCheckoutIdempotencyKey(input),
+    });
+  } catch (err) {
+    if (isStripeIdempotencyConflict(err)) {
+      logger.warn({
+        userId: input.userId,
+        tenantId: input.tenantId,
+        packageId: input.packageId,
+        source: input.source,
+        stripeErrorType: (err as any)?.type,
+        stripeRawType: (err as any)?.rawType,
+        stripeStatusCode: (err as any)?.statusCode,
+      }, 'Stripe Nexus Points Checkout idempotency conflict');
+      throw new StripeNexusPointsIdempotencyConflictError();
+    }
+    throw err;
+  }
 
   if (!session.url) {
     throw new Error('Stripe returned no Checkout URL for Nexus Points');
@@ -440,6 +474,15 @@ function normalizeStripeMetadata(input: Record<string, string>): Record<string, 
 function buildCheckoutIdempotencyKey(input: CreateNexusPointsCheckoutSessionInput): string {
   const minuteBucket = Math.floor(Date.now() / 60000);
   return `nexus-points:${input.userId}:${input.packageId}:${input.source}:${minuteBucket}`;
+}
+
+function isStripeIdempotencyConflict(err: unknown): boolean {
+  if (!err || typeof err !== 'object') return false;
+  const e = err as { type?: unknown; rawType?: unknown; code?: unknown; statusCode?: unknown };
+  return e.type === 'StripeIdempotencyError'
+    || e.rawType === 'idempotency_error'
+    || e.code === 'idempotency_error'
+    || (e.statusCode === 400 && e.rawType === 'idempotency_error');
 }
 
 function lookupStripeCustomerForNexusPoints(userId: number): { providerCustomerId: string | null; email: string | null } {

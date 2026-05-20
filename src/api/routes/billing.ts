@@ -31,6 +31,7 @@ import {
 } from '../../services/nexus-points';
 import {
   createNexusPointsCheckoutSession,
+  isStripeNexusPointsIdempotencyConflictError,
   isStripeNexusPointsConfigured,
 } from '../../services/stripe-nexus-points-service';
 import { logAudit } from '../../services/audit-trail';
@@ -202,12 +203,21 @@ export function billingRoutes(): Router {
       return;
     }
 
-    const session = await createNexusPointsCheckoutSession({
-      userId,
-      tenantId,
-      packageId,
-      source: 'web',
-    });
+    let session;
+    try {
+      session = await createNexusPointsCheckoutSession({
+        userId,
+        tenantId,
+        packageId,
+        source: 'web',
+      });
+    } catch (err) {
+      if (isStripeNexusPointsIdempotencyConflictError(err)) {
+        sendError(res, 'IDEMPOTENCY_CONFLICT', err.message, 409);
+        return;
+      }
+      throw err;
+    }
     logAudit({
       tenantId,
       userId,

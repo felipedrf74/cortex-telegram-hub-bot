@@ -82,6 +82,7 @@ vi.mock('../../src/services/nexus-points', () => ({
 
 vi.mock('../../src/services/stripe-nexus-points-service', () => ({
   createNexusPointsCheckoutSession: (...args: unknown[]) => mockCreateNexusPointsCheckoutSession(...args),
+  isStripeNexusPointsIdempotencyConflictError: (err: any) => err?.code === 'IDEMPOTENCY_CONFLICT',
   isStripeNexusPointsConfigured: () => mockIsStripeNexusPointsConfigured(),
 }));
 
@@ -308,6 +309,23 @@ describe('billing routes', () => {
     expect(spoofed.statusCode).toBe(400);
     expect(spoofed.body.error.code).toBe('UNEXPECTED_BODY_FIELDS');
     expect(mockCreateNexusPointsCheckoutSession).not.toHaveBeenCalled();
+  });
+
+  it('maps Stripe Nexus Points idempotency conflicts to 409 for website checkout', async () => {
+    mockCreateNexusPointsCheckoutSession.mockRejectedValueOnce({
+      code: 'IDEMPOTENCY_CONFLICT',
+      message: 'A different Stripe Nexus Points checkout was created with the same key in the current minute window. Wait ~60s before creating another checkout for this user/package/source.',
+    });
+
+    const res = await dispatch('POST', '/nexus-points/stripe-checkout', {
+      packageId: 'me.nexushub.points.medium',
+    }, 42);
+
+    expect(res.statusCode).toBe(409);
+    expect(res.body.error).toMatchObject({
+      code: 'IDEMPOTENCY_CONFLICT',
+    });
+    expect(mockLogAudit).not.toHaveBeenCalled();
   });
 
   it('rejects bad or disabled Stripe Nexus Points checkout requests', async () => {
