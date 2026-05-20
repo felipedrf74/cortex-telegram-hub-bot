@@ -98,6 +98,20 @@ function overallHealthStatus(
 }
 
 export function registerPortalHealthRoutes(app: Express, options: HealthRoutesOptions): void {
+  // Public heartbeat for external monitors and AI fetchers. Keep this payload
+  // intentionally small: the Cloudflare WAF allowlist for bot user-agents is
+  // safe only while this route exposes no diagnostics.
+  app.get('/public-status', (_req: Request, res: Response) => {
+    res.setHeader('Cache-Control', 'public, max-age=60');
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('X-Robots-Tag', 'all');
+    res.status(200).json({
+      status: 'ok',
+      service: 'nexushub-api',
+      timestamp: new Date().toISOString(),
+    });
+  });
+
   // GET /health — public, lightweight service readiness.
   app.get('/health', (_req: Request, res: Response) => {
     const uptimeSec = uptimeSeconds(options.startedAt);
