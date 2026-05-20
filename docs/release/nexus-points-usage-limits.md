@@ -191,6 +191,9 @@ Verification for this pass:
 - `STAGING=true npx tsx src/tools/chat-model-bakeoff.ts` passed with 109 fixtures / 218 bilingual turns.
 - `npx tsx src/tools/model-pricing-report.ts` passed; local DB path was not configured, so usage observations were empty and registry entries were reported as unused.
 - `npx tsx scripts/chat-cost-scenarios.ts` passed; local `data/bot.db` is absent, so it emitted a zero-row scenario report.
+- `./scripts/deploy-staging.sh` passed from implementation commit `aae9ba55`.
+- `./scripts/staging-smoke.sh` passed 21/21 checks after the 5-minute soak; evidence: `docs/release/smoke-evidence/staging-smoke-aae9ba55-20260520T135529Z.json`.
+- Stripe test-mode payment smoke is still blocked on external Stripe Dashboard/runtime setup: staging test `price_...` ids, webhook endpoint/secret, and test checkout/refund/dispute execution.
 - Staging deploy passed from commit `3615f145`.
 - Staging smoke passed 21/21 checks; evidence: `docs/release/smoke-evidence/staging-smoke-3615f145-20260520T115720Z.json`.
 - Stripe test-mode smoke, production promote, and live Stripe smoke were not run in this implementation pass because the required Stripe Dashboard test products/webhook setup and Felipe live-purchase signoff are external operational gates. See `docs/integrations/stripe-nexus-points.md`.
