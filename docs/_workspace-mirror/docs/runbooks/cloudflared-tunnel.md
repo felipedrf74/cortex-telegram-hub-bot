@@ -107,7 +107,7 @@ Two surfaces sit behind Cloudflare with **deliberately different postures**:
 | `nexushub.me` | Cloudflare Pages (marketing) | permissive | yes — all major LLM crawlers |
 | `api.nexushub.me` | VPS via Cloudflare Tunnel | strict | only `/public-status` |
 | `portal.nexushub.me` | VPS via Cloudflare Tunnel | strict | no |
-| `api-staging.nexushub.me` | VPS via Cloudflare Tunnel | strict | only `/public-status` when edge smoke is enabled |
+| `api-staging.nexushub.me` | VPS via Cloudflare Tunnel | strict | no, unless a staging DNS route is intentionally added for edge smoke |
 
 **Rationale:** the marketing site benefits from being citable in LLM-generated
 answers (ChatGPT, Claude, Perplexity, etc.) — that is an active growth channel
@@ -149,7 +149,7 @@ Keep the default protective posture **except** for `/public-status`:
    ```
    Name: Allow AI/monitor fetchers on /public-status
    Expression:
-     (http.host in {"api.nexushub.me" "api-staging.nexushub.me"}) and
+     (http.host eq "api.nexushub.me") and
      (http.request.uri.path eq "/public-status") and (
        (http.user_agent contains "Claude") or
        (http.user_agent contains "Anthropic") or
@@ -164,17 +164,23 @@ Keep the default protective posture **except** for `/public-status`:
                   Browser Integrity Check, Zone Lockdown
    ```
 
-   Do **not** broaden this expression to other paths. Staging is included only
-   so `NEXUS_SMOKE_EDGE_VERIFY=1 ./scripts/staging-smoke.sh` can verify the
-   same edge contract before promotion. The whole point of the `/public-status`
-   endpoint is that it carries no sensitive payload — the allowlist is safe
-   specifically because the path is scoped.
+   Do **not** broaden this expression to other paths. The whole point of the
+   `/public-status` endpoint is that it carries no sensitive payload — the
+   allowlist is safe specifically because the path is scoped.
+
+   Optional staging validation: if `api-staging.nexushub.me` is intentionally
+   routed in DNS, use the same expression with
+   `(http.host in {"api.nexushub.me" "api-staging.nexushub.me"})` and run:
+
+   ```bash
+   NEXUS_SMOKE_EDGE_HOST=https://api-staging.nexushub.me \
+     NEXUS_SMOKE_EDGE_VERIFY=1 ./scripts/staging-smoke.sh
+   ```
 
 4. Verify the rule fires by running:
 
    ```bash
    curl -fsS -A "ClaudeBot/1.0" https://api.nexushub.me/public-status
-   curl -fsS -A "ClaudeBot/1.0" https://api-staging.nexushub.me/public-status
    curl -fsS -A "ClaudeBot/1.0" -o /dev/null -w '%{http_code}\n' \
      https://api.nexushub.me/health
    ```

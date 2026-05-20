@@ -391,7 +391,10 @@ fi
 # it must allow AI/monitor user-agents to /public-status, while keeping the
 # same user-agents blocked everywhere else.
 EDGE_VERIFY_ENABLED="${NEXUS_SMOKE_EDGE_VERIFY:-0}"
-EDGE_HOST="${NEXUS_SMOKE_EDGE_HOST:-https://api-staging.nexushub.me}"
+# Default to the production API hostname because that is the public surface
+# external AI fetchers hit today. If/when api-staging.nexushub.me has a live
+# DNS route and matching WAF exception, override with NEXUS_SMOKE_EDGE_HOST.
+EDGE_HOST="${NEXUS_SMOKE_EDGE_HOST:-https://api.nexushub.me}"
 
 test_edge_status_ok() {
   local name="$1"

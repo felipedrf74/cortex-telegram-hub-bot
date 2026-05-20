@@ -273,10 +273,11 @@ Two surfaces, two postures. Do not collapse them.
   AI crawlers and user-triggered fetchers for product discoverability. The
   application-level posture lives in `nexushub-landing-deploy/_headers`,
   `robots.txt`, and `llms.txt`.
-- `api.nexushub.me` and `api-staging.nexushub.me` (VPS via Cloudflare Tunnel)
-  stay strict. The only externally allowlisted path is `/public-status`, whose
-  payload is limited to `{status, service, timestamp}` so the WAF exception can
-  stay path-scoped and safe.
+- `api.nexushub.me` (VPS via Cloudflare Tunnel) stays strict. The only
+  externally allowlisted path is `/public-status`, whose payload is limited to
+  `{status, service, timestamp}` so the WAF exception can stay path-scoped and
+  safe. Staging can use the same exception later, but only after
+  `api-staging.nexushub.me` has a live DNS route.
 
 Canonical dashboard steps and diagnostics live in
 `/Users/felipedominguez/Desktop/Nexus Hub/docs/runbooks/cloudflared-tunnel.md`
