@@ -263,6 +263,25 @@ The pre-commit hook prints a soft warning when the sandbox isn't running. It nev
 | `src/utils/logger.ts` | Pino logger with context mixin |
 | `src/services/error-tracker.ts` | Sentry integration |
 | `src/services/error-monitor.ts` | Local error capture → SQLite + Telegram + Sentry |
+| `src/portal/health-routes.ts` | `/public-status` public heartbeat plus `/health` and `/health/detailed` |
+
+### Edge protection posture (Cloudflare)
+
+Two surfaces, two postures. Do not collapse them.
+
+- `nexushub.me` (Cloudflare Pages, marketing) is intentionally permissive to
+  AI crawlers and user-triggered fetchers for product discoverability. The
+  application-level posture lives in `nexushub-landing-deploy/_headers`,
+  `robots.txt`, and `llms.txt`.
+- `api.nexushub.me` and `api-staging.nexushub.me` (VPS via Cloudflare Tunnel)
+  stay strict. The only externally allowlisted path is `/public-status`, whose
+  payload is limited to `{status, service, timestamp}` so the WAF exception can
+  stay path-scoped and safe.
+
+Canonical dashboard steps and diagnostics live in
+`/Users/felipedominguez/Desktop/Nexus Hub/docs/runbooks/cloudflared-tunnel.md`
+under **Edge Protection And AI Crawler Policy**. Do not add diagnostic fields
+to `/public-status`; its safety budget depends on the minimal payload.
 
 ---
 
