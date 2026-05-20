@@ -193,7 +193,8 @@ Verification for this pass:
 - `npx tsx scripts/chat-cost-scenarios.ts` passed; local `data/bot.db` is absent, so it emitted a zero-row scenario report.
 - `./scripts/deploy-staging.sh` passed from implementation commit `aae9ba55`.
 - `./scripts/staging-smoke.sh` passed 21/21 checks after the 5-minute soak; evidence: `docs/release/smoke-evidence/staging-smoke-aae9ba55-20260520T135529Z.json`.
-- Stripe test-mode payment smoke is still blocked on external Stripe Dashboard/runtime setup: staging test `price_...` ids, webhook endpoint/secret, and test checkout/refund/dispute execution.
+- Stripe test-mode payment smoke is still blocked on external Stripe Dashboard/runtime setup: staging test `price_...` ids, webhook endpoint/secret, and test checkout/refund/dispute execution. I also checked likely public staging hosts (`api-staging.nexushub.me`, `staging-api.nexushub.me`, `staging.nexushub.me`); none resolved from this environment, and `scripts/staging-smoke.sh` documents staging as localhost-only by default.
+- Production promote was intentionally not run because the Stripe test-mode payment smoke has not passed and Felipe has not approved live-mode enablement.
 - Staging deploy passed from commit `3615f145`.
 - Staging smoke passed 21/21 checks; evidence: `docs/release/smoke-evidence/staging-smoke-3615f145-20260520T115720Z.json`.
 - Stripe test-mode smoke, production promote, and live Stripe smoke were not run in this implementation pass because the required Stripe Dashboard test products/webhook setup and Felipe live-purchase signoff are external operational gates. See `docs/integrations/stripe-nexus-points.md`.
