@@ -161,7 +161,7 @@ Follow-up verification:
 
 ## Pass 3: Stripe Nexus Points Addition
 
-Status: implementation in progress on `codex/chat-reliability`.
+Status: implemented on `codex/chat-reliability` in `3615f145`; staging deploy and smoke evidence recorded in `48e36685`.
 
 Implemented:
 
@@ -194,3 +194,10 @@ Verification for this pass:
 - Staging deploy passed from commit `3615f145`.
 - Staging smoke passed 21/21 checks; evidence: `docs/release/smoke-evidence/staging-smoke-3615f145-20260520T115720Z.json`.
 - Stripe test-mode smoke, production promote, and live Stripe smoke were not run in this implementation pass because the required Stripe Dashboard test products/webhook setup and Felipe live-purchase signoff are external operational gates. See `docs/integrations/stripe-nexus-points.md`.
+
+Completion gate status:
+
+- Code implementation, unit/integration coverage, docs, staging deploy, and staging smoke are complete.
+- Stripe test-mode smoke is blocked until staging runtime has Stripe test `price_...` ids and webhook secret configured in Stripe Dashboard. This cannot be completed from the repo without external Stripe Dashboard setup.
+- Production promote is intentionally blocked until Stripe test-mode smoke passes. Promoting without that payment smoke would violate the payment release gate.
+- Live Stripe smoke is blocked until Felipe signs off on live-mode enablement and performs the first real $5 purchase/refund verification.
