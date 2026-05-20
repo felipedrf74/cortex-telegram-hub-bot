@@ -258,8 +258,9 @@ export async function createEvent(data: {
     if (data.description) {
       postBody.body = { contentType: 'Text', content: data.description };
     }
-    if (data.categories && data.categories.length > 0) {
-      postBody.categories = data.categories;
+    const writableCategories = await resolveWritableOutlookCategories(data.categories, userId);
+    if (writableCategories.length > 0) {
+      postBody.categories = writableCategories;
     }
     if (data.location) {
       postBody.location = { displayName: data.location };
@@ -277,6 +278,7 @@ export async function createEvent(data: {
       {
         titleLength: String(postBody.subject || '').length,
         categoryCount: Array.isArray(postBody.categories) ? postBody.categories.length : 0,
+        droppedCategoryCount: Math.max(0, (data.categories?.length ?? 0) - writableCategories.length),
         attendeeCount: attendees.length,
       },
       'Creating Outlook calendar event',
@@ -292,13 +294,48 @@ export async function createEvent(data: {
       end: response.end?.dateTime || data.end,
       description: response.bodyPreview || undefined,
       htmlLink: response.webLink || undefined,
-      categories: Array.isArray(response.categories) ? response.categories : data.categories,
+      categories: Array.isArray(response.categories) ? response.categories : (writableCategories.length > 0 ? writableCategories : undefined),
       isAllDay: !!response.isAllDay,
     };
   } catch (err) {
     logger.error({ err }, 'Failed to create Outlook calendar event');
     throw err;
   }
+}
+
+async function resolveWritableOutlookCategories(categories: string[] | undefined, userId?: number): Promise<string[]> {
+  const cleanCategories = [...new Set((categories || [])
+    .map((value) => typeof value === 'string' ? value.trim() : '')
+    .filter(Boolean))];
+  if (cleanCategories.length === 0) return [];
+
+  const masterCategories = await getMasterCategories(userId);
+  if (masterCategories.length === 0) {
+    logger.warn(
+      { requestedCategories: cleanCategories },
+      'Dropping Outlook event categories because master categories could not be verified',
+    );
+    return [];
+  }
+
+  const byNormalizedName = new Map(
+    masterCategories.map((category) => [normalizeCategoryName(category.displayName), category.displayName] as const),
+  );
+  const writable = cleanCategories
+    .map((category) => byNormalizedName.get(normalizeCategoryName(category)))
+    .filter((category): category is string => Boolean(category));
+  const dropped = cleanCategories.filter((category) => !byNormalizedName.has(normalizeCategoryName(category)));
+  if (dropped.length > 0) {
+    logger.warn(
+      { droppedCategories: dropped, writableCategories: writable },
+      'Dropping Outlook event categories that are not in the user master category list',
+    );
+  }
+  return [...new Set(writable)];
+}
+
+function normalizeCategoryName(value: string): string {
+  return value.toLowerCase().replace(/\s+/g, ' ').trim();
 }
 
 export async function updateEvent(data: {
