@@ -130,6 +130,73 @@ describe('training-agenda-reconciliation', () => {
     );
   });
 
+  it.each([
+    ['status 404', { status: 404, message: 'not found' }],
+    ['status 410', { status: 410, message: 'gone' }],
+    ['provider code', { code: 'event_not_found' }],
+    ['message only', new Error('Event not found')],
+  ])('treats provider %s as already gone and marks the ownership deleted', async (_label, providerError) => {
+    mocks.findOwnershipsNeedingReconciliation.mockReturnValue([
+      {
+        id: 5,
+        plan_id: 13,
+        plan_version: 1,
+        session_id: 113,
+        user_id: 42,
+        calendar_event_id: 'evt-already-gone',
+        calendar_source: 'google',
+        status: 'orphaned',
+        created_at: '2026-04-20T00:00:00Z',
+        deleted_at: '2026-04-20T01:00:00Z',
+        delete_reason: 'plan_cancelled_external_delete_failed',
+      },
+    ]);
+    mocks.deleteEvent.mockRejectedValueOnce(providerError);
+
+    const result = await reconcileOrphanedTrainingAgendaEvents(42);
+
+    expect(result).toEqual({ attempted: 1, deleted: 1, failed: 0 });
+    expect(mocks.markCalendarOwnershipDeleted).toHaveBeenCalledWith({
+      eventId: 'evt-already-gone',
+      source: 'google',
+      reason: 'orphan_reconciled_event_gone_upstream',
+      status: 'deleted',
+      userId: 42,
+      tenantId: 42,
+      planId: 13,
+      ownershipId: 5,
+    });
+    expect(mocks.loggerWarn).not.toHaveBeenCalled();
+  });
+
+  it('does not treat non-event not-found provider errors as already gone', async () => {
+    mocks.findOwnershipsNeedingReconciliation.mockReturnValue([
+      {
+        id: 6,
+        plan_id: 14,
+        plan_version: 1,
+        session_id: 114,
+        user_id: 42,
+        calendar_event_id: 'evt-user-scope-failed',
+        calendar_source: 'outlook',
+        status: 'orphaned',
+        created_at: '2026-04-20T00:00:00Z',
+        deleted_at: '2026-04-20T01:00:00Z',
+        delete_reason: 'plan_cancelled_external_delete_failed',
+      },
+    ]);
+    mocks.deleteEvent.mockRejectedValueOnce(new Error('User not found'));
+
+    const result = await reconcileOrphanedTrainingAgendaEvents(42);
+
+    expect(result).toEqual({ attempted: 1, deleted: 0, failed: 1 });
+    expect(mocks.markCalendarOwnershipDeleted).not.toHaveBeenCalled();
+    expect(mocks.loggerWarn).toHaveBeenCalledWith(
+      expect.objectContaining({ eventId: 'evt-user-scope-failed', source: 'outlook' }),
+      'Failed to reconcile orphaned training calendar event',
+    );
+  });
+
   it('marks active orphan rows as queued when the provider delete fails', async () => {
     mocks.findOrphanedOwnerships.mockReturnValue([
       {

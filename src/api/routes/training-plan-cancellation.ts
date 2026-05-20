@@ -23,6 +23,7 @@ import {
   computeTrainingSessionShapeHash,
   parseTrainingIdentityMarker,
 } from '../../services/training-session-identity';
+import { isProviderEventNotFoundError } from '../../services/training-calendar-errors';
 
 /**
  * Successful plan-cancellation payload.
@@ -198,7 +199,9 @@ async function cancelTrainingPlanForUserLocked(
     const deletionResults = await Promise.allSettled(
       deletionTargets.map((target) => deleteEvent(target.eventId, target.source, userId)),
     );
-    const planRemovedEvents = deletionResults.filter(result => result.status === 'fulfilled').length;
+    const planRemovedEvents = deletionResults.filter(result =>
+      result.status === 'fulfilled' || isProviderEventNotFoundError(result.reason),
+    ).length;
     removedEvents += planRemovedEvents;
 
     // Slice 4.D — record the cancellation outcome on the audit table
@@ -210,11 +213,11 @@ async function cancelTrainingPlanForUserLocked(
     deletionResults.forEach((result, idx) => {
       const target = deletionTargets[idx];
       if (!target) return;
-      if (result.status === 'fulfilled') {
+      if (result.status === 'fulfilled' || isProviderEventNotFoundError(result.reason)) {
         markCalendarOwnershipDeleted({
           eventId: target.eventId,
           source: target.source,
-          reason: 'plan_cancelled',
+          reason: result.status === 'fulfilled' ? 'plan_cancelled' : 'plan_cancelled_event_gone_upstream',
           status: 'deleted',
           userId,
           planId: target.planId,

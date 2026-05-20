@@ -564,6 +564,43 @@ describe('training-plan-cancellation (hard delete)', () => {
     expect(mocks.deletePlanHard).toHaveBeenCalledWith(45, 12);
   });
 
+  it.each([
+    ['status 404', { status: 404, message: 'Not Found' }],
+    ['status 410', { status: 410, message: 'Gone' }],
+    ['provider code', { code: 'event_not_found' }],
+    ['message only', new Error('Event not found')],
+  ])('treats provider %s during cancellation as already deleted upstream', async (_label, providerError) => {
+    mocks.getActivePlan.mockReturnValue({ id: 145, user_id: 12 });
+    mocks.getWeeksForPlan.mockReturnValue([{ id: 8101 }]);
+    mocks.getSessionsForWeek.mockReturnValue([
+      { id: 1421, status: 'pending', calendar_event_id: 'evt-gone', calendar_source: 'google' },
+    ]);
+    mocks.deleteEvent.mockRejectedValueOnce(providerError);
+    mocks.deletePlanHard.mockReturnValue({
+      ok: true,
+      removedPlans: 1,
+      removedWeeks: 1,
+      removedSessions: 1,
+      removedCompletions: 0,
+    });
+
+    const result = await cancelTrainingPlanForUser(12);
+
+    expect(result.status).toBe('cancelled');
+    if (result.status === 'cancelled') {
+      expect(result.data.removedEvents).toBe(1);
+      expect(result.data.message).toBe('Plan cancelled. 1 scheduled workout removed from the calendar; 1 session cleared from the plan.');
+    }
+    expect(mocks.markCalendarOwnershipDeleted).toHaveBeenCalledWith({
+      eventId: 'evt-gone',
+      source: 'google',
+      reason: 'plan_cancelled_event_gone_upstream',
+      status: 'deleted',
+      userId: 12,
+      planId: 145,
+    });
+  });
+
   it('does not call calendar deletion for an invalid stored provider source but still hard-deletes', async () => {
     mocks.getActivePlan.mockReturnValue({ id: 46, user_id: 12 });
     mocks.getWeeksForPlan.mockReturnValue([{ id: 8101 }]);

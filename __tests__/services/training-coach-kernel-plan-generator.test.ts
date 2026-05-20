@@ -6,6 +6,10 @@ import {
   buildAthleteStateFromTrainingProfiles,
 } from '../../src/services/training-coach-kernel-plan-generator';
 import {
+  lintPlan,
+  type PlanLintSession,
+} from '../../src/services/coach-kernel/plan-linter';
+import {
   _resetCoachPlanStoreForTests,
   getWeeklyPlanCoveringDate,
   getWeeklyPlanForWeek,
@@ -127,6 +131,73 @@ describe('buildCoachKernelTrainingPlan — side effects', () => {
     expect(plan.sport).toBe('gym');
     expect(plan.weeks?.[0]?.sessions?.filter((session) => session.sessionType === 'gym')).toHaveLength(4);
     expect(plan.weeks?.[0]?.sessions?.some((session) => session.sessionType === 'run')).toBe(true);
+  });
+
+  it('does not invent a long run for strength-dominant plans with one aerobic support slot', () => {
+    const plan = buildCoachKernelTrainingPlan({
+      userId: 516,
+      objective: 'Muscle Building',
+      durationWeeks: 4,
+      startDate: '2026-04-26',
+      sessionsPerWeek: 6,
+      strengthSessionsPerWeek: 5,
+      preferredTime: '12:00',
+      preferredCardioTime: '07:00',
+      preferredStrengthTime: '12:00',
+      longWorkoutDay: 'Saturday',
+      notes: null,
+      fitnessProfile: {
+        experience_level: 'intermediate',
+        training_goals: 'strength and hypertrophy',
+        available_equipment: 'Full gym',
+        session_duration_minutes: '60',
+      },
+      gymProfile: {
+        training_age: '3 years',
+        primary_goal: 'Hypertrophy',
+        equipment_access: 'Full gym',
+        sessions_per_week: '5',
+        session_duration_minutes: '60',
+      },
+      runProfile: null,
+      goalMode: 'continuous',
+      trainingPriority: 'hybrid',
+      twoADayPreference: 'preferred',
+    });
+
+    const weekOneSessions = plan.weeks?.[0]?.sessions ?? [];
+    const aerobicSupport = weekOneSessions.filter((session) => session.sessionType === 'run');
+
+    expect(plan.sport).toBe('gym');
+    expect(weekOneSessions.filter((session) => session.sessionType === 'gym')).toHaveLength(5);
+    expect(aerobicSupport).toHaveLength(1);
+    expect(aerobicSupport[0]?.title).not.toMatch(/long run/i);
+    expect(aerobicSupport[0]?.workout?.some((item) => /long run/i.test(`${item.name} ${item.details ?? ''}`)) ?? false).toBe(false);
+
+    const lintResult = lintPlan({
+      now: new Date('2026-04-22T08:00:00.000Z'),
+      startDate: '2026-04-26',
+      durationWeeks: 4,
+      equipmentProfile: 'full_gym',
+      weeks: [{
+        weekNumber: 1,
+        focus: plan.weeks?.[0]?.focus,
+        sessions: weekOneSessions.map((session): PlanLintSession => {
+          const title = session.title.toLowerCase();
+          return {
+            dayOfWeek: String(session.dayOfWeek || '').toLowerCase(),
+            sessionType: String(session.sessionType || '').toLowerCase(),
+            title: session.title,
+            description: session.description,
+            durationMinutes: session.durationMinutes,
+            status: 'scheduled',
+            isLowerHeavy: /lower|squat|deadlift|quad|posterior chain/.test(title),
+            isLongRun: session.sessionType === 'long_run' || /\blong\s+run\b/i.test(session.title),
+          };
+        }),
+      }],
+    });
+    expect(lintResult.blockers.map((blocker) => blocker.ruleId)).not.toContain('no_heavy_lower_before_long_run');
   });
 
   it('builds marathon weeks with five distinct strength sessions when explicitly requested', () => {

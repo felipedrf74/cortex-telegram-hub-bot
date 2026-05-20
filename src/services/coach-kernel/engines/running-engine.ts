@@ -37,6 +37,13 @@ function hasLowRecoverySignal(context: EngineContext): boolean {
     || context.athlete.readiness.soreness === 'high';
 }
 
+function isPrimaryEnduranceRunningContext(context: EngineContext): boolean {
+  return context.athlete.goals.primaryFocus === 'running'
+    || context.athlete.goals.primaryFocus === 'marathon'
+    || context.athlete.goals.primaryFocus === 'hybrid'
+    || context.athlete.goals.primaryFocus === 'triathlon';
+}
+
 function buildRunSession(
   template: WorkoutTemplate,
   dayOfWeek: DayOfWeek,
@@ -59,6 +66,28 @@ function buildRunSession(
     tags,
     alternatives: ['Swap for aerobic support run', 'Swap for mobility and strides'],
   };
+}
+
+function buildSupportOnlyRunSessions(context: EngineContext, templates: WorkoutTemplate[], requestedRunning: number): Session[] {
+  const targetSessions = clamp(requestedRunning, 1, 3);
+  const previousMinutes = context.athlete.trainingHistory.lastWeekMinutesBySport.running ?? targetSessions * 40;
+  const phaseMultiplier = context.phase === 'deload' ? 0.75 : context.phase === 'taper' ? 0.8 : 1;
+  const targetMinutes = Math.max(targetSessions * 25, Math.round(previousMinutes * phaseMultiplier));
+  const baseMinutes = clamp(Math.round(targetMinutes / targetSessions), 25, 50);
+  const dayPreferences: DayOfWeek[] = ['tuesday', 'thursday', 'saturday', 'monday', 'friday', 'wednesday', 'sunday'];
+  const days = pickAvailableDays(context.athlete, 'running', dayPreferences, targetSessions);
+  const sessions: Session[] = [];
+
+  for (const [supportIndex, dayOfWeek] of days.entries()) {
+    if (sessions.length >= targetSessions) break;
+    const template = supportRunTemplateFor(context, templates, supportIndex, sessions.length === targetSessions - 1);
+    const duration = template.sessionType === 'recovery_run'
+      ? Math.max(25, baseMinutes - 5)
+      : baseMinutes;
+    sessions.push(buildRunSession(template, dayOfWeek, duration, ['aerobic_support', 'support_run', template.id]));
+  }
+
+  return sessions;
 }
 
 function keyRunTemplateFor(context: EngineContext, templates: WorkoutTemplate[]): WorkoutTemplate {
@@ -99,7 +128,13 @@ function supportRunTemplateFor(
 export const runningEngine: SportEngine = {
   buildCandidateSessions(context: EngineContext): Session[] {
     const templates = context.knowledge.workoutTemplates.filter((template) => template.sport === 'running');
-    const targetSessions = clamp(context.athlete.goals.weeklySessionsTarget.running ?? 4, 2, 7);
+    const explicitRunningTarget = context.athlete.goals.weeklySessionsTarget.running;
+    if (!isPrimaryEnduranceRunningContext(context) && explicitRunningTarget && explicitRunningTarget > 0) {
+      return buildSupportOnlyRunSessions(context, templates, explicitRunningTarget);
+    }
+
+    const requestedRunning = explicitRunningTarget ?? 4;
+    const targetSessions = clamp(requestedRunning, 2, 7);
     const previousMinutes = context.athlete.trainingHistory.lastWeekMinutesBySport.running ?? 180;
     const phaseMultiplier = context.phase === 'taper' ? 0.7 : context.phase === 'peak' ? 1.05 : context.phase === 'deload' ? 0.75 : 1;
     const targetMinutes = Math.round(previousMinutes * phaseMultiplier);

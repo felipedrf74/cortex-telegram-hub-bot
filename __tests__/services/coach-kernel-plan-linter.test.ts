@@ -399,6 +399,16 @@ describe('coach-kernel/plan-linter', () => {
       expect(result.status).toBe('pass');
     });
 
+    it('does not treat strength-plan aerobic support as a long-run blocker', () => {
+      const result = lintPlan(input({
+        weeks: [week(1, [
+          session({ dayOfWeek: 'friday', sessionType: 'gym', isLowerHeavy: true, title: 'Lower Strength Support' }),
+          session({ dayOfWeek: 'saturday', sessionType: 'run', isLongRun: false, title: 'Recovery Run' }),
+        ])],
+      }));
+      expect(result.status).toBe('pass');
+    });
+
     it('blocks heavy lower-body across a week boundary when scheduled dates are present', () => {
       const result = lintPlan(input({
         weeks: [

@@ -10,6 +10,7 @@ import {
   markCalendarOwnershipDeleted,
   type AgendaEventOwnership,
 } from './training-plan-lifecycle';
+import { isProviderEventNotFoundError } from './training-calendar-errors';
 import { logger } from '../utils/logger';
 
 export interface TrainingAgendaReconciliationResult {
@@ -65,6 +66,23 @@ export async function reconcileOrphanedTrainingAgendaEvents(
         deleted += 1;
       }
     } catch (err) {
+      if (isProviderEventNotFoundError(err)) {
+        const marked = markCalendarOwnershipDeleted({
+          eventId: ownership.calendar_event_id,
+          source: ownership.calendar_source,
+          reason: 'orphan_reconciled_event_gone_upstream',
+          status: 'deleted',
+          userId,
+          tenantId,
+          planId: ownership.plan_id,
+          ownershipId: ownership.id,
+        });
+        if (marked.rowsAffected > 0) {
+          deleted += 1;
+        }
+        continue;
+      }
+
       failed += 1;
       if (ownership.status === 'active') {
         markCalendarOwnershipDeleted({
