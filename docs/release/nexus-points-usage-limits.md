@@ -143,3 +143,6 @@ Follow-up verification:
 - `npx tsx src/tools/model-pricing-report.ts` passed against the local no-DB path; it emitted an empty usage report with all registry rows listed as unused.
 - `npx tsx scripts/chat-cost-scenarios.ts` passed against the local no-DB path; it emitted a zero-row scenario report because `data/bot.db` is intentionally absent in this worktree.
 - Clean staging deploy from `0b5a7989` passed, then `./scripts/staging-smoke.sh` passed 21/21 checks and wrote `docs/release/smoke-evidence/staging-smoke-0b5a7989-20260520T102027Z.json`.
+- Clean promote-to-prod from `cfe7799d` passed, including its staging smoke gate (21/21 checks, evidence `docs/release/smoke-evidence/staging-smoke-cfe7799d-20260520T102119Z.json`), full `npm run verify` preflight (612 files / 9067 tests), production deploy, and post-deploy health check.
+- Production is running `v4.14.171` from deploy/version commit `c0de6eda`; `curl https://api.nexushub.me/health` returned HTTP 200 with `status=healthy` and `database=connected`.
+- This docs-only evidence entry was recorded after the clean production promotion; the runtime artifact remains `c0de6eda`.
