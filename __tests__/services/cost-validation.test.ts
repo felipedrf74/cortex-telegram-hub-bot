@@ -2,6 +2,8 @@
 
 import { describe, it, expect, vi } from 'vitest';
 
+const mockRecordOperatorAlert = vi.fn();
+
 vi.mock('../../src/services/database', () => ({
   getDb: vi.fn().mockReturnValue({
     prepare: vi.fn().mockReturnValue({
@@ -16,23 +18,25 @@ vi.mock('../../src/services/database', () => ({
   findUnexpectedMigrationPrefixCollisions: vi.fn(() => []),
 }));
 
+vi.mock('../../src/services/operator-alerts', () => ({
+  recordOperatorAlert: (...args: unknown[]) => mockRecordOperatorAlert(...args),
+}));
+
 import { computeGeminiCost, resolveGeminiCostModelKey } from '../../src/services/gemini-provider';
 import { OPENAI_COST_PER_MTK } from '../../src/services/openai-provider';
 import { CHAT_MODEL_BAKEOFF_CANDIDATES } from '../../src/services/chat-model-bakeoff';
+import {
+  _resetModelPricingAlertDedupeForTests,
+  _setRecordOperatorAlertForTests,
+  computeModelUsageCostUsd,
+  getModelPricingTable,
+  recordUnresolvedModelPricingAlert,
+  resolveModelPricing,
+} from '../../src/services/model-pricing';
 
 describe('Cost Validation — Gemini Model Pricing', () => {
-  // Gemini cost table from gemini-provider.ts
-  const GEMINI_COSTS: Record<string, { in: number; out: number }> = {
-    'gemini-3.1-pro':         { in: 2.00, out: 12.00 },
-    'gemini-3-flash':         { in: 0.50, out: 3.00 },
-    'gemini-2.5-flash':       { in: 0.30, out: 2.50 },
-    'gemini-2.5-flash-lite':  { in: 0.10, out: 0.40 },
-    'gemini-2.0-flash':       { in: 0.10, out: 0.40 },
-  };
-
   function computeCost(model: string, inputTokens: number, outputTokens: number): number {
-    const rates = GEMINI_COSTS[model] || GEMINI_COSTS['gemini-2.5-flash'];
-    return (inputTokens / 1_000_000) * rates.in + (outputTokens / 1_000_000) * rates.out;
+    return computeModelUsageCostUsd(model, { inputTokens, outputTokens }, 'gemini').costUsd;
   }
 
   it('gemini-2.5-flash: 1000 in + 500 out = correct cost', () => {
@@ -69,6 +73,60 @@ describe('Cost Validation — Gemini Model Pricing', () => {
     const flashLiteCost = computeCost('gemini-2.5-flash-lite', 500, 50);
     const haikuCost = (500 / 1_000_000) * 1.0 + (50 / 1_000_000) * 5.0;
     expect(flashLiteCost).toBeLessThan(haikuCost / 5); // At least 5x cheaper
+  });
+
+  it('does not silently price unknown production models as Gemini Flash', () => {
+    const priced = computeModelUsageCostUsd('gemini-unknown-future-model', {
+      inputTokens: 1000,
+      outputTokens: 500,
+    }, 'gemini');
+    expect(priced.pricingResolved).toBe(false);
+    expect(priced.costUsd).toBeGreaterThan(0);
+    expect(priced.pricingModelKey).toBeNull();
+  });
+
+  it('does not prefix-price hypothetical future model variants', () => {
+    for (const model of ['gpt-5-thinking', 'gpt-5-2026-05-30', 'gpt-5-pro']) {
+      const priced = computeModelUsageCostUsd(model, {
+        inputTokens: 1000,
+        outputTokens: 500,
+      }, 'openai');
+      expect(priced.pricingResolved, model).toBe(false);
+      expect(priced.pricingModelKey, model).toBeNull();
+      expect(priced.costUsd, model).toBeGreaterThan(0);
+    }
+  });
+
+  it('raises a deduped operator alert for unresolved production model pricing', () => {
+    _resetModelPricingAlertDedupeForTests();
+    _setRecordOperatorAlertForTests((input) => mockRecordOperatorAlert(input));
+    mockRecordOperatorAlert.mockClear();
+
+    recordUnresolvedModelPricingAlert({
+      provider: 'gemini',
+      model: 'gemini-unknown-future-model',
+      category: 'gemini_domain_content',
+      userId: 42,
+    });
+    recordUnresolvedModelPricingAlert({
+      provider: 'gemini',
+      model: 'gemini-unknown-future-model',
+      category: 'gemini_domain_content',
+      userId: 42,
+    });
+
+    expect(mockRecordOperatorAlert).toHaveBeenCalledTimes(1);
+    expect(mockRecordOperatorAlert).toHaveBeenCalledWith(expect.objectContaining({
+      severity: 'critical',
+      source: 'model_pricing',
+      dedupeKey: expect.stringContaining('model-pricing-unresolved:gemini:gemini-unknown-future-model:'),
+      metadata: expect.objectContaining({
+        provider: 'gemini',
+        model: 'gemini-unknown-future-model',
+        category: 'gemini_domain_content',
+        userId: 42,
+      }),
+    }));
   });
 });
 
@@ -108,5 +166,25 @@ describe('Cost Validation — OpenAI model pricing parity', () => {
       expect(rate.in, `${candidate.model}: input`).toBe(candidate.inputUsdPerMillion);
       expect(rate.out, `${candidate.model}: output`).toBe(candidate.outputUsdPerMillion);
     }
+  });
+
+  it('keeps selectable production model prices in the central registry', () => {
+    const table = getModelPricingTable();
+    for (const model of [
+      'gemini-2.5-flash-lite',
+      'gemini-2.5-flash',
+      'gpt-5.4-nano',
+      'gpt-5.4-mini',
+      'gpt-5-nano',
+      'gpt-5-mini',
+      'claude-haiku-4-5-20251001',
+      'claude-sonnet-4-6',
+    ]) {
+      expect(table.some((entry) => entry.model === model), model).toBe(true);
+    }
+    expect(resolveModelPricing('gemini-2.5-flash-lite', 'gemini')).toMatchObject({
+      inputUsdPerMillion: 0.10,
+      outputUsdPerMillion: 0.40,
+    });
   });
 });

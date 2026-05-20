@@ -7,6 +7,7 @@ import { listUsers, setUserStatusById } from '../services/user-service';
 import { logPortalAdminMutation } from './admin-audit';
 import { requireOperatorTargetUser } from './admin-target-user';
 import { sendPortalInternalError } from './http';
+import { clearUserAiBudgetOverride, setUserAiBudgetOverride } from '../services/ai-budget-overrides';
 
 const VALID_TIERS = new Set(['free', 'pro', 'max', 'owner']);
 
@@ -20,6 +21,10 @@ function nonNegNumOrUndef(value: unknown): number | undefined {
   const n = Number(value);
   if (!Number.isFinite(n) || n < 0) return undefined;
   return n;
+}
+
+function hasOwn(obj: unknown, key: string): boolean {
+  return !!obj && typeof obj === 'object' && Object.prototype.hasOwnProperty.call(obj, key);
 }
 
 export function registerPortalUserRoutes(app: express.Express): void {
@@ -95,18 +100,50 @@ export function registerPortalUserRoutes(app: express.Express): void {
       }
 
       const db = getDb();
-      const { daily_message_limit, daily_token_limit, daily_cost_limit_usd } = req.body ?? {};
+      const {
+        daily_message_limit,
+        daily_token_limit,
+        daily_cost_limit_usd,
+        daily_ai_cost_limit_usd,
+        daily_ai_cost_limit_expires_at,
+        daily_ai_cost_limit_reason,
+      } = req.body ?? {};
       const msgLimit = nonNegNumOrUndef(daily_message_limit);
       const tokenLimit = nonNegNumOrUndef(daily_token_limit);
       const costLimit = nonNegNumOrUndef(daily_cost_limit_usd);
+      let aiCostLimit: number | null | undefined;
+      if (hasOwn(req.body, 'daily_ai_cost_limit_usd')) {
+        if (daily_ai_cost_limit_usd === null) {
+          aiCostLimit = null;
+        } else {
+          aiCostLimit = nonNegNumOrUndef(daily_ai_cost_limit_usd);
+          if (aiCostLimit === undefined) {
+            res.status(400).json({ ok: false, message: 'daily_ai_cost_limit_usd must be null or a non-negative number' });
+            return;
+          }
+        }
+      }
+
       if (msgLimit !== undefined) db.prepare('UPDATE users SET daily_message_limit = ? WHERE id = ?').run(msgLimit, userId);
       if (tokenLimit !== undefined) db.prepare('UPDATE users SET daily_token_limit = ? WHERE id = ?').run(tokenLimit, userId);
       if (costLimit !== undefined) db.prepare('UPDATE users SET daily_cost_limit_usd = ? WHERE id = ?').run(costLimit, userId);
+      if (aiCostLimit === null) {
+        clearUserAiBudgetOverride(userId, 0);
+      } else if (aiCostLimit !== undefined) {
+        const expiresAt = typeof daily_ai_cost_limit_expires_at === 'string' && daily_ai_cost_limit_expires_at.trim()
+          ? daily_ai_cost_limit_expires_at.trim()
+          : null;
+        const reason = typeof daily_ai_cost_limit_reason === 'string' && daily_ai_cost_limit_reason.trim()
+          ? daily_ai_cost_limit_reason.trim()
+          : null;
+        setUserAiBudgetOverride({ userId, dailyCostUsd: aiCostLimit, expiresAt, reason, updatedBy: 0 });
+      }
 
       logPortalAdminMutation(req, userId, 'user.limits', {
         daily_message_limit: msgLimit,
         daily_token_limit: tokenLimit,
         daily_cost_limit_usd: costLimit,
+        daily_ai_cost_limit_usd: aiCostLimit,
       });
       res.json({ ok: true, message: 'Limits updated' });
     } catch (err) {

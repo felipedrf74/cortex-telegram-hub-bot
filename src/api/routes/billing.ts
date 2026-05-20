@@ -23,6 +23,21 @@ import {
 } from '../../services/stripe-service';
 import { config } from '../../config';
 import { verifyAppleJws } from '../../services/apple-jws-verifier';
+import { buildQuotaUsagePayload, isUserOverDailyCap } from '../../services/cost-guardrail';
+import {
+  grantNexusPoints,
+  isNexusPointProductId,
+  listNexusPointPackages,
+} from '../../services/nexus-points';
+
+function buildBillingStatusPayload(userId: number): Record<string, unknown> {
+  const status = getSubscriptionStatus(userId);
+  const usage = isUserOverDailyCap(userId);
+  return {
+    ...status,
+    ...buildQuotaUsagePayload(usage),
+  };
+}
 
 export function billingRoutes(): Router {
   const router = Router();
@@ -34,8 +49,7 @@ export function billingRoutes(): Router {
    */
   router.get('/status', asyncHandler(async (req: Request, res: Response) => {
     const userId = (req as any).userId;
-    const status = getSubscriptionStatus(userId);
-    sendSuccess(res, status);
+    sendSuccess(res, buildBillingStatusPayload(userId));
   }));
 
   /**
@@ -52,7 +66,6 @@ export function billingRoutes(): Router {
    */
   router.get('/usage', asyncHandler(async (req: Request, res: Response) => {
     const userId = (req as any).userId;
-    const { isUserOverDailyCap } = require('../../services/cost-guardrail');
     const usage = isUserOverDailyCap(userId);
     sendSuccess(res, {
       plan: usage.plan,
@@ -61,6 +74,7 @@ export function billingRoutes(): Router {
       isOverLimit: usage.over,
       resetsAt: usage.resetAt,
       boostAvailable: usage.boostAvailable,
+      ...buildQuotaUsagePayload(usage),
     });
   }));
 
@@ -224,7 +238,8 @@ export function billingRoutes(): Router {
       }
 
       // ── Step 4: Extract and validate required fields ──
-      const originalTransactionId = payload.originalTransactionId || payload.transactionId;
+      const transactionId = payload.transactionId || payload.originalTransactionId;
+      const originalTransactionId = payload.originalTransactionId || transactionId;
       const productId = payload.productId;
 
       if (!originalTransactionId || !productId) {
@@ -243,6 +258,7 @@ export function billingRoutes(): Router {
       const knownProducts = [
         'me.nexushub.pro.monthly', 'me.nexushub.pro.yearly',
         'me.nexushub.max.monthly', 'me.nexushub.max.yearly',
+        ...listNexusPointPackages().map((pkg) => pkg.productId),
       ];
       if (!knownProducts.includes(productId)) {
         logger.warn({ userId, productId }, 'Apple verify: unknown product ID');
@@ -255,7 +271,7 @@ export function billingRoutes(): Router {
         ? new Date(payload.expiresDate).toISOString()
         : null;
 
-      if (expiresDate) {
+      if (expiresDate && !isNexusPointProductId(productId)) {
         const expiryMs = new Date(expiresDate).getTime();
         // Allow 24h grace period for clock skew and renewal processing
         if (expiryMs < Date.now() - 86400000) {
@@ -266,6 +282,36 @@ export function billingRoutes(): Router {
       }
 
       // ── Step 7: Process the verified transaction ──
+      if (isNexusPointProductId(productId)) {
+        const grant = grantNexusPoints({
+          userId,
+          provider: 'apple',
+          providerTransactionId: String(transactionId),
+          productId,
+          source: 'apple_iap',
+        });
+        logger.info({
+          userId,
+          productId,
+          transactionId,
+          granted: grant.granted,
+          creditId: grant.creditId,
+          environment: env || 'unknown',
+        }, 'Apple Nexus Points transaction verified and processed');
+
+        sendSuccess(res, {
+          ...buildBillingStatusPayload(userId),
+          nexusPointsPurchase: {
+            granted: grant.granted,
+            productId,
+            points: grant.package.points,
+            usdAllowance: grant.package.usdAllowance,
+            expiresInDays: 30,
+          },
+        });
+        return;
+      }
+
       handleAppleTransaction(userId, String(originalTransactionId), productId, expiresDate);
 
       logger.info({
@@ -275,8 +321,7 @@ export function billingRoutes(): Router {
         environment: env || 'unknown',
       }, 'Apple transaction verified and processed');
 
-      const status = getSubscriptionStatus(userId);
-      sendSuccess(res, status);
+      sendSuccess(res, buildBillingStatusPayload(userId));
     } catch (err: any) {
       logger.error({ err, userId }, 'Apple transaction verification failed');
       sendError(res, 'VERIFICATION_FAILED', 'Failed to verify Apple transaction', 400);

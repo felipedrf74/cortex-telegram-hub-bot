@@ -33,6 +33,8 @@ import { withTimeout } from '../utils/timeout';
 import { getAICallTimeoutMs } from './runtime-flags';
 import { buildScopedStateContextPrefix } from './provider-state-context';
 import { getDomainModelOverride, type DomainModelRole } from './model-config';
+import { computeModelUsageCostUsd, getModelPricingTable, recordUnresolvedModelPricingAlert } from './model-pricing';
+import { settleNexusPointOverageForUser } from './nexus-points';
 
 // ─── Client (lazy init — only created if API key is set) ────────────
 
@@ -56,12 +58,11 @@ export function isOpenAIConfigured(): boolean {
 // ─── Cost per million tokens (update when OpenAI changes rates) ─────
 
 export const OPENAI_COST_PER_MTK: Record<string, { in: number; out: number }> = {
-  'gpt-5.4-nano': { in: 0.20, out: 1.25 },
-  'gpt-5.4-mini': { in: 0.75, out: 4.50 },
-  'gpt-5-nano':   { in: 0.05, out: 0.40 },
-  'gpt-5-mini':   { in: 0.25, out: 2.00 },
-  'gpt-4o':       { in: 2.50, out: 10.00 },
-  'gpt-4o-mini':  { in: 0.15, out: 0.60 },
+  ...Object.fromEntries(
+    getModelPricingTable()
+      .filter((entry) => entry.provider === 'openai')
+      .map((entry) => [entry.model, { in: entry.inputUsdPerMillion, out: entry.outputUsdPerMillion }]),
+  ),
 };
 
 type OpenAINonStreamingParams = OpenAI.ChatCompletionCreateParamsNonStreaming & {
@@ -81,6 +82,15 @@ type OneShotOptions = {
   timeoutMs?: number;
   jsonMode?: boolean;
 };
+
+const warnedUnresolvedModels = new Set<string>();
+
+function warnUnresolvedOpenAiPricing(model: string, category: string, userId: number): void {
+  const key = `${model}:${category}`;
+  if (warnedUnresolvedModels.has(key)) return;
+  warnedUnresolvedModels.add(key);
+  recordUnresolvedModelPricingAlert({ provider: 'openai', model, category, userId });
+}
 
 function usesCompletionTokenCap(model: string): boolean {
   const normalized = model.trim().toLowerCase();
@@ -131,26 +141,34 @@ async function trackedCompletion(
   const usage = response.usage;
   if (usage) {
     const model = response.model || params.model;
-    // Prefix match (longest key first): OpenAI returns versioned models (e.g. 'gpt-4o-2024-08-06')
-    const rateKey = Object.keys(OPENAI_COST_PER_MTK).sort((a, b) => b.length - a.length).find(k => model.startsWith(k));
-    const rates = rateKey ? OPENAI_COST_PER_MTK[rateKey] : OPENAI_COST_PER_MTK['gpt-4o'];
-    const costUsd =
-      (usage.prompt_tokens / 1_000_000) * rates.in +
-      (usage.completion_tokens / 1_000_000) * rates.out;
+    const cacheReadTokens = usage.prompt_tokens_details?.cached_tokens ?? 0;
+    const priced = computeModelUsageCostUsd(model, {
+      inputTokens: usage.prompt_tokens,
+      outputTokens: usage.completion_tokens,
+      cacheReadTokens,
+    }, 'openai');
+    if (!priced.pricingResolved) {
+      warnUnresolvedOpenAiPricing(model, category, userId);
+    }
+    const costUsd = priced.costUsd;
+    const pricingStatus = priced.pricingResolved ? 'resolved' : 'unresolved';
+    let apiUsageId: number | null = null;
 
     try {
       const db = getDb();
-      db.prepare(`
-        INSERT INTO api_usage (category, model, tenant_id, user_id, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, cost_usd, duration_ms, provider)
-        VALUES (?, ?, ?, ?, ?, ?, 0, 0, ?, ?, 'openai')
-      `).run(category, model, tenantId, userId, usage.prompt_tokens, usage.completion_tokens, costUsd, durationMs);
+      const result = db.prepare(`
+        INSERT INTO api_usage (category, model, tenant_id, user_id, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, cost_usd, duration_ms, provider, pricing_status, pricing_model_key)
+        VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?, 'openai', ?, ?)
+      `).run(category, model, tenantId, userId, usage.prompt_tokens, usage.completion_tokens, cacheReadTokens, costUsd, durationMs, pricingStatus, priced.pricingModelKey);
+      apiUsageId = Number((result as { lastInsertRowid?: number | bigint } | undefined)?.lastInsertRowid ?? 0);
     } catch (e) {
       try {
         const db = getDb();
-        db.prepare(`
+        const result = db.prepare(`
           INSERT INTO api_usage (category, model, user_id, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, cost_usd, duration_ms, provider)
-          VALUES (?, ?, ?, ?, ?, 0, 0, ?, ?, 'openai')
-        `).run(category, model, userId, usage.prompt_tokens, usage.completion_tokens, costUsd, durationMs);
+          VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?, 'openai')
+        `).run(category, model, userId, usage.prompt_tokens, usage.completion_tokens, cacheReadTokens, costUsd, durationMs);
+        apiUsageId = Number((result as { lastInsertRowid?: number | bigint } | undefined)?.lastInsertRowid ?? 0);
       } catch (fallbackErr) {
         logger.warn({ err: fallbackErr }, 'Failed to log OpenAI usage to database');
       }
@@ -162,6 +180,7 @@ async function trackedCompletion(
       summary: `OpenAI ${model} [${category}] — ${usage.prompt_tokens}+${usage.completion_tokens} tokens`,
       detail: `$${costUsd.toFixed(4)} in ${durationMs}ms`,
     });
+    await settleNexusPointOverageForUser(userId, apiUsageId);
   }
 
   return response;
@@ -579,6 +598,7 @@ ${message}`;
     history: DomainMessage[],
     currentMessage: string,
     stateContext: string,
+    options: CallDomainOptions = {},
   ): AsyncGenerator<string, AICallResult, undefined> {
     const routing = getModelRouting(config.openai, domain, 'openai');
     // Phase 2 Slice A: same persona routing for the streaming path.
@@ -606,7 +626,7 @@ ${message}`;
 
     let fullText = '';
     let finishReason = 'stop';
-    let usage: { prompt_tokens: number; completion_tokens: number } | null = null;
+    let usage: { prompt_tokens: number; completion_tokens: number; cached_tokens?: number } | null = null;
 
     for await (const chunk of stream) {
       const delta = chunk.choices[0]?.delta?.content;
@@ -621,6 +641,7 @@ ${message}`;
         usage = {
           prompt_tokens: chunk.usage.prompt_tokens,
           completion_tokens: chunk.usage.completion_tokens,
+          cached_tokens: chunk.usage.prompt_tokens_details?.cached_tokens ?? 0,
         };
       }
     }
@@ -629,26 +650,38 @@ ${message}`;
 
     if (usage) {
       const model = routing.model;
-      // Prefix match (longest key first): OpenAI returns versioned models (e.g. 'gpt-4o-2024-08-06')
-    const rateKey = Object.keys(OPENAI_COST_PER_MTK).sort((a, b) => b.length - a.length).find(k => model.startsWith(k));
-    const rates = rateKey ? OPENAI_COST_PER_MTK[rateKey] : OPENAI_COST_PER_MTK['gpt-4o'];
-      const costUsd =
-        (usage.prompt_tokens / 1_000_000) * rates.in +
-        (usage.completion_tokens / 1_000_000) * rates.out;
+      const priced = computeModelUsageCostUsd(model, {
+        inputTokens: usage.prompt_tokens,
+        outputTokens: usage.completion_tokens,
+        cacheReadTokens: usage.cached_tokens ?? 0,
+      }, 'openai');
+      if (!priced.pricingResolved) {
+        warnUnresolvedOpenAiPricing(model, `openai_stream_${domain}`, options.userId ?? 0);
+      }
+      const costUsd = priced.costUsd;
+      const pricingStatus = priced.pricingResolved ? 'resolved' : 'unresolved';
+      let apiUsageId: number | null = null;
+      const userId = options.userId ?? 0;
+      const tenantId = options.tenantId ?? userId;
 
       try {
         const db = getDb();
-        // April 9 2026: persist user_id (same fix as the non-streaming
-        // trackedCompletion above). Streaming callers don't currently
-        // pass userId through — the AIProvider interface's streamDomain
-        // method predates per-user cost attribution. Fallback to 0
-        // until the interface is extended.
-        db.prepare(`
-          INSERT INTO api_usage (category, model, user_id, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, cost_usd, duration_ms, provider)
-          VALUES (?, ?, ?, ?, ?, 0, 0, ?, ?, 'openai')
-        `).run(`openai_stream_${domain}`, model, 0, usage.prompt_tokens, usage.completion_tokens, costUsd, durationMs);
+        const result = db.prepare(`
+          INSERT INTO api_usage (category, model, tenant_id, user_id, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, cost_usd, duration_ms, provider, pricing_status, pricing_model_key)
+          VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?, 'openai', ?, ?)
+        `).run(`openai_stream_${domain}`, model, tenantId, userId, usage.prompt_tokens, usage.completion_tokens, usage.cached_tokens ?? 0, costUsd, durationMs, pricingStatus, priced.pricingModelKey);
+        apiUsageId = Number((result as { lastInsertRowid?: number | bigint } | undefined)?.lastInsertRowid ?? 0);
       } catch (e) {
-        logger.warn({ err: e }, 'Failed to log OpenAI streaming usage');
+        try {
+          const db = getDb();
+          const result = db.prepare(`
+            INSERT INTO api_usage (category, model, user_id, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, cost_usd, duration_ms, provider)
+            VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?, 'openai')
+          `).run(`openai_stream_${domain}`, model, userId, usage.prompt_tokens, usage.completion_tokens, usage.cached_tokens ?? 0, costUsd, durationMs);
+          apiUsageId = Number((result as { lastInsertRowid?: number | bigint } | undefined)?.lastInsertRowid ?? 0);
+        } catch (fallbackErr) {
+          logger.warn({ err: fallbackErr }, 'Failed to log OpenAI streaming usage');
+        }
       }
 
       pushEvent({
@@ -657,6 +690,7 @@ ${message}`;
         summary: `OpenAI stream ${model} [${domain}] — ${usage.prompt_tokens}+${usage.completion_tokens} tokens`,
         detail: `$${costUsd.toFixed(4)} in ${durationMs}ms`,
       });
+      await settleNexusPointOverageForUser(userId, apiUsageId);
     }
 
     return {

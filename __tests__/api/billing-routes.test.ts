@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Request } from 'express';
 
 const mockHandleAppleTransaction = vi.fn();
+const mockGrantNexusPoints = vi.fn();
 
 vi.mock('../../src/services/stripe-service', () => ({
   isStripeConfigured: vi.fn(() => true),
@@ -18,6 +19,62 @@ vi.mock('../../src/services/stripe-service', () => ({
   createCheckoutSession: vi.fn(),
   createPortalSession: vi.fn(),
   handleAppleTransaction: (...args: unknown[]) => mockHandleAppleTransaction(...args),
+}));
+
+vi.mock('../../src/services/cost-guardrail', () => ({
+  buildQuotaUsagePayload: (usage: any) => ({
+    resetAt: usage.resetAt,
+    limitUsd: usage.limitUsd,
+    usedUsd: usage.usedUsd,
+    remainingUsd: usage.remainingUsd,
+    planDailyLimitUsd: usage.planDailyLimitUsd,
+    includedRemainingUsd: usage.includedRemainingUsd,
+    nexusPointsBalance: usage.nexusPointsBalance,
+    nexusPointsRemainingUsd: usage.nexusPointsRemainingUsd,
+    nexusPointsExpiringSoon: usage.nexusPointsExpiringSoon,
+    nexusPointsExpiringSoonUsd: usage.nexusPointsExpiringSoonUsd,
+    nextCreditExpiryAt: usage.nextCreditExpiryAt,
+    totalRemainingUsd: usage.totalRemainingUsd,
+    pointsPurchaseAvailable: usage.pointsPurchaseAvailable,
+    nexusPointPackages: [
+      { productId: 'me.nexushub.points.small', label: 'small', priceUsd: 5, points: 300, usdAllowance: 0.30, aiOnlyMarginPct: 94, netMarginAfterAppleCutPct: 91.4 },
+      { productId: 'me.nexushub.points.medium', label: 'medium', priceUsd: 10, points: 600, usdAllowance: 0.60, aiOnlyMarginPct: 94, netMarginAfterAppleCutPct: 91.4 },
+      { productId: 'me.nexushub.points.large', label: 'large', priceUsd: 20, points: 1200, usdAllowance: 1.20, aiOnlyMarginPct: 94, netMarginAfterAppleCutPct: 91.4 },
+    ],
+  }),
+  isUserOverDailyCap: vi.fn(() => ({
+    over: false,
+    spentUsd: 0,
+    capUsd: 0.04,
+    plan: 'pro',
+    usageLevel: 'enhanced',
+    usageFraction: 0,
+    callsToday: 0,
+    boostAvailable: true,
+    limitUsd: 0.04,
+    usedUsd: 0,
+    remainingUsd: 0.04,
+    planDailyLimitUsd: 0.04,
+    includedRemainingUsd: 0.04,
+    nexusPointsBalance: 0,
+    nexusPointsRemainingUsd: 0,
+    nexusPointsExpiringSoon: 0,
+    nexusPointsExpiringSoonUsd: 0,
+    nextCreditExpiryAt: null,
+    totalRemainingUsd: 0.04,
+    pointsPurchaseAvailable: true,
+    resetAt: '2026-05-21T00:00:00.000Z',
+  })),
+}));
+
+vi.mock('../../src/services/nexus-points', () => ({
+  isNexusPointProductId: (productId: string) => productId.startsWith('me.nexushub.points.'),
+  listNexusPointPackages: vi.fn(() => [
+    { productId: 'me.nexushub.points.small', label: 'small', priceUsd: 5, points: 300, usdAllowance: 0.30, aiOnlyMarginPct: 94, netMarginAfterAppleCutPct: 91.4 },
+    { productId: 'me.nexushub.points.medium', label: 'medium', priceUsd: 10, points: 600, usdAllowance: 0.60, aiOnlyMarginPct: 94, netMarginAfterAppleCutPct: 91.4 },
+    { productId: 'me.nexushub.points.large', label: 'large', priceUsd: 20, points: 1200, usdAllowance: 1.20, aiOnlyMarginPct: 94, netMarginAfterAppleCutPct: 91.4 },
+  ]),
+  grantNexusPoints: (...args: unknown[]) => mockGrantNexusPoints(...args),
 }));
 
 vi.mock('../../src/utils/logger', () => ({
@@ -98,6 +155,12 @@ function buildFakeJws(payload: Record<string, unknown>): string {
 describe('billing routes', () => {
   beforeEach(() => {
     mockHandleAppleTransaction.mockReset();
+    mockGrantNexusPoints.mockReset();
+    mockGrantNexusPoints.mockReturnValue({
+      granted: true,
+      creditId: 77,
+      package: { productId: 'me.nexushub.points.small', label: 'small', priceUsd: 5, points: 300, usdAllowance: 0.30, aiOnlyMarginPct: 94, netMarginAfterAppleCutPct: 91.4 },
+    });
   });
 
   it('sanitizes apple verification failures instead of leaking internals', async () => {
@@ -121,5 +184,65 @@ describe('billing routes', () => {
     expect(res.body.error.code).toBe('VERIFICATION_FAILED');
     expect(res.body.error.message).toBe('Failed to verify Apple transaction');
     expect(JSON.stringify(res.body)).not.toContain('sqlite write exploded');
+  });
+
+  it('returns Nexus Points availability in billing status', async () => {
+    const res = await dispatch('GET', '/status', undefined, 42);
+
+    expect(res.statusCode).toBe(200);
+    expect(res.body.data).toMatchObject({
+      nexusPointsBalance: 0,
+      includedRemainingUsd: 0.04,
+      totalRemainingUsd: 0.04,
+      pointsPurchaseAvailable: true,
+    });
+    expect(res.body.data.nexusPointPackages).toEqual(expect.arrayContaining([
+      expect.objectContaining({ productId: 'me.nexushub.points.small', points: 300 }),
+      expect.objectContaining({ productId: 'me.nexushub.points.medium', points: 600 }),
+      expect.objectContaining({ productId: 'me.nexushub.points.large', points: 1200 }),
+    ]));
+  });
+
+  it('returns Nexus Points availability in billing usage', async () => {
+    const res = await dispatch('GET', '/usage', undefined, 42);
+
+    expect(res.statusCode).toBe(200);
+    expect(res.body.data).toMatchObject({
+      nexusPointsBalance: 0,
+      includedRemainingUsd: 0.04,
+      totalRemainingUsd: 0.04,
+      pointsPurchaseAvailable: true,
+    });
+  });
+
+  it('processes Nexus Point Apple products through the point ledger instead of subscriptions', async () => {
+    const jwsTransaction = buildFakeJws({
+      bundleId: 'me.nexushub.app',
+      productId: 'me.nexushub.points.small',
+      transactionId: '2000000123456790',
+      originalTransactionId: '2000000123456790',
+      environment: 'Production',
+    });
+
+    const res = await dispatch('POST', '/apple-verify', { jwsTransaction }, 42);
+
+    expect(res.statusCode).toBe(200);
+    expect(mockHandleAppleTransaction).not.toHaveBeenCalled();
+    expect(mockGrantNexusPoints).toHaveBeenCalledWith({
+      userId: 42,
+      provider: 'apple',
+      providerTransactionId: '2000000123456790',
+      productId: 'me.nexushub.points.small',
+      source: 'apple_iap',
+    });
+    expect(res.body.data).toMatchObject({
+      pointsPurchaseAvailable: true,
+      nexusPointsPurchase: {
+        granted: true,
+        productId: 'me.nexushub.points.small',
+        points: 300,
+        usdAllowance: 0.30,
+      },
+    });
   });
 });

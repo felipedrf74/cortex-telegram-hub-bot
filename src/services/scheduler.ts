@@ -56,6 +56,7 @@ import { expireStalePendingChatActionsForJob } from './chat-action-state';
 import { pruneCompletedChatActionRuns, reapZombieChatActionRuns } from './chat-action-run-store';
 import { runGarminTenantIsolationWatcher } from './garmin-tenant-isolation-watcher';
 import { runDecisionSourceStateSupersessionJob } from './decision-center';
+import { expireOldNexusPointCredits } from './nexus-points';
 import { getActivePlan, getCurrentWeek, getWeeklyAdherence, computeAdjustmentRecommendation, updateWeekAdjustment, getWeeksForPlan } from './training-plans';
 import { calculateReadiness, persistReadinessScore } from './readiness-scorer';
 
@@ -722,6 +723,7 @@ export function startScheduler(bot?: any): void {
   registerJob('chat_action_plan_expiry', 'Chat Action Plan Expiry', '15 * * * *', 'system');
   registerJob('event_backbone_worker', 'Event Backbone Worker', '* * * * *', 'system');
   registerJob('event_backbone_cleanup', 'Event Backbone Cleanup', '10 0 * * *', 'system');
+  registerJob('nexus_points_expiry', 'Nexus Points Expiry Sweep', '0 4 * * *', 'system');
 
   // Seed lastRunAt from DB so the DST watchdog doesn't re-fire jobs after a restart
   seedJobLastRunFromHistory();
@@ -1719,6 +1721,10 @@ export function startScheduler(bot?: any): void {
     );
   }), { timezone: tz });
 
+  cron.schedule('0 4 * * *', wrapJob('nexus_points_expiry', async () => {
+    expireOldNexusPointCredits();
+  }), { timezone: 'UTC' });
+
   // Seed SEO keywords (only if table is empty)
   try {
     seedKeywordsIfEmpty();
@@ -1866,7 +1872,7 @@ export function startScheduler(bot?: any): void {
   }), { timezone: tz });
 
   logger.info(
-    `Scheduler started: reminders, daily briefing (${config.todo.digestTime}), end-of-day (21:00), weekly (Fri 17:00), shared list (*/5), content (16:43), invoices (1st 09:00/09:15/09:30), fiscal-bundle (daily 08:10 due-check), conflict (19:30), fossa (bi-weekly Mon 07:30), garmin-keepalive (*/30), coach (${config.garmin.coachTime}), invoice-queue (*/15), channel-relearn (Sun 03:00), tue-reels (Tue 09:00), thu-youtube (Thu 09:00), fri-weekly (Fri 18:30), pipeline-agent (20:00), notification-release (*/15), decision-source-supersession (*/15), chat-action-plan-expiry (*/2), chat-action-run-zombie-reaper (*/5), chat-action-run-retention (00:20), event-backbone-worker (* * * * *), event-backbone-cleanup (00:10), expire-signals (hourly), db-backup (${config.backup.time}), dst-watchdog (*/15)`
+    `Scheduler started: reminders, daily briefing (${config.todo.digestTime}), end-of-day (21:00), weekly (Fri 17:00), shared list (*/5), content (16:43), invoices (1st 09:00/09:15/09:30), fiscal-bundle (daily 08:10 due-check), conflict (19:30), fossa (bi-weekly Mon 07:30), garmin-keepalive (*/30), coach (${config.garmin.coachTime}), invoice-queue (*/15), channel-relearn (Sun 03:00), tue-reels (Tue 09:00), thu-youtube (Thu 09:00), fri-weekly (Fri 18:30), pipeline-agent (20:00), notification-release (*/15), decision-source-supersession (*/15), chat-action-plan-expiry (*/2), chat-action-run-zombie-reaper (*/5), chat-action-run-retention (00:20), event-backbone-worker (* * * * *), event-backbone-cleanup (00:10), nexus-points-expiry (04:00 UTC), expire-signals (hourly), db-backup (${config.backup.time}), dst-watchdog (*/15)`
   );
 }
 

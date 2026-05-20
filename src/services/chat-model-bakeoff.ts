@@ -2,6 +2,7 @@
 
 import { CHAT_BILINGUAL_EVAL_FIXTURES } from './chat-bilingual-eval-fixtures';
 import { inferChatTurnContract } from './chat-turn-contract';
+import { resolveModelPricing } from './model-pricing';
 
 export type ChatBakeoffProvider = 'gemini' | 'openai' | 'external_eval_only';
 export type ChatBakeoffServingMode = 'interactive' | 'batch' | 'flex';
@@ -79,9 +80,7 @@ export const CHAT_MODEL_BAKEOFF_CANDIDATES: ChatModelBakeoffCandidate[] = [
     model: 'gemini-2.5-flash-lite',
     recommendedServingModes: ['interactive', 'batch'],
     productionEligible: true,
-    inputUsdPerMillion: 0.10,
-    outputUsdPerMillion: 0.40,
-    batchDiscount: 0.5,
+    ...candidatePricing('gemini-2.5-flash-lite', 'gemini'),
   },
   {
     id: 'openai-gpt-5-4-nano-structured-chat',
@@ -89,9 +88,7 @@ export const CHAT_MODEL_BAKEOFF_CANDIDATES: ChatModelBakeoffCandidate[] = [
     model: 'gpt-5.4-nano',
     recommendedServingModes: ['interactive', 'batch', 'flex'],
     productionEligible: true,
-    inputUsdPerMillion: 0.20,
-    outputUsdPerMillion: 1.25,
-    batchDiscount: 0.5,
+    ...candidatePricing('gpt-5.4-nano', 'openai'),
   },
   {
     id: 'gemini-flash-baseline',
@@ -99,9 +96,7 @@ export const CHAT_MODEL_BAKEOFF_CANDIDATES: ChatModelBakeoffCandidate[] = [
     model: 'gemini-2.5-flash',
     recommendedServingModes: ['interactive', 'batch'],
     productionEligible: true,
-    inputUsdPerMillion: 0.30,
-    outputUsdPerMillion: 2.50,
-    batchDiscount: 0.5,
+    ...candidatePricing('gemini-2.5-flash', 'gemini'),
   },
   {
     id: 'openai-gpt-5-4-mini-escalation',
@@ -109,9 +104,7 @@ export const CHAT_MODEL_BAKEOFF_CANDIDATES: ChatModelBakeoffCandidate[] = [
     model: 'gpt-5.4-mini',
     recommendedServingModes: ['interactive', 'batch', 'flex'],
     productionEligible: true,
-    inputUsdPerMillion: 0.75,
-    outputUsdPerMillion: 4.50,
-    batchDiscount: 0.5,
+    ...candidatePricing('gpt-5.4-mini', 'openai'),
   },
   {
     id: 'mistral-small-4-eval-only',
@@ -136,6 +129,18 @@ export const CHAT_MODEL_BAKEOFF_CANDIDATES: ChatModelBakeoffCandidate[] = [
     batchDiscount: null,
   },
 ];
+
+function candidatePricing(model: string, provider: 'gemini' | 'openai') {
+  const pricing = resolveModelPricing(model, provider);
+  if (!pricing) {
+    return { inputUsdPerMillion: null, outputUsdPerMillion: null, batchDiscount: null };
+  }
+  return {
+    inputUsdPerMillion: pricing.inputUsdPerMillion,
+    outputUsdPerMillion: pricing.outputUsdPerMillion,
+    batchDiscount: pricing.batchDiscount ?? null,
+  };
+}
 
 export function buildChatModelBakeoffReport(input: {
   generatedAt?: string;

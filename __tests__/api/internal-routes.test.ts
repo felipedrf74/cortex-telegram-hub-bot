@@ -10,6 +10,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import fs from 'fs';
 import path from 'path';
+import { computeModelUsageCostUsd } from '../../src/services/model-pricing';
 
 describe('Internal Routes — structural', () => {
   const routesSrc = fs.readFileSync(
@@ -76,25 +77,18 @@ describe('Internal Routes — structural', () => {
 });
 
 describe('Internal Routes — cost computation logic', () => {
-  // Test the cost computation inline since we can't easily import the route
-  const COST_PER_MTK: Record<string, { in: number; out: number; cacheRead: number; cacheWrite: number }> = {
-    'claude-sonnet-4-6':         { in: 3.00, out: 15.00, cacheRead: 0.30, cacheWrite: 3.75 },
-    'claude-haiku-4-5-20251001': { in: 0.80, out: 4.00,  cacheRead: 0.08, cacheWrite: 1.00 },
-  };
-
   function computeCost(model: string, inputTokens: number, outputTokens: number, cacheRead = 0, cacheWrite = 0): number {
-    const rates = COST_PER_MTK[model] ?? COST_PER_MTK['claude-sonnet-4-6'];
-    return (
-      (inputTokens / 1_000_000) * rates.in +
-      (outputTokens / 1_000_000) * rates.out +
-      (cacheRead / 1_000_000) * rates.cacheRead +
-      (cacheWrite / 1_000_000) * rates.cacheWrite
-    );
+    return computeModelUsageCostUsd(model, {
+      inputTokens,
+      outputTokens,
+      cacheReadTokens: cacheRead,
+      cacheWriteTokens: cacheWrite,
+    }, 'anthropic').costUsd;
   }
 
   it('computes Haiku cost correctly', () => {
-    // 1M input × $0.80 + 1M output × $4.00 = $4.80
-    expect(computeCost('claude-haiku-4-5-20251001', 1_000_000, 1_000_000)).toBeCloseTo(4.80);
+    // 1M input × $1.00 + 1M output × $5.00 = $6.00
+    expect(computeCost('claude-haiku-4-5-20251001', 1_000_000, 1_000_000)).toBeCloseTo(6.00);
   });
 
   it('computes Sonnet cost correctly', () => {
@@ -105,13 +99,14 @@ describe('Internal Routes — cost computation logic', () => {
   it('includes cache token costs', () => {
     const withoutCache = computeCost('claude-sonnet-4-6', 500_000, 500_000);
     const withCache = computeCost('claude-sonnet-4-6', 500_000, 500_000, 100_000, 50_000);
-    expect(withCache).toBeGreaterThan(withoutCache);
+    expect(withoutCache).toBeCloseTo(9.00);
+    expect(withCache).toBeCloseTo(8.7675);
+    expect(withCache).toBeLessThan(withoutCache);
   });
 
-  it('falls back to Sonnet pricing for unknown models', () => {
+  it('charges the unresolved sentinel instead of silently falling back to another model key', () => {
     const unknown = computeCost('unknown-model', 1_000_000, 1_000_000);
-    const sonnet = computeCost('claude-sonnet-4-6', 1_000_000, 1_000_000);
-    expect(unknown).toBeCloseTo(sonnet);
+    expect(unknown).toBeCloseTo(18.00);
   });
 });
 

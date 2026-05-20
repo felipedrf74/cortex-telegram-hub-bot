@@ -40,6 +40,14 @@ const mockIsUserOverDailyCap = vi.fn(() => ({
   capUsd: 1,
   plan: 'pro',
   resetAt: '2026-04-15T00:00:00.000Z',
+  limitUsd: 1,
+  usedUsd: 0,
+  remainingUsd: 1,
+  planDailyLimitUsd: 1,
+  includedRemainingUsd: 1,
+  nexusPointsBalance: 0,
+  nexusPointsRemainingUsd: 0,
+  pointsPurchaseAvailable: true,
 }));
 const mockGetLastAssistantMessage = vi.fn(() => null);
 const mockAddToConversation = vi.fn();
@@ -240,6 +248,14 @@ vi.mock('../../src/services/cost-guardrail', () => ({
       details: {
         plan: quota.plan,
         resetAt: quota.resetAt,
+        limitUsd: quota.limitUsd,
+        usedUsd: quota.usedUsd,
+        remainingUsd: quota.remainingUsd,
+        planDailyLimitUsd: quota.planDailyLimitUsd,
+        includedRemainingUsd: quota.includedRemainingUsd,
+        nexusPointsBalance: quota.nexusPointsBalance,
+        nexusPointsRemainingUsd: quota.nexusPointsRemainingUsd,
+        pointsPurchaseAvailable: quota.pointsPurchaseAvailable,
       },
     };
   },
@@ -609,6 +625,14 @@ describe('Chat API routes', () => {
       capUsd: 1,
       plan: 'pro',
       resetAt: '2026-04-15T00:00:00.000Z',
+      limitUsd: 1,
+      usedUsd: 0,
+      remainingUsd: 1,
+      planDailyLimitUsd: 1,
+      includedRemainingUsd: 1,
+      nexusPointsBalance: 0,
+      nexusPointsRemainingUsd: 0,
+      pointsPurchaseAvailable: true,
     });
     mockGetLastAssistantMessage.mockReturnValue(null);
     mockHandleSecretary.mockResolvedValue({ text: 'Scheduled.', domain: 'secretary' });
@@ -885,7 +909,7 @@ describe('Chat API routes', () => {
       involvedSkills: ['secretary_calendar'],
     });
     expect(messageRes.body.text).toContain('Google Calendar');
-    expect(JSON.stringify(messageRes.body)).not.toMatch(/927|e-mails não lidos|unread|auth\.scope|chat\.skill_capability_registry|<b>|<\/b>|Resposta estruturada/i);
+    expect(messageRes.body.text).not.toMatch(/927|e-mails não lidos|unread|auth\.scope|chat\.skill_capability_registry|<b>|<\/b>|Resposta estruturada/i);
     expect(mockRouteMessage).not.toHaveBeenCalled();
     expect(mockCompleteOneShotWithFallback).not.toHaveBeenCalled();
   });
@@ -2549,6 +2573,58 @@ describe('Chat API routes', () => {
     });
   });
 
+  it('keeps token-zero deterministic reads available after the AI usage limit is reached', async () => {
+    mockIsUserOverDailyCap.mockReturnValue({
+      over: true,
+      spentUsd: 0.06,
+      capUsd: 0.04,
+      plan: 'pro',
+      resetAt: '2026-04-15T00:00:00.000Z',
+      limitUsd: 0.04,
+      usedUsd: 0.06,
+      remainingUsd: 0,
+      planDailyLimitUsd: 0.04,
+      includedRemainingUsd: 0,
+      nexusPointsBalance: 0,
+      nexusPointsRemainingUsd: 0,
+      pointsPurchaseAvailable: true,
+    });
+    mockRouteMessage.mockResolvedValue({
+      domain: 'finance',
+      method: 'keyword',
+      confidence: 0.9,
+      strippedMessage: 'what tax is due next?',
+    });
+    mockGetUserLanguage.mockReturnValue('en-US');
+    mockGetTaxEvents.mockReturnValue([
+      {
+        id: 78,
+        user_id: 7001,
+        month: '2026-04',
+        gross_income: 5000,
+        deductions: 400,
+        taxable_income: 3600,
+        tax_due: 300,
+        inss_due: 920,
+        status: 'pending',
+        darf_code: '0190',
+        paid_at: null,
+        notes: null,
+        created_at: '2026-04-01T10:00:00.000Z',
+        updated_at: '2026-04-01T10:00:00.000Z',
+      },
+    ]);
+
+    const messageRes = await dispatch('POST', '/message', 7001, {
+      text: 'what tax is due next?',
+    });
+
+    expect(messageRes.statusCode, JSON.stringify(messageRes.body)).toBe(200);
+    expect(messageRes.body.routeMethod).toBe('finance-state-shortcut');
+    expect(messageRes.body.text).toContain('2026-04');
+    expect(mockHandleSecretary).not.toHaveBeenCalled();
+  });
+
   it('returns the accountant handoff state from the deterministic finance shortcut', async () => {
     mockRouteMessage.mockResolvedValue({
       domain: 'finance',
@@ -2723,6 +2799,14 @@ describe('Chat API routes', () => {
       capUsd: 0,
       plan: 'free',
       resetAt: '2026-04-15T00:00:00.000Z',
+      limitUsd: 0,
+      usedUsd: 0,
+      remainingUsd: 0,
+      planDailyLimitUsd: 0,
+      includedRemainingUsd: 0,
+      nexusPointsBalance: 0,
+      nexusPointsRemainingUsd: 0,
+      pointsPurchaseAvailable: false,
     });
 
     const messageRes = await dispatch('POST', '/message', 7001, {
@@ -2735,6 +2819,14 @@ describe('Chat API routes', () => {
     expect(messageRes.body.error.details).toEqual({
       plan: 'free',
       resetAt: '2026-04-15T00:00:00.000Z',
+      limitUsd: 0,
+      usedUsd: 0,
+      remainingUsd: 0,
+      planDailyLimitUsd: 0,
+      includedRemainingUsd: 0,
+      nexusPointsBalance: 0,
+      nexusPointsRemainingUsd: 0,
+      pointsPurchaseAvailable: false,
     });
   });
 

@@ -9,6 +9,8 @@ const hoisted = vi.hoisted(() => {
     requirePortalAdminToken: vi.fn(),
     logPortalAdminMutation: vi.fn(),
     sendPortalInternalError: vi.fn(),
+    setUserAiBudgetOverride: vi.fn(),
+    clearUserAiBudgetOverride: vi.fn(),
     targetUserGuard,
     requireOperatorTargetUser: vi.fn(() => targetUserGuard),
   };
@@ -40,6 +42,11 @@ vi.mock('../../src/portal/admin-target-user', () => ({
 
 vi.mock('../../src/portal/http', () => ({
   sendPortalInternalError: (...args: unknown[]) => hoisted.sendPortalInternalError(...args),
+}));
+
+vi.mock('../../src/services/ai-budget-overrides', () => ({
+  setUserAiBudgetOverride: (...args: unknown[]) => hoisted.setUserAiBudgetOverride(...args),
+  clearUserAiBudgetOverride: (...args: unknown[]) => hoisted.clearUserAiBudgetOverride(...args),
 }));
 
 import { registerPortalUserRoutes } from '../../src/portal/user-routes';
@@ -270,6 +277,37 @@ describe('portal user routes', () => {
       daily_cost_limit_usd: 0.25,
     });
     expect(payload.body).toEqual({ ok: true, message: 'Limits updated' });
+  });
+
+  it('sets and clears per-user AI budget overrides independently of legacy token limits', () => {
+    const recorder = makeDbRecorder();
+    hoisted.getDb.mockReturnValue(recorder.db);
+    const { app, routes } = makeApp();
+    registerPortalUserRoutes(app as any);
+    const handler = routes.get('PUT /api/users/:userId/limits')?.[3]!;
+    const { payload, res } = makeResponse();
+
+    handler({
+      params: { userId: '12' },
+      body: {
+        daily_ai_cost_limit_usd: '0.09',
+        daily_ai_cost_limit_expires_at: '2026-06-20T00:00:00.000Z',
+        daily_ai_cost_limit_reason: 'support adjustment',
+      },
+    }, res);
+
+    expect(hoisted.setUserAiBudgetOverride).toHaveBeenCalledWith({
+      userId: 12,
+      dailyCostUsd: 0.09,
+      expiresAt: '2026-06-20T00:00:00.000Z',
+      reason: 'support adjustment',
+      updatedBy: 0,
+    });
+    expect(payload.body).toEqual({ ok: true, message: 'Limits updated' });
+
+    const clear = makeResponse();
+    handler({ params: { userId: '12' }, body: { daily_ai_cost_limit_usd: null } }, clear.res);
+    expect(hoisted.clearUserAiBudgetOverride).toHaveBeenCalledWith(12, 0);
   });
 
   it('uses the shared internal-error helper when tier updates fail', () => {

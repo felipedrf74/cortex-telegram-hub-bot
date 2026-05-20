@@ -307,15 +307,14 @@ describe('QA: Anthropic hook metering integration', () => {
       path.resolve(__dirname, '../../src/portal/anthropic-hook.ts'), 'utf-8',
     );
     expect(hookSource).toContain('computeCost');
-    expect(hookSource).toContain('COST_PER_MTK');
+    expect(hookSource).toContain('computeModelUsageCostUsd');
   });
 
-  it('anthropic-hook includes Sonnet and Haiku pricing', () => {
+  it('anthropic-hook does not duplicate Sonnet and Haiku pricing', () => {
     const hookSource = fs.readFileSync(
       path.resolve(__dirname, '../../src/portal/anthropic-hook.ts'), 'utf-8',
     );
-    expect(hookSource).toContain('claude-sonnet');
-    expect(hookSource).toContain('claude-haiku');
+    expect(hookSource).not.toContain('COST_PER_MTK');
   });
 
   it('cost calculation includes cache read/write tokens', () => {
@@ -324,8 +323,8 @@ describe('QA: Anthropic hook metering integration', () => {
     );
     expect(hookSource).toContain('cache_read_input_tokens');
     expect(hookSource).toContain('cache_creation_input_tokens');
-    expect(hookSource).toContain('cacheRead');
-    expect(hookSource).toContain('cacheWrite');
+    expect(hookSource).toContain('cacheReadTokens');
+    expect(hookSource).toContain('cacheWriteTokens');
   });
 
   it('passes userId to recordUsage', () => {

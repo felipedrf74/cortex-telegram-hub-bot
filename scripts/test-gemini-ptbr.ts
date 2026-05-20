@@ -8,6 +8,7 @@
  */
 
 import { GoogleGenerativeAI } from '../src/services/gemini-adapter';
+import { computeModelUsageCostUsd } from '../src/services/model-pricing';
 
 const API_KEY = process.env.GEMINI_API_KEY;
 if (!API_KEY) {
@@ -48,7 +49,10 @@ async function runTest() {
 
       const inputTokens = usage?.promptTokenCount || 0;
       const outputTokens = usage?.candidatesTokenCount || 0;
-      const cost = (inputTokens / 1_000_000) * 0.30 + (outputTokens / 1_000_000) * 2.50;
+      const cost = computeModelUsageCostUsd('gemini-2.5-flash', {
+        inputTokens,
+        outputTokens,
+      }, 'gemini').costUsd;
 
       console.log(`[${domain.toUpperCase().padEnd(10)}] ${isPT ? '✅' : '❌'} PT-BR | ${durationMs}ms | ${inputTokens}+${outputTokens} tokens | $${cost.toFixed(6)}`);
       console.log(`  Q: ${text}`);

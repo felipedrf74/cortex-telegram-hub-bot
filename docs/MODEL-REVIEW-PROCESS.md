@@ -29,9 +29,10 @@ Check for new model releases:
 
 If a cheaper model is available that maintains quality:
 1. Update `MODEL_OPTIONS` in `src/services/model-config.ts`
-2. Update cost table in the relevant provider file
-3. Test with `scripts/test-gemini-ptbr.ts` (or equivalent for other providers)
-4. Deploy with feature flag to one domain first
+2. Update `src/services/model-pricing.ts`, the central input/output/cache rate registry
+3. Run `npx tsx src/tools/model-pricing-report.ts` and confirm no active `api_usage` model is unresolved. Unresolved production rows are not free: quota enforcement charges the Sonnet-4.6 sentinel ceiling rate and emits a deduped operator alert until the registry is fixed.
+4. Test with `scripts/test-gemini-ptbr.ts` (or equivalent for other providers)
+5. Deploy with feature flag to one domain first
 
 ### 3. Quality Check
 - Review user complaints or routing errors in logs

@@ -13,6 +13,7 @@
 import Database from 'better-sqlite3';
 import fs from 'fs';
 import path from 'path';
+import { resolveModelPricing } from '../src/services/model-pricing';
 
 interface UsageRow {
   provider: string;
@@ -35,60 +36,49 @@ const DEFAULT_END = new Date();
 const DEFAULT_START = new Date(DEFAULT_END.getTime() - 30 * 24 * 60 * 60 * 1000);
 const REPORT_START = process.env.COST_REPORT_START || formatSqlDateTime(DEFAULT_START);
 const REPORT_END = process.env.COST_REPORT_END || formatSqlDateTime(DEFAULT_END);
-const MODEL_RATES: Record<string, ModelRate> = {
-  'gemini-2.5-flash-lite': { input: 0.10, output: 0.40, batchDiscount: 0.5 },
-  'gemini-2.5-flash': { input: 0.30, output: 2.50, batchDiscount: 0.5 },
-  'gpt-5.4-nano': { input: 0.20, output: 1.25, batchDiscount: 0.5 },
-  'gpt-5.4-mini': { input: 0.75, output: 4.50, batchDiscount: 0.5 },
-  'gpt-5-nano': { input: 0.05, output: 0.40, batchDiscount: 0.5 },
-  'gpt-5-mini': { input: 0.25, output: 2.00, batchDiscount: 0.5 },
-  'claude-haiku-4-5': { input: 1.00, output: 5.00 },
-  'claude-haiku-4-5-20251001': { input: 1.00, output: 5.00 },
-  'claude-sonnet-4-6': { input: 3.00, output: 15.00 },
-};
 const unmatchedModels = new Set<string>();
 
+let rows: UsageRow[] = [];
 if (!fs.existsSync(DB_PATH)) {
-  console.error(`Database not found: ${DB_PATH}`);
-  process.exit(1);
+  console.warn(`Database not found: ${DB_PATH}; emitting an empty cost scenario report.`);
+} else {
+  const db = new Database(DB_PATH, { readonly: true });
+  rows = db.prepare(`
+    SELECT
+      COALESCE(provider, 'anthropic') AS provider,
+      COALESCE(category, 'unknown') AS category,
+      COALESCE(model, 'unknown') AS model,
+      SUM(COALESCE(input_tokens, 0)) AS input_tokens,
+      SUM(COALESCE(output_tokens, 0)) AS output_tokens,
+      SUM(COALESCE(cost_usd, 0)) AS stored_cost_usd,
+      COUNT(*) AS calls
+    FROM api_usage
+    WHERE ts >= ? AND ts < ?
+    GROUP BY provider, category, model
+    ORDER BY stored_cost_usd DESC
+  `).all(REPORT_START, REPORT_END) as UsageRow[];
+  db.close();
 }
 
-const db = new Database(DB_PATH, { readonly: true });
-const rows = db.prepare(`
-  SELECT
-    COALESCE(provider, 'anthropic') AS provider,
-    COALESCE(category, 'unknown') AS category,
-    COALESCE(model, 'unknown') AS model,
-    SUM(COALESCE(input_tokens, 0)) AS input_tokens,
-    SUM(COALESCE(output_tokens, 0)) AS output_tokens,
-    SUM(COALESCE(cost_usd, 0)) AS stored_cost_usd,
-    COUNT(*) AS calls
-  FROM api_usage
-  WHERE ts >= ? AND ts < ?
-  GROUP BY provider, category, model
-  ORDER BY stored_cost_usd DESC
-`).all(REPORT_START, REPORT_END) as UsageRow[];
-db.close();
-
-const currentCorrected = total(rows, (row) => rateFor(row.model));
+const currentCorrected = total(rows, (row) => rateFor(row.model, 1, row.provider));
 const classifierRouterFlashLite = total(rows, (row) => (
-  isClassifierLike(row) ? rateFor('gemini-2.5-flash-lite') : rateFor(row.model)
+  isClassifierLike(row) ? rateFor('gemini-2.5-flash-lite', 1, 'gemini') : rateFor(row.model, 1, row.provider)
 ));
 const structuredNano = total(rows, (row) => {
-  if (isClassifierLike(row)) return rateFor(row.model);
-  if (isEligibleStructuredChat(row)) return rateFor('gpt-5.4-nano');
-  return rateFor(row.model);
+  if (isClassifierLike(row)) return rateFor(row.model, 1, row.provider);
+  if (isEligibleStructuredChat(row)) return rateFor('gpt-5.4-nano', 1, 'openai');
+  return rateFor(row.model, 1, row.provider);
 });
 const scopedContextTrim = total(rows, (row) => {
   const inputMultiplier = isEligibleStructuredChat(row) || isSecretaryLike(row) ? 0.85 : 1;
-  return rateFor(row.model, inputMultiplier);
+  return rateFor(row.model, inputMultiplier, row.provider);
 });
 const genericNoLocalReadTrim = total(rows, (row) => {
   const inputMultiplier = isGenericNoLocalReadEligible(row) ? 0.70 : 1;
-  return rateFor(row.model, inputMultiplier);
+  return rateFor(row.model, inputMultiplier, row.provider);
 });
 const offlineBatch = total(rows, (row) => {
-  const rate = rateFor(row.model);
+  const rate = rateFor(row.model, 1, row.provider);
   if (!isOfflineBatchEligible(row) || !rate.batchDiscount) return rate;
   return {
     input: rate.input * rate.batchDiscount,
@@ -145,16 +135,21 @@ function withSavings(scenario: { costUsd: number; inputTokens: number; outputTok
   };
 }
 
-function rateFor(model: string, inputMultiplier = 1): ModelRate {
-  const key = Object.keys(MODEL_RATES)
-    .sort((a, b) => b.length - a.length)
-    .find((candidate) => model.startsWith(candidate));
-  if (!key && !unmatchedModels.has(model)) {
-    unmatchedModels.add(model);
-    console.warn(`Unmatched model "${model}" priced as gemini-2.5-flash`);
+function rateFor(model: string, inputMultiplier = 1, provider?: string | null): ModelRate {
+  const pricing = resolveModelPricing(model, provider);
+  if (!pricing) {
+    const key = `${provider || 'unknown'}/${model || 'unknown'}`;
+    if (!unmatchedModels.has(key)) {
+      unmatchedModels.add(key);
+      console.warn(`Unmatched model "${key}" priced as unresolved zero-cost; fix src/services/model-pricing.ts before using this report for enforcement.`);
+    }
+    return { input: 0, output: 0 };
   }
-  const rate = key ? MODEL_RATES[key] : MODEL_RATES['gemini-2.5-flash'];
-  return { ...rate, input: rate.input * inputMultiplier };
+  return {
+    input: pricing.inputUsdPerMillion * inputMultiplier,
+    output: pricing.outputUsdPerMillion,
+    batchDiscount: pricing.batchDiscount,
+  };
 }
 
 function isClassifierLike(row: UsageRow): boolean {

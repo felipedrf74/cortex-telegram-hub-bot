@@ -246,6 +246,40 @@ function tryBuildFinanceShortcutResponse(input: {
   });
 }
 
+export async function tryBuildTokenZeroChatMessageShortcutResponse(input: {
+  normalizedText: string;
+  userId: number;
+  userLanguage: string;
+}): Promise<ChatShortcutRouteResult | null> {
+  const contentStateShortcut = parseContentStateShortcut(input.normalizedText);
+  if (contentStateShortcut) {
+    const requestedLanguage = resolveContentShortcutLanguage(input.normalizedText, input.userLanguage);
+    const shortcut = await buildContentStateShortcutResponse(contentStateShortcut, input.userId, requestedLanguage);
+    return buildShortcutResponse({
+      text: shortcut.text,
+      domain: 'content',
+      routeMethod: 'content-intelligence-shortcut',
+      confidence: 0.95,
+      metadata: shortcut.metadata,
+    });
+  }
+
+  const financeStateShortcut = parseFinanceStateShortcut(input.normalizedText);
+  if (financeStateShortcut) {
+    const requestedLanguage = resolveFinanceShortcutLanguage(input.userLanguage);
+    const shortcut = buildFinanceStateShortcutResponse(financeStateShortcut, input.userId, requestedLanguage);
+    return buildShortcutResponse({
+      text: shortcut.text,
+      domain: 'finance',
+      routeMethod: 'finance-state-shortcut',
+      confidence: 0.95,
+      metadata: shortcut.metadata,
+    });
+  }
+
+  return null;
+}
+
 export async function tryBuildChatMessageShortcutResponse(input: {
   route: RouteResult;
   normalizedText: string;

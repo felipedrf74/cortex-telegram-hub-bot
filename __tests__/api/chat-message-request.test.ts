@@ -34,6 +34,14 @@ vi.mock('../../src/services/cost-guardrail', () => ({
       details: {
         plan: quota.plan,
         resetAt: quota.resetAt,
+        limitUsd: quota.limitUsd,
+        usedUsd: quota.usedUsd,
+        remainingUsd: quota.remainingUsd,
+        planDailyLimitUsd: quota.planDailyLimitUsd,
+        includedRemainingUsd: quota.includedRemainingUsd,
+        nexusPointsBalance: quota.nexusPointsBalance,
+        nexusPointsRemainingUsd: quota.nexusPointsRemainingUsd,
+        pointsPurchaseAvailable: quota.pointsPurchaseAvailable,
       },
     };
   },
@@ -85,6 +93,14 @@ describe('chat message request-boundary helpers', () => {
       capUsd: 1,
       plan: 'pro',
       resetAt: '2026-04-25T00:00:00.000Z',
+      limitUsd: 1,
+      usedUsd: 0,
+      remainingUsd: 1,
+      planDailyLimitUsd: 1,
+      includedRemainingUsd: 1,
+      nexusPointsBalance: 0,
+      nexusPointsRemainingUsd: 0,
+      pointsPurchaseAvailable: true,
     });
     mockBuildQuotaExceededMessage.mockReturnValue('Daily AI quota reached');
   });
@@ -152,6 +168,14 @@ describe('chat message request-boundary helpers', () => {
       capUsd: 0.1,
       plan: 'free',
       resetAt: '2026-04-25T00:00:00.000Z',
+      limitUsd: 0.1,
+      usedUsd: 0.2,
+      remainingUsd: 0,
+      planDailyLimitUsd: 0.1,
+      includedRemainingUsd: 0,
+      nexusPointsBalance: 0,
+      nexusPointsRemainingUsd: 0,
+      pointsPurchaseAvailable: false,
     });
 
     const blockedRes = mockRes();
@@ -178,6 +202,14 @@ describe('chat message request-boundary helpers', () => {
         details: {
           plan: 'free',
           resetAt: '2026-04-25T00:00:00.000Z',
+          limitUsd: 0.1,
+          usedUsd: 0.2,
+          remainingUsd: 0,
+          planDailyLimitUsd: 0.1,
+          includedRemainingUsd: 0,
+          nexusPointsBalance: 0,
+          nexusPointsRemainingUsd: 0,
+          pointsPurchaseAvailable: false,
         },
       },
     });

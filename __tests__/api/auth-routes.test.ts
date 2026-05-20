@@ -175,7 +175,7 @@ describe('Auth invite registration', () => {
     expect(user.tier).toBe('max');
     expect(user.status).toBe('active');
     expect(user.auth_provider).toBe('invite_code');
-    expect(user.daily_cost_limit_usd).toBeGreaterThanOrEqual(0.6);
+    expect(user.daily_cost_limit_usd).toBeGreaterThanOrEqual(0.06);
 
     const subscription = testDb.prepare(
       'SELECT plan, status, provider, period FROM subscriptions WHERE user_id = ?'

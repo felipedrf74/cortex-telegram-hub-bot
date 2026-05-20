@@ -475,8 +475,11 @@ describe('GeminiProvider', () => {
         0, // user_id — classifier calls don't carry a user
         100,
         50,
+        expect.any(Number), // cache_read_tokens
         expect.any(Number),
         expect.any(Number),
+        'resolved',
+        'gemini-2.0-flash',
       );
     });
 
@@ -492,8 +495,41 @@ describe('GeminiProvider', () => {
         0, // user_id — callDomain in this test doesn't pass a user
         100,
         50,
+        expect.any(Number), // cache_read_tokens
         expect.any(Number),
         expect.any(Number),
+        'resolved',
+        'gemini-2.0-pro',
+      );
+    });
+
+    it('persists Gemini cached content tokens when the SDK reports them', async () => {
+      mockGenerateContent.mockResolvedValue({
+        text: 'Cached ok.',
+        functionCalls: [],
+        candidates: [{ finishReason: 'STOP' }],
+        usageMetadata: {
+          promptTokenCount: 100,
+          candidatesTokenCount: 50,
+          totalTokenCount: 150,
+          cachedContentTokenCount: 25,
+        },
+      });
+
+      await provider.callDomain('content', [], 'test', '');
+
+      expect(mockDbRun).toHaveBeenCalledWith(
+        'gemini_domain_content',
+        expect.any(String),
+        0,
+        0,
+        100,
+        50,
+        25,
+        expect.any(Number),
+        expect.any(Number),
+        'resolved',
+        'gemini-2.0-flash',
       );
     });
 
@@ -517,8 +553,8 @@ describe('GeminiProvider', () => {
 
       // gemini-2.0-flash: 1M input × $0.10/MTK = $0.10
       // Column positions: 0=category, 1=model, 2=tenant_id, 3=user_id,
-      // 4=input, 5=output, 6=cost, 7=duration.
-      const costArg = mockDbRun.mock.calls[0]?.[6];
+      // 4=input, 5=output, 6=cache_read_tokens, 7=cost, 8=duration.
+      const costArg = mockDbRun.mock.calls[0]?.[7];
       expect(costArg).toBeCloseTo(0.10, 2);
     });
 

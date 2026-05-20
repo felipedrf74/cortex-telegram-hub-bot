@@ -73,7 +73,12 @@ Important interpretation:
      - `config.ts` default
    - Persists overrides in `kv_store` as `model_override:${provider}:${role}`.
 
-6. `src/services/ai-provider.ts`
+6. `src/services/model-pricing.ts`
+   - Central source of truth for provider/model input, output, cache-read, cache-write, and Batch discount prices.
+   - Provider usage logging, the internal Python usage report endpoint, Chat action planner estimates, bake-off reports, and cost scenarios read from this registry.
+   - Unknown production model names are not silently priced as another model. They are recorded as unresolved rows, charged at the Sonnet-4.6 sentinel ceiling rate, and alert ops until pricing is added.
+
+7. `src/services/ai-provider.ts`
    - Defines the provider-agnostic interface.
    - Resolves model tier for domain calls.
    - Secretary uses chat-tier models by default.

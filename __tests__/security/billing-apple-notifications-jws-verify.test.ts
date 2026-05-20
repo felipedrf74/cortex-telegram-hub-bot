@@ -172,6 +172,25 @@ describe('Apple App Store Server Notifications JWS verification', () => {
         cancel_at_period_end INTEGER DEFAULT 0,
         updated_at TEXT
       );
+      CREATE TABLE nexus_point_credits (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER NOT NULL,
+        source TEXT NOT NULL DEFAULT 'purchase',
+        provider TEXT NOT NULL,
+        product_id TEXT NOT NULL,
+        provider_transaction_id TEXT NOT NULL,
+        points_granted REAL NOT NULL,
+        points_remaining REAL NOT NULL,
+        usd_allowance_granted REAL NOT NULL,
+        usd_allowance_remaining REAL NOT NULL,
+        purchased_at TEXT NOT NULL DEFAULT (datetime('now')),
+        expires_at TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'active',
+        metadata_json TEXT NOT NULL DEFAULT '{}',
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+        UNIQUE(provider, provider_transaction_id)
+      );
     `);
     mockCaptureMessage.mockReset();
   });
@@ -247,6 +266,38 @@ describe('Apple App Store Server Notifications JWS verification', () => {
     expect(subscriptionRow()).toEqual({
       status: 'expired',
       current_period_end: '2026-06-01T00:00:00.000Z',
+    });
+  });
+
+  it('processes a signed Nexus Points refund notification and revokes remaining credit', async () => {
+    testDb.prepare(`
+      INSERT INTO nexus_point_credits (
+        user_id, source, provider, product_id, provider_transaction_id,
+        points_granted, points_remaining, usd_allowance_granted,
+        usd_allowance_remaining, purchased_at, expires_at, status
+      ) VALUES (
+        31, 'apple_iap', 'apple', 'me.nexushub.points.small', '2000000123456799',
+        300, 275, 0.30, 0.275, datetime('now'), '2026-06-19T12:00:00.000Z', 'active'
+      )
+    `).run();
+    const inner = signJws({
+      bundleId: 'me.nexushub.app',
+      productId: 'me.nexushub.points.small',
+      transactionId: '2000000123456799',
+      originalTransactionId: '2000000123456799',
+    });
+
+    const response = await postAppleNotification(appleNotification('REFUND', inner));
+
+    expect(response).toEqual({ status: 200, body: { handled: true } });
+    expect(testDb.prepare(`
+      SELECT status, points_remaining, usd_allowance_remaining
+      FROM nexus_point_credits
+      WHERE provider_transaction_id = '2000000123456799'
+    `).get()).toEqual({
+      status: 'refunded',
+      points_remaining: 0,
+      usd_allowance_remaining: 0,
     });
   });
 });

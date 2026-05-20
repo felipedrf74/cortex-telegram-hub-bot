@@ -11,7 +11,7 @@ import {
   listChatMessages,
 } from '../../services/chat-history-store';
 import { getUserLanguageById, getUserTimezoneById } from '../../services/user-service';
-import { acquireCostLock } from '../../services/cost-guardrail';
+import { acquireCostLock, enforceCostGuardrails } from '../../services/cost-guardrail';
 import { getCurrentRequestId } from '../../utils/request-context';
 import {
   buildDefaultButtonsForChatDomain,
@@ -46,7 +46,7 @@ import {
   syncConversationStateForShortcut,
 } from './chat-persistence';
 import { buildChatAttachmentResponse } from './chat-message-attachments';
-import { tryBuildChatMessageShortcutResponse } from './chat-message-shortcuts';
+import { tryBuildChatMessageShortcutResponse, tryBuildTokenZeroChatMessageShortcutResponse } from './chat-message-shortcuts';
 import {
   getCachedChatCommandResponse,
   maybeCacheChatCommandResponse,
@@ -630,6 +630,44 @@ export function registerChatMessageRoutes(
       );
       latency.mark('request_validated');
 
+      const quotaDecision = enforceCostGuardrails(userId);
+      const tokenZeroShortcut = normalizedText && normalizedAttachments.length === 0
+        ? await tryBuildTokenZeroChatMessageShortcutResponse({
+          normalizedText,
+          userId,
+          userLanguage: getUserLanguageById(userId),
+        })
+        : null;
+      if (tokenZeroShortcut) {
+        const { conversationDomain } = tokenZeroShortcut;
+        if (sendChatTierRequiredIfNeeded(res, userId, conversationDomain)) return;
+        const response = enrichChatResponseForContract(tokenZeroShortcut.response, {
+          normalizedText,
+          userId,
+          tenantId,
+          chatRequestId,
+          tracker: latency,
+          latencyTier: 'tier1_fast_read',
+          fallbackDomain: conversationDomain,
+          fallbackRouteMethod: tokenZeroShortcut.response.routeMethod,
+          actionability: 'answer_only',
+          verificationStatus: 'not_required',
+        });
+        rememberChatActiveDomain(userId, conversationDomain, Date.now(), tenantId);
+        persistExchange(userId, userMessageId, normalizedText, response.id, response, tenantId, {
+          clientMessageId: scopedClientMessageId,
+          requestId: chatRequestId,
+        });
+        syncConversationStateForShortcut(userId, conversationDomain, normalizedText, response.text, tenantId);
+        res.json(response);
+        return;
+      }
+
+      // ── Cost cap enforcement ─────────────────────────────────────
+      // Run before any model-backed planner/reasoning path. Token-zero
+      // deterministic reads above remain available after quota exhaustion.
+      if (quotaDecision.block && sendChatQuotaExceededIfNeeded(res, userId, 'iOS chat: user over daily cost cap')) return;
+
       // ── General Action Planner ─────────────────────────────────
       // Natural-language write intents must be routed before read-only
       // fast paths. Example: "agenda do Gmail" with event semantics means
@@ -982,12 +1020,6 @@ export function registerChatMessageRoutes(
         res.json(response);
         return;
       }
-
-      // ── Cost cap enforcement ─────────────────────────────────────
-      // Per-user daily AI cap. Reject before invoking the AI pipeline if
-      // the user is over their plan quota. Token-zero routes above remain
-      // available; this only protects paid AI traffic from runaway spend.
-      if (sendChatQuotaExceededIfNeeded(res, userId, 'iOS chat: user over daily cost cap')) return;
 
       const activeContext = resolveChatActiveContext(userId, Date.now(), tenantId);
       const preRoutingDecision = analyzeChatSkillOrchestration({

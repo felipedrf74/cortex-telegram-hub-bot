@@ -15,6 +15,7 @@ import StripeLib from 'stripe';
 import { config } from '../config';
 import { getDb } from './database';
 import { logger } from '../utils/logger';
+import { isNexusPointProductId, revokeNexusPointsCredit } from './nexus-points';
 
 // Stripe v17+ uses a different export shape. The namespace for types
 // is accessed via the default export's type definitions.
@@ -348,8 +349,49 @@ export function handleAppleNotification(
   }
 
   const originalTransactionId = payload.originalTransactionId || payload.transactionId;
+  const transactionId = payload.transactionId || originalTransactionId;
   if (!originalTransactionId) {
     logger.warn({ notificationType }, 'Apple notification: no transactionId in payload');
+    return false;
+  }
+
+  if (payload.productId && isNexusPointProductId(String(payload.productId))) {
+    const pointStatus = notificationType === 'REFUND'
+      ? 'refunded'
+      : notificationType === 'REVOKE'
+        ? 'revoked'
+        : null;
+    if (!pointStatus) {
+      logger.info({ notificationType, productId: payload.productId }, 'Apple notification: Nexus Points event does not require ledger mutation');
+      return false;
+    }
+
+    const attempts = Array.from(new Set([String(transactionId), String(originalTransactionId)]));
+    for (const providerTransactionId of attempts) {
+      const result = revokeNexusPointsCredit({
+        provider: 'apple',
+        providerTransactionId,
+        status: pointStatus,
+      });
+      if (result.revoked) {
+        logger.warn({
+          notificationType,
+          productId: payload.productId,
+          providerTransactionId,
+          creditId: result.creditId,
+          previousStatus: result.previousStatus,
+          newStatus: pointStatus,
+        }, 'Apple Nexus Points credit revoked/refunded');
+        return true;
+      }
+    }
+
+    logger.warn({
+      notificationType,
+      productId: payload.productId,
+      transactionId,
+      originalTransactionId,
+    }, 'Apple Nexus Points notification did not match an existing credit');
     return false;
   }
 
