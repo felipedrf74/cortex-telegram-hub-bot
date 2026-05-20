@@ -252,9 +252,9 @@ Latest local validation:
 Completion gate status:
 
 - Code implementation, unit/integration coverage, docs, staging deploy, and staging smoke are complete.
-- Stripe test-mode smoke is blocked until staging runtime has Stripe test `price_...` ids and webhook secret configured in Stripe Dashboard. This cannot be completed from the repo without external Stripe Dashboard setup.
-- Production promote is intentionally blocked until Stripe test-mode smoke passes. Promoting without that payment smoke would violate the payment release gate.
-- Live Stripe smoke is blocked until Felipe signs off on live-mode enablement and performs the first real $5 purchase/refund verification.
+- Stripe test-mode smoke and the pass-2 backend smoke were completed later in this branch; see "Stripe Staging Smoke Pass 2" below.
+- Production code promotion was completed later in this branch; see the v4.14.177 promotion note below.
+- Live Stripe smoke remains blocked until Felipe signs off on live-mode enablement and performs the first real $5 purchase/refund verification.
 
 ## Stripe Staging Smoke Pass 2
 
@@ -288,6 +288,15 @@ Staging verification:
   - Non-Nexus refund/dispute events left the Stripe Nexus Points alert count unchanged.
   - Portal 50KB body returns `413 PAYLOAD_TOO_LARGE`.
   - Same-minute same user/package/source with different note returns `409 IDEMPOTENCY_CONFLICT`.
+
+Production promotion and version-correction evidence:
+
+- A first promotion completed successfully but exposed a local package-version baseline problem: production briefly moved to `v4.14.172` even though the previous production artifact had already reached `v4.14.176`.
+- The baseline was corrected by setting the local package version back to `4.14.176`, committing `f4b3c0b3`, redeploying staging, and recording a clean staging smoke at `docs/release/smoke-evidence/staging-smoke-f4b3c0b3-20260520T221437Z.json`.
+- A final pre-promotion staging smoke from `274f8170` passed 21/21 checks; evidence: `docs/release/smoke-evidence/staging-smoke-274f8170-20260520T221517Z.json`.
+- Final production promotion completed from the corrected baseline and created deploy commit `536df20b`, bumping production from `v4.14.172` to `v4.14.177`.
+- External production `/health` returned `HTTP/2 200` with `status=healthy`, `server.status=online`, and `database=connected` at `2026-05-20T22:23:22.426Z`.
+- `STRIPE_NEXUS_POINTS_ENABLED` remains disabled in production pending live Stripe Dashboard setup and Felipe's live-mode approval.
 
 Remaining manual gates:
 
