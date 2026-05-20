@@ -59,6 +59,11 @@ const client = new Anthropic({
 
 const CONTENT_LEARNER_ADMIN_CONTEXT = createContentReferencesAdminContext('channel-learner system-scope processing');
 
+type AIMeteringScope = {
+  userId?: number;
+  tenantId?: number;
+};
+
 function accessForChannel(channel: Pick<ContentRefChannel, 'user_id' | 'tenant_id'>): ContentReferencesAccess {
   return channel.user_id && channel.user_id > 0
     ? { userId: channel.user_id, tenantId: channel.tenant_id ?? undefined }
@@ -373,12 +378,14 @@ async function extractPatterns(
   videos: VideoData[],
   transcriptData?: string,
   creatorProfile?: Partial<ContentCreatorProfile> | null,
+  meteringScope: AIMeteringScope = {},
 ): Promise<ExtractionResult> {
   return extractPatternsForCreatorContext(
     channelName,
     videos,
     transcriptData,
     buildCreatorPromptContext(creatorProfile),
+    meteringScope,
   );
 }
 
@@ -387,6 +394,7 @@ async function extractPatternsForCreatorContext(
   videos: VideoData[],
   transcriptData: string | undefined,
   creator: CreatorPromptContext,
+  meteringScope: AIMeteringScope = {},
 ): Promise<ExtractionResult> {
   const prompt = buildChannelLearnerExtractionPromptFromContext(channelName, videos, creator, transcriptData);
 
@@ -403,13 +411,13 @@ async function extractPatternsForCreatorContext(
         system: loadPrompt('channel-learner'),
         messages: [{ role: 'user', content: prompt }],
         temperature: 0.3, // Lower temp for more consistent analysis
-      }, 'channel_analysis');
+      }, 'channel_analysis', meteringScope);
       return response.content
         .filter((b): b is Anthropic.TextBlock => b.type === 'text')
         .map((b) => b.text)
         .join('');
     },
-    { maxTokens: 8192, temperature: 0.3 },
+    { maxTokens: 8192, temperature: 0.3, ...meteringScope },
   );
 
   let text = rawAnalysisText;
@@ -510,13 +518,13 @@ async function synthesizeKnowledge(userId?: number): Promise<void> {
             system: synthesisSystemPrompt,
             messages: [{ role: 'user', content: userPrompt }],
             temperature: 0.3,
-          }, 'knowledge_synthesis');
+          }, 'knowledge_synthesis', { userId: scopedUserId, tenantId: scopedUserId });
           return response.content
             .filter((b): b is Anthropic.TextBlock => b.type === 'text')
             .map((b) => b.text)
             .join('');
         },
-        { maxTokens: 2048, temperature: 0.3 },
+        { maxTokens: 2048, temperature: 0.3, userId: scopedUserId, tenantId: scopedUserId },
       );
 
       let text = synthText;
@@ -736,7 +744,17 @@ export async function analyzeChannel(channelId: number): Promise<{
     }
 
     // Step 3: Extract patterns via Claude (now with optional transcript data)
-    const extraction = await extractPatternsForCreatorContext(resolved.channelName, videos, transcriptData, creatorProfile);
+    const channelMeteringScope = {
+      userId: channel.user_id && channel.user_id > 0 ? channel.user_id : 0,
+      tenantId: channel.tenant_id ?? channel.user_id ?? 0,
+    };
+    const extraction = await extractPatternsForCreatorContext(
+      resolved.channelName,
+      videos,
+      transcriptData,
+      creatorProfile,
+      channelMeteringScope,
+    );
 
     // Step 4: Store patterns
     const validPatterns = extraction.patterns.filter(

@@ -312,7 +312,7 @@ export async function generateTopicCandidates(
         system: cachedSystem,
         messages: [{ role: 'user', content: userMessage }],
         ...(tools ? { tools } : {}),
-      } as any, `content_workflow_${format}`);
+      } as any, `content_workflow_${format}`, { userId, tenantId });
 
       let finalResponse = response;
       if (response.stop_reason === 'pause_turn') {
@@ -326,7 +326,7 @@ export async function generateTopicCandidates(
             { role: 'assistant', content: response.content as any },
           ],
           ...(tools ? { tools } : {}),
-        } as any, `content_workflow_${format}_continuation`);
+        } as any, `content_workflow_${format}_continuation`, { userId, tenantId });
       }
 
       return finalResponse.content
@@ -334,7 +334,7 @@ export async function generateTopicCandidates(
         .map((b) => b.text)
         .join('\n');
     },
-    { maxTokens: 4096 },
+    { maxTokens: 4096, userId, tenantId },
   );
 
   // For trending topics with web search, we MUST use Anthropic — Gemini's

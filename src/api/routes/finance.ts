@@ -549,7 +549,7 @@ export function financeRoutes(): Router {
    * POST /transactions call is separate from this parse call.
    */
   router.post('/parse-receipt', asyncHandler(async (req, res: Response) => {
-    const { userId } = req as AuthenticatedRequest;
+    const { userId, tenantId = userId } = req as AuthenticatedRequest;
     const { imageBase64, mimeType, ocrHint } = req.body;
     const normalizedOcrHint = typeof ocrHint === 'string' && ocrHint.trim().length > 0
       ? ocrHint.trim()
@@ -639,6 +639,7 @@ export function financeRoutes(): Router {
         imageBase64,
         normalizeMimeType(mimeType),
         normalizedOcrHint,
+        { userId, tenantId },
       );
 
       const result = {

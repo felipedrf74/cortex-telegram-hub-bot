@@ -85,10 +85,11 @@ async function tryBuildContentShortcutResponse(input: {
   route: RouteResult;
   normalizedText: string;
   userId: number;
+  tenantId: number;
   userLanguage: string;
   activeContext: ActiveChatContext;
 }): Promise<ChatShortcutRouteResult | null> {
-  const { route, normalizedText, userId, userLanguage, activeContext } = input;
+  const { route, normalizedText, userId, tenantId, userLanguage, activeContext } = input;
   const contentStateShortcut = parseContentStateShortcut(normalizedText);
   if (contentStateShortcut) {
     const requestedLanguage = resolveContentShortcutLanguage(normalizedText, userLanguage);
@@ -167,6 +168,7 @@ async function tryBuildContentShortcutResponse(input: {
           maxTokens: 1200,
           temperature: 0.5,
           userId,
+          tenantId,
         },
       );
 
@@ -284,6 +286,7 @@ export async function tryBuildChatMessageShortcutResponse(input: {
   route: RouteResult;
   normalizedText: string;
   userId: number;
+  tenantId: number;
   userLanguage: string;
   activeContext: ActiveChatContext;
 }): Promise<ChatShortcutRouteResult | null> {

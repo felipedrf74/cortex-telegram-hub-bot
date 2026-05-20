@@ -31,6 +31,12 @@ Nexus Points are the public usage-credit unit. Raw provider tokens should not be
 
 Apple subscription products still update `subscriptions`. Nexus Point products are processed separately into the `nexus_point_credits` / `nexus_point_debits` ledger and are idempotent by `(provider, provider_transaction_id)`. Apple refund/revoke server notifications now revoke remaining Nexus Point credit by transaction id and set the credit status to `refunded` or `revoked`.
 
+Refund / clawback policy:
+
+- Refunds and revokes zero any remaining Nexus Point balance for the matching Apple transaction.
+- Already-consumed AI provider cost is not reversed from `nexus_point_debits` and does not restore daily included allowance.
+- This matches the current consumable-credit implementation, but finance/legal should explicitly sign off before higher-volume Nexus Point sales.
+
 ## Pricing Registry
 
 Model pricing is centralized in `src/services/model-pricing.ts`.
@@ -104,3 +110,35 @@ Notes:
 
 - An earlier production promotion attempt correctly failed during deploy validation because the lazy operator-alert import made `__tests__/services/cost-validation.test.ts` miss the alert mock. That test seam was fixed with `_setRecordOperatorAlertForTests()`, then focused tests, `npx tsc --noEmit`, `npm run verify`, bakeoff, pricing report, cost scenarios, staging deploy/smoke, and promotion were rerun.
 - Production is running `v4.14.170`; staging remains on `v4.14.169` after the production auto-bump, as reported by `promote-to-prod.sh`.
+
+## Claude QA Pass 2 Review
+
+Status: pass with issues. Follow-up work in progress on top of `48b0769a`.
+
+Findings and action:
+
+| ID | Status | Evidence / files | Summary |
+| --- | --- | --- | --- |
+| P0-PR1 | Action required | `scripts/deploy.sh`, `scripts/promote-to-prod.sh`, smoke evidence names | `v4.14.170` contains the implementation by rsync working-tree snapshot, but the implementation commit `48b0769a` was created after production promotion. A clean committed deploy should be run so the audit trail is implementation commit -> deploy version bump. |
+| P0-PR2 | Documented | `promote-to-prod.sh` output | Staging remaining on `v4.14.169` while production is `v4.14.170` is expected after `deploy.sh` auto-bumps production, but the next clean deploy should resync staging first. |
+| I1 | Fixed in follow-up | background AI callers | User-owned background calls now pass `userId`/`tenantId` through Gemini/OpenAI wrapper options and Anthropic fallback `trackedCreate` options. System-owned autoresearch calls explicitly use `{ userId: 0, tenantId: 0 }` with an inline comment. |
+| I3 | Fixed in follow-up | `chat-message-shortcuts.ts`, `chat-message-routes.ts` | Independent follow-up scan found content refinement shortcuts passed `userId` but omitted `tenantId`; non-default tenant refinements now meter against the active tenant scope. |
+| I2 | Documented | refund / clawback policy section above | Refund/revoke handling zeros remaining Nexus Points only; already-consumed AI spend is not clawed back. |
+| M-G1 | Accepted | migrations `136` and `137` | Migration `137` rebuilds `api_usage` with `pricing_status DEFAULT 'legacy'`; migration `136` is immutable and may have a transient `resolved` default only if migration execution stops between 136 and 137. |
+
+Historical smoke evidence note:
+
+- `docs/release/smoke-evidence/staging-smoke-75db3026-*` was generated while the working tree contained the uncommitted Nexus Points implementation. The filenames reflect the parent HEAD used by the smoke script, not the later implementation commit. A clean redeploy from the committed follow-up should generate new evidence with the correct commit lineage.
+
+Known remaining risk:
+
+- `channel-learner` synthesis still accepts only `userId` and treats the default tenant as `tenantId=userId`; non-default tenant synthesis is deliberately skipped until that function accepts an explicit tenant scope.
+
+Follow-up verification:
+
+- `npx tsc --noEmit` passed.
+- Focused billing/chat/provider suite passed: 14 files / 280 tests.
+- `npm run verify` passed: 612 files / 9067 tests.
+- `STAGING=true npx tsx src/tools/chat-model-bakeoff.ts` passed with 109 fixtures / 218 bilingual turns.
+- `npx tsx src/tools/model-pricing-report.ts` passed against the local no-DB path; it emitted an empty usage report with all registry rows listed as unused.
+- `npx tsx scripts/chat-cost-scenarios.ts` passed against the local no-DB path; it emitted a zero-row scenario report because `data/bot.db` is intentionally absent in this worktree.

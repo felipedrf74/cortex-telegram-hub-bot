@@ -232,7 +232,7 @@ export function internalRoutes(): Router {
             max_tokens: maxTokens,
             system: system || undefined,
             messages: [{ role: 'user', content: userPrompt }],
-          }, category);
+          }, category, { userId: scopedUserId, tenantId: scopedTenantId });
           return response.content
             .filter((b: any) => b.type === 'text')
             .map((b: any) => b.text)

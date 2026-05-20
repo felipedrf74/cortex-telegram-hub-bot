@@ -432,6 +432,8 @@ export async function generateCoachBriefing(
   // Phase 4: AI analysis (Gemini primary, Anthropic fallback)
   const analysisStart = Date.now();
   try {
+    const meteringUserId = userId && userId > 0 ? userId : 0;
+    const meteringTenantId = meteringUserId;
     const today = now().toFormat('cccc, LLLL dd yyyy');
     const systemPrompt = `${getDomainSystemPrompt('triathlon')}\n\n${COACH_ANALYSIS_PROMPT}`;
     const userPrompt = `DAILY COACHING ANALYSIS — ${today}
@@ -476,13 +478,13 @@ ${payloadStr}
             },
           ],
           messages: [{ role: 'user', content: userPrompt }],
-        }, 'coach_analysis');
+        }, 'coach_analysis', { userId: meteringUserId, tenantId: meteringTenantId });
         return response.content
           .filter((c): c is Anthropic.TextBlock => c.type === 'text')
           .map((c) => c.text)
           .join('');
       },
-      { maxTokens: 2500 },
+      { maxTokens: 2500, userId: meteringUserId, tenantId: meteringTenantId },
     );
 
     const analysisMs = Date.now() - analysisStart;

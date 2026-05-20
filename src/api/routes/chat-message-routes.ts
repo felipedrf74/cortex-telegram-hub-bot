@@ -1334,6 +1334,7 @@ export function registerChatMessageRoutes(
         route,
         normalizedText,
         userId,
+        tenantId,
         userLanguage: getUserLanguageById(userId),
         activeContext,
       });

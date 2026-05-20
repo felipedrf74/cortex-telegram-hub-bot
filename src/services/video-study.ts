@@ -359,13 +359,13 @@ Provide the complete study analysis.`;
           system: studySystemPrompt,
         messages: [{ role: 'user', content: prompt }],
         temperature: 0.4,
-      }, 'video_study');
+      }, 'video_study', { userId: scopedUserId, tenantId: scopedTenantId });
       return response.content
         .filter((b): b is Anthropic.TextBlock => b.type === 'text')
         .map((b) => b.text)
         .join('');
     },
-    { maxTokens: 4096, temperature: 0.4 },
+    { maxTokens: 4096, temperature: 0.4, userId: scopedUserId, tenantId: scopedTenantId },
   );
 
   let text = studyText;
