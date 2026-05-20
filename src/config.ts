@@ -499,6 +499,16 @@ export const config = {
     priceProYearlyEur: process.env.STRIPE_PRICE_PRO_YEARLY_EUR || '',
     priceMaxMonthlyEur: process.env.STRIPE_PRICE_MAX_MONTHLY_EUR || '',
     priceMaxYearlyEur: process.env.STRIPE_PRICE_MAX_YEARLY_EUR || '',
+    nexusPoints: {
+      enabled: (process.env.STRIPE_NEXUS_POINTS_ENABLED || 'false') === 'true',
+      priceIds: {
+        small: process.env.STRIPE_PRICE_ID_POINTS_SMALL || '',
+        medium: process.env.STRIPE_PRICE_ID_POINTS_MEDIUM || '',
+        large: process.env.STRIPE_PRICE_ID_POINTS_LARGE || '',
+      },
+      webSuccessUrl: process.env.STRIPE_NEXUS_POINTS_SUCCESS_URL || 'https://nexushub.me/user?nexusPointsCheckout=success',
+      webCancelUrl: process.env.STRIPE_NEXUS_POINTS_CANCEL_URL || 'https://nexushub.me/user?nexusPointsCheckout=canceled',
+    },
   },
   billing: {
     paywallEnabled: PAYWALL_ENABLED,
@@ -537,4 +547,22 @@ if (config.ios.enabled && !config.ios.jwtSecret) {
 }
 if (config.ios.enabled && !config.ios.inviteCode) {
   throw new Error('IOS_API_ENABLED=true but IOS_INVITE_CODE is not set.');
+}
+
+if (config.stripe.nexusPoints.enabled) {
+  const missingStripeNexusPointsEnv = [
+    ['STRIPE_SECRET_KEY', config.stripe.secretKey],
+    ['STRIPE_WEBHOOK_SECRET', config.stripe.webhookSecret],
+    ['STRIPE_PRICE_ID_POINTS_SMALL', config.stripe.nexusPoints.priceIds.small],
+    ['STRIPE_PRICE_ID_POINTS_MEDIUM', config.stripe.nexusPoints.priceIds.medium],
+    ['STRIPE_PRICE_ID_POINTS_LARGE', config.stripe.nexusPoints.priceIds.large],
+  ]
+    .filter(([, value]) => !value)
+    .map(([key]) => key);
+
+  if (missingStripeNexusPointsEnv.length > 0) {
+    throw new Error(
+      `STRIPE_NEXUS_POINTS_ENABLED=true but required env vars are missing: ${missingStripeNexusPointsEnv.join(', ')}`,
+    );
+  }
 }

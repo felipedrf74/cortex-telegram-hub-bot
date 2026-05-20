@@ -3689,12 +3689,14 @@ table.legacy th {
     body.innerHTML = '<div class="empty">Loading…</div>';
 
     try {
-      const [skillsRes, summaryRes] = await Promise.all([
+      const [skillsRes, summaryRes, pointsRes] = await Promise.all([
         apiFetch('/api/users/' + user.id + '/skills'),
         apiFetch('/api/users/' + user.id + '/data-summary'),
+        apiFetch('/api/billing/nexus-points/packages').catch(() => null),
       ]);
       const skillsData = skillsRes.ok ? await skillsRes.json() : { skills: [] };
       const summary = summaryRes.ok ? await summaryRes.json() : {};
+      const pointsData = pointsRes && pointsRes.ok ? await pointsRes.json() : { packages: [], stripeEnabled: false };
 
       const tier = '<span class="tier-badge tier-' + (user.tier || 'free') + '">' + esc(user.tier || 'free') + '</span>';
       const limit = user.daily_message_limit === 0 ? '∞' : (user.daily_message_limit || 0) + '/day';
@@ -3744,6 +3746,18 @@ table.legacy th {
         '<span class="text-muted" style="font-size:12px">' + k + '</span>' +
         '<span class="mono" style="font-size:12px">' + (v ?? 0) + '</span>' +
       '</div>').join('');
+      const pointOptions = (pointsData.packages || []).map(pkg =>
+        '<option value="' + esc(pkg.productId) + '">' +
+          '$' + Number(pkg.priceUsd || 0).toFixed(0) + ' · ' + Number(pkg.points || 0).toLocaleString() + ' NP' +
+        '</option>'
+      ).join('');
+      const pointsPanel = '<div class="card-title" style="margin-bottom:var(--space-3)">Nexus Points checkout</div>' +
+        '<div style="display:grid;gap:var(--space-2);margin-bottom:var(--space-5)">' +
+          '<select id="slideout-points-package" class="input" ' + (pointsData.stripeEnabled ? '' : 'disabled') + '>' + pointOptions + '</select>' +
+          '<textarea id="slideout-points-note" class="input" rows="2" placeholder="Required support note" ' + (pointsData.stripeEnabled ? '' : 'disabled') + '></textarea>' +
+          '<button class="btn btn-sm" onclick="createPortalNexusPointsCheckout(' + user.id + ')" ' + (pointsData.stripeEnabled ? '' : 'disabled') + '>Create Stripe checkout URL</button>' +
+          '<div id="slideout-points-result" class="text-muted" style="font-size:12px"></div>' +
+        '</div>';
 
       body.innerHTML =
         '<div style="display:flex;gap:var(--space-3);margin-bottom:var(--space-5)">' +
@@ -3755,6 +3769,7 @@ table.legacy th {
         '<div class="grid" style="gap:var(--space-3);margin-bottom:var(--space-5)">' + skillsHtml + '</div>' +
         '<div class="card-title" style="margin-bottom:var(--space-3)">Data Summary</div>' +
         '<div style="margin-bottom:var(--space-4)">' + dataRows + '</div>' +
+        pointsPanel +
         '<button class="btn btn-sm" onclick="openCookingManagerForUser(' + user.id + ')" style="width:100%">Open Cooking setup →</button>';
     } catch (err) {
       body.innerHTML = '<div class="empty">Failed to load user details</div>';
@@ -3769,6 +3784,37 @@ table.legacy th {
   document.getElementById('slideout-close').addEventListener('click', closeUserSlideout);
   document.getElementById('user-slideout-backdrop').addEventListener('click', closeUserSlideout);
   document.addEventListener('keydown', e => { if (e.key === 'Escape') closeUserSlideout(); });
+
+  async function createPortalNexusPointsCheckout(userId) {
+    const packageEl = document.getElementById('slideout-points-package');
+    const noteEl = document.getElementById('slideout-points-note');
+    const resultEl = document.getElementById('slideout-points-result');
+    const packageId = packageEl && packageEl.value;
+    const note = noteEl && noteEl.value ? noteEl.value.trim() : '';
+    if (!packageId || !note) {
+      resultEl.textContent = 'Choose a package and add a support note.';
+      return;
+    }
+    resultEl.textContent = 'Creating checkout session…';
+    try {
+      const res = await apiFetch('/api/users/' + userId + '/billing/nexus-points/stripe-checkout', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ packageId, note }),
+      });
+      const body = await res.json();
+      if (!res.ok || body.ok === false) {
+        throw new Error(body?.error?.message || body?.message || 'Checkout failed');
+      }
+      const checkoutUrl = body.checkoutUrl || body.data?.checkoutUrl;
+      resultEl.innerHTML = checkoutUrl
+        ? '<a href="' + esc(checkoutUrl) + '" target="_blank" rel="noopener">Open Stripe checkout</a>'
+        : 'Checkout created, but no URL was returned.';
+    } catch (err) {
+      resultEl.textContent = err && err.message ? err.message : 'Checkout failed';
+    }
+  }
+  window.createPortalNexusPointsCheckout = createPortalNexusPointsCheckout;
 
   document.getElementById('slideout-suspend-btn').addEventListener('click', async () => {
     if (!currentSlideoutUser) return;

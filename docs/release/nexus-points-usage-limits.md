@@ -31,9 +31,21 @@ Nexus Points are the public usage-credit unit. Raw provider tokens should not be
 
 Apple subscription products still update `subscriptions`. Nexus Point products are processed separately into the `nexus_point_credits` / `nexus_point_debits` ledger and are idempotent by `(provider, provider_transaction_id)`. Apple refund/revoke server notifications now revoke remaining Nexus Point credit by transaction id and set the credit status to `refunded` or `revoked`.
 
+Stripe Nexus Points purchases are web-only:
+
+- Website self-serve checkout is exposed through authenticated web/JWT calls to `POST /api/v1/billing/nexus-points/stripe-checkout`.
+- Portal-admin checkout is exposed through `POST /api/users/:userId/billing/nexus-points/stripe-checkout`, guarded by `requirePortalAdminToken` and `requireOperatorTargetUser('userId')`.
+- iOS purchase UI remains Apple IAP-only. Stripe checkout must not be linked from the native iOS purchase surface.
+- Stripe Checkout uses hosted one-time `mode='payment'` sessions with dashboard `price_...` IDs as the price source of truth. The backend does not compute Stripe line-item amounts.
+- Fulfillment happens only from a verified `/webhooks/stripe` event. Redirect success pages never grant credits.
+- Stripe grants use `PaymentIntent.id` as `provider_transaction_id`; retries and duplicate webhooks are idempotent through the existing ledger uniqueness constraint.
+- Website CORS is scoped to `https://nexushub.me`, `https://www.nexushub.me`, and Cloudflare Pages preview hosts for the minimum auth/billing routes needed by the web purchase page.
+
 Refund / clawback policy:
 
 - Refunds and revokes zero any remaining Nexus Point balance for the matching Apple transaction.
+- Stripe full refunds zero remaining Nexus Point balance for the matching `PaymentIntent.id`.
+- Stripe partial refunds and disputes create operator alerts and do not auto-revoke credits in this PR; finance/legal should define the dispute policy before public web volume.
 - Already-consumed AI provider cost is not reversed from `nexus_point_debits` and does not restore daily included allowance.
 - This matches the current consumable-credit implementation, but finance/legal should explicitly sign off before higher-volume Nexus Point sales.
 
@@ -78,7 +90,7 @@ Part B independent scan:
 | Area | Severity | Status | Notes |
 | --- | --- | --- | --- |
 | Apple refund/revoke for Nexus Points | High | Fixed | Refund/revoke App Store notifications now revoke remaining point credit; signed webhook test added. |
-| Stripe Nexus Points purchases | Medium | Punted | Ledger accepts `provider='stripe'`, but no Stripe add-on product/webhook is wired in this PR. Follow-up needed before selling points outside Apple IAP. |
+| Stripe Nexus Points purchases | Medium | Fixed in Stripe follow-up | Web self-serve and portal-admin Stripe Checkout sessions now grant Nexus Points through the signed Stripe webhook path. |
 | Tenant isolation | Low | Verified acceptable | Ledger is intentionally user-scoped; current tenant model maps one canonical tenant per iOS user. Revisit if users can transfer points across business/personal tenants. |
 | Owner/staging bypass spoofing | Low | Verified acceptable | Owner detection uses server-side owner refs/users table after authenticated `userId`; no request-controlled owner flag was found. |
 | Apple transaction replay | Low | Hardened | Purchase grant remains idempotent by `(provider, provider_transaction_id)`; refund handler now tries both transaction id and original transaction id. |
@@ -146,3 +158,37 @@ Follow-up verification:
 - Clean promote-to-prod from `cfe7799d` passed, including its staging smoke gate (21/21 checks, evidence `docs/release/smoke-evidence/staging-smoke-cfe7799d-20260520T102119Z.json`), full `npm run verify` preflight (612 files / 9067 tests), production deploy, and post-deploy health check.
 - Production is running `v4.14.171` from deploy/version commit `c0de6eda`; `curl https://api.nexushub.me/health` returned HTTP 200 with `status=healthy` and `database=connected`.
 - This docs-only evidence entry was recorded after the clean production promotion; the runtime artifact remains `c0de6eda`.
+
+## Pass 3: Stripe Nexus Points Addition
+
+Status: implementation in progress on `codex/chat-reliability`.
+
+Implemented:
+
+- Added `config.stripe.nexusPoints` with fail-fast validation when `STRIPE_NEXUS_POINTS_ENABLED=true`.
+- Added `src/services/stripe-nexus-points-service.ts` for hosted Checkout session creation and signed webhook event handling.
+- Extended the provider-neutral Nexus Points ledger grant path to persist Stripe reconciliation metadata.
+- Extended `/webhooks/stripe` so existing subscription events continue to work while Nexus Points events are handled by the new service.
+- Added authenticated website checkout at `POST /api/v1/billing/nexus-points/stripe-checkout`.
+- Added portal package listing and portal-admin checkout creation routes with required support notes and audit logging.
+- Added Nexus Points purchase controls to the web sign-in/account page and a checkout panel to the portal user slideout.
+- Added focused tests for service behavior, API checkout, webhook routing, portal guards, CORS, runtime config validation, and ledger metadata.
+
+Deferred:
+
+- Public unauthenticated purchase-to-email matching.
+- Stripe Tax, adaptive pricing, and localization.
+- Automatic dispute revocation or clawback of already-consumed AI spend.
+- Stripe-vs-internal ledger reconciliation script.
+
+Verification for this pass:
+
+- `npx tsc --noEmit` passed.
+- Initial focused local tests passed: `npx vitest run __tests__/services/stripe-nexus-points-service.test.ts __tests__/api/billing-routes.test.ts __tests__/api/webhooks.test.ts __tests__/api/website-cors.test.ts __tests__/portal/portal-user-routes.test.ts __tests__/portal/portal-admin-scope.test.ts __tests__/services/config-runtime-validation.test.ts __tests__/services/nexus-points.test.ts` -> 8 files / 75 tests passed.
+- Expanded focused gate passed: `npx vitest run __tests__/services/stripe-nexus-points-service.test.ts __tests__/api/billing-routes.test.ts __tests__/api/webhooks.test.ts __tests__/api/website-cors.test.ts __tests__/portal/portal-user-routes.test.ts __tests__/portal/portal-admin-scope.test.ts __tests__/services/nexus-points.test.ts __tests__/services/cost-guardrail.test.ts __tests__/services/cost-validation.test.ts __tests__/api/chat-routes.test.ts __tests__/api/internal-routes.test.ts __tests__/services/config-runtime-validation.test.ts __tests__/security/billing-apple-notifications-jws-verify.test.ts` -> 13 files / 192 tests passed.
+- Final post-cleanup affected tests passed: `npx vitest run __tests__/api/webhooks.test.ts __tests__/services/stripe-nexus-points-service.test.ts __tests__/api/billing-routes.test.ts __tests__/api/website-cors.test.ts __tests__/portal/portal-user-routes.test.ts` -> 5 files / 46 tests passed.
+- Final full verification passed after the webhook cleanup: `npm run verify` -> 614 files / 9,090 tests passed.
+- `STAGING=true npx tsx src/tools/chat-model-bakeoff.ts` passed with 109 fixtures / 218 bilingual turns.
+- `npx tsx src/tools/model-pricing-report.ts` passed; local DB path was not configured, so usage observations were empty and registry entries were reported as unused.
+- `npx tsx scripts/chat-cost-scenarios.ts` passed; local `data/bot.db` is absent, so it emitted a zero-row scenario report.
+- Staging/prod deploy, Stripe test-mode smoke, and live Stripe smoke were not run in this implementation pass because the required runtime Stripe env vars, Dashboard webhook setup, and Felipe live-purchase signoff are external operational steps. See `docs/integrations/stripe-nexus-points.md`.

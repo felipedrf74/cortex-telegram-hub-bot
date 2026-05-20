@@ -3,6 +3,8 @@ import type { Request } from 'express';
 
 const mockHandleAppleTransaction = vi.fn();
 const mockGrantNexusPoints = vi.fn();
+const mockCreateNexusPointsCheckoutSession = vi.fn();
+const mockIsStripeNexusPointsConfigured = vi.fn(() => true);
 
 vi.mock('../../src/services/stripe-service', () => ({
   isStripeConfigured: vi.fn(() => true),
@@ -75,6 +77,11 @@ vi.mock('../../src/services/nexus-points', () => ({
     { productId: 'me.nexushub.points.large', label: 'large', priceUsd: 20, points: 1200, usdAllowance: 1.20, aiOnlyMarginPct: 94, netMarginAfterAppleCutPct: 91.4 },
   ]),
   grantNexusPoints: (...args: unknown[]) => mockGrantNexusPoints(...args),
+}));
+
+vi.mock('../../src/services/stripe-nexus-points-service', () => ({
+  createNexusPointsCheckoutSession: (...args: unknown[]) => mockCreateNexusPointsCheckoutSession(...args),
+  isStripeNexusPointsConfigured: () => mockIsStripeNexusPointsConfigured(),
 }));
 
 vi.mock('../../src/utils/logger', () => ({
@@ -161,6 +168,10 @@ describe('billing routes', () => {
       creditId: 77,
       package: { productId: 'me.nexushub.points.small', label: 'small', priceUsd: 5, points: 300, usdAllowance: 0.30, aiOnlyMarginPct: 94, netMarginAfterAppleCutPct: 91.4 },
     });
+    mockCreateNexusPointsCheckoutSession.mockReset();
+    mockCreateNexusPointsCheckoutSession.mockResolvedValue({ sessionId: 'cs_points', checkoutUrl: 'https://checkout.stripe.test/points' });
+    mockIsStripeNexusPointsConfigured.mockReset();
+    mockIsStripeNexusPointsConfigured.mockReturnValue(true);
   });
 
   it('sanitizes apple verification failures instead of leaking internals', async () => {
@@ -244,5 +255,32 @@ describe('billing routes', () => {
         usdAllowance: 0.30,
       },
     });
+  });
+
+  it('creates web-only Stripe Nexus Points checkout from authenticated request scope', async () => {
+    const res = await dispatch('POST', '/nexus-points/stripe-checkout', {
+      packageId: 'me.nexushub.points.medium',
+      userId: 999,
+      tenantId: 999,
+    }, 42);
+
+    expect(res.statusCode).toBe(200);
+    expect(res.body.data).toEqual({ sessionId: 'cs_points', checkoutUrl: 'https://checkout.stripe.test/points' });
+    expect(mockCreateNexusPointsCheckoutSession).toHaveBeenCalledWith({
+      userId: 42,
+      tenantId: 42,
+      packageId: 'me.nexushub.points.medium',
+      source: 'web',
+    });
+  });
+
+  it('rejects bad or disabled Stripe Nexus Points checkout requests', async () => {
+    const bad = await dispatch('POST', '/nexus-points/stripe-checkout', { packageId: 'bad' }, 42);
+    expect(bad.statusCode).toBe(400);
+    expect(mockCreateNexusPointsCheckoutSession).not.toHaveBeenCalled();
+
+    mockIsStripeNexusPointsConfigured.mockReturnValue(false);
+    const disabled = await dispatch('POST', '/nexus-points/stripe-checkout', { packageId: 'me.nexushub.points.small' }, 42);
+    expect(disabled.statusCode).toBe(503);
   });
 });

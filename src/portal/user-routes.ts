@@ -8,6 +8,12 @@ import { logPortalAdminMutation } from './admin-audit';
 import { requireOperatorTargetUser } from './admin-target-user';
 import { sendPortalInternalError } from './http';
 import { clearUserAiBudgetOverride, setUserAiBudgetOverride } from '../services/ai-budget-overrides';
+import {
+  createNexusPointsCheckoutSession,
+  isStripeNexusPointsConfigured,
+} from '../services/stripe-nexus-points-service';
+import { isNexusPointProductId, listNexusPointPackages } from '../services/nexus-points';
+import { getPortalAuthContext } from '../api/secret-guards';
 
 const VALID_TIERS = new Set(['free', 'pro', 'max', 'owner']);
 
@@ -33,6 +39,56 @@ export function registerPortalUserRoutes(app: express.Express): void {
       res.json({ users: listUsers() });
     } catch (err) {
       sendPortalInternalError(res, err, 'Portal request failed', 'Portal: request failed');
+    }
+  });
+
+  app.get('/api/billing/nexus-points/packages', requirePortalAdminToken, (_req: Request, res: Response) => {
+    res.json({
+      ok: true,
+      packages: listNexusPointPackages(),
+      stripeEnabled: isStripeNexusPointsConfigured(),
+    });
+  });
+
+  app.post('/api/users/:userId/billing/nexus-points/stripe-checkout', requirePortalAdminToken, requireOperatorTargetUser('userId'), express.json(), async (req: Request, res: Response) => {
+    try {
+      if (!isStripeNexusPointsConfigured()) {
+        res.status(503).json({ ok: false, error: { code: 'STRIPE_NOT_CONFIGURED', message: 'Stripe Nexus Points checkout is not configured' } });
+        return;
+      }
+      const userId = parsePositiveUserId(req.params.userId);
+      if (!userId) {
+        res.status(400).json({ ok: false, message: 'invalid userId' });
+        return;
+      }
+      const packageId = String(req.body?.packageId ?? '').trim();
+      if (!isNexusPointProductId(packageId)) {
+        res.status(400).json({ ok: false, error: { code: 'BAD_PACKAGE', message: 'packageId must be a known Nexus Points package' } });
+        return;
+      }
+      const note = typeof req.body?.note === 'string' ? req.body.note.trim() : '';
+      if (!note) {
+        res.status(400).json({ ok: false, error: { code: 'NOTE_REQUIRED', message: 'note is required for portal-created Stripe checkout sessions' } });
+        return;
+      }
+      const auth = getPortalAuthContext(req);
+      const actor = auth?.actorHint || auth?.matchedCredential || 'portal-admin';
+      const session = await createNexusPointsCheckoutSession({
+        userId,
+        tenantId: userId,
+        packageId,
+        source: 'portal',
+        note,
+        actor,
+      });
+      logPortalAdminMutation(req, userId, 'billing.nexus_points.stripe_checkout', {
+        packageId,
+        note,
+        sessionId: session.sessionId,
+      });
+      res.json({ ok: true, ...session });
+    } catch (err) {
+      sendPortalInternalError(res, err, 'Failed to create Stripe Nexus Points checkout', 'Portal: Stripe Nexus Points checkout failed');
     }
   });
 

@@ -100,4 +100,28 @@ describe('runtime config validation', () => {
     expect(config.billing.paywallEnabled).toBe(false);
     expect(config.billing.allowUnsafePaywallBypass).toBe(true);
   });
+
+  it('allows Stripe Nexus Points to stay disabled without point price ids', async () => {
+    vi.stubEnv('STRIPE_NEXUS_POINTS_ENABLED', 'false');
+    vi.stubEnv('STRIPE_SECRET_KEY', '');
+    vi.stubEnv('STRIPE_WEBHOOK_SECRET', '');
+
+    const { config } = await loadConfigFresh();
+
+    expect(config.stripe.nexusPoints.enabled).toBe(false);
+    expect(config.stripe.nexusPoints.priceIds.small).toBe('');
+  });
+
+  it('fails fast when Stripe Nexus Points are enabled without required env vars', async () => {
+    vi.stubEnv('STRIPE_NEXUS_POINTS_ENABLED', 'true');
+    vi.stubEnv('STRIPE_SECRET_KEY', 'sk_test');
+    vi.stubEnv('STRIPE_WEBHOOK_SECRET', '');
+    vi.stubEnv('STRIPE_PRICE_ID_POINTS_SMALL', 'price_small');
+    vi.stubEnv('STRIPE_PRICE_ID_POINTS_MEDIUM', '');
+    vi.stubEnv('STRIPE_PRICE_ID_POINTS_LARGE', 'price_large');
+
+    await expect(loadConfigFresh()).rejects.toThrow(
+      'STRIPE_NEXUS_POINTS_ENABLED=true but required env vars are missing: STRIPE_WEBHOOK_SECRET, STRIPE_PRICE_ID_POINTS_MEDIUM',
+    );
+  });
 });

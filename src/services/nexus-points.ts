@@ -68,6 +68,7 @@ export interface GrantNexusPointsInput {
   productId: string;
   source?: string;
   purchasedAt?: Date;
+  metadata?: Record<string, unknown> | null;
 }
 
 export interface GrantNexusPointsResult {
@@ -100,13 +101,14 @@ export function grantNexusPoints(input: GrantNexusPointsInput): GrantNexusPoints
   const purchasedAt = input.purchasedAt ?? new Date();
   const expiresAt = new Date(purchasedAt.getTime() + NEXUS_POINT_EXPIRY_DAYS * 24 * 60 * 60 * 1000).toISOString();
   const db = getDb();
+  const metadataJson = stringifyCreditMetadata(input.metadata);
   const result = db.prepare(`
     INSERT OR IGNORE INTO nexus_point_credits (
       user_id, source, provider, product_id, provider_transaction_id,
       points_granted, points_remaining, usd_allowance_granted,
-      usd_allowance_remaining, purchased_at, expires_at, status
+      usd_allowance_remaining, purchased_at, expires_at, status, metadata_json
     )
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active')
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?)
   `).run(
     input.userId,
     input.source ?? 'purchase',
@@ -119,6 +121,7 @@ export function grantNexusPoints(input: GrantNexusPointsInput): GrantNexusPoints
     pkg.usdAllowance,
     purchasedAt.toISOString(),
     expiresAt,
+    metadataJson,
   );
 
   if (result.changes === 0) {
@@ -402,4 +405,13 @@ function roundUsd(value: number): number {
 
 function roundPoints(value: number): number {
   return Number((Math.max(0, value) + 1e-12).toFixed(5));
+}
+
+function stringifyCreditMetadata(metadata: Record<string, unknown> | null | undefined): string {
+  if (!metadata || typeof metadata !== 'object') return '{}';
+  try {
+    return JSON.stringify(metadata);
+  } catch {
+    return JSON.stringify({ serializationError: true });
+  }
 }

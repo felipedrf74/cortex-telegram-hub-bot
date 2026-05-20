@@ -81,6 +81,7 @@ function createSchema(): void {
       purchased_at TEXT NOT NULL DEFAULT (datetime('now')),
       expires_at TEXT NOT NULL,
       status TEXT NOT NULL DEFAULT 'active',
+      metadata_json TEXT NOT NULL DEFAULT '{}',
       created_at TEXT NOT NULL DEFAULT (datetime('now')),
       updated_at TEXT NOT NULL DEFAULT (datetime('now')),
       UNIQUE(provider, provider_transaction_id)
@@ -154,6 +155,29 @@ describe('Nexus Points ledger', () => {
     expect(row.points_granted).toBe(300);
     expect(row.usd_allowance_granted).toBe(0.30);
     expect(row.expires_at).toBe('2026-06-19T12:00:00.000Z');
+  });
+
+  it('persists purchase metadata for provider-specific reconciliation', () => {
+    grantNexusPoints({
+      userId: 10,
+      provider: 'stripe',
+      providerTransactionId: 'pi_points_metadata',
+      productId: 'me.nexushub.points.small',
+      metadata: {
+        sessionId: 'cs_points_metadata',
+        paymentIntentId: 'pi_points_metadata',
+        chargeId: 'ch_points_metadata',
+        source: 'web',
+      },
+    });
+
+    const row = testDb.prepare('SELECT metadata_json FROM nexus_point_credits WHERE provider_transaction_id = ?').get('pi_points_metadata') as { metadata_json: string };
+    expect(JSON.parse(row.metadata_json)).toMatchObject({
+      sessionId: 'cs_points_metadata',
+      paymentIntentId: 'pi_points_metadata',
+      chargeId: 'ch_points_metadata',
+      source: 'web',
+    });
   });
 
   it('debits credits FIFO by earliest expiry', () => {

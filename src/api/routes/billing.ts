@@ -29,6 +29,10 @@ import {
   isNexusPointProductId,
   listNexusPointPackages,
 } from '../../services/nexus-points';
+import {
+  createNexusPointsCheckoutSession,
+  isStripeNexusPointsConfigured,
+} from '../../services/stripe-nexus-points-service';
 
 function buildBillingStatusPayload(userId: number): Record<string, unknown> {
   const status = getSubscriptionStatus(userId);
@@ -149,6 +153,34 @@ export function billingRoutes(): Router {
         throw err;
       }
     }
+  }));
+
+  /**
+   * POST /api/v1/billing/nexus-points/stripe-checkout
+   * Web-only Nexus Points Checkout. Identity comes from JWT auth middleware;
+   * body-supplied user/tenant ids are ignored by design.
+   */
+  router.post('/nexus-points/stripe-checkout', asyncHandler(async (req: Request, res: Response) => {
+    if (!isStripeNexusPointsConfigured()) {
+      sendError(res, 'STRIPE_NOT_CONFIGURED', 'Stripe Nexus Points checkout is not configured', 503);
+      return;
+    }
+
+    const userId = (req as any).userId;
+    const tenantId = (req as any).tenantId || userId;
+    const packageId = String(req.body?.packageId ?? '').trim();
+    if (!isNexusPointProductId(packageId)) {
+      sendError(res, 'BAD_REQUEST', 'packageId must be a known Nexus Points package', 400);
+      return;
+    }
+
+    const session = await createNexusPointsCheckoutSession({
+      userId,
+      tenantId,
+      packageId,
+      source: 'web',
+    });
+    sendSuccess(res, session);
   }));
 
   /**

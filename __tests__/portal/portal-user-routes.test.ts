@@ -11,6 +11,10 @@ const hoisted = vi.hoisted(() => {
     sendPortalInternalError: vi.fn(),
     setUserAiBudgetOverride: vi.fn(),
     clearUserAiBudgetOverride: vi.fn(),
+    createNexusPointsCheckoutSession: vi.fn(),
+    isStripeNexusPointsConfigured: vi.fn(() => true),
+    listNexusPointPackages: vi.fn(),
+    isNexusPointProductId: vi.fn((value: string) => value.startsWith('me.nexushub.points.')),
     targetUserGuard,
     requireOperatorTargetUser: vi.fn(() => targetUserGuard),
   };
@@ -30,6 +34,7 @@ vi.mock('../../src/services/user-service', () => ({
 
 vi.mock('../../src/api/secret-guards', () => ({
   requirePortalAdminToken: hoisted.requirePortalAdminToken,
+  getPortalAuthContext: vi.fn(() => ({ actorHint: 'felipe', matchedCredential: 'admin' })),
 }));
 
 vi.mock('../../src/portal/admin-audit', () => ({
@@ -47,6 +52,16 @@ vi.mock('../../src/portal/http', () => ({
 vi.mock('../../src/services/ai-budget-overrides', () => ({
   setUserAiBudgetOverride: (...args: unknown[]) => hoisted.setUserAiBudgetOverride(...args),
   clearUserAiBudgetOverride: (...args: unknown[]) => hoisted.clearUserAiBudgetOverride(...args),
+}));
+
+vi.mock('../../src/services/stripe-nexus-points-service', () => ({
+  createNexusPointsCheckoutSession: (...args: unknown[]) => hoisted.createNexusPointsCheckoutSession(...args),
+  isStripeNexusPointsConfigured: () => hoisted.isStripeNexusPointsConfigured(),
+}));
+
+vi.mock('../../src/services/nexus-points', () => ({
+  listNexusPointPackages: () => hoisted.listNexusPointPackages(),
+  isNexusPointProductId: (value: string) => hoisted.isNexusPointProductId(value),
 }));
 
 import { registerPortalUserRoutes } from '../../src/portal/user-routes';
@@ -107,6 +122,14 @@ describe('portal user routes', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     hoisted.listUsers.mockReturnValue([{ id: 4, email: 'user@example.com', tier: 'pro' }]);
+    hoisted.listNexusPointPackages.mockReturnValue([
+      { productId: 'me.nexushub.points.small', label: 'small', priceUsd: 5, points: 300, usdAllowance: 0.30 },
+    ]);
+    hoisted.createNexusPointsCheckoutSession.mockResolvedValue({
+      sessionId: 'cs_portal_points',
+      checkoutUrl: 'https://checkout.stripe.test/portal-points',
+    });
+    hoisted.isStripeNexusPointsConfigured.mockReturnValue(true);
     const recorder = makeDbRecorder();
     hoisted.getDb.mockReturnValue(recorder.db);
   });
@@ -121,12 +144,78 @@ describe('portal user routes', () => {
     expect(app.post).toHaveBeenCalledWith('/api/users/:userId/activate', hoisted.requirePortalAdminToken, hoisted.targetUserGuard, expect.any(Function));
     expect(app.put).toHaveBeenCalledWith('/api/users/:userId/tier', hoisted.requirePortalAdminToken, hoisted.targetUserGuard, expect.any(Function), expect.any(Function));
     expect(app.put).toHaveBeenCalledWith('/api/users/:userId/limits', hoisted.requirePortalAdminToken, hoisted.targetUserGuard, expect.any(Function), expect.any(Function));
+    expect(app.get).toHaveBeenCalledWith('/api/billing/nexus-points/packages', hoisted.requirePortalAdminToken, expect.any(Function));
+    expect(app.post).toHaveBeenCalledWith('/api/users/:userId/billing/nexus-points/stripe-checkout', hoisted.requirePortalAdminToken, hoisted.targetUserGuard, expect.any(Function), expect.any(Function));
     expect(routes.get('POST /api/users/:userId/suspend')?.[0]).toBe(hoisted.requirePortalAdminToken);
     expect(routes.get('POST /api/users/:userId/suspend')?.[1]).toBe(hoisted.targetUserGuard);
     expect(routes.get('POST /api/users/:userId/activate')?.[0]).toBe(hoisted.requirePortalAdminToken);
     expect(routes.get('PUT /api/users/:userId/tier')?.[0]).toBe(hoisted.requirePortalAdminToken);
     expect(routes.get('PUT /api/users/:userId/limits')?.[0]).toBe(hoisted.requirePortalAdminToken);
+    expect(routes.get('POST /api/users/:userId/billing/nexus-points/stripe-checkout')?.[0]).toBe(hoisted.requirePortalAdminToken);
+    expect(routes.get('POST /api/users/:userId/billing/nexus-points/stripe-checkout')?.[1]).toBe(hoisted.targetUserGuard);
     expect(hoisted.requireOperatorTargetUser).toHaveBeenCalledWith('userId');
+  });
+
+  it('lists Nexus Points packages for portal admins', () => {
+    const { app, routes } = makeApp();
+    registerPortalUserRoutes(app as any);
+    const handler = routes.get('GET /api/billing/nexus-points/packages')?.[1]!;
+    const { payload, res } = makeResponse();
+
+    handler({}, res);
+
+    expect(payload.body).toMatchObject({
+      ok: true,
+      stripeEnabled: true,
+      packages: [expect.objectContaining({ productId: 'me.nexushub.points.small' })],
+    });
+  });
+
+  it('creates portal Stripe Nexus Points checkout only with a required note', async () => {
+    const { app, routes } = makeApp();
+    registerPortalUserRoutes(app as any);
+    const handler = routes.get('POST /api/users/:userId/billing/nexus-points/stripe-checkout')?.[3]!;
+    const { payload, res } = makeResponse();
+
+    await handler({
+      params: { userId: '42' },
+      body: { packageId: 'me.nexushub.points.small', note: 'beta support top-up' },
+    }, res);
+
+    expect(payload.body).toEqual({
+      ok: true,
+      sessionId: 'cs_portal_points',
+      checkoutUrl: 'https://checkout.stripe.test/portal-points',
+    });
+    expect(hoisted.createNexusPointsCheckoutSession).toHaveBeenCalledWith({
+      userId: 42,
+      tenantId: 42,
+      packageId: 'me.nexushub.points.small',
+      source: 'portal',
+      note: 'beta support top-up',
+      actor: 'felipe',
+    });
+    expect(hoisted.logPortalAdminMutation).toHaveBeenCalledWith(
+      expect.anything(),
+      42,
+      'billing.nexus_points.stripe_checkout',
+      expect.objectContaining({ packageId: 'me.nexushub.points.small', note: 'beta support top-up' }),
+    );
+  });
+
+  it('rejects portal Stripe Nexus Points checkout without a note', async () => {
+    const { app, routes } = makeApp();
+    registerPortalUserRoutes(app as any);
+    const handler = routes.get('POST /api/users/:userId/billing/nexus-points/stripe-checkout')?.[3]!;
+    const { payload, res } = makeResponse();
+
+    await handler({
+      params: { userId: '42' },
+      body: { packageId: 'me.nexushub.points.small', note: '' },
+    }, res);
+
+    expect(payload.statusCode).toBe(400);
+    expect(hoisted.createNexusPointsCheckoutSession).not.toHaveBeenCalled();
   });
 
   it('lists safe portal users', () => {
