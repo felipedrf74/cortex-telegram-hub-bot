@@ -565,4 +565,14 @@ if (config.stripe.nexusPoints.enabled) {
       `STRIPE_NEXUS_POINTS_ENABLED=true but required env vars are missing: ${missingStripeNexusPointsEnv.join(', ')}`,
     );
   }
+  if (!config.portal.adminActorSignatureSecret) {
+    throw new Error(
+      'STRIPE_NEXUS_POINTS_ENABLED requires PORTAL_ADMIN_ACTOR_SIGNATURE_SECRET to be set so admin-issued purchases have signed attribution.',
+    );
+  }
+  if (process.env.NODE_ENV !== 'production' && /^sk_live_/.test(config.stripe.secretKey)) {
+    throw new Error(
+      'STRIPE_SECRET_KEY appears to be a live key (sk_live_*) but NODE_ENV is not production. Refusing to start to prevent accidental live charges in staging.',
+    );
+  }
 }

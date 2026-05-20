@@ -48,7 +48,8 @@ export function createUserLoginHandler(portalDir = __dirname) {
       'Content-Security-Policy',
       "default-src 'self'; script-src 'self' 'unsafe-inline'; "
       + "style-src 'self' 'unsafe-inline'; img-src 'self' data:; "
-      + "connect-src 'self'; form-action 'self'; frame-ancestors 'none'; "
+      + "connect-src 'self' https://api.nexushub.me https://*.nexushub-landing.pages.dev; "
+      + "form-action 'self'; frame-ancestors 'none'; "
       + "base-uri 'none'",
     );
 

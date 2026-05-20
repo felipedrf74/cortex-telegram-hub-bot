@@ -29,6 +29,7 @@ import {
   debitNexusPoints,
   getNexusPointBalance,
   grantNexusPoints,
+  lookupNexusPointCreditByProviderTransaction,
   NEXUS_POINT_PACKAGES,
   revokeNexusPointsCredit,
   settleNexusPointOverageForUser,
@@ -248,6 +249,32 @@ describe('Nexus Points ledger', () => {
     expect(row.status).toBe('refunded');
     expect(row.points_remaining).toBe(0);
     expect(row.usd_allowance_remaining).toBe(0);
+
+    const duplicate = revokeNexusPointsCredit({
+      provider: 'apple',
+      providerTransactionId: '2000000123456799',
+      status: 'refunded',
+    });
+    expect(duplicate).toMatchObject({ revoked: false, previousStatus: 'refunded', creditId: result.creditId });
+  });
+
+  it('looks up Nexus Points credits by provider transaction for webhook gating', () => {
+    grantNexusPoints({
+      userId: 17,
+      provider: 'stripe',
+      providerTransactionId: 'pi_lookup',
+      productId: 'me.nexushub.points.small',
+      metadata: { sessionId: 'cs_lookup' },
+    });
+
+    expect(lookupNexusPointCreditByProviderTransaction('stripe', 'pi_lookup')).toMatchObject({
+      userId: 17,
+      provider: 'stripe',
+      providerTransactionId: 'pi_lookup',
+      productId: 'me.nexushub.points.small',
+      metadata: { sessionId: 'cs_lookup' },
+    });
+    expect(lookupNexusPointCreditByProviderTransaction('stripe', 'pi_missing')).toBeNull();
   });
 
   it('settles only the cap-crossing overage into Nexus Points', async () => {

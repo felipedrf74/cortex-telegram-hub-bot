@@ -171,6 +171,15 @@ export function createPortalServer(bot?: any): http.Server {
     }
 
     const { createApiRouter } = require('../api/router');
+    app.use('/api/v1/billing/nexus-points/stripe-checkout', (req: Request, res: Response, next: NextFunction) => {
+      const rawLength = req.headers['content-length'];
+      const contentLength = Array.isArray(rawLength) ? Number(rawLength[0]) : Number(rawLength || 0);
+      if (Number.isFinite(contentLength) && contentLength > 8 * 1024) {
+        res.status(413).json({ ok: false, error: { code: 'PAYLOAD_TOO_LARGE', message: 'Request body is too large' } });
+        return;
+      }
+      next();
+    });
     // Receipt uploads send base64-encoded images, so the iOS surface needs
     // a larger JSON cap than the rest of the portal.
     app.use('/api/v1', express.json({ limit: '8mb' }), createApiRouter());

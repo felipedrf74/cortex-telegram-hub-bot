@@ -3754,7 +3754,7 @@ table.legacy th {
       const pointsPanel = '<div class="card-title" style="margin-bottom:var(--space-3)">Nexus Points checkout</div>' +
         '<div style="display:grid;gap:var(--space-2);margin-bottom:var(--space-5)">' +
           '<select id="slideout-points-package" class="input" ' + (pointsData.stripeEnabled ? '' : 'disabled') + '>' + pointOptions + '</select>' +
-          '<textarea id="slideout-points-note" class="input" rows="2" placeholder="Required support note" ' + (pointsData.stripeEnabled ? '' : 'disabled') + '></textarea>' +
+          '<textarea id="slideout-points-note" class="input" rows="2" maxlength="280" placeholder="Required support note" ' + (pointsData.stripeEnabled ? '' : 'disabled') + '></textarea>' +
           '<button class="btn btn-sm" onclick="createPortalNexusPointsCheckout(' + user.id + ')" ' + (pointsData.stripeEnabled ? '' : 'disabled') + '>Create Stripe checkout URL</button>' +
           '<div id="slideout-points-result" class="text-muted" style="font-size:12px"></div>' +
         '</div>';

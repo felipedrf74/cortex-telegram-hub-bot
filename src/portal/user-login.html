@@ -372,7 +372,7 @@
       const checkout = params.get('nexusPointsCheckout');
       if (checkout === 'success') {
         history.replaceState(null, '', location.pathname);
-        setMessage('Nexus Points checkout completed. Your balance updates after Stripe confirms payment.', 'ok');
+        setMessage('Nexus Points checkout received. Your balance updates after Stripe confirms payment.', '');
         return;
       }
       if (checkout === 'canceled') {

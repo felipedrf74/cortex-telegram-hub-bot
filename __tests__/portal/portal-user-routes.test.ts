@@ -203,6 +203,30 @@ describe('portal user routes', () => {
     );
   });
 
+  it('caps and sanitizes portal Stripe Nexus Points checkout notes before persistence/metadata', async () => {
+    const { app, routes } = makeApp();
+    registerPortalUserRoutes(app as any);
+    const handler = routes.get('POST /api/users/:userId/billing/nexus-points/stripe-checkout')?.[3]!;
+    const { res } = makeResponse();
+    const dirtyNote = `beta\u0000 ${'x'.repeat(400)}`;
+
+    await handler({
+      params: { userId: '42' },
+      body: { packageId: 'me.nexushub.points.small', note: dirtyNote },
+    }, res);
+
+    const expectedNote = `beta ${'x'.repeat(400)}`.slice(0, 280);
+    expect(hoisted.createNexusPointsCheckoutSession).toHaveBeenCalledWith(expect.objectContaining({
+      note: expectedNote,
+    }));
+    expect(hoisted.logPortalAdminMutation).toHaveBeenCalledWith(
+      expect.anything(),
+      42,
+      'billing.nexus_points.stripe_checkout',
+      expect.objectContaining({ note: expectedNote }),
+    );
+  });
+
   it('rejects portal Stripe Nexus Points checkout without a note', async () => {
     const { app, routes } = makeApp();
     registerPortalUserRoutes(app as any);

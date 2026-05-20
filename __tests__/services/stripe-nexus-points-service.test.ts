@@ -5,9 +5,11 @@ let testDb: Database.Database;
 
 const hoisted = vi.hoisted(() => {
   const stripeCreate = vi.fn();
+  const stripeRetrieveCharge = vi.fn();
   const stripeConstructEvent = vi.fn();
   const stripeCtor = vi.fn(() => ({
     checkout: { sessions: { create: stripeCreate } },
+    charges: { retrieve: stripeRetrieveCharge },
     webhooks: { constructEvent: stripeConstructEvent },
   }));
   const config = {
@@ -29,6 +31,7 @@ const hoisted = vi.hoisted(() => {
   };
   return {
     stripeCreate,
+    stripeRetrieveCharge,
     stripeConstructEvent,
     stripeCtor,
     config,
@@ -93,6 +96,17 @@ function createSchema(): void {
       updated_at TEXT NOT NULL DEFAULT (datetime('now')),
       UNIQUE(provider, provider_transaction_id)
     );
+    CREATE TABLE subscriptions (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER NOT NULL,
+      provider TEXT,
+      provider_customer_id TEXT,
+      updated_at TEXT DEFAULT (datetime('now'))
+    );
+    CREATE TABLE users (
+      id INTEGER PRIMARY KEY,
+      email TEXT
+    );
   `);
 }
 
@@ -120,6 +134,7 @@ describe('stripe-nexus-points-service', () => {
     vi.clearAllMocks();
     hoisted.config.stripe.nexusPoints.enabled = true;
     hoisted.stripeCreate.mockResolvedValue({ id: 'cs_new', url: 'https://checkout.stripe.test/session' });
+    hoisted.stripeRetrieveCharge.mockResolvedValue({ payment_intent: null });
     hoisted.stripeConstructEvent.mockReturnValue({
       type: 'checkout.session.completed',
       data: { object: paidSession() },
@@ -132,34 +147,91 @@ describe('stripe-nexus-points-service', () => {
   });
 
   it('creates one-time Checkout Sessions with strict metadata and configured price ids', async () => {
-    const result = await createNexusPointsCheckoutSession({
-      userId: 42,
-      tenantId: 42,
-      packageId: 'me.nexushub.points.medium',
-      source: 'portal',
-      note: 'beta tester top-up',
-      actor: 'felipe',
-    });
-
-    expect(result).toEqual({ sessionId: 'cs_new', checkoutUrl: 'https://checkout.stripe.test/session' });
-    expect(hoisted.stripeCreate).toHaveBeenCalledWith(expect.objectContaining({
-      mode: 'payment',
-      line_items: [{ price: 'price_points_medium', quantity: 1 }],
-      success_url: 'https://nexushub.me/user?nexusPointsCheckout=success',
-      cancel_url: 'https://nexushub.me/user?nexusPointsCheckout=canceled',
-      client_reference_id: '42',
-      metadata: expect.objectContaining({
-        userId: '42',
-        tenantId: '42',
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-05-20T12:34:20Z'));
+    try {
+      const result = await createNexusPointsCheckoutSession({
+        userId: 42,
+        tenantId: 42,
         packageId: 'me.nexushub.points.medium',
         source: 'portal',
-        actor: 'felipe',
         note: 'beta tester top-up',
-      }),
-      payment_intent_data: expect.objectContaining({
-        metadata: expect.objectContaining({ packageId: 'me.nexushub.points.medium' }),
-      }),
-    }));
+        actor: 'felipe',
+      });
+
+      const minuteBucket = Math.floor(Date.now() / 60000);
+      expect(result).toEqual({ sessionId: 'cs_new', checkoutUrl: 'https://checkout.stripe.test/session' });
+      expect(hoisted.stripeCreate).toHaveBeenCalledWith(expect.objectContaining({
+        mode: 'payment',
+        line_items: [{ price: 'price_points_medium', quantity: 1 }],
+        success_url: 'https://nexushub.me/user?nexusPointsCheckout=success',
+        cancel_url: 'https://nexushub.me/user?nexusPointsCheckout=canceled',
+        client_reference_id: '42',
+        metadata: expect.objectContaining({
+          userId: '42',
+          tenantId: '42',
+          packageId: 'me.nexushub.points.medium',
+          source: 'portal',
+          actor: 'felipe',
+          note: 'beta tester top-up',
+        }),
+        payment_intent_data: expect.objectContaining({
+          metadata: expect.objectContaining({ packageId: 'me.nexushub.points.medium' }),
+        }),
+      }), {
+        idempotencyKey: `nexus-points:42:me.nexushub.points.medium:portal:${minuteBucket}`,
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('dedupes double-click checkout creation with a minute-scoped idempotency key', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-05-20T12:35:01Z'));
+    try {
+      await Promise.all([
+        createNexusPointsCheckoutSession({
+          userId: 42,
+          tenantId: 42,
+          packageId: 'me.nexushub.points.small',
+          source: 'web',
+        }),
+        createNexusPointsCheckoutSession({
+          userId: 42,
+          tenantId: 42,
+          packageId: 'me.nexushub.points.small',
+          source: 'web',
+        }),
+      ]);
+
+      const [, firstOptions] = hoisted.stripeCreate.mock.calls[0];
+      const [, secondOptions] = hoisted.stripeCreate.mock.calls[1];
+      expect(firstOptions).toEqual(secondOptions);
+      expect(firstOptions.idempotencyKey).toMatch(/^nexus-points:42:me\.nexushub\.points\.small:web:\d+$/);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('reuses an existing Stripe customer and otherwise sends user email without logging it', async () => {
+    testDb.prepare("INSERT INTO subscriptions (user_id, provider, provider_customer_id, updated_at) VALUES (42, 'stripe', 'cus_existing', datetime('now'))").run();
+    await createNexusPointsCheckoutSession({
+      userId: 42,
+      tenantId: 42,
+      packageId: 'me.nexushub.points.small',
+      source: 'web',
+    });
+    expect(hoisted.stripeCreate.mock.calls.at(-1)?.[0]).toEqual(expect.objectContaining({ customer: 'cus_existing' }));
+
+    testDb.prepare("INSERT INTO users (id, email) VALUES (43, 'buyer@example.com')").run();
+    await createNexusPointsCheckoutSession({
+      userId: 43,
+      tenantId: 43,
+      packageId: 'me.nexushub.points.small',
+      source: 'web',
+    });
+    expect(hoisted.stripeCreate.mock.calls.at(-1)?.[0]).toEqual(expect.objectContaining({ customer_email: 'buyer@example.com' }));
   });
 
   it('refuses unknown packages and disabled configuration', async () => {
@@ -213,6 +285,17 @@ describe('stripe-nexus-points-service', () => {
     expect(testDb.prepare('SELECT COUNT(*) AS count FROM nexus_point_credits').get()).toEqual({ count: 0 });
   });
 
+  it('ignores unrelated payment-mode Checkout sessions without Nexus Points metadata', async () => {
+    const handled = await handleStripeNexusPointsEvent({
+      type: 'checkout.session.completed',
+      data: { object: paidSession({ metadata: {}, line_items: { data: [{ price: { id: 'price_subscription' } }] } }) },
+    });
+
+    expect(handled).toBe(false);
+    expect(testDb.prepare('SELECT COUNT(*) AS count FROM nexus_point_credits').get()).toEqual({ count: 0 });
+    expect(hoisted.recordOperatorAlert).not.toHaveBeenCalled();
+  });
+
   it('grants points on async payment success', async () => {
     await handleStripeNexusPointsEvent({
       type: 'checkout.session.async_payment_succeeded',
@@ -254,16 +337,74 @@ describe('stripe-nexus-points-service', () => {
       type: 'charge.refunded',
       data: { object: { id: 'ch_partial', payment_intent: 'pi_refund_123', amount: 500, amount_refunded: 100, currency: 'usd' } },
     });
+    hoisted.stripeRetrieveCharge.mockResolvedValueOnce({ payment_intent: 'pi_refund_123' });
     await handleStripeNexusPointsEvent({
       type: 'charge.dispute.created',
       data: { object: { id: 'du_123', charge: 'ch_partial', amount: 500, currency: 'usd', reason: 'fraudulent', status: 'needs_response' } },
     });
 
     expect(hoisted.recordOperatorAlert).toHaveBeenCalledWith(expect.objectContaining({
-      dedupeKey: expect.stringContaining('stripe_nexus_partial_refund'),
+      dedupeKey: 'stripe_nexus_partial_refund:ch_partial',
     }));
     expect(hoisted.recordOperatorAlert).toHaveBeenCalledWith(expect.objectContaining({
       dedupeKey: 'stripe_nexus_dispute:du_123',
     }));
+    expect(hoisted.stripeRetrieveCharge).toHaveBeenCalledWith('ch_partial');
+  });
+
+  it('ignores non-Nexus subscription refunds and disputes without operator alerts', async () => {
+    hoisted.stripeRetrieveCharge.mockResolvedValueOnce({ payment_intent: 'pi_subscription' });
+    await handleStripeNexusPointsEvent({
+      type: 'charge.refunded',
+      data: { object: { id: 'ch_subscription', payment_intent: 'pi_subscription', amount: 500, amount_refunded: 500, currency: 'usd' } },
+    });
+    await handleStripeNexusPointsEvent({
+      type: 'charge.dispute.created',
+      data: { object: { id: 'du_subscription', charge: 'ch_subscription', amount: 500, currency: 'usd' } },
+    });
+    await handleStripeNexusPointsEvent({
+      type: 'charge.refunded',
+      data: { object: { id: 'ch_missing_pi', amount: 500, amount_refunded: 500, currency: 'usd' } },
+    });
+
+    expect(hoisted.recordOperatorAlert).not.toHaveBeenCalled();
+  });
+
+  it('sanitizes portal metadata before sending it to Stripe and storing it in credits', async () => {
+    const longNote = `<script>alert(1)</script>\u0000 ${'x'.repeat(400)}`;
+    await createNexusPointsCheckoutSession({
+      userId: 42,
+      tenantId: 42,
+      packageId: 'me.nexushub.points.small',
+      source: 'portal',
+      note: longNote,
+      actor: 'felipe\u0007',
+    });
+    const params = hoisted.stripeCreate.mock.calls.at(-1)?.[0];
+    expect(params.metadata.note).not.toContain('\u0000');
+    expect(params.metadata.actor).toBe('felipe');
+    expect(params.metadata.note).toHaveLength(280);
+
+    await handleStripeNexusPointsEvent({
+      type: 'checkout.session.completed',
+      data: {
+        object: paidSession({
+          payment_intent: 'pi_sanitized',
+          metadata: {
+            userId: '42',
+            tenantId: '42',
+            packageId: 'me.nexushub.points.small',
+            source: 'portal',
+            note: params.metadata.note,
+            actor: params.metadata.actor,
+          },
+        }),
+      },
+    });
+    const row = testDb.prepare('SELECT metadata_json FROM nexus_point_credits WHERE provider_transaction_id = ?').get('pi_sanitized') as any;
+    const metadata = JSON.parse(row.metadata_json);
+    expect(metadata.note).toHaveLength(280);
+    expect(metadata.note).toContain('<script>');
+    expect(metadata.note).not.toContain('\u0000');
   });
 });

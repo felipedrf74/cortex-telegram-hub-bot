@@ -50,6 +50,7 @@ const WEBSITE_CORS_ALLOWLIST = new Set([
   'https://www.nexushub.me',
 ]);
 const WEBSITE_CORS_ALLOWLIST_REGEX = /^https:\/\/[a-z0-9-]+\.nexushub-landing\.pages\.dev$/;
+const WEBSITE_CORS_METHODS = new Set(['GET', 'POST', 'OPTIONS']);
 
 function isWebsiteCorsRoute(path: string): boolean {
   return path === '/auth'
@@ -64,6 +65,10 @@ function applyWebsiteCors(req: express.Request, res: express.Response): boolean 
   const origin = req.headers.origin;
   if (typeof origin !== 'string') return false;
   if (!WEBSITE_CORS_ALLOWLIST.has(origin) && !WEBSITE_CORS_ALLOWLIST_REGEX.test(origin)) {
+    return false;
+  }
+  const requestedMethod = String(req.headers['access-control-request-method'] || req.method || '').toUpperCase();
+  if (req.method === 'OPTIONS' && requestedMethod && !WEBSITE_CORS_METHODS.has(requestedMethod)) {
     return false;
   }
   res.set('Access-Control-Allow-Origin', origin);

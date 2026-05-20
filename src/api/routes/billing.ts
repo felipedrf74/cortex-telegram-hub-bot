@@ -11,7 +11,7 @@
  * Protected by authMiddleware (JWT required).
  */
 
-import { Router, Request, Response } from 'express';
+import express, { Router, Request, Response, NextFunction } from 'express';
 import { logger } from '../../utils/logger';
 import { sendSuccess, sendError, asyncHandler } from '../response-helpers';
 import {
@@ -33,6 +33,26 @@ import {
   createNexusPointsCheckoutSession,
   isStripeNexusPointsConfigured,
 } from '../../services/stripe-nexus-points-service';
+import { logAudit } from '../../services/audit-trail';
+
+const STRIPE_NEXUS_CHECKOUT_BODY_LIMIT_BYTES = 8 * 1024;
+const STRIPE_NEXUS_CHECKOUT_BODY_FIELDS = new Set(['packageId']);
+
+function rejectOversizedStripeNexusCheckoutBody(req: Request, res: Response, next: NextFunction): void {
+  const rawLength = req.headers['content-length'];
+  const contentLength = Array.isArray(rawLength) ? Number(rawLength[0]) : Number(rawLength || 0);
+  if (Number.isFinite(contentLength) && contentLength > STRIPE_NEXUS_CHECKOUT_BODY_LIMIT_BYTES) {
+    sendError(res, 'PAYLOAD_TOO_LARGE', 'Request body is too large', 413);
+    return;
+  }
+  next();
+}
+
+function unexpectedStripeCheckoutBodyFields(body: unknown): string[] {
+  if (!body || typeof body !== 'object' || Array.isArray(body)) return [];
+  return Object.keys(body as Record<string, unknown>)
+    .filter((key) => !STRIPE_NEXUS_CHECKOUT_BODY_FIELDS.has(key));
+}
 
 function buildBillingStatusPayload(userId: number): Record<string, unknown> {
   const status = getSubscriptionStatus(userId);
@@ -158,11 +178,19 @@ export function billingRoutes(): Router {
   /**
    * POST /api/v1/billing/nexus-points/stripe-checkout
    * Web-only Nexus Points Checkout. Identity comes from JWT auth middleware;
-   * body-supplied user/tenant ids are ignored by design.
+   * body-supplied identity or attribution fields are rejected by design.
    */
-  router.post('/nexus-points/stripe-checkout', asyncHandler(async (req: Request, res: Response) => {
+  router.post('/nexus-points/stripe-checkout', rejectOversizedStripeNexusCheckoutBody, express.json({ limit: '8kb' }), asyncHandler(async (req: Request, res: Response) => {
     if (!isStripeNexusPointsConfigured()) {
       sendError(res, 'STRIPE_NOT_CONFIGURED', 'Stripe Nexus Points checkout is not configured', 503);
+      return;
+    }
+
+    const unexpectedFields = unexpectedStripeCheckoutBodyFields(req.body);
+    if (unexpectedFields.length > 0) {
+      sendError(res, 'UNEXPECTED_BODY_FIELDS', 'Unexpected body fields are not allowed for Stripe Nexus Points checkout', 400, {
+        fields: unexpectedFields,
+      });
       return;
     }
 
@@ -179,6 +207,18 @@ export function billingRoutes(): Router {
       tenantId,
       packageId,
       source: 'web',
+    });
+    logAudit({
+      tenantId,
+      userId,
+      actorId: userId,
+      action: 'billing.nexus_points.checkout_started',
+      resource: 'billing.nexus_points.stripe_checkout',
+      details: {
+        sessionId: session.sessionId,
+        packageId,
+        source: 'web',
+      },
     });
     sendSuccess(res, session);
   }));

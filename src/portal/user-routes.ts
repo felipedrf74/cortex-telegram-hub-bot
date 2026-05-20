@@ -16,6 +16,7 @@ import { isNexusPointProductId, listNexusPointPackages } from '../services/nexus
 import { getPortalAuthContext } from '../api/secret-guards';
 
 const VALID_TIERS = new Set(['free', 'pro', 'max', 'owner']);
+const STRIPE_NEXUS_POINTS_PORTAL_NOTE_MAX_LENGTH = 280;
 
 function parsePositiveUserId(value: unknown): number | null {
   const userId = Number(value);
@@ -31,6 +32,15 @@ function nonNegNumOrUndef(value: unknown): number | undefined {
 
 function hasOwn(obj: unknown, key: string): boolean {
   return !!obj && typeof obj === 'object' && Object.prototype.hasOwnProperty.call(obj, key);
+}
+
+function sanitizePortalCheckoutNote(value: unknown): string {
+  if (typeof value !== 'string') return '';
+  return value
+    .replace(/[\u0000-\u001F\u007F-\u009F]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, STRIPE_NEXUS_POINTS_PORTAL_NOTE_MAX_LENGTH);
 }
 
 export function registerPortalUserRoutes(app: express.Express): void {
@@ -66,7 +76,7 @@ export function registerPortalUserRoutes(app: express.Express): void {
         res.status(400).json({ ok: false, error: { code: 'BAD_PACKAGE', message: 'packageId must be a known Nexus Points package' } });
         return;
       }
-      const note = typeof req.body?.note === 'string' ? req.body.note.trim() : '';
+      const note = sanitizePortalCheckoutNote(req.body?.note);
       if (!note) {
         res.status(400).json({ ok: false, error: { code: 'NOTE_REQUIRED', message: 'note is required for portal-created Stripe checkout sessions' } });
         return;

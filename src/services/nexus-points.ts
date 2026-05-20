@@ -83,6 +83,18 @@ export interface RevokeNexusPointsResult {
   previousStatus: string | null;
 }
 
+export interface NexusPointCreditLookup {
+  id: number;
+  userId: number;
+  provider: string;
+  providerTransactionId: string;
+  status: string;
+  productId: string;
+  pointsRemaining: number;
+  usdAllowanceRemaining: number;
+  metadata: Record<string, unknown> | null;
+}
+
 export function isNexusPointProductId(productId: string): productId is NexusPointPackageId {
   return Object.prototype.hasOwnProperty.call(NEXUS_POINT_PACKAGES, productId);
 }
@@ -101,7 +113,7 @@ export function grantNexusPoints(input: GrantNexusPointsInput): GrantNexusPoints
   const purchasedAt = input.purchasedAt ?? new Date();
   const expiresAt = new Date(purchasedAt.getTime() + NEXUS_POINT_EXPIRY_DAYS * 24 * 60 * 60 * 1000).toISOString();
   const db = getDb();
-  const metadataJson = stringifyCreditMetadata(input.metadata);
+  const metadataJson = stringifyCreditMetadata(input.metadata, input.provider, input.providerTransactionId);
   const result = db.prepare(`
     INSERT OR IGNORE INTO nexus_point_credits (
       user_id, source, provider, product_id, provider_transaction_id,
@@ -136,6 +148,34 @@ export function grantNexusPoints(input: GrantNexusPointsInput): GrantNexusPoints
   return { granted: true, package: pkg, creditId: Number(result.lastInsertRowid) };
 }
 
+export function lookupNexusPointCreditByProviderTransaction(
+  provider: string,
+  providerTransactionId: string,
+): NexusPointCreditLookup | null {
+  const providerKey = String(provider || '').trim();
+  const transactionId = String(providerTransactionId || '').trim();
+  if (!providerKey || !transactionId) return null;
+  const row = getDb().prepare(`
+    SELECT id, user_id, provider, provider_transaction_id, status, product_id,
+           points_remaining, usd_allowance_remaining, metadata_json
+    FROM nexus_point_credits
+    WHERE provider = ? AND provider_transaction_id = ?
+    LIMIT 1
+  `).get(providerKey, transactionId) as any | undefined;
+  if (!row) return null;
+  return {
+    id: Number(row.id),
+    userId: Number(row.user_id),
+    provider: String(row.provider),
+    providerTransactionId: String(row.provider_transaction_id),
+    status: String(row.status),
+    productId: String(row.product_id),
+    pointsRemaining: Number(row.points_remaining || 0),
+    usdAllowanceRemaining: Number(row.usd_allowance_remaining || 0),
+    metadata: parseCreditMetadata(row.metadata_json),
+  };
+}
+
 export function revokeNexusPointsCredit(input: {
   provider: string;
   providerTransactionId: string;
@@ -154,6 +194,9 @@ export function revokeNexusPointsCredit(input: {
     LIMIT 1
   `).get(provider, providerTransactionId) as { id: number; status: string } | undefined;
   if (!row) return { revoked: false, creditId: null, previousStatus: null };
+  if (row.status === input.status) {
+    return { revoked: false, creditId: row.id, previousStatus: row.status };
+  }
 
   db.prepare(`
     UPDATE nexus_point_credits
@@ -407,11 +450,28 @@ function roundPoints(value: number): number {
   return Number((Math.max(0, value) + 1e-12).toFixed(5));
 }
 
-function stringifyCreditMetadata(metadata: Record<string, unknown> | null | undefined): string {
+function stringifyCreditMetadata(
+  metadata: Record<string, unknown> | null | undefined,
+  provider?: string,
+  providerTransactionId?: string,
+): string {
   if (!metadata || typeof metadata !== 'object') return '{}';
   try {
     return JSON.stringify(metadata);
-  } catch {
+  } catch (err) {
+    logger.warn({ err, provider, providerTransactionId }, 'Nexus Points credit metadata failed to serialize');
     return JSON.stringify({ serializationError: true });
+  }
+}
+
+function parseCreditMetadata(value: string | null | undefined): Record<string, unknown> | null {
+  if (!value) return null;
+  try {
+    const parsed = JSON.parse(value);
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+      ? parsed as Record<string, unknown>
+      : null;
+  } catch {
+    return { parseError: true };
   }
 }

@@ -195,6 +195,56 @@ Verification for this pass:
 - Staging smoke passed 21/21 checks; evidence: `docs/release/smoke-evidence/staging-smoke-3615f145-20260520T115720Z.json`.
 - Stripe test-mode smoke, production promote, and live Stripe smoke were not run in this implementation pass because the required Stripe Dashboard test products/webhook setup and Felipe live-purchase signoff are external operational gates. See `docs/integrations/stripe-nexus-points.md`.
 
+## Stripe Pass 1 QA Review
+
+Status: implemented on top of `48e36685`; staging/prod payment smoke remains gated on Stripe Dashboard test/live setup.
+
+Findings:
+
+| ID | Status | Evidence / files | Summary |
+| --- | --- | --- | --- |
+| B1 | Fixed | `src/portal/static-routes.ts`, `src/api/router.ts`, `docs/integrations/stripe-nexus-points.md` | Chose cross-origin website topology. `user-login.html` may be served from `nexushub.me`; CSP and scoped CORS now allow `https://api.nexushub.me` and Cloudflare Pages previews for only the required auth/billing routes. |
+| B2 | Fixed | `src/services/stripe-nexus-points-service.ts`, `__tests__/services/stripe-nexus-points-service.test.ts` | Refund/dispute handlers now first resolve a Stripe PaymentIntent and verify a matching `provider='stripe'` Nexus Points credit. Non-NP subscription refunds/disputes are debug-ignored. Partial refunds/disputes alert only for NP credits. |
+| B3 | Fixed | `src/services/stripe-nexus-points-service.ts`, `src/portal/user-routes.ts`, `src/portal/portal.html`, `src/portal/portal-static-routes.test.ts` | Portal notes/actor metadata strip control characters, server-cap notes at 280 chars, portal textarea caps input, and operator-alert render surfaces keep HTML escaping pinned by tests. |
+| H1 | Fixed | `src/portal/server.ts`, `src/api/routes/billing.ts`, `__tests__/api/billing-routes.test.ts` | Stripe Nexus Points checkout rejects >8KB bodies before the global 8MB API parser and rejects unexpected body fields. |
+| H2 | Fixed | `src/services/stripe-nexus-points-service.ts`, service tests | Checkout Session creation now uses a minute-scoped Stripe idempotency key to absorb double-click retries without permanently blocking a later purchase. |
+| H3 | Fixed | `src/config.ts`, config validation tests | Non-production runtimes refuse `sk_live_...` keys when Stripe Nexus Points are enabled. |
+| M1 | Fixed | `src/api/routes/billing.ts` | Website checkout rejects body-supplied identity/attribution fields (`userId`, `tenantId`, `actor`, `source`, `note`) instead of silently ignoring them. |
+| M2 | Fixed | `src/config.ts` | Enabling Stripe Nexus Points requires `PORTAL_ADMIN_ACTOR_SIGNATURE_SECRET`, so portal-issued purchases have signed attribution. |
+| M3 | Fixed | `src/services/stripe-nexus-points-service.ts` | Partial-refund alert dedupe is per charge id, not per hour. |
+| M4 | Fixed | `src/services/stripe-nexus-points-service.ts` | Checkout reuses an existing Stripe subscription customer id when present; otherwise it sends the user email to Stripe for future reconciliation. |
+| M5 | Fixed | `src/services/nexus-points.ts` | Metadata serialization fallback now logs a warning with provider/transaction context. |
+| M6 | Fixed | `__tests__/api/website-cors.test.ts` | CORS matrix now covers no credentials, untrusted POST origin, unsupported PUT preflight, and Cloudflare preview checkout preflight. |
+| M7 | Fixed | `src/services/stripe-nexus-points-service.ts` | Unrelated future `mode='payment'` Checkout sessions without Nexus Points metadata are ignored without operator alerts. |
+| L1 | Fixed | `src/portal/user-login.html` | Redirect success UX is now neutral/pending until billing status confirms the credit. |
+| L2 | Fixed | `src/services/stripe-nexus-points-service.ts` | Removed dead `payment_intent.latest_charge` extraction; dispute lookup resolves charge to PaymentIntent when needed. |
+| L3 | Fixed | `src/services/nexus-points.ts` | Repeated refund/revoke webhook retries now short-circuit if the credit is already in the requested status. |
+| L4 | Fixed | `src/services/stripe-nexus-points-service.ts` | Checkout, refund, and dispute processors are async-safe. |
+| L5 | Fixed | `src/services/stripe-nexus-points-service.ts` | Stripe metadata normalization fails closed if future changes exceed Stripe's 50-key metadata limit. |
+| L6 | Fixed | `src/api/routes/billing.ts` | Self-serve website checkout now writes `billing.nexus_points.checkout_started` audit entries. |
+
+Pass-B independent scan:
+
+| Area | Severity | Status | Notes |
+| --- | --- | --- | --- |
+| Customer email exposure | Medium | Documented | Email is sent only to Stripe when no existing customer id is available; no service logs include customer email or full Stripe responses. Stripe must remain listed as an authorized payment processor/subprocessor. |
+| Stripe API version pinning | Low | Fixed | Nexus Points Stripe client pins `2026-02-25.clover`; update only with focused Checkout/webhook tests. |
+| Webhook timeout budget | Low | Verified acceptable | The synchronous path performs bounded DB writes and one alert insert; no slow external call exists except dispute charge lookup, which is limited to one Stripe retrieve when PaymentIntent is absent. |
+| Test/live webhook secret separation | Low | Documented | Test/live secrets are runtime env swaps; no rebuild needed. |
+| Webhook rate limiter | Low | Documented | `120/min/IP` is fine for normal retries; large Dashboard replays should be scheduled and monitored. |
+| Stripe retry exhaustion | Medium | Follow-up documented | Runbook now describes Dashboard delivery replay/manual reconciliation. A full reconciliation script is deferred as `STRIPE-NP-FOLLOWUP-001`. |
+| Apple + Stripe FIFO | Low | Verified acceptable | Credits remain provider-agnostic and debit FIFO by expiry/id, not provider. |
+| Test cards/product naming | Low | Documented | Runbook lists smoke cards and exact Dashboard product/price setup. |
+
+Latest local validation:
+
+- `npx tsc --noEmit` passed.
+- Focused QA gate passed: `npx vitest run __tests__/services/stripe-nexus-points-service.test.ts __tests__/api/webhooks.test.ts __tests__/api/website-cors.test.ts __tests__/api/billing-routes.test.ts __tests__/portal/portal-user-routes.test.ts __tests__/portal/portal-admin-scope.test.ts __tests__/services/config-runtime-validation.test.ts __tests__/services/nexus-points.test.ts __tests__/services/cost-guardrail.test.ts __tests__/services/cost-validation.test.ts __tests__/security/billing-apple-notifications-jws-verify.test.ts` -> 11 files / 126 tests passed.
+- `npm run verify` passed: 614 files / 9,104 tests.
+- `STAGING=true npx tsx src/tools/chat-model-bakeoff.ts` passed with 109 fixtures / 218 bilingual turns.
+- `npx tsx src/tools/model-pricing-report.ts` passed; local DB path was not configured, so usage observations were empty and registry entries were reported as unused.
+- `npx tsx scripts/chat-cost-scenarios.ts` passed; local `data/bot.db` is absent, so it emitted a zero-row scenario report.
+
 Completion gate status:
 
 - Code implementation, unit/integration coverage, docs, staging deploy, and staging smoke are complete.

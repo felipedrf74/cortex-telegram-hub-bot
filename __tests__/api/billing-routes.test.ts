@@ -5,6 +5,7 @@ const mockHandleAppleTransaction = vi.fn();
 const mockGrantNexusPoints = vi.fn();
 const mockCreateNexusPointsCheckoutSession = vi.fn();
 const mockIsStripeNexusPointsConfigured = vi.fn(() => true);
+const mockLogAudit = vi.fn();
 
 vi.mock('../../src/services/stripe-service', () => ({
   isStripeConfigured: vi.fn(() => true),
@@ -84,6 +85,10 @@ vi.mock('../../src/services/stripe-nexus-points-service', () => ({
   isStripeNexusPointsConfigured: () => mockIsStripeNexusPointsConfigured(),
 }));
 
+vi.mock('../../src/services/audit-trail', () => ({
+  logAudit: (...args: unknown[]) => mockLogAudit(...args),
+}));
+
 vi.mock('../../src/utils/logger', () => ({
   logger: {
     info: vi.fn(),
@@ -121,7 +126,7 @@ function mockRes(): MockRes {
   return r;
 }
 
-function mockReq(method: string, path: string, body?: any, userId = 22): Request {
+function mockReq(method: string, path: string, body?: any, userId = 22, headers: Record<string, string> = {}): Request {
   return {
     method,
     url: path,
@@ -130,15 +135,15 @@ function mockReq(method: string, path: string, body?: any, userId = 22): Request
     path,
     query: {},
     params: {},
-    headers: {},
+    headers,
     body,
     userId,
   } as any;
 }
 
-async function dispatch(method: string, path: string, body?: any, userId = 22): Promise<MockRes> {
+async function dispatch(method: string, path: string, body?: any, userId = 22, headers: Record<string, string> = {}): Promise<MockRes> {
   const router = billingRoutes();
-  const req = mockReq(method, path, body, userId);
+  const req = mockReq(method, path, body, userId, headers);
   const res = mockRes();
 
   await new Promise<void>((resolve) => {
@@ -172,6 +177,7 @@ describe('billing routes', () => {
     mockCreateNexusPointsCheckoutSession.mockResolvedValue({ sessionId: 'cs_points', checkoutUrl: 'https://checkout.stripe.test/points' });
     mockIsStripeNexusPointsConfigured.mockReset();
     mockIsStripeNexusPointsConfigured.mockReturnValue(true);
+    mockLogAudit.mockReset();
   });
 
   it('sanitizes apple verification failures instead of leaking internals', async () => {
@@ -260,8 +266,6 @@ describe('billing routes', () => {
   it('creates web-only Stripe Nexus Points checkout from authenticated request scope', async () => {
     const res = await dispatch('POST', '/nexus-points/stripe-checkout', {
       packageId: 'me.nexushub.points.medium',
-      userId: 999,
-      tenantId: 999,
     }, 42);
 
     expect(res.statusCode).toBe(200);
@@ -272,6 +276,38 @@ describe('billing routes', () => {
       packageId: 'me.nexushub.points.medium',
       source: 'web',
     });
+    expect(mockLogAudit).toHaveBeenCalledWith(expect.objectContaining({
+      tenantId: 42,
+      userId: 42,
+      actorId: 42,
+      action: 'billing.nexus_points.checkout_started',
+      details: expect.objectContaining({
+        sessionId: 'cs_points',
+        packageId: 'me.nexushub.points.medium',
+        source: 'web',
+      }),
+    }));
+  });
+
+  it('rejects oversized and body-spoofed Stripe Nexus Points checkout requests', async () => {
+    const oversized = await dispatch(
+      'POST',
+      '/nexus-points/stripe-checkout',
+      { packageId: 'me.nexushub.points.small' },
+      42,
+      { 'content-length': String(100 * 1024) },
+    );
+    expect(oversized.statusCode).toBe(413);
+    expect(oversized.body.error.code).toBe('PAYLOAD_TOO_LARGE');
+
+    const spoofed = await dispatch('POST', '/nexus-points/stripe-checkout', {
+      packageId: 'me.nexushub.points.medium',
+      userId: 999,
+      tenantId: 999,
+    }, 42);
+    expect(spoofed.statusCode).toBe(400);
+    expect(spoofed.body.error.code).toBe('UNEXPECTED_BODY_FIELDS');
+    expect(mockCreateNexusPointsCheckoutSession).not.toHaveBeenCalled();
   });
 
   it('rejects bad or disabled Stripe Nexus Points checkout requests', async () => {
