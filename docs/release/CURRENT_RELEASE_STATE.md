@@ -2,20 +2,58 @@
 
 Status: canonical
 Owner: backend release lead (Felipe)
-Last verified: 2026-05-18
+Last verified: 2026-05-21
 Update policy: update after backend deploy or staging change. Workspace-level entry point is docs/release/CURRENT_RELEASE_STATE.md.
 
-Last updated: 2026-05-18
+Last updated: 2026-05-21
 
 ## Active Production Release
 
 - Source branch: `main`
-- Production HEAD: `1587fc5d`
-- Production version: `4.14.171`
-- Source implementation commit: `0df40622`
+- Production HEAD: `ae4e1421`
+- Production version: `4.14.181`
+- Source implementation commit: `67287399`
+- Latest `origin/main`: `4b490d4a` (post-deploy deploy/pre-push
+  verification guard; not part of the running runtime bundle)
 - iOS Chat card-hiding source changes are pushed to iOS `main` at `e7cfc8b`;
   a separate signed iOS/TestFlight release is still required to reach devices.
 - Official workspace root: `/Users/felipedominguez/Desktop/Nexus Hub`
+
+## 2026-05-21 Nexus Points QA2 + Cloudflare Edge Foundation Promote
+
+- Scope: merged Nexus Points QA2 hardening, added Cloudflare AI-crawler
+  unblock/apply tooling plus `/public-status` verification, updated the
+  Cloudflare tunnel runbook, and hardened deploy transport so promotion smoke
+  and pre-push/deploy verification do not dirty tracked evidence files.
+- Production version: `4.14.181`.
+- Production deploy commit: `ae4e1421`.
+- Source implementation commits before deploy bump: Cloudflare edge tooling
+  `c04200c9`, Nexus Points QA2 merge `3ab03654`, staging smoke evidence
+  `dcf1e05a`, promotion smoke evidence `6bcf76f6`, and promotion-smoke
+  dirty-tree fix `67287399`.
+- Staging deploy passed, followed by staging smoke **17/17** at
+  `docs/release/smoke-evidence/staging-smoke-3ab03654-20260521T003146Z.json`;
+  promote-time staging smoke passed **17/17** again.
+- Release validation passed before and during promotion: full backend
+  `npm run verify` passed **632 test files / 9,407 tests** in the local,
+  deploy-time, and final pre-push gates; deploy-time build passed; production
+  env validation passed; owner bootstrap preflight passed; dependencies and
+  native modules rebuilt; production backup included `bot.db`; and production
+  PM2 showed both `nexus-hub` and `content-engine` online after restart.
+- Production health passed after deploy: `https://api.nexushub.me/health`
+  returned healthy, and `https://api.nexushub.me/public-status` returned only
+  `{ status, service, timestamp }`.
+- Important operational note: the first production promote attempt tripped the
+  new dirty-worktree deploy guard after full verification refreshed
+  `registry-shadow-parity-latest.json`; production PM2 services were restarted
+  immediately, then the deploy completed with `NEXUS_DEPLOY_ALLOW_DIRTY=1`
+  because the only dirty file was observational evidence. Commit `4b490d4a`
+  fixes that loop for future deploys.
+- Cloudflare edge unblock is still pending operator/API credentials. Live
+  `scripts/cloudflare-edge-verify.sh` still fails for Claude/Anthropic,
+  ChatGPT, and Perplexity user agents because this shell has no
+  `CLOUDFLARE_API_TOKEN` and Wrangler is not authenticated. The exact apply
+  command is `CLOUDFLARE_API_TOKEN=... scripts/cloudflare-edge-unblock.mjs --apply`.
 
 ## 2026-05-18 Beta Registry And Stripe Billing Promote
 

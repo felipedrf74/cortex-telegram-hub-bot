@@ -2,64 +2,68 @@
 
 Status: canonical
 Owner: release lead (Felipe)
-Last verified: 2026-05-18
+Last verified: 2026-05-21
 Update policy: update when the current RC identity, deploy-gate evidence, or canonical-doc cross-references change. Run engine/scripts/release-identity.sh --persist to refresh auto-generated identity fields.
 
-Date: 2026-05-18
+Date: 2026-05-21
 
 ## Current Status
 
 Active production package:
 
 - source branch: `main`
-- production HEAD: `1587fc5d` (version-bump for 4.14.171)
-- production version: `4.14.171`
-- runtime source commit: `0df40622` (`feat(beta): add double opt-in registry and Stripe checkout`)
-- latest `origin/main`: `e5b29a69` (release evidence after deploy)
+- production HEAD: `ae4e1421` (version-bump for 4.14.181)
+- production version: `4.14.181`
+- runtime source commit: `67287399` (`fix(deploy): keep promotion smoke from dirtying worktree`)
+- latest `origin/main`: `4b490d4a` (post-deploy deploy/pre-push read-only evidence guard)
 - release state: `docs/release/CURRENT_RELEASE_STATE.md` (backend) and `/Users/felipedominguez/Desktop/Nexus Hub/docs/release/CURRENT_RELEASE_STATE.md` (workspace)
 - official workspace root: `/Users/felipedominguez/Desktop/Nexus Hub`
 
-Commits in this release (4.14.170 -> 4.14.171):
+Commits in this release (4.14.173 -> 4.14.181):
 
-- `0df40622 feat(beta): add double opt-in registry and Stripe checkout`
-- `1587fc5d chore: bump version to 4.14.171 [deploy]`
+- `3ab03654 merge: nexus points qa2 hardening`
+- `c04200c9 chore(edge): add Cloudflare AI crawler unblock tooling`
+- `dcf1e05a docs(release): add staging smoke evidence for qa2 hardening`
+- `6bcf76f6 docs(release): add promotion smoke evidence`
+- `67287399 fix(deploy): keep promotion smoke from dirtying worktree`
+- `994fa7aa chore: bump version to 4.14.180 [deploy]`
+- `ae4e1421 chore: bump version to 4.14.181 [deploy]`
+- `4b490d4a fix(deploy): keep verification from dirtying parity evidence` (on `origin/main`; script/hook guard, not part of the running runtime bundle)
 
 Scope:
 
-- Double opt-in beta registry: normalized email, syntax/disposable/MX
-  validation, hashed expiring confirmation tokens, confirmed-only portal
-  approval, 30-day invite emails, DB invite redemption, and long-lived static
-  reviewer-code policy.
-- Billing launch foundation: public website checkout endpoint, authenticated
-  checkout endpoint hardening, server-side plan/currency to Stripe Price
-  mapping for Pro/Max monthly USD/BRL, webhook idempotency, unknown-price
-  fail-closed behavior, and verified-user claim flow for public checkout
-  ownership.
-- Email and logging hardening from hostile QA: transactional names and reset
-  URLs are escaped; raw names/emails/invite codes are not logged.
-- Static landing source and deploy folder are synced locally with real
-  waitlist fetch handling, pricing copy, and Cloudflare Pages `_headers`.
-  The live `nexushub.me` direct upload is still pending a
-  `CLOUDFLARE_API_TOKEN` in the deploy shell.
+- Nexus Points QA2 hardening: pricing fallback observability, legacy
+  `api_usage` pricing status/key handling, fallback overage settlement,
+  unresolved pricing alert pruning, refund-after-consumption operator alerts,
+  canonical Apple transaction keying, transfer helper, chat runtime assertions,
+  and deployment provenance guardrails.
+- Cloudflare edge unblock foundation: public `/public-status` API contract,
+  Cloudflare AI-crawler unblock/apply script, verifier script, and updated
+  tunnel runbook documenting the asymmetric marketing/API posture.
+- Release transport hardening: promotion smoke no longer dirties the tree, and
+  deploy/pre-push verification now suppresses tracked shadow-parity evidence
+  writes.
 
 Validated through promotion:
 
 - staging deploy: exit 0
-- five-minute staging soak: completed
-- staging smoke: 18 passed / 0 failed / 18 total
-- promote-time staging smoke: 18 passed / 0 failed / 18 total
+- staging smoke: 17 passed / 0 failed / 17 total
+- promote-time staging smoke: 17 passed / 0 failed / 17 total
+- full backend verify: 632 files / 9,407 tests (multiple deploy/pre-push runs)
 - deploy-time typecheck and build passed
-- full backend verify: 618 files / 9,172 tests
-- deploy-time pre-push full Vitest after version bump also passed
-- promote-to-prod.sh: `PROMOTE COMPLETE`
-- post-deploy: PM2 `nexus-hub` and `content-engine` online, production
-  snapshot reports `4.14.171`
+- deploy.sh production promote completed at `4.14.181`
+- post-deploy: PM2 `nexus-hub` and `content-engine` online; `/public-status`
+  returns the minimal public API payload
 - production `/health` (`api.nexushub.me/health`): healthy after deploy
-- still-open operator gate: Cloudflare Pages direct upload for
-  `https://nexushub.me` needs non-interactive Cloudflare credentials
+- still-open operator gate: Cloudflare dashboard/API mutation is pending
+  because this shell has no `CLOUDFLARE_API_TOKEN`; live verifier still shows
+  Cloudflare edge 403s for Claude/Anthropic/ChatGPT/Perplexity fetchers.
 
 ## Previous Production Versions On This Branch
 
+- 4.14.181 (`ae4e1421`) — Nexus Points QA2 hardening + Cloudflare edge unblock foundation + deploy guard fixes (source commits `3ab03654`, `c04200c9`, `67287399`)
+- 4.14.180 (`994fa7aa`) — aborted recovery bump before final successful deploy
+- 4.14.173 (`93ed02d0`) — Content Token Phase 2 + Training Skill Hardening production promote
 - 4.14.163 (`fbb2c607`) — split unauthenticated portal rate limits (source commit `a2587caa`)
 - 4.14.162 (`633d37a6`) — chat general action intelligence production promote (source commit `feb1b022`)
 - 4.14.161 (`38c0e071`) — chat general action intelligence local implementation bump (source commit `feb1b022`)

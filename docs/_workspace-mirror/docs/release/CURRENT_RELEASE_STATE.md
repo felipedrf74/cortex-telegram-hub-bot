@@ -2,10 +2,10 @@
 
 Status: canonical
 Owner: release lead (Felipe)
-Last verified: 2026-05-15
+Last verified: 2026-05-21
 Update policy: update after merge / staging / production / deploy-gate changes. Live identity (branch/commit/version/migrations) auto-generated via engine/scripts/release-identity.sh --persist; do not type those by hand.
 
-Last updated: 2026-05-15
+Last updated: 2026-05-21
 
 > **Live identity** — branch / commit / version / migration count for the
 > current working tree are auto-generated. Do NOT type those values by
@@ -17,7 +17,141 @@ Last updated: 2026-05-15
 
 - Repo: `engine`
 - Workspace HEAD / version / migrations / dirty state: see `docs/release/release-identity.md`
-- Production status (last manual update 2026-05-15): promoted via `./scripts/promote-to-prod.sh`, health-checked, both `nexus-hub` and `content-engine` PM2 processes online at version `4.14.164`.
+- Production status (last manual update 2026-05-21): backend package version
+  `4.14.181` is deployed from commit `ae4e1421`; both `nexus-hub` and
+  `content-engine` PM2 processes are online, production `/health` passed, and
+  `/public-status` returns the minimal public API payload. `origin/main` is
+  `4b490d4a`, which adds a post-deploy deploy/pre-push verification guard.
+  Workspace audit evidence lives at
+  `docs/release/worktree-recovery-audit-2026-05-18.md`.
+
+### 2026-05-21 Nexus Points QA2 + Cloudflare Edge Foundation Production Promote
+
+- Scope: merged Nexus Points QA2 hardening, added Cloudflare AI-crawler
+  unblock/apply tooling plus `/public-status` verification, updated the
+  Cloudflare tunnel runbook, and hardened deploy transport so promotion smoke
+  and pre-push/deploy verification do not dirty tracked evidence files.
+- Production version: `4.14.181`.
+- Production deploy commit: `ae4e1421`.
+- Latest backend `origin/main`: `4b490d4a`.
+- Source implementation commits before deploy bump: Cloudflare edge tooling
+  `c04200c9`, Nexus Points QA2 merge `3ab03654`, staging smoke evidence
+  `dcf1e05a`, promotion smoke evidence `6bcf76f6`, and promotion-smoke
+  dirty-tree fix `67287399`.
+- Staging deploy passed, followed by staging smoke **17/17** at
+  `engine/docs/release/smoke-evidence/staging-smoke-3ab03654-20260521T003146Z.json`;
+  promote-time staging smoke passed **17/17** again.
+- Release validation passed before and during promotion: full backend
+  `npm run verify` passed **632 test files / 9,407 tests** in the local,
+  deploy-time, and final pre-push gates; deploy-time build passed; production
+  env validation passed; owner bootstrap preflight passed; dependencies and
+  native modules rebuilt; production backup included `bot.db`; and production
+  PM2 showed both `nexus-hub` and `content-engine` online after restart.
+- Production health passed after deploy: `https://api.nexushub.me/health`
+  returned healthy, and `https://api.nexushub.me/public-status` returned only
+  `{ status, service, timestamp }`.
+- Important operational note: the first production promote attempt tripped the
+  new dirty-worktree deploy guard after full verification refreshed
+  `registry-shadow-parity-latest.json`; production PM2 services were restarted
+  immediately, then the deploy completed with `NEXUS_DEPLOY_ALLOW_DIRTY=1`
+  because the only dirty file was observational evidence. Commit `4b490d4a`
+  fixes that loop for future deploys.
+- Cloudflare edge unblock is still pending operator/API credentials. Live
+  `scripts/cloudflare-edge-verify.sh` still fails for Claude/Anthropic,
+  ChatGPT, and Perplexity user agents because this shell has no
+  `CLOUDFLARE_API_TOKEN` and Wrangler is not authenticated. The exact apply
+  command is
+  `CLOUDFLARE_API_TOKEN=... scripts/cloudflare-edge-unblock.mjs --apply`.
+
+### 2026-05-19 Content Token Phase 2 + Training Skill Hardening Production Promote
+
+- Scope: merged Content Token Reduction Phase 2 QA fixes with Training Skill
+  hardening, then promoted the combined backend release to production. Content
+  changes include safer non-script content-engine attribution, high-risk and
+  unsupported gating for book/report paths, reusable operation metadata
+  honesty fixes, and category-specific internal attribution. Training changes
+  include active-tenant coach briefing data scope with separate billing/metering
+  user scope, plus source-contract tests for the hardened Training generation
+  path.
+- Production version: `4.14.173`.
+- Production deploy commit: `93ed02d0`.
+- Source implementation commits before deploy bump: Content QA closeout
+  `454f8445`, Training hardening `25de4004`, merge `967bf3ee`, boundary fix
+  `e8232c69`, and registry evidence refresh `2b77fa45`.
+- Staging deploy passed, followed by staging smoke **17/17** on `2b77fa45` with
+  evidence written under
+  `engine/docs/release/smoke-evidence/staging-smoke-2b77fa45-20260519T090411Z.json`.
+  Promote-time staging smoke passed **17/17** again before production deploy.
+- Release validation passed before promotion: Training focused QA suite passed
+  **6 files / 105 tests**, broader Training suite passed **15 files / 230
+  tests**, combined Content + Training focused suite passed **11 files / 148
+  tests**, Python content-engine focused tests passed **132 tests**, security
+  suite passed **17 files / 87 tests**, and full backend `npm run verify` passed
+  **624 test files / 9,252 tests** locally.
+- A full verification run initially failed only on the service line-count
+  boundary for `src/services/content-engine.ts`; the service was trimmed below
+  the boundary without loosening the guard, the focused transport-boundary test
+  then passed, and the full verify passed afterward.
+- Production promote passed through `./scripts/promote-to-prod.sh`. Deploy-time
+  validation ran `npm run verify` again and passed **624 test files / 9,252
+  tests**, deploy-time build passed, production env validation passed, owner
+  bootstrap preflight passed, dependencies updated, native modules rebuilt, and
+  production PM2 showed both `nexus-hub` and `content-engine` online after
+  restart.
+- Production health passed after deploy: content-engine returned OK, status
+  portal responded at version `4.14.173`, the bot was online, and PM2 reported
+  both production services online.
+- Source was pushed to backend `main` after the deploy bump. The final
+  pre-push gate typechecked and ran full Vitest again with **624 test files /
+  9,252 tests** passing before pushing `93ed02d0` to `origin/main`.
+- Staging remains on `4.14.172` after the production auto-bump; this is the
+  deploy script's normal behavior after production version increments. The
+  promoted functional code was already smoke-tested on staging before the bump.
+
+### 2026-05-18 Beta Registry And Stripe Billing Production Promote
+
+- Scope: double opt-in beta registry, waitlist email validation, confirmed-only
+  portal approval, 30-day DB invite emails, DB invite redemption, long-lived
+  static reviewer-code expiry, expired beta-trial paywall handling, public
+  website Stripe Checkout routes, webhook idempotency, verified-user checkout
+  claim flow, and Pro/Max monthly USD/BRL Stripe price mapping.
+- Production version: `4.14.171`.
+- Production deploy commit: `1587fc5d`.
+- Source implementation commit before deploy bump: `0df40622`.
+- Staging deploy passed, followed by a five-minute soak and staging smoke
+  **18/18** at
+  `engine/docs/release/smoke-evidence/staging-smoke-0df40622-20260518T194456Z.json`;
+  promote-time staging smoke passed **18/18** again at
+  `engine/docs/release/smoke-evidence/staging-smoke-0df40622-20260518T194531Z.json`.
+- Deploy-time validation passed: backend `npm run verify` passed
+  **618 test files / 9,172 tests**, deploy-time build passed, production env
+  validation passed, production backup included `bot.db`, dependencies updated,
+  native modules rebuilt, owner bootstrap preflight passed, and production PM2
+  showed both `nexus-hub` and `content-engine` online after restart.
+- Production health passed after deploy: `https://api.nexushub.me/health`
+  returned `status: healthy`, `server.status: online`, and
+  `database: connected`.
+- Operator note: the Cloudflare Pages direct upload for `https://nexushub.me`
+  did not run in this shell because Wrangler has no non-interactive
+  `CLOUDFLARE_API_TOKEN`. The synced static files are present under
+  `/Users/felipedominguez/Desktop/nexushub-landing-deploy`.
+
+### 2026-05-18 Production Identity Reconciliation + Worktree Cleanup
+
+- Confirmed current backend production version by read-only SSH:
+  `4.14.170`.
+- Confirmed backend `origin/main` at `ee780102`, with production deploy
+  commit `65ed74f9` for `4.14.170` and docs/evidence commit `ee780102`
+  after the deploy.
+- Confirmed iOS `origin/main` at `e3908cc`.
+- Home Orchestration Focus is no longer only `in_worktree`; backend
+  Home Orchestration was promoted in `4.14.169`, and the workspace Feature
+  Delivery Ledger was updated to mark its rows `in_prod`.
+- The worktree recovery audit preserved dirty/unmerged work under
+  `docs/release/worktree-recovery-audit-2026-05-18/artifacts/`, then removed
+  only worktrees classified as `delete-safe` or already `prod-shipped`.
+- No local branches, remote branches, or production systems were deleted or
+  promoted during cleanup.
 
 ### 2026-05-15 Chat Hybrid Action Intelligence Hardened Production Promote
 
