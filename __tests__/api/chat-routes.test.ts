@@ -910,7 +910,9 @@ describe('Chat API routes', () => {
       involvedSkills: ['secretary_calendar'],
     });
     expect(messageRes.body.text).toContain('Google Calendar');
-    expect(messageRes.body.text).not.toMatch(/927|e-mails não lidos|unread|auth\.scope|chat\.skill_capability_registry|<b>|<\/b>|Resposta estruturada/i);
+    const forbiddenTokensRegex = /927|e-mails não lidos|unread|auth\.scope|chat\.skill_capability_registry|<b>|<\/b>|Resposta estruturada/i;
+    expect(messageRes.body.text).not.toMatch(forbiddenTokensRegex);
+    expect(messageRes.body.metadata?.chatReasoning?.userFacingSummary ?? '').not.toMatch(forbiddenTokensRegex);
     expect(mockRouteMessage).not.toHaveBeenCalled();
     expect(mockCompleteOneShotWithFallback).not.toHaveBeenCalled();
   });

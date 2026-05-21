@@ -73,6 +73,20 @@ echo ""
 # NEXUS_DEPLOY_SKIP_VERIFY in `.env` or shell config. The script itself
 # defaults to legacy behavior so accidental rollouts are safe.
 cd "$LOCAL_DIR"
+
+ensure_clean_deploy_tree() {
+  if [ "${NEXUS_DEPLOY_ALLOW_DIRTY:-0}" != "1" ]; then
+    if [ -n "$(git status --porcelain)" ]; then
+      echo "❌ Working tree has uncommitted changes. Refusing to deploy."
+      echo "   Either commit, stash, or set NEXUS_DEPLOY_ALLOW_DIRTY=1 to override."
+      echo "   Override is sometimes correct for hotfixes, but /api/snapshot"
+      echo "   GIT_COMMIT will not reflect the deployed code."
+      exit 1
+    fi
+  fi
+}
+
+ensure_clean_deploy_tree
 SKIP_MODE="${NEXUS_DEPLOY_SKIP_VERIFY:-0}"
 
 run_full_verify() {
@@ -302,6 +316,8 @@ ssh "$SERVER" '
 # ── 4. Sync files (excluding protected paths) ────────
 echo ""
 echo "📤 Syncing files to server..."
+
+ensure_clean_deploy_tree
 
 if command -v rsync &>/dev/null; then
   rsync -avz --delete \
