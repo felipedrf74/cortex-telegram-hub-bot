@@ -119,15 +119,26 @@ behind standard Cloudflare bot protection, with one minimal heartbeat
 
 Configure in **Cloudflare Dashboard → `nexushub.me` zone**:
 
-1. **Security → Bots → Bot Fight Mode**: set to "Bot Fight Mode" (basic), NOT
-   "Super Bot Fight Mode". The basic mode allows verified crawlers and most
-   well-behaved fetchers; SBFM challenges them and breaks AI discoverability.
-2. **Security → Settings → Browser Integrity Check**: **off** for this zone.
+1. **Security → Bots → AI Scrapers and Crawlers / AI Crawl Control**:
+   **disabled** for the marketing hostname. This is the setting that injects
+   Cloudflare Managed `robots.txt` content such as `# BEGIN Cloudflare Managed
+   content` and `Disallow: /` entries for ClaudeBot/GPTBot/PerplexityBot.
+   Nexus Hub's canonical `robots.txt` lives in `nexushub-landing-deploy` and
+   explicitly allows these crawlers.
+2. **Security → Bots → Managed robots.txt**: **off**. If Cloudflare prepends
+   managed robots content, AI fetchers may obey the Cloudflare block even when
+   the origin file allows them.
+3. **Security → Bots → Bot Fight Mode / Super Bot Fight Mode**: do not use
+   unskippable Bot Fight Mode for the marketing hostname. If the zone is on a
+   plan with Super Bot Fight Mode, keep it configurable and add a WAF Custom
+   Rule with the Skip action for AI crawler user agents on `nexushub.me` and
+   `www.nexushub.me`.
+4. **Security → Settings → Browser Integrity Check**: **off** for this zone.
    Marketing pages are static; the integrity check blocks legitimate fetchers
    without offering meaningful protection here.
-3. **Security → Settings → Security Level**: **Essentially Off** for this
+5. **Security → Settings → Security Level**: **Essentially Off** for this
    zone. Reserve higher security levels for `api.nexushub.me`.
-4. **Rules → Configuration Rules**: not required if zone-level settings above
+6. **Rules → Configuration Rules**: not required if zone-level settings above
    are applied. If the marketing site shares a zone with another surface that
    needs stricter protection, scope the relaxations with a Configuration Rule
    matched on `hostname equals nexushub.me`.
@@ -136,6 +147,39 @@ The `robots.txt`, `llms.txt`, and `_headers` files in the
 `nexushub-landing-deploy` repo encode the application-level posture
 (see the repo for the canonical files). Cloudflare-side settings above
 must not contradict them.
+
+As of 2026-05-21, `curl https://nexushub.me/robots.txt` returned
+Cloudflare Managed content rather than the local permissive file, and
+`ClaudeBot`, `Claude-Web`, `anthropic-ai`, `ChatGPT-User`, and
+`PerplexityBot` received Cloudflare `403` responses on `/`. Treat that as
+evidence that AI crawler protection and/or managed robots is still enabled.
+
+### Codified Apply And Verify Helpers
+
+The backend repo carries helper scripts so the Cloudflare edge posture can be
+reviewed and applied without hand-transcribing expressions from this runbook:
+
+```bash
+cd "/Users/felipedominguez/Desktop/Custom Connectors/Cortex/cortex-telegram-hub-bot"
+
+# Dry-run: prints the Bot Management settings and WAF rules without credentials.
+scripts/cloudflare-edge-unblock.mjs --include-staging
+
+# Apply: requires a Cloudflare API token with Zone:Read, Rulesets:Edit, and
+# Bot Management / Zone Settings edit permission for the nexushub.me zone.
+CLOUDFLARE_API_TOKEN=... scripts/cloudflare-edge-unblock.mjs --apply
+
+# Verify live behavior after Cloudflare propagation.
+scripts/cloudflare-edge-verify.sh
+```
+
+`scripts/cloudflare-edge-unblock.mjs` upserts rules by stable `ref`, preserves
+unrelated existing rules, disables Cloudflare Managed `robots.txt`, and disables
+AI crawler protection for the marketing site. `scripts/cloudflare-edge-verify.sh`
+is intentionally strict: it fails until AI fetchers can read `nexushub.me`,
+AI/monitor fetchers can read `api.nexushub.me/public-status`, `api.nexushub.me`
+`/health` stays protected for AI user-agents, and `robots.txt` is the local
+permissive file rather than Cloudflare Managed content.
 
 ### Backend API Configuration (`api.nexushub.me`)
 
@@ -160,13 +204,37 @@ Keep the default protective posture **except** for `/public-status`:
        (http.user_agent contains "UptimeRobot") or
        (http.user_agent contains "StatusCake")
      )
-   Action: Skip → All remaining custom rules, Super Bot Fight Mode,
-                  Browser Integrity Check, Zone Lockdown
+   Action: Skip → All remaining custom rules, All Super Bot Fight Mode rules,
+                  Browser Integrity Check, Security Level, Zone Lockdown
    ```
 
    Do **not** broaden this expression to other paths. The whole point of the
    `/public-status` endpoint is that it carries no sensitive payload — the
    allowlist is safe specifically because the path is scoped.
+
+   If `nexushub.me`, `api.nexushub.me`, and `portal.nexushub.me` live in the
+   same Cloudflare zone, keep the API strict with a companion custom rule placed
+   after the `/public-status` skip rule:
+
+   ```
+   Name: Block AI fetchers on API except public status
+   Expression:
+     (http.host in {"api.nexushub.me" "portal.nexushub.me"}) and
+     (http.request.uri.path ne "/public-status") and (
+       (http.user_agent contains "Claude") or
+       (http.user_agent contains "Anthropic") or
+       (http.user_agent contains "GPT") or
+       (http.user_agent contains "OpenAI") or
+       (http.user_agent contains "ChatGPT-User") or
+       (http.user_agent contains "Perplexity")
+     )
+   Action: Block
+   ```
+
+   Bot Fight Mode on the Free plan cannot be skipped by WAF rules. If the zone
+   only has unskippable Bot Fight Mode, disable it and use the explicit custom
+   rules above, or move to Super Bot Fight Mode where the Ruleset Engine Skip
+   action can bypass `http_request_sbfm` for the tiny `/public-status` scope.
 
    Optional staging validation: if `api-staging.nexushub.me` is intentionally
    routed in DNS, use the same expression with
