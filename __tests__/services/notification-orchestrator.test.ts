@@ -91,14 +91,15 @@ describe('Secretary Notification Orchestrator', () => {
     expect(result.decisionLog.decision).toBe('blocked_user_preferences');
   });
 
-  it('creates a concrete decision intent, center item, decision log, and mock delivery attempt', async () => {
+  it('keeps concrete but lower-rank decisions in-app instead of visible push', async () => {
     pushTokens = ['sandbox-token'];
     const result = await createNotificationIntent(buildSkillNotificationFixtureIntent('content', 1));
 
     expect(result.intent.sourceSkill).toBe('content');
     expect(result.item?.status).toBe('unread');
-    expect(result.decisionLog.decision).toBe('sent_push');
-    expect(result.deliveryAttempts[0].status).toBe('mock_sent');
+    expect(result.decisionLog.decision).toBe('in_app_only');
+    expect(result.decisionLog.reason).toContain('decision rank gate held visible push');
+    expect(result.deliveryAttempts).toHaveLength(0);
     expect(result.pushPayload?.body).toBe('Content item is ready for review.');
 
     const items = listNotificationCenterItems(1, 1);
@@ -489,6 +490,14 @@ describe('Secretary Notification Orchestrator', () => {
       collapseId: `decision:${decision.item!.itemId}`,
       badge: 1,
       threadId: 'decision-center',
+      category: 'DECISION_CLARIFICATION',
+      interruptionLevel: 'time-sensitive',
+      data: expect.objectContaining({
+        decisionId: decision.item!.itemId,
+        notificationUserId: 72,
+        userId: 72,
+        tenantId: 72,
+      }),
     }));
   });
 

@@ -359,6 +359,8 @@ interface DecisionRecord extends NotificationCenterItem {
   privacyPolicy: NotificationPrivacyPolicy;
   deliveryPolicy: string | null;
   snoozedUntil: string | null;
+  actionedAt: string | null;
+  decisionLogActionTaken: string | null;
   actionResult: Record<string, unknown> | null;
 }
 
@@ -714,8 +716,9 @@ function buildDecisionSummaryFromSections(
   const todayCount = openItems.filter((item) => item.urgency === 'urgent' || item.urgency === 'today').length;
   const top = openItems[0] ?? null;
   const locale = userDecisionContextDefaults(userId).locale;
+  const timezone = userDecisionContextDefaults(userId).timezone ?? 'UTC';
   const handledTodayCount = handled
-    .filter((item) => DateTime.fromISO(item.createdAt).hasSame(DateTime.utc(), 'day'))
+    .filter((item) => isTimestampInLocalDay(item.createdAt, timezone, DateTime.utc()))
     .length;
   const gamification = isDecisionStreakV1Enabled(process.env, { userId, tenantId })
     ? updateAndReadDecisionGamification(userId, tenantId, openItems.length)
@@ -976,15 +979,43 @@ function updateAndReadDecisionGamification(userId: number, tenantId: number, ope
 export function listHandledByNexusItems(userId: number, tenantId = userId, limit = 25): HandledByNexusItem[] {
   assertScope(userId, tenantId, 'list_handled_by_nexus_items', { limit });
   ensureDecisionCenterTables();
-  const rows = getDb().prepare(`
+  const boundedLimit = Math.min(Math.max(limit, 1), 100);
+  const explicitRows = getDb().prepare(`
     SELECT *
       FROM handled_by_nexus_items
      WHERE user_id = ?
        AND tenant_id = ?
      ORDER BY created_at DESC
      LIMIT ?
-  `).all(userId, tenantId, Math.min(Math.max(limit, 1), 100)) as any[];
-  return rows.map(mapHandledByNexusItem);
+  `).all(userId, tenantId, boundedLimit) as any[];
+  const explicitDecisionIds = new Set(
+    explicitRows
+      .map((row) => typeof row.decision_id === 'string' ? row.decision_id : null)
+      .filter((value): value is string => !!value),
+  );
+  const explicitItems = explicitRows.map(mapHandledByNexusItem);
+
+  const actionedRows = getDb().prepare(`
+    SELECT items.*, intents.related_entity_id, intents.related_entity_type, intents.requires_user_action,
+           intents.decision_deadline, intents.privacy_policy, intents.delivery_policy, intents.decision_context_json,
+           logs.action_taken AS decision_log_action_taken
+      FROM notification_center_items items
+      JOIN notification_intents intents ON intents.intent_id = items.intent_id
+      LEFT JOIN notification_decision_logs logs ON logs.decision_log_id = items.decision_log_id
+     WHERE items.user_id = ?
+       AND items.tenant_id = ?
+       AND items.status = 'actioned'
+     ORDER BY COALESCE(items.actioned_at, items.created_at) DESC
+     LIMIT ?
+  `).all(userId, tenantId, boundedLimit) as any[];
+  const actionedItems = actionedRows
+    .map(mapDecisionRecord)
+    .filter((record) => !explicitDecisionIds.has(record.itemId))
+    .map(mapActionedDecisionToHandledItem);
+
+  return [...explicitItems, ...actionedItems]
+    .sort((a, b) => timestampMillis(b.createdAt) - timestampMillis(a.createdAt))
+    .slice(0, boundedLimit);
 }
 
 export function addDecisionDependency(input: {
@@ -1278,6 +1309,7 @@ export async function performDecisionAction(
     markExecutionSucceeded(claimed.execution.action_execution_id, execution.expectedEffect, execution.actualEffect);
     const updated = getDecisionItem(decisionId, userId, tenantId);
     if (!updated) throw new DecisionActionError('DECISION_NOT_FOUND', 'Decision missing after action execution', 500);
+    recordVerifiedDecisionAction(record, action, actionId, execution);
     recordDecisionOutcome(record, {
       actionShown: action.id,
       actionTaken: actionId,
@@ -2262,6 +2294,8 @@ function mapDecisionRecord(row: any): DecisionRecord {
     privacyPolicy: row.privacy_policy ?? 'standard',
     deliveryPolicy: row.delivery_policy,
     snoozedUntil: row.snoozed_until ?? null,
+    actionedAt: row.actioned_at ?? null,
+    decisionLogActionTaken: row.decision_log_action_taken ?? null,
     actionResult: row.action_result_json ? safeParseJson(row.action_result_json, null) : null,
   };
 }
@@ -3135,6 +3169,64 @@ function recordHandledByNexus(record: DecisionRecord, input: {
   );
 }
 
+function recordVerifiedDecisionAction(
+  record: DecisionRecord,
+  action: NotificationActionButton,
+  actionId: string,
+  execution: {
+    actualEffect: Record<string, unknown>;
+    message: string;
+  },
+): void {
+  if (!MUTATING_ACTIONS.has(actionId)) return;
+  try {
+    recordHandledByNexus(record, {
+      actionTaken: actionId,
+      summary: execution.message || `${action.label} completed.`,
+      whyBrief: 'Nexus applied the approved action and verified the resulting state.',
+      rollbackAvailable: execution.actualEffect.rollbackAvailable === true,
+      changedRuleOption: stringOrNull(execution.actualEffect.changedRuleOption),
+    });
+  } catch (err) {
+    logger.warn({ err, decisionId: record.itemId, actionId, userId: record.userId, tenantId: record.tenantId }, 'Decision handled history write failed');
+  }
+}
+
+function mapActionedDecisionToHandledItem(record: DecisionRecord): HandledByNexusItem {
+  const logic = decisionLogicForRecord(record);
+  const actionTaken = record.decisionLogActionTaken
+    ?? stringOrNull(record.actionResult?.actionId)
+    ?? 'completed';
+  const actionLabel = record.actions.find((action) => action.id === actionTaken)?.label ?? humanizeActionId(actionTaken);
+  const outcome = outcomeSummaryForRecord({ ...record, status: 'actioned' }, logic);
+  const rollback = rollbackContractForRecord({ ...record, status: 'actioned' });
+  return {
+    itemId: `actioned_${record.itemId}`,
+    userId: record.userId,
+    tenantId: record.tenantId,
+    sourceSkill: record.sourceSkill,
+    title: logic.safePreviewTitle,
+    summary: outcome.outcomeSummary ?? `Nexus completed: ${actionLabel}.`,
+    actionTaken,
+    whyBrief: 'Nexus completed the requested action and read-back verified the result.',
+    relatedEntities: record.relatedEntityId && record.relatedEntityType
+      ? [{ type: record.relatedEntityType, id: record.relatedEntityId }]
+      : [],
+    rollbackAvailable: rollback.available,
+    changedRuleOption: null,
+    createdAt: record.actionedAt ?? record.createdAt,
+    privacyClassification: record.privacyPolicy,
+  };
+}
+
+function humanizeActionId(actionId: string): string {
+  return actionId
+    .split(/[_-]+/)
+    .filter(Boolean)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(' ') || 'Completed';
+}
+
 function recordDecisionOutcome(record: DecisionRecord, input: {
   actionShown?: string | null;
   actionTaken?: string | null;
@@ -3239,6 +3331,29 @@ function mapHandledByNexusItem(row: any): HandledByNexusItem {
     createdAt: row.created_at,
     privacyClassification: row.privacy_classification,
   };
+}
+
+function parseDecisionTimestamp(value: string): DateTime {
+  const trimmed = value.trim();
+  if (!trimmed) return DateTime.invalid('empty decision timestamp');
+  const normalized = trimmed.includes('T') ? trimmed : trimmed.replace(' ', 'T');
+  const hasExplicitZone = /(?:Z|[+-]\d{2}:?\d{2})$/i.test(normalized);
+  const iso = hasExplicitZone ? normalized : `${normalized}Z`;
+  const parsed = DateTime.fromISO(iso, { setZone: true });
+  if (parsed.isValid) return parsed.toUTC();
+  return DateTime.fromSQL(trimmed, { zone: 'utc' });
+}
+
+function timestampMillis(value: string): number {
+  const parsed = parseDecisionTimestamp(value);
+  return parsed.isValid ? parsed.toMillis() : 0;
+}
+
+function isTimestampInLocalDay(value: string, timezone: string, now: DateTime): boolean {
+  const zone = validateDecisionTimezone(timezone) ?? 'UTC';
+  const parsed = parseDecisionTimestamp(value);
+  if (!parsed.isValid) return false;
+  return parsed.setZone(zone).hasSame(now.setZone(zone), 'day');
 }
 
 function timeToActionMs(record: DecisionRecord): number | null {

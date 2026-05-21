@@ -522,6 +522,7 @@ describe('scheduler tenant scoping', () => {
       type: 'conflict_detected',
       priority: 'time_sensitive',
       privacyPolicy: 'sensitive',
+      decisionDeadline: expect.any(String),
     }));
     expect(mockCreateNotificationIntent).toHaveBeenCalledWith(expect.objectContaining({
       userId: 22,

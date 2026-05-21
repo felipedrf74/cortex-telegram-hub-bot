@@ -1279,6 +1279,7 @@ export function startScheduler(bot?: any): void {
           deeplink: 'nexus://secretary/conflict/daily',
           dedupeKey: `secretary:conflict_detection:${target.tenantId}:${startOfDay()}:${conflictSignature}`,
           requiresUserAction: true,
+          decisionDeadline: new Date(Date.now() + 3 * 3_600_000).toISOString(),
           quietHoursPolicy: 'allow_time_sensitive',
           privacyPolicy: 'sensitive',
         });

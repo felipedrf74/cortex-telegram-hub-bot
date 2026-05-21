@@ -50,6 +50,7 @@ import {
   getDecisionSummary,
   listDecisionDependencies,
   listDecisionItems,
+  listHandledByNexusItems,
   performDecisionAction,
   runDecisionSourceStateSupersessionJob,
   snoozeDecision,
@@ -580,12 +581,63 @@ describe('Decision Center facade', () => {
     expect(result.item.status).toBe('actioned');
     expect(result.item.outcomeSummary).toContain('content workflow');
     expect(result.verification.actualEffect.contentApprovalState).toBe('approved');
+    testDb.prepare(`UPDATE handled_by_nexus_items SET created_at = ? WHERE decision_id = ?`)
+      .run('2026-05-10T10:00:00.000Z', created.item!.decisionId);
+    const handled = listHandledByNexusItems(2, 2, 5);
+    expect(handled[0]).toMatchObject({
+      sourceSkill: 'content',
+      actionTaken: 'approve_script',
+      rollbackAvailable: false,
+      privacyClassification: 'private_content',
+    });
+    expect(getDecisionOverview(2, 2, { limit: 20, handledLimit: 5 }).summary.handledTodayCount).toBe(1);
 
     const duplicate = await performDecisionAction(created.item!.decisionId, 'approve_script', 2, 2, {
       idempotencyKey: 'tap-1',
     });
     expect(duplicate.idempotent).toBe(true);
     expect(duplicate.status).toBe('idempotent');
+  });
+
+  it('backfills handled history from already-actioned decisions when explicit handled rows are absent', async () => {
+    const { created } = await createContentApprovalDecision(24, 24, 'handled-backfill');
+    await performDecisionAction(created.item!.decisionId, 'approve_script', 24, 24, {
+      idempotencyKey: 'handled-backfill-approval',
+    });
+    testDb.prepare(`DELETE FROM handled_by_nexus_items WHERE decision_id = ?`).run(created.item!.decisionId);
+    testDb.prepare(`UPDATE notification_center_items SET actioned_at = ? WHERE item_id = ?`)
+      .run('2026-05-10T10:00:00.000Z', created.item!.decisionId);
+
+    const handled = listHandledByNexusItems(24, 24, 5);
+    expect(handled).toHaveLength(1);
+    expect(handled[0]).toMatchObject({
+      itemId: `actioned_${created.item!.decisionId}`,
+      actionTaken: 'approve_script',
+      sourceSkill: 'content',
+    });
+    const overview = getDecisionOverview(24, 24, { limit: 20, handledLimit: 5 });
+    expect(overview.handledCount).toBe(1);
+    expect(overview.summary.handledTodayCount).toBe(1);
+  });
+
+  it('counts handled-today by the user local day instead of UTC boundaries', () => {
+    ensureUserFixtureTable();
+    testDb.prepare(`
+      INSERT INTO users (id, telegram_id, first_name, language, timezone, status)
+      VALUES (86, 8600, 'Lisbon Owner', 'en-US', 'Europe/Lisbon', 'active')
+    `).run();
+    testDb.prepare(`
+      INSERT INTO handled_by_nexus_items (
+        handled_item_id, user_id, tenant_id, source_skill, title, summary,
+        action_taken, why_brief, privacy_classification, created_at
+      ) VALUES (
+        'hbn_lisbon_midnight', 86, 86, 'secretary', 'Schedule cleanup',
+        'Nexus resolved the stale conflict.', 'auto_dismiss_stale_decision',
+        'Source state changed.', 'sensitive', '2026-05-09T23:30:00.000Z'
+      )
+    `).run();
+
+    expect(getDecisionSummary(86, 86).handledTodayCount).toBe(1);
   });
 
   it('executes legacy content notification decisions through their workflow object data', async () => {

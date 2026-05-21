@@ -21,7 +21,9 @@ import { enqueueJob } from './background-job-queue';
 import { consumeResourceBudget } from './resource-budgets';
 import {
   buildDecisionLogicV2,
+  rankDecision,
   type DecisionLogicContext,
+  type DecisionLogicInput,
   type DecisionVisibilityScope,
 } from './decision-center-logic-v2';
 
@@ -230,7 +232,15 @@ export interface NotificationEvaluationResult {
     body: string;
     deeplink: string | null;
     actions: NotificationActionButton[];
+    interruptionLevel?: 'passive' | 'active' | 'time-sensitive';
   } | null;
+}
+
+interface DecisionPushPlan {
+  eligible: boolean;
+  reason: string;
+  priorityScore: number;
+  interruptionLevel: 'passive' | 'active' | 'time-sensitive';
 }
 
 export interface NotificationProfilePatch {
@@ -643,6 +653,11 @@ export async function evaluateNotificationIntent(
     actions: intent.actionButtons,
     interruptionLevel: interruptionLevelForPriority(effectivePriority),
   };
+  const effectiveIntent = { ...intent, priority: effectivePriority };
+  const decisionPushPlan = buildDecisionPushPlan(effectiveIntent, pushPayload);
+  if (decisionPushPlan?.eligible) {
+    pushPayload.interruptionLevel = decisionPushPlan.interruptionLevel;
+  }
 
   if (!profile.skillPreferences[intent.sourceSkill] || (!profile.inAppEnabled && !profile.portalEnabled && !profile.pushEnabled)) {
     const log = persistDecisionLog({
@@ -698,10 +713,9 @@ export async function evaluateNotificationIntent(
     decision = 'in_app_only';
     reason = intent.deliveryPolicy === 'in_app_only' ? 'delivery policy is in-app only' : 'push disabled by user preference';
   } else {
-    const decisionQuality = decisionPushQuality(intent, pushPayload);
-    if (decisionQuality && !decisionQuality.safeForAPNs) {
+    if (decisionPushPlan && !decisionPushPlan.eligible) {
       decision = 'in_app_only';
-      reason = `decision quality gate blocked visible push: ${decisionQuality.reason}`;
+      reason = decisionPushPlan.reason;
     } else if (!consumePushRateLimit(intent, effectivePriority)) {
       decision = 'in_app_only';
       reason = 'push rate limit reached for notification source; stored in-app only';
@@ -1476,6 +1490,9 @@ async function attemptPushDelivery(
       data: {
         notificationId,
         decisionId: isDecisionPush ? notificationId : undefined,
+        notificationUserId: intent.userId,
+        userId: intent.userId,
+        tenantId: intent.tenantId,
         intentId: intent.intentId,
         sourceSkill: intent.sourceSkill,
         type: intent.type,
@@ -1645,12 +1662,50 @@ function quietHoursDecision(
   return { delayed: false, scheduledFor: null, reason: 'no quiet hours delay' };
 }
 
-function decisionPushQuality(
+function buildDecisionPushPlan(
   intent: NotificationIntentRecord,
   payload: { title: string; body: string },
-): ReturnType<typeof buildDecisionLogicV2>['quality'] | null {
+): DecisionPushPlan | null {
   if (!isDecisionIntentForPush(intent)) return null;
-  return buildDecisionLogicV2({
+  const input = decisionLogicInputForIntent(intent, payload);
+  const logic = buildDecisionLogicV2(input);
+  const rank = rankDecision(input, logic, logic.quality);
+  const requiresConcreteReview = intent.requiresUserAction
+    || intent.type === 'security_account'
+    || intent.type === 'sync_failure';
+  const hasConcreteUserAction = requiresConcreteReview && intent.actionButtons.length > 0;
+  const hasSourceScope = hasDecisionSourceScope(intent);
+  const nearDeadline = deadlineSoon(input.deadlineAt ?? input.expiresAt ?? input.context?.deadlineAt ?? null);
+  const urgentEnough = rank.apnsEligible || (nearDeadline && intent.priority !== 'passive');
+  const eligible = logic.quality.safeForAPNs
+    && hasConcreteUserAction
+    && hasSourceScope
+    && urgentEnough;
+
+  let reason = `decision rank gate allowed visible push: priorityScore=${rank.priorityScore}`;
+  if (!logic.quality.safeForAPNs) {
+    reason = `decision quality gate blocked visible push: ${logic.quality.reason}`;
+  } else if (!hasConcreteUserAction) {
+    reason = 'decision rank gate blocked visible push: no concrete user action required';
+  } else if (!hasSourceScope) {
+    reason = 'decision rank gate blocked visible push: missing source scope';
+  } else if (!urgentEnough) {
+    reason = `decision rank gate held visible push: priorityScore=${rank.priorityScore}; no near deadline`;
+  }
+
+  return {
+    eligible,
+    reason,
+    priorityScore: rank.priorityScore,
+    interruptionLevel: interruptionLevelForPriority(intent.priority),
+  };
+}
+
+function decisionLogicInputForIntent(
+  intent: NotificationIntentRecord,
+  payload: { body: string },
+): DecisionLogicInput {
+  return {
     sourceSkill: intent.sourceSkill,
     type: intent.type,
     priority: intent.priority,
@@ -1670,7 +1725,13 @@ function decisionPushQuality(
         ? 'sync failure can be scoped to provider state rather than one entity'
         : null),
     },
-  }).quality;
+  };
+}
+
+function hasDecisionSourceScope(intent: NotificationIntentRecord): boolean {
+  if (intent.relatedEntityId && intent.relatedEntityType) return true;
+  if (intent.decisionContext?.explicitNoRelatedEntityReason) return true;
+  return intent.type === 'sync_failure' || intent.type === 'security_account';
 }
 
 function buildPrivacySafeBody(intent: NotificationIntentRecord): string {
