@@ -20,6 +20,8 @@ export interface ModelPricing {
   cacheReadUsdPerMillion?: number;
   cacheWriteUsdPerMillion?: number;
   batchDiscount?: number;
+  // Deliberately unset today. Enabling suffix inheritance is a quota-cost
+  // decision and requires review per docs/MODEL-REVIEW-PROCESS.md.
   acceptVariantSuffix?: boolean;
 }
 
@@ -77,11 +79,14 @@ const MODEL_PRICING: ModelPricing[] = [
 ];
 
 const UNRESOLVED_MODEL_SENTINEL_PRICING = {
+  // Deliberate Sonnet-class ceiling, not Opus-class. Unknown models still
+  // trigger first-call operator alerts; Opus models must be registered exactly.
   inputUsdPerMillion: 3.00,
   outputUsdPerMillion: 15.00,
 };
 
 const unresolvedPricingAlertDedupe = new Set<string>();
+let unresolvedAlertCallCount = 0;
 let recordOperatorAlertOverride: typeof import('./operator-alerts').recordOperatorAlert | null = null;
 
 function getRecordOperatorAlert(): typeof import('./operator-alerts').recordOperatorAlert {
@@ -171,6 +176,9 @@ export function recordUnresolvedModelPricingAlert(input: {
   category?: string | null;
   userId?: number | null;
 }): void {
+  if (++unresolvedAlertCallCount % 100 === 0) {
+    pruneStaleUnresolvedPricingAlertDedupeKeys();
+  }
   const provider = String(input.provider || 'unknown').trim().toLowerCase() || 'unknown';
   const model = String(input.model || 'unknown').trim() || 'unknown';
   const hour = new Date().toISOString().slice(0, 13);
@@ -215,8 +223,19 @@ export function recordUnresolvedModelPricingAlert(input: {
   }
 }
 
+function pruneStaleUnresolvedPricingAlertDedupeKeys(): void {
+  const cutoffHour = new Date(Date.now() - 6 * 60 * 60 * 1000).toISOString().slice(0, 13);
+  for (const key of unresolvedPricingAlertDedupe) {
+    const hour = key.split(':').at(-1);
+    if (hour && hour < cutoffHour) {
+      unresolvedPricingAlertDedupe.delete(key);
+    }
+  }
+}
+
 export function _resetModelPricingAlertDedupeForTests(): void {
   unresolvedPricingAlertDedupe.clear();
+  unresolvedAlertCallCount = 0;
 }
 
 export function _setRecordOperatorAlertForTests(

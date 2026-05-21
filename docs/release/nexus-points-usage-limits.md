@@ -125,7 +125,7 @@ Notes:
 
 ## Claude QA Pass 2 Review
 
-Status: pass with issues. Follow-up work in progress on top of `48b0769a`.
+Status: pass with issues; P2/P3 follow-up hardening closed on `codex/nexus-points-qa2-hardening`.
 
 Findings and action:
 
@@ -146,18 +146,40 @@ Known remaining risk:
 
 - `channel-learner` synthesis still accepts only `userId` and treats the default tenant as `tenantId=userId`; non-default tenant synthesis is deliberately skipped until that function accepts an explicit tenant scope.
 
+Pass 2 follow-up closure:
+
+| ID | Status | Evidence / files | Summary |
+| --- | --- | --- | --- |
+| P2-1 | Closed | `src/portal/cost-breakdown.ts`, `src/portal/provider-routes.ts`, `src/portal/portal.html`, `src/tools/model-pricing-report.ts` | Portal cost breakdown and `model-pricing-report --unresolved-only` now surface unresolved/legacy pricing spend. |
+| P2-2 | Closed | `src/services/api-usage-fallback.ts`, providers, internal route | Schema-aware fallback usage inserts mark rows `pricing_status='legacy'` when pricing columns exist. |
+| P2-3 | Closed | `src/services/openai-provider.ts`, `__tests__/services/openai-provider.test.ts` | OpenAI non-stream and stream paths settle Nexus Points after fallback inserts and swallow settlement errors with warnings. |
+| P2-4 | Closed | `src/services/model-pricing.ts` | `acceptVariantSuffix` remains explicit opt-in with review guidance. |
+| P2-5 | Closed | `src/services/model-pricing.ts` | Sentinel pricing documents the deliberate Sonnet-class ceiling. |
+| P2-6 | Closed | `src/services/stripe-service.ts`, Apple notification tests | Refund/revoke after >50% Nexus Points consumption creates an operator warning. |
+| P2-7 | Closed | `src/api/routes/billing.ts`, migration `152` | New Apple point grants key by `originalTransactionId`; migration backfills rows that stored canonical ids in metadata. |
+| P2-8 | Closed | `src/services/nexus-points.ts`, ledger tests | Added audited `transferNexusPointsCredits()` helper for future account merges. |
+| P2-9 | Closed | `src/api/routes/chat-message-routes.ts` | Slash fast-path reads are documented as intentionally behind the quota gate for now. |
+| P2-10 | Closed | `src/services/openai-provider.ts`, OpenAI provider tests | Streaming usage now requires a positive `userId`; no `user_id=0` sentinel for streams. |
+| P2-11 | Closed | `src/services/model-pricing.ts` | Unresolved-pricing alert dedupe set prunes stale hourly keys. |
+| P2-12 | Closed | `__tests__/api/chat-routes.test.ts` | Defense-in-depth assertion covers both response text and `metadata.chatReasoning.userFacingSummary`. |
+| P3-1 | Closed | `docs/release/smoke-evidence/README.md` | Smoke evidence filename SHA convention is documented. |
+| P3-2 | Closed | `scripts/deploy.sh` | Production deploy refuses dirty worktrees unless `NEXUS_DEPLOY_ALLOW_DIRTY=1` is explicitly set. |
+
 Follow-up verification:
 
 - `npx tsc --noEmit` passed.
-- Focused billing/chat/provider suite passed: 14 files / 280 tests.
-- `npm run verify` passed: 612 files / 9067 tests.
-- `STAGING=true npx tsx src/tools/chat-model-bakeoff.ts` passed with 109 fixtures / 218 bilingual turns.
+- Focused billing/chat/provider suite passed: 14 files / 318 tests.
+- `npm run verify` passed: 632 files / 9,407 tests.
+- Post-lint targeted regression passed: `npx vitest run __tests__/security/billing-apple-notifications-jws-verify.test.ts __tests__/api/billing-routes.test.ts __tests__/services/openai-provider.test.ts __tests__/services/nexus-points.test.ts` -> 4 files / 76 tests.
+- `npx tsx src/tools/model-pricing-report.ts --unresolved-only` passed against the local no-DB path.
 - `npx tsx src/tools/model-pricing-report.ts` passed against the local no-DB path; it emitted an empty usage report with all registry rows listed as unused.
-- `npx tsx scripts/chat-cost-scenarios.ts` passed against the local no-DB path; it emitted a zero-row scenario report because `data/bot.db` is intentionally absent in this worktree.
-- Clean staging deploy from `0b5a7989` passed, then `./scripts/staging-smoke.sh` passed 21/21 checks and wrote `docs/release/smoke-evidence/staging-smoke-0b5a7989-20260520T102027Z.json`.
-- Clean promote-to-prod from `cfe7799d` passed, including its staging smoke gate (21/21 checks, evidence `docs/release/smoke-evidence/staging-smoke-cfe7799d-20260520T102119Z.json`), full `npm run verify` preflight (612 files / 9067 tests), production deploy, and post-deploy health check.
-- Production is running `v4.14.171` from deploy/version commit `c0de6eda`; `curl https://api.nexushub.me/health` returned HTTP 200 with `status=healthy` and `database=connected`.
-- This docs-only evidence entry was recorded after the clean production promotion; the runtime artifact remains `c0de6eda`.
+- `bash -n scripts/deploy.sh scripts/staging-smoke.sh` passed.
+- `bash scripts/changed-area-classifier.sh --json --files migrations/152_nexus_points_canonical_tx_id.sql` passed without a migration collision.
+- `bash scripts/cannot-skip-gate-dashboard.sh --json --no-evidence` passed: 35/35 gates.
+- `node scripts/vi-mock-completeness-lint.mjs --strict` passed against the existing strict baseline of 898 partial mocks.
+- `npm run docs:audit` completed with the pre-existing docs warning backlog; no new scattered docs were introduced outside the approved release/smoke-evidence locations.
+- `./scripts/deploy.sh --dry-run` correctly refused this dirty worktree with the new provenance guard.
+- Staging deploy, staging smoke, and production promotion were intentionally not run in this follow-up branch until the implementation is committed and Felipe approves promotion from the clean commit lineage.
 
 ## Pass 3: Stripe Nexus Points Addition
 

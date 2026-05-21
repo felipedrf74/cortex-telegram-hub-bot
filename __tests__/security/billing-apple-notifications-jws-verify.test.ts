@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 let testDb: Database.Database;
 const mockCaptureMessage = vi.fn();
+const mockRecordOperatorAlert = vi.fn();
 
 vi.mock('../../src/services/database', () => ({
   getDb: () => testDb,
@@ -22,6 +23,25 @@ vi.mock('../../src/services/error-tracker', () => ({
   captureException: vi.fn(),
   captureMessage: (...args: unknown[]) => mockCaptureMessage(...args),
   flush: vi.fn(async () => undefined),
+}));
+
+vi.mock('../../src/services/operator-alerts', () => ({
+  recordOperatorAlert: (...args: unknown[]) => mockRecordOperatorAlert(...args),
+  listOperatorAlerts: vi.fn(() => []),
+  acknowledgeOperatorAlert: vi.fn(() => true),
+  resolveOperatorAlert: vi.fn(() => true),
+  retryOperatorAlertDelivery: vi.fn(() => true),
+  deliverOperatorAlert: vi.fn(async () => ({ ok: true, status: 'not_configured' })),
+  processDueOperatorAlertDeliveries: vi.fn(async () => []),
+  getOperatorAlertDeliverySummary: vi.fn(() => ({
+    pending: 0,
+    delivered: 0,
+    failed: 0,
+    dead_letter: 0,
+    not_configured: 0,
+  })),
+  _setOperatorAlertDeliverySenderForTests: vi.fn(),
+  _setOperatorAlertDeliveryConfigForTests: vi.fn(),
 }));
 
 vi.mock('../../src/utils/logger', () => ({
@@ -193,6 +213,7 @@ describe('Apple App Store Server Notifications JWS verification', () => {
       );
     `);
     mockCaptureMessage.mockReset();
+    mockRecordOperatorAlert.mockReset();
   });
 
   afterEach(() => {
@@ -299,5 +320,40 @@ describe('Apple App Store Server Notifications JWS verification', () => {
       points_remaining: 0,
       usd_allowance_remaining: 0,
     });
+  });
+
+  it('alerts operators when an Apple Nexus Points refund arrives after high consumption', async () => {
+    testDb.prepare(`
+      INSERT INTO nexus_point_credits (
+        user_id, source, provider, product_id, provider_transaction_id,
+        points_granted, points_remaining, usd_allowance_granted,
+        usd_allowance_remaining, purchased_at, expires_at, status
+      ) VALUES (
+        31, 'apple_iap', 'apple', 'me.nexushub.points.small', '2000000123456800',
+        300, 90, 0.30, 0.09, datetime('now'), '2026-06-19T12:00:00.000Z', 'active'
+      )
+    `).run();
+    const inner = signJws({
+      bundleId: 'me.nexushub.app',
+      productId: 'me.nexushub.points.small',
+      transactionId: '2000000123456800',
+      originalTransactionId: '2000000123456800',
+    });
+
+    const response = await postAppleNotification(appleNotification('REFUND', inner));
+
+    expect(response).toEqual({ status: 200, body: { handled: true } });
+    expect(mockRecordOperatorAlert).toHaveBeenCalledWith(expect.objectContaining({
+      source: 'nexus_points',
+      severity: 'warning',
+      dedupeKey: expect.stringContaining('nexus_points_high_consumption_refund:31:'),
+      title: 'Nexus Points refund after 70% consumption',
+      metadata: expect.objectContaining({
+        userId: 31,
+        pointsGranted: 300,
+        pointsRemaining: 90,
+        productId: 'me.nexushub.points.small',
+      }),
+    }));
   });
 });

@@ -381,9 +381,13 @@ export function billingRoutes(): Router {
         const grant = grantNexusPoints({
           userId,
           provider: 'apple',
-          providerTransactionId: String(transactionId),
+          providerTransactionId: String(originalTransactionId),
           productId,
           source: 'apple_iap',
+          metadata: {
+            transactionId: String(transactionId),
+            originalTransactionId: String(originalTransactionId),
+          },
         });
         logger.info({
           userId,

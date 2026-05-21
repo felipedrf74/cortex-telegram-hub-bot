@@ -335,6 +335,10 @@ describe('billing routes', () => {
       providerTransactionId: '2000000123456790',
       productId: 'me.nexushub.points.small',
       source: 'apple_iap',
+      metadata: {
+        transactionId: '2000000123456790',
+        originalTransactionId: '2000000123456790',
+      },
     });
     expect(res.body.data).toMatchObject({
       pointsPurchaseAvailable: true,

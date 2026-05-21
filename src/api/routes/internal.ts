@@ -35,6 +35,7 @@ import { getEffectiveDomainModel } from '../../services/model-config';
 import { completeOneShotWithFallback } from '../../services/gemini-provider';
 import { verifyInternalAttributionToken } from '../../services/internal-attribution';
 import { computeModelUsageCostUsd, recordUnresolvedModelPricingAlert } from '../../services/model-pricing';
+import { insertApiUsageFallback } from '../../services/api-usage-fallback';
 
 function resolveInternalAiTimeoutMs(category: string, maxTokens: number): number | undefined {
   const normalized = String(category || '').toLowerCase();
@@ -134,29 +135,32 @@ export function internalRoutes(): Router {
       try {
         getDb().prepare(`
           INSERT INTO api_usage
-            (category, model, user_id, input_tokens, output_tokens,
+            (category, model, tenant_id, user_id, input_tokens, output_tokens,
              cache_read_tokens, cache_write_tokens, cost_usd, duration_ms,
              provider, pricing_status, pricing_model_key)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'anthropic', ?, ?)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'anthropic', ?, ?)
         `).run(
-          category, model, scopedUserId,
+          category, model, scopedTenantId, scopedUserId,
           inputTokens, outputTokens,
           cacheReadTokens, cacheWriteTokens,
           cost, durationMs ?? 0,
           pricingStatus, priced.pricingModelKey,
         );
       } catch {
-        getDb().prepare(`
-          INSERT INTO api_usage
-            (category, model, user_id, input_tokens, output_tokens,
-             cache_read_tokens, cache_write_tokens, cost_usd, duration_ms)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-        `).run(
-          category, model, scopedUserId,
-          inputTokens, outputTokens,
-          cacheReadTokens, cacheWriteTokens,
-          cost, durationMs ?? 0,
-        );
+        insertApiUsageFallback(getDb(), {
+          category,
+          model,
+          provider: 'anthropic',
+          tenantId: scopedTenantId,
+          userId: scopedUserId,
+          inputTokens,
+          outputTokens,
+          cacheReadTokens,
+          cacheWriteTokens,
+          costUsd: cost,
+          durationMs: durationMs ?? 0,
+          pricingStatus: 'legacy',
+        });
       }
 
       // Write to usage_metering aggregate. Signed attribution preserves the

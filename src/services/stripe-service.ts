@@ -18,6 +18,7 @@ import { isPublicEmailSyntaxValid, normalizePublicEmail } from './waitlist-email
 import { hashEmail } from '../utils/identity';
 import { logger } from '../utils/logger';
 import { isNexusPointProductId, revokeNexusPointsCredit } from './nexus-points';
+import { recordOperatorAlert } from './operator-alerts';
 
 // Stripe v17+ uses a different export shape. The namespace for types
 // is accessed via the default export's type definitions.
@@ -671,7 +672,7 @@ export function handleAppleNotification(
       return false;
     }
 
-    const attempts = Array.from(new Set([String(transactionId), String(originalTransactionId)]));
+    const attempts = Array.from(new Set([String(originalTransactionId), String(transactionId)]));
     for (const providerTransactionId of attempts) {
       const result = revokeNexusPointsCredit({
         provider: 'apple',
@@ -679,6 +680,28 @@ export function handleAppleNotification(
         status: pointStatus,
       });
       if (result.revoked) {
+        const consumedRatio = typeof result.pointsGranted === 'number' && result.pointsGranted > 0
+          ? (result.pointsGranted - (result.pointsRemaining ?? 0)) / result.pointsGranted
+          : 0;
+        if (consumedRatio > 0.5) {
+          recordOperatorAlert({
+            source: 'nexus_points',
+            severity: 'warning',
+            dedupeKey: `nexus_points_high_consumption_refund:${result.userId ?? 'unknown'}:${result.creditId}`,
+            title: `Nexus Points refund after ${Math.round(consumedRatio * 100)}% consumption`,
+            detail: `Apple ${notificationType} arrived after ${Math.round(consumedRatio * 100)}% of purchased Nexus Points were consumed.`,
+            metadata: {
+              userId: result.userId ?? null,
+              creditId: result.creditId,
+              pointsGranted: result.pointsGranted ?? null,
+              pointsRemaining: result.pointsRemaining ?? null,
+              productId: result.productId ?? String(payload.productId),
+            },
+            owner: 'ops',
+            suspectedArea: 'billing',
+            userImpact: 'Potential Apple refund or chargeback after most purchased AI credits were consumed.',
+          });
+        }
         logger.warn({
           notificationType,
           productId: payload.productId,

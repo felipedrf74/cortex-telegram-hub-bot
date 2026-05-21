@@ -4,6 +4,7 @@ import { getDb } from './database';
 import { logger } from '../utils/logger';
 import { getEffectiveDailyCostLimitUsd, resolveBillingPlanForUser } from './plan-quotas';
 import { getActiveUserAiBudgetOverride } from './ai-budget-overrides';
+import { logAudit } from './audit-trail';
 
 export const NEXUS_POINT_USD_ALLOWANCE = 0.001;
 export const NEXUS_POINT_EXPIRY_DAYS = 30;
@@ -81,6 +82,10 @@ export interface RevokeNexusPointsResult {
   revoked: boolean;
   creditId: number | null;
   previousStatus: string | null;
+  userId?: number;
+  productId?: string;
+  pointsGranted?: number;
+  pointsRemaining?: number;
 }
 
 export interface NexusPointCreditLookup {
@@ -90,7 +95,9 @@ export interface NexusPointCreditLookup {
   providerTransactionId: string;
   status: string;
   productId: string;
+  pointsGranted: number;
   pointsRemaining: number;
+  usdAllowanceGranted: number;
   usdAllowanceRemaining: number;
   metadata: Record<string, unknown> | null;
 }
@@ -157,7 +164,8 @@ export function lookupNexusPointCreditByProviderTransaction(
   if (!providerKey || !transactionId) return null;
   const row = getDb().prepare(`
     SELECT id, user_id, provider, provider_transaction_id, status, product_id,
-           points_remaining, usd_allowance_remaining, metadata_json
+           points_granted, points_remaining, usd_allowance_granted,
+           usd_allowance_remaining, metadata_json
     FROM nexus_point_credits
     WHERE provider = ? AND provider_transaction_id = ?
     LIMIT 1
@@ -170,7 +178,9 @@ export function lookupNexusPointCreditByProviderTransaction(
     providerTransactionId: String(row.provider_transaction_id),
     status: String(row.status),
     productId: String(row.product_id),
+    pointsGranted: Number(row.points_granted || 0),
     pointsRemaining: Number(row.points_remaining || 0),
+    usdAllowanceGranted: Number(row.usd_allowance_granted || 0),
     usdAllowanceRemaining: Number(row.usd_allowance_remaining || 0),
     metadata: parseCreditMetadata(row.metadata_json),
   };
@@ -188,14 +198,29 @@ export function revokeNexusPointsCredit(input: {
   }
   const db = getDb();
   const row = db.prepare(`
-    SELECT id, status
+    SELECT id, status, user_id, product_id, points_granted, points_remaining
     FROM nexus_point_credits
     WHERE provider = ? AND provider_transaction_id = ?
     LIMIT 1
-  `).get(provider, providerTransactionId) as { id: number; status: string } | undefined;
+  `).get(provider, providerTransactionId) as {
+    id: number;
+    status: string;
+    user_id: number;
+    product_id: string;
+    points_granted: number;
+    points_remaining: number;
+  } | undefined;
   if (!row) return { revoked: false, creditId: null, previousStatus: null };
   if (row.status === input.status) {
-    return { revoked: false, creditId: row.id, previousStatus: row.status };
+    return {
+      revoked: false,
+      creditId: row.id,
+      previousStatus: row.status,
+      userId: Number(row.user_id),
+      productId: String(row.product_id),
+      pointsGranted: Number(row.points_granted || 0),
+      pointsRemaining: Number(row.points_remaining || 0),
+    };
   }
 
   db.prepare(`
@@ -207,7 +232,15 @@ export function revokeNexusPointsCredit(input: {
     WHERE id = ?
   `).run(input.status, row.id);
 
-  return { revoked: true, creditId: row.id, previousStatus: row.status };
+  return {
+    revoked: true,
+    creditId: row.id,
+    previousStatus: row.status,
+    userId: Number(row.user_id),
+    productId: String(row.product_id),
+    pointsGranted: Number(row.points_granted || 0),
+    pointsRemaining: Number(row.points_remaining || 0),
+  };
 }
 
 export function getNexusPointBalance(userId: number, now = new Date()): NexusPointBalance {
@@ -263,6 +296,57 @@ export function debitNexusPoints(
   }
   const db = getDb();
   const tx = db.transaction(() => debitNexusPointsCore(db, userId, usdCost, metadata));
+  return tx();
+}
+
+export function transferNexusPointsCredits(input: {
+  fromUserId: number;
+  toUserId: number;
+  auditReason: string;
+  actorId: number;
+}): { creditsTransferred: number; debitsTransferred: number } {
+  const fromUserId = Number(input.fromUserId);
+  const toUserId = Number(input.toUserId);
+  const actorId = Number(input.actorId);
+  const auditReason = String(input.auditReason || '').trim();
+  if (!Number.isFinite(fromUserId) || fromUserId <= 0) throw new Error('fromUserId must be a positive user id');
+  if (!Number.isFinite(toUserId) || toUserId <= 0) throw new Error('toUserId must be a positive user id');
+  if (!Number.isFinite(actorId) || actorId <= 0) throw new Error('actorId must be a positive user id');
+  if (fromUserId === toUserId) throw new Error('fromUserId and toUserId must differ');
+  if (!auditReason) throw new Error('auditReason is required');
+
+  const db = getDb();
+  const tx = db.transaction(() => {
+    const creditsTransferred = db.prepare(`
+      UPDATE nexus_point_credits
+      SET user_id = ?, updated_at = datetime('now')
+      WHERE user_id = ?
+    `).run(toUserId, fromUserId).changes;
+    const debitsTransferred = db.prepare(`
+      UPDATE nexus_point_debits
+      SET user_id = ?
+      WHERE user_id = ?
+    `).run(toUserId, fromUserId).changes;
+
+    if (creditsTransferred > 0 || debitsTransferred > 0) {
+      logAudit({
+        userId: toUserId,
+        tenantId: toUserId,
+        actorId,
+        action: 'nexus_points.transfer',
+        resource: 'nexus_points',
+        details: {
+          fromUserId,
+          toUserId,
+          auditReason,
+          creditsTransferred,
+          debitsTransferred,
+        },
+      });
+    }
+
+    return { creditsTransferred, debitsTransferred };
+  });
   return tx();
 }
 

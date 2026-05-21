@@ -859,6 +859,8 @@ export function registerChatMessageRoutes(
       // ── Token-zero fast-path ─────────────────────────────────────
       // Slash commands like /todo, /day, /overdue are pure data lookups.
       // Handle them directly without ever touching the AI pipeline.
+      // They intentionally remain behind the quota gate above until product
+      // explicitly approves them as cap-bypass reads.
       // This is the difference between an instant ~200ms response and a
       // 30-50 second Claude tool-use loop. See specs/08-TOKEN-ZERO-ARCHITECTURE.md.
       const fastPath = await tryBuildFastPathChatResponse(normalizedText, normalizedTextLower, userId, tenantId);

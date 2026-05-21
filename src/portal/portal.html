@@ -1788,6 +1788,7 @@ table.legacy th {
             <button class="btn-sm" id="cost-range-30" onclick="loadCostByDomain(30)">30d</button>
           </div>
           <div id="cost-provider-split" style="flex:1;display:flex;gap:var(--space-3);font-size:11px;font-family:var(--font-mono)"></div>
+          <div id="cost-pricing-status" style="font-size:11px;font-family:var(--font-mono);color:var(--text-tertiary)"></div>
           <canvas id="cost-sparkline" width="180" height="32" style="opacity:0.9"></canvas>
         </div>
 
@@ -4423,6 +4424,18 @@ table.legacy th {
             ' <span class="text-tertiary">(' + (p.percentOfCost || 0).toFixed(1) + '%)</span>' +
             '</span>';
         }).join('');
+      }
+
+      const pricingEl = document.getElementById('cost-pricing-status');
+      if (pricingEl) {
+        const statuses = d.pricingStatus || [];
+        const unresolved = statuses.find(p => p.pricingStatus === 'unresolved');
+        const legacy = statuses.find(p => p.pricingStatus === 'legacy');
+        const unresolvedSpend = unresolved ? unresolved.unresolvedSpendUsd || 0 : 0;
+        const legacyRows = legacy ? legacy.rows || 0 : 0;
+        pricingEl.textContent = unresolvedSpend > 0
+          ? 'unresolved pricing $' + unresolvedSpend.toFixed(4)
+          : (legacyRows > 0 ? 'legacy pricing rows ' + legacyRows : 'pricing resolved');
       }
 
       // ── Sparkline ─────────────────────────────────────────────

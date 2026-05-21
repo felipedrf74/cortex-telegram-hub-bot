@@ -1,6 +1,7 @@
 // Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
 
 import { describe, it, expect, vi } from 'vitest';
+import Database from 'better-sqlite3';
 
 const mockRecordOperatorAlert = vi.fn();
 
@@ -33,6 +34,7 @@ import {
   recordUnresolvedModelPricingAlert,
   resolveModelPricing,
 } from '../../src/services/model-pricing';
+import { insertApiUsageFallback } from '../../src/services/api-usage-fallback';
 
 describe('Cost Validation — Gemini Model Pricing', () => {
   function computeCost(model: string, inputTokens: number, outputTokens: number): number {
@@ -148,6 +150,57 @@ describe('Cost Validation — Model Options', () => {
     expect(expectedGeminiChat).not.toContain('gemini-2.0-flash');
     expect(expectedGeminiChat).not.toContain('gemini-1.5-pro');
     expect(expectedOpenAIChat).not.toContain('gpt-4o');
+  });
+});
+
+describe('Cost Validation — api_usage fallback writes', () => {
+  it('marks fallback rows as legacy when pricing columns exist', () => {
+    const db = new Database(':memory:');
+    try {
+      db.exec(`
+        CREATE TABLE api_usage (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          category TEXT NOT NULL,
+          model TEXT NOT NULL,
+          tenant_id INTEGER NOT NULL DEFAULT 0,
+          user_id INTEGER NOT NULL DEFAULT 0,
+          input_tokens INTEGER NOT NULL DEFAULT 0,
+          output_tokens INTEGER NOT NULL DEFAULT 0,
+          cache_read_tokens INTEGER NOT NULL DEFAULT 0,
+          cache_write_tokens INTEGER NOT NULL DEFAULT 0,
+          cost_usd REAL NOT NULL DEFAULT 0,
+          duration_ms INTEGER NOT NULL DEFAULT 0,
+          provider TEXT,
+          pricing_status TEXT NOT NULL DEFAULT 'resolved',
+          pricing_model_key TEXT
+        );
+      `);
+
+      const id = insertApiUsageFallback(db, {
+        category: 'domain_content',
+        model: 'gpt-future',
+        provider: 'openai',
+        tenantId: 12,
+        userId: 34,
+        inputTokens: 100,
+        outputTokens: 50,
+        costUsd: 0.01,
+        durationMs: 123,
+        pricingStatus: 'legacy',
+      });
+
+      const row = db.prepare('SELECT id, provider, tenant_id, user_id, pricing_status, pricing_model_key FROM api_usage').get() as any;
+      expect(row).toMatchObject({
+        id,
+        provider: 'openai',
+        tenant_id: 12,
+        user_id: 34,
+        pricing_status: 'legacy',
+        pricing_model_key: null,
+      });
+    } finally {
+      db.close();
+    }
   });
 });
 
