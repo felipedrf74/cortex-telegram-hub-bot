@@ -183,7 +183,12 @@ else
     echo "   Set NEXUS_SMOKE_REUSE=0 to force a fresh smoke."
   else
     echo "🧪 Running staging smoke test..."
-    if ! "$LOCAL_DIR/scripts/staging-smoke.sh"; then
+    # Promotion-time smoke is a gate, not a release-evidence authoring step.
+    # A fresh evidence file dirties the worktree and correctly triggers the
+    # deploy.sh provenance guard. Standalone staging-smoke.sh still writes
+    # evidence by default; this path defaults it off so promotion can proceed
+    # from a clean, already-committed tree.
+    if ! NEXUS_SMOKE_EVIDENCE="${NEXUS_PROMOTE_SMOKE_EVIDENCE:-0}" "$LOCAL_DIR/scripts/staging-smoke.sh"; then
       echo ""
       echo "❌ Smoke test failed — REFUSING to promote to prod."
       echo "   Fix the failing tests on staging first, then re-run this script."
