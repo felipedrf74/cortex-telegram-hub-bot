@@ -33,6 +33,7 @@ import {
   NEXUS_POINT_PACKAGES,
   revokeNexusPointsCredit,
   settleNexusPointOverageForUser,
+  transferNexusPointsCredits,
 } from '../../src/services/nexus-points';
 
 function createSchema(): void {
@@ -100,6 +101,17 @@ function createSchema(): void {
     );
     CREATE UNIQUE INDEX idx_nexus_point_debits_api_usage_id_unique
       ON nexus_point_debits(api_usage_id);
+    CREATE TABLE audit_trail (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      ts TEXT NOT NULL DEFAULT (datetime('now')),
+      tenant_id INTEGER,
+      user_id INTEGER,
+      actor_id INTEGER,
+      action TEXT,
+      resource TEXT,
+      details TEXT,
+      ip_address TEXT
+    );
   `);
 }
 
@@ -240,7 +252,14 @@ describe('Nexus Points ledger', () => {
       status: 'refunded',
     });
 
-    expect(result).toMatchObject({ revoked: true, previousStatus: 'active' });
+    expect(result).toMatchObject({
+      revoked: true,
+      previousStatus: 'active',
+      userId: 16,
+      productId: 'me.nexushub.points.medium',
+      pointsGranted: 600,
+      pointsRemaining: 600,
+    });
     const row = testDb.prepare(`
       SELECT status, points_remaining, usd_allowance_remaining
       FROM nexus_point_credits
@@ -272,6 +291,7 @@ describe('Nexus Points ledger', () => {
       provider: 'stripe',
       providerTransactionId: 'pi_lookup',
       productId: 'me.nexushub.points.small',
+      pointsGranted: 300,
       metadata: { sessionId: 'cs_lookup' },
     });
     expect(lookupNexusPointCreditByProviderTransaction('stripe', 'pi_missing')).toBeNull();
@@ -337,5 +357,49 @@ describe('Nexus Points ledger', () => {
 
     const row = testDb.prepare('SELECT usd_cost_debited FROM nexus_point_debits WHERE api_usage_id = ?').get(apiUsageId) as { usd_cost_debited: number };
     expect(row.usd_cost_debited).toBeCloseTo(0.005, 8);
+  });
+
+  it('transfers credits and debits atomically with an audit trail row', () => {
+    grantNexusPoints({
+      userId: 18,
+      provider: 'apple',
+      providerTransactionId: 'tx-transfer',
+      productId: 'me.nexushub.points.small',
+      purchasedAt: new Date('2026-05-20T12:00:00.000Z'),
+    });
+    const debit = debitNexusPoints(18, 0.05, { category: 'manual_adjustment' });
+    expect(debit.usdDebited).toBeCloseTo(0.05, 8);
+
+    const result = transferNexusPointsCredits({
+      fromUserId: 18,
+      toUserId: 19,
+      actorId: 1,
+      auditReason: 'account merge',
+    });
+
+    expect(result).toEqual({ creditsTransferred: 1, debitsTransferred: 1 });
+    expect(testDb.prepare('SELECT COUNT(*) AS count FROM nexus_point_credits WHERE user_id = 19').get()).toEqual({ count: 1 });
+    expect(testDb.prepare('SELECT COUNT(*) AS count FROM nexus_point_debits WHERE user_id = 19').get()).toEqual({ count: 1 });
+    const audit = testDb.prepare('SELECT action, user_id, actor_id, details FROM audit_trail').get() as any;
+    expect(audit).toMatchObject({
+      action: 'nexus_points.transfer',
+      user_id: 19,
+      actor_id: 1,
+    });
+    expect(JSON.parse(audit.details)).toMatchObject({
+      fromUserId: 18,
+      toUserId: 19,
+      auditReason: 'account merge',
+      creditsTransferred: 1,
+      debitsTransferred: 1,
+    });
+
+    expect(transferNexusPointsCredits({
+      fromUserId: 18,
+      toUserId: 19,
+      actorId: 1,
+      auditReason: 'repeat account merge',
+    })).toEqual({ creditsTransferred: 0, debitsTransferred: 0 });
+    expect(testDb.prepare('SELECT COUNT(*) AS count FROM audit_trail').get()).toEqual({ count: 1 });
   });
 });
