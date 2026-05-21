@@ -26,6 +26,8 @@ export interface ApiUsageRow {
   cost_usd: number;
   duration_ms: number;
   ts: string; // ISO-ish "YYYY-MM-DD HH:MM:SS" from SQLite datetime('now')
+  pricing_status?: string | null;
+  pricing_model_key?: string | null;
   // April 9 2026: added for per-user cost attribution. Optional so
   // rows loaded by the existing `computeCostBreakdown` path (which
   // doesn't care about user_id) don't have to be re-typed. Rows
@@ -112,6 +114,13 @@ export interface ProviderSplitEntry {
   percentOfCost: number;
 }
 
+export interface PricingStatusEntry {
+  pricingStatus: string;
+  rows: number;
+  spendUsd: number;
+  unresolvedSpendUsd: number;
+}
+
 export interface DailySeriesPoint {
   date: string; // YYYY-MM-DD
   cost: number;
@@ -125,6 +134,7 @@ export interface CostBreakdown {
   domains: DomainSummary[];
   detailed: CostBreakdownEntry[];
   providerSplit: ProviderSplitEntry[];
+  pricingStatus: PricingStatusEntry[];
   dailySeries: DailySeriesPoint[];
 }
 
@@ -288,6 +298,25 @@ export function computeCostBreakdown(
     }))
     .sort((a, b) => b.cost - a.cost);
 
+  const pricingStatusMap = new Map<string, { rows: number; spendUsd: number; unresolvedSpendUsd: number }>();
+  for (const r of rawRows) {
+    const status = String(r.pricing_status || 'legacy').trim() || 'legacy';
+    const cost = r.cost_usd || 0;
+    const existing = pricingStatusMap.get(status) || { rows: 0, spendUsd: 0, unresolvedSpendUsd: 0 };
+    existing.rows += 1;
+    existing.spendUsd += cost;
+    if (status === 'unresolved') existing.unresolvedSpendUsd += cost;
+    pricingStatusMap.set(status, existing);
+  }
+  const pricingStatus: PricingStatusEntry[] = Array.from(pricingStatusMap.entries())
+    .map(([status, stats]) => ({
+      pricingStatus: status,
+      rows: stats.rows,
+      spendUsd: r4(stats.spendUsd),
+      unresolvedSpendUsd: r4(stats.unresolvedSpendUsd),
+    }))
+    .sort((a, b) => b.unresolvedSpendUsd - a.unresolvedSpendUsd || b.spendUsd - a.spendUsd);
+
   // ── Daily series (zero-filled for consistent sparkline x-axis) ──
   // We use UTC dates here because api_usage.ts is populated via SQLite's
   // datetime('now') which returns UTC. Mixing the client's local TZ with
@@ -320,6 +349,7 @@ export function computeCostBreakdown(
     domains,
     detailed,
     providerSplit,
+    pricingStatus,
     dailySeries,
   };
 }

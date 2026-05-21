@@ -46,6 +46,7 @@ import { buildScopedStateContextPrefix } from './provider-state-context';
 import { getDomainModelOverride, type DomainModelRole } from './model-config';
 import { computeModelUsageCostUsd, recordUnresolvedModelPricingAlert, resolveModelPricing } from './model-pricing';
 import { settleNexusPointOverageForUser } from './nexus-points';
+import { insertApiUsageFallback } from './api-usage-fallback';
 
 // ─── Client (lazy init — only created if API key is set) ────────────
 
@@ -134,11 +135,20 @@ async function logGeminiUsage(
   } catch (err) {
     try {
       const db = getDb();
-      const result = db.prepare(`
-        INSERT INTO api_usage (category, model, user_id, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, cost_usd, duration_ms, provider)
-        VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?, 'gemini')
-      `).run(category, model, userId, usage.promptTokenCount, usage.candidatesTokenCount, cacheReadTokens, cost, durationMs);
-      apiUsageId = Number((result as { lastInsertRowid?: number | bigint } | undefined)?.lastInsertRowid ?? 0);
+      apiUsageId = insertApiUsageFallback(db, {
+        category,
+        model,
+        provider: 'gemini',
+        tenantId,
+        userId,
+        inputTokens: usage.promptTokenCount,
+        outputTokens: usage.candidatesTokenCount,
+        cacheReadTokens,
+        cacheWriteTokens: 0,
+        costUsd: cost,
+        durationMs,
+        pricingStatus: 'legacy',
+      });
       await settleNexusPointOverageForUser(userId, apiUsageId);
     } catch (fallbackErr) {
       logger.warn({ err: fallbackErr }, 'Failed to log Gemini usage');

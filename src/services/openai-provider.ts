@@ -35,6 +35,7 @@ import { buildScopedStateContextPrefix } from './provider-state-context';
 import { getDomainModelOverride, type DomainModelRole } from './model-config';
 import { computeModelUsageCostUsd, getModelPricingTable, recordUnresolvedModelPricingAlert } from './model-pricing';
 import { settleNexusPointOverageForUser } from './nexus-points';
+import { insertApiUsageFallback } from './api-usage-fallback';
 
 // ─── Client (lazy init — only created if API key is set) ────────────
 
@@ -164,11 +165,20 @@ async function trackedCompletion(
     } catch (e) {
       try {
         const db = getDb();
-        const result = db.prepare(`
-          INSERT INTO api_usage (category, model, user_id, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, cost_usd, duration_ms, provider)
-          VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?, 'openai')
-        `).run(category, model, userId, usage.prompt_tokens, usage.completion_tokens, cacheReadTokens, costUsd, durationMs);
-        apiUsageId = Number((result as { lastInsertRowid?: number | bigint } | undefined)?.lastInsertRowid ?? 0);
+        apiUsageId = insertApiUsageFallback(db, {
+          category,
+          model,
+          provider: 'openai',
+          tenantId,
+          userId,
+          inputTokens: usage.prompt_tokens,
+          outputTokens: usage.completion_tokens,
+          cacheReadTokens,
+          cacheWriteTokens: 0,
+          costUsd,
+          durationMs,
+          pricingStatus: 'legacy',
+        });
       } catch (fallbackErr) {
         logger.warn({ err: fallbackErr }, 'Failed to log OpenAI usage to database');
       }
@@ -180,7 +190,11 @@ async function trackedCompletion(
       summary: `OpenAI ${model} [${category}] — ${usage.prompt_tokens}+${usage.completion_tokens} tokens`,
       detail: `$${costUsd.toFixed(4)} in ${durationMs}ms`,
     });
-    await settleNexusPointOverageForUser(userId, apiUsageId);
+    try {
+      await settleNexusPointOverageForUser(userId, apiUsageId);
+    } catch (settleErr) {
+      logger.warn({ err: settleErr, apiUsageId, userId }, 'nexus_points: OpenAI usage settlement failed');
+    }
   }
 
   return response;
@@ -600,6 +614,11 @@ ${message}`;
     stateContext: string,
     options: CallDomainOptions = {},
   ): AsyncGenerator<string, AICallResult, undefined> {
+    if (typeof options.userId !== 'number' || options.userId <= 0) {
+      throw new Error('streamDomain requires options.userId: no userId=0 sentinel allowed for streaming usage');
+    }
+    const userId = options.userId;
+    const tenantId = options.tenantId ?? userId;
     const routing = getModelRouting(config.openai, domain, 'openai');
     // Phase 2 Slice A: same persona routing for the streaming path.
     const systemPrompt = getDomainSystemPrompt(domain, currentMessage);
@@ -661,8 +680,6 @@ ${message}`;
       const costUsd = priced.costUsd;
       const pricingStatus = priced.pricingResolved ? 'resolved' : 'unresolved';
       let apiUsageId: number | null = null;
-      const userId = options.userId ?? 0;
-      const tenantId = options.tenantId ?? userId;
 
       try {
         const db = getDb();
@@ -674,11 +691,20 @@ ${message}`;
       } catch (e) {
         try {
           const db = getDb();
-          const result = db.prepare(`
-            INSERT INTO api_usage (category, model, user_id, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, cost_usd, duration_ms, provider)
-            VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?, 'openai')
-          `).run(`openai_stream_${domain}`, model, userId, usage.prompt_tokens, usage.completion_tokens, usage.cached_tokens ?? 0, costUsd, durationMs);
-          apiUsageId = Number((result as { lastInsertRowid?: number | bigint } | undefined)?.lastInsertRowid ?? 0);
+          apiUsageId = insertApiUsageFallback(db, {
+            category: `openai_stream_${domain}`,
+            model,
+            provider: 'openai',
+            tenantId,
+            userId,
+            inputTokens: usage.prompt_tokens,
+            outputTokens: usage.completion_tokens,
+            cacheReadTokens: usage.cached_tokens ?? 0,
+            cacheWriteTokens: 0,
+            costUsd,
+            durationMs,
+            pricingStatus: 'legacy',
+          });
         } catch (fallbackErr) {
           logger.warn({ err: fallbackErr }, 'Failed to log OpenAI streaming usage');
         }
@@ -690,7 +716,11 @@ ${message}`;
         summary: `OpenAI stream ${model} [${domain}] — ${usage.prompt_tokens}+${usage.completion_tokens} tokens`,
         detail: `$${costUsd.toFixed(4)} in ${durationMs}ms`,
       });
-      await settleNexusPointOverageForUser(userId, apiUsageId);
+      try {
+        await settleNexusPointOverageForUser(userId, apiUsageId);
+      } catch (settleErr) {
+        logger.warn({ err: settleErr, apiUsageId, userId }, 'nexus_points: OpenAI stream settlement failed');
+      }
     }
 
     return {

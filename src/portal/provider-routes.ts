@@ -297,6 +297,8 @@ export function registerPortalProviderRoutes(app: Express, deps: PortalProviderR
           output_tokens,
           cost_usd,
           duration_ms,
+          COALESCE(pricing_status, 'legacy') AS pricing_status,
+          pricing_model_key,
           ts
         FROM api_usage
         WHERE ts >= date('now', '-' || ? || ' days')

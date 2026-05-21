@@ -176,6 +176,22 @@ describe('computeCostBreakdown', () => {
     expect(gemini.percentOfCost).toBe(10);
   });
 
+  it('surfaces unresolved and legacy pricing status spend', () => {
+    const rows: ApiUsageRow[] = [
+      row({ provider: 'openai', model: 'gpt-future', pricing_status: 'unresolved', cost_usd: 0.25 }),
+      row({ provider: 'anthropic', model: 'claude-sonnet-4-6', pricing_status: 'resolved', pricing_model_key: 'claude-sonnet-4-6', cost_usd: 0.10 }),
+      row({ provider: 'gemini', model: 'gemini-old', pricing_status: 'legacy', cost_usd: 0.05 }),
+    ];
+
+    const out = computeCostBreakdown(rows, 7, NOW_MS);
+
+    expect(out.pricingStatus).toEqual([
+      { pricingStatus: 'unresolved', rows: 1, spendUsd: 0.25, unresolvedSpendUsd: 0.25 },
+      { pricingStatus: 'resolved', rows: 1, spendUsd: 0.1, unresolvedSpendUsd: 0 },
+      { pricingStatus: 'legacy', rows: 1, spendUsd: 0.05, unresolvedSpendUsd: 0 },
+    ]);
+  });
+
   it('zero-fills daily series for the full window', () => {
     const out = computeCostBreakdown([], 30, NOW_MS);
     expect(out.dailySeries).toHaveLength(30);

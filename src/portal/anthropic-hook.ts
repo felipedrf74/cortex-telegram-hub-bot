@@ -15,6 +15,7 @@ import { withTimeout } from '../utils/timeout';
 import { getAICallTimeoutMs, isAnthropicRuntimeEnabled } from '../services/runtime-flags';
 import { computeModelUsageCostUsd, recordUnresolvedModelPricingAlert, type ModelCostResult } from '../services/model-pricing';
 import { settleNexusPointOverageForUser } from '../services/nexus-points';
+import { insertApiUsageFallback } from '../services/api-usage-fallback';
 
 // ─── Per-million-token pricing (update when Anthropic changes rates) ─
 
@@ -166,23 +167,20 @@ export async function trackedCreate(
     apiUsageId = Number((result as { lastInsertRowid?: number | bigint } | undefined)?.lastInsertRowid ?? 0);
   } catch (err) {
     try {
-      const result = getDb().prepare(`
-        INSERT INTO api_usage
-          (category, model, user_id, input_tokens, output_tokens,
-           cache_read_tokens, cache_write_tokens, cost_usd, duration_ms)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `).run(
+      apiUsageId = insertApiUsageFallback(getDb(), {
         category,
-        params.model,
-        options?.userId ?? 0,
-        usage.input_tokens,
-        usage.output_tokens,
-        usage.cache_read_input_tokens ?? 0,
-        usage.cache_creation_input_tokens ?? 0,
-        cost,
+        model: params.model,
+        provider: 'anthropic',
+        tenantId: options?.tenantId ?? options?.userId ?? 0,
+        userId: options?.userId ?? 0,
+        inputTokens: usage.input_tokens,
+        outputTokens: usage.output_tokens,
+        cacheReadTokens: usage.cache_read_input_tokens ?? 0,
+        cacheWriteTokens: usage.cache_creation_input_tokens ?? 0,
+        costUsd: cost,
         durationMs,
-      );
-      apiUsageId = Number((result as { lastInsertRowid?: number | bigint } | undefined)?.lastInsertRowid ?? 0);
+        pricingStatus: 'legacy',
+      });
     } catch (fallbackErr) {
       logger.warn({ err: fallbackErr }, 'Failed to record api_usage');
     }

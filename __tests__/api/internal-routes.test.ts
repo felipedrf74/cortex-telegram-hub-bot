@@ -76,7 +76,9 @@ describe('Internal Routes — structural', () => {
 
   it('report-usage uses signed attribution instead of hardcoding system billing', () => {
     expect(routesSrc).toContain('verifyInternalAttributionToken(attributionToken, category)');
-    expect(routesSrc).toContain('VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)');
+    expect(routesSrc).toContain('category, model, tenant_id, user_id, input_tokens, output_tokens');
+    expect(routesSrc).toContain('category, model, scopedTenantId, scopedUserId');
+    expect(routesSrc).toContain('insertApiUsageFallback');
     expect(routesSrc).toContain('recordUsage(scopedUserId');
     expect(routesSrc).not.toContain('VALUES (?, ?, 0, ?, ?, ?, ?, ?, ?)');
     expect(routesSrc).not.toContain('recordUsage(0, inputTokens');

@@ -52,9 +52,15 @@ vi.mock('../../src/utils/logger', () => ({
 // ─── Mock database and telemetry for token tracking ─────────────────
 
 const mockDbRun = vi.fn();
+const mockDbAll = vi.fn();
 vi.mock('../../src/services/database', () => ({
   getDb: () => ({
-    prepare: () => ({ run: mockDbRun }),
+    prepare: (sql: string) => {
+      if (String(sql).includes('PRAGMA table_info(api_usage)')) {
+        return { all: mockDbAll };
+      }
+      return { run: mockDbRun };
+    },
   }),
   initDatabase: vi.fn(),
   closeDatabase: vi.fn(),
@@ -111,6 +117,21 @@ describe('OpenAIProvider', () => {
     config.openai.classifierModel = 'gpt-4o-mini';
     config.openai.maxTokens = 1024;
     config.openai.secretaryMaxTokens = 2048;
+    mockDbAll.mockReturnValue([
+      { name: 'category' },
+      { name: 'model' },
+      { name: 'tenant_id' },
+      { name: 'user_id' },
+      { name: 'input_tokens' },
+      { name: 'output_tokens' },
+      { name: 'cache_read_tokens' },
+      { name: 'cache_write_tokens' },
+      { name: 'cost_usd' },
+      { name: 'duration_ms' },
+      { name: 'provider' },
+      { name: 'pricing_status' },
+      { name: 'pricing_model_key' },
+    ]);
     provider = new OpenAIProvider();
   });
 
@@ -623,6 +644,44 @@ describe('OpenAIProvider', () => {
         'gpt-4o-mini',
       );
       expect(mockSettleNexusPointOverageForUser).toHaveBeenCalledWith(42, 777);
+    });
+
+    it('settles Nexus Points after a legacy fallback usage insert', async () => {
+      mockCreate.mockResolvedValueOnce({
+        choices: [{ message: { content: 'fallback ok' }, finish_reason: 'stop' }],
+        model: 'gpt-4o',
+        usage: { prompt_tokens: 100, completion_tokens: 50 },
+      });
+      mockDbRun
+        .mockImplementationOnce(() => { throw new Error('primary insert failed'); })
+        .mockReturnValueOnce({ lastInsertRowid: 888 });
+
+      const result = await provider.callDomain('content', [], 'test', '', { userId: 42, tenantId: 77 });
+
+      expect(result.text).toBe('fallback ok');
+      expect(mockDbRun).toHaveBeenLastCalledWith(
+        'openai_domain_content',
+        'gpt-4o',
+        77,
+        42,
+        100,
+        50,
+        0,
+        0,
+        expect.any(Number),
+        expect.any(Number),
+        'openai',
+        'legacy',
+        null,
+      );
+      expect(mockSettleNexusPointOverageForUser).toHaveBeenCalledWith(42, 888);
+    });
+
+    it('rejects streaming usage without a positive user id', async () => {
+      const iterator = provider.streamDomain('content', [], 'hello', '', { userId: 0, tenantId: 77 });
+
+      await expect(iterator.next()).rejects.toThrow('streamDomain requires options.userId');
+      expect(mockCreate).not.toHaveBeenCalled();
     });
   });
 
