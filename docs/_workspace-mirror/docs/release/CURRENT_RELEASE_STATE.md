@@ -27,6 +27,44 @@ Last updated: 2026-05-21
   `docs/release/worktree-recovery-audit-2026-05-18.md` and
   `docs/release/worktree-recovery-audit-2026-05-21/`.
 
+### 2026-05-21 Cloudflare Edge Unblock Apply (Completion)
+
+- Scope: completed the operator-credentialed half of the Cloudflare edge
+  unblock work — deployed the landing Pages bundle, applied the three
+  Cloudflare WAF rules, disabled the managed `robots.txt` and AI bots
+  protection on the marketing zone, and validated the live edge contract
+  end-to-end. No backend code or version change.
+- Pages deploy: `nexushub-landing` project on branch `main` redeployed at
+  `https://eeb8585c.nexushub-landing.pages.dev` (production alias is
+  `https://nexushub.me`). Bundle excluded `.wrangler/`, `.DS_Store`, and
+  `.bak*` per `scripts/cloudflare-edge-release.sh`.
+- WAF apply: `node scripts/cloudflare-edge-unblock.mjs --apply
+  --include-staging --skip-bot-management` upserted three rules on the
+  `nexushub.me` zone `5d4cc89b638871ae7084ee65c5f3320d`:
+  - `nexus_marketing_ai_crawler_skip_v1` — SKIP for AI fetchers on
+    `nexushub.me` and `www.nexushub.me`.
+  - `nexus_api_public_status_ai_monitor_skip_v1` — SKIP for AI and monitor
+    UAs on `api.nexushub.me` and `api-staging.nexushub.me` at path
+    `/public-status` only.
+  - `nexus_api_ai_fetcher_block_except_public_status_v1` — BLOCK for AI
+    fetchers on `api.nexushub.me` and `portal.nexushub.me` at every path
+    other than `/public-status`.
+- Bot Management toggle: the full-payload `PUT /zones/{id}/bot_management`
+  call in `scripts/cloudflare-edge-unblock.mjs` was rejected with `400 Bad
+  Request` on the Free plan zone (Free rejects writes to read-only fields
+  like `enable_js`, `fight_mode`, `using_latest_model`). A focused PUT with
+  only `{"ai_bots_protection":"disabled","is_robots_txt_managed":false}`
+  succeeded. The script's full-payload merge needs a follow-up fix to use a
+  focused payload on Free plans — tracked as a follow-up; current behavior
+  works around it with `--skip-bot-management` + a manual focused `curl`.
+- Verification: `scripts/cloudflare-edge-verify.sh` returned **13/13 PASS**.
+- `--include-staging` was used so `api-staging.nexushub.me/public-status` is
+  on the same allowlist as production.
+- Token: Felipe-supplied Cloudflare API token with TTL through
+  `2026-06-30T23:59:59Z`; rotate post-operation. Account ID
+  `413581f656838e03191273def66d5e3a` was supplied via
+  `CLOUDFLARE_ACCOUNT_ID` because the token lacked the User-read scope.
+
 ### 2026-05-21 Nexus Points QA2 + Cloudflare Edge Foundation Production Promote
 
 - Scope: merged Nexus Points QA2 hardening, added Cloudflare AI-crawler
