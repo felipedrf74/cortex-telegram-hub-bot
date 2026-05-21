@@ -91,7 +91,10 @@ SKIP_MODE="${NEXUS_DEPLOY_SKIP_VERIFY:-0}"
 
 run_full_verify() {
   echo "🔍 Running full validation (typecheck + tests)..."
-  if npm run verify 2>&1; then
+  # Deploy validation must not refresh tracked observational evidence files.
+  # Those artifacts are intentionally updated by explicit QA/evidence runs, not
+  # by the release transport path after the clean-tree guard has passed.
+  if NEXUS_SKIP_SHADOW_PARITY_WRITE="${NEXUS_SKIP_SHADOW_PARITY_WRITE:-1}" npm run verify 2>&1; then
     echo ""
     echo "═══════════════════════════════════════════════"
     echo "  ✅ VALIDATION PASSED — proceeding with deploy"

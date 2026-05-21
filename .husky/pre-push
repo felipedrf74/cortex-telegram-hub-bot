@@ -23,6 +23,11 @@ ROOT="$(git rev-parse --show-toplevel)"
 CLASSIFIER="$ROOT/scripts/changed-area-classifier.sh"
 BRANCH="$(git rev-parse --abbrev-ref HEAD)"
 
+# Pre-push verification should be read-only. The shadow-parity suite can write
+# a tracked observational report during explicit QA runs; suppress that here so
+# successful pushes do not leave the worktree dirty.
+export NEXUS_SKIP_SHADOW_PARITY_WRITE="${NEXUS_SKIP_SHADOW_PARITY_WRITE:-1}"
+
 echo "🔍 Pre-push: Verifying $BRANCH..."
 
 echo "   📝 Type check..."
