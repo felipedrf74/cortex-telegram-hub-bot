@@ -162,6 +162,10 @@ reviewed and applied without hand-transcribing expressions from this runbook:
 ```bash
 cd "/Users/felipedominguez/Desktop/Custom Connectors/Cortex/cortex-telegram-hub-bot"
 
+# End-to-end operator path: validates and deploys the landing bundle, applies
+# the Cloudflare WAF/Bot settings, waits for propagation, then verifies.
+CLOUDFLARE_API_TOKEN=... scripts/cloudflare-edge-release.sh --apply
+
 # Dry-run: prints the Bot Management settings and WAF rules without credentials.
 scripts/cloudflare-edge-unblock.mjs --include-staging
 
@@ -173,13 +177,21 @@ CLOUDFLARE_API_TOKEN=... scripts/cloudflare-edge-unblock.mjs --apply
 scripts/cloudflare-edge-verify.sh
 ```
 
+`scripts/cloudflare-edge-release.sh` is the preferred completion path once
+operator credentials are available. It builds a clean Cloudflare Pages upload
+bundle from `/Users/felipedominguez/Desktop/nexushub-landing-deploy`, excludes
+local `.wrangler` and backup files, validates `robots.txt`, `llms.txt`, and
+`_headers`, deploys the `nexushub-landing` Pages project, applies the edge
+rules, and runs live verification.
+
 `scripts/cloudflare-edge-unblock.mjs` upserts rules by stable `ref`, preserves
 unrelated existing rules, disables Cloudflare Managed `robots.txt`, and disables
 AI crawler protection for the marketing site. `scripts/cloudflare-edge-verify.sh`
 is intentionally strict: it fails until AI fetchers can read `nexushub.me`,
 AI/monitor fetchers can read `api.nexushub.me/public-status`, `api.nexushub.me`
-`/health` stays protected for AI user-agents, and `robots.txt` is the local
-permissive file rather than Cloudflare Managed content.
+`/health` stays protected for AI user-agents, `robots.txt` is the local
+permissive file rather than Cloudflare Managed content, and `llms.txt` is the
+canonical Markdown file with current Pro/Max pricing.
 
 ### Backend API Configuration (`api.nexushub.me`)
 

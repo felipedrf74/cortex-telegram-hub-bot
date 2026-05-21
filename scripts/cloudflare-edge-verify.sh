@@ -74,10 +74,30 @@ else
   failures=$((failures + 1))
 fi
 
+echo
+echo "LLM discovery contract: $MARKETING_HOST/llms.txt"
+llms_file="$(mktemp)"
+trap 'rm -f "$robots_file" "$llms_file"' EXIT
+curl -fsSL "$MARKETING_HOST/llms.txt" > "$llms_file" || true
+if head -1 "$llms_file" | grep -q '^# Nexus Hub$'; then
+  echo "[PASS] llms.txt is deployed"
+else
+  echo "[FAIL] llms.txt is not deployed as the canonical Markdown file"
+  failures=$((failures + 1))
+fi
+
+if grep -q '\$14\.99/month or R\$69\.99/month' "$llms_file" \
+  && grep -q '\$24\.99/month or R\$119\.99/month' "$llms_file"; then
+  echo "[PASS] llms.txt contains current Pro/Max prices"
+else
+  echo "[FAIL] llms.txt does not contain current Pro/Max prices"
+  failures=$((failures + 1))
+fi
+
 if [ "$failures" -gt 0 ]; then
   echo
   echo "Cloudflare edge contract failed with $failures issue(s)."
-  echo "Apply scripts/cloudflare-edge-unblock.mjs --apply with a Cloudflare API token, then rerun this verifier."
+  echo "Run scripts/cloudflare-edge-release.sh --apply with a Cloudflare API token, then rerun this verifier."
   exit 1
 fi
 

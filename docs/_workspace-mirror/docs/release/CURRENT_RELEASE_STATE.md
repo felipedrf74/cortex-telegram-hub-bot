@@ -75,6 +75,12 @@ Last updated: 2026-05-21
   script both stopped at the missing `CLOUDFLARE_API_TOKEN` credential, so
   live `robots.txt`/`llms.txt` and AI fetcher unblocking remain pending
   operator credentials.
+- Follow-up hardening added `scripts/cloudflare-edge-release.sh` as the
+  single operator path for the remaining block: it validates/deploys the
+  landing Pages bundle, applies the Cloudflare edge rules, waits for
+  propagation, and runs strict verification once a Cloudflare API token is
+  available. `scripts/cloudflare-edge-verify.sh` now also fails if `llms.txt`
+  is missing or carries stale Pro/Max prices.
 
 ### 2026-05-19 Content Token Phase 2 + Training Skill Hardening Production Promote
 
