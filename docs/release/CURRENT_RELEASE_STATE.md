@@ -13,8 +13,11 @@ Last updated: 2026-05-21
 - Production HEAD: `ae4e1421`
 - Production version: `4.14.181`
 - Source implementation commit: `67287399`
-- Latest `origin/main`: `4b490d4a` (post-deploy deploy/pre-push
-  verification guard; not part of the running runtime bundle)
+- Latest pushed source: `origin/main` is ahead of the running runtime bundle
+  with post-deploy docs/tooling follow-ups. `bb68a55b` is the last
+  release-state commit before the 2026-05-21 Cloudflare follow-up; later
+  docs-only commits may advance the source tip without changing production
+  runtime.
 - iOS Chat card-hiding source changes are pushed to iOS `main` at `e7cfc8b`;
   a separate signed iOS/TestFlight release is still required to reach devices.
 - Official workspace root: `/Users/felipedominguez/Desktop/Nexus Hub`
@@ -54,6 +57,15 @@ Last updated: 2026-05-21
   ChatGPT, and Perplexity user agents because this shell has no
   `CLOUDFLARE_API_TOKEN` and Wrangler is not authenticated. The exact apply
   command is `CLOUDFLARE_API_TOKEN=... scripts/cloudflare-edge-unblock.mjs --apply`.
+- 2026-05-21 post-QA follow-up: the divergent local backend `main` worktree
+  at `a8fce8fe` was preserved under workspace audit evidence
+  `docs/release/worktree-recovery-audit-2026-05-21/claude-local-main-divergence/`,
+  stashed as `archive: claude local main divergence before syncing origin/main
+  2026-05-21`, and fast-forwarded cleanly to `bb68a55b`. A clean
+  Cloudflare Pages deploy attempt for `nexushub-landing` and the edge apply
+  script both stopped at the missing `CLOUDFLARE_API_TOKEN` credential, so
+  live `robots.txt`/`llms.txt` and AI fetcher unblocking remain pending
+  operator credentials.
 
 ## 2026-05-18 Beta Registry And Stripe Billing Promote
 

@@ -21,9 +21,11 @@ Last updated: 2026-05-21
   `4.14.181` is deployed from commit `ae4e1421`; both `nexus-hub` and
   `content-engine` PM2 processes are online, production `/health` passed, and
   `/public-status` returns the minimal public API payload. `origin/main` is
-  `4b490d4a`, which adds a post-deploy deploy/pre-push verification guard.
-  Workspace audit evidence lives at
-  `docs/release/worktree-recovery-audit-2026-05-18.md`.
+  ahead of the running runtime bundle with post-deploy docs/tooling follow-ups;
+  `bb68a55b` is the last release-state commit before the 2026-05-21
+  Cloudflare follow-up. Workspace audit evidence lives at
+  `docs/release/worktree-recovery-audit-2026-05-18.md` and
+  `docs/release/worktree-recovery-audit-2026-05-21/`.
 
 ### 2026-05-21 Nexus Points QA2 + Cloudflare Edge Foundation Production Promote
 
@@ -33,7 +35,9 @@ Last updated: 2026-05-21
   and pre-push/deploy verification do not dirty tracked evidence files.
 - Production version: `4.14.181`.
 - Production deploy commit: `ae4e1421`.
-- Latest backend `origin/main`: `4b490d4a`.
+- Latest backend source: `origin/main` is ahead of the running runtime bundle;
+  `bb68a55b` is the last release-state commit before the 2026-05-21
+  Cloudflare follow-up.
 - Source implementation commits before deploy bump: Cloudflare edge tooling
   `c04200c9`, Nexus Points QA2 merge `3ab03654`, staging smoke evidence
   `dcf1e05a`, promotion smoke evidence `6bcf76f6`, and promotion-smoke
@@ -62,6 +66,15 @@ Last updated: 2026-05-21
   `CLOUDFLARE_API_TOKEN` and Wrangler is not authenticated. The exact apply
   command is
   `CLOUDFLARE_API_TOKEN=... scripts/cloudflare-edge-unblock.mjs --apply`.
+- 2026-05-21 post-QA follow-up: the divergent local backend `main` worktree
+  at `a8fce8fe` was preserved under
+  `docs/release/worktree-recovery-audit-2026-05-21/claude-local-main-divergence/`,
+  stashed as `archive: claude local main divergence before syncing origin/main
+  2026-05-21`, and fast-forwarded cleanly to `bb68a55b`. A clean
+  Cloudflare Pages deploy attempt for `nexushub-landing` and the edge apply
+  script both stopped at the missing `CLOUDFLARE_API_TOKEN` credential, so
+  live `robots.txt`/`llms.txt` and AI fetcher unblocking remain pending
+  operator credentials.
 
 ### 2026-05-19 Content Token Phase 2 + Training Skill Hardening Production Promote
 
