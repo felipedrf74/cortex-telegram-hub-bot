@@ -1,10 +1,10 @@
 # Training Skill Trust Wedge — Roadmap 2026-05-22
 
-Status: IN PROGRESS — PR-pre0 convergence complete; PR0A implementation complete and verified
+Status: READY FOR INDEPENDENT QA — PR-pre0/PR0A complete; PR0B + backend PR1 + iOS PR2 implemented and verified locally
 Owner: Felipe (with Claude/Codex execution)
 Last updated: 2026-05-22
 Update policy: living doc. PR0/PR1/PR2 close-out updates land in this file as each ships.
-Codex critical review: 2026-05-22 (see §18). Convergence update: backend `main` now includes the deployed Training audit line at merge commit `5d037706`; this branch was rebased onto that main. PR0A implementation update: backend honest-input fixes and iOS structured decision reason decoding are implemented on `feature/training-trust-wedge-20260522`.
+Codex critical review: 2026-05-22 (see §18). Convergence update: backend `main` now includes the deployed Training audit line at merge commit `5d037706`; this branch was rebased onto that main. PR0A implementation update: backend honest-input fixes and iOS structured decision reason decoding are implemented on `feature/training-trust-wedge-20260522`. PR0B/PR1 implementation update: the backend now emits, persists, and reads `PlanCreationExplanation` with semantic `labelKey` fields; sample payloads live at `docs/training/training-plan-explanation-samples-20260522.json`. PR2 implementation update: iOS now decodes and renders the explanation card on plan preview.
 
 > This document is the **handoff artifact** between Claude's Phase 1-4 feature-dev work (discovery → exploration → clarifying questions → architecture design) and the code-execution phase. Read this in order; every section answers a specific design decision.
 
@@ -84,9 +84,9 @@ The backend trust-wedge branch was rebased onto post-audit `origin/main` and now
 |---|---|---|---|
 | **PR-pre0** | Main/prod convergence: merge deployed audit line into `main`, rebase trust-wedge backend, prune stale tasks from this doc | Done | Complete on 2026-05-22 |
 | **PR0A** | Remaining honest inputs: structured iOS `decisionReasons`, backend `primaryFocusSource` emission, real `trailing14DayCompliance`, `stale_provider` readiness, phase resolver consolidation without forced week-4 deload | Implemented | Backend focused + full verify, iOS unit, staging smoke |
-| **PR0B** | Explanation contract spike: generate 3 sample JSON payloads from real fixtures, no persistence/UI yet; include `smartPicks`, `respectedConstraints`, and `attentionItems` | ~160 | Vitest sample-builder tests + Felipe copy/noise review |
-| **PR1** | Backend explanation: new module `training-plan-explanation/`, migration 155, generator integration, route decoration, persistence | ~900 | Same gates + new builder vitest suite + sample-emission JSON inspection |
-| **PR2** | iOS rendering: `PlanCreationExplanation.swift` + `TrainingDecisionReason.swift` + `PlanCreationExplanationCard.swift` + 5-bucket DisclosureGroup + confidence pills | ~730 | Xcode build clean + extended `PlanGenerateResponse*Tests.swift` + TestFlight smoke |
+| **PR0B** | Explanation contract spike: generate 3 sample JSON payloads from real fixtures, no persistence/UI yet; include `smartPicks`, `respectedConstraints`, and `attentionItems` | Implemented | `training-plan-explanation-builder.test.ts` + sample JSON inspection |
+| **PR1** | Backend explanation: new module `training-plan-explanation/`, migration 155, generator integration, route decoration, persistence | Implemented + locally verified | TypeScript clean, focused backend suite, and full backend verify |
+| **PR2** | iOS rendering: `PlanCreationExplanation.swift` + `TrainingDecisionReason.swift` + `PlanCreationExplanationCard.swift` + 5-bucket DisclosureGroup + confidence pills | Implemented + locally verified | Xcode simulator selected test suite |
 | **PR3** (deferred) | `GET /training/plan/:id/explanation` history endpoint + iOS detail view consumption | ~150 | After PR1+PR2 soak 1+ week in production |
 
 **Total wedge estimate after convergence**: ~1,850 LOC over 2.5-3 weeks (PR0A + PR0B + PR1 + PR2). PR3 lands in Phase 2 sprint.
@@ -762,6 +762,13 @@ Phase 2's adaptive engine can call it twice (once on plan create, once on plan a
 
 ## 10. Sample Emissions
 
+Implementation note (2026-05-22): the persisted shape now uses the backend contract in
+`src/services/training-plan-explanation/types.ts`. The canonical sample payloads are
+stored in `docs/training/training-plan-explanation-samples-20260522.json`. The older
+example below is retained as historical design context only; iOS should render from
+semantic `labelKey`, `category`, `why`, `confidence`, and `evidence` fields rather than
+from backend English prose.
+
 Felipe-realistic input: `objective: "Run Lisbon Marathon under 3:30"`, `sessionsPerWeek: 6`, `strengthSessionsPerWeek: 3`, `runSessionsPerWeek: null`, profile has Garmin connected + advanced gym experience + commercial gym.
 
 Post-D12 note: the English `fallbackLabel` / `fallbackRationale` values below are debug/portal fallback copy. The iOS app should render localized copy from `labelKey`, `rationaleKey`, category, and evidence.
@@ -1157,4 +1164,47 @@ Replace the current PR sequence with this safer sequence:
 
 ### 18.5 Current implementation line
 
-PR-pre0 is complete. The next implementation step is PR0A, but do not add the persisted explanation migration until PR0B sample payloads are reviewed for copy/noise/localization quality.
+PR-pre0, PR0A, PR0B, backend PR1, and iOS PR2 are complete in their respective trust-wedge worktrees. PR0B and backend PR1 were implemented together in this branch because Felipe asked to continue until the full implementation plan is complete. The migration is additive (`155_training_plan_creation_explanation.sql`), and the copy/localization risk is reduced by keeping user-facing wording semantic-key driven for iOS.
+
+### 18.6 PR0B/PR1/PR2 local verification close-out
+
+Implemented on 2026-05-22:
+
+- Backend emits a semantic `PlanCreationExplanation` during plan preview, quality-blocked responses, and plan creation.
+- Backend persists the explanation on `fitness_training_plans` as `explanation_json` plus `explanation_schema_version`, and read models parse it back for active/today/week plan surfaces.
+- iOS decodes the explanation contract and renders a "Why this plan?" card in the Training plan preview flow with semantic labels, confidence pills, smart picks, respected constraints, and attention items.
+- Builder tests now pin the main trust rows: primary-focus detection, periodization, training history, readiness, equipment, experience, strength goal, two-a-day policy, weekly-volume inference, goal-mode caps, stale readiness, equipment fallback, sanitizer behavior, and persistence round-trip.
+
+Verification completed:
+
+```bash
+npx tsc --noEmit
+npx vitest run \
+  __tests__/services/training-plan-explanation-builder.test.ts \
+  __tests__/api/training-plan-generation.test.ts \
+  __tests__/api/training-read-models.test.ts \
+  __tests__/services/training-plans.test.ts
+# 4 files / 82 tests passed
+
+npm run verify
+# 640 files / 9473 tests passed
+```
+
+iOS simulator verification via XcodeBuildMCP:
+
+```text
+PlanCreationExplanationTests
+PlanGenerateResponseRaceDateTests
+PlanGenerateResponseExpertCoachTests
+PlanGenerateResponsePrimaryFocusTests
+TrainingPresentationTests
+TrainingViewModelGoalModeEchoTests
+TrainingViewModelObservationTests
+# 85 tests passed
+```
+
+Not run locally:
+
+- TestFlight smoke: requires an app distribution/smoke lane outside this local worktree.
+- Backend staging deploy/smoke: this feature is ready for independent QA first; staging promotion should happen after QA accepts the contract.
+- PR3 historical endpoint: deliberately deferred until after PR1+PR2 soak for at least one week in production.

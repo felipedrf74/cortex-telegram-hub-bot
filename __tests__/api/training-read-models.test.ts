@@ -92,7 +92,21 @@ describe('training-read-models', () => {
 
   it('returns today session from the active plan plus linked calendar time', async () => {
     const todayName = new Date().toLocaleDateString('en-US', { weekday: 'long' });
-    mockActivePlan = { id: 10, name: 'Marathon Build', periodization: 'build', start_date: '2026-04-20T00:00:00.000Z' };
+    mockActivePlan = {
+      id: 10,
+      name: 'Marathon Build',
+      periodization: 'build',
+      start_date: '2026-04-20T00:00:00.000Z',
+      explanation_json: JSON.stringify({
+        schemaVersion: 1,
+        generatedAt: '2026-05-22T10:00:00.000Z',
+        locale: 'en',
+        summary: { smartPickCount: 1, respectedConstraintCount: 1, attentionItemCount: 0, highestSeverity: 'info' },
+        smartPicks: [{ id: 'primary_focus_from_objective' }],
+        respectedConstraints: [],
+        attentionItems: [],
+      }),
+    };
     mockCurrentWeek = { id: 20, week_number: 1, focus: 'base' };
     mockWeekSessions = [{
       id: 30,
@@ -115,6 +129,10 @@ describe('training-read-models', () => {
       name: 'Marathon Build',
       weekNumber: 1,
       phase: 'base',
+      explanation: expect.objectContaining({
+        schemaVersion: 1,
+        summary: expect.objectContaining({ smartPickCount: 1 }),
+      }),
     });
     expect(result.session).toMatchObject({
       id: '30',

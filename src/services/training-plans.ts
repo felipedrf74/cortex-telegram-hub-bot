@@ -40,6 +40,8 @@ export interface TrainingPlan {
   start_date: string;
   end_date: string;
   preferences_json: string | null;
+  explanation_json?: string | null;
+  explanation_schema_version?: number | null;
   plan_version?: number | null;
   created_at: string;
   updated_at: string;
@@ -170,6 +172,8 @@ export interface CreatePlanInput {
   start_date: string;
   end_date: string;
   preferences_json?: string;
+  explanation_json?: string | null;
+  explanation_schema_version?: number | null;
 }
 
 export interface CreateWeekInput {
@@ -253,12 +257,14 @@ export function createPlan(input: CreatePlanInput): TrainingPlan {
   const tenantId = input.tenant_id && input.tenant_id > 0 ? input.tenant_id : input.user_id;
   const result = db.prepare(`
     INSERT INTO fitness_training_plans
-      (user_id, tenant_id, name, sport, goal, duration_weeks, periodization, start_date, end_date, preferences_json)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      (user_id, tenant_id, name, sport, goal, duration_weeks, periodization, start_date, end_date, preferences_json, explanation_json, explanation_schema_version)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     input.user_id, tenantId, input.name, input.sport, input.goal ?? null,
     input.duration_weeks, input.periodization ?? 'linear',
     input.start_date, input.end_date, input.preferences_json ?? null,
+    input.explanation_json ?? null,
+    input.explanation_schema_version ?? null,
   );
   logger.info({ planId: result.lastInsertRowid, name: input.name }, 'Training plan created');
   return getDb().prepare('SELECT * FROM fitness_training_plans WHERE id = ?')

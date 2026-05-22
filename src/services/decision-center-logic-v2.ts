@@ -228,7 +228,7 @@ const GENERIC_COPY_PATTERNS = [
   /\bopen nexus to view\b/i,
 ];
 
-const DECISION_CONFIDENCE_RUBRIC = {
+export const DECISION_CONFIDENCE_RUBRIC = {
   highStructuredState: 0.9,
   highEntityReadBack: 0.88,
   highScheduleRecommendation: 0.86,

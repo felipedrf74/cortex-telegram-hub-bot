@@ -33,6 +33,10 @@ import {
 import { logger } from '../../utils/logger';
 import { withTrainingCalendarOperationLock } from '../../services/training-operation-locks';
 import {
+  withPlanCreationExplanationPlanId,
+} from '../../services/training-plan-explanation/builder';
+import type { PlanCreationExplanation } from '../../services/training-plan-explanation/types';
+import {
   preferredTimeForSessionType,
   scheduleSessionWindow,
   type BusyWindow,
@@ -53,6 +57,7 @@ type GeneratedTrainingPlan = {
     intensityPct?: number;
     sessions?: Array<GeneratedTrainingSession>;
   }>;
+  explanation?: PlanCreationExplanation | null;
 };
 
 type GeneratedTrainingSession = {
@@ -140,8 +145,9 @@ export interface PersistGeneratedTrainingPlanResult {
    * Plan-linter verdict + findings. Always populated; in advisor mode
    * (the default), `status === 'fail'` does NOT prevent the plan from
    * being persisted — the API caller decides what to surface.
-   */
+  */
   lint: PlanLintResult;
+  explanation?: PlanCreationExplanation | null;
 }
 
 /**
@@ -184,6 +190,7 @@ async function persistGeneratedTrainingPlanLocked(
   const tenantId = input.tenantId ?? input.userId;
   const plan = trainingPlans.createPlan({
     user_id: input.userId,
+    tenant_id: tenantId,
     name: input.planData.planName || `${input.objective} Plan`,
     sport: input.planData.sport || 'hybrid',
     goal: input.objective,
@@ -192,6 +199,8 @@ async function persistGeneratedTrainingPlanLocked(
     start_date: input.startDate,
     end_date: input.endDate,
     preferences_json: input.preferencesJson,
+    explanation_json: input.planData.explanation ? JSON.stringify(input.planData.explanation) : null,
+    explanation_schema_version: input.planData.explanation?.schemaVersion ?? null,
   });
 
   let totalSessions = 0;
@@ -510,16 +519,18 @@ async function persistGeneratedTrainingPlanLocked(
     mode: 'advisor',
   });
 
+  const explanation = withPlanCreationExplanationPlanId(input.planData.explanation ?? null, plan.id);
   return {
     planId: plan.id,
     totalSessions,
     eventsCreated,
-      weekSummaries: (input.planData.weeks || []).map((weekData) => ({
+    weekSummaries: (input.planData.weeks || []).map((weekData) => ({
       weekNumber: weekData.weekNumber,
       focus: weekData.focus,
       sessionCount: weekData.sessions?.filter(isCalendarSchedulableTrainingSession).length || 0,
     })),
     lint,
+    ...(explanation ? { explanation } : {}),
   };
 }
 

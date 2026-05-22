@@ -6,6 +6,7 @@ import { getCached, setCache } from '../../services/cache-store';
 import * as trainingPlans from '../../services/training-plans';
 import { calculateReadiness } from '../../services/readiness-scorer';
 import type { CoachKernelReadinessInput } from '../../services/training-coach-kernel-plan-generator';
+import { parsePlanCreationExplanationJson } from '../../services/training-plan-explanation/builder';
 import { getActivitiesByDateForUser } from '../../services/garmin';
 import { buildCalendarEventLookup, type TrainingCalendarLookup } from './training-calendar-lookup';
 import {
@@ -149,6 +150,7 @@ export async function getTodaySession(userId: number) {
         lifecycleState: activePlan.status ?? 'active',
         weekNumber: currentWeek?.week_number || 1,
         phase: currentWeek?.focus || activePlan.periodization || null,
+        explanation: parsePlanCreationExplanationJson(activePlan.explanation_json),
       };
       if (currentWeek) {
         const sessions = trainingPlans.getSessionsForWeek(currentWeek.id);
@@ -314,6 +316,7 @@ export async function getWeekPlan(userId: number) {
     lifecycleState?: string | null;
     weekNumber: number;
     phase: string | null;
+    explanation?: unknown;
   } | null = null;
 
   try {
@@ -328,6 +331,7 @@ export async function getWeekPlan(userId: number) {
         lifecycleState: plan.status ?? 'active',
         weekNumber,
         phase: currentWeek?.focus || plan.periodization || null,
+        explanation: parsePlanCreationExplanationJson(plan.explanation_json),
       };
       const weekSessions = currentWeek ? trainingPlans.getSessionsForWeek(currentWeek.id) : [];
       if (Array.isArray(weekSessions) && weekSessions.length > 0) {
