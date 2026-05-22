@@ -1,6 +1,7 @@
 // Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
 
 import { logger } from '../../utils/logger';
+import { getDb } from '../../services/database';
 import { getCached, setCache } from '../../services/cache-store';
 import * as trainingPlans from '../../services/training-plans';
 import { calculateReadiness } from '../../services/readiness-scorer';
@@ -20,6 +21,7 @@ import { adaptSessionForReadiness, type AdaptationContext } from '../../services
 import type { Session, SessionType, Sport, ReadinessSnapshot } from '../../services/coach-kernel/types';
 
 const READINESS_TTL = 5 * 60; // 5 minutes — intraday energy reserve should move during the day
+const READINESS_PROVIDER_STALE_MS = 24 * 60 * 60 * 1000;
 
 /**
  * Map the user-facing iOS sessionType label (e.g. `'gym'`, `'run'`) to a
@@ -533,6 +535,9 @@ export async function fetchCurrentReadinessForPlan(userId: number): Promise<Coac
   try {
     const readiness = await calculateReadiness(userId);
     if (!readiness || typeof readiness.score !== 'number' || readiness.score <= 0) return null;
+    const freshness = resolveReadinessProviderFreshness(userId);
+    const missingWearable = readiness.reasonCode === 'WEARABLE_INTEGRATION_MISSING';
+    const staleProvider = !missingWearable && freshness?.isStale === true;
 
     const hrvTrend = readiness.factors?.hrv?.trend;
     const hrvStatus: CoachKernelReadinessInput['hrvStatus'] =
@@ -547,10 +552,10 @@ export async function fetchCurrentReadinessForPlan(userId: number): Promise<Coac
 
     return {
       score: readiness.score,
-      confidence: readiness.reasonCode === 'WEARABLE_INTEGRATION_MISSING' ? 'no_data' : 'fresh_wearable',
-      dataSource: readiness.reasonCode === 'WEARABLE_INTEGRATION_MISSING' ? 'fallback' : 'wearable',
-      isStale: false,
-      reasonCode: readiness.reasonCode ?? null,
+      confidence: missingWearable ? 'no_data' : staleProvider ? 'stale_provider' : 'fresh_wearable',
+      dataSource: missingWearable ? 'fallback' : 'wearable',
+      isStale: staleProvider,
+      reasonCode: staleProvider ? 'PROVIDER_STALE' : readiness.reasonCode ?? null,
       sleepHours,
       hrvStatus,
       energyReserve,
@@ -558,6 +563,49 @@ export async function fetchCurrentReadinessForPlan(userId: number): Promise<Coac
     };
   } catch (err) {
     logger.debug({ err, userId }, 'fetchCurrentReadinessForPlan failed — plan generator will use neutral fallback');
+    return null;
+  }
+}
+
+function resolveReadinessProviderFreshness(userId: number): { isStale: boolean; latestSyncAt: string | null } | null {
+  try {
+    const db = getDb();
+    const rows: Array<{ synced_at: string | null }> = [];
+
+    for (const sql of [
+      `SELECT MAX(last_refreshed_at) AS synced_at FROM garmin_sessions WHERE user_id = ?`,
+      `SELECT MAX(COALESCE(last_used, last_refresh, updated_at, created_at)) AS synced_at
+         FROM garmin_user_tokens
+        WHERE user_id = ?
+          AND COALESCE(status, 'active') = 'active'`,
+      `SELECT MAX(created_at) AS synced_at
+         FROM apple_health_data
+        WHERE user_id = ?
+          AND data_type IN ('hrv', 'sleep', 'daily_summary', 'body_battery', 'resting_heart_rate', 'resting_hr')`,
+    ]) {
+      try {
+        const row = db.prepare(sql).get(userId) as { synced_at: string | null } | undefined;
+        if (row?.synced_at) rows.push(row);
+      } catch {
+        // Some local/test databases intentionally omit optional provider
+        // tables. Ignore table-level misses and keep checking other sources.
+      }
+    }
+
+    const latestSyncAt = rows
+      .map((row) => row.synced_at)
+      .filter((value): value is string => typeof value === 'string' && value.trim().length > 0)
+      .sort((left, right) => Date.parse(right) - Date.parse(left))[0] ?? null;
+
+    if (!latestSyncAt) return null;
+    const latestMs = Date.parse(latestSyncAt);
+    if (!Number.isFinite(latestMs)) return null;
+    return {
+      latestSyncAt,
+      isStale: Date.now() - latestMs > READINESS_PROVIDER_STALE_MS,
+    };
+  } catch (err) {
+    logger.debug({ err, userId }, 'resolveReadinessProviderFreshness failed — treating readiness as freshness-unknown');
     return null;
   }
 }

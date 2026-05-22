@@ -53,6 +53,10 @@ export interface CoordinatedTrainingPlan {
   weeks?: CoordinatedTrainingWeek[];
   profileQuality?: CoordinatedTrainingProfileQuality;
   decisionReasons?: TrainingDecisionReason[];
+  primaryFocus?: string;
+  primaryFocusSource?: 'objective_keyword' | 'inferred_volume_split' | 'fallback';
+  primaryFocusFallbackReason?: 'missing' | 'unrecognized' | null;
+  primaryFocusRawObjective?: string | null;
 }
 
 export interface TrainingPlanCoordinationInput {

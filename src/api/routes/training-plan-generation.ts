@@ -22,6 +22,7 @@ import {
 } from '../../services/training-plan-coordination';
 import {
   buildCoachKernelTrainingPlan,
+  resolvePrimaryFocusWithSource,
   type TrainingGoalMode,
   type TrainingPriority,
 } from '../../services/training-coach-kernel-plan-generator';
@@ -99,6 +100,10 @@ export type TrainingPlanGenerationResult =
         weeklyTargets: TrainingPlanWeeklyTargets;
         totalSessions: number;
         calendarSource: CalendarSource | null;
+        primaryFocus: string;
+        primaryFocusSource: 'objective_keyword' | 'inferred_volume_split' | 'fallback';
+        primaryFocusFallbackReason: 'missing' | 'unrecognized' | null;
+        primaryFocusRawObjective: string | null;
         phaseRoadmap: Array<{
           weekNumber: number;
           phase: string;
@@ -138,6 +143,10 @@ export type TrainingPlanGenerationResult =
         calendarFetchDegraded: boolean;
         calendarFetchError?: string;
         fallbackTemplateUsed: boolean;
+        primaryFocus: string;
+        primaryFocusSource: 'objective_keyword' | 'inferred_volume_split' | 'fallback';
+        primaryFocusFallbackReason: 'missing' | 'unrecognized' | null;
+        primaryFocusRawObjective: string | null;
         goalMode: TrainingGoalMode | null;
         trainingPriority: TrainingPriority | null;
         raceDate: string | null;
@@ -247,6 +256,24 @@ export interface TrainingPlanWeeklyTargets {
   strengthSessionsPerWeek: number;
   bikeSessionsPerWeek: number | null;
   swimSessionsPerWeek: number | null;
+}
+
+function buildPrimaryFocusResponseFields(
+  resolution: ReturnType<typeof resolvePrimaryFocusWithSource>,
+): {
+  primaryFocus: string;
+  primaryFocusSource: 'objective_keyword' | 'inferred_volume_split' | 'fallback';
+  primaryFocusFallbackReason: 'missing' | 'unrecognized' | null;
+  primaryFocusRawObjective: string | null;
+} {
+  return {
+    primaryFocus: resolution.value,
+    primaryFocusSource: resolution.source,
+    primaryFocusFallbackReason: resolution.source === 'fallback' ? resolution.reason : null,
+    primaryFocusRawObjective: resolution.source === 'fallback' && resolution.reason === 'unrecognized'
+      ? resolution.rawInput ?? null
+      : null,
+  };
 }
 
 export async function generateTrainingPlanForUser(
@@ -377,6 +404,12 @@ export async function generateTrainingPlanForUser(
     : gymOnlyObjective
       ? Math.min(normalizedSessionsPerWeek, 6)
       : 0;
+  const primaryFocusResolution = resolvePrimaryFocusWithSource(
+    objective,
+    normalizedSessionsPerWeek,
+    effectiveStrengthSessionsPerWeek,
+  );
+  const primaryFocusResponseFields = buildPrimaryFocusResponseFields(primaryFocusResolution);
   const normalizedLongWorkoutDay = typeof longWorkoutDay === 'string' ? longWorkoutDay.trim() : null;
 
   let sharedDecisionContext = '';
@@ -586,6 +619,7 @@ export async function generateTrainingPlanForUser(
         }),
         totalSessions: countSchedulablePlanSessions(planData),
         calendarSource: calendarSource || null,
+        ...primaryFocusResponseFields,
         phaseRoadmap: buildPlanPhaseRoadmap(planData),
         planLint: preflightLint,
         warnings: buildPlanWarnings({
@@ -633,6 +667,7 @@ export async function generateTrainingPlanForUser(
         calendarFetchDegraded,
         ...(calendarFetchError ? { calendarFetchError } : {}),
         fallbackTemplateUsed: usedFallbackTemplate,
+        ...primaryFocusResponseFields,
         goalMode: normalizedGoalMode,
         trainingPriority: normalizedTrainingPriority,
         raceDate: raceDateForLint,
@@ -751,6 +786,7 @@ export async function generateTrainingPlanForUser(
       weeks: persistedPlan.weekSummaries,
       profileQuality: planData.profileQuality ?? null,
       decisionReasons: Array.isArray(planData.decisionReasons) ? planData.decisionReasons : [],
+      ...primaryFocusResponseFields,
       fallbackTemplateUsed: usedFallbackTemplate,
       goalMode: normalizedGoalMode,
       trainingPriority: normalizedTrainingPriority,

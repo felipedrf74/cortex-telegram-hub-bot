@@ -4,6 +4,11 @@ const cache = new Map<string, any>();
 const hoisted = vi.hoisted(() => ({
   calculateReadiness: vi.fn(),
   getActivitiesByDateForUser: vi.fn(),
+  readinessFreshnessRows: {
+    garminSession: null as string | null,
+    garminToken: null as string | null,
+    appleHealth: null as string | null,
+  },
 }));
 
 let mockActivePlan: any = null;
@@ -22,6 +27,19 @@ vi.mock('../../src/utils/logger', () => ({
 vi.mock('../../src/services/cache-store', () => ({
   getCached: (key: string) => cache.get(key),
   setCache: (key: string, value: any) => cache.set(key, value),
+}));
+
+vi.mock('../../src/services/database', () => ({
+  getDb: () => ({
+    prepare: (sql: string) => ({
+      get: () => {
+        if (sql.includes('garmin_sessions')) return { synced_at: hoisted.readinessFreshnessRows.garminSession };
+        if (sql.includes('garmin_user_tokens')) return { synced_at: hoisted.readinessFreshnessRows.garminToken };
+        if (sql.includes('apple_health_data')) return { synced_at: hoisted.readinessFreshnessRows.appleHealth };
+        return { synced_at: null };
+      },
+    }),
+  }),
 }));
 
 vi.mock('../../src/services/training-plans', () => ({
@@ -61,6 +79,9 @@ describe('training-read-models', () => {
     mockCalendarLookup = new Map();
     mockReadinessResult = null;
     mockGarminActivities = [];
+    hoisted.readinessFreshnessRows.garminSession = null;
+    hoisted.readinessFreshnessRows.garminToken = null;
+    hoisted.readinessFreshnessRows.appleHealth = null;
     hoisted.calculateReadiness.mockReset();
     hoisted.getActivitiesByDateForUser.mockReset();
     (buildCalendarEventLookup as any).mockReset();
@@ -392,6 +413,33 @@ describe('training-read-models', () => {
       energyReserve: undefined,
       reasoning: 'No wearable provider is connected; using neutral readiness.',
     });
+  });
+
+  it('marks provider-backed readiness as stale when the latest sync is older than 24 hours', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-05-22T12:00:00.000Z'));
+    mockReadinessResult = {
+      score: 76,
+      recommendation: 'normal',
+      reasoning: 'Provider data available.',
+      factors: {
+        sleep: { durationHours: 7.1 },
+        hrv: { trend: 'stable' },
+        bodyBattery: { current: 66 },
+      },
+    };
+    hoisted.readinessFreshnessRows.garminSession = '2026-05-21T10:30:00.000Z';
+
+    const mapped = await fetchCurrentReadinessForPlan(42);
+
+    expect(mapped).toMatchObject({
+      score: 76,
+      confidence: 'stale_provider',
+      dataSource: 'wearable',
+      isStale: true,
+      reasonCode: 'PROVIDER_STALE',
+    });
+    vi.useRealTimers();
   });
 
   // ─── Bug fix 2026-04-28 (no-plan create-CTA) ────────────────────────

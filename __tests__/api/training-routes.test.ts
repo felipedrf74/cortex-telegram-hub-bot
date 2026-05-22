@@ -147,9 +147,15 @@ vi.mock('../../src/services/onboarding', () => ({
   getQuestionnaire: (...args: unknown[]) => mockGetQuestionnaire(...args),
 }));
 
-vi.mock('../../src/services/training-coach-kernel-plan-generator', () => ({
-  buildCoachKernelTrainingPlan: (...args: unknown[]) => mockBuildCoachKernelTrainingPlan(...args),
-}));
+vi.mock('../../src/services/training-coach-kernel-plan-generator', async () => {
+  const actual = await vi.importActual<typeof import('../../src/services/training-coach-kernel-plan-generator')>(
+    '../../src/services/training-coach-kernel-plan-generator',
+  );
+  return {
+    ...actual,
+    buildCoachKernelTrainingPlan: (...args: unknown[]) => mockBuildCoachKernelTrainingPlan(...args),
+  };
+});
 
 vi.mock('../../src/services/readiness-scorer', () => ({
   calculateReadiness: (...args: unknown[]) => mockCalculateReadiness(...args),
