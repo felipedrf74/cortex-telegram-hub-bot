@@ -1,10 +1,10 @@
 # Training Skill Trust Wedge — Roadmap 2026-05-22
 
-Status: PLAN (no code yet)
+Status: PLAN — PR-pre0 convergence complete; PR0A is next
 Owner: Felipe (with Claude/Codex execution)
 Last updated: 2026-05-22
 Update policy: living doc. PR0/PR1/PR2 close-out updates land in this file as each ships.
-Codex critical review: 2026-05-22 (see §18 before starting PR0).
+Codex critical review: 2026-05-22 (see §18). Convergence update: backend `main` now includes the deployed Training audit line at merge commit `5d037706`; this branch was rebased onto that main.
 
 > This document is the **handoff artifact** between Claude's Phase 1-4 feature-dev work (discovery → exploration → clarifying questions → architecture design) and the code-execution phase. Read this in order; every section answers a specific design decision.
 
@@ -38,35 +38,33 @@ All locked decisions from Phase 1-4 with reasoning.
 | D8 | **PR strategy**: PR0 first (honest inputs), then PR1 (backend explanation), PR2 (iOS), PR3 deferred | Separate the trust-restoration bug fixes from the explanation surface so each ships independently with its own staging gate |
 | D9 | **Dead code scope**: Tackle ALL THREE — compliance hardcode + stale_provider wiring + phase resolver consolidation | Honesty contract: never claim provenance from a signal you haven't actually computed (the 0.82 hardcode would have made every explanation chip a partial lie) |
 | D10 | **Architecture choice**: Pragmatic (B), not Lean (A) or Clean (C) | Trust requires depth (5-bucket why) not just disclosure; roadmap-scale needs named hooks not formal abstractions; Decision Center primitives are SHIPPED + PROVEN |
+| D11 | **Trust surface shape**: Show both "Nexus chose" and "Nexus respected" | Felipe's seed bugs were not only about inference; they were about whether explicit choices like preferred time and run/gym counts were honored. The card must prove respected constraints, not only explain smart picks. |
+| D12 | **Localization**: iOS renders user-facing copy from semantic codes; backend persists structured evidence, not English-first prose | Avoids mixed Portuguese/English UX and keeps copy iteration in the client. Backend may include short fallback labels for portal/debugging, but iOS should treat keys/evidence as primary. |
+| D13 | **Fallback disclosure**: no-wearable readiness appears as a low-confidence data-quality row, not as a scary primary warning | Honest without creating unnecessary anxiety. |
+| D14 | **Privacy**: persisted explanation stores sanitized/truncated evidence snippets, not full raw objective text | Raw objective can contain sensitive data. Evidence snippets should be bounded and enough to explain the choice. |
 
 ---
 
 ## 3. Prerequisites
 
-These must be true BEFORE PR0 starts.
+These must be true BEFORE PR0A starts.
 
 ### 3.1 Audit branch merged to main
 
-**Branch**: `codex/training-skill-full-audit-20260522`
-**Worktree**: `cortex-telegram-hub-bot-training-full-audit-20260522` at `96cfd84c`
-**Blocker**: migration `153_training_operation_locks.sql` collides with production's already-shipped `153_decision_center_explanations.sql`.
+**Status**: COMPLETE.
 
-**Resolution steps**:
-1. On the audit branch: rename `migrations/153_training_operation_locks.sql` → `migrations/154_training_operation_locks.sql`.
-2. Update any test that references the migration number (`__tests__/services/training-operation-locks.test.ts` line 68 has the filename literal — verify it's the only reference).
-3. Update any QA/handoff doc that references "migration 153 (training_operation_locks)" → "migration 154".
-4. Rebase audit branch onto current `origin/main` (`81fd5496`).
-5. Confirm `npm run verify` passes.
-6. Deploy staging → smoke 21/21 → promote.
+**Evidence**:
+- Backend `main` now contains merge commit `5d037706 merge: training skill reliability audit`.
+- `migrations/153_decision_center_explanations.sql` and `migrations/154_training_operation_locks.sql` both exist on `main`.
+- Focused Training suite passed after the merge: 15 files / 180 tests.
+- Main push gate passed: full vitest 638 files / 9457 tests plus build verification.
 
-**After**: my new migration becomes `155_training_plan_creation_explanation.sql`.
-
-**Status**: NOT STARTED. Felipe or Codex owns this.
+**After**: the trust-wedge migration remains `155_training_plan_creation_explanation.sql` unless another branch claims 155 first.
 
 ### 3.2 Branch + worktree readiness
 
 **Backend worktree**: `cortex-telegram-hub-bot-training-trust-wedge-20260522` (created 2026-05-22)
-**Backend branch**: `feature/training-trust-wedge-20260522` (tracking `origin/main` at `81fd5496`)
+**Backend branch**: `feature/training-trust-wedge-20260522` (rebased onto post-audit `origin/main` at `5d037706`, with roadmap commit replayed)
 **iOS worktree**: `worktrees/training-trust-wedge-20260522` (created 2026-05-22)
 **iOS branch**: `feature/training-trust-wedge-20260522` (tracking `origin/main` at `b42abe1`)
 
@@ -74,7 +72,9 @@ These must be true BEFORE PR0 starts.
 
 ### 3.3 Once audit branch lands
 
-**Action**: rebase both `feature/training-trust-wedge-20260522` branches onto post-audit `origin/main`. Verify `migrations/` directory now has 154 (training_operation_locks). My migration becomes 155.
+**Status**: COMPLETE for backend.
+
+The backend trust-wedge branch was rebased onto post-audit `origin/main` and now sees `154_training_operation_locks.sql`. The iOS trust-wedge branch was already based on `b42abe1`, which contains the Training plan-builder in-flight guard and modality target forwarding.
 
 ---
 
@@ -82,33 +82,32 @@ These must be true BEFORE PR0 starts.
 
 | PR | Scope | LOC | Gate |
 |---|---|---|---|
-| **PR-prereq** | Audit branch merge (NOT my scope; Felipe/Codex) | — | Staging 21/21 |
-| **PR0** | Honest inputs: per-modality counts wired, structured `decisionReasons` iOS decode, `primaryFocusSource` backend emission, real `trailing14DayCompliance`, `stale_provider` wiring, phase resolver consolidation | ~250 | Backend `npm run verify` + iOS unit + staging 21/21 |
-| **PR1** | Backend explanation: new module `training-plan-explanation/`, migration 155, generator integration, route decoration, persistence | ~975 | Same gates + new builder vitest suite + sample-emission JSON inspection |
+| **PR-pre0** | Main/prod convergence: merge deployed audit line into `main`, rebase trust-wedge backend, prune stale tasks from this doc | Done | Complete on 2026-05-22 |
+| **PR0A** | Remaining honest inputs: structured iOS `decisionReasons`, backend `primaryFocusSource` emission, real `trailing14DayCompliance`, `stale_provider` readiness, phase resolver consolidation without forced week-4 deload | ~180 | Backend focused + full verify, iOS unit, staging smoke |
+| **PR0B** | Explanation contract spike: generate 3 sample JSON payloads from real fixtures, no persistence/UI yet; include `smartPicks`, `respectedConstraints`, and `attentionItems` | ~160 | Vitest sample-builder tests + Felipe copy/noise review |
+| **PR1** | Backend explanation: new module `training-plan-explanation/`, migration 155, generator integration, route decoration, persistence | ~900 | Same gates + new builder vitest suite + sample-emission JSON inspection |
 | **PR2** | iOS rendering: `PlanCreationExplanation.swift` + `TrainingDecisionReason.swift` + `PlanCreationExplanationCard.swift` + 5-bucket DisclosureGroup + confidence pills | ~730 | Xcode build clean + extended `PlanGenerateResponse*Tests.swift` + TestFlight smoke |
 | **PR3** (deferred) | `GET /training/plan/:id/explanation` history endpoint + iOS detail view consumption | ~150 | After PR1+PR2 soak 1+ week in production |
 
-**Total wedge**: ~1,955 LOC over 2.5-3 weeks (PR0 + PR1 + PR2). PR3 lands in Phase 2 sprint.
+**Total wedge estimate after convergence**: ~1,850 LOC over 2.5-3 weeks (PR0A + PR0B + PR1 + PR2). PR3 lands in Phase 2 sprint.
 
 ---
 
-## 5. PR0 — Honest Inputs (~250 LOC, ~3-4 days)
+## 5. PR0A — Honest Inputs Remaining (~180 LOC, ~2-3 days)
 
 The trust contract: never claim provenance from a signal you haven't computed.
 
 ### 5.1 Bug fix A — wire `runSessionsPerWeek` / `bikeSessionsPerWeek` / `swimSessionsPerWeek`
 
-**Symptom**: iOS sends these fields (TrainingService.swift:266-274) but backend silently drops them. The "Corridas por semana" stepper in the UI does nothing.
+**Status**: CLOSED by the Training audit line merged into main.
 
-**Files to touch**:
-- `src/api/routes/training-plan-routes.ts` lines 58-73 (preview body destructure) and 161-176 (generate body destructure) — accept the three new fields.
-- `src/api/routes/training-plan-generation.ts` lines 51-75 (`GenerateTrainingPlanForUserInput`) and 240-254 (destructure inside `generateTrainingPlanForUser`) — thread through.
-- `src/services/training-coach-kernel-plan-generator.ts` lines 69-113 (`CoachKernelTrainingPlanInput`) — accept the three optional numbers.
-- `src/services/training-coach-kernel-plan-generator.ts` lines 797-855 (`resolveWeeklyTargets`) — when caller-supplied per-sport counts exist, they override the focus-derived shape. Clamp each to 0..7. Rebalance the other modalities to total-strength-run when running is explicit.
+**Evidence**:
+- Backend routes accept and forward `runSessionsPerWeek`, `bikeSessionsPerWeek`, and `swimSessionsPerWeek`.
+- `resolveWeeklyTargets` consumes all three fields.
+- iOS main sends all three fields.
+- Existing tests cover modality forwarding and the 6-run + 5-gym bug.
 
-**Test pin**: `__tests__/services/training-coach-kernel-primary-focus.test.ts` add cases: "runSessionsPerWeek=4 overrides marathon-default of 4-7", "bikeSessionsPerWeek + runSessionsPerWeek + swimSessionsPerWeek sum + strength = total".
-
-**Estimated LOC**: 50.
+**PR0A action**: none.
 
 ### 5.2 Bug fix B — iOS structured `decisionReasons` decode
 
@@ -173,7 +172,7 @@ The generator's outer loop overwrites `currentBlock.phase` from `resolveWeekPhas
 
 **Files to touch**:
 - `src/services/training-coach-kernel-plan-generator.ts` lines 1740-1773: compose `inferPhase`-based race window logic into `resolveWeekPhase`. When `raceCalendar` has a next race, delegate phase calculation to `inferPhase` (which knows subtype-specific tables). When no race, keep the simpler base/build/deload logic.
-- Test: `__tests__/services/training-coach-kernel-plan-generator.test.ts` — pin "marathon plan with race 56 days out → week N gets phase 'peak'", "ironman plan with race 21 days out → week N gets phase 'taper'", "no race + 4-week plan → weeks 1-2 base, week 3 build, week 4 deload".
+- Test: `__tests__/services/training-coach-kernel-plan-generator.test.ts` — pin "marathon plan with race 56 days out → week N gets phase 'peak'", "ironman plan with race 21 days out → week N gets phase 'taper'", and "no race + healthy readiness + no fatigue/pain → no forced week-4 deload". Add separate tests where recovery/deload is justified by explicit readiness, pain/injury, race/taper, or a deliberate mesocycle model.
 
 **Estimated LOC**: 40 (carefully — this touches kernel brain logic).
 
@@ -181,13 +180,13 @@ The generator's outer loop overwrites `currentBlock.phase` from `resolveWeekPhas
 
 | Component | LOC |
 |---|---|
-| Bug A — per-modality counts wired | 50 |
+| Bug A — per-modality counts wired | 0 (already closed) |
 | Bug B — iOS structured decisionReasons + new Swift type + 2 test updates | 70 |
 | Bug C — primaryFocusSource emission | 20 |
 | Dead-code A — real compliance | 40 |
 | Dead-code B — stale_provider wiring | 30 |
 | Dead-code C — phase resolver consolidation | 40 |
-| **Total** | **250** |
+| **Total** | **~200** |
 
 ### PR0 verification gate
 
@@ -239,7 +238,7 @@ export type SmartPickCategory =
   | 'readiness_baseline';   // buildReadinessSnapshot fallback path
 
 export type SmartPickProvenance =
-  | { kind: 'inferred_from_keyword'; matchedKeyword: string; rawInput?: string }
+  | { kind: 'inferred_from_keyword'; matchedKeyword: string; rawInputSnippet?: string }
   | { kind: 'inferred_from_volume_split' }
   | { kind: 'inferred_from_profile_data'; sourceField: string; rawValue?: string | number }
   | { kind: 'inferred_from_targets'; targetField: string; multiplier: number }
@@ -250,8 +249,11 @@ export type SmartPickProvenance =
 export interface SmartPick {
   category: SmartPickCategory;
   pickId: string;                    // stable for SwiftUI list keys
-  label: string;                     // short, render-ready
-  rationale: string;                 // one-liner ≤140 chars
+  labelKey: string;                  // stable localization key for iOS copy
+  rationaleKey: string;              // stable localization key for iOS copy
+  fallbackLabel?: string;            // optional debug/portal fallback, not authoritative app copy
+  fallbackRationale?: string;        // optional debug/portal fallback, ≤140 chars
+  evidence: string[];                // sanitized/truncated snippets, never full raw objective
   provenance: SmartPickProvenance;
   why: Partial<DecisionWhy>;         // sparse — sections with content only
   confidence: number;                // anchored to DECISION_CONFIDENCE_RUBRIC
@@ -266,11 +268,36 @@ export interface PlanCreationExplanation {
   generatedAt: string;               // ISO-8601
   planId?: number;                   // omitted on preview
   smartPicks: SmartPick[];           // ONLY system-inferred, NEVER flat defaults
+  respectedConstraints: RespectedConstraint[]; // explicit user choices honored
+  attentionItems: AttentionItem[];    // explicit user choices not honored / require action
   summary: {
     totalPicks: number;
     highConfidenceCount: number;
     fallbackCount: number;
+    respectedConstraintCount: number;
+    attentionCount: number;
   };
+}
+```
+
+Add two small companion types in the same file:
+
+```ts
+export interface RespectedConstraint {
+  constraintId: string;
+  category: 'preferred_time' | 'weekly_frequency' | 'long_session_day' | 'modality_target' | 'start_policy';
+  labelKey: string;
+  evidence: string[];
+  source: 'request' | 'profile';
+}
+
+export interface AttentionItem {
+  itemId: string;
+  category: RespectedConstraint['category'] | 'data_quality';
+  severity: 'info' | 'warning' | 'blocking';
+  labelKey: string;
+  evidence: string[];
+  resolutionHintKey?: string;
 }
 ```
 
@@ -307,9 +334,13 @@ interface PlanExplanationBuilderInput {
 }
 ```
 
-**Filter rule (the SMART pick filter)**: For each resolver output, emit a `SmartPick` ONLY when `source !== 'fallback'` AND the result was inferred (not a literal user-typed value passing through). The fallback path is special-cased:
-- `readiness_baseline` ONLY emits when `buildReadinessSnapshot` returned the neutral 70 fallback (no wearable connected). This is honest disclosure of the "no data" path.
-- `equipment_profile` with `source: 'fallback'` doesn't emit (would shame the user for incomplete profile); the lint surface handles that case separately.
+**Filter rule (the SMART pick filter)**:
+- `request`: never a `SmartPick`; emit as `respectedConstraints` when honored, or `attentionItems` when not honored.
+- `raw_default`: not shown.
+- `fallback`: shown only when user trust benefits from disclosure, such as no wearable readiness; otherwise hidden.
+- `profile` / `inferred` / `derived`: emit as `SmartPick`.
+
+`readiness_baseline` with no wearable should be emitted as a low-confidence `attentionItems` data-quality row plus, if helpful, a low-confidence `SmartPick`. `equipment_profile` with `source: 'fallback'` stays hidden; the lint/profile-completion surface handles that case.
 
 **Confidence anchoring** (no magic numbers):
 ```ts
@@ -539,7 +570,7 @@ enum SmartPickCategory: String, Codable {
 }
 
 enum SmartPickProvenance: Codable, Equatable {
-    case inferredFromKeyword(matchedKeyword: String, rawInput: String?)
+    case inferredFromKeyword(matchedKeyword: String, rawInputSnippet: String?)
     case inferredFromVolumeSplit
     case inferredFromProfileData(sourceField: String, rawValue: AnyCodableValue?)
     case inferredFromTargets(targetField: String, multiplier: Double)
@@ -705,6 +736,8 @@ Phase 2's adaptive engine can call it twice (once on plan create, once on plan a
 
 Felipe-realistic input: `objective: "Run Lisbon Marathon under 3:30"`, `sessionsPerWeek: 6`, `strengthSessionsPerWeek: 3`, `runSessionsPerWeek: null`, profile has Garmin connected + advanced gym experience + commercial gym.
 
+Post-D12 note: the English `fallbackLabel` / `fallbackRationale` values below are debug/portal fallback copy. The iOS app should render localized copy from `labelKey`, `rationaleKey`, category, and evidence.
+
 ```json
 {
   "schemaVersion": 1,
@@ -714,9 +747,12 @@ Felipe-realistic input: `objective: "Run Lisbon Marathon under 3:30"`, `sessions
     {
       "category": "primary_focus",
       "pickId": "primary_focus:marathon",
-      "label": "Marathon focus",
-      "rationale": "Your objective said \"marathon\" — Nexus structured base/build/peak/taper around race-specific running volume.",
-      "provenance": { "kind": "inferred_from_keyword", "matchedKeyword": "marathon", "rawInput": "Run Lisbon Marathon under 3:30" },
+      "labelKey": "training.explanation.primaryFocus.marathon.label",
+      "rationaleKey": "training.explanation.primaryFocus.marathon.rationale",
+      "fallbackLabel": "Marathon focus",
+      "fallbackRationale": "Your objective said \"marathon\" — Nexus structured base/build/peak/taper around race-specific running volume.",
+      "evidence": ["objective contains \"marathon\""],
+      "provenance": { "kind": "inferred_from_keyword", "matchedKeyword": "marathon", "rawInputSnippet": "Run Lisbon Marathon..." },
       "why": {
         "facts": ["Objective contained the keyword \"marathon\"."],
         "rules": ["Race-specific running needs a 4-session minimum per week."]
@@ -730,8 +766,11 @@ Felipe-realistic input: `objective: "Run Lisbon Marathon under 3:30"`, `sessions
     {
       "category": "weekly_volume",
       "pickId": "weekly_volume:running",
-      "label": "4 run sessions/week",
-      "rationale": "You did not pin a run count, so Nexus applied the marathon minimum: 1 long + 1 quality + 2 supports.",
+      "labelKey": "training.explanation.weeklyVolume.running.label",
+      "rationaleKey": "training.explanation.weeklyVolume.running.rationale",
+      "fallbackLabel": "4 run sessions/week",
+      "fallbackRationale": "You did not pin a run count, so Nexus applied the marathon minimum: 1 long + 1 quality + 2 supports.",
+      "evidence": ["runSessionsPerWeek not provided", "marathon minimum: 4 runs"],
       "provenance": { "kind": "inferred_from_capacity_cap", "capValue": 4, "requestedValue": 6 },
       "why": {
         "facts": ["Requested 6 sessions/week with no per-modality split.", "Marathon focus enforces 4 runs minimum."],
@@ -746,8 +785,11 @@ Felipe-realistic input: `objective: "Run Lisbon Marathon under 3:30"`, `sessions
     {
       "category": "experience_level",
       "pickId": "experience_level:advanced",
-      "label": "Advanced experience",
-      "rationale": "Your gym profile reads \"5+ years\" — Nexus unlocked the full strength catalog without beginner-safe substitutions.",
+      "labelKey": "training.explanation.experience.advanced.label",
+      "rationaleKey": "training.explanation.experience.advanced.rationale",
+      "fallbackLabel": "Advanced experience",
+      "fallbackRationale": "Your gym profile reads \"5+ years\" — Nexus unlocked the full strength catalog without beginner-safe substitutions.",
+      "evidence": ["gym training age: 5+ years"],
       "provenance": { "kind": "inferred_from_profile_data", "sourceField": "gym_profile.training_age", "rawValue": "5+ years" },
       "why": { "facts": ["Matched vocabulary token: \"5+\"."] },
       "confidence": 0.88,
@@ -757,8 +799,11 @@ Felipe-realistic input: `objective: "Run Lisbon Marathon under 3:30"`, `sessions
     {
       "category": "two_a_day_policy",
       "pickId": "two_a_day_policy:auto_enabled",
-      "label": "2-a-day enabled",
-      "rationale": "6 weekly sessions + 3 strength reached the threshold, so Nexus allows AM cardio + PM strength on the same day.",
+      "labelKey": "training.explanation.twoADay.autoEnabled.label",
+      "rationaleKey": "training.explanation.twoADay.autoEnabled.rationale",
+      "fallbackLabel": "2-a-day enabled",
+      "fallbackRationale": "6 weekly sessions + 3 strength reached the threshold, so Nexus allows AM cardio + PM strength on the same day.",
+      "evidence": ["6 weekly sessions", "3 strength sessions"],
       "provenance": { "kind": "inferred_from_capacity_cap", "capValue": 2, "requestedValue": 6 },
       "why": {
         "facts": ["Total weekly target: 6 sessions.", "Strength sessions present: 3."],
@@ -771,8 +816,11 @@ Felipe-realistic input: `objective: "Run Lisbon Marathon under 3:30"`, `sessions
     {
       "category": "periodization_phase",
       "pickId": "periodization_phase:peak",
-      "label": "Peak phase active",
-      "rationale": "Your marathon is 56 days away — Nexus shifted into peak intensity 6 weeks before race day.",
+      "labelKey": "training.explanation.periodization.peak.label",
+      "rationaleKey": "training.explanation.periodization.peak.rationale",
+      "fallbackLabel": "Peak phase active",
+      "fallbackRationale": "Your marathon is 56 days away — Nexus shifted into peak intensity 6 weeks before race day.",
+      "evidence": ["race is 56 days away"],
       "provenance": { "kind": "inferred_from_race_window", "daysToRace": 56 },
       "why": {
         "facts": ["Race date: 2026-07-17."],
@@ -784,10 +832,22 @@ Felipe-realistic input: `objective: "Run Lisbon Marathon under 3:30"`, `sessions
       "coachRuleId": "endurance-periodization-by-goal-horizon"
     }
   ],
+  "respectedConstraints": [
+    {
+      "constraintId": "preferred_time:gym",
+      "category": "preferred_time",
+      "labelKey": "training.explanation.constraints.preferredGymTimeRespected",
+      "evidence": ["gym sessions scheduled at 12:00"],
+      "source": "request"
+    }
+  ],
+  "attentionItems": [],
   "summary": {
     "totalPicks": 5,
     "highConfidenceCount": 3,
-    "fallbackCount": 0
+    "fallbackCount": 0,
+    "respectedConstraintCount": 1,
+    "attentionCount": 0
   }
 }
 ```
@@ -799,8 +859,11 @@ Felipe-realistic input: `objective: "Run Lisbon Marathon under 3:30"`, `sessions
 {
   "category": "readiness_baseline",
   "pickId": "readiness_baseline:neutral_70",
-  "label": "Readiness baseline 70",
-  "rationale": "No wearable connected, so Nexus used neutral 70. Connect Garmin or Apple Health to make this honest.",
+  "labelKey": "training.explanation.readiness.neutralFallback.label",
+  "rationaleKey": "training.explanation.readiness.neutralFallback.rationale",
+  "fallbackLabel": "Readiness baseline 70",
+  "fallbackRationale": "No wearable connected, so Nexus used neutral 70. Connect Garmin or Apple Health to make this honest.",
+  "evidence": ["no wearable readiness data connected"],
   "provenance": { "kind": "inferred_from_no_data_fallback", "neutralValue": 70 },
   "why": {
     "uncertainty": ["No HRV / sleep / body-battery data available — plan intensity may be too high or too low."]
@@ -850,14 +913,16 @@ it('explanation builder is pure and exported from training-plan-explanation/buil
 
 | Risk | Likelihood | Mitigation |
 |---|---|---|
-| Audit branch merge gets delayed | Medium | PR0 can ship without audit branch in main (no migration in PR0); only PR1's migration 155 depends on 154. Re-sequence if needed. |
+| Trust-wedge branch drifts from production again | Low | Main/prod convergence is now complete at `5d037706`; keep this branch rebased before each PR. |
 | Phase resolver consolidation regresses goal-mode tests | Medium | Recommend composition (not replacement) in PR0 §5.6. Full vitest suite plus 4-week-plan e2e tests catch regressions. |
 | `trailing14DayCompliance` real computation surfaces low values for cold-start users | High | Default to `0.82` on zero planned sessions (cold-start fallback). Adjust threshold once we see real data distribution. |
 | `stale_provider` 24h detection creates user anxiety ("my plan is wrong because data is stale") | Medium | Surface as **disclosure** not blocker; the SmartPick rationale should be encouraging ("Connect Garmin to refresh"). |
-| Migration 155 fails on a fresh DB without 154 | Low | Migration table is `IF NOT EXISTS`. But verify the migration runner applies in numerical order. |
+| Migration 155 fails on a fresh DB without 154 | Low | `154_training_operation_locks.sql` is now on main. Verify the migration runner applies in numerical order. |
 | iOS forward-compat: backend adds new SmartPickProvenance kind, old clients crash | Low | Swift decoder has `case unknown` last variant. New backend kinds decode as `.unknown` → filtered out of UI. |
 | Explanation JSON column gets corrupted | Low | All readers use `try? JSONDecoder().decode(...)`. Degraded path: card hidden, no crash. |
 | Two patterns for explanations (Training native + Decision Center) drift over time | Medium | Document in this roadmap that Training's `PlanCreationExplanation` BORROWS Decision Center primitives (DecisionWhy, rubric). If Decision Center evolves the rubric, Training inherits. |
+| User-facing explanation copy ships English-only | Medium | iOS renders localized copy from keys/evidence; backend fallback copy is debug-only. |
+| Explanation JSON stores sensitive free-text objective | Medium | Store sanitized/truncated snippets only; do not persist full raw objective inside `explanation_json`. |
 
 ---
 
@@ -867,7 +932,7 @@ it('explanation builder is pure and exported from training-plan-explanation/buil
 |---|---|---|---|
 | 152 | `nexus_points_canonical_tx_id` | Shipped (4.14.179) | main |
 | 153 | `decision_center_explanations` | Shipped (4.14.183) | main |
-| 154 | `training_operation_locks` | RESERVED — needs renumber on audit branch from 153→154 | `codex/training-skill-full-audit-20260522` |
+| 154 | `training_operation_locks` | Shipped in production 4.14.185 and merged to main at `5d037706` | main |
 | 155 | `training_plan_creation_explanation` | RESERVED for this work (PR1) | `feature/training-trust-wedge-20260522` |
 | 156 | (next available) | — | — |
 
@@ -914,13 +979,14 @@ These were considered and deferred:
 
 This document is the contract. The executor (Claude in a future session, or Codex) should:
 
-1. Confirm PR-prereq is done (audit branch merged, migration renumbered).
-2. Rebase `feature/training-trust-wedge-20260522` onto the post-audit `origin/main`.
+1. Confirm PR-pre0 is still true (main includes `154_training_operation_locks`; branch is rebased onto post-audit `origin/main`).
+2. Confirm this roadmap's D11-D14 choices still match Felipe's preference.
 3. Read the §14 reading list.
-4. Execute PR0 per §5 with the verification gate in §5.7.
-5. Once PR0 ships, execute PR1 per §6.
-6. Once PR1 ships, execute PR2 per §7.
-7. PR3 is deferred.
+4. Execute PR0A per §5 with the verification gate in §5.7.
+5. Execute PR0B sample-payload spike and get Felipe copy/noise approval before adding the migration.
+6. Once PR0A/PR0B ship, execute PR1 per §6.
+7. Once PR1 ships, execute PR2 per §7.
+8. PR3 is deferred.
 
 Update this doc's "PR sequence" table with actual ship dates and any LOC variance as each PR closes.
 
@@ -929,7 +995,7 @@ Update this doc's "PR sequence" table with actual ship dates and any LOC varianc
 ## 17. Live Identity
 
 **Worktrees created**:
-- Backend: `cortex-telegram-hub-bot-training-trust-wedge-20260522` on `feature/training-trust-wedge-20260522` (tracking `origin/main` at `81fd5496`)
+- Backend: `cortex-telegram-hub-bot-training-trust-wedge-20260522` on `feature/training-trust-wedge-20260522` (rebased onto post-audit `origin/main` at `5d037706`)
 - iOS: `worktrees/training-trust-wedge-20260522` on `feature/training-trust-wedge-20260522` (tracking `origin/main` at `b42abe1`)
 
 **Author**: Felipe (decisions), Claude (Phase 1-4 design + this doc), Codex/Claude (execution).
@@ -937,17 +1003,17 @@ Update this doc's "PR sequence" table with actual ship dates and any LOC varianc
 
 ---
 
-## 18. Codex Critical Review — Do Not Start PR0 Until These Are Resolved
+## 18. Codex Critical Review — Status After PR-pre0
 
-This addendum was added after a source-backed pass over the roadmap, the trust-wedge worktrees, the production training audit branch, and the current iOS worktree. It intentionally challenges the plan before implementation.
+This addendum was added after a source-backed pass over the roadmap, the trust-wedge worktrees, the production training audit branch, and the current iOS worktree. It intentionally challenges the plan before implementation. C1 and C2 are now resolved; C3-C6 have been converted into D11-D14 and PR0B/PR1 requirements.
 
 ### 18.1 Current evidence snapshot
 
 Verified on 2026-05-22:
 
-- Trust-wedge backend worktree is still based on `origin/main` at `81fd5496` and has migrations only through `153_decision_center_explanations.sql`.
-- Training audit branch `codex/training-skill-full-audit-20260522` is already deployed to production as `v4.14.185` at `96cfd84c`, and contains `migrations/154_training_operation_locks.sql`.
-- The audit branch is not merged into `origin/main` from this worktree's perspective; `origin/main...codex/training-skill-full-audit-20260522` reports divergent history.
+- Trust-wedge backend worktree is now rebased onto post-audit `origin/main` at `5d037706`.
+- Training audit branch `codex/training-skill-full-audit-20260522` was deployed to production as `v4.14.185` at `96cfd84c` and merged into `main`; `migrations/154_training_operation_locks.sql` is now on `main`.
+- The branch provenance problem is closed; future PRs should still rebase before implementation to avoid new migration drift.
 - Several PR0 items in this roadmap are already present on the deployed audit branch:
   - Backend accepts and forwards `runSessionsPerWeek`, `bikeSessionsPerWeek`, and `swimSessionsPerWeek`.
   - `resolveWeeklyTargets` already consumes those per-modality targets.
@@ -965,12 +1031,7 @@ Verified on 2026-05-22:
 
 Production is running the training audit line, but this trust-wedge branch was created from pre-audit `origin/main`. Starting PR0 here would re-open already-fixed Training behavior and create migration drift.
 
-**Better plan**:
-1. Merge or fast-forward the deployed audit line into backend `main` first, preserving `154_training_operation_locks.sql`.
-2. Rebase `feature/training-trust-wedge-20260522` onto the post-audit `origin/main`.
-3. Re-run the roadmap's evidence sweep and delete PR0 tasks already closed by the audit line.
-
-**Question for Felipe**: should the audit production branch become `main` immediately, or should the trust-wedge branch temporarily base from `codex/training-skill-full-audit-20260522` until main catches up?
+**Status**: COMPLETE. Backend `main` now contains merge commit `5d037706`, and this branch is rebased onto it.
 
 #### C2. The roadmap's "no race + week 4 deload" test contradicts the audit we just shipped
 
@@ -981,6 +1042,8 @@ Section 5.6 says to pin: "no race + 4-week plan -> weeks 1-2 base, week 3 build,
 - Add separate tests where recovery/deload is justified by explicit inputs: fatigue/readiness, pain/injury, race/taper, or a deliberately modeled 3-up/1-down mesocycle.
 
 **Question for Felipe**: should the first trust-wedge phase explain recovery weeks only when they are explicitly justified, instead of making week 4 special by default?
+
+**Default adopted**: yes. PR0A must not reintroduce unconditional week-4 deload behavior.
 
 #### C3. "Show only smart picks" may hide the user's highest-trust concerns
 
@@ -997,6 +1060,8 @@ The plan intentionally hides request-sourced choices. That is clean, but it miss
 
 **Question for Felipe**: do you want the wedge to build trust by explaining only Nexus inferences, or also by proving that explicit user choices were respected?
 
+**Default adopted**: include both "Nexus chose" and "Nexus respected", plus `attentionItems` for requests not honored.
+
 #### C4. Backend-rendered labels/rationales create localization drift
 
 The sample emissions include backend-generated English labels and rationales. Nexus already supports bilingual behavior; a backend-only English explanation card will feel wrong for Portuguese users. If iOS localizes the card but the backend sends English sentences, the UX will be mixed-language.
@@ -1006,6 +1071,8 @@ The sample emissions include backend-generated English labels and rationales. Ne
 - Send stable semantic fields (`category`, `ruleId`, `evidence`) and let iOS render localized copy.
 
 **Question for Felipe**: should the explanation copy be localized by backend at generation time, or should iOS render localized copy from semantic codes?
+
+**Default adopted**: iOS renders localized copy from semantic keys/evidence. Backend fallback copy is debug/portal-only.
 
 #### C5. The SMART-pick filter rule is internally inconsistent
 
@@ -1020,6 +1087,8 @@ Define one explicit provenance policy:
 
 **Question for Felipe**: should low-confidence fallbacks like no wearable data be shown as trust disclosures, or hidden to avoid anxiety?
 
+**Default adopted**: show no-wearable readiness as a low-confidence expandable data-quality row, not as a scary primary warning.
+
 #### C6. `DECISION_CONFIDENCE_RUBRIC` is not exported today
 
 The roadmap says Training should import `DECISION_CONFIDENCE_RUBRIC`, but the current source declares it as a local `const` in `src/services/decision-center-logic-v2.ts`.
@@ -1029,6 +1098,8 @@ The roadmap says Training should import `DECISION_CONFIDENCE_RUBRIC`, but the cu
 - Do not duplicate the values in Training; that would recreate drift.
 
 **Question for Felipe**: do we want a shared confidence primitive module now, or a minimal export from Decision Center for speed?
+
+**Default adopted**: PR1 should create or export a shared confidence primitive rather than duplicating constants. Prefer a neutral module if the diff is small; otherwise use a minimal export and file a cleanup note.
 
 ### 18.3 PR sequence revised after critical review
 
@@ -1045,7 +1116,7 @@ Replace the current PR sequence with this safer sequence:
 
 ### 18.4 Implementation questions that should be answered before coding
 
-1. Do we merge the deployed training audit branch into backend `main` before starting trust wedge work?
+1. Do we merge the deployed training audit branch into backend `main` before starting trust wedge work? **Resolved: yes, done at `5d037706`.**
 2. Should the card have two sections: "Nexus chose" and "Nexus respected", or only "Nexus chose"?
 3. Where should explanation copy be localized: backend builder or iOS renderer?
 4. Should no-wearable readiness fallback be shown by default, or only behind an expandable "data quality" row?
@@ -1054,8 +1125,8 @@ Replace the current PR sequence with this safer sequence:
 7. What is the maximum explanation payload size we accept in `/preview` responses?
 8. Should explanation JSON persist raw objective text, or store only a truncated/sanitized evidence snippet to reduce privacy exposure?
 9. Should Decision Center confidence primitives be exported from the existing file or moved into a shared neutral module?
-10. Should Phase 1 include telemetry for how often users expand/read the explanation card, or is that Phase 2?
+10. Should Phase 1 include telemetry for how often users expand/read the explanation card, or is that Phase 2? **Default: Phase 2 unless a lightweight local analytics event already exists in iOS.**
 
-### 18.5 Current "do not implement yet" line
+### 18.5 Current implementation line
 
-Do not start PR0 implementation on this worktree until C1 and C2 are resolved. The safest immediate next action is PR-pre0: converge `main` with the already-deployed training audit production branch, then rebase this worktree and refresh the roadmap task list from actual source.
+PR-pre0 is complete. The next implementation step is PR0A, but do not add the persisted explanation migration until PR0B sample payloads are reviewed for copy/noise/localization quality.
