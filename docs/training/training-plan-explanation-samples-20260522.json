@@ -1,147 +1,190 @@
-[
-  {
-    "scenario": "Marathon plus strength, strong profile data",
-    "explanation": {
-      "schemaVersion": 1,
-      "planId": null,
-      "generatedAt": "2026-05-22T10:00:00.000Z",
-      "locale": "en",
-      "summary": {
-        "smartPickCount": 4,
-        "respectedConstraintCount": 4,
-        "attentionItemCount": 0,
-        "highestSeverity": "info"
-      },
-      "smartPicks": [
-        {
-          "id": "primary_focus_from_objective",
-          "category": "primary_focus",
-          "labelKey": "training.explanation.smartPick.primaryFocus",
-          "fallbackLabel": "Primary focus: marathon",
-          "value": "marathon",
-          "source": "objective_keyword",
-          "confidence": 0.9
+{
+  "contractNote": "These examples intentionally abbreviate repeated item internals for readability. Runtime payloads include the full PlanCreationExplanation contract: labelKey, fallbackLabel, why, and evidence/coachRuleIds where each item type requires them. Respected constraints intentionally omit evidence because they are direct request confirmations.",
+  "samples": [
+    {
+      "scenario": "Marathon plus strength, strong profile data",
+      "explanation": {
+        "schemaVersion": 1,
+        "planId": null,
+        "generatedAt": "2026-05-22T10:00:00.000Z",
+        "locale": "en",
+        "summary": {
+          "smartPickCount": 4,
+          "respectedConstraintCount": 4,
+          "attentionItemCount": 0,
+          "highestSeverity": "info"
         },
-        {
-          "id": "first_week_phase",
-          "category": "periodization_phase",
-          "labelKey": "training.explanation.smartPick.periodizationPhase",
-          "fallbackLabel": "Starts in base phase",
-          "value": "base",
-          "source": "race_calendar",
-          "confidence": 0.9
+        "smartPicks": [
+          {
+            "id": "primary_focus_from_objective",
+            "category": "primary_focus",
+            "labelKey": "training.explanation.smartPick.primaryFocus",
+            "fallbackLabel": "Primary focus: marathon",
+            "value": "marathon",
+            "source": "objective_keyword",
+            "confidence": 0.9
+          },
+          {
+            "id": "first_week_phase",
+            "category": "periodization_phase",
+            "labelKey": "training.explanation.smartPick.periodizationPhase",
+            "fallbackLabel": "Starts in base phase",
+            "value": "base",
+            "source": "race_calendar",
+            "confidence": 0.9
+          },
+          {
+            "id": "training_history_profile_data",
+            "category": "training_history",
+            "labelKey": "training.explanation.smartPick.trainingHistory",
+            "fallbackLabel": "Recent training history informed the load ramp",
+            "value": "profile_data",
+            "source": "training_history",
+            "confidence": 0.88
+          },
+          {
+            "id": "readiness_baseline",
+            "category": "readiness_baseline",
+            "labelKey": "training.explanation.smartPick.readinessBaseline",
+            "fallbackLabel": "Readiness baseline: green",
+            "value": "green",
+            "source": "readiness_data",
+            "confidence": 0.88
+          }
+        ],
+        "respectedConstraints": [
+          {
+            "id": "weekly_frequency",
+            "category": "weekly_frequency",
+            "source": "request",
+            "value": 6
+          },
+          {
+            "id": "run_sessions",
+            "category": "modality_target",
+            "source": "request",
+            "value": 5
+          },
+          {
+            "id": "strength_sessions",
+            "category": "modality_target",
+            "source": "request",
+            "value": 2
+          },
+          {
+            "id": "long_session_day",
+            "category": "long_session_day",
+            "source": "request",
+            "value": "sunday"
+          }
+        ],
+        "attentionItems": []
+      }
+    },
+    {
+      "scenario": "Unrecognized objective with no readiness data",
+      "explanation": {
+        "schemaVersion": 1,
+        "planId": null,
+        "generatedAt": "2026-05-22T10:00:00.000Z",
+        "locale": "en",
+        "summary": {
+          "smartPickCount": 1,
+          "respectedConstraintCount": 2,
+          "attentionItemCount": 2,
+          "highestSeverity": "notice"
         },
-        {
-          "id": "training_history_profile_data",
-          "category": "training_history",
-          "labelKey": "training.explanation.smartPick.trainingHistory",
-          "fallbackLabel": "Recent training history informed the load ramp",
-          "value": "profile_data",
-          "source": "training_history",
-          "confidence": 0.88
+        "smartPicks": [
+          {
+            "id": "weekly_volume_inference",
+            "category": "weekly_volume",
+            "labelKey": "training.explanation.smartPick.weeklyVolume",
+            "fallbackLabel": "6 weekly sessions balanced across modalities",
+            "value": 6,
+            "source": "system_inference",
+            "confidence": 0.72
+          }
+        ],
+        "respectedConstraints": [
+          {
+            "id": "weekly_frequency",
+            "category": "weekly_frequency",
+            "source": "request",
+            "value": 6
+          },
+          {
+            "id": "strength_sessions",
+            "category": "modality_target",
+            "source": "request",
+            "value": 3
+          }
+        ],
+        "attentionItems": [
+          {
+            "id": "primary_focus_fallback",
+            "category": "primary_focus",
+            "severity": "notice",
+            "labelKey": "training.explanation.attention.primaryFocusFallback",
+            "fallbackLabel": "Nexus used a hybrid plan because the goal wording was not recognized."
+          },
+          {
+            "id": "readiness_missing",
+            "category": "readiness_baseline",
+            "severity": "notice",
+            "labelKey": "training.explanation.attention.readinessMissing",
+            "fallbackLabel": "No fresh readiness data was available."
+          }
+        ]
+      }
+    },
+    {
+      "scenario": "Return-to-training volume cap",
+      "explanation": {
+        "schemaVersion": 1,
+        "planId": null,
+        "generatedAt": "2026-05-22T10:00:00.000Z",
+        "locale": "en",
+        "summary": {
+          "smartPickCount": 1,
+          "respectedConstraintCount": 2,
+          "attentionItemCount": 1,
+          "highestSeverity": "notice"
         },
-        {
-          "id": "readiness_baseline",
-          "category": "readiness_baseline",
-          "labelKey": "training.explanation.smartPick.readinessBaseline",
-          "fallbackLabel": "Readiness baseline: green",
-          "value": "green",
-          "source": "readiness_data",
-          "confidence": 0.88
-        }
-      ],
-      "respectedConstraints": [
-        { "id": "weekly_frequency", "category": "weekly_frequency", "source": "request", "value": 6 },
-        { "id": "run_sessions", "category": "modality_target", "source": "request", "value": 5 },
-        { "id": "strength_sessions", "category": "modality_target", "source": "request", "value": 2 },
-        { "id": "long_session_day", "category": "long_session_day", "source": "request", "value": "sunday" }
-      ],
-      "attentionItems": []
+        "smartPicks": [
+          {
+            "id": "goal_mode_volume_cap",
+            "category": "goal_mode_volume_cap",
+            "labelKey": "training.explanation.smartPick.goalModeVolumeCap",
+            "fallbackLabel": "return_to_training capped weekly volume to 3 sessions",
+            "value": 3,
+            "source": "goal_mode_rule",
+            "confidence": 0.9
+          }
+        ],
+        "respectedConstraints": [
+          {
+            "id": "start_policy",
+            "category": "start_policy",
+            "source": "request",
+            "value": "next_full_week"
+          },
+          {
+            "id": "preferred_strength_time",
+            "category": "schedule_preference",
+            "source": "request",
+            "value": "12:00"
+          }
+        ],
+        "attentionItems": [
+          {
+            "id": "readiness_stale",
+            "category": "readiness_baseline",
+            "severity": "notice",
+            "labelKey": "training.explanation.attention.readinessStale",
+            "fallbackLabel": "Readiness data looks stale, so load choices were conservative."
+          }
+        ]
+      }
     }
-  },
-  {
-    "scenario": "Unrecognized objective with no readiness data",
-    "explanation": {
-      "schemaVersion": 1,
-      "planId": null,
-      "generatedAt": "2026-05-22T10:00:00.000Z",
-      "locale": "en",
-      "summary": {
-        "smartPickCount": 1,
-        "respectedConstraintCount": 2,
-        "attentionItemCount": 2,
-        "highestSeverity": "notice"
-      },
-      "smartPicks": [
-        {
-          "id": "weekly_volume_inference",
-          "category": "weekly_volume",
-          "labelKey": "training.explanation.smartPick.weeklyVolume",
-          "fallbackLabel": "6 weekly sessions balanced across modalities",
-          "value": 6,
-          "source": "system_inference",
-          "confidence": 0.72
-        }
-      ],
-      "respectedConstraints": [
-        { "id": "weekly_frequency", "category": "weekly_frequency", "source": "request", "value": 6 },
-        { "id": "strength_sessions", "category": "modality_target", "source": "request", "value": 3 }
-      ],
-      "attentionItems": [
-        {
-          "id": "primary_focus_fallback",
-          "category": "primary_focus",
-          "severity": "notice",
-          "labelKey": "training.explanation.attention.primaryFocusFallback",
-          "fallbackLabel": "Nexus used a hybrid plan because the goal wording was not recognized."
-        },
-        {
-          "id": "readiness_missing",
-          "category": "readiness_baseline",
-          "severity": "notice",
-          "labelKey": "training.explanation.attention.readinessMissing",
-          "fallbackLabel": "No fresh readiness data was available."
-        }
-      ]
-    }
-  },
-  {
-    "scenario": "Return-to-training volume cap",
-    "explanation": {
-      "schemaVersion": 1,
-      "planId": null,
-      "generatedAt": "2026-05-22T10:00:00.000Z",
-      "locale": "en",
-      "summary": {
-        "smartPickCount": 1,
-        "respectedConstraintCount": 2,
-        "attentionItemCount": 1,
-        "highestSeverity": "notice"
-      },
-      "smartPicks": [
-        {
-          "id": "goal_mode_volume_cap",
-          "category": "goal_mode_volume_cap",
-          "labelKey": "training.explanation.smartPick.goalModeVolumeCap",
-          "fallbackLabel": "return_to_training capped weekly volume to 3 sessions",
-          "value": 3,
-          "source": "goal_mode_rule",
-          "confidence": 0.9
-        }
-      ],
-      "respectedConstraints": [
-        { "id": "start_policy", "category": "start_policy", "source": "request", "value": "next_full_week" },
-        { "id": "preferred_strength_time", "category": "schedule_preference", "source": "request", "value": "12:00" }
-      ],
-      "attentionItems": [
-        {
-          "id": "readiness_stale",
-          "category": "readiness_baseline",
-          "severity": "notice",
-          "labelKey": "training.explanation.attention.readinessStale",
-          "fallbackLabel": "Readiness data looks stale, so load choices were conservative."
-        }
-      ]
-    }
-  }
-]
+  ]
+}

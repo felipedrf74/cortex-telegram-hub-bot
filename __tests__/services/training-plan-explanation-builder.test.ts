@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs';
+import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 import {
@@ -77,6 +79,19 @@ const request = {
 };
 
 describe('training plan creation explanation builder', () => {
+  it('documents that sample payloads are abbreviated and points readers to the runtime contract', () => {
+    const samplePath = path.join(process.cwd(), 'docs/training/training-plan-explanation-samples-20260522.json');
+    const sampleDoc = JSON.parse(readFileSync(samplePath, 'utf8')) as {
+      contractNote?: string;
+      samples?: unknown[];
+    };
+
+    expect(sampleDoc.contractNote).toContain('abbreviate');
+    expect(sampleDoc.contractNote).toContain('Runtime payloads');
+    expect(sampleDoc.contractNote).toContain('Respected constraints intentionally omit evidence');
+    expect(sampleDoc.samples).toHaveLength(3);
+  });
+
   it('emits smart picks, respected constraints, and attention items as separate trust surfaces', () => {
     const explanation = buildPlanCreationExplanation({
       request,
