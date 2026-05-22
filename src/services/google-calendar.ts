@@ -20,6 +20,40 @@ const GOOGLE_API_TIMEOUT_MS = 15_000;
 
 let calendarClient: calendar_v3.Calendar | null = null;
 
+export interface SanitizedGoogleCalendarError {
+  name: string;
+  message: string;
+  code?: number | string;
+  status?: number;
+  statusCode?: number;
+  reason?: string;
+  errors?: Array<{ reason?: string; message?: string }>;
+  responseStatus?: number;
+  responseStatusText?: string;
+}
+
+export class GoogleCalendarApiError extends Error {
+  code?: number | string;
+  status?: number;
+  statusCode?: number;
+  reason?: string;
+  errors?: Array<{ reason?: string; message?: string }>;
+  responseStatus?: number;
+  responseStatusText?: string;
+
+  constructor(readonly safeDetails: SanitizedGoogleCalendarError) {
+    super(safeDetails.message || 'Google Calendar API request failed');
+    this.name = 'GoogleCalendarApiError';
+    this.code = safeDetails.code;
+    this.status = safeDetails.status;
+    this.statusCode = safeDetails.statusCode;
+    this.reason = safeDetails.reason;
+    this.errors = safeDetails.errors;
+    this.responseStatus = safeDetails.responseStatus;
+    this.responseStatusText = safeDetails.responseStatusText;
+  }
+}
+
 /** @deprecated No-op. userId is now read from AsyncLocalStorage context. */
 export function setGoogleCalendarUserId(_userId: number | null): void {
   // Intentionally empty
@@ -93,8 +127,7 @@ export async function getEvents(startDate: string, endDate: string, userId?: num
         isAllDay: !event.start?.dateTime && !!event.start?.date,
       }));
   } catch (err) {
-    logger.error({ err }, 'Failed to fetch calendar events');
-    throw err;
+    throw logAndWrapGoogleCalendarError(err, 'Failed to fetch calendar events');
   }
 }
 
@@ -143,8 +176,7 @@ export async function createEvent(data: {
       isAllDay: !response.data.start?.dateTime && !!response.data.start?.date,
     };
   } catch (err) {
-    logger.error({ err }, 'Failed to create calendar event');
-    throw err;
+    throw logAndWrapGoogleCalendarError(err, 'Failed to create calendar event');
   }
 }
 
@@ -203,8 +235,7 @@ export async function updateEvent(data: {
       isAllDay: !response.data.start?.dateTime && !!response.data.start?.date,
     };
   } catch (err) {
-    logger.error({ err }, 'Failed to update calendar event');
-    throw err;
+    throw logAndWrapGoogleCalendarError(err, 'Failed to update calendar event');
   }
 }
 
@@ -219,7 +250,108 @@ export async function deleteEvent(eventId: string, userId?: number, options?: { 
       GOOGLE_API_TIMEOUT_MS,
     );
   } catch (err) {
-    logger.error({ err }, 'Failed to delete calendar event');
-    throw err;
+    throw logAndWrapGoogleCalendarError(err, 'Failed to delete calendar event');
+  }
+}
+
+export function sanitizeGoogleCalendarErrorForLog(err: unknown): SanitizedGoogleCalendarError {
+  if (err instanceof GoogleCalendarApiError) return err.safeDetails;
+  const anyErr = err as any;
+  const directError = safeRead(() => anyErr?.error);
+  const responseData = safeRead(() => anyErr?.response?.data);
+  const responseError = safeRead(() => responseData?.error)
+    ?? (isGoogleErrorEnvelope(responseData) ? responseData : undefined);
+  const directErrors = normalizeGoogleErrorItems(safeRead(() => anyErr?.errors));
+  const topLevelErrorErrors = normalizeGoogleErrorItems(safeRead(() => directError?.errors));
+  const responseErrors = normalizeGoogleErrorItems(safeRead(() => responseError?.errors));
+  const errors = directErrors.length > 0
+    ? directErrors
+    : (responseErrors.length > 0 ? responseErrors : topLevelErrorErrors);
+  const status = numberOrUndefined(
+    safeRead(() => anyErr?.status)
+      ?? safeRead(() => anyErr?.statusCode)
+      ?? safeRead(() => anyErr?.response?.status)
+      ?? safeRead(() => directError?.code)
+      ?? safeRead(() => responseError?.code),
+  );
+  const code = safeRead(() => anyErr?.code) ?? status;
+  const message = [
+    safeRead(() => anyErr?.message),
+    safeRead(() => directError?.message),
+    safeRead(() => responseError?.message),
+    errors.map((item) => item.message).filter(Boolean).join('; '),
+  ].filter(Boolean).join(' — ') || String(err);
+  const reason = String(
+    safeRead(() => anyErr?.reason)
+      ?? safeRead(() => anyErr?.error?.reason)
+      ?? safeRead(() => directError?.errors?.[0]?.reason)
+      ?? errors[0]?.reason
+      ?? '',
+  ) || undefined;
+
+  return {
+    name: safeRead(() => anyErr?.name) || (err instanceof Error ? err.name : typeof err),
+    message,
+    code,
+    status,
+    statusCode: status,
+    reason,
+    errors: errors.length > 0 ? errors : undefined,
+    responseStatus: numberOrUndefined(safeRead(() => anyErr?.response?.status)),
+    responseStatusText: safeRead(() => anyErr?.response?.statusText),
+  };
+}
+
+export function toGoogleCalendarApiError(err: unknown): GoogleCalendarApiError {
+  if (err instanceof GoogleCalendarApiError) return err;
+  return new GoogleCalendarApiError(sanitizeGoogleCalendarErrorForLog(err));
+}
+
+function logAndWrapGoogleCalendarError(err: unknown, message: string): GoogleCalendarApiError {
+  const wrapped = toGoogleCalendarApiError(err);
+  logger.error(
+    {
+      err: wrapped,
+      googleCalendarError: wrapped.safeDetails,
+    },
+    message,
+  );
+  return wrapped;
+}
+
+function normalizeGoogleErrorItems(raw: unknown): Array<{ reason?: string; message?: string }> {
+  if (!Array.isArray(raw)) return [];
+  return raw.flatMap((item) => {
+    if (!item || typeof item !== 'object') return [];
+    const reason = stringOrUndefined((item as any).reason);
+    const message = stringOrUndefined((item as any).message);
+    return reason || message ? [{ reason, message }] : [];
+  });
+}
+
+function isGoogleErrorEnvelope(value: unknown): value is {
+  code?: unknown;
+  message?: unknown;
+  errors?: Array<{ reason?: unknown; message?: unknown }>;
+} {
+  return Boolean(value && typeof value === 'object' && (
+    'errors' in value || 'code' in value || 'message' in value
+  ));
+}
+
+function stringOrUndefined(value: unknown): string | undefined {
+  return typeof value === 'string' && value.trim() ? value.trim() : undefined;
+}
+
+function numberOrUndefined(value: unknown): number | undefined {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : undefined;
+}
+
+function safeRead<T>(reader: () => T): T | undefined {
+  try {
+    return reader();
+  } catch {
+    return undefined;
   }
 }

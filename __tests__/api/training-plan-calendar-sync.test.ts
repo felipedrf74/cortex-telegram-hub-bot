@@ -139,6 +139,8 @@ describe('training-plan-calendar-sync', () => {
     vi.clearAllMocks();
     delete process.env.TRAINING_ENGINE_ENABLED;
     delete process.env.TRAINING_ENGINE_DISABLED;
+    delete process.env.TRAINING_CALENDAR_OUTLOOK_ENABLED;
+    delete process.env.TRAINING_CALENDAR_OUTLOOK_DISABLED;
     delete process.env.TRAINING_CALENDAR_WRITES_ENABLED;
     delete process.env.TRAINING_CALENDAR_WRITES_DISABLED;
     delete process.env.TRAINING_CALENDAR_SYNC_ENABLED;
@@ -198,6 +200,7 @@ describe('training-plan-calendar-sync', () => {
   });
 
   it('previews a conflict reflow destination before mutating the session or provider', async () => {
+    process.env.TRAINING_CALENDAR_OUTLOOK_ENABLED = 'true';
     mocks.isConnected.mockImplementation((_userId: number, provider: string) => provider === 'outlook');
     mocks.getPlanById.mockReturnValue({
       id: 7,
@@ -402,6 +405,7 @@ describe('training-plan-calendar-sync', () => {
   });
 
   it('uses Outlook by default when both Google and Outlook are connected', async () => {
+    process.env.TRAINING_CALENDAR_OUTLOOK_ENABLED = 'true';
     mocks.isConnected.mockImplementation((_userId: number, provider: string) => (
       provider === 'google' || provider === 'outlook'
     ));
@@ -426,6 +430,33 @@ describe('training-plan-calendar-sync', () => {
       expect.objectContaining({ tenantId: 42 }),
     );
     expect(mocks.linkSessionToCalendar).toHaveBeenCalledWith(100, 'evt-outlook', 'outlook');
+  });
+
+  it('uses Google by default while Outlook Training writes are gated', async () => {
+    mocks.isConnected.mockImplementation((_userId: number, provider: string) => (
+      provider === 'google' || provider === 'outlook'
+    ));
+    mocks.getActivePlan.mockReturnValue({
+      id: 7,
+      user_id: 42,
+      start_date: '2026-04-20T00:00:00.000Z',
+      preferences_json: null,
+    });
+    mocks.getWeeksForPlan.mockReturnValue([{ id: 70, week_number: 1 }]);
+    mocks.getSessionsForWeek.mockReturnValue([
+      { id: 100, day_of_week: 'Monday', session_type: 'run', title: 'Easy Run', duration_minutes: 40, description: 'Easy.', status: 'pending', calendar_event_id: null, calendar_source: null },
+    ]);
+    mocks.createEvent.mockResolvedValueOnce({ id: 'evt-google', source: 'google' });
+
+    await syncTrainingPlanCalendar(42, now, undefined, 42);
+
+    expect(mocks.createEvent).toHaveBeenCalledWith(
+      expect.any(Object),
+      'google',
+      42,
+      expect.objectContaining({ tenantId: 42 }),
+    );
+    expect(mocks.linkSessionToCalendar).toHaveBeenCalledWith(100, 'evt-google', 'google');
   });
 
   it('uses the requested connected provider and stores it as the plan preference', async () => {
@@ -459,6 +490,7 @@ describe('training-plan-calendar-sync', () => {
   });
 
   it('does not relink a stale event from the non-selected provider when repairing sync', async () => {
+    process.env.TRAINING_CALENDAR_OUTLOOK_ENABLED = 'true';
     mocks.isConnected.mockImplementation((_userId: number, provider: string) => (
       provider === 'google' || provider === 'outlook'
     ));

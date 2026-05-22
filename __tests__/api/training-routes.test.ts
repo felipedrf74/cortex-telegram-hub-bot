@@ -258,6 +258,10 @@ vi.mock('../../src/services/secretary-scheduling-arbitrator', () => ({
 }));
 
 import { looksLikeTrainingCalendarEvent, trainingRoutes } from '../../src/api/routes/training';
+import {
+  claimTrainingPlanGenerationIdempotency,
+  completeTrainingPlanGenerationIdempotency,
+} from '../../src/services/training-plan-generation-idempotency';
 
 interface MockRes {
   statusCode: number;
@@ -1251,7 +1255,7 @@ describe('Training API routes', () => {
     expect(res.statusCode).toBe(201);
     const createdEvents = mockCreateEvent.mock.calls.map((call) => call[0]);
     const runEvent = createdEvents.find((event) => String(event.title).includes('Base Run'));
-    const gymEvent = createdEvents.find((event) => String(event.title).includes('Runner Strength'));
+    const gymEvent = createdEvents.find((event) => /\bRunner Strength \(40min\)/.test(String(event.title)));
 
     expect(runEvent).toBeTruthy();
     expect(gymEvent).toBeTruthy();
@@ -1313,6 +1317,140 @@ describe('Training API routes', () => {
     expect(mockCreatePlan).toHaveBeenCalledTimes(createPlanCountAfterFirst);
     expect(mockCreateSession).toHaveBeenCalledTimes(createSessionCountAfterFirst);
     expect(mockCreateEvent).toHaveBeenCalledTimes(createEventCountAfterFirst);
+  });
+
+  it('auto-dedupes rapid duplicate plan creation when the client omits an idempotency key', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    vi.setSystemTime(new Date('2026-04-15T06:00:00.000Z'));
+
+    mockGetProfile.mockImplementation((_userId: number, profile: string) => {
+      if (profile === 'fitness') return { experienceLevel: 'Intermediate', available_equipment: 'Full gym' };
+      return null;
+    });
+    mockBuildCoachKernelTrainingPlan.mockReturnValue(makeKernelPlan([
+      {
+        weekNumber: 1,
+        focus: 'base',
+        intensityPct: 70,
+        sessions: [
+          {
+            dayOfWeek: 'Wednesday',
+            sessionType: 'gym',
+            title: 'Strength + Core Support',
+            durationMinutes: 40,
+            description: 'Controlled strength work.',
+            exercises: [],
+          },
+        ],
+      },
+    ]));
+
+    const body = {
+      objective: 'General fitness',
+      preferredTime: '12:00',
+      sessionsPerWeek: 3,
+      strengthSessionsPerWeek: 3,
+    };
+
+    const first = await dispatch('POST', '/plan/generate', {}, body);
+    const createPlanCountAfterFirst = mockCreatePlan.mock.calls.length;
+    const createSessionCountAfterFirst = mockCreateSession.mock.calls.length;
+    const createEventCountAfterFirst = mockCreateEvent.mock.calls.length;
+    const second = await dispatch('POST', '/plan/generate', {}, body);
+
+    expect(first.statusCode).toBe(201);
+    expect(second.statusCode).toBe(201);
+    expect(second.body.data).toEqual(first.body.data);
+    expect(mockCreatePlan).toHaveBeenCalledTimes(createPlanCountAfterFirst);
+    expect(mockCreateSession).toHaveBeenCalledTimes(createSessionCountAfterFirst);
+    expect(mockCreateEvent).toHaveBeenCalledTimes(createEventCountAfterFirst);
+  });
+
+  it('auto-dedupes rapid duplicate plan creation across a minute boundary', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    vi.setSystemTime(new Date('2026-04-15T12:00:59.500Z'));
+
+    mockGetProfile.mockImplementation((_userId: number, profile: string) => {
+      if (profile === 'fitness') return { experienceLevel: 'Intermediate', available_equipment: 'Full gym' };
+      return null;
+    });
+    mockBuildCoachKernelTrainingPlan.mockReturnValue(makeKernelPlan([
+      {
+        weekNumber: 1,
+        focus: 'base',
+        intensityPct: 70,
+        sessions: [
+          {
+            dayOfWeek: 'Wednesday',
+            sessionType: 'gym',
+            title: 'Strength + Core Support',
+            durationMinutes: 40,
+            description: 'Controlled strength work.',
+            exercises: [],
+          },
+        ],
+      },
+    ]));
+
+    const body = {
+      objective: 'General fitness',
+      preferredTime: '12:00',
+      sessionsPerWeek: 3,
+      strengthSessionsPerWeek: 3,
+    };
+
+    const first = await dispatch('POST', '/plan/generate', {}, body);
+    const createPlanCountAfterFirst = mockCreatePlan.mock.calls.length;
+    const createSessionCountAfterFirst = mockCreateSession.mock.calls.length;
+    const createEventCountAfterFirst = mockCreateEvent.mock.calls.length;
+
+    vi.setSystemTime(new Date('2026-04-15T12:01:00.500Z'));
+    const second = await dispatch('POST', '/plan/generate', {}, body);
+
+    expect(first.statusCode).toBe(201);
+    expect(second.statusCode).toBe(201);
+    expect(second.body.data).toEqual(first.body.data);
+    expect(createPlanCountAfterFirst).toBeGreaterThan(0);
+    expect(createSessionCountAfterFirst).toBeGreaterThan(0);
+    expect(createEventCountAfterFirst).toBeGreaterThan(0);
+    expect(mockCreatePlan).toHaveBeenCalledTimes(createPlanCountAfterFirst);
+    expect(mockCreateSession).toHaveBeenCalledTimes(createSessionCountAfterFirst);
+    expect(mockCreateEvent).toHaveBeenCalledTimes(createEventCountAfterFirst);
+  });
+
+  it('keeps stale automatic plan-generation claims in progress while the first request is still running', () => {
+    vi.useFakeTimers({ shouldAdvanceTime: false });
+    vi.setSystemTime(new Date('2026-04-15T12:00:00.000Z'));
+
+    const key = 'auto:slow-provider-request';
+    const requestHash = 'same-plan-request-hash';
+
+    const first = claimTrainingPlanGenerationIdempotency(12, key, requestHash);
+    expect(first).toEqual({ kind: 'claimed', idempotencyKey: key, requestHash });
+
+    vi.setSystemTime(new Date('2026-04-15T12:01:40.000Z'));
+    const second = claimTrainingPlanGenerationIdempotency(12, key, requestHash);
+
+    expect(second).toEqual({ kind: 'in_progress', idempotencyKey: key });
+    expect(mockCreatePlan).not.toHaveBeenCalled();
+  });
+
+  it('replaces stale automatic succeeded plan-generation rows as a fresh user action', () => {
+    vi.useFakeTimers({ shouldAdvanceTime: false });
+    vi.setSystemTime(new Date('2026-04-15T12:00:00.000Z'));
+
+    const key = 'auto:stale-success-request';
+    const requestHash = 'same-plan-request-hash';
+    const responseData = { planId: 901, resolvedStartDate: '2026-04-20' };
+
+    const first = claimTrainingPlanGenerationIdempotency(12, key, requestHash);
+    expect(first).toEqual({ kind: 'claimed', idempotencyKey: key, requestHash });
+    completeTrainingPlanGenerationIdempotency(12, key, requestHash, responseData, 201);
+
+    vi.setSystemTime(new Date('2026-04-15T12:01:40.000Z'));
+    const second = claimTrainingPlanGenerationIdempotency(12, key, requestHash);
+
+    expect(second).toEqual({ kind: 'claimed', idempotencyKey: key, requestHash });
   });
 
   it('rejects reused plan creation idempotency keys with different inputs', async () => {

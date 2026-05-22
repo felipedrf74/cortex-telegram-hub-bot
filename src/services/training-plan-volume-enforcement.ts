@@ -19,6 +19,7 @@ const MAX_STRENGTH_SESSIONS_PER_WEEK = 6;
 
 export interface TrainingPlanVolumeRequest {
   sessionsPerWeek: number;
+  runSessionsPerWeek?: number;
   strengthSessionsPerWeek: number;
   preferredCardioTime: string;
   preferredStrengthTime: string;
@@ -33,9 +34,11 @@ export function enforceRequestedTrainingPlanVolume(
   const cloned: CoordinatedTrainingPlan = JSON.parse(JSON.stringify(plan ?? {}));
   if (!Array.isArray(cloned.weeks)) return cloned;
 
-  const requestedPrimarySessions = clamp(Math.round(request.sessionsPerWeek || 5), 3, 7);
-  const requestedStrength = clamp(Math.round(request.strengthSessionsPerWeek || 0), 0, MAX_STRENGTH_SESSIONS_PER_WEEK);
   const planSport = String(cloned.sport || '').toLowerCase();
+  const requestedPrimarySessions = planSport === 'running'
+    ? clamp(Math.round((request.runSessionsPerWeek ?? request.sessionsPerWeek) || 5), 1, 7)
+    : clamp(Math.round(request.sessionsPerWeek || 5), 3, 7);
+  const requestedStrength = clamp(Math.round(request.strengthSessionsPerWeek || 0), 0, MAX_STRENGTH_SESSIONS_PER_WEEK);
   const requestedTotal = planSport === 'running'
     ? requestedPrimarySessions + requestedStrength
     : requestedPrimarySessions;

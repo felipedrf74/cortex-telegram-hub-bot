@@ -53,6 +53,33 @@ describe('coach-kernel guardrails', () => {
     expect(plan.guardrailResults.some((result) => result.ruleId === 'readiness' && result.status === 'block')).toBe(true);
   });
 
+  it('does not force a deload only because the block is on week 4', () => {
+    const athlete: AthleteState = {
+      ...sampleMarathonAthlete,
+      currentBlock: {
+        ...sampleMarathonAthlete.currentBlock,
+        phase: 'build',
+        weekIndex: 4,
+        totalWeeks: 4,
+      },
+      compliance: {
+        ...sampleMarathonAthlete.compliance,
+        trailing14DayCompliance: 0.95,
+      },
+      readiness: {
+        ...sampleMarathonAthlete.readiness,
+        level: 'green',
+        score: 86,
+        painFlags: [],
+      },
+    };
+
+    const plan = buildWeekPlan(athlete, '2026-05-25');
+
+    expect(plan.phase).toBe('build');
+    expect(plan.guardrailResults.some((result) => result.ruleId === 'deload' && result.adjusted)).toBe(false);
+  });
+
   it('protects key endurance sessions from lower-body strength interference', () => {
     const plan = buildWeekPlan(sampleMarathonAthlete, '2026-05-11');
     const keyDays = new Set(plan.sessions.filter((session) => session.keySession).map((session) => session.dayOfWeek));

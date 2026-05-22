@@ -1,0 +1,13 @@
+{
+  "version": "1",
+  "smokeName": "training-calendar-staging-outlook",
+  "runStartedAt": "2026-05-22T09:44:51Z",
+  "runCompletedAt": "2026-05-22T09:44:51Z",
+  "branch": "unknown",
+  "sha": "unknown",
+  "verdict": "blocked",
+  "exitCode": 2,
+  "durationS": 0,
+  "stdoutTail": "[dotenv@17.3.1] injecting env (0) from .env -- tip: ⚙️  suppress all logs with { quiet: true }\n# Training Calendar Staging Smoke Results\n\n- Run ID: `training-calendar-smoke-20260522094451-56acw8`\n- Started: `2026-05-22T09:44:51.494Z`\n- Finished: `2026-05-22T09:44:51.495Z`\n- Dry run: `false`\n- Staging user ID: `1000013`\n- Providers requested: `outlook`\n- Providers run: `none`\n\n## Prerequisites\n\n- Status: **ready**\n\n## Operations\n\n| Provider | Operation | Expected | Actual | Status | Event IDs | Cleanup |\n| --- | --- | --- | --- | --- | --- | --- |\n| outlook | provider_connection | outlook OAuth tokens exist for the staging smoke user. | outlook is not connected for user 1000013. | blocked | - | not_needed |\n\n## Cleanup Failures\n\nNone.\n\n## Interpretation\n\nCalendar staging validation is partially blocked. See the operation table for the exact provider/prerequisite gap.\n\n{\"level\":30,\"time\":1779443091119,\"pid\":777448,\"hostname\":\"ServerDominguez\",\"path\":\"/home/dominguez/telegram-hub-bot-staging/data/bot.db\",\"msg\":\"SQLiteStorage opened\"}\n{\"level\":30,\"time\":1779443091134,\"pid\":777448,\"hostname\":\"ServerDominguez\",\"count\":0,\"msg\":\"Loaded persisted settings from DB\"}\n{\"level\":30,\"time\":1779443091135,\"pid\":777448,\"hostname\":\"ServerDominguez\",\"scanned\":3,\"encryptedRows\":0,\"alreadyEncrypted\":3,\"msg\":\"OAuth migration: all rows already encrypted\"}\n{\"level\":30,\"time\":1779443091137,\"pid\":777448,\"hostname\":\"ServerDominguez\",\"msg\":\"Default skills seeded\"}\n{\"level\":30,\"time\":1779443091137,\"pid\":777448,\"hostname\":\"ServerDominguez\",\"path\":\"/home/dominguez/telegram-hub-bot-staging/data/bot.db\",\"msg\":\"Database initialized\"}",
+  "stderrTail": ""
+}

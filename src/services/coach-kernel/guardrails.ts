@@ -156,7 +156,6 @@ function enforceVolumeGrowth(plan: WeeklyPlan, athlete: AthleteState): Guardrail
 
 function enforceDeload(plan: WeeklyPlan, athlete: AthleteState): GuardrailResult[] {
   const shouldDeload = plan.phase === 'deload'
-    || (athlete.currentBlock.phase === 'build' && athlete.currentBlock.weekIndex % 4 === 0)
     || athlete.compliance.trailing14DayCompliance < 0.7
     || athlete.readiness.level === 'red'
     || athlete.readiness.painFlags.some((flag) => flag.severity !== 'low');

@@ -14,9 +14,14 @@ const outlookCalendar = vi.hoisted(() => ({
   getEvents: vi.fn(),
 }));
 
+const trainingPlans = vi.hoisted(() => ({
+  getSessionById: vi.fn(),
+}));
+
 vi.mock('../../src/services/unified-calendar', () => unifiedCalendar);
 vi.mock('../../src/services/google-calendar', () => googleCalendar);
 vi.mock('../../src/services/outlook-calendar', () => outlookCalendar);
+vi.mock('../../src/services/training-plans', () => trainingPlans);
 
 import {
   buildSecretaryCalendarDescription,
@@ -45,6 +50,7 @@ const input: SecretaryProviderEventInput = {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  trainingPlans.getSessionById.mockReturnValue(null);
 });
 
 describe('secretary-unified-calendar-provider-adapter', () => {
@@ -73,6 +79,33 @@ describe('secretary-unified-calendar-provider-adapter', () => {
       description: expect.stringContaining('NEXUS_SECRETARY_AGENDA_ITEM:sec_agenda_123'),
       categories: ['Nexus', 'Secretary', 'training'],
     }), 'google', 42);
+  });
+
+  it('puts Training session content before Secretary markers in provider descriptions', () => {
+    trainingPlans.getSessionById.mockReturnValue({
+      id: 970,
+      description: [
+        'WARM-UP:',
+        '• 10 minutes easy jog',
+        '',
+        'MAIN WORKOUT:',
+        'EXECUTION:',
+        '• Effort: RPE 5-6',
+        '',
+        '[NEXUS_TRAINING_IDENTITY plan=39;version=1;session=970;key=x;shape=y]',
+      ].join('\n'),
+    });
+
+    const description = buildSecretaryCalendarDescription({
+      ...input,
+      sourceIntentId: 'training:39:1:970',
+      sourceEntityId: '970',
+    });
+
+    expect(description).toMatch(/^WARM-UP:/);
+    expect(description).toContain('MAIN WORKOUT:');
+    expect(description).toContain('NEXUS_SECRETARY_AGENDA_ITEM:sec_agenda_123');
+    expect(description).not.toContain('NEXUS_TRAINING_IDENTITY');
   });
 
   it('updates and deletes by exact provider event ID', async () => {

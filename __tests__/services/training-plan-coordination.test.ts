@@ -401,7 +401,7 @@ describe('training-plan-coordination', () => {
 
     expect(week1?.intensityPct).toBe(62);
     expect(week2?.intensityPct).toBe(66);
-    expect(week3?.intensityPct).toBe(56);
+    expect(week3?.intensityPct).toBe(70);
     expect(week1?.sessions?.find((session) => session.dayOfWeek === 'wednesday')?.title).toBe('Low-Impact Recovery');
     expect(week1?.sessions?.find((session) => session.dayOfWeek === 'sunday')?.title).toBe('Low-Impact Recovery');
     expect(week1?.sessions?.filter((session) => session.title === 'Long Run')).toHaveLength(1);

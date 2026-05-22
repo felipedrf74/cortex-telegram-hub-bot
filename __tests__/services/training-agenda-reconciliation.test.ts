@@ -130,6 +130,56 @@ describe('training-agenda-reconciliation', () => {
     );
   });
 
+  it('retries provider rate limits before leaving an orphan queued', async () => {
+    mocks.findOwnershipsNeedingReconciliation.mockReturnValue([
+      {
+        id: 9,
+        plan_id: 18,
+        plan_version: 1,
+        session_id: 118,
+        user_id: 42,
+        calendar_event_id: 'evt-rate-limited-once',
+        calendar_source: 'google',
+        status: 'orphaned',
+        created_at: '2026-04-20T00:00:00Z',
+        deleted_at: '2026-04-20T01:00:00Z',
+        delete_reason: 'plan_cancelled_external_delete_failed',
+      },
+    ]);
+    mocks.deleteEvent
+      .mockRejectedValueOnce(Object.assign(new Error('Rate Limit Exceeded'), {
+        status: 403,
+        code: 403,
+        reason: 'rateLimitExceeded',
+        errors: [{ reason: 'rateLimitExceeded', message: 'Rate Limit Exceeded' }],
+      }))
+      .mockResolvedValueOnce(undefined);
+
+    const result = await reconcileOrphanedTrainingAgendaEvents(42);
+
+    expect(result).toEqual({ attempted: 1, deleted: 1, failed: 0 });
+    expect(mocks.deleteEvent).toHaveBeenCalledTimes(2);
+    expect(mocks.markCalendarOwnershipDeleted).toHaveBeenCalledWith({
+      eventId: 'evt-rate-limited-once',
+      source: 'google',
+      reason: 'orphan_reconciled',
+      status: 'deleted',
+      userId: 42,
+      tenantId: 42,
+      planId: 18,
+      ownershipId: 9,
+    });
+    expect(mocks.loggerWarn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        eventId: 'evt-rate-limited-once',
+        source: 'google',
+        attempt: 1,
+        ownershipId: 9,
+      }),
+      'Training calendar delete rate-limited - retrying',
+    );
+  });
+
   it.each([
     ['status 404', { status: 404, message: 'not found' }],
     ['status 410', { status: 410, message: 'gone' }],

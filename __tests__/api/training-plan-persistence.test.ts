@@ -62,6 +62,7 @@ vi.mock('../../src/services/coach-kernel/plan-linter', async (importOriginal) =>
 import {
   lintGeneratedTrainingPlanPreflight,
   persistGeneratedTrainingPlan,
+  trainingCalendarCreateBatchSize,
 } from '../../src/api/routes/training-plan-persistence';
 
 describe('training-plan-persistence', () => {
@@ -72,6 +73,9 @@ describe('training-plan-persistence', () => {
     delete process.env.TRAINING_CALENDAR_WRITES_DISABLED;
     delete process.env.TRAINING_CALENDAR_SYNC_ENABLED;
     delete process.env.TRAINING_CALENDAR_SYNC_DISABLED;
+    delete process.env.TRAINING_CALENDAR_OUTLOOK_ENABLED;
+    delete process.env.TRAINING_CALENDAR_OUTLOOK_DISABLED;
+    delete process.env.TRAINING_CALENDAR_CREATE_BATCH_SIZE;
 
     mockCreatePlan.mockReset();
     mockCreateWeek.mockReset();
@@ -90,7 +94,7 @@ describe('training-plan-persistence', () => {
     mockCreateWeek.mockImplementation(({ week_number }: any) => ({ id: 1000 + Number(week_number || 1) }));
     let sessionId = 2000;
     mockCreateSession.mockImplementation(() => ({ id: ++sessionId }));
-    mockCreateEvent.mockResolvedValue({ id: 'evt-1', source: 'outlook' });
+    mockCreateEvent.mockResolvedValue({ id: 'evt-1', source: 'google' });
     // Slice 4.D defaults: fresh plan_version=1, no prior ownership rows,
     // ownership recorder reports clean inserts.
     mockGetPlanVersion.mockReturnValue(1);
@@ -231,7 +235,7 @@ describe('training-plan-persistence', () => {
         title: expect.stringContaining('Base Run (50min)'),
         description: expect.stringContaining('EXERCISES:'),
       }),
-      undefined,
+      'google',
       12,
       expect.objectContaining({ tenantId: 12 }),
     );
@@ -331,6 +335,58 @@ describe('training-plan-persistence', () => {
     expect(result.eventsCreated).toBe(6);
     expect(mockCreateEvent).toHaveBeenCalledTimes(6);
     expect(maxInFlight).toBe(5);
+  });
+
+  it('allows ops to lower training calendar create batch width to one', async () => {
+    process.env.TRAINING_CALENDAR_CREATE_BATCH_SIZE = '1';
+    let inFlight = 0;
+    let maxInFlight = 0;
+    let eventCounter = 0;
+    mockCreateEvent.mockImplementation(async () => {
+      inFlight += 1;
+      maxInFlight = Math.max(maxInFlight, inFlight);
+      await Promise.resolve();
+      inFlight -= 1;
+      eventCounter += 1;
+      return { id: `evt-${eventCounter}`, source: 'google' };
+    });
+
+    const result = await persistGeneratedTrainingPlan({
+      userId: 12,
+      objective: 'Paced provider writes',
+      durationWeeks: 1,
+      startDate: '2026-04-19',
+      endDate: '2026-04-26',
+      now: new Date('2026-04-19T00:00:00.000Z'),
+      preferencesJson: '{}',
+      normalizedPreferredTime: '12:00',
+      normalizedPreferredCardioTime: '07:00',
+      normalizedPreferredStrengthTime: '12:30',
+      busyWindows: [],
+      planData: {
+        weeks: [
+          {
+            weekNumber: 1,
+            sessions: [
+              { dayOfWeek: 'Monday', sessionType: 'run', title: 'Run 1', durationMinutes: 35 },
+              { dayOfWeek: 'Tuesday', sessionType: 'run', title: 'Run 2', durationMinutes: 35 },
+              { dayOfWeek: 'Wednesday', sessionType: 'gym', title: 'Lift 1', durationMinutes: 45 },
+            ],
+          },
+        ],
+      },
+    });
+
+    expect(result.eventsCreated).toBe(3);
+    expect(mockCreateEvent).toHaveBeenCalledTimes(3);
+    expect(maxInFlight).toBe(1);
+  });
+
+  it('clamps invalid or overly large training calendar create batch sizes', () => {
+    expect(trainingCalendarCreateBatchSize({})).toBe(5);
+    expect(trainingCalendarCreateBatchSize({ TRAINING_CALENDAR_CREATE_BATCH_SIZE: '0' })).toBe(1);
+    expect(trainingCalendarCreateBatchSize({ TRAINING_CALENDAR_CREATE_BATCH_SIZE: '12' })).toBe(5);
+    expect(trainingCalendarCreateBatchSize({ TRAINING_CALENDAR_CREATE_BATCH_SIZE: 'nope' })).toBe(5);
   });
 
   it('persists a mocked 16-week calendar plan under the batching SLA', async () => {
@@ -592,7 +648,7 @@ describe('training-plan-persistence', () => {
       },
     });
 
-    await Promise.resolve();
+    for (let i = 0; i < 5; i += 1) await Promise.resolve();
     expect(mockCreateEvent).toHaveBeenCalledTimes(2);
 
     resolveFirst({ id: 'evt-1', source: 'google' });

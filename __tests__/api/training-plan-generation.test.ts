@@ -125,7 +125,10 @@ vi.mock('../../src/utils/logger', () => ({
   LOGGER_REDACTION_PATHS: [],
 }));
 
-import { generateTrainingPlanForUser } from '../../src/api/routes/training-plan-generation';
+import {
+  generateTrainingPlanForUser,
+  resolveTrainingPlanStartDate,
+} from '../../src/api/routes/training-plan-generation';
 
 function makePlan(title = 'Coach Plan') {
   return {
@@ -387,6 +390,8 @@ describe('generateTrainingPlanForUser', () => {
   });
 
   it('builds a coordinated coach-kernel plan and returns the persisted response shape', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    vi.setSystemTime(new Date('2026-04-15T06:00:00.000Z'));
     mockGetEvents.mockResolvedValue([
       {
         start: '2026-04-20T09:00:00.000Z',
@@ -415,6 +420,7 @@ describe('generateTrainingPlanForUser', () => {
       sport: 'running',
       objective: 'Lisbon Marathon',
       durationWeeks: 6,
+      resolvedStartDate: '2026-04-20',
       totalSessions: 4,
       eventsCreated: 3,
       preferredCardioTime: '07:00',
@@ -440,6 +446,7 @@ describe('generateTrainingPlanForUser', () => {
       longWorkoutDay: 'Sunday',
       notes: 'keep knees happy',
       currentReadiness: { score: 76 },
+      startDate: '2026-04-20',
     }));
     expect(mockCancelTrainingPlanForUser).toHaveBeenCalledWith(12);
 
@@ -455,7 +462,14 @@ describe('generateTrainingPlanForUser', () => {
       strengthSessionsPerWeek: 3,
       longWorkoutDay: ' Sunday ',
       notes: '  keep knees happy  ',
+      startPolicy: 'next_full_week',
     });
+  });
+
+  it('resolves default plan starts to the next full training week unless today is requested', () => {
+    expect(resolveTrainingPlanStartDate(new Date('2026-04-17T10:00:00.000Z'), 'next_full_week')).toBe('2026-04-20');
+    expect(resolveTrainingPlanStartDate(new Date('2026-04-17T10:00:00.000Z'), 'today')).toBe('2026-04-17');
+    expect(resolveTrainingPlanStartDate(new Date('2026-04-20T10:00:00.000Z'), 'next_full_week')).toBe('2026-04-20');
   });
 
   it('persists the requested training calendar source for generation and follow-up sync', async () => {
@@ -693,6 +707,44 @@ describe('generateTrainingPlanForUser', () => {
     expect(JSON.parse(persistInput.preferencesJson)).toMatchObject({
       sessionsPerWeek: 6,
       strengthSessionsPerWeek: 5,
+    });
+  });
+
+  it('passes explicit bike and swim targets through the app-facing triathlon route', async () => {
+    const result = await generateTrainingPlanForUser({
+      userId: 12,
+      objective: 'Olympic triathlon',
+      sessionsPerWeek: 7,
+      runSessionsPerWeek: 4,
+      bikeSessionsPerWeek: 3,
+      swimSessionsPerWeek: 2,
+      strengthSessionsPerWeek: 2,
+      trainingPriority: 'triathlon',
+    });
+
+    expect(result.status).toBe('created');
+    expect(mockBuildCoachKernelTrainingPlan).toHaveBeenCalledWith(expect.objectContaining({
+      objective: 'Olympic triathlon',
+      sessionsPerWeek: 7,
+      runSessionsPerWeek: 4,
+      bikeSessionsPerWeek: 3,
+      swimSessionsPerWeek: 2,
+      strengthSessionsPerWeek: 2,
+      trainingPriority: 'triathlon',
+    }));
+
+    const persistInput = mockPersistGeneratedTrainingPlan.mock.calls[0][0];
+    expect(JSON.parse(persistInput.preferencesJson)).toMatchObject({
+      runSessionsPerWeek: 4,
+      bikeSessionsPerWeek: 3,
+      swimSessionsPerWeek: 2,
+      strengthSessionsPerWeek: 2,
+    });
+    expect((result as any).data.weeklyTargets).toMatchObject({
+      runSessionsPerWeek: 4,
+      bikeSessionsPerWeek: 3,
+      swimSessionsPerWeek: 2,
+      strengthSessionsPerWeek: 2,
     });
   });
 

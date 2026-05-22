@@ -15,6 +15,8 @@ import {
   type SecretaryProviderEvent,
   type SecretaryProviderEventInput,
 } from './secretary-agenda-provider-sync';
+import { getSessionById } from './training-plans';
+import { stripTrainingIdentityMarker } from './training-session-identity';
 
 const MARKER_PREFIX = 'NEXUS_SECRETARY_AGENDA_ITEM';
 const SOURCE_INTENT_PREFIX = 'NEXUS_SECRETARY_SOURCE_INTENT';
@@ -70,7 +72,7 @@ export function createUnifiedCalendarSecretaryProviderAdapter(
 }
 
 export function buildSecretaryCalendarDescription(input: SecretaryProviderEventInput): string {
-  const lines = [
+  const footerLines = [
     `${MARKER_PREFIX}:${input.agendaItemId}`,
     `${SOURCE_INTENT_PREFIX}:${input.sourceIntentId}`,
     `${SOURCE_SKILL_PREFIX}:${input.sourceSkill}`,
@@ -79,9 +81,20 @@ export function buildSecretaryCalendarDescription(input: SecretaryProviderEventI
     `${SHAPE_PREFIX}:${input.sourceShapeHash}`,
   ];
   if (input.decisionReasonCodes.length > 0) {
-    lines.push(`Decision reasons: ${input.decisionReasonCodes.join(', ')}`);
+    footerLines.push(`Decision reasons: ${input.decisionReasonCodes.join(', ')}`);
   }
-  return lines.join('\n');
+  const sourceBody = sourceBodyForSecretaryCalendarEvent(input);
+  const footer = footerLines.join('\n');
+  return sourceBody ? `${sourceBody}\n\n${footer}` : footer;
+}
+
+function sourceBodyForSecretaryCalendarEvent(input: SecretaryProviderEventInput): string | null {
+  if (input.sourceSkill !== 'training' || input.sourceEntityType !== 'training_session') return null;
+  const sessionId = Number(input.sourceEntityId);
+  if (!Number.isFinite(sessionId) || sessionId <= 0) return null;
+  const session = getSessionById(Math.floor(sessionId));
+  const description = stripTrainingIdentityMarker(session?.description ?? '');
+  return description.trim() || null;
 }
 
 export function extractSecretaryAgendaMarker(description: string | undefined): string | null {
