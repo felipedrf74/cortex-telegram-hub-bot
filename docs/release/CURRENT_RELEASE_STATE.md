@@ -2,25 +2,70 @@
 
 Status: canonical
 Owner: backend release lead (Felipe)
-Last verified: 2026-05-21
+Last verified: 2026-05-22
 Update policy: update after backend deploy or staging change. Workspace-level entry point is docs/release/CURRENT_RELEASE_STATE.md.
 
-Last updated: 2026-05-21
+Last updated: 2026-05-22
 
 ## Active Production Release
 
 - Source branch: `main`
-- Production HEAD: `ae4e1421`
-- Production version: `4.14.181`
-- Source implementation commit: `67287399`
-- Latest pushed source: `origin/main` is ahead of the running runtime bundle
-  with post-deploy docs/tooling follow-ups. `bb68a55b` is the last
-  release-state commit before the 2026-05-21 Cloudflare follow-up; later
-  docs-only commits may advance the source tip without changing production
-  runtime.
+- Production HEAD: `17c35872`
+- Production version: `4.14.183`
+- Source implementation commit: `109ce2e9`
+- Latest pushed source: `origin/main` may include a post-deploy release-state
+  docs commit on top of the running production deploy commit; production
+  runtime remains deployed from `17c35872`.
 - iOS Chat card-hiding source changes are pushed to iOS `main` at `e7cfc8b`;
   a separate signed iOS/TestFlight release is still required to reach devices.
 - Official workspace root: `/Users/felipedominguez/Desktop/Nexus Hub`
+
+## 2026-05-22 Decision Center Clarity + Secretary Intelligence Production Promote
+
+- Scope: promoted the full Decision Center clarity and Secretary intelligence
+  phase: structured `explanation` payloads for active and handled decisions,
+  handled history persistence/backfill, locale-aware Secretary Today summary,
+  Decision Center timeline hardening, outcome/ranking observability,
+  privacy-safe notification smoke tooling, and APNs rank-gated urgent decision
+  delivery. iOS rendering support was already validated on main; no iOS binary
+  release was part of this backend promote.
+- Production version: `4.14.183`.
+- Production deploy commit: `17c35872`.
+- Source implementation commit before deploy bump: `109ce2e9`.
+- Previous production deploy commit: `5f64ead7`.
+- Database change: migration `153_decision_center_explanations.sql` adds
+  `handled_by_nexus_items.explanation_json`; runtime schema ensure also covers
+  fresh/test DBs.
+- Staging deploy passed from the committed RC, followed by staging smoke
+  **19/19** with evidence at
+  `docs/release/smoke-evidence/staging-smoke-5f64ead7-20260522T130003Z.json`.
+- Release validation passed before and during promotion: backend typecheck
+  passed, focused Decision Center / Secretary / notification / smoke-tool
+  suites passed during implementation, the pre-commit hook ran full Vitest
+  with **633 test files / 9,419 tests** passing, and the final `main`
+  fast-forward pre-push gate repeated typecheck plus full Vitest with
+  **633 test files / 9,419 tests** passing.
+- Production deploy completed for the committed `4.14.183` artifact. The first
+  deploy attempt tripped the dirty-worktree guard after verification refreshed
+  observational registry evidence; production PM2 services were restarted
+  immediately, the evidence timestamp was restored, and the deploy continued
+  manually with the same committed artifact rather than creating an unnecessary
+  extra version bump.
+- Production health passed after deploy: `content-engine` returned OK,
+  `nexus-hub` package version is `4.14.183`, both production PM2 services are
+  online, `https://api.nexushub.me/health` returned `status: healthy`, and
+  `https://api.nexushub.me/public-status` returned only the minimal public
+  status payload.
+- Production APNs proof passed after setting
+  `NOTIFICATION_DELIVERY_MODE=apns` in the production engine environment and
+  restarting `nexus-hub` with updated env. Decision Center notification smoke
+  run `decision-center-notification-smoke-20260522132201-ixfe21` passed with
+  the visible urgent decision push accepted by APNs (`provider=apns`,
+  `status=sent`) and the low-rank smoke item held to digest/in-app as expected.
+  The smoke report redacted notification copy and exposed only safe payload
+  length/hash evidence.
+- Staging may lag production after the promote/version bump; the promoted
+  functional code was smoke-tested on staging before the production bump.
 
 ## 2026-05-21 Cloudflare Edge Unblock Apply (Completion)
 

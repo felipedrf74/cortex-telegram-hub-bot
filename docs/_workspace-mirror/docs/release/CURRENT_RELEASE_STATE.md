@@ -2,10 +2,10 @@
 
 Status: canonical
 Owner: release lead (Felipe)
-Last verified: 2026-05-21
+Last verified: 2026-05-22
 Update policy: update after merge / staging / production / deploy-gate changes. Live identity (branch/commit/version/migrations) auto-generated via engine/scripts/release-identity.sh --persist; do not type those by hand.
 
-Last updated: 2026-05-21
+Last updated: 2026-05-22
 
 > **Live identity** — branch / commit / version / migration count for the
 > current working tree are auto-generated. Do NOT type those values by
@@ -17,15 +17,103 @@ Last updated: 2026-05-21
 
 - Repo: `engine`
 - Workspace HEAD / version / migrations / dirty state: see `docs/release/release-identity.md`
-- Production status (last manual update 2026-05-21): backend package version
-  `4.14.181` is deployed from commit `ae4e1421`; both `nexus-hub` and
+- Production status (last manual update 2026-05-22): backend package version
+  `4.14.183` is deployed from commit `17c35872`; both `nexus-hub` and
   `content-engine` PM2 processes are online, production `/health` passed, and
-  `/public-status` returns the minimal public API payload. `origin/main` is
-  ahead of the running runtime bundle with post-deploy docs/tooling follow-ups;
-  `bb68a55b` is the last release-state commit before the 2026-05-21
-  Cloudflare follow-up. Workspace audit evidence lives at
+  `/public-status` returns the minimal public API payload. External checks
+  against `https://api.nexushub.me/health` returned `status: healthy` at
+  `2026-05-22T13:25:18Z`, and `https://api.nexushub.me/public-status`
+  returned the minimal public API payload. Backend `origin/main` may include a
+  post-deploy release-state docs commit on top of the running production deploy
+  commit; production runtime remains deployed from `17c35872`. Workspace audit
+  evidence lives at
   `docs/release/worktree-recovery-audit-2026-05-18.md` and
   `docs/release/worktree-recovery-audit-2026-05-21/`.
+
+### 2026-05-22 Decision Center Clarity + Secretary Intelligence Production Promote
+
+- Scope: promoted the full Decision Center clarity and Secretary intelligence
+  phase: structured `explanation` payloads for active and handled decisions,
+  handled history persistence/backfill, locale-aware Secretary Today summary,
+  Decision Center timeline hardening, outcome/ranking observability,
+  privacy-safe notification smoke tooling, and APNs rank-gated urgent decision
+  delivery. iOS rendering support was already validated on main; no iOS binary
+  release was part of this backend promote.
+- Production version: `4.14.183`.
+- Production deploy commit: `17c35872`.
+- Source implementation commit before deploy bump: `109ce2e9`.
+- Previous production deploy commit: `5f64ead7`.
+- Database change: migration `153_decision_center_explanations.sql` adds
+  `handled_by_nexus_items.explanation_json`; runtime schema ensure also covers
+  fresh/test DBs.
+- Staging deploy passed from the committed RC, followed by staging smoke
+  **19/19** with evidence at
+  `engine/docs/release/smoke-evidence/staging-smoke-5f64ead7-20260522T130003Z.json`.
+- Release validation passed before and during promotion: backend typecheck
+  passed, focused Decision Center / Secretary / notification / smoke-tool
+  suites passed during implementation, the pre-commit hook ran full Vitest
+  with **633 test files / 9,419 tests** passing, and the final `main`
+  fast-forward pre-push gate repeated typecheck plus full Vitest with
+  **633 test files / 9,419 tests** passing.
+- Production deploy completed for the committed `4.14.183` artifact. The first
+  deploy attempt tripped the dirty-worktree guard after verification refreshed
+  observational registry evidence; production PM2 services were restarted
+  immediately, the evidence timestamp was restored, and the deploy continued
+  manually with the same committed artifact rather than creating an unnecessary
+  extra version bump.
+- Production health passed after deploy: `content-engine` returned OK,
+  `nexus-hub` package version is `4.14.183`, both production PM2 services are
+  online, `https://api.nexushub.me/health` returned `status: healthy`, and
+  `https://api.nexushub.me/public-status` returned only the minimal public
+  status payload.
+- Production APNs proof passed after setting
+  `NOTIFICATION_DELIVERY_MODE=apns` in the production engine environment and
+  restarting `nexus-hub` with updated env. Decision Center notification smoke
+  run `decision-center-notification-smoke-20260522132201-ixfe21` passed with
+  the visible urgent decision push accepted by APNs (`provider=apns`,
+  `status=sent`) and the low-rank smoke item held to digest/in-app as expected.
+  The smoke report redacted notification copy and exposed only safe payload
+  length/hash evidence.
+- Staging may lag production after the promote/version bump; the promoted
+  functional code was smoke-tested on staging before the production bump.
+
+### 2026-05-22 Decision Center Intelligence Production Promote
+
+- Scope: promoted Decision Center intelligence/orchestration improvements for
+  handled-history truth, local-day handled counts, deterministic read-back
+  history writes, Decision Logic v2 rank-gated visible APNs pushes, scoped APNs
+  payload routing fields, and Secretary conflict deadlines. No iOS binary
+  change and no database migration were part of this promote.
+- Production version: `4.14.182`.
+- Production deploy commit: `5f64ead7`.
+- Source implementation commit before deploy bump: `3b78e960`.
+- Release evidence commit before deploy bump: `510a0112`.
+- Staging deploy passed on the Decision Center RC, followed by staging smoke
+  **17/17** with evidence at
+  `engine/docs/release/smoke-evidence/staging-smoke-3b78e960-20260521T234744Z.json`;
+  promote-time staging smoke passed **17/17** again.
+- Release validation passed before and during promotion: focused Decision
+  Center / notification / scheduler / route suites passed **5 files / 112
+  tests**; backend pre-commit focused gate passed **12 files / 225 tests**;
+  full backend `npm run verify` passed **632 test files / 9,409 tests** on
+  the RC and again during deploy; the `main` pre-push gate typechecked and ran
+  full Vitest before pushing `5f64ead7`.
+- Production promote passed through `./scripts/promote-to-prod.sh`.
+  Deploy-time build passed, production env validation passed, owner bootstrap
+  preflight passed, dependencies and native modules rebuilt, production backup
+  included `bot.db`, and PM2 reported both `nexus-hub` and `content-engine`
+  online after restart.
+- Production health passed after deploy: deploy script health checks passed,
+  `https://api.nexushub.me/health` returned `status: healthy`, and
+  `https://api.nexushub.me/public-status` returned only the minimal public
+  status payload.
+- Production Decision Center contract smoke passed without production data:
+  unauthenticated `/api/v1/decisions/overview` and
+  `/api/v1/decisions/summary` returned 401 with the canonical app-facing error
+  envelope, confirming the routes are mounted and auth is enforced.
+- Staging remains on `4.14.181` after the production auto-bump; this is normal
+  for the deploy script. The promoted functional code was already smoke-tested
+  on staging before the version bump.
 
 ### 2026-05-21 Cloudflare Edge Unblock Apply (Completion)
 
@@ -57,13 +145,23 @@ Last updated: 2026-05-21
   succeeded. The script's full-payload merge needs a follow-up fix to use a
   focused payload on Free plans — tracked as a follow-up; current behavior
   works around it with `--skip-bot-management` + a manual focused `curl`.
-- Verification: `scripts/cloudflare-edge-verify.sh` returned **13/13 PASS**.
+- Verification: `scripts/cloudflare-edge-verify.sh` returned **13/13 PASS**:
+  marketing site reachable to ClaudeBot/Claude-Web/anthropic-ai/ChatGPT-User/
+  PerplexityBot, `api.nexushub.me/public-status` reachable to ClaudeBot and
+  UptimeRobot, `api.nexushub.me/health` still 403 to ClaudeBot,
+  `robots.txt` no longer carries Cloudflare Managed content and explicitly
+  allows ClaudeBot, `llms.txt` starts with `# Nexus Hub` and carries the
+  current Pro `$14.99/R$69.99` and Max `$24.99/R$119.99` prices.
 - `--include-staging` was used so `api-staging.nexushub.me/public-status` is
   on the same allowlist as production.
 - Token: Felipe-supplied Cloudflare API token with TTL through
-  `2026-06-30T23:59:59Z`; rotate post-operation. Account ID
-  `413581f656838e03191273def66d5e3a` was supplied via
-  `CLOUDFLARE_ACCOUNT_ID` because the token lacked the User-read scope.
+  `2026-06-30T23:59:59Z`. Token was exposed in chat transcript during the
+  apply; rotate via the Cloudflare dashboard once this section is committed.
+  The Cloudflare account ID `413581f656838e03191273def66d5e3a` was supplied
+  via `CLOUDFLARE_ACCOUNT_ID` because the token lacked the User-read scope
+  that `npx wrangler whoami` requires for auto-detect.
+- No manual dashboard step was needed for the apply; the entire flow ran
+  via API/CLI from the Mac.
 
 ### 2026-05-21 Nexus Points QA2 + Cloudflare Edge Foundation Production Promote
 
@@ -98,12 +196,9 @@ Last updated: 2026-05-21
   immediately, then the deploy completed with `NEXUS_DEPLOY_ALLOW_DIRTY=1`
   because the only dirty file was observational evidence. Commit `4b490d4a`
   fixes that loop for future deploys.
-- Cloudflare edge unblock is still pending operator/API credentials. Live
-  `scripts/cloudflare-edge-verify.sh` still fails for Claude/Anthropic,
-  ChatGPT, and Perplexity user agents because this shell has no
-  `CLOUDFLARE_API_TOKEN` and Wrangler is not authenticated. The exact apply
-  command is
-  `CLOUDFLARE_API_TOKEN=... scripts/cloudflare-edge-unblock.mjs --apply`.
+- At this checkpoint Cloudflare edge unblock was still pending operator/API
+  credentials; the completion is now recorded in the
+  **2026-05-21 Cloudflare Edge Unblock Apply (Completion)** section above.
 - 2026-05-21 post-QA follow-up: the divergent local backend `main` worktree
   at `a8fce8fe` was preserved under
   `docs/release/worktree-recovery-audit-2026-05-21/claude-local-main-divergence/`,
@@ -114,11 +209,12 @@ Last updated: 2026-05-21
   live `robots.txt`/`llms.txt` and AI fetcher unblocking remain pending
   operator credentials.
 - Follow-up hardening added `scripts/cloudflare-edge-release.sh` as the
-  single operator path for the remaining block: it validates/deploys the
-  landing Pages bundle, applies the Cloudflare edge rules, waits for
-  propagation, and runs strict verification once a Cloudflare API token is
-  available. `scripts/cloudflare-edge-verify.sh` now also fails if `llms.txt`
-  is missing or carries stale Pro/Max prices.
+  single operator path: it validates/deploys the landing Pages bundle, applies
+  the Cloudflare edge rules, waits for propagation, and runs strict
+  verification once a Cloudflare API token is available. The live apply has
+  since completed; the remaining tooling follow-up is to make Bot Management
+  writes use a focused Free-plan-safe payload. `scripts/cloudflare-edge-verify.sh`
+  now also fails if `llms.txt` is missing or carries stale Pro/Max prices.
 
 ### 2026-05-19 Content Token Phase 2 + Training Skill Hardening Production Promote
 
@@ -459,25 +555,32 @@ Last updated: 2026-05-21
 
 Earlier 4.14.132 content, portal, and Apple web sign-in release notes are
 historical and no longer represent the active production release. Current
-production truth is the 4.14.162 Chat General Action Intelligence promote above; live
-working-tree identity is generated in `docs/release/release-identity.md`.
+production truth is the 4.14.183 Decision Center Clarity + Secretary release at the
+top of this file; live working-tree identity is generated in
+`docs/release/release-identity.md`.
 
 ## iOS
 
 - Repo: `ios`
 - Release source branch: `origin/main` (local feature branches may be checked
   out for validation; use git for the exact current source SHA).
-- Current shipped-source focus: Content Creation workflow surfaces,
-  closed-beta user-scope health integration isolation, Google
-  reconnect-noise handling, auth/session hardening, navigation
-  responsiveness, and Training fixture readiness.
+- Current shipped-source focus: Decision Center report rendering and overview
+  loading fixes, Home day-dial calendar projection, Content Creation workflow
+  surfaces, user-scoped integration isolation, auth/session hardening,
+  navigation responsiveness, and Training fixture readiness.
 
 ### iOS scope
 
 - Content Creation now has first-pass workflow surfaces for profile/voice,
   radar, ideas/briefs, script studio, calendar, references, and performance.
-  The source is pushed to iOS `main` at `de220ad`; TestFlight/App Store
-  distribution remains a separate release action.
+  The current iOS `main` source observed during the 2026-05-21 architecture
+  scan is `037ab5c`; TestFlight/App Store distribution remains a separate
+  release action.
+- Decision Center and durable report rendering are present in iOS `main`;
+  the app prefers `/api/v1/decisions/overview` with legacy fallback and renders
+  report detail payloads natively.
+- Home day-dial presentation now projects from calendar truth in current iOS
+  `main`.
 - Home, Training, and Connections guard user-scoped health/readiness/Garmin
   state so one account cannot hydrate another account's cached wearable truth.
 - Google reconnect noise hides raw provider error details and treats expired
@@ -532,10 +635,9 @@ working-tree identity is generated in `docs/release/release-identity.md`.
 
 - No production data was used for validation.
 - Production data was not modified except by the normal deployment process.
-- Production now runs one deploy-bump commit ahead of staging (`4.14.162` vs
-  `4.14.161`). The code change was staged and smoke-tested before promote; run
-  `./scripts/deploy-staging.sh` if staging should match the production version
-  label exactly.
+- Production currently runs package version `4.14.183`. Staging may lag
+  production after promote because production auto-bumps the version label;
+  verify staging directly before claiming parity.
 - Post-promotion production-safe checks still recommended:
   - readiness/body battery isolation across Felipe / Jaqueline / nexushubbot
   - Garmin connection visibility per user
@@ -547,8 +649,8 @@ working-tree identity is generated in `docs/release/release-identity.md`.
 
 - Official working path: `/Users/felipedominguez/Desktop/Nexus Hub`
 - Docs audit command: `cd engine && npm run docs:audit`
-- Latest docs audit before this update: completed on 2026-05-12 with
-  pre-existing warnings only.
+- Latest docs audit before this update: completed on 2026-05-22 with 789
+  pre-existing warnings.
 - Engineering excellence standards are being validated on local feature
   branches. Claude report:
   `docs/archive/2026-05/engineering-excellence-architecture-standards/engineering-excellence-enrichment-report.md`.
