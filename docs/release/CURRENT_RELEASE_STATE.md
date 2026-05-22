@@ -13,8 +13,9 @@ Last updated: 2026-05-22
 - Production HEAD: `05960637`
 - Production version: `4.14.186`
 - Source implementation commit: `992879d6`
-- Latest pushed source: `origin/main` matches the running production deploy
-  commit.
+- Latest pushed source: `origin/main` includes a post-deploy release-state
+  docs commit on top of the running production deploy commit; production
+  runtime remains deployed from `05960637`.
 - iOS Chat card-hiding source changes are pushed to iOS `main` at `e7cfc8b`;
   a separate signed iOS/TestFlight release is still required to reach devices.
 - Official workspace root: `/Users/felipedominguez/Desktop/Nexus Hub`

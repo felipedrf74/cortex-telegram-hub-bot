@@ -23,8 +23,10 @@ Last updated: 2026-05-22
   `/public-status` returns the minimal public API payload. External checks
   against `https://api.nexushub.me/health` returned `status: healthy` at
   `2026-05-22T18:03:21Z`, and `https://api.nexushub.me/public-status`
-  returned the minimal public API payload. Backend `origin/main` matches the
-  running production deploy commit. Workspace audit evidence lives at
+  returned the minimal public API payload. Backend `origin/main` includes a
+  post-deploy release-state docs commit on top of the running production deploy
+  commit; production runtime remains deployed from `05960637`. Workspace audit
+  evidence lives at
   `docs/release/worktree-recovery-audit-2026-05-18.md` and
   `docs/release/worktree-recovery-audit-2026-05-21/`.
 
