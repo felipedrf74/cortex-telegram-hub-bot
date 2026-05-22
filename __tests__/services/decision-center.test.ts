@@ -39,12 +39,14 @@ import {
   addDecisionDependency,
   buildDecisionCenterReportDocument,
   buildSkillDecisionFixtureIntent,
+  cleanupDecisionCenterSmokeItems,
   createDecisionIntent,
   DECISION_OUTCOME_LEDGER_RETENTION_POLICY,
   dismissDecision,
   ensureDecisionCenterTables,
   evaluateDecisionEligibility,
   getDecisionItem,
+  getDecisionGuidanceStats,
   getDecisionOverview,
   getDecisionOutcomeMetrics,
   getDecisionSummary,
@@ -54,9 +56,10 @@ import {
   performDecisionAction,
   runDecisionHandledHistoryBackfillJob,
   runDecisionSourceStateSupersessionJob,
+  sanitizeGuidanceString,
   snoozeDecision,
 } from '../../src/services/decision-center';
-import { buildSkillNotificationFixtureIntent, ensureNotificationTables } from '../../src/services/notification-orchestrator';
+import { buildSkillNotificationFixtureIntent, createNotificationIntent, ensureNotificationTables } from '../../src/services/notification-orchestrator';
 import { trackPendingChatConfirmation } from '../../src/services/chat-pending-confirmations';
 
 async function createContentApprovalDecision(userId: number, tenantId: number, dedupeKey: string) {
@@ -145,7 +148,7 @@ function insertHandledFixture(input: {
       action_taken, why_brief, explanation_json, related_entities_json, rollback_available,
       changed_rule_option, privacy_classification, created_at
     ) VALUES (?, ?, ?, ?, 'content', 'Content review', 'Content workflow is now approved.',
-      'approve_script', 'Read-back confirmed content workflow state is approved.', NULL, '[]', 0,
+      'approve_script', 'Nexus checked Content and found the state is approved.', NULL, '[]', 0,
       NULL, 'private_content', ?)
   `).run(input.handledItemId, input.decisionId, input.userId, input.tenantId, input.createdAt);
 }
@@ -465,7 +468,7 @@ describe('Decision Center facade', () => {
       sectionKey: 'urgent',
       groupKey: 'secretary:calendar_conflict:conflict-81',
       impactLevel: 'high',
-      sourceTraceSummary: expect.stringContaining('Decision Center v2'),
+      sourceTraceSummary: null,
       dependencyGraphSummary: null,
     });
     expect(listed[0].alternatives.some((option) => option.rank === 'best')).toBe(true);
@@ -473,17 +476,9 @@ describe('Decision Center facade', () => {
     expect(listed[0].alternatives.find((option) => option.actionId === 'snooze')?.source).toBe('system_default');
     expect(listed[0].alternatives.find((option) => option.actionId === 'dismiss')?.source).toBe('system_default');
     expect(listed[0].relatedEntitiesSafe[0]).toMatchObject({ type: 'calendar_conflict' });
-    expect(listed[0].sourceTrace).toMatchObject({
-      originatingSkill: 'secretary',
-      originatingSignal: 'conflict_detected',
-      enrichmentService: 'decision-center-logic-v2',
-    });
-    expect(listed[0].actionTruthTableEntry).toMatchObject({
-      actionType: 'open_detail',
-      verifier: null,
-      analyticsEvent: 'decision_action:secretary:open_detail',
-    });
-    expect(listed[0].askNexusContext.prompt).toContain('Secretary');
+    expect(listed[0].sourceTrace).toBeNull();
+    expect(listed[0].actionTruthTableEntry).toBeNull();
+    expect(listed[0].askNexusContext).toBeNull();
   });
 
   it('disables user-facing actions when a recipe has no deterministic executor yet', async () => {
@@ -514,13 +509,7 @@ describe('Decision Center facade', () => {
     expect(listed[0].frontendActionState).toBe('disabled_missing_details');
     expect(listed[0].recommendedAction?.id).toBe('retry');
     expect(listed[0].alternatives.find((option) => option.actionId === 'retry')?.available).toBe(false);
-    expect(listed[0].actionTruthTableEntry).toMatchObject({
-      actionType: 'retry',
-      executor: 'provider-sync',
-      successUi: 'Action unavailable until a deterministic executor is wired.',
-      retryAvailable: false,
-      apnsActionAllowed: false,
-    });
+    expect(listed[0].actionTruthTableEntry).toBeNull();
   });
 
   it('threads owner/admin visibility scope through internal decision intents', async () => {
@@ -542,15 +531,293 @@ describe('Decision Center facade', () => {
       dedupeKey: 'ops:model-fallback-invalid',
     });
 
-    expect(created.item).not.toBeNull();
-    expect(created.item?.visibilityScope).toBe('system_admin');
-    expect(created.item?.title).toBe('Owner operations decision');
-    expect(created.item?.safePreviewTitle).toBe('Owner review needed');
+    expect(created.item).toBeNull();
 
     const listed = listDecisionItems(91, 91);
-    expect(listed).toHaveLength(1);
-    expect(listed[0].visibilityScope).toBe('system_admin');
-    expect(listed[0].safePreviewBody).not.toContain('Model fallback policy');
+    expect(listed).toHaveLength(0);
+    const stored = testDb.prepare(`
+      SELECT intents.decision_context_json
+        FROM notification_center_items items
+        JOIN notification_intents intents ON intents.intent_id = items.intent_id
+       WHERE items.user_id = 91 AND items.tenant_id = 91
+    `).get() as { decision_context_json: string };
+    expect(JSON.parse(stored.decision_context_json).visibilityScope).toBe('system_admin');
+    expect(getDecisionGuidanceStats().filteredByReason.admin_visibility_scope).toBeGreaterThan(0);
+  });
+
+  it('excludes smoke and internal decisions from normal Decision Center surfaces', async () => {
+    const object = createContentWorkflowObject({
+      userId: 93,
+      tenantId: 93,
+      objectType: 'script',
+      title: 'Smoke proof draft',
+      editorialState: 'drafted',
+    });
+    await createNotificationIntent(buildSkillNotificationFixtureIntent('content', 93, {
+      type: 'decision_required',
+      priority: 'time_sensitive',
+      relatedEntityId: object.id,
+      relatedEntityType: 'content_workflow_object',
+      actionButtons: [{ id: 'approve_script', label: 'Approve', style: 'primary' }],
+      requiresUserAction: true,
+      dedupeKey: 'smoke:decision-center:visible:93:test',
+      visibilityScope: 'system_admin',
+      decisionContext: {
+        entityTitle: 'Smoke proof draft',
+        visibilityScope: 'system_admin',
+        internalOnly: true,
+        smoke: true,
+      },
+    }));
+
+    const row = testDb.prepare(`
+      SELECT item_id
+        FROM notification_center_items
+       WHERE user_id = 93 AND tenant_id = 93
+       LIMIT 1
+    `).get() as { item_id: string };
+
+    expect(listDecisionItems(93, 93)).toHaveLength(0);
+    expect(getDecisionItem(row.item_id, 93, 93)).toBeNull();
+    expect(getDecisionSummary(93, 93).openCount).toBe(0);
+    const overview = getDecisionOverview(93, 93, { limit: 10, handledLimit: 5 });
+    expect(overview.openCount).toBe(0);
+    expect(overview.secretaryToday.counts.needsUser).toBe(0);
+    expect((buildDecisionCenterReportDocument(93, 93).openDecisions as unknown[])).toHaveLength(0);
+    expect(getDecisionGuidanceStats().filteredByReason.admin_visibility_scope).toBeGreaterThan(0);
+  });
+
+  it('applies each normal-user Decision Center filtering rule while keeping valid decisions visible', async () => {
+    const userId = 97;
+    const tenantId = 97;
+    const now = new Date('2026-05-10T10:00:00.000Z').toISOString();
+    const oldSync = new Date('2026-05-10T08:00:00.000Z').toISOString();
+    const before = getDecisionGuidanceStats().filteredByReason;
+
+    async function emitFilterFixture(
+      key: string,
+      overrides: {
+        visibilityScope?: 'user_private' | 'tenant_shared' | 'tenant_admin' | 'system_admin';
+        decisionContext?: Record<string, unknown>;
+        dedupeKey?: string;
+        relatedEntityId?: string | null;
+        relatedEntityType?: string | null;
+        title?: string;
+        body?: string;
+      } = {},
+    ) {
+      const hasRelatedOverride = Object.prototype.hasOwnProperty.call(overrides, 'relatedEntityId');
+      const object = hasRelatedOverride
+        ? null
+        : createContentWorkflowObject({
+          userId,
+          tenantId,
+          objectType: 'script',
+          title: `${key} draft`,
+          editorialState: 'drafted',
+        });
+      return createNotificationIntent(buildSkillNotificationFixtureIntent('content', userId, {
+        tenantId,
+        type: 'approval_required',
+        priority: 'time_sensitive',
+        title: overrides.title ?? `${key} content review`,
+        body: overrides.body ?? `${key} content draft is ready for approval or rewrite feedback.`,
+        relatedEntityId: hasRelatedOverride
+          ? overrides.relatedEntityId
+          : object!.id,
+        relatedEntityType: Object.prototype.hasOwnProperty.call(overrides, 'relatedEntityType')
+          ? overrides.relatedEntityType
+          : 'content_workflow_object',
+        actionButtons: [
+          { id: 'approve_script', label: 'Approve', style: 'primary' },
+          { id: 'request_rewrite', label: 'Rewrite', style: 'secondary' },
+        ],
+        requiresUserAction: true,
+        dedupeKey: overrides.dedupeKey ?? `filter:${key}`,
+        visibilityScope: overrides.visibilityScope ?? 'user_private',
+        deliveryPolicy: 'in_app_only',
+        privacyPolicy: 'private_content',
+        decisionDeadline: now,
+        decisionContext: {
+          entityTitle: `${key} draft`,
+          sourceState: 'awaiting_approval',
+          ...(overrides.decisionContext ?? {}),
+        },
+      }));
+    }
+
+    const visible = await emitFilterFixture('visible');
+    const systemAdmin = await emitFilterFixture('system-admin', { visibilityScope: 'system_admin' });
+    const tenantAdmin = await emitFilterFixture('tenant-admin', { visibilityScope: 'tenant_admin' });
+    const internalOnly = await emitFilterFixture('internal-only', { decisionContext: { internalOnly: true } });
+    const smokeContext = await emitFilterFixture('smoke-context', { decisionContext: { smoke: true } });
+    const smokeDedupe = await emitFilterFixture('smoke-dedupe', { dedupeKey: 'smoke:decision-center:filter:97' });
+    const smokeEntity = await emitFilterFixture('smoke-entity', {
+      relatedEntityId: 'smoke-entity',
+      relatedEntityType: 'decision_center_smoke',
+    });
+    const staleSource = await emitFilterFixture('stale-source', {
+      decisionContext: {},
+    });
+    testDb.prepare(`
+      UPDATE notification_intents
+         SET decision_context_json = ?
+       WHERE intent_id = ?
+    `).run(JSON.stringify({
+      entityTitle: 'stale-source draft',
+      sourceState: 'awaiting_approval',
+      providerSyncState: 'not_synced',
+      providerSyncUpdatedAt: oldSync,
+    }), staleSource.intent.intentId);
+    const unsafeQuality = await emitFilterFixture('unsafe-quality', {
+      relatedEntityId: null,
+      relatedEntityType: null,
+      title: 'Decision details',
+      body: 'Review this decision.',
+    });
+
+    const items = listDecisionItems(userId, tenantId, { status: 'all', limit: 20 });
+    expect(items.map((item) => item.decisionId)).toEqual([visible.item?.itemId]);
+
+    for (const result of [systemAdmin, tenantAdmin, internalOnly, smokeContext, smokeDedupe, smokeEntity, staleSource, unsafeQuality]) {
+      expect(result.item).not.toBeNull();
+      expect(getDecisionItem(result.item!.itemId, userId, tenantId)).toBeNull();
+    }
+
+    const after = getDecisionGuidanceStats().filteredByReason;
+    function reasonDelta(reason: string): number {
+      return (after[reason] ?? 0) - (before[reason] ?? 0);
+    }
+    expect(reasonDelta('admin_visibility_scope')).toBeGreaterThanOrEqual(2);
+    expect(reasonDelta('internal_only')).toBeGreaterThanOrEqual(1);
+    expect(reasonDelta('smoke_decision')).toBeGreaterThanOrEqual(3);
+    expect(reasonDelta('stale_action_source')).toBeGreaterThanOrEqual(1);
+    expect(reasonDelta('unsafe_quality')).toBeGreaterThanOrEqual(1);
+  });
+
+  it('cleans up only scoped Decision Center smoke rows with dry-run and confirm modes', async () => {
+    const object = createContentWorkflowObject({
+      userId: 94,
+      tenantId: 94,
+      objectType: 'script',
+      title: 'Cleanup smoke draft',
+      editorialState: 'drafted',
+    });
+    await createNotificationIntent(buildSkillNotificationFixtureIntent('content', 94, {
+      type: 'decision_required',
+      priority: 'time_sensitive',
+      title: '[SMOKE] Cleanup proof',
+      body: '[SMOKE] Cleanup proof body',
+      relatedEntityId: object.id,
+      relatedEntityType: 'content_workflow_object',
+      actionButtons: [{ id: 'approve_script', label: 'Approve', style: 'primary' }],
+      requiresUserAction: true,
+      dedupeKey: 'smoke:decision-center:visible:94:test',
+      visibilityScope: 'system_admin',
+      decisionContext: {
+        entityTitle: '[SMOKE] Cleanup proof',
+        visibilityScope: 'system_admin',
+        internalOnly: true,
+        smoke: true,
+      },
+    }));
+    await createContentApprovalDecision(95, 95, 'not-smoke-cleanup');
+
+    const dryRun = cleanupDecisionCenterSmokeItems({ userId: 94, tenantId: 94, dryRun: true });
+    expect(dryRun).toMatchObject({ inspected: 1, expired: 0, dryRun: true });
+
+    const confirmed = cleanupDecisionCenterSmokeItems({ userId: 94, tenantId: 94, dryRun: false });
+    expect(confirmed).toMatchObject({ inspected: 1, expired: 1, dryRun: false });
+    const smokeStatus = testDb.prepare(`
+      SELECT status FROM notification_center_items WHERE user_id = 94 AND tenant_id = 94
+    `).get() as { status: string };
+    const normalStatus = testDb.prepare(`
+      SELECT status FROM notification_center_items WHERE user_id = 95 AND tenant_id = 95
+    `).get() as { status: string };
+    expect(smokeStatus.status).toBe('expired');
+    expect(normalStatus.status).not.toBe('expired');
+  });
+
+  it('redacts banned technical terms from user-facing guidance without throwing', async () => {
+    const object = createContentWorkflowObject({
+      userId: 96,
+      tenantId: 96,
+      objectType: 'script',
+      title: 'Guidance redaction draft',
+      editorialState: 'drafted',
+    });
+    const created = await createDecisionIntent(buildSkillDecisionFixtureIntent('content', 96, {
+      relatedEntityId: object.id,
+      relatedEntityType: 'content_workflow_object',
+      dedupeKey: 'content:redaction-guidance',
+      decisionContext: {
+        entityTitle: '[SMOKE] source_trace workflow object',
+      },
+    }));
+
+    expect(created.item).not.toBeNull();
+    const payload = JSON.stringify(created.item?.explanation);
+    expect(payload).not.toContain('[SMOKE]');
+    expect(payload).not.toContain('source_trace');
+    expect(payload).not.toContain('workflow object');
+    expect(payload).toContain('[redacted]');
+    expect(getDecisionGuidanceStats().bannedTermsCaught).toBeGreaterThan(0);
+  });
+
+  it('redacts banned technical terms with expected user-facing replacements', () => {
+    const cases = [
+      { input: 'The [SMOKE] action ran.', expected: 'The [redacted] action ran.' },
+      { input: 'Decision Center v2 ships next week.', expected: '[redacted] ships next week.' },
+      { input: 'Source trace shows the read-back attempt.', expected: '[redacted] shows the source confirmation attempt.' },
+      { input: 'The verifier verifies the result.', expected: 'The [redacted] checks the result.' },
+      { input: 'Update secretary_agenda_items state.', expected: 'Update [redacted].' },
+      { input: 'Modify workflow object configuration.', expected: 'Modify [redacted] configuration.' },
+      { input: 'Read decision_log_id from the record.', expected: 'Read [redacted] from the record.' },
+    ];
+
+    for (const testCase of cases) {
+      const result = sanitizeGuidanceString(testCase.input, {
+        decisionId: 'sanitizer-contract',
+        sourceSkill: 'secretary',
+      });
+      expect(result.sanitized).toBe(testCase.expected);
+      expect(result.rejectedTerms.length).toBeGreaterThan(0);
+    }
+  });
+
+  it('preserves common user-facing copy and locale codes without false-positive redaction', () => {
+    const safeStrings = [
+      'Your account is up to date.',
+      'Mark as done when verified.',
+      'Move the long run to Sunday at 08:00.',
+      'Next best move: choose another time.',
+      'Locale fallback: pt_BR for Brazilian Portuguese users.',
+      "It's time to decide.",
+    ];
+
+    for (const safeString of safeStrings) {
+      const result = sanitizeGuidanceString(safeString, {
+        decisionId: 'sanitizer-negative',
+        sourceSkill: 'secretary',
+      });
+      expect(result.sanitized).toBe(safeString);
+      expect(result.rejectedTerms).toEqual([]);
+    }
+  });
+
+  it('increments banned-term counters per rejected guidance term', () => {
+    const before = getDecisionGuidanceStats();
+    const result = sanitizeGuidanceString('The [SMOKE] verifier verifies the source trace.', {
+      decisionId: 'sanitizer-counters',
+      sourceSkill: 'secretary',
+    });
+    const after = getDecisionGuidanceStats();
+
+    expect(result.sanitized).toBe('The [redacted] [redacted] checks the [redacted].');
+    expect(after.bannedTermsCaught).toBeGreaterThan(before.bannedTermsCaught);
+    expect((after.bannedTermsByTerm['[SMOKE]'] ?? 0) - (before.bannedTermsByTerm['[SMOKE]'] ?? 0)).toBe(1);
+    expect((after.bannedTermsByTerm.verifier ?? 0) - (before.bannedTermsByTerm.verifier ?? 0)).toBe(2);
+    expect((after.bannedTermsByTerm.source_trace ?? 0) - (before.bannedTermsByTerm.source_trace ?? 0)).toBe(1);
   });
 
   it('keeps Secretary decisions internal when the only candidate slot matches the current window', async () => {
@@ -649,7 +916,10 @@ describe('Decision Center facade', () => {
     expect(created.item?.status).toBe('unread');
     expect(created.item?.explanation.whatHappened).toContain('ready for approval');
     expect(created.item?.explanation.userAction).toContain('Approve');
-    expect(created.item?.explanation.verification).toContain('content workflow state');
+    expect(created.item?.explanation.verification).toContain('content state');
+    expect(created.item?.explanation.recommendedMove).toBeTruthy();
+    expect(created.item?.explanation.ifIgnored).toBeTruthy();
+    expect(created.item?.explanation.actionLabels?.primary).toBe('Approve');
 
     const result = await performDecisionAction(created.item!.decisionId, 'approve_script', 2, 2, {
       idempotencyKey: 'tap-1',
@@ -669,7 +939,7 @@ describe('Decision Center facade', () => {
       privacyClassification: 'private_content',
     });
     expect(handled[0].summary).toContain('approved');
-    expect(handled[0].whyBrief).toContain('Read-back confirmed content workflow state');
+    expect(handled[0].whyBrief).toContain('Nexus checked Content');
     expect(handled[0].explanation?.result).toContain('approved');
     expect(handled[0].explanation?.whyItMatters).toContain('verified next state');
     expect(handled[0].explanation?.nextStep).toContain('Content');
@@ -724,7 +994,7 @@ describe('Decision Center facade', () => {
     `).get('empty-effect-decision') as { explanation_json: string };
     const explanation = JSON.parse(stored.explanation_json);
     expect(explanation.verification).not.toContain('Read-back confirmed');
-    expect(explanation.verification).toContain('read-back is pending');
+    expect(explanation.verification).toContain('source confirmation is still pending');
     expect(explanation.steps.map((step: { label: string }) => step.label)).toContain('Verification checked');
   });
 
@@ -795,7 +1065,7 @@ describe('Decision Center facade', () => {
     expect(handled[0].explanation).toMatchObject({
       headline: expect.stringContaining('Rewrite requested'),
       result: expect.stringContaining('rewrite'),
-      verification: expect.stringContaining('content workflow state'),
+      verification: expect.stringContaining('Content'),
       nextStep: expect.stringContaining('rewritten draft'),
     });
     expect(handled[0].explanation?.steps.map((step) => step.status)).toContain('done');
@@ -927,9 +1197,9 @@ describe('Decision Center facade', () => {
     expect(agenda).toMatchObject({ lifecycle_state: 'reflowed', decision_action: 'reflowed' });
     const handled = listHandledByNexusItems(42, 42, 5);
     expect(handled[0].explanation).toMatchObject({
-      headline: expect.stringContaining('Secretary reflowed'),
+      headline: expect.stringContaining('Secretary rescheduled'),
       result: expect.stringContaining('removed from active decisions'),
-      verification: expect.stringContaining('Secretary agenda state'),
+      verification: expect.stringContaining('Nexus checked Secretary'),
     });
     expect(handled[0].explanation?.nextStep).toContain('Undo');
 

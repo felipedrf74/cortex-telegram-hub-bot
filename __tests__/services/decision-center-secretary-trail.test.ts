@@ -17,6 +17,7 @@ import Database from 'better-sqlite3';
 import { readFileSync } from 'node:fs';
 
 let testDb: Database.Database;
+let previousDebugEvidence: string | undefined;
 
 vi.mock('../../src/services/database', () => ({
   getDb: () => testDb,
@@ -95,11 +96,15 @@ function trainingIntent(intentId: string, ownerUserId: number): SecretarySchedul
 beforeEach(() => {
   vi.useFakeTimers();
   vi.setSystemTime(new Date('2026-05-10T10:00:00.000Z'));
+  previousDebugEvidence = process.env.DECISION_CENTER_DEBUG_EVIDENCE;
+  process.env.DECISION_CENTER_DEBUG_EVIDENCE = '1';
   testDb = new Database(':memory:');
   ensureFixtureTables();
 });
 
 afterEach(() => {
+  if (previousDebugEvidence === undefined) delete process.env.DECISION_CENTER_DEBUG_EVIDENCE;
+  else process.env.DECISION_CENTER_DEBUG_EVIDENCE = previousDebugEvidence;
   vi.useRealTimers();
   testDb.close();
 });

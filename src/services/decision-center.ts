@@ -52,7 +52,7 @@ import {
 } from './chat-pending-confirmations';
 import { isValidTenantUserId, recordTenantScopeAnomaly } from './tenant-scope-observability';
 import { logger } from '../utils/logger';
-import { isDecisionStreakV1Enabled } from './runtime-flags';
+import { isDecisionCenterGuidanceSkillEnabled, isDecisionCenterGuidanceV1Enabled, isDecisionStreakV1Enabled } from './runtime-flags';
 import type { SecretaryTodaySummaryModel } from './secretary-orchestrator';
 import { secretaryTodayLabels } from './secretary-today-copy';
 import {
@@ -192,11 +192,11 @@ export interface DecisionApiItem {
   quality: DecisionQualityGateResult;
   relatedEntities: Array<{ type: string; id: string }>;
   relatedEntitiesSafe: Array<{ type: string; label: string }>;
-  sourceTraceSummary: string;
-  sourceTrace: DecisionSourceTrace;
+  sourceTraceSummary: string | null;
+  sourceTrace: DecisionSourceTrace | null;
   dependencyGraphSummary: string | null;
   actionTruthTableEntry: DecisionActionTruthTableEntry | null;
-  askNexusContext: DecisionAskNexusContext;
+  askNexusContext: DecisionAskNexusContext | null;
   deadlineAt: string | null;
   expiresAt: string | null;
   confidence: number;
@@ -219,11 +219,17 @@ export interface DecisionApiItem {
 }
 
 export type DecisionExplanationStepStatus = 'done' | 'needs_user' | 'pending' | 'blocked';
+export type DecisionExplanationDisplaySection = 'decision_needed' | 'what_will_change' | 'why_it_matters' | 'options' | 'verification' | 'debug';
 
 export interface DecisionExplanationStep {
   label: string;
   detail: string;
   status: DecisionExplanationStepStatus;
+}
+
+export interface DecisionExplanationActionLabels {
+  primary: string;
+  secondary: string[];
 }
 
 export interface DecisionExplanation {
@@ -236,6 +242,10 @@ export interface DecisionExplanation {
   verification: string;
   nextStep: string;
   steps: DecisionExplanationStep[];
+  recommendedMove?: string;
+  ifIgnored?: string;
+  actionLabels?: DecisionExplanationActionLabels;
+  displaySections?: DecisionExplanationDisplaySection[];
 }
 
 export interface DecisionAnalysisBundle {
@@ -441,11 +451,58 @@ const DECISION_VERIFICATION_STATE_FIELDS: Record<string, string[]> = {
   connections: ['syncState', 'connectionState'],
 };
 
+type DecisionUserFacingFilterReason =
+  | 'visible'
+  | 'guidance_disabled'
+  | 'admin_visibility_scope'
+  | 'internal_only'
+  | 'smoke_decision'
+  | 'unsafe_quality'
+  | 'unsafe_frontend_action'
+  | 'stale_action_source'
+  | 'incomplete_guidance';
+
+interface DecisionUserFacingFilterVerdict {
+  visible: boolean;
+  reason: DecisionUserFacingFilterReason;
+}
+
+const GUIDANCE_DISPLAY_SECTIONS: DecisionExplanationDisplaySection[] = [
+  'decision_needed',
+  'what_will_change',
+  'why_it_matters',
+  'options',
+  'verification',
+];
+
+const GUIDANCE_BANNED_TERMS: Array<{ pattern: RegExp; label: string; replacement?: string }> = [
+  { pattern: /\[smoke\]/gi, label: '[SMOKE]' },
+  { pattern: /decision\s+center\s+(?:v|version\s*)?\d+/gi, label: 'Decision Center version' },
+  { pattern: /source[\s_-]?trace/gi, label: 'source_trace' },
+  { pattern: /read[\s_-]?back/gi, label: 'read-back', replacement: 'source confirmation' },
+  { pattern: /\bverifies\b/gi, label: 'verifier', replacement: 'checks' },
+  { pattern: /\b(verifier|verified by verifier)\b/gi, label: 'verifier' },
+  { pattern: /secretary[\s_]agenda[\s_]items?(?:[\s_]state)?/gi, label: 'secretary_agenda_items' },
+  { pattern: /workflow\s+object/gi, label: 'workflow object' },
+  { pattern: /\b(enum|table|model)[\s_-]?name\b/gi, label: 'schema field' },
+  { pattern: /\b[a-z][a-z0-9]*(?:_[a-z0-9]+)+_(?:id|pk|fk|ref|json|table|enum|model)\b/gi, label: 'raw identifier' },
+];
+
 const decisionHandledHistoryStats = {
   writeFailures: 0,
   backfillRuns: 0,
   backfilled: 0,
   backfillFailures: 0,
+};
+
+const decisionGuidanceStats = {
+  emitted: 0,
+  nullGuidance: 0,
+  partial: 0,
+  bannedTermsCaught: 0,
+  bannedTermsByTerm: {} as Record<string, number>,
+  filteredFromUserView: 0,
+  filteredByReason: {} as Record<string, number>,
 };
 
 export interface DecisionHandledHistoryStats {
@@ -455,6 +512,16 @@ export interface DecisionHandledHistoryStats {
   backfillFailures: number;
 }
 
+export interface DecisionGuidanceStats {
+  emitted: number;
+  nullGuidance: number;
+  partial: number;
+  bannedTermsCaught: number;
+  bannedTermsByTerm: Record<string, number>;
+  filteredFromUserView: number;
+  filteredByReason: Record<string, number>;
+}
+
 export interface DecisionHandledHistoryBackfillResult {
   inspected: number;
   backfilled: number;
@@ -462,8 +529,24 @@ export interface DecisionHandledHistoryBackfillResult {
   failed: number;
 }
 
+export interface DecisionCenterSmokeCleanupResult {
+  inspected: number;
+  expired: number;
+  dryRun: boolean;
+  countsByStatus: Record<string, number>;
+  countsByVisibilityScope: Record<string, number>;
+}
+
 export function getDecisionHandledHistoryStats(): DecisionHandledHistoryStats {
   return { ...decisionHandledHistoryStats };
+}
+
+export function getDecisionGuidanceStats(): DecisionGuidanceStats {
+  return {
+    ...decisionGuidanceStats,
+    bannedTermsByTerm: { ...decisionGuidanceStats.bannedTermsByTerm },
+    filteredByReason: { ...decisionGuidanceStats.filteredByReason },
+  };
 }
 
 export function ensureDecisionCenterTables(): void {
@@ -734,15 +817,65 @@ export function listDecisionItems(
     .map(mapDecisionRecord)
     .filter((item) => isDecisionRecord(item))
     .filter((item) => !supersedeIfSourceStateStale(item))
-    .filter((item) => decisionLogicForRecord(item).quality.safeToShowUser)
+    .filter((item) => isUserFacingDecision(item, decisionLogicForRecord(item)).visible)
     .filter((item) => !isSnoozedUntilFuture(item))
     .filter((item) => !opts.urgency || urgencyForPriority(item.priority, item.decisionDeadline, item.expiresAt) === opts.urgency)
     .map(formatDecisionItemForApi);
 }
 
+function isUserFacingDecision(record: DecisionRecord, logic: DecisionLogicV2): DecisionUserFacingFilterVerdict {
+  const verdict = evaluateUserFacingDecision(record, logic);
+  if (!verdict.visible) {
+    decisionGuidanceStats.filteredFromUserView += 1;
+    decisionGuidanceStats.filteredByReason[verdict.reason] = (decisionGuidanceStats.filteredByReason[verdict.reason] ?? 0) + 1;
+  }
+  return verdict;
+}
+
+function evaluateUserFacingDecision(record: DecisionRecord, logic: DecisionLogicV2): DecisionUserFacingFilterVerdict {
+  const context = decisionContextForRecord(record);
+  const visibilityScope = visibilityScopeForItem(record);
+  if (visibilityScope === 'system_admin' || visibilityScope === 'tenant_admin') {
+    return { visible: false, reason: 'admin_visibility_scope' };
+  }
+  if (context.internalOnly === true) return { visible: false, reason: 'internal_only' };
+  if (context.smoke === true) return { visible: false, reason: 'smoke_decision' };
+  if (record.dedupeKey?.startsWith('smoke:')) return { visible: false, reason: 'smoke_decision' };
+  if (record.relatedEntityType === 'decision_center_smoke') return { visible: false, reason: 'smoke_decision' };
+  if (!logic.quality.safeToShowUser) return { visible: false, reason: 'unsafe_quality' };
+  if (!guidanceEnabledForRecord(record)) return { visible: true, reason: 'guidance_disabled' };
+
+  const actionQueue = ['unread', 'read', 'failed', 'open'].includes(record.status);
+  if (process.env.DECISION_CENTER_DEBUG_EVIDENCE !== '1'
+      && actionQueue
+      && record.requiresUserAction
+      && analysisForRecord(record, logic).sourceFreshness === 'stale') {
+    return { visible: false, reason: 'stale_action_source' };
+  }
+  if (actionQueue && record.requiresUserAction && !logic.quality.safeForFrontendAction) {
+    return { visible: false, reason: 'unsafe_frontend_action' };
+  }
+  if (actionQueue && !hasMinimumVisibleGuidance(record, logic)) {
+    return { visible: false, reason: 'incomplete_guidance' };
+  }
+  return { visible: true, reason: 'visible' };
+}
+
+function hasMinimumVisibleGuidance(record: DecisionRecord, logic: DecisionLogicV2): boolean {
+  const headline = firstConcreteOrNull([logic.safePreviewTitle, logic.title]);
+  const whatHappened = firstConcreteOrNull([logic.problemStatement, logic.safePreviewBody, record.safeBody]);
+  const userAction = firstConcreteOrNull([openDecisionUserAction(record, logic)]);
+  const labels = guidanceActionLabelsForRecord(record, logic);
+  if (!headline || !whatHappened || !userAction) return false;
+  if (record.requiresUserAction && record.type !== 'sync_failure' && !labels?.primary) return false;
+  return true;
+}
+
 export function getDecisionItem(decisionId: string, userId: number, tenantId = userId): DecisionApiItem | null {
   const record = getDecisionRecord(decisionId, userId, tenantId);
   if (!record || !isDecisionRecord(record)) return null;
+  const logic = decisionLogicForRecord(record);
+  if (!isUserFacingDecision(record, logic).visible) return null;
   if (supersedeIfSourceStateStale(record)) {
     const refreshed = getDecisionRecord(decisionId, userId, tenantId);
     return refreshed ? formatDecisionItemForApi(refreshed) : null;
@@ -773,7 +906,9 @@ export function findDecisionByRelatedEntity(
   `).get(userId, tenantId, relatedEntityType, relatedEntityId) as any;
   if (!row) return null;
   const record = mapDecisionRecord(row);
-  return isDecisionRecord(record) ? formatDecisionItemForApi(record) : null;
+  if (!isDecisionRecord(record)) return null;
+  const logic = decisionLogicForRecord(record);
+  return isUserFacingDecision(record, logic).visible ? formatDecisionItemForApi(record) : null;
 }
 
 export function getDecisionSummary(userId: number, tenantId = userId, limit = 3): DecisionSummary {
@@ -1145,7 +1280,9 @@ export function listHandledByNexusItems(userId: number, tenantId = userId, limit
       .map((row) => typeof row.decision_id === 'string' ? row.decision_id : null)
       .filter((value): value is string => !!value),
   );
-  const explicitItems = explicitRows.map(mapHandledByNexusItem);
+  const explicitItems = explicitRows
+    .map(mapHandledByNexusItem)
+    .filter(isHandledByNexusItemUserFacing);
 
   const actionedRows = getDb().prepare(`
     SELECT items.*, intents.related_entity_id, intents.related_entity_type, intents.requires_user_action,
@@ -1163,11 +1300,30 @@ export function listHandledByNexusItems(userId: number, tenantId = userId, limit
   const actionedItems = actionedRows
     .map(mapDecisionRecord)
     .filter((record) => !explicitDecisionIds.has(record.itemId))
+    .filter((record) => isUserFacingDecision(record, decisionLogicForRecord(record)).visible)
     .map(mapActionedDecisionToHandledItem);
 
   return [...explicitItems, ...actionedItems]
     .sort((a, b) => timestampMillis(b.createdAt) - timestampMillis(a.createdAt))
     .slice(0, boundedLimit);
+}
+
+function isHandledByNexusItemUserFacing(item: HandledByNexusItem): boolean {
+  const haystack = [
+    item.title,
+    item.summary,
+    item.actionTaken,
+    item.whyBrief,
+    item.explanation?.headline,
+    item.explanation?.whatHappened,
+    item.explanation?.result,
+  ].filter((value): value is string => typeof value === 'string');
+  const hidden = haystack.some((value) => /\[smoke\]|decision_center_smoke|source[\s_-]?trace|decision\s+center\s+(?:v|version\s*)?\d+/i.test(value));
+  if (hidden) {
+    decisionGuidanceStats.filteredFromUserView += 1;
+    decisionGuidanceStats.filteredByReason.smoke_decision = (decisionGuidanceStats.filteredByReason.smoke_decision ?? 0) + 1;
+  }
+  return !hidden;
 }
 
 export function runDecisionHandledHistoryBackfillJob(input: {
@@ -1257,6 +1413,101 @@ export function runDecisionHandledHistoryBackfillJob(input: {
     }
   }
   return result;
+}
+
+export function cleanupDecisionCenterSmokeItems(input: {
+  userId: number;
+  tenantId?: number;
+  dryRun: boolean;
+  limit?: number;
+}): DecisionCenterSmokeCleanupResult {
+  const tenantId = input.tenantId ?? input.userId;
+  assertScope(input.userId, tenantId, 'decision_center_smoke_cleanup', { dryRun: input.dryRun, limit: input.limit });
+  return runDecisionCenterSmokeCleanup({
+    userId: input.userId,
+    tenantId,
+    dryRun: input.dryRun,
+    limit: input.limit,
+  });
+}
+
+export function runDecisionCenterSmokeCleanupJob(input: {
+  olderThanHours?: number;
+  limit?: number;
+} = {}): DecisionCenterSmokeCleanupResult {
+  const olderThanHours = Math.max(input.olderThanHours ?? 24, 1);
+  const cutoff = DateTime.utc().minus({ hours: olderThanHours }).toISO()!;
+  return runDecisionCenterSmokeCleanup({
+    dryRun: false,
+    limit: input.limit,
+    olderThanIso: cutoff,
+  });
+}
+
+function runDecisionCenterSmokeCleanup(input: {
+  userId?: number;
+  tenantId?: number;
+  dryRun: boolean;
+  limit?: number;
+  olderThanIso?: string;
+}): DecisionCenterSmokeCleanupResult {
+  ensureDecisionCenterTables();
+  const boundedLimit = Math.min(Math.max(input.limit ?? 100, 1), 500);
+  const clauses = [
+    "items.status != 'expired'",
+    `(
+      items.dedupe_key LIKE 'smoke:decision-center:%'
+      OR intents.dedupe_key LIKE 'smoke:decision-center:%'
+      OR intents.related_entity_type = 'decision_center_smoke'
+      OR lower(items.title) LIKE '%[smoke]%'
+      OR lower(items.body) LIKE '%[smoke]%'
+      OR lower(intents.title) LIKE '%[smoke]%'
+      OR lower(intents.body) LIKE '%[smoke]%'
+      OR intents.decision_context_json LIKE '%"smoke":true%'
+      OR intents.decision_context_json LIKE '%"internalOnly":true%'
+    )`,
+  ];
+  const params: Array<string | number> = [];
+  if (input.userId !== undefined && input.tenantId !== undefined) {
+    clauses.push('items.user_id = ?', 'items.tenant_id = ?');
+    params.push(input.userId, input.tenantId);
+  }
+  if (input.olderThanIso) {
+    clauses.push('items.created_at <= ?');
+    params.push(input.olderThanIso);
+  }
+  params.push(boundedLimit);
+  const rows = getDb().prepare(`
+    SELECT items.item_id,
+           items.status,
+           intents.decision_context_json
+      FROM notification_center_items items
+      JOIN notification_intents intents ON intents.intent_id = items.intent_id
+     WHERE ${clauses.join(' AND ')}
+     ORDER BY items.created_at ASC
+     LIMIT ?
+  `).all(...params) as Array<{ item_id: string; status: string; decision_context_json: string | null }>;
+  const countsByStatus: Record<string, number> = {};
+  const countsByVisibilityScope: Record<string, number> = {};
+  for (const row of rows) {
+    countsByStatus[row.status] = (countsByStatus[row.status] ?? 0) + 1;
+    const context = safeParseJson(row.decision_context_json, {}) as DecisionLogicContext;
+    const scope = visibilityScopeFromContext(context) ?? 'unknown';
+    countsByVisibilityScope[scope] = (countsByVisibilityScope[scope] ?? 0) + 1;
+  }
+  if (input.dryRun || rows.length === 0) {
+    return { inspected: rows.length, expired: 0, dryRun: input.dryRun, countsByStatus, countsByVisibilityScope };
+  }
+  const update = getDb().prepare(`
+    UPDATE notification_center_items
+       SET status = 'expired'
+     WHERE item_id = ?
+  `);
+  const txn = getDb().transaction((ids: string[]) => {
+    for (const id of ids) update.run(id);
+  });
+  txn(rows.map((row) => row.item_id));
+  return { inspected: rows.length, expired: rows.length, dryRun: false, countsByStatus, countsByVisibilityScope };
 }
 
 export function addDecisionDependency(input: {
@@ -1792,6 +2043,8 @@ function formatDecisionItemForApi(item: DecisionRecord): DecisionApiItem {
   const riskLevel = riskLevelForItem(item);
   const sectionKey = sectionKeyForRecord(item, urgency, logic);
   const rollback = rollbackContractForRecord(item);
+  const exposeDebugEvidence = shouldExposeDecisionDebugEvidence(item);
+  const visibleWhatWillChange = userVisibleWhatWillChangeForApi(item, logic);
   return {
     decisionId: item.itemId,
     itemId: item.itemId,
@@ -1814,7 +2067,7 @@ function formatDecisionItemForApi(item: DecisionRecord): DecisionApiItem {
     recommendedAction: action,
     alternativeActions: actions.filter((candidate) => candidate.id !== action?.id),
     whySummary: logic.whySummary,
-    whyDetails: whyDetailsForItem(item, logic),
+    whyDetails: exposeDebugEvidence ? whyDetailsForItem(item, logic) : [],
     explanation: explanationForDecisionItem(item, logic),
     problemStatement: logic.problemStatement,
     recommendation: logic.recommendation,
@@ -1824,13 +2077,13 @@ function formatDecisionItemForApi(item: DecisionRecord): DecisionApiItem {
     primaryActionLabel: logic.primaryActionLabel,
     secondaryActionLabels: logic.secondaryActionLabels,
     urgencyReason: logic.urgencyReason,
-    why: logic.why,
-    actionPreview: logic.whatWillChange,
-    whatWillChange: logic.whatWillChange,
+    why: exposeDebugEvidence ? logic.why : emptyDecisionWhy(),
+    actionPreview: visibleWhatWillChange,
+    whatWillChange: visibleWhatWillChange,
     alternatives: alternativesForRecord(item, logic, actions),
     automationEligibility: logic.automationEligibility,
     autopilotPolicy: logic.autopilotPolicy,
-    readBackVerifier: logic.readBackVerifier,
+    readBackVerifier: exposeDebugEvidence ? logic.readBackVerifier : null,
     handledByNexus: false,
     handledAt: null,
     outcomeSummary: outcome.outcomeSummary,
@@ -1845,11 +2098,11 @@ function formatDecisionItemForApi(item: DecisionRecord): DecisionApiItem {
       ? [{ type: item.relatedEntityType, id: item.relatedEntityId }]
       : [],
     relatedEntitiesSafe: relatedEntitiesSafeForRecord(item, logic),
-    sourceTraceSummary: sourceTraceSummaryForRecord(item, logic),
-    sourceTrace: sourceTraceForRecord(item, logic),
+    sourceTraceSummary: exposeDebugEvidence ? sourceTraceSummaryForRecord(item, logic) : null,
+    sourceTrace: exposeDebugEvidence ? sourceTraceForRecord(item, logic) : null,
     dependencyGraphSummary: dependencyGraphSummaryForRecord(dependencies, userDecisionContextDefaults(item.userId).locale),
-    actionTruthTableEntry: action ? actionTruthTableEntryForRecord(item, action, logic, rollback) : null,
-    askNexusContext: askNexusContextForRecord(item, logic),
+    actionTruthTableEntry: exposeDebugEvidence && action ? actionTruthTableEntryForRecord(item, action, logic, rollback) : null,
+    askNexusContext: null,
     deadlineAt: item.decisionDeadline,
     expiresAt: item.expiresAt,
     confidence: logic.confidence,
@@ -1901,6 +2154,29 @@ function safeTitleForItem(item: DecisionRecord): string {
   if (item.privacyPolicy === 'private_content' || item.sourceSkill === 'content') return 'Content review';
   if (item.privacyPolicy === 'sensitive') return sourceLabel(item.sourceSkill);
   return item.title;
+}
+
+function shouldExposeDecisionDebugEvidence(item: DecisionRecord): boolean {
+  void item;
+  return process.env.DECISION_CENTER_DEBUG_EVIDENCE === '1';
+}
+
+function emptyDecisionWhy(): DecisionWhy {
+  return {
+    facts: [],
+    preferences: [],
+    rules: [],
+    tradeoffs: [],
+    uncertainty: [],
+  };
+}
+
+function userVisibleWhatWillChangeForApi(item: DecisionRecord, logic: DecisionLogicV2): DecisionWhatWillChange[] {
+  if (logic.whatWillChange.length === 0) return [];
+  return logic.whatWillChange.slice(0, 3).map((change) => ({
+    ...change,
+    verificationMethod: openVerificationTextForRecord(item, logic),
+  }));
 }
 
 function whyDetailsForItem(item: DecisionRecord, logic: DecisionLogicV2): Array<{ label: string; value: string }> {
@@ -2125,11 +2401,11 @@ function freshnessLabel(freshness: DecisionAnalysisBundle['sourceFreshness'], co
 function topSuggestionForItem(item: DecisionApiItem): DecisionCenterTopSuggestion {
   return {
     decisionId: item.decisionId,
-    title: item.safePreviewTitle || item.title,
-    actionLabel: item.recommendedActionLabel ?? item.primaryActionLabel ?? null,
-    whyNow: item.analysis?.whyNow ?? item.whySummary ?? item.urgencyReason,
-    expectedOutcome: item.analysis?.expectedOutcome ?? item.expectedEffect,
-    riskIfIgnored: item.analysis?.costOfDelay ?? item.impactIfIgnored,
+    title: item.explanation?.headline ?? item.safePreviewTitle ?? item.title,
+    actionLabel: item.explanation?.actionLabels?.primary ?? item.recommendedActionLabel ?? item.primaryActionLabel ?? null,
+    whyNow: item.explanation?.whyItMatters ?? item.analysis?.whyNow ?? item.whySummary ?? item.urgencyReason,
+    expectedOutcome: item.explanation?.result ?? item.analysis?.expectedOutcome ?? item.expectedEffect,
+    riskIfIgnored: item.explanation?.ifIgnored ?? item.analysis?.costOfDelay ?? item.impactIfIgnored,
     sourceSkill: item.sourceSkill,
     urgency: item.urgency,
   };
@@ -2454,39 +2730,43 @@ function outcomeSummaryForRecord(record: DecisionRecord, logic: DecisionLogicV2)
 }
 
 function explanationForDecisionItem(record: DecisionRecord, logic: DecisionLogicV2): DecisionExplanation {
-  if (record.status === 'failed') return failedDecisionExplanation(record, logic);
+  if (record.status === 'failed') return finalizeDecisionExplanation(record, failedDecisionExplanation(record, logic));
   if (record.status === 'actioned') {
     const actionId = actionIdForRecord(record) ?? 'completed';
-    return handledDecisionExplanation(record, logic, {
+    return finalizeDecisionExplanation(record, handledDecisionExplanation(record, logic, {
       actionId,
       actualEffect: record.actionResult ?? {},
       message: outcomeSummaryForRecord(record, logic).outcomeSummary ?? null,
-    });
+    }));
   }
-  return openDecisionExplanation(record, logic);
+  return finalizeDecisionExplanation(record, openDecisionExplanation(record, logic));
 }
 
 function openDecisionExplanation(record: DecisionRecord, logic: DecisionLogicV2): DecisionExplanation {
   const entity = entityLabelForRecord(record, logic);
   const source = sourceLabel(record.sourceSkill);
   const userAction = openDecisionUserAction(record, logic);
-  const verification = logic.readBackVerifier
-    ? `Nexus will read back ${verificationTargetForRecord(record, logic)} before closing this decision.`
-    : `Nexus will keep this item in ${source} until the source state changes.`;
+  const verification = openVerificationTextForRecord(record, logic);
+  const actionLabels = guidanceActionLabelsForRecord(record, logic);
+  const result = guidanceWhatWillChangeForRecord(record, logic);
   const base: DecisionExplanation = {
     headline: `${source} needs a decision on ${entity}.`,
     whatHappened: firstConcrete([logic.problemStatement, logic.safePreviewBody, record.safeBody, record.body], `${source} found an item that needs review.`),
     whyItMatters: firstConcrete([logic.whySummary, logic.impactIfIgnored], `This affects ${source} orchestration and should stay explicit.`),
     nexusAction: firstConcrete([logic.recommendation], `Nexus prepared the safest available ${source} move and is waiting for your choice.`),
     userAction,
-    result: firstConcrete([logic.expectedEffect], `Nexus will update ${source} state after your choice.`),
+    result,
     verification,
     nextStep: userAction,
+    recommendedMove: firstConcrete([logic.recommendation, userAction], userAction),
+    ifIgnored: firstConcrete([logic.impactIfIgnored, logic.whySummary], `This ${source} item stays unresolved.`),
+    actionLabels,
+    displaySections: GUIDANCE_DISPLAY_SECTIONS,
     steps: [
       { label: 'Signal reviewed', detail: firstConcrete([logic.problemStatement], `${source} evaluated the source signal.`), status: 'done' },
       { label: 'User decision needed', detail: userAction, status: 'needs_user' },
-      { label: 'Nexus action', detail: firstConcrete([logic.expectedEffect], `Nexus applies the chosen ${source} action.`), status: 'pending' },
-      { label: 'Read-back', detail: verification, status: logic.readBackVerifier ? 'pending' : 'done' },
+      { label: 'Nexus action', detail: result, status: 'pending' },
+      { label: 'Verification', detail: verification, status: logic.readBackVerifier ? 'pending' : 'done' },
     ],
   };
   if (record.type === 'sync_failure') {
@@ -2497,7 +2777,7 @@ function openDecisionExplanation(record: DecisionRecord, logic: DecisionLogicV2)
       whyItMatters: firstConcrete([logic.impactIfIgnored, logic.whySummary], `Recent ${source} data may stay stale until the sync is retried.`),
       nexusAction: firstConcrete([logic.recommendation], `Nexus can retry the sync without changing your plan.`),
       userAction: openDecisionUserAction(record, logic),
-      result: firstConcrete([logic.expectedEffect], `Nexus retries ${source} sync and verifies provider status.`),
+      result: firstConcrete([logic.expectedEffect], `Nexus retries ${source} sync and checks provider status.`),
       nextStep: openDecisionUserAction(record, logic),
     };
   }
@@ -2509,8 +2789,8 @@ function openDecisionExplanation(record: DecisionRecord, logic: DecisionLogicV2)
       whyItMatters: firstConcrete([logic.impactIfIgnored, logic.whySummary], 'Publishing stays paused until you approve it or request changes.'),
       nexusAction: firstConcrete([logic.recommendation], 'Nexus can advance the workflow or keep quality control open for a rewrite.'),
       userAction: openDecisionUserAction(record, logic),
-      result: firstConcrete([logic.expectedEffect], 'The content workflow moves only after read-back verifies the updated state.'),
-      verification: 'Nexus will read back the content workflow state before closing the decision.',
+      result: firstConcrete([logic.expectedEffect], 'The content state changes only after Nexus confirms the updated state.'),
+      verification: openVerificationTextForRecord(record, logic),
     };
   }
   if (record.sourceSkill === 'secretary') {
@@ -2519,9 +2799,9 @@ function openDecisionExplanation(record: DecisionRecord, logic: DecisionLogicV2)
       headline: `${entity} needs schedule judgment.`,
       whatHappened: firstConcrete([logic.problemStatement], `Secretary found a schedule conflict or reflow option for ${entity}.`),
       whyItMatters: firstConcrete([logic.impactIfIgnored, logic.whySummary], 'Leaving it open can keep the day plan conflicted or stale.'),
-      nexusAction: firstConcrete([logic.recommendation], 'Secretary prepared the safest reflow and is waiting for approval.'),
-      result: firstConcrete([logic.expectedEffect], 'Secretary updates the agenda and verifies the persisted schedule state.'),
-      verification: 'Nexus will read back Secretary agenda state before closing this decision.',
+      nexusAction: firstConcrete([logic.recommendation], 'Secretary prepared the safest schedule change and is waiting for approval.'),
+      result: firstConcrete([logic.expectedEffect], guidanceWhatWillChangeForRecord(record, logic)),
+      verification: openVerificationTextForRecord(record, logic),
     };
   }
   if (record.sourceSkill === 'finance') {
@@ -2532,7 +2812,7 @@ function openDecisionExplanation(record: DecisionRecord, logic: DecisionLogicV2)
       whyItMatters: firstConcrete([logic.impactIfIgnored, logic.whySummary], 'Keeping financial state accurate prevents stale reminders and bad planning pressure.'),
       nexusAction: firstConcrete([logic.recommendation], 'Nexus will update only the scoped finance item after your confirmation.'),
       result: firstConcrete([logic.expectedEffect], 'Finance state is updated and verified without exposing private values in previews.'),
-      verification: 'Nexus will read back finance state before closing this decision.',
+      verification: openVerificationTextForRecord(record, logic),
     };
   }
   if (record.sourceSkill === 'cooking') {
@@ -2564,11 +2844,15 @@ function failedDecisionExplanation(record: DecisionRecord, logic: DecisionLogicV
     headline: `${source} action needs retry.`,
     whatHappened: firstConcrete([logic.problemStatement], `${source} could not complete the last action.`),
     whyItMatters: firstConcrete([failure.failureReason, logic.impactIfIgnored], 'The decision remains open until Nexus can verify the result.'),
-    nexusAction: 'Nexus stopped before closing the decision because read-back did not verify a safe result.',
+    nexusAction: 'Nexus stopped before closing the decision because it could not confirm a safe result.',
     userAction: retry,
     result: firstConcrete([failure.outcomeSummary], 'No verified state change was recorded.'),
-    verification: firstConcrete([failure.failureReason], 'Read-back verification failed or returned an error.'),
+    verification: firstConcrete([failure.failureReason], 'The final source check failed or returned an error.'),
     nextStep: retry,
+    recommendedMove: retry,
+    ifIgnored: firstConcrete([logic.impactIfIgnored], 'The decision stays open until the result is confirmed.'),
+    actionLabels: guidanceActionLabelsForRecord(record, logic),
+    displaySections: GUIDANCE_DISPLAY_SECTIONS,
     steps: [
       { label: 'Action attempted', detail: 'Nexus tried to perform the selected action.', status: 'done' },
       { label: 'Verification blocked', detail: firstConcrete([failure.failureReason], 'The resulting state could not be verified.'), status: 'blocked' },
@@ -2587,11 +2871,16 @@ function handledDecisionExplanation(
   },
 ): DecisionExplanation {
   const actionLabel = actionLabelForRecord(record, input.actionId);
+  const humanActionLabel = humanActionLabelForRecord(
+    record,
+    logic,
+    record.actions.find((action) => action.id === input.actionId) ?? null,
+  ) ?? actionLabel;
   const entity = entityLabelForRecord(record, logic);
   const source = sourceLabel(record.sourceSkill);
   const actualEffect = input.actualEffect ?? {};
   const result = handledResultForRecord(record, logic, input.actionId, actualEffect, input.message);
-  const verification = handledVerificationForRecord(record, logic, input.actionId, actualEffect);
+  const verification = handledVerificationTextForRecord(record, logic, input.actionId, actualEffect);
   const nextStep = rollbackContractForRecord({ ...record, status: 'actioned' }).available
     ? 'No action is needed now. Undo is available if this change no longer works.'
     : 'No action is needed in Decision Center right now.';
@@ -2599,14 +2888,18 @@ function handledDecisionExplanation(
     headline: `${source} handled ${entity}.`,
     whatHappened: firstConcrete([logic.problemStatement], `${source} had an actionable Decision Center item.`),
     whyItMatters: handledBenefitForRecord(record, logic, input.actionId),
-    nexusAction: `Nexus performed ${actionLabel} for ${entity}.`,
+    nexusAction: `Nexus performed ${humanActionLabel} for ${entity}.`,
     userAction: 'No user action needed now.',
     result,
     verification,
     nextStep,
+    recommendedMove: nextStep,
+    ifIgnored: handledBenefitForRecord(record, logic, input.actionId),
+    actionLabels: guidanceActionLabelsForRecord(record, logic),
+    displaySections: ['what_will_change', 'why_it_matters', 'verification'],
     steps: [
       { label: 'Decision cleared', detail: `${source} item left the active queue.`, status: 'done' },
-      { label: 'Action performed', detail: `Nexus performed ${actionLabel}.`, status: 'done' },
+      { label: 'Action performed', detail: `Nexus performed ${humanActionLabel}.`, status: 'done' },
       { label: 'Verification checked', detail: verification, status: 'done' },
       { label: 'Next step', detail: nextStep, status: 'done' },
     ],
@@ -2617,7 +2910,7 @@ function handledDecisionExplanation(
       headline: `${source} removed a resolved decision.`,
       nexusAction: `Nexus removed ${entity} from the active queue because the source state already changed.`,
       result: `The Decision Center no longer asks you to handle ${entity}.`,
-      verification: firstConcrete([input.message], 'Read-back confirmed the source item was no longer actionable.'),
+      verification: firstConcrete([input.message], 'Nexus confirmed the source item was no longer actionable.'),
       nextStep: 'No action is needed unless the source item reopens.',
       steps: [
         { label: 'Source checked', detail: firstConcrete([input.message], 'The source state no longer requires this decision.'), status: 'done' },
@@ -2653,8 +2946,8 @@ function handledDecisionExplanation(
     );
     return {
       ...base,
-      headline: `Secretary reflowed ${entity}.`,
-      nexusAction: `Secretary applied ${actionLabel} for ${entity}.`,
+      headline: `Secretary rescheduled ${entity}.`,
+      nexusAction: `Secretary applied ${humanActionLabel} for ${entity}.`,
       result: window
         ? `${entity} was placed in ${window} and removed from active decisions.`
         : `${entity} was reflowed and removed from active decisions.`,
@@ -2709,28 +3002,12 @@ function handledResultForRecord(
   if (outcome && !isGenericDecisionCopy(outcome)) return outcome;
   if (record.sourceSkill === 'content') {
     const state = stringOrNull(actualEffect.contentApprovalState) ?? stringOrNull(actualEffect.approvalState);
-    if (!state) return 'Content action completed; full workflow state read-back is pending.';
+    if (!state) return 'Content action completed; source confirmation is still pending.';
     return `Content workflow is now ${state}.`;
   }
   const state = concreteVerificationStateForRecord(record, actualEffect);
   if (state) return `${sourceLabel(record.sourceSkill)} state is now ${state}.`;
-  return `${sourceLabel(record.sourceSkill)} action completed; full state read-back is pending.`;
-}
-
-function handledVerificationForRecord(
-  record: DecisionRecord,
-  logic: DecisionLogicV2,
-  actionId: string,
-  actualEffect: Record<string, unknown>,
-): string {
-  const target = verificationTargetForRecord(record, logic);
-  const concreteState = concreteVerificationStateForRecord(record, actualEffect);
-  if (concreteState) return `Read-back confirmed ${target} is ${concreteState}.`;
-  const verifier = firstConcreteOrNull([logic.readBackVerifier]);
-  if (verifier) {
-    return `Verifier ${verifier.replace(/_/g, ' ')} ran for ${sourceLabel(record.sourceSkill)}; full ${target} read-back is pending.`;
-  }
-  return `${sourceLabel(record.sourceSkill)} action ${actionLabelForRecord(record, actionId)} completed; full ${target} read-back is pending.`;
+  return `${sourceLabel(record.sourceSkill)} action completed; source confirmation is still pending.`;
 }
 
 function openDecisionUserAction(record: DecisionRecord, logic: DecisionLogicV2): string {
@@ -2738,14 +3015,6 @@ function openDecisionUserAction(record: DecisionRecord, logic: DecisionLogicV2):
   if (primary) return primary;
   if (record.requiresUserAction) return `Choose how Nexus should handle this ${sourceLabel(record.sourceSkill)} item.`;
   return `Review this ${sourceLabel(record.sourceSkill)} item when you are ready.`;
-}
-
-function verificationTargetForRecord(record: DecisionRecord, logic: DecisionLogicV2): string {
-  if (record.sourceSkill === 'content') return 'content workflow state';
-  if (record.sourceSkill === 'secretary') return 'Secretary agenda state';
-  if (record.sourceSkill === 'finance') return 'finance state';
-  if (logic.readBackVerifier) return logic.readBackVerifier.replace(/_/g, ' ');
-  return `${sourceLabel(record.sourceSkill)} state`;
 }
 
 function concreteVerificationStateForRecord(
@@ -2759,6 +3028,181 @@ function concreteVerificationStateForRecord(
     if (value) return value;
   }
   return null;
+}
+
+function guidanceEnabledForRecord(record: DecisionRecord): boolean {
+  const scope = { userId: record.userId, tenantId: record.tenantId };
+  return isDecisionCenterGuidanceV1Enabled(process.env, scope)
+    && isDecisionCenterGuidanceSkillEnabled(record.sourceSkill, process.env, scope);
+}
+
+function isPortugueseRecord(record: DecisionRecord): boolean {
+  return isPortugueseLocale(decisionContextForRecord(record).locale);
+}
+
+function guidanceActionLabelsForRecord(record: DecisionRecord, logic: DecisionLogicV2): DecisionExplanationActionLabels | undefined {
+  const actions = actionsForRecord(record);
+  const primary = recommendedAction(actions);
+  const primaryLabel = humanActionLabelForRecord(record, logic, primary);
+  if (!primaryLabel) return undefined;
+  const secondary = actions
+    .filter((action) => action.id !== primary?.id && action.id !== 'open_detail')
+    .map((action) => humanActionLabelForRecord(record, logic, action))
+    .filter((label): label is string => !!label)
+    .slice(0, 2);
+  return { primary: primaryLabel, secondary };
+}
+
+function humanActionLabelForRecord(
+  record: DecisionRecord,
+  logic: DecisionLogicV2,
+  action?: NotificationActionButton | null,
+): string | null {
+  const pt = isPortugueseRecord(record);
+  const context = decisionContextForRecord(record);
+  const recommendedWindow = formatDecisionWindow(
+    context.recommendedStartAt,
+    context.recommendedEndAt,
+    context.timezone,
+    context.locale,
+  );
+  if (record.sourceSkill === 'secretary') {
+    if (action?.id === 'accept_reflow' || /reflow/i.test(action?.label ?? logic.primaryActionLabel)) {
+      return recommendedWindow
+        ? (pt ? `Mover para ${recommendedWindow}` : `Move to ${recommendedWindow}`)
+        : (pt ? 'Remarcar' : 'Reschedule');
+    }
+    if (action?.id === 'choose_another_time') {
+      return pt ? 'Escolher outro horário' : 'Choose another time';
+    }
+    if (action?.id === 'undo_reflow') {
+      return pt ? 'Desfazer mudança' : 'Undo change';
+    }
+  }
+  const label = firstConcreteOrNull([action?.label, logic.primaryActionLabel]);
+  if (!label) return null;
+  if (/^reflow$/i.test(label)) return pt ? 'Remarcar' : 'Reschedule';
+  if (/^open detail$/i.test(label)) return pt ? 'Rever' : 'Review';
+  return label;
+}
+
+function guidanceWhatWillChangeForRecord(record: DecisionRecord, logic: DecisionLogicV2): string {
+  const change = logic.whatWillChange[0];
+  if (change?.effect) return change.effect;
+  return firstConcrete([logic.expectedEffect], `Nexus will update ${sourceLabel(record.sourceSkill)} after your choice.`);
+}
+
+function openVerificationTextForRecord(record: DecisionRecord, logic: DecisionLogicV2): string {
+  const source = sourceLabel(record.sourceSkill);
+  if (record.sourceSkill === 'secretary') return 'Nexus will check the calendar item after the change before closing this.';
+  if (record.sourceSkill === 'content') return 'Nexus will check the content state after your choice before closing this.';
+  if (record.sourceSkill === 'finance') return 'Nexus will check Finance after your confirmation before closing this.';
+  if (record.sourceSkill === 'training') return 'Nexus will check the training plan state after your choice before closing this.';
+  if (record.sourceSkill === 'cooking') return 'Nexus will check the meal plan after your choice before closing this.';
+  if (logic.readBackVerifier) return `Nexus will check ${source} after your choice before closing this.`;
+  return `Nexus will keep this item in ${source} until the source state changes.`;
+}
+
+function handledVerificationTextForRecord(
+  record: DecisionRecord,
+  logic: DecisionLogicV2,
+  actionId: string,
+  actualEffect: Record<string, unknown>,
+): string {
+  const concreteState = concreteVerificationStateForRecord(record, actualEffect);
+  const source = sourceLabel(record.sourceSkill);
+  if (concreteState) return `Nexus checked ${source} and found the state is ${concreteState}.`;
+  if (logic.readBackVerifier) return `Nexus checked ${source}; full source confirmation is still pending.`;
+  return `${source} action ${actionLabelForRecord(record, actionId)} completed; Nexus will keep watching for source confirmation.`;
+}
+
+export interface DecisionGuidanceSanitizationResult {
+  sanitized: string;
+  rejectedTerms: string[];
+}
+
+export function sanitizeGuidanceString(
+  value: string,
+  context: { decisionId?: string; sourceSkill?: NotificationSourceSkill } = {},
+): DecisionGuidanceSanitizationResult {
+  let sanitized = value;
+  const rejectedTerms: string[] = [];
+  for (const term of GUIDANCE_BANNED_TERMS) {
+    if (!term.pattern.test(sanitized)) {
+      term.pattern.lastIndex = 0;
+      continue;
+    }
+    term.pattern.lastIndex = 0;
+    rejectedTerms.push(term.label);
+    sanitized = sanitized.replace(term.pattern, term.replacement ?? '[redacted]');
+  }
+  if (rejectedTerms.length > 0) {
+    decisionGuidanceStats.bannedTermsCaught += rejectedTerms.length;
+    for (const term of rejectedTerms) {
+      decisionGuidanceStats.bannedTermsByTerm[term] = (decisionGuidanceStats.bannedTermsByTerm[term] ?? 0) + 1;
+    }
+    logger.warn({
+      decisionId: context.decisionId ?? 'unknown',
+      sourceSkill: context.sourceSkill ?? 'unknown',
+      rejectedTerms,
+    }, 'Decision Center guidance copy redacted technical terms');
+  }
+  return { sanitized, rejectedTerms };
+}
+
+function sanitizeDecisionExplanation(record: DecisionRecord, explanation: DecisionExplanation): DecisionExplanation {
+  const context = { decisionId: record.itemId, sourceSkill: record.sourceSkill };
+  const sanitize = (value: string) => sanitizeGuidanceString(value, context).sanitized;
+  const sanitized: DecisionExplanation = {
+    ...explanation,
+    headline: sanitize(explanation.headline),
+    whatHappened: sanitize(explanation.whatHappened),
+    whyItMatters: sanitize(explanation.whyItMatters),
+    nexusAction: sanitize(explanation.nexusAction),
+    userAction: sanitize(explanation.userAction),
+    result: sanitize(explanation.result),
+    verification: sanitize(explanation.verification),
+    nextStep: sanitize(explanation.nextStep),
+    recommendedMove: explanation.recommendedMove ? sanitize(explanation.recommendedMove) : undefined,
+    ifIgnored: explanation.ifIgnored ? sanitize(explanation.ifIgnored) : undefined,
+    actionLabels: explanation.actionLabels
+      ? {
+        primary: sanitize(explanation.actionLabels.primary),
+        secondary: explanation.actionLabels.secondary.map(sanitize),
+      }
+      : undefined,
+    displaySections: explanation.displaySections,
+    steps: explanation.steps.map((step) => ({
+      ...step,
+      label: sanitize(step.label),
+      detail: sanitize(step.detail),
+    })),
+  };
+  if (!sanitized.recommendedMove || !sanitized.ifIgnored || !sanitized.actionLabels?.primary) {
+    decisionGuidanceStats.partial += 1;
+  } else {
+    decisionGuidanceStats.emitted += 1;
+  }
+  return sanitized;
+}
+
+function finalizeDecisionExplanation(record: DecisionRecord, explanation: DecisionExplanation): DecisionExplanation {
+  if (!guidanceEnabledForRecord(record)) {
+    decisionGuidanceStats.nullGuidance += 1;
+    const {
+      recommendedMove,
+      ifIgnored,
+      actionLabels,
+      displaySections,
+      ...legacy
+    } = explanation;
+    void recommendedMove;
+    void ifIgnored;
+    void actionLabels;
+    void displaySections;
+    return sanitizeDecisionExplanation(record, legacy);
+  }
+  return sanitizeDecisionExplanation(record, explanation);
 }
 
 function actionIdForRecord(record: DecisionRecord): string | null {
@@ -2824,6 +3268,10 @@ function normalizeDecisionExplanation(value: unknown): DecisionExplanation | nul
   if (!headline || !whatHappened || !whyItMatters || !nexusAction || !userAction || !result || !verification || !nextStep) {
     return null;
   }
+  const recommendedMove = stringOrNull(record.recommendedMove) ?? undefined;
+  const ifIgnored = stringOrNull(record.ifIgnored) ?? undefined;
+  const actionLabels = normalizeDecisionExplanationActionLabels(record.actionLabels);
+  const displaySections = normalizeDecisionExplanationDisplaySections(record.displaySections);
   const rawSteps = Array.isArray(record.steps) ? record.steps : [];
   const steps = rawSteps
     .map((step) => normalizeDecisionExplanationStep(step))
@@ -2838,7 +3286,37 @@ function normalizeDecisionExplanation(value: unknown): DecisionExplanation | nul
     verification,
     nextStep,
     steps,
+    recommendedMove,
+    ifIgnored,
+    actionLabels,
+    displaySections,
   };
+}
+
+function normalizeDecisionExplanationActionLabels(value: unknown): DecisionExplanationActionLabels | undefined {
+  if (!value || typeof value !== 'object') return undefined;
+  const record = value as Record<string, unknown>;
+  const primary = stringOrNull(record.primary);
+  if (!primary) return undefined;
+  const secondary = Array.isArray(record.secondary)
+    ? record.secondary.map((item) => stringOrNull(item)).filter((item): item is string => !!item)
+    : [];
+  return { primary, secondary };
+}
+
+function normalizeDecisionExplanationDisplaySections(value: unknown): DecisionExplanationDisplaySection[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const sections = value.filter((section): section is DecisionExplanationDisplaySection => isDecisionExplanationDisplaySection(section));
+  return sections.length > 0 ? sections : undefined;
+}
+
+function isDecisionExplanationDisplaySection(value: unknown): value is DecisionExplanationDisplaySection {
+  return value === 'decision_needed'
+    || value === 'what_will_change'
+    || value === 'why_it_matters'
+    || value === 'options'
+    || value === 'verification'
+    || value === 'debug';
 }
 
 function normalizeDecisionExplanationStep(value: unknown): DecisionExplanationStep | null {
@@ -3803,11 +4281,11 @@ function supersedeDecision(record: DecisionRecord, reason: string): void {
     `).run(record.decisionLogId);
   }
   const logic = decisionLogicForRecord(record);
-  const explanation = handledDecisionExplanation(record, logic, {
+  const explanation = finalizeDecisionExplanation(record, handledDecisionExplanation(record, logic, {
     actionId: 'auto_dismiss_stale_decision',
     actualEffect: { supersededReason: reason },
     message: reason,
-  });
+  }));
   recordHandledByNexus(record, {
     actionTaken: 'auto_dismiss_stale_decision',
     summary: explanation.result,
@@ -3834,11 +4312,11 @@ function recordHandledByNexus(record: DecisionRecord, input: {
 }): void {
   ensureDecisionCenterTables();
   const logic = decisionLogicForRecord(record);
-  const explanation = input.explanation ?? handledDecisionExplanation(record, logic, {
+  const explanation = input.explanation ?? finalizeDecisionExplanation(record, handledDecisionExplanation(record, logic, {
     actionId: input.actionTaken,
     actualEffect: record.actionResult ?? {},
     message: input.summary,
-  });
+  }));
   getDb().prepare(`
     INSERT INTO handled_by_nexus_items (
       handled_item_id, decision_id, user_id, tenant_id, source_skill, title, summary,
@@ -3876,11 +4354,11 @@ function recordVerifiedDecisionAction(
   if (!MUTATING_ACTIONS.has(actionId)) return;
   try {
     const logic = decisionLogicForRecord(record);
-    const explanation = handledDecisionExplanation(record, logic, {
+    const explanation = finalizeDecisionExplanation(record, handledDecisionExplanation(record, logic, {
       actionId,
       actualEffect: execution.actualEffect,
       message: execution.message,
-    });
+    }));
     recordHandledByNexus(record, {
       actionTaken: actionId,
       summary: explanation.result,
@@ -3903,11 +4381,11 @@ function mapActionedDecisionToHandledItem(record: DecisionRecord): HandledByNexu
   const actionLabel = record.actions.find((action) => action.id === actionTaken)?.label ?? humanizeActionId(actionTaken);
   const outcome = outcomeSummaryForRecord({ ...record, status: 'actioned' }, logic);
   const rollback = rollbackContractForRecord({ ...record, status: 'actioned' });
-  const explanation = handledDecisionExplanation(record, logic, {
+  const explanation = finalizeDecisionExplanation(record, handledDecisionExplanation(record, logic, {
     actionId: actionTaken,
     actualEffect: record.actionResult ?? {},
     message: outcome.outcomeSummary,
-  });
+  }));
   return {
     itemId: `actioned_${record.itemId}`,
     userId: record.userId,

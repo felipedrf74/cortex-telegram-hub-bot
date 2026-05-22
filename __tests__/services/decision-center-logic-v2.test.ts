@@ -83,11 +83,11 @@ describe('Decision Center Logic v2', () => {
     expect(decision.safePreviewBody).not.toContain('Open Nexus');
     expect(decision.recommendation).not.toContain('2026-05-17T08:00:00.000Z');
     expect(decision.problemStatement).not.toContain('2026-05-16T08:00:00.000Z');
-    expect(decision.expectedEffect).toContain('verify');
+    expect(decision.expectedEffect).toContain('checks that the calendar item is correct');
     expect(decision.why.facts.length).toBeGreaterThan(0);
     expect(decision.whatWillChange[0]).toMatchObject({
       targetSkill: 'secretary',
-      verificationMethod: 'Read secretary_agenda_items after the action.',
+      verificationMethod: 'Check the calendar item after the action.',
     });
   });
 

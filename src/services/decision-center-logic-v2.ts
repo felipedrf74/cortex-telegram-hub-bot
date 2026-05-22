@@ -36,6 +36,8 @@ export interface DecisionLogicContext {
   timezone?: string | null;
   locale?: string | null;
   visibilityScope?: DecisionVisibilityScope | null;
+  internalOnly?: boolean | null;
+  smoke?: boolean | null;
 }
 
 export interface DecisionLogicInput {
@@ -735,12 +737,12 @@ function secretaryRecipe(input: DecisionLogicInput): DecisionLogicRecipe {
       ? (pt ? `Use ${recommendedWindow} ou escolha outro horário viável.` : `Use ${recommendedWindow} or choose another feasible time.`)
       : (pt ? 'Mantenha a decisão interna e peça para a Secretary enriquecer os detalhes do conflito.' : 'Keep the decision internal and ask Secretary to enrich the conflict details.'),
     expectedEffect: hasConcreteAgenda
-      ? (pt ? 'A Secretary persistirá a mudança de agenda selecionada, verificará o item e fechará a decisão apenas após read-back bem-sucedido.' : 'Secretary will persist the selected schedule change, verify the agenda item, and close the decision only after read-back succeeds.')
+      ? (pt ? 'A Secretary guarda a mudança escolhida, confirma que o calendário ficou certo e só então fecha a decisão.' : 'Secretary saves the selected schedule change, checks that the calendar item is correct, and only then closes the decision.')
       : (pt ? 'Nenhuma ação para o usuário deve rodar até a Secretary ter um item de agenda persistido.' : 'No user-facing action should run until Secretary has a persisted agenda item.'),
     impactIfIgnored: hasConcreteAgenda
       ? (pt ? 'O conflito pode continuar bloqueando seu plano ou colidir com outro compromisso.' : 'The conflict can keep blocking your plan or collide with another commitment.')
       : (pt ? 'Mostrar isto agora pediria julgamento sem contexto suficiente.' : 'Showing this now would ask for judgment without enough context.'),
-    primaryActionLabel: concreteActionLabel(primary, hasConcreteAgenda ? (pt ? 'Reorganizar' : 'Reflow') : (pt ? 'Enriquecer detalhes' : 'Enrich details')),
+    primaryActionLabel: concreteActionLabel(primary, hasConcreteAgenda ? (recommendedWindow ? (pt ? `Mover para ${recommendedWindow}` : `Move to ${recommendedWindow}`) : (pt ? 'Remarcar' : 'Reschedule')) : (pt ? 'Enriquecer detalhes' : 'Enrich details')),
     secondaryActionLabels: secondaryActionLabels(input.actions, primary),
     whySummary: hasConcreteAgenda
       ? (pt ? `A Secretary encontrou um problema de agenda/capacidade e tem uma recomendação concreta para ${recommendedWindow}.` : `Secretary found a schedule/capacity issue and has a concrete ${recommendedWindow} recommendation.`)
@@ -761,7 +763,7 @@ function secretaryRecipe(input: DecisionLogicInput): DecisionLogicRecipe {
       item: entityTitle,
       effect: pt ? `Mover ou confirmar o item de agenda em ${recommendedWindow}.` : `Move or confirm the agenda item at ${recommendedWindow}.`,
       targetSkill: 'secretary',
-      verificationMethod: pt ? 'Ler secretary_agenda_items após a ação.' : 'Read secretary_agenda_items after the action.',
+      verificationMethod: pt ? 'Confirmar que o item ficou certo no calendário após a ação.' : 'Check the calendar item after the action.',
     }] : [],
     readBackVerifier: hasConcreteAgenda ? 'secretary_agenda_item_state' : null,
     automationEligibility: 'ask_first',
@@ -869,7 +871,7 @@ function contentRecipe(input: DecisionLogicInput): DecisionLogicRecipe {
     title: pt ? 'Revisão de conteúdo' : 'Content review',
     problemStatement: pt ? `${contentTitle} está pronto para aprovação ou feedback de reescrita.` : `${contentTitle} is ready for approval or rewrite feedback.`,
     recommendation: pt ? 'Aprove se estiver pronto ou peça uma reescrita com mudanças.' : 'Approve it if it is ready, or request a rewrite with changes.',
-    expectedEffect: pt ? 'O estado do fluxo de conteúdo muda para aprovado ou reescrita solicitada apenas após o read-back verificar o rascunho.' : 'Content workflow state changes to approved or rewrite-requested only after read-back verifies the draft.',
+    expectedEffect: pt ? 'O estado do conteúdo muda para aprovado ou reescrita solicitada apenas depois de o Nexus confirmar o resultado.' : 'Content moves to approved or rewrite-requested only after Nexus confirms the result.',
     impactIfIgnored: pt ? 'O fluxo de conteúdo permanece pausado e a publicação posterior não pode prosseguir.' : 'The content workflow remains paused and downstream publishing cannot proceed.',
     primaryActionLabel: concreteActionLabel(primary, pt ? 'Aprovar' : 'Approve'),
     secondaryActionLabels: secondaryActionLabels(input.actions, primary),

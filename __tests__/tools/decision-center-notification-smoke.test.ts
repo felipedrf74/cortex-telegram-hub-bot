@@ -55,6 +55,10 @@ describe('Decision Center notification smoke helper', () => {
     expect(visible.relatedEntityType).toBe('secretary_agenda_item');
     expect(visible.decisionContext?.currentStartAt).toBe('2026-05-22T10:15:00.000Z');
     expect(visible.decisionContext?.recommendedStartAt).toBe('2026-05-22T11:00:00.000Z');
+    expect(visible.visibilityScope).toBe('system_admin');
+    expect(visible.decisionContext?.visibilityScope).toBe('system_admin');
+    expect(visible.decisionContext?.internalOnly).toBe(true);
+    expect(visible.decisionContext?.smoke).toBe(true);
     expect(visible.dedupeKey).toContain('smoke-run-1');
     expect(visible.sensitiveBody).toBeNull();
     expect(JSON.stringify(visible)).not.toContain('push_token');
@@ -72,6 +76,7 @@ describe('Decision Center notification smoke helper', () => {
       relatedEntityId: visible.relatedEntityId,
       deadlineAt: visible.decisionDeadline,
       privacyClassification: visible.privacyPolicy,
+      visibilityScope: visible.visibilityScope,
       context: {
         ...(visible.decisionContext ?? {}),
         deadlineAt: visible.decisionDeadline,
@@ -88,6 +93,9 @@ describe('Decision Center notification smoke helper', () => {
     expect(lowRank.requiresUserAction).toBe(false);
     expect(lowRank.decisionDeadline).toBeNull();
     expect(lowRank.dedupeKey).toContain('low-rank');
+    expect(lowRank.visibilityScope).toBe('system_admin');
+    expect(lowRank.decisionContext?.internalOnly).toBe(true);
+    expect(lowRank.decisionContext?.smoke).toBe(true);
   });
 
   it('redacts smoke report push body and non-smoke titles', () => {

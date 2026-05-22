@@ -160,6 +160,23 @@ export function isDecisionStreakV1Enabled(env: RuntimeEnv = process.env, scope?:
   return scopedFlagEnabledByDefault(env, 'DECISION_STREAK_V1_ENABLED', scope);
 }
 
+export function isDecisionCenterGuidanceV1Enabled(env: RuntimeEnv = process.env, scope?: RuntimeFlagScope): boolean {
+  return scopedFlagEnabledByDefault(env, 'DECISION_CENTER_GUIDANCE_V1_ENABLED', scope);
+}
+
+export function isDecisionCenterGuidanceSkillEnabled(
+  sourceSkill: string | null | undefined,
+  env: RuntimeEnv = process.env,
+  scope?: RuntimeFlagScope,
+): boolean {
+  const skillKey = String(sourceSkill ?? 'unknown')
+    .trim()
+    .replace(/[^0-9A-Za-z]+/g, '_')
+    .replace(/^_+|_+$/g, '')
+    .toUpperCase() || 'UNKNOWN';
+  return scopedFlagEnabledByDefault(env, `DECISION_CENTER_GUIDANCE_V1_${skillKey}_ENABLED`, scope);
+}
+
 export function isSecretaryOrchestrationSnapshotV1Enabled(env: RuntimeEnv = process.env, scope?: RuntimeFlagScope): boolean {
   return scopedFlagEnabledByDefault(env, 'SECRETARY_ORCHESTRATION_SNAPSHOT_V1_ENABLED', scope);
 }

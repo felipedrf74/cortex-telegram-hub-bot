@@ -168,8 +168,11 @@ export function buildDecisionCenterNotificationSmokeIntents(input: {
         deadlineAt: deadline,
         timezone: 'Europe/Lisbon',
         locale: 'en-US',
-        visibilityScope: 'user_private',
+        visibilityScope: 'system_admin',
+        internalOnly: true,
+        smoke: true,
       },
+      visibilityScope: 'system_admin',
       privacyPolicy: 'standard',
     });
   }
@@ -197,8 +200,11 @@ export function buildDecisionCenterNotificationSmokeIntents(input: {
       decisionContext: {
         entityTitle: '[SMOKE] Low-rank Decision Center note',
         sourceState: 'informational',
-        visibilityScope: 'user_private',
+        visibilityScope: 'system_admin',
+        internalOnly: true,
+        smoke: true,
       },
+      visibilityScope: 'system_admin',
       privacyPolicy: 'standard',
     });
   }

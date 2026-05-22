@@ -2001,9 +2001,21 @@ function normalizeDecisionContext(input: DecisionLogicContext | null | undefined
   assignContextString(context, 'timezone', input.timezone);
   assignContextString(context, 'locale', input.locale);
   assignContextVisibilityScope(context, input.visibilityScope);
+  assignContextBoolean(context, 'internalOnly', input.internalOnly);
+  assignContextBoolean(context, 'smoke', input.smoke);
   assignContextSlots(context, input.candidateSlots);
   assignContextReasonCodes(context, input.reasonCodes);
   return Object.keys(context).length ? context : null;
+}
+
+function assignContextBoolean(
+  context: DecisionLogicContext,
+  key: 'internalOnly' | 'smoke',
+  value: boolean | null | undefined,
+): void {
+  if (typeof value === 'boolean') {
+    context[key] = value;
+  }
 }
 
 function assignContextVisibilityScope(

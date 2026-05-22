@@ -26,6 +26,8 @@ import {
   isContentFreshResearchDisabled,
   isContentFullLongformDisabled,
   isContentModelQualityAuditDisabled,
+  isDecisionCenterGuidanceSkillEnabled,
+  isDecisionCenterGuidanceV1Enabled,
   isAnthropicRuntimeEnabled,
   isSecretaryHaikuRoutingEnabled,
   isTelegramLegacyDeliveryEnabled,
@@ -83,6 +85,30 @@ describe('runtime-flags', () => {
     expect(isSecretaryHaikuRoutingEnabled({ SECRETARY_HAIKU_ROUTING_ENABLED: 'true' })).toBe(true);
     expect(isSecretaryHaikuRoutingEnabled({ SECRETARY_HAIKU_ROUTING_ENABLED: 'false' })).toBe(false);
     expect(isSecretaryHaikuRoutingEnabled({})).toBe(false);
+  });
+
+  it('enables Decision Center guidance by default with scoped rollback overrides', () => {
+    expect(isDecisionCenterGuidanceV1Enabled({})).toBe(true);
+    expect(isDecisionCenterGuidanceV1Enabled({ DECISION_CENTER_GUIDANCE_V1_ENABLED: 'false' })).toBe(false);
+    expect(isDecisionCenterGuidanceV1Enabled({
+      DECISION_CENTER_GUIDANCE_V1_ENABLED: 'true',
+      DECISION_CENTER_GUIDANCE_V1_ENABLED_USER_42: 'off',
+    }, { userId: 42, tenantId: 42 })).toBe(false);
+    expect(isDecisionCenterGuidanceV1Enabled({
+      DECISION_CENTER_GUIDANCE_V1_ENABLED: 'false',
+      DECISION_CENTER_GUIDANCE_V1_ENABLED_TENANT_9: 'true',
+    }, { userId: 7, tenantId: 9 })).toBe(true);
+  });
+
+  it('allows Decision Center guidance to be rolled back per skill and scope', () => {
+    expect(isDecisionCenterGuidanceSkillEnabled('secretary', {})).toBe(true);
+    expect(isDecisionCenterGuidanceSkillEnabled('content', {
+      DECISION_CENTER_GUIDANCE_V1_CONTENT_ENABLED: 'off',
+    })).toBe(false);
+    expect(isDecisionCenterGuidanceSkillEnabled('finance-review', {
+      DECISION_CENTER_GUIDANCE_V1_FINANCE_REVIEW_ENABLED: 'true',
+      DECISION_CENTER_GUIDANCE_V1_FINANCE_REVIEW_ENABLED_TENANT_9: '0',
+    }, { userId: 7, tenantId: 9 })).toBe(false);
   });
 
   it('parses chat hybrid planner rollout flags conservatively', () => {

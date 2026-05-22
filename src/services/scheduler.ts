@@ -55,7 +55,7 @@ import { expireStaleChatActionPlans } from './chat-reasoning-engine';
 import { expireStalePendingChatActionsForJob } from './chat-action-state';
 import { pruneCompletedChatActionRuns, reapZombieChatActionRuns } from './chat-action-run-store';
 import { runGarminTenantIsolationWatcher } from './garmin-tenant-isolation-watcher';
-import { runDecisionHandledHistoryBackfillJob, runDecisionSourceStateSupersessionJob } from './decision-center';
+import { runDecisionCenterSmokeCleanupJob, runDecisionHandledHistoryBackfillJob, runDecisionSourceStateSupersessionJob } from './decision-center';
 import { expireOldNexusPointCredits } from './nexus-points';
 import { getActivePlan, getCurrentWeek, getWeeklyAdherence, computeAdjustmentRecommendation, updateWeekAdjustment, getWeeksForPlan } from './training-plans';
 import { calculateReadiness, persistReadinessScore } from './readiness-scorer';
@@ -1811,6 +1811,12 @@ export function startScheduler(bot?: any): void {
     const result = runDecisionHandledHistoryBackfillJob({ limit: 100 });
     if (result.backfilled === 0 && result.failed === 0) return 'skipped';
     logger.info(result, 'Decision handled-history backfill completed');
+  }), { timezone: tz });
+
+  cron.schedule('7,37 * * * *', wrapJob('decision_center_smoke_cleanup', async () => {
+    const result = runDecisionCenterSmokeCleanupJob({ olderThanHours: 24, limit: 100 });
+    if (result.expired === 0) return 'skipped';
+    logger.info(result, 'Decision Center smoke cleanup completed');
   }), { timezone: tz });
 
   cron.schedule('*/2 * * * *', wrapJob('chat_action_plan_expiry', async () => {

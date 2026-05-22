@@ -17,6 +17,7 @@
     "smoke:content:local": "scripts/with-smoke-evidence.sh content-full-nexus-local scripts/content-full-nexus-local-smoke.sh",
     "smoke:cooking:portal": "scripts/with-smoke-evidence.sh cooking-portal npx tsx scripts/cooking-portal-browser-smoke.ts",
     "smoke:decision-center-notification": "npm run build && scripts/decision-center-notification-smoke.sh",
+    "cleanup:decision-center-smoke": "npm run build && scripts/decision-center-smoke-cleanup.sh",
     "smoke:training-calendar:staging": "npm run build && scripts/training-calendar-staging-smoke.sh",
     "smoke:training-cross-skill:staging": "npm run build && scripts/training-cross-skill-staging-smoke.sh",
     "typecheck": "tsc --noEmit",

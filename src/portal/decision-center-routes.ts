@@ -126,7 +126,7 @@ function sanitizePortalDecisionItem(item: DecisionApiItem): Record<string, unkno
     })),
     actionTruthTableEntry: item.actionTruthTableEntry,
     sourceTraceSummary: item.sourceTraceSummary,
-    sourceTrace: {
+    sourceTrace: item.sourceTrace ? {
       originatingSkill: item.sourceTrace.originatingSkill,
       originatingSignal: item.sourceTrace.originatingSignal,
       sourceTimestamp: item.sourceTrace.sourceTimestamp,
@@ -137,7 +137,7 @@ function sanitizePortalDecisionItem(item: DecisionApiItem): Record<string, unkno
       relatedStateReadModels: item.sourceTrace.relatedStateReadModels,
       confidenceSource: item.sourceTrace.confidenceSource,
       dataFreshness: item.sourceTrace.dataFreshness,
-    },
+    } : null,
     relatedEntitiesSafe: item.relatedEntitiesSafe,
     dependencyGraphSummary: item.dependencyGraphSummary,
     deadlineAt: item.deadlineAt,
