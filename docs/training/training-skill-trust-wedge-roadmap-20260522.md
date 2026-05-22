@@ -1,10 +1,10 @@
 # Training Skill Trust Wedge — Roadmap 2026-05-22
 
-Status: PLAN — PR-pre0 convergence complete; PR0A is next
+Status: IN PROGRESS — PR-pre0 convergence complete; PR0A implementation complete and verified
 Owner: Felipe (with Claude/Codex execution)
 Last updated: 2026-05-22
 Update policy: living doc. PR0/PR1/PR2 close-out updates land in this file as each ships.
-Codex critical review: 2026-05-22 (see §18). Convergence update: backend `main` now includes the deployed Training audit line at merge commit `5d037706`; this branch was rebased onto that main.
+Codex critical review: 2026-05-22 (see §18). Convergence update: backend `main` now includes the deployed Training audit line at merge commit `5d037706`; this branch was rebased onto that main. PR0A implementation update: backend honest-input fixes and iOS structured decision reason decoding are implemented on `feature/training-trust-wedge-20260522`.
 
 > This document is the **handoff artifact** between Claude's Phase 1-4 feature-dev work (discovery → exploration → clarifying questions → architecture design) and the code-execution phase. Read this in order; every section answers a specific design decision.
 
@@ -83,7 +83,7 @@ The backend trust-wedge branch was rebased onto post-audit `origin/main` and now
 | PR | Scope | LOC | Gate |
 |---|---|---|---|
 | **PR-pre0** | Main/prod convergence: merge deployed audit line into `main`, rebase trust-wedge backend, prune stale tasks from this doc | Done | Complete on 2026-05-22 |
-| **PR0A** | Remaining honest inputs: structured iOS `decisionReasons`, backend `primaryFocusSource` emission, real `trailing14DayCompliance`, `stale_provider` readiness, phase resolver consolidation without forced week-4 deload | ~180 | Backend focused + full verify, iOS unit, staging smoke |
+| **PR0A** | Remaining honest inputs: structured iOS `decisionReasons`, backend `primaryFocusSource` emission, real `trailing14DayCompliance`, `stale_provider` readiness, phase resolver consolidation without forced week-4 deload | Implemented | Backend focused + full verify, iOS unit, staging smoke |
 | **PR0B** | Explanation contract spike: generate 3 sample JSON payloads from real fixtures, no persistence/UI yet; include `smartPicks`, `respectedConstraints`, and `attentionItems` | ~160 | Vitest sample-builder tests + Felipe copy/noise review |
 | **PR1** | Backend explanation: new module `training-plan-explanation/`, migration 155, generator integration, route decoration, persistence | ~900 | Same gates + new builder vitest suite + sample-emission JSON inspection |
 | **PR2** | iOS rendering: `PlanCreationExplanation.swift` + `TrainingDecisionReason.swift` + `PlanCreationExplanationCard.swift` + 5-bucket DisclosureGroup + confidence pills | ~730 | Xcode build clean + extended `PlanGenerateResponse*Tests.swift` + TestFlight smoke |
@@ -209,6 +209,34 @@ xcodebuild test -scheme "Nexus Hub" \
   -only-testing:"Nexus HubTests/PlanGenerateResponseRaceDateTests" \
   -only-testing:"Nexus HubTests/PlanGenerateResponseExpertCoachTests"
 ```
+
+### PR0A implementation close-out
+
+Implemented on 2026-05-22. Backend now emits primary-focus provenance, computes trailing 14-day compliance from planned/completed sessions instead of the old `0.82` hardcode, marks wearable readiness as `stale_provider` when provider data is older than 24 hours, and routes generator phase math through the shared race-window resolver without reintroducing unconditional week-4 deloads. iOS now decodes structured `decisionReasons` while preserving legacy string-code compatibility via `decisionReasonCodes`.
+
+Focused backend verification completed before full-verify handoff:
+
+```bash
+npx tsc --noEmit
+npx vitest run \
+  __tests__/api/training-plan-generation.test.ts \
+  __tests__/api/training-routes.test.ts \
+  __tests__/api/training-read-models.test.ts \
+  __tests__/api/training-plan-cancellation.test.ts \
+  __tests__/api/training-schedule-utils.test.ts \
+  __tests__/services/training-history.test.ts \
+  __tests__/services/training-history-compliance.test.ts \
+  __tests__/services/training-coach-kernel-primary-focus.test.ts \
+  __tests__/services/training-coach-kernel-plan-generator.test.ts \
+  __tests__/services/training-coach-kernel-training-history.test.ts \
+  __tests__/services/training-plan-coordination.test.ts \
+  __tests__/services/training-plan-volume-enforcement.test.ts \
+  __tests__/services/coach-kernel-guardrails.test.ts \
+  __tests__/services/secretary-unified-calendar-provider-adapter.test.ts \
+  __tests__/services/training-session-description.test.ts
+```
+
+Result: 15 files / 246 tests passed. Full backend verification also passed: `npm run verify`, 639 files / 9466 tests. iOS targeted verification also passed: `PlanGenerateResponseRaceDateTests` and `PlanGenerateResponseExpertCoachTests`, 21 tests passed.
 
 ---
 

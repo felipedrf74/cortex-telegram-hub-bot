@@ -596,4 +596,28 @@ describe('buildCoachKernelTrainingPlan — side effects', () => {
     expect(phases[15]).toBe('race');
     expect(plan.decisionReasons?.map((reason) => reason.code)).not.toContain('event_based_missing_race_date');
   });
+
+  it('keeps primary-focus provenance on the generated plan object', () => {
+    const plan = buildCoachKernelTrainingPlan({
+      userId: 603,
+      objective: 'General fitness goals',
+      durationWeeks: 4,
+      startDate: '2026-05-04',
+      sessionsPerWeek: 5,
+      strengthSessionsPerWeek: 2,
+      preferredTime: '12:00',
+      preferredCardioTime: '07:00',
+      preferredStrengthTime: '12:00',
+      longWorkoutDay: null,
+      notes: null,
+      fitnessProfile: { experience_level: 'intermediate' },
+      gymProfile: null,
+      runProfile: null,
+    });
+
+    expect(plan.primaryFocus).toBe('hybrid');
+    expect(plan.primaryFocusSource).toBe('inferred_volume_split');
+    expect(plan.primaryFocusFallbackReason).toBeNull();
+    expect(plan.primaryFocusRawObjective).toBeNull();
+  });
 });

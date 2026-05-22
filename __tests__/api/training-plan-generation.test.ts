@@ -76,9 +76,15 @@ vi.mock('../../src/services/cross-agent-learning', () => ({
   readSecretaryMeshContext: (...args: unknown[]) => mockReadSecretaryMeshContext(...args),
 }));
 
-vi.mock('../../src/services/training-coach-kernel-plan-generator', () => ({
-  buildCoachKernelTrainingPlan: (...args: unknown[]) => mockBuildCoachKernelTrainingPlan(...args),
-}));
+vi.mock('../../src/services/training-coach-kernel-plan-generator', async () => {
+  const actual = await vi.importActual<typeof import('../../src/services/training-coach-kernel-plan-generator')>(
+    '../../src/services/training-coach-kernel-plan-generator',
+  );
+  return {
+    ...actual,
+    buildCoachKernelTrainingPlan: (...args: unknown[]) => mockBuildCoachKernelTrainingPlan(...args),
+  };
+});
 
 vi.mock('../../src/api/routes/training-fallback-plan', () => ({
   buildDeterministicTrainingPlan: (...args: unknown[]) => mockBuildDeterministicTrainingPlan(...args),
@@ -812,6 +818,62 @@ describe('generateTrainingPlanForUser', () => {
       goalMode: null,
       trainingPriority: null,
       raceDate: null,
+    });
+  });
+
+  it('emits primary-focus provenance fields on created responses', async () => {
+    const result = await generateTrainingPlanForUser({
+      userId: 12,
+      objective: 'powerbuilding cuts',
+      sessionsPerWeek: 4,
+      strengthSessionsPerWeek: 0,
+    });
+
+    expect(result.status).toBe('created');
+    expect((result as any).data).toMatchObject({
+      primaryFocus: 'hybrid',
+      primaryFocusSource: 'fallback',
+      primaryFocusFallbackReason: 'unrecognized',
+      primaryFocusRawObjective: 'powerbuilding cuts',
+    });
+  });
+
+  it('emits primary-focus provenance fields on preview and blocked responses', async () => {
+    const preview = await generateTrainingPlanForUser({
+      userId: 12,
+      objective: 'General fitness goals',
+      sessionsPerWeek: 5,
+      strengthSessionsPerWeek: 2,
+      previewOnly: true,
+    });
+    expect(preview.status).toBe('preview');
+    expect((preview as any).data).toMatchObject({
+      primaryFocus: 'hybrid',
+      primaryFocusSource: 'inferred_volume_split',
+      primaryFocusFallbackReason: null,
+      primaryFocusRawObjective: null,
+    });
+
+    mockLintGeneratedTrainingPlanPreflight.mockReturnValueOnce({
+      status: 'fail',
+      blockers: [{ ruleId: 'race_specific_plan_requires_race_date', message: 'Race date required.' }],
+      warnings: [],
+      suggestedFixes: [],
+    });
+
+    const blocked = await generateTrainingPlanForUser({
+      userId: 12,
+      objective: '',
+      sessionsPerWeek: 4,
+      strengthSessionsPerWeek: 0,
+    });
+
+    expect(blocked.status).toBe('plan_quality_blocked');
+    expect((blocked as any).data).toMatchObject({
+      primaryFocus: 'hybrid',
+      primaryFocusSource: 'fallback',
+      primaryFocusFallbackReason: 'missing',
+      primaryFocusRawObjective: null,
     });
   });
 

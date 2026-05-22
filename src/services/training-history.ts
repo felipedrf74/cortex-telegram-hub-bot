@@ -84,6 +84,17 @@ export interface RealTrainingHistory {
 }
 
 const SPORTS: ReadonlyArray<Sport> = ['running', 'strength', 'cycling', 'swimming'];
+const COLD_START_COMPLIANCE = 0.82;
+const INACTIVE_SESSION_STATUSES = new Set(['rest', 'unscheduled', 'deferred', 'dropped', 'cancelled', 'superseded']);
+const DAY_INDEX: Record<string, number> = {
+  monday: 0,
+  tuesday: 1,
+  wednesday: 2,
+  thursday: 3,
+  friday: 4,
+  saturday: 5,
+  sunday: 6,
+};
 
 /**
  * Normalize a `training_sessions.session_type` value into the
@@ -296,6 +307,73 @@ export function readTrainingHistoryFromCompletions(
   };
 }
 
+export function computeTrailingCompliance(
+  userId: number,
+  days = 14,
+  options: TrainingHistoryReadOptions = {},
+): number {
+  const asOf = options.asOf ?? new Date();
+  const windowStart = new Date(asOf);
+  windowStart.setUTCDate(windowStart.getUTCDate() - Math.max(1, Math.round(days)));
+
+  let rows: Array<{
+    id: number;
+    status: string | null;
+    day_of_week: string | null;
+    week_number: number | null;
+    start_date: string | null;
+    has_completion: number;
+  }> = [];
+
+  try {
+    const db = getDb();
+    rows = db.prepare(`
+      SELECT ts.id AS id,
+             ts.status AS status,
+             ts.day_of_week AS day_of_week,
+             tw.week_number AS week_number,
+             ftp.start_date AS start_date,
+             CASE WHEN EXISTS (
+               SELECT 1
+                 FROM training_completions tc
+                WHERE tc.session_id = ts.id
+                  AND tc.plan_id = ts.plan_id
+             ) THEN 1 ELSE 0 END AS has_completion
+        FROM training_sessions ts
+        JOIN training_weeks tw ON tw.id = ts.week_id
+        JOIN fitness_training_plans ftp ON ftp.id = ts.plan_id
+       WHERE ftp.user_id = ?
+         AND lower(COALESCE(ftp.status, 'active')) IN ('active', 'completed', 'paused')
+    `).all(userId) as typeof rows;
+  } catch (err) {
+    logger.warn(
+      { err, userId },
+      'computeTrailingCompliance: query failed; using cold-start compliance fallback',
+    );
+    return COLD_START_COMPLIANCE;
+  }
+
+  let planned = 0;
+  let completed = 0;
+
+  for (const row of rows) {
+    const normalizedStatus = String(row.status ?? '').trim().toLowerCase();
+    if (INACTIVE_SESSION_STATUSES.has(normalizedStatus)) continue;
+
+    const plannedDate = plannedDateForTrainingSession(row.start_date, row.week_number, row.day_of_week);
+    if (!plannedDate) continue;
+    if (plannedDate.getTime() < windowStart.getTime() || plannedDate.getTime() > asOf.getTime()) continue;
+
+    planned += 1;
+    if (normalizedStatus === 'completed' || Number(row.has_completion) === 1) {
+      completed += 1;
+    }
+  }
+
+  if (planned <= 0) return COLD_START_COMPLIANCE;
+  return Math.max(0, Math.min(1, Math.round((completed / planned) * 1000) / 1000));
+}
+
 /**
  * Bucket a `completed_at` ISO timestamp into one of 4 week buckets
  * relative to `asOf`. Bucket 0 = most recent 7 days. Returns -1
@@ -319,6 +397,21 @@ function emptyHistory(): RealTrainingHistory {
     rawCompletionCount: 0,
     recentSessions: [],
   };
+}
+
+function plannedDateForTrainingSession(
+  planStartDate: string | null | undefined,
+  weekNumber: number | null | undefined,
+  dayOfWeek: string | null | undefined,
+): Date | null {
+  if (!planStartDate || !weekNumber || weekNumber < 1) return null;
+  const dayIndex = DAY_INDEX[String(dayOfWeek ?? '').trim().toLowerCase()];
+  if (dayIndex == null) return null;
+
+  const base = new Date(`${planStartDate.slice(0, 10)}T12:00:00.000Z`);
+  if (Number.isNaN(base.getTime())) return null;
+  base.setUTCDate(base.getUTCDate() + (weekNumber - 1) * 7 + dayIndex);
+  return base;
 }
 
 function inferIntensityZone(sessionType: SessionType): IntensityZone {

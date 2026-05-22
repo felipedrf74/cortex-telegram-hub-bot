@@ -1,6 +1,6 @@
 // Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
 
-import { buildWeekPlan } from './coach-kernel/planner-engine';
+import { buildWeekPlan, inferRacePhaseForWeek } from './coach-kernel/planner-engine';
 import type {
   AthleteState,
   BlockPhase,
@@ -25,6 +25,7 @@ import { DAY_ORDER } from './coach-kernel/utils';
 import { recordWeeklyPlan } from './coach-plan-registry';
 import type { CoordinatedTrainingPlan, CoordinatedTrainingSession, CoordinatedTrainingWeek } from './training-plan-coordination';
 import {
+  computeTrailingCompliance,
   readTrainingHistoryFromCompletions,
   type RealTrainingHistory,
 } from './training-history';
@@ -161,6 +162,11 @@ const SESSION_TYPE_LABEL_MAP: Record<Session['sessionType'], string> = {
 
 export function buildCoachKernelTrainingPlan(input: CoachKernelTrainingPlanInput): CoordinatedTrainingPlan {
   const athlete = buildAthleteStateFromTrainingProfiles(input);
+  const primaryFocusResolution = resolvePrimaryFocusWithSource(
+    input.objective,
+    input.sessionsPerWeek,
+    input.strengthSessionsPerWeek,
+  );
   let rollingAthlete = athlete;
   const rawWeeklyPlans: WeeklyPlan[] = [];
 
@@ -222,6 +228,15 @@ export function buildCoachKernelTrainingPlan(input: CoachKernelTrainingPlanInput
     periodization: 'block',
     weeks,
     profileQuality: trainingPlanProfileQuality(athlete.profileQuality),
+    primaryFocus: primaryFocusResolution.value,
+    primaryFocusSource: primaryFocusResolution.source,
+    primaryFocusFallbackReason: primaryFocusResolution.source === 'fallback'
+      ? primaryFocusResolution.reason
+      : null,
+    primaryFocusRawObjective: primaryFocusResolution.source === 'fallback'
+      && primaryFocusResolution.reason === 'unrecognized'
+      ? primaryFocusResolution.rawInput ?? null
+      : null,
     decisionReasons: dedupeTrainingDecisionReasons([
       ...goalModeReasons,
       ...rawWeeklyPlans.flatMap((plan) => plan.decisionReasons ?? []),
@@ -538,7 +553,7 @@ export function buildAthleteStateFromTrainingProfiles(input: CoachKernelTraining
     recentSessions: realHistory?.recentSessions ?? [],
     readiness: buildReadinessSnapshot(input, constraints),
     compliance: {
-      trailing14DayCompliance: 0.82,
+      trailing14DayCompliance: computeTrailingCompliance(input.userId),
       bySport: {},
       missedKeySessions: 0,
       consecutiveMisses: 0,
@@ -1764,21 +1779,8 @@ function resolveWeekPhase(args: {
 }): BlockPhase {
   if (args.goalMode === 'maintenance') return 'maintenance';
 
-  const nextRace = [...args.races]
-    .map((race) => ({
-      ...race,
-      diffDays: Math.round((Date.parse(race.date) - Date.parse(args.weekStart)) / (24 * 60 * 60 * 1000)),
-    }))
-    .filter((race) => Number.isFinite(race.diffDays) && race.diffDays >= 0)
-    .sort((left, right) => left.diffDays - right.diffDays)[0];
-
-  if (nextRace) {
-    if (nextRace.diffDays <= 7) return 'race';
-    if (nextRace.diffDays <= 21) return 'taper';
-    if (nextRace.diffDays <= 42) return 'peak';
-    if (nextRace.diffDays <= 98) return 'build';
-    return 'base';
-  }
+  const racePhase = inferRacePhaseForWeek(args.races, args.weekStart);
+  if (racePhase) return racePhase;
 
   if (args.goalMode === 'return_to_training') {
     return args.weekNumber <= 2 ? 'base' : 'build';

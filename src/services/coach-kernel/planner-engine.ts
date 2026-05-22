@@ -35,7 +35,7 @@ function hasHighImpactInjuryConstraint(athlete: AthleteState): boolean {
   ) || (athlete.readiness.painFlags ?? []).some((pain) => pain.severity === 'moderate' || pain.severity === 'high');
 }
 
-function raceWindowDays(race: AthleteState['goals']['raceCalendar'][number]): { taperDays: number; peakDays: number } {
+export function raceWindowDays(race: AthleteState['goals']['raceCalendar'][number]): { taperDays: number; peakDays: number } {
   switch (race.subtype) {
   case '5k':
   case 'sprint':
@@ -57,23 +57,30 @@ function raceWindowDays(race: AthleteState['goals']['raceCalendar'][number]): { 
   }
 }
 
+export function inferRacePhaseForWeek(
+  races: AthleteState['goals']['raceCalendar'],
+  weekStart: string,
+): BlockPhase | null {
+  const nextRace = [...races]
+    .map((race) => ({ ...race, diffDays: Math.round((Date.parse(race.date) - Date.parse(weekStart)) / (24 * 60 * 60 * 1000)) }))
+    .filter((race) => Number.isFinite(race.diffDays) && race.diffDays >= 0)
+    .sort((a, b) => a.diffDays - b.diffDays)[0];
+
+  if (!nextRace) return null;
+  const windows = raceWindowDays(nextRace);
+  if (nextRace.diffDays <= 7) return 'race';
+  if (nextRace.diffDays <= windows.taperDays) return 'taper';
+  if (nextRace.diffDays <= windows.peakDays) return 'peak';
+  if (nextRace.diffDays > windows.peakDays * 3) return 'base';
+  return 'build';
+}
+
 function inferPhase(athlete: AthleteState, weekStart: string): BlockPhase {
   if (hasHighImpactInjuryConstraint(athlete) || athlete.readiness.level === 'red') return 'deload';
   if (athlete.readiness.level === 'orange') return 'maintenance';
   if (athlete.currentBlock.phase) return athlete.currentBlock.phase;
 
-  const nextRace = [...athlete.goals.raceCalendar]
-    .map((race) => ({ ...race, diffDays: Math.round((Date.parse(race.date) - Date.parse(weekStart)) / (24 * 60 * 60 * 1000)) }))
-    .filter((race) => Number.isFinite(race.diffDays) && race.diffDays >= 0)
-    .sort((a, b) => a.diffDays - b.diffDays)[0];
-
-  if (!nextRace) return 'base';
-  const windows = raceWindowDays(nextRace);
-  if (nextRace.diffDays <= 7) return 'race';
-  if (nextRace.diffDays <= windows.taperDays) return 'taper';
-  if (nextRace.diffDays <= windows.peakDays) return 'peak';
-  if (athlete.currentBlock.weekIndex > 0 && athlete.currentBlock.weekIndex % 4 === 0) return 'deload';
-  return 'build';
+  return inferRacePhaseForWeek(athlete.goals.raceCalendar, weekStart) ?? 'base';
 }
 
 /**
