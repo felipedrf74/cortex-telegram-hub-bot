@@ -604,4 +604,38 @@ describe('secretary-orchestrator', () => {
     expect(result.crossSkillImpacts[0]?.skillId).toBe('secretary');
     expect(result.confidence).toBe('low');
   });
+
+  it('summarizes Secretary today with checked, handled, needs-user, and waiting states', () => {
+    const day = makeDay({
+      secretary: {
+        ...makeDay().secretary,
+        writableCalendar: false,
+        pendingTasks: 5,
+        tasksDueOnDate: 3,
+        overdueTasks: 1,
+        mailUnreadTotal: 9,
+      },
+    });
+
+    const result = buildSecretaryCoordination(makeInput({
+      day,
+      weekPlan: { days: [day], conflicts: [], variant: 'steady' },
+      secretaryTodaySignals: {
+        handledCount: 1,
+        handledTitles: ['Secretary reflowed the agenda and verified the state.'],
+        needsUserCount: 1,
+        needsUserTitles: ['Choose which commitment Secretary should protect.'],
+        staleCount: 1,
+        topUserAction: 'Choose the protected commitment.',
+      },
+    }));
+
+    expect(result.secretaryToday.checked.map((entry) => entry.source)).toEqual(
+      expect.arrayContaining(['agenda_sync', 'conflict_scan', 'reminders', 'coordination']),
+    );
+    expect(result.secretaryToday.handled[0]?.detail).toContain('reflowed');
+    expect(result.secretaryToday.needsUser[0]?.detail).toContain('protect');
+    expect(result.secretaryToday.waitingOnSource.map((entry) => entry.source)).toContain('source_health');
+    expect(result.secretaryToday.nextBestMove).toBe('Choose the protected commitment.');
+  });
 });

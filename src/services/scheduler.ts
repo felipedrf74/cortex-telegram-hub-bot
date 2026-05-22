@@ -55,7 +55,7 @@ import { expireStaleChatActionPlans } from './chat-reasoning-engine';
 import { expireStalePendingChatActionsForJob } from './chat-action-state';
 import { pruneCompletedChatActionRuns, reapZombieChatActionRuns } from './chat-action-run-store';
 import { runGarminTenantIsolationWatcher } from './garmin-tenant-isolation-watcher';
-import { runDecisionSourceStateSupersessionJob } from './decision-center';
+import { runDecisionHandledHistoryBackfillJob, runDecisionSourceStateSupersessionJob } from './decision-center';
 import { expireOldNexusPointCredits } from './nexus-points';
 import { getActivePlan, getCurrentWeek, getWeeklyAdherence, computeAdjustmentRecommendation, updateWeekAdjustment, getWeeksForPlan } from './training-plans';
 import { calculateReadiness, persistReadinessScore } from './readiness-scorer';
@@ -720,6 +720,7 @@ export function startScheduler(bot?: any): void {
   registerJob('daily_context',    'Daily Context Builder',  '0 5 * * *',       'system');
   registerJob('operator_alert_delivery', 'Operator Alert Delivery', '* * * * *', 'system');
   registerJob('decision_source_supersession', 'Decision Source Supersession', '*/15 * * * *', 'system');
+  registerJob('decision_handled_history_backfill', 'Decision Handled History Backfill', '22,52 * * * *', 'system');
   registerJob('chat_action_plan_expiry', 'Chat Action Plan Expiry', '15 * * * *', 'system');
   registerJob('event_backbone_worker', 'Event Backbone Worker', '* * * * *', 'system');
   registerJob('event_backbone_cleanup', 'Event Backbone Cleanup', '10 0 * * *', 'system');
@@ -1280,6 +1281,12 @@ export function startScheduler(bot?: any): void {
           dedupeKey: `secretary:conflict_detection:${target.tenantId}:${startOfDay()}:${conflictSignature}`,
           requiresUserAction: true,
           decisionDeadline: new Date(Date.now() + 3 * 3_600_000).toISOString(),
+          decisionContext: {
+            entityTitle: 'Daily schedule conflict',
+            sourceState: 'conflict_detected',
+            deadlineAt: new Date(Date.now() + 3 * 3_600_000).toISOString(),
+            explicitNoRelatedEntityReason: null,
+          },
           quietHoursPolicy: 'allow_time_sensitive',
           privacyPolicy: 'sensitive',
         });
@@ -1798,6 +1805,12 @@ export function startScheduler(bot?: any): void {
     const result = runDecisionSourceStateSupersessionJob();
     if (result.supersededCount === 0) return 'skipped';
     logger.info(result, 'Decision source-state supersession completed');
+  }), { timezone: tz });
+
+  cron.schedule('22,52 * * * *', wrapJob('decision_handled_history_backfill', async () => {
+    const result = runDecisionHandledHistoryBackfillJob({ limit: 100 });
+    if (result.backfilled === 0 && result.failed === 0) return 'skipped';
+    logger.info(result, 'Decision handled-history backfill completed');
   }), { timezone: tz });
 
   cron.schedule('*/2 * * * *', wrapJob('chat_action_plan_expiry', async () => {

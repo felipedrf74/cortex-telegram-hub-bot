@@ -161,6 +161,21 @@ describe('daily-brief-orchestrator', () => {
         reasons: [],
         affectedSkills: ['secretary'],
       },
+      secretaryToday: {
+        title: 'Secretary hoje',
+        summary: 'A orquestração diária ainda não tem estado operacional fiável para mostrar.',
+        checked: [],
+        handled: [],
+        needsUser: [],
+        waitingOnSource: [],
+        nextBestMove: null,
+        counts: {
+          checked: 0,
+          handled: 0,
+          needsUser: 0,
+          waitingOnSource: 0,
+        },
+      },
       weekOrchestration: {
         posture: 'stable',
         title: 'Orquestração semanal indisponível.',

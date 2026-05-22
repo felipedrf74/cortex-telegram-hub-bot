@@ -53,6 +53,8 @@ import {
 import { isValidTenantUserId, recordTenantScopeAnomaly } from './tenant-scope-observability';
 import { logger } from '../utils/logger';
 import { isDecisionStreakV1Enabled } from './runtime-flags';
+import type { SecretaryTodaySummaryModel } from './secretary-orchestrator';
+import { secretaryTodayLabels } from './secretary-today-copy';
 import {
   buildDecisionActionTruthTableEntry,
   isDecisionActionExecutable,
@@ -95,6 +97,7 @@ export interface DecisionOutcomeMetrics {
   decisionActionabilityScore: number | null;
   acceptedCount: number;
   dismissedCount: number;
+  deferredCount: number;
   snoozedCount: number;
   askedNexusCount: number;
   explanationOpenCount: number;
@@ -107,12 +110,19 @@ export interface DecisionOutcomeMetrics {
   averageTimeToActionMs: number | null;
   primaryActionRate: number;
   dismissRate: number;
+  deferRate: number;
   snoozeRate: number;
   explanationOpenRate: number;
   genericBlockedRate: number;
   failedActionRate: number;
   partialFailureRate: number;
   bySourceSkill: Record<string, number>;
+  bySourceSkillOutcome: Record<string, {
+    total: number;
+    accepted: number;
+    dismissed: number;
+    deferred: number;
+  }>;
 }
 
 export interface DecisionEligibilityPolicyInput {
@@ -154,6 +164,7 @@ export interface DecisionApiItem {
   alternativeActions: NotificationActionButton[];
   whySummary: string;
   whyDetails: Array<{ label: string; value: string }>;
+  explanation?: DecisionExplanation | null;
   problemStatement: string;
   recommendation: string;
   expectedEffect: string;
@@ -205,6 +216,26 @@ export interface DecisionApiItem {
   blockedByDecisionIds: string[];
   rollbackAvailable: boolean;
   rollbackActionId: string | null;
+}
+
+export type DecisionExplanationStepStatus = 'done' | 'needs_user' | 'pending' | 'blocked';
+
+export interface DecisionExplanationStep {
+  label: string;
+  detail: string;
+  status: DecisionExplanationStepStatus;
+}
+
+export interface DecisionExplanation {
+  headline: string;
+  whatHappened: string;
+  whyItMatters: string;
+  nexusAction: string;
+  userAction: string;
+  result: string;
+  verification: string;
+  nextStep: string;
+  steps: DecisionExplanationStep[];
 }
 
 export interface DecisionAnalysisBundle {
@@ -304,6 +335,7 @@ export interface DecisionCenterOverview {
     handled: boolean;
     summary: boolean;
   };
+  secretaryToday: SecretaryTodaySummaryModel;
   items: DecisionApiItem[];
   handled: HandledByNexusItem[];
 }
@@ -341,6 +373,7 @@ export interface HandledByNexusItem {
   sourceSkill: NotificationSourceSkill;
   title: string;
   summary: string;
+  explanation?: DecisionExplanation | null;
   actionTaken: string;
   whyBrief: string;
   relatedEntities: Array<{ type: string; id: string }>;
@@ -396,6 +429,43 @@ const MUTATING_ACTIONS = new Set([
 const CONTENT_APPROVAL_ACTION_IDS = new Set(['approve_script', 'request_rewrite']);
 const SECRETARY_REFLOW_ACTION_IDS = new Set(['accept_reflow', 'choose_another_time']);
 
+const DECISION_VERIFICATION_STATE_FIELDS: Record<string, string[]> = {
+  content: ['contentApprovalState', 'approvalState', 'workflowState'],
+  secretary: ['lifecycleState', 'agendaState', 'providerSyncState'],
+  finance: ['paymentStatus', 'financeStatus', 'taxEventStatus'],
+  training: ['planState', 'lifecycleState', 'trainingState'],
+  cooking: ['mealPlanState', 'mealState'],
+  sync: ['syncState'],
+  system: ['systemState'],
+  security: ['securityState'],
+  connections: ['syncState', 'connectionState'],
+};
+
+const decisionHandledHistoryStats = {
+  writeFailures: 0,
+  backfillRuns: 0,
+  backfilled: 0,
+  backfillFailures: 0,
+};
+
+export interface DecisionHandledHistoryStats {
+  writeFailures: number;
+  backfillRuns: number;
+  backfilled: number;
+  backfillFailures: number;
+}
+
+export interface DecisionHandledHistoryBackfillResult {
+  inspected: number;
+  backfilled: number;
+  skipped: number;
+  failed: number;
+}
+
+export function getDecisionHandledHistoryStats(): DecisionHandledHistoryStats {
+  return { ...decisionHandledHistoryStats };
+}
+
 export function ensureDecisionCenterTables(): void {
   ensureNotificationTables();
 
@@ -448,6 +518,7 @@ export function ensureDecisionCenterTables(): void {
       summary TEXT NOT NULL,
       action_taken TEXT NOT NULL,
       why_brief TEXT NOT NULL,
+      explanation_json TEXT,
       related_entities_json TEXT NOT NULL DEFAULT '[]',
       rollback_available INTEGER NOT NULL DEFAULT 0,
       changed_rule_option TEXT,
@@ -514,6 +585,7 @@ export function ensureDecisionCenterTables(): void {
     CREATE INDEX IF NOT EXISTS idx_decision_queue_daily_rollups_scope_date
       ON decision_queue_daily_rollups(user_id, tenant_id, local_date DESC);
   `);
+  ensureColumn('handled_by_nexus_items', 'explanation_json', 'TEXT');
 }
 
 export function evaluateDecisionEligibility(input: DecisionEligibilityPolicyInput): DecisionEligibilityResult {
@@ -600,6 +672,13 @@ export function buildSkillDecisionFixtureIntent(
         { id: 'open_detail', label: 'Review', style: 'primary' },
       ],
       requiresUserAction: true,
+      decisionDeadline: overrides.decisionDeadline ?? new Date(Date.now() + 24 * 3_600_000).toISOString(),
+      decisionContext: {
+        ...(base.decisionContext ?? {}),
+        entityTitle: 'Race date',
+        sourceState: 'missing_required_input',
+        deadlineAt: overrides.decisionDeadline ?? new Date(Date.now() + 24 * 3_600_000).toISOString(),
+      },
       dedupeKey: overrides.dedupeKey ?? `training:missing-race-date:${userId}:demo`,
       ...overrides,
     };
@@ -820,6 +899,8 @@ export function getDecisionOverview(
   const staleCount = allOpenItems.filter((item) => item.analysis.sourceFreshness === 'stale' || item.sourceTrace?.dataFreshness === 'cached').length;
   const supersededCount = allItems.filter((item) => ['superseded', 'dismissed', 'actioned'].includes(item.status)).length;
   const topSuggestion = summary.topSuggestion ?? (allOpenItems[0] ? topSuggestionForItem(allOpenItems[0]) : null);
+  const language = userDecisionContextDefaults(userId).locale ?? 'en';
+  const secretaryToday = buildDecisionCenterSecretaryTodaySummary(allOpenItems, handledForSummary, language);
   return {
     count: items.length,
     openCount: allOpenItems.filter((item) => ['unread', 'read', 'failed', 'open'].includes(item.status)).length,
@@ -834,6 +915,7 @@ export function getDecisionOverview(
       handled: handledAvailable,
       summary: summaryAvailable,
     },
+    secretaryToday,
     items,
     handled,
   };
@@ -869,11 +951,80 @@ export function buildDecisionCenterReportDocument(userId: number, tenantId = use
       itemId: item.itemId,
       title: item.title,
       summary: item.summary,
+      explanation: item.explanation,
       actionTaken: item.actionTaken,
       whyBrief: item.whyBrief,
       rollbackAvailable: item.rollbackAvailable,
     })),
+    secretaryToday: overview.secretaryToday,
     unresolvedRisk: overview.topSuggestion?.riskIfIgnored ?? null,
+  };
+}
+
+function buildDecisionCenterSecretaryTodaySummary(
+  openItems: DecisionApiItem[],
+  handledItems: HandledByNexusItem[],
+  language: string,
+): SecretaryTodaySummaryModel {
+  // Decision Center's Secretary Today view is intentionally queue-centric:
+  // /plan/today owns the richer daily operational scan, while this endpoint
+  // mirrors the live decisions/handled source of truth the user is viewing.
+  const copy = secretaryTodayLabels(language);
+  const secretaryOpen = openItems.filter((item) => item.sourceSkill === 'secretary');
+  const secretaryHandled = handledItems.filter((item) => item.sourceSkill === 'secretary');
+  const stale = secretaryOpen.filter((item) => item.analysis.sourceFreshness === 'stale' || item.sourceTrace?.dataFreshness === 'cached');
+  const checked = [{
+    id: 'decision-center-read',
+    label: copy.decisionCenterCheckedLabel,
+    detail: copy.decisionCenterCheckedDetail,
+    status: 'checked' as const,
+    source: 'decision_center' as const,
+  }];
+  const handled = secretaryHandled.slice(0, 3).map((item, index) => ({
+    id: `secretary-handled-${index}`,
+    label: copy.handledByNexus,
+    detail: item.explanation?.result ?? item.summary,
+    status: 'handled' as const,
+    source: 'decision_center' as const,
+  }));
+  const needsUser = secretaryOpen.slice(0, 3).map((item, index) => ({
+    id: `secretary-needs-user-${index}`,
+    label: copy.needsYou,
+    detail: item.explanation?.userAction ?? item.recommendedActionLabel ?? item.summary,
+    status: 'needs_user' as const,
+    source: 'decision_center' as const,
+  }));
+  const waitingOnSource = stale.slice(0, 3).map((item, index) => ({
+    id: `secretary-waiting-source-${index}`,
+    label: copy.waitingOnSource,
+    detail: item.analysis.freshnessLabel ?? item.summary,
+    status: 'waiting_on_source' as const,
+    source: 'source_health' as const,
+  }));
+  const nextBestMove = secretaryOpen[0]?.explanation?.userAction
+    ?? secretaryOpen[0]?.recommendedActionLabel
+    ?? null;
+  const summary = needsUser.length > 0
+    ? copy.summaryNeedsUser(needsUser.length)
+    : handled.length > 0
+      ? copy.summaryHandled(handled.length)
+      : waitingOnSource.length > 0
+        ? copy.summaryWaitingOnSource
+        : copy.summaryAllClear;
+  return {
+    title: copy.title,
+    summary,
+    checked,
+    handled,
+    needsUser,
+    waitingOnSource,
+    nextBestMove,
+    counts: {
+      checked: checked.length,
+      handled: handled.length,
+      needsUser: needsUser.length,
+      waitingOnSource: waitingOnSource.length,
+    },
   };
 }
 
@@ -980,6 +1131,7 @@ export function listHandledByNexusItems(userId: number, tenantId = userId, limit
   assertScope(userId, tenantId, 'list_handled_by_nexus_items', { limit });
   ensureDecisionCenterTables();
   const boundedLimit = Math.min(Math.max(limit, 1), 100);
+  const wideLimit = Math.min(boundedLimit * 2, 100);
   const explicitRows = getDb().prepare(`
     SELECT *
       FROM handled_by_nexus_items
@@ -987,7 +1139,7 @@ export function listHandledByNexusItems(userId: number, tenantId = userId, limit
        AND tenant_id = ?
      ORDER BY created_at DESC
      LIMIT ?
-  `).all(userId, tenantId, boundedLimit) as any[];
+  `).all(userId, tenantId, wideLimit) as any[];
   const explicitDecisionIds = new Set(
     explicitRows
       .map((row) => typeof row.decision_id === 'string' ? row.decision_id : null)
@@ -1007,7 +1159,7 @@ export function listHandledByNexusItems(userId: number, tenantId = userId, limit
        AND items.status = 'actioned'
      ORDER BY COALESCE(items.actioned_at, items.created_at) DESC
      LIMIT ?
-  `).all(userId, tenantId, boundedLimit) as any[];
+  `).all(userId, tenantId, wideLimit) as any[];
   const actionedItems = actionedRows
     .map(mapDecisionRecord)
     .filter((record) => !explicitDecisionIds.has(record.itemId))
@@ -1016,6 +1168,95 @@ export function listHandledByNexusItems(userId: number, tenantId = userId, limit
   return [...explicitItems, ...actionedItems]
     .sort((a, b) => timestampMillis(b.createdAt) - timestampMillis(a.createdAt))
     .slice(0, boundedLimit);
+}
+
+export function runDecisionHandledHistoryBackfillJob(input: {
+  userId?: number;
+  tenantId?: number;
+  limit?: number;
+} = {}): DecisionHandledHistoryBackfillResult {
+  ensureDecisionCenterTables();
+  if (input.tenantId !== undefined && input.userId === undefined) {
+    throw new Error('Decision handled-history backfill requires userId when tenantId is scoped.');
+  }
+  const tenantId = input.userId !== undefined ? input.tenantId ?? input.userId : undefined;
+  if (input.userId !== undefined && tenantId !== undefined) {
+    assertScope(input.userId, tenantId, 'decision_handled_history_backfill', { limit: input.limit });
+  }
+  const boundedLimit = Math.min(Math.max(input.limit ?? 100, 1), 500);
+  const scopeClause = input.userId !== undefined && tenantId !== undefined
+    ? 'AND items.user_id = ? AND items.tenant_id = ?'
+    : '';
+  const params: Array<number | string> = [];
+  if (input.userId !== undefined && tenantId !== undefined) {
+    params.push(input.userId, tenantId);
+  }
+  params.push(boundedLimit);
+  const rows = getDb().prepare(`
+    SELECT items.*, intents.related_entity_id, intents.related_entity_type, intents.requires_user_action,
+           intents.decision_deadline, intents.privacy_policy, intents.delivery_policy, intents.decision_context_json,
+           logs.action_taken AS decision_log_action_taken
+      FROM notification_center_items items
+      JOIN notification_intents intents ON intents.intent_id = items.intent_id
+      LEFT JOIN notification_decision_logs logs ON logs.decision_log_id = items.decision_log_id
+      LEFT JOIN handled_by_nexus_items handled
+        ON handled.decision_id = items.item_id
+       AND handled.user_id = items.user_id
+       AND handled.tenant_id = items.tenant_id
+     WHERE items.status = 'actioned'
+       AND handled.handled_item_id IS NULL
+       ${scopeClause}
+     ORDER BY COALESCE(items.actioned_at, items.created_at) DESC
+     LIMIT ?
+  `).all(...params) as any[];
+
+  decisionHandledHistoryStats.backfillRuns += 1;
+  const result: DecisionHandledHistoryBackfillResult = {
+    inspected: rows.length,
+    backfilled: 0,
+    skipped: 0,
+    failed: 0,
+  };
+  const existsStmt = getDb().prepare(`
+    SELECT handled_item_id
+      FROM handled_by_nexus_items
+     WHERE decision_id = ?
+       AND user_id = ?
+       AND tenant_id = ?
+     LIMIT 1
+  `);
+  for (const row of rows) {
+    try {
+      const record = mapDecisionRecord(row);
+      const existing = existsStmt.get(record.itemId, record.userId, record.tenantId);
+      if (existing) {
+        result.skipped += 1;
+        continue;
+      }
+      const item = mapActionedDecisionToHandledItem(record);
+      recordHandledByNexus(record, {
+        actionTaken: item.actionTaken,
+        summary: item.summary,
+        whyBrief: item.whyBrief,
+        explanation: item.explanation,
+        rollbackAvailable: item.rollbackAvailable,
+        changedRuleOption: item.changedRuleOption,
+        createdAt: item.createdAt,
+      });
+      result.backfilled += 1;
+      decisionHandledHistoryStats.backfilled += 1;
+    } catch (err) {
+      result.failed += 1;
+      decisionHandledHistoryStats.backfillFailures += 1;
+      logger.error({
+        err,
+        decisionId: typeof row.item_id === 'string' ? row.item_id : null,
+        userId: row.user_id,
+        tenantId: row.tenant_id,
+      }, 'Decision handled history backfill failed');
+    }
+  }
+  return result;
 }
 
 export function addDecisionDependency(input: {
@@ -1180,7 +1421,11 @@ export function getDecisionOutcomeMetrics(userId: number, tenantId = userId): De
   const totalOutcomes = outcomeRows.length;
   const acceptedCount = outcomeRows.filter((row) => !!row.accepted).length;
   const dismissedCount = outcomeRows.filter((row) => !!row.dismissed).length;
+  const isDeferredOutcome = (row: { snoozed: number; actionTaken: string | null }): boolean => {
+    return !!row.snoozed || row.actionTaken === 'snooze';
+  };
   const snoozedCount = outcomeRows.filter((row) => !!row.snoozed).length;
+  const deferredCount = outcomeRows.filter(isDeferredOutcome).length;
   const askedNexusCount = outcomeRows.filter((row) => !!row.askedNexus).length;
   const undoUsedCount = outcomeRows.filter((row) => !!row.undoUsed).length;
   const primaryActionCount = outcomeRows.filter((row) => !!row.actionTaken).length;
@@ -1219,6 +1464,20 @@ export function getDecisionOutcomeMetrics(userId: number, tenantId = userId): De
   for (const row of bySourceRows) {
     bySourceSkill[row.sourceSkill] = Number(row.count ?? 0);
   }
+  const bySourceSkillOutcome: DecisionOutcomeMetrics['bySourceSkillOutcome'] = {};
+  for (const row of outcomeRows) {
+    const bucket = bySourceSkillOutcome[row.sourceSkill] ?? {
+      total: 0,
+      accepted: 0,
+      dismissed: 0,
+      deferred: 0,
+    };
+    bucket.total += 1;
+    if (row.accepted) bucket.accepted += 1;
+    if (row.dismissed) bucket.dismissed += 1;
+    if (isDeferredOutcome(row)) bucket.deferred += 1;
+    bySourceSkillOutcome[row.sourceSkill] = bucket;
+  }
   const totalDecisionQualityAttempts = totalOutcomes + Number(gateTotals.totalQualityGateEvents ?? 0);
   const genericBlockedCount = Number(gateTotals.genericBlockedCount ?? 0);
   return {
@@ -1230,6 +1489,7 @@ export function getDecisionOutcomeMetrics(userId: number, tenantId = userId): De
     decisionActionabilityScore: average(actionabilityScores),
     acceptedCount,
     dismissedCount,
+    deferredCount,
     snoozedCount,
     askedNexusCount,
     explanationOpenCount: askedNexusCount,
@@ -1242,12 +1502,14 @@ export function getDecisionOutcomeMetrics(userId: number, tenantId = userId): De
     averageTimeToActionMs: average(timeToActionValues),
     primaryActionRate: rate(primaryActionCount),
     dismissRate: rate(dismissedCount),
+    deferRate: rate(deferredCount),
     snoozeRate: rate(snoozedCount),
     explanationOpenRate: rate(askedNexusCount),
     genericBlockedRate: totalDecisionQualityAttempts > 0 ? Number((genericBlockedCount / totalDecisionQualityAttempts).toFixed(4)) : 0,
     failedActionRate: rate(failedActionCount),
     partialFailureRate: rate(partialFailureCount),
     bySourceSkill,
+    bySourceSkillOutcome,
   };
 }
 
@@ -1310,13 +1572,15 @@ export async function performDecisionAction(
     const updated = getDecisionItem(decisionId, userId, tenantId);
     if (!updated) throw new DecisionActionError('DECISION_NOT_FOUND', 'Decision missing after action execution', 500);
     recordVerifiedDecisionAction(record, action, actionId, execution);
-    recordDecisionOutcome(record, {
-      actionShown: action.id,
-      actionTaken: actionId,
-      accepted: action.style === 'primary',
-      actionSucceeded: true,
-      timeToActionMs: timeToActionMs(record),
-    });
+    if (actionId !== 'snooze') {
+      recordDecisionOutcome(record, {
+        actionShown: action.id,
+        actionTaken: actionId,
+        ...decisionOutcomeFlagsForAction(actionId, action),
+        actionSucceeded: true,
+        timeToActionMs: timeToActionMs(record),
+      });
+    }
     return {
       actionId,
       status: 'succeeded',
@@ -1425,6 +1689,18 @@ export function getDecisionPreferences(userId: number, tenantId = userId): Recor
 export function updateDecisionPreferences(userId: number, tenantId: number, patch: Record<string, unknown>): Record<string, unknown> {
   const profile = updateNotificationProfile(userId, tenantId, patch);
   return { profile };
+}
+
+function decisionOutcomeFlagsForAction(
+  actionId: string,
+  action: NotificationActionButton,
+): Pick<Parameters<typeof recordDecisionOutcome>[1], 'accepted' | 'dismissed' | 'snoozed' | 'askedNexus'> {
+  if (actionId === 'open_detail') return { askedNexus: true };
+  if (actionId === 'dismiss' || actionId === 'reject_reflow' || actionId === 'not_now') {
+    return { dismissed: true };
+  }
+  if (actionId === 'snooze') return { snoozed: true };
+  return { accepted: action.style === 'primary' };
 }
 
 export class DecisionActionError extends Error {
@@ -1539,6 +1815,7 @@ function formatDecisionItemForApi(item: DecisionRecord): DecisionApiItem {
     alternativeActions: actions.filter((candidate) => candidate.id !== action?.id),
     whySummary: logic.whySummary,
     whyDetails: whyDetailsForItem(item, logic),
+    explanation: explanationForDecisionItem(item, logic),
     problemStatement: logic.problemStatement,
     recommendation: logic.recommendation,
     expectedEffect: logic.expectedEffect,
@@ -2174,6 +2451,408 @@ function outcomeSummaryForRecord(record: DecisionRecord, logic: DecisionLogicV2)
     return { outcomeSummary: `Done — ${logic.expectedEffect}`, failureReason: null, retryActions: [] };
   }
   return { outcomeSummary: null, failureReason: null, retryActions: [] };
+}
+
+function explanationForDecisionItem(record: DecisionRecord, logic: DecisionLogicV2): DecisionExplanation {
+  if (record.status === 'failed') return failedDecisionExplanation(record, logic);
+  if (record.status === 'actioned') {
+    const actionId = actionIdForRecord(record) ?? 'completed';
+    return handledDecisionExplanation(record, logic, {
+      actionId,
+      actualEffect: record.actionResult ?? {},
+      message: outcomeSummaryForRecord(record, logic).outcomeSummary ?? null,
+    });
+  }
+  return openDecisionExplanation(record, logic);
+}
+
+function openDecisionExplanation(record: DecisionRecord, logic: DecisionLogicV2): DecisionExplanation {
+  const entity = entityLabelForRecord(record, logic);
+  const source = sourceLabel(record.sourceSkill);
+  const userAction = openDecisionUserAction(record, logic);
+  const verification = logic.readBackVerifier
+    ? `Nexus will read back ${verificationTargetForRecord(record, logic)} before closing this decision.`
+    : `Nexus will keep this item in ${source} until the source state changes.`;
+  const base: DecisionExplanation = {
+    headline: `${source} needs a decision on ${entity}.`,
+    whatHappened: firstConcrete([logic.problemStatement, logic.safePreviewBody, record.safeBody, record.body], `${source} found an item that needs review.`),
+    whyItMatters: firstConcrete([logic.whySummary, logic.impactIfIgnored], `This affects ${source} orchestration and should stay explicit.`),
+    nexusAction: firstConcrete([logic.recommendation], `Nexus prepared the safest available ${source} move and is waiting for your choice.`),
+    userAction,
+    result: firstConcrete([logic.expectedEffect], `Nexus will update ${source} state after your choice.`),
+    verification,
+    nextStep: userAction,
+    steps: [
+      { label: 'Signal reviewed', detail: firstConcrete([logic.problemStatement], `${source} evaluated the source signal.`), status: 'done' },
+      { label: 'User decision needed', detail: userAction, status: 'needs_user' },
+      { label: 'Nexus action', detail: firstConcrete([logic.expectedEffect], `Nexus applies the chosen ${source} action.`), status: 'pending' },
+      { label: 'Read-back', detail: verification, status: logic.readBackVerifier ? 'pending' : 'done' },
+    ],
+  };
+  if (record.type === 'sync_failure') {
+    return {
+      ...base,
+      headline: `${source} sync needs attention.`,
+      whatHappened: firstConcrete([logic.problemStatement], `${source} sync did not finish cleanly.`),
+      whyItMatters: firstConcrete([logic.impactIfIgnored, logic.whySummary], `Recent ${source} data may stay stale until the sync is retried.`),
+      nexusAction: firstConcrete([logic.recommendation], `Nexus can retry the sync without changing your plan.`),
+      userAction: openDecisionUserAction(record, logic),
+      result: firstConcrete([logic.expectedEffect], `Nexus retries ${source} sync and verifies provider status.`),
+      nextStep: openDecisionUserAction(record, logic),
+    };
+  }
+  if (record.sourceSkill === 'content') {
+    return {
+      ...base,
+      headline: `${entity} needs content review.`,
+      whatHappened: firstConcrete([logic.problemStatement], `${entity} is ready for approval or rewrite feedback.`),
+      whyItMatters: firstConcrete([logic.impactIfIgnored, logic.whySummary], 'Publishing stays paused until you approve it or request changes.'),
+      nexusAction: firstConcrete([logic.recommendation], 'Nexus can advance the workflow or keep quality control open for a rewrite.'),
+      userAction: openDecisionUserAction(record, logic),
+      result: firstConcrete([logic.expectedEffect], 'The content workflow moves only after read-back verifies the updated state.'),
+      verification: 'Nexus will read back the content workflow state before closing the decision.',
+    };
+  }
+  if (record.sourceSkill === 'secretary') {
+    return {
+      ...base,
+      headline: `${entity} needs schedule judgment.`,
+      whatHappened: firstConcrete([logic.problemStatement], `Secretary found a schedule conflict or reflow option for ${entity}.`),
+      whyItMatters: firstConcrete([logic.impactIfIgnored, logic.whySummary], 'Leaving it open can keep the day plan conflicted or stale.'),
+      nexusAction: firstConcrete([logic.recommendation], 'Secretary prepared the safest reflow and is waiting for approval.'),
+      result: firstConcrete([logic.expectedEffect], 'Secretary updates the agenda and verifies the persisted schedule state.'),
+      verification: 'Nexus will read back Secretary agenda state before closing this decision.',
+    };
+  }
+  if (record.sourceSkill === 'finance') {
+    return {
+      ...base,
+      headline: `${source} needs confirmation.`,
+      whatHappened: firstConcrete([logic.problemStatement], 'A finance item needs explicit confirmation.'),
+      whyItMatters: firstConcrete([logic.impactIfIgnored, logic.whySummary], 'Keeping financial state accurate prevents stale reminders and bad planning pressure.'),
+      nexusAction: firstConcrete([logic.recommendation], 'Nexus will update only the scoped finance item after your confirmation.'),
+      result: firstConcrete([logic.expectedEffect], 'Finance state is updated and verified without exposing private values in previews.'),
+      verification: 'Nexus will read back finance state before closing this decision.',
+    };
+  }
+  if (record.sourceSkill === 'cooking') {
+    return {
+      ...base,
+      headline: `${source} needs a meal choice.`,
+      whyItMatters: firstConcrete([logic.impactIfIgnored, logic.whySummary], 'Meal and fueling choices change the plan only when you confirm them.'),
+      nexusAction: firstConcrete([logic.recommendation], 'Nexus prepared the safest meal-plan update and is waiting for your choice.'),
+      result: firstConcrete([logic.expectedEffect], 'Cooking updates the meal plan after the choice is verified.'),
+    };
+  }
+  if (record.sourceSkill === 'training') {
+    return {
+      ...base,
+      headline: `${entity} needs training judgment.`,
+      whyItMatters: firstConcrete([logic.impactIfIgnored, logic.whySummary], 'Training changes can affect load, recovery, and protected work later in the week.'),
+      nexusAction: firstConcrete([logic.recommendation], 'Nexus prepared the safest coach move and is waiting for approval.'),
+      result: firstConcrete([logic.expectedEffect], 'Training state changes only after the relevant plan state is verified.'),
+    };
+  }
+  return base;
+}
+
+function failedDecisionExplanation(record: DecisionRecord, logic: DecisionLogicV2): DecisionExplanation {
+  const source = sourceLabel(record.sourceSkill);
+  const failure = outcomeSummaryForRecord(record, logic);
+  const retry = actionsForRecord(record).find((action) => action.style === 'primary')?.label ?? 'Retry or review the decision';
+  return {
+    headline: `${source} action needs retry.`,
+    whatHappened: firstConcrete([logic.problemStatement], `${source} could not complete the last action.`),
+    whyItMatters: firstConcrete([failure.failureReason, logic.impactIfIgnored], 'The decision remains open until Nexus can verify the result.'),
+    nexusAction: 'Nexus stopped before closing the decision because read-back did not verify a safe result.',
+    userAction: retry,
+    result: firstConcrete([failure.outcomeSummary], 'No verified state change was recorded.'),
+    verification: firstConcrete([failure.failureReason], 'Read-back verification failed or returned an error.'),
+    nextStep: retry,
+    steps: [
+      { label: 'Action attempted', detail: 'Nexus tried to perform the selected action.', status: 'done' },
+      { label: 'Verification blocked', detail: firstConcrete([failure.failureReason], 'The resulting state could not be verified.'), status: 'blocked' },
+      { label: 'Needs review', detail: retry, status: 'needs_user' },
+    ],
+  };
+}
+
+function handledDecisionExplanation(
+  record: DecisionRecord,
+  logic: DecisionLogicV2,
+  input: {
+    actionId: string;
+    actualEffect?: Record<string, unknown> | null;
+    message?: string | null;
+  },
+): DecisionExplanation {
+  const actionLabel = actionLabelForRecord(record, input.actionId);
+  const entity = entityLabelForRecord(record, logic);
+  const source = sourceLabel(record.sourceSkill);
+  const actualEffect = input.actualEffect ?? {};
+  const result = handledResultForRecord(record, logic, input.actionId, actualEffect, input.message);
+  const verification = handledVerificationForRecord(record, logic, input.actionId, actualEffect);
+  const nextStep = rollbackContractForRecord({ ...record, status: 'actioned' }).available
+    ? 'No action is needed now. Undo is available if this change no longer works.'
+    : 'No action is needed in Decision Center right now.';
+  const base: DecisionExplanation = {
+    headline: `${source} handled ${entity}.`,
+    whatHappened: firstConcrete([logic.problemStatement], `${source} had an actionable Decision Center item.`),
+    whyItMatters: handledBenefitForRecord(record, logic, input.actionId),
+    nexusAction: `Nexus performed ${actionLabel} for ${entity}.`,
+    userAction: 'No user action needed now.',
+    result,
+    verification,
+    nextStep,
+    steps: [
+      { label: 'Decision cleared', detail: `${source} item left the active queue.`, status: 'done' },
+      { label: 'Action performed', detail: `Nexus performed ${actionLabel}.`, status: 'done' },
+      { label: 'Verification checked', detail: verification, status: 'done' },
+      { label: 'Next step', detail: nextStep, status: 'done' },
+    ],
+  };
+  if (input.actionId === 'auto_dismiss_stale_decision') {
+    return {
+      ...base,
+      headline: `${source} removed a resolved decision.`,
+      nexusAction: `Nexus removed ${entity} from the active queue because the source state already changed.`,
+      result: `The Decision Center no longer asks you to handle ${entity}.`,
+      verification: firstConcrete([input.message], 'Read-back confirmed the source item was no longer actionable.'),
+      nextStep: 'No action is needed unless the source item reopens.',
+      steps: [
+        { label: 'Source checked', detail: firstConcrete([input.message], 'The source state no longer requires this decision.'), status: 'done' },
+        { label: 'Queue cleaned', detail: `${entity} was removed from active decisions.`, status: 'done' },
+        { label: 'User spared', detail: 'No duplicate decision remains for you to clear.', status: 'done' },
+      ],
+    };
+  }
+  if (record.sourceSkill === 'content') {
+    const state = stringOrNull(actualEffect.contentApprovalState) ?? stringOrNull(actualEffect.approvalState);
+    const isRewrite = input.actionId === 'request_rewrite' || state === 'rewrite_requested';
+    return {
+      ...base,
+      headline: isRewrite ? `Rewrite requested for ${entity}.` : `${entity} approved.`,
+      nexusAction: isRewrite
+        ? `Nexus requested changes on ${entity} and kept publishing paused.`
+        : `Nexus approved ${entity} and moved the content workflow forward.`,
+      result: isRewrite
+        ? 'The content workflow is marked for rewrite, so quality control continues before publishing.'
+        : 'The content workflow is approved and ready for its next downstream step.',
+      nextStep: isRewrite
+        ? 'Review the rewritten draft in Content when it is ready.'
+        : 'Continue from Content when you are ready to publish or schedule it.',
+    };
+  }
+  if (record.sourceSkill === 'secretary') {
+    const context = decisionContextForRecord(record);
+    const window = formatDecisionWindow(
+      stringOrNull(actualEffect.startAt),
+      stringOrNull(actualEffect.endAt),
+      context.timezone,
+      context.locale,
+    );
+    return {
+      ...base,
+      headline: `Secretary reflowed ${entity}.`,
+      nexusAction: `Secretary applied ${actionLabel} for ${entity}.`,
+      result: window
+        ? `${entity} was placed in ${window} and removed from active decisions.`
+        : `${entity} was reflowed and removed from active decisions.`,
+      nextStep: actualEffect.rollbackAvailable === true
+        ? 'No action needed now. Undo remains available if the new timing no longer works.'
+        : nextStep,
+    };
+  }
+  if (record.sourceSkill === 'finance') {
+    return {
+      ...base,
+      headline: `Finance updated ${entity}.`,
+      nexusAction: `Nexus performed ${actionLabel} on the scoped finance item.`,
+      result: 'Finance state is updated, so stale payment or tax reminders can stay out of the queue.',
+      nextStep: 'No Decision Center action is needed unless Finance opens a new item.',
+    };
+  }
+  return base;
+}
+
+function handledBenefitForRecord(record: DecisionRecord, logic: DecisionLogicV2, actionId: string): string {
+  if (actionId === 'auto_dismiss_stale_decision') {
+    return 'This prevents you from clearing a decision that the source system already resolved.';
+  }
+  if (record.sourceSkill === 'content') {
+    return 'The content workflow has a verified next state instead of staying blocked in review.';
+  }
+  if (record.sourceSkill === 'secretary') {
+    return 'Your active queue is quieter because the schedule change was applied and verified.';
+  }
+  if (record.sourceSkill === 'finance') {
+    return 'Financial reminders stay aligned with the verified source of truth.';
+  }
+  if (record.sourceSkill === 'training') {
+    return 'Training coordination can continue from a verified plan state.';
+  }
+  if (record.sourceSkill === 'cooking') {
+    return 'Meal planning can continue from a verified choice instead of another prompt.';
+  }
+  return firstConcrete([logic.expectedEffect, logic.whySummary], 'Nexus verified the result and removed the item from active decisions.');
+}
+
+function handledResultForRecord(
+  record: DecisionRecord,
+  logic: DecisionLogicV2,
+  actionId: string,
+  actualEffect: Record<string, unknown>,
+  message?: string | null,
+): string {
+  if (message && !isGenericDecisionCopy(message)) return message;
+  const outcome = outcomeSummaryForRecord({ ...record, status: 'actioned', actionResult: { actionId, ...actualEffect } }, logic).outcomeSummary;
+  if (outcome && !isGenericDecisionCopy(outcome)) return outcome;
+  if (record.sourceSkill === 'content') {
+    const state = stringOrNull(actualEffect.contentApprovalState) ?? stringOrNull(actualEffect.approvalState);
+    if (!state) return 'Content action completed; full workflow state read-back is pending.';
+    return `Content workflow is now ${state}.`;
+  }
+  const state = concreteVerificationStateForRecord(record, actualEffect);
+  if (state) return `${sourceLabel(record.sourceSkill)} state is now ${state}.`;
+  return `${sourceLabel(record.sourceSkill)} action completed; full state read-back is pending.`;
+}
+
+function handledVerificationForRecord(
+  record: DecisionRecord,
+  logic: DecisionLogicV2,
+  actionId: string,
+  actualEffect: Record<string, unknown>,
+): string {
+  const target = verificationTargetForRecord(record, logic);
+  const concreteState = concreteVerificationStateForRecord(record, actualEffect);
+  if (concreteState) return `Read-back confirmed ${target} is ${concreteState}.`;
+  const verifier = firstConcreteOrNull([logic.readBackVerifier]);
+  if (verifier) {
+    return `Verifier ${verifier.replace(/_/g, ' ')} ran for ${sourceLabel(record.sourceSkill)}; full ${target} read-back is pending.`;
+  }
+  return `${sourceLabel(record.sourceSkill)} action ${actionLabelForRecord(record, actionId)} completed; full ${target} read-back is pending.`;
+}
+
+function openDecisionUserAction(record: DecisionRecord, logic: DecisionLogicV2): string {
+  const primary = firstConcreteOrNull([logic.primaryActionLabel, recommendedAction(actionsForRecord(record))?.label]);
+  if (primary) return primary;
+  if (record.requiresUserAction) return `Choose how Nexus should handle this ${sourceLabel(record.sourceSkill)} item.`;
+  return `Review this ${sourceLabel(record.sourceSkill)} item when you are ready.`;
+}
+
+function verificationTargetForRecord(record: DecisionRecord, logic: DecisionLogicV2): string {
+  if (record.sourceSkill === 'content') return 'content workflow state';
+  if (record.sourceSkill === 'secretary') return 'Secretary agenda state';
+  if (record.sourceSkill === 'finance') return 'finance state';
+  if (logic.readBackVerifier) return logic.readBackVerifier.replace(/_/g, ' ');
+  return `${sourceLabel(record.sourceSkill)} state`;
+}
+
+function concreteVerificationStateForRecord(
+  record: DecisionRecord,
+  actualEffect: Record<string, unknown>,
+): string | null {
+  const fieldNames = DECISION_VERIFICATION_STATE_FIELDS[record.sourceSkill]
+    ?? ['decisionStatus', 'state', 'status', 'lifecycleState', 'syncState'];
+  for (const fieldName of fieldNames) {
+    const value = stringOrNull(actualEffect[fieldName]);
+    if (value) return value;
+  }
+  return null;
+}
+
+function actionIdForRecord(record: DecisionRecord): string | null {
+  return record.decisionLogActionTaken
+    ?? stringOrNull(record.actionResult?.actionId)
+    ?? null;
+}
+
+function actionLabelForRecord(record: DecisionRecord, actionId: string): string {
+  return record.actions.find((action) => action.id === actionId)?.label
+    ?? humanizeActionId(actionId);
+}
+
+function entityLabelForRecord(record: DecisionRecord, logic: DecisionLogicV2): string {
+  const context = decisionContextForRecord(record);
+  return firstConcrete([
+    context.entityTitle,
+    logic.safePreviewTitle,
+    logic.title,
+    record.title,
+  ], `${sourceLabel(record.sourceSkill)} item`);
+}
+
+function firstConcrete(candidates: Array<string | null | undefined>, fallback: string | null): string {
+  return firstConcreteOrNull(candidates) ?? fallback ?? 'Decision details are available in Nexus.';
+}
+
+function firstConcreteOrNull(candidates: Array<string | null | undefined>): string | null {
+  for (const candidate of candidates) {
+    if (typeof candidate !== 'string') continue;
+    const trimmed = candidate.trim();
+    if (!trimmed || isGenericDecisionCopy(trimmed)) continue;
+    return trimmed;
+  }
+  return null;
+}
+
+function isGenericDecisionCopy(value: string): boolean {
+  const normalized = value.trim().toLowerCase();
+  return normalized === 'secretary'
+    || normalized === 'review'
+    || normalized === 'completed'
+    || normalized === 'action saved'
+    || normalized.startsWith('secretary needs your attention')
+    || normalized.startsWith('nexus needs your attention')
+    || normalized.startsWith('nexus completed the requested action')
+    || normalized.startsWith('nexus completed:')
+    || normalized.startsWith('nexus found a schedule or capacity conflict')
+    || normalized.startsWith('open nexus to view details');
+}
+
+function normalizeDecisionExplanation(value: unknown): DecisionExplanation | null {
+  if (!value || typeof value !== 'object') return null;
+  const record = value as Record<string, unknown>;
+  const headline = stringOrNull(record.headline);
+  const whatHappened = stringOrNull(record.whatHappened);
+  const whyItMatters = stringOrNull(record.whyItMatters);
+  const nexusAction = stringOrNull(record.nexusAction);
+  const userAction = stringOrNull(record.userAction);
+  const result = stringOrNull(record.result);
+  const verification = stringOrNull(record.verification);
+  const nextStep = stringOrNull(record.nextStep);
+  if (!headline || !whatHappened || !whyItMatters || !nexusAction || !userAction || !result || !verification || !nextStep) {
+    return null;
+  }
+  const rawSteps = Array.isArray(record.steps) ? record.steps : [];
+  const steps = rawSteps
+    .map((step) => normalizeDecisionExplanationStep(step))
+    .filter((step): step is DecisionExplanationStep => !!step);
+  return {
+    headline,
+    whatHappened,
+    whyItMatters,
+    nexusAction,
+    userAction,
+    result,
+    verification,
+    nextStep,
+    steps,
+  };
+}
+
+function normalizeDecisionExplanationStep(value: unknown): DecisionExplanationStep | null {
+  if (!value || typeof value !== 'object') return null;
+  const record = value as Record<string, unknown>;
+  const label = stringOrNull(record.label);
+  const detail = stringOrNull(record.detail);
+  const status = stringOrNull(record.status);
+  if (!label || !detail || !isDecisionExplanationStepStatus(status)) return null;
+  return { label, detail, status };
+}
+
+function isDecisionExplanationStepStatus(value: string | null): value is DecisionExplanationStepStatus {
+  return value === 'done' || value === 'needs_user' || value === 'pending' || value === 'blocked';
 }
 
 function privacyPolicyForSource(sourceSkill: NotificationSourceSkill): NotificationPrivacyPolicy {
@@ -3123,10 +3802,17 @@ function supersedeDecision(record: DecisionRecord, reason: string): void {
        WHERE decision_log_id = ?
     `).run(record.decisionLogId);
   }
+  const logic = decisionLogicForRecord(record);
+  const explanation = handledDecisionExplanation(record, logic, {
+    actionId: 'auto_dismiss_stale_decision',
+    actualEffect: { supersededReason: reason },
+    message: reason,
+  });
   recordHandledByNexus(record, {
     actionTaken: 'auto_dismiss_stale_decision',
-    summary: 'Nexus hid an outdated decision after the source state changed.',
-    whyBrief: reason,
+    summary: explanation.result,
+    whyBrief: explanation.verification,
+    explanation,
     rollbackAvailable: false,
   });
   recordDecisionOutcome(record, {
@@ -3141,17 +3827,24 @@ function recordHandledByNexus(record: DecisionRecord, input: {
   actionTaken: string;
   summary: string;
   whyBrief: string;
+  explanation?: DecisionExplanation | null;
   rollbackAvailable: boolean;
   changedRuleOption?: string | null;
+  createdAt?: string | null;
 }): void {
   ensureDecisionCenterTables();
   const logic = decisionLogicForRecord(record);
+  const explanation = input.explanation ?? handledDecisionExplanation(record, logic, {
+    actionId: input.actionTaken,
+    actualEffect: record.actionResult ?? {},
+    message: input.summary,
+  });
   getDb().prepare(`
     INSERT INTO handled_by_nexus_items (
       handled_item_id, decision_id, user_id, tenant_id, source_skill, title, summary,
-      action_taken, why_brief, related_entities_json, rollback_available, changed_rule_option,
-      privacy_classification
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      action_taken, why_brief, explanation_json, related_entities_json, rollback_available, changed_rule_option,
+      privacy_classification, created_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, datetime('now')))
   `).run(
     `hbn_${randomUUID()}`,
     record.itemId,
@@ -3162,10 +3855,12 @@ function recordHandledByNexus(record: DecisionRecord, input: {
     input.summary,
     input.actionTaken,
     input.whyBrief,
+    explanation ? JSON.stringify(explanation) : null,
     JSON.stringify(record.relatedEntityId && record.relatedEntityType ? [{ type: record.relatedEntityType, id: record.relatedEntityId }] : []),
     input.rollbackAvailable ? 1 : 0,
     input.changedRuleOption ?? null,
     record.privacyPolicy,
+    input.createdAt ?? null,
   );
 }
 
@@ -3180,15 +3875,23 @@ function recordVerifiedDecisionAction(
 ): void {
   if (!MUTATING_ACTIONS.has(actionId)) return;
   try {
+    const logic = decisionLogicForRecord(record);
+    const explanation = handledDecisionExplanation(record, logic, {
+      actionId,
+      actualEffect: execution.actualEffect,
+      message: execution.message,
+    });
     recordHandledByNexus(record, {
       actionTaken: actionId,
-      summary: execution.message || `${action.label} completed.`,
-      whyBrief: 'Nexus applied the approved action and verified the resulting state.',
+      summary: explanation.result,
+      whyBrief: explanation.verification,
+      explanation,
       rollbackAvailable: execution.actualEffect.rollbackAvailable === true,
       changedRuleOption: stringOrNull(execution.actualEffect.changedRuleOption),
     });
   } catch (err) {
-    logger.warn({ err, decisionId: record.itemId, actionId, userId: record.userId, tenantId: record.tenantId }, 'Decision handled history write failed');
+    decisionHandledHistoryStats.writeFailures += 1;
+    logger.error({ err, decisionId: record.itemId, actionId, userId: record.userId, tenantId: record.tenantId }, 'Decision handled history write failed');
   }
 }
 
@@ -3200,15 +3903,21 @@ function mapActionedDecisionToHandledItem(record: DecisionRecord): HandledByNexu
   const actionLabel = record.actions.find((action) => action.id === actionTaken)?.label ?? humanizeActionId(actionTaken);
   const outcome = outcomeSummaryForRecord({ ...record, status: 'actioned' }, logic);
   const rollback = rollbackContractForRecord({ ...record, status: 'actioned' });
+  const explanation = handledDecisionExplanation(record, logic, {
+    actionId: actionTaken,
+    actualEffect: record.actionResult ?? {},
+    message: outcome.outcomeSummary,
+  });
   return {
     itemId: `actioned_${record.itemId}`,
     userId: record.userId,
     tenantId: record.tenantId,
     sourceSkill: record.sourceSkill,
     title: logic.safePreviewTitle,
-    summary: outcome.outcomeSummary ?? `Nexus completed: ${actionLabel}.`,
+    summary: explanation.result || outcome.outcomeSummary || `${sourceLabel(record.sourceSkill)} completed ${actionLabel}.`,
     actionTaken,
-    whyBrief: 'Nexus completed the requested action and read-back verified the result.',
+    explanation,
+    whyBrief: explanation.verification,
     relatedEntities: record.relatedEntityId && record.relatedEntityType
       ? [{ type: record.relatedEntityType, id: record.relatedEntityId }]
       : [],
@@ -3323,6 +4032,7 @@ function mapHandledByNexusItem(row: any): HandledByNexusItem {
     sourceSkill: row.source_skill,
     title: row.title,
     summary: row.summary,
+    explanation: normalizeDecisionExplanation(safeParseJson(row.explanation_json, null)),
     actionTaken: row.action_taken,
     whyBrief: row.why_brief,
     relatedEntities: safeParseJson(row.related_entities_json, []),

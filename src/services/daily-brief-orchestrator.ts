@@ -4,7 +4,13 @@ import { DateTime } from 'luxon';
 import { config } from '../config';
 import { getCached, setCache } from './cache-store';
 import { composeWeeklyPlan, type WeeklyPlanDay, type WeeklyPlanResponse } from './weekly-plan-orchestrator';
-import { buildSecretaryCoordination, type SecretaryCoordinationModel } from './secretary-orchestrator';
+import {
+  buildSecretaryCoordination,
+  type SecretaryCoordinationModel,
+  type SecretaryTodayDecisionSignals,
+  type SecretaryTodaySummaryModel,
+} from './secretary-orchestrator';
+import { getDecisionOverview } from './decision-center';
 import { isValidTenantUserId, recordTenantScopeAnomaly } from './tenant-scope-observability';
 import { logger } from '../utils/logger';
 
@@ -101,6 +107,7 @@ function buildEmptyDailyBriefResponse(opts: { userId: number; date?: string; lan
         reasons: [],
         affectedSkills: ['secretary'],
       },
+      secretaryToday: emptySecretaryTodaySummary(opts.language),
       weekOrchestration: {
         posture: 'stable',
         title: localizeDailyBriefFallback(
@@ -203,6 +210,7 @@ function buildUnavailableDailyBriefResponse(opts: { userId: number; date?: strin
         reasons: [],
         affectedSkills: ['secretary'],
       },
+      secretaryToday: emptySecretaryTodaySummary(opts.language),
       weekOrchestration: {
         posture: 'stable',
         title: localizeDailyBriefFallback(
@@ -270,6 +278,7 @@ export async function composeDailyBrief(opts: {
     const fallbackDay = buildUnavailableDailyBriefDay(targetDate, opts.language);
     const day = weekPlan.days.find((entry) => entry.date === targetDate) ?? fallbackDay;
     const conflicts = weekPlan.conflicts.filter((conflict) => conflict.date === targetDate);
+    const secretaryTodaySignals = readSecretaryTodayDecisionSignals(opts.userId, opts.userId);
     let coordination = buildUnavailableDailyBriefResponse(opts).coordination;
     let coordinationDegraded = day === fallbackDay;
 
@@ -281,6 +290,7 @@ export async function composeDailyBrief(opts: {
           weekPlan,
           conflicts,
           language: opts.language,
+          secretaryTodaySignals,
         });
       } catch (err) {
         coordinationDegraded = true;
@@ -320,6 +330,7 @@ function buildDailyCoordination(opts: {
   weekPlan: WeeklyPlanResponse;
   conflicts: WeeklyPlanResponse['conflicts'];
   language?: string;
+  secretaryTodaySignals?: SecretaryTodayDecisionSignals;
 }): DailyBriefResponse['coordination'] {
   const coordination = buildSecretaryCoordination({
     date: opts.date,
@@ -331,6 +342,7 @@ function buildDailyCoordination(opts: {
     },
     conflicts: opts.conflicts,
     language: opts.language,
+    secretaryTodaySignals: opts.secretaryTodaySignals,
   });
 
   return {
@@ -360,6 +372,54 @@ function buildDailyCoordination(opts: {
           ? 'Keep the content execution path aligned with the current finance constraints for the week.'
           : null,
       ]),
+  };
+}
+
+function readSecretaryTodayDecisionSignals(userId: number, tenantId: number): SecretaryTodayDecisionSignals | undefined {
+  try {
+    const overview = getDecisionOverview(userId, tenantId, { limit: 30, handledLimit: 10 });
+    const secretaryOpen = overview.items.filter((item) => item.sourceSkill === 'secretary');
+    const secretaryHandled = overview.handled.filter((item) => item.sourceSkill === 'secretary');
+    return {
+      handledCount: secretaryHandled.length,
+      handledTitles: secretaryHandled
+        .map((item) => item.explanation?.result ?? item.summary ?? item.title)
+        .filter((value): value is string => Boolean(value && value.trim().length > 0))
+        .slice(0, 3),
+      needsUserCount: secretaryOpen.length,
+      needsUserTitles: secretaryOpen
+        .map((item) => item.explanation?.userAction ?? item.summary ?? item.title)
+        .filter((value): value is string => Boolean(value && value.trim().length > 0))
+        .slice(0, 3),
+      staleCount: secretaryOpen.filter((item) => item.analysis.sourceFreshness === 'stale' || item.sourceTrace?.dataFreshness === 'cached').length,
+      topUserAction: secretaryOpen[0]?.explanation?.userAction ?? secretaryOpen[0]?.recommendedActionLabel ?? null,
+    };
+  } catch (err) {
+    logger.warn({ err, userId, tenantId }, 'daily brief secretary-today Decision Center signals unavailable');
+    return undefined;
+  }
+}
+
+function emptySecretaryTodaySummary(language?: string): SecretaryTodaySummaryModel {
+  return {
+    title: localizeDailyBriefFallback(language, 'Secretary hoje', 'Secretary hoje', 'Secretary today'),
+    summary: localizeDailyBriefFallback(
+      language,
+      'A orquestração diária ainda não tem estado operacional fiável para mostrar.',
+      'A orquestração diária ainda não tem estado operacional fiável para mostrar.',
+      'Daily orchestration does not have reliable operational state to show yet.',
+    ),
+    checked: [],
+    handled: [],
+    needsUser: [],
+    waitingOnSource: [],
+    nextBestMove: null,
+    counts: {
+      checked: 0,
+      handled: 0,
+      needsUser: 0,
+      waitingOnSource: 0,
+    },
   };
 }
 

@@ -2,6 +2,7 @@
 
 import { DateTime } from 'luxon';
 import { config } from '../config';
+import { secretaryTodayLabels, secretaryTodayText } from './secretary-today-copy';
 import type { WeeklyPlanDay, WeeklyPlanResponse } from './weekly-plan-orchestrator';
 
 export type SecretarySkillId = 'secretary' | 'training' | 'content' | 'cooking' | 'finance';
@@ -129,12 +130,48 @@ export interface NextBestActionModel {
   affectedSkills: SecretarySkillId[];
 }
 
+export type SecretaryTodayEntryStatus = 'checked' | 'handled' | 'needs_user' | 'waiting_on_source';
+
+export interface SecretaryTodayEntryModel {
+  id: string;
+  label: string;
+  detail: string;
+  status: SecretaryTodayEntryStatus;
+  source: 'agenda_sync' | 'conflict_scan' | 'reminders' | 'source_health' | 'decision_center' | 'coordination';
+}
+
+export interface SecretaryTodaySummaryModel {
+  title: string;
+  summary: string;
+  checked: SecretaryTodayEntryModel[];
+  handled: SecretaryTodayEntryModel[];
+  needsUser: SecretaryTodayEntryModel[];
+  waitingOnSource: SecretaryTodayEntryModel[];
+  nextBestMove: string | null;
+  counts: {
+    checked: number;
+    handled: number;
+    needsUser: number;
+    waitingOnSource: number;
+  };
+}
+
+export interface SecretaryTodayDecisionSignals {
+  handledCount?: number;
+  handledTitles?: string[];
+  needsUserCount?: number;
+  needsUserTitles?: string[];
+  staleCount?: number;
+  topUserAction?: string | null;
+}
+
 export interface SecretaryCoordinationModel {
   topPriority: string | null;
   executionOrder: string[];
   watchouts: string[];
   handoffs: string[];
   confidence: PlanConfidence;
+  secretaryToday: SecretaryTodaySummaryModel;
   dayOrchestration: DayOrchestrationCardModel;
   weekOrchestration: WeekOrchestrationCardModel;
   nextBestAction: NextBestActionModel | null;
@@ -151,6 +188,7 @@ export interface SecretaryOrchestrationInput {
   weekPlan: Pick<WeeklyPlanResponse, 'days' | 'conflicts' | 'variant'>;
   conflicts: WeeklyPlanResponse['conflicts'];
   language?: string;
+  secretaryTodaySignals?: SecretaryTodayDecisionSignals;
 }
 
 interface DerivedDaySignals {
@@ -214,6 +252,13 @@ export function buildSecretaryCoordination(input: SecretaryOrchestrationInput): 
     blockers,
     nextBestAction,
   });
+  const secretaryToday = buildSecretaryTodaySummary({
+    input,
+    signals,
+    blockers,
+    nextBestAction,
+    language,
+  });
 
   const executionOrder = dedupeStrings([
     nextBestAction?.title ?? null,
@@ -241,6 +286,7 @@ export function buildSecretaryCoordination(input: SecretaryOrchestrationInput): 
     watchouts,
     handoffs,
     confidence,
+    secretaryToday,
     dayOrchestration,
     weekOrchestration,
     nextBestAction,
@@ -250,6 +296,179 @@ export function buildSecretaryCoordination(input: SecretaryOrchestrationInput): 
     risks,
     crossSkillImpacts,
   };
+}
+
+function buildSecretaryTodaySummary(opts: {
+  input: SecretaryOrchestrationInput;
+  signals: DerivedDaySignals;
+  blockers: BlockerCardModel[];
+  nextBestAction: NextBestActionModel | null;
+  language: string;
+}): SecretaryTodaySummaryModel {
+  const { input, signals, blockers, nextBestAction, language } = opts;
+  const decisionSignals = input.secretaryTodaySignals ?? {};
+  const copy = secretaryTodayLabels(language);
+  const checked = compactEntries([
+    entry({
+      id: 'agenda-sync',
+      label: secretaryTodayText(language, 'Agenda verificada', 'Agenda verificada', 'Agenda checked'),
+      detail: signals.hasWritableCalendar
+        ? secretaryTodayText(language, 'A Secretary verificou a agenda e pode sincronizar mudanças determinísticas.', 'A Secretary verificou a agenda e pode sincronizar mudanças determinísticas.', 'Secretary checked the agenda and can sync deterministic changes.')
+        : secretaryTodayText(language, 'A agenda foi lida, mas a escrita no calendário ainda não está disponível.', 'A agenda foi lida, mas a escrita no calendário ainda não está disponível.', 'Agenda was read, but calendar write access is not available yet.'),
+      status: 'checked',
+      source: 'agenda_sync',
+    }),
+    entry({
+      id: 'conflict-scan',
+      label: secretaryTodayText(language, 'Conflitos verificados', 'Conflitos verificados', 'Conflicts checked'),
+      detail: input.conflicts.length > 0
+        ? secretaryTodayText(language, `${input.conflicts.length} conflito(s) entram na fila de decisão.`, `${input.conflicts.length} conflito(s) entram na fila de decisão.`, `${input.conflicts.length} conflict(s) are in the decision queue.`)
+        : secretaryTodayText(language, 'Nenhum conflito de agenda crítico foi encontrado para este dia.', 'Nenhum conflito de agenda crítico foi encontrado para este dia.', 'No critical schedule conflict was found for this day.'),
+      status: 'checked',
+      source: 'conflict_scan',
+    }),
+    entry({
+      id: 'reminder-pressure',
+      label: secretaryTodayText(language, 'Pressão operacional lida', 'Pressão operacional lida', 'Operational pressure read'),
+      detail: secretaryTodayText(
+        language,
+        `${signals.taskCountForDate} tarefa(s) para hoje, ${signals.overdueCount} atrasada(s), ${signals.mailUnreadTotal} email(s) por ler.`,
+        `${signals.taskCountForDate} tarefa(s) para hoje, ${signals.overdueCount} atrasada(s), ${signals.mailUnreadTotal} email(s) por ler.`,
+        `${signals.taskCountForDate} task(s) due today, ${signals.overdueCount} overdue, ${signals.mailUnreadTotal} unread email(s).`,
+      ),
+      status: 'checked',
+      source: 'reminders',
+    }),
+    entry({
+      id: 'coordination-sequence',
+      label: text(language, 'Sequência preparada', 'Sequência preparada', 'Sequence prepared'),
+      detail: input.day.secretary.sequence[0] ?? nextBestAction?.summary ?? input.day.secretary.priorityNote ?? null,
+      status: 'checked',
+      source: 'coordination',
+    }),
+  ]);
+  const handled = compactEntries([
+    ...(decisionSignals.handledTitles ?? []).slice(0, 3).map((title, index) => entry({
+      id: `handled-decision-${index}`,
+      label: copy.handledByNexus,
+      detail: title,
+      status: 'handled',
+      source: 'decision_center',
+    })),
+  ]);
+  const needsUser = compactEntries([
+    ...(decisionSignals.needsUserTitles ?? []).slice(0, 3).map((title, index) => entry({
+      id: `needs-user-decision-${index}`,
+      label: copy.needsYou,
+      detail: title,
+      status: 'needs_user',
+      source: 'decision_center',
+    })),
+    ...(((decisionSignals.needsUserCount ?? 0) === 0 && blockers.length > 0) ? [entry({
+      id: 'blocker-choice',
+      label: text(language, 'Escolha recomendada', 'Escolha recomendada', 'Recommended choice'),
+      detail: blockers[0].recommendedAction,
+      status: 'needs_user',
+      source: 'decision_center',
+    })] : []),
+  ]);
+  const waitingOnSource = compactEntries([
+    !signals.hasWritableCalendar ? entry({
+      id: 'calendar-write-unavailable',
+      label: secretaryTodayText(language, 'Calendário só leitura', 'Calendário só leitura', 'Calendar read-only'),
+      detail: secretaryTodayText(language, 'Nexus pode explicar a agenda, mas não deve prometer reflow automático sem escrita.', 'Nexus pode explicar a agenda, mas não deve prometer reflow automático sem escrita.', 'Nexus can explain the agenda but should not promise automatic reflow without write access.'),
+      status: 'waiting_on_source',
+      source: 'source_health',
+    }) : null,
+    (decisionSignals.staleCount ?? 0) > 0 ? entry({
+      id: 'stale-decision-source',
+      label: secretaryTodayText(language, 'Fonte a confirmar', 'Fonte a confirmar', 'Source needs confirmation'),
+      detail: secretaryTodayText(language, `${decisionSignals.staleCount} decisão(ões) dependem de estado em cache ou atrasado.`, `${decisionSignals.staleCount} decisão(ões) dependem de estado em cache ou atrasado.`, `${decisionSignals.staleCount} decision(s) depend on cached or delayed source state.`),
+      status: 'waiting_on_source',
+      source: 'source_health',
+    }) : null,
+  ]);
+  const nextBestMove = decisionSignals.topUserAction ?? nextBestAction?.title ?? input.day.secretary.priorityNote ?? null;
+  const title = copy.title;
+  const summary = summarizeSecretaryToday(language, {
+    handledCount: Math.max(decisionSignals.handledCount ?? 0, handled.length),
+    needsUserCount: Math.max(decisionSignals.needsUserCount ?? 0, needsUser.length),
+    waitingCount: waitingOnSource.length,
+    nextBestMove,
+  });
+
+  return {
+    title,
+    summary,
+    checked,
+    handled,
+    needsUser,
+    waitingOnSource,
+    nextBestMove,
+    counts: {
+      checked: checked.length,
+      handled: handled.length,
+      needsUser: needsUser.length,
+      waitingOnSource: waitingOnSource.length,
+    },
+  };
+}
+
+function summarizeSecretaryToday(language: string, input: {
+  handledCount: number;
+  needsUserCount: number;
+  waitingCount: number;
+  nextBestMove: string | null;
+}): string {
+  if (input.needsUserCount > 0) {
+    return text(
+      language,
+      `Há ${input.needsUserCount} escolha(s) que precisam do teu julgamento antes da Secretary reorganizar algo.`,
+      `Há ${input.needsUserCount} escolha(s) que precisam do seu julgamento antes da Secretary reorganizar algo.`,
+      `${input.needsUserCount} choice(s) need your judgment before Secretary reorganizes anything.`,
+    );
+  }
+  if (input.waitingCount > 0) {
+    return text(
+      language,
+      'A Secretary montou o melhor estado possível, mas uma fonte ainda precisa confirmar dados.',
+      'A Secretary montou o melhor estado possível, mas uma fonte ainda precisa confirmar dados.',
+      'Secretary built the best available state, but one source still needs to confirm data.',
+    );
+  }
+  if (input.handledCount > 0) {
+    return text(
+      language,
+      `Nexus já tratou ${input.handledCount} item(s) e deixou o próximo movimento claro.`,
+      `Nexus já tratou ${input.handledCount} item(s) e deixou o próximo movimento claro.`,
+      `Nexus has already handled ${input.handledCount} item(s) and made the next move clear.`,
+    );
+  }
+  return input.nextBestMove
+    ? text(language, `Próximo movimento: ${input.nextBestMove}.`, `Próximo movimento: ${input.nextBestMove}.`, `Next move: ${input.nextBestMove}.`)
+    : text(language, 'Agenda verificada; nada urgente precisa da tua ação agora.', 'Agenda verificada; nada urgente precisa da sua ação agora.', 'Agenda checked; nothing urgent needs your action right now.');
+}
+
+function entry(input: {
+  id: string;
+  label: string;
+  detail: string | null | undefined;
+  status: SecretaryTodayEntryStatus;
+  source: SecretaryTodayEntryModel['source'];
+}): SecretaryTodayEntryModel | null {
+  const detail = input.detail?.trim();
+  if (!detail) return null;
+  return {
+    id: input.id,
+    label: input.label,
+    detail,
+    status: input.status,
+    source: input.source,
+  };
+}
+
+function compactEntries(values: Array<SecretaryTodayEntryModel | null | undefined>): SecretaryTodayEntryModel[] {
+  return values.filter((value): value is SecretaryTodayEntryModel => Boolean(value));
 }
 
 function deriveSignals(day: WeeklyPlanDay): DerivedDaySignals {

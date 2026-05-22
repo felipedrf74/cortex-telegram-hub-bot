@@ -236,6 +236,20 @@ export interface NotificationEvaluationResult {
   } | null;
 }
 
+export interface NotificationDeliveryObservabilityMetrics {
+  userId: number;
+  tenantId: number;
+  totalDecisions: number;
+  pushAttemptCount: number;
+  pushSentCount: number;
+  pushBlockedCount: number;
+  visibleDecisionPushAllowedCount: number;
+  visibleDecisionPushBlockedCount: number;
+  inAppOnlyCount: number;
+  digestCount: number;
+  blockedByReason: Record<string, number>;
+}
+
 interface DecisionPushPlan {
   eligible: boolean;
   reason: string;
@@ -1222,6 +1236,54 @@ export function getNotificationDecisionLog(
   return row ? mapDecisionLog(row) : null;
 }
 
+export function getNotificationDeliveryObservabilityMetrics(
+  userId: number,
+  tenantId = userId,
+): NotificationDeliveryObservabilityMetrics {
+  assertScope(userId, tenantId, 'get_notification_delivery_observability_metrics');
+  ensureNotificationTables();
+  const decisionRows = getDb().prepare(`
+    SELECT decision, reason, source_skill AS sourceSkill
+      FROM notification_decision_logs
+     WHERE user_id = ? AND tenant_id = ?
+  `).all(userId, tenantId) as Array<{ decision: NotificationDecision; reason: string; sourceSkill: string }>;
+  const attemptRows = getDb().prepare(`
+    SELECT status
+      FROM notification_delivery_attempts
+     WHERE user_id = ? AND tenant_id = ? AND channel = 'push'
+  `).all(userId, tenantId) as Array<{ status: DeliveryAttempt['status'] }>;
+  const blockedByReason: Record<string, number> = {};
+  for (const row of decisionRows) {
+    if (row.decision === 'sent_push') continue;
+    const reason = normalizeBlockedReason(row.reason);
+    blockedByReason[reason] = (blockedByReason[reason] ?? 0) + 1;
+  }
+  return {
+    userId,
+    tenantId,
+    totalDecisions: decisionRows.length,
+    pushAttemptCount: attemptRows.length,
+    pushSentCount: attemptRows.filter((row) => row.status === 'sent' || row.status === 'mock_sent').length,
+    pushBlockedCount: attemptRows.filter((row) => row.status.startsWith('blocked_') || row.status === 'failed').length,
+    visibleDecisionPushAllowedCount: decisionRows.filter((row) => row.decision === 'sent_push' && row.reason.includes('privacy-safe payload')).length,
+    visibleDecisionPushBlockedCount: decisionRows.filter((row) => row.reason.startsWith('decision rank gate') || row.reason.startsWith('decision quality gate')).length,
+    inAppOnlyCount: decisionRows.filter((row) => row.decision === 'in_app_only').length,
+    digestCount: decisionRows.filter((row) => row.decision === 'digest').length,
+    blockedByReason,
+  };
+}
+
+function normalizeBlockedReason(reason: string): string {
+  if (reason.startsWith('decision rank gate')) return reason.split(':')[0];
+  if (reason.startsWith('decision quality gate')) return reason.split(':')[0];
+  if (reason.includes('push disabled')) return 'push_disabled_by_user_preference';
+  if (reason.includes('rate limit')) return 'push_rate_limit';
+  if (reason.includes('quiet hours')) return 'quiet_hours';
+  if (reason.includes('device token')) return 'missing_device_token';
+  if (reason.includes('credentials')) return 'missing_apns_credentials';
+  return reason || 'unknown';
+}
+
 export function buildSkillNotificationFixtureIntent(
   sourceSkill: NotificationSourceSkill,
   userId: number,
@@ -1248,6 +1310,11 @@ function fixtureBySkill(sourceSkill: NotificationSourceSkill, userId: number): N
         dedupeKey: `secretary:conflict:${userId}:demo`,
         requiresUserAction: true,
         decisionDeadline: new Date(Date.now() + 3_600_000).toISOString(),
+        decisionContext: {
+          entityTitle: 'Demo schedule conflict',
+          sourceState: 'conflict_detected',
+          deadlineAt: new Date(Date.now() + 3_600_000).toISOString(),
+        },
         privacyPolicy: 'standard',
       };
     case 'training':
@@ -1276,6 +1343,12 @@ function fixtureBySkill(sourceSkill: NotificationSourceSkill, userId: number): N
         deeplink: 'nexus://content/script/script-demo',
         dedupeKey: `content:script:${userId}:demo`,
         requiresUserAction: true,
+        decisionDeadline: new Date(Date.now() + 6 * 3_600_000).toISOString(),
+        decisionContext: {
+          entityTitle: 'Demo content draft',
+          sourceState: 'awaiting_approval',
+          deadlineAt: new Date(Date.now() + 6 * 3_600_000).toISOString(),
+        },
         privacyPolicy: 'private_content',
       };
     case 'cooking':
@@ -1299,6 +1372,13 @@ function fixtureBySkill(sourceSkill: NotificationSourceSkill, userId: number): N
         actionButtons: [{ id: 'mark_paid', label: 'Mark paid', style: 'primary' }],
         deeplink: 'nexus://finance/reminder/invoice-demo',
         dedupeKey: `finance:invoice:${userId}:demo`,
+        requiresUserAction: true,
+        decisionDeadline: new Date(Date.now() + 24 * 3_600_000).toISOString(),
+        decisionContext: {
+          entityTitle: 'Demo finance reminder',
+          sourceState: 'payment_due',
+          deadlineAt: new Date(Date.now() + 24 * 3_600_000).toISOString(),
+        },
         privacyPolicy: 'financial',
       };
     case 'security':
@@ -1528,6 +1608,14 @@ function persistDeliveryAttempt(
 ): DeliveryAttempt {
   const attemptId = `nda_${randomUUID()}`;
   const sentAt = status === 'sent' || status === 'mock_sent' ? new Date().toISOString() : null;
+  const safeErrorCode = sanitizeNotificationDeliveryErrorCode(errorCode);
+  if (errorCode && safeErrorCode === 'opaque_error') {
+    logger.warn({
+      intentId: intent.intentId,
+      provider,
+      status,
+    }, 'Notification delivery error code redacted from structured attempt record');
+  }
   getDb().prepare(`
     INSERT INTO notification_delivery_attempts (
       attempt_id, notification_id, intent_id, user_id, tenant_id, channel, provider, status,
@@ -1543,11 +1631,18 @@ function persistDeliveryAttempt(
     provider,
     status,
     providerResponseCode,
-    errorCode,
+    safeErrorCode,
     sentAt,
   );
   const row = getDb().prepare('SELECT * FROM notification_delivery_attempts WHERE attempt_id = ?').get(attemptId) as any;
   return mapDeliveryAttempt(row);
+}
+
+export function sanitizeNotificationDeliveryErrorCode(errorCode: string | null | undefined): string | null {
+  if (typeof errorCode !== 'string') return null;
+  const trimmed = errorCode.trim();
+  if (!trimmed) return null;
+  return /^[A-Za-z0-9_-]{1,64}$/.test(trimmed) ? trimmed : 'opaque_error';
 }
 
 function persistDecisionLog(input: {
