@@ -64,6 +64,9 @@ export interface PlanExplanationRespectedConstraint {
   fallbackLabel: string;
   value: string | number | boolean | null;
   source: 'request';
+  // Request-sourced constraints intentionally omit evidence arrays: the user
+  // request itself is the evidence, while Nexus-derived smart picks and
+  // attention items carry evidence to justify inferred claims.
   why: DecisionWhy;
 }
 

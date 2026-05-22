@@ -23,6 +23,7 @@ Backend:
 - Parsed persisted explanation back into Training read models.
 - Added sample payloads for representative plan-creation scenarios.
 - Expanded builder tests to cover smart pick, constraint, attention, sanitizer, stale readiness, goal-mode cap, weekly-volume inference, equipment fallback, and persistence round-trip behavior.
+- Closed QA follow-up P3s by documenting that sample payloads are intentionally abbreviated, pinning that documentation with a regression test, and documenting why respected constraints do not carry evidence arrays.
 
 iOS:
 
@@ -31,6 +32,7 @@ iOS:
 - Added `PlanCreationExplanationCard` for the preview flow.
 - Rendered the card under the plan preview in `TrainingView`.
 - Added tests for decoding, semantic label preference over fallback copy, and confidence bucket labels.
+- Closed the reserved-severity follow-up by treating future `block` attention severity with the warning tone/icon instead of the neutral accent path.
 
 ## Files changed
 
@@ -90,10 +92,10 @@ npx vitest run \
   __tests__/api/training-plan-generation.test.ts \
   __tests__/api/training-read-models.test.ts \
   __tests__/services/training-plans.test.ts
-# 4 files / 82 tests passed
+# 4 files / 83 tests passed
 
 npm run verify
-# 640 files / 9473 tests passed
+# 640 files / 9474 tests passed
 ```
 
 iOS via XcodeBuildMCP simulator profile `nexus-ios-trust-wedge`:
@@ -106,7 +108,7 @@ Nexus HubTests/PlanGenerateResponsePrimaryFocusTests
 Nexus HubTests/TrainingPresentationTests
 Nexus HubTests/TrainingViewModelGoalModeEchoTests
 Nexus HubTests/TrainingViewModelObservationTests
-# 85 tests passed
+# 86 tests passed
 ```
 
 ## Areas to inspect carefully
@@ -135,6 +137,7 @@ Nexus HubTests/TrainingViewModelObservationTests
    - Confirm the card layout is not too noisy on mobile.
    - Confirm the card appears for preview and does not require created-plan state.
    - Confirm fallback labels do not leak raw backend wording when semantic keys are known.
+   - Confirm reserved/future attention severity values do not understate risk. In particular, `block` should render with warning tone/icon until a dedicated blocked-state design ships.
    - Confirm old payloads without explanation still render normally.
 
 6. Privacy and safety:
@@ -166,6 +169,8 @@ Nexus HubTests/TrainingViewModelObservationTests
 - Backend staging deploy/smoke was intentionally deferred until independent QA accepts the contract.
 - PR3 historical `GET /training/plan/:id/explanation` endpoint remains deferred until the feature soaks in production for at least one week.
 - Sample payloads are committed for review, but the QA reviewer should verify they match actual builder behavior and do not drift.
+- Sample payloads are explicitly documented as abbreviated examples. Treat `src/services/training-plan-explanation/types.ts` and `__tests__/services/training-plan-explanation-builder.test.ts` as the runtime contract source of truth.
+- `PlanExplanationSeverity.block` is still reserved and is not emitted by the backend builder. iOS now renders it as warning if a future backend starts emitting it before a dedicated blocked design lands.
 - The global Feature Delivery Ledger is outside a git repo on this machine, so it was updated as a local documentation artifact rather than committed with backend/iOS code.
 
 ## QA ask

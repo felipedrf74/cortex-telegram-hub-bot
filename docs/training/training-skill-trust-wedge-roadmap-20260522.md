@@ -764,8 +764,10 @@ Phase 2's adaptive engine can call it twice (once on plan create, once on plan a
 
 Implementation note (2026-05-22): the persisted shape now uses the backend contract in
 `src/services/training-plan-explanation/types.ts`. The canonical sample payloads are
-stored in `docs/training/training-plan-explanation-samples-20260522.json`. The older
-example below is retained as historical design context only; iOS should render from
+stored in `docs/training/training-plan-explanation-samples-20260522.json`. That file
+now carries an explicit `contractNote`: several item internals are abbreviated for
+readability, while the runtime contract remains the TypeScript type plus builder tests.
+The older example below is retained as historical design context only; iOS should render from
 semantic `labelKey`, `category`, `why`, `confidence`, and `evidence` fields rather than
 from backend English prose.
 
@@ -1174,6 +1176,7 @@ Implemented on 2026-05-22:
 - Backend persists the explanation on `fitness_training_plans` as `explanation_json` plus `explanation_schema_version`, and read models parse it back for active/today/week plan surfaces.
 - iOS decodes the explanation contract and renders a "Why this plan?" card in the Training plan preview flow with semantic labels, confidence pills, smart picks, respected constraints, and attention items.
 - Builder tests now pin the main trust rows: primary-focus detection, periodization, training history, readiness, equipment, experience, strength goal, two-a-day policy, weekly-volume inference, goal-mode caps, stale readiness, equipment fallback, sanitizer behavior, and persistence round-trip.
+- QA follow-up P3 items are closed: sample JSON now declares its abbreviated shape, respected constraints document their no-evidence asymmetry, and iOS renders reserved `block` attention severity as a warning tone/icon until a dedicated blocked-state design ships.
 
 Verification completed:
 
@@ -1184,10 +1187,10 @@ npx vitest run \
   __tests__/api/training-plan-generation.test.ts \
   __tests__/api/training-read-models.test.ts \
   __tests__/services/training-plans.test.ts
-# 4 files / 82 tests passed
+# 4 files / 83 tests passed
 
 npm run verify
-# 640 files / 9473 tests passed
+# 640 files / 9474 tests passed
 ```
 
 iOS simulator verification via XcodeBuildMCP:
@@ -1200,7 +1203,7 @@ PlanGenerateResponsePrimaryFocusTests
 TrainingPresentationTests
 TrainingViewModelGoalModeEchoTests
 TrainingViewModelObservationTests
-# 85 tests passed
+# 86 tests passed
 ```
 
 Not run locally:
