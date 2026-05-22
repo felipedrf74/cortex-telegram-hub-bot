@@ -10,15 +10,67 @@ Last updated: 2026-05-22
 ## Active Production Release
 
 - Source branch: `main`
-- Production HEAD: `17c35872`
-- Production version: `4.14.183`
-- Source implementation commit: `109ce2e9`
-- Latest pushed source: `origin/main` may include a post-deploy release-state
-  docs commit on top of the running production deploy commit; production
-  runtime remains deployed from `17c35872`.
+- Production HEAD: `05960637`
+- Production version: `4.14.186`
+- Source implementation commit: `992879d6`
+- Latest pushed source: `origin/main` matches the running production deploy
+  commit.
 - iOS Chat card-hiding source changes are pushed to iOS `main` at `e7cfc8b`;
   a separate signed iOS/TestFlight release is still required to reach devices.
 - Official workspace root: `/Users/felipedominguez/Desktop/Nexus Hub`
+
+## 2026-05-22 Decision Center Human Guidance v2 Production Promote
+
+- Scope: promoted the Human Guidance v2 pass for Decision Center and
+  Secretary surfaces. The existing `DecisionExplanation` contract is extended
+  additively with `recommendedMove`, `ifIgnored`, `actionLabels`, and
+  `displaySections`; no parallel `presentation` object and no new schema
+  migration were introduced. Normal user reads now filter smoke/internal/admin
+  decisions, sanitize technical strings, and keep source traces / facts / rules
+  / tradeoffs out of iOS user-facing decision flows.
+- Production version: `4.14.186`.
+- Production deploy commit: `05960637`.
+- Source implementation commit before deploy bump: `992879d6`.
+- Previous production deploy commit: `17c35872`.
+- Staging deploy passed from committed `main`, followed by staging smoke
+  **17/17**. Authenticated staging payload audits for PT-BR, PT-PT, and EN
+  users passed with zero banned user-facing terms, localized
+  `secretaryToday.title`, valid `displaySections`, and no raw action labels.
+- Release validation passed before production: backend typecheck passed,
+  focused Decision Center tests passed, iOS focused Decision Center tests and
+  simulator build had passed during implementation, pre-commit full Vitest
+  passed with **634 test files / 9,430 tests**, deploy-time full validation
+  passed with **639 test files / 9,468 tests**, and the final backend pre-push
+  gate repeated typecheck plus full Vitest with **639 test files / 9,468 tests**
+  passing before pushing `05960637`.
+- Production promotion started through the standard promote path. The deploy
+  script created and pushed the `4.14.186` release commit, stopped services,
+  and created a production backup including `bot.db`, then tripped the
+  clean-tree guard because verification refreshed the tracked registry shadow
+  parity evidence file. PM2 services were restarted immediately, the generated
+  evidence file was restored, and the same committed `4.14.186` artifact was
+  transported manually without creating an unnecessary extra version bump.
+- Production deploy completed for the committed `4.14.186` artifact. The
+  production backup included `bot.db`, dependencies were installed, owner
+  bootstrap preflight passed, `better-sqlite3` was rebuilt for system Node,
+  and both `content-engine` and `nexus-hub` PM2 services are online.
+- Production health passed after deploy: local content health and portal
+  snapshot passed, `nexus-hub` package version is `4.14.186`,
+  `https://api.nexushub.me/health` returned `status: healthy` at
+  `2026-05-22T18:03:21Z`, and `https://api.nexushub.me/public-status` returned
+  the minimal public status payload.
+- Production authenticated API smoke passed **13/13** against
+  `http://localhost:8200` with a short-lived owner token. Production Decision
+  Center payload audit passed for active PT-BR and EN users: overview and
+  plan/today returned 200, no `[SMOKE]` or banned technical strings were found
+  in scanned user-facing fields, `secretaryToday.title` localized correctly
+  (`Secretary hoje` / `Secretary today`), and no invalid display sections or raw
+  action labels were detected. No active PT-PT production user was available
+  for a live PT-PT audit.
+- Production smoke cleanup dry-run passed with `inspected=0`, `expired=0`,
+  confirming there were no scoped smoke rows to expire at deploy time. The
+  scheduled smoke cleanup remains registered twice hourly, offset from handled
+  history backfill.
 
 ## 2026-05-22 Decision Center Clarity + Secretary Intelligence Production Promote
 
