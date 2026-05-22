@@ -45,6 +45,8 @@ import {
 import { cancelTrainingPlanForUser } from './training-plan-cancellation';
 import { enforceRequestedTrainingPlanVolume } from '../../services/training-plan-volume-enforcement';
 import * as trainingPlans from '../../services/training-plans';
+import { withPlanCreationExplanationPlanId } from '../../services/training-plan-explanation/builder';
+import type { PlanCreationExplanation } from '../../services/training-plan-explanation/types';
 import { findOrphanedOwnerships } from '../../services/training-plan-lifecycle';
 import { reconcileOrphanedTrainingAgendaEvents } from '../../services/training-agenda-reconciliation';
 import { logger } from '../../utils/logger';
@@ -119,6 +121,7 @@ export type TrainingPlanGenerationResult =
         goalMode: TrainingGoalMode | null;
         trainingPriority: TrainingPriority | null;
         raceDate: string | null;
+        explanation: PlanCreationExplanation | null;
       };
     }
   | {
@@ -150,6 +153,7 @@ export type TrainingPlanGenerationResult =
         goalMode: TrainingGoalMode | null;
         trainingPriority: TrainingPriority | null;
         raceDate: string | null;
+        explanation: PlanCreationExplanation | null;
       };
     }
   /**
@@ -495,6 +499,7 @@ export async function generateTrainingPlanForUser(
         runProfile: runProfileForPlan,
         currentReadiness,
         twoADayPreference,
+        startPolicy: normalizedStartPolicy,
       }), coordination),
       equipmentAdaptation,
     );
@@ -637,6 +642,7 @@ export async function generateTrainingPlanForUser(
         goalMode: normalizedGoalMode,
         trainingPriority: normalizedTrainingPriority,
         raceDate: raceDateForLint,
+        explanation: planData.explanation ?? null,
       },
     };
   }
@@ -671,6 +677,7 @@ export async function generateTrainingPlanForUser(
         goalMode: normalizedGoalMode,
         trainingPriority: normalizedTrainingPriority,
         raceDate: raceDateForLint,
+        explanation: planData.explanation ?? null,
       },
     };
   }
@@ -743,6 +750,10 @@ export async function generateTrainingPlanForUser(
     calendarFetchError,
     lintResult,
   });
+  const responseExplanation = withPlanCreationExplanationPlanId(
+    persistedPlan.explanation ?? planData.explanation ?? null,
+    persistedPlan.planId,
+  );
 
   return {
     status: 'created',
@@ -786,6 +797,7 @@ export async function generateTrainingPlanForUser(
       weeks: persistedPlan.weekSummaries,
       profileQuality: planData.profileQuality ?? null,
       decisionReasons: Array.isArray(planData.decisionReasons) ? planData.decisionReasons : [],
+      explanation: responseExplanation,
       ...primaryFocusResponseFields,
       fallbackTemplateUsed: usedFallbackTemplate,
       goalMode: normalizedGoalMode,

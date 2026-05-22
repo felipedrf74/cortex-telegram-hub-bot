@@ -117,6 +117,37 @@ describe('Plan CRUD', () => {
     expect(plan.duration_weeks).toBe(12);
   });
 
+  it('persists plan creation explanation metadata', () => {
+    const explanation = {
+      schemaVersion: 1,
+      generatedAt: '2026-05-22T10:00:00.000Z',
+      locale: 'en',
+      summary: { smartPickCount: 1, respectedConstraintCount: 1, attentionItemCount: 0, highestSeverity: 'info' },
+      smartPicks: [],
+      respectedConstraints: [],
+      attentionItems: [],
+    };
+
+    const plan = createPlan({
+      user_id: 42,
+      name: 'Marathon Build',
+      sport: 'running',
+      goal: 'Lisbon marathon',
+      duration_weeks: 4,
+      periodization: 'block',
+      start_date: '2026-05-25',
+      end_date: '2026-06-21',
+      explanation_json: JSON.stringify(explanation),
+      explanation_schema_version: 1,
+    });
+
+    expect(plan.explanation_schema_version).toBe(1);
+    expect(JSON.parse(plan.explanation_json || '{}')).toMatchObject({
+      schemaVersion: 1,
+      generatedAt: '2026-05-22T10:00:00.000Z',
+    });
+  });
+
   it('gets active plan for user', () => {
     createPlan({
       user_id: 42, name: 'Plan A', sport: 'running',

@@ -140,6 +140,15 @@ function makePlan(title = 'Coach Plan') {
   return {
     planName: title,
     sport: 'running',
+    explanation: {
+      schemaVersion: 1,
+      generatedAt: '2026-05-22T10:00:00.000Z',
+      locale: 'en',
+      summary: { smartPickCount: 1, respectedConstraintCount: 1, attentionItemCount: 0, highestSeverity: 'info' },
+      smartPicks: [{ id: 'primary_focus_from_objective', category: 'primary_focus' }],
+      respectedConstraints: [],
+      attentionItems: [],
+    },
     weeks: [
       {
         weekNumber: 1,
@@ -432,6 +441,10 @@ describe('generateTrainingPlanForUser', () => {
       preferredCardioTime: '07:00',
       preferredStrengthTime: '12:30',
       fallbackTemplateUsed: false,
+      explanation: expect.objectContaining({
+        planId: 9001,
+        schemaVersion: 1,
+      }),
     });
     expect(String(result.data.message)).toContain('Plan created!');
     expect(mockGetEvents).toHaveBeenCalledWith(expect.any(String), expect.any(String), 12);
@@ -515,6 +528,10 @@ describe('generateTrainingPlanForUser', () => {
       });
       expect(result.data.totalSessions).toBeGreaterThan(0);
       expect(result.data.phaseRoadmap[0].sessionCount).toBeGreaterThan(0);
+      expect(result.data.explanation).toMatchObject({
+        schemaVersion: 1,
+        summary: { smartPickCount: 1 },
+      });
     }
     expect(mockGetEvents).toHaveBeenCalledWith(expect.any(String), expect.any(String), 12, ['outlook']);
     expect(mockCancelTrainingPlanForUser).not.toHaveBeenCalled();

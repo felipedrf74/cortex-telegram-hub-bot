@@ -32,6 +32,10 @@ import {
 import {
   extractNormalizedTrainingProfile,
 } from './training-profile-model';
+import {
+  buildPlanCreationExplanation,
+  type TrainingPlanExplanationTrace,
+} from './training-plan-explanation/builder';
 import { logger } from '../utils/logger';
 
 /** Current readiness measurements used to seed the planner's
@@ -112,6 +116,7 @@ export interface CoachKernelTrainingPlanInput {
   goalMode?: TrainingGoalMode | null;
   trainingPriority?: TrainingPriority | null;
   raceDate?: string | null;
+  startPolicy?: 'next_full_week' | 'today' | null;
   recentlyAskedFollowUpIds?: string[] | null;
   resolvedFollowUpIds?: string[] | null;
 }
@@ -210,16 +215,40 @@ export function buildCoachKernelTrainingPlan(input: CoachKernelTrainingPlanInput
   // primary focus + raw targets here for the reason collector — the
   // helpers are pure so the duplicate work is cheap, and dedupe at
   // line 203 collapses any duplicates that survive.
-  const reasonPrimaryFocus = resolvePrimaryFocusWithSource(
-    input.objective,
-    input.sessionsPerWeek,
-    input.strengthSessionsPerWeek,
-  ).value;
-  const reasonRawTargets = resolveWeeklyTargets(reasonPrimaryFocus, input);
+  const reasonRawTargets = resolveWeeklyTargets(primaryFocusResolution.value, input);
   const goalModeReasons = collectGoalModeDecisionReasons({
     input,
     rawTargets: reasonRawTargets,
     raceCalendar: athlete.goals.raceCalendar,
+  });
+  const decisionReasons = dedupeTrainingDecisionReasons([
+    ...goalModeReasons,
+    ...rawWeeklyPlans.flatMap((plan) => plan.decisionReasons ?? []),
+  ]);
+  const explanationTrace = buildTrainingPlanExplanationTrace({
+    input,
+    athlete,
+    primaryFocusResolution,
+    rawWeeklyTargets: reasonRawTargets,
+    decisionReasons,
+    firstWeekPhase: weeks[0]?.focus ?? null,
+  });
+  const explanation = buildPlanCreationExplanation({
+    request: {
+      objective: input.objective,
+      startPolicy: input.startPolicy ?? 'next_full_week',
+      sessionsPerWeek: input.sessionsPerWeek,
+      runSessionsPerWeek: input.runSessionsPerWeek ?? null,
+      bikeSessionsPerWeek: input.bikeSessionsPerWeek ?? null,
+      swimSessionsPerWeek: input.swimSessionsPerWeek ?? null,
+      strengthSessionsPerWeek: input.strengthSessionsPerWeek,
+      preferredCardioTime: input.preferredCardioTime,
+      preferredStrengthTime: input.preferredStrengthTime,
+      longWorkoutDay: input.longWorkoutDay ?? null,
+      twoADayPreference: input.twoADayPreference ?? null,
+      goalMode: input.goalMode ?? null,
+    },
+    trace: explanationTrace,
   });
 
   return {
@@ -237,10 +266,42 @@ export function buildCoachKernelTrainingPlan(input: CoachKernelTrainingPlanInput
       && primaryFocusResolution.reason === 'unrecognized'
       ? primaryFocusResolution.rawInput ?? null
       : null,
-    decisionReasons: dedupeTrainingDecisionReasons([
-      ...goalModeReasons,
-      ...rawWeeklyPlans.flatMap((plan) => plan.decisionReasons ?? []),
-    ]),
+    decisionReasons,
+    explanation,
+  };
+}
+
+function buildTrainingPlanExplanationTrace(input: {
+  input: CoachKernelTrainingPlanInput;
+  athlete: AthleteState;
+  primaryFocusResolution: PrimaryFocusResolution;
+  rawWeeklyTargets: Goals['weeklySessionsTarget'];
+  decisionReasons: TrainingDecisionReason[];
+  firstWeekPhase?: string | null;
+}): TrainingPlanExplanationTrace {
+  const shapedWeeklyTargets = input.athlete.goals.weeklySessionsTarget;
+  const runningPaceForHistory = resolveThresholdPace(input.input.runProfile) ?? 360;
+  return {
+    primaryFocus: input.primaryFocusResolution,
+    rawWeeklyTargets: input.rawWeeklyTargets,
+    shapedWeeklyTargets,
+    equipment: resolveEquipmentAccessWithSource(input.input.fitnessProfile, input.input.gymProfile),
+    runningHistory: resolveRunningWeeklyMinutesWithSource(
+      input.input.runProfile,
+      shapedWeeklyTargets.running ?? 0,
+      runningPaceForHistory,
+    ),
+    cyclingHistory: resolveCyclingWeeklyMinutesWithSource(
+      input.input.runProfile,
+      shapedWeeklyTargets.cycling ?? 0,
+    ),
+    strengthGoal: resolveStrengthGoalWithSource(input.input.gymProfile),
+    experienceLevel: resolveExperienceLevelWithSource(input.input.fitnessProfile, input.input.gymProfile),
+    readiness: input.athlete.readiness,
+    raceCalendar: input.athlete.goals.raceCalendar,
+    firstWeekPhase: input.firstWeekPhase,
+    maxSessionsPerDay: resolveMaxSessionsPerDay(input.input.twoADayPreference, shapedWeeklyTargets),
+    decisionReasons: input.decisionReasons,
   };
 }
 

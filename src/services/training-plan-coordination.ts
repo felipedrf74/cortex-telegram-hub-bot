@@ -12,6 +12,7 @@ import type {
   TrainingProfileFollowUpQuestion,
   TrainingProfileMissingData,
 } from './coach-kernel/types';
+import type { PlanCreationExplanation } from './training-plan-explanation/types';
 
 export interface CoordinatedTrainingSession {
   dayOfWeek: string;
@@ -57,6 +58,7 @@ export interface CoordinatedTrainingPlan {
   primaryFocusSource?: 'objective_keyword' | 'inferred_volume_split' | 'fallback';
   primaryFocusFallbackReason?: 'missing' | 'unrecognized' | null;
   primaryFocusRawObjective?: string | null;
+  explanation?: PlanCreationExplanation | null;
 }
 
 export interface TrainingPlanCoordinationInput {
