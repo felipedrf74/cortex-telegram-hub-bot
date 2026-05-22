@@ -2,9 +2,12 @@ import { describe, expect, it } from 'vitest';
 
 import {
   TrainingOperationDisabledError,
+  assertTrainingCalendarSourceWritesEnabled,
   assertTrainingCalendarWritesEnabled,
+  isTrainingCalendarSourceWritesEnabled,
   isTrainingCalendarWritesEnabled,
   isTrainingCrossSkillSignalsEnabled,
+  isTrainingOutlookCalendarWritesEnabled,
   isTrainingPlanGenerationEnabled,
   trainingOperationDisabledMessage,
 } from '../../src/services/training-operational-switches';
@@ -13,7 +16,17 @@ describe('training-operational-switches', () => {
   it('defaults Training operations to enabled', () => {
     expect(isTrainingPlanGenerationEnabled({})).toBe(true);
     expect(isTrainingCalendarWritesEnabled({})).toBe(true);
+    expect(isTrainingCalendarSourceWritesEnabled('google', {})).toBe(true);
+    expect(isTrainingOutlookCalendarWritesEnabled({})).toBe(false);
     expect(isTrainingCrossSkillSignalsEnabled({})).toBe(true);
+  });
+
+  it('requires an explicit Outlook calendar flag before Training writes there', () => {
+    expect(isTrainingOutlookCalendarWritesEnabled({ TRAINING_CALENDAR_OUTLOOK_ENABLED: 'true' })).toBe(true);
+    expect(isTrainingCalendarSourceWritesEnabled('outlook', { TRAINING_CALENDAR_OUTLOOK_ENABLED: 'true' })).toBe(true);
+    expect(isTrainingCalendarSourceWritesEnabled('outlook', { TRAINING_CALENDAR_OUTLOOK_ENABLED: 'true', TRAINING_CALENDAR_OUTLOOK_DISABLED: '1' })).toBe(false);
+    expect(() => assertTrainingCalendarSourceWritesEnabled('outlook', {}))
+      .toThrow(TrainingOperationDisabledError);
   });
 
   it('supports a global TRAINING_ENGINE_DISABLED emergency switch', () => {
@@ -53,6 +66,7 @@ describe('training-operational-switches', () => {
   it('keeps disabled messages stable for iOS and ops runbooks', () => {
     expect(trainingOperationDisabledMessage('plan_generation')).toContain('Training plan generation');
     expect(trainingOperationDisabledMessage('calendar_writes')).toContain('Training calendar sync');
+    expect(trainingOperationDisabledMessage('outlook_calendar_writes')).toContain('Outlook');
     expect(trainingOperationDisabledMessage('cross_skill_signals')).toContain('Training cross-skill signals');
   });
 });

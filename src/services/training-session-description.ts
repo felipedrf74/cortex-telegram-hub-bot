@@ -623,9 +623,19 @@ export function renderSectionsAsText(sections: SessionSections): string {
     lines.push('');
   }
 
-  // Execution (running/cycling/swim) OR exercises (strength)
+  if (sections.warmup) {
+    lines.push(`${sections.warmup.headline}:`);
+    for (const item of sections.warmup.items) {
+      lines.push(`• ${item}`);
+    }
+    lines.push('');
+  }
+
+  // Main workout content (running/cycling/swim execution cues OR
+  // strength exercises). This intentionally appears before internal
+  // notes/metadata so calendar invite emails are useful at a glance.
   if (sections.execution && sections.execution.length > 0) {
-    lines.push('EXECUTION:');
+    lines.push('MAIN WORKOUT — EXECUTION:');
     for (const item of sections.execution) {
       const noteSuffix = item.note ? ` — ${item.note}` : '';
       lines.push(`• ${item.label}: ${item.value}${noteSuffix}`);
@@ -634,18 +644,10 @@ export function renderSectionsAsText(sections: SessionSections): string {
   }
 
   if (sections.exercises && sections.exercises.length > 0) {
-    lines.push('EXERCISES:');
+    lines.push('MAIN WORKOUT — EXERCISES:');
     for (const ex of sections.exercises) {
       const noteSuffix = ex.note ? ` (${ex.note})` : '';
       lines.push(`${ex.index}. ${ex.name} — ${ex.detail}${noteSuffix}`);
-    }
-    lines.push('');
-  }
-
-  if (sections.warmup) {
-    lines.push(`${sections.warmup.headline}:`);
-    for (const item of sections.warmup.items) {
-      lines.push(`• ${item}`);
     }
     lines.push('');
   }
@@ -664,7 +666,7 @@ export function renderSectionsAsText(sections: SessionSections): string {
   }
 
   if (sections.important && sections.important.length > 0) {
-    lines.push('⚠️ IMPORTANT:');
+    lines.push('TIPS / RECOMMENDATIONS:');
     for (const item of sections.important) {
       lines.push(`• ${item}`);
     }

@@ -1,7 +1,6 @@
 // Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
 
 import {
-  deleteEvent,
   type CalendarSource,
 } from './unified-calendar';
 import {
@@ -12,6 +11,7 @@ import {
 } from './training-plan-lifecycle';
 import { isProviderEventNotFoundError } from './training-calendar-errors';
 import { logger } from '../utils/logger';
+import { deleteTrainingCalendarEventWithRetry } from './training-calendar-provider-retry';
 
 export interface TrainingAgendaReconciliationResult {
   attempted: number;
@@ -51,7 +51,19 @@ export async function reconcileOrphanedTrainingAgendaEvents(
     }
 
     try {
-      await deleteEvent(ownership.calendar_event_id, ownership.calendar_source, userId);
+      await deleteTrainingCalendarEventWithRetry(
+        ownership.calendar_event_id,
+        ownership.calendar_source,
+        userId,
+        {
+          userId,
+          tenantId,
+          planId: ownership.plan_id,
+          ownershipId: ownership.id,
+          eventId: ownership.calendar_event_id,
+          source: ownership.calendar_source,
+        },
+      );
       const marked = markCalendarOwnershipDeleted({
         eventId: ownership.calendar_event_id,
         source: ownership.calendar_source,

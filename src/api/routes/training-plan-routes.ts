@@ -62,7 +62,11 @@ export function registerTrainingPlanRoutes(
       preferredCardioTime,
       preferredStrengthTime,
       sessionsPerWeek = 5,
+      runSessionsPerWeek,
+      bikeSessionsPerWeek,
+      swimSessionsPerWeek,
       strengthSessionsPerWeek = 2,
+      startPolicy,
       longWorkoutDay,
       notes,
       goalMode,
@@ -98,7 +102,11 @@ export function registerTrainingPlanRoutes(
         preferredCardioTime,
         preferredStrengthTime,
         sessionsPerWeek,
+        runSessionsPerWeek,
+        bikeSessionsPerWeek,
+        swimSessionsPerWeek,
         strengthSessionsPerWeek,
+        startPolicy,
         longWorkoutDay,
         notes,
         goalMode,
@@ -165,7 +173,11 @@ export function registerTrainingPlanRoutes(
       preferredCardioTime,
       preferredStrengthTime,
       sessionsPerWeek = 5,
+      runSessionsPerWeek,
+      bikeSessionsPerWeek,
+      swimSessionsPerWeek,
       strengthSessionsPerWeek = 2,
+      startPolicy,
       longWorkoutDay,
       notes,
       goalMode,
@@ -198,7 +210,11 @@ export function registerTrainingPlanRoutes(
       preferredCardioTime,
       preferredStrengthTime,
       sessionsPerWeek,
+      runSessionsPerWeek,
+      bikeSessionsPerWeek,
+      swimSessionsPerWeek,
       strengthSessionsPerWeek,
+      startPolicy,
       longWorkoutDay,
       notes,
       goalMode,
@@ -207,12 +223,14 @@ export function registerTrainingPlanRoutes(
       twoADayPreference,
       calendarSource: calendarSourceValidation.source,
     };
-    const idempotencyKey = normalizeTrainingPlanGenerationIdempotencyKey(
+    const requestHash = fingerprintTrainingPlanGenerationRequest(generationRequest);
+    const explicitIdempotencyKey = normalizeTrainingPlanGenerationIdempotencyKey(
       req.body?.idempotencyKey
         ?? req.header('x-idempotency-key')
         ?? req.header('idempotency-key'),
     );
-    const requestHash = fingerprintTrainingPlanGenerationRequest(generationRequest);
+    const idempotencyKey = explicitIdempotencyKey
+      ?? buildAutomaticTrainingPlanGenerationIdempotencyKey(requestHash);
     const idempotencyClaim = claimTrainingPlanGenerationIdempotency(userId, idempotencyKey, requestHash);
     if (idempotencyClaim.kind === 'replay') {
       sendSuccess(res, idempotencyClaim.responseData, { status: idempotencyClaim.statusCode });
@@ -267,7 +285,11 @@ export function registerTrainingPlanRoutes(
         preferredCardioTime,
         preferredStrengthTime,
         sessionsPerWeek,
+        runSessionsPerWeek,
+        bikeSessionsPerWeek,
+        swimSessionsPerWeek,
         strengthSessionsPerWeek,
+        startPolicy,
         longWorkoutDay,
         notes,
         goalMode,
@@ -541,4 +563,8 @@ export function registerTrainingPlanRoutes(
       sendInternalError(res, 'Failed to cancel training plan');
     }
   });
+}
+
+function buildAutomaticTrainingPlanGenerationIdempotencyKey(requestHash: string): string {
+  return `auto:${requestHash.slice(0, 48)}`;
 }

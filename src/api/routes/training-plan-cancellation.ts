@@ -2,7 +2,6 @@
 
 import { logger } from '../../utils/logger';
 import {
-  deleteEvent,
   getEvents,
   type CalendarSource,
   type UnifiedCalendarEvent,
@@ -24,6 +23,8 @@ import {
   parseTrainingIdentityMarker,
 } from '../../services/training-session-identity';
 import { isProviderEventNotFoundError } from '../../services/training-calendar-errors';
+import { deleteTrainingCalendarEventWithRetry } from '../../services/training-calendar-provider-retry';
+import { withTrainingCalendarOperationLock } from '../../services/training-operation-locks';
 
 /**
  * Successful plan-cancellation payload.
@@ -106,6 +107,7 @@ interface MatchableTrainingSessionIdentity {
 }
 
 const cancellationLocks = new Map<string, Promise<void>>();
+const SERIAL_PROVIDER_DELETE_THRESHOLD = 20;
 
 async function withTrainingCancellationLock<T>(key: string, fn: () => Promise<T>): Promise<T> {
   const previous = cancellationLocks.get(key) ?? Promise.resolve();
@@ -133,8 +135,16 @@ export async function cancelTrainingPlanForUser(
   userId: number,
   requestedPlanId?: unknown,
 ): Promise<TrainingPlanCancellationResult> {
-  return withTrainingCancellationLock(`training-plan-cancel:${userId}`, () =>
-    cancelTrainingPlanForUserLocked(userId, requestedPlanId));
+  return withTrainingCalendarOperationLock(
+    {
+      userId,
+      tenantId: userId,
+      planId: typeof requestedPlanId === 'number' ? requestedPlanId : null,
+      operation: 'calendar_cancel',
+    },
+    () => withTrainingCancellationLock(`training-plan-cancel:${userId}`, () =>
+      cancelTrainingPlanForUserLocked(userId, requestedPlanId)),
+  );
 }
 
 async function cancelTrainingPlanForUserLocked(
@@ -196,9 +206,7 @@ async function cancelTrainingPlanForUserLocked(
     }));
     const deletionTargets = await buildCalendarDeletionTargetsForPlan(userId, plan, sessionsByWeek);
 
-    const deletionResults = await Promise.allSettled(
-      deletionTargets.map((target) => deleteEvent(target.eventId, target.source, userId)),
-    );
+    const deletionResults = await deleteCalendarDeletionTargets(deletionTargets, userId);
     const planRemovedEvents = deletionResults.filter(result =>
       result.status === 'fulfilled' || isProviderEventNotFoundError(result.reason),
     ).length;
@@ -400,6 +408,38 @@ async function cancelTrainingPlanForUserLocked(
   };
 }
 
+async function deleteCalendarDeletionTargets(
+  deletionTargets: CalendarDeletionTarget[],
+  userId: number,
+): Promise<Array<PromiseSettledResult<void>>> {
+  const deleteTarget = (target: CalendarDeletionTarget) => deleteTrainingCalendarEventWithRetry(
+    target.eventId,
+    target.source,
+    userId,
+    {
+      userId,
+      planId: target.planId,
+      eventId: target.eventId,
+      source: target.source,
+    },
+  );
+
+  if (deletionTargets.length <= SERIAL_PROVIDER_DELETE_THRESHOLD) {
+    return Promise.allSettled(deletionTargets.map(deleteTarget));
+  }
+
+  const results: Array<PromiseSettledResult<void>> = [];
+  for (const target of deletionTargets) {
+    try {
+      await deleteTarget(target);
+      results.push({ status: 'fulfilled', value: undefined });
+    } catch (reason) {
+      results.push({ status: 'rejected', reason });
+    }
+  }
+  return results;
+}
+
 function buildCancellationMessage(removedEvents: number, removedSessions: number): string {
   const eventsCopy = `${removedEvents} scheduled workout${removedEvents === 1 ? '' : 's'} removed from the calendar`;
   const sessionsCopy = `${removedSessions} session${removedSessions === 1 ? '' : 's'} cleared from the plan`;
@@ -500,10 +540,15 @@ function isMatchingGeneratedTrainingEvent(
 ): boolean {
   if (!event.id || !isCalendarSource(event.source)) return false;
   const marker = parseTrainingIdentityMarker(event.description);
-  if (!marker?.sessionIdentityKey || !marker?.sessionShapeHash) return false;
-  if (marker.planId !== planId) return false;
-  if (marker.sessionIdentityKey !== entry.sessionIdentityKey) return false;
-  if (marker.sessionShapeHash !== entry.sessionShapeHash) return false;
+  const identityMatched = Boolean(
+    marker?.sessionIdentityKey
+      && marker?.sessionShapeHash
+      && marker.planId === planId
+      && marker.sessionIdentityKey === entry.sessionIdentityKey
+      && marker.sessionShapeHash === entry.sessionShapeHash,
+  );
+  const secretaryIntentMatched = matchesSecretaryTrainingSourceIntent(entry, planId, event.description);
+  if (!identityMatched && !secretaryIntentMatched) return false;
 
   const eventStart = new Date(event.start);
   const eventEnd = new Date(event.end);
@@ -513,6 +558,20 @@ function isMatchingGeneratedTrainingEvent(
   const eventDurationMinutes = Math.round((eventEnd.getTime() - eventStart.getTime()) / 60000);
   const durationMinutes = entry.session.duration_minutes || 60;
   return Math.abs(eventDurationMinutes - durationMinutes) <= 2;
+}
+
+function matchesSecretaryTrainingSourceIntent(
+  entry: MatchableTrainingSessionIdentity,
+  planId: number,
+  description: string | undefined,
+): boolean {
+  const text = String(description || '');
+  if (!/^NEXUS_SECRETARY_SOURCE_SKILL:training$/mi.test(text)) return false;
+  const match = text.match(/^NEXUS_SECRETARY_SOURCE_INTENT:training:(\d+):(\d+):(\d+)$/mi);
+  if (!match) return false;
+  const sourcePlanId = Number(match[1]);
+  const sourceSessionId = Number(match[3]);
+  return sourcePlanId === planId && sourceSessionId === entry.session.id;
 }
 
 function buildIdentityMatchableSessions(

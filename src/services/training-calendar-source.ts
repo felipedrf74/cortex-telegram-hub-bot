@@ -2,13 +2,15 @@
 
 import { isConnected } from './oauth-store';
 import { resolveCalendarWritePreference } from './provider-preferences';
+import { isTrainingCalendarSourceWritesEnabled } from './training-operational-switches';
 import type { CalendarSource } from './unified-calendar';
 
 const TRAINING_CALENDAR_SOURCES: readonly CalendarSource[] = ['outlook', 'google'];
 
 export type TrainingCalendarSourceErrorCode =
   | 'INVALID_CALENDAR_SOURCE'
-  | 'CALENDAR_SOURCE_NOT_CONNECTED';
+  | 'CALENDAR_SOURCE_NOT_CONNECTED'
+  | 'CALENDAR_SOURCE_DISABLED';
 
 export type TrainingCalendarSourceValidation =
   | { ok: true; source?: CalendarSource }
@@ -42,6 +44,14 @@ export function validateRequestedTrainingCalendarSource(
     };
   }
   if (!source) return { ok: true };
+  if (!isTrainingCalendarSourceWritesEnabled(source)) {
+    return {
+      ok: false,
+      code: 'CALENDAR_SOURCE_DISABLED',
+      status: 503,
+      message: `${displayTrainingCalendarSource(source)} sync is temporarily disabled for Training.`,
+    };
+  }
   if (!isTrainingCalendarSourceConnected(userId, source)) {
     return {
       ok: false,
@@ -60,18 +70,23 @@ export function resolveTrainingCalendarSource(input: {
   planPreferencesJson?: string | null;
   linkedSources?: Array<unknown>;
 }): CalendarSource | undefined {
-  if (input.requestedSource && isTrainingCalendarSourceConnected(input.userId, input.requestedSource)) {
+  if (input.requestedSource && isTrainingCalendarSourceAvailable(input.userId, input.requestedSource)) {
     return input.requestedSource;
   }
 
   const preferred = readTrainingCalendarSourcePreference(input.planPreferencesJson);
-  if (preferred && isTrainingCalendarSourceConnected(input.userId, preferred)) {
-    return preferred;
+  if (preferred) {
+    if (isTrainingCalendarSourceAvailable(input.userId, preferred)) {
+      return preferred;
+    }
+    if (!isTrainingCalendarSourceWritesEnabled(preferred)) {
+      return undefined;
+    }
   }
 
   for (const linked of input.linkedSources ?? []) {
     const source = normalizeTrainingCalendarSource(linked);
-    if (source !== 'invalid' && source && isTrainingCalendarSourceConnected(input.userId, source)) {
+    if (source !== 'invalid' && source && isTrainingCalendarSourceAvailable(input.userId, source)) {
       return source;
     }
   }
@@ -80,8 +95,13 @@ export function resolveTrainingCalendarSource(input: {
   // tenant-scoped provider preferences. If the user explicitly selected a
   // preferred provider and it is unavailable, do not silently switch providers.
   const preference = resolveCalendarWritePreference(input.userId, input.tenantId ?? input.userId);
-  if (preference.source && isTrainingCalendarSourceConnected(input.userId, preference.source)) {
-    return preference.source;
+  if (preference.source) {
+    if (isTrainingCalendarSourceAvailable(input.userId, preference.source)) {
+      return preference.source;
+    }
+    if (!isTrainingCalendarSourceWritesEnabled(preference.source) && preference.requested !== 'auto') {
+      return undefined;
+    }
   }
   if (preference.requested !== 'auto') {
     return undefined;
@@ -91,7 +111,7 @@ export function resolveTrainingCalendarSource(input: {
   // training flows are still backed by the OAuth store directly, and treating
   // those as disconnected would strand already-valid Training agenda sync.
   for (const source of TRAINING_CALENDAR_SOURCES) {
-    if (isTrainingCalendarSourceConnected(input.userId, source)) {
+    if (isTrainingCalendarSourceAvailable(input.userId, source)) {
       return source;
     }
   }
@@ -135,6 +155,10 @@ function isTrainingCalendarSourceConnected(userId: number, source: CalendarSourc
   } catch {
     return false;
   }
+}
+
+function isTrainingCalendarSourceAvailable(userId: number, source: CalendarSource): boolean {
+  return isTrainingCalendarSourceWritesEnabled(source) && isTrainingCalendarSourceConnected(userId, source);
 }
 
 function displayTrainingCalendarSource(source: CalendarSource): string {

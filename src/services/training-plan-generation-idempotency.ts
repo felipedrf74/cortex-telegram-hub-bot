@@ -20,10 +20,12 @@ type IdempotencyRow = {
   status: TrainingPlanGenerationIdempotencyStatus;
   response_json: string | null;
   status_code: number | null;
+  created_at: string | null;
   updated_at: string | null;
 };
 
 const MEMORY_ROWS = new Map<string, IdempotencyRow>();
+const AUTO_IDEMPOTENCY_WINDOW_MS = 90_000;
 
 export function normalizeTrainingPlanGenerationIdempotencyKey(value: unknown): string | null {
   if (typeof value !== 'string') return null;
@@ -52,13 +54,19 @@ export function claimTrainingPlanGenerationIdempotency(
 
   ensureTrainingPlanGenerationIdempotencyTable(db);
   const existing = getRow(db, userId, idempotencyKey);
-  if (existing) return claimFromExisting(existing, requestHash);
+  if (existing) {
+    if (!shouldReplaceExistingAutoRow(existing)) {
+      return claimFromExisting(existing, requestHash);
+    }
+    return replaceExistingAutoRow(db, existing, requestHash);
+  }
 
+  const nowIso = new Date().toISOString();
   db.prepare(`
     INSERT INTO training_plan_generation_idempotency (
       user_id, idempotency_key, request_hash, status, created_at, updated_at
-    ) VALUES (?, ?, ?, 'in_progress', datetime('now'), datetime('now'))
-  `).run(userId, idempotencyKey, requestHash);
+    ) VALUES (?, ?, ?, 'in_progress', ?, ?)
+  `).run(userId, idempotencyKey, requestHash, nowIso, nowIso);
 
   return { kind: 'claimed', idempotencyKey, requestHash };
 }
@@ -76,6 +84,7 @@ export function completeTrainingPlanGenerationIdempotency(
   const db = getOptionalDb();
   if (!db) {
     const key = memoryKey(userId, idempotencyKey);
+    const existing = MEMORY_ROWS.get(key);
     MEMORY_ROWS.set(key, {
       user_id: userId,
       idempotency_key: idempotencyKey,
@@ -83,22 +92,24 @@ export function completeTrainingPlanGenerationIdempotency(
       status: 'succeeded',
       response_json: responseJson,
       status_code: statusCode,
+      created_at: existing?.created_at ?? new Date().toISOString(),
       updated_at: new Date().toISOString(),
     });
     return;
   }
 
   ensureTrainingPlanGenerationIdempotencyTable(db);
+  const nowIso = new Date().toISOString();
   db.prepare(`
     UPDATE training_plan_generation_idempotency
        SET status = 'succeeded',
            response_json = ?,
            status_code = ?,
-           updated_at = datetime('now')
+           updated_at = ?
      WHERE user_id = ?
        AND idempotency_key = ?
        AND request_hash = ?
-  `).run(responseJson, statusCode, userId, idempotencyKey, requestHash);
+  `).run(responseJson, statusCode, nowIso, userId, idempotencyKey, requestHash);
 }
 
 export function failTrainingPlanGenerationIdempotency(
@@ -118,15 +129,16 @@ export function failTrainingPlanGenerationIdempotency(
   }
 
   ensureTrainingPlanGenerationIdempotencyTable(db);
+  const nowIso = new Date().toISOString();
   db.prepare(`
     UPDATE training_plan_generation_idempotency
        SET status = 'failed',
-           updated_at = datetime('now')
+           updated_at = ?
      WHERE user_id = ?
        AND idempotency_key = ?
        AND request_hash = ?
        AND status = 'in_progress'
-  `).run(userId, idempotencyKey, requestHash);
+  `).run(nowIso, userId, idempotencyKey, requestHash);
 }
 
 export function _resetTrainingPlanGenerationIdempotencyForTests(): void {
@@ -156,22 +168,23 @@ function claimFromExisting(row: IdempotencyRow, requestHash: string): TrainingPl
 
   if (row.status === 'failed') {
     const db = getOptionalDb();
+    const nowIso = new Date().toISOString();
     if (db) {
       db.prepare(`
         UPDATE training_plan_generation_idempotency
            SET status = 'in_progress',
                response_json = NULL,
                status_code = NULL,
-               updated_at = datetime('now')
+               updated_at = ?
          WHERE user_id = ? AND idempotency_key = ?
-      `).run(row.user_id, row.idempotency_key);
+      `).run(nowIso, row.user_id, row.idempotency_key);
     } else {
       MEMORY_ROWS.set(memoryKey(row.user_id, row.idempotency_key), {
         ...row,
         status: 'in_progress',
         response_json: null,
         status_code: null,
-        updated_at: new Date().toISOString(),
+        updated_at: nowIso,
       });
     }
     return { kind: 'claimed', idempotencyKey: row.idempotency_key, requestHash };
@@ -183,8 +196,25 @@ function claimFromExisting(row: IdempotencyRow, requestHash: string): TrainingPl
 function claimMemory(userId: number, idempotencyKey: string, requestHash: string): TrainingPlanGenerationIdempotencyClaim {
   const key = memoryKey(userId, idempotencyKey);
   const existing = MEMORY_ROWS.get(key);
-  if (existing) return claimFromExisting(existing, requestHash);
+  if (existing) {
+    if (!shouldReplaceExistingAutoRow(existing)) {
+      return claimFromExisting(existing, requestHash);
+    }
+    const nowIso = new Date().toISOString();
+    MEMORY_ROWS.set(key, {
+      user_id: userId,
+      idempotency_key: idempotencyKey,
+      request_hash: requestHash,
+      status: 'in_progress',
+      response_json: null,
+      status_code: null,
+      created_at: nowIso,
+      updated_at: nowIso,
+    });
+    return { kind: 'claimed', idempotencyKey, requestHash };
+  }
 
+  const nowIso = new Date().toISOString();
   MEMORY_ROWS.set(key, {
     user_id: userId,
     idempotency_key: idempotencyKey,
@@ -192,9 +222,51 @@ function claimMemory(userId: number, idempotencyKey: string, requestHash: string
     status: 'in_progress',
     response_json: null,
     status_code: null,
-    updated_at: new Date().toISOString(),
+    created_at: nowIso,
+    updated_at: nowIso,
   });
   return { kind: 'claimed', idempotencyKey, requestHash };
+}
+
+function shouldReplaceExistingAutoRow(row: IdempotencyRow): boolean {
+  if (!isAutomaticIdempotencyKey(row.idempotency_key)) return false;
+  if (row.status === 'in_progress') return false;
+  if (isAutoRowFresh(row)) return false;
+  // Auto keys are intentionally short-lived. After the window expires,
+  // the same draft may be submitted again as a fresh user action, and a
+  // rare hash-prefix collision should not keep returning conflict forever.
+  return true;
+}
+
+function replaceExistingAutoRow(
+  db: any,
+  row: IdempotencyRow,
+  requestHash: string,
+): TrainingPlanGenerationIdempotencyClaim {
+  const nowIso = new Date().toISOString();
+  db.prepare(`
+    UPDATE training_plan_generation_idempotency
+       SET request_hash = ?,
+           status = 'in_progress',
+           response_json = NULL,
+           status_code = NULL,
+           created_at = ?,
+           updated_at = ?
+     WHERE user_id = ? AND idempotency_key = ?
+  `).run(requestHash, nowIso, nowIso, row.user_id, row.idempotency_key);
+  return { kind: 'claimed', idempotencyKey: row.idempotency_key, requestHash };
+}
+
+function isAutomaticIdempotencyKey(idempotencyKey: string): boolean {
+  return idempotencyKey.startsWith('auto:');
+}
+
+function isAutoRowFresh(row: IdempotencyRow): boolean {
+  const source = row.created_at || row.updated_at;
+  if (!source) return false;
+  const parsed = Date.parse(source.includes('T') ? source : `${source.replace(' ', 'T')}Z`);
+  if (!Number.isFinite(parsed)) return false;
+  return Date.now() - parsed <= AUTO_IDEMPOTENCY_WINDOW_MS;
 }
 
 function ensureTrainingPlanGenerationIdempotencyTable(db: any): void {
@@ -215,7 +287,7 @@ function ensureTrainingPlanGenerationIdempotencyTable(db: any): void {
 
 function getRow(db: any, userId: number, idempotencyKey: string): IdempotencyRow | null {
   return db.prepare(`
-    SELECT user_id, idempotency_key, request_hash, status, response_json, status_code, updated_at
+    SELECT user_id, idempotency_key, request_hash, status, response_json, status_code, created_at, updated_at
       FROM training_plan_generation_idempotency
      WHERE user_id = ? AND idempotency_key = ?
   `).get(userId, idempotencyKey) as IdempotencyRow | undefined ?? null;

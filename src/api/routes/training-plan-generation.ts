@@ -1,6 +1,8 @@
 // Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
 
 import * as onboarding from '../../services/onboarding';
+import { DateTime } from 'luxon';
+import { config } from '../../config';
 import {
   readContentMeshContext,
   readCookingMeshContext,
@@ -57,7 +59,11 @@ export interface GenerateTrainingPlanForUserInput {
   preferredCardioTime?: unknown;
   preferredStrengthTime?: unknown;
   sessionsPerWeek?: unknown;
+  runSessionsPerWeek?: unknown;
+  bikeSessionsPerWeek?: unknown;
+  swimSessionsPerWeek?: unknown;
   strengthSessionsPerWeek?: unknown;
+  startPolicy?: unknown;
   longWorkoutDay?: unknown;
   notes?: unknown;
   goalMode?: unknown;
@@ -74,6 +80,8 @@ export interface GenerateTrainingPlanForUserInput {
   previewOnly?: boolean;
 }
 
+export type TrainingPlanStartPolicy = 'next_full_week' | 'today';
+
 export type TrainingPlanGenerationResult =
   | {
       status: 'needs_profile';
@@ -87,6 +95,8 @@ export type TrainingPlanGenerationResult =
         sport: string | null;
         objective: string;
         durationWeeks: number;
+        resolvedStartDate: string;
+        weeklyTargets: TrainingPlanWeeklyTargets;
         totalSessions: number;
         calendarSource: CalendarSource | null;
         phaseRoadmap: Array<{
@@ -231,6 +241,14 @@ async function runPrePersistCancellationSaga(userId: number): Promise<Cancellati
   }
 }
 
+export interface TrainingPlanWeeklyTargets {
+  sessionsPerWeek: number;
+  runSessionsPerWeek: number;
+  strengthSessionsPerWeek: number;
+  bikeSessionsPerWeek: number | null;
+  swimSessionsPerWeek: number | null;
+}
+
 export async function generateTrainingPlanForUser(
   input: GenerateTrainingPlanForUserInput,
 ): Promise<TrainingPlanGenerationResult> {
@@ -242,7 +260,11 @@ export async function generateTrainingPlanForUser(
     preferredCardioTime,
     preferredStrengthTime,
     sessionsPerWeek = 5,
+    runSessionsPerWeek,
+    bikeSessionsPerWeek,
+    swimSessionsPerWeek,
     strengthSessionsPerWeek = 2,
+    startPolicy,
     longWorkoutDay,
     notes,
     goalMode,
@@ -297,9 +319,12 @@ export async function generateTrainingPlanForUser(
   }
 
   const now = new Date();
-  const endDate = new Date(now.getTime() + durationWeeks * 7 * 24 * 60 * 60 * 1000);
-  const startStr = now.toISOString().slice(0, 10);
-  const endStr = endDate.toISOString().slice(0, 10);
+  const normalizedStartPolicy = normalizeStartPolicy(startPolicy);
+  const startStr = resolveTrainingPlanStartDate(now, normalizedStartPolicy);
+  const endStr = DateTime
+    .fromISO(startStr, { zone: config.app.timezone || 'Europe/Lisbon' })
+    .plus({ weeks: durationWeeks })
+    .toISODate() ?? startStr;
 
   // training-expert-coach-knowledge-engine (2026-05-03):
   // Calendar fetch is the upstream source of truth for "when can the
@@ -342,6 +367,9 @@ export async function generateTrainingPlanForUser(
   });
 
   const normalizedSessionsPerWeek = clampNumber(sessionsPerWeek, 5, 3, 7);
+  const normalizedRunSessionsPerWeek = clampNumber(runSessionsPerWeek, normalizedSessionsPerWeek, 0, 7);
+  const normalizedBikeSessionsPerWeek = normalizeOptionalSessionTarget(bikeSessionsPerWeek, 0, 7);
+  const normalizedSwimSessionsPerWeek = normalizeOptionalSessionTarget(swimSessionsPerWeek, 0, 7);
   const normalizedStrengthSessionsPerWeek = clampNumber(strengthSessionsPerWeek, 0, 0, 6);
   const gymOnlyObjective = objectiveNeedsGymProfile(objective) && !objectiveNeedsRunningProfile(objective);
   const effectiveStrengthSessionsPerWeek = normalizedStrengthSessionsPerWeek > 0
@@ -417,6 +445,9 @@ export async function generateTrainingPlanForUser(
         durationWeeks,
         startDate: startStr,
         sessionsPerWeek: normalizedSessionsPerWeek,
+        runSessionsPerWeek: normalizedRunSessionsPerWeek,
+        bikeSessionsPerWeek: normalizedBikeSessionsPerWeek,
+        swimSessionsPerWeek: normalizedSwimSessionsPerWeek,
         strengthSessionsPerWeek: effectiveStrengthSessionsPerWeek,
         preferredTime: normalizedPreferredTime,
         preferredCardioTime: normalizedPreferredCardioTime,
@@ -453,6 +484,7 @@ export async function generateTrainingPlanForUser(
   planData = adaptTrainingPlanToAvailableEquipment(
     enforceRequestedTrainingPlanVolume(planData, {
       sessionsPerWeek: normalizedSessionsPerWeek,
+      runSessionsPerWeek: normalizedRunSessionsPerWeek,
       strengthSessionsPerWeek: effectiveStrengthSessionsPerWeek,
       preferredCardioTime: normalizedPreferredCardioTime,
       preferredStrengthTime: normalizedPreferredStrengthTime,
@@ -507,12 +539,16 @@ export async function generateTrainingPlanForUser(
       preferredCardioTime: normalizedPreferredCardioTime,
       preferredStrengthTime: normalizedPreferredStrengthTime,
       sessionsPerWeek,
+      runSessionsPerWeek: runSessionsPerWeek ?? null,
+      bikeSessionsPerWeek: bikeSessionsPerWeek ?? null,
+      swimSessionsPerWeek: swimSessionsPerWeek ?? null,
       strengthSessionsPerWeek,
       longWorkoutDay: longWorkoutDay || null,
       notes: notes || null,
       goalMode: normalizedGoalMode,
       trainingPriority: normalizedTrainingPriority,
       raceDate: effectiveRaceDate,
+      startPolicy: normalizedStartPolicy,
       trainingCalendarSource: calendarSource || null,
     }),
     normalizedPreferredTime,
@@ -540,6 +576,14 @@ export async function generateTrainingPlanForUser(
         sport: typeof planData.sport === 'string' ? planData.sport : null,
         objective,
         durationWeeks,
+        resolvedStartDate: startStr,
+        weeklyTargets: buildWeeklyTargets({
+          sessionsPerWeek: normalizedSessionsPerWeek,
+          runSessionsPerWeek: normalizedRunSessionsPerWeek,
+          strengthSessionsPerWeek: effectiveStrengthSessionsPerWeek,
+          bikeSessionsPerWeek: normalizedBikeSessionsPerWeek,
+          swimSessionsPerWeek: normalizedSwimSessionsPerWeek,
+        }),
         totalSessions: countSchedulablePlanSessions(planData),
         calendarSource: calendarSource || null,
         phaseRoadmap: buildPlanPhaseRoadmap(planData),
@@ -677,6 +721,7 @@ export async function generateTrainingPlanForUser(
       sport: planData.sport,
       objective,
       durationWeeks,
+      resolvedStartDate: startStr,
       calendarSource: calendarSource || null,
       phaseRoadmap: buildPlanPhaseRoadmap(planData),
       totalSessions: persistedPlan.totalSessions,
@@ -685,7 +730,9 @@ export async function generateTrainingPlanForUser(
         provider: calendarSource || null,
         sessionsAttempted: persistedPlan.totalSessions,
         eventsCreated: persistedPlan.eventsCreated,
+        sessionsLinked: 0,
         sessionsFailed: Math.max(0, persistedPlan.totalSessions - persistedPlan.eventsCreated),
+        unscheduled: Math.max(0, persistedPlan.totalSessions - persistedPlan.eventsCreated),
         status: persistedPlan.eventsCreated >= persistedPlan.totalSessions
           ? 'synced'
           : persistedPlan.eventsCreated > 0
@@ -694,6 +741,13 @@ export async function generateTrainingPlanForUser(
       },
       preferredCardioTime: normalizedPreferredCardioTime,
       preferredStrengthTime: normalizedPreferredStrengthTime,
+      weeklyTargets: buildWeeklyTargets({
+        sessionsPerWeek: normalizedSessionsPerWeek,
+        runSessionsPerWeek: normalizedRunSessionsPerWeek,
+        strengthSessionsPerWeek: effectiveStrengthSessionsPerWeek,
+        bikeSessionsPerWeek: normalizedBikeSessionsPerWeek,
+        swimSessionsPerWeek: normalizedSwimSessionsPerWeek,
+      }),
       weeks: persistedPlan.weekSummaries,
       profileQuality: planData.profileQuality ?? null,
       decisionReasons: Array.isArray(planData.decisionReasons) ? planData.decisionReasons : [],
@@ -791,6 +845,39 @@ function unwrapOnboardingProfileData(profile: unknown): Record<string, any> | nu
 function clampNumber(raw: unknown, fallback: number, min: number, max: number): number {
   const resolved = Number(raw) || fallback;
   return Math.max(min, Math.min(max, resolved));
+}
+
+function normalizeOptionalSessionTarget(raw: unknown, min: number, max: number): number | null {
+  if (raw === undefined || raw === null || raw === '') return null;
+  const resolved = Number(raw);
+  if (!Number.isFinite(resolved)) return null;
+  return Math.max(min, Math.min(max, Math.round(resolved)));
+}
+
+function normalizeStartPolicy(raw: unknown): TrainingPlanStartPolicy {
+  return raw === 'today' ? 'today' : 'next_full_week';
+}
+
+export function resolveTrainingPlanStartDate(now: Date, startPolicy: TrainingPlanStartPolicy): string {
+  const zone = config.app.timezone || 'Europe/Lisbon';
+  const today = DateTime.fromJSDate(now, { zone }).startOf('day');
+  if (!today.isValid) return now.toISOString().slice(0, 10);
+  if (startPolicy === 'today') return today.toISODate() ?? now.toISOString().slice(0, 10);
+
+  // Luxon weekday is 1=Monday ... 7=Sunday. A full training week begins
+  // on Monday; when today is Monday, starting today is already a full week.
+  const daysUntilMonday = (8 - today.weekday) % 7;
+  return today.plus({ days: daysUntilMonday }).toISODate() ?? today.toISODate() ?? now.toISOString().slice(0, 10);
+}
+
+function buildWeeklyTargets(input: TrainingPlanWeeklyTargets): TrainingPlanWeeklyTargets {
+  return {
+    sessionsPerWeek: input.sessionsPerWeek,
+    runSessionsPerWeek: input.runSessionsPerWeek,
+    strengthSessionsPerWeek: input.strengthSessionsPerWeek,
+    bikeSessionsPerWeek: input.bikeSessionsPerWeek,
+    swimSessionsPerWeek: input.swimSessionsPerWeek,
+  };
 }
 
 function normalizeGoalMode(raw: unknown): TrainingGoalMode | null {

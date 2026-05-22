@@ -142,14 +142,13 @@ function overlapsRange(startMs: number, endMs: number, windows: BusyWindow[]): b
 /**
  * Result of attempting to schedule a session into a day's free time.
  *
- * `preferredTimeUnavailable: true` means the user's preferred time (and
- * the symmetric ±60/±90/±120/±150-minute candidates) all overlapped with
- * either real provider events (`busyWindows`) or other sessions already
- * placed earlier in this generation pass (`scheduledWindows`). The
- * scheduler walked the day to find ANY free window. If even the day-walk
- * failed, `noAvailableSlot` is true. Callers must not create a calendar
- * event from that fallback marker; they should persist an explicit
- * unscheduled/deferred state instead.
+ * `preferredTimeUnavailable: true` means the exact user-requested time
+ * could not be used. Nearby candidates may still produce a useful slot,
+ * but callers should surface the conflict instead of silently shifting a
+ * 12:00 preference to 12:30/13:00 and claiming the preference was
+ * honored. If even the day-walk failed, `noAvailableSlot` is true.
+ * Callers must not create a calendar event from that fallback marker;
+ * they should persist an explicit unscheduled/deferred state instead.
  */
 export interface ScheduleSessionResult {
   start: Date;
@@ -190,8 +189,8 @@ export function scheduleSessionWindow(
   options: { notBefore?: Date } = {},
 ): ScheduleSessionResult {
   // Stage 1: try the preferred time + symmetric ±1/±1.5/±2/±2.5 candidates.
-  // This is the friendly fit where the user gets close to their stated
-  // preference even if there's a meeting at the exact preferred slot.
+  // Exact preferred time is the only path that counts as "preference
+  // respected"; nearby fits are useful but must be reported as a shift.
   const candidates = candidateTimesForPreferredTime(preferredTime);
   for (const candidate of candidates) {
     const candidateMinutes = minutesFromTimeString(candidate);
@@ -203,7 +202,7 @@ export function scheduleSessionWindow(
       scheduledWindows,
       options.notBefore,
     );
-    if (slot) return { ...slot, preferredTimeUnavailable: false };
+    if (slot) return { ...slot, preferredTimeUnavailable: candidate !== preferredTime };
   }
 
   // Stage 2: nothing in the friendly band is free. Walk the whole day in

@@ -72,6 +72,9 @@ export interface CoachKernelTrainingPlanInput {
   durationWeeks: number;
   startDate: string;
   sessionsPerWeek: number;
+  runSessionsPerWeek?: number | null;
+  bikeSessionsPerWeek?: number | null;
+  swimSessionsPerWeek?: number | null;
   strengthSessionsPerWeek: number;
   preferredTime: string;
   preferredCardioTime: string;
@@ -811,14 +814,20 @@ export function resolveWeeklyTargets(
   // know what they're doing.
   const STRENGTH_CAP = 6;
   const strength = clamp(Math.max(0, Math.min(STRENGTH_CAP, input.strengthSessionsPerWeek)), 0, STRENGTH_CAP);
+  const requestedRunning = optionalSessionTarget(input.runSessionsPerWeek, 0, 7);
+  const requestedCycling = optionalSessionTarget(input.bikeSessionsPerWeek, 0, 7);
+  const requestedSwimming = optionalSessionTarget(input.swimSessionsPerWeek, 0, 7);
 
   switch (primaryFocus) {
     case 'triathlon': {
       const strengthTarget = Math.min(strength, 2);
       const enduranceTotal = Math.max(5, total);
-      const running = clamp(Math.round(enduranceTotal * 0.4), 3, 4);
-      const cycling = clamp(Math.round(enduranceTotal * 0.35), 2, 3);
-      const swimming = clamp(Math.max(2, enduranceTotal - running - cycling), 2, 3);
+      const defaultRunning = clamp(Math.round(enduranceTotal * 0.4), 3, 4);
+      const defaultCycling = clamp(Math.round(enduranceTotal * 0.35), 2, 3);
+      const defaultSwimming = clamp(Math.max(2, enduranceTotal - defaultRunning - defaultCycling), 2, 3);
+      const running = requestedRunning ?? defaultRunning;
+      const cycling = requestedCycling ?? defaultCycling;
+      const swimming = requestedSwimming ?? defaultSwimming;
       return { running, cycling, swimming, strength: strengthTarget };
     }
     case 'marathon':
@@ -832,13 +841,15 @@ export function resolveWeeklyTargets(
       // 2 still applies — marathon-specific minimum is gated on
       // primaryFocus.
       const minRunning = primaryFocus === 'marathon' ? 4 : 2;
-      const running = clamp(Math.max(minRunning, total), minRunning, runningCap ?? 7);
+      const running = requestedRunning != null
+        ? clamp(Math.max(minRunning, requestedRunning), minRunning, runningCap ?? 7)
+        : clamp(Math.max(minRunning, total), minRunning, runningCap ?? 7);
       return { running, strength: strength };
     }
     case 'cycling':
-      return { cycling: total, strength: strength };
+      return { cycling: requestedCycling ?? total, strength: strength };
     case 'swimming':
-      return { swimming: total, strength: strength };
+      return { swimming: requestedSwimming ?? total, strength: strength };
     case 'strength': {
       const strengthTarget = Math.min(strength || Math.min(total, STRENGTH_CAP), total, STRENGTH_CAP);
       const aerobicSupport = Math.max(0, total - strengthTarget);
@@ -853,6 +864,13 @@ export function resolveWeeklyTargets(
       return { running, strength: strengthTarget };
     }
   }
+}
+
+function optionalSessionTarget(value: unknown, min: number, max: number): number | null {
+  if (value == null) return null;
+  const numeric = typeof value === 'number' ? value : typeof value === 'string' ? Number(value) : NaN;
+  if (!Number.isFinite(numeric)) return null;
+  return clamp(Math.round(numeric), min, max);
 }
 
 function resolveRaceCalendar(
@@ -1763,11 +1781,9 @@ function resolveWeekPhase(args: {
   }
 
   if (args.goalMode === 'return_to_training') {
-    if (args.weekNumber === args.durationWeeks) return 'deload';
     return args.weekNumber <= 2 ? 'base' : 'build';
   }
 
-  if (args.weekNumber === args.durationWeeks) return 'deload';
   if (args.weekNumber <= 2) return 'base';
   return 'build';
 }

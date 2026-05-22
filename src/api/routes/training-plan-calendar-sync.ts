@@ -37,6 +37,7 @@ import {
   withTrainingCalendarSourcePreference,
 } from '../../services/training-calendar-source';
 import { requireTenantIdParam } from '../../services/tenant-scope';
+import { withTrainingCalendarOperationLock } from '../../services/training-operation-locks';
 
 export type TrainingPlanCalendarSyncResult =
   | {
@@ -436,6 +437,25 @@ export async function confirmTrainingSessionReflow(input: {
   requestedCalendarSource?: CalendarSource | null;
   signal?: AbortSignal;
 }): Promise<TrainingSessionReflowConfirmResult> {
+  return withTrainingCalendarOperationLock(
+    {
+      userId: input.userId,
+      tenantId: input.tenantId ?? input.userId,
+      operation: 'calendar_reflow',
+    },
+    () => confirmTrainingSessionReflowLocked(input),
+  );
+}
+
+async function confirmTrainingSessionReflowLocked(input: {
+  userId: number;
+  tenantId?: number;
+  sessionId: number;
+  proposedStartAt?: string | null;
+  proposedEndAt?: string | null;
+  requestedCalendarSource?: CalendarSource | null;
+  signal?: AbortSignal;
+}): Promise<TrainingSessionReflowConfirmResult> {
   const validatedTenantId = requireTenantIdParam(input.tenantId, 'confirmTrainingSessionReflow');
   const preview = await previewTrainingSessionReflow(input.userId, input.sessionId, input.requestedCalendarSource, validatedTenantId);
   if (preview.status !== 'preview') return preview;
@@ -576,6 +596,22 @@ export async function confirmTrainingSessionReflow(input: {
  *   the times are consistent with the original generation pass.
  */
 export async function syncTrainingPlanCalendar(
+  userId: number,
+  now: Date = new Date(),
+  requestedCalendarSource?: CalendarSource | null,
+  tenantId?: number,
+): Promise<TrainingPlanCalendarSyncResult> {
+  return withTrainingCalendarOperationLock(
+    {
+      userId,
+      tenantId: tenantId ?? userId,
+      operation: 'calendar_sync',
+    },
+    () => syncTrainingPlanCalendarLocked(userId, now, requestedCalendarSource, tenantId),
+  );
+}
+
+async function syncTrainingPlanCalendarLocked(
   userId: number,
   now: Date = new Date(),
   requestedCalendarSource?: CalendarSource | null,

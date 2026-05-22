@@ -31,6 +31,7 @@ import {
   type PlanLintResult,
 } from '../../services/coach-kernel/plan-linter';
 import { logger } from '../../utils/logger';
+import { withTrainingCalendarOperationLock } from '../../services/training-operation-locks';
 import {
   preferredTimeForSessionType,
   scheduleSessionWindow,
@@ -167,6 +168,19 @@ export function lintGeneratedTrainingPlanPreflight(
 export async function persistGeneratedTrainingPlan(
   input: PersistGeneratedTrainingPlanInput,
 ): Promise<PersistGeneratedTrainingPlanResult> {
+  return withTrainingCalendarOperationLock(
+    {
+      userId: input.userId,
+      tenantId: input.tenantId ?? input.userId,
+      operation: 'calendar_generate',
+    },
+    () => persistGeneratedTrainingPlanLocked(input),
+  );
+}
+
+async function persistGeneratedTrainingPlanLocked(
+  input: PersistGeneratedTrainingPlanInput,
+): Promise<PersistGeneratedTrainingPlanResult> {
   const tenantId = input.tenantId ?? input.userId;
   const plan = trainingPlans.createPlan({
     user_id: input.userId,
@@ -268,6 +282,7 @@ export async function persistGeneratedTrainingPlan(
       const scheduledWindow = scheduleSessionForPlan({
         weekNumber: weekData.weekNumber || 1,
         dayIndex,
+        planStartDate: input.startDate,
         now: input.now,
         durationMinutes,
         sessionType: sessionData.sessionType || '',
@@ -449,7 +464,7 @@ export async function persistGeneratedTrainingPlan(
     }
   };
 
-  const calendarEventBatches = chunkArray(calendarEvents, 5);
+  const calendarEventBatches = chunkArray(calendarEvents, trainingCalendarCreateBatchSize());
   for (const batch of calendarEventBatches) {
     const settled = await Promise.allSettled(batch.map(createCalendarEventWithOwnership));
     for (const result of settled) {
@@ -791,6 +806,14 @@ function selectedTrainingSecretaryWindow(decision: SecretarySchedulingDecision):
   return { start: decision.selectedSlot.start, end: decision.selectedSlot.end };
 }
 
+export function trainingCalendarCreateBatchSize(env: Record<string, string | undefined> = process.env): number {
+  const raw = env.TRAINING_CALENDAR_CREATE_BATCH_SIZE;
+  if (raw == null || raw.trim() === '') return 5;
+  const parsed = Number.parseInt(raw, 10);
+  if (!Number.isFinite(parsed)) return 5;
+  return Math.min(5, Math.max(1, parsed));
+}
+
 function chunkArray<T>(items: readonly T[], size: number): T[][] {
   const safeSize = Math.max(1, Math.floor(size));
   const chunks: T[][] = [];
@@ -870,12 +893,16 @@ function appendScheduleReason(description: string, reason: string | null | undef
 
 /**
  * Computes the calendar date for a (weekNumber, dayIndex) slot relative
- * to the plan-generation moment `now` and decides whether the slot is
- * legal (i.e. not in the past for week 1).
+ * to the resolved plan start date and decides whether the slot is legal
+ * (i.e. not in the past for week 1).
  *
- * Week 1 is anchored at `now`. If the named day-of-week has already
- * passed this calendar week (e.g. plan generated Wed, slot is Monday),
- * the slot is REJECTED rather than silently sliding to next Monday.
+ * Week 1 is anchored at the actual persisted start date, not at the
+ * request timestamp. If the user explicitly picks "start today", that
+ * start date may be mid-week and earlier days in week 1 are rejected
+ * honestly. If the default `next_full_week` resolves to a future Monday,
+ * Monday-Thursday must remain usable even when the plan is generated on
+ * a Friday. This was the root cause of the "one current-week session +
+ * one next-week session, then full weeks later" regression.
  * The historical bug: the legacy code added +7 days when `daysUntil`
  * went negative, which produced a forward-looking date but landed
  * "Week 1 Monday" on the SAME calendar day as "Week 2 Monday" — users
@@ -913,9 +940,10 @@ const DAY_NAMES_SUN_FIRST = [
 export function resolvePlanSlotDate(input: {
   weekNumber: number;
   dayIndex: number; // 0=Mon, 1=Tue, ..., 6=Sun (matches DAY_NAMES at top of file)
+  planStartDate?: string;
   now: Date;
 }): PlanSlotResolution {
-  const weekStart = new Date(input.now);
+  const weekStart = parsePlanStartDate(input.planStartDate, input.now);
   weekStart.setDate(weekStart.getDate() + ((input.weekNumber - 1) * 7));
 
   const currentDay = weekStart.getDay();
@@ -954,6 +982,7 @@ export function resolvePlanSlotDate(input: {
 function scheduleSessionForPlan(input: {
   weekNumber: number;
   dayIndex: number;
+  planStartDate: string;
   now: Date;
   durationMinutes: number;
   sessionType: string;
@@ -968,6 +997,7 @@ function scheduleSessionForPlan(input: {
   const slot = resolvePlanSlotDate({
     weekNumber: input.weekNumber,
     dayIndex: input.dayIndex,
+    planStartDate: input.planStartDate,
     now: input.now,
   });
 
@@ -1021,6 +1051,20 @@ function scheduleSessionForPlan(input: {
   }
 
   return scheduledWindow;
+}
+
+function parsePlanStartDate(raw: string | undefined, fallback: Date): Date {
+  if (typeof raw === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(raw)) {
+    const [year, month, day] = raw.split('-').map(Number);
+    if (Number.isInteger(year) && Number.isInteger(month) && Number.isInteger(day)) {
+      // Use local midday for date-only anchors. Midnight crosses back to
+      // the prior UTC date in Europe/Lisbon during DST, which makes
+      // date-only tests and provider payloads unnecessarily brittle while
+      // preserving the intended local calendar day for downstream setHours().
+      return new Date(year, month - 1, day, 12, 0, 0, 0);
+    }
+  }
+  return new Date(fallback);
 }
 
 /**

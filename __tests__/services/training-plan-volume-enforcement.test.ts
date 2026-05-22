@@ -62,6 +62,7 @@ describe('training-plan-volume-enforcement', () => {
       { sport: 'running', weeks: [{ weekNumber: 1, sessions: [] }] },
       {
         sessionsPerWeek: 6,
+        runSessionsPerWeek: 6,
         strengthSessionsPerWeek: 5,
         preferredCardioTime: '07:00',
         preferredStrengthTime: '12:00',

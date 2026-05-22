@@ -83,7 +83,7 @@ describe('training schedule route utilities', () => {
     expect(candidateTimesForPreferredTime('07:00').slice(0, 3)).toEqual(['07:00', '06:00', '08:00']);
   });
 
-  it('schedules the first non-overlapping candidate window', () => {
+  it('schedules the first non-overlapping candidate window and flags exact preference misses', () => {
     const day = new Date(2026, 3, 20);
     const busyStart = new Date(day);
     busyStart.setHours(7, 0, 0, 0);
@@ -99,7 +99,7 @@ describe('training schedule route utilities', () => {
 
     expect(scheduled.start.getHours()).toBe(6);
     expect(scheduled.end.getHours()).toBe(7);
-    expect(scheduled.preferredTimeUnavailable).toBe(false);
+    expect(scheduled.preferredTimeUnavailable).toBe(true);
   });
 
   it('returns preferredTimeUnavailable=false when the exact preferred time is free', () => {
@@ -183,7 +183,7 @@ describe('training schedule route utilities', () => {
 
     const scheduled = scheduleSessionWindow(day, 60, '07:00', [], scheduledWindows);
 
-    expect(scheduled.preferredTimeUnavailable).toBe(false);
+    expect(scheduled.preferredTimeUnavailable).toBe(true);
     // 07:00 is taken by sibling, planner walks to 06:00 or 08:00
     const hour = scheduled.start.getHours();
     expect([6, 8]).toContain(hour);

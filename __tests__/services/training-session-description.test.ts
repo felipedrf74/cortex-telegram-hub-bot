@@ -241,5 +241,59 @@ describe('training-session-description', () => {
       const independentRender = renderSectionsAsText(sections);
       expect(independentRender).toBe(text);
     });
+
+    it('renders the provider email body in useful training-content order', () => {
+      const text = renderSectionsAsText({
+        header: { planName: 'Example Plan' },
+        badge: { emoji: '🏃', eyebrow: 'MONDAY EASY RUN', title: 'Easy Run' },
+        weeklyProgression: [
+          { weekNumber: 1, weekStart: 'Mar 9', summary: '30 min easy' },
+        ],
+        warmup: {
+          headline: 'WARM-UP',
+          items: ['5 min walk', '3 min mobility'],
+        },
+        execution: [
+          { label: 'Pace', value: '6:00/km' },
+          { label: 'RPE', value: '4-5/10' },
+        ],
+        cooldown: {
+          headline: 'COOL-DOWN',
+          items: ['5 min walk'],
+        },
+        important: ['Keep it conversational.'],
+        notes: 'Bring water.',
+        totalMinutesText: '~30 min total',
+      } as any);
+
+      expect(text.startsWith('Example Plan')).toBe(true);
+      expect(text.startsWith('NEXUS_')).toBe(false);
+      expect(text.indexOf('WARM-UP')).toBeLessThan(text.indexOf('MAIN WORKOUT'));
+      expect(text.indexOf('MAIN WORKOUT')).toBeLessThan(text.indexOf('COOL-DOWN'));
+      expect(text.indexOf('COOL-DOWN')).toBeLessThan(text.indexOf('TIPS / RECOMMENDATIONS'));
+      expect(text).not.toContain('⚠️ IMPORTANT:');
+    });
+
+    it('uses one clean main-workout label instead of stacked headings', () => {
+      const { text: runningText } = buildRichSessionDescription(baseInput);
+      expect(runningText).toContain('MAIN WORKOUT — EXECUTION:');
+      expect(runningText).not.toContain('MAIN WORKOUT:\nEXECUTION:');
+
+      const { text: strengthText } = buildRichSessionDescription({
+        ...baseInput,
+        sport: 'strength',
+        session: {
+          sessionType: 'strength_max',
+          title: 'Lower Body A',
+          durationMinutes: 65,
+          dayOfWeek: 'Tuesday',
+          exercises: [
+            { name: 'Back Squat', sets: 4, reps: '6', rpe: '7-8', rest_sec: 120 },
+          ],
+        },
+      });
+      expect(strengthText).toContain('MAIN WORKOUT — EXERCISES:');
+      expect(strengthText).not.toContain('MAIN WORKOUT:\nEXERCISES:');
+    });
   });
 });

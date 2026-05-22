@@ -1,15 +1,14 @@
 # Training Cross-Skill Staging Smoke Results
 
-- Run ID: `training-cross-skill-smoke-20260513225117-jykchn`
-- Started: `2026-05-13T22:51:17.793Z`
-- Finished: `2026-05-13T22:51:17.794Z`
+- Run ID: `training-cross-skill-smoke-20260522094359-dg0h9c`
+- Started: `2026-05-22T09:44:00.206Z`
+- Finished: `2026-05-22T09:44:01.163Z`
 - Dry run: `false`
-- Staging user ID: `not configured`
+- Staging user ID: `1000013`
 
 ## Prerequisites
 
-- Status: **blocked**
-- Missing: `STAGING=true or NODE_ENV=staging`, `TRAINING_CROSS_SKILL_STAGING_SMOKE=1`, `TRAINING_CROSS_SKILL_STAGING_USER_ID=<staging test user id>`, `DATABASE_PATH=<staging database path>`
+- Status: **ready**
 
 ## Local Fixture Contract Checks
 
@@ -26,8 +25,13 @@
 
 | Flow | Expected | Actual | Status | Evidence |
 | --- | --- | --- | --- | --- |
-| staging_prerequisites | A staging-mode process, staging database, and isolated staging test user are configured. | Blocked: STAGING=true or NODE_ENV=staging, TRAINING_CROSS_SKILL_STAGING_SMOKE=1, TRAINING_CROSS_SKILL_STAGING_USER_ID=<staging test user id>, DATABASE_PATH=<staging database path> | blocked | STAGING=true or NODE_ENV=staging<br>TRAINING_CROSS_SKILL_STAGING_SMOKE=1<br>TRAINING_CROSS_SKILL_STAGING_USER_ID=<staging test user id><br>DATABASE_PATH=<staging database path> |
+| secretary_conflict | Staging Secretary context shows a real schedule constraint that Training can reflow around. | All checks passed. | pass | secretarySignals=inbox_pressure, deadline_pressure<br>secretaryEvents=1<br>focusBlock=true<br>protectFocusDay=saturday<br>modularSessionBias=false |
+| cooking_fueling_gap | Staging Cooking context exposes meal/fueling gaps once and Training receives actionable constraints. | All checks passed. | pass | cookingSignals=meal_plan_window, fueling_support_status, meal_execution_readiness, grocery_spend_forecast<br>conservativeFirstWeek=true<br>No cross-skill signals active for hybrid right now. |
+| finance_budget_constraint | Staging Finance budget/equipment posture is visible to Training without recommending unrealistic spend. | All checks passed. | pass | financeSignals=budget_remaining, expense_anomaly<br>affordability=tight<br>lowCostBias=true<br>No cross-skill signals active for hybrid right now. |
+| content_workload | Staging Content workload/filming signal is visible to Training as schedule friction. | All checks passed. | pass | contentSignals=none<br>upcomingTopicCount=0<br>nextExecution=Filming window<br>protectFilmingDay=saturday |
+| training_content_milestone | If a Training milestone/content opportunity exists, it is exposed as a user-scoped mesh signal. | Training content_capture_opportunity signal is present. | pass | trainingSignals=training_load_forecast, recovery_state, session_prescription, session_immovability, fueling_requirements, content_capture_opportunity, rest_day_scheduled |
+| shared_context_scope | All peer contexts are scoped to the selected staging user and no unrelated tenant data is present. | All checks passed. | pass | userIds=1000013,1000013,1000013,1000013,1000013 |
 
 ## Interpretation
 
-Real staging validation was **not** run because prerequisites are missing. The local fixture checks only prove harness and contract behavior; they are not a staging pass.
+All requested staging runtime flows passed.

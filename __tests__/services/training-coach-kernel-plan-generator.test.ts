@@ -278,6 +278,38 @@ describe('buildCoachKernelTrainingPlan — side effects', () => {
     expect(athlete.goals.priorityOrder[0]).toBe('running');
   });
 
+  it('uses explicit triathlon modality targets when bike and swim counts are supplied', () => {
+    const athlete = buildAthleteStateFromTrainingProfiles({
+      userId: 518,
+      objective: 'Olympic triathlon build',
+      durationWeeks: 4,
+      startDate: '2026-05-04',
+      sessionsPerWeek: 7,
+      runSessionsPerWeek: 4,
+      bikeSessionsPerWeek: 3,
+      swimSessionsPerWeek: 2,
+      strengthSessionsPerWeek: 2,
+      preferredTime: '12:00',
+      preferredCardioTime: '07:00',
+      preferredStrengthTime: '12:00',
+      longWorkoutDay: 'Saturday',
+      notes: null,
+      fitnessProfile: { experience_level: 'advanced' },
+      gymProfile: null,
+      runProfile: null,
+      goalMode: 'event_based',
+      trainingPriority: 'triathlon',
+    });
+
+    expect(athlete.goals.primaryFocus).toBe('triathlon');
+    expect(athlete.goals.weeklySessionsTarget).toMatchObject({
+      running: 4,
+      cycling: 3,
+      swimming: 2,
+      strength: 2,
+    });
+  });
+
   it('marks maintenance and return-to-training goal modes in priority order', () => {
     const maintenanceAthlete = buildAthleteStateFromTrainingProfiles({
       userId: 509,
@@ -511,7 +543,7 @@ describe('buildCoachKernelTrainingPlan — side effects', () => {
     expect(midWeek2?.weekStart).toBe('2026-04-20');
   });
 
-  it('uses rolling base/build/deload phases without fake tapering when no event date exists', () => {
+  it('uses rolling base/build phases without fake tapering or forced week-4 deload when no event date exists', () => {
     const plan = buildCoachKernelTrainingPlan({
       userId: 601,
       objective: 'General running base',
@@ -530,7 +562,8 @@ describe('buildCoachKernelTrainingPlan — side effects', () => {
       goalMode: 'continuous',
     });
 
-    expect(plan.weeks?.map((week) => week.focus)).toEqual(['base', 'base', 'build', 'deload']);
+    expect(plan.weeks?.map((week) => week.focus)).toEqual(['base', 'base', 'build', 'build']);
+    expect(plan.weeks?.map((week) => week.focus)).not.toContain('deload');
     expect(plan.weeks?.map((week) => week.focus)).not.toContain('taper');
     expect(plan.decisionReasons?.map((reason) => reason.code)).toContain('continuous_plan_no_taper');
   });
