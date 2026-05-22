@@ -52,6 +52,7 @@ import {
   listDecisionItems,
   listHandledByNexusItems,
   performDecisionAction,
+  runDecisionHandledHistoryBackfillJob,
   runDecisionSourceStateSupersessionJob,
   snoozeDecision,
 } from '../../src/services/decision-center';
@@ -73,6 +74,80 @@ async function createContentApprovalDecision(userId: number, tenantId: number, d
     dedupeKey,
   }));
   return { object, created };
+}
+
+function insertActionedDecisionFixture(input: {
+  itemId: string;
+  userId: number;
+  tenantId: number;
+  createdAt: string;
+  actionedAt?: string;
+  sourceSkill?: string;
+  actionResult?: Record<string, unknown>;
+}): void {
+  const sourceSkill = input.sourceSkill ?? 'content';
+  const intentId = `intent-${input.itemId}`;
+  testDb.prepare(`
+    INSERT INTO notification_intents (
+      intent_id, user_id, tenant_id, source_skill, type, priority,
+      related_entity_id, related_entity_type, title, body, sensitive_body,
+      action_buttons_json, deeplink, requires_user_action, privacy_policy,
+      decision_context_json, status, created_at
+    ) VALUES (?, ?, ?, ?, 'decision_required', 'time_sensitive',
+      ?, 'content_workflow_object', 'Content review', 'Decision body', NULL,
+      ?, 'nexushub://decision-center', 1, 'private_content',
+      ?, 'delivered', ?)
+  `).run(
+    intentId,
+    input.userId,
+    input.tenantId,
+    sourceSkill,
+    `entity-${input.itemId}`,
+    JSON.stringify([{ id: 'approve_script', label: 'Approve', style: 'primary' }]),
+    JSON.stringify({ entityTitle: `Draft ${input.itemId}` }),
+    input.createdAt,
+  );
+  testDb.prepare(`
+    INSERT INTO notification_center_items (
+      item_id, intent_id, user_id, tenant_id, title, body, safe_body,
+      source_skill, type, priority, status, deeplink, actions_json,
+      dedupe_key, created_at, actioned_at, action_result_json
+    ) VALUES (?, ?, ?, ?, 'Content review', 'Decision body', 'Decision body',
+      ?, 'decision_required', 'time_sensitive', 'actioned', 'nexushub://decision-center',
+      ?, ?, ?, ?, ?)
+  `).run(
+    input.itemId,
+    intentId,
+    input.userId,
+    input.tenantId,
+    sourceSkill,
+    JSON.stringify([{ id: 'approve_script', label: 'Approve', style: 'primary' }]),
+    `dedupe-${input.itemId}`,
+    input.createdAt,
+    input.actionedAt ?? input.createdAt,
+    JSON.stringify(input.actionResult ?? {
+      actionId: 'approve_script',
+      contentApprovalState: 'approved',
+    }),
+  );
+}
+
+function insertHandledFixture(input: {
+  handledItemId: string;
+  decisionId: string;
+  userId: number;
+  tenantId: number;
+  createdAt: string;
+}): void {
+  testDb.prepare(`
+    INSERT INTO handled_by_nexus_items (
+      handled_item_id, decision_id, user_id, tenant_id, source_skill, title, summary,
+      action_taken, why_brief, explanation_json, related_entities_json, rollback_available,
+      changed_rule_option, privacy_classification, created_at
+    ) VALUES (?, ?, ?, ?, 'content', 'Content review', 'Content workflow is now approved.',
+      'approve_script', 'Read-back confirmed content workflow state is approved.', NULL, '[]', 0,
+      NULL, 'private_content', ?)
+  `).run(input.handledItemId, input.decisionId, input.userId, input.tenantId, input.createdAt);
 }
 
 function ensureSecretaryAgendaFixtureTables(): void {
@@ -572,6 +647,9 @@ describe('Decision Center facade', () => {
       dedupeKey: 'content:approval',
     }));
     expect(created.item?.status).toBe('unread');
+    expect(created.item?.explanation.whatHappened).toContain('ready for approval');
+    expect(created.item?.explanation.userAction).toContain('Approve');
+    expect(created.item?.explanation.verification).toContain('content workflow state');
 
     const result = await performDecisionAction(created.item!.decisionId, 'approve_script', 2, 2, {
       idempotencyKey: 'tap-1',
@@ -590,6 +668,11 @@ describe('Decision Center facade', () => {
       rollbackAvailable: false,
       privacyClassification: 'private_content',
     });
+    expect(handled[0].summary).toContain('approved');
+    expect(handled[0].whyBrief).toContain('Read-back confirmed content workflow state');
+    expect(handled[0].explanation?.result).toContain('approved');
+    expect(handled[0].explanation?.whyItMatters).toContain('verified next state');
+    expect(handled[0].explanation?.nextStep).toContain('Content');
     expect(getDecisionOverview(2, 2, { limit: 20, handledLimit: 5 }).summary.handledTodayCount).toBe(1);
 
     const duplicate = await performDecisionAction(created.item!.decisionId, 'approve_script', 2, 2, {
@@ -615,9 +698,107 @@ describe('Decision Center facade', () => {
       actionTaken: 'approve_script',
       sourceSkill: 'content',
     });
+    expect(handled[0].explanation?.result).toContain('approved');
+    expect(handled[0].whyBrief).not.toContain('requested action');
     const overview = getDecisionOverview(24, 24, { limit: 20, handledLimit: 5 });
     expect(overview.handledCount).toBe(1);
     expect(overview.summary.handledTodayCount).toBe(1);
+  });
+
+  it('does not claim read-back confirmation when handled state fields are absent', () => {
+    insertActionedDecisionFixture({
+      itemId: 'empty-effect-decision',
+      userId: 26,
+      tenantId: 26,
+      createdAt: '2026-05-10T10:00:00.000Z',
+      actionResult: { actionId: 'approve_script' },
+    });
+
+    const result = runDecisionHandledHistoryBackfillJob({ userId: 26, tenantId: 26, limit: 10 });
+
+    expect(result).toMatchObject({ inspected: 1, backfilled: 1, failed: 0 });
+    const stored = testDb.prepare(`
+      SELECT explanation_json
+        FROM handled_by_nexus_items
+       WHERE decision_id = ?
+    `).get('empty-effect-decision') as { explanation_json: string };
+    const explanation = JSON.parse(stored.explanation_json);
+    expect(explanation.verification).not.toContain('Read-back confirmed');
+    expect(explanation.verification).toContain('read-back is pending');
+    expect(explanation.steps.map((step: { label: string }) => step.label)).toContain('Verification checked');
+  });
+
+  it('merges handled history after fetching a wider window from each source', () => {
+    const userId = 27;
+    const tenantId = 27;
+    const expected: Array<{ itemId: string; createdAt: string }> = [];
+    for (let index = 0; index < 30; index += 1) {
+      const explicitCreatedAt = new Date(Date.UTC(2026, 4, 10, 12, 0, 0) - index * 120_000).toISOString();
+      const actionedCreatedAt = new Date(Date.UTC(2026, 4, 10, 11, 59, 0) - index * 120_000).toISOString();
+      const handledItemId = `handled-wide-${index}`;
+      const actionedItemId = `actioned-wide-${index}`;
+      insertHandledFixture({
+        handledItemId,
+        decisionId: `explicit-wide-${index}`,
+        userId,
+        tenantId,
+        createdAt: explicitCreatedAt,
+      });
+      insertActionedDecisionFixture({
+        itemId: actionedItemId,
+        userId,
+        tenantId,
+        createdAt: actionedCreatedAt,
+        actionedAt: actionedCreatedAt,
+      });
+      expected.push({ itemId: handledItemId, createdAt: explicitCreatedAt });
+      expected.push({ itemId: `actioned_${actionedItemId}`, createdAt: actionedCreatedAt });
+    }
+
+    const handled = listHandledByNexusItems(userId, tenantId, 25);
+    const expectedTopIds = expected
+      .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
+      .slice(0, 25)
+      .map((item) => item.itemId);
+
+    expect(handled).toHaveLength(25);
+    expect(handled.map((item) => item.itemId)).toEqual(expectedTopIds);
+  });
+
+  it('localizes Decision Center Secretary Today copy from the user locale', () => {
+    ensureUserFixtureTable();
+    testDb.prepare(`
+      INSERT INTO users (id, telegram_id, first_name, language, timezone, status)
+      VALUES (92, 9200, 'Felipe', 'pt-PT', 'Europe/Lisbon', 'active')
+    `).run();
+
+    const overview = getDecisionOverview(92, 92, { limit: 10, handledLimit: 5 });
+
+    expect(overview.secretaryToday.title).toBe('Secretary hoje');
+    expect(overview.secretaryToday.checked[0]?.label).toBe('Centro de Decisões verificado');
+    expect(overview.secretaryToday.summary).toBe(
+      'A Secretary verificou a fila de decisões; nada urgente precisa da tua ação agora.',
+    );
+    expect(JSON.stringify(overview.secretaryToday)).not.toContain('Decision Center checked');
+  });
+
+  it('describes content rewrite decisions with result, benefit, verification, and next step', async () => {
+    const { created } = await createContentApprovalDecision(25, 25, 'rewrite-explanation');
+
+    const result = await performDecisionAction(created.item!.decisionId, 'request_rewrite', 25, 25, {
+      idempotencyKey: 'rewrite-explanation-tap',
+    });
+
+    expect(result.status).toBe('succeeded');
+    const handled = listHandledByNexusItems(25, 25, 5);
+    expect(handled).toHaveLength(1);
+    expect(handled[0].explanation).toMatchObject({
+      headline: expect.stringContaining('Rewrite requested'),
+      result: expect.stringContaining('rewrite'),
+      verification: expect.stringContaining('content workflow state'),
+      nextStep: expect.stringContaining('rewritten draft'),
+    });
+    expect(handled[0].explanation?.steps.map((step) => step.status)).toContain('done');
   });
 
   it('counts handled-today by the user local day instead of UTC boundaries', () => {
@@ -744,6 +925,13 @@ describe('Decision Center facade', () => {
     expect(result.item.actions.map((action) => action.id)).toContain('undo_reflow');
     const agenda = testDb.prepare('SELECT lifecycle_state, decision_action FROM secretary_agenda_items WHERE agenda_item_id = ?').get('agenda-42') as any;
     expect(agenda).toMatchObject({ lifecycle_state: 'reflowed', decision_action: 'reflowed' });
+    const handled = listHandledByNexusItems(42, 42, 5);
+    expect(handled[0].explanation).toMatchObject({
+      headline: expect.stringContaining('Secretary reflowed'),
+      result: expect.stringContaining('removed from active decisions'),
+      verification: expect.stringContaining('Secretary agenda state'),
+    });
+    expect(handled[0].explanation?.nextStep).toContain('Undo');
 
     const undo = await performDecisionAction(created.item!.decisionId, 'undo_reflow', 42, 42, {
       idempotencyKey: 'undo-secretary-reflow',
@@ -1067,6 +1255,7 @@ describe('Decision Center facade', () => {
       decisionActionabilityScore: expect.any(Number),
       acceptedCount: 1,
       dismissedCount: 1,
+      deferredCount: 1,
       snoozedCount: 1,
       explanationOpenCount: 0,
       genericBlockedCount: 1,
@@ -1075,6 +1264,7 @@ describe('Decision Center facade', () => {
       partialFailureCount: 0,
       primaryActionRate: 1,
       dismissRate: 0.3333,
+      deferRate: 0.3333,
       snoozeRate: 0.3333,
       explanationOpenRate: 0,
       genericBlockedRate: 0.25,
@@ -1087,6 +1277,9 @@ describe('Decision Center facade', () => {
     expect(metrics.bySourceSkill.content).toBe(1);
     expect(metrics.bySourceSkill.training).toBe(1);
     expect(metrics.bySourceSkill.chat).toBe(1);
+    expect(metrics.bySourceSkillOutcome.content).toMatchObject({ total: 1, accepted: 1, dismissed: 0, deferred: 0 });
+    expect(metrics.bySourceSkillOutcome.training).toMatchObject({ total: 1, accepted: 0, dismissed: 1, deferred: 0 });
+    expect(metrics.bySourceSkillOutcome.chat).toMatchObject({ total: 1, accepted: 0, dismissed: 0, deferred: 1 });
     expect(JSON.stringify(metrics)).not.toContain('metrics-private-draft');
     expect(JSON.stringify(metrics)).not.toContain('Draft');
     expect(getDecisionOutcomeMetrics(44, 45).totalOutcomes).toBe(0);
@@ -1142,15 +1335,18 @@ describe('Decision Center facade', () => {
     expect(result.reasons.content_approval_resolved_elsewhere).toBe(1);
     expect(getDecisionItem(created.item!.decisionId, 61, 61)?.status).toBe('superseded');
     const handled = testDb.prepare(`
-      SELECT title, action_taken, privacy_classification
+      SELECT title, action_taken, privacy_classification, explanation_json
       FROM handled_by_nexus_items
       WHERE decision_id = ?
-    `).get(created.item!.decisionId) as { title: string; action_taken: string; privacy_classification: string };
+    `).get(created.item!.decisionId) as { title: string; action_taken: string; privacy_classification: string; explanation_json: string };
     expect(handled).toMatchObject({
       title: 'Content review',
       action_taken: 'auto_dismiss_stale_decision',
       privacy_classification: 'private_content',
     });
+    const explanation = JSON.parse(handled.explanation_json);
+    expect(explanation.result).toContain('no longer asks');
+    expect(explanation.nextStep).toContain('No action');
   });
 
   it('supersedes Secretary conflict decisions when the agenda item is resolved elsewhere', async () => {

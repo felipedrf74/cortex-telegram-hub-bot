@@ -44,6 +44,7 @@ import {
   dismissNotificationCenterItem,
   ensureNotificationTables,
   getNotificationDecisionLog,
+  getNotificationDeliveryObservabilityMetrics,
   getOrCreateNotificationProfile,
   listNotificationCenterItems,
   markNotificationCenterItemRead,
@@ -51,6 +52,7 @@ import {
   registerNotificationDeviceToken,
   releaseDueNotificationDeliveries,
   revokeNotificationDeviceToken,
+  sanitizeNotificationDeliveryErrorCode,
   updateNotificationProfile,
 } from '../../src/services/notification-orchestrator';
 
@@ -93,7 +95,13 @@ describe('Secretary Notification Orchestrator', () => {
 
   it('keeps concrete but lower-rank decisions in-app instead of visible push', async () => {
     pushTokens = ['sandbox-token'];
-    const result = await createNotificationIntent(buildSkillNotificationFixtureIntent('content', 1));
+    const result = await createNotificationIntent(buildSkillNotificationFixtureIntent('content', 1, {
+      decisionDeadline: null,
+      decisionContext: {
+        entityTitle: 'Demo content draft',
+        sourceState: 'awaiting_approval',
+      },
+    }));
 
     expect(result.intent.sourceSkill).toBe('content');
     expect(result.item?.status).toBe('unread');
@@ -105,6 +113,32 @@ describe('Secretary Notification Orchestrator', () => {
     const items = listNotificationCenterItems(1, 1);
     expect(items).toHaveLength(1);
     expect(items[0].userId).toBe(1);
+  });
+
+  it('reports aggregate push delivery observability without private notification text', async () => {
+    pushTokens = ['sandbox-token'];
+    await createNotificationIntent(buildSkillNotificationFixtureIntent('content', 11, {
+      decisionDeadline: null,
+      decisionContext: {
+        entityTitle: 'Demo content draft',
+        sourceState: 'awaiting_approval',
+      },
+    }));
+    await createNotificationIntent(buildSkillNotificationFixtureIntent('cooking', 11));
+
+    const metrics = getNotificationDeliveryObservabilityMetrics(11, 11);
+
+    expect(metrics).toMatchObject({
+      userId: 11,
+      tenantId: 11,
+      totalDecisions: 2,
+      pushAttemptCount: 1,
+      pushSentCount: 1,
+      inAppOnlyCount: 1,
+      visibleDecisionPushBlockedCount: 1,
+    });
+    expect(metrics.blockedByReason['decision rank gate held visible push']).toBe(1);
+    expect(JSON.stringify(metrics)).not.toContain('Demo content draft');
   });
 
   it('blocks generic decision-shaped notifications from visible push', async () => {
@@ -124,6 +158,13 @@ describe('Secretary Notification Orchestrator', () => {
     expect(result.item?.sourceSkill).toBe('cooking');
     expect(result.decisionLog.decision).toBe('blocked_missing_device_token');
     expect(result.deliveryAttempts[0].status).toBe('blocked_missing_device_token');
+  });
+
+  it('sanitizes delivery error codes before structured reporting', () => {
+    expect(sanitizeNotificationDeliveryErrorCode('BadDeviceToken')).toBe('BadDeviceToken');
+    expect(sanitizeNotificationDeliveryErrorCode('apns_delivery_failed')).toBe('apns_delivery_failed');
+    expect(sanitizeNotificationDeliveryErrorCode('BadDeviceToken[abc123-token-fragment]')).toBe('opaque_error');
+    expect(sanitizeNotificationDeliveryErrorCode('')).toBeNull();
   });
 
   it('redacts finance, training, and content bodies for lock-screen payloads', async () => {

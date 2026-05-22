@@ -460,6 +460,7 @@ export function financeRoutes(): Router {
           }
         }
         try {
+          const decisionDeadline = reminderWindow?.end ?? null;
           await createNotificationIntent({
             userId,
             tenantId,
@@ -477,6 +478,13 @@ export function financeRoutes(): Router {
             ],
             deeplink: `nexus://finance/reminder/${encodeURIComponent(String(month))}`,
             dedupeKey: `finance:tax-event:${userId}:${month}`,
+            requiresUserAction: true,
+            decisionDeadline,
+            decisionContext: {
+              entityTitle: `Tax payment for ${month}`,
+              sourceState: 'payment_due',
+              deadlineAt: decisionDeadline,
+            },
             privacyPolicy: 'financial',
           });
         } catch (notificationErr) {
