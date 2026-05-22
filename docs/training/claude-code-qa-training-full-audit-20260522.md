@@ -227,7 +227,7 @@ Round 5 verification:
 
 1. Verify that `startPolicy` defaulting to next full week is correct in timezone boundaries, especially Sunday/Monday in `config.app.timezone`.
 2. Verify automatic idempotency key semantics: same request within the 90-second auto window should dedupe, including adjacent-minute clicks; legitimate later repeated generation should still be possible.
-3. Verify `migrations/153_training_operation_locks.sql` applies in staging before multi-process rollout; Training calendar mutation locks now depend on that durable table.
+3. Verify `migrations/154_training_operation_locks.sql` applies in staging before multi-process rollout; Training calendar mutation locks now depend on that durable table.
 4. Verify no preview path calls provider `createEvent`, writes training plan rows, or mutates calendar ownership.
 5. Verify cancellation does not over-delete unrelated events when matching Secretary markers. It should require training skill marker, source intent plan/session match, date match, duration match, and not be owned by another active Training plan.
 6. Verify the Secretary adapter does not introduce a circular import/runtime initialization problem by loading `getSessionById`.

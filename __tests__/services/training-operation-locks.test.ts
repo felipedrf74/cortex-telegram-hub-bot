@@ -105,7 +105,7 @@ describe('training operation SQLite advisory locks', () => {
 
   it('ships the advisory lock table in a migration, not only runtime bootstrap', () => {
     const migrationSql = fs.readFileSync(
-      path.join(MIGRATIONS_DIR, '153_training_operation_locks.sql'),
+      path.join(MIGRATIONS_DIR, '154_training_operation_locks.sql'),
       'utf8',
     );
     testDb.exec(migrationSql);
