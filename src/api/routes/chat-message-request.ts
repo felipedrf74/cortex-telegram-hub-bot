@@ -84,7 +84,11 @@ export function sendChatQuotaExceededIfNeeded(
     decision.reason,
     decision.message,
     decision.status,
-    decision.details,
+    {
+      ...decision.details,
+      error: 'rate_limited',
+      retryable: true,
+    },
   );
   return true;
 }

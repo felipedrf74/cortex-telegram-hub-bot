@@ -142,6 +142,7 @@ import {
 export type ChatActionStatus = ChatActionRunStatus;
 
 export type ChatPlanStepType = ChatActionName | 'answer' | 'clarification';
+type ChatClarificationReason = 'missing_required_fields' | 'ambiguous_intent' | 'low_confidence';
 
 const CHAT_LLM_TIER2_GEMINI_MODEL = 'gemini-2.5-flash';
 const CHAT_LLM_TIER2_OPENAI_FALLBACK_MODEL = 'gpt-5.4-nano';
@@ -167,6 +168,8 @@ export interface ChatActionPlan {
   steps: ChatPlanStep[];
   requiresConfirmation: boolean;
   clarificationQuestion?: string;
+  clarificationReason?: ChatClarificationReason;
+  intentClass?: string;
   confidence: number;
   effectiveConfidence?: number;
   telemetry?: ChatActionTelemetry;
@@ -398,6 +401,9 @@ export async function buildChatActionPlan(input: ChatPlannerInput): Promise<Chat
   const recentFollowUp = buildRecentEntityFollowUpPlan(input);
   if (recentFollowUp) return recentFollowUp;
 
+  const ambiguousAction = buildAmbiguousActionClarificationPlan(input);
+  if (ambiguousAction) return ambiguousAction;
+
   if (!shouldRunActionPlannerBeforeReadOnlyFastPaths(input.text)) return null;
 
   const deterministic = buildDeterministicChatActionPlan(input);
@@ -421,6 +427,26 @@ export async function buildChatActionPlan(input: ChatPlannerInput): Promise<Chat
       : 'I need a few more details to do that. What title, date, time, and destination should I use?');
   }
   return null;
+}
+
+function buildAmbiguousActionClarificationPlan(input: ChatPlannerInput): ChatActionPlan | null {
+  const folded = foldCalendarText(input.text);
+  const hasScheduleVerb = /\b(schedule|plan|put|book|set up|marca|marcar|agenda|agendar|programa|programar)\b/.test(folded);
+  const hasAmbiguousObject = /\b(something|anything|stuff|thing|algo|alguma coisa|coisa|qualquer coisa)\b/.test(folded);
+  const hasDateHint = /\b(today|tomorrow|tonight|next\s+(?:week|monday|tuesday|wednesday|thursday|friday|saturday|sunday)|monday|tuesday|wednesday|thursday|friday|saturday|sunday|hoje|amanha|amanhã|esta\s+semana|proxima\s+semana|próxima\s+semana|segunda|terca|terça|quarta|quinta|sexta|sabado|sábado|domingo)\b/.test(folded);
+  if (!hasScheduleVerb || !hasAmbiguousObject || !hasDateHint) return null;
+
+  return buildNeedsInputPlan(input, {
+    skill: 'secretary_calendar',
+    action: 'schedule_event',
+    question: input.locale?.startsWith('pt')
+      ? 'Queres criar um evento, uma tarefa ou um lembrete?'
+      : 'Should I make this an event, a task, or a reminder?',
+    args: { rawRequest: input.text },
+    routingSignals: ['ambiguous_action_intent', 'clarifying_question'],
+    clarificationReason: 'ambiguous_intent',
+    intentClass: 'clarifying_question',
+  });
 }
 
 function buildPendingCancellationPlan(input: ChatPlannerInput): ChatActionPlan | null {
@@ -1376,6 +1402,9 @@ function buildPlanFromSteps(input: ChatPlannerInput, steps: ChatPlanStep[], rout
     clarificationQuestion: steps.some((step) => !step.requiredArgsPresent)
       ? buildTargetedClarificationQuestion(input, steps)
       : undefined,
+    clarificationReason: steps.some((step) => !step.requiredArgsPresent)
+      ? 'missing_required_fields'
+      : undefined,
     confidence,
     effectiveConfidence,
     telemetry: {
@@ -1399,6 +1428,8 @@ function buildNeedsInputPlan(input: ChatPlannerInput, opts: {
   question: string;
   args: Record<string, unknown>;
   routingSignals: string[];
+  clarificationReason?: ChatClarificationReason;
+  intentClass?: string;
 }): ChatActionPlan {
   const step = makeStep(input, {
     skill: opts.skill,
@@ -1422,6 +1453,8 @@ function buildNeedsInputPlan(input: ChatPlannerInput, opts: {
     steps: [step],
     requiresConfirmation: false,
     clarificationQuestion: opts.question,
+    clarificationReason: opts.clarificationReason ?? 'missing_required_fields',
+    intentClass: opts.intentClass,
     confidence: 0.72,
     effectiveConfidence: 0.72,
     telemetry: {
@@ -2085,8 +2118,18 @@ function buildClarificationPlan(input: ChatPlannerInput, question: string): Chat
     }],
     requiresConfirmation: false,
     clarificationQuestion: question,
+    clarificationReason: 'ambiguous_intent',
+    intentClass: 'clarifying_question',
     confidence: 0.4,
   };
+}
+
+function clarificationReasonForPlan(plan: ChatActionPlan): ChatClarificationReason {
+  if (plan.clarificationReason) return plan.clarificationReason;
+  if (plan.telemetry && plan.effectiveConfidence != null && plan.effectiveConfidence < plan.telemetry.threshold) {
+    return 'low_confidence';
+  }
+  return 'missing_required_fields';
 }
 
 export function buildLlmPlannerPrompt(input: ChatPlannerInput): { systemPrompt: string; userPrompt: string } {
@@ -2561,10 +2604,13 @@ export async function executeChatActionPlan(
       });
     }
     persistPlanStatus(plan, input, 'needs_clarification');
-    return buildActionResponse(input, plan, 'needs_clarification', plan.clarificationQuestion || defaultClarification(input), {
+    const question = plan.clarificationQuestion || defaultClarification(input);
+    const clarificationReason = clarificationReasonForPlan(plan);
+    return buildActionResponse(input, plan, 'needs_clarification', question, {
       type: 'chat_action_needs_input',
       actionStatus: 'needs_clarification',
-      clarification: { question: plan.clarificationQuestion || defaultClarification(input), reason: 'missing_required_fields' },
+      intentClass: plan.intentClass ?? (clarificationReason === 'ambiguous_intent' ? 'clarifying_question' : undefined),
+      clarification: { question, reason: clarificationReason },
       openSurface: openSurfacePayloadForStep(plan.steps[0], null, input),
     });
   }

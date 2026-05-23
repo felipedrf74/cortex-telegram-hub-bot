@@ -40,6 +40,12 @@ describe('task NLU title extraction', () => {
       dueDateTime: '2026-05-15',
     },
     {
+      text: 'Adiciona uma tarefa para ligar ao dentista amanhã',
+      locale: 'pt-PT',
+      title: 'ligar ao dentista',
+      dueDateTime: '2026-05-15',
+    },
+    {
       text: 'Crea una tarea llamada "Comprar leche"',
       locale: 'es-ES',
       title: 'Comprar leche',

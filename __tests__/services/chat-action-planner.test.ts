@@ -100,6 +100,58 @@ describe('ChatActionPlanner', () => {
     testDb?.close();
   });
 
+  it('asks a clarifying question instead of guessing for ambiguous schedule requests', async () => {
+    const plan = await buildChatActionPlan({
+      ...baseInput,
+      text: 'Schedule something for tomorrow',
+      locale: 'en-US',
+      messageId: 'msg-ambiguous-schedule',
+    });
+
+    expect(plan).toMatchObject({
+      clarificationReason: 'ambiguous_intent',
+      intentClass: 'clarifying_question',
+      steps: [{
+        skill: 'secretary_calendar',
+        action: 'schedule_event',
+        requiredArgsPresent: false,
+      }],
+    });
+
+    const response = await executeChatActionPlan(plan!, {
+      ...baseInput,
+      text: 'Schedule something for tomorrow',
+      locale: 'en-US',
+      messageId: 'msg-ambiguous-schedule',
+      persistRuns: false,
+    }, {} as never);
+
+    expect(response.text).toMatch(/event, a task, or a reminder/i);
+    expect(response.metadata).toMatchObject({
+      type: 'chat_action_needs_input',
+      actionStatus: 'needs_clarification',
+      intentClass: 'clarifying_question',
+      clarification: {
+        reason: 'ambiguous_intent',
+      },
+    });
+  });
+
+  it('asks the same clarifying question for ambiguous Portuguese schedule requests', async () => {
+    const plan = await buildChatActionPlan({
+      ...baseInput,
+      text: 'Agenda algo para amanhã',
+      locale: 'pt-PT',
+      messageId: 'msg-ambiguous-schedule-pt',
+    });
+
+    expect(plan).toMatchObject({
+      clarificationReason: 'ambiguous_intent',
+      intentClass: 'clarifying_question',
+    });
+    expect(plan?.clarificationQuestion).toMatch(/evento.*tarefa.*lembrete/i);
+  });
+
   it('routes the Portuguese Gmail-agenda command to Google Calendar, not Gmail unread', async () => {
     expect(shouldRunActionPlannerBeforeReadOnlyFastPaths(baseInput.text)).toBe(true);
     const parsed = parseNaturalLanguageCalendarEvent(baseInput.text, {

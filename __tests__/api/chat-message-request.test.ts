@@ -210,6 +210,8 @@ describe('chat message request-boundary helpers', () => {
           nexusPointsBalance: 0,
           nexusPointsRemainingUsd: 0,
           pointsPurchaseAvailable: false,
+          error: 'rate_limited',
+          retryable: true,
         },
       },
     });

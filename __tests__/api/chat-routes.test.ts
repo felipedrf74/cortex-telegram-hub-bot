@@ -2917,6 +2917,8 @@ describe('Chat API routes', () => {
       nexusPointsBalance: 0,
       nexusPointsRemainingUsd: 0,
       pointsPurchaseAvailable: false,
+      error: 'rate_limited',
+      retryable: true,
     });
   });
 
