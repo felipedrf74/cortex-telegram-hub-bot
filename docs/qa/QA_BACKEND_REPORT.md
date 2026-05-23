@@ -10,6 +10,62 @@ that pass, not this doc's canonical-status frontmatter.
 Generated: 2026-04-29 03:30 WEST  
 Branch: `feature/chat-tenant-safe-context-orchestration`
 
+## 2026-05-23 iOS QA Confirmation Hostile-QA Follow-up Addendum
+
+Branch: `codex/ios-qa-confirmation-contract-20260523`
+
+Status: local source follow-up complete for the hostile-QA minor findings.
+No production data, OAuth disconnects, payments, staging deploy, or production
+promote were used in this pass.
+
+Findings and fixes:
+
+- P2 fail-open tool risk is closed. `chat-tool-authorization.ts` now has
+  explicit external-send, destructive, write, and read classifications. Unknown
+  future tool names fail closed as `write`, which forces confirmation when the
+  chat context requires write confirmation.
+- The dispatchable tool registry is pinned by test coverage. Every
+  `DISPATCHABLE_TOOL_NAMES` entry must have an explicit chat risk
+  classification, and an unknown future tool is covered by a fail-closed
+  confirmation-required regression test.
+- Confirmation-token reject paths are covered independently for wrong intent,
+  tampered signature, right-user/wrong-tenant, and wrong-user/right-tenant.
+- The `/api/v1/chat/confirm-action` replay path now remembers the completed
+  confirmation before clearing the pending entry so concurrent duplicate
+  confirms are more likely to replay the completed response instead of
+  re-entering execution.
+- Rate-limit handling was verified as existing behavior, not a new fix:
+  `sendChatQuotaExceededIfNeeded` returns a structured 429 with
+  `details.error = rate_limited` and `details.retryable = true`; iOS already
+  maps this to a failed local user message in `ChatRepositoryTests`.
+- The confirmation-card wording is corrected for future handoffs: iOS currently
+  implements three variants, not four: default action, destructive, and
+  financial.
+- The iOS confirm-action retry path now documents the accepted in-memory cache
+  trade-off: if a 401/no-longer-pending response follows a backend restart, the
+  user must start a fresh confirmation instead of auto-retrying the same token.
+
+Validation:
+
+```bash
+npm run docs:audit
+npx tsc --noEmit
+npx vitest run __tests__/services/chat-tool-auth-fail-closed.test.ts __tests__/api/chat-confirmation-contract.test.ts __tests__/api/chat-message-request.test.ts __tests__/api/chat-routes.test.ts __tests__/services/tool-executor-allowlist.test.ts
+npm run verify
+cd /Users/felipedominguez/Desktop/Nexus\ Hub\ IOS/Nexus\ Hub
+bash scripts/ios-feature-test-convention-check.sh
+bash scripts/ios-single-simulator-test.sh "-only-testing:Nexus HubTests/ChatRepositoryTests/test_send_rateLimitedMarksLocalUserMessageFailed" "-only-testing:Nexus HubUITests/ChatActionConfirmationUITests" "-only-testing:Nexus HubUITests/TaskSwipeDeleteConfirmationUITests"
+```
+
+Results: PASS locally. The backend focused suite passed 5 files / 84 tests.
+The full backend verify passed 641 files / 9,490 tests after typecheck.
+The iOS convention check reported 14 covered feature folders, 0 skipped, and
+0 missing. The focused iOS run passed 1 unit test and 2 UI tests on iPhone 17
+Pro simulator.
+
+Remaining caveat: staging deploy, staging smoke, and production promote remain
+operator-gated release steps and were not run for this hostile-QA follow-up.
+
 ## 2026-05-08 Chat Reasoning Engine v1 Addendum
 
 Branch: `feature/chat-reasoning-engine-v1`

@@ -23,12 +23,15 @@ export type ChatToolRisk = 'read' | 'write' | 'destructive' | 'external_send';
 
 const storage = new AsyncLocalStorage<ChatToolAuthorizationContext>();
 
+const EXTERNAL_SEND_TOOLS = new Set([
+  'send_outlook_email',
+  'reply_outlook_email',
+]);
+
 const DESTRUCTIVE_TOOLS = new Set([
   'ms_todo_delete_list',
   'ms_todo_delete_task',
   'delete_calendar_event',
-  'send_outlook_email',
-  'reply_outlook_email',
   'shared_memory_remove',
   'shared_memory_set',
   'finance_delete_transaction',
@@ -66,6 +69,29 @@ const WRITE_TOOLS = new Set([
   'cooking_generate_shopping_list',
 ]);
 
+const READ_TOOLS = new Set([
+  'ms_todo_get_lists',
+  'ms_todo_get_tasks',
+  'ms_todo_search_tasks',
+  'ms_todo_get_due_tasks',
+  'ms_todo_get_checklist',
+  'get_calendar_events',
+  'search_notes',
+  'search_outlook_emails',
+  'read_outlook_email',
+  'get_outlook_unread',
+  'get_training_plan',
+  'finance_get_transactions',
+  'finance_monthly_summary',
+  'finance_get_tax_events',
+  'finance_annual_summary',
+  'cooking_get_recipes',
+  'cooking_get_pantry',
+  'cooking_get_preferences',
+  'cooking_get_meal_plan',
+  'cooking_get_shopping_list',
+]);
+
 export function runWithChatToolAuthorization<T>(
   context: ChatToolAuthorizationContext,
   fn: () => T | Promise<T>,
@@ -77,11 +103,20 @@ export function getCurrentChatToolAuthorizationContext(): ChatToolAuthorizationC
   return storage.getStore();
 }
 
+export function isChatToolRiskClassified(toolName: string): boolean {
+  return EXTERNAL_SEND_TOOLS.has(toolName)
+    || DESTRUCTIVE_TOOLS.has(toolName)
+    || WRITE_TOOLS.has(toolName)
+    || READ_TOOLS.has(toolName);
+}
+
 export function getChatToolRisk(toolName: string): ChatToolRisk {
-  if (toolName === 'send_outlook_email' || toolName === 'reply_outlook_email') return 'external_send';
+  if (EXTERNAL_SEND_TOOLS.has(toolName)) return 'external_send';
   if (DESTRUCTIVE_TOOLS.has(toolName)) return 'destructive';
   if (WRITE_TOOLS.has(toolName)) return 'write';
-  return 'read';
+  if (READ_TOOLS.has(toolName)) return 'read';
+  // New tool names require confirmation until they are explicitly classified.
+  return 'write';
 }
 
 export function authorizeChatToolCall(

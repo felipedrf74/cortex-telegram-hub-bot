@@ -641,7 +641,6 @@ export function registerChatMessageRoutes(
       return;
     }
 
-    clearPendingChatConfirmation(userId, tenantId);
     const response = confirmedAction.response;
     if (decisionResult) {
       response.metadata.confirmationDecision = {
@@ -661,6 +660,7 @@ export function registerChatMessageRoutes(
     };
 
     const statusCode = confirmedAction.status === 'needs_confirmation' || confirmedAction.status === 'needs_clarification' ? 202 : 200;
+    // Cache the completion before clearing pending so a concurrent duplicate confirm replays the result.
     rememberCompletedChatConfirmation({
       confirmationToken,
       userId,
@@ -669,6 +669,7 @@ export function registerChatMessageRoutes(
       statusCode,
       responseBody: response,
     });
+    clearPendingChatConfirmation(userId, tenantId);
     res.status(statusCode).json(response);
   }));
 

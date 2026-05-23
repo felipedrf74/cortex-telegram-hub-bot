@@ -129,6 +129,60 @@ describe('chat confirmation contract', () => {
     expect(validation).toEqual({ ok: false, code: 'wrong_scope' });
   });
 
+  it('wrong intent class is rejected before execution', () => {
+    const { confirmationToken } = issuePendingTaskCreate();
+
+    const validation = validateChatConfirmationToken(confirmationToken, {
+      userId,
+      tenantId,
+      intentClass: 'task_delete',
+      now,
+    });
+
+    expect(validation).toEqual({ ok: false, code: 'wrong_intent' });
+  });
+
+  it('tampered signature is rejected before JSON parsing', () => {
+    const { confirmationToken } = issuePendingTaskCreate();
+    const replacement = confirmationToken.endsWith('A') ? 'B' : 'A';
+    const tamperedToken = `${confirmationToken.slice(0, -1)}${replacement}`;
+
+    const validation = validateChatConfirmationToken(tamperedToken, {
+      userId,
+      tenantId,
+      intentClass: 'task_create',
+      now,
+    });
+
+    expect(validation).toEqual({ ok: false, code: 'invalid_token' });
+  });
+
+  it('right user but wrong tenant is rejected before execution', () => {
+    const { confirmationToken } = issuePendingTaskCreate();
+
+    const validation = validateChatConfirmationToken(confirmationToken, {
+      userId,
+      tenantId: 99999,
+      intentClass: 'task_create',
+      now,
+    });
+
+    expect(validation).toEqual({ ok: false, code: 'wrong_scope' });
+  });
+
+  it('wrong user but right tenant is rejected before execution', () => {
+    const { confirmationToken } = issuePendingTaskCreate();
+
+    const validation = validateChatConfirmationToken(confirmationToken, {
+      userId: 99999,
+      tenantId,
+      intentClass: 'task_create',
+      now,
+    });
+
+    expect(validation).toEqual({ ok: false, code: 'wrong_scope' });
+  });
+
   it('valid token and matching intent allow execution to proceed', async () => {
     const executeMutation = vi.fn(async () => ({ taskId: 'task-contract-1' }));
     const { confirmationToken } = issuePendingTaskCreate();
