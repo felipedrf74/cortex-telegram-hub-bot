@@ -135,6 +135,32 @@ describe('typed slot adoption — create_task (Phase 12 batch 63)', () => {
   });
 });
 
+describe('typed slot adoption — task subtasks', () => {
+  it('extracts parent task and subtasks for task-with-subtasks actions', () => {
+    const entry = findChatActionDefinition('tasks', 'create_task_with_subtasks')!;
+    const result = getSlotExtractors(entry)[0].extract(
+      'Create task "Prozis" with subtasks "creatine", "K2", "D3"',
+      { locale: 'en-US' },
+    );
+    expect(result.slots).toMatchObject({
+      title: 'Prozis',
+      subtasks: ['creatine', 'K2', 'D3'],
+    });
+  });
+
+  it('extracts Spanish add-subtask targets without leaking articles into the title', () => {
+    const entry = findChatActionDefinition('tasks', 'add_subtasks_to_task')!;
+    const result = getSlotExtractors(entry)[0].extract(
+      'Añade creatina, K2 y D3 a la tarea Prozis',
+      { locale: 'es-ES' },
+    );
+    expect(result.slots).toMatchObject({
+      title: 'Prozis',
+      subtasks: ['creatina', 'K2', 'D3'],
+    });
+  });
+});
+
 describe('typed slot adoption — training_plan_create (Phase 12 batch 63)', () => {
   it('exposes the training typed extractor on training_plan_create', () => {
     const entry = findChatActionDefinition('training', 'training_plan_create')!;
@@ -165,10 +191,10 @@ describe('typed slot adoption — training_plan_create (Phase 12 batch 63)', () 
 });
 
 describe('typed slot adoption inventory (Phase 15 batch 77: full coverage)', () => {
-  it('imports the runtime registry and finds exactly 45 active actions', () => {
+  it('imports the runtime registry and finds exactly 47 active actions', () => {
     const entries = getChatActionRegistry();
-    expect(entries).toHaveLength(45);
-    expect(activeActions(entries)).toHaveLength(45);
+    expect(entries).toHaveLength(47);
+    expect(activeActions(entries)).toHaveLength(47);
   });
 
   it('excludes non-active action definitions from active-action counts', () => {
@@ -182,16 +208,16 @@ describe('typed slot adoption inventory (Phase 15 batch 77: full coverage)', () 
     expect(activeActions(synthetic).map((entry) => entry.status)).toEqual(['active']);
   });
 
-  it('all 45 active registry actions have typedSlotExtractors (full coverage)', () => {
+  it('all 47 active registry actions have typedSlotExtractors (full coverage)', () => {
     // Adoption history:
     //   Phase 12 batch 63 — 3 (calendar/task/training core)
     //   Phase 13 batch 67 — +5 (mail send/draft, delete_event, etc.)
     //   Phase 14 batch 72 — +10 (extended to 18)
-    //   Phase 15 batch 77 — +27 (FULL coverage; noop adapter for entries
+    //   Phase 15 batch 77 — +29 (FULL coverage; noop adapter for entries
     //     where extraction has no useful NL signal)
     const entries = activeActions(getChatActionRegistry());
     const adopted = entries.filter((e: { typedSlotExtractors?: unknown }) => Array.isArray(e.typedSlotExtractors) && e.typedSlotExtractors.length > 0);
-    expect(adopted.length).toBe(45);
+    expect(adopted.length).toBe(47);
     expect(adopted.length).toBe(entries.length);
   });
 

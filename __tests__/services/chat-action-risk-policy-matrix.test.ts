@@ -72,7 +72,7 @@ describe('chat action production risk-policy matrix', () => {
   const rows = registry.map(matrixRow);
 
   it('builds one risk-policy row for every active action', () => {
-    expect(rows).toHaveLength(45);
+    expect(rows).toHaveLength(47);
     expect(new Set(rows.map((row) => row.action)).size).toBe(rows.length);
     for (const row of rows) {
       expect(row).toEqual({
