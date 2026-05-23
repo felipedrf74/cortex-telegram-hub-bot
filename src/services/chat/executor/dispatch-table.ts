@@ -6,7 +6,7 @@ import { executeCalendarCreateStep, executeCalendarDeleteStep, executeCalendarRe
 import { executeMailInboxSummaryStep, executeMailUnreadCountStep } from '../../skills/mail/executor';
 import { executeAddSubtasksToTaskStep, executeTaskCreateStep, executeTaskMutationStep, executeTaskWithSubtasksStep } from '../../skills/tasks/executor';
 import { executeContentAgencyStep, executeContentPipelineHandoffStep, executeContentPipelineStageTransitionStep, executeContentScheduleWorkStep } from '../../skills/content/executor';
-import { executeCookingGroceryListStep, executeCookingMealPlanStep, executeCookingSupportStep } from '../../skills/cooking/executor';
+import { executeCookingGroceryListStep, executeCookingMealPlanStep, executeCookingSubstituteIngredientStep, executeCookingSupportStep } from '../../skills/cooking/executor';
 import { executeFinanceCategorizeReceiptStep, executeFinancePaymentActionStep, executeFinanceReminderStep, executeFinanceSummaryStep } from '../../skills/finance/executor';
 import { executeConnectionsReconnectGuidanceStep, executeConnectionsStatusStep } from '../../skills/connections/executor';
 import { executeTrainingCoachReportStep, executeTrainingExplainSessionStep, executeTrainingPlanCreateStep, executeTrainingReflowStep } from '../../skills/training/executor';
@@ -40,6 +40,7 @@ const CHAT_STEP_EXECUTORS: Partial<Record<ChatActionName, ChatStepExecutor>> = {
   content_pipeline_stage_transition: (step, context) => executeContentPipelineStageTransitionStep(step, context.plan, context.input, context.persistRuns),
   cooking_grocery_list: (step, context) => executeCookingGroceryListStep(step, context.plan, context.input, context.persistRuns),
   cooking_meal_plan: (step, context) => executeCookingMealPlanStep(step, context.plan, context.input, context.persistRuns),
+  cooking_substitute_ingredient: (step, context) => executeCookingSubstituteIngredientStep(step, context.plan, context.input, context.persistRuns),
   cooking_meal_support: (step, context) => executeCookingSupportStep(step, context.input),
   cooking_fueling_support: (step, context) => executeCookingSupportStep(step, context.input),
   finance_summary: (step, context) => executeFinanceSummaryStep(step, context.input),

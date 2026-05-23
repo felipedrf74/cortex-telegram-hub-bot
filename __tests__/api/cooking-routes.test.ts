@@ -597,6 +597,59 @@ describe('Cooking API — shopping list item updates', () => {
     expect(mockInvalidateCookingDerivedCaches).not.toHaveBeenCalled();
   });
 
+  it('suggests scoped substitution candidates without mutating the meal plan', async () => {
+    const user = getOrCreateUser(210183, { username: 'cook18c' });
+    const recipe = addRecipe(user.id, 'Peanut noodles', [
+      { name: 'Peanuts', quantity: '30', unit: 'g' },
+      { name: 'Noodles', quantity: '100', unit: 'g' },
+    ], { tenantId: 101 });
+    setMealPlan(user.id, '2026-04-13', 'dinner', 'Peanut noodles', { recipeId: recipe.id, tenantId: 101 });
+    await dispatch('POST', '/preferences', user.id, {
+      kind: 'allergy',
+      value: 'peanuts',
+      source: 'chat_correction',
+    }, 101);
+    mockInvalidateCookingDerivedCaches.mockClear();
+
+    const res = await dispatch('POST', '/meal-plan/substitutions/suggest', user.id, {
+      date: '2026-04-13',
+      mealType: 'dinner',
+      originalIngredient: 'Peanuts',
+      reason: 'allergy',
+      tenantId: 202,
+    }, 101);
+
+    expect(res.statusCode, JSON.stringify(res.body)).toBe(200);
+    expect(res.body.data.count).toBeGreaterThan(0);
+    expect(res.body.data.suggestions).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        originalIngredient: 'Peanuts',
+        suggestedIngredient: 'sunflower seed butter',
+        reason: 'allergy',
+      }),
+    ]));
+    expect(getRecipeById(user.id, recipe.id, 101)!.ingredients.map((ingredient) => ingredient.name)).toEqual(['Peanuts', 'Noodles']);
+    expect(mockInvalidateCookingDerivedCaches).not.toHaveBeenCalled();
+  });
+
+  it('does not suggest substitutions across tenant scope', async () => {
+    const user = getOrCreateUser(210184, { username: 'cook18d' });
+    const recipe = addRecipe(user.id, 'Peanut noodles', [
+      { name: 'Peanuts', quantity: '30', unit: 'g' },
+    ], { tenantId: 101 });
+    setMealPlan(user.id, '2026-04-13', 'dinner', 'Peanut noodles', { recipeId: recipe.id, tenantId: 101 });
+
+    const res = await dispatch('POST', '/meal-plan/substitutions/suggest', user.id, {
+      date: '2026-04-13',
+      mealType: 'dinner',
+      originalIngredient: 'Peanuts',
+      reason: 'allergy',
+    }, 202);
+
+    expect(res.statusCode).toBe(404);
+    expect(res.body.error.code).toBe('NOT_FOUND');
+  });
+
   it('accepts a scoped substitution candidate and refreshes the shopping list', async () => {
     const user = getOrCreateUser(21023, { username: 'cook23' });
     const recipe = addRecipe(user.id, 'Peanut noodles', [

@@ -1,0 +1,52 @@
+{
+  "suite": "track-2-cooking-substitution",
+  "expected_pass_rate": 0.97,
+  "scenarios": [
+    {
+      "id": "cooking-substitution-en-dinner",
+      "user_text": "Replace peanuts with sunflower seed butter in dinner tomorrow",
+      "locale": "en-US",
+      "expected_action": "cooking_substitute_ingredient",
+      "expected_slots": {
+        "mealType": "dinner",
+        "originalIngredient": "peanuts",
+        "suggestedIngredient": "sunflower seed butter"
+      },
+      "expected_verifier": "verified_success",
+      "expected_response_substring": ["sunflower seed butter", "recipe"],
+      "forbidden_response_substring": ["Telegram", "allergy unsafe"]
+    },
+    {
+      "id": "cooking-substitution-pt-jantar",
+      "user_text": "Substitui amendoim por manteiga de girassol no jantar de amanhã",
+      "locale": "pt-PT",
+      "expected_action": "cooking_substitute_ingredient",
+      "expected_slots": {
+        "mealType": "dinner",
+        "originalIngredient": "amendoim",
+        "suggestedIngredient": "manteiga de girassol"
+      },
+      "expected_verifier": "verified_success",
+      "expected_response_substring": ["manteiga de girassol"]
+    },
+    {
+      "id": "cooking-substitution-es-cena",
+      "user_text": "Sustituye champiñones por calabacín en la cena de mañana",
+      "locale": "es-ES",
+      "expected_action": "cooking_substitute_ingredient",
+      "expected_slots": {
+        "mealType": "dinner",
+        "originalIngredient": "champiñones",
+        "suggestedIngredient": "calabacín"
+      },
+      "expected_verifier": "verified_success"
+    },
+    {
+      "id": "cooking-substitution-past-tense-negative",
+      "user_text": "I substituted peanuts in dinner yesterday",
+      "locale": "en-US",
+      "expected_action": null,
+      "forbidden_response_substring": ["replaced peanuts"]
+    }
+  ]
+}
