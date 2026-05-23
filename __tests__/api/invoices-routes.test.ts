@@ -14,6 +14,17 @@ const mockGetFiscalCollectionSummary = vi.fn();
 const mockSendFiscalBundleNow = vi.fn();
 const mockUpdateFiscalCollectionProfile = vi.fn();
 const mockInvalidateFinanceDerivedCaches = vi.fn();
+const mockNormalizeScraperMfaSource = vi.fn((value: unknown) => (
+  typeof value === 'string' && ['amazon', 'uber'].includes(value.trim().toLowerCase())
+    ? value.trim().toLowerCase()
+    : null
+));
+const mockNormalizeScraperMfaCode = vi.fn((value: unknown) => {
+  if (typeof value !== 'string') return null;
+  const code = value.trim();
+  return code && code.length <= 256 ? code : null;
+});
+const mockSubmitScraperMfaReply = vi.fn();
 
 vi.mock('../../src/services/invoice-collector', () => ({
   getAllVendors: (...args: unknown[]) => mockGetAllVendorsMerged(...args),
@@ -59,6 +70,12 @@ vi.mock('../../src/services/cache-coherence-registry', () => ({
   },
   invalidateFinanceDerivedCaches: (...args: unknown[]) =>
     mockInvalidateFinanceDerivedCaches(...args),
+}));
+
+vi.mock('../../src/services/scraper-mfa-reply', () => ({
+  normalizeScraperMfaSource: (...args: unknown[]) => mockNormalizeScraperMfaSource(...args),
+  normalizeScraperMfaCode: (...args: unknown[]) => mockNormalizeScraperMfaCode(...args),
+  submitScraperMfaReply: (...args: unknown[]) => mockSubmitScraperMfaReply(...args),
 }));
 
 vi.mock('../../src/utils/logger', () => ({
@@ -168,6 +185,9 @@ describe('Invoices API routes', () => {
     mockSendFiscalBundleNow.mockReset();
     mockUpdateFiscalCollectionProfile.mockReset();
     mockInvalidateFinanceDerivedCaches.mockReset();
+    mockNormalizeScraperMfaSource.mockClear();
+    mockNormalizeScraperMfaCode.mockClear();
+    mockSubmitScraperMfaReply.mockReset();
 
     mockGetFiscalCollectionSummary.mockReturnValue({
       profile: {
@@ -426,5 +446,86 @@ describe('Invoices API routes', () => {
     expect(res.body.ok).toBe(true);
     expect(mockCollectMonthlyInvoices).toHaveBeenCalledWith(12, 2026, 4);
     expect(mockInvalidateFinanceDerivedCaches).toHaveBeenCalledWith(12);
+  });
+
+  it('submits a scoped scraper MFA reply without echoing the code', async () => {
+    mockSubmitScraperMfaReply.mockReturnValue({
+      accepted: true,
+      source: 'amazon',
+    });
+
+    const res = await dispatch('POST', '/scraper-mfa-reply', 44, {
+      source: ' amazon ',
+      code: ' 123456 ',
+    }, { tenantId: 44 });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.body.ok).toBe(true);
+    expect(res.body.data).toEqual({
+      accepted: true,
+      source: 'amazon',
+    });
+    expect(JSON.stringify(res.body)).not.toContain('123456');
+    expect(mockSubmitScraperMfaReply).toHaveBeenCalledWith({
+      userId: 44,
+      tenantId: 44,
+      source: 'amazon',
+      code: '123456',
+    });
+  });
+
+  it('rejects scraper MFA replies for unsupported sources before touching waiters', async () => {
+    const res = await dispatch('POST', '/scraper-mfa-reply', {
+      source: 'garmin',
+      code: '123456',
+    });
+
+    expect(res.statusCode).toBe(400);
+    expect(res.body.ok).toBe(false);
+    expect(res.body.error.code).toBe('BAD_REQUEST');
+    expect(mockSubmitScraperMfaReply).not.toHaveBeenCalled();
+  });
+
+  it('rejects empty scraper MFA codes before touching waiters', async () => {
+    const res = await dispatch('POST', '/scraper-mfa-reply', {
+      source: 'uber',
+      code: '   ',
+    });
+
+    expect(res.statusCode).toBe(400);
+    expect(res.body.ok).toBe(false);
+    expect(res.body.error.code).toBe('BAD_REQUEST');
+    expect(mockSubmitScraperMfaReply).not.toHaveBeenCalled();
+  });
+
+  it('returns a state conflict when there is no pending scraper MFA challenge', async () => {
+    mockSubmitScraperMfaReply.mockReturnValue({
+      accepted: false,
+      source: 'uber',
+    });
+
+    const res = await dispatch('POST', '/scraper-mfa-reply', {
+      source: 'uber',
+      code: '654321',
+    });
+
+    expect(res.statusCode).toBe(409);
+    expect(res.body.ok).toBe(false);
+    expect(res.body.error).toEqual({
+      code: 'SCRAPER_MFA_NO_PENDING_CHALLENGE',
+      message: 'No pending scraper verification challenge for this account.',
+    });
+  });
+
+  it('fails closed on invalid tenant scope before resolving scraper MFA replies', async () => {
+    const res = await dispatch('POST', '/scraper-mfa-reply', 12, {
+      source: 'amazon',
+      code: '123456',
+    }, { tenantId: undefined });
+
+    expect(res.statusCode).toBe(401);
+    expect(res.body.ok).toBe(false);
+    expect(res.body.error.code).toBe('UNAUTHORIZED');
+    expect(mockSubmitScraperMfaReply).not.toHaveBeenCalled();
   });
 });

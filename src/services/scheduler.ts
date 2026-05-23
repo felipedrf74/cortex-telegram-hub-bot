@@ -18,6 +18,7 @@ import { collectMonthlyInvoices, formatCollectionNotification } from './invoice-
 import { isInvoiceFilingConfigured } from './invoice-filer';
 import { collectAmazonInvoices, formatAmazonNotification, isAmazonConfigured } from './amazon-collector';
 import { collectUberInvoices, formatUberNotification, isUberConfigured } from './uber-collector';
+import { createScraperMfaInteractiveCallbacks } from './scraper-mfa-reply';
 import { getFiscalCollectionSummary, isFiscalBundleDue, sendFiscalBundleNow } from './fiscal-bundle';
 import { generateCoachBriefing } from './garmin-coach';
 import { isGarminConfigured, keepAlive as garminKeepAlive, ensureAuthenticated as garminEnsureAuth } from './garmin';
@@ -1178,7 +1179,19 @@ export function startScheduler(bot?: any): void {
     const prev = now().minus({ months: 1 });
     const ownerTenantIds = getOwnerTenantIds();
     for (const tenantId of ownerTenantIds) {
-      const result = await collectAmazonInvoices(tenantId, prev.year, prev.month);
+      const callbacks = createScraperMfaInteractiveCallbacks({
+        userId: tenantId,
+        tenantId,
+        source: 'amazon',
+      });
+      const result = await collectAmazonInvoices(
+        tenantId,
+        prev.year,
+        prev.month,
+        callbacks.sendMessage,
+        callbacks.sendScreenshot,
+        callbacks.waitForReply,
+      );
       const notification = formatAmazonNotification(result);
       const ownerTelegramId = getUserById(tenantId)?.telegram_id;
       if (!ownerTelegramId) continue;
@@ -1197,7 +1210,19 @@ export function startScheduler(bot?: any): void {
     const prev = now().minus({ months: 1 });
     const ownerTenantIds = getOwnerTenantIds();
     for (const tenantId of ownerTenantIds) {
-      const result = await collectUberInvoices(tenantId, prev.year, prev.month);
+      const callbacks = createScraperMfaInteractiveCallbacks({
+        userId: tenantId,
+        tenantId,
+        source: 'uber',
+      });
+      const result = await collectUberInvoices(
+        tenantId,
+        prev.year,
+        prev.month,
+        callbacks.sendMessage,
+        callbacks.sendScreenshot,
+        callbacks.waitForReply,
+      );
       const notification = formatUberNotification(result);
       const ownerTelegramId = getUserById(tenantId)?.telegram_id;
       if (!ownerTelegramId) continue;
