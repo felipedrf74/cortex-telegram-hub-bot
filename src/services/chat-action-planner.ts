@@ -33,6 +33,18 @@ import {
   type ChatActionSkill,
   type ChatProvider,
 } from './chat-action-registry';
+import type {
+  CalendarProviderDeps,
+  ChatActionExecutionOptions,
+  ChatActionPlan,
+  ChatActionPlannerDeps,
+  ChatActionRouteResponse,
+  ChatActionStatus,
+  ChatClarificationReason,
+  ChatPlannerInput,
+  ChatPlanStep,
+  ChatStepExecutionResult,
+} from './chat/types';
 import {
   buildNormalizedActionHash,
   claimChatActionRun,
@@ -63,7 +75,6 @@ import {
 } from './chat-tool-authorization';
 import {
   buildBlocksFromMarkdown,
-  type ChatResponseBlock,
 } from './chat-response-blocks';
 import type { ChatResponseCard } from './chat-response-cards';
 import {
@@ -139,10 +150,19 @@ import {
   isChatOpenSurfaceHandoffEnabled,
 } from './runtime-flags';
 
-export type ChatActionStatus = ChatActionRunStatus;
-
-export type ChatPlanStepType = ChatActionName | 'answer' | 'clarification';
-type ChatClarificationReason = 'missing_required_fields' | 'ambiguous_intent' | 'low_confidence';
+export type {
+  CalendarProviderDeps,
+  ChatActionExecutionOptions,
+  ChatActionPlan,
+  ChatActionPlannerDeps,
+  ChatActionRouteResponse,
+  ChatActionStatus,
+  ChatClarificationReason,
+  ChatPlannerInput,
+  ChatPlanStep,
+  ChatPlanStepType,
+  ChatStepExecutionResult,
+} from './chat/types';
 
 const CHAT_LLM_TIER2_GEMINI_MODEL = 'gemini-2.5-flash';
 const CHAT_LLM_TIER2_OPENAI_FALLBACK_MODEL = 'gpt-5.4-nano';
@@ -153,111 +173,6 @@ const DEFAULT_PROVIDER_READ_BACK_TIMEOUT_MS = 3_500;
 export const BROAD_SKILL_SLOT_COMPLETENESS_BONUS = 0.005;
 export const BROAD_SKILL_MIN_PRIORITY_GAP = 0.01;
 const DEFAULT_PROVIDER_WRITE_TIMEOUT_MS = 10_000;
-
-export interface ChatActionPlan {
-  schemaVersion: 1;
-  userId: string;
-  tenantId: string;
-  conversationId: string;
-  messageId: string;
-  locale: string;
-  timezone: string;
-  channel: 'ios' | 'telegram' | 'portal' | 'api';
-  createdAt: string;
-  planner: 'deterministic' | 'llm_structured' | 'mixed';
-  steps: ChatPlanStep[];
-  requiresConfirmation: boolean;
-  clarificationQuestion?: string;
-  clarificationReason?: ChatClarificationReason;
-  intentClass?: string;
-  confidence: number;
-  effectiveConfidence?: number;
-  telemetry?: ChatActionTelemetry;
-  debug?: {
-    routingSignals: string[];
-    rejectedFastPaths: string[];
-    parser: 'deterministic' | 'model_assisted' | 'mixed';
-    modelProvider?: 'gemini' | 'anthropic' | 'openai';
-  };
-}
-
-export interface ChatPlanStep {
-  stepId: string;
-  skill: ChatActionSkill;
-  type: ChatPlanStepType;
-  action: ChatActionName;
-  risk: ChatActionRisk;
-  riskClass?: ChatActionRiskClass;
-  provider?: ChatProvider;
-  args: Record<string, unknown>;
-  slotProvenance?: Record<string, ChatSlotProvenance>;
-  requiredArgsPresent: boolean;
-  idempotencyKey: string;
-  dependsOnStepIds?: string[];
-  verification: {
-    required: boolean;
-    method: 'provider_read_back' | 'local_read_back' | 'none';
-    expectedFields?: Record<string, unknown>;
-  };
-}
-
-interface ChatStepExecutionResult {
-  step: ChatPlanStep;
-  status: ChatActionRunStatus;
-  result?: unknown;
-  error?: string;
-  runUpdateAccepted?: boolean;
-}
-
-export interface ChatPlannerInput {
-  text: string;
-  userId: number;
-  tenantId: number;
-  conversationId: string;
-  messageId: string;
-  channel: 'ios' | 'telegram' | 'portal' | 'api';
-  locale?: string;
-  timezone: string;
-  nowIso?: string;
-  persistRuns?: boolean;
-  requireSafeWriteConfirmation?: boolean;
-  routeStartedAtMs?: number;
-}
-
-export interface ChatActionRouteResponse {
-  id: string;
-  text: string;
-  domain: 'secretary' | 'tasks' | 'training' | 'content' | 'cooking' | 'finance' | 'unknown';
-  routeMethod: string;
-  confidence: number;
-  buttons: null;
-  metadata: Record<string, unknown>;
-  timestamp: string;
-  // Phase 16 batch 83/84 (2026-05-17): typed block + card envelope.
-  // Optional during the rollout window — older iOS builds keep using
-  // `text` + `metadata.type`. Telegram/WhatsApp adapters consume `text`
-  // via downgradeBlocksToText, which is what the producers serialized
-  // before parsing into blocks here.
-  responseBlocks?: ChatResponseBlock[];
-  responseCards?: ChatResponseCard[];
-}
-
-type CalendarProviderDeps = {
-  createEvent: typeof createEvent;
-  getEventsForSources: typeof getEventsForSources;
-  hasGoogle: typeof isGoogleCalendarConfigured;
-  hasOutlook: typeof isOutlookCalendarConfigured;
-};
-
-export interface ChatActionPlannerDeps {
-  calendar?: CalendarProviderDeps;
-  taskProviderForUser?: typeof getTaskProviderForUser;
-}
-
-interface ChatActionExecutionOptions {
-  confirmed?: boolean;
-  confirmationSource?: 'explicit_current_turn' | 'pending_confirmation' | 'none';
-}
 
 const DEFAULT_DEPS: Required<ChatActionPlannerDeps> = {
   calendar: {
