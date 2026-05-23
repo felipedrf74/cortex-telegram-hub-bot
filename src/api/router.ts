@@ -112,7 +112,7 @@ export function createApiRouter(): Router {
         signals: 'GET /api/v1/signals/active — active cross-skill training signals for the current user',
         cooking: 'GET/POST/DELETE /api/v1/cooking/{recipes|meal-plan|shopping-list}',
         finance: 'GET/POST/DELETE /api/v1/finance/{transactions|monthly-summary|tax/events|tax/calculate}',
-        invoices: 'GET/POST/DELETE /api/v1/invoices/{vendors|scan-now} — vendor config + on-demand collection',
+        invoices: 'GET/POST/DELETE /api/v1/invoices/{vendors|scan-now|scraper-mfa-reply} — vendor config + on-demand collection',
         billing: 'GET /api/v1/billing/status, POST /api/v1/billing/{checkout|portal|apple-verify|nexus-points/stripe-checkout}',
         plan: 'GET /api/v1/plan/{week|today}, POST /api/v1/plan/recompute — multiskill mesh (feature-flagged)',
         summaries: 'GET /api/v1/summaries/{home|week|training|content|notifications} — fast app read models',
