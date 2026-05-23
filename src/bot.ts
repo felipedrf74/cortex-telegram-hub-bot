@@ -50,9 +50,6 @@ import { registerCallbackQueries } from './handlers/callback-query';
 import { registerMediaHandlers } from './handlers/media';
 import { registerTextHandler } from './handlers/text';
 
-// ── Re-exports (backward compatibility for scheduler.ts and other modules) ──
-export { setLastActiveDomain } from './handlers/shared-state';
-
 // ─── Domain Handler Registry ────────────────────────────────────────
 
 const DOMAIN_HANDLERS: Record<string, (message: string, userId?: number) => Promise<{ text: string; domain: DomainName }>> = {

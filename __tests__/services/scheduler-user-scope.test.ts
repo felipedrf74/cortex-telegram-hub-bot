@@ -139,7 +139,7 @@ vi.mock('../../src/services/apns-sender', () => ({ sendPushNotification: vi.fn()
 vi.mock('../../src/skills/skill-manager', () => ({ isCronJobEnabled: vi.fn(() => true) }));
 vi.mock('../../src/services/invoice-queue', () => ({ flushQueue: vi.fn(), getPendingCount: vi.fn(() => 0) }));
 vi.mock('../../src/domains/domain-handler', () => ({ setLastCoachState: vi.fn() }));
-vi.mock('../../src/bot', () => ({ setLastActiveDomain: vi.fn() }));
+vi.mock('../../src/api/routes/chat-message-context', () => ({ setLastActiveDomain: vi.fn() }));
 vi.mock('../../src/state/conversation', () => ({ addToConversation: vi.fn() }));
 vi.mock('../../src/services/channel-learner', () => ({ processAllChannelScopes: vi.fn(), seedDefaultChannels: vi.fn() }));
 vi.mock('../../src/services/content-workflow', () => ({ sendTopicCandidates: vi.fn(), sendWeeklyPackage: vi.fn() }));
@@ -222,7 +222,7 @@ import {
   sendDailyBriefing,
 } from '../../src/services/scheduler';
 import { setLastCoachState } from '../../src/domains/domain-handler';
-import { setLastActiveDomain } from '../../src/bot';
+import { setLastActiveDomain } from '../../src/api/routes/chat-message-context';
 import { addToConversation } from '../../src/state/conversation';
 
 describe('scheduler tenant scoping', () => {
