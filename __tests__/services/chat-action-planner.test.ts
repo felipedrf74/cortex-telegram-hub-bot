@@ -67,7 +67,7 @@ import {
 } from '../../src/services/chat-action-run-store';
 import { getChatActionRegistry } from '../../src/services/chat-action-registry';
 import { parseNaturalLanguageCalendarEvent } from '../../src/services/calendar-natural-language-parser';
-import { buildContentAgencyPackage, persistContentAgencyArtifact } from '../../src/services/content-agency';
+import { buildContentAgencyPackage, ensureContentAgencyTables, persistContentAgencyArtifact } from '../../src/services/content-agency';
 import { getTopics } from '../../src/services/content-scheduler';
 import { getMealPlan } from '../../src/services/cooking-chef';
 import { addTransaction, calculateAndStoreTax, getTaxEvents, getTransactions } from '../../src/services/finance-tracker';
@@ -1932,6 +1932,141 @@ describe('ChatActionPlanner', () => {
     }, { confirmed: true });
     expect(handoffResponse.metadata.actionStatus).toBe('verified_success');
     expect(handoffResponse.text).toContain('pipeline');
+  });
+
+  it('routes and executes Content pipeline stage transitions with scoped read-back', async () => {
+    const deterministic = buildDeterministicChatActionPlan({
+      ...baseInput,
+      userId: 4210,
+      tenantId: 4210,
+      text: 'Mark the recovery reel as filmed',
+      locale: 'en-US',
+      messageId: 'content-pipeline-stage-route',
+    });
+    expect(deterministic?.steps[0]).toMatchObject({
+      skill: 'content',
+      action: 'content_pipeline_stage_transition',
+      requiredArgsPresent: true,
+      args: {
+        topicTitle: 'recovery reel',
+        targetStage: 'filmed',
+      },
+    });
+
+    ensureContentAgencyTables(testDb);
+    const rowId = Number(testDb.prepare(`
+      INSERT INTO content_pipeline (
+        topic_title, niche, stage, stage_history, user_id, tenant_id, owner_user_id,
+        visibility_scope, scope_status
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      'Recovery Reel',
+      'training',
+      'scripted',
+      JSON.stringify([{ to: 'scripted', at: '2026-05-14T10:00:00.000Z' }]),
+      4210,
+      4210,
+      4210,
+      'user_private',
+      'active',
+    ).lastInsertRowid);
+
+    const plan = parseLlmPlannerJson(JSON.stringify({
+      confidence: 0.9,
+      steps: [{
+        skill: 'content',
+        action: 'content_pipeline_stage_transition',
+        args: { topicTitle: 'Recovery Reel', targetStage: 'editing' },
+        missingFields: [],
+      }],
+    }), { ...baseInput, userId: 4210, tenantId: 4210, persistRuns: false });
+
+    const response = await executeChatActionPlan(plan!, { ...baseInput, userId: 4210, tenantId: 4210, persistRuns: false }, {
+      calendar: {
+        createEvent: vi.fn() as any,
+        getEventsForSources: vi.fn() as any,
+        hasGoogle: vi.fn(() => false),
+        hasOutlook: vi.fn(() => false),
+      },
+      taskProviderForUser: vi.fn(() => ({}) as any),
+    });
+
+    expect(response.metadata.actionStatus).toBe('verified_success');
+    expect(response.text).toContain('Recovery Reel');
+    const readBack = testDb.prepare('SELECT stage, stage_history FROM content_pipeline WHERE id = ?').get(rowId) as any;
+    expect(readBack.stage).toBe('editing');
+    expect(JSON.parse(readBack.stage_history)).toEqual(expect.arrayContaining([
+      expect.objectContaining({ from: 'scripted', to: 'editing', source: 'chat_action' }),
+    ]));
+  });
+
+  it('blocks Content pipeline stage transitions when the topic reference is ambiguous', async () => {
+    ensureContentAgencyTables(testDb);
+    for (const title of ['Recovery Reel A', 'Recovery Reel B']) {
+      testDb.prepare(`
+        INSERT INTO content_pipeline (
+          topic_title, niche, stage, stage_history, user_id, tenant_id, owner_user_id,
+          visibility_scope, scope_status
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(title, 'training', 'scripted', '[]', 4213, 4213, 4213, 'user_private', 'active');
+    }
+
+    const plan = parseLlmPlannerJson(JSON.stringify({
+      confidence: 0.9,
+      steps: [{
+        skill: 'content',
+        action: 'content_pipeline_stage_transition',
+        args: { topicTitle: 'Recovery Reel', targetStage: 'filmed' },
+        missingFields: [],
+      }],
+    }), { ...baseInput, userId: 4213, tenantId: 4213, persistRuns: false });
+
+    const response = await executeChatActionPlan(plan!, { ...baseInput, userId: 4213, tenantId: 4213, persistRuns: false }, {
+      calendar: {
+        createEvent: vi.fn() as any,
+        getEventsForSources: vi.fn() as any,
+        hasGoogle: vi.fn(() => false),
+        hasOutlook: vi.fn(() => false),
+      },
+      taskProviderForUser: vi.fn(() => ({}) as any),
+    });
+
+    expect(response.metadata.actionStatus).toBe('blocked');
+    expect(response.text.length).toBeGreaterThan(0);
+    expect(testDb.prepare('SELECT COUNT(*) AS count FROM content_pipeline WHERE stage = ?').get('filmed')).toEqual({ count: 0 });
+  });
+
+  it('blocks Content pipeline stage transitions across tenant scope', async () => {
+    ensureContentAgencyTables(testDb);
+    testDb.prepare(`
+      INSERT INTO content_pipeline (
+        topic_title, niche, stage, stage_history, user_id, tenant_id, owner_user_id,
+        visibility_scope, scope_status
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run('Other User Reel', 'training', 'scripted', '[]', 4212, 4212, 4212, 'user_private', 'active');
+
+    const plan = parseLlmPlannerJson(JSON.stringify({
+      confidence: 0.9,
+      steps: [{
+        skill: 'content',
+        action: 'content_pipeline_stage_transition',
+        args: { topicTitle: 'Other User Reel', targetStage: 'published' },
+        missingFields: [],
+      }],
+    }), { ...baseInput, userId: 4211, tenantId: 4211, persistRuns: false });
+
+    const response = await executeChatActionPlan(plan!, { ...baseInput, userId: 4211, tenantId: 4211, persistRuns: false }, {
+      calendar: {
+        createEvent: vi.fn() as any,
+        getEventsForSources: vi.fn() as any,
+        hasGoogle: vi.fn(() => false),
+        hasOutlook: vi.fn(() => false),
+      },
+      taskProviderForUser: vi.fn(() => ({}) as any),
+    });
+
+    expect(response.metadata.actionStatus).toBe('blocked');
+    expect(testDb.prepare('SELECT stage FROM content_pipeline WHERE topic_title = ?').get('Other User Reel')).toEqual({ stage: 'scripted' });
   });
 
   it('executes Cooking meal-plan slot writes with scoped read-back', async () => {

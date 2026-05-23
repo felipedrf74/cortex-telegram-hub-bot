@@ -190,11 +190,26 @@ describe('typed slot adoption — training_plan_create (Phase 12 batch 63)', () 
   });
 });
 
+describe('typed slot adoption — content pipeline stage transition', () => {
+  it('extracts target stage and topic title from content pipeline phrasings', () => {
+    const entry = findChatActionDefinition('content', 'content_pipeline_stage_transition')!;
+    const result = getSlotExtractors(entry)[0].extract(
+      'Move the morning routine reel to editing',
+      { locale: 'en-US' },
+    );
+    expect(result.slots).toMatchObject({
+      topicTitle: 'morning routine reel',
+      targetStage: 'editing',
+    });
+    expect(result.confidence).toBeGreaterThan(0.8);
+  });
+});
+
 describe('typed slot adoption inventory (Phase 15 batch 77: full coverage)', () => {
-  it('imports the runtime registry and finds exactly 47 active actions', () => {
+  it('imports the runtime registry and finds exactly 48 active actions', () => {
     const entries = getChatActionRegistry();
-    expect(entries).toHaveLength(47);
-    expect(activeActions(entries)).toHaveLength(47);
+    expect(entries).toHaveLength(48);
+    expect(activeActions(entries)).toHaveLength(48);
   });
 
   it('excludes non-active action definitions from active-action counts', () => {
@@ -208,7 +223,7 @@ describe('typed slot adoption inventory (Phase 15 batch 77: full coverage)', () 
     expect(activeActions(synthetic).map((entry) => entry.status)).toEqual(['active']);
   });
 
-  it('all 47 active registry actions have typedSlotExtractors (full coverage)', () => {
+  it('all 48 active registry actions have typedSlotExtractors (full coverage)', () => {
     // Adoption history:
     //   Phase 12 batch 63 — 3 (calendar/task/training core)
     //   Phase 13 batch 67 — +5 (mail send/draft, delete_event, etc.)
@@ -217,7 +232,7 @@ describe('typed slot adoption inventory (Phase 15 batch 77: full coverage)', () 
     //     where extraction has no useful NL signal)
     const entries = activeActions(getChatActionRegistry());
     const adopted = entries.filter((e: { typedSlotExtractors?: unknown }) => Array.isArray(e.typedSlotExtractors) && e.typedSlotExtractors.length > 0);
-    expect(adopted.length).toBe(47);
+    expect(adopted.length).toBe(48);
     expect(adopted.length).toBe(entries.length);
   });
 
