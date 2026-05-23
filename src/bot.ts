@@ -32,7 +32,6 @@ import { isRateLimited } from './handlers/shared-state';
 import { recordMessageProcessed } from './portal/telemetry';
 import { isAnyCalendarConfigured } from './services/unified-calendar';
 import { getMasterCategories } from './services/outlook-calendar';
-import { setMfaNotifier } from './services/garmin';
 import { runTelegramDomainHandlerWithToolAuthorization } from './handlers/chat-tool-auth-context';
 import {
   isValidTenantUserId,
@@ -177,18 +176,6 @@ export function createBot(): Bot {
   bot.use(async (ctx, next) => {
     recordMessageProcessed();
     await next();
-  });
-
-  // ── Garmin MFA notifier (owner-only — Garmin credentials are admin-level) ──
-  setMfaNotifier(async (message: string) => {
-    const { getOwnerUserIds } = require('./services/scheduler');
-    for (const userId of getOwnerUserIds()) {
-      try {
-        await bot.api.sendMessage(userId, message, { parse_mode: 'HTML' });
-      } catch (err) {
-        logger.error({ err, userId }, 'Failed to send Garmin MFA notification');
-      }
-    }
   });
 
   // ── Register command handler modules (order matters for Grammy) ──
