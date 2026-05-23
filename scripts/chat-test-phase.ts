@@ -168,7 +168,12 @@ function redactSensitiveEvidence(value: unknown): unknown {
 function isSensitiveEvidenceKey(key: string): boolean {
   return /(?:^|_)(?:token|jwt)(?:$|_)/i.test(key)
     || /(?:access|refresh|confirmation|auth|bearer).*token/i.test(key)
-    || /token(?:$|[A-Z_])/i.test(key);
+    || /token(?:$|[A-Z_])/i.test(key)
+    || /api(?:[\s_-]?key|Key)/i.test(key)
+    || /(?:client|webhook|session)(?:[\s_-]?secret|Secret)/i.test(key)
+    || /(?:^|[\s_-])secret(?:$|[\s_-])|secret(?:$|[A-Z_])/i.test(key)
+    || /session(?:[\s_-]?id|Id)/i.test(key)
+    || /password/i.test(key);
 }
 
 export async function runChatTestPhase(options: RunnerOptions): Promise<{ reportPath: string; passRate: number; results: ScenarioResult[] }> {

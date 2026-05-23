@@ -14,7 +14,7 @@
  *   • `stripe-service.getSubscriptionStatus` (reads subscriptions
  *     directly, derives own boolean)
  *   • old `dashboard.hasHomeSkillAccess` (used to combine checkTierAccess +
- *     isSkillEnabled with AND before the canonical skill gate existed)
+ *     the user skill-toggle helper with AND before the canonical skill gate existed)
  *   • Each individual route doing its own ad-hoc read
  *
  * This file replaces all of them with one pure resolver that returns

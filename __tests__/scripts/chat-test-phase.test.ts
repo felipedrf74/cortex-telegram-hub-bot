@@ -77,7 +77,7 @@ describe('chat-test-phase runner', () => {
     ]));
   });
 
-  it('redacts confirmation and auth tokens from stored evidence metadata', () => {
+  it('redacts tokens, api keys, passwords, and session secrets from stored evidence metadata', () => {
     const result = evaluateScenarioResponse(
       {
         id: 'confirmation',
@@ -92,7 +92,19 @@ describe('chat-test-phase runner', () => {
             confirmation_token: 'secret-confirmation-token',
             confirmationToken: 'secret-confirmation-token-camel',
           },
-          nested: [{ accessToken: 'secret-access-token', refresh_token: 'secret-refresh-token' }],
+          nested: [{
+            accessToken: 'secret-access-token',
+            refresh_token: 'secret-refresh-token',
+            api_key: 'sk-secret-api-key',
+            apiKey: 'sk-secret-api-key-camel',
+            webhook_api_key: 'sk-secret-webhook-key',
+            clientSecret: 'secret-client-secret',
+            sessionSecret: 'secret-session-secret',
+            session_id: 'secret-session-id',
+            password: 'secret-password',
+            publicLabel: 'visible label',
+          }],
+          apiKeyLabel: 'recoverable label that should be redacted by evidence policy',
         },
       },
       202,
@@ -103,9 +115,22 @@ describe('chat-test-phase runner', () => {
         confirmation_token: '[redacted]',
         confirmationToken: '[redacted]',
       },
-      nested: [{ accessToken: '[redacted]', refresh_token: '[redacted]' }],
+      nested: [{
+        accessToken: '[redacted]',
+        refresh_token: '[redacted]',
+        api_key: '[redacted]',
+        apiKey: '[redacted]',
+        webhook_api_key: '[redacted]',
+        clientSecret: '[redacted]',
+        sessionSecret: '[redacted]',
+        session_id: '[redacted]',
+        password: '[redacted]',
+        publicLabel: 'visible label',
+      }],
+      apiKeyLabel: '[redacted]',
     });
     expect(JSON.stringify(result.response?.metadata)).not.toContain('secret-');
+    expect(JSON.stringify(result.response?.metadata)).not.toContain('sk-');
   });
 
   it('writes a dry-run report without network credentials', async () => {

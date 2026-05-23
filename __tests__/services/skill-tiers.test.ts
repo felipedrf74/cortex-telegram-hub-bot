@@ -308,7 +308,7 @@ describe('checkSkillAccess — canonical precedence', () => {
     const result = checkSkillAccess(makeUser(4, 'pro'), 'finance');
 
     expect(result.allowed).toBe(false);
-    expect(result.reason).toBe('user_denied');
+    expect(result.reason).toBe('admin_override_denied');
   });
 
   it('user explicit grant skips the tier check when global and user-deny gates pass', () => {
@@ -319,6 +319,19 @@ describe('checkSkillAccess — canonical precedence', () => {
 
     expect(result.allowed).toBe(true);
     expect(result.reason).toBe('user_grant');
+  });
+
+  it('tier override deny reports its source separately from admin toggle denies', () => {
+    upsertInstalledSkill('triathlon', true);
+    testDb.prepare(`
+      INSERT INTO user_skill_tier_overrides (user_id, skill_id, unlocked, reason)
+      VALUES (8, 'triathlon.swim', 0, 'coach revoked beta')
+    `).run();
+
+    const result = checkSkillAccess(makeUser(8, 'max'), 'triathlon.swim');
+
+    expect(result.allowed).toBe(false);
+    expect(result.reason).toBe('tier_override_denied');
   });
 
   it('falls back to the tier comparison when no higher-precedence gate matches', () => {
