@@ -2,7 +2,7 @@
 
 import { createHash, randomUUID } from 'crypto';
 import { getDb } from './database';
-import type { ChatActionRisk } from './chat-action-registry';
+import type { ChatActionRisk } from './chat/registry';
 import { logger } from '../utils/logger';
 
 export type ChatActionRunStatus =
