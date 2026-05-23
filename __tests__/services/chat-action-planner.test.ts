@@ -455,7 +455,11 @@ describe('ChatActionPlanner', () => {
     expect(result?.plan.steps.map((step) => step.action)).toEqual(['schedule_event', 'create_task']);
     expect(result?.status).toBe('verified_success');
     expect(taskProvider.createTask).toHaveBeenCalledWith('tasks', 'Tasks', expect.objectContaining({ title: 'levar a bíblia' }));
-    expect(result?.response.metadata.type).toBe('chat_action_verified_success');
+    expect(result?.response.metadata.type).toBe('chat_action_multi_step_result');
+    expect(result?.response.metadata.multiStepSummary).toMatchObject({
+      totalSteps: 2,
+      succeeded: 2,
+    });
   });
 
   it('requires confirmation for external side effects such as attendees', async () => {
