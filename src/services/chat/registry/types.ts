@@ -53,6 +53,7 @@ export type ChatActionName =
   | 'content_rewrite'
   | 'content_schedule_work'
   | 'content_pipeline_handoff'
+  | 'content_pipeline_stage_transition'
   | 'cooking_meal_support'
   | 'cooking_grocery_list'
   | 'cooking_meal_plan'

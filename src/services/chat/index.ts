@@ -2605,6 +2605,14 @@ function successCopy(input: ChatPlannerInput, results: Array<{ step: ChatPlanSte
   if (first?.step.action === 'content_pipeline_handoff') {
     return input.locale?.startsWith('pt') ? 'Feito — movi o pacote para o pipeline de Content e verifiquei o read-back.' : 'Done — I moved the package into the Content pipeline and verified the read-back.';
   }
+  if (first?.step.action === 'content_pipeline_stage_transition') {
+    const result = first.result as any;
+    const title = String(result?.topicTitle || (first.step.args as any).topicTitle || 'content item');
+    const stage = String(result?.stage || (first.step.args as any).targetStage || 'the requested stage');
+    return input.locale?.startsWith('pt')
+      ? `Feito — movi “${title}” para ${localizePipelineStage(stage, true)} e verifiquei no pipeline.`
+      : `Done — I moved “${title}” to ${localizePipelineStage(stage, false)} and verified it in the pipeline.`;
+  }
   if (first?.step.action === 'cooking_grocery_list') {
     const itemCount = Number((first.result as any)?.itemCount ?? 0);
     return input.locale?.startsWith('pt')
@@ -3039,6 +3047,21 @@ function summarizeSlotProvenance(plan: ChatActionPlan): Record<string, unknown> 
 
 
 // actionToStepType and pickExpectedFields moved to skills/step-builder.ts.
+
+function localizePipelineStage(stage: string, portuguese: boolean): string {
+  switch (stage) {
+    case 'scripted':
+      return portuguese ? 'roteiro pronto' : 'scripted';
+    case 'filming':
+      return portuguese ? 'filmagem' : 'filming';
+    case 'editing':
+      return portuguese ? 'edição' : 'editing';
+    case 'published':
+      return portuguese ? 'publicado' : 'published';
+    default:
+      return stage;
+  }
+}
 
 function normalizeProvider(value: unknown): ChatProvider | undefined {
   if (typeof value !== 'string') return undefined;

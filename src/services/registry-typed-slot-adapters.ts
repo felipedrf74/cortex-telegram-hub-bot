@@ -30,6 +30,9 @@ import {
 import {
   extractTrainingPlanSlots,
 } from './skills/training/helpers';
+import {
+  parseContentPipelineStageTransition,
+} from './skills/content/pipeline-stage';
 import type {
   SlotContext,
   SlotExtractor,
@@ -343,6 +346,19 @@ export const contentBriefSlotExtractor: SlotExtractor = {
       slots.goal = topic[1].trim();
     }
     return { slots, confidence: slots.platform && slots.objective ? 0.85 : 0.6 };
+  },
+};
+
+export const contentPipelineStageSlotExtractor: SlotExtractor = {
+  name: 'content_pipeline_stage_transition',
+  label: 'extracts target stage and content title from content pipeline stage phrasings',
+  extract(text) {
+    const slots = parseContentPipelineStageTransition(text);
+    const result: Record<string, unknown> = {};
+    if (slots.topicTitle) result.topicTitle = slots.topicTitle;
+    if (slots.targetStage) result.targetStage = slots.targetStage;
+    if (slots.youtubeUrl) result.youtubeUrl = slots.youtubeUrl;
+    return { slots: result, confidence: result.topicTitle && result.targetStage ? 0.88 : 0.55 };
   },
 };
 
