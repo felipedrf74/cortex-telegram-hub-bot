@@ -382,11 +382,11 @@ describe('changed-area-classifier engineering-excellence enrichments (2026-05-04
 describe('changed-area-classifier cannot-skip dashboard wiring (ENG-EXC-O3)', () => {
   // The dashboard spawns 23 sequential bash + node child processes (one
   // per gate). Under full-sweep load (300+ test files in singleFork
-  // mode) the default 10s timeout is tight enough to flake. Bump to 60s
-  // to absorb the cold-spawn cost without masking a real regression —
+  // mode) even a 60s timeout can flake on colder pre-push runs. Bump to
+  // 120s to absorb the cold-spawn cost without masking a real regression —
   // a real wiring regression prints the failed gate names in the JSON
   // payload regardless of duration.
-  it('cannot-skip gate dashboard reports all 23 gates wired and PASS verdict', { timeout: 60_000 }, () => {
+  it('cannot-skip gate dashboard reports all 23 gates wired and PASS verdict', { timeout: 120_000 }, () => {
     const raw = execFileSync(
       'bash',
       ['scripts/cannot-skip-gate-dashboard.sh', '--json', '--no-evidence'],

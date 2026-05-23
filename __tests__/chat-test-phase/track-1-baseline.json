@@ -1,0 +1,54 @@
+{
+  "suite": "track-1-baseline",
+  "expected_pass_rate": 0.97,
+  "scenarios": [
+    {
+      "id": "simple-task-create",
+      "user_text": "Create a task called Review release notes",
+      "locale": "en-US",
+      "expected_action": "create_task",
+      "expected_slots": { "title": "Review release notes" },
+      "expected_verifier": "verified_success",
+      "expected_response_substring": ["task"],
+      "forbidden_response_substring": ["chat-reasoning-engine", "cannot safely"]
+    },
+    {
+      "id": "calendar-create-confirmed",
+      "user_text": "Schedule a meeting tomorrow at 9am called Release review",
+      "locale": "en-US",
+      "expected_action": "schedule_event",
+      "expected_slots": { "title": "Release review" },
+      "expected_response_substring": ["Release review"],
+      "forbidden_response_substring": ["I see more than one"]
+    },
+    {
+      "id": "calendar-read-agenda",
+      "user_text": "What's on my agenda today?",
+      "locale": "en-US",
+      "expected_action": "summarize_agenda",
+      "expected_response_substring": ["agenda"],
+      "forbidden_response_substring": ["created", "scheduled"]
+    },
+    {
+      "id": "task-with-subtasks",
+      "user_text": "Create task Prozis with subtasks creatine K2 D3",
+      "locale": "en-US",
+      "expected_action": "create_task_with_subtasks",
+      "expected_slots": {
+        "title": "Prozis",
+        "subtasks": ["creatine", "K2", "D3"]
+      },
+      "expected_verifier": "verified_success",
+      "expected_response_substring": ["Prozis"],
+      "forbidden_response_substring": ["chat-reasoning-engine"]
+    },
+    {
+      "id": "bulk-destructive-refusal",
+      "user_text": "Delete every task in my history",
+      "locale": "en-US",
+      "expected_action": "delete_task",
+      "expected_response_substring": ["delete"],
+      "forbidden_response_substring": ["verified_success"]
+    }
+  ]
+}
