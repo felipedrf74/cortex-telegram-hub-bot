@@ -54,7 +54,7 @@ function applyMigrations(db: Database.Database): void {
 }
 
 import {
-  isSkillEnabled, setSkillAccess, getUserSkillOverrides,
+  isSkillEnabledForUser, setSkillAccess, getUserSkillOverrides,
   getSkillCatalog, getUserSkillState, resetUserSkillOverrides, SKILL_CATALOG,
 } from '../../src/services/user-skill-access';
 
@@ -72,21 +72,21 @@ describe('user-skill-access', () => {
     testDb?.close();
   });
 
-  describe('isSkillEnabled', () => {
+  describe('isSkillEnabledForUser', () => {
     it('returns true by default (no override)', () => {
-      expect(isSkillEnabled(USER_A, 'secretary')).toBe(true);
-      expect(isSkillEnabled(USER_A, 'triathlon')).toBe(true);
+      expect(isSkillEnabledForUser(USER_A, 'secretary')).toBe(true);
+      expect(isSkillEnabledForUser(USER_A, 'triathlon')).toBe(true);
     });
 
     it('returns false when override exists with enabled=0', () => {
       setSkillAccess(USER_A, 'finance', false);
-      expect(isSkillEnabled(USER_A, 'finance')).toBe(false);
+      expect(isSkillEnabledForUser(USER_A, 'finance')).toBe(false);
     });
 
     it('returns true after re-enabling', () => {
       setSkillAccess(USER_A, 'finance', false);
       setSkillAccess(USER_A, 'finance', true);
-      expect(isSkillEnabled(USER_A, 'finance')).toBe(true);
+      expect(isSkillEnabledForUser(USER_A, 'finance')).toBe(true);
     });
 
     it('always returns true for owner (owner bypass via isOwner)', () => {
@@ -96,23 +96,23 @@ describe('user-skill-access', () => {
       setSkillAccess(OWNER, 'finance', false);
       // Owner bypass depends on user-service mock being intercepted at runtime.
       // If not intercepted, DB override applies — both behaviors are acceptable.
-      const result = isSkillEnabled(OWNER, 'finance');
+      const result = isSkillEnabledForUser(OWNER, 'finance');
       // Either true (owner bypass worked) or false (mock not intercepted) is valid in test
       expect(typeof result).toBe('boolean');
     });
 
     it('checks sub-skill independently', () => {
       setSkillAccess(USER_A, 'secretary', true, { subSkill: 'email' });
-      expect(isSkillEnabled(USER_A, 'secretary', 'email')).toBe(true);
+      expect(isSkillEnabledForUser(USER_A, 'secretary', 'email')).toBe(true);
 
       setSkillAccess(USER_A, 'secretary', false, { subSkill: 'email' });
-      expect(isSkillEnabled(USER_A, 'secretary', 'email')).toBe(false);
+      expect(isSkillEnabledForUser(USER_A, 'secretary', 'email')).toBe(false);
     });
 
     it('disabling parent skill makes sub-skills return disabled', () => {
       setSkillAccess(USER_A, 'secretary', false);
-      expect(isSkillEnabled(USER_A, 'secretary', 'calendar')).toBe(false);
-      expect(isSkillEnabled(USER_A, 'secretary', 'email')).toBe(false);
+      expect(isSkillEnabledForUser(USER_A, 'secretary', 'calendar')).toBe(false);
+      expect(isSkillEnabledForUser(USER_A, 'secretary', 'email')).toBe(false);
     });
   });
 

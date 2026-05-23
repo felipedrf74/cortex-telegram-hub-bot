@@ -216,7 +216,7 @@ describe('dynamic routing integration with classifier', () => {
       getEnabledPatternRoutes: () => config.getPatternRoutes(),
       getEnabledKeywordRoutes: () => config.getKeywordRoutes(),
       getEnabledClassificationHints: () => config.getClassificationHints(),
-      isSkillEnabled: () => true,
+      isDomainEnabled: () => true,
     };
   });
 

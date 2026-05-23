@@ -8,8 +8,8 @@
  * Canonical access resolution order (first match wins):
  *   1. Owner tier bypass
  *   2. Global installed skill/submodule disabled → deny
- *   3. User explicit deny in user_skill_overrides → deny
- *   4. User explicit grant in user_skill_tier_overrides → allow
+ *   3. Admin/user explicit deny in user_skill_overrides → deny
+ *   4. Tier-override grant/deny in user_skill_tier_overrides → allow/deny
  *   5. Tier comparison from skill_tiers / skill-config.ts / default pro
  *
  * Runtime callers should use `checkSkillAccess`. `checkTierAccess` remains
@@ -56,7 +56,8 @@ export interface TierAccessResult {
 export type SkillAccessReason =
   | 'owner_bypass'
   | 'global_disabled'
-  | 'user_denied'
+  | 'admin_override_denied'
+  | 'tier_override_denied'
   | 'user_grant'
   | TierAccessResult['reason']
   | 'db_error';
@@ -391,7 +392,7 @@ export function checkSkillAccess(
     if (hasUserSkillDeny(user.id, normalizedSkillId)) {
       return buildSkillAccessResult({
         allowed: false,
-        reason: 'user_denied',
+        reason: 'admin_override_denied',
         userTier,
         requiredTier: configuredRequiredTier(normalizedSkillId),
         skillId: normalizedSkillId,
@@ -403,7 +404,7 @@ export function checkSkillAccess(
     if (override) {
       return buildSkillAccessResult({
         allowed: override.unlocked === 1,
-        reason: override.unlocked === 1 ? 'user_grant' : 'user_denied',
+        reason: override.unlocked === 1 ? 'user_grant' : 'tier_override_denied',
         userTier,
         requiredTier: userTier,
         skillId: normalizedSkillId,

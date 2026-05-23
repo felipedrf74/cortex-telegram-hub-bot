@@ -102,7 +102,7 @@ function legacyToggleUser(userId: number): { id: number; tier: 'max' | 'owner' }
  * Deprecated compatibility wrapper for portal/onboarding toggle checks.
  * Runtime access enforcement should call `checkSkillAccess(user, skillId)`.
  */
-export function isSkillEnabled(userId: number, skill: string, subSkill?: string): boolean {
+export function isSkillEnabledForUser(userId: number, skill: string, subSkill?: string): boolean {
   const skillId = subSkill ? `${skill}.${subSkill}` : skill;
   const result = checkSkillAccess(legacyToggleUser(userId), skillId);
   if (result.reason === 'db_error') {
