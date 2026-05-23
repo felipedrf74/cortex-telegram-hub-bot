@@ -1,6 +1,6 @@
 // Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
 
-import type { ChatActionName } from '../../chat-action-registry';
+import type { ChatActionName } from '../registry';
 import type { ChatStepExecutor } from './types';
 import { executeCalendarCreateStep, executeCalendarDeleteStep, executeCalendarReadOnlyStep, executeCalendarUpdateStep } from '../../skills/secretary/executor';
 import { executeMailInboxSummaryStep, executeMailUnreadCountStep } from '../../skills/mail/executor';

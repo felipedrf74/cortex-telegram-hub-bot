@@ -3,7 +3,7 @@
 import type {
   ChatActionName,
   ChatActionSkill,
-} from '../../chat-action-registry';
+} from '../registry';
 import type {
   ChatActionPlan,
   ChatClarificationReason,

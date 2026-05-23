@@ -33,7 +33,7 @@ import {
 import type {
   SlotContext,
   SlotExtractor,
-} from './chat-action-registry';
+} from './chat/registry';
 
 // ─────────────────────────── Calendar adapter ───────────────────────────
 

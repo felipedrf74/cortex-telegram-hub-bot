@@ -73,7 +73,7 @@ import { tryHandleChatReasoningAction } from '../../services/chat-reasoning-engi
 import {
   executeConfirmedChatActionRuns,
   tryHandleChatActionPlan,
-} from '../../services/chat-action-planner';
+} from '../../services/chat';
 import { getPendingChatActionById } from '../../services/chat-action-state';
 import {
   buildNexusAnswerContract,

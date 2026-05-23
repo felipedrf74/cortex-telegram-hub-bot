@@ -17,7 +17,7 @@ import {
   type ChatActionDefinition,
   type ChatActionSkill,
   type ChatProvider,
-} from '../../chat-action-registry';
+} from '../registry';
 import {
   makeSlotProvenance,
   type ChatActionRiskClass,

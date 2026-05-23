@@ -11,7 +11,7 @@ import {
   makeTrainingPlanStep,
   missingTrainingPlanSlots,
 } from './helpers';
-import type { ChatPlanStep } from '../../chat-action-planner';
+import type { ChatPlanStep } from '../../chat/types';
 
 export interface TrainingParserInput extends StepKeyInputs {
   text: string;
