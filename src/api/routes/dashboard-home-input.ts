@@ -9,9 +9,8 @@ import {
   type SecretaryPreviewItemModel,
   type SkillAvailabilityModel,
 } from '../../services/dashboard-home-view-state';
-import { checkTierAccess } from '../../services/skill-tiers';
+import { checkSkillAccess } from '../../services/skill-tiers';
 import { getUserById, getUserByTelegramId } from '../../services/user-service';
-import { isSkillEnabled } from '../../services/user-skill-access';
 import type { Lang } from '../../utils/i18n';
 import { dedupeStrings } from './dashboard-data-fetchers';
 
@@ -150,12 +149,12 @@ function buildHomeSkillAvailability(userId: number): SkillAvailabilityModel {
 }
 
 function hasHomeSkillAccess(
-  userId: number,
+  _userId: number,
   user: { id: number; tier: string } | null | undefined,
   skill: HomeImpactDomain,
 ): boolean {
   const skillId = skill === 'training' ? 'triathlon' : skill;
-  return checkTierAccess(user as any, skillId).allowed && isSkillEnabled(userId, skillId);
+  return checkSkillAccess(user as any, skillId).allowed;
 }
 
 function selectNextEvent(events: Array<{ start?: string; end?: string } & Record<string, any>>) {
