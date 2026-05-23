@@ -9,6 +9,7 @@ import { claimChatActionRunForExecution, updateChatActionRun, type ChatActionRun
 import type { CalendarProviderDeps, ChatActionPlan, ChatPlannerInput, ChatPlanStep } from '../../chat/types';
 import { markPendingChatActionNeedsUserFollowup } from '../../chat-action-state';
 import { calendarSourceFromProvider, claimActionRunForStepExecution, reconciliationPendingResult, replayDuplicateClaimedActionRun, updateClaimedActionRun, withProviderReadBackTimeout, withProviderWriteTimeout } from '../../chat/executor/helpers';
+import { withChatActionRetry } from '../../chat-action-retry-policy';
 
 export async function executeCalendarCreateStep(
   step: ChatPlanStep,
@@ -70,8 +71,10 @@ export async function executeCalendarCreateStep(
     if (claim) updateChatActionRun(claim.row.id, 'verifying', { result: created, providerObjectId: created.id ?? null });
     let readBack: UnifiedCalendarEvent[];
     try {
-      readBack = await withProviderReadBackTimeout(
-        calendar.getEventsForSources(args.startDateTime, args.endDateTime, input.userId, [provider as CalendarSource]),
+      readBack = await withChatActionRetry(
+        async () => assertCalendarReadBack(await withProviderReadBackTimeout(
+          calendar.getEventsForSources(args.startDateTime, args.endDateTime, input.userId, [provider as CalendarSource]),
+        )),
       );
     } catch (readBackErr) {
       if (claim) {
@@ -171,7 +174,9 @@ export async function executeCalendarUpdateStep(
     let readBack: UnifiedCalendarEvent[] = [];
     if (readStart && readEnd) {
       try {
-        readBack = await withProviderReadBackTimeout(getEventsForSources(readStart, readEnd, input.userId, [source]));
+        readBack = await withChatActionRetry(
+          async () => assertCalendarReadBack(await withProviderReadBackTimeout(getEventsForSources(readStart, readEnd, input.userId, [source]))),
+        );
       } catch (readBackErr) {
         if (!updateClaimedActionRun(claim, 'partial_success', {
           result: { event: updated, verified: false },
@@ -222,7 +227,9 @@ export async function executeCalendarDeleteStep(
     if (claim) updateChatActionRun(claim.row.id, 'verifying', { providerObjectId: eventId });
     let readBack: UnifiedCalendarEvent[];
     try {
-      readBack = await withProviderReadBackTimeout(getEventsForSources(readStart, readEnd, input.userId, [source]));
+      readBack = await withChatActionRetry(
+        async () => assertCalendarReadBack(await withProviderReadBackTimeout(getEventsForSources(readStart, readEnd, input.userId, [source]))),
+      );
     } catch (readBackErr) {
       if (!updateClaimedActionRun(claim, 'partial_success', {
         result: { eventId, verified: false },
@@ -276,6 +283,11 @@ export function overlaps(startA: string, endA: string, startB: string, endB: str
   const b1 = DateTime.fromISO(startB).toMillis();
   const b2 = DateTime.fromISO(endB).toMillis();
   return Number.isFinite(a1) && Number.isFinite(a2) && Number.isFinite(b1) && Number.isFinite(b2) && a1 < b2 && b1 < a2;
+}
+
+function assertCalendarReadBack(value: unknown): UnifiedCalendarEvent[] {
+  if (!Array.isArray(value)) throw new Error('provider_read_back_failed');
+  return value as UnifiedCalendarEvent[];
 }
 
 export function calendarEventMatches(event: UnifiedCalendarEvent, expected: { title: string; start: string; end: string; source: CalendarSource; id?: string }): boolean {
