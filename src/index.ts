@@ -29,6 +29,7 @@ import { init as initSentry, flush as flushSentry } from './services/error-track
 import { escapeHtml } from './utils/telegram-formatter';
 import type http from 'http';
 import { isTelegramLegacyDeliveryEnabled } from './services/runtime-flags';
+import { registerGarminMfaNotifier } from './services/garmin-mfa-notifier';
 
 const MAX_RETRIES = 5;
 const INITIAL_RETRY_DELAY_MS = 45_000; // 45s — enough for Telegram to release the polling lock
@@ -123,6 +124,8 @@ async function main(): Promise<void> {
   // (must run BEFORE config import). The error-monitor's boot buffer has
   // already accumulated any boot-phase errors and setErrorDbProvider() above
   // flushed them to error_log.
+
+  registerGarminMfaNotifier();
 
   // ── Telegram is DEPRECATED (April 2026) ─────────────────────────
   // The iOS app is the primary user experience. Telegram bot startup,
