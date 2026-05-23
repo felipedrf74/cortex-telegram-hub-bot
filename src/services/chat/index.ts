@@ -765,7 +765,11 @@ function parseSummarizeAgendaIntent(input: ChatPlannerInput): ChatActionPlan | n
     : /\boutlook\b/.test(folded)
       ? 'outlook_calendar'
       : undefined;
-  const args: Record<string, unknown> = { date: 'today' };
+  const baseDay = DateTime.fromISO(input.nowIso ?? new Date().toISOString()).setZone(input.timezone);
+  const agendaDay = /\b(tomorrow|amanh[aã]|ma[nñ]ana)\b/.test(folded)
+    ? baseDay.plus({ days: 1 })
+    : baseDay;
+  const args: Record<string, unknown> = { date: agendaDay.toISODate() };
   if (provider) args.provider = provider;
   const step = makeStep(input, {
     skill: 'secretary_calendar',
@@ -1878,6 +1882,9 @@ function isUnsafeTaskTitle(title: string): boolean {
 // `isUnsafeTaskTitle`, which catches destructive natural-language vocabulary.
 function containsPromptInjectionMarker(title: string): boolean {
   return /\bignore\s+(?:previous|all|prior)\s+instructions?\b/i.test(title)
+    || /\bignore\s+(?:all\s+)?access\s+checks?\b/i.test(title)
+    || /\bbypass\s+(?:all\s+)?access\s+checks?\b/i.test(title)
+    || /\benable\s+every\s+skill\b/i.test(title)
     || /\bdisregard\s+(?:previous|all|prior)\s+instructions?\b/i.test(title)
     || /\bforget\s+(?:everything|all|previous|prior)\b/i.test(title)
     || /\b(?:you\s+are\s+now|act\s+as|new\s+instructions)\b/i.test(title)

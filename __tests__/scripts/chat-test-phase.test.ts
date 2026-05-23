@@ -77,6 +77,37 @@ describe('chat-test-phase runner', () => {
     ]));
   });
 
+  it('redacts confirmation and auth tokens from stored evidence metadata', () => {
+    const result = evaluateScenarioResponse(
+      {
+        id: 'confirmation',
+        user_text: 'Create a task called Review release',
+        expected_action: 'create_task',
+      },
+      {
+        text: 'Confirm the action.',
+        metadata: {
+          action: 'create_task',
+          pendingConfirmation: {
+            confirmation_token: 'secret-confirmation-token',
+            confirmationToken: 'secret-confirmation-token-camel',
+          },
+          nested: [{ accessToken: 'secret-access-token', refresh_token: 'secret-refresh-token' }],
+        },
+      },
+      202,
+    );
+
+    expect(result.response?.metadata).toMatchObject({
+      pendingConfirmation: {
+        confirmation_token: '[redacted]',
+        confirmationToken: '[redacted]',
+      },
+      nested: [{ accessToken: '[redacted]', refresh_token: '[redacted]' }],
+    });
+    expect(JSON.stringify(result.response?.metadata)).not.toContain('secret-');
+  });
+
   it('writes a dry-run report without network credentials', async () => {
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'chat-test-phase-'));
     const fixturePath = path.join(tmp, 'fixture.yml');
@@ -105,4 +136,3 @@ describe('chat-test-phase runner', () => {
     });
   });
 });
-
