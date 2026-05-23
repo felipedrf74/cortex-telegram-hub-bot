@@ -22,6 +22,7 @@ import {
   type ChatPlannerInput,
 } from '../../src/services/chat-action-planner';
 import {
+  authorizeChatToolCall,
   getCurrentChatToolAuthorizationContext,
   runWithChatToolAuthorization,
 } from '../../src/services/chat-tool-authorization';
@@ -113,6 +114,26 @@ describe('chat tool authorization AsyncLocalStorage scoping', () => {
       confirmedDestructiveAction: true,
       confirmationSource: 'explicit_current_turn',
     });
+  });
+
+  it('blocks safe-write tools only when the caller opts into write confirmation', async () => {
+    await runWithChatToolAuthorization(
+      {
+        userId: 4242,
+        tenantId: 4242,
+        confirmedDestructiveAction: false,
+        confirmationSource: 'none',
+        requireConfirmationForWrites: true,
+      },
+      async () => {
+        expect(authorizeChatToolCall('ms_todo_create_task', { userId: 4242 }, 4242, 4242)).toMatchObject({
+          allowed: false,
+          code: 'CONFIRMATION_REQUIRED',
+          confirmationRequired: true,
+          toolRisk: 'write',
+        });
+      },
+    );
   });
 
   it('executeChatActionPlan preserves an existing auth context during re-entrant execution', async () => {

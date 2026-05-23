@@ -1603,6 +1603,7 @@ export function registerChatMessageRoutes(
         confirmationSource: routingDecision.safety.explicitConfirmation
           ? pendingConfirmation ? 'pending_confirmation' : 'explicit_current_turn'
           : 'none',
+        requireConfirmationForWrites: true,
       }, () => executeChatDomainHandler(handler, route.strippedMessage, userId, tenantId));
       latency.mark('domain_handler_completed');
       if (routingDecision.safety.explicitConfirmation) {

@@ -8,6 +8,7 @@ export interface ChatToolAuthorizationContext {
   tenantId: number;
   confirmedDestructiveAction: boolean;
   confirmationSource: 'explicit_current_turn' | 'pending_confirmation' | 'none';
+  requireConfirmationForWrites?: boolean;
 }
 
 export interface ChatToolAuthorizationResult {
@@ -153,7 +154,10 @@ export function authorizeChatToolCall(
     };
   }
 
-  if ((risk === 'write' || risk === 'destructive' || risk === 'external_send') && !current.confirmedDestructiveAction) {
+  const requiresConfirmation = risk === 'destructive'
+    || risk === 'external_send'
+    || (risk === 'write' && current.requireConfirmationForWrites === true);
+  if (requiresConfirmation && !current.confirmedDestructiveAction) {
     return {
       allowed: false,
       code: 'CONFIRMATION_REQUIRED',

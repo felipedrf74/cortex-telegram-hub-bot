@@ -809,6 +809,8 @@ export function buildDeterministicChatActionPlan(input: ChatPlannerInput): ChatA
     && !/\b(event|evento|meeting|reuni[aã]o|appointment|compromisso|cita[s]?)\b/.test(foldedInput)) {
     return buildPlanFromSteps(input, [earlyContentSchedule], ['content_action_intent', 'deterministic_skill_parser', 'content_schedule_preflight'], 0.8);
   }
+  const taskFirst = startsWithSimpleTaskCreateIntent(input.text) ? parseSimpleTaskIntent(input) : null;
+  if (taskFirst) return taskFirst;
   const calendar = parseNaturalLanguageCalendarEvent(input.text, { timezone: input.timezone, nowIso });
   if (calendar) {
     const provider = calendar.provider === 'outlook' ? 'outlook_calendar' : 'google_calendar';
@@ -1750,7 +1752,10 @@ function parseSimpleTaskStep(input: ChatPlannerInput, text: string | null): Chat
   // Phase 8 batch 43 (2026-05-15): Spanish "crea"/"crear" + "tarea" added
   // for minimum Spanish coverage.
   // Phase 9 batch 48 (2026-05-16): Spanish "añade"/"añadir" added.
-  if (!/\b(cria|criar|adiciona|adicionar|create|add|bota[r]?|coloca[r]?|p[oõ]e[r]?|mete[r]?|crea[r]?|a[nñ]ade|a[nñ]adir|agreg[ae][r]?)\b/.test(folded) || !/\b(task|tarefa|todo|lembrete|tarea[s]?)\b/.test(folded)) return null;
+  const directTaskCreate = /\b(cria|criar|adiciona|adicionar|create|add|bota[r]?|coloca[r]?|p[oõ]e[r]?|mete[r]?|crea[r]?|a[nñ]ade|a[nñ]adir|agreg[ae][r]?)\b/.test(folded)
+    && /\b(task|tarefa|todo|lembrete|tarea[s]?)\b/.test(folded);
+  const reminderTaskCreate = isPlainTaskReminderCreate(folded);
+  if (!directTaskCreate && !reminderTaskCreate) return null;
   const titleSlot = extractTaskTitleSlot(input, text);
   const title = titleSlot?.value.trim();
   if (!title) return null;
@@ -1818,6 +1823,12 @@ function parseSimpleTaskStep(input: ChatPlannerInput, text: string | null): Chat
   };
 }
 
+function startsWithSimpleTaskCreateIntent(text: string): boolean {
+  const folded = foldCalendarText(text).replace(/^(?:please|por favor|pfv)\s+/, '');
+  return /^\s*(?:create|add|cria[r]?|adiciona[r]?|bota[r]?|coloca[r]?|poe[r]?|mete[r]?|crea[r]?|anade|anadir|agrega[r]?)\b[\s\S]{0,40}\b(?:task|tarefa|todo|lembrete|tarea)\b/.test(folded)
+    || /^\s*(?:remind me to|lembra-?me de|lembre-?me de|recuerdame(?: a)?|recordarme(?: a)?)\b/.test(folded);
+}
+
 function isUnsafeTaskTitle(title: string): boolean {
   const folded = foldCalendarText(title);
   return /\b(delete|remove|erase|wipe|apaga|apagar|elimina|eliminar|remove)\b.*\b(all|todos|todas|everything|tasks|tarefas|events|eventos|emails?)\b/.test(folded)
@@ -1866,15 +1877,51 @@ function extractTaskTitleSlot(input: ChatPlannerInput, text: string): { value: s
     }
   }
 
-  const taskNoun = /\b(?:task|tarefa|todo|lembrete)\b/i.exec(text);
+  const reminder = /\b(?:remind\s+me\s+to|lembra-?me\s+de|lembre-?me\s+de|recu[eé]rdame\s+(?:a\s+)?|recordarme\s+(?:a\s+)?)\b/i.exec(text);
+  if (reminder) {
+    const rest = text.slice(reminder.index + reminder[0].length).trim();
+    const cleaned = sentenceCaseEnglishTaskTitle(cleanupTaskTitle(rest, input), input, text);
+    if (cleaned.length > 0) {
+      const start = text.indexOf(rest);
+      return { value: cleaned, rawText: rest, spanStart: start >= 0 ? start : reminder.index, spanEnd: start >= 0 ? start + rest.length : text.length, confidence: 0.85 };
+    }
+  }
+
+  const taskNoun = /\b(?:task|tarefa|todo|lembrete|tarea)\b/i.exec(text);
   if (!taskNoun) return null;
   let rest = text.slice(taskNoun.index + taskNoun[0].length).trim();
   rest = rest.replace(/^(?:to|for|para)\s+/i, '');
   rest = stripLeadingTaskTemporalPhrase(rest, input);
-  const cleaned = cleanupTaskTitle(rest, input);
+  let cleaned = sentenceCaseEnglishTaskTitle(cleanupTaskTitle(rest, input), input, text);
+  if (cleaned.length === 0) {
+    cleaned = sentenceCaseEnglishTaskTitle(extractPreTaskModifierTitle(text, taskNoun.index, input), input, text);
+  }
   if (cleaned.length === 0) return null;
   const start = text.indexOf(rest);
   return { value: cleaned, rawText: rest, spanStart: start >= 0 ? start : taskNoun.index, spanEnd: start >= 0 ? start + rest.length : text.length, confidence: 0.82 };
+}
+
+function extractPreTaskModifierTitle(text: string, taskNounIndex: number, input: ChatPlannerInput): string {
+  const prefix = text.slice(0, taskNounIndex)
+    .replace(/^\s*(?:please|por favor|pfv)\s+/i, '')
+    .replace(/^\s*(?:create|add|cria[r]?|adiciona[r]?|bota[r]?|coloca[r]?|p[oõ]e[r]?|mete[r]?|crea[r]?|a[nñ]ade|a[nñ]adir|agreg[ae][r]?)\s+/i, '')
+    .replace(/^\s*(?:a|an|uma?|una?)\s+/i, '')
+    .trim();
+  const cleaned = cleanupTaskTitle(prefix, input);
+  return /^(?:new|nova?|nuevo|nueva)$/i.test(cleaned) ? '' : cleaned;
+}
+
+function isPlainTaskReminderCreate(folded: string): boolean {
+  if (!/\b(remind me to|lembra-?me de|lembre-?me de|recuerdame(?: a)?|recordarme(?: a)?)\b/.test(folded)) return false;
+  return !/\b(credit card|cartao|cartao de credito|fatura|factura|bill|invoice|darf|irs|iva|tax|imposto|stripe|payment|pagamento)\b/.test(folded);
+}
+
+function sentenceCaseEnglishTaskTitle(title: string, input: ChatPlannerInput, sourceText: string): string {
+  if (!title) return title;
+  const isEnglish = input.locale?.toLowerCase().startsWith('en') === true
+    || /^\s*(?:add|create|remind me to)\b/i.test(sourceText);
+  if (!isEnglish || !/^[a-z]/.test(title)) return title;
+  return `${title[0]?.toUpperCase() ?? ''}${title.slice(1)}`;
 }
 
 function cleanupTaskTitle(title: string, input: ChatPlannerInput): string {
@@ -1911,9 +1958,10 @@ function stripTaskTemporalPhrase(title: string, input: ChatPlannerInput): string
 function extractTaskDueDateTimeSlot(input: ChatPlannerInput, text: string): { value: string; rawText: string; spanStart: number; spanEnd: number; confidence: number } | null {
   const now = DateTime.fromISO(input.nowIso ?? new Date().toISOString()).setZone(input.timezone);
   const patterns = [
-    /\b(?:for|para|due|vence|pra|p[ao]ra)?\s*(?<date>tomorrow|amanh[ãa]|today|hoje)\b\s+(?:at|às?|as|pelas?|by|para\s+as)?\s*(?<time>\d{1,2}h(?:\d{2})?|\d{1,2}(?::\d{2})?\s*(?:am|pm)?)\b/i,
-    /\b(?<date>tomorrow|amanh[ãa]|today|hoje)\b(?:\s+(?:at|às?|as|pelas?|by|para)\s*)?(?<time>\d{1,2}h(?:\d{2})?|\d{1,2}(?::\d{2})?\s*(?:am|pm)?)?/i,
-    /\b(?:for|para|due|vence|pra|p[ao]ra)\s+(?<date>tomorrow|amanh[ãa]|today|hoje)\b(?:\s+(?:at|às?|as|pelas?)\s*)?(?<time>\d{1,2}h(?:\d{2})?|\d{1,2}(?::\d{2})?\s*(?:am|pm)?)?/i,
+    /\b(?:for|para|due|vence|pra|p[ao]ra)?\s*(?<date>tomorrow|amanh[ãa]|today|hoje)(?=\s|$|[,.!?])\s+(?:at|às?|as|pelas?|by|para\s+as)?\s*(?<time>\d{1,2}h(?:\d{2})?|\d{1,2}(?::\d{2})?\s*(?:am|pm)?)\b/i,
+    /\b(?<date>tomorrow|amanh[ãa]|today|hoje)(?=\s|$|[,.!?])(?:\s+(?:at|às?|as|pelas?|by|para)\s*)?(?<time>\d{1,2}h(?:\d{2})?|\d{1,2}(?::\d{2})?\s*(?:am|pm)?)?/i,
+    /\b(?:for|para|due|vence|pra|p[ao]ra)\s+(?<date>tomorrow|amanh[ãa]|today|hoje)(?=\s|$|[,.!?])(?:\s+(?:at|às?|as|pelas?)\s*)?(?<time>\d{1,2}h(?:\d{2})?|\d{1,2}(?::\d{2})?\s*(?:am|pm)?)?/i,
+    /\b(?:for|on|by|due|para|pra|p[ao]ra|el|na|no)?\s*(?<date>monday|tuesday|wednesday|thursday|friday|saturday|sunday|segunda(?:-feira)?|ter[cç]a(?:-feira)?|quarta(?:-feira)?|quinta(?:-feira)?|sexta(?:-feira)?|s[aá]bado|domingo|lunes|martes|mi[eé]rcoles|jueves|viernes)\b(?:\s+(?:at|às?|as|a\s+las|pelas?|by|para\s+as)\s*)?(?<time>\d{1,2}h(?:\d{2})?|\d{1,2}(?::\d{2})?\s*(?:am|pm)?)?/i,
     /\b(?:at|às?|as|pelas?)\s*(?<time>\d{1,2}h(?:\d{2})?|\d{1,2}(?::\d{2})?\s*(?:am|pm)?)\b/i,
   ];
   for (const pattern of patterns) {
@@ -1921,17 +1969,18 @@ function extractTaskDueDateTimeSlot(input: ChatPlannerInput, text: string): { va
     if (!match?.groups) continue;
     const raw = match[0];
     const dateWord = foldCalendarText(String(match.groups.date || ''));
-    let date = now;
-    if (dateWord === 'tomorrow' || dateWord === 'amanha') date = now.plus({ days: 1 });
+    let date = resolveTaskDueDate(now, dateWord);
     if (!dateWord && /\b(?:at|às?|as|pelas?)\b/i.test(raw)) date = now;
-    const parsedTime = parseTaskClockTime(match.groups.time || raw);
-    if (!parsedTime) continue;
-    const value = date.set({
-      hour: parsedTime.hour,
-      minute: parsedTime.minute,
-      second: 0,
-      millisecond: 0,
-    }).toISO();
+    const parsedTime = parseTaskClockTime(match.groups.time || '');
+    if (!parsedTime && !dateWord) continue;
+    const value = parsedTime
+      ? date.set({
+        hour: parsedTime.hour,
+        minute: parsedTime.minute,
+        second: 0,
+        millisecond: 0,
+      }).toISO()
+      : date.toISODate();
     if (!value) continue;
     return {
       value,
@@ -1942,6 +1991,53 @@ function extractTaskDueDateTimeSlot(input: ChatPlannerInput, text: string): { va
     };
   }
   return null;
+}
+
+function resolveTaskDueDate(now: DateTime, dateWord: string): DateTime {
+  if (dateWord === 'tomorrow' || dateWord === 'amanha' || dateWord === 'manana') return now.plus({ days: 1 });
+  const weekday = taskWeekdayNumber(dateWord);
+  if (!weekday) return now;
+  let days = weekday - now.weekday;
+  if (days <= 0) days += 7;
+  return now.plus({ days });
+}
+
+function taskWeekdayNumber(dateWord: string): number | null {
+  switch (dateWord) {
+    case 'monday':
+    case 'segunda':
+    case 'segunda-feira':
+    case 'lunes':
+      return 1;
+    case 'tuesday':
+    case 'terca':
+    case 'terca-feira':
+    case 'martes':
+      return 2;
+    case 'wednesday':
+    case 'quarta':
+    case 'quarta-feira':
+    case 'miercoles':
+      return 3;
+    case 'thursday':
+    case 'quinta':
+    case 'quinta-feira':
+    case 'jueves':
+      return 4;
+    case 'friday':
+    case 'sexta':
+    case 'sexta-feira':
+    case 'viernes':
+      return 5;
+    case 'saturday':
+    case 'sabado':
+      return 6;
+    case 'sunday':
+    case 'domingo':
+      return 7;
+    default:
+      return null;
+  }
 }
 
 function parseTaskClockTime(rawInput: unknown): { hour: number; minute: number } | null {
@@ -2446,6 +2542,7 @@ export async function executeChatActionPlan(
       confirmedDestructiveAction: options.confirmed === true,
       confirmationSource: options.confirmationSource
         ?? (options.confirmed === true ? 'pending_confirmation' : 'none'),
+      requireConfirmationForWrites: input.requireSafeWriteConfirmation === true,
     }, () => executeChatActionPlan(plan, input, deps, options));
   }
   if (plan.clarificationQuestion || plan.steps.some((step) => !step.requiredArgsPresent)) {
