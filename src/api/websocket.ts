@@ -342,10 +342,10 @@ export function attachWebSocket(server: http.Server): void {
         // domain handler (so no tokens are spent on blocked users).
             try {
               const { getUserByTelegramId } = require('../services/user-service');
-              const { checkTierAccess } = require('../services/skill-tiers');
+              const { checkSkillAccess } = require('../services/skill-tiers');
               const user = getUserByTelegramId(userId);
               if (user) {
-                const tierResult = checkTierAccess({ id: user.id, tier: user.tier }, route.domain);
+                const tierResult = checkSkillAccess({ id: user.id, tier: user.tier }, route.domain);
                 if (!tierResult.allowed) {
                   logger.info(
                     { userId, tenantId, domain: route.domain, userTier: tierResult.userTier, requiredTier: tierResult.requiredTier, reason: tierResult.reason },

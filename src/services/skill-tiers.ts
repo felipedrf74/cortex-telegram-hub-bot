@@ -3,17 +3,18 @@
 /**
  * Skill Tier Service — Phase 1 foundation.
  *
- * The tier gate answers one question: "Can user X use skill Y?"
+ * The skill gate answers one question: "Can user X use skill Y?"
  *
- * Resolution order (first match wins):
- *   1. Per-user override in user_skill_tier_overrides (if not expired)
- *   2. Catalog entry in skill_tiers          → compare user.tier ≥ required_tier
- *   3. Defaults from skill-config.ts         → fall back to SkillDefinition.requiredTier
- *   4. Global default: 'pro'
+ * Canonical access resolution order (first match wins):
+ *   1. Owner tier bypass
+ *   2. Global installed skill/submodule disabled → deny
+ *   3. User explicit deny in user_skill_overrides → deny
+ *   4. User explicit grant in user_skill_tier_overrides → allow
+ *   5. Tier comparison from skill_tiers / skill-config.ts / default pro
  *
- * This service is the SINGLE source of truth for tier enforcement. Every
- * caller (API middleware, chat domain router, iOS Skills tab endpoint)
- * should go through `checkTierAccess` — never inline the comparison.
+ * Runtime callers should use `checkSkillAccess`. `checkTierAccess` remains
+ * as a deprecated compatibility helper for tests and catalog views that need
+ * the tier-only answer.
  *
  * Signals DB table `skill_tiers` was created in migration 045.
  */
@@ -50,6 +51,26 @@ export interface TierAccessResult {
   userTier: SkillTier;
   requiredTier: SkillTier;
   skillId: string;
+}
+
+export type SkillAccessReason =
+  | 'owner_bypass'
+  | 'global_disabled'
+  | 'user_denied'
+  | 'user_grant'
+  | TierAccessResult['reason']
+  | 'db_error';
+
+export interface SkillAccessResult {
+  allowed: boolean;
+  reason: SkillAccessReason;
+  userTier: SkillTier;
+  requiredTier: SkillTier;
+  skillId: string;
+  parentSkill: string;
+  subSkill: string | null;
+  globalEnabled: boolean;
+  tierReason: TierAccessResult['reason'] | null;
 }
 
 // ─── Catalog Reads ──────────────────────────────────────────────────
@@ -92,6 +113,93 @@ function getTierFromConfig(skillId: string): SkillTier | null {
 
   // Parent-skill lookup
   return def.requiredTier ?? null;
+}
+
+function normalizeSkillId(skillId: string): string {
+  return String(skillId ?? '').trim();
+}
+
+function splitSkillId(skillId: string): { parentSkill: string; subSkill: string | null } {
+  const normalized = normalizeSkillId(skillId);
+  const dot = normalized.indexOf('.');
+  if (dot === -1) return { parentSkill: normalized, subSkill: null };
+  return {
+    parentSkill: normalized.slice(0, dot),
+    subSkill: normalized.slice(dot + 1) || null,
+  };
+}
+
+function configuredRequiredTier(skillId: string): SkillTier {
+  return getTierFromConfig(skillId) ?? 'pro';
+}
+
+function installedSkillGate(skillId: string): {
+  allowed: boolean;
+  parentSkill: string;
+  subSkill: string | null;
+  globalEnabled: boolean;
+} {
+  const db = getDb();
+  const { parentSkill, subSkill } = splitSkillId(skillId);
+  const parent = db.prepare(
+    'SELECT id, enabled FROM installed_skills WHERE name = ?'
+  ).get(parentSkill) as { id: number; enabled: number } | undefined;
+
+  if (parent && parent.enabled !== 1) {
+    return { allowed: false, parentSkill, subSkill, globalEnabled: false };
+  }
+
+  if (parent && subSkill) {
+    const sub = db.prepare(
+      'SELECT enabled FROM skill_submodules WHERE skill_id = ? AND module_name = ?'
+    ).get(parent.id, subSkill) as { enabled: number } | undefined;
+    if (sub && sub.enabled !== 1) {
+      return { allowed: false, parentSkill, subSkill, globalEnabled: false };
+    }
+  }
+
+  return { allowed: true, parentSkill, subSkill, globalEnabled: true };
+}
+
+function hasUserSkillDeny(userId: number, skillId: string): boolean {
+  const db = getDb();
+  const { parentSkill, subSkill } = splitSkillId(skillId);
+  const parent = db.prepare(
+    'SELECT enabled FROM user_skill_overrides WHERE user_id = ? AND skill = ? AND sub_skill IS NULL'
+  ).get(userId, parentSkill) as { enabled: number } | undefined;
+  if (parent?.enabled === 0) return true;
+
+  if (subSkill) {
+    const child = db.prepare(
+      'SELECT enabled FROM user_skill_overrides WHERE user_id = ? AND skill = ? AND sub_skill = ?'
+    ).get(userId, parentSkill, subSkill) as { enabled: number } | undefined;
+    if (child?.enabled === 0) return true;
+  }
+
+  return false;
+}
+
+function buildSkillAccessResult(opts: {
+  allowed: boolean;
+  reason: SkillAccessReason;
+  userTier: SkillTier;
+  requiredTier: SkillTier;
+  skillId: string;
+  tierReason?: TierAccessResult['reason'] | null;
+  globalEnabled?: boolean;
+}): SkillAccessResult {
+  const { parentSkill, subSkill } = splitSkillId(opts.skillId);
+  return {
+    allowed: opts.allowed,
+    reason: opts.reason,
+    userTier: opts.userTier,
+    requiredTier: opts.requiredTier,
+    skillId: opts.skillId,
+    parentSkill,
+    subSkill,
+    globalEnabled: opts.globalEnabled ?? true,
+    tierReason: opts.tierReason ?? null,
+  };
 }
 
 // ─── Per-User Overrides ─────────────────────────────────────────────
@@ -154,17 +262,12 @@ export function revokeOverride(userId: number, skillId: string): boolean {
 
 // ─── The Gate ───────────────────────────────────────────────────────
 
-/**
- * THE tier gate. Call this before letting a user access any skill.
- *
- * @param user - The resolved User row. If null/undefined, access is denied.
- * @param skillId - Dot-notation skill ID, e.g. 'triathlon.gym' or 'secretary'.
- * @returns Structured result with `allowed`, the reason, and tier breakdown.
- */
-export function checkTierAccess(
+function evaluateTierAccess(
   user: Pick<User, 'id' | 'tier'> | null | undefined,
   skillId: string,
+  opts: { respectUserOverride: boolean },
 ): TierAccessResult {
+  const normalizedSkillId = normalizeSkillId(skillId);
   // Hard deny unknown user
   if (!user) {
     return {
@@ -172,26 +275,26 @@ export function checkTierAccess(
       reason: 'denied',
       userTier: 'free',
       requiredTier: 'owner',
-      skillId,
+      skillId: normalizedSkillId,
     };
   }
 
   const userTier = user.tier as SkillTier;
 
   // 1. Per-user override beats everything
-  const override = getUserOverride(user.id, skillId);
+  const override = opts.respectUserOverride ? getUserOverride(user.id, normalizedSkillId) : null;
   if (override) {
     return {
       allowed: override.unlocked === 1,
       reason: 'override',
       userTier,
       requiredTier: userTier,  // effectively unlocked at user's own tier
-      skillId,
+      skillId: normalizedSkillId,
     };
   }
 
   // 2. Catalog lookup — DB is authoritative if present
-  const catalogTier = getSkillTier(skillId);
+  const catalogTier = getSkillTier(normalizedSkillId);
   if (catalogTier) {
     const allowed = TIER_RANK[userTier] >= TIER_RANK[catalogTier];
     return {
@@ -199,12 +302,12 @@ export function checkTierAccess(
       reason: 'catalog',
       userTier,
       requiredTier: catalogTier,
-      skillId,
+      skillId: normalizedSkillId,
     };
   }
 
   // 3. Fall back to skill-config.ts (code-level default)
-  const configTier = getTierFromConfig(skillId);
+  const configTier = getTierFromConfig(normalizedSkillId);
   if (configTier) {
     const allowed = TIER_RANK[userTier] >= TIER_RANK[configTier];
     return {
@@ -212,7 +315,7 @@ export function checkTierAccess(
       reason: 'default',
       userTier,
       requiredTier: configTier,
-      skillId,
+      skillId: normalizedSkillId,
     };
   }
 
@@ -223,8 +326,112 @@ export function checkTierAccess(
     reason: 'default',
     userTier,
     requiredTier: globalDefault,
-    skillId,
+    skillId: normalizedSkillId,
   };
+}
+
+/**
+ * Deprecated tier-only helper. Runtime gates should use `checkSkillAccess`
+ * so global install state, user explicit denies, owner bypass, and tier
+ * overrides are resolved in one place.
+ */
+export function checkTierAccess(
+  user: Pick<User, 'id' | 'tier'> | null | undefined,
+  skillId: string,
+): TierAccessResult {
+  return evaluateTierAccess(user, skillId, { respectUserOverride: true });
+}
+
+/**
+ * Canonical skill gate. Call this before exposing or executing any user-facing
+ * skill capability.
+ */
+export function checkSkillAccess(
+  user: Pick<User, 'id' | 'tier'> | null | undefined,
+  skillId: string,
+): SkillAccessResult {
+  const normalizedSkillId = normalizeSkillId(skillId);
+  if (!user) {
+    return buildSkillAccessResult({
+      allowed: false,
+      reason: 'denied',
+      userTier: 'free',
+      requiredTier: 'owner',
+      skillId: normalizedSkillId,
+      tierReason: 'denied',
+    });
+  }
+
+  const userTier = user.tier as SkillTier;
+  if (userTier === 'owner') {
+    return buildSkillAccessResult({
+      allowed: true,
+      reason: 'owner_bypass',
+      userTier,
+      requiredTier: userTier,
+      skillId: normalizedSkillId,
+      tierReason: null,
+      globalEnabled: true,
+    });
+  }
+
+  try {
+    const globalGate = installedSkillGate(normalizedSkillId);
+    if (!globalGate.allowed) {
+      return buildSkillAccessResult({
+        allowed: false,
+        reason: 'global_disabled',
+        userTier,
+        requiredTier: configuredRequiredTier(normalizedSkillId),
+        skillId: normalizedSkillId,
+        globalEnabled: false,
+      });
+    }
+
+    if (hasUserSkillDeny(user.id, normalizedSkillId)) {
+      return buildSkillAccessResult({
+        allowed: false,
+        reason: 'user_denied',
+        userTier,
+        requiredTier: configuredRequiredTier(normalizedSkillId),
+        skillId: normalizedSkillId,
+        globalEnabled: true,
+      });
+    }
+
+    const override = getUserOverride(user.id, normalizedSkillId);
+    if (override) {
+      return buildSkillAccessResult({
+        allowed: override.unlocked === 1,
+        reason: override.unlocked === 1 ? 'user_grant' : 'user_denied',
+        userTier,
+        requiredTier: userTier,
+        skillId: normalizedSkillId,
+        globalEnabled: true,
+      });
+    }
+
+    const tier = evaluateTierAccess(user, normalizedSkillId, { respectUserOverride: false });
+    return buildSkillAccessResult({
+      ...tier,
+      reason: tier.reason,
+      tierReason: tier.reason,
+      globalEnabled: true,
+    });
+  } catch (err) {
+    logger.warn(
+      { err, userId: user.id, skillId: normalizedSkillId },
+      'Skill access lookup failed — failing closed',
+    );
+    return buildSkillAccessResult({
+      allowed: false,
+      reason: 'db_error',
+      userTier,
+      requiredTier: configuredRequiredTier(normalizedSkillId),
+      skillId: normalizedSkillId,
+      globalEnabled: false,
+    });
+  }
 }
 
 /**
@@ -239,6 +446,17 @@ export function checkTierAccessBatch(
   const result = new Map<string, TierAccessResult>();
   for (const skillId of skillIds) {
     result.set(skillId, checkTierAccess(user, skillId));
+  }
+  return result;
+}
+
+export function checkSkillAccessBatch(
+  user: Pick<User, 'id' | 'tier'> | null | undefined,
+  skillIds: string[],
+): Map<string, SkillAccessResult> {
+  const result = new Map<string, SkillAccessResult>();
+  for (const skillId of skillIds) {
+    result.set(skillId, checkSkillAccess(user, skillId));
   }
   return result;
 }

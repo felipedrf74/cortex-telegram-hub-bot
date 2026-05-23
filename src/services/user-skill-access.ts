@@ -10,6 +10,7 @@
 
 import { getDb } from './database';
 import { logger } from '../utils/logger';
+import { checkSkillAccess } from './skill-tiers';
 
 // ─── Skill Catalog ──────────────────────────────────────────────────
 
@@ -86,48 +87,28 @@ export const SKILL_CATALOG: SkillDefinition[] = [
 
 // ─── Access Check ───────────────────────────────────────────────────
 
-/**
- * Check if a user can use a specific skill (or sub-skill).
- * Returns true if no override exists OR override.enabled=1.
- * Owner always returns true.
- */
-export function isSkillEnabled(userId: number, skill: string, subSkill?: string): boolean {
-  // Owner bypasses all restrictions
+function legacyToggleUser(userId: number): { id: number; tier: 'max' | 'owner' } {
   try {
     const { isOwner } = require('./user-service');
-    if (isOwner(userId)) return true;
+    if (isOwner(userId)) return { id: userId, tier: 'owner' };
   } catch { /* user-service not loaded */ }
+  // Deprecated compatibility mode: this helper historically answered only
+  // "is this skill toggle disabled?", not "does this user's plan include it?".
+  // Runtime gates use checkSkillAccess with the real user tier.
+  return { id: userId, tier: 'max' };
+}
 
-  try {
-    const db = getDb();
-
-    // Check parent skill first
-    const parentRow = db.prepare(
-      'SELECT enabled FROM user_skill_overrides WHERE user_id = ? AND skill = ? AND sub_skill IS NULL'
-    ).get(userId, skill) as { enabled: number } | undefined;
-
-    if (parentRow && parentRow.enabled === 0) return false;
-
-    // Check sub-skill if specified
-    if (subSkill) {
-      const subRow = db.prepare(
-        'SELECT enabled FROM user_skill_overrides WHERE user_id = ? AND skill = ? AND sub_skill = ?'
-      ).get(userId, skill, subSkill) as { enabled: number } | undefined;
-
-      if (subRow && subRow.enabled === 0) return false;
-    }
-
-    return true; // Default: enabled
-  } catch (err) {
-    // Hardening 2026-04-21: was `return true; // fail open`, which
-    // meant a single DB lock would re-grant access to an admin-
-    // disabled skill. Fail closed instead: on DB error, deny access
-    // and log so operators can correlate with the underlying fault.
-    // Callers that want permissive behavior must make the choice
-    // explicit at the call site.
-    logger.warn({ err, skill }, 'user-skill-access: DB lookup failed — failing closed');
-    return false;
+/**
+ * Deprecated compatibility wrapper for portal/onboarding toggle checks.
+ * Runtime access enforcement should call `checkSkillAccess(user, skillId)`.
+ */
+export function isSkillEnabled(userId: number, skill: string, subSkill?: string): boolean {
+  const skillId = subSkill ? `${skill}.${subSkill}` : skill;
+  const result = checkSkillAccess(legacyToggleUser(userId), skillId);
+  if (result.reason === 'db_error') {
+    logger.warn({ skill, subSkill, userId }, 'user-skill-access: DB lookup failed — failing closed');
   }
+  return result.allowed;
 }
 
 // ─── Admin Actions ──────────────────────────────────────────────────

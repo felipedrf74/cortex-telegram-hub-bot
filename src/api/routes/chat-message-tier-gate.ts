@@ -1,7 +1,7 @@
 // Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
 
 import type { Response } from 'express';
-import { checkTierAccess } from '../../services/skill-tiers';
+import { checkSkillAccess } from '../../services/skill-tiers';
 import { getUserById, getUserByTelegramId } from '../../services/user-service';
 import { logger } from '../../utils/logger';
 
@@ -14,27 +14,28 @@ export function sendChatTierRequiredIfNeeded(
     const user = getUserById(userId) || getUserByTelegramId(userId);
     if (!user) return false;
 
-    const tierResult = checkTierAccess({ id: user.id, tier: user.tier }, domain);
-    if (tierResult.allowed) return false;
+    const accessResult = checkSkillAccess({ id: user.id, tier: user.tier }, domain);
+    if (accessResult.allowed) return false;
 
     logger.info(
       {
         userId,
         domain,
-        userTier: tierResult.userTier,
-        requiredTier: tierResult.requiredTier,
-        reason: tierResult.reason,
+        userTier: accessResult.userTier,
+        requiredTier: accessResult.requiredTier,
+        reason: accessResult.reason,
       },
       'iOS tier gate blocked message',
     );
     res.status(403).json({
       error: {
         code: 'TIER_REQUIRED',
-        message: `This feature requires the ${tierResult.requiredTier} tier. Your current tier: ${tierResult.userTier}.`,
+        message: `This feature requires the ${accessResult.requiredTier} tier. Your current tier: ${accessResult.userTier}.`,
         details: {
           domain,
-          userTier: tierResult.userTier,
-          requiredTier: tierResult.requiredTier,
+          userTier: accessResult.userTier,
+          requiredTier: accessResult.requiredTier,
+          reason: accessResult.reason,
         },
       },
     });
