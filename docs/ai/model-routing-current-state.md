@@ -204,8 +204,8 @@ Quality risks remain:
 Current chat-reliability branch coverage:
 
 - iOS REST Chat (`src/api/routes/chat-message-routes.ts`) infers a chat turn contract before domain execution and uses it for route hints, destructive/high-risk guardrails, selective internet research, and local-and-web context assembly.
-- Telegram text Chat (`src/handlers/message.ts`) runs the same contract/orchestration layer before dispatching to domain handlers. Destructive turns are blocked before model/tool execution.
 - WebSocket Chat (`src/api/websocket.ts`) now runs the same contract/orchestration layer before streaming a domain response. Selective internet research streams a deterministic answer and destructive turns are refused before handler execution.
+- Telegram inbound Chat has been retired. `src/bot.ts` remains a legacy outbound-only factory for safe-send compatibility and does not register commands, message handlers, callback queries, polling, or webhooks.
 - Domain handler context inclusion still uses the contract only to decide whether scoped state is required. The full response contract is assembled at the API/chat surface.
 
 ## Internal AI Completion And Python Content Engine

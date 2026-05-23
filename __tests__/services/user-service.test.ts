@@ -224,20 +224,15 @@ describe('user-service', () => {
   });
 
   describe('bootstrap boundary structure', () => {
-    it('bot auth and /start use the explicit owner bootstrap helper instead of raw whitelist checks', () => {
+    it('legacy Telegram factory does not reintroduce raw whitelist auth checks', () => {
       const botSource = fs.readFileSync(
         path.resolve(__dirname, '../../src/bot.ts'),
         'utf8',
       );
-      const systemSource = fs.readFileSync(
-        path.resolve(__dirname, '../../src/handlers/commands/system.ts'),
-        'utf8',
-      );
 
-      expect(botSource).toContain('isOwnerBootstrapTelegramId');
-      expect(systemSource).toContain('isOwnerBootstrapTelegramId');
       expect(botSource).not.toContain('config.telegram.allowedUserIds.includes(userId)');
-      expect(systemSource).not.toContain('config.telegram.allowedUserIds.includes(userId)');
+      expect(botSource).not.toContain('bot.command(');
+      expect(botSource).not.toContain('bot.on(');
     });
   });
 

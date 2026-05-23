@@ -139,7 +139,6 @@ describe('Nexus security baseline source pins', () => {
   it('fails closed when chat access checks cannot be evaluated', () => {
     const restGate = read('src/api/routes/chat-message-tier-gate.ts');
     const websocket = read('src/api/websocket.ts');
-    const telegramMessage = read('src/handlers/message.ts');
 
     expect(restGate).toContain('ACCESS_CHECK_UNAVAILABLE');
     expect(restGate).toContain('iOS tier gate check failed — fail-closed');
@@ -150,7 +149,7 @@ describe('Nexus security baseline source pins', () => {
     expect(websocket).toContain('WebSocket upgrade rejected due to untrusted Origin');
     expect(websocket).toContain('consumeWebSocketMessageBudget');
     expect(websocket).toContain('RATE_LIMITED');
-    expect(telegramMessage).toContain('tier gate check failed — fail-closed');
-    expect(`${restGate}\n${websocket}\n${telegramMessage}`).not.toContain('tier gate check failed — falling through (fail-open)');
+    expect(fs.existsSync(path.join(root, 'src/handlers/message.ts'))).toBe(false);
+    expect(`${restGate}\n${websocket}`).not.toContain('tier gate check failed — falling through (fail-open)');
   });
 });
