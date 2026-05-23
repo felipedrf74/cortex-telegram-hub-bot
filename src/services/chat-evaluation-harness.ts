@@ -660,7 +660,8 @@ export function runChatEvaluationSuite(input: {
 } = {}): ChatEvaluationSuiteResult {
   const mode = input.mode ?? 'fixture';
   const scenarios = input.scenarios ?? CHAT_EVAL_SCENARIOS;
-  const dayToDay = runDayToDaySimulationSuite({ generatedAt: input.generatedAt });
+  const dayToDayMode = mode === 'real_provider' ? 'real_provider' : 'fixture';
+  const dayToDay = runDayToDaySimulationSuite({ generatedAt: input.generatedAt, mode: dayToDayMode });
   const results = scenarios.map((scenario) => evaluateScenario(scenario, mode, dayToDay));
   const statusCounts = {
     pass: results.filter((result) => result.status === 'pass').length,
