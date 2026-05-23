@@ -12,7 +12,7 @@ Track 4 live Phase A initially failed, one course-correction iteration was compl
 | Iteration | Result | Evidence | Notes |
 |---|---:|---|---|
 | Initial live Phase A | 2/5, pass rate `0.400` | `docs/release/chat-test-phase/chat-test-phase-results-track-4-reliability-2026-05-23T17-18-28-151Z.json` | See `track-4-divergence-1.md`. |
-| Correction run | 5/5, pass rate `1.000` | `docs/release/chat-test-phase/chat-test-phase-results-track-4-reliability-2026-05-23T17-22-21-106Z.json` | Fixture updated for confirmation contract; agenda read and access-control injection gates fixed. |
+| Correction run | 5/5, pass rate `1.000` | `docs/release/chat-test-phase/chat-test-phase-results-track-4-reliability-2026-05-23T17-28-05-612Z.json` | Fixture updated for confirmation contract; agenda read and access-control injection gates fixed. |
 
 ## Fixes
 
@@ -24,6 +24,11 @@ Track 4 live Phase A initially failed, one course-correction iteration was compl
 ## Waivers
 
 None for live Phase A.
+
+## Staging Smoke
+
+- `./scripts/deploy-staging.sh` passed from `d4642c83`.
+- `./scripts/staging-smoke.sh` passed 21/21; evidence: `docs/release/smoke-evidence/staging-smoke-d4642c83-20260523T172751Z.json`.
 
 ## Remaining Release Gates
 
