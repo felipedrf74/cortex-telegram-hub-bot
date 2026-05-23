@@ -57,6 +57,7 @@ export type ChatActionName =
   | 'cooking_meal_support'
   | 'cooking_grocery_list'
   | 'cooking_meal_plan'
+  | 'cooking_substitute_ingredient'
   | 'cooking_fueling_support'
   | 'finance_summary'
   | 'finance_create_reminder'

@@ -205,11 +205,28 @@ describe('typed slot adoption — content pipeline stage transition', () => {
   });
 });
 
+describe('typed slot adoption — cooking ingredient substitution', () => {
+  it('extracts date, meal type, original ingredient, and replacement', () => {
+    const entry = findChatActionDefinition('cooking', 'cooking_substitute_ingredient')!;
+    const result = getSlotExtractors(entry)[0].extract(
+      'Replace peanuts with sunflower seed butter in dinner tomorrow',
+      { locale: 'en-US', timezone: 'Europe/Lisbon', nowIso: '2026-05-14T12:00:00+01:00' },
+    );
+    expect(result.slots).toMatchObject({
+      date: '2026-05-15',
+      mealType: 'dinner',
+      originalIngredient: 'peanuts',
+      suggestedIngredient: 'sunflower seed butter',
+    });
+    expect(result.confidence).toBeGreaterThan(0.8);
+  });
+});
+
 describe('typed slot adoption inventory (Phase 15 batch 77: full coverage)', () => {
-  it('imports the runtime registry and finds exactly 48 active actions', () => {
+  it('imports the runtime registry and finds exactly 49 active actions', () => {
     const entries = getChatActionRegistry();
-    expect(entries).toHaveLength(48);
-    expect(activeActions(entries)).toHaveLength(48);
+    expect(entries).toHaveLength(49);
+    expect(activeActions(entries)).toHaveLength(49);
   });
 
   it('excludes non-active action definitions from active-action counts', () => {
@@ -223,7 +240,7 @@ describe('typed slot adoption inventory (Phase 15 batch 77: full coverage)', () 
     expect(activeActions(synthetic).map((entry) => entry.status)).toEqual(['active']);
   });
 
-  it('all 48 active registry actions have typedSlotExtractors (full coverage)', () => {
+  it('all 49 active registry actions have typedSlotExtractors (full coverage)', () => {
     // Adoption history:
     //   Phase 12 batch 63 — 3 (calendar/task/training core)
     //   Phase 13 batch 67 — +5 (mail send/draft, delete_event, etc.)
@@ -232,7 +249,7 @@ describe('typed slot adoption inventory (Phase 15 batch 77: full coverage)', () 
     //     where extraction has no useful NL signal)
     const entries = activeActions(getChatActionRegistry());
     const adopted = entries.filter((e: { typedSlotExtractors?: unknown }) => Array.isArray(e.typedSlotExtractors) && e.typedSlotExtractors.length > 0);
-    expect(adopted.length).toBe(48);
+    expect(adopted.length).toBe(49);
     expect(adopted.length).toBe(entries.length);
   });
 

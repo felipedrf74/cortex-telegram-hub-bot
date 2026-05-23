@@ -22,6 +22,7 @@
 // shape.
 
 import { randomUUID } from 'crypto';
+import { DateTime } from 'luxon';
 
 import {
   hasCalendarWriteIntent,
@@ -33,6 +34,9 @@ import {
 import {
   parseContentPipelineStageTransition,
 } from './skills/content/pipeline-stage';
+import {
+  parseCookingSubstitution,
+} from './skills/cooking/substitution';
 import type {
   SlotContext,
   SlotExtractor,
@@ -497,6 +501,20 @@ export const mealDateRangeSlotExtractor: SlotExtractor = {
     return {
       slots: { dateRange: isNextWeek ? 'next_week' : 'this_week', datePhrase: phrase },
       confidence: 0.85,
+    };
+  },
+};
+
+export const cookingSubstitutionSlotExtractor: SlotExtractor = {
+  name: 'cooking_substitution',
+  label: 'extracts meal ingredient substitution date, meal type, original ingredient, and replacement',
+  extract(text, ctx) {
+    const now = DateTime.fromISO(ctx.nowIso ?? new Date().toISOString(), { zone: ctx.timezone ?? 'UTC' });
+    const parsed = parseCookingSubstitution(text, now.isValid ? now : DateTime.utc());
+    if (!parsed) return { slots: {} };
+    return {
+      slots: { ...parsed },
+      confidence: parsed.suggestedIngredient ? 0.9 : 0.65,
     };
   },
 };

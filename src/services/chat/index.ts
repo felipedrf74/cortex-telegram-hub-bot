@@ -2625,6 +2625,15 @@ function successCopy(input: ChatPlannerInput, results: Array<{ step: ChatPlanSte
       ? `Feito — guardei “${args.title}” para ${args.mealType} em ${args.date} e verifiquei o plano.`
       : `Done — I saved “${args.title}” for ${args.mealType} on ${args.date} and verified the plan.`;
   }
+  if (first?.step.action === 'cooking_substitute_ingredient') {
+    const result = first.result as any;
+    const substitution = result?.substitution ?? {};
+    const original = String(substitution.originalIngredient || (first.step.args as any).originalIngredient || 'ingredient');
+    const suggested = String(substitution.suggestedIngredient || (first.step.args as any).suggestedIngredient || 'replacement');
+    return input.locale?.startsWith('pt')
+      ? `Feito — troquei ${original} por ${suggested} nessa refeição e verifiquei a receita.`
+      : `Done — I replaced ${original} with ${suggested} in that meal and verified the recipe.`;
+  }
   if (first?.step.action === 'cooking_meal_support' || first?.step.action === 'cooking_fueling_support') {
     const result = first.result as any;
     return input.locale?.startsWith('pt')
@@ -2787,6 +2796,17 @@ function confirmationCopy(plan: ChatActionPlan, input: ChatPlannerInput): string
     }
     return `Confirm that you want to ${first.action === 'delete_task' ? 'delete' : first.action === 'complete_task' ? 'complete' : 'change'} the task “${title}”?`;
   }
+  if (first?.action === 'cooking_substitute_ingredient') {
+    const args = first.args as any;
+    const original = String(args.originalIngredient || 'ingredient');
+    const suggested = String(args.suggestedIngredient || 'replacement');
+    const mealType = String(args.mealType || 'meal');
+    const date = String(args.date || 'the selected day');
+    if (input.locale?.startsWith('pt')) {
+      return `Confirma que queres trocar ${original} por ${suggested} no ${mealType} de ${date}? Vou criar uma cópia da receita para esta refeição e atualizar a lista de compras.`;
+    }
+    return `Confirm replacing ${original} with ${suggested} in ${mealType} on ${date}? I’ll create a meal-specific recipe copy and update the shopping list.`;
+  }
   if (input.locale?.startsWith('pt')) {
     return `Preciso da tua confirmação antes de ${first?.action === 'send_email' ? 'enviar' : 'executar'} esta ação.`;
   }
@@ -2900,6 +2920,17 @@ function resultCardPayload(results: Array<{ step: ChatPlanStep; result?: unknown
   if (first.step.action === 'cooking_grocery_list') {
     const result = first.result as any;
     return { groceryList: result ? { weekStart: result.weekStart, itemCount: result.itemCount, items: result.items } : null };
+  }
+  if (first.step.action === 'cooking_substitute_ingredient') {
+    const result = first.result as any;
+    return {
+      cookingSubstitution: result ? {
+        substitution: result.substitution ?? null,
+        meal: result.meal ?? null,
+        recipe: result.recipe ?? null,
+        shoppingListUpdated: Boolean(result.substitution?.shoppingListUpdated),
+      } : null,
+    };
   }
   if (first.step.action === 'finance_summary') return { finance: first.result ?? null };
   if (first.step.action === 'connections_status') return { connections: first.result ?? null };

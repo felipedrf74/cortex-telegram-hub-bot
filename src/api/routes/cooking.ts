@@ -16,6 +16,7 @@
  *   DELETE /recipes/:id                  — remove a recipe
  *   GET    /meal-plan?from=&to=          — list meal plan entries in range
  *   POST   /meal-plan                    — upsert one meal plan slot
+ *   POST   /meal-plan/substitutions/suggest — suggest scoped substitution candidates
  *   POST   /meal-plan/substitutions/apply — accept a scoped substitution candidate
  *   DELETE /meal-plan?date=&mealType=    — clear one meal plan slot
  *   GET    /shopping-list?week=          — fetch the shopping list for a week
@@ -45,6 +46,7 @@ import {
   deleteRecipe,
   setMealPlan,
   applyMealPlanSubstitution,
+  suggestMealPlanSubstitutions,
   getMealPlan,
   deleteMealPlan,
   generateShoppingList,
@@ -1011,6 +1013,62 @@ export function cookingRoutes(): Router {
         userId,
         operation: 'iOS cooking meal-plan set failed',
         message: 'Failed to save meal plan',
+      });
+    }
+  }));
+
+  /**
+   * POST /api/v1/cooking/meal-plan/substitutions/suggest
+   * Body: { date, mealType, originalIngredient, reason? }
+   *
+   * Returns deterministic, preference-safe substitution candidates for one
+   * scoped meal ingredient. This is read-only: it never changes the recipe,
+   * meal plan, or shopping list.
+   */
+  router.post('/meal-plan/substitutions/suggest', asyncHandler(async (req, res: Response) => {
+    const { userId, tenantId } = req as AuthenticatedRequest;
+    const { date, mealType, originalIngredient, reason } = req.body ?? {};
+
+    if (typeof date !== 'string' || !date.trim()) {
+      sendError(res, 'BAD_REQUEST', 'date is required');
+      return;
+    }
+    if (typeof mealType !== 'string' || !mealType.trim()) {
+      sendError(res, 'BAD_REQUEST', 'mealType is required');
+      return;
+    }
+    if (typeof originalIngredient !== 'string' || !originalIngredient.trim()) {
+      sendError(res, 'BAD_REQUEST', 'originalIngredient is required');
+      return;
+    }
+    if (reason !== undefined && !isCookingSubstitutionReason(reason)) {
+      sendError(res, 'BAD_REQUEST', 'reason must be allergy, dietary_restriction, disliked_ingredient, or expired_pantry');
+      return;
+    }
+
+    try {
+      const result = suggestMealPlanSubstitutions(userId, {
+        date: date.trim(),
+        mealType: mealType.trim().toLowerCase(),
+        originalIngredient,
+        reason,
+      }, tenantId);
+      if (!result.found) {
+        const status = result.reason === 'meal_not_found' || result.reason === 'recipe_not_found' ? 404 : 400;
+        sendError(res, status === 404 ? 'NOT_FOUND' : 'BAD_REQUEST', result.reason ?? 'substitution_not_found', status);
+        return;
+      }
+      sendSuccess(res, {
+        ...result,
+        count: result.suggestions.length,
+      });
+    } catch (err: unknown) {
+      if (sendCookingScopeConflictIfNeeded(res, err)) return;
+      sendCookingInternalError(res, {
+        err,
+        userId,
+        operation: 'iOS cooking substitution suggestion failed',
+        message: 'Failed to suggest Cooking substitutions',
       });
     }
   }));
