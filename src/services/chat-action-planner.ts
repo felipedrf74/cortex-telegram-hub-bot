@@ -56,7 +56,6 @@ import {
 } from './chat-action-run-store';
 import {
   cancelPendingChatActions,
-  getActivePendingChatAction,
   makeSlotProvenance,
   markPendingChatActionNeedsUserFollowup,
   recordChatActionTelemetry,
@@ -85,21 +84,24 @@ import {
 } from './skills/step-builder';
 import { parseConnectionsActionStep } from './skills/connections/parser';
 import { parseContentActionStep } from './skills/content/parser';
+import { buildPendingContentSpecContinuation } from './skills/content/pending';
 import { parseCookingActionStep } from './skills/cooking/parser';
+import { buildPendingCookingMealPlanContinuation } from './skills/cooking/pending';
 import { parseDecisionActionStep } from './skills/decision_center/parser';
+import { buildPendingDecisionChooseContinuation } from './skills/decision_center/pending';
 import { parseFinanceActionStep } from './skills/finance/parser';
+import { buildPendingFinanceCategorizeContinuation } from './skills/finance/pending';
 import { parseMailActionStep } from './skills/mail/parser';
+import { buildPendingMailDraftContinuation } from './skills/mail/pending';
 import { parseNotificationActionStep } from './skills/notifications/parser';
 import { hasPastTenseSignal } from './skills/past-tense-detector';
 import { extractTopic, inferContentPlatform, inferProviderName } from './skills/text-extractors';
 import {
-  extractTrainingPlanSlots,
-  extractWeeklyVolumeKm,
-  makeTrainingPlanStep,
   missingTrainingPlanSlots,
-  TRAINING_PLAN_REQUIRED_SLOTS,
 } from './skills/training/helpers';
 import { parseTrainingActionStep } from './skills/training/parser';
+import { buildPendingSlotContinuationPlan } from './skills/training/pending';
+import type { PendingContinuationHelpers } from './chat/planner/pending-types';
 import { invalidateCalendarCaches } from './cache-coherence-registry';
 import { getTaskProviderForUser } from './task-store/task-router';
 import { resolveTaskCreationList } from './task-store/task-list-resolution';
@@ -182,6 +184,12 @@ const DEFAULT_DEPS: Required<ChatActionPlannerDeps> = {
     hasOutlook: isOutlookCalendarConfigured,
   },
   taskProviderForUser: getTaskProviderForUser,
+};
+
+const PENDING_CONTINUATION_HELPERS: PendingContinuationHelpers = {
+  buildPlanFromSteps,
+  buildNeedsInputPlan,
+  buildTargetedClarificationQuestion,
 };
 
 function hasLegacySubtaskIntent(text: string): boolean {
@@ -289,28 +297,28 @@ export async function buildChatActionPlan(input: ChatPlannerInput): Promise<Chat
   const cancellation = buildPendingCancellationPlan(input);
   if (cancellation) return cancellation;
 
-  const pendingContinuation = buildPendingSlotContinuationPlan(input);
+  const pendingContinuation = buildPendingSlotContinuationPlan(input, PENDING_CONTINUATION_HELPERS);
   if (pendingContinuation) return pendingContinuation;
   // Phase 7 close-out (2026-05-15): cooking pending-meal-plan continuation.
   // Mirrors the training-plan continuation: when the user has a pending
   // cooking_meal_plan and the new turn supplies dietary constraints
   // ("high-protein, vegetarian", "low-carb, no fish"), apply them as
   // additional args and re-emit the plan step.
-  const cookingPendingContinuation = buildPendingCookingMealPlanContinuation(input);
+  const cookingPendingContinuation = buildPendingCookingMealPlanContinuation(input, PENDING_CONTINUATION_HELPERS);
   if (cookingPendingContinuation) return cookingPendingContinuation;
   // Phase 8 batch 38 (2026-05-15): mail draft refinement continuation.
-  const mailPendingContinuation = buildPendingMailDraftContinuation(input);
+  const mailPendingContinuation = buildPendingMailDraftContinuation(input, PENDING_CONTINUATION_HELPERS);
   if (mailPendingContinuation) return mailPendingContinuation;
   // Phase 8 batch 38: decision_choose with sub-options continuation.
-  const decisionPendingContinuation = buildPendingDecisionChooseContinuation(input);
+  const decisionPendingContinuation = buildPendingDecisionChooseContinuation(input, PENDING_CONTINUATION_HELPERS);
   if (decisionPendingContinuation) return decisionPendingContinuation;
   // Phase 8 batch 38: finance categorize-receipt category continuation.
-  const financePendingContinuation = buildPendingFinanceCategorizeContinuation(input);
+  const financePendingContinuation = buildPendingFinanceCategorizeContinuation(input, PENDING_CONTINUATION_HELPERS);
   if (financePendingContinuation) return financePendingContinuation;
   // Phase 9 batch 44 (2026-05-16): content brief / script-create pending
   // continuation. Turn 1 invokes the brief / script intent; turn 2 supplies
   // additional spec (audience, platform-specific tone, length target).
-  const contentPendingContinuation = buildPendingContentSpecContinuation(input);
+  const contentPendingContinuation = buildPendingContentSpecContinuation(input, PENDING_CONTINUATION_HELPERS);
   if (contentPendingContinuation) return contentPendingContinuation;
 
   const recentFollowUp = buildRecentEntityFollowUpPlan(input);
@@ -377,277 +385,6 @@ function buildPendingCancellationPlan(input: ChatPlannerInput): ChatActionPlan |
   return buildMessageOnlyPlan(input, input.locale?.startsWith('pt')
     ? 'Está cancelado. Não vou continuar essa ação pendente.'
     : 'Cancelled. I will not continue that pending action.', 'pending_action_cancelled');
-}
-
-// Phase 9 batch 44 (2026-05-16): content brief / script-create pending
-// continuation. When a pending content brief or script-create action is
-// active, treat the next user turn as additional spec — audience, tone,
-// length, format, hook style — and re-emit the action with the spec
-// applied. Mirrors the cooking/mail/decision/finance continuation pattern.
-function buildPendingContentSpecContinuation(input: ChatPlannerInput): ChatActionPlan | null {
-  const pending = getActivePendingChatAction({
-    userId: input.userId,
-    tenantId: input.tenantId,
-    conversationId: input.conversationId,
-    skill: 'content',
-    nowIso: input.nowIso,
-  });
-  if (!pending) return null;
-  if (pending.action !== 'content_brief_create' && pending.action !== 'content_script_create') {
-    return null;
-  }
-  const folded = foldCalendarText(input.text);
-  // Recognise content-spec vocabulary: audience tokens, tone adjectives,
-  // length targets, format hints. Includes EN + PT phrasings.
-  const specPattern = /\b(audience|tone|length|hook|short|long|brief|punchy|inspirational|educational|tutorial|comedic|professional|casual|formal|under\s+\d+\s+(?:seconds?|words?|minutes?)|\d+\s+(?:seconds?|words?|minutes?)|pubico|p[uú]blico|tom|gancho|curto|longo|inspirador|educacional|tutorial|coloquial|profissional|abaixo\s+de\s+\d+|menos\s+de\s+\d+)\b/i;
-  if (!specPattern.test(folded)) return null;
-  const specs = (folded.match(new RegExp(specPattern.source, 'gi')) ?? [])
-    .map((s) => s.trim().toLowerCase())
-    .filter((s, idx, arr) => arr.indexOf(s) === idx)
-    .slice(0, 8);
-  const collected = { ...pending.collectedSlots, specs };
-  const step = makeStep(input, {
-    skill: 'content',
-    action: pending.action,
-    risk: 'safe_write',
-    provider: 'nexus',
-    args: collected,
-    requiredArgsPresent: true,
-  });
-  return buildPlanFromSteps(
-    input,
-    [step],
-    [`pending_content_${pending.action}_spec_fill`, `specs:${specs.length}`],
-    0.9,
-  );
-}
-
-// Phase 8 batch 38 (2026-05-15): mail draft refinement continuation.
-// When a pending draft_email action is active and the user provides
-// refinement directives ("shorter", "friendlier", "include the timeline"),
-// apply them as refinement instructions and re-emit the draft action.
-function buildPendingMailDraftContinuation(input: ChatPlannerInput): ChatActionPlan | null {
-  const pending = getActivePendingChatAction({
-    userId: input.userId,
-    tenantId: input.tenantId,
-    conversationId: input.conversationId,
-    skill: 'mail',
-    nowIso: input.nowIso,
-  });
-  if (!pending || pending.action !== 'draft_email') return null;
-  const folded = foldCalendarText(input.text);
-  // Recognise refinement directives: tone (friendlier, shorter, formal),
-  // content additions ("include the timeline", "mention the discount"),
-  // style edits (bullet points, line breaks).
-  // Phase 10 batch 52 (2026-05-16): Spanish refinement directives.
-  // ES uses "más" (with accent) where PT uses "mais"; "amistoso/a"
-  // replaces "amigável"; "incluye"/"añade"/"quita" cover include/add/
-  // remove verbs. Adjectives are gender-inflected (corto/corta, etc.).
-  const refinementPattern = /\b(shorter|longer|friendlier|formal|casual|punchier|tighter|crisper|softer|include\s+\w+|mention\s+\w+|add\s+\w+|remove\s+\w+|bullet\s+points|line\s+breaks|mais\s+(?:curto|longo|formal|amig[aá]vel|direto)|m[aá]s\s+(?:cort[oa]|larg[oa]|formal|amistos[oa]|direct[oa]|breve|simple)|incluir?\s+\w+|incluy[ae]\s+\w+|menciona[r]?\s+\w+|adiciona[r]?\s+\w+|a[nñ]ade\s+\w+|quita\s+\w+|elimina\s+\w+)\b/i;
-  if (!refinementPattern.test(folded)) return null;
-  const refinements = (folded.match(new RegExp(refinementPattern.source, 'gi')) ?? [])
-    .map((s) => s.trim().toLowerCase())
-    .filter((s, idx, arr) => arr.indexOf(s) === idx)
-    .slice(0, 8);
-  const collected = { ...pending.collectedSlots, refinements };
-  const step = makeStep(input, {
-    skill: 'mail',
-    action: 'draft_email',
-    risk: 'safe_write',
-    provider: 'gmail',
-    args: collected,
-    requiredArgsPresent: true,
-  });
-  return buildPlanFromSteps(
-    input,
-    [step],
-    ['pending_mail_draft_refinement', `refinements:${refinements.length}`],
-    0.9,
-  );
-}
-
-// Phase 8 batch 38: decision_choose with sub-options continuation.
-// When a pending decision_choose is active and the user provides a choice
-// ("A", "option B", "vou de C"), apply as the choice arg.
-function buildPendingDecisionChooseContinuation(input: ChatPlannerInput): ChatActionPlan | null {
-  const pending = getActivePendingChatAction({
-    userId: input.userId,
-    tenantId: input.tenantId,
-    conversationId: input.conversationId,
-    skill: 'decision_center',
-    nowIso: input.nowIso,
-  });
-  if (!pending || pending.action !== 'decision_choose') return null;
-  // Recognise standalone choice tokens: "A", "B", "Option C", "opção 2",
-  // "vou de B", "go with A".
-  // Phase 10 batch 52 (2026-05-16): Spanish "Opción B" / "elijo C" /
-  // "me quedo con A" / "voy con D" added.
-  const choiceMatch =
-    input.text.match(/\b(?:option|op[cç][aã]o|opci[oó]n)\s+([a-zA-Z0-9]+)/i)
-    || input.text.match(/\b(?:vou\s+de|go\s+with|i'?ll\s+go\s+with|let'?s\s+go\s+with|pick|choose|escolho|elijo|voy\s+con|me\s+quedo\s+con)\s+(?:option\s+|opci[oó]n\s+|la\s+|el\s+)?([a-zA-Z0-9]+)/i)
-    || input.text.match(/^\s*([A-D]|\d)\s*[.!]?\s*$/i);
-  if (!choiceMatch?.[1]) return null;
-  const choice = choiceMatch[1].toUpperCase();
-  const collected = { ...pending.collectedSlots, choice };
-  const step = makeStep(input, {
-    skill: 'decision_center',
-    action: 'decision_choose',
-    risk: 'safe_write',
-    provider: 'nexus',
-    args: collected,
-    requiredArgsPresent: true,
-  });
-  return buildPlanFromSteps(
-    input,
-    [step],
-    ['pending_decision_choose_slot_fill', `choice:${choice}`],
-    0.92,
-  );
-}
-
-// Phase 8 batch 38: finance categorize-receipt category continuation.
-// When a pending finance_categorize_receipt is active and the user supplies
-// the category in a short follow-up ("office supplies", "travel", "meals"),
-// apply as the category arg.
-function buildPendingFinanceCategorizeContinuation(input: ChatPlannerInput): ChatActionPlan | null {
-  const pending = getActivePendingChatAction({
-    userId: input.userId,
-    tenantId: input.tenantId,
-    conversationId: input.conversationId,
-    skill: 'finance',
-    nowIso: input.nowIso,
-  });
-  if (!pending || pending.action !== 'finance_categorize_receipt') return null;
-  // Recognise short category replies (1–4 words) common in receipt
-  // categorization. The category vocabulary intentionally biases toward
-  // business-expense buckets used in Stripe / accounting tooling.
-  const folded = foldCalendarText(input.text);
-  const categoryPattern = /\b(office\s+supplies?|travel|meals?\s*(?:and\s+entertainment)?|transportation|software|hardware|marketing|advertising|professional\s+services?|utilities|rent|insurance|equipment|subscriptions?|training|education|material(?:\s+de\s+escrit[oó]rio)?|despesas?\s+de\s+(?:viagem|escrit[oó]rio|transporte|marketing)|alimenta[cç][aã]o|transporte|softwares?|publicidade|servi[cç]os?\s+profissionais|materiais?|formaca[ao]|treinamento)\b/i;
-  const match = folded.match(categoryPattern);
-  if (!match) return null;
-  // Use the first matched category as the canonical value (lowercased).
-  const category = match[0].toLowerCase().trim();
-  const collected = { ...pending.collectedSlots, category };
-  const step = makeStep(input, {
-    skill: 'finance',
-    action: 'finance_categorize_receipt',
-    risk: 'safe_write',
-    provider: 'nexus',
-    args: collected,
-    requiredArgsPresent: Boolean((collected as Record<string, unknown>).receiptId),
-  });
-  return buildPlanFromSteps(
-    input,
-    [step],
-    ['pending_finance_categorize_receipt_slot_fill', `category:${category}`],
-    0.9,
-  );
-}
-
-// Phase 7 close-out (2026-05-15): cooking pending-meal-plan continuation.
-// When a pending cooking_meal_plan action is active, treat the next user
-// turn as dietary constraints / preferences and re-emit the action with
-// those constraints applied.
-function buildPendingCookingMealPlanContinuation(input: ChatPlannerInput): ChatActionPlan | null {
-  const pending = getActivePendingChatAction({
-    userId: input.userId,
-    tenantId: input.tenantId,
-    conversationId: input.conversationId,
-    skill: 'cooking',
-    nowIso: input.nowIso,
-  });
-  if (!pending) return null;
-  // Extract dietary-constraint signals from the user text. Pattern includes
-  // common diet preferences ("vegetarian", "vegan", "high-protein", "keto",
-  // "low-carb", "no fish", "gluten-free") plus PT-BR/PT-PT equivalents
-  // ("vegetariano", "rico em proteína", "sem peixe", "sem glúten").
-  const folded = foldCalendarText(input.text);
-  // Phase 10 batch 52 (2026-05-16): Spanish dietary constraints — ES uses
-  // gender-inflected adjectives (vegetariana/vegetariano, vegana/vegano),
-  // "alta/alto en proteína" for high-protein, "bajo en carbohidratos",
-  // and "sin <food>" for exclusions.
-  const constraintPattern = /\b(vegetarian|vegan|high[\s-]?protein|low[\s-]?carb|keto|paleo|mediterranean|mediterr[aá]nea?|whole30|gluten[\s-]?free|dairy[\s-]?free|nut[\s-]?free|no\s+(?:fish|pork|beef|red\s+meat|dairy|gluten|sugar|carbs?)|vegetarian[oa]|vegan[oa]|rico\s+em\s+prote[ií]na|alt[oa]\s+en\s+prote[ií]na|baixo\s+em\s+carbo|baj[oa]\s+en\s+carbo|sem\s+(?:peixe|carne|gluten|glúten|laticínios?|lactose|açúcar)|sin\s+(?:pescado|carne|gluten|gl[uú]ten|l[aá]cteos?|lactosa|az[uú]car))\b/i;
-  if (!constraintPattern.test(folded)) return null;
-  const constraints = (folded.match(new RegExp(constraintPattern.source, 'gi')) ?? [])
-    .map((s) => s.trim().toLowerCase())
-    .filter((s, idx, arr) => arr.indexOf(s) === idx)
-    .slice(0, 8);
-  const collected = { ...pending.collectedSlots, constraints };
-  const step = makeStep(input, {
-    skill: 'cooking',
-    action: 'cooking_meal_plan',
-    risk: 'safe_write',
-    provider: 'nexus',
-    args: collected,
-    requiredArgsPresent: true,
-  });
-  return buildPlanFromSteps(
-    input,
-    [step],
-    ['pending_cooking_meal_plan_continuation', `constraints:${constraints.length}`],
-    0.9,
-  );
-}
-
-function buildPendingSlotContinuationPlan(input: ChatPlannerInput): ChatActionPlan | null {
-  const pending = getActivePendingChatAction({
-    userId: input.userId,
-    tenantId: input.tenantId,
-    conversationId: input.conversationId,
-    skill: 'training',
-    nowIso: input.nowIso,
-  });
-  const weeklyVolume = extractWeeklyVolumeKm(input.text);
-
-  if (!pending) {
-    if (weeklyVolume == null) return null;
-    return buildNeedsInputPlan(input, {
-      skill: 'training',
-      action: 'training_plan_create',
-      question: input.locale?.startsWith('pt')
-        ? 'Posso usar esse volume semanal num plano de treino. Estás a criar ou ajustar um plano?'
-        : 'I can use that weekly volume for a training plan. Are we creating or adjusting a plan?',
-      args: { weeklyVolumeKm: weeklyVolume },
-      routingSignals: ['standalone_training_slot_without_pending_action'],
-    });
-  }
-
-  const collected = { ...pending.collectedSlots };
-  const provenance: Record<string, ChatSlotProvenance> = {};
-  if (weeklyVolume != null && pending.missingSlots.includes('weeklyVolumeKm')) {
-    collected.weeklyVolumeKm = weeklyVolume;
-    provenance.weeklyVolumeKm = makeSlotProvenance({
-      slot: 'weeklyVolumeKm',
-      value: weeklyVolume,
-      rawText: input.text,
-      turnId: input.messageId,
-      sourceType: 'user_message',
-      normalizer: 'training_weekly_volume_v1',
-      confidence: 0.96,
-    });
-  }
-
-  const extracted = extractTrainingPlanSlots(input);
-  for (const [slot, value] of Object.entries(extracted.slots)) {
-    if (value == null || value === '') continue;
-    if (!pending.missingSlots.includes(slot) && collected[slot] != null) continue;
-    collected[slot] = value;
-    provenance[slot] = extracted.provenance[slot];
-  }
-
-  if (Object.keys(provenance).length === 0) {
-    return buildNeedsInputPlan(input, {
-      skill: 'training',
-      action: 'training_plan_create',
-      question: buildTargetedClarificationQuestion(input, [makeTrainingPlanStep(input, pending.collectedSlots, pending.missingSlots, {})]),
-      args: pending.collectedSlots,
-      routingSignals: ['pending_training_action_unmatched_answer'],
-    });
-  }
-
-  const missing = missingTrainingPlanSlots(collected);
-  const step = makeTrainingPlanStep(input, collected, missing, provenance);
-  return buildPlanFromSteps(input, [step], ['pending_training_plan_slot_fill', ...Object.keys(provenance).map((slot) => `slot:${slot}`)], missing.length === 0 ? 0.94 : 0.88);
 }
 
 function buildRecentEntityFollowUpPlan(input: ChatPlannerInput): ChatActionPlan | null {
