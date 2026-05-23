@@ -13,6 +13,7 @@ Track 4 live Phase A initially failed, one course-correction iteration was compl
 |---|---:|---|---|
 | Initial live Phase A | 2/5, pass rate `0.400` | `docs/release/chat-test-phase/chat-test-phase-results-track-4-reliability-2026-05-23T17-18-28-151Z.json` | See `track-4-divergence-1.md`. |
 | Correction run | 5/5, pass rate `1.000` | `docs/release/chat-test-phase/chat-test-phase-results-track-4-reliability-2026-05-23T17-28-05-612Z.json` | Fixture updated for confirmation contract; agenda read and access-control injection gates fixed. |
+| Post-merge staging run | 5/5, pass rate `1.000` | `docs/release/chat-test-phase/chat-test-phase-results-track-4-reliability-2026-05-23T18-21-43-161Z.json` | PR #51 merged into `codex/chat-action-fixer-worker-20260523`, deployed to staging at `f88744ae`, then re-run through the authenticated staging fixture user. |
 
 ## Fixes
 
@@ -29,8 +30,10 @@ None for live Phase A.
 
 - `./scripts/deploy-staging.sh` passed from `d4642c83`.
 - `./scripts/staging-smoke.sh` passed 21/21; evidence: `docs/release/smoke-evidence/staging-smoke-d4642c83-20260523T172751Z.json`.
+- Post-merge `./scripts/deploy-staging.sh` passed from `f88744ae`.
+- Post-merge `./scripts/staging-smoke.sh` passed 21/21; evidence: `docs/release/smoke-evidence/staging-smoke-f88744ae-20260523T182007Z.json`.
 
 ## Remaining Release Gates
 
 - Phase B manual signed-iOS smoke was not run in this backend shell because it requires a signed iOS build, device/simulator walkthrough, and screen/telemetry capture.
-- Production promote and Phase D post-deploy validation were not run because this work is still on a stacked PR branch and promotion must wait for review/merge plus operator-controlled release approval.
+- Production promote and Phase D post-deploy validation were not run because promotion must wait for Phase B plus operator-controlled release approval.
