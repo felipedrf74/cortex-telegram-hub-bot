@@ -3,7 +3,7 @@
 Date: 2026-05-23
 Commit under test: `9fdf817c`
 Suite: `track-4-reliability`
-Staging report: `docs/release/chat-test-phase/chat-test-phase-results-track-4-reliability-2026-05-23T17-18-28-151Z.json`
+Staging report: the initial raw runner report was intentionally not committed because it predated report token redaction. Failure details are summarized below; the corrected redacted report is linked from `track-4-final-report.md`.
 
 ## Result
 
