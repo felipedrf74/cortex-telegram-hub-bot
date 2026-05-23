@@ -36,9 +36,16 @@ import {
 } from '../../services/chat-response-blocks';
 import {
   clearPendingChatConfirmation,
+  getCompletedChatConfirmation,
   getPendingChatConfirmation,
+  rememberCompletedChatConfirmation,
   trackPendingChatConfirmation,
+  type PendingChatConfirmation,
 } from '../../services/chat-pending-confirmations';
+import {
+  signChatConfirmationToken,
+  validateChatConfirmationToken,
+} from '../../services/chat-confirmation-token';
 import { buildChatResponseSufficiencyMetadata } from '../../services/chat-response-sufficiency';
 import { asyncHandler, sendInternalError } from '../response-helpers';
 import {
@@ -129,6 +136,104 @@ function mapActionPlannerSkillToNexusSkill(skill: string): NexusSkillId {
   if (skill === 'finance') return 'finance';
   if (skill === 'content') return 'content';
   return 'tools';
+}
+
+function intentClassForAction(action: string | undefined, fallbackSkills: string[] = []): string {
+  switch (action) {
+    case 'create_task':
+      return 'task_create';
+    case 'delete_task':
+      return 'task_delete';
+    case 'complete_task':
+      return 'task_complete';
+    case 'update_task':
+      return 'task_update';
+    case 'schedule_event':
+      return 'event_create';
+    case 'move_event':
+    case 'update_event':
+      return 'event_move';
+    case 'delete_event':
+      return 'event_delete';
+    case 'finance_payment_action':
+      return 'financial_transfer';
+    case 'finance_create_reminder':
+    case 'finance_categorize_receipt':
+      return 'finance_write';
+    case 'send_email':
+      return 'email_send';
+    default:
+      if (fallbackSkills.includes('finance')) return 'financial_transfer';
+      if (fallbackSkills.includes('secretary')) return 'secretary_write';
+      return action ? String(action).replace(/-/g, '_') : 'chat_action';
+  }
+}
+
+function confirmationVariantForIntent(intentClass: string, reasonCodes: string[] = []): 'default' | 'destructive' | 'financial' {
+  if (intentClass.startsWith('financial') || intentClass === 'fiscal_bundle_send') return 'financial';
+  if (intentClass.includes('delete') || reasonCodes.some((reason) => reason.includes('destructive'))) return 'destructive';
+  return 'default';
+}
+
+function attachPendingConfirmationContract(input: {
+  response: { metadata?: Record<string, any> };
+  pendingConfirmation: PendingChatConfirmation;
+  intentClass: string;
+  summary: Record<string, unknown>;
+  decisionId?: string | null;
+}): void {
+  const token = signChatConfirmationToken({
+    pendingId: input.pendingConfirmation.id,
+    userId: input.pendingConfirmation.userId,
+    tenantId: input.pendingConfirmation.tenantId,
+    intentClass: input.intentClass,
+    expiresAt: input.pendingConfirmation.expiresAt,
+    sourceMessageId: input.pendingConfirmation.sourceMessageId ?? null,
+  });
+  const variant = confirmationVariantForIntent(input.intentClass, input.pendingConfirmation.reasonCodes);
+  input.response.metadata = input.response.metadata ?? {};
+  input.response.metadata.pendingConfirmation = {
+    kind: 'pending_confirmation',
+    id: input.pendingConfirmation.id,
+    intent_class: input.intentClass,
+    intentClass: input.intentClass,
+    summary: input.summary,
+    actionSummary: input.pendingConfirmation.actionSummary,
+    confirmation_token: token,
+    confirmationToken: token,
+    expires_at: input.pendingConfirmation.expiresAt,
+    expiresAt: input.pendingConfirmation.expiresAt,
+    sourceMessageId: input.pendingConfirmation.sourceMessageId,
+    decisionId: input.decisionId ?? null,
+  };
+  const existing = input.response.metadata.actionConfirmation && typeof input.response.metadata.actionConfirmation === 'object'
+    ? input.response.metadata.actionConfirmation as Record<string, unknown>
+    : {};
+  input.response.metadata.actionConfirmation = {
+    ...existing,
+    variant,
+    destructive: variant === 'destructive' || existing.destructive === true,
+    requiresStrongConfirm: variant === 'financial',
+    intentClass: input.intentClass,
+    confirmationToken: token,
+    expiresAt: input.pendingConfirmation.expiresAt,
+    summary: input.summary,
+    actionLabel: existing.actionLabel ?? (variant === 'financial' ? 'Confirm send' : 'Confirm'),
+    cancelLabel: existing.cancelLabel ?? 'Cancel',
+  };
+}
+
+function withIdempotentConfirmationReplay(body: unknown): unknown {
+  if (!body || typeof body !== 'object') return body;
+  const response = body as Record<string, any>;
+  return {
+    ...response,
+    metadata: {
+      ...(response.metadata && typeof response.metadata === 'object' ? response.metadata : {}),
+      idempotentReplay: true,
+      confirmationReplay: true,
+    },
+  };
 }
 
 function domainForTurnContractSkill(skill: NexusChatOwnerSkill): string | null {
@@ -469,6 +574,105 @@ export function registerChatMessageRoutes(
   }));
 
   /**
+   * POST /api/v1/chat/confirm-action
+   * Executes a previously-issued pending confirmation token. This is a
+   * deterministic write endpoint for iOS confirmation cards, not another
+   * free-form chat turn.
+   */
+  router.post('/confirm-action', asyncHandler(async (req, res: Response) => {
+    res.setHeader('Cache-Control', 'no-store, max-age=0, must-revalidate');
+    res.setHeader('Pragma', 'no-cache');
+    res.setHeader('Expires', '0');
+    res.setHeader('Vary', 'Authorization');
+
+    const { userId, tenantId } = req as unknown as AuthenticatedRequest;
+    if (!ensureValidChatRouteScope(res, userId, tenantId, 'chat_confirm_action')) {
+      return;
+    }
+
+    const confirmationToken = String(req.body?.confirmation_token ?? req.body?.confirmationToken ?? '').trim();
+    const intentClass = String(req.body?.intent_class ?? req.body?.intentClass ?? '').trim();
+    const validation = validateChatConfirmationToken(confirmationToken, {
+      userId,
+      tenantId,
+      intentClass: intentClass || null,
+    });
+    if (!validation.ok) {
+      res.status(401).json({ error: { code: 'UNAUTHORIZED', message: 'Invalid or expired confirmation token' } });
+      return;
+    }
+
+    const replay = getCompletedChatConfirmation(confirmationToken, userId, tenantId);
+    if (replay) {
+      res.status(replay.statusCode).json(withIdempotentConfirmationReplay(replay.responseBody));
+      return;
+    }
+
+    const pending = getPendingChatConfirmation(userId, tenantId);
+    if (!pending
+      || pending.id !== validation.payload.pendingId
+      || (pending.intentClass && pending.intentClass !== validation.payload.intentClass)
+    ) {
+      res.status(401).json({ error: { code: 'UNAUTHORIZED', message: 'Confirmation token no longer matches a pending action' } });
+      return;
+    }
+
+    const decision = findDecisionByRelatedEntity(userId, tenantId, 'chat_confirmation', pending.id);
+    const decisionResult = decision
+      ? await performDecisionAction(decision.decisionId, 'option_a', userId, tenantId, {
+        idempotencyKey: normalizeIdempotencyKey(req.body?.idempotencyKey)
+          ?? `chat-confirm:${tenantId}:${userId}:${pending.id}`,
+      })
+      : null;
+    const confirmedAction = await executeConfirmedChatActionRuns({
+      text: pending.actionSummary,
+      userId,
+      tenantId,
+      conversationId: `confirm-${pending.id}`,
+      messageId: `msg-confirm-${pending.id}`,
+      sourceMessageId: pending.sourceMessageId,
+      channel: 'ios',
+      locale: getUserLanguageById(userId) || undefined,
+      timezone: getUserTimezoneById(userId),
+    });
+
+    if (!confirmedAction) {
+      res.status(409).json({ error: { code: 'CONFIRMATION_NOT_EXECUTABLE', message: 'Pending action could not be executed' } });
+      return;
+    }
+
+    clearPendingChatConfirmation(userId, tenantId);
+    const response = confirmedAction.response;
+    if (decisionResult) {
+      response.metadata.confirmationDecision = {
+        decisionId: decisionResult.item.decisionId,
+        actionId: decisionResult.actionId,
+        idempotent: decisionResult.idempotent,
+        verification: decisionResult.verification,
+      };
+    }
+    response.metadata.pendingConfirmation = {
+      kind: 'completed_confirmation',
+      id: pending.id,
+      intent_class: validation.payload.intentClass,
+      intentClass: validation.payload.intentClass,
+      expires_at: pending.expiresAt,
+      expiresAt: pending.expiresAt,
+    };
+
+    const statusCode = confirmedAction.status === 'needs_confirmation' || confirmedAction.status === 'needs_clarification' ? 202 : 200;
+    rememberCompletedChatConfirmation({
+      confirmationToken,
+      userId,
+      tenantId,
+      expiresAt: pending.expiresAt,
+      statusCode,
+      responseBody: response,
+    });
+    res.status(statusCode).json(response);
+  }));
+
+  /**
    * POST /api/v1/chat/message
    * Send a message — equivalent to typing in Telegram.
    * Routes through Router → Domain Handler → returns AI response.
@@ -682,6 +886,7 @@ export function registerChatMessageRoutes(
           channel: 'ios',
           locale: getUserLanguageById(userId) || undefined,
           timezone: getUserTimezoneById(userId),
+          requireSafeWriteConfirmation: true,
         });
         if (actionResult) {
           latency.mark('action_planner_completed');
@@ -691,12 +896,24 @@ export function registerChatMessageRoutes(
             const isPT = lang.startsWith('pt');
             const involvedSkills = [...new Set(actionResult.plan.steps.map((step) => mapActionPlannerSkillToNexusSkill(step.skill)))];
             const reasonCodes = [...new Set(actionResult.plan.steps.map((step) => `${step.risk}_requires_confirmation`))];
+            const intentClass = intentClassForAction(actionResult.plan.steps[0]?.action, involvedSkills);
+            const summary = {
+              text: response.text || normalizedText,
+              steps: actionResult.plan.steps.map((step) => ({
+                skill: step.skill,
+                action: step.action,
+                risk: step.risk,
+                args: step.args,
+              })),
+            };
             const pendingConfirmation = trackPendingChatConfirmation({
               userId,
               tenantId,
               actionSummary: response.text || normalizedText,
               involvedSkills,
               reasonCodes,
+              intentClass,
+              summary,
               sourceMessageId: userMessageId,
             });
             const decisionResult = await createDecisionIntent({
@@ -722,13 +939,13 @@ export function registerChatMessageRoutes(
               deliveryPolicy: 'in_app_only',
               privacyPolicy: 'standard',
             });
-            response.metadata.pendingConfirmation = {
-              id: pendingConfirmation.id,
-              actionSummary: pendingConfirmation.actionSummary,
-              expiresAt: pendingConfirmation.expiresAt,
-              sourceMessageId: pendingConfirmation.sourceMessageId,
+            attachPendingConfirmationContract({
+              response,
+              pendingConfirmation,
+              intentClass,
+              summary,
               decisionId: decisionResult.item?.decisionId ?? null,
-            };
+            });
           }
           rememberChatActiveDomain(userId, response.domain, Date.now(), tenantId);
           persistExchange(userId, userMessageId, normalizedText, response.id, response, tenantId, {
@@ -1195,12 +1412,20 @@ export function registerChatMessageRoutes(
       if (preRoutingDecision.safety.requiresConfirmation && !preRoutingDecision.safety.explicitConfirmation) {
         const lang = getUserLanguageById(userId);
         const isPT = lang.startsWith('pt');
+        const intentClass = intentClassForAction(undefined, preRoutingDecision.involvedSkills);
+        const summary = {
+          text: normalizedText,
+          involvedSkills: preRoutingDecision.involvedSkills,
+          reasonCodes: preRoutingDecision.safety.confirmationReasonCodes,
+        };
         const pendingConfirmation = trackPendingChatConfirmation({
           userId,
           tenantId,
           actionSummary: normalizedText,
           involvedSkills: preRoutingDecision.involvedSkills,
           reasonCodes: preRoutingDecision.safety.confirmationReasonCodes,
+          intentClass,
+          summary,
           sourceMessageId: userMessageId,
         });
         const decisionResult = await createDecisionIntent({
@@ -1247,12 +1472,12 @@ export function registerChatMessageRoutes(
             reasonCodes: preRoutingDecision.safety.confirmationReasonCodes,
             unresolvedBlockers: sufficiency.unresolvedBlockers,
             responseSufficiency: sufficiency,
-            pendingConfirmation: {
-              id: pendingConfirmation.id,
-              actionSummary: pendingConfirmation.actionSummary,
-              expiresAt: pendingConfirmation.expiresAt,
-              sourceMessageId: pendingConfirmation.sourceMessageId,
-              decisionId: decisionResult.item?.decisionId ?? null,
+            actionConfirmation: {
+              title: isPT ? 'Confirmação necessária' : 'Confirmation needed',
+              message: pendingConfirmation.actionSummary,
+              destructive: confirmationVariantForIntent(intentClass, preRoutingDecision.safety.confirmationReasonCodes) === 'destructive',
+              variant: confirmationVariantForIntent(intentClass, preRoutingDecision.safety.confirmationReasonCodes),
+              requiresStrongConfirm: confirmationVariantForIntent(intentClass, preRoutingDecision.safety.confirmationReasonCodes) === 'financial',
             },
           },
           timestamp: new Date().toISOString(),
@@ -1265,6 +1490,13 @@ export function registerChatMessageRoutes(
           latencyTier: 'tier2_verified_write',
           actionability: 'preview',
           verificationStatus: 'pending',
+        });
+        attachPendingConfirmationContract({
+          response: confirmationResponse,
+          pendingConfirmation,
+          intentClass,
+          summary,
+          decisionId: decisionResult.item?.decisionId ?? null,
         });
         rememberChatActiveDomain(userId, confirmationResponse.domain, Date.now(), tenantId);
         persistExchange(userId, userMessageId, normalizedText, confirmationResponse.id, confirmationResponse, tenantId, {

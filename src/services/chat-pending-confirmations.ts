@@ -29,11 +29,14 @@
 
 import type { NexusSkillId } from './chat-skill-orchestrator';
 import { resolveChatTenantId } from './chat-tenant-scope';
+import { hashChatConfirmationToken } from './chat-confirmation-token';
 
 export interface PendingChatConfirmation {
   id: string;
   tenantId: number;
   userId: number;
+  intentClass?: string;
+  summary?: Record<string, unknown>;
   actionSummary: string;
   involvedSkills: NexusSkillId[];
   reasonCodes: string[];
@@ -48,6 +51,8 @@ export interface TrackPendingChatConfirmationInput {
   actionSummary: string;
   involvedSkills: NexusSkillId[];
   reasonCodes: string[];
+  intentClass?: string;
+  summary?: Record<string, unknown>;
   sourceMessageId?: string | null;
   ttlMs?: number;
   now?: Date;
@@ -55,6 +60,17 @@ export interface TrackPendingChatConfirmationInput {
 
 const DEFAULT_PENDING_CONFIRMATION_TTL_MS = 10 * 60 * 1000;
 const pendingConfirmations = new Map<string, PendingChatConfirmation>();
+const completedConfirmations = new Map<string, CompletedChatConfirmation>();
+
+export interface CompletedChatConfirmation {
+  tokenHash: string;
+  tenantId: number;
+  userId: number;
+  expiresAt: string;
+  statusCode: number;
+  responseBody: unknown;
+  completedAt: string;
+}
 
 function keyFor(userId: number, tenantId?: number): string {
   return `${resolveChatTenantId(userId, tenantId)}:${userId}`;
@@ -73,6 +89,8 @@ export function trackPendingChatConfirmation(input: TrackPendingChatConfirmation
     id,
     tenantId,
     userId: input.userId,
+    intentClass: input.intentClass,
+    summary: input.summary,
     actionSummary: sanitizeActionSummary(input.actionSummary),
     involvedSkills: [...new Set(input.involvedSkills)],
     reasonCodes: [...new Set(input.reasonCodes)],
@@ -98,6 +116,46 @@ export function clearPendingChatConfirmation(userId: number, tenantId?: number):
   return pendingConfirmations.delete(keyFor(userId, tenantId));
 }
 
+export function rememberCompletedChatConfirmation(input: {
+  confirmationToken: string;
+  userId: number;
+  tenantId?: number;
+  expiresAt: string;
+  statusCode: number;
+  responseBody: unknown;
+  now?: Date;
+}): CompletedChatConfirmation {
+  const tenantId = resolveChatTenantId(input.userId, input.tenantId);
+  const completed: CompletedChatConfirmation = {
+    tokenHash: hashChatConfirmationToken(input.confirmationToken),
+    tenantId,
+    userId: input.userId,
+    expiresAt: input.expiresAt,
+    statusCode: input.statusCode,
+    responseBody: input.responseBody,
+    completedAt: (input.now ?? new Date()).toISOString(),
+  };
+  completedConfirmations.set(completed.tokenHash, completed);
+  return completed;
+}
+
+export function getCompletedChatConfirmation(
+  confirmationToken: string,
+  userId: number,
+  tenantId?: number,
+  now = new Date(),
+): CompletedChatConfirmation | null {
+  const completed = completedConfirmations.get(hashChatConfirmationToken(confirmationToken));
+  if (!completed) return null;
+  if (completed.userId !== userId || completed.tenantId !== resolveChatTenantId(userId, tenantId)) return null;
+  if (new Date(completed.expiresAt).getTime() <= now.getTime()) {
+    completedConfirmations.delete(completed.tokenHash);
+    return null;
+  }
+  return completed;
+}
+
 export function resetPendingChatConfirmationsForTests(): void {
   pendingConfirmations.clear();
+  completedConfirmations.clear();
 }

@@ -153,7 +153,7 @@ export function authorizeChatToolCall(
     };
   }
 
-  if ((risk === 'destructive' || risk === 'external_send') && !current.confirmedDestructiveAction) {
+  if ((risk === 'write' || risk === 'destructive' || risk === 'external_send') && !current.confirmedDestructiveAction) {
     return {
       allowed: false,
       code: 'CONFIRMATION_REQUIRED',

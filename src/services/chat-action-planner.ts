@@ -217,6 +217,7 @@ export interface ChatPlannerInput {
   timezone: string;
   nowIso?: string;
   persistRuns?: boolean;
+  requireSafeWriteConfirmation?: boolean;
   routeStartedAtMs?: number;
 }
 
@@ -252,6 +253,7 @@ export interface ChatActionPlannerDeps {
 
 interface ChatActionExecutionOptions {
   confirmed?: boolean;
+  confirmationSource?: 'explicit_current_turn' | 'pending_confirmation' | 'none';
 }
 
 const DEFAULT_DEPS: Required<ChatActionPlannerDeps> = {
@@ -860,7 +862,9 @@ export function buildDeterministicChatActionPlan(input: ChatPlannerInput): ChatA
       createdAt: nowIso,
       planner: 'deterministic',
       steps,
-      requiresConfirmation: steps.some((candidate) => candidate.risk !== 'safe_write'),
+      requiresConfirmation: steps.some((candidate) => stepRequiresConfirmation(candidate, {
+        requireSafeWrites: input.requireSafeWriteConfirmation === true,
+      })),
       confidence: calendar.confidence,
       debug: {
         routingSignals: ['calendar_write_intent', provider, 'deterministic_calendar_parser', ...(taskFollowUp ? ['task_follow_up_intent'] : [])],
@@ -1353,6 +1357,7 @@ function parseBroadSkillActionIntent(input: ChatPlannerInput): ChatActionPlan | 
 
 function buildPlanFromSteps(input: ChatPlannerInput, steps: ChatPlanStep[], routingSignals: string[], confidence: number): ChatActionPlan {
   const effectiveConfidence = calibratePlanConfidence(steps, confidence);
+  const requireSafeWrites = input.requireSafeWriteConfirmation === true;
   return {
     schemaVersion: 1,
     userId: String(input.userId),
@@ -1365,7 +1370,7 @@ function buildPlanFromSteps(input: ChatPlannerInput, steps: ChatPlanStep[], rout
     createdAt: input.nowIso ?? new Date().toISOString(),
     planner: steps.length > 1 ? 'mixed' : 'deterministic',
     steps,
-    requiresConfirmation: steps.some(stepRequiresConfirmation),
+    requiresConfirmation: steps.some((step) => stepRequiresConfirmation(step, { requireSafeWrites })),
     clarificationQuestion: steps.some((step) => !step.requiredArgsPresent)
       ? buildTargetedClarificationQuestion(input, steps)
       : undefined,
@@ -1712,6 +1717,7 @@ function fieldLabel(field: string, pt?: boolean): string {
 function parseSimpleTaskIntent(input: ChatPlannerInput): ChatActionPlan | null {
   const step = parseSimpleTaskStep(input, input.text);
   if (!step) return null;
+  const requireSafeWrites = input.requireSafeWriteConfirmation === true;
   return {
     schemaVersion: 1,
     userId: String(input.userId),
@@ -1724,7 +1730,7 @@ function parseSimpleTaskIntent(input: ChatPlannerInput): ChatActionPlan | null {
     createdAt: input.nowIso ?? new Date().toISOString(),
     planner: 'deterministic',
     steps: [step],
-    requiresConfirmation: false,
+    requiresConfirmation: stepRequiresConfirmation(step, { requireSafeWrites }),
     confidence: 0.82,
     debug: {
       routingSignals: ['task_write_intent', 'deterministic_task_parser'],
@@ -2168,7 +2174,9 @@ export function parseLlmPlannerJson(raw: string, input: ChatPlannerInput, option
       },
     });
   }
-  const requiresConfirmation = steps.some(stepRequiresConfirmation);
+  const requiresConfirmation = steps.some((step) => stepRequiresConfirmation(step, {
+    requireSafeWrites: input.requireSafeWriteConfirmation === true,
+  }));
   const confidence = clampConfidence(Number(parsed.confidence ?? Math.min(...steps.map((step) => step.requiredArgsPresent ? 0.72 : 0.45))));
   const effectiveConfidence = calibratePlanConfidence(steps, confidence);
   const threshold = thresholdForSteps(steps);
@@ -2436,7 +2444,8 @@ export async function executeChatActionPlan(
       userId: input.userId,
       tenantId: input.tenantId,
       confirmedDestructiveAction: options.confirmed === true,
-      confirmationSource: options.confirmed === true ? 'explicit_current_turn' : 'none',
+      confirmationSource: options.confirmationSource
+        ?? (options.confirmed === true ? 'pending_confirmation' : 'none'),
     }, () => executeChatActionPlan(plan, input, deps, options));
   }
   if (plan.clarificationQuestion || plan.steps.some((step) => !step.requiredArgsPresent)) {
@@ -2472,6 +2481,9 @@ export async function executeChatActionPlan(
         title: input.locale?.startsWith('pt') ? 'Confirmação necessária' : 'Confirmation needed',
         message: confirmationCopy(plan, input),
         destructive: plan.steps.some((step) => step.risk === 'destructive'),
+        variant: confirmationVariant(plan),
+        requiresStrongConfirm: plan.steps.some((step) => step.risk === 'financial' || step.risk === 'admin_security'),
+        intentClass: intentClassForPlan(plan),
       },
     });
   }
@@ -2625,6 +2637,9 @@ export async function executeChatActionPlan(
         title: input.locale?.startsWith('pt') ? 'Confirmação necessária' : 'Confirmation needed',
         message: failureCopy(input, needsConfirmation.error),
         destructive: plan.steps.some((step) => step.risk === 'destructive'),
+        variant: confirmationVariant(plan),
+        requiresStrongConfirm: plan.steps.some((step) => step.risk === 'financial' || step.risk === 'admin_security'),
+        intentClass: intentClassForPlan(plan),
       },
       actionResults: sanitizeActionResults(results),
     });
@@ -4775,7 +4790,10 @@ function clampConfidence(value: number): number {
   return Math.max(0, Math.min(1, value));
 }
 
-function stepRequiresConfirmation(step: ChatPlanStep): boolean {
+function stepRequiresConfirmation(
+  step: ChatPlanStep,
+  opts: { requireSafeWrites?: boolean } = {},
+): boolean {
   if (
     step.risk === 'ambiguous' &&
     step.requiredArgsPresent === false &&
@@ -4784,9 +4802,46 @@ function stepRequiresConfirmation(step: ChatPlanStep): boolean {
     return false;
   }
   const definition = findChatActionDefinition(step.skill, step.action);
+  if (opts.requireSafeWrites && step.risk === 'safe_write') return true;
   return ['external_side_effect', 'destructive', 'financial', 'admin_security'].includes(step.risk)
     || definition?.confirmationPolicy === 'confirm'
     || definition?.confirmationPolicy === 'strong_confirm';
+}
+
+function intentClassForPlan(plan: ChatActionPlan): string {
+  const action = plan.steps[0]?.action;
+  switch (action) {
+    case 'create_task':
+      return 'task_create';
+    case 'delete_task':
+      return 'task_delete';
+    case 'complete_task':
+      return 'task_complete';
+    case 'update_task':
+      return 'task_update';
+    case 'schedule_event':
+      return 'event_create';
+    case 'move_event':
+    case 'update_event':
+      return 'event_move';
+    case 'delete_event':
+      return 'event_delete';
+    case 'finance_payment_action':
+      return 'financial_transfer';
+    case 'finance_create_reminder':
+    case 'finance_categorize_receipt':
+      return 'finance_write';
+    case 'send_email':
+      return 'email_send';
+    default:
+      return action ? String(action).replace(/-/g, '_') : 'chat_action';
+  }
+}
+
+function confirmationVariant(plan: ChatActionPlan): 'default' | 'destructive' | 'financial' {
+  if (plan.steps.some((step) => step.risk === 'financial')) return 'financial';
+  if (plan.steps.some((step) => step.risk === 'destructive' || step.risk === 'admin_security')) return 'destructive';
+  return 'default';
 }
 
 function thresholdForSteps(steps: ChatPlanStep[]): number {

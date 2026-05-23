@@ -402,6 +402,8 @@ vi.mock('../../src/utils/callback-store', () => ({
 import { chatRoutes } from '../../src/api/routes/chat';
 import { authMiddleware } from '../../src/api/auth-middleware';
 import { upsertPendingChatAction } from '../../src/services/chat-action-state';
+import { resetPendingChatConfirmationsForTests } from '../../src/services/chat-pending-confirmations';
+import { signChatConfirmationToken } from '../../src/services/chat-confirmation-token';
 
 function applyMigrations(db: Database.Database): void {
   db.exec(`CREATE TABLE IF NOT EXISTS _migrations (id INTEGER PRIMARY KEY, filename TEXT UNIQUE, applied_at TEXT DEFAULT (datetime('now')))`);
@@ -559,6 +561,7 @@ describe('Chat API routes', () => {
     testDb.pragma('journal_mode = WAL');
     applyMigrations(testDb);
     clearTenantScopeAnomaliesForTests();
+    resetPendingChatConfirmationsForTests();
 
     mockRouteMessage.mockReset();
     mockKeywordMatch.mockReset();
@@ -901,13 +904,17 @@ describe('Chat API routes', () => {
       'x-language': 'pt-PT',
     });
 
-    expect(messageRes.statusCode, JSON.stringify(messageRes.body)).toBe(200);
+    expect(messageRes.statusCode, JSON.stringify(messageRes.body)).toBe(202);
     expect(messageRes.body.domain).toBe('secretary');
     expect(messageRes.body.routeMethod).toBe('chat-action-deterministic');
     expect(messageRes.body.metadata).toMatchObject({
-      type: 'chat_action_blocked',
-      actionStatus: 'blocked',
+      type: 'chat_action_needs_confirmation',
+      actionStatus: 'needs_confirmation',
       involvedSkills: ['secretary_calendar'],
+      pendingConfirmation: {
+        intent_class: 'event_create',
+        confirmation_token: expect.any(String),
+      },
     });
     expect(messageRes.body.text).toContain('Google Calendar');
     const forbiddenTokensRegex = /927|e-mails não lidos|unread|auth\.scope|chat\.skill_capability_registry|<b>|<\/b>|Resposta estruturada/i;
@@ -991,6 +998,86 @@ describe('Chat API routes', () => {
     });
     expect(calendarMocks.getEventsForSources).toHaveBeenCalledTimes(2);
     expect(JSON.stringify(accept.body)).not.toMatch(/auth\.scope|chat\.skill_capability_registry|raw|debug|<b>|<\/b>|Resposta estruturada/i);
+  });
+
+  it('gates iOS task creation behind a confirmation token and replays idempotently', async () => {
+    const first = await dispatch('POST', '/message', 7001, {
+      text: 'Add a task to call my dentist on Friday',
+      clientMessageId: 'task-create-confirmation-contract-1',
+    });
+
+    expect(first.statusCode, JSON.stringify(first.body)).toBe(202);
+    expect(first.body.metadata).toMatchObject({
+      type: 'chat_action_needs_confirmation',
+      actionStatus: 'needs_confirmation',
+      pendingConfirmation: {
+        kind: 'pending_confirmation',
+        intent_class: 'task_create',
+        sourceMessageId: 'msg-user-task-create-confirmation-contract-1',
+        confirmation_token: expect.any(String),
+      },
+    });
+    expect(first.body.metadata.actionConfirmation).toMatchObject({
+      intentClass: 'task_create',
+      confirmationToken: first.body.metadata.pendingConfirmation.confirmation_token,
+    });
+    expect(testDb.prepare('SELECT COUNT(*) AS count FROM native_tasks WHERE user_id = ?').get(7001)).toMatchObject({ count: 0 });
+
+    const confirmationBody = {
+      confirmation_token: first.body.metadata.pendingConfirmation.confirmation_token,
+      intent_class: 'task_create',
+    };
+    const confirmed = await dispatch('POST', '/confirm-action', 7001, confirmationBody);
+
+    expect(confirmed.statusCode, JSON.stringify(confirmed.body)).toBe(200);
+    expect(confirmed.body.metadata).toMatchObject({
+      type: 'chat_action_verified_success',
+      actionStatus: 'verified_success',
+      pendingConfirmation: {
+        kind: 'completed_confirmation',
+        intent_class: 'task_create',
+      },
+    });
+    expect(testDb.prepare('SELECT COUNT(*) AS count FROM native_tasks WHERE user_id = ?').get(7001)).toMatchObject({ count: 1 });
+
+    const replay = await dispatch('POST', '/confirm-action', 7001, confirmationBody);
+    expect(replay.statusCode, JSON.stringify(replay.body)).toBe(200);
+    expect(replay.body.metadata).toMatchObject({
+      idempotentReplay: true,
+      confirmationReplay: true,
+    });
+    expect(testDb.prepare('SELECT COUNT(*) AS count FROM native_tasks WHERE user_id = ?').get(7001)).toMatchObject({ count: 1 });
+  });
+
+  it('rejects stale and wrong-user confirmation tokens before execution', async () => {
+    const first = await dispatch('POST', '/message', 7001, {
+      text: 'Create a task called token scope test',
+      clientMessageId: 'task-create-token-scope-1',
+    });
+    expect(first.statusCode, JSON.stringify(first.body)).toBe(202);
+
+    const token = first.body.metadata.pendingConfirmation.confirmation_token;
+    const wrongUser = await dispatch('POST', '/confirm-action', 7002, {
+      confirmation_token: token,
+      intent_class: 'task_create',
+    });
+    expect(wrongUser.statusCode).toBe(401);
+
+    const staleToken = signChatConfirmationToken({
+      pendingId: first.body.metadata.pendingConfirmation.id,
+      userId: 7001,
+      tenantId: 7001,
+      intentClass: 'task_create',
+      expiresAt: '2026-04-15T11:59:00.000Z',
+      sourceMessageId: first.body.metadata.pendingConfirmation.sourceMessageId,
+      now: new Date('2026-04-15T11:50:00.000Z'),
+    });
+    const stale = await dispatch('POST', '/confirm-action', 7001, {
+      confirmation_token: staleToken,
+      intent_class: 'task_create',
+    });
+    expect(stale.statusCode).toBe(401);
+    expect(testDb.prepare('SELECT COUNT(*) AS count FROM native_tasks WHERE user_id = ?').get(7001)).toMatchObject({ count: 0 });
   });
 
   it('routes task-with-subtasks messages through Chat Reasoning Engine before the AI/tool loop', async () => {
