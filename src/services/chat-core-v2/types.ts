@@ -148,6 +148,8 @@ export type ChatCoreV2EntityType =
 
 export type EntityResolutionStatus = 'resolved' | 'ambiguous' | 'not_found';
 
+export type ReadModelFreshnessStatus = 'live' | 'fresh' | 'stale' | 'unknown';
+
 export interface RuntimeBudget {
   maxInputTokens: number;
   maxOutputTokens: number;
@@ -307,6 +309,36 @@ export interface EntityReferenceResolution {
   selectedId?: string;
   selectedCandidate?: EntityResolutionCandidate;
   reasonCodes: string[];
+}
+
+export interface ReadModelFreshness {
+  generatedAt: string;
+  maxSourceAgeSeconds?: number;
+  status: ReadModelFreshnessStatus;
+}
+
+export interface ChatCoreV2ReadModelResult<TData = unknown> {
+  schemaVersion: string;
+  capabilityId: string;
+  domain: ChatCoreV2Domain;
+  data: TData;
+  sourceEntityIds: string[];
+  sourceVersions: Record<string, string>;
+  freshness: ReadModelFreshness;
+  sensitivity: AuditSensitivity;
+  summary?: string;
+  locale?: string;
+}
+
+export interface ChatCoreV2ReadContextPack {
+  schemaVersion: string;
+  results: ChatCoreV2ReadModelResult[];
+  domains: ChatCoreV2Domain[];
+  sourceEntityIds: string[];
+  sourceVersions: Record<string, string>;
+  sensitivity: AuditSensitivity;
+  generatedAt: string;
+  contextHash: string;
 }
 
 export interface ChatV2AuditPayload {

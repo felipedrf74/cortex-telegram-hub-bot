@@ -7,6 +7,7 @@ export * from './memory-store';
 export * from './model-run-audit';
 export * from './provider-capabilities';
 export * from './provider-data-policy';
+export * from './read-models';
 export * from './reasoning-policies';
 export * from './runtime-budget';
 export * from './types';
