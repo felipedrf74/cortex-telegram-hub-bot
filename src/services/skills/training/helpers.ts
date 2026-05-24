@@ -14,7 +14,7 @@ import { DateTime } from 'luxon';
 import { foldCalendarText } from '../../calendar-natural-language-parser';
 import { makeSlotProvenance, type ChatSlotProvenance } from '../../chat-action-state';
 import { makeStep, type StepKeyInputs } from '../step-builder';
-import type { ChatPlanStep } from '../../chat-action-planner';
+import type { ChatPlanStep } from '../../chat/types';
 
 export const TRAINING_PLAN_REQUIRED_SLOTS = ['sport', 'goal', 'durationWeeks', 'startDate', 'weeklyVolumeKm'] as const;
 

@@ -1080,30 +1080,57 @@ describe('Chat API routes', () => {
     expect(testDb.prepare('SELECT COUNT(*) AS count FROM native_tasks WHERE user_id = ?').get(7001)).toMatchObject({ count: 0 });
   });
 
-  it('routes task-with-subtasks messages through Chat Reasoning Engine before the AI/tool loop', async () => {
+  it('routes task-with-subtasks messages through the action planner confirmation path', async () => {
     const messageRes = await dispatch('POST', '/message', 7001, {
       text: "Create a task called Prozis where it has sub tasks called creatine K2 D3 for now that's it",
       clientMessageId: 'prozis-subtasks-1',
     });
 
-    expect(messageRes.statusCode, JSON.stringify(messageRes.body)).toBe(200);
+    expect(messageRes.statusCode, JSON.stringify(messageRes.body)).toBe(202);
     expect(messageRes.body).toMatchObject({
-      domain: 'secretary',
-      routeMethod: 'chat-reasoning-engine',
+      domain: 'tasks',
+      routeMethod: 'chat-action-deterministic',
       metadata: {
-        type: 'task_created',
+        type: 'chat_action_needs_confirmation',
+        actionStatus: 'needs_confirmation',
+        pendingConfirmation: {
+          kind: 'pending_confirmation',
+          intent_class: 'task_create',
+          confirmation_token: expect.any(String),
+        },
+      },
+    });
+    expect(mockRouteMessage).not.toHaveBeenCalled();
+    expect(mockHandleSecretary).not.toHaveBeenCalled();
+    expect(testDb.prepare('SELECT COUNT(*) AS count FROM native_tasks WHERE user_id = ? AND title = ?')
+      .get(7001, 'Prozis')).toMatchObject({ count: 0 });
+
+    const confirmed = await dispatch('POST', '/confirm-action', 7001, {
+      confirmation_token: messageRes.body.metadata.pendingConfirmation.confirmation_token,
+      intent_class: 'task_create',
+    });
+
+    expect(confirmed.statusCode, JSON.stringify(confirmed.body)).toBe(200);
+    expect(confirmed.body).toMatchObject({
+      domain: 'tasks',
+      routeMethod: 'chat-action-mixed',
+      metadata: {
+        type: 'chat_action_verified_success',
+        actionStatus: 'verified_success',
         title: 'Prozis',
-        verificationStatus: 'verified',
+        verificationStatus: 'verified_success',
         subtasks: [
           { title: 'creatine' },
           { title: 'K2' },
           { title: 'D3' },
         ],
+        pendingConfirmation: {
+          kind: 'completed_confirmation',
+          intent_class: 'task_create',
+        },
       },
     });
-    expect(messageRes.body.text).toContain('Created task “Prozis” with 3 subtasks');
-    expect(mockRouteMessage).not.toHaveBeenCalled();
-    expect(mockHandleSecretary).not.toHaveBeenCalled();
+    expect(confirmed.body.text).toContain('Created task “Prozis” with 3 subtasks');
 
     const task = testDb.prepare('SELECT id, title, user_id FROM native_tasks WHERE user_id = ? AND title = ?')
       .get(7001, 'Prozis') as any;
@@ -1115,22 +1142,16 @@ describe('Chat API routes', () => {
       ORDER BY position ASC, id ASC
     `).all(7001, task.id).map((row: any) => row.display_name);
     expect(subtasks).toEqual(['creatine', 'K2', 'D3']);
-    const plan = testDb.prepare(`
-      SELECT status, frame_json, created_entity_refs_json
-      FROM chat_action_plans
-      WHERE user_id = ? AND tenant_id = ? AND source_message_id = ?
+    const run = testDb.prepare(`
+      SELECT status, action_type, provider_object_id
+      FROM chat_action_runs
+      WHERE user_id = ? AND tenant_id = ? AND message_id = ?
     `).get(7001, 7001, 'msg-user-prozis-subtasks-1') as any;
-    expect(plan).toMatchObject({ status: 'completed' });
-    expect(JSON.parse(plan.frame_json)).toMatchObject({
-      primaryIntent: 'create_task_with_subtasks',
-      skill: 'secretary',
+    expect(run).toMatchObject({
+      status: 'verified_success',
+      action_type: 'create_task_with_subtasks',
+      provider_object_id: String(task.id),
     });
-    expect(JSON.parse(plan.created_entity_refs_json)).toEqual(expect.arrayContaining([
-      expect.objectContaining({ entityType: 'task', title: 'Prozis' }),
-      expect.objectContaining({ entityType: 'subtask', title: 'creatine' }),
-      expect.objectContaining({ entityType: 'subtask', title: 'K2' }),
-      expect.objectContaining({ entityType: 'subtask', title: 'D3' }),
-    ]));
   });
 
   it('does not duplicate task/subtask execution when iOS retries the same client message id', async () => {
@@ -1140,9 +1161,15 @@ describe('Chat API routes', () => {
     };
 
     const first = await dispatch('POST', '/message', 7001, body);
-    const second = await dispatch('POST', '/message', 7001, body);
+    expect(first.statusCode, JSON.stringify(first.body)).toBe(202);
+    const confirmationBody = {
+      confirmation_token: first.body.metadata.pendingConfirmation.confirmation_token,
+      intent_class: 'task_create',
+    };
+    const confirmed = await dispatch('POST', '/confirm-action', 7001, confirmationBody);
+    const second = await dispatch('POST', '/confirm-action', 7001, confirmationBody);
 
-    expect(first.statusCode).toBe(200);
+    expect(confirmed.statusCode, JSON.stringify(confirmed.body)).toBe(200);
     expect(second.statusCode).toBe(200);
     expect(second.body.metadata).toMatchObject({ idempotentReplay: true });
 

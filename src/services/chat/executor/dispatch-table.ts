@@ -1,10 +1,10 @@
 // Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
 
-import type { ChatActionName } from '../../chat-action-registry';
+import type { ChatActionName } from '../registry';
 import type { ChatStepExecutor } from './types';
 import { executeCalendarCreateStep, executeCalendarDeleteStep, executeCalendarReadOnlyStep, executeCalendarUpdateStep } from '../../skills/secretary/executor';
 import { executeMailInboxSummaryStep, executeMailUnreadCountStep } from '../../skills/mail/executor';
-import { executeTaskCreateStep, executeTaskMutationStep } from '../../skills/tasks/executor';
+import { executeAddSubtasksToTaskStep, executeTaskCreateStep, executeTaskMutationStep, executeTaskWithSubtasksStep } from '../../skills/tasks/executor';
 import { executeContentAgencyStep, executeContentPipelineHandoffStep, executeContentScheduleWorkStep } from '../../skills/content/executor';
 import { executeCookingGroceryListStep, executeCookingMealPlanStep, executeCookingSupportStep } from '../../skills/cooking/executor';
 import { executeFinanceCategorizeReceiptStep, executeFinancePaymentActionStep, executeFinanceReminderStep, executeFinanceSummaryStep } from '../../skills/finance/executor';
@@ -25,6 +25,8 @@ const CHAT_STEP_EXECUTORS: Partial<Record<ChatActionName, ChatStepExecutor>> = {
   mail_unread_count: (step, context) => executeMailUnreadCountStep(step, context.input),
   mail_inbox_summary: (step, context) => executeMailInboxSummaryStep(step, context.input),
   create_task: (step, context) => executeTaskCreateStep(step, context.plan, context.input, context.deps.taskProviderForUser, context.persistRuns),
+  create_task_with_subtasks: (step, context) => executeTaskWithSubtasksStep(step, context.plan, context.input, context.deps.taskProviderForUser, context.persistRuns),
+  add_subtasks_to_task: (step, context) => executeAddSubtasksToTaskStep(step, context.plan, context.input, context.deps.taskProviderForUser, context.persistRuns),
   update_task: TASK_MUTATION_EXECUTOR,
   complete_task: TASK_MUTATION_EXECUTOR,
   delete_task: TASK_MUTATION_EXECUTOR,

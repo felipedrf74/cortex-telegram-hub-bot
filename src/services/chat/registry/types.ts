@@ -35,6 +35,8 @@ export type ChatActionName =
   | 'draft_email'
   | 'send_email'
   | 'create_task'
+  | 'create_task_with_subtasks'
+  | 'add_subtasks_to_task'
   | 'update_task'
   | 'complete_task'
   | 'delete_task'
