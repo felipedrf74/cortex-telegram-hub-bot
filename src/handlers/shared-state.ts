@@ -118,13 +118,6 @@ setInterval(() => {
   }
 }, 10 * 60 * 1000);
 
-// ─── Exported Utilities ─────────────────────────────────────────────
-
-/** Set last active domain for a user (used by scheduler for cron-triggered messages) */
-export function setLastActiveDomain(userId: number, domain: DomainName): void {
-  lastActiveDomain.set(userId, { domain, timestamp: Date.now() });
-}
-
 /** HTML parse error detection */
 export function isHtmlParseError(err: unknown): boolean {
   const msg = (err as any)?.description || (err as any)?.message || '';

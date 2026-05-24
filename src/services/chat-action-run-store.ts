@@ -283,6 +283,10 @@ function sanitizeChatActionRunResult(result: unknown, context: { providerObjectI
     ?? stringValue(task?.id)
     ?? intentId
     ?? null;
+  const resultType = inferResultType(record);
+  const listId = resultType === 'task'
+    ? stringValue(record.listId) ?? stringValue(task?.listId)
+    : null;
   return {
     status: context.status,
     verified: typeof record.verified === 'boolean'
@@ -291,8 +295,9 @@ function sanitizeChatActionRunResult(result: unknown, context: { providerObjectI
         ? record.verification.verified
         : undefined,
     providerObjectId,
+    listId,
     source: stringValue(record.provider) ?? stringValue(record.source) ?? stringValue(event?.source),
-    resultType: inferResultType(record),
+    resultType,
     replaySafe: true,
   };
 }

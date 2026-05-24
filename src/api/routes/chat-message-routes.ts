@@ -69,7 +69,6 @@ import {
 } from './chat-message-request';
 import { sendChatTierRequiredIfNeeded } from './chat-message-tier-gate';
 import { sendRetryableChatFailureResponseIfNeeded } from './chat-message-degraded-response';
-import { tryHandleChatReasoningAction } from '../../services/chat-reasoning-engine';
 import {
   executeConfirmedChatActionRuns,
   tryHandleChatActionPlan,
@@ -141,7 +140,10 @@ function mapActionPlannerSkillToNexusSkill(skill: string): NexusSkillId {
 function intentClassForAction(action: string | undefined, fallbackSkills: string[] = []): string {
   switch (action) {
     case 'create_task':
+    case 'create_task_with_subtasks':
       return 'task_create';
+    case 'add_subtasks_to_task':
+      return 'task_update';
     case 'delete_task':
       return 'task_delete';
     case 'complete_task':
@@ -489,36 +491,6 @@ function enrichChatResponseForContract<T extends {
     metadata: enriched.metadata,
     responseBlocks,
   } as T;
-}
-
-function actionabilityForReasoningStatus(status: string): NexusChatActionability {
-  switch (status) {
-    case 'completed':
-    case 'partial_failure':
-    case 'failed':
-      return 'execute';
-    case 'needs_clarification':
-      return 'clarify';
-    case 'needs_confirmation':
-      return 'preview';
-    case 'deferred':
-      return 'blocked';
-    case 'in_progress':
-      return 'execute';
-    default:
-      return 'answer_only';
-  }
-}
-
-function verificationForReasoningMetadata(metadata: Record<string, unknown> | undefined, status: string): NexusChatVerificationStatus {
-  const verification = typeof metadata?.verificationStatus === 'string' ? metadata.verificationStatus : undefined;
-  if (verification === 'verified') return 'verified';
-  if (verification === 'partial_failure') return 'partial_failure';
-  if (status === 'failed') return 'failed';
-  if (status === 'needs_confirmation' || status === 'needs_clarification') return 'pending';
-  if (status === 'deferred') return 'blocked';
-  if (status === 'completed') return 'verified';
-  return 'not_required';
 }
 
 export function registerChatMessageRoutes(
@@ -1106,109 +1078,6 @@ export function registerChatMessageRoutes(
         });
         syncConversationStateForShortcut(userId, conversationDomain, normalizedText, response.text, tenantId);
         logger.info({ cmdLength: normalizedText.length, platform: 'ios', mode: 'fast-path', tenantId, userId }, 'iOS chat fast-path hit');
-        res.json(response);
-        return;
-      }
-
-      // ── Chat Reasoning Engine v1 ─────────────────────────────────
-      // Secretary mutation intents that need structure (for example one
-      // task with subtasks) are parsed into an ActionFrame and executed
-      // through deterministic task services before the model/tool loop.
-      // The model may label future actions, but it never executes tools
-      // directly or chooses user/tenant scope.
-      const reasoningAction = await tryHandleChatReasoningAction({
-        text: normalizedText,
-        userId,
-        tenantId,
-        sourceMessageId: userMessageId,
-        clientRequestId: scopedClientMessageId,
-        correlationId: chatRequestId,
-        locale: getUserLanguageById(userId) || undefined,
-      });
-      if (reasoningAction) {
-        latency.mark('reasoning_engine_completed');
-        const response = reasoningAction.response;
-        const enriched = buildChatAnswerMetadata({
-          normalizedText,
-          responseText: response.text,
-          userId,
-          tenantId,
-          chatRequestId,
-          routeMethod: response.routeMethod,
-          domain: response.domain,
-          confidence: response.confidence,
-          tracker: latency,
-          latencyTier: response.metadata?.verificationStatus ? 'tier2_verified_write' : 'tier1_fast_read',
-          existingMetadata: response.metadata,
-          actionability: actionabilityForReasoningStatus(reasoningAction.status),
-          verificationStatus: verificationForReasoningMetadata(response.metadata, reasoningAction.status),
-        });
-        response.text = enriched.text;
-        response.metadata = enriched.metadata;
-        if (response.routeMethod === 'confirmation-required' && response.metadata?.type === 'chat_action_confirmation_required') {
-          const lang = getUserLanguageById(userId);
-          const isPT = lang.startsWith('pt');
-          const involvedSkills = Array.isArray(response.metadata.involvedSkills)
-            ? response.metadata.involvedSkills.filter((skill): skill is any => typeof skill === 'string')
-            : ['secretary'];
-          const pendingConfirmation = trackPendingChatConfirmation({
-            userId,
-            tenantId,
-            actionSummary: normalizedText,
-            involvedSkills,
-            reasonCodes: Array.isArray(response.metadata.reasonCodes)
-              ? response.metadata.reasonCodes.filter((code): code is string => typeof code === 'string')
-              : ['destructive_action'],
-            sourceMessageId: userMessageId,
-          });
-          const decisionResult = await createDecisionIntent({
-            userId,
-            tenantId,
-            sourceSkill: 'chat',
-            type: 'decision_required',
-            priority: 'active',
-            relatedEntityId: pendingConfirmation.id,
-            relatedEntityType: 'chat_confirmation',
-            title: isPT ? 'Nexus precisa de confirmação' : 'Nexus needs confirmation',
-            body: pendingConfirmation.actionSummary,
-            sensitiveBody: pendingConfirmation.actionSummary,
-            actionButtons: [
-              { id: 'option_a', label: isPT ? 'Confirmar' : 'Confirm', style: 'primary' },
-              { id: 'option_b', label: isPT ? 'Não executar' : 'Do not run', style: 'secondary' },
-              { id: 'open_detail', label: isPT ? 'Abrir decisão' : 'Open decision', style: 'secondary' },
-            ],
-            deeplink: `nexus://notifications/${pendingConfirmation.id}`,
-            expiresAt: pendingConfirmation.expiresAt,
-            dedupeKey: `chat:confirmation:${tenantId}:${userId}:${pendingConfirmation.id}`,
-            requiresUserAction: true,
-            deliveryPolicy: 'in_app_only',
-            privacyPolicy: 'standard',
-          });
-          response.metadata.pendingConfirmation = {
-            id: pendingConfirmation.id,
-            actionSummary: pendingConfirmation.actionSummary,
-            expiresAt: pendingConfirmation.expiresAt,
-            sourceMessageId: pendingConfirmation.sourceMessageId,
-            decisionId: decisionResult.item?.decisionId ?? null,
-          };
-        }
-        rememberChatActiveDomain(userId, response.domain, Date.now(), tenantId);
-        persistExchange(userId, userMessageId, normalizedText, response.id, response, tenantId, {
-          clientMessageId: scopedClientMessageId,
-          requestId: chatRequestId,
-        });
-        syncConversationStateForShortcut(userId, response.domain, normalizedText, response.text, tenantId);
-        logger.info(
-          {
-            chatRequestId,
-            tenantId,
-            userId,
-            mode: 'chat-reasoning-engine',
-            status: reasoningAction.status,
-            metadataType: response.metadata?.type,
-          },
-          'iOS chat reasoning engine handled structured action',
-        );
         res.json(response);
         return;
       }
