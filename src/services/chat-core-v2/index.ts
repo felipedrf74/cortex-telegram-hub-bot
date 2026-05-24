@@ -2,6 +2,7 @@
 
 export * from './capability-registry';
 export * from './fallback-policy';
+export * from './model-run-audit';
 export * from './provider-capabilities';
 export * from './provider-data-policy';
 export * from './reasoning-policies';
