@@ -49,7 +49,7 @@ export function classifyShadowRoute(text: string): ChatCoreV2ShadowRouteGuess {
   if (/\b(complete|done|finish|mark)\b.*\b(task|todo|to-do)\b|\b(concluir|completar|terminar|marcar)\b.*\btarefas?\b/i.test(normalized)) {
     return { intent: 'modify_action', confidence: 0.84, domains: ['tasks'], capabilityIds: ['tasks.complete'] };
   }
-  if (/\b(snooze|pause)\b.*\b(notifications?|alerts?|reminders?)\b/i.test(normalized)) {
+  if (/\b(snooze|pause|adiar|pausar|suspender)\b.*\b(notifications?|alerts?|reminders?|notifica(?:cao|coes|ção|ções)|alertas?|lembretes?)\b/i.test(normalized)) {
     return { intent: 'modify_action', confidence: 0.83, domains: ['notifications'], capabilityIds: ['notifications.snooze'] };
   }
   if (/\b(reconnect|retry|sync|reauth)\b.*\b(connections?|integrations?|providers?|google|outlook|garmin|apple health|strava|todoist|notion)\b|\b(connections?|integrations?|providers?|google|outlook|garmin|apple health|strava|todoist|notion)\b.*\b(reconnect|retry|sync|reauth)\b/i.test(normalized)) {
