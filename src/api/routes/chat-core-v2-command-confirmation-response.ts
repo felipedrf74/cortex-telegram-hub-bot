@@ -121,5 +121,33 @@ function buildResultCards(
       listName: null,
     }];
   }
+  if (pending.command.commandType === 'notifications.snooze') {
+    const payload = pending.command.payload;
+    const notificationId = typeof execution.snoozedNotificationId === 'string'
+      ? execution.snoozedNotificationId
+      : typeof payload.notificationId === 'string'
+        ? payload.notificationId
+        : null;
+    return [{
+      kind: 'notificationCard',
+      notificationId,
+      title: typeof payload.title === 'string' ? payload.title : 'Notification',
+      detail: execution.response?.text ?? null,
+    }];
+  }
+  if (pending.command.commandType === 'decision_center.dismiss') {
+    const payload = pending.command.payload;
+    const decisionId = typeof execution.dismissedDecisionId === 'string'
+      ? execution.dismissedDecisionId
+      : typeof payload.decisionId === 'string'
+        ? payload.decisionId
+        : '';
+    return [{
+      kind: 'decisionCard',
+      decisionId,
+      status: 'dismissed',
+      detail: execution.response?.text ?? null,
+    }];
+  }
   return [];
 }
