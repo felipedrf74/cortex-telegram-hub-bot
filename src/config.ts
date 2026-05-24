@@ -460,6 +460,27 @@ export const config = {
   mesh: {
     enabled: process.env.NEXUS_MULTISKILL_MESH === 'on',
   },
+  // ── Coaching feature flags ────────────────────────────────────────
+  // PR 4 §D4 follow-up (2026-05-23). Coach-rule enforcement is the
+  // warning-only linter pass that surfaces five additional research-
+  // backed coach principles. Flag defaults OFF; staging flips it on
+  // first so a red-team corpus pass can measure false-positive rate
+  // before any rule is considered for promotion to blocker severity.
+  // Wired through `runPlanLintGuarded` in
+  // `src/api/routes/training-plan-persistence.ts` and read from the
+  // canonical `PlanLintInput.enableCoachRuleEnforcement` field.
+  coaching: {
+    ruleEnforcementEnabled: process.env.COACH_RULE_ENFORCEMENT === 'on',
+    // ── Coach periodization v2 feature flag ────────────────────────
+    // Per the Week-Level Adaptability + Periodization plan (v2.1,
+    // build-order week 10–11): all new C6 reflow / C2 travel / A5
+    // coach-policy routes ship behind this flag. Off by default;
+    // staging soak flips it on for ≥2 weeks; production promote only
+    // after false-positive rate per new rule < 5% AND churn rate
+    // <25%. When OFF, the new routes return 404 — the legacy
+    // training endpoints remain fully functional.
+    periodizationV2Enabled: process.env.COACH_PERIODIZATION_V2_ENABLED === 'on',
+  },
   // ── Apple Push Notification Service (APNs) ────────────────────────
   // Token-based auth only (modern .p8 approach). All four env vars must
   // be present for the sender to actually dispatch — when any are missing,

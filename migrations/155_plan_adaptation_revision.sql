@@ -1,0 +1,40 @@
+-- 155: Adaptation revision counter for adaptive plan reflows.
+--
+-- Adds a second versioning counter to fitness_training_plans, distinct
+-- from the existing plan_version (migration 081). Two-counter semantics
+-- per the Week-Level Adaptability + Periodization plan (v2.1, slice A0):
+--
+--   - plan_version (existing): increments only on manual regeneration
+--     (user deletes a plan and re-generates from scratch). Used by the
+--     calendar-ownership audit table (migration 081) to supersede stale
+--     event tuples via the UNIQUE(plan_id, plan_version, event_id,
+--     source) index. Heavyweight: triggers full event cancellation +
+--     re-creation downstream.
+--
+--   - adaptation_revision (new): increments on every persisted adaptive
+--     reflow within the same generation — week-level reflow (slice C6),
+--     missed-session compensation (C8), deload insertion (B5), taper
+--     adjustment (B7), scenario-driven session swap (C8). NEVER
+--     increments on previews, warnings, or non-persisted changes.
+--     Lightweight: does NOT trigger calendar supersession; the calendar
+--     ownership audit keys off plan_version, not adaptation_revision.
+--
+-- The two counters are deliberately independent. Regenerating a plan
+-- bumps plan_version and resets adaptation_revision to 0 (the column
+-- default for the new row). Adaptive reflows bump adaptation_revision
+-- without touching plan_version. Both live on the parent plan row so
+-- "what state of this plan am I looking at" is answerable with a
+-- single SELECT.
+--
+-- Every adaptation_revision increment writes exactly one ledger row in
+-- training_plan_adaptations (migration 156) — that invariant is
+-- enforced by the application layer (`recordAdaptation()` in
+-- src/services/training-plan-adaptations.ts) and by the
+-- UNIQUE(plan_id, adaptation_revision) constraint on the ledger table.
+--
+-- Rollback note: if a column drop becomes necessary, the canonical
+-- SQLite path is the same as migration 081 — create a shadow table,
+-- copy without the column, drop original, rename.
+
+ALTER TABLE fitness_training_plans
+  ADD COLUMN adaptation_revision INTEGER NOT NULL DEFAULT 0;

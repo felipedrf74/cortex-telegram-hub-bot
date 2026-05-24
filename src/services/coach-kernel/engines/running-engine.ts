@@ -4,6 +4,7 @@ import type { EngineContext, SportEngine } from './interfaces';
 import type { DayOfWeek, Session, SessionType, WorkoutTemplate } from '../types';
 import { clamp, createSessionId, durationToLoad } from '../utils';
 import { pickAvailableDays, pickKeyDay } from '../availability-day-picker';
+import { applyVolumeGrowthCapForSport } from '../training-principles';
 
 function templateFor(templates: WorkoutTemplate[], sessionType: SessionType): WorkoutTemplate {
   const match = templates.find((template) => template.sessionType === sessionType);
@@ -72,7 +73,19 @@ function buildSupportOnlyRunSessions(context: EngineContext, templates: WorkoutT
   const targetSessions = clamp(requestedRunning, 1, 3);
   const previousMinutes = context.athlete.trainingHistory.lastWeekMinutesBySport.running ?? targetSessions * 40;
   const phaseMultiplier = context.phase === 'deload' ? 0.75 : context.phase === 'taper' ? 0.8 : 1;
-  const targetMinutes = Math.max(targetSessions * 25, Math.round(previousMinutes * phaseMultiplier));
+  // Slice A1a — activate training-principles.json volume growth cap.
+  // The principles file specifies `volumeGrowthCapsPct.running = 8`,
+  // so a build week cannot grow more than 8% over the prior week.
+  // This is a defensive ceiling: deload/taper multipliers reduce
+  // volume (the cap doesn't apply); only build/peak weeks bind.
+  const phaseTarget = Math.round(previousMinutes * phaseMultiplier);
+  const cappedTarget = applyVolumeGrowthCapForSport(
+    context.knowledge.principles,
+    'running',
+    previousMinutes,
+    phaseTarget,
+  );
+  const targetMinutes = Math.max(targetSessions * 25, cappedTarget);
   const baseMinutes = clamp(Math.round(targetMinutes / targetSessions), 25, 50);
   const dayPreferences: DayOfWeek[] = ['tuesday', 'thursday', 'saturday', 'monday', 'friday', 'wednesday', 'sunday'];
   const days = pickAvailableDays(context.athlete, 'running', dayPreferences, targetSessions);
@@ -137,7 +150,17 @@ export const runningEngine: SportEngine = {
     const targetSessions = clamp(requestedRunning, 2, 7);
     const previousMinutes = context.athlete.trainingHistory.lastWeekMinutesBySport.running ?? 180;
     const phaseMultiplier = context.phase === 'taper' ? 0.7 : context.phase === 'peak' ? 1.05 : context.phase === 'deload' ? 0.75 : 1;
-    const targetMinutes = Math.round(previousMinutes * phaseMultiplier);
+    // Slice A1a — apply principles.json volume-growth cap. With cap=8
+    // and previousMinutes=200, even a peak-phase 1.05× multiplier
+    // (planned 210) stays under the ceiling (216); the cap binds only
+    // when phaseMultiplier > 1 AND the planned value exceeds the cap.
+    const phaseTarget = Math.round(previousMinutes * phaseMultiplier);
+    const targetMinutes = applyVolumeGrowthCapForSport(
+      context.knowledge.principles,
+      'running',
+      previousMinutes,
+      phaseTarget,
+    );
     const longRunMinutes = clamp(Math.round(targetMinutes * (context.phase === 'peak' ? 0.32 : 0.28)), 70, 170);
     const keyMinutes = clamp(Math.round(targetMinutes * 0.18), 30, 70);
     const remainingMinutes = Math.max(targetMinutes - longRunMinutes - keyMinutes, 40);

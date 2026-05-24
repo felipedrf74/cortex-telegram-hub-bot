@@ -215,6 +215,30 @@ export interface LogCompletionInput {
   energy_level?: number;
   soreness_level?: number;
   notes?: string;
+  // ── Slice A0c — CompletionFeedbackV2 fields. All optional;
+  //    older callers continue to work unchanged.
+  /** Finer-resolution duration (seconds). Engine falls back to duration_minutes × 60 when missing. */
+  completed_duration_sec?: number;
+  /** Distance covered in meters (running / cycling / swim). */
+  completed_distance_meters?: number;
+  /** JSON array of completed set counts per prescribed exercise. */
+  completed_sets_json?: string;
+  /** JSON array of completed reps per prescribed exercise. */
+  completed_reps_json?: string;
+  /** JSON array of completed loads (kg) per prescribed exercise. */
+  completed_load_json?: string;
+  /** Reps in reserve (Zourdos RIR scale, 0-5). */
+  rir?: number;
+  /** Pain score (0-10). Distinct from soreness — pain implies injury risk. */
+  pain_score?: number;
+  /** Free-text pain location (e.g., "left knee, medial"). Health-sensitive (A4p). */
+  pain_location?: string;
+  /** Technical success score (0-10) — "did I execute the movement well?". */
+  technical_success_score?: number;
+  /** Free-form short reason when status=skipped (illness, travel, etc.). */
+  missed_reason?: string;
+  /** Set true when athlete did an external (unlogged) training session. */
+  external_training_declared?: boolean;
 }
 
 const TRAINING_SESSION_UPDATE_COLUMNS = new Set([
@@ -674,20 +698,54 @@ export function syncSessionWithCoachRecommendation(rec: {
 
 export function logCompletion(input: LogCompletionInput): TrainingCompletion {
   const db = getDb();
+  // Slice A0c — insert both legacy migration-023 fields AND the V2
+  // CompletionFeedbackV2 columns from migration 157. All V2 fields
+  // are optional; older callers passing only legacy fields continue
+  // to work unchanged.
   const result = db.prepare(`
     INSERT INTO training_completions
       (session_id, plan_id, actual_exercises_json, rpe_overall,
-       duration_minutes, energy_level, soreness_level, notes)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+       duration_minutes, energy_level, soreness_level, notes,
+       completed_duration_sec, completed_distance_meters,
+       completed_sets_json, completed_reps_json, completed_load_json,
+       rir, pain_score, pain_location, technical_success_score,
+       missed_reason, external_training_declared)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
-    input.session_id, input.plan_id, input.actual_exercises_json ?? null,
-    input.rpe_overall ?? null, input.duration_minutes ?? null,
-    input.energy_level ?? null, input.soreness_level ?? null, input.notes ?? null,
+    input.session_id,
+    input.plan_id,
+    input.actual_exercises_json ?? null,
+    input.rpe_overall ?? null,
+    input.duration_minutes ?? null,
+    input.energy_level ?? null,
+    input.soreness_level ?? null,
+    input.notes ?? null,
+    // V2 columns:
+    input.completed_duration_sec ?? null,
+    input.completed_distance_meters ?? null,
+    input.completed_sets_json ?? null,
+    input.completed_reps_json ?? null,
+    input.completed_load_json ?? null,
+    input.rir ?? null,
+    input.pain_score ?? null,
+    input.pain_location ?? null,
+    input.technical_success_score ?? null,
+    input.missed_reason ?? null,
+    input.external_training_declared === true ? 1 : 0,
   );
   // Also mark the session as completed
   markSessionCompleted(input.session_id);
 
-  logger.info({ sessionId: input.session_id, rpe: input.rpe_overall }, 'Training session completed');
+  logger.info(
+    {
+      sessionId: input.session_id,
+      rpe: input.rpe_overall,
+      rir: input.rir,
+      painScore: input.pain_score,
+      externalDeclared: input.external_training_declared === true,
+    },
+    'Training session completed',
+  );
   return db.prepare('SELECT * FROM training_completions WHERE id = ?')
     .get(result.lastInsertRowid) as TrainingCompletion;
 }

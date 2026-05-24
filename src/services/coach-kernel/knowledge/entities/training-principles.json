@@ -1,4 +1,5 @@
 {
+  "sciencePolicyVersion": "1.0.0",
   "volumeGrowthCapsPct": {
     "running": 8,
     "cycling": 12,
@@ -287,5 +288,156 @@
       "isometric_emphasis": "2-3-1-0",
       "intentNote": "Tempo digits = eccentric / bottom pause / concentric / top pause in seconds. The intermediate scheme is the workhorse for hypertrophy. Advanced (5s eccentric) is the gating tempo before unlocking the next leverage variant."
     }
+  },
+  "mesocycleLengths": {
+    "default": 4,
+    "advanced": 3,
+    "novice": 5,
+    "intentNote": "Default 3:1 (3 build + 1 deload) mesocycle. Advanced athletes tolerate 2:1; novices benefit from 4:1 with longer recovery."
+  },
+  "blockTemplates": {
+    "accumulation_4wk": ["accumulation", "accumulation", "accumulation", "deload"],
+    "accumulation_3wk_advanced": ["accumulation", "accumulation", "deload"],
+    "accumulation_5wk_novice": ["accumulation", "accumulation", "accumulation", "accumulation", "deload"],
+    "intensification_4wk": ["intensification", "intensification", "intensification", "deload"],
+    "realization_3wk": ["realization", "realization", "deload"],
+    "taper_2wk_A_race": ["taper", "race"],
+    "taper_1wk_B_race": ["taper"],
+    "post_race_recovery_1wk": ["post_race_recovery"]
+  },
+  "weekIntentDefaults": {
+    "accumulation": { "volumeMultiplier": 1.0, "intensityFloor": "aerobic", "intensityCeiling": "threshold", "primaryQuality": "volume", "sorenessSensitive": false },
+    "intensification": { "volumeMultiplier": 0.9, "intensityFloor": "tempo", "intensityCeiling": "vo2", "primaryQuality": "intensity", "sorenessSensitive": false },
+    "realization": { "volumeMultiplier": 0.85, "intensityFloor": "threshold", "intensityCeiling": "neuromuscular", "primaryQuality": "specificity", "sorenessSensitive": true },
+    "deload": { "volumeMultiplier": 0.6, "intensityFloor": "recovery", "intensityCeiling": "tempo", "primaryQuality": "recovery", "sorenessSensitive": true },
+    "recovery": { "volumeMultiplier": 0.5, "intensityFloor": "recovery", "intensityCeiling": "aerobic", "primaryQuality": "recovery", "sorenessSensitive": true },
+    "taper": { "volumeMultiplier": 0.5, "intensityFloor": "tempo", "intensityCeiling": "vo2", "primaryQuality": "sharpness", "sorenessSensitive": true },
+    "race": { "volumeMultiplier": 0.3, "intensityFloor": "race", "intensityCeiling": "race", "primaryQuality": "race", "sorenessSensitive": true },
+    "post_race_recovery": { "volumeMultiplier": 0.4, "intensityFloor": "recovery", "intensityCeiling": "aerobic", "primaryQuality": "recovery", "sorenessSensitive": true }
+  },
+  "intensityDistributionModels": {
+    "polarized": { "low": 0.80, "moderate": 0.05, "high": 0.15, "evidence": "Seiler 2010; Stöggl & Sperlich 2014" },
+    "pyramidal": { "low": 0.75, "moderate": 0.20, "high": 0.05, "evidence": "Sperlich pyramidal review" },
+    "thresholdFocused": { "low": 0.65, "moderate": 0.25, "high": 0.10, "evidence": "Niche; sprint-distance and threshold-focused phases" },
+    "defaultBySport": {
+      "running": "polarized",
+      "cycling": "polarized",
+      "swimming": "pyramidal",
+      "triathlon": "polarized"
+    },
+    "defaultByLevel": {
+      "novice": "pyramidal",
+      "intermediate": "polarized",
+      "advanced": "polarized"
+    },
+    "accountingDefault": "segment_time_in_zone",
+    "accountingNote": "Default 'segment_time_in_zone' (A2b segments). Weekly summary view can also surface 'session_goal' counting."
+  },
+  "taperCoefficients": {
+    "exponentialBase": 0.85,
+    "minimumVolumePct": 40,
+    "maximumVolumePct": 60,
+    "byPriority": {
+      "A": { "durationDays": 14, "volumeDropPct": 55, "intensityPreservedPct": 100, "strengthCutoffDaysBeforeRace": 7 },
+      "B": { "durationDays": 7, "volumeDropPct": 45, "intensityPreservedPct": 100, "strengthCutoffDaysBeforeRace": 3 },
+      "C": { "durationDays": 3, "volumeDropPct": 35, "intensityPreservedPct": 100, "strengthCutoffDaysBeforeRace": 2 }
+    },
+    "evidence": "Mujika & Padilla 2003; Bosquet 2007 meta — 41-60% volume drop, intensity preserved."
+  },
+  "acwrThresholds": {
+    "lowRisk": { "min": 0.8, "max": 1.3 },
+    "moderateRisk": { "min": 1.3, "max": 1.5 },
+    "highRisk": { "min": 1.5, "max": 100 },
+    "underTraining": { "min": 0, "max": 0.8 },
+    "evidence": "Gabbett 2016; tempered by Impellizzeri 2020 — ACWR is a soft signal, never a sole trigger.",
+    "softSignalNote": "Cold-start (<14d completions) disables ACWR-based decisions. Coupled window signals marked low-confidence."
+  },
+  "riskScoreWeights": {
+    "acwrElevated": 0.20,
+    "hrvDropPersisted": 0.20,
+    "sleepDeficit": 0.15,
+    "painElevated": 0.30,
+    "adherenceCollapse": 0.10,
+    "rapidLoadRamp": 0.15,
+    "recentGapOrIllness": 0.20,
+    "rationale": "Sum of weights > 1.0 by design — risk is multiplicatively compositional; deload fires at sum ≥ 0.40 with ≥2 contributing signals."
+  },
+  "deloadCadenceRules": {
+    "minWeeksBetweenDeloads": 2,
+    "maxWeeksBetweenDeloads": 5,
+    "scheduledCadenceByLevel": {
+      "novice": 5,
+      "intermediate": 4,
+      "advanced": 3
+    },
+    "dataInformedTriggerThresholdScore": 0.4,
+    "evidence": "Bompa 2018; Issurin 2010 — 3:1 / 4:1 / 2:1 mesocycle ratios."
+  },
+  "returnFromGapRamps": {
+    "vacation_or_life_gap": {
+      "weekOnePct": 60,
+      "weeklyIncreasePct": 15,
+      "weeksToFullLoad": 3,
+      "intensityCapZone": "tempo"
+    },
+    "minor_illness_resolved": {
+      "weekOnePct": 50,
+      "weeklyIncreasePct": 12,
+      "weeksToFullLoad": 4,
+      "intensityCapZone": "aerobic"
+    },
+    "febrile_or_systemic_illness": {
+      "weekOnePct": 30,
+      "weeklyIncreasePct": 8,
+      "weeksToFullLoad": 6,
+      "intensityCapZone": "recovery",
+      "additionalNote": "Fever/COVID/prolonged fatigue: medical clearance recommended before any high intensity."
+    },
+    "injury_localized": {
+      "weekOnePct": 40,
+      "weeklyIncreasePct": 10,
+      "weeksToFullLoad": 5,
+      "intensityCapZone": "aerobic"
+    },
+    "post_exertional_symptom_risk": {
+      "weekOnePct": 20,
+      "weeklyIncreasePct": 5,
+      "weeksToFullLoad": 8,
+      "intensityCapZone": "recovery",
+      "additionalNote": "Possible post-viral / post-exertional symptoms; pace gently and watch for symptom return."
+    },
+    "unknown_conservative": {
+      "weekOnePct": 50,
+      "weeklyIncreasePct": 10,
+      "weeksToFullLoad": 5,
+      "intensityCapZone": "aerobic"
+    },
+    "evidence": "Kreher 2012; NSCA 2017; CSCCa/NSCA safe return-to-training guidance — transition periods after inactivity require upper limits on volume, intensity, and work:rest ratios in the first 2-4 weeks."
+  },
+  "missedSessionPolicyDefaults": {
+    "easy_aerobic": "drop",
+    "strength_accessory": "drop_or_merge",
+    "key_interval_tempo": "reschedule_if_recovery_window",
+    "long_run_ride": "reschedule_or_shortened_aerobic",
+    "taper_session": "drop_never_cram",
+    "rescheduleWindowHoursBeforeNextHighIntensity": 48
+  },
+  "minimumViableWeekTemplates": {
+    "endurance_athlete": [
+      { "role": "key_endurance", "sessionType": "threshold_run", "durationMinutes": 45 },
+      { "role": "aerobic_maintenance", "sessionType": "easy_run", "durationMinutes": 35 },
+      { "role": "strength_micro", "sessionType": "mobility", "durationMinutes": 20 }
+    ],
+    "strength_athlete": [
+      { "role": "key_lift", "sessionType": "strength", "durationMinutes": 45 },
+      { "role": "accessory_micro", "sessionType": "strength", "durationMinutes": 25 },
+      { "role": "mobility", "sessionType": "mobility", "durationMinutes": 15 }
+    ],
+    "hybrid_athlete": [
+      { "role": "key_endurance", "sessionType": "threshold_run", "durationMinutes": 40 },
+      { "role": "key_lift", "sessionType": "strength", "durationMinutes": 40 },
+      { "role": "mobility", "sessionType": "mobility", "durationMinutes": 15 }
+    ],
+    "intentNote": "Minimum viable week — fewer decisions, shorter sessions, clearer priorities. Used by C8 low-adherence policy."
   }
 }

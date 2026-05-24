@@ -343,6 +343,56 @@ export function getPlanVersion(planId: number): number | null {
 }
 
 /**
+ * Increment a plan's `adaptation_revision`. Used on every persisted
+ * adaptive reflow within the SAME generation — week-level reflow,
+ * missed-session compensation, deload insertion, taper adjustment,
+ * scenario-driven session swap. NEVER call this on previews, warnings,
+ * or non-persisted changes; the contract is "every revision bump has
+ * exactly one ledger row in training_plan_adaptations".
+ *
+ * Two-counter semantics (plan v2.1, slice A0):
+ *
+ *   - `plan_version` (incrementPlanVersion) — heavyweight; bumps on
+ *     manual regeneration; triggers calendar supersession.
+ *   - `adaptation_revision` (this function) — lightweight; bumps on
+ *     adaptive reflows; does NOT trigger calendar supersession.
+ *
+ * Returns the new revision (>= 1), or null if the plan row doesn't
+ * exist. The ledger insert (recordAdaptation, slice A0b) is the
+ * caller's responsibility and MUST run in the same transaction as
+ * this increment to preserve the invariant.
+ */
+export function incrementAdaptationRevision(planId: number): number | null {
+  const db = getDb();
+  const result = db.prepare(`
+    UPDATE fitness_training_plans
+    SET adaptation_revision = adaptation_revision + 1, updated_at = datetime('now')
+    WHERE id = ?
+  `).run(planId);
+  if (result.changes === 0) return null;
+  const row = db.prepare(
+    'SELECT adaptation_revision FROM fitness_training_plans WHERE id = ?',
+  ).get(planId) as { adaptation_revision: number } | undefined;
+  return row?.adaptation_revision ?? null;
+}
+
+/**
+ * Get the current `adaptation_revision` for a plan. Returns 0 (the
+ * column default for plans that have never been adaptively reflowed)
+ * if found, or null if the plan row doesn't exist at all. The default
+ * of 0 — not 1 like `plan_version` — reflects that newly generated
+ * plans have NO adaptive reflows yet; the first reflow produces
+ * revision 1, the second produces 2, etc.
+ */
+export function getAdaptationRevision(planId: number): number | null {
+  const db = getDb();
+  const row = db.prepare(
+    'SELECT adaptation_revision FROM fitness_training_plans WHERE id = ?',
+  ).get(planId) as { adaptation_revision: number } | undefined;
+  return row?.adaptation_revision ?? null;
+}
+
+/**
  * Idempotency pre-check for the persistence loop: returns the
  * ownership row, if any, that already exists for this session +
  * (plan, plan_version). Used by `persistGeneratedTrainingPlan` to

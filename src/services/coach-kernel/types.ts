@@ -91,12 +91,50 @@ export interface RaceEvent {
   date: string;
   priority: 'a' | 'b' | 'c';
   notes?: string;
+  /**
+   * Slice B2a — extended contract used by B7 (day-level taper) and
+   * B8 (post-race recovery). Optional for backwards compat with
+   * existing plans.
+   */
+  expectedDurationSec?: number;
+  /**
+   * Coach signal: 'high' implies long-build + meaningful taper; 'mini'
+   * implies a tune-up race only. Derived from priority + subtype but
+   * surfaced separately for engines that don't want to re-derive.
+   */
+  taperImportance?: 'high' | 'standard' | 'mini';
+  /**
+   * Recovery days the engine should insert AFTER the race before
+   * resuming build logic. Used by WeekIntent 'post_race_recovery'.
+   */
+  recoveryDaysAfter?: number;
+  /**
+   * Slice B2a — multisport support. For a triathlon brick weekend
+   * or duathlon, `disciplines` lists every sport in the event so
+   * post-race recovery and pre-race taper can account for ALL of
+   * them (a 70.3 needs recovery from swim + bike + run, not just
+   * the listed `discipline`).
+   */
+  disciplines?: Array<'running' | 'cycling' | 'swimming'>;
+  /** 'single' = one discipline; 'multisport' = brick/triathlon/duathlon. */
+  raceFormat?: 'single' | 'multisport';
 }
+
+/**
+ * Slice B2a — race priority as a normalized type. The existing
+ * RaceEvent.priority uses lowercase; B2a accessors expose the
+ * uppercase 'A'/'B'/'C' that engines and the periodization JSON
+ * use. Translation is automatic in the read model.
+ */
+export type RacePriorityNormalized = 'A' | 'B' | 'C';
 
 export interface Goals {
   primaryFocus: CoachingDiscipline;
   secondaryFocus?: Sport | 'strength';
-  strengthGoal?: 'hypertrophy' | 'max_strength' | 'athletic' | 'maintenance';
+  // 'hybrid' added 2026-05-23 (Layer-3 goal→split mapping audit closeout):
+  // dedicated profile for athletes pursuing concurrent endurance + strength,
+  // routed by `STRENGTH_GOAL_KEYWORDS` and consumed by `strength-engine.ts`.
+  strengthGoal?: 'hypertrophy' | 'max_strength' | 'athletic' | 'maintenance' | 'hybrid';
   raceCalendar: RaceEvent[];
   priorityOrder: Array<Sport | 'strength' | 'maintenance' | 'return'>;
   weeklySessionsTarget: Partial<Record<Sport, number>>;
@@ -153,6 +191,190 @@ export interface ReadinessSnapshot {
   illness?: boolean;
   painFlags: PainFlag[];
   notes?: string[];
+}
+
+/**
+ * Slice B2 — WeekIntent as the canonical planning unit.
+ * Discriminated union replacing the older `BlockPhase` enum. The
+ * `BlockPhase` enum is kept as a derived label for backwards-compat
+ * with persistence + iOS contracts; new engine code reads WeekIntent.
+ */
+export type WeekIntentKindEnum =
+  | 'accumulation'
+  | 'intensification'
+  | 'realization'
+  | 'deload'
+  | 'recovery'
+  | 'taper'
+  | 'race'
+  | 'post_race_recovery';
+
+export interface WeekIntent {
+  kind: WeekIntentKindEnum;
+  /** Multiplier on baseline weekly volume. e.g. 1.0 build, 0.5 deload. */
+  volumeMultiplier: number;
+  /** Lower bound for intensity in this week. */
+  intensityFloor: IntensityZone | 'race';
+  /** Upper bound for intensity in this week. */
+  intensityCeiling: IntensityZone | 'race';
+  /** Coaching "what is this week FOR" — volume / intensity / sharpness etc. */
+  primaryQuality: 'volume' | 'intensity' | 'specificity' | 'recovery' | 'sharpness' | 'race';
+  /** Hint to engines: avoid heavy lower-body work this week. */
+  sorenessSensitive?: boolean;
+}
+
+/**
+ * Slice A5 — CoachPlanPolicy substrate. Persisted per plan to capture
+ * coaching preferences that are NOT part of athlete identity. The
+ * v2.1 critique moved this from C0 (Phase C "adaptability") to
+ * Phase A "substrate" because B3/B4/B5/B7 and C8 all read from it.
+ */
+export interface CoachPlanPolicy {
+  intensityDistributionPreference?: 'auto' | 'polarized' | 'pyramidal' | 'thresholdFocused';
+  progressionAggressiveness: 'conservative' | 'standard' | 'aggressive';
+  /**
+   * 'scheduled' = always deload on mesocycle cadence
+   * 'data_informed' = let B5's signal composition decide
+   * 'hybrid' = whichever fires first (scheduled OR data-informed)
+   * The wording 'data_informed' (not 'data_driven') reflects the
+   * v2.1 critique correctly framing ACWR as a soft signal.
+   */
+  deloadStrategy: 'scheduled' | 'data_informed' | 'hybrid';
+  missedSessionPolicy: 'drop_low_priority' | 'preserve_key_sessions' | 'ask_user';
+  taperStrategy: 'auto' | 'short' | 'standard' | 'extended';
+  /**
+   * Anti-churn rate limits for adaptive reflows (C8). Safety overrides
+   * are always exempt. Defaults: 1 non-safety reflow per 24h, 2 per week.
+   */
+  adaptationRateLimits?: {
+    perDay?: number;
+    perWeek?: number;
+  };
+  /** Read-model schema version for iOS contract negotiation. */
+  schemaVersion: number;
+}
+
+/**
+ * Slice A3 — HealthSignal as an EVENT, not a mutable field on
+ * AthleteProfile. Sourced from athlete_health_signals (A0c) and
+ * consumed by PlanGenerationContext.
+ */
+export interface HealthSignal {
+  capturedAt: string;
+  painScore?: number;
+  painLocation?: string;
+  illnessSymptoms?: readonly string[];
+  injuryStatus?: 'none' | 'acute' | 'chronic_managed' | 'returning' | 'post_exertional_symptom_risk';
+  menstrualStatus?: 'menses' | 'follicular' | 'ovulation' | 'luteal' | 'amenorrhea' | 'symptom_only';
+  energyAvailabilityRisk?: 'low' | 'moderate' | 'high';
+  consentScope: readonly string[];
+  source?: string;
+}
+
+/**
+ * Slice A3 — version stamp attached to every generated plan and to
+ * every adaptation-ledger row.
+ */
+export interface VersionStamp {
+  /** Semver of training-principles.json that produced this plan. */
+  sciencePolicyVersion: string;
+  /** Read-model schema version (iOS contract negotiation). */
+  schemaVersion: number;
+  /** ISO 8601 timestamp the plan was generated. */
+  generatedAt: string;
+}
+
+/**
+ * Slice A3 — derived weekly conditions surfaced by C7 onto the
+ * planning context. The shape is forward-declared here so B and C
+ * slices can depend on it; C7 fills in the implementation.
+ */
+export interface WeekConditions {
+  weekIndex: number;
+  isTravelWeek?: boolean;
+  /**
+   * Count of missed sessions this week. Kept for backwards-compat
+   * with summary views and analytics. C8 should consult
+   * `missedSessionIds` (below) when iterating — Codex P2: acting on
+   * a count means "every session" which is wrong.
+   */
+  missedSessionsThisWeek?: number;
+  /**
+   * Specific Session.id values that were missed this week. Codex P2
+   * fix: C8 iterates over these IDs ONLY, not every session in the
+   * week. When undefined or empty, C8 does not emit missed-session
+   * actions even if `missedSessionsThisWeek > 0`.
+   */
+  missedSessionIds?: string[];
+  deloadDue?: boolean;
+  returnProtocol?: string;
+  lowAdherenceTrend?: boolean;
+  equipmentOverride?: Record<string, unknown>;
+  travelStress?: {
+    timeZoneShiftHours?: number;
+    flightDurationHours?: number;
+    sleepDisruptionExpected?: boolean;
+    walkingLoadExpected?: boolean;
+    heatStress?: boolean;
+  };
+  lifecycleState?: string;
+}
+
+/**
+ * Slice A3 — replayable per-plan context. Engines do NOT mutate
+ * this object; each week returns a `WeekContextDelta` that the
+ * generator commits via `commitWeek(ctx, delta)`. Result: replaying
+ * a plan with the same `sciencePolicyVersion` produces identical
+ * output.
+ */
+export interface PlanGenerationContext {
+  versionStamp: VersionStamp;
+  /** Rolling load-model state (TSS/CTL/ATL/TSB-equivalent). B1 populates. */
+  loadModel?: {
+    ctl?: number;
+    atl?: number;
+    tsb?: number;
+    acwr?: number;
+    loadModelStatus: 'cold_start' | 'warming' | 'stable';
+    completionCount: number;
+    confidence: 'high' | 'medium' | 'low';
+  };
+  /** Position within the current mesocycle. B3 populates. */
+  mesocyclePosition?: {
+    blockName: string;
+    weekInBlock: number;
+    blockLengthWeeks: number;
+  };
+  /** Number of weeks since the last deload. B5 reads. */
+  weeksSinceDeload?: number;
+  /** Per-week derived conditions. C7 populates per-week. */
+  weekConditions: WeekConditions[];
+  /** Rolling HRV status — paired-signal rule (B5). */
+  rollingHrv?: {
+    statusLast7d: ('balanced' | 'low' | 'unbalanced' | 'poor')[];
+    dropPersisted: boolean;
+  };
+  /** Rolling adherence over the prior 14 days. */
+  rollingAdherence?: {
+    fraction: number;
+    weeksBelow70Pct: number;
+  };
+  /** Latest readiness snapshot for the current week. */
+  readinessSnapshot?: ReadinessSnapshot;
+  /** Latest health signal for the current week (slice A4 / A0c). */
+  healthSignal?: HealthSignal;
+}
+
+/**
+ * Delta produced by an engine's per-week computation. The generator
+ * commits the delta via `commitWeek(ctx, delta)` only after validation.
+ */
+export interface WeekContextDelta {
+  weekIndex: number;
+  loadModel?: PlanGenerationContext['loadModel'];
+  mesocyclePosition?: PlanGenerationContext['mesocyclePosition'];
+  weeksSinceDeload?: number;
+  weekConditions?: WeekConditions;
 }
 
 export interface ComplianceSummary {
@@ -501,7 +723,16 @@ export type TrainingDecisionReasonCode =
   | 'maintenance_volume_capped'
   | 'return_to_training_volume_capped'
   | 'continuous_plan_no_taper'
-  | 'event_based_missing_race_date';
+  | 'event_based_missing_race_date'
+  // Slice A4 — safety/health guardrail emissions. Internal codes are
+  // factual (medical_referral, pain_flag, illness_flag); user-facing
+  // copy uses gentler "seek_professional_support" phrasing.
+  | 'safety_pause_typed'
+  | 'safety_warning_inferred'
+  | 'medical_referral'
+  | 'pain_flag'
+  | 'illness_flag'
+  | 'red_s_screening_flag';
 
 export interface TrainingDecisionReason {
   code: TrainingDecisionReasonCode;
@@ -514,7 +745,7 @@ export interface TrainingDecisionReason {
     dayOfWeek?: DayOfWeek;
   };
   sourceConstraint?: {
-    type: 'capacity' | 'time' | 'travel' | 'calendar' | 'recovery' | 'fatigue' | 'interference' | 'volume' | 'equipment';
+    type: 'capacity' | 'time' | 'travel' | 'calendar' | 'recovery' | 'fatigue' | 'interference' | 'volume' | 'equipment' | 'safety';
     id?: string;
     label?: string;
   };
@@ -563,6 +794,104 @@ export interface Session {
     label?: string;
     capacityMinutes: number;
   };
+  /**
+   * Slice A2b — Interval-level intensity profile. Full segment plan
+   * for the session (warmup + main work + cooldown), used by B1 (TSS
+   * via IF) and B4 (segment-time-in-zone distribution). Optional:
+   * engines emit this for interval/threshold workouts where the
+   * single `intensityZone` field is too coarse to power load
+   * calculations; steady aerobic sessions can omit it.
+   */
+  intensityProfile?: SessionIntensityProfile;
+  /**
+   * Slice A2b — Compact summary view of the intensity profile for
+   * iOS read-models. iOS can adopt this immediately, defer reading
+   * the full `intensityProfile.segments[]` to a later schemaVersion.
+   */
+  intensitySummary?: IntensitySummary;
+}
+
+/**
+ * Role of an interval segment within a session. Drives how the
+ * engine and UI render the segment (warmup is "easy spin-up", main
+ * is "the actual work", recovery is "between intervals", etc.).
+ */
+export type IntensitySegmentRole =
+  | 'warmup'
+  | 'main'
+  | 'recovery'
+  | 'cooldown'
+  | 'steady'
+  | 'interval';
+
+/**
+ * One segment of an interval-style workout. Either time-based
+ * (durationSec) or distance-based (distanceMeters) — engines may
+ * emit both for hybrid prescriptions ("8x400m in 90s each"). At
+ * least one of duration/distance is required.
+ *
+ * Target ranges are optional and may not all be present — e.g., a
+ * pace-coached running interval has `targetPaceRangeSecPerKm` but
+ * not `targetWattsRange`. Slice A2b defines the type; engines
+ * choose which targets to emit per modality.
+ */
+export interface IntensitySegment {
+  role: IntensitySegmentRole;
+  /** Modality of the segment (typically the parent session's sport, but allows brick sessions). */
+  modality: Sport | 'strength';
+  durationSec?: number;
+  distanceMeters?: number;
+  /** Number of repetitions for interval-style segments (e.g., "5x" main + recovery pairs). */
+  reps?: number;
+  targetZone?: IntensityZone;
+  targetPaceRangeSecPerKm?: { min: number; max: number };
+  targetWattsRange?: { min: number; max: number };
+  targetHrRangeBpm?: { min: number; max: number };
+  targetRpeRange?: { min: number; max: number };
+}
+
+/**
+ * Full intensity profile of a session: the segment plan, the
+ * computed time-in-zone distribution, and the estimated load. Slice
+ * A2b types it; slice B1 (load model) populates `estimatedLoad`
+ * using the IF math from A2's zone-calculator.
+ */
+export interface SessionIntensityProfile {
+  primaryZone: IntensityZone;
+  segments: IntensitySegment[];
+  /**
+   * Time-weighted distribution across the IntensityZone enum. Values
+   * sum to 1.0 (proportions, not percentages). Missing zones default
+   * to 0.
+   */
+  intensityDistribution: Partial<Record<IntensityZone, number>>;
+  /**
+   * TSS-equivalent estimated load for the session. Slice A2b
+   * populates this when athlete anchors allow IF computation;
+   * otherwise undefined — B1 fills the gap with sRPE × duration
+   * fallback when completion data arrives.
+   */
+  estimatedLoad?: number;
+}
+
+/**
+ * Compact view of an intensity profile for iOS. Designed to fit in
+ * the read-model payload without forcing iOS to render full segment
+ * arrays. Slice A2b emits this alongside the full profile; iOS
+ * adopts summary first (schemaVersion=1), defers segment rendering
+ * to schemaVersion=2.
+ */
+export interface IntensitySummary {
+  primaryZone: IntensityZone;
+  /** Proportion of time in low-intensity zones (recovery + aerobic). */
+  lowPct: number;
+  /** Proportion of time in moderate zones (tempo). */
+  moderatePct: number;
+  /** Proportion of time in high zones (threshold + vo2 + neuromuscular). */
+  highPct: number;
+  estimatedLoad?: number;
+  /** Short coach-style description of the session intent. e.g. "5×4min @ threshold + 1min easy". */
+  targetSummaryText?: string;
 }
 
 export interface GuardrailResult {

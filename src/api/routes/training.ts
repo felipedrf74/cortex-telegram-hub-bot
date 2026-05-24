@@ -27,6 +27,8 @@ import {
   invalidateCalendarLookupCoalesce,
   resetCalendarLookupCoalesceForTests,
 } from './training-calendar-lookup';
+import { mountCoachV2Routes } from './training-coach-v2';
+import { computeV2IdempotencyHashHex } from './training-completion-v2-hash';
 import {
   COACH_BRIEFING_TTL,
   getCoachBriefingSnapshot,
@@ -208,6 +210,14 @@ async function buildDeterministicCoachFallback(
 
 export function trainingRoutes(): Router {
   const router = Router();
+
+  // ── Coach periodization v2 routes (Codex P1 wiring) ──────────────
+  // Mounted EARLY so the feature-flag check fires before any other
+  // handler. When the flag is OFF, the helper short-circuits with
+  // 404 for /week/travel, /week/:weekId/reflow, and
+  // /plans/:planId/coach-policy paths — leaving the legacy training
+  // surface untouched.
+  mountCoachV2Routes(router);
 
   /**
    * GET /api/v1/training/home
@@ -489,7 +499,89 @@ export function trainingRoutes(): Router {
    */
   router.post('/complete', async (req, res: Response) => {
     const { userId, tenantId } = req as AuthenticatedRequest;
-    const { sessionId, notes, rpe } = req.body;
+    // Codex R2 P2 fix — accept the A0c CompletionFeedbackV2 fields.
+    // Legacy callers that only send sessionId/notes/rpe continue to
+    // work unchanged; the new fields are all optional.
+    const {
+      sessionId,
+      notes,
+      rpe,
+      rir,
+      painScore,
+      painLocation,
+      technicalSuccessScore,
+      missedReason,
+      externalTrainingDeclared,
+      completedDurationSec,
+      completedDistanceMeters,
+      completedSetsJson,
+      completedRepsJson,
+      completedLoadJson,
+    } = req.body as Record<string, unknown>;
+    // R4 P2 fix — stricter V2 field validation. Codex caught that
+    // R3's `typeof v === 'number'` accepted NaN and Infinity, and
+    // the event hash only fingerprinted field presence (so
+    // `{ painScore: 1, rir: 2 }` and `{ painScore: 9, rir: 0 }`
+    // collided to the same outbox key). This pass requires
+    // Number.isFinite + per-field ranges and switches the event
+    // hash to a canonical *value* hash.
+    const v2TypeErrors: string[] = [];
+    const checkNumberInRange = (
+      name: string,
+      v: unknown,
+      min: number,
+      max: number,
+    ): void => {
+      if (v === undefined || v === null) return;
+      if (typeof v !== 'number' || !Number.isFinite(v)) {
+        v2TypeErrors.push(`${name} must be a finite number`);
+        return;
+      }
+      if (v < min || v > max) {
+        v2TypeErrors.push(`${name} must be between ${min} and ${max} (got ${v})`);
+      }
+    };
+    const checkString = (name: string, v: unknown, maxLen = 1024): void => {
+      if (v === undefined || v === null) return;
+      if (typeof v !== 'string') {
+        v2TypeErrors.push(`${name} must be a string`);
+        return;
+      }
+      if (v.length > maxLen) {
+        v2TypeErrors.push(`${name} must be ≤ ${maxLen} characters`);
+      }
+    };
+    // R7 P2/P3 fix — Codex caught that null was silently treated as
+    // "field omitted." That made `external_training_declared: null`
+    // collapse to `false` instead of failing as wrong-type. The
+    // documented contract (R6 P3 prompt) was reject-on-non-boolean
+    // including null. Only `undefined` (field absent from payload)
+    // is treated as omitted now; explicit `null` falls through to
+    // the type check.
+    const checkBoolean = (name: string, v: unknown): void => {
+      if (v === undefined) return;
+      if (typeof v !== 'boolean') {
+        v2TypeErrors.push(`${name} must be a boolean`);
+      }
+    };
+    // Per-field ranges per A0c semantics (RPE/RIR scales, plausible
+    // distances/durations). Out-of-range payloads are bugs, not data.
+    checkNumberInRange('rir', rir, 0, 10);
+    checkNumberInRange('painScore', painScore, 0, 10);
+    checkString('painLocation', painLocation, 256);
+    checkNumberInRange('technicalSuccessScore', technicalSuccessScore, 0, 10);
+    checkString('missedReason', missedReason, 256);
+    checkBoolean('externalTrainingDeclared', externalTrainingDeclared);
+    checkNumberInRange('completedDurationSec', completedDurationSec, 0, 24 * 3600);
+    checkNumberInRange('completedDistanceMeters', completedDistanceMeters, 0, 500_000);
+    checkString('completedSetsJson', completedSetsJson, 8 * 1024);
+    checkString('completedRepsJson', completedRepsJson, 8 * 1024);
+    checkString('completedLoadJson', completedLoadJson, 8 * 1024);
+    if (v2TypeErrors.length > 0) {
+      sendError(res, 'BAD_INPUT', `Invalid V2 completion fields: ${v2TypeErrors.join('; ')}`, 400);
+      return;
+    }
+
     if (!consumeTrainingWriteBudget(res, tenantId, userId, 'training_session_complete')) return;
 
     try {
@@ -523,13 +615,36 @@ export function trainingRoutes(): Router {
 
       const { rowId, session } = resolved;
 
+      // Codex R2 P2 fix — surface CompletionFeedbackV2 fields from
+      // the REST payload. The service layer normalizes undefined →
+      // NULL so a partial payload doesn't clobber other fields.
+      const hasV2Field = (
+        rir != null || painScore != null || painLocation != null ||
+        technicalSuccessScore != null || missedReason != null ||
+        externalTrainingDeclared === true ||
+        completedDurationSec != null || completedDistanceMeters != null ||
+        completedSetsJson != null || completedRepsJson != null ||
+        completedLoadJson != null
+      );
+
       const writeCompletion = () => {
-        if (notes || rpe != null) {
+        if (notes || rpe != null || hasV2Field) {
           trainingPlans.logCompletion({
             session_id: rowId,
             plan_id: session.plan_id,
-            rpe_overall: rpe ?? null,
-            notes: notes ?? null,
+            rpe_overall: typeof rpe === 'number' ? rpe : undefined,
+            notes: typeof notes === 'string' ? notes : undefined,
+            rir: typeof rir === 'number' ? rir : undefined,
+            pain_score: typeof painScore === 'number' ? painScore : undefined,
+            pain_location: typeof painLocation === 'string' ? painLocation : undefined,
+            technical_success_score: typeof technicalSuccessScore === 'number' ? technicalSuccessScore : undefined,
+            missed_reason: typeof missedReason === 'string' ? missedReason : undefined,
+            external_training_declared: externalTrainingDeclared === true,
+            completed_duration_sec: typeof completedDurationSec === 'number' ? completedDurationSec : undefined,
+            completed_distance_meters: typeof completedDistanceMeters === 'number' ? completedDistanceMeters : undefined,
+            completed_sets_json: typeof completedSetsJson === 'string' ? completedSetsJson : undefined,
+            completed_reps_json: typeof completedRepsJson === 'string' ? completedRepsJson : undefined,
+            completed_load_json: typeof completedLoadJson === 'string' ? completedLoadJson : undefined,
           });
         } else {
           trainingPlans.markSessionCompleted(rowId);
@@ -537,6 +652,45 @@ export function trainingRoutes(): Router {
       };
       runOutboxTransaction((emitDomainEvent) => {
         writeCompletion();
+        // R3 P2 fix — include V2 fields in the dedup hash so two
+        // distinct V2 payloads don't collapse onto the same event.
+        // R4 P2 fix — the prior version only hashed *presence flags*
+        // (e.g. `hasRir: rir != null`). That meant
+        // `{ painScore: 1, rir: 2 }` and `{ painScore: 9, rir: 0 }`
+        // produced the same idempotency key and got deduped at the
+        // outbox. The summary kept here (emitted on the event) stays
+        // presence-only to avoid leaking values into log lines, but
+        // the hash basis now fingerprints the *canonical values* so
+        // two distinct logged completions can't collapse onto one key.
+        const v2Summary = {
+          hasRir: rir != null,
+          hasPainScore: painScore != null,
+          hasPainLocation: typeof painLocation === 'string' && painLocation.length > 0,
+          hasTechnicalSuccessScore: technicalSuccessScore != null,
+          hasMissedReason: typeof missedReason === 'string' && missedReason.length > 0,
+          externalTrainingDeclared: externalTrainingDeclared === true,
+          hasCompletedDurationSec: completedDurationSec != null,
+          hasCompletedDistanceMeters: completedDistanceMeters != null,
+          hasCompletedSetsJson: typeof completedSetsJson === 'string' && completedSetsJson.length > 0,
+          hasCompletedRepsJson: typeof completedRepsJson === 'string' && completedRepsJson.length > 0,
+          hasCompletedLoadJson: typeof completedLoadJson === 'string' && completedLoadJson.length > 0,
+        };
+        // Hash *values*, not just presence. Helper is exported from a
+        // sibling module so it can be unit-tested in isolation (see
+        // R4 P2 fix in training-completion-v2-hash.ts).
+        const v2HashHex = computeV2IdempotencyHashHex({
+          rir: typeof rir === 'number' ? rir : null,
+          painScore: typeof painScore === 'number' ? painScore : null,
+          painLocation: typeof painLocation === 'string' ? painLocation : null,
+          technicalSuccessScore: typeof technicalSuccessScore === 'number' ? technicalSuccessScore : null,
+          missedReason: typeof missedReason === 'string' ? missedReason : null,
+          externalTrainingDeclared: externalTrainingDeclared === true,
+          completedDurationSec: typeof completedDurationSec === 'number' ? completedDurationSec : null,
+          completedDistanceMeters: typeof completedDistanceMeters === 'number' ? completedDistanceMeters : null,
+          completedSetsJson: typeof completedSetsJson === 'string' ? completedSetsJson : null,
+          completedRepsJson: typeof completedRepsJson === 'string' ? completedRepsJson : null,
+          completedLoadJson: typeof completedLoadJson === 'string' ? completedLoadJson : null,
+        });
         emitDomainEvent({
           tenantId,
           userId,
@@ -545,11 +699,16 @@ export function trainingRoutes(): Router {
           entityType: 'training_session',
           entityId: rowId,
           payload: {
-            summary: { status: 'completed', hasNotes: Boolean(notes), hasRpe: rpe != null },
+            summary: {
+              status: 'completed',
+              hasNotes: Boolean(notes),
+              hasRpe: rpe != null,
+              v2: v2Summary,
+            },
             action: 'updated',
           },
           privacyClassification: 'health',
-          idempotencyKey: `training.feedback.recorded:${userId}:${rowId}:completed:${Boolean(notes)}:${rpe ?? 'none'}`,
+          idempotencyKey: `training.feedback.recorded:${userId}:${rowId}:completed:${Boolean(notes)}:${rpe ?? 'none'}:v2-${v2HashHex}`,
         });
       });
 
