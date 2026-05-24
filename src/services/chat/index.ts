@@ -19,9 +19,7 @@ import {
 } from '../calendar-natural-language-parser';
 import {
   findChatActionDefinition,
-  messageHasActionCandidate,
   riskClassForRisk,
-  selectRegistrySubsetForMessage,
   type ChatActionDefinition,
 } from './registry';
 import type {
@@ -52,9 +50,6 @@ import {
   buildTier1ClassifierPrompt,
   parseLlmPlannerJson,
   parseTier1ClassifierJson,
-  tryBuildEscalationReviewerPlan,
-  tryBuildLlmStructuredPlan,
-  tryBuildTier1ClassifierPlan,
 } from './planner/tiers';
 import { sanitizePlannerArgs } from './planner/arg-sanitizer';
 import {
@@ -117,8 +112,6 @@ import { logger } from '../../utils/logger';
 import {
   getChatHybridPlannerMode,
 } from '../runtime-flags';
-import { splitChatMultiStepRequest } from '../chat-multi-step-splitter';
-import { routeChatMultiStepSegments } from '../chat-segment-router';
 import { resolveStepRefs } from '../chat-multi-step-dag';
 import { enqueueChatActionFixerReview } from '../chat-action-fixer-worker';
 import {
@@ -163,7 +156,6 @@ import {
   rowToConfirmedStep,
 } from './executor/run-persistence';
 import {
-  buildClarificationPlan,
   buildMessageOnlyPlan,
   buildNeedsInputPlan,
   buildPlanFromSteps,
@@ -208,6 +200,8 @@ import {
   buildPendingCancellationPlan,
   buildRecentEntityFollowUpPlan,
 } from './planner/preflight-plans';
+import { tryBuildMultiStepChatActionPlan } from './planner/multi-step';
+import { buildSingleActionChatActionPlan } from './planner/single-action';
 import {
   recordShadowTelemetry,
   summarizeSlotProvenance,
@@ -346,7 +340,7 @@ export async function buildChatActionPlan(input: ChatPlannerInput): Promise<Chat
   const contentPendingContinuation = buildPendingContentSpecContinuation(input, PENDING_CONTINUATION_HELPERS);
   if (contentPendingContinuation) return contentPendingContinuation;
 
-  const multiStep = await tryBuildMultiStepChatActionPlan(input);
+  const multiStep = await tryBuildMultiStepChatActionPlan(input, singleActionPlanner);
   if (multiStep) return multiStep;
 
   const recentFollowUp = buildRecentEntityFollowUpPlan(input);
@@ -357,65 +351,11 @@ export async function buildChatActionPlan(input: ChatPlannerInput): Promise<Chat
 
   if (!shouldRunActionPlannerBeforeReadOnlyFastPaths(input.text)) return null;
 
-  return buildSingleActionChatActionPlan(input);
+  return singleActionPlanner(input);
 }
 
-async function buildSingleActionChatActionPlan(input: ChatPlannerInput): Promise<ChatActionPlan | null> {
-  const deterministic = buildDeterministicChatActionPlan(input);
-  if (deterministic) return deterministic;
-
-  const folded = foldCalendarText(input.text);
-  const looksComplex = /(?:\be\b|\band\b|\+|,).{8,}/.test(folded) || selectRegistrySubsetForMessage(input.text).length > 1;
-  const tier1Plan = await tryBuildTier1ClassifierPlan(input);
-  if (tier1Plan) return tier1Plan;
-
-  if (looksComplex || messageHasActionCandidate(input.text)) {
-    const llmPlan = await tryBuildLlmStructuredPlan(input);
-    if (llmPlan) return llmPlan;
-    const reviewerPlan = await tryBuildEscalationReviewerPlan(input);
-    if (reviewerPlan) return reviewerPlan;
-  }
-
-  if (messageHasActionCandidate(input.text)) {
-    return buildClarificationPlan(input, input.locale?.startsWith('pt')
-      ? 'Preciso só de mais detalhes para fazer isso. Qual é o título, data, hora e destino?'
-      : 'I need a few more details to do that. What title, date, time, and destination should I use?');
-  }
-  return null;
-}
-
-async function tryBuildMultiStepChatActionPlan(input: ChatPlannerInput): Promise<ChatActionPlan | null> {
-  const split = splitChatMultiStepRequest(input.text);
-  if (split.classification === 'single' || split.segments.length < 2) return null;
-  const routed = await routeChatMultiStepSegments(input, split.segments, buildSingleActionChatActionPlan);
-  if (routed.plan) {
-    return {
-      ...routed.plan,
-      confidence: Math.min(routed.plan.confidence, split.confidence),
-      effectiveConfidence: Math.min(routed.plan.effectiveConfidence ?? routed.plan.confidence, split.confidence),
-      telemetry: routed.plan.telemetry
-        ? {
-            ...routed.plan.telemetry,
-            calibratedScore: Math.min(routed.plan.telemetry.calibratedScore, split.confidence),
-          }
-        : routed.plan.telemetry,
-      debug: {
-        routingSignals: [
-          ...(routed.plan.debug?.routingSignals ?? []),
-          `multi_step_split_reason:${split.reason}`,
-        ],
-        rejectedFastPaths: routed.plan.debug?.rejectedFastPaths ?? [],
-        parser: 'mixed',
-        modelProvider: routed.plan.debug?.modelProvider,
-      },
-    };
-  }
-  if (routed.blockedReason === 'segment_unresolved') {
-    return buildClarificationPlan(input, input.locale?.startsWith('pt')
-      ? 'Vejo mais de uma ação, mas preciso que separes melhor cada passo antes de executar.'
-      : 'I see more than one action, but I need you to separate each step more clearly before I run it.');
-  }
-  return null;
+function singleActionPlanner(input: ChatPlannerInput): Promise<ChatActionPlan | null> {
+  return buildSingleActionChatActionPlan(input, buildDeterministicChatActionPlan);
 }
 
 export function buildDeterministicChatActionPlan(input: ChatPlannerInput): ChatActionPlan | null {
