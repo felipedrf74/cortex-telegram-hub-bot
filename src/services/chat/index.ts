@@ -1,6 +1,5 @@
 // Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
 
-import { DateTime } from 'luxon';
 import { randomUUID } from 'crypto';
 import {
   createEvent,
@@ -50,7 +49,6 @@ import {
   recordChatActionTelemetry,
   rememberRecentChatEntity,
   resolveRecentChatEntity,
-  type ChatSlotProvenance,
 } from '../chat-action-state';
 import { getChatStepExecutor } from './executor/dispatch-table';
 import {
@@ -71,21 +69,14 @@ import {
   buildStepIdempotencyKey,
   makeStep,
 } from '../skills/step-builder';
-import { parseConnectionsActionStep } from '../skills/connections/parser';
 import { parseContentActionStep } from '../skills/content/parser';
 import { buildPendingContentSpecContinuation } from '../skills/content/pending';
-import { parseCookingActionStep } from '../skills/cooking/parser';
 import { buildPendingCookingMealPlanContinuation } from '../skills/cooking/pending';
-import { parseDecisionActionStep } from '../skills/decision_center/parser';
 import { buildPendingDecisionChooseContinuation } from '../skills/decision_center/pending';
-import { parseFinanceActionStep } from '../skills/finance/parser';
 import { buildPendingFinanceCategorizeContinuation } from '../skills/finance/pending';
-import { parseMailActionStep } from '../skills/mail/parser';
 import { buildPendingMailDraftContinuation } from '../skills/mail/pending';
-import { parseNotificationActionStep } from '../skills/notifications/parser';
 import { hasPastTenseSignal } from '../skills/past-tense-detector';
 import { extractTopic, inferContentPlatform, inferProviderName } from '../skills/text-extractors';
-import { parseTrainingActionStep } from '../skills/training/parser';
 import { buildPendingSlotContinuationPlan } from '../skills/training/pending';
 import type { PendingContinuationHelpers } from './planner/pending-types';
 import { invalidateCalendarCaches } from '../cache-coherence-registry';
@@ -184,7 +175,6 @@ import {
 } from './planner/plan-builder';
 import {
   buildIncompleteCalendarCreatePlan,
-  containsPromptInjectionMarker,
   parseBulkDestructiveRefusal,
   parsePromptInjectionRefusal,
   parseSensitiveDataExfiltrationRefusal,
@@ -200,16 +190,22 @@ import {
   parseTaskMutationIntent,
 } from './planner/task-mutations';
 import {
+  extractTaskClause,
+  parseSimpleTaskIntent,
+  parseSimpleTaskStep,
+  startsWithSimpleTaskCreateIntent,
+} from './planner/simple-task';
+import {
   hasLegacySubtaskIntent,
   parseCreateChecklistIntent,
   parseTaskWithSubtasksIntent,
-  removeTaskQuotedSegments,
   startsWithTaskWithSubtasksIntent,
 } from './planner/task-subtasks';
 import {
   buildTargetedClarificationQuestion,
   defaultClarification,
 } from './planner/clarification';
+import { parseBroadSkillActionIntent } from './planner/broad-skill-intents';
 import {
   recordShadowTelemetry,
   summarizeSlotProvenance,
@@ -217,6 +213,7 @@ import {
 } from './executor/telemetry';
 
 export { buildLlmPlannerPrompt, buildTier1ClassifierPrompt, parseLlmPlannerJson, parseTier1ClassifierJson } from './planner/tiers';
+export { BROAD_SKILL_MIN_PRIORITY_GAP, BROAD_SKILL_SLOT_COMPLETENESS_BONUS } from './planner/broad-skill-intents';
 
 export type {
   CalendarProviderDeps,
@@ -233,8 +230,6 @@ export type {
 } from './types';
 
 const DEFAULT_PROVIDER_READ_BACK_TIMEOUT_MS = 3_500;
-export const BROAD_SKILL_SLOT_COMPLETENESS_BONUS = 0.005;
-export const BROAD_SKILL_MIN_PRIORITY_GAP = 0.01;
 const DEFAULT_PROVIDER_WRITE_TIMEOUT_MS = 10_000;
 
 const DEFAULT_DEPS: Required<ChatActionPlannerDeps> = {
@@ -687,73 +682,6 @@ export function buildDeterministicChatActionPlan(input: ChatPlannerInput): ChatA
   return null;
 }
 
-function parseBroadSkillActionIntent(input: ChatPlannerInput): ChatActionPlan | null {
-  const folded = foldCalendarText(input.text);
-  const locale = input.locale || 'pt-BR';
-  const now = DateTime.fromISO(input.nowIso ?? new Date().toISOString()).setZone(input.timezone);
-
-  // Phase 16 batch 89 second half (2026-05-17): score-based intent picking.
-  //
-  // Before this batch the dispatch was first-match priority — each parser
-  // returned `step | null` and the first non-null result won. The original
-  // Phase 6 batch 6 routing-gap fix established a hand-coded priority
-  // ordering (notifications/decisions ahead of training because "disable
-  // training notifications" should pick notifications). Score-based
-  // picking preserves that ordering as scoreboard weights AND adds slot-
-  // completeness as a TIE-BREAKER (small enough not to cross the
-  // smallest priority gap of 0.01) so when two parsers at the same
-  // base weight both match, the more-confident extraction wins.
-  //
-  // The score = baseWeight + (requiredArgsPresent ? bonus : 0). The
-  // bonus is intentionally smaller than the smallest inter-skill priority
-  // gap between adjacent skills so it only tie-breaks within a priority
-  // tier; it never demotes a higher-priority skill.
-  const candidates: Array<{
-    step: ChatPlanStep;
-    routingSignals: string[];
-    confidence: number;
-    score: number;
-  }> = [];
-  function consider(step: ChatPlanStep | null, baseWeight: number, signals: string[]) {
-    if (!step) return;
-    const score = baseWeight + (step.requiredArgsPresent ? BROAD_SKILL_SLOT_COMPLETENESS_BONUS : 0);
-    candidates.push({ step, routingSignals: signals, confidence: baseWeight, score });
-  }
-
-  consider(parseNotificationActionStep(input, folded), 0.78, ['notification_action_intent', 'deterministic_skill_parser']);
-  consider(parseDecisionActionStep(input, folded), 0.77, ['decision_action_intent', 'deterministic_skill_parser']);
-  consider(parseContentActionStep(input, folded), 0.78, ['content_action_intent', 'deterministic_skill_parser']);
-  consider(parseMailActionStep(input, folded), 0.77, ['mail_action_intent', 'deterministic_skill_parser']);
-  consider(parseCookingActionStep(input, folded, now), 0.76, ['cooking_action_intent', 'deterministic_skill_parser']);
-  consider(parseFinanceActionStep(input, folded, now), 0.75, ['finance_action_intent', 'deterministic_skill_parser']);
-  consider(parseConnectionsActionStep(input, folded), 0.74, ['connections_action_intent', 'deterministic_skill_parser']);
-  consider(parseTrainingActionStep(input, folded), 0.72, ['training_action_intent', 'deterministic_skill_parser']);
-
-  if (candidates.length > 0) {
-    // Stable sort: highest score wins; first declared wins on tie to
-    // preserve the historic priority ordering.
-    const best = candidates.reduce((a, b) => (b.score > a.score ? b : a));
-    return buildPlanFromSteps(input, [best.step], best.routingSignals, best.confidence);
-  }
-
-  if (messageHasActionCandidate(input.text)) {
-    const subset = selectRegistrySubsetForMessage(input.text);
-    const primary = subset[0];
-    if (primary) {
-      const step = makeStep(input, {
-        skill: primary.skill,
-        action: primary.action,
-        risk: primary.risk,
-        provider: primary.providerDependencies[0] ?? 'nexus',
-        args: { rawRequest: input.text },
-        requiredArgsPresent: false,
-      });
-      return buildPlanFromSteps(input, [step], ['unknown_action_candidate', primary.skill], 0.42);
-    }
-  }
-  return null;
-}
-
 // parseContentActionStep moved to skills/content/parser.ts on 2026-05-15
 // (planner-split, audit implementation plan Phase 0).
 // parseCookingActionStep moved to skills/cooking/parser.ts on 2026-05-15.
@@ -781,332 +709,6 @@ function parseBroadSkillActionIntent(input: ChatPlannerInput): ChatActionPlan | 
 // actionToStepType, and pickExpectedFields moved to src/services/skills/
 // step-builder.ts on 2026-05-15 (planner-split foundation, audit
 // implementation plan Phase 0). They are imported at the top of this file.
-
-function parseSimpleTaskIntent(input: ChatPlannerInput): ChatActionPlan | null {
-  const step = parseSimpleTaskStep(input, input.text);
-  if (!step) return null;
-  const requireSafeWrites = input.requireSafeWriteConfirmation === true;
-  return {
-    schemaVersion: 1,
-    userId: String(input.userId),
-    tenantId: String(input.tenantId),
-    conversationId: input.conversationId,
-    messageId: input.messageId,
-    locale: input.locale || 'pt-BR',
-    timezone: input.timezone,
-    channel: input.channel,
-    createdAt: input.nowIso ?? new Date().toISOString(),
-    planner: 'deterministic',
-    steps: [step],
-    requiresConfirmation: stepRequiresConfirmation(step, { requireSafeWrites }),
-    confidence: 0.82,
-    debug: {
-      routingSignals: ['task_write_intent', 'deterministic_task_parser'],
-      rejectedFastPaths: [],
-      parser: 'deterministic',
-    },
-  };
-}
-
-function parseSimpleTaskStep(input: ChatPlannerInput, text: string | null): ChatPlanStep | null {
-  if (!text) return null;
-  const folded = foldCalendarText(text);
-  if (hasLegacySubtaskIntent(removeTaskQuotedSegments(text))) return null;
-  // Phase 2 batch 10: PT-BR colloquial create-verbs ("bota", "coloca", "põe",
-  // "mete") added so "Bota uma tarefa chamada X" routes through the simple-
-  // task parser instead of falling through.
-  // Phase 8 batch 43 (2026-05-15): Spanish "crea"/"crear" + "tarea" added
-  // for minimum Spanish coverage.
-  // Phase 9 batch 48 (2026-05-16): Spanish "añade"/"añadir" added.
-  const directTaskCreate = /\b(cria|criar|adiciona|adicionar|create|add|bota[r]?|coloca[r]?|p[oõ]e[r]?|mete[r]?|crea[r]?|a[nñ]ade|a[nñ]adir|agreg[ae][r]?)\b/.test(folded)
-    && /\b(task|tarefa|todo|lembrete|tarea[s]?)\b/.test(folded);
-  const reminderTaskCreate = isPlainTaskReminderCreate(folded);
-  if (!directTaskCreate && !reminderTaskCreate) return null;
-  const titleSlot = extractTaskTitleSlot(input, text);
-  const title = titleSlot?.value.trim();
-  if (!title) return null;
-  const dueSlot = extractTaskDueDateTimeSlot(input, text);
-  // Literal-title policy (audit §10, approved 2026-05-15 by Felipe): when the
-  // title span comes from an explicit title marker (called/chamada/titulo:/named/
-  // quoted-string — extractTaskTitleSlot returns confidence ≥ 0.95 for those),
-  // treat the title as user-provided content, even if it contains destructive
-  // verbs. Outside trusted spans (heuristic fallback at confidence < 0.95),
-  // the unsafe-title defense still applies.
-  //
-  // Prompt-injection markers (§10.1 point 4) override the literal-title policy:
-  // explicit LLM-instruction syntax (`ignore previous instructions`,
-  // `<|im_start|>`, `[INST]`, etc.) refuses regardless of trusted-span status.
-  const fromTrustedTitleSpan = (titleSlot?.confidence ?? 0) >= 0.95;
-  const hasInjectionMarker = containsPromptInjectionMarker(title);
-  const destructiveOutsideTitleSpan = !fromTrustedTitleSpan && isUnsafeTaskTitle(title);
-  const unsafeTitle = hasInjectionMarker || destructiveOutsideTitleSpan;
-  const args = unsafeTitle
-    ? { title: null, rejectedTitle: title, list: null, dueDateTime: dueSlot?.value ?? null, notes: null }
-    : { title, list: null, dueDateTime: dueSlot?.value ?? null, notes: null };
-  const slotProvenance: Record<string, ChatSlotProvenance> = {
-    title: makeSlotProvenance({
-      slot: 'title',
-      value: title,
-      rawText: titleSlot?.rawText ?? title,
-      turnId: input.messageId,
-      spanStart: titleSlot?.spanStart ?? null,
-      spanEnd: titleSlot?.spanEnd ?? null,
-      sourceType: 'user_message',
-      normalizer: 'task_title_v2',
-      confidence: titleSlot?.confidence ?? 0.9,
-    }),
-  };
-  if (dueSlot) {
-    slotProvenance.dueDateTime = makeSlotProvenance({
-      slot: 'dueDateTime',
-      value: dueSlot.value,
-      rawText: dueSlot.rawText,
-      turnId: input.messageId,
-      spanStart: dueSlot.spanStart,
-      spanEnd: dueSlot.spanEnd,
-      sourceType: 'user_message',
-      normalizer: 'task_due_datetime_v1',
-      confidence: dueSlot.confidence,
-    });
-  }
-  return {
-    stepId: `step-${randomUUID()}`,
-    skill: 'tasks',
-    type: 'create_task',
-    action: 'create_task',
-    risk: unsafeTitle ? 'ambiguous' : 'safe_write',
-    riskClass: unsafeTitle ? 'R4' : 'R1',
-    provider: 'nexus',
-    args,
-    slotProvenance,
-    requiredArgsPresent: !unsafeTitle,
-    idempotencyKey: buildStepIdempotencyKey(input, 'create_task', args),
-    verification: {
-      required: true,
-      method: 'local_read_back',
-      expectedFields: unsafeTitle ? {} : { title },
-    },
-  };
-}
-
-function startsWithSimpleTaskCreateIntent(text: string): boolean {
-  const folded = foldCalendarText(text).replace(/^(?:please|por favor|pfv)\s+/, '');
-  return /^\s*(?:create|add|cria[r]?|adiciona[r]?|bota[r]?|coloca[r]?|poe[r]?|mete[r]?|crea[r]?|anade|anadir|agrega[r]?)\b[\s\S]{0,40}\b(?:task|tarefa|todo|lembrete|tarea)\b/.test(folded)
-    || /^\s*(?:remind me to|lembra-?me de|lembre-?me de|recuerdame(?: a)?|recordarme(?: a)?)\b/.test(folded);
-}
-
-function isUnsafeTaskTitle(title: string): boolean {
-  const folded = foldCalendarText(title);
-  return /\b(delete|remove|erase|wipe|apaga|apagar|elimina|eliminar|remove)\b.*\b(all|todos|todas|everything|tasks|tarefas|events|eventos|emails?)\b/.test(folded)
-    || /\b(send|envia|enviar)\b.*\b(all|todos|todas|emails?|mensagens)\b/.test(folded)
-    || /\b(delete|apaga|apagar)\b.*\b(church|igreja|event|evento)\b/.test(folded);
-}
-
-function extractTaskTitleSlot(input: ChatPlannerInput, text: string): { value: string; rawText: string; spanStart: number; spanEnd: number; confidence: number } | null {
-  const quotedTaskTitle = /\b(?:task|tarefa|todo|lembrete|tarea)\b\s*["“]([^"”]+)["”]/i.exec(text);
-  if (quotedTaskTitle?.[1]) {
-    const raw = quotedTaskTitle[1].trim();
-    const cleaned = cleanupTaskTitle(raw, input);
-    if (cleaned.length > 0) {
-      const start = quotedTaskTitle.index + quotedTaskTitle[0].indexOf(quotedTaskTitle[1]);
-      return { value: cleaned, rawText: raw, spanStart: start, spanEnd: start + quotedTaskTitle[1].length, confidence: 0.98 };
-    }
-  }
-
-  const explicitPatterns = [
-    /\b(?:called|named|titled|with\s+title|chamad[oa]|com\s+o\s+t[ií]tulo|t[ií]tulo|llamad[oa]|titulada)\s*[:\-]?\s*["“]?([\s\S]+?)["”]?(?=$|[.!?]\s*$)/i,
-  ];
-  for (const pattern of explicitPatterns) {
-    const match = pattern.exec(text);
-    const raw = match?.[1]?.trim();
-    if (!match || !raw) continue;
-    const cleaned = cleanupTaskTitle(raw, input);
-    if (cleaned.length > 0) {
-      const start = match.index + match[0].indexOf(match[1]);
-      return { value: cleaned, rawText: raw, spanStart: start, spanEnd: start + match[1].length, confidence: 0.97 };
-    }
-  }
-
-  const reminder = /\b(?:remind\s+me\s+to|lembra-?me\s+de|lembre-?me\s+de|recu[eé]rdame\s+(?:a\s+)?|recordarme\s+(?:a\s+)?)\b/i.exec(text);
-  if (reminder) {
-    const rest = text.slice(reminder.index + reminder[0].length).trim();
-    const cleaned = sentenceCaseEnglishTaskTitle(cleanupTaskTitle(rest, input), input, text);
-    if (cleaned.length > 0) {
-      const start = text.indexOf(rest);
-      return { value: cleaned, rawText: rest, spanStart: start >= 0 ? start : reminder.index, spanEnd: start >= 0 ? start + rest.length : text.length, confidence: 0.85 };
-    }
-  }
-
-  const taskNoun = /\b(?:task|tarefa|todo|lembrete|tarea)\b/i.exec(text);
-  if (!taskNoun) return null;
-  let rest = text.slice(taskNoun.index + taskNoun[0].length).trim();
-  rest = rest.replace(/^(?:to|for|para)\s+/i, '');
-  rest = stripLeadingTaskTemporalPhrase(rest, input);
-  let cleaned = sentenceCaseEnglishTaskTitle(cleanupTaskTitle(rest, input), input, text);
-  if (cleaned.length === 0) {
-    cleaned = sentenceCaseEnglishTaskTitle(extractPreTaskModifierTitle(text, taskNoun.index, input), input, text);
-  }
-  if (cleaned.length === 0) return null;
-  const start = text.indexOf(rest);
-  return { value: cleaned, rawText: rest, spanStart: start >= 0 ? start : taskNoun.index, spanEnd: start >= 0 ? start + rest.length : text.length, confidence: 0.82 };
-}
-
-function extractPreTaskModifierTitle(text: string, taskNounIndex: number, input: ChatPlannerInput): string {
-  const prefix = text.slice(0, taskNounIndex)
-    .replace(/^\s*(?:please|por favor|pfv)\s+/i, '')
-    .replace(/^\s*(?:create|add|cria[r]?|adiciona[r]?|bota[r]?|coloca[r]?|p[oõ]e[r]?|mete[r]?|crea[r]?|a[nñ]ade|a[nñ]adir|agreg[ae][r]?)\s+/i, '')
-    .replace(/^\s*(?:a|an|uma?|una?)\s+/i, '')
-    .trim();
-  const cleaned = cleanupTaskTitle(prefix, input);
-  return /^(?:new|nova?|nuevo|nueva)$/i.test(cleaned) ? '' : cleaned;
-}
-
-function isPlainTaskReminderCreate(folded: string): boolean {
-  if (!/\b(remind me to|lembra-?me de|lembre-?me de|recuerdame(?: a)?|recordarme(?: a)?)\b/.test(folded)) return false;
-  return !/\b(credit card|cartao|cartao de credito|fatura|factura|bill|invoice|darf|irs|iva|tax|imposto|stripe|payment|pagamento)\b/.test(folded);
-}
-
-function sentenceCaseEnglishTaskTitle(title: string, input: ChatPlannerInput, sourceText: string): string {
-  if (!title) return title;
-  const isEnglish = input.locale?.toLowerCase().startsWith('en') === true
-    || /^\s*(?:add|create|remind me to)\b/i.test(sourceText);
-  if (!isEnglish || !/^[a-z]/.test(title)) return title;
-  return `${title[0]?.toUpperCase() ?? ''}${title.slice(1)}`;
-}
-
-function cleanupTaskTitle(title: string, input: ChatPlannerInput): string {
-  let cleaned = title.trim()
-    .replace(/^["“]|["”]$/g, '')
-    .replace(/[.?!]+$/g, '')
-    .trim();
-  cleaned = stripTaskTemporalPhrase(cleaned, input).trim();
-  cleaned = cleaned
-    .replace(/\s+(?:tomorrow|amanh[ãa]|today|hoje)(?:\s+(?:at|[àa]s?|as|pelas?|by|para\s+as?)\s*)?(?:\d{1,2}h(?:\d{2})?|\d{1,2}(?::\d{2})?\s*(?:am|pm)?)\s*$/i, '')
-    .trim();
-  cleaned = cleaned
-    .replace(/\s+\b(?:please|por favor)\b$/i, '')
-    .replace(/\s{2,}/g, ' ')
-    .trim();
-  return cleaned;
-}
-
-function stripLeadingTaskTemporalPhrase(text: string, input: ChatPlannerInput): string {
-  const folded = foldCalendarText(text);
-  if (!/^(today|tomorrow|amanha|amanhã|hoje|next|proxim[ao]|próxim[ao]|\d{1,2}[\/-]\d{1,2})\b/.test(folded)) return text;
-  return text
-    .replace(/^(?:today|tomorrow|amanh[ãa]|hoje)(?:\s+(?:at|às?|as|pelas?)\s*)?(?:\d{1,2}(?::\d{2})?\s*(?:am|pm)?|\d{1,2}h(?:\d{2})?)?\s*/i, '')
-    .replace(/^(?:next|pr[oó]xim[ao])\s+\w+\s*/i, '')
-    .trim();
-}
-
-function stripTaskTemporalPhrase(title: string, input: ChatPlannerInput): string {
-  const due = extractTaskDueDateTimeSlot(input, title);
-  if (!due) return title;
-  return `${title.slice(0, due.spanStart)} ${title.slice(due.spanEnd)}`.replace(/\s{2,}/g, ' ').trim();
-}
-
-function extractTaskDueDateTimeSlot(input: ChatPlannerInput, text: string): { value: string; rawText: string; spanStart: number; spanEnd: number; confidence: number } | null {
-  const now = DateTime.fromISO(input.nowIso ?? new Date().toISOString()).setZone(input.timezone);
-  const patterns = [
-    /\b(?:for|para|due|vence|pra|p[ao]ra)?\s*(?<date>tomorrow|amanh[ãa]|today|hoje)(?=\s|$|[,.!?])\s+(?:at|às?|as|pelas?|by|para\s+as)?\s*(?<time>\d{1,2}h(?:\d{2})?|\d{1,2}(?::\d{2})?\s*(?:am|pm)?)\b/i,
-    /\b(?<date>tomorrow|amanh[ãa]|today|hoje)(?=\s|$|[,.!?])(?:\s+(?:at|às?|as|pelas?|by|para)\s*)?(?<time>\d{1,2}h(?:\d{2})?|\d{1,2}(?::\d{2})?\s*(?:am|pm)?)?/i,
-    /\b(?:for|para|due|vence|pra|p[ao]ra)\s+(?<date>tomorrow|amanh[ãa]|today|hoje)(?=\s|$|[,.!?])(?:\s+(?:at|às?|as|pelas?)\s*)?(?<time>\d{1,2}h(?:\d{2})?|\d{1,2}(?::\d{2})?\s*(?:am|pm)?)?/i,
-    /\b(?:for|on|by|due|para|pra|p[ao]ra|el|na|no)?\s*(?<date>monday|tuesday|wednesday|thursday|friday|saturday|sunday|segunda(?:-feira)?|ter[cç]a(?:-feira)?|quarta(?:-feira)?|quinta(?:-feira)?|sexta(?:-feira)?|s[aá]bado|domingo|lunes|martes|mi[eé]rcoles|jueves|viernes)\b(?:\s+(?:at|às?|as|a\s+las|pelas?|by|para\s+as)\s*)?(?<time>\d{1,2}h(?:\d{2})?|\d{1,2}(?::\d{2})?\s*(?:am|pm)?)?/i,
-    /\b(?:at|às?|as|pelas?)\s*(?<time>\d{1,2}h(?:\d{2})?|\d{1,2}(?::\d{2})?\s*(?:am|pm)?)\b/i,
-  ];
-  for (const pattern of patterns) {
-    const match = pattern.exec(text);
-    if (!match?.groups) continue;
-    const raw = match[0];
-    const dateWord = foldCalendarText(String(match.groups.date || ''));
-    let date = resolveTaskDueDate(now, dateWord);
-    if (!dateWord && /\b(?:at|às?|as|pelas?)\b/i.test(raw)) date = now;
-    const parsedTime = parseTaskClockTime(match.groups.time || '');
-    if (!parsedTime && !dateWord) continue;
-    const value = parsedTime
-      ? date.set({
-        hour: parsedTime.hour,
-        minute: parsedTime.minute,
-        second: 0,
-        millisecond: 0,
-      }).toISO()
-      : date.toISODate();
-    if (!value) continue;
-    return {
-      value,
-      rawText: raw.trim(),
-      spanStart: match.index,
-      spanEnd: match.index + raw.length,
-      confidence: dateWord ? 0.94 : 0.78,
-    };
-  }
-  return null;
-}
-
-function resolveTaskDueDate(now: DateTime, dateWord: string): DateTime {
-  if (dateWord === 'tomorrow' || dateWord === 'amanha' || dateWord === 'manana') return now.plus({ days: 1 });
-  const weekday = taskWeekdayNumber(dateWord);
-  if (!weekday) return now;
-  let days = weekday - now.weekday;
-  if (days <= 0) days += 7;
-  return now.plus({ days });
-}
-
-function taskWeekdayNumber(dateWord: string): number | null {
-  switch (dateWord) {
-    case 'monday':
-    case 'segunda':
-    case 'segunda-feira':
-    case 'lunes':
-      return 1;
-    case 'tuesday':
-    case 'terca':
-    case 'terca-feira':
-    case 'martes':
-      return 2;
-    case 'wednesday':
-    case 'quarta':
-    case 'quarta-feira':
-    case 'miercoles':
-      return 3;
-    case 'thursday':
-    case 'quinta':
-    case 'quinta-feira':
-    case 'jueves':
-      return 4;
-    case 'friday':
-    case 'sexta':
-    case 'sexta-feira':
-    case 'viernes':
-      return 5;
-    case 'saturday':
-    case 'sabado':
-      return 6;
-    case 'sunday':
-    case 'domingo':
-      return 7;
-    default:
-      return null;
-  }
-}
-
-function parseTaskClockTime(rawInput: unknown): { hour: number; minute: number } | null {
-  const raw = String(rawInput || '').trim().toLowerCase();
-  const match = raw.match(/\b(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\b/) || raw.match(/\b(\d{1,2})h(\d{2})?\b/);
-  if (!match) return null;
-  let hour = Number(match[1]);
-  const minute = Number(match[2] || 0);
-  const meridiem = match[3];
-  if (!Number.isInteger(hour) || hour < 0 || hour > 23 || !Number.isInteger(minute) || minute < 0 || minute > 59) return null;
-  if (meridiem === 'pm' && hour < 12) hour += 12;
-  if (meridiem === 'am' && hour === 12) hour = 0;
-  return { hour, minute };
-}
-
-function extractTaskClause(text: string): string | null {
-  const match = text.match(/\b(?:e|and)\s+(?=(?:cria|criar|adiciona|adicionar|create|add)\b[\s\S]*\b(?:tarefa|task|todo|lembrete)\b)([\s\S]+)$/i);
-  return match?.[1]?.trim() || null;
-}
 
 export async function executeChatActionPlan(
   plan: ChatActionPlan,
