@@ -138,6 +138,24 @@ export type MemoryItemType =
 
 export type MemoryStatus = 'active' | 'superseded' | 'deleted' | 'needs_confirmation';
 
+export type HumanReviewStatus =
+  | 'pending'
+  | 'approved'
+  | 'denied'
+  | 'changes_requested'
+  | 'cancelled'
+  | 'expired';
+
+export type HumanReviewReason =
+  | 'restricted_finance'
+  | 'large_batch'
+  | 'training_plan_rewrite'
+  | 'external_integration_side_effect'
+  | 'ambiguous_multi_step_plan'
+  | 'policy_uncertainty';
+
+export type HumanReviewDecision = 'approve' | 'deny' | 'request_changes';
+
 export type ChatCoreV2EntityType =
   | 'task'
   | 'training_session'
@@ -413,6 +431,26 @@ export interface ChatV2CommandEvent {
   redactedSummary: string;
   metadata?: Record<string, unknown>;
   createdAt: string;
+}
+
+export interface ChatV2HumanReviewRequest {
+  reviewId: string;
+  turnId: string;
+  tenantId: string;
+  userId: string;
+  domain: ChatCoreV2Domain;
+  reason: HumanReviewReason;
+  status: HumanReviewStatus;
+  sensitivity: AuditSensitivity;
+  redactedSummary: string;
+  commandId?: string;
+  workflowId?: string;
+  reviewerUserId?: string;
+  decisionNote?: string;
+  metadata?: Record<string, unknown>;
+  requestedAt: string;
+  decidedAt?: string;
+  expiresAt?: string;
 }
 
 export interface ChatReplayBundle {

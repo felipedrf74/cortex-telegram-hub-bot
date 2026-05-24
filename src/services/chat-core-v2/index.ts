@@ -5,6 +5,7 @@ export * from './command-bus';
 export * from './command-events';
 export * from './entity-resolution';
 export * from './fallback-policy';
+export * from './human-review-queue';
 export * from './memory-store';
 export * from './model-run-audit';
 export * from './provider-capabilities';
