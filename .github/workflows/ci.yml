@@ -281,6 +281,31 @@ jobs:
           }
 
   # ═══════════════════════════════════════════════════
+  # SCIENCE-POLICY VERSION GATE (always — fail-closed)
+  # ═══════════════════════════════════════════════════
+  # R4 P2 fix — Codex caught that the gate only existed as a script
+  # under scripts/ci/, with no CI workflow or pre-commit hook calling
+  # it. That meant any change to training-principles.json could land
+  # without bumping `sciencePolicyVersion`, breaking the audit /
+  # reproducibility invariant. This job runs unconditionally on every
+  # push and PR (the check is millisecond-cheap) and fails the build
+  # when the JSON content hash drifts from the pinned hash without a
+  # corresponding version bump.
+  science_policy:
+    name: 🧪 Science-policy version
+    runs-on: ubuntu-latest
+    needs: classify
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Verify training-principles content hash matches pinned version
+        run: node scripts/ci/science-policy-version-check.mjs
+
+  # ═══════════════════════════════════════════════════
   # MIGRATION SAFETY CHECK (only when migrations/** changed)
   # ═══════════════════════════════════════════════════
   migrations:

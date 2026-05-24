@@ -31,6 +31,22 @@ echo "🔍 Pre-commit: Type checking..."
 npx tsc --noEmit
 echo "✅ Type check passed"
 
+# ── Science-policy version gate (R4 P2 fix) ──────────
+# When training-principles.json or its pin file is in the staged diff,
+# verify the content hash matches the pinned sciencePolicyVersion.
+# Codex caught (R4 P2) that the gate script existed but no commit
+# pathway invoked it — making the "every plan stamped with a stable
+# policy version" invariant only enforced by reading docs. This gate
+# is millisecond-cheap when nothing relevant is staged, so we only
+# skip when the file isn't touched. Disable via
+# NEXUS_PRECOMMIT_SKIP_SCIENCE_POLICY=1.
+SCIENCE_POLICY_TOUCHED="$(git diff --cached --name-only --diff-filter=ACMR | grep -E '^src/services/coach-kernel/knowledge/entities/(training-principles\.json|\.science-policy-hash)$' || true)"
+if [ "${NEXUS_PRECOMMIT_SKIP_SCIENCE_POLICY:-0}" != "1" ] && [ -n "$SCIENCE_POLICY_TOUCHED" ]; then
+  echo "🧪 Pre-commit: training-principles changed — running science-policy version check"
+  node "$ROOT/scripts/ci/science-policy-version-check.mjs"
+  echo "✅ Science-policy version pin OK"
+fi
+
 # ── Release-identity auto-refresh (release-pipeline-risk-based-
 # optimization, 2026-05-03):
 # If any current-verdict doc is staged, regenerate the persisted

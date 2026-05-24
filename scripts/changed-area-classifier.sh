@@ -128,6 +128,7 @@ HAS_FINANCE=false
 HAS_SECRETARY=false
 HAS_PORTAL=false
 HAS_MIGRATION=false
+HAS_SCIENCE_POLICY_JSON=false
 HAS_PYTHON_ENGINE=false
 HAS_IOS_SRC=false
 HAS_IOS_AUTH=false
@@ -248,6 +249,11 @@ match '^__tests__/services/secretary-' && HAS_SECRETARY=true
 match '^src/portal/|^__tests__/portal/|^scripts/cooking-portal-browser-smoke\.ts$' && HAS_PORTAL=true
 
 match '^migrations/' && HAS_MIGRATION=true
+# R3 P2 fix — training-principles.json edits trigger the science-
+# policy version/hash gate as a cannot-skip check.
+match '^src/services/coach-kernel/knowledge/entities/training-principles\.json' && HAS_SCIENCE_POLICY_JSON=true
+match '^src/services/coach-kernel/knowledge/entities/\.science-policy-hash' && HAS_SCIENCE_POLICY_JSON=true
+match '^scripts/ci/science-policy-version-check\.mjs' && HAS_SCIENCE_POLICY_JSON=true
 match '^content-engine/' && HAS_PYTHON_ENGINE=true
 match '^src/api/router\.ts$|^src/api/routes/billing\.ts$|^src/services/apple-jws-verifier\.ts$|^__tests__/security/billing-apple-notifications-jws-verify\.test\.ts$' && HAS_APPLE_NOTIFICATION_WEBHOOK=true
 match '^src/services/cost-guardrail\.ts$|^src/api/routes/(chat-message-request|training-plan-routes|training|content-script-routes|finance)\.ts$|^__tests__/security/cost-guardrail-global-rest\.test\.ts$' && HAS_GLOBAL_COST_GUARDRAIL_REST=true
@@ -399,6 +405,7 @@ $HAS_PROMPT && CANNOT_SKIP+=("prompt-injection-defense")
 $HAS_CALENDAR && CANNOT_SKIP+=("calendar-agenda-lifecycle")
 $HAS_PROVIDER_ROUTING && CANNOT_SKIP+=("provider-routing-fallback")
 $HAS_MIGRATION && CANNOT_SKIP+=("migration-rollback-review")
+$HAS_SCIENCE_POLICY_JSON && CANNOT_SKIP+=("science-policy-version-check")
 $HAS_DEPLOY_SCRIPT && CANNOT_SKIP+=("deploy-script-promotion-rehearsal")
 $HAS_HOOK && CANNOT_SKIP+=("hook-validation-on-feature-branch")
 $HAS_CI_WORKFLOW && CANNOT_SKIP+=("ci-workflow-validation-on-PR")
