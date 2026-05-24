@@ -1,19 +1,14 @@
 // Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
 
 import type { DomainName } from '../../domains/types';
-import { classifyAndExtractImage, type ImageClassificationResult } from '../../services/anthropic';
+import {
+  extractPhotoAttachment,
+  PHOTO_EXTRACTION_TIMEOUT_MS,
+  type PhotoExtractionClassifier,
+} from '../../services/photo-extraction';
 import type { ChatImageAttachment } from './chat-attachments';
-import { buildAttachmentText } from './chat-attachments';
 
-export const CHAT_ATTACHMENT_CLASSIFICATION_TIMEOUT_MS = 40_000;
-
-type AttachmentClassifier = (
-  imageBase64: string,
-  mediaType: ChatImageAttachment['mimeType'],
-  caption?: string,
-  userId?: number,
-  tenantId?: number,
-) => Promise<ImageClassificationResult>;
+export const CHAT_ATTACHMENT_CLASSIFICATION_TIMEOUT_MS = PHOTO_EXTRACTION_TIMEOUT_MS;
 
 export type ChatAttachmentResponseEnvelope = {
   id: string;
@@ -34,38 +29,6 @@ export type ChatAttachmentExecutionResult = {
   degradedReason: 'classification_failed' | 'timeout' | null;
   error?: unknown;
 };
-
-class ChatAttachmentTimeoutError extends Error {
-  constructor() {
-    super('Attachment classification timeout');
-    this.name = 'ChatAttachmentTimeoutError';
-  }
-}
-
-function resolveAttachmentUserText(normalizedText: string, isPT: boolean): string {
-  return normalizedText || (isPT ? 'Analisa esta imagem.' : 'Analyze this image.');
-}
-
-async function classifyAttachmentWithTimeout(
-  classifier: AttachmentClassifier,
-  attachment: ChatImageAttachment,
-  userText: string,
-  userId: number,
-  tenantId: number | undefined,
-  timeoutMs: number,
-): Promise<ImageClassificationResult> {
-  const classifierPromise = classifier(attachment.base64, attachment.mimeType, userText, userId, tenantId);
-  let timeout: ReturnType<typeof setTimeout> | undefined;
-  const timeoutPromise = new Promise<never>((_, reject) => {
-    timeout = setTimeout(() => reject(new ChatAttachmentTimeoutError()), timeoutMs);
-  });
-
-  try {
-    return await Promise.race([classifierPromise, timeoutPromise]);
-  } finally {
-    if (timeout) clearTimeout(timeout);
-  }
-}
 
 function buildDegradedAttachmentResponse(
   isPT: boolean,
@@ -97,7 +60,7 @@ export async function buildChatAttachmentResponse({
   userId,
   tenantId,
   language,
-  classifier = classifyAndExtractImage,
+  classifier,
   timeoutMs = CHAT_ATTACHMENT_CLASSIFICATION_TIMEOUT_MS,
   timestamp = new Date().toISOString(),
   id = `msg-${Date.now()}`,
@@ -107,44 +70,48 @@ export async function buildChatAttachmentResponse({
   userId: number;
   tenantId?: number;
   language: string;
-  classifier?: AttachmentClassifier;
+  classifier?: PhotoExtractionClassifier;
   timeoutMs?: number;
   timestamp?: string;
   id?: string;
 }): Promise<ChatAttachmentExecutionResult> {
   const isPT = language.startsWith('pt');
-  const userText = resolveAttachmentUserText(normalizedText, isPT);
+  const extraction = await extractPhotoAttachment({
+    attachment,
+    caption: normalizedText,
+    userId,
+    tenantId,
+    language,
+    classifier,
+    timeoutMs,
+  });
 
-  try {
-    const classified = await classifyAttachmentWithTimeout(classifier, attachment, userText, userId, tenantId, timeoutMs);
-    const attachmentReply = buildAttachmentText(classified, isPT);
-    const response: ChatAttachmentResponseEnvelope = {
-      id,
-      text: attachmentReply.text,
-      domain: attachmentReply.domain,
-      routeMethod: 'attachment',
-      confidence: classified.type === 'invoice' ? classified.confidence ?? 0.8 : 1.0,
-      buttons: null,
-      metadata: attachmentReply.metadata,
-      timestamp,
-    };
-
+  if (!extraction.degraded) {
     return {
-      userText,
-      conversationDomain: attachmentReply.domain,
-      response,
+      userText: extraction.userText,
+      conversationDomain: extraction.conversationDomain,
+      response: {
+        id,
+        text: extraction.preview.text,
+        domain: extraction.preview.domain,
+        routeMethod: 'attachment',
+        confidence: extraction.preview.confidence,
+        buttons: null,
+        metadata: extraction.preview.metadata,
+        timestamp,
+      },
       degraded: false,
       degradedReason: null,
     };
-  } catch (err) {
-    const reason = err instanceof ChatAttachmentTimeoutError ? 'timeout' : 'classification_failed';
-    return {
-      userText,
-      conversationDomain: 'secretary',
-      response: buildDegradedAttachmentResponse(isPT, reason, timestamp, id),
-      degraded: true,
-      degradedReason: reason,
-      error: err,
-    };
   }
+
+  const reason = extraction.degradedReason ?? 'classification_failed';
+  return {
+    userText: extraction.userText,
+    conversationDomain: 'secretary',
+    response: buildDegradedAttachmentResponse(isPT, reason, timestamp, id),
+    degraded: true,
+    degradedReason: reason,
+    error: extraction.error,
+  };
 }

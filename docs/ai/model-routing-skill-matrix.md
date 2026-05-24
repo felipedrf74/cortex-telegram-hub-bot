@@ -23,10 +23,9 @@ Live env note: the older staging/production env grep set `AI_CHAT_FALLBACK=anthr
 Live chat surfaces that enter this matrix:
 
 - iOS REST Chat: `src/api/routes/chat-message-routes.ts`
-- Telegram text Chat: `src/handlers/message.ts`
 - WebSocket Chat: `src/api/websocket.ts`
 
-All three surfaces now infer a chat turn contract before domain execution. The contract may correct weak generic routing, but it must not downgrade action, destructive, high-risk, or local-read flows. Selective web research is allowed only when the contract requires web/current information; `local_and_web` turns must carry scoped local state into the research prompt.
+Both live inbound surfaces now infer a chat turn contract before domain execution. Telegram inbound Chat has been retired; `src/bot.ts` is outbound-only legacy delivery. The contract may correct weak generic routing, but it must not downgrade action, destructive, high-risk, or local-read flows. Selective web research is allowed only when the contract requires web/current information; `local_and_web` turns must carry scoped local state into the research prompt.
 
 ## Task Type Matrix
 

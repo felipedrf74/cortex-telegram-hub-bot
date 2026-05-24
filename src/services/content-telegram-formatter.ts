@@ -8,8 +8,8 @@
  * place in the codebase where content data is formatted for Telegram.
  *
  * New surfaces (iOS API, portal) use the raw response types directly.
- * These formatters exist only for backward compatibility with the
- * Telegram command handler (src/handlers/commands/content.ts).
+ * These formatters exist only for archived Telegram delivery compatibility;
+ * Telegram inbound command handlers have been removed.
  *
  * @deprecated — This file will be removed when Telegram support is
  *   fully deprecated. Do NOT add new formatters here. Instead, ensure

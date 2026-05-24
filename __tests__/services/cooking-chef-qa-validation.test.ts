@@ -423,12 +423,8 @@ describe('QA: Cooking domain handler', () => {
   });
 
   it('cooking is listed in DefaultDomainName type', async () => {
-    // Verify the type was properly updated
-    const { DefaultDomainName } = await import('../../src/domains/types') as any;
-    // The type itself is compile-time, but we can check that bot.ts imports handleCooking
-    // by checking the cooking domain handler exists and is importable
-    const botSource = fs.readFileSync(path.resolve(__dirname, '../../src/bot.ts'), 'utf-8');
-    expect(botSource).toContain("import { handleCooking } from './domains/cooking'");
+    const typesSource = fs.readFileSync(path.resolve(__dirname, '../../src/domains/types.ts'), 'utf-8');
+    expect(typesSource).toContain("| 'cooking'");
   });
 });
 

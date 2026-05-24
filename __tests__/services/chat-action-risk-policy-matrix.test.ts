@@ -72,7 +72,7 @@ describe('chat action production risk-policy matrix', () => {
   const rows = registry.map(matrixRow);
 
   it('builds one risk-policy row for every active action', () => {
-    expect(rows).toHaveLength(47);
+    expect(rows).toHaveLength(49);
     expect(new Set(rows.map((row) => row.action)).size).toBe(rows.length);
     for (const row of rows) {
       expect(row).toEqual({
@@ -290,6 +290,24 @@ describe('high-risk action confirmation behavior', () => {
       requiredArgsPresent: true,
     });
     expect(readOnlyExplain.plan?.requiresConfirmation).toBe(false);
+  });
+
+  it('gates Cooking ingredient substitutions behind confirmation', () => {
+    const entry = registry.find((candidate) => candidate.action === 'cooking_substitute_ingredient');
+    expect(entry).toMatchObject({
+      risk: 'safe_write',
+      confirmationPolicy: 'confirm',
+      executionPolicy: 'preview_then_confirm',
+    });
+
+    const substitution = firstStep('Replace peanuts with sunflower seed butter in dinner tomorrow');
+    expect(substitution.step).toMatchObject({
+      skill: 'cooking',
+      action: 'cooking_substitute_ingredient',
+      risk: 'safe_write',
+      requiredArgsPresent: true,
+    });
+    expect(substitution.plan?.requiresConfirmation).toBe(true);
   });
 
   it('pins decision-center choose/dismiss/snooze/follow-up confirmation policy', () => {

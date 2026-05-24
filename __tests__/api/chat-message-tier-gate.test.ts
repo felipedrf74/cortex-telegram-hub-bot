@@ -4,7 +4,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const mockGetUserById = vi.fn();
 const mockGetUserByTelegramId = vi.fn();
-const mockCheckTierAccess = vi.fn();
+const mockCheckSkillAccess = vi.fn();
 const mockLoggerInfo = vi.fn();
 const mockLoggerWarn = vi.fn();
 
@@ -14,7 +14,7 @@ vi.mock('../../src/services/user-service', () => ({
 }));
 
 vi.mock('../../src/services/skill-tiers', () => ({
-  checkTierAccess: (...args: unknown[]) => mockCheckTierAccess(...args),
+  checkSkillAccess: (...args: unknown[]) => mockCheckSkillAccess(...args),
 }));
 
 vi.mock('../../src/utils/logger', () => ({
@@ -47,13 +47,13 @@ describe('chat message tier gate', () => {
   beforeEach(() => {
     mockGetUserById.mockReset();
     mockGetUserByTelegramId.mockReset();
-    mockCheckTierAccess.mockReset();
+    mockCheckSkillAccess.mockReset();
     mockLoggerInfo.mockReset();
     mockLoggerWarn.mockReset();
 
     mockGetUserById.mockReturnValue({ id: 42, tier: 'pro' });
     mockGetUserByTelegramId.mockReturnValue(null);
-    mockCheckTierAccess.mockReturnValue({
+    mockCheckSkillAccess.mockReturnValue({
       allowed: true,
       reason: 'catalog',
       userTier: 'pro',
@@ -69,7 +69,7 @@ describe('chat message tier gate', () => {
     const res = mockRes();
     expect(sendChatTierRequiredIfNeeded(res, 42, 'content')).toBe(false);
 
-    expect(mockCheckTierAccess).not.toHaveBeenCalled();
+    expect(mockCheckSkillAccess).not.toHaveBeenCalled();
     expect(res.status).not.toHaveBeenCalled();
   });
 
@@ -77,7 +77,7 @@ describe('chat message tier gate', () => {
     const res = mockRes();
     expect(sendChatTierRequiredIfNeeded(res, 42, 'content')).toBe(false);
 
-    expect(mockCheckTierAccess).toHaveBeenCalledWith({ id: 42, tier: 'pro' }, 'content');
+    expect(mockCheckSkillAccess).toHaveBeenCalledWith({ id: 42, tier: 'pro' }, 'content');
     expect(res.status).not.toHaveBeenCalled();
   });
 
@@ -88,13 +88,13 @@ describe('chat message tier gate', () => {
     const res = mockRes();
     expect(sendChatTierRequiredIfNeeded(res, 99, 'finance')).toBe(false);
 
-    expect(mockCheckTierAccess).toHaveBeenCalledWith({ id: 7, tier: 'owner' }, 'finance');
+    expect(mockCheckSkillAccess).toHaveBeenCalledWith({ id: 7, tier: 'owner' }, 'finance');
     expect(res.status).not.toHaveBeenCalled();
   });
 
   it('sends the stable iOS tier-required response when the user is blocked', () => {
     mockGetUserById.mockReturnValue({ id: 42, tier: 'free' });
-    mockCheckTierAccess.mockReturnValue({
+    mockCheckSkillAccess.mockReturnValue({
       allowed: false,
       reason: 'catalog',
       userTier: 'free',
@@ -124,6 +124,7 @@ describe('chat message tier gate', () => {
           domain: 'content',
           userTier: 'free',
           requiredTier: 'pro',
+          reason: 'catalog',
         },
       },
     });

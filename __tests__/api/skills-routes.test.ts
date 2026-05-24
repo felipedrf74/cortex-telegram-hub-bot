@@ -488,7 +488,7 @@ describe('Skills API — POST /override', () => {
     const afterTri = afterRes.body.data.skills.find((s: any) => s.name === 'triathlon');
     const afterGym = afterTri.subSkills.find((s: any) => s.name === 'gym');
     expect(afterGym.accessible).toBe(true);
-    expect(afterGym.accessReason).toBe('override');
+    expect(afterGym.accessReason).toBe('user_grant');
   });
 
   it('sanitizes override grant failures instead of leaking persistence internals', async () => {
