@@ -23,7 +23,7 @@ import type { AuthenticatedRequest } from '../auth-middleware';
 import { sendSuccess, sendError, sendInternalError } from '../response-helpers';
 import { DEFAULT_SKILLS, type SkillDefinition, type SubSkillDefinition, type SkillTier } from '../../skills/skill-config';
 import {
-  checkTierAccess,
+  checkSkillAccess,
   listSkillTiers,
   grantOverride,
   revokeOverride,
@@ -56,7 +56,7 @@ interface CatalogSubSkill {
   promptFile: string | null;
   /** Whether the CURRENT user can access this sub-skill right now. */
   accessible: boolean;
-  /** Reason from the gate: 'catalog' | 'override' | 'default' | 'denied'. */
+  /** Reason from the canonical gate, e.g. 'catalog', 'user_grant', or 'global_disabled'. */
   accessReason: string;
 }
 
@@ -86,7 +86,7 @@ function subSkillToCatalog(
   user: { id: number; tier: SkillTier },
 ): CatalogSubSkill {
   const skillId = `${parent.name}.${sub.name}`;
-  const access = checkTierAccess(user, skillId);
+  const access = checkSkillAccess(user, skillId);
   return {
     name: sub.name,
     description: sub.description,
@@ -103,7 +103,7 @@ function skillToCatalog(
   def: SkillDefinition,
   user: { id: number; tier: SkillTier },
 ): CatalogSkill {
-  const parentAccess = checkTierAccess(user, def.name);
+  const parentAccess = checkSkillAccess(user, def.name);
   return {
     name: def.name,
     description: def.description,

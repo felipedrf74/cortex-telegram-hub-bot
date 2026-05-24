@@ -147,8 +147,33 @@ export function evaluateScenarioResponse(
     status: failures.length === 0 ? 'passed' : 'failed',
     failures,
     request: { text: scenario.user_text, locale: scenario.locale },
-    response: { status, text, metadata },
+    response: { status, text, metadata: redactSensitiveEvidence(metadata) },
   };
+}
+
+function redactSensitiveEvidence(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map((item) => redactSensitiveEvidence(item));
+  if (!value || typeof value !== 'object') return value;
+  const redacted: Record<string, unknown> = {};
+  for (const [key, item] of Object.entries(value)) {
+    if (isSensitiveEvidenceKey(key)) {
+      redacted[key] = '[redacted]';
+    } else {
+      redacted[key] = redactSensitiveEvidence(item);
+    }
+  }
+  return redacted;
+}
+
+function isSensitiveEvidenceKey(key: string): boolean {
+  return /(?:^|_)(?:token|jwt)(?:$|_)/i.test(key)
+    || /(?:access|refresh|confirmation|auth|bearer).*token/i.test(key)
+    || /token(?:$|[A-Z_])/i.test(key)
+    || /api(?:[\s_-]?key|Key)/i.test(key)
+    || /(?:client|webhook|session)(?:[\s_-]?secret|Secret)/i.test(key)
+    || /(?:^|[\s_-])secret(?:$|[\s_-])|secret(?:$|[A-Z_])/i.test(key)
+    || /session(?:[\s_-]?id|Id)/i.test(key)
+    || /password/i.test(key);
 }
 
 export async function runChatTestPhase(options: RunnerOptions): Promise<{ reportPath: string; passRate: number; results: ScenarioResult[] }> {

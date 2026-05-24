@@ -51,7 +51,8 @@ describe('QA: Cortex → Nexus Hub rename — source files', () => {
   });
 
   it('system commands reference "Nexus Hub"', () => {
-    // /version command moved from bot.ts to handlers/commands/system.ts
+    // Legacy Telegram system commands were removed; keep this guard for older
+    // branches where the file may still exist.
     if (fileExists('src/handlers/commands/system.ts')) {
       const content = readFile('src/handlers/commands/system.ts');
       expect(content).toContain('Nexus Hub');

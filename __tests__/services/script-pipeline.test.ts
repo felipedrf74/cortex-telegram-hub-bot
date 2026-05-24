@@ -366,17 +366,6 @@ describe('script-pipeline: iOS API route', () => {
 // ═══════════════════════════════════════════════════════════════════
 
 describe('script-pipeline: workflow approval scripts', () => {
-  it('Telegram handler still imports generateReelScript/generateYouTubeScript', () => {
-    const handlerSource = require('fs').readFileSync(
-      require('path').resolve(__dirname, '../../src/handlers/commands/content.ts'),
-      'utf8',
-    );
-
-    // Backward compat: handler still imports the deprecated wrappers
-    expect(handlerSource).toContain('generateReelScript');
-    expect(handlerSource).toContain('generateYouTubeScript');
-  });
-
   it('deprecated wrappers call generateScript internally', () => {
     const workflowSource = require('fs').readFileSync(
       require('path').resolve(__dirname, '../../src/services/content-workflow.ts'),

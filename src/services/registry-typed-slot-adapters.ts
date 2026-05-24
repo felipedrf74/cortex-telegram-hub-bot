@@ -22,6 +22,7 @@
 // shape.
 
 import { randomUUID } from 'crypto';
+import { DateTime } from 'luxon';
 
 import {
   hasCalendarWriteIntent,
@@ -30,6 +31,12 @@ import {
 import {
   extractTrainingPlanSlots,
 } from './skills/training/helpers';
+import {
+  parseContentPipelineStageTransition,
+} from './skills/content/pipeline-stage';
+import {
+  parseCookingSubstitution,
+} from './skills/cooking/substitution';
 import type {
   SlotContext,
   SlotExtractor,
@@ -346,6 +353,19 @@ export const contentBriefSlotExtractor: SlotExtractor = {
   },
 };
 
+export const contentPipelineStageSlotExtractor: SlotExtractor = {
+  name: 'content_pipeline_stage_transition',
+  label: 'extracts target stage and content title from content pipeline stage phrasings',
+  extract(text) {
+    const slots = parseContentPipelineStageTransition(text);
+    const result: Record<string, unknown> = {};
+    if (slots.topicTitle) result.topicTitle = slots.topicTitle;
+    if (slots.targetStage) result.targetStage = slots.targetStage;
+    if (slots.youtubeUrl) result.youtubeUrl = slots.youtubeUrl;
+    return { slots: result, confidence: result.topicTitle && result.targetStage ? 0.88 : 0.55 };
+  },
+};
+
 export const cookingMealPlanSlotExtractor: SlotExtractor = {
   name: 'cooking_meal_plan',
   label: 'extracts dateRange for meal-plan generation',
@@ -481,6 +501,20 @@ export const mealDateRangeSlotExtractor: SlotExtractor = {
     return {
       slots: { dateRange: isNextWeek ? 'next_week' : 'this_week', datePhrase: phrase },
       confidence: 0.85,
+    };
+  },
+};
+
+export const cookingSubstitutionSlotExtractor: SlotExtractor = {
+  name: 'cooking_substitution',
+  label: 'extracts meal ingredient substitution date, meal type, original ingredient, and replacement',
+  extract(text, ctx) {
+    const now = DateTime.fromISO(ctx.nowIso ?? new Date().toISOString(), { zone: ctx.timezone ?? 'UTC' });
+    const parsed = parseCookingSubstitution(text, now.isValid ? now : DateTime.utc());
+    if (!parsed) return { slots: {} };
+    return {
+      slots: { ...parsed },
+      confidence: parsed.suggestedIngredient ? 0.9 : 0.65,
     };
   },
 };

@@ -153,6 +153,16 @@ import {
   getChatHybridPlannerMode,
   isChatOpenSurfaceHandoffEnabled,
 } from '../runtime-flags';
+import { splitChatMultiStepRequest } from '../chat-multi-step-splitter';
+import { routeChatMultiStepSegments } from '../chat-segment-router';
+import { buildMultiStepSummary, resolveStepRefs } from '../chat-multi-step-dag';
+import { enqueueChatActionFixerReview } from '../chat-action-fixer-worker';
+import {
+  normalizeChatActionErrorReason,
+  runChatActionWithBoundedRetry,
+  shouldQueueChatActionFixerReview,
+} from '../chat-action-retry-policy';
+import type { ChatStepExecutionContext } from './executor/types';
 
 export { buildLlmPlannerPrompt, buildTier1ClassifierPrompt, parseLlmPlannerJson, parseTier1ClassifierJson } from './planner/tiers';
 
@@ -334,6 +344,9 @@ export async function buildChatActionPlan(input: ChatPlannerInput): Promise<Chat
   const contentPendingContinuation = buildPendingContentSpecContinuation(input, PENDING_CONTINUATION_HELPERS);
   if (contentPendingContinuation) return contentPendingContinuation;
 
+  const multiStep = await tryBuildMultiStepChatActionPlan(input);
+  if (multiStep) return multiStep;
+
   const recentFollowUp = buildRecentEntityFollowUpPlan(input);
   if (recentFollowUp) return recentFollowUp;
 
@@ -342,6 +355,10 @@ export async function buildChatActionPlan(input: ChatPlannerInput): Promise<Chat
 
   if (!shouldRunActionPlannerBeforeReadOnlyFastPaths(input.text)) return null;
 
+  return buildSingleActionChatActionPlan(input);
+}
+
+async function buildSingleActionChatActionPlan(input: ChatPlannerInput): Promise<ChatActionPlan | null> {
   const deterministic = buildDeterministicChatActionPlan(input);
   if (deterministic) return deterministic;
 
@@ -361,6 +378,40 @@ export async function buildChatActionPlan(input: ChatPlannerInput): Promise<Chat
     return buildClarificationPlan(input, input.locale?.startsWith('pt')
       ? 'Preciso só de mais detalhes para fazer isso. Qual é o título, data, hora e destino?'
       : 'I need a few more details to do that. What title, date, time, and destination should I use?');
+  }
+  return null;
+}
+
+async function tryBuildMultiStepChatActionPlan(input: ChatPlannerInput): Promise<ChatActionPlan | null> {
+  const split = splitChatMultiStepRequest(input.text);
+  if (split.classification === 'single' || split.segments.length < 2) return null;
+  const routed = await routeChatMultiStepSegments(input, split.segments, buildSingleActionChatActionPlan);
+  if (routed.plan) {
+    return {
+      ...routed.plan,
+      confidence: Math.min(routed.plan.confidence, split.confidence),
+      effectiveConfidence: Math.min(routed.plan.effectiveConfidence ?? routed.plan.confidence, split.confidence),
+      telemetry: routed.plan.telemetry
+        ? {
+            ...routed.plan.telemetry,
+            calibratedScore: Math.min(routed.plan.telemetry.calibratedScore, split.confidence),
+          }
+        : routed.plan.telemetry,
+      debug: {
+        routingSignals: [
+          ...(routed.plan.debug?.routingSignals ?? []),
+          `multi_step_split_reason:${split.reason}`,
+        ],
+        rejectedFastPaths: routed.plan.debug?.rejectedFastPaths ?? [],
+        parser: 'mixed',
+        modelProvider: routed.plan.debug?.modelProvider,
+      },
+    };
+  }
+  if (routed.blockedReason === 'segment_unresolved') {
+    return buildClarificationPlan(input, input.locale?.startsWith('pt')
+      ? 'Vejo mais de uma ação, mas preciso que separes melhor cada passo antes de executar.'
+      : 'I see more than one action, but I need you to separate each step more clearly before I run it.');
   }
   return null;
 }
@@ -714,7 +765,11 @@ function parseSummarizeAgendaIntent(input: ChatPlannerInput): ChatActionPlan | n
     : /\boutlook\b/.test(folded)
       ? 'outlook_calendar'
       : undefined;
-  const args: Record<string, unknown> = { date: 'today' };
+  const baseDay = DateTime.fromISO(input.nowIso ?? new Date().toISOString()).setZone(input.timezone);
+  const agendaDay = /\b(tomorrow|amanh[aã]|ma[nñ]ana)\b/.test(folded)
+    ? baseDay.plus({ days: 1 })
+    : baseDay;
+  const args: Record<string, unknown> = { date: agendaDay.toISODate() };
   if (provider) args.provider = provider;
   const step = makeStep(input, {
     skill: 'secretary_calendar',
@@ -1827,6 +1882,9 @@ function isUnsafeTaskTitle(title: string): boolean {
 // `isUnsafeTaskTitle`, which catches destructive natural-language vocabulary.
 function containsPromptInjectionMarker(title: string): boolean {
   return /\bignore\s+(?:previous|all|prior)\s+instructions?\b/i.test(title)
+    || /\bignore\s+(?:all\s+)?access\s+checks?\b/i.test(title)
+    || /\bbypass\s+(?:all\s+)?access\s+checks?\b/i.test(title)
+    || /\benable\s+every\s+skill\b/i.test(title)
     || /\bdisregard\s+(?:previous|all|prior)\s+instructions?\b/i.test(title)
     || /\bforget\s+(?:everything|all|previous|prior)\b/i.test(title)
     || /\b(?:you\s+are\s+now|act\s+as|new\s+instructions)\b/i.test(title)
@@ -2094,7 +2152,6 @@ function clarificationReasonForPlan(plan: ChatActionPlan): ChatClarificationReas
   return 'missing_required_fields';
 }
 
-
 export async function executeChatActionPlan(
   plan: ChatActionPlan,
   input: ChatPlannerInput,
@@ -2118,7 +2175,8 @@ export async function executeChatActionPlan(
       requireConfirmationForWrites: input.requireSafeWriteConfirmation === true,
     }, () => executeChatActionPlan(plan, input, deps, options));
   }
-  if (plan.clarificationQuestion || plan.steps.some((step) => !step.requiredArgsPresent)) {
+  const hasUnresolvedStep = plan.clarificationQuestion || plan.steps.some((step) => !step.requiredArgsPresent);
+  if (hasUnresolvedStep) {
     // Phase 16 batch 80 (2026-05-16): refusal-vs-clarification distinction.
     // Refused plans (built by buildSafetyRefusalPlan with rejectionReason
     // populated) now take a distinct branch with metadata.actionStatus
@@ -2137,18 +2195,19 @@ export async function executeChatActionPlan(
     const question = plan.clarificationQuestion || defaultClarification(input);
     const clarificationReason = clarificationReasonForPlan(plan);
     return buildActionResponse(input, plan, 'needs_clarification', question, {
-      type: 'chat_action_needs_input',
+      type: multiStepType(plan, 'chat_action_needs_input'),
       actionStatus: 'needs_clarification',
       intentClass: plan.intentClass ?? (clarificationReason === 'ambiguous_intent' ? 'clarifying_question' : undefined),
       clarification: { question, reason: clarificationReason },
       openSurface: openSurfacePayloadForStep(plan.steps[0], null, input),
+      ...multiStepMetadata(plan, []),
     });
   }
 
   if (plan.requiresConfirmation && options.confirmed !== true) {
     persistPlanStatus(plan, input, 'needs_confirmation');
     return buildActionResponse(input, plan, 'needs_confirmation', confirmationCopy(plan, input), {
-      type: 'chat_action_needs_confirmation',
+      type: multiStepType(plan, 'chat_action_needs_confirmation'),
       actionStatus: 'needs_confirmation',
       actionConfirmation: {
         title: input.locale?.startsWith('pt') ? 'Confirmação necessária' : 'Confirmation needed',
@@ -2158,17 +2217,26 @@ export async function executeChatActionPlan(
         requiresStrongConfirm: plan.steps.some((step) => step.risk === 'financial' || step.risk === 'admin_security'),
         intentClass: intentClassForPlan(plan),
       },
+      ...multiStepMetadata(plan, []),
     });
   }
 
   const results: ChatStepExecutionResult[] = [];
   for (const step of plan.steps) {
+    if (step.dependsOnStepIds?.some((dep) => {
+      const depResult = results.find((result) => result.step.stepId === dep);
+      return !depResult || depResult.status !== 'verified_success';
+    })) {
+      results.push({ step, status: 'blocked', error: 'dependency_failed' });
+      break;
+    }
     if (step.type === 'answer') {
       results.push({ step, status: 'verified_success', result: { text: String((step.args as any).text || '') } });
       continue;
     }
-    if (step.dependsOnStepIds?.some((dep) => results.some((result) => result.step.stepId === dep && result.status !== 'verified_success'))) {
-      results.push({ step, status: 'blocked', error: 'dependency_failed' });
+    if (!step.requiredArgsPresent) {
+      persistStepStatus(plan, input, step, 'needs_clarification');
+      results.push({ step, status: 'needs_clarification', error: 'missing_required_fields' });
       break;
     }
     // Phase 16 batch 82 (2026-05-17): executionPolicy enforcement. Before
@@ -2182,18 +2250,21 @@ export async function executeChatActionPlan(
       results.push({ step, status: 'blocked', error: 'execution_policy_blocked' });
       break;
     }
-    const executor = getChatStepExecutor(step.action);
+    const runtimeStep: ChatPlanStep = { ...step, args: resolveStepRefs(step.args, results) };
+    const executor = getChatStepExecutor(runtimeStep.action);
     if (executor) {
-      results.push(await executor(step, {
+      const result = await executeStepWithReliability(runtimeStep, {
         plan,
         input,
         deps,
         persistRuns: input.persistRuns !== false,
         confirmed: options.confirmed === true,
-      }));
+      });
+      results.push(result);
+      if (result.status !== 'verified_success') break;
       continue;
     }
-    results.push({ step, status: 'blocked', error: unsupportedChatExecutorReason(step) });
+    results.push({ step: runtimeStep, status: 'blocked', error: unsupportedChatExecutorReason(runtimeStep) });
     break;
   }
 
@@ -2203,7 +2274,7 @@ export async function executeChatActionPlan(
   if (needsConfirmation) {
     persistPlanStatus(plan, input, 'needs_confirmation');
     return buildActionResponse(input, plan, 'needs_confirmation', confirmationCopy(plan, input), {
-      type: 'chat_action_needs_confirmation',
+      type: multiStepType(plan, 'chat_action_needs_confirmation'),
       actionStatus: 'needs_confirmation',
       actionConfirmation: {
         title: input.locale?.startsWith('pt') ? 'Confirmação necessária' : 'Confirmation needed',
@@ -2214,37 +2285,52 @@ export async function executeChatActionPlan(
         intentClass: intentClassForPlan(plan),
       },
       actionResults: sanitizeActionResults(results),
+      ...multiStepMetadata(plan, results),
+    });
+  }
+  const needsClarification = results.find((result) => result.status === 'needs_clarification');
+  if (needsClarification) {
+    const question = plan.clarificationQuestion || buildTargetedClarificationQuestion(input, plan.steps);
+    return buildActionResponse(input, plan, 'needs_clarification', question, {
+      type: multiStepType(plan, 'chat_action_needs_input'),
+      actionStatus: 'needs_clarification',
+      clarification: { question, reason: clarificationReasonForPlan(plan) },
+      actionResults: sanitizeActionResults(results),
+      ...multiStepMetadata(plan, results),
     });
   }
   const failed = results.find((result) => result.status === 'failed' || result.status === 'blocked');
   const partial = results.some((result) => result.status !== 'verified_success');
   if (failed) {
     return buildActionResponse(input, plan, failed.status, failureCopy(input, failed.error), {
-      type: failed.status === 'blocked' ? 'chat_action_blocked' : 'chat_action_failed',
+      type: multiStepType(plan, failed.status === 'blocked' ? 'chat_action_blocked' : 'chat_action_failed'),
       actionStatus: failed.status,
       error: { message: failureCopy(input, failed.error), retryable: failed.status !== 'blocked' },
       actionResults: sanitizeActionResults(results),
+      ...multiStepMetadata(plan, results),
     });
   }
   const verifiedPending = results.find((result) => result.status === 'verified_pending');
   if (verifiedPending) {
     return buildActionResponse(input, plan, 'verified_pending', verifiedPendingCopy(input, verifiedPending), {
-      type: 'chat_action_verified_pending',
+      type: multiStepType(plan, 'chat_action_verified_pending'),
       actionStatus: 'verified_pending',
       verificationStatus: 'verified_pending',
       openSurface: openSurfacePayloadForStep(verifiedPending.step, verifiedPending.result, input),
       actionResults: sanitizeActionResults(results),
+      ...multiStepMetadata(plan, results),
     });
   }
   if (partial) {
     return buildActionResponse(input, plan, 'partial_success', partialCopy(input), {
-      type: 'chat_action_partial_success',
+      type: multiStepType(plan, 'chat_action_partial_success'),
       actionStatus: 'partial_success',
       actionResults: sanitizeActionResults(results),
+      ...multiStepMetadata(plan, results),
     });
   }
   return buildActionResponse(input, plan, 'verified_success', successCopy(input, results), {
-    type: 'chat_action_verified_success',
+    type: multiStepType(plan, 'chat_action_verified_success'),
     actionStatus: 'verified_success',
     verificationStatus: 'verified_success',
     title: firstTitle(results),
@@ -2252,7 +2338,94 @@ export async function executeChatActionPlan(
     ...resultCardPayload(results),
     actions: actionButtonsForResults(results),
     actionResults: sanitizeActionResults(results),
+    ...multiStepMetadata(plan, results),
   });
+}
+
+async function executeStepWithReliability(
+  step: ChatPlanStep,
+  context: ChatStepExecutionContext,
+): Promise<ChatStepExecutionResult> {
+  const executor = getChatStepExecutor(step.action);
+  if (!executor) return { step, status: 'blocked', error: unsupportedChatExecutorReason(step) };
+  let result: ChatStepExecutionResult;
+  try {
+    result = await runChatActionWithBoundedRetry(() => executor(step, context), {
+      onRetry: (event) => {
+        logger.warn({
+          userId: context.input.userId,
+          tenantId: context.input.tenantId,
+          conversationId: context.input.conversationId,
+          messageId: context.input.messageId,
+          skill: step.skill,
+          action: step.action,
+          attempt: event.attempt,
+          category: event.category,
+          reason: event.reason,
+        }, 'Retrying transient chat action executor failure');
+      },
+    });
+  } catch (err) {
+    result = { step, status: 'failed', error: normalizeChatActionErrorReason(err).slice(0, 200) };
+  }
+  maybeQueueChatActionFixerReview(context.input, context.plan, step, result);
+  return result;
+}
+
+function maybeQueueChatActionFixerReview(
+  input: ChatPlannerInput,
+  plan: ChatActionPlan,
+  step: ChatPlanStep,
+  result: ChatStepExecutionResult,
+): void {
+  if (input.persistRuns === false || result.status === 'verified_success' || !shouldQueueChatActionFixerReview(result.error)) return;
+  try {
+    recordChatActionTelemetry({
+      userId: input.userId,
+      tenantId: input.tenantId,
+      conversationId: input.conversationId,
+      messageId: input.messageId,
+      planner: plan.planner,
+      status: result.status,
+      skill: step.skill,
+      action: step.action,
+      telemetry: {
+        ...(plan.telemetry ?? {
+          routeTier: 'tier0_deterministic',
+          candidates: [{ skill: step.skill, action: step.action, score: plan.effectiveConfidence ?? plan.confidence }],
+          calibratedScore: plan.effectiveConfidence ?? plan.confidence,
+          threshold: thresholdForSteps(plan.steps),
+        }),
+        outcome: 'requires_fixer_review',
+        failureReason: result.error ?? 'unknown_error',
+        verifierStatus: 'mismatch',
+        predictedActionHash: step.idempotencyKey,
+        slotProvenanceSummary: summarizeSlotProvenance(plan),
+      },
+      nowIso: input.nowIso,
+    });
+    enqueueChatActionFixerReview({ input, plan, step, result });
+  } catch (err) {
+    logger.warn({
+      err,
+      userId: input.userId,
+      tenantId: input.tenantId,
+      conversationId: input.conversationId,
+      messageId: input.messageId,
+      skill: step.skill,
+      action: step.action,
+      reason: result.error,
+    }, 'Chat action fixer review enqueue failed');
+  }
+}
+
+function multiStepType(plan: ChatActionPlan, fallback: string): string {
+  return plan.steps.length > 1 ? 'chat_action_multi_step_result' : fallback;
+}
+
+function multiStepMetadata(plan: ChatActionPlan, results: ChatStepExecutionResult[]): Record<string, unknown> {
+  if (plan.steps.length <= 1) return {};
+  return { multiStepSummary: buildMultiStepSummary(plan, results) };
 }
 
 function rowToConfirmedStep(row: ChatActionRunRow): ChatPlanStep | null {
@@ -2288,47 +2461,57 @@ function rowToConfirmedStep(row: ChatActionRunRow): ChatPlanStep | null {
 function persistPlanStatus(plan: ChatActionPlan, input: ChatPlannerInput, status: ChatActionRunStatus): void {
   if (input.persistRuns === false) return;
   for (const step of plan.steps) {
-    if (status === 'needs_clarification' && step.action === 'training_plan_create') {
-      const args = step.args as Record<string, unknown>;
-      upsertPendingChatAction({
-        userId: input.userId,
-        tenantId: input.tenantId,
-        conversationId: input.conversationId,
-        skill: 'training',
-        action: 'training_plan_create',
-        collectedSlots: args,
-        missingSlots: missingTrainingPlanSlots(args),
-        riskClass: 'R1',
-        locale: input.locale || plan.locale,
-        timezone: input.timezone,
-        originatingSurface: input.channel,
-        nowIso: plan.createdAt,
-      });
-    }
-    const claim = claimChatActionRun({
+    persistStepStatus(plan, input, step, status);
+  }
+}
+
+function persistStepStatus(
+  plan: ChatActionPlan,
+  input: ChatPlannerInput,
+  step: ChatPlanStep,
+  status: ChatActionRunStatus,
+): void {
+  if (input.persistRuns === false) return;
+  if (status === 'needs_clarification' && step.action === 'training_plan_create') {
+    const args = step.args as Record<string, unknown>;
+    upsertPendingChatAction({
       userId: input.userId,
       tenantId: input.tenantId,
       conversationId: input.conversationId,
-      messageId: input.messageId,
-      normalizedActionHash: step.idempotencyKey,
-      provider: step.provider,
-      actionType: step.action,
-      risk: step.risk,
-      request: step.args,
+      skill: 'training',
+      action: 'training_plan_create',
+      collectedSlots: args,
+      missingSlots: missingTrainingPlanSlots(args),
+      riskClass: 'R1',
+      locale: input.locale || plan.locale,
+      timezone: input.timezone,
+      originatingSurface: input.channel,
       nowIso: plan.createdAt,
     });
-    const accepted = updateChatActionRun(claim.row.id, status, {
-      error: status === 'needs_clarification' ? { reason: 'missing_required_fields' } : undefined,
-      verification: status === 'needs_confirmation' ? { required: true, reason: 'risk_policy' } : undefined,
-    });
-    if (!accepted) {
-      logger.warn({
-        runId: claim.row.id,
-        userId: input.userId,
-        tenantId: input.tenantId,
-        attemptedStatus: status,
-      }, 'chat action plan status update rejected by terminal run state');
-    }
+  }
+  const claim = claimChatActionRun({
+    userId: input.userId,
+    tenantId: input.tenantId,
+    conversationId: input.conversationId,
+    messageId: input.messageId,
+    normalizedActionHash: step.idempotencyKey,
+    provider: step.provider,
+    actionType: step.action,
+    risk: step.risk,
+    request: step.args,
+    nowIso: plan.createdAt,
+  });
+  const accepted = updateChatActionRun(claim.row.id, status, {
+    error: status === 'needs_clarification' ? { reason: 'missing_required_fields' } : undefined,
+    verification: status === 'needs_confirmation' ? { required: true, reason: 'risk_policy' } : undefined,
+  });
+  if (!accepted) {
+    logger.warn({
+      runId: claim.row.id,
+      userId: input.userId,
+      tenantId: input.tenantId,
+      attemptedStatus: status,
+    }, 'chat action plan status update rejected by terminal run state');
   }
 }
 
@@ -2510,6 +2693,14 @@ function requeuePartialSuccessPendingParents(
 
 function successCopy(input: ChatPlannerInput, results: Array<{ step: ChatPlanStep; status: ChatActionRunStatus; result?: unknown }>): string {
   const first = results[0];
+  if (results.length > 1) {
+    const labels = results
+      .map((result, index) => `${index + 1}. ${friendlyActionLabel(result.step, input)}`)
+      .join('\n');
+    return input.locale?.startsWith('pt')
+      ? `Feito — completei ${results.length} passos e verifiquei o resultado:\n${labels}`
+      : `Done — I completed ${results.length} steps and verified the result:\n${labels}`;
+  }
   if (first?.step.type === 'answer') {
     return String((first.result as any)?.text || (first.step.args as any).text || '');
   }
@@ -2605,6 +2796,14 @@ function successCopy(input: ChatPlannerInput, results: Array<{ step: ChatPlanSte
   if (first?.step.action === 'content_pipeline_handoff') {
     return input.locale?.startsWith('pt') ? 'Feito — movi o pacote para o pipeline de Content e verifiquei o read-back.' : 'Done — I moved the package into the Content pipeline and verified the read-back.';
   }
+  if (first?.step.action === 'content_pipeline_stage_transition') {
+    const result = first.result as any;
+    const title = String(result?.topicTitle || (first.step.args as any).topicTitle || 'content item');
+    const stage = String(result?.stage || (first.step.args as any).targetStage || 'the requested stage');
+    return input.locale?.startsWith('pt')
+      ? `Feito — movi “${title}” para ${localizePipelineStage(stage, true)} e verifiquei no pipeline.`
+      : `Done — I moved “${title}” to ${localizePipelineStage(stage, false)} and verified it in the pipeline.`;
+  }
   if (first?.step.action === 'cooking_grocery_list') {
     const itemCount = Number((first.result as any)?.itemCount ?? 0);
     return input.locale?.startsWith('pt')
@@ -2616,6 +2815,15 @@ function successCopy(input: ChatPlannerInput, results: Array<{ step: ChatPlanSte
     return input.locale?.startsWith('pt')
       ? `Feito — guardei “${args.title}” para ${args.mealType} em ${args.date} e verifiquei o plano.`
       : `Done — I saved “${args.title}” for ${args.mealType} on ${args.date} and verified the plan.`;
+  }
+  if (first?.step.action === 'cooking_substitute_ingredient') {
+    const result = first.result as any;
+    const substitution = result?.substitution ?? {};
+    const original = String(substitution.originalIngredient || (first.step.args as any).originalIngredient || 'ingredient');
+    const suggested = String(substitution.suggestedIngredient || (first.step.args as any).suggestedIngredient || 'replacement');
+    return input.locale?.startsWith('pt')
+      ? `Feito — troquei ${original} por ${suggested} nessa refeição e verifiquei a receita.`
+      : `Done — I replaced ${original} with ${suggested} in that meal and verified the recipe.`;
   }
   if (first?.step.action === 'cooking_meal_support' || first?.step.action === 'cooking_fueling_support') {
     const result = first.result as any;
@@ -2686,6 +2894,21 @@ function successCopy(input: ChatPlannerInput, results: Array<{ step: ChatPlanSte
     return input.locale?.startsWith('pt') ? 'Feito — atualizei a decisão e verifiquei o estado.' : 'Done — I updated the decision and verified its state.';
   }
   return input.locale?.startsWith('pt') ? 'Feito — concluí e verifiquei a ação.' : 'Done — I completed and verified the action.';
+}
+
+function friendlyActionLabel(step: ChatPlanStep, input: ChatPlannerInput): string {
+  switch (step.action) {
+    case 'create_task':
+      return input.locale?.startsWith('pt') ? `Criei a tarefa “${String((step.args as any).title || 'tarefa')}”` : `Created task “${String((step.args as any).title || 'task')}”`;
+    case 'schedule_event':
+      return input.locale?.startsWith('pt') ? `Agendei “${String((step.args as any).title || 'evento')}”` : `Scheduled “${String((step.args as any).title || 'event')}”`;
+    case 'content_pipeline_stage_transition':
+      return input.locale?.startsWith('pt') ? 'Atualizei o estado no pipeline de Content' : 'Updated the Content pipeline stage';
+    case 'cooking_substitute_ingredient':
+      return input.locale?.startsWith('pt') ? 'Atualizei a substituição na refeição' : 'Updated the meal substitution';
+    default:
+      return `${step.skill}.${step.action}`;
+  }
 }
 
 function verifiedPendingCopy(input: ChatPlannerInput, result: { step: ChatPlanStep; result?: unknown; error?: string }): string {
@@ -2778,6 +3001,17 @@ function confirmationCopy(plan: ChatActionPlan, input: ChatPlannerInput): string
       return `Confirma que queres ${first.action === 'delete_task' ? 'apagar' : first.action === 'complete_task' ? 'concluir' : 'alterar'} a tarefa “${title}”?`;
     }
     return `Confirm that you want to ${first.action === 'delete_task' ? 'delete' : first.action === 'complete_task' ? 'complete' : 'change'} the task “${title}”?`;
+  }
+  if (first?.action === 'cooking_substitute_ingredient') {
+    const args = first.args as any;
+    const original = String(args.originalIngredient || 'ingredient');
+    const suggested = String(args.suggestedIngredient || 'replacement');
+    const mealType = String(args.mealType || 'meal');
+    const date = String(args.date || 'the selected day');
+    if (input.locale?.startsWith('pt')) {
+      return `Confirma que queres trocar ${original} por ${suggested} no ${mealType} de ${date}? Vou criar uma cópia da receita para esta refeição e atualizar a lista de compras.`;
+    }
+    return `Confirm replacing ${original} with ${suggested} in ${mealType} on ${date}? I’ll create a meal-specific recipe copy and update the shopping list.`;
   }
   if (input.locale?.startsWith('pt')) {
     return `Preciso da tua confirmação antes de ${first?.action === 'send_email' ? 'enviar' : 'executar'} esta ação.`;
@@ -2892,6 +3126,17 @@ function resultCardPayload(results: Array<{ step: ChatPlanStep; result?: unknown
   if (first.step.action === 'cooking_grocery_list') {
     const result = first.result as any;
     return { groceryList: result ? { weekStart: result.weekStart, itemCount: result.itemCount, items: result.items } : null };
+  }
+  if (first.step.action === 'cooking_substitute_ingredient') {
+    const result = first.result as any;
+    return {
+      cookingSubstitution: result ? {
+        substitution: result.substitution ?? null,
+        meal: result.meal ?? null,
+        recipe: result.recipe ?? null,
+        shoppingListUpdated: Boolean(result.substitution?.shoppingListUpdated),
+      } : null,
+    };
   }
   if (first.step.action === 'finance_summary') return { finance: first.result ?? null };
   if (first.step.action === 'connections_status') return { connections: first.result ?? null };
@@ -3039,6 +3284,21 @@ function summarizeSlotProvenance(plan: ChatActionPlan): Record<string, unknown> 
 
 
 // actionToStepType and pickExpectedFields moved to skills/step-builder.ts.
+
+function localizePipelineStage(stage: string, portuguese: boolean): string {
+  switch (stage) {
+    case 'scripted':
+      return portuguese ? 'roteiro pronto' : 'scripted';
+    case 'filmed':
+      return portuguese ? 'filmado' : 'filmed';
+    case 'editing':
+      return portuguese ? 'edição' : 'editing';
+    case 'published':
+      return portuguese ? 'publicado' : 'published';
+    default:
+      return stage;
+  }
+}
 
 function normalizeProvider(value: unknown): ChatProvider | undefined {
   if (typeof value !== 'string') return undefined;

@@ -3,7 +3,15 @@
 import { DateTime } from 'luxon';
 import { claimChatActionRunForExecution, updateChatActionRun, type ChatActionRunStatus } from '../../chat-action-run-store';
 import type { ChatActionPlan, ChatPlannerInput, ChatPlanStep } from '../../chat/types';
-import { generateShoppingList, getMealPlan, getShoppingList, setMealPlan } from '../../cooking-chef';
+import {
+  applyMealPlanSubstitution,
+  generateShoppingList,
+  getMealPlan,
+  getRecipeById,
+  getShoppingList,
+  setMealPlan,
+  suggestMealPlanSubstitutions,
+} from '../../cooking-chef';
 import { claimActionRunForStepExecution, reconciliationPendingResult, replayDuplicateClaimedActionRun, updateClaimedActionRun } from '../../chat/executor/helpers';
 
 export function executeCookingGroceryListStep(
@@ -85,6 +93,77 @@ export function executeCookingMealPlanStep(
   }
 }
 
+export function executeCookingSubstituteIngredientStep(
+  step: ChatPlanStep,
+  plan: ChatActionPlan,
+  input: ChatPlannerInput,
+  persistRuns: boolean,
+): { step: ChatPlanStep; status: ChatActionRunStatus; result?: unknown; error?: string } {
+  const args = step.args as any;
+  const date = typeof args.date === 'string' ? args.date.trim() : '';
+  const mealType = typeof args.mealType === 'string' ? args.mealType.trim().toLowerCase() : '';
+  const originalIngredient = typeof args.originalIngredient === 'string' ? args.originalIngredient.trim() : '';
+  const suggestedIngredient = typeof args.suggestedIngredient === 'string' ? args.suggestedIngredient.trim() : '';
+  const reason = normalizeSubstitutionReason(args.reason);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || !mealType || !originalIngredient) {
+    return { step, status: 'blocked', error: 'cooking_substitution_requires_date_meal_and_ingredient' };
+  }
+  if (!suggestedIngredient) {
+    const suggestions = suggestMealPlanSubstitutions(input.userId, {
+      date,
+      mealType,
+      originalIngredient,
+      reason,
+    }, input.tenantId);
+    return {
+      step,
+      status: 'blocked',
+      result: {
+        suggestions: suggestions.suggestions,
+        originalIngredient: suggestions.originalIngredient,
+        reason: suggestions.reason,
+      },
+      error: 'cooking_substitution_requires_suggested_ingredient',
+    };
+  }
+  const claim = claimActionRunForStepExecution(step, plan, input, persistRuns);
+  const duplicate = replayDuplicateClaimedActionRun(claim, step);
+  if (duplicate) return duplicate;
+  try {
+    const result = applyMealPlanSubstitution(input.userId, {
+      date,
+      mealType,
+      originalIngredient,
+      suggestedIngredient,
+      reason,
+      updateShoppingList: args.updateShoppingList !== false,
+    }, input.tenantId);
+    if (!result.applied) {
+      if (claim) updateChatActionRun(claim.row.id, 'blocked', { error: { message: result.reason ?? 'substitution_not_applied' } });
+      return { step, status: 'blocked', result, error: result.reason ?? 'substitution_not_applied' };
+    }
+    const readBackRecipe = result.substitution.affectedRecipeId
+      ? getRecipeById(input.userId, result.substitution.affectedRecipeId, input.tenantId)
+      : null;
+    const verified = Boolean(readBackRecipe?.ingredients.some((ingredient) => ingredient.name === suggestedIngredient))
+      && !Boolean(readBackRecipe?.ingredients.some((ingredient) => ingredientNameMatches(ingredient.name, originalIngredient)));
+    const status: ChatActionRunStatus = verified ? 'verified_success' : 'partial_success';
+    const payload = {
+      ...result,
+      verified,
+    };
+    if (!updateClaimedActionRun(claim, status, {
+      result: payload,
+      providerObjectId: result.substitution.affectedMealId ? String(result.substitution.affectedMealId) : `${date}:${mealType}`,
+      verification: { verified, expected: { date, mealType, originalIngredient, suggestedIngredient } },
+    })) return reconciliationPendingResult(step, status);
+    return { step, status, result: payload, error: verified ? undefined : 'local_read_back_mismatch' };
+  } catch (err) {
+    if (claim) updateChatActionRun(claim.row.id, 'failed', { error: { message: err instanceof Error ? err.message : String(err) } });
+    return { step, status: 'failed', error: 'cooking_substitution_failed' };
+  }
+}
+
 export function executeCookingSupportStep(
   step: ChatPlanStep,
   input: ChatPlannerInput,
@@ -111,4 +190,15 @@ export function executeCookingSupportStep(
   } catch {
     return { step, status: 'failed', error: 'cooking_support_failed' };
   }
+}
+
+function normalizeSubstitutionReason(value: unknown): 'allergy' | 'dietary_restriction' | 'disliked_ingredient' | 'expired_pantry' {
+  if (value === 'allergy' || value === 'dietary_restriction' || value === 'disliked_ingredient' || value === 'expired_pantry') return value;
+  return 'disliked_ingredient';
+}
+
+function ingredientNameMatches(candidate: string, originalIngredient: string): boolean {
+  const candidateName = candidate.trim().toLowerCase().replace(/\s+/g, ' ');
+  const originalName = originalIngredient.trim().toLowerCase().replace(/\s+/g, ' ');
+  return candidateName === originalName || candidateName.includes(originalName);
 }

@@ -209,7 +209,7 @@ export function selectRegistrySubsetForMessage(text: string): ChatActionDefiniti
   if (/\b(task|todo|tarefa|subtarefa|checklist|lembrete|reminder)\b/.test(folded)) selected.add('tasks');
   if (/\b(treino|training|plan[o]? de treino|corrida|gym|ginasio)\b/.test(folded)) selected.add('training');
   if (/\b(content|conteudo|conteudo|script|roteiro|reel|tiktok|youtube|brief)\b/.test(folded)) selected.add('content');
-  if (/\b(cozinha|meal|refeicao|jantar|almoco|ceia|lanche|comida|grocery|compras|fueling|recipe|receita|receitas)\b/.test(folded)) selected.add('cooking');
+  if (/\b(cozinha|meal|refeicao|jantar|almoco|ceia|lanche|comida|grocery|compras|fueling|recipe|receita|receitas|dinner|lunch|breakfast|snack|ingredient|ingredients)\b/.test(folded)) selected.add('cooking');
   if (/\b(finance|financas|financeiro|financeira|pagamento|stripe|invoice|fatura|recibo|receipt)\b/.test(folded)) selected.add('finance');
   if (/\b(connection|conexao|ligacao|google|outlook|garmin|health)\b/.test(folded)) selected.add('connections');
   if (/\b(notification|notificacao|notificacoes|alerta|push)\b/.test(folded)) selected.add('notifications');

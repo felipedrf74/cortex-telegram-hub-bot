@@ -24,6 +24,7 @@
     "preflight:owner-bootstrap": "node dist/tools/owner-bootstrap-preflight.js --strict",
     "portal:session:mint": "node dist/tools/portal-session-token.js",
     "chat:eval": "node dist/tools/chat-evaluation-harness.js",
+    "chat:eval-live": "npx tsx scripts/run-chat-eval-live.ts",
     "chat:test-phase": "npx tsx scripts/chat-test-phase.ts",
     "chat:model-bakeoff": "node dist/tools/chat-model-bakeoff.js",
     "fiscal:vendors:audit": "node dist/tools/invoice-vendor-cleanup.js",
