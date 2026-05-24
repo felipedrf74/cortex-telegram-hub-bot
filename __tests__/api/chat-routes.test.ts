@@ -2969,6 +2969,120 @@ describe('Chat API routes', () => {
     }
   });
 
+  it('returns a Chat Core v2 task-complete preview with entity preconditions without completing the task', async () => {
+    const previousGlobal = process.env.CHAT_CORE_V2_ENABLED;
+    const previousWrites = process.env.CHAT_CORE_V2_WRITES_ENABLED;
+    process.env.CHAT_CORE_V2_ENABLED = 'true';
+    process.env.CHAT_CORE_V2_WRITES_ENABLED = 'true';
+    try {
+      upsertTask(7001, {
+        provider: 'nexus',
+        externalId: 'task-core-v2-complete-1',
+        title: 'Buy milk',
+        status: 'pending',
+        priority: 0,
+        projectName: 'Inbox',
+      });
+      const taskRow = testDb.prepare('SELECT id FROM unified_tasks WHERE user_id = ? AND title = ?')
+        .get(7001, 'Buy milk') as { id: number };
+      mockRouteMessage.mockClear();
+      mockHandleSecretary.mockClear();
+
+      const messageRes = await dispatch('POST', '/message', 7001, {
+        text: 'Complete the Buy milk task',
+        clientMessageId: 'chat-core-v2-task-complete-preview-1',
+      });
+
+      expect(messageRes.statusCode, JSON.stringify(messageRes.body)).toBe(200);
+      expect(messageRes.body.routeMethod).toBe('chat-core-v2-command-preview');
+      expect(messageRes.body.domain).toBe('secretary');
+      expect(messageRes.body.text).toBe('I would mark "Buy milk" as done.');
+      expect(messageRes.body.metadata).toMatchObject({
+        type: 'chat_core_v2_command_preview',
+        chatCoreV2: {
+          capabilityId: 'tasks.complete',
+          executionEnabled: false,
+          executionDisabledReason: 'preview_only_rollout',
+          response: {
+            schemaVersion: 'chat_response_v2@1.0.0',
+            kind: 'action_preview',
+            reasonCodes: expect.arrayContaining(['preview_only_rollout']),
+          },
+          command: {
+            commandSchemaVersion: 'tasks.complete@1.0.0',
+            previewSchemaVersion: 'task_preview_card@1.0.0',
+            responseSchemaVersion: 'chat_response_v2@1.0.0',
+            domain: 'tasks',
+            commandType: 'tasks.complete',
+            origin: 'chat',
+            payload: {
+              operation: 'complete',
+              taskId: taskRow.id,
+              title: 'Buy milk',
+              currentStatus: 'pending',
+              targetStatus: 'completed',
+            },
+            basedOn: {
+              entityIds: [`task:${taskRow.id}`],
+              entityVersions: {
+                [`task:${taskRow.id}`]: expect.stringMatching(/^[0-9a-f]{16}$/),
+              },
+            },
+            preconditions: {
+              requiredEntityVersions: {
+                [`task:${taskRow.id}`]: expect.stringMatching(/^[0-9a-f]{16}$/),
+              },
+              invariants: [{
+                type: 'task_status',
+                description: 'Task must still be pending when the preview is confirmed.',
+                check: 'task_is_pending',
+              }],
+              hasPermissionSnapshot: true,
+            },
+          },
+          gate: {
+            ok: true,
+            operation: 'preview',
+            commandStatus: 'previewed',
+          },
+        },
+      });
+      expect(messageRes.body.metadata.chatCoreV2.response.cards[0]).toMatchObject({
+        type: 'task_preview_card',
+        title: 'Completion preview: Buy milk',
+        primaryAction: {
+          kind: 'view',
+          label: 'View',
+        },
+        secondaryActions: [],
+        diff: [
+          { label: 'Task', after: 'Buy milk' },
+          { label: 'Status', after: 'Done' },
+        ],
+      });
+      expect(messageRes.body.metadata.chatCoreV2.response.cards[0].confirmationToken).toBeUndefined();
+      const metadataJson = JSON.stringify(messageRes.body.metadata);
+      expect(metadataJson).not.toContain('actorUserId');
+      expect(metadataJson).not.toContain('delegatedScopes');
+      expect(metadataJson).not.toContain('idempotencyKey');
+      expect(metadataJson).not.toContain('chat-v2-permissions:7001:7001');
+      expect(testDb.prepare('SELECT status FROM unified_tasks WHERE id = ?').get(taskRow.id)).toMatchObject({ status: 'pending' });
+      expect(mockRouteMessage).not.toHaveBeenCalled();
+      expect(mockHandleSecretary).not.toHaveBeenCalled();
+    } finally {
+      if (previousGlobal === undefined) {
+        delete process.env.CHAT_CORE_V2_ENABLED;
+      } else {
+        process.env.CHAT_CORE_V2_ENABLED = previousGlobal;
+      }
+      if (previousWrites === undefined) {
+        delete process.env.CHAT_CORE_V2_WRITES_ENABLED;
+      } else {
+        process.env.CHAT_CORE_V2_WRITES_ENABLED = previousWrites;
+      }
+    }
+  });
+
   it('answers Decision Center status through Chat Core v2 deterministic reads when explicitly enabled', async () => {
     const previousGlobal = process.env.CHAT_CORE_V2_ENABLED;
     const previousReads = process.env.CHAT_CORE_V2_READS_ENABLED;
