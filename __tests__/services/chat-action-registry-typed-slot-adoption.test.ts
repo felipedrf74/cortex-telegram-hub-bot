@@ -22,7 +22,7 @@ import {
   getSlotExtractors,
   getSlotValidators,
   runSlotValidators,
-} from '../../src/services/chat-action-registry';
+} from '../../src/services/chat/registry';
 
 function activeActions(entries: ChatActionDefinition[]): ChatActionDefinition[] {
   return entries.filter((entry) => entry.status === 'active');

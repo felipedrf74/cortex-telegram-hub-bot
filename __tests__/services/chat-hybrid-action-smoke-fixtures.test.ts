@@ -33,8 +33,8 @@ import {
   shouldRunActionPlannerBeforeReadOnlyFastPaths,
   tryHandleChatActionPlan,
   type ChatActionPlan,
-} from '../../src/services/chat-action-planner';
-import { getChatActionRegistry } from '../../src/services/chat-action-registry';
+} from '../../src/services/chat';
+import { getChatActionRegistry } from '../../src/services/chat/registry';
 import { evaluateChatHybridActionGate } from '../../src/services/chat-evaluation-harness';
 import { computeHybridActionMetricsFromCorpus } from '../../src/services/chat-hybrid-metrics';
 import { buildFixturesFromRegistry } from '../lib/registry-fixture-builder';

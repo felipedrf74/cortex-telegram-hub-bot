@@ -3,11 +3,11 @@ import { describe, expect, it } from 'vitest';
 import {
   buildDeterministicChatActionPlan,
   type ChatPlannerInput,
-} from '../../src/services/chat-action-planner';
+} from '../../src/services/chat';
 import {
   getChatActionRegistry,
   type ChatActionDefinition,
-} from '../../src/services/chat-action-registry';
+} from '../../src/services/chat/registry';
 
 const baseInput: ChatPlannerInput = {
   text: '',

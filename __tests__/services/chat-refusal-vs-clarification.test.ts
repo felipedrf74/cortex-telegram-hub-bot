@@ -66,7 +66,7 @@ import {
   executeChatActionPlan,
   type ChatActionPlan,
   type ChatPlannerInput,
-} from '../../src/services/chat-action-planner';
+} from '../../src/services/chat';
 
 const NOW = '2026-05-16T12:00:00+01:00';
 

@@ -98,7 +98,7 @@ GATES=(
   "cached-route-handler|src/api/route-helpers/cached-route-handler.ts|cached-route-handler"
   "garmin-tenant-leak-and-apple-health-cascade|src/services/readiness-scorer.ts|garmin-tenant-leak-and-apple-health-cascade"
   "google-drive-tenant-leak|src/services/google-drive.ts|google-drive-tenant-leak"
-  "registry-real-eval-quality-gates|src/services/chat-action-registry.ts|registry-real-eval-gates"
+  "registry-real-eval-quality-gates|src/services/chat/registry/index.ts|registry-real-eval-gates"
 )
 
 # Run the classifier once per gate and capture results into JSON.

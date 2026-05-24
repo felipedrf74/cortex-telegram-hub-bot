@@ -2,7 +2,7 @@
 //
 // Phase 16 batch 83 (2026-05-17): typed card schema for chat responses.
 //
-// `ChatActionDefinition.supportedCards: string[]` (chat-action-registry.ts:354)
+// `ChatActionDefinition.supportedCards: string[]` (chat/registry/types.ts)
 // has been dead metadata since Phase 0 — every action declares the shared
 // `STATUS_CARDS` constant, and no production code reads the field. iOS keys
 // structured rendering off `metadata.type` strings (`chat_action_needs_input`,
@@ -19,7 +19,7 @@
 // Each card kind has a stable payload that the iOS decoder can rely on.
 // Identity-shaped fields (userId, tenantId, providerObjectId) are never
 // emitted into cards — that contract is shared with
-// `buildLlmSafePromptSlice` (chat-action-registry.ts) and remains the
+// `buildLlmSafePromptSlice` (chat/registry) and remains the
 // LLM-safety boundary.
 
 import type { ChatResponseBlock } from './chat-response-blocks';

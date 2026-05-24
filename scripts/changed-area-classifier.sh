@@ -259,7 +259,7 @@ match '^src/services/(google-drive|google-auth)\.ts$|^__tests__/security/google-
 # adversarial discovery / readableIntents proposer / real-eval scoring +
 # their tests + the registry-feedback-report CLI all fan into the
 # registry-real-eval-quality-gates cannot-skip gate.
-match '^src/services/chat-action-registry\.ts$|^src/services/registry-(driven-eval-scenarios|real-eval-scoring|telemetry-report|adversarial-discovery|adversarial-example-proposer|readable-intents-proposer|cross-tenant-alert-hook)\.ts$|^src/services/build-llm-safe-prompt-slice\.ts$|^src/services/skills/|^__tests__/services/(chat-action-registry-|registry-(driven-eval|real-eval|telemetry-report|adversarial|readable-intents|cross-tenant))|^__tests__/scripts/registry-feedback-report\.test\.ts$|^scripts/registry-feedback-report\.ts$' && HAS_REGISTRY_REAL_EVAL=true
+match '^src/services/chat/registry/|^src/services/registry-(driven-eval-scenarios|real-eval-scoring|telemetry-report|adversarial-discovery|adversarial-example-proposer|readable-intents-proposer|cross-tenant-alert-hook)\.ts$|^src/services/build-llm-safe-prompt-slice\.ts$|^src/services/skills/|^__tests__/services/(chat-action-registry-|registry-(driven-eval|real-eval|telemetry-report|adversarial|readable-intents|cross-tenant))|^__tests__/scripts/registry-feedback-report\.test\.ts$|^scripts/registry-feedback-report\.ts$' && HAS_REGISTRY_REAL_EVAL=true
 
 match '^scripts/(deploy|deploy-staging|promote-to-prod|rollback|restore)\.sh$' && HAS_DEPLOY_SCRIPT=true
 match '^\.husky/' && HAS_HOOK=true
