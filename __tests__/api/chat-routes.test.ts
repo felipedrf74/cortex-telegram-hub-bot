@@ -2883,6 +2883,72 @@ describe('Chat API routes', () => {
     }
   });
 
+  it('answers notification status through Chat Core v2 deterministic reads when explicitly enabled', async () => {
+    const previousGlobal = process.env.CHAT_CORE_V2_ENABLED;
+    const previousReads = process.env.CHAT_CORE_V2_READS_ENABLED;
+    process.env.CHAT_CORE_V2_ENABLED = 'true';
+    process.env.CHAT_CORE_V2_READS_ENABLED = 'true';
+    try {
+      const { createNotificationIntent } = await import('../../src/services/notification-orchestrator');
+      await createNotificationIntent({
+        userId: 7001,
+        tenantId: 7001,
+        sourceSkill: 'system',
+        type: 'reminder',
+        priority: 'active',
+        title: 'Daily planning reminder',
+        body: 'Review today before the afternoon starts.',
+        actionButtons: [{ id: 'open', label: 'Open', style: 'primary' }],
+        deliveryPolicy: 'in_app_only',
+        privacyPolicy: 'standard',
+        dedupeKey: 'chat-core-v2-notification-read-route',
+      });
+      mockRouteMessage.mockClear();
+      mockHandleSecretary.mockClear();
+
+      const messageRes = await dispatch('POST', '/message', 7001, {
+        text: 'What notifications do I have?',
+      });
+
+      expect(messageRes.statusCode, JSON.stringify(messageRes.body)).toBe(200);
+      expect(messageRes.body.routeMethod).toBe('chat-core-v2-deterministic-read');
+      expect(messageRes.body.domain).toBe('secretary');
+      expect(messageRes.body.text).toContain('You have 1 unread notification.');
+      expect(messageRes.body.text).toContain('Daily planning reminder');
+      expect(messageRes.body.metadata).toMatchObject({
+        type: 'chat_core_v2_deterministic_read',
+        chatCoreV2: {
+          capabilityId: 'notifications.summary',
+          response: {
+            schemaVersion: 'chat_response_v2@1.0.0',
+            kind: 'message',
+          },
+          readModel: {
+            capabilityId: 'notifications.summary',
+            domain: 'notifications',
+            data: {
+              unreadCount: 1,
+              actionRequiredCount: 1,
+            },
+          },
+        },
+      });
+      expect(mockRouteMessage).not.toHaveBeenCalled();
+      expect(mockHandleSecretary).not.toHaveBeenCalled();
+    } finally {
+      if (previousGlobal === undefined) {
+        delete process.env.CHAT_CORE_V2_ENABLED;
+      } else {
+        process.env.CHAT_CORE_V2_ENABLED = previousGlobal;
+      }
+      if (previousReads === undefined) {
+        delete process.env.CHAT_CORE_V2_READS_ENABLED;
+      } else {
+        process.env.CHAT_CORE_V2_READS_ENABLED = previousReads;
+      }
+    }
+  });
+
   it('returns the accountant handoff state from the deterministic finance shortcut', async () => {
     mockRouteMessage.mockResolvedValue({
       domain: 'finance',

@@ -5,9 +5,11 @@ import { classifyShadowRoute, type ChatCoreV2ShadowRouteGuess } from './shadow-r
 import { isChatCoreV2CapabilityEnabled } from './capability-registry';
 import {
   DECISION_CENTER_SUMMARY_CAPABILITY,
+  NOTIFICATIONS_SUMMARY_CAPABILITY,
   TASKS_TODAY_SUMMARY_CAPABILITY,
 } from './deterministic-read/common';
 import { buildDecisionCenterSummaryRoute } from './deterministic-read/decision-center-summary-route';
+import { buildNotificationsSummaryRoute } from './deterministic-read/notification-summary-route';
 import { buildTaskSummaryRoute } from './deterministic-read/task-summary-route';
 import type {
   BuildChatCoreV2DeterministicReadRouteInput,
@@ -23,6 +25,8 @@ export type {
   ChatCoreV2DeterministicReadCapabilityId,
   ChatCoreV2DeterministicReadData,
   ChatCoreV2DeterministicReadRouteResult,
+  ChatCoreV2NotificationSummaryData,
+  ChatCoreV2NotificationSummaryItem,
   ChatCoreV2TaskSummaryData,
   ChatCoreV2TaskSummaryItem,
 } from './deterministic-read/types';
@@ -32,6 +36,7 @@ type ChatCoreV2CapabilityFlagInput = Parameters<typeof isChatCoreV2CapabilityEna
 const DETERMINISTIC_READ_BUILDERS: Record<ChatCoreV2DeterministicReadCapabilityId, ChatCoreV2DeterministicReadBuilder> = {
   [TASKS_TODAY_SUMMARY_CAPABILITY]: buildTaskSummaryRoute,
   [DECISION_CENTER_SUMMARY_CAPABILITY]: buildDecisionCenterSummaryRoute,
+  [NOTIFICATIONS_SUMMARY_CAPABILITY]: buildNotificationsSummaryRoute,
 };
 
 export function tryBuildChatCoreV2DeterministicReadRoute(
@@ -66,6 +71,9 @@ function deterministicReadCapabilityForRouteGuess(
   }
   if (routeGuess.domains[0] === 'decision_center' && routeGuess.capabilityIds.includes(DECISION_CENTER_SUMMARY_CAPABILITY)) {
     return DECISION_CENTER_SUMMARY_CAPABILITY;
+  }
+  if (routeGuess.domains[0] === 'notifications' && routeGuess.capabilityIds.includes(NOTIFICATIONS_SUMMARY_CAPABILITY)) {
+    return NOTIFICATIONS_SUMMARY_CAPABILITY;
   }
   return null;
 }
