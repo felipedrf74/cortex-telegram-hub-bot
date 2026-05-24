@@ -29,6 +29,7 @@ import {
   isDecisionCenterGuidanceSkillEnabled,
   isDecisionCenterGuidanceV1Enabled,
   isAnthropicRuntimeEnabled,
+  isChatCoreV2ShadowRouteHookEnabled,
   isSecretaryHaikuRoutingEnabled,
   isTelegramLegacyDeliveryEnabled,
 } from '../../src/services/runtime-flags';
@@ -190,5 +191,19 @@ describe('runtime-flags', () => {
       CHAT_QUALITY_GATE_ENABLED: 'true',
       CHAT_QUALITY_GATE_ENABLED_TENANT_99: 'false',
     }, { userId: 42, tenantId: 99 })).toBe(false);
+  });
+
+  it('keeps Chat Core v2 shadow route hook default-off with scoped opt-in', () => {
+    expect(isChatCoreV2ShadowRouteHookEnabled({})).toBe(false);
+    expect(isChatCoreV2ShadowRouteHookEnabled({ CHAT_CORE_V2_SHADOW_ROUTE_HOOK_ENABLED: 'true' })).toBe(true);
+    expect(isChatCoreV2ShadowRouteHookEnabled({ CHAT_CORE_V2_SHADOW_ROUTE_HOOK_ENABLED: 'shadow' })).toBe(true);
+    expect(isChatCoreV2ShadowRouteHookEnabled({
+      CHAT_CORE_V2_SHADOW_ROUTE_HOOK_ENABLED: 'false',
+      CHAT_CORE_V2_SHADOW_ROUTE_HOOK_ENABLED_TENANT_9: '1',
+    }, { userId: 7, tenantId: 9 })).toBe(true);
+    expect(isChatCoreV2ShadowRouteHookEnabled({
+      CHAT_CORE_V2_SHADOW_ROUTE_HOOK_ENABLED: 'true',
+      CHAT_CORE_V2_SHADOW_ROUTE_HOOK_ENABLED_USER_42: 'off',
+    }, { userId: 42, tenantId: 9 })).toBe(false);
   });
 });
