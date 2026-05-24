@@ -10,6 +10,12 @@ import {
   type ChatCoreV2CommandGateVerdict,
 } from './command-bus';
 import {
+  decisionDismissVersionForItem,
+  isDecisionDismissEligibleStatus,
+  isNotificationSnoozeEligibleStatus,
+  notificationSnoozeVersionForItem,
+} from './command-status-policy';
+import {
   buildChatCoreV2ActionPreviewResponse,
   normalizeChatCoreV2Locale,
   type ChatCoreV2Response,
@@ -92,8 +98,13 @@ export interface ChatCoreV2CommandPreviewRouteResult {
 const TASK_CREATE_CAPABILITY = 'tasks.create';
 const TASK_COMPLETE_CAPABILITY = 'tasks.complete';
 const NOTIFICATION_SNOOZE_CAPABILITY = 'notifications.snooze';
-const EXECUTABLE_CAPABILITIES = new Set([TASK_CREATE_CAPABILITY, TASK_COMPLETE_CAPABILITY, NOTIFICATION_SNOOZE_CAPABILITY]);
 const DECISION_DISMISS_CAPABILITY = 'decision_center.dismiss';
+const EXECUTABLE_CAPABILITIES = new Set([
+  TASK_CREATE_CAPABILITY,
+  TASK_COMPLETE_CAPABILITY,
+  NOTIFICATION_SNOOZE_CAPABILITY,
+  DECISION_DISMISS_CAPABILITY,
+]);
 const SECRETARY_SCHEDULE_EVENT_CAPABILITY = 'secretary.schedule_event_preview';
 const TRAINING_MODIFY_SESSION_CAPABILITY = 'training.modify_session_preview';
 const COOKING_GROCERY_ITEM_CAPABILITY = 'cooking.grocery_item_preview';
@@ -250,10 +261,10 @@ function tryBuildNotificationSnoozePreview(
   const referencePhrase = snoozeRequest.referencePhrase;
   if (!referencePhrase) return null;
 
-  const notifications = listNotificationCenterItems(input.userId, input.tenantId, {
-    status: 'unread',
-    limit: 50,
-  });
+  const notifications = [
+    ...listNotificationCenterItems(input.userId, input.tenantId, { status: 'unread', limit: 50 }),
+    ...listNotificationCenterItems(input.userId, input.tenantId, { status: 'read', limit: 50 }),
+  ].filter((item) => isNotificationSnoozeEligibleStatus(item.status));
   const candidates = notifications
     .map((item) => notificationToResolutionCandidate(item, referencePhrase))
     .filter((candidate) => candidate.confidence > 0.45);
@@ -297,7 +308,7 @@ function tryBuildDecisionDismissPreview(
   if (!referencePhrase) return null;
 
   const decisions = listDecisionItems(input.userId, input.tenantId, { limit: 50 })
-    .filter((item) => ['unread', 'read', 'failed', 'snoozed', 'open'].includes(item.status));
+    .filter((item) => isDecisionDismissEligibleStatus(item.status));
   const candidates = decisions
     .map((item) => decisionToResolutionCandidate(item, referencePhrase))
     .filter((candidate) => candidate.confidence > 0.45);
@@ -777,8 +788,8 @@ function buildNotificationSnoozeCommandEnvelope(input: {
       requiredPermissionsVersion: `chat-v2-permissions:${input.input.tenantId}:${input.input.userId}:notifications:v1`,
       invariants: [{
         type: 'notification_status',
-        description: 'Notification must still be unread when the preview is confirmed.',
-        check: 'notification_is_unread',
+        description: 'Notification must still be snooze-eligible when the preview is confirmed.',
+        check: 'notification_is_snooze_eligible',
       }],
     },
     authorization: {
@@ -803,7 +814,7 @@ function buildDecisionDismissCommandEnvelope(input: {
   const entityPreconditions = buildEntityResolutionPreconditions(input.resolution);
   const entityId = `decision:${input.decision.decisionId}`;
   const createdAt = input.now.toISOString();
-  const decisionVersion = decisionVersionForItem(input.decision);
+  const decisionVersion = decisionDismissVersionForItem(input.decision);
   const payload = {
     operation: 'dismiss',
     decisionId: input.decision.decisionId,
@@ -852,7 +863,7 @@ function buildDecisionDismissCommandEnvelope(input: {
       requiredDecisionVersion: decisionVersion,
       invariants: [{
         type: 'decision_status',
-        description: 'Decision must still be active when the preview is confirmed.',
+        description: 'Decision must still be dismissible when the preview is confirmed.',
         check: 'decision_is_active',
       }],
     },
@@ -1686,17 +1697,7 @@ function notificationToResolutionCandidate(item: NotificationCenterItem, referen
       : confidence >= 0.84
         ? 'title_or_body_match'
         : 'title_partial_match',
-    entityVersion: hashStable({
-      title: item.title,
-      safeBody: item.safeBody || item.body,
-      sourceSkill: item.sourceSkill,
-      type: item.type,
-      priority: item.priority,
-      status: item.status,
-      actions: item.actions.map((action) => ({ id: action.id, label: action.label, style: action.style ?? null })),
-      createdAt: item.createdAt,
-      expiresAt: item.expiresAt,
-    }),
+    entityVersion: notificationSnoozeVersionForItem(item),
     domain: 'notifications',
     metadata: {
       notificationId: item.itemId,
@@ -1775,7 +1776,7 @@ function decisionToResolutionCandidate(item: DecisionApiItem, referencePhrase: s
       : confidence >= 0.84
         ? 'decision_text_match'
         : 'title_partial_match',
-    entityVersion: decisionVersionForItem(item),
+    entityVersion: decisionDismissVersionForItem(item),
     domain: 'decision_center',
     metadata: {
       decisionId: item.decisionId,
@@ -1825,24 +1826,6 @@ function decisionIdFromCandidate(candidate: EntityResolutionCandidate): string |
   if (typeof fromMetadata === 'string' && fromMetadata.trim()) return fromMetadata;
   const match = /^decision:(.+)$/.exec(candidate.id);
   return match?.[1] ?? null;
-}
-
-function decisionVersionForItem(item: DecisionApiItem): string {
-  return hashStable({
-    decisionId: item.decisionId,
-    title: item.title,
-    summary: item.summary,
-    safePreviewTitle: item.safePreviewTitle,
-    safePreviewBody: item.safePreviewBody,
-    status: item.status,
-    urgency: item.urgency,
-    sourceSkill: item.sourceSkill,
-    type: item.type,
-    actions: item.actions.map((action) => ({ id: action.id, label: action.label, style: action.style ?? null })),
-    updatedAt: item.updatedAt,
-    expiresAt: item.expiresAt,
-    snoozedUntil: item.snoozedUntil,
-  });
 }
 
 function extractTrainingChangeTypes(text: string): TrainingChangeType[] {

@@ -885,8 +885,8 @@ describe('Chat Core v2 command preview route', () => {
         requiredPermissionsVersion: 'chat-v2-permissions:84:42:notifications:v1',
         invariants: [{
           type: 'notification_status',
-          description: 'Notification must still be unread when the preview is confirmed.',
-          check: 'notification_is_unread',
+          description: 'Notification must still be snooze-eligible when the preview is confirmed.',
+          check: 'notification_is_snooze_eligible',
         }],
       },
       authorization: {
@@ -920,6 +920,38 @@ describe('Chat Core v2 command preview route', () => {
     });
     expect(result?.response.cards[0]?.confirmationToken).toBeUndefined();
     expect(vi.mocked(listNotificationCenterItems)).toHaveBeenCalledWith(42, 84, { status: 'unread', limit: 50 });
+    expect(vi.mocked(listNotificationCenterItems)).toHaveBeenCalledWith(42, 84, { status: 'read', limit: 50 });
+  });
+
+  it('builds notification-snooze previews for read notifications and excludes resolved notifications', () => {
+    vi.mocked(listNotificationCenterItems).mockReturnValue([
+      notification({
+        itemId: 'nc_budget_read',
+        title: 'Budget alert',
+        status: 'read',
+        safeBody: 'Your monthly budget is close to the limit.',
+      }),
+      notification({
+        itemId: 'nc_budget_dismissed',
+        title: 'Budget dismissed alert',
+        status: 'dismissed',
+        safeBody: 'A dismissed budget alert should not be snoozed.',
+      }),
+    ]);
+
+    const result = buildPreview('Snooze the Budget alert notification for 2 hours');
+
+    expect(result?.capabilityId).toBe('notifications.snooze');
+    expect(result?.command.payload).toMatchObject({
+      notificationId: 'nc_budget_read',
+      currentStatus: 'read',
+      targetStatus: 'snoozed',
+    });
+    expect(result?.command.preconditions.invariants).toEqual([{
+      type: 'notification_status',
+      description: 'Notification must still be snooze-eligible when the preview is confirmed.',
+      check: 'notification_is_snooze_eligible',
+    }]);
   });
 
   it('issues a confirmation token for notification-snooze when v2 confirmations are enabled', () => {
@@ -1063,7 +1095,7 @@ describe('Chat Core v2 command preview route', () => {
         requiredDecisionVersion: expect.stringMatching(/^[0-9a-f]{16}$/),
         invariants: [{
           type: 'decision_status',
-          description: 'Decision must still be active when the preview is confirmed.',
+          description: 'Decision must still be dismissible when the preview is confirmed.',
           check: 'decision_is_active',
         }],
       },
@@ -1098,6 +1130,75 @@ describe('Chat Core v2 command preview route', () => {
     });
     expect(result?.response.cards[0]?.confirmationToken).toBeUndefined();
     expect(vi.mocked(listDecisionItems)).toHaveBeenCalledWith(42, 84, { limit: 50 });
+  });
+
+  it('builds decision-dismiss previews for read decisions and excludes resolved decisions', () => {
+    vi.mocked(listDecisionItems).mockReturnValue([
+      decision({
+        decisionId: 'dc_schedule_read',
+        title: 'Schedule decision',
+        status: 'read',
+      }),
+      decision({
+        decisionId: 'dc_schedule_dismissed',
+        title: 'Schedule dismissed decision',
+        status: 'dismissed',
+      }),
+    ]);
+
+    const result = buildPreview('Dismiss the Schedule decision');
+
+    expect(result?.capabilityId).toBe('decision_center.dismiss');
+    expect(result?.command.payload).toMatchObject({
+      decisionId: 'dc_schedule_read',
+      currentStatus: 'read',
+      targetStatus: 'dismissed',
+    });
+    expect(result?.command.preconditions.invariants).toEqual([{
+      type: 'decision_status',
+      description: 'Decision must still be dismissible when the preview is confirmed.',
+      check: 'decision_is_active',
+    }]);
+  });
+
+  it('issues a confirmation token for decision-dismiss when v2 confirmations are enabled', () => {
+    vi.mocked(listDecisionItems).mockReturnValue([
+      decision({
+        decisionId: 'dc_schedule',
+        title: 'Schedule decision',
+        sourceSkill: 'secretary',
+        urgency: 'urgent',
+      }),
+    ]);
+
+    const result = buildPreview('Dismiss the Schedule decision', CONFIRMATIONS_ENABLED_ENV);
+
+    expect(result).not.toBeNull();
+    expect(result?.capabilityId).toBe('decision_center.dismiss');
+    expect(result?.executionEnabled).toBe(true);
+    expect(result?.executionDisabledReason).toBeUndefined();
+    expect(result?.confirmationToken).toEqual(expect.any(String));
+    expect(result?.response.reasonCodes).toContain('confirmation_required');
+    expect(result?.response.reasonCodes).not.toContain('preview_only_rollout');
+    expect(result?.response.cards[0]).toMatchObject({
+      type: 'decision_preview_card',
+      confirmationToken: result?.confirmationToken,
+      primaryAction: {
+        kind: 'confirm',
+        label: 'Confirm',
+        confirmationToken: result?.confirmationToken,
+      },
+      secondaryActions: [
+        { kind: 'edit', label: 'Edit' },
+        { kind: 'cancel', label: 'Cancel' },
+      ],
+    });
+    expect(getPendingChatCoreV2Command(result!.command.commandId, 42, 84, FIXED_NOW)).toMatchObject({
+      commandId: result!.command.commandId,
+      capabilityId: 'decision_center.dismiss',
+      userId: 42,
+      tenantId: 84,
+    });
   });
 
   it('localizes decision-dismiss previews after resolving the referenced decision', () => {
