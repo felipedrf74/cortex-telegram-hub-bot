@@ -135,6 +135,19 @@ export type MemoryItemType =
 
 export type MemoryStatus = 'active' | 'superseded' | 'deleted' | 'needs_confirmation';
 
+export type ChatCoreV2EntityType =
+  | 'task'
+  | 'training_session'
+  | 'event'
+  | 'notification'
+  | 'decision'
+  | 'content_item'
+  | 'meal_plan_item'
+  | 'finance_item'
+  | 'connection';
+
+export type EntityResolutionStatus = 'resolved' | 'ambiguous' | 'not_found';
+
 export interface RuntimeBudget {
   maxInputTokens: number;
   maxOutputTokens: number;
@@ -274,6 +287,26 @@ export interface MemoryItem {
   createdAt: string;
   updatedAt: string;
   expiresAt?: string;
+}
+
+export interface EntityResolutionCandidate {
+  id: string;
+  label: string;
+  confidence: number;
+  reason: string;
+  entityVersion?: string;
+  domain?: ChatCoreV2Domain;
+  metadata?: Record<string, unknown>;
+}
+
+export interface EntityReferenceResolution {
+  entityType: ChatCoreV2EntityType;
+  userPhrase: string;
+  candidates: EntityResolutionCandidate[];
+  status: EntityResolutionStatus;
+  selectedId?: string;
+  selectedCandidate?: EntityResolutionCandidate;
+  reasonCodes: string[];
 }
 
 export interface ChatV2AuditPayload {
