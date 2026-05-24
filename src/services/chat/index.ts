@@ -19,9 +19,7 @@ import {
 } from '../calendar-natural-language-parser';
 import {
   findChatActionDefinition,
-  messageHasActionCandidate,
   riskClassForRisk,
-  selectRegistrySubsetForMessage,
   type ChatActionDefinition,
 } from './registry';
 import type {
@@ -52,9 +50,6 @@ import {
   buildTier1ClassifierPrompt,
   parseLlmPlannerJson,
   parseTier1ClassifierJson,
-  tryBuildEscalationReviewerPlan,
-  tryBuildLlmStructuredPlan,
-  tryBuildTier1ClassifierPlan,
 } from './planner/tiers';
 import { sanitizePlannerArgs } from './planner/arg-sanitizer';
 import {
@@ -161,7 +156,6 @@ import {
   rowToConfirmedStep,
 } from './executor/run-persistence';
 import {
-  buildClarificationPlan,
   buildMessageOnlyPlan,
   buildNeedsInputPlan,
   buildPlanFromSteps,
@@ -207,6 +201,7 @@ import {
   buildRecentEntityFollowUpPlan,
 } from './planner/preflight-plans';
 import { tryBuildMultiStepChatActionPlan } from './planner/multi-step';
+import { buildSingleActionChatActionPlan } from './planner/single-action';
 import {
   recordShadowTelemetry,
   summarizeSlotProvenance,
@@ -345,7 +340,7 @@ export async function buildChatActionPlan(input: ChatPlannerInput): Promise<Chat
   const contentPendingContinuation = buildPendingContentSpecContinuation(input, PENDING_CONTINUATION_HELPERS);
   if (contentPendingContinuation) return contentPendingContinuation;
 
-  const multiStep = await tryBuildMultiStepChatActionPlan(input, buildSingleActionChatActionPlan);
+  const multiStep = await tryBuildMultiStepChatActionPlan(input, singleActionPlanner);
   if (multiStep) return multiStep;
 
   const recentFollowUp = buildRecentEntityFollowUpPlan(input);
@@ -356,31 +351,11 @@ export async function buildChatActionPlan(input: ChatPlannerInput): Promise<Chat
 
   if (!shouldRunActionPlannerBeforeReadOnlyFastPaths(input.text)) return null;
 
-  return buildSingleActionChatActionPlan(input);
+  return singleActionPlanner(input);
 }
 
-async function buildSingleActionChatActionPlan(input: ChatPlannerInput): Promise<ChatActionPlan | null> {
-  const deterministic = buildDeterministicChatActionPlan(input);
-  if (deterministic) return deterministic;
-
-  const folded = foldCalendarText(input.text);
-  const looksComplex = /(?:\be\b|\band\b|\+|,).{8,}/.test(folded) || selectRegistrySubsetForMessage(input.text).length > 1;
-  const tier1Plan = await tryBuildTier1ClassifierPlan(input);
-  if (tier1Plan) return tier1Plan;
-
-  if (looksComplex || messageHasActionCandidate(input.text)) {
-    const llmPlan = await tryBuildLlmStructuredPlan(input);
-    if (llmPlan) return llmPlan;
-    const reviewerPlan = await tryBuildEscalationReviewerPlan(input);
-    if (reviewerPlan) return reviewerPlan;
-  }
-
-  if (messageHasActionCandidate(input.text)) {
-    return buildClarificationPlan(input, input.locale?.startsWith('pt')
-      ? 'Preciso só de mais detalhes para fazer isso. Qual é o título, data, hora e destino?'
-      : 'I need a few more details to do that. What title, date, time, and destination should I use?');
-  }
-  return null;
+function singleActionPlanner(input: ChatPlannerInput): Promise<ChatActionPlan | null> {
+  return buildSingleActionChatActionPlan(input, buildDeterministicChatActionPlan);
 }
 
 export function buildDeterministicChatActionPlan(input: ChatPlannerInput): ChatActionPlan | null {
