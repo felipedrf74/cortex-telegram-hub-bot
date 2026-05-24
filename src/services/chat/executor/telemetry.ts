@@ -2,10 +2,8 @@
 
 import {
   recordChatActionTelemetry,
-  type ChatActionRiskClass,
   type ChatActionTelemetry,
 } from '../../chat-action-state';
-import { riskClassForRisk } from '../registry';
 import type {
   ChatActionPlan,
   ChatActionStatus,
@@ -13,6 +11,7 @@ import type {
   ChatPlanStep,
 } from '../types';
 import { logger } from '../../../utils/logger';
+import { thresholdForSteps } from '../planner/plan-utils';
 
 export function recordShadowTelemetry(plan: ChatActionPlan, input: ChatPlannerInput, routeStartedAtMs: number): void {
   if (input.persistRuns === false) return;
@@ -109,18 +108,6 @@ export function summarizeSlotProvenance(plan: ChatActionPlan): Record<string, un
   return summary;
 }
 
-export function thresholdForSteps(steps: ChatPlanStep[]): number {
-  const riskiest = steps.reduce<ChatActionRiskClass>((current, step) => {
-    const candidate = step.riskClass ?? riskClassForRisk(step.risk);
-    return riskRank(candidate) > riskRank(current) ? candidate : current;
-  }, 'R0');
-  if (riskiest === 'R3') return 0.98;
-  if (riskiest === 'R2') return 0.96;
-  if (riskiest === 'R1') return 0.9;
-  if (riskiest === 'R4') return 1;
-  return 0.75;
-}
-
 function verifierStatusForActionStatus(status: ChatActionStatus, plan: ChatActionPlan): ChatActionTelemetry['verifierStatus'] {
   const requiresVerification = plan.steps.some((step) => step.verification.required);
   if (!requiresVerification) return 'not_required';
@@ -150,6 +137,4 @@ function failureReasonForTelemetry(status: ChatActionStatus, metadata: Record<st
   return status;
 }
 
-function riskRank(risk: ChatActionRiskClass): number {
-  return { R0: 0, R1: 1, R2: 2, R3: 3, R4: 4 }[risk];
-}
+export { thresholdForSteps };
