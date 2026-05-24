@@ -23,11 +23,11 @@ import {
   type ChatActionRisk,
   type ChatActionSkill,
   type ChatProvider,
-} from '../chat-action-registry';
+} from '../chat/registry';
 import { buildNormalizedActionHash } from '../chat-action-run-store';
 import { sanitizeLlmPromptValue } from '../llm-prompt-safety';
 import type { ChatSlotProvenance } from '../chat-action-state';
-import type { ChatPlanStep, ChatPlanStepType } from '../chat-action-planner';
+import type { ChatPlanStep, ChatPlanStepType } from '../chat/types';
 
 /** Minimal identifying surface a step-builder needs from a chat planner input. */
 export type StepKeyInputs = {

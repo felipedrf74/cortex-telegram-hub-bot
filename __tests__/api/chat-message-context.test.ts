@@ -45,6 +45,7 @@ import {
   rememberChatActiveDomain,
   resetChatMessageContextForTests,
   resolveChatActiveContext,
+  setLastActiveDomain,
 } from '../../src/api/routes/chat-message-context';
 
 describe('chat message context helpers', () => {
@@ -85,6 +86,15 @@ describe('chat message context helpers', () => {
     rememberChatActiveDomain(42, 'finance', now - 1000);
     clearChatActiveDomain(42);
     expect(getLastChatActiveDomain(42, now)).toBeNull();
+  });
+
+  it('exposes a scheduler-facing active-domain helper without Telegram state', () => {
+    const before = Date.now();
+
+    setLastActiveDomain(42, 'triathlon', 7);
+
+    expect(getLastChatActiveDomain(42, before, 7)).toBe('triathlon');
+    expect(getLastChatActiveDomain(42, before)).toBeNull();
   });
 
   it('fails closed when the conversation store cannot provide continuity', () => {

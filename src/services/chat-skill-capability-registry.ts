@@ -10,7 +10,7 @@
 
 import type { DomainName } from '../domains/types';
 import type { NexusChatActionability, NexusChatOwnerSkill, NexusChatRiskLevel } from './chat-answer-contract';
-import { SKILL_METADATA, type ChatActionSkill } from './chat-action-registry';
+import { SKILL_METADATA, type ChatActionSkill } from './chat/registry';
 
 export interface ChatSkillCapability {
   skill: NexusChatOwnerSkill;
