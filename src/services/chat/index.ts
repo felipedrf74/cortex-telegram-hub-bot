@@ -1,6 +1,5 @@
 // Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
 
-import { DateTime } from 'luxon';
 import { randomUUID } from 'crypto';
 import {
   createEvent,
@@ -25,7 +24,6 @@ import {
   riskClassForRisk,
   selectRegistrySubsetForMessage,
   type ChatActionDefinition,
-  type ChatActionRisk,
 } from './registry';
 import type {
   CalendarProviderDeps,
@@ -51,7 +49,6 @@ import {
   recordChatActionTelemetry,
   rememberRecentChatEntity,
   resolveRecentChatEntity,
-  type ChatSlotProvenance,
 } from '../chat-action-state';
 import { getChatStepExecutor } from './executor/dispatch-table';
 import {
@@ -72,21 +69,14 @@ import {
   buildStepIdempotencyKey,
   makeStep,
 } from '../skills/step-builder';
-import { parseConnectionsActionStep } from '../skills/connections/parser';
 import { parseContentActionStep } from '../skills/content/parser';
 import { buildPendingContentSpecContinuation } from '../skills/content/pending';
-import { parseCookingActionStep } from '../skills/cooking/parser';
 import { buildPendingCookingMealPlanContinuation } from '../skills/cooking/pending';
-import { parseDecisionActionStep } from '../skills/decision_center/parser';
 import { buildPendingDecisionChooseContinuation } from '../skills/decision_center/pending';
-import { parseFinanceActionStep } from '../skills/finance/parser';
 import { buildPendingFinanceCategorizeContinuation } from '../skills/finance/pending';
-import { parseMailActionStep } from '../skills/mail/parser';
 import { buildPendingMailDraftContinuation } from '../skills/mail/pending';
-import { parseNotificationActionStep } from '../skills/notifications/parser';
 import { hasPastTenseSignal } from '../skills/past-tense-detector';
 import { extractTopic, inferContentPlatform, inferProviderName } from '../skills/text-extractors';
-import { parseTrainingActionStep } from '../skills/training/parser';
 import { buildPendingSlotContinuationPlan } from '../skills/training/pending';
 import type { PendingContinuationHelpers } from './planner/pending-types';
 import { invalidateCalendarCaches } from '../cache-coherence-registry';
@@ -185,7 +175,6 @@ import {
 } from './planner/plan-builder';
 import {
   buildIncompleteCalendarCreatePlan,
-  containsPromptInjectionMarker,
   parseBulkDestructiveRefusal,
   parsePromptInjectionRefusal,
   parseSensitiveDataExfiltrationRefusal,
@@ -197,9 +186,26 @@ import {
   parseSummarizeAgendaIntent,
 } from './planner/calendar-intents';
 import {
+  parseCompleteTaskByMarkIntent,
+  parseTaskMutationIntent,
+} from './planner/task-mutations';
+import {
+  extractTaskClause,
+  parseSimpleTaskIntent,
+  parseSimpleTaskStep,
+  startsWithSimpleTaskCreateIntent,
+} from './planner/simple-task';
+import {
+  hasLegacySubtaskIntent,
+  parseCreateChecklistIntent,
+  parseTaskWithSubtasksIntent,
+  startsWithTaskWithSubtasksIntent,
+} from './planner/task-subtasks';
+import {
   buildTargetedClarificationQuestion,
   defaultClarification,
 } from './planner/clarification';
+import { parseBroadSkillActionIntent } from './planner/broad-skill-intents';
 import {
   recordShadowTelemetry,
   summarizeSlotProvenance,
@@ -207,6 +213,7 @@ import {
 } from './executor/telemetry';
 
 export { buildLlmPlannerPrompt, buildTier1ClassifierPrompt, parseLlmPlannerJson, parseTier1ClassifierJson } from './planner/tiers';
+export { BROAD_SKILL_MIN_PRIORITY_GAP, BROAD_SKILL_SLOT_COMPLETENESS_BONUS } from './planner/broad-skill-intents';
 
 export type {
   CalendarProviderDeps,
@@ -223,8 +230,6 @@ export type {
 } from './types';
 
 const DEFAULT_PROVIDER_READ_BACK_TIMEOUT_MS = 3_500;
-export const BROAD_SKILL_SLOT_COMPLETENESS_BONUS = 0.005;
-export const BROAD_SKILL_MIN_PRIORITY_GAP = 0.01;
 const DEFAULT_PROVIDER_WRITE_TIMEOUT_MS = 10_000;
 
 const DEFAULT_DEPS: Required<ChatActionPlannerDeps> = {
@@ -242,27 +247,6 @@ const PENDING_CONTINUATION_HELPERS: PendingContinuationHelpers = {
   buildNeedsInputPlan,
   buildTargetedClarificationQuestion,
 };
-
-function hasLegacySubtaskIntent(text: string): boolean {
-  const folded = foldCalendarText(text);
-  return /\b(sub\s*-?\s*tasks?|subtarefas?|check\s*-?\s*list|checklist|lista de verificacao)\b/.test(folded);
-}
-
-const MAX_TASK_TITLE_LENGTH = 500;
-const MAX_SUBTASK_TITLE_LENGTH = 200;
-const MAX_SUBTASKS = 25;
-const SUBTASK_MARKER_PATTERNS = /\b(sub\s*tasks?|subtasks?|subtarefas?|subtareas?|checklist(?:\s+items?)?|steps?|itens?|elementos?)\b/i;
-const SUBTASK_SECOND_ACTION = /\b(and|e|y)\s+(?:remind|schedule|reschedule|cancel|delete|move|plan|mark|create|add|lembrar|agenda|agendar|remarcar|cancela|cancelar|apaga|apagar|mover|marcar|cria|criar|crear|programar|recordar|eliminar|borrar|añade|anade)\b/i;
-const TASK_DISCOURSE_TAILS = [
-  /\bfor now(?:\s+that'?s\s+it)?\.?$/i,
-  /\bthat'?s\s+(?:it|all)\.?$/i,
-  /\band\s+that'?s\s+all\.?$/i,
-  /\bjust\s+this\.?$/i,
-  /\bnothing\s+else\.?$/i,
-  /\bpor\s+agora(?:\s+e\s+so\s+isso)?\.?$/i,
-  /\bé\s+só\s+isso\.?$/i,
-  /\be\s+so\s+isso\.?$/i,
-];
 
 function hasSimpleTaskWriteIntent(text: string): boolean {
   const folded = foldCalendarText(text);
@@ -698,494 +682,6 @@ export function buildDeterministicChatActionPlan(input: ChatPlannerInput): ChatA
   return null;
 }
 
-function parseCompleteTaskByMarkIntent(input: ChatPlannerInput): ChatActionPlan | null {
-  const folded = foldCalendarText(input.text);
-  // Portuguese / English mark-as-done patterns that signal complete_task
-  // without a "create/cria" verb. Surfaced by the registry shadow-parity
-  // report 2026-05-15 — previously fell through to the generic-fallback
-  // first-action-in-subset path and incorrectly emitted create_task.
-  const isMarkAsDone =
-    /\b(marca|marcar|marc[aá]\-?la)\s+(?:essa|esta|a|essa\s+tarefa|esta\s+tarefa|isso)\s+(?:tarefa\s+)?(?:como\s+)?(?:feita|conclu[ií]da|pronta|done|complete[da]?)\b/.test(folded)
-    || /\b(mark|set)\s+(?:this|that|the)\s+task\s+(?:as\s+)?(?:done|complete[d]?)\b/.test(folded)
-    || /\b(concluir|conclui|finaliza|finalizar)\s+(?:essa|esta|a)\s+tarefa\b/.test(folded)
-    // Phase 7 close-out: informal "tick off" / "check off" complete verbs.
-    || /\b(tick|check)\s+off\s+(?:the|this|that|my)\s+\w+\s+task\b/.test(folded)
-    // Phase 9 batch 48: Spanish "marca esa tarea como hecha".
-    || /\b(marca|marcar)\s+(?:esa|esta|la)\s+tarea\s+(?:como\s+)?(?:hecha|hecho|completada|completado|terminada|terminado|lista)\b/.test(folded);
-  if (!isMarkAsDone) return null;
-  const step = makeStep(input, {
-    skill: 'tasks',
-    action: 'complete_task',
-    risk: 'safe_write',
-    provider: 'nexus',
-    // taskId resolution happens via the recent-entity follow-up plan upstream
-    // (buildRecentEntityFollowUpPlan in buildChatActionPlan). Here we mark the
-    // step as not-yet-resolved; the engine will ask for clarification when
-    // multiple recent tasks are candidates.
-    args: { taskId: null },
-    requiredArgsPresent: false,
-  });
-  return buildPlanFromSteps(input, [step], ['task_complete_by_mark_intent', 'deterministic_task_parser'], 0.78);
-}
-
-// Phase 1 batch 4 (2026-05-15): task mutation intents — delete/update/reminder.
-// Pattern mirrors parseCompleteTaskByMarkIntent: identify the mutation verb,
-// claim the action with `taskId: null`, and defer resolution to the
-// recent-entity follow-up path. Must run AFTER parseSimpleTaskIntent only
-// when the user explicitly references an existing task — guarded by NO
-// create-verb anywhere in the message so "create a task called delete all my
-// tasks" continues to route to create_task.
-function parseTaskMutationIntent(input: ChatPlannerInput): ChatActionPlan | null {
-  const folded = foldCalendarText(input.text);
-  // Phase 9 batch 48 (2026-05-16): Spanish `tarea` accepted in outer gate.
-  if (!/\b(task|tarefa|todo|lembrete|tarea[s]?)\b/.test(folded)) return null;
-  // Defer to parseSimpleTaskIntent when a create-verb opens the message. The
-  // literal-title policy (audit §10) means create wins over the embedded
-  // delete/update verb inside a title span — "Create a task called delete all
-  // my tasks" stays a create. We use ^-anchored detection so "delete the laundry
-  // task" (no leading create) still routes here.
-  if (/^\s*(?:cria[r]?|criar|adiciona[r]?|adicionar|create|add|new)\b/i.test(input.text)
-    && /\b(cria[r]?|criar|adiciona[r]?|adicionar|create|add|new)\b\s+(?:um[a]?|uma|a|o|new)?\s*(?:task|tarefa|todo|lembrete)\b/.test(folded)) {
-    return null;
-  }
-
-  // Set-reminder must be checked BEFORE update/delete because "definir um
-  // lembrete na tarefa" contains both `lembrete` and the noun `tarefa`, and we
-  // want it routed to set_task_reminder, not finance_create_reminder via the
-  // broad-skill subset. Includes PT verb forms `define`/`defina`/`definir`.
-  if (/\b(set\s+(?:a\s+)?reminder|defin[aeio](?:r|m|ndo)?\s+(?:um\s+)?lembrete|remind\s+me\s+(?:about|on)|lembra[r]?\s+(?:me\s+)?(?:d[aoe]|sobre|na)|pon(?:er|me)?\s+(?:un\s+)?recordatorio|programa[r]?\s+(?:un\s+)?recordatorio)\b.*\b(task|tarefa|tarea)\b/.test(folded)
-    || /\b(?:task|tarefa|tarea)\b.*\b(set\s+(?:a\s+)?reminder|defin[aeio](?:r|m|ndo)?\s+(?:um\s+)?lembrete|pon(?:er|me)?\s+(?:un\s+)?recordatorio|programa[r]?\s+(?:un\s+)?recordatorio)\b/.test(folded)) {
-    return buildTaskMutationPlan(input, 'set_task_reminder', 'safe_write');
-  }
-  // Delete: verb appears followed (anywhere) by tarefa/task.
-  // Phase 2 batch 10: PT-BR "deleta"/"exclui" added to the verb set so
-  // "Deleta a tarefa" routes correctly. The English verbs cover BR+PT
-  // mixed usage too.
-  // Phase 9 batch 48: Spanish "borra"/"borrar" added; "tarea" accepted.
-  if (/\b(delete|remove|apaga[r]?|elimina[r]?|deleta[r]?|excluir?|exclui[mr]?|borra[r]?)\b[^.]*\b(tarefa|task|tarea)\b/.test(folded)) {
-    return buildTaskMutationPlan(input, 'delete_task', 'destructive');
-  }
-  // Update / change / edit: verb followed by tarefa/task somewhere later.
-  // Phase 3 batch 15: PT-BR `muda[r]?` (BR colloquial for "altera/change")
-  // added so "Muda a tarefa pra terça" routes correctly.
-  // Phase 9 batch 48: Spanish "cambia/cambiar" added; "tarea" accepted.
-  if (/\b(update|change|edit|rename|atualiza[r]?|altera[r]?|modifica[r]?|renomeia[r]?|muda[r]?|cambia[r]?)\b[^.]*\b(tarefa|task|tarea)\b/.test(folded)) {
-    return buildTaskMutationPlan(input, 'update_task', 'safe_write');
-  }
-  return null;
-}
-
-function buildTaskMutationPlan(
-  input: ChatPlannerInput,
-  action: 'delete_task' | 'update_task' | 'set_task_reminder',
-  risk: ChatActionRisk,
-): ChatActionPlan {
-  const step = makeStep(input, {
-    skill: 'tasks',
-    action,
-    risk,
-    provider: 'nexus',
-    args: action === 'set_task_reminder'
-      ? { taskId: null, reminderAt: null }
-      : { taskId: null },
-    requiredArgsPresent: false,
-  });
-  return buildPlanFromSteps(input, [step], [`task_${action}_intent`, 'deterministic_task_parser'], 0.76);
-}
-
-function parseTaskWithSubtasksIntent(input: ChatPlannerInput): ChatActionPlan | null {
-  const cleaned = stripTaskDiscourseTail(input.text.trim());
-  if (!cleaned) return null;
-  if (SUBTASK_SECOND_ACTION.test(cleaned)) {
-    return buildNeedsInputPlan(input, {
-      skill: 'tasks',
-      action: 'create_task_with_subtasks',
-      question: input.locale?.startsWith('pt')
-        ? 'Vejo mais de uma ação nesse pedido. Confirma primeiro a tarefa com subtarefas ou pede uma pré-visualização completa.'
-        : 'I see more than one action in that request. Confirm the task with subtasks first, or ask me to preview the full plan.',
-      args: { title: null, subtasks: [] },
-      routingSignals: ['task_with_subtasks_multi_step_guard', 'deterministic_task_parser'],
-      clarificationReason: 'ambiguous_intent',
-      intentClass: 'multi_step_preview_required',
-    });
-  }
-
-  const quoted = extractTaskQuotedSegments(cleaned);
-  const addFrame = parseAddSubtasksDescriptor(cleaned, quoted);
-  if (addFrame?.multiRecipient) {
-    return buildNeedsInputPlan(input, {
-      skill: 'tasks',
-      action: 'add_subtasks_to_task',
-      question: input.locale?.startsWith('pt')
-        ? 'Quais subtarefas pertencem a qual tarefa? Posso atualizar uma tarefa de cada vez.'
-        : 'Which subtasks belong to which task? I can update one task at a time.',
-      args: { title: null, subtasks: [] },
-      routingSignals: ['multi_recipient_subtask_update', 'deterministic_task_parser'],
-      clarificationReason: 'ambiguous_intent',
-      intentClass: 'task_update',
-    });
-  }
-  if (addFrame) return buildTaskSubtasksActionPlan(input, 'add_subtasks_to_task', addFrame, 0.88, ['add_subtasks_to_task_intent', 'deterministic_task_parser']);
-
-  const checklistFrame = parseChecklistTaskDescriptor(cleaned);
-  if (checklistFrame) return buildTaskSubtasksActionPlan(input, 'create_task_with_subtasks', checklistFrame, 0.9, ['create_checklist_task_intent', 'deterministic_task_parser']);
-
-  const createFrame = parseCreateTaskWithSubtasksDescriptor(cleaned, quoted)
-    ?? parseImplicitTaskWithSubtasksDescriptor(cleaned);
-  if (createFrame) return buildTaskSubtasksActionPlan(input, 'create_task_with_subtasks', createFrame, createFrame.confidence, ['create_task_with_subtasks_intent', 'deterministic_task_parser']);
-
-  const multipleTasks = parseCreateMultipleTasksDescriptor(cleaned);
-  if (multipleTasks) {
-    return buildNeedsInputPlan(input, {
-      skill: 'tasks',
-      action: 'create_task',
-      question: input.locale?.startsWith('pt')
-        ? 'Queres criar tarefas separadas? Confirma uma de cada vez ou pede uma pré-visualização completa.'
-        : 'Do you want separate tasks? Confirm them one at a time, or ask me to preview the full plan.',
-      args: { tasks: multipleTasks.tasks },
-      routingSignals: ['bulk_task_creation_guard', 'deterministic_task_parser'],
-      clarificationReason: 'ambiguous_intent',
-      intentClass: 'task_create',
-    });
-  }
-
-  return null;
-}
-
-function buildTaskSubtasksActionPlan(
-  input: ChatPlannerInput,
-  action: 'create_task_with_subtasks' | 'add_subtasks_to_task',
-  descriptor: { title: string; subtasks: string[]; language?: string },
-  confidence: number,
-  routingSignals: string[],
-): ChatActionPlan {
-  const args = {
-    title: descriptor.title,
-    subtasks: descriptor.subtasks,
-    dueAt: null,
-    reminderAt: null,
-    notes: null,
-    priority: null,
-    list: null,
-    language: descriptor.language ?? detectTaskLanguage(input.text),
-    extractionConfidence: confidence,
-  };
-  const step = makeStep(input, {
-    skill: 'tasks',
-    action,
-    risk: 'safe_write',
-    provider: 'nexus',
-    args,
-    requiredArgsPresent: Boolean(descriptor.title && descriptor.subtasks.length > 0),
-  });
-  return buildPlanFromSteps(input, [step], routingSignals, confidence);
-}
-
-function parseCreateTaskWithSubtasksDescriptor(
-  cleaned: string,
-  quoted: string[],
-): { title: string; subtasks: string[]; language: string; confidence: number } | null {
-  if (!SUBTASK_MARKER_PATTERNS.test(removeTaskQuotedSegments(cleaned))) return null;
-  const marker = /(.*?)\b(?:where\s+it\s+has|with|including|that\s+has|com|incluindo|con)?\s*(?:sub\s*tasks?|subtasks?|subtarefas?|subtareas?|checklist(?:\s+items?)?|steps?|itens?|elementos?)\s*(?:called|named|chamadas?|chamados?|llamadas?|llamados?)?\s+(.+)$/i;
-  const match = cleaned.match(marker);
-  if (!match) return null;
-
-  const title = extractTaskSubtaskTitle(match[1] || '', quoted);
-  const subtasks = splitTaskSubtaskItems(match[2] || '');
-  if (!title || subtasks.length === 0) return null;
-  return { title, subtasks, language: detectTaskLanguage(cleaned), confidence: 0.94 };
-}
-
-function parseChecklistTaskDescriptor(cleaned: string): { title: string; subtasks: string[]; language: string } | null {
-  const match = cleaned.match(/^\s*(?:create|make|cria|criar|crie|crear|crea)\s+(?:a\s+|uma?\s+|una?\s+)?checklist\s+(?:called|named|chamado|chamada|llamado|llamada)?\s*(.+?)\s*:\s*(.+)$/i);
-  if (!match) return null;
-  const title = normalizeTaskGuidanceTitle(match[1]);
-  const subtasks = splitTaskSubtaskItems(match[2]);
-  if (!title || subtasks.length === 0) return null;
-  return { title, subtasks, language: detectTaskLanguage(cleaned) };
-}
-
-function parseImplicitTaskWithSubtasksDescriptor(cleaned: string): { title: string; subtasks: string[]; language: string; confidence: number } | null {
-  const match = cleaned.match(/^\s*(?:cria|criar|crie|crear|crea)\s+(?:uma?\s+|una?\s+)?(?:tarefa|tarea)\s+(?:chamada?|chamado|llamada?|llamado)?\s*(.+?)\s+(?:com|con)\s+(.+)$/i);
-  if (!match) return null;
-  const title = normalizeTaskGuidanceTitle(match[1]);
-  const subtasks = splitTaskSubtaskItems(match[2]);
-  if (!title || subtasks.length < 2) return null;
-  return { title, subtasks, language: detectTaskLanguage(cleaned), confidence: 0.86 };
-}
-
-function parseAddSubtasksDescriptor(
-  cleaned: string,
-  quoted: string[],
-): { title: string; subtasks: string[]; language: string; multiRecipient?: boolean } | null {
-  const textWithoutQuotes = removeTaskQuotedSegments(cleaned);
-  if (!/^\s*(add|adiciona|adicionar|añade|anade|añadir|anadir|agrega|agregar)\b/i.test(textWithoutQuotes)) return null;
-  if (/^\s*(?:add|adiciona|adicionar|añade|anade|añadir|anadir|agrega|agregar)\s+(?:a\s+|uma?\s+|una?\s+)?(?:task|todo|tarefa|tarea)\b/i.test(textWithoutQuotes)) return null;
-  if (hasMultiRecipientSubtaskIntent(textWithoutQuotes)) {
-    return { title: 'multiple tasks', subtasks: [], language: detectTaskLanguage(cleaned), multiRecipient: true };
-  }
-  const match = cleaned.match(/^\s*(?:add|adiciona|adicionar|añade|anade|añadir|anadir|agrega|agregar)\s+(.+?)\s+(?:to|under|à|a|na|no|en|bajo)\s+(?:my\s+|minha\s+|meu\s+|mi\s+|the\s+|la\s+|el\s+)?(?:task\s+|tarefa\s+|tarea\s+)?(.+?)(?:\s+task|\s+tarefa|\s+tarea)?$/i);
-  if (!match) return null;
-  const subtasks = splitTaskSubtaskItems(match[1]);
-  const title = normalizeTaskGuidanceTitle(stripTaskArticleAndWords(match[2], quoted));
-  if (!title || subtasks.length === 0) return null;
-  return { title, subtasks, language: detectTaskLanguage(cleaned) };
-}
-
-function parseCreateMultipleTasksDescriptor(cleaned: string): { tasks: string[] } | null {
-  const match = cleaned.match(/^\s*(?:create|cria|criar|crie|crear|crea)\s+(?:(\d+|three|two|multiple|varias|várias|duas|tres|três|dos)\s+)?(?:tasks|tarefas|tareas)\b[:\s]*(.+)$/i);
-  if (!match) return null;
-  const listPart = match[2] || '';
-  if (!match[1] && !/(?:,|;|\n|\u2022|•|\band\b|\be\b|\by\b)/i.test(listPart)) return null;
-  const tasks = splitTaskSubtaskItems(listPart);
-  return tasks.length < 2 ? null : { tasks };
-}
-
-// Phase 1 batch 4: create_checklist intent. Distinct from create_task by the
-// explicit "checklist" object plus enumerated items. We route deterministically
-// when the user provides items inline; otherwise we defer to broader parsers.
-function parseCreateChecklistIntent(input: ChatPlannerInput): ChatActionPlan | null {
-  const folded = foldCalendarText(input.text);
-  // Phase 12 batch 66 (2026-05-16): Spanish "crea[r]?" / "a[nñ]ade"
-  // added to create-verb set. Checklist noun unchanged — Spanish uses
-  // the loan word "checklist".
-  if (!/\b(create|cria[r]?|crea[r]?|adiciona[r]?|a[nñ]ade|monta[r]?|fa[czc]a?[r]?|build|new)\b/.test(folded)) return null;
-  if (!/\b(checklist|lista\s+de\s+verifica[cç][aã]o|sub-?tarefas?|subtarefas?)\b/.test(folded)) return null;
-  const title = extractTopicFromChecklist(input.text) || 'Checklist';
-  const items = extractChecklistItems(input.text);
-  const step = makeStep(input, {
-    skill: 'tasks',
-    action: 'create_checklist',
-    risk: 'safe_write',
-    provider: 'nexus',
-    args: { title, items },
-    requiredArgsPresent: Boolean(title && items.length > 0),
-  });
-  return buildPlanFromSteps(input, [step], ['create_checklist_intent', 'deterministic_task_parser'], 0.74);
-}
-
-function extractTopicFromChecklist(text: string): string | null {
-  // "create a checklist for trip prep with passport, tickets" → "trip prep"
-  // "cria uma checklist para a viagem com passaporte, bilhetes" → "a viagem"
-  const match = text.match(/\b(?:checklist|sub-?tarefas?|subtarefas?)\s+(?:for|para|sobre|de|do|da)\s+([^,.:;]+?)(?:\s+with\b|\s+com\b|[,.:;]|$)/i);
-  return match?.[1]?.trim() || null;
-}
-
-function extractChecklistItems(text: string): string[] {
-  // Items after "with" / "com" / ":" — comma-or-semicolon separated.
-  // Phase 12 batch 66: Spanish "y" added as a list conjunction.
-  const match = text.match(/\b(?:with|com|con)\s+(.+)$/i) || text.match(/:\s*(.+)$/);
-  if (!match) return [];
-  return match[1]
-    .split(/[,;]\s*|\s+e\s+|\s+y\s+|\s+and\s+/i)
-    .map((item) => item.trim().replace(/[.?!]+$/g, ''))
-    .filter((item) => item.length > 0 && item.length < 80)
-    .slice(0, 20);
-}
-
-function stripTaskDiscourseTail(value: string): string {
-  let output = value.trim();
-  for (const pattern of TASK_DISCOURSE_TAILS) output = output.replace(pattern, '').trim();
-  return output
-    .replace(/\bfor now(?:\s+that'?s\s+it)?\b/gi, ' ')
-    .replace(/\bthat'?s\s+(?:it|all)\b/gi, ' ')
-    .replace(/\band\s+that'?s\s+all\b/gi, ' ')
-    .replace(/\bjust\s+this\b/gi, ' ')
-    .replace(/\bnothing\s+else\b/gi, ' ')
-    .replace(/\bpor\s+agora(?:\s+e\s+so\s+isso)?\b/gi, ' ')
-    .replace(/\bé\s+só\s+isso\b/gi, ' ')
-    .replace(/\be\s+so\s+isso\b/gi, ' ')
-    .replace(/\s+/g, ' ')
-    .replace(/[.。]+$/g, '')
-    .trim();
-}
-
-function extractTaskQuotedSegments(value: string): string[] {
-  const matches = [...value.matchAll(/"([^"]+)"|“([^”]+)”|'([^']+)'|‘([^’]+)’/g)];
-  return matches
-    .map((match) => (match[1] || match[2] || match[3] || match[4] || '').trim())
-    .filter(Boolean);
-}
-
-function replaceTaskQuotedSegments(value: string): string {
-  let index = 0;
-  return value.replace(/"([^"]+)"|“([^”]+)”|'([^']+)'|‘([^’]+)’/g, () => `__QUOTE_${index++}__`);
-}
-
-function removeTaskQuotedSegments(value: string): string {
-  return replaceTaskQuotedSegments(value);
-}
-
-function normalizeTaskGuidanceTitle(value: unknown): string {
-  return String(value || '')
-    .replace(/\s+/g, ' ')
-    .replace(/^[:\-–—\s]+|[:\-–—\s.!?]+$/g, '')
-    .slice(0, MAX_TASK_TITLE_LENGTH)
-    .trim();
-}
-
-function normalizeTaskGuidanceComparable(value: unknown): string {
-  return String(value || '')
-    .normalize('NFD')
-    .replace(/\p{Diacritic}/gu, '')
-    .trim()
-    .toLowerCase()
-    .replace(/\s+/g, ' ');
-}
-
-function splitTaskSubtaskItems(value: string): string[] {
-  const stripped = stripTaskDiscourseTail(value)
-    .replace(/^\s*(called|named|chamadas?|chamados?|llamadas?|llamados?)\s+/i, '')
-    .trim();
-  const quoted = extractTaskQuotedSegments(stripped);
-  if (quoted.length > 0) return normalizeTaskSubtaskList(quoted);
-
-  const commaSplit = stripped
-    .split(/\s*(?:,|;|\n|\u2022|•)\s*|\s+(?:and|e|y)\s+/g)
-    .map(normalizeTaskGuidanceTitle)
-    .filter(Boolean);
-  if (commaSplit.length > 1) return normalizeTaskSubtaskList(commaSplit);
-
-  const words = stripped.split(/\s+/).map(normalizeTaskGuidanceTitle).filter(Boolean);
-  if (words.length >= 2 && words.every((word) => /^[\p{L}\p{N}][\p{L}\p{N}+.-]*$/u.test(word))) {
-    return normalizeTaskSubtaskList(words);
-  }
-  return normalizeTaskSubtaskList([stripped]);
-}
-
-function normalizeTaskSubtaskList(value: unknown): string[] {
-  const input = Array.isArray(value) ? value : typeof value === 'string' ? [value] : [];
-  const seen = new Set<string>();
-  const output: string[] = [];
-  for (const item of input) {
-    const normalized = normalizeTaskGuidanceTitle(item);
-    if (!normalized) continue;
-    const key = normalizeTaskGuidanceComparable(normalized);
-    if (seen.has(key)) continue;
-    seen.add(key);
-    output.push(normalized.slice(0, MAX_SUBTASK_TITLE_LENGTH).trim());
-    if (output.length >= MAX_SUBTASKS) break;
-  }
-  return output;
-}
-
-function extractTaskSubtaskTitle(prefix: string, quoted: string[]): string {
-  const withoutQuoted = removeTaskQuotedSegments(prefix);
-  const hasQuotedTitle = quoted.length > 0 && /\b(called|named|chamada?|chamado?|llamada?|llamado?)\s+__QUOTE_0__/i.test(replaceTaskQuotedSegments(prefix));
-  if (hasQuotedTitle) return normalizeTaskGuidanceTitle(quoted[0]);
-
-  let title = prefix
-    .replace(/^\s*(please\s+)?(create|add|make|cria|criar|crie|adiciona|adicionar|crear|crea|agrega|agregar|añade|anade|añadir|anadir)\s+/i, '')
-    .replace(/^\s*(a|one|uma|um|una|un)\s+/i, '')
-    .replace(/^\s*(tasks?|todo|to-do|tarefas?|tareas?|checklist)\s+/i, '')
-    .replace(/^\s*(called|named|chamada?|chamado?|llamada?|llamado?)\s+/i, '')
-    .replace(/\s+(where\s+it\s+has|with|including|that\s+has|com|incluindo|con)\s*$/i, '')
-    .trim();
-  if (quoted.length > 0 && replaceTaskQuotedSegments(title).trim() === '__QUOTE_0__') return normalizeTaskGuidanceTitle(quoted[0]);
-  const quotedOnly = title.match(/^["“”'‘’]([^"“”'‘’]+)["“”'‘’]$/);
-  if (quotedOnly?.[1]) return normalizeTaskGuidanceTitle(quotedOnly[1]);
-  if (!title && quoted.length > 0 && withoutQuoted.includes('__QUOTE_0__')) title = quoted[0];
-  return normalizeTaskGuidanceTitle(title.replace(/__QUOTE_\d+__/g, '').trim());
-}
-
-function stripTaskArticleAndWords(value: string, quoted: string[]): string {
-  const withPlaceholders = replaceTaskQuotedSegments(value);
-  const replaced = withPlaceholders.replace(/__QUOTE_(\d+)__/g, (_all, index) => quoted[Number(index)] || '');
-  return replaced
-    .replace(/^\s*(the|a|uma|um|una|un|minha|meu|my|mi|la|el|los|las)\s+/i, '')
-    .replace(/\s*(task|tarefa|tarea)\s*$/i, '')
-    .trim();
-}
-
-function detectTaskLanguage(value: string): 'en' | 'pt' | 'es' | 'mixed' | 'unknown' {
-  const hasPortuguese = /\b(cria|criar|crie|tarefa|subtarefas?|adiciona|por agora|é só isso)\b/i.test(value);
-  const hasSpanish = /\b(crea|crear|tarea|subtareas?|añade|anade|agrega|con|llamada?|llamado?)\b/i.test(value);
-  const hasEnglish = /\b(create|task|subtasks?|add|called|for now)\b/i.test(value);
-  if ([hasPortuguese, hasSpanish, hasEnglish].filter(Boolean).length > 1) return 'mixed';
-  if (hasSpanish) return 'es';
-  if (hasPortuguese) return 'pt';
-  if (hasEnglish) return 'en';
-  return 'unknown';
-}
-
-function hasMultiRecipientSubtaskIntent(value: string): boolean {
-  const targetClauses = value.match(/\b(?:to|under|à|a|na|no|en|bajo)\b/gi) || [];
-  return targetClauses.length > 1 && /\b(and|e|y)\b/i.test(value);
-}
-
-function startsWithTaskWithSubtasksIntent(text: string): boolean {
-  const folded = foldCalendarText(text).replace(/^(?:please|por favor|pfv)\s+/, '');
-  return /^\s*(?:create|make|cria[r]?|crie|crea[r]?|agrega[r]?)\b[\s\S]{0,50}\b(?:task|todo|tarefa|tarea)\b/.test(folded)
-    || /^\s*(?:add|adiciona[r]?|a[nñ]ade|a[nñ]adir|agrega[r]?)\b/.test(folded);
-}
-
-function parseBroadSkillActionIntent(input: ChatPlannerInput): ChatActionPlan | null {
-  const folded = foldCalendarText(input.text);
-  const locale = input.locale || 'pt-BR';
-  const now = DateTime.fromISO(input.nowIso ?? new Date().toISOString()).setZone(input.timezone);
-
-  // Phase 16 batch 89 second half (2026-05-17): score-based intent picking.
-  //
-  // Before this batch the dispatch was first-match priority — each parser
-  // returned `step | null` and the first non-null result won. The original
-  // Phase 6 batch 6 routing-gap fix established a hand-coded priority
-  // ordering (notifications/decisions ahead of training because "disable
-  // training notifications" should pick notifications). Score-based
-  // picking preserves that ordering as scoreboard weights AND adds slot-
-  // completeness as a TIE-BREAKER (small enough not to cross the
-  // smallest priority gap of 0.01) so when two parsers at the same
-  // base weight both match, the more-confident extraction wins.
-  //
-  // The score = baseWeight + (requiredArgsPresent ? bonus : 0). The
-  // bonus is intentionally smaller than the smallest inter-skill priority
-  // gap between adjacent skills so it only tie-breaks within a priority
-  // tier; it never demotes a higher-priority skill.
-  const candidates: Array<{
-    step: ChatPlanStep;
-    routingSignals: string[];
-    confidence: number;
-    score: number;
-  }> = [];
-  function consider(step: ChatPlanStep | null, baseWeight: number, signals: string[]) {
-    if (!step) return;
-    const score = baseWeight + (step.requiredArgsPresent ? BROAD_SKILL_SLOT_COMPLETENESS_BONUS : 0);
-    candidates.push({ step, routingSignals: signals, confidence: baseWeight, score });
-  }
-
-  consider(parseNotificationActionStep(input, folded), 0.78, ['notification_action_intent', 'deterministic_skill_parser']);
-  consider(parseDecisionActionStep(input, folded), 0.77, ['decision_action_intent', 'deterministic_skill_parser']);
-  consider(parseContentActionStep(input, folded), 0.78, ['content_action_intent', 'deterministic_skill_parser']);
-  consider(parseMailActionStep(input, folded), 0.77, ['mail_action_intent', 'deterministic_skill_parser']);
-  consider(parseCookingActionStep(input, folded, now), 0.76, ['cooking_action_intent', 'deterministic_skill_parser']);
-  consider(parseFinanceActionStep(input, folded, now), 0.75, ['finance_action_intent', 'deterministic_skill_parser']);
-  consider(parseConnectionsActionStep(input, folded), 0.74, ['connections_action_intent', 'deterministic_skill_parser']);
-  consider(parseTrainingActionStep(input, folded), 0.72, ['training_action_intent', 'deterministic_skill_parser']);
-
-  if (candidates.length > 0) {
-    // Stable sort: highest score wins; first declared wins on tie to
-    // preserve the historic priority ordering.
-    const best = candidates.reduce((a, b) => (b.score > a.score ? b : a));
-    return buildPlanFromSteps(input, [best.step], best.routingSignals, best.confidence);
-  }
-
-  if (messageHasActionCandidate(input.text)) {
-    const subset = selectRegistrySubsetForMessage(input.text);
-    const primary = subset[0];
-    if (primary) {
-      const step = makeStep(input, {
-        skill: primary.skill,
-        action: primary.action,
-        risk: primary.risk,
-        provider: primary.providerDependencies[0] ?? 'nexus',
-        args: { rawRequest: input.text },
-        requiredArgsPresent: false,
-      });
-      return buildPlanFromSteps(input, [step], ['unknown_action_candidate', primary.skill], 0.42);
-    }
-  }
-  return null;
-}
-
 // parseContentActionStep moved to skills/content/parser.ts on 2026-05-15
 // (planner-split, audit implementation plan Phase 0).
 // parseCookingActionStep moved to skills/cooking/parser.ts on 2026-05-15.
@@ -1213,332 +709,6 @@ function parseBroadSkillActionIntent(input: ChatPlannerInput): ChatActionPlan | 
 // actionToStepType, and pickExpectedFields moved to src/services/skills/
 // step-builder.ts on 2026-05-15 (planner-split foundation, audit
 // implementation plan Phase 0). They are imported at the top of this file.
-
-function parseSimpleTaskIntent(input: ChatPlannerInput): ChatActionPlan | null {
-  const step = parseSimpleTaskStep(input, input.text);
-  if (!step) return null;
-  const requireSafeWrites = input.requireSafeWriteConfirmation === true;
-  return {
-    schemaVersion: 1,
-    userId: String(input.userId),
-    tenantId: String(input.tenantId),
-    conversationId: input.conversationId,
-    messageId: input.messageId,
-    locale: input.locale || 'pt-BR',
-    timezone: input.timezone,
-    channel: input.channel,
-    createdAt: input.nowIso ?? new Date().toISOString(),
-    planner: 'deterministic',
-    steps: [step],
-    requiresConfirmation: stepRequiresConfirmation(step, { requireSafeWrites }),
-    confidence: 0.82,
-    debug: {
-      routingSignals: ['task_write_intent', 'deterministic_task_parser'],
-      rejectedFastPaths: [],
-      parser: 'deterministic',
-    },
-  };
-}
-
-function parseSimpleTaskStep(input: ChatPlannerInput, text: string | null): ChatPlanStep | null {
-  if (!text) return null;
-  const folded = foldCalendarText(text);
-  if (hasLegacySubtaskIntent(removeTaskQuotedSegments(text))) return null;
-  // Phase 2 batch 10: PT-BR colloquial create-verbs ("bota", "coloca", "põe",
-  // "mete") added so "Bota uma tarefa chamada X" routes through the simple-
-  // task parser instead of falling through.
-  // Phase 8 batch 43 (2026-05-15): Spanish "crea"/"crear" + "tarea" added
-  // for minimum Spanish coverage.
-  // Phase 9 batch 48 (2026-05-16): Spanish "añade"/"añadir" added.
-  const directTaskCreate = /\b(cria|criar|adiciona|adicionar|create|add|bota[r]?|coloca[r]?|p[oõ]e[r]?|mete[r]?|crea[r]?|a[nñ]ade|a[nñ]adir|agreg[ae][r]?)\b/.test(folded)
-    && /\b(task|tarefa|todo|lembrete|tarea[s]?)\b/.test(folded);
-  const reminderTaskCreate = isPlainTaskReminderCreate(folded);
-  if (!directTaskCreate && !reminderTaskCreate) return null;
-  const titleSlot = extractTaskTitleSlot(input, text);
-  const title = titleSlot?.value.trim();
-  if (!title) return null;
-  const dueSlot = extractTaskDueDateTimeSlot(input, text);
-  // Literal-title policy (audit §10, approved 2026-05-15 by Felipe): when the
-  // title span comes from an explicit title marker (called/chamada/titulo:/named/
-  // quoted-string — extractTaskTitleSlot returns confidence ≥ 0.95 for those),
-  // treat the title as user-provided content, even if it contains destructive
-  // verbs. Outside trusted spans (heuristic fallback at confidence < 0.95),
-  // the unsafe-title defense still applies.
-  //
-  // Prompt-injection markers (§10.1 point 4) override the literal-title policy:
-  // explicit LLM-instruction syntax (`ignore previous instructions`,
-  // `<|im_start|>`, `[INST]`, etc.) refuses regardless of trusted-span status.
-  const fromTrustedTitleSpan = (titleSlot?.confidence ?? 0) >= 0.95;
-  const hasInjectionMarker = containsPromptInjectionMarker(title);
-  const destructiveOutsideTitleSpan = !fromTrustedTitleSpan && isUnsafeTaskTitle(title);
-  const unsafeTitle = hasInjectionMarker || destructiveOutsideTitleSpan;
-  const args = unsafeTitle
-    ? { title: null, rejectedTitle: title, list: null, dueDateTime: dueSlot?.value ?? null, notes: null }
-    : { title, list: null, dueDateTime: dueSlot?.value ?? null, notes: null };
-  const slotProvenance: Record<string, ChatSlotProvenance> = {
-    title: makeSlotProvenance({
-      slot: 'title',
-      value: title,
-      rawText: titleSlot?.rawText ?? title,
-      turnId: input.messageId,
-      spanStart: titleSlot?.spanStart ?? null,
-      spanEnd: titleSlot?.spanEnd ?? null,
-      sourceType: 'user_message',
-      normalizer: 'task_title_v2',
-      confidence: titleSlot?.confidence ?? 0.9,
-    }),
-  };
-  if (dueSlot) {
-    slotProvenance.dueDateTime = makeSlotProvenance({
-      slot: 'dueDateTime',
-      value: dueSlot.value,
-      rawText: dueSlot.rawText,
-      turnId: input.messageId,
-      spanStart: dueSlot.spanStart,
-      spanEnd: dueSlot.spanEnd,
-      sourceType: 'user_message',
-      normalizer: 'task_due_datetime_v1',
-      confidence: dueSlot.confidence,
-    });
-  }
-  return {
-    stepId: `step-${randomUUID()}`,
-    skill: 'tasks',
-    type: 'create_task',
-    action: 'create_task',
-    risk: unsafeTitle ? 'ambiguous' : 'safe_write',
-    riskClass: unsafeTitle ? 'R4' : 'R1',
-    provider: 'nexus',
-    args,
-    slotProvenance,
-    requiredArgsPresent: !unsafeTitle,
-    idempotencyKey: buildStepIdempotencyKey(input, 'create_task', args),
-    verification: {
-      required: true,
-      method: 'local_read_back',
-      expectedFields: unsafeTitle ? {} : { title },
-    },
-  };
-}
-
-function startsWithSimpleTaskCreateIntent(text: string): boolean {
-  const folded = foldCalendarText(text).replace(/^(?:please|por favor|pfv)\s+/, '');
-  return /^\s*(?:create|add|cria[r]?|adiciona[r]?|bota[r]?|coloca[r]?|poe[r]?|mete[r]?|crea[r]?|anade|anadir|agrega[r]?)\b[\s\S]{0,40}\b(?:task|tarefa|todo|lembrete|tarea)\b/.test(folded)
-    || /^\s*(?:remind me to|lembra-?me de|lembre-?me de|recuerdame(?: a)?|recordarme(?: a)?)\b/.test(folded);
-}
-
-function isUnsafeTaskTitle(title: string): boolean {
-  const folded = foldCalendarText(title);
-  return /\b(delete|remove|erase|wipe|apaga|apagar|elimina|eliminar|remove)\b.*\b(all|todos|todas|everything|tasks|tarefas|events|eventos|emails?)\b/.test(folded)
-    || /\b(send|envia|enviar)\b.*\b(all|todos|todas|emails?|mensagens)\b/.test(folded)
-    || /\b(delete|apaga|apagar)\b.*\b(church|igreja|event|evento)\b/.test(folded);
-}
-
-function extractTaskTitleSlot(input: ChatPlannerInput, text: string): { value: string; rawText: string; spanStart: number; spanEnd: number; confidence: number } | null {
-  const quotedTaskTitle = /\b(?:task|tarefa|todo|lembrete|tarea)\b\s*["“]([^"”]+)["”]/i.exec(text);
-  if (quotedTaskTitle?.[1]) {
-    const raw = quotedTaskTitle[1].trim();
-    const cleaned = cleanupTaskTitle(raw, input);
-    if (cleaned.length > 0) {
-      const start = quotedTaskTitle.index + quotedTaskTitle[0].indexOf(quotedTaskTitle[1]);
-      return { value: cleaned, rawText: raw, spanStart: start, spanEnd: start + quotedTaskTitle[1].length, confidence: 0.98 };
-    }
-  }
-
-  const explicitPatterns = [
-    /\b(?:called|named|titled|with\s+title|chamad[oa]|com\s+o\s+t[ií]tulo|t[ií]tulo|llamad[oa]|titulada)\s*[:\-]?\s*["“]?([\s\S]+?)["”]?(?=$|[.!?]\s*$)/i,
-  ];
-  for (const pattern of explicitPatterns) {
-    const match = pattern.exec(text);
-    const raw = match?.[1]?.trim();
-    if (!match || !raw) continue;
-    const cleaned = cleanupTaskTitle(raw, input);
-    if (cleaned.length > 0) {
-      const start = match.index + match[0].indexOf(match[1]);
-      return { value: cleaned, rawText: raw, spanStart: start, spanEnd: start + match[1].length, confidence: 0.97 };
-    }
-  }
-
-  const reminder = /\b(?:remind\s+me\s+to|lembra-?me\s+de|lembre-?me\s+de|recu[eé]rdame\s+(?:a\s+)?|recordarme\s+(?:a\s+)?)\b/i.exec(text);
-  if (reminder) {
-    const rest = text.slice(reminder.index + reminder[0].length).trim();
-    const cleaned = sentenceCaseEnglishTaskTitle(cleanupTaskTitle(rest, input), input, text);
-    if (cleaned.length > 0) {
-      const start = text.indexOf(rest);
-      return { value: cleaned, rawText: rest, spanStart: start >= 0 ? start : reminder.index, spanEnd: start >= 0 ? start + rest.length : text.length, confidence: 0.85 };
-    }
-  }
-
-  const taskNoun = /\b(?:task|tarefa|todo|lembrete|tarea)\b/i.exec(text);
-  if (!taskNoun) return null;
-  let rest = text.slice(taskNoun.index + taskNoun[0].length).trim();
-  rest = rest.replace(/^(?:to|for|para)\s+/i, '');
-  rest = stripLeadingTaskTemporalPhrase(rest, input);
-  let cleaned = sentenceCaseEnglishTaskTitle(cleanupTaskTitle(rest, input), input, text);
-  if (cleaned.length === 0) {
-    cleaned = sentenceCaseEnglishTaskTitle(extractPreTaskModifierTitle(text, taskNoun.index, input), input, text);
-  }
-  if (cleaned.length === 0) return null;
-  const start = text.indexOf(rest);
-  return { value: cleaned, rawText: rest, spanStart: start >= 0 ? start : taskNoun.index, spanEnd: start >= 0 ? start + rest.length : text.length, confidence: 0.82 };
-}
-
-function extractPreTaskModifierTitle(text: string, taskNounIndex: number, input: ChatPlannerInput): string {
-  const prefix = text.slice(0, taskNounIndex)
-    .replace(/^\s*(?:please|por favor|pfv)\s+/i, '')
-    .replace(/^\s*(?:create|add|cria[r]?|adiciona[r]?|bota[r]?|coloca[r]?|p[oõ]e[r]?|mete[r]?|crea[r]?|a[nñ]ade|a[nñ]adir|agreg[ae][r]?)\s+/i, '')
-    .replace(/^\s*(?:a|an|uma?|una?)\s+/i, '')
-    .trim();
-  const cleaned = cleanupTaskTitle(prefix, input);
-  return /^(?:new|nova?|nuevo|nueva)$/i.test(cleaned) ? '' : cleaned;
-}
-
-function isPlainTaskReminderCreate(folded: string): boolean {
-  if (!/\b(remind me to|lembra-?me de|lembre-?me de|recuerdame(?: a)?|recordarme(?: a)?)\b/.test(folded)) return false;
-  return !/\b(credit card|cartao|cartao de credito|fatura|factura|bill|invoice|darf|irs|iva|tax|imposto|stripe|payment|pagamento)\b/.test(folded);
-}
-
-function sentenceCaseEnglishTaskTitle(title: string, input: ChatPlannerInput, sourceText: string): string {
-  if (!title) return title;
-  const isEnglish = input.locale?.toLowerCase().startsWith('en') === true
-    || /^\s*(?:add|create|remind me to)\b/i.test(sourceText);
-  if (!isEnglish || !/^[a-z]/.test(title)) return title;
-  return `${title[0]?.toUpperCase() ?? ''}${title.slice(1)}`;
-}
-
-function cleanupTaskTitle(title: string, input: ChatPlannerInput): string {
-  let cleaned = title.trim()
-    .replace(/^["“]|["”]$/g, '')
-    .replace(/[.?!]+$/g, '')
-    .trim();
-  cleaned = stripTaskTemporalPhrase(cleaned, input).trim();
-  cleaned = cleaned
-    .replace(/\s+(?:tomorrow|amanh[ãa]|today|hoje)(?:\s+(?:at|[àa]s?|as|pelas?|by|para\s+as?)\s*)?(?:\d{1,2}h(?:\d{2})?|\d{1,2}(?::\d{2})?\s*(?:am|pm)?)\s*$/i, '')
-    .trim();
-  cleaned = cleaned
-    .replace(/\s+\b(?:please|por favor)\b$/i, '')
-    .replace(/\s{2,}/g, ' ')
-    .trim();
-  return cleaned;
-}
-
-function stripLeadingTaskTemporalPhrase(text: string, input: ChatPlannerInput): string {
-  const folded = foldCalendarText(text);
-  if (!/^(today|tomorrow|amanha|amanhã|hoje|next|proxim[ao]|próxim[ao]|\d{1,2}[\/-]\d{1,2})\b/.test(folded)) return text;
-  return text
-    .replace(/^(?:today|tomorrow|amanh[ãa]|hoje)(?:\s+(?:at|às?|as|pelas?)\s*)?(?:\d{1,2}(?::\d{2})?\s*(?:am|pm)?|\d{1,2}h(?:\d{2})?)?\s*/i, '')
-    .replace(/^(?:next|pr[oó]xim[ao])\s+\w+\s*/i, '')
-    .trim();
-}
-
-function stripTaskTemporalPhrase(title: string, input: ChatPlannerInput): string {
-  const due = extractTaskDueDateTimeSlot(input, title);
-  if (!due) return title;
-  return `${title.slice(0, due.spanStart)} ${title.slice(due.spanEnd)}`.replace(/\s{2,}/g, ' ').trim();
-}
-
-function extractTaskDueDateTimeSlot(input: ChatPlannerInput, text: string): { value: string; rawText: string; spanStart: number; spanEnd: number; confidence: number } | null {
-  const now = DateTime.fromISO(input.nowIso ?? new Date().toISOString()).setZone(input.timezone);
-  const patterns = [
-    /\b(?:for|para|due|vence|pra|p[ao]ra)?\s*(?<date>tomorrow|amanh[ãa]|today|hoje)(?=\s|$|[,.!?])\s+(?:at|às?|as|pelas?|by|para\s+as)?\s*(?<time>\d{1,2}h(?:\d{2})?|\d{1,2}(?::\d{2})?\s*(?:am|pm)?)\b/i,
-    /\b(?<date>tomorrow|amanh[ãa]|today|hoje)(?=\s|$|[,.!?])(?:\s+(?:at|às?|as|pelas?|by|para)\s*)?(?<time>\d{1,2}h(?:\d{2})?|\d{1,2}(?::\d{2})?\s*(?:am|pm)?)?/i,
-    /\b(?:for|para|due|vence|pra|p[ao]ra)\s+(?<date>tomorrow|amanh[ãa]|today|hoje)(?=\s|$|[,.!?])(?:\s+(?:at|às?|as|pelas?)\s*)?(?<time>\d{1,2}h(?:\d{2})?|\d{1,2}(?::\d{2})?\s*(?:am|pm)?)?/i,
-    /\b(?:for|on|by|due|para|pra|p[ao]ra|el|na|no)?\s*(?<date>monday|tuesday|wednesday|thursday|friday|saturday|sunday|segunda(?:-feira)?|ter[cç]a(?:-feira)?|quarta(?:-feira)?|quinta(?:-feira)?|sexta(?:-feira)?|s[aá]bado|domingo|lunes|martes|mi[eé]rcoles|jueves|viernes)\b(?:\s+(?:at|às?|as|a\s+las|pelas?|by|para\s+as)\s*)?(?<time>\d{1,2}h(?:\d{2})?|\d{1,2}(?::\d{2})?\s*(?:am|pm)?)?/i,
-    /\b(?:at|às?|as|pelas?)\s*(?<time>\d{1,2}h(?:\d{2})?|\d{1,2}(?::\d{2})?\s*(?:am|pm)?)\b/i,
-  ];
-  for (const pattern of patterns) {
-    const match = pattern.exec(text);
-    if (!match?.groups) continue;
-    const raw = match[0];
-    const dateWord = foldCalendarText(String(match.groups.date || ''));
-    let date = resolveTaskDueDate(now, dateWord);
-    if (!dateWord && /\b(?:at|às?|as|pelas?)\b/i.test(raw)) date = now;
-    const parsedTime = parseTaskClockTime(match.groups.time || '');
-    if (!parsedTime && !dateWord) continue;
-    const value = parsedTime
-      ? date.set({
-        hour: parsedTime.hour,
-        minute: parsedTime.minute,
-        second: 0,
-        millisecond: 0,
-      }).toISO()
-      : date.toISODate();
-    if (!value) continue;
-    return {
-      value,
-      rawText: raw.trim(),
-      spanStart: match.index,
-      spanEnd: match.index + raw.length,
-      confidence: dateWord ? 0.94 : 0.78,
-    };
-  }
-  return null;
-}
-
-function resolveTaskDueDate(now: DateTime, dateWord: string): DateTime {
-  if (dateWord === 'tomorrow' || dateWord === 'amanha' || dateWord === 'manana') return now.plus({ days: 1 });
-  const weekday = taskWeekdayNumber(dateWord);
-  if (!weekday) return now;
-  let days = weekday - now.weekday;
-  if (days <= 0) days += 7;
-  return now.plus({ days });
-}
-
-function taskWeekdayNumber(dateWord: string): number | null {
-  switch (dateWord) {
-    case 'monday':
-    case 'segunda':
-    case 'segunda-feira':
-    case 'lunes':
-      return 1;
-    case 'tuesday':
-    case 'terca':
-    case 'terca-feira':
-    case 'martes':
-      return 2;
-    case 'wednesday':
-    case 'quarta':
-    case 'quarta-feira':
-    case 'miercoles':
-      return 3;
-    case 'thursday':
-    case 'quinta':
-    case 'quinta-feira':
-    case 'jueves':
-      return 4;
-    case 'friday':
-    case 'sexta':
-    case 'sexta-feira':
-    case 'viernes':
-      return 5;
-    case 'saturday':
-    case 'sabado':
-      return 6;
-    case 'sunday':
-    case 'domingo':
-      return 7;
-    default:
-      return null;
-  }
-}
-
-function parseTaskClockTime(rawInput: unknown): { hour: number; minute: number } | null {
-  const raw = String(rawInput || '').trim().toLowerCase();
-  const match = raw.match(/\b(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\b/) || raw.match(/\b(\d{1,2})h(\d{2})?\b/);
-  if (!match) return null;
-  let hour = Number(match[1]);
-  const minute = Number(match[2] || 0);
-  const meridiem = match[3];
-  if (!Number.isInteger(hour) || hour < 0 || hour > 23 || !Number.isInteger(minute) || minute < 0 || minute > 59) return null;
-  if (meridiem === 'pm' && hour < 12) hour += 12;
-  if (meridiem === 'am' && hour === 12) hour = 0;
-  return { hour, minute };
-}
-
-function extractTaskClause(text: string): string | null {
-  const match = text.match(/\b(?:e|and)\s+(?=(?:cria|criar|adiciona|adicionar|create|add)\b[\s\S]*\b(?:tarefa|task|todo|lembrete)\b)([\s\S]+)$/i);
-  return match?.[1]?.trim() || null;
-}
 
 export async function executeChatActionPlan(
   plan: ChatActionPlan,
