@@ -16,6 +16,12 @@ import {
 import {
   recordChatV2CommandEvent,
 } from './command-events';
+import {
+  decisionDismissVersionForItem,
+  isDecisionDismissEligibleStatus,
+  isNotificationSnoozeEligibleStatus,
+  notificationSnoozeVersionForItem,
+} from './command-status-policy';
 import { hashStable } from './deterministic-read/common';
 import {
   completeTask,
@@ -26,12 +32,10 @@ import { computeContentHash } from '../task-store/unified-task-store';
 import {
   getNotificationCenterItem,
   snoozeNotificationCenterItem,
-  type NotificationCenterItem,
 } from '../notification-orchestrator';
 import {
   dismissDecision,
   getDecisionItem,
-  type DecisionApiItem,
 } from '../decision-center';
 import type {
   AICommandEnvelope,
@@ -253,12 +257,12 @@ function buildNotificationExecuteGateSnapshot(
   const item = notificationId ? getNotificationCenterItem(notificationId, userId, tenantId) : null;
   const entityId = notificationId ? `notification:${notificationId}` : undefined;
   const currentEntityVersions = entityId && item
-    ? { [entityId]: notificationVersionForItem(item) }
+    ? { [entityId]: notificationSnoozeVersionForItem(item) }
     : {};
   return {
     currentEntityVersions,
     invariantResults: {
-      notification_is_unread: Boolean(item && item.status === 'unread'),
+      notification_is_snooze_eligible: Boolean(item && isNotificationSnoozeEligibleStatus(item.status)),
     },
   };
 }
@@ -275,7 +279,7 @@ function buildDecisionDismissExecuteGateSnapshot(
   const decisionId = decisionIdFromPayload(command.payload);
   const item = decisionId ? getDecisionItem(decisionId, userId, tenantId) : null;
   const entityId = decisionId ? `decision:${decisionId}` : undefined;
-  const decisionVersion = item ? decisionVersionForItem(item) : undefined;
+  const decisionVersion = item ? decisionDismissVersionForItem(item) : undefined;
   const currentEntityVersions = entityId && decisionVersion
     ? { [entityId]: decisionVersion }
     : {};
@@ -283,7 +287,7 @@ function buildDecisionDismissExecuteGateSnapshot(
     currentEntityVersions,
     decisionVersion,
     invariantResults: {
-      decision_is_active: Boolean(item && item.status === 'unread'),
+      decision_is_active: Boolean(item && isDecisionDismissEligibleStatus(item.status)),
     },
   };
 }
@@ -528,42 +532,6 @@ function snoozedUntilFromPayload(payload: Record<string, unknown>): string | nul
 function snoozeMinutesFromPayload(payload: Record<string, unknown>): number {
   const minutes = Number(payload.snoozeMinutes);
   return Number.isFinite(minutes) && minutes > 0 ? Math.round(minutes) : 60;
-}
-
-function notificationVersionForItem(item: NotificationCenterItem): string {
-  return hashStable({
-    title: item.title,
-    safeBody: item.safeBody || item.body,
-    sourceSkill: item.sourceSkill,
-    type: item.type,
-    priority: item.priority,
-    status: item.status,
-    actions: item.actions.map((action) => ({
-      id: action.id,
-      label: action.label,
-      style: action.style ?? null,
-    })),
-    createdAt: item.createdAt,
-    expiresAt: item.expiresAt,
-  });
-}
-
-function decisionVersionForItem(item: DecisionApiItem): string {
-  return hashStable({
-    decisionId: item.decisionId,
-    title: item.title,
-    summary: item.summary,
-    safePreviewTitle: item.safePreviewTitle,
-    safePreviewBody: item.safePreviewBody,
-    status: item.status,
-    urgency: item.urgency,
-    sourceSkill: item.sourceSkill,
-    type: item.type,
-    actions: item.actions.map((action) => ({ id: action.id, label: action.label, style: action.style ?? null })),
-    updatedAt: item.updatedAt,
-    expiresAt: item.expiresAt,
-    snoozedUntil: item.snoozedUntil,
-  });
 }
 
 function buildTaskCreateResultResponse(input: {

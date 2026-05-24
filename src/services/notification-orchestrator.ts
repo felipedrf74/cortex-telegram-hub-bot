@@ -1081,7 +1081,7 @@ export function snoozeNotificationCenterItem(
     SET status = 'snoozed',
         snoozed_until = ?,
         read_at = COALESCE(read_at, datetime('now'))
-    WHERE item_id = ? AND user_id = ? AND tenant_id = ? AND status = 'unread'
+    WHERE item_id = ? AND user_id = ? AND tenant_id = ? AND status IN ('unread', 'read')
   `).run(until, itemId, userId, tenantId);
   return getNotificationCenterItem(itemId, userId, tenantId);
 }
