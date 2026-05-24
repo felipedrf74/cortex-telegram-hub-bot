@@ -6,11 +6,10 @@
 // idempotent step construction, idempotency-key derivation, expected-field
 // projection, and the step-type label.
 //
-// Type-only imports from `chat-action-planner.ts` (ChatPlanStep,
-// ChatPlanStepType) are erased at compile time, so importing this module
-// from the planner does not create a runtime cycle. Per-skill parsers that
-// move out of the planner in subsequent PRs will call `makeStep` from here
-// and import the planner's types as type-only references.
+// Type-only imports from `chat/types.ts` (ChatPlanStep, ChatPlanStepType)
+// are erased at compile time, so importing this module from the planner does
+// not create a runtime cycle. Per-skill parsers call `makeStep` from here and
+// share the canonical chat types.
 
 import { randomUUID } from 'crypto';
 import { DateTime } from 'luxon';
@@ -51,7 +50,7 @@ export function makeStep(input: StepKeyInputs, opts: MakeStepOptions): ChatPlanS
   // Phase 16 batch 81 (2026-05-17): Tier-0 validation parity. Before this,
   // deterministic parsers' hand-rolled `requiredArgsPresent` flag was the
   // sole source of truth at construction time, and typed validators only
-  // ran in the LLM-structured path (chat-action-planner.ts:2106). Now
+  // ran in the LLM-structured path. Now
   // makeStep also runs validators and AND-combines: a step claims its
   // slots are present only when both the parser AND the typed validator
   // agree. Two carve-outs to preserve parser-as-source-of-truth where

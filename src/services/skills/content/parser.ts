@@ -7,6 +7,7 @@
 import { makeStep, type StepKeyInputs } from '../step-builder';
 import { extractTopic, inferContentPlatform } from '../text-extractors';
 import type { ChatPlanStep } from '../../chat/types';
+import { parseContentPipelineStageTransition } from './pipeline-stage';
 
 export function parseContentActionStep(
   input: StepKeyInputs & { text: string },
@@ -18,6 +19,18 @@ export function parseContentActionStep(
   if (!/\b(content|conteudo|contenido|script|roteiro|guion|guión|brief|reel|tiktok|youtube|post|video|publicaci[oó]n|rewrite|reescreve|reescrever|reescribe[r]?|reescritura|pipeline|publica|publish|schedule|programa[r]?|caption|legenda|copy|campa[nñ]a)\b/.test(folded)) return null;
   const platform = inferContentPlatform(folded);
   const topic = extractTopic(input.text) || input.text.trim();
+
+  const pipelineStage = parseContentPipelineStageTransition(input.text);
+  if (pipelineStage.targetStage && pipelineStage.topicTitle) {
+    return makeStep(input, {
+      skill: 'content',
+      action: 'content_pipeline_stage_transition',
+      risk: 'safe_write',
+      provider: 'nexus',
+      args: { ...pipelineStage },
+      requiredArgsPresent: true,
+    });
+  }
 
   // Rewrite: explicit rewrite verb with content/copy object.
   // Phase 3 batch 16: "make this shorter/longer/punchier/simpler" treated as

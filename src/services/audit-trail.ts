@@ -38,7 +38,8 @@ export type AuditAction =
   | 'fiscal_bundle_send'
   | 'invoice_vendor_create'
   | 'invoice_vendor_disable'
-  | 'invoice_scan_on_demand';
+  | 'invoice_scan_on_demand'
+  | 'invoice_scraper_mfa_reply';
 
 export interface AuditEntry {
   userId: number;

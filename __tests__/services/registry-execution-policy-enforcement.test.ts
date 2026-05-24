@@ -17,7 +17,7 @@
 // `executionPolicy === 'blocked'` only fires for explicit declarations.
 
 import { describe, expect, it } from 'vitest';
-import { getChatActionRegistry } from '../../src/services/chat-action-registry';
+import { getChatActionRegistry } from '../../src/services/chat/registry';
 
 describe('executionPolicy registry invariants (Phase 16 batch 82)', () => {
   it('every defaulted action has a canonical executionPolicy value', () => {

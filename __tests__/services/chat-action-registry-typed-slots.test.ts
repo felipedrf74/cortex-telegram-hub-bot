@@ -29,7 +29,7 @@ import {
   type ChatActionDefinition,
   type SlotExtractor,
   type SlotValidator,
-} from '../../src/services/chat-action-registry';
+} from '../../src/services/chat/registry';
 
 function makeEntry(overrides: Partial<ChatActionDefinition>): ChatActionDefinition {
   return {

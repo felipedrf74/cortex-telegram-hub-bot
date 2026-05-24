@@ -8,12 +8,13 @@
  *
  *   • `cost-guardrail.resolvePlanFromSubscriptionState` (file-private,
  *     reads subscriptions + users.tier + isOwnerUserRef)
- *   • `skill-tiers.checkTierAccess` (reads ONLY users.tier — ignored
- *     subscription status, so a canceled user kept 'pro' access)
+ *   • legacy `skill-tiers.checkTierAccess` (tier-only; runtime gates now
+ *     use `checkSkillAccess` so install state, user denies, and tier grants
+ *     are resolved in one place)
  *   • `stripe-service.getSubscriptionStatus` (reads subscriptions
  *     directly, derives own boolean)
- *   • `dashboard.hasHomeSkillAccess` (combines checkTierAccess +
- *     isSkillEnabled with AND)
+ *   • old `dashboard.hasHomeSkillAccess` (used to combine checkTierAccess +
+ *     the user skill-toggle helper with AND before the canonical skill gate existed)
  *   • Each individual route doing its own ad-hoc read
  *
  * This file replaces all of them with one pure resolver that returns

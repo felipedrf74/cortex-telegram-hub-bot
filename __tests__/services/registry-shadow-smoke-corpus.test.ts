@@ -20,7 +20,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { buildFixturesFromRegistry } from '../lib/registry-fixture-builder';
-import { getChatActionRegistry } from '../../src/services/chat-action-registry';
+import { getChatActionRegistry } from '../../src/services/chat/registry';
 
 describe('registry-shadow smoke corpus (Phase 14 batch 74)', () => {
   const generated = buildFixturesFromRegistry({

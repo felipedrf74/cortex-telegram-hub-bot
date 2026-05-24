@@ -32,6 +32,33 @@ Use this checklist after the automated Phase A runner passes against staging and
    - Expected: request is refused or blocked before execution.
    - Evidence: no provider mutation; response explains why it cannot execute as requested.
 
+## Track 4 Reliability Walkthrough
+
+1. Live eval run completes within budget.
+   - Command: `npm run chat:eval-live -- --mode dry-run` for local validation, then staging live mode with `EVAL_*` keys.
+   - Expected: report is persisted to eval history with pass/fail totals and no raw provider secrets.
+   - Evidence: eval history row, generated report path, and budget/cost summary.
+
+2. Fixer worker proposes, but does not execute, a synthetic mismatch correction.
+   - Setup: enqueue a synthetic `chat_action_fixer_review` job for a verifier mismatch.
+   - Expected: worker creates a Decision Center review item or declines; it never performs a provider write.
+   - Evidence: background job row, Decision Center item, and no target provider mutation.
+
+3. Skill-access consolidation gates an owner-only skill for a non-owner.
+   - Setup: mark `admin.audit` as `owner` in `skill_tiers`; use a non-owner staging user.
+   - Expected: `checkSkillAccess` returns blocked with `requiredTier=owner`; chat/skills catalog do not expose access.
+   - Evidence: response payload/log line includes `reason` and no downstream handler executes.
+
+4. Retry policy fires for `SQLITE_BUSY`.
+   - Setup: inject or simulate a transient busy failure on a safe-write executor.
+   - Expected: one bounded retry happens; success is only reported after read-back verification.
+   - Evidence: retry telemetry row and verified provider/read-model state.
+
+5. Retry policy does not fire for a 4xx/auth failure.
+   - Setup: use an expired or revoked provider token in staging.
+   - Expected: no retry storm; response is degraded/honest and prompts reconnection or user action.
+   - Evidence: telemetry shows blocked/non-retry outcome and zero repeated provider writes.
+
 ## Phase C Divergence Template
 
 When a scenario fails, write `docs/release/chat-test-phase/<trackId>-divergence-<n>.md` with:
@@ -43,4 +70,3 @@ When a scenario fails, write `docs/release/chat-test-phase/<trackId>-divergence-
 - Fix attempted and rerun result.
 
 Do not promote while any non-waived Phase A or Phase B failure remains.
-

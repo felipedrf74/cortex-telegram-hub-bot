@@ -91,10 +91,22 @@ import { applyChatFallbackPolicy } from '../../services/chat-fallback-policy';
 import { applyChatResponseQualityGate } from '../../services/chat-response-quality-gate';
 import { buildSimpleStateContext } from '../../domains/domain-handler';
 import {
+  isChatCoreV2ShadowRouteHookEnabled,
   isChatQualityGateEnabled,
   isChatResearchRouterEnabled,
   isChatTurnContractEnabled,
 } from '../../services/runtime-flags';
+import {
+  runChatCoreV2ShadowRouteHook,
+  claimPendingChatCoreV2Command,
+  clearPendingChatCoreV2Command,
+  executeChatCoreV2Command,
+  tryBuildChatCoreV2CommandPreviewRoute,
+  tryBuildChatCoreV2DeterministicReadRoute,
+} from '../../services/chat-core-v2';
+import { buildChatCoreV2CommandPreviewShortcutResponse } from './chat-core-v2-command-preview-response';
+import { buildChatCoreV2CommandConfirmationShortcutResponse } from './chat-core-v2-command-confirmation-response';
+import { buildChatCoreV2DeterministicReadShortcutResponse } from './chat-core-v2-deterministic-read-response';
 import {
   createDecisionIntent,
   findDecisionByRelatedEntity,
@@ -580,6 +592,64 @@ export function registerChatMessageRoutes(
       return;
     }
 
+    const v2Claim = claimPendingChatCoreV2Command(validation.payload.pendingId, userId, tenantId);
+    if (v2Claim.status === 'already_claimed') {
+      res.status(202).json({
+        id: `msg-${Date.now()}`,
+        text: 'I am still applying that confirmed change. I will reuse the completed result instead of running it twice.',
+        domain: 'secretary',
+        routeMethod: 'chat-core-v2-command-confirmation-in-progress',
+        confidence: 1,
+        buttons: null,
+        metadata: {
+          type: 'chat_core_v2_command_confirmation_in_progress',
+          commandId: validation.payload.pendingId,
+        },
+        timestamp: new Date().toISOString(),
+      });
+      return;
+    }
+    if (v2Claim.status === 'claimed') {
+      const confirmationStartedAt = Date.now();
+      const execution = await executeChatCoreV2Command({
+        command: v2Claim.pending.command,
+        capabilityId: v2Claim.pending.capabilityId,
+        userId,
+        tenantId,
+        locale: getUserLanguageById(userId) || undefined,
+        now: new Date(confirmationStartedAt),
+      });
+      if (!execution.ok || !execution.response) {
+        clearPendingChatCoreV2Command(validation.payload.pendingId, userId, tenantId);
+        res.status(409).json({
+          error: {
+            code: 'CHAT_CORE_V2_CONFIRMATION_NOT_EXECUTABLE',
+            message: execution.reason === 'command_gate_rejected'
+              ? 'This preview is no longer safe to apply. Please ask again so I can refresh it.'
+              : 'The confirmed Chat Core v2 command could not be executed.',
+          },
+        });
+        return;
+      }
+
+      const response = buildChatCoreV2CommandConfirmationShortcutResponse({
+        pending: v2Claim.pending,
+        execution: execution as typeof execution & { response: NonNullable<typeof execution.response> },
+        requestStartedAt: confirmationStartedAt,
+      });
+      rememberCompletedChatConfirmation({
+        confirmationToken,
+        userId,
+        tenantId,
+        expiresAt: v2Claim.pending.expiresAt,
+        statusCode: 200,
+        responseBody: response,
+      });
+      clearPendingChatCoreV2Command(validation.payload.pendingId, userId, tenantId);
+      res.status(200).json(response);
+      return;
+    }
+
     const pending = getPendingChatConfirmation(userId, tenantId);
     if (!pending
       || pending.id !== validation.payload.pendingId
@@ -840,10 +910,142 @@ export function registerChatMessageRoutes(
         return;
       }
 
+      const chatCoreV2Read = normalizedText && normalizedAttachments.length === 0
+        ? tryBuildChatCoreV2DeterministicReadRoute({
+          normalizedText,
+          userId,
+          tenantId,
+          locale: getUserLanguageById(userId),
+          timezone: getUserTimezoneById(userId),
+          now: new Date(requestStartedAt),
+        })
+        : null;
+      if (chatCoreV2Read) {
+        latency.mark('chat_core_v2_deterministic_read_completed');
+        const deterministicReadShortcut = buildChatCoreV2DeterministicReadShortcutResponse({
+          result: chatCoreV2Read,
+          requestStartedAt,
+        });
+        const { conversationDomain, response: shortcutResponse } = deterministicReadShortcut;
+        const response = enrichChatResponseForContract(shortcutResponse, {
+          normalizedText,
+          userId,
+          tenantId,
+          chatRequestId,
+          tracker: latency,
+          latencyTier: 'tier1_fast_read',
+          fallbackDomain: conversationDomain,
+          fallbackRouteMethod: 'chat-core-v2-deterministic-read',
+          actionability: 'answer_only',
+          verificationStatus: 'not_required',
+        });
+        rememberChatActiveDomain(userId, conversationDomain, Date.now(), tenantId);
+        persistExchange(userId, userMessageId, normalizedText, response.id, response, tenantId, {
+          clientMessageId: scopedClientMessageId,
+          requestId: chatRequestId,
+        });
+        syncConversationStateForShortcut(userId, conversationDomain, normalizedText, response.text, tenantId);
+        logger.info(
+          {
+            chatRequestId,
+            platform: 'ios',
+            mode: 'chat-core-v2-deterministic-read',
+            tenantId,
+            userId,
+            capabilityId: deterministicReadShortcut.logContext.capabilityId,
+            contextHash: deterministicReadShortcut.logContext.contextHash,
+          },
+          'iOS chat Chat Core v2 deterministic read hit',
+        );
+        res.json(response);
+        return;
+      }
+
       // ── Cost cap enforcement ─────────────────────────────────────
       // Run before any model-backed planner/reasoning path. Token-zero
       // deterministic reads above remain available after quota exhaustion.
       if (quotaDecision.block && sendChatQuotaExceededIfNeeded(res, userId, 'iOS chat: user over daily cost cap')) return;
+
+      if (isChatCoreV2ShadowRouteHookEnabled(process.env, { userId, tenantId })) {
+        const shadow = runChatCoreV2ShadowRouteHook({
+          normalizedText,
+          userId,
+          tenantId,
+          chatRequestId,
+          userMessageId,
+          clientMessageId: scopedClientMessageId,
+          attachmentsCount: normalizedAttachments.length,
+          locale: getUserLanguageById(userId),
+          timezone: getUserTimezoneById(userId),
+          now: new Date(requestStartedAt),
+        });
+        if (shadow.recorded) {
+          logger.info(
+            {
+              chatRequestId,
+              tenantId,
+              userId,
+              routeMethod: shadow.result?.routeDecision.routeMethod,
+              reasoningTier: shadow.result?.routeDecision.reasoningTier,
+              replayBundleId: shadow.replayBundleId,
+            },
+            'Chat Core v2 shadow route hook recorded plan',
+          );
+        }
+      }
+
+      const chatCoreV2CommandPreview = normalizedText && normalizedAttachments.length === 0
+        ? tryBuildChatCoreV2CommandPreviewRoute({
+          normalizedText,
+          userId,
+          tenantId,
+          conversationId: scopedClientMessageId ?? chatRequestId,
+          messageId: userMessageId,
+          locale: getUserLanguageById(userId),
+          timezone: getUserTimezoneById(userId),
+          now: new Date(requestStartedAt),
+        })
+        : null;
+      if (chatCoreV2CommandPreview) {
+        latency.mark('chat_core_v2_command_preview_completed');
+        const commandPreviewShortcut = buildChatCoreV2CommandPreviewShortcutResponse({
+          result: chatCoreV2CommandPreview,
+          requestStartedAt,
+        });
+        const { conversationDomain, response: shortcutResponse } = commandPreviewShortcut;
+        const response = enrichChatResponseForContract(shortcutResponse, {
+          normalizedText,
+          userId,
+          tenantId,
+          chatRequestId,
+          tracker: latency,
+          latencyTier: 'tier1_fast_read',
+          fallbackDomain: conversationDomain,
+          fallbackRouteMethod: 'chat-core-v2-command-preview',
+          actionability: 'preview',
+          verificationStatus: 'not_required',
+        });
+        rememberChatActiveDomain(userId, conversationDomain, Date.now(), tenantId);
+        persistExchange(userId, userMessageId, normalizedText, response.id, response, tenantId, {
+          clientMessageId: scopedClientMessageId,
+          requestId: chatRequestId,
+        });
+        syncConversationStateForShortcut(userId, conversationDomain, normalizedText, response.text, tenantId);
+        logger.info(
+          {
+            chatRequestId,
+            platform: 'ios',
+            mode: 'chat-core-v2-command-preview',
+            tenantId,
+            userId,
+            capabilityId: commandPreviewShortcut.logContext.capabilityId,
+            commandId: commandPreviewShortcut.logContext.commandId,
+          },
+          'iOS chat Chat Core v2 command preview hit',
+        );
+        res.json(response);
+        return;
+      }
 
       // ── General Action Planner ─────────────────────────────────
       // Natural-language write intents must be routed before read-only

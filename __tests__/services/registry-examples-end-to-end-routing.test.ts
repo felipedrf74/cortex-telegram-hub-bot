@@ -13,11 +13,11 @@ import { describe, expect, it } from 'vitest';
 import {
   getChatActionRegistry,
   type ChatActionDefinition,
-} from '../../src/services/chat-action-registry';
+} from '../../src/services/chat/registry';
 import {
   buildDeterministicChatActionPlan,
   type ChatPlannerInput,
-} from '../../src/services/chat-action-planner';
+} from '../../src/services/chat';
 
 type RegistryExample = NonNullable<ChatActionDefinition['examples']>[number];
 type RuntimeGoldenCase = {
@@ -98,9 +98,9 @@ describe('registry examples end-to-end deterministic routing', () => {
   const routableCases = cases.filter((testCase) => !isLlmTierExample(testCase));
 
   it('loads golden examples from the runtime registry', () => {
-    expect(activeActions()).toHaveLength(47);
+    expect(activeActions()).toHaveLength(49);
     expect(cases.length).toBeGreaterThanOrEqual(150);
-    expect(cases.filter((testCase) => testCase.locale === 'es')).toHaveLength(47);
+    expect(cases.filter((testCase) => testCase.locale === 'es')).toHaveLength(49);
   });
 
   it('every runtime golden example declares expectedAction', () => {

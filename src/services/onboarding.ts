@@ -10,8 +10,8 @@
 
 import { getDb } from './database';
 import { logger } from '../utils/logger';
-import { isOwner } from './user-service';
-import { isSkillEnabled } from './user-skill-access';
+import { getUserById, getUserByTelegramId, isOwner } from './user-service';
+import { checkSkillAccess } from './skill-tiers';
 
 // ── Types ──────────────────────────────────────────────────────────
 
@@ -966,16 +966,20 @@ export function getEnabledQuestionnaires(userId: number): string[] {
       return getAvailableQuestionnaires();
     }
 
+    const user = getUserById(userId) || getUserByTelegramId(userId);
+    if (!user) return [];
+
     const enabled: string[] = [];
     for (const [skill] of Object.entries(SKILL_ONBOARDING_MAP)) {
-      if (!isSkillEnabled(userId, skill)) continue;
+      if (!checkSkillAccess({ id: userId, tier: user.tier }, skill).allowed) continue;
       for (const qId of questionnairesForSkill(skill)) {
         if (getQuestionnaire(qId)) enabled.push(qId);
       }
     }
     return enabled;
-  } catch {
-    return getAvailableQuestionnaires(); // fallback to all if skill system not loaded
+  } catch (err) {
+    logger.warn({ err, userId }, 'Onboarding skill access lookup failed — failing closed');
+    return [];
   }
 }
 

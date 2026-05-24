@@ -13,7 +13,7 @@ import {
   getSkillMetadata,
   SKILL_METADATA,
   type ChatActionSkill,
-} from '../../src/services/chat-action-registry';
+} from '../../src/services/chat/registry';
 import {
   getChatSkillCapability,
   getChatSkillCapabilityRegistry,
@@ -145,7 +145,7 @@ describe('manifest loader runtime architecture', () => {
 describe('runtime registry shape', () => {
   it('keeps disabled/deprecated actions out of the active registry count', () => {
     const actions = getChatActionRegistry();
-    expect(actions).toHaveLength(47);
+    expect(actions).toHaveLength(49);
     expect(actions.every((entry) => entry.status === 'active')).toBe(true);
   });
 });

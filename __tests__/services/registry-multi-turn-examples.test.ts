@@ -15,7 +15,7 @@ import { describe, expect, it } from 'vitest';
 import {
   getChatActionRegistry,
   type ChatActionDefinition,
-} from '../../src/services/chat-action-registry';
+} from '../../src/services/chat/registry';
 import {
   buildRegistryDrivenEvalScenarios,
 } from '../../src/services/registry-driven-eval-scenarios';

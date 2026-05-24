@@ -1,14 +1,13 @@
 /**
- * Transport Boundary Tests — Telegram formatting isolation.
+ * Transport Boundary Tests — legacy Telegram formatting isolation.
  *
  * Verifies the content domain's transport boundary:
  *   1. Format functions live in content-telegram-formatter.ts (not content-engine.ts)
  *   2. content-engine.ts has no inline format functions
  *   3. content-engine.ts has no Telegram HTML tags
- *   4. Telegram handler imports formatters from the adapter, not the engine
- *   5. Format functions produce Telegram HTML (not structured data)
- *   6. content-engine.ts re-exports for backward compat
- *   7. Core response types are structured (not strings)
+ *   4. Format functions produce Telegram HTML (not structured data)
+ *   5. content-engine.ts re-exports for backward compat
+ *   6. Core response types are structured (not strings)
  */
 
 import { describe, it, expect } from 'vitest';
@@ -17,7 +16,6 @@ import path from 'path';
 
 const SRC_DIR = path.resolve(__dirname, '../../src');
 const SERVICES_DIR = path.join(SRC_DIR, 'services');
-const HANDLERS_DIR = path.join(SRC_DIR, 'handlers/commands');
 
 // ═══════════════════════════════════════════════════════════════════
 // 1. Format Functions — Physical Location
@@ -147,55 +145,7 @@ describe('transport-boundary: formatter isolation', () => {
   });
 });
 
-// ═══════════════════════════════════════════════════════════════════
-// 4. Telegram Handler — Correct Import Path
-// ═══════════════════════════════════════════════════════════════════
-
-describe('transport-boundary: handler import paths', () => {
-  const handlerSource = fs.readFileSync(
-    path.join(HANDLERS_DIR, 'content.ts'),
-    'utf8',
-  );
-
-  it('handler imports format functions from content-telegram-formatter', () => {
-    expect(handlerSource).toContain("from '../../services/content-telegram-formatter'");
-  });
-
-  it('handler does NOT import format functions from content-engine', () => {
-    // The engine import should only have service functions (getScript, etc.)
-    // not format functions
-    const lines = handlerSource.split('\n');
-    const engineImportBlock: string[] = [];
-    let inEngineImport = false;
-    for (const line of lines) {
-      if (line.includes("from '../../services/content-engine'")) {
-        // Find the full import block
-        inEngineImport = false;
-        engineImportBlock.push(line);
-      }
-      if (line.includes("} from '../../services/content-engine'")) {
-        engineImportBlock.push(line);
-        break;
-      }
-    }
-
-    // None of the format functions should be in the engine import
-    const engineImport = engineImportBlock.join('\n');
-    expect(engineImport).not.toContain('formatDeepSearch');
-    expect(engineImport).not.toContain('formatScript');
-    expect(engineImport).not.toContain('formatHotNews');
-  });
-
-  it('handler imports service functions from content-engine (not formatters)', () => {
-    // These should still come from content-engine
-    expect(handlerSource).toContain("getScript");
-    expect(handlerSource).toContain("deepSearch");
-    expect(handlerSource).toContain("getHotNews");
-  });
-});
-
-// ═══════════════════════════════════════════════════════════════════
-// 5. Backward Compat — Re-exports from content-engine.ts
+// 4. Backward Compat — Re-exports from content-engine.ts
 // ═══════════════════════════════════════════════════════════════════
 
 describe('transport-boundary: backward compat re-exports', () => {
@@ -210,7 +160,7 @@ describe('transport-boundary: backward compat re-exports', () => {
 });
 
 // ═══════════════════════════════════════════════════════════════════
-// 6. Core Response Types — Structured (not strings)
+// 5. Core Response Types — Structured (not strings)
 // ═══════════════════════════════════════════════════════════════════
 
 describe('transport-boundary: core response types are structured', () => {
