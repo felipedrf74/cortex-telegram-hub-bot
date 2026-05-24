@@ -95,11 +95,13 @@ export type WorkflowStatus =
   | 'awaiting_human_review'
   | 'queued'
   | 'running'
+  | 'retrying'
   | 'waiting_external_provider'
   | 'verification_pending'
   | 'completed'
   | 'partially_completed'
   | 'failed'
+  | 'timed_out'
   | 'cancelled'
   | 'expired';
 

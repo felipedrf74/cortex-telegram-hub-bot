@@ -1,6 +1,7 @@
 // Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
 
 export * from './capability-registry';
+export * from './command-bus';
 export * from './entity-resolution';
 export * from './fallback-policy';
 export * from './memory-store';
@@ -11,3 +12,4 @@ export * from './read-models';
 export * from './reasoning-policies';
 export * from './runtime-budget';
 export * from './types';
+export * from './workflow-state-machine';
