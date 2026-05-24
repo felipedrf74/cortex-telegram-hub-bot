@@ -103,6 +103,22 @@ export function buildChatCoreV2RouteDecision(input: BuildRouteDecisionInput): Ch
     });
   }
 
+  if (input.unsupportedReason === 'ambiguous_scope') {
+    reasonCodes.push('unsupported_capability');
+    return decision({
+      input,
+      primaryDomain,
+      secondaryDomains,
+      selectedCapabilityIds: knownCapabilities.map((capability) => capability.capabilityId),
+      routeMethod: 'needs_clarification',
+      riskEstimate: estimateRisk(knownCapabilities),
+      reasoningTier: 'none',
+      requiresLLM: false,
+      unsupportedReason: input.unsupportedReason,
+      reasonCodes,
+    });
+  }
+
   if (input.unsupportedReason || input.intent === 'unsafe_or_disallowed') {
     reasonCodes.push('unsupported_capability');
     return decision({
