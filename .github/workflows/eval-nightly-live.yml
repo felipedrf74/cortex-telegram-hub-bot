@@ -1,0 +1,60 @@
+name: Nightly — Chat live evaluation
+
+on:
+  schedule:
+    - cron: '0 6 * * *'
+  workflow_dispatch:
+
+env:
+  NODE_VERSION: '20'
+  CHAT_EVAL_MODE: real_provider
+  EVAL_MAX_USD_PER_RUN: '4.00'
+  CHAT_EVAL_OUT_DIR: reports/chat-eval
+  CHAT_EVAL_PERSIST_DB: '1'
+  CHAT_EVAL_DB_PATH: reports/chat-eval/chat-eval-history.sqlite
+
+jobs:
+  chat-live-eval:
+    name: Chat live eval
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - run: npm ci
+
+      - name: TypeScript type check
+        run: npm run typecheck
+
+      - name: Run bounded live chat evaluation
+        env:
+          GEMINI_API_KEY: ${{ secrets.EVAL_GEMINI_API_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.EVAL_ANTHROPIC_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.EVAL_OPENAI_API_KEY }}
+          CHAT_EVAL_PORTAL_URL: ${{ secrets.CHAT_EVAL_PORTAL_URL }}
+          CHAT_EVAL_PORTAL_TOKEN: ${{ secrets.CHAT_EVAL_PORTAL_TOKEN }}
+        run: npm run chat:eval-live -- --mode real_provider --out-dir reports/chat-eval --persist-db reports/chat-eval/chat-eval-history.sqlite --budget-usd "$EVAL_MAX_USD_PER_RUN"
+
+      - name: Upload chat eval artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: chat-live-eval
+          path: reports/chat-eval/
+          retention-days: 30
+
+      - name: Notify chat-quality channel on regression
+        if: failure()
+        env:
+          SLACK_CHAT_QUALITY_WEBHOOK_URL: ${{ secrets.SLACK_CHAT_QUALITY_WEBHOOK_URL }}
+        run: |
+          if [ -z "$SLACK_CHAT_QUALITY_WEBHOOK_URL" ]; then
+            echo "No Slack webhook configured; skipping notification."
+            exit 0
+          fi
+          payload=$(printf '{"text":"Nightly chat live evaluation failed for %s. Run: %s"}' "${GITHUB_SHA}" "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}")
+          curl -fsS -X POST -H 'content-type: application/json' --data "$payload" "$SLACK_CHAT_QUALITY_WEBHOOK_URL"

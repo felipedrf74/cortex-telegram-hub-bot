@@ -187,6 +187,17 @@ const ACTION_TRUTH_TABLE: Record<string, DecisionActionTruthTemplate> = {
     apnsActionAllowed: false,
     highRiskConfirmationRequired: false,
   },
+  accept_chat_action_fix: {
+    executor: 'chat-action-fixer',
+    verifier: 'notification_center_items.status',
+    implemented: true,
+    mutating: true,
+    expectedMutation: 'Record user acceptance of a proposed chat-action correction; no provider action is executed.',
+    successUi: 'Correction accepted for a fresh chat retry.',
+    retryAvailable: false,
+    apnsActionAllowed: false,
+    highRiskConfirmationRequired: false,
+  },
   retry: {
     executor: 'provider-sync',
     verifier: 'provider_sync_state',
