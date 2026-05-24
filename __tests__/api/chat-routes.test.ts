@@ -3544,6 +3544,126 @@ describe('Chat API routes', () => {
     }
   });
 
+  it('answers content pipeline status through Chat Core v2 deterministic reads when explicitly enabled', async () => {
+    const previousGlobal = process.env.CHAT_CORE_V2_ENABLED;
+    const previousReads = process.env.CHAT_CORE_V2_READS_ENABLED;
+    process.env.CHAT_CORE_V2_ENABLED = 'true';
+    process.env.CHAT_CORE_V2_READS_ENABLED = 'true';
+    try {
+      mockGetTopics.mockReturnValue([
+        {
+          id: 401,
+          user_id: 7001,
+          title: 'Race-week fueling mistakes',
+          notes: 'Private draft notes',
+          scheduled_date: '2026-04-17',
+          scheduled_at: null,
+          status: 'ready',
+          secretary_task_list_id: null,
+          secretary_task_list_name: null,
+          secretary_task_external_id: null,
+          calendar_event_id: 'calendar_private',
+          calendar_source: 'google',
+          secretary_sync_status: null,
+          secretary_sync_error: null,
+          created_at: '2026-04-14T08:00:00.000Z',
+          updated_at: '2026-04-14T08:00:00.000Z',
+        },
+        {
+          id: 402,
+          user_id: 7001,
+          title: 'Recovery myth carousel',
+          notes: null,
+          scheduled_date: null,
+          scheduled_at: null,
+          status: 'drafting',
+          created_at: '2026-04-14T09:00:00.000Z',
+          updated_at: '2026-04-14T09:00:00.000Z',
+        },
+      ]);
+      mockGetContentDeskItems.mockReturnValue([
+        {
+          id: 501,
+          type: 'script_ready',
+          title: 'Recovery reel draft',
+          body: 'Full private script body',
+          createdAt: '2026-04-14T10:00:00.000Z',
+        },
+      ]);
+      mockGetRankedContentSignals.mockReturnValue([
+        {
+          type: 'reaction_opportunity',
+          title: 'Creators are debating carb myths again',
+          summary: 'Full private signal summary',
+          priority: 'urgent',
+          relevanceScore: 0.93,
+          confidence: 0.81,
+        },
+      ]);
+      mockRouteMessage.mockClear();
+      mockHandleSecretary.mockClear();
+
+      const messageRes = await dispatch('POST', '/message', 7001, {
+        text: 'Show my content pipeline',
+      });
+
+      expect(messageRes.statusCode, JSON.stringify(messageRes.body)).toBe(200);
+      expect(messageRes.body.routeMethod).toBe('chat-core-v2-deterministic-read');
+      expect(messageRes.body.domain).toBe('secretary');
+      expect(messageRes.body.text).toContain('Content pipeline: 2 tracked topics.');
+      expect(messageRes.body.text).toContain('1 ready');
+      expect(messageRes.body.text).toContain('1 drafting');
+      expect(messageRes.body.text).toContain('1 desk-ready item');
+      expect(messageRes.body.text).toContain('1 urgent signal');
+      expect(messageRes.body.text).toContain('Race-week fueling mistakes');
+      expect(messageRes.body.text).toContain('Recovery reel draft');
+      expect(messageRes.body.text).not.toContain('Full private script body');
+      expect(messageRes.body.text).not.toContain('Full private signal summary');
+      expect(JSON.stringify(messageRes.body.metadata)).not.toContain('Private draft notes');
+      expect(JSON.stringify(messageRes.body.metadata)).not.toContain('Full private script body');
+      expect(JSON.stringify(messageRes.body.metadata)).not.toContain('calendar_private');
+      expect(mockGetTopics).toHaveBeenCalledWith(7001, { includeTerminal: false, limit: 20 });
+      expect(mockGetContentDeskItems).toHaveBeenCalledWith(7001, 5);
+      expect(mockGetRankedContentSignals).toHaveBeenCalledWith(7001, 5);
+      expect(messageRes.body.metadata).toMatchObject({
+        type: 'chat_core_v2_deterministic_read',
+        chatCoreV2: {
+          capabilityId: 'content.pipeline_summary',
+          response: {
+            schemaVersion: 'chat_response_v2@1.0.0',
+            kind: 'message',
+            reasonCodes: ['deterministic_read', 'content.pipeline_summary'],
+          },
+          readModel: {
+            capabilityId: 'content.pipeline_summary',
+            domain: 'content',
+            sensitivity: 'personal',
+            data: {
+              topicCount: 2,
+              readyCount: 1,
+              draftingCount: 1,
+              deskReadyCount: 1,
+              urgentSignalCount: 1,
+            },
+          },
+        },
+      });
+      expect(mockRouteMessage).not.toHaveBeenCalled();
+      expect(mockHandleSecretary).not.toHaveBeenCalled();
+    } finally {
+      if (previousGlobal === undefined) {
+        delete process.env.CHAT_CORE_V2_ENABLED;
+      } else {
+        process.env.CHAT_CORE_V2_ENABLED = previousGlobal;
+      }
+      if (previousReads === undefined) {
+        delete process.env.CHAT_CORE_V2_READS_ENABLED;
+      } else {
+        process.env.CHAT_CORE_V2_READS_ENABLED = previousReads;
+      }
+    }
+  });
+
   it('returns the accountant handoff state from the deterministic finance shortcut', async () => {
     mockRouteMessage.mockResolvedValue({
       domain: 'finance',

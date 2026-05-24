@@ -11,7 +11,8 @@ export type ChatCoreV2DeterministicReadCapabilityId =
   | 'notifications.summary'
   | 'connections.status'
   | 'finance.summary'
-  | 'training.session_explain';
+  | 'training.session_explain'
+  | 'content.pipeline_summary';
 
 export interface ChatCoreV2AgendaSummaryItem {
   entityId: string;
@@ -170,6 +171,28 @@ export interface ChatCoreV2TrainingSessionExplainData {
   topSessions: ChatCoreV2TrainingSessionSummaryItem[];
 }
 
+export interface ChatCoreV2ContentPipelineSummaryItem {
+  entityId: string;
+  title: string;
+  kind: 'topic' | 'desk_item' | 'signal';
+  status: string;
+  scheduledDate: string | null;
+  priority: string | null;
+  createdAt: string | null;
+}
+
+export interface ChatCoreV2ContentPipelineSummaryData {
+  topicCount: number;
+  plannedCount: number;
+  draftingCount: number;
+  readyCount: number;
+  publishedCount: number;
+  scheduledCount: number;
+  deskReadyCount: number;
+  urgentSignalCount: number;
+  topItems: ChatCoreV2ContentPipelineSummaryItem[];
+}
+
 export type ChatCoreV2DeterministicReadData =
   | ChatCoreV2AgendaSummaryData
   | ChatCoreV2TaskSummaryData
@@ -177,7 +200,8 @@ export type ChatCoreV2DeterministicReadData =
   | ChatCoreV2NotificationSummaryData
   | ChatCoreV2ConnectionStatusData
   | ChatCoreV2FinanceSummaryData
-  | ChatCoreV2TrainingSessionExplainData;
+  | ChatCoreV2TrainingSessionExplainData
+  | ChatCoreV2ContentPipelineSummaryData;
 
 export interface ChatCoreV2DeterministicReadRouteResult {
   capabilityId: ChatCoreV2DeterministicReadCapabilityId;

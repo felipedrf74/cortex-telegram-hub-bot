@@ -5,6 +5,8 @@ import type { NotificationCenterItem } from '../../src/services/notification-orc
 import type { IntegrationSummary } from '../../src/services/integration-status';
 import type { SecretaryAgendaItem } from '../../src/services/secretary-scheduling-arbitrator';
 import type { MonthlyBudgetView, MonthlySummary } from '../../src/services/finance-tracker';
+import type { ContentDeskItem, ContentSignalDigest } from '../../src/services/content-intelligence';
+import type { ContentTopic } from '../../src/services/content-scheduler';
 import type {
   TrainingPlan,
   TrainingSession,
@@ -44,6 +46,17 @@ vi.mock('../../src/services/training-plans', () => ({
   getWeeklyAdherence: vi.fn(),
 }));
 
+vi.mock('../../src/services/content-scheduler', () => ({
+  getTopics: vi.fn(),
+}));
+
+vi.mock('../../src/services/content-intelligence', () => ({
+  getContentDeskItems: vi.fn(),
+  getRankedContentSignals: vi.fn(),
+}));
+
+import { getContentDeskItems, getRankedContentSignals } from '../../src/services/content-intelligence';
+import { getTopics } from '../../src/services/content-scheduler';
 import { getDecisionSummary } from '../../src/services/decision-center';
 import { getMonthlyBudgetView, getMonthlySummary } from '../../src/services/finance-tracker';
 import { getIntegrationSummary } from '../../src/services/integration-status';
@@ -237,6 +250,51 @@ function weeklyAdherence(overrides: Partial<WeeklyAdherenceStats> = {}): WeeklyA
   };
 }
 
+function contentTopic(overrides: Partial<ContentTopic> = {}): ContentTopic {
+  return {
+    id: 401,
+    user_id: 42,
+    title: 'Race-week fueling mistakes',
+    notes: 'Private draft notes that should not be surfaced in Chat Core v2 read summaries.',
+    scheduled_date: null,
+    scheduled_at: null,
+    status: 'planned',
+    secretary_task_list_id: null,
+    secretary_task_list_name: null,
+    secretary_task_external_id: null,
+    calendar_event_id: 'calendar_private',
+    calendar_source: 'google',
+    secretary_sync_status: null,
+    secretary_sync_error: null,
+    created_at: '2026-05-20T09:00:00.000Z',
+    updated_at: '2026-05-21T09:00:00.000Z',
+    ...overrides,
+  };
+}
+
+function contentDeskItem(overrides: Partial<ContentDeskItem> = {}): ContentDeskItem {
+  return {
+    id: 501,
+    type: 'script_ready',
+    title: 'Recovery reel draft',
+    body: 'Private script body that should stay out of Chat Core v2 metadata.',
+    createdAt: '2026-05-22T09:00:00.000Z',
+    ...overrides,
+  };
+}
+
+function contentSignal(overrides: Partial<ContentSignalDigest> = {}): ContentSignalDigest {
+  return {
+    type: 'reaction_opportunity',
+    title: 'Creators are debating carb myths again',
+    summary: 'Private signal summary that should not be surfaced in Chat Core v2 metadata.',
+    priority: 'urgent',
+    relevanceScore: 0.93,
+    confidence: 0.81,
+    ...overrides,
+  };
+}
+
 
 function notification(overrides: Partial<NotificationCenterItem>): NotificationCenterItem {
   return {
@@ -328,6 +386,9 @@ describe('Chat Core v2 deterministic read route', () => {
     vi.mocked(getWeeksForPlan).mockReset();
     vi.mocked(getSessionsForWeek).mockReset();
     vi.mocked(getWeeklyAdherence).mockReset();
+    vi.mocked(getTopics).mockReset();
+    vi.mocked(getContentDeskItems).mockReset();
+    vi.mocked(getRankedContentSignals).mockReset();
   });
 
   it('stays disabled unless both global and read flags are explicitly enabled', () => {
@@ -540,6 +601,104 @@ describe('Chat Core v2 deterministic read route', () => {
       'training_session:302',
       'training_session:303',
     ]);
+  });
+
+  it('answers content pipeline questions without exposing raw draft bodies or provider IDs', () => {
+    vi.mocked(getTopics).mockReturnValue([
+      contentTopic({ id: 401, title: 'Race-week fueling mistakes', status: 'ready', scheduled_date: '2026-05-27' }),
+      contentTopic({ id: 402, title: 'Recovery myth carousel', status: 'drafting', scheduled_date: null }),
+      contentTopic({ id: 403, title: 'Published archive note', status: 'published', scheduled_date: '2026-05-20' }),
+    ]);
+    vi.mocked(getContentDeskItems).mockReturnValue([
+      contentDeskItem({ id: 501, title: 'Recovery reel draft', body: 'Full private script body' }),
+    ]);
+    vi.mocked(getRankedContentSignals).mockReturnValue([
+      contentSignal({ title: 'Creators are debating carb myths again', summary: 'Full private signal summary' }),
+    ]);
+
+    const result = tryBuildChatCoreV2DeterministicReadRoute({
+      normalizedText: 'Show my content pipeline',
+      userId: 42,
+      tenantId: 84,
+      locale: 'en-US',
+      timezone: 'Europe/Lisbon',
+      now: FIXED_NOW,
+      env: ENABLED_ENV,
+    });
+
+    expect(result).not.toBeNull();
+    expect(getTopics).toHaveBeenCalledWith(42, { includeTerminal: false, limit: 20 });
+    expect(getContentDeskItems).toHaveBeenCalledWith(42, 5);
+    expect(getRankedContentSignals).toHaveBeenCalledWith(42, 5);
+    expect(listTasks).not.toHaveBeenCalled();
+    expect(getDecisionSummary).not.toHaveBeenCalled();
+    expect(listNotificationCenterItems).not.toHaveBeenCalled();
+    expect(getIntegrationSummary).not.toHaveBeenCalled();
+    expect(listSecretaryAgendaItems).not.toHaveBeenCalled();
+    expect(getMonthlySummary).not.toHaveBeenCalled();
+    expect(getMonthlyBudgetView).not.toHaveBeenCalled();
+    expect(getActivePlan).not.toHaveBeenCalled();
+    expect(result?.capabilityId).toBe('content.pipeline_summary');
+    expect(result?.response).toMatchObject({
+      schemaVersion: 'chat_response_v2@1.0.0',
+      kind: 'message',
+      locale: 'en',
+      cards: [],
+      reasonCodes: ['deterministic_read', 'content.pipeline_summary'],
+    });
+    expect(result?.response.text).toContain('Content pipeline: 3 tracked topics.');
+    expect(result?.response.text).toContain('1 ready');
+    expect(result?.response.text).toContain('1 drafting');
+    expect(result?.response.text).toContain('1 desk-ready item');
+    expect(result?.response.text).toContain('1 urgent signal');
+    expect(result?.response.text).toContain('Race-week fueling mistakes');
+    expect(result?.response.text).toContain('Recovery reel draft');
+    expect(result?.response.text).not.toContain('Full private script body');
+    expect(result?.response.text).not.toContain('Full private signal summary');
+    expect(result?.response.text).not.toContain('calendar_private');
+    expect(JSON.stringify(result?.readModel.data)).not.toContain('Private draft notes');
+    expect(JSON.stringify(result?.readModel.data)).not.toContain('Full private script body');
+    expect(JSON.stringify(result?.readModel.data)).not.toContain('Full private signal summary');
+    expect(JSON.stringify(result?.readModel.data)).not.toContain('calendar_private');
+    expect(result?.readModel).toMatchObject({
+      capabilityId: 'content.pipeline_summary',
+      domain: 'content',
+      sensitivity: 'personal',
+      freshness: { status: 'live' },
+      data: {
+        topicCount: 3,
+        readyCount: 1,
+        draftingCount: 1,
+        publishedCount: 1,
+        scheduledCount: 2,
+        deskReadyCount: 1,
+        urgentSignalCount: 1,
+      },
+    });
+    expect(result?.contextPack.sourceEntityIds).toEqual([
+      'content_topic:401',
+      'content_topic:402',
+      'content_topic:403',
+      'content_desk:501',
+      expect.stringMatching(/^content_signal:[a-f0-9]{12}$/),
+    ]);
+  });
+
+  it('does not route content write-like requests through deterministic reads', () => {
+    const result = tryBuildChatCoreV2DeterministicReadRoute({
+      normalizedText: 'Draft a content brief for my next video',
+      userId: 42,
+      tenantId: 84,
+      locale: 'en-US',
+      timezone: 'Europe/Lisbon',
+      now: FIXED_NOW,
+      env: ENABLED_ENV,
+    });
+
+    expect(result).toBeNull();
+    expect(getTopics).not.toHaveBeenCalled();
+    expect(getContentDeskItems).not.toHaveBeenCalled();
+    expect(getRankedContentSignals).not.toHaveBeenCalled();
   });
 
   it('answers task summary questions without model calls or provider reads', () => {
