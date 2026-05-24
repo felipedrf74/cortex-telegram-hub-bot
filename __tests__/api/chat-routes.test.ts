@@ -2949,6 +2949,101 @@ describe('Chat API routes', () => {
     }
   });
 
+  it('answers connection status through Chat Core v2 deterministic reads when explicitly enabled', async () => {
+    const previousGlobal = process.env.CHAT_CORE_V2_ENABLED;
+    const previousReads = process.env.CHAT_CORE_V2_READS_ENABLED;
+    process.env.CHAT_CORE_V2_ENABLED = 'true';
+    process.env.CHAT_CORE_V2_READS_ENABLED = 'true';
+    try {
+      testDb.prepare(`
+        INSERT INTO garmin_user_tokens (
+          user_id,
+          garmin_email,
+          tokens_json,
+          status,
+          last_refresh,
+          last_used,
+          created_at,
+          updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        7001,
+        'athlete@example.com',
+        JSON.stringify({ oauth1: { token: 'test-oauth1' }, oauth2: { token: 'test-oauth2' } }),
+        'active',
+        '2026-04-15T09:00:00.000Z',
+        '2026-04-15T09:00:00.000Z',
+        '2026-04-15T09:00:00.000Z',
+        '2026-04-15T09:00:00.000Z',
+      );
+      testDb.prepare(`
+        INSERT INTO garmin_sessions (
+          user_id,
+          oauth1_token_json,
+          oauth2_token_json,
+          last_refreshed_at,
+          created_at,
+          updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?)
+      `).run(
+        7001,
+        JSON.stringify({ token: 'session-oauth1' }),
+        JSON.stringify({ token: 'session-oauth2' }),
+        '2026-04-15T09:00:00.000Z',
+        '2026-04-15T09:00:00.000Z',
+        '2026-04-15T09:00:00.000Z',
+      );
+      mockRouteMessage.mockClear();
+      mockHandleSecretary.mockClear();
+
+      const messageRes = await dispatch('POST', '/message', 7001, {
+        text: 'What connections are active?',
+      });
+
+      expect(messageRes.statusCode, JSON.stringify(messageRes.body)).toBe(200);
+      expect(messageRes.body.routeMethod).toBe('chat-core-v2-deterministic-read');
+      expect(messageRes.body.domain).toBe('secretary');
+      expect(messageRes.body.text).toContain('Your connections have 1 active integration.');
+      expect(messageRes.body.text).toContain('Garmin: connected');
+      expect(messageRes.body.text).not.toContain('test-oauth');
+      expect(messageRes.body.text).not.toContain('session-oauth');
+      expect(messageRes.body.metadata).toMatchObject({
+        type: 'chat_core_v2_deterministic_read',
+        chatCoreV2: {
+          capabilityId: 'connections.status',
+          response: {
+            schemaVersion: 'chat_response_v2@1.0.0',
+            kind: 'message',
+          },
+          readModel: {
+            capabilityId: 'connections.status',
+            domain: 'connections',
+            sensitivity: 'credential_adjacent',
+            data: {
+              connectedCount: 1,
+              capabilities: {
+                health: true,
+              },
+            },
+          },
+        },
+      });
+      expect(mockRouteMessage).not.toHaveBeenCalled();
+      expect(mockHandleSecretary).not.toHaveBeenCalled();
+    } finally {
+      if (previousGlobal === undefined) {
+        delete process.env.CHAT_CORE_V2_ENABLED;
+      } else {
+        process.env.CHAT_CORE_V2_ENABLED = previousGlobal;
+      }
+      if (previousReads === undefined) {
+        delete process.env.CHAT_CORE_V2_READS_ENABLED;
+      } else {
+        process.env.CHAT_CORE_V2_READS_ENABLED = previousReads;
+      }
+    }
+  });
+
   it('returns the accountant handoff state from the deterministic finance shortcut', async () => {
     mockRouteMessage.mockResolvedValue({
       domain: 'finance',

@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { NormalizedTask } from '../../src/services/task-store/types';
 import type { NotificationCenterItem } from '../../src/services/notification-orchestrator';
+import type { IntegrationSummary } from '../../src/services/integration-status';
 
 vi.mock('../../src/services/task-store/task-service', () => ({
   listTasks: vi.fn(),
@@ -15,7 +16,12 @@ vi.mock('../../src/services/notification-orchestrator', () => ({
   listNotificationCenterItems: vi.fn(),
 }));
 
+vi.mock('../../src/services/integration-status', () => ({
+  getIntegrationSummary: vi.fn(),
+}));
+
 import { getDecisionSummary } from '../../src/services/decision-center';
+import { getIntegrationSummary } from '../../src/services/integration-status';
 import { listNotificationCenterItems } from '../../src/services/notification-orchestrator';
 import { listTasks } from '../../src/services/task-store/task-service';
 import { tryBuildChatCoreV2DeterministicReadRoute } from '../../src/services/chat-core-v2';
@@ -63,11 +69,65 @@ function notification(overrides: Partial<NotificationCenterItem>): NotificationC
   };
 }
 
+function integrationSummary(overrides: Partial<IntegrationSummary> = {}): IntegrationSummary {
+  return {
+    providers: [
+      {
+        provider: 'google',
+        state: 'connected',
+        connectedAt: '2026-05-23T08:00:00.000Z',
+        scopes: ['https://www.googleapis.com/auth/calendar', 'https://www.googleapis.com/auth/gmail.readonly'],
+        capabilities: ['calendar', 'gmail'],
+        lastCheckedAt: '2026-05-24T09:30:00.000Z',
+      },
+      {
+        provider: 'garmin',
+        state: 'revoked',
+        connectedAt: '2026-05-20T08:00:00.000Z',
+        scopes: ['activities', 'sleep', 'readiness'],
+        capabilities: ['training', 'sleep', 'readiness'],
+        reasonCode: 'NEEDS_REAUTH',
+      },
+      {
+        provider: 'outlook',
+        state: 'disconnected',
+        connectedAt: null,
+        scopes: [],
+        capabilities: ['calendar', 'email', 'tasks'],
+      },
+      {
+        provider: 'whoop',
+        state: 'coming_soon',
+        connectedAt: null,
+        scopes: [],
+        capabilities: ['recovery', 'strain', 'sleep'],
+        reasonCode: 'COMING_SOON',
+        detail: 'WHOOP support is coming soon.',
+      },
+    ],
+    counts: {
+      connected: 1,
+      degraded: 0,
+      revoked: 1,
+      pending: 0,
+      disconnected: 1,
+    },
+    capabilities: {
+      mail: true,
+      calendar: true,
+      externalTasks: false,
+      health: false,
+    },
+    ...overrides,
+  };
+}
+
 describe('Chat Core v2 deterministic read route', () => {
   beforeEach(() => {
     vi.mocked(listTasks).mockReset();
     vi.mocked(getDecisionSummary).mockReset();
     vi.mocked(listNotificationCenterItems).mockReset();
+    vi.mocked(getIntegrationSummary).mockReset();
   });
 
   it('stays disabled unless both global and read flags are explicitly enabled', () => {
@@ -93,6 +153,61 @@ describe('Chat Core v2 deterministic read route', () => {
     expect(globalOnly).toBeNull();
     expect(listTasks).not.toHaveBeenCalled();
     expect(getDecisionSummary).not.toHaveBeenCalled();
+  });
+
+  it('answers connection status questions through the canonical integration summary', () => {
+    vi.mocked(getIntegrationSummary).mockReturnValue(integrationSummary());
+
+    const result = tryBuildChatCoreV2DeterministicReadRoute({
+      normalizedText: 'What connections are connected?',
+      userId: 42,
+      tenantId: 84,
+      locale: 'en-US',
+      timezone: 'Europe/Lisbon',
+      now: FIXED_NOW,
+      env: ENABLED_ENV,
+    });
+
+    expect(result).not.toBeNull();
+    expect(getIntegrationSummary).toHaveBeenCalledWith(42);
+    expect(listTasks).not.toHaveBeenCalled();
+    expect(getDecisionSummary).not.toHaveBeenCalled();
+    expect(listNotificationCenterItems).not.toHaveBeenCalled();
+    expect(result?.capabilityId).toBe('connections.status');
+    expect(result?.response).toMatchObject({
+      schemaVersion: 'chat_response_v2@1.0.0',
+      kind: 'message',
+      locale: 'en',
+      cards: [],
+      reasonCodes: ['deterministic_read', 'connections.status'],
+    });
+    expect(result?.response.text).toContain('Your connections have 1 active integration.');
+    expect(result?.response.text).toContain('1 needing attention');
+    expect(result?.response.text).toContain('- Garmin: needs reconnect');
+    expect(result?.response.text).toContain('- Google: connected');
+    expect(result?.response.text).not.toContain('https://www.googleapis.com');
+    expect(result?.response.text).not.toContain('WHOOP support is coming soon');
+    expect(result?.readModel).toMatchObject({
+      capabilityId: 'connections.status',
+      domain: 'connections',
+      sensitivity: 'credential_adjacent',
+      freshness: { status: 'live' },
+      data: {
+        connectedCount: 1,
+        revokedCount: 1,
+        attentionCount: 1,
+        capabilities: {
+          mail: true,
+          calendar: true,
+        },
+      },
+    });
+    expect(result?.contextPack.sourceEntityIds).toEqual([
+      'connection:garmin',
+      'connection:google',
+      'connection:outlook',
+      'connection:whoop',
+    ]);
   });
 
   it('answers task summary questions without model calls or provider reads', () => {
@@ -480,14 +595,23 @@ describe('Chat Core v2 deterministic read route', () => {
       now: FIXED_NOW,
       env: ENABLED_ENV,
     });
+    const connectionWrite = tryBuildChatCoreV2DeterministicReadRoute({
+      normalizedText: 'Reconnect Garmin now',
+      userId: 42,
+      tenantId: 84,
+      now: FIXED_NOW,
+      env: ENABLED_ENV,
+    });
 
     expect(write).toBeNull();
     expect(portugueseWrite).toBeNull();
     expect(multiDomain).toBeNull();
     expect(decisionWrite).toBeNull();
     expect(notificationWrite).toBeNull();
+    expect(connectionWrite).toBeNull();
     expect(listTasks).not.toHaveBeenCalled();
     expect(getDecisionSummary).not.toHaveBeenCalled();
     expect(listNotificationCenterItems).not.toHaveBeenCalled();
+    expect(getIntegrationSummary).not.toHaveBeenCalled();
   });
 });

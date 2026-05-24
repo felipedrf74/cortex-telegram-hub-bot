@@ -4,10 +4,12 @@ import { type RuntimeFlagScope } from '../runtime-flags';
 import { classifyShadowRoute, type ChatCoreV2ShadowRouteGuess } from './shadow-route-classifier';
 import { isChatCoreV2CapabilityEnabled } from './capability-registry';
 import {
+  CONNECTIONS_STATUS_CAPABILITY,
   DECISION_CENTER_SUMMARY_CAPABILITY,
   NOTIFICATIONS_SUMMARY_CAPABILITY,
   TASKS_TODAY_SUMMARY_CAPABILITY,
 } from './deterministic-read/common';
+import { buildConnectionsStatusRoute } from './deterministic-read/connection-status-route';
 import { buildDecisionCenterSummaryRoute } from './deterministic-read/decision-center-summary-route';
 import { buildNotificationsSummaryRoute } from './deterministic-read/notification-summary-route';
 import { buildTaskSummaryRoute } from './deterministic-read/task-summary-route';
@@ -20,6 +22,8 @@ import type {
 
 export type {
   BuildChatCoreV2DeterministicReadRouteInput,
+  ChatCoreV2ConnectionStatusData,
+  ChatCoreV2ConnectionStatusItem,
   ChatCoreV2DecisionCenterSummaryData,
   ChatCoreV2DecisionCenterSummaryItem,
   ChatCoreV2DeterministicReadCapabilityId,
@@ -37,6 +41,7 @@ const DETERMINISTIC_READ_BUILDERS: Record<ChatCoreV2DeterministicReadCapabilityI
   [TASKS_TODAY_SUMMARY_CAPABILITY]: buildTaskSummaryRoute,
   [DECISION_CENTER_SUMMARY_CAPABILITY]: buildDecisionCenterSummaryRoute,
   [NOTIFICATIONS_SUMMARY_CAPABILITY]: buildNotificationsSummaryRoute,
+  [CONNECTIONS_STATUS_CAPABILITY]: buildConnectionsStatusRoute,
 };
 
 export function tryBuildChatCoreV2DeterministicReadRoute(
@@ -74,6 +79,9 @@ function deterministicReadCapabilityForRouteGuess(
   }
   if (routeGuess.domains[0] === 'notifications' && routeGuess.capabilityIds.includes(NOTIFICATIONS_SUMMARY_CAPABILITY)) {
     return NOTIFICATIONS_SUMMARY_CAPABILITY;
+  }
+  if (routeGuess.domains[0] === 'connections' && routeGuess.capabilityIds.includes(CONNECTIONS_STATUS_CAPABILITY)) {
+    return CONNECTIONS_STATUS_CAPABILITY;
   }
   return null;
 }

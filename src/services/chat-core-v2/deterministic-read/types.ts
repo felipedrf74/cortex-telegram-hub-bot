@@ -7,7 +7,8 @@ import type { ChatCoreV2Response } from '../response-contracts';
 export type ChatCoreV2DeterministicReadCapabilityId =
   | 'tasks.today_summary'
   | 'decision_center.summary'
-  | 'notifications.summary';
+  | 'notifications.summary'
+  | 'connections.status';
 
 export interface ChatCoreV2TaskSummaryItem {
   entityId: string;
@@ -72,10 +73,39 @@ export interface ChatCoreV2NotificationSummaryData {
   topItems: ChatCoreV2NotificationSummaryItem[];
 }
 
+export interface ChatCoreV2ConnectionStatusItem {
+  entityId: string;
+  provider: string;
+  state: string;
+  connectedAt: string | null;
+  capabilities: string[];
+  needsAttention: boolean;
+  reasonCode: string | null;
+  lastCheckedAt: string | null;
+}
+
+export interface ChatCoreV2ConnectionStatusData {
+  providerCount: number;
+  connectedCount: number;
+  degradedCount: number;
+  revokedCount: number;
+  pendingCount: number;
+  disconnectedCount: number;
+  attentionCount: number;
+  capabilities: {
+    mail: boolean;
+    calendar: boolean;
+    externalTasks: boolean;
+    health: boolean;
+  };
+  topProviders: ChatCoreV2ConnectionStatusItem[];
+}
+
 export type ChatCoreV2DeterministicReadData =
   | ChatCoreV2TaskSummaryData
   | ChatCoreV2DecisionCenterSummaryData
-  | ChatCoreV2NotificationSummaryData;
+  | ChatCoreV2NotificationSummaryData
+  | ChatCoreV2ConnectionStatusData;
 
 export interface ChatCoreV2DeterministicReadRouteResult {
   capabilityId: ChatCoreV2DeterministicReadCapabilityId;
