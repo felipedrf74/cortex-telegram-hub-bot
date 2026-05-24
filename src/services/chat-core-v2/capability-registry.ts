@@ -15,12 +15,20 @@ import type {
   UndoPolicy,
   VerificationMode,
 } from './types';
+import {
+  isChatCoreV2RuntimeFlagEnabled,
+  type RuntimeFlagScope,
+} from '../runtime-flags';
 import { CHAT_CORE_V2_FINANCE_ACTION_POLICY_VERSION } from './finance-action-policy';
 import { CHAT_CORE_V2_TRAINING_SAFETY_POLICY_VERSION } from './training-safety-policy';
 
 const SCHEMA_VERSION = 'chat_core_v2_capability@1.0.0';
 const TOOL_SCHEMA_SET_VERSION = 'chat_core_v2_tools@1.0.0';
-const GLOBAL_FLAG = 'CHAT_CORE_V2_ENABLED';
+export const CHAT_CORE_V2_GLOBAL_FLAG = 'CHAT_CORE_V2_ENABLED';
+export const CHAT_CORE_V2_READS_FLAG = 'CHAT_CORE_V2_READS_ENABLED';
+export const CHAT_CORE_V2_WRITES_FLAG = 'CHAT_CORE_V2_WRITES_ENABLED';
+export const CHAT_CORE_V2_PREVIEWS_FLAG = 'CHAT_CORE_V2_PREVIEWS_ENABLED';
+export const CHAT_CORE_V2_RESTRICTED_POLICY_FLAG = 'CHAT_CORE_V2_RESTRICTED_POLICY_ENABLED';
 
 const NO_UNDO: UndoPolicy = {
   supported: false,
@@ -109,7 +117,7 @@ function capability(input: {
     verificationMode: input.verificationMode ?? (readOnly ? 'not_verifiable' : 'immediate_read_back'),
     executionMode: input.executionMode ?? 'sync',
     modelVisible: input.modelVisible ?? !readOnly,
-    enabledFlags: input.enabledFlags ?? [GLOBAL_FLAG],
+    enabledFlags: input.enabledFlags ?? [CHAT_CORE_V2_GLOBAL_FLAG],
     sensitivity: input.sensitivity ?? 'personal',
     fallbackAllowed: input.fallbackAllowed ?? readOnly,
     promptFamily: input.promptFamily ?? `chat_v2_${input.domain}`,
@@ -138,6 +146,7 @@ export const CHAT_CORE_V2_CAPABILITIES: CapabilityDefinition[] = [
     requiredPermissions: ['secretary:read'],
     sensitivity: 'personal',
     fallbackAllowed: true,
+    enabledFlags: [CHAT_CORE_V2_GLOBAL_FLAG, CHAT_CORE_V2_READS_FLAG],
     promptFamily: 'chat_v2_secretary',
     reasoningTier: 'none',
   }),
@@ -151,6 +160,7 @@ export const CHAT_CORE_V2_CAPABILITIES: CapabilityDefinition[] = [
     ownerService: 'task-read-model',
     requiredPermissions: ['tasks:read'],
     sensitivity: 'personal',
+    enabledFlags: [CHAT_CORE_V2_GLOBAL_FLAG, CHAT_CORE_V2_READS_FLAG],
     promptFamily: 'chat_v2_tasks',
   }),
   capability({
@@ -163,6 +173,7 @@ export const CHAT_CORE_V2_CAPABILITIES: CapabilityDefinition[] = [
     ownerService: 'training-read-model',
     requiredPermissions: ['training:read'],
     sensitivity: 'health_adjacent',
+    enabledFlags: [CHAT_CORE_V2_GLOBAL_FLAG, CHAT_CORE_V2_READS_FLAG],
     promptFamily: 'chat_v2_training',
     reasoningTier: 'synthesis',
     domainSafetyPolicyVersion: CHAT_CORE_V2_TRAINING_SAFETY_POLICY_VERSION,
@@ -176,6 +187,7 @@ export const CHAT_CORE_V2_CAPABILITIES: CapabilityDefinition[] = [
     rolloutStage: 'mvp_read',
     ownerService: 'content-read-model',
     requiredPermissions: ['content:read'],
+    enabledFlags: [CHAT_CORE_V2_GLOBAL_FLAG, CHAT_CORE_V2_READS_FLAG],
     promptFamily: 'chat_v2_content',
   }),
   capability({
@@ -187,6 +199,7 @@ export const CHAT_CORE_V2_CAPABILITIES: CapabilityDefinition[] = [
     rolloutStage: 'mvp_read',
     ownerService: 'cooking-read-model',
     requiredPermissions: ['cooking:read'],
+    enabledFlags: [CHAT_CORE_V2_GLOBAL_FLAG, CHAT_CORE_V2_READS_FLAG],
     promptFamily: 'chat_v2_cooking',
   }),
   capability({
@@ -199,6 +212,7 @@ export const CHAT_CORE_V2_CAPABILITIES: CapabilityDefinition[] = [
     ownerService: 'finance-read-model',
     requiredPermissions: ['finance:read'],
     sensitivity: 'financial',
+    enabledFlags: [CHAT_CORE_V2_GLOBAL_FLAG, CHAT_CORE_V2_READS_FLAG],
     promptFamily: 'chat_v2_finance',
     domainSafetyPolicyVersion: CHAT_CORE_V2_FINANCE_ACTION_POLICY_VERSION,
   }),
@@ -212,6 +226,7 @@ export const CHAT_CORE_V2_CAPABILITIES: CapabilityDefinition[] = [
     ownerService: 'connections-read-model',
     requiredPermissions: ['connections:read'],
     sensitivity: 'credential_adjacent',
+    enabledFlags: [CHAT_CORE_V2_GLOBAL_FLAG, CHAT_CORE_V2_READS_FLAG],
     promptFamily: 'chat_v2_connections',
   }),
   capability({
@@ -223,6 +238,7 @@ export const CHAT_CORE_V2_CAPABILITIES: CapabilityDefinition[] = [
     rolloutStage: 'mvp_read',
     ownerService: 'notification-read-model',
     requiredPermissions: ['notifications:read'],
+    enabledFlags: [CHAT_CORE_V2_GLOBAL_FLAG, CHAT_CORE_V2_READS_FLAG],
     promptFamily: 'chat_v2_notifications',
   }),
   capability({
@@ -234,6 +250,7 @@ export const CHAT_CORE_V2_CAPABILITIES: CapabilityDefinition[] = [
     rolloutStage: 'mvp_read',
     ownerService: 'decision-read-model',
     requiredPermissions: ['decision_center:read'],
+    enabledFlags: [CHAT_CORE_V2_GLOBAL_FLAG, CHAT_CORE_V2_READS_FLAG],
     promptFamily: 'chat_v2_decision_center',
   }),
 
@@ -248,6 +265,7 @@ export const CHAT_CORE_V2_CAPABILITIES: CapabilityDefinition[] = [
     ownerService: 'task-command-service',
     requiredPermissions: ['tasks:read', 'tasks:write'],
     previewCardType: 'task_preview_card@1.0.0',
+    enabledFlags: [CHAT_CORE_V2_GLOBAL_FLAG, CHAT_CORE_V2_WRITES_FLAG],
     undoPolicy: undo('tasks.delete_created'),
     verificationMode: 'immediate_read_back',
     promptFamily: 'chat_v2_tasks',
@@ -264,6 +282,7 @@ export const CHAT_CORE_V2_CAPABILITIES: CapabilityDefinition[] = [
     ownerService: 'task-command-service',
     requiredPermissions: ['tasks:read', 'tasks:write'],
     previewCardType: 'task_preview_card@1.0.0',
+    enabledFlags: [CHAT_CORE_V2_GLOBAL_FLAG, CHAT_CORE_V2_WRITES_FLAG],
     undoPolicy: undo('tasks.reopen'),
     verificationMode: 'immediate_read_back',
     promptFamily: 'chat_v2_tasks',
@@ -280,6 +299,7 @@ export const CHAT_CORE_V2_CAPABILITIES: CapabilityDefinition[] = [
     ownerService: 'notification-command-service',
     requiredPermissions: ['notifications:read', 'notifications:write'],
     previewCardType: 'notification_preview_card@1.0.0',
+    enabledFlags: [CHAT_CORE_V2_GLOBAL_FLAG, CHAT_CORE_V2_WRITES_FLAG],
     undoPolicy: undo('notifications.unsnooze'),
     verificationMode: 'immediate_read_back',
     promptFamily: 'chat_v2_notifications',
@@ -296,6 +316,7 @@ export const CHAT_CORE_V2_CAPABILITIES: CapabilityDefinition[] = [
     ownerService: 'decision-command-service',
     requiredPermissions: ['decision_center:read', 'decision_center:write'],
     previewCardType: 'decision_preview_card@1.0.0',
+    enabledFlags: [CHAT_CORE_V2_GLOBAL_FLAG, CHAT_CORE_V2_WRITES_FLAG],
     undoPolicy: undo('decision_center.restore'),
     verificationMode: 'immediate_read_back',
     promptFamily: 'chat_v2_decision_center',
@@ -313,6 +334,7 @@ export const CHAT_CORE_V2_CAPABILITIES: CapabilityDefinition[] = [
     ownerService: 'secretary-command-service',
     requiredPermissions: ['secretary:read'],
     previewCardType: 'calendar_change_preview_card@1.0.0',
+    enabledFlags: [CHAT_CORE_V2_GLOBAL_FLAG, CHAT_CORE_V2_PREVIEWS_FLAG],
     verificationMode: 'not_verifiable',
     promptFamily: 'chat_v2_secretary',
     reasoningTier: 'standard_command',
@@ -328,6 +350,7 @@ export const CHAT_CORE_V2_CAPABILITIES: CapabilityDefinition[] = [
     ownerService: 'training-command-service',
     requiredPermissions: ['training:read'],
     previewCardType: 'training_change_preview_card@1.0.0',
+    enabledFlags: [CHAT_CORE_V2_GLOBAL_FLAG, CHAT_CORE_V2_PREVIEWS_FLAG],
     verificationMode: 'not_verifiable',
     promptFamily: 'chat_v2_training',
     reasoningTier: 'standard_command',
@@ -345,6 +368,7 @@ export const CHAT_CORE_V2_CAPABILITIES: CapabilityDefinition[] = [
     ownerService: 'cooking-command-service',
     requiredPermissions: ['cooking:read'],
     previewCardType: 'grocery_preview_card@1.0.0',
+    enabledFlags: [CHAT_CORE_V2_GLOBAL_FLAG, CHAT_CORE_V2_PREVIEWS_FLAG],
     verificationMode: 'not_verifiable',
     promptFamily: 'chat_v2_cooking',
     reasoningTier: 'fast_extraction',
@@ -360,6 +384,7 @@ export const CHAT_CORE_V2_CAPABILITIES: CapabilityDefinition[] = [
     ownerService: 'content-command-service',
     requiredPermissions: ['content:read'],
     previewCardType: 'content_brief_preview_card@1.0.0',
+    enabledFlags: [CHAT_CORE_V2_GLOBAL_FLAG, CHAT_CORE_V2_PREVIEWS_FLAG],
     verificationMode: 'not_verifiable',
     promptFamily: 'chat_v2_content',
     reasoningTier: 'synthesis',
@@ -378,6 +403,7 @@ export const CHAT_CORE_V2_CAPABILITIES: CapabilityDefinition[] = [
     verificationMode: 'manual_review',
     executionMode: 'manual_review',
     modelVisible: false,
+    enabledFlags: [CHAT_CORE_V2_GLOBAL_FLAG, CHAT_CORE_V2_RESTRICTED_POLICY_FLAG],
     sensitivity: 'financial',
     fallbackAllowed: false,
     promptFamily: 'chat_v2_finance',
@@ -413,4 +439,25 @@ export function listChatCoreV2ExecutableCapabilities(): CapabilityDefinition[] {
 
 export function listChatCoreV2ModelVisibleCapabilities(): CapabilityDefinition[] {
   return getChatCoreV2Capabilities().filter((capability) => capability.modelVisible);
+}
+
+export function isChatCoreV2CapabilityEnabled(
+  capabilityId: string,
+  input: {
+    env?: NodeJS.ProcessEnv;
+    scope?: RuntimeFlagScope;
+  } = {},
+): boolean {
+  const capability = getChatCoreV2Capability(capabilityId);
+  if (!capability) return false;
+  return capability.enabledFlags.every((flag) =>
+    isChatCoreV2RuntimeFlagEnabled(flag, input.env ?? process.env, input.scope));
+}
+
+export function listEnabledChatCoreV2Capabilities(input: {
+  env?: NodeJS.ProcessEnv;
+  scope?: RuntimeFlagScope;
+} = {}): CapabilityDefinition[] {
+  return getChatCoreV2Capabilities().filter((capability) =>
+    isChatCoreV2CapabilityEnabled(capability.capabilityId, input));
 }
