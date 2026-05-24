@@ -42,9 +42,16 @@ None for live Phase A.
 
 - Focused iOS unit/integration confirmation tests passed on simulator: `Nexus HubTests/ChatStructuredCardRenderingTests` plus `Nexus HubTests/IntegrationFlowTests/test_chatService_confirmAction_targetsDeterministicConfirmationEndpoint` passed 16/16.
 - Focused iOS confirmation UI fixture passed on simulator: `Nexus HubUITests/ChatActionConfirmationUITests/test_fixtureRendersConfirmationCardsAndCancelDoesNotConfirm` passed 1/1 with `NEXUS_UI_TEST_MODE=1`.
+- TestFlight smoke-matrix unit guard passed on simulator: `Nexus HubTests/BetaTestFlightSmokeMatrixTests` passed 4/4.
 - These simulator checks validate card decoding/rendering, deterministic confirm endpoint targeting, visible confirmation-card variants, and the cancel path. They do not replace the signed-device/TestFlight smoke.
+
+## Signed-Device Gate Status
+
+- `xcrun xctrace list devices` shows physical devices `iPad Pro (26.5)` and `iPhone Felipe (26.5)` as offline from this shell.
+- The iOS checkout has no Fastlane/TestFlight upload workflow or export-options automation available for Codex to run.
+- Therefore, signed-device/TestFlight Phase B cannot be completed by this backend/iOS simulator session. It remains an operator gate: install a signed/TestFlight build, run the chat confirmation smoke on a physical device, capture screen/telemetry evidence, then continue to production promotion.
 
 ## Remaining Release Gates
 
-- Phase B manual signed-iOS smoke still requires an operator-run signed device/TestFlight build with screen/telemetry capture. The simulator proxy passed, but signed-device evidence is not produced by this backend shell.
+- Phase B manual signed-iOS smoke still requires an operator-run signed device/TestFlight build with screen/telemetry capture. The simulator proxy and smoke-matrix guard passed, but signed-device evidence is impossible from this session because the physical devices are offline and no TestFlight automation is present.
 - Production promote and Phase D post-deploy validation were not run because promotion must wait for Phase B plus operator-controlled release approval.
