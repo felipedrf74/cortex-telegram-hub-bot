@@ -46,14 +46,7 @@ import {
   getCurrentChatToolAuthorizationContext,
   runWithChatToolAuthorization,
 } from '../chat-tool-authorization';
-import { buildPendingContentSpecContinuation } from '../skills/content/pending';
-import { buildPendingCookingMealPlanContinuation } from '../skills/cooking/pending';
-import { buildPendingDecisionChooseContinuation } from '../skills/decision_center/pending';
-import { buildPendingFinanceCategorizeContinuation } from '../skills/finance/pending';
-import { buildPendingMailDraftContinuation } from '../skills/mail/pending';
 import { extractTopic, inferContentPlatform, inferProviderName } from '../skills/text-extractors';
-import { buildPendingSlotContinuationPlan } from '../skills/training/pending';
-import type { PendingContinuationHelpers } from './planner/pending-types';
 import { invalidateCalendarCaches } from '../cache-coherence-registry';
 import { getTaskProviderForUser } from '../task-store/task-router';
 import { resolveTaskCreationList } from '../task-store/task-list-resolution';
@@ -98,12 +91,7 @@ import {
 } from '../runtime-flags';
 import { resolveStepRefs } from '../chat-multi-step-dag';
 import {
-  actionButtonsForResults,
-  calendarCardEvents,
-  firstTitle,
   openSurfacePayloadForStep,
-  resultCardPayload,
-  sanitizeActionResults,
 } from './executor/response-cards';
 import {
   buildActionResponse,
@@ -112,12 +100,8 @@ import {
 } from './executor/response-builder';
 import {
   confirmationCopy,
-  failureCopy,
-  partialCopy,
   refusalCopyForReason,
   refusalReasonForPlan,
-  successCopy,
-  verifiedPendingCopy,
 } from './executor/response-copy';
 import {
   confirmationVariant,
@@ -131,33 +115,23 @@ import {
   rowToConfirmedStep,
 } from './executor/run-persistence';
 import {
-  buildMessageOnlyPlan,
-  buildNeedsInputPlan,
-  buildPlanFromSteps,
   clarificationReasonForPlan,
 } from './planner/plan-builder';
 import {
-  buildTargetedClarificationQuestion,
   defaultClarification,
 } from './planner/clarification';
-import { shouldRunActionPlannerBeforeReadOnlyFastPaths } from './planner/preflight-gates';
-import {
-  buildAmbiguousActionClarificationPlan,
-  buildPendingCancellationPlan,
-  buildRecentEntityFollowUpPlan,
-} from './planner/preflight-plans';
-import { tryBuildMultiStepChatActionPlan } from './planner/multi-step';
-import { buildSingleActionChatActionPlan } from './planner/single-action';
-import { buildDeterministicChatActionPlan } from './planner/deterministic';
 import {
   recordShadowTelemetry,
 } from './executor/telemetry';
 import { executeStepWithReliability } from './executor/reliability';
+import { buildExecutedChatActionResponse } from './executor/result-response';
+import { buildChatActionPlan } from './planner/orchestrator';
 
 export { buildLlmPlannerPrompt, buildTier1ClassifierPrompt, parseLlmPlannerJson, parseTier1ClassifierJson } from './planner/tiers';
 export { BROAD_SKILL_MIN_PRIORITY_GAP, BROAD_SKILL_SLOT_COMPLETENESS_BONUS } from './planner/broad-skill-intents';
 export { shouldRunActionPlannerBeforeReadOnlyFastPaths } from './planner/preflight-gates';
 export { buildDeterministicChatActionPlan } from './planner/deterministic';
+export { buildChatActionPlan } from './planner/orchestrator';
 
 export type {
   CalendarProviderDeps,
@@ -184,12 +158,6 @@ const DEFAULT_DEPS: Required<ChatActionPlannerDeps> = {
     hasOutlook: isOutlookCalendarConfigured,
   },
   taskProviderForUser: getTaskProviderForUser,
-};
-
-const PENDING_CONTINUATION_HELPERS: PendingContinuationHelpers = {
-  buildPlanFromSteps,
-  buildNeedsInputPlan,
-  buildTargetedClarificationQuestion,
 };
 
 export async function tryHandleChatActionPlan(
@@ -257,52 +225,6 @@ export async function executeConfirmedChatActionRuns(
     messageId: plan.messageId,
   }, resolvedDeps, { confirmed: true });
   return { plan, response, status: String(response.metadata.actionStatus || 'planned') as ChatActionStatus };
-}
-
-export async function buildChatActionPlan(input: ChatPlannerInput): Promise<ChatActionPlan | null> {
-  const cancellation = buildPendingCancellationPlan(input);
-  if (cancellation) return cancellation;
-
-  const pendingContinuation = buildPendingSlotContinuationPlan(input, PENDING_CONTINUATION_HELPERS);
-  if (pendingContinuation) return pendingContinuation;
-  // Phase 7 close-out (2026-05-15): cooking pending-meal-plan continuation.
-  // Mirrors the training-plan continuation: when the user has a pending
-  // cooking_meal_plan and the new turn supplies dietary constraints
-  // ("high-protein, vegetarian", "low-carb, no fish"), apply them as
-  // additional args and re-emit the plan step.
-  const cookingPendingContinuation = buildPendingCookingMealPlanContinuation(input, PENDING_CONTINUATION_HELPERS);
-  if (cookingPendingContinuation) return cookingPendingContinuation;
-  // Phase 8 batch 38 (2026-05-15): mail draft refinement continuation.
-  const mailPendingContinuation = buildPendingMailDraftContinuation(input, PENDING_CONTINUATION_HELPERS);
-  if (mailPendingContinuation) return mailPendingContinuation;
-  // Phase 8 batch 38: decision_choose with sub-options continuation.
-  const decisionPendingContinuation = buildPendingDecisionChooseContinuation(input, PENDING_CONTINUATION_HELPERS);
-  if (decisionPendingContinuation) return decisionPendingContinuation;
-  // Phase 8 batch 38: finance categorize-receipt category continuation.
-  const financePendingContinuation = buildPendingFinanceCategorizeContinuation(input, PENDING_CONTINUATION_HELPERS);
-  if (financePendingContinuation) return financePendingContinuation;
-  // Phase 9 batch 44 (2026-05-16): content brief / script-create pending
-  // continuation. Turn 1 invokes the brief / script intent; turn 2 supplies
-  // additional spec (audience, platform-specific tone, length target).
-  const contentPendingContinuation = buildPendingContentSpecContinuation(input, PENDING_CONTINUATION_HELPERS);
-  if (contentPendingContinuation) return contentPendingContinuation;
-
-  const multiStep = await tryBuildMultiStepChatActionPlan(input, singleActionPlanner);
-  if (multiStep) return multiStep;
-
-  const recentFollowUp = buildRecentEntityFollowUpPlan(input);
-  if (recentFollowUp) return recentFollowUp;
-
-  const ambiguousAction = buildAmbiguousActionClarificationPlan(input);
-  if (ambiguousAction) return ambiguousAction;
-
-  if (!shouldRunActionPlannerBeforeReadOnlyFastPaths(input.text)) return null;
-
-  return singleActionPlanner(input);
-}
-
-function singleActionPlanner(input: ChatPlannerInput): Promise<ChatActionPlan | null> {
-  return buildSingleActionChatActionPlan(input, buildDeterministicChatActionPlan);
 }
 
 export async function executeChatActionPlan(
@@ -416,75 +338,5 @@ export async function executeChatActionPlan(
   }
 
   requeuePartialSuccessPendingParents(input, plan, results);
-
-  const needsConfirmation = results.find((result) => result.status === 'needs_confirmation');
-  if (needsConfirmation) {
-    persistPlanStatus(plan, input, 'needs_confirmation');
-    return buildActionResponse(input, plan, 'needs_confirmation', confirmationCopy(plan, input), {
-      type: multiStepType(plan, 'chat_action_needs_confirmation'),
-      actionStatus: 'needs_confirmation',
-      actionConfirmation: {
-        title: input.locale?.startsWith('pt') ? 'Confirmação necessária' : 'Confirmation needed',
-        message: failureCopy(input, needsConfirmation.error),
-        destructive: plan.steps.some((step) => step.risk === 'destructive'),
-        variant: confirmationVariant(plan),
-        requiresStrongConfirm: plan.steps.some((step) => step.risk === 'financial' || step.risk === 'admin_security'),
-        intentClass: intentClassForPlan(plan),
-      },
-      actionResults: sanitizeActionResults(results),
-      ...multiStepMetadata(plan, results),
-    });
-  }
-  const needsClarification = results.find((result) => result.status === 'needs_clarification');
-  if (needsClarification) {
-    const question = plan.clarificationQuestion || buildTargetedClarificationQuestion(input, plan.steps);
-    return buildActionResponse(input, plan, 'needs_clarification', question, {
-      type: multiStepType(plan, 'chat_action_needs_input'),
-      actionStatus: 'needs_clarification',
-      clarification: { question, reason: clarificationReasonForPlan(plan) },
-      actionResults: sanitizeActionResults(results),
-      ...multiStepMetadata(plan, results),
-    });
-  }
-  const failed = results.find((result) => result.status === 'failed' || result.status === 'blocked');
-  const partial = results.some((result) => result.status !== 'verified_success');
-  if (failed) {
-    return buildActionResponse(input, plan, failed.status, failureCopy(input, failed.error), {
-      type: multiStepType(plan, failed.status === 'blocked' ? 'chat_action_blocked' : 'chat_action_failed'),
-      actionStatus: failed.status,
-      error: { message: failureCopy(input, failed.error), retryable: failed.status !== 'blocked' },
-      actionResults: sanitizeActionResults(results),
-      ...multiStepMetadata(plan, results),
-    });
-  }
-  const verifiedPending = results.find((result) => result.status === 'verified_pending');
-  if (verifiedPending) {
-    return buildActionResponse(input, plan, 'verified_pending', verifiedPendingCopy(input, verifiedPending), {
-      type: multiStepType(plan, 'chat_action_verified_pending'),
-      actionStatus: 'verified_pending',
-      verificationStatus: 'verified_pending',
-      openSurface: openSurfacePayloadForStep(verifiedPending.step, verifiedPending.result, input),
-      actionResults: sanitizeActionResults(results),
-      ...multiStepMetadata(plan, results),
-    });
-  }
-  if (partial) {
-    return buildActionResponse(input, plan, 'partial_success', partialCopy(input), {
-      type: multiStepType(plan, 'chat_action_partial_success'),
-      actionStatus: 'partial_success',
-      actionResults: sanitizeActionResults(results),
-      ...multiStepMetadata(plan, results),
-    });
-  }
-  return buildActionResponse(input, plan, 'verified_success', successCopy(input, results), {
-    type: multiStepType(plan, 'chat_action_verified_success'),
-    actionStatus: 'verified_success',
-    verificationStatus: 'verified_success',
-    title: firstTitle(results),
-    calendar: calendarCardEvents(results),
-    ...resultCardPayload(results),
-    actions: actionButtonsForResults(results),
-    actionResults: sanitizeActionResults(results),
-    ...multiStepMetadata(plan, results),
-  });
+  return buildExecutedChatActionResponse(input, plan, results);
 }
