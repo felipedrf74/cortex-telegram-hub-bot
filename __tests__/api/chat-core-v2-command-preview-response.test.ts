@@ -161,4 +161,129 @@ describe('Chat Core v2 command preview API adapter', () => {
     expect(metadataJson).not.toContain('idempotencyKey');
     expect(metadataJson).not.toContain('chat-v2-permissions:84:42');
   });
+
+  it('maps notification previews into notification cards without leaking authorization scope', () => {
+    const requestStartedAt = Date.parse('2026-05-24T12:34:56.000Z');
+    const result: ChatCoreV2CommandPreviewRouteResult = {
+      routeVersion: 'chat_core_v2_command_preview_route@1.0.0',
+      capabilityId: 'notifications.snooze',
+      routeGuess: {
+        intent: 'modify_action',
+        confidence: 0.83,
+        domains: ['notifications'],
+        capabilityIds: ['notifications.snooze'],
+      },
+      executionEnabled: false,
+      executionDisabledReason: 'preview_only_rollout',
+      gateVerdict: {
+        ok: true,
+        operation: 'preview',
+        gateVersion: 'chat_core_v2_command_bus_gate@1.0.0',
+        commandStatus: 'previewed',
+        capabilityId: 'notifications.snooze',
+      },
+      command: {
+        commandId: 'cmd_notification',
+        commandSchemaVersion: 'notifications.snooze@1.0.0',
+        previewSchemaVersion: 'notification_preview_card@1.0.0',
+        responseSchemaVersion: 'chat_response_v2@1.0.0',
+        tenantId: '84',
+        userId: '42',
+        domain: 'notifications',
+        commandType: 'notifications.snooze',
+        origin: 'chat',
+        payload: {
+          operation: 'snooze',
+          notificationId: 'nc_budget',
+          title: 'Budget alert',
+          currentStatus: 'unread',
+          targetStatus: 'snoozed',
+          snoozeMinutes: 60,
+          snoozedUntil: '2026-05-24T13:34:56.000Z',
+        },
+        basedOn: {
+          entityIds: ['notification:nc_budget'],
+          entityVersions: { 'notification:nc_budget': 'abc123def4567890' },
+          contextHash: 'abc123def4567890',
+          createdAt: '2026-05-24T12:34:56.000Z',
+        },
+        preconditions: {
+          requiredEntityVersions: { 'notification:nc_budget': 'abc123def4567890' },
+          requiredPermissionsVersion: 'chat-v2-permissions:84:42:notifications:v1',
+          invariants: [{
+            type: 'notification_status',
+            description: 'Notification must still be unread when the preview is confirmed.',
+            check: 'notification_is_unread',
+          }],
+        },
+        authorization: {
+          actorUserId: '42',
+          tenantId: '84',
+          actingSurface: 'ios_chat',
+          delegatedScopes: ['notifications:read', 'notifications:write'],
+          permissionSnapshotVersion: 'chat-v2-permissions:84:42:notifications:v1',
+          authTime: '2026-05-24T12:34:56.000Z',
+        },
+        expiresAt: '2026-05-24T12:44:56.000Z',
+        idempotencyKey: 'chat-v2:84:42:notification-snooze',
+      },
+      response: {
+        schemaVersion: 'chat_response_v2@1.0.0',
+        kind: 'action_preview',
+        locale: 'en',
+        text: 'I would snooze "Budget alert" for 1 hour.',
+        reasonCodes: ['preview_only_rollout'],
+        cards: [{
+          type: 'notification_preview_card',
+          version: 'notification_preview_card@1.0.0',
+          title: 'Snooze preview: Budget alert',
+          summary: 'I would snooze "Budget alert" for 1 hour.',
+          risk: 'low',
+          sensitivity: 'personal',
+          capabilityId: 'notifications.snooze',
+          commandId: 'cmd_notification',
+          sourceEntityIds: ['notification:nc_budget'],
+          diff: [{ label: 'Status', before: 'Unread', after: 'Snoozed' }],
+          primaryAction: {
+            id: 'view',
+            kind: 'view',
+            label: 'View',
+            style: 'primary',
+          },
+          secondaryActions: [],
+        }],
+      },
+    };
+
+    const built = buildChatCoreV2CommandPreviewShortcutResponse({
+      result,
+      requestStartedAt,
+    });
+
+    expect(built.response.responseCards).toEqual([{
+      kind: 'notificationCard',
+      notificationId: 'nc_budget',
+      title: 'Budget alert',
+      detail: 'I would snooze "Budget alert" for 1 hour.',
+    }]);
+    expect(built.response.metadata.chatCoreV2.command).toMatchObject({
+      commandSchemaVersion: 'notifications.snooze@1.0.0',
+      domain: 'notifications',
+      commandType: 'notifications.snooze',
+      payload: {
+        notificationId: 'nc_budget',
+        title: 'Budget alert',
+        targetStatus: 'snoozed',
+      },
+      preconditions: {
+        requiredEntityVersions: { 'notification:nc_budget': 'abc123def4567890' },
+        hasPermissionSnapshot: true,
+      },
+    });
+    const metadataJson = JSON.stringify(built.response.metadata);
+    expect(metadataJson).not.toContain('actorUserId');
+    expect(metadataJson).not.toContain('delegatedScopes');
+    expect(metadataJson).not.toContain('idempotencyKey');
+    expect(metadataJson).not.toContain('chat-v2-permissions:84:42');
+  });
 });

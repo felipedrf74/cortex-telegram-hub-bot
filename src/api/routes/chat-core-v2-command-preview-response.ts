@@ -77,10 +77,7 @@ export function buildChatCoreV2CommandPreviewShortcutResponse(
   const { result, requestStartedAt } = input;
   const conversationDomain = 'secretary';
   const payload = result.command.payload as Record<string, unknown>;
-  const title = String(payload.title ?? '').trim();
-  const dueAt = typeof payload.dueDateTime === 'string' && payload.dueDateTime.trim()
-    ? payload.dueDateTime.trim()
-    : null;
+  const responseCards = buildLegacyResponseCards(result);
 
   return {
     conversationDomain,
@@ -135,17 +132,38 @@ export function buildChatCoreV2CommandPreviewShortcutResponse(
         },
       },
       timestamp: new Date(requestStartedAt).toISOString(),
-      responseCards: [{
-        kind: 'taskCard',
-        title,
-        status: 'pending',
-        dueAt,
-        listName: null,
-      }],
+      responseCards,
     },
     logContext: {
       capabilityId: result.capabilityId,
       commandId: result.command.commandId,
     },
   };
+}
+
+function buildLegacyResponseCards(result: ChatCoreV2CommandPreviewRouteResult): ChatResponseCard[] {
+  const payload = result.command.payload as Record<string, unknown>;
+  const title = String(payload.title ?? '').trim();
+  if (result.command.domain === 'notifications') {
+    const notificationId = typeof payload.notificationId === 'string' && payload.notificationId.trim()
+      ? payload.notificationId.trim()
+      : null;
+    return [{
+      kind: 'notificationCard',
+      notificationId,
+      title,
+      detail: result.response.text,
+    }];
+  }
+
+  const dueAt = typeof payload.dueDateTime === 'string' && payload.dueDateTime.trim()
+    ? payload.dueDateTime.trim()
+    : null;
+  return [{
+    kind: 'taskCard',
+    title,
+    status: 'pending',
+    dueAt,
+    listName: null,
+  }];
 }
