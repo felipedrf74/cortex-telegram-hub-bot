@@ -121,5 +121,19 @@ function buildResultCards(
       listName: null,
     }];
   }
+  if (pending.command.commandType === 'notifications.snooze') {
+    const payload = pending.command.payload;
+    const notificationId = typeof execution.snoozedNotificationId === 'string'
+      ? execution.snoozedNotificationId
+      : typeof payload.notificationId === 'string'
+        ? payload.notificationId
+        : null;
+    return [{
+      kind: 'notificationCard',
+      notificationId,
+      title: typeof payload.title === 'string' ? payload.title : 'Notification',
+      detail: execution.response?.text ?? null,
+    }];
+  }
   return [];
 }

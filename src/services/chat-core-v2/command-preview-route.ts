@@ -91,8 +91,8 @@ export interface ChatCoreV2CommandPreviewRouteResult {
 
 const TASK_CREATE_CAPABILITY = 'tasks.create';
 const TASK_COMPLETE_CAPABILITY = 'tasks.complete';
-const EXECUTABLE_TASK_CAPABILITIES = new Set([TASK_CREATE_CAPABILITY, TASK_COMPLETE_CAPABILITY]);
 const NOTIFICATION_SNOOZE_CAPABILITY = 'notifications.snooze';
+const EXECUTABLE_CAPABILITIES = new Set([TASK_CREATE_CAPABILITY, TASK_COMPLETE_CAPABILITY, NOTIFICATION_SNOOZE_CAPABILITY]);
 const DECISION_DISMISS_CAPABILITY = 'decision_center.dismiss';
 const SECRETARY_SCHEDULE_EVENT_CAPABILITY = 'secretary.schedule_event_preview';
 const TRAINING_MODIFY_SESSION_CAPABILITY = 'training.modify_session_preview';
@@ -558,7 +558,7 @@ function maybeIssueConfirmationToken(input: {
   if (!flagEnabled) {
     return { executionEnabled: false, executionDisabledReason: 'preview_only_rollout' };
   }
-  if (!EXECUTABLE_TASK_CAPABILITIES.has(input.capabilityId)) {
+  if (!EXECUTABLE_CAPABILITIES.has(input.capabilityId)) {
     return { executionEnabled: false, executionDisabledReason: 'executor_not_supported' };
   }
 

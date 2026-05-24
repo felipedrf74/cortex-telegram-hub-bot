@@ -922,6 +922,48 @@ describe('Chat Core v2 command preview route', () => {
     expect(vi.mocked(listNotificationCenterItems)).toHaveBeenCalledWith(42, 84, { status: 'unread', limit: 50 });
   });
 
+  it('issues a confirmation token for notification-snooze when v2 confirmations are enabled', () => {
+    vi.mocked(listNotificationCenterItems).mockReturnValue([
+      notification({
+        itemId: 'nc_budget',
+        title: 'Budget alert',
+        safeBody: 'Your monthly budget is close to the limit.',
+        sourceSkill: 'finance',
+        type: 'insight',
+        priority: 'active',
+      }),
+    ]);
+
+    const result = buildPreview('Snooze the Budget alert notification for 2 hours', CONFIRMATIONS_ENABLED_ENV);
+
+    expect(result).not.toBeNull();
+    expect(result?.capabilityId).toBe('notifications.snooze');
+    expect(result?.executionEnabled).toBe(true);
+    expect(result?.executionDisabledReason).toBeUndefined();
+    expect(result?.confirmationToken).toEqual(expect.any(String));
+    expect(result?.response.reasonCodes).toContain('confirmation_required');
+    expect(result?.response.reasonCodes).not.toContain('preview_only_rollout');
+    expect(result?.response.cards[0]).toMatchObject({
+      type: 'notification_preview_card',
+      confirmationToken: result?.confirmationToken,
+      primaryAction: {
+        kind: 'confirm',
+        label: 'Confirm',
+        confirmationToken: result?.confirmationToken,
+      },
+      secondaryActions: [
+        { kind: 'edit', label: 'Edit' },
+        { kind: 'cancel', label: 'Cancel' },
+      ],
+    });
+    expect(getPendingChatCoreV2Command(result!.command.commandId, 42, 84, FIXED_NOW)).toMatchObject({
+      commandId: result!.command.commandId,
+      capabilityId: 'notifications.snooze',
+      userId: 42,
+      tenantId: 84,
+    });
+  });
+
   it('localizes notification-snooze previews after resolving the referenced notification', () => {
     vi.mocked(listNotificationCenterItems).mockReturnValue([
       notification({ itemId: 'nc_orcamento', title: 'Alerta de orçamento' }),

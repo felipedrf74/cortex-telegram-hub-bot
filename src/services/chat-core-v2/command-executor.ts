@@ -9,17 +9,25 @@ import {
 } from './capability-registry';
 import {
   buildChatCoreV2CommandResultResponse,
+  normalizeChatCoreV2Locale,
   type ChatCoreV2Response,
+  type ChatCoreV2Locale,
 } from './response-contracts';
 import {
   recordChatV2CommandEvent,
 } from './command-events';
+import { hashStable } from './deterministic-read/common';
 import {
   completeTask,
   createTask,
   getTask,
 } from '../task-store/task-service';
 import { computeContentHash } from '../task-store/unified-task-store';
+import {
+  getNotificationCenterItem,
+  snoozeNotificationCenterItem,
+  type NotificationCenterItem,
+} from '../notification-orchestrator';
 import type {
   AICommandEnvelope,
   CapabilityDefinition,
@@ -45,6 +53,7 @@ export interface ChatCoreV2CommandExecutionResult {
   reason?: ChatCoreV2CommandExecutionRejection;
   createdTaskId?: number;
   completedTaskId?: number;
+  snoozedNotificationId?: string;
 }
 
 export async function executeChatCoreV2Command(input: {
@@ -56,7 +65,7 @@ export async function executeChatCoreV2Command(input: {
   now?: Date;
 }): Promise<ChatCoreV2CommandExecutionResult> {
   const now = input.now ?? new Date();
-  const executeSnapshot = buildExecuteGateSnapshot(input.command);
+  const executeSnapshot = buildExecuteGateSnapshot(input.command, input.userId, input.tenantId);
   const gateVerdict = evaluateChatCoreV2CommandBusGate(input.command, {
     actorUserId: String(input.userId),
     tenantId: String(input.tenantId),
@@ -100,6 +109,14 @@ export async function executeChatCoreV2Command(input: {
 
   if (input.command.commandType === 'tasks.complete') {
     return executeTaskComplete({
+      ...input,
+      capability,
+      gateVerdict,
+      now,
+    });
+  }
+  if (input.command.commandType === 'notifications.snooze') {
+    return executeNotificationSnooze({
       ...input,
       capability,
       gateVerdict,
@@ -160,22 +177,37 @@ export async function executeChatCoreV2Command(input: {
 }
 
 function isExecutableCommandType(commandType: string): boolean {
-  return commandType === 'tasks.create' || commandType === 'tasks.complete';
+  return commandType === 'tasks.create'
+    || commandType === 'tasks.complete'
+    || commandType === 'notifications.snooze';
 }
 
 function buildExecuteGateSnapshot(
+  command: AICommandEnvelope<Record<string, unknown>>,
+  userId: number,
+  tenantId: number,
+): {
+  currentEntityVersions: Record<string, string>;
+  invariantResults: Record<string, boolean>;
+} {
+  if (command.commandType === 'tasks.complete') {
+    return buildTaskCompleteExecuteGateSnapshot(command);
+  }
+  if (command.commandType === 'notifications.snooze') {
+    return buildNotificationExecuteGateSnapshot(command, userId, tenantId);
+  }
+  return {
+    currentEntityVersions: command.preconditions.requiredEntityVersions,
+    invariantResults: Object.fromEntries(command.preconditions.invariants.map((invariant) => [invariant.check, true])),
+  };
+}
+
+function buildTaskCompleteExecuteGateSnapshot(
   command: AICommandEnvelope<Record<string, unknown>>,
 ): {
   currentEntityVersions: Record<string, string>;
   invariantResults: Record<string, boolean>;
 } {
-  if (command.commandType !== 'tasks.complete') {
-    return {
-      currentEntityVersions: command.preconditions.requiredEntityVersions,
-      invariantResults: Object.fromEntries(command.preconditions.invariants.map((invariant) => [invariant.check, true])),
-    };
-  }
-
   const taskId = taskIdFromPayload(command.payload);
   const task = typeof taskId === 'number' ? getTask(taskId) : null;
   const entityId = typeof taskId === 'number' ? `task:${taskId}` : undefined;
@@ -187,6 +219,44 @@ function buildExecuteGateSnapshot(
     invariantResults: {
       task_is_pending: Boolean(task && task.status === 'pending'),
     },
+  };
+}
+
+function buildNotificationExecuteGateSnapshot(
+  command: AICommandEnvelope<Record<string, unknown>>,
+  userId: number,
+  tenantId: number,
+): {
+  currentEntityVersions: Record<string, string>;
+  invariantResults: Record<string, boolean>;
+} {
+  const notificationId = notificationIdFromPayload(command.payload);
+  const item = notificationId ? getNotificationCenterItem(notificationId, userId, tenantId) : null;
+  const entityId = notificationId ? `notification:${notificationId}` : undefined;
+  const currentEntityVersions = entityId && item
+    ? { [entityId]: notificationVersionForItem(item) }
+    : {};
+  return {
+    currentEntityVersions,
+    invariantResults: {
+      notification_is_unread: Boolean(item && item.status === 'unread'),
+    },
+  };
+}
+
+function emptyExecutionFailure(input: {
+  command: AICommandEnvelope<Record<string, unknown>>;
+  capabilityId: string;
+  gateVerdict: ChatCoreV2CommandGateVerdict;
+}): ChatCoreV2CommandExecutionResult {
+  return {
+    ok: false,
+    executorVersion: CHAT_CORE_V2_COMMAND_EXECUTOR_VERSION,
+    commandId: input.command.commandId,
+    capabilityId: input.capabilityId,
+    gateVerdict: input.gateVerdict,
+    status: 'failed',
+    reason: 'execution_failed',
   };
 }
 
@@ -203,15 +273,7 @@ async function executeTaskComplete(input: {
   const taskId = taskIdFromPayload(input.command.payload);
   if (typeof taskId !== 'number') {
     recordCommandEvent(input.command, input.capabilityId, 'command_failed', 'failed', 'execution_failed', input.now);
-    return {
-      ok: false,
-      executorVersion: CHAT_CORE_V2_COMMAND_EXECUTOR_VERSION,
-      commandId: input.command.commandId,
-      capabilityId: input.capabilityId,
-      gateVerdict: input.gateVerdict,
-      status: 'failed',
-      reason: 'execution_failed',
-    };
+    return emptyExecutionFailure(input);
   }
 
   try {
@@ -255,15 +317,70 @@ async function executeTaskComplete(input: {
     };
   } catch {
     recordCommandEvent(input.command, input.capabilityId, 'command_failed', 'failed', 'execution_failed', input.now);
+    return emptyExecutionFailure(input);
+  }
+}
+
+async function executeNotificationSnooze(input: {
+  command: AICommandEnvelope<Record<string, unknown>>;
+  capabilityId: string;
+  capability: CapabilityDefinition;
+  userId: number;
+  tenantId: number;
+  locale?: string | null;
+  now: Date;
+  gateVerdict: ChatCoreV2CommandGateVerdict;
+}): Promise<ChatCoreV2CommandExecutionResult> {
+  const notificationId = notificationIdFromPayload(input.command.payload);
+  const snoozedUntil = snoozedUntilFromPayload(input.command.payload);
+  if (!notificationId || !snoozedUntil) {
+    recordCommandEvent(input.command, input.capabilityId, 'command_failed', 'failed', 'execution_failed', input.now);
+    return emptyExecutionFailure(input);
+  }
+
+  try {
+    const updated = snoozeNotificationCenterItem(notificationId, input.userId, input.tenantId, snoozedUntil);
+    const expectedUntil = new Date(Date.parse(snoozedUntil)).toISOString();
+    const verified = Boolean(updated && updated.status === 'snoozed' && updated.snoozedUntil === expectedUntil);
+    const status: CommandStatus = verified ? 'verified' : 'verification_failed';
+    const title = updated?.title ?? String(input.command.payload.title ?? 'Notification');
+    const response = buildNotificationSnoozeResultResponse({
+      capability: input.capability,
+      command: input.command,
+      title,
+      notificationId,
+      snoozedUntil: expectedUntil,
+      status,
+      locale: input.locale,
+    });
+
+    recordCommandEvent(input.command, input.capabilityId, 'execution_completed', 'executed', undefined, input.now, {
+      notificationId,
+    });
+    recordCommandEvent(
+      input.command,
+      input.capabilityId,
+      verified ? 'verification_completed' : 'verification_failed',
+      status,
+      verified ? undefined : 'verification_failed',
+      input.now,
+      { notificationId },
+    );
+
     return {
-      ok: false,
+      ok: verified,
       executorVersion: CHAT_CORE_V2_COMMAND_EXECUTOR_VERSION,
       commandId: input.command.commandId,
       capabilityId: input.capabilityId,
       gateVerdict: input.gateVerdict,
-      status: 'failed',
-      reason: 'execution_failed',
+      response,
+      status,
+      reason: verified ? undefined : 'verification_failed',
+      snoozedNotificationId: notificationId,
     };
+  } catch {
+    recordCommandEvent(input.command, input.capabilityId, 'command_failed', 'failed', 'execution_failed', input.now);
+    return emptyExecutionFailure(input);
   }
 }
 
@@ -286,6 +403,40 @@ function taskIdFromPayload(payload: Record<string, unknown>): number | null {
     ? payload.taskId
     : Number(payload.taskId);
   return Number.isInteger(taskId) && taskId > 0 ? taskId : null;
+}
+
+function notificationIdFromPayload(payload: Record<string, unknown>): string | null {
+  const notificationId = typeof payload.notificationId === 'string' ? payload.notificationId.trim() : '';
+  return notificationId ? notificationId : null;
+}
+
+function snoozedUntilFromPayload(payload: Record<string, unknown>): string | null {
+  if (typeof payload.snoozedUntil !== 'string') return null;
+  const parsed = Date.parse(payload.snoozedUntil);
+  return Number.isFinite(parsed) ? new Date(parsed).toISOString() : null;
+}
+
+function snoozeMinutesFromPayload(payload: Record<string, unknown>): number {
+  const minutes = Number(payload.snoozeMinutes);
+  return Number.isFinite(minutes) && minutes > 0 ? Math.round(minutes) : 60;
+}
+
+function notificationVersionForItem(item: NotificationCenterItem): string {
+  return hashStable({
+    title: item.title,
+    safeBody: item.safeBody || item.body,
+    sourceSkill: item.sourceSkill,
+    type: item.type,
+    priority: item.priority,
+    status: item.status,
+    actions: item.actions.map((action) => ({
+      id: action.id,
+      label: action.label,
+      style: action.style ?? null,
+    })),
+    createdAt: item.createdAt,
+    expiresAt: item.expiresAt,
+  });
 }
 
 function buildTaskCreateResultResponse(input: {
@@ -345,6 +496,96 @@ function buildTaskCompleteResultResponse(input: {
       { label: isPT ? 'Estado' : isES ? 'Estado' : 'Status', before: beforeStatus, after: afterStatus },
     ],
   });
+}
+
+function buildNotificationSnoozeResultResponse(input: {
+  capability: CapabilityDefinition;
+  command: AICommandEnvelope<Record<string, unknown>>;
+  title: string;
+  notificationId: string;
+  snoozedUntil: string;
+  status: CommandStatus;
+  locale?: string | null;
+}): ChatCoreV2Response {
+  const locale = normalizeChatCoreV2Locale(input.locale);
+  const duration = formatSnoozeDuration(snoozeMinutesFromPayload(input.command.payload), locale);
+  const copy = notificationSnoozeResultCopy(locale, input.title, duration);
+  const statusCopy = notificationStatusCopy(locale);
+  return buildChatCoreV2CommandResultResponse({
+    capability: input.capability,
+    commandId: input.command.commandId,
+    title: copy.title,
+    summary: copy.summary,
+    status: input.status,
+    locale,
+    sourceEntityIds: [`notification:${input.notificationId}`],
+    diff: [
+      { label: statusCopy.notification, after: input.title },
+      { label: statusCopy.status, before: statusCopy.unread, after: statusCopy.snoozed },
+      { label: statusCopy.until, after: input.snoozedUntil },
+    ],
+  });
+}
+
+function notificationSnoozeResultCopy(
+  locale: ChatCoreV2Locale,
+  title: string,
+  duration: string,
+): { title: string; summary: string } {
+  if (locale === 'pt-BR') {
+    return {
+      title: 'Notificação pausada',
+      summary: `Feito — pausei "${title}" por ${duration}.`,
+    };
+  }
+  if (locale === 'pt-PT') {
+    return {
+      title: 'Notificação pausada',
+      summary: `Feito — pausei "${title}" durante ${duration}.`,
+    };
+  }
+  if (locale === 'es') {
+    return {
+      title: 'Notificación pausada',
+      summary: `Listo — pausé "${title}" durante ${duration}.`,
+    };
+  }
+  return {
+    title: 'Notification snoozed',
+    summary: `Done — I snoozed "${title}" for ${duration}.`,
+  };
+}
+
+function notificationStatusCopy(locale: ChatCoreV2Locale): {
+  notification: string;
+  status: string;
+  until: string;
+  unread: string;
+  snoozed: string;
+} {
+  if (locale === 'pt-BR') {
+    return { notification: 'Notificação', status: 'Estado', until: 'Até', unread: 'Não lida', snoozed: 'Pausada' };
+  }
+  if (locale === 'pt-PT') {
+    return { notification: 'Notificação', status: 'Estado', until: 'Até', unread: 'Por ler', snoozed: 'Pausada' };
+  }
+  if (locale === 'es') {
+    return { notification: 'Notificación', status: 'Estado', until: 'Hasta', unread: 'Sin leer', snoozed: 'Pausada' };
+  }
+  return { notification: 'Notification', status: 'Status', until: 'Until', unread: 'Unread', snoozed: 'Snoozed' };
+}
+
+function formatSnoozeDuration(minutes: number, locale: ChatCoreV2Locale): string {
+  const safeMinutes = Number.isFinite(minutes) && minutes > 0 ? Math.round(minutes) : 60;
+  if (safeMinutes % 60 === 0) {
+    const hours = safeMinutes / 60;
+    if (locale === 'en') return hours === 1 ? '1 hour' : `${hours} hours`;
+    if (locale === 'es') return hours === 1 ? '1 hora' : `${hours} horas`;
+    return hours === 1 ? '1 hora' : `${hours} horas`;
+  }
+  if (locale === 'en') return safeMinutes === 1 ? '1 minute' : `${safeMinutes} minutes`;
+  if (locale === 'es') return safeMinutes === 1 ? '1 minuto' : `${safeMinutes} minutos`;
+  return safeMinutes === 1 ? '1 minuto' : `${safeMinutes} minutos`;
 }
 
 function recordCommandEvent(
