@@ -1,6 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { tryBuildChatCoreV2CommandPreviewRoute } from '../../src/services/chat-core-v2';
+import {
+  getPendingChatCoreV2Command,
+  resetPendingChatCoreV2CommandsForTests,
+  tryBuildChatCoreV2CommandPreviewRoute,
+} from '../../src/services/chat-core-v2';
 import { listDecisionItems } from '../../src/services/decision-center';
 import { listNotificationCenterItems } from '../../src/services/notification-orchestrator';
 import { listTasks } from '../../src/services/task-store/task-service';
@@ -32,6 +36,11 @@ const FIXED_NOW = new Date('2026-05-24T10:00:00.000Z');
 const ENABLED_ENV = {
   CHAT_CORE_V2_ENABLED: 'true',
   CHAT_CORE_V2_WRITES_ENABLED: 'true',
+} as NodeJS.ProcessEnv;
+const CONFIRMATIONS_ENABLED_ENV = {
+  CHAT_CORE_V2_ENABLED: 'true',
+  CHAT_CORE_V2_WRITES_ENABLED: 'true',
+  CHAT_CORE_V2_CONFIRMATIONS_ENABLED: 'true',
 } as NodeJS.ProcessEnv;
 const PREVIEWS_ENABLED_ENV = {
   CHAT_CORE_V2_ENABLED: 'true',
@@ -284,6 +293,7 @@ describe('Chat Core v2 command preview route', () => {
     vi.mocked(getWeeksForPlan).mockReturnValue([]);
     vi.mocked(getSessionsForWeek).mockReset();
     vi.mocked(getSessionsForWeek).mockReturnValue([]);
+    resetPendingChatCoreV2CommandsForTests();
   });
 
   it('stays disabled unless the global and write rollout flags are explicitly enabled', () => {
@@ -596,6 +606,37 @@ describe('Chat Core v2 command preview route', () => {
     });
     expect(result?.response.cards[0]?.confirmationToken).toBeUndefined();
     expect(result?.response.cards[0]?.primaryAction?.confirmationToken).toBeUndefined();
+  });
+
+  it('issues a confirmation token for task-create only when v2 confirmations are enabled', () => {
+    const result = buildPreview('Create a task called Buy milk tomorrow at 09:00', CONFIRMATIONS_ENABLED_ENV);
+
+    expect(result).not.toBeNull();
+    expect(result?.capabilityId).toBe('tasks.create');
+    expect(result?.executionEnabled).toBe(true);
+    expect(result?.executionDisabledReason).toBeUndefined();
+    expect(result?.confirmationToken).toEqual(expect.any(String));
+    expect(result?.response.reasonCodes).toContain('confirmation_required');
+    expect(result?.response.reasonCodes).not.toContain('preview_only_rollout');
+    expect(result?.response.cards[0]).toMatchObject({
+      type: 'task_preview_card',
+      confirmationToken: result?.confirmationToken,
+      primaryAction: {
+        kind: 'confirm',
+        label: 'Confirm',
+        confirmationToken: result?.confirmationToken,
+      },
+      secondaryActions: [
+        { kind: 'edit', label: 'Edit' },
+        { kind: 'cancel', label: 'Cancel' },
+      ],
+    });
+    expect(getPendingChatCoreV2Command(result!.command.commandId, 42, 84, FIXED_NOW)).toMatchObject({
+      commandId: result!.command.commandId,
+      capabilityId: 'tasks.create',
+      userId: 42,
+      tenantId: 84,
+    });
   });
 
   it('localizes the preview card copy while preserving exact user task text', () => {

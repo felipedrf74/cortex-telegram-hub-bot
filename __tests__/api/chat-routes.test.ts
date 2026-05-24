@@ -217,6 +217,7 @@ vi.mock('../../src/services/anthropic', () => ({
 vi.mock('../../src/services/cache-store', () => ({
   getCached: vi.fn(() => null),
   setCache: vi.fn(),
+  clearCache: vi.fn(),
   clearCacheByPrefix: vi.fn(),
 }));
 
@@ -427,6 +428,7 @@ import { authMiddleware } from '../../src/api/auth-middleware';
 import { upsertPendingChatAction } from '../../src/services/chat-action-state';
 import { resetPendingChatConfirmationsForTests } from '../../src/services/chat-pending-confirmations';
 import { signChatConfirmationToken } from '../../src/services/chat-confirmation-token';
+import { resetPendingChatCoreV2CommandsForTests } from '../../src/services/chat-core-v2';
 import { upsertTask } from '../../src/services/task-store/unified-task-store';
 
 function applyMigrations(db: Database.Database): void {
@@ -600,6 +602,7 @@ describe('Chat API routes', () => {
     applyMigrations(testDb);
     clearTenantScopeAnomaliesForTests();
     resetPendingChatConfirmationsForTests();
+    resetPendingChatCoreV2CommandsForTests();
 
     mockRouteMessage.mockReset();
     mockKeywordMatch.mockReset();
@@ -2965,6 +2968,125 @@ describe('Chat API routes', () => {
         delete process.env.CHAT_CORE_V2_WRITES_ENABLED;
       } else {
         process.env.CHAT_CORE_V2_WRITES_ENABLED = previousWrites;
+      }
+    }
+  });
+
+  it('confirms a Chat Core v2 task-create command through the v2 command bus and replays idempotently', async () => {
+    const previousGlobal = process.env.CHAT_CORE_V2_ENABLED;
+    const previousWrites = process.env.CHAT_CORE_V2_WRITES_ENABLED;
+    const previousConfirmations = process.env.CHAT_CORE_V2_CONFIRMATIONS_ENABLED;
+    process.env.CHAT_CORE_V2_ENABLED = 'true';
+    process.env.CHAT_CORE_V2_WRITES_ENABLED = 'true';
+    process.env.CHAT_CORE_V2_CONFIRMATIONS_ENABLED = 'true';
+    try {
+      mockRouteMessage.mockClear();
+      mockHandleSecretary.mockClear();
+
+      const preview = await dispatch('POST', '/message', 7001, {
+        text: 'Create a task called Buy milk',
+        clientMessageId: 'chat-core-v2-task-create-confirm-1',
+      });
+
+      expect(preview.statusCode, JSON.stringify(preview.body)).toBe(200);
+      expect(preview.body.metadata).toMatchObject({
+        type: 'chat_core_v2_command_preview',
+        pendingConfirmation: {
+          kind: 'pending_confirmation',
+          intent_class: 'tasks.create',
+          confirmation_token: expect.any(String),
+        },
+        chatCoreV2: {
+          capabilityId: 'tasks.create',
+          executionEnabled: true,
+          response: {
+            kind: 'action_preview',
+            reasonCodes: expect.arrayContaining(['confirmation_required']),
+          },
+        },
+      });
+      expect(preview.body.metadata.chatCoreV2.response.cards[0]).toMatchObject({
+        primaryAction: {
+          kind: 'confirm',
+          confirmationToken: preview.body.metadata.pendingConfirmation.confirmation_token,
+        },
+      });
+      expect(testDb.prepare('SELECT COUNT(*) AS count FROM unified_tasks WHERE user_id = ?').get(7001)).toMatchObject({ count: 0 });
+
+      const confirmationBody = {
+        confirmation_token: preview.body.metadata.pendingConfirmation.confirmation_token,
+        intent_class: 'tasks.create',
+      };
+      const confirmed = await dispatch('POST', '/confirm-action', 7001, confirmationBody);
+
+      expect(confirmed.statusCode, JSON.stringify(confirmed.body)).toBe(200);
+      expect(confirmed.body.routeMethod).toBe('chat-core-v2-command-confirmation');
+      expect(confirmed.body.text).toBe('Done — I created the task "Buy milk".');
+      expect(confirmed.body.metadata).toMatchObject({
+        type: 'chat_core_v2_command_result',
+        actionStatus: 'verified',
+        verificationStatus: 'verified',
+        pendingConfirmation: {
+          kind: 'completed_confirmation',
+          intent_class: 'tasks.create',
+        },
+        chatCoreV2: {
+          capabilityId: 'tasks.create',
+          commandType: 'tasks.create',
+          status: 'verified',
+          response: {
+            kind: 'action_result',
+            cards: [expect.objectContaining({
+              type: 'command_result_card',
+              status: 'verified',
+            })],
+          },
+          gate: {
+            ok: true,
+            operation: 'execute',
+            commandStatus: 'confirmed',
+          },
+        },
+      });
+      expect(confirmed.body.responseCards).toEqual([{
+        kind: 'taskCard',
+        taskId: expect.any(String),
+        title: 'Buy milk',
+        status: 'created',
+        dueAt: null,
+        listName: null,
+      }]);
+      expect(testDb.prepare('SELECT COUNT(*) AS count FROM unified_tasks WHERE user_id = ? AND title = ?').get(7001, 'Buy milk')).toMatchObject({ count: 1 });
+      const metadataJson = JSON.stringify(confirmed.body.metadata);
+      expect(metadataJson).not.toContain('actorUserId');
+      expect(metadataJson).not.toContain('delegatedScopes');
+      expect(metadataJson).not.toContain('idempotencyKey');
+      expect(metadataJson).not.toContain('chat-v2-permissions:7001:7001');
+
+      const replay = await dispatch('POST', '/confirm-action', 7001, confirmationBody);
+      expect(replay.statusCode, JSON.stringify(replay.body)).toBe(200);
+      expect(replay.body.metadata).toMatchObject({
+        idempotentReplay: true,
+        confirmationReplay: true,
+      });
+      expect(testDb.prepare('SELECT COUNT(*) AS count FROM unified_tasks WHERE user_id = ? AND title = ?').get(7001, 'Buy milk')).toMatchObject({ count: 1 });
+      expect(mockRouteMessage).not.toHaveBeenCalled();
+      expect(mockHandleSecretary).not.toHaveBeenCalled();
+    } finally {
+      if (previousGlobal === undefined) {
+        delete process.env.CHAT_CORE_V2_ENABLED;
+      } else {
+        process.env.CHAT_CORE_V2_ENABLED = previousGlobal;
+      }
+      if (previousWrites === undefined) {
+        delete process.env.CHAT_CORE_V2_WRITES_ENABLED;
+      } else {
+        process.env.CHAT_CORE_V2_WRITES_ENABLED = previousWrites;
+      }
+      if (previousConfirmations === undefined) {
+        delete process.env.CHAT_CORE_V2_CONFIRMATIONS_ENABLED;
+      } else {
+        process.env.CHAT_CORE_V2_CONFIRMATIONS_ENABLED = previousConfirmations;
       }
     }
   });

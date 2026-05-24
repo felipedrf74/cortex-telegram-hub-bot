@@ -1,6 +1,7 @@
 // Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
 
 import {
+  CHAT_CORE_V2_CONFIRMATIONS_FLAG,
   getChatCoreV2Capability,
   isChatCoreV2CapabilityEnabled,
 } from './capability-registry';
@@ -18,6 +19,9 @@ import {
   type ChatCoreV2ShadowRouteGuess,
 } from './shadow-route-classifier';
 import { hashStable, normalizeTimezone } from './deterministic-read/common';
+import { isChatCoreV2RuntimeFlagEnabled } from '../runtime-flags';
+import { signChatConfirmationToken } from '../chat-confirmation-token';
+import { trackPendingChatCoreV2Command } from './pending-commands';
 import {
   buildEntityResolutionPreconditions,
   resolveEntityReferenceFromCandidates,
@@ -80,8 +84,9 @@ export interface ChatCoreV2CommandPreviewRouteResult {
   command: AICommandEnvelope;
   gateVerdict: ChatCoreV2CommandGateVerdict;
   response: ChatCoreV2Response;
-  executionEnabled: false;
-  executionDisabledReason: 'preview_only_rollout';
+  executionEnabled: boolean;
+  executionDisabledReason?: 'preview_only_rollout' | 'executor_not_supported';
+  confirmationToken?: string;
 }
 
 const TASK_CREATE_CAPABILITY = 'tasks.create';
@@ -490,7 +495,14 @@ function buildCommandPreviewResult(input: {
   }, 'preview');
   if (!gateVerdict.ok) return null;
 
-  const previewCapability = asPreviewOnlyCapability(input.capability);
+  const confirmation = maybeIssueConfirmationToken({
+    input: input.input,
+    capability: input.capability,
+    capabilityId: input.capabilityId,
+    command,
+    now: input.now,
+  });
+  const previewCapability = confirmation.executionEnabled ? input.capability : asPreviewOnlyCapability(input.capability);
   const previewCopy = buildPreviewCopy(input.capabilityId, command.payload, input.input.locale);
   const response = buildChatCoreV2ActionPreviewResponse({
     capability: previewCapability,
@@ -499,12 +511,17 @@ function buildCommandPreviewResult(input: {
     summary: previewCopy.summary,
     diff: previewCopy.diff,
     locale: input.input.locale,
+    confirmationToken: confirmation.confirmationToken,
     expiresAt: command.expiresAt,
   });
-  response.reasonCodes = [
-    ...response.reasonCodes,
-    'preview_only_rollout',
-  ];
+  if (!confirmation.executionEnabled) {
+    response.reasonCodes = [
+      ...response.reasonCodes,
+      'preview_only_rollout',
+    ];
+  } else {
+    response.reasonCodes = [...response.reasonCodes, 'confirmation_required'];
+  }
 
   return {
     routeVersion: CHAT_CORE_V2_COMMAND_PREVIEW_ROUTE_VERSION,
@@ -513,8 +530,55 @@ function buildCommandPreviewResult(input: {
     command,
     gateVerdict,
     response,
-    executionEnabled: false,
-    executionDisabledReason: 'preview_only_rollout',
+    executionEnabled: confirmation.executionEnabled,
+    executionDisabledReason: confirmation.executionDisabledReason,
+    confirmationToken: confirmation.confirmationToken,
+  };
+}
+
+function maybeIssueConfirmationToken(input: {
+  input: BuildChatCoreV2CommandPreviewRouteInput;
+  capability: CapabilityDefinition;
+  capabilityId: string;
+  command: AICommandEnvelope<Record<string, unknown>>;
+  now: Date;
+}): {
+  executionEnabled: boolean;
+  executionDisabledReason?: ChatCoreV2CommandPreviewRouteResult['executionDisabledReason'];
+  confirmationToken?: string;
+} {
+  if (input.capability.support.execute !== 'supported') {
+    return { executionEnabled: false, executionDisabledReason: 'preview_only_rollout' };
+  }
+  const flagEnabled = isChatCoreV2RuntimeFlagEnabled(CHAT_CORE_V2_CONFIRMATIONS_FLAG, input.input.env ?? process.env, {
+    userId: input.input.userId,
+    tenantId: input.input.tenantId,
+  });
+  if (!flagEnabled) {
+    return { executionEnabled: false, executionDisabledReason: 'preview_only_rollout' };
+  }
+  if (input.capabilityId !== TASK_CREATE_CAPABILITY) {
+    return { executionEnabled: false, executionDisabledReason: 'executor_not_supported' };
+  }
+
+  trackPendingChatCoreV2Command({
+    userId: input.input.userId,
+    tenantId: input.input.tenantId,
+    capabilityId: input.capabilityId,
+    command: input.command,
+    now: input.now,
+  });
+  return {
+    executionEnabled: true,
+    confirmationToken: signChatConfirmationToken({
+      pendingId: input.command.commandId,
+      userId: input.input.userId,
+      tenantId: input.input.tenantId,
+      intentClass: input.command.commandType,
+      expiresAt: input.command.expiresAt,
+      sourceMessageId: input.input.messageId,
+      now: input.now,
+    }),
   };
 }
 
