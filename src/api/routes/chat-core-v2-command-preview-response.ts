@@ -155,6 +155,17 @@ function buildLegacyResponseCards(result: ChatCoreV2CommandPreviewRouteResult): 
       detail: result.response.text,
     }];
   }
+  if (result.command.domain === 'decision_center') {
+    const decisionId = typeof payload.decisionId === 'string' && payload.decisionId.trim()
+      ? payload.decisionId.trim()
+      : '';
+    return [{
+      kind: 'decisionCard',
+      decisionId,
+      status: 'pending',
+      detail: result.response.text,
+    }];
+  }
 
   const dueAt = typeof payload.dueDateTime === 'string' && payload.dueDateTime.trim()
     ? payload.dueDateTime.trim()

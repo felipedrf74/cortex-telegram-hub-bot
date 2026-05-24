@@ -1,10 +1,16 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { tryBuildChatCoreV2CommandPreviewRoute } from '../../src/services/chat-core-v2';
+import { listDecisionItems } from '../../src/services/decision-center';
 import { listNotificationCenterItems } from '../../src/services/notification-orchestrator';
 import { listTasks } from '../../src/services/task-store/task-service';
+import type { DecisionApiItem } from '../../src/services/decision-center';
 import type { NotificationCenterItem } from '../../src/services/notification-orchestrator';
 import type { NormalizedTask } from '../../src/services/task-store/types';
+
+vi.mock('../../src/services/decision-center', () => ({
+  listDecisionItems: vi.fn(),
+}));
 
 vi.mock('../../src/services/notification-orchestrator', () => ({
   listNotificationCenterItems: vi.fn(),
@@ -71,8 +77,114 @@ function notification(overrides: Partial<NotificationCenterItem> & { itemId: str
   };
 }
 
+function decision(overrides: Partial<DecisionApiItem> & { decisionId: string; title: string }): DecisionApiItem {
+  return {
+    decisionId: overrides.decisionId,
+    itemId: overrides.decisionId,
+    id: overrides.decisionId,
+    intentId: `intent_${overrides.decisionId}`,
+    decisionLogId: null,
+    userId: 42,
+    tenantId: 84,
+    sourceSkill: 'secretary',
+    type: 'decision_required',
+    status: 'unread',
+    urgency: 'normal',
+    timingLabel: null,
+    priorityScore: 0.5,
+    title: overrides.title,
+    summary: `${overrides.title} summary`,
+    safePreviewTitle: overrides.title,
+    safePreviewBody: `${overrides.title} body`,
+    recommendedActionLabel: 'Review',
+    recommendedAction: { id: 'open_detail', label: 'Review', style: 'primary' },
+    alternativeActions: [],
+    whySummary: 'Needs a user choice.',
+    whyDetails: [],
+    explanation: {
+      headline: overrides.title,
+      whatHappened: `${overrides.title} needs a decision.`,
+      whyItMatters: 'It affects the active plan.',
+      nexusAction: 'Nexus will check the source before changing anything.',
+      userAction: 'Choose whether to dismiss it.',
+      result: 'The decision leaves the active queue.',
+      verification: 'Nexus checks the decision state.',
+      nextStep: 'Review the decision.',
+      steps: [],
+      recommendedMove: 'Dismiss if it no longer matters.',
+      ifIgnored: 'It stays in your queue.',
+      actionLabels: { primary: 'Dismiss', secondary: [] },
+      displaySections: ['decision_needed', 'what_will_change'],
+    },
+    problemStatement: `${overrides.title} needs a decision.`,
+    recommendation: 'Review it.',
+    expectedEffect: 'Decision state changes.',
+    impactIfIgnored: 'It stays in your queue.',
+    impactLevel: 'low',
+    primaryActionLabel: 'Review',
+    secondaryActionLabels: [],
+    urgencyReason: 'No deadline.',
+    why: { facts: [], rules: [], tradeoffs: [], confidence: 0.8 },
+    actionPreview: [],
+    whatWillChange: [],
+    alternatives: [],
+    automationEligibility: { eligible: false, reason: 'needs_user' },
+    autopilotPolicy: 'requires_user',
+    readBackVerifier: null,
+    handledByNexus: false,
+    handledAt: null,
+    outcomeSummary: null,
+    failureReason: null,
+    retryActions: [],
+    notificationEligibility: 'in_app_only',
+    apnsInterruptionLevel: 'active',
+    collapseKey: null,
+    badgeContribution: true,
+    quality: { status: 'pass', safeToShowUser: true, safeForFrontendAction: true, missingFields: [] },
+    relatedEntities: [],
+    relatedEntitiesSafe: [],
+    sourceTraceSummary: null,
+    sourceTrace: null,
+    dependencyGraphSummary: null,
+    actionTruthTableEntry: null,
+    askNexusContext: null,
+    deadlineAt: null,
+    expiresAt: null,
+    confidence: 0.8,
+    analysis: {
+      confidence: 0.8,
+      confidenceLabel: 'high',
+      sourceFreshness: 'fresh',
+      freshnessLabel: 'Fresh',
+      whyNow: 'It is active.',
+      expectedOutcome: 'It leaves the queue.',
+      costOfDelay: 'It stays visible.',
+      tradeoffs: [],
+      uncertainty: [],
+    },
+    riskLevel: 'low',
+    groupKey: 'decision-test',
+    sectionKey: 'needs_input',
+    displayMode: 'compact',
+    frontendActionState: 'enabled',
+    privacyClassification: 'standard',
+    visibilityScope: 'user_private',
+    createdAt: FIXED_NOW.toISOString(),
+    updatedAt: FIXED_NOW.toISOString(),
+    snoozedUntil: null,
+    actions: [{ id: 'open_detail', label: 'Review', style: 'primary' }],
+    dependsOnDecisionIds: [],
+    blockedByDecisionIds: [],
+    rollbackAvailable: false,
+    rollbackActionId: null,
+    ...overrides,
+  };
+}
+
 describe('Chat Core v2 command preview route', () => {
   beforeEach(() => {
+    vi.mocked(listDecisionItems).mockReset();
+    vi.mocked(listDecisionItems).mockReturnValue([]);
     vi.mocked(listTasks).mockReset();
     vi.mocked(listTasks).mockReturnValue([]);
     vi.mocked(listNotificationCenterItems).mockReset();
@@ -448,6 +560,142 @@ describe('Chat Core v2 command preview route', () => {
 
     vi.mocked(listNotificationCenterItems).mockReturnValue([]);
     expect(buildPreview('Snooze the Budget alert notification')).toBeNull();
+  });
+
+  it('builds a preview-only decision-dismiss command from a resolved decision title', () => {
+    vi.mocked(listDecisionItems).mockReturnValue([
+      decision({
+        decisionId: 'dc_schedule',
+        title: 'Schedule decision',
+        sourceSkill: 'secretary',
+        urgency: 'urgent',
+      }),
+    ]);
+
+    const result = buildPreview('Dismiss the Schedule decision');
+
+    expect(result).not.toBeNull();
+    expect(result?.capabilityId).toBe('decision_center.dismiss');
+    expect(result?.executionEnabled).toBe(false);
+    expect(result?.gateVerdict).toMatchObject({
+      ok: true,
+      operation: 'preview',
+      commandStatus: 'previewed',
+      capabilityId: 'decision_center.dismiss',
+    });
+    expect(result?.command).toMatchObject({
+      commandSchemaVersion: 'decision_center.dismiss@1.0.0',
+      previewSchemaVersion: 'decision_preview_card@1.0.0',
+      responseSchemaVersion: 'chat_response_v2@1.0.0',
+      tenantId: '84',
+      userId: '42',
+      domain: 'decision_center',
+      commandType: 'decision_center.dismiss',
+      origin: 'chat',
+      payload: {
+        operation: 'dismiss',
+        decisionId: 'dc_schedule',
+        title: 'Schedule decision',
+        currentStatus: 'unread',
+        targetStatus: 'dismissed',
+        sourceSkill: 'secretary',
+        type: 'decision_required',
+        urgency: 'urgent',
+      },
+      basedOn: {
+        entityIds: ['decision:dc_schedule'],
+        entityVersions: {
+          'decision:dc_schedule': expect.stringMatching(/^[0-9a-f]{16}$/),
+        },
+      },
+      preconditions: {
+        requiredEntityVersions: {
+          'decision:dc_schedule': expect.stringMatching(/^[0-9a-f]{16}$/),
+        },
+        requiredPermissionsVersion: 'chat-v2-permissions:84:42:decision_center:v1',
+        requiredDecisionVersion: expect.stringMatching(/^[0-9a-f]{16}$/),
+        invariants: [{
+          type: 'decision_status',
+          description: 'Decision must still be active when the preview is confirmed.',
+          check: 'decision_is_active',
+        }],
+      },
+      authorization: {
+        actorUserId: '42',
+        tenantId: '84',
+        actingSurface: 'ios_chat',
+        delegatedScopes: ['decision_center:read', 'decision_center:write'],
+        permissionSnapshotVersion: 'chat-v2-permissions:84:42:decision_center:v1',
+        authTime: FIXED_NOW.toISOString(),
+      },
+      expiresAt: '2026-05-24T10:10:00.000Z',
+    });
+    expect(result?.command.idempotencyKey).toContain('chat-v2:84:42:decision_center.dismiss:dc_schedule:');
+    expect(result?.response.kind).toBe('action_preview');
+    expect(result?.response.text).toBe('I would dismiss "Schedule decision" from Decision Center. Nothing else would change.');
+    expect(result?.response.cards[0]).toMatchObject({
+      type: 'decision_preview_card',
+      title: 'Dismiss preview: Schedule decision',
+      risk: 'low',
+      capabilityId: 'decision_center.dismiss',
+      primaryAction: {
+        kind: 'view',
+        label: 'View',
+      },
+      secondaryActions: [],
+      diff: [
+        { label: 'Decision', after: 'Schedule decision' },
+        { label: 'Status', before: 'Active', after: 'Dismissed' },
+        { label: 'Effect', after: 'Remove from active queue' },
+      ],
+    });
+    expect(result?.response.cards[0]?.confirmationToken).toBeUndefined();
+    expect(vi.mocked(listDecisionItems)).toHaveBeenCalledWith(42, 84, { limit: 50 });
+  });
+
+  it('localizes decision-dismiss previews after resolving the referenced decision', () => {
+    vi.mocked(listDecisionItems).mockReturnValue([
+      decision({ decisionId: 'dc_agenda', title: 'Decisão de agenda' }),
+    ]);
+
+    const result = tryBuildChatCoreV2CommandPreviewRoute({
+      normalizedText: 'Dispensar a decisão Decisão de agenda',
+      userId: 42,
+      tenantId: 84,
+      conversationId: 'conv_1',
+      messageId: 'msg_1',
+      locale: 'pt-PT',
+      timezone: 'Europe/Lisbon',
+      env: ENABLED_ENV,
+      now: FIXED_NOW,
+    });
+
+    expect(result?.capabilityId).toBe('decision_center.dismiss');
+    expect(result?.response.locale).toBe('pt-PT');
+    expect(result?.response.text).toBe('Eu dispensaria "Decisão de agenda" do Decision Center. Nada mais mudaria.');
+    expect(result?.response.cards[0]).toMatchObject({
+      title: 'Pré-visualização para dispensar: Decisão de agenda',
+      primaryAction: {
+        kind: 'view',
+        label: 'Ver',
+      },
+      diff: [
+        { label: 'Decisão', after: 'Decisão de agenda' },
+        { label: 'Estado', before: 'Ativa', after: 'Dispensada' },
+        { label: 'Efeito', after: 'Remove da fila ativa' },
+      ],
+    });
+  });
+
+  it('does not guess when decision dismiss resolution is ambiguous or missing', () => {
+    vi.mocked(listDecisionItems).mockReturnValue([
+      decision({ decisionId: 'dc_schedule', title: 'Schedule decision' }),
+      decision({ decisionId: 'dc_schedule_followup', title: 'Schedule follow-up decision' }),
+    ]);
+    expect(buildPreview('Dismiss the Schedule decision')).toBeNull();
+
+    vi.mocked(listDecisionItems).mockReturnValue([]);
+    expect(buildPreview('Dismiss the Schedule decision')).toBeNull();
   });
 
   it('refuses unsafe titles instead of building a task preview', () => {

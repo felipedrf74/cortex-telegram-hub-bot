@@ -286,4 +286,129 @@ describe('Chat Core v2 command preview API adapter', () => {
     expect(metadataJson).not.toContain('idempotencyKey');
     expect(metadataJson).not.toContain('chat-v2-permissions:84:42');
   });
+
+  it('maps decision previews into decision cards without leaking authorization scope', () => {
+    const requestStartedAt = Date.parse('2026-05-24T12:34:56.000Z');
+    const result: ChatCoreV2CommandPreviewRouteResult = {
+      routeVersion: 'chat_core_v2_command_preview_route@1.0.0',
+      capabilityId: 'decision_center.dismiss',
+      routeGuess: {
+        intent: 'modify_action',
+        confidence: 0.82,
+        domains: ['decision_center'],
+        capabilityIds: ['decision_center.dismiss'],
+      },
+      executionEnabled: false,
+      executionDisabledReason: 'preview_only_rollout',
+      gateVerdict: {
+        ok: true,
+        operation: 'preview',
+        gateVersion: 'chat_core_v2_command_bus_gate@1.0.0',
+        commandStatus: 'previewed',
+        capabilityId: 'decision_center.dismiss',
+      },
+      command: {
+        commandId: 'cmd_decision',
+        commandSchemaVersion: 'decision_center.dismiss@1.0.0',
+        previewSchemaVersion: 'decision_preview_card@1.0.0',
+        responseSchemaVersion: 'chat_response_v2@1.0.0',
+        tenantId: '84',
+        userId: '42',
+        domain: 'decision_center',
+        commandType: 'decision_center.dismiss',
+        origin: 'chat',
+        payload: {
+          operation: 'dismiss',
+          decisionId: 'dc_schedule',
+          title: 'Schedule decision',
+          currentStatus: 'unread',
+          targetStatus: 'dismissed',
+        },
+        basedOn: {
+          entityIds: ['decision:dc_schedule'],
+          entityVersions: { 'decision:dc_schedule': 'abc123def4567890' },
+          contextHash: 'abc123def4567890',
+          createdAt: '2026-05-24T12:34:56.000Z',
+        },
+        preconditions: {
+          requiredEntityVersions: { 'decision:dc_schedule': 'abc123def4567890' },
+          requiredPermissionsVersion: 'chat-v2-permissions:84:42:decision_center:v1',
+          requiredDecisionVersion: 'abc123def4567890',
+          invariants: [{
+            type: 'decision_status',
+            description: 'Decision must still be active when the preview is confirmed.',
+            check: 'decision_is_active',
+          }],
+        },
+        authorization: {
+          actorUserId: '42',
+          tenantId: '84',
+          actingSurface: 'ios_chat',
+          delegatedScopes: ['decision_center:read', 'decision_center:write'],
+          permissionSnapshotVersion: 'chat-v2-permissions:84:42:decision_center:v1',
+          authTime: '2026-05-24T12:34:56.000Z',
+        },
+        expiresAt: '2026-05-24T12:44:56.000Z',
+        idempotencyKey: 'chat-v2:84:42:decision-dismiss',
+      },
+      response: {
+        schemaVersion: 'chat_response_v2@1.0.0',
+        kind: 'action_preview',
+        locale: 'en',
+        text: 'I would dismiss "Schedule decision" from Decision Center. Nothing else would change.',
+        reasonCodes: ['preview_only_rollout'],
+        cards: [{
+          type: 'decision_preview_card',
+          version: 'decision_preview_card@1.0.0',
+          title: 'Dismiss preview: Schedule decision',
+          summary: 'I would dismiss "Schedule decision" from Decision Center. Nothing else would change.',
+          risk: 'low',
+          sensitivity: 'personal',
+          capabilityId: 'decision_center.dismiss',
+          commandId: 'cmd_decision',
+          sourceEntityIds: ['decision:dc_schedule'],
+          diff: [{ label: 'Status', before: 'Active', after: 'Dismissed' }],
+          primaryAction: {
+            id: 'view',
+            kind: 'view',
+            label: 'View',
+            style: 'primary',
+          },
+          secondaryActions: [],
+        }],
+      },
+    };
+
+    const built = buildChatCoreV2CommandPreviewShortcutResponse({
+      result,
+      requestStartedAt,
+    });
+
+    expect(built.response.responseCards).toEqual([{
+      kind: 'decisionCard',
+      decisionId: 'dc_schedule',
+      status: 'pending',
+      detail: 'I would dismiss "Schedule decision" from Decision Center. Nothing else would change.',
+    }]);
+    expect(built.response.metadata.chatCoreV2.command).toMatchObject({
+      commandSchemaVersion: 'decision_center.dismiss@1.0.0',
+      domain: 'decision_center',
+      commandType: 'decision_center.dismiss',
+      payload: {
+        decisionId: 'dc_schedule',
+        title: 'Schedule decision',
+        targetStatus: 'dismissed',
+      },
+      preconditions: {
+        requiredEntityVersions: { 'decision:dc_schedule': 'abc123def4567890' },
+        hasPermissionSnapshot: true,
+        hasDecisionSnapshot: true,
+      },
+    });
+    const metadataJson = JSON.stringify(built.response.metadata);
+    expect(metadataJson).not.toContain('actorUserId');
+    expect(metadataJson).not.toContain('delegatedScopes');
+    expect(metadataJson).not.toContain('idempotencyKey');
+    expect(metadataJson).not.toContain('chat-v2-permissions:84:42');
+  });
 });

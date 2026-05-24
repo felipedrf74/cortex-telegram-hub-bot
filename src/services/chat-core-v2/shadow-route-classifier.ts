@@ -55,7 +55,7 @@ export function classifyShadowRoute(text: string): ChatCoreV2ShadowRouteGuess {
   if (/\b(reconnect|retry|sync|reauth)\b.*\b(connections?|integrations?|providers?|google|outlook|garmin|apple health|strava|todoist|notion)\b|\b(connections?|integrations?|providers?|google|outlook|garmin|apple health|strava|todoist|notion)\b.*\b(reconnect|retry|sync|reauth)\b/i.test(normalized)) {
     return { intent: 'modify_action', confidence: 0.83, domains: ['connections'], capabilityIds: ['connections.retry_sync'] };
   }
-  if (/\b(dismiss|close)\b.*\b(decision|choice)\b/i.test(normalized)) {
+  if (/\b(dismiss|close|ignore|drop|dispensar|descartar|ignorar|fechar)\b.*\b(decision|choice|decis(?:ao|oes|ão|ões)|escolha)\b/i.test(normalized)) {
     return { intent: 'modify_action', confidence: 0.82, domains: ['decision_center'], capabilityIds: ['decision_center.dismiss'] };
   }
   if (/\b(move|reschedule|change|make|lighter|reduce)\b.*\b(workout|training|session)\b|\b(workout|training|session)\b.*\b(lighter|easier|easy|reduce)\b/i.test(normalized)) {

@@ -56,7 +56,7 @@ const mockClearAllConversations = vi.fn();
 const mockCompleteOneShotWithFallback = vi.fn();
 const mockCompleteOneShotWithSearch = vi.fn();
 const mockBuildSimpleStateContext = vi.fn(async () => 'Scoped Nexus state for research prompt');
-const mockHandleSecretary = vi.fn(async () => ({ text: 'Scheduled.', domain: 'secretary' as const }));
+const mockHandleSecretary = vi.fn(async () => ({ text: 'Quarterly planning cleanupd.', domain: 'secretary' as const }));
 const mockGetScript = vi.fn();
 const mockGetActiveContentPillars = vi.fn(() => []);
 const mockGetContentDeskItems = vi.fn(() => []);
@@ -681,7 +681,7 @@ describe('Chat API routes', () => {
       pointsPurchaseAvailable: true,
     });
     mockGetLastAssistantMessage.mockReturnValue(null);
-    mockHandleSecretary.mockResolvedValue({ text: 'Scheduled.', domain: 'secretary' });
+    mockHandleSecretary.mockResolvedValue({ text: 'Quarterly planning cleanupd.', domain: 'secretary' });
     mockGetScript.mockResolvedValue({
       topic: 'Recovery after intervals',
       script: 'Open strong. Explain why recovery matters after hard intervals.',
@@ -3326,6 +3326,156 @@ describe('Chat API routes', () => {
       expect(metadataJson).not.toContain('chat-v2-permissions:7001:7001');
       expect(listNotificationCenterItems(7001, 7001, { status: 'unread', limit: 5 })[0]).toMatchObject({
         itemId: item.itemId,
+        status: 'unread',
+      });
+      expect(mockRouteMessage).not.toHaveBeenCalled();
+      expect(mockHandleSecretary).not.toHaveBeenCalled();
+    } finally {
+      if (previousGlobal === undefined) {
+        delete process.env.CHAT_CORE_V2_ENABLED;
+      } else {
+        process.env.CHAT_CORE_V2_ENABLED = previousGlobal;
+      }
+      if (previousWrites === undefined) {
+        delete process.env.CHAT_CORE_V2_WRITES_ENABLED;
+      } else {
+        process.env.CHAT_CORE_V2_WRITES_ENABLED = previousWrites;
+      }
+    }
+  });
+
+  it('returns a Chat Core v2 decision-dismiss preview with entity preconditions without dismissing the decision', async () => {
+    const previousGlobal = process.env.CHAT_CORE_V2_ENABLED;
+    const previousWrites = process.env.CHAT_CORE_V2_WRITES_ENABLED;
+    process.env.CHAT_CORE_V2_ENABLED = 'true';
+    process.env.CHAT_CORE_V2_WRITES_ENABLED = 'true';
+    try {
+      const {
+        buildSkillDecisionFixtureIntent,
+        createDecisionIntent,
+        getDecisionItem,
+        listDecisionItems,
+      } = await import('../../src/services/decision-center');
+      const { createContentWorkflowObject } = await import('../../src/services/content-editorial-workflow');
+      const object = createContentWorkflowObject({
+        userId: 7001,
+        tenantId: 7001,
+        objectType: 'script',
+        title: 'Quarterly planning cleanup decision',
+        editorialState: 'drafted',
+      });
+      const created = await createDecisionIntent(buildSkillDecisionFixtureIntent('content', 7001, {
+        tenantId: 7001,
+        relatedEntityId: object.id,
+        relatedEntityType: 'content_workflow_object',
+        title: 'Quarterly planning cleanup decision',
+        body: 'Quarterly planning cleanup decision needs input before the day plan changes.',
+        safePreviewTitle: 'Quarterly planning cleanup decision',
+        safePreviewBody: 'Quarterly planning cleanup decision needs input before the day plan changes.',
+        actionButtons: [{ id: 'approve_script', label: 'Approve', style: 'primary' }],
+        dedupeKey: 'chat-core-v2-decision-dismiss-preview',
+        decisionContext: {
+          entityTitle: 'Quarterly planning cleanup decision',
+          sourceState: 'needs_user_input',
+        },
+      }));
+      const item = created.item!;
+      expect(item).toMatchObject({
+        title: 'Content review',
+        status: 'unread',
+      });
+      expect(listDecisionItems(7001, 7001, { limit: 50 }).map((decision) => decision.decisionId)).toContain(item.decisionId);
+      mockRouteMessage.mockClear();
+      mockHandleSecretary.mockClear();
+
+      const messageRes = await dispatch('POST', '/message', 7001, {
+        text: 'Dismiss the Content review decision',
+        clientMessageId: 'chat-core-v2-decision-dismiss-preview-1',
+      });
+
+      expect(messageRes.statusCode, JSON.stringify(messageRes.body)).toBe(200);
+      expect(messageRes.body.routeMethod).toBe('chat-core-v2-command-preview');
+      expect(messageRes.body.domain).toBe('secretary');
+      expect(messageRes.body.text).toBe('I would dismiss "Content review" from Decision Center. Nothing else would change.');
+      expect(messageRes.body.metadata).toMatchObject({
+        type: 'chat_core_v2_command_preview',
+        chatCoreV2: {
+          capabilityId: 'decision_center.dismiss',
+          executionEnabled: false,
+          executionDisabledReason: 'preview_only_rollout',
+          response: {
+            schemaVersion: 'chat_response_v2@1.0.0',
+            kind: 'action_preview',
+            reasonCodes: expect.arrayContaining(['preview_only_rollout']),
+          },
+          command: {
+            commandSchemaVersion: 'decision_center.dismiss@1.0.0',
+            previewSchemaVersion: 'decision_preview_card@1.0.0',
+            responseSchemaVersion: 'chat_response_v2@1.0.0',
+            domain: 'decision_center',
+            commandType: 'decision_center.dismiss',
+            origin: 'chat',
+            payload: {
+              operation: 'dismiss',
+              decisionId: item.decisionId,
+              title: 'Content review',
+              currentStatus: 'unread',
+              targetStatus: 'dismissed',
+            },
+            basedOn: {
+              entityIds: [`decision:${item.decisionId}`],
+              entityVersions: {
+                [`decision:${item.decisionId}`]: expect.stringMatching(/^[0-9a-f]{16}$/),
+              },
+            },
+            preconditions: {
+              requiredEntityVersions: {
+                [`decision:${item.decisionId}`]: expect.stringMatching(/^[0-9a-f]{16}$/),
+              },
+              invariants: [{
+                type: 'decision_status',
+                description: 'Decision must still be active when the preview is confirmed.',
+                check: 'decision_is_active',
+              }],
+              hasPermissionSnapshot: true,
+              hasDecisionSnapshot: true,
+            },
+          },
+          gate: {
+            ok: true,
+            operation: 'preview',
+            commandStatus: 'previewed',
+          },
+        },
+      });
+      expect(messageRes.body.metadata.chatCoreV2.response.cards[0]).toMatchObject({
+        type: 'decision_preview_card',
+        title: 'Dismiss preview: Content review',
+        primaryAction: {
+          kind: 'view',
+          label: 'View',
+        },
+        secondaryActions: [],
+        diff: [
+          { label: 'Decision', after: 'Content review' },
+          { label: 'Status', before: 'Active', after: 'Dismissed' },
+          { label: 'Effect', after: 'Remove from active queue' },
+        ],
+      });
+      expect(messageRes.body.responseCards).toEqual([{
+        kind: 'decisionCard',
+        decisionId: item.decisionId,
+        status: 'pending',
+        detail: 'I would dismiss "Content review" from Decision Center. Nothing else would change.',
+      }]);
+      expect(messageRes.body.metadata.chatCoreV2.response.cards[0].confirmationToken).toBeUndefined();
+      const metadataJson = JSON.stringify(messageRes.body.metadata);
+      expect(metadataJson).not.toContain('actorUserId');
+      expect(metadataJson).not.toContain('delegatedScopes');
+      expect(metadataJson).not.toContain('idempotencyKey');
+      expect(metadataJson).not.toContain('chat-v2-permissions:7001:7001');
+      expect(getDecisionItem(item.decisionId, 7001, 7001)).toMatchObject({
+        decisionId: item.decisionId,
         status: 'unread',
       });
       expect(mockRouteMessage).not.toHaveBeenCalled();

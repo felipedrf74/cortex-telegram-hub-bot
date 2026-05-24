@@ -25,6 +25,10 @@ import {
 import { foldCalendarText } from '../calendar-natural-language-parser';
 import { parseSimpleTaskStep } from '../chat/planner/simple-task';
 import {
+  listDecisionItems,
+  type DecisionApiItem,
+} from '../decision-center';
+import {
   listNotificationCenterItems,
   type NotificationCenterItem,
 } from '../notification-orchestrator';
@@ -67,6 +71,7 @@ export interface ChatCoreV2CommandPreviewRouteResult {
 const TASK_CREATE_CAPABILITY = 'tasks.create';
 const TASK_COMPLETE_CAPABILITY = 'tasks.complete';
 const NOTIFICATION_SNOOZE_CAPABILITY = 'notifications.snooze';
+const DECISION_DISMISS_CAPABILITY = 'decision_center.dismiss';
 const COMMAND_TTL_MS = 10 * 60 * 1000;
 const NOTIFICATION_SNOOZE_DEFAULT_MINUTES = 60;
 
@@ -85,6 +90,11 @@ export function tryBuildChatCoreV2CommandPreviewRoute(
   if (routeGuess.domains[0] === 'notifications') {
     if (routeGuess.intent === 'modify_action' && routeGuess.capabilityIds.includes(NOTIFICATION_SNOOZE_CAPABILITY)) {
       return tryBuildNotificationSnoozePreview(input, routeGuess);
+    }
+  }
+  if (routeGuess.domains[0] === 'decision_center') {
+    if (routeGuess.intent === 'modify_action' && routeGuess.capabilityIds.includes(DECISION_DISMISS_CAPABILITY)) {
+      return tryBuildDecisionDismissPreview(input, routeGuess);
     }
   }
   return null;
@@ -222,6 +232,49 @@ function tryBuildNotificationSnoozePreview(
   });
 }
 
+function tryBuildDecisionDismissPreview(
+  input: BuildChatCoreV2CommandPreviewRouteInput,
+  routeGuess: ChatCoreV2ShadowRouteGuess,
+): ChatCoreV2CommandPreviewRouteResult | null {
+  const capability = getEnabledCapability(DECISION_DISMISS_CAPABILITY, input);
+  if (!capability) return null;
+
+  const referencePhrase = extractDecisionDismissReference(input.normalizedText);
+  if (!referencePhrase) return null;
+
+  const decisions = listDecisionItems(input.userId, input.tenantId, { limit: 50 })
+    .filter((item) => ['unread', 'read', 'failed', 'snoozed', 'open'].includes(item.status));
+  const candidates = decisions
+    .map((item) => decisionToResolutionCandidate(item, referencePhrase))
+    .filter((candidate) => candidate.confidence > 0.45);
+  const resolution = resolveEntityReferenceFromCandidates({
+    entityType: 'decision',
+    userPhrase: referencePhrase,
+    candidates,
+  });
+  if (resolution.status !== 'resolved' || !resolution.selectedCandidate) return null;
+
+  const decisionId = decisionIdFromCandidate(resolution.selectedCandidate);
+  const decision = decisions.find((candidateDecision) => candidateDecision.decisionId === decisionId);
+  if (!decision) return null;
+
+  const now = input.now ?? new Date();
+  const command = buildDecisionDismissCommandEnvelope({
+    input,
+    now,
+    decision,
+    resolution,
+  });
+  return buildCommandPreviewResult({
+    input,
+    routeGuess,
+    capability,
+    capabilityId: DECISION_DISMISS_CAPABILITY,
+    command,
+    now,
+  });
+}
+
 function getEnabledCapability(
   capabilityId: string,
   input: BuildChatCoreV2CommandPreviewRouteInput,
@@ -251,6 +304,7 @@ function buildCommandPreviewResult(input: {
     delegatedScopes: command.authorization.delegatedScopes,
     permissionSnapshotVersion: command.authorization.permissionSnapshotVersion,
     currentEntityVersions: command.preconditions.requiredEntityVersions,
+    decisionVersion: command.preconditions.requiredDecisionVersion,
     invariantResults: Object.fromEntries(command.preconditions.invariants.map((invariant) => [invariant.check, true])),
     now: input.now,
   }, 'preview');
@@ -495,6 +549,81 @@ function buildNotificationSnoozeCommandEnvelope(input: {
   };
 }
 
+function buildDecisionDismissCommandEnvelope(input: {
+  input: BuildChatCoreV2CommandPreviewRouteInput;
+  now: Date;
+  decision: DecisionApiItem;
+  resolution: EntityReferenceResolution;
+}): AICommandEnvelope<Record<string, unknown>> {
+  const entityPreconditions = buildEntityResolutionPreconditions(input.resolution);
+  const entityId = `decision:${input.decision.decisionId}`;
+  const createdAt = input.now.toISOString();
+  const decisionVersion = decisionVersionForItem(input.decision);
+  const payload = {
+    operation: 'dismiss',
+    decisionId: input.decision.decisionId,
+    title: input.decision.title,
+    currentStatus: input.decision.status,
+    targetStatus: 'dismissed',
+    sourceSkill: input.decision.sourceSkill,
+    type: input.decision.type,
+    urgency: input.decision.urgency,
+    recommendedActionLabel: input.decision.recommendedActionLabel,
+  };
+  const commandId = `cmd_${hashStable({
+    tenantId: input.input.tenantId,
+    userId: input.input.userId,
+    messageId: input.input.messageId,
+    decisionId: input.decision.decisionId,
+    decisionVersion,
+    entityVersions: entityPreconditions.requiredEntityVersions,
+  })}`;
+
+  return {
+    commandId,
+    commandSchemaVersion: 'decision_center.dismiss@1.0.0',
+    previewSchemaVersion: 'decision_preview_card@1.0.0',
+    responseSchemaVersion: 'chat_response_v2@1.0.0',
+    tenantId: String(input.input.tenantId),
+    userId: String(input.input.userId),
+    domain: 'decision_center',
+    commandType: 'decision_center.dismiss',
+    origin: 'chat',
+    payload,
+    basedOn: {
+      entityIds: [entityId],
+      entityVersions: entityPreconditions.requiredEntityVersions,
+      contextHash: hashStable({
+        routeVersion: CHAT_CORE_V2_COMMAND_PREVIEW_ROUTE_VERSION,
+        textHash: hashStable({ text: input.input.normalizedText }),
+        payload,
+        resolution: input.resolution.reasonCodes,
+      }),
+      createdAt,
+    },
+    preconditions: {
+      requiredEntityVersions: entityPreconditions.requiredEntityVersions,
+      requiredPermissionsVersion: `chat-v2-permissions:${input.input.tenantId}:${input.input.userId}:decision_center:v1`,
+      requiredDecisionVersion: decisionVersion,
+      invariants: [{
+        type: 'decision_status',
+        description: 'Decision must still be active when the preview is confirmed.',
+        check: 'decision_is_active',
+      }],
+    },
+    authorization: {
+      actorUserId: String(input.input.userId),
+      tenantId: String(input.input.tenantId),
+      actingSurface: 'ios_chat',
+      delegatedScopes: ['decision_center:read', 'decision_center:write'],
+      permissionSnapshotVersion: `chat-v2-permissions:${input.input.tenantId}:${input.input.userId}:decision_center:v1`,
+      authTime: createdAt,
+    },
+    expiresAt: new Date(input.now.getTime() + COMMAND_TTL_MS).toISOString(),
+    idempotencyKey: `chat-v2:${input.input.tenantId}:${input.input.userId}:decision_center.dismiss:${input.decision.decisionId}:${commandId}`,
+  };
+}
+
 function asPreviewOnlyCapability(capability: CapabilityDefinition): CapabilityDefinition {
   const support: CapabilitySupportMatrix = {
     ...capability.support,
@@ -512,6 +641,13 @@ function buildPreviewCopy(
   payload: Record<string, unknown>,
   locale: string | null | undefined,
 ): { title: string; summary: string; diff: Array<{ label: string; before?: string; after: string }> } {
+  if (capabilityId === DECISION_DISMISS_CAPABILITY) {
+    return {
+      title: decisionPreviewTitle(payload, locale),
+      summary: decisionPreviewSummary(payload, locale),
+      diff: decisionPreviewDiff(payload, locale),
+    };
+  }
   if (capabilityId === NOTIFICATION_SNOOZE_CAPABILITY) {
     return {
       title: notificationPreviewTitle(payload, locale),
@@ -524,6 +660,40 @@ function buildPreviewCopy(
     summary: taskPreviewSummary(payload, locale),
     diff: taskPreviewDiff(payload, locale),
   };
+}
+
+function decisionPreviewTitle(payload: Record<string, unknown>, locale: string | null | undefined): string {
+  const title = String(payload.title ?? '').trim();
+  const normalized = normalizeChatCoreV2Locale(locale);
+  if (normalized === 'pt-BR') return `Prévia para dispensar: ${title}`;
+  if (normalized === 'pt-PT') return `Pré-visualização para dispensar: ${title}`;
+  if (normalized === 'es') return `Vista previa para descartar: ${title}`;
+  return `Dismiss preview: ${title}`;
+}
+
+function decisionPreviewSummary(payload: Record<string, unknown>, locale: string | null | undefined): string {
+  const title = String(payload.title ?? '').trim();
+  const normalized = normalizeChatCoreV2Locale(locale);
+  if (normalized === 'pt-BR') return `Eu dispensaria "${title}" do Decision Center. Nada mais mudaria.`;
+  if (normalized === 'pt-PT') return `Eu dispensaria "${title}" do Decision Center. Nada mais mudaria.`;
+  if (normalized === 'es') return `Descartaría "${title}" del Decision Center. No cambiaría nada más.`;
+  return `I would dismiss "${title}" from Decision Center. Nothing else would change.`;
+}
+
+function decisionPreviewDiff(payload: Record<string, unknown>, locale: string | null | undefined): Array<{ label: string; before?: string; after: string }> {
+  const normalized = normalizeChatCoreV2Locale(locale);
+  const labels = normalized === 'pt-BR'
+    ? { decision: 'Decisão', status: 'Estado', effect: 'Efeito', active: 'Ativa', dismissed: 'Dispensada', hides: 'Remove da fila ativa' }
+    : normalized === 'pt-PT'
+      ? { decision: 'Decisão', status: 'Estado', effect: 'Efeito', active: 'Ativa', dismissed: 'Dispensada', hides: 'Remove da fila ativa' }
+      : normalized === 'es'
+        ? { decision: 'Decisión', status: 'Estado', effect: 'Efecto', active: 'Activa', dismissed: 'Descartada', hides: 'La quita de la cola activa' }
+        : { decision: 'Decision', status: 'Status', effect: 'Effect', active: 'Active', dismissed: 'Dismissed', hides: 'Remove from active queue' };
+  return [
+    { label: labels.decision, after: String(payload.title ?? '').trim() },
+    { label: labels.status, before: labels.active, after: labels.dismissed },
+    { label: labels.effect, after: labels.hides },
+  ];
 }
 
 function taskPreviewTitle(payload: Record<string, unknown>, locale: string | null | undefined): string {
@@ -754,6 +924,112 @@ function notificationIdFromCandidate(candidate: EntityResolutionCandidate): stri
   if (typeof fromMetadata === 'string' && fromMetadata.trim()) return fromMetadata;
   const match = /^notification:(.+)$/.exec(candidate.id);
   return match?.[1] ?? null;
+}
+
+function extractDecisionDismissReference(text: string): string | null {
+  const patterns = [
+    /\b(?:dismiss|close|ignore|drop)\s+(?:the\s+|my\s+)?(.+?)\s+(?:decision|choice)\b/i,
+    /\b(?:dismiss|close|ignore|drop)\s+(?:the\s+|my\s+)?(?:decision|choice)\s+(?:about|for|called|named)?\s*(.+?)(?=$|[.!?])/i,
+    /\b(?:dispensar|descartar|ignorar|fechar)\s+(?:a\s+|essa\s+|esta\s+)?(.+?)\s+decis[aã]o\b/i,
+    /\b(?:dispensar|descartar|ignorar|fechar)\s+(?:a\s+|essa\s+|esta\s+)?decis[aã]o\s+(?:sobre|chamada?)?\s*(.+?)(?=$|[.!?])/i,
+  ];
+  for (const pattern of patterns) {
+    const match = pattern.exec(text);
+    const reference = cleanupDecisionReference(match?.[1]);
+    if (reference) return reference;
+  }
+  return null;
+}
+
+function cleanupDecisionReference(value: unknown): string | null {
+  const cleaned = String(value ?? '')
+    .replace(/^["“]|["”]$/g, '')
+    .replace(/\b(?:decision|choice|decis[aã]o|escolha)\b/gi, ' ')
+    .replace(/\s{2,}/g, ' ')
+    .trim();
+  if (!cleaned || /^(?:this|that|it|essa|esta|isso|the|my|a|o|la)$/i.test(cleaned)) return null;
+  return cleaned;
+}
+
+function decisionToResolutionCandidate(item: DecisionApiItem, referencePhrase: string): EntityResolutionCandidate {
+  const confidence = scoreDecisionCandidate(referencePhrase, item);
+  return {
+    id: `decision:${item.decisionId}`,
+    label: item.title,
+    confidence,
+    reason: confidence >= 0.95
+      ? 'title_exact_match'
+      : confidence >= 0.84
+        ? 'decision_text_match'
+        : 'title_partial_match',
+    entityVersion: decisionVersionForItem(item),
+    domain: 'decision_center',
+    metadata: {
+      decisionId: item.decisionId,
+      status: item.status,
+      sourceSkill: item.sourceSkill,
+    },
+  };
+}
+
+function scoreDecisionCandidate(referencePhrase: string, item: DecisionApiItem): number {
+  const reference = normalizeDecisionResolutionText(referencePhrase);
+  const title = normalizeDecisionResolutionText(item.title);
+  const body = normalizeDecisionResolutionText([
+    item.summary,
+    item.safePreviewBody,
+    item.problemStatement,
+    item.recommendation,
+    item.explanation?.headline,
+    item.explanation?.whatHappened,
+    item.explanation?.userAction,
+    item.explanation?.recommendedMove,
+  ].filter(Boolean).join(' '));
+  if (!reference || !title) return 0;
+  if (reference === title) return 0.97;
+  if (title.includes(reference)) return 0.9;
+  if (reference.includes(title)) return 0.88;
+  if (body.includes(reference)) return 0.84;
+
+  const referenceTokens = new Set(reference.split(' ').filter((token) => token.length > 1));
+  const decisionTokens = new Set(`${title} ${body}`.split(' ').filter((token) => token.length > 1));
+  if (referenceTokens.size === 0 || decisionTokens.size === 0) return 0;
+  const overlap = [...referenceTokens].filter((token) => decisionTokens.has(token)).length;
+  if (overlap === 0) return 0;
+  const ratio = overlap / Math.max(referenceTokens.size, decisionTokens.size);
+  return Math.min(0.86, 0.55 + ratio * 0.35);
+}
+
+function normalizeDecisionResolutionText(value: string): string {
+  return foldCalendarText(value)
+    .replace(/[^a-z0-9]+/gi, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function decisionIdFromCandidate(candidate: EntityResolutionCandidate): string | null {
+  const fromMetadata = candidate.metadata?.decisionId;
+  if (typeof fromMetadata === 'string' && fromMetadata.trim()) return fromMetadata;
+  const match = /^decision:(.+)$/.exec(candidate.id);
+  return match?.[1] ?? null;
+}
+
+function decisionVersionForItem(item: DecisionApiItem): string {
+  return hashStable({
+    decisionId: item.decisionId,
+    title: item.title,
+    summary: item.summary,
+    safePreviewTitle: item.safePreviewTitle,
+    safePreviewBody: item.safePreviewBody,
+    status: item.status,
+    urgency: item.urgency,
+    sourceSkill: item.sourceSkill,
+    type: item.type,
+    actions: item.actions.map((action) => ({ id: action.id, label: action.label, style: action.style ?? null })),
+    updatedAt: item.updatedAt,
+    expiresAt: item.expiresAt,
+    snoozedUntil: item.snoozedUntil,
+  });
 }
 
 function extractTaskCompletionReference(text: string): string | null {
