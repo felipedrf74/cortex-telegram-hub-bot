@@ -15,6 +15,7 @@ import type {
   UndoPolicy,
   VerificationMode,
 } from './types';
+import { CHAT_CORE_V2_FINANCE_ACTION_POLICY_VERSION } from './finance-action-policy';
 import { CHAT_CORE_V2_TRAINING_SAFETY_POLICY_VERSION } from './training-safety-policy';
 
 const SCHEMA_VERSION = 'chat_core_v2_capability@1.0.0';
@@ -199,6 +200,7 @@ export const CHAT_CORE_V2_CAPABILITIES: CapabilityDefinition[] = [
     requiredPermissions: ['finance:read'],
     sensitivity: 'financial',
     promptFamily: 'chat_v2_finance',
+    domainSafetyPolicyVersion: CHAT_CORE_V2_FINANCE_ACTION_POLICY_VERSION,
   }),
   capability({
     capabilityId: 'connections.status',
@@ -380,6 +382,7 @@ export const CHAT_CORE_V2_CAPABILITIES: CapabilityDefinition[] = [
     fallbackAllowed: false,
     promptFamily: 'chat_v2_finance',
     reasoningTier: 'none',
+    domainSafetyPolicyVersion: CHAT_CORE_V2_FINANCE_ACTION_POLICY_VERSION,
   }),
 ];
 

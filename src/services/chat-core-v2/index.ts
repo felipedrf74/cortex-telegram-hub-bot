@@ -8,6 +8,7 @@ export * from './command-events';
 export * from './entity-resolution';
 export * from './evidence-policy';
 export * from './fallback-policy';
+export * from './finance-action-policy';
 export * from './human-review-queue';
 export * from './locale-policy';
 export * from './memory-store';
