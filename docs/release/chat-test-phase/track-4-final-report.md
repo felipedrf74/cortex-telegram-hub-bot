@@ -7,7 +7,7 @@ Suite: `track-4-reliability`
 
 Track 4 live Phase A initially failed, one course-correction iteration was completed, and the full suite then passed.
 
-The Chat Core v2 confirmed-write stack was redeployed to staging at `869f86ea` on 2026-05-24 and the Track 4 automated gate remains green.
+The Chat Core v2 confirmed-write stack was redeployed to staging at `6ee83074` on 2026-05-24 after the decision-dismiss/read-state QA fix, and the Track 4 automated gate remains green.
 
 ## Iterations
 
@@ -17,6 +17,7 @@ The Chat Core v2 confirmed-write stack was redeployed to staging at `869f86ea` o
 | Correction run | 5/5, pass rate `1.000` | `docs/release/chat-test-phase/chat-test-phase-results-track-4-reliability-2026-05-23T17-28-05-612Z.json` | Fixture updated for confirmation contract; agenda read and access-control injection gates fixed. |
 | Post-merge staging run | 5/5, pass rate `1.000` | `docs/release/chat-test-phase/chat-test-phase-results-track-4-reliability-2026-05-23T18-21-43-161Z.json` | PR #51 merged into `codex/chat-action-fixer-worker-20260523`, deployed to staging at `f88744ae`, then re-run through the authenticated staging fixture user. |
 | Chat Core v2 confirmed-write staging run | 5/5, pass rate `1.000` | `docs/release/chat-test-phase/chat-test-phase-results-track-4-reliability-2026-05-24T21-17-54-582Z.json` | Deployed stacked head `869f86ea` to staging, seeded synthetic fixture user `1000001`, ran via SSH tunnel to server-local staging port because `staging-api.nexushub.me` did not resolve from this shell, then cleaned up the fixture user. |
+| Chat Core v2 status-policy QA fix staging run | 5/5, pass rate `1.000` | `docs/release/chat-test-phase/chat-test-phase-results-track-4-reliability-2026-05-24T22-02-07-642Z.json` | Deployed QA-fix head `6ee83074` to staging, seeded synthetic fixture user `1000001`, ran via SSH tunnel to server-local staging port, then cleaned up the fixture user. |
 
 ## Fixes
 
@@ -37,6 +38,8 @@ None for live Phase A.
 - Post-merge `./scripts/staging-smoke.sh` passed 21/21; evidence: `docs/release/smoke-evidence/staging-smoke-f88744ae-20260523T182007Z.json`.
 - Chat Core v2 confirmed-write `./scripts/deploy-staging.sh` passed from `869f86ea`.
 - Chat Core v2 confirmed-write `./scripts/staging-smoke.sh` passed 21/21; evidence: `docs/release/smoke-evidence/staging-smoke-869f86ea-20260524T211637Z.json`.
+- Chat Core v2 status-policy QA fix `./scripts/deploy-staging.sh` passed from `6ee83074`.
+- Chat Core v2 status-policy QA fix `./scripts/staging-smoke.sh` passed 21/21; evidence: `docs/release/smoke-evidence/staging-smoke-6ee83074-20260524T215911Z.json`.
 
 ## Phase B App-Side Evidence
 
