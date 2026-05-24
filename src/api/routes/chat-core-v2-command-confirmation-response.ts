@@ -106,5 +106,48 @@ function buildResultCards(
       listName: typeof payload.list === 'string' ? payload.list : null,
     }];
   }
+  if (pending.command.commandType === 'tasks.complete') {
+    const payload = pending.command.payload;
+    return [{
+      kind: 'taskCard',
+      taskId: typeof execution.completedTaskId === 'number'
+        ? String(execution.completedTaskId)
+        : typeof payload.taskId === 'number'
+          ? String(payload.taskId)
+          : null,
+      title: typeof payload.title === 'string' ? payload.title : 'Task',
+      status: 'completed',
+      dueAt: typeof payload.dueDateTime === 'string' ? payload.dueDateTime : null,
+      listName: null,
+    }];
+  }
+  if (pending.command.commandType === 'notifications.snooze') {
+    const payload = pending.command.payload;
+    const notificationId = typeof execution.snoozedNotificationId === 'string'
+      ? execution.snoozedNotificationId
+      : typeof payload.notificationId === 'string'
+        ? payload.notificationId
+        : null;
+    return [{
+      kind: 'notificationCard',
+      notificationId,
+      title: typeof payload.title === 'string' ? payload.title : 'Notification',
+      detail: execution.response?.text ?? null,
+    }];
+  }
+  if (pending.command.commandType === 'decision_center.dismiss') {
+    const payload = pending.command.payload;
+    const decisionId = typeof execution.dismissedDecisionId === 'string'
+      ? execution.dismissedDecisionId
+      : typeof payload.decisionId === 'string'
+        ? payload.decisionId
+        : '';
+    return [{
+      kind: 'decisionCard',
+      decisionId,
+      status: 'dismissed',
+      detail: execution.response?.text ?? null,
+    }];
+  }
   return [];
 }

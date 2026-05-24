@@ -3091,6 +3091,195 @@ describe('Chat API routes', () => {
     }
   });
 
+  it('confirms a Chat Core v2 task-complete command through the v2 command bus and replays idempotently', async () => {
+    const previousGlobal = process.env.CHAT_CORE_V2_ENABLED;
+    const previousWrites = process.env.CHAT_CORE_V2_WRITES_ENABLED;
+    const previousConfirmations = process.env.CHAT_CORE_V2_CONFIRMATIONS_ENABLED;
+    process.env.CHAT_CORE_V2_ENABLED = 'true';
+    process.env.CHAT_CORE_V2_WRITES_ENABLED = 'true';
+    process.env.CHAT_CORE_V2_CONFIRMATIONS_ENABLED = 'true';
+    try {
+      upsertTask(7001, {
+        provider: 'nexus',
+        externalId: 'task-core-v2-complete-confirm-1',
+        title: 'Buy milk',
+        status: 'pending',
+        priority: 0,
+        projectName: 'Inbox',
+      });
+      const taskRow = testDb.prepare('SELECT id FROM unified_tasks WHERE user_id = ? AND title = ?')
+        .get(7001, 'Buy milk') as { id: number };
+      mockRouteMessage.mockClear();
+      mockHandleSecretary.mockClear();
+
+      const preview = await dispatch('POST', '/message', 7001, {
+        text: 'Complete the Buy milk task',
+        clientMessageId: 'chat-core-v2-task-complete-confirm-1',
+      });
+
+      expect(preview.statusCode, JSON.stringify(preview.body)).toBe(200);
+      expect(preview.body.metadata).toMatchObject({
+        type: 'chat_core_v2_command_preview',
+        pendingConfirmation: {
+          kind: 'pending_confirmation',
+          intent_class: 'tasks.complete',
+          confirmation_token: expect.any(String),
+        },
+        chatCoreV2: {
+          capabilityId: 'tasks.complete',
+          executionEnabled: true,
+          response: {
+            kind: 'action_preview',
+            reasonCodes: expect.arrayContaining(['confirmation_required']),
+          },
+        },
+      });
+      expect(preview.body.metadata.chatCoreV2.response.cards[0]).toMatchObject({
+        primaryAction: {
+          kind: 'confirm',
+          confirmationToken: preview.body.metadata.pendingConfirmation.confirmation_token,
+        },
+      });
+      expect(testDb.prepare('SELECT status FROM unified_tasks WHERE id = ?').get(taskRow.id)).toMatchObject({ status: 'pending' });
+
+      const confirmationBody = {
+        confirmation_token: preview.body.metadata.pendingConfirmation.confirmation_token,
+        intent_class: 'tasks.complete',
+      };
+      const confirmed = await dispatch('POST', '/confirm-action', 7001, confirmationBody);
+
+      expect(confirmed.statusCode, JSON.stringify(confirmed.body)).toBe(200);
+      expect(confirmed.body.routeMethod).toBe('chat-core-v2-command-confirmation');
+      expect(confirmed.body.text).toBe('Done — I marked "Buy milk" as done.');
+      expect(confirmed.body.metadata).toMatchObject({
+        type: 'chat_core_v2_command_result',
+        actionStatus: 'verified',
+        verificationStatus: 'verified',
+        pendingConfirmation: {
+          kind: 'completed_confirmation',
+          intent_class: 'tasks.complete',
+        },
+        chatCoreV2: {
+          capabilityId: 'tasks.complete',
+          commandType: 'tasks.complete',
+          status: 'verified',
+          response: {
+            kind: 'action_result',
+            cards: [expect.objectContaining({
+              type: 'command_result_card',
+              status: 'verified',
+            })],
+          },
+          gate: {
+            ok: true,
+            operation: 'execute',
+            commandStatus: 'confirmed',
+          },
+        },
+      });
+      expect(confirmed.body.responseCards).toEqual([{
+        kind: 'taskCard',
+        taskId: String(taskRow.id),
+        title: 'Buy milk',
+        status: 'completed',
+        dueAt: null,
+        listName: null,
+      }]);
+      expect(testDb.prepare('SELECT status FROM unified_tasks WHERE id = ?').get(taskRow.id)).toMatchObject({ status: 'completed' });
+      const metadataJson = JSON.stringify(confirmed.body.metadata);
+      expect(metadataJson).not.toContain('actorUserId');
+      expect(metadataJson).not.toContain('delegatedScopes');
+      expect(metadataJson).not.toContain('idempotencyKey');
+      expect(metadataJson).not.toContain('chat-v2-permissions:7001:7001');
+
+      const replay = await dispatch('POST', '/confirm-action', 7001, confirmationBody);
+      expect(replay.statusCode, JSON.stringify(replay.body)).toBe(200);
+      expect(replay.body.metadata).toMatchObject({
+        idempotentReplay: true,
+        confirmationReplay: true,
+      });
+      expect(testDb.prepare('SELECT status FROM unified_tasks WHERE id = ?').get(taskRow.id)).toMatchObject({ status: 'completed' });
+      expect(mockRouteMessage).not.toHaveBeenCalled();
+      expect(mockHandleSecretary).not.toHaveBeenCalled();
+    } finally {
+      if (previousGlobal === undefined) {
+        delete process.env.CHAT_CORE_V2_ENABLED;
+      } else {
+        process.env.CHAT_CORE_V2_ENABLED = previousGlobal;
+      }
+      if (previousWrites === undefined) {
+        delete process.env.CHAT_CORE_V2_WRITES_ENABLED;
+      } else {
+        process.env.CHAT_CORE_V2_WRITES_ENABLED = previousWrites;
+      }
+      if (previousConfirmations === undefined) {
+        delete process.env.CHAT_CORE_V2_CONFIRMATIONS_ENABLED;
+      } else {
+        process.env.CHAT_CORE_V2_CONFIRMATIONS_ENABLED = previousConfirmations;
+      }
+    }
+  });
+
+  it('rejects a stale Chat Core v2 task-complete confirmation before mutating again', async () => {
+    const previousGlobal = process.env.CHAT_CORE_V2_ENABLED;
+    const previousWrites = process.env.CHAT_CORE_V2_WRITES_ENABLED;
+    const previousConfirmations = process.env.CHAT_CORE_V2_CONFIRMATIONS_ENABLED;
+    process.env.CHAT_CORE_V2_ENABLED = 'true';
+    process.env.CHAT_CORE_V2_WRITES_ENABLED = 'true';
+    process.env.CHAT_CORE_V2_CONFIRMATIONS_ENABLED = 'true';
+    try {
+      upsertTask(7001, {
+        provider: 'nexus',
+        externalId: 'task-core-v2-complete-stale-1',
+        title: 'Buy milk',
+        status: 'pending',
+        priority: 0,
+        projectName: 'Inbox',
+      });
+      const taskRow = testDb.prepare('SELECT id FROM unified_tasks WHERE user_id = ? AND title = ?')
+        .get(7001, 'Buy milk') as { id: number };
+
+      const preview = await dispatch('POST', '/message', 7001, {
+        text: 'Complete the Buy milk task',
+        clientMessageId: 'chat-core-v2-task-complete-stale-1',
+      });
+      expect(preview.statusCode, JSON.stringify(preview.body)).toBe(200);
+      expect(preview.body.metadata.pendingConfirmation.confirmation_token).toEqual(expect.any(String));
+
+      testDb.prepare("UPDATE unified_tasks SET status = 'completed', content_hash = NULL WHERE id = ?").run(taskRow.id);
+
+      const confirmed = await dispatch('POST', '/confirm-action', 7001, {
+        confirmation_token: preview.body.metadata.pendingConfirmation.confirmation_token,
+        intent_class: 'tasks.complete',
+      });
+
+      expect(confirmed.statusCode, JSON.stringify(confirmed.body)).toBe(409);
+      expect(confirmed.body.error).toMatchObject({
+        code: 'CHAT_CORE_V2_CONFIRMATION_NOT_EXECUTABLE',
+        message: 'This preview is no longer safe to apply. Please ask again so I can refresh it.',
+      });
+      expect(testDb.prepare('SELECT status FROM unified_tasks WHERE id = ?').get(taskRow.id)).toMatchObject({ status: 'completed' });
+      expect(mockRouteMessage).not.toHaveBeenCalled();
+      expect(mockHandleSecretary).not.toHaveBeenCalled();
+    } finally {
+      if (previousGlobal === undefined) {
+        delete process.env.CHAT_CORE_V2_ENABLED;
+      } else {
+        process.env.CHAT_CORE_V2_ENABLED = previousGlobal;
+      }
+      if (previousWrites === undefined) {
+        delete process.env.CHAT_CORE_V2_WRITES_ENABLED;
+      } else {
+        process.env.CHAT_CORE_V2_WRITES_ENABLED = previousWrites;
+      }
+      if (previousConfirmations === undefined) {
+        delete process.env.CHAT_CORE_V2_CONFIRMATIONS_ENABLED;
+      } else {
+        process.env.CHAT_CORE_V2_CONFIRMATIONS_ENABLED = previousConfirmations;
+      }
+    }
+  });
+
   it('returns a Chat Core v2 secretary schedule preview without creating calendar events', async () => {
     const previousGlobal = process.env.CHAT_CORE_V2_ENABLED;
     const previousPreviews = process.env.CHAT_CORE_V2_PREVIEWS_ENABLED;
@@ -3521,8 +3710,8 @@ describe('Chat API routes', () => {
               },
               invariants: [{
                 type: 'notification_status',
-                description: 'Notification must still be unread when the preview is confirmed.',
-                check: 'notification_is_unread',
+                description: 'Notification must still be snooze-eligible when the preview is confirmed.',
+                check: 'notification_is_snooze_eligible',
               }],
               hasPermissionSnapshot: true,
             },
@@ -3576,6 +3765,307 @@ describe('Chat API routes', () => {
         delete process.env.CHAT_CORE_V2_WRITES_ENABLED;
       } else {
         process.env.CHAT_CORE_V2_WRITES_ENABLED = previousWrites;
+      }
+    }
+  });
+
+  it('confirms a Chat Core v2 notification-snooze command through the v2 command bus and replays idempotently', async () => {
+    const previousGlobal = process.env.CHAT_CORE_V2_ENABLED;
+    const previousWrites = process.env.CHAT_CORE_V2_WRITES_ENABLED;
+    const previousConfirmations = process.env.CHAT_CORE_V2_CONFIRMATIONS_ENABLED;
+    process.env.CHAT_CORE_V2_ENABLED = 'true';
+    process.env.CHAT_CORE_V2_WRITES_ENABLED = 'true';
+    process.env.CHAT_CORE_V2_CONFIRMATIONS_ENABLED = 'true';
+    try {
+      const { createNotificationIntent, listNotificationCenterItems } = await import('../../src/services/notification-orchestrator');
+      await createNotificationIntent({
+        userId: 7001,
+        tenantId: 7001,
+        sourceSkill: 'system',
+        type: 'reminder',
+        priority: 'active',
+        title: 'Daily planning reminder',
+        body: 'Review today before the afternoon starts.',
+        actionButtons: [{ id: 'open', label: 'Open', style: 'primary' }],
+        deliveryPolicy: 'in_app_only',
+        privacyPolicy: 'standard',
+        dedupeKey: 'chat-core-v2-notification-snooze-confirm',
+      });
+      const item = listNotificationCenterItems(7001, 7001, { status: 'unread', limit: 5 })[0];
+      mockRouteMessage.mockClear();
+      mockHandleSecretary.mockClear();
+
+      const preview = await dispatch('POST', '/message', 7001, {
+        text: 'Snooze the Daily planning reminder notification for 30 minutes',
+        clientMessageId: 'chat-core-v2-notification-snooze-confirm-1',
+      });
+
+      expect(preview.statusCode, JSON.stringify(preview.body)).toBe(200);
+      expect(preview.body.metadata).toMatchObject({
+        type: 'chat_core_v2_command_preview',
+        pendingConfirmation: {
+          kind: 'pending_confirmation',
+          intent_class: 'notifications.snooze',
+          confirmation_token: expect.any(String),
+        },
+        chatCoreV2: {
+          capabilityId: 'notifications.snooze',
+          executionEnabled: true,
+          response: {
+            kind: 'action_preview',
+            reasonCodes: expect.arrayContaining(['confirmation_required']),
+          },
+        },
+      });
+      expect(preview.body.metadata.chatCoreV2.response.cards[0]).toMatchObject({
+        primaryAction: {
+          kind: 'confirm',
+          confirmationToken: preview.body.metadata.pendingConfirmation.confirmation_token,
+        },
+      });
+      expect(listNotificationCenterItems(7001, 7001, { status: 'unread', limit: 5 })[0]).toMatchObject({
+        itemId: item.itemId,
+        status: 'unread',
+        snoozedUntil: null,
+      });
+
+      const confirmationBody = {
+        confirmation_token: preview.body.metadata.pendingConfirmation.confirmation_token,
+        intent_class: 'notifications.snooze',
+      };
+      const confirmed = await dispatch('POST', '/confirm-action', 7001, confirmationBody);
+
+      expect(confirmed.statusCode, JSON.stringify(confirmed.body)).toBe(200);
+      expect(confirmed.body.routeMethod).toBe('chat-core-v2-command-confirmation');
+      expect(confirmed.body.text).toBe('Done — I snoozed "Daily planning reminder" for 30 minutes.');
+      expect(confirmed.body.metadata).toMatchObject({
+        type: 'chat_core_v2_command_result',
+        actionStatus: 'verified',
+        verificationStatus: 'verified',
+        pendingConfirmation: {
+          kind: 'completed_confirmation',
+          intent_class: 'notifications.snooze',
+        },
+        chatCoreV2: {
+          capabilityId: 'notifications.snooze',
+          commandType: 'notifications.snooze',
+          status: 'verified',
+          response: {
+            kind: 'action_result',
+            cards: [expect.objectContaining({
+              type: 'command_result_card',
+              status: 'verified',
+            })],
+          },
+          gate: {
+            ok: true,
+            operation: 'execute',
+            commandStatus: 'confirmed',
+          },
+        },
+      });
+      expect(confirmed.body.responseCards).toEqual([{
+        kind: 'notificationCard',
+        notificationId: item.itemId,
+        title: 'Daily planning reminder',
+        detail: 'Done — I snoozed "Daily planning reminder" for 30 minutes.',
+      }]);
+      const updated = listNotificationCenterItems(7001, 7001, { status: 'all', limit: 5 })
+        .find((candidate) => candidate.itemId === item.itemId);
+      expect(updated).toMatchObject({
+        itemId: item.itemId,
+        status: 'snoozed',
+        snoozedUntil: expect.any(String),
+      });
+      const metadataJson = JSON.stringify(confirmed.body.metadata);
+      expect(metadataJson).not.toContain('actorUserId');
+      expect(metadataJson).not.toContain('delegatedScopes');
+      expect(metadataJson).not.toContain('idempotencyKey');
+      expect(metadataJson).not.toContain('chat-v2-permissions:7001:7001');
+
+      const replay = await dispatch('POST', '/confirm-action', 7001, confirmationBody);
+      expect(replay.statusCode, JSON.stringify(replay.body)).toBe(200);
+      expect(replay.body.metadata).toMatchObject({
+        idempotentReplay: true,
+        confirmationReplay: true,
+      });
+      const snoozedRows = listNotificationCenterItems(7001, 7001, { status: 'snoozed', limit: 5 })
+        .filter((candidate) => candidate.itemId === item.itemId);
+      expect(snoozedRows).toHaveLength(1);
+      expect(mockRouteMessage).not.toHaveBeenCalled();
+      expect(mockHandleSecretary).not.toHaveBeenCalled();
+    } finally {
+      if (previousGlobal === undefined) {
+        delete process.env.CHAT_CORE_V2_ENABLED;
+      } else {
+        process.env.CHAT_CORE_V2_ENABLED = previousGlobal;
+      }
+      if (previousWrites === undefined) {
+        delete process.env.CHAT_CORE_V2_WRITES_ENABLED;
+      } else {
+        process.env.CHAT_CORE_V2_WRITES_ENABLED = previousWrites;
+      }
+      if (previousConfirmations === undefined) {
+        delete process.env.CHAT_CORE_V2_CONFIRMATIONS_ENABLED;
+      } else {
+        process.env.CHAT_CORE_V2_CONFIRMATIONS_ENABLED = previousConfirmations;
+      }
+    }
+  });
+
+  it('confirms a Chat Core v2 notification-snooze command after the notification is read', async () => {
+    const previousGlobal = process.env.CHAT_CORE_V2_ENABLED;
+    const previousWrites = process.env.CHAT_CORE_V2_WRITES_ENABLED;
+    const previousConfirmations = process.env.CHAT_CORE_V2_CONFIRMATIONS_ENABLED;
+    process.env.CHAT_CORE_V2_ENABLED = 'true';
+    process.env.CHAT_CORE_V2_WRITES_ENABLED = 'true';
+    process.env.CHAT_CORE_V2_CONFIRMATIONS_ENABLED = 'true';
+    try {
+      const { createNotificationIntent, listNotificationCenterItems } = await import('../../src/services/notification-orchestrator');
+      await createNotificationIntent({
+        userId: 7001,
+        tenantId: 7001,
+        sourceSkill: 'system',
+        type: 'reminder',
+        priority: 'active',
+        title: 'Daily planning reminder',
+        body: 'Review today before the afternoon starts.',
+        actionButtons: [{ id: 'open', label: 'Open', style: 'primary' }],
+        deliveryPolicy: 'in_app_only',
+        privacyPolicy: 'standard',
+        dedupeKey: 'chat-core-v2-notification-snooze-stale',
+      });
+      const item = listNotificationCenterItems(7001, 7001, { status: 'unread', limit: 5 })[0];
+
+      const preview = await dispatch('POST', '/message', 7001, {
+        text: 'Snooze the Daily planning reminder notification for 30 minutes',
+        clientMessageId: 'chat-core-v2-notification-snooze-stale-1',
+      });
+      expect(preview.statusCode, JSON.stringify(preview.body)).toBe(200);
+      expect(preview.body.metadata.pendingConfirmation.confirmation_token).toEqual(expect.any(String));
+
+      testDb.prepare(`
+        UPDATE notification_center_items
+        SET status = 'read', read_at = datetime('now')
+        WHERE item_id = ? AND user_id = ? AND tenant_id = ?
+      `).run(item.itemId, 7001, 7001);
+
+      const confirmed = await dispatch('POST', '/confirm-action', 7001, {
+        confirmation_token: preview.body.metadata.pendingConfirmation.confirmation_token,
+        intent_class: 'notifications.snooze',
+      });
+
+      expect(confirmed.statusCode, JSON.stringify(confirmed.body)).toBe(200);
+      expect(confirmed.body.routeMethod).toBe('chat-core-v2-command-confirmation');
+      expect(confirmed.body.metadata).toMatchObject({
+        type: 'chat_core_v2_command_result',
+        actionStatus: 'verified',
+        verificationStatus: 'verified',
+        chatCoreV2: {
+          capabilityId: 'notifications.snooze',
+          commandType: 'notifications.snooze',
+          status: 'verified',
+        },
+      });
+      const updated = listNotificationCenterItems(7001, 7001, { status: 'all', limit: 5 })
+        .find((candidate) => candidate.itemId === item.itemId);
+      expect(updated).toMatchObject({
+        itemId: item.itemId,
+        status: 'snoozed',
+        snoozedUntil: expect.any(String),
+      });
+      expect(mockRouteMessage).not.toHaveBeenCalled();
+      expect(mockHandleSecretary).not.toHaveBeenCalled();
+    } finally {
+      if (previousGlobal === undefined) {
+        delete process.env.CHAT_CORE_V2_ENABLED;
+      } else {
+        process.env.CHAT_CORE_V2_ENABLED = previousGlobal;
+      }
+      if (previousWrites === undefined) {
+        delete process.env.CHAT_CORE_V2_WRITES_ENABLED;
+      } else {
+        process.env.CHAT_CORE_V2_WRITES_ENABLED = previousWrites;
+      }
+      if (previousConfirmations === undefined) {
+        delete process.env.CHAT_CORE_V2_CONFIRMATIONS_ENABLED;
+      } else {
+        process.env.CHAT_CORE_V2_CONFIRMATIONS_ENABLED = previousConfirmations;
+      }
+    }
+  });
+
+  it('rejects a stale Chat Core v2 notification-snooze confirmation after the notification is dismissed', async () => {
+    const previousGlobal = process.env.CHAT_CORE_V2_ENABLED;
+    const previousWrites = process.env.CHAT_CORE_V2_WRITES_ENABLED;
+    const previousConfirmations = process.env.CHAT_CORE_V2_CONFIRMATIONS_ENABLED;
+    process.env.CHAT_CORE_V2_ENABLED = 'true';
+    process.env.CHAT_CORE_V2_WRITES_ENABLED = 'true';
+    process.env.CHAT_CORE_V2_CONFIRMATIONS_ENABLED = 'true';
+    try {
+      const { createNotificationIntent, listNotificationCenterItems } = await import('../../src/services/notification-orchestrator');
+      await createNotificationIntent({
+        userId: 7001,
+        tenantId: 7001,
+        sourceSkill: 'system',
+        type: 'reminder',
+        priority: 'active',
+        title: 'Daily planning reminder',
+        body: 'Review today before the afternoon starts.',
+        actionButtons: [{ id: 'open', label: 'Open', style: 'primary' }],
+        deliveryPolicy: 'in_app_only',
+        privacyPolicy: 'standard',
+        dedupeKey: 'chat-core-v2-notification-snooze-dismissed-stale',
+      });
+      const item = listNotificationCenterItems(7001, 7001, { status: 'unread', limit: 5 })[0];
+
+      const preview = await dispatch('POST', '/message', 7001, {
+        text: 'Snooze the Daily planning reminder notification for 30 minutes',
+        clientMessageId: 'chat-core-v2-notification-snooze-dismissed-stale-1',
+      });
+      expect(preview.statusCode, JSON.stringify(preview.body)).toBe(200);
+      expect(preview.body.metadata.pendingConfirmation.confirmation_token).toEqual(expect.any(String));
+
+      testDb.prepare(`
+        UPDATE notification_center_items
+        SET status = 'dismissed', dismissed_at = datetime('now')
+        WHERE item_id = ? AND user_id = ? AND tenant_id = ?
+      `).run(item.itemId, 7001, 7001);
+
+      const confirmed = await dispatch('POST', '/confirm-action', 7001, {
+        confirmation_token: preview.body.metadata.pendingConfirmation.confirmation_token,
+        intent_class: 'notifications.snooze',
+      });
+
+      expect(confirmed.statusCode, JSON.stringify(confirmed.body)).toBe(409);
+      expect(confirmed.body.error).toMatchObject({
+        code: 'CHAT_CORE_V2_CONFIRMATION_NOT_EXECUTABLE',
+        message: 'This preview is no longer safe to apply. Please ask again so I can refresh it.',
+      });
+      const updated = listNotificationCenterItems(7001, 7001, { status: 'all', limit: 5 })
+        .find((candidate) => candidate.itemId === item.itemId);
+      expect(updated).toMatchObject({
+        itemId: item.itemId,
+        status: 'dismissed',
+        snoozedUntil: null,
+      });
+      expect(mockRouteMessage).not.toHaveBeenCalled();
+      expect(mockHandleSecretary).not.toHaveBeenCalled();
+    } finally {
+      if (previousGlobal === undefined) {
+        delete process.env.CHAT_CORE_V2_ENABLED;
+      } else {
+        process.env.CHAT_CORE_V2_ENABLED = previousGlobal;
+      }
+      if (previousWrites === undefined) {
+        delete process.env.CHAT_CORE_V2_WRITES_ENABLED;
+      } else {
+        process.env.CHAT_CORE_V2_WRITES_ENABLED = previousWrites;
+      }
+      if (previousConfirmations === undefined) {
+        delete process.env.CHAT_CORE_V2_CONFIRMATIONS_ENABLED;
+      } else {
+        process.env.CHAT_CORE_V2_CONFIRMATIONS_ENABLED = previousConfirmations;
       }
     }
   });
@@ -3670,7 +4160,7 @@ describe('Chat API routes', () => {
               },
               invariants: [{
                 type: 'decision_status',
-                description: 'Decision must still be active when the preview is confirmed.',
+                description: 'Decision must still be dismissible when the preview is confirmed.',
                 check: 'decision_is_active',
               }],
               hasPermissionSnapshot: true,
@@ -3726,6 +4216,423 @@ describe('Chat API routes', () => {
         delete process.env.CHAT_CORE_V2_WRITES_ENABLED;
       } else {
         process.env.CHAT_CORE_V2_WRITES_ENABLED = previousWrites;
+      }
+    }
+  });
+
+  it('confirms a Chat Core v2 decision-dismiss command through the v2 command bus and replays idempotently', async () => {
+    const previousGlobal = process.env.CHAT_CORE_V2_ENABLED;
+    const previousWrites = process.env.CHAT_CORE_V2_WRITES_ENABLED;
+    const previousConfirmations = process.env.CHAT_CORE_V2_CONFIRMATIONS_ENABLED;
+    process.env.CHAT_CORE_V2_ENABLED = 'true';
+    process.env.CHAT_CORE_V2_WRITES_ENABLED = 'true';
+    process.env.CHAT_CORE_V2_CONFIRMATIONS_ENABLED = 'true';
+    try {
+      const {
+        createDecisionIntent,
+        getDecisionItem,
+        listDecisionItems,
+      } = await import('../../src/services/decision-center');
+      const created = await createDecisionIntent({
+        userId: 7001,
+        tenantId: 7001,
+        sourceSkill: 'system',
+        type: 'decision_required',
+        priority: 'active',
+        title: 'Schedule review',
+        body: 'The schedule review needs a decision.',
+        safePreviewTitle: 'Schedule review',
+        safePreviewBody: 'The schedule review needs a decision.',
+        relatedEntityId: 'chat-core-v2-decision-dismiss-confirm',
+        relatedEntityType: 'chat_core_v2_decision',
+        actionButtons: [{ id: 'open_detail', label: 'Review', style: 'primary' }],
+        requiresUserAction: true,
+        deliveryPolicy: 'in_app_only',
+        privacyPolicy: 'standard',
+        dedupeKey: 'chat-core-v2-decision-dismiss-confirm',
+      });
+      const item = created.item;
+      expect(item).not.toBeNull();
+      expect(getDecisionItem(item.decisionId, 7001, 7001)).toMatchObject({
+        decisionId: item.decisionId,
+        status: 'unread',
+      });
+      expect(listDecisionItems(7001, 7001, { limit: 50 }).map((decision) => decision.title))
+        .toContain('Schedule review');
+      mockRouteMessage.mockClear();
+      mockHandleSecretary.mockClear();
+
+      const preview = await dispatch('POST', '/message', 7001, {
+        text: 'Dismiss the decision called Schedule review',
+        clientMessageId: 'chat-core-v2-decision-dismiss-confirm-1',
+      });
+
+      expect(preview.statusCode, JSON.stringify(preview.body)).toBe(200);
+      expect(preview.body.metadata).toMatchObject({
+        type: 'chat_core_v2_command_preview',
+        pendingConfirmation: {
+          kind: 'pending_confirmation',
+          intent_class: 'decision_center.dismiss',
+          confirmation_token: expect.any(String),
+        },
+        chatCoreV2: {
+          capabilityId: 'decision_center.dismiss',
+          executionEnabled: true,
+          response: {
+            kind: 'action_preview',
+            reasonCodes: expect.arrayContaining(['confirmation_required']),
+          },
+        },
+      });
+      expect(preview.body.metadata.chatCoreV2.response.cards[0]).toMatchObject({
+        primaryAction: {
+          kind: 'confirm',
+          confirmationToken: preview.body.metadata.pendingConfirmation.confirmation_token,
+        },
+      });
+      expect(getDecisionItem(item.decisionId, 7001, 7001)).toMatchObject({
+        decisionId: item.decisionId,
+        status: 'unread',
+      });
+
+      const confirmationBody = {
+        confirmation_token: preview.body.metadata.pendingConfirmation.confirmation_token,
+        intent_class: 'decision_center.dismiss',
+      };
+      const confirmed = await dispatch('POST', '/confirm-action', 7001, confirmationBody);
+
+      expect(confirmed.statusCode, JSON.stringify(confirmed.body)).toBe(200);
+      expect(confirmed.body.routeMethod).toBe('chat-core-v2-command-confirmation');
+      expect(confirmed.body.text).toBe('Done — I dismissed "Schedule review" from Decision Center.');
+      expect(confirmed.body.metadata).toMatchObject({
+        type: 'chat_core_v2_command_result',
+        actionStatus: 'verified',
+        verificationStatus: 'verified',
+        pendingConfirmation: {
+          kind: 'completed_confirmation',
+          intent_class: 'decision_center.dismiss',
+        },
+        chatCoreV2: {
+          capabilityId: 'decision_center.dismiss',
+          commandType: 'decision_center.dismiss',
+          status: 'verified',
+          response: {
+            kind: 'action_result',
+            cards: [expect.objectContaining({
+              type: 'command_result_card',
+              status: 'verified',
+            })],
+          },
+          gate: {
+            ok: true,
+            operation: 'execute',
+            commandStatus: 'confirmed',
+          },
+        },
+      });
+      expect(confirmed.body.responseCards).toEqual([{
+        kind: 'decisionCard',
+        decisionId: item.decisionId,
+        status: 'dismissed',
+        detail: 'Done — I dismissed "Schedule review" from Decision Center.',
+      }]);
+      expect(getDecisionItem(item.decisionId, 7001, 7001)).toMatchObject({
+        decisionId: item.decisionId,
+        status: 'dismissed',
+      });
+      expect(listDecisionItems(7001, 7001, { limit: 50 }).map((decision) => decision.decisionId))
+        .not.toContain(item.decisionId);
+      const metadataJson = JSON.stringify(confirmed.body.metadata);
+      expect(metadataJson).not.toContain('actorUserId');
+      expect(metadataJson).not.toContain('delegatedScopes');
+      expect(metadataJson).not.toContain('idempotencyKey');
+      expect(metadataJson).not.toContain('chat-v2-permissions:7001:7001');
+
+      const replay = await dispatch('POST', '/confirm-action', 7001, confirmationBody);
+      expect(replay.statusCode, JSON.stringify(replay.body)).toBe(200);
+      expect(replay.body.metadata).toMatchObject({
+        idempotentReplay: true,
+        confirmationReplay: true,
+      });
+      expect(getDecisionItem(item.decisionId, 7001, 7001)).toMatchObject({
+        decisionId: item.decisionId,
+        status: 'dismissed',
+      });
+      expect(mockRouteMessage).not.toHaveBeenCalled();
+      expect(mockHandleSecretary).not.toHaveBeenCalled();
+    } finally {
+      if (previousGlobal === undefined) {
+        delete process.env.CHAT_CORE_V2_ENABLED;
+      } else {
+        process.env.CHAT_CORE_V2_ENABLED = previousGlobal;
+      }
+      if (previousWrites === undefined) {
+        delete process.env.CHAT_CORE_V2_WRITES_ENABLED;
+      } else {
+        process.env.CHAT_CORE_V2_WRITES_ENABLED = previousWrites;
+      }
+      if (previousConfirmations === undefined) {
+        delete process.env.CHAT_CORE_V2_CONFIRMATIONS_ENABLED;
+      } else {
+        process.env.CHAT_CORE_V2_CONFIRMATIONS_ENABLED = previousConfirmations;
+      }
+    }
+  });
+
+  it('confirms a Chat Core v2 decision-dismiss command after the decision is read', async () => {
+    const previousGlobal = process.env.CHAT_CORE_V2_ENABLED;
+    const previousWrites = process.env.CHAT_CORE_V2_WRITES_ENABLED;
+    const previousConfirmations = process.env.CHAT_CORE_V2_CONFIRMATIONS_ENABLED;
+    process.env.CHAT_CORE_V2_ENABLED = 'true';
+    process.env.CHAT_CORE_V2_WRITES_ENABLED = 'true';
+    process.env.CHAT_CORE_V2_CONFIRMATIONS_ENABLED = 'true';
+    try {
+      const {
+        createDecisionIntent,
+        getDecisionItem,
+        markDecisionViewed,
+      } = await import('../../src/services/decision-center');
+      const created = await createDecisionIntent({
+        userId: 7001,
+        tenantId: 7001,
+        sourceSkill: 'system',
+        type: 'decision_required',
+        priority: 'active',
+        title: 'Read then dismiss review',
+        body: 'The read then dismiss review needs a decision.',
+        safePreviewTitle: 'Read then dismiss review',
+        safePreviewBody: 'The read then dismiss review needs a decision.',
+        relatedEntityId: 'chat-core-v2-decision-dismiss-read-confirm',
+        relatedEntityType: 'chat_core_v2_decision',
+        actionButtons: [{ id: 'open_detail', label: 'Review', style: 'primary' }],
+        requiresUserAction: true,
+        deliveryPolicy: 'in_app_only',
+        privacyPolicy: 'standard',
+        dedupeKey: 'chat-core-v2-decision-dismiss-read-confirm',
+      });
+      const item = created.item;
+      expect(item).not.toBeNull();
+
+      const preview = await dispatch('POST', '/message', 7001, {
+        text: 'Dismiss the decision called Read then dismiss review',
+        clientMessageId: 'chat-core-v2-decision-dismiss-read-confirm-1',
+      });
+      expect(preview.statusCode, JSON.stringify(preview.body)).toBe(200);
+      expect(preview.body.metadata.pendingConfirmation.confirmation_token).toEqual(expect.any(String));
+
+      markDecisionViewed(item.decisionId, 7001, 7001);
+      expect(getDecisionItem(item.decisionId, 7001, 7001)).toMatchObject({
+        decisionId: item.decisionId,
+        status: 'read',
+      });
+
+      const confirmed = await dispatch('POST', '/confirm-action', 7001, {
+        confirmation_token: preview.body.metadata.pendingConfirmation.confirmation_token,
+        intent_class: 'decision_center.dismiss',
+      });
+
+      expect(confirmed.statusCode, JSON.stringify(confirmed.body)).toBe(200);
+      expect(confirmed.body.routeMethod).toBe('chat-core-v2-command-confirmation');
+      expect(confirmed.body.metadata).toMatchObject({
+        type: 'chat_core_v2_command_result',
+        actionStatus: 'verified',
+        verificationStatus: 'verified',
+        chatCoreV2: {
+          capabilityId: 'decision_center.dismiss',
+          commandType: 'decision_center.dismiss',
+          status: 'verified',
+        },
+      });
+      expect(getDecisionItem(item.decisionId, 7001, 7001)).toMatchObject({
+        decisionId: item.decisionId,
+        status: 'dismissed',
+      });
+      expect(mockRouteMessage).not.toHaveBeenCalled();
+      expect(mockHandleSecretary).not.toHaveBeenCalled();
+    } finally {
+      if (previousGlobal === undefined) {
+        delete process.env.CHAT_CORE_V2_ENABLED;
+      } else {
+        process.env.CHAT_CORE_V2_ENABLED = previousGlobal;
+      }
+      if (previousWrites === undefined) {
+        delete process.env.CHAT_CORE_V2_WRITES_ENABLED;
+      } else {
+        process.env.CHAT_CORE_V2_WRITES_ENABLED = previousWrites;
+      }
+      if (previousConfirmations === undefined) {
+        delete process.env.CHAT_CORE_V2_CONFIRMATIONS_ENABLED;
+      } else {
+        process.env.CHAT_CORE_V2_CONFIRMATIONS_ENABLED = previousConfirmations;
+      }
+    }
+  });
+
+  it('rejects a stale Chat Core v2 decision-dismiss confirmation before mutating the decision again', async () => {
+    const previousGlobal = process.env.CHAT_CORE_V2_ENABLED;
+    const previousWrites = process.env.CHAT_CORE_V2_WRITES_ENABLED;
+    const previousConfirmations = process.env.CHAT_CORE_V2_CONFIRMATIONS_ENABLED;
+    process.env.CHAT_CORE_V2_ENABLED = 'true';
+    process.env.CHAT_CORE_V2_WRITES_ENABLED = 'true';
+    process.env.CHAT_CORE_V2_CONFIRMATIONS_ENABLED = 'true';
+    try {
+      const {
+        createDecisionIntent,
+        dismissDecision,
+        getDecisionItem,
+        listDecisionItems,
+      } = await import('../../src/services/decision-center');
+      const created = await createDecisionIntent({
+        userId: 7001,
+        tenantId: 7001,
+        sourceSkill: 'system',
+        type: 'decision_required',
+        priority: 'active',
+        title: 'Schedule review',
+        body: 'The schedule review needs a decision.',
+        safePreviewTitle: 'Schedule review',
+        safePreviewBody: 'The schedule review needs a decision.',
+        relatedEntityId: 'chat-core-v2-decision-dismiss-stale',
+        relatedEntityType: 'chat_core_v2_decision',
+        actionButtons: [{ id: 'open_detail', label: 'Review', style: 'primary' }],
+        requiresUserAction: true,
+        deliveryPolicy: 'in_app_only',
+        privacyPolicy: 'standard',
+        dedupeKey: 'chat-core-v2-decision-dismiss-stale',
+      });
+      const item = created.item;
+      expect(item).not.toBeNull();
+      expect(listDecisionItems(7001, 7001, { limit: 50 }).map((decision) => decision.title))
+        .toContain('Schedule review');
+
+      const preview = await dispatch('POST', '/message', 7001, {
+        text: 'Dismiss the decision called Schedule review',
+        clientMessageId: 'chat-core-v2-decision-dismiss-stale-1',
+      });
+      expect(preview.statusCode, JSON.stringify(preview.body)).toBe(200);
+      expect(preview.body.metadata.pendingConfirmation.confirmation_token).toEqual(expect.any(String));
+
+      dismissDecision(item.decisionId, 7001, 7001);
+
+      const confirmed = await dispatch('POST', '/confirm-action', 7001, {
+        confirmation_token: preview.body.metadata.pendingConfirmation.confirmation_token,
+        intent_class: 'decision_center.dismiss',
+      });
+
+      expect(confirmed.statusCode, JSON.stringify(confirmed.body)).toBe(409);
+      expect(confirmed.body.error).toMatchObject({
+        code: 'CHAT_CORE_V2_CONFIRMATION_NOT_EXECUTABLE',
+        message: 'This preview is no longer safe to apply. Please ask again so I can refresh it.',
+      });
+      expect(getDecisionItem(item.decisionId, 7001, 7001)).toMatchObject({
+        decisionId: item.decisionId,
+        status: 'dismissed',
+      });
+      expect(mockRouteMessage).not.toHaveBeenCalled();
+      expect(mockHandleSecretary).not.toHaveBeenCalled();
+    } finally {
+      if (previousGlobal === undefined) {
+        delete process.env.CHAT_CORE_V2_ENABLED;
+      } else {
+        process.env.CHAT_CORE_V2_ENABLED = previousGlobal;
+      }
+      if (previousWrites === undefined) {
+        delete process.env.CHAT_CORE_V2_WRITES_ENABLED;
+      } else {
+        process.env.CHAT_CORE_V2_WRITES_ENABLED = previousWrites;
+      }
+      if (previousConfirmations === undefined) {
+        delete process.env.CHAT_CORE_V2_CONFIRMATIONS_ENABLED;
+      } else {
+        process.env.CHAT_CORE_V2_CONFIRMATIONS_ENABLED = previousConfirmations;
+      }
+    }
+  });
+
+  it('rejects a Chat Core v2 decision-dismiss confirmation when decision content changed after preview', async () => {
+    const previousGlobal = process.env.CHAT_CORE_V2_ENABLED;
+    const previousWrites = process.env.CHAT_CORE_V2_WRITES_ENABLED;
+    const previousConfirmations = process.env.CHAT_CORE_V2_CONFIRMATIONS_ENABLED;
+    process.env.CHAT_CORE_V2_ENABLED = 'true';
+    process.env.CHAT_CORE_V2_WRITES_ENABLED = 'true';
+    process.env.CHAT_CORE_V2_CONFIRMATIONS_ENABLED = 'true';
+    try {
+      const {
+        createDecisionIntent,
+        getDecisionItem,
+      } = await import('../../src/services/decision-center');
+      const created = await createDecisionIntent({
+        userId: 7001,
+        tenantId: 7001,
+        sourceSkill: 'system',
+        type: 'decision_required',
+        priority: 'active',
+        title: 'Versioned schedule review',
+        body: 'The versioned schedule review needs a decision.',
+        safePreviewTitle: 'Versioned schedule review',
+        safePreviewBody: 'The versioned schedule review needs a decision.',
+        relatedEntityId: 'chat-core-v2-decision-dismiss-version-stale',
+        relatedEntityType: 'chat_core_v2_decision',
+        actionButtons: [{ id: 'open_detail', label: 'Review', style: 'primary' }],
+        requiresUserAction: true,
+        deliveryPolicy: 'in_app_only',
+        privacyPolicy: 'standard',
+        dedupeKey: 'chat-core-v2-decision-dismiss-version-stale',
+      });
+      const item = created.item;
+      expect(item).not.toBeNull();
+
+      const preview = await dispatch('POST', '/message', 7001, {
+        text: 'Dismiss the decision called Versioned schedule review',
+        clientMessageId: 'chat-core-v2-decision-dismiss-version-stale-1',
+      });
+      expect(preview.statusCode, JSON.stringify(preview.body)).toBe(200);
+      expect(preview.body.metadata.pendingConfirmation.confirmation_token).toEqual(expect.any(String));
+
+      testDb.prepare(`
+        UPDATE notification_center_items
+        SET title = ?, safe_body = ?
+        WHERE item_id = ? AND user_id = ? AND tenant_id = ?
+      `).run(
+        'Versioned schedule review changed',
+        'The versioned schedule review changed after preview.',
+        item.decisionId,
+        7001,
+        7001,
+      );
+
+      const confirmed = await dispatch('POST', '/confirm-action', 7001, {
+        confirmation_token: preview.body.metadata.pendingConfirmation.confirmation_token,
+        intent_class: 'decision_center.dismiss',
+      });
+
+      expect(confirmed.statusCode, JSON.stringify(confirmed.body)).toBe(409);
+      expect(confirmed.body.error).toMatchObject({
+        code: 'CHAT_CORE_V2_CONFIRMATION_NOT_EXECUTABLE',
+        message: 'This preview is no longer safe to apply. Please ask again so I can refresh it.',
+      });
+      expect(getDecisionItem(item.decisionId, 7001, 7001)).toMatchObject({
+        decisionId: item.decisionId,
+        title: 'Versioned schedule review changed',
+        status: 'unread',
+      });
+      expect(mockRouteMessage).not.toHaveBeenCalled();
+      expect(mockHandleSecretary).not.toHaveBeenCalled();
+    } finally {
+      if (previousGlobal === undefined) {
+        delete process.env.CHAT_CORE_V2_ENABLED;
+      } else {
+        process.env.CHAT_CORE_V2_ENABLED = previousGlobal;
+      }
+      if (previousWrites === undefined) {
+        delete process.env.CHAT_CORE_V2_WRITES_ENABLED;
+      } else {
+        process.env.CHAT_CORE_V2_WRITES_ENABLED = previousWrites;
+      }
+      if (previousConfirmations === undefined) {
+        delete process.env.CHAT_CORE_V2_CONFIRMATIONS_ENABLED;
+      } else {
+        process.env.CHAT_CORE_V2_CONFIRMATIONS_ENABLED = previousConfirmations;
       }
     }
   });

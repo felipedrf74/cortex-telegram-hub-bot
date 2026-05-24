@@ -7,6 +7,7 @@ export * from './command-bus';
 export * from './command-events';
 export * from './command-executor';
 export * from './command-preview-route';
+export * from './command-status-policy';
 export * from './deterministic-read-route';
 export * from './entity-resolution';
 export * from './evidence-policy';
