@@ -7,8 +7,10 @@ import {
   CONNECTIONS_STATUS_CAPABILITY,
   DECISION_CENTER_SUMMARY_CAPABILITY,
   NOTIFICATIONS_SUMMARY_CAPABILITY,
+  SECRETARY_AGENDA_SUMMARY_CAPABILITY,
   TASKS_TODAY_SUMMARY_CAPABILITY,
 } from './deterministic-read/common';
+import { buildAgendaSummaryRoute } from './deterministic-read/agenda-summary-route';
 import { buildConnectionsStatusRoute } from './deterministic-read/connection-status-route';
 import { buildDecisionCenterSummaryRoute } from './deterministic-read/decision-center-summary-route';
 import { buildNotificationsSummaryRoute } from './deterministic-read/notification-summary-route';
@@ -22,6 +24,8 @@ import type {
 
 export type {
   BuildChatCoreV2DeterministicReadRouteInput,
+  ChatCoreV2AgendaSummaryData,
+  ChatCoreV2AgendaSummaryItem,
   ChatCoreV2ConnectionStatusData,
   ChatCoreV2ConnectionStatusItem,
   ChatCoreV2DecisionCenterSummaryData,
@@ -38,6 +42,7 @@ export type {
 type ChatCoreV2CapabilityFlagInput = Parameters<typeof isChatCoreV2CapabilityEnabled>[1];
 
 const DETERMINISTIC_READ_BUILDERS: Record<ChatCoreV2DeterministicReadCapabilityId, ChatCoreV2DeterministicReadBuilder> = {
+  [SECRETARY_AGENDA_SUMMARY_CAPABILITY]: buildAgendaSummaryRoute,
   [TASKS_TODAY_SUMMARY_CAPABILITY]: buildTaskSummaryRoute,
   [DECISION_CENTER_SUMMARY_CAPABILITY]: buildDecisionCenterSummaryRoute,
   [NOTIFICATIONS_SUMMARY_CAPABILITY]: buildNotificationsSummaryRoute,
@@ -73,6 +78,9 @@ function deterministicReadCapabilityForRouteGuess(
   if (routeGuess.domains.length !== 1) return null;
   if (routeGuess.domains[0] === 'tasks' && routeGuess.capabilityIds.includes(TASKS_TODAY_SUMMARY_CAPABILITY)) {
     return TASKS_TODAY_SUMMARY_CAPABILITY;
+  }
+  if (routeGuess.domains[0] === 'secretary' && routeGuess.capabilityIds.includes(SECRETARY_AGENDA_SUMMARY_CAPABILITY)) {
+    return SECRETARY_AGENDA_SUMMARY_CAPABILITY;
   }
   if (routeGuess.domains[0] === 'decision_center' && routeGuess.capabilityIds.includes(DECISION_CENTER_SUMMARY_CAPABILITY)) {
     return DECISION_CENTER_SUMMARY_CAPABILITY;

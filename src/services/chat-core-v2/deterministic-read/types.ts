@@ -5,10 +5,32 @@ import type { ChatCoreV2ReadContextPack, ChatCoreV2ReadModelResult } from '../ty
 import type { ChatCoreV2Response } from '../response-contracts';
 
 export type ChatCoreV2DeterministicReadCapabilityId =
+  | 'secretary.agenda_summary'
   | 'tasks.today_summary'
   | 'decision_center.summary'
   | 'notifications.summary'
   | 'connections.status';
+
+export interface ChatCoreV2AgendaSummaryItem {
+  entityId: string;
+  title: string;
+  sourceSkill: string;
+  lifecycleState: string;
+  providerSyncState: string;
+  startAt: string | null;
+  endAt: string | null;
+  durationMinutes: number | null;
+  bucket: 'today' | 'upcoming' | 'unscheduled';
+}
+
+export interface ChatCoreV2AgendaSummaryData {
+  activeCount: number;
+  todayCount: number;
+  unscheduledCount: number;
+  providerAttentionCount: number;
+  timezone: string;
+  topItems: ChatCoreV2AgendaSummaryItem[];
+}
 
 export interface ChatCoreV2TaskSummaryItem {
   entityId: string;
@@ -102,6 +124,7 @@ export interface ChatCoreV2ConnectionStatusData {
 }
 
 export type ChatCoreV2DeterministicReadData =
+  | ChatCoreV2AgendaSummaryData
   | ChatCoreV2TaskSummaryData
   | ChatCoreV2DecisionCenterSummaryData
   | ChatCoreV2NotificationSummaryData

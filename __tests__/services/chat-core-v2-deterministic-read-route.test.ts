@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { NormalizedTask } from '../../src/services/task-store/types';
 import type { NotificationCenterItem } from '../../src/services/notification-orchestrator';
 import type { IntegrationSummary } from '../../src/services/integration-status';
+import type { SecretaryAgendaItem } from '../../src/services/secretary-scheduling-arbitrator';
 
 vi.mock('../../src/services/task-store/task-service', () => ({
   listTasks: vi.fn(),
@@ -20,9 +21,14 @@ vi.mock('../../src/services/integration-status', () => ({
   getIntegrationSummary: vi.fn(),
 }));
 
+vi.mock('../../src/services/secretary-scheduling-arbitrator', () => ({
+  listSecretaryAgendaItems: vi.fn(),
+}));
+
 import { getDecisionSummary } from '../../src/services/decision-center';
 import { getIntegrationSummary } from '../../src/services/integration-status';
 import { listNotificationCenterItems } from '../../src/services/notification-orchestrator';
+import { listSecretaryAgendaItems } from '../../src/services/secretary-scheduling-arbitrator';
 import { listTasks } from '../../src/services/task-store/task-service';
 import { tryBuildChatCoreV2DeterministicReadRoute } from '../../src/services/chat-core-v2';
 
@@ -44,6 +50,44 @@ function task(overrides: Partial<NormalizedTask>): NormalizedTask {
     ...overrides,
   };
 }
+
+function agendaItem(overrides: Partial<SecretaryAgendaItem>): SecretaryAgendaItem {
+  return {
+    agendaItemId: 'agenda_1',
+    sourceIntentId: 'intent_1',
+    sourceSkill: 'secretary',
+    sourceAction: null,
+    intentAction: 'schedule_this',
+    sourceEntityId: null,
+    sourceEntityType: null,
+    ownerUserId: 42,
+    tenantId: '84',
+    lifecycleState: 'scheduled',
+    providerSyncState: 'synced',
+    providerEventId: null,
+    providerSource: null,
+    version: 1,
+    title: 'Client review',
+    startAt: '2026-05-24T14:00:00.000Z',
+    endAt: '2026-05-24T14:30:00.000Z',
+    durationMinutes: 30,
+    decisionAction: 'scheduled',
+    decisionReasonCodes: [],
+    decisionExplanation: null,
+    sourceShapeHash: 'shape_1',
+    scheduledSegments: [],
+    cancellationReason: null,
+    supersededByAgendaItemId: null,
+    createdAt: '2026-05-24T09:00:00.000Z',
+    updatedAt: '2026-05-24T09:00:00.000Z',
+    completedAt: null,
+    sourceCreatedAt: null,
+    sourceUpdatedAt: null,
+    reasoningTrail: [],
+    ...overrides,
+  };
+}
+
 
 function notification(overrides: Partial<NotificationCenterItem>): NotificationCenterItem {
   return {
@@ -128,6 +172,7 @@ describe('Chat Core v2 deterministic read route', () => {
     vi.mocked(getDecisionSummary).mockReset();
     vi.mocked(listNotificationCenterItems).mockReset();
     vi.mocked(getIntegrationSummary).mockReset();
+    vi.mocked(listSecretaryAgendaItems).mockReset();
   });
 
   it('stays disabled unless both global and read flags are explicitly enabled', () => {
@@ -255,6 +300,91 @@ describe('Chat Core v2 deterministic read route', () => {
     });
     expect(result?.contextPack.contextHash).toMatch(/^[a-f0-9]{16}$/);
   });
+
+  it('answers Secretary agenda summary questions from the tenant-scoped agenda ledger', () => {
+    vi.mocked(listSecretaryAgendaItems).mockReturnValue([
+      agendaItem({
+        agendaItemId: 'agenda_today',
+        title: 'Client review',
+        sourceSkill: 'content',
+        startAt: '2026-05-24T14:00:00.000Z',
+        endAt: '2026-05-24T14:30:00.000Z',
+      }),
+      agendaItem({
+        agendaItemId: 'agenda_unscheduled',
+        title: 'Finance follow-up',
+        sourceSkill: 'finance',
+        lifecycleState: 'proposed',
+        providerSyncState: 'not_synced',
+        startAt: null,
+        endAt: null,
+        durationMinutes: null,
+      }),
+      agendaItem({
+        agendaItemId: 'agenda_failed',
+        title: 'Training check-in',
+        sourceSkill: 'training',
+        providerSyncState: 'readback_failed',
+        startAt: '2026-05-25T08:00:00.000Z',
+        endAt: '2026-05-25T08:30:00.000Z',
+      }),
+    ]);
+
+    const result = tryBuildChatCoreV2DeterministicReadRoute({
+      normalizedText: "What's on my agenda today?",
+      userId: 42,
+      tenantId: 84,
+      locale: 'en-US',
+      timezone: 'Europe/Lisbon',
+      now: FIXED_NOW,
+      env: ENABLED_ENV,
+    });
+
+    expect(result).not.toBeNull();
+    expect(listSecretaryAgendaItems).toHaveBeenCalledWith({
+      ownerUserId: 42,
+      tenantId: 84,
+      includeInactive: false,
+    });
+    expect(listTasks).not.toHaveBeenCalled();
+    expect(getDecisionSummary).not.toHaveBeenCalled();
+    expect(listNotificationCenterItems).not.toHaveBeenCalled();
+    expect(getIntegrationSummary).not.toHaveBeenCalled();
+    expect(result?.capabilityId).toBe('secretary.agenda_summary');
+    expect(result?.response).toMatchObject({
+      schemaVersion: 'chat_response_v2@1.0.0',
+      kind: 'message',
+      locale: 'en',
+      cards: [],
+      reasonCodes: ['deterministic_read', 'secretary.agenda_summary'],
+    });
+    expect(result?.response.text).toContain('Secretary has 3 active agenda items.');
+    expect(result?.response.text).toContain('1 for today');
+    expect(result?.response.text).toContain('1 not timed yet');
+    expect(result?.response.text).toContain('1 needing verification');
+    expect(result?.response.text).toContain('- Client review (today)');
+    expect(result?.response.text).toContain('- Training check-in (needs verification)');
+    expect(result?.response.text).toContain('- Finance follow-up (not timed yet)');
+    expect(result?.response.text).not.toContain('secretary_agenda_items');
+    expect(result?.readModel).toMatchObject({
+      capabilityId: 'secretary.agenda_summary',
+      domain: 'secretary',
+      sensitivity: 'personal',
+      freshness: { status: 'live' },
+      data: {
+        activeCount: 3,
+        todayCount: 1,
+        unscheduledCount: 1,
+        providerAttentionCount: 1,
+      },
+    });
+    expect(result?.contextPack.sourceEntityIds).toEqual([
+      'secretary_agenda:agenda_today',
+      'secretary_agenda:agenda_failed',
+      'secretary_agenda:agenda_unscheduled',
+    ]);
+  });
+
 
   it('answers Decision Center summary questions through the filtered Decision Center facade', () => {
     vi.mocked(getDecisionSummary).mockReturnValue({
@@ -602,6 +732,13 @@ describe('Chat Core v2 deterministic read route', () => {
       now: FIXED_NOW,
       env: ENABLED_ENV,
     });
+    const secretaryWrite = tryBuildChatCoreV2DeterministicReadRoute({
+      normalizedText: 'Schedule a meeting with Ana tomorrow',
+      userId: 42,
+      tenantId: 84,
+      now: FIXED_NOW,
+      env: ENABLED_ENV,
+    });
 
     expect(write).toBeNull();
     expect(portugueseWrite).toBeNull();
@@ -609,9 +746,11 @@ describe('Chat Core v2 deterministic read route', () => {
     expect(decisionWrite).toBeNull();
     expect(notificationWrite).toBeNull();
     expect(connectionWrite).toBeNull();
+    expect(secretaryWrite).toBeNull();
     expect(listTasks).not.toHaveBeenCalled();
     expect(getDecisionSummary).not.toHaveBeenCalled();
     expect(listNotificationCenterItems).not.toHaveBeenCalled();
     expect(getIntegrationSummary).not.toHaveBeenCalled();
+    expect(listSecretaryAgendaItems).not.toHaveBeenCalled();
   });
 });

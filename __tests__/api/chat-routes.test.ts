@@ -3044,6 +3044,199 @@ describe('Chat API routes', () => {
     }
   });
 
+  it('answers Secretary agenda status through Chat Core v2 deterministic reads when explicitly enabled', async () => {
+    const previousGlobal = process.env.CHAT_CORE_V2_ENABLED;
+    const previousReads = process.env.CHAT_CORE_V2_READS_ENABLED;
+    process.env.CHAT_CORE_V2_ENABLED = 'true';
+    process.env.CHAT_CORE_V2_READS_ENABLED = 'true';
+    try {
+      const todayParts = new Intl.DateTimeFormat('en-GB', {
+        timeZone: 'Europe/Lisbon',
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit',
+      }).formatToParts(new Date());
+      const todayPart = (type: string) => todayParts.find((part) => part.type === type)?.value;
+      const today = `${todayPart('year')}-${todayPart('month')}-${todayPart('day')}`;
+      testDb.prepare(`
+        INSERT INTO secretary_agenda_items (
+          agenda_item_id,
+          source_intent_id,
+          source_skill,
+          source_action,
+          intent_action,
+          source_entity_id,
+          source_entity_type,
+          owner_user_id,
+          tenant_id,
+          lifecycle_state,
+          provider_sync_state,
+          provider_event_id,
+          provider_source,
+          version,
+          title,
+          start_at,
+          end_at,
+          duration_minutes,
+          decision_action,
+          decision_reason_codes_json,
+          source_shape_hash,
+          scheduled_segments_json,
+          cancellation_reason,
+          superseded_by_agenda_item_id,
+          created_at,
+          updated_at,
+          completed_at,
+          source_created_at,
+          source_updated_at
+        ) VALUES (
+          'agenda-chat-core-v2-today',
+          'intent-chat-core-v2-today',
+          'content',
+          'review',
+          'schedule_this',
+          'content-brief-1',
+          'content_brief',
+          7001,
+          '7001',
+          'scheduled',
+          'synced',
+          NULL,
+          NULL,
+          1,
+          'Review launch brief',
+          ?,
+          ?,
+          30,
+          'scheduled',
+          '[]',
+          'shape-chat-core-v2-today',
+          '[]',
+          NULL,
+          NULL,
+          '2026-04-15T09:00:00.000Z',
+          '2026-04-15T09:00:00.000Z',
+          NULL,
+          NULL,
+          NULL
+        )
+      `).run(`${today}T14:00:00.000Z`, `${today}T14:30:00.000Z`);
+      testDb.prepare(`
+        INSERT INTO secretary_agenda_items (
+          agenda_item_id,
+          source_intent_id,
+          source_skill,
+          source_action,
+          intent_action,
+          source_entity_id,
+          source_entity_type,
+          owner_user_id,
+          tenant_id,
+          lifecycle_state,
+          provider_sync_state,
+          provider_event_id,
+          provider_source,
+          version,
+          title,
+          start_at,
+          end_at,
+          duration_minutes,
+          decision_action,
+          decision_reason_codes_json,
+          source_shape_hash,
+          scheduled_segments_json,
+          cancellation_reason,
+          superseded_by_agenda_item_id,
+          created_at,
+          updated_at,
+          completed_at,
+          source_created_at,
+          source_updated_at
+        ) VALUES (
+          'agenda-chat-core-v2-unscheduled',
+          'intent-chat-core-v2-unscheduled',
+          'finance',
+          'follow_up',
+          'create_follow_up',
+          'invoice-1',
+          'invoice',
+          7001,
+          '7001',
+          'proposed',
+          'readback_failed',
+          NULL,
+          NULL,
+          1,
+          'Finance follow-up',
+          NULL,
+          NULL,
+          NULL,
+          'needs_more_context',
+          '[]',
+          'shape-chat-core-v2-unscheduled',
+          '[]',
+          NULL,
+          NULL,
+          '2026-04-15T09:10:00.000Z',
+          '2026-04-15T09:10:00.000Z',
+          NULL,
+          NULL,
+          NULL
+        )
+      `).run();
+      mockRouteMessage.mockClear();
+      mockHandleSecretary.mockClear();
+
+      const messageRes = await dispatch('POST', '/message', 7001, {
+        text: "What's on my agenda today?",
+      });
+
+      expect(messageRes.statusCode, JSON.stringify(messageRes.body)).toBe(200);
+      expect(messageRes.body.routeMethod).toBe('chat-core-v2-deterministic-read');
+      expect(messageRes.body.domain).toBe('secretary');
+      expect(messageRes.body.text).toContain('Secretary has 2 active agenda items.');
+      expect(messageRes.body.text).toContain('1 for today');
+      expect(messageRes.body.text).toContain('1 not timed yet');
+      expect(messageRes.body.text).toContain('1 needing verification');
+      expect(messageRes.body.text).toContain('Review launch brief');
+      expect(messageRes.body.text).toContain('Finance follow-up');
+      expect(messageRes.body.text).not.toContain('secretary_agenda_items');
+      expect(messageRes.body.metadata).toMatchObject({
+        type: 'chat_core_v2_deterministic_read',
+        chatCoreV2: {
+          capabilityId: 'secretary.agenda_summary',
+          response: {
+            schemaVersion: 'chat_response_v2@1.0.0',
+            kind: 'message',
+          },
+          readModel: {
+            capabilityId: 'secretary.agenda_summary',
+            domain: 'secretary',
+            data: {
+              activeCount: 2,
+              todayCount: 1,
+              unscheduledCount: 1,
+              providerAttentionCount: 1,
+            },
+          },
+        },
+      });
+      expect(mockRouteMessage).not.toHaveBeenCalled();
+      expect(mockHandleSecretary).not.toHaveBeenCalled();
+    } finally {
+      if (previousGlobal === undefined) {
+        delete process.env.CHAT_CORE_V2_ENABLED;
+      } else {
+        process.env.CHAT_CORE_V2_ENABLED = previousGlobal;
+      }
+      if (previousReads === undefined) {
+        delete process.env.CHAT_CORE_V2_READS_ENABLED;
+      } else {
+        process.env.CHAT_CORE_V2_READS_ENABLED = previousReads;
+      }
+    }
+  });
+
   it('returns the accountant handoff state from the deterministic finance shortcut', async () => {
     mockRouteMessage.mockResolvedValue({
       domain: 'finance',
