@@ -27,7 +27,7 @@ import { isCronJobEnabled } from '../skills/skill-manager';
 import { CronExpressionParser } from 'cron-parser';
 import { flushQueue, getPendingCount } from './invoice-queue';
 import { setLastCoachState } from '../domains/domain-handler';
-import { setLastActiveDomain } from '../bot';
+import { setLastActiveDomain } from '../api/routes/chat-message-context';
 import { addToConversation } from '../state/conversation';
 import { processAllChannelScopes, seedDefaultChannels } from './channel-learner';
 import { generateAndStoreTopicCandidates, generateWeeklyPackage } from './content-workflow';
@@ -51,7 +51,6 @@ import { isTelegramLegacyDeliveryEnabled } from './runtime-flags';
 import { processDueOperatorAlertDeliveries, recordOperatorAlert } from './operator-alerts';
 import { runEventBackboneOnce } from './event-backbone-worker';
 import { runEventBackboneCleanup } from '../tools/event-backbone-cleanup';
-import { expireStaleChatActionPlans } from './chat-reasoning-engine';
 import { expireStalePendingChatActionsForJob } from './chat-action-state';
 import { pruneCompletedChatActionRuns, reapZombieChatActionRuns } from './chat-action-run-store';
 import { runGarminTenantIsolationWatcher } from './garmin-tenant-isolation-watcher';
@@ -1820,11 +1819,9 @@ export function startScheduler(bot?: any): void {
   }), { timezone: tz });
 
   cron.schedule('*/2 * * * *', wrapJob('chat_action_plan_expiry', async () => {
-    const expired = expireStaleChatActionPlans();
     const expiredPendingActions = expireStalePendingChatActionsForJob();
-    const totalExpired = expired + expiredPendingActions;
-    if (totalExpired === 0) return 'skipped';
-    logger.info({ expired, expiredPendingActions }, 'Expired stale chat action plans');
+    if (expiredPendingActions === 0) return 'skipped';
+    logger.info({ expiredPendingActions }, 'Expired stale pending chat actions');
   }), { timezone: tz });
 
   cron.schedule('*/5 * * * *', wrapJob('chat_action_run_zombie_reaper', async () => {

@@ -24,7 +24,7 @@ import {
 import {
   getChatActionRegistry,
   type ChatActionDefinition,
-} from './chat-action-registry';
+} from './chat/registry';
 
 export interface AdversarialExampleProposal {
   skill: string;

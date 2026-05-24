@@ -21,7 +21,7 @@ import { getDb } from '../services/database';
 import { verifyIosJwt } from '../services/ios-jwt';
 import { getUserLanguageById, getUserTimezoneById, resolveCurrentTenantIdForUser } from '../services/user-service';
 import { config } from '../config';
-import { tryHandleChatActionPlan } from '../services/chat-action-planner';
+import { tryHandleChatActionPlan } from '../services/chat';
 import {
   analyzeChatSkillOrchestration,
   applyChatSkillRoutingDecision,

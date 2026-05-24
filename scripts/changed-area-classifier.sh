@@ -499,7 +499,7 @@ if $HAS_NON_DOC; then
     $HAS_AUDIT && VITEST_GLOBS+=("__tests__/services/audit-trail.test.ts" "__tests__/api/authenticated-support-routes-scope.test.ts" "__tests__/portal/portal-admin-audit.test.ts" "__tests__/portal/portal-admin-data-routes.test.ts" "__tests__/portal/portal-admin-data-isolation.integration.test.ts")
     $HAS_DEPLOY_CONFIG && VITEST_GLOBS+=("__tests__/services/config-*.test.ts" "__tests__/portal/health-endpoint*.test.ts" "__tests__/portal/health-endpoints.test.ts" "__tests__/scripts/*.test.ts" "__tests__/security/**/*.test.ts")
     $HAS_EVENT_BACKBONE && VITEST_GLOBS+=("__tests__/services/event-backbone.test.ts" "__tests__/api/event-backbone-routes.test.ts" "__tests__/security/**/*.test.ts")
-    $HAS_CHAT_REASONING && VITEST_GLOBS+=("__tests__/services/chat-reasoning-engine.test.ts" "__tests__/api/chat-routes.test.ts" "__tests__/security/p0-chat-identity-isolation.test.ts")
+    $HAS_CHAT_REASONING && VITEST_GLOBS+=("__tests__/services/chat-action-planner.test.ts" "__tests__/services/chat-action-production-safety.test.ts" "__tests__/api/chat-routes.test.ts" "__tests__/security/p0-chat-identity-isolation.test.ts")
     $HAS_APPLE_NOTIFICATION_WEBHOOK && VITEST_GLOBS+=("__tests__/security/billing-apple-notifications-jws-verify.test.ts")
     $HAS_TRAINING_ENTITLEMENT && VITEST_GLOBS+=("__tests__/security/training-routes-entitlement.test.ts")
     $HAS_VOICE_EVOLUTION_MULTI_TENANT && VITEST_GLOBS+=("__tests__/agents/voice-evolution-multi-tenant.test.ts")
