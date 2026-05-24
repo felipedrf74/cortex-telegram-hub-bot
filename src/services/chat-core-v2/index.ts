@@ -9,6 +9,7 @@ export * from './fallback-policy';
 export * from './human-review-queue';
 export * from './memory-store';
 export * from './model-run-audit';
+export * from './online-eval-sampler';
 export * from './provider-capabilities';
 export * from './provider-data-policy';
 export * from './prompt-registry';
