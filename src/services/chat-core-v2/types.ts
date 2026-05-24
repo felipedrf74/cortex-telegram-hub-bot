@@ -17,6 +17,7 @@ export type ChatCoreV2RouteMethod =
   | 'llm_command_translation'
   | 'planner'
   | 'background_planner'
+  | 'needs_clarification'
   | 'unsupported'
   | 'blocked';
 
