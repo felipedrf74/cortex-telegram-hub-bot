@@ -1,14 +1,19 @@
 // Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
 
+export * from './action-authorization';
+export * from './batch-policy';
 export * from './capability-registry';
 export * from './command-bus';
 export * from './command-events';
 export * from './entity-resolution';
 export * from './evidence-policy';
 export * from './fallback-policy';
+export * from './finance-action-policy';
 export * from './human-review-queue';
+export * from './locale-policy';
 export * from './memory-store';
 export * from './model-run-audit';
+export * from './online-eval-sampler';
 export * from './provider-capabilities';
 export * from './provider-data-policy';
 export * from './prompt-registry';
@@ -18,6 +23,8 @@ export * from './response-contracts';
 export * from './route-decision';
 export * from './runtime-budget';
 export * from './tool-selection';
+export * from './trace-recorder';
+export * from './training-safety-policy';
 export * from './types';
 export * from './unsupported-policy';
 export * from './workflow-state-machine';

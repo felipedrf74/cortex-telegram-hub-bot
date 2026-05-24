@@ -3,6 +3,7 @@
 import type {
   ActionRisk,
   AuditSensitivity,
+  BatchPolicy,
   CapabilityDefinition,
   CapabilityRolloutStage,
   CapabilitySupportLevel,
@@ -14,6 +15,8 @@ import type {
   UndoPolicy,
   VerificationMode,
 } from './types';
+import { CHAT_CORE_V2_FINANCE_ACTION_POLICY_VERSION } from './finance-action-policy';
+import { CHAT_CORE_V2_TRAINING_SAFETY_POLICY_VERSION } from './training-safety-policy';
 
 const SCHEMA_VERSION = 'chat_core_v2_capability@1.0.0';
 const TOOL_SCHEMA_SET_VERSION = 'chat_core_v2_tools@1.0.0';
@@ -22,6 +25,27 @@ const GLOBAL_FLAG = 'CHAT_CORE_V2_ENABLED';
 const NO_UNDO: UndoPolicy = {
   supported: false,
   requiresConfirmation: false,
+};
+
+const LOW_RISK_BATCH_POLICY: BatchPolicy = {
+  maxItemsWithoutSpecialConfirmation: 5,
+  maxItemsAbsolute: 25,
+  requiresDiffPreview: true,
+  requiresTypedConfirmationText: 'Confirm {count} changes',
+};
+
+const MEDIUM_RISK_BATCH_POLICY: BatchPolicy = {
+  maxItemsWithoutSpecialConfirmation: 1,
+  maxItemsAbsolute: 5,
+  requiresDiffPreview: true,
+  requiresTypedConfirmationText: 'Confirm {count} changes',
+};
+
+const RESTRICTED_BATCH_POLICY: BatchPolicy = {
+  maxItemsWithoutSpecialConfirmation: 0,
+  maxItemsAbsolute: 0,
+  requiresDiffPreview: true,
+  requiresTypedConfirmationText: 'manual_review_required',
 };
 
 function undo(undoCommandType: string, undoWindowSeconds = 300): UndoPolicy {
@@ -64,7 +88,9 @@ function capability(input: {
   promptFamily?: string;
   reasoningTier?: ReasoningTier;
   batchPolicy?: CapabilityDefinition['batchPolicy'];
+  domainSafetyPolicyVersion?: string;
 }): CapabilityDefinition {
+  const risk = input.risk ?? 'low';
   const readOnly = input.support.execute === 'not_applicable' && input.support.preview === 'not_applicable';
   return {
     capabilityId: input.capabilityId,
@@ -73,7 +99,7 @@ function capability(input: {
     routeMethods: input.routeMethods,
     support: input.support,
     rolloutStage: input.rolloutStage,
-    risk: input.risk ?? 'low',
+    risk,
     ownerService: input.ownerService,
     requiredPermissions: input.requiredPermissions ?? [`${input.domain}:read`],
     schemaVersion: SCHEMA_VERSION,
@@ -89,8 +115,15 @@ function capability(input: {
     promptFamily: input.promptFamily ?? `chat_v2_${input.domain}`,
     reasoningTier: input.reasoningTier ?? (readOnly ? 'none' : 'standard_command'),
     toolSchemaSetVersion: TOOL_SCHEMA_SET_VERSION,
-    batchPolicy: input.batchPolicy,
+    batchPolicy: input.batchPolicy ?? (readOnly ? undefined : defaultBatchPolicy(risk)),
+    domainSafetyPolicyVersion: input.domainSafetyPolicyVersion,
   };
+}
+
+function defaultBatchPolicy(risk: ActionRisk): BatchPolicy {
+  if (risk === 'restricted') return { ...RESTRICTED_BATCH_POLICY };
+  if (risk === 'medium' || risk === 'high') return { ...MEDIUM_RISK_BATCH_POLICY };
+  return { ...LOW_RISK_BATCH_POLICY };
 }
 
 export const CHAT_CORE_V2_CAPABILITIES: CapabilityDefinition[] = [
@@ -132,6 +165,7 @@ export const CHAT_CORE_V2_CAPABILITIES: CapabilityDefinition[] = [
     sensitivity: 'health_adjacent',
     promptFamily: 'chat_v2_training',
     reasoningTier: 'synthesis',
+    domainSafetyPolicyVersion: CHAT_CORE_V2_TRAINING_SAFETY_POLICY_VERSION,
   }),
   capability({
     capabilityId: 'content.pipeline_summary',
@@ -166,6 +200,7 @@ export const CHAT_CORE_V2_CAPABILITIES: CapabilityDefinition[] = [
     requiredPermissions: ['finance:read'],
     sensitivity: 'financial',
     promptFamily: 'chat_v2_finance',
+    domainSafetyPolicyVersion: CHAT_CORE_V2_FINANCE_ACTION_POLICY_VERSION,
   }),
   capability({
     capabilityId: 'connections.status',
@@ -297,6 +332,7 @@ export const CHAT_CORE_V2_CAPABILITIES: CapabilityDefinition[] = [
     promptFamily: 'chat_v2_training',
     reasoningTier: 'standard_command',
     sensitivity: 'health_adjacent',
+    domainSafetyPolicyVersion: CHAT_CORE_V2_TRAINING_SAFETY_POLICY_VERSION,
   }),
   capability({
     capabilityId: 'cooking.grocery_item_preview',
@@ -346,6 +382,7 @@ export const CHAT_CORE_V2_CAPABILITIES: CapabilityDefinition[] = [
     fallbackAllowed: false,
     promptFamily: 'chat_v2_finance',
     reasoningTier: 'none',
+    domainSafetyPolicyVersion: CHAT_CORE_V2_FINANCE_ACTION_POLICY_VERSION,
   }),
 ];
 
@@ -358,6 +395,7 @@ export function getChatCoreV2Capabilities(): CapabilityDefinition[] {
     routeMethods: [...capability.routeMethods],
     enabledFlags: [...capability.enabledFlags],
     batchPolicy: capability.batchPolicy ? { ...capability.batchPolicy } : undefined,
+    domainSafetyPolicyVersion: capability.domainSafetyPolicyVersion,
   }));
 }
 

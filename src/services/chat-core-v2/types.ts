@@ -314,6 +314,7 @@ export interface CapabilityDefinition {
   reasoningTier: ReasoningTier;
   toolSchemaSetVersion?: string;
   batchPolicy?: BatchPolicy;
+  domainSafetyPolicyVersion?: string;
 }
 
 export interface MemoryItem {
@@ -457,6 +458,24 @@ export type ChatV2CommandEventName =
   | 'approval_denied'
   | 'human_review_requested';
 
+export type ChatV2TraceSpanKind =
+  | 'router'
+  | 'budget'
+  | 'capability'
+  | 'context'
+  | 'entity_resolution'
+  | 'tool_selection'
+  | 'model'
+  | 'policy'
+  | 'command'
+  | 'workflow'
+  | 'response'
+  | 'fallback'
+  | 'guardrail'
+  | 'custom';
+
+export type ChatV2TraceSpanStatus = 'success' | 'skipped' | 'blocked' | 'failed';
+
 export interface ChatV2CommandEvent {
   commandEventId: string;
   turnId: string;
@@ -474,6 +493,24 @@ export interface ChatV2CommandEvent {
   redactedSummary: string;
   metadata?: Record<string, unknown>;
   createdAt: string;
+}
+
+export interface ChatV2TraceSpan {
+  traceSpanId: string;
+  turnId: string;
+  tenantId: string;
+  userId: string;
+  parentSpanId?: string;
+  kind: ChatV2TraceSpanKind;
+  name: string;
+  status: ChatV2TraceSpanStatus;
+  sensitivity: AuditSensitivity;
+  retentionPolicy: AuditRetentionPolicy;
+  redactedSummary: string;
+  attributes?: Record<string, unknown>;
+  startedAt: string;
+  endedAt?: string;
+  durationMs?: number;
 }
 
 export interface ChatV2HumanReviewRequest {
@@ -504,5 +541,6 @@ export interface ChatReplayBundle {
   toolSchemaSetVersion: string;
   commandProposals: AICommandEnvelope[];
   commandEvents: ChatV2CommandEvent[];
+  traceSpans?: ChatV2TraceSpan[];
   response: unknown;
 }
