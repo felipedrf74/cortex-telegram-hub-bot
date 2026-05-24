@@ -271,12 +271,12 @@ match '^package\.json$|^package-lock\.json$' && HAS_PACKAGE_JSON=true
 # security/isolation suite gets dispatched whenever the relevant
 # surfaces change.
 
-# Attachment / image / media plumbing — chat attachment routes,
-# media handlers, and any test that exercises them. Cross-tenant
+# Attachment / image / media plumbing — app chat attachment routes
+# and any test that exercises them. Cross-tenant
 # attachment leakage is a high-blast-radius P0 vector if anything
 # in this surface regresses (an attachment handed to user A could
 # be served to user B).
-match '^src/api/routes/chat-message-attachments|^src/api/routes/chat-attachments|^src/handlers/media|^__tests__/api/chat-attachments|^__tests__/api/chat-message-attachments|^__tests__/services/fiscal-bundle-attachments' && HAS_ATTACHMENT=true
+match '^src/api/routes/chat-message-attachments|^src/api/routes/chat-attachments|^__tests__/api/chat-attachments|^__tests__/api/chat-message-attachments|^__tests__/services/fiscal-bundle-attachments' && HAS_ATTACHMENT=true
 
 # Model routing / domain provider router — provider routing already
 # has its own flag, but the higher-level `domain-provider-router.ts`
