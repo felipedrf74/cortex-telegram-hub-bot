@@ -102,7 +102,7 @@ function guessDomains(text: string): ChatCoreV2Domain[] {
   if (/\b(task|tasks|todo|to-do|tarefas?)\b/i.test(text)) domains.push('tasks');
   if (/\b(training|workout|run|session)\b/i.test(text)) domains.push('training');
   if (/\b(content|script|post|pipeline)\b/i.test(text)) domains.push('content');
-  if (/\b(cooking|meal|grocery|groceries|ingredient)\b/i.test(text)) domains.push('cooking');
+  if (/\b(cooking|meals?|grocery|groceries|ingredients?)\b/i.test(text)) domains.push('cooking');
   if (/\b(finance|invoice|receipt|budget|tax|payment)\b/i.test(text)) domains.push('finance');
   if (/\b(connections?|connect|integrations?|providers?)\b|\bconex(?:ão|ões|ao|oes)\b|\bintegra(?:ção|ções|cao|coes)\b/i.test(text)) domains.push('connections');
   if (/\b(notifications?|alerts?|reminders?)\b|\bnotifica(?:ção|ções|cao|coes)\b|\blembretes?\b/i.test(text)) domains.push('notifications');

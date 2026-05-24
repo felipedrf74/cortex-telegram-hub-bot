@@ -577,6 +577,20 @@ async function requestApp(
   });
 }
 
+function currentMondayIso(): string {
+  const today = new Date().toISOString().slice(0, 10);
+  const parsed = new Date(`${today}T00:00:00.000Z`);
+  const mondayOffset = (parsed.getUTCDay() + 6) % 7;
+  parsed.setUTCDate(parsed.getUTCDate() - mondayOffset);
+  return parsed.toISOString().slice(0, 10);
+}
+
+function addIsoDays(date: string, days: number): string {
+  const parsed = new Date(`${date}T00:00:00.000Z`);
+  parsed.setUTCDate(parsed.getUTCDate() + days);
+  return parsed.toISOString().slice(0, 10);
+}
+
 describe('Chat API routes', () => {
   beforeEach(() => {
     Settings.now = () => new Date('2026-04-15T12:00:00.000Z').valueOf();
@@ -3644,6 +3658,104 @@ describe('Chat API routes', () => {
               draftingCount: 1,
               deskReadyCount: 1,
               urgentSignalCount: 1,
+            },
+          },
+        },
+      });
+      expect(mockRouteMessage).not.toHaveBeenCalled();
+      expect(mockHandleSecretary).not.toHaveBeenCalled();
+    } finally {
+      if (previousGlobal === undefined) {
+        delete process.env.CHAT_CORE_V2_ENABLED;
+      } else {
+        process.env.CHAT_CORE_V2_ENABLED = previousGlobal;
+      }
+      if (previousReads === undefined) {
+        delete process.env.CHAT_CORE_V2_READS_ENABLED;
+      } else {
+        process.env.CHAT_CORE_V2_READS_ENABLED = previousReads;
+      }
+    }
+  });
+
+  it('answers cooking meal-plan status through Chat Core v2 deterministic reads when explicitly enabled', async () => {
+    const previousGlobal = process.env.CHAT_CORE_V2_ENABLED;
+    const previousReads = process.env.CHAT_CORE_V2_READS_ENABLED;
+    process.env.CHAT_CORE_V2_ENABLED = 'true';
+    process.env.CHAT_CORE_V2_READS_ENABLED = 'true';
+    try {
+      const {
+        addRecipe,
+        generateShoppingList,
+        setMealPlan,
+        upsertPantryItem,
+      } = await import('../../src/services/cooking-chef');
+      const weekStart = currentMondayIso();
+      const dinnerDate = addIsoDays(weekStart, 2);
+      const recipe = addRecipe(7001, 'Salmon recovery bowl', [
+        { name: 'salmon', quantity: '2', unit: 'fillets' },
+        { name: 'rice', quantity: '500', unit: 'g' },
+      ], {
+        tenantId: 7001,
+        instructions: 'Private instruction text',
+        tags: 'private-tag',
+        source: 'private-source',
+      });
+      upsertPantryItem(7001, {
+        name: 'rice',
+        quantity: '500',
+        unit: 'g',
+        freshnessStatus: 'fresh',
+        notes: 'Private pantry note',
+      }, 7001);
+      setMealPlan(7001, dinnerDate, 'dinner', 'Salmon recovery bowl', {
+        recipeId: recipe.id,
+        notes: 'Private meal note',
+        tenantId: 7001,
+      });
+      generateShoppingList(7001, weekStart, 7001);
+      mockRouteMessage.mockClear();
+      mockHandleSecretary.mockClear();
+
+      const messageRes = await dispatch('POST', '/message', 7001, {
+        text: 'What meals do I have this week?',
+      });
+
+      expect(messageRes.statusCode, JSON.stringify(messageRes.body)).toBe(200);
+      expect(messageRes.body.routeMethod).toBe('chat-core-v2-deterministic-read');
+      expect(messageRes.body.domain).toBe('secretary');
+      expect(messageRes.body.text).toContain(`This week's meal plan (${weekStart} to ${addIsoDays(weekStart, 6)}).`);
+      expect(messageRes.body.text).toContain('1 planned meal');
+      expect(messageRes.body.text).toContain('2 shopping items');
+      expect(messageRes.body.text).toContain('1 already in the pantry');
+      expect(messageRes.body.text).toContain('Salmon recovery bowl');
+      expect(messageRes.body.text).toContain('salmon');
+      expect(messageRes.body.text).not.toContain('Private instruction text');
+      expect(messageRes.body.text).not.toContain('Private meal note');
+      expect(messageRes.body.text).not.toContain('Private pantry note');
+      expect(JSON.stringify(messageRes.body.metadata)).not.toContain('Private instruction text');
+      expect(JSON.stringify(messageRes.body.metadata)).not.toContain('Private meal note');
+      expect(JSON.stringify(messageRes.body.metadata)).not.toContain('Private pantry note');
+      expect(JSON.stringify(messageRes.body.metadata)).not.toContain('private-source');
+      expect(messageRes.body.metadata).toMatchObject({
+        type: 'chat_core_v2_deterministic_read',
+        chatCoreV2: {
+          capabilityId: 'cooking.meal_plan_summary',
+          response: {
+            schemaVersion: 'chat_response_v2@1.0.0',
+            kind: 'message',
+            reasonCodes: ['deterministic_read', 'cooking.meal_plan_summary'],
+          },
+          readModel: {
+            capabilityId: 'cooking.meal_plan_summary',
+            domain: 'cooking',
+            sensitivity: 'personal',
+            data: {
+              rangeStart: weekStart,
+              rangeEnd: addIsoDays(weekStart, 6),
+              plannedMealCount: 1,
+              shoppingItemCount: 2,
+              pantryAvailableShoppingItemCount: 1,
             },
           },
         },

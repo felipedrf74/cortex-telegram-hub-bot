@@ -12,7 +12,8 @@ export type ChatCoreV2DeterministicReadCapabilityId =
   | 'connections.status'
   | 'finance.summary'
   | 'training.session_explain'
-  | 'content.pipeline_summary';
+  | 'content.pipeline_summary'
+  | 'cooking.meal_plan_summary';
 
 export interface ChatCoreV2AgendaSummaryItem {
   entityId: string;
@@ -193,6 +194,37 @@ export interface ChatCoreV2ContentPipelineSummaryData {
   topItems: ChatCoreV2ContentPipelineSummaryItem[];
 }
 
+export interface ChatCoreV2CookingMealSummaryItem {
+  entityId: string;
+  date: string;
+  mealType: string;
+  title: string;
+}
+
+export interface ChatCoreV2CookingShoppingSummaryItem {
+  name: string;
+  aisle: string;
+  checked: boolean;
+  pantryStatus: string | null;
+}
+
+export interface ChatCoreV2CookingMealPlanSummaryData {
+  rangeStart: string;
+  rangeEnd: string;
+  plannedMealCount: number;
+  plannedDateCount: number;
+  shoppingListWeekStart: string;
+  shoppingItemCount: number;
+  checkedShoppingItemCount: number;
+  pantryAvailableShoppingItemCount: number;
+  pantryExpiredShoppingItemCount: number;
+  pantryAvailableCount: number;
+  pantryUseSoonCount: number;
+  pantryUnknownCount: number;
+  topMeals: ChatCoreV2CookingMealSummaryItem[];
+  topShoppingItems: ChatCoreV2CookingShoppingSummaryItem[];
+}
+
 export type ChatCoreV2DeterministicReadData =
   | ChatCoreV2AgendaSummaryData
   | ChatCoreV2TaskSummaryData
@@ -201,7 +233,8 @@ export type ChatCoreV2DeterministicReadData =
   | ChatCoreV2ConnectionStatusData
   | ChatCoreV2FinanceSummaryData
   | ChatCoreV2TrainingSessionExplainData
-  | ChatCoreV2ContentPipelineSummaryData;
+  | ChatCoreV2ContentPipelineSummaryData
+  | ChatCoreV2CookingMealPlanSummaryData;
 
 export interface ChatCoreV2DeterministicReadRouteResult {
   capabilityId: ChatCoreV2DeterministicReadCapabilityId;

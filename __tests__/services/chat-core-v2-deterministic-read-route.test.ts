@@ -7,6 +7,7 @@ import type { SecretaryAgendaItem } from '../../src/services/secretary-schedulin
 import type { MonthlyBudgetView, MonthlySummary } from '../../src/services/finance-tracker';
 import type { ContentDeskItem, ContentSignalDigest } from '../../src/services/content-intelligence';
 import type { ContentTopic } from '../../src/services/content-scheduler';
+import type { MealPlan, PantryItem, ShoppingList } from '../../src/services/cooking-chef';
 import type {
   TrainingPlan,
   TrainingSession,
@@ -55,8 +56,15 @@ vi.mock('../../src/services/content-intelligence', () => ({
   getRankedContentSignals: vi.fn(),
 }));
 
+vi.mock('../../src/services/cooking-chef', () => ({
+  getMealPlan: vi.fn(),
+  getShoppingList: vi.fn(),
+  getPantryItems: vi.fn(),
+}));
+
 import { getContentDeskItems, getRankedContentSignals } from '../../src/services/content-intelligence';
 import { getTopics } from '../../src/services/content-scheduler';
+import { getMealPlan, getPantryItems, getShoppingList } from '../../src/services/cooking-chef';
 import { getDecisionSummary } from '../../src/services/decision-center';
 import { getMonthlyBudgetView, getMonthlySummary } from '../../src/services/finance-tracker';
 import { getIntegrationSummary } from '../../src/services/integration-status';
@@ -295,6 +303,91 @@ function contentSignal(overrides: Partial<ContentSignalDigest> = {}): ContentSig
   };
 }
 
+function mealPlan(overrides: Partial<MealPlan> = {}): MealPlan {
+  return {
+    id: 601,
+    tenant_id: 84,
+    user_id: 42,
+    owner_user_id: 42,
+    visibility_scope: 'user_private',
+    lifecycle_state: 'available',
+    scope_status: 'active',
+    date: '2026-05-24',
+    meal_type: 'dinner',
+    recipe_id: 701,
+    title: 'Salmon recovery bowl',
+    notes: 'Private prep notes that should not appear in Chat Core v2 read summaries.',
+    created_at: '2026-05-20T09:00:00.000Z',
+    ...overrides,
+  };
+}
+
+function shoppingList(overrides: Partial<ShoppingList> = {}): ShoppingList {
+  return {
+    id: 801,
+    tenant_id: 84,
+    user_id: 42,
+    owner_user_id: 42,
+    visibility_scope: 'user_private',
+    lifecycle_state: 'active',
+    scope_status: 'active',
+    week_start: '2026-05-18',
+    items: [
+      {
+        name: 'salmon',
+        quantity: '2',
+        unit: 'fillets',
+        checked: false,
+        aisle: 'protein',
+        pantry_status: 'needed',
+        pantry_item_id: 901,
+        pantry_freshness_status: 'unknown',
+        pantry_note: 'Private pantry note',
+      },
+      {
+        name: 'rice',
+        quantity: '500',
+        unit: 'g',
+        checked: true,
+        aisle: 'pantry',
+        pantry_status: 'pantry_available',
+        pantry_item_id: 902,
+        pantry_freshness_status: 'fresh',
+      },
+    ],
+    status: 'active',
+    created_at: '2026-05-20T09:00:00.000Z',
+    updated_at: '2026-05-20T09:00:00.000Z',
+    ...overrides,
+  };
+}
+
+function pantryItem(overrides: Partial<PantryItem> = {}): PantryItem {
+  return {
+    id: 901,
+    tenant_id: 84,
+    user_id: 42,
+    owner_user_id: 42,
+    visibility_scope: 'user_private',
+    lifecycle_state: 'available',
+    scope_status: 'active',
+    name: 'rice',
+    normalized_name: 'rice',
+    quantity: '500',
+    unit: 'g',
+    category: 'pantry',
+    expires_at: null,
+    freshness_status: 'fresh',
+    availability_status: 'available',
+    source: 'manual',
+    confidence: 1,
+    notes: 'Private pantry note',
+    created_at: '2026-05-20T09:00:00.000Z',
+    updated_at: '2026-05-20T09:00:00.000Z',
+    ...overrides,
+  };
+}
+
 
 function notification(overrides: Partial<NotificationCenterItem>): NotificationCenterItem {
   return {
@@ -389,6 +482,9 @@ describe('Chat Core v2 deterministic read route', () => {
     vi.mocked(getTopics).mockReset();
     vi.mocked(getContentDeskItems).mockReset();
     vi.mocked(getRankedContentSignals).mockReset();
+    vi.mocked(getMealPlan).mockReset();
+    vi.mocked(getShoppingList).mockReset();
+    vi.mocked(getPantryItems).mockReset();
   });
 
   it('stays disabled unless both global and read flags are explicitly enabled', () => {
@@ -699,6 +795,108 @@ describe('Chat Core v2 deterministic read route', () => {
     expect(getTopics).not.toHaveBeenCalled();
     expect(getContentDeskItems).not.toHaveBeenCalled();
     expect(getRankedContentSignals).not.toHaveBeenCalled();
+  });
+
+  it('answers cooking meal-plan questions without exposing notes, recipe IDs, or pantry IDs', () => {
+    vi.mocked(getMealPlan).mockReturnValue([
+      mealPlan({ id: 601, title: 'Salmon recovery bowl', meal_type: 'dinner', date: '2026-05-24' }),
+      mealPlan({ id: 602, title: 'Greek yogurt breakfast', meal_type: 'breakfast', date: '2026-05-23', recipe_id: null }),
+    ]);
+    vi.mocked(getShoppingList).mockReturnValue(shoppingList());
+    vi.mocked(getPantryItems).mockReturnValue([
+      pantryItem({ id: 901, name: 'rice', freshness_status: 'fresh', availability_status: 'available' }),
+      pantryItem({ id: 902, name: 'spinach', freshness_status: 'use_soon', availability_status: 'available' }),
+    ]);
+
+    const result = tryBuildChatCoreV2DeterministicReadRoute({
+      normalizedText: 'What meals do I have this week?',
+      userId: 42,
+      tenantId: 84,
+      locale: 'en-US',
+      timezone: 'Europe/Lisbon',
+      now: FIXED_NOW,
+      env: ENABLED_ENV,
+    });
+
+    expect(result).not.toBeNull();
+    expect(getMealPlan).toHaveBeenCalledWith(42, '2026-05-18', '2026-05-24', 84);
+    expect(getShoppingList).toHaveBeenCalledWith(42, '2026-05-18', 84);
+    expect(getPantryItems).toHaveBeenCalledWith(42, {
+      tenantId: 84,
+      includeExpired: true,
+      limit: 100,
+    });
+    expect(listTasks).not.toHaveBeenCalled();
+    expect(getDecisionSummary).not.toHaveBeenCalled();
+    expect(listNotificationCenterItems).not.toHaveBeenCalled();
+    expect(getIntegrationSummary).not.toHaveBeenCalled();
+    expect(listSecretaryAgendaItems).not.toHaveBeenCalled();
+    expect(getMonthlySummary).not.toHaveBeenCalled();
+    expect(getMonthlyBudgetView).not.toHaveBeenCalled();
+    expect(getActivePlan).not.toHaveBeenCalled();
+    expect(getTopics).not.toHaveBeenCalled();
+    expect(result?.capabilityId).toBe('cooking.meal_plan_summary');
+    expect(result?.response).toMatchObject({
+      schemaVersion: 'chat_response_v2@1.0.0',
+      kind: 'message',
+      locale: 'en',
+      cards: [],
+      reasonCodes: ['deterministic_read', 'cooking.meal_plan_summary'],
+    });
+    expect(result?.response.text).toContain("This week's meal plan (2026-05-18 to 2026-05-24).");
+    expect(result?.response.text).toContain('2 planned meals');
+    expect(result?.response.text).toContain('2 shopping items');
+    expect(result?.response.text).toContain('1 already in the pantry');
+    expect(result?.response.text).toContain('Salmon recovery bowl');
+    expect(result?.response.text).toContain('salmon');
+    expect(result?.response.text).not.toContain('Private prep notes');
+    expect(result?.response.text).not.toContain('Private pantry note');
+    expect(result?.response.text).not.toContain('recipe_id');
+    expect(result?.response.text).not.toContain('pantry_item_id');
+    expect(JSON.stringify(result?.readModel.data)).not.toContain('Private prep notes');
+    expect(JSON.stringify(result?.readModel.data)).not.toContain('Private pantry note');
+    expect(JSON.stringify(result?.readModel.data)).not.toContain('recipe_id');
+    expect(JSON.stringify(result?.readModel.data)).not.toContain('pantry_item_id');
+    expect(result?.readModel).toMatchObject({
+      capabilityId: 'cooking.meal_plan_summary',
+      domain: 'cooking',
+      sensitivity: 'personal',
+      freshness: { status: 'live' },
+      data: {
+        rangeStart: '2026-05-18',
+        rangeEnd: '2026-05-24',
+        plannedMealCount: 2,
+        plannedDateCount: 2,
+        shoppingItemCount: 2,
+        checkedShoppingItemCount: 1,
+        pantryAvailableShoppingItemCount: 1,
+        pantryAvailableCount: 2,
+        pantryUseSoonCount: 1,
+      },
+    });
+    expect(result?.contextPack.sourceEntityIds).toEqual([
+      'cooking_meal:601',
+      'cooking_meal:602',
+      'cooking_shopping_list:2026-05-18',
+      'cooking_pantry_summary',
+    ]);
+  });
+
+  it('does not route cooking grocery write-like requests through deterministic reads', () => {
+    const result = tryBuildChatCoreV2DeterministicReadRoute({
+      normalizedText: 'Add milk to my grocery list',
+      userId: 42,
+      tenantId: 84,
+      locale: 'en-US',
+      timezone: 'Europe/Lisbon',
+      now: FIXED_NOW,
+      env: ENABLED_ENV,
+    });
+
+    expect(result).toBeNull();
+    expect(getMealPlan).not.toHaveBeenCalled();
+    expect(getShoppingList).not.toHaveBeenCalled();
+    expect(getPantryItems).not.toHaveBeenCalled();
   });
 
   it('answers task summary questions without model calls or provider reads', () => {
