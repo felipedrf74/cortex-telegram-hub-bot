@@ -98,10 +98,14 @@ import {
 } from '../../services/runtime-flags';
 import {
   runChatCoreV2ShadowRouteHook,
+  claimPendingChatCoreV2Command,
+  clearPendingChatCoreV2Command,
+  executeChatCoreV2Command,
   tryBuildChatCoreV2CommandPreviewRoute,
   tryBuildChatCoreV2DeterministicReadRoute,
 } from '../../services/chat-core-v2';
 import { buildChatCoreV2CommandPreviewShortcutResponse } from './chat-core-v2-command-preview-response';
+import { buildChatCoreV2CommandConfirmationShortcutResponse } from './chat-core-v2-command-confirmation-response';
 import { buildChatCoreV2DeterministicReadShortcutResponse } from './chat-core-v2-deterministic-read-response';
 import {
   createDecisionIntent,
@@ -585,6 +589,64 @@ export function registerChatMessageRoutes(
     const replay = getCompletedChatConfirmation(confirmationToken, userId, tenantId);
     if (replay) {
       res.status(replay.statusCode).json(withIdempotentConfirmationReplay(replay.responseBody));
+      return;
+    }
+
+    const v2Claim = claimPendingChatCoreV2Command(validation.payload.pendingId, userId, tenantId);
+    if (v2Claim.status === 'already_claimed') {
+      res.status(202).json({
+        id: `msg-${Date.now()}`,
+        text: 'I am still applying that confirmed change. I will reuse the completed result instead of running it twice.',
+        domain: 'secretary',
+        routeMethod: 'chat-core-v2-command-confirmation-in-progress',
+        confidence: 1,
+        buttons: null,
+        metadata: {
+          type: 'chat_core_v2_command_confirmation_in_progress',
+          commandId: validation.payload.pendingId,
+        },
+        timestamp: new Date().toISOString(),
+      });
+      return;
+    }
+    if (v2Claim.status === 'claimed') {
+      const confirmationStartedAt = Date.now();
+      const execution = await executeChatCoreV2Command({
+        command: v2Claim.pending.command,
+        capabilityId: v2Claim.pending.capabilityId,
+        userId,
+        tenantId,
+        locale: getUserLanguageById(userId) || undefined,
+        now: new Date(confirmationStartedAt),
+      });
+      if (!execution.ok || !execution.response) {
+        clearPendingChatCoreV2Command(validation.payload.pendingId, userId, tenantId);
+        res.status(409).json({
+          error: {
+            code: 'CHAT_CORE_V2_CONFIRMATION_NOT_EXECUTABLE',
+            message: execution.reason === 'command_gate_rejected'
+              ? 'This preview is no longer safe to apply. Please ask again so I can refresh it.'
+              : 'The confirmed Chat Core v2 command could not be executed.',
+          },
+        });
+        return;
+      }
+
+      const response = buildChatCoreV2CommandConfirmationShortcutResponse({
+        pending: v2Claim.pending,
+        execution: execution as typeof execution & { response: NonNullable<typeof execution.response> },
+        requestStartedAt: confirmationStartedAt,
+      });
+      rememberCompletedChatConfirmation({
+        confirmationToken,
+        userId,
+        tenantId,
+        expiresAt: v2Claim.pending.expiresAt,
+        statusCode: 200,
+        responseBody: response,
+      });
+      clearPendingChatCoreV2Command(validation.payload.pendingId, userId, tenantId);
+      res.status(200).json(response);
       return;
     }
 

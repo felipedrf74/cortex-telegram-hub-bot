@@ -212,8 +212,8 @@ describe('Chat Core v2 command preview API adapter', () => {
           requiredPermissionsVersion: 'chat-v2-permissions:84:42:notifications:v1',
           invariants: [{
             type: 'notification_status',
-            description: 'Notification must still be unread when the preview is confirmed.',
-            check: 'notification_is_unread',
+            description: 'Notification must still be snooze-eligible when the preview is confirmed.',
+            check: 'notification_is_snooze_eligible',
           }],
         },
         authorization: {
@@ -585,7 +585,7 @@ describe('Chat Core v2 command preview API adapter', () => {
           requiredDecisionVersion: 'abc123def4567890',
           invariants: [{
             type: 'decision_status',
-            description: 'Decision must still be active when the preview is confirmed.',
+            description: 'Decision must still be dismissible when the preview is confirmed.',
             check: 'decision_is_active',
           }],
         },
