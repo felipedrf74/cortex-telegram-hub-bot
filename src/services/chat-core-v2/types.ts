@@ -314,6 +314,7 @@ export interface CapabilityDefinition {
   reasoningTier: ReasoningTier;
   toolSchemaSetVersion?: string;
   batchPolicy?: BatchPolicy;
+  domainSafetyPolicyVersion?: string;
 }
 
 export interface MemoryItem {
