@@ -9,7 +9,11 @@ export type ChatCoreV2DeterministicReadCapabilityId =
   | 'tasks.today_summary'
   | 'decision_center.summary'
   | 'notifications.summary'
-  | 'connections.status';
+  | 'connections.status'
+  | 'finance.summary'
+  | 'training.session_explain'
+  | 'content.pipeline_summary'
+  | 'cooking.meal_plan_summary';
 
 export interface ChatCoreV2AgendaSummaryItem {
   entityId: string;
@@ -123,12 +127,114 @@ export interface ChatCoreV2ConnectionStatusData {
   topProviders: ChatCoreV2ConnectionStatusItem[];
 }
 
+export interface ChatCoreV2FinanceSummaryData {
+  month: string;
+  basisCurrency: string;
+  currencies: string[];
+  totalIncome: number;
+  totalExpenses: number;
+  totalDeductions: number;
+  netIncome: number;
+  transactionCount: number;
+  integrity: string;
+  affordability: string;
+  currentRemaining: number | null;
+  projectedRemaining: number | null;
+  recurringExpenseEstimate: number;
+  recurringExpenseCount: number;
+  notes: string[];
+}
+
+export interface ChatCoreV2TrainingSessionSummaryItem {
+  entityId: string;
+  title: string;
+  dayOfWeek: string;
+  sessionType: string;
+  status: string;
+  durationMinutes: number | null;
+  intensityText: string | null;
+}
+
+export interface ChatCoreV2TrainingSessionExplainData {
+  hasActivePlan: boolean;
+  planName: string | null;
+  sport: string | null;
+  goal: string | null;
+  durationWeeks: number | null;
+  currentWeekNumber: number | null;
+  currentWeekFocus: string | null;
+  currentWeekIntensityPct: number | null;
+  adherenceRate: number | null;
+  completedSessions: number;
+  skippedSessions: number;
+  pendingSessions: number;
+  totalSessions: number;
+  topSessions: ChatCoreV2TrainingSessionSummaryItem[];
+}
+
+export interface ChatCoreV2ContentPipelineSummaryItem {
+  entityId: string;
+  title: string;
+  kind: 'topic' | 'desk_item' | 'signal';
+  status: string;
+  scheduledDate: string | null;
+  priority: string | null;
+  createdAt: string | null;
+}
+
+export interface ChatCoreV2ContentPipelineSummaryData {
+  topicCount: number;
+  plannedCount: number;
+  draftingCount: number;
+  readyCount: number;
+  publishedCount: number;
+  scheduledCount: number;
+  deskReadyCount: number;
+  urgentSignalCount: number;
+  topItems: ChatCoreV2ContentPipelineSummaryItem[];
+}
+
+export interface ChatCoreV2CookingMealSummaryItem {
+  entityId: string;
+  date: string;
+  mealType: string;
+  title: string;
+}
+
+export interface ChatCoreV2CookingShoppingSummaryItem {
+  name: string;
+  aisle: string;
+  checked: boolean;
+  pantryStatus: string | null;
+}
+
+export interface ChatCoreV2CookingMealPlanSummaryData {
+  rangeStart: string;
+  rangeEnd: string;
+  plannedMealCount: number;
+  plannedDateCount: number;
+  shoppingListWeekStart: string;
+  shoppingItemCount: number;
+  checkedShoppingItemCount: number;
+  pantryAvailableShoppingItemCount: number;
+  pantryExpiredShoppingItemCount: number;
+  pantryAvailableCount: number;
+  pantryUseSoonCount: number;
+  pantryUnknownCount: number;
+  topMeals: ChatCoreV2CookingMealSummaryItem[];
+  topShoppingItems: ChatCoreV2CookingShoppingSummaryItem[];
+}
+
 export type ChatCoreV2DeterministicReadData =
   | ChatCoreV2AgendaSummaryData
   | ChatCoreV2TaskSummaryData
   | ChatCoreV2DecisionCenterSummaryData
   | ChatCoreV2NotificationSummaryData
-  | ChatCoreV2ConnectionStatusData;
+  | ChatCoreV2ConnectionStatusData
+  | ChatCoreV2FinanceSummaryData
+  | ChatCoreV2TrainingSessionExplainData
+  | ChatCoreV2ContentPipelineSummaryData
+  | ChatCoreV2CookingMealPlanSummaryData;
 
 export interface ChatCoreV2DeterministicReadRouteResult {
   capabilityId: ChatCoreV2DeterministicReadCapabilityId;

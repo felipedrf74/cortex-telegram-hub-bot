@@ -4,6 +4,16 @@ import type { NormalizedTask } from '../../src/services/task-store/types';
 import type { NotificationCenterItem } from '../../src/services/notification-orchestrator';
 import type { IntegrationSummary } from '../../src/services/integration-status';
 import type { SecretaryAgendaItem } from '../../src/services/secretary-scheduling-arbitrator';
+import type { MonthlyBudgetView, MonthlySummary } from '../../src/services/finance-tracker';
+import type { ContentDeskItem, ContentSignalDigest } from '../../src/services/content-intelligence';
+import type { ContentTopic } from '../../src/services/content-scheduler';
+import type { MealPlan, PantryItem, ShoppingList } from '../../src/services/cooking-chef';
+import type {
+  TrainingPlan,
+  TrainingSession,
+  TrainingWeek,
+  WeeklyAdherenceStats,
+} from '../../src/services/training-plans';
 
 vi.mock('../../src/services/task-store/task-service', () => ({
   listTasks: vi.fn(),
@@ -25,11 +35,48 @@ vi.mock('../../src/services/secretary-scheduling-arbitrator', () => ({
   listSecretaryAgendaItems: vi.fn(),
 }));
 
+vi.mock('../../src/services/finance-tracker', () => ({
+  getMonthlySummary: vi.fn(),
+  getMonthlyBudgetView: vi.fn(),
+}));
+
+vi.mock('../../src/services/training-plans', () => ({
+  getActivePlan: vi.fn(),
+  getWeeksForPlan: vi.fn(),
+  getSessionsForWeek: vi.fn(),
+  getWeeklyAdherence: vi.fn(),
+}));
+
+vi.mock('../../src/services/content-scheduler', () => ({
+  getTopics: vi.fn(),
+}));
+
+vi.mock('../../src/services/content-intelligence', () => ({
+  getContentDeskItems: vi.fn(),
+  getRankedContentSignals: vi.fn(),
+}));
+
+vi.mock('../../src/services/cooking-chef', () => ({
+  getMealPlan: vi.fn(),
+  getShoppingList: vi.fn(),
+  getPantryItems: vi.fn(),
+}));
+
+import { getContentDeskItems, getRankedContentSignals } from '../../src/services/content-intelligence';
+import { getTopics } from '../../src/services/content-scheduler';
+import { getMealPlan, getPantryItems, getShoppingList } from '../../src/services/cooking-chef';
 import { getDecisionSummary } from '../../src/services/decision-center';
+import { getMonthlyBudgetView, getMonthlySummary } from '../../src/services/finance-tracker';
 import { getIntegrationSummary } from '../../src/services/integration-status';
 import { listNotificationCenterItems } from '../../src/services/notification-orchestrator';
 import { listSecretaryAgendaItems } from '../../src/services/secretary-scheduling-arbitrator';
 import { listTasks } from '../../src/services/task-store/task-service';
+import {
+  getActivePlan,
+  getSessionsForWeek,
+  getWeeklyAdherence,
+  getWeeksForPlan,
+} from '../../src/services/training-plans';
 import { tryBuildChatCoreV2DeterministicReadRoute } from '../../src/services/chat-core-v2';
 
 const FIXED_NOW = new Date('2026-05-24T10:00:00.000Z');
@@ -84,6 +131,259 @@ function agendaItem(overrides: Partial<SecretaryAgendaItem>): SecretaryAgendaIte
     sourceCreatedAt: null,
     sourceUpdatedAt: null,
     reasoningTrail: [],
+    ...overrides,
+  };
+}
+
+function monthlySummary(overrides: Partial<MonthlySummary> = {}): MonthlySummary {
+  return {
+    month: '2026-05',
+    totalIncome: 4200,
+    totalExpenses: 2300,
+    totalDeductions: 400,
+    netIncome: 1900,
+    transactionCount: 12,
+    ...overrides,
+  };
+}
+
+function monthlyBudgetView(overrides: Partial<MonthlyBudgetView> = {}): MonthlyBudgetView {
+  return {
+    month: '2026-05',
+    basisCurrency: 'EUR',
+    currencies: ['EUR'],
+    integrity: 'reliable',
+    affordability: 'controlled',
+    incomeInBasisCurrency: 4200,
+    expensesInBasisCurrency: 2300,
+    currentRemainingInBasisCurrency: 1900,
+    currentRemainingRatio: 0.45,
+    projectedExpensesInBasisCurrency: 2800,
+    projectedRemainingInBasisCurrency: 1400,
+    projectedRemainingRatio: 0.33,
+    recurringExpenseEstimate: 500,
+    recurringExpenseCount: 2,
+    recurringExpenses: [
+      {
+        fingerprint: 'private-vendor',
+        label: 'Private vendor subscription',
+        currency: 'EUR',
+        monthlyEstimate: 500,
+        monthCount: 3,
+        lastSeenDate: '2026-04-20',
+        alreadyLoggedThisMonth: false,
+      },
+    ],
+    notes: ['Recurring expense pressure still likely this month: EUR 500.00 across 2 pending commitment(s).'],
+    ...overrides,
+  };
+}
+
+function trainingPlan(overrides: Partial<TrainingPlan> = {}): TrainingPlan {
+  return {
+    id: 101,
+    user_id: 42,
+    tenant_id: 84,
+    name: 'Marathon Base',
+    sport: 'running',
+    goal: 'Finish strong',
+    duration_weeks: 8,
+    periodization: 'linear',
+    status: 'active',
+    start_date: '2026-05-18',
+    end_date: '2026-07-12',
+    preferences_json: null,
+    plan_version: 2,
+    created_at: '2026-05-18T00:00:00.000Z',
+    updated_at: '2026-05-20T09:00:00.000Z',
+    ...overrides,
+  };
+}
+
+function trainingWeek(overrides: Partial<TrainingWeek> = {}): TrainingWeek {
+  return {
+    id: 201,
+    plan_id: 101,
+    week_number: 1,
+    focus: 'Base endurance',
+    intensity_pct: 85,
+    volume_sessions: 3,
+    notes: null,
+    auto_adjusted: 0,
+    adjustment_reason: null,
+    created_at: '2026-05-18T00:00:00.000Z',
+    ...overrides,
+  };
+}
+
+function trainingSession(overrides: Partial<TrainingSession> = {}): TrainingSession {
+  return {
+    id: 301,
+    week_id: 201,
+    plan_id: 101,
+    tenant_id: 84,
+    day_of_week: 'Monday',
+    session_type: 'running',
+    title: 'Easy run',
+    description: 'Private coaching detail that should not be surfaced in Chat Core v2 read summaries.',
+    description_json: null,
+    exercises_json: '[{"name":"Private drill"}]',
+    duration_minutes: 45,
+    intensity_text: 'easy',
+    calendar_event_id: 'evt_private',
+    calendar_source: 'google',
+    session_identity_key: 'week1_run1',
+    session_shape_hash: 'shape_1',
+    preferred_time_unavailable: 0,
+    status: 'scheduled',
+    created_at: '2026-05-18T00:00:00.000Z',
+    updated_at: '2026-05-20T09:00:00.000Z',
+    ...overrides,
+  };
+}
+
+function weeklyAdherence(overrides: Partial<WeeklyAdherenceStats> = {}): WeeklyAdherenceStats {
+  return {
+    planId: 101,
+    weekNumber: 1,
+    totalSessions: 3,
+    completedSessions: 1,
+    skippedSessions: 0,
+    pendingSessions: 2,
+    adherenceRate: 33,
+    avgRpe: 6,
+    avgEnergy: 7,
+    avgSoreness: 3,
+    ...overrides,
+  };
+}
+
+function contentTopic(overrides: Partial<ContentTopic> = {}): ContentTopic {
+  return {
+    id: 401,
+    user_id: 42,
+    title: 'Race-week fueling mistakes',
+    notes: 'Private draft notes that should not be surfaced in Chat Core v2 read summaries.',
+    scheduled_date: null,
+    scheduled_at: null,
+    status: 'planned',
+    secretary_task_list_id: null,
+    secretary_task_list_name: null,
+    secretary_task_external_id: null,
+    calendar_event_id: 'calendar_private',
+    calendar_source: 'google',
+    secretary_sync_status: null,
+    secretary_sync_error: null,
+    created_at: '2026-05-20T09:00:00.000Z',
+    updated_at: '2026-05-21T09:00:00.000Z',
+    ...overrides,
+  };
+}
+
+function contentDeskItem(overrides: Partial<ContentDeskItem> = {}): ContentDeskItem {
+  return {
+    id: 501,
+    type: 'script_ready',
+    title: 'Recovery reel draft',
+    body: 'Private script body that should stay out of Chat Core v2 metadata.',
+    createdAt: '2026-05-22T09:00:00.000Z',
+    ...overrides,
+  };
+}
+
+function contentSignal(overrides: Partial<ContentSignalDigest> = {}): ContentSignalDigest {
+  return {
+    type: 'reaction_opportunity',
+    title: 'Creators are debating carb myths again',
+    summary: 'Private signal summary that should not be surfaced in Chat Core v2 metadata.',
+    priority: 'urgent',
+    relevanceScore: 0.93,
+    confidence: 0.81,
+    ...overrides,
+  };
+}
+
+function mealPlan(overrides: Partial<MealPlan> = {}): MealPlan {
+  return {
+    id: 601,
+    tenant_id: 84,
+    user_id: 42,
+    owner_user_id: 42,
+    visibility_scope: 'user_private',
+    lifecycle_state: 'available',
+    scope_status: 'active',
+    date: '2026-05-24',
+    meal_type: 'dinner',
+    recipe_id: 701,
+    title: 'Salmon recovery bowl',
+    notes: 'Private prep notes that should not appear in Chat Core v2 read summaries.',
+    created_at: '2026-05-20T09:00:00.000Z',
+    ...overrides,
+  };
+}
+
+function shoppingList(overrides: Partial<ShoppingList> = {}): ShoppingList {
+  return {
+    id: 801,
+    tenant_id: 84,
+    user_id: 42,
+    owner_user_id: 42,
+    visibility_scope: 'user_private',
+    lifecycle_state: 'active',
+    scope_status: 'active',
+    week_start: '2026-05-18',
+    items: [
+      {
+        name: 'salmon',
+        quantity: '2',
+        unit: 'fillets',
+        checked: false,
+        aisle: 'protein',
+        pantry_status: 'needed',
+        pantry_item_id: 901,
+        pantry_freshness_status: 'unknown',
+        pantry_note: 'Private pantry note',
+      },
+      {
+        name: 'rice',
+        quantity: '500',
+        unit: 'g',
+        checked: true,
+        aisle: 'pantry',
+        pantry_status: 'pantry_available',
+        pantry_item_id: 902,
+        pantry_freshness_status: 'fresh',
+      },
+    ],
+    status: 'active',
+    created_at: '2026-05-20T09:00:00.000Z',
+    updated_at: '2026-05-20T09:00:00.000Z',
+    ...overrides,
+  };
+}
+
+function pantryItem(overrides: Partial<PantryItem> = {}): PantryItem {
+  return {
+    id: 901,
+    tenant_id: 84,
+    user_id: 42,
+    owner_user_id: 42,
+    visibility_scope: 'user_private',
+    lifecycle_state: 'available',
+    scope_status: 'active',
+    name: 'rice',
+    normalized_name: 'rice',
+    quantity: '500',
+    unit: 'g',
+    category: 'pantry',
+    expires_at: null,
+    freshness_status: 'fresh',
+    availability_status: 'available',
+    source: 'manual',
+    confidence: 1,
+    notes: 'Private pantry note',
+    created_at: '2026-05-20T09:00:00.000Z',
+    updated_at: '2026-05-20T09:00:00.000Z',
     ...overrides,
   };
 }
@@ -173,6 +473,18 @@ describe('Chat Core v2 deterministic read route', () => {
     vi.mocked(listNotificationCenterItems).mockReset();
     vi.mocked(getIntegrationSummary).mockReset();
     vi.mocked(listSecretaryAgendaItems).mockReset();
+    vi.mocked(getMonthlySummary).mockReset();
+    vi.mocked(getMonthlyBudgetView).mockReset();
+    vi.mocked(getActivePlan).mockReset();
+    vi.mocked(getWeeksForPlan).mockReset();
+    vi.mocked(getSessionsForWeek).mockReset();
+    vi.mocked(getWeeklyAdherence).mockReset();
+    vi.mocked(getTopics).mockReset();
+    vi.mocked(getContentDeskItems).mockReset();
+    vi.mocked(getRankedContentSignals).mockReset();
+    vi.mocked(getMealPlan).mockReset();
+    vi.mocked(getShoppingList).mockReset();
+    vi.mocked(getPantryItems).mockReset();
   });
 
   it('stays disabled unless both global and read flags are explicitly enabled', () => {
@@ -253,6 +565,338 @@ describe('Chat Core v2 deterministic read route', () => {
       'connection:outlook',
       'connection:whoop',
     ]);
+  });
+
+  it('answers finance summary questions through aggregate-only finance reads', () => {
+    vi.mocked(getMonthlySummary).mockReturnValue(monthlySummary());
+    vi.mocked(getMonthlyBudgetView).mockReturnValue(monthlyBudgetView());
+
+    const result = tryBuildChatCoreV2DeterministicReadRoute({
+      normalizedText: 'Show my finance budget summary',
+      userId: 42,
+      tenantId: 84,
+      locale: 'en-US',
+      timezone: 'Europe/Lisbon',
+      now: FIXED_NOW,
+      env: ENABLED_ENV,
+    });
+
+    expect(result).not.toBeNull();
+    expect(getMonthlySummary).toHaveBeenCalledWith(42, '2026-05', { tenantId: 84 });
+    expect(getMonthlyBudgetView).toHaveBeenCalledWith(42, '2026-05', { tenantId: 84 });
+    expect(listTasks).not.toHaveBeenCalled();
+    expect(getDecisionSummary).not.toHaveBeenCalled();
+    expect(listNotificationCenterItems).not.toHaveBeenCalled();
+    expect(getIntegrationSummary).not.toHaveBeenCalled();
+    expect(listSecretaryAgendaItems).not.toHaveBeenCalled();
+    expect(result?.capabilityId).toBe('finance.summary');
+    expect(result?.response).toMatchObject({
+      schemaVersion: 'chat_response_v2@1.0.0',
+      kind: 'message',
+      locale: 'en',
+      cards: [],
+      reasonCodes: ['deterministic_read', 'finance.summary', 'aggregate_read_allowed'],
+    });
+    expect(result?.response.text).toContain('Finance summary for 2026-05');
+    expect(result?.response.text).toContain('EUR 4200.00 income');
+    expect(result?.response.text).toContain('EUR 2300.00 expenses');
+    expect(result?.response.text).toContain('EUR 1900.00 net');
+    expect(result?.response.text).toContain('Current headroom: EUR 1900.00');
+    expect(result?.response.text).toContain('Projected headroom: EUR 1400.00');
+    expect(result?.response.text).not.toContain('Private vendor');
+    expect(JSON.stringify(result?.readModel.data)).not.toContain('Private vendor');
+    expect(result?.readModel).toMatchObject({
+      capabilityId: 'finance.summary',
+      domain: 'finance',
+      sensitivity: 'financial',
+      freshness: { status: 'live' },
+      data: {
+        month: '2026-05',
+        basisCurrency: 'EUR',
+        totalIncome: 4200,
+        totalExpenses: 2300,
+        netIncome: 1900,
+        transactionCount: 12,
+        affordability: 'controlled',
+        recurringExpenseCount: 2,
+      },
+    });
+    expect(result?.contextPack.sourceEntityIds).toEqual(['finance:summary:2026-05']);
+  });
+
+  it('answers training plan and session questions through health-adjacent read-only summaries', () => {
+    vi.mocked(getActivePlan).mockReturnValue(trainingPlan());
+    vi.mocked(getWeeksForPlan).mockReturnValue([trainingWeek()]);
+    vi.mocked(getSessionsForWeek).mockReturnValue([
+      trainingSession({ id: 301, title: 'Easy run', status: 'completed', day_of_week: 'Monday' }),
+      trainingSession({ id: 302, title: 'Tempo intervals', status: 'scheduled', day_of_week: 'Wednesday', intensity_text: 'moderate' }),
+      trainingSession({ id: 303, title: 'Long run', status: 'pending', day_of_week: 'Sunday', duration_minutes: 75 }),
+    ]);
+    vi.mocked(getWeeklyAdherence).mockReturnValue(weeklyAdherence());
+
+    const result = tryBuildChatCoreV2DeterministicReadRoute({
+      normalizedText: 'Show my training sessions',
+      userId: 42,
+      tenantId: 84,
+      locale: 'en-US',
+      timezone: 'Europe/Lisbon',
+      now: FIXED_NOW,
+      env: ENABLED_ENV,
+    });
+
+    expect(result).not.toBeNull();
+    expect(getActivePlan).toHaveBeenCalledWith(42, 84);
+    expect(getWeeksForPlan).toHaveBeenCalledWith(101);
+    expect(getSessionsForWeek).toHaveBeenCalledWith(201);
+    expect(getWeeklyAdherence).toHaveBeenCalledWith(101, 201);
+    expect(listTasks).not.toHaveBeenCalled();
+    expect(getDecisionSummary).not.toHaveBeenCalled();
+    expect(listNotificationCenterItems).not.toHaveBeenCalled();
+    expect(getIntegrationSummary).not.toHaveBeenCalled();
+    expect(listSecretaryAgendaItems).not.toHaveBeenCalled();
+    expect(getMonthlySummary).not.toHaveBeenCalled();
+    expect(getMonthlyBudgetView).not.toHaveBeenCalled();
+    expect(result?.capabilityId).toBe('training.session_explain');
+    expect(result?.response).toMatchObject({
+      schemaVersion: 'chat_response_v2@1.0.0',
+      kind: 'message',
+      locale: 'en',
+      cards: [],
+      reasonCodes: ['deterministic_read', 'training.session_explain', 'read_only_allowed'],
+    });
+    expect(result?.response.text).toContain('Training plan: Marathon Base');
+    expect(result?.response.text).toContain('week 1/8');
+    expect(result?.response.text).toContain('33% adherence');
+    expect(result?.response.text).toContain('Tempo intervals');
+    expect(result?.response.text).not.toContain('session_id');
+    expect(result?.response.text).not.toContain('evt_private');
+    expect(result?.response.text).not.toContain('Private coaching detail');
+    expect(JSON.stringify(result?.readModel.data)).not.toContain('Private drill');
+    expect(JSON.stringify(result?.readModel.data)).not.toContain('evt_private');
+    expect(result?.readModel).toMatchObject({
+      capabilityId: 'training.session_explain',
+      domain: 'training',
+      sensitivity: 'health_adjacent',
+      freshness: { status: 'live' },
+      data: {
+        hasActivePlan: true,
+        planName: 'Marathon Base',
+        sport: 'running',
+        currentWeekNumber: 1,
+        currentWeekFocus: 'Base endurance',
+        currentWeekIntensityPct: 85,
+        adherenceRate: 33,
+        completedSessions: 1,
+        pendingSessions: 2,
+        totalSessions: 3,
+      },
+    });
+    expect(result?.contextPack.sourceEntityIds).toEqual([
+      'training_plan:101',
+      'training_session:301',
+      'training_session:302',
+      'training_session:303',
+    ]);
+  });
+
+  it('answers content pipeline questions without exposing raw draft bodies or provider IDs', () => {
+    vi.mocked(getTopics).mockReturnValue([
+      contentTopic({ id: 401, title: 'Race-week fueling mistakes', status: 'ready', scheduled_date: '2026-05-27' }),
+      contentTopic({ id: 402, title: 'Recovery myth carousel', status: 'drafting', scheduled_date: null }),
+      contentTopic({ id: 403, title: 'Published archive note', status: 'published', scheduled_date: '2026-05-20' }),
+    ]);
+    vi.mocked(getContentDeskItems).mockReturnValue([
+      contentDeskItem({ id: 501, title: 'Recovery reel draft', body: 'Full private script body' }),
+    ]);
+    vi.mocked(getRankedContentSignals).mockReturnValue([
+      contentSignal({ title: 'Creators are debating carb myths again', summary: 'Full private signal summary' }),
+    ]);
+
+    const result = tryBuildChatCoreV2DeterministicReadRoute({
+      normalizedText: 'Show my content pipeline',
+      userId: 42,
+      tenantId: 84,
+      locale: 'en-US',
+      timezone: 'Europe/Lisbon',
+      now: FIXED_NOW,
+      env: ENABLED_ENV,
+    });
+
+    expect(result).not.toBeNull();
+    expect(getTopics).toHaveBeenCalledWith(42, { includeTerminal: false, limit: 20 });
+    expect(getContentDeskItems).toHaveBeenCalledWith(42, 5);
+    expect(getRankedContentSignals).toHaveBeenCalledWith(42, 5);
+    expect(listTasks).not.toHaveBeenCalled();
+    expect(getDecisionSummary).not.toHaveBeenCalled();
+    expect(listNotificationCenterItems).not.toHaveBeenCalled();
+    expect(getIntegrationSummary).not.toHaveBeenCalled();
+    expect(listSecretaryAgendaItems).not.toHaveBeenCalled();
+    expect(getMonthlySummary).not.toHaveBeenCalled();
+    expect(getMonthlyBudgetView).not.toHaveBeenCalled();
+    expect(getActivePlan).not.toHaveBeenCalled();
+    expect(result?.capabilityId).toBe('content.pipeline_summary');
+    expect(result?.response).toMatchObject({
+      schemaVersion: 'chat_response_v2@1.0.0',
+      kind: 'message',
+      locale: 'en',
+      cards: [],
+      reasonCodes: ['deterministic_read', 'content.pipeline_summary'],
+    });
+    expect(result?.response.text).toContain('Content pipeline: 3 tracked topics.');
+    expect(result?.response.text).toContain('1 ready');
+    expect(result?.response.text).toContain('1 drafting');
+    expect(result?.response.text).toContain('1 desk-ready item');
+    expect(result?.response.text).toContain('1 urgent signal');
+    expect(result?.response.text).toContain('Race-week fueling mistakes');
+    expect(result?.response.text).toContain('Recovery reel draft');
+    expect(result?.response.text).not.toContain('Full private script body');
+    expect(result?.response.text).not.toContain('Full private signal summary');
+    expect(result?.response.text).not.toContain('calendar_private');
+    expect(JSON.stringify(result?.readModel.data)).not.toContain('Private draft notes');
+    expect(JSON.stringify(result?.readModel.data)).not.toContain('Full private script body');
+    expect(JSON.stringify(result?.readModel.data)).not.toContain('Full private signal summary');
+    expect(JSON.stringify(result?.readModel.data)).not.toContain('calendar_private');
+    expect(result?.readModel).toMatchObject({
+      capabilityId: 'content.pipeline_summary',
+      domain: 'content',
+      sensitivity: 'personal',
+      freshness: { status: 'live' },
+      data: {
+        topicCount: 3,
+        readyCount: 1,
+        draftingCount: 1,
+        publishedCount: 1,
+        scheduledCount: 2,
+        deskReadyCount: 1,
+        urgentSignalCount: 1,
+      },
+    });
+    expect(result?.contextPack.sourceEntityIds).toEqual([
+      'content_topic:401',
+      'content_topic:402',
+      'content_topic:403',
+      'content_desk:501',
+      expect.stringMatching(/^content_signal:[a-f0-9]{12}$/),
+    ]);
+  });
+
+  it('does not route content write-like requests through deterministic reads', () => {
+    const result = tryBuildChatCoreV2DeterministicReadRoute({
+      normalizedText: 'Draft a content brief for my next video',
+      userId: 42,
+      tenantId: 84,
+      locale: 'en-US',
+      timezone: 'Europe/Lisbon',
+      now: FIXED_NOW,
+      env: ENABLED_ENV,
+    });
+
+    expect(result).toBeNull();
+    expect(getTopics).not.toHaveBeenCalled();
+    expect(getContentDeskItems).not.toHaveBeenCalled();
+    expect(getRankedContentSignals).not.toHaveBeenCalled();
+  });
+
+  it('answers cooking meal-plan questions without exposing notes, recipe IDs, or pantry IDs', () => {
+    vi.mocked(getMealPlan).mockReturnValue([
+      mealPlan({ id: 601, title: 'Salmon recovery bowl', meal_type: 'dinner', date: '2026-05-24' }),
+      mealPlan({ id: 602, title: 'Greek yogurt breakfast', meal_type: 'breakfast', date: '2026-05-23', recipe_id: null }),
+    ]);
+    vi.mocked(getShoppingList).mockReturnValue(shoppingList());
+    vi.mocked(getPantryItems).mockReturnValue([
+      pantryItem({ id: 901, name: 'rice', freshness_status: 'fresh', availability_status: 'available' }),
+      pantryItem({ id: 902, name: 'spinach', freshness_status: 'use_soon', availability_status: 'available' }),
+    ]);
+
+    const result = tryBuildChatCoreV2DeterministicReadRoute({
+      normalizedText: 'What meals do I have this week?',
+      userId: 42,
+      tenantId: 84,
+      locale: 'en-US',
+      timezone: 'Europe/Lisbon',
+      now: FIXED_NOW,
+      env: ENABLED_ENV,
+    });
+
+    expect(result).not.toBeNull();
+    expect(getMealPlan).toHaveBeenCalledWith(42, '2026-05-18', '2026-05-24', 84);
+    expect(getShoppingList).toHaveBeenCalledWith(42, '2026-05-18', 84);
+    expect(getPantryItems).toHaveBeenCalledWith(42, {
+      tenantId: 84,
+      includeExpired: true,
+      limit: 100,
+    });
+    expect(listTasks).not.toHaveBeenCalled();
+    expect(getDecisionSummary).not.toHaveBeenCalled();
+    expect(listNotificationCenterItems).not.toHaveBeenCalled();
+    expect(getIntegrationSummary).not.toHaveBeenCalled();
+    expect(listSecretaryAgendaItems).not.toHaveBeenCalled();
+    expect(getMonthlySummary).not.toHaveBeenCalled();
+    expect(getMonthlyBudgetView).not.toHaveBeenCalled();
+    expect(getActivePlan).not.toHaveBeenCalled();
+    expect(getTopics).not.toHaveBeenCalled();
+    expect(result?.capabilityId).toBe('cooking.meal_plan_summary');
+    expect(result?.response).toMatchObject({
+      schemaVersion: 'chat_response_v2@1.0.0',
+      kind: 'message',
+      locale: 'en',
+      cards: [],
+      reasonCodes: ['deterministic_read', 'cooking.meal_plan_summary'],
+    });
+    expect(result?.response.text).toContain("This week's meal plan (2026-05-18 to 2026-05-24).");
+    expect(result?.response.text).toContain('2 planned meals');
+    expect(result?.response.text).toContain('2 shopping items');
+    expect(result?.response.text).toContain('1 already in the pantry');
+    expect(result?.response.text).toContain('Salmon recovery bowl');
+    expect(result?.response.text).toContain('salmon');
+    expect(result?.response.text).not.toContain('Private prep notes');
+    expect(result?.response.text).not.toContain('Private pantry note');
+    expect(result?.response.text).not.toContain('recipe_id');
+    expect(result?.response.text).not.toContain('pantry_item_id');
+    expect(JSON.stringify(result?.readModel.data)).not.toContain('Private prep notes');
+    expect(JSON.stringify(result?.readModel.data)).not.toContain('Private pantry note');
+    expect(JSON.stringify(result?.readModel.data)).not.toContain('recipe_id');
+    expect(JSON.stringify(result?.readModel.data)).not.toContain('pantry_item_id');
+    expect(result?.readModel).toMatchObject({
+      capabilityId: 'cooking.meal_plan_summary',
+      domain: 'cooking',
+      sensitivity: 'personal',
+      freshness: { status: 'live' },
+      data: {
+        rangeStart: '2026-05-18',
+        rangeEnd: '2026-05-24',
+        plannedMealCount: 2,
+        plannedDateCount: 2,
+        shoppingItemCount: 2,
+        checkedShoppingItemCount: 1,
+        pantryAvailableShoppingItemCount: 1,
+        pantryAvailableCount: 2,
+        pantryUseSoonCount: 1,
+      },
+    });
+    expect(result?.contextPack.sourceEntityIds).toEqual([
+      'cooking_meal:601',
+      'cooking_meal:602',
+      'cooking_shopping_list:2026-05-18',
+      'cooking_pantry_summary',
+    ]);
+  });
+
+  it('does not route cooking grocery write-like requests through deterministic reads', () => {
+    const result = tryBuildChatCoreV2DeterministicReadRoute({
+      normalizedText: 'Add milk to my grocery list',
+      userId: 42,
+      tenantId: 84,
+      locale: 'en-US',
+      timezone: 'Europe/Lisbon',
+      now: FIXED_NOW,
+      env: ENABLED_ENV,
+    });
+
+    expect(result).toBeNull();
+    expect(getMealPlan).not.toHaveBeenCalled();
+    expect(getShoppingList).not.toHaveBeenCalled();
+    expect(getPantryItems).not.toHaveBeenCalled();
   });
 
   it('answers task summary questions without model calls or provider reads', () => {
@@ -739,6 +1383,20 @@ describe('Chat Core v2 deterministic read route', () => {
       now: FIXED_NOW,
       env: ENABLED_ENV,
     });
+    const financeWrite = tryBuildChatCoreV2DeterministicReadRoute({
+      normalizedText: 'Pay the invoice from my account',
+      userId: 42,
+      tenantId: 84,
+      now: FIXED_NOW,
+      env: ENABLED_ENV,
+    });
+    const trainingWrite = tryBuildChatCoreV2DeterministicReadRoute({
+      normalizedText: "Move tomorrow's workout and make it lighter",
+      userId: 42,
+      tenantId: 84,
+      now: FIXED_NOW,
+      env: ENABLED_ENV,
+    });
 
     expect(write).toBeNull();
     expect(portugueseWrite).toBeNull();
@@ -747,10 +1405,18 @@ describe('Chat Core v2 deterministic read route', () => {
     expect(notificationWrite).toBeNull();
     expect(connectionWrite).toBeNull();
     expect(secretaryWrite).toBeNull();
+    expect(financeWrite).toBeNull();
+    expect(trainingWrite).toBeNull();
     expect(listTasks).not.toHaveBeenCalled();
     expect(getDecisionSummary).not.toHaveBeenCalled();
     expect(listNotificationCenterItems).not.toHaveBeenCalled();
     expect(getIntegrationSummary).not.toHaveBeenCalled();
     expect(listSecretaryAgendaItems).not.toHaveBeenCalled();
+    expect(getMonthlySummary).not.toHaveBeenCalled();
+    expect(getMonthlyBudgetView).not.toHaveBeenCalled();
+    expect(getActivePlan).not.toHaveBeenCalled();
+    expect(getWeeksForPlan).not.toHaveBeenCalled();
+    expect(getSessionsForWeek).not.toHaveBeenCalled();
+    expect(getWeeklyAdherence).not.toHaveBeenCalled();
   });
 });
