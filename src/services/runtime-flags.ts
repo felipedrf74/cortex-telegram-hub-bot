@@ -204,3 +204,8 @@ export function isChatQualityGateEnabled(env: RuntimeEnv = process.env, scope?: 
 export function isChatBilingualEvalGateEnabled(env: RuntimeEnv = process.env, scope?: RuntimeFlagScope): boolean {
   return scopedEnvValue(env, 'CHAT_BILINGUAL_EVAL_GATE_ENABLED', scope) !== 'false';
 }
+
+export function isChatCoreV2ShadowRouteHookEnabled(env: RuntimeEnv = process.env, scope?: RuntimeFlagScope): boolean {
+  const raw = scopedEnvValue(env, 'CHAT_CORE_V2_SHADOW_ROUTE_HOOK_ENABLED', scope)?.trim().toLowerCase();
+  return raw === 'true' || raw === 'on' || raw === '1' || raw === 'shadow';
+}
