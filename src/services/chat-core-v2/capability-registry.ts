@@ -15,6 +15,10 @@ import type {
   UndoPolicy,
   VerificationMode,
 } from './types';
+import {
+  isChatCoreV2RuntimeFlagEnabled,
+  type RuntimeFlagScope,
+} from '../runtime-flags';
 import { CHAT_CORE_V2_FINANCE_ACTION_POLICY_VERSION } from './finance-action-policy';
 import { CHAT_CORE_V2_TRAINING_SAFETY_POLICY_VERSION } from './training-safety-policy';
 
@@ -413,4 +417,25 @@ export function listChatCoreV2ExecutableCapabilities(): CapabilityDefinition[] {
 
 export function listChatCoreV2ModelVisibleCapabilities(): CapabilityDefinition[] {
   return getChatCoreV2Capabilities().filter((capability) => capability.modelVisible);
+}
+
+export function isChatCoreV2CapabilityEnabled(
+  capabilityId: string,
+  input: {
+    env?: NodeJS.ProcessEnv;
+    scope?: RuntimeFlagScope;
+  } = {},
+): boolean {
+  const capability = getChatCoreV2Capability(capabilityId);
+  if (!capability) return false;
+  return capability.enabledFlags.every((flag) =>
+    isChatCoreV2RuntimeFlagEnabled(flag, input.env ?? process.env, input.scope));
+}
+
+export function listEnabledChatCoreV2Capabilities(input: {
+  env?: NodeJS.ProcessEnv;
+  scope?: RuntimeFlagScope;
+} = {}): CapabilityDefinition[] {
+  return getChatCoreV2Capabilities().filter((capability) =>
+    isChatCoreV2CapabilityEnabled(capability.capabilityId, input));
 }

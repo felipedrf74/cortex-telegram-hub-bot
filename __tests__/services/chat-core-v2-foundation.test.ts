@@ -6,6 +6,8 @@ import {
   GENERIC_JSON_PROVIDER_CAPABILITIES,
   OPENAI_RESPONSES_PROVIDER_CAPABILITIES,
   getChatCoreV2Capabilities,
+  isChatCoreV2CapabilityEnabled,
+  listEnabledChatCoreV2Capabilities,
   listChatCoreV2ExecutableCapabilities,
   listChatCoreV2ModelVisibleCapabilities,
   requiresBackendSchemaRetry,
@@ -75,6 +77,35 @@ describe('Chat Core v2 foundation contracts', () => {
       expect(capability.requiredPermissions.length, capability.capabilityId).toBeGreaterThan(0);
       expect(capability.promptFamily, capability.capabilityId).toMatch(/^chat_v2_/);
     }
+  });
+
+  it('keeps live capability availability default-off and scoped by registry flags', () => {
+    expect(listEnabledChatCoreV2Capabilities({ env: {} })).toEqual([]);
+    expect(isChatCoreV2CapabilityEnabled('tasks.today_summary', { env: {} })).toBe(false);
+    expect(isChatCoreV2CapabilityEnabled('unknown.capability', {
+      env: { CHAT_CORE_V2_ENABLED: 'true' },
+    })).toBe(false);
+
+    const enabled = listEnabledChatCoreV2Capabilities({
+      env: { CHAT_CORE_V2_ENABLED: 'true' },
+    });
+    expect(enabled.map((capability) => capability.capabilityId)).toEqual(
+      getChatCoreV2Capabilities().map((capability) => capability.capabilityId),
+    );
+    expect(isChatCoreV2CapabilityEnabled('tasks.today_summary', {
+      env: {
+        CHAT_CORE_V2_ENABLED: 'false',
+        CHAT_CORE_V2_ENABLED_TENANT_9: '1',
+      },
+      scope: { userId: 7, tenantId: 9 },
+    })).toBe(true);
+    expect(isChatCoreV2CapabilityEnabled('tasks.today_summary', {
+      env: {
+        CHAT_CORE_V2_ENABLED: 'true',
+        CHAT_CORE_V2_ENABLED_USER_42: 'off',
+      },
+      scope: { userId: 42, tenantId: 9 },
+    })).toBe(false);
   });
 
   it('keeps deterministic reads at zero model calls and bounds planner tiers with explicit budgets', () => {
