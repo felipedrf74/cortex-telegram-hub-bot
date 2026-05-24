@@ -22,6 +22,7 @@ export * from './reasoning-policies';
 export * from './response-contracts';
 export * from './route-decision';
 export * from './runtime-budget';
+export * from './shadow-orchestrator';
 export * from './tool-selection';
 export * from './trace-recorder';
 export * from './training-safety-policy';
