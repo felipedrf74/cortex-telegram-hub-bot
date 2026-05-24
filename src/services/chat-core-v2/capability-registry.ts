@@ -15,6 +15,7 @@ import type {
   UndoPolicy,
   VerificationMode,
 } from './types';
+import { CHAT_CORE_V2_TRAINING_SAFETY_POLICY_VERSION } from './training-safety-policy';
 
 const SCHEMA_VERSION = 'chat_core_v2_capability@1.0.0';
 const TOOL_SCHEMA_SET_VERSION = 'chat_core_v2_tools@1.0.0';
@@ -86,6 +87,7 @@ function capability(input: {
   promptFamily?: string;
   reasoningTier?: ReasoningTier;
   batchPolicy?: CapabilityDefinition['batchPolicy'];
+  domainSafetyPolicyVersion?: string;
 }): CapabilityDefinition {
   const risk = input.risk ?? 'low';
   const readOnly = input.support.execute === 'not_applicable' && input.support.preview === 'not_applicable';
@@ -113,6 +115,7 @@ function capability(input: {
     reasoningTier: input.reasoningTier ?? (readOnly ? 'none' : 'standard_command'),
     toolSchemaSetVersion: TOOL_SCHEMA_SET_VERSION,
     batchPolicy: input.batchPolicy ?? (readOnly ? undefined : defaultBatchPolicy(risk)),
+    domainSafetyPolicyVersion: input.domainSafetyPolicyVersion,
   };
 }
 
@@ -161,6 +164,7 @@ export const CHAT_CORE_V2_CAPABILITIES: CapabilityDefinition[] = [
     sensitivity: 'health_adjacent',
     promptFamily: 'chat_v2_training',
     reasoningTier: 'synthesis',
+    domainSafetyPolicyVersion: CHAT_CORE_V2_TRAINING_SAFETY_POLICY_VERSION,
   }),
   capability({
     capabilityId: 'content.pipeline_summary',
@@ -326,6 +330,7 @@ export const CHAT_CORE_V2_CAPABILITIES: CapabilityDefinition[] = [
     promptFamily: 'chat_v2_training',
     reasoningTier: 'standard_command',
     sensitivity: 'health_adjacent',
+    domainSafetyPolicyVersion: CHAT_CORE_V2_TRAINING_SAFETY_POLICY_VERSION,
   }),
   capability({
     capabilityId: 'cooking.grocery_item_preview',
@@ -387,6 +392,7 @@ export function getChatCoreV2Capabilities(): CapabilityDefinition[] {
     routeMethods: [...capability.routeMethods],
     enabledFlags: [...capability.enabledFlags],
     batchPolicy: capability.batchPolicy ? { ...capability.batchPolicy } : undefined,
+    domainSafetyPolicyVersion: capability.domainSafetyPolicyVersion,
   }));
 }
 
