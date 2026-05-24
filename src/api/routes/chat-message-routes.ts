@@ -100,6 +100,7 @@ import {
   runChatCoreV2ShadowRouteHook,
   tryBuildChatCoreV2DeterministicReadRoute,
 } from '../../services/chat-core-v2';
+import { buildChatCoreV2DeterministicReadShortcutResponse } from './chat-core-v2-deterministic-read-response';
 import {
   createDecisionIntent,
   findDecisionByRelatedEntity,
@@ -857,47 +858,11 @@ export function registerChatMessageRoutes(
         : null;
       if (chatCoreV2Read) {
         latency.mark('chat_core_v2_deterministic_read_completed');
-        const conversationDomain = 'secretary';
-        const shortcutResponse = {
-          id: `msg-${requestStartedAt}`,
-          text: chatCoreV2Read.response.text,
-          domain: conversationDomain,
-          routeMethod: 'chat-core-v2-deterministic-read',
-          confidence: chatCoreV2Read.routeGuess.confidence,
-          buttons: null,
-          metadata: {
-            type: 'chat_core_v2_deterministic_read',
-            chatCoreV2: {
-              capabilityId: chatCoreV2Read.capabilityId,
-              response: {
-                schemaVersion: chatCoreV2Read.response.schemaVersion,
-                kind: chatCoreV2Read.response.kind,
-                locale: chatCoreV2Read.response.locale,
-                reasonCodes: chatCoreV2Read.response.reasonCodes,
-              },
-              routeGuess: chatCoreV2Read.routeGuess,
-              readModel: {
-                schemaVersion: chatCoreV2Read.readModel.schemaVersion,
-                capabilityId: chatCoreV2Read.readModel.capabilityId,
-                domain: chatCoreV2Read.readModel.domain,
-                data: chatCoreV2Read.readModel.data,
-                sourceEntityIds: chatCoreV2Read.readModel.sourceEntityIds,
-                freshness: chatCoreV2Read.readModel.freshness,
-                sensitivity: chatCoreV2Read.readModel.sensitivity,
-              },
-              contextPack: {
-                schemaVersion: chatCoreV2Read.contextPack.schemaVersion,
-                domains: chatCoreV2Read.contextPack.domains,
-                sourceEntityIds: chatCoreV2Read.contextPack.sourceEntityIds,
-                sourceVersions: chatCoreV2Read.contextPack.sourceVersions,
-                generatedAt: chatCoreV2Read.contextPack.generatedAt,
-                contextHash: chatCoreV2Read.contextPack.contextHash,
-                sensitivity: chatCoreV2Read.contextPack.sensitivity,
-              },
-            },
-          },
-          timestamp: new Date(requestStartedAt).toISOString(),
-        };
+        const deterministicReadShortcut = buildChatCoreV2DeterministicReadShortcutResponse({
+          result: chatCoreV2Read,
+          requestStartedAt,
+        });
+        const { conversationDomain, response: shortcutResponse } = deterministicReadShortcut;
         const response = enrichChatResponseForContract(shortcutResponse, {
           normalizedText,
           userId,
@@ -923,8 +888,8 @@ export function registerChatMessageRoutes(
             mode: 'chat-core-v2-deterministic-read',
             tenantId,
             userId,
-            capabilityId: chatCoreV2Read.capabilityId,
-            contextHash: chatCoreV2Read.contextPack.contextHash,
+            capabilityId: deterministicReadShortcut.logContext.capabilityId,
+            contextHash: deterministicReadShortcut.logContext.contextHash,
           },
           'iOS chat Chat Core v2 deterministic read hit',
         );
