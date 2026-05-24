@@ -54,6 +54,7 @@ import { runEventBackboneOnce } from './event-backbone-worker';
 import { runEventBackboneCleanup } from '../tools/event-backbone-cleanup';
 import { expireStalePendingChatActionsForJob } from './chat-action-state';
 import { pruneCompletedChatActionRuns, reapZombieChatActionRuns } from './chat-action-run-store';
+import { processChatActionFixerJobs } from './chat-action-fixer-worker';
 import { runGarminTenantIsolationWatcher } from './garmin-tenant-isolation-watcher';
 import { runDecisionCenterSmokeCleanupJob, runDecisionHandledHistoryBackfillJob, runDecisionSourceStateSupersessionJob } from './decision-center';
 import { expireOldNexusPointCredits } from './nexus-points';
@@ -722,6 +723,7 @@ export function startScheduler(bot?: any): void {
   registerJob('decision_source_supersession', 'Decision Source Supersession', '*/15 * * * *', 'system');
   registerJob('decision_handled_history_backfill', 'Decision Handled History Backfill', '22,52 * * * *', 'system');
   registerJob('chat_action_plan_expiry', 'Chat Action Plan Expiry', '15 * * * *', 'system');
+  registerJob('chat_action_fixer_worker', 'Chat Action Fixer Worker', '* * * * *', 'system');
   registerJob('event_backbone_worker', 'Event Backbone Worker', '* * * * *', 'system');
   registerJob('event_backbone_cleanup', 'Event Backbone Cleanup', '10 0 * * *', 'system');
   registerJob('nexus_points_expiry', 'Nexus Points Expiry Sweep', '0 4 * * *', 'system');
@@ -1853,6 +1855,19 @@ export function startScheduler(bot?: any): void {
     const reaped = reapZombieChatActionRuns();
     if (reaped === 0) return 'skipped';
     logger.warn({ reaped }, 'Reaped orphaned chat action runs stuck in executing status');
+  }), { timezone: tz });
+
+  cron.schedule('* * * * *', wrapJob('chat_action_fixer_worker', async () => {
+    const result = await processChatActionFixerJobs({
+      limit: intEnv('CHAT_ACTION_FIXER_JOB_BATCH_LIMIT', 5, 1, 25),
+      lockOwner: `chat-action-fixer:${process.pid}`,
+    });
+    const touched = result.completed + result.failed + result.deadLetter;
+    if (result.deadLetter > 0) {
+      logger.warn(result, 'Chat action fixer worker produced dead-letter rows');
+    }
+    if (touched === 0) return 'skipped';
+    logger.info(result, 'Chat action fixer worker completed');
   }), { timezone: tz });
 
   cron.schedule('20 0 * * *', wrapJob('chat_action_run_retention', async () => {

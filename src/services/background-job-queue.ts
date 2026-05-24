@@ -130,9 +130,21 @@ export function enqueueJob(input: JobInput, db: Database.Database = getDb()): Jo
   return mapJob(db.prepare('SELECT * FROM background_jobs WHERE job_id = ?').get(jobId) as any);
 }
 
-export function claimPendingJobs(limit = 10, lockOwner = `worker-${process.pid}`, db: Database.Database = getDb()): JobRecord[] {
+export function claimPendingJobs(
+  limit = 10,
+  lockOwner = `worker-${process.pid}`,
+  db: Database.Database = getDb(),
+  jobTypes?: string[],
+): JobRecord[] {
   ensureBackgroundJobTables(db);
   const boundedLimit = Math.max(1, Math.min(Math.floor(limit), 50));
+  const boundedJobTypes = jobTypes
+    ? Array.from(new Set(jobTypes.filter((jobType) => typeof jobType === 'string' && jobType.trim()).map((jobType) => jobType.trim())))
+    : [];
+  if (jobTypes && boundedJobTypes.length === 0) return [];
+  const typePredicate = boundedJobTypes.length > 0
+    ? `AND job_type IN (${boundedJobTypes.map(() => '?').join(', ')})`
+    : '';
   return (db.prepare(`
     UPDATE background_jobs
     SET status = 'processing',
@@ -144,6 +156,7 @@ export function claimPendingJobs(limit = 10, lockOwner = `worker-${process.pid}`
       SELECT job_id
       FROM background_jobs
       WHERE (
+        (
           status IN ('pending', 'failed')
           AND not_before <= datetime('now')
         )
@@ -152,11 +165,13 @@ export function claimPendingJobs(limit = 10, lockOwner = `worker-${process.pid}`
           AND locked_at IS NOT NULL
           AND locked_at <= datetime('now', ?)
         )
+      )
+        ${typePredicate}
       ORDER BY CASE WHEN status = 'processing' THEN 1 ELSE 0 END, priority ASC, created_at ASC
       LIMIT ?
     )
     RETURNING *
-  `).all(lockOwner, `-${STALE_JOB_LEASE_MINUTES} minutes`, boundedLimit) as any[]).map(mapJob);
+  `).all(lockOwner, `-${STALE_JOB_LEASE_MINUTES} minutes`, ...boundedJobTypes, boundedLimit) as any[]).map(mapJob);
 }
 
 export async function processPendingJobs(
@@ -168,8 +183,9 @@ export async function processPendingJobs(
   }
   const db = opts.db ?? getDb();
   const startedAt = Date.now();
-  const claimed = claimPendingJobs(opts.limit ?? 10, opts.lockOwner ?? `worker-${process.pid}`, db);
   const handlersByType = new Map(handlers.map((handler) => [handler.jobType, handler]));
+  const claimableJobTypes = handlersByType.has('*') ? undefined : Array.from(handlersByType.keys());
+  const claimed = claimPendingJobs(opts.limit ?? 10, opts.lockOwner ?? `worker-${process.pid}`, db, claimableJobTypes);
   let completed = 0;
   let failed = 0;
   let deadLetter = 0;

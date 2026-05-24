@@ -36,6 +36,7 @@ import { registerPortalContentRoutes } from './content-routes';
 import { registerPortalCookingRoutes } from './cooking-routes';
 import { registerPortalDecisionCenterRoutes } from './decision-center-routes';
 import { registerPortalDocumentRoutes } from './document-routes';
+import { registerPortalEvalHistoryRoutes } from './eval-history-routes';
 import { registerPortalFounderRoutes } from './founder-routes';
 import { registerPortalHealthRoutes } from './health-routes';
 import { registerPortalIntelligenceRoutes } from './intelligence-routes';
@@ -372,6 +373,8 @@ export function createPortalServer(bot?: any): http.Server {
   registerPortalAdminDataRoutes(app);
 
   registerPortalChatRoutes(app);
+
+  registerPortalEvalHistoryRoutes(app);
 
   registerPortalUserSkillRoutes(app);
 

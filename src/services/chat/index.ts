@@ -156,6 +156,13 @@ import {
 import { splitChatMultiStepRequest } from '../chat-multi-step-splitter';
 import { routeChatMultiStepSegments } from '../chat-segment-router';
 import { buildMultiStepSummary, resolveStepRefs } from '../chat-multi-step-dag';
+import { enqueueChatActionFixerReview } from '../chat-action-fixer-worker';
+import {
+  normalizeChatActionErrorReason,
+  runChatActionWithBoundedRetry,
+  shouldQueueChatActionFixerReview,
+} from '../chat-action-retry-policy';
+import type { ChatStepExecutionContext } from './executor/types';
 
 export { buildLlmPlannerPrompt, buildTier1ClassifierPrompt, parseLlmPlannerJson, parseTier1ClassifierJson } from './planner/tiers';
 
@@ -758,7 +765,11 @@ function parseSummarizeAgendaIntent(input: ChatPlannerInput): ChatActionPlan | n
     : /\boutlook\b/.test(folded)
       ? 'outlook_calendar'
       : undefined;
-  const args: Record<string, unknown> = { date: 'today' };
+  const baseDay = DateTime.fromISO(input.nowIso ?? new Date().toISOString()).setZone(input.timezone);
+  const agendaDay = /\b(tomorrow|amanh[aã]|ma[nñ]ana)\b/.test(folded)
+    ? baseDay.plus({ days: 1 })
+    : baseDay;
+  const args: Record<string, unknown> = { date: agendaDay.toISODate() };
   if (provider) args.provider = provider;
   const step = makeStep(input, {
     skill: 'secretary_calendar',
@@ -1871,6 +1882,9 @@ function isUnsafeTaskTitle(title: string): boolean {
 // `isUnsafeTaskTitle`, which catches destructive natural-language vocabulary.
 function containsPromptInjectionMarker(title: string): boolean {
   return /\bignore\s+(?:previous|all|prior)\s+instructions?\b/i.test(title)
+    || /\bignore\s+(?:all\s+)?access\s+checks?\b/i.test(title)
+    || /\bbypass\s+(?:all\s+)?access\s+checks?\b/i.test(title)
+    || /\benable\s+every\s+skill\b/i.test(title)
     || /\bdisregard\s+(?:previous|all|prior)\s+instructions?\b/i.test(title)
     || /\bforget\s+(?:everything|all|previous|prior)\b/i.test(title)
     || /\b(?:you\s+are\s+now|act\s+as|new\s+instructions)\b/i.test(title)
@@ -2239,7 +2253,7 @@ export async function executeChatActionPlan(
     const runtimeStep: ChatPlanStep = { ...step, args: resolveStepRefs(step.args, results) };
     const executor = getChatStepExecutor(runtimeStep.action);
     if (executor) {
-      const result = await executor(runtimeStep, {
+      const result = await executeStepWithReliability(runtimeStep, {
         plan,
         input,
         deps,
@@ -2326,6 +2340,83 @@ export async function executeChatActionPlan(
     actionResults: sanitizeActionResults(results),
     ...multiStepMetadata(plan, results),
   });
+}
+
+async function executeStepWithReliability(
+  step: ChatPlanStep,
+  context: ChatStepExecutionContext,
+): Promise<ChatStepExecutionResult> {
+  const executor = getChatStepExecutor(step.action);
+  if (!executor) return { step, status: 'blocked', error: unsupportedChatExecutorReason(step) };
+  let result: ChatStepExecutionResult;
+  try {
+    result = await runChatActionWithBoundedRetry(() => executor(step, context), {
+      onRetry: (event) => {
+        logger.warn({
+          userId: context.input.userId,
+          tenantId: context.input.tenantId,
+          conversationId: context.input.conversationId,
+          messageId: context.input.messageId,
+          skill: step.skill,
+          action: step.action,
+          attempt: event.attempt,
+          category: event.category,
+          reason: event.reason,
+        }, 'Retrying transient chat action executor failure');
+      },
+    });
+  } catch (err) {
+    result = { step, status: 'failed', error: normalizeChatActionErrorReason(err).slice(0, 200) };
+  }
+  maybeQueueChatActionFixerReview(context.input, context.plan, step, result);
+  return result;
+}
+
+function maybeQueueChatActionFixerReview(
+  input: ChatPlannerInput,
+  plan: ChatActionPlan,
+  step: ChatPlanStep,
+  result: ChatStepExecutionResult,
+): void {
+  if (input.persistRuns === false || result.status === 'verified_success' || !shouldQueueChatActionFixerReview(result.error)) return;
+  try {
+    recordChatActionTelemetry({
+      userId: input.userId,
+      tenantId: input.tenantId,
+      conversationId: input.conversationId,
+      messageId: input.messageId,
+      planner: plan.planner,
+      status: result.status,
+      skill: step.skill,
+      action: step.action,
+      telemetry: {
+        ...(plan.telemetry ?? {
+          routeTier: 'tier0_deterministic',
+          candidates: [{ skill: step.skill, action: step.action, score: plan.effectiveConfidence ?? plan.confidence }],
+          calibratedScore: plan.effectiveConfidence ?? plan.confidence,
+          threshold: thresholdForSteps(plan.steps),
+        }),
+        outcome: 'requires_fixer_review',
+        failureReason: result.error ?? 'unknown_error',
+        verifierStatus: 'mismatch',
+        predictedActionHash: step.idempotencyKey,
+        slotProvenanceSummary: summarizeSlotProvenance(plan),
+      },
+      nowIso: input.nowIso,
+    });
+    enqueueChatActionFixerReview({ input, plan, step, result });
+  } catch (err) {
+    logger.warn({
+      err,
+      userId: input.userId,
+      tenantId: input.tenantId,
+      conversationId: input.conversationId,
+      messageId: input.messageId,
+      skill: step.skill,
+      action: step.action,
+      reason: result.error,
+    }, 'Chat action fixer review enqueue failed');
+  }
 }
 
 function multiStepType(plan: ChatActionPlan, fallback: string): string {
