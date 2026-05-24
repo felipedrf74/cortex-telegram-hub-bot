@@ -345,6 +345,8 @@ db.transaction(() => {
 
   insert('recipes', {
     user_id: userId,
+    tenant_id: userId,
+    owner_user_id: userId,
     title: 'Fixture Lentil Soup',
     ingredients: JSON.stringify([{ name: 'lentils', quantity: '1', unit: 'cup' }]),
     instructions: 'Simmer lentils with vegetables until tender.',
@@ -358,6 +360,8 @@ db.transaction(() => {
   }, 'INSERT');
   insert('meal_plans', {
     user_id: userId,
+    tenant_id: userId,
+    owner_user_id: userId,
     date: today,
     meal_type: 'dinner',
     title: 'Fixture Lentil Soup',
@@ -366,6 +370,8 @@ db.transaction(() => {
   });
   insert('shopping_lists', {
     user_id: userId,
+    tenant_id: userId,
+    owner_user_id: userId,
     week_start: today,
     items: JSON.stringify([{ name: 'lentils', quantity: '1 cup', checked: false }]),
     status: 'active',
@@ -375,6 +381,7 @@ db.transaction(() => {
 
   insert('finance_transactions', {
     user_id: userId,
+    tenant_id: userId,
     date: today,
     category: 'expense',
     subcategory: 'materials',
