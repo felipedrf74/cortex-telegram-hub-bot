@@ -16,6 +16,7 @@ export * from './reasoning-policies';
 export * from './response-contracts';
 export * from './route-decision';
 export * from './runtime-budget';
+export * from './tool-selection';
 export * from './types';
 export * from './unsupported-policy';
 export * from './workflow-state-machine';
