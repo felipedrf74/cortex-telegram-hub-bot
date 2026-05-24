@@ -2,8 +2,10 @@
 
 import {
   findChatActionDefinition,
+  riskClassForRisk,
   type ChatProvider,
 } from '../registry';
+import type { ChatActionRiskClass } from '../../chat-action-state';
 import type {
   ChatActionPlan,
   ChatPlanStep,
@@ -90,6 +92,18 @@ export function calibratePlanConfidence(steps: ChatPlanStep[], baseConfidence: n
   return Number(score.toFixed(3));
 }
 
+export function thresholdForSteps(steps: ChatPlanStep[]): number {
+  const riskiest = steps.reduce<ChatActionRiskClass>((current, step) => {
+    const candidate = step.riskClass ?? riskClassForRisk(step.risk);
+    return riskRank(candidate) > riskRank(current) ? candidate : current;
+  }, 'R0');
+  if (riskiest === 'R3') return 0.98;
+  if (riskiest === 'R2') return 0.96;
+  if (riskiest === 'R1') return 0.9;
+  if (riskiest === 'R4') return 1;
+  return 0.75;
+}
+
 function provenanceCoverage(step: ChatPlanStep): number {
   const definition = findChatActionDefinition(step.skill, step.action);
   const required = definition?.requiredFields ?? [];
@@ -99,4 +113,8 @@ function provenanceCoverage(step: ChatPlanStep): number {
   if (present.length === 0) return 0;
   const withProvenance = present.filter((field) => provenance[field]?.validation === 'passed');
   return withProvenance.length / present.length;
+}
+
+function riskRank(risk: ChatActionRiskClass): number {
+  return { R0: 0, R1: 1, R2: 2, R3: 3, R4: 4 }[risk];
 }

@@ -184,7 +184,7 @@ import {
   intentClassForPlan,
   normalizeProvider,
   stepRequiresConfirmation,
-} from './executor/plan-utils';
+} from './planner/plan-utils';
 import {
   buildTargetedClarificationQuestion,
   defaultClarification,
