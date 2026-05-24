@@ -49,7 +49,7 @@ export function classifyShadowRoute(text: string): ChatCoreV2ShadowRouteGuess {
   if (/\b(complete|done|finish|mark)\b.*\b(task|todo|to-do)\b|\b(concluir|completar|terminar|marcar)\b.*\btarefas?\b/i.test(normalized)) {
     return { intent: 'modify_action', confidence: 0.84, domains: ['tasks'], capabilityIds: ['tasks.complete'] };
   }
-  if (/\b(snooze|pause)\b.*\b(notification|alert|reminder)\b/i.test(normalized)) {
+  if (/\b(snooze|pause)\b.*\b(notifications?|alerts?|reminders?)\b/i.test(normalized)) {
     return { intent: 'modify_action', confidence: 0.83, domains: ['notifications'], capabilityIds: ['notifications.snooze'] };
   }
   if (/\b(dismiss|close)\b.*\b(decision|choice)\b/i.test(normalized)) {
@@ -102,7 +102,7 @@ function guessDomains(text: string): ChatCoreV2Domain[] {
   if (/\b(cooking|meal|grocery|groceries|ingredient)\b/i.test(text)) domains.push('cooking');
   if (/\b(finance|invoice|receipt|budget|tax|payment)\b/i.test(text)) domains.push('finance');
   if (/\b(connection|connect|integration|provider)\b/i.test(text)) domains.push('connections');
-  if (/\b(notification|alert|reminder)\b/i.test(text)) domains.push('notifications');
+  if (/\b(notifications?|alerts?|reminders?)\b|\bnotifica(?:ção|ções|cao|coes)\b|\blembretes?\b/i.test(text)) domains.push('notifications');
   if (/\b(decision|choice|decision center)\b/i.test(text)) domains.push('decision_center');
   return [...new Set(domains)];
 }

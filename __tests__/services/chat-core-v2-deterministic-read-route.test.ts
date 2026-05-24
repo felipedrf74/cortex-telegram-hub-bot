@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { NormalizedTask } from '../../src/services/task-store/types';
+import type { NotificationCenterItem } from '../../src/services/notification-orchestrator';
 
 vi.mock('../../src/services/task-store/task-service', () => ({
   listTasks: vi.fn(),
@@ -10,7 +11,12 @@ vi.mock('../../src/services/decision-center', () => ({
   getDecisionSummary: vi.fn(),
 }));
 
+vi.mock('../../src/services/notification-orchestrator', () => ({
+  listNotificationCenterItems: vi.fn(),
+}));
+
 import { getDecisionSummary } from '../../src/services/decision-center';
+import { listNotificationCenterItems } from '../../src/services/notification-orchestrator';
 import { listTasks } from '../../src/services/task-store/task-service';
 import { tryBuildChatCoreV2DeterministicReadRoute } from '../../src/services/chat-core-v2';
 
@@ -33,10 +39,35 @@ function task(overrides: Partial<NormalizedTask>): NormalizedTask {
   };
 }
 
+function notification(overrides: Partial<NotificationCenterItem>): NotificationCenterItem {
+  return {
+    itemId: 'notif_1',
+    intentId: 'intent_1',
+    decisionLogId: null,
+    userId: 42,
+    tenantId: 84,
+    title: 'Notification',
+    body: 'Notification body',
+    safeBody: 'Notification body',
+    sensitiveBody: null,
+    sourceSkill: 'system',
+    type: 'reminder',
+    priority: 'active',
+    status: 'unread',
+    deeplink: null,
+    actions: [],
+    dedupeKey: null,
+    createdAt: '2026-05-24T09:00:00.000Z',
+    expiresAt: null,
+    ...overrides,
+  };
+}
+
 describe('Chat Core v2 deterministic read route', () => {
   beforeEach(() => {
     vi.mocked(listTasks).mockReset();
     vi.mocked(getDecisionSummary).mockReset();
+    vi.mocked(listNotificationCenterItems).mockReset();
   });
 
   it('stays disabled unless both global and read flags are explicitly enabled', () => {
@@ -345,6 +376,72 @@ describe('Chat Core v2 deterministic read route', () => {
     expect(br?.response.text).toContain('Você tem 1 tarefa aberta.');
   });
 
+  it('answers notification summary questions through the tenant-scoped notification center', () => {
+    vi.mocked(listNotificationCenterItems).mockReturnValue([
+      notification({
+        itemId: 'notif_1',
+        title: 'Training reminder',
+        sourceSkill: 'training',
+        type: 'reminder',
+        priority: 'time_sensitive',
+        actions: [{ id: 'open', label: 'Open', style: 'primary' }],
+        createdAt: '2026-05-24T09:30:00.000Z',
+      }),
+      notification({
+        itemId: 'notif_2',
+        title: 'Content idea ready',
+        sourceSkill: 'content',
+        type: 'insight',
+        priority: 'active',
+        actions: [],
+        createdAt: '2026-05-24T09:00:00.000Z',
+      }),
+    ]);
+
+    const result = tryBuildChatCoreV2DeterministicReadRoute({
+      normalizedText: 'What notifications do I have?',
+      userId: 42,
+      tenantId: 84,
+      locale: 'en-US',
+      timezone: 'Europe/Lisbon',
+      now: FIXED_NOW,
+      env: ENABLED_ENV,
+    });
+
+    expect(result).not.toBeNull();
+    expect(listNotificationCenterItems).toHaveBeenCalledWith(42, 84, {
+      status: 'unread',
+      limit: 200,
+    });
+    expect(listTasks).not.toHaveBeenCalled();
+    expect(getDecisionSummary).not.toHaveBeenCalled();
+    expect(result?.capabilityId).toBe('notifications.summary');
+    expect(result?.response).toMatchObject({
+      schemaVersion: 'chat_response_v2@1.0.0',
+      kind: 'message',
+      locale: 'en',
+      cards: [],
+      reasonCodes: ['deterministic_read', 'notifications.summary'],
+    });
+    expect(result?.response.text).toContain('You have 2 unread notifications.');
+    expect(result?.response.text).toContain('1 urgent');
+    expect(result?.response.text).toContain('1 needing action');
+    expect(result?.response.text).toContain('- Training reminder (urgent) - action: Open');
+    expect(result?.readModel).toMatchObject({
+      capabilityId: 'notifications.summary',
+      domain: 'notifications',
+      sensitivity: 'personal',
+      freshness: { status: 'live' },
+      data: {
+        unreadCount: 2,
+        urgentCount: 1,
+        actionRequiredCount: 1,
+        remindersCount: 1,
+        sourceSkills: ['content', 'training'],
+      },
+    });
+  });
+
   it('does not intercept task writes or multi-domain questions', () => {
     vi.mocked(listTasks).mockReturnValue([]);
 
@@ -376,12 +473,21 @@ describe('Chat Core v2 deterministic read route', () => {
       now: FIXED_NOW,
       env: ENABLED_ENV,
     });
+    const notificationWrite = tryBuildChatCoreV2DeterministicReadRoute({
+      normalizedText: 'Snooze this notification until tomorrow',
+      userId: 42,
+      tenantId: 84,
+      now: FIXED_NOW,
+      env: ENABLED_ENV,
+    });
 
     expect(write).toBeNull();
     expect(portugueseWrite).toBeNull();
     expect(multiDomain).toBeNull();
     expect(decisionWrite).toBeNull();
+    expect(notificationWrite).toBeNull();
     expect(listTasks).not.toHaveBeenCalled();
     expect(getDecisionSummary).not.toHaveBeenCalled();
+    expect(listNotificationCenterItems).not.toHaveBeenCalled();
   });
 });
