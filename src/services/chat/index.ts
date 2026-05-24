@@ -45,21 +45,16 @@ import type {
 } from './types';
 import {
   buildNormalizedActionHash,
-  claimChatActionRun,
   claimChatActionRunForExecution,
   listPendingChatActionRuns,
-  updateChatActionRun,
-  type ChatActionRunRow,
   type ChatActionRunStatus,
 } from '../chat-action-run-store';
 import {
   cancelPendingChatActions,
   makeSlotProvenance,
-  markPendingChatActionNeedsUserFollowup,
   recordChatActionTelemetry,
   rememberRecentChatEntity,
   resolveRecentChatEntity,
-  upsertPendingChatAction,
   type ChatSlotProvenance,
 } from '../chat-action-state';
 import { getChatStepExecutor } from './executor/dispatch-table';
@@ -78,10 +73,8 @@ import {
   runWithChatToolAuthorization,
 } from '../chat-tool-authorization';
 import {
-  actionToStepType,
   buildStepIdempotencyKey,
   makeStep,
-  pickExpectedFields,
 } from '../skills/step-builder';
 import { parseConnectionsActionStep } from '../skills/connections/parser';
 import { parseContentActionStep } from '../skills/content/parser';
@@ -97,9 +90,6 @@ import { buildPendingMailDraftContinuation } from '../skills/mail/pending';
 import { parseNotificationActionStep } from '../skills/notifications/parser';
 import { hasPastTenseSignal } from '../skills/past-tense-detector';
 import { extractTopic, inferContentPlatform, inferProviderName } from '../skills/text-extractors';
-import {
-  missingTrainingPlanSlots,
-} from '../skills/training/helpers';
 import { parseTrainingActionStep } from '../skills/training/parser';
 import { buildPendingSlotContinuationPlan } from '../skills/training/pending';
 import type { PendingContinuationHelpers } from './planner/pending-types';
@@ -184,6 +174,12 @@ import {
   normalizeProvider,
   stepRequiresConfirmation,
 } from './planner/plan-utils';
+import {
+  persistPlanStatus,
+  persistStepStatus,
+  requeuePartialSuccessPendingParents,
+  rowToConfirmedStep,
+} from './executor/run-persistence';
 import {
   buildClarificationPlan,
   buildMessageOnlyPlan,
@@ -2053,125 +2049,6 @@ function maybeQueueChatActionFixerReview(
     }, 'Chat action fixer review enqueue failed');
   }
 }
-
-function rowToConfirmedStep(row: ChatActionRunRow): ChatPlanStep | null {
-  const action = row.action_type as ChatActionName;
-  const registryEntry = getChatActionRegistry().find((entry) => entry.action === action);
-  if (!registryEntry) return null;
-  let args: Record<string, unknown>;
-  try {
-    args = JSON.parse(row.request_json || '{}') as Record<string, unknown>;
-  } catch {
-    return null;
-  }
-  const provider = normalizeProvider(row.provider ?? args.provider) ?? registryEntry.providerDependencies[0] ?? 'nexus';
-  return {
-    stepId: `confirmed-${row.id}`,
-    skill: registryEntry.skill,
-    type: actionToStepType(action),
-    action,
-    risk: row.risk,
-    riskClass: riskClassForRisk(row.risk),
-    provider,
-    args,
-    requiredArgsPresent: registryEntry.requiredFields.every((field) => args[field] != null && args[field] !== ''),
-    idempotencyKey: row.normalized_action_hash,
-    verification: {
-      required: registryEntry.verifier !== 'none',
-      method: registryEntry.verifier,
-      expectedFields: pickExpectedFields(args, registryEntry.requiredFields),
-    },
-  };
-}
-
-function persistPlanStatus(plan: ChatActionPlan, input: ChatPlannerInput, status: ChatActionRunStatus): void {
-  if (input.persistRuns === false) return;
-  for (const step of plan.steps) {
-    persistStepStatus(plan, input, step, status);
-  }
-}
-
-function persistStepStatus(
-  plan: ChatActionPlan,
-  input: ChatPlannerInput,
-  step: ChatPlanStep,
-  status: ChatActionRunStatus,
-): void {
-  if (input.persistRuns === false) return;
-  if (status === 'needs_clarification' && step.action === 'training_plan_create') {
-    const args = step.args as Record<string, unknown>;
-    upsertPendingChatAction({
-      userId: input.userId,
-      tenantId: input.tenantId,
-      conversationId: input.conversationId,
-      skill: 'training',
-      action: 'training_plan_create',
-      collectedSlots: args,
-      missingSlots: missingTrainingPlanSlots(args),
-      riskClass: 'R1',
-      locale: input.locale || plan.locale,
-      timezone: input.timezone,
-      originatingSurface: input.channel,
-      nowIso: plan.createdAt,
-    });
-  }
-  const claim = claimChatActionRun({
-    userId: input.userId,
-    tenantId: input.tenantId,
-    conversationId: input.conversationId,
-    messageId: input.messageId,
-    normalizedActionHash: step.idempotencyKey,
-    provider: step.provider,
-    actionType: step.action,
-    risk: step.risk,
-    request: step.args,
-    nowIso: plan.createdAt,
-  });
-  const accepted = updateChatActionRun(claim.row.id, status, {
-    error: status === 'needs_clarification' ? { reason: 'missing_required_fields' } : undefined,
-    verification: status === 'needs_confirmation' ? { required: true, reason: 'risk_policy' } : undefined,
-  });
-  if (!accepted) {
-    logger.warn({
-      runId: claim.row.id,
-      userId: input.userId,
-      tenantId: input.tenantId,
-      attemptedStatus: status,
-    }, 'chat action plan status update rejected by terminal run state');
-  }
-}
-
-function requeuePartialSuccessPendingParents(
-  input: ChatPlannerInput,
-  plan: ChatActionPlan,
-  results: Array<{ step: ChatPlanStep; status: ChatActionRunStatus; result?: unknown; error?: string }>,
-): void {
-  if (input.persistRuns === false) return;
-  for (const result of results) {
-    if (result.status !== 'partial_success') continue;
-    try {
-      markPendingChatActionNeedsUserFollowup({
-        userId: input.userId,
-        tenantId: input.tenantId,
-        conversationId: input.conversationId,
-        skill: result.step.skill,
-        action: result.step.action,
-        nowIso: plan.createdAt,
-      });
-    } catch (err) {
-      logger.debug({
-        err,
-        userId: input.userId,
-        tenantId: input.tenantId,
-        conversationId: input.conversationId,
-        skill: result.step.skill,
-        action: result.step.action,
-      }, 'chat action pending parent requeue skipped');
-    }
-  }
-}
-
-// actionToStepType and pickExpectedFields moved to skills/step-builder.ts.
 
 function buildCalendarSlotProvenance(input: ChatPlannerInput, calendar: NonNullable<ReturnType<typeof parseNaturalLanguageCalendarEvent>>, provider: ChatProvider): Record<string, ChatSlotProvenance> {
   const rawText = input.text;
