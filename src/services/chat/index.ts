@@ -60,8 +60,6 @@ import {
   rememberRecentChatEntity,
   resolveRecentChatEntity,
   upsertPendingChatAction,
-  type ChatActionRiskClass,
-  type ChatActionTelemetry,
   type ChatSlotProvenance,
 } from '../chat-action-state';
 import { getChatStepExecutor } from './executor/dispatch-table';
@@ -150,7 +148,6 @@ import {
 import { logger } from '../../utils/logger';
 import {
   getChatHybridPlannerMode,
-  isChatOpenSurfaceHandoffEnabled,
 } from '../runtime-flags';
 import { splitChatMultiStepRequest } from '../chat-multi-step-splitter';
 import { routeChatMultiStepSegments } from '../chat-segment-router';
@@ -163,6 +160,15 @@ import {
 } from '../chat-action-retry-policy';
 import type { ChatStepExecutionContext } from './executor/types';
 import {
+  actionButtonsForResults,
+  calendarCardEvents,
+  domainForPlan,
+  firstTitle,
+  openSurfacePayloadForStep,
+  resultCardPayload,
+  sanitizeActionResults,
+} from './executor/response-cards';
+import {
   confirmationCopy,
   defaultClarification,
   failureCopy,
@@ -173,6 +179,20 @@ import {
   unsupportedChatExecutorReason,
   verifiedPendingCopy,
 } from './executor/response-copy';
+import {
+  calibratePlanConfidence,
+  confirmationVariant,
+  intentClassForPlan,
+  normalizeProvider,
+  stepRequiresConfirmation,
+} from './executor/plan-utils';
+import {
+  finalizeTelemetryForResponse,
+  recordShadowTelemetry,
+  safeTelemetry,
+  summarizeSlotProvenance,
+  thresholdForSteps,
+} from './executor/telemetry';
 
 export { buildLlmPlannerPrompt, buildTier1ClassifierPrompt, parseLlmPlannerJson, parseTier1ClassifierJson } from './planner/tiers';
 
@@ -2639,38 +2659,6 @@ function buildResponseCardsFromMetadata(metadata: Record<string, unknown>): Chat
   return cards.length > 0 ? cards : undefined;
 }
 
-function recordShadowTelemetry(plan: ChatActionPlan, input: ChatPlannerInput, routeStartedAtMs: number): void {
-  if (input.persistRuns === false) return;
-  const firstStep = plan.steps[0];
-  try {
-    recordChatActionTelemetry({
-      userId: input.userId,
-      tenantId: input.tenantId,
-      conversationId: input.conversationId,
-      messageId: input.messageId,
-      planner: plan.planner,
-      status: 'shadow_only',
-      skill: firstStep?.skill ?? null,
-      action: firstStep?.action ?? null,
-      telemetry: {
-        ...(plan.telemetry ?? {
-          routeTier: 'tier0_deterministic',
-          candidates: firstStep ? [{ skill: firstStep.skill, action: firstStep.action, score: plan.effectiveConfidence ?? plan.confidence }] : [],
-          calibratedScore: plan.effectiveConfidence ?? plan.confidence,
-          threshold: thresholdForSteps(plan.steps),
-        }),
-        latencyMs: Date.now() - routeStartedAtMs,
-        outcome: 'shadow_only',
-        predictedActionHash: firstStep?.idempotencyKey,
-        slotProvenanceSummary: summarizeSlotProvenance(plan),
-      },
-      nowIso: input.nowIso,
-    });
-  } catch (err) {
-    logger.debug({ err, userId: input.userId, tenantId: input.tenantId }, 'chat action shadow telemetry skipped');
-  }
-}
-
 function requeuePartialSuccessPendingParents(
   input: ChatPlannerInput,
   plan: ChatActionPlan,
@@ -2701,338 +2689,7 @@ function requeuePartialSuccessPendingParents(
   }
 }
 
-function domainForPlan(plan: ChatActionPlan): ChatActionRouteResponse['domain'] {
-  const skill = plan.steps[0]?.skill;
-  if (skill === 'secretary_calendar' || skill === 'mail') return 'secretary';
-  if (skill === 'tasks') return 'tasks';
-  if (skill === 'training') return 'training';
-  if (skill === 'content') return 'content';
-  if (skill === 'cooking') return 'cooking';
-  if (skill === 'finance') return 'finance';
-  return 'unknown';
-}
-
-function firstTitle(results: Array<{ step: ChatPlanStep }>): string | undefined {
-  const title = (results[0]?.step.args as any)?.title;
-  return typeof title === 'string' ? title : undefined;
-}
-
-function calendarCardEvents(results: Array<{ step: ChatPlanStep; result?: unknown }>): Array<Record<string, string>> | undefined {
-  const calendarSteps = results.filter((result) => result.step.action === 'schedule_event');
-  if (calendarSteps.length === 0) return undefined;
-  return calendarSteps.map((result) => {
-    const args = result.step.args as any;
-    const start = DateTime.fromISO(String(args.startDateTime));
-    const end = DateTime.fromISO(String(args.endDateTime));
-    return {
-      title: String(args.title),
-      time: `${start.toFormat('HH:mm')}–${end.toFormat('HH:mm')}`,
-      source: args.provider === 'outlook_calendar' ? 'outlook' : 'google',
-    };
-  });
-}
-
-function resultCardPayload(results: Array<{ step: ChatPlanStep; result?: unknown }>): Record<string, unknown> {
-  const first = results[0];
-  if (!first) return {};
-  if (first.step.action === 'content_brief_create' || first.step.action === 'content_script_create') {
-    const result = first.result as any;
-    return {
-      contentPackage: result ? {
-        packageId: result.packageId,
-        qualityScore: result.quality?.score ?? null,
-        blockers: result.quality?.blockers ?? [],
-        warnings: result.quality?.warnings ?? [],
-        script: result.firstScript ? {
-          title: result.firstScript.title,
-          coldOpen: result.firstScript.coldOpen,
-          promise: result.firstScript.promise,
-          cta: result.firstScript.cta,
-        } : null,
-      } : null,
-    };
-  }
-  if (first.step.action === 'create_task_with_subtasks' || first.step.action === 'add_subtasks_to_task') {
-    const result = first.result as any;
-    return {
-      taskId: result?.taskId ?? null,
-      listId: result?.listId ?? null,
-      title: result?.title ?? (first.step.args as any).title ?? null,
-      subtasks: Array.isArray(result?.subtasks) ? result.subtasks : [],
-      failedSubtasks: Array.isArray(result?.failedSubtasks) ? result.failedSubtasks : [],
-      warnings: Array.isArray(result?.warnings) ? result.warnings : [],
-      taskVerificationStatus: result?.verificationStatus ?? null,
-    };
-  }
-  if (first.step.action === 'cooking_grocery_list') {
-    const result = first.result as any;
-    return { groceryList: result ? { weekStart: result.weekStart, itemCount: result.itemCount, items: result.items } : null };
-  }
-  if (first.step.action === 'cooking_substitute_ingredient') {
-    const result = first.result as any;
-    return {
-      cookingSubstitution: result ? {
-        substitution: result.substitution ?? null,
-        meal: result.meal ?? null,
-        recipe: result.recipe ?? null,
-        shoppingListUpdated: Boolean(result.substitution?.shoppingListUpdated),
-      } : null,
-    };
-  }
-  if (first.step.action === 'finance_summary') return { finance: first.result ?? null };
-  if (first.step.action === 'connections_status') return { connections: first.result ?? null };
-  if (first.step.action === 'training_coach_report') return { training: first.result ?? null };
-  return {};
-}
-
-function actionButtonsForResults(results: Array<{ step: ChatPlanStep }>): string[] {
-  const first = results[0]?.step;
-  if (!first) return [];
-  if (first.action === 'schedule_event') return ['open_provider_event', 'undo_created_event'];
-  if (first.action === 'create_task' || first.action === 'create_checklist' || first.action === 'create_task_with_subtasks' || first.action === 'add_subtasks_to_task') return ['open_skill', 'undo'];
-  if (first.skill === 'content' || first.skill === 'cooking' || first.skill === 'finance' || first.skill === 'connections' || first.skill === 'training') return ['open_skill'];
-  if (first.skill === 'notifications' || first.skill === 'decision_center') return ['open_skill'];
-  return [];
-}
-
-function openSurfacePayloadForStep(step: ChatPlanStep, result: unknown, input: ChatPlannerInput): Record<string, unknown> | null {
-  if (!isChatOpenSurfaceHandoffEnabled(process.env, { userId: input.userId, tenantId: input.tenantId })) return null;
-  if (step.action === 'training_plan_create') {
-    return {
-      surface: 'training_plan_builder',
-      pendingActionId: (result as any)?.pendingActionId ?? null,
-      prefill: {
-        sport: (step.args as any).sport ?? null,
-        goal: (step.args as any).goal ?? null,
-        durationWeeks: (step.args as any).durationWeeks ?? null,
-        startDate: (step.args as any).startDate ?? null,
-        weeklyVolumeKm: (step.args as any).weeklyVolumeKm ?? null,
-        constraints: (step.args as any).constraints ?? [],
-      },
-    };
-  }
-  if (step.skill === 'content') return { surface: 'script_studio', prefill: step.args };
-  if (step.skill === 'tasks') return { surface: 'task_detail', prefill: step.args };
-  if (step.skill === 'secretary_calendar') return { surface: 'calendar_event', prefill: step.args };
-  if (step.skill === 'finance') return { surface: 'finance_review', prefill: step.args };
-  if (step.skill === 'cooking') return { surface: 'cooking_meal_plan', prefill: step.args };
-  return null;
-}
-
-function sanitizeActionResults(results: Array<{ step: ChatPlanStep; status: ChatActionRunStatus; result?: unknown; error?: string }>): Array<Record<string, unknown>> {
-  return results.map((result) => ({
-    stepId: result.step.stepId,
-    skill: result.step.skill,
-    action: result.step.action,
-    status: result.status,
-    provider: result.step.provider,
-    title: typeof (result.step.args as any).title === 'string' ? (result.step.args as any).title : undefined,
-    error: result.error,
-  }));
-}
-
-function safeTelemetry(telemetry: ChatActionTelemetry): Record<string, unknown> {
-  return {
-    routeTier: telemetry.routeTier,
-    candidates: telemetry.candidates.slice(0, 4),
-    calibratedScore: telemetry.calibratedScore,
-    threshold: telemetry.threshold,
-    modelProvider: telemetry.modelProvider,
-    model: telemetry.model,
-    estimatedTokenCostUsd: telemetry.estimatedTokenCostUsd,
-    verifierStatus: telemetry.verifierStatus,
-    latencyMs: telemetry.latencyMs,
-    outcome: telemetry.outcome,
-    failureReason: telemetry.failureReason,
-    slotProvenanceSummary: telemetry.slotProvenanceSummary,
-  };
-}
-
-function finalizeTelemetryForResponse(
-  plan: ChatActionPlan,
-  status: ChatActionStatus,
-  metadata: Record<string, unknown>,
-  input: ChatPlannerInput,
-): ChatActionTelemetry {
-  const base = plan.telemetry ?? {
-    routeTier: 'tier0_deterministic' as const,
-    candidates: plan.steps.map((step) => ({
-      skill: step.skill,
-      action: step.action,
-      score: plan.effectiveConfidence ?? plan.confidence,
-    })),
-    calibratedScore: plan.effectiveConfidence ?? plan.confidence,
-    threshold: thresholdForSteps(plan.steps),
-  };
-  return {
-    ...base,
-    verifierStatus: verifierStatusForActionStatus(status, plan),
-    latencyMs: input.routeStartedAtMs ? Math.max(0, Date.now() - input.routeStartedAtMs) : base.latencyMs,
-    outcome: status,
-    failureReason: failureReasonForTelemetry(status, metadata) ?? base.failureReason,
-    slotProvenanceSummary: summarizeSlotProvenance(plan),
-  };
-}
-
-function verifierStatusForActionStatus(status: ChatActionStatus, plan: ChatActionPlan): ChatActionTelemetry['verifierStatus'] {
-  const requiresVerification = plan.steps.some((step) => step.verification.required);
-  if (!requiresVerification) return 'not_required';
-  if (status === 'verified_success') return 'verified';
-  if (status === 'verified_pending' || status === 'needs_confirmation' || status === 'needs_clarification' || status === 'planned' || status === 'executing' || status === 'verifying') return 'pending';
-  if (status === 'partial_success') return 'mismatch';
-  return 'failed';
-}
-
-function failureReasonForTelemetry(status: ChatActionStatus, metadata: Record<string, unknown>): string | undefined {
-  if (status === 'verified_success' || status === 'verified_pending' || status === 'needs_confirmation' || status === 'needs_clarification') return undefined;
-  const actionResults = metadata.actionResults;
-  if (Array.isArray(actionResults)) {
-    const firstError = actionResults
-      .map((result) => result && typeof result === 'object' ? (result as Record<string, unknown>).error : null)
-      .find((error): error is string => typeof error === 'string' && error.length > 0);
-    if (firstError) return firstError.slice(0, 120);
-  }
-  const error = metadata.error;
-  if (typeof error === 'string') return error.slice(0, 120);
-  if (error && typeof error === 'object') {
-    const code = (error as Record<string, unknown>).code;
-    if (typeof code === 'string') return code.slice(0, 120);
-  }
-  const reason = metadata.reason;
-  if (typeof reason === 'string') return reason.slice(0, 120);
-  return status;
-}
-
-function summarizeSlotProvenance(plan: ChatActionPlan): Record<string, unknown> {
-  const summary: Record<string, unknown> = {};
-  for (const step of plan.steps) {
-    if (!step.slotProvenance) continue;
-    const stepSummary: Record<string, unknown> = {};
-    for (const [slot, provenance] of Object.entries(step.slotProvenance)) {
-      stepSummary[slot] = {
-        sourceType: provenance.sourceType,
-        normalizer: provenance.normalizer,
-        confidence: provenance.confidence,
-        validation: provenance.validation,
-      };
-    }
-    if (Object.keys(stepSummary).length > 0) {
-      summary[`${step.skill}.${step.action}.${step.stepId}`] = stepSummary;
-    }
-  }
-  return summary;
-}
-
-
 // actionToStepType and pickExpectedFields moved to skills/step-builder.ts.
-
-function normalizeProvider(value: unknown): ChatProvider | undefined {
-  if (typeof value !== 'string') return undefined;
-  if (value === 'google_calendar' || value === 'outlook_calendar' || value === 'gmail' || value === 'outlook_mail' || value === 'nexus' || value === 'stripe' || value === 'telegram' || value === 'none') {
-    return value;
-  }
-  return undefined;
-}
-
-function clampConfidence(value: number): number {
-  if (!Number.isFinite(value)) return 0.4;
-  return Math.max(0, Math.min(1, value));
-}
-
-function stepRequiresConfirmation(
-  step: ChatPlanStep,
-  opts: { requireSafeWrites?: boolean } = {},
-): boolean {
-  if (
-    step.risk === 'ambiguous' &&
-    step.requiredArgsPresent === false &&
-    typeof step.args?.rejectionReason === 'string'
-  ) {
-    return false;
-  }
-  const definition = findChatActionDefinition(step.skill, step.action);
-  if (opts.requireSafeWrites && step.risk === 'safe_write') return true;
-  return ['external_side_effect', 'destructive', 'financial', 'admin_security'].includes(step.risk)
-    || definition?.confirmationPolicy === 'confirm'
-    || definition?.confirmationPolicy === 'strong_confirm';
-}
-
-function intentClassForPlan(plan: ChatActionPlan): string {
-  const action = plan.steps[0]?.action;
-  switch (action) {
-    case 'create_task':
-    case 'create_task_with_subtasks':
-      return 'task_create';
-    case 'add_subtasks_to_task':
-      return 'task_update';
-    case 'delete_task':
-      return 'task_delete';
-    case 'complete_task':
-      return 'task_complete';
-    case 'update_task':
-      return 'task_update';
-    case 'schedule_event':
-      return 'event_create';
-    case 'move_event':
-    case 'update_event':
-      return 'event_move';
-    case 'delete_event':
-      return 'event_delete';
-    case 'finance_payment_action':
-      return 'financial_transfer';
-    case 'finance_create_reminder':
-    case 'finance_categorize_receipt':
-      return 'finance_write';
-    case 'send_email':
-      return 'email_send';
-    default:
-      return action ? String(action).replace(/-/g, '_') : 'chat_action';
-  }
-}
-
-function confirmationVariant(plan: ChatActionPlan): 'default' | 'destructive' | 'financial' {
-  if (plan.steps.some((step) => step.risk === 'financial')) return 'financial';
-  if (plan.steps.some((step) => step.risk === 'destructive' || step.risk === 'admin_security')) return 'destructive';
-  return 'default';
-}
-
-function thresholdForSteps(steps: ChatPlanStep[]): number {
-  const riskiest = steps.reduce<ChatActionRiskClass>((current, step) => {
-    const candidate = step.riskClass ?? riskClassForRisk(step.risk);
-    return riskRank(candidate) > riskRank(current) ? candidate : current;
-  }, 'R0');
-  if (riskiest === 'R3') return 0.98;
-  if (riskiest === 'R2') return 0.96;
-  if (riskiest === 'R1') return 0.9;
-  if (riskiest === 'R4') return 1;
-  return 0.75;
-}
-
-function calibratePlanConfidence(steps: ChatPlanStep[], baseConfidence: number): number {
-  let score = clampConfidence(baseConfidence);
-  for (const step of steps) {
-    const missingPenalty = step.requiredArgsPresent ? 0 : 0.28;
-    const provenancePenalty = provenanceCoverage(step) >= 0.9 ? 0 : 0.08;
-    const riskPenalty = step.riskClass === 'R4' ? 0.35 : 0;
-    score = Math.min(score, clampConfidence(score - missingPenalty - provenancePenalty - riskPenalty));
-  }
-  return Number(score.toFixed(3));
-}
-
-function provenanceCoverage(step: ChatPlanStep): number {
-  const definition = findChatActionDefinition(step.skill, step.action);
-  const required = definition?.requiredFields ?? [];
-  if (required.length === 0) return 1;
-  const provenance = step.slotProvenance ?? {};
-  const present = required.filter((field) => step.args[field] != null && step.args[field] !== '');
-  if (present.length === 0) return 0;
-  const withProvenance = present.filter((field) => provenance[field]?.validation === 'passed');
-  return withProvenance.length / present.length;
-}
-
-function riskRank(risk: ChatActionRiskClass): number {
-  return { R0: 0, R1: 1, R2: 2, R3: 3, R4: 4 }[risk];
-}
 
 function buildCalendarSlotProvenance(input: ChatPlannerInput, calendar: NonNullable<ReturnType<typeof parseNaturalLanguageCalendarEvent>>, provider: ChatProvider): Record<string, ChatSlotProvenance> {
   const rawText = input.text;
