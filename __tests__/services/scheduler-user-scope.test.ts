@@ -24,7 +24,6 @@ const mockCronSchedule = vi.hoisted(() => vi.fn());
 const mockCreateNotificationIntent = vi.hoisted(() => vi.fn());
 const mockRunEventBackboneOnce = vi.hoisted(() => vi.fn());
 const mockRunEventBackboneCleanup = vi.hoisted(() => vi.fn());
-const mockExpireStaleChatActionPlans = vi.hoisted(() => vi.fn());
 const mockRunGarminTenantIsolationWatcher = vi.hoisted(() => vi.fn());
 const mockGetActivePlan = vi.hoisted(() => vi.fn());
 const mockGetCurrentWeek = vi.hoisted(() => vi.fn());
@@ -140,7 +139,7 @@ vi.mock('../../src/services/apns-sender', () => ({ sendPushNotification: vi.fn()
 vi.mock('../../src/skills/skill-manager', () => ({ isCronJobEnabled: vi.fn(() => true) }));
 vi.mock('../../src/services/invoice-queue', () => ({ flushQueue: vi.fn(), getPendingCount: vi.fn(() => 0) }));
 vi.mock('../../src/domains/domain-handler', () => ({ setLastCoachState: vi.fn() }));
-vi.mock('../../src/bot', () => ({ setLastActiveDomain: vi.fn() }));
+vi.mock('../../src/api/routes/chat-message-context', () => ({ setLastActiveDomain: vi.fn() }));
 vi.mock('../../src/state/conversation', () => ({ addToConversation: vi.fn() }));
 vi.mock('../../src/services/channel-learner', () => ({ processAllChannelScopes: vi.fn(), seedDefaultChannels: vi.fn() }));
 vi.mock('../../src/services/content-workflow', () => ({ sendTopicCandidates: vi.fn(), sendWeeklyPackage: vi.fn() }));
@@ -192,16 +191,6 @@ vi.mock('../../src/services/event-backbone-worker', () => ({
 vi.mock('../../src/tools/event-backbone-cleanup', () => ({
   runEventBackboneCleanup: (...args: unknown[]) => mockRunEventBackboneCleanup(...args),
 }));
-vi.mock('../../src/services/chat-reasoning-engine', () => ({
-  CHAT_ACTION_MANIFESTS: [],
-  buildChatReasoningContextPack: vi.fn(),
-  detectChatReasoningMode: vi.fn(),
-  parseDeterministicActionFrame: vi.fn(),
-  validateChatActionFrame: vi.fn(),
-  tryHandleChatReasoningAction: vi.fn(),
-  executeChatReasoningFrame: vi.fn(),
-  expireStaleChatActionPlans: (...args: unknown[]) => mockExpireStaleChatActionPlans(...args),
-}));
 vi.mock('../../src/services/training-plans', () => ({
   getActivePlans: vi.fn(() => []),
   getActivePlan: (...args: unknown[]) => mockGetActivePlan(...args),
@@ -233,7 +222,7 @@ import {
   sendDailyBriefing,
 } from '../../src/services/scheduler';
 import { setLastCoachState } from '../../src/domains/domain-handler';
-import { setLastActiveDomain } from '../../src/bot';
+import { setLastActiveDomain } from '../../src/api/routes/chat-message-context';
 import { addToConversation } from '../../src/state/conversation';
 
 describe('scheduler tenant scoping', () => {
@@ -277,7 +266,6 @@ describe('scheduler tenant scoping', () => {
       cutoff: '2026-04-01T00:00:00.000Z',
       targets: [],
     });
-    mockExpireStaleChatActionPlans.mockReturnValue(0);
     mockGenerateCoachBriefing.mockResolvedValue({
       message: 'coach briefing',
       recommendations: [],
@@ -645,7 +633,7 @@ describe('scheduler tenant scoping', () => {
     }));
   });
 
-  it('chat action plan expiry is wired through the scheduler and skips no-op runs', async () => {
+  it('pending chat action expiry is wired through the scheduler and skips no-op runs', async () => {
     startScheduler();
     const expiryJob = mockCronSchedule.mock.calls.find((call) => call[0] === '*/2 * * * *')?.[1] as (() => Promise<unknown>) | undefined;
     expect(expiryJob).toBeTypeOf('function');
@@ -653,7 +641,6 @@ describe('scheduler tenant scoping', () => {
     const result = await expiryJob!();
 
     expect(result).toBe('skipped');
-    expect(mockExpireStaleChatActionPlans).toHaveBeenCalledTimes(1);
   });
 
   it('sendDailyBriefing stores report documents under canonical tenant ids', async () => {
