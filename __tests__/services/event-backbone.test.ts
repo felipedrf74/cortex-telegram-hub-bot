@@ -278,6 +278,41 @@ describe('event backbone foundation', () => {
     expect(getAppSummary({ tenantId: 7, userId: 7, summaryType: 'home' }).payload.kind).toBe('home');
   });
 
+  it('processPendingJobs only claims job types handled by the worker', async () => {
+    const projectionJob = enqueueJob({
+      tenantId: 7,
+      userId: 7,
+      jobType: 'project_read_models',
+      payload: { source: 'test' },
+      idempotencyKey: 'project-7-filtered',
+    });
+    const fixerJob = enqueueJob({
+      tenantId: 7,
+      userId: 7,
+      jobType: 'chat_action_fixer_review',
+      payload: { source: 'test' },
+      idempotencyKey: 'fixer-7-filtered',
+    });
+    const handled = vi.fn();
+
+    const result = await processPendingJobs([{
+      jobType: 'chat_action_fixer_review',
+      idempotent: true,
+      handle: handled,
+    }], { limit: 10, lockOwner: 'fixer-worker' });
+
+    expect(result.completed).toBe(1);
+    expect(handled).toHaveBeenCalledTimes(1);
+    expect(handled.mock.calls[0][0].jobId).toBe(fixerJob.jobId);
+
+    const projectionRow = testDb.prepare('SELECT status, lock_owner FROM background_jobs WHERE job_id = ?')
+      .get(projectionJob.jobId) as { status: string; lock_owner: string | null };
+    const fixerRow = testDb.prepare('SELECT status FROM background_jobs WHERE job_id = ?')
+      .get(fixerJob.jobId) as { status: string };
+    expect(projectionRow).toEqual({ status: 'pending', lock_owner: null });
+    expect(fixerRow.status).toBe('completed');
+  });
+
   it('reclaims stale processing job leases after fifteen minutes', () => {
     const job = enqueueJob({
       tenantId: 7,

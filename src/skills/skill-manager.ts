@@ -257,12 +257,13 @@ export function disableSubSkill(domain: DomainName, subSkillName: string): boole
   return result;
 }
 
-/** Enable an entire skill (domain). Invalidates tool cache. */
-export function isSkillEnabled(domain: DomainName): boolean {
+/** Returns whether a domain is registered and globally enabled in the skill registry. */
+export function isDomainEnabled(domain: DomainName): boolean {
   const status = getSkillStatus(domain);
   return status.enabled;
 }
 
+/** Enable an entire skill (domain). Invalidates tool cache. */
 export function enableSkill(domain: DomainName): boolean {
   const result = registry.enable(domain);
   if (result) invalidateToolCache();

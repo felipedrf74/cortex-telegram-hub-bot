@@ -29,7 +29,7 @@ const mockClassifyAndExtractImage = vi.fn();
 const mockGetUserLanguage = vi.fn(() => 'en');
 const mockSetUserLanguage = vi.fn();
 const mockGetPreferredDisplayName = vi.fn(() => 'Jaqueline');
-const mockCheckTierAccess = vi.fn(() => ({
+const mockCheckSkillAccess = vi.fn(() => ({
   allowed: true,
   userTier: 'pro',
   requiredTier: 'free',
@@ -228,7 +228,8 @@ vi.mock('../../src/services/secretary-fastpath', () => ({
 }));
 
 vi.mock('../../src/services/skill-tiers', () => ({
-  checkTierAccess: (...args: unknown[]) => mockCheckTierAccess(...args),
+  checkSkillAccess: (...args: unknown[]) => mockCheckSkillAccess(...args),
+  checkTierAccess: (...args: unknown[]) => mockCheckSkillAccess(...args),
 }));
 
 vi.mock('../../src/services/cost-guardrail', () => ({
@@ -570,7 +571,7 @@ describe('Chat API routes', () => {
     mockGetUserLanguage.mockReset();
     mockSetUserLanguage.mockReset();
     mockGetPreferredDisplayName.mockReset();
-    mockCheckTierAccess.mockReset();
+    mockCheckSkillAccess.mockReset();
     mockIsUserOverDailyCap.mockReset();
     mockGetLastAssistantMessage.mockReset();
     mockAddToConversation.mockReset();
@@ -618,7 +619,7 @@ describe('Chat API routes', () => {
     mockKeywordMatch.mockReturnValue(null);
     mockGetUserLanguage.mockReturnValue('en');
     mockGetPreferredDisplayName.mockReturnValue('Jaqueline');
-    mockCheckTierAccess.mockReturnValue({
+    mockCheckSkillAccess.mockReturnValue({
       allowed: true,
       userTier: 'pro',
       requiredTier: 'free',
