@@ -3,6 +3,8 @@
 
 import fs from 'fs';
 import path from 'path';
+import { planChatCoreV2ShadowTurn } from '../src/services/chat-core-v2/shadow-orchestrator';
+import { classifyShadowRoute } from '../src/services/chat-core-v2/shadow-route-classifier';
 
 type JsonValue = null | boolean | number | string | JsonValue[] | { [key: string]: JsonValue };
 
@@ -19,6 +21,11 @@ export type ChatTestScenario = {
   expected_step_count?: number;
   expected_steps?: Array<{ skill?: string; action?: string }>;
   expected_aggregate_status?: string;
+  expected_shadow_intent?: string;
+  expected_shadow_route_method?: string;
+  expected_shadow_capability_ids?: string[];
+  expected_shadow_fallback_allowed?: boolean;
+  expected_shadow_would_call_model?: boolean;
 };
 
 export type ChatTestFixture = {
@@ -50,6 +57,7 @@ type RunnerOptions = {
   token?: string;
   outputDir: string;
   dryRun: boolean;
+  shadowLocal?: boolean;
 };
 
 type ParsedArgs = RunnerOptions & {
@@ -67,6 +75,7 @@ Options:
   --token <jwt>         Authenticated API bearer token. Env: CHAT_TEST_TOKEN
   --output-dir <path>   Report directory. Default: docs/release/chat-test-phase
   --dry-run             Validate fixture and write a skipped report without network calls.
+  --shadow-local        Evaluate Chat Core v2 shadow routing locally without network calls.
 `;
 }
 
@@ -151,6 +160,71 @@ export function evaluateScenarioResponse(
   };
 }
 
+export function evaluateShadowScenario(scenario: ChatTestScenario): ScenarioResult {
+  const failures: string[] = [];
+  const guess = classifyShadowRoute(scenario.user_text);
+  const result = planChatCoreV2ShadowTurn({
+    turnId: `chat-test-phase-shadow:${scenario.id}`,
+    tenantId: 'chat-test-phase',
+    userId: 'chat-test-phase',
+    intent: guess.intent,
+    confidence: guess.confidence,
+    domains: guess.domains,
+    capabilityIds: guess.capabilityIds,
+    unsupportedReason: guess.unsupportedReason,
+    now: new Date('2026-05-24T00:00:00.000Z'),
+  });
+  const metadata = {
+    chatCoreV2Shadow: {
+      intent: result.routeDecision.intent,
+      routeMethod: result.routeDecision.routeMethod,
+      selectedCapabilityIds: result.routeDecision.selectedCapabilityIds,
+      unsupportedReason: result.routeDecision.unsupportedReason,
+      fallbackAllowed: result.fallbackVerdict.allowed,
+      wouldCallModel: result.wouldCallModel,
+      wouldExecute: result.wouldExecute,
+      toolSchemaSetVersion: result.toolSchemaSet.toolSchemaSetVersion,
+    },
+  };
+
+  if (scenario.expected_shadow_intent && result.routeDecision.intent !== scenario.expected_shadow_intent) {
+    failures.push(`expected_shadow_intent_${scenario.expected_shadow_intent}_saw_${result.routeDecision.intent}`);
+  }
+  if (scenario.expected_shadow_route_method && result.routeDecision.routeMethod !== scenario.expected_shadow_route_method) {
+    failures.push(`expected_shadow_route_method_${scenario.expected_shadow_route_method}_saw_${result.routeDecision.routeMethod}`);
+  }
+  for (const capabilityId of scenario.expected_shadow_capability_ids ?? []) {
+    if (!result.routeDecision.selectedCapabilityIds.includes(capabilityId)) {
+      failures.push(`missing_shadow_capability_${capabilityId}`);
+    }
+  }
+  if (
+    scenario.expected_shadow_fallback_allowed !== undefined
+    && result.fallbackVerdict.allowed !== scenario.expected_shadow_fallback_allowed
+  ) {
+    failures.push(`expected_shadow_fallback_allowed_${scenario.expected_shadow_fallback_allowed}_saw_${result.fallbackVerdict.allowed}`);
+  }
+  if (
+    scenario.expected_shadow_would_call_model !== undefined
+    && result.wouldCallModel !== scenario.expected_shadow_would_call_model
+  ) {
+    failures.push(`expected_shadow_would_call_model_${scenario.expected_shadow_would_call_model}_saw_${result.wouldCallModel}`);
+  }
+
+  return {
+    id: scenario.id,
+    passed: failures.length === 0,
+    status: failures.length === 0 ? 'passed' : 'failed',
+    failures,
+    request: { text: scenario.user_text, locale: scenario.locale },
+    response: {
+      status: 200,
+      text: `Shadow route: ${result.routeDecision.routeMethod}`,
+      metadata,
+    },
+  };
+}
+
 function redactSensitiveEvidence(value: unknown): unknown {
   if (Array.isArray(value)) return value.map((item) => redactSensitiveEvidence(item));
   if (!value || typeof value !== 'object') return value;
@@ -190,6 +264,10 @@ export async function runChatTestPhase(options: RunnerOptions): Promise<{ report
       });
       continue;
     }
+    if (options.shadowLocal) {
+      results.push(evaluateShadowScenario(scenario));
+      continue;
+    }
     const endpoint = resolveEndpoint(options);
     const response = await fetch(endpoint, {
       method: 'POST',
@@ -219,7 +297,7 @@ export async function runChatTestPhase(options: RunnerOptions): Promise<{ report
     passRate,
     passed,
     total: results.length,
-    endpoint: options.dryRun ? null : redactUrl(resolveEndpoint(options)),
+    endpoint: options.dryRun || options.shadowLocal ? null : redactUrl(resolveEndpoint(options)),
     results,
   };
   fs.mkdirSync(options.outputDir, { recursive: true });
@@ -239,12 +317,14 @@ function parseArgs(argv: string[]): ParsedArgs {
     token: process.env.CHAT_TEST_TOKEN,
     outputDir: process.env.CHAT_TEST_OUTPUT_DIR ?? 'docs/release/chat-test-phase',
     dryRun: false,
+    shadowLocal: false,
     help: false,
   };
   for (let index = 0; index < argv.length; index += 1) {
     const value = argv[index];
     if (value === '--help' || value === '-h') args.help = true;
     else if (value === '--dry-run') args.dryRun = true;
+    else if (value === '--shadow-local') args.shadowLocal = true;
     else if (value === '--fixture') args.fixturePath = argv[++index] ?? '';
     else if (value === '--base-url') args.baseUrl = argv[++index];
     else if (value === '--endpoint') args.endpoint = argv[++index];
@@ -319,7 +399,7 @@ async function main(): Promise<void> {
     return;
   }
   if (!args.fixturePath) throw new Error('Missing --fixture');
-  if (!args.dryRun && !args.token) throw new Error('Missing --token for non-dry-run execution');
+  if (!args.dryRun && !args.shadowLocal && !args.token) throw new Error('Missing --token for non-dry-run execution');
   const result = await runChatTestPhase(args);
   console.log(JSON.stringify({
     reportPath: result.reportPath,

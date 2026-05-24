@@ -6,6 +6,7 @@ import path from 'path';
 import { describe, expect, it } from 'vitest';
 
 import {
+  evaluateShadowScenario,
   evaluateScenarioResponse,
   parseFixtureText,
   runChatTestPhase,
@@ -159,5 +160,63 @@ describe('chat-test-phase runner', () => {
       total: 1,
       passed: 1,
     });
+  });
+
+  it('evaluates Chat Core v2 shadow routing expectations locally', () => {
+    const result = evaluateShadowScenario({
+      id: 'task-create-preview',
+      user_text: 'Create a task to buy milk tomorrow',
+      expected_shadow_intent: 'create_action',
+      expected_shadow_route_method: 'llm_command_translation',
+      expected_shadow_capability_ids: ['tasks.create'],
+      expected_shadow_fallback_allowed: false,
+      expected_shadow_would_call_model: true,
+    });
+
+    expect(result.passed).toBe(true);
+    expect(result.response?.metadata).toMatchObject({
+      chatCoreV2Shadow: {
+        intent: 'create_action',
+        routeMethod: 'llm_command_translation',
+        selectedCapabilityIds: ['tasks.create'],
+        fallbackAllowed: false,
+        wouldCallModel: true,
+        wouldExecute: false,
+      },
+    });
+  });
+
+  it('writes a Chat Core v2 shadow-local report without network credentials', async () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'chat-test-phase-shadow-'));
+    const fixturePath = path.join(tmp, 'fixture.json');
+    fs.writeFileSync(fixturePath, JSON.stringify({
+      suite: 'shadow-local-suite',
+      expected_pass_rate: 1,
+      scenarios: [
+        {
+          id: 'training-read',
+          user_text: 'What is my next training session?',
+          expected_shadow_route_method: 'deterministic_read',
+          expected_shadow_capability_ids: ['training.session_explain'],
+        },
+      ],
+    }));
+
+    const result = await runChatTestPhase({
+      fixturePath,
+      outputDir: tmp,
+      dryRun: false,
+      shadowLocal: true,
+    });
+
+    expect(result.passRate).toBe(1);
+    const report = JSON.parse(fs.readFileSync(result.reportPath, 'utf8'));
+    expect(report).toMatchObject({
+      suite: 'shadow-local-suite',
+      dryRun: false,
+      total: 1,
+      passed: 1,
+    });
+    expect(report.results[0].response.metadata.chatCoreV2Shadow.routeMethod).toBe('deterministic_read');
   });
 });

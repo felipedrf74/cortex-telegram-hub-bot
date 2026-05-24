@@ -91,10 +91,12 @@ import { applyChatFallbackPolicy } from '../../services/chat-fallback-policy';
 import { applyChatResponseQualityGate } from '../../services/chat-response-quality-gate';
 import { buildSimpleStateContext } from '../../domains/domain-handler';
 import {
+  isChatCoreV2ShadowRouteHookEnabled,
   isChatQualityGateEnabled,
   isChatResearchRouterEnabled,
   isChatTurnContractEnabled,
 } from '../../services/runtime-flags';
+import { runChatCoreV2ShadowRouteHook } from '../../services/chat-core-v2';
 import {
   createDecisionIntent,
   findDecisionByRelatedEntity,
@@ -844,6 +846,34 @@ export function registerChatMessageRoutes(
       // Run before any model-backed planner/reasoning path. Token-zero
       // deterministic reads above remain available after quota exhaustion.
       if (quotaDecision.block && sendChatQuotaExceededIfNeeded(res, userId, 'iOS chat: user over daily cost cap')) return;
+
+      if (isChatCoreV2ShadowRouteHookEnabled(process.env, { userId, tenantId })) {
+        const shadow = runChatCoreV2ShadowRouteHook({
+          normalizedText,
+          userId,
+          tenantId,
+          chatRequestId,
+          userMessageId,
+          clientMessageId: scopedClientMessageId,
+          attachmentsCount: normalizedAttachments.length,
+          locale: getUserLanguageById(userId),
+          timezone: getUserTimezoneById(userId),
+          now: new Date(requestStartedAt),
+        });
+        if (shadow.recorded) {
+          logger.info(
+            {
+              chatRequestId,
+              tenantId,
+              userId,
+              routeMethod: shadow.result?.routeDecision.routeMethod,
+              reasoningTier: shadow.result?.routeDecision.reasoningTier,
+              replayBundleId: shadow.replayBundleId,
+            },
+            'Chat Core v2 shadow route hook recorded plan',
+          );
+        }
+      }
 
       // ── General Action Planner ─────────────────────────────────
       // Natural-language write intents must be routed before read-only
