@@ -2,6 +2,11 @@ import { describe, expect, it } from 'vitest';
 
 import {
   CHAT_CORE_V2_CAPABILITIES,
+  CHAT_CORE_V2_GLOBAL_FLAG,
+  CHAT_CORE_V2_PREVIEWS_FLAG,
+  CHAT_CORE_V2_READS_FLAG,
+  CHAT_CORE_V2_RESTRICTED_POLICY_FLAG,
+  CHAT_CORE_V2_WRITES_FLAG,
   CHAT_CORE_V2_REASONING_POLICIES,
   GENERIC_JSON_PROVIDER_CAPABILITIES,
   OPENAI_RESPONSES_PROVIDER_CAPABILITIES,
@@ -73,36 +78,74 @@ describe('Chat Core v2 foundation contracts', () => {
     for (const capability of listChatCoreV2ModelVisibleCapabilities()) {
       expect(capability.schemaVersion, capability.capabilityId).toMatch(/^chat_core_v2_capability@\d+\.\d+\.\d+$/);
       expect(capability.toolSchemaSetVersion, capability.capabilityId).toMatch(/^chat_core_v2_tools@\d+\.\d+\.\d+$/);
-      expect(capability.enabledFlags, capability.capabilityId).toContain('CHAT_CORE_V2_ENABLED');
+      expect(capability.enabledFlags, capability.capabilityId).toContain(CHAT_CORE_V2_GLOBAL_FLAG);
       expect(capability.requiredPermissions.length, capability.capabilityId).toBeGreaterThan(0);
       expect(capability.promptFamily, capability.capabilityId).toMatch(/^chat_v2_/);
     }
   });
 
-  it('keeps live capability availability default-off and scoped by registry flags', () => {
+  it('keeps live capability availability default-off and staged by registry flags', () => {
     expect(listEnabledChatCoreV2Capabilities({ env: {} })).toEqual([]);
+    expect(listEnabledChatCoreV2Capabilities({
+      env: { [CHAT_CORE_V2_GLOBAL_FLAG]: 'true' },
+    })).toEqual([]);
     expect(isChatCoreV2CapabilityEnabled('tasks.today_summary', { env: {} })).toBe(false);
     expect(isChatCoreV2CapabilityEnabled('unknown.capability', {
-      env: { CHAT_CORE_V2_ENABLED: 'true' },
+      env: { [CHAT_CORE_V2_GLOBAL_FLAG]: 'true' },
     })).toBe(false);
 
-    const enabled = listEnabledChatCoreV2Capabilities({
-      env: { CHAT_CORE_V2_ENABLED: 'true' },
+    const reads = listEnabledChatCoreV2Capabilities({
+      env: {
+        [CHAT_CORE_V2_GLOBAL_FLAG]: 'true',
+        [CHAT_CORE_V2_READS_FLAG]: 'true',
+      },
     });
-    expect(enabled.map((capability) => capability.capabilityId)).toEqual(
-      getChatCoreV2Capabilities().map((capability) => capability.capabilityId),
+    expect(new Set(reads.map((capability) => capability.rolloutStage))).toEqual(new Set(['mvp_read']));
+    expect(reads.map((capability) => capability.capabilityId)).toEqual(
+      getChatCoreV2Capabilities()
+        .filter((capability) => capability.rolloutStage === 'mvp_read')
+        .map((capability) => capability.capabilityId),
+    );
+
+    const writes = listEnabledChatCoreV2Capabilities({
+      env: {
+        [CHAT_CORE_V2_GLOBAL_FLAG]: 'true',
+        [CHAT_CORE_V2_WRITES_FLAG]: 'true',
+      },
+    });
+    expect(new Set(writes.map((capability) => capability.rolloutStage))).toEqual(new Set(['mvp_confirmed_write']));
+
+    const previews = listEnabledChatCoreV2Capabilities({
+      env: {
+        [CHAT_CORE_V2_GLOBAL_FLAG]: 'true',
+        [CHAT_CORE_V2_PREVIEWS_FLAG]: 'true',
+      },
+    });
+    expect(new Set(previews.map((capability) => capability.rolloutStage))).toEqual(new Set(['preview_only']));
+
+    const restrictedPolicies = listEnabledChatCoreV2Capabilities({
+      env: {
+        [CHAT_CORE_V2_GLOBAL_FLAG]: 'true',
+        [CHAT_CORE_V2_RESTRICTED_POLICY_FLAG]: 'true',
+      },
+    });
+    expect(restrictedPolicies.map((capability) => capability.capabilityId)).toEqual(
+      ['finance.payment_or_tax_action_blocked'],
     );
     expect(isChatCoreV2CapabilityEnabled('tasks.today_summary', {
       env: {
-        CHAT_CORE_V2_ENABLED: 'false',
-        CHAT_CORE_V2_ENABLED_TENANT_9: '1',
+        [CHAT_CORE_V2_GLOBAL_FLAG]: 'false',
+        [`${CHAT_CORE_V2_GLOBAL_FLAG}_TENANT_9`]: '1',
+        [CHAT_CORE_V2_READS_FLAG]: 'false',
+        [`${CHAT_CORE_V2_READS_FLAG}_TENANT_9`]: '1',
       },
       scope: { userId: 7, tenantId: 9 },
     })).toBe(true);
     expect(isChatCoreV2CapabilityEnabled('tasks.today_summary', {
       env: {
-        CHAT_CORE_V2_ENABLED: 'true',
-        CHAT_CORE_V2_ENABLED_USER_42: 'off',
+        [CHAT_CORE_V2_GLOBAL_FLAG]: 'true',
+        [CHAT_CORE_V2_READS_FLAG]: 'true',
+        [`${CHAT_CORE_V2_READS_FLAG}_USER_42`]: 'off',
       },
       scope: { userId: 42, tenantId: 9 },
     })).toBe(false);
