@@ -490,7 +490,7 @@ describe('buildCoachKernelTrainingPlan — side effects', () => {
   });
 
   it('clamps out-of-range scores and ignores non-finite inputs gracefully', () => {
-    const absurd = buildAthleteStateFromTrainingProfiles({
+    const makeWith = (score: number) => buildAthleteStateFromTrainingProfiles({
       userId: 504,
       objective: '10k base',
       durationWeeks: 1,
@@ -505,11 +505,27 @@ describe('buildCoachKernelTrainingPlan — side effects', () => {
       fitnessProfile: null,
       gymProfile: null,
       runProfile: null,
-      currentReadiness: { score: 120 }, // impossible — clamp
+      currentReadiness: { score },
     });
 
-    expect(absurd.readiness.score).toBe(100);
-    expect(absurd.readiness.level).toBe('green');
+    // Out-of-range positive — clamp to 100.
+    expect(makeWith(120).readiness.score).toBe(100);
+    expect(makeWith(120).readiness.level).toBe('green');
+
+    // Out-of-range negative — clamp to 0.
+    expect(makeWith(-25).readiness.score).toBe(0);
+    expect(makeWith(-25).readiness.level).toBe('red');
+
+    // Non-finite — fall back to neutral 70 / yellow.
+    // PR 2 §B2 acceptance: lock the generator-input-level behavior so the
+    // adapter dedupe stays safe even if a future refactor adds another
+    // caller that skips the clamp step.
+    expect(makeWith(Number.NaN).readiness.score).toBe(70);
+    expect(makeWith(Number.NaN).readiness.level).toBe('yellow');
+    expect(makeWith(Number.POSITIVE_INFINITY).readiness.score).toBe(70);
+    expect(makeWith(Number.POSITIVE_INFINITY).readiness.level).toBe('yellow');
+    expect(makeWith(Number.NEGATIVE_INFINITY).readiness.score).toBe(70);
+    expect(makeWith(Number.NEGATIVE_INFINITY).readiness.level).toBe('yellow');
   });
 
   it('exposes mid-week date lookups through the registry after plan generation', () => {
