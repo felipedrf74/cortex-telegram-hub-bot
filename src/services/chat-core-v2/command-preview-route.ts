@@ -1,6 +1,7 @@
 // Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
 
 import {
+  CHAT_CORE_V2_CONFIRMATIONS_FLAG,
   getChatCoreV2Capability,
   isChatCoreV2CapabilityEnabled,
 } from './capability-registry';
@@ -8,6 +9,12 @@ import {
   evaluateChatCoreV2CommandBusGate,
   type ChatCoreV2CommandGateVerdict,
 } from './command-bus';
+import {
+  decisionDismissVersionForItem,
+  isDecisionDismissEligibleStatus,
+  isNotificationSnoozeEligibleStatus,
+  notificationSnoozeVersionForItem,
+} from './command-status-policy';
 import {
   buildChatCoreV2ActionPreviewResponse,
   normalizeChatCoreV2Locale,
@@ -18,6 +25,9 @@ import {
   type ChatCoreV2ShadowRouteGuess,
 } from './shadow-route-classifier';
 import { hashStable, normalizeTimezone } from './deterministic-read/common';
+import { isChatCoreV2RuntimeFlagEnabled } from '../runtime-flags';
+import { signChatConfirmationToken } from '../chat-confirmation-token';
+import { trackPendingChatCoreV2Command } from './pending-commands';
 import {
   buildEntityResolutionPreconditions,
   resolveEntityReferenceFromCandidates,
@@ -39,6 +49,18 @@ import {
 import { listTasks } from '../task-store/task-service';
 import { computeContentHash } from '../task-store/unified-task-store';
 import type { NormalizedTask } from '../task-store/types';
+import {
+  getActivePlan,
+  getSessionsForWeek,
+  getWeeksForPlan,
+  type TrainingPlan,
+  type TrainingSession,
+  type TrainingWeek,
+} from '../training-plans';
+import {
+  evaluateChatCoreV2TrainingSafetyPolicy,
+  type TrainingChangeType,
+} from './training-safety-policy';
 import type {
   AICommandEnvelope,
   CapabilityDefinition,
@@ -68,19 +90,35 @@ export interface ChatCoreV2CommandPreviewRouteResult {
   command: AICommandEnvelope;
   gateVerdict: ChatCoreV2CommandGateVerdict;
   response: ChatCoreV2Response;
-  executionEnabled: false;
-  executionDisabledReason: 'preview_only_rollout';
+  executionEnabled: boolean;
+  executionDisabledReason?: 'preview_only_rollout' | 'executor_not_supported';
+  confirmationToken?: string;
 }
 
 const TASK_CREATE_CAPABILITY = 'tasks.create';
 const TASK_COMPLETE_CAPABILITY = 'tasks.complete';
 const NOTIFICATION_SNOOZE_CAPABILITY = 'notifications.snooze';
 const DECISION_DISMISS_CAPABILITY = 'decision_center.dismiss';
+const EXECUTABLE_CAPABILITIES = new Set([
+  TASK_CREATE_CAPABILITY,
+  TASK_COMPLETE_CAPABILITY,
+  NOTIFICATION_SNOOZE_CAPABILITY,
+  DECISION_DISMISS_CAPABILITY,
+]);
 const SECRETARY_SCHEDULE_EVENT_CAPABILITY = 'secretary.schedule_event_preview';
+const TRAINING_MODIFY_SESSION_CAPABILITY = 'training.modify_session_preview';
 const COOKING_GROCERY_ITEM_CAPABILITY = 'cooking.grocery_item_preview';
 const CONTENT_BRIEF_DRAFT_CAPABILITY = 'content.brief_draft_preview';
 const COMMAND_TTL_MS = 10 * 60 * 1000;
 const NOTIFICATION_SNOOZE_DEFAULT_MINUTES = 60;
+const ACTIVE_TRAINING_SESSION_STATUSES = new Set([
+  'pending',
+  'scheduled',
+  'reflowed',
+  'compressed',
+  'capped',
+  'moved',
+]);
 
 export function tryBuildChatCoreV2CommandPreviewRoute(
   input: BuildChatCoreV2CommandPreviewRouteInput,
@@ -107,6 +145,11 @@ export function tryBuildChatCoreV2CommandPreviewRoute(
   if (routeGuess.domains[0] === 'secretary') {
     if (routeGuess.intent === 'create_action' && routeGuess.capabilityIds.includes(SECRETARY_SCHEDULE_EVENT_CAPABILITY)) {
       return tryBuildSecretaryScheduleEventPreview(input, routeGuess);
+    }
+  }
+  if (routeGuess.domains[0] === 'training') {
+    if (routeGuess.intent === 'modify_action' && routeGuess.capabilityIds.includes(TRAINING_MODIFY_SESSION_CAPABILITY)) {
+      return tryBuildTrainingModifySessionPreview(input, routeGuess);
     }
   }
   if (routeGuess.domains[0] === 'content') {
@@ -218,10 +261,10 @@ function tryBuildNotificationSnoozePreview(
   const referencePhrase = snoozeRequest.referencePhrase;
   if (!referencePhrase) return null;
 
-  const notifications = listNotificationCenterItems(input.userId, input.tenantId, {
-    status: 'unread',
-    limit: 50,
-  });
+  const notifications = [
+    ...listNotificationCenterItems(input.userId, input.tenantId, { status: 'unread', limit: 50 }),
+    ...listNotificationCenterItems(input.userId, input.tenantId, { status: 'read', limit: 50 }),
+  ].filter((item) => isNotificationSnoozeEligibleStatus(item.status));
   const candidates = notifications
     .map((item) => notificationToResolutionCandidate(item, referencePhrase))
     .filter((candidate) => candidate.confidence > 0.45);
@@ -265,7 +308,7 @@ function tryBuildDecisionDismissPreview(
   if (!referencePhrase) return null;
 
   const decisions = listDecisionItems(input.userId, input.tenantId, { limit: 50 })
-    .filter((item) => ['unread', 'read', 'failed', 'snoozed', 'open'].includes(item.status));
+    .filter((item) => isDecisionDismissEligibleStatus(item.status));
   const candidates = decisions
     .map((item) => decisionToResolutionCandidate(item, referencePhrase))
     .filter((candidate) => candidate.confidence > 0.45);
@@ -334,6 +377,47 @@ function isConcreteCalendarEventTitle(title: string): boolean {
     .trim();
   if (!normalized) return false;
   return !/^(?:something|anything|event|meeting|appointment|calendar|agenda|reuniao|cita|evento|compromisso)$/.test(normalized);
+}
+
+function tryBuildTrainingModifySessionPreview(
+  input: BuildChatCoreV2CommandPreviewRouteInput,
+  routeGuess: ChatCoreV2ShadowRouteGuess,
+): ChatCoreV2CommandPreviewRouteResult | null {
+  const capability = getEnabledCapability(TRAINING_MODIFY_SESSION_CAPABILITY, input);
+  if (!capability) return null;
+
+  const changeTypes = extractTrainingChangeTypes(input.normalizedText);
+  if (changeTypes.length === 0) return null;
+
+  const now = input.now ?? new Date();
+  const target = resolveTrainingSessionTarget(input, now);
+  if (!target) return null;
+
+  const policy = evaluateChatCoreV2TrainingSafetyPolicy({
+    operation: 'preview',
+    changeTypes,
+    affectedSessionCount: 1,
+    targetSessionIds: [`training_session:${target.session.id}`],
+    increasesIntensity: false,
+    increasesVolumePercent: 0,
+  });
+  if (!policy.ok) return null;
+
+  const command = buildTrainingModifySessionCommandEnvelope({
+    input,
+    now,
+    target,
+    changeTypes,
+    policyVersion: policy.policyVersion,
+  });
+  return buildCommandPreviewResult({
+    input,
+    routeGuess,
+    capability,
+    capabilityId: TRAINING_MODIFY_SESSION_CAPABILITY,
+    command,
+    now,
+  });
 }
 
 function tryBuildCookingGroceryItemPreview(
@@ -423,7 +507,14 @@ function buildCommandPreviewResult(input: {
   }, 'preview');
   if (!gateVerdict.ok) return null;
 
-  const previewCapability = asPreviewOnlyCapability(input.capability);
+  const confirmation = maybeIssueConfirmationToken({
+    input: input.input,
+    capability: input.capability,
+    capabilityId: input.capabilityId,
+    command,
+    now: input.now,
+  });
+  const previewCapability = confirmation.executionEnabled ? input.capability : asPreviewOnlyCapability(input.capability);
   const previewCopy = buildPreviewCopy(input.capabilityId, command.payload, input.input.locale);
   const response = buildChatCoreV2ActionPreviewResponse({
     capability: previewCapability,
@@ -432,12 +523,17 @@ function buildCommandPreviewResult(input: {
     summary: previewCopy.summary,
     diff: previewCopy.diff,
     locale: input.input.locale,
+    confirmationToken: confirmation.confirmationToken,
     expiresAt: command.expiresAt,
   });
-  response.reasonCodes = [
-    ...response.reasonCodes,
-    'preview_only_rollout',
-  ];
+  if (!confirmation.executionEnabled) {
+    response.reasonCodes = [
+      ...response.reasonCodes,
+      'preview_only_rollout',
+    ];
+  } else {
+    response.reasonCodes = [...response.reasonCodes, 'confirmation_required'];
+  }
 
   return {
     routeVersion: CHAT_CORE_V2_COMMAND_PREVIEW_ROUTE_VERSION,
@@ -446,8 +542,55 @@ function buildCommandPreviewResult(input: {
     command,
     gateVerdict,
     response,
-    executionEnabled: false,
-    executionDisabledReason: 'preview_only_rollout',
+    executionEnabled: confirmation.executionEnabled,
+    executionDisabledReason: confirmation.executionDisabledReason,
+    confirmationToken: confirmation.confirmationToken,
+  };
+}
+
+function maybeIssueConfirmationToken(input: {
+  input: BuildChatCoreV2CommandPreviewRouteInput;
+  capability: CapabilityDefinition;
+  capabilityId: string;
+  command: AICommandEnvelope<Record<string, unknown>>;
+  now: Date;
+}): {
+  executionEnabled: boolean;
+  executionDisabledReason?: ChatCoreV2CommandPreviewRouteResult['executionDisabledReason'];
+  confirmationToken?: string;
+} {
+  if (input.capability.support.execute !== 'supported') {
+    return { executionEnabled: false, executionDisabledReason: 'preview_only_rollout' };
+  }
+  const flagEnabled = isChatCoreV2RuntimeFlagEnabled(CHAT_CORE_V2_CONFIRMATIONS_FLAG, input.input.env ?? process.env, {
+    userId: input.input.userId,
+    tenantId: input.input.tenantId,
+  });
+  if (!flagEnabled) {
+    return { executionEnabled: false, executionDisabledReason: 'preview_only_rollout' };
+  }
+  if (!EXECUTABLE_CAPABILITIES.has(input.capabilityId)) {
+    return { executionEnabled: false, executionDisabledReason: 'executor_not_supported' };
+  }
+
+  trackPendingChatCoreV2Command({
+    userId: input.input.userId,
+    tenantId: input.input.tenantId,
+    capabilityId: input.capabilityId,
+    command: input.command,
+    now: input.now,
+  });
+  return {
+    executionEnabled: true,
+    confirmationToken: signChatConfirmationToken({
+      pendingId: input.command.commandId,
+      userId: input.input.userId,
+      tenantId: input.input.tenantId,
+      intentClass: input.command.commandType,
+      expiresAt: input.command.expiresAt,
+      sourceMessageId: input.input.messageId,
+      now: input.now,
+    }),
   };
 }
 
@@ -645,8 +788,8 @@ function buildNotificationSnoozeCommandEnvelope(input: {
       requiredPermissionsVersion: `chat-v2-permissions:${input.input.tenantId}:${input.input.userId}:notifications:v1`,
       invariants: [{
         type: 'notification_status',
-        description: 'Notification must still be unread when the preview is confirmed.',
-        check: 'notification_is_unread',
+        description: 'Notification must still be snooze-eligible when the preview is confirmed.',
+        check: 'notification_is_snooze_eligible',
       }],
     },
     authorization: {
@@ -671,7 +814,7 @@ function buildDecisionDismissCommandEnvelope(input: {
   const entityPreconditions = buildEntityResolutionPreconditions(input.resolution);
   const entityId = `decision:${input.decision.decisionId}`;
   const createdAt = input.now.toISOString();
-  const decisionVersion = decisionVersionForItem(input.decision);
+  const decisionVersion = decisionDismissVersionForItem(input.decision);
   const payload = {
     operation: 'dismiss',
     decisionId: input.decision.decisionId,
@@ -720,7 +863,7 @@ function buildDecisionDismissCommandEnvelope(input: {
       requiredDecisionVersion: decisionVersion,
       invariants: [{
         type: 'decision_status',
-        description: 'Decision must still be active when the preview is confirmed.',
+        description: 'Decision must still be dismissible when the preview is confirmed.',
         check: 'decision_is_active',
       }],
     },
@@ -937,6 +1080,112 @@ function buildContentBriefDraftCommandEnvelope(input: {
   };
 }
 
+interface TrainingSessionPreviewTarget {
+  plan: TrainingPlan;
+  week: TrainingWeek;
+  session: TrainingSession;
+  sessionDate: string | null;
+  sessionDateLabel: string;
+  entityVersions: Record<string, string>;
+}
+
+function buildTrainingModifySessionCommandEnvelope(input: {
+  input: BuildChatCoreV2CommandPreviewRouteInput;
+  now: Date;
+  target: TrainingSessionPreviewTarget;
+  changeTypes: TrainingChangeType[];
+  policyVersion: string;
+}): AICommandEnvelope<Record<string, unknown>> {
+  const createdAt = input.now.toISOString();
+  const entityId = `training_session:${input.target.session.id}`;
+  const planEntityId = `training_plan:${input.target.plan.id}`;
+  const payload = {
+    operation: 'modify_session',
+    changeType: 'reduce_intensity',
+    sessionId: input.target.session.id,
+    planId: input.target.plan.id,
+    weekId: input.target.week.id,
+    title: input.target.session.title,
+    dayOfWeek: input.target.session.day_of_week,
+    sessionDate: input.target.sessionDate,
+    sessionDateLabel: input.target.sessionDateLabel,
+    sessionType: input.target.session.session_type,
+    currentIntensity: input.target.session.intensity_text ?? null,
+    targetIntensity: 'easier',
+    currentDurationMinutes: input.target.session.duration_minutes,
+    status: 'preview',
+    safetyPolicyVersion: input.policyVersion,
+    changes: {
+      intensity: 'reduce',
+      load: 'lighter',
+      notes: 'Preview only. Training safety rules must validate any future execution.',
+    },
+  };
+  const commandId = `cmd_${hashStable({
+    tenantId: input.input.tenantId,
+    userId: input.input.userId,
+    messageId: input.input.messageId,
+    sessionId: input.target.session.id,
+    entityVersions: input.target.entityVersions,
+    changeTypes: input.changeTypes,
+  })}`;
+
+  return {
+    commandId,
+    commandSchemaVersion: 'training.modify_session@1.0.0',
+    previewSchemaVersion: 'training_change_preview_card@1.0.0',
+    responseSchemaVersion: 'chat_response_v2@1.0.0',
+    tenantId: String(input.input.tenantId),
+    userId: String(input.input.userId),
+    domain: 'training',
+    commandType: 'training.modify_session',
+    origin: 'chat',
+    payload,
+    basedOn: {
+      entityIds: [entityId, planEntityId],
+      entityVersions: input.target.entityVersions,
+      contextHash: hashStable({
+        routeVersion: CHAT_CORE_V2_COMMAND_PREVIEW_ROUTE_VERSION,
+        textHash: hashStable({ text: input.input.normalizedText }),
+        payload,
+        changeTypes: input.changeTypes,
+      }),
+      createdAt,
+    },
+    preconditions: {
+      requiredEntityVersions: input.target.entityVersions,
+      requiredPermissionsVersion: `chat-v2-permissions:${input.input.tenantId}:${input.input.userId}:training:v1`,
+      invariants: [
+        {
+          type: 'training_session_status',
+          description: 'Training session must still be active before any future execution.',
+          check: 'training_session_is_active',
+        },
+        {
+          type: 'training_safety_policy',
+          description: 'Training safety policy must allow the proposed modification before execution.',
+          check: 'training_safety_policy_allows_change',
+        },
+        {
+          type: 'preview_only',
+          description: 'Training session modification previews do not change the plan in this rollout.',
+          check: 'training_modify_session_preview_only',
+        },
+      ],
+    },
+    authorization: {
+      actorUserId: String(input.input.userId),
+      tenantId: String(input.input.tenantId),
+      actingSurface: 'ios_chat',
+      delegatedScopes: ['training:read'],
+      permissionSnapshotVersion: `chat-v2-permissions:${input.input.tenantId}:${input.input.userId}:training:v1`,
+      authTime: createdAt,
+    },
+    expiresAt: new Date(input.now.getTime() + COMMAND_TTL_MS).toISOString(),
+    idempotencyKey: `chat-v2:${input.input.tenantId}:${input.input.userId}:training.modify_session:${input.target.session.id}:${commandId}`,
+  };
+}
+
 function asPreviewOnlyCapability(capability: CapabilityDefinition): CapabilityDefinition {
   const support: CapabilitySupportMatrix = {
     ...capability.support,
@@ -959,6 +1208,13 @@ function buildPreviewCopy(
       title: secretarySchedulePreviewTitle(payload, locale),
       summary: secretarySchedulePreviewSummary(payload, locale),
       diff: secretarySchedulePreviewDiff(payload, locale),
+    };
+  }
+  if (capabilityId === TRAINING_MODIFY_SESSION_CAPABILITY) {
+    return {
+      title: trainingModifyPreviewTitle(payload, locale),
+      summary: trainingModifyPreviewSummary(payload, locale),
+      diff: trainingModifyPreviewDiff(payload, locale),
     };
   }
   if (capabilityId === CONTENT_BRIEF_DRAFT_CAPABILITY) {
@@ -1081,6 +1337,49 @@ function formatCalendarPreviewDateTime(value: unknown, timezone: unknown, locale
   } catch {
     return raw;
   }
+}
+
+function trainingModifyPreviewTitle(payload: Record<string, unknown>, locale: string | null | undefined): string {
+  const normalized = normalizeChatCoreV2Locale(locale);
+  const title = trainingSessionTitle(payload);
+  if (normalized === 'pt-BR') return `Prévia do treino: ${title}`;
+  if (normalized === 'pt-PT') return `Pré-visualização do treino: ${title}`;
+  if (normalized === 'es') return `Vista previa de entrenamiento: ${title}`;
+  return `Training preview: ${title}`;
+}
+
+function trainingModifyPreviewSummary(payload: Record<string, unknown>, locale: string | null | undefined): string {
+  const normalized = normalizeChatCoreV2Locale(locale);
+  const title = trainingSessionTitle(payload);
+  const when = String(payload.sessionDateLabel ?? payload.dayOfWeek ?? '').trim();
+  if (normalized === 'pt-BR') return `Eu prepararia uma versão mais leve de "${title}"${when ? ` para ${when}` : ''}. O plano de treino ainda não seria alterado.`;
+  if (normalized === 'pt-PT') return `Eu prepararia uma versão mais leve de "${title}"${when ? ` para ${when}` : ''}. O plano de treino ainda não seria alterado.`;
+  if (normalized === 'es') return `Prepararía una versión más suave de "${title}"${when ? ` para ${when}` : ''}. El plan de entrenamiento todavía no cambiaría.`;
+  return `I would prepare a lighter version of "${title}"${when ? ` for ${when}` : ''}. Your training plan would not change yet.`;
+}
+
+function trainingModifyPreviewDiff(payload: Record<string, unknown>, locale: string | null | undefined): Array<{ label: string; before?: string; after: string }> {
+  const normalized = normalizeChatCoreV2Locale(locale);
+  const labels = normalized === 'pt-BR'
+    ? { session: 'Sessão', when: 'Quando', intensity: 'Intensidade', current: 'Atual', easier: 'Mais leve', status: 'Estado', preview: 'Prévia' }
+    : normalized === 'pt-PT'
+      ? { session: 'Sessão', when: 'Quando', intensity: 'Intensidade', current: 'Atual', easier: 'Mais leve', status: 'Estado', preview: 'Pré-visualização' }
+      : normalized === 'es'
+        ? { session: 'Sesión', when: 'Cuándo', intensity: 'Intensidad', current: 'Actual', easier: 'Más suave', status: 'Estado', preview: 'Vista previa' }
+        : { session: 'Session', when: 'When', intensity: 'Intensity', current: 'Current', easier: 'Easier', status: 'Status', preview: 'Preview' };
+  const currentIntensity = String(payload.currentIntensity ?? '').trim() || labels.current;
+  const when = String(payload.sessionDateLabel ?? payload.dayOfWeek ?? '').trim();
+  return [
+    { label: labels.session, after: trainingSessionTitle(payload) },
+    ...(when ? [{ label: labels.when, after: when }] : []),
+    { label: labels.intensity, before: currentIntensity, after: labels.easier },
+    { label: labels.status, after: labels.preview },
+  ];
+}
+
+function trainingSessionTitle(payload: Record<string, unknown>): string {
+  const title = String(payload.title ?? '').trim();
+  return title || 'Training session';
 }
 
 function contentBriefPreviewTitle(payload: Record<string, unknown>, locale: string | null | undefined): string {
@@ -1398,17 +1697,7 @@ function notificationToResolutionCandidate(item: NotificationCenterItem, referen
       : confidence >= 0.84
         ? 'title_or_body_match'
         : 'title_partial_match',
-    entityVersion: hashStable({
-      title: item.title,
-      safeBody: item.safeBody || item.body,
-      sourceSkill: item.sourceSkill,
-      type: item.type,
-      priority: item.priority,
-      status: item.status,
-      actions: item.actions.map((action) => ({ id: action.id, label: action.label, style: action.style ?? null })),
-      createdAt: item.createdAt,
-      expiresAt: item.expiresAt,
-    }),
+    entityVersion: notificationSnoozeVersionForItem(item),
     domain: 'notifications',
     metadata: {
       notificationId: item.itemId,
@@ -1487,7 +1776,7 @@ function decisionToResolutionCandidate(item: DecisionApiItem, referencePhrase: s
       : confidence >= 0.84
         ? 'decision_text_match'
         : 'title_partial_match',
-    entityVersion: decisionVersionForItem(item),
+    entityVersion: decisionDismissVersionForItem(item),
     domain: 'decision_center',
     metadata: {
       decisionId: item.decisionId,
@@ -1539,22 +1828,212 @@ function decisionIdFromCandidate(candidate: EntityResolutionCandidate): string |
   return match?.[1] ?? null;
 }
 
-function decisionVersionForItem(item: DecisionApiItem): string {
-  return hashStable({
-    decisionId: item.decisionId,
-    title: item.title,
-    summary: item.summary,
-    safePreviewTitle: item.safePreviewTitle,
-    safePreviewBody: item.safePreviewBody,
-    status: item.status,
-    urgency: item.urgency,
-    sourceSkill: item.sourceSkill,
-    type: item.type,
-    actions: item.actions.map((action) => ({ id: action.id, label: action.label, style: action.style ?? null })),
-    updatedAt: item.updatedAt,
-    expiresAt: item.expiresAt,
-    snoozedUntil: item.snoozedUntil,
-  });
+function extractTrainingChangeTypes(text: string): TrainingChangeType[] {
+  const normalized = foldCalendarText(text).toLowerCase();
+  const wantsLighter = /\b(lighter|easier|easy|reduce|reduced|less\s+intense|lower\s+intensity|mais\s+leve|leve|reduz(?:ir|e|a)?|suave|menos\s+intens[ao]|mas\s+suave|más\s+suave|bajar\s+intensidad)\b/i.test(normalized);
+  const asksToMoveOnly = /\b(move|reschedule|mover|remarcar|reagendar|cambiar|mudar)\b/i.test(normalized) && !wantsLighter;
+  if (!wantsLighter || asksToMoveOnly) return [];
+  return ['reduce_intensity'];
+}
+
+function resolveTrainingSessionTarget(
+  input: BuildChatCoreV2CommandPreviewRouteInput,
+  now: Date,
+): TrainingSessionPreviewTarget | null {
+  const reference = parseTrainingSessionReference(input.normalizedText, now, input.timezone);
+  if (!reference) return null;
+
+  const plan = getActivePlan(input.userId, input.tenantId);
+  if (!plan) return null;
+
+  const weeks = getWeeksForPlan(plan.id);
+  if (weeks.length === 0) return null;
+
+  const todayKey = dateKey(now, normalizeTimezone(input.timezone));
+  const candidates = weeks
+    .flatMap((week) =>
+      getSessionsForWeek(week.id)
+        .filter(isActiveTrainingSession)
+        .map((session) => {
+          const sessionDate = trainingSessionDateForWeek(plan, week, session.day_of_week);
+          return { week, session, sessionDate };
+        }))
+    .filter((candidate) => candidate.sessionDate === null || candidate.sessionDate >= todayKey)
+    .sort((a, b) => String(a.sessionDate ?? '').localeCompare(String(b.sessionDate ?? '')));
+
+  const selected = selectTrainingSessionCandidate(candidates, reference);
+  if (!selected) return null;
+
+  return {
+    plan,
+    week: selected.week,
+    session: selected.session,
+    sessionDate: selected.sessionDate,
+    sessionDateLabel: formatTrainingSessionTargetDate(selected.sessionDate, selected.session.day_of_week, input.locale),
+    entityVersions: trainingEntityVersions(plan, selected.week, selected.session),
+  };
+}
+
+type TrainingSessionReference =
+  | { kind: 'exact_date'; date: string }
+  | { kind: 'day_of_week'; dayIndex: number }
+  | { kind: 'next_session' };
+
+function parseTrainingSessionReference(
+  text: string,
+  now: Date,
+  timezone: string,
+): TrainingSessionReference | null {
+  const normalized = foldCalendarText(text).toLowerCase();
+  const today = dateKey(now, normalizeTimezone(timezone));
+  if (/\b(today|hoje|hoy)\b/i.test(normalized)) return { kind: 'exact_date', date: today };
+  if (/\b(tomorrow|amanha|mañana|manana)\b/i.test(normalized)) return { kind: 'exact_date', date: addDays(today, 1) };
+  if (/\b(next\s+(?:training\s+)?session|next\s+workout|proximo\s+treino|proxima\s+sessao|pr[oó]ximo\s+treino|pr[oó]xima\s+sess[aã]o|siguiente\s+(?:sesion|entrenamiento)|pr[oó]xima\s+(?:sesion|entrenamiento))\b/i.test(normalized)) {
+    return { kind: 'next_session' };
+  }
+  const dayIndex = dayIndexFromText(normalized);
+  if (dayIndex !== null) return { kind: 'day_of_week', dayIndex };
+  return null;
+}
+
+function selectTrainingSessionCandidate(
+  candidates: Array<{ week: TrainingWeek; session: TrainingSession; sessionDate: string | null }>,
+  reference: TrainingSessionReference,
+): { week: TrainingWeek; session: TrainingSession; sessionDate: string | null } | null {
+  if (reference.kind === 'next_session') return candidates[0] ?? null;
+  if (reference.kind === 'exact_date') return candidates.find((candidate) => candidate.sessionDate === reference.date) ?? null;
+  return candidates.find((candidate) => dayIndexForTrainingDay(candidate.session.day_of_week) === reference.dayIndex) ?? null;
+}
+
+function isActiveTrainingSession(session: TrainingSession): boolean {
+  return ACTIVE_TRAINING_SESSION_STATUSES.has(normalizeTrainingStatus(session.status));
+}
+
+function trainingEntityVersions(
+  plan: TrainingPlan,
+  week: TrainingWeek,
+  session: TrainingSession,
+): Record<string, string> {
+  return {
+    [`training_plan:${plan.id}`]: hashStable({
+      name: plan.name,
+      sport: plan.sport,
+      goal: plan.goal,
+      durationWeeks: plan.duration_weeks,
+      status: plan.status,
+      startDate: plan.start_date,
+      endDate: plan.end_date,
+      planVersion: plan.plan_version,
+      updatedAt: plan.updated_at,
+      weekNumber: week.week_number,
+      weekFocus: week.focus,
+      weekIntensityPct: week.intensity_pct,
+    }),
+    [`training_session:${session.id}`]: hashStable({
+      title: session.title,
+      dayOfWeek: session.day_of_week,
+      sessionType: session.session_type,
+      durationMinutes: session.duration_minutes,
+      intensityText: session.intensity_text,
+      status: session.status,
+      sessionIdentityKey: session.session_identity_key,
+      sessionShapeHash: session.session_shape_hash,
+      updatedAt: session.updated_at,
+    }),
+  };
+}
+
+function trainingSessionDateForWeek(
+  plan: TrainingPlan,
+  week: TrainingWeek,
+  dayOfWeek: string,
+): string | null {
+  const dayIndex = dayIndexForTrainingDay(dayOfWeek);
+  if (dayIndex === null) return null;
+  const planStart = parseDateKey(plan.start_date);
+  if (!planStart) return null;
+  const planMonday = addDaysToDate(planStart, -mondayOffset(planStart));
+  const weekMonday = addDaysToDate(planMonday, (Math.max(1, week.week_number) - 1) * 7);
+  return dateKeyFromDate(addDaysToDate(weekMonday, dayIndex));
+}
+
+function formatTrainingSessionTargetDate(
+  date: string | null,
+  dayOfWeek: string,
+  locale: string | null | undefined,
+): string {
+  const normalized = normalizeChatCoreV2Locale(locale);
+  if (!date) return localizedTrainingDay(dayOfWeek, normalized);
+  const parsed = new Date(`${date}T12:00:00.000Z`);
+  if (!Number.isFinite(parsed.getTime())) return date;
+  const localeTag = normalized === 'pt-BR'
+    ? 'pt-BR'
+    : normalized === 'pt-PT'
+      ? 'pt-PT'
+      : normalized === 'es'
+        ? 'es-ES'
+        : 'en-GB';
+  try {
+    return new Intl.DateTimeFormat(localeTag, {
+      weekday: 'short',
+      day: '2-digit',
+      month: 'short',
+    }).format(parsed);
+  } catch {
+    return date;
+  }
+}
+
+function localizedTrainingDay(dayOfWeek: string, locale: ReturnType<typeof normalizeChatCoreV2Locale>): string {
+  const dayIndex = dayIndexForTrainingDay(dayOfWeek);
+  const english = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
+  const pt = ['segunda', 'terça', 'quarta', 'quinta', 'sexta', 'sábado', 'domingo'];
+  const es = ['lunes', 'martes', 'miércoles', 'jueves', 'viernes', 'sábado', 'domingo'];
+  if (dayIndex === null) return dayOfWeek;
+  if (locale === 'es') return es[dayIndex];
+  if (locale === 'pt-BR' || locale === 'pt-PT') return pt[dayIndex];
+  return english[dayIndex];
+}
+
+function dayIndexFromText(text: string): number | null {
+  const normalized = foldCalendarText(text).toLowerCase();
+  const patterns: Array<[number, RegExp]> = [
+    [0, /\b(monday|segunda|lunes)\b/i],
+    [1, /\b(tuesday|terca|terça|martes)\b/i],
+    [2, /\b(wednesday|quarta|miercoles|miércoles)\b/i],
+    [3, /\b(thursday|quinta|jueves)\b/i],
+    [4, /\b(friday|sexta|viernes)\b/i],
+    [5, /\b(saturday|sabado|sábado)\b/i],
+    [6, /\b(sunday|domingo)\b/i],
+  ];
+  return patterns.find(([, pattern]) => pattern.test(normalized))?.[0] ?? null;
+}
+
+function dayIndexForTrainingDay(dayOfWeek: string): number | null {
+  return dayIndexFromText(dayOfWeek);
+}
+
+function parseDateKey(value: string): Date | null {
+  const parsed = new Date(`${value}T12:00:00.000Z`);
+  return Number.isFinite(parsed.getTime()) ? parsed : null;
+}
+
+function dateKeyFromDate(value: Date): string {
+  return value.toISOString().slice(0, 10);
+}
+
+function addDaysToDate(value: Date, days: number): Date {
+  const next = new Date(value.getTime());
+  next.setUTCDate(next.getUTCDate() + days);
+  return next;
+}
+
+function mondayOffset(value: Date): number {
+  return (value.getUTCDay() + 6) % 7;
+}
+
+function normalizeTrainingStatus(value: unknown): string {
+  return String(value ?? 'pending').trim().toLowerCase();
 }
 
 interface ContentBriefDraft {

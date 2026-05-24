@@ -12,10 +12,21 @@ export interface ChatCoreV2CommandPreviewShortcutResponse {
   buttons: null;
   metadata: {
     type: 'chat_core_v2_command_preview';
+    pendingConfirmation?: {
+      kind: 'pending_confirmation';
+      id: string;
+      intent_class: string;
+      intentClass: string;
+      confirmation_token: string;
+      confirmationToken: string;
+      expires_at: string;
+      expiresAt: string;
+      sourceMessageId: string | null;
+    };
     chatCoreV2: {
       capabilityId: string;
-      executionEnabled: false;
-      executionDisabledReason: ChatCoreV2CommandPreviewRouteResult['executionDisabledReason'];
+      executionEnabled: boolean;
+      executionDisabledReason?: ChatCoreV2CommandPreviewRouteResult['executionDisabledReason'];
       response: {
         schemaVersion: string;
         kind: string;
@@ -90,6 +101,19 @@ export function buildChatCoreV2CommandPreviewShortcutResponse(
       buttons: null,
       metadata: {
         type: 'chat_core_v2_command_preview',
+        ...(result.confirmationToken ? {
+          pendingConfirmation: {
+            kind: 'pending_confirmation',
+            id: result.command.commandId,
+            intent_class: result.command.commandType,
+            intentClass: result.command.commandType,
+            confirmation_token: result.confirmationToken,
+            confirmationToken: result.confirmationToken,
+            expires_at: result.command.expiresAt,
+            expiresAt: result.command.expiresAt,
+            sourceMessageId: null,
+          },
+        } : {}),
         chatCoreV2: {
           capabilityId: result.capabilityId,
           executionEnabled: result.executionEnabled,
@@ -210,6 +234,17 @@ function buildLegacyResponseCards(result: ChatCoreV2CommandPreviewRouteResult): 
         ? payload.attendees.map((attendee) => String(attendee).trim()).filter(Boolean)
         : null,
       status: 'pending',
+    }];
+  }
+  if (result.command.domain === 'training') {
+    return [{
+      kind: 'trainingSessionCard',
+      sessionId: typeof payload.sessionId === 'number' ? String(payload.sessionId) : null,
+      title,
+      dateLabel: typeof payload.sessionDateLabel === 'string' && payload.sessionDateLabel.trim()
+        ? payload.sessionDateLabel.trim()
+        : String(payload.dayOfWeek ?? ''),
+      summary: [{ kind: 'paragraph', text: result.response.text }],
     }];
   }
 
