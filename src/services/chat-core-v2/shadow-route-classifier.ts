@@ -2,6 +2,7 @@
 
 import type { ChatCoreV2Intent } from './route-decision';
 import type { ChatCoreV2Domain, UnsupportedReason } from './types';
+import { hasCalendarWriteIntent } from '../calendar-natural-language-parser';
 
 export interface ChatCoreV2ShadowRouteGuess {
   intent: ChatCoreV2Intent;
@@ -32,6 +33,19 @@ export function classifyShadowRoute(text: string): ChatCoreV2ShadowRouteGuess {
     };
   }
 
+  if (/\b(dismiss|close|ignore|drop|dispensar|descartar|ignorar|fechar)\b.*\b(decision|choice|decis(?:ao|oes|ão|ões)|escolha)\b/i.test(normalized)) {
+    return { intent: 'modify_action', confidence: 0.82, domains: ['decision_center'], capabilityIds: ['decision_center.dismiss'] };
+  }
+
+  if (hasCalendarWriteIntent(normalized)) {
+    return {
+      intent: 'create_action',
+      confidence: 0.84,
+      domains: ['secretary'],
+      capabilityIds: ['secretary.schedule_event_preview'],
+    };
+  }
+
   if (/\b(plan|organize|optimise|optimize|schedule)\b.*\b(week|day|training|task|meeting|meal)\b/i.test(normalized)) {
     const domains = guessDomains(normalized);
     const selectedDomains: ChatCoreV2Domain[] = domains.length > 0 ? domains : ['tasks'];
@@ -55,16 +69,13 @@ export function classifyShadowRoute(text: string): ChatCoreV2ShadowRouteGuess {
   if (/\b(reconnect|retry|sync|reauth)\b.*\b(connections?|integrations?|providers?|google|outlook|garmin|apple health|strava|todoist|notion)\b|\b(connections?|integrations?|providers?|google|outlook|garmin|apple health|strava|todoist|notion)\b.*\b(reconnect|retry|sync|reauth)\b/i.test(normalized)) {
     return { intent: 'modify_action', confidence: 0.83, domains: ['connections'], capabilityIds: ['connections.retry_sync'] };
   }
-  if (/\b(dismiss|close|ignore|drop|dispensar|descartar|ignorar|fechar)\b.*\b(decision|choice|decis(?:ao|oes|ão|ões)|escolha)\b/i.test(normalized)) {
-    return { intent: 'modify_action', confidence: 0.82, domains: ['decision_center'], capabilityIds: ['decision_center.dismiss'] };
-  }
-  if (/\b(move|reschedule|change|make|lighter|reduce)\b.*\b(workout|training|session)\b|\b(workout|training|session)\b.*\b(lighter|easier|easy|reduce)\b/i.test(normalized)) {
+  if (/\b(move|reschedule|change|make|lighter|reduce|mover|remarcar|mudar|alterar|reduzir|reduz|tornar|deixar|cambiar|hacer|bajar)\b.*\b(workout|training|session|treino|sess(?:ao|ão)|entrenamiento|sesion|sesión)\b|\b(workout|training|session|treino|sess(?:ao|ão)|entrenamiento|sesion|sesión)\b.*\b(lighter|easier|easy|reduce|mais\s+leve|leve|suave|menos\s+intens[ao]|mas\s+suave|más\s+suave)\b/i.test(normalized)) {
     return { intent: 'modify_action', confidence: 0.83, domains: ['training'], capabilityIds: ['training.modify_session_preview'] };
   }
-  if (/\b(add|buy|create)\b.*\b(grocery|groceries|ingredient|shopping)\b/i.test(normalized)) {
+  if (/\b(add|buy|create|adicionar|adiciona|acrescentar|acrescenta|comprar|compra|agregar|añadir|anadir|crear)\b.*\b(grocery|groceries|ingredient|ingredients|shopping|compras|ingredientes?|lista\s+de\s+compras|lista\s+de\s+la\s+compra)\b/i.test(normalized)) {
     return { intent: 'create_action', confidence: 0.8, domains: ['cooking'], capabilityIds: ['cooking.grocery_item_preview'] };
   }
-  if (/\b(create|draft|write)\b.*\b(content|brief|script|post)\b/i.test(normalized)) {
+  if (/\b(create|draft|write|prepare)\b.*\b(?:content\s+)?brief(?:ing)?\b|\bbrief(?:ing)?\b.*\b(content|post|script|reel|video|newsletter)\b|\b(criar|cria|preparar|prepara|escrever|escreve)\b.*\bbrief(?:ing)?\s+de\s+conte[uú]do\b|\b(crear|preparar|escribir|redactar)\b.*\bbrief(?:ing)?\s+de\s+contenido\b/i.test(normalized)) {
     return { intent: 'create_action', confidence: 0.8, domains: ['content'], capabilityIds: ['content.brief_draft_preview'] };
   }
   if (/\b(pay|payment|tax|send money|transfer)\b/i.test(normalized)) {
