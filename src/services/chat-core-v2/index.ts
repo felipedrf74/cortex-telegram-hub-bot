@@ -1,6 +1,7 @@
 // Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
 
 export * from './action-authorization';
+export * from './batch-policy';
 export * from './capability-registry';
 export * from './command-bus';
 export * from './command-events';

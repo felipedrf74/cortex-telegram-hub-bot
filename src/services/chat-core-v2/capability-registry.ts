@@ -3,6 +3,7 @@
 import type {
   ActionRisk,
   AuditSensitivity,
+  BatchPolicy,
   CapabilityDefinition,
   CapabilityRolloutStage,
   CapabilitySupportLevel,
@@ -22,6 +23,27 @@ const GLOBAL_FLAG = 'CHAT_CORE_V2_ENABLED';
 const NO_UNDO: UndoPolicy = {
   supported: false,
   requiresConfirmation: false,
+};
+
+const LOW_RISK_BATCH_POLICY: BatchPolicy = {
+  maxItemsWithoutSpecialConfirmation: 5,
+  maxItemsAbsolute: 25,
+  requiresDiffPreview: true,
+  requiresTypedConfirmationText: 'Confirm {count} changes',
+};
+
+const MEDIUM_RISK_BATCH_POLICY: BatchPolicy = {
+  maxItemsWithoutSpecialConfirmation: 1,
+  maxItemsAbsolute: 5,
+  requiresDiffPreview: true,
+  requiresTypedConfirmationText: 'Confirm {count} changes',
+};
+
+const RESTRICTED_BATCH_POLICY: BatchPolicy = {
+  maxItemsWithoutSpecialConfirmation: 0,
+  maxItemsAbsolute: 0,
+  requiresDiffPreview: true,
+  requiresTypedConfirmationText: 'manual_review_required',
 };
 
 function undo(undoCommandType: string, undoWindowSeconds = 300): UndoPolicy {
@@ -65,6 +87,7 @@ function capability(input: {
   reasoningTier?: ReasoningTier;
   batchPolicy?: CapabilityDefinition['batchPolicy'];
 }): CapabilityDefinition {
+  const risk = input.risk ?? 'low';
   const readOnly = input.support.execute === 'not_applicable' && input.support.preview === 'not_applicable';
   return {
     capabilityId: input.capabilityId,
@@ -73,7 +96,7 @@ function capability(input: {
     routeMethods: input.routeMethods,
     support: input.support,
     rolloutStage: input.rolloutStage,
-    risk: input.risk ?? 'low',
+    risk,
     ownerService: input.ownerService,
     requiredPermissions: input.requiredPermissions ?? [`${input.domain}:read`],
     schemaVersion: SCHEMA_VERSION,
@@ -89,8 +112,14 @@ function capability(input: {
     promptFamily: input.promptFamily ?? `chat_v2_${input.domain}`,
     reasoningTier: input.reasoningTier ?? (readOnly ? 'none' : 'standard_command'),
     toolSchemaSetVersion: TOOL_SCHEMA_SET_VERSION,
-    batchPolicy: input.batchPolicy,
+    batchPolicy: input.batchPolicy ?? (readOnly ? undefined : defaultBatchPolicy(risk)),
   };
+}
+
+function defaultBatchPolicy(risk: ActionRisk): BatchPolicy {
+  if (risk === 'restricted') return { ...RESTRICTED_BATCH_POLICY };
+  if (risk === 'medium' || risk === 'high') return { ...MEDIUM_RISK_BATCH_POLICY };
+  return { ...LOW_RISK_BATCH_POLICY };
 }
 
 export const CHAT_CORE_V2_CAPABILITIES: CapabilityDefinition[] = [
