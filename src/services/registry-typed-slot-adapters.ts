@@ -33,7 +33,7 @@ import {
 import type {
   SlotContext,
   SlotExtractor,
-} from './chat-action-registry';
+} from './chat/registry';
 
 // ─────────────────────────── Calendar adapter ───────────────────────────
 
@@ -176,6 +176,49 @@ export const checklistSlotExtractor: SlotExtractor = {
     return { slots, confidence: slots.items ? 0.85 : 0.6 };
   },
 };
+
+const TASK_WITH_SUBTASKS_PATTERN = /^\s*(?:create|make|cria|criar|crie|crear|crea)\s+(?:a\s+|uma?\s+|una?\s+)?(?:task|tarefa|tarea)\s+(?:called|named|chamad[oa]|llamad[oa])?\s*(.+?)\s+(?:where\s+it\s+has\s+|with\s+|com\s+|con\s+)?(?:sub\s*-?\s*tasks?|subtarefas?|subtareas?|checklist(?:\s+items?)?)\s*(?:called|named|chamad[oa]s?|llamad[oa]s?)?\s+(.+)$/i;
+const ADD_SUBTASKS_PATTERN = /^\s*(?:add|adiciona|adicionar|a[nñ]ade|a[nñ]adir|agrega|agregar)\s+(.+?)\s+(?:to|under|à|a|na|no|en|bajo)\s+(?:my\s+|minha\s+|meu\s+|mi\s+|the\s+|la\s+|el\s+)?(?:task\s+|tarefa\s+|tarea\s+)?(.+?)(?:\s+task|\s+tarefa|\s+tarea)?$/i;
+
+export const taskWithSubtasksSlotExtractor: SlotExtractor = {
+  name: 'task_with_subtasks',
+  label: 'extracts a parent task title and checklist subtasks',
+  extract(text) {
+    const quoted = [...text.matchAll(/"([^"]+)"|“([^”]+)”|'([^']+)'|‘([^’]+)’/g)]
+      .map((match) => (match[1] || match[2] || match[3] || match[4] || '').trim())
+      .filter(Boolean);
+    const createMatch = text.match(TASK_WITH_SUBTASKS_PATTERN);
+    if (createMatch) {
+      const title = quoted.length > 0 && /["“'‘]/.test(createMatch[1]) ? quoted[0] : createMatch[1].trim();
+      const rawItems = quoted.length > 1 ? quoted.slice(1) : splitChecklistLikeItems(createMatch[2]);
+      return rawItems.length > 0
+        ? { slots: { title, subtasks: rawItems }, confidence: quoted.length > 1 ? 0.92 : 0.84 }
+        : { slots: {} };
+    }
+    const addMatch = text.match(ADD_SUBTASKS_PATTERN);
+    if (addMatch) {
+      const subtasks = splitChecklistLikeItems(addMatch[1]);
+      const title = addMatch[2].trim().replace(/^\s*(the|a|uma|um|una|un|minha|meu|my|mi|la|el|los|las)\s+/i, '');
+      return subtasks.length > 0 && title
+        ? { slots: { title, subtasks }, confidence: 0.82 }
+        : { slots: {} };
+    }
+    return { slots: {} };
+  },
+};
+
+function splitChecklistLikeItems(value: string): string[] {
+  const stripped = value
+    .replace(/^\s*(called|named|chamad[oa]s?|llamad[oa]s?)\s+/i, '')
+    .trim();
+  const commaSplit = stripped
+    .split(/\s*(?:,|;|\n|\u2022|•)\s*|\s+(?:and|e|y)\s+/g)
+    .map((item) => item.trim().replace(/[.?!]+$/g, ''))
+    .filter(Boolean);
+  if (commaSplit.length > 1) return commaSplit;
+  const words = stripped.split(/\s+/).map((item) => item.trim()).filter(Boolean);
+  return words.length >= 2 ? words : commaSplit;
+}
 
 // ─────────────────────────── Agenda-date adapter ───────────────────────────
 //

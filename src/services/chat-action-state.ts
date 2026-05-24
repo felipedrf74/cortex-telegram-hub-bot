@@ -3,7 +3,7 @@
 import { randomUUID } from 'crypto';
 import { getDb } from './database';
 import { buildNormalizedActionHash } from './chat-action-run-store';
-import type { ChatActionName, ChatActionSkill } from './chat-action-registry';
+import type { ChatActionName, ChatActionSkill } from './chat/registry';
 
 export type ChatActionRiskClass = 'R0' | 'R1' | 'R2' | 'R3' | 'R4';
 

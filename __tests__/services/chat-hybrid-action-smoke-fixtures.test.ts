@@ -2,10 +2,16 @@ import { describe, expect, it, vi } from 'vitest';
 
 vi.mock('../../src/services/chat-action-state', () => ({
   cancelPendingChatActions: vi.fn(() => 0),
+  cancelPendingChatActionsForAccountSwitch: vi.fn(() => 0),
+  clearRecentChatEntitiesForUser: vi.fn(),
+  expireStalePendingChatActionsForJob: vi.fn(() => 0),
   getActivePendingChatAction: vi.fn(() => null),
+  getPendingChatActionById: vi.fn(() => null),
+  listChatActionTelemetryForScope: vi.fn(() => []),
   markPendingChatActionNeedsUserFollowup: vi.fn(() => false),
   recordChatActionTelemetry: vi.fn(),
   rememberRecentChatEntity: vi.fn(),
+  resetChatActionStateForTests: vi.fn(),
   resolveRecentChatEntity: vi.fn(() => ({ status: 'none', candidates: [] })),
   upsertPendingChatAction: vi.fn(),
   makeSlotProvenance: vi.fn((input: any) => ({
