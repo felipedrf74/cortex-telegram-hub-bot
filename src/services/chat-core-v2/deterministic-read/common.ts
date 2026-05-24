@@ -7,6 +7,7 @@ export const SECRETARY_AGENDA_SUMMARY_CAPABILITY = 'secretary.agenda_summary';
 export const DECISION_CENTER_SUMMARY_CAPABILITY = 'decision_center.summary';
 export const NOTIFICATIONS_SUMMARY_CAPABILITY = 'notifications.summary';
 export const CONNECTIONS_STATUS_CAPABILITY = 'connections.status';
+export const FINANCE_SUMMARY_CAPABILITY = 'finance.summary';
 export const MAX_VISIBLE_TASKS = 5;
 export const MAX_VISIBLE_AGENDA_ITEMS = 5;
 export const MAX_VISIBLE_DECISIONS = 3;

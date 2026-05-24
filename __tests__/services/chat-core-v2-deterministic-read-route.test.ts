@@ -4,6 +4,7 @@ import type { NormalizedTask } from '../../src/services/task-store/types';
 import type { NotificationCenterItem } from '../../src/services/notification-orchestrator';
 import type { IntegrationSummary } from '../../src/services/integration-status';
 import type { SecretaryAgendaItem } from '../../src/services/secretary-scheduling-arbitrator';
+import type { MonthlyBudgetView, MonthlySummary } from '../../src/services/finance-tracker';
 
 vi.mock('../../src/services/task-store/task-service', () => ({
   listTasks: vi.fn(),
@@ -25,7 +26,13 @@ vi.mock('../../src/services/secretary-scheduling-arbitrator', () => ({
   listSecretaryAgendaItems: vi.fn(),
 }));
 
+vi.mock('../../src/services/finance-tracker', () => ({
+  getMonthlySummary: vi.fn(),
+  getMonthlyBudgetView: vi.fn(),
+}));
+
 import { getDecisionSummary } from '../../src/services/decision-center';
+import { getMonthlyBudgetView, getMonthlySummary } from '../../src/services/finance-tracker';
 import { getIntegrationSummary } from '../../src/services/integration-status';
 import { listNotificationCenterItems } from '../../src/services/notification-orchestrator';
 import { listSecretaryAgendaItems } from '../../src/services/secretary-scheduling-arbitrator';
@@ -84,6 +91,50 @@ function agendaItem(overrides: Partial<SecretaryAgendaItem>): SecretaryAgendaIte
     sourceCreatedAt: null,
     sourceUpdatedAt: null,
     reasoningTrail: [],
+    ...overrides,
+  };
+}
+
+function monthlySummary(overrides: Partial<MonthlySummary> = {}): MonthlySummary {
+  return {
+    month: '2026-05',
+    totalIncome: 4200,
+    totalExpenses: 2300,
+    totalDeductions: 400,
+    netIncome: 1900,
+    transactionCount: 12,
+    ...overrides,
+  };
+}
+
+function monthlyBudgetView(overrides: Partial<MonthlyBudgetView> = {}): MonthlyBudgetView {
+  return {
+    month: '2026-05',
+    basisCurrency: 'EUR',
+    currencies: ['EUR'],
+    integrity: 'reliable',
+    affordability: 'controlled',
+    incomeInBasisCurrency: 4200,
+    expensesInBasisCurrency: 2300,
+    currentRemainingInBasisCurrency: 1900,
+    currentRemainingRatio: 0.45,
+    projectedExpensesInBasisCurrency: 2800,
+    projectedRemainingInBasisCurrency: 1400,
+    projectedRemainingRatio: 0.33,
+    recurringExpenseEstimate: 500,
+    recurringExpenseCount: 2,
+    recurringExpenses: [
+      {
+        fingerprint: 'private-vendor',
+        label: 'Private vendor subscription',
+        currency: 'EUR',
+        monthlyEstimate: 500,
+        monthCount: 3,
+        lastSeenDate: '2026-04-20',
+        alreadyLoggedThisMonth: false,
+      },
+    ],
+    notes: ['Recurring expense pressure still likely this month: EUR 500.00 across 2 pending commitment(s).'],
     ...overrides,
   };
 }
@@ -173,6 +224,8 @@ describe('Chat Core v2 deterministic read route', () => {
     vi.mocked(listNotificationCenterItems).mockReset();
     vi.mocked(getIntegrationSummary).mockReset();
     vi.mocked(listSecretaryAgendaItems).mockReset();
+    vi.mocked(getMonthlySummary).mockReset();
+    vi.mocked(getMonthlyBudgetView).mockReset();
   });
 
   it('stays disabled unless both global and read flags are explicitly enabled', () => {
@@ -253,6 +306,63 @@ describe('Chat Core v2 deterministic read route', () => {
       'connection:outlook',
       'connection:whoop',
     ]);
+  });
+
+  it('answers finance summary questions through aggregate-only finance reads', () => {
+    vi.mocked(getMonthlySummary).mockReturnValue(monthlySummary());
+    vi.mocked(getMonthlyBudgetView).mockReturnValue(monthlyBudgetView());
+
+    const result = tryBuildChatCoreV2DeterministicReadRoute({
+      normalizedText: 'Show my finance budget summary',
+      userId: 42,
+      tenantId: 84,
+      locale: 'en-US',
+      timezone: 'Europe/Lisbon',
+      now: FIXED_NOW,
+      env: ENABLED_ENV,
+    });
+
+    expect(result).not.toBeNull();
+    expect(getMonthlySummary).toHaveBeenCalledWith(42, '2026-05', { tenantId: 84 });
+    expect(getMonthlyBudgetView).toHaveBeenCalledWith(42, '2026-05', { tenantId: 84 });
+    expect(listTasks).not.toHaveBeenCalled();
+    expect(getDecisionSummary).not.toHaveBeenCalled();
+    expect(listNotificationCenterItems).not.toHaveBeenCalled();
+    expect(getIntegrationSummary).not.toHaveBeenCalled();
+    expect(listSecretaryAgendaItems).not.toHaveBeenCalled();
+    expect(result?.capabilityId).toBe('finance.summary');
+    expect(result?.response).toMatchObject({
+      schemaVersion: 'chat_response_v2@1.0.0',
+      kind: 'message',
+      locale: 'en',
+      cards: [],
+      reasonCodes: ['deterministic_read', 'finance.summary', 'aggregate_read_allowed'],
+    });
+    expect(result?.response.text).toContain('Finance summary for 2026-05');
+    expect(result?.response.text).toContain('EUR 4200.00 income');
+    expect(result?.response.text).toContain('EUR 2300.00 expenses');
+    expect(result?.response.text).toContain('EUR 1900.00 net');
+    expect(result?.response.text).toContain('Current headroom: EUR 1900.00');
+    expect(result?.response.text).toContain('Projected headroom: EUR 1400.00');
+    expect(result?.response.text).not.toContain('Private vendor');
+    expect(JSON.stringify(result?.readModel.data)).not.toContain('Private vendor');
+    expect(result?.readModel).toMatchObject({
+      capabilityId: 'finance.summary',
+      domain: 'finance',
+      sensitivity: 'financial',
+      freshness: { status: 'live' },
+      data: {
+        month: '2026-05',
+        basisCurrency: 'EUR',
+        totalIncome: 4200,
+        totalExpenses: 2300,
+        netIncome: 1900,
+        transactionCount: 12,
+        affordability: 'controlled',
+        recurringExpenseCount: 2,
+      },
+    });
+    expect(result?.contextPack.sourceEntityIds).toEqual(['finance:summary:2026-05']);
   });
 
   it('answers task summary questions without model calls or provider reads', () => {
@@ -739,6 +849,13 @@ describe('Chat Core v2 deterministic read route', () => {
       now: FIXED_NOW,
       env: ENABLED_ENV,
     });
+    const financeWrite = tryBuildChatCoreV2DeterministicReadRoute({
+      normalizedText: 'Pay the invoice from my account',
+      userId: 42,
+      tenantId: 84,
+      now: FIXED_NOW,
+      env: ENABLED_ENV,
+    });
 
     expect(write).toBeNull();
     expect(portugueseWrite).toBeNull();
@@ -747,10 +864,13 @@ describe('Chat Core v2 deterministic read route', () => {
     expect(notificationWrite).toBeNull();
     expect(connectionWrite).toBeNull();
     expect(secretaryWrite).toBeNull();
+    expect(financeWrite).toBeNull();
     expect(listTasks).not.toHaveBeenCalled();
     expect(getDecisionSummary).not.toHaveBeenCalled();
     expect(listNotificationCenterItems).not.toHaveBeenCalled();
     expect(getIntegrationSummary).not.toHaveBeenCalled();
     expect(listSecretaryAgendaItems).not.toHaveBeenCalled();
+    expect(getMonthlySummary).not.toHaveBeenCalled();
+    expect(getMonthlyBudgetView).not.toHaveBeenCalled();
   });
 });

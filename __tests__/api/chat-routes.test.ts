@@ -3237,6 +3237,114 @@ describe('Chat API routes', () => {
     }
   });
 
+  it('answers aggregate finance status through Chat Core v2 deterministic reads when explicitly enabled', async () => {
+    const previousGlobal = process.env.CHAT_CORE_V2_ENABLED;
+    const previousReads = process.env.CHAT_CORE_V2_READS_ENABLED;
+    process.env.CHAT_CORE_V2_ENABLED = 'true';
+    process.env.CHAT_CORE_V2_READS_ENABLED = 'true';
+    try {
+      const monthParts = new Intl.DateTimeFormat('en-GB', {
+        timeZone: 'Europe/Lisbon',
+        year: 'numeric',
+        month: '2-digit',
+      }).formatToParts(new Date());
+      const monthPart = (type: string) => monthParts.find((part) => part.type === type)?.value;
+      const month = `${monthPart('year')}-${monthPart('month')}`;
+      mockGetMonthlySummary.mockReturnValue({
+        month,
+        totalIncome: 4200,
+        totalExpenses: 2300,
+        totalDeductions: 400,
+        netIncome: 1900,
+        transactionCount: 12,
+      });
+      mockGetMonthlyBudgetView.mockReturnValue({
+        month,
+        basisCurrency: 'EUR',
+        currencies: ['EUR'],
+        integrity: 'reliable',
+        affordability: 'controlled',
+        incomeInBasisCurrency: 4200,
+        expensesInBasisCurrency: 2300,
+        currentRemainingInBasisCurrency: 1900,
+        currentRemainingRatio: 0.45,
+        projectedExpensesInBasisCurrency: 2800,
+        projectedRemainingInBasisCurrency: 1400,
+        projectedRemainingRatio: 0.33,
+        recurringExpenseEstimate: 500,
+        recurringExpenseCount: 2,
+        recurringExpenses: [
+          {
+            fingerprint: 'private-vendor',
+            label: 'Private vendor subscription',
+            currency: 'EUR',
+            monthlyEstimate: 500,
+            monthCount: 3,
+            lastSeenDate: '2026-04-20',
+            alreadyLoggedThisMonth: false,
+          },
+        ],
+        notes: ['Recurring expense pressure still likely this month: EUR 500.00 across 2 pending commitment(s).'],
+      });
+      mockRouteMessage.mockClear();
+      mockHandleSecretary.mockClear();
+
+      const messageRes = await dispatch('POST', '/message', 7001, {
+        text: 'Show my finance budget summary',
+      });
+
+      expect(messageRes.statusCode, JSON.stringify(messageRes.body)).toBe(200);
+      expect(messageRes.body.routeMethod).toBe('chat-core-v2-deterministic-read');
+      expect(messageRes.body.domain).toBe('secretary');
+      expect(messageRes.body.text).toContain(`Finance summary for ${month}`);
+      expect(messageRes.body.text).toContain('EUR 4200.00 income');
+      expect(messageRes.body.text).toContain('EUR 2300.00 expenses');
+      expect(messageRes.body.text).toContain('Budget mode: controlled');
+      expect(messageRes.body.text).not.toContain('Private vendor');
+      expect(JSON.stringify(messageRes.body.metadata)).not.toContain('Private vendor');
+      expect(mockGetMonthlySummary).toHaveBeenCalledWith(7001, month, { tenantId: 7001 });
+      expect(mockGetMonthlyBudgetView).toHaveBeenCalledWith(7001, month, { tenantId: 7001 });
+      expect(messageRes.body.metadata).toMatchObject({
+        type: 'chat_core_v2_deterministic_read',
+        chatCoreV2: {
+          capabilityId: 'finance.summary',
+          response: {
+            schemaVersion: 'chat_response_v2@1.0.0',
+            kind: 'message',
+            reasonCodes: ['deterministic_read', 'finance.summary', 'aggregate_read_allowed'],
+          },
+          readModel: {
+            capabilityId: 'finance.summary',
+            domain: 'finance',
+            sensitivity: 'financial',
+            data: {
+              month,
+              basisCurrency: 'EUR',
+              totalIncome: 4200,
+              totalExpenses: 2300,
+              netIncome: 1900,
+              transactionCount: 12,
+              affordability: 'controlled',
+            },
+          },
+        },
+      });
+      expect(mockRouteMessage).not.toHaveBeenCalled();
+      expect(mockHandleSecretary).not.toHaveBeenCalled();
+    } finally {
+      if (previousGlobal === undefined) {
+        delete process.env.CHAT_CORE_V2_ENABLED;
+      } else {
+        process.env.CHAT_CORE_V2_ENABLED = previousGlobal;
+      }
+      if (previousReads === undefined) {
+        delete process.env.CHAT_CORE_V2_READS_ENABLED;
+      } else {
+        process.env.CHAT_CORE_V2_READS_ENABLED = previousReads;
+      }
+    }
+  });
+
   it('returns the accountant handoff state from the deterministic finance shortcut', async () => {
     mockRouteMessage.mockResolvedValue({
       domain: 'finance',

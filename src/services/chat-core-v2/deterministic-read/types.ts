@@ -9,7 +9,8 @@ export type ChatCoreV2DeterministicReadCapabilityId =
   | 'tasks.today_summary'
   | 'decision_center.summary'
   | 'notifications.summary'
-  | 'connections.status';
+  | 'connections.status'
+  | 'finance.summary';
 
 export interface ChatCoreV2AgendaSummaryItem {
   entityId: string;
@@ -123,12 +124,31 @@ export interface ChatCoreV2ConnectionStatusData {
   topProviders: ChatCoreV2ConnectionStatusItem[];
 }
 
+export interface ChatCoreV2FinanceSummaryData {
+  month: string;
+  basisCurrency: string;
+  currencies: string[];
+  totalIncome: number;
+  totalExpenses: number;
+  totalDeductions: number;
+  netIncome: number;
+  transactionCount: number;
+  integrity: string;
+  affordability: string;
+  currentRemaining: number | null;
+  projectedRemaining: number | null;
+  recurringExpenseEstimate: number;
+  recurringExpenseCount: number;
+  notes: string[];
+}
+
 export type ChatCoreV2DeterministicReadData =
   | ChatCoreV2AgendaSummaryData
   | ChatCoreV2TaskSummaryData
   | ChatCoreV2DecisionCenterSummaryData
   | ChatCoreV2NotificationSummaryData
-  | ChatCoreV2ConnectionStatusData;
+  | ChatCoreV2ConnectionStatusData
+  | ChatCoreV2FinanceSummaryData;
 
 export interface ChatCoreV2DeterministicReadRouteResult {
   capabilityId: ChatCoreV2DeterministicReadCapabilityId;

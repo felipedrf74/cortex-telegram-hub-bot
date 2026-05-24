@@ -6,6 +6,7 @@ import { isChatCoreV2CapabilityEnabled } from './capability-registry';
 import {
   CONNECTIONS_STATUS_CAPABILITY,
   DECISION_CENTER_SUMMARY_CAPABILITY,
+  FINANCE_SUMMARY_CAPABILITY,
   NOTIFICATIONS_SUMMARY_CAPABILITY,
   SECRETARY_AGENDA_SUMMARY_CAPABILITY,
   TASKS_TODAY_SUMMARY_CAPABILITY,
@@ -13,6 +14,7 @@ import {
 import { buildAgendaSummaryRoute } from './deterministic-read/agenda-summary-route';
 import { buildConnectionsStatusRoute } from './deterministic-read/connection-status-route';
 import { buildDecisionCenterSummaryRoute } from './deterministic-read/decision-center-summary-route';
+import { buildFinanceSummaryRoute } from './deterministic-read/finance-summary-route';
 import { buildNotificationsSummaryRoute } from './deterministic-read/notification-summary-route';
 import { buildTaskSummaryRoute } from './deterministic-read/task-summary-route';
 import type {
@@ -33,6 +35,7 @@ export type {
   ChatCoreV2DeterministicReadCapabilityId,
   ChatCoreV2DeterministicReadData,
   ChatCoreV2DeterministicReadRouteResult,
+  ChatCoreV2FinanceSummaryData,
   ChatCoreV2NotificationSummaryData,
   ChatCoreV2NotificationSummaryItem,
   ChatCoreV2TaskSummaryData,
@@ -47,6 +50,7 @@ const DETERMINISTIC_READ_BUILDERS: Record<ChatCoreV2DeterministicReadCapabilityI
   [DECISION_CENTER_SUMMARY_CAPABILITY]: buildDecisionCenterSummaryRoute,
   [NOTIFICATIONS_SUMMARY_CAPABILITY]: buildNotificationsSummaryRoute,
   [CONNECTIONS_STATUS_CAPABILITY]: buildConnectionsStatusRoute,
+  [FINANCE_SUMMARY_CAPABILITY]: buildFinanceSummaryRoute,
 };
 
 export function tryBuildChatCoreV2DeterministicReadRoute(
@@ -90,6 +94,9 @@ function deterministicReadCapabilityForRouteGuess(
   }
   if (routeGuess.domains[0] === 'connections' && routeGuess.capabilityIds.includes(CONNECTIONS_STATUS_CAPABILITY)) {
     return CONNECTIONS_STATUS_CAPABILITY;
+  }
+  if (routeGuess.domains[0] === 'finance' && routeGuess.capabilityIds.includes(FINANCE_SUMMARY_CAPABILITY)) {
+    return FINANCE_SUMMARY_CAPABILITY;
   }
   return null;
 }
