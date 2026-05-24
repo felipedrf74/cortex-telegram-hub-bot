@@ -2,6 +2,7 @@
 
 import { createHash } from 'crypto';
 
+import { getDecisionSummary, type DecisionApiItem, type DecisionSummary } from '../decision-center';
 import { listTasks } from '../task-store/task-service';
 import type { NormalizedTask } from '../task-store/types';
 import { type RuntimeFlagScope } from '../runtime-flags';
@@ -21,6 +22,10 @@ import {
 } from './capability-registry';
 import type { ChatCoreV2ReadContextPack, ChatCoreV2ReadModelResult } from './types';
 
+export type ChatCoreV2DeterministicReadCapabilityId =
+  | 'tasks.today_summary'
+  | 'decision_center.summary';
+
 export interface ChatCoreV2TaskSummaryItem {
   entityId: string;
   title: string;
@@ -39,10 +44,37 @@ export interface ChatCoreV2TaskSummaryData {
   topTasks: ChatCoreV2TaskSummaryItem[];
 }
 
+export interface ChatCoreV2DecisionCenterSummaryItem {
+  entityId: string;
+  title: string;
+  sourceSkill: string;
+  urgency: string;
+  status: string;
+  actionLabel: string | null;
+  why: string | null;
+}
+
+export interface ChatCoreV2DecisionCenterSummaryData {
+  openCount: number;
+  urgentCount: number;
+  todayCount: number;
+  handledTodayCount: number;
+  badgeCount: number;
+  ctaLabel: string;
+  topDecisionTitle: string | null;
+  topDecisionWhy: string | null;
+  topSuggestionTitle: string | null;
+  topItems: ChatCoreV2DecisionCenterSummaryItem[];
+}
+
+export type ChatCoreV2DeterministicReadData =
+  | ChatCoreV2TaskSummaryData
+  | ChatCoreV2DecisionCenterSummaryData;
+
 export interface ChatCoreV2DeterministicReadRouteResult {
-  capabilityId: 'tasks.today_summary';
+  capabilityId: ChatCoreV2DeterministicReadCapabilityId;
   routeGuess: ChatCoreV2ShadowRouteGuess;
-  readModel: ChatCoreV2ReadModelResult<ChatCoreV2TaskSummaryData>;
+  readModel: ChatCoreV2ReadModelResult<ChatCoreV2DeterministicReadData>;
   contextPack: ChatCoreV2ReadContextPack;
   response: ChatCoreV2Response;
 }
@@ -60,7 +92,9 @@ export interface BuildChatCoreV2DeterministicReadRouteInput {
 type ChatCoreV2CapabilityFlagInput = Parameters<typeof isChatCoreV2CapabilityEnabled>[1];
 
 const TASKS_TODAY_SUMMARY_CAPABILITY = 'tasks.today_summary';
+const DECISION_CENTER_SUMMARY_CAPABILITY = 'decision_center.summary';
 const MAX_VISIBLE_TASKS = 5;
+const MAX_VISIBLE_DECISIONS = 3;
 
 export function tryBuildChatCoreV2DeterministicReadRoute(
   input: BuildChatCoreV2DeterministicReadRouteInput,
@@ -68,24 +102,43 @@ export function tryBuildChatCoreV2DeterministicReadRoute(
   const text = input.normalizedText.trim();
   if (!text) return null;
 
+  const routeGuess = classifyShadowRoute(text);
+  const capabilityId = deterministicReadCapabilityForRouteGuess(routeGuess);
+  if (!capabilityId) return null;
+
   const scope: RuntimeFlagScope = { userId: input.userId, tenantId: input.tenantId };
   const flagInput: ChatCoreV2CapabilityFlagInput = {
     env: input.env ?? process.env,
     scope,
   };
-  if (!isChatCoreV2CapabilityEnabled(TASKS_TODAY_SUMMARY_CAPABILITY, flagInput)) {
+  if (!isChatCoreV2CapabilityEnabled(capabilityId, flagInput)) {
     return null;
   }
 
-  const routeGuess = classifyShadowRoute(text);
-  if (
-    routeGuess.intent !== 'app_question'
-    || !routeGuess.capabilityIds.includes(TASKS_TODAY_SUMMARY_CAPABILITY)
-    || routeGuess.domains.some((domain) => domain !== 'tasks')
-  ) {
-    return null;
+  if (capabilityId === DECISION_CENTER_SUMMARY_CAPABILITY) {
+    return buildDecisionCenterSummaryRoute(input, routeGuess);
   }
+  return buildTaskSummaryRoute(input, routeGuess);
+}
 
+function deterministicReadCapabilityForRouteGuess(
+  routeGuess: ChatCoreV2ShadowRouteGuess,
+): ChatCoreV2DeterministicReadCapabilityId | null {
+  if (routeGuess.intent !== 'app_question') return null;
+  if (routeGuess.domains.length !== 1) return null;
+  if (routeGuess.domains[0] === 'tasks' && routeGuess.capabilityIds.includes(TASKS_TODAY_SUMMARY_CAPABILITY)) {
+    return TASKS_TODAY_SUMMARY_CAPABILITY;
+  }
+  if (routeGuess.domains[0] === 'decision_center' && routeGuess.capabilityIds.includes(DECISION_CENTER_SUMMARY_CAPABILITY)) {
+    return DECISION_CENTER_SUMMARY_CAPABILITY;
+  }
+  return null;
+}
+
+function buildTaskSummaryRoute(
+  input: BuildChatCoreV2DeterministicReadRouteInput,
+  routeGuess: ChatCoreV2ShadowRouteGuess,
+): ChatCoreV2DeterministicReadRouteResult | null {
   const now = input.now ?? new Date();
   const timezone = normalizeTimezone(input.timezone);
   const pendingTasks = listTasks(input.userId, { status: 'pending' });
@@ -114,6 +167,44 @@ export function tryBuildChatCoreV2DeterministicReadRoute(
 
   return {
     capabilityId: TASKS_TODAY_SUMMARY_CAPABILITY,
+    routeGuess,
+    readModel,
+    contextPack,
+    response,
+  };
+}
+
+function buildDecisionCenterSummaryRoute(
+  input: BuildChatCoreV2DeterministicReadRouteInput,
+  routeGuess: ChatCoreV2ShadowRouteGuess,
+): ChatCoreV2DeterministicReadRouteResult | null {
+  const now = input.now ?? new Date();
+  const summary = getDecisionSummary(input.userId, input.tenantId, MAX_VISIBLE_DECISIONS);
+  const data = summarizeDecisionCenter(summary);
+  const readModel = buildChatCoreV2ReadModelResult<ChatCoreV2DecisionCenterSummaryData>({
+    capabilityId: DECISION_CENTER_SUMMARY_CAPABILITY,
+    domain: 'decision_center',
+    data,
+    sourceEntityIds: data.topItems.map((item) => item.entityId),
+    sourceVersions: sourceVersionsForDecisions(summary.previewItems),
+    generatedAt: now.toISOString(),
+    maxSourceAgeSeconds: 60,
+    sensitivity: 'personal',
+    summary: buildDecisionCenterSummaryText(data, input.locale),
+    locale: normalizeChatCoreV2Locale(input.locale),
+    now,
+  });
+  if (!isReadModelFreshEnough(readModel)) return null;
+
+  const contextPack = buildChatCoreV2ReadContextPack([readModel], { generatedAt: now.toISOString() });
+  const response = buildChatCoreV2MessageResponse({
+    text: readModel.summary ?? buildDecisionCenterSummaryText(data, input.locale),
+    locale: input.locale,
+    reasonCodes: ['deterministic_read', DECISION_CENTER_SUMMARY_CAPABILITY],
+  });
+
+  return {
+    capabilityId: DECISION_CENTER_SUMMARY_CAPABILITY,
     routeGuess,
     readModel,
     contextPack,
@@ -160,6 +251,29 @@ function summarizeTasks(tasks: NormalizedTask[], timezone: string, now: Date): C
   };
 }
 
+function summarizeDecisionCenter(summary: DecisionSummary): ChatCoreV2DecisionCenterSummaryData {
+  return {
+    openCount: summary.openCount,
+    urgentCount: summary.urgentCount,
+    todayCount: summary.todayCount,
+    handledTodayCount: summary.handledTodayCount,
+    badgeCount: summary.badgeCount,
+    ctaLabel: summary.ctaLabel,
+    topDecisionTitle: summary.topDecisionTitle,
+    topDecisionWhy: summary.topDecisionWhy,
+    topSuggestionTitle: summary.topSuggestion?.title ?? null,
+    topItems: summary.previewItems.slice(0, MAX_VISIBLE_DECISIONS).map((item) => ({
+      entityId: decisionEntityId(item),
+      title: item.safePreviewTitle || item.title,
+      sourceSkill: item.sourceSkill,
+      urgency: item.urgency,
+      status: item.status,
+      actionLabel: item.explanation?.actionLabels?.primary ?? item.primaryActionLabel ?? item.recommendedActionLabel,
+      why: item.explanation?.whyItMatters ?? item.whySummary ?? item.analysis?.whyNow ?? null,
+    })),
+  };
+}
+
 function buildTaskSummaryText(data: ChatCoreV2TaskSummaryData, locale: string | null | undefined): string {
   const normalizedLocale = normalizeChatCoreV2Locale(locale);
   if (data.pendingCount === 0) {
@@ -175,6 +289,27 @@ function buildTaskSummaryText(data: ChatCoreV2TaskSummaryData, locale: string | 
   return `${header}\n\n${taskListLabel(normalizedLocale)}\n${taskLines.join('\n')}`;
 }
 
+function buildDecisionCenterSummaryText(
+  data: ChatCoreV2DecisionCenterSummaryData,
+  locale: string | null | undefined,
+): string {
+  const normalizedLocale = normalizeChatCoreV2Locale(locale);
+  if (data.openCount === 0) {
+    if (normalizedLocale === 'pt-BR') return 'O Decision Center está sem pendências agora.';
+    if (normalizedLocale === 'pt-PT') return 'O Decision Center não tem pendências neste momento.';
+    if (normalizedLocale === 'es') return 'El Decision Center está al día ahora.';
+    return 'Decision Center is clear right now.';
+  }
+
+  const header = buildDecisionCenterSummaryHeader(data, normalizedLocale);
+  if (data.topItems.length === 0) return header;
+  const itemLines = data.topItems.map((item) => {
+    const action = item.actionLabel ? decisionActionSuffix(item.actionLabel, normalizedLocale) : '';
+    return `- ${item.title}${decisionUrgencySuffix(item.urgency, normalizedLocale)}${action}`;
+  });
+  return `${header}\n\n${decisionListLabel(normalizedLocale)}\n${itemLines.join('\n')}`;
+}
+
 function buildTaskSummaryHeader(data: ChatCoreV2TaskSummaryData, locale: ReturnType<typeof normalizeChatCoreV2Locale>): string {
   const parts: string[] = [];
   if (data.dueTodayCount > 0) parts.push(countPhrase(data.dueTodayCount, locale, 'today'));
@@ -186,6 +321,21 @@ function buildTaskSummaryHeader(data: ChatCoreV2TaskSummaryData, locale: ReturnT
   if (locale === 'pt-PT') return `Tens ${data.pendingCount} ${plural(data.pendingCount, 'tarefa aberta', 'tarefas abertas')}.${detail}`;
   if (locale === 'es') return `Tienes ${data.pendingCount} ${plural(data.pendingCount, 'tarea abierta', 'tareas abiertas')}.${detail}`;
   return `You have ${data.pendingCount} open ${data.pendingCount === 1 ? 'task' : 'tasks'}.${detail}`;
+}
+
+function buildDecisionCenterSummaryHeader(
+  data: ChatCoreV2DecisionCenterSummaryData,
+  locale: ReturnType<typeof normalizeChatCoreV2Locale>,
+): string {
+  const parts: string[] = [];
+  if (data.urgentCount > 0) parts.push(decisionCountPhrase(data.urgentCount, locale, 'urgent'));
+  if (data.todayCount > 0) parts.push(decisionCountPhrase(data.todayCount, locale, 'today'));
+  if (data.handledTodayCount > 0) parts.push(decisionCountPhrase(data.handledTodayCount, locale, 'handled'));
+  const detail = parts.length > 0 ? ` ${joinParts(parts, locale)}` : '';
+  if (locale === 'pt-BR') return `O Decision Center tem ${data.openCount} ${plural(data.openCount, 'decisão aberta', 'decisões abertas')}.${detail}`;
+  if (locale === 'pt-PT') return `O Decision Center tem ${data.openCount} ${plural(data.openCount, 'decisão aberta', 'decisões abertas')}.${detail}`;
+  if (locale === 'es') return `Decision Center tiene ${data.openCount} ${plural(data.openCount, 'decisión abierta', 'decisiones abiertas')}.${detail}`;
+  return `Decision Center has ${data.openCount} open ${data.openCount === 1 ? 'decision' : 'decisions'}.${detail}`;
 }
 
 function countPhrase(
@@ -208,11 +358,38 @@ function countPhrase(
   return `${count} high priority`;
 }
 
+function decisionCountPhrase(
+  count: number,
+  locale: ReturnType<typeof normalizeChatCoreV2Locale>,
+  kind: 'urgent' | 'today' | 'handled',
+): string {
+  if (locale === 'pt-BR' || locale === 'pt-PT') {
+    if (kind === 'urgent') return `${count} ${plural(count, 'urgente', 'urgentes')}`;
+    if (kind === 'today') return `${count} ${plural(count, 'para hoje', 'para hoje')}`;
+    return `${count} ${plural(count, 'tratada hoje', 'tratadas hoje')}`;
+  }
+  if (locale === 'es') {
+    if (kind === 'urgent') return `${count} ${plural(count, 'urgente', 'urgentes')}`;
+    if (kind === 'today') return `${count} ${plural(count, 'para hoy', 'para hoy')}`;
+    return `${count} ${plural(count, 'gestionada hoy', 'gestionadas hoy')}`;
+  }
+  if (kind === 'urgent') return `${count} urgent`;
+  if (kind === 'today') return `${count} for today`;
+  return `${count} handled today`;
+}
+
 function taskListLabel(locale: ReturnType<typeof normalizeChatCoreV2Locale>): string {
   if (locale === 'pt-BR') return 'Principais tarefas:';
   if (locale === 'pt-PT') return 'Tarefas principais:';
   if (locale === 'es') return 'Tareas principales:';
   return 'Top tasks:';
+}
+
+function decisionListLabel(locale: ReturnType<typeof normalizeChatCoreV2Locale>): string {
+  if (locale === 'pt-BR') return 'Principais decisões:';
+  if (locale === 'pt-PT') return 'Decisões principais:';
+  if (locale === 'es') return 'Decisiones principales:';
+  return 'Top decisions:';
 }
 
 function taskSuffix(task: ChatCoreV2TaskSummaryItem, locale: ReturnType<typeof normalizeChatCoreV2Locale>): string {
@@ -227,6 +404,26 @@ function taskSuffix(task: ChatCoreV2TaskSummaryItem, locale: ReturnType<typeof n
     return ' (overdue)';
   }
   return '';
+}
+
+function decisionUrgencySuffix(urgency: string, locale: ReturnType<typeof normalizeChatCoreV2Locale>): string {
+  if (urgency === 'urgent') {
+    if (locale === 'pt-BR' || locale === 'pt-PT') return ' (urgente)';
+    if (locale === 'es') return ' (urgente)';
+    return ' (urgent)';
+  }
+  if (urgency === 'today') {
+    if (locale === 'pt-BR' || locale === 'pt-PT') return ' (hoje)';
+    if (locale === 'es') return ' (hoy)';
+    return ' (today)';
+  }
+  return '';
+}
+
+function decisionActionSuffix(actionLabel: string, locale: ReturnType<typeof normalizeChatCoreV2Locale>): string {
+  if (locale === 'pt-BR' || locale === 'pt-PT') return ` - precisa de: ${actionLabel}`;
+  if (locale === 'es') return ` - necesita: ${actionLabel}`;
+  return ` - needs: ${actionLabel}`;
 }
 
 function joinParts(parts: string[], locale: ReturnType<typeof normalizeChatCoreV2Locale>): string {
@@ -254,9 +451,28 @@ function sourceVersionsForTasks(tasks: NormalizedTask[]): Record<string, string>
   return versions;
 }
 
+function sourceVersionsForDecisions(items: DecisionApiItem[]): Record<string, string> {
+  const versions: Record<string, string> = {};
+  for (const item of items) {
+    versions[decisionEntityId(item)] = hashStable({
+      status: item.status,
+      urgency: item.urgency,
+      title: item.safePreviewTitle || item.title,
+      actionLabel: item.explanation?.actionLabels?.primary ?? item.primaryActionLabel ?? item.recommendedActionLabel,
+      updatedAt: item.updatedAt,
+      snoozedUntil: item.snoozedUntil,
+    });
+  }
+  return versions;
+}
+
 function taskEntityId(task: NormalizedTask): string {
   if (typeof task.id === 'number' && Number.isFinite(task.id)) return `task:${task.id}`;
   return `task:${hashStable({ provider: task.provider, externalId: task.externalId }).slice(0, 12)}`;
+}
+
+function decisionEntityId(item: DecisionApiItem): string {
+  return `decision:${item.decisionId}`;
 }
 
 function bucketSortRank(bucket: ChatCoreV2TaskSummaryItem['bucket']): number {

@@ -6,6 +6,11 @@ vi.mock('../../src/services/task-store/task-service', () => ({
   listTasks: vi.fn(),
 }));
 
+vi.mock('../../src/services/decision-center', () => ({
+  getDecisionSummary: vi.fn(),
+}));
+
+import { getDecisionSummary } from '../../src/services/decision-center';
 import { listTasks } from '../../src/services/task-store/task-service';
 import { tryBuildChatCoreV2DeterministicReadRoute } from '../../src/services/chat-core-v2';
 
@@ -31,6 +36,7 @@ function task(overrides: Partial<NormalizedTask>): NormalizedTask {
 describe('Chat Core v2 deterministic read route', () => {
   beforeEach(() => {
     vi.mocked(listTasks).mockReset();
+    vi.mocked(getDecisionSummary).mockReset();
   });
 
   it('stays disabled unless both global and read flags are explicitly enabled', () => {
@@ -55,6 +61,7 @@ describe('Chat Core v2 deterministic read route', () => {
     });
     expect(globalOnly).toBeNull();
     expect(listTasks).not.toHaveBeenCalled();
+    expect(getDecisionSummary).not.toHaveBeenCalled();
   });
 
   it('answers task summary questions without model calls or provider reads', () => {
@@ -101,6 +108,208 @@ describe('Chat Core v2 deterministic read route', () => {
       },
     });
     expect(result?.contextPack.contextHash).toMatch(/^[a-f0-9]{16}$/);
+  });
+
+  it('answers Decision Center summary questions through the filtered Decision Center facade', () => {
+    vi.mocked(getDecisionSummary).mockReturnValue({
+      openCount: 2,
+      urgentCount: 1,
+      todayCount: 1,
+      handledTodayCount: 3,
+      topDecisionTitle: 'Move client review to 15:30?',
+      topDecisionSourceSkill: 'secretary',
+      topDecisionUrgency: 'urgent',
+      topDecisionWhy: 'The current time conflicts with another commitment.',
+      topSuggestion: {
+        decisionId: 'dec_1',
+        title: 'Move client review to 15:30?',
+        actionLabel: 'Move to 15:30',
+        whyNow: 'This affects today.',
+        expectedOutcome: 'Calendar stays conflict-free.',
+        riskIfIgnored: 'The conflict may remain.',
+        sourceSkill: 'secretary',
+      },
+      previewItems: [
+        {
+          decisionId: 'dec_1',
+          itemId: 'item_1',
+          id: 'item_1',
+          intentId: 'intent_1',
+          decisionLogId: null,
+          userId: 42,
+          tenantId: 84,
+          sourceSkill: 'secretary',
+          type: 'decision_required',
+          status: 'unread',
+          urgency: 'urgent',
+          timingLabel: null,
+          priorityScore: 90,
+          title: 'Move client review to 15:30?',
+          summary: 'Client review needs a better slot.',
+          safePreviewTitle: 'Move client review to 15:30?',
+          safePreviewBody: 'Client review needs a better slot.',
+          recommendedActionLabel: 'Move to 15:30',
+          recommendedAction: null,
+          alternativeActions: [],
+          whySummary: 'The current time conflicts with another commitment.',
+          whyDetails: [],
+          explanation: {
+            headline: 'Move client review to 15:30?',
+            whatHappened: 'The current time conflicts with another commitment.',
+            whyItMatters: 'It keeps the afternoon plan realistic.',
+            nexusAction: 'Nexus will move the item after confirmation.',
+            userAction: 'Choose whether to move it.',
+            result: 'The calendar item moves to 15:30.',
+            verification: 'Nexus will check the calendar after the move.',
+            nextStep: 'Confirm or choose another time.',
+            steps: [],
+            actionLabels: { primary: 'Move to 15:30', secondary: ['Choose another time'] },
+          },
+          problemStatement: 'The current time conflicts with another commitment.',
+          recommendation: 'Move to 15:30',
+          expectedEffect: 'Calendar stays conflict-free.',
+          impactIfIgnored: 'The conflict may remain.',
+          impactLevel: 'high',
+          primaryActionLabel: 'Move to 15:30',
+          secondaryActionLabels: ['Choose another time'],
+          urgencyReason: 'Affects today.',
+          why: { facts: [], rules: [], tradeoffs: [], confidence: 'high' },
+          actionPreview: [],
+          whatWillChange: [],
+          alternatives: [],
+          automationEligibility: { eligible: false, reason: 'needs_user', mode: 'manual' },
+          autopilotPolicy: 'manual',
+          readBackVerifier: null,
+          handledByNexus: false,
+          handledAt: null,
+          outcomeSummary: null,
+          failureReason: null,
+          retryActions: [],
+          notificationEligibility: 'visible',
+          apnsInterruptionLevel: 'active',
+          collapseKey: null,
+          badgeContribution: true,
+          quality: {
+            status: 'safe',
+            safeToShowUser: true,
+            safeForFrontendAction: true,
+            missingFields: [],
+            warnings: [],
+          },
+          relatedEntities: [],
+          relatedEntitiesSafe: [],
+          sourceTraceSummary: null,
+          sourceTrace: null,
+          dependencyGraphSummary: null,
+          actionTruthTableEntry: null,
+          askNexusContext: null,
+          deadlineAt: null,
+          expiresAt: null,
+          confidence: 0.9,
+          analysis: {
+            confidence: 0.9,
+            confidenceLabel: 'high',
+            sourceFreshness: 'live',
+            freshnessLabel: 'Live',
+            whyNow: 'This affects today.',
+            expectedOutcome: 'Calendar stays conflict-free.',
+            costOfDelay: 'The conflict may remain.',
+            tradeoffs: [],
+            uncertainty: [],
+            rollbackConfidence: 'high',
+          },
+          riskLevel: 'medium',
+          groupKey: 'secretary',
+          sectionKey: 'urgent',
+          displayMode: 'decision_required',
+          frontendActionState: 'enabled',
+          privacyClassification: 'standard',
+          visibilityScope: 'user_private',
+          createdAt: '2026-05-24T09:00:00.000Z',
+          updatedAt: '2026-05-24T09:05:00.000Z',
+          snoozedUntil: null,
+          actions: [],
+          dependsOnDecisionIds: [],
+          blockedByDecisionIds: [],
+          rollbackAvailable: false,
+          rollbackActionId: null,
+        },
+      ],
+      badgeCount: 1,
+      ctaLabel: 'Urgent decision',
+      gamification: null,
+    });
+
+    const result = tryBuildChatCoreV2DeterministicReadRoute({
+      normalizedText: 'What is in Decision Center?',
+      userId: 42,
+      tenantId: 84,
+      locale: 'en-US',
+      timezone: 'Europe/Lisbon',
+      now: FIXED_NOW,
+      env: ENABLED_ENV,
+    });
+
+    expect(result).not.toBeNull();
+    expect(getDecisionSummary).toHaveBeenCalledWith(42, 84, 3);
+    expect(listTasks).not.toHaveBeenCalled();
+    expect(result?.capabilityId).toBe('decision_center.summary');
+    expect(result?.response).toMatchObject({
+      schemaVersion: 'chat_response_v2@1.0.0',
+      kind: 'message',
+      locale: 'en',
+      cards: [],
+      reasonCodes: ['deterministic_read', 'decision_center.summary'],
+    });
+    expect(result?.response.text).toContain('Decision Center has 2 open decisions.');
+    expect(result?.response.text).toContain('1 urgent');
+    expect(result?.response.text).toContain('3 handled today');
+    expect(result?.response.text).toContain('- Move client review to 15:30? (urgent) - needs: Move to 15:30');
+    expect(result?.readModel).toMatchObject({
+      capabilityId: 'decision_center.summary',
+      domain: 'decision_center',
+      sensitivity: 'personal',
+      freshness: { status: 'live' },
+      data: {
+        openCount: 2,
+        urgentCount: 1,
+        todayCount: 1,
+        handledTodayCount: 3,
+        badgeCount: 1,
+      },
+    });
+    expect(result?.contextPack.sourceEntityIds).toEqual(['decision:dec_1']);
+  });
+
+  it('localizes clear Decision Center summaries for Portuguese users', () => {
+    vi.mocked(getDecisionSummary).mockReturnValue({
+      openCount: 0,
+      urgentCount: 0,
+      todayCount: 0,
+      handledTodayCount: 0,
+      topDecisionTitle: null,
+      topDecisionSourceSkill: null,
+      topDecisionUrgency: null,
+      topDecisionWhy: null,
+      topSuggestion: null,
+      previewItems: [],
+      badgeCount: 0,
+      ctaLabel: 'Tudo certo',
+      gamification: null,
+    });
+
+    const pt = tryBuildChatCoreV2DeterministicReadRoute({
+      normalizedText: 'O que está no Decision Center?',
+      userId: 42,
+      tenantId: 84,
+      locale: 'pt-PT',
+      timezone: 'Europe/Lisbon',
+      now: FIXED_NOW,
+      env: ENABLED_ENV,
+    });
+
+    expect(pt?.response.locale).toBe('pt-PT');
+    expect(pt?.response.text).toBe('O Decision Center não tem pendências neste momento.');
   });
 
   it('localizes deterministic task summaries for Portuguese users', () => {
@@ -160,10 +369,19 @@ describe('Chat Core v2 deterministic read route', () => {
       now: FIXED_NOW,
       env: ENABLED_ENV,
     });
+    const decisionWrite = tryBuildChatCoreV2DeterministicReadRoute({
+      normalizedText: 'Dismiss this decision',
+      userId: 42,
+      tenantId: 84,
+      now: FIXED_NOW,
+      env: ENABLED_ENV,
+    });
 
     expect(write).toBeNull();
     expect(portugueseWrite).toBeNull();
     expect(multiDomain).toBeNull();
+    expect(decisionWrite).toBeNull();
     expect(listTasks).not.toHaveBeenCalled();
+    expect(getDecisionSummary).not.toHaveBeenCalled();
   });
 });

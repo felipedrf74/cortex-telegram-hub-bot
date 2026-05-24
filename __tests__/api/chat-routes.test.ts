@@ -2818,6 +2818,71 @@ describe('Chat API routes', () => {
     }
   });
 
+  it('answers Decision Center status through Chat Core v2 deterministic reads when explicitly enabled', async () => {
+    const previousGlobal = process.env.CHAT_CORE_V2_ENABLED;
+    const previousReads = process.env.CHAT_CORE_V2_READS_ENABLED;
+    process.env.CHAT_CORE_V2_ENABLED = 'true';
+    process.env.CHAT_CORE_V2_READS_ENABLED = 'true';
+    try {
+      mockRouteMessage.mockResolvedValue({
+        domain: 'secretary',
+        method: 'keyword',
+        confidence: 0.9,
+        strippedMessage: 'cancel my training plan and clear the calendar',
+      });
+      mockGetUserLanguage.mockReturnValue('en-US');
+
+      const decisionSeed = await dispatch('POST', '/message', 7001, {
+        text: 'cancel my training plan and clear the calendar',
+      });
+      expect(decisionSeed.statusCode, JSON.stringify(decisionSeed.body)).toBe(200);
+      expect(decisionSeed.body.routeMethod).toBe('confirmation-required');
+
+      mockRouteMessage.mockClear();
+      mockHandleSecretary.mockClear();
+
+      const messageRes = await dispatch('POST', '/message', 7001, {
+        text: 'What is in Decision Center?',
+      });
+
+      expect(messageRes.statusCode, JSON.stringify(messageRes.body)).toBe(200);
+      expect(messageRes.body.routeMethod).toBe('chat-core-v2-deterministic-read');
+      expect(messageRes.body.domain).toBe('secretary');
+      expect(messageRes.body.text).toContain('Decision Center has');
+      expect(messageRes.body.metadata).toMatchObject({
+        type: 'chat_core_v2_deterministic_read',
+        chatCoreV2: {
+          capabilityId: 'decision_center.summary',
+          response: {
+            schemaVersion: 'chat_response_v2@1.0.0',
+            kind: 'message',
+          },
+          readModel: {
+            capabilityId: 'decision_center.summary',
+            domain: 'decision_center',
+            data: {
+              openCount: expect.any(Number),
+            },
+          },
+        },
+      });
+      expect(messageRes.body.metadata.chatCoreV2.readModel.data.openCount).toBeGreaterThan(0);
+      expect(mockRouteMessage).not.toHaveBeenCalled();
+      expect(mockHandleSecretary).not.toHaveBeenCalled();
+    } finally {
+      if (previousGlobal === undefined) {
+        delete process.env.CHAT_CORE_V2_ENABLED;
+      } else {
+        process.env.CHAT_CORE_V2_ENABLED = previousGlobal;
+      }
+      if (previousReads === undefined) {
+        delete process.env.CHAT_CORE_V2_READS_ENABLED;
+      } else {
+        process.env.CHAT_CORE_V2_READS_ENABLED = previousReads;
+      }
+    }
+  });
+
   it('returns the accountant handoff state from the deterministic finance shortcut', async () => {
     mockRouteMessage.mockResolvedValue({
       domain: 'finance',
