@@ -212,6 +212,17 @@ function buildLegacyResponseCards(result: ChatCoreV2CommandPreviewRouteResult): 
       status: 'pending',
     }];
   }
+  if (result.command.domain === 'training') {
+    return [{
+      kind: 'trainingSessionCard',
+      sessionId: typeof payload.sessionId === 'number' ? String(payload.sessionId) : null,
+      title,
+      dateLabel: typeof payload.sessionDateLabel === 'string' && payload.sessionDateLabel.trim()
+        ? payload.sessionDateLabel.trim()
+        : String(payload.dayOfWeek ?? ''),
+      summary: [{ kind: 'paragraph', text: result.response.text }],
+    }];
+  }
 
   const dueAt = typeof payload.dueDateTime === 'string' && payload.dueDateTime.trim()
     ? payload.dueDateTime.trim()

@@ -3831,6 +3831,184 @@ describe('Chat API routes', () => {
     }
   });
 
+  it('returns a Chat Core v2 training lighter-session preview without mutating the plan', async () => {
+    const previousGlobal = process.env.CHAT_CORE_V2_ENABLED;
+    const previousPreviews = process.env.CHAT_CORE_V2_PREVIEWS_ENABLED;
+    process.env.CHAT_CORE_V2_ENABLED = 'true';
+    process.env.CHAT_CORE_V2_PREVIEWS_ENABLED = 'true';
+    try {
+      mockGetActivePlan.mockReturnValue({
+        id: 101,
+        user_id: 7001,
+        tenant_id: 7001,
+        name: 'Strength Base',
+        sport: 'strength',
+        goal: 'Build strength',
+        duration_weeks: 4,
+        periodization: 'linear',
+        status: 'active',
+        start_date: '2026-05-25',
+        end_date: '2026-06-21',
+        preferences_json: null,
+        plan_version: 1,
+        created_at: '2026-05-20T09:00:00.000Z',
+        updated_at: '2026-05-20T09:00:00.000Z',
+      });
+      mockGetWeeksForPlan.mockReturnValue([{
+        id: 201,
+        plan_id: 101,
+        week_number: 1,
+        focus: 'Base strength',
+        intensity_pct: 80,
+        volume_sessions: 3,
+        notes: null,
+        auto_adjusted: 0,
+        adjustment_reason: null,
+        created_at: '2026-05-25T00:00:00.000Z',
+      }]);
+      mockGetSessionsForWeek.mockReturnValue([{
+        id: 301,
+        week_id: 201,
+        plan_id: 101,
+        tenant_id: 7001,
+        day_of_week: 'Monday',
+        session_type: 'strength',
+        title: 'Lower-body strength',
+        description: 'Private training instructions',
+        description_json: null,
+        exercises_json: '[{"name":"Private lift"}]',
+        duration_minutes: 55,
+        intensity_text: 'hard',
+        calendar_event_id: 'evt_private_training',
+        calendar_source: 'google',
+        session_identity_key: 'week1_strength1',
+        session_shape_hash: 'shape_training_1',
+        preferred_time_unavailable: 0,
+        status: 'scheduled',
+        created_at: '2026-05-20T09:00:00.000Z',
+        updated_at: '2026-05-20T09:00:00.000Z',
+      }]);
+      mockRouteMessage.mockClear();
+      mockHandleSecretary.mockClear();
+
+      const messageRes = await dispatch('POST', '/message', 7001, {
+        text: 'Make tomorrow workout lighter',
+        clientMessageId: 'chat-core-v2-training-preview-1',
+      });
+
+      expect(messageRes.statusCode, JSON.stringify(messageRes.body)).toBe(200);
+      expect(messageRes.body.routeMethod).toBe('chat-core-v2-command-preview');
+      expect(messageRes.body.domain).toBe('secretary');
+      expect(messageRes.body.text).toContain('Your training plan would not change yet.');
+      expect(messageRes.body.text).not.toContain('Private training instructions');
+      expect(JSON.stringify(messageRes.body.metadata)).not.toContain('Private lift');
+      expect(JSON.stringify(messageRes.body.metadata)).not.toContain('evt_private_training');
+      expect(messageRes.body.metadata).toMatchObject({
+        type: 'chat_core_v2_command_preview',
+        chatCoreV2: {
+          capabilityId: 'training.modify_session_preview',
+          executionEnabled: false,
+          executionDisabledReason: 'preview_only_rollout',
+          response: {
+            schemaVersion: 'chat_response_v2@1.0.0',
+            kind: 'action_preview',
+            reasonCodes: expect.arrayContaining(['preview_only_rollout']),
+          },
+          command: {
+            commandSchemaVersion: 'training.modify_session@1.0.0',
+            previewSchemaVersion: 'training_change_preview_card@1.0.0',
+            responseSchemaVersion: 'chat_response_v2@1.0.0',
+            domain: 'training',
+            commandType: 'training.modify_session',
+            origin: 'chat',
+            payload: {
+              operation: 'modify_session',
+              changeType: 'reduce_intensity',
+              sessionId: 301,
+              planId: 101,
+              weekId: 201,
+              title: 'Lower-body strength',
+              currentIntensity: 'hard',
+              targetIntensity: 'easier',
+              status: 'preview',
+            },
+            basedOn: {
+              entityIds: ['training_session:301', 'training_plan:101'],
+              entityVersions: {
+                'training_session:301': expect.stringMatching(/^[0-9a-f]{16}$/),
+                'training_plan:101': expect.stringMatching(/^[0-9a-f]{16}$/),
+              },
+            },
+            preconditions: {
+              requiredEntityVersions: {
+                'training_session:301': expect.stringMatching(/^[0-9a-f]{16}$/),
+                'training_plan:101': expect.stringMatching(/^[0-9a-f]{16}$/),
+              },
+              invariants: expect.arrayContaining([{
+                type: 'preview_only',
+                description: 'Training session modification previews do not change the plan in this rollout.',
+                check: 'training_modify_session_preview_only',
+              }]),
+              hasPermissionSnapshot: true,
+            },
+          },
+          gate: {
+            ok: true,
+            operation: 'preview',
+            commandStatus: 'previewed',
+          },
+        },
+      });
+      expect(messageRes.body.metadata.chatCoreV2.response.cards[0]).toMatchObject({
+        type: 'training_change_preview_card',
+        title: 'Training preview: Lower-body strength',
+        sensitivity: 'health_adjacent',
+        primaryAction: {
+          kind: 'view',
+          label: 'View',
+        },
+        secondaryActions: [],
+        diff: expect.arrayContaining([
+          { label: 'Session', after: 'Lower-body strength' },
+          { label: 'Intensity', before: 'hard', after: 'Easier' },
+          { label: 'Status', after: 'Preview' },
+        ]),
+      });
+      expect(messageRes.body.responseCards).toEqual([{
+        kind: 'trainingSessionCard',
+        sessionId: '301',
+        title: 'Lower-body strength',
+        dateLabel: 'Mon 25 May',
+        summary: [{
+          kind: 'paragraph',
+          text: expect.stringContaining('Your training plan would not change yet.'),
+        }],
+      }]);
+      expect(messageRes.body.metadata.chatCoreV2.response.cards[0].confirmationToken).toBeUndefined();
+      const metadataJson = JSON.stringify(messageRes.body.metadata);
+      expect(metadataJson).not.toContain('actorUserId');
+      expect(metadataJson).not.toContain('delegatedScopes');
+      expect(metadataJson).not.toContain('idempotencyKey');
+      expect(metadataJson).not.toContain('chat-v2-permissions:7001:7001');
+      expect(mockGetActivePlan).toHaveBeenCalledWith(7001, 7001);
+      expect(mockGetWeeksForPlan).toHaveBeenCalledWith(101);
+      expect(mockGetSessionsForWeek).toHaveBeenCalledWith(201);
+      expect(mockRouteMessage).not.toHaveBeenCalled();
+      expect(mockHandleSecretary).not.toHaveBeenCalled();
+    } finally {
+      if (previousGlobal === undefined) {
+        delete process.env.CHAT_CORE_V2_ENABLED;
+      } else {
+        process.env.CHAT_CORE_V2_ENABLED = previousGlobal;
+      }
+      if (previousPreviews === undefined) {
+        delete process.env.CHAT_CORE_V2_PREVIEWS_ENABLED;
+      } else {
+        process.env.CHAT_CORE_V2_PREVIEWS_ENABLED = previousPreviews;
+      }
+    }
+  });
+
   it('answers connection status through Chat Core v2 deterministic reads when explicitly enabled', async () => {
     const previousGlobal = process.env.CHAT_CORE_V2_ENABLED;
     const previousReads = process.env.CHAT_CORE_V2_READS_ENABLED;

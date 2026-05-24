@@ -4,9 +4,11 @@ import { tryBuildChatCoreV2CommandPreviewRoute } from '../../src/services/chat-c
 import { listDecisionItems } from '../../src/services/decision-center';
 import { listNotificationCenterItems } from '../../src/services/notification-orchestrator';
 import { listTasks } from '../../src/services/task-store/task-service';
+import { getActivePlan, getSessionsForWeek, getWeeksForPlan } from '../../src/services/training-plans';
 import type { DecisionApiItem } from '../../src/services/decision-center';
 import type { NotificationCenterItem } from '../../src/services/notification-orchestrator';
 import type { NormalizedTask } from '../../src/services/task-store/types';
+import type { TrainingPlan, TrainingSession, TrainingWeek } from '../../src/services/training-plans';
 
 vi.mock('../../src/services/decision-center', () => ({
   listDecisionItems: vi.fn(),
@@ -18,6 +20,12 @@ vi.mock('../../src/services/notification-orchestrator', () => ({
 
 vi.mock('../../src/services/task-store/task-service', () => ({
   listTasks: vi.fn(),
+}));
+
+vi.mock('../../src/services/training-plans', () => ({
+  getActivePlan: vi.fn(),
+  getWeeksForPlan: vi.fn(),
+  getSessionsForWeek: vi.fn(),
 }));
 
 const FIXED_NOW = new Date('2026-05-24T10:00:00.000Z');
@@ -199,6 +207,69 @@ function decision(overrides: Partial<DecisionApiItem> & { decisionId: string; ti
   };
 }
 
+function trainingPlan(overrides: Partial<TrainingPlan> = {}): TrainingPlan {
+  return {
+    id: 501,
+    user_id: 42,
+    tenant_id: 84,
+    name: 'Strength Base',
+    sport: 'strength',
+    goal: 'Build sustainable strength',
+    duration_weeks: 4,
+    periodization: 'linear',
+    status: 'active',
+    start_date: '2026-05-25',
+    end_date: '2026-06-21',
+    preferences_json: null,
+    plan_version: 1,
+    created_at: '2026-05-20T09:00:00.000Z',
+    updated_at: '2026-05-20T09:00:00.000Z',
+    ...overrides,
+  };
+}
+
+function trainingWeek(overrides: Partial<TrainingWeek> = {}): TrainingWeek {
+  return {
+    id: 601,
+    plan_id: 501,
+    week_number: 1,
+    focus: 'Base',
+    intensity_pct: 80,
+    volume_sessions: 3,
+    notes: null,
+    auto_adjusted: 0,
+    adjustment_reason: null,
+    created_at: '2026-05-25T00:00:00.000Z',
+    ...overrides,
+  };
+}
+
+function trainingSession(overrides: Partial<TrainingSession> & { id: number; title: string; day_of_week: string }): TrainingSession {
+  return {
+    id: overrides.id,
+    week_id: 601,
+    plan_id: 501,
+    tenant_id: 84,
+    day_of_week: overrides.day_of_week,
+    session_type: 'strength',
+    title: overrides.title,
+    description: null,
+    description_json: null,
+    exercises_json: null,
+    duration_minutes: 55,
+    intensity_text: 'hard',
+    calendar_event_id: null,
+    calendar_source: null,
+    session_identity_key: `session_${overrides.id}`,
+    session_shape_hash: `shape_${overrides.id}`,
+    preferred_time_unavailable: 0,
+    status: 'scheduled',
+    created_at: '2026-05-20T09:00:00.000Z',
+    updated_at: '2026-05-20T09:00:00.000Z',
+    ...overrides,
+  };
+}
+
 describe('Chat Core v2 command preview route', () => {
   beforeEach(() => {
     vi.mocked(listDecisionItems).mockReset();
@@ -207,6 +278,12 @@ describe('Chat Core v2 command preview route', () => {
     vi.mocked(listTasks).mockReturnValue([]);
     vi.mocked(listNotificationCenterItems).mockReset();
     vi.mocked(listNotificationCenterItems).mockReturnValue([]);
+    vi.mocked(getActivePlan).mockReset();
+    vi.mocked(getActivePlan).mockReturnValue(null);
+    vi.mocked(getWeeksForPlan).mockReset();
+    vi.mocked(getWeeksForPlan).mockReturnValue([]);
+    vi.mocked(getSessionsForWeek).mockReset();
+    vi.mocked(getSessionsForWeek).mockReturnValue([]);
   });
 
   it('stays disabled unless the global and write rollout flags are explicitly enabled', () => {
@@ -308,6 +385,148 @@ describe('Chat Core v2 command preview route', () => {
     expect(buildPreview('Schedule a meeting for Friday at 2pm called weekly sync')).toBeNull();
     expect(buildPreview('Schedule a meeting for Friday', PREVIEWS_ENABLED_ENV)).toBeNull();
     expect(buildPreview('Schedule something on my calendar tomorrow at 9am', PREVIEWS_ENABLED_ENV)).toBeNull();
+  });
+
+  it('builds a preview-only training session modification without changing the plan', () => {
+    vi.mocked(getActivePlan).mockReturnValue(trainingPlan());
+    vi.mocked(getWeeksForPlan).mockReturnValue([trainingWeek()]);
+    vi.mocked(getSessionsForWeek).mockReturnValue([
+      trainingSession({ id: 701, title: 'Lower-body strength', day_of_week: 'Monday', intensity_text: 'hard' }),
+    ]);
+
+    const result = buildPreview('Make tomorrow workout lighter', PREVIEWS_ENABLED_ENV);
+
+    expect(result).not.toBeNull();
+    expect(result?.capabilityId).toBe('training.modify_session_preview');
+    expect(result?.executionEnabled).toBe(false);
+    expect(result?.routeGuess).toMatchObject({
+      intent: 'modify_action',
+      domains: ['training'],
+      capabilityIds: ['training.modify_session_preview'],
+    });
+    expect(result?.gateVerdict).toMatchObject({
+      ok: true,
+      operation: 'preview',
+      commandStatus: 'previewed',
+      capabilityId: 'training.modify_session_preview',
+    });
+    expect(result?.command).toMatchObject({
+      commandSchemaVersion: 'training.modify_session@1.0.0',
+      previewSchemaVersion: 'training_change_preview_card@1.0.0',
+      responseSchemaVersion: 'chat_response_v2@1.0.0',
+      domain: 'training',
+      commandType: 'training.modify_session',
+      origin: 'chat',
+      payload: {
+        operation: 'modify_session',
+        changeType: 'reduce_intensity',
+        sessionId: 701,
+        planId: 501,
+        weekId: 601,
+        title: 'Lower-body strength',
+        dayOfWeek: 'Monday',
+        sessionDate: '2026-05-25',
+        sessionType: 'strength',
+        currentIntensity: 'hard',
+        targetIntensity: 'easier',
+        status: 'preview',
+        safetyPolicyVersion: 'chat_core_v2_training_safety_policy@1.0.0',
+      },
+      basedOn: {
+        entityIds: ['training_session:701', 'training_plan:501'],
+        entityVersions: {
+          'training_session:701': expect.stringMatching(/^[0-9a-f]{16}$/),
+          'training_plan:501': expect.stringMatching(/^[0-9a-f]{16}$/),
+        },
+      },
+      preconditions: {
+        requiredEntityVersions: {
+          'training_session:701': expect.stringMatching(/^[0-9a-f]{16}$/),
+          'training_plan:501': expect.stringMatching(/^[0-9a-f]{16}$/),
+        },
+        requiredPermissionsVersion: 'chat-v2-permissions:84:42:training:v1',
+        invariants: [
+          {
+            type: 'training_session_status',
+            description: 'Training session must still be active before any future execution.',
+            check: 'training_session_is_active',
+          },
+          {
+            type: 'training_safety_policy',
+            description: 'Training safety policy must allow the proposed modification before execution.',
+            check: 'training_safety_policy_allows_change',
+          },
+          {
+            type: 'preview_only',
+            description: 'Training session modification previews do not change the plan in this rollout.',
+            check: 'training_modify_session_preview_only',
+          },
+        ],
+      },
+      authorization: {
+        delegatedScopes: ['training:read'],
+        permissionSnapshotVersion: 'chat-v2-permissions:84:42:training:v1',
+      },
+    });
+    expect(result?.command.idempotencyKey).toMatch(/^chat-v2:84:42:training\.modify_session:701:cmd_/);
+    expect(result?.response.kind).toBe('action_preview');
+    expect(result?.response.text).toContain('Your training plan would not change yet.');
+    expect(result?.response.cards[0]).toMatchObject({
+      type: 'training_change_preview_card',
+      title: 'Training preview: Lower-body strength',
+      risk: 'medium',
+      sensitivity: 'health_adjacent',
+      capabilityId: 'training.modify_session_preview',
+      primaryAction: {
+        kind: 'view',
+        label: 'View',
+      },
+      secondaryActions: [],
+      diff: expect.arrayContaining([
+        { label: 'Session', after: 'Lower-body strength' },
+        { label: 'Intensity', before: 'hard', after: 'Easier' },
+        { label: 'Status', after: 'Preview' },
+      ]),
+    });
+    expect(result?.response.cards[0]?.confirmationToken).toBeUndefined();
+    expect(vi.mocked(getActivePlan)).toHaveBeenCalledWith(42, 84);
+    expect(vi.mocked(getWeeksForPlan)).toHaveBeenCalledWith(501);
+    expect(vi.mocked(getSessionsForWeek)).toHaveBeenCalledWith(601);
+  });
+
+  it('localizes training modification previews after resolving the target session', () => {
+    vi.mocked(getActivePlan).mockReturnValue(trainingPlan());
+    vi.mocked(getWeeksForPlan).mockReturnValue([trainingWeek()]);
+    vi.mocked(getSessionsForWeek).mockReturnValue([
+      trainingSession({ id: 702, title: 'Força inferior', day_of_week: 'Monday', intensity_text: 'forte' }),
+    ]);
+
+    const result = buildPreviewForLocale('Torna o treino de amanhã mais leve', 'pt-PT');
+
+    expect(result?.capabilityId).toBe('training.modify_session_preview');
+    expect(result?.response.text).toContain('O plano de treino ainda não seria alterado.');
+    expect(result?.response.cards[0]).toMatchObject({
+      title: 'Pré-visualização do treino: Força inferior',
+      diff: expect.arrayContaining([
+        { label: 'Sessão', after: 'Força inferior' },
+        { label: 'Intensidade', before: 'forte', after: 'Mais leve' },
+        { label: 'Estado', after: 'Pré-visualização' },
+      ]),
+    });
+  });
+
+  it('does not build training modification previews when the target or safe change is unclear', () => {
+    vi.mocked(getActivePlan).mockReturnValue(trainingPlan());
+    vi.mocked(getWeeksForPlan).mockReturnValue([trainingWeek()]);
+    vi.mocked(getSessionsForWeek).mockReturnValue([
+      trainingSession({ id: 701, title: 'Lower-body strength', day_of_week: 'Monday' }),
+    ]);
+
+    expect(buildPreview('Move tomorrow workout to Friday', PREVIEWS_ENABLED_ENV)).toBeNull();
+    expect(buildPreview('Make my workout lighter', PREVIEWS_ENABLED_ENV)).toBeNull();
+
+    vi.mocked(getActivePlan).mockReturnValue(null);
+    expect(buildPreview('Make tomorrow workout lighter', PREVIEWS_ENABLED_ENV)).toBeNull();
   });
 
   it('builds a preview-only task-create command envelope without a confirmation token', () => {
