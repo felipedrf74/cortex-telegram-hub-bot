@@ -158,6 +158,21 @@ const mockApplyCoachRecommendations = vi.fn(async () => ({
   count: 0,
   appliedRecommendations: [],
 }));
+const mockGetActivePlan = vi.fn(() => null);
+const mockGetWeeksForPlan = vi.fn(() => []);
+const mockGetSessionsForWeek = vi.fn(() => []);
+const mockGetWeeklyAdherence = vi.fn(() => ({
+  planId: 101,
+  weekNumber: 1,
+  totalSessions: 0,
+  completedSessions: 0,
+  skippedSessions: 0,
+  pendingSessions: 0,
+  adherenceRate: 0,
+  avgRpe: null,
+  avgEnergy: null,
+  avgSoreness: null,
+}));
 const mockClearChatHistory = vi.fn();
 
 vi.mock('../../src/services/database', () => ({
@@ -353,6 +368,13 @@ vi.mock('../../src/domains/domain-handler', () => ({
 
 vi.mock('../../src/services/garmin-coach', () => ({
   applyCoachRecommendations: (...args: unknown[]) => mockApplyCoachRecommendations(...args),
+}));
+
+vi.mock('../../src/services/training-plans', () => ({
+  getActivePlan: (...args: unknown[]) => mockGetActivePlan(...args),
+  getWeeksForPlan: (...args: unknown[]) => mockGetWeeksForPlan(...args),
+  getSessionsForWeek: (...args: unknown[]) => mockGetSessionsForWeek(...args),
+  getWeeklyAdherence: (...args: unknown[]) => mockGetWeeklyAdherence(...args),
 }));
 
 vi.mock('../../src/services/google-calendar', async () => {
@@ -555,6 +577,20 @@ async function requestApp(
   });
 }
 
+function currentMondayIso(): string {
+  const today = new Date().toISOString().slice(0, 10);
+  const parsed = new Date(`${today}T00:00:00.000Z`);
+  const mondayOffset = (parsed.getUTCDay() + 6) % 7;
+  parsed.setUTCDate(parsed.getUTCDate() - mondayOffset);
+  return parsed.toISOString().slice(0, 10);
+}
+
+function addIsoDays(date: string, days: number): string {
+  const parsed = new Date(`${date}T00:00:00.000Z`);
+  parsed.setUTCDate(parsed.getUTCDate() + days);
+  return parsed.toISOString().slice(0, 10);
+}
+
 describe('Chat API routes', () => {
   beforeEach(() => {
     Settings.now = () => new Date('2026-04-15T12:00:00.000Z').valueOf();
@@ -608,6 +644,10 @@ describe('Chat API routes', () => {
     mockStoreCallbackForScope.mockReset();
     mockGetLastCoachState.mockReset();
     mockApplyCoachRecommendations.mockReset();
+    mockGetActivePlan.mockReset();
+    mockGetWeeksForPlan.mockReset();
+    mockGetSessionsForWeek.mockReset();
+    mockGetWeeklyAdherence.mockReset();
     mockClearChatHistory.mockReset();
     calendarMocks.createEvent.mockReset();
     calendarMocks.getEventsForSources.mockReset();
@@ -764,6 +804,21 @@ describe('Chat API routes', () => {
     mockApplyCoachRecommendations.mockResolvedValue({
       count: 0,
       appliedRecommendations: [],
+    });
+    mockGetActivePlan.mockReturnValue(null);
+    mockGetWeeksForPlan.mockReturnValue([]);
+    mockGetSessionsForWeek.mockReturnValue([]);
+    mockGetWeeklyAdherence.mockReturnValue({
+      planId: 101,
+      weekNumber: 1,
+      totalSessions: 0,
+      completedSessions: 0,
+      skippedSessions: 0,
+      pendingSessions: 0,
+      adherenceRate: 0,
+      avgRpe: null,
+      avgEnergy: null,
+      avgSoreness: null,
     });
 
     testDb.prepare(`
@@ -2818,6 +2873,216 @@ describe('Chat API routes', () => {
     }
   });
 
+  it('returns a Chat Core v2 task-create preview without mutating data when write previews are enabled', async () => {
+    const previousGlobal = process.env.CHAT_CORE_V2_ENABLED;
+    const previousWrites = process.env.CHAT_CORE_V2_WRITES_ENABLED;
+    process.env.CHAT_CORE_V2_ENABLED = 'true';
+    process.env.CHAT_CORE_V2_WRITES_ENABLED = 'true';
+    try {
+      mockRouteMessage.mockClear();
+      mockHandleSecretary.mockClear();
+
+      const messageRes = await dispatch('POST', '/message', 7001, {
+        text: 'Create a task called Buy milk',
+        clientMessageId: 'chat-core-v2-task-create-preview-1',
+      });
+
+      expect(messageRes.statusCode, JSON.stringify(messageRes.body)).toBe(200);
+      expect(messageRes.body.routeMethod).toBe('chat-core-v2-command-preview');
+      expect(messageRes.body.domain).toBe('secretary');
+      expect(messageRes.body.text).toContain('I would prepare the task "Buy milk"');
+      expect(messageRes.body.metadata).toMatchObject({
+        type: 'chat_core_v2_command_preview',
+        chatCoreV2: {
+          capabilityId: 'tasks.create',
+          executionEnabled: false,
+          executionDisabledReason: 'preview_only_rollout',
+          response: {
+            schemaVersion: 'chat_response_v2@1.0.0',
+            kind: 'action_preview',
+            reasonCodes: expect.arrayContaining(['preview_only_rollout']),
+          },
+          command: {
+            commandSchemaVersion: 'tasks.create@1.0.0',
+            previewSchemaVersion: 'task_preview_card@1.0.0',
+            responseSchemaVersion: 'chat_response_v2@1.0.0',
+            domain: 'tasks',
+            commandType: 'tasks.create',
+            origin: 'chat',
+            payload: {
+              title: 'Buy milk',
+              dueDateTime: null,
+            },
+            preconditions: {
+              requiredEntityVersions: {},
+              invariants: [],
+              hasPermissionSnapshot: true,
+              hasTenantPolicySnapshot: false,
+              hasIntegrationConnectionSnapshot: false,
+              hasDecisionSnapshot: false,
+            },
+          },
+          gate: {
+            ok: true,
+            operation: 'preview',
+            commandStatus: 'previewed',
+          },
+        },
+      });
+      expect(messageRes.body.metadata.chatCoreV2.response.cards[0]).toMatchObject({
+        type: 'task_preview_card',
+        title: 'Task preview: Buy milk',
+        primaryAction: {
+          kind: 'view',
+          label: 'View',
+        },
+        secondaryActions: [],
+        diff: [{ label: 'Task', after: 'Buy milk' }],
+      });
+      expect(messageRes.body.metadata.chatCoreV2.response.cards[0].confirmationToken).toBeUndefined();
+      expect(messageRes.body.responseCards).toEqual([{
+        kind: 'taskCard',
+        title: 'Buy milk',
+        status: 'pending',
+        dueAt: null,
+        listName: null,
+      }]);
+      const metadataJson = JSON.stringify(messageRes.body.metadata);
+      expect(metadataJson).not.toContain('actorUserId');
+      expect(metadataJson).not.toContain('delegatedScopes');
+      expect(metadataJson).not.toContain('idempotencyKey');
+      expect(metadataJson).not.toContain('chat-v2-permissions:7001:7001');
+      expect(testDb.prepare('SELECT COUNT(*) AS count FROM native_tasks WHERE user_id = ?').get(7001)).toMatchObject({ count: 0 });
+      expect(mockRouteMessage).not.toHaveBeenCalled();
+      expect(mockHandleSecretary).not.toHaveBeenCalled();
+    } finally {
+      if (previousGlobal === undefined) {
+        delete process.env.CHAT_CORE_V2_ENABLED;
+      } else {
+        process.env.CHAT_CORE_V2_ENABLED = previousGlobal;
+      }
+      if (previousWrites === undefined) {
+        delete process.env.CHAT_CORE_V2_WRITES_ENABLED;
+      } else {
+        process.env.CHAT_CORE_V2_WRITES_ENABLED = previousWrites;
+      }
+    }
+  });
+
+  it('returns a Chat Core v2 task-complete preview with entity preconditions without completing the task', async () => {
+    const previousGlobal = process.env.CHAT_CORE_V2_ENABLED;
+    const previousWrites = process.env.CHAT_CORE_V2_WRITES_ENABLED;
+    process.env.CHAT_CORE_V2_ENABLED = 'true';
+    process.env.CHAT_CORE_V2_WRITES_ENABLED = 'true';
+    try {
+      upsertTask(7001, {
+        provider: 'nexus',
+        externalId: 'task-core-v2-complete-1',
+        title: 'Buy milk',
+        status: 'pending',
+        priority: 0,
+        projectName: 'Inbox',
+      });
+      const taskRow = testDb.prepare('SELECT id FROM unified_tasks WHERE user_id = ? AND title = ?')
+        .get(7001, 'Buy milk') as { id: number };
+      mockRouteMessage.mockClear();
+      mockHandleSecretary.mockClear();
+
+      const messageRes = await dispatch('POST', '/message', 7001, {
+        text: 'Complete the Buy milk task',
+        clientMessageId: 'chat-core-v2-task-complete-preview-1',
+      });
+
+      expect(messageRes.statusCode, JSON.stringify(messageRes.body)).toBe(200);
+      expect(messageRes.body.routeMethod).toBe('chat-core-v2-command-preview');
+      expect(messageRes.body.domain).toBe('secretary');
+      expect(messageRes.body.text).toBe('I would mark "Buy milk" as done.');
+      expect(messageRes.body.metadata).toMatchObject({
+        type: 'chat_core_v2_command_preview',
+        chatCoreV2: {
+          capabilityId: 'tasks.complete',
+          executionEnabled: false,
+          executionDisabledReason: 'preview_only_rollout',
+          response: {
+            schemaVersion: 'chat_response_v2@1.0.0',
+            kind: 'action_preview',
+            reasonCodes: expect.arrayContaining(['preview_only_rollout']),
+          },
+          command: {
+            commandSchemaVersion: 'tasks.complete@1.0.0',
+            previewSchemaVersion: 'task_preview_card@1.0.0',
+            responseSchemaVersion: 'chat_response_v2@1.0.0',
+            domain: 'tasks',
+            commandType: 'tasks.complete',
+            origin: 'chat',
+            payload: {
+              operation: 'complete',
+              taskId: taskRow.id,
+              title: 'Buy milk',
+              currentStatus: 'pending',
+              targetStatus: 'completed',
+            },
+            basedOn: {
+              entityIds: [`task:${taskRow.id}`],
+              entityVersions: {
+                [`task:${taskRow.id}`]: expect.stringMatching(/^[0-9a-f]{16}$/),
+              },
+            },
+            preconditions: {
+              requiredEntityVersions: {
+                [`task:${taskRow.id}`]: expect.stringMatching(/^[0-9a-f]{16}$/),
+              },
+              invariants: [{
+                type: 'task_status',
+                description: 'Task must still be pending when the preview is confirmed.',
+                check: 'task_is_pending',
+              }],
+              hasPermissionSnapshot: true,
+            },
+          },
+          gate: {
+            ok: true,
+            operation: 'preview',
+            commandStatus: 'previewed',
+          },
+        },
+      });
+      expect(messageRes.body.metadata.chatCoreV2.response.cards[0]).toMatchObject({
+        type: 'task_preview_card',
+        title: 'Completion preview: Buy milk',
+        primaryAction: {
+          kind: 'view',
+          label: 'View',
+        },
+        secondaryActions: [],
+        diff: [
+          { label: 'Task', after: 'Buy milk' },
+          { label: 'Status', after: 'Done' },
+        ],
+      });
+      expect(messageRes.body.metadata.chatCoreV2.response.cards[0].confirmationToken).toBeUndefined();
+      const metadataJson = JSON.stringify(messageRes.body.metadata);
+      expect(metadataJson).not.toContain('actorUserId');
+      expect(metadataJson).not.toContain('delegatedScopes');
+      expect(metadataJson).not.toContain('idempotencyKey');
+      expect(metadataJson).not.toContain('chat-v2-permissions:7001:7001');
+      expect(testDb.prepare('SELECT status FROM unified_tasks WHERE id = ?').get(taskRow.id)).toMatchObject({ status: 'pending' });
+      expect(mockRouteMessage).not.toHaveBeenCalled();
+      expect(mockHandleSecretary).not.toHaveBeenCalled();
+    } finally {
+      if (previousGlobal === undefined) {
+        delete process.env.CHAT_CORE_V2_ENABLED;
+      } else {
+        process.env.CHAT_CORE_V2_ENABLED = previousGlobal;
+      }
+      if (previousWrites === undefined) {
+        delete process.env.CHAT_CORE_V2_WRITES_ENABLED;
+      } else {
+        process.env.CHAT_CORE_V2_WRITES_ENABLED = previousWrites;
+      }
+    }
+  });
+
   it('answers Decision Center status through Chat Core v2 deterministic reads when explicitly enabled', async () => {
     const previousGlobal = process.env.CHAT_CORE_V2_ENABLED;
     const previousReads = process.env.CHAT_CORE_V2_READS_ENABLED;
@@ -2945,6 +3210,136 @@ describe('Chat API routes', () => {
         delete process.env.CHAT_CORE_V2_READS_ENABLED;
       } else {
         process.env.CHAT_CORE_V2_READS_ENABLED = previousReads;
+      }
+    }
+  });
+
+  it('returns a Chat Core v2 notification-snooze preview with entity preconditions without mutating the notification', async () => {
+    const previousGlobal = process.env.CHAT_CORE_V2_ENABLED;
+    const previousWrites = process.env.CHAT_CORE_V2_WRITES_ENABLED;
+    process.env.CHAT_CORE_V2_ENABLED = 'true';
+    process.env.CHAT_CORE_V2_WRITES_ENABLED = 'true';
+    try {
+      const { createNotificationIntent, listNotificationCenterItems } = await import('../../src/services/notification-orchestrator');
+      await createNotificationIntent({
+        userId: 7001,
+        tenantId: 7001,
+        sourceSkill: 'system',
+        type: 'reminder',
+        priority: 'active',
+        title: 'Daily planning reminder',
+        body: 'Review today before the afternoon starts.',
+        actionButtons: [{ id: 'open', label: 'Open', style: 'primary' }],
+        deliveryPolicy: 'in_app_only',
+        privacyPolicy: 'standard',
+        dedupeKey: 'chat-core-v2-notification-snooze-preview',
+      });
+      const item = listNotificationCenterItems(7001, 7001, { status: 'unread', limit: 5 })[0];
+      mockRouteMessage.mockClear();
+      mockHandleSecretary.mockClear();
+
+      const messageRes = await dispatch('POST', '/message', 7001, {
+        text: 'Snooze the Daily planning reminder notification for 30 minutes',
+        clientMessageId: 'chat-core-v2-notification-snooze-preview-1',
+      });
+
+      expect(messageRes.statusCode, JSON.stringify(messageRes.body)).toBe(200);
+      expect(messageRes.body.routeMethod).toBe('chat-core-v2-command-preview');
+      expect(messageRes.body.domain).toBe('secretary');
+      expect(messageRes.body.text).toBe('I would snooze "Daily planning reminder" for 30 minutes.');
+      expect(messageRes.body.metadata).toMatchObject({
+        type: 'chat_core_v2_command_preview',
+        chatCoreV2: {
+          capabilityId: 'notifications.snooze',
+          executionEnabled: false,
+          executionDisabledReason: 'preview_only_rollout',
+          response: {
+            schemaVersion: 'chat_response_v2@1.0.0',
+            kind: 'action_preview',
+            reasonCodes: expect.arrayContaining(['preview_only_rollout']),
+          },
+          command: {
+            commandSchemaVersion: 'notifications.snooze@1.0.0',
+            previewSchemaVersion: 'notification_preview_card@1.0.0',
+            responseSchemaVersion: 'chat_response_v2@1.0.0',
+            domain: 'notifications',
+            commandType: 'notifications.snooze',
+            origin: 'chat',
+            payload: {
+              operation: 'snooze',
+              notificationId: item.itemId,
+              title: 'Daily planning reminder',
+              currentStatus: 'unread',
+              targetStatus: 'snoozed',
+              snoozeMinutes: 30,
+            },
+            basedOn: {
+              entityIds: [`notification:${item.itemId}`],
+              entityVersions: {
+                [`notification:${item.itemId}`]: expect.stringMatching(/^[0-9a-f]{16}$/),
+              },
+            },
+            preconditions: {
+              requiredEntityVersions: {
+                [`notification:${item.itemId}`]: expect.stringMatching(/^[0-9a-f]{16}$/),
+              },
+              invariants: [{
+                type: 'notification_status',
+                description: 'Notification must still be unread when the preview is confirmed.',
+                check: 'notification_is_unread',
+              }],
+              hasPermissionSnapshot: true,
+            },
+          },
+          gate: {
+            ok: true,
+            operation: 'preview',
+            commandStatus: 'previewed',
+          },
+        },
+      });
+      expect(messageRes.body.metadata.chatCoreV2.response.cards[0]).toMatchObject({
+        type: 'notification_preview_card',
+        title: 'Snooze preview: Daily planning reminder',
+        primaryAction: {
+          kind: 'view',
+          label: 'View',
+        },
+        secondaryActions: [],
+        diff: [
+          { label: 'Notification', after: 'Daily planning reminder' },
+          { label: 'Status', before: 'Unread', after: 'Snoozed' },
+          { label: 'Until', after: expect.stringMatching(/^\d{4}-\d{2}-\d{2}T/) },
+        ],
+      });
+      expect(messageRes.body.responseCards).toEqual([{
+        kind: 'notificationCard',
+        notificationId: item.itemId,
+        title: 'Daily planning reminder',
+        detail: 'I would snooze "Daily planning reminder" for 30 minutes.',
+      }]);
+      expect(messageRes.body.metadata.chatCoreV2.response.cards[0].confirmationToken).toBeUndefined();
+      const metadataJson = JSON.stringify(messageRes.body.metadata);
+      expect(metadataJson).not.toContain('actorUserId');
+      expect(metadataJson).not.toContain('delegatedScopes');
+      expect(metadataJson).not.toContain('idempotencyKey');
+      expect(metadataJson).not.toContain('chat-v2-permissions:7001:7001');
+      expect(listNotificationCenterItems(7001, 7001, { status: 'unread', limit: 5 })[0]).toMatchObject({
+        itemId: item.itemId,
+        status: 'unread',
+      });
+      expect(mockRouteMessage).not.toHaveBeenCalled();
+      expect(mockHandleSecretary).not.toHaveBeenCalled();
+    } finally {
+      if (previousGlobal === undefined) {
+        delete process.env.CHAT_CORE_V2_ENABLED;
+      } else {
+        process.env.CHAT_CORE_V2_ENABLED = previousGlobal;
+      }
+      if (previousWrites === undefined) {
+        delete process.env.CHAT_CORE_V2_WRITES_ENABLED;
+      } else {
+        process.env.CHAT_CORE_V2_WRITES_ENABLED = previousWrites;
       }
     }
   });
@@ -3325,6 +3720,382 @@ describe('Chat API routes', () => {
               netIncome: 1900,
               transactionCount: 12,
               affordability: 'controlled',
+            },
+          },
+        },
+      });
+      expect(mockRouteMessage).not.toHaveBeenCalled();
+      expect(mockHandleSecretary).not.toHaveBeenCalled();
+    } finally {
+      if (previousGlobal === undefined) {
+        delete process.env.CHAT_CORE_V2_ENABLED;
+      } else {
+        process.env.CHAT_CORE_V2_ENABLED = previousGlobal;
+      }
+      if (previousReads === undefined) {
+        delete process.env.CHAT_CORE_V2_READS_ENABLED;
+      } else {
+        process.env.CHAT_CORE_V2_READS_ENABLED = previousReads;
+      }
+    }
+  });
+
+  it('answers training plan status through Chat Core v2 deterministic reads when explicitly enabled', async () => {
+    const previousGlobal = process.env.CHAT_CORE_V2_ENABLED;
+    const previousReads = process.env.CHAT_CORE_V2_READS_ENABLED;
+    process.env.CHAT_CORE_V2_ENABLED = 'true';
+    process.env.CHAT_CORE_V2_READS_ENABLED = 'true';
+    try {
+      mockGetActivePlan.mockReturnValue({
+        id: 101,
+        user_id: 7001,
+        tenant_id: 7001,
+        name: 'Marathon Base',
+        sport: 'running',
+        goal: 'Finish strong',
+        duration_weeks: 8,
+        periodization: 'linear',
+        status: 'active',
+        start_date: '2026-04-13',
+        end_date: '2026-06-07',
+        preferences_json: null,
+        plan_version: 2,
+        created_at: '2026-04-13T00:00:00.000Z',
+        updated_at: '2026-04-14T08:00:00.000Z',
+      });
+      mockGetWeeksForPlan.mockReturnValue([
+        {
+          id: 201,
+          plan_id: 101,
+          week_number: 1,
+          focus: 'Base endurance',
+          intensity_pct: 85,
+          volume_sessions: 3,
+          notes: null,
+          auto_adjusted: 0,
+          adjustment_reason: null,
+          created_at: '2026-04-13T00:00:00.000Z',
+        },
+      ]);
+      mockGetSessionsForWeek.mockReturnValue([
+        {
+          id: 301,
+          week_id: 201,
+          plan_id: 101,
+          tenant_id: 7001,
+          day_of_week: 'Monday',
+          session_type: 'running',
+          title: 'Easy run',
+          description: 'Private coaching detail',
+          description_json: null,
+          exercises_json: '[{"name":"Private drill"}]',
+          duration_minutes: 45,
+          intensity_text: 'easy',
+          calendar_event_id: 'evt_private',
+          calendar_source: 'google',
+          session_identity_key: 'week1_run1',
+          session_shape_hash: 'shape_1',
+          preferred_time_unavailable: 0,
+          status: 'completed',
+          created_at: '2026-04-13T00:00:00.000Z',
+          updated_at: '2026-04-14T08:00:00.000Z',
+        },
+        {
+          id: 302,
+          week_id: 201,
+          plan_id: 101,
+          tenant_id: 7001,
+          day_of_week: 'Wednesday',
+          session_type: 'running',
+          title: 'Tempo intervals',
+          description: null,
+          description_json: null,
+          exercises_json: null,
+          duration_minutes: 50,
+          intensity_text: 'moderate',
+          calendar_event_id: null,
+          calendar_source: null,
+          session_identity_key: 'week1_run2',
+          session_shape_hash: 'shape_2',
+          preferred_time_unavailable: 0,
+          status: 'scheduled',
+          created_at: '2026-04-13T00:00:00.000Z',
+          updated_at: '2026-04-14T08:00:00.000Z',
+        },
+      ]);
+      mockGetWeeklyAdherence.mockReturnValue({
+        planId: 101,
+        weekNumber: 1,
+        totalSessions: 2,
+        completedSessions: 1,
+        skippedSessions: 0,
+        pendingSessions: 1,
+        adherenceRate: 50,
+        avgRpe: 6,
+        avgEnergy: 7,
+        avgSoreness: 3,
+      });
+      mockRouteMessage.mockClear();
+      mockHandleSecretary.mockClear();
+
+      const messageRes = await dispatch('POST', '/message', 7001, {
+        text: 'Show my training sessions',
+      });
+
+      expect(messageRes.statusCode, JSON.stringify(messageRes.body)).toBe(200);
+      expect(messageRes.body.routeMethod).toBe('chat-core-v2-deterministic-read');
+      expect(messageRes.body.domain).toBe('secretary');
+      expect(messageRes.body.text).toContain('Training plan: Marathon Base');
+      expect(messageRes.body.text).toContain('week 1/8');
+      expect(messageRes.body.text).toContain('50% adherence');
+      expect(messageRes.body.text).toContain('Tempo intervals');
+      expect(messageRes.body.text).not.toContain('evt_private');
+      expect(messageRes.body.text).not.toContain('Private coaching detail');
+      expect(JSON.stringify(messageRes.body.metadata)).not.toContain('Private drill');
+      expect(JSON.stringify(messageRes.body.metadata)).not.toContain('evt_private');
+      expect(mockGetActivePlan).toHaveBeenCalledWith(7001, 7001);
+      expect(mockGetWeeksForPlan).toHaveBeenCalledWith(101);
+      expect(mockGetSessionsForWeek).toHaveBeenCalledWith(201);
+      expect(mockGetWeeklyAdherence).toHaveBeenCalledWith(101, 201);
+      expect(messageRes.body.metadata).toMatchObject({
+        type: 'chat_core_v2_deterministic_read',
+        chatCoreV2: {
+          capabilityId: 'training.session_explain',
+          response: {
+            schemaVersion: 'chat_response_v2@1.0.0',
+            kind: 'message',
+            reasonCodes: ['deterministic_read', 'training.session_explain', 'read_only_allowed'],
+          },
+          readModel: {
+            capabilityId: 'training.session_explain',
+            domain: 'training',
+            sensitivity: 'health_adjacent',
+            data: {
+              hasActivePlan: true,
+              planName: 'Marathon Base',
+              sport: 'running',
+              currentWeekNumber: 1,
+              currentWeekFocus: 'Base endurance',
+              currentWeekIntensityPct: 85,
+              adherenceRate: 50,
+            },
+          },
+        },
+      });
+      expect(mockRouteMessage).not.toHaveBeenCalled();
+      expect(mockHandleSecretary).not.toHaveBeenCalled();
+    } finally {
+      if (previousGlobal === undefined) {
+        delete process.env.CHAT_CORE_V2_ENABLED;
+      } else {
+        process.env.CHAT_CORE_V2_ENABLED = previousGlobal;
+      }
+      if (previousReads === undefined) {
+        delete process.env.CHAT_CORE_V2_READS_ENABLED;
+      } else {
+        process.env.CHAT_CORE_V2_READS_ENABLED = previousReads;
+      }
+    }
+  });
+
+  it('answers content pipeline status through Chat Core v2 deterministic reads when explicitly enabled', async () => {
+    const previousGlobal = process.env.CHAT_CORE_V2_ENABLED;
+    const previousReads = process.env.CHAT_CORE_V2_READS_ENABLED;
+    process.env.CHAT_CORE_V2_ENABLED = 'true';
+    process.env.CHAT_CORE_V2_READS_ENABLED = 'true';
+    try {
+      mockGetTopics.mockReturnValue([
+        {
+          id: 401,
+          user_id: 7001,
+          title: 'Race-week fueling mistakes',
+          notes: 'Private draft notes',
+          scheduled_date: '2026-04-17',
+          scheduled_at: null,
+          status: 'ready',
+          secretary_task_list_id: null,
+          secretary_task_list_name: null,
+          secretary_task_external_id: null,
+          calendar_event_id: 'calendar_private',
+          calendar_source: 'google',
+          secretary_sync_status: null,
+          secretary_sync_error: null,
+          created_at: '2026-04-14T08:00:00.000Z',
+          updated_at: '2026-04-14T08:00:00.000Z',
+        },
+        {
+          id: 402,
+          user_id: 7001,
+          title: 'Recovery myth carousel',
+          notes: null,
+          scheduled_date: null,
+          scheduled_at: null,
+          status: 'drafting',
+          created_at: '2026-04-14T09:00:00.000Z',
+          updated_at: '2026-04-14T09:00:00.000Z',
+        },
+      ]);
+      mockGetContentDeskItems.mockReturnValue([
+        {
+          id: 501,
+          type: 'script_ready',
+          title: 'Recovery reel draft',
+          body: 'Full private script body',
+          createdAt: '2026-04-14T10:00:00.000Z',
+        },
+      ]);
+      mockGetRankedContentSignals.mockReturnValue([
+        {
+          type: 'reaction_opportunity',
+          title: 'Creators are debating carb myths again',
+          summary: 'Full private signal summary',
+          priority: 'urgent',
+          relevanceScore: 0.93,
+          confidence: 0.81,
+        },
+      ]);
+      mockRouteMessage.mockClear();
+      mockHandleSecretary.mockClear();
+
+      const messageRes = await dispatch('POST', '/message', 7001, {
+        text: 'Show my content pipeline',
+      });
+
+      expect(messageRes.statusCode, JSON.stringify(messageRes.body)).toBe(200);
+      expect(messageRes.body.routeMethod).toBe('chat-core-v2-deterministic-read');
+      expect(messageRes.body.domain).toBe('secretary');
+      expect(messageRes.body.text).toContain('Content pipeline: 2 tracked topics.');
+      expect(messageRes.body.text).toContain('1 ready');
+      expect(messageRes.body.text).toContain('1 drafting');
+      expect(messageRes.body.text).toContain('1 desk-ready item');
+      expect(messageRes.body.text).toContain('1 urgent signal');
+      expect(messageRes.body.text).toContain('Race-week fueling mistakes');
+      expect(messageRes.body.text).toContain('Recovery reel draft');
+      expect(messageRes.body.text).not.toContain('Full private script body');
+      expect(messageRes.body.text).not.toContain('Full private signal summary');
+      expect(JSON.stringify(messageRes.body.metadata)).not.toContain('Private draft notes');
+      expect(JSON.stringify(messageRes.body.metadata)).not.toContain('Full private script body');
+      expect(JSON.stringify(messageRes.body.metadata)).not.toContain('calendar_private');
+      expect(mockGetTopics).toHaveBeenCalledWith(7001, { includeTerminal: false, limit: 20 });
+      expect(mockGetContentDeskItems).toHaveBeenCalledWith(7001, 5);
+      expect(mockGetRankedContentSignals).toHaveBeenCalledWith(7001, 5);
+      expect(messageRes.body.metadata).toMatchObject({
+        type: 'chat_core_v2_deterministic_read',
+        chatCoreV2: {
+          capabilityId: 'content.pipeline_summary',
+          response: {
+            schemaVersion: 'chat_response_v2@1.0.0',
+            kind: 'message',
+            reasonCodes: ['deterministic_read', 'content.pipeline_summary'],
+          },
+          readModel: {
+            capabilityId: 'content.pipeline_summary',
+            domain: 'content',
+            sensitivity: 'personal',
+            data: {
+              topicCount: 2,
+              readyCount: 1,
+              draftingCount: 1,
+              deskReadyCount: 1,
+              urgentSignalCount: 1,
+            },
+          },
+        },
+      });
+      expect(mockRouteMessage).not.toHaveBeenCalled();
+      expect(mockHandleSecretary).not.toHaveBeenCalled();
+    } finally {
+      if (previousGlobal === undefined) {
+        delete process.env.CHAT_CORE_V2_ENABLED;
+      } else {
+        process.env.CHAT_CORE_V2_ENABLED = previousGlobal;
+      }
+      if (previousReads === undefined) {
+        delete process.env.CHAT_CORE_V2_READS_ENABLED;
+      } else {
+        process.env.CHAT_CORE_V2_READS_ENABLED = previousReads;
+      }
+    }
+  });
+
+  it('answers cooking meal-plan status through Chat Core v2 deterministic reads when explicitly enabled', async () => {
+    const previousGlobal = process.env.CHAT_CORE_V2_ENABLED;
+    const previousReads = process.env.CHAT_CORE_V2_READS_ENABLED;
+    process.env.CHAT_CORE_V2_ENABLED = 'true';
+    process.env.CHAT_CORE_V2_READS_ENABLED = 'true';
+    try {
+      const {
+        addRecipe,
+        generateShoppingList,
+        setMealPlan,
+        upsertPantryItem,
+      } = await import('../../src/services/cooking-chef');
+      const weekStart = currentMondayIso();
+      const dinnerDate = addIsoDays(weekStart, 2);
+      const recipe = addRecipe(7001, 'Salmon recovery bowl', [
+        { name: 'salmon', quantity: '2', unit: 'fillets' },
+        { name: 'rice', quantity: '500', unit: 'g' },
+      ], {
+        tenantId: 7001,
+        instructions: 'Private instruction text',
+        tags: 'private-tag',
+        source: 'private-source',
+      });
+      upsertPantryItem(7001, {
+        name: 'rice',
+        quantity: '500',
+        unit: 'g',
+        freshnessStatus: 'fresh',
+        notes: 'Private pantry note',
+      }, 7001);
+      setMealPlan(7001, dinnerDate, 'dinner', 'Salmon recovery bowl', {
+        recipeId: recipe.id,
+        notes: 'Private meal note',
+        tenantId: 7001,
+      });
+      generateShoppingList(7001, weekStart, 7001);
+      mockRouteMessage.mockClear();
+      mockHandleSecretary.mockClear();
+
+      const messageRes = await dispatch('POST', '/message', 7001, {
+        text: 'What meals do I have this week?',
+      });
+
+      expect(messageRes.statusCode, JSON.stringify(messageRes.body)).toBe(200);
+      expect(messageRes.body.routeMethod).toBe('chat-core-v2-deterministic-read');
+      expect(messageRes.body.domain).toBe('secretary');
+      expect(messageRes.body.text).toContain(`This week's meal plan (${weekStart} to ${addIsoDays(weekStart, 6)}).`);
+      expect(messageRes.body.text).toContain('1 planned meal');
+      expect(messageRes.body.text).toContain('2 shopping items');
+      expect(messageRes.body.text).toContain('1 already in the pantry');
+      expect(messageRes.body.text).toContain('Salmon recovery bowl');
+      expect(messageRes.body.text).toContain('salmon');
+      expect(messageRes.body.text).not.toContain('Private instruction text');
+      expect(messageRes.body.text).not.toContain('Private meal note');
+      expect(messageRes.body.text).not.toContain('Private pantry note');
+      expect(JSON.stringify(messageRes.body.metadata)).not.toContain('Private instruction text');
+      expect(JSON.stringify(messageRes.body.metadata)).not.toContain('Private meal note');
+      expect(JSON.stringify(messageRes.body.metadata)).not.toContain('Private pantry note');
+      expect(JSON.stringify(messageRes.body.metadata)).not.toContain('private-source');
+      expect(messageRes.body.metadata).toMatchObject({
+        type: 'chat_core_v2_deterministic_read',
+        chatCoreV2: {
+          capabilityId: 'cooking.meal_plan_summary',
+          response: {
+            schemaVersion: 'chat_response_v2@1.0.0',
+            kind: 'message',
+            reasonCodes: ['deterministic_read', 'cooking.meal_plan_summary'],
+          },
+          readModel: {
+            capabilityId: 'cooking.meal_plan_summary',
+            domain: 'cooking',
+            sensitivity: 'personal',
+            data: {
+              rangeStart: weekStart,
+              rangeEnd: addIsoDays(weekStart, 6),
+              plannedMealCount: 1,
+              shoppingItemCount: 2,
+              pantryAvailableShoppingItemCount: 1,
             },
           },
         },

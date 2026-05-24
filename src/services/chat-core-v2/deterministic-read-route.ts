@@ -5,18 +5,24 @@ import { classifyShadowRoute, type ChatCoreV2ShadowRouteGuess } from './shadow-r
 import { isChatCoreV2CapabilityEnabled } from './capability-registry';
 import {
   CONNECTIONS_STATUS_CAPABILITY,
+  CONTENT_PIPELINE_SUMMARY_CAPABILITY,
+  COOKING_MEAL_PLAN_SUMMARY_CAPABILITY,
   DECISION_CENTER_SUMMARY_CAPABILITY,
   FINANCE_SUMMARY_CAPABILITY,
   NOTIFICATIONS_SUMMARY_CAPABILITY,
   SECRETARY_AGENDA_SUMMARY_CAPABILITY,
   TASKS_TODAY_SUMMARY_CAPABILITY,
+  TRAINING_SESSION_EXPLAIN_CAPABILITY,
 } from './deterministic-read/common';
 import { buildAgendaSummaryRoute } from './deterministic-read/agenda-summary-route';
 import { buildConnectionsStatusRoute } from './deterministic-read/connection-status-route';
+import { buildContentPipelineSummaryRoute } from './deterministic-read/content-pipeline-route';
+import { buildCookingMealPlanSummaryRoute } from './deterministic-read/cooking-meal-plan-route';
 import { buildDecisionCenterSummaryRoute } from './deterministic-read/decision-center-summary-route';
 import { buildFinanceSummaryRoute } from './deterministic-read/finance-summary-route';
 import { buildNotificationsSummaryRoute } from './deterministic-read/notification-summary-route';
 import { buildTaskSummaryRoute } from './deterministic-read/task-summary-route';
+import { buildTrainingSessionExplainRoute } from './deterministic-read/training-session-route';
 import type {
   BuildChatCoreV2DeterministicReadRouteInput,
   ChatCoreV2DeterministicReadBuilder,
@@ -30,6 +36,11 @@ export type {
   ChatCoreV2AgendaSummaryItem,
   ChatCoreV2ConnectionStatusData,
   ChatCoreV2ConnectionStatusItem,
+  ChatCoreV2ContentPipelineSummaryData,
+  ChatCoreV2ContentPipelineSummaryItem,
+  ChatCoreV2CookingMealPlanSummaryData,
+  ChatCoreV2CookingMealSummaryItem,
+  ChatCoreV2CookingShoppingSummaryItem,
   ChatCoreV2DecisionCenterSummaryData,
   ChatCoreV2DecisionCenterSummaryItem,
   ChatCoreV2DeterministicReadCapabilityId,
@@ -40,6 +51,8 @@ export type {
   ChatCoreV2NotificationSummaryItem,
   ChatCoreV2TaskSummaryData,
   ChatCoreV2TaskSummaryItem,
+  ChatCoreV2TrainingSessionExplainData,
+  ChatCoreV2TrainingSessionSummaryItem,
 } from './deterministic-read/types';
 
 type ChatCoreV2CapabilityFlagInput = Parameters<typeof isChatCoreV2CapabilityEnabled>[1];
@@ -51,6 +64,9 @@ const DETERMINISTIC_READ_BUILDERS: Record<ChatCoreV2DeterministicReadCapabilityI
   [NOTIFICATIONS_SUMMARY_CAPABILITY]: buildNotificationsSummaryRoute,
   [CONNECTIONS_STATUS_CAPABILITY]: buildConnectionsStatusRoute,
   [FINANCE_SUMMARY_CAPABILITY]: buildFinanceSummaryRoute,
+  [TRAINING_SESSION_EXPLAIN_CAPABILITY]: buildTrainingSessionExplainRoute,
+  [CONTENT_PIPELINE_SUMMARY_CAPABILITY]: buildContentPipelineSummaryRoute,
+  [COOKING_MEAL_PLAN_SUMMARY_CAPABILITY]: buildCookingMealPlanSummaryRoute,
 };
 
 export function tryBuildChatCoreV2DeterministicReadRoute(
@@ -97,6 +113,15 @@ function deterministicReadCapabilityForRouteGuess(
   }
   if (routeGuess.domains[0] === 'finance' && routeGuess.capabilityIds.includes(FINANCE_SUMMARY_CAPABILITY)) {
     return FINANCE_SUMMARY_CAPABILITY;
+  }
+  if (routeGuess.domains[0] === 'training' && routeGuess.capabilityIds.includes(TRAINING_SESSION_EXPLAIN_CAPABILITY)) {
+    return TRAINING_SESSION_EXPLAIN_CAPABILITY;
+  }
+  if (routeGuess.domains[0] === 'content' && routeGuess.capabilityIds.includes(CONTENT_PIPELINE_SUMMARY_CAPABILITY)) {
+    return CONTENT_PIPELINE_SUMMARY_CAPABILITY;
+  }
+  if (routeGuess.domains[0] === 'cooking' && routeGuess.capabilityIds.includes(COOKING_MEAL_PLAN_SUMMARY_CAPABILITY)) {
+    return COOKING_MEAL_PLAN_SUMMARY_CAPABILITY;
   }
   return null;
 }

@@ -98,8 +98,10 @@ import {
 } from '../../services/runtime-flags';
 import {
   runChatCoreV2ShadowRouteHook,
+  tryBuildChatCoreV2CommandPreviewRoute,
   tryBuildChatCoreV2DeterministicReadRoute,
 } from '../../services/chat-core-v2';
+import { buildChatCoreV2CommandPreviewShortcutResponse } from './chat-core-v2-command-preview-response';
 import { buildChatCoreV2DeterministicReadShortcutResponse } from './chat-core-v2-deterministic-read-response';
 import {
   createDecisionIntent,
@@ -928,6 +930,59 @@ export function registerChatMessageRoutes(
             'Chat Core v2 shadow route hook recorded plan',
           );
         }
+      }
+
+      const chatCoreV2CommandPreview = normalizedText && normalizedAttachments.length === 0
+        ? tryBuildChatCoreV2CommandPreviewRoute({
+          normalizedText,
+          userId,
+          tenantId,
+          conversationId: scopedClientMessageId ?? chatRequestId,
+          messageId: userMessageId,
+          locale: getUserLanguageById(userId),
+          timezone: getUserTimezoneById(userId),
+          now: new Date(requestStartedAt),
+        })
+        : null;
+      if (chatCoreV2CommandPreview) {
+        latency.mark('chat_core_v2_command_preview_completed');
+        const commandPreviewShortcut = buildChatCoreV2CommandPreviewShortcutResponse({
+          result: chatCoreV2CommandPreview,
+          requestStartedAt,
+        });
+        const { conversationDomain, response: shortcutResponse } = commandPreviewShortcut;
+        const response = enrichChatResponseForContract(shortcutResponse, {
+          normalizedText,
+          userId,
+          tenantId,
+          chatRequestId,
+          tracker: latency,
+          latencyTier: 'tier1_fast_read',
+          fallbackDomain: conversationDomain,
+          fallbackRouteMethod: 'chat-core-v2-command-preview',
+          actionability: 'preview',
+          verificationStatus: 'not_required',
+        });
+        rememberChatActiveDomain(userId, conversationDomain, Date.now(), tenantId);
+        persistExchange(userId, userMessageId, normalizedText, response.id, response, tenantId, {
+          clientMessageId: scopedClientMessageId,
+          requestId: chatRequestId,
+        });
+        syncConversationStateForShortcut(userId, conversationDomain, normalizedText, response.text, tenantId);
+        logger.info(
+          {
+            chatRequestId,
+            platform: 'ios',
+            mode: 'chat-core-v2-command-preview',
+            tenantId,
+            userId,
+            capabilityId: commandPreviewShortcut.logContext.capabilityId,
+            commandId: commandPreviewShortcut.logContext.commandId,
+          },
+          'iOS chat Chat Core v2 command preview hit',
+        );
+        res.json(response);
+        return;
       }
 
       // ── General Action Planner ─────────────────────────────────
