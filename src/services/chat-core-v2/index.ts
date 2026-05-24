@@ -4,6 +4,7 @@ export * from './capability-registry';
 export * from './command-bus';
 export * from './command-events';
 export * from './entity-resolution';
+export * from './evidence-policy';
 export * from './fallback-policy';
 export * from './human-review-queue';
 export * from './memory-store';

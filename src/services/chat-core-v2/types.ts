@@ -171,6 +171,26 @@ export type EntityResolutionStatus = 'resolved' | 'ambiguous' | 'not_found';
 
 export type ReadModelFreshnessStatus = 'live' | 'fresh' | 'stale' | 'unknown';
 
+export type ChatCoreV2EvidenceSourceType =
+  | 'read_model'
+  | 'memory'
+  | 'entity_resolution'
+  | 'tool_result'
+  | 'user_attachment'
+  | 'decision_text'
+  | 'notification_payload'
+  | 'system_policy';
+
+export type ChatCoreV2EvidenceTrust = 'untrusted_evidence' | 'trusted_policy';
+
+export type ChatCoreV2InstructionAuthority = 'none' | 'system_policy';
+
+export type ChatCoreV2EvidenceSignal =
+  | 'prompt_injection_phrase'
+  | 'delimiter_breakout'
+  | 'access_control_request'
+  | 'bulk_destructive_request';
+
 export interface RuntimeBudget {
   maxInputTokens: number;
   maxOutputTokens: number;
@@ -360,6 +380,29 @@ export interface ChatCoreV2ReadContextPack {
   sensitivity: AuditSensitivity;
   generatedAt: string;
   contextHash: string;
+}
+
+export interface ChatCoreV2EvidenceItem {
+  schemaVersion: string;
+  evidenceId: string;
+  sourceType: ChatCoreV2EvidenceSourceType;
+  sourceId: string;
+  sourceLabel: string;
+  domain?: ChatCoreV2Domain;
+  content: string;
+  sensitivity: AuditSensitivity;
+  trust: ChatCoreV2EvidenceTrust;
+  instructionAuthority: ChatCoreV2InstructionAuthority;
+  signalCodes: ChatCoreV2EvidenceSignal[];
+  metadata?: Record<string, unknown>;
+}
+
+export interface ChatCoreV2PromptEvidenceBundle {
+  schemaVersion: string;
+  evidencePolicyVersion: string;
+  items: ChatCoreV2EvidenceItem[];
+  renderedText: string;
+  generatedAt: string;
 }
 
 export interface ChatV2AuditPayload {
