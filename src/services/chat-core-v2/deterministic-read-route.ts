@@ -6,6 +6,7 @@ import { isChatCoreV2CapabilityEnabled } from './capability-registry';
 import {
   CONNECTIONS_STATUS_CAPABILITY,
   CONTENT_PIPELINE_SUMMARY_CAPABILITY,
+  COOKING_MEAL_PLAN_SUMMARY_CAPABILITY,
   DECISION_CENTER_SUMMARY_CAPABILITY,
   FINANCE_SUMMARY_CAPABILITY,
   NOTIFICATIONS_SUMMARY_CAPABILITY,
@@ -16,6 +17,7 @@ import {
 import { buildAgendaSummaryRoute } from './deterministic-read/agenda-summary-route';
 import { buildConnectionsStatusRoute } from './deterministic-read/connection-status-route';
 import { buildContentPipelineSummaryRoute } from './deterministic-read/content-pipeline-route';
+import { buildCookingMealPlanSummaryRoute } from './deterministic-read/cooking-meal-plan-route';
 import { buildDecisionCenterSummaryRoute } from './deterministic-read/decision-center-summary-route';
 import { buildFinanceSummaryRoute } from './deterministic-read/finance-summary-route';
 import { buildNotificationsSummaryRoute } from './deterministic-read/notification-summary-route';
@@ -36,6 +38,9 @@ export type {
   ChatCoreV2ConnectionStatusItem,
   ChatCoreV2ContentPipelineSummaryData,
   ChatCoreV2ContentPipelineSummaryItem,
+  ChatCoreV2CookingMealPlanSummaryData,
+  ChatCoreV2CookingMealSummaryItem,
+  ChatCoreV2CookingShoppingSummaryItem,
   ChatCoreV2DecisionCenterSummaryData,
   ChatCoreV2DecisionCenterSummaryItem,
   ChatCoreV2DeterministicReadCapabilityId,
@@ -61,6 +66,7 @@ const DETERMINISTIC_READ_BUILDERS: Record<ChatCoreV2DeterministicReadCapabilityI
   [FINANCE_SUMMARY_CAPABILITY]: buildFinanceSummaryRoute,
   [TRAINING_SESSION_EXPLAIN_CAPABILITY]: buildTrainingSessionExplainRoute,
   [CONTENT_PIPELINE_SUMMARY_CAPABILITY]: buildContentPipelineSummaryRoute,
+  [COOKING_MEAL_PLAN_SUMMARY_CAPABILITY]: buildCookingMealPlanSummaryRoute,
 };
 
 export function tryBuildChatCoreV2DeterministicReadRoute(
@@ -113,6 +119,9 @@ function deterministicReadCapabilityForRouteGuess(
   }
   if (routeGuess.domains[0] === 'content' && routeGuess.capabilityIds.includes(CONTENT_PIPELINE_SUMMARY_CAPABILITY)) {
     return CONTENT_PIPELINE_SUMMARY_CAPABILITY;
+  }
+  if (routeGuess.domains[0] === 'cooking' && routeGuess.capabilityIds.includes(COOKING_MEAL_PLAN_SUMMARY_CAPABILITY)) {
+    return COOKING_MEAL_PLAN_SUMMARY_CAPABILITY;
   }
   return null;
 }
