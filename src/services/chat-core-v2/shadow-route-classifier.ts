@@ -61,7 +61,7 @@ export function classifyShadowRoute(text: string): ChatCoreV2ShadowRouteGuess {
   if (/\b(move|reschedule|change|make|lighter|reduce)\b.*\b(workout|training|session)\b|\b(workout|training|session)\b.*\b(lighter|easier|easy|reduce)\b/i.test(normalized)) {
     return { intent: 'modify_action', confidence: 0.83, domains: ['training'], capabilityIds: ['training.modify_session_preview'] };
   }
-  if (/\b(add|buy|create)\b.*\b(grocery|groceries|ingredient|shopping)\b/i.test(normalized)) {
+  if (/\b(add|buy|create|adicionar|adiciona|acrescentar|acrescenta|comprar|compra|agregar|añadir|anadir|crear)\b.*\b(grocery|groceries|ingredient|ingredients|shopping|compras|ingredientes?|lista\s+de\s+compras|lista\s+de\s+la\s+compra)\b/i.test(normalized)) {
     return { intent: 'create_action', confidence: 0.8, domains: ['cooking'], capabilityIds: ['cooking.grocery_item_preview'] };
   }
   if (/\b(create|draft|write)\b.*\b(content|brief|script|post)\b/i.test(normalized)) {

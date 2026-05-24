@@ -411,4 +411,126 @@ describe('Chat Core v2 command preview API adapter', () => {
     expect(metadataJson).not.toContain('idempotencyKey');
     expect(metadataJson).not.toContain('chat-v2-permissions:84:42');
   });
+
+  it('maps cooking grocery previews into grocery cards without leaking authorization scope', () => {
+    const requestStartedAt = Date.parse('2026-05-24T12:34:56.000Z');
+    const result: ChatCoreV2CommandPreviewRouteResult = {
+      routeVersion: 'chat_core_v2_command_preview_route@1.0.0',
+      capabilityId: 'cooking.grocery_item_preview',
+      routeGuess: {
+        intent: 'create_action',
+        confidence: 0.8,
+        domains: ['cooking'],
+        capabilityIds: ['cooking.grocery_item_preview'],
+      },
+      executionEnabled: false,
+      executionDisabledReason: 'preview_only_rollout',
+      gateVerdict: {
+        ok: true,
+        operation: 'preview',
+        gateVersion: 'chat_core_v2_command_bus_gate@1.0.0',
+        commandStatus: 'previewed',
+        capabilityId: 'cooking.grocery_item_preview',
+      },
+      command: {
+        commandId: 'cmd_grocery',
+        commandSchemaVersion: 'cooking.grocery_item@1.0.0',
+        previewSchemaVersion: 'grocery_preview_card@1.0.0',
+        responseSchemaVersion: 'chat_response_v2@1.0.0',
+        tenantId: '84',
+        userId: '42',
+        domain: 'cooking',
+        commandType: 'cooking.grocery_item',
+        origin: 'chat',
+        payload: {
+          operation: 'add_items',
+          items: ['eggs', 'milk'],
+          itemCount: 2,
+          weekStart: '2026-05-18',
+          list: 'grocery',
+        },
+        basedOn: {
+          entityIds: ['cooking_grocery_draft:cmd_grocery'],
+          entityVersions: {},
+          contextHash: 'abc123def4567890',
+          createdAt: '2026-05-24T12:34:56.000Z',
+        },
+        preconditions: {
+          requiredEntityVersions: {},
+          requiredPermissionsVersion: 'chat-v2-permissions:84:42:cooking:v1',
+          invariants: [{
+            type: 'preview_only',
+            description: 'Grocery item previews do not mutate the shopping list in this rollout.',
+            check: 'cooking_grocery_preview_only',
+          }],
+        },
+        authorization: {
+          actorUserId: '42',
+          tenantId: '84',
+          actingSurface: 'ios_chat',
+          delegatedScopes: ['cooking:read'],
+          permissionSnapshotVersion: 'chat-v2-permissions:84:42:cooking:v1',
+          authTime: '2026-05-24T12:34:56.000Z',
+        },
+        expiresAt: '2026-05-24T12:44:56.000Z',
+        idempotencyKey: 'chat-v2:84:42:grocery',
+      },
+      response: {
+        schemaVersion: 'chat_response_v2@1.0.0',
+        kind: 'action_preview',
+        locale: 'en',
+        text: 'I would prepare eggs and milk for the grocery list. Nothing would be added yet.',
+        reasonCodes: ['preview_only_rollout'],
+        cards: [{
+          type: 'grocery_preview_card',
+          version: 'grocery_preview_card@1.0.0',
+          title: 'Grocery preview: eggs and milk',
+          summary: 'I would prepare eggs and milk for the grocery list. Nothing would be added yet.',
+          risk: 'low',
+          sensitivity: 'personal',
+          capabilityId: 'cooking.grocery_item_preview',
+          commandId: 'cmd_grocery',
+          sourceEntityIds: ['cooking_grocery_draft:cmd_grocery'],
+          diff: [{ label: 'Items', after: 'eggs and milk' }],
+          primaryAction: {
+            id: 'view',
+            kind: 'view',
+            label: 'View',
+            style: 'primary',
+          },
+          secondaryActions: [],
+        }],
+      },
+    };
+
+    const built = buildChatCoreV2CommandPreviewShortcutResponse({
+      result,
+      requestStartedAt,
+    });
+
+    expect(built.response.responseCards).toEqual([{
+      kind: 'groceryListCard',
+      weekStart: '2026-05-18',
+      items: ['eggs', 'milk'],
+    }]);
+    expect(built.response.metadata.chatCoreV2.command).toMatchObject({
+      commandSchemaVersion: 'cooking.grocery_item@1.0.0',
+      domain: 'cooking',
+      commandType: 'cooking.grocery_item',
+      payload: {
+        operation: 'add_items',
+        items: ['eggs', 'milk'],
+        weekStart: '2026-05-18',
+      },
+      preconditions: {
+        requiredEntityVersions: {},
+        hasPermissionSnapshot: true,
+      },
+    });
+    const metadataJson = JSON.stringify(built.response.metadata);
+    expect(metadataJson).not.toContain('actorUserId');
+    expect(metadataJson).not.toContain('delegatedScopes');
+    expect(metadataJson).not.toContain('idempotencyKey');
+    expect(metadataJson).not.toContain('chat-v2-permissions:84:42');
+  });
 });

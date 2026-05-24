@@ -3494,6 +3494,113 @@ describe('Chat API routes', () => {
     }
   });
 
+  it('returns a Chat Core v2 cooking grocery preview without mutating the shopping list', async () => {
+    const previousGlobal = process.env.CHAT_CORE_V2_ENABLED;
+    const previousPreviews = process.env.CHAT_CORE_V2_PREVIEWS_ENABLED;
+    process.env.CHAT_CORE_V2_ENABLED = 'true';
+    process.env.CHAT_CORE_V2_PREVIEWS_ENABLED = 'true';
+    try {
+      const { getShoppingList } = await import('../../src/services/cooking-chef');
+      mockRouteMessage.mockClear();
+      mockHandleSecretary.mockClear();
+
+      const messageRes = await dispatch('POST', '/message', 7001, {
+        text: 'Add eggs and milk to my grocery list',
+        clientMessageId: 'chat-core-v2-cooking-grocery-preview-1',
+      });
+
+      expect(messageRes.statusCode, JSON.stringify(messageRes.body)).toBe(200);
+      expect(messageRes.body.routeMethod).toBe('chat-core-v2-command-preview');
+      expect(messageRes.body.domain).toBe('secretary');
+      expect(messageRes.body.text).toBe('I would prepare eggs and milk for the grocery list. Nothing would be added yet.');
+      expect(messageRes.body.metadata).toMatchObject({
+        type: 'chat_core_v2_command_preview',
+        chatCoreV2: {
+          capabilityId: 'cooking.grocery_item_preview',
+          executionEnabled: false,
+          executionDisabledReason: 'preview_only_rollout',
+          response: {
+            schemaVersion: 'chat_response_v2@1.0.0',
+            kind: 'action_preview',
+            reasonCodes: expect.arrayContaining(['preview_only_rollout']),
+          },
+          command: {
+            commandSchemaVersion: 'cooking.grocery_item@1.0.0',
+            previewSchemaVersion: 'grocery_preview_card@1.0.0',
+            responseSchemaVersion: 'chat_response_v2@1.0.0',
+            domain: 'cooking',
+            commandType: 'cooking.grocery_item',
+            origin: 'chat',
+            payload: {
+              operation: 'add_items',
+              items: ['eggs', 'milk'],
+              itemCount: 2,
+              weekStart: '2026-05-18',
+              list: 'grocery',
+            },
+            basedOn: {
+              entityIds: [expect.stringMatching(/^cooking_grocery_draft:cmd_[0-9a-f]{16}$/)],
+              entityVersions: {},
+            },
+            preconditions: {
+              requiredEntityVersions: {},
+              invariants: [{
+                type: 'preview_only',
+                description: 'Grocery item previews do not mutate the shopping list in this rollout.',
+                check: 'cooking_grocery_preview_only',
+              }],
+              hasPermissionSnapshot: true,
+            },
+          },
+          gate: {
+            ok: true,
+            operation: 'preview',
+            commandStatus: 'previewed',
+          },
+        },
+      });
+      expect(messageRes.body.metadata.chatCoreV2.response.cards[0]).toMatchObject({
+        type: 'grocery_preview_card',
+        title: 'Grocery preview: eggs and milk',
+        primaryAction: {
+          kind: 'view',
+          label: 'View',
+        },
+        secondaryActions: [],
+        diff: [
+          { label: 'Items', after: 'eggs and milk' },
+          { label: 'List', after: 'Grocery' },
+          { label: 'Status', after: 'Preview' },
+        ],
+      });
+      expect(messageRes.body.responseCards).toEqual([{
+        kind: 'groceryListCard',
+        weekStart: '2026-05-18',
+        items: ['eggs', 'milk'],
+      }]);
+      expect(messageRes.body.metadata.chatCoreV2.response.cards[0].confirmationToken).toBeUndefined();
+      const metadataJson = JSON.stringify(messageRes.body.metadata);
+      expect(metadataJson).not.toContain('actorUserId');
+      expect(metadataJson).not.toContain('delegatedScopes');
+      expect(metadataJson).not.toContain('idempotencyKey');
+      expect(metadataJson).not.toContain('chat-v2-permissions:7001:7001');
+      expect(getShoppingList(7001, '2026-05-18', 7001)).toBeNull();
+      expect(mockRouteMessage).not.toHaveBeenCalled();
+      expect(mockHandleSecretary).not.toHaveBeenCalled();
+    } finally {
+      if (previousGlobal === undefined) {
+        delete process.env.CHAT_CORE_V2_ENABLED;
+      } else {
+        process.env.CHAT_CORE_V2_ENABLED = previousGlobal;
+      }
+      if (previousPreviews === undefined) {
+        delete process.env.CHAT_CORE_V2_PREVIEWS_ENABLED;
+      } else {
+        process.env.CHAT_CORE_V2_PREVIEWS_ENABLED = previousPreviews;
+      }
+    }
+  });
+
   it('answers connection status through Chat Core v2 deterministic reads when explicitly enabled', async () => {
     const previousGlobal = process.env.CHAT_CORE_V2_ENABLED;
     const previousReads = process.env.CHAT_CORE_V2_READS_ENABLED;

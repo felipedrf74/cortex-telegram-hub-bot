@@ -17,7 +17,7 @@ import {
   classifyShadowRoute,
   type ChatCoreV2ShadowRouteGuess,
 } from './shadow-route-classifier';
-import { hashStable } from './deterministic-read/common';
+import { hashStable, normalizeTimezone } from './deterministic-read/common';
 import {
   buildEntityResolutionPreconditions,
   resolveEntityReferenceFromCandidates,
@@ -72,6 +72,7 @@ const TASK_CREATE_CAPABILITY = 'tasks.create';
 const TASK_COMPLETE_CAPABILITY = 'tasks.complete';
 const NOTIFICATION_SNOOZE_CAPABILITY = 'notifications.snooze';
 const DECISION_DISMISS_CAPABILITY = 'decision_center.dismiss';
+const COOKING_GROCERY_ITEM_CAPABILITY = 'cooking.grocery_item_preview';
 const COMMAND_TTL_MS = 10 * 60 * 1000;
 const NOTIFICATION_SNOOZE_DEFAULT_MINUTES = 60;
 
@@ -95,6 +96,11 @@ export function tryBuildChatCoreV2CommandPreviewRoute(
   if (routeGuess.domains[0] === 'decision_center') {
     if (routeGuess.intent === 'modify_action' && routeGuess.capabilityIds.includes(DECISION_DISMISS_CAPABILITY)) {
       return tryBuildDecisionDismissPreview(input, routeGuess);
+    }
+  }
+  if (routeGuess.domains[0] === 'cooking') {
+    if (routeGuess.intent === 'create_action' && routeGuess.capabilityIds.includes(COOKING_GROCERY_ITEM_CAPABILITY)) {
+      return tryBuildCookingGroceryItemPreview(input, routeGuess);
     }
   }
   return null;
@@ -270,6 +276,32 @@ function tryBuildDecisionDismissPreview(
     routeGuess,
     capability,
     capabilityId: DECISION_DISMISS_CAPABILITY,
+    command,
+    now,
+  });
+}
+
+function tryBuildCookingGroceryItemPreview(
+  input: BuildChatCoreV2CommandPreviewRouteInput,
+  routeGuess: ChatCoreV2ShadowRouteGuess,
+): ChatCoreV2CommandPreviewRouteResult | null {
+  const capability = getEnabledCapability(COOKING_GROCERY_ITEM_CAPABILITY, input);
+  if (!capability) return null;
+
+  const groceryItems = extractCookingGroceryItems(input.normalizedText);
+  if (groceryItems.length === 0) return null;
+
+  const now = input.now ?? new Date();
+  const command = buildCookingGroceryItemCommandEnvelope({
+    input,
+    now,
+    items: groceryItems,
+  });
+  return buildCommandPreviewResult({
+    input,
+    routeGuess,
+    capability,
+    capabilityId: COOKING_GROCERY_ITEM_CAPABILITY,
     command,
     now,
   });
@@ -624,6 +656,71 @@ function buildDecisionDismissCommandEnvelope(input: {
   };
 }
 
+function buildCookingGroceryItemCommandEnvelope(input: {
+  input: BuildChatCoreV2CommandPreviewRouteInput;
+  now: Date;
+  items: string[];
+}): AICommandEnvelope<Record<string, unknown>> {
+  const createdAt = input.now.toISOString();
+  const weekStart = weekStartForDate(dateKey(input.now, normalizeTimezone(input.input.timezone)));
+  const payload = {
+    operation: 'add_items',
+    items: input.items,
+    itemCount: input.items.length,
+    weekStart,
+    list: 'grocery',
+  };
+  const commandId = `cmd_${hashStable({
+    tenantId: input.input.tenantId,
+    userId: input.input.userId,
+    messageId: input.input.messageId,
+    items: input.items,
+    weekStart,
+  })}`;
+
+  return {
+    commandId,
+    commandSchemaVersion: 'cooking.grocery_item@1.0.0',
+    previewSchemaVersion: 'grocery_preview_card@1.0.0',
+    responseSchemaVersion: 'chat_response_v2@1.0.0',
+    tenantId: String(input.input.tenantId),
+    userId: String(input.input.userId),
+    domain: 'cooking',
+    commandType: 'cooking.grocery_item',
+    origin: 'chat',
+    payload,
+    basedOn: {
+      entityIds: [`cooking_grocery_draft:${commandId}`],
+      entityVersions: {},
+      contextHash: hashStable({
+        routeVersion: CHAT_CORE_V2_COMMAND_PREVIEW_ROUTE_VERSION,
+        textHash: hashStable({ text: input.input.normalizedText }),
+        payload,
+      }),
+      createdAt,
+    },
+    preconditions: {
+      requiredEntityVersions: {},
+      requiredPermissionsVersion: `chat-v2-permissions:${input.input.tenantId}:${input.input.userId}:cooking:v1`,
+      invariants: [{
+        type: 'preview_only',
+        description: 'Grocery item previews do not mutate the shopping list in this rollout.',
+        check: 'cooking_grocery_preview_only',
+      }],
+    },
+    authorization: {
+      actorUserId: String(input.input.userId),
+      tenantId: String(input.input.tenantId),
+      actingSurface: 'ios_chat',
+      delegatedScopes: ['cooking:read'],
+      permissionSnapshotVersion: `chat-v2-permissions:${input.input.tenantId}:${input.input.userId}:cooking:v1`,
+      authTime: createdAt,
+    },
+    expiresAt: new Date(input.now.getTime() + COMMAND_TTL_MS).toISOString(),
+    idempotencyKey: `chat-v2:${input.input.tenantId}:${input.input.userId}:cooking.grocery_item:${weekStart}:${commandId}`,
+  };
+}
+
 function asPreviewOnlyCapability(capability: CapabilityDefinition): CapabilityDefinition {
   const support: CapabilitySupportMatrix = {
     ...capability.support,
@@ -641,6 +738,13 @@ function buildPreviewCopy(
   payload: Record<string, unknown>,
   locale: string | null | undefined,
 ): { title: string; summary: string; diff: Array<{ label: string; before?: string; after: string }> } {
+  if (capabilityId === COOKING_GROCERY_ITEM_CAPABILITY) {
+    return {
+      title: cookingGroceryPreviewTitle(payload, locale),
+      summary: cookingGroceryPreviewSummary(payload, locale),
+      diff: cookingGroceryPreviewDiff(payload, locale),
+    };
+  }
   if (capabilityId === DECISION_DISMISS_CAPABILITY) {
     return {
       title: decisionPreviewTitle(payload, locale),
@@ -660,6 +764,60 @@ function buildPreviewCopy(
     summary: taskPreviewSummary(payload, locale),
     diff: taskPreviewDiff(payload, locale),
   };
+}
+
+function cookingGroceryPreviewTitle(payload: Record<string, unknown>, locale: string | null | undefined): string {
+  const normalized = normalizeChatCoreV2Locale(locale);
+  const itemLabel = groceryItemLabel(payload, locale);
+  if (normalized === 'pt-BR') return `Prévia da lista de compras: ${itemLabel}`;
+  if (normalized === 'pt-PT') return `Pré-visualização da lista de compras: ${itemLabel}`;
+  if (normalized === 'es') return `Vista previa de compra: ${itemLabel}`;
+  return `Grocery preview: ${itemLabel}`;
+}
+
+function cookingGroceryPreviewSummary(payload: Record<string, unknown>, locale: string | null | undefined): string {
+  const normalized = normalizeChatCoreV2Locale(locale);
+  const itemLabel = groceryItemLabel(payload, locale);
+  if (normalized === 'pt-BR') return `Eu prepararia ${itemLabel} para a lista de compras. Nada seria adicionado ainda.`;
+  if (normalized === 'pt-PT') return `Eu prepararia ${itemLabel} para a lista de compras. Nada seria adicionado ainda.`;
+  if (normalized === 'es') return `Prepararía ${itemLabel} para la lista de compras. Todavía no se añadiría nada.`;
+  return `I would prepare ${itemLabel} for the grocery list. Nothing would be added yet.`;
+}
+
+function cookingGroceryPreviewDiff(payload: Record<string, unknown>, locale: string | null | undefined): Array<{ label: string; before?: string; after: string }> {
+  const normalized = normalizeChatCoreV2Locale(locale);
+  const items = groceryItemsFromPayload(payload);
+  const labels = normalized === 'pt-BR'
+    ? { items: 'Itens', list: 'Lista', status: 'Estado', grocery: 'Compras', draft: 'Prévia' }
+    : normalized === 'pt-PT'
+      ? { items: 'Itens', list: 'Lista', status: 'Estado', grocery: 'Compras', draft: 'Pré-visualização' }
+      : normalized === 'es'
+        ? { items: 'Artículos', list: 'Lista', status: 'Estado', grocery: 'Compras', draft: 'Vista previa' }
+        : { items: 'Items', list: 'List', status: 'Status', grocery: 'Grocery', draft: 'Preview' };
+  return [
+    { label: labels.items, after: joinGroceryItems(items, locale) },
+    { label: labels.list, after: labels.grocery },
+    { label: labels.status, after: labels.draft },
+  ];
+}
+
+function groceryItemsFromPayload(payload: Record<string, unknown>): string[] {
+  return Array.isArray(payload.items)
+    ? payload.items.map((item) => String(item).trim()).filter(Boolean)
+    : [];
+}
+
+function groceryItemLabel(payload: Record<string, unknown>, locale: string | null | undefined): string {
+  const items = groceryItemsFromPayload(payload);
+  return joinGroceryItems(items, locale);
+}
+
+function joinGroceryItems(items: string[], locale: string | null | undefined): string {
+  const normalized = normalizeChatCoreV2Locale(locale);
+  const conjunction = normalized === 'es' ? ' y ' : normalized.startsWith('pt') ? ' e ' : ' and ';
+  if (items.length <= 1) return items[0] ?? '';
+  if (items.length === 2) return `${items[0]}${conjunction}${items[1]}`;
+  return `${items.slice(0, -1).join(', ')}${conjunction}${items[items.length - 1]}`;
 }
 
 function decisionPreviewTitle(payload: Record<string, unknown>, locale: string | null | undefined): string {
@@ -1030,6 +1188,71 @@ function decisionVersionForItem(item: DecisionApiItem): string {
     expiresAt: item.expiresAt,
     snoozedUntil: item.snoozedUntil,
   });
+}
+
+function extractCookingGroceryItems(text: string): string[] {
+  const patterns = [
+    /\b(?:add|buy|get)\s+(.+?)\s+(?:to|for|on|in)\s+(?:my\s+)?(?:grocery|groceries|shopping)(?:\s+list)?\b/i,
+    /\b(?:create|make|prepare)\s+(?:a\s+)?(?:grocery|shopping)(?:\s+list)?\s+(?:with|for|of)\s+(.+?)(?=$|[.!?])/i,
+    /\b(?:adicionar|adiciona|acrescentar|acrescenta|comprar|compra)\s+(.+?)\s+(?:a|à|ao|na|para a)\s+(?:minha\s+)?lista\s+de\s+compras\b/i,
+    /\b(?:criar|cria|preparar|prepara)\s+(?:uma\s+)?lista\s+de\s+compras\s+(?:com|para|de)\s+(.+?)(?=$|[.!?])/i,
+    /\b(?:agregar|añadir|anadir|comprar)\s+(.+?)\s+(?:a|en|para)\s+(?:mi\s+)?lista\s+de\s+(?:compras|la\s+compra)\b/i,
+    /\b(?:crear|preparar)\s+(?:una\s+)?lista\s+de\s+(?:compras|la\s+compra)\s+(?:con|para|de)\s+(.+?)(?=$|[.!?])/i,
+  ];
+  for (const pattern of patterns) {
+    const match = pattern.exec(text);
+    const items = splitCookingGroceryItems(match?.[1]);
+    if (items.length > 0) return items;
+  }
+  return [];
+}
+
+function splitCookingGroceryItems(value: unknown): string[] {
+  const cleaned = String(value ?? '')
+    .replace(/^["“]|["”]$/g, '')
+    .replace(/\b(?:some|items?|ingredients?|grocer(?:y|ies)|shopping|lista\s+de\s+compras|lista\s+de\s+la\s+compra|compras)\b/gi, ' ')
+    .replace(/\s{2,}/g, ' ')
+    .trim();
+  if (!cleaned) return [];
+  return cleaned
+    .split(/\s*(?:,|;|\band\b|\be\b|\by\b|\+)\s*/i)
+    .map((item) => item.replace(/^(?:and|e|y)\s+/i, '').trim())
+    .map((item) => item.replace(/\s{2,}/g, ' '))
+    .filter((item) => item.length > 1)
+    .slice(0, 10);
+}
+
+function dateKey(now: Date, timezone: string): string {
+  try {
+    const parts = new Intl.DateTimeFormat('en-GB', {
+      timeZone: timezone,
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+    }).formatToParts(now);
+    const part = (type: string) => parts.find((item) => item.type === type)?.value;
+    const year = part('year');
+    const month = part('month');
+    const day = part('day');
+    return year && month && day ? `${year}-${month}-${day}` : now.toISOString().slice(0, 10);
+  } catch {
+    return now.toISOString().slice(0, 10);
+  }
+}
+
+function weekStartForDate(date: string): string {
+  const parsed = new Date(`${date}T12:00:00.000Z`);
+  if (!Number.isFinite(parsed.getTime())) return date;
+  const utcDay = parsed.getUTCDay();
+  const mondayOffset = ((utcDay + 6) % 7);
+  return addDays(date, -mondayOffset);
+}
+
+function addDays(date: string, days: number): string {
+  const parsed = new Date(`${date}T00:00:00.000Z`);
+  if (!Number.isFinite(parsed.getTime())) return date;
+  parsed.setUTCDate(parsed.getUTCDate() + days);
+  return parsed.toISOString().slice(0, 10);
 }
 
 function extractTaskCompletionReference(text: string): string | null {

@@ -25,6 +25,10 @@ const ENABLED_ENV = {
   CHAT_CORE_V2_ENABLED: 'true',
   CHAT_CORE_V2_WRITES_ENABLED: 'true',
 } as NodeJS.ProcessEnv;
+const PREVIEWS_ENABLED_ENV = {
+  CHAT_CORE_V2_ENABLED: 'true',
+  CHAT_CORE_V2_PREVIEWS_ENABLED: 'true',
+} as NodeJS.ProcessEnv;
 
 function buildPreview(text: string, env: NodeJS.ProcessEnv = ENABLED_ENV) {
   return tryBuildChatCoreV2CommandPreviewRoute({
@@ -696,6 +700,115 @@ describe('Chat Core v2 command preview route', () => {
 
     vi.mocked(listDecisionItems).mockReturnValue([]);
     expect(buildPreview('Dismiss the Schedule decision')).toBeNull();
+  });
+
+  it('builds a preview-only cooking grocery item command without mutating the shopping list', () => {
+    const result = buildPreview('Add eggs and milk to my grocery list', PREVIEWS_ENABLED_ENV);
+
+    expect(result).not.toBeNull();
+    expect(result?.capabilityId).toBe('cooking.grocery_item_preview');
+    expect(result?.executionEnabled).toBe(false);
+    expect(result?.gateVerdict).toMatchObject({
+      ok: true,
+      operation: 'preview',
+      commandStatus: 'previewed',
+      capabilityId: 'cooking.grocery_item_preview',
+    });
+    expect(result?.command).toMatchObject({
+      commandSchemaVersion: 'cooking.grocery_item@1.0.0',
+      previewSchemaVersion: 'grocery_preview_card@1.0.0',
+      responseSchemaVersion: 'chat_response_v2@1.0.0',
+      tenantId: '84',
+      userId: '42',
+      domain: 'cooking',
+      commandType: 'cooking.grocery_item',
+      origin: 'chat',
+      payload: {
+        operation: 'add_items',
+        items: ['eggs', 'milk'],
+        itemCount: 2,
+        weekStart: '2026-05-18',
+        list: 'grocery',
+      },
+      basedOn: {
+        entityIds: [expect.stringMatching(/^cooking_grocery_draft:cmd_[0-9a-f]{16}$/)],
+        entityVersions: {},
+      },
+      preconditions: {
+        requiredEntityVersions: {},
+        requiredPermissionsVersion: 'chat-v2-permissions:84:42:cooking:v1',
+        invariants: [{
+          type: 'preview_only',
+          description: 'Grocery item previews do not mutate the shopping list in this rollout.',
+          check: 'cooking_grocery_preview_only',
+        }],
+      },
+      authorization: {
+        actorUserId: '42',
+        tenantId: '84',
+        actingSurface: 'ios_chat',
+        delegatedScopes: ['cooking:read'],
+        permissionSnapshotVersion: 'chat-v2-permissions:84:42:cooking:v1',
+        authTime: FIXED_NOW.toISOString(),
+      },
+      expiresAt: '2026-05-24T10:10:00.000Z',
+    });
+    expect(result?.command.idempotencyKey).toContain('chat-v2:84:42:cooking.grocery_item:2026-05-18:');
+    expect(result?.command.basedOn.contextHash).toMatch(/^[0-9a-f]{16}$/);
+    expect(result?.response.kind).toBe('action_preview');
+    expect(result?.response.text).toBe('I would prepare eggs and milk for the grocery list. Nothing would be added yet.');
+    expect(result?.response.cards[0]).toMatchObject({
+      type: 'grocery_preview_card',
+      title: 'Grocery preview: eggs and milk',
+      risk: 'low',
+      capabilityId: 'cooking.grocery_item_preview',
+      primaryAction: {
+        kind: 'view',
+        label: 'View',
+      },
+      secondaryActions: [],
+      diff: [
+        { label: 'Items', after: 'eggs and milk' },
+        { label: 'List', after: 'Grocery' },
+        { label: 'Status', after: 'Preview' },
+      ],
+    });
+    expect(result?.response.cards[0]?.confirmationToken).toBeUndefined();
+  });
+
+  it('localizes cooking grocery previews while preserving grocery item text', () => {
+    const result = tryBuildChatCoreV2CommandPreviewRoute({
+      normalizedText: 'Adicionar ovos e leite à lista de compras',
+      userId: 42,
+      tenantId: 84,
+      conversationId: 'conv_1',
+      messageId: 'msg_1',
+      locale: 'pt-PT',
+      timezone: 'Europe/Lisbon',
+      env: PREVIEWS_ENABLED_ENV,
+      now: FIXED_NOW,
+    });
+
+    expect(result?.capabilityId).toBe('cooking.grocery_item_preview');
+    expect(result?.response.locale).toBe('pt-PT');
+    expect(result?.response.text).toBe('Eu prepararia ovos e leite para a lista de compras. Nada seria adicionado ainda.');
+    expect(result?.response.cards[0]).toMatchObject({
+      title: 'Pré-visualização da lista de compras: ovos e leite',
+      primaryAction: {
+        kind: 'view',
+        label: 'Ver',
+      },
+      diff: [
+        { label: 'Itens', after: 'ovos e leite' },
+        { label: 'Lista', after: 'Compras' },
+        { label: 'Estado', after: 'Pré-visualização' },
+      ],
+    });
+  });
+
+  it('does not build grocery previews without concrete items or the preview rollout flag', () => {
+    expect(buildPreview('Add items to my grocery list', PREVIEWS_ENABLED_ENV)).toBeNull();
+    expect(buildPreview('Add eggs to my grocery list', ENABLED_ENV)).toBeNull();
   });
 
   it('refuses unsafe titles instead of building a task preview', () => {

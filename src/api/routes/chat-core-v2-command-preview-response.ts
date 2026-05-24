@@ -166,6 +166,19 @@ function buildLegacyResponseCards(result: ChatCoreV2CommandPreviewRouteResult): 
       detail: result.response.text,
     }];
   }
+  if (result.command.domain === 'cooking') {
+    const items = Array.isArray(payload.items)
+      ? payload.items.map((item) => String(item).trim()).filter(Boolean)
+      : [];
+    const weekStart = typeof payload.weekStart === 'string' && payload.weekStart.trim()
+      ? payload.weekStart.trim()
+      : new Date().toISOString().slice(0, 10);
+    return [{
+      kind: 'groceryListCard',
+      weekStart,
+      items,
+    }];
+  }
 
   const dueAt = typeof payload.dueDateTime === 'string' && payload.dueDateTime.trim()
     ? payload.dueDateTime.trim()
