@@ -22,7 +22,11 @@ import {
   buildEntityResolutionPreconditions,
   resolveEntityReferenceFromCandidates,
 } from './entity-resolution';
-import { foldCalendarText } from '../calendar-natural-language-parser';
+import {
+  foldCalendarText,
+  parseNaturalLanguageCalendarEvent,
+  type ParsedNaturalLanguageCalendarEvent,
+} from '../calendar-natural-language-parser';
 import { parseSimpleTaskStep } from '../chat/planner/simple-task';
 import {
   listDecisionItems,
@@ -72,6 +76,7 @@ const TASK_CREATE_CAPABILITY = 'tasks.create';
 const TASK_COMPLETE_CAPABILITY = 'tasks.complete';
 const NOTIFICATION_SNOOZE_CAPABILITY = 'notifications.snooze';
 const DECISION_DISMISS_CAPABILITY = 'decision_center.dismiss';
+const SECRETARY_SCHEDULE_EVENT_CAPABILITY = 'secretary.schedule_event_preview';
 const COOKING_GROCERY_ITEM_CAPABILITY = 'cooking.grocery_item_preview';
 const CONTENT_BRIEF_DRAFT_CAPABILITY = 'content.brief_draft_preview';
 const COMMAND_TTL_MS = 10 * 60 * 1000;
@@ -97,6 +102,11 @@ export function tryBuildChatCoreV2CommandPreviewRoute(
   if (routeGuess.domains[0] === 'decision_center') {
     if (routeGuess.intent === 'modify_action' && routeGuess.capabilityIds.includes(DECISION_DISMISS_CAPABILITY)) {
       return tryBuildDecisionDismissPreview(input, routeGuess);
+    }
+  }
+  if (routeGuess.domains[0] === 'secretary') {
+    if (routeGuess.intent === 'create_action' && routeGuess.capabilityIds.includes(SECRETARY_SCHEDULE_EVENT_CAPABILITY)) {
+      return tryBuildSecretaryScheduleEventPreview(input, routeGuess);
     }
   }
   if (routeGuess.domains[0] === 'content') {
@@ -285,6 +295,45 @@ function tryBuildDecisionDismissPreview(
     command,
     now,
   });
+}
+
+function tryBuildSecretaryScheduleEventPreview(
+  input: BuildChatCoreV2CommandPreviewRouteInput,
+  routeGuess: ChatCoreV2ShadowRouteGuess,
+): ChatCoreV2CommandPreviewRouteResult | null {
+  const capability = getEnabledCapability(SECRETARY_SCHEDULE_EVENT_CAPABILITY, input);
+  if (!capability) return null;
+
+  const now = input.now ?? new Date();
+  const event = parseNaturalLanguageCalendarEvent(input.normalizedText, {
+    timezone: normalizeTimezone(input.timezone),
+    nowIso: now.toISOString(),
+  });
+  if (!event) return null;
+  if (!isConcreteCalendarEventTitle(event.title)) return null;
+
+  const command = buildSecretaryScheduleEventCommandEnvelope({
+    input,
+    now,
+    event,
+  });
+  return buildCommandPreviewResult({
+    input,
+    routeGuess,
+    capability,
+    capabilityId: SECRETARY_SCHEDULE_EVENT_CAPABILITY,
+    command,
+    now,
+  });
+}
+
+function isConcreteCalendarEventTitle(title: string): boolean {
+  const normalized = foldCalendarText(title)
+    .replace(/[^a-z0-9]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (!normalized) return false;
+  return !/^(?:something|anything|event|meeting|appointment|calendar|agenda|reuniao|cita|evento|compromisso)$/.test(normalized);
 }
 
 function tryBuildCookingGroceryItemPreview(
@@ -688,6 +737,78 @@ function buildDecisionDismissCommandEnvelope(input: {
   };
 }
 
+function buildSecretaryScheduleEventCommandEnvelope(input: {
+  input: BuildChatCoreV2CommandPreviewRouteInput;
+  now: Date;
+  event: ParsedNaturalLanguageCalendarEvent;
+}): AICommandEnvelope<Record<string, unknown>> {
+  const createdAt = input.now.toISOString();
+  const provider = input.event.provider === 'outlook' ? 'outlook_calendar' : 'google_calendar';
+  const payload = {
+    operation: 'schedule_event',
+    title: input.event.title,
+    provider,
+    calendarId: 'primary',
+    startDateTime: input.event.startDateTime,
+    endDateTime: input.event.endDateTime,
+    timezone: input.event.timezone,
+    attendees: input.event.attendees,
+    location: input.event.location,
+    notes: input.event.notes,
+    recurrence: input.event.recurrence,
+    status: 'preview',
+  };
+  const commandId = `cmd_${hashStable({
+    tenantId: input.input.tenantId,
+    userId: input.input.userId,
+    messageId: input.input.messageId,
+    payload,
+  })}`;
+
+  return {
+    commandId,
+    commandSchemaVersion: 'secretary.schedule_event@1.0.0',
+    previewSchemaVersion: 'calendar_change_preview_card@1.0.0',
+    responseSchemaVersion: 'chat_response_v2@1.0.0',
+    tenantId: String(input.input.tenantId),
+    userId: String(input.input.userId),
+    domain: 'secretary',
+    commandType: 'secretary.schedule_event',
+    origin: 'chat',
+    payload,
+    basedOn: {
+      entityIds: [`calendar_event_draft:${commandId}`],
+      entityVersions: {},
+      contextHash: hashStable({
+        routeVersion: CHAT_CORE_V2_COMMAND_PREVIEW_ROUTE_VERSION,
+        textHash: hashStable({ text: input.input.normalizedText }),
+        payload,
+        parserConfidence: input.event.confidence,
+      }),
+      createdAt,
+    },
+    preconditions: {
+      requiredEntityVersions: {},
+      requiredPermissionsVersion: `chat-v2-permissions:${input.input.tenantId}:${input.input.userId}:secretary:v1`,
+      invariants: [{
+        type: 'preview_only',
+        description: 'Secretary calendar previews do not create events or invite attendees in this rollout.',
+        check: 'secretary_schedule_event_preview_only',
+      }],
+    },
+    authorization: {
+      actorUserId: String(input.input.userId),
+      tenantId: String(input.input.tenantId),
+      actingSurface: 'ios_chat',
+      delegatedScopes: ['secretary:read'],
+      permissionSnapshotVersion: `chat-v2-permissions:${input.input.tenantId}:${input.input.userId}:secretary:v1`,
+      authTime: createdAt,
+    },
+    expiresAt: new Date(input.now.getTime() + COMMAND_TTL_MS).toISOString(),
+    idempotencyKey: `chat-v2:${input.input.tenantId}:${input.input.userId}:secretary.schedule_event:${commandId}`,
+  };
+}
+
 function buildCookingGroceryItemCommandEnvelope(input: {
   input: BuildChatCoreV2CommandPreviewRouteInput;
   now: Date;
@@ -833,6 +954,13 @@ function buildPreviewCopy(
   payload: Record<string, unknown>,
   locale: string | null | undefined,
 ): { title: string; summary: string; diff: Array<{ label: string; before?: string; after: string }> } {
+  if (capabilityId === SECRETARY_SCHEDULE_EVENT_CAPABILITY) {
+    return {
+      title: secretarySchedulePreviewTitle(payload, locale),
+      summary: secretarySchedulePreviewSummary(payload, locale),
+      diff: secretarySchedulePreviewDiff(payload, locale),
+    };
+  }
   if (capabilityId === CONTENT_BRIEF_DRAFT_CAPABILITY) {
     return {
       title: contentBriefPreviewTitle(payload, locale),
@@ -866,6 +994,93 @@ function buildPreviewCopy(
     summary: taskPreviewSummary(payload, locale),
     diff: taskPreviewDiff(payload, locale),
   };
+}
+
+function secretarySchedulePreviewTitle(payload: Record<string, unknown>, locale: string | null | undefined): string {
+  const normalized = normalizeChatCoreV2Locale(locale);
+  const title = calendarEventTitle(payload);
+  if (normalized === 'pt-BR') return `Prévia da agenda: ${title}`;
+  if (normalized === 'pt-PT') return `Pré-visualização da agenda: ${title}`;
+  if (normalized === 'es') return `Vista previa de agenda: ${title}`;
+  return `Calendar preview: ${title}`;
+}
+
+function secretarySchedulePreviewSummary(payload: Record<string, unknown>, locale: string | null | undefined): string {
+  const normalized = normalizeChatCoreV2Locale(locale);
+  const title = calendarEventTitle(payload);
+  const start = formatCalendarPreviewDateTime(payload.startDateTime, payload.timezone, locale);
+  const end = formatCalendarPreviewDateTime(payload.endDateTime, payload.timezone, locale);
+  if (normalized === 'pt-BR') return `Eu prepararia "${title}" de ${start} até ${end}. Nenhum evento ou convite seria criado ainda.`;
+  if (normalized === 'pt-PT') return `Eu prepararia "${title}" de ${start} até ${end}. Nenhum evento ou convite seria criado ainda.`;
+  if (normalized === 'es') return `Prepararía "${title}" de ${start} a ${end}. Todavía no se crearía ningún evento ni invitación.`;
+  return `I would prepare "${title}" from ${start} to ${end}. No calendar event or invite would be created yet.`;
+}
+
+function secretarySchedulePreviewDiff(payload: Record<string, unknown>, locale: string | null | undefined): Array<{ label: string; before?: string; after: string }> {
+  const normalized = normalizeChatCoreV2Locale(locale);
+  const labels = normalized === 'pt-BR'
+    ? { event: 'Evento', start: 'Início', end: 'Fim', calendar: 'Agenda', attendees: 'Convidados', status: 'Estado', preview: 'Prévia' }
+    : normalized === 'pt-PT'
+      ? { event: 'Evento', start: 'Início', end: 'Fim', calendar: 'Agenda', attendees: 'Convidados', status: 'Estado', preview: 'Pré-visualização' }
+      : normalized === 'es'
+        ? { event: 'Evento', start: 'Inicio', end: 'Fin', calendar: 'Calendario', attendees: 'Invitados', status: 'Estado', preview: 'Vista previa' }
+        : { event: 'Event', start: 'Start', end: 'End', calendar: 'Calendar', attendees: 'Guests', status: 'Status', preview: 'Preview' };
+  const attendees = calendarAttendees(payload);
+  return [
+    { label: labels.event, after: calendarEventTitle(payload) },
+    { label: labels.start, after: formatCalendarPreviewDateTime(payload.startDateTime, payload.timezone, locale) },
+    { label: labels.end, after: formatCalendarPreviewDateTime(payload.endDateTime, payload.timezone, locale) },
+    { label: labels.calendar, after: calendarProviderLabel(payload.provider, locale) },
+    ...(attendees.length > 0 ? [{ label: labels.attendees, after: attendees.join(', ') }] : []),
+    { label: labels.status, after: labels.preview },
+  ];
+}
+
+function calendarEventTitle(payload: Record<string, unknown>): string {
+  const title = String(payload.title ?? '').trim();
+  return title || 'Untitled';
+}
+
+function calendarAttendees(payload: Record<string, unknown>): string[] {
+  return Array.isArray(payload.attendees)
+    ? payload.attendees.map((attendee) => String(attendee).trim()).filter(Boolean)
+    : [];
+}
+
+function calendarProviderLabel(value: unknown, locale: string | null | undefined): string {
+  const provider = String(value ?? '').trim();
+  if (provider === 'outlook_calendar') return 'Outlook';
+  if (provider === 'google_calendar') return 'Google';
+  const normalized = normalizeChatCoreV2Locale(locale);
+  return normalized === 'es' ? 'Calendario' : normalized.startsWith('pt') ? 'Agenda' : 'Calendar';
+}
+
+function formatCalendarPreviewDateTime(value: unknown, timezone: unknown, locale: string | null | undefined): string {
+  const raw = String(value ?? '').trim();
+  if (!raw) return '';
+  const date = new Date(raw);
+  if (!Number.isFinite(date.getTime())) return raw;
+  const normalized = normalizeChatCoreV2Locale(locale);
+  const localeTag = normalized === 'pt-BR'
+    ? 'pt-BR'
+    : normalized === 'pt-PT'
+      ? 'pt-PT'
+      : normalized === 'es'
+        ? 'es-ES'
+        : 'en-GB';
+  try {
+    return new Intl.DateTimeFormat(localeTag, {
+      timeZone: normalizeTimezone(String(timezone ?? 'UTC')),
+      weekday: 'short',
+      day: '2-digit',
+      month: 'short',
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: false,
+    }).format(date);
+  } catch {
+    return raw;
+  }
 }
 
 function contentBriefPreviewTitle(payload: Record<string, unknown>, locale: string | null | undefined): string {

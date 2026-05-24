@@ -198,6 +198,20 @@ function buildLegacyResponseCards(result: ChatCoreV2CommandPreviewRouteResult): 
       },
     }];
   }
+  if (result.command.domain === 'secretary') {
+    return [{
+      kind: 'eventCard',
+      eventId: null,
+      title,
+      startAt: typeof payload.startDateTime === 'string' ? payload.startDateTime : '',
+      endAt: typeof payload.endDateTime === 'string' ? payload.endDateTime : null,
+      location: typeof payload.location === 'string' ? payload.location : null,
+      attendees: Array.isArray(payload.attendees)
+        ? payload.attendees.map((attendee) => String(attendee).trim()).filter(Boolean)
+        : null,
+      status: 'pending',
+    }];
+  }
 
   const dueAt = typeof payload.dueDateTime === 'string' && payload.dueDateTime.trim()
     ? payload.dueDateTime.trim()

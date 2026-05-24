@@ -2969,6 +2969,120 @@ describe('Chat API routes', () => {
     }
   });
 
+  it('returns a Chat Core v2 secretary schedule preview without creating calendar events', async () => {
+    const previousGlobal = process.env.CHAT_CORE_V2_ENABLED;
+    const previousPreviews = process.env.CHAT_CORE_V2_PREVIEWS_ENABLED;
+    process.env.CHAT_CORE_V2_ENABLED = 'true';
+    process.env.CHAT_CORE_V2_PREVIEWS_ENABLED = 'true';
+    try {
+      mockRouteMessage.mockClear();
+      mockHandleSecretary.mockClear();
+
+      const messageRes = await dispatch('POST', '/message', 7001, {
+        text: 'Schedule a meeting for Friday at 2pm called weekly sync',
+        clientMessageId: 'chat-core-v2-secretary-schedule-preview-1',
+      });
+
+      expect(messageRes.statusCode, JSON.stringify(messageRes.body)).toBe(200);
+      expect(messageRes.body.routeMethod).toBe('chat-core-v2-command-preview');
+      expect(messageRes.body.domain).toBe('secretary');
+      expect(messageRes.body.text).toContain('No calendar event or invite would be created yet.');
+      expect(messageRes.body.metadata).toMatchObject({
+        type: 'chat_core_v2_command_preview',
+        chatCoreV2: {
+          capabilityId: 'secretary.schedule_event_preview',
+          executionEnabled: false,
+          executionDisabledReason: 'preview_only_rollout',
+          response: {
+            schemaVersion: 'chat_response_v2@1.0.0',
+            kind: 'action_preview',
+            reasonCodes: expect.arrayContaining(['preview_only_rollout']),
+          },
+          command: {
+            commandSchemaVersion: 'secretary.schedule_event@1.0.0',
+            previewSchemaVersion: 'calendar_change_preview_card@1.0.0',
+            responseSchemaVersion: 'chat_response_v2@1.0.0',
+            domain: 'secretary',
+            commandType: 'secretary.schedule_event',
+            origin: 'chat',
+            payload: {
+              operation: 'schedule_event',
+              title: 'weekly sync',
+              provider: 'google_calendar',
+              calendarId: 'primary',
+              timezone: 'Europe/Lisbon',
+              attendees: [],
+              status: 'preview',
+            },
+            basedOn: {
+              entityIds: [expect.stringMatching(/^calendar_event_draft:cmd_/)],
+              entityVersions: {},
+            },
+            preconditions: {
+              requiredEntityVersions: {},
+              invariants: [{
+                type: 'preview_only',
+                description: 'Secretary calendar previews do not create events or invite attendees in this rollout.',
+                check: 'secretary_schedule_event_preview_only',
+              }],
+              hasPermissionSnapshot: true,
+            },
+          },
+          gate: {
+            ok: true,
+            operation: 'preview',
+            commandStatus: 'previewed',
+          },
+        },
+      });
+      expect(String(messageRes.body.metadata.chatCoreV2.command.payload.startDateTime)).toContain('2026-05-29T14:00:00');
+      expect(String(messageRes.body.metadata.chatCoreV2.command.payload.endDateTime)).toContain('2026-05-29T15:00:00');
+      expect(messageRes.body.metadata.chatCoreV2.response.cards[0]).toMatchObject({
+        type: 'calendar_change_preview_card',
+        title: 'Calendar preview: weekly sync',
+        primaryAction: {
+          kind: 'view',
+          label: 'View',
+        },
+        secondaryActions: [],
+        diff: expect.arrayContaining([
+          { label: 'Event', after: 'weekly sync' },
+          { label: 'Calendar', after: 'Google' },
+          { label: 'Status', after: 'Preview' },
+        ]),
+      });
+      expect(messageRes.body.responseCards).toEqual([{
+        kind: 'eventCard',
+        eventId: null,
+        title: 'weekly sync',
+        startAt: expect.stringContaining('2026-05-29T14:00:00'),
+        endAt: expect.stringContaining('2026-05-29T15:00:00'),
+        location: null,
+        attendees: [],
+        status: 'pending',
+      }]);
+      expect(messageRes.body.metadata.chatCoreV2.response.cards[0].confirmationToken).toBeUndefined();
+      const metadataJson = JSON.stringify(messageRes.body.metadata);
+      expect(metadataJson).not.toContain('actorUserId');
+      expect(metadataJson).not.toContain('delegatedScopes');
+      expect(metadataJson).not.toContain('idempotencyKey');
+      expect(metadataJson).not.toContain('chat-v2-permissions:7001:7001');
+      expect(mockRouteMessage).not.toHaveBeenCalled();
+      expect(mockHandleSecretary).not.toHaveBeenCalled();
+    } finally {
+      if (previousGlobal === undefined) {
+        delete process.env.CHAT_CORE_V2_ENABLED;
+      } else {
+        process.env.CHAT_CORE_V2_ENABLED = previousGlobal;
+      }
+      if (previousPreviews === undefined) {
+        delete process.env.CHAT_CORE_V2_PREVIEWS_ENABLED;
+      } else {
+        process.env.CHAT_CORE_V2_PREVIEWS_ENABLED = previousPreviews;
+      }
+    }
+  });
+
   it('returns a Chat Core v2 task-complete preview with entity preconditions without completing the task', async () => {
     const previousGlobal = process.env.CHAT_CORE_V2_ENABLED;
     const previousWrites = process.env.CHAT_CORE_V2_WRITES_ENABLED;

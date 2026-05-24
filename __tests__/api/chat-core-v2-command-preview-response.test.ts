@@ -287,6 +287,126 @@ describe('Chat Core v2 command preview API adapter', () => {
     expect(metadataJson).not.toContain('chat-v2-permissions:84:42');
   });
 
+  it('maps secretary schedule previews into pending event cards without leaking authorization scope', () => {
+    const requestStartedAt = Date.parse('2026-05-24T12:34:56.000Z');
+    const result: ChatCoreV2CommandPreviewRouteResult = {
+      routeVersion: 'chat_core_v2_command_preview_route@1.0.0',
+      capabilityId: 'secretary.schedule_event_preview',
+      routeGuess: {
+        intent: 'create_action',
+        confidence: 0.84,
+        domains: ['secretary'],
+        capabilityIds: ['secretary.schedule_event_preview'],
+      },
+      executionEnabled: false,
+      executionDisabledReason: 'preview_only_rollout',
+      gateVerdict: {
+        ok: true,
+        operation: 'preview',
+        gateVersion: 'chat_core_v2_command_bus_gate@1.0.0',
+        commandStatus: 'previewed',
+        capabilityId: 'secretary.schedule_event_preview',
+      },
+      command: {
+        commandId: 'cmd_calendar',
+        commandSchemaVersion: 'secretary.schedule_event@1.0.0',
+        previewSchemaVersion: 'calendar_change_preview_card@1.0.0',
+        responseSchemaVersion: 'chat_response_v2@1.0.0',
+        tenantId: '84',
+        userId: '42',
+        domain: 'secretary',
+        commandType: 'secretary.schedule_event',
+        origin: 'chat',
+        payload: {
+          operation: 'schedule_event',
+          title: 'weekly sync',
+          provider: 'google_calendar',
+          calendarId: 'primary',
+          startDateTime: '2026-05-29T14:00:00+01:00',
+          endDateTime: '2026-05-29T15:00:00+01:00',
+          timezone: 'Europe/Lisbon',
+          attendees: ['pedro@example.com'],
+          location: null,
+          notes: null,
+          recurrence: null,
+          status: 'preview',
+        },
+        basedOn: {
+          entityIds: ['calendar_event_draft:cmd_calendar'],
+          entityVersions: {},
+          contextHash: 'abc123def4567890',
+          createdAt: '2026-05-24T12:34:56.000Z',
+        },
+        preconditions: {
+          requiredEntityVersions: {},
+          requiredPermissionsVersion: 'chat-v2-permissions:84:42:secretary:v1',
+          invariants: [{
+            type: 'preview_only',
+            description: 'Secretary calendar previews do not create events or invite attendees in this rollout.',
+            check: 'secretary_schedule_event_preview_only',
+          }],
+        },
+        authorization: {
+          actorUserId: '42',
+          tenantId: '84',
+          actingSurface: 'ios_chat',
+          delegatedScopes: ['secretary:read'],
+          permissionSnapshotVersion: 'chat-v2-permissions:84:42:secretary:v1',
+          authTime: '2026-05-24T12:34:56.000Z',
+        },
+        expiresAt: '2026-05-24T12:44:56.000Z',
+        idempotencyKey: 'chat-v2:84:42:secretary-schedule',
+      },
+      response: {
+        schemaVersion: 'chat_response_v2@1.0.0',
+        kind: 'action_preview',
+        locale: 'en',
+        text: 'I would prepare "weekly sync" from Fri, 29 May, 14:00 to Fri, 29 May, 15:00. No calendar event or invite would be created yet.',
+        reasonCodes: ['preview_only_rollout'],
+        cards: [{
+          type: 'calendar_change_preview_card',
+          version: 'calendar_change_preview_card@1.0.0',
+          title: 'Calendar preview: weekly sync',
+          summary: 'I would prepare "weekly sync".',
+          risk: 'medium',
+          sensitivity: 'personal',
+          capabilityId: 'secretary.schedule_event_preview',
+          commandId: 'cmd_calendar',
+          sourceEntityIds: ['calendar_event_draft:cmd_calendar'],
+          diff: [{ label: 'Event', after: 'weekly sync' }],
+          primaryAction: {
+            id: 'view',
+            kind: 'view',
+            label: 'View',
+            style: 'primary',
+          },
+          secondaryActions: [],
+        }],
+      },
+    };
+
+    const built = buildChatCoreV2CommandPreviewShortcutResponse({
+      result,
+      requestStartedAt,
+    });
+
+    expect(built.response.responseCards).toEqual([{
+      kind: 'eventCard',
+      eventId: null,
+      title: 'weekly sync',
+      startAt: '2026-05-29T14:00:00+01:00',
+      endAt: '2026-05-29T15:00:00+01:00',
+      location: null,
+      attendees: ['pedro@example.com'],
+      status: 'pending',
+    }]);
+    const metadataJson = JSON.stringify(built.response.metadata);
+    expect(metadataJson).not.toContain('actorUserId');
+    expect(metadataJson).not.toContain('delegatedScopes');
+    expect(metadataJson).not.toContain('idempotencyKey');
+    expect(metadataJson).not.toContain('chat-v2-permissions:84:42');
+  });
+
   it('maps decision previews into decision cards without leaking authorization scope', () => {
     const requestStartedAt = Date.parse('2026-05-24T12:34:56.000Z');
     const result: ChatCoreV2CommandPreviewRouteResult = {

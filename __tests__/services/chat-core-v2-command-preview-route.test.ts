@@ -44,6 +44,20 @@ function buildPreview(text: string, env: NodeJS.ProcessEnv = ENABLED_ENV) {
   });
 }
 
+function buildPreviewForLocale(text: string, locale: string, env: NodeJS.ProcessEnv = PREVIEWS_ENABLED_ENV) {
+  return tryBuildChatCoreV2CommandPreviewRoute({
+    normalizedText: text,
+    userId: 42,
+    tenantId: 84,
+    conversationId: 'conv_1',
+    messageId: 'msg_1',
+    locale,
+    timezone: 'Europe/Lisbon',
+    env,
+    now: FIXED_NOW,
+  });
+}
+
 function task(overrides: Partial<NormalizedTask> & { id: number; title: string }): NormalizedTask {
   return {
     id: overrides.id,
@@ -202,6 +216,98 @@ describe('Chat Core v2 command preview route', () => {
     expect(buildPreview('Create a task called Buy milk', {
       CHAT_CORE_V2_WRITES_ENABLED: 'true',
     } as NodeJS.ProcessEnv)).toBeNull();
+  });
+
+  it('builds a preview-only secretary schedule-event command without creating a calendar event', () => {
+    const result = buildPreview('Schedule a meeting for Friday at 2pm called weekly sync', PREVIEWS_ENABLED_ENV);
+
+    expect(result).not.toBeNull();
+    expect(result?.capabilityId).toBe('secretary.schedule_event_preview');
+    expect(result?.executionEnabled).toBe(false);
+    expect(result?.executionDisabledReason).toBe('preview_only_rollout');
+    expect(result?.routeGuess).toMatchObject({
+      intent: 'create_action',
+      domains: ['secretary'],
+      capabilityIds: ['secretary.schedule_event_preview'],
+    });
+    expect(result?.gateVerdict).toMatchObject({
+      ok: true,
+      operation: 'preview',
+      commandStatus: 'previewed',
+      capabilityId: 'secretary.schedule_event_preview',
+    });
+    expect(result?.command).toMatchObject({
+      commandSchemaVersion: 'secretary.schedule_event@1.0.0',
+      previewSchemaVersion: 'calendar_change_preview_card@1.0.0',
+      responseSchemaVersion: 'chat_response_v2@1.0.0',
+      domain: 'secretary',
+      commandType: 'secretary.schedule_event',
+      origin: 'chat',
+      payload: {
+        operation: 'schedule_event',
+        title: 'weekly sync',
+        provider: 'google_calendar',
+        calendarId: 'primary',
+        timezone: 'Europe/Lisbon',
+        attendees: [],
+        status: 'preview',
+      },
+      preconditions: {
+        requiredEntityVersions: {},
+        requiredPermissionsVersion: 'chat-v2-permissions:84:42:secretary:v1',
+        invariants: [{
+          type: 'preview_only',
+          description: 'Secretary calendar previews do not create events or invite attendees in this rollout.',
+          check: 'secretary_schedule_event_preview_only',
+        }],
+      },
+      authorization: {
+        delegatedScopes: ['secretary:read'],
+        permissionSnapshotVersion: 'chat-v2-permissions:84:42:secretary:v1',
+      },
+    });
+    const payload = result?.command.payload as Record<string, unknown>;
+    expect(String(payload.startDateTime)).toContain('2026-05-29T14:00:00');
+    expect(String(payload.endDateTime)).toContain('2026-05-29T15:00:00');
+    expect(result?.command.basedOn.entityIds[0]).toMatch(/^calendar_event_draft:cmd_/);
+    expect(result?.command.idempotencyKey).toMatch(/^chat-v2:84:42:secretary\.schedule_event:cmd_/);
+    expect(result?.response.kind).toBe('action_preview');
+    expect(result?.response.text).toContain('No calendar event or invite would be created yet.');
+    expect(result?.response.cards[0]).toMatchObject({
+      type: 'calendar_change_preview_card',
+      title: 'Calendar preview: weekly sync',
+      capabilityId: 'secretary.schedule_event_preview',
+      diff: expect.arrayContaining([
+        { label: 'Event', after: 'weekly sync' },
+        { label: 'Calendar', after: 'Google' },
+        { label: 'Status', after: 'Preview' },
+      ]),
+    });
+  });
+
+  it('localizes secretary schedule-event previews while preserving exact event title', () => {
+    const result = buildPreviewForLocale(
+      'Marca uma reunião pra sexta às 14h chamada sync semanal',
+      'pt-PT',
+    );
+
+    expect(result?.capabilityId).toBe('secretary.schedule_event_preview');
+    expect(result?.response.cards[0]).toMatchObject({
+      type: 'calendar_change_preview_card',
+      title: 'Pré-visualização da agenda: sync semanal',
+    });
+    expect(result?.response.text).toContain('Nenhum evento ou convite seria criado ainda.');
+    expect(result?.response.cards[0]?.diff).toEqual(expect.arrayContaining([
+      { label: 'Evento', after: 'sync semanal' },
+      { label: 'Agenda', after: 'Google' },
+      { label: 'Estado', after: 'Pré-visualização' },
+    ]));
+  });
+
+  it('does not build schedule-event previews without concrete date, time, title, or the preview rollout flag', () => {
+    expect(buildPreview('Schedule a meeting for Friday at 2pm called weekly sync')).toBeNull();
+    expect(buildPreview('Schedule a meeting for Friday', PREVIEWS_ENABLED_ENV)).toBeNull();
+    expect(buildPreview('Schedule something on my calendar tomorrow at 9am', PREVIEWS_ENABLED_ENV)).toBeNull();
   });
 
   it('builds a preview-only task-create command envelope without a confirmation token', () => {
