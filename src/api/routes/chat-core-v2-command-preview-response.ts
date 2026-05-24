@@ -179,6 +179,25 @@ function buildLegacyResponseCards(result: ChatCoreV2CommandPreviewRouteResult): 
       items,
     }];
   }
+  if (result.command.domain === 'content') {
+    const topic = typeof payload.topic === 'string' && payload.topic.trim()
+      ? payload.topic.trim()
+      : 'Untitled';
+    const format = typeof payload.format === 'string' && payload.format.trim()
+      ? payload.format.trim()
+      : 'content';
+    return [{
+      kind: 'openSurfaceCard',
+      surface: 'content',
+      pendingActionId: null,
+      prefill: {
+        kind: 'content_brief_preview',
+        topic,
+        format,
+        objective: typeof payload.objective === 'string' ? payload.objective : null,
+      },
+    }];
+  }
 
   const dueAt = typeof payload.dueDateTime === 'string' && payload.dueDateTime.trim()
     ? payload.dueDateTime.trim()

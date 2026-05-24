@@ -3601,6 +3601,122 @@ describe('Chat API routes', () => {
     }
   });
 
+  it('returns a Chat Core v2 content brief preview without calling the content generator', async () => {
+    const previousGlobal = process.env.CHAT_CORE_V2_ENABLED;
+    const previousPreviews = process.env.CHAT_CORE_V2_PREVIEWS_ENABLED;
+    process.env.CHAT_CORE_V2_ENABLED = 'true';
+    process.env.CHAT_CORE_V2_PREVIEWS_ENABLED = 'true';
+    try {
+      const { handleContent } = await import('../../src/domains/content-creator');
+      mockRouteMessage.mockClear();
+      mockHandleSecretary.mockClear();
+      mockGetScript.mockClear();
+      vi.mocked(handleContent).mockClear();
+
+      const messageRes = await dispatch('POST', '/message', 7001, {
+        text: 'Create a content brief about recovery after hard intervals',
+        clientMessageId: 'chat-core-v2-content-brief-preview-1',
+      });
+
+      expect(messageRes.statusCode, JSON.stringify(messageRes.body)).toBe(200);
+      expect(messageRes.body.routeMethod).toBe('chat-core-v2-command-preview');
+      expect(messageRes.body.domain).toBe('secretary');
+      expect(messageRes.body.text).toBe('I would prepare a content brief about recovery after hard intervals. Nothing would be created or published yet.');
+      expect(messageRes.body.metadata).toMatchObject({
+        type: 'chat_core_v2_command_preview',
+        chatCoreV2: {
+          capabilityId: 'content.brief_draft_preview',
+          executionEnabled: false,
+          executionDisabledReason: 'preview_only_rollout',
+          response: {
+            schemaVersion: 'chat_response_v2@1.0.0',
+            kind: 'action_preview',
+            reasonCodes: expect.arrayContaining(['preview_only_rollout']),
+          },
+          command: {
+            commandSchemaVersion: 'content.brief_draft@1.0.0',
+            previewSchemaVersion: 'content_brief_preview_card@1.0.0',
+            responseSchemaVersion: 'chat_response_v2@1.0.0',
+            domain: 'content',
+            commandType: 'content.brief_draft',
+            origin: 'chat',
+            payload: {
+              operation: 'draft_brief',
+              topic: 'recovery after hard intervals',
+              objective: 'Prepare a content brief about recovery after hard intervals.',
+              format: 'content',
+              status: 'preview',
+            },
+            basedOn: {
+              entityIds: [expect.stringMatching(/^content_brief_draft:cmd_[0-9a-f]{16}$/)],
+              entityVersions: {},
+            },
+            preconditions: {
+              requiredEntityVersions: {},
+              invariants: [{
+                type: 'preview_only',
+                description: 'Content brief previews do not create drafts, scripts, or publishable content in this rollout.',
+                check: 'content_brief_preview_only',
+              }],
+              hasPermissionSnapshot: true,
+            },
+          },
+          gate: {
+            ok: true,
+            operation: 'preview',
+            commandStatus: 'previewed',
+          },
+        },
+      });
+      expect(messageRes.body.metadata.chatCoreV2.response.cards[0]).toMatchObject({
+        type: 'content_brief_preview_card',
+        title: 'Content brief preview: recovery after hard intervals',
+        primaryAction: {
+          kind: 'view',
+          label: 'View',
+        },
+        secondaryActions: [],
+        diff: [
+          { label: 'Topic', after: 'recovery after hard intervals' },
+          { label: 'Format', after: 'Content' },
+          { label: 'Status', after: 'Preview' },
+        ],
+      });
+      expect(messageRes.body.responseCards).toEqual([{
+        kind: 'openSurfaceCard',
+        surface: 'content',
+        pendingActionId: null,
+        prefill: {
+          kind: 'content_brief_preview',
+          topic: 'recovery after hard intervals',
+          format: 'content',
+          objective: 'Prepare a content brief about recovery after hard intervals.',
+        },
+      }]);
+      expect(messageRes.body.metadata.chatCoreV2.response.cards[0].confirmationToken).toBeUndefined();
+      const metadataJson = JSON.stringify(messageRes.body.metadata);
+      expect(metadataJson).not.toContain('actorUserId');
+      expect(metadataJson).not.toContain('delegatedScopes');
+      expect(metadataJson).not.toContain('idempotencyKey');
+      expect(metadataJson).not.toContain('chat-v2-permissions:7001:7001');
+      expect(mockGetScript).not.toHaveBeenCalled();
+      expect(vi.mocked(handleContent)).not.toHaveBeenCalled();
+      expect(mockRouteMessage).not.toHaveBeenCalled();
+      expect(mockHandleSecretary).not.toHaveBeenCalled();
+    } finally {
+      if (previousGlobal === undefined) {
+        delete process.env.CHAT_CORE_V2_ENABLED;
+      } else {
+        process.env.CHAT_CORE_V2_ENABLED = previousGlobal;
+      }
+      if (previousPreviews === undefined) {
+        delete process.env.CHAT_CORE_V2_PREVIEWS_ENABLED;
+      } else {
+        process.env.CHAT_CORE_V2_PREVIEWS_ENABLED = previousPreviews;
+      }
+    }
+  });
+
   it('answers connection status through Chat Core v2 deterministic reads when explicitly enabled', async () => {
     const previousGlobal = process.env.CHAT_CORE_V2_ENABLED;
     const previousReads = process.env.CHAT_CORE_V2_READS_ENABLED;

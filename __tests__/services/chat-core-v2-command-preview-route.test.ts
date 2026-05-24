@@ -702,6 +702,116 @@ describe('Chat Core v2 command preview route', () => {
     expect(buildPreview('Dismiss the Schedule decision')).toBeNull();
   });
 
+  it('builds a preview-only content brief draft command without creating content', () => {
+    const result = buildPreview('Create a content brief about recovery after hard intervals', PREVIEWS_ENABLED_ENV);
+
+    expect(result).not.toBeNull();
+    expect(result?.capabilityId).toBe('content.brief_draft_preview');
+    expect(result?.executionEnabled).toBe(false);
+    expect(result?.gateVerdict).toMatchObject({
+      ok: true,
+      operation: 'preview',
+      commandStatus: 'previewed',
+      capabilityId: 'content.brief_draft_preview',
+    });
+    expect(result?.command).toMatchObject({
+      commandSchemaVersion: 'content.brief_draft@1.0.0',
+      previewSchemaVersion: 'content_brief_preview_card@1.0.0',
+      responseSchemaVersion: 'chat_response_v2@1.0.0',
+      tenantId: '84',
+      userId: '42',
+      domain: 'content',
+      commandType: 'content.brief_draft',
+      origin: 'chat',
+      payload: {
+        operation: 'draft_brief',
+        topic: 'recovery after hard intervals',
+        objective: 'Prepare a content brief about recovery after hard intervals.',
+        format: 'content',
+        status: 'preview',
+      },
+      basedOn: {
+        entityIds: [expect.stringMatching(/^content_brief_draft:cmd_[0-9a-f]{16}$/)],
+        entityVersions: {},
+      },
+      preconditions: {
+        requiredEntityVersions: {},
+        requiredPermissionsVersion: 'chat-v2-permissions:84:42:content:v1',
+        invariants: [{
+          type: 'preview_only',
+          description: 'Content brief previews do not create drafts, scripts, or publishable content in this rollout.',
+          check: 'content_brief_preview_only',
+        }],
+      },
+      authorization: {
+        actorUserId: '42',
+        tenantId: '84',
+        actingSurface: 'ios_chat',
+        delegatedScopes: ['content:read'],
+        permissionSnapshotVersion: 'chat-v2-permissions:84:42:content:v1',
+        authTime: FIXED_NOW.toISOString(),
+      },
+      expiresAt: '2026-05-24T10:10:00.000Z',
+    });
+    expect(result?.command.idempotencyKey).toContain('chat-v2:84:42:content.brief_draft:');
+    expect(result?.command.basedOn.contextHash).toMatch(/^[0-9a-f]{16}$/);
+    expect(result?.response.kind).toBe('action_preview');
+    expect(result?.response.text).toBe('I would prepare a content brief about recovery after hard intervals. Nothing would be created or published yet.');
+    expect(result?.response.cards[0]).toMatchObject({
+      type: 'content_brief_preview_card',
+      title: 'Content brief preview: recovery after hard intervals',
+      risk: 'low',
+      capabilityId: 'content.brief_draft_preview',
+      primaryAction: {
+        kind: 'view',
+        label: 'View',
+      },
+      secondaryActions: [],
+      diff: [
+        { label: 'Topic', after: 'recovery after hard intervals' },
+        { label: 'Format', after: 'Content' },
+        { label: 'Status', after: 'Preview' },
+      ],
+    });
+    expect(result?.response.cards[0]?.confirmationToken).toBeUndefined();
+  });
+
+  it('localizes content brief previews while preserving the requested topic', () => {
+    const result = tryBuildChatCoreV2CommandPreviewRoute({
+      normalizedText: 'Criar um briefing de conteúdo sobre recuperação depois de intervalos fortes',
+      userId: 42,
+      tenantId: 84,
+      conversationId: 'conv_1',
+      messageId: 'msg_1',
+      locale: 'pt-PT',
+      timezone: 'Europe/Lisbon',
+      env: PREVIEWS_ENABLED_ENV,
+      now: FIXED_NOW,
+    });
+
+    expect(result?.capabilityId).toBe('content.brief_draft_preview');
+    expect(result?.response.locale).toBe('pt-PT');
+    expect(result?.response.text).toBe('Eu prepararia um briefing de conteúdo sobre recuperação depois de intervalos fortes. Nada seria criado ou publicado ainda.');
+    expect(result?.response.cards[0]).toMatchObject({
+      title: 'Pré-visualização de briefing de conteúdo: recuperação depois de intervalos fortes',
+      primaryAction: {
+        kind: 'view',
+        label: 'Ver',
+      },
+      diff: [
+        { label: 'Tema', after: 'recuperação depois de intervalos fortes' },
+        { label: 'Formato', after: 'Conteúdo' },
+        { label: 'Estado', after: 'Pré-visualização' },
+      ],
+    });
+  });
+
+  it('does not capture script generation or generic content asks as content brief previews', () => {
+    expect(buildPreview('Write a short script about recovery after hard intervals', PREVIEWS_ENABLED_ENV)).toBeNull();
+    expect(buildPreview('Create content for tomorrow', PREVIEWS_ENABLED_ENV)).toBeNull();
+    expect(buildPreview('Create a content brief about recovery', ENABLED_ENV)).toBeNull();
+  });
+
   it('builds a preview-only cooking grocery item command without mutating the shopping list', () => {
     const result = buildPreview('Add eggs and milk to my grocery list', PREVIEWS_ENABLED_ENV);
 

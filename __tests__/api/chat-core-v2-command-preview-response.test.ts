@@ -533,4 +533,132 @@ describe('Chat Core v2 command preview API adapter', () => {
     expect(metadataJson).not.toContain('idempotencyKey');
     expect(metadataJson).not.toContain('chat-v2-permissions:84:42');
   });
+
+  it('maps content brief previews into content surface cards without leaking authorization scope', () => {
+    const requestStartedAt = Date.parse('2026-05-24T12:34:56.000Z');
+    const result: ChatCoreV2CommandPreviewRouteResult = {
+      routeVersion: 'chat_core_v2_command_preview_route@1.0.0',
+      capabilityId: 'content.brief_draft_preview',
+      routeGuess: {
+        intent: 'create_action',
+        confidence: 0.8,
+        domains: ['content'],
+        capabilityIds: ['content.brief_draft_preview'],
+      },
+      executionEnabled: false,
+      executionDisabledReason: 'preview_only_rollout',
+      gateVerdict: {
+        ok: true,
+        operation: 'preview',
+        gateVersion: 'chat_core_v2_command_bus_gate@1.0.0',
+        commandStatus: 'previewed',
+        capabilityId: 'content.brief_draft_preview',
+      },
+      command: {
+        commandId: 'cmd_content',
+        commandSchemaVersion: 'content.brief_draft@1.0.0',
+        previewSchemaVersion: 'content_brief_preview_card@1.0.0',
+        responseSchemaVersion: 'chat_response_v2@1.0.0',
+        tenantId: '84',
+        userId: '42',
+        domain: 'content',
+        commandType: 'content.brief_draft',
+        origin: 'chat',
+        payload: {
+          operation: 'draft_brief',
+          topic: 'recovery after hard intervals',
+          objective: 'Prepare a content brief about recovery after hard intervals.',
+          format: 'content',
+          status: 'preview',
+        },
+        basedOn: {
+          entityIds: ['content_brief_draft:cmd_content'],
+          entityVersions: {},
+          contextHash: 'abc123def4567890',
+          createdAt: '2026-05-24T12:34:56.000Z',
+        },
+        preconditions: {
+          requiredEntityVersions: {},
+          requiredPermissionsVersion: 'chat-v2-permissions:84:42:content:v1',
+          invariants: [{
+            type: 'preview_only',
+            description: 'Content brief previews do not create drafts, scripts, or publishable content in this rollout.',
+            check: 'content_brief_preview_only',
+          }],
+        },
+        authorization: {
+          actorUserId: '42',
+          tenantId: '84',
+          actingSurface: 'ios_chat',
+          delegatedScopes: ['content:read'],
+          permissionSnapshotVersion: 'chat-v2-permissions:84:42:content:v1',
+          authTime: '2026-05-24T12:34:56.000Z',
+        },
+        expiresAt: '2026-05-24T12:44:56.000Z',
+        idempotencyKey: 'chat-v2:84:42:content-brief',
+      },
+      response: {
+        schemaVersion: 'chat_response_v2@1.0.0',
+        kind: 'action_preview',
+        locale: 'en',
+        text: 'I would prepare a content brief about recovery after hard intervals. Nothing would be created or published yet.',
+        reasonCodes: ['preview_only_rollout'],
+        cards: [{
+          type: 'content_brief_preview_card',
+          version: 'content_brief_preview_card@1.0.0',
+          title: 'Content brief preview: recovery after hard intervals',
+          summary: 'I would prepare a content brief about recovery after hard intervals. Nothing would be created or published yet.',
+          risk: 'low',
+          sensitivity: 'personal',
+          capabilityId: 'content.brief_draft_preview',
+          commandId: 'cmd_content',
+          sourceEntityIds: ['content_brief_draft:cmd_content'],
+          diff: [{ label: 'Topic', after: 'recovery after hard intervals' }],
+          primaryAction: {
+            id: 'view',
+            kind: 'view',
+            label: 'View',
+            style: 'primary',
+          },
+          secondaryActions: [],
+        }],
+      },
+    };
+
+    const built = buildChatCoreV2CommandPreviewShortcutResponse({
+      result,
+      requestStartedAt,
+    });
+
+    expect(built.response.responseCards).toEqual([{
+      kind: 'openSurfaceCard',
+      surface: 'content',
+      pendingActionId: null,
+      prefill: {
+        kind: 'content_brief_preview',
+        topic: 'recovery after hard intervals',
+        format: 'content',
+        objective: 'Prepare a content brief about recovery after hard intervals.',
+      },
+    }]);
+    expect(built.response.metadata.chatCoreV2.command).toMatchObject({
+      commandSchemaVersion: 'content.brief_draft@1.0.0',
+      domain: 'content',
+      commandType: 'content.brief_draft',
+      payload: {
+        operation: 'draft_brief',
+        topic: 'recovery after hard intervals',
+        status: 'preview',
+      },
+      preconditions: {
+        requiredEntityVersions: {},
+        hasPermissionSnapshot: true,
+      },
+    });
+    const metadataJson = JSON.stringify(built.response.metadata);
+    expect(metadataJson).not.toContain('actorUserId');
+    expect(metadataJson).not.toContain('delegatedScopes');
+    expect(metadataJson).not.toContain('idempotencyKey');
+    expect(metadataJson).not.toContain('chat-v2-permissions:84:42');
+  });
 });

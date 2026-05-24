@@ -64,7 +64,7 @@ export function classifyShadowRoute(text: string): ChatCoreV2ShadowRouteGuess {
   if (/\b(add|buy|create|adicionar|adiciona|acrescentar|acrescenta|comprar|compra|agregar|añadir|anadir|crear)\b.*\b(grocery|groceries|ingredient|ingredients|shopping|compras|ingredientes?|lista\s+de\s+compras|lista\s+de\s+la\s+compra)\b/i.test(normalized)) {
     return { intent: 'create_action', confidence: 0.8, domains: ['cooking'], capabilityIds: ['cooking.grocery_item_preview'] };
   }
-  if (/\b(create|draft|write)\b.*\b(content|brief|script|post)\b/i.test(normalized)) {
+  if (/\b(create|draft|write|prepare)\b.*\b(?:content\s+)?brief(?:ing)?\b|\bbrief(?:ing)?\b.*\b(content|post|script|reel|video|newsletter)\b|\b(criar|cria|preparar|prepara|escrever|escreve)\b.*\bbrief(?:ing)?\s+de\s+conte[uú]do\b|\b(crear|preparar|escribir|redactar)\b.*\bbrief(?:ing)?\s+de\s+contenido\b/i.test(normalized)) {
     return { intent: 'create_action', confidence: 0.8, domains: ['content'], capabilityIds: ['content.brief_draft_preview'] };
   }
   if (/\b(pay|payment|tax|send money|transfer)\b/i.test(normalized)) {

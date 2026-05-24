@@ -73,6 +73,7 @@ const TASK_COMPLETE_CAPABILITY = 'tasks.complete';
 const NOTIFICATION_SNOOZE_CAPABILITY = 'notifications.snooze';
 const DECISION_DISMISS_CAPABILITY = 'decision_center.dismiss';
 const COOKING_GROCERY_ITEM_CAPABILITY = 'cooking.grocery_item_preview';
+const CONTENT_BRIEF_DRAFT_CAPABILITY = 'content.brief_draft_preview';
 const COMMAND_TTL_MS = 10 * 60 * 1000;
 const NOTIFICATION_SNOOZE_DEFAULT_MINUTES = 60;
 
@@ -96,6 +97,11 @@ export function tryBuildChatCoreV2CommandPreviewRoute(
   if (routeGuess.domains[0] === 'decision_center') {
     if (routeGuess.intent === 'modify_action' && routeGuess.capabilityIds.includes(DECISION_DISMISS_CAPABILITY)) {
       return tryBuildDecisionDismissPreview(input, routeGuess);
+    }
+  }
+  if (routeGuess.domains[0] === 'content') {
+    if (routeGuess.intent === 'create_action' && routeGuess.capabilityIds.includes(CONTENT_BRIEF_DRAFT_CAPABILITY)) {
+      return tryBuildContentBriefDraftPreview(input, routeGuess);
     }
   }
   if (routeGuess.domains[0] === 'cooking') {
@@ -302,6 +308,32 @@ function tryBuildCookingGroceryItemPreview(
     routeGuess,
     capability,
     capabilityId: COOKING_GROCERY_ITEM_CAPABILITY,
+    command,
+    now,
+  });
+}
+
+function tryBuildContentBriefDraftPreview(
+  input: BuildChatCoreV2CommandPreviewRouteInput,
+  routeGuess: ChatCoreV2ShadowRouteGuess,
+): ChatCoreV2CommandPreviewRouteResult | null {
+  const capability = getEnabledCapability(CONTENT_BRIEF_DRAFT_CAPABILITY, input);
+  if (!capability) return null;
+
+  const brief = extractContentBriefDraft(input.normalizedText);
+  if (!brief) return null;
+
+  const now = input.now ?? new Date();
+  const command = buildContentBriefDraftCommandEnvelope({
+    input,
+    now,
+    brief,
+  });
+  return buildCommandPreviewResult({
+    input,
+    routeGuess,
+    capability,
+    capabilityId: CONTENT_BRIEF_DRAFT_CAPABILITY,
     command,
     now,
   });
@@ -721,6 +753,69 @@ function buildCookingGroceryItemCommandEnvelope(input: {
   };
 }
 
+function buildContentBriefDraftCommandEnvelope(input: {
+  input: BuildChatCoreV2CommandPreviewRouteInput;
+  now: Date;
+  brief: ContentBriefDraft;
+}): AICommandEnvelope<Record<string, unknown>> {
+  const createdAt = input.now.toISOString();
+  const payload = {
+    operation: 'draft_brief',
+    topic: input.brief.topic,
+    objective: input.brief.objective,
+    format: input.brief.format,
+    status: 'preview',
+  };
+  const commandId = `cmd_${hashStable({
+    tenantId: input.input.tenantId,
+    userId: input.input.userId,
+    messageId: input.input.messageId,
+    payload,
+  })}`;
+
+  return {
+    commandId,
+    commandSchemaVersion: 'content.brief_draft@1.0.0',
+    previewSchemaVersion: 'content_brief_preview_card@1.0.0',
+    responseSchemaVersion: 'chat_response_v2@1.0.0',
+    tenantId: String(input.input.tenantId),
+    userId: String(input.input.userId),
+    domain: 'content',
+    commandType: 'content.brief_draft',
+    origin: 'chat',
+    payload,
+    basedOn: {
+      entityIds: [`content_brief_draft:${commandId}`],
+      entityVersions: {},
+      contextHash: hashStable({
+        routeVersion: CHAT_CORE_V2_COMMAND_PREVIEW_ROUTE_VERSION,
+        textHash: hashStable({ text: input.input.normalizedText }),
+        payload,
+      }),
+      createdAt,
+    },
+    preconditions: {
+      requiredEntityVersions: {},
+      requiredPermissionsVersion: `chat-v2-permissions:${input.input.tenantId}:${input.input.userId}:content:v1`,
+      invariants: [{
+        type: 'preview_only',
+        description: 'Content brief previews do not create drafts, scripts, or publishable content in this rollout.',
+        check: 'content_brief_preview_only',
+      }],
+    },
+    authorization: {
+      actorUserId: String(input.input.userId),
+      tenantId: String(input.input.tenantId),
+      actingSurface: 'ios_chat',
+      delegatedScopes: ['content:read'],
+      permissionSnapshotVersion: `chat-v2-permissions:${input.input.tenantId}:${input.input.userId}:content:v1`,
+      authTime: createdAt,
+    },
+    expiresAt: new Date(input.now.getTime() + COMMAND_TTL_MS).toISOString(),
+    idempotencyKey: `chat-v2:${input.input.tenantId}:${input.input.userId}:content.brief_draft:${commandId}`,
+  };
+}
+
 function asPreviewOnlyCapability(capability: CapabilityDefinition): CapabilityDefinition {
   const support: CapabilitySupportMatrix = {
     ...capability.support,
@@ -738,6 +833,13 @@ function buildPreviewCopy(
   payload: Record<string, unknown>,
   locale: string | null | undefined,
 ): { title: string; summary: string; diff: Array<{ label: string; before?: string; after: string }> } {
+  if (capabilityId === CONTENT_BRIEF_DRAFT_CAPABILITY) {
+    return {
+      title: contentBriefPreviewTitle(payload, locale),
+      summary: contentBriefPreviewSummary(payload, locale),
+      diff: contentBriefPreviewDiff(payload, locale),
+    };
+  }
   if (capabilityId === COOKING_GROCERY_ITEM_CAPABILITY) {
     return {
       title: cookingGroceryPreviewTitle(payload, locale),
@@ -764,6 +866,56 @@ function buildPreviewCopy(
     summary: taskPreviewSummary(payload, locale),
     diff: taskPreviewDiff(payload, locale),
   };
+}
+
+function contentBriefPreviewTitle(payload: Record<string, unknown>, locale: string | null | undefined): string {
+  const normalized = normalizeChatCoreV2Locale(locale);
+  const topic = contentBriefTopic(payload);
+  if (normalized === 'pt-BR') return `Prévia de briefing de conteúdo: ${topic}`;
+  if (normalized === 'pt-PT') return `Pré-visualização de briefing de conteúdo: ${topic}`;
+  if (normalized === 'es') return `Vista previa de brief de contenido: ${topic}`;
+  return `Content brief preview: ${topic}`;
+}
+
+function contentBriefPreviewSummary(payload: Record<string, unknown>, locale: string | null | undefined): string {
+  const normalized = normalizeChatCoreV2Locale(locale);
+  const topic = contentBriefTopic(payload);
+  if (normalized === 'pt-BR') return `Eu prepararia um briefing de conteúdo sobre ${topic}. Nada seria criado ou publicado ainda.`;
+  if (normalized === 'pt-PT') return `Eu prepararia um briefing de conteúdo sobre ${topic}. Nada seria criado ou publicado ainda.`;
+  if (normalized === 'es') return `Prepararía un brief de contenido sobre ${topic}. Todavía no se crearía ni publicaría nada.`;
+  return `I would prepare a content brief about ${topic}. Nothing would be created or published yet.`;
+}
+
+function contentBriefPreviewDiff(payload: Record<string, unknown>, locale: string | null | undefined): Array<{ label: string; before?: string; after: string }> {
+  const normalized = normalizeChatCoreV2Locale(locale);
+  const labels = normalized === 'pt-BR'
+    ? { topic: 'Tema', format: 'Formato', status: 'Estado', preview: 'Prévia' }
+    : normalized === 'pt-PT'
+      ? { topic: 'Tema', format: 'Formato', status: 'Estado', preview: 'Pré-visualização' }
+      : normalized === 'es'
+        ? { topic: 'Tema', format: 'Formato', status: 'Estado', preview: 'Vista previa' }
+        : { topic: 'Topic', format: 'Format', status: 'Status', preview: 'Preview' };
+  return [
+    { label: labels.topic, after: contentBriefTopic(payload) },
+    { label: labels.format, after: contentBriefFormatLabel(payload, locale) },
+    { label: labels.status, after: labels.preview },
+  ];
+}
+
+function contentBriefTopic(payload: Record<string, unknown>): string {
+  const topic = String(payload.topic ?? '').trim();
+  return topic || 'Untitled';
+}
+
+function contentBriefFormatLabel(payload: Record<string, unknown>, locale: string | null | undefined): string {
+  const format = String(payload.format ?? '').trim();
+  const normalized = normalizeChatCoreV2Locale(locale);
+  if (format === 'reel') return 'Reel';
+  if (format === 'short_video') return normalized === 'es' ? 'Video corto' : normalized.startsWith('pt') ? 'Vídeo curto' : 'Short video';
+  if (format === 'newsletter') return 'Newsletter';
+  if (format === 'youtube') return 'YouTube';
+  if (format === 'post') return 'Post';
+  return normalized === 'es' ? 'Contenido' : normalized.startsWith('pt') ? 'Conteúdo' : 'Content';
 }
 
 function cookingGroceryPreviewTitle(payload: Record<string, unknown>, locale: string | null | undefined): string {
@@ -1188,6 +1340,52 @@ function decisionVersionForItem(item: DecisionApiItem): string {
     expiresAt: item.expiresAt,
     snoozedUntil: item.snoozedUntil,
   });
+}
+
+interface ContentBriefDraft {
+  topic: string;
+  objective: string;
+  format: 'content' | 'post' | 'reel' | 'short_video' | 'newsletter' | 'youtube';
+}
+
+function extractContentBriefDraft(text: string): ContentBriefDraft | null {
+  const patterns = [
+    /\b(?:create|draft|write|prepare)\s+(?:a\s+)?(?:content\s+)?brief(?:ing)?(?:\s+draft)?\s+(?:for|about|on)\s+(.+?)(?=$|[.!?])/i,
+    /\b(?:create|draft|write|prepare)\s+(?:a\s+)?brief(?:ing)?\s+(?:for|about|on)\s+(?:a\s+)?(?:content\s+|post\s+|script\s+|reel\s+|video\s+|newsletter\s+)?(.+?)(?=$|[.!?])/i,
+    /\b(?:criar|cria|preparar|prepara|escrever|escreve)\s+(?:um\s+|uma\s+)?brief(?:ing)?\s+de\s+conte[uú]do\s+(?:para|sobre|acerca\s+de)\s+(.+?)(?=$|[.!?])/i,
+    /\b(?:crear|preparar|escribir|redactar)\s+(?:un\s+|una\s+)?brief(?:ing)?\s+de\s+contenido\s+(?:para|sobre|acerca\s+de)\s+(.+?)(?=$|[.!?])/i,
+  ];
+  for (const pattern of patterns) {
+    const match = pattern.exec(text);
+    const topic = cleanupContentBriefTopic(match?.[1]);
+    if (topic) {
+      return {
+        topic,
+        objective: `Prepare a content brief about ${topic}.`,
+        format: inferContentBriefFormat(text),
+      };
+    }
+  }
+  return null;
+}
+
+function cleanupContentBriefTopic(value: unknown): string | null {
+  const cleaned = String(value ?? '')
+    .replace(/^["“]|["”]$/g, '')
+    .replace(/\b(?:content\s+)?brief(?:ing)?(?:\s+draft)?\b/gi, ' ')
+    .replace(/\b(?:conte[uú]do|contenido)\b/gi, ' ')
+    .replace(/\s{2,}/g, ' ')
+    .trim();
+  if (!cleaned || /^(?:it|this|that|algo|isso|isto|eso|aquilo|something|content)$/i.test(cleaned)) return null;
+  return cleaned.slice(0, 160);
+}
+
+function inferContentBriefFormat(text: string): ContentBriefDraft['format'] {
+  if (/\b(reel|shorts?|short\s+video|vídeo\s+curto|video\s+corto)\b/i.test(text)) return 'short_video';
+  if (/\bnewsletter\b/i.test(text)) return 'newsletter';
+  if (/\b(youtube|yt)\b/i.test(text)) return 'youtube';
+  if (/\b(post|publica[cç][aã]o|publicaci[oó]n)\b/i.test(text)) return 'post';
+  return 'content';
 }
 
 function extractCookingGroceryItems(text: string): string[] {
