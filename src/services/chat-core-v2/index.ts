@@ -5,6 +5,7 @@ export * from './batch-policy';
 export * from './capability-registry';
 export * from './command-bus';
 export * from './command-events';
+export * from './deterministic-read-route';
 export * from './entity-resolution';
 export * from './evidence-policy';
 export * from './fallback-policy';

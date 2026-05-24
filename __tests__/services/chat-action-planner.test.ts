@@ -48,7 +48,7 @@ import {
   parseTier1ClassifierJson,
   shouldRunActionPlannerBeforeReadOnlyFastPaths,
   tryHandleChatActionPlan,
-} from '../../src/services/chat-action-planner';
+} from '../../src/services/chat';
 import {
   cancelPendingChatActionsForAccountSwitch,
   expireStalePendingChatActionsForJob,
@@ -65,7 +65,7 @@ import {
   reapZombieChatActionRuns,
   updateChatActionRun,
 } from '../../src/services/chat-action-run-store';
-import { getChatActionRegistry } from '../../src/services/chat-action-registry';
+import { getChatActionRegistry } from '../../src/services/chat/registry';
 import { parseNaturalLanguageCalendarEvent } from '../../src/services/calendar-natural-language-parser';
 import { buildContentAgencyPackage, ensureContentAgencyTables, persistContentAgencyArtifact } from '../../src/services/content-agency';
 import { getTopics } from '../../src/services/content-scheduler';

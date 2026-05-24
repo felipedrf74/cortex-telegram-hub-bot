@@ -11,12 +11,12 @@ import {
   buildDeterministicChatActionPlan,
   buildLlmPlannerPrompt,
   type ChatPlannerInput,
-} from '../../src/services/chat-action-planner';
+} from '../../src/services/chat';
 import {
   getChatActionRegistry,
   selectRegistrySubsetForMessage,
   type ChatActionDefinition,
-} from '../../src/services/chat-action-registry';
+} from '../../src/services/chat/registry';
 import { buildLlmSafePromptSlice } from '../../src/services/build-llm-safe-prompt-slice';
 import { buildRegistryDrivenEvalScenarios } from '../../src/services/registry-driven-eval-scenarios';
 import { scoreRegistryScenariosBatch } from '../../src/services/registry-real-eval-scoring';

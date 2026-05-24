@@ -405,6 +405,7 @@ import { authMiddleware } from '../../src/api/auth-middleware';
 import { upsertPendingChatAction } from '../../src/services/chat-action-state';
 import { resetPendingChatConfirmationsForTests } from '../../src/services/chat-pending-confirmations';
 import { signChatConfirmationToken } from '../../src/services/chat-confirmation-token';
+import { upsertTask } from '../../src/services/task-store/unified-task-store';
 
 function applyMigrations(db: Database.Database): void {
   db.exec(`CREATE TABLE IF NOT EXISTS _migrations (id INTEGER PRIMARY KEY, filename TEXT UNIQUE, applied_at TEXT DEFAULT (datetime('now')))`);
@@ -2741,6 +2742,80 @@ describe('Chat API routes', () => {
     expect(messageRes.body.routeMethod).toBe('finance-state-shortcut');
     expect(messageRes.body.text).toContain('2026-04');
     expect(mockHandleSecretary).not.toHaveBeenCalled();
+  });
+
+  it('keeps Chat Core v2 deterministic task reads available after the AI usage limit is reached when explicitly enabled', async () => {
+    const previousGlobal = process.env.CHAT_CORE_V2_ENABLED;
+    const previousReads = process.env.CHAT_CORE_V2_READS_ENABLED;
+    process.env.CHAT_CORE_V2_ENABLED = 'true';
+    process.env.CHAT_CORE_V2_READS_ENABLED = 'true';
+    try {
+      mockIsUserOverDailyCap.mockReturnValue({
+        over: true,
+        spentUsd: 0.06,
+        capUsd: 0.04,
+        plan: 'pro',
+        resetAt: '2026-04-15T00:00:00.000Z',
+        limitUsd: 0.04,
+        usedUsd: 0.06,
+        remainingUsd: 0,
+        planDailyLimitUsd: 0.04,
+        includedRemainingUsd: 0,
+        nexusPointsBalance: 0,
+        nexusPointsRemainingUsd: 0,
+        pointsPurchaseAvailable: true,
+      });
+      upsertTask(7001, {
+        provider: 'nexus',
+        externalId: 'task-core-v2-1',
+        title: 'Review proposal',
+        status: 'pending',
+        priority: 3,
+        dueDate: '2026-04-15',
+        dueIsDatetime: false,
+        projectName: 'Inbox',
+      });
+
+      const messageRes = await dispatch('POST', '/message', 7001, {
+        text: 'What tasks do I have today?',
+      });
+
+      expect(messageRes.statusCode, JSON.stringify(messageRes.body)).toBe(200);
+      expect(messageRes.body.routeMethod).toBe('chat-core-v2-deterministic-read');
+      expect(messageRes.body.domain).toBe('secretary');
+      expect(messageRes.body.text).toContain('You have 1 open task.');
+      expect(messageRes.body.text).toContain('Review proposal');
+      expect(messageRes.body.metadata).toMatchObject({
+        type: 'chat_core_v2_deterministic_read',
+        chatCoreV2: {
+          capabilityId: 'tasks.today_summary',
+          response: {
+            schemaVersion: 'chat_response_v2@1.0.0',
+            kind: 'message',
+          },
+          readModel: {
+            capabilityId: 'tasks.today_summary',
+            domain: 'tasks',
+            data: {
+              pendingCount: 1,
+            },
+          },
+        },
+      });
+      expect(mockRouteMessage).not.toHaveBeenCalled();
+      expect(mockHandleSecretary).not.toHaveBeenCalled();
+    } finally {
+      if (previousGlobal === undefined) {
+        delete process.env.CHAT_CORE_V2_ENABLED;
+      } else {
+        process.env.CHAT_CORE_V2_ENABLED = previousGlobal;
+      }
+      if (previousReads === undefined) {
+        delete process.env.CHAT_CORE_V2_READS_ENABLED;
+      } else {
+        process.env.CHAT_CORE_V2_READS_ENABLED = previousReads;
+      }
+    }
   });
 
   it('returns the accountant handoff state from the deterministic finance shortcut', async () => {

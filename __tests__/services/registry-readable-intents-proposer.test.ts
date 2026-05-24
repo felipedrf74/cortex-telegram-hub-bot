@@ -8,7 +8,7 @@ import {
   proposeReadableIntentsExtensions,
   formatReadableIntentsProposalsMarkdown,
 } from '../../src/services/registry-readable-intents-proposer';
-import { getChatActionRegistry } from '../../src/services/chat-action-registry';
+import { getChatActionRegistry } from '../../src/services/chat/registry';
 
 let db: Database.Database;
 

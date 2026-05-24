@@ -43,10 +43,10 @@ export function classifyShadowRoute(text: string): ChatCoreV2ShadowRouteGuess {
     };
   }
 
-  if (/\b(create|add|new)\b.*\b(task|todo|to-do)\b|\b(task|todo|to-do)\b.*\b(tomorrow|today|later)\b/i.test(normalized)) {
+  if (/\b(create|add|new)\b.*\b(task|todo|to-do)\b|\b(criar|cria|adicionar|adiciona|nova?)\b.*\btarefas?\b|\b(task|todo|to-do)\b.*\b(tomorrow|today|later)\b/i.test(normalized)) {
     return { intent: 'create_action', confidence: 0.88, domains: ['tasks'], capabilityIds: ['tasks.create'] };
   }
-  if (/\b(complete|done|finish|mark)\b.*\b(task|todo|to-do)\b/i.test(normalized)) {
+  if (/\b(complete|done|finish|mark)\b.*\b(task|todo|to-do)\b|\b(concluir|completar|terminar|marcar)\b.*\btarefas?\b/i.test(normalized)) {
     return { intent: 'modify_action', confidence: 0.84, domains: ['tasks'], capabilityIds: ['tasks.complete'] };
   }
   if (/\b(snooze|pause)\b.*\b(notification|alert|reminder)\b/i.test(normalized)) {
@@ -96,7 +96,7 @@ export function classifyShadowRoute(text: string): ChatCoreV2ShadowRouteGuess {
 function guessDomains(text: string): ChatCoreV2Domain[] {
   const domains: ChatCoreV2Domain[] = [];
   if (/\b(agenda|calendar|meeting|schedule|secretary)\b/i.test(text)) domains.push('secretary');
-  if (/\b(task|tasks|todo|to-do)\b/i.test(text)) domains.push('tasks');
+  if (/\b(task|tasks|todo|to-do|tarefas?)\b/i.test(text)) domains.push('tasks');
   if (/\b(training|workout|run|session)\b/i.test(text)) domains.push('training');
   if (/\b(content|script|post|pipeline)\b/i.test(text)) domains.push('content');
   if (/\b(cooking|meal|grocery|groceries|ingredient)\b/i.test(text)) domains.push('cooking');

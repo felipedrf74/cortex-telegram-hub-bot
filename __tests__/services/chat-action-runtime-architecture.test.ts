@@ -13,7 +13,7 @@ import {
   getSkillMetadata,
   SKILL_METADATA,
   type ChatActionSkill,
-} from '../../src/services/chat-action-registry';
+} from '../../src/services/chat/registry';
 import {
   getChatSkillCapability,
   getChatSkillCapabilityRegistry,

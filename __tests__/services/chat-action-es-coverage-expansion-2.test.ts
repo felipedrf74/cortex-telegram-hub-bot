@@ -36,7 +36,7 @@ vi.mock('../../src/services/chat-action-state', () => ({
 import {
   buildDeterministicChatActionPlan,
   type ChatPlannerInput,
-} from '../../src/services/chat-action-planner';
+} from '../../src/services/chat';
 
 const FROZEN_NOW = '2026-05-16T12:00:00+02:00';
 

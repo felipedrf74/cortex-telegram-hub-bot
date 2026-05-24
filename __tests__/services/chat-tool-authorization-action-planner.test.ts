@@ -20,7 +20,7 @@ import {
   executeChatActionPlan,
   type ChatActionPlan,
   type ChatPlannerInput,
-} from '../../src/services/chat-action-planner';
+} from '../../src/services/chat';
 import {
   authorizeChatToolCall,
   getCurrentChatToolAuthorizationContext,

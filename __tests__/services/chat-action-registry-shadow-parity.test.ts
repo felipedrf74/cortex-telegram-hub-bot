@@ -36,8 +36,8 @@ vi.mock('../../src/services/chat-action-state', () => ({
 import {
   buildDeterministicChatActionPlan,
   type ChatPlannerInput,
-} from '../../src/services/chat-action-planner';
-import { getChatActionRegistry } from '../../src/services/chat-action-registry';
+} from '../../src/services/chat';
+import { getChatActionRegistry } from '../../src/services/chat/registry';
 import { buildFixturesFromRegistry } from '../lib/registry-fixture-builder';
 
 const FROZEN_NOW = '2026-05-14T12:00:00+01:00';

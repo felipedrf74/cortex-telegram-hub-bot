@@ -144,6 +144,11 @@ function scopedFlagEnabledByDefault(env: RuntimeEnv, key: string, scope?: Runtim
   return true;
 }
 
+function scopedFlagEnabledByExplicitOptIn(env: RuntimeEnv, key: string, scope?: RuntimeFlagScope): boolean {
+  const raw = scopedEnvValue(env, key, scope)?.trim().toLowerCase();
+  return raw === 'true' || raw === 'on' || raw === '1' || raw === 'enabled';
+}
+
 export function isHomeDayDialV1Enabled(env: RuntimeEnv = process.env, scope?: RuntimeFlagScope): boolean {
   return scopedFlagEnabledByDefault(env, 'HOME_DAY_DIAL_V1_ENABLED', scope);
 }
@@ -208,4 +213,18 @@ export function isChatBilingualEvalGateEnabled(env: RuntimeEnv = process.env, sc
 export function isChatCoreV2ShadowRouteHookEnabled(env: RuntimeEnv = process.env, scope?: RuntimeFlagScope): boolean {
   const raw = scopedEnvValue(env, 'CHAT_CORE_V2_SHADOW_ROUTE_HOOK_ENABLED', scope)?.trim().toLowerCase();
   return raw === 'true' || raw === 'on' || raw === '1' || raw === 'shadow';
+}
+
+export function isChatCoreV2Enabled(env: RuntimeEnv = process.env, scope?: RuntimeFlagScope): boolean {
+  return scopedFlagEnabledByExplicitOptIn(env, 'CHAT_CORE_V2_ENABLED', scope);
+}
+
+export function isChatCoreV2RuntimeFlagEnabled(
+  flagKey: string,
+  env: RuntimeEnv = process.env,
+  scope?: RuntimeFlagScope,
+): boolean {
+  const normalized = flagKey.trim().toUpperCase();
+  if (!/^CHAT_CORE_V2_[0-9A-Z_]+$/.test(normalized)) return false;
+  return scopedFlagEnabledByExplicitOptIn(env, normalized, scope);
 }
