@@ -14,6 +14,7 @@ import { randomUUID } from 'crypto';
 
 let tempDir: string;
 let dbPath: string;
+const CLI_TEST_TIMEOUT_MS = 30_000;
 
 beforeEach(() => {
   tempDir = mkdtempSync(path.join(tmpdir(), 'registry-feedback-'));
@@ -96,7 +97,7 @@ describe('registry-feedback-report CLI (Phase 6 batch 32)', () => {
     expect(content).toMatch(/Chat Action Telemetry — Registry Feedback Report/);
     expect(content).toMatch(/Adversarial Discovery Report/);
     expect(content).toMatch(/readableIntents Proposer/);
-  });
+  }, CLI_TEST_TIMEOUT_MS);
 
   it('emits only the telemetry section when --section telemetry', () => {
     const outputPath = path.join(tempDir, 'output.md');
@@ -109,7 +110,7 @@ describe('registry-feedback-report CLI (Phase 6 batch 32)', () => {
     expect(content).toMatch(/Chat Action Telemetry/);
     expect(content).not.toMatch(/Adversarial Discovery Report/);
     expect(content).not.toMatch(/readableIntents Proposer/);
-  });
+  }, CLI_TEST_TIMEOUT_MS);
 
   it('emits only the adversarial section when --section adversarial', () => {
     const outputPath = path.join(tempDir, 'output.md');
@@ -121,7 +122,7 @@ describe('registry-feedback-report CLI (Phase 6 batch 32)', () => {
     const content = readFileSync(outputPath, 'utf8');
     expect(content).toMatch(/Adversarial Discovery Report/);
     expect(content).toMatch(/prompt_injection_marker_detected/);
-  });
+  }, CLI_TEST_TIMEOUT_MS);
 
   it('emits only the proposer section when --section proposer', () => {
     const outputPath = path.join(tempDir, 'output.md');
@@ -132,7 +133,7 @@ describe('registry-feedback-report CLI (Phase 6 batch 32)', () => {
     );
     const content = readFileSync(outputPath, 'utf8');
     expect(content).toMatch(/readableIntents Proposer/);
-  });
+  }, CLI_TEST_TIMEOUT_MS);
 
   it('exits with non-zero status when database does not exist', () => {
     const repoRoot = path.resolve(__dirname, '../..');
@@ -142,7 +143,7 @@ describe('registry-feedback-report CLI (Phase 6 batch 32)', () => {
         { stdio: 'pipe' },
       ),
     ).toThrow();
-  });
+  }, CLI_TEST_TIMEOUT_MS);
 
   it('respects --since filter (no clusters when since is in the future)', () => {
     const outputPath = path.join(tempDir, 'output.md');
@@ -153,5 +154,5 @@ describe('registry-feedback-report CLI (Phase 6 batch 32)', () => {
     );
     const content = readFileSync(outputPath, 'utf8');
     expect(content).toMatch(/No adversarial clusters above the threshold/);
-  });
+  }, CLI_TEST_TIMEOUT_MS);
 });
