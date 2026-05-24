@@ -28,6 +28,7 @@ import { actionToStepType, buildStepIdempotencyKey, pickExpectedFields } from '.
 import { isChatEscalationReviewerEnabled, isChatLlmTier1Enabled, isChatLlmTier2Enabled } from '../../runtime-flags';
 import type { ChatActionPlan, ChatPlannerInput, ChatPlanStep } from '../types';
 import { logger } from '../../../utils/logger';
+import { sanitizePlannerArgs } from './arg-sanitizer';
 
 const CHAT_LLM_TIER2_GEMINI_MODEL = 'gemini-2.5-flash';
 const CHAT_LLM_TIER2_OPENAI_FALLBACK_MODEL = 'gpt-5.4-nano';
@@ -468,82 +469,6 @@ async function completeEscalationReviewerWithCascade(
   return { text, provider: 'openai', model: CHAT_LLM_TIER3_OPENAI_FALLBACK_MODEL };
 }
 
-
-const FORBIDDEN_MODEL_ARG_KEYS = new Set([
-  'userid',
-  'uid',
-  'user',
-  'tenantid',
-  'tenant',
-  'accountid',
-  'account',
-  'owneruserid',
-  'ownerid',
-  'owner',
-  'proto',
-  'prototype',
-  'constructor',
-  'customerid',
-  'subjectid',
-  'principalid',
-  'memberid',
-  'actorid',
-  'providertoken',
-  'provideraccesstoken',
-  'providerrefreshtoken',
-  'accesstoken',
-  'refreshtoken',
-  'oauthtoken',
-  'oauthcredentials',
-  'oauthcredential',
-  'clientsecret',
-  'apikey',
-  'rawsystemprompt',
-  'systemprompt',
-  'developerprompt',
-  'internalprompt',
-  'systeminstructions',
-  'reasoning',
-  'internalreasoning',
-  'debug',
-  'debugcard',
-  'debugcards',
-  'internaldebug',
-  'internaldebugcard',
-  'nexusanswer',
-  'structuredresponse',
-  'rawmodeloutput',
-  'modeltrace',
-  'tooltrace',
-]);
-
-function sanitizePlannerArgs(args: Record<string, unknown>): Record<string, unknown> {
-  const sanitized = sanitizePlannerArgValue(args);
-  return isRecord(sanitized) ? sanitized : {};
-}
-
-function sanitizePlannerArgValue(value: unknown): unknown {
-  if (Array.isArray(value)) {
-    return value.map((item) => sanitizePlannerArgValue(item));
-  }
-  if (typeof value === 'string') return redactSensitivePromptText(value);
-  if (!isRecord(value)) return value;
-
-  const sanitized = Object.create(null) as Record<string, unknown>;
-  for (const [key, child] of Object.entries(value)) {
-    if (isForbiddenModelArgKey(key)) continue;
-    sanitized[key] = sanitizePlannerArgValue(child);
-  }
-  return sanitized;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return value != null && typeof value === 'object' && !Array.isArray(value);
-}
-
-function isForbiddenModelArgKey(key: string): boolean {
-  return FORBIDDEN_MODEL_ARG_KEYS.has(key.replace(/[^a-z0-9]/gi, '').toLowerCase());
-}
 
 function missingRequiredFieldsForStep(step: ChatPlanStep): string[] {
   const definition = findChatActionDefinition(step.skill, step.action);
