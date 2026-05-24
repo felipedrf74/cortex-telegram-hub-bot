@@ -27,7 +27,7 @@ import { isCronJobEnabled } from '../skills/skill-manager';
 import { CronExpressionParser } from 'cron-parser';
 import { flushQueue, getPendingCount } from './invoice-queue';
 import { setLastCoachState } from '../domains/domain-handler';
-import { setLastActiveDomain } from '../bot';
+import { setLastActiveDomain } from '../api/routes/chat-message-context';
 import { addToConversation } from '../state/conversation';
 import { processAllChannelScopes, seedDefaultChannels } from './channel-learner';
 import { generateAndStoreTopicCandidates, generateWeeklyPackage } from './content-workflow';
