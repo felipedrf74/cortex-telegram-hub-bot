@@ -7,7 +7,7 @@ import {
 import {
   getChatActionRegistry,
   type ChatActionDefinition,
-} from '../../src/services/chat-action-registry';
+} from '../../src/services/chat/registry';
 
 function syntheticRegistry(entries: Array<Partial<ChatActionDefinition> & { examples?: unknown[] }>): ChatActionDefinition[] {
   return entries.map((overrides) => ({

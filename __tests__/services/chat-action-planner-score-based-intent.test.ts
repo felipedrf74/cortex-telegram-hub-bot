@@ -65,7 +65,7 @@ import {
   BROAD_SKILL_SLOT_COMPLETENESS_BONUS,
   buildChatActionPlan,
   type ChatPlannerInput,
-} from '../../src/services/chat-action-planner';
+} from '../../src/services/chat';
 
 const NOW = '2026-05-17T10:00:00+01:00';
 

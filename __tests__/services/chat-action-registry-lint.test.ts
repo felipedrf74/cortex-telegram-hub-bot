@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
   CHAT_ACTION_REGISTRY,
   getChatActionRegistry,
-} from '../../src/services/chat-action-registry';
+} from '../../src/services/chat/registry';
 
 const EMAIL_PATTERN = /[\w.+-]+@[\w-]+\.[a-z]{2,}/i;
 const PHONE_PATTERN = /\+?\d[\d\s().-]{7,}/;

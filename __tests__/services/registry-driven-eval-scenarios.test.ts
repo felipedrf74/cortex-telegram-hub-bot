@@ -21,7 +21,7 @@ import {
 } from '../../src/services/registry-driven-eval-scenarios';
 import {
   getChatActionRegistry,
-} from '../../src/services/chat-action-registry';
+} from '../../src/services/chat/registry';
 import {
   runChatEvaluationSuite,
 } from '../../src/services/chat-evaluation-harness';

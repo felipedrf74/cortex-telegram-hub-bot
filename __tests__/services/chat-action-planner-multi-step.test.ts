@@ -33,7 +33,7 @@ vi.mock('../../src/services/database', () => ({
   findUnexpectedMigrationPrefixCollisions: vi.fn(() => []),
 }));
 
-import { buildChatActionPlan, executeChatActionPlan } from '../../src/services/chat-action-planner';
+import { buildChatActionPlan, executeChatActionPlan } from '../../src/services/chat';
 import type { ChatActionPlan, ChatPlanStep } from '../../src/services/chat/types';
 
 const baseInput = {

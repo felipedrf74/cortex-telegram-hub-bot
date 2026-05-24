@@ -11,6 +11,8 @@ The response layer decides how to explain it.
 
 This first foundation PR is intentionally behavior-neutral. It adds executable contracts and metadata that later PRs can wire into routing, context building, command previews, confirmations, evals, and iOS cards.
 
+Subsequent stacked slices have begun wiring the contracts behind default-off rollout flags. The first live slice is `tasks.today_summary`: a deterministic, no-model task summary that only runs when both `CHAT_CORE_V2_ENABLED` and `CHAT_CORE_V2_READS_ENABLED` are explicitly enabled for the environment, tenant, or user. It does not execute writes, and it returns `null` for write-like or multi-domain requests so the existing chat path stays authoritative.
+
 ## MVP Rollout Shape
 
 - All product domains get deterministic read support first.
@@ -29,7 +31,7 @@ This first foundation PR is intentionally behavior-neutral. It adds executable c
 
 ## Non-Goals In This PR
 
-- No live route changes.
+- No broad live route changes outside the explicitly flag-gated deterministic read slice.
 - No command execution changes.
 - No old chat fallback changes.
 - No provider calls.
