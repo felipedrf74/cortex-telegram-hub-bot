@@ -60,8 +60,6 @@ import {
   rememberRecentChatEntity,
   resolveRecentChatEntity,
   upsertPendingChatAction,
-  type ChatActionRiskClass,
-  type ChatActionTelemetry,
   type ChatSlotProvenance,
 } from '../chat-action-state';
 import { getChatStepExecutor } from './executor/dispatch-table';
@@ -181,6 +179,20 @@ import {
   unsupportedChatExecutorReason,
   verifiedPendingCopy,
 } from './executor/response-copy';
+import {
+  calibratePlanConfidence,
+  confirmationVariant,
+  intentClassForPlan,
+  normalizeProvider,
+  stepRequiresConfirmation,
+} from './executor/plan-utils';
+import {
+  finalizeTelemetryForResponse,
+  recordShadowTelemetry,
+  safeTelemetry,
+  summarizeSlotProvenance,
+  thresholdForSteps,
+} from './executor/telemetry';
 
 export { buildLlmPlannerPrompt, buildTier1ClassifierPrompt, parseLlmPlannerJson, parseTier1ClassifierJson } from './planner/tiers';
 
@@ -2647,38 +2659,6 @@ function buildResponseCardsFromMetadata(metadata: Record<string, unknown>): Chat
   return cards.length > 0 ? cards : undefined;
 }
 
-function recordShadowTelemetry(plan: ChatActionPlan, input: ChatPlannerInput, routeStartedAtMs: number): void {
-  if (input.persistRuns === false) return;
-  const firstStep = plan.steps[0];
-  try {
-    recordChatActionTelemetry({
-      userId: input.userId,
-      tenantId: input.tenantId,
-      conversationId: input.conversationId,
-      messageId: input.messageId,
-      planner: plan.planner,
-      status: 'shadow_only',
-      skill: firstStep?.skill ?? null,
-      action: firstStep?.action ?? null,
-      telemetry: {
-        ...(plan.telemetry ?? {
-          routeTier: 'tier0_deterministic',
-          candidates: firstStep ? [{ skill: firstStep.skill, action: firstStep.action, score: plan.effectiveConfidence ?? plan.confidence }] : [],
-          calibratedScore: plan.effectiveConfidence ?? plan.confidence,
-          threshold: thresholdForSteps(plan.steps),
-        }),
-        latencyMs: Date.now() - routeStartedAtMs,
-        outcome: 'shadow_only',
-        predictedActionHash: firstStep?.idempotencyKey,
-        slotProvenanceSummary: summarizeSlotProvenance(plan),
-      },
-      nowIso: input.nowIso,
-    });
-  } catch (err) {
-    logger.debug({ err, userId: input.userId, tenantId: input.tenantId }, 'chat action shadow telemetry skipped');
-  }
-}
-
 function requeuePartialSuccessPendingParents(
   input: ChatPlannerInput,
   plan: ChatActionPlan,
@@ -2709,208 +2689,7 @@ function requeuePartialSuccessPendingParents(
   }
 }
 
-function safeTelemetry(telemetry: ChatActionTelemetry): Record<string, unknown> {
-  return {
-    routeTier: telemetry.routeTier,
-    candidates: telemetry.candidates.slice(0, 4),
-    calibratedScore: telemetry.calibratedScore,
-    threshold: telemetry.threshold,
-    modelProvider: telemetry.modelProvider,
-    model: telemetry.model,
-    estimatedTokenCostUsd: telemetry.estimatedTokenCostUsd,
-    verifierStatus: telemetry.verifierStatus,
-    latencyMs: telemetry.latencyMs,
-    outcome: telemetry.outcome,
-    failureReason: telemetry.failureReason,
-    slotProvenanceSummary: telemetry.slotProvenanceSummary,
-  };
-}
-
-function finalizeTelemetryForResponse(
-  plan: ChatActionPlan,
-  status: ChatActionStatus,
-  metadata: Record<string, unknown>,
-  input: ChatPlannerInput,
-): ChatActionTelemetry {
-  const base = plan.telemetry ?? {
-    routeTier: 'tier0_deterministic' as const,
-    candidates: plan.steps.map((step) => ({
-      skill: step.skill,
-      action: step.action,
-      score: plan.effectiveConfidence ?? plan.confidence,
-    })),
-    calibratedScore: plan.effectiveConfidence ?? plan.confidence,
-    threshold: thresholdForSteps(plan.steps),
-  };
-  return {
-    ...base,
-    verifierStatus: verifierStatusForActionStatus(status, plan),
-    latencyMs: input.routeStartedAtMs ? Math.max(0, Date.now() - input.routeStartedAtMs) : base.latencyMs,
-    outcome: status,
-    failureReason: failureReasonForTelemetry(status, metadata) ?? base.failureReason,
-    slotProvenanceSummary: summarizeSlotProvenance(plan),
-  };
-}
-
-function verifierStatusForActionStatus(status: ChatActionStatus, plan: ChatActionPlan): ChatActionTelemetry['verifierStatus'] {
-  const requiresVerification = plan.steps.some((step) => step.verification.required);
-  if (!requiresVerification) return 'not_required';
-  if (status === 'verified_success') return 'verified';
-  if (status === 'verified_pending' || status === 'needs_confirmation' || status === 'needs_clarification' || status === 'planned' || status === 'executing' || status === 'verifying') return 'pending';
-  if (status === 'partial_success') return 'mismatch';
-  return 'failed';
-}
-
-function failureReasonForTelemetry(status: ChatActionStatus, metadata: Record<string, unknown>): string | undefined {
-  if (status === 'verified_success' || status === 'verified_pending' || status === 'needs_confirmation' || status === 'needs_clarification') return undefined;
-  const actionResults = metadata.actionResults;
-  if (Array.isArray(actionResults)) {
-    const firstError = actionResults
-      .map((result) => result && typeof result === 'object' ? (result as Record<string, unknown>).error : null)
-      .find((error): error is string => typeof error === 'string' && error.length > 0);
-    if (firstError) return firstError.slice(0, 120);
-  }
-  const error = metadata.error;
-  if (typeof error === 'string') return error.slice(0, 120);
-  if (error && typeof error === 'object') {
-    const code = (error as Record<string, unknown>).code;
-    if (typeof code === 'string') return code.slice(0, 120);
-  }
-  const reason = metadata.reason;
-  if (typeof reason === 'string') return reason.slice(0, 120);
-  return status;
-}
-
-function summarizeSlotProvenance(plan: ChatActionPlan): Record<string, unknown> {
-  const summary: Record<string, unknown> = {};
-  for (const step of plan.steps) {
-    if (!step.slotProvenance) continue;
-    const stepSummary: Record<string, unknown> = {};
-    for (const [slot, provenance] of Object.entries(step.slotProvenance)) {
-      stepSummary[slot] = {
-        sourceType: provenance.sourceType,
-        normalizer: provenance.normalizer,
-        confidence: provenance.confidence,
-        validation: provenance.validation,
-      };
-    }
-    if (Object.keys(stepSummary).length > 0) {
-      summary[`${step.skill}.${step.action}.${step.stepId}`] = stepSummary;
-    }
-  }
-  return summary;
-}
-
-
 // actionToStepType and pickExpectedFields moved to skills/step-builder.ts.
-
-function normalizeProvider(value: unknown): ChatProvider | undefined {
-  if (typeof value !== 'string') return undefined;
-  if (value === 'google_calendar' || value === 'outlook_calendar' || value === 'gmail' || value === 'outlook_mail' || value === 'nexus' || value === 'stripe' || value === 'telegram' || value === 'none') {
-    return value;
-  }
-  return undefined;
-}
-
-function clampConfidence(value: number): number {
-  if (!Number.isFinite(value)) return 0.4;
-  return Math.max(0, Math.min(1, value));
-}
-
-function stepRequiresConfirmation(
-  step: ChatPlanStep,
-  opts: { requireSafeWrites?: boolean } = {},
-): boolean {
-  if (
-    step.risk === 'ambiguous' &&
-    step.requiredArgsPresent === false &&
-    typeof step.args?.rejectionReason === 'string'
-  ) {
-    return false;
-  }
-  const definition = findChatActionDefinition(step.skill, step.action);
-  if (opts.requireSafeWrites && step.risk === 'safe_write') return true;
-  return ['external_side_effect', 'destructive', 'financial', 'admin_security'].includes(step.risk)
-    || definition?.confirmationPolicy === 'confirm'
-    || definition?.confirmationPolicy === 'strong_confirm';
-}
-
-function intentClassForPlan(plan: ChatActionPlan): string {
-  const action = plan.steps[0]?.action;
-  switch (action) {
-    case 'create_task':
-    case 'create_task_with_subtasks':
-      return 'task_create';
-    case 'add_subtasks_to_task':
-      return 'task_update';
-    case 'delete_task':
-      return 'task_delete';
-    case 'complete_task':
-      return 'task_complete';
-    case 'update_task':
-      return 'task_update';
-    case 'schedule_event':
-      return 'event_create';
-    case 'move_event':
-    case 'update_event':
-      return 'event_move';
-    case 'delete_event':
-      return 'event_delete';
-    case 'finance_payment_action':
-      return 'financial_transfer';
-    case 'finance_create_reminder':
-    case 'finance_categorize_receipt':
-      return 'finance_write';
-    case 'send_email':
-      return 'email_send';
-    default:
-      return action ? String(action).replace(/-/g, '_') : 'chat_action';
-  }
-}
-
-function confirmationVariant(plan: ChatActionPlan): 'default' | 'destructive' | 'financial' {
-  if (plan.steps.some((step) => step.risk === 'financial')) return 'financial';
-  if (plan.steps.some((step) => step.risk === 'destructive' || step.risk === 'admin_security')) return 'destructive';
-  return 'default';
-}
-
-function thresholdForSteps(steps: ChatPlanStep[]): number {
-  const riskiest = steps.reduce<ChatActionRiskClass>((current, step) => {
-    const candidate = step.riskClass ?? riskClassForRisk(step.risk);
-    return riskRank(candidate) > riskRank(current) ? candidate : current;
-  }, 'R0');
-  if (riskiest === 'R3') return 0.98;
-  if (riskiest === 'R2') return 0.96;
-  if (riskiest === 'R1') return 0.9;
-  if (riskiest === 'R4') return 1;
-  return 0.75;
-}
-
-function calibratePlanConfidence(steps: ChatPlanStep[], baseConfidence: number): number {
-  let score = clampConfidence(baseConfidence);
-  for (const step of steps) {
-    const missingPenalty = step.requiredArgsPresent ? 0 : 0.28;
-    const provenancePenalty = provenanceCoverage(step) >= 0.9 ? 0 : 0.08;
-    const riskPenalty = step.riskClass === 'R4' ? 0.35 : 0;
-    score = Math.min(score, clampConfidence(score - missingPenalty - provenancePenalty - riskPenalty));
-  }
-  return Number(score.toFixed(3));
-}
-
-function provenanceCoverage(step: ChatPlanStep): number {
-  const definition = findChatActionDefinition(step.skill, step.action);
-  const required = definition?.requiredFields ?? [];
-  if (required.length === 0) return 1;
-  const provenance = step.slotProvenance ?? {};
-  const present = required.filter((field) => step.args[field] != null && step.args[field] !== '');
-  if (present.length === 0) return 0;
-  const withProvenance = present.filter((field) => provenance[field]?.validation === 'passed');
-  return withProvenance.length / present.length;
-}
-
-function riskRank(risk: ChatActionRiskClass): number {
-  return { R0: 0, R1: 1, R2: 2, R3: 3, R4: 4 }[risk];
-}
 
 function buildCalendarSlotProvenance(input: ChatPlannerInput, calendar: NonNullable<ReturnType<typeof parseNaturalLanguageCalendarEvent>>, provider: ChatProvider): Record<string, ChatSlotProvenance> {
   const rawText = input.text;
