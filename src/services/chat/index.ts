@@ -1,16 +1,6 @@
 // Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
 
 import {
-  createEvent,
-  getEventsForSources,
-  updateEvent,
-  deleteEvent,
-  type CalendarSource,
-  type UnifiedCalendarEvent,
-} from '../unified-calendar';
-import { isGoogleCalendarConfigured } from '../google-calendar';
-import { isOutlookCalendarConfigured } from '../outlook-calendar';
-import {
   findChatActionDefinition,
   type ChatActionDefinition,
 } from './registry';
@@ -48,7 +38,6 @@ import {
 } from '../chat-tool-authorization';
 import { extractTopic, inferContentPlatform, inferProviderName } from '../skills/text-extractors';
 import { invalidateCalendarCaches } from '../cache-coherence-registry';
-import { getTaskProviderForUser } from '../task-store/task-router';
 import { resolveTaskCreationList } from '../task-store/task-list-resolution';
 import {
   buildContentAgencyPackage,
@@ -126,12 +115,14 @@ import {
 import { executeStepWithReliability } from './executor/reliability';
 import { buildExecutedChatActionResponse } from './executor/result-response';
 import { buildChatActionPlan } from './planner/orchestrator';
+import { resolveChatActionPlannerDeps } from './deps';
 
 export { buildLlmPlannerPrompt, buildTier1ClassifierPrompt, parseLlmPlannerJson, parseTier1ClassifierJson } from './planner/tiers';
 export { BROAD_SKILL_MIN_PRIORITY_GAP, BROAD_SKILL_SLOT_COMPLETENESS_BONUS } from './planner/broad-skill-intents';
 export { shouldRunActionPlannerBeforeReadOnlyFastPaths } from './planner/preflight-gates';
 export { buildDeterministicChatActionPlan } from './planner/deterministic';
 export { buildChatActionPlan } from './planner/orchestrator';
+export { resolveChatActionPlannerDeps } from './deps';
 
 export type {
   CalendarProviderDeps,
@@ -146,19 +137,6 @@ export type {
   ChatPlanStepType,
   ChatStepExecutionResult,
 } from './types';
-
-const DEFAULT_PROVIDER_READ_BACK_TIMEOUT_MS = 3_500;
-const DEFAULT_PROVIDER_WRITE_TIMEOUT_MS = 10_000;
-
-const DEFAULT_DEPS: Required<ChatActionPlannerDeps> = {
-  calendar: {
-    createEvent,
-    getEventsForSources,
-    hasGoogle: isGoogleCalendarConfigured,
-    hasOutlook: isOutlookCalendarConfigured,
-  },
-  taskProviderForUser: getTaskProviderForUser,
-};
 
 export async function tryHandleChatActionPlan(
   input: ChatPlannerInput,
@@ -184,7 +162,7 @@ export async function tryHandleChatActionPlan(
     recordShadowTelemetry(plan, input, routeStartedAtMs);
     return null;
   }
-  const resolvedDeps = { ...DEFAULT_DEPS, ...deps };
+  const resolvedDeps = resolveChatActionPlannerDeps(deps);
   const response = await executeChatActionPlan(plan, { ...input, routeStartedAtMs }, resolvedDeps);
   return { plan, response, status: String(response.metadata.actionStatus || 'planned') as ChatActionStatus };
 }
@@ -218,7 +196,7 @@ export async function executeConfirmedChatActionRuns(
     requiresConfirmation: false,
     confidence: 0.93,
   };
-  const resolvedDeps = { ...DEFAULT_DEPS, ...deps };
+  const resolvedDeps = resolveChatActionPlannerDeps(deps);
   const response = await executeChatActionPlan(plan, {
     ...input,
     conversationId: plan.conversationId,
