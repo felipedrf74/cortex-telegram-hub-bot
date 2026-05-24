@@ -19,7 +19,7 @@
 import {
   getChatActionRegistry,
   type ChatActionDefinition,
-} from './chat-action-registry';
+} from './chat/registry';
 import type {
   ChatEvalScenario,
   ChatEvalScenarioId,

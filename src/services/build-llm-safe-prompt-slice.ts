@@ -5,7 +5,7 @@ import type {
   ChatActionName,
   ChatActionRiskClass,
   ChatActionSkill,
-} from './chat-action-registry';
+} from './chat/registry';
 import { redactSensitivePromptText, sanitizeLlmPromptValue } from './llm-prompt-safety';
 
 export type LlmSafeRiskLabel = 'safe' | 'sensitive' | 'destructive';

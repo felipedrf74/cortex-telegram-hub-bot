@@ -13,7 +13,7 @@
 
 import { makeStep, type StepKeyInputs } from '../step-builder';
 import { inferProviderName } from '../text-extractors';
-import type { ChatPlanStep } from '../../chat-action-planner';
+import type { ChatPlanStep } from '../../chat/types';
 
 export function parseMailActionStep(
   input: StepKeyInputs & { text: string },

@@ -30,7 +30,7 @@
 import {
   buildDeterministicChatActionPlan,
   type ChatPlannerInput,
-} from './chat-action-planner';
+} from './chat';
 import type {
   ChatEvalScenario,
   ChatEvalScenarioResult,

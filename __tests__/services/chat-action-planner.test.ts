@@ -72,6 +72,7 @@ import { getTopics } from '../../src/services/content-scheduler';
 import { getMealPlan } from '../../src/services/cooking-chef';
 import { addTransaction, calculateAndStoreTax, getTaxEvents, getTransactions } from '../../src/services/finance-tracker';
 import { confirmTrainingSessionReflow, previewTrainingSessionReflow } from '../../src/api/routes/training-plan-calendar-sync';
+import { executeTaskWithSubtasksStep } from '../../src/services/skills/tasks/executor';
 
 const FROZEN_NOW = '2026-05-14T12:00:00+01:00';
 
@@ -481,12 +482,260 @@ describe('ChatActionPlanner', () => {
     expect(shouldRunActionPlannerBeforeReadOnlyFastPaths('Quantos emails não lidos tenho no Gmail?')).toBe(false);
   });
 
-  it('leaves legacy spaced sub-task creation with the existing reasoning executor', () => {
-    expect(shouldRunActionPlannerBeforeReadOnlyFastPaths('Create task Prozis where it has sub tasks called creatine K2 D3')).toBe(false);
+  it('routes legacy spaced sub-task creation through the action planner', () => {
+    expect(shouldRunActionPlannerBeforeReadOnlyFastPaths('Create task Prozis where it has sub tasks called creatine K2 D3')).toBe(true);
     expect(buildDeterministicChatActionPlan({
       ...baseInput,
       text: 'Create task Prozis where it has sub tasks called creatine K2 D3',
-    })).toBeNull();
+    })).toMatchObject({
+      planner: 'deterministic',
+      steps: [{
+        skill: 'tasks',
+        action: 'create_task_with_subtasks',
+        requiredArgsPresent: true,
+        args: {
+          title: 'Prozis',
+          subtasks: ['creatine', 'K2', 'D3'],
+        },
+      }],
+    });
+  });
+
+  it('keeps task/subtask parsing bounded, multilingual, and literal-title safe', () => {
+    const cases = [
+      {
+        text: 'Create task "Prozis" with subtasks "creatine", "K2", "D3"',
+        locale: 'en-US',
+        title: 'Prozis',
+        subtasks: ['creatine', 'K2', 'D3'],
+      },
+      {
+        text: 'Cria uma tarefa chamada Prozis com subtarefas creatine K2 D3 por agora',
+        locale: 'pt-PT',
+        title: 'Prozis',
+        subtasks: ['creatine', 'K2', 'D3'],
+      },
+      {
+        text: 'Cria uma tarefa Prozis com creatina K2 D3',
+        locale: 'pt-PT',
+        title: 'Prozis',
+        subtasks: ['creatina', 'K2', 'D3'],
+      },
+      {
+        text: 'Crear tarea Prozis con subtareas creatina K2 D3',
+        locale: 'es-ES',
+        title: 'Prozis',
+        subtasks: ['creatina', 'K2', 'D3'],
+      },
+      {
+        text: 'Create uma task chamada Suplementos com subtasks creatine K2 D3',
+        locale: 'pt-PT',
+        title: 'Suplementos',
+        subtasks: ['creatine', 'K2', 'D3'],
+      },
+    ];
+
+    for (const testCase of cases) {
+      expect(buildDeterministicChatActionPlan({
+        ...baseInput,
+        text: testCase.text,
+        locale: testCase.locale,
+      }), testCase.text).toMatchObject({
+        steps: [{
+          skill: 'tasks',
+          action: 'create_task_with_subtasks',
+          args: {
+            title: testCase.title,
+            subtasks: testCase.subtasks,
+          },
+        }],
+      });
+    }
+
+    expect(buildDeterministicChatActionPlan({
+      ...baseInput,
+      text: 'Create task "Prozis with subtasks called creatine K2 D3"',
+      locale: 'en-US',
+    })).toMatchObject({
+      steps: [{
+        skill: 'tasks',
+        action: 'create_task',
+        args: { title: 'Prozis with subtasks called creatine K2 D3' },
+      }],
+    });
+
+    expect(buildDeterministicChatActionPlan({
+      ...baseInput,
+      text: 'Create task Prozis with subtasks A B C D E F G H I J',
+      locale: 'en-US',
+    })?.steps[0]?.args).toMatchObject({ subtasks: ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J'] });
+
+    expect(buildDeterministicChatActionPlan({
+      ...baseInput,
+      text: `Create task Load Test with subtasks ${Array.from({ length: 40 }, (_, index) => `item${index + 1}`).join(' ')}`,
+      locale: 'en-US',
+    })?.steps[0]?.args).toMatchObject({
+      title: 'Load Test',
+      subtasks: Array.from({ length: 25 }, (_, index) => `item${index + 1}`),
+    });
+
+    expect(buildDeterministicChatActionPlan({
+      ...baseInput,
+      text: 'Create task Prozis with subtasks creatine K2 D3 and remind me tomorrow',
+      locale: 'en-US',
+    })).toMatchObject({
+      clarificationReason: 'ambiguous_intent',
+      intentClass: 'multi_step_preview_required',
+      steps: [{ action: 'create_task_with_subtasks', requiredArgsPresent: false }],
+    });
+
+    expect(buildDeterministicChatActionPlan({
+      ...baseInput,
+      text: 'Add creatine to Prozis and K2 to Vitamins',
+      locale: 'en-US',
+    })).toMatchObject({
+      clarificationReason: 'ambiguous_intent',
+      steps: [{ action: 'add_subtasks_to_task', requiredArgsPresent: false }],
+    });
+  });
+
+  it('executes task-with-subtasks through local read-back without claiming unverified subtasks', async () => {
+    const input = {
+      ...baseInput,
+      text: 'Create task Prozis with subtasks creatine K2 D3',
+      locale: 'en-US',
+      messageId: 'msg-task-with-subtasks-executor',
+      persistRuns: false,
+    };
+    const plan = buildDeterministicChatActionPlan(input)!;
+    const checklistItems: Array<{ id: string; displayName: string; isChecked: boolean }> = [];
+    const provider = {
+      getLists: vi.fn(async () => ({ success: true, data: [{ id: 'list-1', displayName: 'Inbox', wellknownListName: 'defaultList' }] })),
+      getDefaultList: vi.fn(async () => ({ id: 'list-1', displayName: 'Inbox' })),
+      createTask: vi.fn(async (_listId: string, _listName: string, data: any) => ({
+        success: true,
+        data: { id: 'task-1', listId: 'list-1', listName: 'Inbox', title: data.title },
+      })),
+      addChecklistItem: vi.fn(async (_listId: string, _taskId: string, displayName: string) => {
+        const item = { id: `ci-${checklistItems.length + 1}`, displayName, isChecked: false };
+        checklistItems.push(item);
+        return { success: true, data: item };
+      }),
+      getTask: vi.fn(async () => ({
+        success: true,
+        data: { id: 'task-1', listId: 'list-1', listName: 'Inbox', title: 'Prozis', checklistItems },
+      })),
+      getChecklistItems: vi.fn(async () => ({ success: true, data: checklistItems })),
+    };
+
+    const result = await executeTaskWithSubtasksStep(
+      plan.steps[0]!,
+      plan,
+      input,
+      vi.fn(() => provider as any) as any,
+      false,
+    );
+
+    expect(provider.createTask).toHaveBeenCalledWith('list-1', 'Inbox', expect.objectContaining({ title: 'Prozis' }));
+    expect(provider.addChecklistItem).toHaveBeenCalledTimes(3);
+    expect(result.status).toBe('verified_success');
+    expect(result.result).toMatchObject({
+      type: 'task_created',
+      title: 'Prozis',
+      verificationStatus: 'verified',
+      subtasks: [
+        { title: 'creatine' },
+        { title: 'K2' },
+        { title: 'D3' },
+      ],
+    });
+
+    const partialProvider = {
+      getLists: vi.fn(async () => ({ success: true, data: [{ id: 'list-1', displayName: 'Inbox', wellknownListName: 'defaultList' }] })),
+      getDefaultList: vi.fn(async () => ({ id: 'list-1', displayName: 'Inbox' })),
+      createTask: vi.fn(async () => ({ success: true, data: { id: 'task-2', listId: 'list-1', listName: 'Inbox', title: 'Prozis' } })),
+      addChecklistItem: vi.fn(async (_listId: string, _taskId: string, displayName: string) => ({ success: true, data: { id: displayName, displayName, isChecked: false } })),
+      getTask: vi.fn(async () => ({ success: true, data: { id: 'task-2', listId: 'list-1', title: 'Prozis', checklistItems: [] } })),
+      getChecklistItems: vi.fn(async () => ({ success: true, data: [] })),
+    };
+
+    const partial = await executeTaskWithSubtasksStep(
+      plan.steps[0]!,
+      { ...plan, messageId: 'msg-task-with-subtasks-partial' },
+      { ...input, messageId: 'msg-task-with-subtasks-partial' },
+      vi.fn(() => partialProvider as any) as any,
+      false,
+    );
+
+    expect(partial.status).toBe('partial_success');
+    expect(partial.error).toBe('task_subtasks_partial_verification');
+    expect(partial.result).toMatchObject({
+      verificationStatus: 'partial_failure',
+      warnings: expect.arrayContaining(['created_subtasks_missing']),
+    });
+  });
+
+  it('recovers duplicate task-with-subtasks runs without recreating the parent task', async () => {
+    const input = {
+      ...baseInput,
+      text: 'Create task Prozis with subtasks creatine K2 D3',
+      locale: 'en-US',
+      messageId: 'msg-task-subtasks-recover',
+      persistRuns: true,
+    };
+    const plan = buildDeterministicChatActionPlan(input)!;
+    const provider1 = {
+      getLists: vi.fn(async () => ({ success: true, data: [{ id: 'list-1', displayName: 'Inbox', wellknownListName: 'defaultList' }] })),
+      getDefaultList: vi.fn(async () => ({ id: 'list-1', displayName: 'Inbox' })),
+      createTask: vi.fn(async () => ({ success: true, data: { id: 'task-recover', listId: 'list-1', listName: 'Inbox', title: 'Prozis' } })),
+      addChecklistItem: vi.fn(async (_listId: string, _taskId: string, displayName: string) => ({ success: true, data: { id: displayName, displayName, isChecked: false } })),
+      getTask: vi.fn(async () => ({ success: true, data: { id: 'task-recover', listId: 'list-1', title: 'Prozis', checklistItems: [] } })),
+      getChecklistItems: vi.fn(async () => ({ success: true, data: [] })),
+    };
+
+    const first = await executeTaskWithSubtasksStep(
+      plan.steps[0]!,
+      plan,
+      input,
+      vi.fn(() => provider1 as any) as any,
+      true,
+    );
+    expect(first.status).toBe('partial_success');
+
+    const visibleItems = [{ id: 'ci-1', displayName: 'creatine', isChecked: false }];
+    const provider2 = {
+      createTask: vi.fn(),
+      addChecklistItem: vi.fn(async (_listId: string, _taskId: string, displayName: string) => {
+        const item = { id: `ci-${visibleItems.length + 1}`, displayName, isChecked: false };
+        visibleItems.push(item);
+        return { success: true, data: item };
+      }),
+      getTask: vi.fn(async () => ({
+        success: true,
+        data: { id: 'task-recover', listId: 'list-1', title: 'Prozis', checklistItems: visibleItems },
+      })),
+      getChecklistItems: vi.fn(async () => ({ success: true, data: visibleItems })),
+    };
+
+    const recovered = await executeTaskWithSubtasksStep(
+      plan.steps[0]!,
+      plan,
+      input,
+      vi.fn(() => provider2 as any) as any,
+      true,
+    );
+
+    expect(provider2.createTask).not.toHaveBeenCalled();
+    expect(provider2.addChecklistItem).toHaveBeenCalledTimes(2);
+    expect(provider2.addChecklistItem.mock.calls.map((call) => call[2])).toEqual(['K2', 'D3']);
+    expect(recovered.status).toBe('verified_success');
+    expect(recovered.result).toMatchObject({
+      taskId: 'task-recover',
+      verificationStatus: 'verified',
+      warnings: expect.arrayContaining([
+        'Duplicate request detected; returned the existing task instead of creating another one.',
+      ]),
+    });
   });
 
   it('extracts task title and due date without polluting the title with timing syntax', async () => {

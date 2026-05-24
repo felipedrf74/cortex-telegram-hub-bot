@@ -50,6 +50,15 @@ export function rememberChatActiveDomain(
   lastActiveDomain.set(activeDomainKey(userId, tenantId), { domain, timestamp });
 }
 
+/**
+ * Scheduler-facing alias for cron-generated assistant messages.
+ * Kept here instead of the legacy Telegram shared state so native chat
+ * continuity survives the Telegram inbound removal.
+ */
+export function setLastActiveDomain(userId: number, domain: DomainName, tenantId?: number): void {
+  rememberChatActiveDomain(userId, domain, Date.now(), tenantId);
+}
+
 export function clearChatActiveDomain(userId: number, tenantId?: number): void {
   lastActiveDomain.delete(activeDomainKey(userId, tenantId));
 }
