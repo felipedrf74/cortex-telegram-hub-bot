@@ -4,8 +4,11 @@ import { createHash } from 'crypto';
 
 export const TASKS_TODAY_SUMMARY_CAPABILITY = 'tasks.today_summary';
 export const DECISION_CENTER_SUMMARY_CAPABILITY = 'decision_center.summary';
+export const NOTIFICATIONS_SUMMARY_CAPABILITY = 'notifications.summary';
 export const MAX_VISIBLE_TASKS = 5;
 export const MAX_VISIBLE_DECISIONS = 3;
+export const MAX_VISIBLE_NOTIFICATIONS = 5;
+export const MAX_NOTIFICATION_SCAN = 200;
 
 export function normalizeTimezone(value: string | null | undefined): string {
   const timezone = String(value ?? '').trim();

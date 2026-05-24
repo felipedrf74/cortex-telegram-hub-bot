@@ -11,7 +11,7 @@ The response layer decides how to explain it.
 
 This first foundation PR is intentionally behavior-neutral. It adds executable contracts and metadata that later PRs can wire into routing, context building, command previews, confirmations, evals, and iOS cards.
 
-Subsequent stacked slices have begun wiring the contracts behind default-off rollout flags. The first live slices are `tasks.today_summary` and `decision_center.summary`: deterministic, no-model summaries that only run when both `CHAT_CORE_V2_ENABLED` and `CHAT_CORE_V2_READS_ENABLED` are explicitly enabled for the environment, tenant, or user. They do not execute writes, and they return `null` for write-like or multi-domain requests so the existing chat path stays authoritative.
+Subsequent stacked slices have begun wiring the contracts behind default-off rollout flags. The first live slices are `tasks.today_summary`, `decision_center.summary`, and `notifications.summary`: deterministic, no-model summaries that only run when both `CHAT_CORE_V2_ENABLED` and `CHAT_CORE_V2_READS_ENABLED` are explicitly enabled for the environment, tenant, or user. They do not execute writes, and they return `null` for write-like or multi-domain requests so the existing chat path stays authoritative. The notifications read uses the tenant-scoped notification center as its source of truth; legacy content notification rows stay out of this Chat Core v2 path until they have equivalent tenant-scoped read-model coverage.
 
 ## MVP Rollout Shape
 
