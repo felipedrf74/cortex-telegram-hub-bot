@@ -158,6 +158,21 @@ const mockApplyCoachRecommendations = vi.fn(async () => ({
   count: 0,
   appliedRecommendations: [],
 }));
+const mockGetActivePlan = vi.fn(() => null);
+const mockGetWeeksForPlan = vi.fn(() => []);
+const mockGetSessionsForWeek = vi.fn(() => []);
+const mockGetWeeklyAdherence = vi.fn(() => ({
+  planId: 101,
+  weekNumber: 1,
+  totalSessions: 0,
+  completedSessions: 0,
+  skippedSessions: 0,
+  pendingSessions: 0,
+  adherenceRate: 0,
+  avgRpe: null,
+  avgEnergy: null,
+  avgSoreness: null,
+}));
 const mockClearChatHistory = vi.fn();
 
 vi.mock('../../src/services/database', () => ({
@@ -353,6 +368,13 @@ vi.mock('../../src/domains/domain-handler', () => ({
 
 vi.mock('../../src/services/garmin-coach', () => ({
   applyCoachRecommendations: (...args: unknown[]) => mockApplyCoachRecommendations(...args),
+}));
+
+vi.mock('../../src/services/training-plans', () => ({
+  getActivePlan: (...args: unknown[]) => mockGetActivePlan(...args),
+  getWeeksForPlan: (...args: unknown[]) => mockGetWeeksForPlan(...args),
+  getSessionsForWeek: (...args: unknown[]) => mockGetSessionsForWeek(...args),
+  getWeeklyAdherence: (...args: unknown[]) => mockGetWeeklyAdherence(...args),
 }));
 
 vi.mock('../../src/services/google-calendar', async () => {
@@ -608,6 +630,10 @@ describe('Chat API routes', () => {
     mockStoreCallbackForScope.mockReset();
     mockGetLastCoachState.mockReset();
     mockApplyCoachRecommendations.mockReset();
+    mockGetActivePlan.mockReset();
+    mockGetWeeksForPlan.mockReset();
+    mockGetSessionsForWeek.mockReset();
+    mockGetWeeklyAdherence.mockReset();
     mockClearChatHistory.mockReset();
     calendarMocks.createEvent.mockReset();
     calendarMocks.getEventsForSources.mockReset();
@@ -764,6 +790,21 @@ describe('Chat API routes', () => {
     mockApplyCoachRecommendations.mockResolvedValue({
       count: 0,
       appliedRecommendations: [],
+    });
+    mockGetActivePlan.mockReturnValue(null);
+    mockGetWeeksForPlan.mockReturnValue([]);
+    mockGetSessionsForWeek.mockReturnValue([]);
+    mockGetWeeklyAdherence.mockReturnValue({
+      planId: 101,
+      weekNumber: 1,
+      totalSessions: 0,
+      completedSessions: 0,
+      skippedSessions: 0,
+      pendingSessions: 0,
+      adherenceRate: 0,
+      avgRpe: null,
+      avgEnergy: null,
+      avgSoreness: null,
     });
 
     testDb.prepare(`
@@ -3325,6 +3366,164 @@ describe('Chat API routes', () => {
               netIncome: 1900,
               transactionCount: 12,
               affordability: 'controlled',
+            },
+          },
+        },
+      });
+      expect(mockRouteMessage).not.toHaveBeenCalled();
+      expect(mockHandleSecretary).not.toHaveBeenCalled();
+    } finally {
+      if (previousGlobal === undefined) {
+        delete process.env.CHAT_CORE_V2_ENABLED;
+      } else {
+        process.env.CHAT_CORE_V2_ENABLED = previousGlobal;
+      }
+      if (previousReads === undefined) {
+        delete process.env.CHAT_CORE_V2_READS_ENABLED;
+      } else {
+        process.env.CHAT_CORE_V2_READS_ENABLED = previousReads;
+      }
+    }
+  });
+
+  it('answers training plan status through Chat Core v2 deterministic reads when explicitly enabled', async () => {
+    const previousGlobal = process.env.CHAT_CORE_V2_ENABLED;
+    const previousReads = process.env.CHAT_CORE_V2_READS_ENABLED;
+    process.env.CHAT_CORE_V2_ENABLED = 'true';
+    process.env.CHAT_CORE_V2_READS_ENABLED = 'true';
+    try {
+      mockGetActivePlan.mockReturnValue({
+        id: 101,
+        user_id: 7001,
+        tenant_id: 7001,
+        name: 'Marathon Base',
+        sport: 'running',
+        goal: 'Finish strong',
+        duration_weeks: 8,
+        periodization: 'linear',
+        status: 'active',
+        start_date: '2026-04-13',
+        end_date: '2026-06-07',
+        preferences_json: null,
+        plan_version: 2,
+        created_at: '2026-04-13T00:00:00.000Z',
+        updated_at: '2026-04-14T08:00:00.000Z',
+      });
+      mockGetWeeksForPlan.mockReturnValue([
+        {
+          id: 201,
+          plan_id: 101,
+          week_number: 1,
+          focus: 'Base endurance',
+          intensity_pct: 85,
+          volume_sessions: 3,
+          notes: null,
+          auto_adjusted: 0,
+          adjustment_reason: null,
+          created_at: '2026-04-13T00:00:00.000Z',
+        },
+      ]);
+      mockGetSessionsForWeek.mockReturnValue([
+        {
+          id: 301,
+          week_id: 201,
+          plan_id: 101,
+          tenant_id: 7001,
+          day_of_week: 'Monday',
+          session_type: 'running',
+          title: 'Easy run',
+          description: 'Private coaching detail',
+          description_json: null,
+          exercises_json: '[{"name":"Private drill"}]',
+          duration_minutes: 45,
+          intensity_text: 'easy',
+          calendar_event_id: 'evt_private',
+          calendar_source: 'google',
+          session_identity_key: 'week1_run1',
+          session_shape_hash: 'shape_1',
+          preferred_time_unavailable: 0,
+          status: 'completed',
+          created_at: '2026-04-13T00:00:00.000Z',
+          updated_at: '2026-04-14T08:00:00.000Z',
+        },
+        {
+          id: 302,
+          week_id: 201,
+          plan_id: 101,
+          tenant_id: 7001,
+          day_of_week: 'Wednesday',
+          session_type: 'running',
+          title: 'Tempo intervals',
+          description: null,
+          description_json: null,
+          exercises_json: null,
+          duration_minutes: 50,
+          intensity_text: 'moderate',
+          calendar_event_id: null,
+          calendar_source: null,
+          session_identity_key: 'week1_run2',
+          session_shape_hash: 'shape_2',
+          preferred_time_unavailable: 0,
+          status: 'scheduled',
+          created_at: '2026-04-13T00:00:00.000Z',
+          updated_at: '2026-04-14T08:00:00.000Z',
+        },
+      ]);
+      mockGetWeeklyAdherence.mockReturnValue({
+        planId: 101,
+        weekNumber: 1,
+        totalSessions: 2,
+        completedSessions: 1,
+        skippedSessions: 0,
+        pendingSessions: 1,
+        adherenceRate: 50,
+        avgRpe: 6,
+        avgEnergy: 7,
+        avgSoreness: 3,
+      });
+      mockRouteMessage.mockClear();
+      mockHandleSecretary.mockClear();
+
+      const messageRes = await dispatch('POST', '/message', 7001, {
+        text: 'Show my training sessions',
+      });
+
+      expect(messageRes.statusCode, JSON.stringify(messageRes.body)).toBe(200);
+      expect(messageRes.body.routeMethod).toBe('chat-core-v2-deterministic-read');
+      expect(messageRes.body.domain).toBe('secretary');
+      expect(messageRes.body.text).toContain('Training plan: Marathon Base');
+      expect(messageRes.body.text).toContain('week 1/8');
+      expect(messageRes.body.text).toContain('50% adherence');
+      expect(messageRes.body.text).toContain('Tempo intervals');
+      expect(messageRes.body.text).not.toContain('evt_private');
+      expect(messageRes.body.text).not.toContain('Private coaching detail');
+      expect(JSON.stringify(messageRes.body.metadata)).not.toContain('Private drill');
+      expect(JSON.stringify(messageRes.body.metadata)).not.toContain('evt_private');
+      expect(mockGetActivePlan).toHaveBeenCalledWith(7001, 7001);
+      expect(mockGetWeeksForPlan).toHaveBeenCalledWith(101);
+      expect(mockGetSessionsForWeek).toHaveBeenCalledWith(201);
+      expect(mockGetWeeklyAdherence).toHaveBeenCalledWith(101, 201);
+      expect(messageRes.body.metadata).toMatchObject({
+        type: 'chat_core_v2_deterministic_read',
+        chatCoreV2: {
+          capabilityId: 'training.session_explain',
+          response: {
+            schemaVersion: 'chat_response_v2@1.0.0',
+            kind: 'message',
+            reasonCodes: ['deterministic_read', 'training.session_explain', 'read_only_allowed'],
+          },
+          readModel: {
+            capabilityId: 'training.session_explain',
+            domain: 'training',
+            sensitivity: 'health_adjacent',
+            data: {
+              hasActivePlan: true,
+              planName: 'Marathon Base',
+              sport: 'running',
+              currentWeekNumber: 1,
+              currentWeekFocus: 'Base endurance',
+              currentWeekIntensityPct: 85,
+              adherenceRate: 50,
             },
           },
         },

@@ -5,6 +5,12 @@ import type { NotificationCenterItem } from '../../src/services/notification-orc
 import type { IntegrationSummary } from '../../src/services/integration-status';
 import type { SecretaryAgendaItem } from '../../src/services/secretary-scheduling-arbitrator';
 import type { MonthlyBudgetView, MonthlySummary } from '../../src/services/finance-tracker';
+import type {
+  TrainingPlan,
+  TrainingSession,
+  TrainingWeek,
+  WeeklyAdherenceStats,
+} from '../../src/services/training-plans';
 
 vi.mock('../../src/services/task-store/task-service', () => ({
   listTasks: vi.fn(),
@@ -31,12 +37,25 @@ vi.mock('../../src/services/finance-tracker', () => ({
   getMonthlyBudgetView: vi.fn(),
 }));
 
+vi.mock('../../src/services/training-plans', () => ({
+  getActivePlan: vi.fn(),
+  getWeeksForPlan: vi.fn(),
+  getSessionsForWeek: vi.fn(),
+  getWeeklyAdherence: vi.fn(),
+}));
+
 import { getDecisionSummary } from '../../src/services/decision-center';
 import { getMonthlyBudgetView, getMonthlySummary } from '../../src/services/finance-tracker';
 import { getIntegrationSummary } from '../../src/services/integration-status';
 import { listNotificationCenterItems } from '../../src/services/notification-orchestrator';
 import { listSecretaryAgendaItems } from '../../src/services/secretary-scheduling-arbitrator';
 import { listTasks } from '../../src/services/task-store/task-service';
+import {
+  getActivePlan,
+  getSessionsForWeek,
+  getWeeklyAdherence,
+  getWeeksForPlan,
+} from '../../src/services/training-plans';
 import { tryBuildChatCoreV2DeterministicReadRoute } from '../../src/services/chat-core-v2';
 
 const FIXED_NOW = new Date('2026-05-24T10:00:00.000Z');
@@ -139,6 +158,85 @@ function monthlyBudgetView(overrides: Partial<MonthlyBudgetView> = {}): MonthlyB
   };
 }
 
+function trainingPlan(overrides: Partial<TrainingPlan> = {}): TrainingPlan {
+  return {
+    id: 101,
+    user_id: 42,
+    tenant_id: 84,
+    name: 'Marathon Base',
+    sport: 'running',
+    goal: 'Finish strong',
+    duration_weeks: 8,
+    periodization: 'linear',
+    status: 'active',
+    start_date: '2026-05-18',
+    end_date: '2026-07-12',
+    preferences_json: null,
+    plan_version: 2,
+    created_at: '2026-05-18T00:00:00.000Z',
+    updated_at: '2026-05-20T09:00:00.000Z',
+    ...overrides,
+  };
+}
+
+function trainingWeek(overrides: Partial<TrainingWeek> = {}): TrainingWeek {
+  return {
+    id: 201,
+    plan_id: 101,
+    week_number: 1,
+    focus: 'Base endurance',
+    intensity_pct: 85,
+    volume_sessions: 3,
+    notes: null,
+    auto_adjusted: 0,
+    adjustment_reason: null,
+    created_at: '2026-05-18T00:00:00.000Z',
+    ...overrides,
+  };
+}
+
+function trainingSession(overrides: Partial<TrainingSession> = {}): TrainingSession {
+  return {
+    id: 301,
+    week_id: 201,
+    plan_id: 101,
+    tenant_id: 84,
+    day_of_week: 'Monday',
+    session_type: 'running',
+    title: 'Easy run',
+    description: 'Private coaching detail that should not be surfaced in Chat Core v2 read summaries.',
+    description_json: null,
+    exercises_json: '[{"name":"Private drill"}]',
+    duration_minutes: 45,
+    intensity_text: 'easy',
+    calendar_event_id: 'evt_private',
+    calendar_source: 'google',
+    session_identity_key: 'week1_run1',
+    session_shape_hash: 'shape_1',
+    preferred_time_unavailable: 0,
+    status: 'scheduled',
+    created_at: '2026-05-18T00:00:00.000Z',
+    updated_at: '2026-05-20T09:00:00.000Z',
+    ...overrides,
+  };
+}
+
+function weeklyAdherence(overrides: Partial<WeeklyAdherenceStats> = {}): WeeklyAdherenceStats {
+  return {
+    planId: 101,
+    weekNumber: 1,
+    totalSessions: 3,
+    completedSessions: 1,
+    skippedSessions: 0,
+    pendingSessions: 2,
+    adherenceRate: 33,
+    avgRpe: 6,
+    avgEnergy: 7,
+    avgSoreness: 3,
+    ...overrides,
+  };
+}
+
 
 function notification(overrides: Partial<NotificationCenterItem>): NotificationCenterItem {
   return {
@@ -226,6 +324,10 @@ describe('Chat Core v2 deterministic read route', () => {
     vi.mocked(listSecretaryAgendaItems).mockReset();
     vi.mocked(getMonthlySummary).mockReset();
     vi.mocked(getMonthlyBudgetView).mockReset();
+    vi.mocked(getActivePlan).mockReset();
+    vi.mocked(getWeeksForPlan).mockReset();
+    vi.mocked(getSessionsForWeek).mockReset();
+    vi.mocked(getWeeklyAdherence).mockReset();
   });
 
   it('stays disabled unless both global and read flags are explicitly enabled', () => {
@@ -363,6 +465,81 @@ describe('Chat Core v2 deterministic read route', () => {
       },
     });
     expect(result?.contextPack.sourceEntityIds).toEqual(['finance:summary:2026-05']);
+  });
+
+  it('answers training plan and session questions through health-adjacent read-only summaries', () => {
+    vi.mocked(getActivePlan).mockReturnValue(trainingPlan());
+    vi.mocked(getWeeksForPlan).mockReturnValue([trainingWeek()]);
+    vi.mocked(getSessionsForWeek).mockReturnValue([
+      trainingSession({ id: 301, title: 'Easy run', status: 'completed', day_of_week: 'Monday' }),
+      trainingSession({ id: 302, title: 'Tempo intervals', status: 'scheduled', day_of_week: 'Wednesday', intensity_text: 'moderate' }),
+      trainingSession({ id: 303, title: 'Long run', status: 'pending', day_of_week: 'Sunday', duration_minutes: 75 }),
+    ]);
+    vi.mocked(getWeeklyAdherence).mockReturnValue(weeklyAdherence());
+
+    const result = tryBuildChatCoreV2DeterministicReadRoute({
+      normalizedText: 'Show my training sessions',
+      userId: 42,
+      tenantId: 84,
+      locale: 'en-US',
+      timezone: 'Europe/Lisbon',
+      now: FIXED_NOW,
+      env: ENABLED_ENV,
+    });
+
+    expect(result).not.toBeNull();
+    expect(getActivePlan).toHaveBeenCalledWith(42, 84);
+    expect(getWeeksForPlan).toHaveBeenCalledWith(101);
+    expect(getSessionsForWeek).toHaveBeenCalledWith(201);
+    expect(getWeeklyAdherence).toHaveBeenCalledWith(101, 201);
+    expect(listTasks).not.toHaveBeenCalled();
+    expect(getDecisionSummary).not.toHaveBeenCalled();
+    expect(listNotificationCenterItems).not.toHaveBeenCalled();
+    expect(getIntegrationSummary).not.toHaveBeenCalled();
+    expect(listSecretaryAgendaItems).not.toHaveBeenCalled();
+    expect(getMonthlySummary).not.toHaveBeenCalled();
+    expect(getMonthlyBudgetView).not.toHaveBeenCalled();
+    expect(result?.capabilityId).toBe('training.session_explain');
+    expect(result?.response).toMatchObject({
+      schemaVersion: 'chat_response_v2@1.0.0',
+      kind: 'message',
+      locale: 'en',
+      cards: [],
+      reasonCodes: ['deterministic_read', 'training.session_explain', 'read_only_allowed'],
+    });
+    expect(result?.response.text).toContain('Training plan: Marathon Base');
+    expect(result?.response.text).toContain('week 1/8');
+    expect(result?.response.text).toContain('33% adherence');
+    expect(result?.response.text).toContain('Tempo intervals');
+    expect(result?.response.text).not.toContain('session_id');
+    expect(result?.response.text).not.toContain('evt_private');
+    expect(result?.response.text).not.toContain('Private coaching detail');
+    expect(JSON.stringify(result?.readModel.data)).not.toContain('Private drill');
+    expect(JSON.stringify(result?.readModel.data)).not.toContain('evt_private');
+    expect(result?.readModel).toMatchObject({
+      capabilityId: 'training.session_explain',
+      domain: 'training',
+      sensitivity: 'health_adjacent',
+      freshness: { status: 'live' },
+      data: {
+        hasActivePlan: true,
+        planName: 'Marathon Base',
+        sport: 'running',
+        currentWeekNumber: 1,
+        currentWeekFocus: 'Base endurance',
+        currentWeekIntensityPct: 85,
+        adherenceRate: 33,
+        completedSessions: 1,
+        pendingSessions: 2,
+        totalSessions: 3,
+      },
+    });
+    expect(result?.contextPack.sourceEntityIds).toEqual([
+      'training_plan:101',
+      'training_session:301',
+      'training_session:302',
+      'training_session:303',
+    ]);
   });
 
   it('answers task summary questions without model calls or provider reads', () => {
@@ -856,6 +1033,13 @@ describe('Chat Core v2 deterministic read route', () => {
       now: FIXED_NOW,
       env: ENABLED_ENV,
     });
+    const trainingWrite = tryBuildChatCoreV2DeterministicReadRoute({
+      normalizedText: "Move tomorrow's workout and make it lighter",
+      userId: 42,
+      tenantId: 84,
+      now: FIXED_NOW,
+      env: ENABLED_ENV,
+    });
 
     expect(write).toBeNull();
     expect(portugueseWrite).toBeNull();
@@ -865,6 +1049,7 @@ describe('Chat Core v2 deterministic read route', () => {
     expect(connectionWrite).toBeNull();
     expect(secretaryWrite).toBeNull();
     expect(financeWrite).toBeNull();
+    expect(trainingWrite).toBeNull();
     expect(listTasks).not.toHaveBeenCalled();
     expect(getDecisionSummary).not.toHaveBeenCalled();
     expect(listNotificationCenterItems).not.toHaveBeenCalled();
@@ -872,5 +1057,9 @@ describe('Chat Core v2 deterministic read route', () => {
     expect(listSecretaryAgendaItems).not.toHaveBeenCalled();
     expect(getMonthlySummary).not.toHaveBeenCalled();
     expect(getMonthlyBudgetView).not.toHaveBeenCalled();
+    expect(getActivePlan).not.toHaveBeenCalled();
+    expect(getWeeksForPlan).not.toHaveBeenCalled();
+    expect(getSessionsForWeek).not.toHaveBeenCalled();
+    expect(getWeeklyAdherence).not.toHaveBeenCalled();
   });
 });

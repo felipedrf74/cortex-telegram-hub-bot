@@ -10,6 +10,7 @@ import {
   NOTIFICATIONS_SUMMARY_CAPABILITY,
   SECRETARY_AGENDA_SUMMARY_CAPABILITY,
   TASKS_TODAY_SUMMARY_CAPABILITY,
+  TRAINING_SESSION_EXPLAIN_CAPABILITY,
 } from './deterministic-read/common';
 import { buildAgendaSummaryRoute } from './deterministic-read/agenda-summary-route';
 import { buildConnectionsStatusRoute } from './deterministic-read/connection-status-route';
@@ -17,6 +18,7 @@ import { buildDecisionCenterSummaryRoute } from './deterministic-read/decision-c
 import { buildFinanceSummaryRoute } from './deterministic-read/finance-summary-route';
 import { buildNotificationsSummaryRoute } from './deterministic-read/notification-summary-route';
 import { buildTaskSummaryRoute } from './deterministic-read/task-summary-route';
+import { buildTrainingSessionExplainRoute } from './deterministic-read/training-session-route';
 import type {
   BuildChatCoreV2DeterministicReadRouteInput,
   ChatCoreV2DeterministicReadBuilder,
@@ -40,6 +42,8 @@ export type {
   ChatCoreV2NotificationSummaryItem,
   ChatCoreV2TaskSummaryData,
   ChatCoreV2TaskSummaryItem,
+  ChatCoreV2TrainingSessionExplainData,
+  ChatCoreV2TrainingSessionSummaryItem,
 } from './deterministic-read/types';
 
 type ChatCoreV2CapabilityFlagInput = Parameters<typeof isChatCoreV2CapabilityEnabled>[1];
@@ -51,6 +55,7 @@ const DETERMINISTIC_READ_BUILDERS: Record<ChatCoreV2DeterministicReadCapabilityI
   [NOTIFICATIONS_SUMMARY_CAPABILITY]: buildNotificationsSummaryRoute,
   [CONNECTIONS_STATUS_CAPABILITY]: buildConnectionsStatusRoute,
   [FINANCE_SUMMARY_CAPABILITY]: buildFinanceSummaryRoute,
+  [TRAINING_SESSION_EXPLAIN_CAPABILITY]: buildTrainingSessionExplainRoute,
 };
 
 export function tryBuildChatCoreV2DeterministicReadRoute(
@@ -97,6 +102,9 @@ function deterministicReadCapabilityForRouteGuess(
   }
   if (routeGuess.domains[0] === 'finance' && routeGuess.capabilityIds.includes(FINANCE_SUMMARY_CAPABILITY)) {
     return FINANCE_SUMMARY_CAPABILITY;
+  }
+  if (routeGuess.domains[0] === 'training' && routeGuess.capabilityIds.includes(TRAINING_SESSION_EXPLAIN_CAPABILITY)) {
+    return TRAINING_SESSION_EXPLAIN_CAPABILITY;
   }
   return null;
 }

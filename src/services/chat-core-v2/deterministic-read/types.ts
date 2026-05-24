@@ -10,7 +10,8 @@ export type ChatCoreV2DeterministicReadCapabilityId =
   | 'decision_center.summary'
   | 'notifications.summary'
   | 'connections.status'
-  | 'finance.summary';
+  | 'finance.summary'
+  | 'training.session_explain';
 
 export interface ChatCoreV2AgendaSummaryItem {
   entityId: string;
@@ -142,13 +143,41 @@ export interface ChatCoreV2FinanceSummaryData {
   notes: string[];
 }
 
+export interface ChatCoreV2TrainingSessionSummaryItem {
+  entityId: string;
+  title: string;
+  dayOfWeek: string;
+  sessionType: string;
+  status: string;
+  durationMinutes: number | null;
+  intensityText: string | null;
+}
+
+export interface ChatCoreV2TrainingSessionExplainData {
+  hasActivePlan: boolean;
+  planName: string | null;
+  sport: string | null;
+  goal: string | null;
+  durationWeeks: number | null;
+  currentWeekNumber: number | null;
+  currentWeekFocus: string | null;
+  currentWeekIntensityPct: number | null;
+  adherenceRate: number | null;
+  completedSessions: number;
+  skippedSessions: number;
+  pendingSessions: number;
+  totalSessions: number;
+  topSessions: ChatCoreV2TrainingSessionSummaryItem[];
+}
+
 export type ChatCoreV2DeterministicReadData =
   | ChatCoreV2AgendaSummaryData
   | ChatCoreV2TaskSummaryData
   | ChatCoreV2DecisionCenterSummaryData
   | ChatCoreV2NotificationSummaryData
   | ChatCoreV2ConnectionStatusData
-  | ChatCoreV2FinanceSummaryData;
+  | ChatCoreV2FinanceSummaryData
+  | ChatCoreV2TrainingSessionExplainData;
 
 export interface ChatCoreV2DeterministicReadRouteResult {
   capabilityId: ChatCoreV2DeterministicReadCapabilityId;
