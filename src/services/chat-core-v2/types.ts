@@ -372,6 +372,49 @@ export interface ChatV2ModelRun {
   createdAt: string;
 }
 
+export type ChatV2CommandEventName =
+  | 'command_proposed'
+  | 'preview_rendered'
+  | 'confirmation_requested'
+  | 'confirmation_received'
+  | 'queued'
+  | 'execution_started'
+  | 'retrying'
+  | 'execution_completed'
+  | 'verification_started'
+  | 'verification_completed'
+  | 'verification_failed'
+  | 'command_partially_failed'
+  | 'command_failed'
+  | 'timed_out'
+  | 'stale_rejected'
+  | 'command_expired'
+  | 'command_cancelled'
+  | 'command_undone'
+  | 'undo_failed'
+  | 'command_rejected'
+  | 'approval_denied'
+  | 'human_review_requested';
+
+export interface ChatV2CommandEvent {
+  commandEventId: string;
+  turnId: string;
+  commandId: string;
+  tenantId: string;
+  userId: string;
+  domain: ChatCoreV2Domain;
+  commandType: string;
+  eventName: ChatV2CommandEventName;
+  status: CommandStatus;
+  origin: CommandOrigin;
+  capabilityId?: string;
+  idempotencyKey?: string;
+  reason?: string;
+  redactedSummary: string;
+  metadata?: Record<string, unknown>;
+  createdAt: string;
+}
+
 export interface ChatReplayBundle {
   turnId: string;
   routeDecision: unknown;
@@ -379,6 +422,6 @@ export interface ChatReplayBundle {
   modelRuns: ChatV2ModelRun[];
   toolSchemaSetVersion: string;
   commandProposals: AICommandEnvelope[];
-  commandEvents: unknown[];
+  commandEvents: ChatV2CommandEvent[];
   response: unknown;
 }
