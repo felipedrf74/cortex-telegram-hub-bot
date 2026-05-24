@@ -117,8 +117,6 @@ import { logger } from '../../utils/logger';
 import {
   getChatHybridPlannerMode,
 } from '../runtime-flags';
-import { splitChatMultiStepRequest } from '../chat-multi-step-splitter';
-import { routeChatMultiStepSegments } from '../chat-segment-router';
 import { resolveStepRefs } from '../chat-multi-step-dag';
 import { enqueueChatActionFixerReview } from '../chat-action-fixer-worker';
 import {
@@ -208,6 +206,7 @@ import {
   buildPendingCancellationPlan,
   buildRecentEntityFollowUpPlan,
 } from './planner/preflight-plans';
+import { tryBuildMultiStepChatActionPlan } from './planner/multi-step';
 import {
   recordShadowTelemetry,
   summarizeSlotProvenance,
@@ -346,7 +345,7 @@ export async function buildChatActionPlan(input: ChatPlannerInput): Promise<Chat
   const contentPendingContinuation = buildPendingContentSpecContinuation(input, PENDING_CONTINUATION_HELPERS);
   if (contentPendingContinuation) return contentPendingContinuation;
 
-  const multiStep = await tryBuildMultiStepChatActionPlan(input);
+  const multiStep = await tryBuildMultiStepChatActionPlan(input, buildSingleActionChatActionPlan);
   if (multiStep) return multiStep;
 
   const recentFollowUp = buildRecentEntityFollowUpPlan(input);
@@ -380,40 +379,6 @@ async function buildSingleActionChatActionPlan(input: ChatPlannerInput): Promise
     return buildClarificationPlan(input, input.locale?.startsWith('pt')
       ? 'Preciso só de mais detalhes para fazer isso. Qual é o título, data, hora e destino?'
       : 'I need a few more details to do that. What title, date, time, and destination should I use?');
-  }
-  return null;
-}
-
-async function tryBuildMultiStepChatActionPlan(input: ChatPlannerInput): Promise<ChatActionPlan | null> {
-  const split = splitChatMultiStepRequest(input.text);
-  if (split.classification === 'single' || split.segments.length < 2) return null;
-  const routed = await routeChatMultiStepSegments(input, split.segments, buildSingleActionChatActionPlan);
-  if (routed.plan) {
-    return {
-      ...routed.plan,
-      confidence: Math.min(routed.plan.confidence, split.confidence),
-      effectiveConfidence: Math.min(routed.plan.effectiveConfidence ?? routed.plan.confidence, split.confidence),
-      telemetry: routed.plan.telemetry
-        ? {
-            ...routed.plan.telemetry,
-            calibratedScore: Math.min(routed.plan.telemetry.calibratedScore, split.confidence),
-          }
-        : routed.plan.telemetry,
-      debug: {
-        routingSignals: [
-          ...(routed.plan.debug?.routingSignals ?? []),
-          `multi_step_split_reason:${split.reason}`,
-        ],
-        rejectedFastPaths: routed.plan.debug?.rejectedFastPaths ?? [],
-        parser: 'mixed',
-        modelProvider: routed.plan.debug?.modelProvider,
-      },
-    };
-  }
-  if (routed.blockedReason === 'segment_unresolved') {
-    return buildClarificationPlan(input, input.locale?.startsWith('pt')
-      ? 'Vejo mais de uma ação, mas preciso que separes melhor cada passo antes de executar.'
-      : 'I see more than one action, but I need you to separate each step more clearly before I run it.');
   }
   return null;
 }
