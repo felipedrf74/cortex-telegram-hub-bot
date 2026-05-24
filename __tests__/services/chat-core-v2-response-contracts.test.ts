@@ -5,6 +5,7 @@ import {
   buildChatCoreV2ActionPreviewResponse,
   buildChatCoreV2ClarificationResponse,
   buildChatCoreV2CommandResultResponse,
+  buildChatCoreV2MessageResponse,
   buildChatCoreV2UnsupportedResponse,
   chatCoreV2CardTypeRequiresVisibleDiff,
   getChatCoreV2Capability,
@@ -147,6 +148,23 @@ describe('Chat Core v2 response contracts', () => {
     expect(response.reasonCodes).toEqual(['restricted_domain']);
     expect(response.text).toContain("I can't do that directly yet");
     expect(response.text).toContain('create a reminder');
+  });
+
+  it('builds deterministic message responses without action cards', () => {
+    const response = buildChatCoreV2MessageResponse({
+      text: 'You have no open tasks right now.',
+      locale: 'en-US',
+      reasonCodes: ['deterministic_read', 'tasks.today_summary'],
+    });
+
+    expect(response).toEqual({
+      schemaVersion: 'chat_response_v2@1.0.0',
+      kind: 'message',
+      locale: 'en',
+      text: 'You have no open tasks right now.',
+      cards: [],
+      reasonCodes: ['deterministic_read', 'tasks.today_summary'],
+    });
   });
 
   it('renders result cards with undo only when the capability supports it and a token is present', () => {

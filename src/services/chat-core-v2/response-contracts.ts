@@ -169,6 +169,12 @@ interface BuildUnsupportedInput {
   supportedAlternative?: string;
 }
 
+interface BuildMessageInput {
+  text: string;
+  locale?: string | null;
+  reasonCodes?: string[];
+}
+
 const DIFF_REQUIRED_CARD_TYPES = new Set<ChatCoreV2ResponseCardType>([
   'training_change_preview_card',
   'finance_action_preview_card',
@@ -361,6 +367,17 @@ export function buildChatCoreV2UnsupportedResponse(input: BuildUnsupportedInput)
     text,
     cards: [],
     reasonCodes: [input.reason],
+  };
+}
+
+export function buildChatCoreV2MessageResponse(input: BuildMessageInput): ChatCoreV2Response {
+  return {
+    schemaVersion: CHAT_CORE_V2_RESPONSE_SCHEMA_VERSION,
+    kind: 'message',
+    locale: normalizeChatCoreV2Locale(input.locale),
+    text: input.text,
+    cards: [],
+    reasonCodes: input.reasonCodes ?? [],
   };
 }
 
