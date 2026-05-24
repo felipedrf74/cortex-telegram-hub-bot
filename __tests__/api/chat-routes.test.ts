@@ -4138,6 +4138,246 @@ describe('Chat API routes', () => {
     }
   });
 
+  it('confirms a Chat Core v2 decision-dismiss command through the v2 command bus and replays idempotently', async () => {
+    const previousGlobal = process.env.CHAT_CORE_V2_ENABLED;
+    const previousWrites = process.env.CHAT_CORE_V2_WRITES_ENABLED;
+    const previousConfirmations = process.env.CHAT_CORE_V2_CONFIRMATIONS_ENABLED;
+    process.env.CHAT_CORE_V2_ENABLED = 'true';
+    process.env.CHAT_CORE_V2_WRITES_ENABLED = 'true';
+    process.env.CHAT_CORE_V2_CONFIRMATIONS_ENABLED = 'true';
+    try {
+      const {
+        createDecisionIntent,
+        getDecisionItem,
+        listDecisionItems,
+      } = await import('../../src/services/decision-center');
+      const created = await createDecisionIntent({
+        userId: 7001,
+        tenantId: 7001,
+        sourceSkill: 'system',
+        type: 'decision_required',
+        priority: 'active',
+        title: 'Schedule review',
+        body: 'The schedule review needs a decision.',
+        safePreviewTitle: 'Schedule review',
+        safePreviewBody: 'The schedule review needs a decision.',
+        relatedEntityId: 'chat-core-v2-decision-dismiss-confirm',
+        relatedEntityType: 'chat_core_v2_decision',
+        actionButtons: [{ id: 'open_detail', label: 'Review', style: 'primary' }],
+        requiresUserAction: true,
+        deliveryPolicy: 'in_app_only',
+        privacyPolicy: 'standard',
+        dedupeKey: 'chat-core-v2-decision-dismiss-confirm',
+      });
+      const item = created.item;
+      expect(item).not.toBeNull();
+      expect(getDecisionItem(item.decisionId, 7001, 7001)).toMatchObject({
+        decisionId: item.decisionId,
+        status: 'unread',
+      });
+      expect(listDecisionItems(7001, 7001, { limit: 50 }).map((decision) => decision.title))
+        .toContain('Schedule review');
+      mockRouteMessage.mockClear();
+      mockHandleSecretary.mockClear();
+
+      const preview = await dispatch('POST', '/message', 7001, {
+        text: 'Dismiss the decision called Schedule review',
+        clientMessageId: 'chat-core-v2-decision-dismiss-confirm-1',
+      });
+
+      expect(preview.statusCode, JSON.stringify(preview.body)).toBe(200);
+      expect(preview.body.metadata).toMatchObject({
+        type: 'chat_core_v2_command_preview',
+        pendingConfirmation: {
+          kind: 'pending_confirmation',
+          intent_class: 'decision_center.dismiss',
+          confirmation_token: expect.any(String),
+        },
+        chatCoreV2: {
+          capabilityId: 'decision_center.dismiss',
+          executionEnabled: true,
+          response: {
+            kind: 'action_preview',
+            reasonCodes: expect.arrayContaining(['confirmation_required']),
+          },
+        },
+      });
+      expect(preview.body.metadata.chatCoreV2.response.cards[0]).toMatchObject({
+        primaryAction: {
+          kind: 'confirm',
+          confirmationToken: preview.body.metadata.pendingConfirmation.confirmation_token,
+        },
+      });
+      expect(getDecisionItem(item.decisionId, 7001, 7001)).toMatchObject({
+        decisionId: item.decisionId,
+        status: 'unread',
+      });
+
+      const confirmationBody = {
+        confirmation_token: preview.body.metadata.pendingConfirmation.confirmation_token,
+        intent_class: 'decision_center.dismiss',
+      };
+      const confirmed = await dispatch('POST', '/confirm-action', 7001, confirmationBody);
+
+      expect(confirmed.statusCode, JSON.stringify(confirmed.body)).toBe(200);
+      expect(confirmed.body.routeMethod).toBe('chat-core-v2-command-confirmation');
+      expect(confirmed.body.text).toBe('Done — I dismissed "Schedule review" from Decision Center.');
+      expect(confirmed.body.metadata).toMatchObject({
+        type: 'chat_core_v2_command_result',
+        actionStatus: 'verified',
+        verificationStatus: 'verified',
+        pendingConfirmation: {
+          kind: 'completed_confirmation',
+          intent_class: 'decision_center.dismiss',
+        },
+        chatCoreV2: {
+          capabilityId: 'decision_center.dismiss',
+          commandType: 'decision_center.dismiss',
+          status: 'verified',
+          response: {
+            kind: 'action_result',
+            cards: [expect.objectContaining({
+              type: 'command_result_card',
+              status: 'verified',
+            })],
+          },
+          gate: {
+            ok: true,
+            operation: 'execute',
+            commandStatus: 'confirmed',
+          },
+        },
+      });
+      expect(confirmed.body.responseCards).toEqual([{
+        kind: 'decisionCard',
+        decisionId: item.decisionId,
+        status: 'dismissed',
+        detail: 'Done — I dismissed "Schedule review" from Decision Center.',
+      }]);
+      expect(getDecisionItem(item.decisionId, 7001, 7001)).toMatchObject({
+        decisionId: item.decisionId,
+        status: 'dismissed',
+      });
+      expect(listDecisionItems(7001, 7001, { limit: 50 }).map((decision) => decision.decisionId))
+        .not.toContain(item.decisionId);
+      const metadataJson = JSON.stringify(confirmed.body.metadata);
+      expect(metadataJson).not.toContain('actorUserId');
+      expect(metadataJson).not.toContain('delegatedScopes');
+      expect(metadataJson).not.toContain('idempotencyKey');
+      expect(metadataJson).not.toContain('chat-v2-permissions:7001:7001');
+
+      const replay = await dispatch('POST', '/confirm-action', 7001, confirmationBody);
+      expect(replay.statusCode, JSON.stringify(replay.body)).toBe(200);
+      expect(replay.body.metadata).toMatchObject({
+        idempotentReplay: true,
+        confirmationReplay: true,
+      });
+      expect(getDecisionItem(item.decisionId, 7001, 7001)).toMatchObject({
+        decisionId: item.decisionId,
+        status: 'dismissed',
+      });
+      expect(mockRouteMessage).not.toHaveBeenCalled();
+      expect(mockHandleSecretary).not.toHaveBeenCalled();
+    } finally {
+      if (previousGlobal === undefined) {
+        delete process.env.CHAT_CORE_V2_ENABLED;
+      } else {
+        process.env.CHAT_CORE_V2_ENABLED = previousGlobal;
+      }
+      if (previousWrites === undefined) {
+        delete process.env.CHAT_CORE_V2_WRITES_ENABLED;
+      } else {
+        process.env.CHAT_CORE_V2_WRITES_ENABLED = previousWrites;
+      }
+      if (previousConfirmations === undefined) {
+        delete process.env.CHAT_CORE_V2_CONFIRMATIONS_ENABLED;
+      } else {
+        process.env.CHAT_CORE_V2_CONFIRMATIONS_ENABLED = previousConfirmations;
+      }
+    }
+  });
+
+  it('rejects a stale Chat Core v2 decision-dismiss confirmation before mutating the decision again', async () => {
+    const previousGlobal = process.env.CHAT_CORE_V2_ENABLED;
+    const previousWrites = process.env.CHAT_CORE_V2_WRITES_ENABLED;
+    const previousConfirmations = process.env.CHAT_CORE_V2_CONFIRMATIONS_ENABLED;
+    process.env.CHAT_CORE_V2_ENABLED = 'true';
+    process.env.CHAT_CORE_V2_WRITES_ENABLED = 'true';
+    process.env.CHAT_CORE_V2_CONFIRMATIONS_ENABLED = 'true';
+    try {
+      const {
+        createDecisionIntent,
+        dismissDecision,
+        getDecisionItem,
+        listDecisionItems,
+      } = await import('../../src/services/decision-center');
+      const created = await createDecisionIntent({
+        userId: 7001,
+        tenantId: 7001,
+        sourceSkill: 'system',
+        type: 'decision_required',
+        priority: 'active',
+        title: 'Schedule review',
+        body: 'The schedule review needs a decision.',
+        safePreviewTitle: 'Schedule review',
+        safePreviewBody: 'The schedule review needs a decision.',
+        relatedEntityId: 'chat-core-v2-decision-dismiss-stale',
+        relatedEntityType: 'chat_core_v2_decision',
+        actionButtons: [{ id: 'open_detail', label: 'Review', style: 'primary' }],
+        requiresUserAction: true,
+        deliveryPolicy: 'in_app_only',
+        privacyPolicy: 'standard',
+        dedupeKey: 'chat-core-v2-decision-dismiss-stale',
+      });
+      const item = created.item;
+      expect(item).not.toBeNull();
+      expect(listDecisionItems(7001, 7001, { limit: 50 }).map((decision) => decision.title))
+        .toContain('Schedule review');
+
+      const preview = await dispatch('POST', '/message', 7001, {
+        text: 'Dismiss the decision called Schedule review',
+        clientMessageId: 'chat-core-v2-decision-dismiss-stale-1',
+      });
+      expect(preview.statusCode, JSON.stringify(preview.body)).toBe(200);
+      expect(preview.body.metadata.pendingConfirmation.confirmation_token).toEqual(expect.any(String));
+
+      dismissDecision(item.decisionId, 7001, 7001);
+
+      const confirmed = await dispatch('POST', '/confirm-action', 7001, {
+        confirmation_token: preview.body.metadata.pendingConfirmation.confirmation_token,
+        intent_class: 'decision_center.dismiss',
+      });
+
+      expect(confirmed.statusCode, JSON.stringify(confirmed.body)).toBe(409);
+      expect(confirmed.body.error).toMatchObject({
+        code: 'CHAT_CORE_V2_CONFIRMATION_NOT_EXECUTABLE',
+        message: 'This preview is no longer safe to apply. Please ask again so I can refresh it.',
+      });
+      expect(getDecisionItem(item.decisionId, 7001, 7001)).toMatchObject({
+        decisionId: item.decisionId,
+        status: 'dismissed',
+      });
+      expect(mockRouteMessage).not.toHaveBeenCalled();
+      expect(mockHandleSecretary).not.toHaveBeenCalled();
+    } finally {
+      if (previousGlobal === undefined) {
+        delete process.env.CHAT_CORE_V2_ENABLED;
+      } else {
+        process.env.CHAT_CORE_V2_ENABLED = previousGlobal;
+      }
+      if (previousWrites === undefined) {
+        delete process.env.CHAT_CORE_V2_WRITES_ENABLED;
+      } else {
+        process.env.CHAT_CORE_V2_WRITES_ENABLED = previousWrites;
+      }
+      if (previousConfirmations === undefined) {
+        delete process.env.CHAT_CORE_V2_CONFIRMATIONS_ENABLED;
+      } else {
+        process.env.CHAT_CORE_V2_CONFIRMATIONS_ENABLED = previousConfirmations;
+      }
+    }
+  });
+
   it('returns a Chat Core v2 cooking grocery preview without mutating the shopping list', async () => {
     const previousGlobal = process.env.CHAT_CORE_V2_ENABLED;
     const previousPreviews = process.env.CHAT_CORE_V2_PREVIEWS_ENABLED;

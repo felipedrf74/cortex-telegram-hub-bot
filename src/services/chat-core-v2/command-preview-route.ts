@@ -92,8 +92,13 @@ export interface ChatCoreV2CommandPreviewRouteResult {
 const TASK_CREATE_CAPABILITY = 'tasks.create';
 const TASK_COMPLETE_CAPABILITY = 'tasks.complete';
 const NOTIFICATION_SNOOZE_CAPABILITY = 'notifications.snooze';
-const EXECUTABLE_CAPABILITIES = new Set([TASK_CREATE_CAPABILITY, TASK_COMPLETE_CAPABILITY, NOTIFICATION_SNOOZE_CAPABILITY]);
 const DECISION_DISMISS_CAPABILITY = 'decision_center.dismiss';
+const EXECUTABLE_CAPABILITIES = new Set([
+  TASK_CREATE_CAPABILITY,
+  TASK_COMPLETE_CAPABILITY,
+  NOTIFICATION_SNOOZE_CAPABILITY,
+  DECISION_DISMISS_CAPABILITY,
+]);
 const SECRETARY_SCHEDULE_EVENT_CAPABILITY = 'secretary.schedule_event_preview';
 const TRAINING_MODIFY_SESSION_CAPABILITY = 'training.modify_session_preview';
 const COOKING_GROCERY_ITEM_CAPABILITY = 'cooking.grocery_item_preview';

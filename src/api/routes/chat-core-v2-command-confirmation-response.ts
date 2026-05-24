@@ -135,5 +135,19 @@ function buildResultCards(
       detail: execution.response?.text ?? null,
     }];
   }
+  if (pending.command.commandType === 'decision_center.dismiss') {
+    const payload = pending.command.payload;
+    const decisionId = typeof execution.dismissedDecisionId === 'string'
+      ? execution.dismissedDecisionId
+      : typeof payload.decisionId === 'string'
+        ? payload.decisionId
+        : '';
+    return [{
+      kind: 'decisionCard',
+      decisionId,
+      status: 'dismissed',
+      detail: execution.response?.text ?? null,
+    }];
+  }
   return [];
 }

@@ -1100,6 +1100,46 @@ describe('Chat Core v2 command preview route', () => {
     expect(vi.mocked(listDecisionItems)).toHaveBeenCalledWith(42, 84, { limit: 50 });
   });
 
+  it('issues a confirmation token for decision-dismiss when v2 confirmations are enabled', () => {
+    vi.mocked(listDecisionItems).mockReturnValue([
+      decision({
+        decisionId: 'dc_schedule',
+        title: 'Schedule decision',
+        sourceSkill: 'secretary',
+        urgency: 'urgent',
+      }),
+    ]);
+
+    const result = buildPreview('Dismiss the Schedule decision', CONFIRMATIONS_ENABLED_ENV);
+
+    expect(result).not.toBeNull();
+    expect(result?.capabilityId).toBe('decision_center.dismiss');
+    expect(result?.executionEnabled).toBe(true);
+    expect(result?.executionDisabledReason).toBeUndefined();
+    expect(result?.confirmationToken).toEqual(expect.any(String));
+    expect(result?.response.reasonCodes).toContain('confirmation_required');
+    expect(result?.response.reasonCodes).not.toContain('preview_only_rollout');
+    expect(result?.response.cards[0]).toMatchObject({
+      type: 'decision_preview_card',
+      confirmationToken: result?.confirmationToken,
+      primaryAction: {
+        kind: 'confirm',
+        label: 'Confirm',
+        confirmationToken: result?.confirmationToken,
+      },
+      secondaryActions: [
+        { kind: 'edit', label: 'Edit' },
+        { kind: 'cancel', label: 'Cancel' },
+      ],
+    });
+    expect(getPendingChatCoreV2Command(result!.command.commandId, 42, 84, FIXED_NOW)).toMatchObject({
+      commandId: result!.command.commandId,
+      capabilityId: 'decision_center.dismiss',
+      userId: 42,
+      tenantId: 84,
+    });
+  });
+
   it('localizes decision-dismiss previews after resolving the referenced decision', () => {
     vi.mocked(listDecisionItems).mockReturnValue([
       decision({ decisionId: 'dc_agenda', title: 'Decisão de agenda' }),

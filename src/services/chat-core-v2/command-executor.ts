@@ -28,6 +28,11 @@ import {
   snoozeNotificationCenterItem,
   type NotificationCenterItem,
 } from '../notification-orchestrator';
+import {
+  dismissDecision,
+  getDecisionItem,
+  type DecisionApiItem,
+} from '../decision-center';
 import type {
   AICommandEnvelope,
   CapabilityDefinition,
@@ -54,6 +59,7 @@ export interface ChatCoreV2CommandExecutionResult {
   createdTaskId?: number;
   completedTaskId?: number;
   snoozedNotificationId?: string;
+  dismissedDecisionId?: string;
 }
 
 export async function executeChatCoreV2Command(input: {
@@ -72,7 +78,7 @@ export async function executeChatCoreV2Command(input: {
     delegatedScopes: input.command.authorization.delegatedScopes,
     permissionSnapshotVersion: input.command.authorization.permissionSnapshotVersion,
     currentEntityVersions: executeSnapshot.currentEntityVersions,
-    decisionVersion: input.command.preconditions.requiredDecisionVersion,
+    decisionVersion: executeSnapshot.decisionVersion ?? input.command.preconditions.requiredDecisionVersion,
     invariantResults: executeSnapshot.invariantResults,
     now,
   }, 'execute');
@@ -117,6 +123,14 @@ export async function executeChatCoreV2Command(input: {
   }
   if (input.command.commandType === 'notifications.snooze') {
     return executeNotificationSnooze({
+      ...input,
+      capability,
+      gateVerdict,
+      now,
+    });
+  }
+  if (input.command.commandType === 'decision_center.dismiss') {
+    return executeDecisionDismiss({
       ...input,
       capability,
       gateVerdict,
@@ -179,7 +193,8 @@ export async function executeChatCoreV2Command(input: {
 function isExecutableCommandType(commandType: string): boolean {
   return commandType === 'tasks.create'
     || commandType === 'tasks.complete'
-    || commandType === 'notifications.snooze';
+    || commandType === 'notifications.snooze'
+    || commandType === 'decision_center.dismiss';
 }
 
 function buildExecuteGateSnapshot(
@@ -189,12 +204,16 @@ function buildExecuteGateSnapshot(
 ): {
   currentEntityVersions: Record<string, string>;
   invariantResults: Record<string, boolean>;
+  decisionVersion?: string;
 } {
   if (command.commandType === 'tasks.complete') {
     return buildTaskCompleteExecuteGateSnapshot(command);
   }
   if (command.commandType === 'notifications.snooze') {
     return buildNotificationExecuteGateSnapshot(command, userId, tenantId);
+  }
+  if (command.commandType === 'decision_center.dismiss') {
+    return buildDecisionDismissExecuteGateSnapshot(command, userId, tenantId);
   }
   return {
     currentEntityVersions: command.preconditions.requiredEntityVersions,
@@ -240,6 +259,31 @@ function buildNotificationExecuteGateSnapshot(
     currentEntityVersions,
     invariantResults: {
       notification_is_unread: Boolean(item && item.status === 'unread'),
+    },
+  };
+}
+
+function buildDecisionDismissExecuteGateSnapshot(
+  command: AICommandEnvelope<Record<string, unknown>>,
+  userId: number,
+  tenantId: number,
+): {
+  currentEntityVersions: Record<string, string>;
+  invariantResults: Record<string, boolean>;
+  decisionVersion?: string;
+} {
+  const decisionId = decisionIdFromPayload(command.payload);
+  const item = decisionId ? getDecisionItem(decisionId, userId, tenantId) : null;
+  const entityId = decisionId ? `decision:${decisionId}` : undefined;
+  const decisionVersion = item ? decisionVersionForItem(item) : undefined;
+  const currentEntityVersions = entityId && decisionVersion
+    ? { [entityId]: decisionVersion }
+    : {};
+  return {
+    currentEntityVersions,
+    decisionVersion,
+    invariantResults: {
+      decision_is_active: Boolean(item && item.status === 'unread'),
     },
   };
 }
@@ -384,6 +428,66 @@ async function executeNotificationSnooze(input: {
   }
 }
 
+async function executeDecisionDismiss(input: {
+  command: AICommandEnvelope<Record<string, unknown>>;
+  capabilityId: string;
+  capability: CapabilityDefinition;
+  userId: number;
+  tenantId: number;
+  locale?: string | null;
+  now: Date;
+  gateVerdict: ChatCoreV2CommandGateVerdict;
+}): Promise<ChatCoreV2CommandExecutionResult> {
+  const decisionId = decisionIdFromPayload(input.command.payload);
+  if (!decisionId) {
+    recordCommandEvent(input.command, input.capabilityId, 'command_failed', 'failed', 'execution_failed', input.now);
+    return emptyExecutionFailure(input);
+  }
+
+  try {
+    const updated = dismissDecision(decisionId, input.userId, input.tenantId);
+    const verified = Boolean(updated && updated.status === 'dismissed');
+    const status: CommandStatus = verified ? 'verified' : 'verification_failed';
+    const title = updated?.title ?? String(input.command.payload.title ?? 'Decision');
+    const response = buildDecisionDismissResultResponse({
+      capability: input.capability,
+      command: input.command,
+      title,
+      decisionId,
+      status,
+      locale: input.locale,
+    });
+
+    recordCommandEvent(input.command, input.capabilityId, 'execution_completed', 'executed', undefined, input.now, {
+      decisionId,
+    });
+    recordCommandEvent(
+      input.command,
+      input.capabilityId,
+      verified ? 'verification_completed' : 'verification_failed',
+      status,
+      verified ? undefined : 'verification_failed',
+      input.now,
+      { decisionId },
+    );
+
+    return {
+      ok: verified,
+      executorVersion: CHAT_CORE_V2_COMMAND_EXECUTOR_VERSION,
+      commandId: input.command.commandId,
+      capabilityId: input.capabilityId,
+      gateVerdict: input.gateVerdict,
+      response,
+      status,
+      reason: verified ? undefined : 'verification_failed',
+      dismissedDecisionId: decisionId,
+    };
+  } catch {
+    recordCommandEvent(input.command, input.capabilityId, 'command_failed', 'failed', 'execution_failed', input.now);
+    return emptyExecutionFailure(input);
+  }
+}
+
 function taskCreatePayload(payload: Record<string, unknown>): Parameters<typeof createTask>[1] {
   const title = String(payload.title ?? '').trim();
   const dueDateTime = typeof payload.dueDateTime === 'string' && payload.dueDateTime.trim()
@@ -408,6 +512,11 @@ function taskIdFromPayload(payload: Record<string, unknown>): number | null {
 function notificationIdFromPayload(payload: Record<string, unknown>): string | null {
   const notificationId = typeof payload.notificationId === 'string' ? payload.notificationId.trim() : '';
   return notificationId ? notificationId : null;
+}
+
+function decisionIdFromPayload(payload: Record<string, unknown>): string | null {
+  const decisionId = typeof payload.decisionId === 'string' ? payload.decisionId.trim() : '';
+  return decisionId ? decisionId : null;
 }
 
 function snoozedUntilFromPayload(payload: Record<string, unknown>): string | null {
@@ -436,6 +545,24 @@ function notificationVersionForItem(item: NotificationCenterItem): string {
     })),
     createdAt: item.createdAt,
     expiresAt: item.expiresAt,
+  });
+}
+
+function decisionVersionForItem(item: DecisionApiItem): string {
+  return hashStable({
+    decisionId: item.decisionId,
+    title: item.title,
+    summary: item.summary,
+    safePreviewTitle: item.safePreviewTitle,
+    safePreviewBody: item.safePreviewBody,
+    status: item.status,
+    urgency: item.urgency,
+    sourceSkill: item.sourceSkill,
+    type: item.type,
+    actions: item.actions.map((action) => ({ id: action.id, label: action.label, style: action.style ?? null })),
+    updatedAt: item.updatedAt,
+    expiresAt: item.expiresAt,
+    snoozedUntil: item.snoozedUntil,
   });
 }
 
@@ -525,6 +652,81 @@ function buildNotificationSnoozeResultResponse(input: {
       { label: statusCopy.until, after: input.snoozedUntil },
     ],
   });
+}
+
+function buildDecisionDismissResultResponse(input: {
+  capability: CapabilityDefinition;
+  command: AICommandEnvelope<Record<string, unknown>>;
+  title: string;
+  decisionId: string;
+  status: CommandStatus;
+  locale?: string | null;
+}): ChatCoreV2Response {
+  const locale = normalizeChatCoreV2Locale(input.locale);
+  const copy = decisionDismissResultCopy(locale, input.title);
+  const labels = decisionStatusCopy(locale);
+  return buildChatCoreV2CommandResultResponse({
+    capability: input.capability,
+    commandId: input.command.commandId,
+    title: copy.title,
+    summary: copy.summary,
+    status: input.status,
+    locale,
+    sourceEntityIds: [`decision:${input.decisionId}`],
+    diff: [
+      { label: labels.decision, after: input.title },
+      { label: labels.status, before: labels.active, after: labels.dismissed },
+      { label: labels.effect, after: labels.removed },
+    ],
+  });
+}
+
+function decisionDismissResultCopy(
+  locale: ChatCoreV2Locale,
+  title: string,
+): { title: string; summary: string } {
+  if (locale === 'pt-BR') {
+    return {
+      title: 'Decisão dispensada',
+      summary: `Feito — dispensei "${title}" do Decision Center.`,
+    };
+  }
+  if (locale === 'pt-PT') {
+    return {
+      title: 'Decisão dispensada',
+      summary: `Feito — dispensei "${title}" do Decision Center.`,
+    };
+  }
+  if (locale === 'es') {
+    return {
+      title: 'Decisión descartada',
+      summary: `Listo — descarté "${title}" del Decision Center.`,
+    };
+  }
+  return {
+    title: 'Decision dismissed',
+    summary: `Done — I dismissed "${title}" from Decision Center.`,
+  };
+}
+
+function decisionStatusCopy(locale: ChatCoreV2Locale): {
+  decision: string;
+  status: string;
+  effect: string;
+  active: string;
+  dismissed: string;
+  removed: string;
+} {
+  if (locale === 'pt-BR') {
+    return { decision: 'Decisão', status: 'Estado', effect: 'Efeito', active: 'Ativa', dismissed: 'Dispensada', removed: 'Removida da fila ativa' };
+  }
+  if (locale === 'pt-PT') {
+    return { decision: 'Decisão', status: 'Estado', effect: 'Efeito', active: 'Ativa', dismissed: 'Dispensada', removed: 'Removida da fila ativa' };
+  }
+  if (locale === 'es') {
+    return { decision: 'Decisión', status: 'Estado', effect: 'Efecto', active: 'Activa', dismissed: 'Descartada', removed: 'Retirada de la cola activa' };
+  }
+  return { decision: 'Decision', status: 'Status', effect: 'Effect', active: 'Active', dismissed: 'Dismissed', removed: 'Removed from active queue' };
 }
 
 function notificationSnoozeResultCopy(
