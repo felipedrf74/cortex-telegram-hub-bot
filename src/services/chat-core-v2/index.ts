@@ -12,3 +12,4 @@ export * from './read-models';
 export * from './reasoning-policies';
 export * from './runtime-budget';
 export * from './types';
+export * from './workflow-state-machine';
