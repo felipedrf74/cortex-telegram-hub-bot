@@ -1,6 +1,5 @@
 // Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
 
-import { DateTime } from 'luxon';
 import { randomUUID } from 'crypto';
 import {
   createEvent,
@@ -70,21 +69,14 @@ import {
   buildStepIdempotencyKey,
   makeStep,
 } from '../skills/step-builder';
-import { parseConnectionsActionStep } from '../skills/connections/parser';
 import { parseContentActionStep } from '../skills/content/parser';
 import { buildPendingContentSpecContinuation } from '../skills/content/pending';
-import { parseCookingActionStep } from '../skills/cooking/parser';
 import { buildPendingCookingMealPlanContinuation } from '../skills/cooking/pending';
-import { parseDecisionActionStep } from '../skills/decision_center/parser';
 import { buildPendingDecisionChooseContinuation } from '../skills/decision_center/pending';
-import { parseFinanceActionStep } from '../skills/finance/parser';
 import { buildPendingFinanceCategorizeContinuation } from '../skills/finance/pending';
-import { parseMailActionStep } from '../skills/mail/parser';
 import { buildPendingMailDraftContinuation } from '../skills/mail/pending';
-import { parseNotificationActionStep } from '../skills/notifications/parser';
 import { hasPastTenseSignal } from '../skills/past-tense-detector';
 import { extractTopic, inferContentPlatform, inferProviderName } from '../skills/text-extractors';
-import { parseTrainingActionStep } from '../skills/training/parser';
 import { buildPendingSlotContinuationPlan } from '../skills/training/pending';
 import type { PendingContinuationHelpers } from './planner/pending-types';
 import { invalidateCalendarCaches } from '../cache-coherence-registry';
@@ -213,6 +205,7 @@ import {
   buildTargetedClarificationQuestion,
   defaultClarification,
 } from './planner/clarification';
+import { parseBroadSkillActionIntent } from './planner/broad-skill-intents';
 import {
   recordShadowTelemetry,
   summarizeSlotProvenance,
@@ -220,6 +213,7 @@ import {
 } from './executor/telemetry';
 
 export { buildLlmPlannerPrompt, buildTier1ClassifierPrompt, parseLlmPlannerJson, parseTier1ClassifierJson } from './planner/tiers';
+export { BROAD_SKILL_MIN_PRIORITY_GAP, BROAD_SKILL_SLOT_COMPLETENESS_BONUS } from './planner/broad-skill-intents';
 
 export type {
   CalendarProviderDeps,
@@ -236,8 +230,6 @@ export type {
 } from './types';
 
 const DEFAULT_PROVIDER_READ_BACK_TIMEOUT_MS = 3_500;
-export const BROAD_SKILL_SLOT_COMPLETENESS_BONUS = 0.005;
-export const BROAD_SKILL_MIN_PRIORITY_GAP = 0.01;
 const DEFAULT_PROVIDER_WRITE_TIMEOUT_MS = 10_000;
 
 const DEFAULT_DEPS: Required<ChatActionPlannerDeps> = {
@@ -687,73 +679,6 @@ export function buildDeterministicChatActionPlan(input: ChatPlannerInput): ChatA
   if (task) return task;
   const broadAction = parseBroadSkillActionIntent(input);
   if (broadAction) return broadAction;
-  return null;
-}
-
-function parseBroadSkillActionIntent(input: ChatPlannerInput): ChatActionPlan | null {
-  const folded = foldCalendarText(input.text);
-  const locale = input.locale || 'pt-BR';
-  const now = DateTime.fromISO(input.nowIso ?? new Date().toISOString()).setZone(input.timezone);
-
-  // Phase 16 batch 89 second half (2026-05-17): score-based intent picking.
-  //
-  // Before this batch the dispatch was first-match priority — each parser
-  // returned `step | null` and the first non-null result won. The original
-  // Phase 6 batch 6 routing-gap fix established a hand-coded priority
-  // ordering (notifications/decisions ahead of training because "disable
-  // training notifications" should pick notifications). Score-based
-  // picking preserves that ordering as scoreboard weights AND adds slot-
-  // completeness as a TIE-BREAKER (small enough not to cross the
-  // smallest priority gap of 0.01) so when two parsers at the same
-  // base weight both match, the more-confident extraction wins.
-  //
-  // The score = baseWeight + (requiredArgsPresent ? bonus : 0). The
-  // bonus is intentionally smaller than the smallest inter-skill priority
-  // gap between adjacent skills so it only tie-breaks within a priority
-  // tier; it never demotes a higher-priority skill.
-  const candidates: Array<{
-    step: ChatPlanStep;
-    routingSignals: string[];
-    confidence: number;
-    score: number;
-  }> = [];
-  function consider(step: ChatPlanStep | null, baseWeight: number, signals: string[]) {
-    if (!step) return;
-    const score = baseWeight + (step.requiredArgsPresent ? BROAD_SKILL_SLOT_COMPLETENESS_BONUS : 0);
-    candidates.push({ step, routingSignals: signals, confidence: baseWeight, score });
-  }
-
-  consider(parseNotificationActionStep(input, folded), 0.78, ['notification_action_intent', 'deterministic_skill_parser']);
-  consider(parseDecisionActionStep(input, folded), 0.77, ['decision_action_intent', 'deterministic_skill_parser']);
-  consider(parseContentActionStep(input, folded), 0.78, ['content_action_intent', 'deterministic_skill_parser']);
-  consider(parseMailActionStep(input, folded), 0.77, ['mail_action_intent', 'deterministic_skill_parser']);
-  consider(parseCookingActionStep(input, folded, now), 0.76, ['cooking_action_intent', 'deterministic_skill_parser']);
-  consider(parseFinanceActionStep(input, folded, now), 0.75, ['finance_action_intent', 'deterministic_skill_parser']);
-  consider(parseConnectionsActionStep(input, folded), 0.74, ['connections_action_intent', 'deterministic_skill_parser']);
-  consider(parseTrainingActionStep(input, folded), 0.72, ['training_action_intent', 'deterministic_skill_parser']);
-
-  if (candidates.length > 0) {
-    // Stable sort: highest score wins; first declared wins on tie to
-    // preserve the historic priority ordering.
-    const best = candidates.reduce((a, b) => (b.score > a.score ? b : a));
-    return buildPlanFromSteps(input, [best.step], best.routingSignals, best.confidence);
-  }
-
-  if (messageHasActionCandidate(input.text)) {
-    const subset = selectRegistrySubsetForMessage(input.text);
-    const primary = subset[0];
-    if (primary) {
-      const step = makeStep(input, {
-        skill: primary.skill,
-        action: primary.action,
-        risk: primary.risk,
-        provider: primary.providerDependencies[0] ?? 'nexus',
-        args: { rawRequest: input.text },
-        requiredArgsPresent: false,
-      });
-      return buildPlanFromSteps(input, [step], ['unknown_action_candidate', primary.skill], 0.42);
-    }
-  }
   return null;
 }
 
