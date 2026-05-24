@@ -608,7 +608,7 @@ describe('Chat Core v2 command preview route', () => {
     expect(result?.response.cards[0]?.primaryAction?.confirmationToken).toBeUndefined();
   });
 
-  it('issues a confirmation token for task-create only when v2 confirmations are enabled', () => {
+  it('issues a confirmation token for task-create when v2 confirmations are enabled', () => {
     const result = buildPreview('Create a task called Buy milk tomorrow at 09:00', CONFIRMATIONS_ENABLED_ENV);
 
     expect(result).not.toBeNull();
@@ -747,6 +747,41 @@ describe('Chat Core v2 command preview route', () => {
     });
     expect(result?.response.cards[0]?.confirmationToken).toBeUndefined();
     expect(vi.mocked(listTasks)).toHaveBeenCalledWith(42, { status: 'pending' });
+  });
+
+  it('issues a confirmation token for task-complete when v2 confirmations are enabled', () => {
+    vi.mocked(listTasks).mockReturnValue([
+      task({ id: 101, title: 'Buy milk', dueDate: '2026-05-25', dueIsDatetime: false }),
+    ]);
+
+    const result = buildPreview('Complete the Buy milk task', CONFIRMATIONS_ENABLED_ENV);
+
+    expect(result).not.toBeNull();
+    expect(result?.capabilityId).toBe('tasks.complete');
+    expect(result?.executionEnabled).toBe(true);
+    expect(result?.executionDisabledReason).toBeUndefined();
+    expect(result?.confirmationToken).toEqual(expect.any(String));
+    expect(result?.response.reasonCodes).toContain('confirmation_required');
+    expect(result?.response.reasonCodes).not.toContain('preview_only_rollout');
+    expect(result?.response.cards[0]).toMatchObject({
+      type: 'task_preview_card',
+      confirmationToken: result?.confirmationToken,
+      primaryAction: {
+        kind: 'confirm',
+        label: 'Confirm',
+        confirmationToken: result?.confirmationToken,
+      },
+      secondaryActions: [
+        { kind: 'edit', label: 'Edit' },
+        { kind: 'cancel', label: 'Cancel' },
+      ],
+    });
+    expect(getPendingChatCoreV2Command(result!.command.commandId, 42, 84, FIXED_NOW)).toMatchObject({
+      commandId: result!.command.commandId,
+      capabilityId: 'tasks.complete',
+      userId: 42,
+      tenantId: 84,
+    });
   });
 
   it('localizes task-complete previews after resolving the referenced task', () => {

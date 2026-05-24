@@ -106,5 +106,20 @@ function buildResultCards(
       listName: typeof payload.list === 'string' ? payload.list : null,
     }];
   }
+  if (pending.command.commandType === 'tasks.complete') {
+    const payload = pending.command.payload;
+    return [{
+      kind: 'taskCard',
+      taskId: typeof execution.completedTaskId === 'number'
+        ? String(execution.completedTaskId)
+        : typeof payload.taskId === 'number'
+          ? String(payload.taskId)
+          : null,
+      title: typeof payload.title === 'string' ? payload.title : 'Task',
+      status: 'completed',
+      dueAt: typeof payload.dueDateTime === 'string' ? payload.dueDateTime : null,
+      listName: null,
+    }];
+  }
   return [];
 }
