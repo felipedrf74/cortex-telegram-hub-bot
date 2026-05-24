@@ -111,4 +111,12 @@ describe('Chat Core v2 shadow route hook', () => {
       capabilityIds: ['training.session_explain'],
     });
   });
+
+  it('routes localized lighter-workout requests to the training preview capability', () => {
+    expect(classifyShadowRoute('Torna o treino de amanhã mais leve')).toMatchObject({
+      intent: 'modify_action',
+      domains: ['training'],
+      capabilityIds: ['training.modify_session_preview'],
+    });
+  });
 });
