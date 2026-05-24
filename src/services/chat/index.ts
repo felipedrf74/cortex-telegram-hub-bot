@@ -19,9 +19,7 @@ import {
 } from '../calendar-natural-language-parser';
 import {
   findChatActionDefinition,
-  messageHasActionCandidate,
   riskClassForRisk,
-  selectRegistrySubsetForMessage,
   type ChatActionDefinition,
 } from './registry';
 import type {
@@ -43,11 +41,8 @@ import {
   type ChatActionRunStatus,
 } from '../chat-action-run-store';
 import {
-  cancelPendingChatActions,
-  makeSlotProvenance,
   recordChatActionTelemetry,
   rememberRecentChatEntity,
-  resolveRecentChatEntity,
 } from '../chat-action-state';
 import { getChatStepExecutor } from './executor/dispatch-table';
 import {
@@ -55,9 +50,6 @@ import {
   buildTier1ClassifierPrompt,
   parseLlmPlannerJson,
   parseTier1ClassifierJson,
-  tryBuildEscalationReviewerPlan,
-  tryBuildLlmStructuredPlan,
-  tryBuildTier1ClassifierPlan,
 } from './planner/tiers';
 import { sanitizePlannerArgs } from './planner/arg-sanitizer';
 import {
@@ -120,8 +112,6 @@ import { logger } from '../../utils/logger';
 import {
   getChatHybridPlannerMode,
 } from '../runtime-flags';
-import { splitChatMultiStepRequest } from '../chat-multi-step-splitter';
-import { routeChatMultiStepSegments } from '../chat-segment-router';
 import { resolveStepRefs } from '../chat-multi-step-dag';
 import { enqueueChatActionFixerReview } from '../chat-action-fixer-worker';
 import {
@@ -166,7 +156,6 @@ import {
   rowToConfirmedStep,
 } from './executor/run-persistence';
 import {
-  buildClarificationPlan,
   buildMessageOnlyPlan,
   buildNeedsInputPlan,
   buildPlanFromSteps,
@@ -206,6 +195,13 @@ import {
 } from './planner/clarification';
 import { parseBroadSkillActionIntent } from './planner/broad-skill-intents';
 import { shouldRunActionPlannerBeforeReadOnlyFastPaths } from './planner/preflight-gates';
+import {
+  buildAmbiguousActionClarificationPlan,
+  buildPendingCancellationPlan,
+  buildRecentEntityFollowUpPlan,
+} from './planner/preflight-plans';
+import { tryBuildMultiStepChatActionPlan } from './planner/multi-step';
+import { buildSingleActionChatActionPlan } from './planner/single-action';
 import {
   recordShadowTelemetry,
   summarizeSlotProvenance,
@@ -344,7 +340,7 @@ export async function buildChatActionPlan(input: ChatPlannerInput): Promise<Chat
   const contentPendingContinuation = buildPendingContentSpecContinuation(input, PENDING_CONTINUATION_HELPERS);
   if (contentPendingContinuation) return contentPendingContinuation;
 
-  const multiStep = await tryBuildMultiStepChatActionPlan(input);
+  const multiStep = await tryBuildMultiStepChatActionPlan(input, singleActionPlanner);
   if (multiStep) return multiStep;
 
   const recentFollowUp = buildRecentEntityFollowUpPlan(input);
@@ -355,168 +351,11 @@ export async function buildChatActionPlan(input: ChatPlannerInput): Promise<Chat
 
   if (!shouldRunActionPlannerBeforeReadOnlyFastPaths(input.text)) return null;
 
-  return buildSingleActionChatActionPlan(input);
+  return singleActionPlanner(input);
 }
 
-async function buildSingleActionChatActionPlan(input: ChatPlannerInput): Promise<ChatActionPlan | null> {
-  const deterministic = buildDeterministicChatActionPlan(input);
-  if (deterministic) return deterministic;
-
-  const folded = foldCalendarText(input.text);
-  const looksComplex = /(?:\be\b|\band\b|\+|,).{8,}/.test(folded) || selectRegistrySubsetForMessage(input.text).length > 1;
-  const tier1Plan = await tryBuildTier1ClassifierPlan(input);
-  if (tier1Plan) return tier1Plan;
-
-  if (looksComplex || messageHasActionCandidate(input.text)) {
-    const llmPlan = await tryBuildLlmStructuredPlan(input);
-    if (llmPlan) return llmPlan;
-    const reviewerPlan = await tryBuildEscalationReviewerPlan(input);
-    if (reviewerPlan) return reviewerPlan;
-  }
-
-  if (messageHasActionCandidate(input.text)) {
-    return buildClarificationPlan(input, input.locale?.startsWith('pt')
-      ? 'Preciso só de mais detalhes para fazer isso. Qual é o título, data, hora e destino?'
-      : 'I need a few more details to do that. What title, date, time, and destination should I use?');
-  }
-  return null;
-}
-
-async function tryBuildMultiStepChatActionPlan(input: ChatPlannerInput): Promise<ChatActionPlan | null> {
-  const split = splitChatMultiStepRequest(input.text);
-  if (split.classification === 'single' || split.segments.length < 2) return null;
-  const routed = await routeChatMultiStepSegments(input, split.segments, buildSingleActionChatActionPlan);
-  if (routed.plan) {
-    return {
-      ...routed.plan,
-      confidence: Math.min(routed.plan.confidence, split.confidence),
-      effectiveConfidence: Math.min(routed.plan.effectiveConfidence ?? routed.plan.confidence, split.confidence),
-      telemetry: routed.plan.telemetry
-        ? {
-            ...routed.plan.telemetry,
-            calibratedScore: Math.min(routed.plan.telemetry.calibratedScore, split.confidence),
-          }
-        : routed.plan.telemetry,
-      debug: {
-        routingSignals: [
-          ...(routed.plan.debug?.routingSignals ?? []),
-          `multi_step_split_reason:${split.reason}`,
-        ],
-        rejectedFastPaths: routed.plan.debug?.rejectedFastPaths ?? [],
-        parser: 'mixed',
-        modelProvider: routed.plan.debug?.modelProvider,
-      },
-    };
-  }
-  if (routed.blockedReason === 'segment_unresolved') {
-    return buildClarificationPlan(input, input.locale?.startsWith('pt')
-      ? 'Vejo mais de uma ação, mas preciso que separes melhor cada passo antes de executar.'
-      : 'I see more than one action, but I need you to separate each step more clearly before I run it.');
-  }
-  return null;
-}
-
-function buildAmbiguousActionClarificationPlan(input: ChatPlannerInput): ChatActionPlan | null {
-  const folded = foldCalendarText(input.text);
-  const hasScheduleVerb = /\b(schedule|plan|put|book|set up|marca|marcar|agenda|agendar|programa|programar)\b/.test(folded);
-  const hasAmbiguousObject = /\b(something|anything|stuff|thing|algo|alguma coisa|coisa|qualquer coisa)\b/.test(folded);
-  const hasDateHint = /\b(today|tomorrow|tonight|next\s+(?:week|monday|tuesday|wednesday|thursday|friday|saturday|sunday)|monday|tuesday|wednesday|thursday|friday|saturday|sunday|hoje|amanha|amanhã|esta\s+semana|proxima\s+semana|próxima\s+semana|segunda|terca|terça|quarta|quinta|sexta|sabado|sábado|domingo)\b/.test(folded);
-  if (!hasScheduleVerb || !hasAmbiguousObject || !hasDateHint) return null;
-
-  return buildNeedsInputPlan(input, {
-    skill: 'secretary_calendar',
-    action: 'schedule_event',
-    question: input.locale?.startsWith('pt')
-      ? 'Queres criar um evento, uma tarefa ou um lembrete?'
-      : 'Should I make this an event, a task, or a reminder?',
-    args: { rawRequest: input.text },
-    routingSignals: ['ambiguous_action_intent', 'clarifying_question'],
-    clarificationReason: 'ambiguous_intent',
-    intentClass: 'clarifying_question',
-  });
-}
-
-function buildPendingCancellationPlan(input: ChatPlannerInput): ChatActionPlan | null {
-  const folded = foldCalendarText(input.text);
-  if (!/\b(cancel|cancelar|never mind|nevermind|esquece|deixa|forget it)\b/.test(folded)) return null;
-  const cancelled = cancelPendingChatActions({
-    userId: input.userId,
-    tenantId: input.tenantId,
-    conversationId: input.conversationId,
-    nowIso: input.nowIso,
-  });
-  if (cancelled <= 0) return null;
-  return buildMessageOnlyPlan(input, input.locale?.startsWith('pt')
-    ? 'Está cancelado. Não vou continuar essa ação pendente.'
-    : 'Cancelled. I will not continue that pending action.', 'pending_action_cancelled');
-}
-
-function buildRecentEntityFollowUpPlan(input: ChatPlannerInput): ChatActionPlan | null {
-  const folded = foldCalendarText(input.text);
-  if (!/\b(mark|complete|done|finish|concluir|conclui|feito|terminar|marca)\b/.test(folded)) return null;
-  if (!/\b(this task|that task|it|this|that|essa tarefa|esta tarefa|isso)\b/.test(folded)) return null;
-  const resolved = resolveRecentChatEntity({
-    userId: input.userId,
-    tenantId: input.tenantId,
-    conversationId: input.conversationId,
-    entityType: 'task',
-    action: 'complete_task',
-    nowIso: input.nowIso,
-  });
-  if (resolved.status === 'single') {
-    const entity = resolved.candidates[0];
-    const args = {
-      taskId: entity.entityId,
-      listId: typeof entity.metadata?.listId === 'string' ? entity.metadata.listId : undefined,
-      listName: typeof entity.metadata?.listName === 'string' ? entity.metadata.listName : undefined,
-      title: entity.userVisibleLabel,
-    };
-    if (!args.listId) {
-      return buildNeedsInputPlan(input, {
-        skill: 'tasks',
-        action: 'complete_task',
-        question: input.locale?.startsWith('pt')
-          ? `Qual tarefa devo concluir: ${entity.userVisibleLabel}?`
-          : `Which task should I mark done: ${entity.userVisibleLabel}?`,
-        args: {},
-        routingSignals: ['recent_entity_followup', 'task_reference_missing_list'],
-      });
-    }
-    const step = makeStep(input, {
-      skill: 'tasks',
-      action: 'complete_task',
-      risk: 'safe_write',
-      provider: 'nexus',
-      args,
-      slotProvenance: {
-        taskId: makeSlotProvenance({
-          slot: 'taskId',
-          value: entity.entityId,
-          rawText: input.text,
-          turnId: input.messageId,
-          sourceType: 'visible_card',
-          normalizer: 'recent_entity_graph_v1',
-          confidence: entity.confidence,
-        }),
-      },
-      requiredArgsPresent: Boolean(args.taskId && args.listId),
-    });
-    return buildPlanFromSteps(input, [step], ['recent_entity_followup', 'task_reference_resolved'], 0.94);
-  }
-  const options = resolved.candidates.map((candidate) => candidate.userVisibleLabel).filter(Boolean).slice(0, 3);
-  return buildNeedsInputPlan(input, {
-    skill: 'tasks',
-    action: 'complete_task',
-    question: input.locale?.startsWith('pt')
-      ? options.length > 0
-        ? `Qual tarefa devo concluir: ${options.join(', ')}?`
-        : 'Qual tarefa devo concluir?'
-      : options.length > 0
-        ? `Which task should I mark done: ${options.join(', ')}?`
-        : 'Which task should I mark done?',
-    args: {},
-    routingSignals: [resolved.status === 'ambiguous' ? 'ambiguous_recent_task_reference' : 'missing_recent_task_reference'],
-  });
+function singleActionPlanner(input: ChatPlannerInput): Promise<ChatActionPlan | null> {
+  return buildSingleActionChatActionPlan(input, buildDeterministicChatActionPlan);
 }
 
 export function buildDeterministicChatActionPlan(input: ChatPlannerInput): ChatActionPlan | null {
