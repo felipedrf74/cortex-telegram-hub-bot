@@ -161,6 +161,7 @@ HAS_AUDIT=false               # audit trail and audit-event contracts
 HAS_DEPLOY_CONFIG=false       # PM2/deploy config and environment shape
 HAS_EVENT_BACKBONE=false      # event_outbox/jobs/read-models/delta-sync/budgets
 HAS_CHAT_REASONING=false      # Chat ActionFrame parsing/execution/eval harness
+HAS_CHAT_CORE_V2=false        # Chat Core v2 contracts/orchestration/shadow route
 HAS_IOS_NAVIGATION=false      # tab/navigation/view-model responsiveness
 HAS_IOS_DTO=false             # app-facing DTO/decoder contract changes
 HAS_IOS_NOTIFICATION=false    # APNs/local notifications/Decision Center UI
@@ -348,7 +349,8 @@ match '^src/services/event-outbox|^src/services/background-job-queue|^src/servic
 # task/subtask execution, policy validation, and route-level no-model
 # interception. These changes must route through behavior tests, not
 # shape-only prompt checks.
-match '^src/services/chat-reasoning|^src/api/routes/chat-message-routes|^__tests__/services/chat-reasoning|^__tests__/api/chat-routes' && { HAS_CHAT_REASONING=true; HAS_SECRETARY=true; }
+match '^src/services/chat/|^src/services/chat-reasoning|^src/api/routes/chat-message-routes|^__tests__/services/chat-reasoning|^__tests__/api/chat-routes' && { HAS_CHAT_REASONING=true; HAS_SECRETARY=true; }
+match '^src/services/chat-core-v2/|^__tests__/services/chat-core-v2-' && HAS_CHAT_CORE_V2=true
 
 # Detect iOS changes by file path. iOS repo is at ../Nexus Hub IOS/Nexus Hub
 # but in workspace symlink it's `ios/`. Since this script runs from engine,
@@ -500,6 +502,7 @@ if $HAS_NON_DOC; then
     $HAS_DEPLOY_CONFIG && VITEST_GLOBS+=("__tests__/services/config-*.test.ts" "__tests__/portal/health-endpoint*.test.ts" "__tests__/portal/health-endpoints.test.ts" "__tests__/scripts/*.test.ts" "__tests__/security/**/*.test.ts")
     $HAS_EVENT_BACKBONE && VITEST_GLOBS+=("__tests__/services/event-backbone.test.ts" "__tests__/api/event-backbone-routes.test.ts" "__tests__/security/**/*.test.ts")
     $HAS_CHAT_REASONING && VITEST_GLOBS+=("__tests__/services/chat-action-planner.test.ts" "__tests__/services/chat-action-production-safety.test.ts" "__tests__/api/chat-routes.test.ts" "__tests__/security/p0-chat-identity-isolation.test.ts")
+    $HAS_CHAT_CORE_V2 && VITEST_GLOBS+=("__tests__/services/chat-core-v2-*.test.ts")
     $HAS_APPLE_NOTIFICATION_WEBHOOK && VITEST_GLOBS+=("__tests__/security/billing-apple-notifications-jws-verify.test.ts")
     $HAS_TRAINING_ENTITLEMENT && VITEST_GLOBS+=("__tests__/security/training-routes-entitlement.test.ts")
     $HAS_VOICE_EVOLUTION_MULTI_TENANT && VITEST_GLOBS+=("__tests__/agents/voice-evolution-multi-tenant.test.ts")
@@ -631,6 +634,7 @@ emit_json() {
   export CLAS_CURRENT_VERDICT_DOC="$HAS_CURRENT_VERDICT_DOC"
   export CLAS_ATTACHMENT="$HAS_ATTACHMENT"
   export CLAS_CHAT_REASONING="$HAS_CHAT_REASONING"
+  export CLAS_CHAT_CORE_V2="$HAS_CHAT_CORE_V2"
   export CLAS_MODEL_ROUTING="$HAS_MODEL_ROUTING"
   export CLAS_PERSONALIZATION_SCOPE="$HAS_PERSONALIZATION_SCOPE"
   export CLAS_CONTENT_AGENT="$HAS_CONTENT_AGENT"
@@ -713,6 +717,7 @@ const payload = {
     currentVerdictDoc: flag('CLAS_CURRENT_VERDICT_DOC'),
     attachment: flag('CLAS_ATTACHMENT'),
     chatReasoning: flag('CLAS_CHAT_REASONING'),
+    chatCoreV2: flag('CLAS_CHAT_CORE_V2'),
     modelRouting: flag('CLAS_MODEL_ROUTING'),
     personalizationScope: flag('CLAS_PERSONALIZATION_SCOPE'),
     contentAgent: flag('CLAS_CONTENT_AGENT'),
