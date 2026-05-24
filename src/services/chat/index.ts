@@ -179,12 +179,18 @@ import {
   verifiedPendingCopy,
 } from './executor/response-copy';
 import {
-  calibratePlanConfidence,
   confirmationVariant,
   intentClassForPlan,
   normalizeProvider,
   stepRequiresConfirmation,
 } from './planner/plan-utils';
+import {
+  buildClarificationPlan,
+  buildMessageOnlyPlan,
+  buildNeedsInputPlan,
+  buildPlanFromSteps,
+  clarificationReasonForPlan,
+} from './planner/plan-builder';
 import {
   buildTargetedClarificationQuestion,
   defaultClarification,
@@ -1423,138 +1429,6 @@ function parseBroadSkillActionIntent(input: ChatPlannerInput): ChatActionPlan | 
 // parseDecisionActionStep moved to skills/decision_center/parser.ts on
 // 2026-05-15 (first per-skill parser extraction, planner-split foundation).
 
-function buildPlanFromSteps(input: ChatPlannerInput, steps: ChatPlanStep[], routingSignals: string[], confidence: number): ChatActionPlan {
-  const effectiveConfidence = calibratePlanConfidence(steps, confidence);
-  const requireSafeWrites = input.requireSafeWriteConfirmation === true;
-  return {
-    schemaVersion: 1,
-    userId: String(input.userId),
-    tenantId: String(input.tenantId),
-    conversationId: input.conversationId,
-    messageId: input.messageId,
-    locale: input.locale || 'pt-BR',
-    timezone: input.timezone,
-    channel: input.channel,
-    createdAt: input.nowIso ?? new Date().toISOString(),
-    planner: steps.length > 1 ? 'mixed' : 'deterministic',
-    steps,
-    requiresConfirmation: steps.some((step) => stepRequiresConfirmation(step, { requireSafeWrites })),
-    clarificationQuestion: steps.some((step) => !step.requiredArgsPresent)
-      ? buildTargetedClarificationQuestion(input, steps)
-      : undefined,
-    clarificationReason: steps.some((step) => !step.requiredArgsPresent)
-      ? 'missing_required_fields'
-      : undefined,
-    confidence,
-    effectiveConfidence,
-    telemetry: {
-      routeTier: 'tier0_deterministic',
-      candidates: steps.map((step) => ({ skill: step.skill, action: step.action, score: effectiveConfidence })),
-      calibratedScore: effectiveConfidence,
-      threshold: thresholdForSteps(steps),
-      verifierStatus: steps.some((step) => step.verification.required) ? 'pending' : 'not_required',
-    },
-    debug: {
-      routingSignals,
-      rejectedFastPaths: [],
-      parser: 'deterministic',
-    },
-  };
-}
-
-function buildNeedsInputPlan(input: ChatPlannerInput, opts: {
-  skill: ChatActionSkill;
-  action: ChatActionName;
-  question: string;
-  args: Record<string, unknown>;
-  routingSignals: string[];
-  clarificationReason?: ChatClarificationReason;
-  intentClass?: string;
-}): ChatActionPlan {
-  const step = makeStep(input, {
-    skill: opts.skill,
-    action: opts.action,
-    risk: 'ambiguous',
-    provider: 'nexus',
-    args: opts.args,
-    requiredArgsPresent: false,
-  });
-  return {
-    schemaVersion: 1,
-    userId: String(input.userId),
-    tenantId: String(input.tenantId),
-    conversationId: input.conversationId,
-    messageId: input.messageId,
-    locale: input.locale || 'pt-BR',
-    timezone: input.timezone,
-    channel: input.channel,
-    createdAt: input.nowIso ?? new Date().toISOString(),
-    planner: 'deterministic',
-    steps: [step],
-    requiresConfirmation: false,
-    clarificationQuestion: opts.question,
-    clarificationReason: opts.clarificationReason ?? 'missing_required_fields',
-    intentClass: opts.intentClass,
-    confidence: 0.72,
-    effectiveConfidence: 0.72,
-    telemetry: {
-      routeTier: 'tier0_deterministic',
-      candidates: [{ skill: opts.skill, action: opts.action, score: 0.72 }],
-      calibratedScore: 0.72,
-      threshold: 0.86,
-      verifierStatus: 'not_required',
-      outcome: 'needs_input',
-    },
-    debug: {
-      routingSignals: opts.routingSignals,
-      rejectedFastPaths: [],
-      parser: 'deterministic',
-    },
-  };
-}
-
-function buildMessageOnlyPlan(input: ChatPlannerInput, text: string, signal: string): ChatActionPlan {
-  const args = { text };
-  const step: ChatPlanStep = {
-    stepId: `step-${randomUUID()}`,
-    skill: 'connections',
-    type: 'answer',
-    action: 'connections_status',
-    risk: 'read_only',
-    riskClass: 'R0',
-    provider: 'none',
-    args,
-    requiredArgsPresent: true,
-    idempotencyKey: buildStepIdempotencyKey(input, 'connections_status', args),
-    verification: { required: false, method: 'none' },
-  };
-  return {
-    schemaVersion: 1,
-    userId: String(input.userId),
-    tenantId: String(input.tenantId),
-    conversationId: input.conversationId,
-    messageId: input.messageId,
-    locale: input.locale || 'pt-BR',
-    timezone: input.timezone,
-    channel: input.channel,
-    createdAt: input.nowIso ?? new Date().toISOString(),
-    planner: 'deterministic',
-    steps: [step],
-    requiresConfirmation: false,
-    confidence: 0.99,
-    effectiveConfidence: 0.99,
-    telemetry: {
-      routeTier: 'tier0_deterministic',
-      candidates: [{ skill: 'connections', action: 'connections_status', score: 0.99 }],
-      calibratedScore: 0.99,
-      threshold: 0.7,
-      verifierStatus: 'not_required',
-      outcome: signal,
-    },
-    debug: { routingSignals: [signal], rejectedFastPaths: [], parser: 'deterministic' },
-  };
-}
-
 // makeStep, buildStepIdempotencyKey, normalizeHashArgs, isHashDateTimeKey,
 // actionToStepType, and pickExpectedFields moved to src/services/skills/
 // step-builder.ts on 2026-05-15 (planner-split foundation, audit
@@ -1913,47 +1787,6 @@ function parseTaskClockTime(rawInput: unknown): { hour: number; minute: number }
 function extractTaskClause(text: string): string | null {
   const match = text.match(/\b(?:e|and)\s+(?=(?:cria|criar|adiciona|adicionar|create|add)\b[\s\S]*\b(?:tarefa|task|todo|lembrete)\b)([\s\S]+)$/i);
   return match?.[1]?.trim() || null;
-}
-
-function buildClarificationPlan(input: ChatPlannerInput, question: string): ChatActionPlan {
-  return {
-    schemaVersion: 1,
-    userId: String(input.userId),
-    tenantId: String(input.tenantId),
-    conversationId: input.conversationId,
-    messageId: input.messageId,
-    locale: input.locale || 'pt-BR',
-    timezone: input.timezone,
-    channel: input.channel,
-    createdAt: input.nowIso ?? new Date().toISOString(),
-    planner: 'deterministic',
-    steps: [{
-      stepId: `step-${randomUUID()}`,
-      skill: 'secretary_calendar',
-      type: 'clarification',
-      action: 'schedule_event',
-      risk: 'ambiguous',
-      riskClass: 'R4',
-      provider: 'none',
-      args: {},
-      requiredArgsPresent: false,
-      idempotencyKey: buildStepIdempotencyKey(input, 'schedule_event', { text: input.text }),
-      verification: { required: false, method: 'none' },
-    }],
-    requiresConfirmation: false,
-    clarificationQuestion: question,
-    clarificationReason: 'ambiguous_intent',
-    intentClass: 'clarifying_question',
-    confidence: 0.4,
-  };
-}
-
-function clarificationReasonForPlan(plan: ChatActionPlan): ChatClarificationReason {
-  if (plan.clarificationReason) return plan.clarificationReason;
-  if (plan.telemetry && plan.effectiveConfidence != null && plan.effectiveConfidence < plan.telemetry.threshold) {
-    return 'low_confidence';
-  }
-  return 'missing_required_fields';
 }
 
 export async function executeChatActionPlan(
