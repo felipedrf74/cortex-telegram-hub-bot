@@ -80,7 +80,6 @@ import {
 import {
   buildBlocksFromMarkdown,
 } from '../chat-response-blocks';
-import type { ChatResponseCard } from '../chat-response-cards';
 import {
   actionToStepType,
   buildStepIdempotencyKey,
@@ -161,6 +160,7 @@ import {
 import type { ChatStepExecutionContext } from './executor/types';
 import {
   actionButtonsForResults,
+  buildResponseCardsFromMetadata,
   calendarCardEvents,
   domainForPlan,
   firstTitle,
@@ -184,7 +184,7 @@ import {
   intentClassForPlan,
   normalizeProvider,
   stepRequiresConfirmation,
-} from './executor/plan-utils';
+} from './planner/plan-utils';
 import {
   buildTargetedClarificationQuestion,
   defaultClarification,
@@ -2391,46 +2391,6 @@ function buildActionResponse(
     responseBlocks,
     responseCards,
   };
-}
-
-// Phase 16 batch 86 (2026-05-17): derive typed responseCards from
-// existing metadata. Refusal / clarification / confirmation are the
-// three card kinds emitted at the action-planner boundary today; the
-// remaining 12 kinds in ChatResponseCardKind are populated by their
-// dedicated executors (calendar agenda, task creation, etc.) — those
-// extend this function as block-builder migration lands in Batches 84+.
-function buildResponseCardsFromMetadata(metadata: Record<string, unknown>): ChatResponseCard[] | undefined {
-  const cards: ChatResponseCard[] = [];
-  const refusal = metadata.refusal as { reason?: string; message?: string } | undefined;
-  if (refusal && typeof refusal.message === 'string') {
-    cards.push({
-      kind: 'refusalCard',
-      reason: typeof refusal.reason === 'string' ? refusal.reason : 'unknown',
-      message: refusal.message,
-    });
-  }
-  const clarification = metadata.clarification as { question?: string; reason?: string } | undefined;
-  if (clarification && typeof clarification.question === 'string') {
-    cards.push({
-      kind: 'clarificationCard',
-      question: clarification.question,
-      reason: clarification.reason === 'missing_required_fields'
-        || clarification.reason === 'ambiguous_intent'
-        || clarification.reason === 'low_confidence'
-        ? clarification.reason
-        : undefined,
-    });
-  }
-  const confirmation = metadata.actionConfirmation as { title?: string; message?: string; destructive?: boolean } | undefined;
-  if (confirmation && typeof confirmation.message === 'string' && typeof confirmation.title === 'string') {
-    cards.push({
-      kind: 'confirmationCard',
-      title: confirmation.title,
-      message: confirmation.message,
-      destructive: Boolean(confirmation.destructive),
-    });
-  }
-  return cards.length > 0 ? cards : undefined;
 }
 
 function requeuePartialSuccessPendingParents(

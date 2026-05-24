@@ -16,11 +16,9 @@ import {
   type ChatActionName,
   type ChatActionDefinition,
   type ChatActionSkill,
-  type ChatProvider,
 } from '../registry';
 import {
   makeSlotProvenance,
-  type ChatActionRiskClass,
   type ChatActionTelemetry,
   type ChatSlotProvenance,
 } from '../../chat-action-state';
@@ -30,6 +28,13 @@ import type { ChatActionPlan, ChatPlannerInput, ChatPlanStep } from '../types';
 import { logger } from '../../../utils/logger';
 import { sanitizePlannerArgs } from './arg-sanitizer';
 import { buildTargetedClarificationQuestion } from './clarification';
+import {
+  calibratePlanConfidence,
+  clampConfidence,
+  normalizeProvider,
+  stepRequiresConfirmation,
+  thresholdForSteps,
+} from './plan-utils';
 
 const CHAT_LLM_TIER2_GEMINI_MODEL = 'gemini-2.5-flash';
 const CHAT_LLM_TIER2_OPENAI_FALLBACK_MODEL = 'gpt-5.4-nano';
@@ -483,76 +488,6 @@ function estimatePlannerCallCostUsd(provider: 'gemini' | 'openai', model: string
 
 function estimateTokens(text: string): number {
   return Math.max(1, Math.ceil(text.length / 4));
-}
-
-
-function normalizeProvider(value: unknown): ChatProvider | undefined {
-  if (typeof value !== 'string') return undefined;
-  if (value === 'google_calendar' || value === 'outlook_calendar' || value === 'gmail' || value === 'outlook_mail' || value === 'nexus' || value === 'stripe' || value === 'telegram' || value === 'none') {
-    return value;
-  }
-  return undefined;
-}
-
-function clampConfidence(value: number): number {
-  if (!Number.isFinite(value)) return 0.4;
-  return Math.max(0, Math.min(1, value));
-}
-
-function stepRequiresConfirmation(
-  step: ChatPlanStep,
-  opts: { requireSafeWrites?: boolean } = {},
-): boolean {
-  if (
-    step.risk === 'ambiguous' &&
-    step.requiredArgsPresent === false &&
-    typeof step.args?.rejectionReason === 'string'
-  ) {
-    return false;
-  }
-  const definition = findChatActionDefinition(step.skill, step.action);
-  if (opts.requireSafeWrites && step.risk === 'safe_write') return true;
-  return ['external_side_effect', 'destructive', 'financial', 'admin_security'].includes(step.risk)
-    || definition?.confirmationPolicy === 'confirm'
-    || definition?.confirmationPolicy === 'strong_confirm';
-}
-
-function thresholdForSteps(steps: ChatPlanStep[]): number {
-  const riskiest = steps.reduce<ChatActionRiskClass>((current, step) => {
-    const candidate = step.riskClass ?? riskClassForRisk(step.risk);
-    return riskRank(candidate) > riskRank(current) ? candidate : current;
-  }, 'R0');
-  if (riskiest === 'R3') return 0.98;
-  if (riskiest === 'R2') return 0.96;
-  if (riskiest === 'R1') return 0.9;
-  if (riskiest === 'R4') return 1;
-  return 0.75;
-}
-
-function calibratePlanConfidence(steps: ChatPlanStep[], baseConfidence: number): number {
-  let score = clampConfidence(baseConfidence);
-  for (const step of steps) {
-    const missingPenalty = step.requiredArgsPresent ? 0 : 0.28;
-    const provenancePenalty = provenanceCoverage(step) >= 0.9 ? 0 : 0.08;
-    const riskPenalty = step.riskClass === 'R4' ? 0.35 : 0;
-    score = Math.min(score, clampConfidence(score - missingPenalty - provenancePenalty - riskPenalty));
-  }
-  return Number(score.toFixed(3));
-}
-
-function provenanceCoverage(step: ChatPlanStep): number {
-  const definition = findChatActionDefinition(step.skill, step.action);
-  const required = definition?.requiredFields ?? [];
-  if (required.length === 0) return 1;
-  const provenance = step.slotProvenance ?? {};
-  const present = required.filter((field) => step.args[field] != null && step.args[field] !== '');
-  if (present.length === 0) return 0;
-  const withProvenance = present.filter((field) => provenance[field]?.validation === 'passed');
-  return withProvenance.length / present.length;
-}
-
-function riskRank(risk: ChatActionRiskClass): number {
-  return { R0: 0, R1: 1, R2: 2, R3: 3, R4: 4 }[risk];
 }
 
 
