@@ -51,13 +51,46 @@ function applyMigrations(db: Database.Database): void {
 }
 
 import {
-  checkTierAccess, checkTierAccessBatch, getSkillTier, listSkillTiers,
+  checkSkillAccess, checkTierAccess, checkTierAccessBatch, getSkillTier, listSkillTiers,
   grantOverride, revokeOverride, getUserOverride, setSkillTier,
 } from '../../src/services/skill-tiers';
 import type { User } from '../../src/services/user-service';
 
 function makeUser(id: number, tier: 'free' | 'pro' | 'max' | 'owner'): Pick<User, 'id' | 'tier'> {
   return { id, tier };
+}
+
+function upsertInstalledSkill(
+  name: string,
+  enabled: boolean,
+  submodules: Array<{ name: string; enabled: boolean }> = [],
+): void {
+  testDb.prepare(`
+    INSERT INTO installed_skills (name, description, version, domain, enabled)
+    VALUES (?, ?, '1.0.0', ?, ?)
+    ON CONFLICT(name) DO UPDATE SET enabled = excluded.enabled
+  `).run(name, `${name} test skill`, name, enabled ? 1 : 0);
+
+  const skill = testDb.prepare('SELECT id FROM installed_skills WHERE name = ?').get(name) as { id: number };
+  for (const sub of submodules) {
+    testDb.prepare(`
+      INSERT INTO skill_submodules (skill_id, module_name, enabled)
+      VALUES (?, ?, ?)
+      ON CONFLICT(skill_id, module_name) DO UPDATE SET enabled = excluded.enabled
+    `).run(skill.id, sub.name, sub.enabled ? 1 : 0);
+  }
+}
+
+function setUserSkillToggle(
+  userId: number,
+  skill: string,
+  enabled: boolean,
+  subSkill: string | null = null,
+): void {
+  testDb.prepare(`
+    INSERT INTO user_skill_overrides (user_id, skill, sub_skill, enabled)
+    VALUES (?, ?, ?, ?)
+  `).run(userId, skill, subSkill, enabled ? 1 : 0);
 }
 
 // ─── Migration 045 shape + seeds ────────────────────────────────────
@@ -224,6 +257,103 @@ describe('checkTierAccess — gate cascade', () => {
     expect(checkTierAccess(makeUser(1, 'pro'), 'nonexistent.skill').allowed).toBe(true);
     expect(checkTierAccess(makeUser(1, 'free'), 'nonexistent.skill').allowed).toBe(false);
     expect(checkTierAccess(makeUser(1, 'free'), 'nonexistent.skill').reason).toBe('default');
+  });
+});
+
+// ─── Canonical skill access gate ───────────────────────────────────
+
+describe('checkSkillAccess — canonical precedence', () => {
+  beforeEach(() => {
+    testDb = new Database(':memory:');
+    testDb.pragma('journal_mode = WAL');
+    applyMigrations(testDb);
+  });
+  afterEach(() => {
+    try { testDb?.close(); } catch { /* already closed in fail-closed test */ }
+  });
+
+  it('owner bypass runs once at the top even when the skill is globally disabled', () => {
+    upsertInstalledSkill('triathlon', false);
+
+    const result = checkSkillAccess(makeUser(1, 'owner'), 'triathlon.swim');
+
+    expect(result.allowed).toBe(true);
+    expect(result.reason).toBe('owner_bypass');
+  });
+
+  it('global skill disable blocks non-owner users before tier grants', () => {
+    upsertInstalledSkill('triathlon', false);
+    grantOverride({ userId: 2, skillId: 'triathlon.swim', reason: 'beta grant' });
+
+    const result = checkSkillAccess(makeUser(2, 'free'), 'triathlon.swim');
+
+    expect(result.allowed).toBe(false);
+    expect(result.reason).toBe('global_disabled');
+  });
+
+  it('global submodule disable blocks non-owner users before tier grants', () => {
+    upsertInstalledSkill('triathlon', true, [{ name: 'swim', enabled: false }]);
+    grantOverride({ userId: 3, skillId: 'triathlon.swim', reason: 'beta grant' });
+
+    const result = checkSkillAccess(makeUser(3, 'free'), 'triathlon.swim');
+
+    expect(result.allowed).toBe(false);
+    expect(result.reason).toBe('global_disabled');
+  });
+
+  it('user explicit deny blocks a tier-eligible user', () => {
+    upsertInstalledSkill('finance', true);
+    setUserSkillToggle(4, 'finance', false);
+
+    const result = checkSkillAccess(makeUser(4, 'pro'), 'finance');
+
+    expect(result.allowed).toBe(false);
+    expect(result.reason).toBe('admin_override_denied');
+  });
+
+  it('user explicit grant skips the tier check when global and user-deny gates pass', () => {
+    upsertInstalledSkill('triathlon', true);
+    grantOverride({ userId: 5, skillId: 'triathlon.swim', reason: 'coach beta' });
+
+    const result = checkSkillAccess(makeUser(5, 'free'), 'triathlon.swim');
+
+    expect(result.allowed).toBe(true);
+    expect(result.reason).toBe('user_grant');
+  });
+
+  it('tier override deny reports its source separately from admin toggle denies', () => {
+    upsertInstalledSkill('triathlon', true);
+    testDb.prepare(`
+      INSERT INTO user_skill_tier_overrides (user_id, skill_id, unlocked, reason)
+      VALUES (8, 'triathlon.swim', 0, 'coach revoked beta')
+    `).run();
+
+    const result = checkSkillAccess(makeUser(8, 'max'), 'triathlon.swim');
+
+    expect(result.allowed).toBe(false);
+    expect(result.reason).toBe('tier_override_denied');
+  });
+
+  it('falls back to the tier comparison when no higher-precedence gate matches', () => {
+    const secretary = checkSkillAccess(makeUser(6, 'free'), 'secretary.tasks');
+    const triathlon = checkSkillAccess(makeUser(6, 'free'), 'triathlon.swim');
+
+    expect(secretary.allowed).toBe(true);
+    expect(secretary.reason).toBe('catalog');
+    expect(secretary.tierReason).toBe('catalog');
+    expect(triathlon.allowed).toBe(false);
+    expect(triathlon.reason).toBe('catalog');
+  });
+
+  it('fails closed when the DB is busy or unavailable', () => {
+    testDb.close();
+
+    const result = checkSkillAccess(makeUser(7, 'pro'), 'secretary.tasks');
+
+    expect(result.allowed).toBe(false);
+    expect(result.reason).toBe('db_error');
+
+    testDb = new Database(':memory:');
   });
 });
 

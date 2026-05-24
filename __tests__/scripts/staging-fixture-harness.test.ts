@@ -59,6 +59,8 @@ describe('staging fixture harness safety boundaries', () => {
     expect(script).toContain('CREATE TABLE IF NOT EXISTS staging_fixture_calendar_events');
     expect(script).toContain('seedFixtureCalendarEvents(userId, calendarEventCount);');
     expect(script).toContain('staging-fixture-cal-');
+    expect(script).toContain('tenant_id: userId');
+    expect(script).toContain('owner_user_id: userId');
     expect(script).not.toContain('\\`');
     expect(() => new vm.Script(script)).not.toThrow();
   });

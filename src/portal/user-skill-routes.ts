@@ -41,6 +41,9 @@ function validateSkillTarget(skill: unknown, subSkill: unknown): { skill: string
 
 export function registerPortalUserSkillRoutes(app: express.Express): void {
   // Skills routes accept canonical users.id (v4.14+).
+  // Portal user-skill views intentionally read/edit admin toggle state through
+  // getUserSkillState/setSkillAccess. Runtime enforcement uses checkSkillAccess
+  // with the user's real tier, which answers a different product question.
   app.get('/api/users/:userId/skills', (req: Request, res: Response) => {
     try {
       const userId = parsePositiveUserId(req.params.userId);

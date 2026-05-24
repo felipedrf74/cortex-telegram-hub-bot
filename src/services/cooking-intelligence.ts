@@ -162,6 +162,14 @@ export function assessCookingMealPlan(input: CookingPlanAssessmentInput): Cookin
   };
 }
 
+export function suggestCookingSubstitutionsForIngredient(
+  originalIngredient: string,
+  reason: CookingSubstitutionSuggestion['reason'],
+  preferences: CookingPreferenceProfile = {},
+): CookingSubstitutionSuggestion[] {
+  return buildSubstitutionSuggestions(originalIngredient, reason, preferences);
+}
+
 export function buildCookingPreferenceMemorySummary(preferences: CookingPreferenceProfile = {}): string {
   const lines: string[] = [];
   if (preferences.allergies?.length) lines.push(`Allergies: ${preferences.allergies.join(', ')}`);
