@@ -28,6 +28,7 @@ vi.mock('../../src/services/database', () => ({
   initDatabase: vi.fn(),
   closeDatabase: vi.fn(),
   findUnexpectedMigrationPrefixCollisions: vi.fn(() => []),
+  assertNoUnexpectedMigrationPrefixCollisions: vi.fn(),
 }));
 
 vi.mock('../../src/utils/logger', () => ({
@@ -60,11 +61,13 @@ function applyMigrations(db: Database.Database): void {
 }
 
 import { mountCoachV2Routes } from '../../src/api/routes/training-coach-v2';
+import { _resetRateLimiterForTests } from '../../src/api/rate-limiter';
 
 let server: http.Server;
 let baseUrl: string;
 
 beforeEach(async () => {
+  _resetRateLimiterForTests();
   testDb = new Database(':memory:');
   applyMigrations(testDb);
   flagState = true;
@@ -97,6 +100,7 @@ beforeEach(async () => {
 afterEach(async () => {
   await new Promise<void>((resolve) => server.close(() => resolve()));
   testDb.close();
+  _resetRateLimiterForTests();
 });
 
 async function req(method: string, path: string, body?: unknown): Promise<{ status: number; json: any }> {
@@ -110,6 +114,18 @@ async function req(method: string, path: string, body?: unknown): Promise<{ stat
 }
 
 describe('coach v2 routes — feature flag gate', () => {
+  it('rate limits flagged v2 coach routes before handler database work', async () => {
+    for (let i = 0; i < 60; i++) {
+      const result = await req('POST', '/api/v1/training/week/not-a-week/reflow', {});
+      expect(result.status).toBe(400);
+      expect(result.json?.error?.code).toBe('BAD_WEEK_ID');
+    }
+
+    const blocked = await req('POST', '/api/v1/training/week/not-a-week/reflow', {});
+    expect(blocked.status).toBe(429);
+    expect(blocked.json?.error?.code).toBe('RATE_LIMITED');
+  });
+
   it('flag OFF → POST /week/travel returns 404 COACH_V2_DISABLED', async () => {
     flagState = false;
     const result = await req('POST', '/api/v1/training/week/travel', {

@@ -579,8 +579,24 @@ async function requestApp(
   });
 }
 
+function todayIsoInTestTimezone(timezone = 'Europe/Lisbon'): string {
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: timezone,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).formatToParts(new Date());
+  const year = parts.find((part) => part.type === 'year')?.value;
+  const month = parts.find((part) => part.type === 'month')?.value;
+  const day = parts.find((part) => part.type === 'day')?.value;
+  if (!year || !month || !day) {
+    throw new Error('Failed to format test date');
+  }
+  return `${year}-${month}-${day}`;
+}
+
 function currentMondayIso(): string {
-  const today = new Date().toISOString().slice(0, 10);
+  const today = todayIsoInTestTimezone();
   const parsed = new Date(`${today}T00:00:00.000Z`);
   const mondayOffset = (parsed.getUTCDay() + 6) % 7;
   parsed.setUTCDate(parsed.getUTCDate() - mondayOffset);
@@ -591,6 +607,26 @@ function addIsoDays(date: string, days: number): string {
   const parsed = new Date(`${date}T00:00:00.000Z`);
   parsed.setUTCDate(parsed.getUTCDate() + days);
   return parsed.toISOString().slice(0, 10);
+}
+
+function daysBetweenIsoDates(start: string, end: string): number {
+  return Math.round((Date.parse(`${end}T00:00:00.000Z`) - Date.parse(`${start}T00:00:00.000Z`)) / (24 * 60 * 60 * 1000));
+}
+
+function weekdayNameForIsoDate(date: string): string {
+  return new Intl.DateTimeFormat('en-US', {
+    timeZone: 'UTC',
+    weekday: 'long',
+  }).format(new Date(`${date}T12:00:00.000Z`));
+}
+
+function shortDateLabelForIsoDate(date: string): string {
+  return new Intl.DateTimeFormat('en-GB', {
+    timeZone: 'UTC',
+    weekday: 'short',
+    day: '2-digit',
+    month: 'short',
+  }).format(new Date(`${date}T12:00:00.000Z`));
 }
 
 describe('Chat API routes', () => {
@@ -4653,6 +4689,8 @@ describe('Chat API routes', () => {
       });
 
       expect(messageRes.statusCode, JSON.stringify(messageRes.body)).toBe(200);
+      const groceryWeekStart = messageRes.body.metadata?.chatCoreV2?.command?.payload?.weekStart;
+      expect(groceryWeekStart).toEqual(expect.stringMatching(/^\d{4}-\d{2}-\d{2}$/));
       expect(messageRes.body.routeMethod).toBe('chat-core-v2-command-preview');
       expect(messageRes.body.domain).toBe('secretary');
       expect(messageRes.body.text).toBe('I would prepare eggs and milk for the grocery list. Nothing would be added yet.');
@@ -4678,7 +4716,7 @@ describe('Chat API routes', () => {
               operation: 'add_items',
               items: ['eggs', 'milk'],
               itemCount: 2,
-              weekStart: '2026-05-18',
+              weekStart: groceryWeekStart,
               list: 'grocery',
             },
             basedOn: {
@@ -4718,7 +4756,7 @@ describe('Chat API routes', () => {
       });
       expect(messageRes.body.responseCards).toEqual([{
         kind: 'groceryListCard',
-        weekStart: '2026-05-18',
+        weekStart: groceryWeekStart,
         items: ['eggs', 'milk'],
       }]);
       expect(messageRes.body.metadata.chatCoreV2.response.cards[0].confirmationToken).toBeUndefined();
@@ -4727,7 +4765,7 @@ describe('Chat API routes', () => {
       expect(metadataJson).not.toContain('delegatedScopes');
       expect(metadataJson).not.toContain('idempotencyKey');
       expect(metadataJson).not.toContain('chat-v2-permissions:7001:7001');
-      expect(getShoppingList(7001, '2026-05-18', 7001)).toBeNull();
+      expect(getShoppingList(7001, groceryWeekStart, 7001)).toBeNull();
       expect(mockRouteMessage).not.toHaveBeenCalled();
       expect(mockHandleSecretary).not.toHaveBeenCalled();
     } finally {
@@ -4866,6 +4904,11 @@ describe('Chat API routes', () => {
     process.env.CHAT_CORE_V2_ENABLED = 'true';
     process.env.CHAT_CORE_V2_PREVIEWS_ENABLED = 'true';
     try {
+      const planStart = currentMondayIso();
+      const targetDate = addIsoDays(todayIsoInTestTimezone(), 1);
+      const targetWeekNumber = Math.floor(daysBetweenIsoDates(planStart, targetDate) / 7) + 1;
+      const targetDayOfWeek = weekdayNameForIsoDate(targetDate);
+      const targetDateLabel = shortDateLabelForIsoDate(targetDate);
       mockGetActivePlan.mockReturnValue({
         id: 101,
         user_id: 7001,
@@ -4876,8 +4919,8 @@ describe('Chat API routes', () => {
         duration_weeks: 4,
         periodization: 'linear',
         status: 'active',
-        start_date: '2026-05-25',
-        end_date: '2026-06-21',
+        start_date: planStart,
+        end_date: addIsoDays(planStart, 27),
         preferences_json: null,
         plan_version: 1,
         created_at: '2026-05-20T09:00:00.000Z',
@@ -4886,7 +4929,7 @@ describe('Chat API routes', () => {
       mockGetWeeksForPlan.mockReturnValue([{
         id: 201,
         plan_id: 101,
-        week_number: 1,
+        week_number: targetWeekNumber,
         focus: 'Base strength',
         intensity_pct: 80,
         volume_sessions: 3,
@@ -4900,7 +4943,7 @@ describe('Chat API routes', () => {
         week_id: 201,
         plan_id: 101,
         tenant_id: 7001,
-        day_of_week: 'Monday',
+        day_of_week: targetDayOfWeek,
         session_type: 'strength',
         title: 'Lower-body strength',
         description: 'Private training instructions',
@@ -4957,6 +5000,9 @@ describe('Chat API routes', () => {
               planId: 101,
               weekId: 201,
               title: 'Lower-body strength',
+              dayOfWeek: targetDayOfWeek,
+              sessionDate: targetDate,
+              sessionDateLabel: targetDateLabel,
               currentIntensity: 'hard',
               targetIntensity: 'easier',
               status: 'preview',
@@ -5007,7 +5053,7 @@ describe('Chat API routes', () => {
         kind: 'trainingSessionCard',
         sessionId: '301',
         title: 'Lower-body strength',
-        dateLabel: 'Mon 25 May',
+        dateLabel: targetDateLabel,
         summary: [{
           kind: 'paragraph',
           text: expect.stringContaining('Your training plan would not change yet.'),

@@ -26,6 +26,7 @@ import { createHmac, randomBytes } from 'node:crypto';
 import { Router, type Response, type Request } from 'express';
 
 import type { AuthenticatedRequest } from '../auth-middleware';
+import { rateLimitMiddleware } from '../rate-limiter';
 import { sendSuccess, sendError } from '../response-helpers';
 import { config } from '../../config';
 import { logger } from '../../utils/logger';
@@ -422,6 +423,7 @@ function resolveOwnedWeek(
  */
 export function mountCoachV2Routes(parent: Router): Router {
   const v2 = Router({ mergeParams: true });
+  v2.use(rateLimitMiddleware);
 
   // ── C2 — POST /week/travel ─────────────────────────────────────
   v2.post('/week/travel', (req: Request, res: Response) => {

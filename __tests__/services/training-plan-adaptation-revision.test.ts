@@ -34,6 +34,7 @@ vi.mock('../../src/services/database', () => ({
   initDatabase: vi.fn(),
   closeDatabase: vi.fn(),
   findUnexpectedMigrationPrefixCollisions: vi.fn(() => []),
+  assertNoUnexpectedMigrationPrefixCollisions: vi.fn(),
 }));
 
 vi.mock('../../src/utils/logger', () => ({

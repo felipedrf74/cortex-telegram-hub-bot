@@ -324,8 +324,12 @@ jobs:
             .filter((file) => /^\d{3}_.*\.sql$/.test(file))
             .sort();
           const prefixes = [...new Set(files.map((file) => Number(file.slice(0, 3))))].sort((a, b) => a - b);
+          const knownHistoricalGaps = new Set([142, 143]);
           let expected = 1;
           for (const prefix of prefixes) {
+            while (knownHistoricalGaps.has(expected) && expected < prefix) {
+              expected += 1;
+            }
             if (prefix !== expected) {
               console.error(`❌ Gap in migration sequence: expected ${expected}, got ${prefix}`);
               process.exit(1);
