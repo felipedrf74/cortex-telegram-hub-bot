@@ -117,7 +117,7 @@ export interface CoachKernelTrainingPlanInput {
    * When omitted, the generator behaves exactly as before
    * (`'optional'` semantics) — additive change only.
    */
-  twoADayPreference?: 'never' | 'optional' | 'preferred' | null;
+  twoADayPreference?: 'never' | 'optional' | 'preferred' | 'auto' | null;
   goalMode?: TrainingGoalMode | null;
   trainingPriority?: TrainingPriority | null;
   raceDate?: string | null;
@@ -864,6 +864,24 @@ export function resolveWeeklyTargets(
     }
     case 'hybrid':
     default: {
+      // 2026-05-25 Bug #2 fix — when the user explicitly sets BOTH
+      // `runSessionsPerWeek` AND a non-zero `strengthSessionsPerWeek`
+      // (iOS exposes both as separate dials in the New Plan screen),
+      // respect their per-sport asks directly. Pre-fix the hybrid
+      // branch silently rewrote `(strength=5, running=5)` to
+      // `(strength=4, running=2)` based on `sessionsPerWeek=6`,
+      // which made the user-reported "5 gym + 5 run" volume
+      // impossible to schedule and prevented two-a-day days from
+      // ever being generated. The per-sport caps still apply
+      // (STRENGTH_CAP=6, runningCap=7) and downstream guardrails
+      // still reduce sessions when recovery state can't support
+      // the load. Only fall through to the legacy inferred
+      // volume-split when one or both per-sport values are absent
+      // (e.g. legacy clients that only set `sessionsPerWeek`).
+      if (requestedRunning != null && strength > 0) {
+        const runningTarget = clamp(requestedRunning, 0, 7);
+        return { running: runningTarget, strength };
+      }
       const strengthTarget = Math.max(1, Math.min(strength || 2, total - 2));
       const running = clamp(total - strengthTarget, 2, 5);
       return { running, strength: strengthTarget };
@@ -2142,11 +2160,18 @@ function totalTargetSessions(targets: Goals['weeklySessionsTarget']): number {
 /**
  * Slice 2.B — explicit two-a-day routing.
  *
- * Three-state preference maps to the planner's `maxSessionsPerDay`:
+ * Four-state preference maps to the planner's `maxSessionsPerDay`:
  *   - `'preferred'`: always allow 2 sessions/day. The planner will use
  *     the existing `preferredCardioTime` / `preferredStrengthTime` split
  *     (e.g. 07:00 cardio + 18:00 strength) to space the day's two
  *     sessions adequately.
+ *   - `'auto'` (2026-05-25 — Bug #2 fix): explicit "let the planner
+ *     decide" — same volume-based heuristic as the legacy `'optional'`
+ *     branch (2/day when strength is in the mix AND total weekly
+ *     sessions ≥ 5), but surfaced as a first-class named branch so
+ *     analytics and decision-reason logging can distinguish
+ *     "user asked auto" from "client sent nothing." iOS sends this
+ *     literal string when the user picks the "Auto" chip.
  *   - `'optional'` or `null` / `undefined`: keep the existing volume-
  *     based inference — 2/day only when strength is in the mix AND
  *     total weekly sessions ≥ 5. This is the default so callers that
@@ -2156,11 +2181,14 @@ function totalTargetSessions(targets: Goals['weeklySessionsTarget']): number {
  *     compressed via the guardrail layer.
  */
 export function resolveMaxSessionsPerDay(
-  preference: 'never' | 'optional' | 'preferred' | null | undefined,
+  preference: 'never' | 'optional' | 'preferred' | 'auto' | null | undefined,
   weeklyTargets: Goals['weeklySessionsTarget'],
 ): number {
   if (preference === 'preferred') return 2;
   if (preference === 'never') return 1;
+  if (preference === 'auto') {
+    return weeklyTargets.strength && totalTargetSessions(weeklyTargets) >= 5 ? 2 : 1;
+  }
   // optional / nullish — fall back to the volume-based inference that
   // was the existing default before slice 2.B added the explicit field.
   return weeklyTargets.strength && totalTargetSessions(weeklyTargets) >= 5 ? 2 : 1;

@@ -34,7 +34,7 @@ export interface TrainingProfileExtractionInput {
     hrvStatus?: 'low' | 'normal' | 'high';
     energyReserve?: number;
   } | null;
-  twoADayPreference?: 'never' | 'optional' | 'preferred' | null;
+  twoADayPreference?: 'never' | 'optional' | 'preferred' | 'auto' | null;
   recentlyAskedFollowUpIds?: string[] | null;
   resolvedFollowUpIds?: string[] | null;
 }
