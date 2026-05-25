@@ -10,15 +10,121 @@ Last updated: 2026-05-25
 ## Active Production Release
 
 - Source branch: `main`
-- Production HEAD: `fb1ca66d`
-- Production version: `4.14.193`
-- Source implementation commits before deploy bump: PR #135 merge
-  `99992ddc` and PR #136 merge `256aa591`.
+- Production HEAD: `0682b34b`
+- Production version: `4.14.195`
+- Source implementation commits before deploy bump: PR #137 merge
+  `d94c2d1a` (training bug-fix triplet) and PR #138 merge `0bae01cb`
+  (Outlook default-enabled).
 - Latest pushed source: `origin/main` includes the running production deploy
-  commit `fb1ca66d`.
-- Staging remains on the previous deploy version until the next staging deploy;
-  the promoted functional code passed the staging smoke before production.
+  commit `0682b34b`.
+- Staging remains on the previous deploy version (`4.14.194`) until the next
+  staging deploy; the promoted functional code passed the staging smoke before
+  production.
 - Official workspace root: `/Users/felipedominguez/Desktop/Nexus Hub`
+
+## 2026-05-25 Training Outlook Default-Enabled Production Promote
+
+- Scope: removed the opt-in `TRAINING_CALENDAR_OUTLOOK_ENABLED` env requirement
+  for selecting Outlook as the training calendar in the iOS New Plan flow.
+  Pre-fix, picking "Outlook" returned a 503 ("That calendar is not available
+  for Training plans yet"). The same Outlook adapter
+  (`secretary-unified-calendar-provider-adapter`) had been writing
+  training-owned events to Outlook in production for months via the
+  secretary-agenda path, so the defensive gate was effectively stale. Outlook
+  is now ON by default, matching Google's contract. The kill switch
+  `TRAINING_CALENDAR_OUTLOOK_DISABLED=1` is retained for fast emergency
+  rollback without a redeploy.
+- Production version: `4.14.195`.
+- Production deploy commit: `0682b34b`.
+- Source implementation/evidence commits before deploy bump: PR #138 merge
+  `0bae01cb`; staging smoke evidence `e2c21415`.
+- Previous production deploy commit: `fb1f844e` (4.14.194).
+- Release validation passed before production: PR #138 GitHub checks all green
+  (Tests focused, Build, Lint & Type Check, Science-policy version, CodeQL,
+  OpenSSF Scorecard, Migration check skipped, Python content-engine audit),
+  staging smoke passed **17/17** at evidence
+  `docs/release/smoke-evidence/staging-smoke-0bae01cb-20260525T161058Z.json`,
+  and the deploy-time `npm run verify` passed
+  **718 test files / 10,555 tests** (floor previously 10,544; +11 net new from
+  the +5 operational-switches tests, +9 calendar-source tests with the new
+  default-on contract minus 4 pre-fix tests, +4 calendar-event-writer tests).
+- Production deploy completed through the standard `promote-to-prod.sh` path.
+  Deploy ordering bug from PR #136 stayed clear: the clean-tree check now
+  precedes the PM2 stop so a dirty evidence file never strands prod.
+- Production health passed after deploy: public
+  `https://api.nexushub.me/health` returned `status: healthy` with fresh
+  `uptime: 21s`, PM2 showed both `nexus-hub` and `content-engine` online,
+  and the production package version is `4.14.195`.
+- Behavior change downstream: `createTrainingCalendarEvent` no longer forces
+  `'google'` as the auto-target fallback — with Outlook default-enabled, the
+  writer passes `undefined` and lets `unified-calendar.createEvent` resolve
+  per the user's actual connected calendars. Tests updated to pin the new
+  shape.
+
+## 2026-05-25 Training Bug-Fix Triplet Production Promote
+
+- Scope: PR #137 closed three user-reported Training bugs in one PR:
+  (1) cancelling a plan left orphan Outlook/Google calendar events from
+  prior `plan_version` regenerations because the cancel cascade's
+  `findMatchingSecretaryAgendaItems` query pinned the current version;
+  (2) iOS-sent `twoADayPreference: "auto"` was silently dropped at the route
+  validator (only `never|optional|preferred` accepted) AND the hybrid branch
+  of `resolveWeeklyTargets` silently rewrote explicit `(running=5, strength=5)`
+  to `(running=2, strength=4)` based on `sessionsPerWeek=6`, preventing
+  two-a-day day generation; (3) Outlook/Google calendar event bodies showed
+  raw `NEXUS_SECRETARY_*` correlation metadata when `session.description` was
+  empty for some session types, collapsing the visible content to just the
+  metadata footer.
+- Production version: `4.14.194`.
+- Production deploy commit: `fb1f844e`.
+- Source implementation/evidence commits before deploy bump: PR #137 merge
+  `d94c2d1a`; staging smoke evidence `b3bfb4e8`.
+- Previous production deploy commit: `fb1ca66d` (4.14.193).
+- Release validation passed before production: PR #137 GitHub checks all
+  green, staging smoke passed **17/17** at evidence
+  `docs/release/smoke-evidence/staging-smoke-d94c2d1a-20260525T101747Z.json`,
+  and deploy-time `npm run verify` passed
+  **718 test files / 10,544 tests** (floor was 10,525; +19 net new tests
+  across cancel-cascade, two-a-day, secretary-adapter, and route entitlement
+  surfaces).
+- Production deploy completed through the standard `promote-to-prod.sh`
+  path. PM2 restarted `nexus-hub` (PID 2804361) and `content-engine`
+  (PID 2804352); health checks green.
+- Production health passed after deploy: public
+  `https://api.nexushub.me/health` returned `status: healthy` with fresh
+  `uptime: 30s`, PM2 reported both services online, and the production
+  package version was `4.14.194`.
+- Track A — Cancel cascade fixes (`src/services/training-plan-cancellation-cascade.ts`,
+  `src/api/routes/training-plan-cancellation.ts`): pushed the matching query
+  into SQL via `source_intent_id LIKE 'training:${planId}:%'`, added
+  `findSecretaryAgendaCalendarEventsForPlan` helper so the deletion-targets
+  builder also enumerates Secretary-owned events without
+  `training_agenda_event_ownership` rows.
+- Track B — Volume + two-a-day fixes (`src/api/routes/training-plan-routes.ts`,
+  `src/services/training-coach-kernel-plan-generator.ts`,
+  `src/services/training-plan-volume-enforcement.ts`,
+  `src/services/coach-kernel/types.ts`,
+  `src/services/training-profile-model.ts`): added `'auto'` to the
+  `twoADayPreference` enum + a first-class `'auto'` branch in
+  `resolveMaxSessionsPerDay`; hybrid `resolveWeeklyTargets` branch now
+  respects explicit per-sport asks when both `runSessionsPerWeek` AND
+  `strengthSessionsPerWeek > 0` are provided; volume enforcer sums the
+  explicit per-sport values into `requestedTotal` regardless of
+  `planSport`.
+- Track C — Calendar event body (Stage 1) (`src/services/secretary-unified-calendar-provider-adapter.ts`):
+  `sourceBodyForSecretaryCalendarEvent` is now a 3-priority hydration chain
+  (stored description → re-rendered from `description_json` via
+  `renderSectionsAsText` → minimal `title · intensity · duration min`
+  fallback). Body now puts workout content FIRST, then a `────────────`
+  divider, then the metadata markers. `extractSecretaryAgendaMarker` is
+  unchanged so legacy events still resolve.
+- Track C — Stage 2 deferred: moving `NEXUS_SECRETARY_*` markers entirely
+  to Google `extendedProperties.private` and Outlook
+  `singleValueExtendedProperties` is queued as a separate PR. There is zero
+  existing extended-properties plumbing in `google-calendar.ts` or
+  `outlook-calendar.ts`, so that change would double this PR's size + need
+  cross-provider integration testing. Stage 1 above solves the user-visible
+  symptom.
 
 ## 2026-05-25 Coach Periodization v2.1 + Deploy Safety Production Promote
 

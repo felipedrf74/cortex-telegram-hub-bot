@@ -12,47 +12,70 @@ Date: 2026-05-25
 Active production package:
 
 - source branch: `main`
-- production HEAD: `fb1ca66d` (version-bump for 4.14.193)
-- production version: `4.14.193`
-- runtime source commits: PR #135 merge `99992ddc` (Coach Periodization v2.1)
-  and PR #136 merge `256aa591` (deploy dirty-tree stop fix)
-- latest `origin/main`: `fb1ca66d`
+- production HEAD: `0682b34b` (version-bump for 4.14.195)
+- production version: `4.14.195`
+- runtime source commits: PR #137 merge `d94c2d1a` (training bug-fix
+  triplet — cancel-orphan, two-a-day/Auto, calendar body) and PR #138
+  merge `0bae01cb` (Outlook default-enabled training calendar)
+- latest `origin/main`: `0682b34b`
 - release state: `docs/release/CURRENT_RELEASE_STATE.md` (backend) and `/Users/felipedominguez/Desktop/Nexus Hub/docs/release/CURRENT_RELEASE_STATE.md` (workspace)
 - official workspace root: `/Users/felipedominguez/Desktop/Nexus Hub`
 
-Commits in this release (4.14.190 -> 4.14.193):
+Commits in this release (4.14.193 -> 4.14.195):
 
-- `99992ddc merge: PR #135 Coach Periodization v2.1 training stack`
-- `256aa591 merge: PR #136 deploy dirty-tree stop fix`
-- `fb1ca66d chore: bump version to 4.14.193 [deploy]`
+- `d94c2d1a merge: PR #137 training bug-fix triplet (cancel-orphan + two-a-day + calendar body)`
+- `b3bfb4e8 docs(release): staging smoke evidence for d94c2d1a`
+- `fb1f844e chore: bump version to 4.14.194 [deploy]`
+- `0bae01cb merge: PR #138 Training Outlook default-enabled`
+- `e2c21415 docs(release): staging smoke evidence for 0bae01cb`
+- `0682b34b chore: bump version to 4.14.195 [deploy]`
 
 Scope:
 
-- Coach Periodization v2.1 training implementation with R1-R8 closeout fixes,
-  focused and full regression coverage, CI/operator docs, and training
-  periodization contracts promoted from PR #135.
-- Deploy transport hardening: `deploy.sh` restores the tracked
-  registry-shadow-parity evidence before clean-tree checks that precede service
-  stop, avoiding the prior failure mode where a generated timestamp could abort
-  deploy after PM2 services were already stopped.
-- Local workspace hygiene: obsolete clean/merged worktrees and PR-specific QA
-  prompt artifacts were removed after promotion; dirty/unmerged worktrees were
-  preserved.
+- Training bug-fix triplet (PR #137 -> 4.14.194):
+  - Cancel cascade — broadened `findMatchingSecretaryAgendaItems` to match
+    every prior `plan_version` (SQL `LIKE 'training:${planId}:%'`); added
+    `findSecretaryAgendaCalendarEventsForPlan` so the immediate-delete path
+    also enumerates Secretary-owned events without ownership rows.
+  - Two-a-day Auto — added `'auto'` to backend `twoADayPreference` enum
+    (iOS already sends this literal); explicit `'auto'` branch in
+    `resolveMaxSessionsPerDay`; hybrid `resolveWeeklyTargets` now respects
+    explicit `runSessionsPerWeek` + `strengthSessionsPerWeek` when both are
+    provided; volume enforcer sums explicit per-sport values into
+    `requestedTotal` regardless of `planSport`.
+  - Calendar event body — `sourceBodyForSecretaryCalendarEvent` hydrates
+    workout content from `description_json` and falls back to
+    `title · intensity · duration min` when sections are empty; assembly
+    puts workout content first, then a `────────────` divider, then the
+    metadata markers (markers preserved for sync).
+- Outlook default-enabled (PR #138 -> 4.14.195):
+  - `isTrainingOutlookCalendarWritesEnabled` flipped from opt-in to
+    default-on. `TRAINING_CALENDAR_OUTLOOK_DISABLED=1` retained as kill
+    switch for emergency rollback without redeploy.
+  - Validator + writer surface accepts Outlook by default; auto-target
+    `createTrainingCalendarEvent` no longer forces `'google'` — passes
+    `undefined` so `unified-calendar.createEvent` picks per the user's
+    connected providers.
+  - Tests rewritten across 5 files to pin the new default-on contract;
+    kill-switch paths preserve the original gated-path semantics.
 
 Validated through promotion:
 
-- promote-time staging smoke: 17 passed / 0 failed / 17 total
-- deploy-time full backend verify: 718 files / 10,525 tests
-- final `main` pre-push gate: typecheck, full Vitest, and build passed
-- deploy.sh production promote completed at `4.14.193`
-- post-deploy: PM2 `nexus-hub` and `content-engine` online
-- production `/health` (`api.nexushub.me/health`): HTTP 200 repeatedly after
-  deploy
-- known infra follow-up: Cloudflare Tunnel was restored as detached user
-  processes during recovery; install/enable a supervised `cloudflared` service.
+- promote-time staging smoke (4.14.194): 17/17 passed (`staging-smoke-d94c2d1a-20260525T101747Z.json`)
+- promote-time staging smoke (4.14.195): 17/17 passed (`staging-smoke-0bae01cb-20260525T161058Z.json`)
+- deploy-time `npm run verify` (4.14.194): 718 files / 10,544 tests
+- deploy-time `npm run verify` (4.14.195): 718 files / 10,555 tests
+- final `main` pre-push gates: typecheck, full Vitest, and build passed
+  for both bumps
+- `promote-to-prod.sh` completed cleanly for both 4.14.194 and 4.14.195
+- post-deploy: PM2 `nexus-hub` and `content-engine` online after both deploys
+- production `/health` (`api.nexushub.me/health`): HTTP 200 `status: healthy`
+  with fresh uptime after each deploy
 
 ## Previous Production Versions On This Branch
 
+- 4.14.195 (`0682b34b`) — Training Outlook calendar default-enabled (source commit `0bae01cb`)
+- 4.14.194 (`fb1f844e`) — Training bug-fix triplet: cancel-orphan + two-a-day/Auto + calendar body Stage 1 (source commit `d94c2d1a`)
 - 4.14.193 (`fb1ca66d`) — Coach Periodization v2.1 + deploy dirty-tree stop fix (source commits `99992ddc`, `256aa591`)
 - 4.14.190 (`bac44816`) — beta-hardening confirmation contract production promote
 - 4.14.186 (`05960637`) — Decision Center Human Guidance v2 production promote
