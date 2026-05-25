@@ -148,7 +148,10 @@ jobs:
   # FOCUSED OR FULL VITEST (driven by classifier)
   # ═══════════════════════════════════════════════════
   test:
-    name: 🧪 Tests (${{ needs.classify.outputs.vitest_mode }})
+    # Keep the check-run name stable because the main-branch ruleset
+    # requires the exact `🧪 Tests` context. The selected mode is still
+    # reported in the job logs and classifier output.
+    name: 🧪 Tests
     runs-on: ubuntu-latest
     needs: classify
     if: needs.classify.outputs.vitest_mode != 'skip'
