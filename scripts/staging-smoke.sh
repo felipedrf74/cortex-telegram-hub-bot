@@ -364,6 +364,18 @@ db.transaction(() => {
     last_active_at: now,
     created_at: now,
   }, 'INSERT OR IGNORE');
+  insert('subscriptions', {
+    user_id: userId,
+    plan: 'max',
+    period: 'monthly',
+    status: 'active',
+    provider: 'founder',
+    provider_subscription_id: 'training-preview-smoke-subscription-' + userId,
+    current_period_start: now,
+    current_period_end: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
+    created_at: now,
+    updated_at: now,
+  });
 
   const profiles = [
     ['fitness', {
