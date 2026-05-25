@@ -435,6 +435,7 @@ $HAS_IOS_DTO && CANNOT_SKIP+=("ios-contract-decoder-resilience")
 $HAS_IOS_NOTIFICATION && CANNOT_SKIP+=("ios-notification-decision-center")
 $HAS_APPLE_NOTIFICATION_WEBHOOK && CANNOT_SKIP+=("apple-notifications-jws-verify")
 $HAS_TRAINING_ENTITLEMENT && CANNOT_SKIP+=("training-routes-entitlement")
+$HAS_TRAINING && CANNOT_SKIP+=("training-plan-create-e2e")
 $HAS_CONTENT_PROMPT_CLEANLINESS && CANNOT_SKIP+=("content-engine-prompt-cleanliness")
 $HAS_VOICE_EVOLUTION_MULTI_TENANT && CANNOT_SKIP+=("voice-evolution-multi-tenant")
 $HAS_VIDEO_STUDY_PROMPT_CLEANLINESS && CANNOT_SKIP+=("video-study-prompt-cleanliness")
@@ -482,7 +483,7 @@ if $HAS_NON_DOC; then
     VITEST_MODE="full"
   elif $HAS_BACKEND_SRC || $HAS_BACKEND_TEST || $HAS_DEPLOY_CONFIG; then
     VITEST_MODE="focused"
-    $HAS_TRAINING && VITEST_GLOBS+=("__tests__/services/training-*.test.ts" "__tests__/services/coach-kernel-*.test.ts" "__tests__/api/training-*.test.ts")
+    $HAS_TRAINING && VITEST_GLOBS+=("__tests__/services/training-*.test.ts" "__tests__/services/coach-kernel-*.test.ts" "__tests__/api/training-*.test.ts" "__tests__/integration/training-plan-create-cycle.test.ts")
     $HAS_TRAINING_ENTITLEMENT && VITEST_GLOBS+=("__tests__/security/training-routes-entitlement.test.ts")
     $HAS_CALENDAR && VITEST_GLOBS+=("__tests__/services/calendar*.test.ts" "__tests__/api/training-calendar-*.test.ts" "__tests__/api/training-plan-calendar-*.test.ts")
     $HAS_PROVIDER_ROUTING && VITEST_GLOBS+=("__tests__/services/provider-*.test.ts" "__tests__/services/ai-provider*.test.ts")

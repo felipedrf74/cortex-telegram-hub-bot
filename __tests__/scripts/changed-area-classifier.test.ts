@@ -400,6 +400,30 @@ describe('changed-area-classifier engineering-excellence enrichments (2026-05-04
     expect(result.vitest.globs).toContain('__tests__/services/prompt-cleanliness.test.ts');
   });
 
+  it('routes Training changes into the real-DB plan create-cycle E2E cannot-skip gate', () => {
+    const raw = execFileSync(
+      'bash',
+      [
+        'scripts/changed-area-classifier.sh',
+        '--json',
+        '--files',
+        'src/services/training-plan-volume-enforcement.ts',
+      ],
+      { encoding: 'utf8' },
+    );
+    const result = JSON.parse(raw) as {
+      flags: Record<string, boolean>;
+      cannotSkip: string[];
+      vitest: { globs: string[] };
+      stagingSmoke: { domains: string[] };
+    };
+
+    expect(result.flags.training).toBe(true);
+    expect(result.cannotSkip).toContain('training-plan-create-e2e');
+    expect(result.vitest.globs).toContain('__tests__/integration/training-plan-create-cycle.test.ts');
+    expect(result.stagingSmoke.domains).toContain('smoke:training-cross-skill:staging');
+  });
+
   it('preserves all new flags as false on unrelated diff (no false positives)', () => {
     const raw = execFileSync(
       'bash',
@@ -426,13 +450,13 @@ describe('changed-area-classifier engineering-excellence enrichments (2026-05-04
 });
 
 describe('changed-area-classifier cannot-skip dashboard wiring (ENG-EXC-O3)', () => {
-  // The dashboard spawns 23 sequential bash + node child processes (one
+  // The dashboard spawns 24+ sequential bash + node child processes (one
   // per gate). Under full-sweep load (300+ test files in singleFork
   // mode) even a 60s timeout can flake on colder pre-push runs. Bump to
   // 120s to absorb the cold-spawn cost without masking a real regression —
   // a real wiring regression prints the failed gate names in the JSON
   // payload regardless of duration.
-  it('cannot-skip gate dashboard reports all 23 gates wired and PASS verdict', { timeout: 120_000 }, () => {
+  it('cannot-skip gate dashboard reports every gate wired and PASS verdict', { timeout: 120_000 }, () => {
     const raw = execFileSync(
       'bash',
       ['scripts/cannot-skip-gate-dashboard.sh', '--json', '--no-evidence'],
@@ -451,7 +475,7 @@ describe('changed-area-classifier cannot-skip dashboard wiring (ENG-EXC-O3)', ()
 
     expect(result.summary.verdict).toBe('PASS');
     expect(result.summary.fail).toBe(0);
-    expect(result.summary.total).toBeGreaterThanOrEqual(23);
+    expect(result.summary.total).toBeGreaterThanOrEqual(24);
     expect(result.summary.pass).toBe(result.summary.total);
     // Every per-gate row must report pass:true.
     for (const gate of result.gates) {

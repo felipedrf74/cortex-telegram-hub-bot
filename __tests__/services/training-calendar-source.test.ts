@@ -14,6 +14,7 @@ vi.mock('../../src/services/provider-preferences', () => ({
 }));
 
 import {
+  normalizeTrainingCalendarSource,
   resolveTrainingCalendarSource,
   validateRequestedTrainingCalendarSource,
 } from '../../src/services/training-calendar-source';
@@ -43,6 +44,12 @@ describe('training-calendar-source', () => {
   it('R-2026-05-25 — accepts requested Outlook sync by default (no env opt-in needed)', () => {
     const result = validateRequestedTrainingCalendarSource(42, 'outlook');
     expect(result).toEqual({ ok: true, source: 'outlook' });
+  });
+
+  it('treats explicit auto as provider preference mode, not an invalid provider', () => {
+    expect(normalizeTrainingCalendarSource('auto')).toBeNull();
+    expect(validateRequestedTrainingCalendarSource(42, 'auto')).toEqual({ ok: true });
+    expect(mocks.isConnected).not.toHaveBeenCalled();
   });
 
   it('R-2026-05-25 — rejects requested Outlook sync when the kill switch is set', () => {

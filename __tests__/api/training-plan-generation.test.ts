@@ -222,6 +222,7 @@ describe('generateTrainingPlanForUser', () => {
       planId: 9001,
       totalSessions: 4,
       eventsCreated: 3,
+      sessionsLinked: 3,
       weekSummaries: [{ weekNumber: 1, focus: 'base', sessionCount: 4 }],
     });
     mockCancelTrainingPlanForUser.mockResolvedValue({
@@ -423,6 +424,13 @@ describe('generateTrainingPlanForUser', () => {
       resolvedStartDate: '2026-04-20',
       totalSessions: 4,
       eventsCreated: 3,
+      calendarSync: expect.objectContaining({
+        eventsCreated: 3,
+        sessionsLinked: 3,
+        sessionsFailed: 1,
+        unscheduled: 1,
+        status: 'partial',
+      }),
       preferredCardioTime: '07:00',
       preferredStrengthTime: '12:30',
       fallbackTemplateUsed: false,

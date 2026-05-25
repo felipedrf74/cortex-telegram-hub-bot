@@ -489,7 +489,7 @@ export async function generateTrainingPlanForUser(
       preferredCardioTime: normalizedPreferredCardioTime,
       preferredStrengthTime: normalizedPreferredStrengthTime,
       startDate: startStr,
-      longWorkoutDay: normalizedLongWorkoutDay,
+      longWorkoutDay: coordination.resolvedLongWorkoutDay ?? normalizedLongWorkoutDay,
     }),
     equipmentAdaptation,
   );
@@ -703,6 +703,10 @@ export async function generateTrainingPlanForUser(
     warnings: [],
     suggestedFixes: [],
   };
+  const sessionsLinked = typeof persistedPlan.sessionsLinked === 'number'
+    ? persistedPlan.sessionsLinked
+    : persistedPlan.eventsCreated;
+  const sessionsFailed = Math.max(0, persistedPlan.totalSessions - sessionsLinked);
   const planWarnings = buildPlanWarnings({
     calendarFetchDegraded,
     calendarFetchError,
@@ -730,12 +734,12 @@ export async function generateTrainingPlanForUser(
         provider: calendarSource || null,
         sessionsAttempted: persistedPlan.totalSessions,
         eventsCreated: persistedPlan.eventsCreated,
-        sessionsLinked: 0,
-        sessionsFailed: Math.max(0, persistedPlan.totalSessions - persistedPlan.eventsCreated),
-        unscheduled: Math.max(0, persistedPlan.totalSessions - persistedPlan.eventsCreated),
-        status: persistedPlan.eventsCreated >= persistedPlan.totalSessions
+        sessionsLinked,
+        sessionsFailed,
+        unscheduled: sessionsFailed,
+        status: sessionsLinked >= persistedPlan.totalSessions
           ? 'synced'
-          : persistedPlan.eventsCreated > 0
+          : sessionsLinked > 0
             ? 'partial'
             : 'not_synced',
       },

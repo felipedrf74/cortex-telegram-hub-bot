@@ -287,6 +287,224 @@ else
 fi
 
 echo ""
+echo "🏋️  Training plan preview E2E (isolated fixture seed, preview API only)"
+TRAINING_E2E_ENABLED="${NEXUS_SMOKE_TRAINING_E2E:-1}"
+if [ "$TRAINING_E2E_ENABLED" = "0" ]; then
+  echo "  ⚠️  Training plan preview E2E skipped by NEXUS_SMOKE_TRAINING_E2E=0"
+  PASS=$((PASS + 1))
+  evidence_record "training plan preview e2e" "passed" "skipped_by_kill_switch"
+else
+  TRAINING_SMOKE_RESULT=""
+  TRAINING_SMOKE_RC=0
+  TRAINING_SMOKE_RESULT=$(ssh "$SERVER" "
+    set -e
+    cd $STAGING_DIR
+    set -a
+    . ./.env
+    set +a
+    node <<'NODE'
+const Database = require('better-sqlite3');
+const { signIosJwt } = require('./dist/services/ios-jwt');
+
+const userId = Number(process.env.NEXUS_SMOKE_TRAINING_E2E_USER_ID || '1000014');
+if (!Number.isInteger(userId) || userId < 1000000 || userId > 1099999) {
+  throw new Error('NEXUS_SMOKE_TRAINING_E2E_USER_ID must be an isolated staging fixture user id in 1000000-1099999');
+}
+
+const deviceId = process.env.NEXUS_SMOKE_TRAINING_E2E_DEVICE_ID || 'training-preview-smoke-device-' + userId;
+const db = new Database(process.env.DATABASE_PATH || process.env.DB_PATH || './data/bot.db');
+const now = new Date().toISOString();
+
+function tableExists(name) {
+  return Boolean(db.prepare(\"SELECT 1 FROM sqlite_master WHERE type='table' AND name = ?\").get(name));
+}
+
+function columnsFor(name) {
+  if (!tableExists(name)) return new Set();
+  return new Set(db.prepare('PRAGMA table_info(' + name + ')').all().map((row) => row.name));
+}
+
+function insert(table, values, mode = 'INSERT OR REPLACE') {
+  const columns = columnsFor(table);
+  if (columns.size === 0) return;
+  const entries = Object.entries(values).filter(([column]) => columns.has(column));
+  if (entries.length === 0) return;
+  const names = entries.map(([column]) => column);
+  const placeholders = names.map(() => '?').join(', ');
+  db.prepare(mode + ' INTO ' + table + ' (' + names.join(', ') + ') VALUES (' + placeholders + ')')
+    .run(...entries.map(([, value]) => value));
+}
+
+db.transaction(() => {
+  insert('users', {
+    id: userId,
+    telegram_id: 910000000 + userId,
+    email: 'training-preview-smoke-' + userId + '@nexushub.test',
+    email_verified: 1,
+    username: 'training_preview_smoke_' + userId,
+    first_name: 'Training',
+    last_name: 'Smoke',
+    language: 'en-US',
+    timezone: 'Europe/Lisbon',
+    tier: 'max',
+    status: 'active',
+    auth_provider: 'email',
+    daily_message_limit: 500,
+    daily_token_limit: 1000000,
+    daily_cost_limit_usd: 25,
+    created_at: now,
+    last_active_at: now,
+  });
+  insert('ios_devices', {
+    user_id: userId,
+    device_id: deviceId,
+    device_name: 'Training Preview Smoke',
+    refresh_token: 'training-preview-smoke-refresh-' + userId,
+    refresh_token_hash: 'training-preview-smoke-refresh-hash-' + userId,
+    last_active_at: now,
+    created_at: now,
+  }, 'INSERT OR IGNORE');
+
+  const profiles = [
+    ['fitness', {
+      experience_level: 'Advanced (3+ years)',
+      weekly_frequency: '6+ days',
+      training_goals: ['Endurance', 'Strength'],
+      injuries: 'none',
+      available_equipment: 'Full gym',
+    }],
+    ['triathlon-gym', {
+      training_age: '5+ years',
+      current_split: 'Upper/Lower',
+      primary_goal: 'Support running',
+      squat_1rm_kg: 140,
+      bench_1rm_kg: 100,
+      deadlift_1rm_kg: 180,
+      sessions_per_week: '5+',
+      equipment_access: 'Full commercial gym',
+    }],
+    ['triathlon-running', {
+      weekly_mileage_km: 55,
+      longest_recent_run_km: 24,
+      easy_pace_min_per_km: '5:20',
+      target_race: 'Marathon',
+      target_race_date: '2026-10-18',
+      preferred_workouts: ['Easy runs', 'Tempo', 'Long runs'],
+      injury_history: 'none',
+      weekly_availability_days: '6+',
+    }],
+  ];
+  for (const [profileType, data] of profiles) {
+    insert('user_profiles', {
+      user_id: userId,
+      profile_type: profileType,
+      data: JSON.stringify(data),
+      updated_at: now,
+    });
+  }
+
+  insert('user_oauth_tokens', {
+    user_id: userId,
+    provider: 'outlook',
+    access_token: 'training-preview-smoke-access-token',
+    refresh_token: 'training-preview-smoke-refresh-token',
+    token_type: 'Bearer',
+    scopes: JSON.stringify([]),
+    updated_at: now,
+  });
+})();
+
+async function main() {
+  const token = signIosJwt({
+    userId,
+    deviceId,
+    staging_fixture: true,
+    fixture: 'training-plan-preview-smoke',
+  }, { expiresIn: '15m' });
+
+  const payload = {
+    objective: 'Lisbon Marathon October 2026',
+    durationWeeks: 2,
+    preferredTime: '07:00',
+    preferredCardioTime: '07:00',
+    preferredStrengthTime: '18:00',
+    sessionsPerWeek: 5,
+    runSessionsPerWeek: 5,
+    strengthSessionsPerWeek: 5,
+    startPolicy: 'today',
+    longWorkoutDay: 'Saturday',
+    goalMode: 'event_based',
+    trainingPriority: 'running',
+    raceDate: '2026-10-18',
+    twoADayPreference: 'preferred',
+    calendarSource: 'outlook',
+  };
+
+  const response = await fetch('http://localhost:8201/api/v1/training/plan/preview', {
+    method: 'POST',
+    headers: {
+      authorization: 'Bearer ' + token,
+      accept: 'application/json',
+      'content-type': 'application/json',
+      'x-language': 'en-US',
+    },
+    body: JSON.stringify(payload),
+  });
+  const text = await response.text();
+  let json = null;
+  try {
+    json = text ? JSON.parse(text) : null;
+  } catch {}
+
+  const blockerIds = (json?.data?.planLint?.blockers || []).map((blocker) => String(blocker.ruleId || blocker.code || ''));
+  const warningCodes = (json?.data?.warnings || []).map((warning) => String(warning.code || warning.ruleId || ''));
+  const ok = response.status === 200
+    && json?.ok === true
+    && json?.data?.status === 'preview'
+    && blockerIds.length === 0
+    && Array.isArray(json?.data?.phaseRoadmap)
+    && json.data.phaseRoadmap.length > 0
+    && json?.data?.weeklyTargets?.runSessionsPerWeek === 5
+    && json?.data?.weeklyTargets?.strengthSessionsPerWeek === 5;
+
+  const summary = {
+    ok,
+    httpStatus: response.status,
+    responseOk: json?.ok ?? null,
+    planStatus: json?.data?.status ?? null,
+    userId,
+    blockerIds,
+    warningCodes,
+    totalSessions: json?.data?.totalSessions ?? null,
+    calendarFetchDegraded: json?.data?.calendarFetchDegraded ?? null,
+    bodyPreview: ok ? undefined : text.slice(0, 500),
+  };
+  process.stdout.write(JSON.stringify(summary));
+  if (!ok) process.exit(1);
+}
+
+main().catch((err) => {
+  process.stdout.write(JSON.stringify({ ok: false, error: err instanceof Error ? err.message : String(err) }));
+  process.exit(1);
+});
+NODE
+  " 2>&1) || TRAINING_SMOKE_RC=$?
+
+  TRAINING_SMOKE_DETAIL="$(printf '%s' "$TRAINING_SMOKE_RESULT" | tail -c 700 | tr '\n' ' ')"
+  if [ "$TRAINING_SMOKE_RC" -eq 0 ]; then
+    echo "  ✅ Training plan preview E2E — isolated fixture seeded; blocker-free preview"
+    PASS=$((PASS + 1))
+    evidence_record "training plan preview e2e" "passed" "$TRAINING_SMOKE_DETAIL"
+  else
+    echo "  ❌ Training plan preview E2E — failed"
+    FAIL=$((FAIL + 1))
+    FAILED_TESTS+=("training plan preview e2e")
+    evidence_record "training plan preview e2e" "failed" "$TRAINING_SMOKE_DETAIL"
+    [ "$VERBOSE" = true ] && echo "     Detail: $TRAINING_SMOKE_RESULT"
+  fi
+fi
+
+echo ""
 echo "🗃  6/6 — DB integrity"
 DB_CHECK=$(ssh "$SERVER" "
   cd /home/dominguez/telegram-hub-bot-staging
