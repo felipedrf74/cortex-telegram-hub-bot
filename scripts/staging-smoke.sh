@@ -287,7 +287,7 @@ else
 fi
 
 echo ""
-echo "🏋️  Training plan preview E2E"
+echo "🏋️  Training plan preview E2E (isolated fixture seed, preview API only)"
 TRAINING_E2E_ENABLED="${NEXUS_SMOKE_TRAINING_E2E:-1}"
 if [ "$TRAINING_E2E_ENABLED" = "0" ]; then
   echo "  ⚠️  Training plan preview E2E skipped by NEXUS_SMOKE_TRAINING_E2E=0"
@@ -492,7 +492,7 @@ NODE
 
   TRAINING_SMOKE_DETAIL="$(printf '%s' "$TRAINING_SMOKE_RESULT" | tail -c 700 | tr '\n' ' ')"
   if [ "$TRAINING_SMOKE_RC" -eq 0 ]; then
-    echo "  ✅ Training plan preview E2E — blocker-free preview"
+    echo "  ✅ Training plan preview E2E — isolated fixture seeded; blocker-free preview"
     PASS=$((PASS + 1))
     evidence_record "training plan preview e2e" "passed" "$TRAINING_SMOKE_DETAIL"
   else

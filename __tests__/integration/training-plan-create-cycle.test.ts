@@ -89,6 +89,7 @@ describe('training plan create cycle integration', () => {
     expect(ruleIds(res.body.data.planLint.blockers)).not.toContain('no_heavy_lower_before_long_run');
     expect(res.body.data.calendarSource).toBe('outlook');
     expect(res.body.data.eventsCreated).toBeGreaterThan(0);
+    expect(res.body.data.calendarSync.sessionsLinked).toBe(res.body.data.eventsCreated);
 
     const sessions = persistedSessions(Number(res.body.data.planId));
     expect(countTwoADayTrainingDays(sessions)).toBeGreaterThanOrEqual(3);
@@ -205,6 +206,8 @@ describe('training plan create cycle integration', () => {
       message: expect.any(String),
     });
     expect(created.body.data).toHaveProperty('profileQuality');
+    expect(created.body.data.calendarSync.sessionsLinked).toBeGreaterThan(0);
+    expect(created.body.data.calendarSync.sessionsLinked).toBe(created.body.data.eventsCreated);
     expect(created.body.data.weeks[0]).toMatchObject({
       weekNumber: 1,
       sessionCount: expect.any(Number),

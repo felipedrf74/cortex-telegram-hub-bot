@@ -26,7 +26,7 @@ The backend must not generate or persist a strength session that the Training li
 - Route coverage must use the real `/plan/preview` path before shipping the production fix.
 - "Upper-body" by title is not enough. Assertions use the same lower-heavy classifier as persistence/lint.
 - Preview smoke must not call `/plan/cancel`; preview creates no plan.
-- Staging smoke is honest: it catches this blocker, not calendar write/body/cancel bugs.
+- Staging smoke is honest: it seeds only an isolated staging fixture user, calls the preview API only, and catches this blocker, not calendar write/body/cancel bugs.
 - Calendar-source E2E must seed connected provider state, because explicit Outlook validation checks OAuth/provider availability.
 - Mock boundaries must include `unified-calendar`, `google-calendar`, and `outlook-calendar`.
 - Normal protected-branch merge is the default. Admin merge requires explicit Felipe approval.
@@ -44,7 +44,8 @@ The backend must not generate or persist a strength session that the Training li
 - Route-level reproducer coverage added for preview and generate.
 - Generate/cancel/generate cycle coverage added with live Secretary agenda cleanup assertions.
 - iOS payload contract assertions added for fields returned by `training-plan-generation.ts`.
-- Staging smoke now has a default-on, preview-only Training plan E2E gate with `NEXUS_SMOKE_TRAINING_E2E=0` as the emergency kill switch.
+- Plan create responses now report nonzero `calendarSync.sessionsLinked` when sessions are linked to created or already-owned calendar events.
+- Staging smoke now has a default-on Training plan E2E gate that seeds an isolated fixture user and then calls only `/plan/preview`, with `NEXUS_SMOKE_TRAINING_E2E=0` as the emergency kill switch.
 - Changed-area classifier and cannot-skip dashboard now route Training changes to the real-DB create-cycle E2E.
 - iOS Codex E2E prompt created at `docs/training/training-skill-ios-codex-e2e-prompt-2026-05-25.md`.
 
@@ -55,9 +56,10 @@ The backend must not generate or persist a strength session that the Training li
 - Persisted sessions have no lower-heavy session on Friday when Saturday is the resolved long run.
 - At least three persisted training days have two sessions for the 5+5 preferred two-a-day reproducer.
 - Calendar create calls carry workout content before metadata markers.
+- Calendar sync response reports linked session count instead of hard-coding `sessionsLinked: 0`.
 - After cancel, active plans are zero and live `secretary_agenda_items` in `scheduled`, `synced`, or `proposed` states are zero.
 - Explicit Outlook and explicit Auto calendar-source scenarios are covered without live provider HTTP.
-- Staging smoke preview does not create or cancel a plan.
+- Staging smoke may upsert isolated fixture user/profile/token rows, but its Training API call does not create or cancel a plan.
 - iOS handoff prompt is self-contained and uses absolute paths.
 
 ## Required Verification

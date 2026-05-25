@@ -183,6 +183,7 @@ describe('training-plan-persistence', () => {
       planId: 901,
       totalSessions: 2,
       eventsCreated: 2,
+      sessionsLinked: 2,
       weekSummaries: [{ weekNumber: 1, focus: 'base', sessionCount: 2 }],
       // training-expert-coach-knowledge-engine (2026-05-03):
       // The persister now runs the deterministic plan-linter in advisor

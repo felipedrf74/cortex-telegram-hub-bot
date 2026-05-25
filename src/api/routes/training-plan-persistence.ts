@@ -136,6 +136,7 @@ export interface PersistGeneratedTrainingPlanResult {
   planId: number;
   totalSessions: number;
   eventsCreated: number;
+  sessionsLinked: number;
   weekSummaries: Array<{
     weekNumber: number | undefined;
     focus: string | undefined;
@@ -519,7 +520,8 @@ async function persistGeneratedTrainingPlanLocked(
     planId: plan.id,
     totalSessions,
     eventsCreated,
-      weekSummaries: (input.planData.weeks || []).map((weekData) => ({
+    sessionsLinked: eventsCreated + eventsAlreadyOwned,
+    weekSummaries: (input.planData.weeks || []).map((weekData) => ({
       weekNumber: weekData.weekNumber,
       focus: weekData.focus,
       sessionCount: weekData.sessions?.filter(isCalendarSchedulableTrainingSession).length || 0,

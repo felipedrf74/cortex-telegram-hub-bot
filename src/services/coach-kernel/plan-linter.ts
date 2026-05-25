@@ -392,7 +392,9 @@ function ruleNoHeavyLowerBeforeLongRun(input: PlanLintInput): PlanLintFinding | 
     }
     for (const longIdx of longRunDays) {
       const dayBefore = longIdx - 1;
-      if (dayBefore < 0) continue; // Sun long-run with Sat heavy-lower handled by 3-day rule
+      // Monday's previous calendar day is in the prior week; date-aware
+      // lint above catches that when session dates are available.
+      if (dayBefore < 0) continue;
       const heavy = heavyLowerDays.get(dayBefore);
       if (heavy) {
         offenders.push(makeAffected(week.weekNumber, heavy));
