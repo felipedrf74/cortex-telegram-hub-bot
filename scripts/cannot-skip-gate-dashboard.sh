@@ -89,6 +89,7 @@ GATES=(
   "ios-contract-decoder-resilience|Nexus Hub/Core/Services/TrainingService.swift|ContractDecoder"
   "apple-notifications-jws-verify|src/services/apple-jws-verifier.ts|apple-notifications-jws-verify"
   "training-routes-entitlement|src/api/routes/training.ts|training-routes-entitlement"
+  "training-plan-create-e2e|src/services/training-plan-volume-enforcement.ts|training-plan-create-cycle"
   "content-engine-prompt-cleanliness|content-engine/services/creative/hook_generator.py|test_prompt_cleanliness"
   "voice-evolution-multi-tenant|src/agents/voice-evolution-agent.ts|voice-evolution-multi-tenant"
   "video-study-prompt-cleanliness|src/services/video-study.ts|video-study-prompt-cleanliness"
