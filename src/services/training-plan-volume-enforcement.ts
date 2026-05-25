@@ -4,6 +4,10 @@ import type { CoordinatedTrainingPlan, CoordinatedTrainingSession } from './trai
 import { loadCoachKnowledge } from './coach-kernel/knowledge-loader';
 import { buildStrengthSupportVariant } from './coach-kernel/support-session-builder';
 import type { CoachKnowledgeBase } from './coach-kernel/types';
+import {
+  inferTrainingSessionIsLongRun,
+  inferTrainingSessionIsLowerHeavy,
+} from './training-session-classification';
 
 const DAY_ORDER = ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday'] as const;
 const DAY_LABEL: Record<string, string> = {
@@ -84,6 +88,7 @@ export function enforceRequestedTrainingPlanVolume(
     // rotation shifts each week (0-based shift = weekNumber - 1).
     sessions = fillMissingStrength(sessions, strengthTarget, allowedDays, cloned.sport, request, weekNumber);
     sessions = fillMissingActiveSessions(sessions, activeTarget, allowedDays, cloned.sport, request);
+    sessions = protectHeavyLowerBeforeLongRun(sessions, request, cloned.sport, weekNumber);
 
     return {
       ...week,
@@ -262,6 +267,148 @@ function fillMissingActiveSessions(
   return next;
 }
 
+function protectHeavyLowerBeforeLongRun(
+  sessions: CoordinatedTrainingSession[],
+  request: TrainingPlanVolumeRequest,
+  sport: string | undefined,
+  weekNumber: number,
+): CoordinatedTrainingSession[] {
+  const longRunDay = resolveLongRunDayForWeek(sessions, request.longWorkoutDay);
+  if (!longRunDay) return sessions;
+
+  const dayBeforeLongRun = previousDay(longRunDay);
+  const next = sessions.map((session) => ({ ...session }));
+
+  for (let index = 0; index < next.length; index += 1) {
+    const session = next[index];
+    if (normalizeDay(session.dayOfWeek) !== dayBeforeLongRun) continue;
+    if (!inferTrainingSessionIsLowerHeavy(session)) continue;
+
+    const swapIndex = findUpperStrengthSwapTarget(next, index, dayBeforeLongRun, longRunDay);
+    if (swapIndex >= 0) {
+      const originalDay = next[index].dayOfWeek;
+      const replacementDay = next[swapIndex].dayOfWeek;
+      next[index] = withScheduleAdjustment({
+        ...next[index],
+        dayOfWeek: replacementDay,
+      }, `Moved away from the day before the long run to avoid heavy lower-body work before ${DAY_LABEL[longRunDay]}.`);
+      next[swapIndex] = withScheduleAdjustment({
+        ...next[swapIndex],
+        dayOfWeek: originalDay,
+      }, 'Moved into the pre-long-run strength slot as an upper-body-safe replacement.');
+      continue;
+    }
+
+    next[index] = buildUpperBodyReplacementSession(next[index], sport, request, weekNumber);
+  }
+
+  return next;
+}
+
+function resolveLongRunDayForWeek(
+  sessions: CoordinatedTrainingSession[],
+  requestedLongWorkoutDay: unknown,
+): string | null {
+  const requested = normalizeDay(requestedLongWorkoutDay);
+  const longSessions = sessions
+    .map((session) => ({ session, day: normalizeDay(session.dayOfWeek) }))
+    .filter((entry): entry is { session: CoordinatedTrainingSession; day: string } =>
+      Boolean(entry.day) && inferTrainingSessionIsLongRun(entry.session)
+    );
+
+  return longSessions.find((entry) => !requested || entry.day === requested)?.day
+    ?? longSessions[0]?.day
+    ?? null;
+}
+
+function findUpperStrengthSwapTarget(
+  sessions: CoordinatedTrainingSession[],
+  offenderIndex: number,
+  dayBeforeLongRun: string,
+  longRunDay: string,
+): number {
+  const candidates = sessions
+    .map((session, index) => ({ session, index, day: normalizeDay(session.dayOfWeek) }))
+    .filter((entry): entry is { session: CoordinatedTrainingSession; index: number; day: string } =>
+      entry.index !== offenderIndex
+      && Boolean(entry.day)
+      && entry.day !== dayBeforeLongRun
+      && entry.day !== longRunDay
+      && isStrengthSession(entry.session)
+      && !inferTrainingSessionIsLowerHeavy(entry.session)
+    )
+    .sort((left, right) => {
+      const leftScore = longRunSwapScore(left.day, longRunDay);
+      const rightScore = longRunSwapScore(right.day, longRunDay);
+      if (leftScore !== rightScore) return rightScore - leftScore;
+      return daySortIndex(left.day) - daySortIndex(right.day);
+    });
+
+  return candidates[0]?.index ?? -1;
+}
+
+function longRunSwapScore(day: string, longRunDay: string): number {
+  if (day === longRunDay) return 0;
+  if (previousDay(longRunDay) === day || nextDay(longRunDay) === day) return 1;
+  return 3;
+}
+
+function buildUpperBodyReplacementSession(
+  original: CoordinatedTrainingSession,
+  sport: string | undefined,
+  request: TrainingPlanVolumeRequest,
+  weekNumber: number,
+): CoordinatedTrainingSession {
+  const knowledge = safeLoadCoachKnowledge();
+  const weekShift = Math.max(0, weekNumber - 1);
+  const upperVariant = [1, 3]
+    .map((slot) => buildStrengthSupportVariant(slot, knowledge, weekShift))
+    .find((variant) => !inferTrainingSessionIsLowerHeavy({
+      sessionType: 'gym',
+      title: variant.title,
+      exercises: variant.exercises as Array<Record<string, any>>,
+    }));
+
+  const planSport = String(sport || '').toLowerCase();
+  const replacement = upperVariant
+    ? {
+        title: planSport === 'running' ? `Runner ${upperVariant.title}` : upperVariant.title,
+        durationMinutes: upperVariant.durationMinutes,
+        exercises: upperVariant.exercises as Array<Record<string, any>>,
+      }
+    : {
+        title: planSport === 'running' ? 'Runner Upper Body Strength' : 'Upper Body Strength',
+        durationMinutes: Math.min(Math.max(original.durationMinutes || 45, 35), 50),
+        exercises: [
+          { name: 'Dumbbell Bench Press', sets: 3, reps: '8-10', rir: 2, restSec: 75 },
+          { name: 'Lat Pulldown', sets: 3, reps: '8-10', rir: 2, restSec: 75 },
+          { name: 'One-Arm Dumbbell Row', sets: 3, reps: '10 each side', rir: 2, restSec: 60 },
+          { name: 'Dead Bug', sets: 3, reps: '10 each side', rir: 3, restSec: 30 },
+        ],
+      };
+
+  return withScheduleAdjustment({
+    ...original,
+    sessionType: 'gym',
+    title: replacement.title,
+    durationMinutes: replacement.durationMinutes,
+    preferredStartTime: original.preferredStartTime ?? request.preferredStrengthTime,
+    description: 'Upper-body strength slot substituted to avoid heavy lower-body work the day before the long run.',
+    exercises: replacement.exercises,
+  }, 'Converted from lower-body strength to upper-body strength before the long run.');
+}
+
+function withScheduleAdjustment(
+  session: CoordinatedTrainingSession,
+  adjustment: string,
+): CoordinatedTrainingSession {
+  return {
+    ...session,
+    scheduleAdjustments: [...(session.scheduleAdjustments ?? []), adjustment],
+    scheduleReason: session.scheduleReason ?? adjustment,
+  };
+}
+
 function chooseInsertionDay(
   sessions: CoordinatedTrainingSession[],
   allowedDays: string[],
@@ -400,6 +547,18 @@ function countStrength(sessions: CoordinatedTrainingSession[]): number {
 function normalizeDay(value: unknown): string | null {
   const normalized = String(value || '').trim().toLowerCase();
   return DAY_ORDER.includes(normalized as typeof DAY_ORDER[number]) ? normalized : null;
+}
+
+function previousDay(day: string): string {
+  const index = DAY_ORDER.indexOf(day as typeof DAY_ORDER[number]);
+  if (index < 0) return day;
+  return DAY_ORDER[(index + DAY_ORDER.length - 1) % DAY_ORDER.length];
+}
+
+function nextDay(day: string): string {
+  const index = DAY_ORDER.indexOf(day as typeof DAY_ORDER[number]);
+  if (index < 0) return day;
+  return DAY_ORDER[(index + 1) % DAY_ORDER.length];
 }
 
 function daySortIndex(day: string | null): number {

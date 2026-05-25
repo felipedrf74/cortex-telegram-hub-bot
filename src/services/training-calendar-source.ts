@@ -25,6 +25,7 @@ export function normalizeTrainingCalendarSource(value: unknown): CalendarSource 
   if (value == null) return null;
   const normalized = String(value).trim().toLowerCase();
   if (!normalized) return null;
+  if (normalized === 'auto' || normalized === 'default') return null;
   if (normalized === 'google' || normalized === 'gmail' || normalized === 'gcal') return 'google';
   if (normalized === 'outlook' || normalized === 'microsoft' || normalized === 'msft') return 'outlook';
   return 'invalid';
@@ -40,7 +41,7 @@ export function validateRequestedTrainingCalendarSource(
       ok: false,
       code: 'INVALID_CALENDAR_SOURCE',
       status: 400,
-      message: 'calendarSource must be "outlook" or "google".',
+      message: 'calendarSource must be "auto", "outlook", or "google".',
     };
   }
   if (!source) return { ok: true };

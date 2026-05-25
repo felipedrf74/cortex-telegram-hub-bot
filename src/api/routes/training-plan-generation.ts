@@ -489,7 +489,7 @@ export async function generateTrainingPlanForUser(
       preferredCardioTime: normalizedPreferredCardioTime,
       preferredStrengthTime: normalizedPreferredStrengthTime,
       startDate: startStr,
-      longWorkoutDay: normalizedLongWorkoutDay,
+      longWorkoutDay: coordination.resolvedLongWorkoutDay ?? normalizedLongWorkoutDay,
     }),
     equipmentAdaptation,
   );
