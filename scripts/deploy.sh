@@ -86,6 +86,19 @@ ensure_clean_deploy_tree() {
   fi
 }
 
+restore_deploy_generated_artifacts() {
+  if [ "${NEXUS_DEPLOY_ALLOW_DIRTY:-0}" = "1" ]; then
+    return
+  fi
+
+  local shadow_parity_report="docs/release/eval-evidence/registry-shadow-parity-latest.json"
+  if [ -n "$(git status --porcelain -- "$shadow_parity_report")" ]; then
+    echo "♻️  Restoring deploy-generated shadow parity evidence"
+    git restore -- "$shadow_parity_report"
+  fi
+}
+
+restore_deploy_generated_artifacts
 ensure_clean_deploy_tree
 SKIP_MODE="${NEXUS_DEPLOY_SKIP_VERIFY:-0}"
 
@@ -151,6 +164,9 @@ case "$SKIP_MODE" in
     run_full_verify
     ;;
 esac
+
+restore_deploy_generated_artifacts
+ensure_clean_deploy_tree
 
 # ── 1. Build TypeScript locally ──────────────────────
 echo "📦 Building TypeScript..."
@@ -255,6 +271,12 @@ git push origin "$(git branch --show-current)" 2>/dev/null || {
 COMMIT=$(git rev-parse --short HEAD 2>/dev/null || echo "unknown")
 DEPLOY_STATUS="✅ Success"
 
+# Last local provenance guard before production is stopped. Any generated
+# artifact drift or build/version side effect must abort here while prod is
+# still online; after this point the script must continue through rsync/start.
+restore_deploy_generated_artifacts
+ensure_clean_deploy_tree
+
 # ── 2. Stop services on server ───────────────────────
 # (Moved BEFORE backup so the SQLite WAL is checkpointed and bot.db is in
 # a consistent state when we copy it. Audit QW-10 found that the previous
@@ -319,8 +341,6 @@ ssh "$SERVER" '
 # ── 4. Sync files (excluding protected paths) ────────
 echo ""
 echo "📤 Syncing files to server..."
-
-ensure_clean_deploy_tree
 
 if command -v rsync &>/dev/null; then
   rsync -avz --delete \
