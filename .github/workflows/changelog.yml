@@ -55,6 +55,9 @@ jobs:
             --body "Auto-generated changelog update via git-cliff." \
             --base main \
             --head "$BRANCH" \
-            --label "documentation"
+            --label "documentation" || {
+              echo "::warning::Changelog branch pushed to $BRANCH, but this repository does not allow GitHub Actions to create pull requests."
+              echo "::warning::Create the pull request manually from https://github.com/${{ github.repository }}/pull/new/$BRANCH"
+            }
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

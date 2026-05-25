@@ -180,7 +180,7 @@ jobs:
           case "$MODE" in
             full)
               echo "▶️ Full vitest"
-              npx vitest run --reporter=verbose
+              npx vitest run
               ;;
             changed-only)
               if [ "${{ github.event_name }}" = "pull_request" ]; then
@@ -189,21 +189,21 @@ jobs:
                 BASE="HEAD~1"
               fi
               echo "▶️ Vitest --changed $BASE"
-              npx vitest run --reporter=verbose --changed "$BASE"
+              npx vitest run --changed "$BASE"
               ;;
             focused)
               if [ -z "$GLOBS" ]; then
                 echo "Focused mode but empty globs — falling back to full"
-                npx vitest run --reporter=verbose
+                npx vitest run
               else
                 echo "▶️ Focused vitest: $GLOBS"
                 # shellcheck disable=SC2086
-                npx vitest run --reporter=verbose $GLOBS
+                npx vitest run $GLOBS
               fi
               ;;
             *)
               echo "Unknown mode '$MODE' — full"
-              npx vitest run --reporter=verbose
+              npx vitest run
               ;;
           esac
 
