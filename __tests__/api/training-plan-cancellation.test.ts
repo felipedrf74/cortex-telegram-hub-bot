@@ -19,6 +19,10 @@ const mocks = vi.hoisted(() => ({
   markCalendarOwnershipDeleted: vi.fn(),
   getTrainingCalendarEventOwners: vi.fn(),
   cancelTrainingPlanCrossSkillDependents: vi.fn(),
+  // 2026-05-25 Bug #1 fix — buildCalendarDeletionTargetsForPlan now
+  // also reads Secretary-owned events from secretary_agenda_items.
+  // Test default: no extra events. Specific tests can override.
+  findSecretaryAgendaCalendarEventsForPlan: vi.fn(() => []),
 }));
 
 vi.mock('../../src/services/unified-calendar', () => ({
@@ -58,6 +62,7 @@ vi.mock('../../src/services/training-calendar-scope', () => ({
 
 vi.mock('../../src/services/training-plan-cancellation-cascade', () => ({
   cancelTrainingPlanCrossSkillDependents: mocks.cancelTrainingPlanCrossSkillDependents,
+  findSecretaryAgendaCalendarEventsForPlan: mocks.findSecretaryAgendaCalendarEventsForPlan,
 }));
 
 import { cancelTrainingPlanForUser } from '../../src/api/routes/training-plan-cancellation';

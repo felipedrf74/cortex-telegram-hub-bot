@@ -518,7 +518,7 @@ export interface NormalizedTrainingProfile {
     priorityOrder: Array<Sport | 'strength'>;
     requestedSessions: Partial<Record<Sport, number>>;
     preferredTimesBySport: Partial<Record<Sport, string>>;
-    twoADayPreference?: 'never' | 'optional' | 'preferred' | null;
+    twoADayPreference?: 'never' | 'optional' | 'preferred' | 'auto' | null;
   };
   equipment: EquipmentAccess & {
     source: 'provided' | 'fallback';

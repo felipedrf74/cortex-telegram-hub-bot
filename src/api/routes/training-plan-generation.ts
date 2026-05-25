@@ -75,7 +75,7 @@ export interface GenerateTrainingPlanForUserInput {
    * omitted the generator behaves exactly as before (volume-based
    * inference) — additive, fully backward-compatible.
    */
-  twoADayPreference?: 'never' | 'optional' | 'preferred' | null;
+  twoADayPreference?: 'never' | 'optional' | 'preferred' | 'auto' | null;
   calendarSource?: CalendarSource | null;
   previewOnly?: boolean;
 }

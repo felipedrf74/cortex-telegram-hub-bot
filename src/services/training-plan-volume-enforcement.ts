@@ -39,9 +39,22 @@ export function enforceRequestedTrainingPlanVolume(
     ? clamp(Math.round((request.runSessionsPerWeek ?? request.sessionsPerWeek) || 5), 1, 7)
     : clamp(Math.round(request.sessionsPerWeek || 5), 3, 7);
   const requestedStrength = clamp(Math.round(request.strengthSessionsPerWeek || 0), 0, MAX_STRENGTH_SESSIONS_PER_WEEK);
-  const requestedTotal = planSport === 'running'
-    ? requestedPrimarySessions + requestedStrength
-    : requestedPrimarySessions;
+  // 2026-05-25 Bug #2 fix — when the user provides BOTH explicit
+  // `runSessionsPerWeek` AND `strengthSessionsPerWeek`, the total
+  // active sessions for the week must be the sum, regardless of
+  // `planSport`. Pre-fix the enforcer only summed for `planSport ==
+  // 'running'` and silently dropped the strength count from the
+  // total for hybrid/gym plans, which capped weeks at the primary
+  // count and prevented true two-a-day scheduling. The math still
+  // respects MAX_STRENGTH_SESSIONS_PER_WEEK on the strength side
+  // and the existing `allowedDays.length * 2` ceiling below.
+  const hasExplicitRunRequest = typeof request.runSessionsPerWeek === 'number' && request.runSessionsPerWeek > 0;
+  const hasExplicitStrengthRequest = requestedStrength > 0;
+  const requestedTotal = (hasExplicitRunRequest && hasExplicitStrengthRequest)
+    ? clamp(Math.round(request.runSessionsPerWeek!), 1, 7) + requestedStrength
+    : planSport === 'running'
+      ? requestedPrimarySessions + requestedStrength
+      : requestedPrimarySessions;
   const defaultStrengthForGymPlan = planSport === 'gym'
     ? Math.min(MAX_STRENGTH_SESSIONS_PER_WEEK, requestedPrimarySessions)
     : 0;

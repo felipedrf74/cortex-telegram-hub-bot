@@ -15,8 +15,10 @@ import {
   type SecretaryProviderEvent,
   type SecretaryProviderEventInput,
 } from './secretary-agenda-provider-sync';
-import { getSessionById } from './training-plans';
+import { getSessionById, type TrainingSession } from './training-plans';
 import { stripTrainingIdentityMarker } from './training-session-identity';
+import { renderSectionsAsText, type SessionSections } from './training-session-description';
+import { logger } from '../utils/logger';
 
 const MARKER_PREFIX = 'NEXUS_SECRETARY_AGENDA_ITEM';
 const SOURCE_INTENT_PREFIX = 'NEXUS_SECRETARY_SOURCE_INTENT';
@@ -71,6 +73,16 @@ export function createUnifiedCalendarSecretaryProviderAdapter(
   };
 }
 
+// 2026-05-25 Bug #3 (Stage 1) — visual divider between user-facing
+// workout content and machine-facing correlation markers. Keeps the
+// markers parseable by `extractSecretaryAgendaMarker` (which the
+// secretary_agenda_sync cron uses to match events back to agenda
+// rows) while signaling to the calendar viewer that everything
+// below the divider is operator/sync metadata. A follow-up PR
+// (tracked as architectural Bug #3) moves the markers to
+// provider-private fields entirely so this divider disappears.
+const METADATA_FOOTER_DIVIDER = '────────────';
+
 export function buildSecretaryCalendarDescription(input: SecretaryProviderEventInput): string {
   const footerLines = [
     `${MARKER_PREFIX}:${input.agendaItemId}`,
@@ -85,16 +97,74 @@ export function buildSecretaryCalendarDescription(input: SecretaryProviderEventI
   }
   const sourceBody = sourceBodyForSecretaryCalendarEvent(input);
   const footer = footerLines.join('\n');
-  return sourceBody ? `${sourceBody}\n\n${footer}` : footer;
+  return sourceBody ? `${sourceBody}\n\n${METADATA_FOOTER_DIVIDER}\n${footer}` : footer;
 }
 
+// 2026-05-25 Bug #3 (Stage 1) — body hydration. Pre-fix this function
+// only read `session.description`. When the planner had stored a
+// session without a populated `description` (some session-type
+// branches skip the rich-text rendering step at persistence time),
+// the calendar event body collapsed to just the metadata footer —
+// the bug the user reported (screenshot showed a "Strength + Core
+// Support" event whose body was 6 lines of NEXUS_SECRETARY_* markers
+// and nothing else).
+//
+// Hydration priority (first non-empty wins):
+//   1. `session.description` — the pre-rendered plain text, what the
+//      planner historically wrote at persistence time. iOS reads this
+//      same field.
+//   2. `session.description_json` parsed + re-rendered via
+//      `renderSectionsAsText` — the typed `SessionSections` source of
+//      truth. Used when description was never written.
+//   3. Minimal fallback one-liner from `title + intensity_text +
+//      duration_minutes` — never empty when the session row exists.
 function sourceBodyForSecretaryCalendarEvent(input: SecretaryProviderEventInput): string | null {
   if (input.sourceSkill !== 'training' || input.sourceEntityType !== 'training_session') return null;
   const sessionId = Number(input.sourceEntityId);
   if (!Number.isFinite(sessionId) || sessionId <= 0) return null;
   const session = getSessionById(Math.floor(sessionId));
-  const description = stripTrainingIdentityMarker(session?.description ?? '');
-  return description.trim() || null;
+  if (!session) return null;
+
+  // Priority 1: stored plain-text description.
+  const storedDescription = stripTrainingIdentityMarker(session.description ?? '').trim();
+  if (storedDescription) return storedDescription;
+
+  // Priority 2: re-render from structured sections.
+  const renderedFromSections = tryRenderSectionsFromJson(session.description_json);
+  if (renderedFromSections) return renderedFromSections;
+
+  // Priority 3: minimal fallback so the event body is never empty.
+  return buildMinimalSessionFallback(session);
+}
+
+function tryRenderSectionsFromJson(raw: string | null | undefined): string | null {
+  const trimmed = (raw ?? '').trim();
+  if (!trimmed) return null;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(trimmed);
+  } catch (err) {
+    logger.warn({ err }, 'secretary-calendar-adapter: description_json parse failed — falling back to minimal body');
+    return null;
+  }
+  if (!parsed || typeof parsed !== 'object') return null;
+  try {
+    const rendered = renderSectionsAsText(parsed as SessionSections).trim();
+    return rendered || null;
+  } catch (err) {
+    logger.warn({ err }, 'secretary-calendar-adapter: renderSectionsAsText failed — falling back to minimal body');
+    return null;
+  }
+}
+
+function buildMinimalSessionFallback(session: TrainingSession): string | null {
+  const parts: string[] = [];
+  if (session.title) parts.push(session.title);
+  if (session.intensity_text) parts.push(session.intensity_text);
+  if (typeof session.duration_minutes === 'number' && session.duration_minutes > 0) {
+    parts.push(`${session.duration_minutes} min`);
+  }
+  return parts.length > 0 ? parts.join(' · ') : null;
 }
 
 export function extractSecretaryAgendaMarker(description: string | undefined): string | null {

@@ -15,7 +15,10 @@ import {
   markCalendarOwnershipDeleted,
 } from '../../services/training-plan-lifecycle';
 import { reconcileOrphanedTrainingAgendaEvents } from '../../services/training-agenda-reconciliation';
-import { cancelTrainingPlanCrossSkillDependents } from '../../services/training-plan-cancellation-cascade';
+import {
+  cancelTrainingPlanCrossSkillDependents,
+  findSecretaryAgendaCalendarEventsForPlan,
+} from '../../services/training-plan-cancellation-cascade';
 import { getTrainingCalendarEventOwners } from '../../services/training-calendar-scope';
 import {
   buildTrainingSessionIdentityKey,
@@ -482,6 +485,27 @@ async function buildCalendarDeletionTargetsForPlan(
     targets.set(key, {
       eventId: ownership.calendar_event_id,
       source: ownership.calendar_source,
+      planId: plan.id,
+    });
+  }
+
+  // 2026-05-25 fix — Secretary-owned training calendar events live
+  // in `secretary_agenda_items.provider_event_id` and are NOT
+  // mirrored into `training_agenda_event_ownership`. Without this
+  // sweep, cancelling a plan only deletes events the training skill
+  // wrote directly; events the secretary arbitrator wrote on
+  // training's behalf were left behind, then either had to wait for
+  // the next `secretary_agenda_sync` cron tick (5 min) or sat as
+  // permanent orphans if the cancellation cascade also failed to
+  // match the agenda row (see prior `plan_version` drift fix in
+  // training-plan-cancellation-cascade.ts).
+  for (const secretaryEvent of findSecretaryAgendaCalendarEventsForPlan(plan.id, userId, plan.tenant_id ?? userId)) {
+    if (!isCalendarSource(secretaryEvent.calendar_source)) continue;
+    const key = `${secretaryEvent.calendar_source}:${secretaryEvent.calendar_event_id}`;
+    if (targets.has(key)) continue;
+    targets.set(key, {
+      eventId: secretaryEvent.calendar_event_id,
+      source: secretaryEvent.calendar_source,
       planId: plan.id,
     });
   }
