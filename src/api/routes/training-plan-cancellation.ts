@@ -2,7 +2,7 @@
 
 import { logger } from '../../utils/logger';
 import {
-  getEvents,
+  getEventsForSources,
   type CalendarSource,
   type UnifiedCalendarEvent,
 } from '../../services/unified-calendar';
@@ -111,6 +111,9 @@ interface MatchableTrainingSessionIdentity {
 
 const cancellationLocks = new Map<string, Promise<void>>();
 const SERIAL_PROVIDER_DELETE_THRESHOLD = 20;
+const TRAINING_ORPHAN_LOOKBACK_DAYS = 14;
+const TRAINING_ORPHAN_LOOKAHEAD_DAYS = 240;
+const TRAINING_CALENDAR_SOURCES: readonly CalendarSource[] = ['google', 'outlook'];
 
 async function withTrainingCancellationLock<T>(key: string, fn: () => Promise<T>): Promise<T> {
   const previous = cancellationLocks.get(key) ?? Promise.resolve();
@@ -172,17 +175,20 @@ async function cancelTrainingPlanForUserLocked(
   }
 
   if (plans.length === 0) {
+    const removedEvents = await cleanupOrphanedTrainingCalendarEventsForUser(userId);
     return {
       status: 'not_found',
       data: {
         cancelled: false,
-        removedEvents: 0,
+        removedEvents,
         removedSessions: 0,
         removedWeeks: 0,
         removedCompletions: 0,
         removedPlans: 0,
         totalSessions: 0,
-        message: 'No active training plan to cancel.',
+        message: removedEvents > 0
+          ? buildCancellationMessage(removedEvents, 0)
+          : 'No active training plan to cancel.',
       },
     };
   }
@@ -527,7 +533,7 @@ async function buildCalendarDeletionTargetsForPlan(
     .slice(0, 10);
 
   try {
-    const events = await getEvents(startStr, endStr, userId);
+    const events = await getCalendarEventsForCancellation(startStr, endStr, userId);
     for (const event of events || []) {
       const matchingSession = matchableSessions.find((entry) =>
         isMatchingGeneratedTrainingEvent(entry, plan.id, event),
@@ -547,6 +553,119 @@ async function buildCalendarDeletionTargetsForPlan(
   }
 
   return [...targets.values()];
+}
+
+async function getCalendarEventsForCancellation(
+  startStr: string,
+  endStr: string,
+  userId: number,
+): Promise<UnifiedCalendarEvent[]> {
+  const settled = await Promise.allSettled(TRAINING_CALENDAR_SOURCES.map((source) =>
+    getEventsForSources(startStr, endStr, userId, [source]),
+  ));
+  const events: UnifiedCalendarEvent[] = [];
+  const failures: unknown[] = [];
+  settled.forEach((result) => {
+    if (result.status === 'fulfilled') {
+      events.push(...(result.value || []));
+    } else {
+      failures.push(result.reason);
+    }
+  });
+  if (failures.length === TRAINING_CALENDAR_SOURCES.length) {
+    throw failures[0];
+  }
+  return events;
+}
+
+async function cleanupOrphanedTrainingCalendarEventsForUser(userId: number): Promise<number> {
+  let removedEvents = 0;
+  try {
+    const reconciliation = await reconcileOrphanedTrainingAgendaEvents(userId);
+    removedEvents += reconciliation.deleted;
+  } catch (err) {
+    logger.warn({ err, userId }, 'No-plan training cancellation orphan reconciliation failed');
+  }
+
+  let markerTargets: CalendarDeletionTarget[] = [];
+  try {
+    markerTargets = await buildMarkerOrphanDeletionTargetsForUser(userId);
+  } catch (err) {
+    logger.warn({ err, userId }, 'No-plan training cancellation marker sweep failed');
+  }
+  if (markerTargets.length === 0) return removedEvents;
+
+  const deletionResults = await deleteCalendarDeletionTargets(markerTargets, userId);
+  deletionResults.forEach((result, idx) => {
+    const target = markerTargets[idx];
+    if (!target) return;
+    if (result.status === 'fulfilled' || isProviderEventNotFoundError(result.reason)) {
+      removedEvents += 1;
+      markCalendarOwnershipDeleted({
+        eventId: target.eventId,
+        source: target.source,
+        reason: result.status === 'fulfilled'
+          ? 'no_active_plan_marker_sweep'
+          : 'no_active_plan_marker_sweep_event_gone_upstream',
+        status: 'deleted',
+        userId,
+        planId: target.planId,
+      });
+    } else {
+      markCalendarOwnershipDeleted({
+        eventId: target.eventId,
+        source: target.source,
+        reason: 'no_active_plan_marker_sweep_delete_failed',
+        status: 'orphaned',
+        userId,
+        planId: target.planId,
+      });
+    }
+  });
+
+  return removedEvents;
+}
+
+async function buildMarkerOrphanDeletionTargetsForUser(userId: number): Promise<CalendarDeletionTarget[]> {
+  const lookupStart = new Date();
+  lookupStart.setDate(lookupStart.getDate() - TRAINING_ORPHAN_LOOKBACK_DAYS);
+  const lookupEnd = new Date();
+  lookupEnd.setDate(lookupEnd.getDate() + TRAINING_ORPHAN_LOOKAHEAD_DAYS);
+  const events = await getCalendarEventsForCancellation(
+    lookupStart.toISOString().slice(0, 10),
+    lookupEnd.toISOString().slice(0, 10),
+    userId,
+  );
+  const targets = new Map<string, CalendarDeletionTarget>();
+  for (const event of events) {
+    if (!event.id || !isCalendarSource(event.source)) continue;
+    const planId = trainingMarkerPlanId(event.description);
+    if (!planId) continue;
+    if (hasActiveTrainingOwner(event.id, event.source, userId)) continue;
+    const key = `${event.source}:${event.id}`;
+    targets.set(key, {
+      eventId: event.id,
+      source: event.source,
+      planId,
+    });
+  }
+  return [...targets.values()];
+}
+
+function hasActiveTrainingOwner(eventId: string, source: CalendarSource, userId: number): boolean {
+  const owners = getTrainingCalendarEventOwners(eventId, source);
+  return owners.some((owner) => owner.userId === userId && String(owner.planStatus || '').toLowerCase() === 'active');
+}
+
+function trainingMarkerPlanId(description: string | undefined): number | null {
+  const marker = parseTrainingIdentityMarker(description);
+  if (marker?.planId) return marker.planId;
+  const text = String(description || '');
+  if (!/^NEXUS_SECRETARY_SOURCE_SKILL:training$/mi.test(text)) return null;
+  const match = text.match(/^NEXUS_SECRETARY_SOURCE_INTENT:training:(\d+):(\d+):(\d+)$/mi);
+  if (!match) return null;
+  const planId = Number(match[1]);
+  return Number.isFinite(planId) && planId > 0 ? Math.trunc(planId) : null;
 }
 
 function isOwnedByAnotherTrainingPlan(

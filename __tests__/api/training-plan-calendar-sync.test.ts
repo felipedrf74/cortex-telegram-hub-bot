@@ -461,6 +461,86 @@ describe('training-plan-calendar-sync', () => {
     expect(wedPayload.title).toBe('🏃 Tempo Run (35min)');
   });
 
+  it('does not create a calendar event when Secretary returns a stale past slot during sync', async () => {
+    const lateNow = new Date('2026-04-20T20:55:00.000Z');
+    mocks.getActivePlan.mockReturnValue({
+      id: 7,
+      user_id: 42,
+      start_date: '2026-04-20T00:00:00.000Z',
+      preferences_json: JSON.stringify({
+        preferredTime: '07:00',
+        preferredCardioTime: '07:00',
+        preferredStrengthTime: '18:00',
+      }),
+    });
+    mocks.getWeeksForPlan.mockReturnValue([{ id: 70, week_number: 1 }]);
+    mocks.getSessionsForWeek.mockReturnValue([
+      {
+        id: 100,
+        day_of_week: 'Wednesday',
+        session_type: 'run',
+        title: 'Recovery Run',
+        duration_minutes: 15,
+        description: 'Easy.',
+        status: 'pending',
+        calendar_event_id: null,
+      },
+    ]);
+    mocks.submitSecretarySchedulingIntent.mockImplementation((intent: any) => ({
+      status: 'scheduled',
+      reasonCodes: ['scheduled_in_available_window'],
+      selectedSlot: {
+        start: '2026-04-20T06:00:00.000Z',
+        end: '2026-04-20T06:15:00.000Z',
+      },
+      agendaItem: {
+        agendaItemId: `sec-${intent.sourceEntityId}`,
+        sourceIntentId: intent.intentId,
+        lifecycleState: 'scheduled',
+      },
+      explanation: 'scheduled by Secretary',
+      alternativeSlots: [],
+      conflicts: [],
+      downstreamImplications: [],
+      confidence: 'high',
+      feedback: {
+        sourceSkill: 'training',
+        sourceIntentId: intent.intentId,
+        agendaItemId: `sec-${intent.sourceEntityId}`,
+        status: 'scheduled',
+        reasonCodes: ['scheduled_in_available_window'],
+        scheduledStart: '2026-04-20T06:00:00.000Z',
+        scheduledEnd: '2026-04-20T06:15:00.000Z',
+        shouldRefreshSource: false,
+        downstreamImplications: [],
+      },
+    }));
+
+    const result = await syncTrainingPlanCalendar(42, lateNow, undefined, 42);
+
+    expect(result.status).toBe('synced');
+    if (result.status === 'synced') {
+      expect(result.data.eventsCreated).toBe(0);
+      expect(result.data.sessionsFailed).toBe(1);
+      expect(result.data.sessionResults).toEqual([
+        expect.objectContaining({
+          sessionId: 100,
+          status: 'failed',
+          reason: 'secretary_no_confirmed_slot',
+          retryable: true,
+          eventId: null,
+        }),
+      ]);
+    }
+    expect(mocks.createEvent).not.toHaveBeenCalled();
+    expect(mocks.linkSessionToCalendar).not.toHaveBeenCalled();
+    expect(mocks.updateSession).toHaveBeenCalledWith(100, {
+      status: 'unscheduled',
+      calendar_event_id: null,
+      calendar_source: null,
+    });
+  });
+
   it('uses Outlook by default when both Google and Outlook are connected', async () => {
     process.env.TRAINING_CALENDAR_OUTLOOK_ENABLED = 'true';
     mocks.isConnected.mockImplementation((_userId: number, provider: string) => (
@@ -487,6 +567,68 @@ describe('training-plan-calendar-sync', () => {
       expect.objectContaining({ tenantId: 42 }),
     );
     expect(mocks.linkSessionToCalendar).toHaveBeenCalledWith(100, 'evt-outlook', 'outlook');
+  });
+
+  it('deletes duplicate Nexus-marked training events left on the non-selected provider during sync', async () => {
+    process.env.TRAINING_CALENDAR_OUTLOOK_ENABLED = 'true';
+    mocks.isConnected.mockImplementation((_userId: number, provider: string) => (
+      provider === 'google' || provider === 'outlook'
+    ));
+    const session = {
+      id: 100,
+      day_of_week: 'Monday',
+      session_type: 'run',
+      title: 'Easy Run',
+      duration_minutes: 40,
+      description: 'Easy.',
+      status: 'scheduled',
+      calendar_event_id: 'evt-outlook-canonical',
+      calendar_source: 'outlook',
+    };
+    mocks.getActivePlan.mockReturnValue({
+      id: 7,
+      user_id: 42,
+      start_date: '2026-04-20T00:00:00.000Z',
+      preferences_json: JSON.stringify({ trainingCalendarSource: 'outlook' }),
+    });
+    mocks.getWeeksForPlan.mockReturnValue([{ id: 70, week_number: 1 }]);
+    mocks.getSessionsForWeek.mockReturnValue([session]);
+    mocks.getEvents.mockImplementation(async (_start: string, _end: string, _userId: number, sources: string[]) => {
+      if (sources.includes('outlook')) {
+        return [{
+          id: 'evt-outlook-canonical',
+          source: 'outlook',
+          summary: '🏃 Easy Run (40min)',
+          start: '2026-04-20T07:00:00.000Z',
+          end: '2026-04-20T07:40:00.000Z',
+          description: markerDescription(7, 3, 100, session),
+        }];
+      }
+      return [{
+        id: 'evt-google-duplicate',
+        source: 'google',
+        summary: '🏃 Easy Run (40min)',
+        start: '2026-04-20T07:00:00.000Z',
+        end: '2026-04-20T07:40:00.000Z',
+        description: markerDescription(7, 3, 100, session),
+      }];
+    });
+
+    const result = await syncTrainingPlanCalendar(42, now, undefined, 42);
+
+    expect(result.status).toBe('synced');
+    if (result.status === 'synced') {
+      expect(result.data.eventsCreated).toBe(0);
+      expect(result.data.sessionsAlreadySynced).toBe(1);
+    }
+    expect(mocks.createEvent).not.toHaveBeenCalled();
+    expect(mocks.deleteEvent).toHaveBeenCalledWith('evt-google-duplicate', 'google', 42);
+    expect(mocks.markCalendarOwnershipDeleted).toHaveBeenCalledWith(expect.objectContaining({
+      eventId: 'evt-google-duplicate',
+      source: 'google',
+      reason: 'training_sync_deleted_duplicate_event',
+      status: 'deleted',
+    }));
   });
 
   it('deletes stale old-provider links when syncing a session to the resolved provider', async () => {

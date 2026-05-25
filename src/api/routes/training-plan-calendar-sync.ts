@@ -219,6 +219,8 @@ type StaleTrainingCalendarEventRef = {
   source: CalendarSource;
 };
 
+const TRAINING_CALENDAR_SOURCES: readonly CalendarSource[] = ['google', 'outlook'];
+
 function resolveOwnedSessionScope(
   userId: number,
   sessionId: number,
@@ -420,6 +422,17 @@ export async function previewTrainingSessionReflow(
       },
     };
   }
+  if (!isFutureWindow(scheduled.start, scheduled.end, notBefore)) {
+    return {
+      status: 'blocked',
+      data: {
+        message: 'Nexus could not find a future safe free slot for this training session. Refresh the recommendation and try again.',
+        reason: 'no_future_slot',
+        provider: calendarSource,
+        sessionId,
+      },
+    };
+  }
 
   const intent = buildTrainingSyncSecretaryIntent({
     userId,
@@ -453,6 +466,17 @@ export async function previewTrainingSessionReflow(
   const selected = selectedTrainingSyncSecretaryWindow(secretaryPreview, { notBefore });
   const proposedStart = selected ? new Date(selected.start) : scheduled.start;
   const proposedEnd = selected ? new Date(selected.end) : scheduled.end;
+  if (!isFutureWindow(proposedStart, proposedEnd, notBefore)) {
+    return {
+      status: 'blocked',
+      data: {
+        message: 'Nexus could not find a future safe free slot for this training session. Refresh the recommendation and try again.',
+        reason: 'no_future_slot',
+        provider: calendarSource,
+        sessionId,
+      },
+    };
+  }
 
   return {
     status: 'preview',
@@ -829,6 +853,7 @@ async function syncTrainingPlanCalendarLocked(
   const endStr = new Date(latest.getTime() + 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
   let busyWindows: BusyWindow[] = [];
   let calendarEvents: UnifiedCalendarEvent[] = [];
+  let cleanupCalendarEvents: UnifiedCalendarEvent[] = [];
   let calendarFetchSucceeded = false;
   try {
     const events = await getEventsForSources(startStr, endStr, userId, [calendarSource]);
@@ -848,6 +873,17 @@ async function syncTrainingPlanCalendarLocked(
     calendarFetchSucceeded = true;
   } catch (err) {
     logger.debug({ err, userId }, 'syncTrainingPlanCalendar: getEvents failed — scheduling without busy-window constraints');
+  }
+  try {
+    const otherSources = TRAINING_CALENDAR_SOURCES.filter((source) => source !== calendarSource);
+    const settled = await Promise.allSettled(otherSources.map((source) =>
+      getEventsForSources(startStr, endStr, userId, [source]),
+    ));
+    cleanupCalendarEvents = settled.flatMap((result) =>
+      result.status === 'fulfilled' ? result.value || [] : [],
+    );
+  } catch (err) {
+    logger.debug({ err, userId, calendarSource }, 'syncTrainingPlanCalendar: duplicate cleanup provider read failed');
   }
 
   const scheduledWindows: BusyWindow[] = [];
@@ -926,6 +962,14 @@ async function syncTrainingPlanCalendarLocked(
           sessionIdentityKey: item.sessionIdentityKey,
           sessionShapeHash: item.sessionShapeHash,
         });
+        await deleteDuplicateTrainingEventsForSession({
+          userId,
+          planId: plan.id,
+          planVersion,
+          item,
+          keepEvent: ownedEvent,
+          events: [...calendarEvents, ...cleanupCalendarEvents],
+        });
         ownershipRelinked += 1;
         sessionResults.push(syncResult(item, ownedEvent.source, 'linked', 'existing_owned_event_relinked', false, ownedEvent.id, attemptedAt, ownedEvent.start, ownedEvent.end));
         const eventStart = new Date(ownedEvent.start);
@@ -985,6 +1029,14 @@ async function syncTrainingPlanCalendarLocked(
         source: linkedEvent.source,
         sessionIdentityKey: item.sessionIdentityKey,
         sessionShapeHash: item.sessionShapeHash,
+      });
+      await deleteDuplicateTrainingEventsForSession({
+        userId,
+        planId: plan.id,
+        planVersion,
+        item,
+        keepEvent: linkedEvent,
+        events: [...calendarEvents, ...cleanupCalendarEvents],
       });
       markSessionScheduledAfterCalendarLink(item);
       alreadySynced += 1;
@@ -1075,6 +1127,14 @@ async function syncTrainingPlanCalendarLocked(
         sessionId: item.sessionId,
         staleEvent: item.staleLinkedEvent,
         staleEventRef: item.staleEventRef,
+      });
+      await deleteDuplicateTrainingEventsForSession({
+        userId,
+        planId: plan.id,
+        planVersion,
+        item,
+        keepEvent: existingEvent,
+        events: [...calendarEvents, ...cleanupCalendarEvents],
       });
       continue;
     }
@@ -1181,6 +1241,22 @@ async function syncTrainingPlanCalendarLocked(
       sessionResults.push(syncResult(item, calendarSource, 'failed', 'secretary_scheduling_failed', true, null, attemptedAt));
       continue;
     }
+    const secretaryStart = new Date(secretaryWindow.start);
+    const secretaryEnd = new Date(secretaryWindow.end);
+    if (!isFutureWindow(secretaryStart, secretaryEnd, now)) {
+      trainingPlans.updateSession(item.sessionId, {
+        status: 'unscheduled',
+        calendar_event_id: null,
+        calendar_source: null,
+      });
+      sessionsFailed += 1;
+      logger.warn(
+        { userId, planId: plan.id, planVersion, sessionId: item.sessionId, secretaryWindow },
+        'syncTrainingPlanCalendar: Secretary returned a past Training slot',
+      );
+      sessionResults.push(syncResult(item, calendarSource, 'failed', 'secretary_past_slot', true, null, attemptedAt));
+      continue;
+    }
 
     scheduledWindows.push({
       startMs: Date.parse(secretaryWindow.start),
@@ -1231,6 +1307,14 @@ async function syncTrainingPlanCalendarLocked(
         sessionId: item.sessionId,
         staleEvent: item.staleLinkedEvent,
         staleEventRef: item.staleEventRef,
+      });
+      await deleteDuplicateTrainingEventsForSession({
+        userId,
+        planId: plan.id,
+        planVersion,
+        item,
+        keepEvent: event,
+        events: [...calendarEvents, ...cleanupCalendarEvents],
       });
       eventsCreated += 1;
       sessionResults.push(syncResult(item, event.source, 'created', 'provider_event_created', false, event.id, attemptedAt, secretaryWindow.start, secretaryWindow.end));
@@ -1490,8 +1574,88 @@ function selectedTrainingSyncSecretaryWindow(
   return { start: slot.start, end: slot.end };
 }
 
+function isFutureWindow(start: Date, end: Date, notBefore: Date): boolean {
+  return Number.isFinite(start.getTime())
+    && Number.isFinite(end.getTime())
+    && end > start
+    && start.getTime() >= notBefore.getTime();
+}
+
+async function deleteDuplicateTrainingEventsForSession(input: {
+  userId: number;
+  planId: number;
+  planVersion: number;
+  item: {
+    sessionId: number;
+    sessionIdentityKey: string;
+    sessionShapeHash: string;
+    sessionType: string;
+    title: string;
+    durationMinutes: number;
+    sessionDate: Date;
+  };
+  keepEvent: UnifiedCalendarEvent;
+  events: UnifiedCalendarEvent[];
+}): Promise<void> {
+  const seen = new Set<string>([`${input.keepEvent.source}:${input.keepEvent.id}`]);
+  for (const event of input.events) {
+    if (!event.id || !isWritableCalendarSource(event.source)) continue;
+    const key = `${event.source}:${event.id}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    if (!isMatchingGeneratedTrainingEvent(input.item, event, input.planId, { allowLegacyTitleMatch: false })) continue;
+
+    try {
+      await deleteEvent(event.id, event.source, input.userId);
+      markCalendarOwnershipDeleted({
+        eventId: event.id,
+        source: event.source,
+        reason: 'training_sync_deleted_duplicate_event',
+        status: 'deleted',
+        userId: input.userId,
+        planId: input.planId,
+      });
+      logger.info(
+        {
+          userId: input.userId,
+          planId: input.planId,
+          planVersion: input.planVersion,
+          sessionId: input.item.sessionId,
+          eventId: event.id,
+          source: event.source,
+          keptEventId: input.keepEvent.id,
+          keptSource: input.keepEvent.source,
+        },
+        'syncTrainingPlanCalendar: deleted duplicate generated training calendar event',
+      );
+    } catch (err) {
+      markCalendarOwnershipDeleted({
+        eventId: event.id,
+        source: event.source,
+        reason: 'training_sync_duplicate_delete_failed',
+        status: 'orphaned',
+        userId: input.userId,
+        planId: input.planId,
+      });
+      logger.warn(
+        {
+          err,
+          userId: input.userId,
+          planId: input.planId,
+          planVersion: input.planVersion,
+          sessionId: input.item.sessionId,
+          eventId: event.id,
+          source: event.source,
+        },
+        'syncTrainingPlanCalendar: failed to delete duplicate generated training calendar event',
+      );
+    }
+  }
+}
+
 function consumeMatchingExistingTrainingEvent(
   item: {
+    sessionId?: number;
     sessionIdentityKey: string;
     sessionShapeHash: string;
     sessionType: string;
@@ -1548,6 +1712,7 @@ function findLinkedCalendarEvent(
 
 function isMatchingGeneratedTrainingEvent(
   item: {
+    sessionId?: number;
     sessionIdentityKey: string;
     sessionShapeHash: string;
     sessionType: string;
@@ -1566,6 +1731,9 @@ function isMatchingGeneratedTrainingEvent(
       && marker.sessionIdentityKey === item.sessionIdentityKey
       && marker.sessionShapeHash === item.sessionShapeHash;
   }
+  if (matchesSecretaryTrainingSourceIntent(item, planId, event.description)) {
+    return true;
+  }
   if (!options.allowLegacyTitleMatch) return false;
 
   const expectedTitle = normalizeTrainingEventTitle(
@@ -1580,6 +1748,21 @@ function isMatchingGeneratedTrainingEvent(
 
   const durationMinutes = Math.round((eventEnd.getTime() - eventStart.getTime()) / 60000);
   return Math.abs(durationMinutes - item.durationMinutes) <= 2;
+}
+
+function matchesSecretaryTrainingSourceIntent(
+  item: { sessionId?: number },
+  planId: number,
+  description: string | undefined,
+): boolean {
+  if (!Number.isFinite(item.sessionId) || Number(item.sessionId) <= 0) return false;
+  const text = String(description || '');
+  if (!/^NEXUS_SECRETARY_SOURCE_SKILL:training$/mi.test(text)) return false;
+  const match = text.match(/^NEXUS_SECRETARY_SOURCE_INTENT:training:(\d+):(\d+):(\d+)$/mi);
+  if (!match) return false;
+  const sourcePlanId = Number(match[1]);
+  const sourceSessionId = Number(match[3]);
+  return sourcePlanId === planId && sourceSessionId === item.sessionId;
 }
 
 async function updateSameShapeEventIfNeeded(input: {

@@ -92,6 +92,7 @@ vi.mock('../../src/services/report-document-store', () => ({
 
 vi.mock('../../src/services/unified-calendar', () => ({
   getEvents: (...args: unknown[]) => mockGetEvents(...args),
+  getEventsForSources: (...args: unknown[]) => mockGetEvents(...args),
   createEvent: (...args: unknown[]) => mockCreateEvent(...args),
   deleteEvent: (...args: unknown[]) => mockDeleteEvent(...args),
 }));

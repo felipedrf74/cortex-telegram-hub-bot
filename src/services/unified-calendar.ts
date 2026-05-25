@@ -347,25 +347,33 @@ function normalizeAllDayStartDate(event: UnifiedCalendarEvent): string | null {
  * Deduplicate events from multiple calendar sources.
  * When the same event appears on both Google and Outlook (same meeting invite),
  * merge them into a single event with syncedSources listing both calendars.
+ * Same-provider duplicates are intentionally preserved because they represent
+ * real calendar dirt that cleanup and cancellation paths must still see.
  * Keeps the event with the richer data (longer description, location present).
  */
 export function deduplicateEvents(events: UnifiedCalendarEvent[]): UnifiedCalendarEvent[] {
   if (events.length === 0) return events;
   if (events.length === 1) return [{ ...events[0], syncedSources: [events[0].source] }];
 
-  const fingerMap = new Map<string, UnifiedCalendarEvent>();
+  const fingerMap = new Map<string, UnifiedCalendarEvent[]>();
   let dupsFound = 0;
 
   for (const event of events) {
     const fp = eventFingerprint(event);
-    const existing = fingerMap.get(fp);
+    const bucket = fingerMap.get(fp) ?? [];
+    const existingIndex = bucket.findIndex((candidate) => {
+      const sources = new Set(candidate.syncedSources || [candidate.source]);
+      return !sources.has(event.source);
+    });
 
-    if (!existing) {
-      fingerMap.set(fp, { ...event, syncedSources: [event.source] });
+    if (existingIndex < 0) {
+      bucket.push({ ...event, syncedSources: [event.source] });
+      fingerMap.set(fp, bucket);
       continue;
     }
 
-    // Duplicate found — merge sources and keep richer data
+    const existing = bucket[existingIndex];
+    // Cross-provider duplicate found — merge sources and keep richer data.
     dupsFound++;
     const sources = new Set(existing.syncedSources || [existing.source]);
     sources.add(event.source);
@@ -375,20 +383,21 @@ export function deduplicateEvents(events: UnifiedCalendarEvent[]): UnifiedCalend
     const newScore = dataRichness(event);
 
     if (newScore > existingScore) {
-      fingerMap.set(fp, {
+      bucket[existingIndex] = {
         ...event,
         syncedSources: [...sources],
-      });
+      };
     } else {
       existing.syncedSources = [...sources];
     }
   }
 
+  const deduped = [...fingerMap.values()].flat();
   if (dupsFound > 0) {
-    logger.info({ dupsFound, total: events.length, after: fingerMap.size }, 'Calendar events deduplicated');
+    logger.info({ dupsFound, total: events.length, after: deduped.length }, 'Calendar events deduplicated');
   }
 
-  return [...fingerMap.values()];
+  return deduped;
 }
 
 /** Score an event's data richness (more fields = higher score). */

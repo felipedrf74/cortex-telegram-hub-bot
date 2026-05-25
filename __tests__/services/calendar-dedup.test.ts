@@ -140,6 +140,19 @@ describe('deduplicateEvents', () => {
     expect(result).toHaveLength(2);
   });
 
+  it('preserves exact same-source duplicates so cleanup paths can delete both provider events', () => {
+    const events = [
+      makeEvent('Strength + Core', '2024-06-15T09:00:00Z', 'google', { id: 'g-1' }),
+      makeEvent('Strength + Core', '2024-06-15T09:00:00Z', 'google', { id: 'g-2' }),
+    ];
+
+    const result = deduplicateEvents(events);
+
+    expect(result).toHaveLength(2);
+    expect(result.map((event) => event.id)).toEqual(['g-1', 'g-2']);
+    expect(result.every((event) => event.syncedSources?.length === 1)).toBe(true);
+  });
+
   it('preserves richer event data during merge', () => {
     const events = [
       makeEvent('Meeting', '2024-06-15T09:00:00Z', 'google', {

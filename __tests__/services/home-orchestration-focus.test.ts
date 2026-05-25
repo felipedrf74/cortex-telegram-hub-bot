@@ -277,6 +277,31 @@ describe('Home orchestration focus helpers', () => {
     expect(dial.warningCodes).not.toContain('SLEEP_DATA_UNAVAILABLE');
   });
 
+  it('builds day dial sleep totals from daily_summary rows when the sleep row is missing', () => {
+    testDb.prepare(`
+      INSERT INTO apple_health_data (user_id, date, data_type, data_json, source)
+      VALUES (?, ?, 'daily_summary', ?, 'apple_health')
+    `).run(
+      42,
+      '2026-05-25',
+      JSON.stringify({
+        steps: 6400,
+        totalSleepMinutes: 405,
+      }),
+    );
+
+    const dial = buildHomeDayDial({
+      userId: 42,
+      date: '2026-05-25',
+      timezone: 'UTC',
+      calendarEvents: [],
+    });
+
+    expect(dial.totals.find((total) => total.kind === 'sleep')?.minutes).toBe(405);
+    expect(dial.totals.find((total) => total.kind === 'sleep')?.unavailable).toBeUndefined();
+    expect(dial.warningCodes).not.toContain('SLEEP_DATA_UNAVAILABLE');
+  });
+
   it('projects Apple Health sleep into read-only agenda blocks', () => {
     testDb.prepare(`
       INSERT INTO apple_health_data (user_id, date, data_type, data_json, source)

@@ -439,12 +439,10 @@ export function registerTrainingPlanRoutes(
         sendError(res, 'NO_CALENDAR', result.data.message, 409, result.data);
         return;
       }
-      if (result.data.eventsCreated > 0 || result.data.sessionsLinked > 0) {
-        // Calendar caches need to forget the empty pre-sync state so
-        // the next /training/week pull surfaces the freshly-linked
-        // start times instead of serving the cached `time: null`s.
-        invalidateCalendarCaches(userId);
-      }
+      // Calendar sync can create/link sessions, update an existing event, or
+      // delete duplicate stale provider events. Refresh calendar caches even
+      // when counts stay at zero so the button never appears to no-op.
+      invalidateCalendarCaches(userId);
       invalidateTrainingScreenCaches(userId);
       sendSuccess(res, result.data);
     } catch (err: any) {

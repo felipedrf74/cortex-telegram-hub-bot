@@ -28,6 +28,7 @@ const mocks = vi.hoisted(() => ({
 vi.mock('../../src/services/unified-calendar', () => ({
   deleteEvent: mocks.deleteEvent,
   getEvents: mocks.getEvents,
+  getEventsForSources: mocks.getEvents,
 }));
 
 vi.mock('../../src/services/training-plans', () => ({
@@ -515,6 +516,65 @@ describe('training-plan-cancellation (hard delete)', () => {
     expect(mocks.deleteEvent).toHaveBeenCalledWith('secretary-training-duplicate', 'google', 12);
   });
 
+  it('deletes matching generated training events from both Google and Outlook with provider-specific ids', async () => {
+    const session = {
+      id: 976,
+      day_of_week: 'Tuesday',
+      session_type: 'gym',
+      title: 'Runner Upper Body Strength A',
+      duration_minutes: 48,
+      status: 'pending',
+      calendar_event_id: null,
+      calendar_source: null,
+    };
+    mocks.getActivePlan.mockReturnValue({
+      id: 39,
+      user_id: 12,
+      start_date: '2026-05-25T00:00:00.000Z',
+    });
+    mocks.getWeeksForPlan.mockReturnValue([{ id: 3901, week_number: 1 }]);
+    mocks.getSessionsForWeek.mockReturnValue([session]);
+    mocks.getEvents.mockImplementation(async (_start: string, _end: string, _userId: number, sources: string[]) => {
+      if (sources.includes('google')) {
+        return [{
+          id: 'google-training-duplicate',
+          source: 'google',
+          summary: '💪 Runner Upper Body Strength A (48min)',
+          start: '2026-05-26T12:00:00.000Z',
+          end: '2026-05-26T12:48:00.000Z',
+          description: markerDescription(39, 1, 976, session),
+        }];
+      }
+      if (sources.includes('outlook')) {
+        return [{
+          id: 'outlook-training-duplicate',
+          source: 'outlook',
+          summary: '💪 Runner Upper Body Strength A (48min)',
+          start: '2026-05-26T12:00:00.000Z',
+          end: '2026-05-26T12:48:00.000Z',
+          description: markerDescription(39, 1, 976, session),
+        }];
+      }
+      return [];
+    });
+    mocks.deletePlanHard.mockReturnValue({
+      ok: true,
+      removedPlans: 1,
+      removedWeeks: 1,
+      removedSessions: 1,
+      removedCompletions: 0,
+    });
+
+    const result = await cancelTrainingPlanForUser(12);
+
+    expect(result.status).toBe('cancelled');
+    if (result.status === 'cancelled') {
+      expect(result.data.removedEvents).toBe(2);
+    }
+    expect(mocks.deleteEvent).toHaveBeenCalledWith('google-training-duplicate', 'google', 12);
+    expect(mocks.deleteEvent).toHaveBeenCalledWith('outlook-training-duplicate', 'outlook', 12);
+  });
+
   it('cancels every active plan when no specific plan id is provided', async () => {
     mocks.getActivePlans.mockReturnValue([
       { id: 70, user_id: 12, start_date: '2026-04-20T00:00:00.000Z' },
@@ -589,6 +649,35 @@ describe('training-plan-cancellation (hard delete)', () => {
       },
     });
     expect(mocks.deletePlanHard).not.toHaveBeenCalled();
+  });
+
+  it('cleans Nexus-marked orphan calendar events even when no active plan remains', async () => {
+    mocks.getEvents.mockImplementation(async (_start: string, _end: string, _userId: number, sources: string[]) => {
+      if (!sources.includes('google')) return [];
+      return [{
+        id: 'post-cancel-orphan',
+        source: 'google',
+        summary: '💪 Strength + Core Support (40min)',
+        start: '2026-05-26T07:00:00.000Z',
+        end: '2026-05-26T07:40:00.000Z',
+        description: appendTrainingIdentityMarker('Training session', {
+          planId: 88,
+          planVersion: 1,
+          sessionId: 8801,
+          sessionIdentityKey: 'plan:88|week:1|day:tuesday|type:gym|slot:1',
+          sessionShapeHash: 'shape-post-cancel',
+        }),
+      }];
+    });
+
+    const result = await cancelTrainingPlanForUser(12);
+
+    expect(result.status).toBe('not_found');
+    if (result.status === 'not_found') {
+      expect(result.data.removedEvents).toBe(1);
+      expect(result.data.message).toContain('1 scheduled workout removed');
+    }
+    expect(mocks.deleteEvent).toHaveBeenCalledWith('post-cancel-orphan', 'google', 12);
   });
 
   it('proceeds with the local hard delete when one calendar deletion fails', async () => {
