@@ -125,11 +125,11 @@ function extractClientIp(req: Request): string {
   // socket address alone would collapse all visitors into one rate-limit
   // bucket. Trust CF-Connecting-IP only when the direct peer is local/private;
   // direct public-origin spoofing keeps using req.ip/socket.remoteAddress.
-  const peerIp = req.socket.remoteAddress || req.ip;
-  const cloudflareIp = normalizeIp(firstHeaderValue(req.headers['cf-connecting-ip']));
+  const peerIp = req.socket?.remoteAddress || req.ip;
+  const cloudflareIp = normalizeIp(firstHeaderValue(req.headers?.['cf-connecting-ip']));
   if (cloudflareIp && isTrustedImmediatePeer(peerIp)) return cloudflareIp;
 
-  return req.ip || req.socket.remoteAddress || 'unknown';
+  return req.ip || req.socket?.remoteAddress || 'unknown';
 }
 
 function unauthenticatedBucketFor(req: Request): {

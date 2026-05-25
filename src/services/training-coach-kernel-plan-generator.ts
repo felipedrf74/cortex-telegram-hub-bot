@@ -10,7 +10,6 @@ import type {
   EquipmentAccess,
   Goals,
   RaceEvent,
-  ReadinessLevel,
   ReadinessSnapshot,
   NormalizedTrainingProfile,
   Session,
@@ -22,6 +21,7 @@ import type {
   WeeklyPlan,
 } from './coach-kernel/types';
 import { DAY_ORDER } from './coach-kernel/utils';
+import { scoreToReadinessLevel } from './coach-kernel/readiness-snapshot-adapter';
 import { recordWeeklyPlan } from './coach-plan-registry';
 import type { CoordinatedTrainingPlan, CoordinatedTrainingSession, CoordinatedTrainingWeek } from './training-plan-coordination';
 import {
@@ -61,6 +61,16 @@ export interface CoachKernelReadinessInput {
   energyReserve?: number;
   /** One-line reasoning from the scorer, surfaced as a planner note. */
   reasoning?: string | null;
+  /**
+   * ISO timestamp anchoring how fresh the underlying wearable data is.
+   * Mirrors `ReadinessResult.capturedAt` (`src/services/readiness-scorer.ts`).
+   * The kernel itself ignores this for plan generation; the field is
+   * propagated through `fetchCurrentReadinessForPlan` and consumed
+   * downstream by the persistence layer to compute
+   * `readinessSnapshotAgeHours` for the D4
+   * `load_monitoring_multiple_signal_check` lint rule.
+   */
+  capturedAt?: string;
 }
 
 export type TrainingGoalMode = 'event_based' | 'continuous' | 'maintenance' | 'return_to_training';
@@ -620,16 +630,11 @@ function clampReadinessScore(score: number): number {
   return Math.max(0, Math.min(100, Math.round(score)));
 }
 
-/** Map a composite readiness score (0..100) onto the planner's discrete
- *  level. High-severity injuries can't return green regardless of score —
- *  the planner treats them as a ceiling. */
-function scoreToReadinessLevel(score: number, hasHighInjury: boolean): ReadinessLevel {
-  if (hasHighInjury && score > 65) return 'orange';
-  if (score >= 80) return 'green';
-  if (score >= 60) return 'yellow';
-  if (score >= 40) return 'orange';
-  return 'red';
-}
+// `scoreToReadinessLevel` is now sourced from
+// `./coach-kernel/readiness-snapshot-adapter` — the adapter version is the
+// canonical mapping and additionally treats non-finite scores as the neutral
+// yellow level. The plan generator only ever calls it with a clamped finite
+// score (see `clampReadinessScore` above), so behavior is preserved.
 
 /**
  * Vocabulary table for the objective-string matcher. Order matters
@@ -1363,7 +1368,15 @@ const STRENGTH_GOAL_KEYWORDS: ReadonlyArray<{
   keyword: string;
   goal: NonNullable<Goals['strengthGoal']>;
 }> = [
+  // Order matters: substrings are checked via `includes`, so more-specific
+  // tokens must appear before the substrings they contain (e.g. 'hybrid'
+  // before 'strength', 'powerlifting' before 'strength').
   { pattern: 'hypertrophy', keyword: 'hypertrophy', goal: 'hypertrophy' },
+  // 'hybrid' added 2026-05-23 (Layer-3 goal→split mapping audit closeout):
+  // routes athletes pursuing concurrent endurance + strength to a Full×N
+  // posterior-chain + single-leg + carry-emphasis prescription template
+  // that protects key endurance sessions.
+  { pattern: 'hybrid', keyword: 'hybrid', goal: 'hybrid' },
   { pattern: 'powerlifting', keyword: 'powerlifting', goal: 'max_strength' },
   { pattern: 'strength', keyword: 'strength', goal: 'max_strength' },
   { pattern: 'support', keyword: 'support', goal: 'maintenance' },

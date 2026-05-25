@@ -252,6 +252,12 @@ Then merge: `server-sync/* → develop → main → deploy.sh`
 | NOTION_TOKEN | ✅ Configured | |
 | NOTION_RELEASES_DB | ✅ Configured | Stored in secret manager; do not copy database IDs into docs |
 
+## Optional Runtime Secrets (Training Coach v2)
+
+| Env var | Purpose | What happens when unset |
+|---------|---------|-------------------------|
+| `OWNER_ID_HASH_SECRET` | HMAC-SHA256 key for the `u#XXXXXXXX` ownership-denial log correlation tag (R5 P3 / R6 P3) | Each Node process generates a random 32-byte salt at boot. Tag correlation works WITHIN a single process boot but NOT across processes / restarts. Set this in production if the operator runbook for "investigate why account X tried to access plan Y" reaches across multiple processes or recent deploys. Treat as a secret — leaking it lets a log reader pre-compute the tag for any user id. |
+
 ## Future: Re-enabling Auto-Deploy
 
 When the server gets a stable SSH transport that GitHub Actions can use:

@@ -37,7 +37,12 @@ import {
 } from '../exercise-metadata';
 import { logger } from '../../../utils/logger';
 
-type StrengthProfile = 'maintenance' | 'hypertrophy' | 'max_strength' | 'athletic';
+// 'hybrid' added 2026-05-23 (Layer-3 goal→split mapping audit closeout):
+// dedicated profile for concurrent endurance + strength athletes. Mapped
+// from `Goals.strengthGoal === 'hybrid'` via `resolveStrengthProfile`; routed
+// to Full×N posterior-chain + single-leg variants that respect endurance
+// volume and protect key cardio sessions.
+type StrengthProfile = 'maintenance' | 'hypertrophy' | 'max_strength' | 'athletic' | 'hybrid';
 type StrengthExperience = AthleteState['profile']['experienceLevel'];
 
 interface StrengthVariant {
@@ -61,6 +66,8 @@ function resolveStrengthProfile(context: EngineContext, maintenance: boolean): S
       return 'max_strength';
     case 'maintenance':
       return 'maintenance';
+    case 'hybrid':
+      return 'hybrid';
     default:
       return 'athletic';
   }
@@ -69,6 +76,11 @@ function resolveStrengthProfile(context: EngineContext, maintenance: boolean): S
 function preferredSessionType(profile: StrengthProfile): SessionType {
   if (profile === 'maintenance') return 'strength_maintenance';
   if (profile === 'hypertrophy') return 'strength_hypertrophy';
+  // 'hybrid' routes to `strength_max` so we don't have to extend the
+  // SessionType union — the actual variant catalog encodes the hybrid
+  // character (Full×N + posterior chain + single-leg). If telemetry ever
+  // needs to distinguish hybrid sessions from max-strength sessions,
+  // adding `'strength_hybrid'` to the SessionType union is a follow-up.
   return 'strength_max';
 }
 
@@ -278,20 +290,30 @@ function applyBeginnerSubstitutions(
  * Monday"). The audit flagged this as a multi-week variant gap
  * compounding regression #2.
  *
- * The fix shifts the slot by `weekIndex` modulo the variant count.
- * For 4-session weeks (4 variants in pool):
- *   week 0 → slots [Lower A, Upper A, Lower B, Upper B]
- *   week 1 → slots [Upper A, Lower B, Upper B, Lower A] (shifted +1)
- *   week 2 → slots [Lower B, Upper B, Lower A, Upper A] (shifted +2)
- *   week 3 → slots [Upper B, Lower A, Upper A, Lower B] (shifted +3)
- *   week 4 → back to week-0 ordering
+ * The fix shifts the slot by `weekIndex` modulo the **variant pool
+ * size** (not `targetSessions`). For 4-session weeks with a 6-variant
+ * pool (the size used by hypertrophy / max_strength / athletic / hybrid):
+ *   week 0 → slots [0, 1, 2, 3]
+ *   week 1 → slots [1, 2, 3, 4]    (variant 4 reachable)
+ *   week 2 → slots [2, 3, 4, 5]    (variant 5 reachable)
+ *   week 3 → slots [3, 4, 5, 0]
+ *   week 4 → slots [4, 5, 0, 1]
+ *   week 5 → slots [5, 0, 1, 2]
+ *   week 6 → back to week-0 ordering
  *
- * The variant count for 4-session plans is 4, so this gives a
- * 4-week macro-rotation: any specific (slot, week-mod-4) pair
- * produces a distinct variant. Weekly variety preserved (slice 4.B
- * primary-pattern alternation) and multi-week variety added without
- * tracking history in AthleteState — pure deterministic rotation
- * indexed on the planner's existing `currentBlock.weekIndex`.
+ * This gives a 6-week macro-rotation when the pool has 6 variants
+ * (extending the previous 4-week cycle), and any specific (slot,
+ * week-mod-poolSize) pair produces a distinct variant. Pre-2026-05-23
+ * the modulo was `targetSessions` rather than `variants.length`, so
+ * the 5th and 6th variants in the existing 4-session pools were
+ * unreachable at runtime — codex flagged this during the Layer-3
+ * goal→split closeout review. Fixing it here also makes the new
+ * hybrid pool's full Full×4 + 2 macro-rotation claim true.
+ *
+ * Weekly variety preserved (slice 4.B primary-pattern alternation)
+ * and multi-week variety extended without tracking history in
+ * AthleteState — pure deterministic rotation indexed on the
+ * planner's existing `currentBlock.weekIndex`.
  *
  * Signature is backward compatible: when `weekIndex` is omitted (or
  * zero), behavior matches the pre-slice-4.C form exactly.
@@ -308,14 +330,15 @@ function strengthVariantFor(
       ? 'Strength'
       : profile === 'maintenance'
         ? 'Maintenance'
-        : 'Strength';
-  // Slice 4.C — slot shifted by weekIndex so successive weeks don't
-  // ship identical day→variant mappings. We modulo-twice (once on
-  // weekIndex itself, once on the sum) so a callsite passing a very
-  // large weekIndex value can't overflow the bounds.
+        : profile === 'hybrid'
+          ? 'Hybrid'
+          : 'Strength';
+  // The slot is computed per-branch using `variants.length` rather than
+  // `targetSessions` so every variant in each pool is reachable across
+  // the macro-rotation. See the doc comment above for the new cycle.
   const safeWeekShift = Math.max(0, Math.trunc(weekIndex));
-  const variantCount = Math.max(1, targetSessions);
-  const slot = (Math.max(0, index) + safeWeekShift) % variantCount;
+  const pickSlot = (poolSize: number): number =>
+    (Math.max(0, index) + safeWeekShift) % Math.max(1, poolSize);
 
   if (targetSessions >= 4) {
     const variants: StrengthVariant[] = profile === 'hypertrophy'
@@ -384,7 +407,46 @@ function strengthVariantFor(
               tags: ['posterior_chain', 'support', 'carry', 'core'],
             },
           ]
-        : [
+        : profile === 'hybrid'
+          // Hybrid 4-session: Full×4 + 2 macro-rotation variants. Added
+          // 2026-05-23 as the Layer-3 goal→split mapping audit closeout.
+          // Each session touches the primary patterns (squat/hinge/push/
+          // pull/trunk) but biases the focus so two adjacent strength
+          // sessions don't double-stress the same system the endurance
+          // volume already loads.
+          ? [
+              {
+                title: 'Full Body Hybrid - Durability',
+                exerciseIds: ['single_leg_rdl', 'goblet_squat', 'one_arm_dumbbell_row', 'farmer_carry', 'dead_bug'],
+                tags: ['full_body', 'durability', 'single_leg', 'posterior_chain', 'hybrid'],
+              },
+              {
+                title: 'Full Body Hybrid - Pulling Emphasis',
+                exerciseIds: ['romanian_deadlift', 'pull_up', 'one_arm_dumbbell_row', 'pallof_press', 'suitcase_carry'],
+                tags: ['full_body', 'pulling', 'posterior_chain', 'trunk', 'hybrid'],
+              },
+              {
+                title: 'Full Body Hybrid - Single-Leg Power',
+                exerciseIds: ['split_squat', 'dumbbell_reverse_lunge', 'kettlebell_swing', 'one_arm_dumbbell_row', 'side_plank'],
+                tags: ['full_body', 'single_leg', 'power', 'hybrid'],
+              },
+              {
+                title: 'Full Body Hybrid - Posterior Chain',
+                exerciseIds: ['romanian_deadlift', 'dumbbell_hip_thrust', 'goblet_squat', 'inverted_row', 'plank'],
+                tags: ['full_body', 'posterior_chain', 'hinge', 'hybrid'],
+              },
+              {
+                title: 'Full Body Hybrid - Athletic Trunk',
+                exerciseIds: ['kettlebell_swing', 'goblet_squat', 'pallof_press', 'farmer_carry', 'side_plank'],
+                tags: ['full_body', 'power', 'trunk', 'carry', 'hybrid'],
+              },
+              {
+                title: 'Full Body Hybrid - Recovery Volume',
+                exerciseIds: ['goblet_squat', 'dumbbell_floor_press', 'band_row', 'glute_bridge', 'dead_bug'],
+                tags: ['full_body', 'recovery', 'low_fatigue', 'hybrid'],
+              },
+            ]
+          : [
             {
               title: `Lower Body ${profileTitle} A`,
               exerciseIds: ['front_squat', 'romanian_deadlift', 'split_squat', 'dead_bug', 'farmer_carry'],
@@ -416,44 +478,179 @@ function strengthVariantFor(
               tags: ['lower_body', 'durability', 'hips', 'core'],
             },
           ];
-    return variants[slot] ?? variants[0];
+    return variants[pickSlot(variants.length)] ?? variants[0];
   }
 
   if (targetSessions === 3) {
-    const variants: StrengthVariant[] = [
-      {
-        title: `Full Body ${profileTitle} - Squat/Press`,
-        exerciseIds: ['front_squat', 'dumbbell_bench_press', 'romanian_deadlift', 'pull_up', 'side_plank'],
-        tags: ['full_body', 'squat', 'push', 'core'],
-      },
-      {
-        title: `Lower + Posterior Chain ${profileTitle}`,
-        exerciseIds: ['goblet_squat', 'single_leg_rdl', 'dumbbell_reverse_lunge', 'farmer_carry', 'pallof_press'],
-        tags: ['lower_body', 'posterior_chain', 'single_leg', 'core'],
-      },
-      {
-        title: `Upper + Athletic Trunk ${profileTitle}`,
-        exerciseIds: ['pull_up', 'dumbbell_overhead_press', 'one_arm_dumbbell_row', 'push_up', 'plank'],
-        tags: ['upper_body', 'trunk', 'push', 'pull'],
-      },
-    ];
-    return variants[slot] ?? variants[0];
+    // Profile-specific 3-session variants added 2026-05-23 (Layer-3 goal→
+    // split mapping audit closeout). Prior to this slice the 3-session
+    // branch shared exerciseIds across profiles and only changed the title;
+    // each profile now has its own exercise selection matching the audit's
+    // (goal, days/week) → split shape requirement.
+    const variants: StrengthVariant[] = profile === 'hypertrophy'
+      ? [
+          {
+            title: 'Lower Hypertrophy - Volume',
+            exerciseIds: ['front_squat', 'dumbbell_hip_thrust', 'dumbbell_reverse_lunge', 'leg_press', 'calf_raise'],
+            tags: ['lower_body', 'hypertrophy', 'volume'],
+          },
+          {
+            title: 'Upper Hypertrophy - Volume',
+            exerciseIds: ['incline_dumbbell_press', 'lat_pulldown', 'seated_cable_row', 'dumbbell_overhead_press', 'pallof_press'],
+            tags: ['upper_body', 'hypertrophy', 'volume'],
+          },
+          {
+            title: 'Full Body Hypertrophy - Pump',
+            exerciseIds: ['goblet_squat', 'dumbbell_bench_press', 'one_arm_dumbbell_row', 'glute_bridge', 'plank'],
+            tags: ['full_body', 'hypertrophy', 'pump'],
+          },
+        ]
+      : profile === 'max_strength'
+        ? [
+            {
+              title: 'Lower Max Strength - Compound',
+              exerciseIds: ['front_squat', 'romanian_deadlift', 'split_squat', 'farmer_carry', 'dead_bug'],
+              tags: ['lower_body', 'max_strength', 'compound'],
+            },
+            {
+              title: 'Upper Max Strength - Compound',
+              exerciseIds: ['bench_press', 'pull_up', 'dumbbell_overhead_press', 'one_arm_dumbbell_row', 'side_plank'],
+              tags: ['upper_body', 'max_strength', 'compound'],
+            },
+            {
+              title: 'Full Body Strength - Technique',
+              exerciseIds: ['front_squat', 'bench_press', 'pull_up', 'kettlebell_swing', 'pallof_press'],
+              tags: ['full_body', 'max_strength', 'technique'],
+            },
+          ]
+        : profile === 'maintenance'
+          ? [
+              {
+                title: 'Full Body Maintenance - Compound',
+                exerciseIds: ['goblet_squat', 'dumbbell_floor_press', 'band_row', 'pallof_press', 'hip_hinge_band'],
+                tags: ['full_body', 'maintenance', 'compound'],
+              },
+              {
+                title: 'Lower Maintenance + Mobility',
+                exerciseIds: ['bodyweight_squat', 'single_leg_rdl', 'glute_bridge', 'calf_raise', 'dead_bug'],
+                tags: ['lower_body', 'maintenance', 'mobility'],
+              },
+              {
+                title: 'Upper Maintenance + Carry',
+                exerciseIds: ['band_row', 'push_up', 'dumbbell_overhead_press', 'suitcase_carry', 'side_plank'],
+                tags: ['upper_body', 'maintenance', 'carry'],
+              },
+            ]
+          : profile === 'hybrid'
+            ? [
+                {
+                  title: 'Full Body Hybrid - Posterior Chain',
+                  exerciseIds: ['romanian_deadlift', 'goblet_squat', 'one_arm_dumbbell_row', 'farmer_carry', 'side_plank'],
+                  tags: ['full_body', 'hybrid', 'posterior_chain', 'carry'],
+                },
+                {
+                  title: 'Full Body Hybrid - Single-Leg Focus',
+                  exerciseIds: ['split_squat', 'single_leg_rdl', 'dumbbell_reverse_lunge', 'inverted_row', 'pallof_press'],
+                  tags: ['full_body', 'hybrid', 'single_leg', 'trunk'],
+                },
+                {
+                  title: 'Full Body Hybrid - Power/Carry',
+                  exerciseIds: ['kettlebell_swing', 'goblet_squat', 'pull_up', 'suitcase_carry', 'dead_bug'],
+                  tags: ['full_body', 'hybrid', 'power', 'carry'],
+                },
+              ]
+            : [
+                // Athletic (default) 3-session: existing variants preserved
+                // for the historical default path.
+                {
+                  title: `Full Body ${profileTitle} - Squat/Press`,
+                  exerciseIds: ['front_squat', 'dumbbell_bench_press', 'romanian_deadlift', 'pull_up', 'side_plank'],
+                  tags: ['full_body', 'squat', 'push', 'core'],
+                },
+                {
+                  title: `Lower + Posterior Chain ${profileTitle}`,
+                  exerciseIds: ['goblet_squat', 'single_leg_rdl', 'dumbbell_reverse_lunge', 'farmer_carry', 'pallof_press'],
+                  tags: ['lower_body', 'posterior_chain', 'single_leg', 'core'],
+                },
+                {
+                  title: `Upper + Athletic Trunk ${profileTitle}`,
+                  exerciseIds: ['pull_up', 'dumbbell_overhead_press', 'one_arm_dumbbell_row', 'push_up', 'plank'],
+                  tags: ['upper_body', 'trunk', 'push', 'pull'],
+                },
+              ];
+    return variants[pickSlot(variants.length)] ?? variants[0];
   }
 
   if (targetSessions === 2) {
-    const variants: StrengthVariant[] = [
-      {
-        title: `Full Body ${profileTitle} - Main Lifts`,
-        exerciseIds: ['front_squat', 'dumbbell_bench_press', 'romanian_deadlift', 'pull_up', 'pallof_press'],
-        tags: ['full_body', 'main_lifts', 'squat', 'hinge'],
-      },
-      {
-        title: `Full Body ${profileTitle} - Unilateral Support`,
-        exerciseIds: ['goblet_squat', 'dumbbell_overhead_press', 'single_leg_rdl', 'band_row', 'suitcase_carry'],
-        tags: ['full_body', 'accessory', 'single_leg', 'trunk'],
-      },
-    ];
-    return variants[slot] ?? variants[0];
+    // Profile-specific 2-session variants added 2026-05-23 (Layer-3 goal→
+    // split mapping audit closeout). Prior to this slice the 2-session
+    // branch shared exerciseIds across profiles.
+    const variants: StrengthVariant[] = profile === 'hypertrophy'
+      ? [
+          {
+            title: 'Full Body Hypertrophy - Lower Bias',
+            exerciseIds: ['front_squat', 'dumbbell_hip_thrust', 'dumbbell_bench_press', 'lat_pulldown', 'plank'],
+            tags: ['full_body', 'hypertrophy', 'lower_bias'],
+          },
+          {
+            title: 'Full Body Hypertrophy - Upper Bias',
+            exerciseIds: ['incline_dumbbell_press', 'seated_cable_row', 'goblet_squat', 'single_leg_rdl', 'pallof_press'],
+            tags: ['full_body', 'hypertrophy', 'upper_bias'],
+          },
+        ]
+      : profile === 'max_strength'
+        ? [
+            {
+              title: 'Full Body Strength - Squat/Bench',
+              exerciseIds: ['front_squat', 'bench_press', 'pull_up', 'farmer_carry', 'dead_bug'],
+              tags: ['full_body', 'max_strength', 'compound'],
+            },
+            {
+              title: 'Full Body Strength - Hinge/Press',
+              exerciseIds: ['romanian_deadlift', 'dumbbell_overhead_press', 'one_arm_dumbbell_row', 'split_squat', 'side_plank'],
+              tags: ['full_body', 'max_strength', 'hinge'],
+            },
+          ]
+        : profile === 'maintenance'
+          ? [
+              {
+                title: 'Full Body Maintenance - Main Lifts',
+                exerciseIds: ['goblet_squat', 'dumbbell_floor_press', 'band_row', 'pallof_press', 'hip_hinge_band'],
+                tags: ['full_body', 'maintenance', 'main_lifts'],
+              },
+              {
+                title: 'Full Body Maintenance - Mobility + Carry',
+                exerciseIds: ['bodyweight_squat', 'push_up', 'single_leg_rdl', 'suitcase_carry', 'dead_bug'],
+                tags: ['full_body', 'maintenance', 'mobility', 'carry'],
+              },
+            ]
+          : profile === 'hybrid'
+            ? [
+                {
+                  title: 'Full Body Hybrid - Compound Base',
+                  exerciseIds: ['goblet_squat', 'romanian_deadlift', 'one_arm_dumbbell_row', 'dumbbell_bench_press', 'farmer_carry'],
+                  tags: ['full_body', 'hybrid', 'compound'],
+                },
+                {
+                  title: 'Full Body Hybrid - Durability + Carry',
+                  exerciseIds: ['single_leg_rdl', 'split_squat', 'inverted_row', 'suitcase_carry', 'dead_bug'],
+                  tags: ['full_body', 'hybrid', 'durability', 'single_leg'],
+                },
+              ]
+            : [
+                // Athletic (default) 2-session: existing variants preserved.
+                {
+                  title: `Full Body ${profileTitle} - Main Lifts`,
+                  exerciseIds: ['front_squat', 'dumbbell_bench_press', 'romanian_deadlift', 'pull_up', 'pallof_press'],
+                  tags: ['full_body', 'main_lifts', 'squat', 'hinge'],
+                },
+                {
+                  title: `Full Body ${profileTitle} - Unilateral Support`,
+                  exerciseIds: ['goblet_squat', 'dumbbell_overhead_press', 'single_leg_rdl', 'band_row', 'suitcase_carry'],
+                  tags: ['full_body', 'accessory', 'single_leg', 'trunk'],
+                },
+              ];
+    return variants[pickSlot(variants.length)] ?? variants[0];
   }
 
   return {
@@ -477,7 +674,13 @@ function limitedEquipmentVariantFor(
   weekIndex: number,
 ): StrengthVariant | null {
   const slot = (Math.max(0, index) + Math.max(0, weekIndex)) % Math.max(1, Math.min(targetSessions, 3));
-  const label = profile === 'hypertrophy' ? 'Hypertrophy' : profile === 'max_strength' ? 'Strength' : 'Strength';
+  const label = profile === 'hypertrophy'
+    ? 'Hypertrophy'
+    : profile === 'max_strength'
+      ? 'Strength'
+      : profile === 'hybrid'
+        ? 'Hybrid'
+        : 'Strength';
   const variants: StrengthVariant[] = [
     {
       title: `Limited Equipment ${label} - Squat/Push`,
@@ -502,6 +705,7 @@ function templateTitleForProfile(profile: StrengthProfile): string {
   if (profile === 'hypertrophy') return 'Full Body Hypertrophy';
   if (profile === 'max_strength') return 'Full Body Strength';
   if (profile === 'maintenance') return 'Strength Maintenance + Core';
+  if (profile === 'hybrid') return 'Hybrid Full Body - Durability + Power';
   return 'Strength + Core Support';
 }
 
@@ -511,6 +715,12 @@ function templateExerciseFallback(profile: StrengthProfile): string[] {
   }
   if (profile === 'hypertrophy') {
     return ['goblet_squat', 'dumbbell_floor_press', 'band_row', 'glute_bridge', 'side_plank'];
+  }
+  if (profile === 'hybrid') {
+    // Hybrid fallback emphasizes posterior chain + single-leg + carry to
+    // protect endurance volume and reduce spinal-loading risk before key
+    // cardio sessions.
+    return ['single_leg_rdl', 'goblet_squat', 'one_arm_dumbbell_row', 'farmer_carry', 'dead_bug'];
   }
   return ['front_squat', 'romanian_deadlift', 'pull_up', 'bench_press', 'dead_bug'];
 }
@@ -717,6 +927,12 @@ function scoreRebuildCandidate(args: {
   if (profile === 'max_strength' && purpose === 'strength') score += 8;
   if (profile === 'athletic' && (purpose === 'strength' || purpose === 'conditioning' || purpose === 'stability')) score += 6;
   if (profile === 'maintenance' && getExerciseSpinalLoading(exercise) === 'high') score -= 8;
+  // Hybrid athletes carry endurance volume in parallel, so the scoring
+  // favors durability + stability + conditioning over raw maximal-strength
+  // work and penalizes high spinal loading more than other non-maintenance
+  // profiles do.
+  if (profile === 'hybrid' && (purpose === 'strength' || purpose === 'conditioning' || purpose === 'stability')) score += 6;
+  if (profile === 'hybrid' && getExerciseSpinalLoading(exercise) === 'high') score -= 4;
   if (exercise.fatigueCost === 'low') score += 4;
   if (exercise.fatigueCost === 'very_high') score -= 12;
   return score;

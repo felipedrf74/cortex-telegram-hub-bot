@@ -91,11 +91,38 @@ export interface SafetyEvaluationInput {
     postpartum?: boolean;
     severeMenstrualSymptoms?: boolean;
     disorderedEatingConcern?: boolean;
+    /** Slice A4 — fever / systemic illness reported. */
+    feverPresent?: boolean;
+    /** Slice A4 — RED-S risk screening. */
+    energyAvailabilityRisk?: 'low' | 'moderate' | 'high';
   };
   /** Direct user question text (free-form). */
   userQuestionText?: string;
   /** Was this triggered from supplement/doping context? */
   fromSupplementContext?: boolean;
+  /**
+   * R4 P1 fix — Typed red-flag trigger from a structured intake
+   * surface (e.g., iOS form). Each value here ALWAYS produces a
+   * `block` finding with a domain-specific referral, regardless of
+   * whether other input fields are set. Before this field existed,
+   * a structured intake of `chest_pain` / `fainting` / `acute_injury`
+   * would arrive without any pain-score or fever flag and the
+   * evaluation would return `pass` — a paper hard-pause.
+   *
+   * Inferred (free-text) flags should NOT set this field; they must
+   * flow through the existing `acuteSessionPain` / `fatiguePattern`
+   * / `selfReportedFlags` paths so the warning-only-from-inference
+   * contract holds.
+   */
+  typedRedFlagTrigger?:
+    | 'chest_pain'
+    | 'fainting'
+    | 'severe_dizziness'
+    | 'acute_injury'
+    | 'worsening_localized_pain'
+    | 'fever_or_systemic_illness'
+    | 'red_s_high_risk'
+    | 'unexplained_performance_collapse';
 }
 
 const REFERRAL_BASE =
@@ -199,6 +226,46 @@ function buildSelfReportedFinding(input: NonNullable<SafetyEvaluationInput['self
         'message and stop coaching.',
     });
   }
+  // Slice A4 — fever/systemic illness reported.
+  if (input.feverPresent) {
+    findings.push({
+      domain: 'persistent_fatigue',
+      severity: 'block',
+      triggerSummary: 'self-reported fever or systemic illness',
+      referralCopy:
+        `Training with a fever or systemic illness can be dangerous. ` +
+        `${REFERRAL_BASE}`,
+      recommendedAction:
+        'Pause training entirely until at least 24 hours fever-free and symptoms have resolved. ' +
+        'Ramp back per the febrile_or_systemic_illness return protocol.',
+    });
+  }
+  // Slice A4 — RED-S risk screening (IOC 2023 framing — screening, NOT diagnosis).
+  if (input.energyAvailabilityRisk === 'high') {
+    findings.push({
+      domain: 'under_fueling_signs',
+      severity: 'block',
+      triggerSummary: 'high RED-S risk indicators',
+      referralCopy:
+        `Patterns suggest a high risk of low energy availability (Relative Energy Deficiency ` +
+        `in Sport). This is a screening flag, not a diagnosis. ${REFERRAL_BASE} ` +
+        `In particular, a registered sports dietitian and a sports-medicine physician can ` +
+        `evaluate whether RED-S applies.`,
+      recommendedAction:
+        'Hold volume flat or reduce. Halt new high-intensity prescription. Surface referral.',
+    });
+  } else if (input.energyAvailabilityRisk === 'moderate') {
+    findings.push({
+      domain: 'under_fueling_signs',
+      severity: 'warn',
+      triggerSummary: 'moderate RED-S risk indicators',
+      referralCopy:
+        `Some indicators of low energy availability. Consider speaking with a sports dietitian. ` +
+        `${REFERRAL_BASE}`,
+      recommendedAction:
+        'Avoid additional volume growth this cycle. Pay attention to fueling.',
+    });
+  }
   return findings;
 }
 
@@ -252,8 +319,136 @@ function buildSupplementFinding(input: SafetyEvaluationInput): SafetyFinding | n
  * verdict. The caller decides whether to render `topMessage` as a UI
  * banner, log to decision-trail, or attach to the coach response.
  */
+/**
+ * R4 P1 fix — build a guaranteed `block` SafetyFinding from a typed
+ * red-flag trigger. Each trigger maps to a domain-specific referral
+ * line. Closes the paper-pause gap where structured intake of
+ * chest_pain / fainting / acute_injury produced no finding because
+ * the map function emitted nothing block-worthy.
+ */
+function buildTypedRedFlagFinding(
+  trigger: NonNullable<SafetyEvaluationInput['typedRedFlagTrigger']>,
+): SafetyFinding {
+  switch (trigger) {
+    case 'chest_pain':
+      return {
+        domain: 'acute_pain_during_session',
+        severity: 'block',
+        triggerSummary: 'structured intake: chest pain reported',
+        referralCopy:
+          `Chest pain during or after exercise can have serious causes. Please stop training ` +
+          `and seek immediate medical evaluation. ${REFERRAL_BASE}`,
+        recommendedAction:
+          'Halt all training immediately. Surface medical referral. Do not resume until cleared.',
+      };
+    case 'fainting':
+      return {
+        domain: 'acute_pain_during_session',
+        severity: 'block',
+        triggerSummary: 'structured intake: fainting reported',
+        referralCopy:
+          `Fainting (syncope) during or after exercise requires immediate medical evaluation. ` +
+          `${REFERRAL_BASE}`,
+        recommendedAction:
+          'Halt all training. Surface medical referral. Avoid solo training until cleared.',
+      };
+    case 'severe_dizziness':
+      return {
+        domain: 'acute_pain_during_session',
+        severity: 'block',
+        triggerSummary: 'structured intake: severe dizziness reported',
+        referralCopy:
+          `Severe dizziness during or after exercise warrants medical evaluation, ` +
+          `particularly for cardiac, neurological, and dehydration causes. ${REFERRAL_BASE}`,
+        recommendedAction:
+          'Pause training pending evaluation. Avoid any activity with fall risk until cleared.',
+      };
+    case 'acute_injury':
+      return {
+        domain: 'stress_fracture_warning',
+        severity: 'block',
+        triggerSummary: 'structured intake: acute injury reported',
+        referralCopy:
+          `An acute injury reported during structured intake needs proper assessment before ` +
+          `returning to training. ${REFERRAL_BASE}`,
+        recommendedAction:
+          'Halt training on the affected limb/region. Surface medical referral. Hold maintenance ' +
+          'volume only on unaffected modalities until cleared.',
+      };
+    case 'worsening_localized_pain':
+      return {
+        domain: 'acute_pain_during_session',
+        severity: 'block',
+        triggerSummary: 'structured intake: worsening localized pain',
+        referralCopy:
+          `Pain that worsens session-over-session is a stress-injury risk signal. ` +
+          `Please pause the affected modality and seek evaluation. ${REFERRAL_BASE}`,
+        recommendedAction:
+          'Halt the affected modality. Substitute non-loading work. Surface medical referral.',
+      };
+    case 'fever_or_systemic_illness':
+      return {
+        domain: 'persistent_fatigue',
+        severity: 'block',
+        triggerSummary: 'structured intake: fever / systemic illness',
+        referralCopy:
+          `Training with a fever or systemic illness can be dangerous. ${REFERRAL_BASE}`,
+        recommendedAction:
+          'Pause training entirely until ≥24 hours fever-free and symptoms have resolved. ' +
+          'Ramp back per the febrile_or_systemic_illness return protocol.',
+      };
+    case 'red_s_high_risk':
+      return {
+        domain: 'under_fueling_signs',
+        severity: 'block',
+        triggerSummary: 'structured intake: high RED-S risk indicators',
+        referralCopy:
+          `Structured intake flagged a high risk of low energy availability (Relative Energy ` +
+          `Deficiency in Sport). This is a screening flag, not a diagnosis. ${REFERRAL_BASE} ` +
+          `A registered sports dietitian and a sports-medicine physician can evaluate.`,
+        recommendedAction:
+          'Pause new high-intensity prescription. Hold volume flat or reduce. Surface referral.',
+      };
+    case 'unexplained_performance_collapse':
+      return {
+        domain: 'persistent_fatigue',
+        severity: 'block',
+        triggerSummary: 'structured intake: unexplained performance collapse',
+        referralCopy:
+          `A sudden, unexplained performance collapse can indicate overtraining, illness, ` +
+          `or an underlying medical issue. Please seek medical evaluation. ${REFERRAL_BASE}`,
+        recommendedAction:
+          'Pause training. Surface medical referral. Resume only after evaluation and a controlled ramp.',
+      };
+    default: {
+      // Exhaustiveness guard — a new HARD_PAUSE_TYPED_TRIGGER added
+      // to safety-wiring.ts must extend the switch here.
+      const _exhaustive: never = trigger;
+      void _exhaustive;
+      return {
+        domain: 'direct_medical_question',
+        severity: 'block',
+        triggerSummary: 'unknown typed red flag — defensive block',
+        referralCopy:
+          `An unrecognized red-flag trigger arrived from structured intake. Defaulting to a ` +
+          `safety pause. ${REFERRAL_BASE}`,
+        recommendedAction: 'Pause training. Surface medical referral.',
+      };
+    }
+  }
+}
+
 export function evaluateSafetyContext(input: SafetyEvaluationInput): SafetyEvaluationResult {
   const findings: SafetyFinding[] = [];
+  // R4 P1 fix — typed red-flag triggers FIRST and unconditional.
+  // Every value in `typedRedFlagTrigger` produces a `block` finding
+  // with a domain-specific referral; the prior code path required
+  // an additional `acuteSessionPain` / `feverPresent` etc. to ever
+  // produce a block, which made structured chest-only / fainting-only
+  // / acute-injury-only intake silently pass.
+  if (input.typedRedFlagTrigger) {
+    findings.push(buildTypedRedFlagFinding(input.typedRedFlagTrigger));
+  }
   if (input.acuteSessionPain) findings.push(buildAcutePainFinding(input.acuteSessionPain));
   if (input.fatiguePattern) {
     const f = buildFatigueFinding(input.fatiguePattern);

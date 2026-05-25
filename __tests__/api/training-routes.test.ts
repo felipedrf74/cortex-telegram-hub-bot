@@ -1586,6 +1586,134 @@ describe('Training API routes', () => {
     expect(res.body.error.code).toBe('FORBIDDEN');
   });
 
+  // ─── R4 P2 #1 — /complete V2 field validation hardening ───
+  //
+  // Codex caught (R4 P2) that R3's `typeof v === 'number'` accepted
+  // NaN and Infinity, and the event hash only fingerprinted field
+  // *presence* (so two distinct value payloads collapsed onto the
+  // same outbox idempotency key). These tests pin the new behavior:
+  // BAD_INPUT bails out *before* any DB access, so no plan/session
+  // mocks are needed.
+
+  it('R4 P2 — /complete rejects NaN rir as BAD_INPUT (400)', async () => {
+    const res = await dispatch('POST', '/complete', {}, {
+      sessionId: 'today',
+      rir: Number.NaN,
+    });
+    expect(res.statusCode).toBe(400);
+    expect(res.body.ok).toBe(false);
+    expect(res.body.error.code).toBe('BAD_INPUT');
+    expect(res.body.error.message).toMatch(/rir must be a finite number/);
+  });
+
+  it('R4 P2 — /complete rejects Infinity painScore as BAD_INPUT (400)', async () => {
+    const res = await dispatch('POST', '/complete', {}, {
+      sessionId: 'today',
+      painScore: Number.POSITIVE_INFINITY,
+    });
+    expect(res.statusCode).toBe(400);
+    expect(res.body.error.code).toBe('BAD_INPUT');
+    expect(res.body.error.message).toMatch(/painScore must be a finite number/);
+  });
+
+  it('R4 P2 — /complete rejects out-of-range rir > 10 (400)', async () => {
+    const res = await dispatch('POST', '/complete', {}, {
+      sessionId: 'today',
+      rir: 25,
+    });
+    expect(res.statusCode).toBe(400);
+    expect(res.body.error.code).toBe('BAD_INPUT');
+    expect(res.body.error.message).toMatch(/rir must be between 0 and 10/);
+  });
+
+  it('R4 P2 — /complete rejects negative completedDurationSec (400)', async () => {
+    const res = await dispatch('POST', '/complete', {}, {
+      sessionId: 'today',
+      completedDurationSec: -120,
+    });
+    expect(res.statusCode).toBe(400);
+    expect(res.body.error.code).toBe('BAD_INPUT');
+    expect(res.body.error.message).toMatch(/completedDurationSec must be between 0 and 86400/);
+  });
+
+  it('R4 P2 — /complete rejects oversized completedSetsJson (400)', async () => {
+    const tooBig = 'x'.repeat(9 * 1024); // > 8 KB cap
+    const res = await dispatch('POST', '/complete', {}, {
+      sessionId: 'today',
+      completedSetsJson: tooBig,
+    });
+    expect(res.statusCode).toBe(400);
+    expect(res.body.error.code).toBe('BAD_INPUT');
+    expect(res.body.error.message).toMatch(/completedSetsJson must be ≤ 8192 characters/);
+  });
+
+  it('R4 P2 — /complete returns multiple errors joined when many fields are invalid', async () => {
+    const res = await dispatch('POST', '/complete', {}, {
+      sessionId: 'today',
+      rir: Number.NaN,
+      painScore: 99,
+      completedDistanceMeters: Number.NEGATIVE_INFINITY,
+    });
+    expect(res.statusCode).toBe(400);
+    expect(res.body.error.code).toBe('BAD_INPUT');
+    expect(res.body.error.message).toMatch(/rir must be a finite number/);
+    expect(res.body.error.message).toMatch(/painScore must be between 0 and 10/);
+    expect(res.body.error.message).toMatch(/completedDistanceMeters must be a finite number/);
+  });
+
+  it('R4 P2 — /complete accepts valid V2 payload (soft-success path proves bad-input gate is bypassed)', async () => {
+    mockGetActivePlan.mockReturnValue(null);
+    const res = await dispatch('POST', '/complete', {}, {
+      sessionId: 'today',
+      rir: 2,
+      painScore: 0,
+      completedDurationSec: 1800,
+      completedDistanceMeters: 5000,
+    });
+    // No active plan → soft success (200). Validation passed before
+    // reaching the no-active-plan resolver.
+    expect(res.statusCode).toBe(200);
+    expect(res.body.ok).toBe(true);
+    expect(res.body.data.noActiveSession).toBe(true);
+  });
+
+  // R7 P2/P3 — Codex caught the helper accepted explicit null as if
+  // the field had been omitted, so `externalTrainingDeclared: null`
+  // silently collapsed to false. The R7 contract is reject-on-non
+  // -boolean including null; only `undefined` (absent from payload)
+  // is omitted.
+
+  it('R7 P2/P3 — /complete rejects explicit externalTrainingDeclared: null (400)', async () => {
+    const res = await dispatch('POST', '/complete', {}, {
+      sessionId: 'today',
+      externalTrainingDeclared: null,
+    });
+    expect(res.statusCode).toBe(400);
+    expect(res.body.error.code).toBe('BAD_INPUT');
+    expect(res.body.error.message).toMatch(/externalTrainingDeclared must be a boolean/);
+  });
+
+  it('R7 P2/P3 — /complete rejects externalTrainingDeclared: "yes" (string, 400)', async () => {
+    const res = await dispatch('POST', '/complete', {}, {
+      sessionId: 'today',
+      externalTrainingDeclared: 'yes',
+    });
+    expect(res.statusCode).toBe(400);
+    expect(res.body.error.code).toBe('BAD_INPUT');
+  });
+
+  it('R7 P2/P3 — /complete still accepts externalTrainingDeclared: true / false / absent', async () => {
+    mockGetActivePlan.mockReturnValue(null);
+    for (const payload of [
+      { sessionId: 'today', externalTrainingDeclared: true },
+      { sessionId: 'today', externalTrainingDeclared: false },
+      { sessionId: 'today' /* omitted */ },
+    ]) {
+      const res = await dispatch('POST', '/complete', {}, payload);
+      expect(res.statusCode).toBe(200);
+    }
+  });
+
   it('applies cross-skill coaching coordination before training sessions are stored', async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     vi.setSystemTime(new Date('2026-04-13T12:00:00.000Z'));
