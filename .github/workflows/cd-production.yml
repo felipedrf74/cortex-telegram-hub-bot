@@ -153,14 +153,14 @@ jobs:
     runs-on: ubuntu-latest
     needs: [pre-deploy, health-check]
     if: always()
+    env:
+      NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
+      NOTION_RELEASES_DB: ${{ secrets.NOTION_RELEASES_DB }}
     steps:
       - uses: actions/checkout@v4
 
       - name: Update Notion release log
-        if: ${{ secrets.NOTION_TOKEN != '' }}
-        env:
-          NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
-          NOTION_RELEASES_DB: ${{ secrets.NOTION_RELEASES_DB }}
+        if: ${{ env.NOTION_TOKEN != '' }}
         run: |
           STATUS=${{ needs.health-check.result == 'success' && '✅ Success' || '❌ Failed' }}
           VERSION="${{ needs.pre-deploy.outputs.version }}"
