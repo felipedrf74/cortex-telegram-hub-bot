@@ -72,6 +72,7 @@ export function getAppleHealthSleepSegments(input: {
     for (const row of rows) {
       const parsed = safeJson(row.data_json);
       const intervals = Array.isArray(parsed?.intervals) ? parsed.intervals : [];
+      const segmentCountBeforeRow = segments.length;
       for (const interval of intervals) {
         const stage = String(interval?.stage || '').trim();
         if (!isAsleepStage(stage)) continue;
@@ -85,9 +86,10 @@ export function getAppleHealthSleepSegments(input: {
         });
       }
 
-      if (segments.length === 0 && typeof parsed?.totalMinutes === 'number' && parsed.totalMinutes > 0) {
+      const totalMinutes = readSleepTotalMinutes(parsed);
+      if (segments.length === segmentCountBeforeRow && totalMinutes > 0) {
         const fallbackEnd = DateTime.fromISO(row.date, { zone: input.timezone }).plus({ hours: 7 });
-        const fallbackStart = fallbackEnd.minus({ minutes: parsed.totalMinutes });
+        const fallbackStart = fallbackEnd.minus({ minutes: totalMinutes });
         const clipped = clipToRange(fallbackStart.toISO(), fallbackEnd.toISO(), rangeStart, rangeEnd, input.timezone);
         if (clipped) {
           appendSegment(segments, seen, {
@@ -104,6 +106,23 @@ export function getAppleHealthSleepSegments(input: {
   } catch {
     return [];
   }
+}
+
+function readSleepTotalMinutes(value: any): number {
+  const directMinutes = numericMetric(value?.totalMinutes)
+    ?? numericMetric(value?.totalSleepMinutes)
+    ?? numericMetric(value?.sleepMinutes)
+    ?? numericMetric(value?.durationMinutes);
+  if (directMinutes != null) return Math.max(0, directMinutes);
+  const totalSeconds = numericMetric(value?.totalSleepSeconds)
+    ?? numericMetric(value?.sleepSeconds)
+    ?? numericMetric(value?.durationSeconds);
+  return totalSeconds != null ? Math.max(0, totalSeconds / 60) : 0;
+}
+
+function numericMetric(value: unknown): number | null {
+  const parsed = typeof value === 'number' ? value : Number(value);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
 }
 
 function appendSegment(segments: AppleHealthSleepSegment[], seen: Set<string>, segment: AppleHealthSleepSegment) {

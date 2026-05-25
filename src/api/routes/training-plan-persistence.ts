@@ -407,7 +407,7 @@ async function persistGeneratedTrainingPlanLocked(
         }),
         { now: input.now.toISOString() },
       );
-      const selectedWindow = selectedTrainingSecretaryWindow(secretaryDecision);
+      const selectedWindow = selectedTrainingSecretaryWindow(secretaryDecision, { notBefore: input.now });
       if (!selectedWindow) {
         logger.warn(
           {
@@ -750,9 +750,16 @@ function buildTrainingSecretaryIntent(input: {
   };
 }
 
-function selectedTrainingSecretaryWindow(decision: SecretarySchedulingDecision): { start: string; end: string } | null {
+function selectedTrainingSecretaryWindow(
+  decision: SecretarySchedulingDecision,
+  options: { notBefore?: Date } = {},
+): { start: string; end: string } | null {
   if (!['scheduled', 'reflowed', 'compressed'].includes(decision.status)) return null;
   if (!decision.selectedSlot?.start || !decision.selectedSlot?.end) return null;
+  const start = Date.parse(decision.selectedSlot.start);
+  const end = Date.parse(decision.selectedSlot.end);
+  if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) return null;
+  if (options.notBefore && start < options.notBefore.getTime()) return null;
   return { start: decision.selectedSlot.start, end: decision.selectedSlot.end };
 }
 

@@ -727,7 +727,7 @@ describe('Training API routes', () => {
     expect(res.body.data.totalCount).toBe(0);
   });
 
-  it('surfaces rich training lifecycle states in the week payload without counting inactive sessions as active load', async () => {
+  it('surfaces rich training lifecycle states in the week payload without counting superseded sessions as active load', async () => {
     mockGetActivePlan.mockReturnValue({
       id: 44,
       name: 'Travel build',
@@ -796,7 +796,7 @@ describe('Training API routes', () => {
       planVersion: 3,
       lifecycleState: 'active',
     }));
-    expect(res.body.data.totalCount).toBe(2);
+    expect(res.body.data.totalCount).toBe(3);
     expect(res.body.data.sessions).toEqual(expect.arrayContaining([
       expect.objectContaining({
         id: '301',
@@ -1924,20 +1924,45 @@ describe('Training API routes', () => {
   });
 
   it('cancels an owned plan, removes linked calendar events, and hard-deletes the plan + cascades', async () => {
-    mockGetActivePlan.mockReturnValue({ id: 44, user_id: 12 });
-    mockGetWeeksForPlan.mockReturnValue([{ id: 7001 }]);
+    mockGetActivePlan.mockReturnValue({
+      id: 44,
+      user_id: 12,
+      start_date: '2026-05-25T00:00:00.000Z',
+      tenant_id: 12,
+    });
+    mockGetWeeksForPlan.mockReturnValue([{ id: 7001, week_number: 1 }]);
     mockGetSessionsForWeek.mockReturnValue([
       {
         id: 321,
         status: 'completed',
+        day_of_week: 'Monday',
+        session_type: 'run',
+        title: 'Recovery Run',
+        duration_minutes: 30,
         calendar_event_id: 'evt-completed',
         calendar_source: 'outlook',
       },
       {
         id: 322,
         status: 'planned',
+        day_of_week: 'Monday',
+        session_type: 'gym',
+        title: 'Strength + Core',
+        duration_minutes: 40,
+        session_identity_key: 'key-322',
+        session_shape_hash: 'shape-322',
         calendar_event_id: 'evt-planned',
         calendar_source: 'google',
+      },
+    ]);
+    mockGetEvents.mockResolvedValue([
+      {
+        id: 'evt-orphan-moved',
+        source: 'google',
+        summary: '💪 Strength + Core (40min)',
+        start: '2026-05-31T18:00:00.000Z',
+        end: '2026-05-31T18:40:00.000Z',
+        description: 'Training moved by the user\n\n[NEXUS_TRAINING_IDENTITY plan=44;version=1;session=322;key=key-322;shape=shape-322]',
       },
     ]);
     mockDeletePlanHard.mockReturnValue({
@@ -1955,7 +1980,7 @@ describe('Training API routes', () => {
     expect(res.body.data).toMatchObject({
       cancelled: true,
       planId: 44,
-      removedEvents: 2,
+      removedEvents: 3,
       removedSessions: 2,
       removedWeeks: 1,
       removedCompletions: 1,
@@ -1964,6 +1989,7 @@ describe('Training API routes', () => {
     });
     expect(mockDeleteEvent).toHaveBeenCalledWith('evt-completed', 'outlook', 12);
     expect(mockDeleteEvent).toHaveBeenCalledWith('evt-planned', 'google', 12);
+    expect(mockDeleteEvent).toHaveBeenCalledWith('evt-orphan-moved', 'google', 12);
     expect(mockDeletePlanHard).toHaveBeenCalledWith(44, 12);
     // Hard delete replaces the soft-update path; no per-session
     // status mutations or plan status mutation should fire anymore.

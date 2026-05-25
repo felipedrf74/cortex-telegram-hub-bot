@@ -519,8 +519,10 @@ async function buildCalendarDeletionTargetsForPlan(
   const sortedDates = matchableSessions
     .map((entry) => entry.sessionDate)
     .sort((left, right) => left.getTime() - right.getTime());
-  const startStr = sortedDates[0].toISOString().slice(0, 10);
-  const endStr = new Date(sortedDates[sortedDates.length - 1].getTime() + 24 * 60 * 60 * 1000)
+  const lookupStart = new Date(sortedDates[0].getTime() - 7 * 24 * 60 * 60 * 1000);
+  const lookupEnd = new Date(sortedDates[sortedDates.length - 1].getTime() + 15 * 24 * 60 * 60 * 1000);
+  const startStr = lookupStart.toISOString().slice(0, 10);
+  const endStr = lookupEnd
     .toISOString()
     .slice(0, 10);
 
@@ -573,15 +575,7 @@ function isMatchingGeneratedTrainingEvent(
   );
   const secretaryIntentMatched = matchesSecretaryTrainingSourceIntent(entry, planId, event.description);
   if (!identityMatched && !secretaryIntentMatched) return false;
-
-  const eventStart = new Date(event.start);
-  const eventEnd = new Date(event.end);
-  if (!Number.isFinite(eventStart.getTime()) || !Number.isFinite(eventEnd.getTime())) return false;
-  if (eventStart.toISOString().slice(0, 10) !== entry.sessionDate.toISOString().slice(0, 10)) return false;
-
-  const eventDurationMinutes = Math.round((eventEnd.getTime() - eventStart.getTime()) / 60000);
-  const durationMinutes = entry.session.duration_minutes || 60;
-  return Math.abs(eventDurationMinutes - durationMinutes) <= 2;
+  return true;
 }
 
 function matchesSecretaryTrainingSourceIntent(

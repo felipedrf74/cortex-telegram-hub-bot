@@ -132,7 +132,7 @@ describe('training plan create cycle integration', () => {
         strengthSessionsPerWeek: 5,
       },
       totalSessions: expect.any(Number),
-      calendarSource: null,
+      calendarSource: 'outlook',
       fallbackTemplateUsed: expect.any(Boolean),
       goalMode: 'event_based',
       trainingPriority: 'running',
@@ -228,8 +228,8 @@ describe('training plan create cycle integration', () => {
     expect(res.statusCode).toBe(200);
     expect(res.body.ok).toBe(true);
     expect(res.body.data.status).toBe('preview');
-    expect(res.body.data.calendarSource).toBeNull();
-    expect(calendarMocks.getEvents).toHaveBeenCalledWith('2026-05-25', '2026-06-08', 12);
+    expect(res.body.data.calendarSource).toBe('outlook');
+    expect(calendarMocks.getEventsForSources).toHaveBeenCalledWith('2026-05-25', '2026-06-08', 12, ['outlook']);
   });
 
   it('can generate, cancel, and generate again without leaving an active plan behind', async () => {
