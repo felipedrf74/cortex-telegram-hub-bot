@@ -17,16 +17,54 @@ describe('training-operational-switches', () => {
     expect(isTrainingPlanGenerationEnabled({})).toBe(true);
     expect(isTrainingCalendarWritesEnabled({})).toBe(true);
     expect(isTrainingCalendarSourceWritesEnabled('google', {})).toBe(true);
-    expect(isTrainingOutlookCalendarWritesEnabled({})).toBe(false);
+    // 2026-05-25 fix — Outlook now defaults to enabled, matching Google.
+    expect(isTrainingOutlookCalendarWritesEnabled({})).toBe(true);
     expect(isTrainingCrossSkillSignalsEnabled({})).toBe(true);
   });
 
-  it('requires an explicit Outlook calendar flag before Training writes there', () => {
+  // 2026-05-25 fix — Outlook is now ON by default, matching Google.
+  // The kill switch TRAINING_CALENDAR_OUTLOOK_DISABLED is retained for
+  // fast emergency rollback without a redeploy. The previously-required
+  // opt-in TRAINING_CALENDAR_OUTLOOK_ENABLED still works but is no
+  // longer required for Outlook to be reachable.
+  it('R-2026-05-25 — allows Outlook calendar writes by default (no env opt-in required)', () => {
+    expect(isTrainingOutlookCalendarWritesEnabled({})).toBe(true);
+    expect(isTrainingCalendarSourceWritesEnabled('outlook', {})).toBe(true);
+    expect(() => assertTrainingCalendarSourceWritesEnabled('outlook', {})).not.toThrow();
+  });
+
+  it('R-2026-05-25 — still respects the TRAINING_CALENDAR_OUTLOOK_DISABLED kill switch', () => {
+    expect(isTrainingOutlookCalendarWritesEnabled({ TRAINING_CALENDAR_OUTLOOK_DISABLED: '1' })).toBe(false);
+    expect(isTrainingCalendarSourceWritesEnabled('outlook', { TRAINING_CALENDAR_OUTLOOK_DISABLED: '1' })).toBe(false);
+    expect(() => assertTrainingCalendarSourceWritesEnabled('outlook', { TRAINING_CALENDAR_OUTLOOK_DISABLED: 'true' }))
+      .toThrow(TrainingOperationDisabledError);
+  });
+
+  it('R-2026-05-25 — kill switch beats an explicit ENABLED opt-in', () => {
+    // Both flags set: DISABLED wins. Lets operators flip Outlook off
+    // even if the deployment env still has the legacy ENABLED flag set.
+    expect(isTrainingOutlookCalendarWritesEnabled({
+      TRAINING_CALENDAR_OUTLOOK_ENABLED: 'true',
+      TRAINING_CALENDAR_OUTLOOK_DISABLED: '1',
+    })).toBe(false);
+  });
+
+  it('R-2026-05-25 — honors an explicit ENABLED=false (back-compat with prior code path)', () => {
+    // A deployment that previously had TRAINING_CALENDAR_OUTLOOK_ENABLED=false
+    // intentionally set to disable Outlook keeps that semantic — the
+    // shared `isExplicitlyDisabled` helper treats the falsy ENABLED
+    // value as a disable signal even without the explicit DISABLED flag.
+    expect(isTrainingOutlookCalendarWritesEnabled({ TRAINING_CALENDAR_OUTLOOK_ENABLED: 'false' })).toBe(false);
+    expect(isTrainingOutlookCalendarWritesEnabled({ TRAINING_CALENDAR_OUTLOOK_ENABLED: '0' })).toBe(false);
+  });
+
+  it('R-2026-05-25 — global TRAINING_ENGINE_DISABLED still beats default-enabled Outlook', () => {
+    expect(isTrainingOutlookCalendarWritesEnabled({ TRAINING_ENGINE_DISABLED: '1' })).toBe(false);
+  });
+
+  it('R-2026-05-25 — legacy explicit ENABLED=true is still accepted (deployments that already set it keep working)', () => {
     expect(isTrainingOutlookCalendarWritesEnabled({ TRAINING_CALENDAR_OUTLOOK_ENABLED: 'true' })).toBe(true);
     expect(isTrainingCalendarSourceWritesEnabled('outlook', { TRAINING_CALENDAR_OUTLOOK_ENABLED: 'true' })).toBe(true);
-    expect(isTrainingCalendarSourceWritesEnabled('outlook', { TRAINING_CALENDAR_OUTLOOK_ENABLED: 'true', TRAINING_CALENDAR_OUTLOOK_DISABLED: '1' })).toBe(false);
-    expect(() => assertTrainingCalendarSourceWritesEnabled('outlook', {}))
-      .toThrow(TrainingOperationDisabledError);
   });
 
   it('supports a global TRAINING_ENGINE_DISABLED emergency switch', () => {
