@@ -24,9 +24,9 @@
 
 import { createHmac, randomBytes } from 'node:crypto';
 import { Router, type Response, type Request } from 'express';
+import { ipKeyGenerator, rateLimit } from 'express-rate-limit';
 
 import type { AuthenticatedRequest } from '../auth-middleware';
-import { rateLimitMiddleware } from '../rate-limiter';
 import { sendSuccess, sendError } from '../response-helpers';
 import { config } from '../../config';
 import { logger } from '../../utils/logger';
@@ -423,9 +423,31 @@ function resolveOwnedWeek(
  */
 export function mountCoachV2Routes(parent: Router): Router {
   const v2 = Router({ mergeParams: true });
+  const coachV2RateLimitMiddleware = rateLimit({
+    windowMs: 60 * 1000,
+    limit: (req: Request) => {
+      const readLimit = config.ios?.readRateLimit ?? Math.max(config.ios?.rateLimit ?? 60, 300);
+      const writeLimit = config.ios?.rateLimit ?? 60;
+      return req.method === 'GET' || req.method === 'HEAD' ? readLimit : writeLimit;
+    },
+    keyGenerator: (req: Request) => {
+      const userId = (req as AuthenticatedRequest).userId;
+      if (typeof userId === 'number' && userId > 0) return `user:${userId}`;
+      return `ip:${ipKeyGenerator(req.ip || req.socket?.remoteAddress || '0.0.0.0')}`;
+    },
+    legacyHeaders: true,
+    standardHeaders: false,
+    handler: (_req, res, _next, options) => {
+      const retryAfter = Math.ceil(options.windowMs / 1000);
+      res.setHeader('Retry-After', retryAfter);
+      res.status(options.statusCode).json({
+        error: { code: 'RATE_LIMITED', message: 'Too many requests. Slow down.', retryAfter },
+      });
+    },
+  });
 
   // ── C2 — POST /week/travel ─────────────────────────────────────
-  v2.post('/week/travel', rateLimitMiddleware, (req: Request, res: Response) => {
+  v2.post('/week/travel', coachV2RateLimitMiddleware, (req: Request, res: Response) => {
     if (!v2EnabledOrShortCircuit(res)) return;
     const auth = req as AuthenticatedRequest;
     const body = (req.body ?? {}) as Record<string, unknown>;
@@ -497,7 +519,7 @@ export function mountCoachV2Routes(parent: Router): Router {
   //     energyAvailabilityRisk?: 'low' | 'moderate' | 'high',
   //     consentScope: ('pain' | 'illness' | 'injury' | 'red_s_screening')[]
   //   }
-  v2.post('/health-intake/red-flag', rateLimitMiddleware, (req: Request, res: Response) => {
+  v2.post('/health-intake/red-flag', coachV2RateLimitMiddleware, (req: Request, res: Response) => {
     if (!v2EnabledOrShortCircuit(res)) return;
     const auth = req as AuthenticatedRequest;
     const body = (req.body ?? {}) as Record<string, unknown>;
@@ -562,7 +584,7 @@ export function mountCoachV2Routes(parent: Router): Router {
   });
 
   // ── C6 — POST /week/:weekId/reflow ─────────────────────────────
-  v2.post('/week/:weekId/reflow', rateLimitMiddleware, (req: Request, res: Response) => {
+  v2.post('/week/:weekId/reflow', coachV2RateLimitMiddleware, (req: Request, res: Response) => {
     if (!v2EnabledOrShortCircuit(res)) return;
     const rawWeekId = resolveWeekId(req, res);
     if (rawWeekId === null) return;
@@ -1024,7 +1046,7 @@ export function mountCoachV2Routes(parent: Router): Router {
   });
 
   // ── A5 — GET /plans/:planId/coach-policy ───────────────────────
-  v2.get('/plans/:planId/coach-policy', rateLimitMiddleware, (req: Request, res: Response) => {
+  v2.get('/plans/:planId/coach-policy', coachV2RateLimitMiddleware, (req: Request, res: Response) => {
     if (!v2EnabledOrShortCircuit(res)) return;
     const rawPlanId = resolvePlanId(req, res);
     if (rawPlanId === null) return;
@@ -1040,7 +1062,7 @@ export function mountCoachV2Routes(parent: Router): Router {
   });
 
   // ── A5 — PATCH /plans/:planId/coach-policy ─────────────────────
-  v2.patch('/plans/:planId/coach-policy', rateLimitMiddleware, (req: Request, res: Response) => {
+  v2.patch('/plans/:planId/coach-policy', coachV2RateLimitMiddleware, (req: Request, res: Response) => {
     if (!v2EnabledOrShortCircuit(res)) return;
     const rawPlanId = resolvePlanId(req, res);
     if (rawPlanId === null) return;
@@ -1073,7 +1095,7 @@ export function mountCoachV2Routes(parent: Router): Router {
   // + B7 taper + C7 aggregator + C8 scenario classifier. Production
   // caller for every remaining v2 service that the route layer
   // hadn't previously exercised — Codex P1 closure.
-  v2.get('/plans/:planId/coach-analysis', rateLimitMiddleware, (req: Request, res: Response) => {
+  v2.get('/plans/:planId/coach-analysis', coachV2RateLimitMiddleware, (req: Request, res: Response) => {
     if (!v2EnabledOrShortCircuit(res)) return;
     const rawPlanId = resolvePlanId(req, res);
     if (rawPlanId === null) return;
