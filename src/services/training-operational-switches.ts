@@ -32,9 +32,21 @@ export function isTrainingCalendarWritesEnabled(env: EnvLike = process.env): boo
 }
 
 export function isTrainingOutlookCalendarWritesEnabled(env: EnvLike = process.env): boolean {
+  // 2026-05-25 fix — Outlook is now ON by default, matching Google.
+  // Pre-fix this required an explicit `TRAINING_CALENDAR_OUTLOOK_ENABLED=true`
+  // env opt-in that originated from a defensive release gate in commit
+  // `7130f867 fix(training): complete calendar reliability audit`. The
+  // gate has since been validated implicitly: the same Outlook adapter
+  // (`secretary-unified-calendar-provider-adapter`) has been writing
+  // training-owned events to Outlook in production for months via the
+  // secretary-agenda path. Blocking explicit Outlook selection in the
+  // New Plan iOS flow while implicitly writing to Outlook everywhere
+  // else is the wrong contract. The kill switch
+  // (`TRAINING_CALENDAR_OUTLOOK_DISABLED=1`) is retained for fast
+  // emergency rollback without a redeploy.
   return isTrainingCalendarWritesEnabled(env)
     && !isTruthyDisabledFlag(env.TRAINING_CALENDAR_OUTLOOK_DISABLED)
-    && isTruthyEnabledFlag(env.TRAINING_CALENDAR_OUTLOOK_ENABLED);
+    && !isExplicitlyDisabled(env.TRAINING_CALENDAR_OUTLOOK_ENABLED, env.TRAINING_CALENDAR_OUTLOOK_DISABLED);
 }
 
 export function isTrainingCalendarSourceWritesEnabled(
@@ -71,7 +83,7 @@ export function trainingOperationDisabledMessage(operation: TrainingOperation): 
     case 'calendar_writes':
       return 'Training calendar sync is temporarily disabled.';
     case 'outlook_calendar_writes':
-      return 'Training Outlook calendar sync is temporarily disabled until Outlook provider smoke passes.';
+      return 'Training Outlook calendar sync is temporarily disabled.';
     case 'cross_skill_signals':
       return 'Training cross-skill signals are temporarily disabled.';
   }

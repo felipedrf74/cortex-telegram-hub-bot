@@ -432,31 +432,43 @@ describe('training-plan-calendar-sync', () => {
     expect(mocks.linkSessionToCalendar).toHaveBeenCalledWith(100, 'evt-outlook', 'outlook');
   });
 
-  it('uses Google by default while Outlook Training writes are gated', async () => {
-    mocks.isConnected.mockImplementation((_userId: number, provider: string) => (
-      provider === 'google' || provider === 'outlook'
-    ));
-    mocks.getActivePlan.mockReturnValue({
-      id: 7,
-      user_id: 42,
-      start_date: '2026-04-20T00:00:00.000Z',
-      preferences_json: null,
-    });
-    mocks.getWeeksForPlan.mockReturnValue([{ id: 70, week_number: 1 }]);
-    mocks.getSessionsForWeek.mockReturnValue([
-      { id: 100, day_of_week: 'Monday', session_type: 'run', title: 'Easy Run', duration_minutes: 40, description: 'Easy.', status: 'pending', calendar_event_id: null, calendar_source: null },
-    ]);
-    mocks.createEvent.mockResolvedValueOnce({ id: 'evt-google', source: 'google' });
+  it('R-2026-05-25 — uses Google by default when Outlook kill switch is set (pre-fix this gated by absence of opt-in flag)', async () => {
+    // 2026-05-25 fix — Outlook is now ON by default for Training.
+    // Pre-fix, the absence of TRAINING_CALENDAR_OUTLOOK_ENABLED was the
+    // gate; now the kill switch TRAINING_CALENDAR_OUTLOOK_DISABLED=1 is
+    // the explicit way to force Google-only behavior. Same observable
+    // outcome, opposite default.
+    const priorDisabled = process.env.TRAINING_CALENDAR_OUTLOOK_DISABLED;
+    process.env.TRAINING_CALENDAR_OUTLOOK_DISABLED = '1';
+    try {
+      mocks.isConnected.mockImplementation((_userId: number, provider: string) => (
+        provider === 'google' || provider === 'outlook'
+      ));
+      mocks.getActivePlan.mockReturnValue({
+        id: 7,
+        user_id: 42,
+        start_date: '2026-04-20T00:00:00.000Z',
+        preferences_json: null,
+      });
+      mocks.getWeeksForPlan.mockReturnValue([{ id: 70, week_number: 1 }]);
+      mocks.getSessionsForWeek.mockReturnValue([
+        { id: 100, day_of_week: 'Monday', session_type: 'run', title: 'Easy Run', duration_minutes: 40, description: 'Easy.', status: 'pending', calendar_event_id: null, calendar_source: null },
+      ]);
+      mocks.createEvent.mockResolvedValueOnce({ id: 'evt-google', source: 'google' });
 
-    await syncTrainingPlanCalendar(42, now, undefined, 42);
+      await syncTrainingPlanCalendar(42, now, undefined, 42);
 
-    expect(mocks.createEvent).toHaveBeenCalledWith(
-      expect.any(Object),
-      'google',
-      42,
-      expect.objectContaining({ tenantId: 42 }),
-    );
-    expect(mocks.linkSessionToCalendar).toHaveBeenCalledWith(100, 'evt-google', 'google');
+      expect(mocks.createEvent).toHaveBeenCalledWith(
+        expect.any(Object),
+        'google',
+        42,
+        expect.objectContaining({ tenantId: 42 }),
+      );
+      expect(mocks.linkSessionToCalendar).toHaveBeenCalledWith(100, 'evt-google', 'google');
+    } finally {
+      if (priorDisabled === undefined) delete process.env.TRAINING_CALENDAR_OUTLOOK_DISABLED;
+      else process.env.TRAINING_CALENDAR_OUTLOOK_DISABLED = priorDisabled;
+    }
   });
 
   it('uses the requested connected provider and stores it as the plan preference', async () => {
