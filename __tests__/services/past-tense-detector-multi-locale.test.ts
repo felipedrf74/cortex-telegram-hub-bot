@@ -11,7 +11,7 @@ import { describe, expect, it } from 'vitest';
 import {
   buildDeterministicChatActionPlan,
   type ChatPlannerInput,
-} from '../../src/services/chat-action-planner';
+} from '../../src/services/chat';
 import { hasPastTenseSignal } from '../../src/services/skills/past-tense-detector';
 
 const FROZEN_NOW = '2026-05-16T12:00:00+01:00';

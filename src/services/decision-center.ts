@@ -435,6 +435,7 @@ const MUTATING_ACTIONS = new Set([
   'mark_paid',
   'add_meal',
   'undo_reflow',
+  'accept_chat_action_fix',
 ]);
 const CONTENT_APPROVAL_ACTION_IDS = new Set(['approve_script', 'request_rewrite']);
 const SECRETARY_REFLOW_ACTION_IDS = new Set(['accept_reflow', 'choose_another_time']);
@@ -3664,6 +3665,10 @@ async function executeDecisionAction(
     return executeChatClarificationDecision(record, action.id, userId, tenantId);
   }
 
+  if (action.id === 'accept_chat_action_fix') {
+    return executeChatFixerDecision(record, userId, tenantId);
+  }
+
   if (MUTATING_ACTIONS.has(action.id)) {
     throw new DecisionActionError(
       'UNSUPPORTED_DECISION_EXECUTOR',
@@ -4048,6 +4053,29 @@ function executeChatClarificationDecision(
     selectedOption: actionId,
     involvedSkills: pending.involvedSkills,
   }, 'Chat clarification was recorded.');
+}
+
+function executeChatFixerDecision(
+  record: DecisionRecord,
+  userId: number,
+  tenantId: number,
+): {
+  readBackOk: boolean;
+  expectedEffect: Record<string, unknown>;
+  actualEffect: Record<string, unknown>;
+  message: string;
+} {
+  if (record.sourceSkill !== 'chat' || record.relatedEntityType !== 'chat_action_fixer_review') {
+    throw new DecisionActionError('UNSUPPORTED_DECISION_EXECUTOR', 'Chat fixer decision is missing a scoped fixer review.', 409);
+  }
+  if (record.userId !== userId || record.tenantId !== tenantId) {
+    throw new DecisionActionError('DECISION_SCOPE_MISMATCH', 'Decision scope mismatch.', 403);
+  }
+  return markDecisionActioned(record, 'accept_chat_action_fix', {
+    fixerReviewId: record.relatedEntityId,
+    providerActionExecuted: false,
+    freshConfirmationRequired: true,
+  }, 'Chat action correction accepted. Nexus will require a fresh confirmation before any provider write.');
 }
 
 function markDecisionActioned(

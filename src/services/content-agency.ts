@@ -843,6 +843,8 @@ function ensureAgencyPipelineHandoffSchema(db: any): void {
   addColumn('approved_by', 'INTEGER');
   addColumn('approved_at', 'TEXT');
   addColumn('source_agency_package_id', 'TEXT');
+  addColumn('published_url', 'TEXT');
+  addColumn('published_at', 'TEXT');
   db.exec(`
     CREATE INDEX IF NOT EXISTS idx_content_pipeline_agency_package
       ON content_pipeline(tenant_id, user_id, source_agency_package_id, scope_status);

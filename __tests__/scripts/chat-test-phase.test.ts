@@ -1,0 +1,222 @@
+// Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
+
+import fs from 'fs';
+import os from 'os';
+import path from 'path';
+import { describe, expect, it } from 'vitest';
+
+import {
+  evaluateShadowScenario,
+  evaluateScenarioResponse,
+  parseFixtureText,
+  runChatTestPhase,
+} from '../../scripts/chat-test-phase';
+
+describe('chat-test-phase runner', () => {
+  it('parses the JSON fixture contract', () => {
+    const fixture = parseFixtureText(JSON.stringify({
+      suite: 'track-1-baseline',
+      expected_pass_rate: 0.97,
+      scenarios: [
+        {
+          id: 'simple-task',
+          user_text: 'Create a task called Review release',
+          expected_action: 'create_task',
+        },
+      ],
+    }));
+
+    expect(fixture.suite).toBe('track-1-baseline');
+    expect(fixture.scenarios[0]?.expected_action).toBe('create_task');
+  });
+
+  it('evaluates action, verifier, slots, and response substrings', () => {
+    const result = evaluateScenarioResponse(
+      {
+        id: 'task-create',
+        user_text: 'Create a task called Review release',
+        expected_action: 'create_task',
+        expected_slots: { title: 'Review release' },
+        expected_verifier: 'verified_success',
+        expected_response_substring: ['Created'],
+        forbidden_response_substring: ['cannot safely'],
+      },
+      {
+        text: 'Created task “Review release”.',
+        metadata: {
+          action: 'create_task',
+          actionStatus: 'verified_success',
+          result: { title: 'Review release' },
+        },
+      },
+      200,
+    );
+
+    expect(result.passed).toBe(true);
+    expect(result.failures).toEqual([]);
+  });
+
+  it('reports forbidden actions and missing expectations', () => {
+    const result = evaluateScenarioResponse(
+      {
+        id: 'confusion',
+        user_text: 'Remind me to pay the bill',
+        expected_action: 'finance_create_reminder',
+        expected_action_NOT: 'create_task',
+      },
+      {
+        text: 'Created a task.',
+        metadata: { action: 'create_task' },
+      },
+      200,
+    );
+
+    expect(result.passed).toBe(false);
+    expect(result.failures).toEqual(expect.arrayContaining([
+      'missing_expected_action_finance_create_reminder',
+      'saw_forbidden_action_create_task',
+    ]));
+  });
+
+  it('redacts tokens, api keys, passwords, and session secrets from stored evidence metadata', () => {
+    const result = evaluateScenarioResponse(
+      {
+        id: 'confirmation',
+        user_text: 'Create a task called Review release',
+        expected_action: 'create_task',
+      },
+      {
+        text: 'Confirm the action.',
+        metadata: {
+          action: 'create_task',
+          pendingConfirmation: {
+            confirmation_token: 'secret-confirmation-token',
+            confirmationToken: 'secret-confirmation-token-camel',
+          },
+          nested: [{
+            accessToken: 'secret-access-token',
+            refresh_token: 'secret-refresh-token',
+            api_key: 'sk-secret-api-key',
+            apiKey: 'sk-secret-api-key-camel',
+            webhook_api_key: 'sk-secret-webhook-key',
+            clientSecret: 'secret-client-secret',
+            sessionSecret: 'secret-session-secret',
+            session_id: 'secret-session-id',
+            password: 'secret-password',
+            publicLabel: 'visible label',
+          }],
+          apiKeyLabel: 'recoverable label that should be redacted by evidence policy',
+        },
+      },
+      202,
+    );
+
+    expect(result.response?.metadata).toMatchObject({
+      pendingConfirmation: {
+        confirmation_token: '[redacted]',
+        confirmationToken: '[redacted]',
+      },
+      nested: [{
+        accessToken: '[redacted]',
+        refresh_token: '[redacted]',
+        api_key: '[redacted]',
+        apiKey: '[redacted]',
+        webhook_api_key: '[redacted]',
+        clientSecret: '[redacted]',
+        sessionSecret: '[redacted]',
+        session_id: '[redacted]',
+        password: '[redacted]',
+        publicLabel: 'visible label',
+      }],
+      apiKeyLabel: '[redacted]',
+    });
+    expect(JSON.stringify(result.response?.metadata)).not.toContain('secret-');
+    expect(JSON.stringify(result.response?.metadata)).not.toContain('sk-');
+  });
+
+  it('writes a dry-run report without network credentials', async () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'chat-test-phase-'));
+    const fixturePath = path.join(tmp, 'fixture.json');
+    fs.writeFileSync(fixturePath, JSON.stringify({
+      suite: 'dry-run-suite',
+      expected_pass_rate: 1,
+      scenarios: [
+        { id: 'baseline', user_text: 'What is on my calendar today?', expected_action: 'summarize_agenda' },
+      ],
+    }));
+
+    const result = await runChatTestPhase({
+      fixturePath,
+      outputDir: tmp,
+      dryRun: true,
+    });
+
+    expect(result.passRate).toBe(1);
+    expect(fs.existsSync(result.reportPath)).toBe(true);
+    const report = JSON.parse(fs.readFileSync(result.reportPath, 'utf8'));
+    expect(report).toMatchObject({
+      suite: 'dry-run-suite',
+      dryRun: true,
+      total: 1,
+      passed: 1,
+    });
+  });
+
+  it('evaluates Chat Core v2 shadow routing expectations locally', () => {
+    const result = evaluateShadowScenario({
+      id: 'task-create-preview',
+      user_text: 'Create a task to buy milk tomorrow',
+      expected_shadow_intent: 'create_action',
+      expected_shadow_route_method: 'llm_command_translation',
+      expected_shadow_capability_ids: ['tasks.create'],
+      expected_shadow_fallback_allowed: false,
+      expected_shadow_would_call_model: true,
+    });
+
+    expect(result.passed).toBe(true);
+    expect(result.response?.metadata).toMatchObject({
+      chatCoreV2Shadow: {
+        intent: 'create_action',
+        routeMethod: 'llm_command_translation',
+        selectedCapabilityIds: ['tasks.create'],
+        fallbackAllowed: false,
+        wouldCallModel: true,
+        wouldExecute: false,
+      },
+    });
+  });
+
+  it('writes a Chat Core v2 shadow-local report without network credentials', async () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'chat-test-phase-shadow-'));
+    const fixturePath = path.join(tmp, 'fixture.json');
+    fs.writeFileSync(fixturePath, JSON.stringify({
+      suite: 'shadow-local-suite',
+      expected_pass_rate: 1,
+      scenarios: [
+        {
+          id: 'training-read',
+          user_text: 'What is my next training session?',
+          expected_shadow_route_method: 'deterministic_read',
+          expected_shadow_capability_ids: ['training.session_explain'],
+        },
+      ],
+    }));
+
+    const result = await runChatTestPhase({
+      fixturePath,
+      outputDir: tmp,
+      dryRun: false,
+      shadowLocal: true,
+    });
+
+    expect(result.passRate).toBe(1);
+    const report = JSON.parse(fs.readFileSync(result.reportPath, 'utf8'));
+    expect(report).toMatchObject({
+      suite: 'shadow-local-suite',
+      dryRun: false,
+      total: 1,
+      passed: 1,
+    });
+    expect(report.results[0].response.metadata.chatCoreV2Shadow.routeMethod).toBe('deterministic_read');
+  });
+});

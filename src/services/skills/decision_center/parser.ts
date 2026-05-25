@@ -11,8 +11,8 @@ import { makeStep, type StepKeyInputs } from '../step-builder';
 import type {
   ChatActionName,
   ChatActionSkill,
-} from '../../chat-action-registry';
-import type { ChatPlanStep } from '../../chat-action-planner';
+} from '../../chat/registry';
+import type { ChatPlanStep } from '../../chat/types';
 
 export function parseDecisionActionStep(
   input: StepKeyInputs & { text: string },

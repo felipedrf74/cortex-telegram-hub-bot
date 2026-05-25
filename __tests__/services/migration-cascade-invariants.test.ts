@@ -75,7 +75,7 @@ function seedPlan(planId: number, userId: number): void {
   ).run(planId, userId);
 }
 
-describe('Migration 156 — training_plan_adaptations FK declarations', () => {
+describe('Migration 163 — training_plan_adaptations FK declarations', () => {
   it('FK to fitness_training_plans is ON DELETE CASCADE', () => {
     seedUser(1);
     seedPlan(10, 1);
@@ -118,14 +118,18 @@ describe('Migration 156 — training_plan_adaptations FK declarations', () => {
   });
 });
 
-describe('Migrations 158-161 — current FK state (PINS NO-FK BEHAVIOR)', () => {
+describe('Migrations 165-168 — current FK state (PINS NO-FK BEHAVIOR)', () => {
   // R8 P1-5 note — the prompt assumed these tables had FKs to
   // their natural parents. Inspecting the migrations showed no
   // FK declarations. These tests pin the actual behavior so a
   // future schema migration that adds CASCADE shows up as a
   // breaking test rather than an undocumented data-loss surface.
+  //
+  // (Renumbered from 158-161 during the 2026-05-25 merge with main,
+  // because main's Chat Core v2 PRs landed migrations at 156-162
+  // first. Table names are unchanged; only the file prefixes moved.)
 
-  it('158 athlete_health_signals: deleting the user does NOT cascade rows (no FK declared)', () => {
+  it('165 athlete_health_signals: deleting the user does NOT cascade rows (no FK declared)', () => {
     seedUser(50);
     testDb.prepare(`
       INSERT INTO athlete_health_signals (user_id, date, consent_scope, created_at)
@@ -136,7 +140,7 @@ describe('Migrations 158-161 — current FK state (PINS NO-FK BEHAVIOR)', () => 
     expect(remaining.n).toBe(1);
   });
 
-  it('158 athlete_readiness_events: deleting the user does NOT cascade rows (no FK declared)', () => {
+  it('165 athlete_readiness_events: deleting the user does NOT cascade rows (no FK declared)', () => {
     seedUser(51);
     testDb.prepare(`
       INSERT INTO athlete_readiness_events (user_id, date, consent_scope, created_at)
@@ -147,7 +151,7 @@ describe('Migrations 158-161 — current FK state (PINS NO-FK BEHAVIOR)', () => 
     expect(remaining.n).toBe(1);
   });
 
-  it('159 coach_plan_policy is a column on fitness_training_plans → policy dies WITH the plan row (column-on-parent)', () => {
+  it('166 coach_plan_policy is a column on fitness_training_plans → policy dies WITH the plan row (column-on-parent)', () => {
     seedUser(60);
     seedPlan(600, 60);
     testDb.prepare(
@@ -160,7 +164,7 @@ describe('Migrations 158-161 — current FK state (PINS NO-FK BEHAVIOR)', () => 
     expect(remaining.n).toBe(0);
   });
 
-  it('160 athlete_session_preferences: deleting the user does NOT cascade rows (no FK declared)', () => {
+  it('167 athlete_session_preferences: deleting the user does NOT cascade rows (no FK declared)', () => {
     seedUser(70);
     testDb.prepare(`
       INSERT INTO athlete_session_preferences (user_id, date, intensity_preference, created_at)
@@ -173,7 +177,7 @@ describe('Migrations 158-161 — current FK state (PINS NO-FK BEHAVIOR)', () => 
     expect(remaining.n).toBe(1);
   });
 
-  it('161 travel_windows: deleting the user does NOT cascade rows (no FK declared)', () => {
+  it('168 travel_windows: deleting the user does NOT cascade rows (no FK declared)', () => {
     seedUser(80);
     testDb.prepare(`
       INSERT INTO travel_windows (user_id, start_date, end_date, created_at)
@@ -184,7 +188,7 @@ describe('Migrations 158-161 — current FK state (PINS NO-FK BEHAVIOR)', () => 
     expect(remaining.n).toBe(1);
   });
 
-  it('161 week_equipment_override (column on training_weeks): CASCADE is already inherited because the column lives on training_weeks itself', () => {
+  it('168 week_equipment_override (column on training_weeks): CASCADE is already inherited because the column lives on training_weeks itself', () => {
     seedUser(81);
     seedPlan(810, 81);
     testDb.prepare(

@@ -19,7 +19,7 @@
 
 import { describe, expect, it } from 'vitest';
 
-import { getChatActionRegistry } from '../../src/services/chat-action-registry';
+import { getChatActionRegistry } from '../../src/services/chat/registry';
 import { buildRegistryDrivenEvalScenarios } from '../../src/services/registry-driven-eval-scenarios';
 
 describe('examples-as-living-corpus shadow mode (Phase 14 batch 74)', () => {

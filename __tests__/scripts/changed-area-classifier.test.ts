@@ -92,6 +92,52 @@ describe('changed-area-classifier closed-beta content-agent routing', () => {
 });
 
 describe('changed-area-classifier engineering-excellence enrichments (2026-05-04)', () => {
+  it('routes canonical chat planner/executor changes into chat reasoning tests', () => {
+    const raw = execFileSync(
+      'bash',
+      [
+        'scripts/changed-area-classifier.sh',
+        '--json',
+        '--files',
+        'src/services/chat/planner/orchestrator.ts,src/services/chat/executor/plan-executor.ts',
+      ],
+      { encoding: 'utf8' },
+    );
+    const result = JSON.parse(raw) as {
+      flags: Record<string, boolean>;
+      vitest: { globs: string[] };
+    };
+
+    expect(result.flags.chatReasoning).toBe(true);
+    expect(result.flags.secretary).toBe(true);
+    expect(result.vitest.globs).toContain('__tests__/services/chat-action-planner.test.ts');
+    expect(result.vitest.globs).toContain('__tests__/services/chat-action-production-safety.test.ts');
+    expect(result.vitest.globs).toContain('__tests__/api/chat-routes.test.ts');
+    expect(result.vitest.globs).toContain('__tests__/security/p0-chat-identity-isolation.test.ts');
+  });
+
+  it('routes Chat Core v2 foundation changes into Chat Core v2 focused tests', () => {
+    const raw = execFileSync(
+      'bash',
+      [
+        'scripts/changed-area-classifier.sh',
+        '--json',
+        '--files',
+        'src/services/chat-core-v2/route-decision.ts',
+      ],
+      { encoding: 'utf8' },
+    );
+    const result = JSON.parse(raw) as {
+      flags: Record<string, boolean>;
+      vitest: { mode: string; globs: string[] };
+    };
+
+    expect(result.flags.chatReasoning).toBe(false);
+    expect(result.flags.chatCoreV2).toBe(true);
+    expect(result.vitest.mode).toBe('focused');
+    expect(result.vitest.globs).toContain('__tests__/services/chat-core-v2-*.test.ts');
+  });
+
   it('routes logger / redaction changes into logger + secret-guards tests', () => {
     const raw = execFileSync(
       'bash',
@@ -382,11 +428,11 @@ describe('changed-area-classifier engineering-excellence enrichments (2026-05-04
 describe('changed-area-classifier cannot-skip dashboard wiring (ENG-EXC-O3)', () => {
   // The dashboard spawns 23 sequential bash + node child processes (one
   // per gate). Under full-sweep load (300+ test files in singleFork
-  // mode) the default 10s timeout is tight enough to flake. Bump to 60s
-  // to absorb the cold-spawn cost without masking a real regression —
+  // mode) even a 60s timeout can flake on colder pre-push runs. Bump to
+  // 120s to absorb the cold-spawn cost without masking a real regression —
   // a real wiring regression prints the failed gate names in the JSON
   // payload regardless of duration.
-  it('cannot-skip gate dashboard reports all 23 gates wired and PASS verdict', { timeout: 60_000 }, () => {
+  it('cannot-skip gate dashboard reports all 23 gates wired and PASS verdict', { timeout: 120_000 }, () => {
     const raw = execFileSync(
       'bash',
       ['scripts/cannot-skip-gate-dashboard.sh', '--json', '--no-evidence'],

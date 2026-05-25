@@ -7,13 +7,31 @@
 import type { DateTime } from 'luxon';
 
 import { makeStep, type StepKeyInputs } from '../step-builder';
-import type { ChatPlanStep } from '../../chat-action-planner';
+import type { ChatPlanStep } from '../../chat/types';
+import { parseCookingSubstitution } from './substitution';
 
 export function parseCookingActionStep(
   input: StepKeyInputs & { text: string },
   folded: string,
   now: DateTime,
 ): ChatPlanStep | null {
+  const substitution = parseCookingSubstitution(input.text, now);
+  if (substitution) {
+    return makeStep(input, {
+      skill: 'cooking',
+      action: 'cooking_substitute_ingredient',
+      risk: 'safe_write',
+      provider: 'nexus',
+      args: { ...substitution },
+      requiredArgsPresent: Boolean(
+        substitution.date
+          && substitution.mealType
+          && substitution.originalIngredient
+          && substitution.suggestedIngredient,
+      ),
+    });
+  }
+
   // Phase 10 batch 51 (2026-05-16): Spanish nouns (comida[s], cena,
   // almuerzo, desayuno, menú, compra) and verbs (planea, crea) added.
   // "compra" alone covers "lista de la compra" (ES grocery list idiom)

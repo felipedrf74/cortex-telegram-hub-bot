@@ -8,7 +8,7 @@ import {
   proposeAdversarialExamples,
   formatAdversarialExampleProposalsMarkdown,
 } from '../../src/services/registry-adversarial-example-proposer';
-import { getChatActionRegistry } from '../../src/services/chat-action-registry';
+import { getChatActionRegistry } from '../../src/services/chat/registry';
 
 let db: Database.Database;
 

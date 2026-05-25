@@ -15,12 +15,12 @@ import {
   parseLlmPlannerJson,
   parseTier1ClassifierJson,
   type ChatPlannerInput,
-} from '../../src/services/chat-action-planner';
+} from '../../src/services/chat';
 import {
   CHAT_ACTION_REGISTRY,
   getChatActionRegistry,
   type ChatActionDefinition,
-} from '../../src/services/chat-action-registry';
+} from '../../src/services/chat/registry';
 
 const FORBIDDEN_VIEW_FIELDS = [
   'executor',
@@ -450,10 +450,14 @@ describe('LLM prompt construction safety', () => {
   });
 
   it('does not log raw prompt text, prompt bodies, or action args in planner logger calls', () => {
-    const source = fs.readFileSync(
-      path.resolve(__dirname, '../../src/services/chat-action-planner.ts'),
-      'utf8',
-    );
+    const chatSourceDir = path.resolve(__dirname, '../../src/services/chat');
+    const readTypescriptFiles = (dir: string): string[] => fs.readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
+      const fullPath = path.join(dir, entry.name);
+      if (entry.isDirectory()) return readTypescriptFiles(fullPath);
+      if (entry.isFile() && entry.name.endsWith('.ts')) return [fs.readFileSync(fullPath, 'utf8')];
+      return [];
+    });
+    const source = readTypescriptFiles(chatSourceDir).join('\n');
     const loggerPayloads = Array.from(
       source.matchAll(/logger\.(?:info|debug|warn|error)\(([\s\S]*?)\);/g),
     ).map((match) => match[1]).join('\n');

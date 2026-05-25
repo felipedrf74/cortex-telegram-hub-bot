@@ -39,8 +39,8 @@ import {
 import {
   buildChatActionPlan,
   type ChatPlannerInput,
-} from '../../src/services/chat-action-planner';
-import { getChatActionRegistry } from '../../src/services/chat-action-registry';
+} from '../../src/services/chat';
+import { getChatActionRegistry } from '../../src/services/chat/registry';
 
 const FROZEN_NOW = '2026-05-16T12:00:00+01:00';
 
@@ -285,7 +285,7 @@ describe('multi-turn pending continuation with real chat-action-state persistenc
       const {
         buildChatActionPlan,
         buildDeterministicChatActionPlan,
-      } = await import('../../src/services/chat-action-planner');
+      } = await import('../../src/services/chat');
       const {
         getActivePendingChatAction: getRealActivePendingChatAction,
         upsertPendingChatAction: upsertRealPendingChatAction,

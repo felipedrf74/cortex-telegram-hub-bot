@@ -484,7 +484,7 @@ const COOKING_SKILL: SkillDefinition = {
 //
 // Promoted 2026-05-15 per the Skill Interaction Catalog audit §4 (orphan-skill
 // promotion). These three skills were already first-class in `ChatActionSkill`
-// (chat-action-registry.ts) but were not surfaced as user-facing skills in the
+// (chat/registry/types.ts) but were not surfaced as user-facing skills in the
 // catalog. They have empty `tools: []` arrays because their action surface is
 // owned by the chat-action registry (executor strings dispatched server-side),
 // not by the legacy Anthropic tool-call surface. Each sub-skill maps to a
