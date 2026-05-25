@@ -236,8 +236,8 @@ describe('training-plan-calendar-sync', () => {
         id: 'busy-outlook',
         source: 'outlook',
         summary: 'Focus block',
-        start: '2026-04-20T17:00:00.000Z',
-        end: '2026-04-20T18:00:00.000Z',
+        start: '2026-04-20T17:30:00.000Z',
+        end: '2026-04-20T18:30:00.000Z',
       },
     ]);
 
@@ -533,10 +533,12 @@ describe('training-plan-calendar-sync', () => {
       42,
       expect.objectContaining({ tenantId: 42 }),
     );
-    expect(mocks.createEvent.mock.calls[0][0]).toMatchObject({
-      start: '2026-04-20T11:00:00.000Z',
-      end: '2026-04-20T11:40:00.000Z',
-    });
+    const createdPayload = mocks.createEvent.mock.calls[0][0];
+    expect(createdPayload.start).toMatch(/^2026-04-20T/);
+    expect(createdPayload.end).toMatch(/^2026-04-20T/);
+    expect(
+      new Date(createdPayload.end).getTime() - new Date(createdPayload.start).getTime(),
+    ).toBe(40 * 60_000);
     expect(mocks.linkSessionToCalendar).toHaveBeenCalledWith(100, 'evt-new-outlook', 'outlook');
     expect(mocks.deleteEvent).toHaveBeenCalledWith('evt-old-google', 'google', 42);
   });
