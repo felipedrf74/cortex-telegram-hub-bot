@@ -31,63 +31,50 @@ or copying verdicts, commit hashes, or test counts.
 
 **Providers**: Gemini primary (2.5-flash / 2.5-flash-lite), Anthropic fallback (Claude Sonnet 4.6 / Haiku 4.5), OpenAI as secondary fallback. See `src/config.ts > providerRouting`.
 
-## Current Production Truth - 2026-05-07
+## Current Production Truth - 2026-05-25
 
-- Production backend is live at `4.14.134` on `main`.
+- Production backend is live at `4.14.193` on `main`.
 - Current production deploy commit is
-  `7edf9eb389bb0808893ef2fd038b7e706f567a1e`.
-- The 2026-05 tech-debt sweep is source-closed and deployed. The sweep
-  addressed the original P0/P1 backend source findings, closed the major P2
-  engineering-safety cluster, and leaves only operator-gated carryovers in
-  `docs/release/OPEN_ITEMS.md`.
-- Production promote completed after staging passed the 17/17 smoke gate.
-  Production `/health` returned `healthy`; authenticated local
-  `/api/snapshot` returned version `4.14.134`. The snapshot endpoint does
-  not currently expose a commit field, so deploy commit truth is taken from git
-  and the deploy script output.
-- Current deployed branch: `main`.
-- Historical beta recovery branch: `beta/single-agent-rc`.
-- Sweep closeout dossier:
-  `docs/archive/2026-05/tech-debt-validation/sweep-closeout-dossier.md`.
+  `fb1ca66d0169ce69530bb18194b532cc43802a12`.
+- Source scope now in production:
+  - PR #135 `99992ddc` — Coach Periodization v2.1 training stack.
+  - PR #136 `256aa591` — deploy hardening so generated parity evidence is
+    restored before risky deploy phases and dirty-tree failures happen before
+    PM2 services are stopped.
+- Production promote completed through the standard gate. Staging smoke passed
+  17/17 before promotion, deploy-time `npm run verify` passed 718 files /
+  10,525 tests, and the final `main` pre-push gate repeated typecheck, full
+  Vitest, and build successfully before pushing `fb1ca66d`.
+- Production `/health` returned HTTP 200 repeatedly after deploy, local
+  `http://127.0.0.1:8200/health` returned 200 on the server, PM2 showed
+  `nexus-hub` and `content-engine` online, and the server package version is
+  `4.14.193`.
+- Staging remains on the previous deploy version until the next staging deploy;
+  this is expected after production version bumps.
+- Cloudflare Tunnel is currently restored and serving traffic, but it was
+  restarted as detached `cloudflared` user processes during incident recovery.
+  Follow up by installing/enabling a supervised service for the tunnel so it
+  survives host restarts cleanly.
+- Current active local feature worktree:
+  `/Users/felipedominguez/Desktop/Custom Connectors/Cortex/cortex-telegram-hub-bot`
+  on `codex/chat_improvement_goal`, with uncommitted chat improvement changes.
+  Do not clean or reset that worktree unless Felipe explicitly asks.
 
-Source-side guarantees after the sweep:
+Current verification floor:
 
-- State isolation: high-risk state modules enforce positive, safe integer user
-  identifiers at state-layer entry points. The six-module isolation pack and
-  the 23-case P0 chat identity suite are canonical regression contracts.
-- JWT rotation: iOS API JWT signing supports `kid`-based key rotation with
-  overlap verification and `docs/engineering/jwt-rotation-runbook.md`.
-- PM2 recovery: supervisor health and restart-count signals are observable via
-  `src/services/pm2-health.ts` and `/health/detailed`.
-- Gemini SDK migration: production Gemini code uses `@google/genai`; the
-  legacy `@google/generative-ai` runtime dependency was removed.
-- Mock hygiene: strict `vi.mock` completeness lint is enforceable at the 827
-  partial-mock ceiling.
-- Docs hygiene: docs:audit is held at the 480 issue ceiling established by the
-  closeout pass.
+- Full backend verify: 718 Vitest files / 10,525 tests.
+- Main pre-push gate: typecheck + full Vitest + build.
+- Promote gate: staging smoke 17/17 before production.
+- Deploy script now restores the tracked registry shadow parity evidence before
+  clean-tree checks that precede service stop.
 
-Verification floor after the source sweep:
+Documentation hygiene:
 
-- `npm run verify`: 467 test files / 6,973 tests.
-- `content-engine/.venv313/bin/python -m pytest tests/`: 135 tests.
-- `npx vitest run __tests__/security/p0-chat-identity-isolation.test.ts`:
-  23/23 passing.
-- `bash scripts/cannot-skip-gate-dashboard.sh --json --no-evidence`: 23/23
-  passing.
-- `node scripts/vi-mock-completeness-lint.mjs --strict`: 827/827 passing.
-- `npm run docs:audit`: 480 issues / 427 audited markdown files at the final
-  pre-deploy source gate.
-
-Remaining beta/operator gates:
-
-- Signed TestFlight and two-account walkthrough.
-- APNs token and delivery validation.
-- Real Gmail/Outlook/Health provider-state checks.
-- Non-prod Google/Outlook OAuth credentials provisioning.
-- Garmin MFA/live-session validation.
-- Content portal smoke window.
-- iOS fastlane setup, if Felipe chooses to pursue it.
-- Self-hosted runner provisioning only if SSH-only promote workflows require it.
+- `docs/release/CURRENT_RELEASE_STATE.md` and
+  `docs/release/current-release-index.md` are the canonical release state.
+- One-off QA prompts should not be added to `main` as long-lived docs. Keep
+  QA prompts in PR comments or temporary worktrees unless the active release
+  index links them as durable evidence.
 
 ## Codex + Claude Operating Protocol
 

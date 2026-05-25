@@ -2,22 +2,57 @@
 
 Status: canonical
 Owner: backend release lead (Felipe)
-Last verified: 2026-05-23
+Last verified: 2026-05-25
 Update policy: update after backend deploy or staging change. Workspace-level entry point is docs/release/CURRENT_RELEASE_STATE.md.
 
-Last updated: 2026-05-23
+Last updated: 2026-05-25
 
 ## Active Production Release
 
 - Source branch: `main`
-- Production HEAD: `bac44816`
-- Production version: `4.14.190`
-- Source implementation commit before deploy bump: `8ee3ad95`
+- Production HEAD: `fb1ca66d`
+- Production version: `4.14.193`
+- Source implementation commits before deploy bump: PR #135 merge
+  `99992ddc` and PR #136 merge `256aa591`.
 - Latest pushed source: `origin/main` includes the running production deploy
-  commit `bac44816`.
-- iOS confirmation card and rate-limit focused tests passed in simulator; a
-  separate signed iOS/TestFlight release is still required to reach devices.
+  commit `fb1ca66d`.
+- Staging remains on the previous deploy version until the next staging deploy;
+  the promoted functional code passed the staging smoke before production.
 - Official workspace root: `/Users/felipedominguez/Desktop/Nexus Hub`
+
+## 2026-05-25 Coach Periodization v2.1 + Deploy Safety Production Promote
+
+- Scope: promoted PR #135 Coach Periodization v2.1 training changes and PR #136
+  deploy safety hardening. PR #135 added the v2.1 training implementation,
+  tests, CI/operator docs, and R1-R8 closeout fixes. PR #136 fixed the deploy
+  ordering hazard where a generated registry-shadow-parity evidence timestamp
+  could dirty the worktree after PM2 services had already been stopped.
+- Production version: `4.14.193`.
+- Production deploy commit: `fb1ca66d`.
+- Source implementation/evidence commits before deploy bump: PR #135 merge
+  `99992ddc`; deploy safety merge `256aa591`.
+- Previous production deploy commit: `bac44816`.
+- Release validation passed before production: PR #136 GitHub checks passed,
+  staging smoke passed **17/17**, deploy-time `npm run verify` passed
+  **718 test files / 10,525 tests**, and the final `main` pre-push gate repeated
+  typecheck, full Vitest, and build before pushing `fb1ca66d`.
+- Production deploy completed through the standard `promote-to-prod.sh` path
+  after local dependencies were refreshed with `npm ci`. The deploy installed
+  dependencies on the server, ran owner bootstrap preflight, rebuilt native
+  modules for system Node, restarted `content-engine` and `nexus-hub`, and
+  saved the PM2 process list.
+- Production health passed after deploy: public
+  `https://api.nexushub.me/health` returned HTTP 200 repeatedly, server-local
+  `http://127.0.0.1:8200/health` returned 200, PM2 showed `nexus-hub` and
+  `content-engine` online, and the production package version is `4.14.193`.
+- Incident recovery note: Cloudflare Tunnel was found stopped during the
+  deploy recovery window and was restarted as detached `cloudflared` user
+  processes. Public health is currently green through the tunnel, but the next
+  infra follow-up should install/enable a supervised service for `cloudflared`.
+- Local cleanup note: obsolete clean/merged worktrees from prior Decision
+  Center, Chat Core, Cloudflare, confirmation, and training validation branches
+  were removed after promotion. Dirty or unmerged worktrees were intentionally
+  left in place.
 
 ## 2026-05-23 Beta Hardening Confirmation Contract Production Promote
 

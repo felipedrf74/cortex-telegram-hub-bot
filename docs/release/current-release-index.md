@@ -2,65 +2,61 @@
 
 Status: canonical
 Owner: release lead (Felipe)
-Last verified: 2026-05-21
+Last verified: 2026-05-25
 Update policy: update when the current RC identity, deploy-gate evidence, or canonical-doc cross-references change. Run engine/scripts/release-identity.sh --persist to refresh auto-generated identity fields.
 
-Date: 2026-05-21
+Date: 2026-05-25
 
 ## Current Status
 
 Active production package:
 
 - source branch: `main`
-- production HEAD: `ae4e1421` (version-bump for 4.14.181)
-- production version: `4.14.181`
-- runtime source commit: `67287399` (`fix(deploy): keep promotion smoke from dirtying worktree`)
-- latest `origin/main`: `4b490d4a` (post-deploy deploy/pre-push read-only evidence guard)
+- production HEAD: `fb1ca66d` (version-bump for 4.14.193)
+- production version: `4.14.193`
+- runtime source commits: PR #135 merge `99992ddc` (Coach Periodization v2.1)
+  and PR #136 merge `256aa591` (deploy dirty-tree stop fix)
+- latest `origin/main`: `fb1ca66d`
 - release state: `docs/release/CURRENT_RELEASE_STATE.md` (backend) and `/Users/felipedominguez/Desktop/Nexus Hub/docs/release/CURRENT_RELEASE_STATE.md` (workspace)
 - official workspace root: `/Users/felipedominguez/Desktop/Nexus Hub`
 
-Commits in this release (4.14.173 -> 4.14.181):
+Commits in this release (4.14.190 -> 4.14.193):
 
-- `3ab03654 merge: nexus points qa2 hardening`
-- `c04200c9 chore(edge): add Cloudflare AI crawler unblock tooling`
-- `dcf1e05a docs(release): add staging smoke evidence for qa2 hardening`
-- `6bcf76f6 docs(release): add promotion smoke evidence`
-- `67287399 fix(deploy): keep promotion smoke from dirtying worktree`
-- `994fa7aa chore: bump version to 4.14.180 [deploy]`
-- `ae4e1421 chore: bump version to 4.14.181 [deploy]`
-- `4b490d4a fix(deploy): keep verification from dirtying parity evidence` (on `origin/main`; script/hook guard, not part of the running runtime bundle)
+- `99992ddc merge: PR #135 Coach Periodization v2.1 training stack`
+- `256aa591 merge: PR #136 deploy dirty-tree stop fix`
+- `fb1ca66d chore: bump version to 4.14.193 [deploy]`
 
 Scope:
 
-- Nexus Points QA2 hardening: pricing fallback observability, legacy
-  `api_usage` pricing status/key handling, fallback overage settlement,
-  unresolved pricing alert pruning, refund-after-consumption operator alerts,
-  canonical Apple transaction keying, transfer helper, chat runtime assertions,
-  and deployment provenance guardrails.
-- Cloudflare edge unblock foundation: public `/public-status` API contract,
-  Cloudflare AI-crawler unblock/apply script, verifier script, and updated
-  tunnel runbook documenting the asymmetric marketing/API posture.
-- Release transport hardening: promotion smoke no longer dirties the tree, and
-  deploy/pre-push verification now suppresses tracked shadow-parity evidence
-  writes.
+- Coach Periodization v2.1 training implementation with R1-R8 closeout fixes,
+  focused and full regression coverage, CI/operator docs, and training
+  periodization contracts promoted from PR #135.
+- Deploy transport hardening: `deploy.sh` restores the tracked
+  registry-shadow-parity evidence before clean-tree checks that precede service
+  stop, avoiding the prior failure mode where a generated timestamp could abort
+  deploy after PM2 services were already stopped.
+- Local workspace hygiene: obsolete clean/merged worktrees and PR-specific QA
+  prompt artifacts were removed after promotion; dirty/unmerged worktrees were
+  preserved.
 
 Validated through promotion:
 
-- staging deploy: exit 0
-- staging smoke: 17 passed / 0 failed / 17 total
 - promote-time staging smoke: 17 passed / 0 failed / 17 total
-- full backend verify: 632 files / 9,407 tests (multiple deploy/pre-push runs)
-- deploy-time typecheck and build passed
-- deploy.sh production promote completed at `4.14.181`
-- post-deploy: PM2 `nexus-hub` and `content-engine` online; `/public-status`
-  returns the minimal public API payload
-- production `/health` (`api.nexushub.me/health`): healthy after deploy
-- still-open operator gate: Cloudflare dashboard/API mutation is pending
-  because this shell has no `CLOUDFLARE_API_TOKEN`; live verifier still shows
-  Cloudflare edge 403s for Claude/Anthropic/ChatGPT/Perplexity fetchers.
+- deploy-time full backend verify: 718 files / 10,525 tests
+- final `main` pre-push gate: typecheck, full Vitest, and build passed
+- deploy.sh production promote completed at `4.14.193`
+- post-deploy: PM2 `nexus-hub` and `content-engine` online
+- production `/health` (`api.nexushub.me/health`): HTTP 200 repeatedly after
+  deploy
+- known infra follow-up: Cloudflare Tunnel was restored as detached user
+  processes during recovery; install/enable a supervised `cloudflared` service.
 
 ## Previous Production Versions On This Branch
 
+- 4.14.193 (`fb1ca66d`) — Coach Periodization v2.1 + deploy dirty-tree stop fix (source commits `99992ddc`, `256aa591`)
+- 4.14.190 (`bac44816`) — beta-hardening confirmation contract production promote
+- 4.14.186 (`05960637`) — Decision Center Human Guidance v2 production promote
+- 4.14.183 (`17c35872`) — Decision Center clarity + Secretary intelligence production promote
 - 4.14.181 (`ae4e1421`) — Nexus Points QA2 hardening + Cloudflare edge unblock foundation + deploy guard fixes (source commits `3ab03654`, `c04200c9`, `67287399`)
 - 4.14.180 (`994fa7aa`) — aborted recovery bump before final successful deploy
 - 4.14.173 (`93ed02d0`) — Content Token Phase 2 + Training Skill Hardening production promote

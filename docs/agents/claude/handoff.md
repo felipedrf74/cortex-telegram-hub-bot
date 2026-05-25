@@ -1,5 +1,36 @@
 # Claude Code — Tenant + Entitlement + Portal Hardening Handoff
 
+## Current Cross-Agent Truth - 2026-05-25
+
+This section supersedes older branch/status notes below. Historical handoff
+content is retained only for provenance.
+
+- Current deployed backend branch: `main`.
+- Production backend is live at `4.14.193` on deploy commit `fb1ca66d`.
+- Running source scope:
+  - PR #135 `99992ddc` — Coach Periodization v2.1 training stack.
+  - PR #136 `256aa591` — deploy safety fix for dirty-tree failures after
+    generated registry-shadow-parity evidence refreshes.
+- Production promote completed through `promote-to-prod.sh`: staging smoke
+  passed 17/17, deploy-time full verify passed 718 files / 10,525 tests, and
+  final `main` pre-push repeated typecheck, full Vitest, and build before
+  pushing the deploy bump.
+- Production health passed after deploy: public `/health` returned 200
+  repeatedly, server-local health returned 200, PM2 showed `nexus-hub` and
+  `content-engine` online, and the server package version is `4.14.193`.
+- Cloudflare Tunnel is restored and public traffic is healthy, but it is
+  currently running as detached user processes. Future infra work should move
+  `cloudflared` to a supervised service.
+- Current active local work that must not be cleaned/reset without Felipe:
+  `/Users/felipedominguez/Desktop/Custom Connectors/Cortex/cortex-telegram-hub-bot`
+  on `codex/chat_improvement_goal` with uncommitted chat improvement changes.
+- Cleanup completed after promotion: clean/merged local worktrees from prior
+  Decision Center, Chat Core, Cloudflare, confirmation, and training validation
+  branches were removed. Dirty or unmerged worktrees were preserved.
+- Canonical release state:
+  `docs/release/CURRENT_RELEASE_STATE.md` and
+  `docs/release/current-release-index.md`.
+
 ## Current Cross-Agent Truth - 2026-04-27
 
 This section supersedes older branch/status notes below. Historical handoff

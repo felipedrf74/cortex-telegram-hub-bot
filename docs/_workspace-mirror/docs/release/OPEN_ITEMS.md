@@ -2,7 +2,7 @@
 
 Status: canonical
 Owner: release lead (Felipe)
-Last verified: 2026-05-12
+Last verified: 2026-05-21
 Update policy: keep only current carryovers here. Historical closed, fixed, and
 deferred rows for the 2026-05 sweep live in
 `docs/release/OPEN_ITEMS_ARCHIVE_2026-05.md`. Rotate monthly with
@@ -28,6 +28,7 @@ closable without explicit authorization and live credentials/devices.
 | GAP-FIN-2 | P1 | finance | OPEN / OWNER DECISION REQUIRED | Decide non-Brazil finance jurisdiction model and behavior contract. |
 | GAP-REL-6 | P1 | mock lint | OPEN / OWNER DECISION REQUIRED | Either authorize a larger mock-factory reduction batch or revise the <100-by-2026-08-01 commitment. |
 | GAP-REL-7 | P1 | release gate | OPEN / OWNER DECISION REQUIRED | Decide whether two-account E5 becomes a hard CI/deploy gate or remains operator evidence. |
+| CF-BOT-MGMT-1 | P2 | Cloudflare edge tooling | OPEN | Update `scripts/cloudflare-edge-unblock.mjs` to use a focused Free-plan-safe Bot Management payload so operators no longer need `--skip-bot-management` plus manual focused `curl`. |
 
 ## Recently Closed
 

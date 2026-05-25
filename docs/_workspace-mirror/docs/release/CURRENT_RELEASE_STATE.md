@@ -2,10 +2,10 @@
 
 Status: canonical
 Owner: release lead (Felipe)
-Last verified: 2026-05-22
+Last verified: 2026-05-23
 Update policy: update after merge / staging / production / deploy-gate changes. Live identity (branch/commit/version/migrations) auto-generated via engine/scripts/release-identity.sh --persist; do not type those by hand.
 
-Last updated: 2026-05-22
+Last updated: 2026-05-23
 
 > **Live identity** — branch / commit / version / migration count for the
 > current working tree are auto-generated. Do NOT type those values by
@@ -17,18 +17,54 @@ Last updated: 2026-05-22
 
 - Repo: `engine`
 - Workspace HEAD / version / migrations / dirty state: see `docs/release/release-identity.md`
-- Production status (last manual update 2026-05-22): backend package version
-  `4.14.186` is deployed from commit `05960637`; both `nexus-hub` and
-  `content-engine` PM2 processes are online, production `/health` passed, and
-  `/public-status` returns the minimal public API payload. External checks
-  against `https://api.nexushub.me/health` returned `status: healthy` at
-  `2026-05-22T18:03:21Z`, and `https://api.nexushub.me/public-status`
-  returned the minimal public API payload. Backend `origin/main` includes a
-  post-deploy release-state docs commit on top of the running production deploy
-  commit; production runtime remains deployed from `05960637`. Workspace audit
-  evidence lives at
+- Production status (last manual update 2026-05-23): backend package version
+  `4.14.190` is deployed from commit `bac44816`; both `nexus-hub` and
+  `content-engine` PM2 processes are online, production content health passed,
+  and the authenticated production snapshot returned version `4.14.190`.
+  Backend `origin/main` includes the running production deploy commit
+  `bac44816`. Workspace audit evidence lives at
   `docs/release/worktree-recovery-audit-2026-05-18.md` and
   `docs/release/worktree-recovery-audit-2026-05-21/`.
+
+### 2026-05-23 Beta Hardening Confirmation Contract Production Promote
+
+- Scope: promoted the beta-hardening confirmation contract for chat-driven
+  operational actions. The backend now fails closed for unclassified tools,
+  validates signed confirmation tokens for user/tenant/intent scope before any
+  side effect, preserves idempotent confirm-action replay behavior, and keeps
+  iOS confirmation/rate-limit UX contracts aligned with the backend.
+- Production version: `4.14.190`.
+- Production deploy commit: `bac44816`.
+- Source implementation/evidence commit before deploy bumps: `8ee3ad95`.
+- Previous production deploy commit: `05960637`.
+- Staging deploy passed at runtime commit `76ac6684` / version `4.14.188`,
+  followed by staging smoke. Promote-time staging smoke passed **17/17** before
+  production was touched. Targeted staging confirmation-contract smoke also
+  passed for pending-confirmation emission, confirm-action execution, idempotent
+  replay, missing/wrong-user/wrong-intent token rejects, and the structured
+  rate-limit path.
+- Release validation passed before production: backend typecheck passed,
+  focused confirmation contract coverage passed, the final `main` pre-push
+  gates ran full Vitest with **641 test files / 9,490 tests** passing, and iOS
+  focused confirmation/rate-limit simulator tests passed **28/28**.
+- Production promotion started through the standard promote path. The deploy
+  script created and pushed release bump commits, stopped services, and created
+  production backups including `bot.db`, then tripped the clean-tree guard
+  because the `chat-action-registry-shadow-parity` pre-push evidence refreshed
+  the tracked registry shadow parity timestamp. PM2 services were restarted
+  immediately after each interrupted attempt. The generated evidence file was
+  restored, and the clean committed `4.14.190` artifact was transported with the
+  same stop / backup / rsync / dependency install / native rebuild / start
+  sequence from `deploy.sh`.
+- Production deploy completed for the committed `4.14.190` artifact. The
+  production backup included `bot.db`, dependencies were installed, owner
+  bootstrap preflight passed, `better-sqlite3` was rebuilt for system Node, and
+  both `content-engine` and `nexus-hub` PM2 services are online.
+- Production health passed after deploy: local content health returned
+  `status: ok`, the authenticated portal snapshot returned version `4.14.190`,
+  and PM2 showed both production services online. Staging remains on
+  `4.14.188`; this is expected after production deploy version bumps, and the
+  promoted functional code was smoke-tested on staging before production.
 
 ### 2026-05-22 Decision Center Human Guidance v2 Production Promote
 
