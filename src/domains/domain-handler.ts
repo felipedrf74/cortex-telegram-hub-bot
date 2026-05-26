@@ -535,6 +535,21 @@ export async function handleSimpleDomain(
       finalText = result.text;
     }
 
+    // Codex QA round 5: if the loop exits at maxIterations with the
+    // model STILL requesting tools, we used to silently return
+    // finalText (often empty or stale). That hides a cap-exceeded
+    // state from the user. Surface it explicitly so iOS shows a
+    // "needs a follow-up" prompt instead of an apparently-done turn.
+    if (result.toolCalls.length > 0 && iterations >= maxIterations) {
+      logger.warn(
+        { domain, iterations, toolsUsedCount: toolsUsed.length },
+        'Tool loop exceeded maxIterations with model still requesting tools — returning partial-state notice',
+      );
+      finalText = (finalText && finalText.trim().length > 10)
+        ? `${finalText}\n\n_Nexus reached the per-turn tool cap (${maxIterations}). Some steps are still pending — ask me to continue and I'll keep going._`
+        : `Nexus ran out of tool-call iterations for this turn (${maxIterations}). I started the work but didn't finish — ask me to continue from where I left off.`;
+    }
+
     finalText = normalizeReplyForUserLanguage(finalText, userId);
 
     if (hasUserScope) {
@@ -599,6 +614,19 @@ async function handleWithDirectCalls(
     );
     result = await continueWithToolResultsFn(domain, history, message, stateContext, toolConversation, userId, directOptions);
     finalText = result.text;
+  }
+
+  // Codex QA round 5/6: parity with the primary path — direct-calls
+  // fallback must also surface a cap-reached notice when the loop
+  // exits with the model still requesting tools.
+  if (result.toolCalls && result.toolCalls.length > 0 && iterations >= maxIterations) {
+    logger.warn(
+      { domain, iterations, toolsUsedCount: toolsUsed.length, path: 'direct-calls' },
+      'Tool loop exceeded maxIterations with model still requesting tools — returning partial-state notice',
+    );
+    finalText = (finalText && finalText.trim().length > 10)
+      ? `${finalText}\n\n_Nexus reached the per-turn tool cap (${maxIterations}). Some steps are still pending — ask me to continue and I'll keep going._`
+      : `Nexus ran out of tool-call iterations for this turn (${maxIterations}). I started the work but didn't finish — ask me to continue from where I left off.`;
   }
 
   finalText = normalizeReplyForUserLanguage(finalText, userId);

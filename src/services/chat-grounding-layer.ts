@@ -103,15 +103,24 @@ function inferMissingFacts(
   const mutating = /\.(create|adjust|destructive)$/.test(intent);
   if (!mutating) return [];
 
-  if (ownerSkill === 'secretary') {
+  // Calendar/scheduling-owning skills need date/time/title — even when
+  // the owner is `tasks` or `training` (which both schedule into the
+  // calendar). Codex QA proved the old `secretary`-only branch missed
+  // `create a task` because inferSkillFromText returns `tasks` for any
+  // sentence containing the word "task".
+  const schedulingOwners: NexusChatOwnerSkill[] = ['secretary', 'tasks', 'training'];
+  if (schedulingOwners.includes(ownerSkill)) {
     if (!hasDateSignal(text)) missing.add('date');
-    if (!hasTimeSignal(text)) missing.add('time');
+    if (ownerSkill === 'secretary' && !hasTimeSignal(text)) missing.add('time');
     if (!hasTitleSignal(text)) missing.add('title');
-  } else {
-    for (const field of requiredFields) {
-      if (field.endsWith('Reference') && !/\b(this|that|current|today|tomorrow|este|esta|isso|hoje|amanh[aã])\b/.test(text)) {
-        missing.add(field);
-      }
+  }
+
+  // Reference-shaped required fields (e.g. `recipeReference`) need an
+  // anaphor to resolve. Keep this for every owner so cooking/finance
+  // benefit too.
+  for (const field of requiredFields) {
+    if (field.endsWith('Reference') && !/\b(this|that|current|today|tomorrow|este|esta|isso|hoje|amanh[aã])\b/.test(text)) {
+      missing.add(field);
     }
   }
 

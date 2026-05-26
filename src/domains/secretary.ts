@@ -34,6 +34,26 @@ import { getUnreadMailSummaryForUser, isAnyMailConfiguredForUser } from '../serv
 import { getUserLanguage, getUserTimezone } from '../services/user-service';
 import { DateTime } from 'luxon';
 import { buildChatPromptContextBlock } from '../services/chat-context-engine';
+import { buildChatGroundingEnvelope } from '../services/chat-grounding-layer';
+import { sanitizeForPromptInterpolation } from '../utils/prompt-sanitizer';
+
+// Codex QA round 5: untrusted text from user-controlled sources (task
+// titles, reminder messages, calendar summaries) was previously
+// interpolated raw into the secretary state-context prompt. Wrap with
+// the sanitizer so injection attempts are neutralized. JSON-stringify
+// adds quotes but keeps the prompt readable as a data literal — fine
+// for a comma-separated list. Returns the inner value without the
+// outer quotes to keep the human-readable format closer to before.
+function safeInline(value: unknown): string {
+  const sanitized = sanitizeForPromptInterpolation(value);
+  // sanitizeForPromptInterpolation returns a JSON-stringified value
+  // (e.g. `"my title"`). Strip the outer quotes for cleaner inline
+  // rendering — the inner content is already neutralized.
+  if (sanitized.startsWith('"') && sanitized.endsWith('"')) {
+    return sanitized.slice(1, -1);
+  }
+  return sanitized;
+}
 
 const DOMAIN: DomainName = 'secretary';
 
@@ -97,6 +117,37 @@ export function _resetStateContextCacheForTesting(): void {
  * a "show tasks" cache hit on a follow-up "what's my week" would miss
  * (calendar wasn't loaded the first time) and re-run with calendar.
  */
+// Slim <missing_facts> block — built directly from the grounding
+// envelope so the pre-call hallucination guard reaches the model on
+// mutating turns that don't trigger the planner context. Returns ''
+// when no fields are missing (read-only turns) so the prompt isn't
+// inflated unnecessarily.
+function buildMinimalMissingFactsBlock(
+  message: string,
+  userId: number | null,
+  tenantId?: number,
+): string {
+  if (!message.trim() || userId === null) return '';
+  try {
+    const envelope = buildChatGroundingEnvelope({
+      message,
+      userId,
+      tenantId: typeof tenantId === 'number' ? tenantId : userId,
+      routedDomain: DOMAIN,
+    });
+    if (!envelope.missingFacts.length) return '';
+    const lines = [
+      `<missing_facts owner_skill="${envelope.capability.ownerSkill}" intent="${envelope.capability.intent}">`,
+      'The user message does not state these fields. Do NOT invent values; ask one focused clarification (in the user language) before calling any write tool:',
+      ...envelope.missingFacts.map((f) => `- ${f}`),
+      '</missing_facts>',
+    ];
+    return lines.join('\n');
+  } catch {
+    return '';
+  }
+}
+
 async function buildStateContext(message: string = '', userId?: number, tenantId?: number): Promise<string> {
   const scopedUserId = typeof userId === 'number' ? userId : null;
   const hasUserScope = scopedUserId !== null;
@@ -147,6 +198,13 @@ async function buildStateContext(message: string = '', userId?: number, tenantId
   const appendPromptContext = async (baseContext: string, cacheHit: boolean): Promise<string> => {
     if (!hasUserScope) return baseContext;
     if (!needs.planner) {
+      // Codex QA round 2: even when the planner context is skipped,
+      // mutating turns still need the pre-call <missing_facts> block
+      // so the model asks for unstated date/time/title instead of
+      // inventing them. Cost: ~100-250 chars only when the grounding
+      // layer actually finds missing fields.
+      const minimalBlock = buildMinimalMissingFactsBlock(message, scopedUserId, tenantId);
+      const augmented = minimalBlock ? `${baseContext}\n${minimalBlock}` : baseContext;
       logger.debug({
         userId: scopedUserId,
         tenantId: scopedTenantKey,
@@ -154,10 +212,11 @@ async function buildStateContext(message: string = '', userId?: number, tenantId
         cacheHit,
         promptBudgetChars: 0,
         promptContextAttached: false,
-        estimatedContextChars: baseContext.length,
-        estimatedInputTokens: Math.ceil(baseContext.length / 4),
+        missingFactsAttached: !!minimalBlock,
+        estimatedContextChars: augmented.length,
+        estimatedInputTokens: Math.ceil(augmented.length / 4),
       }, 'Secretary state context assembled without broad prompt context');
-      return baseContext;
+      return augmented;
     }
     const promptContext = await buildChatPromptContextBlock({
       domain: DOMAIN,
@@ -180,7 +239,12 @@ async function buildStateContext(message: string = '', userId?: number, tenantId
     return combined;
   };
 
-  const cacheKey = `${scopedTenantKey}:${hasUserScope ? scopedUserId : 'anon'}:${shape}:${contextLanguage}`;
+  // Codex QA round 3: subskill toggles weren't part of the cache key,
+  // so disabling `tasks` mid-conversation still let cached task context
+  // ship for up to 30s. Bake the enabled-flags into the key so any
+  // toggle immediately invalidates.
+  const enabledFlags = `${tasksEnabled ? 't' : ''}${calendarEnabled ? 'c' : ''}${emailEnabled ? 'e' : ''}${remindersEnabled ? 'r' : ''}`;
+  const cacheKey = `${scopedTenantKey}:${hasUserScope ? scopedUserId : 'anon'}:${shape}:e${enabledFlags}:${contextLanguage}`;
 
   const cached = _stateContextCache.get(cacheKey);
   if (cached && Date.now() < cached.expiresAt) {
@@ -257,19 +321,22 @@ async function buildStateContext(message: string = '', userId?: number, tenantId
         `\n${copy.todoLabel}: ${copy.pendingLabel(tasks.length)}, ${copy.overdueLabel(overdue.length)}, ${copy.dueTodayLabel(dueToday.length)}.\n${copy.listsLabel}: ${listSummary}`,
       );
       if (overdue.length > 0) {
-        parts.push(`${copy.overdueOnlyLabel}: ${overdue.slice(0, 5).map((t: TodoTask) => t.title).join(', ')}`);
+        parts.push(`${copy.overdueOnlyLabel}: ${overdue.slice(0, 5).map((t: TodoTask) => safeInline(t.title)).join(', ')}`);
       }
     } else if (!todoResult.success) {
       parts.push(`\n${copy.todoLabel}: ${copy.apiErrorLabel}`);
     }
   }
 
-  // Reminders & calendar — compact
+  // Reminders & calendar — compact. Codex QA round 5: untrusted
+  // strings (reminder body, event summary) now wrapped in safeInline
+  // so injection patterns inside a calendar invite or reminder don't
+  // reach the model as instructions.
   if (reminders.length > 0) {
-    parts.push(`\n${copy.remindersTodayLabel}: ${reminders.map((r) => `${r.message} (${formatDateTime(r.remind_at)})`).join(', ')}`);
+    parts.push(`\n${copy.remindersTodayLabel}: ${reminders.map((r) => `${safeInline(r.message)} (${formatDateTime(r.remind_at)})`).join(', ')}`);
   }
   if (calendarResult.length > 0) {
-    parts.push(`\n${copy.calendarTodayLabel(calendarResult.length)}: ${calendarResult.map((e) => `${formatDateTime(e.start)}-${formatDateTime(e.end)} ${e.summary}`).join(' | ')}`);
+    parts.push(`\n${copy.calendarTodayLabel(calendarResult.length)}: ${calendarResult.map((e) => `${formatDateTime(e.start)}-${formatDateTime(e.end)} ${safeInline(e.summary)}`).join(' | ')}`);
   }
   if (unreadMail) {
     const providerDetails = [

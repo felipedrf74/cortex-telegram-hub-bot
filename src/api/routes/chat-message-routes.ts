@@ -758,14 +758,17 @@ export function registerChatMessageRoutes(
     // and together exceed the daily budget. See
     // `acquireCostLock` docs in services/cost-guardrail.ts.
     const releaseCostLock = await acquireCostLock(userId);
+    // Codex QA round 5: hoist idempotency ids OUT of the try block so
+    // the catch can pass them to the degraded-response path. Without
+    // this hoist the previous round-4 fix did not compile.
+    const requestStartedAt = Date.now();
+    const scopedClientMessageId = normalizeIdempotencyKey(
+      clientMessageId ?? idempotencyKey ?? req.header('x-idempotency-key') ?? req.header('x-client-message-id'),
+    );
+    const userMessageId = buildUserMessageId(scopedClientMessageId, requestStartedAt);
     try {
-      const requestStartedAt = Date.now();
       const latency = createChatLatencyTracker(requestStartedAt);
       const chatRequestId = getCurrentRequestId() || (req as any).requestId || `chat-${Date.now()}`;
-      const scopedClientMessageId = normalizeIdempotencyKey(
-        clientMessageId ?? idempotencyKey ?? req.header('x-idempotency-key') ?? req.header('x-client-message-id'),
-      );
-      const userMessageId = buildUserMessageId(scopedClientMessageId, requestStartedAt);
 
       const idempotentHit = findCompletedAssistantForClientMessage(userId, scopedClientMessageId, tenantId);
       if (idempotentHit) {
@@ -1749,7 +1752,19 @@ export function registerChatMessageRoutes(
       res.json(response);
     } catch (err: any) {
       const chatRequestId = getCurrentRequestId() || (req as any).requestId || `chat-${Date.now()}`;
-      if (await sendRetryableChatFailureResponseIfNeeded({ err, res, userId, tenantId, normalizedText, chatRequestId })) return;
+      // Codex QA round 4 / 5: the idempotency ids are now hoisted above
+      // the try block, so they're in scope here and can flow into the
+      // degraded-response persistence path.
+      if (await sendRetryableChatFailureResponseIfNeeded({
+        err,
+        res,
+        userId,
+        tenantId,
+        normalizedText,
+        chatRequestId,
+        userMessageId,
+        clientMessageId: scopedClientMessageId ?? undefined,
+      })) return;
       pushEvent({
         ts: new Date().toISOString(),
         type: 'error',

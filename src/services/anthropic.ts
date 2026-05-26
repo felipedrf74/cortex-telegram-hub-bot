@@ -240,8 +240,38 @@ export const DOMAIN_SYSTEM_PROMPTS: Record<DomainName, string> = new Proxy(
 
 // ─── Classifier System Prompt (loaded from prompts/classifier.md) ────
 
+// The chat pipeline has handlers only for these 5 user-facing domains.
+// Platform skills (connections, notifications, decision_center) live in
+// skill-config but have no chat domain handler — if the classifier
+// confidently picks one, chat-message-routes returns UNKNOWN_DOMAIN.
+// Codex QA caught this regression, so we hard-filter at the prompt
+// boundary until those domains get real chat handlers.
+const CLASSIFIER_ROUTABLE_LABELS = new Set(['secretary', 'triathlon', 'content', 'finance', 'cooking']);
+
 export function getClassifierSystemPrompt(): string {
-  return loadPrompt('classifier');
+  const basePrompt = loadPrompt('classifier');
+  // Append skill-defined classification examples so the per-skill
+  // example strings registered in skill-config reach the model. The
+  // hardcoded pattern+keyword routes in router/classifier.ts are still
+  // the first two routing stages; this is NOT a single source of
+  // truth, only an alignment for the paid classifier stage.
+  try {
+    const { getClassificationHints } = require('../skills/skill-config') as typeof import('../skills/skill-config');
+    const hints = getClassificationHints().filter((h) => CLASSIFIER_ROUTABLE_LABELS.has(h.label));
+    if (!hints.length) return basePrompt;
+    const block = hints
+      .map((h) => {
+        const examples = Array.isArray((h as { examples?: string[] }).examples)
+          ? (h as { examples: string[] }).examples.slice(0, 3)
+          : [];
+        const exampleLine = examples.length ? ` Examples: ${examples.map((e) => `"${e}"`).join(', ')}.` : '';
+        return `- "${h.label}" → ${h.description}${exampleLine}`;
+      })
+      .join('\n');
+    return `${basePrompt}\n\nSkill-level hints for the 5 chat-routable domains (additive to the blurbs above):\n${block}`;
+  } catch {
+    return basePrompt;
+  }
 }
 
 // ─── Tool Definitions ────────────────────────────────────────────────
@@ -257,19 +287,17 @@ export const TOOLS: Anthropic.Tool[] = [
   },
   {
     // CHAT-M1: improved schema — only title is truly required.
-    // list_id/list_name are optional; if omitted, the default Inbox list is used
-    // automatically. Previous required: ['list_id', 'list_name', 'title'] caused
-    // the AI to hallucinate list IDs instead of letting the executor auto-resolve.
+    // list_id/list_name are optional; if omitted, the default Inbox list is used.
     name: 'ms_todo_create_task',
-    description: 'Create a new task. Only title is required — if list_id and list_name are omitted, the task is created in the user\'s default/Inbox list. Use list IDs from [Current State] when available.',
+    description: 'Create a task (only title required; omit list_id/list_name to use Inbox).',
     input_schema: { type: 'object' as const, properties: {
-      list_id: { type: 'string', description: 'List ID from [Current State]. Omit to use default Inbox list.' },
-      list_name: { type: 'string', description: 'List display name. Omit to use default Inbox list.' },
-      title: { type: 'string', description: 'Task title (required)' },
-      body: { type: 'string', description: 'Task description/notes (optional)' },
-      importance: { type: 'string', enum: ['low', 'normal', 'high'], description: 'Priority level (default: normal)' },
-      due_date_time: { type: 'string', description: 'Due date in ISO 8601 format (Europe/Lisbon timezone)' },
-      reminder_date_time: { type: 'string', description: 'Reminder date in ISO 8601 format' },
+      list_id: { type: 'string', description: 'List ID from [Current State]. Omit for Inbox.' },
+      list_name: { type: 'string', description: 'List display name. Omit for Inbox.' },
+      title: { type: 'string', description: 'Task title' },
+      body: { type: 'string' },
+      importance: { type: 'string', enum: ['low', 'normal', 'high'] },
+      due_date_time: { type: 'string', description: 'ISO 8601 (Europe/Lisbon)' },
+      reminder_date_time: { type: 'string', description: 'ISO 8601' },
     }, required: ['title'] },
   },
   {
@@ -295,9 +323,9 @@ export const TOOLS: Anthropic.Tool[] = [
   { name: 'ms_todo_delete_list', description: 'Delete a task list', input_schema: { type: 'object' as const, properties: { list_id: { type: 'string' } }, required: ['list_id'] } },
   // ── Calendar tools ──
   { name: 'get_calendar_events', description: 'Get calendar events for a date range', input_schema: { type: 'object' as const, properties: { start_date: { type: 'string', description: 'ISO 8601' }, end_date: { type: 'string', description: 'ISO 8601' } }, required: ['start_date', 'end_date'] } },
-  { name: 'create_calendar_event', description: 'Create a calendar event. If attendees are provided, invite them by email. Supports simple recurring agendas with a Microsoft Graph-style recurrence object.', input_schema: { type: 'object' as const, properties: { title: { type: 'string' }, start: { type: 'string', description: 'ISO 8601' }, end: { type: 'string', description: 'ISO 8601' }, description: { type: 'string' }, categories: { type: 'array', items: { type: 'string' }, description: 'Outlook categories e.g. ["Blue Category"]' }, attendees: { type: 'array', items: { type: 'string' }, description: 'Email addresses to invite to the meeting' }, location: { type: 'string', description: 'Optional location or meeting room name' }, recurrence: { type: 'object', description: 'Optional recurrence: { pattern: { type: daily|weekly|absoluteMonthly, interval, daysOfWeek? }, range: { type: noEnd, startDate: YYYY-MM-DD } }' } }, required: ['title', 'start', 'end'] } },
-  { name: 'update_calendar_event', description: 'Update an EXISTING calendar event (title, time). Use this to modify events — never create duplicates.', input_schema: { type: 'object' as const, properties: { event_id: { type: 'string' }, new_start: { type: 'string', description: 'ISO 8601' }, new_end: { type: 'string', description: 'ISO 8601' }, new_title: { type: 'string' }, calendar_source: { type: 'string', description: '"outlook" or "google"' } }, required: ['event_id'] } },
-  { name: 'delete_calendar_event', description: 'Delete an EXISTING calendar event (for cancellations/rest days).', input_schema: { type: 'object' as const, properties: { event_id: { type: 'string' }, calendar_source: { type: 'string', description: '"outlook" or "google"' } }, required: ['event_id'] } },
+  { name: 'create_calendar_event', description: 'Create a calendar event; if attendees are provided, invite by email.', input_schema: { type: 'object' as const, properties: { title: { type: 'string' }, start: { type: 'string', description: 'ISO 8601' }, end: { type: 'string', description: 'ISO 8601' }, description: { type: 'string' }, categories: { type: 'array', items: { type: 'string' }, description: 'Outlook categories e.g. ["Blue Category"]' }, attendees: { type: 'array', items: { type: 'string' }, description: 'Attendee email addresses' }, location: { type: 'string' }, recurrence: { type: 'object', description: 'MS Graph shape: { pattern: { type: daily|weekly|absoluteMonthly, interval, daysOfWeek? }, range: { type: noEnd, startDate: YYYY-MM-DD } }' } }, required: ['title', 'start', 'end'] } },
+  { name: 'update_calendar_event', description: 'Update an existing calendar event by event_id (never use to create).', input_schema: { type: 'object' as const, properties: { event_id: { type: 'string' }, new_start: { type: 'string', description: 'ISO 8601' }, new_end: { type: 'string', description: 'ISO 8601' }, new_title: { type: 'string' }, calendar_source: { type: 'string', description: '"outlook" or "google"' } }, required: ['event_id'] } },
+  { name: 'delete_calendar_event', description: 'Delete a calendar event by event_id.', input_schema: { type: 'object' as const, properties: { event_id: { type: 'string' }, calendar_source: { type: 'string', description: '"outlook" or "google"' } }, required: ['event_id'] } },
   // ── Reminder & notes tools ──
   { name: 'set_reminder', description: 'Set a reminder', input_schema: { type: 'object' as const, properties: { message: { type: 'string' }, remind_at: { type: 'string', description: 'ISO 8601' }, recurring: { type: 'string', description: 'null/daily/weekly/monthly/cron' } }, required: ['message', 'remind_at'] } },
   { name: 'save_note', description: 'Save a note', input_schema: { type: 'object' as const, properties: { content: { type: 'string' }, domain: { type: 'string' }, tags: { type: 'string' } }, required: ['content'] } },
@@ -309,7 +337,7 @@ export const TOOLS: Anthropic.Tool[] = [
   { name: 'reply_outlook_email', description: 'Reply to an email', input_schema: { type: 'object' as const, properties: { message_id: { type: 'string' }, body: { type: 'string' } }, required: ['message_id', 'body'] } },
   { name: 'get_outlook_unread', description: 'Get unread emails', input_schema: { type: 'object' as const, properties: { max_results: { type: 'number' } } } },
   // ── Shared memory tools (cross-domain context) ──
-  { name: 'shared_memory_set', description: 'Store a cross-domain fact visible to all domains (e.g. "marathon_date: March 15"). Use for info relevant across secretary/triathlon/content.', input_schema: { type: 'object' as const, properties: { key: { type: 'string', description: 'Short snake_case identifier' }, value: { type: 'string' }, expires_at: { type: 'string', description: 'Optional ISO 8601 expiry' } }, required: ['key', 'value'] } },
+  { name: 'shared_memory_set', description: 'Store a cross-domain fact (snake_case key, e.g. "marathon_date").', input_schema: { type: 'object' as const, properties: { key: { type: 'string', description: 'Short snake_case identifier' }, value: { type: 'string' }, expires_at: { type: 'string', description: 'Optional ISO 8601 expiry' } }, required: ['key', 'value'] } },
   { name: 'shared_memory_remove', description: 'Remove a cross-domain fact by key', input_schema: { type: 'object' as const, properties: { key: { type: 'string' } }, required: ['key'] } },
   // ── Phase 3 Slice A — Chat-triggered onboarding ──
   // The sport coach personas use this tool to persist athlete profile
@@ -319,21 +347,21 @@ export const TOOLS: Anthropic.Tool[] = [
   // injects the list of pending fields so the coach knows what to ask.
   {
     name: 'save_athlete_profile_field',
-    description: 'Save a single field of the user\'s athlete profile during chat-triggered onboarding. Use when the user volunteers profile information (1RM, mileage, FTP, pool access, etc.) that matches a pending profile field listed in <onboarding_pending>. One call per field — call repeatedly as the user answers multiple questions in one turn.',
+    description: 'Save one onboarding field (1RM, mileage, FTP). One call per field; only use fields listed in <onboarding_pending>.',
     input_schema: {
       type: 'object' as const,
       properties: {
         profile_type: {
           type: 'string',
-          description: 'Exact profile ID from <onboarding_pending> (e.g. "triathlon-gym", "triathlon-running", "triathlon-cycling", "triathlon-swim", "fitness")',
+          description: 'Profile ID from <onboarding_pending> (triathlon-gym, triathlon-running, triathlon-cycling, triathlon-swim, fitness)',
         },
         field_key: {
           type: 'string',
-          description: 'Exact field key from the pending list (e.g. "squat_1rm_kg", "weekly_mileage_km", "ftp_watts")',
+          description: 'Field key from the pending list (e.g. squat_1rm_kg, weekly_mileage_km, ftp_watts)',
         },
         value: {
           type: 'string',
-          description: 'The user\'s answer. For numbers, pass the bare number as a string (e.g. "150"). For choice/multi-choice, pass the exact option label as shown in the prompt.',
+          description: 'User answer. Numbers as bare-string (e.g. "150"). Choice/multi-choice as the exact option label.',
         },
       },
       required: ['profile_type', 'field_key', 'value'],
@@ -418,14 +446,14 @@ export const TOOLS: Anthropic.Tool[] = [
   },
   // ── Finance tools ──
   {
-    name: 'finance_add_transaction', description: 'Log a financial transaction (income, expense, or deduction)',
+    name: 'finance_add_transaction', description: 'Log a transaction (income, expense, or deduction).',
     input_schema: { type: 'object' as const, properties: {
-      date: { type: 'string', description: 'ISO date YYYY-MM-DD' },
-      category: { type: 'string', enum: ['income', 'expense', 'deduction'], description: 'Transaction type' },
-      amount: { type: 'number', description: 'Amount in the original currency (always positive). Do not convert unless the user asks.' },
-      currency: { type: 'string', description: 'ISO currency code like EUR, USD, or BRL. Preserve the user-stated currency; default to EUR only if unspecified.' },
-      subcategory: { type: 'string', description: 'e.g. freelance, rent, software, health, education' },
-      description: { type: 'string', description: 'Brief description of the transaction' },
+      date: { type: 'string', description: 'YYYY-MM-DD' },
+      category: { type: 'string', enum: ['income', 'expense', 'deduction'] },
+      amount: { type: 'number', description: 'Positive amount in original currency; do not convert.' },
+      currency: { type: 'string', description: 'EUR/USD/BRL. Preserve user-stated currency; default EUR only if unspecified.' },
+      subcategory: { type: 'string', description: 'e.g. freelance, rent, software' },
+      description: { type: 'string' },
     }, required: ['date', 'category', 'amount'] },
   },
   {
@@ -530,7 +558,7 @@ export const TOOLS: Anthropic.Tool[] = [
     }, required: ['item_id'] },
   },
   {
-    name: 'cooking_set_preference', description: 'Save or correct a tenant-scoped, user-private Cooking preference such as allergy, disliked ingredient, prep-time, or budget sensitivity',
+    name: 'cooking_set_preference', description: 'Save or correct a Cooking preference (allergy, disliked ingredient, prep-time, budget).',
     input_schema: { type: 'object' as const, properties: {
       kind: {
         type: 'string',
@@ -744,8 +772,33 @@ export async function classifyAndExtractImage(
     );
     rawText = result.text;
   } else {
-    // gif — Gemini doesn't support this mime type, go straight to Anthropic
-    rawText = await anthropicFallback();
+    // gif — Gemini doesn't support this mime type, go straight to
+    // Anthropic. Codex QA round 2 flagged that when ANTHROPIC_ENABLED
+    // is false in prod (the current kill-switch state), this throws
+    // and turns a user GIF upload into a 500. Catch the kill-switch
+    // error and return the safe "task" fallback so the iOS client
+    // still gets a usable classification.
+    try {
+      rawText = await anthropicFallback();
+    } catch (err) {
+      logger.warn({ err, mediaType }, 'GIF image classification fell back to task because Anthropic provider is disabled');
+      try {
+        const { captureError } = require('./error-monitor') as typeof import('./error-monitor');
+        captureError({
+          source: 'api',
+          level: 'warning',
+          message: 'GIF image classification fell back to task because Anthropic provider is disabled',
+          context: {
+            mediaType,
+            userId: userId ?? null,
+            tenantId: tenantId ?? null,
+            hasCaption: !!caption,
+            err: err instanceof Error ? err.message : String(err),
+          },
+        });
+      } catch { /* error-monitor unavailable in some test paths */ }
+      return { type: 'task', title: caption ? caption.slice(0, 100) : 'Image', subtasks: [] };
+    }
   }
 
   // Strip markdown fences (either provider may wrap JSON in ```json … ```)

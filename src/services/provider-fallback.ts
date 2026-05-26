@@ -20,6 +20,42 @@ import { getCurrentContext } from '../utils/request-context';
 // Non-retryable errors (auth failures, bad requests) should throw immediately
 // without polluting the circuit breaker state.
 
+// Codex QA round 7 P1: stop reasons that indicate truncated output.
+// Anthropic emits `max_tokens`, Gemini emits `MAX_TOKENS`, OpenAI
+// emits `length`. When primary returns one of these we attempt the
+// fallback provider instead of shipping a half-answer.
+const TRUNCATED_STOP_REASONS = new Set([
+  'max_tokens',
+  'MAX_TOKENS',
+  'length',
+  'LENGTH',
+]);
+
+function isTruncatedDomainResult(result: unknown): boolean {
+  if (!result || typeof result !== 'object') return false;
+  const stop = (result as { stopReason?: unknown }).stopReason;
+  if (typeof stop !== 'string') return false;
+  return TRUNCATED_STOP_REASONS.has(stop);
+}
+
+// Codex QA round 9: a typed error so the route's catch can recognize
+// truncation as RETRYABLE and emit a degraded response instead of a
+// 500. Without this, a plain Error bubbles up as a non-retryable
+// internal failure and the iOS client sees an internal error.
+export class AIProviderTruncatedError extends Error {
+  readonly retryable = true;
+  readonly status = 502;
+  readonly code = 'AI_PROVIDER_TRUNCATED';
+  readonly providerName: string;
+  readonly stopReason: string;
+  constructor(providerName: string, stopReason: string) {
+    super(`AI provider ${providerName} returned truncated output (stopReason=${stopReason})`);
+    this.name = 'AIProviderTruncatedError';
+    this.providerName = providerName;
+    this.stopReason = stopReason;
+  }
+}
+
 function isRetryableError(err: any): boolean {
   const status = err?.status ?? err?.statusCode ?? err?.error_code;
   // 429 = rate limited (retryable after backoff)
@@ -51,7 +87,9 @@ export type FallbackReason =
   | 'network_unavailable'
   | 'provider_overloaded'
   | 'circuit_open'
-  | 'unknown_retryable';
+  | 'unknown_retryable'
+  // Codex QA round 9: both providers returned truncated output.
+  | 'fallback_truncated';
 
 export interface SafeProviderErrorSummary {
   name: string;
@@ -477,6 +515,23 @@ export class TaskRoutingProvider implements AIProvider {
         }
         logger.debug(attemptMeta, 'AI provider routing attempt');
         const result = await fn(pair.primary);
+        // Codex QA round 7 (P1 prod blocker): treat truncated provider
+        // output as a degraded result and try the fallback. Anthropic
+        // returns stopReason='max_tokens', Gemini 'MAX_TOKENS', OpenAI
+        // 'length'. Previously these were accepted as success and a
+        // clipped half-answer shipped to the user.
+        if (isTruncatedDomainResult(result) && pair.fallback) {
+          const stopReason = String((result as { stopReason?: string }).stopReason ?? 'unknown');
+          logger.warn(
+            {
+              ...attemptMeta,
+              stopReason,
+              textChars: typeof (result as { text?: unknown }).text === 'string' ? (result as { text: string }).text.length : 0,
+            },
+            'Primary provider returned truncated output — falling back to secondary provider',
+          );
+          throw new AIProviderTruncatedError(pair.primary.name, stopReason);
+        }
         primaryBreaker.recordSuccess();
         const pm = this.getMetrics(pair.primary.name);
         pm.usageCount++;
@@ -597,6 +652,46 @@ export class TaskRoutingProvider implements AIProvider {
       }));
       logger.debug(fallbackMeta, 'AI provider fallback attempt');
       const result = await fn(pair.fallback!);
+      // Codex QA round 8/9: if the fallback ALSO returns truncated
+      // output, do not silently ship a clipped half-answer. Throw a
+      // typed AIProviderTruncatedError (retryable=true, status=502)
+      // so the route's catch hands off to the degraded-response path
+      // instead of 500ing. Metrics are written ONCE here — the outer
+      // catch must skip its own usage/failure increment to avoid
+      // double-counting.
+      if (isTruncatedDomainResult(result)) {
+        const stopReason = String((result as { stopReason?: string }).stopReason ?? 'unknown');
+        logger.warn(
+          {
+            ...fallbackMeta,
+            stopReason,
+            textChars: typeof (result as { text?: unknown }).text === 'string' ? (result as { text: string }).text.length : 0,
+          },
+          'Fallback provider returned truncated output — refusing to ship clipped response',
+        );
+        const fm = this.getMetrics(pair.fallback!.name);
+        fm.usageCount++;
+        fm.failureCount++;
+        fm.lastFailureAt = new Date().toISOString();
+        // Telemetry signal so dashboards see this terminal state.
+        const truncatedReason: FallbackReason = 'fallback_truncated';
+        this.emitFallbackEvent({
+          ...safeRoutingMetadata(taskType, pair.fallback!.name, metadata, {
+            fallbackUsed: true,
+            fallbackReason: truncatedReason,
+            primaryProvider: pair.primary.name,
+            fallbackProvider: pair.fallback!.name,
+            circuitOpen: false,
+          }),
+          error: sanitizedFallbackError(truncatedReason),
+          errorSummary: { name: 'AIProviderTruncatedError', retryable: true, reason: truncatedReason },
+          fallbackReason: truncatedReason,
+          primaryProvider: pair.primary.name,
+          fallbackProvider: pair.fallback!.name,
+          circuitOpen: false,
+        });
+        throw new AIProviderTruncatedError(pair.fallback!.name, stopReason);
+      }
       const fm = this.getMetrics(pair.fallback!.name);
       fm.usageCount++;
       fm.lastSuccessAt = new Date().toISOString();
@@ -605,10 +700,15 @@ export class TaskRoutingProvider implements AIProvider {
     } catch (fallbackErr) {
       const retryable = isRetryableError(fallbackErr);
       const errorSummary = summarizeProviderError(fallbackErr, retryable);
-      const fm = this.getMetrics(pair.fallback!.name);
-      fm.usageCount++;
-      fm.failureCount++;
-      fm.lastFailureAt = new Date().toISOString();
+      // Codex QA round 9: skip metric increments for AIProviderTruncatedError
+      // because the throwing path already wrote them once. Otherwise the
+      // fallback usageCount + failureCount would double-count.
+      if (!(fallbackErr instanceof AIProviderTruncatedError)) {
+        const fm = this.getMetrics(pair.fallback!.name);
+        fm.usageCount++;
+        fm.failureCount++;
+        fm.lastFailureAt = new Date().toISOString();
+      }
       logger.warn(
         {
           ...safeRoutingMetadata(taskType, pair.fallback!.name, metadata, {

@@ -8,12 +8,35 @@ const CONTENT_REFINEMENT_PATTERNS = [
   /\b(vers[aã]o mais curta|mais curto|mais curta|reescreve|reescrever|traduz|traduz isto|adapta|encurta|melhora isto)\b/i,
 ];
 
-export function isRetryableAIProviderError(err: unknown): err is { retryable?: boolean; status?: number } {
+export function isRetryableAIProviderError(err: unknown): err is { retryable?: boolean; status?: number; name?: string; cause?: unknown } {
   if (!err || typeof err !== 'object') return false;
-  const candidate = err as { retryable?: boolean; status?: number };
+  const candidate = err as { retryable?: boolean; status?: number; name?: string; cause?: unknown };
   if (candidate.retryable) return true;
   if (candidate.status === 429) return true;
-  return typeof candidate.status === 'number' && candidate.status >= 500;
+  if (typeof candidate.status === 'number' && candidate.status >= 500) return true;
+  // Codex QA round 4: AI provider timeouts (withTimeout → AITimeoutError)
+  // were leaking through as 500s instead of degraded responses. The
+  // timeout is by definition transient — treat it as retryable so the
+  // route emits a degraded answer + the iOS client can retry.
+  if (candidate.name === 'AITimeoutError') return true;
+  // Codex QA round 9: typed truncated-output error from provider-fallback.
+  // Already exposes retryable=true via class field, but match by name
+  // for safety in case the .retryable getter is lost across module
+  // boundaries.
+  if (candidate.name === 'AIProviderTruncatedError') return true;
+  // Codex QA round 5: SDKs (e.g. anthropic-sdk) wrap inner errors in a
+  // generic Error with `.cause`. Unwrap up to 3 levels so a wrapped
+  // timeout doesn't slip through as a 500.
+  let cause = candidate.cause;
+  for (let depth = 0; depth < 3 && cause && typeof cause === 'object'; depth += 1) {
+    const inner = cause as { name?: string; status?: number; retryable?: boolean; cause?: unknown };
+    if (inner.name === 'AITimeoutError') return true;
+    if (inner.retryable) return true;
+    if (inner.status === 429) return true;
+    if (typeof inner.status === 'number' && inner.status >= 500) return true;
+    cause = inner.cause;
+  }
+  return false;
 }
 
 export function isContentRefinementFollowUp(message: string): boolean {

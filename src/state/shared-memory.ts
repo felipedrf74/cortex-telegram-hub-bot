@@ -6,6 +6,7 @@ import {
   resolveChatTenantScope,
   type ChatVisibilityScope,
 } from '../services/chat-tenant-scope';
+import { sanitizeForPromptInterpolation } from '../utils/prompt-sanitizer';
 
 export interface SharedMemoryEntry {
   id: number;
@@ -300,6 +301,16 @@ export function removeSharedMemory(userId: number, key: string, tenantId?: numbe
 export function getSharedMemorySummary(userId: number, tenantId?: number): string {
   const entries = getSharedMemory(userId, undefined, tenantId);
   if (entries.length === 0) return '';
-  const lines = entries.map((e) => `- ${e.key}: ${e.value} (from ${e.source_domain})`);
+  // Codex QA round 6: shared-memory values are user-controlled and
+  // reach the model. Sanitize every field through
+  // sanitizeForPromptInterpolation so injection patterns ("Ignore
+  // previous instructions...") are neutralized before they hit the
+  // prompt. The static import below is used; the helper strips the
+  // outer JSON quotes so the inline display stays readable.
+  const safe = (value: unknown): string => {
+    const s = sanitizeForPromptInterpolation(value);
+    return (s.startsWith('"') && s.endsWith('"')) ? s.slice(1, -1) : s;
+  };
+  const lines = entries.map((e) => `- ${safe(e.key)}: ${safe(e.value)} (from ${safe(e.source_domain)})`);
   return `\nShared context:\n${lines.join('\n')}`;
 }
