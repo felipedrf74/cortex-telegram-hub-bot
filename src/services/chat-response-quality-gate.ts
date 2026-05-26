@@ -228,7 +228,7 @@ function stripQuotedText(text: string): string {
     // assistant claim because the period-based sentence boundary was
     // too generous.
     .replace(/^\s*(?:the\s+tool\s+returned|tool\s+result|tool\s+output|the\s+system\s+returned|backend\s+returned|raw\s+result|o\s+resultado\s+da\s+ferramenta|resultado\s+da\s+ferramenta):[^,.?!;\n]*[,.?!;\n]?/gim, '')
-    .replace(/^>\s+.*$/gm, '')                              // markdown blockquote line
+    .replace(/^>\s[^\n]*$/gm, '')                           // markdown blockquote line — ReDoS-safe (CodeQL round 10)
     .replace(/"([^"]*)"/g, stripMultiWord)                  // ASCII double, no spanning
     .replace(/'([^']*)'/g, stripMultiWord)                  // ASCII single, no spanning
     .replace(/[“]([^“”]*)[”]/g, stripMultiWord)             // curly double

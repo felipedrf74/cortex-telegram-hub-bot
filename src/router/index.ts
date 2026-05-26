@@ -83,8 +83,12 @@ const NEGATED_INTENT_PATTERN = /\b(don'?t|do\s+not|don't|cannot|can'?t|won'?t|wi
 // schedule a meeting tomorrow` doesn't suppress the legitimate
 // affirmative intent OUTSIDE the quotes.
 function stripQuotedForRouting(message: string): string {
+  // CodeQL flagged `^>\s+.*$` as ReDoS-prone because `\s+` and `.*`
+  // can both consume whitespace, producing catastrophic backtracking
+  // on inputs like "> " + many spaces. Tighten to a single \s and
+  // bound `.*` to a non-newline char class so the match is linear.
   return message
-    .replace(/^>\s+.*$/gm, '')
+    .replace(/^>\s[^\n]*$/gm, '')
     .replace(/"[^"]*"/g, '')
     .replace(/'[^']*'/g, '')
     .replace(/[“][^”]*[”]/g, '')
