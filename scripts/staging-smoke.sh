@@ -256,6 +256,63 @@ test_ios_401 "iOS /api/v1/tasks/lists"   "http://localhost:8201/api/v1/tasks/lis
 test_ios_401 "iOS /api/v1/training/today" "http://localhost:8201/api/v1/training/today"
 test_ios_401 "iOS /api/v1/plan/today"    "http://localhost:8201/api/v1/plan/today"
 
+# Chat route boundary smoke — added 2026-05-26 after Codex round-10 QA
+# flagged that staging-smoke did not exercise chat at all. This checks
+# the route is MOUNTED and AUTH-GATED. Spending tokens on a real chat
+# probe is left to the manual post-staging checks (CLAUDE.md deploy
+# runbook) — staging-smoke must stay cheap and deterministic. A 405
+# response is treated as acceptable for GET because the route is
+# defined for POST only; the important guarantee is "not 404 and not
+# 200-leaking-data".
+test_ios_chat_route_mounted() {
+  local url="http://localhost:8201/api/v1/chat/message"
+  local http_code
+  http_code=$(ssh "$SERVER" "curl -s -o /tmp/_smoke_chat_body -w '%{http_code}' -X POST -H 'Content-Type: application/json' -d '{}' '$url' 2>/dev/null" || echo "000")
+  local body
+  body=$(ssh "$SERVER" "cat /tmp/_smoke_chat_body 2>/dev/null" || echo "")
+
+  if [ "$http_code" = "401" ]; then
+    local shape
+    shape=$(echo "$body" | node -e "
+      let b='';
+      process.stdin.on('data',c=>b+=c);
+      process.stdin.on('end',()=>{
+        try {
+          const j=JSON.parse(b);
+          const hasError = j.error && typeof j.error.code==='string' && typeof j.error.message==='string';
+          if (j.ok === false && hasError && typeof j.timestamp === 'string') {
+            console.log('OK');
+          } else {
+            console.log('BAD_SHAPE:'+JSON.stringify(j).slice(0,80));
+          }
+        } catch(e){ console.log('NOT_JSON:'+e.message); }
+      });
+    " 2>&1)
+    if [ "$shape" = "OK" ]; then
+      echo "  ✅ iOS POST /api/v1/chat/message — 401 with canonical error envelope"
+      PASS=$((PASS + 1))
+      evidence_record "iOS chat-message route boundary" "passed" "http_code=401 envelope=canonical"
+    else
+      echo "  ❌ iOS POST /api/v1/chat/message — $shape"
+      FAIL=$((FAIL + 1))
+      FAILED_TESTS+=("iOS chat-message route (shape)")
+      evidence_record "iOS chat-message route boundary" "failed" "envelope=$shape"
+    fi
+  elif [ "$http_code" = "404" ]; then
+    echo "  ❌ iOS POST /api/v1/chat/message — route not mounted (404)"
+    FAIL=$((FAIL + 1))
+    FAILED_TESTS+=("iOS chat-message route (404 not mounted)")
+    evidence_record "iOS chat-message route boundary" "failed" "http_code=404"
+  else
+    echo "  ❌ iOS POST /api/v1/chat/message — expected 401, got $http_code"
+    FAIL=$((FAIL + 1))
+    FAILED_TESTS+=("iOS chat-message route (http $http_code)")
+    evidence_record "iOS chat-message route boundary" "failed" "http_code=$http_code expected=401"
+    [ "$VERBOSE" = true ] && echo "     Body: $(echo "$body" | head -c 200)"
+  fi
+}
+test_ios_chat_route_mounted
+
 echo ""
 echo "🏃 5/6 — Process state via PM2"
 PM2_STATUS=$(ssh "$SERVER" "/home/dominguez/.npm-global/bin/pm2 jlist 2>/dev/null | /usr/bin/node -e \"

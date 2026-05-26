@@ -82,7 +82,11 @@ const SKILL_PATTERNS: Array<{ skill: NexusSkillId; pattern: RegExp }> = [
   },
   {
     skill: 'finance',
-    pattern: /\b(finance|budget|afford|bill|invoice|tax|subscription|expense|purchase|payment|money|cash|conta|or[cç]amento|fatura|imposto|assinatura|comprar)\b/i,
+    // Codex QA round 8: added `receipt`/`recibo`/`transaction`/`despesa`/`gasto`
+    // so "Log this receipt for 45 EUR..." is recognized as a finance
+    // half of a split-intent. Without these, the orchestrator missed
+    // the finance side of "Log this receipt and remind me Friday".
+    pattern: /\b(finance|budget|afford|bill|invoice|receipts?|tax|subscription|expense|purchase|payment|transaction|money|cash|conta|or[cç]amento|fatura|recibos?|imposto|assinatura|comprar|despesas?|gastos?)\b/i,
   },
   {
     skill: 'content',
@@ -90,7 +94,12 @@ const SKILL_PATTERNS: Array<{ skill: NexusSkillId; pattern: RegExp }> = [
   },
   {
     skill: 'secretary',
-    pattern: /\b(schedule|calendar|agenda|meeting|task|reminder|follow[- ]?up|daily\s+plan|weekly\s+plan|plan\s+my\s+(?:day|week)|move|reschedule|defer|fit|find\s+time|availability|today|tomorrow|agenda|calend[aá]rio|reuni[aã]o|lembrete|prioriza|organiza|encaixa)\b/i,
+    // Codex QA round 8: added explicit `remind me|set a reminder|
+    // lembra-me|me lembra` phrasings so reminder intents in a split-
+    // intent message ("...and remind me Friday") count toward the
+    // secretary skill. Without these, the secretary half of
+    // "Log this receipt and remind me Friday" was invisible.
+    pattern: /\b(schedule|calendar|agenda|meeting|task|reminder|remind\s+me|set\s+(?:a\s+)?reminder|lembra-?me|me\s+lembra|me\s+lembre|follow[- ]?up|daily\s+plan|weekly\s+plan|plan\s+my\s+(?:day|week)|move|reschedule|defer|fit|find\s+time|availability|today|tomorrow|agenda|calend[aá]rio|reuni[aã]o|lembrete|prioriza|organiza|encaixa)\b/i,
   },
 ];
 
@@ -221,6 +230,35 @@ export function buildChatSkillRoutingPromptBlock(decision: ChatSkillRoutingDecis
   }
   if (decision.context.shouldRefreshBeforeAnswer) {
     lines.push(`<context_refresh stale_risk="${decision.context.staleContextRisk}" ambiguous_reference="${decision.context.ambiguousReference}" tenant_boundary="${decision.context.tenantBoundaryMention}" />`);
+  }
+  // Codex QA round 9: explicit prompt bridge for split-intent turns.
+  // Even though the model only has the routed domain's tools, it can
+  // still NAME the action the other skill should perform and ask the
+  // user to confirm or queue it. This is a stopgap behavior bridge
+  // until the architectural handoff_to_domain tool lands.
+  const crossSkill = decision.intentKinds.includes('cross_skill');
+  if (crossSkill && decision.involvedSkills.length > 1) {
+    const otherSkills = decision.involvedSkills
+      .filter((s) => s !== 'shared_context' && s !== 'tools')
+      .filter((s, _, arr) => arr.length > 1)
+      .filter((s) => {
+        const skillToDomain: Record<string, string> = {
+          secretary: 'secretary',
+          training: 'triathlon',
+          cooking: 'cooking',
+          finance: 'finance',
+          content: 'content',
+        };
+        return skillToDomain[s] !== decision.primaryDomain;
+      });
+    if (otherSkills.length > 0) {
+      lines.push(`<cross_skill_bridge other_skills="${otherSkills.join(',')}">`);
+      lines.push('This turn touches multiple skills, but only the primary domain\'s tools are available right now.');
+      lines.push(`After handling the primary-domain action, explicitly NAME the actions that belong to: ${otherSkills.join(', ')}.`);
+      lines.push('Ask the user one focused follow-up to confirm or defer those actions. Do NOT silently drop them.');
+      lines.push('Do NOT claim success on the other skill\'s actions — you have no tools for them on this turn.');
+      lines.push('</cross_skill_bridge>');
+    }
   }
   lines.push(`Explanation: ${decision.explanation}`);
   lines.push('</chat_skill_routing>');

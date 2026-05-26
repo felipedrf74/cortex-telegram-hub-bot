@@ -25,10 +25,63 @@ const RAW_DEBUG_PATTERNS = [
   /\{["']?(?:error|tool|provider|stack)["']?\s*:/i,
 ];
 
+// Codex QA round 6: a STATE-ASSERTION pattern set is distinct from a
+// success claim. "You have a meeting at 09:30" doesn't claim a write
+// happened, but DOES assert backend state. When concrete state
+// specifics show up alongside an assertion like this on an unground
+// answer_only turn, the gate must still fire — even though no verb
+// from SUCCESS_CLAIM_PATTERNS appears.
+const STATE_ASSERTION_PATTERNS = [
+  /\b(you|your)\s+(?:have|has|got|are|will\s+have|already\s+have)\b/i,
+  /\b(is|are|was|were)\s+(?:scheduled|booked|on|at|for|set|planned)\b/i,
+  // Codex QA round 7: PT informal second-person (`tens`, `tem`,
+  // `tinhas`) without explicit `você`. Common in pt-PT. Round 8
+  // added plural nouns (reuniões/chamadas/etc).
+  /\b(j[aá]\s+)?(?:tens|tem|tinhas|tinha)\s+(?:uma?s?\s+)?(?:reuni(?:[aã]o|[oõ]es)|chamadas?|consultas?|liga[cç](?:[aã]o|[oõ]es)|eventos?|compromissos?|encontros?|sess(?:[aã]o|[oõ]es)|treinos?|aulas?|tarefas?|lembretes?)/i,
+  /\bvoc[eê]\s+(?:tem|j[aá]\s+tem|est[aá]|tem\s+agendado|tem\s+marcado)\b/i,
+  /\b(?:o|a|os|as)\s+\w+\s+(?:est[aá]|est[aã]o|s[aã]o)\s+(?:agendado|agendada|agendados|agendadas|marcado|marcada)/i,
+  // Codex QA round 7/8: flipped ownership — "the 2pm slot is yours",
+  // "your 2pm meeting is locked/booked/scheduled". Round 8 added
+  // "your X is locked/booked/...".
+  /\bis\s+(?:yours?|in\s+your\s+(?:calendar|agenda|schedule))\b/i,
+  /\byour\s+(?:\w+\s+){0,4}(?:slot|meeting|call|event|appointment|reservation|session|block)(?:\s+\w+){0,7}\s+is\s+(?:locked|booked|scheduled|set|reserved|on\s+the\s+books|confirmed)\b/i,
+  /\b(?:[eé]\s+(?:seu|sua)|est[aá]\s+(?:na\s+sua|no\s+seu)\s+(?:agenda|calend[aá]rio|cronograma))\b/i,
+  // Codex QA round 10 P2: PT possessive form "A tua reunião ... está
+  // marcada" — possessive-prefixed scheduling noun + status verb.
+  // Article variants: "A tua / A sua / O teu / O seu / A minha / O meu".
+  // Spans up to 8 tokens between noun and status verb. Uses \S+ for
+  // token spacing because PT words contain accented chars (`às`,
+  // `manhã`) that JS `\w` does not match.
+  /(?:^|\s)(?:a|o)\s+(?:tua|sua|minha|nossa|teu|seu|meu|nosso)\s+(?:\S+\s+){0,8}(?:reuni(?:[aã]o|[oõ]es)|chamadas?|consultas?|liga[cç](?:[aã]o|[oõ]es)|eventos?|compromissos?|encontros?|sess(?:[aã]o|[oõ]es)|treinos?|aulas?|tarefas?|lembretes?)(?:\s+\S+){0,8}\s+(?:est[aá]|[eé]|fica)\s+(?:marcad[oa]s?|agendad[oa]s?|reservad[oa]s?|confirmad[oa]s?|definid[oa]s?|bloqueada?s?)/i,
+];
+
+function hasStateAssertion(text: string): boolean {
+  return STATE_ASSERTION_PATTERNS.some((pattern) => pattern.test(text));
+}
+
+// Past-tense completion verbs only. `noted` and bare `set` are
+// excluded because they collide with acknowledgments ("Noted, I'll
+// let you know") and future-tense periphrasis ("I'll set up a
+// reminder"). Codex QA produced failing tests for both — keep the
+// list to unambiguous past-tense completions and add explicit
+// past-tense forms ("set up", "have set") in IMPLIED_SUCCESS_PATTERNS
+// where the auxiliary disambiguates.
 const SUCCESS_CLAIM_PATTERNS = [
-  /\b(done|created|scheduled|booked|moved|updated|completed|sent|deleted|removed|cancell?ed|cleared|eliminated)\b/i,
-  /\b(pronto|criei|agendei|marquei|movi|atualizei|conclu[ií]|enviei|apaguei|removi|cancelei|limpei|eliminei|exclu[ií])\b/i,
+  /\b(done|created|scheduled|booked|moved|updated|completed|sent|deleted|removed|cancell?ed|cleared|eliminated|added|saved|logged|marked|filed|recorded)\b/i,
+  /\b(pronto|criei|agendei|marquei|movi|atualizei|conclu[ií]|enviei|apaguei|removi|cancelei|limpei|eliminei|exclu[ií]|adicionei|guardei|salvei|anotei|registei|registrei|defini|gravei|lancei|lan[çc]ei|fiz isso|est[aá] feito|tudo certo)\b/i,
   /✅/,
+];
+
+// Hedged or auxiliary-anchored past tense. Requires "I've" / "I have"
+// / "já" so a future "I will set up" / "vou agendar" never matches.
+const IMPLIED_SUCCESS_PATTERNS = [
+  /\b(i(?:'ve| have)\s+(?:just\s+)?(?:created|scheduled|booked|moved|added|saved|sent|deleted|cancell?ed|updated|set\s+up|logged|noted\s+(?:down|that)|marked|filed))\b/i,
+  /\b(j[aá]\s+(?:criei|agendei|marquei|movi|adicionei|enviei|apaguei|cancelei|atualizei|defini|lancei|lan[çc]ei|registei|registrei|anotei))\b/i,
+  // Sentence-initial "Set the X for HH:MM" — elided subject form of
+  // "[I] set the X for HH:MM". Codex QA round 2 noted this wasn't
+  // caught after I removed bare `set`. Requires a definite article so
+  // imperative "Set a reminder" doesn't trigger.
+  /^(set|marked)\s+the\s+\w+\s+(?:for|at|to)\s+\d/i,
 ];
 
 export function applyChatResponseQualityGate(input: {
@@ -90,20 +143,55 @@ export function detectChatResponseQualityIssues(text: string, contract: NexusAns
 
   if (!trimmed) issues.add('empty_response');
   if (RAW_DEBUG_PATTERNS.some((pattern) => pattern.test(trimmed))) issues.add('raw_internal_content');
+  // Codex QA round 2: quoted user text was treated as the model's own
+  // claim. Strip text inside double/single quotes before the success
+  // pattern scan so `You said: "I scheduled it for 2:00."` doesn't
+  // fire a fake-success rewrite.
+  const unquoted = stripQuotedText(trimmed);
+  const claimsSuccess = SUCCESS_CLAIM_PATTERNS.some((pattern) => pattern.test(unquoted))
+    || IMPLIED_SUCCESS_PATTERNS.some((pattern) => pattern.test(unquoted));
   if (contract.actionability === 'execute'
-    && SUCCESS_CLAIM_PATTERNS.some((pattern) => pattern.test(trimmed))
+    && claimsSuccess
     && contract.verificationStatus !== 'verified'
     && contract.verificationStatus !== 'partial_failure') {
     issues.add('unverified_success_claim');
   }
-  if (shouldEnforceLocalStateGrounding(contract)
+  // Catch the harder case: actionability is "answer_only" (read/explain
+  // turn) but the response still asserts a write happened. The model
+  // had no tool authorization on this turn, so any past-tense write
+  // verb is a hallucination, not a missing read-back.
+  // Codex QA round 3 blocker: this check was corrupting deterministic
+  // read responses (content-intelligence-shortcut, finance-state-shortcut,
+  // chat-core-v2-deterministic) that legitimately return concrete state
+  // from the backend. Gate it tightly:
+  //   - skip when the route is a deterministic local read,
+  //   - skip when the answer is grounded in real scoped state,
+  //   - skip when verification already succeeded.
+  // The remaining surface is the hallucination case: an answer_only
+  // turn that claims a write happened with no grounding and no
+  // verification.
+  if (contract.actionability === 'answer_only'
+    && claimsSuccess
+    && hasConcreteStateSpecifics(unquoted)
+    && contract.routeKind !== 'local_read'
     && !hasScopedStateGrounding(contract)
-    && /\b(my|mine|today|this week|calendar|task|meu|minha|hoje|esta semana|agenda|tarefa)\b/i.test(trimmed)) {
-    issues.add('state_claim_without_grounding');
+    && contract.verificationStatus !== 'verified') {
+    issues.add('unverified_success_claim');
   }
   if (shouldEnforceLocalStateGrounding(contract)
     && !hasScopedStateGrounding(contract)
-    && hasConcreteStateSpecifics(trimmed)) {
+    && /\b(my|mine|today|this week|calendar|task|meu|minha|hoje|esta semana|agenda|tarefa)\b/i.test(unquoted)) {
+    issues.add('state_claim_without_grounding');
+  }
+  // Codex QA round 6: bare time/date mentions ("2:00 PM is fine for
+  // me") used to trip this gate even though they're not state claims.
+  // Require the SPECIFIC to be paired with a success/action claim
+  // OR a state assertion ("you have X at Y"). Otherwise the model is
+  // just discussing a time, not asserting backend state.
+  if (shouldEnforceLocalStateGrounding(contract)
+    && !hasScopedStateGrounding(contract)
+    && hasConcreteStateSpecifics(unquoted)
+    && (claimsSuccess || hasStateAssertion(unquoted))) {
     issues.add('unsupported_specific_state_claim');
   }
   if (contract.expectedResponseShape === 'recipe' && !looksLikeRecipe(trimmed)) {
@@ -116,6 +204,35 @@ export function detectChatResponseQualityIssues(text: string, contract: NexusAns
   }
 
   return [...issues];
+}
+
+// Strip ATTRIBUTED quoted text (3+ words inside a SINGLE quote pair)
+// and markdown blockquotes. Single-word quotes (scare quotes) are
+// kept so anti-detection like `I 'scheduled' it for 2:00.` still
+// trips the gate. Codex QA round 4 caught the prior regex spanning
+// across multiple quote pairs and deleting whole claims; the new
+// version uses [^q] char classes to forbid cross-quote spanning, then
+// counts words inside the captured group via a replace callback.
+function stripQuotedText(text: string): string {
+  const stripMultiWord = (match: string, inner: string): string => {
+    const words = inner.trim().split(/\s+/).filter(Boolean);
+    return words.length >= 3 ? '' : match;
+  };
+  return text
+    // Codex QA round 4/5/6: tool-result attribution prefixes are NOT
+    // assistant claims — they are the model echoing what a tool said.
+    // Round 6 tightened to clause-level: strip up to the next CLAUSE
+    // boundary (comma, semicolon, period, question, bang, newline)
+    // rather than sentence-level. Otherwise "Tool returned: X, I
+    // scheduled it for 2:00." would shield the comma-separated
+    // assistant claim because the period-based sentence boundary was
+    // too generous.
+    .replace(/^\s*(?:the\s+tool\s+returned|tool\s+result|tool\s+output|the\s+system\s+returned|backend\s+returned|raw\s+result|o\s+resultado\s+da\s+ferramenta|resultado\s+da\s+ferramenta):[^,.?!;\n]*[,.?!;\n]?/gim, '')
+    .replace(/^>\s+.*$/gm, '')                              // markdown blockquote line
+    .replace(/"([^"]*)"/g, stripMultiWord)                  // ASCII double, no spanning
+    .replace(/'([^']*)'/g, stripMultiWord)                  // ASCII single, no spanning
+    .replace(/[“]([^“”]*)[”]/g, stripMultiWord)             // curly double
+    .replace(/[‘]([^‘’]*)[’]/g, stripMultiWord);            // curly single
 }
 
 export function sanitizeUserFacingChatText(text: string): string {
@@ -159,7 +276,24 @@ function hasScopedStateGrounding(contract: NexusAnswerContract): boolean {
 
 function hasConcreteStateSpecifics(text: string): boolean {
   return /\b\d{1,2}[:h]\d{0,2}\b/.test(text)
+    // Codex QA round 7: `2pm`, `2 pm`, `14h00` — bare am/pm without
+    // colon. Without this the state-assertion path missed "The 2pm
+    // slot is yours.".
+    || /\b\d{1,2}\s?(?:am|pm|a\.m\.|p\.m\.)\b/i.test(text)
+    // Codex QA round 9: "9 in the morning" / "9 da manhã" — temporal
+    // phrase where the hour digit is followed by a daypart phrase
+    // instead of am/pm. "Your meeting at 9 in the morning is set"
+    // slipped past the earlier patterns.
+    || /\b\d{1,2}\s+(?:in\s+the\s+(?:morning|afternoon|evening|night)|at\s+night|da\s+manh[aã]|da\s+tarde|da\s+noite)\b/i.test(text)
     || /\b\d{1,2}[/-]\d{1,2}(?:[/-]\d{2,4})?\b/.test(text)
+    // Codex QA round 8: relative day anchors. "Tens reuniões marcadas
+    // amanhã" had no date format my regex matched, even though
+    // `amanhã` IS a concrete-state-specific in a scheduling claim.
+    // ASCII-only words use \b; accented PT day names use explicit
+    // non-word anchors because JS `\b` treats `ã/é/ç` as non-word
+    // and refuses to match `\bamanhã\b` against `amanhã `.
+    || /\b(?:today|tomorrow|yesterday|tonight|monday|tuesday|wednesday|thursday|friday|saturday|sunday|hoje|ontem|segunda|quarta|quinta|sexta|domingo)\b/i.test(text)
+    || /(?:^|[^A-Za-z])(?:amanh[aã]|ter[cç]a|s[aá]bado)(?=$|[^A-Za-z])/i.test(text)
     || /\b(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec|janeiro|fevereiro|mar[cç]o|abril|maio|junho|julho|agosto|setembro|outubro|novembro|dezembro)\b/i.test(text)
     || /[$€£]\s?\d|\b\d+[,.]\d{2}\b/.test(text);
 }

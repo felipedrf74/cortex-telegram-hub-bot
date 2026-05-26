@@ -490,7 +490,7 @@ describe('handleSimpleDomain', () => {
     expect(storedCall![3]).toBe('[Tools: search_notes]\nFound notes.');
   });
 
-  it('stops at maxIterations even if tools keep returning', async () => {
+  it('stops at maxIterations and surfaces a cap-reached notice (Codex QA round 5)', async () => {
     const toolCall = { type: 'tool_use', id: 'tc_1', name: 'set_reminder', input: {} };
 
     mockCallDomain.mockResolvedValue({
@@ -507,7 +507,11 @@ describe('handleSimpleDomain', () => {
 
     // 1 initial callDomain + 3 continueWithToolResults = 3 iterations max
     expect(mockContinue).toHaveBeenCalledTimes(3);
-    expect(result.text).toBe('Still working...');
+    // Codex QA round 5: cap-exceeded turns must NOT silently return
+    // the partial text — they must tell the user iteration cap was
+    // hit and the request can be continued.
+    expect(result.text).toContain('Still working...');
+    expect(result.text).toMatch(/tool cap|per-turn tool cap|tool-call iterations|partial/i);
   });
 
   it('passes userId to buildSimpleStateContext', async () => {

@@ -131,6 +131,15 @@ async function logGeminiUsage(
       summary: `Gemini ${model}: ${usage.promptTokenCount}+${usage.candidatesTokenCount} tokens ($${cost.toFixed(4)})`,
       durationMs,
     });
+    // April 2026 follow-up: mirror anthropic-hook's per-user metering so
+    // `usage_metering` aggregates reflect Gemini traffic (the dominant
+    // provider). Without this, checkQuota silently sees an empty table.
+    try {
+      const { recordUsage } = require('./usage-metering') as typeof import('./usage-metering');
+      recordUsage(userId, usage.promptTokenCount, usage.candidatesTokenCount, cost, false);
+    } catch (meterErr) {
+      logger.warn({ err: meterErr, userId }, 'Failed to record Gemini usage_metering');
+    }
     await settleNexusPointOverageForUser(userId, apiUsageId);
   } catch (err) {
     try {

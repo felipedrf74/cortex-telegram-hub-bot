@@ -37,11 +37,15 @@ export function getConversationHistory(userId: number, domain: DomainName, tenan
     details: { domain },
   });
   if (!scope) return [];
+  // Codex QA round 5: secondary `id DESC` makes the order deterministic
+  // when two rows share `created_at` (millisecond ties happen on rapid
+  // back-to-back inserts). Without this, the read order is undefined
+  // and two parallel calls can see different truncations.
   const rows = db.prepare(`
     SELECT role, content FROM conversations
     WHERE tenant_id = ? AND user_id = ? AND domain = ? AND scope_status = 'active'
       ${conversationLifecycleFilter()}
-    ORDER BY created_at DESC
+    ORDER BY created_at DESC, id DESC
     LIMIT ?
   `).all(scope.tenantId, userId, domain, limit) as DomainMessage[];
   return rows.reverse();
@@ -85,7 +89,7 @@ export function addToConversation(
     const maxKeep = (HISTORY_LIMITS[d] ?? 8) * 2;
     db.prepare(`
       DELETE FROM conversations WHERE tenant_id = ? AND user_id = ? AND domain = ? AND scope_status = 'active' AND id NOT IN (
-        SELECT id FROM conversations WHERE tenant_id = ? AND user_id = ? AND domain = ? AND scope_status = 'active' ${conversationLifecycleFilter()} ORDER BY created_at DESC LIMIT ?
+        SELECT id FROM conversations WHERE tenant_id = ? AND user_id = ? AND domain = ? AND scope_status = 'active' ${conversationLifecycleFilter()} ORDER BY created_at DESC, id DESC LIMIT ?
       )
     `).run(tenant, u, d, tenant, u, d, maxKeep);
   });
@@ -133,7 +137,7 @@ export function syncLastAssistantConversationMessage(
     const maxKeep = (HISTORY_LIMITS[d] ?? 8) * 2;
     db.prepare(`
       DELETE FROM conversations WHERE tenant_id = ? AND user_id = ? AND domain = ? AND scope_status = 'active' AND id NOT IN (
-        SELECT id FROM conversations WHERE tenant_id = ? AND user_id = ? AND domain = ? AND scope_status = 'active' ${conversationLifecycleFilter()} ORDER BY created_at DESC LIMIT ?
+        SELECT id FROM conversations WHERE tenant_id = ? AND user_id = ? AND domain = ? AND scope_status = 'active' ${conversationLifecycleFilter()} ORDER BY created_at DESC, id DESC LIMIT ?
       )
     `).run(tenant, u, d, tenant, u, d, maxKeep);
   });
@@ -156,11 +160,15 @@ export function getLastAssistantMessage(userId: number, domain: DomainName, tena
     details: { domain },
   });
   if (!scope) return null;
+  // Codex QA round 6: secondary id DESC for deterministic resolution
+  // on tied second-resolution `datetime('now')` timestamps. This feeds
+  // active-context resolution at chat-message-context.ts:77, so
+  // nondeterminism here shows up as flaky routing.
   const row = db.prepare(`
     SELECT role, content FROM conversations
     WHERE tenant_id = ? AND user_id = ? AND domain = ? AND scope_status = 'active'
       ${conversationLifecycleFilter()}
-    ORDER BY created_at DESC
+    ORDER BY created_at DESC, id DESC
     LIMIT 1
   `).get(scope.tenantId, userId, domain) as DomainMessage | undefined;
 

@@ -190,6 +190,15 @@ async function trackedCompletion(
       summary: `OpenAI ${model} [${category}] — ${usage.prompt_tokens}+${usage.completion_tokens} tokens`,
       detail: `$${costUsd.toFixed(4)} in ${durationMs}ms`,
     });
+    // April 2026 follow-up: per-user metering for OpenAI mirrors
+    // anthropic-hook and gemini-provider so quota enforcement sees
+    // every provider's traffic, not only the disabled Anthropic path.
+    try {
+      const { recordUsage } = require('./usage-metering') as typeof import('./usage-metering');
+      recordUsage(userId, usage.prompt_tokens, usage.completion_tokens, costUsd, false);
+    } catch (meterErr) {
+      logger.warn({ err: meterErr, userId }, 'Failed to record OpenAI usage_metering');
+    }
     try {
       await settleNexusPointOverageForUser(userId, apiUsageId);
     } catch (settleErr) {
@@ -716,6 +725,15 @@ ${message}`;
         summary: `OpenAI stream ${model} [${domain}] — ${usage.prompt_tokens}+${usage.completion_tokens} tokens`,
         detail: `$${costUsd.toFixed(4)} in ${durationMs}ms`,
       });
+      // Codex QA: the streaming path wrote api_usage but skipped
+      // usage_metering, leaving per-user quota silently undercounting
+      // every OpenAI stream call. Mirror the non-streaming path.
+      try {
+        const { recordUsage } = require('./usage-metering') as typeof import('./usage-metering');
+        recordUsage(userId, usage.prompt_tokens, usage.completion_tokens, costUsd, false);
+      } catch (meterErr) {
+        logger.warn({ err: meterErr, userId }, 'Failed to record OpenAI streaming usage_metering');
+      }
       try {
         await settleNexusPointOverageForUser(userId, apiUsageId);
       } catch (settleErr) {
