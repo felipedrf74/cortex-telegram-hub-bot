@@ -17,6 +17,7 @@ import {
 } from '../../src/services/provider-fallback';
 import type { AIProvider, AICallResult } from '../../src/services/ai-provider';
 import type { ClassificationResult } from '../../src/domains/types';
+import { config } from '../../src/config';
 
 // ─── Mocks ─────────────────────────────────────────────────────────
 
@@ -43,6 +44,7 @@ function createMockProvider(name: string): AIProvider & {
 
 const OK_RESULT: AICallResult = { text: 'ok', toolCalls: [], stopReason: 'end_turn' };
 const CLASSIFY_OK: ClassificationResult = { domain: 'secretary', confidence: 0.9 };
+const DEFAULT_CLASSIFY_CONFIDENCE_THRESHOLDS = { ...config.classifyConfidenceThresholds };
 
 // ═══════════════════════════════════════════════════════════════════
 // resolveTaskType
@@ -178,11 +180,16 @@ describe('TaskRoutingProvider', () => {
   }
 
   beforeEach(() => {
+    config.classifyConfidenceThresholds = { ...DEFAULT_CLASSIFY_CONFIDENCE_THRESHOLDS };
     anthropic = createMockProvider('anthropic');
     openai = createMockProvider('openai');
     gemini = createMockProvider('gemini');
     onFallback = vi.fn();
     provider = new TaskRoutingProvider(buildConfig(), onFallback);
+  });
+
+  afterEach(() => {
+    config.classifyConfidenceThresholds = { ...DEFAULT_CLASSIFY_CONFIDENCE_THRESHOLDS };
   });
 
   it('has a composite name with all providers', () => {
@@ -241,7 +248,19 @@ describe('TaskRoutingProvider', () => {
 
       expect(anthropic.classify).toHaveBeenCalledTimes(1);
       expect(openai.classify).toHaveBeenCalledTimes(1);
-      expect(result).toEqual(highConfCooking);
+      expect(onFallback).not.toHaveBeenCalled();
+      expect(result).toEqual({
+        ...highConfCooking,
+        fallbackUsed: true,
+        fallbackReason: 'low_confidence',
+        primaryProvider: 'anthropic',
+        fallbackProvider: 'openai',
+        primaryDomain: 'cooking',
+        primaryConfidence: 0.4,
+      });
+      const health = provider.getProviderHealth();
+      expect(health['anthropic'].metrics.failureCount).toBe(0);
+      expect(health['openai'].metrics.fallbackTriggerCount).toBe(0);
     });
 
     it('O3-A7: tool-domain (secretary) escalates at higher threshold (0.80) than non-tool (0.65)', async () => {
@@ -253,19 +272,88 @@ describe('TaskRoutingProvider', () => {
       const result = await provider.classify('schedule meeting');
 
       expect(openai.classify).toHaveBeenCalledTimes(1);
-      expect(result).toEqual(confidentSecretary);
+      expect(result).toEqual(expect.objectContaining({
+        ...confidentSecretary,
+        fallbackUsed: true,
+        fallbackReason: 'low_confidence',
+        primaryDomain: 'secretary',
+        primaryConfidence: 0.75,
+      }));
     });
 
-    it('O3-A7: returns primary low-confidence result when fallback also fails', async () => {
+    it('O3-A7: returns primary low-confidence result when fallback has a known provider failure', async () => {
       const lowConfCooking: ClassificationResult = { domain: 'cooking', confidence: 0.4 };
       anthropic.classify.mockResolvedValue(lowConfCooking);
-      openai.classify.mockRejectedValue(new Error('fallback unavailable'));
+      openai.classify.mockRejectedValue(Object.assign(new Error('fallback unavailable'), { status: 503 }));
 
       const result = await provider.classify('test');
 
       expect(anthropic.classify).toHaveBeenCalledTimes(1);
       expect(openai.classify).toHaveBeenCalledTimes(1);
       expect(result).toEqual(lowConfCooking);
+    });
+
+    it('O3-A7: rethrows unexpected fallback programming errors instead of hiding them', async () => {
+      const lowConfCooking: ClassificationResult = { domain: 'cooking', confidence: 0.4 };
+      anthropic.classify.mockResolvedValue(lowConfCooking);
+      openai.classify.mockRejectedValue(new TypeError('fallback bug'));
+
+      await expect(provider.classify('test')).rejects.toThrow(TypeError);
+    });
+
+    it('O3-A7: does not escalate when confidence equals configured thresholds', async () => {
+      const exactCooking: ClassificationResult = { domain: 'cooking', confidence: 0.65 };
+      anthropic.classify.mockResolvedValueOnce(exactCooking);
+
+      const cookingResult = await provider.classify('recipe');
+
+      expect(cookingResult).toEqual(exactCooking);
+      expect(openai.classify).not.toHaveBeenCalled();
+
+      const exactSecretary: ClassificationResult = { domain: 'secretary', confidence: 0.80 };
+      anthropic.classify.mockResolvedValueOnce(exactSecretary);
+
+      const secretaryResult = await provider.classify('schedule');
+
+      expect(secretaryResult).toEqual(exactSecretary);
+      expect(openai.classify).not.toHaveBeenCalled();
+    });
+
+    it('O3-A7: does not escalate above threshold, without fallback, or when fallback is the same provider', async () => {
+      const aboveThreshold: ClassificationResult = { domain: 'cooking', confidence: 0.66 };
+      anthropic.classify.mockResolvedValue(aboveThreshold);
+
+      await expect(provider.classify('recipe')).resolves.toEqual(aboveThreshold);
+      expect(openai.classify).not.toHaveBeenCalled();
+
+      const noFallbackProvider = new TaskRoutingProvider(buildConfig({
+        classify: { primary: anthropic },
+      }), onFallback);
+      const lowConfCooking: ClassificationResult = { domain: 'cooking', confidence: 0.4 };
+      anthropic.classify.mockResolvedValue(lowConfCooking);
+      await expect(noFallbackProvider.classify('recipe')).resolves.toEqual(lowConfCooking);
+
+      const sameProvider = new TaskRoutingProvider(buildConfig({
+        classify: { primary: anthropic, fallback: anthropic },
+      }), onFallback);
+      anthropic.classify.mockResolvedValue(lowConfCooking);
+      await expect(sameProvider.classify('recipe')).resolves.toEqual(lowConfCooking);
+    });
+
+    it('O3-A7: treats missing threshold config or fields as no-op', async () => {
+      const lowConfCooking: ClassificationResult = { domain: 'cooking', confidence: 0.4 };
+      anthropic.classify.mockResolvedValue(lowConfCooking);
+
+      (config as any).classifyConfidenceThresholds = undefined;
+      await expect(provider.classify('recipe')).resolves.toEqual(lowConfCooking);
+      expect(openai.classify).not.toHaveBeenCalled();
+
+      config.classifyConfidenceThresholds = {
+        minConfidence: undefined as unknown as number,
+        toolDomainMinConfidence: DEFAULT_CLASSIFY_CONFIDENCE_THRESHOLDS.toolDomainMinConfidence,
+      };
+      await expect(provider.classify('recipe')).resolves.toEqual(lowConfCooking);
+      expect(openai.classify).not.toHaveBeenCalled();
     });
   });
 

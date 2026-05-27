@@ -93,7 +93,36 @@ function isLowConfidenceClassifyResult(result: ClassificationResult): boolean {
   if (!thresholds) return false; // defensive: skip if config missing (test fixtures, etc.)
   const isToolDomain = TOOL_BEARING_CLASSIFY_DOMAINS.has(result.domain);
   const threshold = isToolDomain ? thresholds.toolDomainMinConfidence : thresholds.minConfidence;
+  if (!Number.isFinite(result.confidence) || !Number.isFinite(threshold)) return false;
   return result.confidence < threshold;
+}
+
+const KNOWN_PROVIDER_ERROR_CODES = new Set([
+  'ECONNREFUSED',
+  'ETIMEDOUT',
+  'ENOTFOUND',
+  'ECONNRESET',
+  'UND_ERR_CONNECT_TIMEOUT',
+  'UND_ERR_SOCKET',
+  'ABORT_ERR',
+]);
+
+function isKnownClassifyFallbackError(err: unknown): boolean {
+  if (err instanceof AIProviderTruncatedError) return true;
+  if (!err || typeof err !== 'object') return false;
+  const e = err as {
+    name?: unknown;
+    status?: unknown;
+    statusCode?: unknown;
+    error_code?: unknown;
+    code?: unknown;
+    error?: { type?: unknown };
+  };
+  if (e.status !== undefined || e.statusCode !== undefined || e.error_code !== undefined) return true;
+  if (typeof e.code === 'string' && KNOWN_PROVIDER_ERROR_CODES.has(e.code)) return true;
+  if (typeof e.error?.type === 'string') return true;
+  if (e.name === 'AbortError' || e.name === 'TimeoutError' || e.name === 'LocalLLMError') return true;
+  return false;
 }
 
 // ─── Tenant-safe routing metadata ─────────────────────────────────
@@ -107,6 +136,7 @@ export type FallbackReason =
   | 'network_unavailable'
   | 'provider_overloaded'
   | 'circuit_open'
+  | 'low_confidence'
   | 'unknown_retryable'
   // Codex QA round 9: both providers returned truncated output.
   | 'fallback_truncated';
@@ -950,10 +980,37 @@ export class TaskRoutingProvider implements AIProvider {
         const fm = this.getMetrics(pair.fallback.name);
         fm.usageCount++;
         fm.lastSuccessAt = new Date().toISOString();
-        return fallbackResult;
+        return {
+          ...fallbackResult,
+          fallbackUsed: true,
+          fallbackReason: 'low_confidence',
+          primaryProvider: pair.primary.name,
+          fallbackProvider: pair.fallback.name,
+          primaryDomain: primaryResult.domain,
+          primaryConfidence: primaryResult.confidence,
+        };
       } catch (err) {
+        if (!isKnownClassifyFallbackError(err)) {
+          logger.error(
+            {
+              err: summarizeProviderError(err, false),
+              primaryName: pair.primary.name,
+              fallbackName: pair.fallback.name,
+              predictedDomain: primaryResult.domain,
+              confidence: primaryResult.confidence,
+            },
+            'low-confidence fallback classify failed unexpectedly — rethrowing',
+          );
+          throw err;
+        }
         logger.warn(
-          { err: err instanceof Error ? err.message : String(err) },
+          {
+            err: summarizeProviderError(err),
+            primaryName: pair.primary.name,
+            fallbackName: pair.fallback.name,
+            predictedDomain: primaryResult.domain,
+            confidence: primaryResult.confidence,
+          },
           'low-confidence fallback classify failed — returning primary result',
         );
         return primaryResult;
