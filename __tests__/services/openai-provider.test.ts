@@ -574,6 +574,29 @@ describe('OpenAIProvider', () => {
       );
     });
 
+    it('attributes classify usage to ClassifyOptions userId and tenantId', async () => {
+      mockCreate.mockResolvedValueOnce({
+        choices: [{ message: { content: '{"domain":"secretary","confidence":0.9}' }, finish_reason: 'stop' }],
+        model: 'gpt-4o-mini',
+        usage: { prompt_tokens: 100, completion_tokens: 20 },
+      });
+
+      await provider.classify('hello', undefined, { userId: 25, tenantId: 42 });
+      expect(mockDbRun).toHaveBeenCalledWith(
+        'openai_classify',
+        expect.any(String),
+        42,
+        25,
+        expect.any(Number),
+        expect.any(Number),
+        expect.any(Number),
+        expect.any(Number),
+        expect.any(Number),
+        'resolved',
+        'gpt-4o-mini',
+      );
+    });
+
     it('uses openai_tool_continuation category for tool result calls', async () => {
       mockCreate.mockResolvedValueOnce({
         choices: [{ message: { content: 'Done.' }, finish_reason: 'stop' }],

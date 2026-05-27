@@ -810,11 +810,11 @@ export class GeminiProvider implements AIProvider {
     activeContext?: { domain: DomainName; lastAssistantMessage: string },
     options?: ClassifyOptions,
   ): Promise<ClassificationResult> {
-    // O3-A11: ClassifyOptions accepted for interface compliance. Gemini
-    // classify writes its own api_usage row via logGeminiUsage; userId/
-    // tenantId attribution flows through request-context — no per-call
-    // wiring needed here today.
-    void options;
+    // O3-A11/F-new-6: ClassifyOptions must carry user attribution for
+    // routed classify calls. Without this, Gemini-primary classify rows
+    // silently fall back to user_id=0 / tenant_id=0.
+    const usageUserId = options?.userId ?? 0;
+    const usageTenantId = options?.tenantId ?? options?.userId ?? 0;
     try {
       let userContent = message;
       if (activeContext) {
@@ -840,7 +840,7 @@ ${message}`;
           promptTokenCount: usage.promptTokenCount ?? 0,
           candidatesTokenCount: usage.candidatesTokenCount ?? 0,
           cachedContentTokenCount: usage.cachedContentTokenCount ?? 0,
-        }, durationMs);
+        }, durationMs, usageUserId, usageTenantId);
       }
 
       let text = extractText(result);

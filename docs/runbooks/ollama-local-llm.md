@@ -236,7 +236,7 @@ Look in `providerMetadata`: `isColdLoad=true` flags a load that took > 1 s. Freq
 | Tier | Action | Recovery time | Use when |
 |---|---|---|---|
 | 1 | Flip one task primary back to cloud, e.g. `AI_CLASSIFY_PRIMARY=gemini`, then `pm2 restart nexus-hub` | ~5 s | One task type's quality regressed |
-| 1b | **Operational rollback to 27B**: `sed -i 's/^OLLAMA_MODEL=.*/OLLAMA_MODEL=qwen3.6:27b-q4_K_M/' .env && sed -i 's/^OLLAMA_CLASSIFIER_MODEL=.*/OLLAMA_CLASSIFIER_MODEL=qwen3.6:27b-q4_K_M/' .env && pm2 restart nexus-hub`. Optional systemd retune: `OLLAMA_MEMORY_HIGH=20G OLLAMA_MEMORY_MAX=23G bash scripts/install-ollama.sh` | ~5 s + warm-load | 35B exhibits OOM, swap thrash, or generation_tokens_per_sec < 1 sustained |
+| 1b | **Primary local chat/script model alternate**: `sed -i 's/^OLLAMA_MODEL=.*/OLLAMA_MODEL=qwen3.6:27b-q4_K_M/' .env && pm2 restart nexus-hub`. Do **not** change `OLLAMA_CLASSIFIER_MODEL` here; classifier rollback is Tier 1 (`AI_CLASSIFY_PRIMARY=gemini`) or the Option-3 small-model Tier 1b below. Optional systemd retune: `OLLAMA_MEMORY_HIGH=20G OLLAMA_MEMORY_MAX=23G bash scripts/install-ollama.sh` | ~5 s + warm-load | Main local chat/script generation has OOM, swap thrash, or generation_tokens_per_sec < 1 sustained |
 | 2 | `OLLAMA_ENABLED=false`, `pm2 restart nexus-hub` | ~5 s | Provider system-wide failure |
 | 3 | `sudo systemctl stop ollama` | ~2 s | Daemon-level instability — circuit breaker + rate limiter handle the rest |
 | 4 | Revert PR + redeploy via `scripts/promote-to-prod.sh` | minutes | Code-level regression env flips can't fix |
@@ -447,7 +447,7 @@ Memory cap bumps (`MemoryHigh=27G`, `MemoryMax=29G`) are SEPARATE from Stage 3B 
 | 3 | Post-cutover quality regression | Flip `AI_CLASSIFY_PRIMARY=gemini`; shadow stays for diagnostics |
 | 4 | Code regression | Restore `dist-pre-option-3` snapshot, PM2 restart |
 
-DO NOT default to 35B classifier as a "rollback". 35B at the live classify path = 60s latency = unusable chat.
+DO NOT use the primary large model on the live classify path as a "rollback"; that path has unusable chat latency.
 
 ## Pending after Option 3
 

@@ -483,6 +483,26 @@ describe('GeminiProvider', () => {
       );
     });
 
+    it('attributes classify usage to ClassifyOptions userId and tenantId', async () => {
+      mockGeminiResponse('{"domain":"secretary","confidence":0.9}');
+
+      await provider.classify('hello', undefined, { userId: 25, tenantId: 42 });
+
+      expect(mockDbRun).toHaveBeenCalledWith(
+        'gemini_classify',
+        'gemini-2.0-flash',
+        42,
+        25,
+        100,
+        50,
+        expect.any(Number),
+        expect.any(Number),
+        expect.any(Number),
+        'resolved',
+        'gemini-2.0-flash',
+      );
+    });
+
     it('logs to api_usage table after callDomain with correct category', async () => {
       mockGeminiResponse('Tasks done.');
 

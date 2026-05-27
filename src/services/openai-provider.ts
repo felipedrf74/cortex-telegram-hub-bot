@@ -463,10 +463,11 @@ export class OpenAIProvider implements AIProvider {
     activeContext?: { domain: DomainName; lastAssistantMessage: string },
     options?: ClassifyOptions,
   ): Promise<ClassificationResult> {
-    // O3-A11: ClassifyOptions accepted for interface compliance. OpenAI's
-    // trackedCompletion already attributes via the global request-context
-    // (request-context.ts).
-    void options;
+    // O3-A11/F-new-6: ClassifyOptions must carry user attribution for
+    // routed classify calls. Without this, OpenAI fallback classify rows
+    // silently fall back to user_id=0 / tenant_id=0.
+    const usageUserId = options?.userId ?? 0;
+    const usageTenantId = options?.tenantId ?? options?.userId ?? 0;
     try {
       let userContent = message;
       if (activeContext) {
@@ -484,7 +485,7 @@ ${message}`;
             { role: 'system', content: getClassifierSystemPrompt() },
             { role: 'user', content: userContent },
           ],
-        }, 100), 'openai_classify')
+        }, 100), 'openai_classify', usageUserId, usageTenantId, options?.timeoutMs)
       );
 
       let text = response.choices[0]?.message?.content || '';
