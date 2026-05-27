@@ -562,12 +562,12 @@ export function getSpendByProvider(
       GROUP BY provider
     `).all(...params) as { provider: string; total: number }[];
 
-    const result: Record<string, number> = { anthropic: 0, openai: 0, gemini: 0 };
+    const result: Record<string, number> = { anthropic: 0, openai: 0, gemini: 0, ollama: 0 };
     for (const row of rows) {
       result[row.provider] = row.total;
     }
     return result;
   } catch {
-    return { anthropic: 0, openai: 0, gemini: 0 };
+    return { anthropic: 0, openai: 0, gemini: 0, ollama: 0 };
   }
 }

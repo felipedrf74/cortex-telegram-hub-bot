@@ -24,6 +24,15 @@ vi.mock('openai', () => {
 vi.mock('../../src/services/anthropic', () => ({
   getDomainSystemPrompt: vi.fn().mockReturnValue('You are a helpful secretary.'),
   getClassifierSystemPrompt: vi.fn().mockReturnValue('Classify into: secretary, triathlon, content.'),
+  getOllamaClassifierSystemPromptCompact: vi.fn().mockReturnValue(null),
+  DOMAIN_SYSTEM_PROMPTS: {},
+  buildReplyLanguageInstruction: vi.fn().mockReturnValue(''),
+  callDomain: vi.fn(),
+  classifyAndExtractImage: vi.fn(),
+  classifyMessage: vi.fn(),
+  continueWithToolResults: vi.fn(),
+  getToolsForDomainCached: vi.fn().mockReturnValue([]),
+  resolveReplyLanguage: vi.fn().mockReturnValue('en'),
   TOOLS: [
     { name: 'set_reminder', description: 'Set a reminder', input_schema: { type: 'object', properties: { message: { type: 'string' } }, required: ['message'] } },
   ],
@@ -65,14 +74,50 @@ vi.mock('../../src/services/database', () => ({
   initDatabase: vi.fn(),
   closeDatabase: vi.fn(),
   findUnexpectedMigrationPrefixCollisions: vi.fn(() => []),
+  assertNoUnexpectedMigrationPrefixCollisions: vi.fn(),
 }));
 
 vi.mock('../../src/portal/telemetry', () => ({
   pushEvent: vi.fn(),
+  _resetTelemetryForTests: vi.fn(),
+  getBotRef: vi.fn(),
+  getGarminRefreshStatus: vi.fn(),
+  getJobMap: vi.fn(),
+  getJobStatuses: vi.fn(),
+  getLastMessageAt: vi.fn(),
+  getRecentEvents: vi.fn(),
+  isBotPollingActive: vi.fn(),
+  isJobEnabled: vi.fn(),
+  isRestarting: vi.fn(),
+  recordGarminRefresh: vi.fn(),
+  recordMessageProcessed: vi.fn(),
+  registerJob: vi.fn(),
+  seedJobLastRunFromHistory: vi.fn(),
+  setBotPollingActive: vi.fn(),
+  setBotRef: vi.fn(),
+  setDbProvider: vi.fn(),
+  setIsRestarting: vi.fn(),
+  setJobEnabledChecker: vi.fn(),
+  setJobFailureNotifier: vi.fn(),
+  wrapJob: vi.fn((name: string, fn: unknown) => fn),
 }));
 
 vi.mock('../../src/services/nexus-points', () => ({
+  NEXUS_POINT_EXPIRY_DAYS: 365,
+  NEXUS_POINT_PACKAGES: [],
+  NEXUS_POINT_USD_ALLOWANCE: 0,
+  debitNexusPoints: vi.fn(),
+  expireOldNexusPointCredits: vi.fn(),
+  getNexusPointBalance: vi.fn(),
+  getNexusPointPackage: vi.fn(),
+  grantNexusPoints: vi.fn(),
+  isNexusPointProductId: vi.fn(() => false),
+  listNexusPointPackages: vi.fn(() => []),
+  lookupNexusPointCreditByProviderTransaction: vi.fn(),
+  revokeNexusPointsCredit: vi.fn(),
   settleNexusPointOverageForUser: (...args: unknown[]) => mockSettleNexusPointOverageForUser(...args),
+  transferNexusPointsCredits: vi.fn(),
+  usdToPoints: vi.fn(() => 0),
 }));
 
 // ─── Imports ─────────────────────────────────────────────────────────
@@ -564,6 +609,29 @@ describe('OpenAIProvider', () => {
         expect.any(String),
         expect.any(Number), // tenant_id
         expect.any(Number), // user_id (added April 9 2026)
+        expect.any(Number),
+        expect.any(Number),
+        expect.any(Number),
+        expect.any(Number),
+        expect.any(Number),
+        'resolved',
+        'gpt-4o-mini',
+      );
+    });
+
+    it('attributes classify usage to ClassifyOptions userId and tenantId', async () => {
+      mockCreate.mockResolvedValueOnce({
+        choices: [{ message: { content: '{"domain":"secretary","confidence":0.9}' }, finish_reason: 'stop' }],
+        model: 'gpt-4o-mini',
+        usage: { prompt_tokens: 100, completion_tokens: 20 },
+      });
+
+      await provider.classify('hello', undefined, { userId: 25, tenantId: 42 });
+      expect(mockDbRun).toHaveBeenCalledWith(
+        'openai_classify',
+        expect.any(String),
+        42,
+        25,
         expect.any(Number),
         expect.any(Number),
         expect.any(Number),

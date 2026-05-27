@@ -1,6 +1,6 @@
 // Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
 
-import type { NexusAnswerContract } from './chat-answer-contract';
+import type { NexusAnswerContract, NexusChatOwnerSkill } from './chat-answer-contract';
 
 export type ChatResponseQualityStatus = 'pass' | 'repaired' | 'blocked';
 
@@ -10,6 +10,48 @@ export interface ChatResponseQualityGateResult {
   contract: NexusAnswerContract;
   issues: string[];
   score: number;
+  // Phase K (2026-05-26) — observability fields so audit_trail can
+  // record whether the second-tier `unverified_success_claim` check
+  // was suppressed for a creative-text owner (cooking / content).
+  qualityGateSkipped?: boolean;
+  qualityGateReason?: string;
+}
+
+// Phase K (Operator A3 + amendment item 3 in second review pass):
+// domains where the model legitimately uses past-tense narrative
+// ("Criei uma receita...") in answer-only contexts. The first-tier
+// check (actionability='execute') still fires for these — only the
+// second-tier `answer_only` fallback is relaxed.
+//
+// `training` is EXCLUDED — "Programei seu bloco Z2" is a scheduling
+// claim. If a contract were accidentally marked answer_only, the
+// exemption would hide a real false-success-claim.
+//
+// `finance` is EXCLUDED — finance answers can assert backend numbers,
+// and the gate must catch unverified backend claims even on
+// answer_only turns.
+const CREATIVE_TEXT_OWNERS: ReadonlySet<NexusChatOwnerSkill> = new Set<NexusChatOwnerSkill>([
+  'cooking',
+  'content',
+]);
+
+// Phase K (Amendment item 4): within CREATIVE_TEXT_OWNERS, content can
+// still claim external side effects ("Publiquei o reel", "Agendei os
+// posts", "Enviei o roteiro"). Those MUST still trigger the gate —
+// the creative-text skip only applies when none of these verbs appear.
+const SIDE_EFFECT_SUCCESS_VERBS: ReadonlyArray<RegExp> = [
+  // English
+  /\b(published|posted|uploaded|submitted)\b/i,
+  /\bsent (the|your|it)\b/i,
+  /\b(scheduled (the|your)|saved to|added to (the|your) calendar)\b/i,
+  // Portuguese
+  /\b(publiquei|postei|subi|cadastrei|programei)\b/i,
+  /\benviei (o|a|os|as|isso|para)\b/i,
+  /\b(agendei (o|a|os|as)|atualizei (o|a)|adicionei ao calend[áa]rio)\b/i,
+];
+
+function containsSideEffectSuccessVerb(text: string): boolean {
+  return SIDE_EFFECT_SUCCESS_VERBS.some((re) => re.test(text));
 }
 
 const RAW_DEBUG_PATTERNS = [
@@ -88,7 +130,9 @@ export function applyChatResponseQualityGate(input: {
   text: string;
   contract: NexusAnswerContract;
 }): ChatResponseQualityGateResult {
-  const issues = detectChatResponseQualityIssues(input.text, input.contract);
+  const detect = detectChatResponseQualityIssuesWithSkipInfo(input.text, input.contract);
+  const issues = detect.issues;
+  const phaseKSkipReason = detect.creativeTextOwnerSkipReason;
   if (issues.length === 0) {
     return {
       status: 'pass',
@@ -96,6 +140,8 @@ export function applyChatResponseQualityGate(input: {
       contract: input.contract,
       issues,
       score: 1,
+      qualityGateSkipped: !!phaseKSkipReason,
+      qualityGateReason: phaseKSkipReason ?? 'pass',
     };
   }
 
@@ -128,16 +174,40 @@ export function applyChatResponseQualityGate(input: {
       ? repairRecipeStructure(sanitized, input.contract.language)
     : sanitized;
 
+  const firstIssue = issues[0] ?? 'unknown';
   return {
     status: hasOnlyRepairableIssues(issues) ? 'repaired' : 'blocked',
     text: repairedText,
     contract,
     issues,
     score: Math.max(0, 1 - issues.length * 0.2),
+    qualityGateSkipped: !!phaseKSkipReason,
+    qualityGateReason: phaseKSkipReason
+      ?? (hasOnlyRepairableIssues(issues) ? `repaired:${firstIssue}` : `blocked:${firstIssue}`),
   };
 }
 
+/**
+ * Phase K (2026-05-26): public-facing detector that wraps the
+ * internal "with skip info" version. Existing callers continue to
+ * receive only the string[] of issues.
+ */
 export function detectChatResponseQualityIssues(text: string, contract: NexusAnswerContract): string[] {
+  return detectChatResponseQualityIssuesWithSkipInfo(text, contract).issues;
+}
+
+/**
+ * Phase K internal helper — returns issues AND surfaces whether the
+ * second-tier `unverified_success_claim` check was suppressed for a
+ * creative-text owner (cooking/content). The caller uses this to set
+ * `qualityGateSkipped` + `qualityGateReason` in the
+ * `ChatResponseQualityGateResult` so audit_trail can record the
+ * decision.
+ */
+function detectChatResponseQualityIssuesWithSkipInfo(
+  text: string,
+  contract: NexusAnswerContract,
+): { issues: string[]; creativeTextOwnerSkipReason: string | null } {
   const issues = new Set<string>();
   const trimmed = text.trim();
 
@@ -148,12 +218,38 @@ export function detectChatResponseQualityIssues(text: string, contract: NexusAns
   // pattern scan so `You said: "I scheduled it for 2:00."` doesn't
   // fire a fake-success rewrite.
   const unquoted = stripQuotedText(trimmed);
-  const claimsSuccess = SUCCESS_CLAIM_PATTERNS.some((pattern) => pattern.test(unquoted))
-    || IMPLIED_SUCCESS_PATTERNS.some((pattern) => pattern.test(unquoted));
+  // Phase K Codex round-9 fix (F3): include SIDE_EFFECT_SUCCESS_VERBS
+  // in `claimsSuccess`. Verbs like `publiquei`/`postei`/`programei`
+  // aren't in SUCCESS_CLAIM_PATTERNS, so the previous predicate left
+  // them unflagged in the gate — defeating the operator's defense
+  // against content workflow false-success claims.
+  const matchesSuccessClaim = SUCCESS_CLAIM_PATTERNS.some((pattern) => pattern.test(unquoted));
+  const matchesImpliedSuccess = IMPLIED_SUCCESS_PATTERNS.some((pattern) => pattern.test(unquoted));
+  const matchesSideEffectVerb = containsSideEffectSuccessVerb(unquoted);
+  const claimsSuccess = matchesSuccessClaim || matchesImpliedSuccess || matchesSideEffectVerb;
+
+  // Phase K Codex round-9 fix (F4): the live cooking contract comes
+  // through as `actionability='execute'` (intent='cooking.create'),
+  // not 'answer_only'. The first-tier check fires before the second-
+  // tier creative-text skip is even considered, so cooking recipes
+  // were still being replaced with the canned text. Apply the
+  // CREATIVE_TEXT_OWNERS skip HERE too — but ONLY when there's no
+  // side-effect verb. Cooking/content with side-effect verbs ("Publiquei
+  // o reel") MUST still trip the gate. Finance and training remain
+  // strict on the first-tier check.
+  const isCreativeTextOwnerExecuteSkip =
+    contract.actionability === 'execute'
+    && claimsSuccess
+    && contract.verificationStatus !== 'verified'
+    && contract.verificationStatus !== 'partial_failure'
+    && CREATIVE_TEXT_OWNERS.has(contract.ownerSkill)
+    && !matchesSideEffectVerb;
+
   if (contract.actionability === 'execute'
     && claimsSuccess
     && contract.verificationStatus !== 'verified'
-    && contract.verificationStatus !== 'partial_failure') {
+    && contract.verificationStatus !== 'partial_failure'
+    && !isCreativeTextOwnerExecuteSkip) {
     issues.add('unverified_success_claim');
   }
   // Catch the harder case: actionability is "answer_only" (read/explain
@@ -170,14 +266,42 @@ export function detectChatResponseQualityIssues(text: string, contract: NexusAns
   // The remaining surface is the hallucination case: an answer_only
   // turn that claims a write happened with no grounding and no
   // verification.
-  if (contract.actionability === 'answer_only'
+  //
+  // Phase K (2026-05-26) — added a final CREATIVE_TEXT_OWNERS predicate.
+  // Cooking and content domains generate past-tense self-narrative
+  // ("Criei uma receita...") that the model uses to describe its own
+  // output. That's not a real action claim. Skip the second-tier check
+  // for those owners — but ONLY when the response contains NO side-
+  // effect success verb (publiquei/postei/agendei/enviei/scheduled/etc.).
+  // Compute the "would have flagged but skipped" case explicitly so
+  // the caller can set qualityGateSkipped correctly.
+  const matchesAnswerOnlySuccessPattern =
+    contract.actionability === 'answer_only'
     && claimsSuccess
     && hasConcreteStateSpecifics(unquoted)
     && contract.routeKind !== 'local_read'
     && !hasScopedStateGrounding(contract)
-    && contract.verificationStatus !== 'verified') {
+    && contract.verificationStatus !== 'verified';
+
+  const isCreativeTextOwnerSkip =
+    matchesAnswerOnlySuccessPattern
+    && CREATIVE_TEXT_OWNERS.has(contract.ownerSkill)
+    && !containsSideEffectSuccessVerb(unquoted);
+
+  if (matchesAnswerOnlySuccessPattern && !isCreativeTextOwnerSkip) {
     issues.add('unverified_success_claim');
   }
+
+  // Phase K (Codex round-9 fix F4): merge skip-decision across BOTH
+  // tiers. If either the execute-path skip OR the answer_only skip
+  // fired, surface a single `creative_text_owner:<ownerSkill>` reason.
+  // Execute skip takes precedence in the reason string only because
+  // it's the higher-risk path; the actual outcome (gate didn't fire)
+  // is the same.
+  const creativeTextOwnerSkipReason =
+    isCreativeTextOwnerExecuteSkip ? `creative_text_owner:${contract.ownerSkill}:execute`
+    : isCreativeTextOwnerSkip ? `creative_text_owner:${contract.ownerSkill}`
+    : null;
   if (shouldEnforceLocalStateGrounding(contract)
     && !hasScopedStateGrounding(contract)
     && /\b(my|mine|today|this week|calendar|task|meu|minha|hoje|esta semana|agenda|tarefa)\b/i.test(unquoted)) {
@@ -203,7 +327,7 @@ export function detectChatResponseQualityIssues(text: string, contract: NexusAns
     issues.add('generic_retry_without_reason');
   }
 
-  return [...issues];
+  return { issues: [...issues], creativeTextOwnerSkipReason };
 }
 
 // Strip ATTRIBUTED quoted text (3+ words inside a SINGLE quote pair)

@@ -8,7 +8,7 @@
  * where the provider exposes cache token counters in our SDK integration.
  */
 
-export type ModelPricingProvider = 'anthropic' | 'openai' | 'gemini';
+export type ModelPricingProvider = 'anthropic' | 'openai' | 'gemini' | 'ollama';
 
 import { logger } from '../utils/logger';
 
@@ -76,6 +76,13 @@ const MODEL_PRICING: ModelPricing[] = [
   { provider: 'anthropic', model: 'claude-haiku-4-5', inputUsdPerMillion: 1.00, outputUsdPerMillion: 5.00, cacheReadUsdPerMillion: 0.10, cacheWriteUsdPerMillion: 1.25 },
   { provider: 'anthropic', model: 'claude-sonnet-4-6', inputUsdPerMillion: 3.00, outputUsdPerMillion: 15.00, cacheReadUsdPerMillion: 0.30, cacheWriteUsdPerMillion: 3.75 },
   { provider: 'anthropic', model: 'claude-opus-4-6', inputUsdPerMillion: 5.00, outputUsdPerMillion: 25.00, cacheReadUsdPerMillion: 0.50, cacheWriteUsdPerMillion: 6.25 },
+
+  // Local Ollama (WO-ollama-local-llm) — zero cost, accounted via
+  // local_request_units column instead of cost_usd dollars. Listed here
+  // so getOrThrow / computeModelUsageCostUsd resolves cleanly without
+  // firing the operator alert for unknown models.
+  { provider: 'ollama', model: 'qwen3.6:35b-a3b-q4_K_M', inputUsdPerMillion: 0, outputUsdPerMillion: 0 },
+  { provider: 'ollama', model: 'qwen3.6:27b-q4_K_M', inputUsdPerMillion: 0, outputUsdPerMillion: 0 },
 ];
 
 const UNRESOLVED_MODEL_SENTINEL_PRICING = {

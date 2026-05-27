@@ -212,7 +212,18 @@ export function getFallbackForDomain(domain: DomainName): ProviderName {
 
 function normalizeDomainProviderOverrides(raw: Record<string, string>): Map<string, ProviderName> {
   const validDomains = new Set(['secretary', 'triathlon', 'content', 'finance', 'cooking']);
-  const validProviders = new Set<ProviderName>(['anthropic', 'openai', 'gemini']);
+  const validProviders = new Set<ProviderName>(['anthropic', 'openai', 'gemini', 'ollama']);
+  // Phase K (2026-05-26, Operator A2): Nexus Hub OllamaProvider v1 does
+  // not support safe local tool orchestration yet. Qwen/Ollama may emit
+  // tool calls via the `tools` parameter, but Nexus Hub must keep
+  // tool-requiring domains on the cloud/tool path until v2 implements
+  // schema validation, argument validation, max tool turns, dry-run
+  // / write-confirmation rules, and tool-result continuation. Secretary
+  // needs calendar/email/tasks tools; triathlon needs training-plans +
+  // calendar. Routing these to Ollama would break user-facing flows.
+  // Drop such overrides with a warn so a misconfigured .env is visible
+  // in logs but doesn't take down the bot.
+  const toolRequiringDomains = new Set(['secretary', 'triathlon']);
   const normalized = new Map<string, ProviderName>();
   for (const [domain, provider] of Object.entries(raw)) {
     if (!validDomains.has(domain)) {
@@ -221,6 +232,13 @@ function normalizeDomainProviderOverrides(raw: Record<string, string>): Map<stri
     }
     if (!validProviders.has(provider as ProviderName)) {
       logger.warn({ domain, provider }, 'Dropped invalid AI_DOMAIN_PROVIDER_OVERRIDES entry: unknown provider');
+      continue;
+    }
+    if (provider === 'ollama' && toolRequiringDomains.has(domain)) {
+      logger.warn(
+        { domain, provider },
+        'Dropped AI_DOMAIN_PROVIDER_OVERRIDES: Nexus Hub OllamaProvider v1 does not support safe local tool orchestration for tool-requiring domains. Falling back to default cloud routing.',
+      );
       continue;
     }
     normalized.set(domain, provider as ProviderName);

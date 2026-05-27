@@ -146,8 +146,14 @@ vi.mock('../../src/services/anthropic', () => ({
   classifyMessage: vi.fn(),
   callDomain: vi.fn(),
   continueWithToolResults: vi.fn(),
+  DOMAIN_SYSTEM_PROMPTS: {},
+  buildReplyLanguageInstruction: vi.fn().mockReturnValue(''),
+  classifyAndExtractImage: vi.fn(),
   getDomainSystemPrompt: vi.fn().mockReturnValue('mock prompt'),
   getClassifierSystemPrompt: vi.fn().mockReturnValue('mock classifier'),
+  getOllamaClassifierSystemPromptCompact: vi.fn().mockReturnValue(null),
+  getToolsForDomainCached: vi.fn().mockReturnValue([]),
+  resolveReplyLanguage: vi.fn().mockReturnValue('en'),
   TOOLS: [],
 }));
 
@@ -186,7 +192,10 @@ describe('AnthropicProvider', () => {
 
       const result = await provider.classify('workout plan');
       expect(result).toEqual({ domain: 'triathlon', confidence: 0.95 });
-      expect(mockClassify).toHaveBeenCalledWith('workout plan', undefined);
+      // Option 3 (O3-A11): AnthropicProvider.classify forwards
+      // options?.userId + options?.tenantId to classifyMessage. With no
+      // options arg, both come through as undefined → 4-arg call.
+      expect(mockClassify).toHaveBeenCalledWith('workout plan', undefined, undefined, undefined);
     });
 
     it('passes context through', async () => {
@@ -194,7 +203,8 @@ describe('AnthropicProvider', () => {
       const ctx = { domain: 'content' as const, lastAssistantMessage: 'Your reel is ready' };
 
       await provider.classify('thanks', ctx);
-      expect(mockClassify).toHaveBeenCalledWith('thanks', ctx);
+      // Option 3 (O3-A11): same 4-arg forwarding as above.
+      expect(mockClassify).toHaveBeenCalledWith('thanks', ctx, undefined, undefined);
     });
   });
 

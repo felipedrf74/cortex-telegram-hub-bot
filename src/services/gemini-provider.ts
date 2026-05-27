@@ -30,6 +30,7 @@ import {
   AIToolCall,
   AIToolResultMessage,
   CallDomainOptions,
+  ClassifyOptions,
   getModelRouting,
   normalizeCallDomainOptions,
 } from './ai-provider';
@@ -807,7 +808,13 @@ export class GeminiProvider implements AIProvider {
   async classify(
     message: string,
     activeContext?: { domain: DomainName; lastAssistantMessage: string },
+    options?: ClassifyOptions,
   ): Promise<ClassificationResult> {
+    // O3-A11/F-new-6: ClassifyOptions must carry user attribution for
+    // routed classify calls. Without this, Gemini-primary classify rows
+    // silently fall back to user_id=0 / tenant_id=0.
+    const usageUserId = options?.userId ?? 0;
+    const usageTenantId = options?.tenantId ?? options?.userId ?? 0;
     try {
       let userContent = message;
       if (activeContext) {
@@ -833,7 +840,7 @@ ${message}`;
           promptTokenCount: usage.promptTokenCount ?? 0,
           candidatesTokenCount: usage.candidatesTokenCount ?? 0,
           cachedContentTokenCount: usage.cachedContentTokenCount ?? 0,
-        }, durationMs);
+        }, durationMs, usageUserId, usageTenantId);
       }
 
       let text = extractText(result);
@@ -873,7 +880,13 @@ ${message}`;
     const opts = normalizeCallDomainOptions(optionsOrMaxTokens);
 
     // Layer 4: tier-aware model selection
-    const routing = resolveGeminiModel(domain, opts.modelTier);
+    // v2: honor options.modelOverride (set by cloud-reasoning-gate so the
+    // approved reasoning model is actually used). When undefined, fall
+    // through to the existing tier-aware routing.
+    const baseRouting = resolveGeminiModel(domain, opts.modelTier);
+    const routing = opts.modelOverride
+      ? { model: opts.modelOverride, maxTokens: baseRouting.maxTokens }
+      : baseRouting;
 
     // Phase 2 Slice A: pass currentMessage so triathlon sub-skill
     // routing picks the sport-specific coach persona prompt.
@@ -934,7 +947,13 @@ ${message}`;
     // is what makes multi-step tool conversations work.
     const opts = normalizeCallDomainOptions(options);
 
-    const routing = resolveGeminiModel(domain, opts.modelTier);
+    // v2: honor options.modelOverride (set by cloud-reasoning-gate so the
+    // approved reasoning model is actually used). When undefined, fall
+    // through to the existing tier-aware routing.
+    const baseRouting = resolveGeminiModel(domain, opts.modelTier);
+    const routing = opts.modelOverride
+      ? { model: opts.modelOverride, maxTokens: baseRouting.maxTokens }
+      : baseRouting;
     // Phase 2 Slice A: same persona routing as callDomain — continuation
     // uses the same currentMessage so the classifier resolves to the
     // same coach file. Mid-turn persona swaps would break tool chains.
