@@ -223,6 +223,50 @@ describe('TaskRoutingProvider', () => {
 
       await expect(provider.classify('test')).rejects.toThrow('also down');
     });
+
+    // ─── Option 3 (O3-A7): low-confidence escalation ─────────────
+    // When the primary classifier returns a result with confidence
+    // below the per-domain threshold, TaskRoutingProvider.classify
+    // retries via the fallback provider WITHOUT marking the primary
+    // unhealthy. Tool-bearing domains (secretary, triathlon) require
+    // a higher confidence bar (0.80) than the default (0.65).
+
+    it('O3-A7: escalates to fallback when primary classify confidence is low (non-tool domain)', async () => {
+      const lowConfCooking: ClassificationResult = { domain: 'cooking', confidence: 0.4 };
+      const highConfCooking: ClassificationResult = { domain: 'cooking', confidence: 0.95 };
+      anthropic.classify.mockResolvedValue(lowConfCooking);
+      openai.classify.mockResolvedValue(highConfCooking);
+
+      const result = await provider.classify('test');
+
+      expect(anthropic.classify).toHaveBeenCalledTimes(1);
+      expect(openai.classify).toHaveBeenCalledTimes(1);
+      expect(result).toEqual(highConfCooking);
+    });
+
+    it('O3-A7: tool-domain (secretary) escalates at higher threshold (0.80) than non-tool (0.65)', async () => {
+      const borderlineSecretary: ClassificationResult = { domain: 'secretary', confidence: 0.75 };
+      const confidentSecretary: ClassificationResult = { domain: 'secretary', confidence: 0.99 };
+      anthropic.classify.mockResolvedValue(borderlineSecretary);
+      openai.classify.mockResolvedValue(confidentSecretary);
+
+      const result = await provider.classify('schedule meeting');
+
+      expect(openai.classify).toHaveBeenCalledTimes(1);
+      expect(result).toEqual(confidentSecretary);
+    });
+
+    it('O3-A7: returns primary low-confidence result when fallback also fails', async () => {
+      const lowConfCooking: ClassificationResult = { domain: 'cooking', confidence: 0.4 };
+      anthropic.classify.mockResolvedValue(lowConfCooking);
+      openai.classify.mockRejectedValue(new Error('fallback unavailable'));
+
+      const result = await provider.classify('test');
+
+      expect(anthropic.classify).toHaveBeenCalledTimes(1);
+      expect(openai.classify).toHaveBeenCalledTimes(1);
+      expect(result).toEqual(lowConfCooking);
+    });
   });
 
   // ─── callDomain (routes based on domain → task type) ────────────

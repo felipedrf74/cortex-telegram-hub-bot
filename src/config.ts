@@ -155,6 +155,17 @@ export const config = {
   // Previous defaults had chat+toolUse primary=anthropic, which was a
   // correct choice at the time but stale by the time the Gemini migration and
   // GPT nano review shipped. The env vars are an override, not a lifeline.
+  // Option 3 (O3-A7): minimum confidence thresholds for the classify
+  // task. When a primary classifier returns a result with confidence
+  // BELOW these thresholds, TaskRoutingProvider.classify retries via
+  // the configured fallback provider. Tool-bearing domains (secretary,
+  // triathlon) require a higher bar because misroute risk is higher.
+  // Defaults are no-op for Gemini (confidence ≈ 1.0 in practice);
+  // become active once AI_CLASSIFY_PRIMARY=ollama.
+  classifyConfidenceThresholds: {
+    minConfidence: parseFloat(process.env.OLLAMA_CLASSIFIER_MIN_CONFIDENCE || '0.65'),
+    toolDomainMinConfidence: parseFloat(process.env.OLLAMA_CLASSIFIER_TOOL_DOMAIN_MIN_CONFIDENCE || '0.80'),
+  },
   providerRouting: {
     // May 2026 — generic chat uses GPT-5.4 nano by default because it is
     // cheaper than Gemini Flash on the chat token mix and stronger on

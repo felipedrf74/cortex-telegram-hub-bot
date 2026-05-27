@@ -345,6 +345,44 @@ Option 3 fixes the problem architecturally: load a small dedicated classifier mo
 | `OLLAMA_CLASSIFIER_MIN_CONFIDENCE` | `0.65` | Non-tool-domain confidence floor (used post-cutover) |
 | `OLLAMA_CLASSIFIER_TOOL_DOMAIN_MIN_CONFIDENCE` | `0.80` | Higher bar for secretary/triathlon |
 
+## Model license — review BEFORE production cutover (O3-A16)
+
+Per Operator amendment O3-A16, verify the active classifier model's
+license is acceptable for Nexus Hub's distribution / commercial policy
+BEFORE flipping `AI_CLASSIFY_PRIMARY=ollama`.
+
+- **`qwen2.5:3b-instruct-q4_K_M`** (default — current Stage 3A) and
+  **`qwen2.5:72b-instruct`** are under the **Qwen license**, NOT
+  Apache 2.0. Read the Qwen license at
+  <https://huggingface.co/Qwen/Qwen2.5-3B-Instruct/blob/main/LICENSE>
+  before declaring production-acceptable. The Qwen license has terms
+  around commercial use, redistribution attribution, and downstream
+  modification that differ from Apache 2.0.
+- The rest of the Qwen2.5 family (`qwen2.5:0.5b/1.5b/7b/14b/32b`) is
+  **Apache 2.0** — `qwen2.5:1.5b-instruct-q4_K_M` (1.0 GB, slightly
+  lower-quality than 3B) is the natural Apache fallback if the 3B
+  Qwen license is unacceptable.
+- **`gemma2:2b-instruct-q4_K_M`** (Tier 1b alternative) is under the
+  **Gemma Terms of Use** — read <https://ai.google.dev/gemma/terms>
+  before adopting. Gemma terms are commercial-friendly but include
+  prohibited-use language Nexus Hub must agree with.
+
+If the operator decides the Qwen 3B license is not acceptable, the
+rollback path is:
+1. `ollama pull qwen2.5:1.5b-instruct-q4_K_M` (Apache 2.0) OR
+   `ollama pull gemma2:2b-instruct-q4_K_M` (Gemma terms).
+2. Replace `OLLAMA_CLASSIFIER_MODEL` in `.env` via the O3-A10 safety
+   pattern (replace-or-append, never duplicate).
+3. Re-run `scripts/llm/classifier-golden-eval.ts` against the new
+   model — the Apache 1.5B and Gemma 2B both fall outside the golden
+   set used to validate Qwen 3B; expect a fresh eval cycle.
+4. PM2 restart `nexus-hub`.
+
+This decision is **deferred until cutover** — the shadow window only
+fires Ollama as a non-blocking secondary, so the Qwen license is not
+yet a production-blocker. It IS a hard gate before
+`AI_CLASSIFY_PRIMARY=ollama` flips.
+
 ## Shadow eval review SQL (operator workflow)
 
 Real shadow rows accumulate as production traffic flows. Periodically (≥50 calls in), the operator runs the review SQL:

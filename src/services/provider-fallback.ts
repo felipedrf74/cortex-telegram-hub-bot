@@ -14,6 +14,7 @@ import { AIProvider, AICallResult, AIToolResultMessage, CallDomainOptions, Class
 import { DomainName, DomainMessage, ClassificationResult } from '../domains/types';
 import { logger } from '../utils/logger';
 import { getCurrentContext } from '../utils/request-context';
+import { config } from '../config';
 
 // ─── Error Classification ─────────────────────────────────────────
 // Only retryable errors should trigger circuit-breaker failures and fallback.
@@ -75,6 +76,25 @@ function isRetryableError(err: any): boolean {
 import { planSecretaryOptimization, type SecretaryOptimization } from './secretary-tools';
 import { TOOLS } from './anthropic';
 import type Anthropic from '@anthropic-ai/sdk';
+
+// ─── Option 3 (O3-A7): low-confidence classify escalation ─────────
+// Domains where misroute risk is highest because they bind to live
+// tool calls (calendar / email / training-plan). When the primary
+// classifier returns one of these with confidence BELOW
+// `toolDomainMinConfidence`, escalate to the configured fallback
+// provider. For non-tool domains use `minConfidence`. The defaults
+// (0.65 / 0.80) are no-ops for Gemini-primary (confidence ≈ 1.0 in
+// practice) and become active when AI_CLASSIFY_PRIMARY=ollama under
+// the Option 3 cutover.
+const TOOL_BEARING_CLASSIFY_DOMAINS: ReadonlySet<string> = new Set(['secretary', 'triathlon']);
+
+function isLowConfidenceClassifyResult(result: ClassificationResult): boolean {
+  const thresholds = config.classifyConfidenceThresholds;
+  if (!thresholds) return false; // defensive: skip if config missing (test fixtures, etc.)
+  const isToolDomain = TOOL_BEARING_CLASSIFY_DOMAINS.has(result.domain);
+  const threshold = isToolDomain ? thresholds.toolDomainMinConfidence : thresholds.minConfidence;
+  return result.confidence < threshold;
+}
 
 // ─── Tenant-safe routing metadata ─────────────────────────────────
 
@@ -883,11 +903,7 @@ export class TaskRoutingProvider implements AIProvider {
     activeContext?: { domain: DomainName; lastAssistantMessage: string },
     options?: ClassifyOptions,
   ): Promise<ClassificationResult> {
-    // O3-A11: forward ClassifyOptions to whichever underlying provider
-    // wins the executeWithFallback race. This lets the Ollama provider
-    // suppress side effects when source='shadow' (O3-A12 OPTION 1) and
-    // honor caller-side cancellation via abortSignal (O3-A18).
-    return this.executeWithFallback('classify', (p) =>
+    const primaryResult = await this.executeWithFallback('classify', (p) =>
       p.classify(message, activeContext, options),
       undefined,
       {
@@ -899,6 +915,51 @@ export class TaskRoutingProvider implements AIProvider {
         operatorOverrideApplied: false,
       },
     );
+
+    // O3-A7 — Confidence-based fallback escalation. When the primary
+    // classifier returns a low-confidence result, retry once through
+    // the fallback provider. Tool-bearing domains (secretary, triathlon)
+    // require a higher confidence bar because misroute risk is higher
+    // (a secretary misclassified as cooking loses the user's scheduling
+    // intent entirely). Defaults are no-op for the current Gemini-primary
+    // path because Gemini's classify confidence is consistently ≥0.95;
+    // becomes active when AI_CLASSIFY_PRIMARY=ollama (Option 3 cutover).
+    //
+    // Why not raise inside the executeWithFallback fn: that would burn
+    // a circuit-breaker failure on the primary, which is wrong — the
+    // primary did its job (returned a result), it was just uncertain.
+    // We escalate WITHOUT marking the primary unhealthy.
+    const pair = this.routing.classify;
+    if (
+      pair.fallback &&
+      pair.fallback.name !== pair.primary.name &&
+      isLowConfidenceClassifyResult(primaryResult)
+    ) {
+      logger.warn(
+        {
+          primaryName: pair.primary.name,
+          fallbackName: pair.fallback.name,
+          predictedDomain: primaryResult.domain,
+          confidence: primaryResult.confidence,
+          isToolDomain: TOOL_BEARING_CLASSIFY_DOMAINS.has(primaryResult.domain),
+        },
+        'classify result below confidence threshold — escalating to fallback provider',
+      );
+      try {
+        const fallbackResult = await pair.fallback.classify(message, activeContext, options);
+        const fm = this.getMetrics(pair.fallback.name);
+        fm.usageCount++;
+        fm.lastSuccessAt = new Date().toISOString();
+        return fallbackResult;
+      } catch (err) {
+        logger.warn(
+          { err: err instanceof Error ? err.message : String(err) },
+          'low-confidence fallback classify failed — returning primary result',
+        );
+        return primaryResult;
+      }
+    }
+    return primaryResult;
   }
 
   // Cache domain-specific provider pairs to avoid re-construction on every call.
