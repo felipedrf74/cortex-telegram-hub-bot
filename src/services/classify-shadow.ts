@@ -47,6 +47,7 @@ import { getDb } from './database';
 import { logger } from '../utils/logger';
 import { getProvider, getActiveProvider } from './provider-registry';
 import { hmacSha256 } from '../utils/hmac';
+import { generateRequestId } from '../utils/request-context';
 import type { ClassificationResult, DomainName } from '../domains/types';
 
 // ─── Knobs ────────────────────────────────────────────────────────
@@ -103,6 +104,9 @@ export async function runOllamaShadowClassification(input: ShadowClassifyInput):
   if (!config.localLLM?.classifyShadow) return;
   if (MAX_IN_FLIGHT === 0) return;
 
+  const requestId = input.requestId ?? generateRequestId();
+  const geminiModel = input.geminiModel ?? 'unknown';
+
   // O3-A19: do not recurse when the live path is already Ollama. If
   // AI_CLASSIFY_PRIMARY=ollama, the live call already produced an
   // Ollama result; running another shadow Ollama call would be a
@@ -110,14 +114,14 @@ export async function runOllamaShadowClassification(input: ShadowClassifyInput):
   // call site ever propagated the trigger by accident.
   const active = getActiveProvider();
   if (active?.name === 'ollama' || active?.name?.startsWith('routing(ollama')) {
-    logger.debug({ requestId: input.requestId }, 'classify-shadow skipped — live path already ollama');
+    logger.debug({ requestId }, 'classify-shadow skipped — live path already ollama');
     return;
   }
 
   // Concurrency cap — drop silently when over capacity.
   if (inFlight >= MAX_IN_FLIGHT && queued >= MAX_QUEUE) {
     logger.debug(
-      { requestId: input.requestId, inFlight, queued, maxInFlight: MAX_IN_FLIGHT, maxQueue: MAX_QUEUE },
+      { requestId, inFlight, queued, maxInFlight: MAX_IN_FLIGHT, maxQueue: MAX_QUEUE },
       'classify-shadow dropped — over capacity',
     );
     return;
@@ -131,7 +135,7 @@ export async function runOllamaShadowClassification(input: ShadowClassifyInput):
     if (!warnedNoSecret) {
       warnedNoSecret = true;
       logger.warn(
-        { requestId: input.requestId },
+        { requestId },
         'classify-shadow: CLASSIFY_SHADOW_HASH_SECRET not set — shadow rows will not be written until the secret is generated',
       );
     }
@@ -145,7 +149,7 @@ export async function runOllamaShadowClassification(input: ShadowClassifyInput):
     if (!warnedNoProvider) {
       warnedNoProvider = true;
       logger.warn(
-        { requestId: input.requestId },
+        { requestId },
         'classify-shadow: ollama provider unavailable — skipping (set OLLAMA_ENABLED=true if you want shadow eval)',
       );
     }
@@ -168,14 +172,14 @@ export async function runOllamaShadowClassification(input: ShadowClassifyInput):
         gemini_domain, gemini_confidence, gemini_duration_ms
       ) VALUES (datetime('now'), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
-      input.requestId ?? null,
+      requestId,
       input.userId ?? 0,
       input.tenantId ?? 0,
       messageHash,
       SCHEMA_VERSION,
       config.ollama?.classifierModel ?? null,
       process.env.OLLAMA_CLASSIFIER_PROMPT_VERSION || PROMPT_VERSION_DEFAULT,
-      input.geminiModel ?? null,
+      geminiModel,
       input.geminiResult.domain,
       input.geminiResult.confidence,
       input.geminiDurationMs,
@@ -183,7 +187,7 @@ export async function runOllamaShadowClassification(input: ShadowClassifyInput):
     rowId = insert.lastInsertRowid;
   } catch (err) {
     queued--;
-    logger.warn({ err: err instanceof Error ? err.message : String(err), requestId: input.requestId }, 'classify-shadow: insert baseline row failed');
+    logger.warn({ err: err instanceof Error ? err.message : String(err), requestId }, 'classify-shadow: insert baseline row failed');
     return;
   }
 
@@ -206,7 +210,7 @@ export async function runOllamaShadowClassification(input: ShadowClassifyInput):
     ollamaResult = await ollama.classify(input.message, input.activeContext, {
       userId: input.userId,
       tenantId: input.tenantId,
-      requestId: input.requestId,
+      requestId,
       source: 'shadow',         // O3-A19: opt-in to shadow path
       recordUsage: false,       // O3-A12 OPTION 1: skip api_usage / rate-limit
       timeoutMs: SHADOW_TIMEOUT_MS,
@@ -243,7 +247,7 @@ export async function runOllamaShadowClassification(input: ShadowClassifyInput):
     );
   } catch (err) {
     logger.warn(
-      { err: err instanceof Error ? err.message : String(err), rowId, requestId: input.requestId },
+      { err: err instanceof Error ? err.message : String(err), rowId, requestId },
       'classify-shadow: UPDATE failed (row inserted but never updated)',
     );
   }

@@ -362,6 +362,30 @@ describe('runOllamaShadowClassification', () => {
     expect(updateArgs[4]).toBe(1);                 // agree=1
   });
 
+  it('O3-A21: row insert self-populates request_id and gemini_model when caller omits them', async () => {
+    process.env.CLASSIFY_SHADOW_HASH_SECRET = 'test-secret-' + 'x'.repeat(32);
+    process.env.OLLAMA_CLASSIFIER_PROMPT_VERSION = 'v1';
+
+    providerHolder.active = { name: 'gemini' };
+    providerHolder.ollama = {
+      name: 'ollama',
+      classify: vi.fn().mockResolvedValue({ domain: 'cooking', confidence: 0.95 }),
+    };
+
+    await runOllamaShadowClassification({
+      message: 'cria uma receita de kibe',
+      userId: 7,
+      tenantId: 1,
+      geminiResult: { domain: 'cooking', confidence: 0.9 },
+      geminiDurationMs: 1010,
+    });
+
+    expect(dbRows).toHaveLength(1);
+    const insertArgs = dbRows[0].args as unknown[];
+    expect(insertArgs[0]).toEqual(expect.stringMatching(/^[a-z0-9]+-[a-z0-9]+$/));
+    expect(insertArgs[7]).toBe('unknown');
+  });
+
   it('O3-A12 OPTION 1: shadow path passes source="shadow" + recordUsage:false to ollama.classify', async () => {
     process.env.CLASSIFY_SHADOW_HASH_SECRET = 'test-secret-' + 'x'.repeat(32);
 
