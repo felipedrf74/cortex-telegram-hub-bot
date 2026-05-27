@@ -45,14 +45,46 @@ vi.mock('../../src/services/anthropic', () => ({
 }));
 vi.mock('../../src/services/database', () => ({
   getDb: () => ({ prepare: () => ({ run: vi.fn(), all: () => [], get: () => undefined }) }),
+  initDatabase: vi.fn(),
+  closeDatabase: vi.fn(),
+  findUnexpectedMigrationPrefixCollisions: vi.fn(() => []),
+  assertNoUnexpectedMigrationPrefixCollisions: vi.fn(),
 }));
-vi.mock('../../src/portal/telemetry', () => ({ pushEvent: vi.fn() }));
-vi.mock('../../src/services/api-usage-fallback', () => ({ insertApiUsageFallback: vi.fn(() => 0) }));
+vi.mock('../../src/portal/telemetry', () => ({
+  pushEvent: vi.fn(),
+  _resetTelemetryForTests: vi.fn(),
+  getBotRef: vi.fn(),
+  getGarminRefreshStatus: vi.fn(),
+  getJobMap: vi.fn(),
+  getJobStatuses: vi.fn(),
+  getLastMessageAt: vi.fn(),
+  getRecentEvents: vi.fn(),
+  isBotPollingActive: vi.fn(),
+  isJobEnabled: vi.fn(),
+  isRestarting: vi.fn(),
+  recordGarminRefresh: vi.fn(),
+  recordMessageProcessed: vi.fn(),
+  registerJob: vi.fn(),
+  seedJobLastRunFromHistory: vi.fn(),
+  setBotPollingActive: vi.fn(),
+  setBotRef: vi.fn(),
+  setDbProvider: vi.fn(),
+  setIsRestarting: vi.fn(),
+  setJobEnabledChecker: vi.fn(),
+  setJobFailureNotifier: vi.fn(),
+  wrapJob: vi.fn((name: string, fn: unknown) => fn),
+}));
+vi.mock('../../src/services/api-usage-fallback', () => ({
+  getApiUsageColumns: vi.fn(() => new Set<string>()),
+  insertApiUsageFallback: vi.fn(() => 0),
+}));
 vi.mock('../../src/services/local-llm-rate-limiter', () => ({
+  _resetLocalLLMRateLimiterSchemaCacheForTests: vi.fn(),
   checkAndConsumeLocalLLMRateLimit: vi.fn(() => ({ allowed: true })),
 }));
 vi.mock('../../src/utils/logger', () => ({
   logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
+  LOGGER_REDACTION_PATHS: [],
 }));
 
 import { stripThinkBlocks } from '../../src/services/ollama-provider';

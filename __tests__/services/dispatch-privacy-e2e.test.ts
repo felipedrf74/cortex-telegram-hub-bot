@@ -40,10 +40,22 @@ const { mockConfig } = vi.hoisted(() => ({
 vi.mock('../../src/config', () => ({ config: mockConfig }));
 vi.mock('../../src/utils/logger', () => ({
   logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
+  LOGGER_REDACTION_PATHS: [],
 }));
-vi.mock('../../src/utils/request-context', () => ({ getCurrentContext: () => ({}) }));
+vi.mock('../../src/utils/request-context', () => ({
+  generateRequestId: () => 'test-request-id',
+  getCurrentContext: () => ({}),
+  getCurrentRequestId: () => 'test-request-id',
+  runWithContext: (_context: unknown, fn: () => unknown) => fn(),
+}));
 vi.mock('../../src/services/secretary-tools', () => ({
+  SECRETARY_TOOL_PACKS: {},
+  analyzeIntent: vi.fn(),
+  getFilteredToolsForMessage: vi.fn(() => []),
+  getToolPacksForMessage: vi.fn(() => []),
   planSecretaryOptimization: () => ({ modelTier: 'light' as const, slicedHistory: [] }),
+  secretaryNeedsHeavyModel: vi.fn(() => false),
+  secretaryNeedsSonnet: vi.fn(() => false),
 }));
 vi.mock('../../src/services/anthropic', () => ({
   TOOLS: [],
@@ -64,6 +76,10 @@ const cloudProvider = {
 
 vi.mock('../../src/services/provider-registry', () => ({
   getProvider: (name: string) => (name === 'gemini' ? cloudProvider : null),
+  getActiveProvider: () => null,
+  clearProviderCache: vi.fn(),
+  createRoutingProvider: vi.fn(),
+  ensureActiveProvider: vi.fn(),
 }));
 
 vi.mock('../../src/services/cloud-reasoning-gate', async () => {

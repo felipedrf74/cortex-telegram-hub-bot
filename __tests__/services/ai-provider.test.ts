@@ -146,8 +146,14 @@ vi.mock('../../src/services/anthropic', () => ({
   classifyMessage: vi.fn(),
   callDomain: vi.fn(),
   continueWithToolResults: vi.fn(),
+  DOMAIN_SYSTEM_PROMPTS: {},
+  buildReplyLanguageInstruction: vi.fn().mockReturnValue(''),
+  classifyAndExtractImage: vi.fn(),
   getDomainSystemPrompt: vi.fn().mockReturnValue('mock prompt'),
   getClassifierSystemPrompt: vi.fn().mockReturnValue('mock classifier'),
+  getOllamaClassifierSystemPromptCompact: vi.fn().mockReturnValue(null),
+  getToolsForDomainCached: vi.fn().mockReturnValue([]),
+  resolveReplyLanguage: vi.fn().mockReturnValue('en'),
   TOOLS: [],
 }));
 

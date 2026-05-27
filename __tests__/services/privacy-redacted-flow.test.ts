@@ -69,10 +69,17 @@ const { mockConfig, mockLogger } = vi.hoisted(() => ({
 }));
 
 vi.mock('../../src/config', () => ({ config: mockConfig }));
-vi.mock('../../src/utils/logger', () => ({ logger: mockLogger }));
-vi.mock('../../src/utils/request-context', () => ({ getCurrentContext: () => ({}) }));
+vi.mock('../../src/utils/logger', () => ({ logger: mockLogger, LOGGER_REDACTION_PATHS: [] }));
+vi.mock('../../src/utils/request-context', () => ({
+  generateRequestId: () => 'test-request-id',
+  getCurrentContext: () => ({}),
+  getCurrentRequestId: () => 'test-request-id',
+  runWithContext: (_context: unknown, fn: () => unknown) => fn(),
+}));
 vi.mock('../../src/services/ollama-provider', () => ({
   OllamaProvider: class { name = 'ollama'; },
+  isOllamaConfigured: () => true,
+  normalizeClassificationPayload: (payload: unknown) => payload,
   stripThinkBlocks: (text: string | null | undefined): string => String(text ?? ''),
 }));
 

@@ -40,6 +40,7 @@ const { mockConfig } = vi.hoisted(() => {
 vi.mock('../../src/config', () => ({ config: mockConfig }));
 vi.mock('../../src/utils/logger', () => ({
   logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
+  LOGGER_REDACTION_PATHS: [],
 }));
 // v2.8: cloud-reasoning-gate now statically imports stripThinkBlocks from
 // ollama-provider. Stub it here to avoid the transitive import chain.
@@ -60,6 +61,8 @@ vi.mock('../../src/services/ollama-provider', () => ({
     return out.trim();
   },
   OllamaProvider: class { name = 'ollama'; },
+  isOllamaConfigured: () => true,
+  normalizeClassificationPayload: (payload: unknown) => payload,
 }));
 
 import { selectApprovedCloudReasoningProvider } from '../../src/services/cloud-reasoning-gate';

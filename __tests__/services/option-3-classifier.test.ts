@@ -107,6 +107,7 @@ vi.mock('../../src/utils/logger', () => ({
     warn: (obj: unknown, msg?: string) => { logCalls.push({ level: 'warn', obj, msg: msg ?? String(obj) }); },
     error: (obj: unknown, msg?: string) => { logCalls.push({ level: 'error', obj, msg: msg ?? String(obj) }); },
   },
+  LOGGER_REDACTION_PATHS: [],
 }));
 
 vi.mock('../../src/services/database', () => ({
@@ -127,11 +128,18 @@ vi.mock('../../src/services/database', () => ({
       },
     }),
   }),
+  initDatabase: vi.fn(),
+  closeDatabase: vi.fn(),
+  findUnexpectedMigrationPrefixCollisions: vi.fn(() => []),
+  assertNoUnexpectedMigrationPrefixCollisions: vi.fn(),
 }));
 
 vi.mock('../../src/services/provider-registry', () => ({
   getProvider: (name: string) => (name === 'ollama' ? providerHolder.ollama : null),
   getActiveProvider: () => providerHolder.active,
+  clearProviderCache: vi.fn(),
+  createRoutingProvider: vi.fn(),
+  ensureActiveProvider: vi.fn(),
 }));
 
 // ─── Imports under test (after mocks) ──────────────────────────────

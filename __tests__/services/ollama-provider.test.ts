@@ -77,12 +77,41 @@ vi.mock('../../src/services/database', () => ({
   getDb: () => ({
     prepare: () => ({ run: runMock, all: () => [], get: () => undefined }),
   }),
+  initDatabase: vi.fn(),
+  closeDatabase: vi.fn(),
+  findUnexpectedMigrationPrefixCollisions: vi.fn(() => []),
+  assertNoUnexpectedMigrationPrefixCollisions: vi.fn(),
 }));
-vi.mock('../../src/portal/telemetry', () => ({ pushEvent: vi.fn() }));
+vi.mock('../../src/portal/telemetry', () => ({
+  pushEvent: vi.fn(),
+  _resetTelemetryForTests: vi.fn(),
+  getBotRef: vi.fn(),
+  getGarminRefreshStatus: vi.fn(),
+  getJobMap: vi.fn(),
+  getJobStatuses: vi.fn(),
+  getLastMessageAt: vi.fn(),
+  getRecentEvents: vi.fn(),
+  isBotPollingActive: vi.fn(),
+  isJobEnabled: vi.fn(),
+  isRestarting: vi.fn(),
+  recordGarminRefresh: vi.fn(),
+  recordMessageProcessed: vi.fn(),
+  registerJob: vi.fn(),
+  seedJobLastRunFromHistory: vi.fn(),
+  setBotPollingActive: vi.fn(),
+  setBotRef: vi.fn(),
+  setDbProvider: vi.fn(),
+  setIsRestarting: vi.fn(),
+  setJobEnabledChecker: vi.fn(),
+  setJobFailureNotifier: vi.fn(),
+  wrapJob: vi.fn((name: string, fn: unknown) => fn),
+}));
 vi.mock('../../src/services/api-usage-fallback', () => ({
+  getApiUsageColumns: vi.fn(() => new Set<string>()),
   insertApiUsageFallback: vi.fn(() => 0),
 }));
 vi.mock('../../src/services/local-llm-rate-limiter', () => ({
+  _resetLocalLLMRateLimiterSchemaCacheForTests: vi.fn(),
   checkAndConsumeLocalLLMRateLimit: vi.fn(() => ({ allowed: true })),
 }));
 
@@ -95,6 +124,7 @@ vi.mock('../../src/utils/logger', () => ({
     error: (obj: Record<string, unknown>, _msg?: string) => { logCalls.push({ level: 'error', ...obj, _msg }); },
     debug: (obj: Record<string, unknown>, _msg?: string) => { logCalls.push({ level: 'debug', ...obj, _msg }); },
   },
+  LOGGER_REDACTION_PATHS: [],
 }));
 
 // Import AFTER all mocks so the provider picks them up.
