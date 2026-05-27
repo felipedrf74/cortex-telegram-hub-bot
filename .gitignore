@@ -1,6 +1,7 @@
 node_modules/
 dist/
-data/
+data/*
+!data/classifier-golden-set.json
 .env
 .env.*
 # Local Docker sandbox env template — tracked; private .env.local is not.

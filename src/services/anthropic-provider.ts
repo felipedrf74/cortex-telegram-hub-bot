@@ -14,6 +14,7 @@ import {
   AIToolCall,
   AIToolResultMessage,
   CallDomainOptions,
+  ClassifyOptions,
 } from './ai-provider';
 import { DomainName, DomainMessage, ClassificationResult } from '../domains/types';
 import {
@@ -49,8 +50,15 @@ export class AnthropicProvider implements AIProvider {
   async classify(
     message: string,
     activeContext?: { domain: DomainName; lastAssistantMessage: string },
+    options?: ClassifyOptions,
   ): Promise<ClassificationResult> {
-    return classifyMessage(message, activeContext);
+    // O3-A11: classify options bag. Anthropic attribution already
+    // happens via trackedCreate inside classifyMessage; the options
+    // arrive here only for interface compliance + forward-compat with
+    // future per-call timeout/cancellation features. Pass userId/tenantId
+    // through so the legacy classifyMessage path can route them to
+    // trackedCreate.
+    return classifyMessage(message, activeContext, options?.userId, options?.tenantId);
   }
 
   async callDomain(

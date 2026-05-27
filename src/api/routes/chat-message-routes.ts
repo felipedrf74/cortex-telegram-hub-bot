@@ -360,7 +360,7 @@ function buildChatAnswerMetadata(input: {
     const fallbackPolicy = applyChatFallbackPolicy(contract);
     const gated = qualityGateEnabled
       ? applyChatResponseQualityGate({ text: input.responseText, contract: fallbackPolicy.contract })
-      : { text: input.responseText, contract: fallbackPolicy.contract, status: 'pass' as const, issues: [], score: 1 };
+      : { text: input.responseText, contract: fallbackPolicy.contract, status: 'pass' as const, issues: [], score: 1, qualityGateSkipped: false, qualityGateReason: 'gate_disabled' };
     return {
       text: gated.text,
       contract: gated.contract,
@@ -375,6 +375,11 @@ function buildChatAnswerMetadata(input: {
           issues: [...fallbackPolicy.issues, ...gated.issues],
           score: gated.score,
           qualityGateDisabled: !qualityGateEnabled,
+          // Phase K (2026-05-26) observability — surface the gate's
+          // skip decision so audit_trail / portal show whether the
+          // creative-text-owner short-circuit fired for this turn.
+          qualityGateSkipped: gated.qualityGateSkipped === true,
+          qualityGateReason: gated.qualityGateReason ?? (qualityGateEnabled ? 'pass' : 'gate_disabled'),
         },
         fallbackPolicy: fallbackPolicy.policy,
       },

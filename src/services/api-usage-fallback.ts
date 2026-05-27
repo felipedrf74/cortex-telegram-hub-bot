@@ -2,7 +2,7 @@
 
 import type Database from 'better-sqlite3';
 
-export type ApiUsagePricingStatus = 'resolved' | 'unresolved' | 'legacy';
+export type ApiUsagePricingStatus = 'resolved' | 'unresolved' | 'legacy' | 'zero-cost';
 
 export interface ApiUsageFallbackInsertInput {
   category: string;
@@ -18,6 +18,13 @@ export interface ApiUsageFallbackInsertInput {
   durationMs?: number | null;
   pricingStatus?: ApiUsagePricingStatus;
   pricingModelKey?: string | null;
+  // v2.6 (angry-QA-found): local LLM call metering. The Ollama provider's
+  // primary INSERT path sets `local_request_units=1` directly in its SQL
+  // text. Without this field on the fallback path, fallback rows landed
+  // with the default 0 and the local-llm-rate-limiter under-counted —
+  // a single user could exceed daily/hourly caps by repeatedly tripping
+  // the primary INSERT's catch handler.
+  localRequestUnits?: number | null;
 }
 
 const columnCache = new WeakMap<Database.Database, Set<string>>();
@@ -58,6 +65,7 @@ export function insertApiUsageFallback(
   add('provider', input.provider);
   add('pricing_status', input.pricingStatus ?? 'legacy');
   add('pricing_model_key', input.pricingModelKey ?? null);
+  add('local_request_units', input.localRequestUnits ?? 0);
 
   if (insertColumns.length === 0) return null;
 

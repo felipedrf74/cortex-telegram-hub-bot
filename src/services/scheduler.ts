@@ -727,6 +727,7 @@ export function startScheduler(bot?: any): void {
   registerJob('event_backbone_worker', 'Event Backbone Worker', '* * * * *', 'system');
   registerJob('event_backbone_cleanup', 'Event Backbone Cleanup', '10 0 * * *', 'system');
   registerJob('nexus_points_expiry', 'Nexus Points Expiry Sweep', '0 4 * * *', 'system');
+  registerJob('classify_shadow_prune', 'Classify Shadow Retention Prune', '17 4 * * *', 'system');
 
   // Seed lastRunAt from DB so the DST watchdog doesn't re-fire jobs after a restart
   seedJobLastRunFromHistory();
@@ -1757,6 +1758,37 @@ export function startScheduler(bot?: any): void {
 
   cron.schedule('0 4 * * *', wrapJob('nexus_points_expiry', async () => {
     expireOldNexusPointCredits();
+  }), { timezone: 'UTC' });
+
+  // ── Option 3 (O3-A23): classify_shadow_runs retention prune ────────
+  // Deletes shadow-eval rows older than CLASSIFY_SHADOW_RETENTION_DAYS
+  // (default 30), but preserves any row the operator manually reviewed
+  // (manually_reviewed=1) — those carry training-data value indefinitely.
+  // Runs daily at 04:17 UTC, after the nexus_points_expiry tick.
+  cron.schedule('17 4 * * *', wrapJob('classify_shadow_prune', async () => {
+    const raw = process.env.CLASSIFY_SHADOW_RETENTION_DAYS;
+    const days = (() => {
+      const n = raw ? parseInt(raw, 10) : NaN;
+      return Number.isFinite(n) && n >= 1 && n <= 365 ? n : 30;
+    })();
+    try {
+      const db = getDb();
+      const result = db.prepare(`
+        DELETE FROM classify_shadow_runs
+        WHERE ts < datetime('now', '-' || ? || ' days')
+          AND manually_reviewed = 0
+      `).run(days);
+      logger.info(
+        { deletedRows: result.changes, retentionDays: days },
+        'classify_shadow_runs pruned',
+      );
+    } catch (err) {
+      // Table may not exist on a brand-new DB before migration 171 runs.
+      logger.warn(
+        { err: err instanceof Error ? err.message : String(err), retentionDays: days },
+        'classify_shadow_prune: skipped (table missing or query failed)',
+      );
+    }
   }), { timezone: 'UTC' });
 
   // Seed SEO keywords (only if table is empty)

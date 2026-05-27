@@ -1,7 +1,28 @@
 # Model Routing Current State
 
 Generated: 2026-05-19
+Updated: 2026-05-26 (Phase K + Option 3 addendum below)
 Audited branch: `codex/chat-reliability`
+
+> **2026-05-26 ADDENDUM — read this first.** The body below describes the
+> routing architecture as of 2026-05-19 and is still accurate at the
+> framework level. Two material changes have since landed in production
+> and are documented at the end of this file under "Phase K (2026-05-26)"
+> and "Option 3 (2026-05-26 late)":
+> - Phase K: Ollama (35B-A3B) became the cloud-replacement target for
+>   pure-text domains (cooking, content, finance). Currently ROLLED BACK
+>   on production — see Phase K M-fixes.
+> - Option 3: a dedicated small classifier model (qwen2.5:3b) shadow-
+>   evaluates against the live Gemini classify path. `AI_CLASSIFY_PRIMARY`
+>   stays `gemini` while shadow data accumulates.
+>
+> The "current effective routing" today is:
+> - `classify` → **gemini → openai** (live), plus fire-and-forget Ollama shadow
+> - `chat` → gemini → openai
+> - `tool-use` → gemini → openai
+> - `scriptGeneration` → ollama → none
+> - `localReasoning` → ollama → approved_cloud_reasoning
+> - `domain` overlays (Phase K rollback): secretary→openai, triathlon/content/finance/cooking→gemini
 
 ## Executive Summary
 
@@ -286,3 +307,31 @@ Future Chat changes must preserve these properties:
 - Keep category tags accurate, but do not treat category tags as routing controls.
 - Pass tenant/user scope into context retrieval and persistence before any model call.
 - Add observability for provider/model/fallback without logging sensitive prompt content.
+
+
+---
+
+# Phase K (2026-05-26) — Ollama as response source for pure-text domains
+
+After Codex angry-QA rounds 5–9, Phase K shipped to production with `AI_DOMAIN_PROVIDER_OVERRIDES=cooking=ollama,content=ollama,finance=ollama` flipping the three pure-text domain handlers to run on the local 35B-A3B model.
+
+**Status (2026-05-26):** ROLLED BACK. Codex M-fix series found that the 35B model on this CPU could not consistently produce non-truncated responses for cooking/content within the `CHAT_DOMAIN_HANDLER_TIMEOUT_MS=40000` window, causing fallback churn. Production reverted to `cooking/content/finance → gemini` via env removal of the AI_DOMAIN_PROVIDER_OVERRIDES line. The hard-blocks (Phase K Step 2 + 2b in `domain-provider-router.normalizeDomainProviderOverrides` and `provider-fallback.shouldBypassOllamaForToolOrWrite`) remain in place — they prevent secretary/triathlon from ever routing to Ollama even if env override re-enabled.
+
+Phase K-related quality-gate enhancements (`CREATIVE_TEXT_OWNERS = cooking + content`, side-effect-verb blocklist) remain in `chat-response-quality-gate.ts` and ARE still active — they catch creative narratives like "Criei uma receita de kibe..." for the answer-only domains without false-positive flagging.
+
+# Option 3 (2026-05-26 late) — dedicated small classifier on Ollama
+
+The Phase K rollback exposed a separate problem: classify-via-Ollama-on-35B took 50–60s wall-clock per call when `AI_CLASSIFY_PRIMARY=ollama` was set (the prompt is ~1032 tokens; 35B on this CPU at that prompt size is slow). Codex flagged as F-new-5. Option 3 fixes the architecture: a dedicated small classifier model (`qwen2.5:3b-instruct-q4_K_M`, 1.9 GB) replaces the 35B for classify. The 35B stays loaded for script-generation and local-reasoning paths (not user-blocking).
+
+**Status (2026-05-26 23:04 UTC):** Shadow-eval enabled on production. Live classify stays on Gemini. Every Gemini classify call also fires (fire-and-forget) an Ollama classify call; the comparison goes to a new `classify_shadow_runs` table. Cutover from Gemini → Ollama is gated on:
+1. ≥50 real shadow rows accumulated
+2. Operator manual review of every disagreement (Gemini is baseline NOT ground truth per O3-A24)
+3. Effective agree ≥90%, tool-domain (secretary/triathlon) recall ≥95%, p95 latency ≤3000ms
+
+Architectural details in `docs/runbooks/ollama-local-llm.md#option-3---dedicated-small-classifier-2026-05-26-late-evening` and `docs/qa/work-orders/WO-ollama-local-llm-mac-handoff.md#option-3---dedicated-small-ollama-classifier-model-2026-05-26-late`.
+
+The compact <400-token classifier prompt is in `services/anthropic.getOllamaClassifierSystemPromptCompact()`, versioned by `OLLAMA_CLASSIFIER_PROMPT_VERSION=v1`. Future iterations bump the version without changing source.
+
+Privacy: message bodies are NEVER stored. `classify_shadow_runs.message_hash` is HMAC-SHA256 keyed by `CLASSIFY_SHADOW_HASH_SECRET` (generate-once at deploy time per O3-A20; rotation is a deliberate operator action documented in the runbook).
+
+

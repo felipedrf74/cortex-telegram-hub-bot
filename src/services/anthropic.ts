@@ -248,6 +248,190 @@ export const DOMAIN_SYSTEM_PROMPTS: Record<DomainName, string> = new Proxy(
 // boundary until those domains get real chat handlers.
 const CLASSIFIER_ROUTABLE_LABELS = new Set(['secretary', 'triathlon', 'content', 'finance', 'cooking']);
 
+/**
+ * O3-A14: Compact (<400 token) classifier prompt optimized for a small
+ * dedicated Ollama classifier model (qwen2.5:3b-instruct-q4_K_M and
+ * similar). The long Gemini-style prompt (~1032 tokens via
+ * `getClassifierSystemPrompt`) is too slow on CPU + a small model:
+ * smoke runs measured 50-60s wall-clock for the long prompt vs
+ * 1.5-2.0s for this compact version on qwen2.5:3b.
+ *
+ * Returns null when `OLLAMA_CLASSIFIER_PROMPT_VERSION` is unset (so
+ * tests and back-compat paths fall through to the long prompt). The
+ * compact prompt is versioned via the env var so we can roll forward
+ * (`v2`, `v3`) without code changes.
+ *
+ * Design choices:
+ * - 5-domain enum with one-line descriptions.
+ * - Strict JSON schema literal inline.
+ * - 2 ambiguous Portuguese examples (real production failure modes).
+ * - Bias toward secretary/triathlon when scheduling/tool intent
+ *   detected (tool-domain recall is gated at ≥95% per O3-A24).
+ *
+ * Always answer in the user's language unless they request another —
+ * a real Nexus Hub UX expectation (Portuguese primary, English/Spanish
+ * sometimes).
+ */
+export function getOllamaClassifierSystemPromptCompact(): string | null {
+  const version = process.env.OLLAMA_CLASSIFIER_PROMPT_VERSION;
+  if (!version) return null;
+  // v1 — the compact prompt described above. Future versions land here
+  // as additional cases; the env var picks which one runs in production
+  // without source changes.
+  if (version === 'v1') {
+    return [
+      'Classify the user message into exactly one Nexus Hub domain.',
+      '',
+      'Reply JSON only matching this schema:',
+      '{"domain":<one of: secretary, triathlon, content, finance, cooking>, "confidence":<0..1>}',
+      '',
+      'Domain meanings:',
+      '- secretary = scheduling, calendar, email, reminders, tasks, todos, contacts',
+      '- triathlon = training plans, workouts, recovery, gym/run/bike/swim sessions, athletic coaching',
+      '- content = video/social-media drafts, scripts, hooks, captions, posts, reels, content ideas',
+      '- finance = money, expenses, budget, invoices, taxes, payments, categorization',
+      '- cooking = recipes, meals, food, ingredients, meal planning',
+      '',
+      'Prefer secretary or triathlon when the message asks for scheduling, an',
+      'action that creates a calendar event, persistence of a training plan, or',
+      'tool-bearing intent. Confidence ≥ 0.80 required for tool domains.',
+      '',
+      'Examples (ambiguous cases — common Portuguese failure modes):',
+      '- "Devo treinar hoje ou descansar?" → triathlon (athletic coaching question)',
+      '- "Cria uma receita de kibe" → cooking (recipe request, not creative content)',
+      '',
+      'Reply JSON only. No extra text, no thinking, no preamble.',
+    ].join('\n');
+  }
+  // v2 (Option 3 post-golden-eval-2026-05-26): same core but adds explicit
+  // disambiguation rules for the "budget/price keyword → finance" anchoring
+  // that the golden eval surfaced on qwen2.5:3b. v1 misrouted 5 of 6
+  // failures because cost/budget words pulled the model toward finance even
+  // when the actual intent was a task (secretary), a price-of-ingredient
+  // question (cooking), an athlete nutrition question (triathlon), or a
+  // product question (triathlon, when the product is Garmin etc).
+  //
+  // Promotion path: keep v1 in production; switch
+  // `OLLAMA_CLASSIFIER_PROMPT_VERSION=v2` and re-run the golden eval
+  // (`scripts/llm/classifier-golden-eval.ts`). Promote only when v2 is
+  // STRICTLY better than v1 on overall agreement + tool-domain recall.
+  if (version === 'v2') {
+    return [
+      'Classify the user message into exactly one Nexus Hub domain.',
+      '',
+      'Reply JSON only matching this schema:',
+      '{"domain":<one of: secretary, triathlon, content, finance, cooking>, "confidence":<0..1>}',
+      '',
+      'Domain meanings:',
+      '- secretary = scheduling, calendar, email, reminders, TASKS/todos, contacts.',
+      '  Any message that asks to ADD A TASK, REMIND ME, MARK AS DONE,',
+      '  CANCEL/MOVE/EDIT a task or appointment, or NOTE something to act',
+      '  on later is secretary — REGARDLESS of the topic of the task.',
+      '- triathlon = training plans, workouts, recovery, gym/run/bike/swim',
+      '  sessions, athletic coaching, AND athlete nutrition / dietary',
+      '  guidance for training. Garmin device questions are triathlon.',
+      '- content = video/social-media drafts, scripts, hooks, captions,',
+      '  posts, reels, content ideas, channel strategy.',
+      '- finance = MANAGING the user\'s OWN money — categorizing their',
+      '  expenses, paying their invoices, tracking their budget,',
+      '  calculating their taxes, organizing receipts. Finance is about',
+      '  the user\'s financial RECORDS, not about the cost of things in',
+      '  the world.',
+      '- cooking = recipes, meals, food, ingredients, meal planning,',
+      '  ingredient substitutions, ingredient prices.',
+      '',
+      'IMPORTANT DISAMBIGUATION:',
+      '1. "Add a task to ..." or "Mark X as done" is SECRETARY even when',
+      '   the task topic is financial ("budget review", "pay invoice").',
+      '   The user is requesting task management, not financial action.',
+      '2. "How much does X cost?" / "Quanto custa X?" is COOKING when X',
+      '   is an ingredient ("quilo de carne"), TRIATHLON when X is a',
+      '   training tool ("relógio Garmin"), and FINANCE only when X is',
+      '   the user\'s own expense/bill ("minha conta de luz", "meu IRPF").',
+      '3. "Should I stop eating X?" / "Preciso parar de comer X?" is',
+      '   TRIATHLON when framed as an athlete (training/recovery/diet),',
+      '   COOKING when framed as a meal choice without athletic context.',
+      '4. Side-effect verbs (publish, schedule, post) inside a content',
+      '   request are still CONTENT if the user is asking for the draft,',
+      '   but SECRETARY if the user is asking to schedule the publishing',
+      '   ("posta no Instagram amanhã às 14h" → secretary, the time is',
+      '   the action; "escreve um post sobre X" → content, the draft is',
+      '   the action).',
+      '',
+      'Prefer secretary or triathlon when the message asks for scheduling,',
+      'an action that creates a calendar event, persistence of a training',
+      'plan, or tool-bearing intent. Confidence ≥ 0.80 required for tool',
+      'domains.',
+      '',
+      'Examples (real Portuguese ambiguous cases):',
+      '- "Devo treinar hoje ou descansar?" → triathlon (coaching question)',
+      '- "Cria uma receita de kibe" → cooking (recipe, not content)',
+      '- "Add a task to review the budget by Thursday" → secretary',
+      '  (task creation, not financial analysis)',
+      '- "Anota: ligar para o contador amanhã" → secretary',
+      '  (note-taking, even though the topic is financial)',
+      '- "Quanto custa um quilo de carne moída?" → cooking',
+      '  (ingredient price, not personal finance)',
+      '- "Quanto custa um relógio Garmin?" → triathlon',
+      '  (training-tool research, not personal finance)',
+      '- "Preciso parar de comer pão?" → triathlon',
+      '  (athlete diet question; cooking only if no athletic context)',
+      '',
+      'Reply JSON only. No extra text, no thinking, no preamble.',
+    ].join('\n');
+  }
+  // v3 (Option 3 post-golden-eval-2026-05-26 iteration 2): ATTEMPTED
+  // compression of v2 to reduce p95 latency. RESULT: REGRESSION.
+  //
+  // Golden eval 2026-05-26T23-30-56 (qwen2.5:3b + v3):
+  //   - Overall agreement: 96.7% (v2 was 99.2% — REGRESSED 2.5pp)
+  //   - Failures: 4 (v2 was 1)
+  //   - Triathlon recall: 92% (v2 was 100% — gate ✗ again)
+  //   - p95 latency: 6031ms (v2 was 4209ms — REGRESSED, not improved!)
+  //
+  // The compression lost critical disambiguation context. v2's verbosity
+  // is doing real work; trimming it costs more in quality than it saves
+  // in latency. DO NOT PROMOTE v3. Kept here as a paper trail so the
+  // next iteration knows the compression path was explored.
+  //
+  // To re-evaluate v3 (e.g., after a model swap):
+  //   OLLAMA_CLASSIFIER_PROMPT_VERSION=v3 npx tsx scripts/llm/classifier-golden-eval.ts
+  if (version === 'v3') {
+    return [
+      'Classify the user message into exactly one Nexus Hub domain.',
+      '',
+      'Reply JSON only: {"domain":<secretary|triathlon|content|finance|cooking>,"confidence":<0..1>}',
+      '',
+      'Domains:',
+      '- secretary: scheduling, calendar, email, reminders, TASKS, todos, contacts.',
+      '  Task-creation verbs (add a task, remind me, mark done, anota, lembra-me,',
+      '  cancela, move) = secretary even when topic is financial or other.',
+      '- triathlon: training, workouts, recovery, gym/run/bike/swim, athletic coaching,',
+      '  athlete nutrition, Garmin device questions.',
+      '- content: video/social drafts, scripts, hooks, captions, posts, reels.',
+      '- finance: managing user\'s OWN money — categorize expenses, pay invoices,',
+      '  track budget, calculate taxes, organize receipts. NOT cost-of-things.',
+      '- cooking: recipes, meals, food, ingredients (incl. ingredient prices).',
+      '',
+      'Disambiguation rules:',
+      '1. "Add a task / mark done / anota" → secretary (regardless of topic).',
+      '2. "Quanto custa X?" → cooking if X is ingredient, triathlon if X is training',
+      '   tool (Garmin), finance ONLY if X is user\'s own bill.',
+      '3. "Preciso parar de comer X?" → triathlon (athlete diet); cooking only if',
+      '   no athletic context.',
+      '4. "Posta no Instagram amanhã às 14h" → secretary (scheduled action);',
+      '   "escreve um post sobre X" → content (draft request).',
+      '',
+      'Prefer secretary/triathlon for scheduling, calendar events, training-plan',
+      'persistence, or tool-bearing intent. Confidence ≥ 0.80 for tool domains.',
+      '',
+      'Reply JSON only. No extra text.',
+    ].join('\n');
+  }
+  // Unknown version → fall through to the long prompt (safe default).
+  return null;
+}
+
 export function getClassifierSystemPrompt(): string {
   const basePrompt = loadPrompt('classifier');
   // Append skill-defined classification examples so the per-skill
@@ -1191,7 +1375,11 @@ export async function callDomain(
   let response: Anthropic.Message;
   try {
     response = await trackedCreate(client, {
-      model: getModelForDomain(domain, currentMessage, opts.modelTier),
+      // v2: honor opts.modelOverride (set by cloud-reasoning-gate when an
+      // approved Sonnet-class model has been selected as the cloud
+      // reasoning fallback). Falls through to the existing tier-aware
+      // selection when undefined.
+      model: opts.modelOverride ?? getModelForDomain(domain, currentMessage, opts.modelTier),
       max_tokens: opts.maxTokensOverride || getMaxTokensForDomain(domain),
       system,
       messages,
@@ -1300,7 +1488,9 @@ export async function continueWithToolResults(
   let response: Anthropic.Message;
   try {
     response = await trackedCreate(client, {
-      model: getModelForDomain(domain, currentMessage, opts.modelTier),
+      // v2: same modelOverride honor as callDomain — keeps the cloud
+      // reasoning gate's selection consistent across tool loops.
+      model: opts.modelOverride ?? getModelForDomain(domain, currentMessage, opts.modelTier),
       max_tokens: getMaxTokensForDomain(domain),
       system,
       messages,

@@ -20,6 +20,7 @@ import {
   AIToolCall,
   AIToolResultMessage,
   CallDomainOptions,
+  ClassifyOptions,
   getModelRouting,
   normalizeCallDomainOptions,
 } from './ai-provider';
@@ -460,7 +461,12 @@ export class OpenAIProvider implements AIProvider {
   async classify(
     message: string,
     activeContext?: { domain: DomainName; lastAssistantMessage: string },
+    options?: ClassifyOptions,
   ): Promise<ClassificationResult> {
+    // O3-A11: ClassifyOptions accepted for interface compliance. OpenAI's
+    // trackedCompletion already attributes via the global request-context
+    // (request-context.ts).
+    void options;
     try {
       let userContent = message;
       if (activeContext) {
@@ -504,7 +510,12 @@ ${message}`;
     optionsOrMaxTokens?: number | CallDomainOptions,
   ): Promise<AICallResult> {
     const opts = normalizeCallDomainOptions(optionsOrMaxTokens);
-    const routing = resolveOpenAIModel(domain, opts.modelTier);
+    // v2: honor options.modelOverride (set by cloud-reasoning-gate so the
+    // approved reasoning model is actually used).
+    const baseRouting = resolveOpenAIModel(domain, opts.modelTier);
+    const routing = opts.modelOverride
+      ? { model: opts.modelOverride, maxTokens: baseRouting.maxTokens }
+      : baseRouting;
     // Phase 2 Slice A: pass currentMessage so triathlon sub-skill
     // routing picks the sport-specific coach persona prompt.
     const systemPrompt = getDomainSystemPrompt(domain, currentMessage);
@@ -547,7 +558,12 @@ ${message}`;
     options?: CallDomainOptions,
   ): Promise<AICallResult> {
     const opts = normalizeCallDomainOptions(options);
-    const routing = resolveOpenAIModel(domain, opts.modelTier);
+    // v2: honor options.modelOverride (set by cloud-reasoning-gate so the
+    // approved reasoning model is actually used).
+    const baseRouting = resolveOpenAIModel(domain, opts.modelTier);
+    const routing = opts.modelOverride
+      ? { model: opts.modelOverride, maxTokens: baseRouting.maxTokens }
+      : baseRouting;
     // Phase 2 Slice A: pass currentMessage so triathlon sub-skill
     // routing picks the sport-specific coach persona prompt.
     const systemPrompt = getDomainSystemPrompt(domain, currentMessage);
@@ -628,7 +644,15 @@ ${message}`;
     }
     const userId = options.userId;
     const tenantId = options.tenantId ?? userId;
-    const routing = getModelRouting(config.openai, domain, 'openai');
+    // v2.6 (angry-QA-found): streamDomain was the one model-resolution
+    // site missing the modelOverride wrap. callDomain and
+    // continueWithToolResults honored it; streaming silently used the
+    // default model, which would let cloud-reasoning-gate's approved
+    // model selection be ignored for any streaming consumer.
+    const baseRouting = getModelRouting(config.openai, domain, 'openai');
+    const routing = options.modelOverride
+      ? { model: options.modelOverride, maxTokens: baseRouting.maxTokens }
+      : baseRouting;
     // Phase 2 Slice A: same persona routing for the streaming path.
     const systemPrompt = getDomainSystemPrompt(domain, currentMessage);
     const contextPrefix = buildScopedStateContextPrefix(stateContext);

@@ -17,6 +17,7 @@ import { AIProvider, AICallResult, AIToolResultMessage, CallDomainOptions } from
 import { AnthropicProvider } from './anthropic-provider';
 import { OpenAIProvider, isOpenAIConfigured } from './openai-provider';
 import { GeminiProvider, isGeminiProviderConfigured } from './gemini-provider';
+import { OllamaProvider, isOllamaConfigured } from './ollama-provider';
 import { TaskRoutingProvider, TaskRoutingConfig, TaskProviderPair, FallbackEvent } from './provider-fallback';
 import { config } from '../config';
 import { logger } from '../utils/logger';
@@ -26,7 +27,7 @@ import type { ClassificationResult, DomainMessage, DomainName } from '../domains
 
 // ─── Provider Registry ─────────────────────────────────────────────
 
-type ProviderName = 'anthropic' | 'openai' | 'gemini';
+type ProviderName = 'anthropic' | 'openai' | 'gemini' | 'ollama';
 
 const providers = new Map<string, AIProvider>();
 
@@ -132,6 +133,19 @@ export function getProvider(name: string): AIProvider | null {
       providers.set(name, p);
       return p;
     }
+    case 'ollama': {
+      // Config-only check (plan amendment R3-5). Reachability happens in
+      // getProviderHealth(); the provider stays registered even if the
+      // daemon is temporarily down so /health/detailed shows it as
+      // unhealthy instead of silently dropping it.
+      if (!isOllamaConfigured()) {
+        logger.debug('Ollama provider requested but OLLAMA_ENABLED=false — skipping');
+        return null;
+      }
+      const p = new OllamaProvider();
+      providers.set(name, p);
+      return p;
+    }
     default:
       logger.warn({ name }, 'Unknown provider name in config — skipping');
       return null;
@@ -163,10 +177,49 @@ function buildPair(primaryName: string, fallbackName: string): TaskProviderPair 
   }
 
   if (primary.name !== primaryName) {
-    logger.warn(
-      { requested: primaryName, selected: primary.name },
-      'Configured primary provider unavailable — using first available provider instead',
-    );
+    // v2.6 (angry-QA-found): silent fallback to cloud when the configured
+    // local primary is unavailable is dangerous — operators who intentionally
+    // flipped AI_CLASSIFY_PRIMARY=ollama for cost/privacy reasons would
+    // never notice their flip didn't take effect. For the local primary
+    // specifically, fail loud (operator alert + structured log) unless
+    // the explicit escape hatch is set.
+    const isLocalPrimary = primaryName === 'ollama';
+    const allowSilentCloudFallback = (process.env.AI_ALLOW_CLOUD_FALLBACK_WHEN_LOCAL_DISABLED || 'false') === 'true';
+    const severity: 'warn' | 'error' = isLocalPrimary && !allowSilentCloudFallback ? 'error' : 'warn';
+    const context = {
+      requested: primaryName,
+      selected: primary.name,
+      isLocalPrimary,
+      allowSilentCloudFallback,
+    };
+    if (severity === 'error') {
+      logger.error(
+        context,
+        'CONFIG ERROR: AI_*_PRIMARY=ollama but Ollama provider is unavailable (OLLAMA_ENABLED=false or not configured). Configured fallback engaged silently — set AI_ALLOW_CLOUD_FALLBACK_WHEN_LOCAL_DISABLED=true to acknowledge, or fix OLLAMA_ENABLED.',
+      );
+      try {
+        // Best-effort operator alert (recorder may not be available during
+        // very-early startup; swallow to avoid blocking init).
+        const { recordOperatorAlert } = require('./operator-alerts') as typeof import('./operator-alerts');
+        recordOperatorAlert({
+          severity: 'critical',
+          source: 'provider_routing',
+          dedupeKey: `ollama-primary-unavailable:${primaryName}`,
+          title: `AI primary=${primaryName} but Ollama is unavailable`,
+          detail: `Configured primary provider '${primaryName}' is not available at startup; routing silently fell back to '${primary.name}'. Set OLLAMA_ENABLED=true to use local, or set AI_ALLOW_CLOUD_FALLBACK_WHEN_LOCAL_DISABLED=true to acknowledge.`,
+          owner: 'ops',
+          suspectedArea: 'ai_routing',
+          userImpact: 'Local-first cost/privacy guarantee silently violated until reconfigured.',
+          runbookUrl: 'docs/runbooks/ollama-local-llm.md#provider-availability',
+          metadata: context,
+        });
+      } catch { /* alert recorder not available at startup */ }
+    } else {
+      logger.warn(
+        context,
+        'Configured primary provider unavailable — using first available provider instead',
+      );
+    }
   }
 
   let fallback: AIProvider | undefined;
@@ -267,6 +320,18 @@ export function createRoutingProvider(
     classify: buildPair(rc.classify.primary, rc.classify.fallback),
     chat: buildPair(rc.chat.primary, rc.chat.fallback),
     'tool-use': buildPair(rc.toolUse.primary, rc.toolUse.fallback),
+    // v2: new task types added by WO-ollama-local-llm. The fallback can
+    // be a real provider name OR a sentinel ('none' / 'approved_cloud_reasoning').
+    // buildSentinelFallbackPair handles both. Pairs are only built when
+    // the primary provider is actually available (e.g., Ollama enabled);
+    // otherwise the task type is left undefined and the dispatch method
+    // throws a clear configuration error.
+    scriptGeneration: rc.scriptGeneration
+      ? buildSentinelFallbackPair(rc.scriptGeneration.primary, rc.scriptGeneration.fallback)
+      : undefined,
+    localReasoning: rc.localReasoning
+      ? buildSentinelFallbackPair(rc.localReasoning.primary, rc.localReasoning.fallback)
+      : undefined,
     circuitBreaker: {
       failureThreshold: rc.circuitBreaker.failureThreshold,
       cooldownMs: rc.circuitBreaker.cooldownMs,
@@ -281,6 +346,12 @@ export function createRoutingProvider(
       classify: `${routingConfig.classify.primary.name}→${routingConfig.classify.fallback?.name || 'none'}`,
       chat: `${routingConfig.chat.primary.name}→${routingConfig.chat.fallback?.name || 'none'}`,
       'tool-use': `${routingConfig['tool-use'].primary.name}→${routingConfig['tool-use'].fallback?.name || 'none'}`,
+      scriptGeneration: routingConfig.scriptGeneration
+        ? `${routingConfig.scriptGeneration.primary.name}→${describeSentinelFallback(routingConfig.scriptGeneration.fallback)}`
+        : 'unconfigured',
+      localReasoning: routingConfig.localReasoning
+        ? `${routingConfig.localReasoning.primary.name}→${describeSentinelFallback(routingConfig.localReasoning.fallback)}`
+        : 'unconfigured',
       circuitBreaker: routingConfig.circuitBreaker,
       fixtureMode: areModelProviderCallsDisabled(),
     },
@@ -288,6 +359,55 @@ export function createRoutingProvider(
   );
 
   return provider;
+}
+
+/**
+ * Build a SentinelFallbackPair for the new task types (scriptGeneration,
+ * localReasoning). The fallback can be either a real provider name OR a
+ * sentinel string ('none' / 'approved_cloud_reasoning') — preserve the
+ * sentinel verbatim; only resolve real provider names.
+ *
+ * If the configured primary provider isn't available (e.g., OLLAMA_ENABLED=false),
+ * return null so the registry skips building the pair and the dispatch
+ * method throws a clean configuration error rather than a cryptic null
+ * dereference.
+ */
+function buildSentinelFallbackPair(
+  primaryName: string,
+  fallbackName: string,
+): { primary: AIProvider; fallback: AIProvider | 'none' | 'approved_cloud_reasoning' } | undefined {
+  if (areModelProviderCallsDisabled()) {
+    return undefined;
+  }
+  const primary = getProvider(primaryName);
+  if (!primary) {
+    logger.info(
+      { primaryName, fallbackName },
+      'New task-type primary unavailable — skipping pair build',
+    );
+    return undefined;
+  }
+  if (fallbackName === 'none' || fallbackName === 'approved_cloud_reasoning') {
+    return { primary, fallback: fallbackName };
+  }
+  const fallback = getProvider(fallbackName);
+  if (!fallback) {
+    // Configured fallback unavailable — fail closed (sentinel 'none')
+    // rather than silently falling through to no escalation.
+    logger.info(
+      { primaryName, fallbackName },
+      'New task-type fallback provider unavailable — falling back to sentinel "none"',
+    );
+    return { primary, fallback: 'none' };
+  }
+  return { primary, fallback };
+}
+
+function describeSentinelFallback(
+  fallback: AIProvider | 'none' | 'approved_cloud_reasoning',
+): string {
+  if (fallback === 'none' || fallback === 'approved_cloud_reasoning') return fallback;
+  return fallback.name;
 }
 
 function defaultFallbackHandler(event: FallbackEvent): void {
