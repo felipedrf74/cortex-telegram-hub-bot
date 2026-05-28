@@ -97,6 +97,15 @@ Documentation hygiene:
 - If credentials, APNs, TestFlight, OAuth, HealthKit, Gmail/Outlook, or provider
   access are required, document the exact env/command and mark the item as
   manual verification required.
+- **Agent model + effort policy.** This environment runs on Claude Opus 4.8 with
+  the 1M context window at `xhigh` effort — for the main session and every
+  subagent (enforced in global `~/.claude/settings.json` via
+  `"model": "claude-opus-4-8[1m]"` plus `"effortLevel": "xhigh"`; subagents
+  inherit the session model by default). `xhigh` is Anthropic's recommended
+  setting for coding/agentic work; escalate to `/effort max` ad hoc for the
+  hardest tasks. Opus 4.8 follows instructions literally and spawns fewer
+  subagents than prior models, so state scope and any desired parallel fan-out
+  explicitly.
 
 ---
 
