@@ -183,10 +183,10 @@ failures still required for the Phase 2 gate.
   - Latest: 42 tests passed after atom-packet, source-audit,
     safe-metadata guard additions, and golden-corpus seed validation
 - [x] `npx vitest run __tests__/services/chat-core-v2-*.test.ts`
-  - Latest: 294 tests passed across 35 files after the M1/M2 peer-review fixes
+  - Latest: 312 tests passed across 37 files after the M1/M2 peer-review fixes
     (recipe success-claim guard scoping, read-fast-path kill-switch gating)
 - [x] `npm run verify`
-  - Latest: 734 files / 10,841 tests passed (exit 0) after the M1/M2 peer-review
+  - Latest: 736 files / 10,859 tests passed (exit 0) after the M1/M2 peer-review
     fixes; typecheck + full Vitest + build all green
 - [x] `git diff --check`
   - Latest: clean after atom-packet additions

@@ -75,9 +75,9 @@ pass; items only spot-checked or not re-opened are left `[ ]` with a note.
 
 ## Tests To Re-run
 
-- [x] `npx vitest run __tests__/services/chat-core-v2-*.test.ts` — 294 passed (35 files)
+- [x] `npx vitest run __tests__/services/chat-core-v2-*.test.ts` — 312 passed (37 files)
 - [x] Focused task route/firewall tests — `chat-routes.test.ts` green inside the 123-test focused run
-- [x] `npm run verify` — 734 files / 10,841 tests passed
+- [x] `npm run verify` — 736 files / 10,859 tests passed
 - [x] `git diff --check` — clean
 - [ ] Focused billing/dashboard/content/sleep sandbox tests (not re-run this pass)
 

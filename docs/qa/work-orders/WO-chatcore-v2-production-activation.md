@@ -9,7 +9,7 @@ implementer: Codex
 peer_reviewer: Claude
 release_gatekeeper: Felipe
 base_commit: e5ca00348175e50426c97cff27a768f41681c2a1
-candidate_commit: e5ca00348175e50426c97cff27a768f41681c2a1
+candidate_commit: 762828f728ce3830fa6466448551495adcb19755
 branch: codex/chatcore-v2-production-activation-wo
 worktree: "/Users/felipedominguez/Desktop/Custom Connectors/Cortex/cortex-telegram-hub-bot-chatcore-v2-activation"
 owned_paths:
@@ -79,7 +79,7 @@ evidence_checklist: docs/qa/evidence-checklists/WO-chatcore-v2-production-activa
 peer_review_checklist: docs/qa/peer-reviews/WO-chatcore-v2-production-activation-peer-review.md
 final_handoff: docs/qa/final-handoffs/WO-chatcore-v2-production-activation-final-handoff.md
 created_at: 2026-05-27
-updated_at: 2026-05-27
+updated_at: 2026-05-29
 ---
 
 # Work Order: WO-chatcore-v2-production-activation
