@@ -52,7 +52,7 @@ import {
 } from './chat-pending-confirmations';
 import { isValidTenantUserId, recordTenantScopeAnomaly } from './tenant-scope-observability';
 import { logger } from '../utils/logger';
-import { isDecisionCenterGuidanceSkillEnabled, isDecisionCenterGuidanceV1Enabled, isDecisionStreakV1Enabled } from './runtime-flags';
+import { isDecisionCenterCommandBusEnabled, isDecisionCenterGuidanceSkillEnabled, isDecisionCenterGuidanceV1Enabled, isDecisionStreakV1Enabled } from './runtime-flags';
 import type { SecretaryTodaySummaryModel } from './secretary-orchestrator';
 import { secretaryTodayLabels } from './secretary-today-copy';
 import {
@@ -3829,6 +3829,16 @@ async function executeDecisionAction(
   actualEffect: Record<string, unknown>;
   message: string;
 }> {
+  // Command Bus convergence (flag-gated OFF by default): route eligible actions through the
+  // committed Chat Core v2 bus. Flag-OFF never loads the adapter, so the legacy path is
+  // byte-identical. Lazy require breaks the adapter→command-executor→decision-center cycle.
+  if (isDecisionCenterCommandBusEnabled(process.env, { userId, tenantId })) {
+    const adapter = await import('./decision-command-adapter');
+    if (adapter.isDecisionActionBusEligible(action.id)) {
+      return adapter.runDecisionActionViaCommandBus(formatDecisionItemForApi(record), action, userId, tenantId);
+    }
+  }
+
   if (action.id === 'open_detail') {
     markNotificationCenterItemRead(record.itemId, userId, tenantId);
     return verifiedStatusEffect(record, 'read', 'Decision was marked viewed.');

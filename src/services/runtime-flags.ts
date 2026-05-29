@@ -219,6 +219,16 @@ export function isChatCoreV2Enabled(env: RuntimeEnv = process.env, scope?: Runti
   return scopedFlagEnabledByExplicitOptIn(env, 'CHAT_CORE_V2_ENABLED', scope);
 }
 
+/**
+ * Routes Decision Center actions through the committed Chat Core v2 Command Bus
+ * (via decision-command-adapter) instead of the legacy in-module executors.
+ * Default OFF; opt-in per user/tenant. A distinct flag (the CHAT_CORE_V2 regex
+ * rejects this name) so it can be enabled for Decision Center independently.
+ */
+export function isDecisionCenterCommandBusEnabled(env: RuntimeEnv = process.env, scope?: RuntimeFlagScope): boolean {
+  return scopedFlagEnabledByExplicitOptIn(env, 'DECISION_CENTER_COMMAND_BUS_ENABLED', scope);
+}
+
 export function isChatCoreV2RuntimeFlagEnabled(
   flagKey: string,
   env: RuntimeEnv = process.env,
