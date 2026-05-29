@@ -1,0 +1,516 @@
+# Chat Core v2 — Orchestrator Runtime Build Plan
+
+**Date:** 2026-05-29
+**Repo:** `cortex-telegram-hub-bot` (`@nexushub/core`)
+**Implementation worktree:** `/Users/felipedominguez/Desktop/Custom Connectors/Cortex/cortex-telegram-hub-bot-chatcore-v2-activation`
+**Status:** FINAL for execution. Supersedes the GATE 0b draft. This is the sequenced implementation plan referenced by `docs/ai/chatcore-v2-plan-completion-audit.md` and the GATE 0b peer review.
+**Companion docs:** `docs/ai/chatcore-v2-implementation-readiness-matrix.md`, `docs/ai/chatcore-v2-layer1-assembly-map.md`, `docs/ai/chatcore-v2-golden-corpus-spec.md`, `docs/ai/chat-route-exit-inventory.md`.
+
+> This plan was reconciled against the codebase twice: once for the GATE 0b critique (six BLOCKING defects, all verified true and corrected) and once for the follow-up architecture audit (which confirmed those six were genuinely closed and surfaced a second tier of blocking/should-fix items in the *live* kill-switch path, tenant-scoping of the HMAC corpus and safety controls, the auto-revert health-probe mapping, and the formal gate-ordering edge). **Read Section 5 before starting any work package.** Several blueprints as originally drafted will not compile, will not migrate, will silently ship an inert safety valve, or will let a single tenant's safety event mutate a second tenant's serving path.
+
+---
+
+## 1. Purpose, Scope, and Standing Safety Invariants
+
+### 1.1 Purpose
+
+Take the Chat Core v2 orchestrator from its current **helper-complete but unwired** state to a **production-activated** state, sequenced so that no change reaches the live route path before the kill-switch and the observability/auto-revert control plane are proven solid **on the live, env-direct request path** — not only on resolver-aware callers. The plan closes GATE 0b blockers **B1–B9** through twenty dependency-ordered work packages spanning Phase 2 Shadow → Phase 8 Retire.
+
+### 1.2 Scope
+
+**In scope:** the `src/services/chat-core-v2/` module surface, its wiring into `src/api/routes/chat-message-routes.ts`, the `src/services/scheduler.ts` cron surface, the `src/portal/` observability surface, new migrations (≥172), and the offline/CI eval pipeline.
+
+**Out of scope:** any rewrite of the legacy `routeMessage()` router internals (only its *fallthrough* is retired in WP-20), iOS client changes beyond consuming new response `routeMethod` values, and full Telegram code deletion (WP-18 documents the inbound-removal state; deletion is a separate WP). Per-tenant flag stores are **not** out of scope for the *safety controls* (see Section 5.J — the audit promoted this from deferred debt to a blocking precondition because two tenants already share these controls).
+
+### 1.3 Standing Safety Invariants (apply to every work package)
+
+1. **Default-off.** When `CHAT_CORE_V2_ORCHESTRATOR_MODE` is absent or `off`, every new code path is a no-op and produces output bit-identical to its pre-change behaviour. `resolveChatCoreV2ActivationConfig()` in `src/services/chat-core-v2/activation-flags.ts` (line 44; kill-switch block line 63) is the single authority. `parseMode` (line 79) currently does **not** trim/lowercase — it is hardened in WP-00.5 (Section 5.A).
+2. **Kill-switch wins, in ONE chokepoint — including the live, pre-existing parsers.** The kill-switch must be enforced through exactly one resolver. The GATE 0b critique found N *new* WPs re-parsing `process.env.CHAT_CORE_V2_ORCHESTRATOR_MODE` inline. The follow-up audit found a deeper, already-shipped hazard: **two pre-existing LIVE parsers** gate every wired entry point and read env directly — `resolveChatCoreV2LocalChatLlmMode` (`local-chat-orchestrator.ts:118`) and `resolveChatCoreV2ActionGatewayMode` (`action-gateway.ts:102`). They drive the three live call sites in `chat-message-routes.ts` (`:1024` `shouldGateReadFastPathsForWriteIntent`, `:1146` `runChatCoreV2ActionGateway`, `:1332` `runChatCoreV2LocalChatTurn`). **Correction (Section 5.A, WP-00.5):** both pre-existing parsers are rewritten to delegate their `CHAT_CORE_V2_ORCHESTRATOR_MODE` kill-switch decision to `resolveChatCoreV2ActivationConfig(env).mode` (which reads the WP-07 runtime-override Map *before* env). Until they do, the kill-switch is enforced in ≥3 parsers and a WP-07 auto-revert flip is invisible to the live path. This is a hard precondition for WP-07/WP-14/WP-15.
+3. **Token-zero reads preserved.** Pure lookups (list tasks, agenda, readiness) are served by `tryBuildChatCoreV2DeterministicReadRoute()` / REST routes, never by the chat LLM pipeline. WP-20 tightens this for the residual `app_question` leak path (`app_question` confidence caps at 0.82 — `shadow-route-classifier.ts:95`) and logs `chat_core_v2_read_intent_leaked_to_legacy` for any multi-domain read that slips to legacy.
+4. **No raw text to cloud / positive allowlist only.** Layer-1 prepass and any module on a Layer-1 path must contain **zero** provider/network imports, enforced repo-wide by `auditPrepassSourceForDeterminism` (WP-03). Shadow replay corpus text is HMAC-tokenised before leaving the process; the HMAC secret is **mandatory (hard-fail)** when the source DB is not a fixture, and the token is **tenant+user-salted** to match the codebase house standard (`prepass-miss-log.ts:38` hashes `${tenantId}:${userId}:${message}`; `cloud-allowlist-packet.ts:103-105` `hmacTenantScopedEntityId` hashes `${tenantId}:${entityType}:${entityId}`). A global unsalted HMAC is forbidden (Section 5.F). The preferred terminal state is to drop text entirely and keep only capability labels.
+5. **Tenant + user id at every boundary; NO single-tenant runtime assumptions in safety controls.** Every DB write, prompt injection, queue enqueue, and trace span carries `tenantId` **and** `userId`. Evidence/memory injected into a local prompt MUST be confirmed scoped to the requesting `userId+tenantId` **before** injection, enforced by a guard + test that ships *in the same WP* as the injection machinery (WP-05/WP-17 — not deferred). System-level aggregate signals (composer drift, auto-revert) must **not** be mis-attributed to the last turn's tenant. Per CLAUDE.md §94, safety controls/caches/jobs/fallbacks must not assume one tenant: the auto-revert override, the `allowedDomains` gate, and the legacy-fallback flag are **per-tenant keyed** so one tenant's safety event cannot mutate another's path (Section 5.J). With Felipe + Jaqueline both live, "single-tenant" is not an accurate framing and is not an acceptable deferral. (The one bounded exception — OD-1's fallback single-tenant override Map — is permissible only while exactly one tenant is on the v2 path; a second live tenant on the v2 read or write path requires per-tenant keying first, so the absolute and the fallback do not conflict.)
+6. **No false success claims (Delivered-Means-Verified / DMV).** A feature is "delivered" only when a runtime-integration test exercises the real wired path — not a helper unit test. The critique caught two DMV traps verified against code: WP-07's auto-revert probe called a **non-existent** function (`getLatestOllamaHealthStatus`; real export is `getLatestHealthByProvider`, `integration-health.ts:351`), and WP-01 emitted a trace span `kind='prepass'` that **throws** (rejected by `TRACE_SPAN_KINDS`, `trace-recorder.ts:52-67`, guard `:265`, and the CHECK in `migrations/161`). Both corrected. New DMV bars added by the audit: (a) a Map-flip must be proven to stop the *live* gateway/local-chat path (not just `applyAutoRevertDecision` in a unit test); (b) memoryContext must be proven to *change* a route decision, not merely be threaded; (c) the Ollama health mapping must be proven to short-circuit `skipped`/not-configured to healthy.
+7. **DMV gate ladder.** No phase promotes on helper-completeness. Each phase has an explicit runtime-evidence gate (Section 6). Recall@8, latency p95, and auto-revert inputs must be measured by code that measures what its name claims (Section 5.I corrects WP-06's per-language "recall" which actually measures sampling-rate; the metric is renamed `schemaComplianceByLanguage` on both producer and consumer, OR wired to real per-language corpus recall — Open design decision OD-3).
+
+---
+
+## 2. Current State (wired vs helper-only)
+
+Verified against the worktree. "Helper-only" = the module exists, exports a clean API, has unit tests, but **no live route/cron/portal path invokes it**.
+
+| Concern | State | Evidence (real files) |
+|---|---|---|
+| Activation config + kill-switch | **Wired** (authoritative) | `activation-flags.ts` — `resolveChatCoreV2ActivationConfig` (line 44), `parseMode` (line 79; does **not** trim/lowercase), kill-switch override block (line 63). `DEFAULT_ALLOWED_DOMAINS` = 4 domains. |
+| **Live mode parsers (pre-existing)** | **Wired, env-direct (HAZARD)** | `local-chat-orchestrator.ts:118` `resolveChatCoreV2LocalChatLlmMode` and `action-gateway.ts:102` `resolveChatCoreV2ActionGatewayMode` each read `process.env.CHAT_CORE_V2_ORCHESTRATOR_MODE` directly. They gate `chat-message-routes.ts:1024/1146/1332`. → **WP-00.5 must reroute them through the resolver.** |
+| Deterministic-read fast path | **Wired** | `tryBuildChatCoreV2DeterministicReadRoute()` (`deterministic-read-route.ts:72`); only serves `app_question` when `domains.length === 1` (~line 99) — multi-domain reads fall through (WP-20). |
+| Action gateway | **Wired (shadow/preview)** | `runChatCoreV2ActionGateway` at `chat-message-routes.ts:1146`; `shouldGateReadFastPathsForWriteIntent` at `:1024`; `runChatCoreV2LocalChatTurn` at `:1332`. **All three imports are live — not dead** (corrects WP-18). |
+| Command executor | **Wired (4 commands)** | `command-executor.ts` — `isExecutableCommandType` allows only `tasks.create`, `tasks.complete`, `notifications.snooze`, `decision_center.dismiss` (lines 157–161); real read-back at `:411-412`, `:510-511`, `:610`. |
+| Prepass Layer-1 selector | **Helper-only** | `prepass-candidate-selection.ts`; `route-decision.ts` does **not** import it (verified: no `prepass` reference). → **B1.** |
+| ChatTurnPlanMicro schema/repair | **Helper-only** | `plan-schema.ts`, `planner-repair.ts` — no live caller. → **B1.** |
+| Answer-composition mode budgets | **Helper-only** | `answer-composition.ts` — `ANSWER_COMPOSITION_MODE_BUDGETS`; `model_constrained.targetMaxShare = 0.35`. Zero consumers; `composer_mode_drift` never emitted. → **B2.** |
+| Model-residency policy | **Helper-only** | `model-residency-policy.ts` — roles `planner_3b`(`-1`), `escalation_35b`(`5m`), `operational_rollback`(`0`), `classifier_shadow`(`5m`). `ollama-provider.ts` hardcodes `keep_alive:-1`. `resolveKeepAliveForRole` does **not** exist yet. → **B8.** |
+| Evidence binding | **Helper-only / inert** | `evidence-policy.ts`; runtime always sets `factualClaims:[]`, so `unsupported_factual_claim` never fires. **No `tenantId`/`userId` field on any evidence interface** (`BuildChatCoreV2EvidenceItemInput`). → **B5 + tenant-scope gap.** |
+| Write-risk / verification / human-review | **Helper-only** | `write-risk-policy.ts` (`requiresReadbackVerification` is a risk-class property, `:20`), `write-verification-policy.ts`, `human-review-queue.ts` (`enqueueChatV2HumanReview` `:105`, `decideChatV2HumanReview` `:160`, `expireChatV2HumanReviews` `:192`, `listPendingChatV2HumanReviews` `:217`). **Zero runtime callers** — the enqueue-time operator notification does not exist. → **B6.** |
+| Auto-revert policy | **Helper-only** | `auto-revert-policy.ts` — `evaluateChatCoreV2AutoRevertPolicy` consumes `{legacyFallbackRate24h, ollamaHealthy, schemaComplianceRate1h, prepassRecallByLanguage}` (lines 10-14); no live producer. `flip_global_to_shadow`/`page_operator`/`pin_planner_to_repair_only`/`flip_language_to_shadow` arms (lines 30,35,39,42,46-52). → **B7.** |
+| Determinism guard | **Single-file test** | `auditPrepassSourceForDeterminism` called once in `chat-core-v2-activation-contracts.test.ts`; no repo-wide sweep. → **B9.** |
+| Trace recorder | **Wired** | `trace-recorder.ts` — `TRACE_SPAN_KINDS` (lines 52-67) has 14 kinds incl. `custom`; **`prepass` is NOT one**; guard throws (`:265`); `requireNonEmpty` (`:257-268`) requires a non-empty STRING (so `tenantId=0` numeric is invalid); CHECK in `migrations/161`. |
+| Integration health | **Wired** | `integration-health.ts` — `getLatestHealthByProvider` (`:351`, MAX(id) GROUP BY provider, **no recency filter** `:355-362`); `probeOllama` (`:260`) emits provider key `ollama` with status `ok`/`fail`/`skipped` (`skipped` + `not configured` when disabled, `:271`); included in the probe set (`:318`). `getLatestOllamaHealthStatus` does **not** exist. |
+| Online-eval sampler | **Wired (write)** | `migrations/162_chat_core_v2_online_eval_samples.sql` — columns `domain`/`risk`/`sensitivity`/`reason`/`metadata_json`, **no** `locale`/`language` column; reason codes are sampling reasons (`baseline_random`, `schema_failure` — `online-eval-sampler.ts:18-19`). |
+| Memory store | **Helper-only** | `memory-store.ts` — `upsertChatV2MemoryItem`, `listChatV2MemoryItems`; `value` is `TEXT`, uncapped (`:97`); migration 158 has `expires_at` + index, no length/content CHECK. No live read/write wiring; `chatCoreV2MemoryContext` does not exist. |
+| Background lifecycle | **Helper-only** | `background-lifecycle.ts` — `canTransitionBackgroundJob`; `ChatCoreV2BackgroundJob.tenantId/userId` are **string** (`:23-24`); `'critic'` IS a member of `ChatCoreV2BackgroundJobType` (`:16`). `background-job-queue.ts` `JobInput.tenantId` is **number** (`:22-23`); `command-executor.ts` `executeChatCoreV2Command` input ids are **number** (`:76-77`); `command-events.ts` event ids are **string** (`:168-169`, read back `String(row)` `:262-263`). |
+| Shadow gate readiness | **Helper-only** | `shadow-gate-readiness.ts` — `recallAt8` literal `'requires_labeled_corpus'` (`:55`, `:97`). No `upsertRecallAt8`/`getLatestRecallAt8`/`chat_v2_gate_metrics` writer exists anywhere in `src/`. |
+| Golden corpus | **Seed exists, gate unmet** | `golden-corpus-seed.ts` + `golden-corpus-synthetic.ts`; documented baseline recall@8 = 0.563. `corpus-eval.ts` carries a `byLanguage` dimension (`:106-124`) and `ChatCoreV2CorpusLanguage` (`:35`); real recall computed by `evaluatePrepassRecallAtK` (`prepass-recall-eval.ts:55`, single aggregate). → **B4.** |
+| Capability registry | **Wired** | `capability-registry.ts` has `content.brief_draft_preview` (`:378`) and `training.session_explain` (`:168`); does **NOT** have `content.draft_assist`, `content.script_generate`, or `training.health_summary`. WP-09 remap targets must be verified against this file. |
+| Latest used migration | `171_classify_shadow_runs.sql` | **Next free number is 172.** `163` (`163_training_plan_adaptations`), `169` (`169_local_request_units`), `170` (`170_script_generation_runs`) are taken. |
+| Command events schema | **Wired** | `migrations/159` — `event_name` CHECK includes `execution_completed`/`command_failed`; `status` CHECK includes `verified`/`failed` (`:14-28`); `redacted_summary` is `TEXT NOT NULL`. |
+
+---
+
+## 3. GATE 0b Blockers This Plan Closes
+
+| ID | Blocker | Closed by | Closure evidence required |
+|---|---|---|---|
+| **B1** | Layer-1 selector (D1) + ChatTurnPlanMicro (D4) never invoked on a live route-decision path | WP-01 (wire prepass into `route-decision.ts`), WP-16 (orchestration gate intercept) | DMV integration test: a real turn flows prepass → route-decision; single source of truth for *where* prepass runs (Section 5.G). |
+| **B2** | D10 mode-usage share never measured; `composer_mode_drift` never emitted; 0.35 vs 0.30 unreconciled | WP-04 | 40/100 drift test fires; system-level (not per-tenant-mis-attributed) trace span. |
+| **B3** | D3 production-sized p95 never run; ~10–15s under load vs 5s gate | WP-11 (fast-model path + benchmark gate) | `burst5` p95 gate in CI as **proxy**; binding pass requires VPS/GPU run. |
+| **B4** | D6 per-language recall@8 gate unmet; needs ≥200-turn peer-reviewed real corpus | WP-09 (corpus), WP-13 (persisted gate), WP-19 (continuous eval + the SOLE writer of persisted recall) | recall@8 ≥ 0.90 persisted to `chat_v2_gate_metrics` by WP-19; peer-review sign-off hash recorded; formal WP-19-before-canary edge (Section 5.C). |
+| **B5** | D5 evidence binding inert (`factualClaims:[]` always) | WP-05 | `unsupported_factual_claim` fires in a fixture; evidence sentinel appears in real prompt; **cross-tenant evidence rejected by a guard + test that ships in WP-05** (Section 5.F). |
+| **B6** | D14 write-risk governance inert; reviews never consumed or surfaced | WP-10 (classify + enqueue + **operator notification on enqueue**), WP-12 (resolve route), WP-08 (expiry sweep) | review enqueued **and** an operator is notified at enqueue **and** the review is resolved/expired by a cron + portal action. |
+| **B7** | D15 auto-revert lacks live inputs; only `local_queue_saturation` emits; valve cannot stop the live path | WP-06 (live metrics aggregator), WP-07 (executor) — **merged into one cron**; WP-00.5 (live parsers route through the Map-aware resolver) | live `legacyFallbackRate24h` + real Ollama health via `getLatestHealthByProvider` with explicit status mapping + staleness guard; **Map flip proven to stop the live gateway/local-chat path through `chat-message-routes`** (Section 5.A/5.I). |
+| **B8** | D12 residency policy unwired (`keep_alive:-1` hardcoded) | WP-02 (adapter for `planner_3b`), WP-15 (wires `escalation_35b`) (Section 5.E) | outbound `/api/chat` body asserts resolved `keep_alive` per role on **both** planner and escalation paths. |
+| **B9** | D16 determinism guard is a single-file regex test | WP-03 (repo-wide CI sweep) | every `prepass`/`layer1`/`candidate-selection` file audited on each CI run. |
+
+---
+
+## 4. Sequenced Work-Packages
+
+### 4.1 Dependency-Ordered Table
+
+> **Reading order = build order.** The `dependsOn` column is the authoritative ordering an executor follows. Two edges that prose-only resolutions previously left implicit are now **formal** here: WP-00.5 precedes every mode-gated WP, and WP-14 dependsOn WP-19 (so the canary gate cannot open without a persisted recall — Section 5.C, Issue 6).
+
+| ID | Title | WO Phase | dependsOn | Blockers closed |
+|---|---|---|---|---|
+| **WP-00.5** | Consolidate the kill-switch: route the two pre-existing live mode parsers through the Map-aware resolver | Phase 2 Shadow | — | (precondition for B7) |
+| WP-01 | Prepass Layer-1 selector wired into `route-decision.ts` + ChatTurnPlanMicro schema enforcement | Phase 2 Shadow | WP-00.5 | B1, B4 |
+| WP-02 | Keep-alive adapter: residency policy → `OllamaProvider` payloads | Phase 2 Shadow | — | B8 |
+| WP-03 | CI repo-wide Layer-1 determinism sweep | Phase 2 Shadow | — | B9 |
+| WP-04 | Composer-mode usage counter + `composer_mode_drift` emission | Phase 2 Shadow | WP-01 | B2 |
+| WP-05 | Evidence binding: populate `factualClaims[]` + fire `unsupported_factual_claim` + tenant-scope guard | Phase 2 Shadow | WP-01 | B5 |
+| WP-06 | Metrics aggregation service for auto-revert inputs (per-tenant keyed) | Phase 2 Shadow | WP-04, WP-00.5 | B7 |
+| WP-07 | Auto-revert executor: per-tenant override + persist decisions + runtime config mutations | Phase 2 Shadow | WP-06, WP-00.5 | B7 |
+| WP-08 | Shadow data-retention cron in `midnight_cleanup` (memory + human-reviews) | Phase 2 Shadow | WP-07 | — |
+| WP-08b | Per-turn retention: `chat_v2_command_events` + `chat_v2_canary_turn_log` DELETE stanzas | Phase 4 Write-Enable | WP-14, WP-15 | — |
+| WP-09 | Prepass recall@8 labeled corpus seed + `evaluatePrepassRecallAtK` CI gate | Phase 2 Shadow | WP-03 | B4 |
+| WP-10 | Write-risk governance runtime wiring (gateway → policy → executor) + operator notification on review enqueue | Phase 2 Shadow | WP-01 | B6 |
+| WP-11 | D3 latency: smaller-model path + benchmark gate (p95≤5s) | Phase 2 Shadow | WP-02 | B3 |
+| WP-12 | Observability portal API routes (auto-revert, failures, eval samples) + human-review decide route | Phase 2 Shadow | WP-07 | — |
+| WP-13 | Shadow gate readiness report: portal endpoint + automated gate check (sole owner of `chat_v2_gate_metrics`) | Phase 2 Shadow | WP-09, WP-12 | B4 |
+| WP-19-seed | Seed the FIRST persisted recall via `workflow_dispatch` (so the canary gate can open) | Phase 2 Shadow | WP-09, WP-13, **WP-19** | B4 |
+| WP-14 | Canary promotion: user-scoped enablement + split logging + prod-refusal on gate override | Phase 3 Canary | WP-13, **WP-19-seed** | — |
+| WP-15 | Background-lifecycle orchestrator: async queue + APNs + escalation keep-alive | Phase 4 Write-Enable | WP-10, WP-14 | B6, **B8 (escalation_35b)** |
+| WP-16 | Orchestration gate intercept (between cost-check and legacy `routeMessage`); memoryContext influences the decision | Phase 4 Write-Enable | WP-14 | B1 |
+| WP-17 | Memory-store integration: turn outcomes → memory; memory → orchestrator (sanitised) | Phase 4 Write-Enable | WP-16 | — |
+| WP-18 | Full-mode promotion: all surfaces/domains, write execution, dead-code removal | Phase 5 Full-On | WP-15, WP-17 | — |
+| WP-19 | Corpus eval pipeline: weekly offline eval → `chat_v2_gate_metrics` (the SOLE persisted-recall writer; tenant-salted HMAC) | Phase 2 (first run, via WP-19-seed) + Phase 6 (weekly cadence) | WP-09, WP-13 | B4 |
+| WP-20 | Retire legacy router fallback + enforce token-zero for read intents | Phase 8 Retire | WP-18, WP-19 | — |
+
+> **On WP-19's dual phase (Section 5.C, Issue 6):** WP-19 is the *only* writer of the persisted `recall_at_8_latest` that opens `gateCanPromote`. It is therefore split into **WP-19-seed** (a Phase-2 deliverable: a `workflow_dispatch` first run that writes the first persisted recall) and **WP-19** (the Phase-6 weekly cron). WP-14 (canary) formally `dependsOn WP-19-seed`, so an executor following this table cannot reach the canary gate with `gateCanPromote` permanently false. WP-13 acceptance documents `gateCanPromote=false` until WP-19-seed runs as the *expected* state.
+
+### 4.2 Per-WP Blueprints
+
+Each blueprint lists files, the corrected step summary, tests, flags, acceptance, and risks. Where a WP is materially corrected, the marker **[CORRECTED — see §5.x]** appears.
+
+---
+
+#### WP-00.5 — Consolidate the kill-switch through the Map-aware resolver **[NEW — closes killswitch blocking items, §5.A]**
+
+**Create:** `__tests__/services/chat-core-v2-killswitch-single-chokepoint.test.ts`, `__tests__/api/chat-core-v2-live-path-killswitch.integration.test.ts`
+**Modify:** `activation-flags.ts` (harden `parseMode`), `local-chat-orchestrator.ts`, `action-gateway.ts`.
+
+**Steps:** (1) Harden `parseMode` (`activation-flags.ts:79`) to `String(raw ?? '').trim().toLowerCase()` before the `shadow|canary|on` test so `'ON '`/`'on'` no longer resolve to `off`. (2) Rewrite `resolveChatCoreV2LocalChatLlmMode` (`local-chat-orchestrator.ts:118`) and `resolveChatCoreV2ActionGatewayMode` (`action-gateway.ts:102`) so their `CHAT_CORE_V2_ORCHESTRATOR_MODE` kill-switch decision delegates to `resolveChatCoreV2ActivationConfig(env).mode` — i.e. replace the inline `String(env.CHAT_CORE_V2_ORCHESTRATOR_MODE ?? '').trim().toLowerCase() === 'off'` reads with `resolveChatCoreV2ActivationConfig(env).mode === 'off'`. The secondary sub-mode envs (`CHAT_CORE_V2_LOCAL_CHAT_LLM_MODE`, `CHAT_CORE_V2_ACTION_GATEWAY_MODE`) are unchanged in semantics but are now subordinate to the resolver's master mode. (3) Because the resolver reads the WP-07 `_runtimeOverrides` Map *before* env (added in WP-07), a `flip_global_to_shadow` now propagates to the live `chat-message-routes.ts:1024/1146/1332` paths without a restart.
+
+**Tests:** `parseMode('ON ')==='on'`; `parseMode('  shadow ')==='shadow'`; both live parsers return `'off'` when the resolver mode is `off` regardless of the sub-mode env; both live parsers honour a runtime-override Map set to `'shadow'` (stubbed before WP-07; re-asserted in WP-07's integration test). **DMV integration** (the load-bearing test): with `CHAT_CORE_V2_ORCHESTRATOR_MODE=on`, drive a real request through `chat-message-routes`, then `setChatCoreV2RuntimeOverride('global_mode','shadow')` (WP-07 stub acceptable here), and assert on the SAME process without restart that the gateway path returns mode≠`enforce` and the local-chat path returns `null` — proving the kill-switch governs the live path.
+
+**Flags:** `CHAT_CORE_V2_ORCHESTRATOR_MODE` (existing). **Acceptance:** no inline `process.env.CHAT_CORE_V2_ORCHESTRATOR_MODE` kill-switch compare remains in `local-chat-orchestrator.ts`/`action-gateway.ts` (grep proves zero); both delegate to the resolver; bit-identical legacy behaviour when mode=off; `tsc` clean. **Risks:** the resolver is now on the per-request hot path of two live functions — keep it allocation-light (it already is, pure object construction); rollback = revert these two functions to env-direct (but then B7 cannot close).
+
+---
+
+#### WP-01 — Prepass Layer-1 into `route-decision.ts` + ChatTurnPlanMicro
+
+**Create:** `__tests__/services/chat-core-v2-prepass-route-decision-wiring.test.ts`
+**Modify:** `route-decision.ts`, `shadow-orchestrator.ts`
+
+**Steps (corrected):** Add additive optional fields `message?`, `pendingConfirmationCapabilityId?`, `recentDomainCapabilityIds?` to `BuildRouteDecisionInput` and `prepassApplied`/`prepassCandidateIds` to `ChatCoreV2RouteDecision`. Invoke `selectPrepassCandidateCapabilities()` as the mandatory first step inside `buildChatCoreV2RouteDecision` **only when mode≠off**; in **shadow** mode use the *union* of prepass candidates and original `capabilityIds` (observation-only, no narrowing); strict intersection is reserved for `on`. Add pure `computeRouteDecisionContextHash()` (sha256, no I/O) and `enforceAndRepairChatTurnPlanMicro()` (one repair attempt max, `CHAT_CORE_V2_PLANNER_MAX_REPAIR_ATTEMPTS=1`). **[CORRECTED — §5.D]:** the planned shadow trace span `kind='prepass'` is invalid and throws; emit it as `kind='custom'`, `name='prepass_candidate_selection'` (`'custom'` is in `TRACE_SPAN_KINDS`, `trace-recorder.ts:66`). **[CORRECTED — §5.G]:** WP-01 is the **single source of truth** for where prepass runs; WP-16 must not re-run it.
+
+**Tests:** kill-switch parity (mode=off → bit-identical); prepass-applied subset; empty-message sentinels; schema-valid/invalid/exhausted repair; context-hash determinism; **DMV integration**: real `planChatCoreV2ShadowTurn` with `mode=shadow` produces a `custom`/`prepass_candidate_selection` span that **persists** via the real `recordChatV2TraceSpan` (not an in-memory build) in < 5ms.
+
+**Flags:** `CHAT_CORE_V2_ORCHESTRATOR_MODE`. **Acceptance:** kill-switch absolute; prepass is zero-I/O (passes determinism audit); `tsc --noEmit` clean; existing route-decision + shadow-orchestrator suites pass unchanged. **Risks:** capability-narrowing regression (mitigated by shadow-union rule); import cycle (none — prepass imports only `prepass-contract`); rollback = env flip.
+
+---
+
+#### WP-02 — Keep-alive adapter
+
+**Create:** `__tests__/services/chat-core-v2-keep-alive-adapter.test.ts`
+**Modify:** `model-residency-policy.ts`, `ollama-provider.ts`, `local-chat-orchestrator.ts`
+
+**Steps:** Add pure `resolveKeepAliveForRole(role, env?)` mapping `'-1'→-1`, `'5m'→300`, `'0'→0` (default `-1` for unknown roles). Add optional `keepAliveSeconds?: number` to `LocalReasoningTask`; in `OllamaProvider.localReason()` replace `keep_alive:-1` with `task.keepAliveSeconds ?? -1` (do **not** touch `classify()`/`callDomain()`). In `runChatCoreV2LocalChatTurn`, compute `keepAliveSeconds` for `planner_3b` when mode≠off; pass `undefined` when off (falls back to `-1`). Thread through `tryRepairRecipeDraft`. **[CORRECTED — §5.E]:** the `escalation_35b` path is no longer "document-only" — its wiring is an explicit deliverable of WP-15 (the background path is the only place 35B runs), closing B8 across both WPs.
+
+**Tests:** pure role→seconds table; outbound fetch-body asserts `keep_alive` per role (DMV); orchestrator integration asserts `keepAliveSeconds` per mode. **Flags:** `CHAT_CORE_V2_ORCHESTRATOR_MODE`. **Acceptance:** planner stays `-1`; escalation maps to `300`; off path falls back to `-1`; `tsc` clean. **Risks:** 35B 5m residency increases memory pressure (only exercised once WP-15 passes `300`); rollback = env flip.
+
+---
+
+#### WP-03 — CI repo-wide Layer-1 determinism sweep
+
+**Create:** `__tests__/services/chat-core-v2-layer1-determinism-ci.test.ts`. **Modify:** none.
+
+**Steps:** Flat-scan `src/services/chat-core-v2/` for basenames containing `prepass`/`layer1`/`candidate-selection` (today: `prepass-contract`, `prepass-candidate-selection`, `prepass-miss-log`, `prepass-recall-eval`), run `auditPrepassSourceForDeterminism` on each via `it.each`, fail on any forbidden pattern. Meta-guard (≥1 file), coverage anchor (selector + recall-eval present), negative sentinel (auditor flags a synthetic provider import), rollup assertion. No recursion into subdirs (documented boundary). **Tests/Acceptance:** descriptive per-file failures; auto-expands for new files; coexists with the existing single-file assertion. **Flags:** none (unconditional). **Risks:** false-positive on `gemini` substring in a comment (mitigated by backtick-quoting); rollback = file delete.
+
+---
+
+#### WP-04 — Composer-mode counter + drift
+
+**Create:** `src/services/chat-core-v2/composer-mode-counter.ts`, `__tests__/services/chat-core-v2-composer-mode-counter.test.ts`. **Modify:** `local-chat-orchestrator.ts`, `index.ts`.
+
+**Steps:** In-process rolling 1-hour LRU counter (`{mode, ts}[]`, prune `< now-3.6e6`); `recordComposerModeTurn(mode, env)` is a no-op when mode=off; `_resetComposerModeCounterForTests()`. Threshold from `ANSWER_COMPOSITION_MODE_BUDGETS` = **0.35** (code value) with inline comment: `// NOTE: code value 0.35; spec cites 0.30. Using code value; peer resolution required before Phase 3.` On crossing, build `composer_mode_drift` failure event → pino + trace span (`kind='policy'`, `status='blocked'`). **[CORRECTED — §5.A privacy]:** the drift span must **not** carry the last turn's `tenantId/userId` (tenant-attribution leak for a system-level signal). **Use the pino-only path** (`buildChatCoreV2FailureObservabilityEvent` carries no `tenantId/userId` and allowlists metadata — `failure-observability.ts:137-160`) and **skip the trace span**. Do **not** use a synthetic `tenantId=0/userId=0`: `recordChatV2TraceSpan`'s `requireNonEmpty` (`trace-recorder.ts:257-268`) requires a non-empty STRING and throws on numeric `0`; even string `'0'` would mis-attribute to a fictitious tenant. Wrap any recorder call in try/catch (never throw into the hot path).
+
+**Tests:** kill-switch; happy increment; no-drift at exactly 0.30; **40/100 drift fires** at the 36th `model_constrained` turn; LRU expiry; context-optional; orchestrator wiring (fires once per non-degraded return, never on degraded/null); **drift event carries no per-tenant identity** (asserts pino-only, no trace span written). **Acceptance:** A1–A10 per draft, plus drift signal carries no per-tenant identity. **Risks:** O(N) prune (TODO circular buffer at N>10k); pino failure non-fatal.
+
+---
+
+#### WP-05 — Evidence binding **[CORRECTED — tenant-scope guard + test ships in WP-05, §5.F]**
+
+**Create:** `__tests__/services/chat-core-v2-evidence-binding.test.ts`. **Modify:** `evidence-policy.ts`, `local-chat-orchestrator.ts`.
+
+**Steps:** Add `ChatCoreV2DomainEvidenceTaxonomy` type (secretary/training/cooking/tasks/finance) with `// TODO(WP-05): taxonomy pending product sign-off`. **[CORRECTED — tenant dimension]:** add `tenantId` and `userId` to `BuildChatCoreV2EvidenceItemInput` and the evidence bundle type (`evidence-policy.ts` currently has zero tenant fields). Add a pure guard `assertEvidenceScopedToTurn(items, {tenantId, userId})` that **rejects/filters out** any evidence item whose `tenantId+userId` ≠ the requesting turn's. Gate `isEvidenceInjectionEnabled(env)` = false unless mode≠off **and** `CHAT_CORE_V2_EVIDENCE_INJECTION_ENABLED=1`. Build a prompt evidence bundle (truncate to 2000 chars, consider 1000 for `numCtx=512`) appended after an untrusted-evidence sentinel; back-fill `evidenceIds` (cap 3) for `support='supported'` claims; confirm `unsupported_factual_claim` fires when supported+empty. **The injection machinery does not merge until the scoping guard + its test exist in this WP.** The live call-site wiring is still threaded by WP-06/WP-16, but the scoping guard is a hard WP-05 deliverable, not a deferred contract.
+
+**Tests:** branch fires/does-not-fire matrix; sentinel present/absent by flag; master kill-switch dominates; back-fill cap=3; taxonomy export; **cross-tenant evidence rejection** (an item with a different `tenantId`/`userId` is filtered out and never injected — unit test against `assertEvidenceScopedToTurn`). **Acceptance:** per draft + tenant-scope guard + test present. **Risks:** prompt-length inflation; **claim semantic corruption** (mechanical back-fill ≠ semantic match — acceptable for Phase 2 offline only, gated by taxonomy sign-off before any user-facing surface).
+
+---
+
+#### WP-06 — Metrics aggregation service **[CORRECTED — merged cron with WP-07; explicit Ollama-health mapping + staleness guard; per-tenant keying; honest per-language metric, §5.C/§5.I/§5.J]**
+
+**Create:** `src/services/chat-core-v2/metrics-aggregator.ts`, `__tests__/services/chat-core-v2-metrics-aggregator.test.ts`. **Modify:** `index.ts`, `scheduler.ts`.
+
+**Steps (corrected):** Pure read-only aggregator: `computeLegacyFallbackRate24h(db, {tenantId})`, `computeSchemaComplianceRate1h(db, {tenantId})`, `computeChatCoreV2OllamaHealthy(probe?)`, composed by `computeChatCoreV2AutoRevertMetrics(db, {tenantId}, probe?)`. **[CORRECTED — per-tenant, §5.J]:** the legacy-fallback and schema-compliance reads are computed **per tenantId**, and the cron iterates the active tenant set so one tenant's metrics never drive another's decision.
+
+**Health-probe correction (§5.I) — explicit status mapping (closes residual (d)):** `computeChatCoreV2OllamaHealthy` reads `getLatestHealthByProvider()['ollama']` (the real export, `integration-health.ts:351`) inside a 5s `AbortController` race. Map exactly:
+- status `'ok'` ⇒ `healthy=true`;
+- status `'fail'` ⇒ `healthy=false` (valve may fire);
+- status `'skipped'` / `errorMessage==='not configured'` / **missing `ollama` key** ⇒ **short-circuit `healthy=true`** (a not-configured Ollama in CI/staging must NEVER trigger an auto-revert). Equivalently, if `OLLAMA_ENABLED`/`config.ollama.enabled` is false, skip the valve entirely.
+- timeout/throw ⇒ `healthy=false` only when Ollama is *configured*; if not configured, `true`.
+
+**Staleness guard (§5.I, closes residual (d) freshness gap):** `getLatestHealthByProvider` returns the latest row per provider with **no recency filter** (`MAX(id) GROUP BY provider`, `:355-362`). A stalled probe cron would otherwise return a permanently-fresh-looking stale `'ok'`. Treat the `ollama` row as **unknown ⇒ short-circuit `healthy=true`** (do not fire a revert on stale data; a dead probe is an operator-paging condition, not an auto-flip condition) when its `ts` is older than `OLLAMA_HEALTH_STALENESS_MS` (default = probe interval × 3). Document the assumed probe cadence (the `runHealthProbes` scheduler entry) in a comment and assert it in a test.
+
+**Per-language metric correction (§5.I, OD-3):** `migrations/162` has **no** locale column and its reason codes are sampling reasons, not recall. Do **not** ship a metric named "recall" that computes sampling-rate. Resolve via Open design decision **OD-3** (Section 7): the recommended option renames the field to `schemaComplianceByLanguage` on **both** the producer (this aggregator) AND the consumer (`auto-revert-policy.ts:14,46-52`) and adjusts the threshold semantics, so no arm is named `recall` while measuring something else. (The alternative — wiring real per-language corpus recall via `evaluatePrepassRecallAtK` grouped over `corpus-eval.ts` `byLanguage` — is deferred to WP-19 and tracked in OD-3.)
+
+**Single cron:** WP-06 owns the cron body that *computes* metrics; WP-07 adds the executor call to the **same** job (`chat_v2_auto_revert_eval`, `*/5 * * * *`) — one evaluator, not two.
+
+**Tests:** empty-table defaults; 24h/1h windows per tenant; **health-probe matrix: `ok`→healthy, `fail`→unhealthy, `skipped`/`'not configured'`/missing-key→healthy (short-circuit), throw-while-configured→false, throw-while-not-configured→true**; **stale `ollama` row (ts beyond window) → short-circuit healthy=true**; composed shape; **round-trip into `evaluateChatCoreV2AutoRevertPolicy`**; cron not registered when mode=off. **Acceptance:** division-by-zero → 0.0; not-configured/stale Ollama never fires a revert; cron `*/5` registered only when mode≠off; pino log carries metrics+decision only (no PII). **Risks:** hung daemon (5s race); schema gap (graceful empty map); staleness window mis-tuning (documented default).
+
+---
+
+#### WP-07 — Auto-revert executor **[CORRECTED — migration 173; single cron; per-tenant override; resolver-visible on the live path, §5.C/§5.A/§5.J]**
+
+**Create:** `migrations/173_chat_v2_auto_revert_decisions.sql`, `src/services/chat-core-v2/auto-revert-executor.ts`, `__tests__/services/chat-core-v2-auto-revert-executor.test.ts`. **Modify:** `activation-flags.ts`, `index.ts`, `scheduler.ts`.
+
+**Steps (corrected):** **Migration number is 173** (163 is taken). This WP is the **sole creator** of `chat_v2_auto_revert_decisions` (columns: `id`, `tenant_id` NOT NULL, `actions_json`, `affected_languages_json`, `reason_codes_json`, `metrics_snapshot_json`, `decided_at`). Add a module-scoped `_runtimeOverrides` Map in `activation-flags.ts` **keyed by `tenantId`** (per-tenant: the Map value is a per-tenant override record, e.g. `Map<string /*tenantId*/, {mode?, plannerPinnedToRepairOnly?, languageShadow?: string[]}>`) with `setChatCoreV2RuntimeOverride(tenantId, ...)`/`clear(tenantId)`/`get(tenantId)`, `isPlannerPinnedToRepairOnly(tenantId)`, `isLanguageShadowOverrideSet(tenantId, language)`. **[CORRECTED — §5.A]:** `resolveChatCoreV2ActivationConfig(env, {tenantId?})` reads the per-tenant Map entry *before* env so a flip is visible to **all** resolver callers — including the two live parsers rerouted in WP-00.5. Kill-switch precedence: if startup env was `off`, the Map cannot un-off it for any tenant. `applyAutoRevertDecision(tenantId, decision, metrics)` persists with `tenant_id` (try/catch non-blocking), applies per-action mutations to **that tenant's** Map entry only, pages via `CHAT_CORE_V2_PAGER_WEBHOOK_URL` (https-only guard, 5s timeout, non-fatal). Wire into the **WP-06 cron body** (one job), iterating the active tenant set.
+
+**[CORRECTED — §5.J, per-tenant isolation]:** a `flip_global_to_shadow` for tenant A mutates only tenant A's Map entry and only affects tenant A's live serving; tenant B is untouched. (`flip_global_to_shadow` is renamed in intent to "flip this tenant to shadow" while keeping the policy action constant; the executor scopes the mutation by `tenantId`.) See Open design decision **OD-1** for the precise Map-key + resolver-signature shape, which is recommended-and-specified rather than deferred.
+
+**Tests:** kill-switch (env off → full no-op for every tenant); persistence incl. `tenant_id` and `keep_current_mode` audit row; DB-failure non-blocking; each action mutates only the target tenant's Map entry; **resolver sees the flip without restart**; **DMV integration through `chat-message-routes`**: `setChatCoreV2RuntimeOverride(tenantA,'global_mode','shadow')` causes `runChatCoreV2ActionGateway` for tenant A to return mode≠`enforce` AND `runChatCoreV2LocalChatTurn` for tenant A to return `null` on the SAME process without restart, while tenant B still serves `on`; pager present/absent/non-2xx/AbortError; metrics snapshot allowlist; kill-switch precedence over Map; end-to-end policy→executor→Map. **Acceptance:** flip visible to the live env-direct readers via WP-00.5's resolver delegation (the corrected contract); per-tenant isolation (one tenant's flip never mutates another's path); paging non-fatal; only safe scalar fields persisted. **Risks:** in-process Map wiped on restart (intended; the persisted decision row is the durable record); idempotent re-evaluation; circular dep avoided (resolver imports the Map module, not vice-versa).
+
+---
+
+#### WP-08 — Shadow data-retention cron **[CORRECTED — migration 172 for the trace `expires_at` column only; +memory/human-review retention, §5.B]**
+
+**Create:** `migrations/172_chat_v2_trace_spans_expires_at.sql`, `__tests__/services/chat-core-v2-shadow-data-retention.test.ts`. **Modify:** `scheduler.ts`, `trace-recorder.ts`.
+
+**Steps (corrected):** Migration **172** adds `expires_at` to `chat_v2_trace_spans` + idempotent `ALTER TABLE` guard in `ensureChatCoreV2TraceTables`. **Do NOT recreate `chat_v2_auto_revert_decisions`** — it is owned by WP-07 (migration 173); this WP only adds its cleanup stanza. Extend `midnight_cleanup` with independent try/catch stanzas: `chat_v2_replay_bundles` (expires_at), `chat_v2_trace_spans` (expires_at AND `retention_policy NOT IN ('legal_required')`), `chat_v2_online_eval_samples` (>90d), `chat_v2_auto_revert_decisions` (>365d), `chat_v2_memory_items` (expired rows — WP-17's flagged gap), `chat_v2_human_reviews` (resolved/expired >90d). **The per-turn `chat_v2_command_events` and `chat_v2_canary_turn_log` retention is owned by WP-08b** (a real WP sequenced after their last writers), not a follow-up note — see §5.B.
+
+**Tests:** past deleted/future survives; null expires_at never deleted; `legal_required` survives (compliance sentinel, named test); 90/365-day boundaries; independent-table-failure isolation; expired memory rows deleted; human-review resolved rows deleted. **Acceptance:** `legal_required` predicate present; per-stanza WARN on missing table; idempotent ALTER. **Risks:** schema gaps absorbed by try/catch; no tenant predicate (system retention tables — correct, but each row carries `tenant_id` for audit).
+
+---
+
+#### WP-08b — Per-turn retention: `chat_v2_command_events` + `chat_v2_canary_turn_log` **[NEW — closes the deferred-retention should_fix, §5.B]**
+
+**Create:** `__tests__/services/chat-core-v2-per-turn-retention.test.ts`, and (if a `created_at`/`expires_at` predicate column is missing on either table) a migration `migrations/177_chat_v2_per_turn_retention_columns.sql`. **Modify:** `scheduler.ts` (`midnight_cleanup`).
+
+**Steps:** These are the highest-write-volume per-turn tables (`chat_v2_command_events` writes multiple lifecycle events per command and stores `redacted_summary` TEXT; `chat_v2_canary_turn_log` writes one row per canary turn). Add isolated try/catch DELETE stanzas to `midnight_cleanup`: `chat_v2_command_events` (>90d on `created_at`/`occurred_at`), `chat_v2_canary_turn_log` (>90d). If neither table has a usable date predicate, migration 177 (≥172, unique) adds an indexed `created_at`/`expires_at`. Sequenced **after** WP-14 and WP-15 (their last writers) so the tables exist. This closes the unbounded-growth gap with an owning WP + acceptance test rather than an orphaned note.
+
+**Tests:** past rows deleted; recent rows survive; boundary at exactly 90d; independent-failure isolation; missing-table WARN. **Acceptance:** both stanzas present with their own tests; no orphaned follow-up note remains in WP-08 or WP-19. **Risks:** DELETE volume on a large table at midnight (bounded by indexed predicate + `LIMIT`/batched delete if needed).
+
+---
+
+#### WP-09 — Recall@8 corpus + CI gate **[CORRECTED — persists via WP-19's writer; capability remaps verified, §5.C]**
+
+**Create:** `__tests__/services/chat-core-v2-prepass-recall-gate.test.ts`. **Modify:** `golden-corpus-seed.ts`, `prepass-candidate-selection.ts`, `docs/ai/chatcore-v2-golden-corpus-spec.md`.
+
+**Steps:** Extend the selector with keyword groups grounded in the **real** 0.563 miss analysis (cooking/content/finance-educational/task-write) — not tuned to pass the test (overfitting guard). Verify the 8-candidate cap holds; domain candidates take priority slots over sentinels. Cover all 9 domains (add `connections`/`notifications` items — both already sentinel HITs). Spanish items mapped to `mixed` (Option 1; no schema break) with `notes`. Add `// PEER_REVIEW_SIGN_OFF: <PENDING>` block. **[CORRECTED — §5.C/capability, verified against `capability-registry.ts`]:** remap real-failure seed capabilities that do **not** exist in the registry. `content.draft_assist` does **not** exist — use the real `content.brief_draft_preview` (`capability-registry.ts:378`); `training.health_summary` does **not** exist — use the real `training.session_explain` (`:168`). The WP must run the whitelist check against `capability-registry.ts` before adding the test and must not emit a remap target that is absent from the registry. **[CORRECTED — §5.C inversion]:** WP-09 only *asserts* recall in CI; it does **not** persist. The persisted `recall_at_8_latest` is written by **WP-19** (first run via WP-19-seed). The gate chain is formally ordered (Section 5.C, Issue 6): WP-14 reads its **own** startup recall (0.80 boot floor); WP-13's `gateCanPromote` reads the persisted value once WP-19-seed has run; until then `gateCanPromote=false` is **correct and expected**.
+
+**On the WP-09 → WP-03 edge (Issue 5, acknowledge_ok):** WP-09 modifies `prepass-candidate-selection.ts`, the very file WP-03 audits, and re-runs the determinism sweep on its own change. The `dependsOn WP-03` edge is retained with an honest re-justification: *"WP-09 mutates a determinism-audited file, so the repo-wide sweep (WP-03) should already exist to catch a determinism regression introduced by the new keyword groups."* It is not load-bearing for recall.
+
+**Tests:** recall@8 ≥ 0.90; total ≥ 200; ≥1 `real_failure`; all 4 languages; all 9 domains; determinism audit on the selector; `validateGoldenCorpus` empty; capability-whitelist (every remap target exists in `capability-registry.ts`). **Acceptance:** AC1–AC11 per draft. **Risks:** **overfitting** (log miss distribution before each rule; remove any rule that exists only to pass one item); cap overflow; capability remaps verified first.
+
+---
+
+#### WP-10 — Write-risk governance wiring **[CORRECTED — review-resolution surface + operator notification on enqueue, §5.B]**
+
+**Create:** `__tests__/services/chat-core-v2-write-risk-governance-wiring.test.ts`. **Modify:** `write-risk-policy.ts`, `action-gateway.ts`, `command-executor.ts`.
+
+**Steps:** Add `classifyCommandWriteRisk(commandType, domain, capability)` (finance→C; training+plan→C; restricted→C; high→B; else A) and `classifyCommandEscalationReasons`. Kill-switch at top of `runChatCoreV2ActionGateway` when `CHAT_CORE_V2_ALLOW_WRITE_EXECUTION` false → `no_write_intent`/`write_execution_disabled` (resolved via the resolver, not env-direct — WP-00.5 contract). Class C or `requires35BOrBackgroundEscalation` → `unsupported_write` (no envelope). Class B → `requires3BCritic`. Thread `writeRiskPolicy` onto results + telemetry. In `command-executor.ts`, assert `requiresReadbackVerification` is satisfied by the 4 sync commands' immediate read-back (this is honestly an assertion-tautology over the only executable commands — §5.I; the real governance value is class-C blocking + human-review). Enqueue human review via the **real** export `enqueueChatV2HumanReview` (deterministic `reviewId = hvr:${commandId}`, ON CONFLICT upsert) for `restricted_finance` / `training_plan_rewrite`.
+
+**[ADDED — §5.B, closes B6's notification half (open item)]:** on a successful (non-ON-CONFLICT-noop) `enqueueChatV2HumanReview`, fire an **operator notification exactly once** — APNs to the owner device and/or the `CHAT_CORE_V2_PAGER_WEBHOOK_URL` introduced in WP-07 (https-only, non-fatal, 5s timeout) — carrying only `redacted_summary`/`domain`/`reason`/`reviewId` (no payload PII). A write-blocking governance event must push, not wait to be polled. The portal decide route (WP-12) and expiry sweep (WP-08) close the resolution half; the notification closes the enqueue half.
+
+**Tests:** GROUP 1–10 per draft, **plus**: operator notification sent exactly once per newly-enqueued (non-noop) review; notification is non-fatal on transport failure; review resolvable via portal route (WP-12); expired reviews swept (WP-08). **Acceptance:** AC-1..AC-10, plus enqueue-notification + resolution surface exist. **Risks:** `redactedSummary` from `commandType+commandId` only (no payload PII); class-C reaching executor directly (JSDoc + optional param contract); notification dedup keyed on `reviewId`.
+
+---
+
+#### WP-11 — D3 latency fast-model + benchmark gate **[CORRECTED — default-off, §5.A]**
+
+**Create:** `scripts/bench-gate.sh`, `.github/workflows/bench-gate.yml`, `__tests__/services/chat-core-v2-local-chat-fast-model.test.ts`. **Modify:** `local-chat-orchestrator.ts`, `scripts/llm/chatcore-v2-planner-benchmark.ts`, `.husky/pre-push`, `.env.example`.
+
+**Steps:** Add `classifyLocalReasoningTier()` (none/fast_extraction/standard_command) and a fast-model branch in `resolveLocalChatModel` for non-recipe `fast_extraction`/`none` turns. `CHAT_CORE_V2_LOCAL_CHAT_FAST_MODEL` (default `qwen2.5:1.5b-instruct-q4_K_M`); `=off` disables. **[CORRECTED — §5.A]:** the fast path is reachable only inside `resolveLocalChatModel`, which is only reached via `runChatCoreV2LocalChatTurn`, gated by `isChatCoreV2LocalChatVisibleEnabled` (returns false when the resolver mode=off — WP-00.5). So shipping the code with mode=off changes nothing; the outer kill-switch dominates the inner default. Add `burst5` benchmark phase (5 concurrent, p95≤5000ms gate), `bench-gate.sh` (forwards exit code; "requires GPU/VPS validation" header), GH Actions path-filtered on `ollama-provider.ts`/`local-chat-orchestrator.ts` with graceful Ollama-absent skip, opt-in pre-push (`NEXUS_RUN_BENCH_GATE=1`).
+
+**Tests:** pure resolvers; tier classifier; model selection matrix; integration (fast vs standard model override); kill-switch (`=off` and mode=off both disable); percentile math. **Acceptance:** AC1–AC13; p95 gate annotated as **proxy** until VPS/GPU; fast path inert when mode=off. **Risks:** 1.5B quality regression (conservative classifier + `fastModelUsed` metadata); CI Ollama-absent no-op; rollback = `=off` or mode flip.
+
+---
+
+#### WP-12 — Observability portal routes **[CORRECTED — single mode parser; + review-resolution route, §5.A/§5.B]**
+
+**Create:** `src/portal/chat-core-v2-observability-routes.ts`, `__tests__/portal/chat-core-v2-observability-routes.test.ts`. **Modify:** `src/portal/server.ts`.
+
+**Steps:** Register routes only when mode≠off, using `resolveChatCoreV2ActivationConfig(process.env).mode` (**not** an inline `toLowerCase().trim()` — single parser, §5.A). `GET …/auto-revert-decisions` (graceful no-such-table → empty envelope; surfaces `tenant_id` for the admin grid), `…/failure-events` (query `status='failed'`; **omit `attributes_json`**; assert `redacted_summary` on **failed** spans is free of message fragments — §1.3 privacy note), `…/eval-samples` (`status='sampled'`; omit `metadata_json`). Admin-scoped (`requirePortalAdminToken`). **[ADDED — §5.B]:** `POST …/human-reviews/:id/decide` admin action that calls `decideChatV2HumanReview` so the WP-10 queue has a resolution consumer.
+
+**Tests:** kill-switch 404; zero-row 200 envelopes; seeded-row projections; auth 401; privacy guards (no attributes/metadata json; `redacted_summary` clean on failures); review-decide action. **Acceptance:** per draft + review-decide route. **Risks:** p50/p95 200-row cap; additive-only rollback.
+
+---
+
+#### WP-13 — Shadow gate readiness portal + automated check **[CORRECTED — sole owner of `chat_v2_gate_metrics`; tightened ownership wording, §5.C]**
+
+**Create:** `migrations/174_chat_v2_gate_metrics.sql`, `src/services/chat-core-v2/gate-metrics-store.ts`, `src/api/routes/chat-core-v2-gate.ts`, gate-metrics + route + scheduler tests. **Modify:** `shadow-gate-readiness.ts`, `index.ts`, `router.ts`, `scheduler.ts`, existing readiness test.
+
+**Steps (corrected):** **Migration number 174** (172/173 taken by WP-08/WP-07). **WP-13 is the sole creator** of `chat_v2_gate_metrics` and `gate-metrics-store.ts` (owning `recall_at_8_latest` keyed config + `chat_v2_gate_check_log`, and exporting `upsertRecallAt8()`/`getLatestRecallAt8()`). **WP-19 adds a separate `chat_v2_gate_eval_runs` table (migration 176) and CALLS `upsertRecallAt8()`; WP-19 does NOT modify `gate-metrics-store.ts` or `chat_v2_gate_metrics`** (this replaces the loose "WP-19 extends the same table/module" phrasing — §5.C minor item). `measureChatCoreV2ShadowGateReadiness()` composes base readiness + `getLatestRecallAt8()`; `gateCanPromote = meetsMinRows && meetsSchemaValidity && meetsSafeShape && recallAt8≥0.90`. Portal `GET /api/v1/internal/chat-core-v2/shadow-gate-readiness` (portal-token). Hourly cron `chat_core_v2_gate_check` gated by `CHAT_CORE_V2_GATE_CHECK_ENABLED`. **Circular-dependency fix:** extract `ChatCoreV2ShadowGateReadiness` type to a types file (or lazy `require()`), since `gate-metrics-store` ↔ `shadow-gate-readiness` would otherwise cycle.
+
+**Tests:** store unit (idempotent DDL, upsert single row, gate_can_promote logic, misses cap 50); `measure…` integration (zero rows/0.85/0.90/safe-shape-violation matrix); portal HTTP contract + auth + 500-on-throw; cron smoke; **recall round-trip** (upsert 0.92 → report → persisted log row). **Acceptance:** AC-1..AC-8; **`gateCanPromote=false` until WP-19-seed runs is the documented expected state**, not a defect. **Risks:** circular import (resolved); replay_bundles index for the shadow-prefix scan.
+
+---
+
+#### WP-19-seed — Seed the first persisted recall **[NEW — formalises the gate-opening edge, §5.C Issue 6]**
+
+**Create:** `.github/workflows/corpus-eval-seed.yml` (a `workflow_dispatch`-only trigger) OR a documented `npm run eval:corpus -- --seed` one-shot. **Modify:** none beyond what WP-19 ships.
+
+**Steps:** A Phase-2 deliverable that runs WP-19's corpus eval **once** (via `workflow_dispatch` or the one-shot script) to write the first persisted `recall_at_8_latest` row through WP-13's `upsertRecallAt8()`. This is the formal precondition that opens `gateCanPromote` and the canary path. **WP-14 `dependsOn WP-19-seed`** — an executor cannot reach the canary gate with the persisted recall absent. This split exists precisely so the sole gate-opening writer is sequenced before the gate it opens (resolving the Issue-6 ordering inconsistency that previously lived only in prose).
+
+**Tests:** the seed run writes exactly one `recall_at_8_latest` row; `getLatestRecallAt8()` returns it; `gateCanPromote` flips to its data-driven value. **Acceptance:** persisted recall present before WP-14 begins. **Risks:** seed run against the synthetic corpus is a boot floor, not the peer-reviewed bar (the persisted ≥0.90 is the real promotion authority).
+
+---
+
+#### WP-14 — Canary promotion **[CORRECTED — single recall authority; prod-refusal on gate override; formal WP-19-seed dependency, §5.C/§5.I]**
+
+**Create:** `canary-gate-guard.ts`, `canary-turn-log.ts`, `migrations/175_chat_v2_canary_turn_log.sql`, two tests. **Modify:** `chat-core-v2/index.ts`, `src/index.ts`, `chat-message-routes.ts`, `.env.local.example`.
+
+**Steps (corrected):** **Migration number 175.** `assertCanaryGateOrExit()` runs at startup when mode=canary: computes recall@8 over the seed; `process.exit(1)` below `CHAT_CORE_V2_CANARY_MIN_RECALL_AT_8` (default 0.80). **[CORRECTED — §5.I, prod-refusal]:** `CHAT_CORE_V2_CANARY_GATE_OVERRIDE=1` (WARN + continue below floor) **must refuse to apply when `NODE_ENV==='production'`** unless an explicit second prod-allow flag (`CHAT_CORE_V2_CANARY_GATE_OVERRIDE_ALLOW_PROD==='1'`) is also set — mirroring the existing prod-guard precedent at `local-chat-orchestrator.ts:136-137`. A stray/leftover override env var must not boot a sub-floor canary onto real production canary users with only a WARN. **[CORRECTED — §5.C three-threshold contradiction]:** **one** recall authority — the persisted `recall_at_8_latest` (WP-13/WP-19) at the **0.90** floor for the true Phase-2→3 promotion gate. The 0.80 startup floor is explicitly a **"minimum-viable-boot floor"** (prevents booting canary on a clearly-broken selector), **not** the promotion gate; `gateCanPromote` (persisted ≥0.90) is not override-able. DEPLOY.md states canary may boot at ≥0.80 but is promotion-eligible only at persisted ≥0.90. Per-turn split log (`path`, shadow plan fields, `canary_confidence`) fire-and-forget after `res.json`. Kill-switch: a WP-07 per-tenant Map flip reverts canary on the live path **without restart** (because `isChatCoreV2LocalChatVisibleEnabled` resolves mode through the WP-00.5-rerouted resolver). **[CORRECTED — §5.A]:** this is no longer "documented-only"; it is verified by a test on the live request path.
+
+**Tests:** gate above/below/non-canary/override; **override refused in production without the explicit prod-allow flag**; both env vars activate guard; turn-log insert (canary/legacy), idempotency, shadow round-trip, idempotent DDL; **a per-tenant Map flip to shadow reverts canary on the live request path without restart** (DMV); route-wiring DMV (logger called with correct path). **Acceptance:** A1–A10; single recall authority documented; prod-refusal enforced; live-path revert verified. **Risks:** seed-corpus reliability (acknowledged; the persisted 0.90 gate is the real bar); tenant-prefixed canary list.
+
+---
+
+#### WP-15 — Background-lifecycle orchestrator **[CORRECTED — full type-boundary enumeration, jobType guard, escalation_35b keep-alive, command-events enum, §5.E]**
+
+**Create:** `src/api/routes/chat-core-v2-background-queued-response.ts`. **Modify:** `background-lifecycle.ts`, `event-backbone-worker.ts`, `action-gateway.ts`, `chat-message-routes.ts`, background-lifecycle test.
+
+**Steps (corrected):** Add `enqueueBackgroundChatCommand()` to `background-lifecycle.ts`. Kill-switch: throw unless `CHAT_CORE_V2_ALLOW_WRITE_EXECUTION` true **and** mode∈{canary,on} — **[CORRECTED — §5.A]** read mode through the resolver (Map-aware, per-tenant) so a WP-07 flip actually stops enqueue for that tenant. **[CORRECTED — §5.E full type-boundary enumeration]:** specify the string↔number conversion at **every** crossing, not just one: (1) `ChatCoreV2BackgroundJob.tenantId/userId` are **string** (`background-lifecycle.ts:23-24`); (2) `JobInput.tenantId` is **number**, `userId` number|null, positive-integer-validated (`background-job-queue.ts:22-23`, `isValidTenantUserId`); (3) `executeChatCoreV2Command` input ids are **number** (`command-executor.ts:76-77`); (4) `recordChatV2CommandEvent` event ids are **string** (`command-events.ts:168-169`, read back `String(row)` `:262-263`). Apply explicit `Number()`/`String()` at the `enqueueJob`, `executeChatCoreV2Command`, AND `recordChatV2CommandEvent` boundaries; `tsc`-clean, no silent coercion. **[CORRECTED — §5.E jobType guard]:** `'critic'` IS a valid `ChatCoreV2BackgroundJobType` (`background-lifecycle.ts:16`), so the type system won't reject it; add a hand-written runtime guard restricting to `{planner_escalation, composer}` and fix the test expectation. Register a `processPendingJobs` handler that calls `executeChatCoreV2Command`, records a command event using **only** `event_name`/`status` values present in `migrations/159` CHECK lists (`execution_completed`/`command_failed`, `verified`/`failed` — verified valid), transitions via `canTransitionBackgroundJob`, and pushes APNs when `notificationPolicy='apns'`. **[CORRECTED — §5.E closes B8 escalation]:** when the handler dispatches the 35B escalation model, it must call `resolveKeepAliveForRole('escalation_35b')` (=300) — the only path that exercises the 5m residency. Validate `isExecutableCommandType` before enqueue (reject unexecutable). Stale-envelope check (skip + mark completed, not failed). Action-gateway adds `queued_background` variant; routes return an "acknowledgement/working-on-it" response (`actionability='queued'`).
+
+**Tests:** kill-switch matrix (per-tenant Map flip stops enqueue); return shape; jobType runtime guard (critic rejected); **all four type-boundary conversions tsc-clean (enqueue, execute, record-event)**; state transitions; processPendingJobs integration (completed/failed/dead-letter, APNs called/not); gateway `queued_background`/fallback/shadow; tenant isolation; **escalation keep-alive=300 asserted**. **Acceptance:** per draft + command-events enum match + escalation keep-alive + full type-boundary enumeration. **Risks:** payload PII redaction; APNs dedup via `collapseId`; stale-command bound.
+
+---
+
+#### WP-16 — Orchestration gate intercept **[CORRECTED — prepass single-source-of-truth + memoryContext INFLUENCES the decision, §5.G]**
+
+**Create:** `orchestration-gate.ts`, gate test. **Modify:** `chat-core-v2/index.ts`, `runtime-flags.ts`, `chat-skill-orchestrator.ts`, `chat-message-routes.ts`.
+
+**Steps (corrected):** `runChatCoreV2OrchestrationGate()` returns null unless mode∈{canary,on} (resolver, Map-aware); null if `classifyShadowRoute` confidence < 0.68; calls `buildChatCoreV2RouteDecision`. **[CORRECTED — §5.G]:** after WP-01, prepass runs **inside** `buildChatCoreV2RouteDecision`. The gate must **not** call `selectPrepassCandidateCapabilities` itself; it passes the **raw** classifier capabilityIds + `message` and lets the single prepass step run once. **[CORRECTED — §5.G, memoryContext must CHANGE the decision, not just be threaded]:** thread the loaded `memoryContext` into `BuildRouteDecisionInput.memoryContext` AND add a concrete consumption rule inside `buildChatCoreV2RouteDecision` so memory observably influences the decision: e.g. a stored `decision_rationale`/domain-affinity memory item nudges `primaryDomain`/`selectedCapabilityIds` (or confidence/reasoning-tier) for the matching domain. The DMV acceptance is a **behavior-change** assertion, not a threading assertion: identical input produces a **different** route decision with vs without a relevant memory item. (If product decides memory should remain prompt-only for now, this WP must relabel the deliverable "memory threaded for future consumption" and downgrade the B-intent claim — Open design decision **OD-2**.) Null on `needs_clarification`/`unsupported`/`blocked`. `overrideDomain` only if in the requesting tenant's resolved `allowedDomains` (per-tenant, §5.J). Wrap in try/catch → null. Insert after the shadow hook, before `const rawRoute = await routeMessage()`. `applyChatSkillRoutingDecision` gains optional `routeOverride`. Note: `checkRuntimeBudget(policy, EMPTY)` is structurally always-ok for tiers with `maxModelCalls>0` — keep it as a pre-flight only and document it is **not** a usage enforcer (no false safety claim).
+
+**Tests:** kill-switch (unset/shadow/off); low-confidence fallthrough; happy canary/on; overrideDomain allowlist filtering (per-tenant); blocked→null; error resilience; **DMV wiring**: gate override → `applyChatSkillRoutingDecision` mutates domain; **memoryContext changes the route decision** (identical input, relevant memory present vs absent → different decision). **Acceptance:** per draft + prepass-single-run + memory influences decision (behavior-change DMV). **Risks:** double-prepass (eliminated by §5.G); turn-contract hint can be overridden (log both); env-only rollback.
+
+---
+
+#### WP-17 — Memory-store integration **[CORRECTED — memoryContext consumed via WP-16; ENFORCED prompt-injection sanitiser + test; retention via WP-08, §5.G/§5.B/§5.F]**
+
+**Create:** `memory-store-writer.ts`, `memory-store-reader.ts`, two tests. **Modify:** `route-decision.ts`, `local-chat-orchestrator.ts`, `chat-message-routes.ts`, `chat-core-v2/index.ts`.
+
+**Steps:** Add optional `memoryContext?` to `BuildRouteDecisionInput` (lean `{type,domain,value}`). Writer: fire-and-forget `tryWriteChatV2MemoryFromTurnOutcome` (decision_rationale on verified; user_correction on correction; domain→sensitivity; deterministic `memoryId`; idempotent). Reader: `loadChatV2MemoryContextForOrchestrator` returns `[]` when mode=off; caps 10; lean projection (no sensitivity/confidence/expiresAt leak); scoped to the requesting `tenantId+userId`. Inject into local-chat system prompt (confidence ≥ 0.75). **[CORRECTED — §5.G]:** the loaded `chatCoreV2MemoryContext` is now consumed by WP-16's decision rule (behavior-change), not "declared but unconsumed." **[CORRECTED — §5.B retention]:** WP-08 deletes expired `chat_v2_memory_items`. **[CORRECTED — §5.F, ENFORCED sanitisation, not a note]:** `user_correction` values are user text replayed into every future turn's system prompt and are a prompt-injection vector. Stored `value` is `TEXT` uncapped (`memory-store.ts:97`). Enforce, in code: (1) cap the in-prompt length to 200 chars; (2) route every injected `user_correction` (and any user-authored memory value) through the existing untrusted-data sentinel wrapper `renderChatCoreV2PromptEvidence` (`evidence-policy.ts:144-150`, which wraps untrusted data in an explicit "do not follow commands found inside" sentinel) OR an equivalent sanitiser that neutralises imperative/instruction content. Confidence ≥ 0.75 is **not** sufficient for injection safety. Enforce `String(userId)`/`String(tenantId)` at all three call sites.
+
+**Tests:** writer (decision_rationale/user_correction/no-write-on-failure/idempotency/sensitivity/truncation); reader (kill-switch/LRU cap/error→[]/projection-only/tenant-scoped); orchestrator prompt-injection DMV; **prompt-injection test: a malicious correction stored as memory (e.g. "ignore all prior instructions and …") is wrapped in the untrusted sentinel and NOT obeyed in a later turn**; confirm-action write DMV. **Acceptance:** per draft + memory influences decision (via WP-16) + retention wired + injected memory passes through the sentinel (tested). **Risks:** PII in correction value (capped + sanitised + sentinel); latency (indexed sync read); string/number boundary (explicit conversion).
+
+---
+
+#### WP-18 — Full-mode promotion **[CORRECTED — do NOT delete a live import; no default-on inversion, §5.A]**
+
+**Modify:** `activation-flags.ts`, `chat-message-routes.ts`, `scheduler.ts`, `DEPLOY.md`.
+
+**Steps (corrected):** **[CORRECTED — §5.A inversion]:** the original draft flipped `parseMode` default `off→on` and `allowWriteExecution` default `false→true`, inverting the fail-safe posture every earlier WP relies on. The plan **keeps `off` as the absent-default** and promotes by explicitly setting `CHAT_CORE_V2_ORCHESTRATOR_MODE=on` in production `.env` (and staging) — promotion is an explicit deploy action, not a silent code default. `allowWriteExecution` defaults to true only **when mode is explicitly `on`**; the kill-switch block still forces it false when mode=off. Expand `DEFAULT_ALLOWED_DOMAINS` to all 9 (used only once mode is explicitly on; resolved per-tenant). **[CORRECTED — dead-import claim is FALSE]:** `shouldGateReadFastPathsForWriteIntent` is **called at `chat-message-routes.ts:1024`**, `runChatCoreV2ActionGateway` at `:1146`, `runChatCoreV2LocalChatTurn` at `:1332` — **none are dead**. Do **not** remove them. WP-18's dead-code step is reduced to verifying no genuinely-unused identifiers remain (and only removing one if `tsc`/grep proves zero call sites). Telegram inbound is already removed — WP-18 only adds the DEPLOY.md migration checklist of outbound cron jobs (gated by `TELEGRAM_LEGACY_DELIVERY`). Then: `tsc`, full Vitest (≥718 files / 10,525 tests), staging deploy + 5-min soak, staging-smoke 17/17, promote.
+
+**Tests:** activation defaults (explicit on → write+9 domains; absent → off; kill-switch precedence); a deliberately-unused identifier, if any, removed cleanly (`tsc` gate); read-only message returns v2 `routeMethod` when mode explicitly on; mode=off falls to legacy; staging smoke 17/17. **Acceptance:** explicit-on promotion (no silent inversion); no live import removed; smoke green. **Risks:** write-surface expansion bounded to 4 commands; latency under burst (queue-fallback degraded path); **promotion only with a functioning safety net** — WP-18 must not promote until WP-06/07 auto-revert is proven live on the request path (Section 6 gate) and the per-tenant override isolation (WP-07/§5.J) is verified.
+
+---
+
+#### WP-19 — Corpus eval pipeline **[CORRECTED — sole persisted-recall writer; tenant+user-salted mandatory HMAC; §5.C/§5.F]**
+
+**Create:** `src/services/chat-core-v2/shadow-corpus-loader.ts`, `scripts/eval/corpus-eval-weekly.ts`, `src/portal/corpus-eval-routes.ts`, `.github/workflows/corpus-eval-weekly.yml`, eval + store-extension tests. **Modify:** `chat-core-v2/index.ts`, `src/portal/server.ts`, `package.json`. **(Migration: `migrations/176_chat_v2_gate_eval_runs.sql` — NOT a second `172`/`174`.)**
+
+**Steps (corrected):** **[CORRECTED — §5.C]:** WP-19 does **not** create `chat_v2_gate_metrics.sql` or its own `gate-metrics-store.ts` (both owned by WP-13). It adds eval-run history via `migrations/176_chat_v2_gate_eval_runs.sql` and **calls** `upsertRecallAt8()` from WP-13's store — this is the writer that opens WP-13's `gateCanPromote` and WP-14's promotion path (resolving the inverted dependency; first run via WP-19-seed). `loadShadowReplayCorpusItems(db, {windowDays, limit, hmacSecret})`.
+
+**[CORRECTED — §5.F, mandatory + tenant+user-salted HMAC (closes the blocking privacy item)]:** `hmacSecret` is **required (hard-fail in code)** whenever the source DB is not an in-memory fixture; the CI workflow fails the job if `CORPUS_EVAL_HMAC_SECRET` is empty while `DATABASE_PATH` points at a real DB. The tokenisation **must be tenant+user-salted** to match the codebase house standard — hash `${tenantId}:${userId}:${text}` (cf. `prepass-miss-log.ts:38` and `hmacTenantScopedEntityId` `cloud-allowlist-packet.ts:103-105`), **never** a global unsalted `HMAC(text, secret)` (which yields identical tokens for identical phrases across tenants, leaking cross-tenant message-equality). The preferred terminal state is to **drop text entirely** and keep only capability labels (a recall corpus needs no text post-tokenisation) — and this is the recommended option in **OD-4**, with the salted construction as the floor if any text must be retained. HMAC is pseudonymisation, not anonymisation; the doc must not label a global-unsalted scheme acceptable. Weekly script merges golden + shadow corpus, runs `evaluatePrepassRecallAtK`, writes results, prints `GATE_PASS`/`GATE_FAIL`, exits non-zero on fail. Portal read-only routes; GH Actions Monday 06:00 UTC + dispatch; artifact retention 14d.
+
+**Tests:** store-extension unit; shadow loader (empty/parse/HMAC-redacts/skip-no-text/window cutoff); **two different tenants produce DIFFERENT tokens for identical text** (salting proof); recall on seed; GATE_PASS/FAIL; online-eval window summary; **no network** (fetch spy asserts never called); **HMAC mandatory** (missing secret on real DB → hard fail). **Acceptance:** per draft + table-ownership (no duplicate 172/174) + mandatory tenant-salted HMAC. **Risks:** PII in artifact (mandatory salted HMAC/text-drop); tenant-global aggregate (no per-tenant text breakdown exposed); tsconfig scope for `scripts/`; own DB handle + `close()`. (No orphaned "add retention to WP-08 follow-up" note — per-turn retention is owned by WP-08b.)
+
+---
+
+#### WP-20 — Retire legacy fallback + enforce token-zero **[CORRECTED — gate reachable for a NARROW set; reads served by deterministic path; per-tenant flag, §5.H/§5.J]**
+
+**Create:** `chat-core-v2-unsupported-fallback-response.ts`, two tests. **Modify:** `activation-flags.ts`, `chat-message-routes.ts`, `DEPLOY.md`.
+
+**Steps (corrected):** Add `legacyFallbackDisabled` flag (default false; forced false when mode=off) — **per-tenant resolved** (§5.J), so disabling legacy fallback for one tenant cannot starve another. Gate the `routeMessage()` call: if the requesting tenant's `legacyFallbackDisabled` → never call it (unsupported-fallback response); else if confidence ≥ 0.85 and mode∈{on,canary} and the 3 fast paths returned null → unsupported-fallback. **[CORRECTED — §5.H token-zero reachability]:** `app_question` confidence caps at **0.82** (`shadow-route-classifier.ts:95`), below the 0.85 gate, so the 0.85 path almost never fires for *reads*. The plan reframes honestly: **token-zero for reads is enforced by the deterministic-read path, not by the 0.85 gate.** `tryBuildChatCoreV2DeterministicReadRoute` (`deterministic-read-route.ts:72`) only serves `app_question` when `domains.length === 1` (~`:99`), so multi-domain reads fall through today. WP-20's real read-enforcement deliverable is (a) the `chat_core_v2_read_intent_leaked_to_legacy` **observability log** for any multi-domain `app_question` that the deterministic builder returned null on, monitored ≥2 weeks, and (b) once the leak count is ~0, **extending the deterministic-read builder to cover multi-domain reads** so those `app_question` turns are served token-zero **before** the LLM. The 0.85 full-disable flag remains for *future* full retirement of writes/unsupported intents, default-off, never set in prod until WP-18 is stable ≥2 weeks with zero auto-revert events. `buildChatCoreV2UnsupportedFallbackResponse` is pure (no LLM). The 0.85/0.68 constants are named constants but tuning them requires a code change — **document this breaks the env-only-rollback contract for these two thresholds** (§5.A) and is the deliberate forcing function for a retirement decision.
+
+**Tests:** flag parsing (default off; kill-switch forces off; **per-tenant resolution**); fallback response shape (pure, locale-aware, no LLM); confidence-gate scenarios; full-disable eliminates `routeMessage`; **leak-warning for multi-domain `app_question`**; integration DMV. **Acceptance:** AC-1..AC-10 + honest read-enforcement framing + leak log + per-tenant flag. **Risks:** double `classifyShadowRoute` call (accepted/refactor later); env-flip rollback for the flag (but not for the two hardcoded thresholds — documented).
+
+---
+
+## 5. Critique-Driven Adjustments
+
+All defects below were **verified true against the codebase** before this plan was finalized. They are corrections to the original blueprints, not optional suggestions. The first tier (the six GATE 0b BLOCKERS) was verified by the GATE 0b critique; the second tier (live kill-switch path, tenant scoping of the HMAC corpus and the safety controls, the Ollama-health mapping/staleness, and the formal gate edge) was verified by the follow-up architecture audit and is folded in here.
+
+### 5.A — Kill-switch single-chokepoint + default-off invariant (fixes kill-switch/rollback gaps)
+
+- **Hardened `parseMode`.** `activation-flags.ts:parseMode` (`:79-81`) does not trim/lowercase, so `'ON '`/`'on'` resolve to `off`. **Fix (WP-00.5):** `parseMode` trims+lowercases.
+- **The two PRE-EXISTING live parsers must route through the resolver (the core fix the prior draft missed).** `resolveChatCoreV2LocalChatLlmMode` (`local-chat-orchestrator.ts:118`) and `resolveChatCoreV2ActionGatewayMode` (`action-gateway.ts:102`) each read `process.env.CHAT_CORE_V2_ORCHESTRATOR_MODE` directly and gate the three live entry points (`chat-message-routes.ts:1024/1146/1332`). The prior draft scoped the "one parser" fix to NEW work packages only and silently left these two live parsers env-direct — meaning the WP-07 override Map was a second source of truth invisible to the live write/local-chat paths, and the auto-revert "safety valve" could not actually stop live execution. **Fix (WP-00.5):** both delegate their kill-switch decision to `resolveChatCoreV2ActivationConfig(env).mode`. No inline `process.env.CHAT_CORE_V2_ORCHESTRATOR_MODE` kill-switch compare remains anywhere (grep proves zero). This is a hard precondition for B7/WP-07/WP-14/WP-15.
+- **WP-07 override Map is per-tenant and resolver-visible on the live path.** The Map is keyed by `tenantId`, read **inside** `resolveChatCoreV2ActivationConfig` *before* env; because WP-00.5 reroutes the live parsers through the resolver, a `flip_global_to_shadow` for a tenant actually stops that tenant's live gateway/local-chat serving without a restart. **DMV proof is mandatory** (WP-07 integration test through `chat-message-routes`, not a unit injection into `applyAutoRevertDecision`). Kill-switch precedence preserved: startup `off` cannot be un-offed by the Map.
+- **WP-14 canary revert via the Map is verified on the live path, not "documented".** Because `isChatCoreV2LocalChatVisibleEnabled` resolves through the rerouted resolver, a Map flip reverts canary live; WP-14 ships a test asserting this on the request path.
+- **WP-18 must not invert default-off.** Keep `off` as the absent-default; promote by explicitly setting `mode=on`. `allowWriteExecution=true` only when mode is explicitly `on`.
+- **WP-11 fast-model is not default-on.** It self-activates only inside an already-enabled (mode≠off) turn flow; the outer kill-switch (resolver, via `isChatCoreV2LocalChatVisibleEnabled`) dominates the inner default.
+- **WP-20 threshold-tuning caveat documented.** The 0.85/0.68 constants require a code change to tune — explicitly noted as breaking env-only rollback for those two values (intentional forcing function).
+
+### 5.B — Missing review-resolution + operator notification + retention (closes B6 fully; folds in missing WPs)
+
+- **Human-review queue has BOTH halves of its consumer.** (resolution) WP-12 adds `POST …/human-reviews/:id/decide` (`decideChatV2HumanReview`) and WP-08 adds the expiry sweep (`expireChatV2HumanReviews`); (notification — the previously-missing half) WP-10 fires an operator notification (APNs and/or `CHAT_CORE_V2_PAGER_WEBHOOK_URL`) exactly once on a successful enqueue, carrying only `redacted_summary`/`domain`/`reason`/`reviewId`. A write-blocking governance event pushes, not waits to be polled. (`human-review-queue.ts` exports `enqueueChatV2HumanReview`/`decideChatV2HumanReview`/`expireChatV2HumanReviews`/`listPendingChatV2HumanReviews`, all real, zero runtime callers today — every consumer/notifier is net-new.)
+- **Retention has owning WPs, not orphaned notes.** WP-08 cleans `chat_v2_memory_items` (expired) and resolved/expired `chat_v2_human_reviews`. The highest-write-volume per-turn tables — `chat_v2_command_events` (stores `redacted_summary` TEXT) and `chat_v2_canary_turn_log` — are owned by **WP-08b**, a real WP sequenced after their last writers (WP-14/WP-15), with its own migration (177) for any needed predicate column and its own acceptance tests. No "follow-up note assigned to no WP" remains.
+- **Command-events enum contract.** WP-15 inserts only `event_name`/`status` values present in `migrations/159` CHECK lists (verified: `execution_completed`, `command_failed`, `verified`, `failed`).
+
+### 5.C — Migration collisions + duplicate control planes + formal gate edge (fixes ordering issues; the hard blockers)
+
+- **Migration renumbering (all collisions verified; next free = 172; each table has exactly ONE creating migration):**
+  - WP-07 `chat_v2_auto_revert_decisions`: **→ 173** (163 is `163_training_plan_adaptations`). WP-07 **sole creator**; WP-08 only adds the cleanup stanza, does **not** recreate it.
+  - WP-08 trace `expires_at`: **→ 172** (was 169/170, both taken).
+  - WP-13 `chat_v2_gate_metrics` + `gate-metrics-store.ts`: **→ 174**; **sole creator** of the table + the store + `upsertRecallAt8()`/`getLatestRecallAt8()`.
+  - WP-14 `chat_v2_canary_turn_log`: **→ 175** (was triply-colliding at 163).
+  - WP-19: **does not create `chat_v2_gate_metrics.sql` or its own store** — adds `176_chat_v2_gate_eval_runs.sql` and **calls** WP-13's `upsertRecallAt8()`; WP-19 does **not** modify `gate-metrics-store.ts` (tightens the prior loose "extends the same module" wording).
+  - WP-08b per-turn retention predicate (if needed): **→ 177**.
+- **One auto-revert evaluator, not two.** WP-06 owns the single cron (`chat_v2_auto_revert_eval`, `*/5`) that computes live metrics; WP-07 adds `applyAutoRevertDecision` to the **same** job body. The original two-cron design (`*/15` live-no-executor + `*/5` stub-with-executor) is collapsed.
+- **Inverted recall dependency resolved FORMALLY, not in prose (Issue 6).** WP-09 only asserts in CI; **WP-19** writes the persisted `recall_at_8_latest`. WP-19 is split: **WP-19-seed** (Phase-2 `workflow_dispatch` first run) writes the first persisted recall, and **WP-14 `dependsOn WP-19-seed`** in the §4.1 table — so an executor following the `dependsOn` graph cannot reach the canary gate with `gateCanPromote` permanently false. WP-13's `gateCanPromote=false` until WP-19-seed runs is the **expected** state. WP-14 uses a separate **0.80 boot floor** (not the promotion gate); the **single promotion authority** is persisted ≥0.90.
+- **Capability remaps verified against `capability-registry.ts`.** `content.draft_assist` and `content.script_generate` do **not** exist → use `content.brief_draft_preview` (`:378`). `training.health_summary` does **not** exist → use `training.session_explain` (`:168`). WP-09 runs the whitelist check before adding the test.
+
+### 5.D — WP-01 throwing trace span (fixes DMV concern)
+
+`recordChatV2TraceSpan` throws on `kind='prepass'` (`trace-recorder.ts:265`; `TRACE_SPAN_KINDS` `:52-67` has 14 kinds incl. `custom`, none is `prepass`; CHECK in `migrations/161`). **Fix:** emit the prepass span as `kind='custom'`, `name='prepass_candidate_selection'`. WP-01's DMV test calls the **real** recorder and asserts the span **persists** (the original draft built spans in-memory and never hit the throw).
+
+### 5.E — WP-15 type/jobType/keep-alive/enum corrections (fixes DMV + missing-WP)
+
+- **Type boundary, fully enumerated** (the prior draft named only one of four crossings): `ChatCoreV2BackgroundJob` ids are **string** (`:23-24`); `JobInput.tenantId` is **number** (`:22-23`); `executeChatCoreV2Command` ids are **number** (`:76-77`); `recordChatV2CommandEvent` ids are **string** (`:168-169`). Explicit `Number()`/`String()` at the enqueue, execute, AND record-event boundaries; `tsc`-clean.
+- **`jobType` runtime guard:** `'critic'` is a valid `ChatCoreV2BackgroundJobType` (`:16`); a hand-written guard restricts to `{planner_escalation, composer}` and the test expectation is fixed.
+- **B8 escalation_35b finished here:** the background handler is the only path that runs 35B, so it must call `resolveKeepAliveForRole('escalation_35b')` (=300). WP-02's "document-only" step is replaced by this real wiring.
+- **Command-events enum** matched to `migrations/159` (see 5.B).
+
+### 5.F — WP-19 HMAC safety + WP-05/WP-17 tenant scoping (fixes privacy/tenant risks — blocking + should_fix)
+
+- **WP-19 HMAC mandatory AND tenant+user-salted (blocking).** The prior draft made `hmacSecret` mandatory (good) but explicitly documented the token as "not tenant-scoped" — a regression from the house standard. **Fix:** hash `${tenantId}:${userId}:${text}` (matching `prepass-miss-log.ts:38` and `hmacTenantScopedEntityId` `cloud-allowlist-packet.ts:103-105`), or drop text entirely (preferred — OD-4). A global unsalted HMAC is forbidden; the doc does not call it acceptable. Hard-fail when the secret is empty against a real DB; a salting-proof test asserts two tenants produce different tokens for identical text.
+- **WP-05 cross-tenant evidence scoping ENFORCED + TESTED in WP-05 (should_fix).** `evidence-policy.ts` has zero tenant fields today. **Fix:** add `tenantId`/`userId` to the evidence item/bundle types and a guard `assertEvidenceScopedToTurn` that rejects/filters cross-tenant evidence; the cross-tenant-rejection unit test ships in WP-05 and the injection machinery does not merge before the guard+test exist. Not a deferred "wiring contract".
+- **WP-17 prompt-injection sanitisation ENFORCED + TESTED (should_fix).** `user_correction` is stored verbatim (`memory-store.ts:97`, uncapped TEXT) and replayed into every future prompt. **Fix:** a 200-char in-prompt cap **plus** routing every injected user-authored memory value through the existing untrusted-data sentinel `renderChatCoreV2PromptEvidence` (`evidence-policy.ts:144-150`) or an equivalent imperative-neutralising sanitiser, with a prompt-injection test (a malicious correction is not obeyed in a later turn). Confidence ≥ 0.75 is not an injection control.
+- **WP-04 system-level drift span tenant leak (resolved).** Use the pino-only path (`buildChatCoreV2FailureObservabilityEvent` carries no tenant/user fields, allowlists metadata — `failure-observability.ts:137-160`) and skip the trace span. Do **not** use synthetic `tenantId=0/userId=0`: `requireNonEmpty` (`trace-recorder.ts:257-268`) requires a non-empty STRING and would mis-attribute even `'0'`.
+- **WP-12 redacted_summary on FAILED spans audited (resolved).** WP-12 asserts `redacted_summary` on failed spans is free of message fragments and omits `attributes_json`/`metadata_json`.
+
+### 5.G — Prepass single-source-of-truth + memoryContext consumption (fixes missing-WP + double-run)
+
+- **Prepass runs once.** After WP-01, prepass executes inside `buildChatCoreV2RouteDecision`. WP-16 passes the **raw** classifier capabilityIds + `message` and does **not** call `selectPrepassCandidateCapabilities` itself. `route-decision.ts` is the single owner.
+- **Memory CHANGES the orchestrator decision (not merely threaded).** WP-16 threads `memoryContext` into `BuildRouteDecisionInput.memoryContext` AND `buildChatCoreV2RouteDecision` consumes it with a concrete decision rule (a relevant memory item nudges domain/capability/confidence/tier). The DMV acceptance is a behavior-change assertion: identical input → different decision with vs without a relevant memory item. If product chooses prompt-only memory for now, the deliverable is relabelled "threaded for future consumption" and the B-intent claim is downgraded — see OD-2.
+
+### 5.H — WP-20 token-zero reachability (fixes unreachable-goal DMV concern)
+
+`app_question` caps at 0.82 (`shadow-route-classifier.ts:95`), below the 0.85 gate; `general_question` is 0.62 (`:103`). **Fix:** token-zero for reads is served by the deterministic-read path, not the 0.85 gate. WP-20 adds (a) the `chat_core_v2_read_intent_leaked_to_legacy` log for multi-domain `app_question` leaks (the deterministic builder only serves single-domain `app_question`, `deterministic-read-route.ts:72` + `domains.length===1` ~`:99`), monitored ≥2 weeks, and (b) extends the deterministic-read builder to cover multi-domain reads. The 0.85 full-disable flag remains for future write/unsupported-intent retirement, default-off, per-tenant resolved.
+
+### 5.I — Other DMV / honesty corrections folded in
+
+- **WP-06 health probe** uses `getLatestHealthByProvider` (real export, `:351`), not `getLatestOllamaHealthStatus` (does not exist), with the **explicit status mapping** (`ok`→healthy; `fail`→unhealthy; `skipped`/`not configured`/missing→short-circuit healthy) and a **staleness guard** (stale `ollama` row beyond `OLLAMA_HEALTH_STALENESS_MS` → short-circuit healthy, never auto-flip on stale data; a dead probe is a paging condition). Stub metrics replaced with live aggregation in the merged cron.
+- **WP-06 per-language metric** is renamed `schemaComplianceByLanguage` on both producer and consumer (no metric named "recall" that computes sampling-rate) — OD-3. `migrations/162` has no locale column; the rename is the floor, real per-language corpus recall is the upgrade path.
+- **WP-10 readback verification** is honestly an assertion over the existing 4 sync commands (a tautology on the only executable commands) — documented as such; the real new governance value is class-C blocking + human-review enqueue/notify/resolve.
+- **WP-16 budget check** is a pre-flight only (always-ok for tiers with `maxModelCalls>0`) — documented as not a usage enforcer.
+- **WP-14 canary gate override** refuses to apply in production without an explicit prod-allow flag (mirrors `local-chat-orchestrator.ts:136-137`).
+
+### 5.J — Per-tenant safety controls (CLAUDE.md §94 compliance — promoted from deferred debt to a blocking precondition)
+
+The prior draft logged the process-global auto-revert override Map, the global `allowedDomains` gate, and the global legacy-fallback flag as "Phase 7 follow-up debt … acceptable for the current single-tenant production (Felipe + Jaqueline)." That framing is internally inconsistent — **Felipe and Jaqueline are two accounts** (the beta gate requires true two-account switching) — and CLAUDE.md §94 forbids single-tenant runtime assumptions in safety controls/caches/jobs/fallbacks. A process-global `flip_global_to_shadow` driven by one account's `legacyFallbackRate24h` would flip **both** accounts' serving behaviour. **Fix (not deferral):**
+
+- **Auto-revert override (WP-07):** the `_runtimeOverrides` Map is **keyed by `tenantId`**; `resolveChatCoreV2ActivationConfig(env, {tenantId})` reads the per-tenant entry; a flip mutates only the target tenant's path. (OD-1 specifies the exact key + resolver signature.)
+- **`allowedDomains` (WP-16):** resolved per-tenant (`overrideDomain` checked against the requesting tenant's resolved allowlist), not a single process-global env read.
+- **Legacy-fallback flag (WP-20):** `legacyFallbackDisabled` resolved per-tenant so disabling for one tenant never starves another.
+
+The aggregator (WP-06) computes `legacyFallbackRate24h`/`schemaComplianceRate1h` per tenant and the cron iterates the active tenant set. These controls govern two tenants today, so the per-tenant keying ships with them — it is not deferred to "before a third tenant."
+
+---
+
+## 6. Critical-Path Summary → Production-Activation Gate Ladder
+
+The promotion ladder; each rung promotes only on **runtime evidence**, never helper-completeness.
+
+```
+Phase 2 Shadow                         Phase 3 Canary    Phase 4 Write-Enable    Phase 5 Full-On   Phase 6/8
+──────────────────────────────────────────────────────────────────────────────────────────────────────────
+WP-00.5 kill-switch chokepoint ─┐
+WP-01 prepass wired ────────────┤
+WP-02 keep-alive  ──────────────┤
+WP-03 determinism ──────────────┤
+WP-04 drift       ──────────────┤
+WP-05 evidence(+tenant scope) ──┤
+WP-06 metrics(per-tenant) ──────┼─► WP-07 executor(per-tenant) ─► WP-08 retention
+WP-09 corpus  ──────────────────┤        │
+WP-10 write-risk(+notify) ──────┤        ▼
+WP-11 latency    ───────────────┤   WP-12 portal ─► WP-13 gate ─► WP-19-seed ─► WP-14 canary ─► WP-16 gate ─► WP-18 full-on ─► WP-20 retire
+                                │                                      ▲             │            WP-17 memory      ▲
+                                └──────────────────────────────────────┘        WP-15 bg ─► WP-08b retention ──────┘
+                                                                                                          WP-19 weekly eval
+```
+
+**Gate ladder (each is a hard go/no-go):**
+
+| Gate | Rung | Pass condition (runtime evidence) | Owning WPs |
+|---|---|---|---|
+| **G2-shadow** | Phase 2 → 3 | Kill-switch enforced in ONE chokepoint, proven on the live `chat-message-routes` path (WP-00.5); determinism sweep green repo-wide (B9); prepass + schema enforcement on a real route-decision DMV test (B1); drift fires at 40/100, pino-only, no tenant leak (B2); `unsupported_factual_claim` fires + cross-tenant evidence rejected (B5); **live** auto-revert metrics via `getLatestHealthByProvider` with explicit `skipped`/stale mapping + per-tenant executor flip proven to stop the live path (B7); first persisted recall@8 ≥ 0.90 from WP-19-seed (B4); `bench-gate` burst5 proxy green (B3, VPS pending); tenant-salted mandatory HMAC in the corpus loader. | WP-00.5,01,03,04,05,06,07,09,10,11,19-seed |
+| **G3-canary** | Phase 3 → 4 | `gateCanPromote=true` (persisted ≥0.90, seeded by WP-19-seed); canary boot floor ≥0.80 with prod-refusal on override; split-log shows v2 path serving canary users; a per-tenant Map flip reverts canary on the live request path without restart (verified). | WP-13, WP-19-seed, WP-14, WP-07 |
+| **G4-write** | Phase 4 → 5 | Orchestration gate runs prepass **once** and memoryContext **changes** the decision (behavior-change DMV); class-C commands enqueue background jobs that execute + APNs, with `escalation_35b` keep-alive=300 asserted and all four type-boundary conversions tsc-clean; human reviews enqueue + **notify an operator** + resolve via portal/cron (B6 fully closed); per-turn retention live (WP-08b); memory injection passes the untrusted sentinel (injection test). | WP-15, WP-16, WP-17, WP-08b |
+| **G5-full** | Phase 5 | Mode explicitly set to `on` (no silent default inversion); no live import removed; per-tenant override isolation verified; `tsc` clean; full Vitest ≥ 718/10,525; staging-smoke 17/17; **auto-revert safety net proven live before promote**. | WP-18 |
+| **G6/8-steady/retire** | Phase 6/8 | ≥2 weeks stable with zero auto-revert events; `chat_core_v2_read_intent_leaked_to_legacy` count ~0; weekly eval continuously ≥0.90; then enable `CHAT_CORE_V2_LEGACY_FALLBACK_DISABLED=1` per-tenant and serve residual reads token-zero. | WP-19, WP-20 |
+
+**The single longest dependency chain (critical path):**
+`WP-00.5 → WP-01 → WP-04 → WP-06 → WP-07 → (WP-12 + WP-09) → WP-13 → WP-19-seed → WP-14 → WP-16 → WP-17 → WP-18 → WP-20`, with `WP-15` joining at WP-18 and `WP-08b` immediately after WP-14/WP-15. The hard transition is **G3-canary**: it cannot open until **WP-19-seed** has written a persisted recall@8 ≥ 0.90 **and** the per-tenant auto-revert executor (WP-07) is proven to flip live behaviour through `chat-message-routes` — those two are the real production-safety preconditions for putting any user on the new path.
+
+---
+
+## 7. Open design decisions (resolve before implementation)
+
+These are genuinely hard design questions that this plan specifies a concrete recommended approach for, but which warrant an explicit sign-off (with Felipe) before the owning WP merges. None is hand-waved: each has a recommended option and a stated fallback.
+
+- **OD-1 — Per-tenant runtime-override Map shape (WP-07; blocks G2-shadow).** *Recommended:* `_runtimeOverrides: Map<string /*tenantId*/, ChatCoreV2TenantOverride>` where `ChatCoreV2TenantOverride = { mode?: 'shadow'; plannerPinnedToRepairOnly?: boolean; languageShadow?: string[] }`, and `resolveChatCoreV2ActivationConfig(env: EnvLike, ctx?: { tenantId?: string })` reads `ctx?.tenantId` → Map entry → env, with `tenantId` undefined meaning "no override layer" (env-only). The two WP-00.5-rerouted parsers and `isChatCoreV2LocalChatVisibleEnabled`/`resolveChatCoreV2ActionGatewayMode` thread the per-request `tenantId` into the resolver. *Fallback if threading `tenantId` through every resolver caller is too invasive for Phase 2:* ship a single-tenant override Map **only while exactly one tenant is on the v2 path**, and gate on OD-1 being resolved BOTH (a) write-enable (WP-15/WP-18) **and** (b) enabling the v2 canary **read** path for a *second* tenant — i.e. a single-tenant override may serve one live tenant's canary, but no second account (e.g. Jaqueline alongside Felipe) is put on the v2 read **or** write path until per-tenant keying lands, so one account's auto-revert flip can never mutate another's serving. This keeps the fallback consistent with Invariant 5: a single-tenant override is permissible only when "single-tenant" is literally true. *Why surfaced:* threading `tenantId` into a previously env-only resolver touches several call sites; the exact signature is a judgment call.
+
+- **OD-2 — Does memory change the route decision, or stay prompt-only? (WP-16/WP-17; affects G4-write).** *Recommended:* memory influences the decision via a conservative nudge (a stored `decision_rationale`/domain-affinity item raises the matching domain's confidence by a bounded delta or adds its capability to the candidate set), proven by a behavior-change DMV test. *Fallback:* keep memory prompt-only for Phase 4, relabel the deliverable "memory threaded for future consumption," and downgrade the B-intent closure claim so the plan does not overstate delivery. *Why surfaced:* a decision-changing rule has quality-regression risk (memory could steer a turn wrongly) and needs a product call on how aggressive the nudge is.
+
+- **OD-3 — Per-language safety arm: rename or real recall? (WP-06/auto-revert-policy).** *Recommended (now):* rename `prepassRecallByLanguage` → `schemaComplianceByLanguage` on **both** producer and consumer (`auto-revert-policy.ts:14,46-52`) and adjust the threshold semantics, so no arm named `recall` measures sampling-rate. *Upgrade path (WP-19):* compute real per-language recall@8 from the corpus via `evaluatePrepassRecallAtK` grouped over `corpus-eval.ts` `byLanguage` (`:106-124`), and feed that into a properly-named `prepassRecallByLanguage` arm. *Why surfaced:* the honest rename ships immediately, but the real per-language recall arm is a meaningful safety signal worth scheduling — Felipe should decide whether to pull it into WP-19 or a later WP.
+
+- **OD-4 — Corpus tokenisation: drop text vs tenant-salted HMAC (WP-19).** *Recommended:* **drop text entirely** post-tokenisation and keep only capability labels — a recall corpus needs no raw text, eliminating the pseudonymisation/dictionary-reversal risk class outright. *Floor (if any text must be retained for debugging):* mandatory tenant+user-salted HMAC `${tenantId}:${userId}:${text}`, never global-unsalted. *Why surfaced:* dropping text is strictly safer but slightly reduces offline debuggability of recall misses; the trade-off is Felipe's call.
+
+---
+
+## 8. Honest residual notes (not closure claims)
+
+- **WP-16 `EMPTY_RUNTIME_BUDGET` pre-flight** is structurally always-ok for tiers with `maxModelCalls>0` (`runtime-budget.ts:73-93` uses `used > max`; `EMPTY_RUNTIME_BUDGET_USAGE` is all-zeros). It is kept as a pre-flight and **documented as not a usage enforcer** — it is not claimed as a safety control. A real usage enforcer (decrementing a live budget) is out of scope for this plan.
+- **WP-10 readback verification** over the 4 sync commands is an assertion-tautology (those commands already read back; no other command can execute). It is documented as such; it is not claimed to add enforcement.
+- **B3 p95 gate** is a CI **proxy** (`burst5`) until a VPS/GPU run validates it; the binding pass requires the real hardware run and is annotated everywhere as pending.
