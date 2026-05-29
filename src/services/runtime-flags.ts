@@ -229,6 +229,15 @@ export function isDecisionCenterCommandBusEnabled(env: RuntimeEnv = process.env,
   return scopedFlagEnabledByExplicitOptIn(env, 'DECISION_CENTER_COMMAND_BUS_ENABLED', scope);
 }
 
+/**
+ * Honors the x-nexus-api-version: v2 Decision Center contract (compact cards on list/overview,
+ * full item on detail, cursor pagination). Default OFF; opt-in per user/tenant so older iOS
+ * clients keep the v1 shape until they ship v2 decoders.
+ */
+export function isDecisionApiV2Enabled(env: RuntimeEnv = process.env, scope?: RuntimeFlagScope): boolean {
+  return scopedFlagEnabledByExplicitOptIn(env, 'DECISION_API_V2_ENABLED', scope);
+}
+
 export function isChatCoreV2RuntimeFlagEnabled(
   flagKey: string,
   env: RuntimeEnv = process.env,

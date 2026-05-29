@@ -106,6 +106,35 @@ export interface DecisionActionEffectiveStatus {
   capabilityReason: string | null;
 }
 
+/**
+ * Compact list/overview card (API v2). Projected from the full DecisionApiItem so list
+ * surfaces ship ~22 fields/item instead of ~70. Full item is served only on detail.
+ */
+export interface DecisionCardSummary {
+  schemaVersion: string;
+  decisionId: string;
+  sourceSkill: NotificationSourceSkill;
+  type: NotificationIntentType;
+  status: string;
+  effectiveStatus?: DecisionEffectiveStatus;
+  urgency: DecisionUrgency;
+  timingLabel: string | null;
+  priorityScore: number;
+  sectionKey: DecisionTimelineSectionKey;
+  groupKey: string;
+  displayMode: DecisionFrontendDisplayMode;
+  frontendActionState: DecisionFrontendActionState;
+  impactLevel: 'low' | 'medium' | 'high';
+  safePreviewTitle: string;
+  safePreviewBody: string;
+  recommendedActionLabel: string | null;
+  primaryActionLabel: string;
+  deadlineAt: string | null;
+  expiresAt: string | null;
+  badgeContribution: boolean;
+  confidence: number;
+}
+
 export const DECISION_OUTCOME_LEDGER_RETENTION_POLICY = Object.freeze({
   rawOutcomeRetentionDays: 180,
   aggregateRetentionDays: 730,

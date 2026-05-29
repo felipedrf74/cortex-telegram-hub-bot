@@ -29,6 +29,7 @@ import {
   type NotificationSourceSkill,
 } from '../../services/notification-orchestrator';
 import { assertTenantScope, requireMutationScope, TenantScopeError } from '../../services/tenant-scope';
+import { buildDecisionCardSummary, resolveDecisionApiVersion } from '../decision-api-version';
 import { logger } from '../../utils/logger';
 
 function routeTenantId(
@@ -113,7 +114,11 @@ export function decisionRoutes(): Router {
     const tenantId = routeTenantId(authReq, res, userId, 'decisions_route');
     if (tenantId == null) return;
     const limit = parseInt(String(req.query.limit || '3'), 10);
-    sendSuccess(res, getDecisionSummary(userId, tenantId, limit));
+    const summary = getDecisionSummary(userId, tenantId, limit);
+    const { version, schemaVersion } = resolveDecisionApiVersion(authReq);
+    sendSuccess(res, version === 'v2'
+      ? { ...summary, schemaVersion, previewItems: summary.previewItems.map(buildDecisionCardSummary) }
+      : { ...summary, schemaVersion });
   }));
 
   router.get('/overview', asyncHandler(async (req, res: Response) => {
@@ -126,7 +131,16 @@ export function decisionRoutes(): Router {
     if (limit == null) return;
     const handledLimit = positiveIntQuery(res, req.query.handledLimit, 10, 'handledLimit', 25);
     if (handledLimit == null) return;
-    sendSuccess(res, getDecisionOverview(userId, tenantId, { limit, handledLimit }));
+    const overview = getDecisionOverview(userId, tenantId, { limit, handledLimit });
+    const { version, schemaVersion } = resolveDecisionApiVersion(authReq);
+    sendSuccess(res, version === 'v2'
+      ? {
+          ...overview,
+          schemaVersion,
+          items: overview.items.map(buildDecisionCardSummary),
+          summary: { ...overview.summary, previewItems: overview.summary.previewItems.map(buildDecisionCardSummary) },
+        }
+      : { ...overview, schemaVersion });
   }));
 
   router.get('/', asyncHandler(async (req, res: Response) => {
@@ -141,10 +155,12 @@ export function decisionRoutes(): Router {
     const type = typeof req.query.type === 'string' ? req.query.type as NotificationIntentType : undefined;
     const urgency = typeof req.query.urgency === 'string' ? req.query.urgency as DecisionUrgency : undefined;
     const items = listDecisionItems(userId, tenantId, { status, sourceSkill, type, urgency, limit });
+    const { version, schemaVersion } = resolveDecisionApiVersion(authReq);
     sendSuccess(res, {
+      schemaVersion,
       count: items.length,
       openCount: items.filter((item) => ['unread', 'read', 'failed'].includes(item.status)).length,
-      items,
+      items: version === 'v2' ? items.map(buildDecisionCardSummary) : items,
     });
   }));
 
