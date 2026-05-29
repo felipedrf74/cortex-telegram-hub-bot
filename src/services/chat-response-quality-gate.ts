@@ -150,6 +150,7 @@ export function applyChatResponseQualityGate(input: {
   const hasUnsupportedSpecifics = issues.includes('unsupported_specific_state_claim')
     || issues.includes('state_claim_without_grounding');
   const hasRecipeStructureIssue = issues.includes('recipe_missing_structure');
+  const unusableRecipeSeed = hasRecipeStructureIssue && isUnusableRecipeSeed(sanitized);
   const contract: NexusAnswerContract = {
     ...input.contract,
     verificationStatus: hasFakeSuccess || hasUnsupportedSpecifics ? 'pending' : input.contract.verificationStatus,
@@ -158,9 +159,12 @@ export function applyChatResponseQualityGate(input: {
       ...input.contract.missingFacts,
       ...(hasFakeSuccess ? ['read_back_verification'] : []),
       ...(hasUnsupportedSpecifics ? ['scoped_state_read'] : []),
+      ...(unusableRecipeSeed ? ['usable_recipe_content'] : []),
     ])],
     userFacingSummary: hasFakeSuccess || hasUnsupportedSpecifics
       ? 'Nexus needs fresher scoped state before making that claim.'
+      : unusableRecipeSeed
+        ? 'Nexus could not safely repair the recipe because the answer did not contain recipe content.'
       : hasRecipeStructureIssue
         ? 'Nexus repaired the answer into the expected recipe structure.'
         : input.contract.userFacingSummary,
@@ -171,19 +175,24 @@ export function applyChatResponseQualityGate(input: {
     : hasUnsupportedSpecifics
       ? scopedReadRepairText(input.contract.language)
     : hasRecipeStructureIssue
-      ? repairRecipeStructure(sanitized, input.contract.language)
+      ? unusableRecipeSeed
+        ? recipeSeedUnavailableText(input.contract.language)
+        : repairRecipeStructure(sanitized, input.contract.language)
     : sanitized;
 
   const firstIssue = issues[0] ?? 'unknown';
+  const status: ChatResponseQualityStatus = unusableRecipeSeed
+    ? 'blocked'
+    : hasOnlyRepairableIssues(issues) ? 'repaired' : 'blocked';
   return {
-    status: hasOnlyRepairableIssues(issues) ? 'repaired' : 'blocked',
+    status,
     text: repairedText,
     contract,
     issues,
     score: Math.max(0, 1 - issues.length * 0.2),
     qualityGateSkipped: !!phaseKSkipReason,
     qualityGateReason: phaseKSkipReason
-      ?? (hasOnlyRepairableIssues(issues) ? `repaired:${firstIssue}` : `blocked:${firstIssue}`),
+      ?? (unusableRecipeSeed ? 'blocked:recipe_seed_unusable' : hasOnlyRepairableIssues(issues) ? `repaired:${firstIssue}` : `blocked:${firstIssue}`),
   };
 }
 
@@ -437,6 +446,13 @@ function scopedReadRepairText(language: NexusAnswerContract['language']): string
   return 'I need a current scoped read before I can state those details confidently. Ask me to check the relevant Nexus section, and I will ground the answer first.';
 }
 
+function recipeSeedUnavailableText(language: NexusAnswerContract['language']): string {
+  if (language === 'pt' || language === 'mixed') {
+    return 'Não consegui gerar uma receita confiável agora. Tenta novamente com o prato, número de pessoas e restrições, e eu devolvo ingredientes e modo de preparo.';
+  }
+  return 'I could not generate a reliable recipe right now. Try again with the dish, servings, and constraints, and I will return ingredients and method.';
+}
+
 function repairRecipeStructure(text: string, language: NexusAnswerContract['language']): string {
   const title = inferRecipeTitle(text, language);
   const serves = inferRecipeServing(text, language);
@@ -519,4 +535,18 @@ function extractRecipeSeedSections(text: string): { ingredients: string[]; metho
     ingredients: (ingredientHints.length > 0 ? ingredientHints : seedLines).slice(0, 6),
     method: (methodHints.length > 0 ? methodHints : seedLines).slice(0, 6),
   };
+}
+
+function isUnusableRecipeSeed(text: string): boolean {
+  const folded = text.normalize('NFD').replace(/\p{Diacritic}/gu, '').toLowerCase();
+  if (/\b(nao consegui gerar|nao pude gerar|nao consegui criar|could not generate|couldn't generate|unable to generate|could not create|couldn't create|no pude generar|no consegui generar)\b/.test(folded)) {
+    return true;
+  }
+  return /\b(proxima acao|bloco curto de foco|25 minutos|manter foco|next action|focus block|short focus)\b/.test(folded)
+    && !hasRecipeContentSignal(folded);
+}
+
+function hasRecipeContentSignal(foldedText: string): boolean {
+  return /\b(recipe|recipes|receita|receitas|receta|recetas|ingredientes?|ingredients?|modo de preparo|instructions?|directions?|method|preparo|cozimento|cook|cozinhe|cozinhar|asse|assar|forno|oven|servings?|porcoes|porcao|rende|macros?|calorias|calories|protein|proteina)\b/.test(foldedText)
+    || /\b\d+\s?(?:g|kg|ml|l|cup|cups|tbsp|tsp|colher|colheres|xicara|xicaras|chávena|chávenas)\b/i.test(foldedText);
 }

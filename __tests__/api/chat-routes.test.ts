@@ -14,6 +14,10 @@ import {
 const MIGRATIONS_DIR = path.resolve(__dirname, '../../migrations');
 
 let testDb: Database.Database;
+const cacheStoreMocks = vi.hoisted(() => ({
+  clearCache: vi.fn(),
+  clearCacheByPrefix: vi.fn(),
+}));
 
 const calendarMocks = vi.hoisted(() => ({
   createEvent: vi.fn(),
@@ -217,8 +221,8 @@ vi.mock('../../src/services/anthropic', () => ({
 vi.mock('../../src/services/cache-store', () => ({
   getCached: vi.fn(() => null),
   setCache: vi.fn(),
-  clearCache: vi.fn(),
-  clearCacheByPrefix: vi.fn(),
+  clearCache: (...args: unknown[]) => cacheStoreMocks.clearCache(...args),
+  clearCacheByPrefix: (...args: unknown[]) => cacheStoreMocks.clearCacheByPrefix(...args),
 }));
 
 vi.mock('../../src/services/user-service', () => ({
@@ -265,13 +269,9 @@ vi.mock('../../src/services/cost-guardrail', () => ({
       details: {
         plan: quota.plan,
         resetAt: quota.resetAt,
-        limitUsd: quota.limitUsd,
-        usedUsd: quota.usedUsd,
-        remainingUsd: quota.remainingUsd,
-        planDailyLimitUsd: quota.planDailyLimitUsd,
-        includedRemainingUsd: quota.includedRemainingUsd,
+        usagePercent: 100,
+        quotaState: 'reached',
         nexusPointsBalance: quota.nexusPointsBalance,
-        nexusPointsRemainingUsd: quota.nexusPointsRemainingUsd,
         pointsPurchaseAvailable: quota.pointsPurchaseAvailable,
       },
     };
@@ -424,6 +424,10 @@ vi.mock('../../src/utils/callback-store', () => ({
 }));
 
 import { chatRoutes } from '../../src/api/routes/chat';
+import {
+  isChatCoreV2TaskAutoExecuteModeActive,
+  resolveChatCoreV2TaskAutoExecuteMode,
+} from '../../src/api/routes/chat-message-routes';
 import { authMiddleware } from '../../src/api/auth-middleware';
 import { upsertPendingChatAction } from '../../src/services/chat-action-state';
 import { resetPendingChatConfirmationsForTests } from '../../src/services/chat-pending-confirmations';
@@ -688,6 +692,8 @@ describe('Chat API routes', () => {
     mockGetSessionsForWeek.mockReset();
     mockGetWeeklyAdherence.mockReset();
     mockClearChatHistory.mockReset();
+    cacheStoreMocks.clearCache.mockReset();
+    cacheStoreMocks.clearCacheByPrefix.mockReset();
     calendarMocks.createEvent.mockReset();
     calendarMocks.getEventsForSources.mockReset();
     calendarMocks.isGoogleCalendarConfigured.mockReset();
@@ -1248,6 +1254,78 @@ describe('Chat API routes', () => {
       action_type: 'create_task_with_subtasks',
       provider_object_id: String(task.id),
     });
+  });
+
+  it('routes Portuguese colon task lists through the verified subtask executor instead of flattening them into the title', async () => {
+    const previousReads = process.env.CHAT_CORE_V2_READS_ENABLED;
+    process.env.CHAT_CORE_V2_READS_ENABLED = 'true';
+    try {
+      const messageRes = await dispatch('POST', '/message', 7001, {
+        text: 'Crie uma tarefa para comprar suplementos:\nk2\nd3\ncreatina',
+        clientMessageId: 'suplementos-subtasks-pt-colon-1',
+      });
+
+      expect(messageRes.statusCode, JSON.stringify(messageRes.body)).toBe(202);
+      expect(messageRes.body).toMatchObject({
+        domain: 'tasks',
+        routeMethod: 'chat-action-deterministic',
+        metadata: {
+          type: 'chat_action_needs_confirmation',
+          pendingConfirmation: {
+            kind: 'pending_confirmation',
+            intent_class: 'task_create',
+            confirmation_token: expect.any(String),
+          },
+        },
+      });
+      expect(JSON.stringify(messageRes.body.metadata)).not.toContain('chat_core_v2_command_preview');
+      expect(testDb.prepare('SELECT COUNT(*) AS count FROM native_tasks WHERE user_id = ? AND title = ?')
+        .get(7001, 'comprar suplementos')).toMatchObject({ count: 0 });
+
+      const confirmed = await dispatch('POST', '/confirm-action', 7001, {
+        confirmation_token: messageRes.body.metadata.pendingConfirmation.confirmation_token,
+        intent_class: 'task_create',
+      });
+
+      expect(confirmed.statusCode, JSON.stringify(confirmed.body)).toBe(200);
+      expect(confirmed.body).toMatchObject({
+        domain: 'tasks',
+        routeMethod: 'chat-action-mixed',
+        metadata: {
+          type: 'chat_action_verified_success',
+          actionStatus: 'verified_success',
+          title: 'comprar suplementos',
+          verificationStatus: 'verified_success',
+          subtasks: [
+            { title: 'k2' },
+            { title: 'd3' },
+            { title: 'creatina' },
+          ],
+        },
+      });
+      expect(confirmed.body.text).toContain('comprar suplementos');
+      expect(confirmed.body.text).toContain('3 subtasks');
+
+      const task = testDb.prepare('SELECT id, title, user_id FROM native_tasks WHERE user_id = ? AND title = ?')
+        .get(7001, 'comprar suplementos') as any;
+      expect(task).toMatchObject({ title: 'comprar suplementos', user_id: 7001 });
+      const subtasks = testDb.prepare(`
+        SELECT display_name
+        FROM native_task_checklist_items
+        WHERE user_id = ? AND task_id = ?
+        ORDER BY position ASC, id ASC
+      `).all(7001, task.id).map((row: any) => row.display_name);
+      expect(subtasks).toEqual(['k2', 'd3', 'creatina']);
+      expect(cacheStoreMocks.clearCache).toHaveBeenCalledWith('u:7001:tasks-filtered:all');
+      expect(cacheStoreMocks.clearCache).toHaveBeenCalledWith('u:7001:task-lists');
+      expect(cacheStoreMocks.clearCache).toHaveBeenCalledWith('u:7001:tasks-working-set');
+    } finally {
+      if (previousReads === undefined) {
+        delete process.env.CHAT_CORE_V2_READS_ENABLED;
+      } else {
+        process.env.CHAT_CORE_V2_READS_ENABLED = previousReads;
+      }
+    }
   });
 
   it('does not duplicate task/subtask execution when iOS retries the same client message id', async () => {
@@ -3047,6 +3125,7 @@ describe('Chat API routes', () => {
           confirmationToken: preview.body.metadata.pendingConfirmation.confirmation_token,
         },
       });
+      expect(testDb.prepare('SELECT COUNT(*) AS count FROM native_tasks WHERE user_id = ?').get(7001)).toMatchObject({ count: 0 });
       expect(testDb.prepare('SELECT COUNT(*) AS count FROM unified_tasks WHERE user_id = ?').get(7001)).toMatchObject({ count: 0 });
 
       const confirmationBody = {
@@ -3092,7 +3171,8 @@ describe('Chat API routes', () => {
         dueAt: null,
         listName: null,
       }]);
-      expect(testDb.prepare('SELECT COUNT(*) AS count FROM unified_tasks WHERE user_id = ? AND title = ?').get(7001, 'Buy milk')).toMatchObject({ count: 1 });
+      expect(testDb.prepare('SELECT COUNT(*) AS count FROM native_tasks WHERE user_id = ? AND title = ?').get(7001, 'Buy milk')).toMatchObject({ count: 1 });
+      expect(testDb.prepare('SELECT COUNT(*) AS count FROM unified_tasks WHERE user_id = ? AND title = ?').get(7001, 'Buy milk')).toMatchObject({ count: 0 });
       const metadataJson = JSON.stringify(confirmed.body.metadata);
       expect(metadataJson).not.toContain('actorUserId');
       expect(metadataJson).not.toContain('delegatedScopes');
@@ -3105,7 +3185,8 @@ describe('Chat API routes', () => {
         idempotentReplay: true,
         confirmationReplay: true,
       });
-      expect(testDb.prepare('SELECT COUNT(*) AS count FROM unified_tasks WHERE user_id = ? AND title = ?').get(7001, 'Buy milk')).toMatchObject({ count: 1 });
+      expect(testDb.prepare('SELECT COUNT(*) AS count FROM native_tasks WHERE user_id = ? AND title = ?').get(7001, 'Buy milk')).toMatchObject({ count: 1 });
+      expect(testDb.prepare('SELECT COUNT(*) AS count FROM unified_tasks WHERE user_id = ? AND title = ?').get(7001, 'Buy milk')).toMatchObject({ count: 0 });
       expect(mockRouteMessage).not.toHaveBeenCalled();
       expect(mockHandleSecretary).not.toHaveBeenCalled();
     } finally {
@@ -3382,8 +3463,12 @@ describe('Chat API routes', () => {
           },
         },
       });
-      expect(String(messageRes.body.metadata.chatCoreV2.command.payload.startDateTime)).toContain('2026-05-29T14:00:00');
-      expect(String(messageRes.body.metadata.chatCoreV2.command.payload.endDateTime)).toContain('2026-05-29T15:00:00');
+      // Date-agnostic: "Friday at 2pm" resolves to the upcoming Friday, so
+      // assert time-of-day and weekday instead of a hardcoded calendar date
+      // (which drifts as the test runs on different days).
+      expect(String(messageRes.body.metadata.chatCoreV2.command.payload.startDateTime)).toContain('T14:00:00');
+      expect(String(messageRes.body.metadata.chatCoreV2.command.payload.endDateTime)).toContain('T15:00:00');
+      expect(new Date(String(messageRes.body.metadata.chatCoreV2.command.payload.startDateTime)).getUTCDay()).toBe(5);
       expect(messageRes.body.metadata.chatCoreV2.response.cards[0]).toMatchObject({
         type: 'calendar_change_preview_card',
         title: 'Calendar preview: weekly sync',
@@ -3402,8 +3487,8 @@ describe('Chat API routes', () => {
         kind: 'eventCard',
         eventId: null,
         title: 'weekly sync',
-        startAt: expect.stringContaining('2026-05-29T14:00:00'),
-        endAt: expect.stringContaining('2026-05-29T15:00:00'),
+        startAt: expect.stringContaining('T14:00:00'),
+        endAt: expect.stringContaining('T15:00:00'),
         location: null,
         attendees: [],
         status: 'pending',
@@ -3540,6 +3625,670 @@ describe('Chat API routes', () => {
         delete process.env.CHAT_CORE_V2_WRITES_ENABLED;
       } else {
         process.env.CHAT_CORE_V2_WRITES_ENABLED = previousWrites;
+      }
+    }
+  });
+
+  it('auto-executes explicit safe native task completion in the local Chat Core v2 sandbox', async () => {
+    const previousGlobal = process.env.CHAT_CORE_V2_ENABLED;
+    const previousWrites = process.env.CHAT_CORE_V2_WRITES_ENABLED;
+    const previousConfirmations = process.env.CHAT_CORE_V2_CONFIRMATIONS_ENABLED;
+    const previousAutoExecute = process.env.CHAT_CORE_V2_LOCAL_AUTO_EXECUTE_SAFE_TASKS;
+    const previousTaskCompleteAutoExecute = process.env.CHAT_CORE_V2_TASK_COMPLETE_AUTO_EXECUTE;
+    process.env.CHAT_CORE_V2_ENABLED = 'true';
+    process.env.CHAT_CORE_V2_WRITES_ENABLED = 'true';
+    process.env.CHAT_CORE_V2_CONFIRMATIONS_ENABLED = 'true';
+    process.env.CHAT_CORE_V2_TASK_COMPLETE_AUTO_EXECUTE = 'sandbox_only';
+    try {
+      const listInfo = testDb.prepare(`
+        INSERT INTO native_task_lists (user_id, name, is_default)
+        VALUES (?, ?, 1)
+      `).run(7001, 'Inbox');
+      const taskInfo = testDb.prepare(`
+        INSERT INTO native_tasks (user_id, list_id, title, status)
+        VALUES (?, ?, ?, 'notStarted')
+      `).run(7001, Number(listInfo.lastInsertRowid), 'comprar suplementos');
+      mockRouteMessage.mockClear();
+      mockHandleSecretary.mockClear();
+
+      const messageRes = await dispatch('POST', '/message', 7001, {
+        text: 'Mark comprar suplementos task as done',
+        clientMessageId: 'chat-core-v2-native-task-complete-auto-execute-1',
+      });
+
+      expect(messageRes.statusCode, JSON.stringify(messageRes.body)).toBe(200);
+      expect(messageRes.body.routeMethod).toBe('chat-core-v2-command-confirmation');
+      expect(messageRes.body.domain).toBe('secretary');
+      expect(messageRes.body.text).toBe('Done — I marked "comprar suplementos" as done.');
+      expect(messageRes.body.metadata).toMatchObject({
+        type: 'chat_core_v2_command_result',
+        actionStatus: 'verified',
+        verificationStatus: 'verified',
+        chatCoreV2: {
+          capabilityId: 'tasks.complete',
+          commandType: 'tasks.complete',
+          status: 'verified',
+          response: {
+            kind: 'action_result',
+          },
+        },
+      });
+      expect(messageRes.body.responseCards).toEqual([{
+        kind: 'taskCard',
+        taskId: String(taskInfo.lastInsertRowid),
+        title: 'comprar suplementos',
+        status: 'completed',
+        dueAt: null,
+        listName: null,
+      }]);
+      expect(testDb.prepare('SELECT status FROM native_tasks WHERE id = ?').get(taskInfo.lastInsertRowid))
+        .toMatchObject({ status: 'completed' });
+      expect(mockRouteMessage).not.toHaveBeenCalled();
+      expect(mockHandleSecretary).not.toHaveBeenCalled();
+    } finally {
+      if (previousGlobal === undefined) {
+        delete process.env.CHAT_CORE_V2_ENABLED;
+      } else {
+        process.env.CHAT_CORE_V2_ENABLED = previousGlobal;
+      }
+      if (previousWrites === undefined) {
+        delete process.env.CHAT_CORE_V2_WRITES_ENABLED;
+      } else {
+        process.env.CHAT_CORE_V2_WRITES_ENABLED = previousWrites;
+      }
+      if (previousConfirmations === undefined) {
+        delete process.env.CHAT_CORE_V2_CONFIRMATIONS_ENABLED;
+      } else {
+        process.env.CHAT_CORE_V2_CONFIRMATIONS_ENABLED = previousConfirmations;
+      }
+      if (previousAutoExecute === undefined) {
+        delete process.env.CHAT_CORE_V2_LOCAL_AUTO_EXECUTE_SAFE_TASKS;
+      } else {
+        process.env.CHAT_CORE_V2_LOCAL_AUTO_EXECUTE_SAFE_TASKS = previousAutoExecute;
+      }
+      if (previousTaskCompleteAutoExecute === undefined) {
+        delete process.env.CHAT_CORE_V2_TASK_COMPLETE_AUTO_EXECUTE;
+      } else {
+        process.env.CHAT_CORE_V2_TASK_COMPLETE_AUTO_EXECUTE = previousTaskCompleteAutoExecute;
+      }
+    }
+  });
+
+  it('does not activate Chat Core v2 canary task auto-execute in production without explicit prod override', async () => {
+    const previousNodeEnv = process.env.NODE_ENV;
+    const previousTaskCompleteAutoExecute = process.env.CHAT_CORE_V2_TASK_COMPLETE_AUTO_EXECUTE;
+    const previousCanaryAllowProd = process.env.CHAT_CORE_V2_CANARY_ALLOW_PROD;
+    const previousLegacyAutoExecute = process.env.CHAT_CORE_V2_LOCAL_AUTO_EXECUTE_SAFE_TASKS;
+    process.env.NODE_ENV = 'production';
+    delete process.env.CHAT_CORE_V2_CANARY_ALLOW_PROD;
+    delete process.env.CHAT_CORE_V2_LOCAL_AUTO_EXECUTE_SAFE_TASKS;
+    try {
+      for (const raw of ['canary', 'sandbox_only', 'true', '1', 'True', 'on']) {
+        process.env.CHAT_CORE_V2_TASK_COMPLETE_AUTO_EXECUTE = raw;
+        const resolved = resolveChatCoreV2TaskAutoExecuteMode('tasks.complete');
+        expect(
+          isChatCoreV2TaskAutoExecuteModeActive(resolved.mode),
+          `${raw} resolved to ${resolved.mode} from ${resolved.source}`,
+        ).toBe(false);
+      }
+      process.env.CHAT_CORE_V2_TASK_COMPLETE_AUTO_EXECUTE = 'canary';
+      process.env.CHAT_CORE_V2_CANARY_ALLOW_PROD = '1';
+      expect(isChatCoreV2TaskAutoExecuteModeActive(resolveChatCoreV2TaskAutoExecuteMode('tasks.complete').mode)).toBe(true);
+    } finally {
+      if (previousNodeEnv === undefined) {
+        delete process.env.NODE_ENV;
+      } else {
+        process.env.NODE_ENV = previousNodeEnv;
+      }
+      if (previousTaskCompleteAutoExecute === undefined) {
+        delete process.env.CHAT_CORE_V2_TASK_COMPLETE_AUTO_EXECUTE;
+      } else {
+        process.env.CHAT_CORE_V2_TASK_COMPLETE_AUTO_EXECUTE = previousTaskCompleteAutoExecute;
+      }
+      if (previousCanaryAllowProd === undefined) {
+        delete process.env.CHAT_CORE_V2_CANARY_ALLOW_PROD;
+      } else {
+        process.env.CHAT_CORE_V2_CANARY_ALLOW_PROD = previousCanaryAllowProd;
+      }
+      if (previousLegacyAutoExecute === undefined) {
+        delete process.env.CHAT_CORE_V2_LOCAL_AUTO_EXECUTE_SAFE_TASKS;
+      } else {
+        process.env.CHAT_CORE_V2_LOCAL_AUTO_EXECUTE_SAFE_TASKS = previousLegacyAutoExecute;
+      }
+    }
+  });
+
+  it('routes exact native task completion through the Chat Core v2 action gateway and mutates only the canonical task id', async () => {
+    const previousGlobal = process.env.CHAT_CORE_V2_ENABLED;
+    const previousWrites = process.env.CHAT_CORE_V2_WRITES_ENABLED;
+    const previousConfirmations = process.env.CHAT_CORE_V2_CONFIRMATIONS_ENABLED;
+    const previousAutoExecute = process.env.CHAT_CORE_V2_LOCAL_AUTO_EXECUTE_SAFE_TASKS;
+    const previousTaskCompleteAutoExecute = process.env.CHAT_CORE_V2_TASK_COMPLETE_AUTO_EXECUTE;
+    const previousGateway = process.env.CHAT_CORE_V2_ACTION_GATEWAY_MODE;
+    process.env.CHAT_CORE_V2_ENABLED = 'true';
+    process.env.CHAT_CORE_V2_WRITES_ENABLED = 'true';
+    process.env.CHAT_CORE_V2_CONFIRMATIONS_ENABLED = 'true';
+    process.env.CHAT_CORE_V2_TASK_COMPLETE_AUTO_EXECUTE = 'sandbox_only';
+    process.env.CHAT_CORE_V2_ACTION_GATEWAY_MODE = 'enforce';
+    try {
+      const listInfo = testDb.prepare(`
+        INSERT INTO native_task_lists (user_id, name, is_default)
+        VALUES (?, ?, 1)
+      `).run(7001, 'Inbox');
+      const otherUserList = testDb.prepare(`
+        INSERT INTO native_task_lists (user_id, name, is_default)
+        VALUES (?, ?, 1)
+      `).run(7002, 'Inbox');
+      const unrelated = testDb.prepare(`
+        INSERT INTO native_tasks (user_id, list_id, title, status)
+        VALUES (?, ?, ?, 'notStarted')
+      `).run(7001, Number(listInfo.lastInsertRowid), 'comprar suplementos QA LOCAL 2');
+      const target = testDb.prepare(`
+        INSERT INTO native_tasks (user_id, list_id, title, status)
+        VALUES (?, ?, ?, 'notStarted')
+      `).run(7001, Number(listInfo.lastInsertRowid), 'comprar suplementos QA LOCAL');
+      const crossTenant = testDb.prepare(`
+        INSERT INTO native_tasks (user_id, list_id, title, status)
+        VALUES (?, ?, ?, 'notStarted')
+      `).run(7002, Number(otherUserList.lastInsertRowid), 'comprar suplementos QA LOCAL');
+      mockRouteMessage.mockClear();
+      mockHandleSecretary.mockClear();
+
+      const messageRes = await dispatch('POST', '/message', 7001, {
+        text: 'Mark comprar suplementos QA LOCAL task as done',
+        clientMessageId: 'chat-core-v2-native-task-complete-gateway-exact-1',
+      });
+
+      expect(messageRes.statusCode, JSON.stringify(messageRes.body)).toBe(200);
+      expect(messageRes.body.routeMethod).toBe('chat-core-v2-command-confirmation');
+      expect(messageRes.body.text).toBe('Done — I marked "comprar suplementos QA LOCAL" as done.');
+      expect(messageRes.body.metadata).toMatchObject({
+        type: 'chat_core_v2_command_result',
+        actionStatus: 'verified',
+        verificationStatus: 'verified',
+        chatCoreV2: {
+          capabilityId: 'tasks.complete',
+          commandType: 'tasks.complete',
+          status: 'verified',
+        },
+      });
+      const rows = testDb.prepare(`
+        SELECT id, user_id, title, status
+        FROM native_tasks
+        WHERE id IN (?, ?, ?)
+        ORDER BY id
+      `).all(unrelated.lastInsertRowid, target.lastInsertRowid, crossTenant.lastInsertRowid) as Array<{
+        id: number;
+        user_id: number;
+        title: string;
+        status: string;
+      }>;
+      expect(rows).toEqual([
+        { id: Number(unrelated.lastInsertRowid), user_id: 7001, title: 'comprar suplementos QA LOCAL 2', status: 'notStarted' },
+        { id: Number(target.lastInsertRowid), user_id: 7001, title: 'comprar suplementos QA LOCAL', status: 'completed' },
+        { id: Number(crossTenant.lastInsertRowid), user_id: 7002, title: 'comprar suplementos QA LOCAL', status: 'notStarted' },
+      ]);
+      expect(mockRouteMessage).not.toHaveBeenCalled();
+      expect(mockHandleSecretary).not.toHaveBeenCalled();
+    } finally {
+      if (previousGlobal === undefined) {
+        delete process.env.CHAT_CORE_V2_ENABLED;
+      } else {
+        process.env.CHAT_CORE_V2_ENABLED = previousGlobal;
+      }
+      if (previousWrites === undefined) {
+        delete process.env.CHAT_CORE_V2_WRITES_ENABLED;
+      } else {
+        process.env.CHAT_CORE_V2_WRITES_ENABLED = previousWrites;
+      }
+      if (previousConfirmations === undefined) {
+        delete process.env.CHAT_CORE_V2_CONFIRMATIONS_ENABLED;
+      } else {
+        process.env.CHAT_CORE_V2_CONFIRMATIONS_ENABLED = previousConfirmations;
+      }
+      if (previousAutoExecute === undefined) {
+        delete process.env.CHAT_CORE_V2_LOCAL_AUTO_EXECUTE_SAFE_TASKS;
+      } else {
+        process.env.CHAT_CORE_V2_LOCAL_AUTO_EXECUTE_SAFE_TASKS = previousAutoExecute;
+      }
+      if (previousTaskCompleteAutoExecute === undefined) {
+        delete process.env.CHAT_CORE_V2_TASK_COMPLETE_AUTO_EXECUTE;
+      } else {
+        process.env.CHAT_CORE_V2_TASK_COMPLETE_AUTO_EXECUTE = previousTaskCompleteAutoExecute;
+      }
+      if (previousGateway === undefined) {
+        delete process.env.CHAT_CORE_V2_ACTION_GATEWAY_MODE;
+      } else {
+        process.env.CHAT_CORE_V2_ACTION_GATEWAY_MODE = previousGateway;
+      }
+    }
+  });
+
+  it('blocks unresolved task-complete write intents before scoped-read or legacy tool fallback', async () => {
+    const previousGlobal = process.env.CHAT_CORE_V2_ENABLED;
+    const previousWrites = process.env.CHAT_CORE_V2_WRITES_ENABLED;
+    const previousGateway = process.env.CHAT_CORE_V2_ACTION_GATEWAY_MODE;
+    process.env.CHAT_CORE_V2_ENABLED = 'true';
+    process.env.CHAT_CORE_V2_WRITES_ENABLED = 'true';
+    process.env.CHAT_CORE_V2_ACTION_GATEWAY_MODE = 'enforce';
+    try {
+      mockRouteMessage.mockClear();
+      mockHandleSecretary.mockClear();
+
+      const messageRes = await dispatch('POST', '/message', 7001, {
+        text: 'Mark comprar suplementos QA LOCAL task as done',
+        clientMessageId: 'chat-core-v2-task-complete-unresolved-gateway-1',
+      });
+
+      expect(messageRes.statusCode, JSON.stringify(messageRes.body)).toBe(200);
+      expect(messageRes.body.routeMethod).toBe('chat-core-v2-action-gateway');
+      expect(messageRes.body.text).toContain('could not identify exactly which task');
+      expect(messageRes.body.text).not.toContain('current scoped read');
+      expect(messageRes.body.metadata).toMatchObject({
+        type: 'chat_core_v2_write_intent_guard',
+        chatCoreV2: {
+          kind: 'needs_clarification',
+          telemetry: {
+            legacyFallbackBlocked: true,
+            finalOutcome: 'needs_clarification',
+            resolvedEntityIds: [],
+          },
+        },
+      });
+      expect(mockRouteMessage).not.toHaveBeenCalled();
+      expect(mockHandleSecretary).not.toHaveBeenCalled();
+    } finally {
+      if (previousGlobal === undefined) {
+        delete process.env.CHAT_CORE_V2_ENABLED;
+      } else {
+        process.env.CHAT_CORE_V2_ENABLED = previousGlobal;
+      }
+      if (previousWrites === undefined) {
+        delete process.env.CHAT_CORE_V2_WRITES_ENABLED;
+      } else {
+        process.env.CHAT_CORE_V2_WRITES_ENABLED = previousWrites;
+      }
+      if (previousGateway === undefined) {
+        delete process.env.CHAT_CORE_V2_ACTION_GATEWAY_MODE;
+      } else {
+        process.env.CHAT_CORE_V2_ACTION_GATEWAY_MODE = previousGateway;
+      }
+    }
+  });
+
+  it('does not execute negated or hypothetical task-complete messages', async () => {
+    const previousGlobal = process.env.CHAT_CORE_V2_ENABLED;
+    const previousWrites = process.env.CHAT_CORE_V2_WRITES_ENABLED;
+    const previousConfirmations = process.env.CHAT_CORE_V2_CONFIRMATIONS_ENABLED;
+    const previousAutoExecute = process.env.CHAT_CORE_V2_LOCAL_AUTO_EXECUTE_SAFE_TASKS;
+    const previousGateway = process.env.CHAT_CORE_V2_ACTION_GATEWAY_MODE;
+    process.env.CHAT_CORE_V2_ENABLED = 'true';
+    process.env.CHAT_CORE_V2_WRITES_ENABLED = 'true';
+    process.env.CHAT_CORE_V2_CONFIRMATIONS_ENABLED = 'true';
+    process.env.CHAT_CORE_V2_LOCAL_AUTO_EXECUTE_SAFE_TASKS = 'true';
+    process.env.CHAT_CORE_V2_ACTION_GATEWAY_MODE = 'enforce';
+    try {
+      const listInfo = testDb.prepare(`
+        INSERT INTO native_task_lists (user_id, name, is_default)
+        VALUES (?, ?, 1)
+      `).run(7001, 'Inbox');
+      const target = testDb.prepare(`
+        INSERT INTO native_tasks (user_id, list_id, title, status)
+        VALUES (?, ?, ?, 'notStarted')
+      `).run(7001, Number(listInfo.lastInsertRowid), 'comprar suplementos QA LOCAL');
+      mockRouteMessage.mockClear();
+      mockHandleSecretary.mockClear();
+
+      const negated = await dispatch('POST', '/message', 7001, {
+        text: 'Don’t mark comprar suplementos QA LOCAL task as done',
+        clientMessageId: 'chat-core-v2-task-complete-negated-gateway-1',
+      });
+      const hypothetical = await dispatch('POST', '/message', 7001, {
+        text: 'Should I mark comprar suplementos QA LOCAL task as done?',
+        clientMessageId: 'chat-core-v2-task-complete-hypothetical-gateway-1',
+      });
+
+      expect(negated.statusCode, JSON.stringify(negated.body)).toBe(200);
+      expect(hypothetical.statusCode, JSON.stringify(hypothetical.body)).toBe(200);
+      expect(negated.body.routeMethod).toBe('chat-core-v2-action-gateway');
+      expect(hypothetical.body.routeMethod).toBe('chat-core-v2-action-gateway');
+      expect(negated.body.metadata.chatCoreV2.kind).toBe('unsupported_write');
+      expect(hypothetical.body.metadata.chatCoreV2.kind).toBe('unsupported_write');
+      expect(testDb.prepare('SELECT status FROM native_tasks WHERE id = ?').get(target.lastInsertRowid))
+        .toMatchObject({ status: 'notStarted' });
+      expect(mockRouteMessage).not.toHaveBeenCalled();
+      expect(mockHandleSecretary).not.toHaveBeenCalled();
+    } finally {
+      if (previousGlobal === undefined) {
+        delete process.env.CHAT_CORE_V2_ENABLED;
+      } else {
+        process.env.CHAT_CORE_V2_ENABLED = previousGlobal;
+      }
+      if (previousWrites === undefined) {
+        delete process.env.CHAT_CORE_V2_WRITES_ENABLED;
+      } else {
+        process.env.CHAT_CORE_V2_WRITES_ENABLED = previousWrites;
+      }
+      if (previousConfirmations === undefined) {
+        delete process.env.CHAT_CORE_V2_CONFIRMATIONS_ENABLED;
+      } else {
+        process.env.CHAT_CORE_V2_CONFIRMATIONS_ENABLED = previousConfirmations;
+      }
+      if (previousAutoExecute === undefined) {
+        delete process.env.CHAT_CORE_V2_LOCAL_AUTO_EXECUTE_SAFE_TASKS;
+      } else {
+        process.env.CHAT_CORE_V2_LOCAL_AUTO_EXECUTE_SAFE_TASKS = previousAutoExecute;
+      }
+      if (previousGateway === undefined) {
+        delete process.env.CHAT_CORE_V2_ACTION_GATEWAY_MODE;
+      } else {
+        process.env.CHAT_CORE_V2_ACTION_GATEWAY_MODE = previousGateway;
+      }
+    }
+  });
+
+  it('returns a confirmable Chat Core v2 task-with-subtasks card instead of claiming creation', async () => {
+    const previousGlobal = process.env.CHAT_CORE_V2_ENABLED;
+    const previousWrites = process.env.CHAT_CORE_V2_WRITES_ENABLED;
+    const previousConfirmations = process.env.CHAT_CORE_V2_CONFIRMATIONS_ENABLED;
+    const previousAutoExecute = process.env.CHAT_CORE_V2_LOCAL_AUTO_EXECUTE_SAFE_TASKS;
+    const previousGateway = process.env.CHAT_CORE_V2_ACTION_GATEWAY_MODE;
+    process.env.CHAT_CORE_V2_ENABLED = 'true';
+    process.env.CHAT_CORE_V2_WRITES_ENABLED = 'true';
+    process.env.CHAT_CORE_V2_CONFIRMATIONS_ENABLED = 'true';
+    process.env.CHAT_CORE_V2_LOCAL_AUTO_EXECUTE_SAFE_TASKS = 'true';
+    process.env.CHAT_CORE_V2_ACTION_GATEWAY_MODE = 'enforce';
+    try {
+      mockGetUserLanguage.mockReturnValue('pt-PT');
+      mockRouteMessage.mockClear();
+      mockHandleSecretary.mockClear();
+
+      const messageRes = await dispatch('POST', '/message', 7001, {
+        text: 'Crie uma tarefa para comprar suplementos QA:\nk2\nd3\ncreatina',
+        clientMessageId: 'chat-core-v2-task-with-subtasks-preview-1',
+      });
+
+      expect(messageRes.statusCode, JSON.stringify(messageRes.body)).toBe(200);
+      expect(messageRes.body.routeMethod).toBe('chat-core-v2-command-preview');
+      expect(messageRes.body.text).toContain('Revê e confirma para criar a tarefa "comprar suplementos QA" com 3 subtarefa(s)');
+      expect(messageRes.body.text).not.toContain('Criei');
+      expect(messageRes.body.text).not.toContain('Nada seria criado');
+      expect(messageRes.body.metadata).toMatchObject({
+        type: 'chat_core_v2_command_preview',
+        chatCoreV2: {
+          capabilityId: 'tasks.create',
+          executionEnabled: true,
+          executionDisabledReason: undefined,
+          command: {
+            payload: {
+              operation: 'create',
+              title: 'comprar suplementos QA',
+              subtasks: ['k2', 'd3', 'creatina'],
+            },
+          },
+          response: {
+            kind: 'action_preview',
+            reasonCodes: expect.arrayContaining(['confirmation_required']),
+          },
+        },
+      });
+      expect(messageRes.body.metadata.pendingConfirmation).toMatchObject({
+        kind: 'pending_confirmation',
+        intent_class: 'tasks.create',
+        confirmation_token: expect.any(String),
+      });
+      expect(messageRes.body.metadata.actionConfirmation).toMatchObject({
+        title: 'Confirmação necessária',
+        actionLabel: 'Confirmar',
+        cancelLabel: 'Cancelar',
+        destructive: false,
+        variant: 'default',
+        requiresStrongConfirm: false,
+        intentClass: 'tasks.create',
+        confirmationToken: messageRes.body.metadata.pendingConfirmation.confirmation_token,
+        summary: {
+          operation: 'create',
+          title: 'comprar suplementos QA',
+          subtasks: ['k2', 'd3', 'creatina'],
+        },
+      });
+      expect(messageRes.body.metadata.chatCoreV2.response.cards[0].confirmationToken)
+        .toBe(messageRes.body.metadata.pendingConfirmation.confirmation_token);
+      expect(testDb.prepare('SELECT COUNT(*) AS count FROM native_tasks WHERE user_id = ?').get(7001)).toMatchObject({ count: 0 });
+      expect(mockRouteMessage).not.toHaveBeenCalled();
+      expect(mockHandleSecretary).not.toHaveBeenCalled();
+
+      const confirmed = await dispatch('POST', '/confirm-action', 7001, {
+        confirmation_token: messageRes.body.metadata.pendingConfirmation.confirmation_token,
+        intent_class: 'tasks.create',
+      });
+
+      expect(confirmed.statusCode, JSON.stringify(confirmed.body)).toBe(200);
+      expect(confirmed.body).toMatchObject({
+        domain: 'secretary',
+        routeMethod: 'chat-core-v2-command-confirmation',
+        metadata: {
+          type: 'chat_core_v2_command_result',
+          actionStatus: 'verified',
+          verificationStatus: 'verified',
+        },
+      });
+      expect(confirmed.body.text).toContain('comprar suplementos QA');
+      expect(confirmed.body.text).toContain('3 subtarefa');
+      const task = testDb.prepare(`
+        SELECT id, title, user_id
+        FROM native_tasks
+        WHERE user_id = ? AND title = ?
+      `).get(7001, 'comprar suplementos QA') as any;
+      expect(task).toMatchObject({ title: 'comprar suplementos QA', user_id: 7001 });
+      const subtasks = testDb.prepare(`
+        SELECT display_name
+        FROM native_task_checklist_items
+        WHERE user_id = ? AND task_id = ?
+        ORDER BY position ASC, id ASC
+      `).all(7001, task.id).map((row: any) => row.display_name);
+      expect(subtasks).toEqual(['k2', 'd3', 'creatina']);
+    } finally {
+      if (previousGlobal === undefined) {
+        delete process.env.CHAT_CORE_V2_ENABLED;
+      } else {
+        process.env.CHAT_CORE_V2_ENABLED = previousGlobal;
+      }
+      if (previousWrites === undefined) {
+        delete process.env.CHAT_CORE_V2_WRITES_ENABLED;
+      } else {
+        process.env.CHAT_CORE_V2_WRITES_ENABLED = previousWrites;
+      }
+      if (previousConfirmations === undefined) {
+        delete process.env.CHAT_CORE_V2_CONFIRMATIONS_ENABLED;
+      } else {
+        process.env.CHAT_CORE_V2_CONFIRMATIONS_ENABLED = previousConfirmations;
+      }
+      if (previousAutoExecute === undefined) {
+        delete process.env.CHAT_CORE_V2_LOCAL_AUTO_EXECUTE_SAFE_TASKS;
+      } else {
+        process.env.CHAT_CORE_V2_LOCAL_AUTO_EXECUTE_SAFE_TASKS = previousAutoExecute;
+      }
+      if (previousGateway === undefined) {
+        delete process.env.CHAT_CORE_V2_ACTION_GATEWAY_MODE;
+      } else {
+        process.env.CHAT_CORE_V2_ACTION_GATEWAY_MODE = previousGateway;
+      }
+    }
+  });
+
+  it('asks clarification for duplicate-title task completion instead of creating a batch completion preview', async () => {
+    const previousGlobal = process.env.CHAT_CORE_V2_ENABLED;
+    const previousWrites = process.env.CHAT_CORE_V2_WRITES_ENABLED;
+    const previousConfirmations = process.env.CHAT_CORE_V2_CONFIRMATIONS_ENABLED;
+    const previousAutoExecute = process.env.CHAT_CORE_V2_LOCAL_AUTO_EXECUTE_SAFE_TASKS;
+    const previousTaskCompleteAutoExecute = process.env.CHAT_CORE_V2_TASK_COMPLETE_AUTO_EXECUTE;
+    process.env.CHAT_CORE_V2_ENABLED = 'true';
+    process.env.CHAT_CORE_V2_WRITES_ENABLED = 'true';
+    process.env.CHAT_CORE_V2_CONFIRMATIONS_ENABLED = 'true';
+    process.env.CHAT_CORE_V2_LOCAL_AUTO_EXECUTE_SAFE_TASKS = 'true';
+    delete process.env.CHAT_CORE_V2_TASK_COMPLETE_AUTO_EXECUTE;
+    try {
+      const listInfo = testDb.prepare(`
+        INSERT INTO native_task_lists (user_id, name, is_default)
+        VALUES (?, ?, 1)
+      `).run(7001, 'Inbox');
+      const first = testDb.prepare(`
+        INSERT INTO native_tasks (user_id, list_id, title, status)
+        VALUES (?, ?, ?, 'notStarted')
+      `).run(7001, Number(listInfo.lastInsertRowid), 'comprar suplementos DUP');
+      const second = testDb.prepare(`
+        INSERT INTO native_tasks (user_id, list_id, title, status)
+        VALUES (?, ?, ?, 'notStarted')
+      `).run(7001, Number(listInfo.lastInsertRowid), 'comprar suplementos DUP');
+      mockRouteMessage.mockClear();
+      mockHandleSecretary.mockClear();
+
+      const messageRes = await dispatch('POST', '/message', 7001, {
+        text: 'Mark comprar suplementos DUP task as done',
+        clientMessageId: 'chat-core-v2-native-task-complete-duplicate-preview-1',
+      });
+
+      expect(messageRes.statusCode, JSON.stringify(messageRes.body)).toBe(200);
+      expect(messageRes.body.routeMethod).toBe('chat-core-v2-action-gateway');
+      expect(messageRes.body.text).toContain('could not identify exactly which task');
+      expect(messageRes.body.metadata).toMatchObject({
+        type: 'chat_core_v2_write_intent_guard',
+        chatCoreV2: {
+          kind: 'needs_clarification',
+          telemetry: {
+            legacyFallbackBlocked: true,
+            finalOutcome: 'needs_clarification',
+          },
+        },
+      });
+      const statuses = testDb.prepare(`
+        SELECT id, status
+        FROM native_tasks
+        WHERE id IN (?, ?)
+        ORDER BY id
+      `).all(first.lastInsertRowid, second.lastInsertRowid) as Array<{ id: number; status: string }>;
+      expect(statuses).toEqual([
+        { id: Number(first.lastInsertRowid), status: 'notStarted' },
+        { id: Number(second.lastInsertRowid), status: 'notStarted' },
+      ]);
+      expect(mockRouteMessage).not.toHaveBeenCalled();
+      expect(mockHandleSecretary).not.toHaveBeenCalled();
+    } finally {
+      if (previousGlobal === undefined) {
+        delete process.env.CHAT_CORE_V2_ENABLED;
+      } else {
+        process.env.CHAT_CORE_V2_ENABLED = previousGlobal;
+      }
+      if (previousWrites === undefined) {
+        delete process.env.CHAT_CORE_V2_WRITES_ENABLED;
+      } else {
+        process.env.CHAT_CORE_V2_WRITES_ENABLED = previousWrites;
+      }
+      if (previousConfirmations === undefined) {
+        delete process.env.CHAT_CORE_V2_CONFIRMATIONS_ENABLED;
+      } else {
+        process.env.CHAT_CORE_V2_CONFIRMATIONS_ENABLED = previousConfirmations;
+      }
+      if (previousAutoExecute === undefined) {
+        delete process.env.CHAT_CORE_V2_LOCAL_AUTO_EXECUTE_SAFE_TASKS;
+      } else {
+        process.env.CHAT_CORE_V2_LOCAL_AUTO_EXECUTE_SAFE_TASKS = previousAutoExecute;
+      }
+      if (previousTaskCompleteAutoExecute === undefined) {
+        delete process.env.CHAT_CORE_V2_TASK_COMPLETE_AUTO_EXECUTE;
+      } else {
+        process.env.CHAT_CORE_V2_TASK_COMPLETE_AUTO_EXECUTE = previousTaskCompleteAutoExecute;
+      }
+    }
+  });
+
+  it('does not auto-execute duplicate-title native task completion even when sandbox auto-execute is explicitly enabled', async () => {
+    const previousGlobal = process.env.CHAT_CORE_V2_ENABLED;
+    const previousWrites = process.env.CHAT_CORE_V2_WRITES_ENABLED;
+    const previousConfirmations = process.env.CHAT_CORE_V2_CONFIRMATIONS_ENABLED;
+    const previousAutoExecute = process.env.CHAT_CORE_V2_LOCAL_AUTO_EXECUTE_SAFE_TASKS;
+    const previousTaskCompleteAutoExecute = process.env.CHAT_CORE_V2_TASK_COMPLETE_AUTO_EXECUTE;
+    process.env.CHAT_CORE_V2_ENABLED = 'true';
+    process.env.CHAT_CORE_V2_WRITES_ENABLED = 'true';
+    process.env.CHAT_CORE_V2_CONFIRMATIONS_ENABLED = 'true';
+    process.env.CHAT_CORE_V2_TASK_COMPLETE_AUTO_EXECUTE = 'sandbox_only';
+    try {
+      const listInfo = testDb.prepare(`
+        INSERT INTO native_task_lists (user_id, name, is_default)
+        VALUES (?, ?, 1)
+      `).run(7001, 'Inbox');
+      const first = testDb.prepare(`
+        INSERT INTO native_tasks (user_id, list_id, title, status)
+        VALUES (?, ?, ?, 'notStarted')
+      `).run(7001, Number(listInfo.lastInsertRowid), 'comprar suplementos QA3');
+      const second = testDb.prepare(`
+        INSERT INTO native_tasks (user_id, list_id, title, status)
+        VALUES (?, ?, ?, 'notStarted')
+      `).run(7001, Number(listInfo.lastInsertRowid), 'comprar suplementos QA3');
+      const other = testDb.prepare(`
+        INSERT INTO native_tasks (user_id, list_id, title, status)
+        VALUES (?, ?, ?, 'notStarted')
+      `).run(7001, Number(listInfo.lastInsertRowid), 'comprar suplementos QA4');
+      mockRouteMessage.mockClear();
+      mockHandleSecretary.mockClear();
+
+      const messageRes = await dispatch('POST', '/message', 7001, {
+        text: 'Mark comprar suplementos QA3 task as done',
+        clientMessageId: 'chat-core-v2-native-task-complete-duplicate-auto-execute-1',
+      });
+
+      expect(messageRes.statusCode, JSON.stringify(messageRes.body)).toBe(200);
+      expect(messageRes.body.routeMethod).toBe('chat-core-v2-action-gateway');
+      expect(messageRes.body.text).toContain('could not identify exactly which task');
+      expect(messageRes.body.metadata).toMatchObject({
+        type: 'chat_core_v2_write_intent_guard',
+        chatCoreV2: {
+          kind: 'needs_clarification',
+          telemetry: {
+            legacyFallbackBlocked: true,
+            finalOutcome: 'needs_clarification',
+          },
+        },
+      });
+      const statuses = testDb.prepare(`
+        SELECT id, status
+        FROM native_tasks
+        WHERE id IN (?, ?, ?)
+        ORDER BY id
+      `).all(first.lastInsertRowid, second.lastInsertRowid, other.lastInsertRowid) as Array<{ id: number; status: string }>;
+      expect(statuses).toEqual([
+        { id: Number(first.lastInsertRowid), status: 'notStarted' },
+        { id: Number(second.lastInsertRowid), status: 'notStarted' },
+        { id: Number(other.lastInsertRowid), status: 'notStarted' },
+      ]);
+      expect(mockRouteMessage).not.toHaveBeenCalled();
+      expect(mockHandleSecretary).not.toHaveBeenCalled();
+    } finally {
+      if (previousGlobal === undefined) {
+        delete process.env.CHAT_CORE_V2_ENABLED;
+      } else {
+        process.env.CHAT_CORE_V2_ENABLED = previousGlobal;
+      }
+      if (previousWrites === undefined) {
+        delete process.env.CHAT_CORE_V2_WRITES_ENABLED;
+      } else {
+        process.env.CHAT_CORE_V2_WRITES_ENABLED = previousWrites;
+      }
+      if (previousConfirmations === undefined) {
+        delete process.env.CHAT_CORE_V2_CONFIRMATIONS_ENABLED;
+      } else {
+        process.env.CHAT_CORE_V2_CONFIRMATIONS_ENABLED = previousConfirmations;
+      }
+      if (previousAutoExecute === undefined) {
+        delete process.env.CHAT_CORE_V2_LOCAL_AUTO_EXECUTE_SAFE_TASKS;
+      } else {
+        process.env.CHAT_CORE_V2_LOCAL_AUTO_EXECUTE_SAFE_TASKS = previousAutoExecute;
+      }
+      if (previousTaskCompleteAutoExecute === undefined) {
+        delete process.env.CHAT_CORE_V2_TASK_COMPLETE_AUTO_EXECUTE;
+      } else {
+        process.env.CHAT_CORE_V2_TASK_COMPLETE_AUTO_EXECUTE = previousTaskCompleteAutoExecute;
       }
     }
   });
@@ -6050,17 +6799,14 @@ describe('Chat API routes', () => {
     expect(messageRes.body.error.details).toEqual({
       plan: 'free',
       resetAt: '2026-04-15T00:00:00.000Z',
-      limitUsd: 0,
-      usedUsd: 0,
-      remainingUsd: 0,
-      planDailyLimitUsd: 0,
-      includedRemainingUsd: 0,
+      usagePercent: 100,
+      quotaState: 'reached',
       nexusPointsBalance: 0,
-      nexusPointsRemainingUsd: 0,
       pointsPurchaseAvailable: false,
       error: 'rate_limited',
       retryable: true,
     });
+    expect(JSON.stringify(messageRes.body.error.details)).not.toMatch(/limitUsd|usedUsd|remainingUsd|planDailyLimitUsd|includedRemainingUsd|nexusPointsRemainingUsd|usdAllowance/i);
   });
 
   it('fails closed on invalid tenant scope before processing personalized chat state', async () => {

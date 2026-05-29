@@ -60,6 +60,31 @@ describe('chat skill orchestrator', () => {
     expect(decision.involvedSkills).toEqual(expect.arrayContaining(['secretary', 'training']));
   });
 
+  it('does not treat ordinary Portuguese answer requests as destructive actions', () => {
+    const decision = analyzeChatSkillOrchestration({
+      message: 'Responde em uma frase: qual é uma boa forma de manter foco enquanto crio um SaaS?',
+      routedDomain: 'chat',
+      userId: 42,
+      tenantId: 42,
+    });
+
+    expect(decision.safety.destructive).toBe(false);
+    expect(decision.safety.requiresConfirmation).toBe(false);
+    expect(decision.reasonCodes).not.toContain('destructive_action_safety');
+  });
+
+  it('still treats explicit Portuguese email replies as destructive external side effects', () => {
+    const decision = analyzeChatSkillOrchestration({
+      message: 'Responde ao email do João a confirmar a reunião.',
+      routedDomain: 'secretary',
+      userId: 42,
+      tenantId: 42,
+    });
+
+    expect(decision.safety.destructive).toBe(true);
+    expect(decision.safety.requiresConfirmation).toBe(true);
+  });
+
   it('recognizes explicit confirmation only when the destructive action is restated', () => {
     const decision = analyzeChatSkillOrchestration({
       message: 'Yes, cancel the training plan and remove its calendar events.',

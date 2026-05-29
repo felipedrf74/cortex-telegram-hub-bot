@@ -106,6 +106,20 @@ export interface LocalReasoningTask {
   redactionRequired?: boolean;
   /** Optional JSON schema enforced via Ollama format=. */
   outputSchema?: unknown;
+  /** Optional per-call model override for bounded ChatCoreV2 planner/composer paths. */
+  modelOverride?: string;
+  /** Optional per-call thinking toggle. Defaults to true for legacy localReasoning. */
+  think?: boolean;
+  /** Optional per-call context window. Defaults to the localReasoning cap. */
+  numCtx?: number;
+  /** Optional per-call output cap. Defaults to outputCapFor('localReasoning'). */
+  numPredict?: number;
+  /** Optional per-call temperature. Defaults to 0.2. */
+  temperature?: number;
+  /** Optional per-call timeout override. Defaults to config.ollama.timeoutMs. */
+  timeoutMs?: number;
+  /** Optional caller abort signal composed into the Ollama fetch. */
+  abortSignal?: AbortSignal;
 }
 
 export interface LocalReasoningResult {
@@ -113,6 +127,8 @@ export interface LocalReasoningResult {
   text: string;
   /** When outputSchema is set, parsed structured payload (best-effort). */
   parsed?: unknown;
+  /** Ollama completion stop reason, when available. */
+  stopReason?: string;
   requires_cloud_reasoning?: boolean;
   providerMetadata?: AICallResult['providerMetadata'];
 }
@@ -980,20 +996,26 @@ export class OllamaProvider implements AIProvider {
   async localReason(task: LocalReasoningTask): Promise<LocalReasoningResult> {
     const sys = task.systemContext ?? 'You are an expert reasoning assistant.';
     enforceInputTokenCap('localReasoning', [sys, task.prompt]);
+    const numCtx = Number.isFinite(task.numCtx) && (task.numCtx ?? 0) > 0
+      ? Math.floor(task.numCtx!)
+      : 8192;
+    const numPredict = Number.isFinite(task.numPredict) && (task.numPredict ?? 0) > 0
+      ? Math.floor(task.numPredict!)
+      : outputCapFor('localReasoning');
 
     const request: OllamaChatRequest = {
-      model: config.ollama.model,
+      model: task.modelOverride?.trim() || config.ollama.model,
       messages: [
         { role: 'system', content: sys },
         { role: 'user', content: task.prompt },
       ],
-      think: true,
+      think: task.think ?? true,
       stream: false,
       keep_alive: -1,
       options: {
-        num_ctx: 8192,
-        num_predict: outputCapFor('localReasoning'),
-        temperature: 0.2,
+        num_ctx: numCtx,
+        num_predict: numPredict,
+        temperature: Number.isFinite(task.temperature) ? task.temperature : 0.2,
         top_p: 0.9,
         top_k: 20,
       },
@@ -1006,6 +1028,8 @@ export class OllamaProvider implements AIProvider {
       userId: task.userId,
       tenantId: task.tenantId,
       request,
+      externalSignal: task.abortSignal,
+      timeoutMsOverride: task.timeoutMs,
     });
 
     const text = stripThinkBlocks(result.response.message?.content);
@@ -1021,6 +1045,7 @@ export class OllamaProvider implements AIProvider {
     return {
       text,
       parsed,
+      stopReason: result.response.done_reason ?? 'stop',
       providerMetadata: {
         providerUsed: 'ollama',
         modelUsed: request.model,

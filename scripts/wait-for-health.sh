@@ -11,6 +11,7 @@ set -euo pipefail
 NEXUS_PORT="${NEXUS_LOCAL_PORT_TS:-8200}"
 CONTENT_PORT="${NEXUS_LOCAL_PORT_PY:-8100}"
 TIMEOUT_SECONDS="${LOCAL_HEALTH_TIMEOUT:-90}"
+COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME:-cortex-telegram-hub-bot}"
 
 NEXUS_URL="http://127.0.0.1:${NEXUS_PORT}/health"
 CONTENT_URL="http://127.0.0.1:${CONTENT_PORT}/health"
@@ -43,7 +44,7 @@ while :; do
     echo "  nexus-hub:      $([ "$nexus_ok" -eq 1 ] && echo green || echo TIMEOUT)" >&2
     echo "  content-engine: $([ "$content_ok" -eq 1 ] && echo green || echo TIMEOUT)" >&2
     echo "Last 30 lines per container:" >&2
-    docker compose -f docker-compose.local.yml logs --tail=30 >&2 || true
+    docker compose -p "$COMPOSE_PROJECT_NAME" -f docker-compose.local.yml logs --tail=30 >&2 || true
     exit 1
   fi
 

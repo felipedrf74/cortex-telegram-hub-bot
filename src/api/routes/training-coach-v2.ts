@@ -23,8 +23,8 @@
  */
 
 import { createHmac, randomBytes } from 'node:crypto';
-import { Router, type Response, type Request } from 'express';
-import { ipKeyGenerator, rateLimit } from 'express-rate-limit';
+import { Router, type NextFunction, type Response, type Request } from 'express';
+import { ipKeyGenerator, rateLimit, type Options as RateLimitOptions } from 'express-rate-limit';
 
 import type { AuthenticatedRequest } from '../auth-middleware';
 import { sendSuccess, sendError } from '../response-helpers';
@@ -437,7 +437,7 @@ export function mountCoachV2Routes(parent: Router): Router {
     },
     legacyHeaders: true,
     standardHeaders: false,
-    handler: (_req, res, _next, options) => {
+    handler: (_req: Request, res: Response, _next: NextFunction, options: RateLimitOptions) => {
       const retryAfter = Math.ceil(options.windowMs / 1000);
       res.setHeader('Retry-After', retryAfter);
       res.status(options.statusCode).json({

@@ -576,6 +576,12 @@ describe('ChatActionPlanner', () => {
         title: 'Suplementos',
         subtasks: ['creatine', 'K2', 'D3'],
       },
+      {
+        text: 'Crie uma tarefa para comprar suplementos:\nk2\nd3\ncreatina',
+        locale: 'pt-BR',
+        title: 'comprar suplementos',
+        subtasks: ['k2', 'd3', 'creatina'],
+      },
     ];
 
     for (const testCase of cases) {

@@ -34,13 +34,9 @@ vi.mock('../../src/services/cost-guardrail', () => ({
       details: {
         plan: quota.plan,
         resetAt: quota.resetAt,
-        limitUsd: quota.limitUsd,
-        usedUsd: quota.usedUsd,
-        remainingUsd: quota.remainingUsd,
-        planDailyLimitUsd: quota.planDailyLimitUsd,
-        includedRemainingUsd: quota.includedRemainingUsd,
+        usagePercent: 100,
+        quotaState: 'reached',
         nexusPointsBalance: quota.nexusPointsBalance,
-        nexusPointsRemainingUsd: quota.nexusPointsRemainingUsd,
         pointsPurchaseAvailable: quota.pointsPurchaseAvailable,
       },
     };
@@ -202,18 +198,15 @@ describe('chat message request-boundary helpers', () => {
         details: {
           plan: 'free',
           resetAt: '2026-04-25T00:00:00.000Z',
-          limitUsd: 0.1,
-          usedUsd: 0.2,
-          remainingUsd: 0,
-          planDailyLimitUsd: 0.1,
-          includedRemainingUsd: 0,
+          usagePercent: 100,
+          quotaState: 'reached',
           nexusPointsBalance: 0,
-          nexusPointsRemainingUsd: 0,
           pointsPurchaseAvailable: false,
           error: 'rate_limited',
           retryable: true,
         },
       },
     });
+    expect(JSON.stringify(blockedRes.body.error.details)).not.toMatch(/limitUsd|usedUsd|remainingUsd|planDailyLimitUsd|includedRemainingUsd|nexusPointsRemainingUsd|usdAllowance/i);
   });
 });

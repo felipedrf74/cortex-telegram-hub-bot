@@ -9,6 +9,7 @@ import { listDecisionItems } from '../../src/services/decision-center';
 import { listNotificationCenterItems } from '../../src/services/notification-orchestrator';
 import { listTasks } from '../../src/services/task-store/task-service';
 import { getActivePlan, getSessionsForWeek, getWeeksForPlan } from '../../src/services/training-plans';
+import { getDb } from '../../src/services/database';
 import type { DecisionApiItem } from '../../src/services/decision-center';
 import type { NotificationCenterItem } from '../../src/services/notification-orchestrator';
 import type { NormalizedTask } from '../../src/services/task-store/types';
@@ -30,6 +31,10 @@ vi.mock('../../src/services/training-plans', () => ({
   getActivePlan: vi.fn(),
   getWeeksForPlan: vi.fn(),
   getSessionsForWeek: vi.fn(),
+}));
+
+vi.mock('../../src/services/database', () => ({
+  getDb: vi.fn(),
 }));
 
 const FIXED_NOW = new Date('2026-05-24T10:00:00.000Z');
@@ -281,6 +286,12 @@ function trainingSession(overrides: Partial<TrainingSession> & { id: number; tit
 
 describe('Chat Core v2 command preview route', () => {
   beforeEach(() => {
+    vi.mocked(getDb).mockReset();
+    vi.mocked(getDb).mockReturnValue({
+      prepare: vi.fn(() => ({
+        all: vi.fn(() => []),
+      })),
+    } as any);
     vi.mocked(listDecisionItems).mockReset();
     vi.mocked(listDecisionItems).mockReturnValue([]);
     vi.mocked(listTasks).mockReset();
@@ -639,6 +650,46 @@ describe('Chat Core v2 command preview route', () => {
     });
   });
 
+  it('issues a confirmation token for task-create with subtasks when v2 confirmations are enabled', () => {
+    const result = buildPreview('Create task Buy supplements with subtasks K2 D3 creatine', CONFIRMATIONS_ENABLED_ENV);
+
+    expect(result).not.toBeNull();
+    expect(result?.capabilityId).toBe('tasks.create');
+    expect(result?.executionEnabled).toBe(true);
+    expect(result?.executionDisabledReason).toBeUndefined();
+    expect(result?.confirmationToken).toEqual(expect.any(String));
+    expect(result?.command.payload).toMatchObject({
+      operation: 'create',
+      title: 'Buy supplements',
+      subtasks: ['K2', 'D3', 'creatine'],
+    });
+    expect(result?.response.reasonCodes).toContain('confirmation_required');
+    expect(result?.response.reasonCodes).not.toContain('preview_only_rollout');
+    expect(result?.response.cards[0]).toMatchObject({
+      type: 'task_preview_card',
+      confirmationToken: result?.confirmationToken,
+      primaryAction: {
+        kind: 'confirm',
+        label: 'Confirm',
+        confirmationToken: result?.confirmationToken,
+      },
+      secondaryActions: [
+        { kind: 'edit', label: 'Edit' },
+        { kind: 'cancel', label: 'Cancel' },
+      ],
+      diff: [
+        { label: 'Task', after: 'Buy supplements' },
+        { label: 'Subtasks', after: 'K2, D3, creatine' },
+      ],
+    });
+    expect(getPendingChatCoreV2Command(result!.command.commandId, 42, 84, FIXED_NOW)).toMatchObject({
+      commandId: result!.command.commandId,
+      capabilityId: 'tasks.create',
+      userId: 42,
+      tenantId: 84,
+    });
+  });
+
   it('localizes the preview card copy while preserving exact user task text', () => {
     const result = tryBuildChatCoreV2CommandPreviewRoute({
       normalizedText: 'Cria uma tarefa chamada Comprar pão amanhã às 09:00',
@@ -782,6 +833,51 @@ describe('Chat Core v2 command preview route', () => {
       userId: 42,
       tenantId: 84,
     });
+  });
+
+  it('resolves iOS native tasks for task-complete previews when unified task store is empty', () => {
+    vi.mocked(listTasks).mockReturnValue([]);
+    vi.mocked(getDb).mockReturnValue({
+      prepare: vi.fn(() => ({
+        all: vi.fn(() => [{
+          id: 303,
+          list_id: 4,
+          list_name: 'Tarefas',
+          title: 'comprar suplementos',
+          body: null,
+          importance: 'normal',
+          status: 'notStarted',
+          due_date_time: null,
+          tags: null,
+          completed_at: null,
+        }]),
+      })),
+    } as any);
+
+    const result = buildPreview('Mark comprar suplementos task as done', CONFIRMATIONS_ENABLED_ENV);
+
+    expect(result).not.toBeNull();
+    expect(result?.capabilityId).toBe('tasks.complete');
+    expect(result?.executionEnabled).toBe(true);
+    expect(result?.command).toMatchObject({
+      commandSchemaVersion: 'tasks.complete@1.0.0',
+      payload: {
+        operation: 'complete',
+        taskStore: 'native_tasks',
+        taskId: 303,
+        nativeListId: 4,
+        title: 'comprar suplementos',
+        currentStatus: 'pending',
+        targetStatus: 'completed',
+      },
+      basedOn: {
+        entityIds: ['native_task:303'],
+        entityVersions: {
+          'native_task:303': expect.stringMatching(/^[0-9a-f]{16}$/),
+        },
+      },
+    });
+    expect(result?.response.text).toBe('I would mark "comprar suplementos" as done.');
   });
 
   it('localizes task-complete previews after resolving the referenced task', () => {

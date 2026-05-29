@@ -19,6 +19,7 @@
 #   NEXUS_IOS_PROJECT_PATH    — path to the .xcodeproj directory
 #   NEXUS_LOCAL_PORT_TS       — host port for Node (default: 8200)
 #   NEXUS_SIM_AUTH_INVITE_CODE — local sandbox auth invite code override
+#   NEXUS_SIM_AUTH_FILE         — auth JSON imported by the DEBUG iOS app
 #   NEXUS_SIM_CONSOLE         — set to 1 to attach simctl --console-pty
 #   NEXUS_SIM_RESOLVE_ONLY    — set to 1 to print selected simulator and exit
 #
@@ -44,6 +45,43 @@ SIM_DEVICE="${NEXUS_SIM_DEVICE:-}"
 SIM_UDID_OVERRIDE="${NEXUS_SIM_UDID:-}"
 PORT="${NEXUS_LOCAL_PORT_TS:-8200}"
 LOCAL_AUTH_INVITE_CODE="${NEXUS_SIM_AUTH_INVITE_CODE:-${IOS_INVITE_CODE:-LOCAL-DEV-INVITE}}"
+LOCAL_AUTH_FILE="${NEXUS_SIM_AUTH_FILE:-$ROOT/.local/full-nexus/local-ios-auth.json}"
+
+mint_local_ios_auth() {
+  mkdir -p "$(dirname "$LOCAL_AUTH_FILE")"
+  local payload response
+  payload="$(mktemp)"
+  response="$(mktemp)"
+  cat > "$payload" <<EOF
+{"deviceId":"sim-local-${SIM_UDID:-booting}","deviceName":"Local iOS Simulator","inviteCode":"${LOCAL_AUTH_INVITE_CODE}"}
+EOF
+  echo "Minting fresh local iOS auth session..."
+  curl -fsS \
+    -H "Content-Type: application/json" \
+    -H "Accept: application/json" \
+    -d @"$payload" \
+    "http://127.0.0.1:${PORT}/api/v1/auth/register" > "$response"
+  node - "$response" "$LOCAL_AUTH_FILE" <<'EOF'
+const fs = require('fs');
+const source = process.argv[2];
+const target = process.argv[3];
+const raw = fs.readFileSync(source, 'utf8');
+const json = JSON.parse(raw);
+const payload = json.data || json;
+if (!payload.accessToken) {
+  console.error('Auth response did not contain accessToken');
+  process.exit(1);
+}
+fs.writeFileSync(target, JSON.stringify({
+  accessToken: payload.accessToken,
+  refreshToken: payload.refreshToken,
+  expiresIn: payload.expiresIn,
+  user: payload.user,
+}, null, 2));
+console.log(`Auth token file: ${target}`);
+EOF
+  rm -f "$payload" "$response"
+}
 
 # ──────────────────────────────────────────────────────────────────────
 # Step 0 — preflight
@@ -78,6 +116,7 @@ if [ "${NEXUS_SIM_RESOLVE_ONLY:-0}" != "1" ]; then
   echo "  Step 1/5: boot Docker sandbox"
   echo "═══════════════════════════════════════════════"
   "$ROOT/scripts/local-up.sh"
+  mint_local_ios_auth
 fi
 
 # ──────────────────────────────────────────────────────────────────────
@@ -230,6 +269,7 @@ LAUNCH_ARGS=(
   "$SIM_UDID"
   "$IOS_BUNDLE_ID"
   -nexus_allow_local_backend YES
+  -nexus_debug_local_auth_import YES
   -nexus_base_url "http://127.0.0.1:${PORT}"
   -nexus_local_auth_invite_code "$LOCAL_AUTH_INVITE_CODE"
 )
@@ -237,12 +277,13 @@ if [ "${NEXUS_SIM_CONSOLE:-0}" = "1" ]; then
   LAUNCH_ARGS=(--console-pty "${LAUNCH_ARGS[@]}")
 fi
 
-xcrun simctl launch "${LAUNCH_ARGS[@]}" || {
+SIMCTL_CHILD_NEXUS_LOCAL_AUTH_IMPORT_PATH="$LOCAL_AUTH_FILE" xcrun simctl launch "${LAUNCH_ARGS[@]}" || {
     echo ""
     echo "WARN: simctl launch returned non-zero. The app may still be"
     echo "running — check the Simulator window. You can manually launch with:"
     echo "  xcrun simctl launch $SIM_UDID $IOS_BUNDLE_ID \\"
     echo "    -nexus_allow_local_backend YES \\"
+    echo "    -nexus_debug_local_auth_import YES \\"
     echo "    -nexus_base_url http://127.0.0.1:${PORT} \\"
     echo "    -nexus_local_auth_invite_code '$LOCAL_AUTH_INVITE_CODE'"
   }

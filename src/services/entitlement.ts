@@ -26,7 +26,7 @@
  *   2. Active founder assignment (provider='founder') → founder.plan
  *   3. Active Apple App Store subscription → subscription.plan
  *   4. Active Stripe/web subscription → subscription.plan
- *   5. Active beta sandbox grant (trialing, invite-code era) → 'max'
+ *   5. Active beta sandbox grant (trialing, invite-code era) → 'beta'
  *   6. Otherwise → 'free'
  *
  * Free users get the Secretary skill ONLY and the budget defined in
@@ -49,6 +49,7 @@ import {
   type BillingPlan,
   getEffectiveDailyCostLimitUsd,
   getPlanAllowedSkillsOverride,
+  isInternalUnlimitedEmail,
 } from './plan-quotas';
 
 // ── Types ────────────────────────────────────────────────────────
@@ -183,6 +184,32 @@ export function getEffectiveEntitlement(userId: number | null | undefined): User
     };
   }
 
+  try {
+    const db = getDb();
+    const user = db
+      .prepare('SELECT email FROM users WHERE id = ?')
+      .get(userId) as { email?: string | null } | undefined;
+    if (isInternalUnlimitedEmail(user?.email)) {
+      const betaPlan = 'beta' as const;
+      return {
+        userId,
+        plan: betaPlan,
+        source: 'beta',
+        status: 'active',
+        subscriptionProvider: 'internal_unlimited_email',
+        subscriptionExpiresAt: null,
+        isFounder: false,
+        isOwner: false,
+        dailyCostCapUsd: getEffectiveDailyCostLimitUsd(betaPlan),
+        allowedSkills: resolveAllowedSkillsForPlan(betaPlan),
+        evaluatedAt,
+      };
+    }
+  } catch {
+    // Email allowlist is additive. If the users table is unavailable,
+    // continue into the canonical subscription resolver below.
+  }
+
   // Rules 2-5 — subscription table
   let sub: SubscriptionRow | undefined;
   try {
@@ -260,17 +287,18 @@ export function getEffectiveEntitlement(userId: number | null | undefined): User
     // the owner/founder/apple/stripe canonical set — historically the
     // beta-invite flow set a trialing row for 365 days).
     if (sub.status === 'trialing' && (plan === 'pro' || plan === 'max')) {
+      const betaPlan = 'beta' as const;
       return {
         userId,
-        plan,
+        plan: betaPlan,
         source: 'beta',
         status: 'active',
         subscriptionProvider: sub.provider ?? 'beta',
         subscriptionExpiresAt,
         isFounder: false,
         isOwner: false,
-        dailyCostCapUsd: getEffectiveDailyCostLimitUsd(plan),
-        allowedSkills: resolveAllowedSkillsForPlan(plan),
+        dailyCostCapUsd: getEffectiveDailyCostLimitUsd(betaPlan),
+        allowedSkills: resolveAllowedSkillsForPlan(betaPlan),
         evaluatedAt,
       };
     }

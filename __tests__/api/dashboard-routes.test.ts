@@ -35,6 +35,7 @@ const mockGetDailyQuotaStatus = vi.fn(() => ({
   usageFraction: 0.6,
   callsToday: 3,
   boostAvailable: false,
+  pointsPurchaseAvailable: true,
   limitUsd: 0.2,
   usedUsd: 0.12,
   remainingUsd: 0.08,
@@ -332,12 +333,18 @@ describe('Dashboard API route', () => {
     expect(res.body.data.training.readinessScore).toBeNull();
     expect(res.body.data.training.bodyBattery).toBeNull();
     expect(res.body.data.quota).toEqual({
-      used_usd: 0.12,
-      limit_usd: 0.2,
-      remaining_usd: 0.08,
       plan: 'pro',
+      usageLevel: 'enhanced',
+      usageFraction: 0.6,
+      isOverLimit: false,
+      boostAvailable: false,
+      points_purchase_available: true,
       resetAt: '2026-04-15T00:00:00.000Z',
     });
+    expect(res.body.data.quota.usedUsd).toBeUndefined();
+    expect(res.body.data.quota.limitUsd).toBeUndefined();
+    expect(res.body.data.quota.remainingUsd).toBeUndefined();
+    expect(JSON.stringify(res.body.data.quota)).not.toMatch(/usedUsd|limitUsd|remainingUsd|planDailyLimitUsd|includedRemainingUsd|usdAllowance/i);
   });
 
   it('passes calendar event colors through the dashboard payload', async () => {
@@ -501,10 +508,12 @@ describe('Dashboard API route', () => {
         warnings: [],
       },
       quota: {
-        used_usd: 0.12,
-        limit_usd: 0.2,
-        remaining_usd: 0.08,
         plan: 'pro',
+        usageLevel: 'enhanced',
+        usageFraction: 0.6,
+        isOverLimit: false,
+        boostAvailable: false,
+        points_purchase_available: true,
         resetAt: '2026-04-15T00:00:00.000Z',
       },
       system: {

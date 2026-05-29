@@ -23,6 +23,19 @@ export interface ChatCoreV2CommandPreviewShortcutResponse {
       expiresAt: string;
       sourceMessageId: string | null;
     };
+    actionConfirmation?: {
+      title: string;
+      message: string;
+      actionLabel: string;
+      cancelLabel: string;
+      destructive: boolean;
+      variant: 'default';
+      requiresStrongConfirm: false;
+      intentClass: string;
+      confirmationToken: string;
+      expiresAt: string;
+      summary: Record<string, unknown>;
+    };
     chatCoreV2: {
       capabilityId: string;
       executionEnabled: boolean;
@@ -89,6 +102,9 @@ export function buildChatCoreV2CommandPreviewShortcutResponse(
   const conversationDomain = 'secretary';
   const payload = result.command.payload as Record<string, unknown>;
   const responseCards = buildLegacyResponseCards(result);
+  const actionConfirmation = result.confirmationToken
+    ? buildActionConfirmation(result, payload)
+    : undefined;
 
   return {
     conversationDomain,
@@ -114,6 +130,7 @@ export function buildChatCoreV2CommandPreviewShortcutResponse(
             sourceMessageId: null,
           },
         } : {}),
+        ...(actionConfirmation ? { actionConfirmation } : {}),
         chatCoreV2: {
           capabilityId: result.capabilityId,
           executionEnabled: result.executionEnabled,
@@ -162,6 +179,48 @@ export function buildChatCoreV2CommandPreviewShortcutResponse(
       capabilityId: result.capabilityId,
       commandId: result.command.commandId,
     },
+  };
+}
+
+function buildActionConfirmation(
+  result: ChatCoreV2CommandPreviewRouteResult,
+  payload: Record<string, unknown>,
+): NonNullable<ChatCoreV2CommandPreviewShortcutResponse['metadata']['actionConfirmation']> {
+  const locale = String(result.response.locale ?? '').toLowerCase();
+  const isPT = locale.startsWith('pt');
+  const isES = locale === 'es';
+  const title = String(payload.title ?? '').trim();
+  const summary = summarizeCommandPayload(payload);
+  const cardSummary = result.response.cards[0]?.summary;
+  const message = typeof cardSummary === 'string' && cardSummary.trim()
+    ? cardSummary.trim()
+    : result.response.text;
+  return {
+    title: isPT ? 'Confirmação necessária' : isES ? 'Confirmación necesaria' : 'Confirmation needed',
+    message,
+    actionLabel: isPT ? 'Confirmar' : isES ? 'Confirmar' : 'Confirm',
+    cancelLabel: isPT ? 'Cancelar' : isES ? 'Cancelar' : 'Cancel',
+    destructive: false,
+    variant: 'default',
+    requiresStrongConfirm: false,
+    intentClass: result.command.commandType,
+    confirmationToken: result.confirmationToken ?? '',
+    expiresAt: result.command.expiresAt,
+    summary: {
+      ...summary,
+      ...(title ? { title } : {}),
+    },
+  };
+}
+
+function summarizeCommandPayload(payload: Record<string, unknown>): Record<string, unknown> {
+  const subtasks = Array.isArray(payload.subtasks)
+    ? payload.subtasks.map((subtask) => String(subtask).trim()).filter(Boolean).slice(0, 25)
+    : [];
+  return {
+    ...(typeof payload.operation === 'string' ? { operation: payload.operation } : {}),
+    ...(typeof payload.dueDateTime === 'string' && payload.dueDateTime.trim() ? { dueDateTime: payload.dueDateTime.trim() } : {}),
+    ...(subtasks.length > 0 ? { subtasks } : {}),
   };
 }
 

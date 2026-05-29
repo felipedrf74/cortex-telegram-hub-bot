@@ -155,7 +155,55 @@ describe('getEffectiveEntitlement', () => {
 
     const ent = getEffectiveEntitlement(12);
     expect(ent.source).toBe('beta');
-    expect(ent.plan).toBe('max');
+    expect(ent.plan).toBe('beta');
+  });
+
+  it('treats configured internal emails as beta entitlement', () => {
+    const previous = process.env.NEXUS_INTERNAL_UNLIMITED_EMAILS;
+    process.env.NEXUS_INTERNAL_UNLIMITED_EMAILS = 'nexushubbot@gmail.com';
+    try {
+      mockGetDb.mockReturnValue({
+        prepare: (sql: string) => ({
+          get: () => sql.includes('SELECT email FROM users')
+            ? { email: 'nexushubbot@gmail.com' }
+            : undefined,
+        }),
+      });
+
+      const ent = getEffectiveEntitlement(12);
+      expect(ent.source).toBe('beta');
+      expect(ent.plan).toBe('beta');
+      expect(ent.subscriptionProvider).toBe('internal_unlimited_email');
+      expect(ent.dailyCostCapUsd).toBe(100);
+    } finally {
+      if (previous === undefined) {
+        delete process.env.NEXUS_INTERNAL_UNLIMITED_EMAILS;
+      } else {
+        process.env.NEXUS_INTERNAL_UNLIMITED_EMAILS = previous;
+      }
+    }
+  });
+
+  it('does not grant beta entitlement to internal-looking emails unless the env allowlist is explicit', () => {
+    const previous = process.env.NEXUS_INTERNAL_UNLIMITED_EMAILS;
+    delete process.env.NEXUS_INTERNAL_UNLIMITED_EMAILS;
+    try {
+      mockGetDb.mockReturnValue({
+        prepare: (sql: string) => ({
+          get: () => sql.includes('SELECT email FROM users')
+            ? { email: 'nexushubbot@gmail.com' }
+            : undefined,
+        }),
+      });
+
+      const ent = getEffectiveEntitlement(12);
+      expect(ent.source).not.toBe('beta');
+      expect(ent.subscriptionProvider).not.toBe('internal_unlimited_email');
+    } finally {
+      if (previous !== undefined) {
+        process.env.NEXUS_INTERNAL_UNLIMITED_EMAILS = previous;
+      }
+    }
   });
 
   it('treats expired beta trial rows as free', () => {

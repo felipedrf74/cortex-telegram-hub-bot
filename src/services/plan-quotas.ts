@@ -74,6 +74,23 @@ const PLAN_USAGE_LEVELS: Record<BillingPlan, UsageLevel> = {
   beta: 'owner',
 };
 
+const DEFAULT_INTERNAL_UNLIMITED_EMAILS = '';
+
+function internalUnlimitedEmailAllowlist(): Set<string> {
+  return new Set(
+    (process.env.NEXUS_INTERNAL_UNLIMITED_EMAILS || DEFAULT_INTERNAL_UNLIMITED_EMAILS)
+      .split(',')
+      .map((email) => email.trim().toLowerCase())
+      .filter(Boolean),
+  );
+}
+
+export function isInternalUnlimitedEmail(email: string | null | undefined): boolean {
+  const normalized = email?.trim().toLowerCase();
+  if (!normalized) return false;
+  return internalUnlimitedEmailAllowlist().has(normalized);
+}
+
 export function getEffectiveDailyCostLimitUsd(plan: BillingPlan): number {
   // Portal override wins when present — lets admin tune caps live.
   if (plan in portalOverrides && typeof portalOverrides[plan] === 'number') {
@@ -114,18 +131,32 @@ export function resolveBillingPlanForUser(userId: number): BillingPlan {
 
   let isOwner = isOwnerUserRef(userId);
   let userTier: string | null = null;
+  let userEmail: string | null = null;
 
   try {
     const user = db.prepare(
-      'SELECT telegram_id, tier FROM users WHERE id = ?'
-    ).get(userId) as { telegram_id: number | null; tier: string | null } | undefined;
+      'SELECT telegram_id, tier, email FROM users WHERE id = ?'
+    ).get(userId) as { telegram_id: number | null; tier: string | null; email?: string | null } | undefined;
     userTier = user?.tier ?? null;
+    userEmail = user?.email ?? null;
     if (user?.tier === 'owner') isOwner = true;
   } catch {
-    userTier = null;
+    try {
+      const user = db.prepare(
+        'SELECT telegram_id, tier FROM users WHERE id = ?'
+      ).get(userId) as { telegram_id: number | null; tier: string | null } | undefined;
+      userTier = user?.tier ?? null;
+      userEmail = null;
+      if (user?.tier === 'owner') isOwner = true;
+    } catch {
+      userTier = null;
+      userEmail = null;
+    }
   }
 
   if (isOwner) return 'owner';
+
+  if (isInternalUnlimitedEmail(userEmail)) return 'beta';
 
   if (!config.billing.paywallEnabled && isStagingRuntime()) {
     const allowlist = stagingBypassTierAllowlist();
@@ -133,11 +164,21 @@ export function resolveBillingPlanForUser(userId: number): BillingPlan {
   }
 
   try {
-    const sub = db.prepare(
-      'SELECT plan, status FROM subscriptions WHERE user_id = ?'
-    ).get(userId) as { plan: string; status: string } | undefined;
+    const sub = readSubscriptionPlanRow(db, userId);
 
-    if (sub && ['active', 'trialing'].includes(sub.status) && (sub.plan === 'pro' || sub.plan === 'max')) {
+    const subscriptionActive = !!sub
+      && ['active', 'trialing'].includes(sub.status)
+      && (!sub.current_period_end || new Date(sub.current_period_end).getTime() > Date.now());
+
+    if (subscriptionActive && sub.status === 'trialing' && (sub.provider ?? '').toLowerCase().includes('beta')) {
+      return 'beta';
+    }
+
+    if (subscriptionActive && sub.plan === 'beta') {
+      return 'beta';
+    }
+
+    if (subscriptionActive && (sub.plan === 'pro' || sub.plan === 'max')) {
       return sub.plan;
     }
   } catch {
@@ -149,6 +190,21 @@ export function resolveBillingPlanForUser(userId: number): BillingPlan {
   if (userTier === 'pro') return 'pro';
 
   return 'free';
+}
+
+function readSubscriptionPlanRow(
+  db: ReturnType<typeof getDb>,
+  userId: number,
+): { plan: string; status: string; provider?: string | null; current_period_end?: string | null } | undefined {
+  try {
+    return db.prepare(
+      'SELECT plan, status, provider, current_period_end FROM subscriptions WHERE user_id = ?'
+    ).get(userId) as { plan: string; status: string; provider?: string | null; current_period_end?: string | null } | undefined;
+  } catch {
+    return db.prepare(
+      'SELECT plan, status FROM subscriptions WHERE user_id = ?'
+    ).get(userId) as { plan: string; status: string } | undefined;
+  }
 }
 
 /**

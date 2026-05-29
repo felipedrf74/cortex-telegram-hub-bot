@@ -329,6 +329,14 @@ export function getTaskById(taskId: number): NormalizedTask | null {
   return row ? rowToTask(row) : null;
 }
 
+export function getTaskByIdForUser(userId: number, taskId: number): NormalizedTask | null {
+  const db = getDb();
+  const row = db.prepare('SELECT * FROM unified_tasks WHERE id = ? AND user_id = ? AND is_deleted = 0').get(taskId, userId) as
+    | UnifiedTaskRow
+    | undefined;
+  return row ? rowToTask(row) : null;
+}
+
 /**
  * Get the full task row including the user_id (used by task-service for
  * authorization checks before writing back to a provider).

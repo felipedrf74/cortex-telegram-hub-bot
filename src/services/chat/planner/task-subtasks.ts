@@ -73,6 +73,7 @@ export function parseTaskWithSubtasksIntent(input: ChatPlannerInput): ChatAction
   if (checklistFrame) return buildTaskSubtasksActionPlan(input, 'create_task_with_subtasks', checklistFrame, 0.9, ['create_checklist_task_intent', 'deterministic_task_parser']);
 
   const createFrame = parseCreateTaskWithSubtasksDescriptor(cleaned, quoted)
+    ?? parseColonTaskWithSubtasksDescriptor(cleaned)
     ?? parseImplicitTaskWithSubtasksDescriptor(cleaned);
   if (createFrame) return buildTaskSubtasksActionPlan(input, 'create_task_with_subtasks', createFrame, createFrame.confidence, ['create_task_with_subtasks_intent', 'deterministic_task_parser']);
 
@@ -145,6 +146,15 @@ function parseChecklistTaskDescriptor(cleaned: string): { title: string; subtask
   const subtasks = splitTaskSubtaskItems(match[2]);
   if (!title || subtasks.length === 0) return null;
   return { title, subtasks, language: detectTaskLanguage(cleaned) };
+}
+
+function parseColonTaskWithSubtasksDescriptor(cleaned: string): { title: string; subtasks: string[]; language: string; confidence: number } | null {
+  const match = cleaned.match(/^\s*(?:create|make|cria|criar|crie|crear|crea)\s+(?:a\s+|uma?\s+|una?\s+)?(?:task|tarefa|tarea)\s+(?:(?:called|named|chamada?|chamado|llamada?|llamado|para|for)\s+)?(.+?)\s*[:：]\s*([\s\S]+)$/i);
+  if (!match) return null;
+  const title = normalizeTaskGuidanceTitle(match[1]);
+  const subtasks = splitTaskSubtaskItems(match[2]);
+  if (!title || subtasks.length < 2) return null;
+  return { title, subtasks, language: detectTaskLanguage(cleaned), confidence: 0.88 };
 }
 
 function parseImplicitTaskWithSubtasksDescriptor(cleaned: string): { title: string; subtasks: string[]; language: string; confidence: number } | null {

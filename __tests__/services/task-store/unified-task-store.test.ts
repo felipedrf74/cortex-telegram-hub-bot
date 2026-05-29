@@ -62,6 +62,7 @@ import {
   getTasksDueThisWeek,
   getAllTasks,
   getTaskById,
+  getTaskByIdForUser,
   getDefaultProvider,
   setDefaultProvider,
   getSyncState,
@@ -170,6 +171,15 @@ describe('upsertTask', () => {
 
     expect(getPendingTasks(USER_ID)).toHaveLength(1);
     expect(getPendingTasks(99)).toHaveLength(1);
+  });
+
+  it('scopes direct task-id reads to the owning user', () => {
+    upsertTask(USER_ID, makeTask({ externalId: 'scoped-read', title: 'Scoped Read' }));
+    const [task] = getAllTasks(USER_ID);
+
+    expect(getTaskById(task.id!)?.title).toBe('Scoped Read');
+    expect(getTaskByIdForUser(USER_ID, task.id!)?.title).toBe('Scoped Read');
+    expect(getTaskByIdForUser(99, task.id!)).toBeNull();
   });
 
   it('isolates tasks across providers for the same external_id', () => {

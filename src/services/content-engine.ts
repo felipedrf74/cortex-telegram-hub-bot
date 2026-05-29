@@ -177,7 +177,8 @@ export interface ReportResponse {
   duration_ms: number;
 }
 
-const BASE_URL = `http://localhost:${config.contentEngine.port}/api/v1`;
+const CONTENT_ENGINE_ORIGIN = (process.env.CONTENT_ENGINE_BASE_URL || `http://localhost:${config.contentEngine.port}`).replace(/\/+$/, '');
+const BASE_URL = `${CONTENT_ENGINE_ORIGIN}/api/v1`;
 
 let _lastHealthCheck = 0;
 let _isHealthy = true;

@@ -25,6 +25,7 @@ if [ -f .env.local ]; then
 fi
 
 NEXUS_PORT="${NEXUS_LOCAL_PORT_TS:-8200}"
+COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME:-cortex-telegram-hub-bot}"
 BASE_URL="http://127.0.0.1:${NEXUS_PORT}"
 VERBOSE=0
 if [ "${1:-}" = "-v" ]; then VERBOSE=1; fi
@@ -137,7 +138,7 @@ check "GET /api/cost-by-domain has dashboard shape" check_cost_dashboard
 # Check 5: SQLite PRAGMA integrity_check via docker exec
 check_db_integrity() {
   local out
-  out=$(docker compose -f docker-compose.local.yml exec -T nexus-hub \
+  out=$(docker exec nexus-hub-node \
     sh -c 'sqlite3 ${DATABASE_PATH:-/app/data/local.db} "PRAGMA integrity_check"' 2>&1) || {
     echo "docker exec failed: $out"
     return 1

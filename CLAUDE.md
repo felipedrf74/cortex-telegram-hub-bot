@@ -94,6 +94,12 @@ Documentation hygiene:
 - Avoid single-tenant runtime assumptions in prompts, caches, background jobs,
   provider fallbacks, and user-facing copy. Hardcoded founder identity belongs
   only in docs, provenance notes, or explicit owner-only fixtures.
+- Do not fix product behavior by hardcoding a specific user, email, tenant,
+  task title, recipe, ingredient list, domain example, simulator phrase, model,
+  or provider into runtime code. Use typed contracts, deterministic generic
+  parsers, config/env flags, persisted data, registries, or schema-validated
+  model output. If a fix seems to require a special case, design the generic
+  rule first and keep one-off examples inside tests/corpus fixtures only.
 - If credentials, APNs, TestFlight, OAuth, HealthKit, Gmail/Outlook, or provider
   access are required, document the exact env/command and mark the item as
   manual verification required.

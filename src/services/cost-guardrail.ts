@@ -214,7 +214,22 @@ export function buildQuotaUsagePayload(quota: DailyQuotaStatus): Record<string, 
 }
 
 export function buildQuotaExceededPayload(quota: DailyQuotaStatus): Record<string, unknown> {
-  return buildQuotaUsagePayload(quota);
+  const usagePercent = Number.isFinite(quota.usageFraction)
+    ? Math.min(999, Math.max(0, Math.round(quota.usageFraction * 100)))
+    : quota.over ? 100 : 0;
+  return {
+    plan: quota.plan,
+    resetAt: quota.resetAt,
+    usagePercent,
+    quotaState: quota.over ? 'reached' : usagePercent >= 80 ? 'near_limit' : 'available',
+    usageLevel: quota.usageLevel,
+    callsToday: quota.callsToday,
+    boostAvailable: quota.boostAvailable,
+    pointsPurchaseAvailable: quota.pointsPurchaseAvailable,
+    nexusPointsBalance: quota.nexusPointsBalance,
+    nexusPointsExpiringSoon: quota.nexusPointsExpiringSoon,
+    nextCreditExpiryAt: quota.nextCreditExpiryAt,
+  };
 }
 
 export type CostGuardrailDecision =
@@ -336,8 +351,7 @@ export function enforceCostGuardrails(userId: number): CostGuardrailDecision {
       global,
       quota,
       details: {
-        totalUsd: global.totalUsd,
-        limitUsd: global.limitUsd,
+        quotaState: 'workspace_degraded',
       },
     };
   }

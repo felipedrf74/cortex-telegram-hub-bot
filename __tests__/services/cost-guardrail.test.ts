@@ -58,7 +58,7 @@ function applyMigrations(db: Database.Database): void {
 }
 
 import { checkQuota } from '../../src/services/usage-metering';
-import { checkGlobalCostGuardrail, isUserOverDailyCap, getUserDailySpend, getSpendByProvider } from '../../src/services/cost-guardrail';
+import { buildQuotaExceededPayload, checkGlobalCostGuardrail, isUserOverDailyCap, getUserDailySpend, getSpendByProvider } from '../../src/services/cost-guardrail';
 
 describe('checkQuota', () => {
   beforeEach(() => {
@@ -284,6 +284,31 @@ describe('isUserOverDailyCap', () => {
     expect(result.resetAt).toMatch(/T00:00:00.000Z$/);
   });
 
+  it('builds customer-facing quota-exceeded payloads without raw USD fields', () => {
+    testDb.prepare(`
+      INSERT INTO users (id, telegram_id, first_name, tier, status, auth_provider, daily_message_limit, daily_token_limit, daily_cost_limit_usd)
+      VALUES (5101, 5101, 'Pro Over', 'pro', 'active', 'telegram', 200, 500000, 0.2)
+    `).run();
+    testDb.prepare(`
+      INSERT INTO subscriptions (user_id, plan, period, status, provider, updated_at)
+      VALUES (5101, 'pro', 'monthly', 'active', 'stripe', datetime('now'))
+    `).run();
+    testDb.prepare(`
+      INSERT INTO api_usage (category, model, user_id, input_tokens, output_tokens, cost_usd, duration_ms)
+      VALUES ('domain_content', 'gemini-2.5-flash', 5101, 5000, 2000, 0.20, 200)
+    `).run();
+
+    const payload = buildQuotaExceededPayload(isUserOverDailyCap(5101));
+
+    expect(payload).toMatchObject({
+      plan: 'pro',
+      usagePercent: expect.any(Number),
+      quotaState: 'reached',
+      pointsPurchaseAvailable: expect.any(Boolean),
+    });
+    expect(JSON.stringify(payload)).not.toMatch(/limitUsd|usedUsd|remainingUsd|planDailyLimitUsd|includedRemainingUsd|nexusPointsRemainingUsd|totalRemainingUsd|priceUsd|usdAllowance/i);
+  });
+
   it('uses the active max subscription cap of $0.06/day', () => {
     testDb.prepare(`
       INSERT INTO users (id, telegram_id, first_name, tier, status, auth_provider, daily_message_limit, daily_token_limit, daily_cost_limit_usd)
@@ -304,6 +329,54 @@ describe('isUserOverDailyCap', () => {
     expect(result.usedUsd).toBe(0.025);
     expect(result.remainingUsd).toBeCloseTo(0.035, 8);
     expect(result.over).toBe(false);
+  });
+
+  it('treats beta-provider trial rows as unlimited beta usage', () => {
+    testDb.prepare(`
+      INSERT INTO users (id, telegram_id, first_name, tier, status, auth_provider, daily_message_limit, daily_token_limit, daily_cost_limit_usd)
+      VALUES (5003, 5003, 'Sandbox Beta', 'max', 'active', 'telegram', 200, 500000, 0.6)
+    `).run();
+    testDb.prepare(`
+      INSERT INTO subscriptions (user_id, plan, period, status, provider, updated_at, current_period_end)
+      VALUES (5003, 'max', 'monthly', 'trialing', 'beta', datetime('now'), datetime('now', '+365 days'))
+    `).run();
+    testDb.prepare(`
+      INSERT INTO api_usage (category, model, user_id, input_tokens, output_tokens, cost_usd, duration_ms)
+      VALUES ('domain_content', 'gemini-2.5-flash', 5003, 5000, 2000, 1.25, 200)
+    `).run();
+
+    const result = isUserOverDailyCap(5003);
+    expect(result.plan).toBe('beta');
+    expect(result.usageLevel).toBe('owner');
+    expect(result.limitUsd).toBe(100);
+    expect(result.over).toBe(false);
+  });
+
+  it('treats configured internal emails as unlimited beta usage', () => {
+    const previous = process.env.NEXUS_INTERNAL_UNLIMITED_EMAILS;
+    process.env.NEXUS_INTERNAL_UNLIMITED_EMAILS = 'nexushubbot@gmail.com';
+    try {
+      testDb.prepare(`
+        INSERT INTO users (id, telegram_id, email, first_name, tier, status, auth_provider, daily_message_limit, daily_token_limit, daily_cost_limit_usd)
+        VALUES (5005, 5005, 'nexushubbot@gmail.com', 'Nexus Bot', 'free', 'active', 'google', 40, 100000, 0.005)
+      `).run();
+      testDb.prepare(`
+        INSERT INTO api_usage (category, model, user_id, input_tokens, output_tokens, cost_usd, duration_ms)
+        VALUES ('script_generation', 'qwen3.6:35b-a3b', 5005, 5000, 2000, 1.25, 200)
+      `).run();
+
+      const result = isUserOverDailyCap(5005);
+      expect(result.plan).toBe('beta');
+      expect(result.usageLevel).toBe('owner');
+      expect(result.limitUsd).toBe(100);
+      expect(result.over).toBe(false);
+    } finally {
+      if (previous === undefined) {
+        delete process.env.NEXUS_INTERNAL_UNLIMITED_EMAILS;
+      } else {
+        process.env.NEXUS_INTERNAL_UNLIMITED_EMAILS = previous;
+      }
+    }
   });
 
   it('lets an active per-user AI budget override win over the plan cap', () => {

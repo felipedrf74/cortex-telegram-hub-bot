@@ -287,33 +287,38 @@ describe('billing routes', () => {
     expect(JSON.stringify(res.body)).not.toContain('sqlite write exploded');
   });
 
-  it('returns Nexus Points availability in billing status', async () => {
+  it('returns percentage-only usage availability in billing status', async () => {
     const res = await dispatch('GET', '/status', undefined, 42);
 
     expect(res.statusCode).toBe(200);
     expect(res.body.data).toMatchObject({
-      nexusPointsBalance: 0,
-      includedRemainingUsd: 0.04,
-      totalRemainingUsd: 0.04,
+      usageLevel: 'enhanced',
+      usageFraction: 0,
+      isOverLimit: false,
       pointsPurchaseAvailable: true,
     });
-    expect(res.body.data.nexusPointPackages).toEqual(expect.arrayContaining([
-      expect.objectContaining({ productId: 'me.nexushub.points.small', points: 300 }),
-      expect.objectContaining({ productId: 'me.nexushub.points.medium', points: 600 }),
-      expect.objectContaining({ productId: 'me.nexushub.points.large', points: 1200 }),
-    ]));
+    expect(res.body.data.limitUsd).toBeUndefined();
+    expect(res.body.data.usedUsd).toBeUndefined();
+    expect(res.body.data.remainingUsd).toBeUndefined();
+    expect(res.body.data.includedRemainingUsd).toBeUndefined();
+    expect(res.body.data.nexusPointPackages).toBeUndefined();
   });
 
-  it('returns Nexus Points availability in billing usage', async () => {
+  it('returns percentage-only usage availability in billing usage', async () => {
     const res = await dispatch('GET', '/usage', undefined, 42);
 
     expect(res.statusCode).toBe(200);
     expect(res.body.data).toMatchObject({
-      nexusPointsBalance: 0,
-      includedRemainingUsd: 0.04,
-      totalRemainingUsd: 0.04,
+      usageLevel: 'enhanced',
+      usageFraction: 0,
+      isOverLimit: false,
       pointsPurchaseAvailable: true,
     });
+    expect(res.body.data.limitUsd).toBeUndefined();
+    expect(res.body.data.usedUsd).toBeUndefined();
+    expect(res.body.data.remainingUsd).toBeUndefined();
+    expect(res.body.data.includedRemainingUsd).toBeUndefined();
+    expect(res.body.data.nexusPointPackages).toBeUndefined();
   });
 
   it('processes Nexus Point Apple products through the point ledger instead of subscriptions', async () => {
@@ -346,9 +351,10 @@ describe('billing routes', () => {
         granted: true,
         productId: 'me.nexushub.points.small',
         points: 300,
-        usdAllowance: 0.30,
+        pointsAllowance: 300,
       },
     });
+    expect(res.body.data.nexusPointsPurchase.usdAllowance).toBeUndefined();
   });
 
   it('creates web-only Stripe Nexus Points checkout from authenticated request scope', async () => {

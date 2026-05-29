@@ -24,7 +24,7 @@ import {
 } from '../../services/stripe-service';
 import { verifyAppleJws } from '../../services/apple-jws-verifier';
 import { safeCheckoutUrl } from './public-billing';
-import { buildQuotaUsagePayload, isUserOverDailyCap } from '../../services/cost-guardrail';
+import { isUserOverDailyCap } from '../../services/cost-guardrail';
 import {
   grantNexusPoints,
   isNexusPointProductId,
@@ -61,7 +61,12 @@ function buildBillingStatusPayload(userId: number): Record<string, unknown> {
   const usage = isUserOverDailyCap(userId);
   return {
     ...status,
-    ...buildQuotaUsagePayload(usage),
+    usageLevel: usage.usageLevel,
+    usageFraction: usage.usageFraction,
+    isOverLimit: usage.over,
+    resetsAt: usage.resetAt,
+    boostAvailable: usage.boostAvailable,
+    pointsPurchaseAvailable: usage.pointsPurchaseAvailable,
   };
 }
 
@@ -100,7 +105,8 @@ export function billingRoutes(): Router {
       isOverLimit: usage.over,
       resetsAt: usage.resetAt,
       boostAvailable: usage.boostAvailable,
-      ...buildQuotaUsagePayload(usage),
+      resetAt: usage.resetAt,
+      pointsPurchaseAvailable: usage.pointsPurchaseAvailable,
     });
   }));
 
@@ -404,7 +410,7 @@ export function billingRoutes(): Router {
             granted: grant.granted,
             productId,
             points: grant.package.points,
-            usdAllowance: grant.package.usdAllowance,
+            pointsAllowance: grant.package.points,
             expiresInDays: 30,
           },
         });

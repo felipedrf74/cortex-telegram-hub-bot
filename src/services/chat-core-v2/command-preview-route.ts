@@ -28,6 +28,7 @@ import { hashStable, normalizeTimezone } from './deterministic-read/common';
 import { isChatCoreV2RuntimeFlagEnabled } from '../runtime-flags';
 import { signChatConfirmationToken } from '../chat-confirmation-token';
 import { trackPendingChatCoreV2Command } from './pending-commands';
+import { getDb } from '../database';
 import {
   buildEntityResolutionPreconditions,
   resolveEntityReferenceFromCandidates,
@@ -38,6 +39,7 @@ import {
   type ParsedNaturalLanguageCalendarEvent,
 } from '../calendar-natural-language-parser';
 import { parseSimpleTaskStep } from '../chat/planner/simple-task';
+import { parseTaskWithSubtasksIntent } from '../chat/planner/task-subtasks';
 import {
   listDecisionItems,
   type DecisionApiItem,
@@ -120,6 +122,14 @@ const ACTIVE_TRAINING_SESSION_STATUSES = new Set([
   'moved',
 ]);
 
+type ChatCoreV2ResolvableTask = NormalizedTask & {
+  id: number;
+  providerData?: Record<string, unknown> & {
+    chatCoreV2TaskStore?: 'unified_tasks' | 'native_tasks';
+    nativeListId?: number;
+  };
+};
+
 export function tryBuildChatCoreV2CommandPreviewRoute(
   input: BuildChatCoreV2CommandPreviewRouteInput,
 ): ChatCoreV2CommandPreviewRouteResult | null {
@@ -186,6 +196,28 @@ function tryBuildTaskCreatePreview(
     persistRuns: false,
     requireSafeWriteConfirmation: true,
   };
+  const taskWithSubtasksPlan = parseTaskWithSubtasksIntent(plannerInput);
+  const taskWithSubtasksStep = taskWithSubtasksPlan?.steps.find((step) => step.action === 'create_task_with_subtasks');
+  if (taskWithSubtasksStep) {
+    if (!taskWithSubtasksStep.requiredArgsPresent) return null;
+    const command = buildTaskCreateCommandEnvelope({
+      input,
+      now,
+      args: taskWithSubtasksStep.args,
+      idempotencyKey: taskWithSubtasksStep.idempotencyKey,
+    });
+    return buildCommandPreviewResult({
+      input,
+      routeGuess,
+      capability,
+      capabilityId: TASK_CREATE_CAPABILITY,
+      command,
+      now,
+    });
+  }
+  if (taskWithSubtasksPlan?.steps.some((step) => step.action === 'add_subtasks_to_task')) {
+    return null;
+  }
   const step = parseSimpleTaskStep(plannerInput, input.normalizedText);
   if (!step || step.action !== 'create_task' || step.risk !== 'safe_write' || !step.requiredArgsPresent) {
     return null;
@@ -217,11 +249,57 @@ function tryBuildTaskCompletePreview(
   const referencePhrase = extractTaskCompletionReference(input.normalizedText);
   if (!referencePhrase) return null;
 
-  const pendingTasks = listTasks(input.userId, { status: 'pending' })
-    .filter((task): task is NormalizedTask & { id: number } => Number.isFinite(task.id));
+  const pendingTasks: ChatCoreV2ResolvableTask[] = [
+    ...listTasks(input.userId, { status: 'pending' })
+      .filter((task): task is NormalizedTask & { id: number } => Number.isFinite(task.id))
+      .map((task) => ({
+        ...task,
+        providerData: {
+          ...(task.providerData ?? {}),
+          chatCoreV2TaskStore: 'unified_tasks' as const,
+        },
+      })),
+    ...listNativeTasksForPreview(input.userId),
+  ];
+  const exactTitleMatches = pendingTasks.filter(
+    (task) => normalizeTaskResolutionText(task.title) === normalizeTaskResolutionText(referencePhrase),
+  );
   const candidates = pendingTasks
     .map((task) => taskToResolutionCandidate(task, referencePhrase))
     .filter((candidate) => candidate.confidence > 0.45);
+
+  if (exactTitleMatches.length === 1) {
+    const selectedCandidate = taskToResolutionCandidate(exactTitleMatches[0], referencePhrase);
+    const resolution: EntityReferenceResolution = {
+      entityType: 'task',
+      userPhrase: referencePhrase,
+      candidates: [selectedCandidate],
+      status: 'resolved',
+      selectedId: selectedCandidate.id,
+      selectedCandidate,
+      reasonCodes: ['exact_title_match'],
+    };
+    const now = input.now ?? new Date();
+    const command = buildTaskCompleteCommandEnvelope({
+      input,
+      now,
+      task: exactTitleMatches[0],
+      resolution,
+    });
+    return buildCommandPreviewResult({
+      input,
+      routeGuess,
+      capability,
+      capabilityId: TASK_COMPLETE_CAPABILITY,
+      command,
+      now,
+    });
+  }
+
+  if (exactTitleMatches.length > 1) {
+    return null;
+  }
+
   const resolution = resolveEntityReferenceFromCandidates({
     entityType: 'task',
     userPhrase: referencePhrase,
@@ -493,6 +571,7 @@ function buildCommandPreviewResult(input: {
   capabilityId: string;
   command: AICommandEnvelope<Record<string, unknown>>;
   now: Date;
+  forcePreviewOnly?: boolean;
 }): ChatCoreV2CommandPreviewRouteResult | null {
   const command = input.command;
   const gateVerdict = evaluateChatCoreV2CommandBusGate(command, {
@@ -507,13 +586,15 @@ function buildCommandPreviewResult(input: {
   }, 'preview');
   if (!gateVerdict.ok) return null;
 
-  const confirmation = maybeIssueConfirmationToken({
-    input: input.input,
-    capability: input.capability,
-    capabilityId: input.capabilityId,
-    command,
-    now: input.now,
-  });
+  const confirmation = input.forcePreviewOnly
+    ? { executionEnabled: false as const, executionDisabledReason: 'preview_only_rollout' as const }
+    : maybeIssueConfirmationToken({
+      input: input.input,
+      capability: input.capability,
+      capabilityId: input.capabilityId,
+      command,
+      now: input.now,
+    });
   const previewCapability = confirmation.executionEnabled ? input.capability : asPreviewOnlyCapability(input.capability);
   const previewCopy = buildPreviewCopy(input.capabilityId, command.payload, input.input.locale);
   const response = buildChatCoreV2ActionPreviewResponse({
@@ -618,6 +699,9 @@ function buildTaskCreateCommandEnvelope(input: {
     dueDateTime,
     list: input.args.list ?? null,
     notes: input.args.notes ?? null,
+    ...(Array.isArray(input.args.subtasks) ? {
+      subtasks: input.args.subtasks.map((subtask) => String(subtask).trim()).filter(Boolean).slice(0, 25),
+    } : {}),
   };
 
   return {
@@ -662,27 +746,49 @@ function buildTaskCreateCommandEnvelope(input: {
 function buildTaskCompleteCommandEnvelope(input: {
   input: BuildChatCoreV2CommandPreviewRouteInput;
   now: Date;
-  task: NormalizedTask & { id: number };
+  task: ChatCoreV2ResolvableTask;
+  relatedTasks?: ChatCoreV2ResolvableTask[];
   resolution: EntityReferenceResolution;
 }): AICommandEnvelope<Record<string, unknown>> {
   const entityPreconditions = buildEntityResolutionPreconditions(input.resolution);
-  const entityId = `task:${input.task.id}`;
+  const taskStore = input.task.providerData?.chatCoreV2TaskStore === 'native_tasks' ? 'native_tasks' : 'unified_tasks';
+  const nativeListId = typeof input.task.providerData?.nativeListId === 'number'
+    ? input.task.providerData.nativeListId
+    : null;
+  const relatedTasks = input.relatedTasks?.length ? input.relatedTasks : [input.task];
+  const relatedEntityVersions = Object.fromEntries(
+    relatedTasks.map((task) => [taskEntityId(task), computeContentHash(task)]),
+  );
+  const requiredEntityVersions = {
+    ...entityPreconditions.requiredEntityVersions,
+    ...relatedEntityVersions,
+  };
+  const relatedPayload = relatedTasks.map((task) => ({
+    taskStore: task.providerData?.chatCoreV2TaskStore === 'native_tasks' ? 'native_tasks' : 'unified_tasks',
+    taskId: task.id,
+    nativeListId: typeof task.providerData?.nativeListId === 'number' ? task.providerData.nativeListId : null,
+    title: task.title,
+    currentStatus: task.status,
+  }));
   const createdAt = input.now.toISOString();
   const payload = {
     operation: 'complete',
+    taskStore,
     taskId: input.task.id,
+    nativeListId,
     title: input.task.title,
     currentStatus: input.task.status,
     targetStatus: 'completed',
     dueDateTime: input.task.dueIsDatetime ? input.task.dueDate ?? null : null,
     dueDate: input.task.dueIsDatetime ? null : input.task.dueDate ?? null,
+    duplicateTasks: relatedPayload.length > 1 ? relatedPayload : undefined,
   };
   const commandId = `cmd_${hashStable({
     tenantId: input.input.tenantId,
     userId: input.input.userId,
     messageId: input.input.messageId,
-    taskId: input.task.id,
-    entityVersions: entityPreconditions.requiredEntityVersions,
+    taskIds: relatedTasks.map((task) => task.id),
+    entityVersions: requiredEntityVersions,
   })}`;
 
   return {
@@ -697,8 +803,8 @@ function buildTaskCompleteCommandEnvelope(input: {
     origin: 'chat',
     payload,
     basedOn: {
-      entityIds: [entityId],
-      entityVersions: entityPreconditions.requiredEntityVersions,
+      entityIds: relatedTasks.map(taskEntityId),
+      entityVersions: requiredEntityVersions,
       contextHash: hashStable({
         routeVersion: CHAT_CORE_V2_COMMAND_PREVIEW_ROUTE_VERSION,
         textHash: hashStable({ text: input.input.normalizedText }),
@@ -708,7 +814,7 @@ function buildTaskCompleteCommandEnvelope(input: {
       createdAt,
     },
     preconditions: {
-      requiredEntityVersions: entityPreconditions.requiredEntityVersions,
+      requiredEntityVersions,
       requiredPermissionsVersion: `chat-v2-permissions:${input.input.tenantId}:${input.input.userId}:tasks:v1`,
       invariants: [{
         type: 'task_status',
@@ -725,8 +831,14 @@ function buildTaskCompleteCommandEnvelope(input: {
       authTime: createdAt,
     },
     expiresAt: new Date(input.now.getTime() + COMMAND_TTL_MS).toISOString(),
-    idempotencyKey: `chat-v2:${input.input.tenantId}:${input.input.userId}:tasks.complete:${input.task.id}:${commandId}`,
+    idempotencyKey: `chat-v2:${input.input.tenantId}:${input.input.userId}:tasks.complete:${relatedTasks.map((task) => task.id).join(',')}:${commandId}`,
   };
+}
+
+function taskEntityId(task: ChatCoreV2ResolvableTask): string {
+  return task.providerData?.chatCoreV2TaskStore === 'native_tasks'
+    ? `native_task:${task.id}`
+    : `task:${task.id}`;
 }
 
 function buildNotificationSnoozeCommandEnvelope(input: {
@@ -1542,13 +1654,31 @@ function taskPreviewSummary(payload: Record<string, unknown>, locale: string | n
   const due = typeof payload.dueDateTime === 'string' && payload.dueDateTime.trim()
     ? payload.dueDateTime.trim()
     : null;
+  const subtasks = taskPreviewSubtasks(payload);
+  const duplicateCount = taskPreviewDuplicateCount(payload);
   const normalized = normalizeChatCoreV2Locale(locale);
   if (operation === 'complete') {
+    if (duplicateCount > 1) {
+      if (normalized === 'pt-BR') return `Eu marcaria ${duplicateCount} tarefas chamadas "${title}" como concluídas.`;
+      if (normalized === 'pt-PT') return `Eu marcaria ${duplicateCount} tarefas chamadas "${title}" como concluídas.`;
+      if (normalized === 'es') return `Marcaría ${duplicateCount} tareas llamadas "${title}" como completadas.`;
+      return `I would mark ${duplicateCount} tasks named "${title}" as done.`;
+    }
     if (normalized === 'pt-BR') return `Eu marcaria "${title}" como concluída.`;
     if (normalized === 'pt-PT') return `Eu marcaria "${title}" como concluída.`;
     if (normalized === 'es') return `Marcaría "${title}" como completada.`;
     return `I would mark "${title}" as done.`;
   }
+  if (normalized === 'pt-BR') {
+    if (subtasks.length > 0) return `Revê e confirma para criar a tarefa "${title}" com ${subtasks.length} subtarefa(s).`;
+  }
+  if (normalized === 'pt-PT') {
+    if (subtasks.length > 0) return `Revê e confirma para criar a tarefa "${title}" com ${subtasks.length} subtarefa(s).`;
+  }
+  if (normalized === 'es') {
+    if (subtasks.length > 0) return `Revisa y confirma para crear la tarea "${title}" con ${subtasks.length} subtarea(s).`;
+  }
+  if (subtasks.length > 0) return `Review and confirm to create the task "${title}" with ${subtasks.length} subtask(s).`;
   if (normalized === 'pt-BR') {
     return due
       ? `Eu prepararia a tarefa "${title}" para ${due}.`
@@ -1573,26 +1703,40 @@ function taskPreviewDiff(payload: Record<string, unknown>, locale: string | null
   const normalized = normalizeChatCoreV2Locale(locale);
   const operation = payload.operation === 'complete' ? 'complete' : 'create';
   const labels = normalized === 'pt-BR'
-    ? { task: 'Tarefa', due: 'Quando', status: 'Estado', pending: 'Pendente', completed: 'Concluída' }
+    ? { task: 'Tarefa', subtasks: 'Subtarefas', due: 'Quando', status: 'Estado', pending: 'Pendente', completed: 'Concluída', count: 'Quantidade' }
     : normalized === 'pt-PT'
-      ? { task: 'Tarefa', due: 'Quando', status: 'Estado', pending: 'Pendente', completed: 'Concluída' }
+      ? { task: 'Tarefa', subtasks: 'Subtarefas', due: 'Quando', status: 'Estado', pending: 'Pendente', completed: 'Concluída', count: 'Quantidade' }
       : normalized === 'es'
-        ? { task: 'Tarea', due: 'Cuándo', status: 'Estado', pending: 'Pendiente', completed: 'Completada' }
-        : { task: 'Task', due: 'When', status: 'Status', pending: 'Pending', completed: 'Done' };
+        ? { task: 'Tarea', subtasks: 'Subtareas', due: 'Cuándo', status: 'Estado', pending: 'Pendiente', completed: 'Completada', count: 'Cantidad' }
+        : { task: 'Task', subtasks: 'Subtasks', due: 'When', status: 'Status', pending: 'Pending', completed: 'Done', count: 'Count' };
   const title = String(payload.title ?? '').trim();
   const due = typeof payload.dueDateTime === 'string' && payload.dueDateTime.trim()
     ? payload.dueDateTime.trim()
     : null;
+  const subtasks = taskPreviewSubtasks(payload);
+  const duplicateCount = taskPreviewDuplicateCount(payload);
   if (operation === 'complete') {
     return [
       { label: labels.task, after: title },
+      ...(duplicateCount > 1 ? [{ label: labels.count, after: String(duplicateCount) }] : []),
       { label: labels.status, after: labels.completed },
     ];
   }
   return [
     { label: labels.task, after: title },
+    ...(subtasks.length > 0 ? [{ label: labels.subtasks, after: subtasks.join(', ') }] : []),
     ...(due ? [{ label: labels.due, after: due }] : []),
   ];
+}
+
+function taskPreviewSubtasks(payload: Record<string, unknown>): string[] {
+  return Array.isArray(payload.subtasks)
+    ? payload.subtasks.map((subtask) => String(subtask).trim()).filter(Boolean)
+    : [];
+}
+
+function taskPreviewDuplicateCount(payload: Record<string, unknown>): number {
+  return Array.isArray(payload.duplicateTasks) ? payload.duplicateTasks.length : 0;
 }
 
 function notificationPreviewTitle(payload: Record<string, unknown>, locale: string | null | undefined): string {
@@ -2174,10 +2318,75 @@ function cleanupTaskReference(value: unknown): string | null {
   return cleaned;
 }
 
-function taskToResolutionCandidate(task: NormalizedTask & { id: number }, referencePhrase: string): EntityResolutionCandidate {
+function listNativeTasksForPreview(userId: number): ChatCoreV2ResolvableTask[] {
+  try {
+    const rows = getDb().prepare(`
+      SELECT t.*, l.name AS list_name
+      FROM native_tasks t
+      JOIN native_task_lists l ON l.id = t.list_id
+      WHERE t.user_id = ?
+        AND t.status != 'completed'
+      ORDER BY t.position ASC, t.created_at DESC
+      LIMIT 100
+    `).all(userId) as Array<{
+      id: number;
+      list_id: number;
+      list_name: string;
+      title: string;
+      body: string | null;
+      importance: string | null;
+      status: string;
+      due_date_time: string | null;
+      tags: string | null;
+      completed_at: string | null;
+    }>;
+
+    return rows.map((row) => ({
+      id: Number(row.id),
+      provider: 'nexus',
+      externalId: String(row.id),
+      projectId: Number(row.list_id),
+      projectName: row.list_name,
+      title: row.title,
+      description: row.body ?? undefined,
+      status: row.status === 'inProgress' ? 'in_progress' : 'pending',
+      priority: nativeImportanceToPriority(row.importance),
+      dueDate: row.due_date_time ?? undefined,
+      dueIsDatetime: !!row.due_date_time?.includes('T'),
+      tags: parseNativeTags(row.tags),
+      notes: row.body ?? undefined,
+      completedAt: row.completed_at ?? undefined,
+      providerData: {
+        chatCoreV2TaskStore: 'native_tasks',
+        nativeListId: Number(row.list_id),
+      },
+    }));
+  } catch {
+    return [];
+  }
+}
+
+function nativeImportanceToPriority(importance: string | null): number {
+  if (importance === 'high') return 3;
+  if (importance === 'normal') return 2;
+  return 1;
+}
+
+function parseNativeTags(raw: string | null): string[] | undefined {
+  if (!raw) return undefined;
+  try {
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed.map((item) => String(item)).filter(Boolean) : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function taskToResolutionCandidate(task: ChatCoreV2ResolvableTask, referencePhrase: string): EntityResolutionCandidate {
   const confidence = scoreTaskCandidate(referencePhrase, task.title);
+  const taskStore = task.providerData?.chatCoreV2TaskStore === 'native_tasks' ? 'native_tasks' : 'unified_tasks';
   return {
-    id: `task:${task.id}`,
+    id: taskStore === 'native_tasks' ? `native_task:${task.id}` : `task:${task.id}`,
     label: task.title,
     confidence,
     reason: confidence >= 0.95
@@ -2189,6 +2398,8 @@ function taskToResolutionCandidate(task: NormalizedTask & { id: number }, refere
     domain: 'tasks',
     metadata: {
       taskId: task.id,
+      taskStore,
+      nativeListId: task.providerData?.nativeListId ?? null,
       status: task.status,
       dueDate: task.dueDate ?? null,
     },
@@ -2222,6 +2433,6 @@ function normalizeTaskResolutionText(value: string): string {
 function taskIdFromCandidate(candidate: EntityResolutionCandidate): number | null {
   const fromMetadata = candidate.metadata?.taskId;
   if (typeof fromMetadata === 'number' && Number.isFinite(fromMetadata)) return fromMetadata;
-  const match = /^task:(\d+)$/.exec(candidate.id);
+  const match = /^(?:task|native_task):(\d+)$/.exec(candidate.id);
   return match ? Number(match[1]) : null;
 }

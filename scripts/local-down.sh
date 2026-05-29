@@ -8,6 +8,8 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
-docker compose -f docker-compose.local.yml down
+COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME:-cortex-telegram-hub-bot}"
+
+docker compose -p "$COMPOSE_PROJECT_NAME" -f docker-compose.local.yml down
 
 echo "Sandbox stopped. Data preserved at: $ROOT/data/"

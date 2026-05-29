@@ -163,6 +163,13 @@ describe('TypeScript content-engine callers — outbound internal auth', () => {
     expect(src).toContain('config.contentEngine.internalApiSecret');
   });
 
+  it('uses CONTENT_ENGINE_BASE_URL for Docker network routing when provided', () => {
+    const src = fs.readFileSync(path.join(__dirname, '..', '..', 'src', 'services', 'content-engine.ts'), 'utf-8');
+    expect(src).toContain('process.env.CONTENT_ENGINE_BASE_URL');
+    expect(src).toContain('CONTENT_ENGINE_ORIGIN');
+    expect(src).toContain('`${CONTENT_ENGINE_ORIGIN}/api/v1`');
+  });
+
   it('forwards INTERNAL_API_SECRET from book extraction calls', () => {
     const src = fs.readFileSync(path.join(__dirname, '..', '..', 'src', 'commands', 'books.ts'), 'utf-8');
     expect(src).toContain('X-Internal-Secret');

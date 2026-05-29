@@ -15,7 +15,7 @@ function hasSimpleTaskWriteIntent(text: string): boolean {
     // Phase 2 batch 10: PT-BR "bota" (colloquial) and "coloca" (BR + PT)
     // join the create-verb set so "Bota uma tarefa..." routes correctly.
     // Phase 8 batch 43 (2026-05-15): Spanish "crea"/"crear" added.
-    && /\b(cria|criar|adiciona|adicionar|create|add|bota[r]?|coloca[r]?|p[oõ]e[r]?|mete[r]?|crea[r]?)\b/.test(folded)
+    && /\b(cria|criar|crie|adiciona|adicionar|create|add|bota[r]?|coloca[r]?|p[oõ]e[r]?|mete[r]?|crea[r]?)\b/.test(folded)
     && /\b(task|tarefa|todo|lembrete|tarea[s]?)\b/.test(folded);
 }
 

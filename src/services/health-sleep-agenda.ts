@@ -73,7 +73,7 @@ export function getAppleHealthSleepSegments(input: {
     const datesWithSleepSegments = new Set<string>();
     for (const row of rows) {
       const parsed = safeJson(row.data_json);
-      const intervals = Array.isArray(parsed?.intervals) ? parsed.intervals : [];
+      const intervals = firstArray(parsed?.intervals, parsed?.sleepIntervals, parsed?.segments);
       const segmentCountBeforeRow = segments.length;
       for (const interval of intervals) {
         const stage = String(interval?.stage || '').trim();
@@ -124,6 +124,13 @@ function readSleepTotalMinutes(value: any): number {
   return totalSeconds != null ? Math.max(0, totalSeconds / 60) : 0;
 }
 
+function firstArray(...values: unknown[]): any[] {
+  for (const value of values) {
+    if (Array.isArray(value)) return value;
+  }
+  return [];
+}
+
 function numericMetric(value: unknown): number | null {
   const parsed = typeof value === 'number' ? value : Number(value);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
@@ -143,6 +150,7 @@ function isAsleepStage(stage: string): boolean {
   if (!normalized) return false;
   if (normalized.includes('awake')) return false;
   if (normalized.includes('inbed') || normalized.includes('in_bed') || normalized.includes('in bed')) return false;
+  if (['core', 'deep', 'rem'].includes(normalized)) return true;
   return normalized.includes('sleep') || normalized.includes('asleep');
 }
 

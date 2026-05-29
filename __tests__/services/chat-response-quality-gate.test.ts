@@ -277,4 +277,43 @@ describe('qualityGateReason metadata', () => {
     expect(result.qualityGateSkipped).toBe(true);
     expect(result.qualityGateReason).toBe('creative_text_owner:cooking:execute');
   });
+
+  it('does not turn generic productivity fallback text into fake recipe sections', () => {
+    const text = 'Divide isso numa próxima ação pequena, faz um bloco curto de foco e revê o resultado antes de continuar.';
+    const contract = makeContract({
+      ownerSkill: 'cooking',
+      actionability: 'answer_only',
+      expectedResponseShape: 'recipe',
+      language: 'pt',
+    });
+
+    const result = applyChatResponseQualityGate({ text, contract });
+
+    expect(result.status).toBe('blocked');
+    expect(result.qualityGateReason).toBe('blocked:recipe_seed_unusable');
+    expect(result.text).toContain('Não consegui gerar uma receita confiável');
+    expect(result.text).not.toContain('**Ingredientes:**');
+    expect(result.text).not.toContain('- Divide isso');
+    expect(result.contract.missingFacts).toContain('usable_recipe_content');
+  });
+
+  it('does not wrap degraded recipe generation text into fake recipe sections', () => {
+    const text = 'Não consegui gerar uma receita completa com segurança agora. Tenta novamente com o prato, porções e preferências principais.';
+    const contract = makeContract({
+      ownerSkill: 'cooking',
+      actionability: 'answer_only',
+      expectedResponseShape: 'recipe',
+      language: 'pt',
+    });
+
+    const result = applyChatResponseQualityGate({ text, contract });
+
+    expect(result.status).toBe('blocked');
+    expect(result.qualityGateReason).toBe('blocked:recipe_seed_unusable');
+    expect(result.text).toContain('Não consegui gerar uma receita confiável');
+    expect(result.text).not.toContain('**Ingredientes:**');
+    expect(result.text).not.toContain('**Modo de preparo:**');
+    expect(result.text).not.toContain('Observação: preservei');
+    expect(result.contract.missingFacts).toContain('usable_recipe_content');
+  });
 });

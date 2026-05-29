@@ -12,6 +12,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
+COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME:-cortex-telegram-hub-bot}"
 AUTO_YES="${LOCAL_RESET_YES:-0}"
 if [ "${1:-}" = "--yes" ] || [ "${1:-}" = "-y" ]; then
   AUTO_YES=1
@@ -37,7 +38,7 @@ if [ "$AUTO_YES" != "1" ]; then
   esac
 fi
 
-docker compose -f docker-compose.local.yml down -v
+docker compose -p "$COMPOSE_PROJECT_NAME" -f docker-compose.local.yml down -v
 
 rm -f \
   "$ROOT/data/local.db" \

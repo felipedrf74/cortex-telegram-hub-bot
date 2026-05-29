@@ -80,7 +80,8 @@ export class SQLiteStorage implements StorageProvider {
     }
 
     this.db = new Database(dbPath);
-    this.db.pragma('journal_mode = WAL');
+    const journalMode = resolveSqliteJournalMode();
+    this.db.pragma(`journal_mode = ${journalMode}`);
     this.db.pragma('synchronous = NORMAL');
     this.db.pragma('foreign_keys = ON');
     this.db.pragma('cache_size = -65536');
@@ -92,7 +93,7 @@ export class SQLiteStorage implements StorageProvider {
     // sporadic write failures under any concurrent load.
     this.db.pragma('busy_timeout = 5000');
 
-    logger.info({ path: dbPath }, 'SQLiteStorage opened');
+    logger.info({ path: dbPath, journalMode }, 'SQLiteStorage opened');
   }
 
   prepare<T = any>(sql: string): PreparedStatement<T> {
@@ -134,6 +135,22 @@ export class SQLiteStorage implements StorageProvider {
       throw new Error('SQLiteStorage not initialized. Call open() first.');
     }
     return this.db;
+  }
+}
+
+function resolveSqliteJournalMode(): 'WAL' | 'DELETE' | 'TRUNCATE' | 'PERSIST' | 'MEMORY' | 'OFF' {
+  const raw = String(process.env.SQLITE_JOURNAL_MODE || 'WAL').trim().toUpperCase();
+  switch (raw) {
+    case 'DELETE':
+    case 'TRUNCATE':
+    case 'PERSIST':
+    case 'MEMORY':
+    case 'OFF':
+    case 'WAL':
+      return raw;
+    default:
+      logger.warn({ requested: raw }, 'Invalid SQLITE_JOURNAL_MODE; falling back to WAL');
+      return 'WAL';
   }
 }
 

@@ -7,6 +7,7 @@ import { getTaskProviderForUser } from '../../task-store/task-router';
 import { resolveTaskCreationList } from '../../task-store/task-list-resolution';
 import { claimActionRunForStepExecution, parseStoredRunResult, reconciliationPendingResult, replayDuplicateClaimedActionRun, updateClaimedActionRun, withProviderWriteTimeout } from '../../chat/executor/helpers';
 import { normalizeTaskComparable, verifyTaskWithSubtasks } from '../../chat/verification/task-with-subtasks';
+import { invalidateTaskCaches } from '../../cache-coherence-registry';
 
 export async function executeTaskCreateStep(
   step: ChatPlanStep,
@@ -79,6 +80,7 @@ export async function executeTaskCreateStep(
         },
       });
     }
+    invalidateChatTaskMutationCaches(input.userId, String(created.data.listId || list.id));
     return { step, status, result };
   } catch (err) {
     if (claim) updateChatActionRun(claim.row.id, 'failed', { error: { message: err instanceof Error ? err.message : String(err) } });
@@ -175,6 +177,7 @@ export async function executeTaskWithSubtasksStep(
       verification: { verified, expected: step.verification.expectedFields, warnings: verification.warnings },
     })) return reconciliationPendingResult(step, status);
     rememberTaskForFollowup(input, taskId, listId, args.title, list.displayName || list.name || 'Tasks', plan.createdAt);
+    invalidateChatTaskMutationCaches(input.userId, listId);
     return { step, status, result, error: verified ? undefined : 'task_subtasks_partial_verification' };
   } catch (err) {
     if (claim) updateChatActionRun(claim.row.id, 'failed', { error: { message: err instanceof Error ? err.message : String(err) } });
@@ -257,6 +260,7 @@ export async function executeAddSubtasksToTaskStep(
       providerObjectId: taskId,
       verification: { verified, expected: step.verification.expectedFields, warnings: verification.warnings },
     })) return reconciliationPendingResult(step, status);
+    invalidateChatTaskMutationCaches(input.userId, listId);
     return { step, status, result, error: verified ? undefined : 'task_subtasks_partial_verification' };
   } catch (err) {
     if (claim) updateChatActionRun(claim.row.id, 'failed', { error: { message: err instanceof Error ? err.message : String(err) } });
@@ -299,6 +303,7 @@ export async function executeTaskMutationStep(
       if (!updateClaimedActionRun(claim, status, { result, providerObjectId: String(created.data.id), verification: { verified } })) {
         return reconciliationPendingResult(step, status);
       }
+      invalidateChatTaskMutationCaches(input.userId, String(created.data.listId || list.id));
       return { step, status, result, error: verified ? undefined : 'checklist_provider_partial' };
     }
 
@@ -339,6 +344,7 @@ export async function executeTaskMutationStep(
       providerObjectId: target.taskId,
       verification: { verified, expected: step.verification.expectedFields },
     })) return reconciliationPendingResult(step, status);
+    invalidateChatTaskMutationCaches(input.userId, target.listId);
     return { step, status, result, error: verified ? undefined : 'local_read_back_mismatch' };
   } catch (err) {
     if (claim) updateChatActionRun(claim.row.id, 'failed', { error: { message: err instanceof Error ? err.message : String(err) } });
@@ -376,6 +382,14 @@ export async function resolveTaskMutationTarget(
   const listId = String(match.listId || match.projectId || explicitListId || '');
   if (!taskId || !listId) return null;
   return { taskId, listId, listName: typeof match.listName === 'string' ? match.listName : typeof match.projectName === 'string' ? match.projectName : undefined };
+}
+
+function invalidateChatTaskMutationCaches(userId: number, listId?: string | null): void {
+  invalidateTaskCaches({
+    userId,
+    listIds: listId ? [listId] : [],
+    includeDerivedSurfaces: true,
+  });
 }
 
 type TaskWithSubtasksArgs = {

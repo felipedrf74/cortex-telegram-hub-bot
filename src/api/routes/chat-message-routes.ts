@@ -100,9 +100,13 @@ import {
   runChatCoreV2ShadowRouteHook,
   claimPendingChatCoreV2Command,
   clearPendingChatCoreV2Command,
+  shouldGateReadFastPathsForWriteIntent,
   executeChatCoreV2Command,
+  runChatCoreV2LocalChatTurn,
+  runChatCoreV2ActionGateway,
   tryBuildChatCoreV2CommandPreviewRoute,
   tryBuildChatCoreV2DeterministicReadRoute,
+  type ChatCoreV2ActionGatewayResult,
 } from '../../services/chat-core-v2';
 import { buildChatCoreV2CommandPreviewShortcutResponse } from './chat-core-v2-command-preview-response';
 import { buildChatCoreV2CommandConfirmationShortcutResponse } from './chat-core-v2-command-confirmation-response';
@@ -510,6 +514,136 @@ function enrichChatResponseForContract<T extends {
   } as T;
 }
 
+function isChatCoreV2LocalAutoExecuteSafeTaskEnabled(): boolean {
+  if (process.env.NODE_ENV === 'production') return false;
+  return /^(1|true|yes|on)$/i.test(String(process.env.CHAT_CORE_V2_LOCAL_AUTO_EXECUTE_SAFE_TASKS ?? '').trim());
+}
+
+type ChatCoreV2TaskAutoExecuteMode = 'off' | 'sandbox_only' | 'canary';
+
+export function resolveChatCoreV2TaskAutoExecuteMode(commandType: string): {
+  mode: ChatCoreV2TaskAutoExecuteMode;
+  source: 'specific_flag' | 'legacy_local_flag' | 'default';
+} {
+  const key = commandType === 'tasks.complete'
+    ? 'CHAT_CORE_V2_TASK_COMPLETE_AUTO_EXECUTE'
+    : commandType === 'tasks.create'
+      ? 'CHAT_CORE_V2_TASK_CREATE_AUTO_EXECUTE'
+      : null;
+  const raw = key ? String(process.env[key] ?? '').trim().toLowerCase() : '';
+  if (raw === 'off' || raw === 'false' || raw === '0') return { mode: 'off', source: 'specific_flag' };
+  if (raw === 'sandbox_only' || raw === 'sandbox-only' || raw === 'sandbox') return { mode: 'sandbox_only', source: 'specific_flag' };
+  if (raw === 'canary') return { mode: 'canary', source: 'specific_flag' };
+  if ((raw === 'true' || raw === '1' || raw === 'yes' || raw === 'on') && process.env.NODE_ENV !== 'production') {
+    return { mode: 'sandbox_only', source: 'specific_flag' };
+  }
+  if (isChatCoreV2LocalAutoExecuteSafeTaskEnabled()) {
+    return { mode: 'sandbox_only', source: 'legacy_local_flag' };
+  }
+  return { mode: 'off', source: 'default' };
+}
+
+export function isChatCoreV2TaskAutoExecuteModeActive(mode: ChatCoreV2TaskAutoExecuteMode): boolean {
+  if (mode === 'off') return false;
+  if (mode === 'sandbox_only') return process.env.NODE_ENV !== 'production';
+  return process.env.NODE_ENV !== 'production' || process.env.CHAT_CORE_V2_CANARY_ALLOW_PROD === '1';
+}
+
+function hasDuplicateTaskCompletionTargets(command: { commandType: string; payload?: unknown }): boolean {
+  if (command.commandType !== 'tasks.complete') return false;
+  if (!command.payload || typeof command.payload !== 'object') return false;
+  const payload = command.payload as Record<string, unknown>;
+  return Array.isArray(payload.duplicateTasks) && payload.duplicateTasks.length > 1;
+}
+
+function hasTaskCreateSubtasks(command: { commandType: string; payload?: unknown }): boolean {
+  if (command.commandType !== 'tasks.create') return false;
+  if (!command.payload || typeof command.payload !== 'object') return false;
+  const payload = command.payload as Record<string, unknown>;
+  return Array.isArray(payload.subtasks) && payload.subtasks.length > 0;
+}
+
+function shouldAutoExecuteLocalChatCoreV2TaskCommand(input: {
+  executionEnabled: boolean;
+  command: { commandType: string; domain: string; payload?: unknown };
+}): boolean {
+  if (!input.executionEnabled) return false;
+  if (input.command.domain !== 'tasks') return false;
+  if (input.command.commandType !== 'tasks.create' && input.command.commandType !== 'tasks.complete') return false;
+
+  const autoExecute = resolveChatCoreV2TaskAutoExecuteMode(input.command.commandType);
+  if (!isChatCoreV2TaskAutoExecuteModeActive(autoExecute.mode)) return false;
+  // Duplicate-title completion is deliberately stricter than exact-one
+  // completion. The legacy broad sandbox flag cannot batch-complete duplicate
+  // titles; tests/operators must opt in via CHAT_CORE_V2_TASK_COMPLETE_AUTO_EXECUTE.
+  if (hasDuplicateTaskCompletionTargets(input.command) && autoExecute.source !== 'specific_flag') return false;
+  // Task-with-subtasks needs an explicit confirmation click even in the
+  // sandbox. This keeps the preview/confirm contract visible and prevents a
+  // multi-row checklist write from happening while the user is still reviewing.
+  if (hasTaskCreateSubtasks(input.command)) return false;
+  return true;
+}
+
+function shouldDeferChatCoreV2ReadForTaskMutation(text: string): boolean {
+  const folded = text
+    .normalize('NFD')
+    .replace(/\p{Diacritic}/gu, '')
+    .toLowerCase();
+  const hasTaskNoun = /\b(tasks?|todos?|tarefas?|tareas?|lembretes?)\b/.test(folded);
+  const hasTaskCreateVerb = /\b(create|make|add|cria|criar|crie|adiciona|adicionar|bota|botar|coloca|colocar|poe|por|mete|meter|crea|crear)\b/.test(folded);
+  const hasTaskCompleteVerb = /\b(mark|complete|finish|done|concluir|conclui|conclua|concluida|concluido|marcar|marque)\b/.test(folded);
+  const hasSubtaskMarker = /\b(sub\s*-?\s*tasks?|subtarefas?|subtareas?|check\s*-?\s*list|checklist)\b/.test(folded);
+  return hasTaskNoun && (hasTaskCreateVerb || hasTaskCompleteVerb || hasSubtaskMarker);
+}
+
+function buildChatCoreV2ActionGatewayStopShortcutResponse(input: {
+  result: Exclude<ChatCoreV2ActionGatewayResult, { kind: 'no_write_intent' | 'resolved_preview' | 'resolved_execute' }>;
+  requestStartedAt: number;
+  locale?: string | null;
+}) {
+  const isPT = String(input.locale ?? '').toLowerCase().startsWith('pt');
+  const text = input.result.kind === 'needs_clarification'
+    ? input.result.question
+    : input.result.kind === 'unsupported_write' && input.result.reason === 'write_intent_negated_or_hypothetical'
+      ? isPT
+        ? 'Não alterei nada. Se quiseres que eu execute uma ação, pede diretamente.'
+        : 'I did not change anything. Ask me directly if you want me to perform an action.'
+      : isPT
+        ? 'Não posso executar essa ação por chat com segurança ainda. Abri a proteção de escrita do ChatCoreV2 em vez de seguir pelo fluxo antigo.'
+        : 'I cannot safely perform that chat action yet. I stopped it in the ChatCoreV2 write-intent guard instead of sending it through the legacy path.';
+
+  return {
+    conversationDomain: 'secretary' as const,
+    response: {
+      id: `msg-${input.requestStartedAt}`,
+      text,
+      domain: 'secretary' as const,
+      routeMethod: 'chat-core-v2-action-gateway',
+      confidence: 1,
+      buttons: null,
+      metadata: {
+        type: 'chat_core_v2_write_intent_guard',
+        chatCoreV2: {
+          gatewayVersion: input.result.telemetry.gatewayVersion,
+          kind: input.result.kind,
+          reason: 'reason' in input.result ? input.result.reason : undefined,
+          candidates: 'candidates' in input.result ? input.result.candidates ?? [] : [],
+          telemetry: input.result.telemetry,
+        },
+      },
+      timestamp: new Date(input.requestStartedAt).toISOString(),
+      responseCards: [],
+    },
+    logContext: {
+      kind: input.result.kind,
+      detectedIntent: input.result.telemetry.detectedIntent,
+      actionType: input.result.telemetry.actionType,
+      policyDecision: input.result.telemetry.policyDecision,
+      finalOutcome: input.result.telemetry.finalOutcome,
+    },
+  };
+}
+
 export function registerChatMessageRoutes(
   router: Router,
   ensureValidChatRouteScope: ChatRouteScopeGuard,
@@ -886,7 +1020,11 @@ export function registerChatMessageRoutes(
       latency.mark('request_validated');
 
       const quotaDecision = enforceCostGuardrails(userId);
+      const suppressReadFastPathsForWriteIntent = normalizedText && normalizedAttachments.length === 0
+        ? shouldGateReadFastPathsForWriteIntent(normalizedText)
+        : false;
       const tokenZeroShortcut = normalizedText && normalizedAttachments.length === 0
+        && !suppressReadFastPathsForWriteIntent
         ? await tryBuildTokenZeroChatMessageShortcutResponse({
           normalizedText,
           userId,
@@ -918,7 +1056,9 @@ export function registerChatMessageRoutes(
         return;
       }
 
-      const chatCoreV2Read = normalizedText && normalizedAttachments.length === 0
+      const deferChatCoreV2ReadToActionPlanner = suppressReadFastPathsForWriteIntent
+        && shouldDeferChatCoreV2ReadForTaskMutation(normalizedText);
+      const chatCoreV2Read = normalizedText && normalizedAttachments.length === 0 && !deferChatCoreV2ReadToActionPlanner
         ? tryBuildChatCoreV2DeterministicReadRoute({
           normalizedText,
           userId,
@@ -1002,8 +1142,8 @@ export function registerChatMessageRoutes(
         }
       }
 
-      const chatCoreV2CommandPreview = normalizedText && normalizedAttachments.length === 0
-        ? tryBuildChatCoreV2CommandPreviewRoute({
+      const chatCoreV2ActionGateway = normalizedText && normalizedAttachments.length === 0
+        ? runChatCoreV2ActionGateway({
           normalizedText,
           userId,
           tenantId,
@@ -1012,10 +1152,143 @@ export function registerChatMessageRoutes(
           locale: getUserLanguageById(userId),
           timezone: getUserTimezoneById(userId),
           now: new Date(requestStartedAt),
+          requestId: chatRequestId,
+          shouldAutoExecute: shouldAutoExecuteLocalChatCoreV2TaskCommand,
         })
         : null;
+      if (
+        chatCoreV2ActionGateway
+        && chatCoreV2ActionGateway.kind !== 'no_write_intent'
+        && chatCoreV2ActionGateway.kind !== 'resolved_preview'
+        && chatCoreV2ActionGateway.kind !== 'resolved_execute'
+      ) {
+        latency.mark('chat_core_v2_action_gateway_stopped_write_intent');
+        const gatewayStop = buildChatCoreV2ActionGatewayStopShortcutResponse({
+          result: chatCoreV2ActionGateway,
+          requestStartedAt,
+          locale: getUserLanguageById(userId),
+        });
+        const { conversationDomain, response: shortcutResponse } = gatewayStop;
+        const response = enrichChatResponseForContract(shortcutResponse, {
+          normalizedText,
+          userId,
+          tenantId,
+          chatRequestId,
+          tracker: latency,
+          latencyTier: 'tier1_fast_read',
+          fallbackDomain: conversationDomain,
+          fallbackRouteMethod: 'chat-core-v2-action-gateway',
+          actionability: chatCoreV2ActionGateway.kind === 'needs_clarification' ? 'clarify' : 'blocked',
+          verificationStatus: 'not_required',
+        });
+        rememberChatActiveDomain(userId, conversationDomain, Date.now(), tenantId);
+        persistExchange(userId, userMessageId, normalizedText, response.id, response, tenantId, {
+          clientMessageId: scopedClientMessageId,
+          requestId: chatRequestId,
+        });
+        syncConversationStateForShortcut(userId, conversationDomain, normalizedText, response.text, tenantId);
+        logger.info(
+          {
+            chatRequestId,
+            platform: 'ios',
+            mode: 'chat-core-v2-action-gateway',
+            tenantId,
+            userId,
+            ...gatewayStop.logContext,
+          },
+          'iOS chat Chat Core v2 action gateway stopped write intent',
+        );
+        res.json(response);
+        return;
+      }
+
+      const chatCoreV2CommandPreview = chatCoreV2ActionGateway?.kind === 'resolved_preview' || chatCoreV2ActionGateway?.kind === 'resolved_execute'
+        ? chatCoreV2ActionGateway.preview
+        : normalizedText && normalizedAttachments.length === 0
+          ? tryBuildChatCoreV2CommandPreviewRoute({
+            normalizedText,
+            userId,
+            tenantId,
+            conversationId: scopedClientMessageId ?? chatRequestId,
+            messageId: userMessageId,
+            locale: getUserLanguageById(userId),
+            timezone: getUserTimezoneById(userId),
+            now: new Date(requestStartedAt),
+          })
+          : null;
       if (chatCoreV2CommandPreview) {
         latency.mark('chat_core_v2_command_preview_completed');
+        if (shouldAutoExecuteLocalChatCoreV2TaskCommand(chatCoreV2CommandPreview)) {
+          const autoExecuteStartedAt = Date.now();
+          const v2Claim = claimPendingChatCoreV2Command(
+            chatCoreV2CommandPreview.command.commandId,
+            userId,
+            tenantId,
+            new Date(autoExecuteStartedAt),
+          );
+          if (v2Claim.status === 'claimed') {
+            const execution = await executeChatCoreV2Command({
+              command: v2Claim.pending.command,
+              capabilityId: v2Claim.pending.capabilityId,
+              userId,
+              tenantId,
+              locale: getUserLanguageById(userId) || undefined,
+              now: new Date(autoExecuteStartedAt),
+            });
+            clearPendingChatCoreV2Command(v2Claim.pending.commandId, userId, tenantId);
+            if (execution.ok && execution.response) {
+              const executedResponse = buildChatCoreV2CommandConfirmationShortcutResponse({
+                pending: v2Claim.pending,
+                execution: execution as typeof execution & { response: NonNullable<typeof execution.response> },
+                requestStartedAt: autoExecuteStartedAt,
+              });
+              const response = enrichChatResponseForContract(executedResponse, {
+                normalizedText,
+                userId,
+                tenantId,
+                chatRequestId,
+                tracker: latency,
+                latencyTier: 'tier1_fast_read',
+                fallbackDomain: executedResponse.domain,
+                fallbackRouteMethod: 'chat-core-v2-command-auto-execute',
+                actionability: 'execute',
+                verificationStatus: execution.status === 'verified' ? 'verified' : 'failed',
+              });
+              rememberChatActiveDomain(userId, executedResponse.domain, Date.now(), tenantId);
+              persistExchange(userId, userMessageId, normalizedText, response.id, response, tenantId, {
+                clientMessageId: scopedClientMessageId,
+                requestId: chatRequestId,
+              });
+              syncConversationStateForShortcut(userId, executedResponse.domain, normalizedText, response.text, tenantId);
+              logger.info(
+                {
+                  chatRequestId,
+                  platform: 'ios',
+                  mode: 'chat-core-v2-command-auto-execute',
+                  tenantId,
+                  userId,
+                  capabilityId: v2Claim.pending.capabilityId,
+                  commandId: v2Claim.pending.commandId,
+                  status: execution.status,
+                },
+                'iOS chat Chat Core v2 local sandbox command auto-executed',
+              );
+              res.json(response);
+              return;
+            }
+            logger.warn(
+              {
+                chatRequestId,
+                tenantId,
+                userId,
+                capabilityId: v2Claim.pending.capabilityId,
+                commandId: v2Claim.pending.commandId,
+                reason: execution.reason,
+              },
+              'Chat Core v2 local sandbox auto-execute failed; returning preview instead',
+            );
+          }
+        }
         const commandPreviewShortcut = buildChatCoreV2CommandPreviewShortcutResponse({
           result: chatCoreV2CommandPreview,
           requestStartedAt,
@@ -1050,6 +1323,60 @@ export function registerChatMessageRoutes(
             commandId: commandPreviewShortcut.logContext.commandId,
           },
           'iOS chat Chat Core v2 command preview hit',
+        );
+        res.json(response);
+        return;
+      }
+
+      const chatCoreV2LocalChat = normalizedText && normalizedAttachments.length === 0
+        ? await runChatCoreV2LocalChatTurn({
+          normalizedText,
+          userId,
+          tenantId,
+          requestId: chatRequestId,
+          locale: getUserLanguageById(userId),
+          surface: 'ios',
+          recentTurns: listChatMessages(userId, 8, undefined, tenantId).messages
+            .filter((message) => message.id !== userMessageId)
+            .slice(-6)
+            .map((message) => ({
+              role: message.role,
+              text: message.text,
+            })),
+        })
+        : null;
+      if (chatCoreV2LocalChat) {
+        latency.mark('chat_core_v2_local_llm_completed');
+        const shortcutResponse = chatCoreV2LocalChat.response;
+        const response = enrichChatResponseForContract(shortcutResponse, {
+          normalizedText,
+          userId,
+          tenantId,
+          chatRequestId,
+          tracker: latency,
+          latencyTier: chatCoreV2LocalChat.degraded ? 'tier4_long_running' : 'tier3_model_assisted',
+          fallbackDomain: shortcutResponse.domain,
+          fallbackRouteMethod: shortcutResponse.routeMethod,
+          actionability: chatCoreV2LocalChat.degraded ? 'degraded' : 'answer_only',
+          verificationStatus: 'not_required',
+        });
+        rememberChatActiveDomain(userId, shortcutResponse.domain, Date.now(), tenantId);
+        persistExchange(userId, userMessageId, normalizedText, response.id, response, tenantId, {
+          clientMessageId: scopedClientMessageId,
+          requestId: chatRequestId,
+        });
+        syncConversationStateForShortcut(userId, shortcutResponse.domain, normalizedText, response.text, tenantId);
+        logger.info(
+          {
+            chatRequestId,
+            platform: 'ios',
+            mode: shortcutResponse.routeMethod,
+            tenantId,
+            userId,
+            degraded: chatCoreV2LocalChat.degraded,
+            providerMetadata: chatCoreV2LocalChat.modelMetadata,
+          },
+          'iOS chat Chat Core v2 local LLM answered request',
         );
         res.json(response);
         return;

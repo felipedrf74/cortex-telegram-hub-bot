@@ -162,6 +162,130 @@ describe('Chat Core v2 command preview API adapter', () => {
     expect(metadataJson).not.toContain('chat-v2-permissions:84:42');
   });
 
+  it('maps confirmation tokens into the iOS actionConfirmation envelope without leaking command secrets', () => {
+    const requestStartedAt = Date.parse('2026-05-24T12:34:56.000Z');
+    const result = {
+      routeVersion: 'chat_core_v2_command_preview_route@1.0.0',
+      capabilityId: 'tasks.create',
+      routeGuess: {
+        intent: 'create_action',
+        confidence: 0.91,
+        domains: ['tasks'],
+        capabilityIds: ['tasks.create'],
+      },
+      executionEnabled: true,
+      gateVerdict: {
+        ok: true,
+        operation: 'preview',
+        gateVersion: 'chat_core_v2_command_bus_gate@1.0.0',
+        commandStatus: 'previewed',
+        capabilityId: 'tasks.create',
+      },
+      confirmationToken: 'confirm_task_create_subtasks',
+      command: {
+        commandId: 'cmd_task_subtasks',
+        commandSchemaVersion: 'tasks.create@1.0.0',
+        previewSchemaVersion: 'task_preview_card@1.0.0',
+        responseSchemaVersion: 'chat_response_v2@1.0.0',
+        tenantId: '84',
+        userId: '42',
+        domain: 'tasks',
+        commandType: 'tasks.create',
+        origin: 'chat',
+        payload: {
+          operation: 'create',
+          title: 'comprar suplementos QA',
+          subtasks: ['k2', 'd3', 'creatina'],
+          idempotencyKey: 'do-not-leak',
+        },
+        basedOn: {
+          entityIds: ['task_draft:cmd_task_subtasks'],
+          entityVersions: {},
+          contextHash: 'abc123def4567890',
+          createdAt: '2026-05-24T12:34:56.000Z',
+        },
+        preconditions: {
+          requiredEntityVersions: {},
+          requiredPermissionsVersion: 'chat-v2-permissions:84:42:tasks:v1',
+          invariants: [],
+        },
+        authorization: {
+          actorUserId: '42',
+          tenantId: '84',
+          actingSurface: 'ios_chat',
+          delegatedScopes: ['tasks:read', 'tasks:write'],
+          permissionSnapshotVersion: 'chat-v2-permissions:84:42:tasks:v1',
+          authTime: '2026-05-24T12:34:56.000Z',
+        },
+        expiresAt: '2026-05-24T12:44:56.000Z',
+        idempotencyKey: 'chat-v2:84:42:task-create-secret',
+      },
+      response: {
+        schemaVersion: 'chat_response_v2@1.0.0',
+        kind: 'action_preview',
+        locale: 'pt-PT',
+        text: 'Revê e confirma para criar a tarefa "comprar suplementos QA" com 3 subtarefa(s).',
+        reasonCodes: ['confirmation_required'],
+        cards: [{
+          type: 'task_preview_card',
+          version: '1.0.0',
+          title: 'Pré-visualização da tarefa: comprar suplementos QA',
+          summary: 'Revê e confirma para criar a tarefa "comprar suplementos QA" com 3 subtarefa(s).',
+          risk: 'low',
+          sensitivity: 'personal',
+          capabilityId: 'tasks.create',
+          commandId: 'cmd_task_subtasks',
+          sourceEntityIds: ['task_draft:cmd_task_subtasks'],
+          diff: [
+            { label: 'Tarefa', after: 'comprar suplementos QA' },
+            { label: 'Subtarefas', after: 'k2, d3, creatina' },
+          ],
+          primaryAction: {
+            id: 'confirm',
+            kind: 'confirm',
+            label: 'Confirmar',
+            style: 'primary',
+            confirmationToken: 'confirm_task_create_subtasks',
+          },
+          secondaryActions: [],
+          confirmationToken: 'confirm_task_create_subtasks',
+        }],
+      },
+    } as ChatCoreV2CommandPreviewRouteResult;
+
+    const built = buildChatCoreV2CommandPreviewShortcutResponse({
+      result,
+      requestStartedAt,
+    });
+
+    expect(built.response.metadata.pendingConfirmation).toMatchObject({
+      intent_class: 'tasks.create',
+      confirmation_token: 'confirm_task_create_subtasks',
+      expires_at: '2026-05-24T12:44:56.000Z',
+    });
+    expect(built.response.metadata.actionConfirmation).toMatchObject({
+      title: 'Confirmação necessária',
+      actionLabel: 'Confirmar',
+      cancelLabel: 'Cancelar',
+      destructive: false,
+      variant: 'default',
+      requiresStrongConfirm: false,
+      intentClass: 'tasks.create',
+      confirmationToken: 'confirm_task_create_subtasks',
+      expiresAt: '2026-05-24T12:44:56.000Z',
+      summary: {
+        operation: 'create',
+        title: 'comprar suplementos QA',
+        subtasks: ['k2', 'd3', 'creatina'],
+      },
+    });
+    const actionJson = JSON.stringify(built.response.metadata.actionConfirmation);
+    expect(actionJson).not.toContain('idempotencyKey');
+    expect(actionJson).not.toContain('do-not-leak');
+    expect(actionJson).not.toContain('actorUserId');
+    expect(actionJson).not.toContain('delegatedScopes');
+  });
+
   it('maps notification previews into notification cards without leaking authorization scope', () => {
     const requestStartedAt = Date.parse('2026-05-24T12:34:56.000Z');
     const result: ChatCoreV2CommandPreviewRouteResult = {

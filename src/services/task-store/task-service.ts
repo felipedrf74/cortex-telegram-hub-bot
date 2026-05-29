@@ -23,6 +23,7 @@ import { getDb } from '../database';
 import {
   upsertTask,
   getTaskById,
+  getTaskByIdForUser,
   getTaskWithUserId,
   markTaskCompleted,
   markTaskDeleted,
@@ -217,6 +218,11 @@ export function listTasks(userId: number, filters?: TaskFilters): NormalizedTask
 /** Look up a single task by local id. */
 export function getTask(taskId: number): NormalizedTask | null {
   return getTaskById(taskId);
+}
+
+/** Look up a single task by local id and user scope. Prefer this before write verification. */
+export function getTaskForUser(userId: number, taskId: number): NormalizedTask | null {
+  return getTaskByIdForUser(userId, taskId);
 }
 
 // Re-export status type for callers that build filters

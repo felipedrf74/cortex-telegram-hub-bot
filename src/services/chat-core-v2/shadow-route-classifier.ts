@@ -57,7 +57,7 @@ export function classifyShadowRoute(text: string): ChatCoreV2ShadowRouteGuess {
     };
   }
 
-  if (/\b(create|add|new)\b.*\b(task|todo|to-do)\b|\b(criar|cria|adicionar|adiciona|nova?)\b.*\btarefas?\b|\b(task|todo|to-do)\b.*\b(tomorrow|today|later)\b/i.test(normalized)) {
+  if (/\b(create|add|new)\b.*\b(task|todo|to-do)\b|\b(criar|cria|crie|adicionar|adiciona|nova?)\b.*\btarefas?\b|\b(task|todo|to-do)\b.*\b(tomorrow|today|later)\b/i.test(normalized)) {
     return { intent: 'create_action', confidence: 0.88, domains: ['tasks'], capabilityIds: ['tasks.create'] };
   }
   if (/\b(complete|done|finish|mark)\b.*\b(task|todo|to-do)\b|\b(concluir|completar|terminar|marcar)\b.*\btarefas?\b/i.test(normalized)) {

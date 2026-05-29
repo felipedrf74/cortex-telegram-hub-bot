@@ -116,7 +116,7 @@ const ACTION_PATTERNS = [
 
 const DESTRUCTIVE_PATTERNS = [
   /\b(cancel|delete|remove|eliminate|clear|wipe|discard|send\s+(?:the\s+)?email|reply\s+to|mark\s+.*\s+paid|cancel\s+my\s+plan|clear\s+(?:the\s+)?calendar)\b/i,
-  /\b(cancela|cancelar|cancele|cancelem|apaga|apagar|apague|apaguem|remove|remover|remova|removam|elimina|eliminar|elimine|eliminem|exclui|excluir|exclua|excluam|limpa|descarta|envia\s+(?:o\s+)?email|responde|marca\s+.*\s+pago)\b/i,
+  /\b(cancela|cancelar|cancele|cancelem|apaga|apagar|apague|apaguem|remove|remover|remova|removam|elimina|eliminar|elimine|eliminem|exclui|excluir|exclua|excluam|limpa|descarta|envia\s+(?:o\s+)?email|responde\s+(?:ao?\s+)?(?:email|e-?mail|mensagem|whats?app)|marca\s+.*\s+pago)\b/i,
 ];
 
 const EXPLANATION_PATTERNS = [/\b(why|explain|what\s+are\s+you\s+basing|based\s+on\s+what|por\s+qu[eê]|explica|baseaste)\b/i];
