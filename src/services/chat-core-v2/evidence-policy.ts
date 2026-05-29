@@ -2,6 +2,8 @@
 
 import { createHash } from 'crypto';
 
+import { resolveChatCoreV2ActivationConfig } from './activation-flags';
+import type { EvidenceBoundFactualClaim } from './answer-composition';
 import type {
   AuditSensitivity,
   ChatCoreV2Domain,
@@ -24,6 +26,45 @@ export const CHAT_CORE_V2_UNTRUSTED_EVIDENCE_END = 'CHAT_CORE_V2_UNTRUSTED_EVIDE
 export const CHAT_CORE_V2_REDACTED_EVIDENCE_DELIMITER = '[redacted-evidence-delimiter]';
 
 const DEFAULT_MAX_EVIDENCE_CHARS = 4000;
+
+/**
+ * WP-05 (§5.F): total rendered evidence text is truncated before injection to
+ * bound prompt-length inflation. 2000 chars is the Phase-2 default; for the
+ * smallest local context window (numCtx=512) 1000 may be required — tune via
+ * the maxRenderedChars option once WP-06/WP-16 own the live numCtx selection.
+ */
+export const CHAT_CORE_V2_MAX_PROMPT_EVIDENCE_CHARS = 2000;
+
+/**
+ * WP-05 (§5.F): mechanical back-fill caps the number of evidence ids bound to a
+ * single supported claim. This is NOT a semantic match (see
+ * backfillChatCoreV2SupportedClaimEvidence) — the cap simply bounds the noise.
+ */
+export const CHAT_CORE_V2_BACKFILL_EVIDENCE_ID_CAP = 3;
+
+/**
+ * WP-05 (§5.F): the per-domain evidence taxonomy that future read-model
+ * selection will use to decide which evidence kinds may bind to which claim
+ * kinds. The shape is intentionally minimal until product sign-off.
+ */
+// TODO(WP-05): taxonomy pending product sign-off
+export interface ChatCoreV2DomainEvidenceTaxonomy {
+  secretary: ChatCoreV2EvidenceSourceType[];
+  training: ChatCoreV2EvidenceSourceType[];
+  cooking: ChatCoreV2EvidenceSourceType[];
+  tasks: ChatCoreV2EvidenceSourceType[];
+  finance: ChatCoreV2EvidenceSourceType[];
+}
+
+/**
+ * WP-05 (§5.F): the tenant+user scope that binds an evidence item (and the
+ * prompt bundle) to a single requesting turn. Load-bearing privacy field — the
+ * scoping guard rejects any item whose scope does not match the turn.
+ */
+export interface ChatCoreV2EvidenceScope {
+  tenantId: number;
+  userId: number;
+}
 
 interface EvidenceSignalDetector {
   signal: ChatCoreV2EvidenceSignal;
@@ -50,6 +91,11 @@ const SIGNAL_DETECTORS: EvidenceSignalDetector[] = [
 ];
 
 export interface BuildChatCoreV2EvidenceItemInput {
+  // WP-05 (§5.F): tenant+user are required so every item is scope-bound at
+  // construction time. They are never optional — an unset scope would let an
+  // item slip past the cross-tenant guard.
+  tenantId: number;
+  userId: number;
   sourceType: ChatCoreV2EvidenceSourceType;
   sourceId: string;
   sourceLabel: string;
@@ -63,6 +109,9 @@ export interface BuildChatCoreV2EvidenceItemInput {
 }
 
 export interface BuildChatCoreV2PromptEvidenceBundleInput {
+  // WP-05 (§5.F): the bundle is bound to the requesting turn's tenant+user.
+  tenantId: number;
+  userId: number;
   items: ChatCoreV2EvidenceItem[];
   generatedAt?: string;
 }
@@ -88,6 +137,8 @@ export function buildChatCoreV2EvidenceItem(input: BuildChatCoreV2EvidenceItemIn
   return {
     schemaVersion: CHAT_CORE_V2_EVIDENCE_ITEM_SCHEMA_VERSION,
     evidenceId: buildEvidenceId(input.sourceType, sourceId, content),
+    tenantId: input.tenantId,
+    userId: input.userId,
     sourceType: input.sourceType,
     sourceId,
     sourceLabel,
@@ -103,8 +154,11 @@ export function buildChatCoreV2EvidenceItem(input: BuildChatCoreV2EvidenceItemIn
 
 export function buildChatCoreV2EvidenceFromReadModelResult(
   result: ChatCoreV2ReadModelResult,
+  scope: ChatCoreV2EvidenceScope,
 ): ChatCoreV2EvidenceItem {
   return buildChatCoreV2EvidenceItem({
+    tenantId: scope.tenantId,
+    userId: scope.userId,
     sourceType: 'read_model',
     sourceId: `${result.domain}:${result.capabilityId}`,
     sourceLabel: `${result.domain}:${result.capabilityId}`,
@@ -124,8 +178,9 @@ export function buildChatCoreV2EvidenceFromReadModelResult(
 
 export function buildChatCoreV2EvidenceFromReadContextPack(
   pack: ChatCoreV2ReadContextPack,
+  scope: ChatCoreV2EvidenceScope,
 ): ChatCoreV2EvidenceItem[] {
-  return pack.results.map(buildChatCoreV2EvidenceFromReadModelResult);
+  return pack.results.map((result) => buildChatCoreV2EvidenceFromReadModelResult(result, scope));
 }
 
 export function buildChatCoreV2PromptEvidenceBundle(
@@ -135,6 +190,8 @@ export function buildChatCoreV2PromptEvidenceBundle(
   return {
     schemaVersion: CHAT_CORE_V2_PROMPT_EVIDENCE_BUNDLE_SCHEMA_VERSION,
     evidencePolicyVersion: CHAT_CORE_V2_EVIDENCE_POLICY_VERSION,
+    tenantId: input.tenantId,
+    userId: input.userId,
     items,
     renderedText: renderChatCoreV2PromptEvidence(items),
     generatedAt: input.generatedAt ?? new Date().toISOString(),
@@ -153,6 +210,125 @@ export function renderChatCoreV2PromptEvidence(items: ChatCoreV2EvidenceItem[]):
     header,
     ...items.map(renderEvidenceItem),
   ].join('\n\n');
+}
+
+/**
+ * WP-05 (§5.F) cross-tenant evidence scoping guard. PURE: no I/O, never throws
+ * into a hot path. Returns ONLY the items whose tenant+user match the
+ * requesting turn; any item carrying a different tenantId OR a different userId
+ * is filtered OUT and can never reach the prompt bundle. This is the
+ * load-bearing privacy control — evidence derived for one tenant/user must
+ * never leak into another tenant/user's prompt.
+ *
+ * The rejected items are surfaced via `rejected`/`rejectedCount` for
+ * observability only; callers must inject only `inScope`.
+ */
+export interface ChatCoreV2EvidenceScopeResult {
+  inScope: ChatCoreV2EvidenceItem[];
+  rejected: ChatCoreV2EvidenceItem[];
+  rejectedCount: number;
+}
+
+export function assertEvidenceScopedToTurn(
+  items: ChatCoreV2EvidenceItem[],
+  turn: ChatCoreV2EvidenceScope,
+): ChatCoreV2EvidenceScopeResult {
+  const inScope: ChatCoreV2EvidenceItem[] = [];
+  const rejected: ChatCoreV2EvidenceItem[] = [];
+  for (const item of items) {
+    if (item.tenantId === turn.tenantId && item.userId === turn.userId) {
+      inScope.push(item);
+    } else {
+      rejected.push(item);
+    }
+  }
+  return { inScope, rejected, rejectedCount: rejected.length };
+}
+
+/**
+ * WP-05 (§5.F) injection gate. Returns false (default-off) UNLESS the master
+ * activation mode is not 'off' AND the explicit injection flag is set to '1'.
+ * The master kill-switch dominates: mode='off' forces false even with the flag
+ * on. Live call-site wiring of injection is deferred to WP-06/WP-16.
+ */
+export function isEvidenceInjectionEnabled(
+  env: Record<string, string | undefined> = process.env,
+): boolean {
+  if (resolveChatCoreV2ActivationConfig(env).mode === 'off') return false;
+  return env.CHAT_CORE_V2_EVIDENCE_INJECTION_ENABLED === '1';
+}
+
+/**
+ * WP-05 (§5.F) MECHANICAL back-fill. Given a draft's factual claims and the
+ * in-scope evidence items, assigns up to CHAT_CORE_V2_BACKFILL_EVIDENCE_ID_CAP
+ * (3) evidence ids to each claim that is `support === 'supported'` AND currently
+ * has an empty `evidenceIds`. Claims that are 'assumption' /
+ * 'clarification_needed', or already carry evidenceIds, are returned unchanged.
+ *
+ * WARNING: this is a MECHANICAL back-fill, NOT a semantic match — it simply
+ * staples the first N in-scope evidence ids onto an otherwise-unsupported
+ * claim. It exists so `validateComposedAnswerDraft`'s
+ * `unsupported_factual_claim` branch can be exercised offline. It is acceptable
+ * for Phase-2 OFFLINE evaluation ONLY and is gated by taxonomy product sign-off
+ * before it may touch any user-facing surface (see the blueprint risk note:
+ * "claim semantic corruption"). It must NOT run on the live response path.
+ */
+export function backfillChatCoreV2SupportedClaimEvidence(
+  claims: EvidenceBoundFactualClaim[],
+  inScopeItems: ChatCoreV2EvidenceItem[],
+): EvidenceBoundFactualClaim[] {
+  const evidenceIds = inScopeItems
+    .slice(0, CHAT_CORE_V2_BACKFILL_EVIDENCE_ID_CAP)
+    .map((item) => item.evidenceId);
+  if (evidenceIds.length === 0) return claims.map((claim) => ({ ...claim }));
+  return claims.map((claim) => {
+    if (claim.support !== 'supported' || claim.evidenceIds.length > 0) {
+      return { ...claim };
+    }
+    return { ...claim, evidenceIds: [...evidenceIds] };
+  });
+}
+
+/**
+ * WP-05 (§5.F) gated prompt-evidence bundle builder. Scopes the items to the
+ * requesting turn (cross-tenant items are dropped here, never injected),
+ * truncates total rendered evidence text to `maxRenderedChars`
+ * (CHAT_CORE_V2_MAX_PROMPT_EVIDENCE_CHARS=2000 default; 1000 may be needed for
+ * numCtx=512), and wraps it in the existing untrusted-evidence sentinel via
+ * renderChatCoreV2PromptEvidence. Returns null (injects NOTHING) when
+ * isEvidenceInjectionEnabled(env) is false — so legacy behavior is unchanged
+ * with the flag off. Live call-site wiring is WP-06/WP-16's job.
+ */
+export interface ChatCoreV2InjectedEvidenceBundle {
+  bundle: ChatCoreV2PromptEvidenceBundle;
+  renderedText: string;
+  truncated: boolean;
+  rejectedCount: number;
+}
+
+export function buildChatCoreV2InjectedEvidenceBundle(
+  items: ChatCoreV2EvidenceItem[],
+  turn: ChatCoreV2EvidenceScope,
+  options: { env?: Record<string, string | undefined>; generatedAt?: string; maxRenderedChars?: number } = {},
+): ChatCoreV2InjectedEvidenceBundle | null {
+  const env = options.env ?? process.env;
+  if (!isEvidenceInjectionEnabled(env)) return null;
+
+  const { inScope, rejectedCount } = assertEvidenceScopedToTurn(items, turn);
+  const bundle = buildChatCoreV2PromptEvidenceBundle({
+    tenantId: turn.tenantId,
+    userId: turn.userId,
+    items: inScope,
+    generatedAt: options.generatedAt,
+  });
+  const maxRenderedChars = options.maxRenderedChars ?? CHAT_CORE_V2_MAX_PROMPT_EVIDENCE_CHARS;
+  const rendered = truncateRenderedEvidence(bundle.renderedText, maxRenderedChars);
+  return {
+    bundle,
+    renderedText: rendered.text,
+    truncated: rendered.truncated,
+    rejectedCount,
+  };
 }
 
 export function detectChatCoreV2EvidenceSignals(content: string): ChatCoreV2EvidenceSignal[] {
@@ -197,6 +373,14 @@ function truncateEvidenceContent(content: string, maxContentChars = DEFAULT_MAX_
   }
   if (content.length <= maxContentChars) return content;
   return `${content.slice(0, maxContentChars)}\n[truncated]`;
+}
+
+function truncateRenderedEvidence(text: string, maxRenderedChars: number): { text: string; truncated: boolean } {
+  if (!Number.isFinite(maxRenderedChars) || maxRenderedChars < 1) {
+    throw new Error('maxRenderedChars must be a positive finite number');
+  }
+  if (text.length <= maxRenderedChars) return { text, truncated: false };
+  return { text: `${text.slice(0, maxRenderedChars)}\n[truncated]`, truncated: true };
 }
 
 function escapeEvidenceDelimiters(content: string): string {

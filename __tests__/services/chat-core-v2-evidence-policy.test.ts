@@ -15,6 +15,8 @@ import {
 describe('Chat Core v2 evidence policy', () => {
   it('wraps prompt-injection text from app data as untrusted evidence, not instructions', () => {
     const item = buildChatCoreV2EvidenceItem({
+      tenantId: 1,
+      userId: 10,
       sourceType: 'read_model',
       sourceId: 'tasks:task:1',
       sourceLabel: 'Task title',
@@ -23,6 +25,8 @@ describe('Chat Core v2 evidence policy', () => {
       sensitivity: 'personal',
     });
     const bundle = buildChatCoreV2PromptEvidenceBundle({
+      tenantId: 1,
+      userId: 10,
       items: [item],
       generatedAt: '2026-05-24T10:00:00.000Z',
     });
@@ -39,6 +43,8 @@ describe('Chat Core v2 evidence policy', () => {
 
   it('escapes evidence delimiter breakouts without pretending prompt injection can be sanitized away', () => {
     const item = buildChatCoreV2EvidenceItem({
+      tenantId: 1,
+      userId: 10,
       sourceType: 'notification_payload',
       sourceId: 'notification:1',
       sourceLabel: 'Notification body',
@@ -72,7 +78,7 @@ describe('Chat Core v2 evidence policy', () => {
       generatedAt: '2026-05-24T10:01:00.000Z',
     });
 
-    const [evidence] = buildChatCoreV2EvidenceFromReadContextPack(pack);
+    const [evidence] = buildChatCoreV2EvidenceFromReadContextPack(pack, { tenantId: 1, userId: 10 });
     expect(evidence).toMatchObject({
       sourceType: 'read_model',
       sourceId: 'tasks:tasks.today_summary',
@@ -91,6 +97,8 @@ describe('Chat Core v2 evidence policy', () => {
 
   it('rejects non-policy sources that try to claim instruction authority', () => {
     expect(() => buildChatCoreV2EvidenceItem({
+      tenantId: 1,
+      userId: 10,
       sourceType: 'read_model',
       sourceId: 'tasks:1',
       sourceLabel: 'Task',
@@ -99,6 +107,8 @@ describe('Chat Core v2 evidence policy', () => {
     })).toThrow(/Only system_policy evidence/);
 
     expect(() => buildChatCoreV2EvidenceItem({
+      tenantId: 1,
+      userId: 10,
       sourceType: 'read_model',
       sourceId: 'tasks:2',
       sourceLabel: 'Task',

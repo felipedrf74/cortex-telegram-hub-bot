@@ -386,6 +386,12 @@ export interface ChatCoreV2ReadContextPack {
 export interface ChatCoreV2EvidenceItem {
   schemaVersion: string;
   evidenceId: string;
+  // WP-05 (§5.F): tenant/user scope is a load-bearing privacy field. Every
+  // evidence item is bound to the tenant+user it was derived for so the
+  // cross-tenant scoping guard (assertEvidenceScopedToTurn) can filter out any
+  // item that does not belong to the requesting turn before injection.
+  tenantId: number;
+  userId: number;
   sourceType: ChatCoreV2EvidenceSourceType;
   sourceId: string;
   sourceLabel: string;
@@ -401,6 +407,10 @@ export interface ChatCoreV2EvidenceItem {
 export interface ChatCoreV2PromptEvidenceBundle {
   schemaVersion: string;
   evidencePolicyVersion: string;
+  // WP-05 (§5.F): the bundle is bound to the turn's tenant+user. Only items
+  // that passed assertEvidenceScopedToTurn for this tenant+user reach `items`.
+  tenantId: number;
+  userId: number;
   items: ChatCoreV2EvidenceItem[];
   renderedText: string;
   generatedAt: string;
