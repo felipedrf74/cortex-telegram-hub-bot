@@ -56,7 +56,7 @@ import { expireStalePendingChatActionsForJob } from './chat-action-state';
 import { pruneCompletedChatActionRuns, reapZombieChatActionRuns } from './chat-action-run-store';
 import { processChatActionFixerJobs } from './chat-action-fixer-worker';
 import { runGarminTenantIsolationWatcher } from './garmin-tenant-isolation-watcher';
-import { runDecisionCenterSmokeCleanupJob, runDecisionHandledHistoryBackfillJob, runDecisionSourceStateSupersessionJob } from './decision-center';
+import { runDecisionCenterSmokeCleanupJob, runDecisionExpiryJob, runDecisionHandledHistoryBackfillJob, runDecisionSourceStateSupersessionJob } from './decision-center';
 import { expireOldNexusPointCredits } from './nexus-points';
 import { getActivePlan, getCurrentWeek, getWeeklyAdherence, computeAdjustmentRecommendation, updateWeekAdjustment, getWeeksForPlan } from './training-plans';
 import { calculateReadiness, persistReadinessScore } from './readiness-scorer';
@@ -722,6 +722,7 @@ export function startScheduler(bot?: any): void {
   registerJob('operator_alert_delivery', 'Operator Alert Delivery', '* * * * *', 'system');
   registerJob('decision_source_supersession', 'Decision Source Supersession', '*/15 * * * *', 'system');
   registerJob('decision_handled_history_backfill', 'Decision Handled History Backfill', '22,52 * * * *', 'system');
+  registerJob('decision_expiry', 'Decision Expiry Sweep', '*/10 * * * *', 'system');
   registerJob('chat_action_plan_expiry', 'Chat Action Plan Expiry', '15 * * * *', 'system');
   registerJob('chat_action_fixer_worker', 'Chat Action Fixer Worker', '* * * * *', 'system');
   registerJob('event_backbone_worker', 'Event Backbone Worker', '* * * * *', 'system');
@@ -1875,6 +1876,12 @@ export function startScheduler(bot?: any): void {
     const result = runDecisionCenterSmokeCleanupJob({ olderThanHours: 24, limit: 100 });
     if (result.expired === 0) return 'skipped';
     logger.info(result, 'Decision Center smoke cleanup completed');
+  }), { timezone: tz });
+
+  cron.schedule('*/10 * * * *', wrapJob('decision_expiry', async () => {
+    const result = runDecisionExpiryJob({ batchSize: 500, maxBatches: 20 });
+    if (result.expired === 0) return 'skipped';
+    logger.info(result, 'Decision expiry sweep completed');
   }), { timezone: tz });
 
   cron.schedule('*/2 * * * *', wrapJob('chat_action_plan_expiry', async () => {

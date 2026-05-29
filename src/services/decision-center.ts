@@ -102,6 +102,8 @@ export interface DecisionOutcomeMetrics {
   askedNexusCount: number;
   explanationOpenCount: number;
   genericBlockedCount: number;
+  totalQualityGateEvents: number;
+  qualityGateByStatus: Record<string, number>;
   undoUsedCount: number;
   primaryActionCount: number;
   failedActionCount: number;
@@ -720,6 +722,7 @@ export async function createDecisionIntent(input: NotificationIntentInput): Prom
 
   const quality = decisionLogicForIntentInput(input).quality;
   if (!quality.safeToShowUser) {
+    // C4: a blocked decision is a distinct quality-gate outcome — always record it.
     recordDecisionQualityGateEvent(input, quality);
     return {
       item: null,
@@ -736,6 +739,11 @@ export async function createDecisionIntent(input: NotificationIntentInput): Prom
     requiresUserAction: true,
     deliveryPolicy: input.deliveryPolicy ?? (eligibility.apnsEligible ? 'auto' : 'in_app_only'),
   });
+  // C4: record the passing evaluation only for a genuinely new decision, not for a
+  // deduped retry of an already-active decision (which would inflate the rejection-rate denominator).
+  if (result.intent.status !== 'deduped') {
+    recordDecisionQualityGateEvent(input, quality);
+  }
   const item = result.item ? getDecisionItem(result.item.itemId, input.userId, input.tenantId ?? input.userId) : null;
   return { item, eligibility };
 }
@@ -820,6 +828,7 @@ export function listDecisionItems(
     .filter((item) => !supersedeIfSourceStateStale(item))
     .filter((item) => isUserFacingDecision(item, decisionLogicForRecord(item)).visible)
     .filter((item) => !isSnoozedUntilFuture(item))
+    .filter((item) => opts.status === 'expired' || !isDecisionExpired(item))
     .filter((item) => !opts.urgency || urgencyForPriority(item.priority, item.decisionDeadline, item.expiresAt) === opts.urgency)
     .map(formatDecisionItemForApi);
 }
@@ -877,9 +886,10 @@ export function getDecisionItem(decisionId: string, userId: number, tenantId = u
   if (!record || !isDecisionRecord(record)) return null;
   const logic = decisionLogicForRecord(record);
   if (!isUserFacingDecision(record, logic).visible) return null;
+  if (isDecisionExpired(record)) return null;
   if (supersedeIfSourceStateStale(record)) {
     const refreshed = getDecisionRecord(decisionId, userId, tenantId);
-    return refreshed ? formatDecisionItemForApi(refreshed) : null;
+    return refreshed && !isDecisionExpired(refreshed) ? formatDecisionItemForApi(refreshed) : null;
   }
   return formatDecisionItemForApi(record);
 }
@@ -908,6 +918,7 @@ export function findDecisionByRelatedEntity(
   if (!row) return null;
   const record = mapDecisionRecord(row);
   if (!isDecisionRecord(record)) return null;
+  if (isDecisionExpired(record)) return null;
   const logic = decisionLogicForRecord(record);
   return isUserFacingDecision(record, logic).visible ? formatDecisionItemForApi(record) : null;
 }
@@ -1511,6 +1522,81 @@ function runDecisionCenterSmokeCleanup(input: {
   return { inspected: rows.length, expired: rows.length, dryRun: false, countsByStatus, countsByVisibilityScope };
 }
 
+export interface DecisionExpirySweepResult {
+  inspected: number;
+  expired: number;
+  remaining: number;
+  batches: number;
+  durationMs: number;
+}
+
+/**
+ * Statuses that can still surface a decision to the user and therefore must be
+ * expired once their deadline passes. Matches the authoritative active set used
+ * by listDecisionItems(); 'open' is intentionally excluded (it is not a member
+ * of NotificationCenterStatus and never matches a real row).
+ */
+const DECISION_EXPIRY_ACTIVE_STATUSES = ['unread', 'read', 'failed', 'snoozed'] as const;
+
+/**
+ * Proactively expire decisions whose hard deadline (expires_at) has passed.
+ *
+ * Decision lists already hide expired items in-memory (isDecisionExpired), so
+ * this sweep is hygiene: it flips lingering active rows to 'expired' so DB
+ * state, counts, and dedup lookups stay accurate instead of waiting for the
+ * reactive flip in guardActionable() when a user taps an already-dead decision.
+ *
+ * Batched (LIMIT per pass, capped pass count) so a large backlog never runs as
+ * a single long transaction. The comparison uses SQLite datetime() on both
+ * sides so it is robust to ISO-with-Z vs 'YYYY-MM-DD HH:MM:SS' storage formats.
+ * expires_at is expected to carry an explicit zone (the codebase convention,
+ * matching the findActiveDuplicate guard in notification-orchestrator); a naive
+ * timestamp is read as UTC by datetime(), so writers should store ISO-with-Z.
+ */
+export function runDecisionExpiryJob(input: { batchSize?: number; maxBatches?: number } = {}): DecisionExpirySweepResult {
+  ensureDecisionCenterTables();
+  const start = Date.now();
+  const batchSize = Math.min(Math.max(input.batchSize ?? 500, 1), 1000);
+  const maxBatches = Math.min(Math.max(input.maxBatches ?? 20, 1), 200);
+  const db = getDb();
+  const statuses = [...DECISION_EXPIRY_ACTIVE_STATUSES];
+  const placeholders = statuses.map(() => '?').join(', ');
+  const selectExpired = db.prepare(`
+    SELECT item_id
+      FROM notification_center_items
+     WHERE status IN (${placeholders})
+       AND expires_at IS NOT NULL
+       AND datetime(expires_at) <= datetime('now')
+     ORDER BY expires_at ASC
+     LIMIT ?
+  `);
+  const countExpired = db.prepare(`
+    SELECT COUNT(*) AS n
+      FROM notification_center_items
+     WHERE status IN (${placeholders})
+       AND expires_at IS NOT NULL
+       AND datetime(expires_at) <= datetime('now')
+  `);
+  const update = db.prepare("UPDATE notification_center_items SET status = 'expired' WHERE item_id = ?");
+  const expireBatch = db.transaction((ids: string[]) => {
+    for (const id of ids) update.run(id);
+  });
+
+  let expired = 0;
+  let batches = 0;
+  while (batches < maxBatches) {
+    const rows = selectExpired.all(...statuses, batchSize) as Array<{ item_id: string }>;
+    if (rows.length === 0) break;
+    expireBatch(rows.map((row) => row.item_id));
+    expired += rows.length;
+    batches += 1;
+    if (rows.length < batchSize) break;
+  }
+
+  const remaining = (countExpired.get(...statuses) as { n: number }).n;
+  return { inspected: expired, expired, remaining, batches, durationMs: Date.now() - start };
+}
+
 export function addDecisionDependency(input: {
   decisionId: string;
   dependsOnDecisionId: string;
@@ -1664,6 +1750,14 @@ export function getDecisionOutcomeMetrics(userId: number, tenantId = userId): De
     FROM decision_quality_gate_events
     WHERE user_id = ? AND tenant_id = ?
   `).get(userId, tenantId) as { totalQualityGateEvents: number; genericBlockedCount: number };
+  const gateStatusRows = getDb().prepare(`
+    SELECT quality_status AS status, COUNT(*) AS count
+    FROM decision_quality_gate_events
+    WHERE user_id = ? AND tenant_id = ?
+    GROUP BY quality_status
+  `).all(userId, tenantId) as Array<{ status: string; count: number }>;
+  const qualityGateByStatus: Record<string, number> = {};
+  for (const row of gateStatusRows) qualityGateByStatus[row.status] = Number(row.count ?? 0);
   const bySourceRows = getDb().prepare(`
     SELECT source_skill AS sourceSkill, COUNT(*) AS count
     FROM decision_outcome_ledger
@@ -1730,7 +1824,9 @@ export function getDecisionOutcomeMetrics(userId: number, tenantId = userId): De
     if (isDeferredOutcome(row)) bucket.deferred += 1;
     bySourceSkillOutcome[row.sourceSkill] = bucket;
   }
-  const totalDecisionQualityAttempts = totalOutcomes + Number(gateTotals.totalQualityGateEvents ?? 0);
+  // C4: every quality-gate evaluation (pass and fail) is recorded, so the gate-event
+  // count is the true denominator for the rejection rate (no double-counting outcomes).
+  const totalDecisionQualityAttempts = Number(gateTotals.totalQualityGateEvents ?? 0);
   const genericBlockedCount = Number(gateTotals.genericBlockedCount ?? 0);
   return {
     userId,
@@ -1746,6 +1842,8 @@ export function getDecisionOutcomeMetrics(userId: number, tenantId = userId): De
     askedNexusCount,
     explanationOpenCount: askedNexusCount,
     genericBlockedCount,
+    totalQualityGateEvents: Number(gateTotals.totalQualityGateEvents ?? 0),
+    qualityGateByStatus,
     undoUsedCount,
     primaryActionCount,
     failedActionCount,
@@ -3462,6 +3560,19 @@ function isSnoozedUntilFuture(item: DecisionRecord): boolean {
   if (item.status !== 'snoozed' || !item.snoozedUntil) return false;
   const untilMs = Date.parse(item.snoozedUntil);
   return Number.isFinite(untilMs) && untilMs > Date.now();
+}
+
+/**
+ * A decision whose hard deadline (expires_at) has already passed must never be
+ * surfaced as actionable. This uses the same Date.parse semantics as the
+ * action-time guard in guardActionable(), so the display filter and the
+ * action guard agree on "expired". A null/unparseable expires_at is treated as
+ * non-expiring (matches guardActionable, which only flips on a finite past ms).
+ */
+function isDecisionExpired(item: DecisionRecord): boolean {
+  if (!item.expiresAt) return false;
+  const expiresMs = Date.parse(item.expiresAt);
+  return Number.isFinite(expiresMs) && expiresMs <= Date.now();
 }
 
 function actionsForRecord(record: DecisionRecord): NotificationActionButton[] {

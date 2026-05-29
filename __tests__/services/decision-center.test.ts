@@ -57,6 +57,7 @@ import {
   runDecisionHandledHistoryBackfillJob,
   runDecisionSourceStateSupersessionJob,
   sanitizeGuidanceString,
+  runDecisionExpiryJob,
   snoozeDecision,
 } from '../../src/services/decision-center';
 import { buildSkillNotificationFixtureIntent, createNotificationIntent, ensureNotificationTables } from '../../src/services/notification-orchestrator';
@@ -1702,5 +1703,137 @@ describe('Decision Center facade', () => {
     expect(portalRoute).toContain('sanitizeDecisionErrorDetails(err.details)');
     expect(apiRoute).toContain("key === 'originalMessage'");
     expect(portalRoute).toContain("key === 'originalMessage'");
+  });
+});
+
+describe('Decision Center expiry (A1)', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-05-10T10:00:00.000Z'));
+    testDb = new Database(':memory:');
+    process.env.NOTIFICATION_DELIVERY_MODE = 'mock';
+    ensureNotificationTables();
+    ensureDecisionCenterTables();
+  });
+
+  afterEach(() => {
+    delete process.env.NOTIFICATION_DELIVERY_MODE;
+    vi.useRealTimers();
+    testDb?.close();
+  });
+
+  const PAST = '2020-01-01T00:00:00.000Z';   // before fake clock AND real wall clock
+  const FUTURE = '2999-01-01T00:00:00.000Z'; // after fake clock AND real wall clock
+  const setExpiry = (decisionId: string, expiresAt: string) =>
+    testDb.prepare('UPDATE notification_center_items SET expires_at = ? WHERE item_id = ?').run(expiresAt, decisionId);
+  const statusOf = (decisionId: string) =>
+    (testDb.prepare('SELECT status FROM notification_center_items WHERE item_id = ?').get(decisionId) as { status: string }).status;
+
+  it('hides past-deadline decisions from the list and overview while keeping future-deadline ones', async () => {
+    const expired = await createDecisionIntent(buildSkillDecisionFixtureIntent('training', 50, { dedupeKey: 'a1-expired' }));
+    const active = await createDecisionIntent(buildSkillDecisionFixtureIntent('training', 50, { dedupeKey: 'a1-active' }));
+    setExpiry(expired.item!.decisionId, PAST);
+    setExpiry(active.item!.decisionId, FUTURE);
+
+    const listed = listDecisionItems(50, 50, { status: 'all', limit: 80 }).map((i) => i.decisionId);
+    expect(listed).toContain(active.item!.decisionId);
+    expect(listed).not.toContain(expired.item!.decisionId);
+
+    const overviewIds = getDecisionOverview(50, 50).items.map((i) => i.decisionId);
+    expect(overviewIds).toContain(active.item!.decisionId);
+    expect(overviewIds).not.toContain(expired.item!.decisionId);
+  });
+
+  it('treats a null expires_at as non-expiring (still surfaced)', async () => {
+    const open = await createDecisionIntent(buildSkillDecisionFixtureIntent('training', 51, { dedupeKey: 'a1-null-expiry' }));
+    setExpiry(open.item!.decisionId, null as unknown as string);
+    const listed = listDecisionItems(51, 51, { status: 'all', limit: 80 }).map((i) => i.decisionId);
+    expect(listed).toContain(open.item!.decisionId);
+  });
+
+  it('batch-expires past-deadline decisions, leaves future ones, and reports remaining', async () => {
+    const ids: string[] = [];
+    for (let i = 0; i < 3; i += 1) {
+      const created = await createDecisionIntent(buildSkillDecisionFixtureIntent('training', 60, { dedupeKey: `a1-sweep-${i}` }));
+      ids.push(created.item!.decisionId);
+      setExpiry(created.item!.decisionId, PAST);
+    }
+    const future = await createDecisionIntent(buildSkillDecisionFixtureIntent('training', 60, { dedupeKey: 'a1-sweep-future' }));
+    setExpiry(future.item!.decisionId, FUTURE);
+
+    const result = runDecisionExpiryJob({ batchSize: 2, maxBatches: 20 });
+    expect(result.expired).toBe(3);
+    expect(result.remaining).toBe(0);
+    expect(result.batches).toBe(2); // 3 rows at batchSize 2 → two passes
+
+    for (const id of ids) expect(statusOf(id)).toBe('expired');
+    expect(statusOf(future.item!.decisionId)).not.toBe('expired');
+  });
+
+  it('is idempotent on a clean sweep (no past-deadline rows → no-op)', async () => {
+    const future = await createDecisionIntent(buildSkillDecisionFixtureIntent('training', 61, { dedupeKey: 'a1-clean' }));
+    setExpiry(future.item!.decisionId, FUTURE);
+    const result = runDecisionExpiryJob();
+    expect(result.expired).toBe(0);
+    expect(result.remaining).toBe(0);
+    expect(result.batches).toBe(0);
+    expect(statusOf(future.item!.decisionId)).not.toBe('expired');
+  });
+
+  it('returns null from getDecisionItem detail for a past-deadline decision (list and detail agree)', async () => {
+    const expired = await createDecisionIntent(buildSkillDecisionFixtureIntent('training', 52, { dedupeKey: 'a1-detail-expired' }));
+    setExpiry(expired.item!.decisionId, PAST);
+    expect(getDecisionItem(expired.item!.decisionId, 52, 52)).toBeNull();
+
+    const active = await createDecisionIntent(buildSkillDecisionFixtureIntent('training', 53, { dedupeKey: 'a1-detail-active' }));
+    setExpiry(active.item!.decisionId, FUTURE);
+    expect(getDecisionItem(active.item!.decisionId, 53, 53)).not.toBeNull();
+  });
+});
+
+describe('Decision Center quality-gate telemetry (C4)', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-05-10T10:00:00.000Z'));
+    testDb = new Database(':memory:');
+    process.env.NOTIFICATION_DELIVERY_MODE = 'mock';
+    ensureNotificationTables();
+    ensureDecisionCenterTables();
+  });
+
+  afterEach(() => {
+    delete process.env.NOTIFICATION_DELIVERY_MODE;
+    vi.useRealTimers();
+    testDb?.close();
+  });
+
+  it('records a gate event for BOTH passing and blocked decisions and exposes the distribution', async () => {
+    const passed = await createDecisionIntent(buildSkillDecisionFixtureIntent('training', 70, { tenantId: 70, dedupeKey: 'c4-pass' }));
+    expect(passed.item).not.toBeNull();
+
+    const blocked = await createDecisionIntent({
+      userId: 70,
+      tenantId: 70,
+      sourceSkill: 'secretary',
+      type: 'conflict_detected',
+      priority: 'active',
+      title: 'Secretary',
+      body: 'Secretary needs your attention.',
+      actionButtons: [{ id: 'open_detail', label: 'Review', style: 'primary' }],
+      requiresUserAction: true,
+      privacyPolicy: 'standard',
+      dedupeKey: 'c4-blocked',
+    });
+    expect(blocked.item).toBeNull();
+
+    const recorded = (testDb.prepare('SELECT COUNT(*) AS n FROM decision_quality_gate_events WHERE user_id = ?').get(70) as { n: number }).n;
+    expect(recorded).toBe(2); // pre-fix only the blocked one was recorded
+
+    const metrics = getDecisionOutcomeMetrics(70, 70);
+    expect(metrics.totalQualityGateEvents).toBe(2);
+    expect(metrics.qualityGateByStatus.pass ?? 0).toBeGreaterThanOrEqual(1);
+    expect(metrics.genericBlockedCount).toBeGreaterThanOrEqual(1);
+    // Rejection rate now uses gate events as the denominator (no double-counting outcomes).
+    expect(metrics.genericBlockedRate).toBeCloseTo(metrics.genericBlockedCount / 2, 4);
   });
 });

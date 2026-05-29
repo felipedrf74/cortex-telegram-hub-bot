@@ -74,6 +74,23 @@ describe('Secretary Notification Orchestrator', () => {
     testDb?.close();
   });
 
+  it('A1: does not mark an expired notification read and does not surface it on open', async () => {
+    const expired = await createNotificationIntent(buildSkillNotificationFixtureIntent('finance', 5));
+    const expiredId = expired.item!.itemId;
+    testDb.prepare('UPDATE notification_center_items SET expires_at = ? WHERE item_id = ?')
+      .run('2020-01-01T00:00:00.000Z', expiredId);
+
+    expect(markNotificationCenterItemRead(expiredId, 5, 5)).toBeNull();
+    const expiredStatus = (testDb.prepare('SELECT status FROM notification_center_items WHERE item_id = ?').get(expiredId) as { status: string }).status;
+    expect(expiredStatus).toBe('unread'); // guard prevented mark-read
+
+    const live = await createNotificationIntent(buildSkillNotificationFixtureIntent('finance', 6));
+    const liveId = live.item!.itemId;
+    expect(markNotificationCenterItemRead(liveId, 6, 6)).not.toBeNull();
+    const liveStatus = (testDb.prepare('SELECT status FROM notification_center_items WHERE item_id = ?').get(liveId) as { status: string }).status;
+    expect(liveStatus).toBe('read');
+  });
+
   it('creates default profile, updates preferences, and blocks disabled skills', async () => {
     const defaultProfile = getOrCreateNotificationProfile(1, 1);
     expect(defaultProfile.pushEnabled).toBe(true);

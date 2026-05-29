@@ -354,18 +354,22 @@ describe('event backbone foundation', () => {
         tenant_id INTEGER NOT NULL,
         source_skill TEXT NOT NULL,
         type TEXT NOT NULL,
-        status TEXT NOT NULL
+        status TEXT NOT NULL,
+        expires_at TEXT
       );
     `);
     testDb.prepare("INSERT INTO fitness_training_plans VALUES (1, 7, 'Marathon', 'running', 'Base', 'active', datetime('now'))").run();
     testDb.prepare("INSERT INTO training_sessions VALUES (9, 1, 'running', 'Long run private title', 60, 'pending')").run();
-    testDb.prepare("INSERT INTO notification_center_items VALUES ('n1', 7, 7, 'secretary', 'decision_required', 'unread')").run();
-    testDb.prepare("INSERT INTO notification_center_items VALUES ('n2', 8, 8, 'secretary', 'decision_required', 'unread')").run();
+    testDb.prepare("INSERT INTO notification_center_items VALUES ('n1', 7, 7, 'secretary', 'decision_required', 'unread', NULL)").run();
+    testDb.prepare("INSERT INTO notification_center_items VALUES ('n2', 8, 8, 'secretary', 'decision_required', 'unread', NULL)").run();
+    // A1: a future-deadline decision still counts; a past-deadline one must be excluded.
+    testDb.prepare("INSERT INTO notification_center_items VALUES ('n3', 7, 7, 'secretary', 'decision_required', 'unread', '2999-01-01T00:00:00.000Z')").run();
+    testDb.prepare("INSERT INTO notification_center_items VALUES ('n4', 7, 7, 'secretary', 'decision_required', 'unread', '2020-01-01T00:00:00.000Z')").run();
 
     const summaries = projectSummaryReadModelsForUser({ tenantId: 7, userId: 7 });
     const home = summaries.find((summary) => summary.summaryType === 'home')!;
 
-    expect(home.payload.pendingDecisionsCount).toBe(1);
+    expect(home.payload.pendingDecisionsCount).toBe(2); // n1 (no deadline) + n3 (future); n4 (past) excluded, n2 is another user
     expect(JSON.stringify(home.payload)).not.toContain('Long run private title');
     expect(JSON.stringify(home.payload)).not.toContain('n2');
   });
