@@ -35,8 +35,11 @@ vi.mock('../../src/utils/logger', () => ({
 }));
 
 import { createContentWorkflowObject } from '../../src/services/content-editorial-workflow';
+import type { DecisionApiItem } from '../../src/services/decision-center';
 import {
   addDecisionDependency,
+  applyDecisionFatigueCaps,
+  isDecisionItemPolicyFloored,
   buildDecisionCenterReportDocument,
   buildSkillDecisionFixtureIntent,
   cleanupDecisionCenterSmokeItems,
@@ -2182,5 +2185,105 @@ describe('Decision Center lifecycle events (SI-4)', () => {
     const item = dismissDecision(d.item!.decisionId, 83, 83); // emit fails internally; dismiss must still succeed
     expect(item.status).toBe('dismissed');
     expect(getDecisionLifecycleEventWriteFailures()).toBeGreaterThan(before);
+  });
+});
+
+describe('Decision Center fatigue caps (C5)', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-05-10T10:00:00.000Z'));
+    testDb = new Database(':memory:');
+    process.env.NOTIFICATION_DELIVERY_MODE = 'mock';
+    ensureNotificationTables();
+    ensureDecisionCenterTables();
+  });
+  afterEach(() => {
+    delete process.env.NOTIFICATION_DELIVERY_MODE;
+    delete process.env.DECISION_CENTER_FATIGUE_CAPS_ENABLED;
+    vi.useRealTimers();
+    testDb?.close();
+  });
+
+  // Hand-built items: the helpers only read prioritySnapshot + sourceSkill, so a minimal cast is safe.
+  const snap = (reasonCodes: string[], priorityTier: 'critical' | 'high' | 'normal' | 'low' = 'normal'): DecisionApiItem =>
+    ({ sourceSkill: 'cooking', prioritySnapshot: { priorityTier, priorityScore: 0, reasonCodes, computedAt: 'x', rankingVersion: 1 } } as unknown as DecisionApiItem);
+  const item = (sourceSkill: 'cooking' | 'secretary', floored = false): DecisionApiItem =>
+    ({ sourceSkill, prioritySnapshot: { priorityTier: floored ? 'critical' : 'normal', priorityScore: 0, reasonCodes: floored ? ['floor_finance_risk'] : [], computedAt: 'x', rankingVersion: 1 } } as unknown as DecisionApiItem);
+
+  it('isDecisionItemPolicyFloored detects every floor_* token + the critical-tier fallback, conservatively', () => {
+    for (const t of ['floor_critical_deadline', 'floor_deadline_soon', 'floor_finance_risk', 'floor_connection_blocking', 'floor_training_safety']) {
+      expect(isDecisionItemPolicyFloored(snap([t]))).toBe(true);
+    }
+    expect(isDecisionItemPolicyFloored(snap(['high_urgency', 'deadline_soon']))).toBe(false); // no floor_ prefix
+    expect(isDecisionItemPolicyFloored(snap([], 'critical'))).toBe(true); // secondary tier guard
+    expect(isDecisionItemPolicyFloored(snap([], 'high'))).toBe(false);
+    expect(isDecisionItemPolicyFloored({ sourceSkill: 'cooking' } as unknown as DecisionApiItem)).toBe(false); // no snapshot => conservative
+  });
+
+  it('applyDecisionFatigueCaps splits primary/more and honors the visible cap', () => {
+    const items = Array.from({ length: 30 }, () => item('secretary'));
+    const { primaryItems, moreItems } = applyDecisionFatigueCaps(items, { visibleCap: 20, topPrimaryCount: 5, perDomainCap: 100 });
+    expect(primaryItems).toHaveLength(5);
+    expect(moreItems).toHaveLength(15);
+    expect(primaryItems.length + moreItems.length).toBe(20); // visibleCap ceiling
+  });
+
+  it('applyDecisionFatigueCaps enforces perDomainCap so one noisy domain cannot crowd out others', () => {
+    const items = [...Array.from({ length: 15 }, () => item('cooking')), ...Array.from({ length: 15 }, () => item('secretary'))];
+    const all = (() => { const r = applyDecisionFatigueCaps(items, { visibleCap: 50, topPrimaryCount: 5, perDomainCap: 10 }); return [...r.primaryItems, ...r.moreItems]; })();
+    expect(all.filter((i) => i.sourceSkill === 'cooking')).toHaveLength(10);
+    expect(all.filter((i) => i.sourceSkill === 'secretary')).toHaveLength(10);
+  });
+
+  it('applyDecisionFatigueCaps: floored items bypass ALL caps and sit at the head in rank order', () => {
+    const floored = Array.from({ length: 12 }, () => item('cooking', true));
+    const regular = Array.from({ length: 25 }, () => item('secretary'));
+    const { primaryItems, moreItems } = applyDecisionFatigueCaps([...floored, ...regular], { visibleCap: 20, topPrimaryCount: 5, perDomainCap: 10 });
+    const all = [...primaryItems, ...moreItems];
+    expect(all.filter((i) => isDecisionItemPolicyFloored(i))).toHaveLength(12); // all 12 survive both caps
+    expect(all.slice(0, 12).every((i) => isDecisionItemPolicyFloored(i))).toBe(true); // floored at the head
+  });
+
+  it('applyDecisionFatigueCaps: empty + under-cap inputs pass through untouched', () => {
+    expect(applyDecisionFatigueCaps([])).toEqual({ primaryItems: [], moreItems: [] });
+    const r = applyDecisionFatigueCaps(Array.from({ length: 3 }, () => item('cooking')));
+    expect(r.primaryItems.length + r.moreItems.length).toBe(3);
+  });
+
+  it('getDecisionOverview: OFF is unchanged; ON routes through the cap; floored decisions survive end-to-end', async () => {
+    for (let i = 0; i < 25; i++) {
+      await createDecisionIntent(buildSkillDecisionFixtureIntent('cooking', 300, { tenantId: 300, dedupeKey: `cap-${i}` }));
+    }
+    // Training fixtures carry a now+24h deadline => floor_deadline_soon => floored seeds.
+    for (let i = 0; i < 3; i++) {
+      await createDecisionIntent(buildSkillDecisionFixtureIntent('training', 300, { tenantId: 300, dedupeKey: `cap-floor-${i}` }));
+    }
+    const open = listDecisionItems(300, 300, { status: 'all', limit: 80 })
+      .filter((i) => ['unread', 'read', 'snoozed', 'failed', 'open'].includes(i.status));
+    // Precondition: cooking seeds are non-floored; training seeds are floored.
+    expect(open.filter((i) => i.sourceSkill === 'cooking').some(isDecisionItemPolicyFloored)).toBe(false);
+    const flooredIds = open.filter(isDecisionItemPolicyFloored).map((i) => i.decisionId);
+    expect(flooredIds.length).toBe(3);
+
+    const expected = applyDecisionFatigueCaps(open);
+    const expectedIds = [...expected.primaryItems, ...expected.moreItems].slice(0, 80).map((i) => i.decisionId);
+
+    const off = getDecisionOverview(300, 300, { limit: 80 });
+    expect(off.items.length).toBe(open.length); // OFF == existing slice(0, limit) behavior
+
+    process.env.DECISION_CENTER_FATIGUE_CAPS_ENABLED = 'true';
+    const on = getDecisionOverview(300, 300, { limit: 80 });
+    expect(on.items.map((i) => i.decisionId)).toEqual(expectedIds); // ON == pure-fn selection (wiring)
+    expect(expectedIds.length).toBeLessThan(open.length); // the cap actually reduced the visible set
+    for (const id of flooredIds) expect(on.items.map((i) => i.decisionId)).toContain(id); // floored never capped away
+  });
+
+  it('getDecisionOverview fatigue cap stays tenant-scoped', async () => {
+    await createDecisionIntent(buildSkillDecisionFixtureIntent('cooking', 301, { tenantId: 301, dedupeKey: 'mine' }));
+    await createDecisionIntent(buildSkillDecisionFixtureIntent('cooking', 302, { tenantId: 302, dedupeKey: 'theirs' }));
+    process.env.DECISION_CENTER_FATIGUE_CAPS_ENABLED = 'true';
+    const mine = getDecisionOverview(301, 301, { limit: 80 });
+    expect(mine.items.every((i) => i.userId === 301)).toBe(true);
+    expect(mine.items.some((i) => i.userId === 302)).toBe(false);
   });
 });

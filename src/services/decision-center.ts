@@ -52,7 +52,7 @@ import {
 } from './chat-pending-confirmations';
 import { isValidTenantUserId, recordTenantScopeAnomaly } from './tenant-scope-observability';
 import { logger } from '../utils/logger';
-import { isDecisionCenterCommandBusEnabled, isDecisionCenterGuidanceSkillEnabled, isDecisionCenterGuidanceV1Enabled, isDecisionStreakV1Enabled } from './runtime-flags';
+import { isDecisionCenterCommandBusEnabled, isDecisionCenterFatigueCapsEnabled, isDecisionCenterGuidanceSkillEnabled, isDecisionCenterGuidanceV1Enabled, isDecisionStreakV1Enabled } from './runtime-flags';
 import type { SecretaryTodaySummaryModel } from './secretary-orchestrator';
 import { secretaryTodayLabels } from './secretary-today-copy';
 import {
@@ -1164,7 +1164,18 @@ export function getDecisionOverview(
   }
 
   const allOpenItems = openDecisionItemsForOverview(allItems);
-  const items = itemsAvailable ? allOpenItems.slice(0, limit) : [];
+  let items: DecisionApiItem[] = [];
+  if (itemsAvailable) {
+    if (isDecisionCenterFatigueCapsEnabled(process.env, { userId, tenantId })) {
+      // C5: flag-gated, post-ranking selection. Floored decisions bypass the cap; non-floored items
+      // are bounded per-domain and to the visible budget. Response SHAPE is unchanged — the cap only
+      // reshapes the already-ranked `items` array, then honors the caller's pagination limit.
+      const { primaryItems, moreItems } = applyDecisionFatigueCaps(allOpenItems);
+      items = [...primaryItems, ...moreItems].slice(0, limit);
+    } else {
+      items = allOpenItems.slice(0, limit);
+    }
+  }
   const handled = handledAvailable ? handledForSummary.slice(0, handledLimit) : [];
   let summary = emptyDecisionSummary(userId);
   if (summaryAvailable) {
@@ -3909,6 +3920,74 @@ export function rankDecisionPriority(input: DecisionRankingInputs): DecisionPrio
     reasonCodes: [...new Set(reasonCodes)],
     computedAt: new Date().toISOString(),
     rankingVersion: DECISION_RANKING_VERSION,
+  };
+}
+
+/** C5 fatigue policy — bounds on how many decisions the overview surfaces. */
+export interface DecisionFatiguePolicy {
+  /**
+   * Total visible budget the overview targets. Floored items occupy slots FIRST and are never
+   * dropped (so the result can exceed this when floored.length > visibleCap); whatever budget remains
+   * (visibleCap − floored.length, clamped at 0) bounds the NON-floored items. The cap is on the TOTAL
+   * card count — criticals count toward it — which is the point: a flood of critical items must not
+   * also drag in a full page of regular ones.
+   */
+  visibleCap: number;
+  /** Size of the pinned "primary" set; the remainder is the "More" bucket. Floored items sit at the head, so they occupy these slots first. */
+  topPrimaryCount: number;
+  /** Max NON-floored items per sourceSkill domain, so one noisy domain can't crowd out the rest. Floored items bypass this cap entirely. */
+  perDomainCap: number;
+}
+
+const DECISION_FATIGUE_DEFAULT_POLICY: DecisionFatiguePolicy = { visibleCap: 20, topPrimaryCount: 5, perDomainCap: 10 };
+
+/**
+ * True when a decision carries a non-suppressible policy floor and therefore must NEVER be hidden
+ * under "More" or capped away by fatigue logic. Detection is the floor_* reason-code marker emitted
+ * by rankDecisionPriority (pushed even when it does not raise the tier — see floorTo), with a
+ * defensive priorityTier==='critical' fallback. Pure; no DB/env access. Conservative on missing
+ * snapshot (returns false => under-floors rather than over-caps).
+ */
+export function isDecisionItemPolicyFloored(item: DecisionApiItem): boolean {
+  const snapshot = item.prioritySnapshot;
+  if (!snapshot) return false;
+  return snapshot.reasonCodes.some((code) => code.startsWith('floor_')) || snapshot.priorityTier === 'critical';
+}
+
+/**
+ * C5 fatigue selection — a PURE, post-ranking selection layer (never a re-rank): it preserves the
+ * input order and only chooses which already-ranked items to surface. Floored decisions
+ * (isDecisionItemPolicyFloored) bypass the PER-DOMAIN cap and are NEVER dropped — every floored item
+ * survives into the result even when floored.length exceeds visibleCap. They are placed at the head
+ * of the combined list in their original rank order, so they occupy the first primary slots and DO
+ * count toward the total visible budget (visibleCap). Non-floored items are then bounded per-domain
+ * (by sourceSkill) and to the REMAINING budget (visibleCap − floored.length, clamped at 0), and the
+ * combined list is split into primaryItems (the first topPrimaryCount) + moreItems. No DB/env access;
+ * exported for isolated unit testing.
+ */
+export function applyDecisionFatigueCaps(
+  rankedItems: DecisionApiItem[],
+  policy: DecisionFatiguePolicy = DECISION_FATIGUE_DEFAULT_POLICY,
+): { primaryItems: DecisionApiItem[]; moreItems: DecisionApiItem[] } {
+  const floored: DecisionApiItem[] = [];
+  const regular: DecisionApiItem[] = [];
+  for (const item of rankedItems) (isDecisionItemPolicyFloored(item) ? floored : regular).push(item);
+
+  const perDomain = new Map<string, number>();
+  const domainCapped: DecisionApiItem[] = [];
+  for (const item of regular) {
+    const key = item.sourceSkill;
+    const seen = perDomain.get(key) ?? 0;
+    if (seen >= policy.perDomainCap) continue;
+    perDomain.set(key, seen + 1);
+    domainCapped.push(item);
+  }
+
+  const regularBudget = Math.max(policy.visibleCap - floored.length, 0);
+  const combined = [...floored, ...domainCapped.slice(0, regularBudget)];
+  return {
+    primaryItems: combined.slice(0, Math.max(policy.topPrimaryCount, 0)),
+    moreItems: combined.slice(Math.max(policy.topPrimaryCount, 0)),
   };
 }
 

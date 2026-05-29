@@ -238,6 +238,21 @@ export function isDecisionApiV2Enabled(env: RuntimeEnv = process.env, scope?: Ru
   return scopedFlagEnabledByExplicitOptIn(env, 'DECISION_API_V2_ENABLED', scope);
 }
 
+/**
+ * Applies C5 fatigue caps to the Decision Center OVERVIEW read path only: floored policy decisions
+ * (floor_critical_deadline / floor_deadline_soon / floor_finance_risk / floor_connection_blocking /
+ * floor_training_safety) ALWAYS surface, while non-floored items are bounded per-domain and to an
+ * overall visible budget so the overview never floods. Pure post-ranking selection — never a re-rank.
+ * The full `GET /decisions` list route stays UNCAPPED by design — it is the explicit "show everything"
+ * view, distinct from the bounded overview dashboard. Default OFF; opt-in per user/tenant. When ON,
+ * floored items count toward the visible budget but are never dropped (the total can exceed visibleCap
+ * if floored.length does); non-floored items fill the remaining budget. Off => the existing
+ * slice(0, limit) behavior is unchanged.
+ */
+export function isDecisionCenterFatigueCapsEnabled(env: RuntimeEnv = process.env, scope?: RuntimeFlagScope): boolean {
+  return scopedFlagEnabledByExplicitOptIn(env, 'DECISION_CENTER_FATIGUE_CAPS_ENABLED', scope);
+}
+
 export function isChatCoreV2RuntimeFlagEnabled(
   flagKey: string,
   env: RuntimeEnv = process.env,

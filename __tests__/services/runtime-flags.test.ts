@@ -28,6 +28,7 @@ import {
   isContentFreshResearchDisabled,
   isContentFullLongformDisabled,
   isContentModelQualityAuditDisabled,
+  isDecisionCenterFatigueCapsEnabled,
   isDecisionCenterGuidanceSkillEnabled,
   isDecisionCenterGuidanceV1Enabled,
   isAnthropicRuntimeEnabled,
@@ -233,5 +234,22 @@ describe('runtime-flags', () => {
     expect(isChatCoreV2RuntimeFlagEnabled('CHAT_CORE_V3_ENABLED', {
       CHAT_CORE_V3_ENABLED: 'true',
     })).toBe(false);
+  });
+
+  it('keeps Decision Center fatigue caps default-off with scoped opt-in (C5)', () => {
+    expect(isDecisionCenterFatigueCapsEnabled({})).toBe(false);
+    expect(isDecisionCenterFatigueCapsEnabled({ DECISION_CENTER_FATIGUE_CAPS_ENABLED: 'true' })).toBe(true);
+    expect(isDecisionCenterFatigueCapsEnabled({ DECISION_CENTER_FATIGUE_CAPS_ENABLED: 'on' })).toBe(true);
+    expect(isDecisionCenterFatigueCapsEnabled({ DECISION_CENTER_FATIGUE_CAPS_ENABLED: '1' })).toBe(true);
+    expect(isDecisionCenterFatigueCapsEnabled({ DECISION_CENTER_FATIGUE_CAPS_ENABLED: 'enabled' })).toBe(true);
+    expect(isDecisionCenterFatigueCapsEnabled({ DECISION_CENTER_FATIGUE_CAPS_ENABLED: 'yes' })).toBe(false);
+    expect(isDecisionCenterFatigueCapsEnabled({
+      DECISION_CENTER_FATIGUE_CAPS_ENABLED: 'false',
+      DECISION_CENTER_FATIGUE_CAPS_ENABLED_TENANT_9: 'true',
+    }, { userId: 7, tenantId: 9 })).toBe(true);
+    expect(isDecisionCenterFatigueCapsEnabled({
+      DECISION_CENTER_FATIGUE_CAPS_ENABLED: 'true',
+      DECISION_CENTER_FATIGUE_CAPS_ENABLED_USER_42: 'off',
+    }, { userId: 42, tenantId: 9 })).toBe(false);
   });
 });
