@@ -43,6 +43,12 @@ export interface ChatCoreV2ShadowTurnInput {
   requestedRouteMethod?: ChatCoreV2RouteMethod;
   unsupportedReason?: UnsupportedReason;
   minConfidence?: number;
+  // Layer-1 prepass inputs. The shadow path observes prepass candidates only
+  // (routing is unchanged in shadow); these feed selectPrepassCandidateCapabilities.
+  message?: string;
+  pendingConfirmationCapabilityId?: string;
+  recentDomainCapabilityIds?: string[];
+  activeThreadCapabilityIds?: string[];
   runtimeUsage?: Partial<RuntimeBudgetUsage>;
   maxToolSchemas?: number;
   oldPathHasEquivalentSafety?: boolean;
@@ -113,6 +119,14 @@ function buildRouteInput(input: ChatCoreV2ShadowTurnInput): BuildRouteDecisionIn
     requestedRouteMethod: input.requestedRouteMethod,
     unsupportedReason: input.unsupportedReason,
     minConfidence: input.minConfidence,
+    // The shadow path always OBSERVES the Layer-1 prepass: candidates are
+    // recorded on the decision (and emitted as a trace span) without changing
+    // the routing outcome.
+    prepassMode: 'observe',
+    message: input.message,
+    pendingConfirmationCapabilityId: input.pendingConfirmationCapabilityId,
+    recentDomainCapabilityIds: input.recentDomainCapabilityIds,
+    activeThreadCapabilityIds: input.activeThreadCapabilityIds,
   };
 }
 
@@ -142,6 +156,12 @@ function buildShadowTraceSpans(input: {
       selectedCapabilityIds: input.routeDecision.selectedCapabilityIds,
       reasonCodes: input.routeDecision.reasonCodes,
     }),
+    ...(input.routeDecision.prepassApplied
+      ? [buildSpan(input.input, 'custom', 'prepass_candidate_selection', 'success', sensitivity, now, {
+        prepassCandidateIds: input.routeDecision.prepassCandidateIds ?? [],
+        candidateCount: (input.routeDecision.prepassCandidateIds ?? []).length,
+      })]
+      : []),
     buildSpan(input.input, 'budget', 'runtime_budget', input.budgetVerdict.ok ? 'success' : 'blocked', sensitivity, now, {
       ok: input.budgetVerdict.ok,
       limit: input.budgetVerdict.limit,

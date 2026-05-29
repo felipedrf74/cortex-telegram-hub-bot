@@ -76,8 +76,24 @@ export function resolveChatCoreV2ActivationConfig(env: EnvLike = process.env): C
   };
 }
 
+/**
+ * The single master kill-switch chokepoint for the live chat entry parsers
+ * (resolveChatCoreV2LocalChatLlmMode / resolveChatCoreV2ActionGatewayMode).
+ * Fires when CHAT_CORE_V2_ORCHESTRATOR_MODE is EXPLICITLY 'off'. An ABSENT mode
+ * is intentionally NOT a kill here: it defers to the sub-mode flags (action
+ * gateway / local-chat / the legacy CHAT_CORE_V2_ENABLED activation), preserving
+ * existing behavior. WP-07's runtime-override Map will extend THIS function so an
+ * auto-revert flip governs the live chat-message-routes path without a restart.
+ * Strict default-off subordination (absent master => all sub-modes off) is a
+ * separate, deliberate change and is intentionally NOT folded in here.
+ */
+export function isChatCoreV2MasterKillSwitchOff(env: EnvLike = process.env): boolean {
+  return String(env.CHAT_CORE_V2_ORCHESTRATOR_MODE ?? '').trim().toLowerCase() === 'off';
+}
+
 function parseMode(raw: string | undefined): ChatCoreV2OrchestratorMode {
-  return raw === 'shadow' || raw === 'canary' || raw === 'on' ? raw : 'off';
+  const normalized = String(raw ?? '').trim().toLowerCase();
+  return normalized === 'shadow' || normalized === 'canary' || normalized === 'on' ? normalized : 'off';
 }
 
 function parseBoolean(raw: string | undefined, fallback: boolean): boolean {

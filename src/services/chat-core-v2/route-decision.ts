@@ -1,6 +1,9 @@
 // Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
 
+import { createHash } from 'crypto';
+
 import { getChatCoreV2Capability } from './capability-registry';
+import { selectPrepassCandidateCapabilities } from './prepass-candidate-selection';
 import { getChatCoreV2ReasoningPolicy } from './reasoning-policies';
 import type {
   ActionRisk,
@@ -35,6 +38,18 @@ export type ChatCoreV2RouteReasonCode =
   | 'planner_required'
   | 'background_required';
 
+/**
+ * Controls whether the deterministic Layer-1 prepass selector influences routing.
+ * - 'off' (default): prepass does not run; output is bit-identical to legacy.
+ * - 'observe' (shadow): prepass candidates are recorded on the decision (and
+ *   emitted as a trace span) WITHOUT changing the routing outcome — true
+ *   observation-only, so no sentinel/fallback candidate can pollute the route.
+ * - 'enforce' (on): routing narrows to the intersection of the caller's
+ *   capabilityIds and the prepass candidates, falling back to the caller's set
+ *   when the intersection is empty (never route on an empty capability set).
+ */
+export type ChatCoreV2PrepassMode = 'off' | 'observe' | 'enforce';
+
 export interface BuildRouteDecisionInput {
   intent: ChatCoreV2Intent;
   confidence: number;
@@ -43,6 +58,14 @@ export interface BuildRouteDecisionInput {
   requestedRouteMethod?: ChatCoreV2RouteMethod;
   unsupportedReason?: UnsupportedReason;
   minConfidence?: number;
+  // Layer-1 prepass inputs (additive, optional). Prepass runs only when
+  // prepassMode is 'observe'/'enforce' AND message is non-empty. Layer 1 is
+  // deterministic — it performs no model or network calls.
+  prepassMode?: ChatCoreV2PrepassMode;
+  message?: string;
+  pendingConfirmationCapabilityId?: string;
+  recentDomainCapabilityIds?: string[];
+  activeThreadCapabilityIds?: string[];
 }
 
 export interface ChatCoreV2RouteDecision {
@@ -58,6 +81,10 @@ export interface ChatCoreV2RouteDecision {
   requiresLLM: boolean;
   unsupportedReason?: UnsupportedReason;
   reasonCodes: ChatCoreV2RouteReasonCode[];
+  // Set only when the Layer-1 prepass ran (prepassMode !== 'off'); omitted
+  // otherwise so an off-mode decision stays bit-identical to legacy output.
+  prepassApplied?: boolean;
+  prepassCandidateIds?: string[];
 }
 
 const DEFAULT_MIN_CONFIDENCE = 0.68;
@@ -72,7 +99,64 @@ const REASONING_ORDER: ReasoningTier[] = [
   'background_planner',
 ];
 
+/**
+ * Pure, deterministic sha256 of the routing-relevant context. Used to detect
+ * when the context that produced a plan has changed (so the orchestrator can
+ * re-read / replan). No I/O. Array fields are sorted so the hash is independent
+ * of caller ordering; the message is normalized (trim + lowercase). The output
+ * is a one-way digest, so it never re-exposes raw message text.
+ */
+export function computeRouteDecisionContextHash(input: BuildRouteDecisionInput): string {
+  const canonical = JSON.stringify({
+    intent: input.intent,
+    domains: [...(input.domains ?? [])].sort(),
+    capabilityIds: [...(input.capabilityIds ?? [])].sort(),
+    requestedRouteMethod: input.requestedRouteMethod ?? null,
+    unsupportedReason: input.unsupportedReason ?? null,
+    pendingConfirmationCapabilityId: input.pendingConfirmationCapabilityId ?? null,
+    recentDomainCapabilityIds: [...(input.recentDomainCapabilityIds ?? [])].sort(),
+    activeThreadCapabilityIds: [...(input.activeThreadCapabilityIds ?? [])].sort(),
+    message: (input.message ?? '').trim().toLowerCase(),
+  });
+  return createHash('sha256').update(canonical).digest('hex');
+}
+
 export function buildChatCoreV2RouteDecision(input: BuildRouteDecisionInput): ChatCoreV2RouteDecision {
+  const prepassMode = input.prepassMode ?? 'off';
+  const message = (input.message ?? '').trim();
+
+  // Kill-switch parity: with prepass off (or no message to analyze) the decision
+  // is computed exactly as before — bit-identical legacy output.
+  if (prepassMode === 'off' || message.length === 0) {
+    return computeRouteDecision(input);
+  }
+
+  // Layer 1 is a pure, deterministic selector (no model or network calls). It
+  // only proposes candidate capability IDs from the message text + cheap hints.
+  const prepass = selectPrepassCandidateCapabilities({
+    message: input.message ?? '',
+    pendingConfirmationCapabilityId: input.pendingConfirmationCapabilityId,
+    recentDomainCapabilityIds: input.recentDomainCapabilityIds,
+    activeThreadCapabilityIds: input.activeThreadCapabilityIds,
+  });
+
+  // 'observe' (shadow) never narrows routing — the candidates (which include
+  // sentinels/fallback reads) are recorded for measurement only. 'enforce'
+  // narrows to the intersection, with a safe fallback to the caller's set.
+  const original = input.capabilityIds ?? [];
+  const effectiveCapabilityIds = prepassMode === 'enforce'
+    ? intersectPreservingOrder(original, prepass.candidateCapabilityIds)
+    : original;
+
+  const base = computeRouteDecision({ ...input, capabilityIds: effectiveCapabilityIds });
+  return {
+    ...base,
+    prepassApplied: true,
+    prepassCandidateIds: prepass.candidateCapabilityIds,
+  };
+}
+
+function computeRouteDecision(input: BuildRouteDecisionInput): ChatCoreV2RouteDecision {
   const confidence = normalizeConfidence(input.confidence);
   const domains = unique(input.domains ?? []);
   const capabilities = resolveCapabilities(input.capabilityIds ?? []);
@@ -255,4 +339,13 @@ function normalizeConfidence(confidence: number): number {
 
 function unique<T>(items: T[]): T[] {
   return [...new Set(items)];
+}
+
+// 'enforce'-mode prepass narrowing: keep only the caller's capability IDs that
+// the prepass also proposed (preserving the caller's order). Falls back to the
+// caller's full set when the intersection is empty so we never route on nothing.
+function intersectPreservingOrder(original: string[], candidates: string[]): string[] {
+  const candidateSet = new Set(candidates);
+  const intersection = original.filter((id) => candidateSet.has(id));
+  return intersection.length > 0 ? intersection : original;
 }

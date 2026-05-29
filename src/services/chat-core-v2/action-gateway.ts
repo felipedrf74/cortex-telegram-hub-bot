@@ -8,6 +8,7 @@ import {
   type ChatCoreV2CommandPreviewRouteResult,
 } from './command-preview-route';
 import { classifyShadowRoute } from './shadow-route-classifier';
+import { isChatCoreV2MasterKillSwitchOff } from './activation-flags';
 import type { AICommandEnvelope } from './types';
 
 export const CHAT_CORE_V2_ACTION_GATEWAY_VERSION = 'chat_core_v2_action_gateway@1.0.0';
@@ -102,7 +103,9 @@ const READ_QUESTION_RE = /\b(o que|que tenho|what (?:do i|are|is|s)|which|qual|q
 export function resolveChatCoreV2ActionGatewayMode(
   env: NodeJS.ProcessEnv = process.env,
 ): ChatCoreV2ActionGatewayMode {
-  if (String(env.CHAT_CORE_V2_ORCHESTRATOR_MODE ?? '').trim().toLowerCase() === 'off') return 'off';
+  // Single kill-switch chokepoint (WP-00.5); WP-07's runtime override extends
+  // isChatCoreV2MasterKillSwitchOff to reach this live path without a restart.
+  if (isChatCoreV2MasterKillSwitchOff(env)) return 'off';
   const raw = String(env.CHAT_CORE_V2_ACTION_GATEWAY_MODE ?? '').trim().toLowerCase();
   if (raw === 'off' || raw === 'shadow' || raw === 'enforce') return raw;
   if (env.CHAT_CORE_V2_ENABLED === 'true' && (env.CHAT_CORE_V2_WRITES_ENABLED === 'true' || env.CHAT_CORE_V2_PREVIEWS_ENABLED === 'true')) {

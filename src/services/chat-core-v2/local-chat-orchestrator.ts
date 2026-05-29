@@ -24,7 +24,7 @@ import {
   type ChatCoreV2QueueFallbackDecision,
 } from './queue-fallback-policy';
 import { WRITE_SUCCESS_CLAIM_RE } from './success-claim-policy';
-import { resolveChatCoreV2ActivationConfig, type ChatCoreV2AllowedSurface } from './activation-flags';
+import { isChatCoreV2MasterKillSwitchOff, resolveChatCoreV2ActivationConfig, type ChatCoreV2AllowedSurface } from './activation-flags';
 import type { ChatCoreV2Locale } from './response-contracts';
 
 export type ChatCoreV2LocalChatLlmMode = 'off' | 'shadow' | 'canary' | 'on';
@@ -116,7 +116,9 @@ const LOCAL_CHAT_OUTPUT_SCHEMA = {
 type EnvLike = NodeJS.ProcessEnv | Record<string, string | undefined>;
 
 export function resolveChatCoreV2LocalChatLlmMode(env: EnvLike = process.env): ChatCoreV2LocalChatLlmMode {
-  if (String(env.CHAT_CORE_V2_ORCHESTRATOR_MODE ?? '').trim().toLowerCase() === 'off') return 'off';
+  // Single kill-switch chokepoint (WP-00.5); WP-07's runtime override extends
+  // isChatCoreV2MasterKillSwitchOff to reach this live path without a restart.
+  if (isChatCoreV2MasterKillSwitchOff(env)) return 'off';
   const raw = String(env.CHAT_CORE_V2_LOCAL_CHAT_LLM_MODE ?? '').trim().toLowerCase();
   if (raw === 'off' || raw === 'shadow' || raw === 'canary' || raw === 'on') return raw;
   return 'off';
