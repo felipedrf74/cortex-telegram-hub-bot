@@ -2134,12 +2134,22 @@ export function snoozeDecision(decisionId: string, userId: number, tenantId = us
   return item;
 }
 
-export function dismissDecision(decisionId: string, userId: number, tenantId = userId): DecisionApiItem {
+/** Closed vocabulary for dismiss feedback (C3) — never store free user text; unknown → 'other'. */
+export const DECISION_DISMISS_REASONS = ['already_handled', 'not_relevant', 'wrong_data', 'bad_timing', 'too_risky', 'duplicate', 'dont_show_type', 'other'] as const;
+export type DecisionDismissReason = typeof DECISION_DISMISS_REASONS[number];
+
+function normalizeDismissReason(reason?: string | null): DecisionDismissReason | null {
+  if (reason == null || reason.trim() === '') return null;
+  const value = reason.trim().toLowerCase();
+  return (DECISION_DISMISS_REASONS as readonly string[]).includes(value) ? (value as DecisionDismissReason) : 'other';
+}
+
+export function dismissDecision(decisionId: string, userId: number, tenantId = userId, reason?: string): DecisionApiItem {
   const item = dismissNotificationCenterItem(decisionId, userId, tenantId);
   if (!item) throw new DecisionActionError('DECISION_NOT_FOUND', 'Decision not found', 404);
   const decision = getDecisionItem(decisionId, userId, tenantId);
   if (!decision) throw new DecisionActionError('DECISION_NOT_FOUND', 'Decision not found after dismiss', 404);
-  emitDecisionLifecycleEvent({ decisionId, userId, tenantId, event: 'dismissed', toStatus: decision.status });
+  emitDecisionLifecycleEvent({ decisionId, userId, tenantId, event: 'dismissed', toStatus: decision.status, reason: normalizeDismissReason(reason) });
   const record = getDecisionRecord(decisionId, userId, tenantId);
   if (record) {
     recordDecisionOutcome(record, {

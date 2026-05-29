@@ -2085,4 +2085,18 @@ describe('Decision Center lifecycle events (SI-4)', () => {
     expect(passing.expiredButVisible).toBe(0);
     expect(passing.pass).toBe(true);
   });
+
+  it('captures dismiss reason on the lifecycle event, normalized to the vocab (C3a)', async () => {
+    const a = await createDecisionIntent(buildSkillDecisionFixtureIntent('training', 96, { dedupeKey: 'dr-1' }));
+    dismissDecision(a.item!.decisionId, 96, 96, 'not_relevant');
+    expect(getDecisionLifecycleEvents(a.item!.decisionId, 96, 96).find((e) => e.event === 'dismissed')?.reason).toBe('not_relevant');
+
+    const b = await createDecisionIntent(buildSkillDecisionFixtureIntent('training', 96, { dedupeKey: 'dr-2' }));
+    dismissDecision(b.item!.decisionId, 96, 96, 'some free-text the client should not be storing');
+    expect(getDecisionLifecycleEvents(b.item!.decisionId, 96, 96).find((e) => e.event === 'dismissed')?.reason).toBe('other');
+
+    const c = await createDecisionIntent(buildSkillDecisionFixtureIntent('training', 96, { dedupeKey: 'dr-3' }));
+    dismissDecision(c.item!.decisionId, 96, 96);
+    expect(getDecisionLifecycleEvents(c.item!.decisionId, 96, 96).find((e) => e.event === 'dismissed')?.reason).toBeNull();
+  });
 });

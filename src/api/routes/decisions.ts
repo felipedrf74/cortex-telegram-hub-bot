@@ -292,7 +292,7 @@ export function decisionRoutes(): Router {
     const tenantId = routeTenantId(authReq, res, userId, 'decisions_route_dismiss', 'notification_center_items');
     if (tenantId == null) return;
     try {
-      sendSuccess(res, { item: dismissDecision(String(req.params.id || ''), userId, tenantId) });
+      sendSuccess(res, { item: dismissDecision(String(req.params.id || ''), userId, tenantId, typeof req.body?.reason === 'string' ? req.body.reason : undefined) });
     } catch (err) {
       decisionError(res, err, 'DECISION_DISMISS_FAILED');
     }
