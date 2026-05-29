@@ -253,6 +253,16 @@ export function isDecisionCenterFatigueCapsEnabled(env: RuntimeEnv = process.env
   return scopedFlagEnabledByExplicitOptIn(env, 'DECISION_CENTER_FATIGUE_CAPS_ENABLED', scope);
 }
 
+/**
+ * Gates the B3 semantic-dedup classifier (decision-center-semantic-dedup.ts). The first slice is
+ * classify-only with NO call sites, so this flag has no runtime effect yet; it reserves the name and
+ * the scoped-opt-in shape for the later slice that wires the classifier into the creation/dedup path.
+ * Default OFF; opt-in per user/tenant.
+ */
+export function isDecisionSemanticDedupEnabled(env: RuntimeEnv = process.env, scope?: RuntimeFlagScope): boolean {
+  return scopedFlagEnabledByExplicitOptIn(env, 'DECISION_SEMANTIC_DEDUP_ENABLED', scope);
+}
+
 export function isChatCoreV2RuntimeFlagEnabled(
   flagKey: string,
   env: RuntimeEnv = process.env,
