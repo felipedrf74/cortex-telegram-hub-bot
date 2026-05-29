@@ -115,4 +115,23 @@ describe('Decision Center → Command Bus adapter (unblock)', () => {
     expect(onResult.status).toBe('succeeded');
     expect(onStatus).toBe(offStatus); // same terminal status via either path
   });
+
+  it('flag-ON: rejects expired + already-dismissed dismisses, and is idempotent on repeat', async () => {
+    process.env.DECISION_CENTER_COMMAND_BUS_ENABLED = 'true';
+
+    // expired → rejected (guardActionable fires before the adapter, regardless of flag)
+    const expired = await createDecisionIntent(buildSkillDecisionFixtureIntent('training', 75, { tenantId: 75, dedupeKey: 're-exp', actionButtons: DISMISSIBLE_ACTIONS }));
+    testDb.prepare('UPDATE notification_center_items SET expires_at = ? WHERE item_id = ?').run('2020-01-01T00:00:00.000Z', expired.item!.decisionId);
+    await expect(performDecisionAction(expired.item!.decisionId, 'dismiss', 75, 75, { idempotencyKey: 're-exp-1' })).rejects.toThrow();
+
+    // double-submit with the same idempotency key → second is idempotent (single mutation)
+    const dbl = await createDecisionIntent(buildSkillDecisionFixtureIntent('training', 75, { tenantId: 75, dedupeKey: 're-dbl', actionButtons: DISMISSIBLE_ACTIONS }));
+    const first = await performDecisionAction(dbl.item!.decisionId, 'dismiss', 75, 75, { idempotencyKey: 're-dbl-k' });
+    const second = await performDecisionAction(dbl.item!.decisionId, 'dismiss', 75, 75, { idempotencyKey: 're-dbl-k' });
+    expect(first.status).toBe('succeeded');
+    expect(second.idempotent).toBe(true);
+
+    // a fresh dismiss of the now-dismissed decision → rejected
+    await expect(performDecisionAction(dbl.item!.decisionId, 'dismiss', 75, 75, { idempotencyKey: 're-dbl-k2' })).rejects.toThrow();
+  });
 });

@@ -67,6 +67,7 @@ import {
   rankDecisionPriority,
   computeConfidenceExplanation,
   getDecisionLifecycleEvents,
+  getDecisionLifecycleEventWriteFailures,
   runDecisionMetricsRollupJob,
   getDecisionMetricsDaily,
   getDecisionReleaseGateStatus,
@@ -1849,6 +1850,14 @@ describe('Decision Center quality-gate telemetry (C4)', () => {
     // Rejection rate now uses gate events as the denominator (no double-counting outcomes).
     expect(metrics.genericBlockedRate).toBeCloseTo(metrics.genericBlockedCount / 2, 4);
   });
+
+  it('does not inflate the gate denominator on deduped retries', async () => {
+    await createDecisionIntent(buildSkillDecisionFixtureIntent('training', 71, { tenantId: 71, dedupeKey: 'c4-dedup' }));
+    await createDecisionIntent(buildSkillDecisionFixtureIntent('training', 71, { tenantId: 71, dedupeKey: 'c4-dedup' })); // same key → deduped
+    const recorded = (testDb.prepare('SELECT COUNT(*) AS n FROM decision_quality_gate_events WHERE user_id = ?').get(71) as { n: number }).n;
+    expect(recorded).toBe(1); // the deduped retry recorded no second gate event
+    expect(getDecisionOutcomeMetrics(71, 71).totalQualityGateEvents).toBe(1);
+  });
 });
 
 describe('Decision Center layered status (Foundation)', () => {
@@ -2098,5 +2107,15 @@ describe('Decision Center lifecycle events (SI-4)', () => {
     const c = await createDecisionIntent(buildSkillDecisionFixtureIntent('training', 96, { dedupeKey: 'dr-3' }));
     dismissDecision(c.item!.decisionId, 96, 96);
     expect(getDecisionLifecycleEvents(c.item!.decisionId, 96, 96).find((e) => e.event === 'dismissed')?.reason).toBeNull();
+  });
+
+  it('swallows lifecycle event write failures without breaking the user action', async () => {
+    const d = await createDecisionIntent(buildSkillDecisionFixtureIntent('training', 83, { dedupeKey: 'lc-failwrite' }));
+    const before = getDecisionLifecycleEventWriteFailures();
+    // Force every lifecycle-event INSERT to abort (survives ensureDecisionCenterTables' CREATE-IF-NOT-EXISTS).
+    testDb.exec("CREATE TRIGGER force_lifecycle_fail BEFORE INSERT ON decision_lifecycle_events BEGIN SELECT RAISE(ABORT, 'forced'); END;");
+    const item = dismissDecision(d.item!.decisionId, 83, 83); // emit fails internally; dismiss must still succeed
+    expect(item.status).toBe('dismissed');
+    expect(getDecisionLifecycleEventWriteFailures()).toBeGreaterThan(before);
   });
 });
