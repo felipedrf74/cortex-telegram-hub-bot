@@ -1,3 +1,5 @@
+// Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
+
 /**
  * C6 — typed dependency/relationship semantics (single source of truth).
  *
