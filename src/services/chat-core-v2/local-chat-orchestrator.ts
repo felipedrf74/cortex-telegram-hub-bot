@@ -9,6 +9,7 @@ import {
   type ComposedAnswerDraft,
   validateComposedAnswerDraft,
 } from './answer-composition';
+import { recordComposerModeTurn } from './composer-mode-counter';
 import { detectChatCoreV2WriteIntent } from './action-gateway';
 import { dispatchCloudAllowlistAnswer } from './cloud-allowlist-answer';
 import { buildLocalChatCloudAllowlistPacket } from './cloud-allowlist-answer-packet';
@@ -196,6 +197,9 @@ export async function runChatCoreV2LocalChatTurn(
       });
       const locale = normalizeLocale(input.locale);
       const guarded = applyNoUnverifiedSuccessClaimGuard(cloudAnswer.text, locale, input.normalizedText);
+      // Observability-only (WP-04): record the composer mode of this
+      // NON-DEGRADED answer. Must not change the response or control flow.
+      recordComposerModeTurn('cloud_allowlist', env);
       return {
         response: {
           id: `msg-${Date.now()}`,
@@ -290,6 +294,10 @@ export async function runChatCoreV2LocalChatTurn(
     }
 
     const guarded = applyNoUnverifiedSuccessClaimGuard(draft.text, locale, input.normalizedText);
+    // Observability-only (WP-04): record the composer mode of this NON-DEGRADED
+    // answer. draft.mode is normalized to 'model_constrained' (see
+    // normalizeDraft / buildDraftFromPlainText). Must not change response/flow.
+    recordComposerModeTurn(draft.mode, env);
     return {
       response: {
         id: `msg-${Date.now()}`,

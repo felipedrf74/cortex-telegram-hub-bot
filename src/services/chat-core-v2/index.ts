@@ -15,6 +15,7 @@ export * from './command-events';
 export * from './command-executor';
 export * from './command-preview-route';
 export * from './command-status-policy';
+export * from './composer-mode-counter';
 export * from './context-staleness-policy';
 export * from './deterministic-read-route';
 export * from './domain-adapter';
