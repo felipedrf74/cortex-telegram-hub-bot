@@ -4077,6 +4077,45 @@ export function getDecisionMetricsDaily(tenantId: number, opts: { date?: string 
   return row ?? null;
 }
 
+export interface DecisionReleaseGateStatus {
+  /** Active rows whose hard deadline has passed but the expiry sweep has not yet flipped them. Sweep-health signal. */
+  expiredButVisible: number;
+  /** Decisions presented as actionable whose primary action has no deterministic executor. Must be 0 (invariant tripwire). */
+  unimplementedActionableCtas: number;
+  pass: boolean;
+}
+
+/**
+ * Release-gate invariants for the Decision Center (per the plan's "expired-visible = 0 /
+ * unimplemented-primary-CTA = 0"). expiredButVisible measures sweep health (SQL sees unswept rows
+ * the in-memory list filter hides); unimplementedActionableCtas is a tripwire — computeActionability
+ * downgrades not-implemented primaries to read_only, so this is 0 unless that invariant regresses.
+ */
+export function getDecisionReleaseGateStatus(userId: number, tenantId = userId): DecisionReleaseGateStatus {
+  assertScope(userId, tenantId, 'decision_release_gate_status', {});
+  ensureDecisionCenterTables();
+  const expiredButVisible = (getDb().prepare(`
+    SELECT COUNT(*) AS n
+      FROM notification_center_items
+     WHERE user_id = ? AND tenant_id = ?
+       AND status IN ('unread', 'read', 'failed', 'snoozed')
+       AND expires_at IS NOT NULL AND datetime(expires_at) <= datetime('now')
+  `).get(userId, tenantId) as { n: number }).n;
+
+  const items = listDecisionItems(userId, tenantId, { status: 'all', limit: 200 });
+  const unimplementedActionableCtas = items.filter((item) => {
+    const actionable = item.actionability != null && !['read_only', 'blocked', 'unavailable'].includes(item.actionability);
+    const primary = item.recommendedAction;
+    return Boolean(actionable && primary && !isDecisionActionExecutable(primary.id));
+  }).length;
+
+  return {
+    expiredButVisible,
+    unimplementedActionableCtas,
+    pass: expiredButVisible === 0 && unimplementedActionableCtas === 0,
+  };
+}
+
 function actionsForRecord(record: DecisionRecord): NotificationActionButton[] {
   const actions = [...record.actions];
   const rollback = rollbackContractForRecord(record);

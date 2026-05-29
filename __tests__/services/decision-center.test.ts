@@ -69,6 +69,7 @@ import {
   getDecisionLifecycleEvents,
   runDecisionMetricsRollupJob,
   getDecisionMetricsDaily,
+  getDecisionReleaseGateStatus,
   markDecisionViewed,
   snoozeDecision,
 } from '../../src/services/decision-center';
@@ -2068,5 +2069,20 @@ describe('Decision Center lifecycle events (SI-4)', () => {
     const row2 = getDecisionMetricsDaily(90)!;
     expect(row2.createdCount).toBe(2);
     expect(row2.dismissedCount).toBe(1);
+  });
+
+  it('release-gate status: clean by default, fails on unswept expired rows, passes after the sweep', async () => {
+    expect(getDecisionReleaseGateStatus(95, 95)).toEqual({ expiredButVisible: 0, unimplementedActionableCtas: 0, pass: true });
+
+    const d = await createDecisionIntent(buildSkillDecisionFixtureIntent('training', 95, { tenantId: 95, dedupeKey: 'gate-exp' }));
+    testDb.prepare('UPDATE notification_center_items SET expires_at = ? WHERE item_id = ?').run('2020-01-01T00:00:00.000Z', d.item!.decisionId);
+    const failing = getDecisionReleaseGateStatus(95, 95);
+    expect(failing.expiredButVisible).toBe(1);
+    expect(failing.pass).toBe(false);
+
+    runDecisionExpiryJob();
+    const passing = getDecisionReleaseGateStatus(95, 95);
+    expect(passing.expiredButVisible).toBe(0);
+    expect(passing.pass).toBe(true);
   });
 });
