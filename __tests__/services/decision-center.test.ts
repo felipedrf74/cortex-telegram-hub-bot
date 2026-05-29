@@ -66,6 +66,8 @@ import {
   computeActionability,
   rankDecisionPriority,
   computeConfidenceExplanation,
+  getDecisionLifecycleEvents,
+  markDecisionViewed,
   snoozeDecision,
 } from '../../src/services/decision-center';
 import { buildSkillNotificationFixtureIntent, createNotificationIntent, ensureNotificationTables } from '../../src/services/notification-orchestrator';
@@ -1992,5 +1994,57 @@ describe('Decision Center layered status (Foundation)', () => {
     expect(typeof item.status).toBe('string');
     expect(item.frontendActionState).toBeDefined();
     expect(item.displayMode).toBeDefined();
+  });
+});
+
+describe('Decision Center lifecycle events (SI-4)', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-05-10T10:00:00.000Z'));
+    testDb = new Database(':memory:');
+    process.env.NOTIFICATION_DELIVERY_MODE = 'mock';
+    ensureNotificationTables();
+    ensureDecisionCenterTables();
+  });
+  afterEach(() => {
+    delete process.env.NOTIFICATION_DELIVERY_MODE;
+    delete process.env.DECISION_LIFECYCLE_EVENTS_ENABLED;
+    vi.useRealTimers();
+    testDb?.close();
+  });
+
+  it('records an ordered lifecycle stream across create/view/dismiss/snooze', async () => {
+    const created = await createDecisionIntent(buildSkillDecisionFixtureIntent('training', 80, { dedupeKey: 'lc-1' }));
+    const id = created.item!.decisionId;
+    markDecisionViewed(id, 80, 80);
+    dismissDecision(id, 80, 80);
+    const events = getDecisionLifecycleEvents(id, 80, 80).map((e) => e.event);
+    expect(events).toEqual(expect.arrayContaining(['created', 'viewed', 'dismissed']));
+    expect(events[0]).toBe('created'); // append-only, ordered
+
+    const snoozeTarget = await createDecisionIntent(buildSkillDecisionFixtureIntent('training', 80, { dedupeKey: 'lc-snooze' }));
+    snoozeDecision(snoozeTarget.item!.decisionId, 80, 80, 30);
+    expect(getDecisionLifecycleEvents(snoozeTarget.item!.decisionId, 80, 80).map((e) => e.event)).toContain('snoozed');
+  });
+
+  it('records action lifecycle (started + succeeded + verified) and expiry', async () => {
+    const d = await createDecisionIntent(buildSkillDecisionFixtureIntent('training', 81, {
+      dedupeKey: 'lc-action',
+      actionButtons: [{ id: 'open_detail', label: 'Open', style: 'primary' }, { id: 'dismiss', label: 'Not now', style: 'secondary' }],
+    }));
+    await performDecisionAction(d.item!.decisionId, 'open_detail', 81, 81, { idempotencyKey: 'lc-tap' });
+    expect(getDecisionLifecycleEvents(d.item!.decisionId, 81, 81).map((e) => e.event))
+      .toEqual(expect.arrayContaining(['action_started', 'action_succeeded', 'verified']));
+
+    const exp = await createDecisionIntent(buildSkillDecisionFixtureIntent('training', 81, { dedupeKey: 'lc-exp' }));
+    testDb.prepare('UPDATE notification_center_items SET expires_at = ? WHERE item_id = ?').run('2020-01-01T00:00:00.000Z', exp.item!.decisionId);
+    runDecisionExpiryJob();
+    expect(getDecisionLifecycleEvents(exp.item!.decisionId, 81, 81).map((e) => e.event)).toContain('expired');
+  });
+
+  it('kill-switch (DECISION_LIFECYCLE_EVENTS_ENABLED=0) suppresses writes without throwing', async () => {
+    process.env.DECISION_LIFECYCLE_EVENTS_ENABLED = '0';
+    const d = await createDecisionIntent(buildSkillDecisionFixtureIntent('training', 82, { dedupeKey: 'lc-off' }));
+    expect(getDecisionLifecycleEvents(d.item!.decisionId, 82, 82)).toEqual([]);
   });
 });

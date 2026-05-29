@@ -753,6 +753,21 @@ export function ensureDecisionCenterTables(): void {
     );
     CREATE INDEX IF NOT EXISTS idx_decision_quality_gate_scope_created
       ON decision_quality_gate_events(user_id, tenant_id, created_at DESC);
+    CREATE TABLE IF NOT EXISTS decision_lifecycle_events (
+      event_id TEXT PRIMARY KEY,
+      decision_id TEXT NOT NULL,
+      user_id INTEGER NOT NULL,
+      tenant_id INTEGER NOT NULL,
+      event TEXT NOT NULL,
+      from_status TEXT,
+      to_status TEXT,
+      action_id TEXT,
+      reason TEXT,
+      metadata_json TEXT NOT NULL DEFAULT '{}',
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_decision_lifecycle_events_scope_created
+      ON decision_lifecycle_events(user_id, tenant_id, decision_id, created_at);
     CREATE TABLE IF NOT EXISTS decision_queue_daily_rollups (
       user_id INTEGER NOT NULL,
       tenant_id INTEGER NOT NULL,
@@ -842,6 +857,9 @@ export async function createDecisionIntent(input: NotificationIntentInput): Prom
     recordDecisionQualityGateEvent(input, quality);
   }
   const item = result.item ? getDecisionItem(result.item.itemId, input.userId, input.tenantId ?? input.userId) : null;
+  if (result.item && result.intent.status !== 'deduped') {
+    emitDecisionLifecycleEvent({ decisionId: result.item.itemId, userId: input.userId, tenantId: input.tenantId ?? input.userId, event: 'created', toStatus: result.item.status });
+  }
   return { item, eligibility };
 }
 
@@ -1659,7 +1677,7 @@ export function runDecisionExpiryJob(input: { batchSize?: number; maxBatches?: n
   const statuses = [...DECISION_EXPIRY_ACTIVE_STATUSES];
   const placeholders = statuses.map(() => '?').join(', ');
   const selectExpired = db.prepare(`
-    SELECT item_id
+    SELECT item_id, user_id, tenant_id
       FROM notification_center_items
      WHERE status IN (${placeholders})
        AND expires_at IS NOT NULL
@@ -1682,9 +1700,12 @@ export function runDecisionExpiryJob(input: { batchSize?: number; maxBatches?: n
   let expired = 0;
   let batches = 0;
   while (batches < maxBatches) {
-    const rows = selectExpired.all(...statuses, batchSize) as Array<{ item_id: string }>;
+    const rows = selectExpired.all(...statuses, batchSize) as Array<{ item_id: string; user_id: number; tenant_id: number }>;
     if (rows.length === 0) break;
     expireBatch(rows.map((row) => row.item_id));
+    for (const row of rows) {
+      emitDecisionLifecycleEvent({ decisionId: row.item_id, userId: row.user_id, tenantId: row.tenant_id, event: 'expired', toStatus: 'expired' });
+    }
     expired += rows.length;
     batches += 1;
     if (rows.length < batchSize) break;
@@ -2013,12 +2034,15 @@ export async function performDecisionAction(
     throw new DecisionActionError(claimed.execution.error_code || 'DECISION_ACTION_FAILED', 'Prior decision action attempt failed', 409, safeParseJson(claimed.execution.result_json, {}));
   }
 
+  emitDecisionLifecycleEvent({ decisionId, userId, tenantId, event: 'action_started', actionId });
   try {
     const execution = await executeDecisionAction(record, action, userId, tenantId, opts.payload ?? {});
     markExecutionSucceeded(claimed.execution.action_execution_id, execution.expectedEffect, execution.actualEffect);
     const updated = getDecisionItem(decisionId, userId, tenantId);
     if (!updated) throw new DecisionActionError('DECISION_NOT_FOUND', 'Decision missing after action execution', 500);
     recordVerifiedDecisionAction(record, action, actionId, execution);
+    emitDecisionLifecycleEvent({ decisionId, userId, tenantId, event: 'action_succeeded', actionId, toStatus: updated.status });
+    if (execution.readBackOk) emitDecisionLifecycleEvent({ decisionId, userId, tenantId, event: 'verified', actionId });
     if (actionId !== 'snooze') {
       recordDecisionOutcome(record, {
         actionShown: action.id,
@@ -2053,6 +2077,7 @@ export async function performDecisionAction(
     );
     markExecutionFailed(claimed.execution.action_execution_id, error.code, error.details);
     markDecisionFailed(record, actionId, error.code);
+    emitDecisionLifecycleEvent({ decisionId, userId, tenantId, event: 'action_failed', actionId, reason: error.code });
     recordDecisionOutcome(record, {
       actionShown: actionId,
       actionTaken: actionId,
@@ -2077,6 +2102,7 @@ export function snoozeDecision(decisionId: string, userId: number, tenantId = us
   assertDecisionScopedUpdateApplied(update, 'snooze_decision', { decisionId, userId, tenantId });
   const item = getDecisionItem(decisionId, userId, tenantId);
   if (!item) throw new DecisionActionError('DECISION_NOT_FOUND', 'Decision not found after snooze', 404);
+  emitDecisionLifecycleEvent({ decisionId, userId, tenantId, event: 'snoozed', toStatus: item.status });
   const record = getDecisionRecord(decisionId, userId, tenantId);
   if (record) {
     recordDecisionOutcome(record, {
@@ -2095,6 +2121,7 @@ export function dismissDecision(decisionId: string, userId: number, tenantId = u
   if (!item) throw new DecisionActionError('DECISION_NOT_FOUND', 'Decision not found', 404);
   const decision = getDecisionItem(decisionId, userId, tenantId);
   if (!decision) throw new DecisionActionError('DECISION_NOT_FOUND', 'Decision not found after dismiss', 404);
+  emitDecisionLifecycleEvent({ decisionId, userId, tenantId, event: 'dismissed', toStatus: decision.status });
   const record = getDecisionRecord(decisionId, userId, tenantId);
   if (record) {
     recordDecisionOutcome(record, {
@@ -2113,6 +2140,7 @@ export function markDecisionViewed(decisionId: string, userId: number, tenantId 
   if (!item) throw new DecisionActionError('DECISION_NOT_FOUND', 'Decision not found', 404);
   const decision = getDecisionItem(decisionId, userId, tenantId);
   if (!decision) throw new DecisionActionError('DECISION_NOT_FOUND', 'Decision not found after viewed', 404);
+  emitDecisionLifecycleEvent({ decisionId, userId, tenantId, event: 'viewed', toStatus: decision.status });
   return decision;
 }
 
@@ -3878,6 +3906,76 @@ export function computeConfidenceExplanation(
   };
 }
 
+/** Ordered decision lifecycle events. 'surfaced' (first list/get exposure) is emitted in a follow-up. */
+export type DecisionLifecycleEvent =
+  | 'created' | 'surfaced' | 'viewed' | 'snoozed' | 'dismissed'
+  | 'action_started' | 'action_succeeded' | 'action_failed' | 'verified'
+  | 'expired' | 'superseded' | 'rolled_back';
+
+let decisionLifecycleEventWriteFailures = 0;
+
+/** Returns how many lifecycle-event writes have been swallowed (observability for the kill-switch path). */
+export function getDecisionLifecycleEventWriteFailures(): number {
+  return decisionLifecycleEventWriteFailures;
+}
+
+/**
+ * Append a lifecycle event. Fire-and-forget: guarded by a kill-switch
+ * (DECISION_LIFECYCLE_EVENTS_ENABLED=0) and a try/catch so a write failure can NEVER break the
+ * user action it accompanies (mirrors the recordVerifiedDecisionAction write-failure pattern).
+ */
+function emitDecisionLifecycleEvent(input: {
+  decisionId: string;
+  userId: number;
+  tenantId: number;
+  event: DecisionLifecycleEvent;
+  toStatus?: string | null;
+  actionId?: string | null;
+  reason?: string | null;
+  metadata?: Record<string, unknown>;
+}): void {
+  if (process.env.DECISION_LIFECYCLE_EVENTS_ENABLED === '0') return;
+  try {
+    getDb().prepare(`
+      INSERT INTO decision_lifecycle_events
+        (event_id, decision_id, user_id, tenant_id, event, to_status, action_id, reason, metadata_json)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      `dle_${randomUUID()}`,
+      input.decisionId,
+      input.userId,
+      input.tenantId,
+      input.event,
+      input.toStatus ?? null,
+      input.actionId ?? null,
+      input.reason ?? null,
+      JSON.stringify(input.metadata ?? {}),
+    );
+  } catch (err) {
+    decisionLifecycleEventWriteFailures += 1;
+    logger.warn({ err, decisionId: input.decisionId, event: input.event }, 'Decision lifecycle event write failed (non-fatal)');
+  }
+}
+
+export interface DecisionLifecycleEventRow {
+  event: string;
+  toStatus: string | null;
+  actionId: string | null;
+  reason: string | null;
+  createdAt: string;
+}
+
+/** Read the ordered lifecycle event stream for a decision (tests + observability). */
+export function getDecisionLifecycleEvents(decisionId: string, userId: number, tenantId = userId): DecisionLifecycleEventRow[] {
+  ensureDecisionCenterTables();
+  return getDb().prepare(`
+    SELECT event, to_status AS toStatus, action_id AS actionId, reason, created_at AS createdAt
+      FROM decision_lifecycle_events
+     WHERE decision_id = ? AND user_id = ? AND tenant_id = ?
+     ORDER BY rowid ASC
+  `).all(decisionId, userId, tenantId) as DecisionLifecycleEventRow[];
+}
+
 function actionsForRecord(record: DecisionRecord): NotificationActionButton[] {
   const actions = [...record.actions];
   const rollback = rollbackContractForRecord(record);
@@ -4725,6 +4823,7 @@ function supersedeDecision(record: DecisionRecord, reason: string): void {
     tenantId: record.tenantId,
     reason,
   });
+  emitDecisionLifecycleEvent({ decisionId: record.itemId, userId: record.userId, tenantId: record.tenantId, event: 'superseded', reason });
   if (record.decisionLogId) {
     getDb().prepare(`
       UPDATE notification_decision_logs
