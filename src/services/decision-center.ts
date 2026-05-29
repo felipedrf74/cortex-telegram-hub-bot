@@ -4126,6 +4126,96 @@ export function getDecisionReleaseGateStatus(userId: number, tenantId = userId):
   };
 }
 
+export interface DecisionFeedbackSignal {
+  sourceSkill: string;
+  surfaced: number;
+  dismissed: number;
+  snoozed: number;
+  actionSucceeded: number;
+  dismissRate: number;
+  dontShowTypeCount: number;
+  topDismissReasons: Array<{ reason: string; count: number }>;
+}
+
+/**
+ * Aggregate the lifecycle event stream (incl. C3a dismiss reasons) into per-source-skill feedback
+ * signals (C3b). READ-ONLY substrate for a future calibration/suppression pass — it does NOT alter
+ * ranking yet (bounded suppression is a deliberate follow-up; floored categories stay exempt). Joins
+ * events to notification_center_items for the source_skill dimension.
+ *
+ * Scope: per-user read, filtered by (user_id, tenant_id) and rides idx_decision_lifecycle_events_
+ * scope_created — bounded by the caller's own event count, never a hot-table-wide scan. The JOIN
+ * carries a redundant (user_id, tenant_id) guard as defense-in-depth so a future per-tenant item_id
+ * scheme can never bleed another tenant's source_skill in.
+ *
+ * `opts.sinceDays` bounds the window so the signal can decay (a year-old dismissal must not weigh
+ * like today's); omitted => all-time. The window uses the SQLite clock (`datetime('now')`), which
+ * is NOT affected by vi.setSystemTime — tests pin determinism by back/forward-dating event rows
+ * directly rather than moving the JS clock.
+ *
+ * `dontShowTypeCount` deliberately re-surfaces the 'dont_show_type' tally that also appears in
+ * `topDismissReasons`; it is the single strongest suppression signal and callers act on it directly
+ * without scanning the reason breakdown.
+ */
+export function getDecisionFeedbackSignals(
+  userId: number,
+  tenantId = userId,
+  opts: { sinceDays?: number } = {},
+): DecisionFeedbackSignal[] {
+  assertScope(userId, tenantId, 'decision_feedback_signals', {});
+  ensureDecisionCenterTables();
+  const db = getDb();
+  const windowClause =
+    typeof opts.sinceDays === 'number' && opts.sinceDays > 0 ? `AND e.created_at >= datetime('now', ?)` : '';
+  const windowArg: string[] = windowClause ? [`-${Math.floor(opts.sinceDays as number)} days`] : [];
+  const eventRows = db.prepare(`
+    SELECT i.source_skill AS sourceSkill, e.event AS event, COUNT(*) AS n
+      FROM decision_lifecycle_events e
+      JOIN notification_center_items i
+        ON i.item_id = e.decision_id AND i.user_id = e.user_id AND i.tenant_id = e.tenant_id
+     WHERE e.user_id = ? AND e.tenant_id = ? ${windowClause}
+     GROUP BY i.source_skill, e.event
+  `).all(userId, tenantId, ...windowArg) as Array<{ sourceSkill: string; event: string; n: number }>;
+  const reasonRows = db.prepare(`
+    SELECT i.source_skill AS sourceSkill, e.reason AS reason, COUNT(*) AS n
+      FROM decision_lifecycle_events e
+      JOIN notification_center_items i
+        ON i.item_id = e.decision_id AND i.user_id = e.user_id AND i.tenant_id = e.tenant_id
+     WHERE e.user_id = ? AND e.tenant_id = ? AND e.event = 'dismissed' AND e.reason IS NOT NULL ${windowClause}
+     GROUP BY i.source_skill, e.reason
+  `).all(userId, tenantId, ...windowArg) as Array<{ sourceSkill: string; reason: string; n: number }>;
+
+  const bySkill = new Map<string, { events: Record<string, number>; reasons: Array<{ reason: string; count: number }> }>();
+  const bucket = (skill: string): { events: Record<string, number>; reasons: Array<{ reason: string; count: number }> } => {
+    let b = bySkill.get(skill);
+    if (!b) { b = { events: {}, reasons: [] }; bySkill.set(skill, b); }
+    return b;
+  };
+  for (const row of eventRows) bucket(row.sourceSkill).events[row.event] = row.n;
+  for (const row of reasonRows) bucket(row.sourceSkill).reasons.push({ reason: row.reason, count: row.n });
+
+  return [...bySkill.entries()]
+    .map(([sourceSkill, b]) => {
+      const surfaced = b.events.created ?? 0;
+      const dismissed = b.events.dismissed ?? 0;
+      return {
+        sourceSkill,
+        surfaced,
+        dismissed,
+        snoozed: b.events.snoozed ?? 0,
+        actionSucceeded: b.events.action_succeeded ?? 0,
+        // Guard the zero-denominator case (matches the file's blessed rate() convention at :~1714):
+        // a skill with dismissed>0 but surfaced=0 (lifecycle tracking enabled after creation, or
+        // post-retention pruning) must report 0, never the raw count — a rate > 1.0 would mis-fire a
+        // future "suppress if rate > 0.8" consumer on a skill that has no recorded surfacing at all.
+        dismissRate: surfaced === 0 ? 0 : Number((dismissed / surfaced).toFixed(4)),
+        dontShowTypeCount: b.reasons.find((r) => r.reason === 'dont_show_type')?.count ?? 0,
+        topDismissReasons: [...b.reasons].sort((a, c) => c.count - a.count).slice(0, 3),
+      };
+    })
+    .sort((a, c) => c.dismissed - a.dismissed);
+}
+
 function actionsForRecord(record: DecisionRecord): NotificationActionButton[] {
   const actions = [...record.actions];
   const rollback = rollbackContractForRecord(record);

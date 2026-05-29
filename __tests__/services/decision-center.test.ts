@@ -71,6 +71,7 @@ import {
   runDecisionMetricsRollupJob,
   getDecisionMetricsDaily,
   getDecisionReleaseGateStatus,
+  getDecisionFeedbackSignals,
   markDecisionViewed,
   snoozeDecision,
 } from '../../src/services/decision-center';
@@ -2107,6 +2108,70 @@ describe('Decision Center lifecycle events (SI-4)', () => {
     const c = await createDecisionIntent(buildSkillDecisionFixtureIntent('training', 96, { dedupeKey: 'dr-3' }));
     dismissDecision(c.item!.decisionId, 96, 96);
     expect(getDecisionLifecycleEvents(c.item!.decisionId, 96, 96).find((e) => e.event === 'dismissed')?.reason).toBeNull();
+  });
+
+  it('aggregates per-skill feedback signals from the lifecycle stream incl. dismiss reasons (C3b)', async () => {
+    // 3 training decisions surfaced; 2 dismissed (one with the strong "dont_show_type" signal,
+    // one "not_relevant"); 1 left active. Aggregation is read-only and clock-independent.
+    const a = await createDecisionIntent(buildSkillDecisionFixtureIntent('training', 97, { tenantId: 97, dedupeKey: 'fb-1' }));
+    const b = await createDecisionIntent(buildSkillDecisionFixtureIntent('training', 97, { tenantId: 97, dedupeKey: 'fb-2' }));
+    await createDecisionIntent(buildSkillDecisionFixtureIntent('training', 97, { tenantId: 97, dedupeKey: 'fb-3' }));
+    dismissDecision(a.item!.decisionId, 97, 97, 'dont_show_type');
+    dismissDecision(b.item!.decisionId, 97, 97, 'not_relevant');
+
+    const signals = getDecisionFeedbackSignals(97, 97);
+    const training = signals.find((s) => s.sourceSkill === 'training')!;
+    expect(training).toBeDefined();
+    expect(training.surfaced).toBe(3); // 3 'created' events
+    expect(training.dismissed).toBe(2);
+    expect(training.dismissRate).toBeCloseTo(0.6667, 3);
+    expect(training.dontShowTypeCount).toBe(1); // strongest suppression signal surfaced explicitly
+    expect(training.topDismissReasons).toEqual(
+      expect.arrayContaining([
+        { reason: 'dont_show_type', count: 1 },
+        { reason: 'not_relevant', count: 1 },
+      ]),
+    );
+  });
+
+  it('guards dismissRate against missing creation events — never returns a rate > 1.0 (C3b)', async () => {
+    const d = await createDecisionIntent(buildSkillDecisionFixtureIntent('training', 100, { tenantId: 100, dedupeKey: 'fb-norate' }));
+    dismissDecision(d.item!.decisionId, 100, 100, 'not_relevant');
+    // Simulate lifecycle tracking that began AFTER this decision was created (or post-retention
+    // pruning): drop the 'created' event so surfaced=0 while dismissed=1.
+    testDb.prepare("DELETE FROM decision_lifecycle_events WHERE decision_id = ? AND event = 'created'").run(d.item!.decisionId);
+    const training = getDecisionFeedbackSignals(100, 100).find((s) => s.sourceSkill === 'training')!;
+    expect(training.surfaced).toBe(0);
+    expect(training.dismissed).toBe(1);
+    expect(training.dismissRate).toBe(0); // guarded — not the raw count (1.0), never > 1.0
+  });
+
+  it('respects the sinceDays decay window — older feedback excluded (C3b)', async () => {
+    const recent = await createDecisionIntent(buildSkillDecisionFixtureIntent('training', 101, { tenantId: 101, dedupeKey: 'fb-recent' }));
+    dismissDecision(recent.item!.decisionId, 101, 101, 'not_relevant');
+    const old = await createDecisionIntent(buildSkillDecisionFixtureIntent('content', 101, { tenantId: 101, dedupeKey: 'fb-old' }));
+    dismissDecision(old.item!.decisionId, 101, 101, 'too_risky');
+    // Back-date every 'content' event well outside a 7-day window. Both stored timestamps and the
+    // window boundary use the SQLite clock, so this is deterministic under the suite's fake JS timers.
+    testDb.prepare("UPDATE decision_lifecycle_events SET created_at = '2020-01-01T00:00:00.000Z' WHERE decision_id = ?").run(old.item!.decisionId);
+
+    const windowed = getDecisionFeedbackSignals(101, 101, { sinceDays: 7 });
+    expect(windowed.find((s) => s.sourceSkill === 'content')).toBeUndefined(); // outside the window
+    expect(windowed.find((s) => s.sourceSkill === 'training')).toBeDefined();  // inside the window
+
+    const allTime = getDecisionFeedbackSignals(101, 101);
+    expect(allTime.find((s) => s.sourceSkill === 'content')).toBeDefined();    // no window => included
+  });
+
+  it('feedback signals are tenant-scoped (no cross-tenant bleed)', async () => {
+    const mine = await createDecisionIntent(buildSkillDecisionFixtureIntent('training', 98, { tenantId: 98, dedupeKey: 'fb-mine' }));
+    dismissDecision(mine.item!.decisionId, 98, 98, 'not_relevant');
+    const other = await createDecisionIntent(buildSkillDecisionFixtureIntent('training', 99, { tenantId: 99, dedupeKey: 'fb-other' }));
+    dismissDecision(other.item!.decisionId, 99, 99, 'too_risky');
+
+    const mineSignals = getDecisionFeedbackSignals(98, 98);
+    expect(mineSignals.reduce((n, s) => n + s.dismissed, 0)).toBe(1);
+    expect(mineSignals.flatMap((s) => s.topDismissReasons.map((r) => r.reason))).not.toContain('too_risky');
   });
 
   it('swallows lifecycle event write failures without breaking the user action', async () => {
