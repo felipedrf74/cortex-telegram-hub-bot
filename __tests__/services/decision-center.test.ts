@@ -1610,6 +1610,52 @@ describe('Decision Center facade', () => {
     expect(workflow.approval_state).toBe('approved');
   });
 
+  it('records a non-blocking typed dependency (conflicts_with) without blocking the action (C6)', async () => {
+    const parent = await createDecisionIntent(buildSkillDecisionFixtureIntent('training', 62, { tenantId: 62, dedupeKey: 'c6-conflict-parent' }));
+    const { created: child } = await createContentApprovalDecision(62, 62, 'c6-conflict-child');
+
+    addDecisionDependency({
+      decisionId: child.item!.decisionId,
+      dependsOnDecisionId: parent.item!.decisionId,
+      userId: 62,
+      tenantId: 62,
+      relationship: 'conflicts_with',
+    });
+
+    // The relationship IS recorded and surfaced as a dependency edge...
+    expect(listDecisionDependencies(child.item!.decisionId, 62, 62)).toHaveLength(1);
+    const item = getDecisionItem(child.item!.decisionId, 62, 62)!;
+    expect(item.dependsOnDecisionIds).toEqual([parent.item!.decisionId]);
+    // ...but conflicts_with is advisory, so the (still-unresolved) parent does NOT block the action.
+    expect(item.blockedByDecisionIds).toHaveLength(0);
+    const result = await performDecisionAction(child.item!.decisionId, 'approve_script', 62, 62, {
+      idempotencyKey: 'c6-conflict-action',
+    });
+    expect(result.status).toBe('succeeded');
+  });
+
+  it('treats blocked_by as a display-only inverse label that does NOT block — only a forward blocks edge blocks (C6)', async () => {
+    const blocker = await createDecisionIntent(buildSkillDecisionFixtureIntent('training', 63, { tenantId: 63, dedupeKey: 'c6-blockedby-blocker' }));
+    const { created: subject } = await createContentApprovalDecision(63, 63, 'c6-blockedby-subject');
+
+    // A caller who (mistakenly) writes a lone blocked_by edge expecting `subject` to be blocked...
+    addDecisionDependency({
+      decisionId: subject.item!.decisionId,
+      dependsOnDecisionId: blocker.item!.decisionId,
+      userId: 63,
+      tenantId: 63,
+      relationship: 'blocked_by',
+    });
+
+    const item = getDecisionItem(subject.item!.decisionId, 63, 63)!;
+    expect(item.dependsOnDecisionIds).toEqual([blocker.item!.decisionId]);
+    expect(item.blockedByDecisionIds).toHaveLength(0); // ...gets a non-block: blocked_by is advisory by design
+    const result = await performDecisionAction(subject.item!.decisionId, 'approve_script', 63, 63, {
+      idempotencyKey: 'c6-blockedby-action',
+    });
+    expect(result.status).toBe('succeeded'); // the action proceeds — the forward 'blocks' edge is what blocks
+  });
+
   it('supersedes content decisions when approval resolves outside Decision Center', async () => {
     const { object, created } = await createContentApprovalDecision(61, 61, 'content-supersession');
     testDb.prepare(`

@@ -53,6 +53,7 @@ import {
 import { isValidTenantUserId, recordTenantScopeAnomaly } from './tenant-scope-observability';
 import { logger } from '../utils/logger';
 import { isDecisionCenterCommandBusEnabled, isDecisionCenterFatigueCapsEnabled, isDecisionCenterGuidanceSkillEnabled, isDecisionCenterGuidanceV1Enabled, isDecisionStreakV1Enabled } from './runtime-flags';
+import { decisionRelationshipSemantics, type DecisionRelationshipType } from './decision-relationship-types';
 import type { SecretaryTodaySummaryModel } from './secretary-orchestrator';
 import { secretaryTodayLabels } from './secretary-today-copy';
 import {
@@ -1744,12 +1745,23 @@ export function runDecisionExpiryJob(input: { batchSize?: number; maxBatches?: n
   return { inspected: expired, expired, remaining, batches, durationMs: Date.now() - start };
 }
 
+/**
+ * Record a typed dependency edge from `decisionId` to `dependsOnDecisionId`. With the canonical
+ * `blocks` relationship the target (`dependsOnDecisionId`) blocks `decisionId`: while the target is
+ * unresolved, `decisionId` is reported in `blockedByDecisionIds` and its mutating actions are refused.
+ *
+ * Directionality matters and only `blocks` prevents action. `blocked_by` is a DISPLAY-ONLY inverse
+ * label (kind `inverse_blocked`, blocksAction=false) — writing a `blocked_by` edge blocks NOTHING; to
+ * actually block `decisionId`, store a forward `blocks` edge to its blocker as above, never a lone
+ * `blocked_by` on the decision itself. Every other type (conflicts_with / duplicate_of / related* /
+ * supersedes / caused_by / ...) is advisory (see decisionRelationshipSemantics).
+ */
 export function addDecisionDependency(input: {
   decisionId: string;
   dependsOnDecisionId: string;
   userId: number;
   tenantId?: number;
-  relationship?: 'blocks' | 'supersedes' | 'caused_by' | 'related';
+  relationship?: DecisionRelationshipType;
 }): void {
   const tenantId = input.tenantId ?? input.userId;
   assertScope(input.userId, tenantId, 'add_decision_dependency', {
@@ -4328,7 +4340,11 @@ function dependencyStateForRecord(record: DecisionRecord): { dependsOnDecisionId
   return {
     dependsOnDecisionIds: dependencies.map((dependency) => dependency.dependsOnDecisionId),
     blockedByDecisionIds: dependencies
-      .filter((dependency) => dependency.relationship === 'blocks' && dependency.blockerStatus && unresolved.has(dependency.blockerStatus))
+      // C6: only a 'blocks' relationship prevents action (decisionRelationshipSemantics is the single
+      // source of truth). Every other typed relationship — conflicts_with / duplicate_of / related_to /
+      // requires_same_slot / affects_same_entity / alternative_to / blocked_by / supersedes / caused_by /
+      // related — is advisory and never contributes to blockedByDecisionIds.
+      .filter((dependency) => decisionRelationshipSemantics(dependency.relationship).blocksAction && dependency.blockerStatus && unresolved.has(dependency.blockerStatus))
       .map((dependency) => dependency.dependsOnDecisionId),
   };
 }
