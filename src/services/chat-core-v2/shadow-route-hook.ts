@@ -1,6 +1,6 @@
 // Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
 
-import { createHash } from 'crypto';
+import { createHmac } from 'crypto';
 import Database from 'better-sqlite3';
 
 import { logger } from '../../utils/logger';
@@ -16,6 +16,7 @@ import {
 import { classifyShadowRoute, type ChatCoreV2ShadowRouteGuess } from './shadow-route-classifier';
 
 export const CHAT_CORE_V2_SHADOW_ROUTE_HOOK_VERSION = 'chat_core_v2_shadow_route_hook@1.0.0';
+const CHAT_CORE_V2_SHADOW_ROUTE_HASH_VERSION = 'hmac_sha256@1';
 
 export interface RunChatCoreV2ShadowRouteHookInput {
   normalizedText: string;
@@ -37,7 +38,7 @@ export interface ChatCoreV2ShadowRouteHookResult {
   recorded: boolean;
   result?: ChatCoreV2ShadowTurnResult;
   replayBundleId?: string;
-  errorCode?: 'shadow_route_hook_failed';
+  errorCode?: 'shadow_route_hook_failed' | 'shadow_route_hook_missing_hmac_secret';
 }
 
 export function runChatCoreV2ShadowRouteHook(
@@ -49,6 +50,20 @@ export function runChatCoreV2ShadowRouteHook(
   }
 
   try {
+    const hmacSecret = resolveShadowRouteHmacSecret(input.env ?? process.env);
+    if (!hmacSecret) {
+      logger.warn(
+        {
+          chatRequestId: input.chatRequestId,
+          tenantId: input.tenantId,
+          userId: input.userId,
+          shadowRouteHookVersion: CHAT_CORE_V2_SHADOW_ROUTE_HOOK_VERSION,
+        },
+        'Chat Core v2 shadow route hook skipped because no HMAC secret is configured',
+      );
+      return { enabled: true, recorded: false, errorCode: 'shadow_route_hook_missing_hmac_secret' };
+    }
+
     const guess = classifyShadowRoute(input.normalizedText);
     const result = planChatCoreV2ShadowTurn({
       turnId: input.chatRequestId,
@@ -63,7 +78,7 @@ export function runChatCoreV2ShadowRouteHook(
     });
     const replayInput = {
       result,
-      contextPack: buildShadowRouteContextPack(input, guess),
+      contextPack: buildShadowRouteContextPack(input, guess, hmacSecret),
       response: buildShadowRouteResponse(result),
       createdAt: input.now?.toISOString(),
     };
@@ -95,14 +110,18 @@ export function runChatCoreV2ShadowRouteHook(
 function buildShadowRouteContextPack(
   input: RunChatCoreV2ShadowRouteHookInput,
   guess: ChatCoreV2ShadowRouteGuess,
+  hmacSecret: string,
 ): Record<string, unknown> {
   return {
     shadowRouteHookVersion: CHAT_CORE_V2_SHADOW_ROUTE_HOOK_VERSION,
-    messageHash: hashText(input.normalizedText),
+    hashVersion: CHAT_CORE_V2_SHADOW_ROUTE_HASH_VERSION,
+    messageHash: hmacShadowRouteValue(input, hmacSecret, 'message', input.normalizedText),
     messageLength: input.normalizedText.length,
     attachmentsCount: input.attachmentsCount ?? 0,
-    clientMessageHash: input.clientMessageId ? hashText(input.clientMessageId) : undefined,
-    userMessageId: input.userMessageId,
+    clientMessageHash: input.clientMessageId
+      ? hmacShadowRouteValue(input, hmacSecret, 'client_message_id', input.clientMessageId)
+      : undefined,
+    userMessageHash: hmacShadowRouteValue(input, hmacSecret, 'user_message_id', input.userMessageId),
     locale: input.locale ?? undefined,
     timezone: input.timezone ?? undefined,
     guessedIntent: guess.intent,
@@ -134,6 +153,21 @@ function buildShadowRouteResponse(result: ChatCoreV2ShadowTurnResult): ChatCoreV
   };
 }
 
-function hashText(value: string): string {
-  return createHash('sha256').update(value).digest('hex').slice(0, 16);
+function resolveShadowRouteHmacSecret(env: NodeJS.ProcessEnv): string | null {
+  const secret = env.CHAT_CORE_V2_SHADOW_ROUTE_HMAC_SECRET
+    ?? env.CHAT_CORE_V2_WRITE_INTENT_HASH_SECRET
+    ?? env.CLASSIFY_SHADOW_HASH_SECRET;
+  const trimmed = secret?.trim();
+  return trimmed ? trimmed : null;
+}
+
+function hmacShadowRouteValue(
+  input: Pick<RunChatCoreV2ShadowRouteHookInput, 'tenantId' | 'userId'>,
+  hmacSecret: string,
+  kind: 'message' | 'client_message_id' | 'user_message_id',
+  value: string,
+): string {
+  return createHmac('sha256', hmacSecret)
+    .update(`${input.tenantId}:${input.userId}:${kind}:${value}`)
+    .digest('hex');
 }

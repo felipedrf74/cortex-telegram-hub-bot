@@ -135,6 +135,21 @@ describe('ChatCoreV2 action gateway', () => {
     expect(JSON.stringify(result.telemetry)).not.toContain('comprar suplementos');
   });
 
+  it('does not use a hardcoded fallback secret when write-intent HMAC config is missing', () => {
+    const { CHAT_CORE_V2_WRITE_INTENT_HASH_SECRET, ...envWithoutSecret } = baseInput.env;
+    expect(CHAT_CORE_V2_WRITE_INTENT_HASH_SECRET).toBe('test-secret');
+
+    const result = runChatCoreV2ActionGateway({
+      ...baseInput,
+      env: envWithoutSecret as NodeJS.ProcessEnv,
+      shouldAutoExecute: () => true,
+    });
+
+    expect(result.kind).toBe('resolved_execute');
+    expect(result.telemetry.messageHash).toBe('hmac_unavailable');
+    expect(JSON.stringify(result.telemetry)).not.toContain('comprar suplementos');
+  });
+
   it('blocks negated write intents before legacy fallthrough in enforce mode', () => {
     const result = runChatCoreV2ActionGateway({
       ...baseInput,

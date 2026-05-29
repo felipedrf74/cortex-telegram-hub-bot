@@ -37,6 +37,35 @@ is not a final delivery handoff because Phase 2+ runtime gates remain blocked.
   acceleration, or a smaller model.
   - Artifact: `data/chatcore-v2-planner-benchmarks/2026-05-28T22-30-16-965Z.json`.
     `num_ctx=128` remains rejected (regressed).
+- [x] D3 queue fallback policy helper implemented and wired fail-closed into
+  local chat:
+  `src/services/chat-core-v2/queue-fallback-policy.ts`,
+  `src/services/chat-core-v2/local-chat-orchestrator.ts`
+  - Cloud is selected only when `CHAT_CORE_V2_ALLOW_CLOUD_FALLBACK=true`,
+    `CHAT_CORE_V2_QUEUE_FALLBACK_MODE=cloud_allowlist`, queue pressure crosses
+    threshold, and `buildCloudAllowlistPacket` already returned `ok: true`.
+  - Denied cloud packets background/wait/fail visibly; the policy does not
+    widen cloud context and does not permit raw-message fallback.
+  - `src/services/chat-core-v2/cloud-allowlist-answer.ts` dispatches only the
+    positive allowlist packet prompt to the approved cloud provider. The local
+    chat branch can use a supplied safe packet, or build a safe generic-answer
+    packet via `src/services/chat-core-v2/cloud-allowlist-answer-packet.ts`
+    only when the explicit producer, budget, HMAC secret, cloud fallback, and
+    queue-fallback flags are all enabled. The producer emits only HMAC-scoped
+    turn/evidence fingerprints plus coarse capability IDs, denies private or
+    app-state requests, and never routes a queued raw prompt/recent-turn
+    context to cloud.
+  - 2026-05-29 hardening (independent multi-agent QA, 0 confirmed blocking/major):
+    the producer now also denies sensitive personal/medical/mental-health/legal/
+    financial-distress topics (deny-when-uncertain) so they fail closed to local
+    instead of becoming cloud-escalation candidates; negative tests assert the
+    denial. The queue-fallback observability event carries only safe enums
+    (decision kind, reasonCode, cloudDenialReason, routeMethod, surface, locale)
+    via the failure-observability sanitizer (`cloudDenialReason` added to its
+    string allowlist); a contract test asserts raw metadata is dropped while the
+    safe enums survive. NOTE: this is still a generic-answer slice — broader
+    domain-specific (tasks/calendar/finance/health/training/email) packet
+    production and Phase 2 shadow gates remain open.
 - [x] D4 `ChatTurnPlanMicro` contract and validator implemented:
   `src/services/chat-core-v2/plan-schema.ts`
 - [x] D5 evidence taxonomy / answer-draft binding drafted:
@@ -84,12 +113,27 @@ is not a final delivery handoff because Phase 2+ runtime gates remain blocked.
 - [x] Exact task completion resolves by canonical task ID and verifies before a
   success claim
 - [x] Task-with-subtasks path is preview-only
+- [x] ChatCoreV2 deterministic task reads now use a provider-aware local read
+  (`listTasksForUser`) so native chat-created tasks in `native_tasks` and
+  legacy/local Nexus rows in `unified_tasks` are both visible without provider
+  API calls. Regression pinned by
+  `__tests__/services/task-store/task-service.test.ts`,
+  `__tests__/services/chat-core-v2-deterministic-read-route.test.ts`, and
+  `__tests__/api/chat-routes.test.ts`.
+- [x] iOS natural-language task creation typed in chat now falls through to the
+  server `/api/v1/chat/message` pipeline instead of the local task REST
+  fastpath, preserving ChatCoreV2 preview/confirmation/subtask parsing.
 - [x] Local Docker SQLite journal mode supports simulator-visible committed
   rows via `SQLITE_JOURNAL_MODE=DELETE`
 - [x] Customer-facing usage payloads hide raw dollar caps/remaining spend
 - [x] Content script generation local sandbox path uses container-safe engine
   URL configuration
 - [x] Apple Health sleep intervals are accepted for Home day-dial sleep totals
+- [x] iOS recipe-chat parsing accepts the backend labelled title format
+  (`**Title**` followed by the name line) and ignores stray section labels as
+  ingredients/steps; unit tests cover the regression.
+- [x] iOS slow local-LLM progress copy no longer shows internal
+  action/idempotency wording for long recipe/answer generation.
 
 ## Peer Review P0 Fixes (Claude, 2026-05-28)
 
@@ -118,6 +162,13 @@ is not a final delivery handoff because Phase 2+ runtime gates remain blocked.
 - [x] D7 domain-adapter, D13 cloud-allowlist, D15 failure-observability reviewed
   (tenant/user IDs at every boundary; positive-allowlist + tenant-scoped HMAC;
   safe-metadata normalizer). D2/D5 docs + D4 packet validators review pending.
+- [x] Shadow route hook now uses HMAC-only message/client/user-message
+  identifiers and skips recording when no HMAC secret is configured. Focused
+  tests cover no raw text/IDs in replay bundles and secret/tenant/user hash
+  sensitivity.
+- [x] Write-intent guard telemetry no longer falls back to a hardcoded local-dev
+  HMAC secret. Missing HMAC config emits the non-correlatable
+  `hmac_unavailable` sentinel while still excluding raw message text.
 
 ## iOS Test Execution Fix (Claude, 2026-05-29)
 
@@ -186,10 +237,28 @@ failures still required for the Phase 2 gate.
   - Latest: 312 tests passed across 37 files after the M1/M2 peer-review fixes
     (recipe success-claim guard scoping, read-fast-path kill-switch gating)
 - [x] `npm run verify`
-  - Latest: 736 files / 10,859 tests passed (exit 0) after the M1/M2 peer-review
-    fixes; typecheck + full Vitest + build all green
+  - Latest: 741 files / 10,894 tests passed (exit 0) after the D3
+    queue-fallback local-chat preflight, packet-only cloud allowlist answer
+    dispatcher, safe generic-answer packet producer wiring, the sensitive-topic
+    deny gate, the queue-fallback observability enums, the read-only shadow
+    gate-readiness report, and the Layer-1 prepass recall@8 measurement harness;
+    typecheck + full Vitest all green
+- [x] D3 queue fallback focused gate
+  - Latest:
+    `npx vitest run __tests__/services/chat-core-v2-cloud-allowlist-answer-packet.test.ts __tests__/services/chat-core-v2-cloud-allowlist-answer.test.ts __tests__/services/chat-core-v2-queue-fallback-policy.test.ts __tests__/services/chat-core-v2-local-inference-concurrency-gate.test.ts __tests__/services/chat-core-v2-local-chat-orchestrator.test.ts __tests__/services/chat-core-v2-activation-contracts.test.ts --pool=forks --poolOptions.forks.singleFork=true`
+    passed: 6 files / 70 tests (after the sensitive-topic deny + locale/cloudDenialReason observability assertions).
 - [x] `git diff --check`
-  - Latest: clean after atom-packet additions
+  - Latest: clean after shadow-route HMAC additions
+- [x] Provider-aware task-read focused gate
+  - Latest:
+    `git diff --check && npx tsc --noEmit && npx vitest run __tests__/services/task-store/task-service.test.ts __tests__/services/chat-core-v2-deterministic-read-route.test.ts __tests__/api/chat-routes.test.ts -t "keeps Chat Core v2 deterministic task reads available|listTasksForUser|answers task summary" --pool=forks --poolOptions.forks.singleFork=true`
+    passed: 3 files / 4 focused tests passed, 127 skipped.
+- [x] iOS default scheme verification
+  - Latest:
+    `xcodebuild test -project "Nexus Hub.xcodeproj" -scheme "Nexus Hub" -destination 'platform=iOS Simulator,name=iPhone 17 Pro' -parallel-testing-enabled NO`
+    passed: 1439 XCTest tests / 0 failures, plus 10 Swift Testing tests / 0
+    failures. `Nexus HubUITests` target builds but remains skipped in the
+    default scheme.
 
 ## Blocked Evidence
 
@@ -199,11 +268,32 @@ failures still required for the Phase 2 gate.
   `node scripts/verify-agent-lanes.mjs --work-order docs/qa/work-orders/WO-chatcore-v2-production-activation.md`
   both passed.
 - [ ] Phase 2 plan-only shadow:
-  D3 gate met for serialized execution only; the full-suite run shows
-  concurrent/sustained exceed the gate (~10s p95) on current hardware, so
-  multi-user shadow needs a planner concurrency cap/queue, hardware
-  acceleration, or a smaller model. Also still blocked by peer review of
-  D1-D16, real corpus labels, shadow storage, repair loop, privacy checks, and
-  rollout tests.
+  Shadow plan/route persistence is now implemented and privacy-first
+  (`chat_v2_replay_bundles`/`chat_v2_trace_spans`: redacted + HMAC-only +
+  retention-policied; table-level no-raw-storage tests in
+  `chat-core-v2-shadow-route-hook.test.ts`), wired and gated default-off, and a
+  read-only gate-readiness report
+  (`src/services/chat-core-v2/shadow-gate-readiness.ts`,
+  `evaluateChatCoreV2ShadowGateReadiness`; tests in
+  `chat-core-v2-shadow-gate-readiness.test.ts`) measures the thresholds. The
+  GATE itself remains UNMET: >=50 real shadow rows have not accumulated (the
+  shadow runtime is default-off, so 0 rows by default), and recall@8 on a
+  peer-reviewed labeled corpus is still required (`gateMet` is hard-coded false
+  in the report until both hold). D3 latency is met for serialized execution
+  only; multi-user shadow also needs a planner concurrency cap/queue, hardware
+  acceleration, or a smaller model. Still blocked by peer review of D1-D16,
+  real corpus labels, repair loop, privacy checks, and rollout tests.
+- [ ] Phase 2 recall@8:
+  Read-only Layer-1 prepass recall@8 harness implemented
+  (`src/services/chat-core-v2/prepass-recall-eval.ts`,
+  `evaluateGoldenCorpusPrepassRecallAtK`; tests in
+  `chat-core-v2-prepass-recall-eval.test.ts`). Synthetic baseline over the seed
+  corpus = recall@8 **0.563** (148/263 scored); top misses are
+  `cooking.recipe_answer` and `content.draft_assist` (the prepass candidate
+  selection is a contract helper, not yet live-wired, and lacks
+  cooking/content/write candidate buckets). This is a SYNTHETIC baseline only
+  and does NOT meet the gate: the real gate requires a peer-reviewed labeled
+  corpus, and recall must not be tuned to the synthetic corpus (overfitting).
+  UNMET.
 - [ ] Production verification:
   no production deploy authorized.

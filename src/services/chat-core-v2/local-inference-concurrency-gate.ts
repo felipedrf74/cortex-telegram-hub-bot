@@ -20,7 +20,14 @@
  */
 
 let activeCount = 0;
-const waiters: Array<() => void> = [];
+const waiters: Array<{ enqueuedAt: number; resolve: () => void }> = [];
+
+export interface LocalInferenceGateSnapshot {
+  activeCount: number;
+  queuedCount: number;
+  maxConcurrency: number;
+  estimatedWaitMs?: number;
+}
 
 export function resolveLocalInferenceMaxConcurrency(
   env: NodeJS.ProcessEnv = process.env,
@@ -50,15 +57,30 @@ export async function runWithLocalInferenceSlot<T>(
   }
 }
 
+export function getLocalInferenceGateSnapshot(
+  env: NodeJS.ProcessEnv = process.env,
+): LocalInferenceGateSnapshot {
+  const oldestWaiter = waiters[0];
+  return {
+    activeCount,
+    queuedCount: waiters.length,
+    maxConcurrency: resolveLocalInferenceMaxConcurrency(env),
+    estimatedWaitMs: oldestWaiter ? Math.max(0, Date.now() - oldestWaiter.enqueuedAt) : undefined,
+  };
+}
+
 function acquireSlot(max: number): Promise<void> {
   if (activeCount < max) {
     activeCount += 1;
     return Promise.resolve();
   }
   return new Promise<void>((resolve) => {
-    waiters.push(() => {
-      activeCount += 1;
-      resolve();
+    waiters.push({
+      enqueuedAt: Date.now(),
+      resolve: () => {
+        activeCount += 1;
+        resolve();
+      },
     });
   });
 }
@@ -66,7 +88,7 @@ function acquireSlot(max: number): Promise<void> {
 function releaseSlot(): void {
   activeCount = Math.max(0, activeCount - 1);
   const next = waiters.shift();
-  if (next) next();
+  if (next) next.resolve();
 }
 
 /** Test-only: reset module-scoped slot state between tests. */

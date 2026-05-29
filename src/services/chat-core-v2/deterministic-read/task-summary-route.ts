@@ -1,6 +1,6 @@
 // Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
 
-import { listTasks } from '../../task-store/task-service';
+import { listTasksForUser } from '../../task-store/task-service';
 import type { NormalizedTask } from '../../task-store/types';
 import {
   buildChatCoreV2ReadContextPack,
@@ -32,7 +32,11 @@ export function buildTaskSummaryRoute(
 ): ChatCoreV2DeterministicReadRouteResult | null {
   const now = input.now ?? new Date();
   const timezone = normalizeTimezone(input.timezone);
-  const pendingTasks = listTasks(input.userId, { status: 'pending' });
+  // Provider-aware read: native users' chat-created tasks live in
+  // `native_tasks`, not the unified store. listTasksForUser routes by the
+  // user's resolved provider so this read can't report "no open tasks" right
+  // after a chat created one.
+  const pendingTasks = listTasksForUser(input.userId, { status: 'pending' });
   const data = summarizeTasks(pendingTasks, timezone, now);
   const readModel = buildChatCoreV2ReadModelResult<ChatCoreV2TaskSummaryData>({
     capabilityId: TASKS_TODAY_SUMMARY_CAPABILITY,

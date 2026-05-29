@@ -2,12 +2,17 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const mocks = vi.hoisted(() => ({
   dispatchLocalReasoning: vi.fn(),
+  dispatchCloudAllowlistAnswer: vi.fn(),
 }));
 
 vi.mock('../../src/services/provider-registry', () => ({
   ensureActiveProvider: vi.fn(() => ({
     dispatchLocalReasoning: mocks.dispatchLocalReasoning,
   })),
+}));
+
+vi.mock('../../src/services/chat-core-v2/cloud-allowlist-answer', () => ({
+  dispatchCloudAllowlistAnswer: mocks.dispatchCloudAllowlistAnswer,
 }));
 
 import {
@@ -18,6 +23,7 @@ import {
   resolveChatCoreV2LocalChatLlmMode,
   runChatCoreV2LocalChatTurn,
 } from '../../src/services/chat-core-v2/local-chat-orchestrator';
+import { _resetLocalInferenceGateForTests } from '../../src/services/chat-core-v2/local-inference-concurrency-gate';
 
 function baseEnv(overrides: Record<string, string | undefined> = {}): NodeJS.ProcessEnv {
   return {
@@ -33,6 +39,8 @@ function baseEnv(overrides: Record<string, string | undefined> = {}): NodeJS.Pro
 describe('ChatCoreV2 local chat orchestrator', () => {
   beforeEach(() => {
     mocks.dispatchLocalReasoning.mockReset();
+    mocks.dispatchCloudAllowlistAnswer.mockReset();
+    _resetLocalInferenceGateForTests();
   });
 
   it('keeps the master orchestrator switch authoritative', () => {
@@ -102,6 +110,212 @@ describe('ChatCoreV2 local chat orchestrator', () => {
       systemContext: expect.stringContaining('Answer the CURRENT message directly'),
       prompt: expect.stringContaining('current: Como posso manter foco hoje?'),
     }));
+  });
+
+  it('fails visibly on local queue pressure when explicitly configured without using cloud', async () => {
+    const env = baseEnv({
+      CHAT_CORE_V2_LOCAL_INFERENCE_MAX_CONCURRENCY: '1',
+      CHAT_CORE_V2_QUEUE_FALLBACK_MODE: 'fail_visible',
+      CHAT_CORE_V2_QUEUE_CLOUD_AFTER_QUEUED_COUNT: '0',
+    });
+    let releaseFirst!: () => void;
+    mocks.dispatchLocalReasoning.mockImplementationOnce(async () => {
+      await new Promise<void>((resolve) => { releaseFirst = resolve; });
+      return {
+        text: 'Primeira resposta.',
+        providerMetadata: { providerUsed: 'ollama', modelUsed: 'qwen2.5:3b-instruct-q4_K_M' },
+      };
+    });
+
+    const first = runChatCoreV2LocalChatTurn({
+      normalizedText: 'Como mantenho foco?',
+      userId: 42,
+      tenantId: 84,
+      requestId: 'req-queue-first',
+      locale: 'pt-BR',
+      surface: 'ios',
+      env,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    const second = await runChatCoreV2LocalChatTurn({
+      normalizedText: 'Dá-me uma próxima ação pequena.',
+      userId: 42,
+      tenantId: 84,
+      requestId: 'req-queue-second',
+      locale: 'pt-BR',
+      surface: 'ios',
+      env,
+    });
+
+    expect(second?.degraded).toBe(true);
+    expect(second?.response.metadata).toEqual(expect.objectContaining({
+      reason: 'local_queue_saturated',
+      queueFallbackDecision: expect.objectContaining({
+        kind: 'fail_visible',
+        reasonCode: 'fail_visible_configured',
+      }),
+    }));
+    expect(mocks.dispatchLocalReasoning).toHaveBeenCalledTimes(1);
+
+    releaseFirst();
+    await first;
+  });
+
+  it('uses only a supplied positive allowlist packet for queue cloud fallback', async () => {
+    const env = baseEnv({
+      CHAT_CORE_V2_ALLOW_CLOUD_FALLBACK: 'true',
+      CHAT_CORE_V2_LOCAL_INFERENCE_MAX_CONCURRENCY: '1',
+      CHAT_CORE_V2_QUEUE_FALLBACK_MODE: 'cloud_allowlist',
+      CHAT_CORE_V2_QUEUE_CLOUD_AFTER_QUEUED_COUNT: '0',
+    });
+    let releaseFirst!: () => void;
+    mocks.dispatchLocalReasoning.mockImplementationOnce(async () => {
+      await new Promise<void>((resolve) => { releaseFirst = resolve; });
+      return {
+        text: 'Primeira resposta.',
+        providerMetadata: { providerUsed: 'ollama', modelUsed: 'qwen2.5:3b-instruct-q4_K_M' },
+      };
+    });
+    mocks.dispatchCloudAllowlistAnswer.mockResolvedValue({
+      text: 'Preciso de mais contexto seguro para responder com qualidade.',
+      providerMetadata: {
+        providerUsed: 'gemini',
+        modelUsed: 'gemini-2.5-pro',
+        privacyAction: 'cloud_allowlist_packet_only',
+      },
+    });
+
+    const first = runChatCoreV2LocalChatTurn({
+      normalizedText: 'Como mantenho foco?',
+      userId: 42,
+      tenantId: 84,
+      requestId: 'req-cloud-first',
+      locale: 'pt-BR',
+      surface: 'ios',
+      env,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    const packet = {
+      schemaVersion: 'cloud_allowlist_packet@1.0.0' as const,
+      intent: 'answer' as const,
+      capabilityId: 'chat.general_answer',
+      domain: 'content' as const,
+      hmacEntityIds: [],
+      evidenceFingerprints: ['evidence:general-focus'],
+      locale: 'pt-BR',
+      complexityScore: 0.2,
+      escalationReason: 'cloud_allowlist_candidate' as const,
+    };
+    const second = await runChatCoreV2LocalChatTurn({
+      normalizedText: 'Dá-me uma próxima ação pequena.',
+      userId: 42,
+      tenantId: 84,
+      requestId: 'req-cloud-second',
+      locale: 'pt-BR',
+      surface: 'ios',
+      cloudAllowlistPacket: { ok: true, packet },
+      env,
+    });
+
+    expect(second?.response.routeMethod).toBe('chat-core-v2-cloud-allowlist');
+    expect(second?.response.metadata).toEqual(expect.objectContaining({
+      type: 'chat_core_v2_cloud_allowlist',
+      queueFallbackDecision: expect.objectContaining({
+        kind: 'use_cloud_allowlist',
+        reasonCode: 'cloud_allowlist_packet_safe',
+      }),
+    }));
+    expect(mocks.dispatchCloudAllowlistAnswer).toHaveBeenCalledWith(packet, {
+      userId: 42,
+      tenantId: 84,
+      requestId: 'req-cloud-second',
+    });
+    expect(mocks.dispatchLocalReasoning).toHaveBeenCalledTimes(1);
+
+    releaseFirst();
+    await first;
+  });
+
+  it('builds a packet-only cloud fallback from safe local-chat metadata under explicit producer flags', async () => {
+    const env = baseEnv({
+      CHAT_CORE_V2_ALLOW_CLOUD_FALLBACK: 'true',
+      CHAT_CORE_V2_LOCAL_INFERENCE_MAX_CONCURRENCY: '1',
+      CHAT_CORE_V2_QUEUE_FALLBACK_MODE: 'cloud_allowlist',
+      CHAT_CORE_V2_QUEUE_CLOUD_AFTER_QUEUED_COUNT: '0',
+      CHAT_CORE_V2_CLOUD_ALLOWLIST_PACKET_PRODUCER_ENABLED: 'true',
+      CHAT_CORE_V2_CLOUD_ALLOWLIST_BUDGET_AVAILABLE: 'true',
+      CHAT_CORE_V2_CLOUD_ALLOWLIST_HMAC_SECRET: 'test-cloud-allowlist-secret',
+    });
+    let releaseFirst!: () => void;
+    mocks.dispatchLocalReasoning.mockImplementationOnce(async () => {
+      await new Promise<void>((resolve) => { releaseFirst = resolve; });
+      return {
+        text: 'Primeira resposta.',
+        providerMetadata: { providerUsed: 'ollama', modelUsed: 'qwen2.5:3b-instruct-q4_K_M' },
+      };
+    });
+    mocks.dispatchCloudAllowlistAnswer.mockResolvedValue({
+      text: 'Escolhe uma próxima ação pequena e limita o escopo.',
+      providerMetadata: {
+        providerUsed: 'gemini',
+        modelUsed: 'gemini-2.5-pro',
+        privacyAction: 'cloud_allowlist_packet_only',
+      },
+    });
+
+    const first = runChatCoreV2LocalChatTurn({
+      normalizedText: 'Como mantenho foco?',
+      userId: 42,
+      tenantId: 84,
+      requestId: 'req-producer-first',
+      locale: 'pt-BR',
+      surface: 'ios',
+      env,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    const second = await runChatCoreV2LocalChatTurn({
+      normalizedText: 'Dá-me um próximo passo pequeno para hoje.',
+      userId: 42,
+      tenantId: 84,
+      requestId: 'req-producer-second',
+      locale: 'pt-BR',
+      surface: 'ios',
+      env,
+    });
+
+    expect(second?.response.routeMethod).toBe('chat-core-v2-cloud-allowlist');
+    expect(second?.response.metadata).toEqual(expect.objectContaining({
+      type: 'chat_core_v2_cloud_allowlist',
+      queueFallbackDecision: expect.objectContaining({
+        kind: 'use_cloud_allowlist',
+        reasonCode: 'cloud_allowlist_packet_safe',
+      }),
+      queueFallbackObservabilityEvent: expect.objectContaining({
+        failureMode: 'local_queue_saturation',
+        safeMetadata: expect.objectContaining({
+          routeMethod: 'chat-core-v2-local-chat',
+          surface: 'ios',
+          reasonCode: 'cloud_allowlist_packet_safe',
+          locale: 'pt-BR',
+        }),
+      }),
+    }));
+    const packet = mocks.dispatchCloudAllowlistAnswer.mock.calls[0]?.[0];
+    expect(packet).toEqual(expect.objectContaining({
+      capabilityId: 'chat.general_next_step',
+      domain: 'content',
+      locale: 'pt-BR',
+    }));
+    expect(JSON.stringify(packet)).not.toContain('Dá-me');
+    expect(JSON.stringify(packet)).not.toContain('próximo passo');
+    expect(JSON.stringify(packet)).not.toContain('req-producer-second');
+    expect(mocks.dispatchLocalReasoning).toHaveBeenCalledTimes(1);
+
+    releaseFirst();
+    await first;
   });
 
   it('can require structured JSON output when the feature flag is enabled', async () => {

@@ -17,6 +17,7 @@ import type {
 
 vi.mock('../../src/services/task-store/task-service', () => ({
   listTasks: vi.fn(),
+  listTasksForUser: vi.fn(),
 }));
 
 vi.mock('../../src/services/decision-center', () => ({
@@ -70,7 +71,7 @@ import { getMonthlyBudgetView, getMonthlySummary } from '../../src/services/fina
 import { getIntegrationSummary } from '../../src/services/integration-status';
 import { listNotificationCenterItems } from '../../src/services/notification-orchestrator';
 import { listSecretaryAgendaItems } from '../../src/services/secretary-scheduling-arbitrator';
-import { listTasks } from '../../src/services/task-store/task-service';
+import { listTasksForUser } from '../../src/services/task-store/task-service';
 import {
   getActivePlan,
   getSessionsForWeek,
@@ -468,7 +469,7 @@ function integrationSummary(overrides: Partial<IntegrationSummary> = {}): Integr
 
 describe('Chat Core v2 deterministic read route', () => {
   beforeEach(() => {
-    vi.mocked(listTasks).mockReset();
+    vi.mocked(listTasksForUser).mockReset();
     vi.mocked(getDecisionSummary).mockReset();
     vi.mocked(listNotificationCenterItems).mockReset();
     vi.mocked(getIntegrationSummary).mockReset();
@@ -488,7 +489,7 @@ describe('Chat Core v2 deterministic read route', () => {
   });
 
   it('stays disabled unless both global and read flags are explicitly enabled', () => {
-    vi.mocked(listTasks).mockReturnValue([]);
+    vi.mocked(listTasksForUser).mockReturnValue([]);
 
     const disabled = tryBuildChatCoreV2DeterministicReadRoute({
       normalizedText: 'What tasks do I have today?',
@@ -498,7 +499,7 @@ describe('Chat Core v2 deterministic read route', () => {
       env: {},
     });
     expect(disabled).toBeNull();
-    expect(listTasks).not.toHaveBeenCalled();
+    expect(listTasksForUser).not.toHaveBeenCalled();
 
     const globalOnly = tryBuildChatCoreV2DeterministicReadRoute({
       normalizedText: 'What tasks do I have today?',
@@ -508,7 +509,7 @@ describe('Chat Core v2 deterministic read route', () => {
       env: { CHAT_CORE_V2_ENABLED: 'true' } as NodeJS.ProcessEnv,
     });
     expect(globalOnly).toBeNull();
-    expect(listTasks).not.toHaveBeenCalled();
+    expect(listTasksForUser).not.toHaveBeenCalled();
     expect(getDecisionSummary).not.toHaveBeenCalled();
   });
 
@@ -527,7 +528,7 @@ describe('Chat Core v2 deterministic read route', () => {
 
     expect(result).not.toBeNull();
     expect(getIntegrationSummary).toHaveBeenCalledWith(42);
-    expect(listTasks).not.toHaveBeenCalled();
+    expect(listTasksForUser).not.toHaveBeenCalled();
     expect(getDecisionSummary).not.toHaveBeenCalled();
     expect(listNotificationCenterItems).not.toHaveBeenCalled();
     expect(result?.capabilityId).toBe('connections.status');
@@ -584,7 +585,7 @@ describe('Chat Core v2 deterministic read route', () => {
     expect(result).not.toBeNull();
     expect(getMonthlySummary).toHaveBeenCalledWith(42, '2026-05', { tenantId: 84 });
     expect(getMonthlyBudgetView).toHaveBeenCalledWith(42, '2026-05', { tenantId: 84 });
-    expect(listTasks).not.toHaveBeenCalled();
+    expect(listTasksForUser).not.toHaveBeenCalled();
     expect(getDecisionSummary).not.toHaveBeenCalled();
     expect(listNotificationCenterItems).not.toHaveBeenCalled();
     expect(getIntegrationSummary).not.toHaveBeenCalled();
@@ -649,7 +650,7 @@ describe('Chat Core v2 deterministic read route', () => {
     expect(getWeeksForPlan).toHaveBeenCalledWith(101);
     expect(getSessionsForWeek).toHaveBeenCalledWith(201);
     expect(getWeeklyAdherence).toHaveBeenCalledWith(101, 201);
-    expect(listTasks).not.toHaveBeenCalled();
+    expect(listTasksForUser).not.toHaveBeenCalled();
     expect(getDecisionSummary).not.toHaveBeenCalled();
     expect(listNotificationCenterItems).not.toHaveBeenCalled();
     expect(getIntegrationSummary).not.toHaveBeenCalled();
@@ -726,7 +727,7 @@ describe('Chat Core v2 deterministic read route', () => {
     expect(getTopics).toHaveBeenCalledWith(42, { includeTerminal: false, limit: 20 });
     expect(getContentDeskItems).toHaveBeenCalledWith(42, 5);
     expect(getRankedContentSignals).toHaveBeenCalledWith(42, 5);
-    expect(listTasks).not.toHaveBeenCalled();
+    expect(listTasksForUser).not.toHaveBeenCalled();
     expect(getDecisionSummary).not.toHaveBeenCalled();
     expect(listNotificationCenterItems).not.toHaveBeenCalled();
     expect(getIntegrationSummary).not.toHaveBeenCalled();
@@ -826,7 +827,7 @@ describe('Chat Core v2 deterministic read route', () => {
       includeExpired: true,
       limit: 100,
     });
-    expect(listTasks).not.toHaveBeenCalled();
+    expect(listTasksForUser).not.toHaveBeenCalled();
     expect(getDecisionSummary).not.toHaveBeenCalled();
     expect(listNotificationCenterItems).not.toHaveBeenCalled();
     expect(getIntegrationSummary).not.toHaveBeenCalled();
@@ -900,7 +901,7 @@ describe('Chat Core v2 deterministic read route', () => {
   });
 
   it('answers task summary questions without model calls or provider reads', () => {
-    vi.mocked(listTasks).mockReturnValue([
+    vi.mocked(listTasksForUser).mockReturnValue([
       task({ id: 1, title: 'Review proposal', dueDate: '2026-05-24', priority: 3 }),
       task({ id: 2, title: 'Send invoice', dueDate: '2026-05-23', priority: 2 }),
       task({ id: 3, title: 'Buy groceries', dueDate: '2026-05-26', priority: 1 }),
@@ -917,7 +918,7 @@ describe('Chat Core v2 deterministic read route', () => {
     });
 
     expect(result).not.toBeNull();
-    expect(listTasks).toHaveBeenCalledWith(42, { status: 'pending' });
+    expect(listTasksForUser).toHaveBeenCalledWith(42, { status: 'pending' });
     expect(result?.response).toMatchObject({
       schemaVersion: 'chat_response_v2@1.0.0',
       kind: 'message',
@@ -990,7 +991,7 @@ describe('Chat Core v2 deterministic read route', () => {
       tenantId: 84,
       includeInactive: false,
     });
-    expect(listTasks).not.toHaveBeenCalled();
+    expect(listTasksForUser).not.toHaveBeenCalled();
     expect(getDecisionSummary).not.toHaveBeenCalled();
     expect(listNotificationCenterItems).not.toHaveBeenCalled();
     expect(getIntegrationSummary).not.toHaveBeenCalled();
@@ -1172,7 +1173,7 @@ describe('Chat Core v2 deterministic read route', () => {
 
     expect(result).not.toBeNull();
     expect(getDecisionSummary).toHaveBeenCalledWith(42, 84, 3);
-    expect(listTasks).not.toHaveBeenCalled();
+    expect(listTasksForUser).not.toHaveBeenCalled();
     expect(result?.capabilityId).toBe('decision_center.summary');
     expect(result?.response).toMatchObject({
       schemaVersion: 'chat_response_v2@1.0.0',
@@ -1233,7 +1234,7 @@ describe('Chat Core v2 deterministic read route', () => {
   });
 
   it('localizes deterministic task summaries for Portuguese users', () => {
-    vi.mocked(listTasks).mockReturnValue([
+    vi.mocked(listTasksForUser).mockReturnValue([
       task({ id: 1, title: 'Enviar proposta', dueDate: '2026-05-24', priority: 1 }),
     ]);
 
@@ -1302,7 +1303,7 @@ describe('Chat Core v2 deterministic read route', () => {
       status: 'unread',
       limit: 200,
     });
-    expect(listTasks).not.toHaveBeenCalled();
+    expect(listTasksForUser).not.toHaveBeenCalled();
     expect(getDecisionSummary).not.toHaveBeenCalled();
     expect(result?.capabilityId).toBe('notifications.summary');
     expect(result?.response).toMatchObject({
@@ -1332,7 +1333,7 @@ describe('Chat Core v2 deterministic read route', () => {
   });
 
   it('does not intercept task writes or multi-domain questions', () => {
-    vi.mocked(listTasks).mockReturnValue([]);
+    vi.mocked(listTasksForUser).mockReturnValue([]);
 
     const write = tryBuildChatCoreV2DeterministicReadRoute({
       normalizedText: 'Create a task to call Joao tomorrow',
@@ -1407,7 +1408,7 @@ describe('Chat Core v2 deterministic read route', () => {
     expect(secretaryWrite).toBeNull();
     expect(financeWrite).toBeNull();
     expect(trainingWrite).toBeNull();
-    expect(listTasks).not.toHaveBeenCalled();
+    expect(listTasksForUser).not.toHaveBeenCalled();
     expect(getDecisionSummary).not.toHaveBeenCalled();
     expect(listNotificationCenterItems).not.toHaveBeenCalled();
     expect(getIntegrationSummary).not.toHaveBeenCalled();

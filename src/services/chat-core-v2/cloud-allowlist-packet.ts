@@ -107,6 +107,19 @@ export function hmacTenantScopedEntityId(input: {
   return `hmac:${input.entityType}:${digest}`;
 }
 
+export function hmacTenantScopedEvidenceFingerprint(input: {
+  tenantId: string;
+  hmacSecret: string;
+  sourceType: string;
+  sourceValue: string;
+}): string {
+  const digest = createHmac('sha256', input.hmacSecret)
+    .update(`${input.tenantId}:evidence:${input.sourceType}:${input.sourceValue}`)
+    .digest('hex')
+    .slice(0, 32);
+  return `hmac:evidence:${input.sourceType}:${digest}`;
+}
+
 function normalizeFingerprints(values: string[]): string[] {
   return [...new Set(values.map((value) => value.trim()).filter(Boolean))];
 }

@@ -40,6 +40,11 @@ owned_paths:
   - "src/services/chat-core-v2/**"
   - "src/services/chat/planner/**"
   - "src/services/skills/tasks/executor.ts"
+  # Added 2026-05-29: provider-aware token-zero task read so the chat
+  # deterministic-read sees native_tasks (read-after-write fix).
+  - "src/services/task-store/native-adapter.ts"
+  - "src/services/task-store/task-service.ts"
+  - "__tests__/services/task-store/task-service.test.ts"
   - "/Users/felipedominguez/Desktop/Nexus Hub IOS/Nexus Hub/AGENTS.md"
   - "/Users/felipedominguez/Desktop/Nexus Hub IOS/Nexus Hub/CLAUDE.md"
   - "/Users/felipedominguez/Desktop/Nexus Hub IOS/Nexus Hub/Nexus Hub/Core/AppEntitlementResolver.swift"
@@ -51,6 +56,10 @@ owned_paths:
   - "/Users/felipedominguez/Desktop/Nexus Hub IOS/Nexus Hub/Nexus Hub/Views/Chat/ChatView.swift"
   - "/Users/felipedominguez/Desktop/Nexus Hub IOS/Nexus Hub/Nexus Hub/Views/Chat/MessageBubble.swift"
   - "/Users/felipedominguez/Desktop/Nexus Hub IOS/Nexus Hub/Nexus Hub/Views/Chat/StructuredCards.swift"
+  # Added 2026-05-29: iOS test files updated to match the chat task-create
+  # server-routing and recipe-parser fixes.
+  - "/Users/felipedominguez/Desktop/Nexus Hub IOS/Nexus Hub/Nexus HubTests/ChatViewModelFastpathTests.swift"
+  - "/Users/felipedominguez/Desktop/Nexus Hub IOS/Nexus Hub/Nexus HubTests/MessageBubbleRecipeParsingTests.swift"
   - "/Users/felipedominguez/Desktop/Nexus Hub IOS/Nexus Hub/Nexus Hub/Views/Billing/UsageMeterView.swift"
   - "/Users/felipedominguez/Desktop/Nexus Hub IOS/Nexus Hub/Nexus Hub/Views/Content/ScriptGeneratorView.swift"
   - "/Users/felipedominguez/Desktop/Nexus Hub IOS/Nexus Hub/Nexus Hub/Views/Cooking/RecipeEditorView.swift"
@@ -540,6 +549,12 @@ CHAT_CORE_V2_ALLOW_CLOUD_FALLBACK=false
 CHAT_CORE_V2_DISABLE_NL_TOKEN_ZERO=true
 CHAT_CORE_V2_FORCE_CLARIFICATION_ON_PLAN_INVALID=true
 CHAT_CORE_V2_FORCE_EVIDENCE_FOR_FACTUAL_CLAIMS=true
+CHAT_CORE_V2_SHADOW_ROUTE_HOOK_ENABLED=false
+CHAT_CORE_V2_SHADOW_ROUTE_HMAC_SECRET=<generate-stable-secret>
+CHAT_CORE_V2_LOCAL_INFERENCE_MAX_CONCURRENCY=1
+CHAT_CORE_V2_QUEUE_FALLBACK_MODE=off|cloud_allowlist|background|fail_visible
+CHAT_CORE_V2_QUEUE_CLOUD_AFTER_QUEUED_COUNT=1
+CHAT_CORE_V2_QUEUE_CLOUD_AFTER_WAIT_MS=5000
 CHAT_CORE_V2_MAX_LOCAL_PLANNER_MS=15000
 CHAT_CORE_V2_MAX_COMPOSER_MS=15000
 CHAT_CORE_V2_PROGRESS_AFTER_MS=2000
@@ -548,6 +563,13 @@ CHAT_CORE_V2_BACKGROUND_AFTER_MS=20000
 
 Master switch rule: `CHAT_CORE_V2_ORCHESTRATOR_MODE=off` wins over all
 other flags and returns to legacy in one code path. CI must prove this.
+
+Queue fallback rule: local queue pressure may use cloud only when
+`CHAT_CORE_V2_ALLOW_CLOUD_FALLBACK=true`, `CHAT_CORE_V2_QUEUE_FALLBACK_MODE`
+is `cloud_allowlist`, and the turn already has a positive-allowlist cloud
+packet. If the packet is denied, the runtime must background, wait, or fail
+visibly; it must never widen the packet or send raw message text to cloud just
+because Ollama is busy.
 
 ## Numerical Gates
 
@@ -563,8 +585,11 @@ other flags and returns to legacy in one code path. CI must prove this.
 - auto-shadow-revert threshold behavior
 - WebSocket/reconnect `sequenceNumber` resume where enabled
 - background `superseded` transition and abort-token behavior
-- HMAC-only shadow/cloud identifiers
+- HMAC-only shadow/cloud identifiers; shadow-route hook must skip recording
+  rather than store plain hashes when no HMAC secret is configured
 - no raw private strings in cloud packets
+- queue fallback uses cloud only with a positive-allowlist packet; denied
+  packets background/wait/fail visibly without widening context
 - no unvalidated writes
 - no write success without verification
 - context hash mismatch forces re-read/replan/clarification

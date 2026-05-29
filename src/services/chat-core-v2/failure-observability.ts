@@ -6,6 +6,7 @@ export type ChatCoreV2FailureMode =
   | 'composer_mode_drift'
   | 'plan_repair_loop'
   | 'escalation_rate_to_35b'
+  | 'local_queue_saturation'
   | 'background_timeout'
   | 'cloud_allowlist_denial'
   | 'legacy_fallback_rate'
@@ -90,6 +91,12 @@ export const CHAT_CORE_V2_FAILURE_OBSERVABILITY_MATRIX: ChatCoreV2FailureObserva
     loggedWhere: 'trace span and dashboard',
     alertThreshold: '> 25% sustained',
   },
+  {
+    failureMode: 'local_queue_saturation',
+    detection: 'local inference queue exceeds configured queue-fallback threshold',
+    loggedWhere: 'trace span and queue fallback decision counter',
+    alertThreshold: '> 10% of turns per hour use queue fallback or wait beyond progress threshold',
+  },
 ];
 
 export function buildChatCoreV2FailureObservabilityEvent(input: {
@@ -149,5 +156,5 @@ function isSensitiveMetadataKey(key: string): boolean {
 }
 
 function isAllowlistedStringMetadataKey(key: string): boolean {
-  return /^(?:locale|language|domain|capabilityId|actionType|routeMethod|mode|surface|reasonCode)$/i.test(key);
+  return /^(?:locale|language|domain|capabilityId|actionType|routeMethod|mode|surface|reasonCode|cloudDenialReason)$/i.test(key);
 }

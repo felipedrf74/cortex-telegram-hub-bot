@@ -20,6 +20,8 @@
 import crypto from 'crypto';
 import { logger } from '../../utils/logger';
 import { getDb } from '../database';
+import { resolveTaskProvider } from './task-router';
+import { listNativeTasks } from './native-adapter';
 import {
   upsertTask,
   getTaskById,
@@ -212,6 +214,36 @@ export async function deleteTask(userId: number, taskId: number): Promise<void> 
  * details into call sites that should be provider-agnostic.
  */
 export function listTasks(userId: number, filters?: TaskFilters): NormalizedTask[] {
+  return getAllTasks(userId, filters);
+}
+
+/**
+ * Provider-aware token-zero read of a user's tasks.
+ *
+ * `listTasks`/`getAllTasks` only read `unified_tasks` (the synced-provider
+ * mirror). A native user's tasks live in `native_tasks` and are never
+ * mirrored there, so a unified-only read reports "no open tasks" right after
+ * a chat creates one. Route the read by the user's resolved provider so the
+ * chat deterministic read sees what was actually written. Stays synchronous
+ * and never calls a provider API — both stores are local SQLite.
+ */
+export function listTasksForUser(userId: number, filters?: TaskFilters): NormalizedTask[] {
+  if (resolveTaskProvider(userId) === 'nexus') {
+    const byProviderId = new Map<string, NormalizedTask>();
+
+    // Native tasks are the canonical store for Nexus-local users, but older
+    // local rows and some test/setup paths can still exist only in
+    // unified_tasks. Include both stores without double-counting rows that
+    // task-service mirrored into unified_tasks after a native adapter write.
+    for (const task of getAllTasks(userId, filters)) {
+      byProviderId.set(`${task.provider}:${task.externalId}`, task);
+    }
+    for (const task of listNativeTasks(userId, filters)) {
+      byProviderId.set(`${task.provider}:${task.externalId}`, task);
+    }
+
+    return Array.from(byProviderId.values());
+  }
   return getAllTasks(userId, filters);
 }
 

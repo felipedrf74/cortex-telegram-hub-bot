@@ -77,8 +77,10 @@ import {
   completeTask,
   deleteTask,
   listTasks,
+  listTasksForUser,
   getTask,
 } from '../../../src/services/task-store/task-service';
+import { NativeTaskAdapter } from '../../../src/services/task-store/native-adapter';
 import {
   registerAdapter,
   _resetAdaptersForTests,
@@ -289,5 +291,33 @@ describe('listTasks', () => {
 
     expect(listTasks(USER_ID, { status: 'pending' })).toHaveLength(0);
     expect(listTasks(USER_ID, { status: 'completed' })).toHaveLength(1);
+  });
+});
+
+describe('listTasksForUser (provider-aware read)', () => {
+  it('keeps legacy unified Nexus rows visible for native users', async () => {
+    // Some local/Nexus rows still exist only in unified_tasks (older writes,
+    // tests, and fallback paths). The provider-aware read must add native_tasks
+    // support without hiding those unified-only rows.
+    await createTask(USER_ID, { title: 'Legacy unified local task', priority: 3 });
+
+    const open = listTasksForUser(USER_ID, { status: 'pending' });
+    expect(open.some((task) => task.title === 'Legacy unified local task')).toBe(true);
+  });
+
+  it('routes a native user to native_tasks so chat-created tasks are visible to the read', async () => {
+    // No provider is connected → resolveTaskProvider(USER_ID) === 'nexus'.
+    // Chat task writes land in the native_tasks table (via NativeTaskAdapter),
+    // which the unified-only read never sees — that was the read-after-write
+    // bug: create a task in chat, then be told "no open tasks".
+    const native = new NativeTaskAdapter();
+    await native.createTask(USER_ID, { title: 'Chat-created native task', priority: 1 });
+
+    // Unified-only read (what the deterministic read used to call) misses it.
+    expect(listTasks(USER_ID).some((task) => task.title === 'Chat-created native task')).toBe(false);
+
+    // Provider-aware read routes to native_tasks and finds it.
+    const open = listTasksForUser(USER_ID, { status: 'pending' });
+    expect(open.some((task) => task.title === 'Chat-created native task')).toBe(true);
   });
 });

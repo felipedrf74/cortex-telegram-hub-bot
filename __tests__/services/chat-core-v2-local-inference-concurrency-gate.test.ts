@@ -1,7 +1,8 @@
-import { beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
   _resetLocalInferenceGateForTests,
+  getLocalInferenceGateSnapshot,
   resolveLocalInferenceMaxConcurrency,
   runWithLocalInferenceSlot,
 } from '../../src/services/chat-core-v2/local-inference-concurrency-gate';
@@ -30,6 +31,10 @@ describe('ChatCoreV2 local inference concurrency gate', () => {
     _resetLocalInferenceGateForTests();
   });
 
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
   it('defaults to serialized execution (max concurrency 1)', () => {
     expect(resolveLocalInferenceMaxConcurrency(envWith())).toBe(1);
     expect(resolveLocalInferenceMaxConcurrency(envWith('0'))).toBe(1);
@@ -54,5 +59,36 @@ describe('ChatCoreV2 local inference concurrency gate', () => {
     ).rejects.toThrow('boom');
     // A subsequent call must still be able to acquire a slot.
     await expect(runWithLocalInferenceSlot(async () => 'ok', env)).resolves.toBe('ok');
+  });
+
+  it('exposes a safe queue snapshot for queue-fallback policy decisions', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-05-29T12:00:00.000Z'));
+    const env = envWith('1');
+    let releaseFirst!: () => void;
+    const first = runWithLocalInferenceSlot(async () => {
+      await new Promise<void>((resolve) => { releaseFirst = resolve; });
+      return true;
+    }, env);
+
+    const second = runWithLocalInferenceSlot(async () => true, env);
+    await vi.runAllTimersAsync();
+    vi.setSystemTime(new Date('2026-05-29T12:00:03.000Z'));
+
+    expect(getLocalInferenceGateSnapshot(env)).toEqual({
+      activeCount: 1,
+      queuedCount: 1,
+      maxConcurrency: 1,
+      estimatedWaitMs: 3000,
+    });
+
+    releaseFirst();
+    await Promise.all([first, second]);
+    expect(getLocalInferenceGateSnapshot(env)).toEqual({
+      activeCount: 0,
+      queuedCount: 0,
+      maxConcurrency: 1,
+      estimatedWaitMs: undefined,
+    });
   });
 });

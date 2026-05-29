@@ -10,7 +10,19 @@ import {
   validateComposedAnswerDraft,
 } from './answer-composition';
 import { detectChatCoreV2WriteIntent } from './action-gateway';
-import { runWithLocalInferenceSlot } from './local-inference-concurrency-gate';
+import { dispatchCloudAllowlistAnswer } from './cloud-allowlist-answer';
+import { buildLocalChatCloudAllowlistPacket } from './cloud-allowlist-answer-packet';
+import type { CloudAllowlistPacketResult } from './cloud-allowlist-packet';
+import { buildChatCoreV2FailureObservabilityEvent } from './failure-observability';
+import {
+  getLocalInferenceGateSnapshot,
+  runWithLocalInferenceSlot,
+} from './local-inference-concurrency-gate';
+import {
+  evaluateChatCoreV2QueueFallback,
+  resolveChatCoreV2QueueFallbackPolicy,
+  type ChatCoreV2QueueFallbackDecision,
+} from './queue-fallback-policy';
 import { WRITE_SUCCESS_CLAIM_RE } from './success-claim-policy';
 import { resolveChatCoreV2ActivationConfig, type ChatCoreV2AllowedSurface } from './activation-flags';
 import type { ChatCoreV2Locale } from './response-contracts';
@@ -30,6 +42,7 @@ export interface ChatCoreV2LocalChatTurnInput {
   locale?: string | null;
   surface: ChatCoreV2AllowedSurface;
   recentTurns?: ChatCoreV2LocalChatRecentTurn[];
+  cloudAllowlistPacket?: CloudAllowlistPacketResult | null;
   env?: NodeJS.ProcessEnv;
 }
 
@@ -38,7 +51,10 @@ export interface ChatCoreV2LocalChatTurnResult {
     id: string;
     text: string;
     domain: 'chat' | 'cooking';
-    routeMethod: 'chat-core-v2-local-llm' | 'chat-core-v2-local-llm-degraded';
+    routeMethod:
+      | 'chat-core-v2-local-llm'
+      | 'chat-core-v2-local-llm-degraded'
+      | 'chat-core-v2-cloud-allowlist';
     confidence: number;
     buttons: null;
     metadata: Record<string, unknown>;
@@ -146,6 +162,78 @@ export async function runChatCoreV2LocalChatTurn(
     return buildDegradedResponse(input, 'provider_not_configured');
   }
 
+  const cloudAllowlistPacket = input.cloudAllowlistPacket ?? buildLocalChatCloudAllowlistPacket({
+    normalizedText: input.normalizedText,
+    userId: input.userId,
+    tenantId: input.tenantId,
+    requestId: input.requestId,
+    locale: input.locale,
+    env,
+  });
+  const queueFallbackDecision = evaluateLocalQueueFallbackBeforeInference(input, env, cloudAllowlistPacket);
+  const queueFallbackObservabilityEvent = buildQueueFallbackObservabilityEvent(input, queueFallbackDecision);
+  logQueueFallbackDecision(input, queueFallbackDecision, queueFallbackObservabilityEvent);
+  if (queueFallbackDecision.kind === 'fail_visible') {
+    return buildDegradedResponse(input, 'local_queue_saturated', undefined, undefined, {
+      queueFallbackDecision,
+      queueFallbackObservabilityEvent,
+    });
+  }
+  if (queueFallbackDecision.kind === 'use_cloud_allowlist') {
+    if (!cloudAllowlistPacket.ok) {
+      return buildDegradedResponse(input, 'cloud_allowlist_runtime_not_wired', undefined, undefined, {
+        queueFallbackDecision,
+        queueFallbackObservabilityEvent,
+      });
+    }
+    try {
+      const cloudAnswer = await dispatchCloudAllowlistAnswer(cloudAllowlistPacket.packet, {
+        userId: input.userId,
+        tenantId: input.tenantId,
+        requestId: input.requestId,
+      });
+      const locale = normalizeLocale(input.locale);
+      const guarded = applyNoUnverifiedSuccessClaimGuard(cloudAnswer.text, locale, input.normalizedText);
+      return {
+        response: {
+          id: `msg-${Date.now()}`,
+          text: guarded.text,
+          domain: cloudAllowlistPacket.packet.domain === 'cooking' ? 'cooking' : 'chat',
+          routeMethod: 'chat-core-v2-cloud-allowlist',
+          confidence: guarded.rewritten ? 0.65 : 0.82,
+          buttons: null,
+          metadata: {
+            type: 'chat_core_v2_cloud_allowlist',
+            schemaVersion: CHAT_CORE_V2_LOCAL_CHAT_SCHEMA_VERSION,
+            compositionMode: 'cloud_allowlist',
+            queueFallbackDecision,
+            queueFallbackObservabilityEvent,
+            antiClaimGuardRewritten: guarded.rewritten,
+            providerMetadata: cloudAnswer.providerMetadata,
+          },
+          timestamp: new Date().toISOString(),
+          responseCards: [],
+        },
+        modelMetadata: cloudAnswer.providerMetadata,
+        degraded: false,
+      };
+    } catch (err) {
+      logger.warn(
+        {
+          requestId: input.requestId,
+          userId: input.userId,
+          tenantId: input.tenantId,
+          err: err instanceof Error ? err.message : String(err),
+        },
+        'Chat Core v2 cloud allowlist answer failed',
+      );
+      return buildDegradedResponse(input, 'cloud_allowlist_answer_failed', undefined, undefined, {
+        queueFallbackDecision,
+        queueFallbackObservabilityEvent,
+      });
+    }
+  }
+
   const locale = normalizeLocale(input.locale);
   const requireJson = parseBoolean(env.CHAT_CORE_V2_LOCAL_CHAT_REQUIRE_JSON, false);
   const foldedMessage = foldForIntent(input.normalizedText);
@@ -216,6 +304,7 @@ export async function runChatCoreV2LocalChatTurn(
           draftReasonCodes: draft.reasonCodes,
           factualClaimCount: draft.factualClaims.length,
           antiClaimGuardRewritten: guarded.rewritten,
+          queueFallbackDecision,
           providerMetadata: result.providerMetadata,
         },
         timestamp: new Date().toISOString(),
@@ -335,6 +424,7 @@ function buildDegradedResponse(
   reason: string,
   providerMetadata?: LocalReasoningResult['providerMetadata'],
   validationIssues?: string[],
+  extraMetadata: Record<string, unknown> = {},
 ): ChatCoreV2LocalChatTurnResult {
   const locale = normalizeLocale(input.locale);
   const text = locale.startsWith('pt')
@@ -356,6 +446,7 @@ function buildDegradedResponse(
         degraded: true,
         reason,
         validationIssues,
+        ...extraMetadata,
         providerMetadata,
       },
       timestamp: new Date().toISOString(),
@@ -364,6 +455,62 @@ function buildDegradedResponse(
     modelMetadata: providerMetadata,
     degraded: true,
   };
+}
+
+function evaluateLocalQueueFallbackBeforeInference(
+  input: ChatCoreV2LocalChatTurnInput,
+  env: EnvLike,
+  cloudAllowlistPacket: CloudAllowlistPacketResult,
+): ChatCoreV2QueueFallbackDecision {
+  const activation = resolveChatCoreV2ActivationConfig(env);
+  return evaluateChatCoreV2QueueFallback({
+    activation,
+    queue: getLocalInferenceGateSnapshot(env as NodeJS.ProcessEnv),
+    policy: resolveChatCoreV2QueueFallbackPolicy(env),
+    cloudPacket: cloudAllowlistPacket,
+    requestAllowsBackground: false,
+  });
+}
+
+function logQueueFallbackDecision(
+  input: ChatCoreV2LocalChatTurnInput,
+  decision: ChatCoreV2QueueFallbackDecision,
+  observabilityEvent: ReturnType<typeof buildQueueFallbackObservabilityEvent>,
+): void {
+  if (decision.kind === 'use_local_now' || decision.reasonCode === 'queue_below_threshold') return;
+  logger.info(
+    {
+      requestId: input.requestId,
+      userId: input.userId,
+      tenantId: input.tenantId,
+      decisionKind: decision.kind,
+      reasonCode: decision.reasonCode,
+      cloudDenialReason: decision.cloudDenialReason,
+      observabilityEvent,
+    },
+    'Chat Core v2 local queue fallback decision',
+  );
+}
+
+function buildQueueFallbackObservabilityEvent(
+  input: ChatCoreV2LocalChatTurnInput,
+  decision: ChatCoreV2QueueFallbackDecision,
+) {
+  return buildChatCoreV2FailureObservabilityEvent({
+    failureMode: 'local_queue_saturation',
+    reasonCode: decision.reasonCode,
+    metricValue: decision.kind === 'use_local_now' || decision.reasonCode === 'queue_below_threshold' ? 0 : 1,
+    metadata: {
+      routeMethod: 'chat-core-v2-local-chat',
+      surface: input.surface,
+      reasonCode: decision.reasonCode,
+      mode: decision.kind,
+      // Safe enums only. cloudDenialReason is allowlisted in
+      // failure-observability; undefined values are dropped by the sanitizer.
+      cloudDenialReason: decision.cloudDenialReason,
+      locale: normalizeLocale(input.locale),
+    },
+  });
 }
 
 function buildHelpfulFallbackResponse(

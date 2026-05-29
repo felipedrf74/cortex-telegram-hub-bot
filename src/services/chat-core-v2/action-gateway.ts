@@ -11,6 +11,7 @@ import { classifyShadowRoute } from './shadow-route-classifier';
 import type { AICommandEnvelope } from './types';
 
 export const CHAT_CORE_V2_ACTION_GATEWAY_VERSION = 'chat_core_v2_action_gateway@1.0.0';
+const CHAT_CORE_V2_HMAC_UNAVAILABLE = 'hmac_unavailable';
 
 export type ChatCoreV2ActionGatewayMode = 'off' | 'shadow' | 'enforce';
 
@@ -362,10 +363,10 @@ function hmacMessageHash(input: {
   env: NodeJS.ProcessEnv;
 }): string {
   const secret = input.env.CHAT_CORE_V2_WRITE_INTENT_HASH_SECRET
-    ?? input.env.CLASSIFY_SHADOW_HASH_SECRET
-    ?? 'local-dev-chat-core-v2-write-intent-secret';
+    ?? input.env.CLASSIFY_SHADOW_HASH_SECRET;
+  if (!secret?.trim()) return CHAT_CORE_V2_HMAC_UNAVAILABLE;
   return crypto
-    .createHmac('sha256', `${secret}:${input.tenantId}:${input.userId}`)
+    .createHmac('sha256', `${secret.trim()}:${input.tenantId}:${input.userId}`)
     .update(input.text)
     .digest('hex');
 }

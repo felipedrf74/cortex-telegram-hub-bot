@@ -101,3 +101,42 @@ clear the Phase 2 gate. Before shadow ships, a peer reviewer still needs to
 promote/replace these seeds with reviewed labels from the approved private
 evidence store and confirm the corpus represents real hallucination/context
 failures rather than only hand-authored regression coverage.
+
+## Recall@8 gate runbook (how to close it, no overfitting)
+
+The Layer-1 prepass recall@8 is the fraction of labeled turns whose
+ground-truth capability appears in the prepass top-8 candidate set
+(`CHAT_CORE_V2_PREPASS_MAX_CANDIDATES = 8`). The measurement primitive is
+implemented and reusable:
+
+- `evaluatePrepassRecallAtK(items, k=8)` and
+  `evaluateGoldenCorpusPrepassRecallAtK(corpus, k=8)` in
+  `src/services/chat-core-v2/prepass-recall-eval.ts` (pure, read-only; derives
+  candidates from message text only — no ground-truth leakage).
+
+Measure a corpus in the `ChatCoreV2GoldenCorpus` shape:
+
+```
+npx tsx -e "const {evaluateGoldenCorpusPrepassRecallAtK}=require('./src/services/chat-core-v2/prepass-recall-eval'); const corpus=require('<path-to-corpus>'); console.log(JSON.stringify(evaluateGoldenCorpusPrepassRecallAtK(corpus, 8), null, 2))"
+```
+
+Current **synthetic** baseline over the seed corpus: recall@8 = **0.563**
+(148/263). Top misses are `cooking.recipe_answer` and `content.draft_assist`
+(the prepass candidate selection is a contract helper, not yet live-wired, and
+has no cooking/content/write candidate buckets).
+
+Gate requirements (all must hold; none met yet):
+
+1. A **peer-reviewed labeled real corpus** (not the synthetic seed). Do NOT
+   tune `selectPrepassCandidateCapabilities` to the synthetic corpus — that is
+   overfitting and invalidates the measurement.
+2. recall@8 must meet the agreed target on that real corpus. Closing the gap
+   should be a deliberate Layer-1 candidate-coverage pass driven by the real
+   corpus's misses (e.g. add cooking/content/write candidate buckets), then
+   re-measured.
+3. `>= 50` real shadow rows accumulated (enable the shadow runtime, which is
+   default-off) and `0` raw strings — measured by
+   `evaluateChatCoreV2ShadowGateReadiness` over `chat_v2_replay_bundles`.
+
+Until 1–3 hold, `evaluateChatCoreV2ShadowGateReadiness().gateMet` stays the
+literal `false`.

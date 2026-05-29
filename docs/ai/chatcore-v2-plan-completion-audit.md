@@ -10,18 +10,19 @@
 The full implementation plan is not 100% complete.
 
 No Claude Code QA prompt has been created because the Work Order is not ready
-for final QA. The current branch contains Work Order support plus one
-deliberately scoped runtime hotfix for local-sandbox task write intents:
-documentation, the initial bounded planner schema validator, plan validator,
-bounded repair/prompt-budget helpers, first-slice
-activation/cloud/evidence/prepass/observability/golden-corpus contract helpers,
-auto-revert/staleness/write-verification policy helpers, focused tests, a
-locale preservation policy helper, and a read-only D3 full-suite benchmark
-harness. It also includes a pure Layer 1 candidate selector that is not wired
-into the future 3B-planner runtime. The runtime behavior change is limited to
-the V1 ChatCoreV2 write-intent firewall for task create/complete sandbox
-regression testing and local Docker SQLite journaling configuration so
-simulator verification reads committed task rows reliably.
+for final QA. The current branch contains Work Order support plus deliberately
+scoped local-sandbox runtime bridges: documentation, the initial bounded
+planner schema validator, plan validator, bounded repair/prompt-budget helpers,
+first-slice activation/cloud/evidence/prepass/observability/golden-corpus
+contract helpers, auto-revert/staleness/write-verification policy helpers,
+focused tests, a locale preservation policy helper, and a read-only D3
+full-suite benchmark harness. It also includes a pure Layer 1 candidate selector
+that is not wired into the future 3B-planner runtime. Runtime behavior changes
+remain limited to the V1 ChatCoreV2 write-intent firewall for task
+create/complete sandbox regression testing, provider-aware local task reads,
+iOS chat task-create server routing, iOS recipe parsing/progress fixes, and
+local Docker SQLite journaling configuration so simulator verification reads
+committed task rows reliably.
 
 ## Completed In This Branch
 
@@ -42,6 +43,8 @@ simulator verification reads committed task rows reliably.
 | Auto-revert threshold helper | complete for D11 first slice | `src/services/chat-core-v2/auto-revert-policy.ts`; focused contract tests |
 | Answer draft/evidence binding helper | complete for D5/D10 first slice | `src/services/chat-core-v2/answer-composition.ts`; focused contract tests |
 | Cloud allowlist/HMAC helper | complete for D13 first slice | `src/services/chat-core-v2/cloud-allowlist-packet.ts`; focused contract tests |
+| Shadow-route hook HMAC identifiers | complete for current hook slice | `src/services/chat-core-v2/shadow-route-hook.ts`; skips recording without `CHAT_CORE_V2_SHADOW_ROUTE_HMAC_SECRET` / fallback secret; focused tests cover secret/tenant/user sensitivity |
+| Write-intent HMAC telemetry | complete for current gateway slice | `src/services/chat-core-v2/action-gateway.ts`; missing `CHAT_CORE_V2_WRITE_INTENT_HASH_SECRET` no longer uses a hardcoded fallback secret and emits `hmac_unavailable` instead |
 | DomainAdapterV1 interface | complete for D7 first slice | `src/services/chat-core-v2/domain-adapter.ts` |
 | Turn-state event helper | complete for D8 first slice | `src/services/chat-core-v2/turn-state-events.ts`; focused contract tests |
 | Background lifecycle helper | complete for D9 first slice | `src/services/chat-core-v2/background-lifecycle.ts`; focused contract tests |
@@ -57,15 +60,20 @@ simulator verification reads committed task rows reliably.
 | Locale preservation helper | complete for composer first slice | `src/services/chat-core-v2/locale-preservation-policy.ts`; focused contract tests |
 | D3 benchmark harness | complete for safe rerun | `scripts/llm/chatcore-v2-planner-benchmark.ts` supports sequential, burst, concurrent, sustained, and `--suite=all` |
 | VPS benchmark readiness probe | complete, read-only | SSH OK, Ollama active, `qwen2.5:3b-instruct-q4_K_M` present |
-| 3B planner calibration | failed/blocking, improved | Atom packet calibration now produces valid qwen 3B output with p50 3577 ms / p95 4194 ms and valid Gemma 2B output with p50 3274 ms / p95 3580 ms. Raw-prompt `/api/generate` improved the best installed-model result to Gemma 2B p50 3138 ms / p95 3484 ms. The p95 gate is viable, but the formal p50 <= 2s gate still fails; `docs/ai/benchmarks/chatcore-v2-planner-calibration-2026-05-27.md` |
+| 3B planner calibration | serialized gate accepted, multi-user scaling blocked | Operator revised the D3 foreground gate to p95 <= 5s at `num_ctx=256` with p50 <= 2s deferred. The bounded full `--suite=all` run produced zero transport/schema failures across 66 calls; sequential p50 3378 / p95 3669 ms PASS, while burst/concurrent/sustained p95 ~10-15s FAIL on CPU-only Ollama serialization. The local-inference concurrency cap mitigates per-call latency for L2 sandbox; multi-user Phase 2 still needs queue/hardware/model work. See `docs/ai/benchmarks/chatcore-v2-planner-calibration-2026-05-27.md` |
+| Queue-aware cloud fallback policy | complete for Phase 2 contract slice | `src/services/chat-core-v2/queue-fallback-policy.ts`; cloud is eligible only when queue pressure crosses threshold, ChatCoreV2 cloud fallback is enabled, and a positive-allowlist packet is already safe. Denied packets background/wait/fail visibly without widening context. |
+| Packet-only cloud answer dispatcher and safe generic-answer packet producer | complete for Phase 2 slice | `src/services/chat-core-v2/cloud-allowlist-answer.ts`, `src/services/chat-core-v2/cloud-allowlist-answer-packet.ts`; cloud calls receive only the allowlist packet prompt, while the producer is opt-in, budget/HMAC-gated, denies private/app-state requests, and emits HMAC-scoped turn/evidence fingerprints plus coarse capability IDs only. Broader domain-specific answer packets remain blocked. |
 | Write-intent firewall hotfix | complete for task V1 sandbox scope | `src/services/chat-core-v2/action-gateway.ts` plus route wiring now blocks unresolved/negated/hypothetical task writes before legacy paths, resolves exact task completion by canonical ID, keeps task-with-subtasks preview-only, and requires explicit task auto-execute flags for local sandbox execution. Duplicate-title completion is preview-only unless `CHAT_CORE_V2_TASK_COMPLETE_AUTO_EXECUTE=sandbox_only|canary` is explicitly set. |
+| Provider-aware deterministic task read | complete for sandbox scope | `src/services/task-store/task-service.ts` now exposes `listTasksForUser`, merging `native_tasks` and local/unified Nexus rows for native users without provider API calls; `task-summary-route.ts` uses it so chat-created tasks appear in deterministic task reads after writes. |
 | Local Docker SQLite visibility | complete for simulator sandbox | `src/services/storage-provider.ts` honors `SQLITE_JOURNAL_MODE`; `.env.local.example` documents `SQLITE_JOURNAL_MODE=DELETE` for macOS Docker bind mounts. This prevents orphaned WAL sidecars from making chat-created tasks visible only to the Node process but invisible to fresh SQLite/API verification. |
+| iOS chat task-create bridge | complete for local sandbox scope | `ChatViewModel` now routes natural-language task creation typed in chat through `/api/v1/chat/message` instead of the local task REST fastpath, preserving ChatCoreV2 preview/confirmation and subtask parsing. |
+| iOS recipe parser/progress fixes | complete for local sandbox scope | `MessageBubble.parseRecipeFromChat` now accepts labelled backend title output and avoids section-label ingredients; slow local-LLM progress copy no longer shows internal action/idempotency wording. |
 
 ## Not Complete / Blocked
 
 | Plan item | Status | Specific reason |
 |---|---|---|
-| D3 full hardware benchmark execution | blocked | Original 2k/3k prompt probes took 58.6s and 37.5s. The newer atom packet expands server-side into canonical `ChatTurnPlanMicro` and produced 0/10 schema failures. qwen 3B reached p50 3577 ms / p95 4194 ms; Gemma 2B reached p50 3274 ms / p95 3580 ms; raw-prompt Gemma 2B reached p50 3138 ms / p95 3484 ms. This satisfies the p95 target but still misses the formal p50 <= 2s Phase 0 gate. Full-suite production load still requires a smaller planner model, hardware change, or an operator-approved latency-target revision. |
+| D3 multi-user hardware benchmark execution | blocked for Phase 2 | Serialized foreground planning meets the operator-revised p95 <= 5s gate, but burst/concurrent/sustained p95 remains ~10-15s on CPU-only Ollama. A queue-aware cloud-allowlist policy helper and packet-only cloud answer dispatcher now exist; full Phase 2 still needs deterministic positive answer-packet production, decision counters, and measured load evidence before any rollout. |
 | Peer review of D1-D16 | blocked | Requires a separate read-only Claude/Codex review pass under Delivered-Means-Verified. |
 | Golden corpus >= 200 turns | partially unblocked | `src/services/chat-core-v2/golden-corpus-seed.ts` now provides 263 safe-paraphrase labeled seed items across en, pt-BR, pt-PT, and mixed, including 7 operator-reported real failure seeds. Phase 2 still needs peer-reviewed labels/private evidence promotion before this can count as the final shadow gate corpus. |
 | Local LLM chat sandbox path | complete for sandbox validation | `src/services/chat-core-v2/local-chat-orchestrator.ts` uses Ollama localReasoning with bounded `ComposedAnswerDraft`; local Docker/iOS env enables `CHAT_CORE_V2_LOCAL_CHAT_LLM_MODE=canary`; live sandbox API request returned `chat-core-v2-local-llm` via `qwen2.5:3b-instruct-q4_K_M`. This is not a production Phase 3 canary claim. |
@@ -76,7 +84,7 @@ simulator verification reads committed task rows reliably.
 | Phase 6 confirmed writes | blocked | The focused task V1 readback path exists for sandbox regression testing, but full Phase 6 still requires background lifecycle, broader idempotency, readback verification across all Class A/B/C commands, and runtime policies. |
 | Phase 7 cloud allowlist | blocked | Requires positive allowlist module, denial telemetry, budget gates, and audit tests. |
 | Phase 8 legacy retirement | blocked | Requires per-route shadow parity >= 95% over at least 50 rows and `legacy_fallback_rate_24h < 2%`. |
-| iOS implementation | blocked | Separate repository/team dependency; this branch only defines the contract. |
+| iOS full turn-state/background implementation | partially blocked | Local sandbox iOS bridges for server-routed task creation, recipe parsing, progress copy, and default unit-test execution are implemented and tested. The full Phase 1/3 turn-state event/reconnect/background UX remains a broader iOS/server contract implementation item. |
 | Production verification | blocked | No runtime code has been deployed from this branch. |
 
 ## Read-Only VPS Probe And Calibration
@@ -141,11 +149,20 @@ npx tsc --noEmit --target ES2022 --module commonjs --moduleResolution node --esM
 npx tsc --noEmit --target ES2022 --module commonjs --moduleResolution node --esModuleInterop --types node --lib ES2022,DOM --skipLibCheck src/services/chat-core-v2/plan-schema.ts src/services/chat-core-v2/plan-validator.ts src/services/chat-core-v2/planner-repair.ts src/services/chat-core-v2/prompt-budget.ts src/services/chat-core-v2/prepass-candidate-selection.ts src/services/chat-core-v2/prepass-miss-log.ts src/services/chat-core-v2/activation-flags.ts src/services/chat-core-v2/answer-composition.ts src/services/chat-core-v2/auto-revert-policy.ts src/services/chat-core-v2/background-lifecycle.ts src/services/chat-core-v2/cloud-allowlist-packet.ts src/services/chat-core-v2/context-staleness-policy.ts src/services/chat-core-v2/domain-adapter.ts src/services/chat-core-v2/failure-observability.ts src/services/chat-core-v2/golden-corpus.ts src/services/chat-core-v2/locale-preservation-policy.ts src/services/chat-core-v2/model-residency-policy.ts src/services/chat-core-v2/prepass-contract.ts src/services/chat-core-v2/turn-state-events.ts src/services/chat-core-v2/write-verification-policy.ts src/services/chat-core-v2/write-risk-policy.ts scripts/llm/chatcore-v2-planner-benchmark.ts __tests__/services/chat-core-v2-plan-schema.test.ts __tests__/services/chat-core-v2-activation-contracts.test.ts
 ```
 
-Latest broader ChatCoreV2 sweep:
+Latest broader ChatCoreV2 sweep after the M1/M2 peer-review fixes:
 
 ```text
-Test Files  31 passed (31)
-Tests       263 passed (263)
+Test Files  37 passed (37)
+Tests       312 passed (312)
+```
+
+Latest full repo verification after the provider-aware task read, iOS sandbox
+bridges, shadow-route HMAC fix, and write-intent HMAC fallback removal:
+
+```text
+npm run verify
+Test Files  736 passed (736)
+Tests       10864 passed (10864)
 ```
 
 Full repo verification after installing the already-declared
@@ -226,9 +243,9 @@ script succeeds at parsing but still fails until a commit is authorized because
 
 ## Required Next Actions
 
-1. Perform the next latency-tuning pass with a smaller schema/packet shape or a
-   different runtime/model choice; the first safe output-cap tuning pass did not
-   unblock the gate.
+1. Finish Phase 2 queue fallback runtime wiring: keep local first, produce
+   positive answer packets deterministically where safe, pass only those packets
+   to cloud, and record queue fallback decision counters under load.
 2. Run the full D3 benchmark with
    `scripts/llm/chatcore-v2-planner-benchmark.ts --suite=all --runs=100 --burst-size=10 --concurrency=5 --duration-ms=300000`
    in a maintenance window or staging-equivalent hardware environment and link

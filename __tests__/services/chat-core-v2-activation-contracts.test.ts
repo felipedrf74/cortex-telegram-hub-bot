@@ -269,6 +269,7 @@ describe('ChatCoreV2 activation contracts', () => {
         userEmail: 'person@example.com',
         debug: 'contains possibly private free text',
         capabilityId: 'tasks.complete',
+        cloudDenialReason: 'required_fact_never_cloud',
         legacyFallbackCount: 12,
       },
     });
@@ -281,6 +282,7 @@ describe('ChatCoreV2 activation contracts', () => {
       safeMetadata: {
         locale: 'pt-PT',
         capabilityId: 'tasks.complete',
+        cloudDenialReason: 'required_fact_never_cloud',
         legacyFallbackCount: 12,
       },
     });
