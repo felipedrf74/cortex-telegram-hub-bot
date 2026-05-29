@@ -58,6 +58,10 @@ import {
   runDecisionSourceStateSupersessionJob,
   sanitizeGuidanceString,
   runDecisionExpiryJob,
+  legacyStatusToLifecycle,
+  actionOutcomeFromRecord,
+  computeEffectiveStatus,
+  computeActionEffectiveStatus,
   snoozeDecision,
 } from '../../src/services/decision-center';
 import { buildSkillNotificationFixtureIntent, createNotificationIntent, ensureNotificationTables } from '../../src/services/notification-orchestrator';
@@ -1835,5 +1839,86 @@ describe('Decision Center quality-gate telemetry (C4)', () => {
     expect(metrics.genericBlockedCount).toBeGreaterThanOrEqual(1);
     // Rejection rate now uses gate events as the denominator (no double-counting outcomes).
     expect(metrics.genericBlockedRate).toBeCloseTo(metrics.genericBlockedCount / 2, 4);
+  });
+});
+
+describe('Decision Center layered status (Foundation)', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-05-10T10:00:00.000Z'));
+    testDb = new Database(':memory:');
+    process.env.NOTIFICATION_DELIVERY_MODE = 'mock';
+    ensureNotificationTables();
+    ensureDecisionCenterTables();
+  });
+  afterEach(() => {
+    delete process.env.NOTIFICATION_DELIVERY_MODE;
+    vi.useRealTimers();
+    testDb?.close();
+  });
+
+  const recOf = (over: Record<string, unknown> = {}) =>
+    ({ status: 'unread', expiresAt: null, type: 'decision_required', snoozedUntil: null, ...over }) as unknown as Parameters<typeof computeEffectiveStatus>[0];
+  const ctxOf = (over: { blocked?: string[]; safeToShow?: boolean; safeFrontend?: boolean; retryAvailable?: boolean } = {}) => ({
+    dependencies: { blockedByDecisionIds: over.blocked ?? [] },
+    logic: { quality: { safeToShowUser: over.safeToShow ?? true, safeForFrontendAction: over.safeFrontend ?? true } } as any,
+    retryAvailable: over.retryAvailable,
+  });
+  const PAST = '2020-01-01T00:00:00.000Z';
+  const FUTURE = '2999-01-01T00:00:00.000Z';
+
+  it('computeEffectiveStatus honors the documented precedence', () => {
+    expect(computeEffectiveStatus(recOf(), ctxOf())).toBe('needs_action');
+    expect(computeEffectiveStatus(recOf({ expiresAt: PAST }), ctxOf())).toBe('expired');
+    expect(computeEffectiveStatus(recOf({ status: 'expired' }), ctxOf())).toBe('expired');
+    expect(computeEffectiveStatus(recOf({ status: 'superseded' }), ctxOf())).toBe('superseded');
+    expect(computeEffectiveStatus(recOf({ status: 'dismissed' }), ctxOf())).toBe('dismissed');
+    expect(computeEffectiveStatus(recOf({ status: 'actioned' }), ctxOf())).toBe('completed');
+    expect(computeEffectiveStatus(recOf({ status: 'failed' }), ctxOf({ retryAvailable: true }))).toBe('failed_retryable');
+    expect(computeEffectiveStatus(recOf({ status: 'failed' }), ctxOf({ retryAvailable: false }))).toBe('failed_terminal');
+    expect(computeEffectiveStatus(recOf(), ctxOf({ safeToShow: false }))).toBe('unavailable');
+    expect(computeEffectiveStatus(recOf({ status: 'snoozed', snoozedUntil: FUTURE }), ctxOf())).toBe('snoozed');
+    expect(computeEffectiveStatus(recOf(), ctxOf({ blocked: ['d2'] }))).toBe('waiting_on_dependency');
+    expect(computeEffectiveStatus(recOf({ type: 'sync_failure' }), ctxOf())).toBe('waiting_on_system');
+    // precedence: expiry beats a blocking dependency
+    expect(computeEffectiveStatus(recOf({ expiresAt: PAST }), ctxOf({ blocked: ['d2'] }))).toBe('expired');
+  });
+
+  it('computeActionEffectiveStatus folds capability + lifecycle gating', () => {
+    const open = { id: 'open_detail', label: 'Open' } as any;   // implemented: true
+    const retry = { id: 'retry', label: 'Retry' } as any;       // implemented: false
+    expect(computeActionEffectiveStatus(recOf(), open, ctxOf()).effective).toBe('enabled');
+    const retryState = computeActionEffectiveStatus(recOf(), retry, ctxOf());
+    expect(retryState.effective).toBe('disabled_not_implemented');
+    expect(retryState.implemented).toBe(false);
+    expect(computeActionEffectiveStatus(recOf(), open, ctxOf({ safeFrontend: false })).effective).toBe('disabled_missing_details');
+    expect(computeActionEffectiveStatus(recOf({ expiresAt: PAST }), open, ctxOf()).effective).toBe('disabled_expired');
+    expect(computeActionEffectiveStatus(recOf({ status: 'actioned' }), open, ctxOf()).effective).toBe('disabled_already_actioned');
+    expect(computeActionEffectiveStatus(recOf(), open, ctxOf({ blocked: ['d2'] })).effective).toBe('disabled_blocked_by_dependency');
+  });
+
+  it('maps legacy status to lifecycle + action outcome', () => {
+    expect(legacyStatusToLifecycle('unread')).toBe('surfaced');
+    expect(legacyStatusToLifecycle('read')).toBe('viewed');
+    expect(legacyStatusToLifecycle('actioned')).toBe('completed');
+    expect(legacyStatusToLifecycle('failed')).toBe('surfaced');
+    expect(legacyStatusToLifecycle('mystery')).toBe('created');
+    expect(actionOutcomeFromRecord(recOf({ status: 'actioned' }))).toBe('succeeded');
+    expect(actionOutcomeFromRecord(recOf({ status: 'failed' }))).toBe('failed');
+    expect(actionOutcomeFromRecord(recOf({ status: 'unread' }))).toBe('none');
+  });
+
+  it('exposes the layered fields (additive) on a real API item without breaking v1 fields', async () => {
+    const created = await createDecisionIntent(buildSkillDecisionFixtureIntent('training', 90, { dedupeKey: 'fnd-api' }));
+    const item = getDecisionItem(created.item!.decisionId, 90, 90)!;
+    expect(item.lifecycleStatus).toBe('surfaced');
+    expect(item.effectiveStatus).toBe('needs_action');
+    expect(item.actionOutcomeStatus).toBe('none');
+    expect(Array.isArray(item.actionEffectiveStatuses)).toBe(true);
+    expect(item.actionEffectiveStatuses!.length).toBeGreaterThan(0);
+    // v1 fields still present/unchanged
+    expect(typeof item.status).toBe('string');
+    expect(item.frontendActionState).toBeDefined();
+    expect(item.displayMode).toBeDefined();
   });
 });

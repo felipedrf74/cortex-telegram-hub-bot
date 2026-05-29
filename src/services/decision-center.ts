@@ -81,6 +81,31 @@ export type DecisionClassification = 'decision' | 'notification' | 'task' | 'ins
 export type DecisionUrgency = 'urgent' | 'today' | 'this_week' | 'optional';
 export type DecisionActionStatus = 'succeeded' | 'failed' | 'blocked' | 'idempotent';
 
+// ── Layered status model (Foundation) ──────────────────────────────────────
+// The legacy flat `status` (NotificationCenterStatus) stays authoritative for
+// back-compat; these express the distinct concerns it conflated. Effective
+// statuses are COMPUTED, never persisted as the source of truth.
+/** Where the decision is in its lifecycle (distinct from the action outcome). */
+export type DecisionLifecycleStatus =
+  | 'created' | 'surfaced' | 'viewed' | 'snoozed' | 'dismissed' | 'expired' | 'superseded' | 'completed';
+/** Item-level outcome of the decision's action. Distinct from the per-execution DecisionActionStatus above. */
+export type DecisionActionOutcomeStatus =
+  | 'none' | 'started' | 'succeeded' | 'failed' | 'partially_failed' | 'rolled_back';
+/** Computed: how the client should render the item. Never persisted as source of truth. */
+export type DecisionEffectiveStatus =
+  | 'needs_action' | 'waiting_on_dependency' | 'waiting_on_system' | 'snoozed'
+  | 'in_progress' | 'completed' | 'failed_retryable' | 'failed_terminal'
+  | 'expired' | 'superseded' | 'dismissed' | 'unavailable';
+/** Computed per-action render state. */
+export interface DecisionActionEffectiveStatus {
+  actionId: string;
+  effective:
+    | 'enabled' | 'disabled_not_implemented' | 'disabled_blocked_by_dependency'
+    | 'disabled_expired' | 'disabled_superseded' | 'disabled_already_actioned' | 'disabled_missing_details';
+  implemented: boolean;
+  capabilityReason: string | null;
+}
+
 export const DECISION_OUTCOME_LEDGER_RETENTION_POLICY = Object.freeze({
   rawOutcomeRetentionDays: 180,
   aggregateRetentionDays: 730,
@@ -154,6 +179,10 @@ export interface DecisionApiItem {
   sourceSkill: NotificationSourceSkill;
   type: NotificationIntentType;
   status: string;
+  lifecycleStatus?: DecisionLifecycleStatus;
+  actionOutcomeStatus?: DecisionActionOutcomeStatus;
+  effectiveStatus?: DecisionEffectiveStatus;
+  actionEffectiveStatuses?: DecisionActionEffectiveStatus[];
   urgency: DecisionUrgency;
   timingLabel: string | null;
   priorityScore: number;
@@ -580,6 +609,8 @@ export function ensureDecisionCenterTables(): void {
       ON decision_action_executions(user_id, tenant_id, decision_id, action_id);
     CREATE INDEX IF NOT EXISTS idx_notification_center_decision_home
       ON notification_center_items(user_id, tenant_id, status, priority, created_at);
+    CREATE INDEX IF NOT EXISTS idx_notification_center_active_expiry
+      ON notification_center_items(status, expires_at) WHERE expires_at IS NOT NULL;
     CREATE TABLE IF NOT EXISTS decision_dependencies (
       dependency_id TEXT PRIMARY KEY,
       decision_id TEXT NOT NULL,
@@ -2155,6 +2186,10 @@ function formatDecisionItemForApi(item: DecisionRecord): DecisionApiItem {
     sourceSkill: item.sourceSkill,
     type: item.type,
     status: item.status,
+    lifecycleStatus: legacyStatusToLifecycle(item.status),
+    actionOutcomeStatus: actionOutcomeFromRecord(item),
+    effectiveStatus: computeEffectiveStatus(item, { dependencies, logic, retryAvailable: outcome.retryActions.length > 0 }),
+    actionEffectiveStatuses: actions.map((candidate) => computeActionEffectiveStatus(item, candidate, { dependencies, logic })),
     urgency,
     timingLabel: timingLabelForRecord(item, urgency),
     priorityScore: priorityScoreFor(item),
@@ -3573,6 +3608,70 @@ function isDecisionExpired(item: DecisionRecord): boolean {
   if (!item.expiresAt) return false;
   const expiresMs = Date.parse(item.expiresAt);
   return Number.isFinite(expiresMs) && expiresMs <= Date.now();
+}
+
+/** Map the legacy flat status onto the lifecycle layer (read implies viewed). */
+export function legacyStatusToLifecycle(status: string): DecisionLifecycleStatus {
+  switch (status) {
+    case 'unread': return 'surfaced';
+    case 'read': return 'viewed';
+    case 'viewed': return 'viewed';
+    case 'snoozed': return 'snoozed';
+    case 'actioned': return 'completed';
+    case 'dismissed': return 'dismissed';
+    case 'expired': return 'expired';
+    case 'superseded': return 'superseded';
+    case 'failed': return 'surfaced'; // still actionable/retryable — outcome lives in actionOutcomeStatus
+    default: return 'created';
+  }
+}
+
+/** Item-level action outcome. Failed rows stay lifecycle 'surfaced' but carry a 'failed' outcome. */
+export function actionOutcomeFromRecord(record: DecisionRecord): DecisionActionOutcomeStatus {
+  switch (record.status) {
+    case 'actioned': return 'succeeded';
+    case 'failed': return 'failed';
+    default: return 'none';
+  }
+}
+
+/**
+ * Fold the legacy status + expiry + dependency state + capability into the single
+ * effective status the client renders. Precedence is deliberate (expired wins over
+ * everything; needs_action is the fallthrough). Pure — no DB writes. Expiry uses the
+ * same isDecisionExpired() helper as the action guard so display and action agree.
+ */
+export function computeEffectiveStatus(
+  record: DecisionRecord,
+  ctx: { dependencies: { blockedByDecisionIds: string[] }; logic: DecisionLogicV2; retryAvailable?: boolean },
+): DecisionEffectiveStatus {
+  if (isDecisionExpired(record) || record.status === 'expired') return 'expired';
+  if (record.status === 'superseded') return 'superseded';
+  if (record.status === 'dismissed') return 'dismissed';
+  if (record.status === 'actioned') return 'completed';
+  if (record.status === 'failed') return ctx.retryAvailable ? 'failed_retryable' : 'failed_terminal';
+  if (!ctx.logic.quality.safeToShowUser) return 'unavailable';
+  if (isSnoozedUntilFuture(record)) return 'snoozed';
+  if (ctx.dependencies.blockedByDecisionIds.length > 0) return 'waiting_on_dependency';
+  if (record.type === 'sync_failure') return 'waiting_on_system';
+  return 'needs_action';
+}
+
+/** Per-action render state: capability (truth-table implemented) + lifecycle gating. */
+export function computeActionEffectiveStatus(
+  record: DecisionRecord,
+  action: NotificationActionButton,
+  ctx: { dependencies: { blockedByDecisionIds: string[] }; logic: DecisionLogicV2 },
+): DecisionActionEffectiveStatus {
+  const implemented = isDecisionActionExecutable(action.id);
+  const base = { actionId: action.id, implemented };
+  if (!ctx.logic.quality.safeForFrontendAction) return { ...base, effective: 'disabled_missing_details', capabilityReason: 'Decision details incomplete' };
+  if (!implemented) return { ...base, effective: 'disabled_not_implemented', capabilityReason: `No deterministic executor wired for '${action.id}' yet` };
+  if (isDecisionExpired(record) || record.status === 'expired') return { ...base, effective: 'disabled_expired', capabilityReason: null };
+  if (record.status === 'superseded' || record.status === 'dismissed') return { ...base, effective: 'disabled_superseded', capabilityReason: null };
+  if (record.status === 'actioned') return { ...base, effective: 'disabled_already_actioned', capabilityReason: null };
+  if (ctx.dependencies.blockedByDecisionIds.length > 0) return { ...base, effective: 'disabled_blocked_by_dependency', capabilityReason: 'Blocked by another decision' };
+  return { ...base, effective: 'enabled', capabilityReason: null };
 }
 
 function actionsForRecord(record: DecisionRecord): NotificationActionButton[] {
