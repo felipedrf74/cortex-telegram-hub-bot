@@ -62,6 +62,8 @@ import {
   actionOutcomeFromRecord,
   computeEffectiveStatus,
   computeActionEffectiveStatus,
+  computeDecisionKind,
+  computeActionability,
   snoozeDecision,
 } from '../../src/services/decision-center';
 import { buildSkillNotificationFixtureIntent, createNotificationIntent, ensureNotificationTables } from '../../src/services/notification-orchestrator';
@@ -1906,6 +1908,28 @@ describe('Decision Center layered status (Foundation)', () => {
     expect(actionOutcomeFromRecord(recOf({ status: 'actioned' }))).toBe('succeeded');
     expect(actionOutcomeFromRecord(recOf({ status: 'failed' }))).toBe('failed');
     expect(actionOutcomeFromRecord(recOf({ status: 'unread' }))).toBe('none');
+  });
+
+  it('classifies decisionKind and actionability', () => {
+    const logic = { quality: { safeForFrontendAction: true, safeToShowUser: true } } as any;
+    const deps = { blockedByDecisionIds: [] as string[] };
+    const open = { id: 'open_detail', label: 'Open' } as any;  // implemented
+    const retry = { id: 'retry', label: 'Retry' } as any;       // not implemented
+
+    expect(computeDecisionKind(recOf({ requiresUserAction: false }), logic, deps, open)).toBe('insight');
+    expect(computeDecisionKind(recOf({ requiresUserAction: true, type: 'sync_failure' }), logic, deps, open)).toBe('status_update');
+    expect(computeDecisionKind(recOf({ requiresUserAction: true }), logic, { blockedByDecisionIds: ['d2'] }, open)).toBe('blocked_action');
+    expect(computeDecisionKind(recOf({ requiresUserAction: true, sourceSkill: 'finance' }), logic, deps, open)).toBe('risk_alert');
+    expect(computeDecisionKind(recOf({ requiresUserAction: true, type: 'approval_required' }), logic, deps, open)).toBe('choice_required');
+    expect(computeDecisionKind(recOf({ requiresUserAction: true }), logic, deps, open)).toBe('action_proposal');
+    expect(computeDecisionKind(recOf({ requiresUserAction: true }), logic, deps, retry)).toBe('recommendation');
+
+    expect(computeActionability(recOf({ requiresUserAction: true }), logic, 'needs_action', open)).toBe('confirmation_required');
+    expect(computeActionability(recOf({ requiresUserAction: true }), logic, 'waiting_on_dependency', open)).toBe('blocked');
+    expect(computeActionability(recOf({ requiresUserAction: true }), logic, 'unavailable', open)).toBe('unavailable');
+    expect(computeActionability(recOf({ requiresUserAction: true }), logic, 'expired', open)).toBe('read_only');
+    expect(computeActionability(recOf({ requiresUserAction: true }), logic, 'needs_action', retry)).toBe('read_only');
+    expect(computeActionability(recOf({ requiresUserAction: true }), { quality: { safeForFrontendAction: false } } as any, 'needs_action', open)).toBe('read_only');
   });
 
   it('exposes the layered fields (additive) on a real API item without breaking v1 fields', async () => {

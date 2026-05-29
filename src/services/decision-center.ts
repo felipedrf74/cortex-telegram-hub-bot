@@ -106,6 +106,15 @@ export interface DecisionActionEffectiveStatus {
   capabilityReason: string | null;
 }
 
+/** What kind of item this is, for differentiated client rendering. */
+export type DecisionKind =
+  | 'insight' | 'recommendation' | 'action_proposal' | 'choice_required'
+  | 'risk_alert' | 'blocked_action' | 'status_update';
+/** How the client should treat acting on this decision (computed; never persisted). */
+export type Actionability =
+  | 'read_only' | 'preview_available' | 'confirmation_required' | 'execute_with_undo'
+  | 'requires_human_review' | 'blocked' | 'unavailable';
+
 /**
  * Compact list/overview card (API v2). Projected from the full DecisionApiItem so list
  * surfaces ship ~22 fields/item instead of ~70. Full item is served only on detail.
@@ -117,6 +126,8 @@ export interface DecisionCardSummary {
   type: NotificationIntentType;
   status: string;
   effectiveStatus?: DecisionEffectiveStatus;
+  decisionKind?: DecisionKind;
+  actionability?: Actionability;
   urgency: DecisionUrgency;
   timingLabel: string | null;
   priorityScore: number;
@@ -212,6 +223,8 @@ export interface DecisionApiItem {
   actionOutcomeStatus?: DecisionActionOutcomeStatus;
   effectiveStatus?: DecisionEffectiveStatus;
   actionEffectiveStatuses?: DecisionActionEffectiveStatus[];
+  decisionKind?: DecisionKind;
+  actionability?: Actionability;
   urgency: DecisionUrgency;
   timingLabel: string | null;
   priorityScore: number;
@@ -2204,6 +2217,9 @@ function formatDecisionItemForApi(item: DecisionRecord): DecisionApiItem {
   const rollback = rollbackContractForRecord(item);
   const exposeDebugEvidence = shouldExposeDecisionDebugEvidence(item);
   const visibleWhatWillChange = userVisibleWhatWillChangeForApi(item, logic);
+  const effectiveStatus = computeEffectiveStatus(item, { dependencies, logic, retryAvailable: outcome.retryActions.length > 0 });
+  const decisionKind = computeDecisionKind(item, logic, dependencies, action);
+  const actionability = computeActionability(item, logic, effectiveStatus, action);
   return {
     decisionId: item.itemId,
     itemId: item.itemId,
@@ -2217,8 +2233,10 @@ function formatDecisionItemForApi(item: DecisionRecord): DecisionApiItem {
     status: item.status,
     lifecycleStatus: legacyStatusToLifecycle(item.status),
     actionOutcomeStatus: actionOutcomeFromRecord(item),
-    effectiveStatus: computeEffectiveStatus(item, { dependencies, logic, retryAvailable: outcome.retryActions.length > 0 }),
+    effectiveStatus,
     actionEffectiveStatuses: actions.map((candidate) => computeActionEffectiveStatus(item, candidate, { dependencies, logic })),
+    decisionKind,
+    actionability,
     urgency,
     timingLabel: timingLabelForRecord(item, urgency),
     priorityScore: priorityScoreFor(item),
@@ -3701,6 +3719,37 @@ export function computeActionEffectiveStatus(
   if (record.status === 'actioned') return { ...base, effective: 'disabled_already_actioned', capabilityReason: null };
   if (ctx.dependencies.blockedByDecisionIds.length > 0) return { ...base, effective: 'disabled_blocked_by_dependency', capabilityReason: 'Blocked by another decision' };
   return { ...base, effective: 'enabled', capabilityReason: null };
+}
+
+/** Classify the decision for differentiated client rendering. Pure; precedence is deliberate. */
+export function computeDecisionKind(
+  record: DecisionRecord,
+  logic: DecisionLogicV2,
+  deps: { blockedByDecisionIds: string[] },
+  primaryAction: NotificationActionButton | null,
+): DecisionKind {
+  if (deps.blockedByDecisionIds.length > 0) return 'blocked_action';
+  if (record.type === 'sync_failure') return 'status_update';
+  if (!record.requiresUserAction) return 'insight';
+  if (record.type === 'conflict_detected' || record.sourceSkill === 'finance') return 'risk_alert';
+  if (record.type === 'approval_required' || logic.automationEligibility === 'user_opt_in_required') return 'choice_required';
+  if (primaryAction && isDecisionActionExecutable(primaryAction.id)) return 'action_proposal';
+  return 'recommendation';
+}
+
+/** Decide how the client may act on the decision. Pure; derives from effectiveStatus + capability. */
+export function computeActionability(
+  record: DecisionRecord,
+  logic: DecisionLogicV2,
+  effectiveStatus: DecisionEffectiveStatus,
+  primaryAction: NotificationActionButton | null,
+): Actionability {
+  if (effectiveStatus === 'unavailable') return 'unavailable';
+  if (effectiveStatus === 'waiting_on_dependency') return 'blocked';
+  if (effectiveStatus === 'expired' || effectiveStatus === 'superseded' || effectiveStatus === 'dismissed' || effectiveStatus === 'completed') return 'read_only';
+  if (!record.requiresUserAction || !logic.quality.safeForFrontendAction) return 'read_only';
+  if (!primaryAction || !isDecisionActionExecutable(primaryAction.id)) return 'read_only';
+  return 'confirmation_required';
 }
 
 function actionsForRecord(record: DecisionRecord): NotificationActionButton[] {

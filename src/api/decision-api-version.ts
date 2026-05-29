@@ -44,6 +44,8 @@ export function buildDecisionCardSummary(item: DecisionApiItem): DecisionCardSum
     type: item.type,
     status: item.status,
     effectiveStatus: item.effectiveStatus,
+    decisionKind: item.decisionKind,
+    actionability: item.actionability,
     urgency: item.urgency,
     timingLabel: item.timingLabel,
     priorityScore: item.priorityScore,

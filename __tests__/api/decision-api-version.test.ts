@@ -12,6 +12,8 @@ const fullItem = (): DecisionApiItem => ({
   type: 'decision_required',
   status: 'unread',
   effectiveStatus: 'needs_action',
+  decisionKind: 'action_proposal',
+  actionability: 'confirmation_required',
   urgency: 'today',
   timingLabel: 'Today',
   priorityScore: 70,
@@ -58,6 +60,8 @@ describe('Decision API version negotiation', () => {
     expect(card.schemaVersion).toBe('decision-center.v2');
     expect(card.decisionId).toBe('d1');
     expect(card.effectiveStatus).toBe('needs_action');
+    expect(card.decisionKind).toBe('action_proposal');
+    expect(card.actionability).toBe('confirmation_required');
     expect(card.safePreviewTitle).toBe('Move your session');
     expect(card.confidence).toBe(0.82);
     // the card is compact: full-only fields are not carried over
