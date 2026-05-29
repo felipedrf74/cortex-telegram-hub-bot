@@ -56,7 +56,7 @@ import { expireStalePendingChatActionsForJob } from './chat-action-state';
 import { pruneCompletedChatActionRuns, reapZombieChatActionRuns } from './chat-action-run-store';
 import { processChatActionFixerJobs } from './chat-action-fixer-worker';
 import { runGarminTenantIsolationWatcher } from './garmin-tenant-isolation-watcher';
-import { runDecisionCenterSmokeCleanupJob, runDecisionExpiryJob, runDecisionHandledHistoryBackfillJob, runDecisionSourceStateSupersessionJob } from './decision-center';
+import { runDecisionCenterSmokeCleanupJob, runDecisionExpiryJob, runDecisionHandledHistoryBackfillJob, runDecisionMetricsRollupJob, runDecisionSourceStateSupersessionJob } from './decision-center';
 import { expireOldNexusPointCredits } from './nexus-points';
 import { getActivePlan, getCurrentWeek, getWeeklyAdherence, computeAdjustmentRecommendation, updateWeekAdjustment, getWeeksForPlan } from './training-plans';
 import { calculateReadiness, persistReadinessScore } from './readiness-scorer';
@@ -723,6 +723,7 @@ export function startScheduler(bot?: any): void {
   registerJob('decision_source_supersession', 'Decision Source Supersession', '*/15 * * * *', 'system');
   registerJob('decision_handled_history_backfill', 'Decision Handled History Backfill', '22,52 * * * *', 'system');
   registerJob('decision_expiry', 'Decision Expiry Sweep', '*/10 * * * *', 'system');
+  registerJob('decision_metrics_rollup', 'Decision Metrics Daily Rollup', '15 0 * * *', 'system');
   registerJob('chat_action_plan_expiry', 'Chat Action Plan Expiry', '15 * * * *', 'system');
   registerJob('chat_action_fixer_worker', 'Chat Action Fixer Worker', '* * * * *', 'system');
   registerJob('event_backbone_worker', 'Event Backbone Worker', '* * * * *', 'system');
@@ -1882,6 +1883,12 @@ export function startScheduler(bot?: any): void {
     const result = runDecisionExpiryJob({ batchSize: 500, maxBatches: 20 });
     if (result.expired === 0) return 'skipped';
     logger.info(result, 'Decision expiry sweep completed');
+  }), { timezone: tz });
+
+  cron.schedule('15 0 * * *', wrapJob('decision_metrics_rollup', async () => {
+    const yesterday = new Date(Date.now() - 24 * 3_600_000).toISOString().slice(0, 10);
+    const result = runDecisionMetricsRollupJob({ date: yesterday });
+    logger.info(result, 'Decision metrics daily rollup completed');
   }), { timezone: tz });
 
   cron.schedule('*/2 * * * *', wrapJob('chat_action_plan_expiry', async () => {

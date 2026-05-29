@@ -67,6 +67,8 @@ import {
   rankDecisionPriority,
   computeConfidenceExplanation,
   getDecisionLifecycleEvents,
+  runDecisionMetricsRollupJob,
+  getDecisionMetricsDaily,
   markDecisionViewed,
   snoozeDecision,
 } from '../../src/services/decision-center';
@@ -2046,5 +2048,25 @@ describe('Decision Center lifecycle events (SI-4)', () => {
     process.env.DECISION_LIFECYCLE_EVENTS_ENABLED = '0';
     const d = await createDecisionIntent(buildSkillDecisionFixtureIntent('training', 82, { dedupeKey: 'lc-off' }));
     expect(getDecisionLifecycleEvents(d.item!.decisionId, 82, 82)).toEqual([]);
+  });
+
+  it('rolls up the day\'s lifecycle events into decision_metrics_daily (idempotent)', async () => {
+    // Real timers so luxon (rollup default date) and SQLite datetime('now') (event timestamps) agree.
+    vi.useRealTimers();
+    const a = await createDecisionIntent(buildSkillDecisionFixtureIntent('training', 90, { tenantId: 90, dedupeKey: 'm-1' }));
+    await createDecisionIntent(buildSkillDecisionFixtureIntent('training', 90, { tenantId: 90, dedupeKey: 'm-2' }));
+    dismissDecision(a.item!.decisionId, 90, 90);
+
+    const r1 = runDecisionMetricsRollupJob();
+    expect(r1.tenants).toBeGreaterThanOrEqual(1);
+    const row = getDecisionMetricsDaily(90)!;
+    expect(row.createdCount).toBe(2);
+    expect(row.dismissedCount).toBe(1);
+
+    // idempotent re-run does not double-count
+    runDecisionMetricsRollupJob();
+    const row2 = getDecisionMetricsDaily(90)!;
+    expect(row2.createdCount).toBe(2);
+    expect(row2.dismissedCount).toBe(1);
   });
 });

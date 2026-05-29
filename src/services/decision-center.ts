@@ -768,6 +768,24 @@ export function ensureDecisionCenterTables(): void {
     );
     CREATE INDEX IF NOT EXISTS idx_decision_lifecycle_events_scope_created
       ON decision_lifecycle_events(user_id, tenant_id, decision_id, created_at);
+    CREATE TABLE IF NOT EXISTS decision_metrics_daily (
+      metric_date TEXT NOT NULL,
+      tenant_id INTEGER NOT NULL,
+      source_skill TEXT NOT NULL DEFAULT '*',
+      created_count INTEGER NOT NULL DEFAULT 0,
+      surfaced_count INTEGER NOT NULL DEFAULT 0,
+      viewed_count INTEGER NOT NULL DEFAULT 0,
+      dismissed_count INTEGER NOT NULL DEFAULT 0,
+      snoozed_count INTEGER NOT NULL DEFAULT 0,
+      action_succeeded_count INTEGER NOT NULL DEFAULT 0,
+      action_failed_count INTEGER NOT NULL DEFAULT 0,
+      expired_count INTEGER NOT NULL DEFAULT 0,
+      gate_blocked_count INTEGER NOT NULL DEFAULT 0,
+      computed_at TEXT NOT NULL DEFAULT (datetime('now')),
+      PRIMARY KEY (metric_date, tenant_id, source_skill)
+    );
+    CREATE INDEX IF NOT EXISTS idx_decision_metrics_daily_tenant
+      ON decision_metrics_daily(tenant_id, metric_date);
     CREATE TABLE IF NOT EXISTS decision_queue_daily_rollups (
       user_id INTEGER NOT NULL,
       tenant_id INTEGER NOT NULL,
@@ -3974,6 +3992,89 @@ export function getDecisionLifecycleEvents(decisionId: string, userId: number, t
      WHERE decision_id = ? AND user_id = ? AND tenant_id = ?
      ORDER BY rowid ASC
   `).all(decisionId, userId, tenantId) as DecisionLifecycleEventRow[];
+}
+
+export interface DecisionMetricsDailyRow {
+  metricDate: string;
+  tenantId: number;
+  sourceSkill: string;
+  createdCount: number;
+  surfacedCount: number;
+  viewedCount: number;
+  dismissedCount: number;
+  snoozedCount: number;
+  actionSucceededCount: number;
+  actionFailedCount: number;
+  expiredCount: number;
+  gateBlockedCount: number;
+  computedAt: string;
+}
+
+/**
+ * Aggregate one day's lifecycle events + generic-blocked quality-gate events into tenant-total
+ * rows in decision_metrics_daily so dashboards read pre-aggregated counters, never the hot tables.
+ * Idempotent (INSERT OR REPLACE per (date, tenant, '*')). Defaults to today (UTC).
+ */
+export function runDecisionMetricsRollupJob(input: { date?: string } = {}): { date: string; tenants: number } {
+  ensureDecisionCenterTables();
+  const db = getDb();
+  const date = input.date ?? DateTime.utc().toISODate() ?? '1970-01-01';
+  const eventRows = db.prepare(`
+    SELECT tenant_id AS tenantId, event, COUNT(*) AS n
+      FROM decision_lifecycle_events
+     WHERE date(created_at) = ?
+     GROUP BY tenant_id, event
+  `).all(date) as Array<{ tenantId: number; event: string; n: number }>;
+  const gateRows = db.prepare(`
+    SELECT tenant_id AS tenantId, COUNT(*) AS n
+      FROM decision_quality_gate_events
+     WHERE date(created_at) = ? AND generic_blocked = 1
+     GROUP BY tenant_id
+  `).all(date) as Array<{ tenantId: number; n: number }>;
+
+  const byTenant = new Map<number, Record<string, number>>();
+  const bucket = (tenantId: number): Record<string, number> => {
+    let row = byTenant.get(tenantId);
+    if (!row) { row = {}; byTenant.set(tenantId, row); }
+    return row;
+  };
+  for (const row of eventRows) bucket(row.tenantId)[row.event] = row.n;
+  for (const row of gateRows) bucket(row.tenantId).gate_blocked = row.n;
+
+  const upsert = db.prepare(`
+    INSERT OR REPLACE INTO decision_metrics_daily
+      (metric_date, tenant_id, source_skill, created_count, surfaced_count, viewed_count,
+       dismissed_count, snoozed_count, action_succeeded_count, action_failed_count,
+       expired_count, gate_blocked_count, computed_at)
+    VALUES (?, ?, '*', ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+  `);
+  const writeAll = db.transaction(() => {
+    for (const [tenantId, c] of byTenant) {
+      upsert.run(
+        date, tenantId,
+        c.created ?? 0, c.surfaced ?? 0, c.viewed ?? 0, c.dismissed ?? 0, c.snoozed ?? 0,
+        c.action_succeeded ?? 0, c.action_failed ?? 0, c.expired ?? 0, c.gate_blocked ?? 0,
+      );
+    }
+  });
+  writeAll();
+  return { date, tenants: byTenant.size };
+}
+
+/** Read a tenant's daily metrics row (dashboard + tests). Defaults to today (UTC). */
+export function getDecisionMetricsDaily(tenantId: number, opts: { date?: string } = {}): DecisionMetricsDailyRow | null {
+  ensureDecisionCenterTables();
+  const date = opts.date ?? DateTime.utc().toISODate() ?? '1970-01-01';
+  const row = getDb().prepare(`
+    SELECT metric_date AS metricDate, tenant_id AS tenantId, source_skill AS sourceSkill,
+           created_count AS createdCount, surfaced_count AS surfacedCount, viewed_count AS viewedCount,
+           dismissed_count AS dismissedCount, snoozed_count AS snoozedCount,
+           action_succeeded_count AS actionSucceededCount, action_failed_count AS actionFailedCount,
+           expired_count AS expiredCount, gate_blocked_count AS gateBlockedCount, computed_at AS computedAt
+      FROM decision_metrics_daily
+     WHERE metric_date = ? AND tenant_id = ? AND source_skill = '*'
+  `).get(date, tenantId) as DecisionMetricsDailyRow | undefined;
+  return row ?? null;
 }
 
 function actionsForRecord(record: DecisionRecord): NotificationActionButton[] {
