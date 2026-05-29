@@ -64,6 +64,7 @@ import {
   computeActionEffectiveStatus,
   computeDecisionKind,
   computeActionability,
+  rankDecisionPriority,
   snoozeDecision,
 } from '../../src/services/decision-center';
 import { buildSkillNotificationFixtureIntent, createNotificationIntent, ensureNotificationTables } from '../../src/services/notification-orchestrator';
@@ -1930,6 +1931,35 @@ describe('Decision Center layered status (Foundation)', () => {
     expect(computeActionability(recOf({ requiresUserAction: true }), logic, 'expired', open)).toBe('read_only');
     expect(computeActionability(recOf({ requiresUserAction: true }), logic, 'needs_action', retry)).toBe('read_only');
     expect(computeActionability(recOf({ requiresUserAction: true }), { quality: { safeForFrontendAction: false } } as any, 'needs_action', open)).toBe('read_only');
+  });
+
+  it('ranks by multi-signal priority separate from confidence, with non-suppressible floors', () => {
+    const base = {
+      priority: 'active' as const, sourceSkill: 'content', type: 'decision_required',
+      status: 'unread', deadlineSoon: false, riskLevel: 'low' as const, actionCount: 1, dependencyBlocked: false,
+    };
+    const later = rankDecisionPriority(base);
+    expect(later.rankingVersion).toBe(1);
+
+    // critical priority floors to critical
+    expect(rankDecisionPriority({ ...base, priority: 'critical' }).priorityTier).toBe('critical');
+
+    // finance + risk → non-suppressible floor, at least 'high'
+    const fin = rankDecisionPriority({ ...base, sourceSkill: 'finance', riskLevel: 'medium' });
+    expect(['high', 'critical']).toContain(fin.priorityTier);
+    expect(fin.reasonCodes).toContain('floor_finance_risk');
+
+    // connection-blocking (sync_failure) → at least 'high'
+    const sync = rankDecisionPriority({ ...base, type: 'sync_failure' });
+    expect(['high', 'critical']).toContain(sync.priorityTier);
+    expect(sync.reasonCodes).toContain('floor_connection_blocking');
+
+    // training high-risk safety floor tag present
+    expect(rankDecisionPriority({ ...base, sourceSkill: 'training', riskLevel: 'high' }).reasonCodes).toContain('floor_training_safety');
+
+    // higher cost-of-delay outranks at equal other signals; snooze penalizes
+    expect(rankDecisionPriority({ ...base, deadlineSoon: true }).priorityScore).toBeGreaterThan(later.priorityScore);
+    expect(rankDecisionPriority({ ...base, status: 'snoozed' }).priorityScore).toBeLessThan(later.priorityScore);
   });
 
   it('exposes the layered fields (additive) on a real API item without breaking v1 fields', async () => {

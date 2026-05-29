@@ -115,6 +115,17 @@ export type Actionability =
   | 'read_only' | 'preview_available' | 'confirmation_required' | 'execute_with_undo'
   | 'requires_human_review' | 'blocked' | 'unavailable';
 
+/** Priority tier — deliberately separate from confidence. */
+export type DecisionPriorityTier = 'critical' | 'high' | 'normal' | 'low';
+/** Multi-signal priority (separate from confidence). Computed live for now; persistence is a follow-up. */
+export interface DecisionPrioritySnapshot {
+  priorityTier: DecisionPriorityTier;
+  priorityScore: number;
+  reasonCodes: string[];
+  computedAt: string;
+  rankingVersion: number;
+}
+
 /**
  * Compact list/overview card (API v2). Projected from the full DecisionApiItem so list
  * surfaces ship ~22 fields/item instead of ~70. Full item is served only on detail.
@@ -128,6 +139,7 @@ export interface DecisionCardSummary {
   effectiveStatus?: DecisionEffectiveStatus;
   decisionKind?: DecisionKind;
   actionability?: Actionability;
+  prioritySnapshot?: DecisionPrioritySnapshot;
   urgency: DecisionUrgency;
   timingLabel: string | null;
   priorityScore: number;
@@ -225,6 +237,7 @@ export interface DecisionApiItem {
   actionEffectiveStatuses?: DecisionActionEffectiveStatus[];
   decisionKind?: DecisionKind;
   actionability?: Actionability;
+  prioritySnapshot?: DecisionPrioritySnapshot;
   urgency: DecisionUrgency;
   timingLabel: string | null;
   priorityScore: number;
@@ -2220,6 +2233,17 @@ function formatDecisionItemForApi(item: DecisionRecord): DecisionApiItem {
   const effectiveStatus = computeEffectiveStatus(item, { dependencies, logic, retryAvailable: outcome.retryActions.length > 0 });
   const decisionKind = computeDecisionKind(item, logic, dependencies, action);
   const actionability = computeActionability(item, logic, effectiveStatus, action);
+  const rankDeadline = item.decisionDeadline ?? item.expiresAt;
+  const prioritySnapshot = rankDecisionPriority({
+    priority: item.priority,
+    sourceSkill: item.sourceSkill,
+    type: item.type,
+    status: item.status,
+    deadlineSoon: !!rankDeadline && Number.isFinite(Date.parse(rankDeadline)) && Date.parse(rankDeadline) - Date.now() <= 24 * 3_600_000,
+    riskLevel,
+    actionCount: actions.length,
+    dependencyBlocked: dependencies.blockedByDecisionIds.length > 0,
+  });
   return {
     decisionId: item.itemId,
     itemId: item.itemId,
@@ -2237,6 +2261,7 @@ function formatDecisionItemForApi(item: DecisionRecord): DecisionApiItem {
     actionEffectiveStatuses: actions.map((candidate) => computeActionEffectiveStatus(item, candidate, { dependencies, logic })),
     decisionKind,
     actionability,
+    prioritySnapshot,
     urgency,
     timingLabel: timingLabelForRecord(item, urgency),
     priorityScore: priorityScoreFor(item),
@@ -3750,6 +3775,71 @@ export function computeActionability(
   if (!record.requiresUserAction || !logic.quality.safeForFrontendAction) return 'read_only';
   if (!primaryAction || !isDecisionActionExecutable(primaryAction.id)) return 'read_only';
   return 'confirmation_required';
+}
+
+export const DECISION_RANKING_VERSION = 1;
+
+/** Per-domain base weight: safety/finance-leaning skills rank higher at equal urgency. */
+const DOMAIN_PRIORITY_WEIGHTS: Record<string, number> = {
+  security: 1, finance: 0.9, secretary: 0.7, training: 0.7, chat: 0.6, content: 0.5, cooking: 0.4,
+};
+
+const PRIORITY_TIER_ORDER: DecisionPriorityTier[] = ['low', 'normal', 'high', 'critical'];
+
+export interface DecisionRankingInputs {
+  priority: NotificationPriority;
+  sourceSkill: string;
+  type: string;
+  status: string;
+  deadlineSoon: boolean;
+  riskLevel: 'low' | 'medium' | 'high';
+  actionCount: number;
+  dependencyBlocked: boolean;
+}
+
+/**
+ * Compute a multi-signal priority SEPARATE from confidence, then apply raise-only policy floors so
+ * finance-risk / connection-blocking / critical-deadline / training-safety can never be buried.
+ * Floor reason codes mark the item as feedback-suppression-exempt. Pure — no DB, no confidence input.
+ */
+export function rankDecisionPriority(input: DecisionRankingInputs): DecisionPrioritySnapshot {
+  const reasonCodes: string[] = [];
+  const urgency = input.priority === 'critical' ? 1 : input.priority === 'time_sensitive' ? 0.85 : input.priority === 'active' ? 0.55 : 0.25;
+  const impact = input.riskLevel === 'high' ? 1 : input.riskLevel === 'medium' ? 0.6 : 0.3;
+  const costOfDelay = input.deadlineSoon ? 0.9 : 0.3;
+  const domainPriority = DOMAIN_PRIORITY_WEIGHTS[input.sourceSkill] ?? 0.5;
+  const effortPenalty = (Math.min(Math.max(input.actionCount, 0), 4) / 4) * 0.15;
+  const snoozePenalty = input.status === 'snoozed' ? 0.25 : 0;
+  const blockedPenalty = input.dependencyBlocked ? 0.2 : 0;
+
+  const raw = (0.35 * urgency) + (0.25 * impact) + (0.2 * costOfDelay) + (0.2 * domainPriority)
+    - effortPenalty - snoozePenalty - blockedPenalty;
+  const score = Math.round(Math.max(0, Math.min(1, raw)) * 100);
+
+  if (urgency >= 0.85) reasonCodes.push('high_urgency');
+  if (impact >= 1) reasonCodes.push('high_impact');
+  if (input.deadlineSoon) reasonCodes.push('deadline_soon');
+  if (input.dependencyBlocked) reasonCodes.push('blocked_by_dependency');
+  if (input.status === 'snoozed') reasonCodes.push('snoozed');
+
+  let tier: DecisionPriorityTier = score >= 80 ? 'critical' : score >= 60 ? 'high' : score >= 35 ? 'normal' : 'low';
+  const floorTo = (floor: DecisionPriorityTier, code: string): void => {
+    if (PRIORITY_TIER_ORDER.indexOf(floor) > PRIORITY_TIER_ORDER.indexOf(tier)) tier = floor;
+    reasonCodes.push(code); // suppression-exempt marker, even if it did not raise the tier
+  };
+  if (input.priority === 'critical' || input.priority === 'time_sensitive') floorTo('critical', 'floor_critical_deadline');
+  else if (input.deadlineSoon) floorTo('high', 'floor_deadline_soon');
+  if (input.sourceSkill === 'finance' && input.riskLevel !== 'low') floorTo('high', 'floor_finance_risk');
+  if (input.type === 'sync_failure' || input.dependencyBlocked) floorTo('high', 'floor_connection_blocking');
+  if (input.sourceSkill === 'training' && input.riskLevel === 'high') floorTo('high', 'floor_training_safety');
+
+  return {
+    priorityTier: tier,
+    priorityScore: score,
+    reasonCodes: [...new Set(reasonCodes)],
+    computedAt: new Date().toISOString(),
+    rankingVersion: DECISION_RANKING_VERSION,
+  };
 }
 
 function actionsForRecord(record: DecisionRecord): NotificationActionButton[] {
