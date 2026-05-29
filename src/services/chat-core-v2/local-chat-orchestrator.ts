@@ -11,6 +11,7 @@ import {
 } from './answer-composition';
 import { detectChatCoreV2WriteIntent } from './action-gateway';
 import { runWithLocalInferenceSlot } from './local-inference-concurrency-gate';
+import { WRITE_SUCCESS_CLAIM_RE } from './success-claim-policy';
 import { resolveChatCoreV2ActivationConfig, type ChatCoreV2AllowedSurface } from './activation-flags';
 import type { ChatCoreV2Locale } from './response-contracts';
 
@@ -56,23 +57,9 @@ const DEFAULT_LOCAL_CHAT_TIMEOUT_MS = 15_000;
 const DEFAULT_RECIPE_NUM_PREDICT = 380;
 const DEFAULT_RECIPE_TIMEOUT_MS = 50_000;
 
-// Only treat text as an unverified success claim when the model says *it*
-// performed (or will perform) an app action. First-person claims, first-person
-// preterite verbs, intent-to-act ("I'll cancel" / "vou cancelar"), and the
-// "cancelado" participle qualify. Bare participles like "done"/"completed" are
-// excluded so legitimate content (e.g. a recipe step "cook until done") is not
-// rewritten away.
-const WRITE_SUCCESS_CLAIM_RE = new RegExp(
-  [
-    "\\bi(?:['’]ve|\\s+have|\\s+just|\\s+already)*\\s+(?:marked|completed|created|scheduled|sent|deleted|updated|published|posted|paid|transferred|cancell?ed)\\b",
-    "\\bi(?:['’]ll|\\s+will)\\s+(?:cancel|move|reschedule|delete|create|schedule|send|mark|complete|update|add|remove)\\b",
-    '\\b(?:criei|marquei|conclu[ií]|agendei|enviei|apaguei|deletei|atualizei|publiquei|postei|paguei|transferi|cancelei)\\b',
-    '\\bvou\\s+(?:cancelar|mudar|adiar|mover|apagar|deletar|criar|agendar|enviar|marcar|concluir|atualizar|adicionar|remover)\\b',
-    '\\bcancelad[oa]\\b',
-    '\\b(?:marqu[eé]|cre[eé]|complet[eé]|program[eé]|envi[eé]|elimin[eé]|actualic[eé]|pagu[eé]|cancel[eé])\\b',
-  ].join('|'),
-  'i',
-);
+// WRITE_SUCCESS_CLAIM_RE is the shared single source of truth in
+// ./success-claim-policy (imported above), kept identical to the eval grader so
+// the runtime guard and its evaluator cannot drift.
 
 const LOCAL_CHAT_OUTPUT_SCHEMA = {
   type: 'object',

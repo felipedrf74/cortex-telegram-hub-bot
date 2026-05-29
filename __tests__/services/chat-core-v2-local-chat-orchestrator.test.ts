@@ -583,4 +583,39 @@ describe('ChatCoreV2 local chat orchestrator', () => {
     expect(result?.response.metadata).toEqual(expect.objectContaining({ antiClaimGuardRewritten: true }));
     expect(result?.response.text).not.toContain('cancel');
   });
+
+  it('rewrites saved/added success claims in EN and PT (aligned with the eval grader)', async () => {
+    for (const claim of ["I've saved the recipe for you.", "I've added it to your list.", 'Pronto, guardei isso.', 'Adicionei isso à tua lista.']) {
+      mocks.dispatchLocalReasoning.mockResolvedValue({
+        text: JSON.stringify({
+          schemaVersion: COMPOSED_ANSWER_DRAFT_SCHEMA_VERSION,
+          mode: 'model_constrained',
+          locale: 'en',
+          text: claim,
+          factualClaims: [],
+          reasonCodes: ['bad_action_claim'],
+        }),
+        parsed: {
+          schemaVersion: COMPOSED_ANSWER_DRAFT_SCHEMA_VERSION,
+          mode: 'model_constrained',
+          locale: 'en',
+          text: claim,
+          factualClaims: [],
+          reasonCodes: ['bad_action_claim'],
+        },
+      });
+
+      const result = await runChatCoreV2LocalChatTurn({
+        normalizedText: 'Can you help me think about this?',
+        userId: 42,
+        tenantId: 84,
+        requestId: `req-claim-${claim.slice(0, 6)}`,
+        locale: 'en',
+        surface: 'ios',
+        env: baseEnv(),
+      });
+
+      expect(result?.response.metadata).toEqual(expect.objectContaining({ antiClaimGuardRewritten: true }));
+    }
+  });
 });

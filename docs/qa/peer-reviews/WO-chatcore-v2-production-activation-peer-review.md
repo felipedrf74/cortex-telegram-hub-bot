@@ -139,9 +139,17 @@ Reviewed this pass (read-only):
   allowlist, so a raw numeric userId/tenantId could appear — recommend HMAC-ing
   or dropping numeric `*Id` keys when D15 is wired to a table.
 
-Still pending: the D5 per-domain evidence-taxonomy doc (`phase1-contracts.md`)
-and the D4 planner packet/atom-schema validators for the "no unknown keys /
-bounded capability IDs" check.
+- D4 `plan-schema.ts` / `plan-validator.ts` — every schema is
+  `additionalProperties:false` with bounded enums (intent/domain/risk) and
+  `maxItems` limits (domains<=2, capabilityIds<=3, proposedWrites<=1); the
+  validator rejects `unknown_capability`. "No unknown keys / bounded capability
+  IDs" — PASS.
+- D5 `phase1-contracts.md` — coherent D4-D16 contract doc (schema, evidence
+  taxonomy, CPU hot-path amendment). Documentation-level PASS.
+
+All named D1-D16 peer-review items have now been reviewed for this L2 slice.
+Runtime integration (D1/D7/D9/D11/D13/D14/D15) and the real-label corpus remain
+Phase 2+ and are out of this slice's scope.
 
 ## Phase-2 prep implemented this pass
 

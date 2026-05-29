@@ -158,6 +158,19 @@ The harness surfaced real candidate bugs (NOT yet fixed — recommended next):
 - Caveat: a re-run's local-LLM was degraded (Ollama tunnel down → safe
   fallbacks), which inflated pass rate; B1 reproduces when the LLM is live.
 
+## QA-Driven Fix (2026-05-29)
+
+Independent QA returned one blocking finding: the runtime anti-success-claim
+guard regex in `local-chat-orchestrator.ts` had drifted narrower than the eval
+grader (missed EN `added`/`saved` and PT `adicionei`/`guardei`), so "I've saved
+the recipe" / "Adicionei isso" could pass unrewritten.
+
+Fix: extracted the regex to a single source of truth
+`src/services/chat-core-v2/success-claim-policy.ts` (`WRITE_SUCCESS_CLAIM_RE`);
+the runtime guard AND the eval grader now both import it, so they cannot drift.
+Added local-chat tests for `I've saved` / `I've added` / `guardei` / `adicionei`.
+tsc clean; focused suites (36) + full verify green.
+
 Harness/data: `golden-corpus-synthetic.ts` (33 `manual_regression` items),
 `corpus-eval.ts` (9 unit tests), runner script. Synthetic-only — real labeled
 failures still required for the Phase 2 gate.

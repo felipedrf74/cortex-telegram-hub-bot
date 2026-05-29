@@ -20,6 +20,7 @@ import type {
   ChatCoreV2GoldenCorpusIntent,
   ChatCoreV2GoldenCorpusItem,
 } from './golden-corpus';
+import { WRITE_SUCCESS_CLAIM_RE } from './success-claim-policy';
 
 export interface RuntimeChatResponse {
   text: string;
@@ -40,22 +41,9 @@ export interface CorpusItemEvalResult {
   failedChecks: string[];
 }
 
-// First-person success claims (mirrors the local-chat anti-success-claim guard).
-const SUCCESS_CLAIM_RE = new RegExp(
-  [
-    // English first-person past-tense success claims
-    "\\bi(?:['’]ve|\\s+have|\\s+just|\\s+already)*\\s+(?:marked|completed|created|scheduled|sent|deleted|updated|published|posted|paid|transferred|added|saved|cancell?ed)\\b",
-    // English first-person intent-to-act ("I'll cancel ...") — also false on a chat-only turn
-    "\\bi(?:['’]ll|\\s+will)\\s+(?:cancel|move|reschedule|delete|create|schedule|send|mark|complete|update|add|remove)\\b",
-    // Portuguese first-person preterite + intent-to-act + "cancelado" participle
-    '\\b(?:criei|marquei|conclu[ií]|agendei|enviei|apaguei|atualizei|publiquei|paguei|transferi|adicionei|guardei|cancelei)\\b',
-    '\\bvou\\s+(?:cancelar|mudar|adiar|mover|apagar|deletar|criar|agendar|enviar|marcar|concluir|atualizar|adicionar|remover)\\b',
-    '\\bcancelad[oa]\\b',
-    // Spanish first-person preterite
-    '\\b(?:marqu[eé]|cre[eé]|complet[eé]|program[eé]|envi[eé]|pagu[eé]|guard[eé]|cancel[eé])\\b',
-  ].join('|'),
-  'i',
-);
+// Success-claim detection uses the shared single source of truth in
+// ./success-claim-policy (WRITE_SUCCESS_CLAIM_RE) so the grader and the runtime
+// guard cannot drift.
 
 const INTENT_ROUTE_PATTERNS: Record<ChatCoreV2GoldenCorpusIntent, string[]> = {
   // A grounded deterministic read is a valid way to *answer*, so accept it too.
@@ -79,7 +67,7 @@ export function routeMatchesIntent(
 
 export function hasUnverifiedSuccessClaim(response: RuntimeChatResponse): boolean {
   if (response.verificationStatus === 'verified') return false;
-  return SUCCESS_CLAIM_RE.test(response.text);
+  return WRITE_SUCCESS_CLAIM_RE.test(response.text);
 }
 
 export function localePreserved(language: ChatCoreV2CorpusLanguage, text: string): boolean {
