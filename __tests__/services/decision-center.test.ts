@@ -65,6 +65,7 @@ import {
   computeDecisionKind,
   computeActionability,
   rankDecisionPriority,
+  computeConfidenceExplanation,
   snoozeDecision,
 } from '../../src/services/decision-center';
 import { buildSkillNotificationFixtureIntent, createNotificationIntent, ensureNotificationTables } from '../../src/services/notification-orchestrator';
@@ -1960,6 +1961,23 @@ describe('Decision Center layered status (Foundation)', () => {
     // higher cost-of-delay outranks at equal other signals; snooze penalizes
     expect(rankDecisionPriority({ ...base, deadlineSoon: true }).priorityScore).toBeGreaterThan(later.priorityScore);
     expect(rankDecisionPriority({ ...base, status: 'snoozed' }).priorityScore).toBeLessThan(later.priorityScore);
+  });
+
+  it('promotes confidence to an evidence-strength explanation with privacy-gated basis', () => {
+    const why = { facts: ['Exact calendar conflict', 'Task due tomorrow'], preferences: [], rules: ['Protect rest window'], tradeoffs: [], uncertainty: ['No fatigue data'] } as any;
+    const exposed = computeConfidenceExplanation(0.823, why, { confidenceLabel: 'high', sourceFreshness: 'fresh' }, true);
+    expect(exposed.label).toBe('high');
+    expect(exposed.value).toBe(0.82);
+    expect(exposed.sourceFreshness).toBe('fresh');
+    expect(exposed.basis).toEqual(expect.arrayContaining(['Exact calendar conflict', 'Protect rest window']));
+    expect(exposed.uncertainty).toContain('No fatigue data');
+
+    // privacy-gated: basis/uncertainty suppressed when evidence is not exposable; label/freshness still shipped
+    const gated = computeConfidenceExplanation(0.4, why, { confidenceLabel: 'low', sourceFreshness: 'stale' }, false);
+    expect(gated.basis).toEqual([]);
+    expect(gated.uncertainty).toEqual([]);
+    expect(gated.label).toBe('low');
+    expect(gated.sourceFreshness).toBe('stale');
   });
 
   it('exposes the layered fields (additive) on a real API item without breaking v1 fields', async () => {

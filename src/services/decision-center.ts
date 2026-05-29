@@ -126,6 +126,16 @@ export interface DecisionPrioritySnapshot {
   rankingVersion: number;
 }
 
+/** "Evidence strength" — confidence promoted to an explanation. label/sourceFreshness are always safe;
+ *  basis/uncertainty are privacy-gated (only when decision evidence is exposable). */
+export interface ConfidenceExplanation {
+  value: number;
+  label: 'high' | 'medium' | 'low';
+  basis: string[];
+  uncertainty: string[];
+  sourceFreshness: 'live' | 'fresh' | 'stale' | 'unknown';
+}
+
 /**
  * Compact list/overview card (API v2). Projected from the full DecisionApiItem so list
  * surfaces ship ~22 fields/item instead of ~70. Full item is served only on detail.
@@ -287,6 +297,7 @@ export interface DecisionApiItem {
   expiresAt: string | null;
   confidence: number;
   analysis: DecisionAnalysisBundle;
+  confidenceExplanation?: ConfidenceExplanation;
   riskLevel: 'low' | 'medium' | 'high';
   groupKey: string;
   sectionKey: DecisionTimelineSectionKey;
@@ -2244,6 +2255,8 @@ function formatDecisionItemForApi(item: DecisionRecord): DecisionApiItem {
     actionCount: actions.length,
     dependencyBlocked: dependencies.blockedByDecisionIds.length > 0,
   });
+  const analysisBundle = analysisForRecord(item, logic);
+  const confidenceExplanation = computeConfidenceExplanation(logic.confidence, logic.why, analysisBundle, exposeDebugEvidence);
   return {
     decisionId: item.itemId,
     itemId: item.itemId,
@@ -2312,7 +2325,8 @@ function formatDecisionItemForApi(item: DecisionRecord): DecisionApiItem {
     deadlineAt: item.decisionDeadline,
     expiresAt: item.expiresAt,
     confidence: logic.confidence,
-    analysis: analysisForRecord(item, logic),
+    analysis: analysisBundle,
+    confidenceExplanation,
     riskLevel,
     groupKey: groupKeyForRecord(item),
     sectionKey,
@@ -3839,6 +3853,28 @@ export function rankDecisionPriority(input: DecisionRankingInputs): DecisionPrio
     reasonCodes: [...new Set(reasonCodes)],
     computedAt: new Date().toISOString(),
     rankingVersion: DECISION_RANKING_VERSION,
+  };
+}
+
+/**
+ * Promote the bare confidence number to an "evidence strength" explanation. label + sourceFreshness
+ * are always safe to surface; basis/uncertainty inherit the decision's privacy gate (they come from
+ * DecisionWhy, which can carry sensitive specifics).
+ */
+export function computeConfidenceExplanation(
+  confidence: number,
+  why: DecisionWhy,
+  analysis: Pick<DecisionAnalysisBundle, 'confidenceLabel' | 'sourceFreshness'>,
+  exposeEvidence: boolean,
+): ConfidenceExplanation {
+  const basis = exposeEvidence ? [...why.facts, ...why.rules].filter(Boolean).slice(0, 4) : [];
+  const uncertainty = exposeEvidence ? why.uncertainty.filter(Boolean).slice(0, 4) : [];
+  return {
+    value: Number((Number.isFinite(confidence) ? confidence : 0).toFixed(2)),
+    label: analysis.confidenceLabel,
+    basis,
+    uncertainty,
+    sourceFreshness: analysis.sourceFreshness,
   };
 }
 
