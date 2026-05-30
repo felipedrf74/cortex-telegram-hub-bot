@@ -335,6 +335,15 @@ export function isDecisionHumanReviewGateEnabled(env: RuntimeEnv = process.env, 
   return scopedFlagEnabledByExplicitOptIn(env, 'DECISION_HUMAN_REVIEW_GATE_ENABLED', scope);
 }
 
+/**
+ * Gates the Refresh-evidence endpoint (POST /decisions/:id/refresh): re-derives a decision's computed fields
+ * (effectiveStatus / freshness / ranking / actionability) from CURRENT stored source state — token-zero, no
+ * provider re-fetch — and returns the refreshed item. Read-only. Default OFF; opt-in per user/tenant.
+ */
+export function isDecisionRefreshEnabled(env: RuntimeEnv = process.env, scope?: RuntimeFlagScope): boolean {
+  return scopedFlagEnabledByExplicitOptIn(env, 'DECISION_REFRESH_ENABLED', scope);
+}
+
 
 export function isChatCoreV2RuntimeFlagEnabled(
   flagKey: string,

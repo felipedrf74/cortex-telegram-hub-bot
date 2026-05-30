@@ -17,6 +17,7 @@ import {
   listHandledByNexusItems,
   listDecisionItems,
   markDecisionViewed,
+  refreshDecisionItem,
   performDecisionAction,
   snoozeDecision,
   updateDecisionPreferences,
@@ -30,6 +31,9 @@ import {
 } from '../../services/notification-orchestrator';
 import { assertTenantScope, requireMutationScope, TenantScopeError } from '../../services/tenant-scope';
 import { buildDecisionCardSummary, resolveDecisionApiVersion } from '../decision-api-version';
+import { decodeDecisionCursor, paginateDecisions, sortDecisionsForKeyset } from '../decision-cursor';
+import type { DecisionListResponse } from '../../services/decision-center';
+import { isDecisionRefreshEnabled } from '../../services/runtime-flags';
 import { logger } from '../../utils/logger';
 
 function routeTenantId(
@@ -104,6 +108,10 @@ function positiveIntQuery(res: Response, raw: unknown, fallback: number, name: s
   return Math.min(parsed, max);
 }
 
+/** Internal read cap for v2 cursor pagination: the full active list to paginate over (cursor/pageSize bound
+ *  the page). Comfortably exceeds the ~50-active-per-user product ceiling so cursors traverse everything. */
+const DECISION_LIST_CURSOR_CAP = 500;
+
 export function decisionRoutes(): Router {
   const router = Router();
 
@@ -154,8 +162,31 @@ export function decisionRoutes(): Router {
     const sourceSkill = typeof req.query.sourceSkill === 'string' ? req.query.sourceSkill as NotificationSourceSkill : undefined;
     const type = typeof req.query.type === 'string' ? req.query.type as NotificationIntentType : undefined;
     const urgency = typeof req.query.urgency === 'string' ? req.query.urgency as DecisionUrgency : undefined;
-    const items = listDecisionItems(userId, tenantId, { status, sourceSkill, type, urgency, limit });
     const { version, schemaVersion } = resolveDecisionApiVersion(authReq);
+    // API v2 keyset cursor pagination — opt-in WITHIN v2 via ?cursor / ?pageSize. v1 and v2-without-cursor
+    // responses are byte-identical to before (this branch only triggers on an explicit cursor/pageSize param).
+    const cursorMode = version === 'v2' && (req.query.cursor !== undefined || req.query.pageSize !== undefined);
+    // In cursor mode the URL ?limit is irrelevant — the pagination universe must be the FULL active list, so
+    // read with a generous internal cap (cursor/pageSize bound the page). Otherwise a >80-item user would get
+    // nextCursor=null mid-dataset. The cap comfortably exceeds the ~50-active-per-user product ceiling.
+    const readLimit = cursorMode ? DECISION_LIST_CURSOR_CAP : limit;
+    const items = listDecisionItems(userId, tenantId, { status, sourceSkill, type, urgency, limit: readLimit });
+    if (cursorMode) {
+      const pageSize = positiveIntQuery(res, req.query.pageSize, 50, 'pageSize', 100);
+      if (pageSize == null) return;
+      const cursor = typeof req.query.cursor === 'string' ? decodeDecisionCursor(req.query.cursor) : null;
+      const { page, nextCursor } = paginateDecisions(sortDecisionsForKeyset(items), cursor, pageSize);
+      const response: DecisionListResponse = {
+        schemaVersion,
+        count: page.length,
+        openCount: page.filter((item) => ['unread', 'read', 'failed'].includes(item.status)).length,
+        items: page.map(buildDecisionCardSummary),
+        pageSize,
+        ...(nextCursor ? { nextCursor } : {}),
+      };
+      sendSuccess(res, response);
+      return;
+    }
     sendSuccess(res, {
       schemaVersion,
       count: items.length,
@@ -270,6 +301,31 @@ export function decisionRoutes(): Router {
     } catch (err) {
       decisionError(res, err, 'DECISION_VIEW_FAILED');
     }
+  }));
+
+  // Refresh-evidence: re-derive a decision's computed fields from current stored state (token-zero, read-only).
+  // Flag-gated (DECISION_REFRESH_ENABLED, default OFF -> 404). Respects v2 card negotiation.
+  router.post('/:id/refresh', asyncHandler(async (req, res: Response) => {
+    const authReq = req as unknown as AuthenticatedRequest;
+    const { userId } = authReq;
+    if (!ensureValidTenantRouteScope(res, userId, 'decisions_route_refresh', { decisionId: req.params.id })) return;
+    const tenantId = routeTenantId(authReq, res, userId, 'decisions_route_refresh');
+    if (tenantId == null) return;
+    if (!isDecisionRefreshEnabled(process.env, { userId, tenantId })) {
+      sendError(res, 'NOT_FOUND', 'Decision refresh is not enabled', 404);
+      return;
+    }
+    const result = refreshDecisionItem(String(req.params.id || ''), userId, tenantId);
+    if (!result) {
+      sendError(res, 'DECISION_NOT_FOUND', 'Decision not found', 404);
+      return;
+    }
+    const { version, schemaVersion } = resolveDecisionApiVersion(authReq);
+    sendSuccess(res, {
+      schemaVersion,
+      item: version === 'v2' ? buildDecisionCardSummary(result.item) : result.item,
+      refreshedAt: result.refreshedAt,
+    });
   }));
 
   router.patch('/:id/snooze', asyncHandler(async (req, res: Response) => {

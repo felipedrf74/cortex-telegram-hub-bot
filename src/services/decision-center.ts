@@ -181,6 +181,16 @@ export interface DecisionCardSummary {
   evidenceStrengthLabel?: EvidenceStrengthLabel;
 }
 
+/** Paginated list envelope (API v2 cursor mode — always compact cards). nextCursor omitted when no further page. */
+export interface DecisionListResponse {
+  schemaVersion: string;
+  count: number;
+  openCount: number;
+  items: DecisionCardSummary[];
+  nextCursor?: string;
+  pageSize: number;
+}
+
 export const DECISION_OUTCOME_LEDGER_RETENTION_POLICY = Object.freeze({
   rawOutcomeRetentionDays: 180,
   aggregateRetentionDays: 730,
@@ -1239,6 +1249,18 @@ export function getDecisionItem(decisionId: string, userId: number, tenantId = u
     return refreshed && !isDecisionExpired(refreshed) ? formatDecisionItemForApi(refreshed) : null;
   }
   return formatDecisionItemForApi(record);
+}
+
+/**
+ * Refresh-evidence: the explicit, audited trigger to re-derive a decision's computed fields (effectiveStatus
+ * / sourceFreshness / ranking / actionability) from CURRENT stored source state. getDecisionItem already
+ * recomputes everything on every call and re-evaluates supersession, so this is a token-zero re-read (no
+ * provider network fetch) — honest about NOT fetching fresh upstream data. Read-only; returns null if the
+ * decision is gone/expired/superseded-away.
+ */
+export function refreshDecisionItem(decisionId: string, userId: number, tenantId = userId): { item: DecisionApiItem; refreshedAt: string } | null {
+  const item = getDecisionItem(decisionId, userId, tenantId);
+  return item ? { item, refreshedAt: DateTime.utc().toISO()! } : null;
 }
 
 export function findDecisionByRelatedEntity(

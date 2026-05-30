@@ -49,6 +49,7 @@ import {
   ensureDecisionCenterTables,
   evaluateDecisionEligibility,
   getDecisionItem,
+  refreshDecisionItem,
   getDecisionGuidanceStats,
   getDecisionOverview,
   getDecisionOutcomeMetrics,
@@ -2336,6 +2337,18 @@ describe('Decision Center layered status (Foundation)', () => {
     expect(typeof item.status).toBe('string');
     expect(item.frontendActionState).toBeDefined();
     expect(item.displayMode).toBeDefined();
+  });
+
+  it('refreshDecisionItem re-derives the item from current stored state (read-only) + stamps refreshedAt', async () => {
+    const created = await createDecisionIntent(buildSkillDecisionFixtureIntent('training', 91, { tenantId: 91, dedupeKey: 'refresh-1' }));
+    const result = refreshDecisionItem(created.item!.decisionId, 91, 91)!;
+    expect(result.item.decisionId).toBe(created.item!.decisionId);
+    expect(result.item.effectiveStatus).toBe('needs_action'); // recomputed, matches getDecisionItem
+    expect(typeof result.refreshedAt).toBe('string');
+    expect(Number.isFinite(Date.parse(result.refreshedAt))).toBe(true);
+    // unknown / wrong-scope decision -> null (no throw).
+    expect(refreshDecisionItem('nc_does_not_exist', 91, 91)).toBeNull();
+    expect(refreshDecisionItem(created.item!.decisionId, 999, 999)).toBeNull(); // wrong user scope
   });
 });
 
