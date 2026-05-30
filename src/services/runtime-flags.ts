@@ -263,6 +263,15 @@ export function isDecisionSemanticDedupEnabled(env: RuntimeEnv = process.env, sc
   return scopedFlagEnabledByExplicitOptIn(env, 'DECISION_SEMANTIC_DEDUP_ENABLED', scope);
 }
 
+/**
+ * Gates the T14 operator dashboard read route (buildDecisionDashboardSnapshot). The route is
+ * additionally admin-gated by the portal guard stack; this flag keeps the endpoint dark by default
+ * until the dashboard is ready. Default OFF; opt-in per user/tenant.
+ */
+export function isDecisionDashboardEnabled(env: RuntimeEnv = process.env, scope?: RuntimeFlagScope): boolean {
+  return scopedFlagEnabledByExplicitOptIn(env, 'DECISION_DASHBOARD_ENABLED', scope);
+}
+
 export function isChatCoreV2RuntimeFlagEnabled(
   flagKey: string,
   env: RuntimeEnv = process.env,
