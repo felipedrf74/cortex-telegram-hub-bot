@@ -30,6 +30,8 @@ import { escapeHtml } from './utils/telegram-formatter';
 import type http from 'http';
 import { isTelegramLegacyDeliveryEnabled } from './services/runtime-flags';
 import { registerGarminMfaNotifier } from './services/garmin-mfa-notifier';
+import { resolveChatCoreV2ActivationConfig } from './services/chat-core-v2/activation-flags';
+import { assertCanaryGateOrThrow } from './services/chat-core-v2/canary-gate-guard';
 
 const MAX_RETRIES = 5;
 const INITIAL_RETRY_DELAY_MS = 45_000; // 45s — enough for Telegram to release the polling lock
@@ -118,6 +120,17 @@ async function main(): Promise<void> {
     }
   } catch (err) {
     logger.warn({ err }, 'AI provider router cold-start failed; lazy init will retry');
+  }
+
+  // Chat Core v2 canary boot gate (Wave-3 rank 7). STRICT NO-OP unless the
+  // orchestrator mode is 'canary': in off/shadow/on/absent this branch is never
+  // entered, so boot is byte-unchanged. When mode==='canary' the guard THROWS on
+  // a refused gate (coarse boot floor / refused prod override) — main()'s
+  // existing catch handler below converts that into the single process.exit. The
+  // guard is placed after DB + provider setup and BEFORE the scheduler/portal
+  // start listening. This is the rank-7 boot floor, NOT the 0.90 promotion gate.
+  if (resolveChatCoreV2ActivationConfig().mode === 'canary') {
+    assertCanaryGateOrThrow();
   }
 
   // Process-level error handlers were installed by ./boot at module load
