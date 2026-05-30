@@ -26,6 +26,7 @@ import {
   CHAT_TURN_PLAN_MICRO_SCHEMA_VERSION,
   CHAT_TURN_PLAN_MICRO_ULTRA_COMPACT_OPTIONS,
   CHAT_TURN_PLAN_MICRO_WIRE_JSON_SCHEMA,
+  buildChatCoreV2WirePlannerSystemPrompt,
   buildUltraCompactPlannerPacket,
   parseAndValidateChatTurnPlanMicroJson,
   parseAndValidateChatTurnPlanMicroAtomJson,
@@ -290,7 +291,7 @@ async function runOnce(phase: Exclude<Suite, 'all'>, run: number, profile: Profi
     : outputShape === 'mini'
       ? buildMiniSystemPrompt()
       : outputShape === 'wire'
-        ? buildWireSystemPrompt()
+        ? buildChatCoreV2WirePlannerSystemPrompt()
         : buildFullSystemPrompt();
   const options = {
     num_ctx: numCtx,
@@ -413,19 +414,6 @@ function buildMiniSystemPrompt(): string {
     'If msg does not ask to change state, NEVER use i="w".',
     'For msg "today?": {"i":"r","c":"1","s":"91"}.',
     'Use i="w" only for create/mark/move/delete/write/send; write form w="0A".',
-    'No prose.',
-  ].join(' ');
-}
-
-function buildWireSystemPrompt(): string {
-  return [
-    'Return compact JSON only.',
-    'Intent code i: a=answer r=read w=write_preview c=clarify u=unsupported e=escalate.',
-    'Use c/r as 0-based indexes into candidates; w as [{"c":index,"k":"A"}].',
-    'Omit empty c/r/w arrays.',
-    'If msg asks status/today/what, use i=r and omit w.',
-    'Never set w unless msg asks create/mark/move/delete.',
-    'Use cf/x decimals 0.0..1.0.',
     'No prose.',
   ].join(' ');
 }

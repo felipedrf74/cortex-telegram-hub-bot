@@ -3,6 +3,7 @@
 import { createHmac } from 'crypto';
 import Database from 'better-sqlite3';
 
+import { config } from '../../config';
 import { logger } from '../../utils/logger';
 import {
   isChatCoreV2ShadowPlannerEnabled,
@@ -11,7 +12,11 @@ import {
 } from '../runtime-flags';
 import { ensureActiveProvider } from '../provider-registry';
 import { getDb } from '../database';
-import { CHAT_TURN_PLAN_MICRO_ULTRA_COMPACT_OPTIONS } from './plan-schema';
+import {
+  buildChatCoreV2WirePlannerSystemPrompt,
+  CHAT_TURN_PLAN_MICRO_ULTRA_COMPACT_OPTIONS,
+  CHAT_TURN_PLAN_MICRO_WIRE_JSON_SCHEMA,
+} from './plan-schema';
 import {
   planChatCoreV2ShadowTurn,
   planChatCoreV2ShadowTurnWithPlanner,
@@ -349,9 +354,24 @@ function buildShadowPlannerTurnInput(
  * bounds the task (think=false, ultra-compact ctx/predict/temperature). Returns
  * null when no local provider is configured (the side effect then no-ops).
  *
- * The packet is JSON-serialized as the prompt; it is text-free by construction
- * (built by planChatCoreV2ShadowTurnWithPlanner from the route decision + the
- * fixed placeholder), so no raw user message ever reaches the local model.
+ * PROVEN WIRE METHOD (doctrine #10 — schema validation backstops Ollama format
+ * enforcement on every planner response). The dispatch carries:
+ *   - systemContext: buildChatCoreV2WirePlannerSystemPrompt() — STATIC
+ *     instruction text only (no user data, no packet contents), telling the
+ *     model to emit the tiny WIRE JSON shape.
+ *   - outputSchema: CHAT_TURN_PLAN_MICRO_WIRE_JSON_SCHEMA — enforced via Ollama
+ *     `format=`, so the model is constrained to the wire shape end-to-end.
+ *   - modelOverride: config.ollama.classifierModel — the fast planner slot.
+ * The shadow orchestrator then expands the wire output to a canonical
+ * ChatTurnPlanMicro via parseAndValidateChatTurnPlanMicroWireJson(raw, packet),
+ * which is why every span can now reach schemaValid=true instead of the bare
+ * context-packet path that produced unrepairable/schemaValid=false.
+ *
+ * The packet is JSON-serialized as the user prompt; it is text-free by
+ * construction (built by planChatCoreV2ShadowTurnWithPlanner from the route
+ * decision + the fixed placeholder), so no raw user message ever reaches the
+ * local model. The system prompt is static instruction text, so it carries no
+ * user data either.
  */
 function buildLocalReasoningPlanner(
   input: RunChatCoreV2ShadowRouteHookInput,
@@ -363,6 +383,12 @@ function buildLocalReasoningPlanner(
     const result = await runWithLocalInferenceSlot(
       () => provider.dispatchLocalReasoning({
         prompt: JSON.stringify(packet),
+        // PROVEN wire method: static instruction prompt + Ollama format schema so
+        // the model emits the tiny WIRE shape that the orchestrator auto-expands.
+        systemContext: buildChatCoreV2WirePlannerSystemPrompt(),
+        outputSchema: CHAT_TURN_PLAN_MICRO_WIRE_JSON_SCHEMA,
+        // Fast planner slot (the classifier model tag), per D3 calibration.
+        modelOverride: config.ollama.classifierModel,
         userId: input.userId,
         tenantId: input.tenantId,
         // Observe-only: never escalate to cloud and never log raw content.

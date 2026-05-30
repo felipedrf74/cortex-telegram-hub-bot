@@ -8,12 +8,7 @@ import {
   type ChatCoreV2ShadowRunPlanner,
   type ChatCoreV2ShadowTurnInput,
 } from '../../src/services/chat-core-v2/shadow-orchestrator';
-import {
-  CHAT_TURN_PLAN_MICRO_PROMPT_VERSION,
-  CHAT_TURN_PLAN_MICRO_SCHEMA_VERSION,
-  type ChatTurnPlanMicro,
-  type UltraCompactPlannerPacket,
-} from '../../src/services/chat-core-v2/plan-schema';
+import { type UltraCompactPlannerPacket } from '../../src/services/chat-core-v2/plan-schema';
 import type { ChatV2TraceSpan } from '../../src/services/chat-core-v2/types';
 
 const BASE: ChatCoreV2ShadowTurnInput = {
@@ -29,26 +24,22 @@ const BASE: ChatCoreV2ShadowTurnInput = {
 
 const SECRET = 'SUPER_SECRET_USER_MESSAGE_98765';
 
-function validPlan(overrides: Partial<ChatTurnPlanMicro> = {}): ChatTurnPlanMicro {
-  return {
-    schemaVersion: CHAT_TURN_PLAN_MICRO_SCHEMA_VERSION,
-    intent: 'read',
-    domains: ['tasks'],
-    capabilityIds: ['tasks.today_summary'],
-    requiredReads: [{ requestId: 'read-1', capabilityId: 'tasks.today_summary' }],
-    proposedWrites: [],
-    evidenceClaimIds: ['evidence:1'],
-    confidence: 0.9,
-    complexityScore: 0.2,
-    escalationReasons: [],
-    contextHash: 'ctx-1',
-    promptVersion: CHAT_TURN_PLAN_MICRO_PROMPT_VERSION,
+/**
+ * A valid WIRE-shape planner response. The shadow orchestrator now drives the
+ * PROVEN wire method (doctrine #10): the planner emits the tiny wire object and
+ * parseAndValidateChatTurnPlanMicroWireJson(raw, packet) expands it against the
+ * bound packet. `h` is omitted so the wire parser defaults contextHash to the
+ * packet's contextHash (auto-matching the staleness guard). Required wire keys:
+ * v, i, cf, x. We use i='r' (read) which needs no candidate to be schema-valid.
+ */
+function validWirePlanJson(overrides: Record<string, unknown> = {}): string {
+  return JSON.stringify({
+    v: 1,
+    i: 'r',
+    cf: 0.9,
+    x: 0.2,
     ...overrides,
-  };
-}
-
-function validPlanJson(overrides: Partial<ChatTurnPlanMicro> = {}): string {
-  return JSON.stringify(validPlan(overrides));
+  });
 }
 
 function plannerSpan(spans: ChatV2TraceSpan[]): ChatV2TraceSpan | undefined {
@@ -62,8 +53,8 @@ function assertNoSecretLeak(span: ChatV2TraceSpan): void {
 }
 
 describe('planChatCoreV2ShadowTurnWithPlanner', () => {
-  it('appends a shadow_planner span with schemaValid true when the planner returns valid JSON', async () => {
-    const runPlanner = vi.fn<ChatCoreV2ShadowRunPlanner>(async () => validPlanJson());
+  it('appends a shadow_planner span with schemaValid true when the planner returns a valid WIRE plan', async () => {
+    const runPlanner = vi.fn<ChatCoreV2ShadowRunPlanner>(async () => validWirePlanJson());
 
     const result = await planChatCoreV2ShadowTurnWithPlanner(BASE, { runPlanner });
 
@@ -82,11 +73,11 @@ describe('planChatCoreV2ShadowTurnWithPlanner', () => {
     expect(packet.msg).toBe('shadow_observe_only');
   });
 
-  it('reports outcome "repaired" when the first output is invalid and the repair returns valid JSON', async () => {
-    // First call (initial planner) -> invalid; second call (repair) -> valid.
+  it('reports outcome "repaired" when the first output is invalid and the repair returns a valid WIRE plan', async () => {
+    // First call (initial planner) -> invalid; second call (repair) -> valid wire.
     const runPlanner = vi.fn<ChatCoreV2ShadowRunPlanner>()
       .mockResolvedValueOnce('{"not":"a valid plan"}')
-      .mockResolvedValueOnce(validPlanJson());
+      .mockResolvedValueOnce(validWirePlanJson());
 
     const result = await planChatCoreV2ShadowTurnWithPlanner(BASE, { runPlanner });
 
@@ -169,7 +160,7 @@ describe('planChatCoreV2ShadowTurnWithPlanner', () => {
   });
 
   it('preserves the base trace spans and appends the planner span last', async () => {
-    const runPlanner = vi.fn<ChatCoreV2ShadowRunPlanner>(async () => validPlanJson());
+    const runPlanner = vi.fn<ChatCoreV2ShadowRunPlanner>(async () => validWirePlanJson());
 
     const base = planChatCoreV2ShadowTurn(BASE);
     const result = await planChatCoreV2ShadowTurnWithPlanner(BASE, { runPlanner });
@@ -183,5 +174,57 @@ describe('planChatCoreV2ShadowTurnWithPlanner', () => {
     expect(result.routeDecision).toEqual(base.routeDecision);
     expect(result.fallbackVerdict).toEqual(base.fallbackVerdict);
     expect(result.wouldExecute).toBe(false);
+  });
+
+  // ── PROVEN WIRE METHOD (doctrine #10) — packet-bound wire parser ──────────
+  it('expands a candidate-index WIRE plan against the bound packet (read with c index)', async () => {
+    // i='r' + c=[0] references candidate index 0, which the wire parser must
+    // expand to packet.candidates[0] using THIS turn's packet (not the canonical
+    // full schema). A valid expansion => outcome valid, schemaValid true.
+    const runPlanner = vi.fn<ChatCoreV2ShadowRunPlanner>(
+      async (packet) => {
+        // Sanity: the packet is the bounded text-free shadow packet.
+        expect(packet.candidates.length).toBeGreaterThan(0);
+        return validWirePlanJson({ i: 'r', c: [0], r: [0] });
+      },
+    );
+
+    const result = await planChatCoreV2ShadowTurnWithPlanner(BASE, { runPlanner });
+
+    const span = plannerSpan(result.traceSpans);
+    expect(span?.attributes?.schemaValid).toBe(true);
+    expect(span?.attributes?.outcome).toBe('valid');
+    expect(span?.attributes?.issueCodeCount).toBe(0);
+  });
+
+  it('reports unrepairable when the WIRE plan is garbage in both passes (parser bound to packet)', async () => {
+    // Full-canonical JSON is NOT valid wire JSON: the wire parser rejects the
+    // canonical top-level keys. This proves the orchestrator now validates via
+    // the WIRE parser, not the canonical one.
+    const canonicalNotWire = JSON.stringify({
+      schemaVersion: 'chat_turn_plan_micro@1.0.0',
+      intent: 'read',
+      domains: ['tasks'],
+      capabilityIds: ['tasks.today_summary'],
+      requiredReads: [],
+      proposedWrites: [],
+      evidenceClaimIds: [],
+      confidence: 0.9,
+      complexityScore: 0.2,
+      escalationReasons: [],
+      contextHash: 'mismatched-ctx',
+      promptVersion: 'chat_turn_plan_micro_prompt@0.1.0',
+    });
+    const runPlanner = vi.fn<ChatCoreV2ShadowRunPlanner>(async () => canonicalNotWire);
+
+    const result = await planChatCoreV2ShadowTurnWithPlanner(BASE, { runPlanner });
+
+    const span = plannerSpan(result.traceSpans);
+    expect(span?.status).toBe('success');
+    expect(span?.attributes?.schemaValid).toBe(false);
+    expect(span?.attributes?.outcome).toBe('unrepairable');
+    expect(span?.attributes?.issueCodeCount).toBeGreaterThan(0);
+    // Still no raw text on the span.
+    assertNoSecretLeak(span!);
   });
 });

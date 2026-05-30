@@ -328,6 +328,42 @@ export const CHAT_TURN_PLAN_MICRO_WIRE_JSON_SCHEMA = {
   },
 } as const;
 
+/**
+ * The wire-mode planner system prompt validated by the D3 calibration harness.
+ *
+ * HONESTY (sampling caveat): the calibration's "0 schema failures" figure was
+ * measured under a DETERMINISTIC benchmark regime (seed=42, no top_p/top_k). The
+ * runtime planner path (ollama-provider `dispatchLocalReasoning`) samples
+ * stochastically (top_p/top_k, no seed), so the production schema-valid RATE is
+ * not guaranteed to be that benchmark number. That is by design: the shadow path
+ * is observe-only precisely so the LIVE shadow schema-valid rate (recorded via
+ * the shadow_planner spans + schema-compliance counter) is the AUTHORITATIVE
+ * gate signal — not the seeded benchmark figure. Ollama `format=` still enforces
+ * the wire shape on every response regardless of sampling.
+ *
+ * This is STATIC INSTRUCTION TEXT ONLY — it contains no user data, no message
+ * text, no tenant/user identifiers, and no packet contents. It is paired with
+ * Ollama `format=CHAT_TURN_PLAN_MICRO_WIRE_JSON_SCHEMA` so the model emits the
+ * tiny WIRE JSON shape, which parseAndValidateChatTurnPlanMicroWireJson then
+ * auto-expands into a canonical ChatTurnPlanMicro against the bound packet.
+ *
+ * Single source of truth: the benchmark harness
+ * (scripts/llm/chatcore-v2-planner-benchmark.ts) imports this so the production
+ * planner and the calibration benchmark share byte-identical instruction text.
+ */
+export function buildChatCoreV2WirePlannerSystemPrompt(): string {
+  return [
+    'Return compact JSON only.',
+    'Intent code i: a=answer r=read w=write_preview c=clarify u=unsupported e=escalate.',
+    'Use c/r as 0-based indexes into candidates; w as [{"c":index,"k":"A"}].',
+    'Omit empty c/r/w arrays.',
+    'If msg asks status/today/what, use i=r and omit w.',
+    'Never set w unless msg asks create/mark/move/delete.',
+    'Use cf/x decimals 0.0..1.0.',
+    'No prose.',
+  ].join(' ');
+}
+
 export const CHAT_TURN_PLAN_MICRO_MINI_JSON_SCHEMA = {
   type: 'object',
   additionalProperties: false,

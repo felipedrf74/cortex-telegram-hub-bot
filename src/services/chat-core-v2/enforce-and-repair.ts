@@ -4,6 +4,7 @@ import {
   parseAndValidateChatTurnPlanMicroJson,
   type ChatTurnPlanMicro,
   type ChatTurnPlanMicroValidationIssue,
+  type ChatTurnPlanMicroValidationResult,
 } from './plan-schema';
 import {
   CHAT_CORE_V2_PLANNER_REPAIR_PROMPT_VERSION,
@@ -53,6 +54,22 @@ export interface EnforceAndRepairResult {
  */
 export type PlannerRepairModel = (repairPrompt: string) => Promise<string>;
 
+/**
+ * Optional schema parser injected by the caller. Takes a raw model output
+ * string and returns the structured validation result. When provided, this
+ * REPLACES the default full-canonical parser for BOTH the initial parse and
+ * the post-repair re-parse, letting callers (e.g. the shadow planner) supply a
+ * wire->canonical expanding parser bound to their own packet
+ * (parseAndValidateChatTurnPlanMicroWireJson). The injected parser owns its own
+ * context-hash check, so callers binding a packet-aware parser already cover
+ * the staleness guard that the default path performs via expectedContextHash.
+ *
+ * Privacy: like the default parser, an injected parser must never throw and
+ * must return only structured plans + machine-readable issue codes. This module
+ * still never logs or persists the raw output regardless of which parser runs.
+ */
+export type EnforceAndRepairPlanParser = (raw: string) => ChatTurnPlanMicroValidationResult;
+
 export interface EnforceAndRepairChatTurnPlanMicroInput {
   rawModelOutput: string;
   /**
@@ -61,6 +78,13 @@ export interface EnforceAndRepairChatTurnPlanMicroInput {
    * context issues are folded in before deciding whether a repair is needed.
    */
   context?: PlanValidationContext;
+  /**
+   * Optional schema parser override. When OMITTED, behaviour is byte-identical
+   * to the historical path: parseAndValidateChatTurnPlanMicroJson(raw,
+   * context?.contextHash). When PROVIDED, input.parse(raw) is used for both the
+   * initial parse and the post-repair re-parse.
+   */
+  parse?: EnforceAndRepairPlanParser;
   repairModel: PlannerRepairModel;
   now?: Date;
 }
@@ -71,7 +95,7 @@ const NO_REPAIR_ATTEMPT_USED = 0;
 export async function enforceAndRepairChatTurnPlanMicro(
   input: EnforceAndRepairChatTurnPlanMicroInput,
 ): Promise<EnforceAndRepairResult> {
-  const firstPass = validateRawAgainstSchemaAndContext(input.rawModelOutput, input.context);
+  const firstPass = validateRawAgainstSchemaAndContext(input.rawModelOutput, input.context, input.parse);
   if (firstPass.ok) {
     return {
       outcome: 'valid',
@@ -113,7 +137,7 @@ export async function enforceAndRepairChatTurnPlanMicro(
     };
   }
 
-  const secondPass = validateRawAgainstSchemaAndContext(repairedRaw, input.context);
+  const secondPass = validateRawAgainstSchemaAndContext(repairedRaw, input.context, input.parse);
   if (secondPass.ok) {
     return {
       outcome: 'repaired',
@@ -142,12 +166,20 @@ interface SchemaAndContextPass {
 function validateRawAgainstSchemaAndContext(
   raw: string,
   context?: PlanValidationContext,
+  parse?: EnforceAndRepairPlanParser,
 ): SchemaAndContextPass {
   // parseAndValidateChatTurnPlanMicroJson never throws: it catches JSON parse
   // failures and returns an 'invalid_json' issue. Garbage / empty input is
-  // therefore handled here without any try/catch of our own.
+  // therefore handled here without any try/catch of our own. When the caller
+  // injects a parser, we defer to it instead; it carries the same never-throw
+  // contract and owns its own context-hash check (the WIRE parser, for
+  // instance, validates against its bound packet.contextHash). When OMITTED,
+  // this is byte-identical to the historical path: the full canonical parser
+  // with context?.contextHash.
   const expectedContextHash = context?.contextHash;
-  const schemaResult = parseAndValidateChatTurnPlanMicroJson(raw, expectedContextHash);
+  const schemaResult = parse
+    ? parse(raw)
+    : parseAndValidateChatTurnPlanMicroJson(raw, expectedContextHash);
   if (!schemaResult.ok || !schemaResult.plan) {
     return { ok: false, issues: schemaResult.issues };
   }

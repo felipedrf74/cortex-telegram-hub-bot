@@ -13,6 +13,7 @@ import { evaluateChatCoreV2Fallback, type FallbackPolicyVerdict } from './fallba
 import {
   buildUltraCompactPlannerPacket,
   CHAT_TURN_PLAN_MICRO_ULTRA_COMPACT_OPTIONS,
+  parseAndValidateChatTurnPlanMicroWireJson,
   type UltraCompactPlannerPacket,
 } from './plan-schema';
 import { getChatCoreV2ReasoningPolicy } from './reasoning-policies';
@@ -245,8 +246,19 @@ async function runShadowPlannerSpan(
   // The repairModel is derived from the SAME injected planner so the single
   // bounded repair attempt also stays injection-only and network-optional. The
   // repair prompt is passed straight through; enforceAndRepair never logs it.
+  //
+  // PROVEN WIRE METHOD (doctrine #10): the planner emits the tiny WIRE JSON shape
+  // (Ollama format=CHAT_TURN_PLAN_MICRO_WIRE_JSON_SCHEMA + the static wire system
+  // prompt — see buildLocalReasoningPlanner). We inject the packet-bound wire
+  // parser so enforceAndRepair auto-EXPANDS that wire output into a canonical
+  // ChatTurnPlanMicro against THIS packet (candidate indexes -> capability ids,
+  // packet.contextHash as the staleness guard) for BOTH the initial parse and
+  // the post-repair re-parse. Without this the bare context packet validated as
+  // unrepairable/schemaValid=false. The parser is packet-bound and text-free; it
+  // returns only structured issue codes, never raw model output.
   const enforced = await enforceAndRepairChatTurnPlanMicro({
     rawModelOutput: rawOutput,
+    parse: (raw) => parseAndValidateChatTurnPlanMicroWireJson(raw, packet),
     repairModel: () => deps.runPlanner!(packet),
   });
 

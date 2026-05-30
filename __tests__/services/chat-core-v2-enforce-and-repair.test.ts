@@ -5,12 +5,14 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   enforceAndRepairChatTurnPlanMicro,
   type EnforceAndRepairChatTurnPlanMicroInput,
+  type EnforceAndRepairPlanParser,
 } from '../../src/services/chat-core-v2/enforce-and-repair';
 import { CHAT_CORE_V2_PLANNER_REPAIR_PROMPT_VERSION } from '../../src/services/chat-core-v2/planner-repair';
 import {
   CHAT_TURN_PLAN_MICRO_PROMPT_VERSION,
   CHAT_TURN_PLAN_MICRO_SCHEMA_VERSION,
   type ChatTurnPlanMicro,
+  type ChatTurnPlanMicroValidationResult,
 } from '../../src/services/chat-core-v2/plan-schema';
 import type { PlanValidationContext } from '../../src/services/chat-core-v2/plan-validator';
 
@@ -219,5 +221,166 @@ describe('enforceAndRepairChatTurnPlanMicro', () => {
 
     expect(result.outcome).toBe('valid');
     expect(repairModel).not.toHaveBeenCalled();
+  });
+
+  describe('injected schema parser (parse override)', () => {
+    /**
+     * A wire-ish raw string the default canonical parser would REJECT (it is not
+     * canonical ChatTurnPlanMicro JSON), but which the injected parser expands
+     * into a valid canonical plan. This is the shadow-planner shape: the model
+     * emits tiny WIRE JSON and the caller binds a packet-aware expanding parser.
+     */
+    const WIRE_RAW = '{"v":1,"i":"r","c":[0],"cf":0.9,"x":0.2}';
+
+    /** Build an injected parser that returns `result` for the given raw string. */
+    function fixedParser(result: ChatTurnPlanMicroValidationResult): EnforceAndRepairPlanParser {
+      return vi.fn((_raw: string) => result);
+    }
+
+    const okResult: ChatTurnPlanMicroValidationResult = {
+      ok: true,
+      issues: [],
+      plan: validPlan(),
+    };
+
+    const rejectResult: ChatTurnPlanMicroValidationResult = {
+      ok: false,
+      issues: [{ code: 'invalid_json', path: '$', message: 'wire parse failed' }],
+    };
+
+    it('uses the injected parser on the first pass; wire-ish input expands to a valid plan', async () => {
+      const repairModel = neverCalledRepairModel();
+      const parse = fixedParser(okResult);
+
+      const result = await enforceAndRepairChatTurnPlanMicro({
+        // Raw the canonical parser would reject, but the injected parser accepts.
+        rawModelOutput: WIRE_RAW,
+        parse,
+        repairModel,
+      });
+
+      expect(result.outcome).toBe('valid');
+      expect(result.plan).toBeDefined();
+      expect(result.plan?.intent).toBe('read');
+      expect(result.issues).toEqual([]);
+      expect(result.attemptsUsed).toBe(0);
+      // The injected parser ran exactly once (first pass) and the repair model
+      // was never touched.
+      expect(parse).toHaveBeenCalledTimes(1);
+      expect(parse).toHaveBeenCalledWith(WIRE_RAW);
+      expect(repairModel).not.toHaveBeenCalled();
+    });
+
+    it('control: the same wire-ish input is unrepairable WITHOUT an injected parser', async () => {
+      // Proves WIRE_RAW genuinely fails the default canonical parser, so the
+      // valid outcome above is attributable to the injected parser, not to the
+      // raw string being canonical by accident.
+      const repairModel = vi.fn(async () => WIRE_RAW);
+
+      const result = await enforceAndRepairChatTurnPlanMicro({
+        rawModelOutput: WIRE_RAW,
+        repairModel,
+      });
+
+      expect(result.outcome).toBe('unrepairable');
+      expect(result.attemptsUsed).toBe(1);
+      expect(repairModel).toHaveBeenCalledTimes(1);
+    });
+
+    it('uses the injected parser on BOTH passes: rejects first, repair re-parses to valid', async () => {
+      // First call rejects (first pass), second call accepts (post-repair pass).
+      const parse = vi
+        .fn<[string], ChatTurnPlanMicroValidationResult>()
+        .mockReturnValueOnce(rejectResult)
+        .mockReturnValueOnce(okResult);
+      const repairModel = vi.fn(async () => WIRE_RAW);
+
+      const result = await enforceAndRepairChatTurnPlanMicro({
+        rawModelOutput: '{"v":1,"i":"x"}',
+        parse,
+        repairModel,
+      });
+
+      expect(result.outcome).toBe('repaired');
+      expect(result.plan).toBeDefined();
+      expect(result.plan?.intent).toBe('read');
+      expect(result.issues).toEqual([]);
+      expect(result.attemptsUsed).toBe(1);
+      // Injected parser ran on the initial parse AND the post-repair re-parse.
+      expect(parse).toHaveBeenCalledTimes(2);
+      // Single-repair bound respected.
+      expect(repairModel).toHaveBeenCalledTimes(1);
+    });
+
+    it('stays bounded with an injected parser that rejects both passes', async () => {
+      const parse = vi
+        .fn<[string], ChatTurnPlanMicroValidationResult>()
+        .mockReturnValue(rejectResult);
+      const repairModel = vi.fn(async () => WIRE_RAW);
+
+      const result = await enforceAndRepairChatTurnPlanMicro({
+        rawModelOutput: WIRE_RAW,
+        parse,
+        repairModel,
+      });
+
+      expect(result.outcome).toBe('unrepairable');
+      expect(result.plan).toBeUndefined();
+      expect(result.issues.length).toBeGreaterThan(0);
+      expect(result.attemptsUsed).toBe(1);
+      expect(parse).toHaveBeenCalledTimes(2);
+      expect(repairModel).toHaveBeenCalledTimes(1);
+    });
+
+    it('still folds context validation in when an injected parser is used', async () => {
+      // The injected parser only replaces the SCHEMA parse step; the context
+      // policy check still runs on the schema-valid plan. Here the parsed plan
+      // uses a capability the context disallows, so a repair is attempted.
+      const offContextPlan: ChatTurnPlanMicroValidationResult = {
+        ok: true,
+        issues: [],
+        plan: validPlan({
+          capabilityIds: ['tasks.not_allowed'],
+          requiredReads: [{ requestId: 'read-1', capabilityId: 'tasks.not_allowed' }],
+        }),
+      };
+      const parse = vi
+        .fn<[string], ChatTurnPlanMicroValidationResult>()
+        .mockReturnValueOnce(offContextPlan)
+        .mockReturnValueOnce(okResult);
+      const repairModel = vi.fn(async () => WIRE_RAW);
+
+      const result = await enforceAndRepairChatTurnPlanMicro({
+        rawModelOutput: WIRE_RAW,
+        context: acceptingContext(),
+        parse,
+        repairModel,
+      });
+
+      expect(result.outcome).toBe('repaired');
+      expect(result.plan).toBeDefined();
+      expect(result.attemptsUsed).toBe(1);
+      expect(parse).toHaveBeenCalledTimes(2);
+      expect(repairModel).toHaveBeenCalledTimes(1);
+    });
+
+    it('OMITTED parser is byte-identical to the canonical full-parser path (context-hash mismatch still caught)', async () => {
+      // With no injected parser, the default path passes context?.contextHash
+      // through to parseAndValidateChatTurnPlanMicroJson. A plan whose
+      // contextHash disagrees with the context must therefore fail the schema
+      // pass exactly as before this change.
+      const repairModel = vi.fn(async () => validPlanJson({ contextHash: 'stale' }));
+
+      const result = await enforceAndRepairChatTurnPlanMicro({
+        rawModelOutput: validPlanJson({ contextHash: 'stale' }),
+        context: acceptingContext({ contextHash: 'ctx-1' }),
+        repairModel,
+      });
+
+      expect(result.outcome).toBe('unrepairable');
+      expect(result.issues.some((issue) => issue.code === 'context_hash_mismatch')).toBe(true);
+      expect(result.attemptsUsed).toBe(1);
+      expect(repairModel).toHaveBeenCalledTimes(1);
+    });
   });
 });

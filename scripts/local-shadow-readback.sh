@@ -6,12 +6,20 @@
 # scripts/local-shadow-traffic.sh. Reads the LOCAL SQLite DB and:
 #
 #   1. Counts chat_v2_replay_bundles (shadow) + chat_v2_trace_spans rows.
-#   2. ASSERTS zero raw message strings: every persisted contextPack carries a
-#      64-hex HMAC `messageHash`, exposes NO `message` / `messagePreview`
-#      field, and the redacted trace summaries are `name:status` only. If any
-#      non-hashed/raw text is found, the script FAILS.
-#   3. ASSERTS identifiers are HMAC/hex (messageHash + userMessageHash match
-#      ^[a-f0-9]{64}$; trace ids match ^chatv2-shadow:[a-f0-9]{16}$).
+#   2. ASSERTS zero raw message strings: NO persisted contextPack may expose a
+#      `message` / `messagePreview` (or any other) plaintext field, and the
+#      redacted trace summaries are `name:status` only. A raw-text leak is a
+#      HARD FAILURE. Current-scheme rows carry a 64-hex HMAC `messageHash`.
+#      Legacy rows from an OLDER hashing scheme (hashed-but-short hex, e.g.
+#      16-hex, with NO raw text) are reported as a WARN ("stale pre-current-
+#      hashing rows") and do NOT hard-fail — they leak nothing. A messageHash
+#      that is missing OR not hex at all is still a HARD FAILURE (it may be
+#      non-hashed content). Net: zero false-positives on stale HASHED rows; a
+#      true raw-text leak still hard-fails.
+#   3. ASSERTS identifiers are HMAC/hex. Current-scheme messageHash +
+#      userMessageHash match ^[a-f0-9]{64}$; legacy short-hex hashes match
+#      ^[a-f0-9]+$ (warned, not failed); trace ids match
+#      ^chatv2-shadow:[a-f0-9]{16}$.
 #   4. Invokes evaluateChatCoreV2ShadowGateReadiness over the same DB and prints
 #      the HONEST gate-readiness verdict (rows / schema / safe-shape /
 #      gateMet=false until recall@8 on a labeled corpus).
@@ -88,6 +96,10 @@ const Database = require("better-sqlite3");
 const dbPath = process.env.DB_PATH;
 const rootDir = process.env.ROOT_DIR;
 const HMAC_HEX_64 = /^[a-f0-9]{64}$/;
+// A hashed-but-not-current identifier: any non-empty lowercase hex string that
+// is NOT the current 64-hex shape (e.g. 16-hex rows from an older hashing
+// scheme). These leak nothing, so they WARN instead of hard-failing.
+const HEX_ANY = /^[a-f0-9]+$/;
 const SHADOW_LIKE = "chatv2-shadow-replay:%";
 
 const db = new Database(dbPath, { readonly: true });
@@ -116,7 +128,13 @@ console.log("Trace spans (all)     : " + traceCount);
 console.log("");
 
 // ── Privacy assertion: zero raw strings; identifiers are HMAC/hex ──
+// A raw-text leak (plaintext message/messagePreview) is ALWAYS a hard failure.
+// A hashed identifier whose shape is hex-but-not-the-current-64-hex (e.g. a
+// 16-hex row from an older hashing scheme) leaks nothing, so it is counted as a
+// legacy/stale row and WARNED — it does NOT hard-fail. A messageHash that is
+// missing or non-hex is still a hard failure (it may be non-hashed content).
 const violations = [];
+const legacyHashRows = [];
 for (const row of bundles) {
   let bundle;
   try {
@@ -133,11 +151,20 @@ for (const row of bundles) {
   if (typeof ctx.message === "string" || typeof ctx.messagePreview === "string") {
     violations.push(row.replay_bundle_id + ": RAW message/messagePreview present");
   }
-  if (typeof ctx.messageHash !== "string" || !HMAC_HEX_64.test(ctx.messageHash)) {
-    violations.push(row.replay_bundle_id + ": messageHash is not a 64-hex HMAC");
+  if (typeof ctx.messageHash !== "string" || !HEX_ANY.test(ctx.messageHash)) {
+    // Missing or non-hex => may be non-hashed/raw content => HARD FAILURE.
+    violations.push(row.replay_bundle_id + ": messageHash is missing or not hex (non-hashed?)");
+  } else if (!HMAC_HEX_64.test(ctx.messageHash)) {
+    // Hex but not 64-hex => hashed under an older scheme => stale, WARN only.
+    legacyHashRows.push(row.replay_bundle_id + ": messageHash is " + ctx.messageHash.length + "-hex (legacy scheme)");
   }
-  if (ctx.userMessageHash !== undefined && !HMAC_HEX_64.test(String(ctx.userMessageHash))) {
-    violations.push(row.replay_bundle_id + ": userMessageHash is not a 64-hex HMAC");
+  if (ctx.userMessageHash !== undefined) {
+    const u = String(ctx.userMessageHash);
+    if (!HEX_ANY.test(u)) {
+      violations.push(row.replay_bundle_id + ": userMessageHash is not hex (non-hashed?)");
+    } else if (!HMAC_HEX_64.test(u)) {
+      legacyHashRows.push(row.replay_bundle_id + ": userMessageHash is " + u.length + "-hex (legacy scheme)");
+    }
   }
 }
 
@@ -164,7 +191,13 @@ if (violations.length > 0) {
   if (violations.length > 20) console.error("   ... and " + (violations.length - 20) + " more");
   process.exit(1);
 }
-console.log("✅ Privacy assertion passed: every identifier is HMAC/hex; no raw message text.");
+console.log("✅ Privacy assertion passed: every identifier is hashed hex; no raw message text.");
+if (legacyHashRows.length > 0) {
+  console.log("⚠️  " + legacyHashRows.length + " stale pre-current-hashing row(s) found (hashed, shorter-hex, NO raw text — not a leak):");
+  for (const v of legacyHashRows.slice(0, 10)) console.log("   - " + v);
+  if (legacyHashRows.length > 10) console.log("   ... and " + (legacyHashRows.length - 10) + " more");
+  console.log("   These are NOT failures; current-scheme rows carry a 64-hex HMAC messageHash.");
+}
 console.log("");
 
 // ── Gate-readiness verdict ─────────────────────────────────────────

@@ -34,10 +34,10 @@ import {
   getLocalInferenceGateSnapshot,
 } from '../../src/services/chat-core-v2/local-inference-concurrency-gate';
 import {
-  CHAT_TURN_PLAN_MICRO_PROMPT_VERSION,
-  CHAT_TURN_PLAN_MICRO_SCHEMA_VERSION,
-  type ChatTurnPlanMicro,
+  buildChatCoreV2WirePlannerSystemPrompt,
+  CHAT_TURN_PLAN_MICRO_WIRE_JSON_SCHEMA,
 } from '../../src/services/chat-core-v2/plan-schema';
+import { config } from '../../src/config';
 
 const SECRET_MESSAGE = 'SUPER_SECRET_user_text_buy_milk_42xyz';
 
@@ -74,20 +74,19 @@ function baseInput(db: Database.Database, env: Record<string, string>) {
   return { input, getSettled: () => settled };
 }
 
-function validPlanJson(overrides: Partial<ChatTurnPlanMicro> = {}): string {
+/**
+ * A valid WIRE-shape planner response. The shadow orchestrator drives the PROVEN
+ * wire method (doctrine #10): the planner emits the tiny wire object, which the
+ * orchestrator's packet-bound parser expands into a canonical ChatTurnPlanMicro.
+ * `h` is omitted so the wire parser defaults contextHash to the packet's, so the
+ * staleness guard auto-matches. Required wire keys: v, i, cf, x.
+ */
+function validWirePlanJson(overrides: Record<string, unknown> = {}): string {
   return JSON.stringify({
-    schemaVersion: CHAT_TURN_PLAN_MICRO_SCHEMA_VERSION,
-    intent: 'read',
-    domains: ['tasks'],
-    capabilityIds: ['tasks.today_summary'],
-    requiredReads: [{ requestId: 'read-1', capabilityId: 'tasks.today_summary' }],
-    proposedWrites: [],
-    evidenceClaimIds: ['evidence:1'],
-    confidence: 0.9,
-    complexityScore: 0.2,
-    escalationReasons: [],
-    contextHash: 'ctx-1',
-    promptVersion: CHAT_TURN_PLAN_MICRO_PROMPT_VERSION,
+    v: 1,
+    i: 'r',
+    cf: 0.9,
+    x: 0.2,
     ...overrides,
   });
 }
@@ -107,7 +106,7 @@ describe('Chat Core v2 shadow planner live hook (Batch-A)', () => {
   });
 
   it('is fully inert when the NEW planner flag is OFF (default): no dispatch, no span, identical result', async () => {
-    dispatchLocalReasoning.mockResolvedValue({ text: validPlanJson() });
+    dispatchLocalReasoning.mockResolvedValue({ text: validWirePlanJson() });
     // Route hook on, HMAC present, BUT planner flag absent (default off).
     const { input, getSettled } = baseInput(db, HMAC_ENV);
 
@@ -125,7 +124,7 @@ describe('Chat Core v2 shadow planner live hook (Batch-A)', () => {
   });
 
   it('does NOT dispatch when the planner flag is on but the orchestrator mode is off/absent (gate 2)', async () => {
-    dispatchLocalReasoning.mockResolvedValue({ text: validPlanJson() });
+    dispatchLocalReasoning.mockResolvedValue({ text: validWirePlanJson() });
     const { input, getSettled } = baseInput(db, {
       ...HMAC_ENV,
       CHAT_CORE_V2_SHADOW_PLANNER_ENABLED: 'true',
@@ -140,7 +139,7 @@ describe('Chat Core v2 shadow planner live hook (Batch-A)', () => {
   });
 
   it('does NOT dispatch when the per-tenant kill-switch forces orchestrator mode off (gate 3)', async () => {
-    dispatchLocalReasoning.mockResolvedValue({ text: validPlanJson() });
+    dispatchLocalReasoning.mockResolvedValue({ text: validWirePlanJson() });
     const { input, getSettled } = baseInput(db, {
       ...HMAC_ENV,
       CHAT_CORE_V2_SHADOW_PLANNER_ENABLED: 'true',
@@ -155,7 +154,7 @@ describe('Chat Core v2 shadow planner live hook (Batch-A)', () => {
   });
 
   it('keeps the hook return byte-identical whether the planner flag is on or off', () => {
-    dispatchLocalReasoning.mockResolvedValue({ text: validPlanJson() });
+    dispatchLocalReasoning.mockResolvedValue({ text: validWirePlanJson() });
     const turnId = 'chat-planner-byte-identical';
 
     const offDb = new Database(':memory:');
@@ -182,7 +181,7 @@ describe('Chat Core v2 shadow planner live hook (Batch-A)', () => {
   });
 
   it('runs the planner in the background (triple gate on): dispatch via slot, span recorded, NO raw text leaked', async () => {
-    dispatchLocalReasoning.mockResolvedValue({ text: validPlanJson() });
+    dispatchLocalReasoning.mockResolvedValue({ text: validWirePlanJson() });
     const { input, getSettled } = baseInput(db, PLANNER_ON_ENV);
 
     const result = runChatCoreV2ShadowRouteHook(input);
@@ -198,6 +197,9 @@ describe('Chat Core v2 shadow planner live hook (Batch-A)', () => {
     expect(dispatchLocalReasoning).toHaveBeenCalledTimes(1);
     const task = dispatchLocalReasoning.mock.calls[0][0] as {
       prompt: string;
+      systemContext?: string;
+      outputSchema?: unknown;
+      modelOverride?: string;
       think?: boolean;
       numPredict?: number;
       allowCloudEscalation?: boolean;
@@ -206,6 +208,17 @@ describe('Chat Core v2 shadow planner live hook (Batch-A)', () => {
     expect(task.allowCloudEscalation).toBe(false);
     expect(typeof task.numPredict).toBe('number');
     expect(task.prompt).not.toContain(SECRET_MESSAGE);
+
+    // PROVEN WIRE METHOD (doctrine #10): the dispatch carries the STATIC wire
+    // system prompt, the wire output schema (Ollama format enforcement), and the
+    // fast planner-slot model override.
+    expect(task.systemContext).toBe(buildChatCoreV2WirePlannerSystemPrompt());
+    expect(task.outputSchema).toEqual(CHAT_TURN_PLAN_MICRO_WIRE_JSON_SCHEMA);
+    expect(task.modelOverride).toBe(config.ollama.classifierModel);
+    // PRIVACY: the entire dispatch task (prompt + system prompt + schema + every
+    // field) must carry zero raw user text. The system prompt is static
+    // instruction only; the packet uses the safe placeholder.
+    expect(JSON.stringify(task)).not.toContain(SECRET_MESSAGE);
 
     // A single `shadow_planner` span is persisted with machine-readable enums
     // only — and the raw user message is nowhere in the persisted span.
@@ -231,7 +244,7 @@ describe('Chat Core v2 shadow planner live hook (Batch-A)', () => {
       () =>
         new Promise<{ text: string }>((resolve) => {
           dispatchStarted = true;
-          releaseOllama = () => resolve({ text: validPlanJson() });
+          releaseOllama = () => resolve({ text: validWirePlanJson() });
         }),
     );
 
@@ -266,5 +279,32 @@ describe('Chat Core v2 shadow planner live hook (Batch-A)', () => {
     );
     expect(plannerSpan).toBeDefined();
     expect(plannerSpan?.attributes?.schemaValid).toBe(true);
+  });
+
+  it('records outcome unrepairable when the local model returns garbage (both passes invalid)', async () => {
+    // Garbage that the packet-bound WIRE parser rejects on BOTH passes.
+    dispatchLocalReasoning.mockResolvedValue({ text: '{"totally":"not wire"}' });
+    const { input, getSettled } = baseInput(db, PLANNER_ON_ENV);
+
+    const result = runChatCoreV2ShadowRouteHook(input);
+    expect(result.recorded).toBe(true);
+
+    const settled = getSettled();
+    expect(settled).toBeDefined();
+    await settled;
+
+    // Two passes: initial + one bounded repair, both garbage.
+    expect(dispatchLocalReasoning).toHaveBeenCalledTimes(2);
+
+    const plannerSpan = listChatV2TraceSpansForTurn(input.chatRequestId, db).find(
+      (s) => s.name === 'shadow_planner',
+    );
+    expect(plannerSpan).toBeDefined();
+    expect(plannerSpan?.status).toBe('success');
+    expect(plannerSpan?.attributes?.schemaValid).toBe(false);
+    expect(plannerSpan?.attributes?.outcome).toBe('unrepairable');
+    expect(plannerSpan?.attributes?.issueCodeCount as number).toBeGreaterThan(0);
+    // Still no raw user text on the persisted span.
+    expect(JSON.stringify(plannerSpan)).not.toContain(SECRET_MESSAGE);
   });
 });

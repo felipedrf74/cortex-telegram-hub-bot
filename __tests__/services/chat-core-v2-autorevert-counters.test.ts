@@ -45,11 +45,6 @@ import {
   type ChatCoreV2ShadowRunPlanner,
   type ChatCoreV2ShadowTurnInput,
 } from '../../src/services/chat-core-v2/shadow-orchestrator';
-import {
-  CHAT_TURN_PLAN_MICRO_PROMPT_VERSION,
-  CHAT_TURN_PLAN_MICRO_SCHEMA_VERSION,
-  type ChatTurnPlanMicro,
-} from '../../src/services/chat-core-v2/plan-schema';
 
 const NOW = new Date('2026-05-30T12:00:00.000Z');
 
@@ -361,22 +356,12 @@ describe('autorevert-counters — schema-compliance increment via the shadow pla
     now: NOW,
   };
 
-  function validPlanJson(): string {
-    const plan: ChatTurnPlanMicro = {
-      schemaVersion: CHAT_TURN_PLAN_MICRO_SCHEMA_VERSION,
-      intent: 'read',
-      domains: ['tasks'],
-      capabilityIds: ['tasks.today_summary'],
-      requiredReads: [{ requestId: 'read-1', capabilityId: 'tasks.today_summary' }],
-      proposedWrites: [],
-      evidenceClaimIds: ['evidence:1'],
-      confidence: 0.9,
-      complexityScore: 0.2,
-      escalationReasons: [],
-      contextHash: 'ctx-1',
-      promptVersion: CHAT_TURN_PLAN_MICRO_PROMPT_VERSION,
-    };
-    return JSON.stringify(plan);
+  // The shadow orchestrator drives the PROVEN wire method (doctrine #10): the
+  // planner emits the tiny WIRE JSON shape and the orchestrator's packet-bound
+  // parser expands it. Required wire keys: v, i, cf, x. `h` omitted so the wire
+  // parser defaults contextHash to the packet's (auto-matching the guard).
+  function validWirePlanJson(): string {
+    return JSON.stringify({ v: 1, i: 'r', cf: 0.9, x: 0.2 });
   }
 
   let db: Database.Database;
@@ -386,7 +371,7 @@ describe('autorevert-counters — schema-compliance increment via the shadow pla
   afterEach(() => db.close());
 
   it('a valid planner output bumps pass_count (1/1 ⇒ 1.0 compliance)', async () => {
-    const runPlanner: ChatCoreV2ShadowRunPlanner = async () => validPlanJson();
+    const runPlanner: ChatCoreV2ShadowRunPlanner = async () => validWirePlanJson();
     await planChatCoreV2ShadowTurnWithPlanner(PLANNER_INPUT, {
       runPlanner,
       schemaComplianceDb: db,
