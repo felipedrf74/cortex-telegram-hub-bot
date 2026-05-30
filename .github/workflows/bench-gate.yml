@@ -1,0 +1,54 @@
+name: Bench gate (D3 latency proxy)
+
+# WP-11 (D3 latency fast-model + benchmark gate).
+#
+# ⚠️  PROXY GATE — requires GPU/VPS validation.
+# GitHub-hosted runners have NO Ollama daemon and no GPU, so this workflow's
+# bench step gracefully SKIPS (exit 0) here. It exists so the burst5 gate is
+# wired and path-filtered; the authoritative D3 latency number must be measured
+# on the GPU/VPS box. This job is intentionally non-blocking on hosted runners.
+#
+# Path-filtered: only runs when the two files that govern local-chat model
+# selection / local inference change.
+
+on:
+  push:
+    paths:
+      - 'src/services/ollama-provider.ts'
+      - 'src/services/chat-core-v2/local-chat-orchestrator.ts'
+      - 'scripts/bench-gate.sh'
+      - 'scripts/llm/chatcore-v2-planner-benchmark.ts'
+      - '.github/workflows/bench-gate.yml'
+  pull_request:
+    paths:
+      - 'src/services/ollama-provider.ts'
+      - 'src/services/chat-core-v2/local-chat-orchestrator.ts'
+      - 'scripts/bench-gate.sh'
+      - 'scripts/llm/chatcore-v2-planner-benchmark.ts'
+      - '.github/workflows/bench-gate.yml'
+  workflow_dispatch:
+
+env:
+  NODE_VERSION: '20'
+
+jobs:
+  bench-gate:
+    name: 🏎️ Bench gate (burst5, proxy)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+
+      - run: npm ci
+
+      - name: Run bench gate (graceful Ollama-absent skip)
+        # bench-gate.sh probes Ollama at OLLAMA_BASE_URL and exits 0 with a SKIP
+        # message when it is not reachable (the hosted-runner case). On a runner
+        # WITH a reachable Ollama daemon it forwards the burst5 p95 gate exit
+        # code. The ⚠️ PROXY header in the script reiterates that the
+        # authoritative number must be measured on GPU/VPS.
+        run: bash scripts/bench-gate.sh

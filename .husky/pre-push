@@ -147,4 +147,16 @@ if [ "$BRANCH" = "main" ]; then
   echo "   ✅ Build OK"
 fi
 
+# ── OPT-IN bench gate (WP-11 / D3 latency) ────────────
+# ADDITIVE + DEFAULT-OFF. Runs ONLY when NEXUS_RUN_BENCH_GATE=1 is set in the
+# environment. When unset (the default), this block is a no-op and the gate
+# above (typecheck + vitest [+ build on main]) is byte-unchanged. bench-gate.sh
+# itself gracefully SKIPs (exit 0) when no Ollama daemon is reachable and is a
+# PROXY that requires GPU/VPS validation for the authoritative number.
+if [ "${NEXUS_RUN_BENCH_GATE:-0}" = "1" ]; then
+  echo "   🏎️  NEXUS_RUN_BENCH_GATE=1 — running opt-in bench gate (proxy)"
+  bash "$ROOT/scripts/bench-gate.sh"
+  echo "   ✅ Bench gate complete"
+fi
+
 echo "✅ All checks passed — pushing"

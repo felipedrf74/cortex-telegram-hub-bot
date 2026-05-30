@@ -39,9 +39,18 @@ const MODEL = process.env.CHAT_CORE_V2_PLANNER_MODEL
   || 'qwen2.5:3b-instruct-q4_K_M';
 
 type Profile = 'tiny' | 'stress';
-type Suite = 'sequential' | 'burst' | 'concurrent' | 'sustained' | 'all';
+// WP-11 (D3 latency gate): `burst5` is a fixed 5-concurrent-request phase with a
+// dedicated p95 gate (CHAT_CORE_V2_BURST5_P95_MS, default 5000ms) used by
+// scripts/bench-gate.sh. It is additive — the existing phases are unchanged.
+type Suite = 'sequential' | 'burst' | 'burst5' | 'concurrent' | 'sustained' | 'all';
 type OutputShape = 'atom' | 'mini' | 'wire' | 'full';
 type OllamaEndpoint = 'chat' | 'generate';
+
+// WP-11: fixed concurrency + p95 gate for the burst5 phase. The gate is applied
+// in main() only when the selected suite is exactly `burst5`, so other phases
+// keep their existing target-p50/target-p95 behavior untouched.
+const BURST5_CONCURRENCY = 5;
+const BURST5_P95_GATE_MS = parsePositiveInt(process.env.CHAT_CORE_V2_BURST5_P95_MS, 5000);
 
 interface RunResult {
   phase: Exclude<Suite, 'all'>;
@@ -91,7 +100,7 @@ const rawPrompt = args.get('raw-prompt') === 'true';
 async function main(): Promise<void> {
   const warmupResults = warmupRuns > 0 ? await runWarmup(warmupRuns) : [];
   const selectedPhases = suite === 'all'
-    ? ['sequential', 'burst', 'concurrent', 'sustained'] as const
+    ? ['sequential', 'burst', 'burst5', 'concurrent', 'sustained'] as const
     : [suite];
   const results: RunResult[] = [];
 
@@ -141,6 +150,36 @@ async function main(): Promise<void> {
   fs.writeFileSync(outPath, JSON.stringify(artifact, null, 2));
   console.log(JSON.stringify({ summary, phaseSummaries, artifact: outPath }));
 
+  // WP-11: the `burst5` suite uses its own dedicated p95 gate (5 concurrent
+  // requests, p95 ≤ CHAT_CORE_V2_BURST5_P95_MS). This is the gate bench-gate.sh
+  // forwards. Every other suite keeps the existing target-p50/target-p95 gate.
+  if (suite === 'burst5') {
+    if (!noFail && (
+      !summary.p95Ms
+      || summary.p95Ms > BURST5_P95_GATE_MS
+      || summary.failures > 0
+      || summary.schemaFailures > 0
+    )) {
+      console.error(JSON.stringify({
+        gate: 'burst5',
+        result: 'fail',
+        p95Ms: summary.p95Ms,
+        gateMs: BURST5_P95_GATE_MS,
+        failures: summary.failures,
+        schemaFailures: summary.schemaFailures,
+      }));
+      process.exitCode = 1;
+    } else {
+      console.log(JSON.stringify({
+        gate: 'burst5',
+        result: 'pass',
+        p95Ms: summary.p95Ms,
+        gateMs: BURST5_P95_GATE_MS,
+      }));
+    }
+    return;
+  }
+
   if (!noFail && (
     !summary.p50Ms
     || summary.p50Ms > targetP50Ms
@@ -166,8 +205,20 @@ async function runWarmup(count: number): Promise<RunResult[]> {
 async function runPhase(phase: Exclude<Suite, 'all'>): Promise<RunResult[]> {
   if (phase === 'sequential') return runSequential(phase, runs);
   if (phase === 'burst') return runBurst(phase, burstSize);
+  if (phase === 'burst5') return runBurst5(phase);
   if (phase === 'concurrent') return runConcurrent(phase, runs, concurrency);
   return runSustained(phase, durationMs, concurrency);
+}
+
+// WP-11: 5 concurrent requests fired together, the D3 latency gate's fixed
+// shape. Concurrency is pinned to BURST5_CONCURRENCY regardless of --burst-size
+// so the gate measures a known load.
+async function runBurst5(phase: Exclude<Suite, 'all'>): Promise<RunResult[]> {
+  const results = await Promise.all(
+    Array.from({ length: BURST5_CONCURRENCY }, (_, index) => runOnce(phase, index + 1, profile)),
+  );
+  for (const result of results) console.log(JSON.stringify(result));
+  return results;
 }
 
 async function runSequential(phase: Exclude<Suite, 'all'>, count: number): Promise<RunResult[]> {
@@ -427,7 +478,7 @@ function parseProfile(raw: string): Profile {
 }
 
 function parseSuite(raw: string): Suite {
-  return raw === 'burst' || raw === 'concurrent' || raw === 'sustained' || raw === 'all'
+  return raw === 'burst' || raw === 'burst5' || raw === 'concurrent' || raw === 'sustained' || raw === 'all'
     ? raw
     : 'sequential';
 }

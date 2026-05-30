@@ -92,7 +92,12 @@ describe('ChatCoreV2 local chat orchestrator', () => {
       requestId: 'req-1',
       locale: 'pt-BR',
       surface: 'ios',
-      env: baseEnv(),
+      // WP-11: pin the standard model for this assertion by disabling the
+      // fast-model branch (the literal `off`). Without this, a short non-write
+      // question is classified 'fast_extraction' and would use the 1.5B fast
+      // model. The fast-model selection itself is covered in
+      // chat-core-v2-local-chat-fast-model.test.ts.
+      env: baseEnv({ CHAT_CORE_V2_LOCAL_CHAT_FAST_MODEL: 'off' }),
     });
 
     expect(result?.degraded).toBe(false);

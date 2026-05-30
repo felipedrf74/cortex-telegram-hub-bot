@@ -30,6 +30,41 @@ import type { ChatCoreV2Locale } from './response-contracts';
 
 export type ChatCoreV2LocalChatLlmMode = 'off' | 'shadow' | 'canary' | 'on';
 
+/**
+ * WP-11 (D3 latency fast-model). The local-reasoning "tier" of a turn, used only
+ * to decide whether the smaller/faster fast model is safe for this turn.
+ *
+ *  - 'none'             — a trivial acknowledgement/greeting/confirmation with no
+ *                         real reasoning load. Cheapest; fast model is safe.
+ *  - 'fast_extraction'  — a short, single-intent question/answer that needs only
+ *                         light extraction/composition. Fast model is acceptable.
+ *  - 'standard_command' — anything heavier (long, multi-turn, write-adjacent,
+ *                         recipe, or otherwise non-trivial). Use the standard
+ *                         (larger) model. This is the CONSERVATIVE default: every
+ *                         turn that is not clearly trivial lands here.
+ *
+ * The classifier is deliberately conservative because the fast model is a 1.5B
+ * quality tradeoff: only the simplest turns are downgraded, and the choice is
+ * surfaced in metadata (`fastModelUsed`) so it is observable.
+ */
+export type ChatCoreV2LocalReasoningTier = 'none' | 'fast_extraction' | 'standard_command';
+
+export const CHAT_CORE_V2_LOCAL_CHAT_FAST_MODEL_DEFAULT = 'qwen2.5:1.5b-instruct-q4_K_M';
+
+/**
+ * The literal env value that DISABLES the fast path (WP-11, §5.A). Setting
+ * `CHAT_CORE_V2_LOCAL_CHAT_FAST_MODEL=off` forces the standard model even for
+ * trivial turns. This is the inner kill-switch for the fast model; the OUTER
+ * kill-switch (orchestrator mode=off via isChatCoreV2LocalChatVisibleEnabled)
+ * still dominates and makes the whole local-chat path inert.
+ */
+const CHAT_CORE_V2_LOCAL_CHAT_FAST_MODEL_DISABLED_LITERAL = 'off';
+
+export interface ChatCoreV2ClassifyLocalReasoningTierInput {
+  normalizedText: string;
+  recentTurns?: ChatCoreV2LocalChatRecentTurn[];
+}
+
 export interface ChatCoreV2LocalChatRecentTurn {
   role: 'user' | 'assistant';
   text: string;
@@ -257,6 +292,17 @@ export async function runChatCoreV2LocalChatTurn(
   const baseTimeoutMs = readPositiveInt(env.CHAT_CORE_V2_LOCAL_CHAT_TIMEOUT_MS, DEFAULT_LOCAL_CHAT_TIMEOUT_MS);
   const recipeNumPredict = readPositiveInt(env.CHAT_CORE_V2_LOCAL_CHAT_RECIPE_NUM_PREDICT, DEFAULT_RECIPE_NUM_PREDICT);
   const recipeTimeoutMs = readPositiveInt(env.CHAT_CORE_V2_LOCAL_CHAT_RECIPE_TIMEOUT_MS, DEFAULT_RECIPE_TIMEOUT_MS);
+  // WP-11 (D3 latency fast-model). Classify the reasoning tier once and let the
+  // resolver decide whether the smaller/faster model is safe. `fastModelUsed` is
+  // surfaced in metadata so the 1.5B quality tradeoff is observable. This is
+  // ONLY reachable inside runChatCoreV2LocalChatTurn, which is already gated by
+  // isChatCoreV2LocalChatVisibleEnabled (false when orchestrator mode=off), so
+  // shipping with mode=off changes nothing — the outer kill-switch dominates.
+  const reasoningTier = classifyLocalReasoningTier({
+    normalizedText: input.normalizedText,
+    recentTurns: input.recentTurns,
+  });
+  const fastModelUsed = shouldUseFastModel(env, recipeRequest, reasoningTier);
   const task: LocalReasoningTask = {
     systemContext: buildSystemPrompt(locale, requireJson),
     prompt: buildUserPrompt(input, locale, recipeRequest),
@@ -266,7 +312,7 @@ export async function runChatCoreV2LocalChatTurn(
     containsPrivateData: true,
     redactionRequired: false,
     outputSchema: requireJson ? LOCAL_CHAT_OUTPUT_SCHEMA : undefined,
-    modelOverride: resolveLocalChatModel(env, recipeRequest),
+    modelOverride: resolveLocalChatModel(env, recipeRequest, reasoningTier),
     think: false,
     numCtx: readPositiveInt(env.CHAT_CORE_V2_LOCAL_CHAT_NUM_CTX, DEFAULT_LOCAL_CHAT_NUM_CTX),
     numPredict: recipeRequest ? Math.max(baseNumPredict, recipeNumPredict) : baseNumPredict,
@@ -323,6 +369,11 @@ export async function runChatCoreV2LocalChatTurn(
           draftReasonCodes: draft.reasonCodes,
           factualClaimCount: draft.factualClaims.length,
           antiClaimGuardRewritten: guarded.rewritten,
+          // WP-11 observability: surface the reasoning tier + whether the fast
+          // (1.5B) model was selected for this turn, so the quality tradeoff is
+          // visible without re-deriving it downstream.
+          reasoningTier,
+          fastModelUsed,
           queueFallbackDecision,
           providerMetadata: result.providerMetadata,
         },
@@ -720,10 +771,97 @@ function buildRecipeFormatInstructions(locale: ChatCoreV2Locale): string[] {
   ];
 }
 
-function resolveLocalChatModel(env: EnvLike, recipeRequest = false): string {
+/**
+ * WP-11 pure tier classifier. CONSERVATIVE by design: only the clearly-simplest
+ * turns qualify for the fast model; everything else is 'standard_command'.
+ *
+ * Rules (all of which must hold to leave 'standard_command'):
+ *  - the turn must not look like a write/mutation intent (reuses the shared
+ *    detectChatCoreV2WriteIntent guard — never downgrade a turn the gateway may
+ *    have to handle);
+ *  - it must not be a recipe request (recipes always use the standard/recipe
+ *    model — handled separately in resolveLocalChatModel too, but guarded here);
+ *  - it must be short (single, compact message) and have at most a tiny amount
+ *    of recent multi-turn context.
+ *
+ * Within that safe envelope: a near-empty / greeting / acknowledgement turn is
+ * 'none'; a short single-intent question is 'fast_extraction'.
+ */
+export function classifyLocalReasoningTier(
+  input: ChatCoreV2ClassifyLocalReasoningTierInput,
+): ChatCoreV2LocalReasoningTier {
+  const text = String(input.normalizedText ?? '').trim();
+  if (!text) return 'none';
+
+  // Never downgrade a write-adjacent turn. The fast model must not be used where
+  // the action gateway might need to resolve/clarify a mutation.
+  if (detectChatCoreV2WriteIntent(text).mayMutate) return 'standard_command';
+
+  // Recipes are a heavier composition task — always standard.
+  if (isRecipeRequest(foldForIntent(text))) return 'standard_command';
+
+  // Multi-turn follow-ups can require carrying context — be conservative.
+  const recentTurnCount = (input.recentTurns ?? []).filter((turn) => turn && String(turn.text ?? '').trim()).length;
+  if (recentTurnCount > 1) return 'standard_command';
+
+  // Long messages are not "simple" — defer to the standard model.
+  if (text.length > 160) return 'standard_command';
+  const wordCount = text.split(/\s+/).filter(Boolean).length;
+  if (wordCount > 24) return 'standard_command';
+
+  // Trivial acknowledgement/greeting with no question and almost no content.
+  const folded = foldForIntent(text);
+  const looksTrivial =
+    text.length <= 24
+    && !text.includes('?')
+    && /^(hi|hello|hey|yo|ok|okay|thanks|thank you|got it|cool|nice|ola|oi|obrigad[oa]|valeu|gracias|hola)\b/.test(folded);
+  if (looksTrivial) return 'none';
+
+  // Short, single-intent, non-write, non-recipe turn → light extraction.
+  return 'fast_extraction';
+}
+
+/**
+ * WP-11: whether the fast model is currently selectable from the environment.
+ * The fast path is DISABLED (returns null) when the env var is the literal
+ * `off` sentinel; otherwise it resolves to the configured fast model (default
+ * CHAT_CORE_V2_LOCAL_CHAT_FAST_MODEL_DEFAULT). Pure; no I/O.
+ */
+function resolveFastModelOrNull(env: EnvLike): string | null {
+  const raw = String(env.CHAT_CORE_V2_LOCAL_CHAT_FAST_MODEL ?? '').trim();
+  if (raw.toLowerCase() === CHAT_CORE_V2_LOCAL_CHAT_FAST_MODEL_DISABLED_LITERAL) return null;
+  return raw || CHAT_CORE_V2_LOCAL_CHAT_FAST_MODEL_DEFAULT;
+}
+
+/**
+ * Whether the fast model would be selected for this (already-classified) turn.
+ * Pure mirror of the branch inside resolveLocalChatModel, kept separate so the
+ * caller can surface `fastModelUsed` in metadata without re-deriving the model.
+ */
+function shouldUseFastModel(
+  env: EnvLike,
+  recipeRequest: boolean,
+  tier: ChatCoreV2LocalReasoningTier,
+): boolean {
+  if (recipeRequest) return false;
+  if (tier !== 'fast_extraction' && tier !== 'none') return false;
+  return resolveFastModelOrNull(env) !== null;
+}
+
+export function resolveLocalChatModel(
+  env: EnvLike,
+  recipeRequest = false,
+  tier: ChatCoreV2LocalReasoningTier = 'standard_command',
+): string {
   if (recipeRequest) {
     const recipeModel = String(env.CHAT_CORE_V2_LOCAL_CHAT_RECIPE_MODEL ?? '').trim();
     if (recipeModel) return recipeModel;
+  }
+  // WP-11 fast-model branch: non-recipe trivial/light-extraction turns may use
+  // the smaller/faster model unless it is disabled with the literal `off`.
+  if (!recipeRequest && (tier === 'fast_extraction' || tier === 'none')) {
+    const fastModel = resolveFastModelOrNull(env);
+    if (fastModel) return fastModel;
   }
   return String(env.CHAT_CORE_V2_LOCAL_CHAT_MODEL ?? '').trim()
     || config.ollama.classifierModel
