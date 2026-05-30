@@ -21,6 +21,9 @@ export interface ChatV2TraceSpanRecord extends ChatV2TraceSpan {
   id: number;
   attributes: Record<string, unknown>;
   durationMs: number;
+  // WP-08: retention-window expiry. NULL (=> undefined here) for
+  // `legal_required` spans, which are never auto-deleted.
+  expiresAt?: string;
 }
 
 export interface BuildChatV2ReplayBundleInput {
@@ -128,6 +131,50 @@ export function ensureChatCoreV2TraceTables(db: Database.Database = getDb()): vo
     CREATE INDEX IF NOT EXISTS idx_chat_v2_trace_spans_kind_status
       ON chat_v2_trace_spans(kind, status, started_at DESC);
   `);
+
+  // WP-08 retention column. The base CREATE above keeps the original 161-era
+  // schema verbatim (so a fresh :memory: test DB matches production-after-161);
+  // `expires_at` is added here as an idempotent ALTER that mirrors migration
+  // 172. The PRAGMA guard makes it a no-op once the column exists, whether it
+  // was added by this guard on a fresh DB or by migration 172 in production.
+  // This is the seam that lets the data-retention cron's
+  // `chat_v2_trace_spans` stanza be meaningful on any DB this module touches.
+  ensureTraceSpanExpiresAtColumn(db);
+}
+
+function ensureTraceSpanExpiresAtColumn(db: Database.Database): void {
+  try {
+    const columns = db.prepare('PRAGMA table_info(chat_v2_trace_spans)').all() as Array<{ name: string }>;
+    if (!columns.some((column) => column.name === 'expires_at')) {
+      db.exec('ALTER TABLE chat_v2_trace_spans ADD COLUMN expires_at TEXT');
+    }
+    db.exec(`
+      CREATE INDEX IF NOT EXISTS idx_chat_v2_trace_spans_retention
+        ON chat_v2_trace_spans(retention_policy, expires_at);
+    `);
+  } catch {
+    // A concurrent migration may have raced the ALTER ("duplicate column") or
+    // the table may be mid-creation; either way the column ends up present.
+    // The retention stanza tolerates a missing column via its own try/catch.
+  }
+}
+
+/**
+ * Resolves the retention-window expiry for a trace span from its
+ * `retention_policy`. `legal_required` is the compliance sentinel — it returns
+ * `null` so the row is NEVER assigned an `expires_at` and the data-retention
+ * cron can never delete it. Backfill (migration 172) and live writes
+ * (`recordChatV2TraceSpan`) must agree on this mapping.
+ */
+export function resolveTraceSpanExpiresAt(
+  startedAt: string,
+  retentionPolicy: AuditRetentionPolicy,
+): string | null {
+  if (retentionPolicy === 'legal_required') return null;
+  const started = Date.parse(startedAt);
+  if (!Number.isFinite(started)) return null;
+  const days = retentionPolicy === '1y' ? 365 : retentionPolicy === '90d' ? 90 : 30;
+  return new Date(started + days * 24 * 60 * 60 * 1000).toISOString();
 }
 
 export function recordChatV2TraceSpan(
@@ -137,14 +184,18 @@ export function recordChatV2TraceSpan(
   ensureChatCoreV2TraceTables(db);
   validateTraceSpan(span);
   const durationMs = normalizeDurationMs(span);
+  // WP-08: persist the retention-window expiry so the midnight cron can age the
+  // row out by policy. `legal_required` resolves to NULL (compliance sentinel),
+  // and a NULL expires_at is NEVER deleted by the retention sweep.
+  const expiresAt = resolveTraceSpanExpiresAt(span.startedAt, span.retentionPolicy);
 
   db.prepare(`
     INSERT INTO chat_v2_trace_spans (
       trace_span_id, turn_id, tenant_id, user_id, parent_span_id, kind, name,
       status, sensitivity, retention_policy, redacted_summary, attributes_json,
-      started_at, ended_at, duration_ms
+      started_at, ended_at, duration_ms, expires_at
     )
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(trace_span_id) DO UPDATE SET
       turn_id = excluded.turn_id,
       tenant_id = excluded.tenant_id,
@@ -159,7 +210,8 @@ export function recordChatV2TraceSpan(
       attributes_json = excluded.attributes_json,
       started_at = excluded.started_at,
       ended_at = excluded.ended_at,
-      duration_ms = excluded.duration_ms
+      duration_ms = excluded.duration_ms,
+      expires_at = excluded.expires_at
   `).run(
     span.traceSpanId,
     span.turnId,
@@ -176,6 +228,7 @@ export function recordChatV2TraceSpan(
     span.startedAt,
     span.endedAt ?? null,
     durationMs,
+    expiresAt,
   );
 
   return getChatV2TraceSpanById(span.traceSpanId, db)!;
@@ -386,6 +439,7 @@ function mapTraceSpanRow(raw: unknown): ChatV2TraceSpanRecord {
     startedAt: String(row.started_at),
     endedAt: stringOrUndefined(row.ended_at),
     durationMs: Number(row.duration_ms),
+    expiresAt: stringOrUndefined(row.expires_at),
   };
 }
 

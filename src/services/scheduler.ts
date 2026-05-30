@@ -2,6 +2,7 @@
 
 import path from 'path';
 import { createHash } from 'crypto';
+import type Database from 'better-sqlite3';
 import cron from 'node-cron';
 import { Bot } from 'grammy';
 import { config } from '../config';
@@ -644,6 +645,110 @@ export async function buildConflictAlertForUser(userId: number): Promise<string 
   return message;
 }
 
+/**
+ * WP-08 — Chat Core v2 shadow data-retention sweep.
+ *
+ * Ages out shadow/observability rows by their per-table retention policy. Runs
+ * inside the existing `midnight_cleanup` cron (NO new cron is added). Each table
+ * is deleted in its OWN try/catch so a missing table or query error on one
+ * stanza never blocks the others — a missing table is a WARN-and-continue
+ * (these tables only exist after their chat-core-v2 migrations have run).
+ *
+ * Compliance + null safety invariants:
+ *   - A NULL `expires_at` is NEVER deleted (the predicate requires
+ *     `expires_at < now`, and `NULL < now` is NULL/false in SQL).
+ *   - `chat_v2_trace_spans` rows with `retention_policy = 'legal_required'`
+ *     ALWAYS survive (explicit `retention_policy NOT IN ('legal_required')`
+ *     guard) — compliance sentinel.
+ *
+ * Privacy: logs row COUNTS only, never row contents. The `now` parameter is
+ * injectable so boundary behaviour is deterministically testable.
+ *
+ * NOTE (WP-08b, deferred): the per-turn `chat_v2_command_events` and
+ * `chat_v2_canary_turn_log` tables are intentionally NOT swept here. Their
+ * retention is owned by WP-08b, sequenced after their last writers (WP-14/WP-15)
+ * exist; adding their stanzas now would touch tables with no writers yet.
+ */
+export function runChatCoreV2ShadowDataRetention(
+  db: Database.Database = getDb(),
+  nowIso: string = new Date().toISOString(),
+): Record<string, number> {
+  const deleted: Record<string, number> = {};
+
+  const stanza = (table: string, run: () => number): void => {
+    try {
+      const changes = run();
+      deleted[table] = changes;
+      if (changes > 0) {
+        logger.info({ table, deleted: changes }, 'Chat Core v2 retention cleanup');
+      }
+    } catch (err) {
+      // Table may not exist yet (its chat-core-v2 migration has not run on this
+      // deploy). WARN + continue so one missing/failing table never blocks the
+      // rest of the sweep. No row contents are logged.
+      logger.warn(
+        { err: err instanceof Error ? err.message : String(err), table },
+        'Chat Core v2 retention cleanup failed for table (skipped)',
+      );
+    }
+  };
+
+  // Replay bundles: drop once past their stored expires_at. NULL never expires.
+  stanza('chat_v2_replay_bundles', () =>
+    db.prepare(
+      `DELETE FROM chat_v2_replay_bundles WHERE expires_at IS NOT NULL AND expires_at < ?`,
+    ).run(nowIso).changes,
+  );
+
+  // Trace spans: drop once past expires_at, but NEVER for the legal_required
+  // compliance sentinel (its expires_at is NULL anyway, but the explicit guard
+  // is defence-in-depth in case a legal row ever carries a non-NULL value).
+  stanza('chat_v2_trace_spans', () =>
+    db.prepare(
+      `DELETE FROM chat_v2_trace_spans
+       WHERE expires_at IS NOT NULL
+         AND expires_at < ?
+         AND retention_policy NOT IN ('legal_required')`,
+    ).run(nowIso).changes,
+  );
+
+  // Online eval samples: fixed 90-day window on created_at.
+  stanza('chat_v2_online_eval_samples', () =>
+    db.prepare(
+      `DELETE FROM chat_v2_online_eval_samples WHERE created_at < datetime(?, '-90 days')`,
+    ).run(nowIso).changes,
+  );
+
+  // Auto-revert decision ledger (table owned by WP-07 / migration 173 — we only
+  // sweep it here, never recreate it): fixed 365-day window on decided_at.
+  stanza('chat_v2_auto_revert_decisions', () =>
+    db.prepare(
+      `DELETE FROM chat_v2_auto_revert_decisions WHERE decided_at < datetime(?, '-365 days')`,
+    ).run(nowIso).changes,
+  );
+
+  // Memory items: drop rows whose own expiry has passed. NULL never expires
+  // (the predicate requires a non-NULL expires_at strictly before now).
+  stanza('chat_v2_memory_items', () =>
+    db.prepare(
+      `DELETE FROM chat_v2_memory_items WHERE expires_at IS NOT NULL AND expires_at < ?`,
+    ).run(nowIso).changes,
+  );
+
+  // Human reviews: drop resolved/expired reviews older than 90 days. 'pending'
+  // reviews are NEVER swept (an open governance item must not vanish). The age
+  // basis is decided_at when present, else requested_at.
+  stanza('chat_v2_human_reviews', () =>
+    db.prepare(
+      `DELETE FROM chat_v2_human_reviews
+       WHERE status IN ('approved', 'denied', 'changes_requested', 'cancelled', 'expired')
+         AND COALESCE(decided_at, requested_at) < datetime(?, '-90 days')`,
+    ).run(nowIso).changes,
+  );
+
+  return deleted;
+}
+
 export function startScheduler(bot?: any): void {
   // Register sub-skill gating so disabled sub-skills skip their cron jobs
   setJobEnabledChecker(isCronJobEnabled);
@@ -978,6 +1083,21 @@ export function startScheduler(bot?: any): void {
       }
     } catch (err) {
       logger.warn({ err }, 'Retention cleanup failed for audit_trail');
+    }
+
+    // ── Chat Core v2 shadow data-retention (WP-08) ─────────────────
+    // Ages out chat-core-v2 shadow/observability rows by per-table policy.
+    // Each table is swept in its own try/catch inside the helper, so a missing
+    // table (its migration not yet applied) WARN-skips without blocking the
+    // others. NULL expires_at is never deleted and the `legal_required` trace
+    // sentinel always survives. Runs in THIS existing cron — no new cron.
+    try {
+      runChatCoreV2ShadowDataRetention();
+    } catch (err) {
+      // The helper isolates per-table failures internally; this outer guard is
+      // pure defence-in-depth so a chat-core-v2 sweep can never break the rest
+      // of midnight_cleanup.
+      logger.warn({ err }, 'Chat Core v2 shadow data-retention sweep failed');
     }
   }), { timezone: tz });
 
