@@ -33,6 +33,7 @@ import { registerPortalAdminDataRoutes } from './admin-data-routes';
 import { registerPortalActionRoutes } from './action-routes';
 import { registerPortalChatRoutes } from './chat-routes';
 import { registerPortalChatCoreV2GateRoutes } from './chat-core-v2-gate-routes';
+import { registerPortalChatCoreV2ObservabilityRoutes } from './chat-core-v2-observability-routes';
 import { registerPortalContentRoutes } from './content-routes';
 import { registerPortalCookingRoutes } from './cooking-routes';
 import { registerPortalDecisionCenterRoutes } from './decision-center-routes';
@@ -380,6 +381,13 @@ export function createPortalServer(bot?: any): http.Server {
   // WP-13: admin-scoped Chat Core v2 shadow gate-readiness endpoint. Registered
   // ONLY when the orchestrator mode is not 'off' (default-off; single parser).
   registerPortalChatCoreV2GateRoutes(app);
+
+  // WP-12: admin-scoped Chat Core v2 observability endpoints (auto-revert
+  // ledger, failed trace spans, sampled eval references) + the write-risk
+  // human-review resolution action. Registered ONLY when the orchestrator mode
+  // is not 'off' (default-off; same single parser). The POST decide route is
+  // mounted after the global express.json() above, so req.body is parsed.
+  registerPortalChatCoreV2ObservabilityRoutes(app);
 
   registerPortalUserSkillRoutes(app);
 
