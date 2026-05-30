@@ -79,6 +79,11 @@ import {
   runDecisionMetricsRollupJob,
   getDecisionMetricsDaily,
   getDecisionReleaseGateStatus,
+  getDecisionActiveBreakdowns,
+  applyDecisionTypeSuppression,
+  suppressDecisionType,
+  unsuppressDecisionType,
+  listDecisionTypeSuppressions,
   getDecisionFeedbackSignals,
   markDecisionViewed,
   snoozeDecision,
@@ -2983,5 +2988,147 @@ describe('Decision Center B3 acting — conflict linking on create', () => {
     expect(item.relationships.some((r) => r.type === 'affects_same_entity' && r.decisionId === a.item!.decisionId)).toBe(true);
     expect(item.relationships.some((r) => r.type === 'conflicts_with' && r.decisionId === bExisting.item!.decisionId)).toBe(true);
     expect(item.blockedByDecisionIds).toHaveLength(0); // all advisory — nothing blocked
+  });
+});
+
+describe('Decision Center C3 type-suppression controls', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-05-10T10:00:00.000Z'));
+    testDb = new Database(':memory:');
+    process.env.NOTIFICATION_DELIVERY_MODE = 'mock';
+    ensureNotificationTables();
+    ensureDecisionCenterTables();
+  });
+  afterEach(() => {
+    delete process.env.NOTIFICATION_DELIVERY_MODE;
+    delete process.env.DECISION_TYPE_SUPPRESSION_ENABLED;
+    vi.useRealTimers();
+    testDb?.close();
+  });
+
+  const cooking = (user: number, key: string, priority: 'active' | 'critical' = 'active') =>
+    createDecisionIntent(buildSkillDecisionFixtureIntent('cooking', user, { tenantId: user, type: 'decision_required', priority, requiresUserAction: true, relatedEntityId: key, dedupeKey: `cook:plan:${key}` }));
+
+  it('hides a suppressed type from the user-facing list (flag ON), keeps other types; OFF == unchanged; integrity reads unaffected', async () => {
+    const cook = await cooking(200, 'a');
+    const content = await createContentApprovalDecision(200, 200, 'c3-content');
+    const cookItem = getDecisionItem(cook.item!.decisionId, 200, 200)!;
+    const contentItem = getDecisionItem(content.created.item!.decisionId, 200, 200)!;
+    suppressDecisionType(200, 200, 'cooking', 'decision_required', 'dont_show_type');
+
+    // OFF (default) — byte-identical: both pass through.
+    expect(applyDecisionTypeSuppression([cookItem, contentItem], 200, 200)).toHaveLength(2);
+
+    process.env.DECISION_TYPE_SUPPRESSION_ENABLED = 'true';
+    // ON: the suppressed cooking decision_required is dropped; the content approval stays.
+    expect(applyDecisionTypeSuppression([cookItem, contentItem], 200, 200).map((i) => i.decisionId)).toEqual([contentItem.decisionId]);
+    // INTEGRITY: getDecisionActiveBreakdowns (admin read) still counts the suppressed type — never filtered.
+    expect(getDecisionActiveBreakdowns(200, 200).byDomain.cooking).toBe(1);
+  });
+
+  it('NEVER hides a policy-floored decision of a suppressed type (floor bypass)', async () => {
+    const floored = await cooking(201, 'f', 'critical'); // critical => policy-floored
+    const item = getDecisionItem(floored.item!.decisionId, 201, 201)!;
+    expect(isDecisionItemPolicyFloored(item)).toBe(true); // precondition
+    suppressDecisionType(201, 201, 'cooking', 'decision_required', 'dont_show_type');
+    process.env.DECISION_TYPE_SUPPRESSION_ENABLED = 'true';
+    expect(applyDecisionTypeSuppression([item], 201, 201)).toHaveLength(1); // floored never suppressed
+  });
+
+  it('snooze_type suppresses only while active; a lapsed snooze and unsuppress both restore', async () => {
+    const cook = await cooking(202, 's');
+    const item = getDecisionItem(cook.item!.decisionId, 202, 202)!;
+    process.env.DECISION_TYPE_SUPPRESSION_ENABLED = 'true';
+    suppressDecisionType(202, 202, 'cooking', 'decision_required', 'snooze_type', '2999-01-01T00:00:00.000Z');
+    expect(applyDecisionTypeSuppression([item], 202, 202)).toHaveLength(0); // active snooze hides
+    suppressDecisionType(202, 202, 'cooking', 'decision_required', 'snooze_type', '2020-01-01T00:00:00.000Z');
+    expect(applyDecisionTypeSuppression([item], 202, 202)).toHaveLength(1); // lapsed snooze no longer hides
+    suppressDecisionType(202, 202, 'cooking', 'decision_required', 'dont_show_type');
+    expect(applyDecisionTypeSuppression([item], 202, 202)).toHaveLength(0);
+    unsuppressDecisionType(202, 202, 'cooking', 'decision_required');
+    expect(applyDecisionTypeSuppression([item], 202, 202)).toHaveLength(1); // unsuppress restores
+  });
+
+  it('is scoped — one user\'s suppression does not affect another', async () => {
+    const a = await cooking(203, 'a');
+    const b = await cooking(204, 'b');
+    const itemA = getDecisionItem(a.item!.decisionId, 203, 203)!;
+    const itemB = getDecisionItem(b.item!.decisionId, 204, 204)!;
+    process.env.DECISION_TYPE_SUPPRESSION_ENABLED = 'true';
+    suppressDecisionType(203, 203, 'cooking', 'decision_required', 'dont_show_type');
+    expect(applyDecisionTypeSuppression([itemA], 203, 203)).toHaveLength(0); // suppressed for 203
+    expect(applyDecisionTypeSuppression([itemB], 204, 204)).toHaveLength(1); // 204 unaffected
+  });
+
+  it('getDecisionOverview drops suppressed types from the open set (flag ON, integration)', async () => {
+    const cook = await cooking(205, 'ov');
+    const content = await createContentApprovalDecision(205, 205, 'c3-ov-content');
+    process.env.DECISION_TYPE_SUPPRESSION_ENABLED = 'true';
+    suppressDecisionType(205, 205, 'cooking', 'decision_required', 'dont_show_type');
+    const overview = getDecisionOverview(205, 205, { limit: 20 });
+    const ids = overview.items.map((i) => i.decisionId);
+    expect(ids).not.toContain(cook.item!.decisionId); // suppressed from the rendered list
+    expect(ids).toContain(content.created.item!.decisionId);  // kept
+    expect(overview.items.length).toBe(1);
+    // C3-1: counts are an INTEGRITY read — openCount reflects the true open set (both decisions),
+    // not the suppression-filtered list, so it stays consistent with summary.openCount.
+    expect(overview.openCount).toBe(2);
+    expect(overview.summary.openCount).toBe(2);
+  });
+
+  it('all-suppressed: every RENDERED surface (items, previewItems, topSuggestion) is empty while counts stay raw', async () => {
+    await cooking(220, 'a');
+    await cooking(220, 'b'); // two open cooking decisions of the same suppressed type
+    process.env.DECISION_TYPE_SUPPRESSION_ENABLED = 'true';
+    suppressDecisionType(220, 220, 'cooking', 'decision_required', 'dont_show_type');
+    const overview = getDecisionOverview(220, 220, { limit: 20 });
+    // Rendered surfaces respect the mute — the muted type must not peek through anywhere user-facing.
+    expect(overview.items).toHaveLength(0);
+    expect(overview.topSuggestion).toBeNull();
+    expect(overview.summary.previewItems).toHaveLength(0);
+    expect(overview.summary.topSuggestion).toBeNull();
+    // Counts are integrity reads — both decisions stay counted and consistent across overview + summary.
+    expect(overview.openCount).toBe(2);
+    expect(overview.summary.openCount).toBe(2);
+  });
+
+  it('getDecisionSummary suppresses rendered previewItems/topSuggestion at the source (fixes all consumers) but keeps counts raw', async () => {
+    await cooking(221, 'a');
+    const content = await createContentApprovalDecision(221, 221, 'sum-content');
+    expect(content.created.item).toBeTruthy();
+    process.env.DECISION_TYPE_SUPPRESSION_ENABLED = 'true';
+    suppressDecisionType(221, 221, 'cooking', 'decision_required', 'dont_show_type');
+    const summary = getDecisionSummary(221, 221);
+    // Counts stay raw (both decisions); the rendered preview excludes the muted cooking decision, keeps content.
+    expect(summary.openCount).toBe(2);
+    const previewSkills = summary.previewItems.map((i) => i.sourceSkill);
+    expect(previewSkills).not.toContain('cooking');
+    expect(previewSkills).toContain('content');
+    expect(summary.topDecisionSourceSkill).not.toBe('cooking');
+  });
+
+  it('suppressDecisionType rejects a snooze with no until timestamp (no silent zombie row)', async () => {
+    expect(() => suppressDecisionType(206, 206, 'cooking', 'decision_required', 'snooze_type')).toThrow(/until/i);
+    expect(listDecisionTypeSuppressions(206, 206)).toHaveLength(0); // nothing persisted
+  });
+
+  it('re-suppressing a type replaces the prior mode and clears a stale until', async () => {
+    suppressDecisionType(207, 207, 'cooking', 'decision_required', 'snooze_type', '2999-01-01T00:00:00.000Z');
+    suppressDecisionType(207, 207, 'cooking', 'decision_required', 'dont_show_type'); // re-suppress same (skill,type)
+    const rows = listDecisionTypeSuppressions(207, 207);
+    expect(rows).toHaveLength(1); // INSERT OR REPLACE on the PK — not a duplicate
+    expect(rows[0].mode).toBe('dont_show_type');
+    expect(rows[0].until).toBeNull(); // stale snooze timestamp cleared
+  });
+
+  it('fails OPEN (shows all items) if the suppression-table read throws', async () => {
+    const cook = await cooking(208, 'fo');
+    const item = getDecisionItem(cook.item!.decisionId, 208, 208)!;
+    process.env.DECISION_TYPE_SUPPRESSION_ENABLED = 'true';
+    suppressDecisionType(208, 208, 'cooking', 'decision_required', 'dont_show_type');
+    testDb.exec('DROP TABLE decision_type_suppressions'); // simulate a transient read fault
+    // Presentation filter must not crash the queue — it returns the full set rather than hiding/erroring.
+    expect(applyDecisionTypeSuppression([item], 208, 208)).toHaveLength(1);
   });
 });

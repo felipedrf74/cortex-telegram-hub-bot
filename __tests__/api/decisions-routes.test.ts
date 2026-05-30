@@ -17,6 +17,10 @@ const mockUpdateDecisionPreferences = vi.fn();
 const mockCountOpenUrgentDecisionsForUser = vi.fn();
 const mockRegisterNotificationDeviceToken = vi.fn();
 const mockRevokeNotificationDeviceToken = vi.fn();
+const mockApplyDecisionTypeSuppression = vi.fn();
+const mockListDecisionTypeSuppressions = vi.fn();
+const mockSuppressDecisionType = vi.fn();
+const mockUnsuppressDecisionType = vi.fn();
 
 vi.mock('../../src/services/decision-center', () => ({
   DecisionActionError: class DecisionActionError extends Error {
@@ -50,6 +54,10 @@ vi.mock('../../src/services/decision-center', () => ({
   markDecisionViewed: (...args: unknown[]) => mockMarkDecisionViewed(...args),
   getDecisionPreferences: (...args: unknown[]) => mockGetDecisionPreferences(...args),
   updateDecisionPreferences: (...args: unknown[]) => mockUpdateDecisionPreferences(...args),
+  applyDecisionTypeSuppression: (...args: unknown[]) => mockApplyDecisionTypeSuppression(...args),
+  listDecisionTypeSuppressions: (...args: unknown[]) => mockListDecisionTypeSuppressions(...args),
+  suppressDecisionType: (...args: unknown[]) => mockSuppressDecisionType(...args),
+  unsuppressDecisionType: (...args: unknown[]) => mockUnsuppressDecisionType(...args),
 }));
 
 vi.mock('../../src/services/notification-orchestrator', () => ({
@@ -177,6 +185,15 @@ describe('Decision routes', () => {
     mockUpdateDecisionPreferences.mockReset();
     mockRegisterNotificationDeviceToken.mockReset();
     mockRevokeNotificationDeviceToken.mockReset();
+    mockApplyDecisionTypeSuppression.mockReset();
+    mockListDecisionTypeSuppressions.mockReset();
+    mockSuppressDecisionType.mockReset();
+    mockUnsuppressDecisionType.mockReset();
+
+    // Type-suppression is a presentation post-filter; by default it passes the list through unchanged
+    // (flag OFF semantics) so the existing list assertions stay byte-identical.
+    mockApplyDecisionTypeSuppression.mockImplementation((items: unknown) => items);
+    mockListDecisionTypeSuppressions.mockReturnValue([]);
 
     mockGetDecisionSummary.mockReturnValue({ openCount: 1, urgentCount: 0, todayCount: 1, ctaLabel: '1 Decision', previewItems: [], badgeCount: 1 });
     mockGetDecisionOverview.mockReturnValue({
@@ -345,5 +362,66 @@ describe('Decision routes', () => {
     expect(mockPerformDecisionAction).toHaveBeenCalledWith('user-a-decision', 'approve_script', 7, 7, expect.objectContaining({
       idempotencyKey: 'wrong-user-notification-tap',
     }));
+  });
+
+  it('C3: lists, creates (dont_show_type + snooze_type), and removes type suppressions from authenticated scope', async () => {
+    const router = decisionRoutes();
+    mockListDecisionTypeSuppressions.mockReturnValue([
+      { sourceSkill: 'cooking', type: 'decision_required', mode: 'dont_show_type', until: null, createdAt: '2026-05-20T10:00:00.000Z' },
+    ]);
+
+    const listed = await dispatch(router, 'GET', '/preferences/suppressions');
+    expect(listed.statusCode).toBe(200);
+    expect(listed.body.data.suppressions[0].sourceSkill).toBe('cooking');
+    expect(mockListDecisionTypeSuppressions).toHaveBeenCalledWith(7, 7);
+
+    const dontShow = await dispatch(router, 'POST', '/preferences/suppress-type', {}, { sourceSkill: 'cooking', type: 'decision_required', mode: 'dont_show_type' });
+    expect(dontShow.statusCode).toBe(201);
+    // dont_show_type never carries an `until`.
+    expect(mockSuppressDecisionType).toHaveBeenCalledWith(7, 7, 'cooking', 'decision_required', 'dont_show_type', null);
+
+    const snooze = await dispatch(router, 'POST', '/preferences/suppress-type', {}, { sourceSkill: 'training', type: 'reminder', mode: 'snooze_type', untilDays: 3 });
+    expect(snooze.statusCode).toBe(201);
+    // snooze_type computes a forward `until` ISO timestamp from untilDays.
+    expect(mockSuppressDecisionType).toHaveBeenLastCalledWith(7, 7, 'training', 'reminder', 'snooze_type', expect.stringMatching(/^\d{4}-\d{2}-\d{2}T/));
+
+    const removed = await dispatch(router, 'DELETE', '/preferences/suppress-type', { sourceSkill: 'cooking', type: 'decision_required' });
+    expect(removed.statusCode).toBe(200);
+    expect(mockUnsuppressDecisionType).toHaveBeenCalledWith(7, 7, 'cooking', 'decision_required');
+  });
+
+  it('C3: rejects suppress/unsuppress requests with missing fields before touching the store', async () => {
+    const router = decisionRoutes();
+
+    const badMode = await dispatch(router, 'POST', '/preferences/suppress-type', {}, { sourceSkill: 'cooking', type: 'decision_required', mode: 'nope' });
+    expect(badMode.statusCode).toBe(400);
+    expect(badMode.body.error.code).toBe('VALIDATION');
+
+    const missingType = await dispatch(router, 'POST', '/preferences/suppress-type', {}, { sourceSkill: 'cooking', mode: 'dont_show_type' });
+    expect(missingType.statusCode).toBe(400);
+
+    // snooze_type with a non-positive untilDays is rejected by positiveIntQuery before any store write.
+    const badSnoozeWindow = await dispatch(router, 'POST', '/preferences/suppress-type', {}, { sourceSkill: 'training', type: 'reminder', mode: 'snooze_type', untilDays: -1 });
+    expect(badSnoozeWindow.statusCode).toBe(400);
+
+    const missingDeleteParams = await dispatch(router, 'DELETE', '/preferences/suppress-type', {});
+    expect(missingDeleteParams.statusCode).toBe(400);
+
+    expect(mockSuppressDecisionType).not.toHaveBeenCalled();
+    expect(mockUnsuppressDecisionType).not.toHaveBeenCalled();
+  });
+
+  it('C3: maps a service DecisionActionError from suppress/unsuppress to its 4xx status (not a 500)', async () => {
+    const router = decisionRoutes();
+
+    mockSuppressDecisionType.mockImplementation(() => { throw new DecisionActionError('VALIDATION', 'bad until', 422); });
+    const suppressRes = await dispatch(router, 'POST', '/preferences/suppress-type', {}, { sourceSkill: 'cooking', type: 'decision_required', mode: 'dont_show_type' });
+    expect(suppressRes.statusCode).toBe(422); // mapped by decisionError, NOT asyncHandler's 500
+    expect(suppressRes.body.error.code).toBe('VALIDATION');
+
+    mockUnsuppressDecisionType.mockImplementation(() => { throw new DecisionActionError('INVALID_SCOPE', 'nope', 403); });
+    const deleteRes = await dispatch(router, 'DELETE', '/preferences/suppress-type', { sourceSkill: 'cooking', type: 'decision_required' });
+    expect(deleteRes.statusCode).toBe(403);
+    expect(deleteRes.body.error.code).toBe('INVALID_SCOPE');
   });
 });

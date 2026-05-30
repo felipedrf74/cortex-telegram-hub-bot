@@ -355,6 +355,16 @@ export function isDecisionRollbackSnapshotProtectionEnabled(env: RuntimeEnv = pr
   return scopedFlagEnabledByExplicitOptIn(env, 'DECISION_ROLLBACK_SNAPSHOT_PROTECTION_ENABLED', scope);
 }
 
+/**
+ * C3 — gates per-type suppression controls ("Don't show this type" / "Snooze this type"). When ON, the
+ * user-facing Decision Center list + overview drop actively-suppressed (source_skill, type) recipes — EXCEPT
+ * policy-floored decisions, which are never suppressible. Integrity/admin reads (release gate, dashboard
+ * breakdowns, summary counts) are never filtered. OFF => the user-facing lists are unchanged. Default OFF.
+ */
+export function isDecisionTypeSuppressionEnabled(env: RuntimeEnv = process.env, scope?: RuntimeFlagScope): boolean {
+  return scopedFlagEnabledByExplicitOptIn(env, 'DECISION_TYPE_SUPPRESSION_ENABLED', scope);
+}
+
 
 export function isChatCoreV2RuntimeFlagEnabled(
   flagKey: string,

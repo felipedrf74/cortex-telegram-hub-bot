@@ -7,6 +7,7 @@ import { ensureValidTenantRouteScope } from '../tenant-route-scope';
 import { secureSecretMatches } from '../secret-guards';
 import {
   buildSkillDecisionFixtureIntent,
+  applyDecisionTypeSuppression,
   createDecisionIntent,
   DecisionActionError,
   dismissDecision,
@@ -14,13 +15,17 @@ import {
   getDecisionItem,
   getDecisionPreferences,
   getDecisionSummary,
+  listDecisionTypeSuppressions,
   listHandledByNexusItems,
   listDecisionItems,
   markDecisionViewed,
   refreshDecisionItem,
   performDecisionAction,
   snoozeDecision,
+  suppressDecisionType,
+  unsuppressDecisionType,
   updateDecisionPreferences,
+  type DecisionTypeSuppressionMode,
   type DecisionUrgency,
 } from '../../services/decision-center';
 import {
@@ -170,7 +175,12 @@ export function decisionRoutes(): Router {
     // read with a generous internal cap (cursor/pageSize bound the page). Otherwise a >80-item user would get
     // nextCursor=null mid-dataset. The cap comfortably exceeds the ~50-active-per-user product ceiling.
     const readLimit = cursorMode ? DECISION_LIST_CURSOR_CAP : limit;
-    const items = listDecisionItems(userId, tenantId, { status, sourceSkill, type, urgency, limit: readLimit });
+    // C3: drop user-suppressed types from the user-facing list (flag-gated; floored decisions never dropped).
+    const items = applyDecisionTypeSuppression(
+      listDecisionItems(userId, tenantId, { status, sourceSkill, type, urgency, limit: readLimit }),
+      userId,
+      tenantId,
+    );
     if (cursorMode) {
       const pageSize = positiveIntQuery(res, req.query.pageSize, 50, 'pageSize', 100);
       if (pageSize == null) return;
@@ -263,6 +273,69 @@ export function decisionRoutes(): Router {
     } catch (err) {
       decisionError(res, err, 'INVALID_DECISION_PREFERENCES');
     }
+  }));
+
+  // C3 type-suppression controls. The READ FILTER is flag-gated (DECISION_TYPE_SUPPRESSION_ENABLED); these
+  // write/read endpoints persist the preference regardless so it is ready when the flag flips.
+  router.get('/preferences/suppressions', asyncHandler(async (req, res: Response) => {
+    const authReq = req as unknown as AuthenticatedRequest;
+    const { userId } = authReq;
+    if (!ensureValidTenantRouteScope(res, userId, 'decisions_route_list_suppressions')) return;
+    const tenantId = routeTenantId(authReq, res, userId, 'decisions_route');
+    if (tenantId == null) return;
+    sendSuccess(res, { suppressions: listDecisionTypeSuppressions(userId, tenantId) });
+  }));
+
+  router.post('/preferences/suppress-type', asyncHandler(async (req, res: Response) => {
+    const authReq = req as unknown as AuthenticatedRequest;
+    const { userId } = authReq;
+    if (!ensureValidTenantRouteScope(res, userId, 'decisions_route_suppress_type')) return;
+    const tenantId = routeTenantId(authReq, res, userId, 'decisions_route_suppress_type', 'decision_type_suppressions');
+    if (tenantId == null) return;
+    const body = (req.body ?? {}) as { sourceSkill?: unknown; type?: unknown; mode?: unknown; untilDays?: unknown };
+    const sourceSkill = typeof body.sourceSkill === 'string' ? body.sourceSkill.trim() : '';
+    const type = typeof body.type === 'string' ? body.type.trim() : '';
+    const mode = body.mode === 'snooze_type' ? 'snooze_type' : body.mode === 'dont_show_type' ? 'dont_show_type' : null;
+    if (!sourceSkill || !type || !mode) {
+      sendError(res, 'VALIDATION', 'sourceSkill, type, and mode (dont_show_type|snooze_type) are required', 400);
+      return;
+    }
+    let until: string | null = null;
+    if (mode === 'snooze_type') {
+      const days = positiveIntQuery(res, body.untilDays ?? 7, 7, 'untilDays', 365);
+      if (days == null) return;
+      until = new Date(Date.now() + days * 24 * 60 * 60 * 1000).toISOString();
+    }
+    try {
+      suppressDecisionType(userId, tenantId, sourceSkill, type, mode as DecisionTypeSuppressionMode, until);
+    } catch (err) {
+      // Map service-layer DecisionActionError (VALIDATION / INVALID_SCOPE) to its intended 4xx instead of a
+      // 500, consistent with every other handler in this file.
+      decisionError(res, err, 'DECISION_SUPPRESS_FAILED');
+      return;
+    }
+    sendSuccess(res, { suppressions: listDecisionTypeSuppressions(userId, tenantId) }, { status: 201 });
+  }));
+
+  router.delete('/preferences/suppress-type', asyncHandler(async (req, res: Response) => {
+    const authReq = req as unknown as AuthenticatedRequest;
+    const { userId } = authReq;
+    if (!ensureValidTenantRouteScope(res, userId, 'decisions_route_unsuppress_type')) return;
+    const tenantId = routeTenantId(authReq, res, userId, 'decisions_route_unsuppress_type', 'decision_type_suppressions');
+    if (tenantId == null) return;
+    const sourceSkill = typeof req.query.sourceSkill === 'string' ? req.query.sourceSkill.trim() : '';
+    const type = typeof req.query.type === 'string' ? req.query.type.trim() : '';
+    if (!sourceSkill || !type) {
+      sendError(res, 'VALIDATION', 'sourceSkill and type query params are required', 400);
+      return;
+    }
+    try {
+      unsuppressDecisionType(userId, tenantId, sourceSkill, type);
+    } catch (err) {
+      decisionError(res, err, 'DECISION_UNSUPPRESS_FAILED');
+      return;
+    }
+    sendSuccess(res, { suppressions: listDecisionTypeSuppressions(userId, tenantId) });
   }));
 
   router.get('/handled', asyncHandler(async (req, res: Response) => {

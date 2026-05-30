@@ -35,6 +35,7 @@ import {
   isDecisionHumanReviewGateEnabled,
   isDecisionReconnectAffordanceEnabled,
   isDecisionSemanticSupersedeEnabled,
+  isDecisionTypeSuppressionEnabled,
   isDecisionSkillCardsEnabled,
   isAnthropicRuntimeEnabled,
   isChatCoreV2ShadowRouteHookEnabled,
@@ -296,6 +297,21 @@ describe('runtime-flags', () => {
     expect(isDecisionSemanticSupersedeEnabled({ DECISION_SEMANTIC_SUPERSEDE_ENABLED: 'true', DECISION_SEMANTIC_SUPERSEDE_ENABLED_USER_5: 'off' }, { userId: 5, tenantId: 9 })).toBe(false);
     expect(isDecisionHumanReviewGateEnabled({})).toBe(false);
     expect(isDecisionHumanReviewGateEnabled({ DECISION_HUMAN_REVIEW_GATE_ENABLED: '1' })).toBe(true);
+  });
+
+  it('keeps the C3 type-suppression control default-off with scoped opt-in', () => {
+    expect(isDecisionTypeSuppressionEnabled({})).toBe(false);
+    expect(isDecisionTypeSuppressionEnabled({ DECISION_TYPE_SUPPRESSION_ENABLED: 'true' })).toBe(true);
+    expect(isDecisionTypeSuppressionEnabled({ DECISION_TYPE_SUPPRESSION_ENABLED: '1' })).toBe(true);
+    expect(isDecisionTypeSuppressionEnabled({ DECISION_TYPE_SUPPRESSION_ENABLED: 'yes' })).toBe(false);
+    expect(isDecisionTypeSuppressionEnabled({
+      DECISION_TYPE_SUPPRESSION_ENABLED: 'true',
+      DECISION_TYPE_SUPPRESSION_ENABLED_USER_5: 'off',
+    }, { userId: 5, tenantId: 9 })).toBe(false);
+    expect(isDecisionTypeSuppressionEnabled({
+      DECISION_TYPE_SUPPRESSION_ENABLED: 'false',
+      DECISION_TYPE_SUPPRESSION_ENABLED_TENANT_9: 'true',
+    }, { userId: 7, tenantId: 9 })).toBe(true);
   });
 
   it('keeps the D skill cards surface default-off with scoped opt-in', () => {

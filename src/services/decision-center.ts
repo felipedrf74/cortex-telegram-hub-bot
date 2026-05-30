@@ -52,7 +52,7 @@ import {
 } from './chat-pending-confirmations';
 import { isValidTenantUserId, recordTenantScopeAnomaly } from './tenant-scope-observability';
 import { logger } from '../utils/logger';
-import { isDecisionCenterCommandBusEnabled, isDecisionCenterFatigueCapsEnabled, isDecisionCenterGuidanceSkillEnabled, isDecisionCenterGuidanceV1Enabled, isDecisionChoiceOptionsEnabled, isDecisionEvidenceFreshnessGateEnabled, isDecisionHumanReviewGateEnabled, isDecisionReconnectAffordanceEnabled, isDecisionRollbackSnapshotProtectionEnabled, isDecisionSemanticDedupEnabled, isDecisionSemanticSupersedeEnabled, isDecisionSkillCardsEnabled, isDecisionStreakV1Enabled } from './runtime-flags';
+import { isDecisionCenterCommandBusEnabled, isDecisionCenterFatigueCapsEnabled, isDecisionCenterGuidanceSkillEnabled, isDecisionCenterGuidanceV1Enabled, isDecisionChoiceOptionsEnabled, isDecisionEvidenceFreshnessGateEnabled, isDecisionHumanReviewGateEnabled, isDecisionReconnectAffordanceEnabled, isDecisionRollbackSnapshotProtectionEnabled, isDecisionSemanticDedupEnabled, isDecisionSemanticSupersedeEnabled, isDecisionSkillCardsEnabled, isDecisionStreakV1Enabled, isDecisionTypeSuppressionEnabled } from './runtime-flags';
 import { decisionRelationshipSemantics, type DecisionRelationshipKind, type DecisionRelationshipType } from './decision-relationship-types';
 import { buildDecisionDedupKey, classifyDecisionDedup } from './decision-center-semantic-dedup';
 import type { SecretaryTodaySummaryModel } from './secretary-orchestrator';
@@ -910,6 +910,18 @@ export function ensureDecisionCenterTables(): void {
     );
     CREATE INDEX IF NOT EXISTS idx_decision_queue_daily_rollups_scope_date
       ON decision_queue_daily_rollups(user_id, tenant_id, local_date DESC);
+    CREATE TABLE IF NOT EXISTS decision_type_suppressions (
+      user_id INTEGER NOT NULL,
+      tenant_id INTEGER NOT NULL,
+      source_skill TEXT NOT NULL,
+      type TEXT NOT NULL,
+      mode TEXT NOT NULL,
+      until TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      PRIMARY KEY (user_id, tenant_id, source_skill, type)
+    );
+    CREATE INDEX IF NOT EXISTS idx_decision_type_suppressions_scope
+      ON decision_type_suppressions(user_id, tenant_id);
   `);
   ensureColumn('handled_by_nexus_items', 'explanation_json', 'TEXT');
 }
@@ -1307,9 +1319,16 @@ function buildDecisionSummaryFromSections(
 ): DecisionSummary {
   const activeItems = items.filter((item) => ['unread', 'read', 'snoozed', 'failed', 'open'].includes(item.status));
   const openItems = activeItems.filter((item) => item.status !== 'snoozed' || !item.snoozedUntil);
+  // C3: COUNTS (openCount/urgentCount/todayCount/badgeCount/gamification) are INTEGRITY reads computed on the
+  // raw open set so they stay accurate and consistent with the overview. The RENDERED fields (top pick +
+  // preview list + their derived titles/CTA) are USER-FACING, so they respect type-suppression — a muted
+  // type must never peek through previewItems/topSuggestion on ANY summary consumer (overview, /summary,
+  // portal, secretary fastpath, chat). Flag OFF => presentationItems === openItems (byte-identical). Floored
+  // decisions are never suppressed.
+  const presentationItems = applyDecisionTypeSuppression(openItems, userId, tenantId);
   const urgentCount = openItems.filter((item) => item.urgency === 'urgent').length;
   const todayCount = openItems.filter((item) => item.urgency === 'urgent' || item.urgency === 'today').length;
-  const top = openItems[0] ?? null;
+  const top = presentationItems[0] ?? null;
   const locale = userDecisionContextDefaults(userId).locale;
   const timezone = userDecisionContextDefaults(userId).timezone ?? 'UTC';
   const handledTodayCount = handled
@@ -1329,7 +1348,7 @@ function buildDecisionSummaryFromSections(
     topDecisionWhy: top?.whySummary ?? top?.analysis?.whyNow ?? null,
     topSuggestion: top ? topSuggestionForItem(top) : null,
     ctaLabel: ctaLabelForSummary(openItems.length, urgentCount, top, locale),
-    previewItems: openItems.slice(0, Math.min(Math.max(limit, 0), 3)),
+    previewItems: presentationItems.slice(0, Math.min(Math.max(limit, 0), 3)),
     badgeCount: todayCount,
     gamification,
   };
@@ -1399,7 +1418,13 @@ export function getDecisionOverview(
     logDecisionOverviewSectionFailure('handled', err, userId, tenantId);
   }
 
-  const allOpenItems = openDecisionItemsForOverview(allItems);
+  // C3: type-suppression is a PRESENTATION filter. `openItemsRaw` is the true open partition and feeds the
+  // numeric counts (openCount/staleCount) so they stay consistent with `summary.openCount` (an integrity
+  // read built from `allItems`). `allOpenItems` is the user-facing, suppression-filtered set that feeds the
+  // rendered list, the top suggestion, and the today narrative. Floored decisions are never suppressed.
+  // Flag-gated; OFF makes the two sets identical (byte-identical overview).
+  const openItemsRaw = openDecisionItemsForOverview(allItems);
+  const allOpenItems = applyDecisionTypeSuppression(openItemsRaw, userId, tenantId);
   let items: DecisionApiItem[] = [];
   let fatigueMeta: DecisionCenterOverview['fatigue'];
   if (itemsAvailable) {
@@ -1427,14 +1452,14 @@ export function getDecisionOverview(
       logDecisionOverviewSectionFailure('summary', err, userId, tenantId);
     }
   }
-  const staleCount = allOpenItems.filter((item) => item.analysis.sourceFreshness === 'stale' || item.sourceTrace?.dataFreshness === 'cached').length;
+  const staleCount = openItemsRaw.filter((item) => item.analysis.sourceFreshness === 'stale' || item.sourceTrace?.dataFreshness === 'cached').length;
   const supersededCount = allItems.filter((item) => ['superseded', 'dismissed', 'actioned'].includes(item.status)).length;
   const topSuggestion = summary.topSuggestion ?? (allOpenItems[0] ? topSuggestionForItem(allOpenItems[0]) : null);
   const language = userDecisionContextDefaults(userId).locale ?? 'en';
   const secretaryToday = buildDecisionCenterSecretaryTodaySummary(allOpenItems, handledForSummary, language);
   return {
     count: items.length,
-    openCount: allOpenItems.filter((item) => ['unread', 'read', 'failed', 'open'].includes(item.status)).length,
+    openCount: openItemsRaw.filter((item) => ['unread', 'read', 'failed', 'open'].includes(item.status)).length,
     handledCount: handled.length,
     staleCount,
     supersededCount,
@@ -4837,6 +4862,92 @@ export function getDecisionActiveBreakdowns(userId: number, tenantId = userId): 
     byStatus[row.status] = (byStatus[row.status] ?? 0) + row.n;
   }
   return { total, byDomain, byType, byStatus };
+}
+
+export type DecisionTypeSuppressionMode = 'dont_show_type' | 'snooze_type';
+
+export interface DecisionTypeSuppression {
+  sourceSkill: string;
+  type: string;
+  mode: DecisionTypeSuppressionMode;
+  until: string | null;
+  createdAt: string;
+}
+
+/**
+ * C3 — mute a (sourceSkill, type) recipe: permanently (dont_show_type) or until a timestamp (snooze_type).
+ * Re-suppressing the same type replaces the prior mode (PK is user+tenant+skill+type). Scoped write.
+ */
+export function suppressDecisionType(
+  userId: number,
+  tenantId: number,
+  sourceSkill: string,
+  type: string,
+  mode: DecisionTypeSuppressionMode,
+  until: string | null = null,
+): void {
+  assertScope(userId, tenantId, 'suppress_decision_type', { sourceSkill, type, mode });
+  // A snooze with no `until` would persist a row that listActiveDecisionTypeSuppressionKeys can never
+  // activate (it requires `until > now`) — a silent no-op. Reject it so the caller's intent can't be dropped.
+  if (mode === 'snooze_type' && !until) {
+    throw new DecisionActionError('VALIDATION', 'snooze_type suppression requires a non-null until timestamp', 400);
+  }
+  ensureDecisionCenterTables();
+  getDb().prepare(`
+    INSERT OR REPLACE INTO decision_type_suppressions (user_id, tenant_id, source_skill, type, mode, until, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, datetime('now'))
+  `).run(userId, tenantId, sourceSkill, type, mode, mode === 'snooze_type' ? until : null);
+}
+
+/** C3 — remove a (sourceSkill, type) suppression. */
+export function unsuppressDecisionType(userId: number, tenantId: number, sourceSkill: string, type: string): void {
+  assertScope(userId, tenantId, 'unsuppress_decision_type', { sourceSkill, type });
+  ensureDecisionCenterTables();
+  getDb().prepare(`DELETE FROM decision_type_suppressions WHERE user_id = ? AND tenant_id = ? AND source_skill = ? AND type = ?`)
+    .run(userId, tenantId, sourceSkill, type);
+}
+
+/** C3 — all suppression rows for the user (for the preferences GET; includes lapsed snoozes so the client can show state). */
+export function listDecisionTypeSuppressions(userId: number, tenantId = userId): DecisionTypeSuppression[] {
+  assertScope(userId, tenantId, 'list_decision_type_suppressions', {});
+  ensureDecisionCenterTables();
+  return getDb().prepare(`
+    SELECT source_skill AS sourceSkill, type, mode, until, created_at AS createdAt
+      FROM decision_type_suppressions WHERE user_id = ? AND tenant_id = ? ORDER BY created_at DESC
+  `).all(userId, tenantId) as DecisionTypeSuppression[];
+}
+
+/** ACTIVE suppression keys (`${sourceSkill}:${type}`): dont_show_type always; snooze_type only while until > now. */
+function listActiveDecisionTypeSuppressionKeys(userId: number, tenantId: number): Set<string> {
+  const rows = getDb().prepare(`
+    SELECT source_skill AS sourceSkill, type
+      FROM decision_type_suppressions
+     WHERE user_id = ? AND tenant_id = ?
+       AND (mode = 'dont_show_type' OR (mode = 'snooze_type' AND until IS NOT NULL AND datetime(until) > datetime('now')))
+  `).all(userId, tenantId) as Array<{ sourceSkill: string; type: string }>;
+  return new Set(rows.map((row) => `${row.sourceSkill}:${row.type}`));
+}
+
+/**
+ * C3 read-path filter (USER-FACING list + overview ONLY). Drops decisions whose (sourceSkill, type) the user
+ * has actively suppressed — EXCEPT policy-floored decisions, which are never suppressible (mirrors the C5/B3
+ * floor discipline). Flag-gated; OFF or no-suppressions returns the input unchanged. Read-only. NEVER applied
+ * to integrity/admin reads (release gate, dashboard breakdowns, summary counts) so those stay accurate.
+ */
+export function applyDecisionTypeSuppression(items: DecisionApiItem[], userId: number, tenantId: number): DecisionApiItem[] {
+  if (!isDecisionTypeSuppressionEnabled(process.env, { userId, tenantId })) return items;
+  let suppressed: Set<string>;
+  try {
+    suppressed = listActiveDecisionTypeSuppressionKeys(userId, tenantId);
+  } catch (err) {
+    // Presentation filter: a transient suppression-read fault (locked DB, table not yet self-healed) must
+    // NEVER hide the decision queue or 500 a survivable read. Fail OPEN to the full set; the preference
+    // re-applies on the next successful read. (Write paths keep throwing — a dropped write must surface.)
+    logger.warn({ err, userId, tenantId }, 'decision type-suppression read failed; showing all items (fail-open)');
+    return items;
+  }
+  if (suppressed.size === 0) return items;
+  return items.filter((item) => !suppressed.has(`${item.sourceSkill}:${item.type}`) || isDecisionItemPolicyFloored(item));
 }
 
 export interface DecisionFeedbackSignal {
