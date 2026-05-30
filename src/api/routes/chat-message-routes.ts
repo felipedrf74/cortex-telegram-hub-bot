@@ -1021,7 +1021,9 @@ export function registerChatMessageRoutes(
 
       const quotaDecision = enforceCostGuardrails(userId);
       const suppressReadFastPathsForWriteIntent = normalizedText && normalizedAttachments.length === 0
-        ? shouldGateReadFastPathsForWriteIntent(normalizedText)
+        // WP-07: forward the authenticated per-request tenantId so a per-tenant
+        // auto-revert override demotes the gateway off the enforce path live.
+        ? shouldGateReadFastPathsForWriteIntent(normalizedText, process.env, String(tenantId))
         : false;
       const tokenZeroShortcut = normalizedText && normalizedAttachments.length === 0
         && !suppressReadFastPathsForWriteIntent

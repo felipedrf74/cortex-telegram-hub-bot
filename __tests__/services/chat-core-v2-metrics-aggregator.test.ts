@@ -341,7 +341,7 @@ describe('WP-06 scheduler wiring (default-off, compute+log only, no raw PII)', (
     expect(cronGate).not.toBeNull();
   });
 
-  it('cron body computes + logs only — no executor (WP-07) call, documented', () => {
+  it('cron body computes (WP-06) AND applies the decision (WP-07) in ONE job', () => {
     const body = source.match(
       /wrapJob\('chat_v2_auto_revert_eval',\s*async[\s\S]*?\}\),\s*\{\s*timezone: 'UTC'\s*\}\)/,
     );
@@ -350,12 +350,9 @@ describe('WP-06 scheduler wiring (default-off, compute+log only, no raw PII)', (
     expect(text).toContain('computeChatCoreV2AutoRevertMetrics');
     expect(text).toContain('evaluateChatCoreV2AutoRevertPolicy');
     expect(text).toContain('getActiveChatCoreV2TenantIds');
-    // No mutation: the WP-07 executor must NOT be CALLED here (a documenting
-    // comment naming it is allowed; an invocation is not).
-    expect(text).not.toMatch(/applyAutoRevertDecision\s*\(/);
-    expect(text).not.toMatch(/setChatCoreV2RuntimeOverride\s*\(/);
-    // The "executor is WP-07" intent is documented.
-    expect(text).toContain('executor (applyAutoRevertDecision) is WP-07');
+    // WP-07 (merged into the SAME cron per §5.C): the executor IS invoked here,
+    // per tenant, inside the per-tenant try/catch.
+    expect(text).toMatch(/applyAutoRevertDecision\s*\(\s*tenantId\s*,\s*decision\s*,\s*metrics\s*,\s*db\s*\)/);
     // Per-tenant try/catch keeps the loop alive.
     expect(text).toMatch(/for \(const tenantId of tenantIds\)/);
   });

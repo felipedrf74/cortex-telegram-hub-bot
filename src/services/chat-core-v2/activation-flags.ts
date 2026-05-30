@@ -77,18 +77,99 @@ export function resolveChatCoreV2ActivationConfig(env: EnvLike = process.env): C
 }
 
 /**
+ * Per-tenant runtime override record (WP-07, OD-1). An override may only DEMOTE
+ * a tenant's serving (force it off/shadow, pin the planner to repair-only, or
+ * shadow specific languages) — it can NEVER promote a tenant past the env mode.
+ * The override is in-process only (intentionally wiped on restart; the durable
+ * record is the persisted `chat_v2_auto_revert_decisions` row).
+ */
+export interface ChatCoreV2TenantOverride {
+  /** A demotion target. 'off' or 'shadow' both force the live parsers off. */
+  mode?: 'shadow' | 'off';
+  /** Pin the local planner to schema-repair-only (no fresh generation). */
+  plannerPinnedToRepairOnly?: boolean;
+  /** Languages demoted to shadow for this tenant. */
+  languageShadow?: string[];
+}
+
+/**
+ * Module-scoped per-tenant override Map (WP-07/§5.J), keyed by tenantId. A flip
+ * for tenant A mutates ONLY tenant A's entry; tenant B is untouched. This is the
+ * seam that lets the auto-revert valve stop a single tenant's live serving
+ * WITHOUT a process restart, because the two live parsers route their kill-switch
+ * decision through `isChatCoreV2MasterKillSwitchOff`, which consults this Map.
+ */
+const _runtimeOverrides = new Map<string /* tenantId */, ChatCoreV2TenantOverride>();
+
+/** Set (replace) the per-tenant runtime override for a single tenant. */
+export function setChatCoreV2RuntimeOverride(tenantId: string, override: ChatCoreV2TenantOverride): void {
+  _runtimeOverrides.set(tenantId, { ...override });
+}
+
+/** Clear the per-tenant runtime override for a single tenant. */
+export function clearChatCoreV2RuntimeOverride(tenantId: string): void {
+  _runtimeOverrides.delete(tenantId);
+}
+
+/** Read the per-tenant runtime override for a single tenant (undefined = none). */
+export function getChatCoreV2RuntimeOverride(tenantId: string): ChatCoreV2TenantOverride | undefined {
+  const value = _runtimeOverrides.get(tenantId);
+  return value ? { ...value } : undefined;
+}
+
+/** Whether this tenant's local planner is pinned to schema-repair-only. */
+export function isPlannerPinnedToRepairOnly(tenantId: string): boolean {
+  return _runtimeOverrides.get(tenantId)?.plannerPinnedToRepairOnly === true;
+}
+
+/** Whether this tenant has demoted the given language to shadow. */
+export function isLanguageShadowOverrideSet(tenantId: string, language: string): boolean {
+  const languages = _runtimeOverrides.get(tenantId)?.languageShadow;
+  return Array.isArray(languages) && languages.includes(language);
+}
+
+/** Test-only: wipe every per-tenant runtime override (use in afterEach). */
+export function _resetChatCoreV2RuntimeOverridesForTests(): void {
+  _runtimeOverrides.clear();
+}
+
+/**
+ * Whether a per-tenant runtime override DEMOTES this tenant's live serving off
+ * (override mode is 'off' or 'shadow'). Either value forces the live parsers off
+ * for that tenant: 'off' is a hard stop, 'shadow' demotes a live (enforce/on)
+ * path back to observe-only, and a shadow path is already non-serving on the live
+ * read/write fast paths.
+ */
+function isTenantOverrideForcingOff(tenantId: string | undefined): boolean {
+  if (tenantId === undefined) return false;
+  const mode = _runtimeOverrides.get(tenantId)?.mode;
+  return mode === 'off' || mode === 'shadow';
+}
+
+/**
  * The single master kill-switch chokepoint for the live chat entry parsers
  * (resolveChatCoreV2LocalChatLlmMode / resolveChatCoreV2ActionGatewayMode).
- * Fires when CHAT_CORE_V2_ORCHESTRATOR_MODE is EXPLICITLY 'off'. An ABSENT mode
- * is intentionally NOT a kill here: it defers to the sub-mode flags (action
- * gateway / local-chat / the legacy CHAT_CORE_V2_ENABLED activation), preserving
- * existing behavior. WP-07's runtime-override Map will extend THIS function so an
- * auto-revert flip governs the live chat-message-routes path without a restart.
- * Strict default-off subordination (absent master => all sub-modes off) is a
- * separate, deliberate change and is intentionally NOT folded in here.
+ *
+ * Returns true (kill) when EITHER:
+ *  (a) CHAT_CORE_V2_ORCHESTRATOR_MODE is EXPLICITLY 'off' (existing behavior), OR
+ *  (b) a tenantId is supplied AND that tenant's runtime override forces off/shadow
+ *      (WP-07 per-tenant demotion — reaches the live path without a restart).
+ *
+ * KILL-SWITCH PRECEDENCE: an explicit env 'off' always wins. An override can only
+ * DEMOTE (force off/shadow); it can NEVER promote — it cannot make an env-off path
+ * active (the env check below already returns true for env-off regardless of the
+ * Map, and the Map only ever ADDS a kill, never removes one).
+ *
+ * An ABSENT env mode is intentionally NOT a kill: it defers to the sub-mode flags
+ * (action gateway / local-chat / the legacy CHAT_CORE_V2_ENABLED activation),
+ * preserving existing behavior. The optional tenantId is additive — existing
+ * 1-arg callers keep their exact behavior. Strict default-off subordination
+ * (absent master => all sub-modes off) is a separate, deliberate change and is
+ * intentionally NOT folded in here.
  */
-export function isChatCoreV2MasterKillSwitchOff(env: EnvLike = process.env): boolean {
-  return String(env.CHAT_CORE_V2_ORCHESTRATOR_MODE ?? '').trim().toLowerCase() === 'off';
+export function isChatCoreV2MasterKillSwitchOff(env: EnvLike = process.env, tenantId?: string): boolean {
+  if (String(env.CHAT_CORE_V2_ORCHESTRATOR_MODE ?? '').trim().toLowerCase() === 'off') return true;
+  return isTenantOverrideForcingOff(tenantId);
 }
 
 function parseMode(raw: string | undefined): ChatCoreV2OrchestratorMode {

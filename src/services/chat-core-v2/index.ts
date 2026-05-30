@@ -4,6 +4,7 @@ export * from './action-authorization';
 export * from './action-gateway';
 export * from './activation-flags';
 export * from './answer-composition';
+export * from './auto-revert-executor';
 export * from './auto-revert-policy';
 export * from './batch-policy';
 export * from './capability-registry';

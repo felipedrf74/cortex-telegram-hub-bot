@@ -116,10 +116,16 @@ const LOCAL_CHAT_OUTPUT_SCHEMA = {
 
 type EnvLike = NodeJS.ProcessEnv | Record<string, string | undefined>;
 
-export function resolveChatCoreV2LocalChatLlmMode(env: EnvLike = process.env): ChatCoreV2LocalChatLlmMode {
-  // Single kill-switch chokepoint (WP-00.5); WP-07's runtime override extends
-  // isChatCoreV2MasterKillSwitchOff to reach this live path without a restart.
-  if (isChatCoreV2MasterKillSwitchOff(env)) return 'off';
+export function resolveChatCoreV2LocalChatLlmMode(
+  env: EnvLike = process.env,
+  tenantId?: string,
+): ChatCoreV2LocalChatLlmMode {
+  // Single kill-switch chokepoint (WP-00.5); WP-07 extended
+  // isChatCoreV2MasterKillSwitchOff to also consult the per-tenant runtime
+  // override Map, so an auto-revert flip for THIS tenant reaches the live path
+  // without a restart. tenantId is additive/optional — env-off still dominates,
+  // and an absent tenantId is identical to the prior 1-arg behavior.
+  if (isChatCoreV2MasterKillSwitchOff(env, tenantId)) return 'off';
   const raw = String(env.CHAT_CORE_V2_LOCAL_CHAT_LLM_MODE ?? '').trim().toLowerCase();
   if (raw === 'off' || raw === 'shadow' || raw === 'canary' || raw === 'on') return raw;
   return 'off';
@@ -133,7 +139,10 @@ export function isChatCoreV2LocalChatVisibleEnabled(
   if (activation.mode === 'off') return false;
   if (!activation.allowedSurfaces.includes(input.surface)) return false;
 
-  const mode = resolveChatCoreV2LocalChatLlmMode(env);
+  // Pass the per-request tenantId so a WP-07 per-tenant override demotes THIS
+  // tenant's local-chat off the visible (canary/on) path on the live route
+  // without a restart, while other tenants keep serving.
+  const mode = resolveChatCoreV2LocalChatLlmMode(env, String(input.tenantId));
   if (mode === 'off' || mode === 'shadow') return false;
   if (mode === 'canary') {
     const nodeEnv = String(env.NODE_ENV ?? process.env.NODE_ENV ?? '').trim().toLowerCase();

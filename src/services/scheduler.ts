@@ -63,6 +63,7 @@ import {
   getActiveChatCoreV2TenantIds,
 } from './chat-core-v2/metrics-aggregator';
 import { evaluateChatCoreV2AutoRevertPolicy } from './chat-core-v2/auto-revert-policy';
+import { applyAutoRevertDecision } from './chat-core-v2/auto-revert-executor';
 import { expireOldNexusPointCredits } from './nexus-points';
 import { getActivePlan, getCurrentWeek, getWeeklyAdherence, computeAdjustmentRecommendation, updateWeekAdjustment, getWeeksForPlan } from './training-plans';
 import { calculateReadiness, persistReadinessScore } from './readiness-scorer';
@@ -1820,16 +1821,17 @@ export function startScheduler(bot?: any): void {
     }
   }), { timezone: 'UTC' });
 
-  // ── Chat Core v2 auto-revert evaluator (WP-06 — read-only compute + log) ──
-  // Default-off: only schedule when the orchestrator mode is not 'off'. This is
-  // the READ-ONLY half of B7. It computes per-tenant metrics, evaluates the
-  // EXISTING auto-revert policy, and LOGS the would-be decision (aggregate
-  // numbers + decision enums only). It performs NO mutation and NO live-path
-  // change. The executor (applyAutoRevertDecision) is WP-07; this cron computes
-  // + logs only.
+  // ── Chat Core v2 auto-revert evaluator + executor (WP-06 compute + WP-07 apply) ──
+  // Default-off: only schedule when the orchestrator mode is not 'off'. ONE cron
+  // (not two): WP-06 computes per-tenant metrics + evaluates the EXISTING
+  // auto-revert policy, and WP-07's `applyAutoRevertDecision` is invoked in this
+  // SAME job body to persist the decision, mutate ONLY that tenant's runtime
+  // override (per-tenant isolation, §5.J — the seam that reaches the live
+  // chat-message-routes path without a restart), and page non-fatally. Each
+  // tenant runs in its own try/catch so one tenant's failure never breaks the
+  // loop, and the executor itself never throws.
   if (resolveChatCoreV2ActivationConfig(process.env).mode !== 'off') {
     cron.schedule('*/5 * * * *', wrapJob('chat_v2_auto_revert_eval', async () => {
-      // executor (applyAutoRevertDecision) is WP-07; this cron computes + logs only.
       let evaluated = 0;
       let wouldRevert = 0;
       try {
@@ -1871,8 +1873,13 @@ export function startScheduler(bot?: any): void {
                   affectedLanguageCount: decision.affectedLanguages.length,
                 },
               },
-              'Chat Core v2 auto-revert evaluation (would-be decision; not applied)',
+              'Chat Core v2 auto-revert evaluation (decision applied below)',
             );
+            // WP-07: APPLY the decision for this tenant — persist the audit row,
+            // mutate ONLY this tenant's runtime override (per-tenant isolation),
+            // and page non-fatally. The executor never throws; it is awaited only
+            // so an in-flight page settles within the tick.
+            await applyAutoRevertDecision(tenantId, decision, metrics, db);
           } catch (err) {
             logger.warn(
               {

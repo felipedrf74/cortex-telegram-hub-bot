@@ -40,7 +40,15 @@ export function evaluateChatCoreV2AutoRevertPolicy(
     reasonCodes.push('legacy_fallback_rate_auto_shadow_threshold');
   }
   if (metrics.schemaComplianceRate1h < 0.95) {
+    // Live planner-repair-only enforcement is DEFERRED (enforceAndRepairChatTurnPlanMicro,
+    // WP-01 carve-out / task #14): no live-path code consults isPlannerPinnedToRepairOnly
+    // yet, so the pin ALONE would be an inert valve (it would record a mitigation that
+    // never takes effect). A schema-compliance breach therefore ALSO demotes the tenant
+    // to shadow — flip_global_to_shadow IS enforced on the live path via the kill-switch
+    // seam (proven by the WP-07 live-path DMV test) — so the breach actually mitigates.
+    // When the live repair-only mode lands, this can relax back to the gentler pin alone.
     actions.add('pin_planner_to_repair_only');
+    actions.add('flip_global_to_shadow');
     reasonCodes.push('schema_compliance_below_95');
   }
   for (const [language, recall] of Object.entries(metrics.prepassRecallByLanguage ?? {})) {

@@ -496,6 +496,22 @@ describe('ChatCoreV2 activation contracts', () => {
     });
   });
 
+  it('demotes a tenant to shadow on a schema-compliance breach (pin alone is inert on the live path until task #14)', () => {
+    // A schema breach as the SOLE trigger must still produce a STOP that reaches
+    // the live path: flip_global_to_shadow is enforced via the kill-switch seam,
+    // whereas pin_planner_to_repair_only has no live consumer yet (deferred
+    // enforceAndRepairChatTurnPlanMicro). Without the flip this would be an inert
+    // valve recording a mitigation that never happened.
+    const decision = evaluateChatCoreV2AutoRevertPolicy({
+      legacyFallbackRate24h: 0.0,
+      ollamaHealthy: true,
+      schemaComplianceRate1h: 0.90,
+    });
+    expect(decision.actions).toContain('flip_global_to_shadow');
+    expect(decision.actions).toContain('pin_planner_to_repair_only');
+    expect(decision.reasonCodes).toContain('schema_compliance_below_95');
+  });
+
   it('turns context hash drift into re-read/replan/clarify decisions', () => {
     expect(evaluateContextStaleness({
       plannedContextHash: 'a',

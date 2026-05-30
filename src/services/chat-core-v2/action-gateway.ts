@@ -102,10 +102,14 @@ const READ_QUESTION_RE = /\b(o que|que tenho|what (?:do i|are|is|s)|which|qual|q
 
 export function resolveChatCoreV2ActionGatewayMode(
   env: NodeJS.ProcessEnv = process.env,
+  tenantId?: string,
 ): ChatCoreV2ActionGatewayMode {
-  // Single kill-switch chokepoint (WP-00.5); WP-07's runtime override extends
-  // isChatCoreV2MasterKillSwitchOff to reach this live path without a restart.
-  if (isChatCoreV2MasterKillSwitchOff(env)) return 'off';
+  // Single kill-switch chokepoint (WP-00.5); WP-07 extended
+  // isChatCoreV2MasterKillSwitchOff to also consult the per-tenant runtime
+  // override Map, so an auto-revert flip for THIS tenant reaches the live path
+  // without a restart. tenantId is additive/optional — env-off still dominates,
+  // and an absent tenantId is identical to the prior 1-arg behavior.
+  if (isChatCoreV2MasterKillSwitchOff(env, tenantId)) return 'off';
   const raw = String(env.CHAT_CORE_V2_ACTION_GATEWAY_MODE ?? '').trim().toLowerCase();
   if (raw === 'off' || raw === 'shadow' || raw === 'enforce') return raw;
   if (env.CHAT_CORE_V2_ENABLED === 'true' && (env.CHAT_CORE_V2_WRITES_ENABLED === 'true' || env.CHAT_CORE_V2_PREVIEWS_ENABLED === 'true')) {
@@ -194,8 +198,11 @@ export function detectChatCoreV2WriteIntent(text: string): ChatCoreV2WriteIntent
 export function shouldGateReadFastPathsForWriteIntent(
   text: string,
   env: NodeJS.ProcessEnv = process.env,
+  tenantId?: string,
 ): boolean {
-  if (resolveChatCoreV2ActionGatewayMode(env) !== 'enforce') return false;
+  // tenantId is additive/optional — forwards the per-request tenant so a WP-07
+  // override for this tenant demotes the gateway off the enforce path live.
+  if (resolveChatCoreV2ActionGatewayMode(env, tenantId) !== 'enforce') return false;
   return detectChatCoreV2WriteIntent(text).mayMutate;
 }
 
@@ -204,7 +211,10 @@ export function runChatCoreV2ActionGateway(
 ): ChatCoreV2ActionGatewayResult {
   const startedAt = Date.now();
   const env = input.env ?? process.env;
-  const mode = resolveChatCoreV2ActionGatewayMode(env);
+  // The gateway input already carries the authenticated tenantId (number);
+  // forward it (as the Map's string key) so a WP-07 per-tenant override demotes
+  // this tenant's gateway off the enforce path on the live route without restart.
+  const mode = resolveChatCoreV2ActionGatewayMode(env, String(input.tenantId));
   const shouldBlockLegacy = mode === 'enforce' && isLegacyWriteFallthroughBlockEnabled(env);
   const probe = detectChatCoreV2WriteIntent(input.normalizedText);
   const baseTelemetry = (overrides: Partial<ChatCoreV2WriteIntentGuardTelemetry>): ChatCoreV2WriteIntentGuardTelemetry => ({
