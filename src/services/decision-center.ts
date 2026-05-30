@@ -52,8 +52,9 @@ import {
 } from './chat-pending-confirmations';
 import { isValidTenantUserId, recordTenantScopeAnomaly } from './tenant-scope-observability';
 import { logger } from '../utils/logger';
-import { isDecisionCenterCommandBusEnabled, isDecisionCenterFatigueCapsEnabled, isDecisionCenterGuidanceSkillEnabled, isDecisionCenterGuidanceV1Enabled, isDecisionEvidenceFreshnessGateEnabled, isDecisionStreakV1Enabled } from './runtime-flags';
+import { isDecisionCenterCommandBusEnabled, isDecisionCenterFatigueCapsEnabled, isDecisionCenterGuidanceSkillEnabled, isDecisionCenterGuidanceV1Enabled, isDecisionEvidenceFreshnessGateEnabled, isDecisionSemanticDedupEnabled, isDecisionStreakV1Enabled } from './runtime-flags';
 import { decisionRelationshipSemantics, type DecisionRelationshipKind, type DecisionRelationshipType } from './decision-relationship-types';
+import { buildDecisionDedupKey, classifyDecisionDedup } from './decision-center-semantic-dedup';
 import type { SecretaryTodaySummaryModel } from './secretary-orchestrator';
 import { secretaryTodayLabels } from './secretary-today-copy';
 import {
@@ -847,6 +848,62 @@ export function evaluateDecisionEligibility(input: DecisionEligibilityPolicyInpu
   return { classification: 'ignore', reasons, apnsEligible: false, urgency };
 }
 
+/** Active decisions' dedup-key fields, used to detect semantic conflicts at creation time (B3 acting). */
+function listActiveDedupCandidates(userId: number, tenantId: number, excludeId: string): Array<{
+  decisionId: string; sourceSkill: NotificationSourceSkill; type: NotificationIntentType; relatedEntityId: string | null; dedupeKey: string | null; createdAt: string;
+}> {
+  // Active AND not-yet-expired (mirrors the A1 expiry predicate so we never link to an expired-but-unswept
+  // decision), bounded + recency-ordered so this stays cheap on the hot creation path even past the
+  // ~50-active-per-user product ceiling (recent decisions are the ones that can share a time window).
+  return getDb().prepare(`
+    SELECT items.item_id AS decisionId, items.source_skill AS sourceSkill, items.type AS type,
+           intents.related_entity_id AS relatedEntityId, items.dedupe_key AS dedupeKey, items.created_at AS createdAt
+      FROM notification_center_items items
+      LEFT JOIN notification_intents intents ON intents.intent_id = items.intent_id
+     WHERE items.user_id = ? AND items.tenant_id = ? AND items.item_id != ?
+       AND items.status IN ('unread', 'read', 'snoozed', 'failed', 'open')
+       AND (items.expires_at IS NULL OR datetime(items.expires_at) > datetime('now'))
+     ORDER BY items.created_at DESC
+     LIMIT 200
+  `).all(userId, tenantId, excludeId) as Array<{ decisionId: string; sourceSkill: NotificationSourceSkill; type: NotificationIntentType; relatedEntityId: string | null; dedupeKey: string | null; createdAt: string }>;
+}
+
+/**
+ * B3 acting (first slice): when a newly-created decision SEMANTICALLY conflicts with an existing active
+ * decision (overlapping target entity + same window, both unresolved asks), record a `conflicts_with`
+ * relationship between them. ADDITIVE + advisory — only `blocks` prevents action, so a conflict link
+ * never hides or blocks a decision; the hiding verdicts (same_recommendation / supersedes) are a
+ * deliberate later slice. Non-fatal: any failure must never break decision creation. Uses the new
+ * decision's stored created_at (DB clock) so candidate and existing windows are compared consistently.
+ */
+function linkConflictingDecisionsOnCreate(newId: string, input: NotificationIntentInput, userId: number, tenantId: number, createdAt: string): void {
+  try {
+    const candidate = buildDecisionDedupKey({
+      sourceSkill: input.sourceSkill,
+      type: input.type,
+      relatedEntityId: input.relatedEntityId == null ? null : String(input.relatedEntityId),
+      dedupeKey: input.dedupeKey ?? null,
+      createdAt,
+    });
+    for (const existing of listActiveDedupCandidates(userId, tenantId, newId)) {
+      const existingKey = buildDecisionDedupKey({
+        sourceSkill: existing.sourceSkill,
+        type: existing.type,
+        relatedEntityId: existing.relatedEntityId,
+        dedupeKey: existing.dedupeKey,
+        createdAt: existing.createdAt,
+      });
+      if (classifyDecisionDedup(candidate, [existingKey]).verdict === 'conflicting_recommendation_link') {
+        // Reciprocal edges so BOTH decisions surface the conflict (idempotent via INSERT OR IGNORE).
+        addDecisionDependency({ decisionId: newId, dependsOnDecisionId: existing.decisionId, userId, tenantId, relationship: 'conflicts_with' });
+        addDecisionDependency({ decisionId: existing.decisionId, dependsOnDecisionId: newId, userId, tenantId, relationship: 'conflicts_with' });
+      }
+    }
+  } catch (err) {
+    logger.warn({ err: err instanceof Error ? err.message : String(err), newId }, 'B3 conflict-linking failed (non-fatal)');
+  }
+}
+
 export async function createDecisionIntent(input: NotificationIntentInput): Promise<{ item: DecisionApiItem | null; eligibility: DecisionEligibilityResult }> {
   assertScope(input.userId, input.tenantId ?? input.userId, 'create_decision_intent', { sourceSkill: input.sourceSkill, type: input.type });
   const eligibility = evaluateDecisionEligibility({
@@ -888,6 +945,10 @@ export async function createDecisionIntent(input: NotificationIntentInput): Prom
   const item = result.item ? getDecisionItem(result.item.itemId, input.userId, input.tenantId ?? input.userId) : null;
   if (result.item && result.intent.status !== 'deduped') {
     emitDecisionLifecycleEvent({ decisionId: result.item.itemId, userId: input.userId, tenantId: input.tenantId ?? input.userId, event: 'created', toStatus: result.item.status });
+    // B3 acting: flag-gated, additive conflict-linking (writes an advisory conflicts_with edge; hides nothing).
+    if (item && isDecisionSemanticDedupEnabled(process.env, { userId: input.userId, tenantId: input.tenantId ?? input.userId })) {
+      linkConflictingDecisionsOnCreate(result.item.itemId, input, input.userId, input.tenantId ?? input.userId, item.createdAt);
+    }
   }
   return { item, eligibility };
 }

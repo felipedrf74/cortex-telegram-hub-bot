@@ -2472,3 +2472,55 @@ describe('Decision Center evidence-freshness gate (F2)', () => {
     expect(on.actionability).toBe(off.actionability); // fresh => gate does nothing
   });
 });
+
+describe('Decision Center B3 acting — conflict linking on create', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-05-10T10:00:00.000Z'));
+    testDb = new Database(':memory:');
+    process.env.NOTIFICATION_DELIVERY_MODE = 'mock';
+    ensureNotificationTables();
+    ensureDecisionCenterTables();
+  });
+  afterEach(() => {
+    delete process.env.NOTIFICATION_DELIVERY_MODE;
+    delete process.env.DECISION_SEMANTIC_DEDUP_ENABLED;
+    vi.useRealTimers();
+    testDb?.close();
+  });
+
+  it('links a newly-created cross-skill conflicting decision to the existing one (conflicts_with) when the flag is ON', async () => {
+    const a = await createDecisionIntent(buildSkillDecisionFixtureIntent('training', 87, { tenantId: 87, relatedEntityId: 'slot1', dedupeKey: 'b3act-a' }));
+    process.env.DECISION_SEMANTIC_DEDUP_ENABLED = 'true';
+    const b = await createDecisionIntent(buildSkillDecisionFixtureIntent('cooking', 87, { tenantId: 87, type: 'decision_required', relatedEntityId: 'slot1', dedupeKey: 'b3act-b', requiresUserAction: true }));
+
+    const item = getDecisionItem(b.item!.decisionId, 87, 87)!;
+    const link = item.relationships.find((r) => r.type === 'conflicts_with');
+    expect(link).toBeDefined();
+    expect(link?.decisionId).toBe(a.item!.decisionId);
+    expect(link?.kind).toBe('warns'); // advisory — never blocks
+    // The linked decision is NOT blocked by the advisory conflict edge.
+    expect(item.blockedByDecisionIds).toHaveLength(0);
+
+    // Reciprocal: the pre-existing decision also surfaces the conflict back to the new one.
+    const existing = getDecisionItem(a.item!.decisionId, 87, 87)!;
+    expect(existing.relationships.some((r) => r.type === 'conflicts_with' && r.decisionId === b.item!.decisionId)).toBe(true);
+  });
+
+  it('does NOT link when the flag is OFF (default)', async () => {
+    await createDecisionIntent(buildSkillDecisionFixtureIntent('training', 88, { tenantId: 88, relatedEntityId: 'slot2', dedupeKey: 'b3off-a' }));
+    const b = await createDecisionIntent(buildSkillDecisionFixtureIntent('cooking', 88, { tenantId: 88, type: 'decision_required', relatedEntityId: 'slot2', dedupeKey: 'b3off-b', requiresUserAction: true }));
+
+    const item = getDecisionItem(b.item!.decisionId, 88, 88)!;
+    expect(item.relationships).toHaveLength(0);
+  });
+
+  it('does NOT link independent decisions (different entity) even with the flag ON', async () => {
+    await createDecisionIntent(buildSkillDecisionFixtureIntent('training', 89, { tenantId: 89, relatedEntityId: 'entityA', dedupeKey: 'b3ind-a' }));
+    process.env.DECISION_SEMANTIC_DEDUP_ENABLED = 'true';
+    const b = await createDecisionIntent(buildSkillDecisionFixtureIntent('cooking', 89, { tenantId: 89, type: 'decision_required', relatedEntityId: 'entityB', dedupeKey: 'b3ind-b', requiresUserAction: true }));
+
+    const item = getDecisionItem(b.item!.decisionId, 89, 89)!;
+    expect(item.relationships).toHaveLength(0); // no shared entity => independent => no link
+  });
+});
