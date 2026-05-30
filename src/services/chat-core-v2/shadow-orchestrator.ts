@@ -2,10 +2,20 @@
 
 import { createHash } from 'crypto';
 
+import {
+  enforceAndRepairChatTurnPlanMicro,
+  type EnforceAndRepairOutcome,
+} from './enforce-and-repair';
 import { evaluateChatCoreV2Fallback, type FallbackPolicyVerdict } from './fallback-policy';
+import {
+  buildUltraCompactPlannerPacket,
+  CHAT_TURN_PLAN_MICRO_ULTRA_COMPACT_OPTIONS,
+  type UltraCompactPlannerPacket,
+} from './plan-schema';
 import { getChatCoreV2ReasoningPolicy } from './reasoning-policies';
 import {
   buildChatCoreV2RouteDecision,
+  computeRouteDecisionContextHash,
   type BuildRouteDecisionInput,
   type ChatCoreV2Intent,
   type ChatCoreV2RouteDecision,
@@ -108,6 +118,182 @@ export function planChatCoreV2ShadowTurn(input: ChatCoreV2ShadowTurnInput): Chat
     wouldCallModel: routeDecision.requiresLLM && budgetVerdict.ok,
     wouldExecute: false,
   };
+}
+
+/**
+ * The planner span name. The span carries ONLY HMAC/text-free outcome metadata
+ * (schemaValid, outcome enum, attemptsUsed, issueCodeCount) — never raw model
+ * text and never plan contents.
+ */
+const SHADOW_PLANNER_SPAN_NAME = 'shadow_planner';
+
+/**
+ * A bounded, privacy-safe placeholder for the planner packet's message field.
+ * The shadow path NEVER puts raw user text into the planner packet: the packet
+ * is derived entirely from the already-computed (non-text) route decision plus
+ * this fixed marker. Schema validity is therefore measurable without ever
+ * letting a message reach the injected model call.
+ */
+const SHADOW_PLANNER_MESSAGE_PLACEHOLDER = 'shadow_observe_only';
+
+/**
+ * Reason codes recorded on a `shadow_planner` span. Text-free; safe to persist.
+ */
+export type ChatCoreV2ShadowPlannerReasonCode =
+  | 'planner_ok'
+  | 'planner_threw';
+
+/**
+ * Async callback that turns a bounded planner packet (JSON-serialized) into the
+ * model's raw output string. Injected so the shadow path never hard-depends on
+ * Ollama / the network and stays unit-testable with a fake. The callback owns
+ * its own privacy + timeout posture; this orchestrator tolerates it throwing
+ * (records a 'failed' span and continues — never throws, never blocks shadow
+ * recording).
+ */
+export type ChatCoreV2ShadowRunPlanner = (packet: UltraCompactPlannerPacket) => Promise<string>;
+
+export interface ChatCoreV2ShadowTurnWithPlannerDeps {
+  /**
+   * Optional. When omitted, this function is byte-identical to
+   * planChatCoreV2ShadowTurn (no planner call, no extra span). When provided,
+   * the planner is invoked exactly once and a single `shadow_planner` span is
+   * appended.
+   */
+  runPlanner?: ChatCoreV2ShadowRunPlanner;
+  now?: Date;
+}
+
+/**
+ * Additive, DEFAULT-OFF planner observation for the shadow path.
+ *
+ * Calls the existing synchronous planChatCoreV2ShadowTurn(input) UNCHANGED to
+ * get the base result, then — ONLY when deps.runPlanner is injected — builds a
+ * bounded, text-free planner packet, invokes the planner once, runs the output
+ * through enforceAndRepairChatTurnPlanMicro (schema validate + one bounded
+ * repair), and appends ONE extra `shadow_planner` trace span carrying only
+ * machine-readable outcome metadata. With runPlanner omitted the result is
+ * byte-identical to planChatCoreV2ShadowTurn (existing callers are untouched).
+ *
+ * Privacy: no raw user/model text ever reaches a span attribute or the
+ * redactedSummary. The packet's message field is a fixed placeholder, the
+ * packet's contextHash is a one-way digest, and enforceAndRepair returns only
+ * structured issue codes — never raw output. A planner throw becomes a
+ * structured 'failed' span; this function never throws.
+ */
+export async function planChatCoreV2ShadowTurnWithPlanner(
+  input: ChatCoreV2ShadowTurnInput,
+  deps: ChatCoreV2ShadowTurnWithPlannerDeps = {},
+): Promise<ChatCoreV2ShadowTurnResult> {
+  const base = planChatCoreV2ShadowTurn(input);
+
+  // DEFAULT-OFF: with no injected planner this is a pure pass-through, byte
+  // identical to planChatCoreV2ShadowTurn (no extra span, same trace bytes).
+  if (!deps.runPlanner) {
+    return base;
+  }
+
+  const span = await runShadowPlannerSpan(input, base.routeDecision, deps);
+  return {
+    ...base,
+    traceSpans: [...base.traceSpans, span],
+  };
+}
+
+async function runShadowPlannerSpan(
+  input: ChatCoreV2ShadowTurnInput,
+  routeDecision: ChatCoreV2RouteDecision,
+  deps: ChatCoreV2ShadowTurnWithPlannerDeps,
+): Promise<ChatV2TraceSpan> {
+  const now = (deps.now ?? input.now ?? new Date()).toISOString();
+  const sensitivity = input.sensitivity ?? 'personal';
+  const packet = buildShadowPlannerPacket(input, routeDecision);
+
+  let rawOutput: string;
+  try {
+    // Single planner invocation. think=false is conveyed via the bounded
+    // ultra-compact options (temperature 0, capped numPredict). The injected
+    // callback owns transport; we only observe its output shape.
+    rawOutput = await deps.runPlanner!(packet);
+  } catch {
+    // Never throw, never block shadow recording: a planner failure becomes a
+    // structured, text-free 'failed' span.
+    return buildPlannerSpan(input, 'failed', sensitivity, now, {
+      schemaValid: false,
+      outcome: 'unrepairable',
+      attemptsUsed: 0,
+      issueCodeCount: 0,
+      reasonCode: 'planner_threw',
+      plannerOptionsVersion: SHADOW_PLANNER_OPTIONS_SUMMARY,
+    });
+  }
+
+  // The repairModel is derived from the SAME injected planner so the single
+  // bounded repair attempt also stays injection-only and network-optional. The
+  // repair prompt is passed straight through; enforceAndRepair never logs it.
+  const enforced = await enforceAndRepairChatTurnPlanMicro({
+    rawModelOutput: rawOutput,
+    repairModel: () => deps.runPlanner!(packet),
+  });
+
+  const schemaValid = enforced.outcome === 'valid' || enforced.outcome === 'repaired';
+  return buildPlannerSpan(input, 'success', sensitivity, now, {
+    schemaValid,
+    outcome: enforced.outcome satisfies EnforceAndRepairOutcome,
+    attemptsUsed: enforced.attemptsUsed,
+    issueCodeCount: enforced.issues.length,
+    reasonCode: 'planner_ok',
+    plannerOptionsVersion: SHADOW_PLANNER_OPTIONS_SUMMARY,
+  });
+}
+
+/**
+ * Build the bounded planner packet from the already-computed route decision.
+ * The packet is text-free: candidate capability ids come from the decision, the
+ * message field is a fixed placeholder, and the contextHash is a one-way digest
+ * (computeRouteDecisionContextHash never re-exposes raw message text).
+ */
+function buildShadowPlannerPacket(
+  input: ChatCoreV2ShadowTurnInput,
+  routeDecision: ChatCoreV2RouteDecision,
+): UltraCompactPlannerPacket {
+  const candidateCapabilityIds = routeDecision.selectedCapabilityIds.length > 0
+    ? routeDecision.selectedCapabilityIds
+    : (routeDecision.prepassCandidateIds ?? input.capabilityIds ?? []);
+  return buildUltraCompactPlannerPacket({
+    locale: 'unknown',
+    candidateCapabilityIds,
+    messageSummary: SHADOW_PLANNER_MESSAGE_PLACEHOLDER,
+    contextHash: computeRouteDecisionContextHash(buildRouteInput(input)),
+  });
+}
+
+// Text-free summary of the bounded planner options actually used. Recorded so
+// the shadow evidence shows think=false / temperature 0 without leaking content.
+const SHADOW_PLANNER_OPTIONS_SUMMARY =
+  `numCtx=${CHAT_TURN_PLAN_MICRO_ULTRA_COMPACT_OPTIONS.numCtx}`
+  + `;numPredict=${CHAT_TURN_PLAN_MICRO_ULTRA_COMPACT_OPTIONS.numPredict}`
+  + `;temperature=${CHAT_TURN_PLAN_MICRO_ULTRA_COMPACT_OPTIONS.temperature}`
+  + ';think=false';
+
+function buildPlannerSpan(
+  input: ChatCoreV2ShadowTurnInput,
+  status: ChatV2TraceSpan['status'],
+  sensitivity: AuditSensitivity,
+  timestamp: string,
+  attributes: {
+    schemaValid: boolean;
+    outcome: EnforceAndRepairOutcome;
+    attemptsUsed: number;
+    issueCodeCount: number;
+    reasonCode: ChatCoreV2ShadowPlannerReasonCode;
+    plannerOptionsVersion: string;
+  },
+): ChatV2TraceSpan {
+  // kind 'model': this span observes a (would-be) local-model planner call.
+  return buildSpan(input, 'model', SHADOW_PLANNER_SPAN_NAME, status, sensitivity, timestamp, {
+    ...attributes,
+  });
 }
 
 function buildRouteInput(input: ChatCoreV2ShadowTurnInput): BuildRouteDecisionInput {

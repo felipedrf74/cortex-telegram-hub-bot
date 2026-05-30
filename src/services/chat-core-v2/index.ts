@@ -21,6 +21,7 @@ export * from './context-staleness-policy';
 export * from './corpus-eval-runner';
 export * from './deterministic-read-route';
 export * from './domain-adapter';
+export * from './enforce-and-repair';
 export * from './entity-resolution';
 export * from './evidence-policy';
 export * from './fallback-policy';
