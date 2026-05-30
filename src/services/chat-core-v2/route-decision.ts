@@ -10,6 +10,7 @@ import type {
   CapabilityDefinition,
   ChatCoreV2Domain,
   ChatCoreV2RouteMethod,
+  MemoryItemType,
   ReasoningTier,
   UnsupportedReason,
 } from './types';
@@ -66,6 +67,16 @@ export interface BuildRouteDecisionInput {
   pendingConfirmationCapabilityId?: string;
   recentDomainCapabilityIds?: string[];
   activeThreadCapabilityIds?: string[];
+  // WP-17 (§5.G): the lean, projection-only memory context loaded for the
+  // requesting tenant+user (`{type, domain, value}` ONLY — see
+  // memory-store-reader). ADDITIVE + OPTIONAL: it is threaded here so WP-16 can
+  // add the consumption rule (a relevant decision_rationale/domain memory item
+  // nudges the route decision). It is NOT consumed in this WP — buildChatCoreV2
+  // RouteDecision ignores it entirely, so a decision with the field absent vs
+  // present is byte-identical until WP-16 lands its rule. Carrying it through
+  // computeRouteDecisionContextHash is also deliberately deferred to WP-16 so
+  // the context hash stays stable in the interim.
+  memoryContext?: Array<{ type: MemoryItemType; domain?: ChatCoreV2Domain; value: string }>;
 }
 
 export interface ChatCoreV2RouteDecision {

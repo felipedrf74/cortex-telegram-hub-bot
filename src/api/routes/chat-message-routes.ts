@@ -106,6 +106,8 @@ import {
   runChatCoreV2ActionGateway,
   tryBuildChatCoreV2CommandPreviewRoute,
   tryBuildChatCoreV2DeterministicReadRoute,
+  loadChatV2MemoryContextForOrchestrator,
+  tryWriteChatV2MemoryFromTurnOutcome,
   type ChatCoreV2ActionGatewayResult,
 } from '../../services/chat-core-v2';
 import { buildChatCoreV2CommandPreviewShortcutResponse } from './chat-core-v2-command-preview-response';
@@ -784,6 +786,15 @@ export function registerChatMessageRoutes(
         statusCode: 200,
         responseBody: response,
       });
+      // WP-17 (§5.F): fire-and-forget — a user-confirmed, executed command is a
+      // verified outcome. Remember the decision_rationale. Never blocks the turn.
+      tryWriteChatV2MemoryFromTurnOutcome({
+        outcome: 'verified',
+        tenantId: String(tenantId),
+        userId: String(userId),
+        value: v2Claim.pending.capabilityId,
+        sourceTurnId: `confirm:${validation.payload.pendingId}`,
+      });
       clearPendingChatCoreV2Command(validation.payload.pendingId, userId, tenantId);
       res.status(200).json(response);
       return;
@@ -1261,6 +1272,17 @@ export function registerChatMessageRoutes(
                 clientMessageId: scopedClientMessageId,
                 requestId: chatRequestId,
               });
+              // WP-17 (§5.F): fire-and-forget — on a VERIFIED outcome remember a
+              // decision_rationale. Never throws / never blocks the turn.
+              if (execution.status === 'verified') {
+                tryWriteChatV2MemoryFromTurnOutcome({
+                  outcome: 'verified',
+                  tenantId: String(tenantId),
+                  userId: String(userId),
+                  value: normalizedText,
+                  sourceTurnId: chatRequestId,
+                });
+              }
               syncConversationStateForShortcut(userId, executedResponse.domain, normalizedText, response.text, tenantId);
               logger.info(
                 {
@@ -1330,6 +1352,16 @@ export function registerChatMessageRoutes(
         return;
       }
 
+      // WP-17 (§5.F/§5.G): load the lean, projection-only memory context for
+      // THIS tenant+user before the turn. Returns [] when mode=off (no
+      // injection, behavior-preserving) or on any read error. String() at the
+      // boundary — the store is TEXT-keyed.
+      const chatCoreV2MemoryContext = normalizedText && normalizedAttachments.length === 0
+        ? loadChatV2MemoryContextForOrchestrator({
+          tenantId: String(tenantId),
+          userId: String(userId),
+        })
+        : [];
       const chatCoreV2LocalChat = normalizedText && normalizedAttachments.length === 0
         ? await runChatCoreV2LocalChatTurn({
           normalizedText,
@@ -1338,6 +1370,9 @@ export function registerChatMessageRoutes(
           requestId: chatRequestId,
           locale: getUserLanguageById(userId),
           surface: 'ios',
+          // WP-17: threaded so the orchestrator can sentinel-wrap + 200-char-cap
+          // every value before it reaches the local-chat system prompt.
+          memoryContext: chatCoreV2MemoryContext,
           recentTurns: listChatMessages(userId, 8, undefined, tenantId).messages
             .filter((message) => message.id !== userMessageId)
             .slice(-6)
