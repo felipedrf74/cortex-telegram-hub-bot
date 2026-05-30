@@ -27,6 +27,7 @@ import {
   analyzeChatSkillOrchestration,
   applyChatSkillRoutingDecision,
   buildChatSkillRoutingLogContext,
+  type ChatSkillRouteOverride,
   type NexusSkillId,
 } from '../../services/chat-skill-orchestrator';
 import { runWithChatToolAuthorization } from '../../services/chat-tool-authorization';
@@ -108,6 +109,7 @@ import {
   tryBuildChatCoreV2DeterministicReadRoute,
   loadChatV2MemoryContextForOrchestrator,
   tryWriteChatV2MemoryFromTurnOutcome,
+  runChatCoreV2OrchestrationGate,
   type ChatCoreV2ActionGatewayResult,
 } from '../../services/chat-core-v2';
 import { buildChatCoreV2CommandPreviewShortcutResponse } from './chat-core-v2-command-preview-response';
@@ -1956,6 +1958,31 @@ export function registerChatMessageRoutes(
         return;
       }
 
+      // ── WP-16 (§5.G): Chat Core v2 orchestration gate intercept ──────────
+      // INSERTED AFTER the shadow hook (run earlier in this handler) and BEFORE
+      // routeMessage(). The gate is INERT (returns null) unless the resolved
+      // activation mode is canary/on — for mode unset/shadow/off it is a no-op
+      // and the legacy route below runs byte-for-byte unchanged. It also returns
+      // null on low confidence (<0.68), needs_clarification/unsupported/blocked,
+      // a non-allowlisted domain, or ANY internal error (try/catch → null). It
+      // NEVER throws into the live route. When it returns a non-null
+      // overrideDomain we pass it to applyChatSkillRoutingDecision so the v2
+      // plan wins the domain choice; the loaded memoryContext is threaded into
+      // the gate's route decision so a relevant memory item can change it.
+      const chatCoreV2GateResult = runChatCoreV2OrchestrationGate({
+        message: normalizedText,
+        tenantId,
+        userId,
+        // Reuse the memory context already loaded once for this turn (see the
+        // WP-17 read earlier in this handler). Re-reading here was a redundant
+        // per-turn store hit that returned the identical projection.
+        memoryContext: chatCoreV2MemoryContext,
+      });
+      const chatCoreV2GateOverride: ChatSkillRouteOverride | null =
+        chatCoreV2GateResult?.overrideDomain
+          ? { domain: chatCoreV2GateResult.overrideDomain, confidence: chatCoreV2GateResult.routeDecision.confidence }
+          : null;
+
       // Route the message (handles both commands and natural language).
       // April 9 2026: thread userId into routeMessage so the classifier
       // cost row in api_usage attributes this call to the real user
@@ -1975,7 +2002,7 @@ export function registerChatMessageRoutes(
       const pendingConfirmation = routingDecision.safety.explicitConfirmation
         ? getPendingChatConfirmation(userId, tenantId)
         : null;
-      const route = applyChatSkillRoutingDecision(contractAwareRoute, routingDecision);
+      const route = applyChatSkillRoutingDecision(contractAwareRoute, routingDecision, chatCoreV2GateOverride);
       logger.info(
         {
           chatRequestId,
@@ -1986,6 +2013,12 @@ export function registerChatMessageRoutes(
           orchestration: buildChatSkillRoutingLogContext(routingDecision),
           rawDomain: rawRoute.domain,
           contractHintedDomain: contractAwareRoute.domain !== rawRoute.domain ? contractAwareRoute.domain : null,
+          // WP-16: log BOTH the legacy route AND the v2 gate override (never
+          // silently drop the turn-contract hint). When the gate is inert these
+          // are null and the line is identical to the legacy log.
+          chatCoreV2GateMode: chatCoreV2GateResult?.mode ?? null,
+          chatCoreV2GateRouteMethod: chatCoreV2GateResult?.routeDecision.routeMethod ?? null,
+          chatCoreV2GateOverrideDomain: chatCoreV2GateOverride?.domain ?? null,
         },
         'iOS message routed',
       );

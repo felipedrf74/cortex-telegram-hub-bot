@@ -90,6 +90,15 @@ export interface ChatCoreV2TenantOverride {
   plannerPinnedToRepairOnly?: boolean;
   /** Languages demoted to shadow for this tenant. */
   languageShadow?: string[];
+  /**
+   * Per-tenant allowedDomains narrowing (WP-16 §5.J). When present, the
+   * orchestration gate intersects the global CHAT_CORE_V2_ALLOWED_DOMAINS with
+   * this list for THIS tenant only — so a single tenant can be confined to a
+   * subset of the global surface without touching any other tenant. Like every
+   * other override field this can only NARROW (intersect), never expand past the
+   * global set, so it can never promote a tenant past the env allowlist.
+   */
+  allowedDomains?: ChatCoreV2Domain[];
 }
 
 /**

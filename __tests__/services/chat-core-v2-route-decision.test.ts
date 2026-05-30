@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
   CHAT_CORE_V2_ROUTE_DECISION_VERSION,
   buildChatCoreV2RouteDecision,
+  computeRouteDecisionContextHash,
 } from '../../src/services/chat-core-v2';
 
 describe('Chat Core v2 route decision contract', () => {
@@ -129,5 +130,70 @@ describe('Chat Core v2 route decision contract', () => {
     expect(decision.confidence).toBe(1);
     expect(decision.primaryDomain).toBe('tasks');
     expect(decision.secondaryDomains).toEqual(['notifications']);
+  });
+});
+
+describe('WP-16 (§5.G) — context-hash fires iff the DECISION changes', () => {
+  // A two-candidate read where 'tasks' is the primary (index 0) candidate and
+  // 'finance' is the secondary (index 1) candidate.
+  const baseInput = {
+    intent: 'app_question' as const,
+    confidence: 0.9,
+    domains: ['tasks', 'finance'] as const,
+    capabilityIds: ['tasks.today_summary', 'finance.summary'],
+  };
+
+  function build(memoryContext?: Array<{ type: 'domain_preference'; domain: 'tasks' | 'finance' | 'cooking'; value: string }>) {
+    return buildChatCoreV2RouteDecision({ ...baseInput, domains: [...baseInput.domains], memoryContext });
+  }
+  function hash(memoryContext?: Array<{ type: 'domain_preference'; domain: 'tasks' | 'finance' | 'cooking'; value: string }>) {
+    return computeRouteDecisionContextHash({ ...baseInput, domains: [...baseInput.domains], memoryContext });
+  }
+
+  it('a pref for the ALREADY-PRIMARY candidate leaves BOTH the decision and the hash unchanged', () => {
+    // 'tasks' is already index 0 → hoist is a no-op → the rule must NOT fire.
+    const baseDecision = build();
+    const baseHash = hash();
+
+    const prefPrimary = build([{ type: 'domain_preference', domain: 'tasks', value: 'prefers tasks' }]);
+    const prefPrimaryHash = hash([{ type: 'domain_preference', domain: 'tasks', value: 'prefers tasks' }]);
+
+    // Decision byte-identical…
+    expect(prefPrimary).toEqual(baseDecision);
+    // …AND therefore the hash MUST be byte-identical (the over-fire defect).
+    expect(prefPrimaryHash).toBe(baseHash);
+  });
+
+  it('a pref for the ONLY candidate leaves BOTH the decision and the hash unchanged', () => {
+    const single = {
+      intent: 'app_question' as const,
+      confidence: 0.9,
+      domains: ['tasks'] as ('tasks')[],
+      capabilityIds: ['tasks.today_summary'],
+    };
+    const baseDecision = buildChatCoreV2RouteDecision({ ...single, domains: [...single.domains] });
+    const baseHash = computeRouteDecisionContextHash({ ...single, domains: [...single.domains] });
+
+    const mem = [{ type: 'domain_preference' as const, domain: 'tasks' as const, value: 'prefers tasks' }];
+    const prefOnly = buildChatCoreV2RouteDecision({ ...single, domains: [...single.domains], memoryContext: mem });
+    const prefOnlyHash = computeRouteDecisionContextHash({ ...single, domains: [...single.domains], memoryContext: mem });
+
+    expect(prefOnly).toEqual(baseDecision);
+    expect(prefOnlyHash).toBe(baseHash);
+  });
+
+  it('positive control: a pref for a NON-primary candidate changes BOTH the decision and the hash', () => {
+    const baseDecision = build();
+    const baseHash = hash();
+
+    const prefSecondary = build([{ type: 'domain_preference', domain: 'finance', value: 'prefers finance' }]);
+    const prefSecondaryHash = hash([{ type: 'domain_preference', domain: 'finance', value: 'prefers finance' }]);
+
+    // The rule fires: 'finance' (index 1) is hoisted to primaryDomain.
+    expect(baseDecision.primaryDomain).toBe('tasks');
+    expect(prefSecondary.primaryDomain).toBe('finance');
+    expect(prefSecondary).not.toEqual(baseDecision);
+    // And the hash moves in lockstep with the decision.
+    expect(prefSecondaryHash).not.toBe(baseHash);
   });
 });

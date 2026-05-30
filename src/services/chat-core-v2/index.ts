@@ -40,6 +40,7 @@ export * from './metrics-aggregator';
 export * from './model-run-audit';
 export * from './model-residency-policy';
 export * from './online-eval-sampler';
+export * from './orchestration-gate';
 export * from './pending-commands';
 export * from './plan-schema';
 export * from './plan-validator';

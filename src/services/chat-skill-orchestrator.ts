@@ -187,10 +187,59 @@ export function analyzeChatSkillOrchestration(input: {
   };
 }
 
+/**
+ * WP-16 (§5.G/§5.J) optional route override produced by the Chat Core v2
+ * orchestration gate. When present, it takes PRECEDENCE over the legacy
+ * skill-orchestration override: the gate has already (a) confirmed mode is
+ * canary/on, (b) confirmed classifier confidence ≥ 0.68, and (c) filtered the
+ * domain against the requesting tenant's allowedDomains, so it is authoritative
+ * for the domain choice. `domain` is the Chat Core v2 domain (e.g. 'training'),
+ * which is mapped to the legacy DomainName (e.g. 'triathlon') here.
+ */
+export interface ChatSkillRouteOverride {
+  /** The Chat Core v2 domain the gate selected (already allowlist-filtered). */
+  domain: string;
+  /** The gate's confidence (the v2 route-decision confidence). */
+  confidence: number;
+}
+
+// Chat Core v2 domains → legacy DomainName. Mirrors SKILL_TO_DOMAIN's single
+// remap ('training' → 'triathlon'); every other v2 domain is its own legacy
+// name. Domains with no legacy handler counterpart are intentionally absent so
+// the override is a no-op for them (the gate's allowlist already excludes the
+// non-handler domains, but this is a second, local safety net).
+const V2_DOMAIN_TO_LEGACY_DOMAIN: Record<string, DomainName> = {
+  secretary: 'secretary',
+  training: 'triathlon',
+  content: 'content',
+  finance: 'finance',
+  cooking: 'cooking',
+  connections: 'connections',
+  notifications: 'notifications',
+  decision_center: 'decision_center',
+};
+
 export function applyChatSkillRoutingDecision(
   route: RouteResult,
   decision: ChatSkillRoutingDecision,
+  // WP-16: when present + the mapped domain is non-empty and differs from the
+  // current route, the gate override wins. Absent → exact legacy behavior.
+  routeOverride?: ChatSkillRouteOverride | null,
 ): RouteResult {
+  if (routeOverride) {
+    const mappedDomain = V2_DOMAIN_TO_LEGACY_DOMAIN[routeOverride.domain];
+    if (mappedDomain && mappedDomain !== route.domain) {
+      return {
+        ...route,
+        domain: mappedDomain,
+        method: 'context',
+        confidence: Math.max(route.confidence, routeOverride.confidence),
+      };
+    }
+    // Override present but a no-op (unmapped domain, or already on it): fall
+    // through to the legacy skill-orchestration path unchanged.
+  }
+
   if (!decision.primaryDomain || decision.primaryDomain === route.domain) {
     return route;
   }
