@@ -88,7 +88,7 @@ evidence_checklist: docs/qa/evidence-checklists/WO-chatcore-v2-production-activa
 peer_review_checklist: docs/qa/peer-reviews/WO-chatcore-v2-production-activation-peer-review.md
 final_handoff: docs/qa/final-handoffs/WO-chatcore-v2-production-activation-final-handoff.md
 created_at: 2026-05-27
-updated_at: 2026-05-29
+updated_at: 2026-05-30
 ---
 
 # Work Order: WO-chatcore-v2-production-activation
@@ -101,6 +101,40 @@ updated_at: 2026-05-29
 **Worktree:** `/Users/felipedominguez/Desktop/Custom Connectors/Cortex/cortex-telegram-hub-bot-chatcore-v2-activation`
 **Base commit:** `e5ca0034` (`origin/main`, post-Ollama/post-Option-3)
 **Related docs:** `docs/ai/chat-route-exit-inventory.md`, `docs/ai/chatcore-v2-module-inventory.md`, `docs/ai/chatcore-v2-layer1-assembly-map.md`, `docs/ai/chatcore-v2-phase1-contracts.md`, `docs/ai/chatcore-v2-golden-corpus-spec.md`, `docs/ai/benchmarks/chatcore-v2-planner-calibration-2026-05-27.md`, `docs/ai/chatcore-v2-plan-completion-audit.md`, `docs/ai/chatcore-v2-implementation-readiness-matrix.md`
+
+## Update 2026-05-30 — Phase 2/3 Closeout Waves (post-WP)
+
+After the 17 work-package build, a code-grounded audit ranked the remaining
+autonomously-doable engineering (8 items; everything else is gated on a real
+labeled corpus, the D3 multi-user hardware decision, or operator
+canary/production/cloud-on authorization). Those 8 items shipped on PR #148 as
+three default-off / inert waves. The live `chat-routes` suite held green
+throughout, and every wave passed an adversarial safety gauntlet plus the
+pre-commit and pre-push gates.
+
+- Wave 1 `bb864937` — Phase 2 closeout: `enforceAndRepairChatTurnPlanMicro`
+  (bounded validate→repair-once, injected model = Ollama-optional), a default-off
+  shadow planner (`planChatCoreV2ShadowTurnWithPlanner`) so shadow-path schema
+  validity is finally *measurable*, the shadow-gate-readiness integration test,
+  and local-only shadow evidence scripts. The existing synchronous shadow path
+  and the live route are byte-unchanged (the new planner has zero production
+  callers — injection-gated, not just flag-gated).
+- Wave 2 `aff3d11a` — auto-revert/observability: `chat_v2_prepass_miss_log`
+  (mig 175, HMAC-only) and per-tenant per-hour schema-compliance /
+  legacy-fallback counters (mig 177), with `metrics-aggregator` wired off its
+  hardcoded placeholders. Off-mode inert; empty-table reads preserve the
+  revert-safe 1.0 / 0.0 defaults so the auto-revert valve cannot false-fire.
+- Wave 3 `f88d72bd` — Phase 3 inert plumbing: `canary-gate-guard`
+  (synthetic-seed boot floor, cohort filter, prod-override refusal, throw-not-
+  exit, wired into `main()` only when `mode=canary`), `chat_v2_canary_turn_log`
+  (mig 178), and the per-locale `chat_v2_answer_acceptance_counter` (mig 179).
+
+Honesty unchanged: `gateCanPromote` stays the sole promotion authority and stays
+false until a real (non-synthetic) labeled corpus is measured; the rank-7 boot
+floor is a coarse "selector not grossly broken" sanity check, never the
+promotion gate. No activation flip, deploy, or cloud-on is performed by these
+waves. Full per-item detail and verification counts are in the PR #148
+description.
 
 ## Summary
 
