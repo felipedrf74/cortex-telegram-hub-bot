@@ -2090,6 +2090,26 @@ describe('Decision Center layered status (Foundation)', () => {
     expect(rankDecisionPriority({ ...base, status: 'snoozed' }).priorityScore).toBeLessThan(later.priorityScore);
   });
 
+  it('ranking-stability invariants compose on a real blocked item: visible-but-not-primary + floor is fatigue-exempt (plan §F)', async () => {
+    // A dependency-blocked decision; the blocking parent stays unresolved.
+    const parent = await createDecisionIntent(buildSkillDecisionFixtureIntent('training', 96, { tenantId: 96, dedupeKey: 'rankinv-parent' }));
+    const { created: child } = await createContentApprovalDecision(96, 96, 'rankinv-child');
+    addDecisionDependency({ decisionId: child.item!.decisionId, dependsOnDecisionId: parent.item!.decisionId, userId: 96, tenantId: 96 }); // forward `blocks` (default)
+
+    const item = getDecisionItem(child.item!.decisionId, 96, 96)!;
+
+    // "blocked never primary": a blocked decision is VISIBLE (not buried) yet its action is NOT a primary
+    // actionable CTA. Ranking visibility and action actionability are INDEPENDENT axes — the floor keeps it
+    // surfaced while the dependency keeps it un-actionable. A regression that conflated them would break here.
+    expect(item.blockedByDecisionIds).toEqual([parent.item!.decisionId]);
+    expect(item.effectiveStatus).toBe('waiting_on_dependency');
+    expect(item.actionability).toBe('blocked'); // never confirmation_required/execute_with_undo while blocked
+    expect(item.prioritySnapshot?.reasonCodes).toContain('floor_connection_blocking'); // floored visible — not buried
+
+    // policy-floored alerts are fatigue-suppression-EXEMPT (never dropped under "More"/per-domain caps).
+    expect(isDecisionItemPolicyFloored(item)).toBe(true);
+  });
+
   it('promotes confidence to an evidence-strength explanation with privacy-gated basis', () => {
     const why = { facts: ['Exact calendar conflict', 'Task due tomorrow'], preferences: [], rules: ['Protect rest window'], tradeoffs: [], uncertainty: ['No fatigue data'] } as any;
     const exposed = computeConfidenceExplanation(0.823, why, { confidenceLabel: 'high', sourceFreshness: 'fresh' }, true);
