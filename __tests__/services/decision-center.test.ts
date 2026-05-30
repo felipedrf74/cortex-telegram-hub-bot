@@ -2001,6 +2001,33 @@ describe('Decision Center layered status (Foundation)', () => {
     expect(computeActionEffectiveStatus(recOf(), open, ctxOf({ blocked: ['d2'] })).effective).toBe('disabled_blocked_by_dependency');
   });
 
+  it('A2: reframes an unwired sync-retry as a reconnect path only when the affordance is enabled', () => {
+    const retry = { id: 'retry', label: 'Retry' } as any;          // implemented: false
+    const open = { id: 'open_detail', label: 'Open' } as any;      // implemented: true
+    const syncFailure = recOf({ type: 'sync_failure' });
+
+    // OFF (default ctx has no reconnectAffordance) — byte-identical to today: disabled_not_implemented.
+    expect(computeActionEffectiveStatus(syncFailure, retry, ctxOf()).effective).toBe('disabled_not_implemented');
+
+    // ON — the unwired retry becomes a reconnect affordance carrying reconnect guidance (still disabled,
+    // still implemented:false; the value just refines WHY, routing the client to connection settings).
+    const onCtx = { ...ctxOf(), reconnectAffordance: true };
+    const reconnect = computeActionEffectiveStatus(syncFailure, retry, onCtx);
+    expect(reconnect.effective).toBe('disabled_requires_reconnect');
+    expect(reconnect.implemented).toBe(false);
+    expect(reconnect.capabilityReason).toMatch(/reconnect/i);
+
+    // ON but NOT a sync_failure (an unwired retry on a different decision type) → unchanged.
+    expect(computeActionEffectiveStatus(recOf({ type: 'decision_required' }), retry, onCtx).effective).toBe('disabled_not_implemented');
+
+    // ON but a different (implemented) action on the same sync_failure → unaffected (still enabled).
+    expect(computeActionEffectiveStatus(syncFailure, open, onCtx).effective).toBe('enabled');
+
+    // Precedence preserved: the safeForFrontendAction gate is still checked before the !implemented branch,
+    // so missing-details wins over the reconnect reframe (proves the reframe did not reorder the guards).
+    expect(computeActionEffectiveStatus(syncFailure, retry, { ...ctxOf({ safeFrontend: false }), reconnectAffordance: true }).effective).toBe('disabled_missing_details');
+  });
+
   it('maps legacy status to lifecycle + action outcome', () => {
     expect(legacyStatusToLifecycle('unread')).toBe('surfaced');
     expect(legacyStatusToLifecycle('read')).toBe('viewed');

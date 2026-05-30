@@ -31,6 +31,7 @@ import {
   isDecisionCenterFatigueCapsEnabled,
   isDecisionCenterGuidanceSkillEnabled,
   isDecisionCenterGuidanceV1Enabled,
+  isDecisionReconnectAffordanceEnabled,
   isAnthropicRuntimeEnabled,
   isChatCoreV2ShadowRouteHookEnabled,
   isSecretaryHaikuRoutingEnabled,
@@ -250,6 +251,23 @@ describe('runtime-flags', () => {
     expect(isDecisionCenterFatigueCapsEnabled({
       DECISION_CENTER_FATIGUE_CAPS_ENABLED: 'true',
       DECISION_CENTER_FATIGUE_CAPS_ENABLED_USER_42: 'off',
+    }, { userId: 42, tenantId: 9 })).toBe(false);
+  });
+
+  it('keeps the A2 reconnect affordance default-off with scoped opt-in', () => {
+    expect(isDecisionReconnectAffordanceEnabled({})).toBe(false);
+    expect(isDecisionReconnectAffordanceEnabled({ DECISION_RECONNECT_AFFORDANCE_ENABLED: 'true' })).toBe(true);
+    expect(isDecisionReconnectAffordanceEnabled({ DECISION_RECONNECT_AFFORDANCE_ENABLED: '1' })).toBe(true);
+    expect(isDecisionReconnectAffordanceEnabled({ DECISION_RECONNECT_AFFORDANCE_ENABLED: 'yes' })).toBe(false);
+    // scoped opt-in: a tenant override flips it on for that tenant only
+    expect(isDecisionReconnectAffordanceEnabled({
+      DECISION_RECONNECT_AFFORDANCE_ENABLED: 'false',
+      DECISION_RECONNECT_AFFORDANCE_ENABLED_TENANT_9: 'true',
+    }, { userId: 7, tenantId: 9 })).toBe(true);
+    // scoped opt-out: a user override flips it off even when the global is on
+    expect(isDecisionReconnectAffordanceEnabled({
+      DECISION_RECONNECT_AFFORDANCE_ENABLED: 'true',
+      DECISION_RECONNECT_AFFORDANCE_ENABLED_USER_42: 'off',
     }, { userId: 42, tenantId: 9 })).toBe(false);
   });
 });

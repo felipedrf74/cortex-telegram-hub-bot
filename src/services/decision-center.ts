@@ -52,7 +52,7 @@ import {
 } from './chat-pending-confirmations';
 import { isValidTenantUserId, recordTenantScopeAnomaly } from './tenant-scope-observability';
 import { logger } from '../utils/logger';
-import { isDecisionCenterCommandBusEnabled, isDecisionCenterFatigueCapsEnabled, isDecisionCenterGuidanceSkillEnabled, isDecisionCenterGuidanceV1Enabled, isDecisionEvidenceFreshnessGateEnabled, isDecisionSemanticDedupEnabled, isDecisionStreakV1Enabled } from './runtime-flags';
+import { isDecisionCenterCommandBusEnabled, isDecisionCenterFatigueCapsEnabled, isDecisionCenterGuidanceSkillEnabled, isDecisionCenterGuidanceV1Enabled, isDecisionEvidenceFreshnessGateEnabled, isDecisionReconnectAffordanceEnabled, isDecisionSemanticDedupEnabled, isDecisionStreakV1Enabled } from './runtime-flags';
 import { decisionRelationshipSemantics, type DecisionRelationshipKind, type DecisionRelationshipType } from './decision-relationship-types';
 import { buildDecisionDedupKey, classifyDecisionDedup } from './decision-center-semantic-dedup';
 import type { SecretaryTodaySummaryModel } from './secretary-orchestrator';
@@ -103,7 +103,11 @@ export interface DecisionActionEffectiveStatus {
   actionId: string;
   effective:
     | 'enabled' | 'disabled_not_implemented' | 'disabled_blocked_by_dependency'
-    | 'disabled_expired' | 'disabled_superseded' | 'disabled_already_actioned' | 'disabled_missing_details';
+    | 'disabled_expired' | 'disabled_superseded' | 'disabled_already_actioned' | 'disabled_missing_details'
+    // A2: an unwired sync-retry on a connection/sync_failure decision — disabled, but the client should
+    // route to connection settings (reconnect) rather than show a dead retry. Emitted only under the
+    // DECISION_RECONNECT_AFFORDANCE flag; OFF falls back to disabled_not_implemented (byte-identical).
+    | 'disabled_requires_reconnect';
   implemented: boolean;
   capabilityReason: string | null;
 }
@@ -2519,7 +2523,7 @@ function formatDecisionItemForApi(item: DecisionRecord): DecisionApiItem {
     lifecycleStatus: legacyStatusToLifecycle(item.status),
     actionOutcomeStatus: actionOutcomeFromRecord(item),
     effectiveStatus,
-    actionEffectiveStatuses: actions.map((candidate) => computeActionEffectiveStatus(item, candidate, { dependencies, logic })),
+    actionEffectiveStatuses: actions.map((candidate) => computeActionEffectiveStatus(item, candidate, { dependencies, logic, reconnectAffordance: isDecisionReconnectAffordanceEnabled(process.env, { userId: item.userId, tenantId: item.tenantId }) })),
     decisionKind,
     actionability,
     prioritySnapshot,
@@ -4003,16 +4007,33 @@ export function computeEffectiveStatus(
   return 'needs_action';
 }
 
+/**
+ * A2 — a "reconnect-class" action is an unwired sync-retry on a connection/sync_failure decision.
+ * It has no deterministic executor (the truth table marks `retry` implemented:false), so rather than a
+ * dead retry the client should route the user to connection settings. Narrow on purpose: only the
+ * `retry` action on a `sync_failure` decision. Once a real provider-sync executor is wired, `retry`
+ * becomes implemented and this never fires — the affordance exists only to replace the fake retry.
+ */
+function isReconnectClassAction(record: DecisionRecord, action: NotificationActionButton): boolean {
+  return record.type === 'sync_failure' && action.id === 'retry';
+}
+
 /** Per-action render state: capability (truth-table implemented) + lifecycle gating. */
 export function computeActionEffectiveStatus(
   record: DecisionRecord,
   action: NotificationActionButton,
-  ctx: { dependencies: { blockedByDecisionIds: string[] }; logic: DecisionLogicV2 },
+  ctx: { dependencies: { blockedByDecisionIds: string[] }; logic: DecisionLogicV2; reconnectAffordance?: boolean },
 ): DecisionActionEffectiveStatus {
   const implemented = isDecisionActionExecutable(action.id);
   const base = { actionId: action.id, implemented };
   if (!ctx.logic.quality.safeForFrontendAction) return { ...base, effective: 'disabled_missing_details', capabilityReason: 'Decision details incomplete' };
-  if (!implemented) return { ...base, effective: 'disabled_not_implemented', capabilityReason: `No deterministic executor wired for '${action.id}' yet` };
+  if (!implemented) {
+    // A2: reframe an unwired sync-retry as a reconnect path (flag-gated). OFF => disabled_not_implemented.
+    if (ctx.reconnectAffordance && isReconnectClassAction(record, action)) {
+      return { ...base, effective: 'disabled_requires_reconnect', capabilityReason: 'Reconnect this provider in connection settings to resume syncing' };
+    }
+    return { ...base, effective: 'disabled_not_implemented', capabilityReason: `No deterministic executor wired for '${action.id}' yet` };
+  }
   if (isDecisionExpired(record) || record.status === 'expired') return { ...base, effective: 'disabled_expired', capabilityReason: null };
   if (record.status === 'superseded' || record.status === 'dismissed') return { ...base, effective: 'disabled_superseded', capabilityReason: null };
   if (record.status === 'actioned') return { ...base, effective: 'disabled_already_actioned', capabilityReason: null };

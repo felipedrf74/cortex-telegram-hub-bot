@@ -282,6 +282,18 @@ export function isDecisionEvidenceFreshnessGateEnabled(env: RuntimeEnv = process
   return scopedFlagEnabledByExplicitOptIn(env, 'DECISION_EVIDENCE_FRESHNESS_GATE_ENABLED', scope);
 }
 
+/**
+ * Gates A2 reconnect-affordance: a `retry` action on a connection/sync-failure decision has no wired
+ * deterministic executor, so instead of presenting a dead "retry" the API marks that action
+ * `disabled_requires_reconnect` (a refinement within the existing disabled_* family) with reconnect
+ * guidance, so the client can route the user to connection settings rather than a fake retry. The new
+ * action effective-status value is only emitted when this flag is ON; OFF is byte-identical to today's
+ * `disabled_not_implemented`. Default OFF; opt-in per user/tenant so iOS adds the case before the flip.
+ */
+export function isDecisionReconnectAffordanceEnabled(env: RuntimeEnv = process.env, scope?: RuntimeFlagScope): boolean {
+  return scopedFlagEnabledByExplicitOptIn(env, 'DECISION_RECONNECT_AFFORDANCE_ENABLED', scope);
+}
+
 export function isChatCoreV2RuntimeFlagEnabled(
   flagKey: string,
   env: RuntimeEnv = process.env,
