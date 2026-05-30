@@ -52,7 +52,7 @@ import {
 } from './chat-pending-confirmations';
 import { isValidTenantUserId, recordTenantScopeAnomaly } from './tenant-scope-observability';
 import { logger } from '../utils/logger';
-import { isDecisionCenterCommandBusEnabled, isDecisionCenterFatigueCapsEnabled, isDecisionCenterGuidanceSkillEnabled, isDecisionCenterGuidanceV1Enabled, isDecisionEvidenceFreshnessGateEnabled, isDecisionReconnectAffordanceEnabled, isDecisionSemanticDedupEnabled, isDecisionStreakV1Enabled } from './runtime-flags';
+import { isDecisionCenterCommandBusEnabled, isDecisionCenterFatigueCapsEnabled, isDecisionCenterGuidanceSkillEnabled, isDecisionCenterGuidanceV1Enabled, isDecisionChoiceOptionsEnabled, isDecisionEvidenceFreshnessGateEnabled, isDecisionReconnectAffordanceEnabled, isDecisionSemanticDedupEnabled, isDecisionStreakV1Enabled } from './runtime-flags';
 import { decisionRelationshipSemantics, type DecisionRelationshipKind, type DecisionRelationshipType } from './decision-relationship-types';
 import { buildDecisionDedupKey, classifyDecisionDedup } from './decision-center-semantic-dedup';
 import type { SecretaryTodaySummaryModel } from './secretary-orchestrator';
@@ -74,6 +74,7 @@ import {
   type DecisionLogicV2,
   type DecisionQualityGateResult,
   type SecretaryAvailableSlot,
+  type SecretaryDecisionAdvice,
   type DecisionVisibilityScope,
   type DecisionWhatWillChange,
   type DecisionWhy,
@@ -279,6 +280,10 @@ export interface DecisionApiItem {
   actionPreview: DecisionWhatWillChange[];
   whatWillChange: DecisionWhatWillChange[];
   alternatives: DecisionAlternativeOption[];
+  /** D — structured domain choices (e.g. secretary slot picks) with tradeoffs. Optional + flag-gated:
+   *  undefined (omitted from JSON) unless DECISION_CHOICE_OPTIONS is enabled AND the decision has real
+   *  options, so existing clients see a byte-identical payload. */
+  options?: DecisionOption[];
   automationEligibility: AutomationEligibility;
   autopilotPolicy: string;
   readBackVerifier: string | null;
@@ -384,6 +389,26 @@ export interface DecisionAlternativeOption {
   actionId: string | null;
   available: boolean;
   source: 'recipe' | 'system_default';
+}
+
+/**
+ * A structured CHOICE option for a `choice_required`-style decision (e.g. secretary "move to which slot?").
+ * Distinct from DecisionAlternativeOption (which-button): an option is a domain choice carrying its own
+ * tradeoffs + a LIGHTWEIGHT intent (which existing action + payload to invoke). It deliberately carries NO
+ * baked command preview — that goes stale — so the client requests a fresh confirmation at selection time
+ * through the normal performDecisionAction path. Additive/optional on the item (Codable-backward-compatible).
+ */
+export interface DecisionOption {
+  optionId: string;
+  title: string;
+  summary: string;
+  tradeoffs: string[];
+  recommended: boolean;
+  risk: 'low' | 'medium' | 'high';
+  /** Lightweight intent: the existing decision action this option maps to (e.g. 'choose_another_time'). */
+  actionId: string;
+  /** Optional payload the action needs at selection time (e.g. the chosen window). Not a baked preview. */
+  actionPayload?: { startAt?: string; endAt?: string };
 }
 
 export interface DecisionSourceTrace {
@@ -2218,14 +2243,15 @@ export async function performDecisionAction(
       { reason: supersededReason },
     );
   }
-  const availableActions = actionsForRecord(record);
-  if (!availableActions.some((action) => action.id === actionId)) {
-    throw new DecisionActionError('DECISION_ACTION_NOT_ALLOWED', 'That action is not available for this decision', 400);
-  }
   const idempotencyKey = opts.idempotencyKey?.trim();
   if (!idempotencyKey) {
     throw new DecisionActionError('IDEMPOTENCY_KEY_REQUIRED', 'Decision actions require an idempotency key', 400);
   }
+  // Idempotency short-circuits BEFORE re-validating availability: a key we have already seen is replayed
+  // based on its prior outcome regardless of whether the action is still "available" now. This matters for
+  // a dynamically-surfaced action whose availability precondition is consumed by its own execution —
+  // choose_another_time stops being injected once the agenda is reflowed — so a client retry of a write
+  // that already succeeded must return the original result, not a spurious DECISION_ACTION_NOT_ALLOWED.
   const existing = getExistingExecution(decisionId, actionId, userId, tenantId, idempotencyKey);
   if (existing && existing.status === 'succeeded') {
     return idempotentActionResult(decisionId, actionId, userId, tenantId, existing);
@@ -2235,6 +2261,11 @@ export async function performDecisionAction(
   }
   if (existing && existing.status === 'failed') {
     throw new DecisionActionError(existing.error_code || 'DECISION_ACTION_FAILED', 'Prior decision action attempt failed', 409, safeParseJson(existing.result_json, {}));
+  }
+  // New attempt (unseen key): now validate that the action is actually available + actionable.
+  const availableActions = actionsForRecord(record);
+  if (!availableActions.some((action) => action.id === actionId)) {
+    throw new DecisionActionError('DECISION_ACTION_NOT_ALLOWED', 'That action is not available for this decision', 400);
   }
   guardActionable(record, actionId);
   guardDecisionDependencies(record, actionId);
@@ -2255,7 +2286,14 @@ export async function performDecisionAction(
   try {
     const execution = await executeDecisionAction(record, action, userId, tenantId, opts.payload ?? {});
     markExecutionSucceeded(claimed.execution.action_execution_id, execution.expectedEffect, execution.actualEffect);
-    const updated = getDecisionItem(decisionId, userId, tenantId);
+    // Post-action: format the just-actioned decision directly from its record. The active-inbox visibility
+    // filter (getDecisionItem → isUserFacingDecision) must NOT apply here — a successfully actioned decision
+    // belongs to handled history and must be returned as the action result even when a live re-read would
+    // hide it. This matters for actions that mutate their own source state: choose_another_time moves the
+    // agenda so the recomputed advice degrades and the filtered read would drop the decision, throwing a
+    // spurious "Decision missing" after a write that actually succeeded.
+    const updatedRecord = getDecisionRecord(decisionId, userId, tenantId);
+    const updated = updatedRecord && isDecisionRecord(updatedRecord) ? formatDecisionItemForApi(updatedRecord) : null;
     if (!updated) throw new DecisionActionError('DECISION_NOT_FOUND', 'Decision missing after action execution', 500);
     recordVerifiedDecisionAction(record, action, actionId, execution);
     emitDecisionLifecycleEvent({ decisionId, userId, tenantId, event: 'action_succeeded', actionId, toStatus: updated.status });
@@ -2561,6 +2599,9 @@ function formatDecisionItemForApi(item: DecisionRecord): DecisionApiItem {
     actionPreview: visibleWhatWillChange,
     whatWillChange: visibleWhatWillChange,
     alternatives: alternativesForRecord(item, logic, actions),
+    options: isDecisionChoiceOptionsEnabled(process.env, { userId: item.userId, tenantId: item.tenantId })
+      ? buildSecretaryChoiceOptions(item, logic)
+      : undefined,
     automationEligibility: logic.automationEligibility,
     autopilotPolicy: logic.autopilotPolicy,
     readBackVerifier: exposeDebugEvidence ? logic.readBackVerifier : null,
@@ -2778,6 +2819,69 @@ function alternativesForRecord(
     });
   }
   return alternatives.slice(0, 5);
+}
+
+/**
+ * Shared (D) — the advisor's feasible slot recommendation for a SECRETARY REFLOW decision, or null when this
+ * is not a secretary reflow (carries `accept_reflow`) with candidate slots and a feasible recommendation.
+ * Pure: decisionContextForRecord + adviseSecretaryDecision are read-only and do NOT call back into
+ * actionsForRecord / decisionLogicForRecord, so this is safe to call from actionsForRecord without recursion.
+ */
+function secretaryReflowChoiceAdvice(record: DecisionRecord): SecretaryDecisionAdvice | null {
+  if (record.sourceSkill !== 'secretary') return null;
+  if (!record.actions.some((candidate) => candidate.id === 'accept_reflow')) return null;
+  const context = decisionContextForRecord(record);
+  const slots = context.candidateSlots ?? [];
+  if (slots.length === 0) return null;
+  const advice = adviseSecretaryDecision({
+    title: context.entityTitle ?? '',
+    currentStartAt: context.currentStartAt,
+    currentEndAt: context.currentEndAt,
+    availableSlots: slots,
+    reasonCodes: context.reasonCodes ?? [],
+    timezone: context.timezone,
+    locale: context.locale,
+  });
+  return advice.recommendedStartAt && advice.recommendedEndAt ? advice : null;
+}
+
+/**
+ * D (secretary choose-a-time) — surface the slot CHOICES the advisor already computes (recommended slot +
+ * ranked feasible alternatives, each a concrete window + tradeoff) as structured DecisionOptions the client
+ * can render as a choice UI. Every option maps to the (fully-wired) `choose_another_time` action with its
+ * window as the payload — a lightweight intent, NOT a baked preview (the client confirms freshly at
+ * selection time). The action is surfaced under the same flag by actionsForRecord, so the options are
+ * genuinely invokable. Returns undefined — never [] — when this is unsafe to act on or there is no feasible
+ * recommendation, so no hollow choice UI is ever shown.
+ */
+function buildSecretaryChoiceOptions(item: DecisionRecord, logic: DecisionLogicV2): DecisionOption[] | undefined {
+  if (!logic.quality.safeForFrontendAction) return undefined; // never offer actionable options on an unsafe decision
+  const advice = secretaryReflowChoiceAdvice(item);
+  if (!advice) return undefined;
+  const options: DecisionOption[] = [{
+    optionId: `${item.itemId}:opt:recommended`,
+    title: advice.bestAction,
+    summary: advice.scheduleImpact,
+    tradeoffs: advice.whyTradeoffs,
+    recommended: true,
+    risk: 'low', // schedule reflow is reversible (undo_reflow), so choosing a window is low-risk
+    actionId: 'choose_another_time',
+    actionPayload: { startAt: advice.recommendedStartAt!, endAt: advice.recommendedEndAt! },
+  }];
+  for (const alt of advice.alternatives) {
+    if (!alt.startAt || !alt.endAt) continue;
+    options.push({
+      optionId: `${item.itemId}:opt:${alt.startAt}`,
+      title: alt.label,
+      summary: alt.tradeoff,
+      tradeoffs: [alt.tradeoff],
+      recommended: false,
+      risk: 'low',
+      actionId: 'choose_another_time',
+      actionPayload: { startAt: alt.startAt, endAt: alt.endAt },
+    });
+  }
+  return options;
 }
 
 function relatedEntitiesSafeForRecord(item: DecisionRecord, logic: DecisionLogicV2): Array<{ type: string; label: string }> {
@@ -4550,6 +4654,17 @@ function actionsForRecord(record: DecisionRecord): NotificationActionButton[] {
       style: 'secondary',
     });
   }
+  // D: expose the fully-wired (truth-table implemented) `choose_another_time` action on a secretary reflow
+  // that has feasible alternative slots, so the user can pick a specific window via the structured
+  // DecisionOptions. Flag-gated and pushed (not unshifted, never primary). OFF or no-feasible-slot leaves
+  // the action set byte-identical. The flag check short-circuits the advisor call when off.
+  if (
+    !actions.some((action) => action.id === 'choose_another_time')
+    && isDecisionChoiceOptionsEnabled(process.env, { userId: record.userId, tenantId: record.tenantId })
+    && secretaryReflowChoiceAdvice(record)
+  ) {
+    actions.push({ id: 'choose_another_time', label: 'Choose another time', style: 'secondary' });
+  }
   return actions;
 }
 
@@ -4652,7 +4767,12 @@ function idempotentActionResult(
   tenantId: number,
   execution: any,
 ): DecisionActionResult {
-  const current = getDecisionItem(decisionId, userId, tenantId);
+  // Same direct-record path as performDecisionAction's success branch: a duplicate (idempotent) replay of
+  // an action that mutated its own source state — e.g. choose_another_time moving the agenda — must return
+  // the actioned decision, not be hidden by getDecisionItem's active-inbox visibility filter (which would
+  // throw a spurious 404 on a replay of a write that already succeeded).
+  const replayRecord = getDecisionRecord(decisionId, userId, tenantId);
+  const current = replayRecord && isDecisionRecord(replayRecord) ? formatDecisionItemForApi(replayRecord) : null;
   if (!current) throw new DecisionActionError('DECISION_NOT_FOUND', 'Decision not found after idempotent action', 404);
   return {
     actionId,

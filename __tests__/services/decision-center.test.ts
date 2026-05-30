@@ -921,6 +921,91 @@ describe('Decision Center facade', () => {
     expect(listed[0].recommendation).toContain('10:00-12:00');
   });
 
+  it('D: surfaces structured choose-a-time DecisionOptions + the choose_another_time action (flag-gated, actionable end-to-end)', async () => {
+    ensureUserFixtureTable();
+    ensureSecretaryAgendaFixtureTables();
+    testDb.prepare(`
+      INSERT INTO users (id, telegram_id, first_name, language, timezone, status)
+      VALUES (97, 9700, 'Choice Owner', 'en-US', 'UTC', 'active')
+    `).run();
+    testDb.prepare(`
+      INSERT INTO secretary_agenda_items (
+        agenda_item_id, source_intent_id, source_skill, source_action, intent_action,
+        source_entity_id, source_entity_type, owner_user_id, tenant_id,
+        lifecycle_state, provider_sync_state, version, title, start_at, end_at,
+        duration_minutes, decision_action, decision_reason_codes_json, decision_explanation,
+        source_shape_hash, scheduled_segments_json, created_at, updated_at
+      ) VALUES (
+        'agenda-choice', 'intent-choice', 'training', 'long_run', 'reschedule_this',
+        'session-choice', 'training_session', 97, '97',
+        'proposed', 'not_synced', 1, 'Long run',
+        '2026-05-11T08:00:00.000Z', '2026-05-11T10:00:00.000Z',
+        120, 'deferred', '["training_schedule_request"]', 'Needs user approval',
+        'hash-choice', ?, datetime('now'), datetime('now')
+      )
+    `).run(JSON.stringify([
+      { start: '2026-05-11T08:00:00.000Z', end: '2026-05-11T10:00:00.000Z', label: 'Current slot' },
+      { start: '2026-05-11T14:00:00.000Z', end: '2026-05-11T16:00:00.000Z', label: 'Afternoon alternative' },
+      { start: '2026-05-11T18:00:00.000Z', end: '2026-05-11T20:00:00.000Z', label: 'Evening alternative' },
+    ]));
+    const created = await createDecisionIntent(buildSkillDecisionFixtureIntent('secretary', 97, {
+      relatedEntityId: 'agenda-choice',
+      relatedEntityType: 'secretary_agenda_item',
+      dedupeKey: 'secretary:choice-options',
+      actionButtons: [{ id: 'accept_reflow', label: 'Reflow', style: 'primary' }],
+    }));
+    expect(created.item).not.toBeNull();
+    const id = created.item!.decisionId;
+
+    // Flag OFF (default) — byte-identical: no options, choose_another_time NOT surfaced as an action.
+    const off = getDecisionItem(id, 97, 97)!;
+    expect(off.options).toBeUndefined();
+    expect(off.alternativeActions.concat(off.recommendedAction ? [off.recommendedAction] : []).map((a) => a.id)).not.toContain('choose_another_time');
+
+    try {
+      process.env.DECISION_CHOICE_OPTIONS_ENABLED = 'true';
+      const on = getDecisionItem(id, 97, 97)!;
+      expect(Array.isArray(on.options)).toBe(true);
+      // recommended + at least one ranked alternative (two feasible non-current slots were seeded).
+      expect(on.options!.length).toBeGreaterThanOrEqual(2);
+      const recommended = on.options!.find((o) => o.recommended);
+      expect(recommended).toBeDefined();
+      expect(recommended!.actionId).toBe('choose_another_time');
+      expect(recommended!.actionPayload?.startAt).toBeTruthy();
+      // every option carries a concrete window intent (lightweight, not a baked preview) + tradeoffs.
+      for (const opt of on.options!) {
+        expect(opt.actionId).toBe('choose_another_time');
+        expect(opt.actionPayload?.startAt && opt.actionPayload?.endAt).toBeTruthy();
+        expect(Array.isArray(opt.tradeoffs)).toBe(true);
+      }
+      // the action is now surfaced (so the options are invokable through the normal action gate).
+      const actionIds = on.alternativeActions.concat(on.recommendedAction ? [on.recommendedAction] : []).map((a) => a.id);
+      expect(actionIds).toContain('choose_another_time');
+
+      // END-TO-END: selecting an alternative option actually reflows the agenda to that window.
+      const alternative = on.options!.find((o) => !o.recommended)!;
+      const result = await performDecisionAction(id, 'choose_another_time', 97, 97, {
+        idempotencyKey: 'choice-option-select',
+        payload: { startAt: alternative.actionPayload!.startAt, endAt: alternative.actionPayload!.endAt },
+      });
+      expect(result.status).toBe('succeeded');
+      const agenda = testDb.prepare('SELECT lifecycle_state, start_at, end_at FROM secretary_agenda_items WHERE agenda_item_id = ?').get('agenda-choice') as any;
+      expect(agenda.lifecycle_state).toBe('reflowed');
+      expect(agenda.start_at).toBe(alternative.actionPayload!.startAt);
+
+      // IDEMPOTENT REPLAY: a duplicate with the SAME key must return the original result, not a spurious
+      // 404 — even though choose_another_time mutated the agenda so a filtered re-read would hide it.
+      const replay = await performDecisionAction(id, 'choose_another_time', 97, 97, {
+        idempotencyKey: 'choice-option-select',
+        payload: { startAt: alternative.actionPayload!.startAt, endAt: alternative.actionPayload!.endAt },
+      });
+      expect(replay.idempotent).toBe(true);
+      expect(replay.item.decisionId).toBe(id);
+    } finally {
+      delete process.env.DECISION_CHOICE_OPTIONS_ENABLED;
+    }
+  });
+
   it('executes content approval actions through Content and read-back verifies state', async () => {
     const object = createContentWorkflowObject({
       userId: 2,

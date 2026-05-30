@@ -31,6 +31,7 @@ import {
   isDecisionCenterFatigueCapsEnabled,
   isDecisionCenterGuidanceSkillEnabled,
   isDecisionCenterGuidanceV1Enabled,
+  isDecisionChoiceOptionsEnabled,
   isDecisionReconnectAffordanceEnabled,
   isAnthropicRuntimeEnabled,
   isChatCoreV2ShadowRouteHookEnabled,
@@ -268,6 +269,21 @@ describe('runtime-flags', () => {
     expect(isDecisionReconnectAffordanceEnabled({
       DECISION_RECONNECT_AFFORDANCE_ENABLED: 'true',
       DECISION_RECONNECT_AFFORDANCE_ENABLED_USER_42: 'off',
+    }, { userId: 42, tenantId: 9 })).toBe(false);
+  });
+
+  it('keeps the D secretary choice-options surface default-off with scoped opt-in', () => {
+    expect(isDecisionChoiceOptionsEnabled({})).toBe(false);
+    expect(isDecisionChoiceOptionsEnabled({ DECISION_CHOICE_OPTIONS_ENABLED: 'true' })).toBe(true);
+    expect(isDecisionChoiceOptionsEnabled({ DECISION_CHOICE_OPTIONS_ENABLED: '1' })).toBe(true);
+    expect(isDecisionChoiceOptionsEnabled({ DECISION_CHOICE_OPTIONS_ENABLED: 'yes' })).toBe(false);
+    expect(isDecisionChoiceOptionsEnabled({
+      DECISION_CHOICE_OPTIONS_ENABLED: 'false',
+      DECISION_CHOICE_OPTIONS_ENABLED_TENANT_9: 'true',
+    }, { userId: 7, tenantId: 9 })).toBe(true);
+    expect(isDecisionChoiceOptionsEnabled({
+      DECISION_CHOICE_OPTIONS_ENABLED: 'true',
+      DECISION_CHOICE_OPTIONS_ENABLED_USER_42: 'off',
     }, { userId: 42, tenantId: 9 })).toBe(false);
   });
 });

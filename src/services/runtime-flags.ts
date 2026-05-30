@@ -294,6 +294,16 @@ export function isDecisionReconnectAffordanceEnabled(env: RuntimeEnv = process.e
   return scopedFlagEnabledByExplicitOptIn(env, 'DECISION_RECONNECT_AFFORDANCE_ENABLED', scope);
 }
 
+/**
+ * Gates D (secretary choose-a-time) structured `DecisionOption[]` on the API item: the advisor's recommended
+ * slot + ranked alternatives (each a window + tradeoff) surfaced as a choice UI, every option a lightweight
+ * choose_another_time intent (no baked preview). Additive optional field — omitted from JSON when OFF, so
+ * existing clients see a byte-identical payload. Default OFF; opt-in per user/tenant.
+ */
+export function isDecisionChoiceOptionsEnabled(env: RuntimeEnv = process.env, scope?: RuntimeFlagScope): boolean {
+  return scopedFlagEnabledByExplicitOptIn(env, 'DECISION_CHOICE_OPTIONS_ENABLED', scope);
+}
+
 export function isChatCoreV2RuntimeFlagEnabled(
   flagKey: string,
   env: RuntimeEnv = process.env,
