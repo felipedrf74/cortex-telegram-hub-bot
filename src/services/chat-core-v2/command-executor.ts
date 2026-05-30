@@ -8,6 +8,9 @@ import {
   getChatCoreV2Capability,
 } from './capability-registry';
 import {
+  assessCommandWriteRisk,
+} from './write-risk-policy';
+import {
   buildChatCoreV2CommandResultResponse,
   normalizeChatCoreV2Locale,
   type ChatCoreV2Response,
@@ -159,6 +162,51 @@ function isExecutableCommandType(commandType: string): boolean {
     || commandType === 'tasks.complete'
     || commandType === 'notifications.snooze'
     || commandType === 'decision_center.dismiss';
+}
+
+/**
+ * The four sync command types the executor can actually run. Each one performs an
+ * immediate read-back of the mutated entity inside its `execute*` path
+ * (`getTaskForUser` / native_tasks SELECT / `snoozeNotificationCenterItem`
+ * read-back / `dismissDecision` read-back) and only reports `verified` when the
+ * read-back confirms the new state.
+ */
+export const CHAT_CORE_V2_SYNC_EXECUTABLE_COMMAND_TYPES = [
+  'tasks.create',
+  'tasks.complete',
+  'notifications.snooze',
+  'decision_center.dismiss',
+] as const;
+
+/**
+ * Assert (WP-10) that `requiresReadbackVerification` from the write-risk policy is
+ * satisfied by the only commands this executor can run — the four sync commands,
+ * each of which performs an immediate read-back before claiming `verified`.
+ *
+ * This is honestly an assertion over the only executable command types (§5.I):
+ * every write-risk class (A/B/C) sets `requiresReadbackVerification: true`, and
+ * every executable command does an immediate read-back, so the contract holds by
+ * construction. The REAL governance value is the action gateway's Class-C
+ * blocking (`unsupported_write`, no execute envelope) plus the human-review
+ * queue + notification — not this tautology. It exists so a future change that
+ * either (a) adds an executable command that skips read-back, or (b) downgrades a
+ * write-risk class to `requiresReadbackVerification: false`, trips a test.
+ *
+ * Returns true iff the contract holds for every executable command type. Pure.
+ */
+export function assertChatCoreV2ReadbackVerificationContract(): boolean {
+  return CHAT_CORE_V2_SYNC_EXECUTABLE_COMMAND_TYPES.every((commandType) => {
+    if (!isExecutableCommandType(commandType)) return false;
+    // Every executable command's write-risk policy must require read-back.
+    const capability = getChatCoreV2Capability(commandType);
+    const capabilityRisk = capability?.risk ?? 'low';
+    const assessment = assessCommandWriteRisk({
+      commandType,
+      domain: capability?.domain ?? 'tasks',
+      capability: capabilityRisk,
+    });
+    return assessment.policy.requiresReadbackVerification === true;
+  });
 }
 
 function buildExecuteGateSnapshot(

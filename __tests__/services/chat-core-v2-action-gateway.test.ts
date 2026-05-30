@@ -124,6 +124,15 @@ describe('ChatCoreV2 action gateway', () => {
   it('returns resolved_execute only through a command preview and HMAC-only telemetry', () => {
     const result = runChatCoreV2ActionGateway({
       ...baseInput,
+      // WP-10: resolved_execute requires the explicit write-execution gate; the
+      // gate ONLY governs the auto-execute envelope, not the firewall. The flag
+      // is resolved through resolveChatCoreV2ActivationConfig (WP-00.5), which
+      // only honors it when the orchestrator mode is explicitly 'on'.
+      env: {
+        ...baseInput.env,
+        CHAT_CORE_V2_ALLOW_WRITE_EXECUTION: 'true',
+        CHAT_CORE_V2_ORCHESTRATOR_MODE: 'on',
+      } as NodeJS.ProcessEnv,
       shouldAutoExecute: () => true,
     });
 
@@ -141,7 +150,11 @@ describe('ChatCoreV2 action gateway', () => {
 
     const result = runChatCoreV2ActionGateway({
       ...baseInput,
-      env: envWithoutSecret as NodeJS.ProcessEnv,
+      env: {
+        ...envWithoutSecret,
+        CHAT_CORE_V2_ALLOW_WRITE_EXECUTION: 'true',
+        CHAT_CORE_V2_ORCHESTRATOR_MODE: 'on',
+      } as NodeJS.ProcessEnv,
       shouldAutoExecute: () => true,
     });
 

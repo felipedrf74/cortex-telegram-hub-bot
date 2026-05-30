@@ -8,8 +8,14 @@ import {
   type ChatCoreV2CommandPreviewRouteResult,
 } from './command-preview-route';
 import { classifyShadowRoute } from './shadow-route-classifier';
-import { isChatCoreV2MasterKillSwitchOff } from './activation-flags';
-import type { AICommandEnvelope } from './types';
+import { isChatCoreV2MasterKillSwitchOff, resolveChatCoreV2ActivationConfig } from './activation-flags';
+import { getChatCoreV2Capability } from './capability-registry';
+import {
+  assessCommandWriteRisk,
+  type ChatCoreV2WriteRiskClass,
+  type ChatCoreV2WriteEscalationReason,
+} from './write-risk-policy';
+import type { AICommandEnvelope, ActionRisk } from './types';
 
 export const CHAT_CORE_V2_ACTION_GATEWAY_VERSION = 'chat_core_v2_action_gateway@1.0.0';
 const CHAT_CORE_V2_HMAC_UNAVAILABLE = 'hmac_unavailable';
@@ -22,18 +28,33 @@ export interface ActionCandidate {
   entityId?: string;
 }
 
+/**
+ * The write-risk governance verdict threaded onto a resolved/blocked gateway
+ * result (WP-10). Computed from the resolved command's (commandType, domain,
+ * capability risk) by `assessCommandWriteRisk`. Class C never receives an execute
+ * envelope; Class B marks `requires3BCritic`.
+ */
+export interface ChatCoreV2ActionWriteRiskPolicy {
+  riskClass: ChatCoreV2WriteRiskClass;
+  requires3BCritic: boolean;
+  requires35BOrBackground: boolean;
+  escalationReasons: ChatCoreV2WriteEscalationReason[];
+}
+
 export type ChatCoreV2ActionGatewayResult =
   | { kind: 'no_write_intent'; telemetry: ChatCoreV2WriteIntentGuardTelemetry }
   | {
     kind: 'resolved_preview';
     command: AICommandEnvelope;
     preview: ChatCoreV2CommandPreviewRouteResult;
+    writeRiskPolicy: ChatCoreV2ActionWriteRiskPolicy;
     telemetry: ChatCoreV2WriteIntentGuardTelemetry;
   }
   | {
     kind: 'resolved_execute';
     command: AICommandEnvelope;
     preview: ChatCoreV2CommandPreviewRouteResult;
+    writeRiskPolicy: ChatCoreV2ActionWriteRiskPolicy;
     telemetry: ChatCoreV2WriteIntentGuardTelemetry;
   }
   | {
@@ -42,7 +63,7 @@ export type ChatCoreV2ActionGatewayResult =
     candidates?: ActionCandidate[];
     telemetry: ChatCoreV2WriteIntentGuardTelemetry;
   }
-  | { kind: 'unsupported_write'; reason: string; telemetry: ChatCoreV2WriteIntentGuardTelemetry }
+  | { kind: 'unsupported_write'; reason: string; writeRiskPolicy?: ChatCoreV2ActionWriteRiskPolicy; telemetry: ChatCoreV2WriteIntentGuardTelemetry }
   | { kind: 'blocked_legacy_fallback'; reason: string; telemetry: ChatCoreV2WriteIntentGuardTelemetry };
 
 export interface ChatCoreV2ActionGatewayInput extends BuildChatCoreV2CommandPreviewRouteInput {
@@ -76,6 +97,16 @@ export interface ChatCoreV2WriteIntentGuardTelemetry {
   latencyMs: number;
   reasonCodes: string[];
   mode: ChatCoreV2ActionGatewayMode;
+  // WP-10 write-risk governance telemetry (optional — only populated once a
+  // command is resolved and its risk class is known).
+  writeRiskClass?: ChatCoreV2WriteRiskClass;
+  requires3BCritic?: boolean;
+  requires35BOrBackground?: boolean;
+  writeRiskEscalationReasons?: ChatCoreV2WriteEscalationReason[];
+  // True iff the resolved write would have auto-executed but the
+  // CHAT_CORE_V2_ALLOW_WRITE_EXECUTION gate forced it down to a preview. The
+  // firewall blocking/clarification path is unaffected by this flag.
+  writeExecutionGateBlocked?: boolean;
 }
 
 const TASK_NOUN_RE = /\b(tasks?|todos?|to-dos?|tarefas?|tareas?)\b/i;
@@ -265,7 +296,44 @@ export function runChatCoreV2ActionGateway(
 
   const preview = tryBuildChatCoreV2CommandPreviewRoute(input);
   if (preview) {
-    const shouldExecute = input.shouldAutoExecute?.(preview) === true;
+    // WP-10: classify the resolved command's write-risk class (pure). Class C
+    // never receives an execute envelope; Class B marks requires3BCritic.
+    const writeRiskPolicy = resolveWriteRiskPolicyForPreview(preview);
+
+    // WP-10: a Class-C write (or any 35B/background-escalation write) is blocked
+    // by the firewall here — it is downgraded to `unsupported_write` and never
+    // gets an execute envelope, regardless of the auto-execute flag. This is the
+    // governance value; the human-review queue + notification picks it up
+    // downstream. This is firewall blocking, NOT auto-execution suppression.
+    if (writeRiskPolicy.riskClass === 'C' || writeRiskPolicy.requires35BOrBackground) {
+      const telemetry = baseTelemetry({
+        resolverResult: 'resolved',
+        resolvedEntityIds: preview.command.basedOn.entityIds,
+        policyDecision: mode === 'shadow' ? 'shadow_would_block' : 'block_class_c_write',
+        legacyFallbackBlocked: shouldBlockLegacy,
+        finalOutcome: 'unsupported_write',
+        verificationStatus: 'not_required',
+        reasonCodes: [...probe.reasonCodes, preview.capabilityId, 'write_risk_class_c'],
+        writeRiskClass: writeRiskPolicy.riskClass,
+        requires3BCritic: writeRiskPolicy.requires3BCritic,
+        requires35BOrBackground: writeRiskPolicy.requires35BOrBackground,
+        writeRiskEscalationReasons: writeRiskPolicy.escalationReasons,
+      });
+      logTelemetry(telemetry);
+      if (mode === 'shadow') return { kind: 'no_write_intent', telemetry };
+      return { kind: 'unsupported_write', reason: 'write_risk_class_c_requires_human_review', writeRiskPolicy, telemetry };
+    }
+
+    // WP-10: the CHAT_CORE_V2_ALLOW_WRITE_EXECUTION gate ONLY suppresses the
+    // resolved_execute step (auto-execution). It does NOT disable the firewall:
+    // a resolvable write with execution disabled still flows through the firewall
+    // as a resolved_preview (confirm-via-token), and the firewall's blocking /
+    // clarification / Class-C paths above are entirely unaffected. Resolved via
+    // the WP-00.5 resolver, NOT env-direct.
+    const allowWriteExecution = resolveChatCoreV2ActivationConfig(env).allowWriteExecution;
+    const wantsExecute = input.shouldAutoExecute?.(preview) === true;
+    const shouldExecute = wantsExecute && allowWriteExecution;
+    const writeExecutionGateBlocked = wantsExecute && !allowWriteExecution;
     const telemetry = baseTelemetry({
       resolverResult: preview.gateVerdict.ok ? 'resolved' : 'rejected_by_command_bus',
       resolvedEntityIds: preview.command.basedOn.entityIds,
@@ -273,13 +341,23 @@ export function runChatCoreV2ActionGateway(
       legacyFallbackBlocked: shouldBlockLegacy,
       finalOutcome: shouldExecute ? 'resolved_execute' : 'resolved_preview',
       verificationStatus: shouldExecute ? 'pending' : 'not_required',
-      reasonCodes: [...probe.reasonCodes, preview.capabilityId],
+      reasonCodes: [
+        ...probe.reasonCodes,
+        preview.capabilityId,
+        ...(writeRiskPolicy.requires3BCritic ? ['write_risk_requires_3b_critic'] : []),
+        ...(writeExecutionGateBlocked ? ['write_execution_disabled'] : []),
+      ],
+      writeRiskClass: writeRiskPolicy.riskClass,
+      requires3BCritic: writeRiskPolicy.requires3BCritic,
+      requires35BOrBackground: writeRiskPolicy.requires35BOrBackground,
+      writeRiskEscalationReasons: writeRiskPolicy.escalationReasons,
+      writeExecutionGateBlocked,
     });
     logTelemetry(telemetry);
     if (mode === 'shadow') return { kind: 'no_write_intent', telemetry };
     return shouldExecute
-      ? { kind: 'resolved_execute', command: preview.command, preview, telemetry }
-      : { kind: 'resolved_preview', command: preview.command, preview, telemetry };
+      ? { kind: 'resolved_execute', command: preview.command, preview, writeRiskPolicy, telemetry }
+      : { kind: 'resolved_preview', command: preview.command, preview, writeRiskPolicy, telemetry };
   }
 
   const unresolved = unresolvedResultForProbe(probe, input, baseTelemetry({
@@ -386,6 +464,29 @@ function hmacMessageHash(input: {
 
 function localized(locale: string | null | undefined, copy: { pt: string; en: string }): string {
   return String(locale ?? '').toLowerCase().startsWith('pt') ? copy.pt : copy.en;
+}
+
+/**
+ * Resolve the write-risk governance policy for a resolved preview (WP-10). Reads
+ * the capability's declared `risk` from the registry (defaulting to 'low' when
+ * absent) and runs the pure `assessCommandWriteRisk` classifier over the resolved
+ * command's (commandType, domain, capability risk).
+ */
+function resolveWriteRiskPolicyForPreview(
+  preview: ChatCoreV2CommandPreviewRouteResult,
+): ChatCoreV2ActionWriteRiskPolicy {
+  const capabilityRisk: ActionRisk = getChatCoreV2Capability(preview.capabilityId)?.risk ?? 'low';
+  const assessment = assessCommandWriteRisk({
+    commandType: preview.command.commandType,
+    domain: preview.command.domain,
+    capability: capabilityRisk,
+  });
+  return {
+    riskClass: assessment.riskClass,
+    requires3BCritic: assessment.policy.requires3BCritic,
+    requires35BOrBackground: assessment.requires35BOrBackground,
+    escalationReasons: assessment.escalationReasons,
+  };
 }
 
 function logTelemetry(telemetry: ChatCoreV2WriteIntentGuardTelemetry): void {

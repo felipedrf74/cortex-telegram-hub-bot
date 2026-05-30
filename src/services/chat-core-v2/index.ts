@@ -28,6 +28,7 @@ export * from './failure-observability';
 export * from './finance-action-policy';
 export * from './gate-metrics-store';
 export * from './golden-corpus';
+export * from './human-review-notification';
 export * from './human-review-queue';
 export * from './locale-policy';
 export * from './locale-preservation-policy';
