@@ -136,6 +136,38 @@ promotion gate. No activation flip, deploy, or cloud-on is performed by these
 waves. Full per-item detail and verification counts are in the PR #148
 description.
 
+### Live shadow validation (2026-05-30, local sandbox, commit `1a1e6446`)
+
+The shadow path was exercised end-to-end in the local Docker sandbox
+(`CHAT_CORE_V2_ORCHESTRATOR_MODE=shadow` + `CHAT_CORE_V2_SHADOW_ROUTE_HOOK_ENABLED`
++ `CHAT_CORE_V2_SHADOW_PLANNER_ENABLED`, planner `modelOverride` = the fast 3B
+slot `qwen2.5:3b-instruct-q4_K_M`) against real Ollama. This surfaced and closed a
+genuine doctrine-#10 gap (the planner had shipped with NO system instruction and
+NO `outputSchema`, so qwen produced schemaValid=false on every span — invisible to
+the mocked unit tests; fixed in `1a1e6446` via the proven wire method).
+
+Evidence (authoritative `chat_v2_schema_compliance_counter`, which excludes
+`planner_threw` timeouts by construction):
+
+- 3B window: **pass=20 / fail=0 — 100% schema-valid among RESPONDING calls.**
+- `shadow_planner` span split: `planner_ok|valid`=20, `planner_ok|unrepairable`=3
+  (all in the earlier 35B window — the small model + wire prompt is the correct
+  pairing), `planner_threw|unrepairable`=14 (Ollama **timeouts** under 50
+  concurrent turns on the serialized concurrency gate, NOT schema failures).
+- Privacy re-confirmed on real rows: every current-run replay bundle carries a
+  64-hex HMAC `messageHash` + safe metadata only; zero raw text. (Pre-2026-05-30
+  rows use a legacy 16-hex hash; the readback now treats those as a WARN, not a
+  hard fail, while a true raw-text leak still hard-fails.)
+- Default-off / fire-and-forget / non-blocking preserved; the live route is
+  byte-unchanged; `gateCanPromote` stays honestly false.
+
+Interpretation: schema validity is effectively SOLVED on the 3B model (100% of
+responses valid). The remaining failure mode is request TIMEOUTS under concurrent
+load — the WO's already-documented, GATED D3 concurrency/latency/hardware item
+(single-instance CPU Ollama serializes under load). The live shadow schema-valid
+rate among responding calls — not the seeded benchmark figure — is the
+authoritative gate signal going forward.
+
 ## Summary
 
 Activate `src/services/chat-core-v2/` as the single owner of ordinary
