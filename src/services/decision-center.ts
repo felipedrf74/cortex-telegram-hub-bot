@@ -895,10 +895,18 @@ function linkConflictingDecisionsOnCreate(newId: string, input: NotificationInte
         dedupeKey: existing.dedupeKey,
         createdAt: existing.createdAt,
       });
-      if (classifyDecisionDedup(candidate, [existingKey]).verdict === 'conflicting_recommendation_link') {
-        // Reciprocal edges so BOTH decisions surface the conflict (idempotent via INSERT OR IGNORE).
-        addDecisionDependency({ decisionId: newId, dependsOnDecisionId: existing.decisionId, userId, tenantId, relationship: 'conflicts_with' });
-        addDecisionDependency({ decisionId: existing.decisionId, dependsOnDecisionId: newId, userId, tenantId, relationship: 'conflicts_with' });
+      const verdict = classifyDecisionDedup(candidate, [existingKey]).verdict;
+      // Map the dedup verdict to an ADVISORY relationship type (only `blocks` prevents action, so
+      // neither hides nor blocks a decision): a cross-skill conflict on the same entity+window =>
+      // conflicts_with (warns the user); a cross-skill, non-conflicting decision on the same
+      // entity+window => affects_same_entity (groups them for context). Written reciprocally so BOTH
+      // decisions surface the link; idempotent via addDecisionDependency's INSERT OR IGNORE.
+      const linkType: DecisionRelationshipType | null = verdict === 'conflicting_recommendation_link' ? 'conflicts_with'
+        : verdict === 'same_issue_cluster' ? 'affects_same_entity'
+        : null;
+      if (linkType) {
+        addDecisionDependency({ decisionId: newId, dependsOnDecisionId: existing.decisionId, userId, tenantId, relationship: linkType });
+        addDecisionDependency({ decisionId: existing.decisionId, dependsOnDecisionId: newId, userId, tenantId, relationship: linkType });
       }
     }
   } catch (err) {

@@ -2548,4 +2548,24 @@ describe('Decision Center B3 acting — conflict linking on create', () => {
     const item = getDecisionItem(b.item!.decisionId, 89, 89)!;
     expect(item.relationships).toHaveLength(0); // no shared entity => independent => no link
   });
+
+  it('links cross-skill, non-conflicting decisions on the same entity as affects_same_entity (same_issue_cluster) when the flag is ON', async () => {
+    // A: a content approval_required decision (NOT a conflict signal) about a content object.
+    const { object, created: a } = await createContentApprovalDecision(93, 93, 'b3cluster-a');
+    expect(a.item).not.toBeNull();
+    process.env.DECISION_SEMANTIC_DEDUP_ENABLED = 'true';
+    // B: a cooking decision_required referencing the SAME entity => cross-skill, same entity+window,
+    // and NOT both conflict signals (approval_required is not a signal) => same_issue_cluster.
+    const b = await createDecisionIntent(buildSkillDecisionFixtureIntent('cooking', 93, { tenantId: 93, type: 'decision_required', relatedEntityId: object.id, dedupeKey: 'b3cluster-b', requiresUserAction: true }));
+    expect(b.item).not.toBeNull();
+
+    const item = getDecisionItem(b.item!.decisionId, 93, 93)!;
+    const link = item.relationships.find((r) => r.type === 'affects_same_entity');
+    expect(link).toBeDefined();
+    expect(link?.decisionId).toBe(a.item!.decisionId);
+    expect(link?.kind).toBe('context'); // advisory grouping — never blocks
+    expect(item.blockedByDecisionIds).toHaveLength(0);
+    // reciprocal: the pre-existing decision also surfaces the grouping
+    expect(getDecisionItem(a.item!.decisionId, 93, 93)!.relationships.some((r) => r.type === 'affects_same_entity' && r.decisionId === b.item!.decisionId)).toBe(true);
+  });
 });
