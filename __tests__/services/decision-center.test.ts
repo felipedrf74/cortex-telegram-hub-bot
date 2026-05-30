@@ -2595,4 +2595,27 @@ describe('Decision Center B3 acting — conflict linking on create', () => {
     // reciprocal: the pre-existing decision also surfaces the grouping
     expect(getDecisionItem(a.item!.decisionId, 93, 93)!.relationships.some((r) => r.type === 'affects_same_entity' && r.decisionId === b.item!.decisionId)).toBe(true);
   });
+
+  it('links a new decision to EVERY qualifying candidate, not just the first (loop completeness)', async () => {
+    // Two existing same-entity decisions, created with the flag OFF so they do not pre-link each other.
+    // A is a content approval_required (NOT a conflict signal); B is a cooking decision_required (signal).
+    const { object, created: a } = await createContentApprovalDecision(94, 94, 'b3multi-a');
+    expect(a.item).not.toBeNull();
+    const bExisting = await createDecisionIntent(buildSkillDecisionFixtureIntent('cooking', 94, { tenantId: 94, type: 'decision_required', relatedEntityId: object.id, dedupeKey: 'b3multi-b', requiresUserAction: true }));
+    expect(bExisting.item).not.toBeNull();
+
+    // Flag ON, then create N (training decision_required) on the SAME entity. Its linker must scan BOTH
+    // existing candidates and link each — with DIFFERENT verdicts: same_issue_cluster->affects_same_entity
+    // for the content approval, conflicting_recommendation_link->conflicts_with for the cooking decision.
+    // A loop that aborted on the first pairing (the QA-flagged regression) would link only one of them.
+    process.env.DECISION_SEMANTIC_DEDUP_ENABLED = 'true';
+    const n = await createDecisionIntent(buildSkillDecisionFixtureIntent('training', 94, { tenantId: 94, type: 'decision_required', relatedEntityId: object.id, dedupeKey: 'b3multi-n', requiresUserAction: true }));
+    expect(n.item).not.toBeNull();
+
+    const item = getDecisionItem(n.item!.decisionId, 94, 94)!;
+    expect(item.relationships).toHaveLength(2); // BOTH candidates linked, no spurious extras
+    expect(item.relationships.some((r) => r.type === 'affects_same_entity' && r.decisionId === a.item!.decisionId)).toBe(true);
+    expect(item.relationships.some((r) => r.type === 'conflicts_with' && r.decisionId === bExisting.item!.decisionId)).toBe(true);
+    expect(item.blockedByDecisionIds).toHaveLength(0); // all advisory — nothing blocked
+  });
 });

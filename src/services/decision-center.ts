@@ -892,25 +892,34 @@ function linkConflictingDecisionsOnCreate(newId: string, input: NotificationInte
       createdAt,
     });
     for (const existing of listActiveDedupCandidates(userId, tenantId, newId)) {
-      const existingKey = buildDecisionDedupKey({
-        sourceSkill: existing.sourceSkill,
-        type: existing.type,
-        relatedEntityId: existing.relatedEntityId,
-        dedupeKey: existing.dedupeKey,
-        createdAt: existing.createdAt,
-      });
-      const verdict = classifyDecisionDedup(candidate, [existingKey]).verdict;
-      // Map the dedup verdict to an ADVISORY relationship type (only `blocks` prevents action, so
-      // neither hides nor blocks a decision): a cross-skill conflict on the same entity+window =>
-      // conflicts_with (warns the user); a cross-skill, non-conflicting decision on the same
-      // entity+window => affects_same_entity (groups them for context). Written reciprocally so BOTH
-      // decisions surface the link; idempotent via addDecisionDependency's INSERT OR IGNORE.
-      const linkType: DecisionRelationshipType | null = verdict === 'conflicting_recommendation_link' ? 'conflicts_with'
-        : verdict === 'same_issue_cluster' ? 'affects_same_entity'
-        : null;
-      if (linkType) {
-        addDecisionDependency({ decisionId: newId, dependsOnDecisionId: existing.decisionId, userId, tenantId, relationship: linkType });
-        addDecisionDependency({ decisionId: existing.decisionId, dependsOnDecisionId: newId, userId, tenantId, relationship: linkType });
+      // Per-candidate isolation: a single pairing that throws (e.g. addDecisionDependency racing a
+      // candidate that was swept/dismissed between the scan and its record check) must NOT abandon the
+      // remaining candidates — otherwise a user with several same-entity decisions would see only the
+      // ones before the failure linked. Each iteration fails independently; the outer catch still guards
+      // candidate-key building and the iterator so linking can never break decision creation.
+      try {
+        const existingKey = buildDecisionDedupKey({
+          sourceSkill: existing.sourceSkill,
+          type: existing.type,
+          relatedEntityId: existing.relatedEntityId,
+          dedupeKey: existing.dedupeKey,
+          createdAt: existing.createdAt,
+        });
+        const verdict = classifyDecisionDedup(candidate, [existingKey]).verdict;
+        // Map the dedup verdict to an ADVISORY relationship type (only `blocks` prevents action, so
+        // neither hides nor blocks a decision): a cross-skill conflict on the same entity+window =>
+        // conflicts_with (warns the user); a cross-skill, non-conflicting decision on the same
+        // entity+window => affects_same_entity (groups them for context). Written reciprocally so BOTH
+        // decisions surface the link; idempotent via addDecisionDependency's INSERT OR IGNORE.
+        const linkType: DecisionRelationshipType | null = verdict === 'conflicting_recommendation_link' ? 'conflicts_with'
+          : verdict === 'same_issue_cluster' ? 'affects_same_entity'
+          : null;
+        if (linkType) {
+          addDecisionDependency({ decisionId: newId, dependsOnDecisionId: existing.decisionId, userId, tenantId, relationship: linkType });
+          addDecisionDependency({ decisionId: existing.decisionId, dependsOnDecisionId: newId, userId, tenantId, relationship: linkType });
+        }
+      } catch (pairErr) {
+        logger.warn({ err: pairErr instanceof Error ? pairErr.message : String(pairErr), newId, existingId: existing.decisionId }, 'B3 conflict-linking pair failed (non-fatal; other pairs continue)');
       }
     }
   } catch (err) {
