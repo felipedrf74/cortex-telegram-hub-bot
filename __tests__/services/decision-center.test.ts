@@ -2333,12 +2333,18 @@ describe('Decision Center fatigue caps (C5)', () => {
 
     const off = getDecisionOverview(300, 300, { limit: 80 });
     expect(off.items.length).toBe(open.length); // OFF == existing slice(0, limit) behavior
+    expect(off.fatigue).toBeUndefined(); // C5 meta absent when the cap is off (additive-safe)
 
     process.env.DECISION_CENTER_FATIGUE_CAPS_ENABLED = 'true';
     const on = getDecisionOverview(300, 300, { limit: 80 });
     expect(on.items.map((i) => i.decisionId)).toEqual(expectedIds); // ON == pure-fn selection (wiring)
     expect(expectedIds.length).toBeLessThan(open.length); // the cap actually reduced the visible set
     for (const id of flooredIds) expect(on.items.map((i) => i.decisionId)).toContain(id); // floored never capped away
+    // C5 fatigue meta: lets the client split items into primary + "More" and know how many were capped out.
+    expect(on.fatigue).toBeDefined();
+    expect(on.fatigue!.primaryCount).toBeLessThanOrEqual(5); // topPrimaryCount default
+    expect(on.fatigue!.primaryCount + on.fatigue!.moreCount).toBe(on.items.length);
+    expect(on.fatigue!.cappedCount).toBe(open.length - on.items.length);
   });
 
   it('getDecisionOverview fatigue cap stays tenant-scoped', async () => {

@@ -455,6 +455,8 @@ export interface DecisionCenterOverview {
     summary: boolean;
   };
   secretaryToday: SecretaryTodaySummaryModel;
+  /** C5: present ONLY when fatigue caps are active — lets the client split `items` into pinned primary cards + a "More" bucket. */
+  fatigue?: { primaryCount: number; moreCount: number; cappedCount: number };
   items: DecisionApiItem[];
   handled: HandledByNexusItem[];
 }
@@ -1237,13 +1239,17 @@ export function getDecisionOverview(
 
   const allOpenItems = openDecisionItemsForOverview(allItems);
   let items: DecisionApiItem[] = [];
+  let fatigueMeta: DecisionCenterOverview['fatigue'];
   if (itemsAvailable) {
     if (isDecisionCenterFatigueCapsEnabled(process.env, { userId, tenantId })) {
       // C5: flag-gated, post-ranking selection. Floored decisions bypass the cap; non-floored items
-      // are bounded per-domain and to the visible budget. Response SHAPE is unchanged — the cap only
-      // reshapes the already-ranked `items` array, then honors the caller's pagination limit.
+      // are bounded per-domain and to the visible budget. The cap reshapes the already-ranked `items`
+      // array (then honors the caller's limit); `fatigue` advertises the primary/More split + how many
+      // open decisions were capped out, so the client can render the hierarchy without re-deriving it.
       const { primaryItems, moreItems } = applyDecisionFatigueCaps(allOpenItems);
       items = [...primaryItems, ...moreItems].slice(0, limit);
+      const primaryCount = Math.min(primaryItems.length, items.length);
+      fatigueMeta = { primaryCount, moreCount: items.length - primaryCount, cappedCount: Math.max(allOpenItems.length - items.length, 0) };
     } else {
       items = allOpenItems.slice(0, limit);
     }
@@ -1279,6 +1285,7 @@ export function getDecisionOverview(
       summary: summaryAvailable,
     },
     secretaryToday,
+    fatigue: fatigueMeta,
     items,
     handled,
   };
