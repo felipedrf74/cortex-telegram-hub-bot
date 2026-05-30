@@ -2,9 +2,11 @@
 
 import { listChatCoreV2CapabilitiesByDomain } from './capability-registry';
 import type {
+  AIActionAuthorization,
   AICommandEnvelope,
   CapabilityDefinition,
   CommandStatus,
+  CommandOrigin,
 } from './types';
 
 export const CHAT_CORE_V2_COMMAND_BUS_GATE_VERSION = 'chat_core_v2_command_bus_gate@1.0.0';
@@ -19,6 +21,9 @@ export type ChatCoreV2CommandRejectionReason =
   | 'expired'
   | 'wrong_actor'
   | 'wrong_tenant'
+  | 'acting_surface_not_allowed'
+  | 'auth_time_invalid'
+  | 'auth_time_expired'
   | 'missing_delegated_scope'
   | 'stale_entity_version'
   | 'permission_version_changed'
@@ -37,6 +42,9 @@ export interface ChatCoreV2CommandGateSnapshot {
   integrationConnectionVersion?: string;
   decisionVersion?: string;
   invariantResults?: Record<string, boolean>;
+  actingSurface?: AIActionAuthorization['actingSurface'];
+  allowedSurfaces?: AIActionAuthorization['actingSurface'][];
+  maxAuthorizationAgeMs?: number;
   now?: Date;
 }
 
@@ -63,6 +71,9 @@ export function evaluateChatCoreV2CommandBusGate(
 ): ChatCoreV2CommandGateVerdict {
   const identityVerdict = evaluateIdentity(envelope, snapshot, operation);
   if (identityVerdict) return identityVerdict;
+
+  const authorizationVerdict = evaluateAuthorizationSurface(envelope, snapshot, operation);
+  if (authorizationVerdict) return authorizationVerdict;
 
   const expiredVerdict = evaluateExpiry(envelope, snapshot, operation);
   if (expiredVerdict) return expiredVerdict;
@@ -107,6 +118,38 @@ function evaluateIdentity(
     return rejected(operation, 'wrong_tenant', 'rejected_by_policy');
   }
   return undefined;
+}
+
+function evaluateAuthorizationSurface(
+  envelope: AICommandEnvelope,
+  snapshot: ChatCoreV2CommandGateSnapshot,
+  operation: ChatCoreV2CommandOperation,
+): ChatCoreV2CommandGateVerdict | undefined {
+  const actingSurface = snapshot.actingSurface ?? envelope.authorization.actingSurface;
+  const allowedSurfaces = snapshot.allowedSurfaces ?? defaultAllowedSurfacesForOrigin(envelope.origin);
+  if (envelope.authorization.actingSurface !== actingSurface || !allowedSurfaces.includes(envelope.authorization.actingSurface)) {
+    return rejected(operation, 'acting_surface_not_allowed', 'rejected_by_policy');
+  }
+
+  const authTime = Date.parse(envelope.authorization.authTime);
+  if (!Number.isFinite(authTime)) {
+    return rejected(operation, 'auth_time_invalid', 'rejected_by_policy');
+  }
+
+  if (
+    snapshot.maxAuthorizationAgeMs != null
+    && (snapshot.now ?? new Date()).getTime() - authTime > snapshot.maxAuthorizationAgeMs
+  ) {
+    return rejected(operation, 'auth_time_expired', 'rejected_by_policy');
+  }
+
+  return undefined;
+}
+
+function defaultAllowedSurfacesForOrigin(origin: CommandOrigin): AIActionAuthorization['actingSurface'][] {
+  if (origin === 'decision_center') return ['ios_chat', 'web_chat', 'system_automation'];
+  if (origin === 'automation' || origin === 'notification') return ['system_automation'];
+  return ['ios_chat', 'web_chat'];
 }
 
 function evaluateExpiry(

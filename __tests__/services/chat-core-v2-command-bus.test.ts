@@ -75,6 +75,86 @@ describe('Chat Core v2 command bus gate', () => {
     });
   });
 
+  it('allows Decision Center-origin dismiss commands through the system automation surface', () => {
+    const envelope = command({
+      commandId: 'cmd_decision_dismiss',
+      commandSchemaVersion: 'decision_center.dismiss@1.0.0',
+      previewSchemaVersion: 'decision_preview_card@1.0.0',
+      domain: 'decision_center',
+      commandType: 'decision_center.dismiss',
+      origin: 'decision_center',
+      payload: { operation: 'dismiss', decisionId: 'dc_1', title: 'Choose a time' },
+      basedOn: {
+        entityIds: ['decision:dc_1'],
+        entityVersions: { 'decision:dc_1': 'decision_v1' },
+        contextHash: 'ctx_decision_1',
+        createdAt: '2026-05-24T09:59:00.000Z',
+      },
+      preconditions: {
+        requiredEntityVersions: { 'decision:dc_1': 'decision_v1' },
+        requiredPermissionsVersion: 'perm_v1',
+        requiredDecisionVersion: 'decision_v1',
+        invariants: [{
+          type: 'decision_status',
+          description: 'Decision must still be dismissible.',
+          check: 'decision_is_active',
+        }],
+      },
+      authorization: {
+        actorUserId: 'user_1',
+        tenantId: 'tenant_1',
+        actingSurface: 'system_automation',
+        delegatedScopes: ['decision_center:read', 'decision_center:write'],
+        permissionSnapshotVersion: 'perm_v1',
+        authTime: '2026-05-24T09:59:00.000Z',
+      },
+      idempotencyKey: 'decision-center:tenant_1:user_1:decision_center.dismiss:dc_1:cmd_decision_dismiss',
+    });
+
+    expect(evaluateChatCoreV2CommandBusGate(envelope, {
+      actorUserId: 'user_1',
+      tenantId: 'tenant_1',
+      delegatedScopes: ['decision_center:read', 'decision_center:write'],
+      currentEntityVersions: { 'decision:dc_1': 'decision_v1' },
+      permissionSnapshotVersion: 'perm_v1',
+      decisionVersion: 'decision_v1',
+      invariantResults: { decision_is_active: true },
+      now: NOW,
+    }, 'execute')).toEqual({
+      ok: true,
+      operation: 'execute',
+      gateVersion: 'chat_core_v2_command_bus_gate@1.0.0',
+      commandStatus: 'confirmed',
+      capabilityId: 'decision_center.dismiss',
+    });
+  });
+
+  it('rejects system automation surfaces unless the command origin allows them', () => {
+    const envelope = command({
+      authorization: {
+        actorUserId: 'user_1',
+        tenantId: 'tenant_1',
+        actingSurface: 'system_automation',
+        delegatedScopes: ['tasks:read', 'tasks:write'],
+        permissionSnapshotVersion: 'perm_v1',
+        authTime: '2026-05-24T09:59:00.000Z',
+      },
+    });
+
+    expect(evaluateChatCoreV2CommandBusGate(envelope, {
+      actorUserId: 'user_1',
+      tenantId: 'tenant_1',
+      delegatedScopes: ['tasks:read', 'tasks:write'],
+      currentEntityVersions: { 'task:list': 'v1' },
+      permissionSnapshotVersion: 'perm_v1',
+      now: NOW,
+    }, 'execute')).toMatchObject({
+      ok: false,
+      commandStatus: 'rejected_by_policy',
+      reason: 'acting_surface_not_allowed',
+    });
+  });
+
   it('allows preview for preview-only capabilities but blocks execution', () => {
     const envelope = command({
       domain: 'training',

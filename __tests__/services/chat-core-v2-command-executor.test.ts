@@ -5,6 +5,7 @@ import {
 } from '../../src/services/chat-core-v2';
 import { getDb } from '../../src/services/database';
 import { recordChatV2CommandEvent } from '../../src/services/chat-core-v2/command-events';
+import { decisionDismissVersionForItem } from '../../src/services/chat-core-v2/command-status-policy';
 import { computeContentHash } from '../../src/services/task-store/unified-task-store';
 import type { AICommandEnvelope } from '../../src/services/chat-core-v2/types';
 
@@ -14,6 +15,8 @@ const mockTaskProvider = vi.hoisted(() => ({
   getTask: vi.fn(),
 }));
 const mockResolveTaskCreationList = vi.hoisted(() => vi.fn());
+const mockGetDecisionItem = vi.hoisted(() => vi.fn());
+const mockDismissDecision = vi.hoisted(() => vi.fn());
 
 vi.mock('../../src/services/database', () => ({
   getDb: vi.fn(),
@@ -33,6 +36,11 @@ vi.mock('../../src/services/task-store/task-router', () => ({
 
 vi.mock('../../src/services/task-store/task-list-resolution', () => ({
   resolveTaskCreationList: (...args: unknown[]) => mockResolveTaskCreationList(...args),
+}));
+
+vi.mock('../../src/services/decision-center', () => ({
+  getDecisionItem: (...args: unknown[]) => mockGetDecisionItem(...args),
+  dismissDecision: (...args: unknown[]) => mockDismissDecision(...args),
 }));
 
 const NOW = new Date('2026-05-27T16:45:00.000Z');
@@ -152,6 +160,80 @@ function nativeCreateCommand(): AICommandEnvelope<Record<string, unknown>> {
   };
 }
 
+function decisionItem(status = 'unread', title = 'Pick a client-review slot') {
+  return {
+    decisionId: 'dc_schedule',
+    status,
+    title,
+    summary: 'Secretary found a scheduling conflict.',
+    safePreviewTitle: title,
+    safePreviewBody: 'Choose whether to keep or dismiss this suggestion.',
+    urgency: 'medium',
+    sourceSkill: 'secretary',
+    type: 'schedule_choice',
+    actions: [
+      { id: 'open_detail', label: 'Open', style: 'primary' },
+      { id: 'dismiss', label: 'Not now', style: 'secondary' },
+    ],
+    expiresAt: '2026-05-28T16:45:00.000Z',
+  } as Parameters<typeof decisionDismissVersionForItem>[0];
+}
+
+function decisionDismissCommand(item = decisionItem()): AICommandEnvelope<Record<string, unknown>> {
+  const decisionVersion = decisionDismissVersionForItem(item);
+  return {
+    commandId: 'cmd_decision_dismiss_dc_schedule',
+    commandSchemaVersion: 'decision_center.dismiss@1.0.0',
+    previewSchemaVersion: 'decision_preview_card@1.0.0',
+    responseSchemaVersion: 'chat_response_v2@1.0.0',
+    tenantId: '5',
+    userId: '5',
+    domain: 'decision_center',
+    commandType: 'decision_center.dismiss',
+    origin: 'decision_center',
+    payload: {
+      operation: 'dismiss',
+      decisionId: item.decisionId,
+      title: item.title,
+      currentStatus: item.status,
+      targetStatus: 'dismissed',
+      sourceSkill: item.sourceSkill,
+      type: item.type,
+      urgency: item.urgency,
+    },
+    basedOn: {
+      entityIds: [`decision:${item.decisionId}`],
+      entityVersions: {
+        [`decision:${item.decisionId}`]: decisionVersion,
+      },
+      contextHash: 'ctx-decision-dismiss',
+      createdAt: NOW.toISOString(),
+    },
+    preconditions: {
+      requiredEntityVersions: {
+        [`decision:${item.decisionId}`]: decisionVersion,
+      },
+      requiredPermissionsVersion: 'decision-center-permissions:5:5:decision_center:v1',
+      requiredDecisionVersion: decisionVersion,
+      invariants: [{
+        type: 'decision_status',
+        description: 'Decision must still be dismissible when the command executes.',
+        check: 'decision_is_active',
+      }],
+    },
+    authorization: {
+      actorUserId: '5',
+      tenantId: '5',
+      actingSurface: 'system_automation',
+      delegatedScopes: ['decision_center:read', 'decision_center:write'],
+      permissionSnapshotVersion: 'decision-center-permissions:5:5:decision_center:v1',
+      authTime: NOW.toISOString(),
+    },
+    expiresAt: new Date(NOW.getTime() + 10 * 60 * 1000).toISOString(),
+    idempotencyKey: `decision-center:5:5:decision_center.dismiss:${item.decisionId}:cmd_decision_dismiss_dc_schedule`,
+  };
+}
+
 describe('Chat Core v2 command executor', () => {
   beforeEach(() => {
     vi.mocked(recordChatV2CommandEvent).mockReset();
@@ -161,6 +243,8 @@ describe('Chat Core v2 command executor', () => {
     mockTaskProvider.getTask.mockReset();
     mockResolveTaskCreationList.mockReset();
     mockResolveTaskCreationList.mockResolvedValue({ id: '4', displayName: 'Inbox' });
+    mockGetDecisionItem.mockReset();
+    mockDismissDecision.mockReset();
   });
 
   it('creates chat tasks through the iOS-visible task provider path', async () => {
@@ -307,5 +391,69 @@ describe('Chat Core v2 command executor', () => {
     });
     expect(result.response?.text).toBe('I sent the request, but I could not verify that "comprar suplementos" was completed yet.');
     expect(result.response?.text).not.toContain('Done — I marked');
+  });
+
+  it('dismisses and event-logs a Decision Center-origin command through the bus', async () => {
+    const activeDecision = decisionItem('unread');
+    const dismissedDecision = decisionItem('dismissed');
+    mockGetDecisionItem.mockReturnValue(activeDecision);
+    mockDismissDecision.mockReturnValue(dismissedDecision);
+    const command = decisionDismissCommand(activeDecision);
+
+    const result = await executeChatCoreV2Command({
+      command,
+      capabilityId: 'decision_center.dismiss',
+      userId: 5,
+      tenantId: 5,
+      locale: 'en-US',
+      now: NOW,
+    });
+
+    expect(result).toMatchObject({
+      ok: true,
+      capabilityId: 'decision_center.dismiss',
+      status: 'verified',
+      dismissedDecisionId: 'dc_schedule',
+    });
+    expect(mockDismissDecision).toHaveBeenCalledWith('dc_schedule', 5, 5);
+    expect(result.response?.text).toBe('Done — I dismissed "Pick a client-review slot" from Decision Center.');
+    expect(recordChatV2CommandEvent).toHaveBeenCalledWith(expect.objectContaining({
+      commandId: command.commandId,
+      commandType: 'decision_center.dismiss',
+      eventName: 'verification_completed',
+      status: 'verified',
+      origin: 'decision_center',
+      capabilityId: 'decision_center.dismiss',
+      idempotencyKey: command.idempotencyKey,
+      metadata: expect.objectContaining({
+        decisionId: 'dc_schedule',
+      }),
+    }));
+  });
+
+  it('rejects Decision Center dismiss execution when the live decision version changed', async () => {
+    const previewDecision = decisionItem('unread', 'Pick a client-review slot');
+    const changedDecision = decisionItem('unread', 'Pick a different client-review slot');
+    mockGetDecisionItem.mockReturnValue(changedDecision);
+
+    const result = await executeChatCoreV2Command({
+      command: decisionDismissCommand(previewDecision),
+      capabilityId: 'decision_center.dismiss',
+      userId: 5,
+      tenantId: 5,
+      locale: 'en-US',
+      now: NOW,
+    });
+
+    expect(result).toMatchObject({
+      ok: false,
+      capabilityId: 'decision_center.dismiss',
+      status: 'stale',
+      reason: 'command_gate_rejected',
+      gateVerdict: {
+        reason: 'stale_entity_version',
+      },
+    });
+    expect(mockDismissDecision).not.toHaveBeenCalled();
   });
 });
