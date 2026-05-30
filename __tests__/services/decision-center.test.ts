@@ -1761,6 +1761,25 @@ describe('Decision Center facade', () => {
     expect(getDecisionItem(created.item!.decisionId, 62, 62)?.status).toBe('superseded');
   });
 
+  it('does NOT supersede a training decision via free-text "race date" when its recipe is not missing-race-date (F1 hardening)', async () => {
+    testDb.exec(readFileSync('migrations/023_onboarding.sql', 'utf8'));
+    // A non-race-date RECIPE (dedupeKey) whose injected TITLE/BODY nonetheless mentions "race date" —
+    // and crucially NOT a 'training_profile' relatedEntityType, so the clean structured path can't fire.
+    const created = await createDecisionIntent(buildSkillDecisionFixtureIntent('training', 92, {
+      title: 'Your readiness is low before your race date',
+      body: 'race date race date race date',
+      dedupeKey: 'training:readiness-low:92',
+    }));
+    // A real race date IS present — under the old free-text match this would wrongly supersede the decision.
+    testDb.prepare(`INSERT INTO user_profiles (user_id, profile_type, data) VALUES (92, 'triathlon-running', ?)`)
+      .run(JSON.stringify({ target_race_date: '2026-10-18' }));
+
+    const result = runDecisionSourceStateSupersessionJob({ userId: 92, tenantId: 92 });
+
+    expect(result.reasons.training_race_date_added_elsewhere ?? 0).toBe(0); // recipe-gated: injected text is ignored
+    expect(getDecisionItem(created.item!.decisionId, 92, 92)?.status).not.toBe('superseded'); // not hidden
+  });
+
   it('can replay migration 119 without duplicate-column failures', () => {
     const sql = readFileSync('migrations/119_decision_center_facade.sql', 'utf8');
     expect(() => {

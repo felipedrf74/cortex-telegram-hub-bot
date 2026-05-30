@@ -3009,10 +3009,21 @@ function decisionContextForIntentInput(input: NotificationIntentInput): Decision
     if (agenda) return secretaryAgendaDecisionContext(agenda, supplied);
   }
   if (hasDecisionContextPayload(suppliedRaw)) return supplied;
-  if (input.sourceSkill === 'training' && /race date/i.test(`${input.title} ${input.body}`)) {
+  if (input.sourceSkill === 'training' && isMissingRaceDateRecipe(input.dedupeKey)) {
     return withUserDecisionContextDefaults(input.userId, { explicitNoRelatedEntityReason: 'training profile is the affected entity' });
   }
   return supplied;
+}
+
+/**
+ * True when a decision's dedupeKey marks it as the training "missing race date" RECIPE. Gated on the
+ * recipe (dedupeKey prefix), NOT free-text title/body — so untrusted evidence text that happens to
+ * contain the phrase "race date" can never trip race-date context/supersession handling and wrongly
+ * hide an unrelated training decision. The missing-race-date fixtures/recipe use a dedupeKey like
+ * `training:missing-race-date:<userId>:demo`.
+ */
+function isMissingRaceDateRecipe(dedupeKey: string | null | undefined): boolean {
+  return /(^|:)missing[- ]race[- ]date/i.test(dedupeKey ?? '');
 }
 
 function decisionContextForRecord(record: DecisionRecord): DecisionLogicContext {
@@ -3036,7 +3047,7 @@ function decisionContextForRecord(record: DecisionRecord): DecisionLogicContext 
       if (object) return withUserDecisionContextDefaults(record.userId, { entityTitle: object.title, sourceState: object.approvalState });
     }
   }
-  if (record.sourceSkill === 'training' && /race date/i.test(`${record.title} ${record.body} ${record.dedupeKey ?? ''}`)) {
+  if (record.sourceSkill === 'training' && isMissingRaceDateRecipe(record.dedupeKey)) {
     return withUserDecisionContextDefaults(record.userId, { explicitNoRelatedEntityReason: 'training profile is the affected entity' });
   }
   if (record.type === 'sync_failure') {
@@ -5312,7 +5323,7 @@ function sourceStateSupersessionReason(record: DecisionRecord): string | null {
     if (record.relatedEntityType === 'training_profile' && trainingRaceDatePresent(record.userId)) {
       return 'training_race_date_added_elsewhere';
     }
-    if (/race date/i.test(`${record.title} ${record.body} ${record.dedupeKey ?? ''}`) && trainingRaceDatePresent(record.userId)) {
+    if (isMissingRaceDateRecipe(record.dedupeKey) && trainingRaceDatePresent(record.userId)) {
       return 'training_race_date_added_elsewhere';
     }
   }
