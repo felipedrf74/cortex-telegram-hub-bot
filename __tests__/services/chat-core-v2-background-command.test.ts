@@ -109,7 +109,15 @@ function taskCreateCommand(overrides: Partial<AICommandEnvelope<Record<string, u
       permissionSnapshotVersion: 'chat-v2-permissions:7:7:tasks:v1',
       authTime: NOW.toISOString(),
     },
-    expiresAt: new Date(NOW.getTime() + 10 * 60 * 1000).toISOString(),
+    // Default expiry is relative to the REAL wall clock (not the fixed NOW),
+    // because the worker's stale-envelope check uses `new Date()` on the
+    // processPendingJobs path. Pinning this to `NOW + 10min` was a time-bomb:
+    // once real time passed 2026-05-30T12:10Z the default command became stale,
+    // so the handler returned `stale_completed` (no throw) and the
+    // "marks a failing job failed" test silently flipped to 0 failures.
+    // Real-clock + 1h keeps non-stale tests non-stale forever; the explicit
+    // stale-path tests still override `expiresAt` via `overrides` below.
+    expiresAt: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
     idempotencyKey: 'chat-v2:7:7:tasks.create:cmd_bg_1',
     ...overrides,
   } as AICommandEnvelope<Record<string, unknown>>;

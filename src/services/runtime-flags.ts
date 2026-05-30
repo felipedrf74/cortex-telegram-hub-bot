@@ -215,6 +215,21 @@ export function isChatCoreV2ShadowRouteHookEnabled(env: RuntimeEnv = process.env
   return raw === 'true' || raw === 'on' || raw === '1' || raw === 'shadow';
 }
 
+/**
+ * Batch-A: DEFAULT-OFF opt-in flag for the fire-and-forget shadow PLANNER side
+ * effect wired into the live shadow route hook. This is the NEW, third gate that
+ * (together with an active CHAT_CORE_V2_ORCHESTRATOR_MODE and the per-tenant
+ * kill-switch) must be on before any local-LLM planner work is dispatched from
+ * the shadow path. When absent/false the live route + shadow hook are
+ * byte-identical: NO Ollama call, NO planner span, NO extra DB write.
+ *
+ * Default FALSE (explicit opt-in), mirroring isChatCoreV2ShadowRouteHookEnabled.
+ */
+export function isChatCoreV2ShadowPlannerEnabled(env: RuntimeEnv = process.env, scope?: RuntimeFlagScope): boolean {
+  const raw = scopedEnvValue(env, 'CHAT_CORE_V2_SHADOW_PLANNER_ENABLED', scope)?.trim().toLowerCase();
+  return raw === 'true' || raw === 'on' || raw === '1' || raw === 'shadow';
+}
+
 export function isChatCoreV2Enabled(env: RuntimeEnv = process.env, scope?: RuntimeFlagScope): boolean {
   return scopedFlagEnabledByExplicitOptIn(env, 'CHAT_CORE_V2_ENABLED', scope);
 }

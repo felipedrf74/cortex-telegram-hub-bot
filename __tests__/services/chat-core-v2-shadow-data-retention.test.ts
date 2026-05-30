@@ -18,6 +18,7 @@ import {
   ensureChatCoreV2OnlineEvalTables,
   ensureChatCoreV2MemoryTables,
   ensureChatCoreV2HumanReviewTables,
+  ensureChatCoreV2CanaryTurnLogTable,
 } from '../../src/services/chat-core-v2';
 import type { ChatV2TraceSpan } from '../../src/services/chat-core-v2';
 
@@ -60,6 +61,18 @@ function insertReplayBundle(id: string, expiresAt: string | null): void {
        (replay_bundle_id, turn_id, sensitivity, retention_policy, redacted_bundle_json, created_at, expires_at)
      VALUES (?, 'turn-1', 'normal', '30d', '{}', ?, ?)`,
   ).run(id, isoDaysAgo(1), expiresAt);
+}
+
+// Raw insert so we can set an arbitrary expires_at (the writer stamps
+// recorded_at + 90 days; here we exercise the boundary directly). The column is
+// NOT NULL per migration 178, so expires_at is always a concrete timestamp.
+function insertCanaryTurn(turnId: string, expiresAt: string): void {
+  ensureChatCoreV2CanaryTurnLogTable(db);
+  db.prepare(
+    `INSERT INTO chat_v2_canary_turn_log
+       (tenant_id, user_id, turn_id, route_path, route_method, reasoning_tier, confidence, locale, recorded_at, expires_at)
+     VALUES ('tenant-1', 'user-1', ?, '/api/v1/chat', 'POST', 'fast', 0.9, 'en', ?, ?)`,
+  ).run(turnId, isoDaysAgo(1), expiresAt);
 }
 
 function insertEvalSample(id: string, createdAt: string): void {
@@ -142,6 +155,35 @@ describe('Chat Core v2 shadow data-retention sweep', () => {
       runChatCoreV2ShadowDataRetention(db, NOW);
       const ids = (db.prepare('SELECT replay_bundle_id AS id FROM chat_v2_replay_bundles').all() as Array<{ id: string }>).map((r) => r.id);
       expect(ids).toEqual(['null-expiry']);
+    });
+  });
+
+  describe('canary turn log (WP-08b, expires_at)', () => {
+    it('deletes rows whose expires_at is in the past and keeps future-expiry rows', () => {
+      insertCanaryTurn('past', isoDaysAgo(1));
+      insertCanaryTurn('future', isoDaysFromNow(1));
+      runChatCoreV2ShadowDataRetention(db, NOW);
+      const ids = (db.prepare('SELECT turn_id AS id FROM chat_v2_canary_turn_log ORDER BY turn_id').all() as Array<{ id: string }>).map((r) => r.id);
+      expect(ids).toEqual(['future']);
+    });
+
+    it('keeps a future-expiry row untouched (boundary just past now stays)', () => {
+      // migration 178 declares expires_at NOT NULL, so a NULL-expiry row is not
+      // representable here. The stanza's `expires_at IS NOT NULL` guard is
+      // harmless defence-in-depth that mirrors the replay-bundle stanza; this
+      // case proves a barely-future row survives.
+      insertCanaryTurn('barely-future', isoDaysFromNow(0.001));
+      runChatCoreV2ShadowDataRetention(db, NOW);
+      const ids = (db.prepare('SELECT turn_id AS id FROM chat_v2_canary_turn_log').all() as Array<{ id: string }>).map((r) => r.id);
+      expect(ids).toEqual(['barely-future']);
+    });
+
+    it('reports the deleted count for the canary stanza', () => {
+      insertCanaryTurn('past-1', isoDaysAgo(1));
+      insertCanaryTurn('past-2', isoDaysAgo(2));
+      insertCanaryTurn('future', isoDaysFromNow(1));
+      const result = runChatCoreV2ShadowDataRetention(db, NOW);
+      expect(result.chat_v2_canary_turn_log).toBe(2);
     });
   });
 

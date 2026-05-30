@@ -65,6 +65,7 @@ import {
 } from './chat-core-v2/metrics-aggregator';
 import { evaluateChatCoreV2AutoRevertPolicy } from './chat-core-v2/auto-revert-policy';
 import { applyAutoRevertDecision } from './chat-core-v2/auto-revert-executor';
+import { recordChatCoreV2GateCheck } from './chat-core-v2/gate-metrics-store';
 import { expireOldNexusPointCredits } from './nexus-points';
 import { getActivePlan, getCurrentWeek, getWeeklyAdherence, computeAdjustmentRecommendation, updateWeekAdjustment, getWeeksForPlan } from './training-plans';
 import { calculateReadiness, persistReadinessScore } from './readiness-scorer';
@@ -664,10 +665,13 @@ export async function buildConflictAlertForUser(userId: number): Promise<string 
  * Privacy: logs row COUNTS only, never row contents. The `now` parameter is
  * injectable so boundary behaviour is deterministically testable.
  *
- * NOTE (WP-08b, deferred): the per-turn `chat_v2_command_events` and
- * `chat_v2_canary_turn_log` tables are intentionally NOT swept here. Their
- * retention is owned by WP-08b, sequenced after their last writers (WP-14/WP-15)
- * exist; adding their stanzas now would touch tables with no writers yet.
+ * NOTE (WP-08b): `chat_v2_canary_turn_log` (migration 178) is now swept here —
+ * its writer (`maybeRecordCanaryTurn`) exists, and its rows carry an `expires_at`
+ * (recorded_at + 90 days), so they age out by the same expires_at policy as the
+ * replay-bundle stanza below. The per-turn `chat_v2_command_events` table is
+ * STILL intentionally NOT swept: its retention is sequenced after its last
+ * writer lands (its own WP concern), so adding its stanza now would touch a
+ * table whose writer/retention contract is not yet settled.
  */
 export function runChatCoreV2ShadowDataRetention(
   db: Database.Database = getDb(),
@@ -697,6 +701,16 @@ export function runChatCoreV2ShadowDataRetention(
   stanza('chat_v2_replay_bundles', () =>
     db.prepare(
       `DELETE FROM chat_v2_replay_bundles WHERE expires_at IS NOT NULL AND expires_at < ?`,
+    ).run(nowIso).changes,
+  );
+
+  // Canary turn log (WP-08b, table owned by migration 178): drop once past the
+  // stored expires_at (recorded_at + 90 days). Same expires_at policy + missing-
+  // table guard as the replay-bundle stanza above; NULL never expires. These
+  // rows are a coarse traffic-shape measurement, never a promotion signal.
+  stanza('chat_v2_canary_turn_log', () =>
+    db.prepare(
+      `DELETE FROM chat_v2_canary_turn_log WHERE expires_at IS NOT NULL AND expires_at < ?`,
     ).run(nowIso).changes,
   );
 
@@ -747,6 +761,62 @@ export function runChatCoreV2ShadowDataRetention(
   );
 
   return deleted;
+}
+
+/**
+ * WP-13 — Chat Core v2 automated shadow gate-check (the body the
+ * `chat_v2_gate_check` cron invokes).
+ *
+ * READ-ONLY beyond the single audit row it writes: it measures the composed
+ * Phase 2→3 promotion gate over the LIVE db (shadow readiness + the persisted
+ * recall@8) via `recordChatCoreV2GateCheck`, which appends ONE safe-scalar row
+ * to `chat_v2_gate_check_log` and computes nothing else. It NEVER mutates any
+ * runtime override, flag, or live route — it is pure observability.
+ *
+ * HONESTY (the load-bearing invariant): `gateCanPromote` is FALSE by
+ * construction until WP-19-seed persists a real (non-synthetic, peer-reviewed,
+ * ≥ target) recall@8. This cron never fakes a pass — it logs the honest
+ * `gateMet` (= `report.gateCanPromote`), which stays `false` until that day.
+ *
+ * Safety: `recordChatCoreV2GateCheck` ensures its own tables (idempotent DDL)
+ * and reads gracefully through missing tables, so a fresh deploy without the
+ * shadow corpus is a clean no-op-shaped row, not an error. Privacy: only safe
+ * scalars / booleans / counts are read and logged — never raw message/prompt
+ * text. The whole body is wrapped so a failure can never crash the tick.
+ */
+export function runChatCoreV2GateCheck(db: Database.Database = getDb()): {
+  gateMet: boolean;
+  shadowRowCount: number;
+  logRowId: number;
+} | null {
+  try {
+    const { report, logRowId } = recordChatCoreV2GateCheck(db);
+    // PRIVACY: safe scalars / booleans / counts only — no PII, no raw text.
+    logger.info(
+      {
+        event: 'chat_core_v2_gate_check',
+        gateMet: report.gateCanPromote,
+        meetsMinRows: report.shadow.meetsMinRows,
+        meetsSchemaValidity: report.shadow.meetsSchemaValidity,
+        meetsSafeShape: report.shadow.meetsSafeShape,
+        shadowRowCount: report.shadow.rowCount,
+        recallMeetsTarget: report.recallMeetsTarget,
+        recallBoundToSyntheticSeed: report.recallBoundToSyntheticSeed,
+        logRowId,
+      },
+      'Chat Core v2 shadow gate check (gateMet stays false until a real corpus is persisted)',
+    );
+    return { gateMet: report.gateCanPromote, shadowRowCount: report.shadow.rowCount, logRowId };
+  } catch (err) {
+    // The body never throws — a metrics/DB failure must not crash the scheduler
+    // tick. A missing table is already handled inside the store; this guard is
+    // pure defence-in-depth. No row contents are logged.
+    logger.warn(
+      { event: 'chat_core_v2_gate_check_failed', err: err instanceof Error ? err.message : String(err) },
+      'Chat Core v2 shadow gate check failed (skipped)',
+    );
+    return null;
+  }
 }
 
 export function startScheduler(bot?: any): void {
@@ -862,6 +932,15 @@ export function startScheduler(bot?: any): void {
   // production deploy with the master kill-switch off never schedules it.
   if (resolveChatCoreV2ActivationConfig(process.env).mode !== 'off') {
     registerJob('chat_v2_auto_revert_eval', 'Chat Core v2 Auto-Revert Eval', '*/5 * * * *', 'system');
+  }
+  // Chat Core v2 automated shadow gate-check (WP-13). Read-only beyond a single
+  // audit row; logs the HONEST gateMet (false until WP-19-seed persists a real
+  // corpus). Hourly is plenty — the gate moves on the order of days/weeks, and
+  // the work is one lightweight aggregate + one INSERT. Default-off via the same
+  // orchestrator-mode gate as the auto-revert eval: a master-kill-switch-off
+  // production deploy never schedules it.
+  if (resolveChatCoreV2ActivationConfig(process.env).mode !== 'off') {
+    registerJob('chat_v2_gate_check', 'Chat Core v2 Shadow Gate Check', '37 * * * *', 'system');
   }
 
   // Seed lastRunAt from DB so the DST watchdog doesn't re-fire jobs after a restart
@@ -2023,6 +2102,19 @@ export function startScheduler(bot?: any): void {
           'Chat Core v2 auto-revert evaluation cycle failed',
         );
       }
+    }), { timezone: 'UTC' });
+  }
+
+  // ── Chat Core v2 automated shadow gate-check (WP-13) ───────────────
+  // Default-off via the same orchestrator-mode gate. Hourly, read-only beyond a
+  // single audit row: it measures the composed promotion gate over the live db
+  // and appends one safe-scalar row to chat_v2_gate_check_log. It NEVER mutates
+  // a flag/override/live route and never fakes a pass — gateMet stays honestly
+  // false until WP-19-seed persists a real (non-synthetic, ≥ target) recall@8.
+  // The body never throws; a missing table is handled inside the store.
+  if (resolveChatCoreV2ActivationConfig(process.env).mode !== 'off') {
+    cron.schedule('37 * * * *', wrapJob('chat_v2_gate_check', async () => {
+      runChatCoreV2GateCheck();
     }), { timezone: 'UTC' });
   }
 
