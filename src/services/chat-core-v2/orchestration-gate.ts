@@ -1,12 +1,16 @@
 // Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
 
+import Database from 'better-sqlite3';
+
 import { logger } from '../../utils/logger';
+import { getDb } from '../database';
 import {
   resolveChatCoreV2ActivationConfig,
   isChatCoreV2MasterKillSwitchOff,
   getChatCoreV2RuntimeOverride,
   type ChatCoreV2ActivationConfig,
 } from './activation-flags';
+import { incrementLegacyFallback } from './autorevert-counters-store';
 import { classifyShadowRoute } from './shadow-route-classifier';
 import {
   buildChatCoreV2RouteDecision,
@@ -45,6 +49,18 @@ export interface RunChatCoreV2OrchestrationGateInput {
   memoryContext?: ChatCoreV2MemoryContextItem[];
   /** Optional injected env (test seam); defaults to process.env. */
   env?: EnvLike;
+  /**
+   * Optional db for the Wave-2 rank 6 per-tenant legacy-fallback counter
+   * (`chat_v2_legacy_fallback_counter`, migration 177). Defaults to `getDb()`.
+   * The increment is reached ONLY after the active-mode + kill-switch guards
+   * have passed, so it is provably off-mode inert — the off-mode live route
+   * returns null at the very first guard and never writes. A test seam so unit
+   * tests can supply an in-memory db (or omit it; a getDb() failure is swallowed
+   * by the fire-and-forget counter).
+   */
+  legacyFallbackDb?: Database.Database;
+  /** Optional clock injection for the counter's hour bucket (test seam). */
+  now?: Date;
 }
 
 /**
@@ -134,14 +150,32 @@ export function runChatCoreV2OrchestrationGate(
       return null;
     }
 
+    // From here on the env mode is canary/on AND this tenant is NOT killed/off,
+    // so EVERY active-mode turn observed below is a real fallback-counter sample.
+    // This is the load-bearing OFF-MODE INERTNESS boundary for the legacy-fallback
+    // counter: an off-mode (or killed-tenant) turn returned null at guard (1)
+    // ABOVE and never reaches `emitLegacyFallback`. Fire-and-forget; never throws.
+    const emitLegacyFallback = (fellBack: boolean): void => {
+      try {
+        const db = input.legacyFallbackDb ?? getDb();
+        incrementLegacyFallback(db, String(input.tenantId), { fellBack }, input.now ?? new Date());
+      } catch {
+        // Belt-and-suspenders: a getDb()/counter failure must never break the
+        // gate. The counter itself is already fire-and-forget.
+      }
+    };
+
     const message = typeof input.message === 'string' ? input.message.trim() : '';
     if (message.length === 0) {
+      // Empty message is not a real chat turn — not a fallback SAMPLE; do not
+      // count it (counting it would dilute the rate with non-turns).
       return null;
     }
 
-    // (2) Classify. Low confidence falls through to the legacy route.
+    // (2) Classify. Low confidence falls through to the legacy route → fallback.
     const guess = classifyShadowRoute(message);
     if (!Number.isFinite(guess.confidence) || guess.confidence < CHAT_CORE_V2_ORCHESTRATION_GATE_MIN_CONFIDENCE) {
+      emitLegacyFallback(true);
       return null;
     }
 
@@ -160,8 +194,10 @@ export function runChatCoreV2OrchestrationGate(
       memoryContext: input.memoryContext,
     });
 
-    // (4) The v2 plan declines to drive these turns; legacy handles them.
+    // (4) The v2 plan declines to drive these turns; legacy handles them →
+    // fallback.
     if (NON_DRIVING_ROUTE_METHODS.has(routeDecision.routeMethod)) {
+      emitLegacyFallback(true);
       return null;
     }
 
@@ -180,6 +216,11 @@ export function runChatCoreV2OrchestrationGate(
     // no safety claim and never blocks the turn.
     const policy = getChatCoreV2ReasoningPolicy(routeDecision.reasoningTier);
     const budgetPreflightOk = checkRuntimeBudget(policy, EMPTY_RUNTIME_BUDGET_USAGE).ok;
+
+    // A non-allowlisted primary domain yields NO overrideDomain: the v2 plan did
+    // not actually drive the domain choice, so legacy still keeps it → fallback.
+    // An applied overrideDomain means the gate drove this turn → NOT a fallback.
+    emitLegacyFallback(overrideDomain === undefined);
 
     return {
       gateVersion: CHAT_CORE_V2_ORCHESTRATION_GATE_VERSION,

@@ -14,6 +14,7 @@ import {
   type ChatCoreV2ShadowReplayResponse,
 } from './shadow-replay';
 import { classifyShadowRoute, type ChatCoreV2ShadowRouteGuess } from './shadow-route-classifier';
+import { maybeEmitPrepassRecallMiss } from './prepass-miss-store';
 
 export const CHAT_CORE_V2_SHADOW_ROUTE_HOOK_VERSION = 'chat_core_v2_shadow_route_hook@1.0.0';
 const CHAT_CORE_V2_SHADOW_ROUTE_HASH_VERSION = 'hmac_sha256@1';
@@ -86,6 +87,12 @@ export function runChatCoreV2ShadowRouteHook(
       ? recordChatCoreV2ShadowReplay(replayInput, input.db)
       : recordChatCoreV2ShadowReplay(replayInput);
 
+    // Active-mode-only prepass recall-miss emission (fire-and-forget). This runs
+    // ONLY from the shadow observe flow, never from the OFF-mode live route;
+    // maybeEmitPrepassRecallMiss additionally re-checks the orchestrator mode and
+    // the per-tenant kill-switch, so it is a hard no-op when mode is off/absent.
+    maybeEmitShadowPrepassRecallMiss(input, result);
+
     return {
       enabled: true,
       recorded: true,
@@ -105,6 +112,48 @@ export function runChatCoreV2ShadowRouteHook(
     );
     return { enabled: true, recorded: false, errorCode: 'shadow_route_hook_failed' };
   }
+}
+
+/**
+ * Detect a Layer-1 prepass recall-miss from the shadow plan and, when one
+ * occurred, emit a privacy-safe row (HMAC-only) through the mode-gated
+ * maybeEmitPrepassRecallMiss. A recall-miss = the prepass ran and produced a
+ * bounded candidate set, but at least one capability the route decision actually
+ * SELECTED is absent from that candidate set (the prepass failed to recall it).
+ *
+ * This is fire-and-forget and active-mode-only: the emitter is a hard no-op when
+ * CHAT_CORE_V2_ORCHESTRATOR_MODE is off/absent or the tenant is demoted off, so
+ * the off-mode live route can never write a miss row.
+ */
+function maybeEmitShadowPrepassRecallMiss(
+  input: RunChatCoreV2ShadowRouteHookInput,
+  result: ChatCoreV2ShadowTurnResult,
+): void {
+  const decision = result.routeDecision;
+  // Only meaningful when the prepass actually ran and emitted candidates.
+  if (decision.prepassApplied !== true) return;
+  const candidateIds = decision.prepassCandidateIds ?? [];
+  const selectedIds = decision.selectedCapabilityIds ?? [];
+  if (selectedIds.length === 0) return;
+
+  const candidateSet = new Set(candidateIds);
+  const missedIds = selectedIds.filter((id) => !candidateSet.has(id));
+  if (missedIds.length === 0) return; // full recall — nothing to log.
+
+  maybeEmitPrepassRecallMiss({
+    turnId: input.chatRequestId,
+    tenantId: String(input.tenantId),
+    userId: String(input.userId),
+    message: input.normalizedText,
+    locale: input.locale ?? 'unknown',
+    expectedCapabilityIds: missedIds,
+    candidateCapabilityIds: candidateIds,
+    reasonCodes: ['prepass_recall_miss'],
+    finalCapabilityId: selectedIds[0],
+    createdAt: input.now?.toISOString(),
+    env: input.env,
+    db: input.db,
+  });
 }
 
 function buildShadowRouteContextPack(

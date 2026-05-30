@@ -28,6 +28,11 @@ import {
   getLatestHealthByProvider,
   type ProbeResult,
 } from '../integration-health';
+import {
+  chatCoreV2HourBucket,
+  sumSchemaComplianceSince,
+  sumLegacyFallbackSince,
+} from './autorevert-counters-store';
 import type { ChatCoreV2AutoRevertMetrics } from './auto-revert-policy';
 
 export const CHAT_CORE_V2_METRICS_AGGREGATOR_VERSION = 'chat_core_v2_metrics_aggregator@1.0.0';
@@ -60,63 +65,69 @@ const SCHEMA_COMPLIANCE_WINDOW_MS = 60 * 60_000; // 1h
 const ACTIVE_TENANT_WINDOW_MS = 24 * 60 * 60_000; // 24h
 
 /**
- * Per-tenant legacy-fallback rate over the trailing 24h. Division-by-zero ⇒ 0.0
- * (a revert-SAFE default: 0.0 < the 0.05 auto-shadow threshold, so no-data never
- * fires a revert).
+ * Per-tenant legacy-fallback rate over the trailing 24h, read from the durable
+ * `chat_v2_legacy_fallback_counter` (migration 177, populated ONLY under an
+ * active orchestration mode by `runChatCoreV2OrchestrationGate`). The rate is
+ * `fallback_count / total_count` summed over every hour bucket at or after the
+ * 24h cutoff.
  *
- * NO QUERYABLE SOURCE YET. Live legacy fallbacks (the action-gateway
- * `blocked_legacy_fallback` outcome and the `legacy_fallback_rate` failure mode
- * in `failure-observability.ts`) are emitted to pino only — there is no
- * reason-coded legacy-fallback counter TABLE to read. The shadow-path
- * `kind='fallback'` trace span records the SHADOW fallback-POLICY verdict, NOT
- * an actual live legacy fallback, so it is deliberately NOT used here (that
- * would be a misnamed metric). Until WP-07 (executor) or a later WP lands a
- * queryable per-tenant legacy-fallback counter, this returns 0.0 gracefully.
+ * Division-by-zero / EMPTY-table ⇒ 0.0 — the revert-SAFE no-data default
+ * (0.0 < the 0.05 auto-shadow threshold, so a dormant/idle tenant never fires a
+ * revert). Wave-2 rank 6 makes this metric REAL; before any active-mode turn the
+ * counter is empty so this still returns 0.0 (the dormant-safe property is
+ * preserved). The whole read is fail-safe: any error ⇒ 0.0.
  */
 export function computeLegacyFallbackRate24h(
   db: Database.Database = getDb(),
   scope: ChatCoreV2MetricsScope,
   now: Date = new Date(),
 ): number {
-  // TODO(WP-07+): read a real per-tenant legacy-fallback counter once a
-  // queryable producer table exists. Today live fallbacks go to pino only, so
-  // there is nothing to query and the revert-safe 0.0 default is returned.
-  void db;
-  void scope;
-  void now;
-  return 0.0;
+  try {
+    const cutoff = chatCoreV2HourBucket(new Date(now.getTime() - FALLBACK_RATE_WINDOW_MS));
+    const sums = sumLegacyFallbackSince(db, scope.tenantId, cutoff);
+    // EMPTY table / no rows in window ⇒ revert-safe 0.0 (no-data ⇒ no revert).
+    if (!sums || sums.total <= 0) return 0.0;
+    return sums.fallback / sums.total;
+  } catch {
+    // Fail-safe: never let a read error drive a revert. 0.0 ⇒ no revert.
+    return 0.0;
+  }
 }
 
 /**
  * Per-tenant schema-compliance rate over the trailing 1h (share of constrained
- * outputs that passed Ajv/Zod validation after enforcement + one repair).
+ * outputs that passed Ajv/Zod validation after enforcement + one repair), read
+ * from the durable `chat_v2_schema_compliance_counter` (migration 177, populated
+ * ONLY from the shadow planner path, which runs only when a planner is injected —
+ * off-mode inert). The rate is `pass / (pass + fail)` summed over every hour
+ * bucket at or after the 1h cutoff.
  *
- * NO-DATA DEFAULT IS 1.0 (fully compliant), NOT 0.0. A compliance RATE with zero
- * samples must mean "no violations observed", because the policy fires
- * `pin_planner_to_repair_only` when the rate is < 0.95 — a 0.0 no-data default
- * would auto-trigger a revert on an idle tenant (the exact inert/false-positive
- * valve class DMV warns against). This mirrors the Ollama staleness guard:
- * no-data / unknown ⇒ never auto-flip.
- *
- * NO QUERYABLE SOURCE YET. `failure-observability.ts` documents the producer as
- * "error_log and format_compliance_fail counter" — that `format_compliance_fail`
- * counter table does not exist yet (schema-validation outcomes are not persisted
- * to a queryable per-tenant table). Until WP-01-remainder / a later WP lands the
- * schema-validation counter, this returns the revert-safe 1.0 default.
+ * NO-DATA / EMPTY-table DEFAULT IS 1.0 (fully compliant), NOT 0.0. A compliance
+ * RATE with zero samples must mean "no violations observed", because the policy
+ * fires `pin_planner_to_repair_only` when the rate is < 0.95 — a 0.0 no-data
+ * default would auto-trigger a revert on an idle tenant (the exact
+ * inert/false-positive valve class DMV warns against). This mirrors the Ollama
+ * staleness guard: no-data / unknown ⇒ never auto-flip. Wave-2 rank 6 makes this
+ * metric REAL; before any planner-path sample the counter is empty so this still
+ * returns 1.0 (the dormant-safe property is preserved). Fail-safe: any error
+ * ⇒ 1.0.
  */
 export function computeSchemaComplianceRate1h(
   db: Database.Database = getDb(),
   scope: ChatCoreV2MetricsScope,
   now: Date = new Date(),
 ): number {
-  // TODO(WP-01-remainder/later): read a real per-tenant schema-validation
-  // compliance counter once `format_compliance_fail` (or equivalent) is a
-  // queryable table. Today validation outcomes are not persisted per tenant, so
-  // the revert-safe 1.0 no-data default is returned.
-  void db;
-  void scope;
-  void now;
-  return 1.0;
+  try {
+    const cutoff = chatCoreV2HourBucket(new Date(now.getTime() - SCHEMA_COMPLIANCE_WINDOW_MS));
+    const sums = sumSchemaComplianceSince(db, scope.tenantId, cutoff);
+    // EMPTY table / no samples in window ⇒ revert-safe 1.0 (no-data ⇒ no revert).
+    const total = sums ? sums.pass + sums.fail : 0;
+    if (!sums || total <= 0) return 1.0;
+    return sums.pass / total;
+  } catch {
+    // Fail-safe: never let a read error pin the planner / trigger a revert.
+    return 1.0;
+  }
 }
 
 /**

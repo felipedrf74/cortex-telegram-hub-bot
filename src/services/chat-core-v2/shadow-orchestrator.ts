@@ -2,6 +2,9 @@
 
 import { createHash } from 'crypto';
 
+import Database from 'better-sqlite3';
+
+import { incrementSchemaCompliance } from './autorevert-counters-store';
 import {
   enforceAndRepairChatTurnPlanMicro,
   type EnforceAndRepairOutcome,
@@ -161,6 +164,17 @@ export interface ChatCoreV2ShadowTurnWithPlannerDeps {
    * appended.
    */
   runPlanner?: ChatCoreV2ShadowRunPlanner;
+  /**
+   * Optional db for the Wave-2 rank 6 per-tenant schema-compliance counter.
+   *
+   * OFF-MODE INERTNESS: the counter increment lives ENTIRELY inside the
+   * `deps.runPlanner` branch below — it runs ONLY when a planner is injected
+   * (shadow+/sandbox). The off-mode live route never injects a planner, so it
+   * never reaches this write. When `db` is omitted NO counter write is attempted
+   * at all (the increment is fully skipped), so existing planner-only callers and
+   * tests that do not care about the counter stay byte-compatible on the DB.
+   */
+  schemaComplianceDb?: Database.Database;
   now?: Date;
 }
 
@@ -237,6 +251,23 @@ async function runShadowPlannerSpan(
   });
 
   const schemaValid = enforced.outcome === 'valid' || enforced.outcome === 'repaired';
+
+  // Wave-2 rank 6: per-tenant schema-compliance counter. This is the ONLY
+  // schema-compliance increment site, and it lives inside the planner branch —
+  // which only runs when a planner is injected (shadow+/sandbox), so it is
+  // OFF-MODE INERT by construction (the off-mode live route never injects a
+  // planner and never reaches here). pass = valid|repaired, fail = unrepairable.
+  // Fire-and-forget: incrementSchemaCompliance never throws. Only attempted when
+  // a db is supplied (omitting the db skips the write entirely — see deps doc).
+  if (deps.schemaComplianceDb) {
+    incrementSchemaCompliance(
+      deps.schemaComplianceDb,
+      String(input.tenantId),
+      { valid: schemaValid },
+      deps.now ?? input.now ?? new Date(),
+    );
+  }
+
   return buildPlannerSpan(input, 'success', sensitivity, now, {
     schemaValid,
     outcome: enforced.outcome satisfies EnforceAndRepairOutcome,
