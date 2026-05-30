@@ -68,6 +68,7 @@ import {
   computeActionEffectiveStatus,
   computeDecisionKind,
   computeActionability,
+  gateActionabilityForStaleEvidence,
   rankDecisionPriority,
   computeConfidenceExplanation,
   getDecisionLifecycleEvents,
@@ -2403,5 +2404,56 @@ describe('runDecisionLedgerRetentionPruneJob (retention)', () => {
     const result = runDecisionLedgerRetentionPruneJob();
     expect(result.outcomeLedgerPruned).toBe(1);
     expect(countOutcome()).toBe(1);
+  });
+});
+
+describe('Decision Center evidence-freshness gate (F2)', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-05-10T10:00:00.000Z'));
+    testDb = new Database(':memory:');
+    process.env.NOTIFICATION_DELIVERY_MODE = 'mock';
+    ensureNotificationTables();
+    ensureDecisionCenterTables();
+  });
+  afterEach(() => {
+    delete process.env.NOTIFICATION_DELIVERY_MODE;
+    delete process.env.DECISION_EVIDENCE_FRESHNESS_GATE_ENABLED;
+    vi.useRealTimers();
+    testDb?.close();
+  });
+
+  it('gateActionabilityForStaleEvidence only LOWERS write-capable actionability (pure)', () => {
+    expect(gateActionabilityForStaleEvidence('confirmation_required')).toBe('preview_available');
+    expect(gateActionabilityForStaleEvidence('execute_with_undo')).toBe('preview_available');
+    expect(gateActionabilityForStaleEvidence('requires_human_review')).toBe('preview_available');
+    for (const passthrough of ['read_only', 'preview_available', 'blocked', 'unavailable'] as const) {
+      expect(gateActionabilityForStaleEvidence(passthrough)).toBe(passthrough);
+    }
+  });
+
+  it('downgrades a STALE decision\'s actionability when the flag is ON; OFF leaves it unchanged', async () => {
+    const { created } = await createContentApprovalDecision(85, 85, 'f2-stale');
+    snoozeDecision(created.item!.decisionId, 85, 85, 60); // snoozed => sourceFreshness 'stale'
+
+    const off = getDecisionItem(created.item!.decisionId, 85, 85)!;
+    expect(off.analysis.sourceFreshness).toBe('stale'); // precondition
+
+    process.env.DECISION_EVIDENCE_FRESHNESS_GATE_ENABLED = 'true';
+    const on = getDecisionItem(created.item!.decisionId, 85, 85)!;
+    expect(on.actionability).toBe(gateActionabilityForStaleEvidence(off.actionability!)); // wiring applies the gate
+    if (['confirmation_required', 'execute_with_undo', 'requires_human_review'].includes(off.actionability ?? '')) {
+      expect(on.actionability).toBe('preview_available'); // real downgrade for a write-capable, stale decision
+    }
+  });
+
+  it('does NOT downgrade a FRESH decision even with the flag ON', async () => {
+    const { created } = await createContentApprovalDecision(86, 86, 'f2-fresh');
+    const off = getDecisionItem(created.item!.decisionId, 86, 86)!;
+    expect(off.analysis.sourceFreshness).not.toBe('stale'); // live/unknown, not stale
+
+    process.env.DECISION_EVIDENCE_FRESHNESS_GATE_ENABLED = 'true';
+    const on = getDecisionItem(created.item!.decisionId, 86, 86)!;
+    expect(on.actionability).toBe(off.actionability); // fresh => gate does nothing
   });
 });

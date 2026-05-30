@@ -52,7 +52,7 @@ import {
 } from './chat-pending-confirmations';
 import { isValidTenantUserId, recordTenantScopeAnomaly } from './tenant-scope-observability';
 import { logger } from '../utils/logger';
-import { isDecisionCenterCommandBusEnabled, isDecisionCenterFatigueCapsEnabled, isDecisionCenterGuidanceSkillEnabled, isDecisionCenterGuidanceV1Enabled, isDecisionStreakV1Enabled } from './runtime-flags';
+import { isDecisionCenterCommandBusEnabled, isDecisionCenterFatigueCapsEnabled, isDecisionCenterGuidanceSkillEnabled, isDecisionCenterGuidanceV1Enabled, isDecisionEvidenceFreshnessGateEnabled, isDecisionStreakV1Enabled } from './runtime-flags';
 import { decisionRelationshipSemantics, type DecisionRelationshipType } from './decision-relationship-types';
 import type { SecretaryTodaySummaryModel } from './secretary-orchestrator';
 import { secretaryTodayLabels } from './secretary-today-copy';
@@ -2399,7 +2399,7 @@ function formatDecisionItemForApi(item: DecisionRecord): DecisionApiItem {
   const visibleWhatWillChange = userVisibleWhatWillChangeForApi(item, logic);
   const effectiveStatus = computeEffectiveStatus(item, { dependencies, logic, retryAvailable: outcome.retryActions.length > 0 });
   const decisionKind = computeDecisionKind(item, logic, dependencies, action);
-  const actionability = computeActionability(item, logic, effectiveStatus, action);
+  let actionability = computeActionability(item, logic, effectiveStatus, action);
   const rankDeadline = item.decisionDeadline ?? item.expiresAt;
   const prioritySnapshot = rankDecisionPriority({
     priority: item.priority,
@@ -2412,6 +2412,12 @@ function formatDecisionItemForApi(item: DecisionRecord): DecisionApiItem {
     dependencyBlocked: dependencies.blockedByDecisionIds.length > 0,
   });
   const analysisBundle = analysisForRecord(item, logic);
+  // F2: gate actionability on stale evidence (flag-gated; only lowers write-capable actionability so the
+  // client offers Refresh instead of acting on stale data). OFF or fresh => unchanged.
+  if (analysisBundle.sourceFreshness === 'stale'
+      && isDecisionEvidenceFreshnessGateEnabled(process.env, { userId: item.userId, tenantId: item.tenantId })) {
+    actionability = gateActionabilityForStaleEvidence(actionability);
+  }
   const confidenceExplanation = computeConfidenceExplanation(logic.confidence, logic.why, analysisBundle, exposeDebugEvidence);
   return {
     decisionId: item.itemId,
@@ -3945,6 +3951,24 @@ export function computeActionability(
   if (!record.requiresUserAction || !logic.quality.safeForFrontendAction) return 'read_only';
   if (!primaryAction || !isDecisionActionExecutable(primaryAction.id)) return 'read_only';
   return 'confirmation_required';
+}
+
+/**
+ * F2 — evidence-freshness gate. When a decision's evidence is STALE, downgrade a write-capable
+ * actionability to `preview_available` so the client surfaces a Refresh affordance (from the item's
+ * `sourceFreshness` signal) rather than letting the user act on stale data. Pure; this only ever LOWERS
+ * actionability — read-only / already-preview / blocked / unavailable states pass through unchanged, so
+ * it can never escalate a decision.
+ */
+export function gateActionabilityForStaleEvidence(actionability: Actionability): Actionability {
+  switch (actionability) {
+    case 'execute_with_undo':
+    case 'confirmation_required':
+    case 'requires_human_review':
+      return 'preview_available';
+    default:
+      return actionability;
+  }
 }
 
 export const DECISION_RANKING_VERSION = 1;

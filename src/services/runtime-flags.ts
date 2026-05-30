@@ -272,6 +272,16 @@ export function isDecisionDashboardEnabled(env: RuntimeEnv = process.env, scope?
   return scopedFlagEnabledByExplicitOptIn(env, 'DECISION_DASHBOARD_ENABLED', scope);
 }
 
+/**
+ * Gates F2 evidence-freshness handling: when a decision's evidence is stale, the API downgrades a
+ * write-capable actionability to preview_available so the client offers a Refresh affordance instead
+ * of letting the user act on stale data. The gate only ever LOWERS actionability. Default OFF; opt-in
+ * per user/tenant so the downgrade is a deliberate, reversible rollout.
+ */
+export function isDecisionEvidenceFreshnessGateEnabled(env: RuntimeEnv = process.env, scope?: RuntimeFlagScope): boolean {
+  return scopedFlagEnabledByExplicitOptIn(env, 'DECISION_EVIDENCE_FRESHNESS_GATE_ENABLED', scope);
+}
+
 export function isChatCoreV2RuntimeFlagEnabled(
   flagKey: string,
   env: RuntimeEnv = process.env,
