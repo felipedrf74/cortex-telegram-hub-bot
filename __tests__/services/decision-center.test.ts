@@ -1006,6 +1006,32 @@ describe('Decision Center facade', () => {
     }
   });
 
+  it('D: surfaces a content pipeline card from the workflow object (flag-gated, real fields only)', async () => {
+    const { created } = await createContentApprovalDecision(98, 98, 'content-card');
+    expect(created.item).not.toBeNull();
+    const id = created.item!.decisionId;
+
+    // OFF (default) — byte-identical: no contentCard.
+    expect(getDecisionItem(id, 98, 98)!.contentCard).toBeUndefined();
+
+    try {
+      process.env.DECISION_SKILL_CARDS_ENABLED = 'true';
+      const card = getDecisionItem(id, 98, 98)!.contentCard;
+      expect(card).toBeDefined();
+      expect(card!.objectType).toBe('script');     // straight from the workflow object
+      expect(card!.pipelineStage).toBe('drafted');  // editorialState
+      expect(typeof card!.approvalState).toBe('string');
+      expect(typeof card!.reviewRequired).toBe('boolean');
+      expect(card!.nextActionLabel).toBeTruthy();   // the decision's primary action label
+
+      // a NON-content decision gets no content card even with the flag ON.
+      const training = await createDecisionIntent(buildSkillDecisionFixtureIntent('training', 98, { dedupeKey: 'content-card-nonmatch' }));
+      expect(getDecisionItem(training.item!.decisionId, 98, 98)!.contentCard).toBeUndefined();
+    } finally {
+      delete process.env.DECISION_SKILL_CARDS_ENABLED;
+    }
+  });
+
   it('executes content approval actions through Content and read-back verifies state', async () => {
     const object = createContentWorkflowObject({
       userId: 2,

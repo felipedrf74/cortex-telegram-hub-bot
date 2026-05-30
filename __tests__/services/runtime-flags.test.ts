@@ -33,6 +33,7 @@ import {
   isDecisionCenterGuidanceV1Enabled,
   isDecisionChoiceOptionsEnabled,
   isDecisionReconnectAffordanceEnabled,
+  isDecisionSkillCardsEnabled,
   isAnthropicRuntimeEnabled,
   isChatCoreV2ShadowRouteHookEnabled,
   isSecretaryHaikuRoutingEnabled,
@@ -284,6 +285,21 @@ describe('runtime-flags', () => {
     expect(isDecisionChoiceOptionsEnabled({
       DECISION_CHOICE_OPTIONS_ENABLED: 'true',
       DECISION_CHOICE_OPTIONS_ENABLED_USER_42: 'off',
+    }, { userId: 42, tenantId: 9 })).toBe(false);
+  });
+
+  it('keeps the D skill cards surface default-off with scoped opt-in', () => {
+    expect(isDecisionSkillCardsEnabled({})).toBe(false);
+    expect(isDecisionSkillCardsEnabled({ DECISION_SKILL_CARDS_ENABLED: 'true' })).toBe(true);
+    expect(isDecisionSkillCardsEnabled({ DECISION_SKILL_CARDS_ENABLED: '1' })).toBe(true);
+    expect(isDecisionSkillCardsEnabled({ DECISION_SKILL_CARDS_ENABLED: 'yes' })).toBe(false);
+    expect(isDecisionSkillCardsEnabled({
+      DECISION_SKILL_CARDS_ENABLED: 'false',
+      DECISION_SKILL_CARDS_ENABLED_TENANT_9: 'true',
+    }, { userId: 7, tenantId: 9 })).toBe(true);
+    expect(isDecisionSkillCardsEnabled({
+      DECISION_SKILL_CARDS_ENABLED: 'true',
+      DECISION_SKILL_CARDS_ENABLED_USER_42: 'off',
     }, { userId: 42, tenantId: 9 })).toBe(false);
   });
 });

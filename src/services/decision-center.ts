@@ -52,7 +52,7 @@ import {
 } from './chat-pending-confirmations';
 import { isValidTenantUserId, recordTenantScopeAnomaly } from './tenant-scope-observability';
 import { logger } from '../utils/logger';
-import { isDecisionCenterCommandBusEnabled, isDecisionCenterFatigueCapsEnabled, isDecisionCenterGuidanceSkillEnabled, isDecisionCenterGuidanceV1Enabled, isDecisionChoiceOptionsEnabled, isDecisionEvidenceFreshnessGateEnabled, isDecisionReconnectAffordanceEnabled, isDecisionSemanticDedupEnabled, isDecisionStreakV1Enabled } from './runtime-flags';
+import { isDecisionCenterCommandBusEnabled, isDecisionCenterFatigueCapsEnabled, isDecisionCenterGuidanceSkillEnabled, isDecisionCenterGuidanceV1Enabled, isDecisionChoiceOptionsEnabled, isDecisionEvidenceFreshnessGateEnabled, isDecisionReconnectAffordanceEnabled, isDecisionSemanticDedupEnabled, isDecisionSkillCardsEnabled, isDecisionStreakV1Enabled } from './runtime-flags';
 import { decisionRelationshipSemantics, type DecisionRelationshipKind, type DecisionRelationshipType } from './decision-relationship-types';
 import { buildDecisionDedupKey, classifyDecisionDedup } from './decision-center-semantic-dedup';
 import type { SecretaryTodaySummaryModel } from './secretary-orchestrator';
@@ -284,6 +284,9 @@ export interface DecisionApiItem {
    *  undefined (omitted from JSON) unless DECISION_CHOICE_OPTIONS is enabled AND the decision has real
    *  options, so existing clients see a byte-identical payload. */
   options?: DecisionOption[];
+  /** D — skill-specific card (content pipeline state today). Optional + flag-gated (DECISION_SKILL_CARDS);
+   *  undefined/omitted unless enabled AND the decision has a backing domain object. */
+  contentCard?: DecisionContentCard;
   automationEligibility: AutomationEligibility;
   autopilotPolicy: string;
   readBackVerifier: string | null;
@@ -409,6 +412,21 @@ export interface DecisionOption {
   actionId: string;
   /** Optional payload the action needs at selection time (e.g. the chosen window). Not a baked preview. */
   actionPayload?: { startAt?: string; endAt?: string };
+}
+
+/**
+ * D (content) — a skill-specific card surfacing the content pipeline state a content decision is about, so
+ * the client can render "Script · Drafted · Review required · [Approve]" instead of inferring it. Every
+ * field is read straight from the content workflow object (objectType / editorialState / approvalState /
+ * reviewRequired) — no free text — so it cannot be tainted by injected evidence. Additive/optional on the
+ * item (Codable-backward-compatible); flag-gated.
+ */
+export interface DecisionContentCard {
+  objectType: string;
+  pipelineStage: string;
+  approvalState: string;
+  reviewRequired: boolean;
+  nextActionLabel: string | null;
 }
 
 export interface DecisionSourceTrace {
@@ -2602,6 +2620,9 @@ function formatDecisionItemForApi(item: DecisionRecord): DecisionApiItem {
     options: isDecisionChoiceOptionsEnabled(process.env, { userId: item.userId, tenantId: item.tenantId })
       ? buildSecretaryChoiceOptions(item, logic)
       : undefined,
+    contentCard: isDecisionSkillCardsEnabled(process.env, { userId: item.userId, tenantId: item.tenantId })
+      ? buildContentDecisionCard(item, logic, action)
+      : undefined,
     automationEligibility: logic.automationEligibility,
     autopilotPolicy: logic.autopilotPolicy,
     readBackVerifier: exposeDebugEvidence ? logic.readBackVerifier : null,
@@ -2882,6 +2903,31 @@ function buildSecretaryChoiceOptions(item: DecisionRecord, logic: DecisionLogicV
     });
   }
   return options;
+}
+
+/**
+ * D (content) — surface the content pipeline state for a content decision as a structured card. Pure +
+ * read-only (getContentWorkflowObject is scope-checked by userId/tenantId). Returns undefined — never a
+ * partial card — for non-content decisions or when the backing workflow object is missing, so the field is
+ * only present when every value is real.
+ */
+function buildContentDecisionCard(
+  item: DecisionRecord,
+  logic: DecisionLogicV2,
+  primaryAction: NotificationActionButton | null,
+): DecisionContentCard | undefined {
+  if (item.sourceSkill !== 'content') return undefined;
+  const objectId = contentWorkflowObjectIdForDecision(item);
+  if (!objectId) return undefined;
+  const object = getContentWorkflowObject(item.userId, objectId, item.tenantId);
+  if (!object) return undefined;
+  return {
+    objectType: object.objectType,
+    pipelineStage: object.editorialState,
+    approvalState: object.approvalState,
+    reviewRequired: object.reviewRequired,
+    nextActionLabel: logic.primaryActionLabel || (primaryAction?.label ?? null),
+  };
 }
 
 function relatedEntitiesSafeForRecord(item: DecisionRecord, logic: DecisionLogicV2): Array<{ type: string; label: string }> {
