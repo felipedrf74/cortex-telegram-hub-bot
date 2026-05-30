@@ -34,6 +34,7 @@ import { registerPortalActionRoutes } from './action-routes';
 import { registerPortalChatRoutes } from './chat-routes';
 import { registerPortalChatCoreV2GateRoutes } from './chat-core-v2-gate-routes';
 import { registerPortalChatCoreV2ObservabilityRoutes } from './chat-core-v2-observability-routes';
+import { registerPortalChatCoreV2CorpusEvalRoutes } from './corpus-eval-routes';
 import { registerPortalContentRoutes } from './content-routes';
 import { registerPortalCookingRoutes } from './cooking-routes';
 import { registerPortalDecisionCenterRoutes } from './decision-center-routes';
@@ -388,6 +389,12 @@ export function createPortalServer(bot?: any): http.Server {
   // is not 'off' (default-off; same single parser). The POST decide route is
   // mounted after the global express.json() above, so req.body is parsed.
   registerPortalChatCoreV2ObservabilityRoutes(app);
+
+  // WP-19: admin-scoped, read-only Chat Core v2 corpus-eval run-history endpoint
+  // (recall@k per run; safe scalars + a corpus content-hash only). Registered
+  // ONLY when the orchestrator mode is not 'off' (default-off; same single
+  // parser as WP-12/WP-13).
+  registerPortalChatCoreV2CorpusEvalRoutes(app);
 
   registerPortalUserSkillRoutes(app);
 

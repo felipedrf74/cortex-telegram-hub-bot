@@ -1,0 +1,106 @@
+name: Corpus eval (weekly recall@8 gate writer)
+
+# WP-19 — OFFLINE/CI corpus-eval pipeline (NOT the live request path).
+#
+# Two entry points:
+#   - Monday 06:00 UTC cron + manual dispatch → the WEEKLY eval. Merges the
+#     golden corpus + the DROP-TEXT shadow corpus, runs recall@8, persists the
+#     recall via WP-13's upsertRecallAt8(), and FAILS the job on GATE_FAIL.
+#   - Manual dispatch with `mode=seed` → the WP-19-SEED one-shot. Runs the eval
+#     over the SYNTHETIC seed corpus only, writing the FIRST persisted recall.
+#     HONESTY: that recall is bound to the synthetic content-hash, which WP-13's
+#     gateCanPromote REJECTS, so the seed run does NOT open the gate (it exits
+#     GATE_FAIL by design, kept green via --allow-seed-fail). Only a
+#     peer-reviewed REAL corpus opens the gate (a data gate, out of code scope).
+#
+# PRIVACY (BLOCKING — §5.F / OD-4): the job FAILS if CORPUS_EVAL_HMAC_SECRET is
+# empty while DATABASE_PATH points at a real (non-:memory:) DB. The shadow
+# corpus is loaded DROP-TEXT (no raw message text) with a tenant+user-salted
+# HMAC token, never a global-unsalted one.
+
+on:
+  schedule:
+    # Monday 06:00 UTC.
+    - cron: '0 6 * * 1'
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'weekly = full golden+shadow eval; seed = WP-19-seed synthetic one-shot (cannot open the gate)'
+        type: choice
+        options:
+          - weekly
+          - seed
+        default: weekly
+      window_days:
+        description: 'Shadow corpus lookback window (days)'
+        default: '30'
+      limit:
+        description: 'Shadow corpus item cap'
+        default: '5000'
+
+env:
+  NODE_VERSION: '20'
+  CORPUS_EVAL_OUT_DIR: reports/corpus-eval
+
+jobs:
+  corpus-eval:
+    name: Corpus eval (recall@8)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - run: npm ci
+
+      - name: TypeScript type check
+        run: npm run typecheck
+
+      # BLOCKING privacy gate (§5.F): fail FAST if the HMAC secret is empty while
+      # DATABASE_PATH points at a real (non-:memory:) DB. The script itself also
+      # hard-fails, and the loader throws — this step is the loudest, earliest
+      # signal so the real-DB path can never run unsecured.
+      - name: Enforce mandatory HMAC secret on a real DB
+        env:
+          CORPUS_EVAL_HMAC_SECRET: ${{ secrets.CORPUS_EVAL_HMAC_SECRET }}
+          DATABASE_PATH: ${{ secrets.CORPUS_EVAL_DATABASE_PATH }}
+        run: |
+          DB_PATH="${DATABASE_PATH:-./data/bot.db}"
+          if [ "$DB_PATH" != ":memory:" ] && [ -z "$CORPUS_EVAL_HMAC_SECRET" ]; then
+            echo "::error::CORPUS_EVAL_HMAC_SECRET is MANDATORY when DATABASE_PATH ('$DB_PATH') is a real (non-:memory:) DB (§5.F)."
+            exit 1
+          fi
+          echo "HMAC secret precondition satisfied for DATABASE_PATH='$DB_PATH'."
+
+      - name: Run weekly corpus eval (golden + shadow)
+        if: ${{ github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.mode == 'weekly') }}
+        env:
+          CORPUS_EVAL_HMAC_SECRET: ${{ secrets.CORPUS_EVAL_HMAC_SECRET }}
+          DATABASE_PATH: ${{ secrets.CORPUS_EVAL_DATABASE_PATH }}
+        run: |
+          npx tsx scripts/eval/corpus-eval-weekly.ts \
+            --window-days="${{ inputs.window_days || '30' }}" \
+            --limit="${{ inputs.limit || '5000' }}"
+
+      - name: Run WP-19-seed one-shot (synthetic; cannot open the gate)
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.mode == 'seed' }}
+        env:
+          CORPUS_EVAL_HMAC_SECRET: ${{ secrets.CORPUS_EVAL_HMAC_SECRET }}
+          DATABASE_PATH: ${{ secrets.CORPUS_EVAL_DATABASE_PATH }}
+        # The seed run writes the FIRST persisted recall (resolving the inverted
+        # recall dependency) but is EXPECTED to print GATE_FAIL — the synthetic
+        # seed can never open the gate. --allow-seed-fail keeps the one-shot green
+        # while still recording the honest verdict + the persisted recall.
+        run: |
+          npx tsx scripts/eval/corpus-eval-weekly.ts --seed --allow-seed-fail
+
+      - name: Upload corpus-eval artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: corpus-eval
+          path: reports/corpus-eval/
+          retention-days: 14
