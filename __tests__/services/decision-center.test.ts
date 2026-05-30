@@ -69,6 +69,8 @@ import {
   computeDecisionKind,
   computeActionability,
   gateActionabilityForStaleEvidence,
+  gateActionabilityForHumanReview,
+  isHumanReviewQueueAvailable,
   rankDecisionPriority,
   computeConfidenceExplanation,
   getDecisionLifecycleEvents,
@@ -1027,6 +1029,90 @@ describe('Decision Center facade', () => {
       // a NON-content decision gets no content card even with the flag ON.
       const training = await createDecisionIntent(buildSkillDecisionFixtureIntent('training', 98, { dedupeKey: 'content-card-nonmatch' }));
       expect(getDecisionItem(training.item!.decisionId, 98, 98)!.contentCard).toBeUndefined();
+    } finally {
+      delete process.env.DECISION_SKILL_CARDS_ENABLED;
+    }
+  });
+
+  it('D: surfaces a training before/after card from the anchoring agenda (flag-gated; risk from reason codes, not text)', async () => {
+    ensureUserFixtureTable();
+    ensureSecretaryAgendaFixtureTables();
+    testDb.prepare(`INSERT INTO users (id, telegram_id, first_name, language, timezone, status) VALUES (110, 11000, 'Train Owner', 'en-US', 'UTC', 'active')`).run();
+    testDb.prepare(`
+      INSERT INTO secretary_agenda_items (
+        agenda_item_id, source_intent_id, source_skill, source_action, intent_action,
+        source_entity_id, source_entity_type, owner_user_id, tenant_id,
+        lifecycle_state, provider_sync_state, version, title, start_at, end_at,
+        duration_minutes, decision_action, decision_reason_codes_json, decision_explanation,
+        source_shape_hash, scheduled_segments_json, created_at, updated_at
+      ) VALUES (
+        'agenda-train', 'intent-train', 'training', 'long_run', 'reschedule_this',
+        'session-train', 'training_session', 110, '110',
+        'proposed', 'not_synced', 1, 'PEAK RACE high risk override by text',
+        '2026-05-11T08:00:00.000Z', '2026-05-11T10:00:00.000Z',
+        120, 'deferred', '["peak_week"]', 'Needs approval',
+        'hash-train', ?, datetime('now'), datetime('now')
+      )
+    `).run(JSON.stringify([
+      { start: '2026-05-11T08:00:00.000Z', end: '2026-05-11T10:00:00.000Z', label: 'Current' },
+      { start: '2026-05-11T14:00:00.000Z', end: '2026-05-11T16:00:00.000Z', label: 'Afternoon' },
+    ]));
+    // A training-session reflow is surfaced under the secretary skill, anchored on the training agenda.
+    const created = await createDecisionIntent(buildSkillDecisionFixtureIntent('secretary', 110, {
+      relatedEntityId: 'agenda-train', relatedEntityType: 'secretary_agenda_item', dedupeKey: 'train-card',
+      actionButtons: [{ id: 'accept_reflow', label: 'Reflow', style: 'primary' }],
+    }));
+    expect(created.item).not.toBeNull();
+    const id = created.item!.decisionId;
+
+    expect(getDecisionItem(id, 110, 110)!.trainingCard).toBeUndefined(); // OFF — byte-identical
+
+    try {
+      process.env.DECISION_SKILL_CARDS_ENABLED = 'true';
+      const card = getDecisionItem(id, 110, 110)!.trainingCard;
+      expect(card).toBeDefined();
+      expect(card!.beforeStartAt).toBe('2026-05-11T08:00:00.000Z');
+      expect(card!.beforeWindowLabel).toBeTruthy();
+      // risk comes from the STRUCTURED reason code 'peak_week' (-> medium), NEVER the "high risk" free text.
+      expect(card!.risk).toBe('medium');
+      expect(typeof card!.undoAvailable).toBe('boolean');
+
+      // a decision NOT anchored on a training agenda gets no training card.
+      const plain = await createDecisionIntent(buildSkillDecisionFixtureIntent('cooking', 110, { tenantId: 110, dedupeKey: 'train-card-nonmatch' }));
+      expect(getDecisionItem(plain.item!.decisionId, 110, 110)!.trainingCard).toBeUndefined();
+    } finally {
+      delete process.env.DECISION_SKILL_CARDS_ENABLED;
+    }
+  });
+
+  it('D: surfaces a privacy-safe finance card (month/status/freshness only — NEVER amounts; flag-gated)', async () => {
+    ensureFinanceFixtureTables();
+    testDb.prepare(`
+      INSERT INTO finance_tax_events (tenant_id, user_id, month, gross_income, deductions, taxable_income, tax_due, inss_due, status, darf_code)
+      VALUES (111, 111, '2026-03', 9000, 0, 9000, 1234, 0, 'pending', '0190')
+    `).run();
+    const created = await createDecisionIntent(buildSkillDecisionFixtureIntent('finance', 111, {
+      type: 'decision_required', requiresUserAction: true,
+      relatedEntityId: '2026-03', relatedEntityType: 'finance_tax_event', dedupeKey: 'finance-card',
+    }));
+    expect(created.item).not.toBeNull();
+    const id = created.item!.decisionId;
+
+    expect(getDecisionItem(id, 111, 111)!.financeCard).toBeUndefined(); // OFF — byte-identical
+
+    try {
+      process.env.DECISION_SKILL_CARDS_ENABLED = 'true';
+      const card = getDecisionItem(id, 111, 111)!.financeCard;
+      expect(card).toBeDefined();
+      expect(card!.taxMonth).toBe('2026-03');
+      expect(typeof card!.paymentStatus).toBe('string');
+      expect(card!.freshnessLabel).toBeTruthy();
+      // PRIVACY (load-bearing): the card carries ONLY safe labels — no amount keys, and the serialized
+      // card never leaks the seeded amounts (tax_due 1234, gross 9000).
+      expect(Object.keys(card!).sort()).toEqual(['freshnessLabel', 'nextActionLabel', 'paymentStatus', 'taxMonth']);
+      const serialized = JSON.stringify(card);
+      expect(serialized).not.toContain('1234');
+      expect(serialized).not.toContain('9000');
     } finally {
       delete process.env.DECISION_SKILL_CARDS_ENABLED;
     }
@@ -2630,6 +2716,22 @@ describe('Decision Center evidence-freshness gate (F2)', () => {
     }
   });
 
+  it('F human-review gate maps requires_human_review -> unavailable only when the queue is down (pure)', () => {
+    // queue DOWN: only requires_human_review lowers; everything else passes through unchanged.
+    expect(gateActionabilityForHumanReview('requires_human_review', false)).toBe('unavailable');
+    for (const passthrough of ['read_only', 'preview_available', 'confirmation_required', 'execute_with_undo', 'blocked', 'unavailable'] as const) {
+      expect(gateActionabilityForHumanReview(passthrough, false)).toBe(passthrough);
+    }
+    // queue UP: requires_human_review is preserved (review can actually be submitted).
+    expect(gateActionabilityForHumanReview('requires_human_review', true)).toBe('requires_human_review');
+    // no env => no queue => default closed.
+    const saved = process.env.DECISION_HUMAN_REVIEW_QUEUE_AVAILABLE;
+    delete process.env.DECISION_HUMAN_REVIEW_QUEUE_AVAILABLE;
+    expect(isHumanReviewQueueAvailable(process.env)).toBe(false);
+    expect(isHumanReviewQueueAvailable({ DECISION_HUMAN_REVIEW_QUEUE_AVAILABLE: 'true' } as NodeJS.ProcessEnv)).toBe(true);
+    if (saved !== undefined) process.env.DECISION_HUMAN_REVIEW_QUEUE_AVAILABLE = saved;
+  });
+
   it('downgrades a STALE decision\'s actionability when the flag is ON; OFF leaves it unchanged', async () => {
     const { created } = await createContentApprovalDecision(85, 85, 'f2-stale');
     snoozeDecision(created.item!.decisionId, 85, 85, 60); // snoozed => sourceFreshness 'stale'
@@ -2668,8 +2770,80 @@ describe('Decision Center B3 acting — conflict linking on create', () => {
   afterEach(() => {
     delete process.env.NOTIFICATION_DELIVERY_MODE;
     delete process.env.DECISION_SEMANTIC_DEDUP_ENABLED;
+    delete process.env.DECISION_SEMANTIC_SUPERSEDE_ENABLED;
     vi.useRealTimers();
     testDb?.close();
+  });
+
+  it('B3 hiding: same_recommendation collapses the new duplicate into the existing (returns existing, only one active)', async () => {
+    process.env.DECISION_SEMANTIC_DEDUP_ENABLED = 'true';
+    process.env.DECISION_SEMANTIC_SUPERSEDE_ENABLED = 'true';
+    // Two SAME-skill, SAME-type, SAME-recipe (dedupe first-two 'train:plan'), SAME-entity, SAME-day rows
+    // with DISTINCT exact dedupe keys (so exact-dedup does not fire; the semantic same_recommendation does).
+    const a = await createDecisionIntent(buildSkillDecisionFixtureIntent('training', 90, { tenantId: 90, type: 'decision_required', requiresUserAction: true, relatedEntityId: 'slot1', dedupeKey: 'train:plan:a' }));
+    expect(a.item).not.toBeNull();
+    const b = await createDecisionIntent(buildSkillDecisionFixtureIntent('training', 90, { tenantId: 90, type: 'decision_required', requiresUserAction: true, relatedEntityId: 'slot1', dedupeKey: 'train:plan:b' }));
+    // the new duplicate folded into the existing => createDecisionIntent returns the EXISTING item.
+    expect(b.item!.decisionId).toBe(a.item!.decisionId);
+    // exactly one active decision remains; the new row is superseded (hidden), the existing is still shown.
+    expect(getDecisionItem(a.item!.decisionId, 90, 90)).not.toBeNull();
+    expect(listDecisionItems(90, 90)).toHaveLength(1);
+  });
+
+  it('B3 hiding: newer_recommendation supersedes the OLDER same-recipe decision (different type, non-floored)', async () => {
+    process.env.DECISION_SEMANTIC_DEDUP_ENABLED = 'true';
+    process.env.DECISION_SEMANTIC_SUPERSEDE_ENABLED = 'true';
+    // Cooking @ active priority is NOT policy-floored; different type (intent) => newer supersedes old.
+    const older = await createDecisionIntent(buildSkillDecisionFixtureIntent('cooking', 91, { tenantId: 91, type: 'decision_required', priority: 'active', requiresUserAction: true, relatedEntityId: 'slot1', dedupeKey: 'cook:plan:older' }));
+    expect(older.item).not.toBeNull();
+    expect(isDecisionItemPolicyFloored(older.item!)).toBe(false); // precondition: supersedes only fires on a non-floored older
+    const newer = await createDecisionIntent(buildSkillDecisionFixtureIntent('cooking', 91, { tenantId: 91, type: 'reminder', priority: 'active', requiresUserAction: true, relatedEntityId: 'slot1', dedupeKey: 'cook:plan:newer' }));
+    expect(newer.item).not.toBeNull();
+    expect(newer.item!.decisionId).not.toBe(older.item!.decisionId); // newer is its own row (not a collapse)
+    // the OLDER decision is superseded (hidden from the active list) — proven by the lifecycle stream.
+    expect(getDecisionLifecycleEvents(older.item!.decisionId, 91, 91).map((e) => e.event)).toContain('superseded');
+    const activeIds = listDecisionItems(91, 91).map((d) => d.decisionId);
+    expect(activeIds).not.toContain(older.item!.decisionId); // older no longer surfaces in the active list
+    expect(activeIds).toContain(newer.item!.decisionId);     // the newer recommendation is surfaced
+  });
+
+  it('B3 hiding NEVER supersedes a DIFFERENT decision (different entity / different skill stay active)', async () => {
+    process.env.DECISION_SEMANTIC_DEDUP_ENABLED = 'true';
+    process.env.DECISION_SEMANTIC_SUPERSEDE_ENABLED = 'true';
+    const sameEntityOlder = await createDecisionIntent(buildSkillDecisionFixtureIntent('cooking', 92, { tenantId: 92, type: 'decision_required', priority: 'active', requiresUserAction: true, relatedEntityId: 'slotA', dedupeKey: 'cook:plan:e1' }));
+    const otherEntity = await createDecisionIntent(buildSkillDecisionFixtureIntent('cooking', 92, { tenantId: 92, type: 'decision_required', priority: 'active', requiresUserAction: true, relatedEntityId: 'slotB', dedupeKey: 'cook:plan:e2' }));
+    const otherSkill = await createDecisionIntent(buildSkillDecisionFixtureIntent('training', 92, { tenantId: 92, type: 'decision_required', requiresUserAction: true, relatedEntityId: 'slotA', dedupeKey: 'train:plan:e1' }));
+    // a newer cooking decision on slotA, different type => supersedes ONLY the same-skill same-entity older.
+    const newer = await createDecisionIntent(buildSkillDecisionFixtureIntent('cooking', 92, { tenantId: 92, type: 'reminder', priority: 'active', requiresUserAction: true, relatedEntityId: 'slotA', dedupeKey: 'cook:plan:new' }));
+    expect(newer.item).not.toBeNull();
+    const activeIds = listDecisionItems(92, 92).map((d) => d.decisionId);
+    expect(activeIds).not.toContain(sameEntityOlder.item!.decisionId); // same skill+entity older -> superseded
+    expect(activeIds).toContain(otherEntity.item!.decisionId); // different entity -> untouched
+    expect(activeIds).toContain(otherSkill.item!.decisionId);  // different skill -> untouched
+  });
+
+  it('B3 hiding NEVER supersedes a policy-floored older decision (fail open)', async () => {
+    process.env.DECISION_SEMANTIC_DEDUP_ENABLED = 'true';
+    process.env.DECISION_SEMANTIC_SUPERSEDE_ENABLED = 'true';
+    // critical priority => rankDecisionPriority emits a floor => isDecisionItemPolicyFloored true.
+    const flooredOlder = await createDecisionIntent(buildSkillDecisionFixtureIntent('cooking', 93, { tenantId: 93, type: 'decision_required', priority: 'critical', requiresUserAction: true, relatedEntityId: 'slot1', dedupeKey: 'cook:plan:floored' }));
+    expect(flooredOlder.item).not.toBeNull();
+    expect(isDecisionItemPolicyFloored(flooredOlder.item!)).toBe(true); // precondition
+    const newer = await createDecisionIntent(buildSkillDecisionFixtureIntent('cooking', 93, { tenantId: 93, type: 'reminder', priority: 'active', requiresUserAction: true, relatedEntityId: 'slot1', dedupeKey: 'cook:plan:newer' }));
+    expect(newer.item).not.toBeNull();
+    // the floored older decision is NOT superseded — it remains visible (fail open).
+    expect(getDecisionLifecycleEvents(flooredOlder.item!.decisionId, 93, 93).map((e) => e.event)).not.toContain('superseded');
+    expect(getDecisionItem(flooredOlder.item!.decisionId, 93, 93)).not.toBeNull();
+  });
+
+  it('B3 hiding is byte-identical when the supersede flag is OFF (linking may be on)', async () => {
+    process.env.DECISION_SEMANTIC_DEDUP_ENABLED = 'true'; // linking on, hiding OFF
+    const older = await createDecisionIntent(buildSkillDecisionFixtureIntent('cooking', 94, { tenantId: 94, type: 'decision_required', priority: 'active', requiresUserAction: true, relatedEntityId: 'slot1', dedupeKey: 'cook:plan:a' }));
+    const newer = await createDecisionIntent(buildSkillDecisionFixtureIntent('cooking', 94, { tenantId: 94, type: 'reminder', priority: 'active', requiresUserAction: true, relatedEntityId: 'slot1', dedupeKey: 'cook:plan:b' }));
+    // nothing superseded, both decisions still active.
+    expect(getDecisionItem(older.item!.decisionId, 94, 94)).not.toBeNull();
+    expect(getDecisionItem(newer.item!.decisionId, 94, 94)).not.toBeNull();
+    expect(getDecisionLifecycleEvents(older.item!.decisionId, 94, 94).map((e) => e.event)).not.toContain('superseded');
   });
 
   it('links a newly-created cross-skill conflicting decision to the existing one (conflicts_with) when the flag is ON', async () => {

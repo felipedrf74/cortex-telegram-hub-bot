@@ -264,6 +264,17 @@ export function isDecisionSemanticDedupEnabled(env: RuntimeEnv = process.env, sc
 }
 
 /**
+ * Gates the B3 HIDING slice (decoupled from the advisory-linking slice above): on creation, a
+ * newer_recommendation_supersedes_old verdict supersedes the OLDER same-recipe decision, and a
+ * same_recommendation_update_existing verdict drops the new duplicate and returns the existing. Both are
+ * same-skill+same-window+same-recipe ONLY (classifier-guaranteed) and NEVER supersede a policy-floored or a
+ * different decision. Default OFF; opt-in per user/tenant — linking can stay ON without enabling hiding.
+ */
+export function isDecisionSemanticSupersedeEnabled(env: RuntimeEnv = process.env, scope?: RuntimeFlagScope): boolean {
+  return scopedFlagEnabledByExplicitOptIn(env, 'DECISION_SEMANTIC_SUPERSEDE_ENABLED', scope);
+}
+
+/**
  * Gates the T14 operator dashboard read route (buildDecisionDashboardSnapshot). The route is
  * additionally admin-gated by the portal guard stack; this flag keeps the endpoint dark by default
  * until the dashboard is ready. Default OFF; opt-in per user/tenant.
@@ -313,6 +324,17 @@ export function isDecisionChoiceOptionsEnabled(env: RuntimeEnv = process.env, sc
 export function isDecisionSkillCardsEnabled(env: RuntimeEnv = process.env, scope?: RuntimeFlagScope): boolean {
   return scopedFlagEnabledByExplicitOptIn(env, 'DECISION_SKILL_CARDS_ENABLED', scope);
 }
+
+/**
+ * Gates the F human-review fallback: when a decision's actionability is `requires_human_review` but no live
+ * review queue exists, downgrade it to `unavailable` (manual-only) rather than show a review affordance that
+ * can't be submitted. Defensive scaffolding (computeActionability does not emit requires_human_review today),
+ * only ever LOWERS. Default OFF; opt-in per user/tenant.
+ */
+export function isDecisionHumanReviewGateEnabled(env: RuntimeEnv = process.env, scope?: RuntimeFlagScope): boolean {
+  return scopedFlagEnabledByExplicitOptIn(env, 'DECISION_HUMAN_REVIEW_GATE_ENABLED', scope);
+}
+
 
 export function isChatCoreV2RuntimeFlagEnabled(
   flagKey: string,

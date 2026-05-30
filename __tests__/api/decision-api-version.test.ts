@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import type { AuthenticatedRequest } from '../../src/api/auth-middleware';
 import type { DecisionApiItem } from '../../src/services/decision-center';
-import { buildDecisionCardSummary, resolveDecisionApiVersion } from '../../src/api/decision-api-version';
+import { buildDecisionCardSummary, deriveEvidenceStrengthLabel, resolveDecisionApiVersion } from '../../src/api/decision-api-version';
 
 const reqWith = (header?: string, userId = 1): AuthenticatedRequest =>
   ({ headers: header ? { 'x-nexus-api-version': header } : {}, userId }) as unknown as AuthenticatedRequest;
@@ -68,5 +68,24 @@ describe('Decision API version negotiation', () => {
     expect((card as Record<string, unknown>).whyDetails).toBeUndefined();
     expect((card as Record<string, unknown>).explanation).toBeUndefined();
     expect((card as Record<string, unknown>).actionTruthTableEntry).toBeUndefined();
+  });
+});
+
+describe('Card evidence-strength label (API v2)', () => {
+  it('derives a compact label where stale/unknown freshness dominates confidence', () => {
+    expect(deriveEvidenceStrengthLabel(undefined)).toBeUndefined();
+    expect(deriveEvidenceStrengthLabel({ label: 'high', sourceFreshness: 'fresh' })).toBe('strong');
+    expect(deriveEvidenceStrengthLabel({ label: 'medium', sourceFreshness: 'live' })).toBe('moderate');
+    expect(deriveEvidenceStrengthLabel({ label: 'low', sourceFreshness: 'fresh' })).toBe('weak');
+    // freshness dominates: even high-confidence stale evidence is labelled 'stale', unknown -> 'unverified'.
+    expect(deriveEvidenceStrengthLabel({ label: 'high', sourceFreshness: 'stale' })).toBe('stale');
+    expect(deriveEvidenceStrengthLabel({ label: 'high', sourceFreshness: 'unknown' })).toBe('unverified');
+  });
+
+  it('carries the label onto the card only when the item has a confidenceExplanation', () => {
+    // fullItem() has no confidenceExplanation -> the label is omitted (Codable-stable).
+    expect((buildDecisionCardSummary(fullItem()) as Record<string, unknown>).evidenceStrengthLabel).toBeUndefined();
+    const withConfidence = { ...fullItem(), confidenceExplanation: { value: 0.9, label: 'high', basis: [], uncertainty: [], sourceFreshness: 'fresh' } } as unknown as DecisionApiItem;
+    expect(buildDecisionCardSummary(withConfidence).evidenceStrengthLabel).toBe('strong');
   });
 });

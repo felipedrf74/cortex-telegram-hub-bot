@@ -1,10 +1,12 @@
 // Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
 
 import {
+  getDecisionActiveBreakdowns,
   getDecisionFeedbackSignals,
   getDecisionMetricsDaily,
   getDecisionOutcomeMetrics,
   getDecisionReleaseGateStatus,
+  type DecisionActiveBreakdowns,
   type DecisionFeedbackSignal,
   type DecisionMetricsDailyRow,
   type DecisionReleaseGateStatus,
@@ -29,6 +31,8 @@ export interface DecisionDashboardSnapshot {
   generatedAt: string;
   /** Release-gate invariants: expired-but-visible sweep health + the unimplemented-CTA tripwire. */
   releaseGate: DecisionReleaseGateStatus;
+  /** Active-decision breakdowns by domain / persisted type / status (one bounded GROUP BY). */
+  activeBreakdowns: DecisionActiveBreakdowns;
   /** Today's pre-aggregated rollup (decision_metrics_daily '*' row), or null if it has not run today. */
   today: DecisionMetricsDailyRow | null;
   /** Per-source-skill feedback signals (C3b): dismiss rates, top reasons, dont_show_type counts. */
@@ -57,6 +61,7 @@ export function buildDecisionDashboardSnapshot(userId: number, tenantId = userId
     tenantId,
     generatedAt: new Date().toISOString(),
     releaseGate: getDecisionReleaseGateStatus(userId, tenantId),
+    activeBreakdowns: getDecisionActiveBreakdowns(userId, tenantId),
     today: getDecisionMetricsDaily(tenantId),
     feedbackBySkill: getDecisionFeedbackSignals(userId, tenantId),
     outcomes: {

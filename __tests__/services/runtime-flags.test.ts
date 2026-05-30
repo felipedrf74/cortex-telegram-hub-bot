@@ -32,7 +32,9 @@ import {
   isDecisionCenterGuidanceSkillEnabled,
   isDecisionCenterGuidanceV1Enabled,
   isDecisionChoiceOptionsEnabled,
+  isDecisionHumanReviewGateEnabled,
   isDecisionReconnectAffordanceEnabled,
+  isDecisionSemanticSupersedeEnabled,
   isDecisionSkillCardsEnabled,
   isAnthropicRuntimeEnabled,
   isChatCoreV2ShadowRouteHookEnabled,
@@ -286,6 +288,14 @@ describe('runtime-flags', () => {
       DECISION_CHOICE_OPTIONS_ENABLED: 'true',
       DECISION_CHOICE_OPTIONS_ENABLED_USER_42: 'off',
     }, { userId: 42, tenantId: 9 })).toBe(false);
+  });
+
+  it('keeps the B3 supersede + human-review gates default-off with scoped opt-in', () => {
+    expect(isDecisionSemanticSupersedeEnabled({})).toBe(false);
+    expect(isDecisionSemanticSupersedeEnabled({ DECISION_SEMANTIC_SUPERSEDE_ENABLED: 'true' })).toBe(true);
+    expect(isDecisionSemanticSupersedeEnabled({ DECISION_SEMANTIC_SUPERSEDE_ENABLED: 'true', DECISION_SEMANTIC_SUPERSEDE_ENABLED_USER_5: 'off' }, { userId: 5, tenantId: 9 })).toBe(false);
+    expect(isDecisionHumanReviewGateEnabled({})).toBe(false);
+    expect(isDecisionHumanReviewGateEnabled({ DECISION_HUMAN_REVIEW_GATE_ENABLED: '1' })).toBe(true);
   });
 
   it('keeps the D skill cards surface default-off with scoped opt-in', () => {

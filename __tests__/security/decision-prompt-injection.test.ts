@@ -99,6 +99,57 @@ describe('Decision Center prompt-injection / evidence quarantine (F1)', () => {
     expect(isDecisionActionBusEligible(INJECTION)).toBe(false);
   });
 
+  it('connection/sync_failure error text cannot move the structural connection-blocking floor or actionability', async () => {
+    // The provider error text is attacker-influenced; the floor + actionability are structural.
+    const benign = await createDecisionIntent(buildSkillDecisionFixtureIntent('secretary', 82, {
+      tenantId: 82, type: 'sync_failure', requiresUserAction: true, dedupeKey: 'inj-sync-benign',
+      decisionContext: { providerName: 'Google Calendar' },
+    }));
+    const injected = await createDecisionIntent(buildSkillDecisionFixtureIntent('secretary', 82, {
+      tenantId: 82, type: 'sync_failure', requiresUserAction: true, dedupeKey: 'inj-sync-evil',
+      decisionContext: { providerName: INJECTION },
+    }));
+    const b = getDecisionItem(benign.item!.decisionId, 82, 82)!;
+    const e = getDecisionItem(injected.item!.decisionId, 82, 82)!;
+    // sync_failure structural outcomes are identical regardless of the provider error string.
+    expect(e.effectiveStatus).toBe('waiting_on_system');
+    expect(e.effectiveStatus).toBe(b.effectiveStatus);
+    expect(e.decisionKind).toBe(b.decisionKind);
+    expect(e.prioritySnapshot?.priorityTier).toBe(b.prioritySnapshot?.priorityTier);
+    expect(e.prioritySnapshot?.reasonCodes).toContain('floor_connection_blocking');
+    expect(e.prioritySnapshot?.reasonCodes).toEqual(b.prioritySnapshot?.reasonCodes);
+    expect(e.actionability).toBe(b.actionability);
+    expect(e.actionability).not.toBe('execute_with_undo');
+    // the user-safe preview never echoes the injected instruction text.
+    expect(e.safePreviewBody).not.toContain('IGNORE ALL PREVIOUS INSTRUCTIONS');
+  });
+
+  it('injected content-draft text cannot change actionability or leak into the safe preview', async () => {
+    const benign = await createDecisionIntent(buildSkillDecisionFixtureIntent('content', 83, {
+      tenantId: 83, dedupeKey: 'inj-content-benign', title: 'Review the draft', body: 'A normal draft.',
+    }));
+    const injected = await createDecisionIntent(buildSkillDecisionFixtureIntent('content', 83, {
+      tenantId: 83, dedupeKey: 'inj-content-evil', title: INJECTION, body: INJECTION, sensitiveBody: INJECTION,
+    }));
+    const b = getDecisionItem(benign.item!.decisionId, 83, 83)!;
+    const e = getDecisionItem(injected.item!.decisionId, 83, 83)!;
+    expect(e.actionability).toBe(b.actionability);
+    expect(e.actionability).not.toBe('execute_with_undo');
+    expect(e.prioritySnapshot?.priorityTier).toBe(b.prioritySnapshot?.priorityTier);
+    // content is private_content: the safe preview is hardcoded copy, never the injected text.
+    expect(e.safePreviewTitle).not.toContain('IGNORE ALL PREVIOUS INSTRUCTIONS');
+    expect(e.safePreviewBody).not.toContain('execute_with_undo');
+  });
+
+  it('a real action id embedded in an injection string never gains Command Bus eligibility', () => {
+    // Eligibility keys on the exact action id; a payload that merely CONTAINS a real id must not match.
+    expect(isDecisionActionBusEligible('dismiss')).toBe(true);
+    expect(isDecisionActionBusEligible(`${INJECTION}:dismiss`)).toBe(false);
+    expect(isDecisionActionBusEligible('dismiss; DROP TABLE decisions;')).toBe(false);
+    expect(isDecisionActionBusEligible('not_now')).toBe(true);
+    expect(isDecisionActionBusEligible(`not_now ${INJECTION}`)).toBe(false);
+  });
+
   it('the B3 dedup classifier is driven by the structured key, not free text', () => {
     // The dedup key is built from skill/type/relatedEntityId/dedupeKey — never the decision body.
     const k = buildDecisionDedupKey({ sourceSkill: 'cooking', type: 'reminder', relatedEntityId: 'e1', dedupeKey: 'cooking:reminder:80', createdAt: '2026-05-10T00:00:00.000Z' });

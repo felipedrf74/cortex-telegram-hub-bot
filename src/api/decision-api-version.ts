@@ -9,8 +9,23 @@
  */
 
 import type { AuthenticatedRequest } from './auth-middleware';
-import type { DecisionApiItem, DecisionCardSummary } from '../services/decision-center';
+import type { ConfidenceExplanation, DecisionApiItem, DecisionCardSummary, EvidenceStrengthLabel } from '../services/decision-center';
 import { isDecisionApiV2Enabled } from '../services/runtime-flags';
+
+/**
+ * Pure, total derivation of the compact card evidence-strength label from the always-safe confidence
+ * label + source freshness. Stale/unknown freshness dominates (stale evidence is weak regardless of
+ * confidence). Never reads the privacy-gated basis/uncertainty. Returns undefined when there is no
+ * confidence explanation, so the optional card field is omitted (byte-stable).
+ */
+export function deriveEvidenceStrengthLabel(
+  confidence?: Pick<ConfidenceExplanation, 'label' | 'sourceFreshness'>,
+): EvidenceStrengthLabel | undefined {
+  if (!confidence) return undefined;
+  if (confidence.sourceFreshness === 'stale') return 'stale';
+  if (confidence.sourceFreshness === 'unknown') return 'unverified';
+  return confidence.label === 'high' ? 'strong' : confidence.label === 'medium' ? 'moderate' : 'weak';
+}
 
 export type DecisionApiVersion = 'v1' | 'v2';
 
@@ -63,5 +78,6 @@ export function buildDecisionCardSummary(item: DecisionApiItem): DecisionCardSum
     expiresAt: item.expiresAt,
     badgeContribution: item.badgeContribution,
     confidence: item.confidence,
+    evidenceStrengthLabel: deriveEvidenceStrengthLabel(item.confidenceExplanation),
   };
 }

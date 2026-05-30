@@ -52,7 +52,7 @@ import {
 } from './chat-pending-confirmations';
 import { isValidTenantUserId, recordTenantScopeAnomaly } from './tenant-scope-observability';
 import { logger } from '../utils/logger';
-import { isDecisionCenterCommandBusEnabled, isDecisionCenterFatigueCapsEnabled, isDecisionCenterGuidanceSkillEnabled, isDecisionCenterGuidanceV1Enabled, isDecisionChoiceOptionsEnabled, isDecisionEvidenceFreshnessGateEnabled, isDecisionReconnectAffordanceEnabled, isDecisionSemanticDedupEnabled, isDecisionSkillCardsEnabled, isDecisionStreakV1Enabled } from './runtime-flags';
+import { isDecisionCenterCommandBusEnabled, isDecisionCenterFatigueCapsEnabled, isDecisionCenterGuidanceSkillEnabled, isDecisionCenterGuidanceV1Enabled, isDecisionChoiceOptionsEnabled, isDecisionEvidenceFreshnessGateEnabled, isDecisionHumanReviewGateEnabled, isDecisionReconnectAffordanceEnabled, isDecisionSemanticDedupEnabled, isDecisionSemanticSupersedeEnabled, isDecisionSkillCardsEnabled, isDecisionStreakV1Enabled } from './runtime-flags';
 import { decisionRelationshipSemantics, type DecisionRelationshipKind, type DecisionRelationshipType } from './decision-relationship-types';
 import { buildDecisionDedupKey, classifyDecisionDedup } from './decision-center-semantic-dedup';
 import type { SecretaryTodaySummaryModel } from './secretary-orchestrator';
@@ -147,6 +147,10 @@ export interface ConfidenceExplanation {
  * Compact list/overview card (API v2). Projected from the full DecisionApiItem so list
  * surfaces ship ~22 fields/item instead of ~70. Full item is served only on detail.
  */
+/** Compact evidence-strength signal for the v2 list card — derived ONLY from the always-safe
+ *  confidence label + source freshness (never the privacy-gated basis/uncertainty). */
+export type EvidenceStrengthLabel = 'strong' | 'moderate' | 'weak' | 'stale' | 'unverified';
+
 export interface DecisionCardSummary {
   schemaVersion: string;
   decisionId: string;
@@ -173,6 +177,8 @@ export interface DecisionCardSummary {
   expiresAt: string | null;
   badgeContribution: boolean;
   confidence: number;
+  /** Optional compact evidence-strength label (omitted when the item has no confidenceExplanation). */
+  evidenceStrengthLabel?: EvidenceStrengthLabel;
 }
 
 export const DECISION_OUTCOME_LEDGER_RETENTION_POLICY = Object.freeze({
@@ -284,9 +290,11 @@ export interface DecisionApiItem {
    *  undefined (omitted from JSON) unless DECISION_CHOICE_OPTIONS is enabled AND the decision has real
    *  options, so existing clients see a byte-identical payload. */
   options?: DecisionOption[];
-  /** D — skill-specific card (content pipeline state today). Optional + flag-gated (DECISION_SKILL_CARDS);
-   *  undefined/omitted unless enabled AND the decision has a backing domain object. */
+  /** D — skill-specific cards (content / training / finance). All optional + flag-gated (DECISION_SKILL_CARDS);
+   *  each is undefined/omitted unless enabled AND the decision has a real backing domain object. */
   contentCard?: DecisionContentCard;
+  trainingCard?: DecisionTrainingCard;
+  financeCard?: DecisionFinanceCard;
   automationEligibility: AutomationEligibility;
   autopilotPolicy: string;
   readBackVerifier: string | null;
@@ -426,6 +434,37 @@ export interface DecisionContentCard {
   pipelineStage: string;
   approvalState: string;
   reviewRequired: boolean;
+  nextActionLabel: string | null;
+}
+
+/**
+ * D (training) — a structured before/after card for a training-origin reflow decision: the current
+ * (before) and recommended (after) schedule windows, a conservative risk label derived ONLY from the
+ * agenda's structured decisionReasonCodes (never free text, so injected evidence can't move it), and undo
+ * availability. Read-only; flag-gated; undefined (no hollow card) unless the decision truly anchors a
+ * training agenda item with a real before window.
+ */
+export interface DecisionTrainingCard {
+  beforeWindowLabel: string | null;
+  afterWindowLabel: string | null;
+  beforeStartAt: string | null;
+  beforeEndAt: string | null;
+  afterStartAt: string | null;
+  afterEndAt: string | null;
+  risk: 'low' | 'medium' | 'high';
+  undoAvailable: boolean;
+}
+
+/**
+ * D (finance) — a READ-ONLY, privacy-safe card for a finance tax-event decision. Surfaces ONLY safe
+ * labels: the tax month, the payment status enum, a freshness label, and the next action. It NEVER
+ * carries any amount (tax_due / inss_due / gross_income / taxable_income) and uses no overconfident copy.
+ * Flag-gated; undefined (no hollow card) unless a real matching tax event exists.
+ */
+export interface DecisionFinanceCard {
+  taxMonth: string;
+  paymentStatus: string;
+  freshnessLabel: string;
   nextActionLabel: string | null;
 }
 
@@ -925,7 +964,13 @@ function listActiveDedupCandidates(userId: number, tenantId: number, excludeId: 
  * deliberate later slice. Non-fatal: any failure must never break decision creation. Uses the new
  * decision's stored created_at (DB clock) so candidate and existing windows are compared consistently.
  */
-function linkConflictingDecisionsOnCreate(newId: string, input: NotificationIntentInput, userId: number, tenantId: number, createdAt: string): void {
+function linkConflictingDecisionsOnCreate(newId: string, input: NotificationIntentInput, userId: number, tenantId: number, createdAt: string): { collapsedToExistingId?: string } {
+  // B3 hiding (flag-gated, decoupled from linking): when ON, the two collapsing verdicts mutate state —
+  // newer_recommendation_supersedes_old supersedes the OLDER same-recipe decision; same_recommendation_
+  // update_existing drops the new duplicate and returns the existing (collapsedToExistingId tells the
+  // caller to return the existing item). Both NEVER touch a policy-floored or a different decision.
+  const supersedeEnabled = isDecisionSemanticSupersedeEnabled(process.env, { userId, tenantId });
+  let collapsedToExistingId: string | undefined;
   try {
     const candidate = buildDecisionDedupKey({
       sourceSkill: input.sourceSkill,
@@ -960,6 +1005,32 @@ function linkConflictingDecisionsOnCreate(newId: string, input: NotificationInte
         if (linkType) {
           addDecisionDependency({ decisionId: newId, dependsOnDecisionId: existing.decisionId, userId, tenantId, relationship: linkType });
           addDecisionDependency({ decisionId: existing.decisionId, dependsOnDecisionId: newId, userId, tenantId, relationship: linkType });
+        } else if (supersedeEnabled && (verdict === 'newer_recommendation_supersedes_old' || verdict === 'same_recommendation_update_existing')) {
+          // HIDING slice. The matched `existing` is the OLDER same-recipe row (listActiveDedupCandidates
+          // excludes newId and orders newest-first; the new row's createdAt is the latest by DB clock).
+          const existingRecord = getDecisionRecord(existing.decisionId, userId, tenantId);
+          if (existingRecord && isDecisionRecord(existingRecord)) {
+            const existingFloored = isDecisionItemPolicyFloored(formatDecisionItemForApi(existingRecord));
+            if (verdict === 'newer_recommendation_supersedes_old') {
+              // Supersede the OLDER decision — but NEVER a policy-floored one (fail open: keep both).
+              // (A later same-skill candidate may additionally same_recommendation-collapse this new row into
+              // a third existing one in the same pass; the result — oldest hidden, newest kept — is invariant-safe.)
+              if (!existingFloored) {
+                supersedeDecision(existingRecord, 'semantic_superseded_by_newer_recommendation');
+                addDecisionDependency({ decisionId: newId, dependsOnDecisionId: existing.decisionId, userId, tenantId, relationship: 'supersedes' });
+              }
+            } else {
+              // same_recommendation: drop the NEW duplicate and return the existing — UNLESS the new is
+              // floored and the existing is not (then fail open — never hide the floored new one).
+              const newRecord = getDecisionRecord(newId, userId, tenantId);
+              const newFloored = newRecord && isDecisionRecord(newRecord) ? isDecisionItemPolicyFloored(formatDecisionItemForApi(newRecord)) : false;
+              if (!(newFloored && !existingFloored) && newRecord && isDecisionRecord(newRecord)) {
+                supersedeDecision(newRecord, 'semantic_duplicate_of_existing');
+                collapsedToExistingId = existing.decisionId;
+                break; // the new row is now superseded — stop scanning further candidates for it
+              }
+            }
+          }
         }
       } catch (pairErr) {
         logger.warn({ err: pairErr instanceof Error ? pairErr.message : String(pairErr), newId, existingId: existing.decisionId }, 'B3 conflict-linking pair failed (non-fatal; other pairs continue)');
@@ -968,6 +1039,7 @@ function linkConflictingDecisionsOnCreate(newId: string, input: NotificationInte
   } catch (err) {
     logger.warn({ err: err instanceof Error ? err.message : String(err), newId }, 'B3 conflict-linking failed (non-fatal)');
   }
+  return { collapsedToExistingId };
 }
 
 export async function createDecisionIntent(input: NotificationIntentInput): Promise<{ item: DecisionApiItem | null; eligibility: DecisionEligibilityResult }> {
@@ -1008,12 +1080,16 @@ export async function createDecisionIntent(input: NotificationIntentInput): Prom
   if (result.intent.status !== 'deduped') {
     recordDecisionQualityGateEvent(input, quality);
   }
-  const item = result.item ? getDecisionItem(result.item.itemId, input.userId, input.tenantId ?? input.userId) : null;
+  let item = result.item ? getDecisionItem(result.item.itemId, input.userId, input.tenantId ?? input.userId) : null;
   if (result.item && result.intent.status !== 'deduped') {
     emitDecisionLifecycleEvent({ decisionId: result.item.itemId, userId: input.userId, tenantId: input.tenantId ?? input.userId, event: 'created', toStatus: result.item.status });
-    // B3 acting: flag-gated, additive conflict-linking (writes an advisory conflicts_with edge; hides nothing).
+    // B3 acting: flag-gated conflict-linking (advisory edges) + optional hiding slice (supersede/collapse).
     if (item && isDecisionSemanticDedupEnabled(process.env, { userId: input.userId, tenantId: input.tenantId ?? input.userId })) {
-      linkConflictingDecisionsOnCreate(result.item.itemId, input, input.userId, input.tenantId ?? input.userId, item.createdAt);
+      const linkResult = linkConflictingDecisionsOnCreate(result.item.itemId, input, input.userId, input.tenantId ?? input.userId, item.createdAt);
+      // same_recommendation collapse: the new row was dropped — return the existing decision it folded into.
+      if (linkResult.collapsedToExistingId) {
+        item = getDecisionItem(linkResult.collapsedToExistingId, input.userId, input.tenantId ?? input.userId);
+      }
     }
   }
   return { item, eligibility };
@@ -2573,6 +2649,11 @@ function formatDecisionItemForApi(item: DecisionRecord): DecisionApiItem {
       && isDecisionEvidenceFreshnessGateEnabled(process.env, { userId: item.userId, tenantId: item.tenantId })) {
     actionability = gateActionabilityForStaleEvidence(actionability);
   }
+  // F human-review fallback: a requires_human_review decision with no live review queue is gated to
+  // unavailable (manual-only). Composes AFTER F2; both only ever lower. OFF/no-review-value => unchanged.
+  if (isDecisionHumanReviewGateEnabled(process.env, { userId: item.userId, tenantId: item.tenantId })) {
+    actionability = gateActionabilityForHumanReview(actionability, isHumanReviewQueueAvailable(process.env));
+  }
   const confidenceExplanation = computeConfidenceExplanation(logic.confidence, logic.why, analysisBundle, exposeDebugEvidence);
   return {
     decisionId: item.itemId,
@@ -2622,6 +2703,12 @@ function formatDecisionItemForApi(item: DecisionRecord): DecisionApiItem {
       : undefined,
     contentCard: isDecisionSkillCardsEnabled(process.env, { userId: item.userId, tenantId: item.tenantId })
       ? buildContentDecisionCard(item, logic, action)
+      : undefined,
+    trainingCard: isDecisionSkillCardsEnabled(process.env, { userId: item.userId, tenantId: item.tenantId })
+      ? buildTrainingDecisionCard(item, rollback)
+      : undefined,
+    financeCard: isDecisionSkillCardsEnabled(process.env, { userId: item.userId, tenantId: item.tenantId })
+      ? buildFinanceDecisionCard(item, logic, analysisBundle, action)
       : undefined,
     automationEligibility: logic.automationEligibility,
     autopilotPolicy: logic.autopilotPolicy,
@@ -2926,6 +3013,80 @@ function buildContentDecisionCard(
     pipelineStage: object.editorialState,
     approvalState: object.approvalState,
     reviewRequired: object.reviewRequired,
+    nextActionLabel: logic.primaryActionLabel || (primaryAction?.label ?? null),
+  };
+}
+
+/**
+ * Conservative training-risk label derived ONLY from the agenda's structured decisionReasonCodes (enum
+ * tokens, never free text), so injected evidence in a title/body can never move the risk. Defaults to
+ * 'low' and only escalates on explicit risk tokens — never overconfident.
+ */
+function trainingRiskFromReasonCodes(codes: string[]): 'low' | 'medium' | 'high' {
+  const set = codes.map((code) => code.toLowerCase());
+  const has = (...needles: string[]): boolean => set.some((code) => needles.some((needle) => code.includes(needle)));
+  if (has('compression', 'deload', 'conflict', 'injury', 'overreach')) return 'high';
+  if (has('peak', 'race', 'taper')) return 'medium';
+  return 'low';
+}
+
+/**
+ * D (training) — before/after window + risk + undo card for a training-origin reflow decision. Reads the
+ * anchoring secretary agenda item (owner/tenant-scoped) for the BEFORE window + structured reason codes,
+ * and the already-computed recommended window (context) for the AFTER. Pure-ish (one scoped read). Returns
+ * undefined (no hollow card) for non-training decisions, a non-training agenda, or a missing before window.
+ */
+function buildTrainingDecisionCard(
+  item: DecisionRecord,
+  rollback: { available: boolean; actionId: string | null },
+): DecisionTrainingCard | undefined {
+  // Gate on the ANCHORING AGENDA's skill, not the decision's: a training-session reflow is surfaced under
+  // sourceSkill 'secretary' (the scheduler) while the agenda is source_skill 'training'. The cheap
+  // relatedEntityType check first avoids a DB read for non-reflow decisions.
+  if (item.relatedEntityType !== 'secretary_agenda_item' || !item.relatedEntityId) return undefined;
+  const agenda = getSecretaryAgendaItemById({ agendaItemId: item.relatedEntityId, ownerUserId: item.userId, tenantId: item.tenantId });
+  if (!agenda || agenda.sourceSkill !== 'training') return undefined; // true training origin only
+  const beforeStartAt = agenda.startAt ?? null;
+  const beforeEndAt = agenda.endAt ?? null;
+  if (!beforeStartAt || !beforeEndAt) return undefined; // no hollow card without a real before window
+  const context = decisionContextForRecord(item);
+  const afterStartAt = context.recommendedStartAt ?? null;
+  const afterEndAt = context.recommendedEndAt ?? null;
+  return {
+    beforeWindowLabel: formatDecisionWindow(beforeStartAt, beforeEndAt, context.timezone, context.locale),
+    afterWindowLabel: afterStartAt && afterEndAt ? formatDecisionWindow(afterStartAt, afterEndAt, context.timezone, context.locale) : null,
+    beforeStartAt,
+    beforeEndAt,
+    afterStartAt,
+    afterEndAt,
+    risk: trainingRiskFromReasonCodes(agenda.decisionReasonCodes ?? []),
+    undoAvailable: rollback.available,
+  };
+}
+
+/**
+ * D (finance) — READ-ONLY, privacy-safe card for a finance tax-event decision. Surfaces ONLY the tax month
+ * + payment-status enum + freshness label + next action; NEVER any amount field. Same owner/tenant-scoped
+ * tax-event derivation the executor already trusts. Returns undefined (no hollow card) unless a real
+ * matching tax event exists.
+ */
+function buildFinanceDecisionCard(
+  item: DecisionRecord,
+  logic: DecisionLogicV2,
+  analysisBundle: DecisionAnalysisBundle,
+  primaryAction: NotificationActionButton | null,
+): DecisionFinanceCard | undefined {
+  if (item.sourceSkill !== 'finance') return undefined;
+  const month = item.relatedEntityType === 'finance_tax_event' ? item.relatedEntityId : null;
+  if (!month || !/^\d{4}-\d{2}$/.test(month)) return undefined; // same gate as the finance executor
+  const year = Number(month.slice(0, 4));
+  const event = getTaxEvents(item.userId, { year, tenantId: item.tenantId }).find((candidate) => candidate.month === month);
+  if (!event) return undefined; // no hollow card
+  return {
+    // Safe labels only — month + status enum + freshness; no amount/currency/due value ever.
+    taxMonth: event.month,
+    paymentStatus: event.status,
+    freshnessLabel: analysisBundle.freshnessLabel,
     nextActionLabel: logic.primaryActionLabel || (primaryAction?.label ?? null),
   };
 }
@@ -4249,6 +4410,26 @@ export function gateActionabilityForStaleEvidence(actionability: Actionability):
   }
 }
 
+/**
+ * True only when a live human-review queue is registered (env opt-in). No in-repo review queue exists today,
+ * so this defaults FALSE — a `requires_human_review` decision must not show a review affordance that can't be
+ * submitted. Flipping DECISION_HUMAN_REVIEW_QUEUE_AVAILABLE re-enables review once a real queue is wired.
+ */
+export function isHumanReviewQueueAvailable(env: NodeJS.ProcessEnv = process.env): boolean {
+  const raw = (env.DECISION_HUMAN_REVIEW_QUEUE_AVAILABLE ?? '').trim().toLowerCase();
+  return raw === 'true' || raw === 'on' || raw === '1';
+}
+
+/**
+ * F human-review fallback — when the review queue is down, a `requires_human_review` decision is gated to
+ * `unavailable` (manual-only). Only ever LOWERS that single value; every other actionability passes through
+ * unchanged (cannot escalate), mirroring gateActionabilityForStaleEvidence's contract.
+ */
+export function gateActionabilityForHumanReview(actionability: Actionability, queueAvailable: boolean): Actionability {
+  if (actionability === 'requires_human_review' && !queueAvailable) return 'unavailable';
+  return actionability;
+}
+
 export const DECISION_RANKING_VERSION = 1;
 
 /** Per-domain base weight: safety/finance-leaning skills rank higher at equal urgency. */
@@ -4594,6 +4775,46 @@ export function getDecisionReleaseGateStatus(userId: number, tenantId = userId):
     unimplementedActionableCtas,
     pass: expiredButVisible === 0 && unimplementedActionableCtas === 0,
   };
+}
+
+/** Active-decision breakdowns for the operator dashboard (counts by domain / persisted type / status). */
+export interface DecisionActiveBreakdowns {
+  total: number;
+  byDomain: Record<string, number>;
+  byType: Record<string, number>;
+  byStatus: Record<string, number>;
+}
+
+/**
+ * One bounded GROUP BY over the active partition for the admin dashboard. `active` is the SAME status+expiry
+ * PREFILTER the read paths start from (status in the active set AND not past expires_at) — so the count is
+ * an upper bound on the active partition, not the fully-surfaced set (which additionally drops rows hidden
+ * by quality/visibility logic). byType is the persisted `type` column (NotificationIntentType) — NOT the computed
+ * DecisionKind (which would require formatting every row), so the field is honestly named byType. Admin +
+ * flag-gated + low-frequency, so the single GROUP BY on the indexed partition is acceptable.
+ */
+export function getDecisionActiveBreakdowns(userId: number, tenantId = userId): DecisionActiveBreakdowns {
+  assertScope(userId, tenantId, 'decision_active_breakdowns', {});
+  ensureDecisionCenterTables();
+  const rows = getDb().prepare(`
+    SELECT source_skill AS domain, type, status, COUNT(*) AS n
+      FROM notification_center_items
+     WHERE user_id = ? AND tenant_id = ?
+       AND status IN ('unread', 'read', 'failed', 'snoozed')
+       AND (expires_at IS NULL OR datetime(expires_at) > datetime('now'))
+     GROUP BY source_skill, type, status
+  `).all(userId, tenantId) as Array<{ domain: string; type: string; status: string; n: number }>;
+  const byDomain: Record<string, number> = {};
+  const byType: Record<string, number> = {};
+  const byStatus: Record<string, number> = {};
+  let total = 0;
+  for (const row of rows) {
+    total += row.n;
+    byDomain[row.domain] = (byDomain[row.domain] ?? 0) + row.n;
+    byType[row.type] = (byType[row.type] ?? 0) + row.n;
+    byStatus[row.status] = (byStatus[row.status] ?? 0) + row.n;
+  }
+  return { total, byDomain, byType, byStatus };
 }
 
 export interface DecisionFeedbackSignal {

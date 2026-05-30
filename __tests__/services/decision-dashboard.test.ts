@@ -68,6 +68,11 @@ describe('buildDecisionDashboardSnapshot (T14)', () => {
     expect(after.today).not.toBeNull(); // rollup populated today's '*' row
     expect(after.today?.createdCount).toBe(2);
     expect(after.today?.dismissedCount).toBe(1);
+
+    // active breakdowns: 1 still-active training decision (the other was dismissed -> not active).
+    expect(after.activeBreakdowns.total).toBe(1);
+    expect(after.activeBreakdowns.byDomain.training).toBe(1);
+    expect(Object.values(after.activeBreakdowns.byStatus).reduce((a, b) => a + b, 0)).toBe(1);
   });
 
   it('is tenant-scoped — a snapshot reflects only its own tenant\'s feedback', async () => {
