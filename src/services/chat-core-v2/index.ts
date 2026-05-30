@@ -31,6 +31,7 @@ export * from './locale-policy';
 export * from './locale-preservation-policy';
 export * from './local-chat-orchestrator';
 export * from './memory-store';
+export * from './metrics-aggregator';
 export * from './model-run-audit';
 export * from './model-residency-policy';
 export * from './online-eval-sampler';

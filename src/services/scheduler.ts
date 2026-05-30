@@ -57,6 +57,12 @@ import { pruneCompletedChatActionRuns, reapZombieChatActionRuns } from './chat-a
 import { processChatActionFixerJobs } from './chat-action-fixer-worker';
 import { runGarminTenantIsolationWatcher } from './garmin-tenant-isolation-watcher';
 import { runDecisionCenterSmokeCleanupJob, runDecisionHandledHistoryBackfillJob, runDecisionSourceStateSupersessionJob } from './decision-center';
+import { resolveChatCoreV2ActivationConfig } from './chat-core-v2/activation-flags';
+import {
+  computeChatCoreV2AutoRevertMetrics,
+  getActiveChatCoreV2TenantIds,
+} from './chat-core-v2/metrics-aggregator';
+import { evaluateChatCoreV2AutoRevertPolicy } from './chat-core-v2/auto-revert-policy';
 import { expireOldNexusPointCredits } from './nexus-points';
 import { getActivePlan, getCurrentWeek, getWeeklyAdherence, computeAdjustmentRecommendation, updateWeekAdjustment, getWeeksForPlan } from './training-plans';
 import { calculateReadiness, persistReadinessScore } from './readiness-scorer';
@@ -67,6 +73,23 @@ interface ActiveUserTarget {
 }
 
 let remindersJobInFlight = false;
+
+/**
+ * Opaque, non-reversible token for a tenant id, used only in the chat-core-v2
+ * auto-revert eval log line so the operator can correlate without the raw id
+ * leaking into logs. Salted with CHAT_CORE_V2_SHADOW_ROUTE_HMAC_SECRET (or the
+ * shared write-intent / classify-shadow secret) when present; falls back to a
+ * fixed salt so the token is still opaque (not a plain hash of the id) without
+ * a configured secret.
+ */
+function opaqueChatV2TenantToken(tenantId: string): string {
+  const salt =
+    process.env.CHAT_CORE_V2_SHADOW_ROUTE_HMAC_SECRET ||
+    process.env.CHAT_CORE_V2_WRITE_INTENT_HASH_SECRET ||
+    process.env.CLASSIFY_SHADOW_HASH_SECRET ||
+    'chat_core_v2_auto_revert_eval_token_salt@1';
+  return createHash('sha256').update(`${salt}:tenant:${tenantId}`).digest('hex').slice(0, 16);
+}
 
 /**
  * Distinguish the expected "users table not created yet on first boot"
@@ -728,6 +751,12 @@ export function startScheduler(bot?: any): void {
   registerJob('event_backbone_cleanup', 'Event Backbone Cleanup', '10 0 * * *', 'system');
   registerJob('nexus_points_expiry', 'Nexus Points Expiry Sweep', '0 4 * * *', 'system');
   registerJob('classify_shadow_prune', 'Classify Shadow Retention Prune', '17 4 * * *', 'system');
+  // Chat Core v2 auto-revert evaluator (WP-06 read-only compute+log half of B7).
+  // Registered ONLY when the orchestrator mode is not 'off' (default-off): a
+  // production deploy with the master kill-switch off never schedules it.
+  if (resolveChatCoreV2ActivationConfig(process.env).mode !== 'off') {
+    registerJob('chat_v2_auto_revert_eval', 'Chat Core v2 Auto-Revert Eval', '*/5 * * * *', 'system');
+  }
 
   // Seed lastRunAt from DB so the DST watchdog doesn't re-fire jobs after a restart
   seedJobLastRunFromHistory();
@@ -1790,6 +1819,85 @@ export function startScheduler(bot?: any): void {
       );
     }
   }), { timezone: 'UTC' });
+
+  // ── Chat Core v2 auto-revert evaluator (WP-06 — read-only compute + log) ──
+  // Default-off: only schedule when the orchestrator mode is not 'off'. This is
+  // the READ-ONLY half of B7. It computes per-tenant metrics, evaluates the
+  // EXISTING auto-revert policy, and LOGS the would-be decision (aggregate
+  // numbers + decision enums only). It performs NO mutation and NO live-path
+  // change. The executor (applyAutoRevertDecision) is WP-07; this cron computes
+  // + logs only.
+  if (resolveChatCoreV2ActivationConfig(process.env).mode !== 'off') {
+    cron.schedule('*/5 * * * *', wrapJob('chat_v2_auto_revert_eval', async () => {
+      // executor (applyAutoRevertDecision) is WP-07; this cron computes + logs only.
+      let evaluated = 0;
+      let wouldRevert = 0;
+      try {
+        const db = getDb();
+        const tenantIds = getActiveChatCoreV2TenantIds(db);
+        if (tenantIds.length === 0) {
+          // No tenants with recent chat-core-v2 activity in chat_v2_trace_spans
+          // (the queryable activity signal). Safe no-op until the shadow runtime
+          // produces rows.
+          return 'skipped';
+        }
+        for (const tenantId of tenantIds) {
+          // Per-tenant try/catch: one tenant's failure never breaks the loop.
+          try {
+            const metrics = await computeChatCoreV2AutoRevertMetrics(db, { tenantId });
+            const decision = evaluateChatCoreV2AutoRevertPolicy(metrics);
+            evaluated += 1;
+            const isRevert = !(decision.actions.length === 1 && decision.actions[0] === 'keep_current_mode');
+            if (isRevert) wouldRevert += 1;
+            // PRIVACY: log aggregate numbers + decision enums only. No raw
+            // tenantId/userId and no raw strings — the tenant is identified by
+            // an opaque salted hash token, never the raw id.
+            logger.info(
+              {
+                event: 'chat_core_v2_auto_revert_eval',
+                tenantToken: opaqueChatV2TenantToken(tenantId),
+                metrics: {
+                  legacyFallbackRate24h: metrics.legacyFallbackRate24h,
+                  ollamaHealthy: metrics.ollamaHealthy,
+                  schemaComplianceRate1h: metrics.schemaComplianceRate1h,
+                  // OD-3 open: per-language recall not wired; the policy's
+                  // per-language arm stays dormant (no metric named recall that
+                  // measures a sampling-rate).
+                  perLanguageArmActive: false,
+                },
+                decision: {
+                  actions: decision.actions,
+                  reasonCodes: decision.reasonCodes,
+                  affectedLanguageCount: decision.affectedLanguages.length,
+                },
+              },
+              'Chat Core v2 auto-revert evaluation (would-be decision; not applied)',
+            );
+          } catch (err) {
+            logger.warn(
+              {
+                event: 'chat_core_v2_auto_revert_eval_tenant_failed',
+                tenantToken: opaqueChatV2TenantToken(tenantId),
+                err: err instanceof Error ? err.message : String(err),
+              },
+              'Chat Core v2 auto-revert evaluation failed for one tenant (loop continues)',
+            );
+          }
+        }
+        logger.info(
+          { event: 'chat_core_v2_auto_revert_eval_cycle', evaluated, wouldRevert },
+          'Chat Core v2 auto-revert evaluation cycle complete',
+        );
+      } catch (err) {
+        // The whole cron body never throws — a metrics/DB failure must not crash
+        // the scheduler tick.
+        logger.warn(
+          { event: 'chat_core_v2_auto_revert_eval_cycle_failed', err: err instanceof Error ? err.message : String(err) },
+          'Chat Core v2 auto-revert evaluation cycle failed',
+        );
+      }
+    }), { timezone: 'UTC' });
+  }
 
   // Seed SEO keywords (only if table is empty)
   try {
