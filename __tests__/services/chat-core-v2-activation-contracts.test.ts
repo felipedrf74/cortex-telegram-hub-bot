@@ -456,8 +456,13 @@ describe('ChatCoreV2 activation contracts', () => {
     ]));
   });
 
-  it('ships a 200+ item multilingual golden corpus seed with operator-reported failures', () => {
-    expect(validateGoldenCorpus(CHAT_CORE_V2_GOLDEN_CORPUS_SEED)).toEqual([]);
+  it('ships a 200+ item multilingual golden corpus seed that is structurally sound but still synthetic-only (NOT yet a real gate corpus)', () => {
+    // WP-09 / B4: the seed is structurally well-formed (size, languages,
+    // capabilities, evidence) but its real-evidence content (7 real_failure
+    // seeds out of 263 = ~2.7%) is far below the real-evidence floor, so the
+    // strengthened validator correctly flags it `synthetic_only`. A genuine
+    // peer-reviewed real corpus would clear this; the seed is a baseline only.
+    expect(validateGoldenCorpus(CHAT_CORE_V2_GOLDEN_CORPUS_SEED)).toEqual(['synthetic_only']);
     expect(CHAT_CORE_V2_GOLDEN_CORPUS_SEED.items.length).toBeGreaterThanOrEqual(200);
     expect(CHAT_CORE_V2_GOLDEN_CORPUS_SEED.items.some((item) => item.source === 'real_failure')).toBe(true);
     expect(new Set(CHAT_CORE_V2_GOLDEN_CORPUS_SEED.items.map((item) => item.language))).toEqual(new Set([

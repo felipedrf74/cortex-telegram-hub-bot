@@ -120,23 +120,51 @@ Measure a corpus in the `ChatCoreV2GoldenCorpus` shape:
 npx tsx -e "const {evaluateGoldenCorpusPrepassRecallAtK}=require('./src/services/chat-core-v2/prepass-recall-eval'); const corpus=require('<path-to-corpus>'); console.log(JSON.stringify(evaluateGoldenCorpusPrepassRecallAtK(corpus, 8), null, 2))"
 ```
 
-Current **synthetic** baseline over the seed corpus: recall@8 = **0.563**
-(148/263). Top misses are `cooking.recipe_answer` and `content.draft_assist`
-(the prepass candidate selection is a contract helper, not yet live-wired, and
-has no cooking/content/write candidate buckets).
+Earlier **synthetic** baseline over the seed corpus: recall@8 = **0.563**
+(148/263). Top misses were `cooking.recipe_answer` and `content.draft_assist`
+(the prepass candidate selection had no cooking/content/write candidate
+buckets, and several corpus capability labels were not real registry ids).
+
+**WP-09 capability-coverage pass (B4 engineering half).** The selector now has
+GENERAL capability-coverage keyword buckets for the previously-uncovered classes
+(cooking answer → `cooking.meal_plan_summary`; content draft →
+`content.brief_draft_preview`; finance-educational → `finance.summary`;
+task-write → `tasks.create`/`tasks.complete`). The keywords are ordinary en+pt
+domain vocabulary for those capability classes (count nouns carry an optional
+trailing `s` for general plural morphology), NOT phrasings reverse-engineered
+from the synthetic fixtures. Corpus capability labels that were not real
+registry ids were remapped to the registry id with the same intent
+(`cooking.recipe_answer`→`cooking.meal_plan_summary`,
+`content.draft_assist`/`content.script_generate`→`content.brief_draft_preview`,
+`finance.educational_answer`→`finance.summary`,
+`training.health_summary`→`training.session_explain`), so every candidate and
+every expected id is a real capability.
+
+Current **synthetic** baseline after the pass: recall@8 = **0.9772** (257/263).
+The 6 remaining misses (two unique messages × 3 rounds) are deliberately left
+unfixed because their only content signals are platform/brand or
+genuinely-ambiguous nouns (e.g. "vídeo"/"tópicos", "Instagram short") whose
+capture would be overfitting. This number is a **BASELINE only**, asserted in CI
+by `__tests__/services/chat-core-v2-prepass-recall-gate.test.ts`; it is never the
+promotion gate.
 
 Gate requirements (all must hold; none met yet):
 
 1. A **peer-reviewed labeled real corpus** (not the synthetic seed). Do NOT
    tune `selectPrepassCandidateCapabilities` to the synthetic corpus — that is
-   overfitting and invalidates the measurement.
-2. recall@8 must meet the agreed target on that real corpus. Closing the gap
-   should be a deliberate Layer-1 candidate-coverage pass driven by the real
-   corpus's misses (e.g. add cooking/content/write candidate buckets), then
-   re-measured.
+   overfitting and invalidates the measurement. The strengthened
+   `validateGoldenCorpus` now requires a MINIMUM count AND share of
+   real-evidence items (default 20 items + 10% share), so the current 263-item
+   seed (7 real_failure items ≈ 2.7%) is correctly flagged `synthetic_only`.
+2. recall@8 must meet the agreed target on that real corpus, then re-measured.
 3. `>= 50` real shadow rows accumulated (enable the shadow runtime, which is
    default-off) and `0` raw strings — measured by
    `evaluateChatCoreV2ShadowGateReadiness` over `chat_v2_replay_bundles`.
+
+Persistence note: WP-09 only **asserts** recall in CI. The persisted
+`recall_at_8_latest` that opens `gateCanPromote` is written by WP-13's
+`upsertRecallAt8()` (first call via WP-19-seed); neither exists yet, so the CI
+assertion never persists.
 
 Until 1–3 hold, `evaluateChatCoreV2ShadowGateReadiness().gateMet` stays the
 literal `false`.

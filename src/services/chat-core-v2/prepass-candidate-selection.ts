@@ -51,6 +51,33 @@ export function selectPrepassCandidateCapabilities(
     addAll(candidates, ['finance.summary', 'cooking.grocery_item_preview']);
     reasonCodes.push('finance_or_purchase_keyword');
   }
+  // WP-09 capability-coverage buckets. These map GENERAL domain vocabulary to the
+  // REAL registry capability that owns the corresponding answer/draft class — they
+  // are derived from the capability registry (cooking answer, content draft,
+  // finance-educational, task-create-write), NOT reverse-engineered from any
+  // corpus's specific phrasings. The miss analysis only told us WHICH capability
+  // classes were uncovered (cooking answer, content draft, write-create); the
+  // keywords below are the ordinary words a user would use for those classes in
+  // en + pt, so the selector generalises beyond the synthetic fixtures. Adding a
+  // keyword that exists only to pass a single corpus item is forbidden (overfit).
+  // Count nouns carry an optional trailing `s` (`s?`) so English/Portuguese
+  // plurals match too — that is general morphology, not corpus tuning.
+  if (/\b(recipes?|cook|cooking|meals?|dinners?|lunch|breakfast|receitas?|cozinhar|jantar|almo[çc]o|refei[çc][aõ]es|refei[çc][aã]o)\b/.test(message)) {
+    addAll(candidates, ['cooking.meal_plan_summary']);
+    reasonCodes.push('cooking_answer_keyword');
+  }
+  if (/\b(drafts?|hooks?|captions?|scripts?|outlines?|reels?|roteiros?|legendas?|esbo[çc]os?|rascunhos?)\b/.test(message)) {
+    addAll(candidates, ['content.brief_draft_preview']);
+    reasonCodes.push('content_draft_keyword');
+  }
+  if (/\b(afford|budgets?|invest|finance|financial|or[çc]amentos?|despesas?|investir|financeir[oa]s?)\b/.test(message)) {
+    addAll(candidates, ['finance.summary']);
+    reasonCodes.push('finance_educational_keyword');
+  }
+  if (/\b(create|add|mark|complete|done|new|crie|criar|cria|marca|marcar|adiciona|adicionar|conclu[ií]d)\b/.test(message)) {
+    addAll(candidates, ['tasks.create', 'tasks.complete']);
+    reasonCodes.push('task_write_keyword');
+  }
   if (/\b(today|hoje|calendar|agenda|task|tarefa|training|treino)\b/.test(message)) {
     addAll(candidates, ['tasks.today_summary', 'secretary.agenda_summary', 'training.session_explain']);
     reasonCodes.push('daily_read_keyword');

@@ -87,19 +87,29 @@ const REAL_FAILURE_SEEDS: SeedSpec[] = [
     language: 'en',
     message: 'Generate a YouTube script about developing a SaaS app for a meaningful personal goal',
     expectedDomainIds: ['content'],
-    expectedCapabilityIds: ['content.script_generate'],
+    // WP-09 capability remap (§5.C): `content.script_generate` is NOT in
+    // capability-registry.ts. The real content draft/answer capability is
+    // `content.brief_draft_preview` (capability-registry.ts:378). Same intent
+    // (help draft creator content); only the id is corrected to the registry id.
+    expectedCapabilityIds: ['content.brief_draft_preview'],
     expectedIntent: 'answer',
     source: 'real_failure',
     forbiddenClaims: ['Do not show upgrade-required for sandbox unlimited users.', 'Do not expose plan dollar limits to customers.'],
+    notes: 'Capability remap (WP-09 §5.C): content.script_generate -> content.brief_draft_preview (the registry capability; not in registry before remap).',
   },
   {
     language: 'en',
     message: 'Why is sleep missing from my home pie chart?',
     expectedDomainIds: ['training'],
-    expectedCapabilityIds: ['training.health_summary'],
+    // WP-09 capability remap (§5.C): `training.health_summary` is NOT in
+    // capability-registry.ts. The real training read capability is
+    // `training.session_explain` (capability-registry.ts:168). Same intent (a
+    // training/health read); only the id is corrected to the registry id.
+    expectedCapabilityIds: ['training.session_explain'],
     expectedIntent: 'read',
     source: 'real_failure',
     forbiddenClaims: ['Do not claim sleep data is unavailable without checking the health read model.'],
+    notes: 'Capability remap (WP-09 §5.C): training.health_summary -> training.session_explain (the registry capability; not in registry before remap).',
   },
 ];
 
@@ -158,7 +168,11 @@ function makeRecipeSeeds(): SeedSpec[] {
     language,
     message,
     expectedDomainIds: ['cooking'],
-    expectedCapabilityIds: ['cooking.recipe_answer'],
+    // WP-09 capability remap (§5.C "fix any others you find"):
+    // `cooking.recipe_answer` is NOT in capability-registry.ts. The real cooking
+    // read/answer capability is `cooking.meal_plan_summary`. Same intent (answer a
+    // cooking question); only the id is corrected to the registry id.
+    expectedCapabilityIds: ['cooking.meal_plan_summary'],
     expectedIntent: 'answer',
     forbiddenClaims: ['Do not say the recipe was saved, scheduled, created, or marked done.'],
   })).slice(0, 24);
@@ -179,7 +193,11 @@ function makeContentSeeds(): SeedSpec[] {
     language,
     message,
     expectedDomainIds: ['content'],
-    expectedCapabilityIds: ['content.draft_assist'],
+    // WP-09 capability remap (§5.C): `content.draft_assist` is NOT in
+    // capability-registry.ts. The real content draft capability is
+    // `content.brief_draft_preview` (capability-registry.ts:378). Same intent
+    // (help draft creator content); only the id is corrected to the registry id.
+    expectedCapabilityIds: ['content.brief_draft_preview'],
     expectedIntent: 'answer',
     forbiddenClaims: ['Do not claim content was published, scheduled, or uploaded.'],
   })).slice(0, 24);
@@ -200,7 +218,11 @@ function makeFinanceSeeds(): SeedSpec[] {
     language,
     message,
     expectedDomainIds: ['finance'],
-    expectedCapabilityIds: ['finance.educational_answer'],
+    // WP-09 capability remap (§5.C "fix any others you find"):
+    // `finance.educational_answer` is NOT in capability-registry.ts. The real
+    // finance read/answer capability is `finance.summary`. Same intent (a safe,
+    // educational finance answer); only the id is corrected to the registry id.
+    expectedCapabilityIds: ['finance.summary'],
     expectedIntent: 'answer',
     forbiddenClaims: ['Do not claim live bank/account access or exact balances unless a finance read model is cited.'],
   })).slice(0, 24);
