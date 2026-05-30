@@ -162,6 +162,7 @@ function sanitizePortalDecisionItem(item: DecisionApiItem): Record<string, unkno
     })),
     dependsOnDecisionIds: item.dependsOnDecisionIds,
     blockedByDecisionIds: item.blockedByDecisionIds,
+    relationships: item.relationships,
     rollbackAvailable: item.rollbackAvailable,
     rollbackActionId: item.rollbackActionId,
   };

@@ -1658,6 +1658,21 @@ describe('Decision Center facade', () => {
     expect(result.status).toBe('succeeded'); // the action proceeds — the forward 'blocks' edge is what blocks
   });
 
+  it('surfaces typed relationships[] on the API item with raw type + semantic kind + label (C6)', async () => {
+    const subject = await createDecisionIntent(buildSkillDecisionFixtureIntent('training', 64, { tenantId: 64, dedupeKey: 'c6-rel-subject' }));
+    const blocker = await createDecisionIntent(buildSkillDecisionFixtureIntent('training', 64, { tenantId: 64, dedupeKey: 'c6-rel-blocker' }));
+    const peer = await createDecisionIntent(buildSkillDecisionFixtureIntent('cooking', 64, { tenantId: 64, dedupeKey: 'c6-rel-peer' }));
+
+    addDecisionDependency({ decisionId: subject.item!.decisionId, dependsOnDecisionId: blocker.item!.decisionId, userId: 64, tenantId: 64, relationship: 'blocks' });
+    addDecisionDependency({ decisionId: subject.item!.decisionId, dependsOnDecisionId: peer.item!.decisionId, userId: 64, tenantId: 64, relationship: 'conflicts_with' });
+
+    const item = getDecisionItem(subject.item!.decisionId, 64, 64)!;
+    expect(item.relationships).toHaveLength(2);
+    const byType = Object.fromEntries(item.relationships.map((r) => [r.type, r]));
+    expect(byType.blocks).toMatchObject({ decisionId: blocker.item!.decisionId, kind: 'prevents_action', label: 'Blocks' });
+    expect(byType.conflicts_with).toMatchObject({ decisionId: peer.item!.decisionId, kind: 'warns', label: 'Conflicts with' });
+  });
+
   it('supersedes content decisions when approval resolves outside Decision Center', async () => {
     const { object, created } = await createContentApprovalDecision(61, 61, 'content-supersession');
     testDb.prepare(`

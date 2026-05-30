@@ -53,7 +53,7 @@ import {
 import { isValidTenantUserId, recordTenantScopeAnomaly } from './tenant-scope-observability';
 import { logger } from '../utils/logger';
 import { isDecisionCenterCommandBusEnabled, isDecisionCenterFatigueCapsEnabled, isDecisionCenterGuidanceSkillEnabled, isDecisionCenterGuidanceV1Enabled, isDecisionEvidenceFreshnessGateEnabled, isDecisionStreakV1Enabled } from './runtime-flags';
-import { decisionRelationshipSemantics, type DecisionRelationshipType } from './decision-relationship-types';
+import { decisionRelationshipSemantics, type DecisionRelationshipKind, type DecisionRelationshipType } from './decision-relationship-types';
 import type { SecretaryTodaySummaryModel } from './secretary-orchestrator';
 import { secretaryTodayLabels } from './secretary-today-copy';
 import {
@@ -312,8 +312,18 @@ export interface DecisionApiItem {
   actions: NotificationActionButton[];
   dependsOnDecisionIds: string[];
   blockedByDecisionIds: string[];
+  /** C6: typed relationship edges to other decisions (only `blocks` is action-preventing; the rest are advisory). */
+  relationships: DecisionRelationship[];
   rollbackAvailable: boolean;
   rollbackActionId: string | null;
+}
+
+/** A typed relationship edge surfaced to the client (C6). `type` is the raw stored relationship; `kind`/`label` come from decisionRelationshipSemantics. */
+export interface DecisionRelationship {
+  decisionId: string;
+  type: string;
+  kind: DecisionRelationshipKind;
+  label: string;
 }
 
 export type DecisionExplanationStepStatus = 'done' | 'needs_user' | 'pending' | 'blocked';
@@ -2501,6 +2511,7 @@ function formatDecisionItemForApi(item: DecisionRecord): DecisionApiItem {
     snoozedUntil: item.snoozedUntil,
     actions,
     dependsOnDecisionIds: dependencies.dependsOnDecisionIds,
+    relationships: dependencies.relationships,
     blockedByDecisionIds: dependencies.blockedByDecisionIds,
     rollbackAvailable: rollback.available,
     rollbackActionId: rollback.actionId,
@@ -4435,11 +4446,16 @@ function rollbackContractForRecord(record: DecisionRecord): { available: boolean
   };
 }
 
-function dependencyStateForRecord(record: DecisionRecord): { dependsOnDecisionIds: string[]; blockedByDecisionIds: string[] } {
+function dependencyStateForRecord(record: DecisionRecord): { dependsOnDecisionIds: string[]; blockedByDecisionIds: string[]; relationships: DecisionRelationship[] } {
   const dependencies = listDecisionDependencies(record.itemId, record.userId, record.tenantId);
   const unresolved = new Set(['unread', 'read', 'failed', 'snoozed']);
   return {
     dependsOnDecisionIds: dependencies.map((dependency) => dependency.dependsOnDecisionId),
+    // C6: typed relationship edges (raw type + semantics) for the client. Read-only projection.
+    relationships: dependencies.map((dependency) => {
+      const semantics = decisionRelationshipSemantics(dependency.relationship);
+      return { decisionId: dependency.dependsOnDecisionId, type: dependency.relationship, kind: semantics.kind, label: semantics.label };
+    }),
     blockedByDecisionIds: dependencies
       // C6: only a 'blocks' relationship prevents action (decisionRelationshipSemantics is the single
       // source of truth). Every other typed relationship — conflicts_with / duplicate_of / related_to /
