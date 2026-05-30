@@ -1745,6 +1745,83 @@ export function runDecisionExpiryJob(input: { batchSize?: number; maxBatches?: n
   return { inspected: expired, expired, remaining, batches, durationMs: Date.now() - start };
 }
 
+export interface DecisionLedgerRetentionPruneResult {
+  outcomeLedgerPruned: number;
+  qualityGateEventsPruned: number;
+  outcomeLedgerRemaining: number;
+  qualityGateEventsRemaining: number;
+  /** Combined batch-pass count across BOTH tables (outcome ledger + quality-gate events), not per-table. */
+  batches: number;
+  durationMs: number;
+}
+
+/**
+ * Enforce the declared retention horizon for the Decision Center's write-heavy raw telemetry tables by
+ * age-pruning rows older than DECISION_OUTCOME_LEDGER_RETENTION_POLICY.rawOutcomeRetentionDays. Without
+ * this the policy is only declarative: decision_outcome_ledger + decision_quality_gate_events grow
+ * unbounded and getDecisionOutcomeMetrics materializes an ever-larger per-user partition on the request
+ * path (the very scan that gates the T14 dashboard at scale).
+ *
+ * GLOBAL (tenant-agnostic) age-based prune. Batched (LIMIT per pass, capped pass count) so a large
+ * backlog never runs as one long transaction. Portable batched DELETE: select a batch of primary keys
+ * matching the age predicate, then delete that batch in a transaction (SQLite has no DELETE ... LIMIT by
+ * default). The created_at predicate rides the existing (user_id, tenant_id, created_at) indexes; the
+ * datetime() comparison is robust to ISO-with-Z vs space-separated storage formats. Table + PK names
+ * are compile-time literals (not input), so the dynamic SQL carries no injection surface.
+ *
+ * Both raw tables intentionally share rawOutcomeRetentionDays (same class of raw event; the 730-day
+ * aggregateRetentionDays tier is for derived rollups, not these). No VACUUM/ANALYZE is run — a frequent
+ * cron must not take SQLite's whole-DB write lock, and freed pages are reused by the steady stream of
+ * new inserts, so disk stays flat in steady state without reclaiming on each pass.
+ */
+export function runDecisionLedgerRetentionPruneJob(
+  input: { retentionDays?: number; batchSize?: number; maxBatches?: number } = {},
+): DecisionLedgerRetentionPruneResult {
+  ensureDecisionCenterTables();
+  const start = Date.now();
+  const retentionDays = Math.max(input.retentionDays ?? DECISION_OUTCOME_LEDGER_RETENTION_POLICY.rawOutcomeRetentionDays, 1);
+  const batchSize = Math.min(Math.max(input.batchSize ?? 500, 1), 1000);
+  const maxBatches = Math.min(Math.max(input.maxBatches ?? 50, 1), 500);
+  const db = getDb();
+  const cutoff = `-${Math.floor(retentionDays)} days`;
+
+  const pruneTable = (table: string, pkColumn: string): { pruned: number; remaining: number; batches: number } => {
+    const selectOld = db.prepare(`
+      SELECT ${pkColumn} AS id FROM ${table}
+       WHERE datetime(created_at) < datetime('now', ?)
+       ORDER BY created_at ASC
+       LIMIT ?
+    `);
+    const del = db.prepare(`DELETE FROM ${table} WHERE ${pkColumn} = ?`);
+    const delBatch = db.transaction((ids: string[]) => {
+      for (const id of ids) del.run(id);
+    });
+    let pruned = 0;
+    let batches = 0;
+    while (batches < maxBatches) {
+      const rows = selectOld.all(cutoff, batchSize) as Array<{ id: string }>;
+      if (rows.length === 0) break;
+      delBatch(rows.map((row) => row.id));
+      pruned += rows.length;
+      batches += 1;
+      if (rows.length < batchSize) break;
+    }
+    const remaining = (db.prepare(`SELECT COUNT(*) AS n FROM ${table} WHERE datetime(created_at) < datetime('now', ?)`).get(cutoff) as { n: number }).n;
+    return { pruned, remaining, batches };
+  };
+
+  const outcome = pruneTable('decision_outcome_ledger', 'outcome_id');
+  const gate = pruneTable('decision_quality_gate_events', 'event_id');
+  return {
+    outcomeLedgerPruned: outcome.pruned,
+    qualityGateEventsPruned: gate.pruned,
+    outcomeLedgerRemaining: outcome.remaining,
+    qualityGateEventsRemaining: gate.remaining,
+    batches: outcome.batches + gate.batches,
+    durationMs: Date.now() - start,
+  };
+}
+
 /**
  * Record a typed dependency edge from `decisionId` to `dependsOnDecisionId`. With the canonical
  * `blocks` relationship the target (`dependsOnDecisionId`) blocks `decisionId`: while the target is

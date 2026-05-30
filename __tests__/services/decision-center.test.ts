@@ -61,6 +61,7 @@ import {
   runDecisionSourceStateSupersessionJob,
   sanitizeGuidanceString,
   runDecisionExpiryJob,
+  runDecisionLedgerRetentionPruneJob,
   legacyStatusToLifecycle,
   actionOutcomeFromRecord,
   computeEffectiveStatus,
@@ -2331,5 +2332,76 @@ describe('Decision Center fatigue caps (C5)', () => {
     const mine = getDecisionOverview(301, 301, { limit: 80 });
     expect(mine.items.every((i) => i.userId === 301)).toBe(true);
     expect(mine.items.some((i) => i.userId === 302)).toBe(false);
+  });
+});
+
+describe('runDecisionLedgerRetentionPruneJob (retention)', () => {
+  beforeEach(() => {
+    // Real timers so inserted `new Date()` timestamps and the SQLite datetime('now') prune predicate agree.
+    vi.useRealTimers();
+    testDb = new Database(':memory:');
+    process.env.NOTIFICATION_DELIVERY_MODE = 'mock';
+    ensureNotificationTables();
+    ensureDecisionCenterTables();
+  });
+  afterEach(() => {
+    delete process.env.NOTIFICATION_DELIVERY_MODE;
+    vi.useRealTimers();
+    testDb?.close();
+  });
+
+  const insertOutcome = (id: string, createdAt: string): void => {
+    testDb.prepare(
+      `INSERT INTO decision_outcome_ledger (outcome_id, decision_id, user_id, tenant_id, source_skill, type, created_at)
+       VALUES (?, ?, 1, 1, 'training', 'decision_required', ?)`,
+    ).run(id, `d_${id}`, createdAt);
+  };
+  const insertGate = (id: string, createdAt: string): void => {
+    testDb.prepare(
+      `INSERT INTO decision_quality_gate_events (event_id, user_id, tenant_id, source_skill, type, quality_status, reason, created_at)
+       VALUES (?, 1, 1, 'training', 'decision_required', 'passed', 'ok', ?)`,
+    ).run(id, createdAt);
+  };
+  const countOutcome = (): number => (testDb.prepare('SELECT COUNT(*) AS n FROM decision_outcome_ledger').get() as { n: number }).n;
+  const countGate = (): number => (testDb.prepare('SELECT COUNT(*) AS n FROM decision_quality_gate_events').get() as { n: number }).n;
+
+  it('prunes rows older than the retention horizon from both raw telemetry tables and keeps recent ones', () => {
+    insertOutcome('old1', '2020-01-01T00:00:00.000Z');
+    insertOutcome('old2', '2020-06-01T00:00:00.000Z');
+    insertOutcome('recent', new Date().toISOString());
+    insertGate('gold', '2020-01-01T00:00:00.000Z');
+    insertGate('grecent', new Date().toISOString());
+
+    const result = runDecisionLedgerRetentionPruneJob({ retentionDays: 180 });
+    expect(result.outcomeLedgerPruned).toBe(2);
+    expect(result.qualityGateEventsPruned).toBe(1);
+    expect(result.outcomeLedgerRemaining).toBe(0);
+    expect(result.qualityGateEventsRemaining).toBe(0);
+    expect(countOutcome()).toBe(1); // only the recent outcome survives
+    expect(countGate()).toBe(1); // only the recent gate event survives
+  });
+
+  it('batches a large backlog of expired rows across multiple passes', () => {
+    for (let i = 0; i < 12; i++) insertOutcome(`b${i}`, '2019-01-01T00:00:00.000Z');
+    const result = runDecisionLedgerRetentionPruneJob({ retentionDays: 180, batchSize: 5, maxBatches: 50 });
+    expect(result.outcomeLedgerPruned).toBe(12);
+    expect(result.batches).toBeGreaterThanOrEqual(3); // 12 rows / batchSize 5 => 5 + 5 + 2
+    expect(countOutcome()).toBe(0);
+  });
+
+  it('respects maxBatches as a time-budget backstop (leaves a remainder for the next run)', () => {
+    for (let i = 0; i < 12; i++) insertOutcome(`m${i}`, '2019-01-01T00:00:00.000Z');
+    const result = runDecisionLedgerRetentionPruneJob({ retentionDays: 180, batchSize: 5, maxBatches: 1 });
+    expect(result.outcomeLedgerPruned).toBe(5); // one pass only
+    expect(result.outcomeLedgerRemaining).toBe(7); // remainder reported for the next run
+    expect(countOutcome()).toBe(7);
+  });
+
+  it('defaults to the declared 180-day raw retention policy when no horizon is passed', () => {
+    insertOutcome('o', '2019-01-01T00:00:00.000Z');
+    insertOutcome('keep', new Date().toISOString());
+    const result = runDecisionLedgerRetentionPruneJob();
+    expect(result.outcomeLedgerPruned).toBe(1);
+    expect(countOutcome()).toBe(1);
   });
 });
