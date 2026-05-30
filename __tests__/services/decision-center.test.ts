@@ -1436,6 +1436,54 @@ describe('Decision Center facade', () => {
     expect(restored).toMatchObject({ lifecycle_state: 'proposed', decision_action: 'deferred' });
   });
 
+  it('B2: redacts the rollback snapshot explanation for a sensitive decision (flag ON) while undo still restores state', async () => {
+    ensureSecretaryAgendaFixtureTables();
+    testDb.prepare(`
+      INSERT INTO secretary_agenda_items (
+        agenda_item_id, source_intent_id, source_skill, source_action, intent_action,
+        source_entity_id, source_entity_type, owner_user_id, tenant_id,
+        lifecycle_state, provider_sync_state, version, title, start_at, end_at,
+        duration_minutes, decision_action, decision_reason_codes_json, decision_explanation,
+        source_shape_hash, scheduled_segments_json, created_at, updated_at
+      ) VALUES (
+        'agenda-b2', 'intent-b2', 'training', 'long_run', 'reschedule_this',
+        'session-b2', 'training_session', 55, '55',
+        'proposed', 'not_synced', 1, 'Move long run',
+        '2026-05-11T08:00:00.000Z', '2026-05-11T10:00:00.000Z',
+        120, 'deferred', '[]', 'SENSITIVE_EXPLANATION_TEXT',
+        'hash-b2', '[]', datetime('now'), datetime('now')
+      )
+    `).run();
+    process.env.DECISION_ROLLBACK_SNAPSHOT_PROTECTION_ENABLED = 'true';
+    try {
+      const created = await createDecisionIntent(buildSkillDecisionFixtureIntent('secretary', 55, {
+        relatedEntityId: 'agenda-b2', relatedEntityType: 'secretary_agenda_item', dedupeKey: 'b2-rollback',
+        privacyPolicy: 'sensitive',
+        actionButtons: [{ id: 'accept_reflow', label: 'Reflow', style: 'primary' }],
+        decisionContext: {
+          currentStartAt: '2026-05-10T08:00:00.000Z', currentEndAt: '2026-05-10T10:00:00.000Z',
+          recommendedStartAt: '2026-05-11T08:00:00.000Z', recommendedEndAt: '2026-05-11T10:00:00.000Z',
+        },
+      }));
+      expect(created.item).not.toBeNull();
+      const result = await performDecisionAction(created.item!.decisionId, 'accept_reflow', 55, 55, { idempotencyKey: 'b2-accept' });
+      expect(result.status).toBe('succeeded');
+      // the stored rollback snapshot omits the sensitive free-text explanation; machine fields are kept.
+      const row = testDb.prepare('SELECT action_result_json FROM notification_center_items WHERE item_id = ?').get(created.item!.decisionId) as any;
+      const snapshot = JSON.parse(row.action_result_json).rollback;
+      expect(snapshot.previous.explanation).toBeUndefined();
+      expect(snapshot.previous.startAt).toBe('2026-05-11T08:00:00.000Z');
+      expect(JSON.stringify(snapshot)).not.toContain('SENSITIVE_EXPLANATION_TEXT');
+      // undo still restores the schedule state (the reader tolerates the missing explanation).
+      const undo = await performDecisionAction(created.item!.decisionId, 'undo_reflow', 55, 55, { idempotencyKey: 'b2-undo' });
+      expect(undo.status).toBe('succeeded');
+      const restored = testDb.prepare('SELECT lifecycle_state FROM secretary_agenda_items WHERE agenda_item_id = ?').get('agenda-b2') as any;
+      expect(restored.lifecycle_state).toBe('proposed');
+    } finally {
+      delete process.env.DECISION_ROLLBACK_SNAPSHOT_PROTECTION_ENABLED;
+    }
+  });
+
   it('executes Finance payment decisions through tax-event state and read-back verification', async () => {
     ensureFinanceFixtureTables();
     testDb.prepare(`

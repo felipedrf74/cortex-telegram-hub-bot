@@ -344,6 +344,17 @@ export function isDecisionRefreshEnabled(env: RuntimeEnv = process.env, scope?: 
   return scopedFlagEnabledByExplicitOptIn(env, 'DECISION_REFRESH_ENABLED', scope);
 }
 
+/**
+ * B2 — gates rollback-snapshot protection: for a financial/sensitive decision, the secretary rollback
+ * snapshot stored in action_result_json drops the free-text decision explanation (the most sensitive field),
+ * keeping only the machine fields the rollback needs to restore state. Reduces sensitive plaintext at rest
+ * without touching the undo path's correctness (the reader already tolerates a missing explanation). Default
+ * OFF; opt-in per user/tenant. (Full at-rest encryption of the window/segments is a separate follow-up.)
+ */
+export function isDecisionRollbackSnapshotProtectionEnabled(env: RuntimeEnv = process.env, scope?: RuntimeFlagScope): boolean {
+  return scopedFlagEnabledByExplicitOptIn(env, 'DECISION_ROLLBACK_SNAPSHOT_PROTECTION_ENABLED', scope);
+}
+
 
 export function isChatCoreV2RuntimeFlagEnabled(
   flagKey: string,

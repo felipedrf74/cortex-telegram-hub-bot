@@ -52,7 +52,7 @@ import {
 } from './chat-pending-confirmations';
 import { isValidTenantUserId, recordTenantScopeAnomaly } from './tenant-scope-observability';
 import { logger } from '../utils/logger';
-import { isDecisionCenterCommandBusEnabled, isDecisionCenterFatigueCapsEnabled, isDecisionCenterGuidanceSkillEnabled, isDecisionCenterGuidanceV1Enabled, isDecisionChoiceOptionsEnabled, isDecisionEvidenceFreshnessGateEnabled, isDecisionHumanReviewGateEnabled, isDecisionReconnectAffordanceEnabled, isDecisionSemanticDedupEnabled, isDecisionSemanticSupersedeEnabled, isDecisionSkillCardsEnabled, isDecisionStreakV1Enabled } from './runtime-flags';
+import { isDecisionCenterCommandBusEnabled, isDecisionCenterFatigueCapsEnabled, isDecisionCenterGuidanceSkillEnabled, isDecisionCenterGuidanceV1Enabled, isDecisionChoiceOptionsEnabled, isDecisionEvidenceFreshnessGateEnabled, isDecisionHumanReviewGateEnabled, isDecisionReconnectAffordanceEnabled, isDecisionRollbackSnapshotProtectionEnabled, isDecisionSemanticDedupEnabled, isDecisionSemanticSupersedeEnabled, isDecisionSkillCardsEnabled, isDecisionStreakV1Enabled } from './runtime-flags';
 import { decisionRelationshipSemantics, type DecisionRelationshipKind, type DecisionRelationshipType } from './decision-relationship-types';
 import { buildDecisionDedupKey, classifyDecisionDedup } from './decision-center-semantic-dedup';
 import type { SecretaryTodaySummaryModel } from './secretary-orchestrator';
@@ -5229,7 +5229,10 @@ function executeSecretaryAgendaDecision(
     throw new DecisionActionError('DECISION_RELATED_ENTITY_NOT_FOUND', 'Secretary agenda item was not found for this user.', 404);
   }
 
-  const rollback = secretaryAgendaRollbackSnapshot(agenda);
+  const rollback = secretaryAgendaRollbackSnapshot(agenda, {
+    redactExplanation: isDecisionRollbackSnapshotProtectionEnabled(process.env, { userId, tenantId })
+      && (record.privacyPolicy === 'financial' || record.privacyPolicy === 'sensitive'),
+  });
   const updates = buildSecretaryAgendaUpdates(actionId, agenda, payload);
   const agendaUpdate = getDb().prepare(`
     UPDATE secretary_agenda_items
@@ -5385,20 +5388,23 @@ function executeSecretaryReflowRollback(
   };
 }
 
-function secretaryAgendaRollbackSnapshot(agenda: SecretaryAgendaItem): Record<string, unknown> {
-  return {
-    type: 'secretary_agenda_item',
-    agendaItemId: agenda.agendaItemId,
-    previous: {
-      lifecycleState: agenda.lifecycleState,
-      decisionAction: agenda.decisionAction,
-      reasonCodes: agenda.decisionReasonCodes,
-      explanation: agenda.decisionExplanation,
-      startAt: agenda.startAt,
-      endAt: agenda.endAt,
-      scheduledSegments: agenda.scheduledSegments,
-    },
+function secretaryAgendaRollbackSnapshot(agenda: SecretaryAgendaItem, opts: { redactExplanation?: boolean } = {}): Record<string, unknown> {
+  // The machine fields below are exactly what executeSecretaryReflowRollback restores. `explanation` is the
+  // free-text display copy — the most sensitive field; B2 (redactExplanation) omits it for financial/sensitive
+  // decisions so it is not persisted in plaintext at rest. The rollback reader tolerates a missing explanation
+  // (stringOrNull -> null), so omitting it never breaks undo. OFF keeps the snapshot byte-identical.
+  const previous: Record<string, unknown> = {
+    lifecycleState: agenda.lifecycleState,
+    decisionAction: agenda.decisionAction,
+    reasonCodes: agenda.decisionReasonCodes,
+    explanation: agenda.decisionExplanation,
+    startAt: agenda.startAt,
+    endAt: agenda.endAt,
+    scheduledSegments: agenda.scheduledSegments,
   };
+  // Delete (not skip) so the OFF path keeps the original key order — byte-identical stored snapshot.
+  if (opts.redactExplanation) delete previous.explanation;
+  return { type: 'secretary_agenda_item', agendaItemId: agenda.agendaItemId, previous };
 }
 
 function buildSecretaryAgendaUpdates(
