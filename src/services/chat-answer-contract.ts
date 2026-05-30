@@ -21,6 +21,7 @@ export type NexusChatActionability =
   | 'clarify'
   | 'preview'
   | 'execute'
+  | 'queued'
   | 'decision_center'
   | 'open_surface'
   | 'blocked'
@@ -228,7 +229,7 @@ function inferRouteKind(
   actionability: NexusChatActionability | undefined,
   missingFacts: string[] | undefined,
 ): NexusChatRouteKind {
-  if (actionability === 'execute' || actionability === 'preview' || actionability === 'decision_center') return 'action';
+  if (actionability === 'execute' || actionability === 'preview' || actionability === 'queued' || actionability === 'decision_center') return 'action';
   if (actionability === 'clarify') return 'clarification';
   if ((missingFacts ?? []).length > 0) return 'local_read';
   return 'generic_skill_answer';

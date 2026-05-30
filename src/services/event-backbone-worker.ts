@@ -11,6 +11,7 @@ import { enqueueJob, processPendingJobs, type JobHandler } from './background-jo
 import { processPendingEvents, type EventHandler } from './event-outbox';
 import { projectSummaryReadModelsForUser } from './app-summary-read-models';
 import { recordProductDecision } from './product-decision-log';
+import { chatCoreV2BackgroundCommandJobHandler } from './chat-core-v2/background-command-worker';
 import { logger } from '../utils/logger';
 
 const PROJECTABLE_EVENT_TYPES = new Set([
@@ -120,6 +121,11 @@ export const defaultJobHandlers: JobHandler[] = [
       // Intentionally no external calendar call in local/job foundation mode.
     },
   },
+  // WP-15: background write-command execution. The handler is INERT unless a job
+  // was enqueued — and enqueue itself is gated default-off (write execution +
+  // canary/on + not per-tenant-killed). With write execution off no job of this
+  // type ever exists, so registering the handler is behavior-preserving.
+  chatCoreV2BackgroundCommandJobHandler,
 ];
 
 export async function runEventBackboneOnce(opts: {

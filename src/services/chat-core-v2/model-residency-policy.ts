@@ -62,6 +62,36 @@ export const CHAT_CORE_V2_MODEL_RESIDENCY_POLICIES: ChatCoreV2ModelResidencyPoli
   },
 ];
 
+/**
+ * Pure role → keep-alive-seconds mapping (WP-02 D12 residency, closed in WP-15
+ * for B8). Maps the declared `defaultKeepAlive` token of a residency role to the
+ * integer second value Ollama's `keep_alive` field expects:
+ *   '-1' → -1   (always loaded; the 3B planner hot path)
+ *   '5m' → 300  (5-minute residency; the 35B background escalation path)
+ *   '0'  → 0    (unload immediately after the call; operational rollback)
+ * Unknown roles default to -1 (the safe "stay loaded" behavior). This is the
+ * single source the background worker calls with `'escalation_35b'` so the only
+ * path that runs 35B asserts a 300s residency (closes B8), while every other
+ * caller (the foreground 3B planner) stays at -1.
+ */
+export function resolveKeepAliveForRole(
+  role: ChatCoreV2ModelResidencyRole | string,
+  env: Pick<NodeJS.ProcessEnv, string> = process.env,
+): number {
+  const policy = CHAT_CORE_V2_MODEL_RESIDENCY_POLICIES.find((entry) => entry.role === role);
+  const token = policy?.defaultKeepAlive ?? '-1';
+  void env;
+  switch (token) {
+    case '5m':
+      return 300;
+    case '0':
+      return 0;
+    case '-1':
+    default:
+      return -1;
+  }
+}
+
 export function resolveChatCoreV2ModelResidencyConfig(
   env: Pick<NodeJS.ProcessEnv, string> = process.env,
 ): ChatCoreV2ResolvedModelResidency[] {

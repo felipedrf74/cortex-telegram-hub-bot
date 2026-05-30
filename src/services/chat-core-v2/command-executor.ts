@@ -157,7 +157,7 @@ export async function executeChatCoreV2Command(input: {
   });
 }
 
-function isExecutableCommandType(commandType: string): boolean {
+export function isExecutableCommandType(commandType: string): boolean {
   return commandType === 'tasks.create'
     || commandType === 'tasks.complete'
     || commandType === 'notifications.snooze'

@@ -110,8 +110,12 @@ import {
   loadChatV2MemoryContextForOrchestrator,
   tryWriteChatV2MemoryFromTurnOutcome,
   runChatCoreV2OrchestrationGate,
+  enqueueBackgroundChatCommand,
+  shouldBackgroundQueueChatCoreV2Command,
+  ChatCoreV2BackgroundCommandEnqueueError,
   type ChatCoreV2ActionGatewayResult,
 } from '../../services/chat-core-v2';
+import { buildChatCoreV2BackgroundQueuedShortcutResponse } from './chat-core-v2-background-queued-response';
 import { buildChatCoreV2CommandPreviewShortcutResponse } from './chat-core-v2-command-preview-response';
 import { buildChatCoreV2CommandConfirmationShortcutResponse } from './chat-core-v2-command-confirmation-response';
 import { buildChatCoreV2DeterministicReadShortcutResponse } from './chat-core-v2-deterministic-read-response';
@@ -1242,6 +1246,73 @@ export function registerChatMessageRoutes(
             new Date(autoExecuteStartedAt),
           );
           if (v2Claim.status === 'claimed') {
+            // WP-15: background write-command queue. DEFAULT-OFF — only reached
+            // when write execution is enabled, mode∈{canary,on}, and this tenant
+            // is not per-tenant-killed (shouldBackgroundQueueChatCoreV2Command).
+            // With the default env this predicate is false, so the synchronous
+            // auto-execute path below runs unchanged (chat-routes 101 stay green).
+            if (shouldBackgroundQueueChatCoreV2Command({ tenantId, jobType: 'composer' })) {
+              try {
+                const job = enqueueBackgroundChatCommand({
+                  tenantId,
+                  userId,
+                  jobType: 'composer',
+                  capabilityId: v2Claim.pending.capabilityId,
+                  command: v2Claim.pending.command,
+                  turnId: chatRequestId,
+                  notificationPolicy: 'apns',
+                  locale: getUserLanguageById(userId) || null,
+                });
+                latency.mark('chat_core_v2_command_background_queued');
+                const queued = buildChatCoreV2BackgroundQueuedShortcutResponse({
+                  command: v2Claim.pending.command,
+                  capabilityId: v2Claim.pending.capabilityId,
+                  jobId: job.jobId,
+                  requestStartedAt,
+                  locale: getUserLanguageById(userId),
+                });
+                const response = enrichChatResponseForContract(queued.response, {
+                  normalizedText,
+                  userId,
+                  tenantId,
+                  chatRequestId,
+                  tracker: latency,
+                  latencyTier: 'tier1_fast_read',
+                  fallbackDomain: queued.conversationDomain,
+                  fallbackRouteMethod: 'chat-core-v2-background-queued',
+                  actionability: 'queued',
+                  verificationStatus: 'pending',
+                });
+                rememberChatActiveDomain(userId, queued.conversationDomain, Date.now(), tenantId);
+                persistExchange(userId, userMessageId, normalizedText, response.id, response, tenantId, {
+                  clientMessageId: scopedClientMessageId,
+                  requestId: chatRequestId,
+                });
+                syncConversationStateForShortcut(userId, queued.conversationDomain, normalizedText, response.text, tenantId);
+                logger.info(
+                  {
+                    chatRequestId,
+                    platform: 'ios',
+                    mode: 'chat-core-v2-background-queued',
+                    tenantId,
+                    userId,
+                    ...queued.logContext,
+                  },
+                  'iOS chat Chat Core v2 command queued for background execution',
+                );
+                res.json(response);
+                return;
+              } catch (err) {
+                // A refused/failed enqueue must NEVER block the turn — fall
+                // through to the existing synchronous auto-execute path.
+                if (!(err instanceof ChatCoreV2BackgroundCommandEnqueueError)) {
+                  logger.warn(
+                    { chatRequestId, tenantId, userId, err },
+                    'Chat Core v2 background enqueue failed; falling back to synchronous execution',
+                  );
+                }
+              }
+            }
             const execution = await executeChatCoreV2Command({
               command: v2Claim.pending.command,
               capabilityId: v2Claim.pending.capabilityId,

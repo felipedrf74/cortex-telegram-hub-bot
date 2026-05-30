@@ -58,6 +58,22 @@ export type ChatCoreV2ActionGatewayResult =
     telemetry: ChatCoreV2WriteIntentGuardTelemetry;
   }
   | {
+    // WP-15: an ADDITIVE outcome on the write-EXECUTION path only. A resolved
+    // write that the route chose to run in the background (e.g. a slow planner
+    // escalation) is acknowledged synchronously and executed by the worker. This
+    // variant is NEVER produced by runChatCoreV2ActionGateway itself — the
+    // gateway still returns the firewall's block/clarify/preview/execute
+    // outcomes unchanged. The route converts a `resolved_execute` into this via
+    // `buildChatCoreV2QueuedBackgroundResult` AFTER the firewall has approved
+    // execution, so the firewall (chat-routes 101) is untouched.
+    kind: 'queued_background';
+    command: AICommandEnvelope;
+    preview: ChatCoreV2CommandPreviewRouteResult;
+    writeRiskPolicy: ChatCoreV2ActionWriteRiskPolicy;
+    jobId: string;
+    telemetry: ChatCoreV2WriteIntentGuardTelemetry;
+  }
+  | {
     kind: 'needs_clarification';
     question: string;
     candidates?: ActionCandidate[];
@@ -368,6 +384,35 @@ export function runChatCoreV2ActionGateway(
   }));
   logTelemetry(unresolved.telemetry);
   return shouldBlockLegacy ? unresolved : { kind: 'no_write_intent', telemetry: unresolved.telemetry };
+}
+
+/**
+ * WP-15: convert a firewall-APPROVED `resolved_execute` outcome into the additive
+ * `queued_background` outcome after the route has enqueued the command. This is a
+ * pure adapter — it does NOT re-run the firewall and is only ever called on a
+ * result the firewall already produced as `resolved_execute`, so the firewall's
+ * block / clarify / preview / unsupported_write paths (chat-routes 101) are never
+ * reached through here and stay exactly as they were. The telemetry is updated to
+ * reflect the queued (rather than synchronously-executed) final outcome.
+ */
+export function buildChatCoreV2QueuedBackgroundResult(
+  resolved: Extract<ChatCoreV2ActionGatewayResult, { kind: 'resolved_execute' }>,
+  jobId: string,
+): Extract<ChatCoreV2ActionGatewayResult, { kind: 'queued_background' }> {
+  return {
+    kind: 'queued_background',
+    command: resolved.command,
+    preview: resolved.preview,
+    writeRiskPolicy: resolved.writeRiskPolicy,
+    jobId,
+    telemetry: {
+      ...resolved.telemetry,
+      policyDecision: 'queued_background',
+      finalOutcome: 'queued_background',
+      verificationStatus: 'pending',
+      reasonCodes: [...resolved.telemetry.reasonCodes, 'queued_background'],
+    },
+  };
 }
 
 function isLegacyWriteFallthroughBlockEnabled(env: NodeJS.ProcessEnv): boolean {
