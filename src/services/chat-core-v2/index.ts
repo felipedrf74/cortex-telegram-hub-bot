@@ -26,6 +26,7 @@ export * from './fallback-policy';
 export * from './background-lifecycle';
 export * from './failure-observability';
 export * from './finance-action-policy';
+export * from './gate-metrics-store';
 export * from './golden-corpus';
 export * from './human-review-queue';
 export * from './locale-policy';

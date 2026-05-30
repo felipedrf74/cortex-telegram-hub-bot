@@ -32,6 +32,7 @@ import {
 import { registerPortalAdminDataRoutes } from './admin-data-routes';
 import { registerPortalActionRoutes } from './action-routes';
 import { registerPortalChatRoutes } from './chat-routes';
+import { registerPortalChatCoreV2GateRoutes } from './chat-core-v2-gate-routes';
 import { registerPortalContentRoutes } from './content-routes';
 import { registerPortalCookingRoutes } from './cooking-routes';
 import { registerPortalDecisionCenterRoutes } from './decision-center-routes';
@@ -375,6 +376,10 @@ export function createPortalServer(bot?: any): http.Server {
   registerPortalChatRoutes(app);
 
   registerPortalEvalHistoryRoutes(app);
+
+  // WP-13: admin-scoped Chat Core v2 shadow gate-readiness endpoint. Registered
+  // ONLY when the orchestrator mode is not 'off' (default-off; single parser).
+  registerPortalChatCoreV2GateRoutes(app);
 
   registerPortalUserSkillRoutes(app);
 
