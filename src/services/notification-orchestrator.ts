@@ -1075,7 +1075,7 @@ export function snoozeNotificationCenterItem(
   const parsedUntil = typeof snoozedUntil === 'string' ? Date.parse(snoozedUntil) : NaN;
   const until = Number.isFinite(parsedUntil)
     ? new Date(parsedUntil).toISOString()
-    : new Date(Date.now() + 60 * 60 * 1000).toISOString();
+    : DateTime.utc().plus({ minutes: 60 }).toISO() ?? DateTime.utc().toISO();
   getDb().prepare(`
     UPDATE notification_center_items
     SET status = 'snoozed',

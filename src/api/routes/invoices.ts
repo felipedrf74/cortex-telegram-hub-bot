@@ -20,6 +20,7 @@
  *   POST   /vendors                 — add or re-enable a custom vendor
  *   DELETE /vendors/:id             — soft-delete (disable) a custom vendor
  *   POST   /scan-now                — trigger on-demand monthly collection
+ *   POST   /scraper-mfa-reply       — submit Amazon/Uber scraper 2FA code
  *
  * Part of TASK-14 Phase 1 (foundation). Vendor management was
  * previously only accessible via Telegram commands; exposing it
@@ -46,6 +47,11 @@ import { updateFiscalCollectionProfile } from '../../state/fiscal-collection-pro
 import { ensureValidTenantRouteScope } from '../tenant-route-scope';
 import { invalidateFinanceDerivedCaches } from '../../services/cache-coherence-registry';
 import { assertTenantScope, TenantScopeError } from '../../services/tenant-scope';
+import {
+  normalizeScraperMfaCode,
+  normalizeScraperMfaSource,
+  submitScraperMfaReply,
+} from '../../services/scraper-mfa-reply';
 
 function splitSubjectPatterns(subjectPatterns: string | null | undefined): string[] {
   const patterns = subjectPatterns
@@ -359,6 +365,65 @@ export function invoicesRoutes(): Router {
     } catch (err: any) {
       logger.error({ err, userId, year, month }, 'iOS on-demand invoice scan failed');
       sendInternalError(res, 'Unable to run the invoice scan right now.');
+    }
+  }));
+
+  /**
+   * POST /api/v1/invoices/scraper-mfa-reply
+   * Body: { source: "amazon" | "uber", code: string }
+   *
+   * App-facing replacement for the legacy Telegram catch-all 2FA reply path.
+   * The code is passed only to the pending scraper waiter and is never echoed
+   * back in the response or logs.
+   */
+  router.post('/scraper-mfa-reply', asyncHandler(async (req, res: Response) => {
+    const { userId, tenantId } = assertTenantScope(req as any, 'invoices.scraper-mfa-reply');
+    const source = normalizeScraperMfaSource(req.body?.source);
+    const code = normalizeScraperMfaCode(req.body?.code);
+
+    if (!source) {
+      sendError(res, 'BAD_REQUEST', 'source must be amazon or uber');
+      return;
+    }
+    if (!code) {
+      sendError(res, 'BAD_REQUEST', 'code is required');
+      return;
+    }
+
+    try {
+      const result = submitScraperMfaReply({
+        userId,
+        tenantId,
+        source,
+        code,
+      });
+      if (!result.accepted) {
+        sendError(
+          res,
+          'SCRAPER_MFA_NO_PENDING_CHALLENGE',
+          'No pending scraper verification challenge for this account.',
+          409,
+        );
+        return;
+      }
+
+      logAudit({
+        userId,
+        tenantId,
+        actorId: userId,
+        action: 'invoice_scraper_mfa_reply',
+        resource: 'invoice_scraper_mfa',
+        details: {
+          source,
+          codeLength: code.length,
+        },
+        ipAddress: (req as any).ip,
+      });
+      logger.info({ userId, tenantId, source, codeLength: code.length }, 'iOS scraper MFA reply accepted');
+      sendSuccess(res, { accepted: true, source });
+    } catch (err: any) {
+      logger.error({ err, userId, tenantId, source }, 'iOS scraper MFA reply failed');
+      sendInternalError(res, 'Unable to submit the verification code right now.');
     }
   }));
 

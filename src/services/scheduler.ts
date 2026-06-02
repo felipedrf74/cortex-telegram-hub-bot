@@ -19,6 +19,7 @@ import { collectMonthlyInvoices, formatCollectionNotification } from './invoice-
 import { isInvoiceFilingConfigured } from './invoice-filer';
 import { collectAmazonInvoices, formatAmazonNotification, isAmazonConfigured } from './amazon-collector';
 import { collectUberInvoices, formatUberNotification, isUberConfigured } from './uber-collector';
+import { createScraperMfaInteractiveCallbacks } from './scraper-mfa-reply';
 import { getFiscalCollectionSummary, isFiscalBundleDue, sendFiscalBundleNow } from './fiscal-bundle';
 import { generateCoachBriefing } from './garmin-coach';
 import { isGarminConfigured, keepAlive as garminKeepAlive, ensureAuthenticated as garminEnsureAuth } from './garmin';
@@ -28,7 +29,7 @@ import { isCronJobEnabled } from '../skills/skill-manager';
 import { CronExpressionParser } from 'cron-parser';
 import { flushQueue, getPendingCount } from './invoice-queue';
 import { setLastCoachState } from '../domains/domain-handler';
-import { setLastActiveDomain } from '../bot';
+import { setLastActiveDomain } from '../api/routes/chat-message-context';
 import { addToConversation } from '../state/conversation';
 import { processAllChannelScopes, seedDefaultChannels } from './channel-learner';
 import { generateAndStoreTopicCandidates, generateWeeklyPackage } from './content-workflow';
@@ -52,9 +53,9 @@ import { isTelegramLegacyDeliveryEnabled } from './runtime-flags';
 import { processDueOperatorAlertDeliveries, recordOperatorAlert } from './operator-alerts';
 import { runEventBackboneOnce } from './event-backbone-worker';
 import { runEventBackboneCleanup } from '../tools/event-backbone-cleanup';
-import { expireStaleChatActionPlans } from './chat-reasoning-engine';
 import { expireStalePendingChatActionsForJob } from './chat-action-state';
 import { pruneCompletedChatActionRuns, reapZombieChatActionRuns } from './chat-action-run-store';
+import { processChatActionFixerJobs } from './chat-action-fixer-worker';
 import { runGarminTenantIsolationWatcher } from './garmin-tenant-isolation-watcher';
 import { runDecisionCenterSmokeCleanupJob, runDecisionHandledHistoryBackfillJob, runDecisionSourceStateSupersessionJob } from './decision-center';
 import { resolveChatCoreV2ActivationConfig } from './chat-core-v2/activation-flags';
@@ -862,6 +863,7 @@ export function startScheduler(bot?: any): void {
   registerJob('decision_source_supersession', 'Decision Source Supersession', '*/15 * * * *', 'system');
   registerJob('decision_handled_history_backfill', 'Decision Handled History Backfill', '22,52 * * * *', 'system');
   registerJob('chat_action_plan_expiry', 'Chat Action Plan Expiry', '15 * * * *', 'system');
+  registerJob('chat_action_fixer_worker', 'Chat Action Fixer Worker', '* * * * *', 'system');
   registerJob('event_backbone_worker', 'Event Backbone Worker', '* * * * *', 'system');
   registerJob('event_backbone_cleanup', 'Event Backbone Cleanup', '10 0 * * *', 'system');
   registerJob('nexus_points_expiry', 'Nexus Points Expiry Sweep', '0 4 * * *', 'system');
@@ -871,6 +873,7 @@ export function startScheduler(bot?: any): void {
   if (resolveChatCoreV2ActivationConfig(process.env).mode !== 'off') {
     registerJob('chat_v2_gate_check', 'Chat Core v2 Shadow Gate Check', '37 * * * *', 'system');
   }
+  registerJob('classify_shadow_prune', 'Classify Shadow Retention Prune', '17 4 * * *', 'system');
 
   // Seed lastRunAt from DB so the DST watchdog doesn't re-fire jobs after a restart
   seedJobLastRunFromHistory();
@@ -1351,7 +1354,19 @@ export function startScheduler(bot?: any): void {
     const prev = now().minus({ months: 1 });
     const ownerTenantIds = getOwnerTenantIds();
     for (const tenantId of ownerTenantIds) {
-      const result = await collectAmazonInvoices(tenantId, prev.year, prev.month);
+      const callbacks = createScraperMfaInteractiveCallbacks({
+        userId: tenantId,
+        tenantId,
+        source: 'amazon',
+      });
+      const result = await collectAmazonInvoices(
+        tenantId,
+        prev.year,
+        prev.month,
+        callbacks.sendMessage,
+        callbacks.sendScreenshot,
+        callbacks.waitForReply,
+      );
       const notification = formatAmazonNotification(result);
       const ownerTelegramId = getUserById(tenantId)?.telegram_id;
       if (!ownerTelegramId) continue;
@@ -1370,7 +1385,19 @@ export function startScheduler(bot?: any): void {
     const prev = now().minus({ months: 1 });
     const ownerTenantIds = getOwnerTenantIds();
     for (const tenantId of ownerTenantIds) {
-      const result = await collectUberInvoices(tenantId, prev.year, prev.month);
+      const callbacks = createScraperMfaInteractiveCallbacks({
+        userId: tenantId,
+        tenantId,
+        source: 'uber',
+      });
+      const result = await collectUberInvoices(
+        tenantId,
+        prev.year,
+        prev.month,
+        callbacks.sendMessage,
+        callbacks.sendScreenshot,
+        callbacks.waitForReply,
+      );
       const notification = formatUberNotification(result);
       const ownerTelegramId = getUserById(tenantId)?.telegram_id;
       if (!ownerTelegramId) continue;
@@ -1905,6 +1932,37 @@ export function startScheduler(bot?: any): void {
     expireOldNexusPointCredits();
   }), { timezone: 'UTC' });
 
+  // ── Option 3 (O3-A23): classify_shadow_runs retention prune ────────
+  // Deletes shadow-eval rows older than CLASSIFY_SHADOW_RETENTION_DAYS
+  // (default 30), but preserves any row the operator manually reviewed
+  // (manually_reviewed=1) — those carry training-data value indefinitely.
+  // Runs daily at 04:17 UTC, after the nexus_points_expiry tick.
+  cron.schedule('17 4 * * *', wrapJob('classify_shadow_prune', async () => {
+    const raw = process.env.CLASSIFY_SHADOW_RETENTION_DAYS;
+    const days = (() => {
+      const n = raw ? parseInt(raw, 10) : NaN;
+      return Number.isFinite(n) && n >= 1 && n <= 365 ? n : 30;
+    })();
+    try {
+      const db = getDb();
+      const result = db.prepare(`
+        DELETE FROM classify_shadow_runs
+        WHERE ts < datetime('now', '-' || ? || ' days')
+          AND manually_reviewed = 0
+      `).run(days);
+      logger.info(
+        { deletedRows: result.changes, retentionDays: days },
+        'classify_shadow_runs pruned',
+      );
+    } catch (err) {
+      // Table may not exist on a brand-new DB before migration 171 runs.
+      logger.warn(
+        { err: err instanceof Error ? err.message : String(err), retentionDays: days },
+        'classify_shadow_prune: skipped (table missing or query failed)',
+      );
+    }
+  }), { timezone: 'UTC' });
+
   // Seed SEO keywords (only if table is empty)
   try {
     seedKeywordsIfEmpty();
@@ -1992,17 +2050,28 @@ export function startScheduler(bot?: any): void {
   }), { timezone: tz });
 
   cron.schedule('*/2 * * * *', wrapJob('chat_action_plan_expiry', async () => {
-    const expired = expireStaleChatActionPlans();
     const expiredPendingActions = expireStalePendingChatActionsForJob();
-    const totalExpired = expired + expiredPendingActions;
-    if (totalExpired === 0) return 'skipped';
-    logger.info({ expired, expiredPendingActions }, 'Expired stale chat action plans');
+    if (expiredPendingActions === 0) return 'skipped';
+    logger.info({ expiredPendingActions }, 'Expired stale pending chat actions');
   }), { timezone: tz });
 
   cron.schedule('*/5 * * * *', wrapJob('chat_action_run_zombie_reaper', async () => {
     const reaped = reapZombieChatActionRuns();
     if (reaped === 0) return 'skipped';
     logger.warn({ reaped }, 'Reaped orphaned chat action runs stuck in executing status');
+  }), { timezone: tz });
+
+  cron.schedule('* * * * *', wrapJob('chat_action_fixer_worker', async () => {
+    const result = await processChatActionFixerJobs({
+      limit: intEnv('CHAT_ACTION_FIXER_JOB_BATCH_LIMIT', 5, 1, 25),
+      lockOwner: `chat-action-fixer:${process.pid}`,
+    });
+    const touched = result.completed + result.failed + result.deadLetter;
+    if (result.deadLetter > 0) {
+      logger.warn(result, 'Chat action fixer worker produced dead-letter rows');
+    }
+    if (touched === 0) return 'skipped';
+    logger.info(result, 'Chat action fixer worker completed');
   }), { timezone: tz });
 
   cron.schedule('20 0 * * *', wrapJob('chat_action_run_retention', async () => {

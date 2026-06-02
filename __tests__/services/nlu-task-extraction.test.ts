@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { buildDeterministicChatActionPlan } from '../../src/services/chat-action-planner';
+import { buildDeterministicChatActionPlan } from '../../src/services/chat';
 
 const baseInput = {
   userId: 9101,

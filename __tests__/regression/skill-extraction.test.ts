@@ -403,13 +403,18 @@ describe('REGRESSION: Three-tier cascade functions correctly', () => {
       expect(mockClassifyMessage).not.toHaveBeenCalled();
     });
 
-    it('with active content context, "deadline" follow-ups preserve content context', async () => {
+    it('with active content context, "deadline" follow-ups preserve content context without paying for the classifier', async () => {
+      // Codex QA round 1 short-circuit: when preferContext+activeContext
+      // are true and the keyword route disagrees with active context for
+      // a non-safe domain (secretary), the router preserves the active
+      // context directly instead of paying for the classifier hop.
       mockClassifyMessage.mockResolvedValue({ domain: 'content', confidence: 0.9 });
       const context = { domain: 'content' as const, lastAssistantMessage: 'Video script draft ready.' };
 
       const result = await routeMessage('when is the deadline for this?', context);
-      expect(result.method).toBe('classifier');
+      expect(result.method).toBe('context');
       expect(result.domain).toBe('content');
+      expect(mockClassifyMessage).not.toHaveBeenCalled();
     });
 
     it('explicit command still wins even with active context', async () => {

@@ -409,15 +409,9 @@ export class FallbackProvider implements AIProvider {
     options?: ClassifyOptions,
   ): Promise<ClassificationResult> {
     try {
-      if (options === undefined) {
-        return await this.primary.classify(message, activeContext);
-      }
       return await this.primary.classify(message, activeContext, options);
     } catch (err) {
       this.onFallback?.(err as Error, 'classify');
-      if (options === undefined) {
-        return this.fallback.classify(message, activeContext);
-      }
       return this.fallback.classify(message, activeContext, options);
     }
   }

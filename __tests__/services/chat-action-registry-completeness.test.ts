@@ -6,7 +6,7 @@ import {
   getChatActionRegistry,
   type ChatActionDefinition,
   type ChatActionRiskClass,
-} from '../../src/services/chat-action-registry';
+} from '../../src/services/chat/registry';
 
 function expectedRiskClassForRisk(risk: ChatActionDefinition['risk']): ChatActionRiskClass {
   if (risk === 'read_only') return 'R0';

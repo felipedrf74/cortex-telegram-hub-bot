@@ -26,8 +26,17 @@ export async function sendRetryableChatFailureResponseIfNeeded(opts: {
   tenantId?: number;
   normalizedText: string;
   chatRequestId: string;
+  /**
+   * Codex QA round 4: pass the original claimed user message id so the
+   * degraded response is persisted under the SAME id the route claimed
+   * at acceptance. Otherwise the retry on the iOS client can't find a
+   * completed assistant for `msg-user-${clientMessageId}` and loops as
+   * "in progress".
+   */
+  userMessageId?: string;
+  clientMessageId?: string;
 }): Promise<boolean> {
-  const { err, res, userId, tenantId, normalizedText, chatRequestId } = opts;
+  const { err, res, userId, tenantId, normalizedText, chatRequestId, userMessageId, clientMessageId } = opts;
   if (!isRetryableAIProviderError(err)) return false;
 
   // 2026-05-18 (skill-hardening QA P1-1): require validated tenantId; the
@@ -95,7 +104,13 @@ export async function sendRetryableChatFailureResponseIfNeeded(opts: {
     },
     timestamp,
   };
-  persistExchange(userId, `msg-user-${Date.now()}`, normalizedText, assistantMessageId, response, validatedTenantId);
+  // Codex QA round 4: preserve the original claimed user-message id so
+  // iOS retry can find the completed (degraded) assistant by the same
+  // key the route claimed at acceptance. Fall back to a fresh id only
+  // when the caller didn't pass one (legacy paths).
+  const persistedUserMessageId = userMessageId
+    ?? (clientMessageId ? `msg-user-${clientMessageId}` : `msg-user-${Date.now()}`);
+  persistExchange(userId, persistedUserMessageId, normalizedText, assistantMessageId, response, validatedTenantId);
   syncConversationStateForShortcut(userId, degraded.domain, normalizedText, degraded.text, validatedTenantId);
   res.json(response);
   return true;

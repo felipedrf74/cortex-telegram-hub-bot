@@ -32,6 +32,25 @@
  *   The engine never UPGRADES a session (e.g., yellow readiness doesn't
  *   make a recovery run into a tempo run). It only downshifts or
  *   passes through.
+ *
+ * Relationship to `poor-recovery-variation.ts`:
+ *   These two modules are complementary, not redundant.
+ *   - `adaptation-engine` is single-session, readiness-driven, with a small
+ *     fixed rule set (red/orange/yellow/green + injury cap). It is cheap
+ *     enough to call at read-time from `training-read-models.ts` for the
+ *     iOS Today screen, and the output structure is the canonical
+ *     `AdaptedSession` that iOS renders.
+ *   - `poor-recovery-variation` is scenario-aware, week-aware, and knowledge-
+ *     backed. It accepts a `PoorRecoveryContext` (athlete + session + week +
+ *     index) and resolves one of seven `RecoveryScenario` cases
+ *     (mild_fatigue, high_soreness, low_readiness, post_intensity_fatigue,
+ *     low_adherence_fatigue, travel_fatigue, hybrid_modality_overload) with
+ *     templated variant prescriptions. It is invoked from the planner
+ *     during plan generation, not at read time.
+ *
+ *   In short: this module is the fast read-time downshift; the variation
+ *   module is the planner-time scenario engine. Either may eventually
+ *   migrate toward the other, but today they own different surfaces.
  */
 
 import type {

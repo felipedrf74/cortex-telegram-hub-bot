@@ -7,6 +7,13 @@ import * as unifiedCal from './unified-calendar';
 import * as outlookMail from './outlook-mail';
 import * as msTodo from './microsoft-todo';
 import * as trainingPlans from './training-plans';
+// R5 P2 fix — tool-executor's log_training_completion case lacked
+// outbox parity with the REST /complete route. Add the same
+// runOutboxTransaction emission so chat/tool-origin completions
+// publish the same `training.feedback.recorded` event stream that
+// REST completions do.
+import { runOutboxTransaction } from './event-outbox';
+import { computeV2IdempotencyHashHex } from '../api/routes/training-completion-v2-hash';
 import * as financeTracker from './finance-tracker';
 import * as cookingChef from './cooking-chef';
 import * as cookingPreferences from './cooking-preferences';
@@ -831,16 +838,234 @@ export async function executeToolCall(
         const session = trainingPlans.getSessionById(input.session_id);
         if (!session) return { error: `Session ${input.session_id} not found` };
 
-        const completion = trainingPlans.logCompletion({
-          session_id: input.session_id,
-          plan_id: session.plan_id,
-          rpe_overall: input.rpe_overall,
-          duration_minutes: input.duration_minutes,
-          energy_level: input.energy_level,
-          soreness_level: input.soreness_level,
-          actual_exercises_json: input.actual_exercises_json,
-          notes: input.notes,
-        });
+        // R3 P2 fix — forward V2 fields (rir / pain / technical
+        // success / missed reason / external-training-declared /
+        // completed sets/reps/load/duration/distance) from the tool
+        // input when supplied.
+        //
+        // R4 P2 fix — Codex caught that the tool path only checked
+        // `typeof v === 'number'`, which accepts NaN and Infinity.
+        // The REST path now rejects those + enforces per-field
+        // ranges; the tool path must reach parity so chat-side
+        // ingestion can't bypass validation. We *reject* the tool
+        // call on out-of-range inputs (return error) rather than
+        // silently dropping the bad field — a model that hallucinates
+        // a malformed payload should learn from the error response,
+        // not have part of its payload silently ignored.
+        const v2ToolErrors: string[] = [];
+        const checkFiniteRange = (
+          name: string,
+          v: unknown,
+          min: number,
+          max: number,
+        ): number | undefined => {
+          if (v === undefined || v === null) return undefined;
+          if (typeof v !== 'number' || !Number.isFinite(v)) {
+            v2ToolErrors.push(`${name} must be a finite number`);
+            return undefined;
+          }
+          if (v < min || v > max) {
+            v2ToolErrors.push(`${name} must be between ${min} and ${max} (got ${v})`);
+            return undefined;
+          }
+          return v;
+        };
+        const checkString = (
+          name: string,
+          v: unknown,
+          maxLen: number,
+        ): string | undefined => {
+          if (v === undefined || v === null) return undefined;
+          if (typeof v !== 'string') {
+            v2ToolErrors.push(`${name} must be a string`);
+            return undefined;
+          }
+          if (v.length > maxLen) {
+            v2ToolErrors.push(`${name} must be ≤ ${maxLen} characters`);
+            return undefined;
+          }
+          return v;
+        };
+        // R6 P3 fix — match the REST validator's boolean check so
+        // wrong-typed `external_training_declared` payloads fail
+        // loudly instead of silently coercing to `false` via
+        // `=== true`. REST returns 400 BAD_INPUT for the same
+        // mismatch (training.ts checkBoolean).
+        //
+        // R7 P2/P3 fix — Codex caught that explicit `null` was
+        // treated as omitted (silently coerced to false). The R7
+        // contract is reject-on-non-boolean including null. Only
+        // `undefined` (key absent) is treated as omitted; explicit
+        // `null` now produces a validation error matching the
+        // hardened REST helper.
+        const checkBoolean = (name: string, v: unknown): boolean | undefined => {
+          if (v === undefined) return undefined;
+          if (typeof v !== 'boolean') {
+            v2ToolErrors.push(`${name} must be a boolean`);
+            return undefined;
+          }
+          return v;
+        };
+        const v2Rir = checkFiniteRange('rir', input.rir, 0, 10);
+        const v2PainScore = checkFiniteRange('pain_score', input.pain_score, 0, 10);
+        const v2PainLocation = checkString('pain_location', input.pain_location, 256);
+        const v2TechSuccess = checkFiniteRange('technical_success_score', input.technical_success_score, 0, 10);
+        const v2MissedReason = checkString('missed_reason', input.missed_reason, 256);
+        const v2ExternalDeclared = checkBoolean('external_training_declared', input.external_training_declared);
+        const v2CompletedDur = checkFiniteRange('completed_duration_sec', input.completed_duration_sec, 0, 24 * 3600);
+        const v2CompletedDist = checkFiniteRange('completed_distance_meters', input.completed_distance_meters, 0, 500_000);
+        const v2SetsJson = checkString('completed_sets_json', input.completed_sets_json, 8 * 1024);
+        const v2RepsJson = checkString('completed_reps_json', input.completed_reps_json, 8 * 1024);
+        const v2LoadJson = checkString('completed_load_json', input.completed_load_json, 8 * 1024);
+        if (v2ToolErrors.length > 0) {
+          return { error: `Invalid V2 completion fields: ${v2ToolErrors.join('; ')}` };
+        }
+        // R5 P2 fix — wrap the logCompletion call in the outbox
+        // transaction so chat/tool-origin completions publish the
+        // SAME `training.feedback.recorded` event the REST /complete
+        // route does. Without this, downstream consumers (analytics,
+        // sibling-skill signal bus, etc.) silently miss every
+        // tool-origin completion. The idempotency key uses the same
+        // canonical V2 hash so a chat-origin + REST-origin completion
+        // for the same session within the dedup window collapses
+        // correctly.
+        // R6 P1 fix — Codex caught a user-data-loss bug here. The
+        // prior version assigned `completion = logCompletion(...)`
+        // inside the runOutboxTransaction closure, BEFORE emit. If
+        // emit threw, Better-SQLite3 rolled back the transaction
+        // (event-backbone.test.ts pins this behavior) — but the
+        // outer JS variable was already truthy, so the catch
+        // skipped the fallback write and we returned `success: true`
+        // with a `completion_id` pointing at a row that no longer
+        // existed. The athlete's completion was lost.
+        //
+        // The new shape:
+        //   1. The transaction callback RETURNS the row. The outer
+        //      variable is assigned ONLY from runOutboxTransaction's
+        //      return value, which is reached only after commit.
+        //   2. The catch block also explicitly resets `completion =
+        //      undefined` as belt-and-braces against any future
+        //      regression that re-introduces the closure-assignment
+        //      pattern.
+        //   3. The fallback write inside the catch becomes the
+        //      authoritative re-attempt on rollback.
+        let completion: ReturnType<typeof trainingPlans.logCompletion> | undefined;
+        try {
+          completion = runOutboxTransaction((emitDomainEvent) => {
+            const row = trainingPlans.logCompletion({
+              session_id: input.session_id,
+              plan_id: session.plan_id,
+              rpe_overall: input.rpe_overall,
+              duration_minutes: input.duration_minutes,
+              energy_level: input.energy_level,
+              soreness_level: input.soreness_level,
+              actual_exercises_json: input.actual_exercises_json,
+              notes: input.notes,
+              rir: v2Rir,
+              pain_score: v2PainScore,
+              pain_location: v2PainLocation,
+              technical_success_score: v2TechSuccess,
+              missed_reason: v2MissedReason,
+              external_training_declared: v2ExternalDeclared === true,
+              completed_duration_sec: v2CompletedDur,
+              completed_distance_meters: v2CompletedDist,
+              completed_sets_json: v2SetsJson,
+              completed_reps_json: v2RepsJson,
+              completed_load_json: v2LoadJson,
+            });
+            const v2HashHex = computeV2IdempotencyHashHex({
+              rir: v2Rir ?? null,
+              painScore: v2PainScore ?? null,
+              painLocation: v2PainLocation ?? null,
+              technicalSuccessScore: v2TechSuccess ?? null,
+              missedReason: v2MissedReason ?? null,
+              externalTrainingDeclared: v2ExternalDeclared === true,
+              completedDurationSec: v2CompletedDur ?? null,
+              completedDistanceMeters: v2CompletedDist ?? null,
+              completedSetsJson: v2SetsJson ?? null,
+              completedRepsJson: v2RepsJson ?? null,
+              completedLoadJson: v2LoadJson ?? null,
+            });
+            const v2Summary = {
+              hasRir: v2Rir != null,
+              hasPainScore: v2PainScore != null,
+              hasPainLocation: typeof v2PainLocation === 'string' && v2PainLocation.length > 0,
+              hasTechnicalSuccessScore: v2TechSuccess != null,
+              hasMissedReason: typeof v2MissedReason === 'string' && v2MissedReason.length > 0,
+              externalTrainingDeclared: v2ExternalDeclared === true,
+              hasCompletedDurationSec: v2CompletedDur != null,
+              hasCompletedDistanceMeters: v2CompletedDist != null,
+              hasCompletedSetsJson: typeof v2SetsJson === 'string' && v2SetsJson.length > 0,
+              hasCompletedRepsJson: typeof v2RepsJson === 'string' && v2RepsJson.length > 0,
+              hasCompletedLoadJson: typeof v2LoadJson === 'string' && v2LoadJson.length > 0,
+            };
+            const hasNotes = typeof input.notes === 'string' && input.notes.length > 0;
+            const rpeForKey = typeof input.rpe_overall === 'number' && Number.isFinite(input.rpe_overall)
+              ? input.rpe_overall : null;
+            // tenantId may be null/undefined for non-tenanted callers;
+            // the REST path always carries one, so we mirror that with
+            // a deterministic fallback that still keys per-user.
+            const effectiveTenantId = typeof tenantId === 'number' && Number.isFinite(tenantId) ? tenantId : (userId ?? 0);
+            const effectiveUserId = typeof userId === 'number' && Number.isFinite(userId) ? userId : 0;
+            emitDomainEvent({
+              tenantId: effectiveTenantId,
+              userId: effectiveUserId,
+              sourceSkill: 'training',
+              eventType: 'training.feedback.recorded',
+              entityType: 'training_session',
+              entityId: input.session_id,
+              payload: {
+                summary: {
+                  status: 'completed',
+                  origin: 'tool',
+                  hasNotes,
+                  hasRpe: rpeForKey != null,
+                  v2: v2Summary,
+                },
+                action: 'updated',
+              },
+              privacyClassification: 'health',
+              idempotencyKey: `training.feedback.recorded:${effectiveUserId}:${input.session_id}:completed:${hasNotes}:${rpeForKey ?? 'none'}:v2-${v2HashHex}`,
+            });
+            // R6 P1 — return the row so the OUTER assignment only
+            // happens once the transaction successfully commits.
+            return row;
+          });
+        } catch (err) {
+          logger.warn({ err, sessionId: input.session_id }, 'tool log_training_completion: outbox transaction failed (rolled back); falling back to non-transactional write');
+          // R6 P1 — defensive reset. If a future change re-introduces
+          // the closure-assignment pattern, this guarantees we still
+          // re-attempt the write rather than silently report success
+          // on a rolled-back row.
+          completion = undefined;
+          // Fallback to a non-transactional write so the user's
+          // logged completion still persists. The event publish is
+          // lost (the outbox row is the only canonical record of
+          // event delivery), but the athlete's data isn't.
+          if (!completion) {
+            completion = trainingPlans.logCompletion({
+              session_id: input.session_id,
+              plan_id: session.plan_id,
+              rpe_overall: input.rpe_overall,
+              duration_minutes: input.duration_minutes,
+              energy_level: input.energy_level,
+              soreness_level: input.soreness_level,
+              actual_exercises_json: input.actual_exercises_json,
+              notes: input.notes,
+              rir: v2Rir,
+              pain_score: v2PainScore,
+              pain_location: v2PainLocation,
+              technical_success_score: v2TechSuccess,
+              missed_reason: v2MissedReason,
+              external_training_declared: v2ExternalDeclared === true,
+              completed_duration_sec: v2CompletedDur,
+              completed_distance_meters: v2CompletedDist,
+              completed_sets_json: v2SetsJson,
+              completed_reps_json: v2RepsJson,
+              completed_load_json: v2LoadJson,
+            });
+          }
+        }
 
         // ─── Phase 1 Slice B — Signal A publishing ───
         // Publish a per-user load marker so sibling sport coaches can
@@ -897,9 +1122,31 @@ export async function executeToolCall(
             }
           }
         } catch (err) {
-          logger.warn({ err, sessionId: input.session_id }, 'training-signals publish failed after log_training_completion');
+          // R8 P2-9 — tag with a stable errorId so SRE dashboards
+          // can count sustained signal-bus failures separately from
+          // other warn lines. The id mirrors the established
+          // module.action_failed convention used elsewhere
+          // (e.g. coach_plan_policy.parse_failed,
+          // week_reflow.transaction_rolled_back).
+          logger.warn(
+            {
+              err,
+              sessionId: input.session_id,
+              errorId: 'training_signals.publish_failed',
+            },
+            'training_signals.publish_failed: signal-bus publish failed after log_training_completion (fire-and-forget; user-visible completion is unaffected)',
+          );
         }
 
+        // After both try and catch fallbacks, `completion` is
+        // guaranteed defined — the catch path runs logCompletion
+        // synchronously if the transaction failed before assignment.
+        if (!completion) {
+          // Defensive — should be unreachable. If reached, surface
+          // an explicit error rather than a confusing `.id` of
+          // undefined.
+          return { error: 'log_training_completion: failed to persist completion' };
+        }
         return { success: true, completion_id: completion.id, session_title: session.title };
       }
 

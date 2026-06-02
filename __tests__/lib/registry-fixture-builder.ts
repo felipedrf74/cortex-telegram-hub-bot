@@ -1,7 +1,7 @@
 import type {
   ChatActionDefinition,
   ChatActionName,
-} from '../../src/services/chat-action-registry';
+} from '../../src/services/chat/registry';
 
 export type ExampleTag = 'golden' | 'ambiguous' | 'adversarial' | 'negative' | 'prompt_injection';
 

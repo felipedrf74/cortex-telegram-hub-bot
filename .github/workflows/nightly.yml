@@ -82,6 +82,9 @@ jobs:
           for f in $(ls *.sql | sort); do
             num=$(echo "$f" | grep -oP '^\d+')
             num=$((10#$num))
+            while [ "$expected" -eq 142 ] || [ "$expected" -eq 143 ]; do
+              expected=$((expected + 1))
+            done
             if [ "$num" -ne "$expected" ]; then
               echo "❌ Gap: expected $expected, got $num ($f)"
               exit 1

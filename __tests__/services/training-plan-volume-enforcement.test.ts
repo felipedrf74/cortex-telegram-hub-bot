@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { enforceRequestedTrainingPlanVolume } from '../../src/services/training-plan-volume-enforcement';
+import { inferTrainingSessionIsLowerHeavy } from '../../src/services/training-session-classification';
 import type { CoordinatedTrainingPlan } from '../../src/services/training-plan-coordination';
 
 describe('training-plan-volume-enforcement', () => {
@@ -82,6 +83,115 @@ describe('training-plan-volume-enforcement', () => {
     expect(sessions.some((session) => session.dayOfWeek.toLowerCase() === 'sunday')).toBe(false);
     expect(new Set(strengthDays).size).toBe(5);
     expect(strengthSessions.every((session) => session.preferredStartTime === '12:00')).toBe(true);
+  });
+
+  it('does not leave lower-heavy strength on the day before a Saturday long run after volume fill-in', () => {
+    const plan: CoordinatedTrainingPlan = {
+      sport: 'running',
+      weeks: [
+        {
+          weekNumber: 1,
+          sessions: [
+            { dayOfWeek: 'Tuesday', sessionType: 'run', title: 'Easy Run', durationMinutes: 45 },
+            { dayOfWeek: 'Wednesday', sessionType: 'gym', title: 'Upper Body Strength', durationMinutes: 45, exercises: [{ name: 'Bench Press' }] },
+            { dayOfWeek: 'Friday', sessionType: 'gym', title: 'Lower Body Strength', durationMinutes: 45, exercises: [{ name: 'Back Squat' }] },
+            { dayOfWeek: 'Saturday', sessionType: 'long_run', title: 'Long Run', durationMinutes: 90 },
+          ],
+        },
+      ],
+    };
+
+    const result = enforceRequestedTrainingPlanVolume(plan, {
+      sessionsPerWeek: 5,
+      runSessionsPerWeek: 5,
+      strengthSessionsPerWeek: 5,
+      preferredCardioTime: '07:00',
+      preferredStrengthTime: '18:00',
+      startDate: '2026-05-25',
+      longWorkoutDay: 'Saturday',
+    });
+
+    const sessions = result.weeks?.[0]?.sessions ?? [];
+    const fridaySessions = sessions.filter((session) => session.dayOfWeek.toLowerCase() === 'friday');
+
+    expect(sessions).toHaveLength(10);
+    expect(sessions.filter((session) => session.sessionType === 'gym')).toHaveLength(5);
+    expect(fridaySessions.some((session) => inferTrainingSessionIsLowerHeavy(session))).toBe(false);
+  });
+
+  it.each([
+    { longWorkoutDay: 'Sunday', protectedDay: 'Saturday', upperDay: 'Thursday' },
+    { longWorkoutDay: 'Wednesday', protectedDay: 'Tuesday', upperDay: 'Friday' },
+    { longWorkoutDay: 'Monday', protectedDay: 'Sunday', upperDay: 'Wednesday' },
+  ])('protects $protectedDay when the resolved long run is $longWorkoutDay', ({ longWorkoutDay, protectedDay, upperDay }) => {
+    const plan: CoordinatedTrainingPlan = {
+      sport: 'running',
+      weeks: [
+        {
+          weekNumber: 1,
+          sessions: [
+            { dayOfWeek: protectedDay, sessionType: 'gym', title: 'Lower Body Strength', durationMinutes: 45, exercises: [{ name: 'Back Squat' }] },
+            { dayOfWeek: upperDay, sessionType: 'gym', title: 'Upper Body Strength', durationMinutes: 45, exercises: [{ name: 'Bench Press' }] },
+            { dayOfWeek: longWorkoutDay, sessionType: 'long_run', title: 'Long Run', durationMinutes: 90 },
+          ],
+        },
+      ],
+    };
+
+    const result = enforceRequestedTrainingPlanVolume(plan, {
+      sessionsPerWeek: 3,
+      runSessionsPerWeek: 3,
+      strengthSessionsPerWeek: 2,
+      preferredCardioTime: '07:00',
+      preferredStrengthTime: '18:00',
+      startDate: '2026-05-25',
+      longWorkoutDay,
+    });
+
+    const sessions = result.weeks?.[0]?.sessions ?? [];
+    const protectedSessions = sessions.filter((session) =>
+      session.dayOfWeek.toLowerCase() === protectedDay.toLowerCase()
+    );
+
+    expect(protectedSessions).not.toHaveLength(0);
+    expect(protectedSessions.some((session) => inferTrainingSessionIsLowerHeavy(session))).toBe(false);
+  });
+
+  it('converts the pre-long-run strength session to upper-body when no safe swap candidate exists', () => {
+    const plan: CoordinatedTrainingPlan = {
+      sport: 'running',
+      weeks: [
+        {
+          weekNumber: 1,
+          sessions: [
+            { dayOfWeek: 'Tuesday', sessionType: 'gym', title: 'Lower Strength A', durationMinutes: 45, exercises: [{ name: 'Back Squat' }] },
+            { dayOfWeek: 'Thursday', sessionType: 'gym', title: 'Lower Strength B', durationMinutes: 45, exercises: [{ name: 'Deadlift' }] },
+            { dayOfWeek: 'Friday', sessionType: 'gym', title: 'Lower Strength C', durationMinutes: 45, exercises: [{ name: 'Front Squat' }] },
+            { dayOfWeek: 'Saturday', sessionType: 'long_run', title: 'Long Run', durationMinutes: 90 },
+          ],
+        },
+      ],
+    };
+
+    const result = enforceRequestedTrainingPlanVolume(plan, {
+      sessionsPerWeek: 4,
+      runSessionsPerWeek: 4,
+      strengthSessionsPerWeek: 3,
+      preferredCardioTime: '07:00',
+      preferredStrengthTime: '18:00',
+      startDate: '2026-05-25',
+      longWorkoutDay: 'Saturday',
+    });
+
+    const sessions = result.weeks?.[0]?.sessions ?? [];
+    const fridayStrength = sessions.find((session) =>
+      session.dayOfWeek.toLowerCase() === 'friday' && session.sessionType === 'gym'
+    );
+
+    expect(fridayStrength).toBeDefined();
+    expect(inferTrainingSessionIsLowerHeavy(fridayStrength!)).toBe(false);
+    expect(fridayStrength?.description).toContain('Upper-body strength slot substituted');
+    expect(fridayStrength?.scheduleAdjustments).toContain('Converted from lower-body strength to upper-body strength before the long run.');
   });
 
   it('converts excess gym sessions into aerobic support instead of standalone mobility', () => {

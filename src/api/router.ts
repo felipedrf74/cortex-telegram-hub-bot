@@ -6,6 +6,7 @@ import { rateLimitMiddleware, webhookRateLimitMiddleware } from './rate-limiter'
 import { requestTimerMiddleware } from './request-timer';
 import { authRoutes } from './routes/auth';
 import { chatRoutes } from './routes/chat';
+import { attachmentRoutes } from './routes/attachments';
 import { dashboardRoutes } from './routes/dashboard';
 import { taskRoutes } from './routes/tasks';
 import { trainingRoutes } from './routes/training';
@@ -95,6 +96,7 @@ export function createApiRouter(): Router {
       endpoints: {
         auth: 'POST /api/v1/auth/register, POST /api/v1/auth/refresh',
         chat: 'POST /api/v1/chat, GET /api/v1/chat/history',
+        attachments: 'POST /api/v1/attachments/extract — image invoice/calendar/task extraction preview',
         dashboard: 'GET /api/v1/dashboard',
         tasks: 'GET/POST/PATCH/DELETE /api/v1/tasks',
         training: 'GET /api/v1/training/*',
@@ -112,7 +114,7 @@ export function createApiRouter(): Router {
         signals: 'GET /api/v1/signals/active — active cross-skill training signals for the current user',
         cooking: 'GET/POST/DELETE /api/v1/cooking/{recipes|meal-plan|shopping-list}',
         finance: 'GET/POST/DELETE /api/v1/finance/{transactions|monthly-summary|tax/events|tax/calculate}',
-        invoices: 'GET/POST/DELETE /api/v1/invoices/{vendors|scan-now} — vendor config + on-demand collection',
+        invoices: 'GET/POST/DELETE /api/v1/invoices/{vendors|scan-now|scraper-mfa-reply} — vendor config + on-demand collection',
         billing: 'GET /api/v1/billing/status, POST /api/v1/billing/{checkout|portal|apple-verify|nexus-points/stripe-checkout}',
         plan: 'GET /api/v1/plan/{week|today}, POST /api/v1/plan/recompute — multiskill mesh (feature-flagged)',
         summaries: 'GET /api/v1/summaries/{home|week|training|content|notifications} — fast app read models',
@@ -263,8 +265,10 @@ export function createApiRouter(): Router {
     next();
   });
 
-  // Chat is the ONLY route allowed to touch the AI pipeline.
+  // Chat and attachment extraction are the only app routes allowed to touch
+  // the AI pipeline. Operational skill flows below stay token-zero.
   router.use('/chat', chatRoutes());
+  router.use('/attachments', attachmentRoutes());
 
   // Aggregated home screen
   router.use('/dashboard', dashboardRoutes());

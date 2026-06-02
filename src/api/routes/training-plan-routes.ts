@@ -112,8 +112,15 @@ export function registerTrainingPlanRoutes(
         goalMode,
         trainingPriority,
         raceDate,
+        // 2026-05-25 fix — Bug #2: iOS exposes an "Auto" chip in the
+        // training plan editor; it sends the literal string "auto" on
+        // the wire. Pre-fix the validator only accepted the legacy
+        // three values, so iOS-sent "auto" silently fell through to
+        // `undefined` and never reached the planner's two-a-day
+        // heuristic explicitly. Now an explicit `'auto'` value flows
+        // through; `resolveMaxSessionsPerDay` has a matching branch.
         twoADayPreference: typeof twoADayPreference === 'string'
-          && (twoADayPreference === 'never' || twoADayPreference === 'optional' || twoADayPreference === 'preferred')
+          && (twoADayPreference === 'never' || twoADayPreference === 'optional' || twoADayPreference === 'preferred' || twoADayPreference === 'auto')
           ? twoADayPreference
           : undefined,
         calendarSource: calendarSourceValidation.source,
@@ -295,8 +302,15 @@ export function registerTrainingPlanRoutes(
         goalMode,
         trainingPriority,
         raceDate,
+        // 2026-05-25 fix — Bug #2: iOS exposes an "Auto" chip in the
+        // training plan editor; it sends the literal string "auto" on
+        // the wire. Pre-fix the validator only accepted the legacy
+        // three values, so iOS-sent "auto" silently fell through to
+        // `undefined` and never reached the planner's two-a-day
+        // heuristic explicitly. Now an explicit `'auto'` value flows
+        // through; `resolveMaxSessionsPerDay` has a matching branch.
         twoADayPreference: typeof twoADayPreference === 'string'
-          && (twoADayPreference === 'never' || twoADayPreference === 'optional' || twoADayPreference === 'preferred')
+          && (twoADayPreference === 'never' || twoADayPreference === 'optional' || twoADayPreference === 'preferred' || twoADayPreference === 'auto')
           ? twoADayPreference
           : undefined,
         calendarSource: calendarSourceValidation.source,
@@ -425,12 +439,10 @@ export function registerTrainingPlanRoutes(
         sendError(res, 'NO_CALENDAR', result.data.message, 409, result.data);
         return;
       }
-      if (result.data.eventsCreated > 0 || result.data.sessionsLinked > 0) {
-        // Calendar caches need to forget the empty pre-sync state so
-        // the next /training/week pull surfaces the freshly-linked
-        // start times instead of serving the cached `time: null`s.
-        invalidateCalendarCaches(userId);
-      }
+      // Calendar sync can create/link sessions, update an existing event, or
+      // delete duplicate stale provider events. Refresh calendar caches even
+      // when counts stay at zero so the button never appears to no-op.
+      invalidateCalendarCaches(userId);
       invalidateTrainingScreenCaches(userId);
       sendSuccess(res, result.data);
     } catch (err: any) {

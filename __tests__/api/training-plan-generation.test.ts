@@ -26,6 +26,7 @@ const mockFindOrphanedOwnerships = vi.fn();
 const mockReconcileOrphanedTrainingAgendaEvents = vi.fn();
 const mockLoggerWarn = vi.fn();
 const mockLoggerError = vi.fn();
+const mockIsConnected = vi.fn();
 
 vi.mock('../../src/services/onboarding', () => ({
   getProfile: (...args: unknown[]) => mockGetProfile(...args),
@@ -113,6 +114,10 @@ vi.mock('../../src/services/training-agenda-reconciliation', () => ({
   ),
 }));
 
+vi.mock('../../src/services/oauth-store', () => ({
+  isConnected: (...args: unknown[]) => mockIsConnected(...args),
+}));
+
 vi.mock('../../src/utils/logger', () => ({
   logger: {
     warn: (...args: unknown[]) => mockLoggerWarn(...args),
@@ -181,6 +186,8 @@ describe('generateTrainingPlanForUser', () => {
     mockReconcileOrphanedTrainingAgendaEvents.mockReset();
     mockLoggerWarn.mockReset();
     mockLoggerError.mockReset();
+    mockIsConnected.mockReset();
+    mockIsConnected.mockReturnValue(true);
     // Slice 4.D.2 defaults — clean state, no orphans, no remaining plans.
     mockGetActivePlans.mockReturnValue([]);
     mockFindOrphanedOwnerships.mockReturnValue([]);
@@ -222,6 +229,7 @@ describe('generateTrainingPlanForUser', () => {
       planId: 9001,
       totalSessions: 4,
       eventsCreated: 3,
+      sessionsLinked: 3,
       weekSummaries: [{ weekNumber: 1, focus: 'base', sessionCount: 4 }],
     });
     mockCancelTrainingPlanForUser.mockResolvedValue({
@@ -423,12 +431,19 @@ describe('generateTrainingPlanForUser', () => {
       resolvedStartDate: '2026-04-20',
       totalSessions: 4,
       eventsCreated: 3,
+      calendarSync: expect.objectContaining({
+        eventsCreated: 3,
+        sessionsLinked: 3,
+        sessionsFailed: 1,
+        unscheduled: 1,
+        status: 'partial',
+      }),
       preferredCardioTime: '07:00',
       preferredStrengthTime: '12:30',
       fallbackTemplateUsed: false,
     });
     expect(String(result.data.message)).toContain('Plan created!');
-    expect(mockGetEvents).toHaveBeenCalledWith(expect.any(String), expect.any(String), 12);
+    expect(mockGetEvents).toHaveBeenCalledWith(expect.any(String), expect.any(String), 12, ['outlook']);
     expect(mockBuildSharedDecisionContext).toHaveBeenCalledWith('triathlon', 12);
     expect(mockBuildTrainingPlanCoordination).toHaveBeenLastCalledWith(expect.objectContaining({
       sessionsPerWeek: 7,

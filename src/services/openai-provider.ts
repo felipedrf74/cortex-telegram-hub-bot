@@ -20,6 +20,7 @@ import {
   AIToolCall,
   AIToolResultMessage,
   CallDomainOptions,
+  ClassifyOptions,
   getModelRouting,
   normalizeCallDomainOptions,
 } from './ai-provider';
@@ -190,6 +191,15 @@ async function trackedCompletion(
       summary: `OpenAI ${model} [${category}] — ${usage.prompt_tokens}+${usage.completion_tokens} tokens`,
       detail: `$${costUsd.toFixed(4)} in ${durationMs}ms`,
     });
+    // April 2026 follow-up: per-user metering for OpenAI mirrors
+    // anthropic-hook and gemini-provider so quota enforcement sees
+    // every provider's traffic, not only the disabled Anthropic path.
+    try {
+      const { recordUsage } = require('./usage-metering') as typeof import('./usage-metering');
+      recordUsage(userId, usage.prompt_tokens, usage.completion_tokens, costUsd, false);
+    } catch (meterErr) {
+      logger.warn({ err: meterErr, userId }, 'Failed to record OpenAI usage_metering');
+    }
     try {
       await settleNexusPointOverageForUser(userId, apiUsageId);
     } catch (settleErr) {
@@ -613,7 +623,13 @@ export class OpenAIProvider implements AIProvider {
   async classify(
     message: string,
     activeContext?: { domain: DomainName; lastAssistantMessage: string },
+    options?: ClassifyOptions,
   ): Promise<ClassificationResult> {
+    // O3-A11/F-new-6: ClassifyOptions must carry user attribution for
+    // routed classify calls. Without this, OpenAI fallback classify rows
+    // silently fall back to user_id=0 / tenant_id=0.
+    const usageUserId = options?.userId ?? 0;
+    const usageTenantId = options?.tenantId ?? options?.userId ?? 0;
     try {
       let userContent = message;
       if (activeContext) {
@@ -631,7 +647,7 @@ ${message}`;
             { role: 'system', content: getClassifierSystemPrompt() },
             { role: 'user', content: userContent },
           ],
-        }, 100), 'openai_classify')
+        }, 100), 'openai_classify', usageUserId, usageTenantId, options?.timeoutMs)
       );
 
       let text = response.choices[0]?.message?.content || '';
@@ -657,7 +673,12 @@ ${message}`;
     optionsOrMaxTokens?: number | CallDomainOptions,
   ): Promise<AICallResult> {
     const opts = normalizeCallDomainOptions(optionsOrMaxTokens);
-    const routing = resolveOpenAIModel(domain, opts.modelTier);
+    // v2: honor options.modelOverride (set by cloud-reasoning-gate so the
+    // approved reasoning model is actually used).
+    const baseRouting = resolveOpenAIModel(domain, opts.modelTier);
+    const routing = opts.modelOverride
+      ? { model: opts.modelOverride, maxTokens: baseRouting.maxTokens }
+      : baseRouting;
     // Phase 2 Slice A: pass currentMessage so triathlon sub-skill
     // routing picks the sport-specific coach persona prompt.
     const systemPrompt = getDomainSystemPrompt(domain, currentMessage);
@@ -700,7 +721,12 @@ ${message}`;
     options?: CallDomainOptions,
   ): Promise<AICallResult> {
     const opts = normalizeCallDomainOptions(options);
-    const routing = resolveOpenAIModel(domain, opts.modelTier);
+    // v2: honor options.modelOverride (set by cloud-reasoning-gate so the
+    // approved reasoning model is actually used).
+    const baseRouting = resolveOpenAIModel(domain, opts.modelTier);
+    const routing = opts.modelOverride
+      ? { model: opts.modelOverride, maxTokens: baseRouting.maxTokens }
+      : baseRouting;
     // Phase 2 Slice A: pass currentMessage so triathlon sub-skill
     // routing picks the sport-specific coach persona prompt.
     const systemPrompt = getDomainSystemPrompt(domain, currentMessage);
@@ -781,7 +807,15 @@ ${message}`;
     }
     const userId = options.userId;
     const tenantId = options.tenantId ?? userId;
-    const routing = getModelRouting(config.openai, domain, 'openai');
+    // v2.6 (angry-QA-found): streamDomain was the one model-resolution
+    // site missing the modelOverride wrap. callDomain and
+    // continueWithToolResults honored it; streaming silently used the
+    // default model, which would let cloud-reasoning-gate's approved
+    // model selection be ignored for any streaming consumer.
+    const baseRouting = getModelRouting(config.openai, domain, 'openai');
+    const routing = options.modelOverride
+      ? { model: options.modelOverride, maxTokens: baseRouting.maxTokens }
+      : baseRouting;
     // Phase 2 Slice A: same persona routing for the streaming path.
     const systemPrompt = getDomainSystemPrompt(domain, currentMessage);
     const contextPrefix = buildScopedStateContextPrefix(stateContext);
@@ -878,6 +912,15 @@ ${message}`;
         summary: `OpenAI stream ${model} [${domain}] — ${usage.prompt_tokens}+${usage.completion_tokens} tokens`,
         detail: `$${costUsd.toFixed(4)} in ${durationMs}ms`,
       });
+      // Codex QA: the streaming path wrote api_usage but skipped
+      // usage_metering, leaving per-user quota silently undercounting
+      // every OpenAI stream call. Mirror the non-streaming path.
+      try {
+        const { recordUsage } = require('./usage-metering') as typeof import('./usage-metering');
+        recordUsage(userId, usage.prompt_tokens, usage.completion_tokens, costUsd, false);
+      } catch (meterErr) {
+        logger.warn({ err: meterErr, userId }, 'Failed to record OpenAI streaming usage_metering');
+      }
       try {
         await settleNexusPointOverageForUser(userId, apiUsageId);
       } catch (settleErr) {

@@ -15,7 +15,7 @@
 
 import { describe, expect, it } from 'vitest';
 
-import { getChatActionRegistry } from '../../src/services/chat-action-registry';
+import { getChatActionRegistry } from '../../src/services/chat/registry';
 
 interface RegistryExample {
   text?: string;

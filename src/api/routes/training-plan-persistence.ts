@@ -40,6 +40,11 @@ import {
 } from './training-schedule-utils';
 import { createTrainingCalendarEvent } from './training-calendar-event-writer';
 import type { CalendarSource } from '../../services/unified-calendar';
+import {
+  flattenTrainingExerciseTokens,
+  inferTrainingSessionIsLongRun,
+  inferTrainingSessionIsLowerHeavy,
+} from '../../services/training-session-classification';
 
 const DAY_NAMES = ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday'];
 
@@ -131,6 +136,7 @@ export interface PersistGeneratedTrainingPlanResult {
   planId: number;
   totalSessions: number;
   eventsCreated: number;
+  sessionsLinked: number;
   weekSummaries: Array<{
     weekNumber: number | undefined;
     focus: string | undefined;
@@ -401,7 +407,7 @@ async function persistGeneratedTrainingPlanLocked(
         }),
         { now: input.now.toISOString() },
       );
-      const selectedWindow = selectedTrainingSecretaryWindow(secretaryDecision);
+      const selectedWindow = selectedTrainingSecretaryWindow(secretaryDecision, { notBefore: input.now });
       if (!selectedWindow) {
         logger.warn(
           {
@@ -514,70 +520,14 @@ async function persistGeneratedTrainingPlanLocked(
     planId: plan.id,
     totalSessions,
     eventsCreated,
-      weekSummaries: (input.planData.weeks || []).map((weekData) => ({
+    sessionsLinked: eventsCreated + eventsAlreadyOwned,
+    weekSummaries: (input.planData.weeks || []).map((weekData) => ({
       weekNumber: weekData.weekNumber,
       focus: weekData.focus,
       sessionCount: weekData.sessions?.filter(isCalendarSchedulableTrainingSession).length || 0,
     })),
     lint,
   };
-}
-
-const LOWER_BODY_EXERCISE_TOKENS = [
-  'squat',
-  'deadlift',
-  'rdl',
-  'lunge',
-  'split squat',
-  'leg press',
-  'leg extension',
-  'leg curl',
-  'hip thrust',
-  'glute bridge',
-  'good morning',
-  'step up',
-  'box jump',
-];
-
-function flattenExerciseTokens(exercises: Array<Record<string, any>> | undefined): string[] {
-  if (!exercises?.length) return [];
-  const tokens: string[] = [];
-  for (const ex of exercises) {
-    if (!ex || typeof ex !== 'object') continue;
-    for (const key of ['name', 'exercise', 'movement', 'equipment', 'tags']) {
-      const val = (ex as any)[key];
-      if (typeof val === 'string' && val.trim()) tokens.push(val.toLowerCase().trim());
-      if (Array.isArray(val)) {
-        for (const v of val) {
-          if (typeof v === 'string' && v.trim()) tokens.push(v.toLowerCase().trim());
-        }
-      }
-    }
-  }
-  return tokens;
-}
-
-function inferIsLowerHeavy(sessionData: GeneratedTrainingSession, exerciseTokens: string[]): boolean {
-  const sessionType = String(sessionData.sessionType || '').toLowerCase();
-  if (sessionType !== 'gym' && !sessionType.startsWith('strength') && sessionType !== 'lift') {
-    return false;
-  }
-  // Title-based fast path: "Lower Body", "Squat day", etc.
-  const title = String(sessionData.title || '').toLowerCase();
-  if (title.includes('lower') || title.includes('squat') || title.includes('deadlift')) {
-    return true;
-  }
-  // Exercise-based: any of the lower-body tokens appears in flattened tokens.
-  return LOWER_BODY_EXERCISE_TOKENS.some((tok) =>
-    exerciseTokens.some((existing) => existing.includes(tok)),
-  );
-}
-
-function inferIsLongRun(sessionData: GeneratedTrainingSession): boolean {
-  const sessionType = String(sessionData.sessionType || '').toLowerCase();
-  if (sessionType === 'long_run') return true;
-  const title = String(sessionData.title || '').toLowerCase();
-  return /\blong\s+run\b/.test(title);
 }
 
 function buildPlanLintWeeks(
@@ -601,7 +551,7 @@ function buildPlanLintWeek(
     const dayOfWeek = String(sessionData.dayOfWeek || '').toLowerCase();
     if (!dayOfWeek) continue;
     const sessionType = String(sessionData.sessionType || '').toLowerCase();
-    const exerciseTokens = flattenExerciseTokens(sessionData.exercises);
+    const exerciseTokens = flattenTrainingExerciseTokens(sessionData.exercises);
     const status: PlanLintSession['status'] = (() => {
       // The persister has decided per session. We re-derive the status
       // family from the input rather than carrying it through the loop:
@@ -638,9 +588,9 @@ function buildPlanLintWeek(
       // past-day rule deliberately ignores non-active rows.
       scheduledDate,
       exerciseTokens,
-      isLowerHeavy: inferIsLowerHeavy(sessionData, exerciseTokens),
-      isLongRun: inferIsLongRun(sessionData),
-      isKey: inferIsLongRun(sessionData) || /\b(threshold|interval|race pace)\b/i.test(
+      isLowerHeavy: inferTrainingSessionIsLowerHeavy(sessionData, exerciseTokens),
+      isLongRun: inferTrainingSessionIsLongRun(sessionData),
+      isKey: inferTrainingSessionIsLongRun(sessionData) || /\b(threshold|interval|race pace)\b/i.test(
         String(sessionData.title || ''),
       ),
     });
@@ -800,9 +750,16 @@ function buildTrainingSecretaryIntent(input: {
   };
 }
 
-function selectedTrainingSecretaryWindow(decision: SecretarySchedulingDecision): { start: string; end: string } | null {
+function selectedTrainingSecretaryWindow(
+  decision: SecretarySchedulingDecision,
+  options: { notBefore?: Date } = {},
+): { start: string; end: string } | null {
   if (!['scheduled', 'reflowed', 'compressed'].includes(decision.status)) return null;
   if (!decision.selectedSlot?.start || !decision.selectedSlot?.end) return null;
+  const start = Date.parse(decision.selectedSlot.start);
+  const end = Date.parse(decision.selectedSlot.end);
+  if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) return null;
+  if (options.notBefore && start < options.notBefore.getTime()) return null;
   return { start: decision.selectedSlot.start, end: decision.selectedSlot.end };
 }
 

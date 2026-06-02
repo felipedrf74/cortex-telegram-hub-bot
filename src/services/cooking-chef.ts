@@ -18,6 +18,10 @@ import {
 } from './cooking-tenant-scope';
 import { buildCookingPreferenceReadModel } from './cooking-preferences';
 import { matchesCookingAllergenText } from './cooking-allergen-vocabulary';
+import {
+  suggestCookingSubstitutionsForIngredient,
+  type CookingSubstitutionSuggestion,
+} from './cooking-intelligence';
 
 // ── Types ──────────────────────────────────────────────────────────
 
@@ -164,6 +168,22 @@ export interface MealPlanSubstitutionInput {
   updateShoppingList?: boolean;
 }
 
+export interface MealPlanSubstitutionSuggestionInput {
+  date: string;
+  mealType: string;
+  originalIngredient: string;
+  reason?: CookingSubstitutionReason;
+}
+
+export interface MealPlanSubstitutionSuggestionResult {
+  found: boolean;
+  reason?: 'meal_not_found' | 'recipe_not_found' | 'ingredient_not_found';
+  meal: MealPlan | null;
+  recipe: Recipe | null;
+  suggestions: CookingSubstitutionSuggestion[];
+  originalIngredient: string;
+}
+
 export interface MealPlanSubstitutionResult {
   applied: boolean;
   reason?: 'meal_not_found' | 'recipe_not_found' | 'ingredient_not_found';
@@ -176,6 +196,7 @@ export interface MealPlanSubstitutionResult {
     reason: CookingSubstitutionReason;
     affectedMealId?: number;
     affectedRecipeId?: number;
+    sourceRecipeId?: number;
     shoppingListUpdated: boolean;
     appliedAt: string;
   };
@@ -590,15 +611,23 @@ export function applyMealPlanSubstitution(
     };
   }
 
-  const updatedRecipe = updateRecipe(userId, recipe.id, {
-    title: replaceIngredientText(recipe.title, originalIngredient, suggestedIngredient),
-    ingredients: updatedIngredients,
+  const updatedRecipe = addRecipe(userId, replaceIngredientText(recipe.title, originalIngredient, suggestedIngredient), updatedIngredients, {
     instructions: recipe.instructions == null
-      ? recipe.instructions
+      ? undefined
       : replaceIngredientText(recipe.instructions, originalIngredient, suggestedIngredient),
-  }, tenantId);
+    prepTime: recipe.prep_time_min ?? undefined,
+    cookTime: recipe.cook_time_min ?? undefined,
+    servings: recipe.servings,
+    tags: recipe.tags ?? undefined,
+    source: recipe.source ?? undefined,
+    protein: recipe.protein,
+    fat: recipe.fat,
+    carbs: recipe.carbs,
+    calories: recipe.calories,
+    tenantId,
+  });
   const updatedMeal = setMealPlan(userId, meal.date, meal.meal_type, replaceIngredientText(meal.title, originalIngredient, suggestedIngredient), {
-    recipeId: recipe.id,
+    recipeId: updatedRecipe.id,
     notes: meal.notes == null ? undefined : replaceIngredientText(meal.notes, originalIngredient, suggestedIngredient),
     tenantId,
   });
@@ -614,9 +643,71 @@ export function applyMealPlanSubstitution(
     substitution: {
       ...baseSubstitution,
       affectedMealId: meal.id,
-      affectedRecipeId: recipe.id,
+      sourceRecipeId: recipe.id,
+      affectedRecipeId: updatedRecipe.id,
       shoppingListUpdated: Boolean(shoppingList),
     },
+  };
+}
+
+export function suggestMealPlanSubstitutions(
+  userId: number,
+  input: MealPlanSubstitutionSuggestionInput,
+  tenantId?: number | null,
+): MealPlanSubstitutionSuggestionResult {
+  const originalIngredient = normalizeRequiredText(input.originalIngredient, 'originalIngredient');
+  const reason = input.reason ?? 'disliked_ingredient';
+  const meals = getMealPlan(userId, input.date, input.date, tenantId);
+  const meal = meals.find((candidate) => candidate.meal_type === input.mealType) ?? null;
+  if (!meal) {
+    return {
+      found: false,
+      reason: 'meal_not_found',
+      meal: null,
+      recipe: null,
+      suggestions: [],
+      originalIngredient,
+    };
+  }
+  if (!meal.recipe_id) {
+    return {
+      found: false,
+      reason: 'recipe_not_found',
+      meal,
+      recipe: null,
+      suggestions: [],
+      originalIngredient,
+    };
+  }
+  const recipe = getRecipeById(userId, meal.recipe_id, tenantId);
+  if (!recipe) {
+    return {
+      found: false,
+      reason: 'recipe_not_found',
+      meal,
+      recipe: null,
+      suggestions: [],
+      originalIngredient,
+    };
+  }
+  const ingredient = recipe.ingredients.find((candidate) => ingredientNameMatches(candidate.name, originalIngredient));
+  if (!ingredient) {
+    return {
+      found: false,
+      reason: 'ingredient_not_found',
+      meal,
+      recipe,
+      suggestions: [],
+      originalIngredient,
+    };
+  }
+  const preferences = buildCookingPreferenceReadModel(userId, tenantId).profile;
+  return {
+    found: true,
+    meal,
+    recipe,
+    suggestions: suggestCookingSubstitutionsForIngredient(ingredient.name, reason, preferences),
+    originalIngredient: ingredient.name,
   };
 }
 

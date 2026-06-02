@@ -220,6 +220,10 @@ export function isChatCoreV2ShadowPlannerEnabled(env: RuntimeEnv = process.env, 
   return raw === 'true' || raw === 'on' || raw === '1' || raw === 'shadow';
 }
 
+export function isChatCoreV2Enabled(env: RuntimeEnv = process.env, scope?: RuntimeFlagScope): boolean {
+  return scopedFlagEnabledByExplicitOptIn(env, 'CHAT_CORE_V2_ENABLED', scope);
+}
+
 export function isChatCoreV2RuntimeFlagEnabled(
   flagKey: string,
   env: RuntimeEnv = process.env,

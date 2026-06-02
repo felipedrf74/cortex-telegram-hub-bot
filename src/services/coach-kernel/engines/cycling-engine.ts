@@ -4,6 +4,7 @@ import type { EngineContext, SportEngine } from './interfaces';
 import type { DayOfWeek, Session, SessionType, WorkoutTemplate } from '../types';
 import { clamp, createSessionId, durationToLoad } from '../utils';
 import { pickAvailableDays, pickKeyDay } from '../availability-day-picker';
+import { applyVolumeGrowthCapForSport } from '../training-principles';
 
 function templateFor(templates: WorkoutTemplate[], sessionType: SessionType): WorkoutTemplate {
   const match = templates.find((template) => template.sessionType === sessionType);
@@ -90,7 +91,21 @@ export const cyclingEngine: SportEngine = {
     const templates = context.knowledge.workoutTemplates.filter((template) => template.sport === 'cycling');
     const targetSessions = clamp(context.athlete.goals.weeklySessionsTarget.cycling ?? 3, 1, 5);
     const previousMinutes = context.athlete.trainingHistory.lastWeekMinutesBySport.cycling ?? 150;
-    const targetMinutes = Math.round(previousMinutes * (context.phase === 'deload' ? 0.78 : context.phase === 'taper' ? 0.7 : 1.05));
+    // Slice A1a — activate training-principles.json volume growth cap.
+    // principles.volumeGrowthCapsPct.cycling = 12 (cycling tolerates
+    // higher week-over-week growth than running due to lower
+    // mechanical load). Deload (0.78×) and taper (0.7×) reduce
+    // volume so the cap is a no-op; only build/peak (1.05×) bind
+    // when previousMinutes is high.
+    const cyclingPhaseTarget = Math.round(
+      previousMinutes * (context.phase === 'deload' ? 0.78 : context.phase === 'taper' ? 0.7 : 1.05),
+    );
+    const targetMinutes = applyVolumeGrowthCapForSport(
+      context.knowledge.principles,
+      'cycling',
+      previousMinutes,
+      cyclingPhaseTarget,
+    );
     const longRideMinutes = clamp(Math.round(targetMinutes * 0.4), 90, 240);
     const keyMinutes = clamp(Math.round(targetMinutes * 0.22), 45, 75);
     const fillerMinutes = clamp(Math.round((targetMinutes - longRideMinutes - keyMinutes) / Math.max(1, targetSessions - 2)), 40, 75);

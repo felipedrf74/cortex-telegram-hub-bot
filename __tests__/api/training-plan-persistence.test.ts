@@ -183,6 +183,7 @@ describe('training-plan-persistence', () => {
       planId: 901,
       totalSessions: 2,
       eventsCreated: 2,
+      sessionsLinked: 2,
       weekSummaries: [{ weekNumber: 1, focus: 'base', sessionCount: 2 }],
       // training-expert-coach-knowledge-engine (2026-05-03):
       // The persister now runs the deterministic plan-linter in advisor
@@ -235,7 +236,12 @@ describe('training-plan-persistence', () => {
         title: expect.stringContaining('Base Run (50min)'),
         description: expect.stringContaining('EXERCISES:'),
       }),
-      'google',
+      // 2026-05-25 fix — was 'google'. Outlook is now ON by default
+      // so the writer no longer forces 'google' in the auto-target
+      // path; it passes `undefined` to let unified-calendar pick the
+      // user's resolved provider. Test setup here has no explicit
+      // calendarSource preference, so `undefined` is the new shape.
+      undefined,
       12,
       expect.objectContaining({ tenantId: 12 }),
     );

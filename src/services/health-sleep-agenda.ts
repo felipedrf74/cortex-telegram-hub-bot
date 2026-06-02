@@ -57,47 +57,53 @@ export function getAppleHealthSleepSegments(input: {
 
   try {
     const rows = getDb().prepare(`
-      SELECT date, data_json
+      SELECT date, data_type, data_json
         FROM apple_health_data
        WHERE user_id = ?
-         AND data_type = 'sleep'
+         AND data_type IN ('sleep', 'daily_summary')
          AND date BETWEEN ? AND ?
-       ORDER BY date ASC
+       ORDER BY date ASC,
+                CASE data_type WHEN 'sleep' THEN 0 ELSE 1 END ASC
     `).all(
       input.userId,
       rangeStart.setZone(input.timezone).minus({ days: 1 }).toISODate(),
       rangeEnd.setZone(input.timezone).plus({ days: 1 }).toISODate(),
-    ) as Array<{ date: string; data_json: string }>;
+    ) as Array<{ date: string; data_type: string; data_json: string }>;
 
     const segments: AppleHealthSleepSegment[] = [];
     const seen = new Set<string>();
+    const datesWithSleepSegments = new Set<string>();
     for (const row of rows) {
       const parsed = safeJson(row.data_json);
       const intervals = Array.isArray(parsed?.intervals) ? parsed.intervals : [];
+      const segmentCountBeforeRow = segments.length;
       for (const interval of intervals) {
         const stage = String(interval?.stage || '').trim();
         if (!isAsleepStage(stage)) continue;
         const clipped = clipToRange(interval?.start, interval?.end, rangeStart, rangeEnd, input.timezone);
         if (!clipped) continue;
-        appendSegment(segments, seen, {
+        const appended = appendSegment(segments, seen, {
           stage: stage || null,
           start: clipped.start.toUTC().toISO()!,
           end: clipped.end.toUTC().toISO()!,
           minutes: Math.round(clipped.end.diff(clipped.start, 'minutes').minutes),
         });
+        if (appended) datesWithSleepSegments.add(row.date);
       }
 
-      if (segments.length === 0 && typeof parsed?.totalMinutes === 'number' && parsed.totalMinutes > 0) {
+      const totalMinutes = readSleepTotalMinutes(parsed);
+      if (segments.length === segmentCountBeforeRow && totalMinutes > 0 && !datesWithSleepSegments.has(row.date)) {
         const fallbackEnd = DateTime.fromISO(row.date, { zone: input.timezone }).plus({ hours: 7 });
-        const fallbackStart = fallbackEnd.minus({ minutes: parsed.totalMinutes });
+        const fallbackStart = fallbackEnd.minus({ minutes: totalMinutes });
         const clipped = clipToRange(fallbackStart.toISO(), fallbackEnd.toISO(), rangeStart, rangeEnd, input.timezone);
         if (clipped) {
-          appendSegment(segments, seen, {
+          const appended = appendSegment(segments, seen, {
             stage: null,
             start: clipped.start.toUTC().toISO()!,
             end: clipped.end.toUTC().toISO()!,
             minutes: Math.round(clipped.end.diff(clipped.start, 'minutes').minutes),
           });
+          if (appended) datesWithSleepSegments.add(row.date);
         }
       }
     }
@@ -108,12 +114,30 @@ export function getAppleHealthSleepSegments(input: {
   }
 }
 
-function appendSegment(segments: AppleHealthSleepSegment[], seen: Set<string>, segment: AppleHealthSleepSegment) {
-  if (segment.minutes <= 0) return;
-  const key = `${segment.start}|${segment.end}`;
-  if (seen.has(key)) return;
+function readSleepTotalMinutes(value: any): number {
+  const directMinutes = numericMetric(value?.totalMinutes)
+    ?? numericMetric(value?.totalSleepMinutes)
+    ?? numericMetric(value?.sleepMinutes)
+    ?? numericMetric(value?.durationMinutes);
+  if (directMinutes != null) return Math.max(0, directMinutes);
+  const totalSeconds = numericMetric(value?.totalSleepSeconds)
+    ?? numericMetric(value?.sleepSeconds)
+    ?? numericMetric(value?.durationSeconds);
+  return totalSeconds != null ? Math.max(0, totalSeconds / 60) : 0;
+}
+
+function numericMetric(value: unknown): number | null {
+  const parsed = typeof value === 'number' ? value : Number(value);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+}
+
+function appendSegment(segments: AppleHealthSleepSegment[], seen: Set<string>, segment: AppleHealthSleepSegment): boolean {
+  if (segment.minutes <= 0) return false;
+  const key = `${segment.start}|${segment.end}|${segment.stage || ''}`;
+  if (seen.has(key)) return false;
   seen.add(key);
   segments.push(segment);
+  return true;
 }
 
 function mergeSleepSegments(segments: AppleHealthSleepSegment[]): AppleHealthSleepSegment[] {

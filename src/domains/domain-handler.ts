@@ -455,6 +455,13 @@ export async function handleSimpleDomain(
   userId?: number,
   maxTokensOverride?: number,
   tenantId?: number,
+  // Phase K (2026-05-26): optional shape hints from the chat-message-
+  // routes layer's NexusAnswerContract. The TaskRoutingProvider's
+  // runtime hard-block reads these to decide whether to bypass Ollama
+  // for tool-or-write requests. Both undefined → bypass uses
+  // conservative defaults (e.g., finance routes to cloud when
+  // ownerSkill is missing).
+  phaseKHints?: { ownerSkill?: string; executeIntent?: boolean },
 ): Promise<DomainResponse> {
   const hasUserScope = typeof userId === 'number';
   const history = hasUserScope ? getConversationHistory(userId, domain, tenantId) : [];
@@ -485,11 +492,28 @@ export async function handleSimpleDomain(
       );
     }
 
+    // Phase K (2026-05-26): derive ownerSkill from the domain name.
+    // chat-answer-contract.ts maps domain↔ownerSkill stably:
+    //   cooking→cooking, content→content, finance→finance,
+    //   triathlon→training, secretary→secretary.
+    // Callers that have an explicit NexusAnswerContract may pass
+    // `phaseKHints.ownerSkill` to override the derived value.
+    const derivedOwnerSkill = phaseKHints?.ownerSkill
+      ?? (domain === 'triathlon' ? 'training'
+        : (domain === 'cooking' || domain === 'content' || domain === 'finance' || domain === 'secretary')
+          ? domain
+          : undefined);
+
     // Route through the provider-agnostic interface
     let result = await provider.callDomain(domain, history, message, stateContext, {
       maxTokensOverride,
       userId,
       tenantId,
+      // Phase K (2026-05-26): forward NexusAnswerContract shape hints
+      // so the TaskRoutingProvider's runtime hard-block can decide
+      // whether to bypass Ollama for tool-or-write requests.
+      ownerSkill: derivedOwnerSkill,
+      executeIntent: phaseKHints?.executeIntent,
     });
     let finalText = result.text;
 
@@ -533,6 +557,21 @@ export async function handleSimpleDomain(
         tenantId,
       });
       finalText = result.text;
+    }
+
+    // Codex QA round 5: if the loop exits at maxIterations with the
+    // model STILL requesting tools, we used to silently return
+    // finalText (often empty or stale). That hides a cap-exceeded
+    // state from the user. Surface it explicitly so iOS shows a
+    // "needs a follow-up" prompt instead of an apparently-done turn.
+    if (result.toolCalls.length > 0 && iterations >= maxIterations) {
+      logger.warn(
+        { domain, iterations, toolsUsedCount: toolsUsed.length },
+        'Tool loop exceeded maxIterations with model still requesting tools — returning partial-state notice',
+      );
+      finalText = (finalText && finalText.trim().length > 10)
+        ? `${finalText}\n\n_Nexus reached the per-turn tool cap (${maxIterations}). Some steps are still pending — ask me to continue and I'll keep going._`
+        : `Nexus ran out of tool-call iterations for this turn (${maxIterations}). I started the work but didn't finish — ask me to continue from where I left off.`;
     }
 
     finalText = normalizeReplyForUserLanguage(finalText, userId);
@@ -599,6 +638,19 @@ async function handleWithDirectCalls(
     );
     result = await continueWithToolResultsFn(domain, history, message, stateContext, toolConversation, userId, directOptions);
     finalText = result.text;
+  }
+
+  // Codex QA round 5/6: parity with the primary path — direct-calls
+  // fallback must also surface a cap-reached notice when the loop
+  // exits with the model still requesting tools.
+  if (result.toolCalls && result.toolCalls.length > 0 && iterations >= maxIterations) {
+    logger.warn(
+      { domain, iterations, toolsUsedCount: toolsUsed.length, path: 'direct-calls' },
+      'Tool loop exceeded maxIterations with model still requesting tools — returning partial-state notice',
+    );
+    finalText = (finalText && finalText.trim().length > 10)
+      ? `${finalText}\n\n_Nexus reached the per-turn tool cap (${maxIterations}). Some steps are still pending — ask me to continue and I'll keep going._`
+      : `Nexus ran out of tool-call iterations for this turn (${maxIterations}). I started the work but didn't finish — ask me to continue from where I left off.`;
   }
 
   finalText = normalizeReplyForUserLanguage(finalText, userId);

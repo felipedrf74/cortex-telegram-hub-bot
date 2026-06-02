@@ -69,11 +69,10 @@ import {
 } from './chat-message-request';
 import { sendChatTierRequiredIfNeeded } from './chat-message-tier-gate';
 import { sendRetryableChatFailureResponseIfNeeded } from './chat-message-degraded-response';
-import { tryHandleChatReasoningAction } from '../../services/chat-reasoning-engine';
 import {
   executeConfirmedChatActionRuns,
   tryHandleChatActionPlan,
-} from '../../services/chat-action-planner';
+} from '../../services/chat';
 import { getPendingChatActionById } from '../../services/chat-action-state';
 import {
   buildNexusAnswerContract,
@@ -100,6 +99,7 @@ import {
   chooseChatCoreV2Locale,
   incrementLegacyFallback,
   incrementLegacyFallbackAttribution,
+  runChatCoreV2ShadowRouteHook,
   runChatCoreV2ActionGateway,
   runChatCoreV2LocalChatTurn,
   claimPendingChatCoreV2Command,
@@ -130,11 +130,16 @@ import { buildChatCoreV2CommandPreviewShortcutResponse } from './chat-core-v2-co
 import { buildChatCoreV2CommandConfirmationShortcutResponse } from './chat-core-v2-command-confirmation-response';
 import { buildChatCoreV2DeterministicReadShortcutResponse } from './chat-core-v2-deterministic-read-response';
 import {
+  isChatCoreV2ShadowRouteHookEnabled,
   isChatQualityGateEnabled,
   isChatResearchRouterEnabled,
   isChatTurnContractEnabled,
 } from '../../services/runtime-flags';
-import { createDecisionIntent, findDecisionByRelatedEntity, performDecisionAction } from '../../services/decision-center';
+import {
+  createDecisionIntent,
+  findDecisionByRelatedEntity,
+  performDecisionAction,
+} from '../../services/decision-center';
 
 type ChatRouteScopeGuard = (
   res: Response,
@@ -410,7 +415,10 @@ function mapActionPlannerSkillToNexusSkill(skill: string): NexusSkillId {
 function intentClassForAction(action: string | undefined, fallbackSkills: string[] = []): string {
   switch (action) {
     case 'create_task':
+    case 'create_task_with_subtasks':
       return 'task_create';
+    case 'add_subtasks_to_task':
+      return 'task_update';
     case 'delete_task':
       return 'task_delete';
     case 'complete_task':
@@ -649,6 +657,11 @@ function buildChatAnswerMetadata(input: {
           issues: [...fallbackPolicy.issues, ...gated.issues],
           score: gated.score,
           qualityGateDisabled: !qualityGateEnabled,
+          // Phase K (2026-05-26) observability — surface the gate's
+          // skip decision so audit_trail / portal show whether the
+          // creative-text-owner short-circuit fired for this turn.
+          qualityGateSkipped: gated.qualityGateSkipped === true,
+          qualityGateReason: gated.qualityGateReason ?? (qualityGateEnabled ? 'pass' : 'gate_disabled'),
         },
         fallbackPolicy: fallbackPolicy.policy,
       },
@@ -802,7 +815,7 @@ function actionGatewayStopText(
   if (result.kind === 'needs_clarification') return result.question;
   const normalizedLocale = String(locale ?? '').toLowerCase();
   const isPT = normalizedLocale.startsWith('pt');
-  const isES = normalizedLocale === 'es';
+  const isES = normalizedLocale.startsWith('es');
   if (result.kind === 'blocked_legacy_fallback') {
     if (isPT) return 'Preciso confirmar exatamente o que devo alterar antes de executar essa ação.';
     if (isES) return 'Necesito confirmar exactamente qué debo cambiar antes de ejecutar esa acción.';
@@ -816,6 +829,41 @@ function actionGatewayStopText(
   if (isPT) return 'Ainda não consigo executar essa ação com segurança. Posso ajudar a preparar uma prévia ou pedir mais detalhes.';
   if (isES) return 'Todavía no puedo ejecutar esa acción con seguridad. Puedo preparar una vista previa o pedir más detalles.';
   return 'I cannot run that action safely yet. I can prepare a preview or ask for more details.';
+}
+
+function destructiveConfirmationCopy(locale: string | null | undefined): {
+  title: string;
+  confirmLabel: string;
+  declineLabel: string;
+  openDecisionLabel: string;
+  text: string;
+} {
+  const normalizedLocale = String(locale ?? '').toLowerCase();
+  if (normalizedLocale.startsWith('pt')) {
+    return {
+      title: 'Confirmação necessária',
+      confirmLabel: 'Confirmar',
+      declineLabel: 'Não executar',
+      openDecisionLabel: 'Abrir decisão',
+      text: 'Antes de fazer uma alteração destrutiva, preciso de confirmação explícita. Confirme a ação exata que quer que eu faça, incluindo o item/plano/evento afetado. Não vou apagar, cancelar, enviar ou limpar nada sem essa confirmação.',
+    };
+  }
+  if (normalizedLocale.startsWith('es')) {
+    return {
+      title: 'Confirmación necesaria',
+      confirmLabel: 'Confirmar',
+      declineLabel: 'No ejecutar',
+      openDecisionLabel: 'Abrir decisión',
+      text: 'Antes de hacer un cambio destructivo, necesito una confirmación explícita. Confirma la acción exacta que quieres que haga, incluyendo el elemento, plan, evento o mensaje afectado. No voy a borrar, cancelar, enviar ni limpiar nada sin esa confirmación.',
+    };
+  }
+  return {
+    title: 'Confirmation needed',
+    confirmLabel: 'Confirm',
+    declineLabel: 'Do not run',
+    openDecisionLabel: 'Open decision',
+    text: 'Before I make a destructive change, I need explicit confirmation. Please confirm the exact action you want, including the affected item, plan, event, or message. I will not delete, cancel, send, or clear anything without that confirmation.',
+  };
 }
 
 function isChatCoreV2GuardOnlyPendingConfirmation(pending: PendingChatConfirmation): boolean {
@@ -1321,55 +1369,70 @@ export function registerChatMessageRoutes(
       return;
     }
 
-    const chatCoreV2Claim = claimPendingChatCoreV2Command(validation.payload.pendingId, userId, tenantId);
-    if (chatCoreV2Claim.status === 'claimed') {
-      const pendingCommand = chatCoreV2Claim.pending;
+    const v2Claim = claimPendingChatCoreV2Command(validation.payload.pendingId, userId, tenantId);
+    if (v2Claim.status === 'already_claimed') {
+      res.status(202).json({
+        id: `msg-${Date.now()}`,
+        text: 'I am still applying that confirmed change. I will reuse the completed result instead of running it twice.',
+        domain: 'secretary',
+        routeMethod: 'chat-core-v2-command-confirmation-in-progress',
+        confidence: 1,
+        buttons: null,
+        metadata: {
+          type: 'chat_core_v2_command_confirmation_in_progress',
+          commandId: validation.payload.pendingId,
+        },
+        timestamp: new Date().toISOString(),
+      });
+      return;
+    }
+    if (v2Claim.status === 'claimed') {
+      const confirmationStartedAt = Date.now();
       const execution = await executeChatCoreV2Command({
-        command: pendingCommand.command,
-        capabilityId: pendingCommand.capabilityId,
+        command: v2Claim.pending.command,
+        capabilityId: v2Claim.pending.capabilityId,
         userId,
         tenantId,
-        locale: pendingCommand.locale ?? getUserLanguageById(userId) ?? undefined,
-        now: new Date(),
+        locale: getUserLanguageById(userId) || undefined,
+        now: new Date(confirmationStartedAt),
       });
-      if (!execution.response) {
-        clearPendingChatCoreV2Command(pendingCommand.commandId, userId, tenantId);
-        res.status(409).json({ error: { code: 'CONFIRMATION_NOT_EXECUTABLE', message: 'Pending action could not be executed' } });
+      if (!execution.ok || !execution.response) {
+        clearPendingChatCoreV2Command(validation.payload.pendingId, userId, tenantId);
+        res.status(409).json({
+          error: {
+            code: 'CHAT_CORE_V2_CONFIRMATION_NOT_EXECUTABLE',
+            message: execution.reason === 'command_gate_rejected'
+              ? 'This preview is no longer safe to apply. Please ask again so I can refresh it.'
+              : 'The confirmed Chat Core v2 command could not be executed.',
+          },
+        });
         return;
       }
 
       const response = buildChatCoreV2CommandConfirmationShortcutResponse({
-        pending: pendingCommand,
-        execution: execution as ChatCoreV2CommandExecutionResult & { response: NonNullable<ChatCoreV2CommandExecutionResult['response']> },
-        requestStartedAt: Date.now(),
+        pending: v2Claim.pending,
+        execution: execution as typeof execution & { response: NonNullable<typeof execution.response> },
+        requestStartedAt: confirmationStartedAt,
       });
       recordConfirmedChatCoreV2CommandWriteEvidence({
         tenantId,
         userId,
         requestId: normalizeIdempotencyKey(req.body?.idempotencyKey)
-          ?? `chat-core-v2-confirm:${tenantId}:${userId}:${pendingCommand.commandId}`,
-        pending: pendingCommand,
-        execution,
+          ?? `chat-core-v2-confirm:${tenantId}:${userId}:${v2Claim.pending.commandId}`,
+        pending: v2Claim.pending,
+        execution: execution as ChatCoreV2CommandExecutionResult,
         response,
       });
       rememberCompletedChatConfirmation({
         confirmationToken,
         userId,
         tenantId,
-        expiresAt: pendingCommand.expiresAt,
+        expiresAt: v2Claim.pending.expiresAt,
         statusCode: 200,
         responseBody: response,
       });
-      clearPendingChatCoreV2Command(pendingCommand.commandId, userId, tenantId);
+      clearPendingChatCoreV2Command(validation.payload.pendingId, userId, tenantId);
       res.status(200).json(response);
-      return;
-    }
-    if (chatCoreV2Claim.status === 'already_claimed') {
-      res.status(409).json({ error: { code: 'CONFIRMATION_IN_PROGRESS', message: 'Pending action is already being executed' } });
-      return;
-    }
-    if (chatCoreV2Claim.status === 'expired') {
-      res.status(401).json({ error: { code: 'UNAUTHORIZED', message: 'Confirmation token no longer matches a pending action' } });
       return;
     }
 
@@ -1562,14 +1625,17 @@ export function registerChatMessageRoutes(
     // and together exceed the daily budget. See
     // `acquireCostLock` docs in services/cost-guardrail.ts.
     const releaseCostLock = await acquireCostLock(userId);
+    // Codex QA round 5: hoist idempotency ids OUT of the try block so
+    // the catch can pass them to the degraded-response path. Without
+    // this hoist the previous round-4 fix did not compile.
+    const requestStartedAt = Date.now();
+    const scopedClientMessageId = normalizeIdempotencyKey(
+      clientMessageId ?? idempotencyKey ?? req.header('x-idempotency-key') ?? req.header('x-client-message-id'),
+    );
+    const userMessageId = buildUserMessageId(scopedClientMessageId, requestStartedAt);
     try {
-      const requestStartedAt = Date.now();
       const latency = createChatLatencyTracker(requestStartedAt);
       const chatRequestId = getCurrentRequestId() || (req as any).requestId || `chat-${Date.now()}`;
-      const scopedClientMessageId = normalizeIdempotencyKey(
-        clientMessageId ?? idempotencyKey ?? req.header('x-idempotency-key') ?? req.header('x-client-message-id'),
-      );
-      const userMessageId = buildUserMessageId(scopedClientMessageId, requestStartedAt);
 
       const idempotentHit = findCompletedAssistantForClientMessage(userId, scopedClientMessageId, tenantId);
       if (idempotentHit) {
@@ -1768,10 +1834,96 @@ export function registerChatMessageRoutes(
           return;
         }
 
+      const chatCoreV2Read = normalizedText
+        && normalizedAttachments.length === 0
+        && !normalizedText.trim().startsWith('/')
+        ? tryBuildChatCoreV2DeterministicReadRoute({
+          normalizedText,
+          userId,
+          tenantId,
+          locale: getUserLanguageById(userId),
+          timezone: getUserTimezoneById(userId),
+          now: new Date(requestStartedAt),
+        })
+        : null;
+      if (chatCoreV2Read) {
+        latency.mark('chat_core_v2_deterministic_read_completed');
+        const deterministicReadShortcut = buildChatCoreV2DeterministicReadShortcutResponse({
+          result: chatCoreV2Read,
+          requestStartedAt,
+        });
+        const { conversationDomain, response: shortcutResponse } = deterministicReadShortcut;
+        const response = enrichChatResponseForContract(shortcutResponse, {
+          normalizedText,
+          userId,
+          tenantId,
+          chatRequestId,
+          tracker: latency,
+          latencyTier: 'tier1_fast_read',
+          fallbackDomain: conversationDomain,
+          fallbackRouteMethod: 'chat-core-v2-deterministic-read',
+          actionability: 'answer_only',
+          verificationStatus: 'not_required',
+        });
+        rememberChatActiveDomain(userId, conversationDomain, Date.now(), tenantId);
+        persistExchange(userId, userMessageId, normalizedText, response.id, response, tenantId, {
+          clientMessageId: scopedClientMessageId,
+          requestId: chatRequestId,
+        });
+        syncConversationStateForShortcut(userId, conversationDomain, normalizedText, response.text, tenantId);
+        logger.info(
+          {
+            chatRequestId,
+            platform: 'ios',
+            mode: 'chat-core-v2-deterministic-read',
+            tenantId,
+            userId,
+            capabilityId: deterministicReadShortcut.logContext.capabilityId,
+            contextHash: deterministicReadShortcut.logContext.contextHash,
+          },
+          'iOS chat Chat Core v2 deterministic read hit',
+        );
+        recordLegacyFallbackSample(false, {
+          domain: chatCoreV2Read.readModel.domain,
+          routeOwner: 'chat_core_v2_deterministic_read',
+          routeMethod: response.routeMethod,
+        });
+        res.json(response);
+        return;
+      }
+
       // ── Cost cap enforcement ─────────────────────────────────────
       // Run before any model-backed planner/reasoning path. Token-zero
       // deterministic reads above remain available after quota exhaustion.
       if (quotaDecision.block && sendChatQuotaExceededIfNeeded(res, userId, 'iOS chat: user over daily cost cap')) return;
+
+      if (isChatCoreV2ShadowRouteHookEnabled(process.env, { userId, tenantId })) {
+        const shadow = runChatCoreV2ShadowRouteHook({
+          normalizedText,
+          userId,
+          tenantId,
+          chatRequestId,
+          userMessageId,
+          clientMessageId: scopedClientMessageId,
+          attachmentsCount: normalizedAttachments.length,
+          locale: chatCoreV2RouteLocale,
+          timezone: getUserTimezoneById(userId),
+          now: new Date(requestStartedAt),
+        });
+        if (shadow.recorded) {
+          logger.info(
+            {
+              chatRequestId,
+              tenantId,
+              userId,
+              routeMethod: shadow.result?.routeDecision.routeMethod,
+              reasoningTier: shadow.result?.routeDecision.reasoningTier,
+              replayBundleId: shadow.replayBundleId,
+            },
+            'Chat Core v2 shadow route hook recorded plan',
+          );
+        }
+      }
 
       let chatV2EvidenceRecorderInstalled = false;
       const installChatV2EvidenceRecorder = () => {
@@ -2339,125 +2491,6 @@ export function registerChatMessageRoutes(
         return;
       }
 
-      // ── Chat Reasoning Engine v1 ─────────────────────────────────
-      // Secretary mutation intents that need structure (for example one
-      // task with subtasks) are parsed into an ActionFrame and executed
-      // through deterministic task services before the model/tool loop.
-      // The model may label future actions, but it never executes tools
-      // directly or chooses user/tenant scope.
-      const reasoningAction = await tryHandleChatReasoningAction({
-        text: normalizedText,
-        userId,
-        tenantId,
-        sourceMessageId: userMessageId,
-        clientRequestId: scopedClientMessageId,
-        correlationId: chatRequestId,
-        locale: chatCoreV2RouteLocale,
-      });
-      if (reasoningAction) {
-        latency.mark('reasoning_engine_completed');
-        const response = reasoningAction.response;
-        const enriched = buildChatAnswerMetadata({
-          normalizedText,
-          responseText: response.text,
-          userId,
-          tenantId,
-          chatRequestId,
-          routeMethod: response.routeMethod,
-          domain: response.domain,
-          confidence: response.confidence,
-          tracker: latency,
-          latencyTier: response.metadata?.verificationStatus ? 'tier2_verified_write' : 'tier1_fast_read',
-          existingMetadata: response.metadata,
-          actionability: actionabilityForReasoningStatus(reasoningAction.status),
-          verificationStatus: verificationForReasoningMetadata(response.metadata, reasoningAction.status),
-          locale: chatCoreV2RouteLocale,
-        });
-        response.text = enriched.text;
-        response.metadata = enriched.metadata;
-        recordChatReasoningWriteEvidence({
-          tenantId,
-          userId,
-          requestId: chatRequestId,
-          normalizedText,
-          status: reasoningAction.status,
-          response: {
-            text: response.text,
-            metadata: response.metadata,
-          },
-        });
-        if (response.routeMethod === 'confirmation-required' && response.metadata?.type === 'chat_action_confirmation_required') {
-          const isPT = chatCoreV2RouteLocale.startsWith('pt');
-          const involvedSkills = Array.isArray(response.metadata.involvedSkills)
-            ? response.metadata.involvedSkills.filter((skill): skill is any => typeof skill === 'string')
-            : ['secretary'];
-          const pendingConfirmation = trackPendingChatConfirmation({
-            userId,
-            tenantId,
-            actionSummary: normalizedText,
-            involvedSkills,
-            reasonCodes: Array.isArray(response.metadata.reasonCodes)
-              ? response.metadata.reasonCodes.filter((code): code is string => typeof code === 'string')
-              : ['destructive_action'],
-            sourceMessageId: userMessageId,
-          });
-          const decisionResult = await createDecisionIntent({
-            userId,
-            tenantId,
-            sourceSkill: 'chat',
-            type: 'decision_required',
-            priority: 'active',
-            relatedEntityId: pendingConfirmation.id,
-            relatedEntityType: 'chat_confirmation',
-            title: isPT ? 'Nexus precisa de confirmação' : 'Nexus needs confirmation',
-            body: pendingConfirmation.actionSummary,
-            sensitiveBody: pendingConfirmation.actionSummary,
-            actionButtons: [
-              { id: 'option_a', label: isPT ? 'Confirmar' : 'Confirm', style: 'primary' },
-              { id: 'option_b', label: isPT ? 'Não executar' : 'Do not run', style: 'secondary' },
-              { id: 'open_detail', label: isPT ? 'Abrir decisão' : 'Open decision', style: 'secondary' },
-            ],
-            deeplink: `nexus://notifications/${pendingConfirmation.id}`,
-            expiresAt: pendingConfirmation.expiresAt,
-            dedupeKey: `chat:confirmation:${tenantId}:${userId}:${pendingConfirmation.id}`,
-            requiresUserAction: true,
-            deliveryPolicy: 'in_app_only',
-            privacyPolicy: 'standard',
-          });
-          response.metadata.pendingConfirmation = {
-            id: pendingConfirmation.id,
-            actionSummary: pendingConfirmation.actionSummary,
-            expiresAt: pendingConfirmation.expiresAt,
-            sourceMessageId: pendingConfirmation.sourceMessageId,
-            decisionId: decisionResult.item?.decisionId ?? null,
-          };
-        }
-        rememberChatActiveDomain(userId, response.domain, Date.now(), tenantId);
-        persistExchange(userId, userMessageId, normalizedText, response.id, response, tenantId, {
-          clientMessageId: scopedClientMessageId,
-          requestId: chatRequestId,
-        });
-        syncConversationStateForShortcut(userId, response.domain, normalizedText, response.text, tenantId);
-        logger.info(
-          {
-            chatRequestId,
-            tenantId,
-            userId,
-            mode: 'chat-reasoning-engine',
-            status: reasoningAction.status,
-            metadataType: response.metadata?.type,
-          },
-          'iOS chat reasoning engine handled structured action',
-        );
-        recordLegacyFallbackSample(true, {
-          domain: response.domain,
-          routeOwner: 'chat_reasoning_engine',
-          routeMethod: response.routeMethod,
-        });
-        res.json(response);
-        return;
-      }
-
       // ── Natural language plan-creation shortcut ───────────────────
       // Intercept "criar plano" / "create training plan" before the AI
       // pipeline. Returns a token-zero response directing the user to
@@ -2689,8 +2722,8 @@ export function registerChatMessageRoutes(
       }
 
       if (preRoutingDecision.safety.requiresConfirmation && !preRoutingDecision.safety.explicitConfirmation) {
-        const isPT = chatCoreV2RouteLocale.startsWith('pt');
         const intentClass = intentClassForAction(undefined, preRoutingDecision.involvedSkills);
+        const copy = destructiveConfirmationCopy(chatCoreV2RouteLocale);
         const summary = {
           text: normalizedText,
           involvedSkills: preRoutingDecision.involvedSkills,
@@ -2714,13 +2747,13 @@ export function registerChatMessageRoutes(
           priority: 'active',
           relatedEntityId: pendingConfirmation.id,
           relatedEntityType: 'chat_confirmation',
-          title: isPT ? 'Nexus precisa de confirmação' : 'Nexus needs confirmation',
+          title: copy.title,
           body: pendingConfirmation.actionSummary,
           sensitiveBody: pendingConfirmation.actionSummary,
           actionButtons: [
-            { id: 'option_a', label: isPT ? 'Confirmar' : 'Confirm', style: 'primary' },
-            { id: 'option_b', label: isPT ? 'Não executar' : 'Do not run', style: 'secondary' },
-            { id: 'open_detail', label: isPT ? 'Abrir decisão' : 'Open decision', style: 'secondary' },
+            { id: 'option_a', label: copy.confirmLabel, style: 'primary' },
+            { id: 'option_b', label: copy.declineLabel, style: 'secondary' },
+            { id: 'open_detail', label: copy.openDecisionLabel, style: 'secondary' },
           ],
           deeplink: `nexus://notifications/${pendingConfirmation.id}`,
           expiresAt: pendingConfirmation.expiresAt,
@@ -2736,9 +2769,7 @@ export function registerChatMessageRoutes(
         });
         const confirmationResponse = enrichChatResponseForContract({
           id: `msg-${Date.now()}`,
-          text: isPT
-            ? 'Antes de executar isso, preciso de confirmação explícita. Confirme a ação exata que quer que eu faça, incluindo o item/plano/evento afetado. Não vou apagar, cancelar, enviar ou limpar nada sem essa confirmação.'
-            : 'Before I execute that, I need explicit confirmation. Please confirm the exact action you want, including the affected item, plan, event, or message. I will not delete, cancel, send, or clear anything without that confirmation.',
+          text: copy.text,
           domain: preRoutingDecision.primaryDomain || 'secretary',
           routeMethod: 'confirmation-required',
           confidence: preRoutingDecision.confidence,
@@ -2751,7 +2782,7 @@ export function registerChatMessageRoutes(
             unresolvedBlockers: sufficiency.unresolvedBlockers,
             responseSufficiency: sufficiency,
             actionConfirmation: {
-              title: isPT ? 'Confirmação necessária' : 'Confirmation needed',
+              title: copy.title,
               message: pendingConfirmation.actionSummary,
               destructive: confirmationVariantForIntent(intentClass, preRoutingDecision.safety.confirmationReasonCodes) === 'destructive',
               variant: confirmationVariantForIntent(intentClass, preRoutingDecision.safety.confirmationReasonCodes),
@@ -3124,7 +3155,19 @@ export function registerChatMessageRoutes(
       res.json(response);
     } catch (err: any) {
       const chatRequestId = getCurrentRequestId() || (req as any).requestId || `chat-${Date.now()}`;
-      if (await sendRetryableChatFailureResponseIfNeeded({ err, res, userId, tenantId, normalizedText, chatRequestId })) return;
+      // Codex QA round 4 / 5: the idempotency ids are now hoisted above
+      // the try block, so they're in scope here and can flow into the
+      // degraded-response persistence path.
+      if (await sendRetryableChatFailureResponseIfNeeded({
+        err,
+        res,
+        userId,
+        tenantId,
+        normalizedText,
+        chatRequestId,
+        userMessageId,
+        clientMessageId: scopedClientMessageId ?? undefined,
+      })) return;
       pushEvent({
         ts: new Date().toISOString(),
         type: 'error',

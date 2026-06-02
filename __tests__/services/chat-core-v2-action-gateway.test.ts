@@ -145,6 +145,19 @@ describe('ChatCoreV2 action gateway', () => {
     expect(detectChatCoreV2WriteIntent('o que eu tenho na agenda hoje?')).toEqual(expect.objectContaining({ mayMutate: false, detectedIntent: 'none' }));
   });
 
+  it('does not treat object nouns like grocery list as read commands', () => {
+    vi.mocked(classifyShadowRoute).mockReturnValueOnce(
+      { intent: 'create_action', domains: ['cooking'], capabilityIds: ['cooking.grocery_item_preview'] } as unknown as ReturnType<typeof classifyShadowRoute>,
+    );
+
+    expect(detectChatCoreV2WriteIntent('Add eggs and milk to my grocery list')).toEqual(expect.objectContaining({
+      mayMutate: true,
+      detectedIntent: 'other_write',
+      actionType: 'cooking.grocery_item_preview',
+      reasonCodes: ['shadow_route_write_intent'],
+    }));
+  });
+
   it('answers a how-to question rather than treating it as a mutation', () => {
     expect(detectChatCoreV2WriteIntent('how do I cancel my subscription?')).toEqual(expect.objectContaining({ mayMutate: false }));
   });

@@ -163,8 +163,15 @@ const BROADER_WRITE_RES = [
 // Bare imperative mutation verbs (incl. imperative stems like "adia"/"cancela"/
 // "muda") that may carry an ambiguous referent ("cancel that").
 const AMBIGUOUS_MUTATION_RE = /\b(cancel(?:a|ar|e|ed|led|ado|ada)?|reschedul(?:e|ing)?|remarc(?:a|ar|e)|adi(?:a|ar|e|am)|postpone[d]?|mov(?:e|er|a)|mud(?:a|ar|e)|delet(?:e|a|ar)|apag(?:a|ar|ue)|remov(?:e|a|er)|descart(?:a|ar|e)|dismiss(?:ed)?)\b/i;
-// Interrogative/read phrasing that must not be misread as a write intent.
-const READ_QUESTION_RE = /\b(o que|que tenho|what (?:do i|are|is|s|tasks?|todos?)|which|qual|quais|mostra|mostrar|show me|list|lista|listar|tenho|tengo|do i have|any |algum|alguma|quanto|quantos|how many|status)\b/i;
+// Interrogative/read phrasing that must not be misread as a write intent. Keep
+// command verbs such as "list" anchored so object nouns like "grocery list" do
+// not suppress a write-preview route.
+const READ_QUESTION_RE = /\b(o que|que tenho|what (?:do i|are|is|s|tasks?|todos?)|which|qual|quais|tenho|tengo|do i have|any\b|algum|alguma|quanto|quantos|how many|status)\b/i;
+const READ_COMMAND_RE = /^(?:(?:can you|could you|please|por favor)\s+)?(?:show me|show|list|mostra|mostrar|lista|listar)\b/i;
+
+function isReadQuestionLike(normalized: string): boolean {
+  return READ_QUESTION_RE.test(normalized) || READ_COMMAND_RE.test(normalized);
+}
 
 export function resolveChatCoreV2ActionGatewayMode(
   env: NodeJS.ProcessEnv = process.env,
@@ -190,7 +197,7 @@ export function detectChatCoreV2WriteIntent(text: string): ChatCoreV2WriteIntent
     return { mayMutate: false, detectedIntent: 'none', reasonCodes: ['empty_message'] };
   }
 
-  const isReadQuestion = READ_QUESTION_RE.test(normalized);
+  const isReadQuestion = isReadQuestionLike(normalized);
   const hasTaskNoun = TASK_NOUN_RE.test(normalized);
   const hasSubtask = SUBTASK_RE.test(normalized);
   const hasTaskComplete = TASK_COMPLETE_RE.test(normalized) && (hasTaskNoun || /\b(done|complete[d]?|conclu[ií]da|conclu[ií]do|feita|feito)\b/i.test(normalized));

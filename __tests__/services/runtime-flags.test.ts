@@ -13,6 +13,8 @@ import {
   isChatEscalationReviewerEnabled,
   isChatBilingualEvalGateEnabled,
   isChatContextCompilerEnabled,
+  isChatCoreV2Enabled,
+  isChatCoreV2RuntimeFlagEnabled,
   isChatHybridPlannerEnabled,
   isChatLlmTier1Enabled,
   isChatLlmTier2Enabled,
@@ -29,6 +31,7 @@ import {
   isDecisionCenterGuidanceSkillEnabled,
   isDecisionCenterGuidanceV1Enabled,
   isAnthropicRuntimeEnabled,
+  isChatCoreV2ShadowRouteHookEnabled,
   isSecretaryHaikuRoutingEnabled,
   isTelegramLegacyDeliveryEnabled,
 } from '../../src/services/runtime-flags';
@@ -190,5 +193,45 @@ describe('runtime-flags', () => {
       CHAT_QUALITY_GATE_ENABLED: 'true',
       CHAT_QUALITY_GATE_ENABLED_TENANT_99: 'false',
     }, { userId: 42, tenantId: 99 })).toBe(false);
+  });
+
+  it('keeps Chat Core v2 shadow route hook default-off with scoped opt-in', () => {
+    expect(isChatCoreV2ShadowRouteHookEnabled({})).toBe(false);
+    expect(isChatCoreV2ShadowRouteHookEnabled({ CHAT_CORE_V2_SHADOW_ROUTE_HOOK_ENABLED: 'true' })).toBe(true);
+    expect(isChatCoreV2ShadowRouteHookEnabled({ CHAT_CORE_V2_SHADOW_ROUTE_HOOK_ENABLED: 'shadow' })).toBe(true);
+    expect(isChatCoreV2ShadowRouteHookEnabled({
+      CHAT_CORE_V2_SHADOW_ROUTE_HOOK_ENABLED: 'false',
+      CHAT_CORE_V2_SHADOW_ROUTE_HOOK_ENABLED_TENANT_9: '1',
+    }, { userId: 7, tenantId: 9 })).toBe(true);
+    expect(isChatCoreV2ShadowRouteHookEnabled({
+      CHAT_CORE_V2_SHADOW_ROUTE_HOOK_ENABLED: 'true',
+      CHAT_CORE_V2_SHADOW_ROUTE_HOOK_ENABLED_USER_42: 'off',
+    }, { userId: 42, tenantId: 9 })).toBe(false);
+  });
+
+  it('keeps Chat Core v2 live capability flags default-off with scoped opt-in', () => {
+    expect(isChatCoreV2Enabled({})).toBe(false);
+    expect(isChatCoreV2Enabled({ CHAT_CORE_V2_ENABLED: 'true' })).toBe(true);
+    expect(isChatCoreV2Enabled({ CHAT_CORE_V2_ENABLED: 'on' })).toBe(true);
+    expect(isChatCoreV2Enabled({ CHAT_CORE_V2_ENABLED: 'enabled' })).toBe(true);
+    expect(isChatCoreV2Enabled({ CHAT_CORE_V2_ENABLED: 'shadow' })).toBe(false);
+    expect(isChatCoreV2Enabled({
+      CHAT_CORE_V2_ENABLED: 'false',
+      CHAT_CORE_V2_ENABLED_TENANT_9: '1',
+    }, { userId: 7, tenantId: 9 })).toBe(true);
+    expect(isChatCoreV2Enabled({
+      CHAT_CORE_V2_ENABLED: 'true',
+      CHAT_CORE_V2_ENABLED_USER_42: 'off',
+    }, { userId: 42, tenantId: 9 })).toBe(false);
+
+    expect(isChatCoreV2RuntimeFlagEnabled('CHAT_CORE_V2_ENABLED', {
+      CHAT_CORE_V2_ENABLED: '1',
+    })).toBe(true);
+    expect(isChatCoreV2RuntimeFlagEnabled('chat_core_v2_tasks_enabled', {
+      CHAT_CORE_V2_TASKS_ENABLED: 'true',
+    })).toBe(true);
+    expect(isChatCoreV2RuntimeFlagEnabled('CHAT_CORE_V3_ENABLED', {
+      CHAT_CORE_V3_ENABLED: 'true',
+    })).toBe(false);
   });
 });

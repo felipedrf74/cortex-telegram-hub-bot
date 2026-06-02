@@ -257,6 +257,34 @@ async function probeGoogle(): Promise<ProbeResult> {
   }
 }
 
+async function probeOllama(): Promise<ProbeResult> {
+  // Local LLM (Ollama) health probe — added by WO-ollama-local-llm.
+  // Read-only: hits /api/version on the loopback daemon and records the
+  // result. Does NOT open the circuit breaker (that's the job of actual
+  // call failures); only surfaces "is the daemon reachable" in
+  // /health/detailed and triggers operator alerts on a 3-streak.
+  const start = Date.now();
+  try {
+    const { config: cfg } = require('../config') as typeof import('../config');
+    const ollamaCfg = (cfg as { ollama?: { enabled?: boolean; baseUrl?: string } }).ollama;
+    if (!ollamaCfg?.enabled || !ollamaCfg.baseUrl) {
+      return { provider: 'ollama', status: 'skipped', latencyMs: null, errorMessage: 'not configured' };
+    }
+    const resp = await fetch(`${ollamaCfg.baseUrl}/api/version`);
+    if (!resp.ok) {
+      return { provider: 'ollama', status: 'fail', latencyMs: Date.now() - start, errorMessage: `HTTP ${resp.status}` };
+    }
+    return { provider: 'ollama', status: 'ok', latencyMs: Date.now() - start, errorMessage: null };
+  } catch (err: any) {
+    return {
+      provider: 'ollama',
+      status: 'fail',
+      latencyMs: Date.now() - start,
+      errorMessage: err?.message ?? String(err),
+    };
+  }
+}
+
 async function probeOutlook(): Promise<ProbeResult> {
   const start = Date.now();
   try {
@@ -287,14 +315,14 @@ async function probeOutlook(): Promise<ProbeResult> {
  * integration_health to render a status grid.
  */
 export async function runHealthProbes(): Promise<ProbeResult[]> {
-  const probes = [probeGarmin(), probeGoogle(), probeOutlook()];
+  const probes = [probeGarmin(), probeGoogle(), probeOutlook(), probeOllama()];
   const settled = await Promise.allSettled(probes);
 
   const results: ProbeResult[] = settled.map((s, idx) => {
     if (s.status === 'fulfilled') return s.value;
     // Promise.allSettled rejection: shouldn't happen because the probes
     // catch internally, but defensive fallback.
-    const provider = ['garmin', 'google', 'outlook'][idx] || 'unknown';
+    const provider = ['garmin', 'google', 'outlook', 'ollama'][idx] || 'unknown';
     return {
       provider,
       status: 'fail',

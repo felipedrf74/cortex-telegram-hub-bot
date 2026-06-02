@@ -103,7 +103,7 @@ if [ -x "$LOCAL_DIR/scripts/cannot-skip-gate-dashboard.sh" ]; then
   # Always emit JSON evidence (operator-recoverable). Dashboard verifies
   # every cannot-skip gate fires on its representative file.
   if "$LOCAL_DIR/scripts/cannot-skip-gate-dashboard.sh" --quiet >/dev/null 2>&1; then
-    log "   ✅ all 23 cannot-skip gates wired"
+    log "   ✅ all cannot-skip gates wired"
   else
     log "   ❌ cannot-skip gate wiring failed — re-run for detail"
     OVERALL_RC=1

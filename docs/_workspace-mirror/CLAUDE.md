@@ -43,6 +43,16 @@ Both Claude and Codex follow the catalogue at
    review go into `docs/adr/` (see
    [docs/adr/README.md](docs/adr/README.md)). Don't ADR ephemeral
    decisions.
+5. **For Nexus Hub marketing website work** (homepage, pricing, features,
+   signup, onboarding, landing page), use
+   [saas-ui-ux-conversion](.claude/skills/saas-ui-ux-conversion/SKILL.md).
+   Companion subagents in `.claude/agents/`:
+   - `saas-ux-researcher` — UX/CRO audits (read-only)
+   - `conversion-copywriter` — value prop, hero copy, CTAs, FAQ
+   - `frontend-design-reviewer` — post-implementation a11y/responsive review
+   Deep reference docs at `docs/agent/saas-conversion/`. Website source of
+   truth: `/Users/felipedominguez/Desktop/nexushub-landing-astro/` (Astro
+   static export, see its `AGENTS.md`).
 
 ## Rule For Markdown
 

@@ -489,7 +489,6 @@ function summarizeTrainingSyncState(sessions: any[]) {
 function isInactiveTrainingReadModelStatus(status: unknown): boolean {
   const normalized = String(status || '').toLowerCase();
   return normalized === 'rest'
-    || normalized === 'unscheduled'
     || normalized === 'deferred'
     || normalized === 'dropped'
     || normalized === 'cancelled'

@@ -46,6 +46,7 @@ import { enforceRequestedTrainingPlanVolume } from '../../services/training-plan
 import * as trainingPlans from '../../services/training-plans';
 import { findOrphanedOwnerships } from '../../services/training-plan-lifecycle';
 import { reconcileOrphanedTrainingAgendaEvents } from '../../services/training-agenda-reconciliation';
+import { resolveTrainingCalendarSource } from '../../services/training-calendar-source';
 import { logger } from '../../utils/logger';
 import type { CalendarSource } from '../../services/unified-calendar';
 import type { PlanLintResult } from '../../services/coach-kernel/plan-linter';
@@ -75,7 +76,7 @@ export interface GenerateTrainingPlanForUserInput {
    * omitted the generator behaves exactly as before (volume-based
    * inference) — additive, fully backward-compatible.
    */
-  twoADayPreference?: 'never' | 'optional' | 'preferred' | null;
+  twoADayPreference?: 'never' | 'optional' | 'preferred' | 'auto' | null;
   calendarSource?: CalendarSource | null;
   previewOnly?: boolean;
 }
@@ -325,6 +326,11 @@ export async function generateTrainingPlanForUser(
     .fromISO(startStr, { zone: config.app.timezone || 'Europe/Lisbon' })
     .plus({ weeks: durationWeeks })
     .toISODate() ?? startStr;
+  const resolvedCalendarSource = resolveTrainingCalendarSource({
+    userId,
+    tenantId,
+    requestedSource: calendarSource ?? undefined,
+  });
 
   // training-expert-coach-knowledge-engine (2026-05-03):
   // Calendar fetch is the upstream source of truth for "when can the
@@ -343,8 +349,8 @@ export async function generateTrainingPlanForUser(
   let calendarFetchDegraded = false;
   let calendarFetchError: string | undefined;
   try {
-    const events = calendarSource
-      ? await getEventsForSources(startStr, endStr, userId, [calendarSource])
+    const events = resolvedCalendarSource
+      ? await getEventsForSources(startStr, endStr, userId, [resolvedCalendarSource])
       : await getEvents(startStr, endStr, userId);
     busyWindows = buildBusyWindows(events || []);
   } catch (err) {
@@ -489,7 +495,7 @@ export async function generateTrainingPlanForUser(
       preferredCardioTime: normalizedPreferredCardioTime,
       preferredStrengthTime: normalizedPreferredStrengthTime,
       startDate: startStr,
-      longWorkoutDay: normalizedLongWorkoutDay,
+      longWorkoutDay: coordination.resolvedLongWorkoutDay ?? normalizedLongWorkoutDay,
     }),
     equipmentAdaptation,
   );
@@ -549,7 +555,7 @@ export async function generateTrainingPlanForUser(
       trainingPriority: normalizedTrainingPriority,
       raceDate: effectiveRaceDate,
       startPolicy: normalizedStartPolicy,
-      trainingCalendarSource: calendarSource || null,
+      trainingCalendarSource: resolvedCalendarSource || null,
     }),
     normalizedPreferredTime,
     normalizedPreferredCardioTime,
@@ -560,7 +566,7 @@ export async function generateTrainingPlanForUser(
       gymProfile,
       runProfile: runProfileForPlan,
     },
-    calendarSource: calendarSource || undefined,
+    calendarSource: resolvedCalendarSource || undefined,
     equipmentProfile: equipmentProfileLabel,
     raceDate: raceDateForLint,
     isRaceSpecific: isRaceSpecificForLint,
@@ -585,7 +591,7 @@ export async function generateTrainingPlanForUser(
           swimSessionsPerWeek: normalizedSwimSessionsPerWeek,
         }),
         totalSessions: countSchedulablePlanSessions(planData),
-        calendarSource: calendarSource || null,
+        calendarSource: resolvedCalendarSource || null,
         phaseRoadmap: buildPlanPhaseRoadmap(planData),
         planLint: preflightLint,
         warnings: buildPlanWarnings({
@@ -703,6 +709,10 @@ export async function generateTrainingPlanForUser(
     warnings: [],
     suggestedFixes: [],
   };
+  const sessionsLinked = typeof persistedPlan.sessionsLinked === 'number'
+    ? persistedPlan.sessionsLinked
+    : persistedPlan.eventsCreated;
+  const sessionsFailed = Math.max(0, persistedPlan.totalSessions - sessionsLinked);
   const planWarnings = buildPlanWarnings({
     calendarFetchDegraded,
     calendarFetchError,
@@ -722,20 +732,20 @@ export async function generateTrainingPlanForUser(
       objective,
       durationWeeks,
       resolvedStartDate: startStr,
-      calendarSource: calendarSource || null,
+      calendarSource: resolvedCalendarSource || null,
       phaseRoadmap: buildPlanPhaseRoadmap(planData),
       totalSessions: persistedPlan.totalSessions,
       eventsCreated: persistedPlan.eventsCreated,
       calendarSync: {
-        provider: calendarSource || null,
+        provider: resolvedCalendarSource || null,
         sessionsAttempted: persistedPlan.totalSessions,
         eventsCreated: persistedPlan.eventsCreated,
-        sessionsLinked: 0,
-        sessionsFailed: Math.max(0, persistedPlan.totalSessions - persistedPlan.eventsCreated),
-        unscheduled: Math.max(0, persistedPlan.totalSessions - persistedPlan.eventsCreated),
-        status: persistedPlan.eventsCreated >= persistedPlan.totalSessions
+        sessionsLinked,
+        sessionsFailed,
+        unscheduled: sessionsFailed,
+        status: sessionsLinked >= persistedPlan.totalSessions
           ? 'synced'
-          : persistedPlan.eventsCreated > 0
+          : sessionsLinked > 0
             ? 'partial'
             : 'not_synced',
       },

@@ -1,75 +1,124 @@
-# AGENTS.md - Nexus Hub Workspace Bootloader
+# Nexus Hub Website Agent Instructions
 
-Status: canonical
-Owner: workspace lead (Felipe)
-Last verified: 2026-05-04
-Update policy: update when the agent workflow, repo map, or workspace
-safety rules change. Removing a safety rule requires owner approval.
+Use these instructions for Codex, Claude Code, and any coding agent improving the Nexus Hub website.
 
-Official working path: `/Users/felipedominguez/Desktop/Nexus Hub`
+## Mission
+Improve Nexus Hub as a high-converting SaaS website: clear value proposition, credible differentiation, strong visual hierarchy, low-friction signup/purchase flow, and polished modern UI.
 
-## Start Here
+## Product positioning direction
+- Treat Nexus Hub as a modern SaaS/productivity hub unless product files prove otherwise.
+- The website must quickly answer: who it is for, what problem it solves, why it is different, and what action the visitor should take next.
+- Convert features into benefits. Do not list features without explaining the customer outcome.
+- Prefer concrete, specific copy over generic SaaS phrases.
 
-Before creating or changing markdown, read:
+## Research-backed UX principles to apply
+- Homepage: every visible element should reinforce a persuasive value proposition and answer “why choose this company over alternatives?”
+- Visual hierarchy: guide attention with scale, contrast, grouping, spacing, and consistent layout rhythm.
+- Landing page conversion: define one primary action per page/section, make the CTA obvious, remove distractions, and write copy before finalizing layout.
+- Trust: add proof close to decision points: testimonials, integrations, security notes, customer logos, metrics, guarantees, or screenshots.
+- Checkout/signup: reduce friction, avoid unnecessary fields, provide clear errors, and keep users oriented through the flow.
+- Accessibility: target WCAG 2.2 AA. Include visible keyboard focus, accessible names, semantic headings, adequate contrast, and usable target sizes.
+- Performance: avoid heavy visual effects that slow First Contentful Paint, Largest Contentful Paint, or interaction readiness.
 
-1. `docs/DOCS_INDEX.md`
-2. `docs/agent/OPERATING_CONTEXT.md`
-3. `docs/agent/AGENT_PROCESS_STANDARD.md`
-4. `docs/agent/AGENT_TECHNICAL_MASTERY.md`
-5. `docs/skills/SKILLS_INDEX.md`
-6. `docs/release/CURRENT_RELEASE_STATE.md`
-7. `docs/release/OPEN_ITEMS.md`
+## Recommended page structure
+1. Hero: benefit-first headline, short support copy, primary CTA, secondary CTA, product UI visual, 1 proof signal.
+2. Problem: show the pain Nexus Hub removes.
+3. Solution overview: 3-5 core benefits in plain language.
+4. Differentiators: what Nexus Hub does better than competitors or manual workflows.
+5. Feature proof: screenshots, short demos, workflows, before/after examples.
+6. Use cases/personas: map benefits to customer jobs-to-be-done.
+7. Social proof: testimonials, logos, metrics, case snippets, review quotes.
+8. Pricing or plan teaser: simple comparison, recommended plan, risk reducer.
+9. FAQ: answer objections about setup, support, security, integrations, migration, cancellation.
+10. Final CTA: repeat the most-wanted action with confidence-building microcopy.
 
-## Working Patterns (Skills)
+## Copywriting rules
+- Use this formula for every major section: Customer problem -> Nexus Hub capability -> measurable/customer benefit -> proof or example -> CTA.
+- Replace vague claims with specific outcomes. Bad: “Powerful platform.” Better: “Manage client workflows, documents, and follow-ups from one hub.”
+- Keep section intros short. Use scannable bullets and descriptive subheads.
+- CTA text should say what happens next: “Start free trial”, “Book a demo”, “See Nexus Hub in action”. Avoid weak CTAs like “Learn more” unless secondary.
+- Do not use lorem ipsum in finished UI.
 
-Codex follows the catalogue at `docs/skills/SKILLS_INDEX.md`. Defaults
-that change everyday work:
+## Visual design direction
+- Brand personality: modern, technical, trustworthy, premium, efficient.
+- Prefer clean layouts, strong spacing, clear hierarchy, and product-led visuals over decorative clutter.
+- Use subtle gradients, glass/blur, or glow effects only when they support hierarchy and do not hurt readability/performance.
+- Components should feel like a real SaaS product: cards, dashboards, workflows, integration badges, comparison tables, and proof modules.
+- Use icons sparingly. Each icon must reinforce meaning, not decorate empty content.
 
-1. **Before non-trivial planning**, default to
-   [grill-me](docs/skills/grill-me/SKILL.md) — one question at a time,
-   each with a recommended answer. Misalignment caught at planning time
-   costs one conversation; misalignment caught after implementation costs
-   the whole round trip.
-2. **Before debugging flaky / lag / regression issues**, follow
-   [diagnose](docs/skills/diagnose/SKILL.md) Phase 1 (build a feedback
-   loop) before speculating.
-3. **Long Claude↔Codex handoff prompts** can be written in
-   [caveman](docs/skills/caveman/SKILL.md) mode once context is
-   established.
-4. **Hard-to-reverse decisions** captured during grilling or architecture
-   review go into `docs/adr/` (see
-   [docs/adr/README.md](docs/adr/README.md)).
+## Typography direction
+Primary recommendation: use Geist Sans for the main UI and marketing typography, with Geist Mono for technical labels, code-like snippets, metrics, or dashboard details.
 
-## Repositories
+Alternative if the site needs a stronger distinct marketing personality: use Space Grotesk for H1/H2 display headings and Inter for body/UI text.
 
-- Backend engine: `engine`
-- iOS app: `ios`
-- iOS specs: `ios-specs`
+Typography rules:
+- Use no more than two families plus one mono family.
+- Body copy should be 16-18px with comfortable line-height.
+- Headlines should be short, benefit-driven, and visually dominant.
+- Use a consistent type scale: display, h1, h2, h3, body, small, label.
+- Never sacrifice legibility for style.
 
-## Documentation Rule
+## Font implementation guidance
+- If the project uses Next.js, prefer `next/font/google` for Google Fonts. It self-hosts fonts at build time and avoids browser requests to Google.
+- Prefer variable fonts when available.
+- Load only needed subsets and weights.
+- Use `display: 'swap'` unless the framework default already handles it.
+- Define fonts once in a central file or root layout, then expose CSS variables.
+- Do not commit random font binaries unless license and source are confirmed.
 
-Do not create a new report file when a current/canonical file already exists.
-Update the current file listed in `docs/DOCS_INDEX.md`.
+Recommended Next.js pattern:
 
-One-off reports belong under `docs/archive/YYYY-MM/<workstream>/`.
+```ts
+import { Geist, Geist_Mono } from 'next/font/google'
 
-Before copying verdicts, commit hashes, or test counts into markdown, run the
-backend docs audit:
+export const fontSans = Geist({
+  subsets: ['latin'],
+  variable: '--font-sans',
+  display: 'swap',
+})
 
-```bash
-cd engine
-npm run docs:audit
+export const fontMono = Geist_Mono({
+  subsets: ['latin'],
+  variable: '--font-mono',
+  display: 'swap',
+})
 ```
 
-## Safety Rules
+## Frontend implementation standards
+- Inspect the current stack before editing.
+- Preserve existing design tokens when good; improve them if inconsistent.
+- Prefer reusable components: Hero, FeatureCard, BenefitGrid, ProofSection, PricingCard, FAQ, CTASection.
+- Use semantic HTML: `header`, `main`, `section`, `nav`, `footer`, proper heading order.
+- Keep components responsive from mobile-first to desktop.
+- Add accessible labels to buttons, links, icons, inputs, and form errors.
+- Avoid hidden interaction traps: modals, dropdowns, tabs, and carousels must be keyboard usable.
+- Do not add new dependencies unless the benefit is clear.
 
-- Do not use production data unless an owner-approved production runbook says so.
-- Do not deploy without explicit owner approval.
-- Do not hardcode a model/provider. Nexus uses live model routing.
-- Do not weaken tenant, auth, provider, calendar, or memory isolation checks.
-- Data lookups and operational flows use REST, not fake chat commands.
-- After full iOS simulator test runs, clean up simulator processes unless the
-  user explicitly needs them left open. Prefer
-  `ios/scripts/ios-single-simulator-test.sh`; otherwise run
-  `xcrun simctl shutdown all`, quit Simulator.app, and trim
-  `SimulatorTrampoline` / CoreSimulator residue before handoff.
+## Conversion review checklist
+Before considering work done, verify:
+- The hero communicates value in under 5 seconds.
+- There is one clear primary CTA above the fold.
+- Features are reframed as customer outcomes.
+- Differentiators are visible without forcing the visitor to read everything.
+- Pricing/signup/demo steps are easy to understand.
+- Trust signals appear near CTAs and pricing decisions.
+- The page is responsive and readable on mobile.
+- Keyboard focus is visible and logical.
+- Images have useful alt text or are decorative with empty alt.
+- Lighthouse or equivalent checks are acceptable for performance, accessibility, best practices, and SEO.
+
+## Agent workflow
+1. Read project files and identify the framework, routes, components, styling system, and content source.
+2. Audit current UX and copy before making changes.
+3. Make a short improvement plan focused on conversion, clarity, and maintainability.
+4. Implement changes in small, reviewable steps.
+5. Run available build, lint, type, and test commands.
+6. Review the diff against this instruction file.
+7. Summarize what changed, why it improves conversion, and what remains to test with real users.
+
+## Do not do
+- Do not redesign everything blindly if targeted improvements will work.
+- Do not invent product features that are not supported by the codebase or provided content.
+- Do not hide pricing, CTAs, or important objections behind vague copy.
+- Do not use low-contrast text, tiny font sizes, or animation-heavy hero sections that reduce clarity.
+- Do not treat accessibility as optional.
