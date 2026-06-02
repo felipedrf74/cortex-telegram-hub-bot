@@ -16,6 +16,10 @@ import * as msTodo from '../../services/microsoft-todo';
 import { getEvents, hasConnectedCalendarForUser, isAnyCalendarConfigured } from '../../services/unified-calendar';
 import { getActiveReminders } from '../../state/reminders';
 import { getTaskProviderForUser } from '../../services/task-store/task-router';
+import {
+  getProviderAwarePendingTodoTasks,
+  getProviderAwareTodoTasksDueInRange,
+} from '../../services/task-store/provider-aware-read-model';
 import { getUnreadMailSummaryForUser, isAnyMailConfiguredForUser } from '../../services/unified-mail-pressure';
 import {
   formatMsTodoLists,
@@ -98,11 +102,32 @@ async function getPendingTasksCached(
   if (cached) {
     return { success: true, data: cached };
   }
-  const result = await taskProvider.getAllPendingTasks();
+  const result = userId != null
+    ? await getProviderAwarePendingTasksWithFallback(userId, taskProvider)
+    : await taskProvider.getAllPendingTasks();
   if (result.success) {
     setCache(key, result.data, PENDING_TASKS_TTL);
   }
   return result;
+}
+
+async function getProviderAwarePendingTasksWithFallback(
+  userId: number,
+  taskProvider: FastPathTaskProvider,
+): Promise<msTodo.ServiceResult<msTodo.TodoTask[]>> {
+  const providerAware = await getProviderAwarePendingTodoTasks(userId);
+  return providerAware.success ? providerAware : taskProvider.getAllPendingTasks();
+}
+
+async function getProviderAwareDueRangeWithFallback(
+  userId: number | undefined,
+  taskProvider: FastPathTaskProvider,
+  startDate: string,
+  endDate: string,
+): Promise<msTodo.ServiceResult<msTodo.TodoTask[]>> {
+  if (userId == null) return taskProvider.getTasksDueInRange(startDate, endDate);
+  const providerAware = await getProviderAwareTodoTasksDueInRange(userId, startDate, endDate);
+  return providerAware.success ? providerAware : taskProvider.getTasksDueInRange(startDate, endDate);
 }
 
 export interface FastPathResult {
@@ -326,7 +351,7 @@ async function handleDueWeek(labels: ReturnType<typeof labelsForLanguage>, userI
   if (!taskProvider) return null;
   const copy = (pt: string, en: string) => fastPathCopy(userId, pt, en);
 
-  const result = await taskProvider.getTasksDueInRange(startOfWeek(), endOfWeek());
+  const result = await getProviderAwareDueRangeWithFallback(userId, taskProvider, startOfWeek(), endOfWeek());
   if (!result.success) {
     return { text: `⚠️ ${copy('Falha ao obter tarefas', 'Failed to fetch tasks')}: ${escapeHtml(result.error || copy('erro desconhecido', 'unknown error'))}`, domain: 'secretary' };
   }

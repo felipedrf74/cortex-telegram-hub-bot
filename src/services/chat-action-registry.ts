@@ -64,6 +64,8 @@ export type ChatActionName =
   | 'draft_email'
   | 'send_email'
   | 'create_task'
+  | 'create_task_with_subtasks'
+  | 'add_subtasks_to_task'
   | 'update_task'
   | 'complete_task'
   | 'delete_task'
@@ -2198,14 +2200,14 @@ export const CHAT_ACTION_REGISTRY: ChatActionDefinition[] = [
         expectedAction: 'cooking_meal_support',
       },
       {
-        text: 'Suggest an oven-baked kibbeh recipe for 3 people',
+        text: 'Suggest an oven-baked vegetable recipe for 3 people',
         locale: 'en',
         tags: ['negative'],
         condition: 'recipe_advice_no_local_write',
         expectedAction: null,
       },
       {
-        text: 'Me indique uma receita de kibe de forno para 3 pessoas',
+        text: 'Me indique uma receita de legumes assados para 3 pessoas',
         locale: 'pt',
         tags: ['negative'],
         condition: 'recipe_advice_no_local_write',

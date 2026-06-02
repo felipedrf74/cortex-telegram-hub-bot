@@ -164,6 +164,27 @@ describe('GeminiProvider', () => {
     expect(promptArg).not.toContain('access_token=secret');
     expect(promptArg).toContain('[redacted-email]');
     expect(promptArg).toContain('[redacted-phone]');
+    expect(genArgs.config.tools).toEqual([{ googleSearch: {} }]);
+  });
+
+  it('rejects incomplete Google Search grounded responses when Gemini stops for token limits', async () => {
+    mockGenerateContent.mockResolvedValue({
+      text: 'Official sources say the requirements include',
+      functionCalls: [],
+      candidates: [{ finishReason: 'MAX_TOKENS' }],
+      usageMetadata: {
+        promptTokenCount: 100,
+        candidatesTokenCount: 50,
+        totalTokenCount: 150,
+      },
+    });
+
+    await expect(completeOneShotWithSearch(
+      'Use public web context.',
+      'Search public visa requirements.',
+      'content_discovery',
+      { userId: 7, tenantId: 7 },
+    )).rejects.toThrow(/Gemini search response incomplete: MAX_TOKENS/);
   });
 
   // ── classify ──────────────────────────────────────────────────────

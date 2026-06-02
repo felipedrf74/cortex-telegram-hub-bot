@@ -62,6 +62,48 @@ function withDashboardTimeout<T>(promise: Promise<T>, timeoutMs: number, label: 
   });
 }
 
+function normalizeDashboardUsageLevel(fraction: number, isOverLimit: boolean): 'ok' | 'near_limit' | 'exhausted' {
+  if (isOverLimit || fraction >= 1) return 'exhausted';
+  if (fraction >= 0.8) return 'near_limit';
+  return 'ok';
+}
+
+function sanitizeDashboardQuotaForClient(quota: any): any {
+  if (!quota || typeof quota !== 'object') return quota;
+
+  const rawFraction = quota.usage_fraction ?? quota.usageFraction;
+  const rawUsed = quota.used_usd ?? quota.usedUsd;
+  const rawLimit = quota.limit_usd ?? quota.limitUsd;
+  const fraction = Number.isFinite(Number(rawFraction))
+    ? Math.max(0, Math.min(1, Number(rawFraction)))
+    : Number.isFinite(Number(rawUsed)) && Number.isFinite(Number(rawLimit)) && Number(rawLimit) > 0
+      ? Math.max(0, Math.min(1, Number(rawUsed) / Number(rawLimit)))
+      : 0;
+  const isOverLimit = Boolean(quota.is_over_limit ?? quota.isOverLimit ?? fraction >= 1);
+
+  return {
+    plan: quota.plan,
+    resetAt: quota.resetAt,
+    usage_level: quota.usage_level ?? quota.usageLevel ?? normalizeDashboardUsageLevel(fraction, isOverLimit),
+    usage_fraction: fraction,
+    usage_percent: quota.usage_percent ?? quota.usagePercent ?? Math.round(fraction * 100),
+    is_over_limit: isOverLimit,
+    nexus_points_balance: quota.nexus_points_balance ?? quota.nexusPointsBalance,
+    nexus_points_expiring_soon: quota.nexus_points_expiring_soon ?? quota.nexusPointsExpiringSoon,
+    points_purchase_available: quota.points_purchase_available ?? quota.pointsPurchaseAvailable,
+  };
+}
+
+export function sanitizeDashboardPayloadForClient<T>(payload: T): T {
+  if (!payload || typeof payload !== 'object') return payload;
+  const maybeDashboard = payload as any;
+  if (!('quota' in maybeDashboard)) return payload;
+  return {
+    ...maybeDashboard,
+    quota: sanitizeDashboardQuotaForClient(maybeDashboard.quota),
+  };
+}
+
 export function dashboardRoutes(): Router {
   const router = Router();
 
@@ -80,7 +122,7 @@ export function dashboardRoutes(): Router {
         refreshContext: { source: 'dashboard_route', operation: 'dashboard_swr_refresh', userId },
         fetchFresh: () => buildDashboardHomePayload(userId, language, timings),
         send: (home, meta) => {
-          sendConditionalApiSuccess(res, req, home, {
+          sendConditionalApiSuccess(res, req, sanitizeDashboardPayloadForClient(home), {
             cached: meta.cached,
             timings: meta.cached ? [{ name: 'cache_hit', durationMs: 0 }] : timings,
           });
@@ -113,7 +155,7 @@ export function dashboardRoutes(): Router {
         refreshContext: { source: 'dashboard_route', operation: 'dashboard_swr_refresh', userId },
         fetchFresh: () => buildDashboardPayload(userId, language, timings),
         send: (dashboard, meta) => {
-          sendConditionalApiSuccess(res, req, dashboard, {
+          sendConditionalApiSuccess(res, req, sanitizeDashboardPayloadForClient(dashboard), {
             cached: meta.cached,
             timings: meta.cached ? [{ name: 'cache_hit', durationMs: 0 }] : timings,
           });
@@ -271,14 +313,12 @@ async function buildDashboardPayload(userId: number, language: Lang, timings: Ro
     training,
     content,
     quota: {
-      used_usd: quota.usedUsd,
-      limit_usd: quota.limitUsd,
-      remaining_usd: quota.remainingUsd,
-      included_remaining_usd: quota.includedRemainingUsd,
+      usage_level: quota.usageLevel,
+      usage_fraction: quota.usageFraction,
+      usage_percent: Math.round(quota.usageFraction * 100),
+      is_over_limit: quota.over,
       nexus_points_balance: quota.nexusPointsBalance,
-      nexus_points_remaining_usd: quota.nexusPointsRemainingUsd,
       nexus_points_expiring_soon: quota.nexusPointsExpiringSoon,
-      total_remaining_usd: quota.totalRemainingUsd,
       points_purchase_available: quota.pointsPurchaseAvailable,
       plan: quota.plan,
       resetAt: quota.resetAt,

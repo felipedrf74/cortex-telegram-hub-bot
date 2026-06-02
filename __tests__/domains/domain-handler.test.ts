@@ -236,7 +236,7 @@ describe('buildSimpleStateContext', () => {
     ] as any);
     vi.mocked(getSharedMemorySummary).mockReturnValue('[Shared] local cooking preference');
 
-    const ctx = await buildSimpleStateContext('cooking', 42, 'Me indique uma receita de kibe de forno para 3 pessoas');
+    const ctx = await buildSimpleStateContext('cooking', 42, 'Me indique uma receita de legumes assados para 3 pessoas');
 
     expect(ctx).toContain('Monday, March 30 2026');
     expect(ctx).not.toContain('Cooking to-dos');

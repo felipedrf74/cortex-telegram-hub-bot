@@ -211,10 +211,13 @@
       renderSignedIn(body.data?.user || body.user || {});
     }
     function renderPackage(pkg) {
+      const priceLabel = Number.isFinite(Number(pkg.priceUsd))
+        ? '$' + Number(pkg.priceUsd).toFixed(0)
+        : String(pkg.label || 'Boost');
       return '<div class="point-card">' +
         '<div class="point-meta">' +
-          '<div class="point-name">$' + Number(pkg.priceUsd).toFixed(0) + ' · ' + Number(pkg.points).toLocaleString() + ' NP</div>' +
-          '<div class="point-detail">$' + Number(pkg.usdAllowance).toFixed(2) + ' AI allowance</div>' +
+          '<div class="point-name">' + priceLabel + ' · ' + Number(pkg.points).toLocaleString() + ' NP</div>' +
+          '<div class="point-detail">Adds ' + Number(pkg.points).toLocaleString() + ' Nexus Points</div>' +
         '</div>' +
         '<button class="primary point-buy" type="button" data-package-id="' + pkg.productId + '">Buy</button>' +
       '</div>';

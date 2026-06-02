@@ -170,6 +170,7 @@ export interface NotificationCenterItem {
   dedupeKey: string | null;
   createdAt: string;
   expiresAt: string | null;
+  snoozedUntil?: string | null;
 }
 
 export interface NotificationDecisionLog {
@@ -454,6 +455,7 @@ export function ensureNotificationTables(): void {
     CREATE INDEX IF NOT EXISTS idx_ios_devices_user ON ios_devices(user_id);
   `);
   ensureColumn('notification_center_items', 'sensitive_body', 'TEXT');
+  ensureColumn('notification_center_items', 'snoozed_until', 'TEXT');
   ensureColumn('notification_intents', 'decision_context_json', 'TEXT');
 }
 
@@ -1059,6 +1061,28 @@ export function dismissNotificationCenterItem(itemId: string, userId: number, te
     SET status = 'dismissed', dismissed_at = datetime('now')
     WHERE item_id = ? AND user_id = ? AND tenant_id = ? AND status IN ('unread', 'read')
   `).run(itemId, userId, tenantId);
+  return getNotificationCenterItem(itemId, userId, tenantId);
+}
+
+export function snoozeNotificationCenterItem(
+  itemId: string,
+  userId: number,
+  tenantId = userId,
+  snoozedUntil?: string | null,
+): NotificationCenterItem | null {
+  assertScope(userId, tenantId, 'snooze_notification_center_item', { itemId });
+  ensureNotificationTables();
+  const parsedUntil = typeof snoozedUntil === 'string' ? Date.parse(snoozedUntil) : NaN;
+  const until = Number.isFinite(parsedUntil)
+    ? new Date(parsedUntil).toISOString()
+    : new Date(Date.now() + 60 * 60 * 1000).toISOString();
+  getDb().prepare(`
+    UPDATE notification_center_items
+    SET status = 'snoozed',
+        snoozed_until = ?,
+        read_at = COALESCE(read_at, datetime('now'))
+    WHERE item_id = ? AND user_id = ? AND tenant_id = ? AND status IN ('unread', 'read')
+  `).run(until, itemId, userId, tenantId);
   return getNotificationCenterItem(itemId, userId, tenantId);
 }
 
@@ -2090,6 +2114,7 @@ function mapCenterItem(row: any): NotificationCenterItem {
     dedupeKey: row.dedupe_key,
     createdAt: row.created_at,
     expiresAt: row.expires_at,
+    snoozedUntil: row.snoozed_until ?? null,
   };
 }
 

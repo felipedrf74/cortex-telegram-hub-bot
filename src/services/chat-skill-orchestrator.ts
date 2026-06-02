@@ -55,6 +55,11 @@ export interface ChatSkillRoutingDecision {
   };
 }
 
+export interface ChatSkillRouteOverride {
+  domain: string;
+  confidence: number;
+}
+
 const SKILL_TO_DOMAIN: Partial<Record<NexusSkillId, DomainName>> = {
   secretary: 'secretary',
   training: 'triathlon',
@@ -66,6 +71,14 @@ const SKILL_TO_DOMAIN: Partial<Record<NexusSkillId, DomainName>> = {
 const DOMAIN_TO_SKILL: Record<string, NexusSkillId> = {
   secretary: 'secretary',
   triathlon: 'training',
+  cooking: 'cooking',
+  finance: 'finance',
+  content: 'content',
+};
+
+const V2_DOMAIN_TO_LEGACY_DOMAIN: Record<string, DomainName> = {
+  secretary: 'secretary',
+  training: 'triathlon',
   cooking: 'cooking',
   finance: 'finance',
   content: 'content',
@@ -181,7 +194,20 @@ export function analyzeChatSkillOrchestration(input: {
 export function applyChatSkillRoutingDecision(
   route: RouteResult,
   decision: ChatSkillRoutingDecision,
+  routeOverride?: ChatSkillRouteOverride | null,
 ): RouteResult {
+  if (routeOverride) {
+    const mappedDomain = V2_DOMAIN_TO_LEGACY_DOMAIN[routeOverride.domain];
+    if (mappedDomain && mappedDomain !== route.domain) {
+      return {
+        ...route,
+        domain: mappedDomain,
+        method: 'context',
+        confidence: Math.max(route.confidence, routeOverride.confidence),
+      };
+    }
+  }
+
   if (!decision.primaryDomain || decision.primaryDomain === route.domain) {
     return route;
   }

@@ -287,11 +287,9 @@ export async function completeOneShotWithSearch(
   const safeSystemPrompt = scrubSearchGroundingPromptForPrivacy(systemPrompt);
   const safeUserPrompt = scrubSearchGroundingPromptForPrivacy(userPrompt);
 
-  // The Google Search tool is declared via the `tools` array with a single
-  // item shaped `{ googleSearchRetrieval: {} }`. The SDK's type defs don't
-  // include this in the public Tool union yet, so we cast. An empty config
-  // object means "use default search retrieval behavior" — Google's
-  // recommendation for most use cases.
+  // The current @google/genai SDK exposes Google Search grounding through
+  // `{ googleSearch: {} }`. Keep this centralized so legacy research routes
+  // do not silently degrade when the SDK rejects an obsolete tool shape.
   const genModel = client.getGenerativeModel({
     model,
     systemInstruction: safeSystemPrompt,
@@ -299,7 +297,7 @@ export async function completeOneShotWithSearch(
       maxOutputTokens: maxTokens,
       temperature,
     },
-    tools: [{ googleSearchRetrieval: {} }] as any,
+    tools: [{ googleSearch: {} }] as any,
   });
 
   const start = Date.now();
@@ -323,6 +321,15 @@ export async function completeOneShotWithSearch(
       options?.userId ?? 0,
       options?.tenantId ?? options?.userId ?? 0,
     );
+  }
+
+  const finishReason = String((result.response as any).candidates?.[0]?.finishReason ?? '').trim();
+  if (finishReason && !/^stop$/i.test(finishReason)) {
+    const err = new Error(`Gemini search response incomplete: ${finishReason}`);
+    (err as any).provider = 'gemini';
+    (err as any).finishReason = finishReason;
+    (err as any).retryable = /^max_tokens$|^recitation$|^other$/i.test(finishReason);
+    throw err;
   }
 
   // Extract grounding sources (URLs) for transparency. When search was

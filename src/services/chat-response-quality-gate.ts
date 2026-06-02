@@ -1,6 +1,10 @@
 // Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
 
 import type { NexusAnswerContract } from './chat-answer-contract';
+import {
+  textClaimsUnverifiedAction,
+  textHasBareAppSuccessMarker,
+} from './chat-success-claim-policy';
 
 export type ChatResponseQualityStatus = 'pass' | 'repaired' | 'blocked';
 
@@ -23,12 +27,6 @@ const RAW_DEBUG_PATTERNS = [
   /\bstack trace\b/i,
   /<untrusted_tool_result>/i,
   /\{["']?(?:error|tool|provider|stack)["']?\s*:/i,
-];
-
-const SUCCESS_CLAIM_PATTERNS = [
-  /\b(done|created|scheduled|booked|moved|updated|completed|sent|deleted|removed|cancell?ed|cleared|eliminated)\b/i,
-  /\b(pronto|criei|agendei|marquei|movi|atualizei|conclu[ií]|enviei|apaguei|removi|cancelei|limpei|eliminei|exclu[ií])\b/i,
-  /✅/,
 ];
 
 export function applyChatResponseQualityGate(input: {
@@ -68,7 +66,7 @@ export function applyChatResponseQualityGate(input: {
   };
 
   const repairedText = hasFakeSuccess
-    ? 'I understood the request, but I cannot honestly mark it done until Nexus verifies the change. I did not claim success without a read-back.'
+    ? unverifiedActionRepairText(input.contract.language)
     : hasUnsupportedSpecifics
       ? scopedReadRepairText(input.contract.language)
     : hasRecipeStructureIssue
@@ -90,8 +88,7 @@ export function detectChatResponseQualityIssues(text: string, contract: NexusAns
 
   if (!trimmed) issues.add('empty_response');
   if (RAW_DEBUG_PATTERNS.some((pattern) => pattern.test(trimmed))) issues.add('raw_internal_content');
-  if (contract.actionability === 'execute'
-    && SUCCESS_CLAIM_PATTERNS.some((pattern) => pattern.test(trimmed))
+  if (claimsUnverifiedAppAction(trimmed, contract)
     && contract.verificationStatus !== 'verified'
     && contract.verificationStatus !== 'partial_failure') {
     issues.add('unverified_success_claim');
@@ -116,6 +113,21 @@ export function detectChatResponseQualityIssues(text: string, contract: NexusAns
   }
 
   return [...issues];
+}
+
+function claimsUnverifiedAppAction(text: string, contract: NexusAnswerContract): boolean {
+  if (textClaimsUnverifiedAction(text)) return true;
+  return contract.actionability === 'execute' && textHasBareAppSuccessMarker(text);
+}
+
+function unverifiedActionRepairText(language: NexusAnswerContract['language']): string {
+  if (language === 'pt' || language === 'mixed') {
+    return 'Entendi o pedido, mas não posso afirmar que a ação foi concluída sem verificação do Nexus. Não executei nem confirmei sucesso sem uma leitura de validação.';
+  }
+  if (language === 'es') {
+    return 'Entendí la petición, pero no puedo afirmar que la acción se haya completado sin verificación de Nexus. No ejecuté ni confirmé éxito sin una lectura de validación.';
+  }
+  return 'I understood the request, but I cannot honestly say the action is done until Nexus verifies the change. I did not claim success without a read-back.';
 }
 
 export function sanitizeUserFacingChatText(text: string): string {
@@ -175,6 +187,9 @@ function looksLikeRecipe(text: string): boolean {
 function scopedReadRepairText(language: NexusAnswerContract['language']): string {
   if (language === 'pt') {
     return 'Preciso consultar os dados atuais do Nexus antes de afirmar esses detalhes com segurança. Posso verificar a seção certa e responder com base nela.';
+  }
+  if (language === 'es') {
+    return 'Necesito consultar los datos actuales de Nexus antes de afirmar esos detalles con seguridad. Puedo revisar la sección correcta y responder con base en ella.';
   }
   return 'I need a current scoped read before I can state those details confidently. Ask me to check the relevant Nexus section, and I will ground the answer first.';
 }

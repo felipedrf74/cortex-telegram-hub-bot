@@ -404,7 +404,6 @@ export function billingRoutes(): Router {
             granted: grant.granted,
             productId,
             points: grant.package.points,
-            usdAllowance: grant.package.usdAllowance,
             expiresInDays: 30,
           },
         });

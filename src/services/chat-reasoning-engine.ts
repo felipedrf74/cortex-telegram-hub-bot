@@ -324,7 +324,11 @@ export async function tryHandleChatReasoningAction(input: TryHandleInput): Promi
     const response = buildNonExecutableResponse({
       input,
       status: 'needs_confirmation',
-      text: 'Before I make a destructive change, I need explicit confirmation with a preview. I did not delete, cancel, or clear anything.',
+      text: localizeReasoningText(input.locale, {
+        pt: 'Antes de fazer uma alteração destrutiva, preciso de confirmação explícita com uma prévia. Nenhuma alteração foi aplicada.',
+        es: 'Antes de hacer un cambio destructivo, necesito confirmación explícita con una vista previa. No se aplicó ningún cambio.',
+        en: 'Before I make a destructive change, I need explicit confirmation with a preview. No change was applied.',
+      }),
       metadata: {
         type: 'chat_action_confirmation_required',
         reasoningMode: mode,
@@ -341,7 +345,11 @@ export async function tryHandleChatReasoningAction(input: TryHandleInput): Promi
     return buildNonExecutableResponse({
       input,
       status: 'needs_clarification',
-      text: 'I see more than one action in that message. I did not change anything yet. Please confirm the steps one at a time or ask me to preview the full plan first.',
+      text: localizeReasoningText(input.locale, {
+        pt: 'Vejo mais de uma ação nessa mensagem. Nenhuma alteração foi aplicada. Confirma os passos um de cada vez ou pede uma prévia do plano completo primeiro.',
+        es: 'Veo más de una acción en ese mensaje. No se aplicó ningún cambio. Confirma los pasos uno por uno o pide primero una vista previa del plan completo.',
+        en: 'I see more than one action in that message. I did not change anything yet. Please confirm the steps one at a time or ask me to preview the full plan first.',
+      }),
       metadata: { type: 'chat_action_clarification_required', reasoningMode: mode, reason: 'multi_step_action_requires_preview' },
     });
   }
@@ -1011,6 +1019,13 @@ function buildNonExecutableResponse(input: {
       timestamp: new Date().toISOString(),
     },
   };
+}
+
+function localizeReasoningText(locale: string | undefined, copy: { pt: string; en: string; es?: string }): string {
+  const normalized = String(locale ?? '').toLowerCase();
+  if (normalized.startsWith('pt')) return copy.pt;
+  if (normalized.startsWith('es')) return copy.es ?? copy.en;
+  return copy.en;
 }
 
 function parseCreateTaskWithSubtasksFrame(cleaned: string, quoted: string[]): ChatActionFrame | null {

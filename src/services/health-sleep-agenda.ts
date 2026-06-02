@@ -23,6 +23,8 @@ export interface AppleHealthSleepAgendaEvent {
   isAllDay: false;
 }
 
+const SLEEP_WINDOW_GAP_MINUTES = 45;
+
 export function getAppleHealthSleepAgendaEvents(input: {
   userId: number;
   start: string;
@@ -100,7 +102,7 @@ export function getAppleHealthSleepSegments(input: {
       }
     }
 
-    return segments.sort((a, b) => a.start.localeCompare(b.start));
+    return mergeSleepSegments(segments);
   } catch {
     return [];
   }
@@ -108,10 +110,69 @@ export function getAppleHealthSleepSegments(input: {
 
 function appendSegment(segments: AppleHealthSleepSegment[], seen: Set<string>, segment: AppleHealthSleepSegment) {
   if (segment.minutes <= 0) return;
-  const key = `${segment.start}|${segment.end}|${segment.stage || ''}`;
+  const key = `${segment.start}|${segment.end}`;
   if (seen.has(key)) return;
   seen.add(key);
   segments.push(segment);
+}
+
+function mergeSleepSegments(segments: AppleHealthSleepSegment[]): AppleHealthSleepSegment[] {
+  const sorted = segments
+    .map((segment) => ({
+      ...segment,
+      startDt: DateTime.fromISO(segment.start, { setZone: true }).toUTC(),
+      endDt: DateTime.fromISO(segment.end, { setZone: true }).toUTC(),
+    }))
+    .filter((segment) => segment.startDt.isValid && segment.endDt.isValid && segment.endDt > segment.startDt)
+    .sort((a, b) => a.startDt.toMillis() - b.startDt.toMillis() || a.endDt.toMillis() - b.endDt.toMillis());
+
+  const merged: Array<{
+    startDt: DateTime;
+    endDt: DateTime;
+    minutes: number;
+    stages: Set<string>;
+  }> = [];
+
+  for (const segment of sorted) {
+    const last = merged[merged.length - 1];
+    if (!last) {
+      merged.push({
+        startDt: segment.startDt,
+        endDt: segment.endDt,
+        minutes: Math.round(segment.endDt.diff(segment.startDt, 'minutes').minutes),
+        stages: new Set(segment.stage ? [segment.stage] : []),
+      });
+      continue;
+    }
+
+    const gapMinutes = segment.startDt.diff(last.endDt, 'minutes').minutes;
+    if (gapMinutes <= SLEEP_WINDOW_GAP_MINUTES) {
+      const additionalStart = segment.startDt > last.endDt ? segment.startDt : last.endDt;
+      const additionalMinutes = segment.endDt > additionalStart
+        ? segment.endDt.diff(additionalStart, 'minutes').minutes
+        : 0;
+      last.minutes += Math.max(0, Math.round(additionalMinutes));
+      if (segment.endDt > last.endDt) last.endDt = segment.endDt;
+      if (segment.stage) last.stages.add(segment.stage);
+      continue;
+    }
+
+    merged.push({
+      startDt: segment.startDt,
+      endDt: segment.endDt,
+      minutes: Math.round(segment.endDt.diff(segment.startDt, 'minutes').minutes),
+      stages: new Set(segment.stage ? [segment.stage] : []),
+    });
+  }
+
+  return merged
+    .map((segment) => ({
+      stage: segment.stages.size === 1 ? [...segment.stages][0] ?? null : null,
+      start: segment.startDt.toISO()!,
+      end: segment.endDt.toISO()!,
+      minutes: Math.max(0, Math.min(1440, Math.round(segment.minutes))),
+    }))
+    .filter((segment) => segment.minutes > 0);
 }
 
 function isAsleepStage(stage: string): boolean {

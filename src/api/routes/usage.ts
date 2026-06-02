@@ -20,6 +20,38 @@ import {
 import { sendSuccess, sendError, sendInternalError, asyncHandler } from '../response-helpers';
 import { ensureValidTenantRouteScope } from '../tenant-route-scope';
 
+type UsageLevel = 'ok' | 'near_limit' | 'exhausted';
+
+function quotaFraction(used: number, limit: number | null | undefined): number | null {
+  if (!Number.isFinite(used) || !Number.isFinite(Number(limit)) || Number(limit) <= 0) return null;
+  return Math.max(0, Math.min(1, used / Number(limit)));
+}
+
+function usageLevelFor(fraction: number, allowed: boolean): UsageLevel {
+  if (!allowed || fraction >= 1) return 'exhausted';
+  if (fraction >= 0.8) return 'near_limit';
+  return 'ok';
+}
+
+function buildSafeUsageQuotaPayload(status: ReturnType<typeof checkQuota>) {
+  const usage = status.usage;
+  const quota = status.quota;
+  const fractions = [
+    quotaFraction(usage.messageCount, quota?.dailyMessageLimit),
+    quotaFraction(usage.totalTokens, quota?.dailyTokenLimit),
+    // Cost remains an internal input to the qualitative meter only. Never
+    // expose raw USD spend/caps on customer-facing usage endpoints.
+    quotaFraction(usage.costUsd, quota?.dailyCostLimitUsd),
+  ].filter((value): value is number => value != null);
+  const usageFraction = fractions.length > 0 ? Math.round(Math.max(...fractions) * 10_000) / 10_000 : 0;
+  return {
+    usageLevel: usageLevelFor(usageFraction, status.allowed),
+    usageFraction,
+    usagePercent: Math.round(usageFraction * 100),
+    isOverLimit: !status.allowed || status.exceeded.length > 0,
+  };
+}
+
 export function usageRoutes(): Router {
   const router = Router();
 
@@ -44,6 +76,7 @@ export function usageRoutes(): Router {
       const status = checkQuota(userId);
       const usage = status.usage;
       const quota = status.quota;
+      const safeQuota = buildSafeUsageQuotaPayload(status);
 
       sendSuccess(res, {
         date: usage.date,
@@ -54,8 +87,7 @@ export function usageRoutes(): Router {
         inputTokens: usage.inputTokens,
         outputTokens: usage.outputTokens,
         apiCalls: usage.apiCalls,
-        costUsd: usage.costUsd,
-        costLimitUsd: quota?.dailyCostLimitUsd ?? null,
+        ...safeQuota,
         allowed: status.allowed,
         exceeded: status.exceeded,
       });
@@ -96,7 +128,6 @@ export function usageRoutes(): Router {
           inputTokens: r.inputTokens,
           outputTokens: r.outputTokens,
           apiCalls: r.apiCalls,
-          costUsd: r.costUsd,
         })),
         totalDays: records.length,
       });
@@ -119,7 +150,6 @@ export function usageRoutes(): Router {
         messagesUsed: usage.messageCount,
         tokensUsed: usage.totalTokens,
         apiCalls: usage.apiCalls,
-        costUsd: usage.costUsd,
       });
     } catch (err: any) {
       logger.error({ err, userId }, 'iOS usage/today fetch failed');

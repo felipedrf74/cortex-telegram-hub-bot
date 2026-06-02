@@ -19,11 +19,6 @@ import { getSessionById } from './training-plans';
 import { stripTrainingIdentityMarker } from './training-session-identity';
 
 const MARKER_PREFIX = 'NEXUS_SECRETARY_AGENDA_ITEM';
-const SOURCE_INTENT_PREFIX = 'NEXUS_SECRETARY_SOURCE_INTENT';
-const SOURCE_SKILL_PREFIX = 'NEXUS_SECRETARY_SOURCE_SKILL';
-const SOURCE_ENTITY_PREFIX = 'NEXUS_SECRETARY_SOURCE_ENTITY';
-const VERSION_PREFIX = 'NEXUS_SECRETARY_VERSION';
-const SHAPE_PREFIX = 'NEXUS_SECRETARY_SHAPE';
 const READBACK_PADDING_MS = 24 * 60 * 60 * 1000;
 
 export function createUnifiedCalendarSecretaryProviderAdapter(
@@ -72,20 +67,13 @@ export function createUnifiedCalendarSecretaryProviderAdapter(
 }
 
 export function buildSecretaryCalendarDescription(input: SecretaryProviderEventInput): string {
-  const footerLines = [
-    `${MARKER_PREFIX}:${input.agendaItemId}`,
-    `${SOURCE_INTENT_PREFIX}:${input.sourceIntentId}`,
-    `${SOURCE_SKILL_PREFIX}:${input.sourceSkill}`,
-    `${SOURCE_ENTITY_PREFIX}:${input.sourceEntityType ?? 'unknown'}:${input.sourceEntityId ?? 'unknown'}`,
-    `${VERSION_PREFIX}:${input.version}`,
-    `${SHAPE_PREFIX}:${input.sourceShapeHash}`,
-  ];
-  if (input.decisionReasonCodes.length > 0) {
-    footerLines.push(`Decision reasons: ${input.decisionReasonCodes.join(', ')}`);
-  }
   const sourceBody = sourceBodyForSecretaryCalendarEvent(input);
-  const footer = footerLines.join('\n');
-  return sourceBody ? `${sourceBody}\n\n${footer}` : footer;
+  if (sourceBody) return sourceBody;
+  return [
+    input.title,
+    input.durationMinutes ? `Duration: ${input.durationMinutes} min` : null,
+    'Scheduled by Nexus Hub.',
+  ].filter(Boolean).join('\n');
 }
 
 function sourceBodyForSecretaryCalendarEvent(input: SecretaryProviderEventInput): string | null {
@@ -94,7 +82,13 @@ function sourceBodyForSecretaryCalendarEvent(input: SecretaryProviderEventInput)
   if (!Number.isFinite(sessionId) || sessionId <= 0) return null;
   const session = getSessionById(Math.floor(sessionId));
   const description = stripTrainingIdentityMarker(session?.description ?? '');
-  return description.trim() || null;
+  const lines = [
+    input.title,
+    input.durationMinutes ? `Duration: ${input.durationMinutes} min` : null,
+    description.trim() || null,
+    'Source: Nexus Hub training plan.',
+  ].filter(Boolean) as string[];
+  return lines.join('\n\n');
 }
 
 export function extractSecretaryAgendaMarker(description: string | undefined): string | null {

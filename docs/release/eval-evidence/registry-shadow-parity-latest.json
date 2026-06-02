@@ -1,5 +1,5 @@
 {
-  "generatedAt": "2026-05-23T02:17:02.038Z",
+  "generatedAt": "2026-06-02T20:20:17.352Z",
   "source": "chat-action-registry-shadow-parity.test.ts",
   "totals": {
     "tested": 255,
@@ -2608,7 +2608,7 @@
     },
     {
       "fixtureId": "cooking-cooking_meal_support-negative-3",
-      "text": "Suggest an oven-baked kibbeh recipe for 3 people",
+      "text": "Suggest an oven-baked vegetable recipe for 3 people",
       "locale": "en-US",
       "observed": {
         "planResolved": false
@@ -2618,7 +2618,7 @@
     },
     {
       "fixtureId": "cooking-cooking_meal_support-negative-4",
-      "text": "Me indique uma receita de kibe de forno para 3 pessoas",
+      "text": "Me indique uma receita de legumes assados para 3 pessoas",
       "locale": "pt-PT",
       "observed": {
         "planResolved": false

@@ -66,7 +66,7 @@ export const SKILL_RESPONSE_POLICIES: SkillResponsePolicy[] = [
   },
   {
     skill: 'cooking',
-    genericAnswerExamples: ['suggest an oven-baked kibbeh recipe', 'how do I store grated carrots?'],
+    genericAnswerExamples: ['suggest an oven-baked vegetable recipe', 'how do I store grated carrots?'],
     localReadExamples: ['what meals did I plan this week?', 'what is on my grocery list?'],
     internetEligibleExamples: ['latest food safety guidance for leftovers'],
     actionExamples: ['create a grocery list', 'add this dinner to my plan'],

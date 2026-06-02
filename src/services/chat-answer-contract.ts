@@ -48,7 +48,7 @@ export type NexusChatExpectedResponseShape =
   | 'notification_summary'
   | 'decision_summary'
   | 'direct_answer';
-export type NexusChatLanguage = 'pt' | 'en' | 'mixed';
+export type NexusChatLanguage = 'pt' | 'en' | 'es' | 'mixed';
 
 export interface NexusGroundingFact {
   statement: string;

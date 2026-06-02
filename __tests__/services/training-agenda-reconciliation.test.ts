@@ -5,7 +5,11 @@ const mocks = vi.hoisted(() => ({
   findOwnershipsNeedingReconciliation: vi.fn(),
   markCalendarOwnershipDeleted: vi.fn(),
   deleteEvent: vi.fn(),
+  getEvents: vi.fn(),
+  getPlanById: vi.fn(),
+  getUserTimezoneById: vi.fn(),
   loggerWarn: vi.fn(),
+  loggerDebug: vi.fn(),
 }));
 
 vi.mock('../../src/services/training-plan-lifecycle', () => ({
@@ -16,11 +20,21 @@ vi.mock('../../src/services/training-plan-lifecycle', () => ({
 
 vi.mock('../../src/services/unified-calendar', () => ({
   deleteEvent: mocks.deleteEvent,
+  getEvents: mocks.getEvents,
+}));
+
+vi.mock('../../src/services/training-plans', () => ({
+  getPlanById: mocks.getPlanById,
+}));
+
+vi.mock('../../src/services/user-service', () => ({
+  getUserTimezoneById: mocks.getUserTimezoneById,
 }));
 
 vi.mock('../../src/utils/logger', () => ({
   logger: {
     warn: mocks.loggerWarn,
+    debug: mocks.loggerDebug,
   },
   LOGGER_REDACTION_PATHS: [],
 }));
@@ -34,6 +48,9 @@ describe('training-agenda-reconciliation', () => {
     mocks.findOwnershipsNeedingReconciliation.mockReturnValue([]);
     mocks.markCalendarOwnershipDeleted.mockReturnValue({ ok: true, rowsAffected: 1 });
     mocks.deleteEvent.mockResolvedValue(undefined);
+    mocks.getEvents.mockResolvedValue([]);
+    mocks.getPlanById.mockReturnValue(null);
+    mocks.getUserTimezoneById.mockReturnValue('UTC');
   });
 
   it('deletes orphaned agenda events by exact ownership and marks them reconciled', async () => {
@@ -278,5 +295,49 @@ describe('training-agenda-reconciliation', () => {
       planId: 12,
       ownershipId: 4,
     });
+  });
+
+  it('deletes stale legacy Secretary training marker events when no active plan owns them', async () => {
+    mocks.getEvents.mockResolvedValue([
+      {
+        id: 'legacy-secretary-event',
+        source: 'google',
+        summary: 'Runner Lower Body Strength A',
+        start: '2026-06-02T12:00:00.000Z',
+        end: '2026-06-02T12:42:00.000Z',
+        description: [
+          'NEXUS_SECRETARY_AGENDA_ITEM:sec_agenda_abc',
+          'NEXUS_SECRETARY_SOURCE_INTENT:training:43:1:1099',
+          'NEXUS_SECRETARY_SOURCE_SKILL:training',
+          'NEXUS_SECRETARY_SOURCE_ENTITY:training_session:1099',
+        ].join('\n'),
+      },
+    ]);
+    mocks.getPlanById.mockReturnValue(null);
+
+    const result = await reconcileOrphanedTrainingAgendaEvents(42);
+
+    expect(result).toEqual({ attempted: 1, deleted: 1, failed: 0 });
+    expect(mocks.deleteEvent).toHaveBeenCalledWith('legacy-secretary-event', 'google', 42);
+    expect(mocks.markCalendarOwnershipDeleted).not.toHaveBeenCalled();
+  });
+
+  it('keeps legacy marker events when the matching plan is still active for the user', async () => {
+    mocks.getEvents.mockResolvedValue([
+      {
+        id: 'active-plan-event',
+        source: 'google',
+        summary: 'Recovery Run',
+        start: '2026-06-02T12:00:00.000Z',
+        end: '2026-06-02T12:40:00.000Z',
+        description: '[NEXUS_TRAINING_IDENTITY plan=43;version=1;session=1099;key=x;shape=y]',
+      },
+    ]);
+    mocks.getPlanById.mockReturnValue({ id: 43, user_id: 42, status: 'active' });
+
+    const result = await reconcileOrphanedTrainingAgendaEvents(42);
+
+    expect(result).toEqual({ attempted: 0, deleted: 0, failed: 0 });
+    expect(mocks.deleteEvent).not.toHaveBeenCalled();
   });
 });

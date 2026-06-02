@@ -42,6 +42,10 @@ export default defineConfig({
         // returns. The vi.mock-completeness lint (scripts/vi-mock-
         // completeness-lint.mjs) is the diagnostic tool for that case.
         singleFork: false,
+        // Cap fork fan-out so the full suite remains a reliable gate on
+        // local/desktop runners. Unbounded forks can complete every assertion
+        // but still fail at shutdown with Vitest worker RPC timeouts.
+        maxForks: 4,
       },
     },
   },

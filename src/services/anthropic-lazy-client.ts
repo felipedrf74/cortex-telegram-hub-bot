@@ -2,7 +2,7 @@
 
 import Anthropic from '@anthropic-ai/sdk';
 import { config } from '../config';
-import { isAnthropicRuntimeEnabled } from './runtime-flags';
+import { canUseAnthropicRuntimeFallback } from './runtime-flags';
 
 export interface LazyAnthropicClientOptions {
   maxRetries?: number;
@@ -19,7 +19,7 @@ export function createLazyAnthropicClient(options: LazyAnthropicClientOptions = 
 
   return {
     get(): Anthropic {
-      if (!isAnthropicRuntimeEnabled()) {
+      if (!canUseAnthropicRuntimeFallback()) {
         throw new Error('ANTHROPIC_RUNTIME_DISABLED');
       }
       if (!client) {

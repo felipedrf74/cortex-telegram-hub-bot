@@ -41,7 +41,7 @@ import { withGoogleCategoryTags } from '../../src/services/google-calendar';
 import { setCacheSWR } from '../../src/services/cache-store';
 import { fetchTasks } from '../../src/api/routes/dashboard-data-fetchers';
 import { ensureDecisionCenterTables, getDecisionSummary } from '../../src/services/decision-center';
-import { getAppleHealthSleepAgendaEvents } from '../../src/services/health-sleep-agenda';
+import { getAppleHealthSleepAgendaEvents, getAppleHealthSleepSegments } from '../../src/services/health-sleep-agenda';
 import { buildHomeDayDial } from '../../src/services/home-day-dial';
 import {
   ensureProviderPreferencesTables,
@@ -290,6 +290,60 @@ describe('Home orchestration focus helpers', () => {
       start: '2026-05-17T00:00:00.000Z',
       end: '2026-05-17T06:45:00.000Z',
     });
+  });
+
+  it('merges Apple Health sleep-stage fragments into one agenda window without inflating day-ring sleep', () => {
+    testDb.prepare(`
+      INSERT INTO apple_health_data (user_id, date, data_type, data_json, source)
+      VALUES (?, ?, 'sleep', ?, 'apple_health')
+    `).run(
+      42,
+      '2026-05-17',
+      JSON.stringify({
+        intervals: [
+          { stage: 'asleepCore', start: '2026-05-17T01:12:00.000Z', end: '2026-05-17T01:15:00.000Z' },
+          { stage: 'asleepDeep', start: '2026-05-17T01:21:00.000Z', end: '2026-05-17T01:23:00.000Z' },
+          { stage: 'asleepREM', start: '2026-05-17T01:23:00.000Z', end: '2026-05-17T01:24:00.000Z' },
+          { stage: 'asleepCore', start: '2026-05-17T01:25:00.000Z', end: '2026-05-17T01:52:00.000Z' },
+          { stage: 'awake', start: '2026-05-17T01:52:00.000Z', end: '2026-05-17T01:58:00.000Z' },
+          { stage: 'asleepCore', start: '2026-05-17T01:58:00.000Z', end: '2026-05-17T02:06:00.000Z' },
+          // Duplicate sample from a repeated HealthKit sync must not double count.
+          { stage: 'asleepDeep', start: '2026-05-17T01:21:00.000Z', end: '2026-05-17T01:23:00.000Z' },
+        ],
+      }),
+    );
+
+    const segments = getAppleHealthSleepSegments({
+      userId: 42,
+      start: '2026-05-17T00:00:00.000Z',
+      end: '2026-05-18T00:00:00.000Z',
+      timezone: 'UTC',
+    });
+    const events = getAppleHealthSleepAgendaEvents({
+      userId: 42,
+      start: '2026-05-17T00:00:00.000Z',
+      end: '2026-05-18T00:00:00.000Z',
+      timezone: 'UTC',
+    });
+    const dial = buildHomeDayDial({
+      userId: 42,
+      date: '2026-05-17',
+      timezone: 'UTC',
+      calendarEvents: [],
+    });
+
+    expect(segments).toEqual([expect.objectContaining({
+      start: '2026-05-17T01:12:00.000Z',
+      end: '2026-05-17T02:06:00.000Z',
+      minutes: 41,
+    })]);
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({
+      start: '2026-05-17T01:12:00.000Z',
+      end: '2026-05-17T02:06:00.000Z',
+    });
+    expect(dial.totals.find((total) => total.kind === 'sleep')?.minutes).toBe(41);
+    expect(dial.totals.find((total) => total.kind === 'open')?.minutes).toBe(1399);
   });
 
   it('treats Apple Health sleep as agenda occupancy for focus conflict checks', async () => {

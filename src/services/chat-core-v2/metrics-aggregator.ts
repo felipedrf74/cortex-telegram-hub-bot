@@ -1,0 +1,349 @@
+// Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
+
+/**
+ * Chat Core v2 — auto-revert metrics aggregator (WP-06, READ-ONLY half of B7).
+ *
+ * Pure, read-only aggregation that computes the inputs the EXISTING auto-revert
+ * policy (`auto-revert-policy.ts`) consumes, evaluates the would-be decision,
+ * and lets the cron LOG it. This module performs NO mutation and NO live-path
+ * change. The executor (`applyAutoRevertDecision`), the per-tenant override Map,
+ * the persistence migration, and threading `tenantId` through the live parsers
+ * are ALL WP-07 — they are intentionally absent here.
+ *
+ * Per-tenant keying (§5.J): the legacy-fallback and schema-compliance reads are
+ * computed per `tenantId`, so one tenant's metrics never drive another tenant's
+ * decision. The cron iterates the active tenant set.
+ *
+ * Honest-metric posture (DMV): each compute function measures exactly what its
+ * name claims. Where the queryable producer table does not exist yet, the
+ * function returns a documented, revert-SAFE no-data default rather than a
+ * fabricated number — and names the later WP that must populate the source.
+ */
+
+import Database from 'better-sqlite3';
+
+import { getDb } from '../database';
+import { config } from '../../config';
+import {
+  getLatestHealthByProvider,
+  type ProbeResult,
+} from '../integration-health';
+import {
+  chatCoreV2HourBucket,
+  sumSchemaComplianceSince,
+  sumLegacyFallbackSince,
+} from './autorevert-counters-store';
+import type { ChatCoreV2AutoRevertMetrics } from './auto-revert-policy';
+
+export const CHAT_CORE_V2_METRICS_AGGREGATOR_VERSION = 'chat_core_v2_metrics_aggregator@1.0.0';
+
+export interface ChatCoreV2MetricsScope {
+  tenantId: string;
+}
+
+/**
+ * The integration-health probe row shape returned by `getLatestHealthByProvider`
+ * for a single provider. WP-06 reads the `'ollama'` entry. `ts` is the SQLite
+ * `datetime('now')` string (UTC, no trailing 'Z') used for the staleness guard.
+ */
+export type ChatCoreV2OllamaHealthProbe = ProbeResult & { ts: string };
+
+/**
+ * Assumed Ollama / integration-health probe cadence.
+ *
+ * The integration-health probe cron runs every 5 minutes (cron "every-5-min"
+ * expression) — see `scheduler.ts` `registerJob('integration_health', ...)` and
+ * the matching `cron.schedule(..., wrapJob('integration_health', ...))`. The
+ * staleness window defaults to probe-interval x 3 (15 min) so a single missed
+ * probe never trips the guard, but a stalled probe cron does.
+ */
+const OLLAMA_HEALTH_PROBE_INTERVAL_MS = 5 * 60_000;
+export const DEFAULT_OLLAMA_HEALTH_STALENESS_MS = OLLAMA_HEALTH_PROBE_INTERVAL_MS * 3; // 15 min
+
+const FALLBACK_RATE_WINDOW_MS = 24 * 60 * 60_000; // 24h
+const SCHEMA_COMPLIANCE_WINDOW_MS = 60 * 60_000; // 1h
+const ACTIVE_TENANT_WINDOW_MS = 24 * 60 * 60_000; // 24h
+
+/**
+ * Per-tenant legacy-fallback rate over the trailing 24h, read from the durable
+   * `chat_v2_legacy_fallback_counter` (migration 177, populated under active
+   * ChatCoreV2 live terminal routes). The rate is `fallback_count / total_count`
+   * summed over every hour bucket at or after the 24h cutoff.
+ *
+ * Division-by-zero / EMPTY-table ⇒ 0.0 — the revert-SAFE no-data default
+ * (0.0 < the 0.05 auto-shadow threshold, so a dormant/idle tenant never fires a
+ * revert). Wave-2 rank 6 makes this metric REAL; before any active-mode turn the
+ * counter is empty so this still returns 0.0 (the dormant-safe property is
+ * preserved). The whole read is fail-safe: any error ⇒ 0.0.
+ */
+export function computeLegacyFallbackRate24h(
+  db: Database.Database = getDb(),
+  scope: ChatCoreV2MetricsScope,
+  now: Date = new Date(),
+): number {
+  try {
+    const cutoff = chatCoreV2HourBucket(new Date(now.getTime() - FALLBACK_RATE_WINDOW_MS));
+    const sums = sumLegacyFallbackSince(db, scope.tenantId, cutoff);
+    // EMPTY table / no rows in window ⇒ revert-safe 0.0 (no-data ⇒ no revert).
+    if (!sums || sums.total <= 0) return 0.0;
+    return sums.fallback / sums.total;
+  } catch {
+    // Fail-safe: never let a read error drive a revert. 0.0 ⇒ no revert.
+    return 0.0;
+  }
+}
+
+/**
+ * Per-tenant schema-compliance rate over the trailing 1h (share of constrained
+ * outputs that passed Ajv/Zod validation after enforcement + one repair), read
+ * from the durable `chat_v2_schema_compliance_counter` (migration 177, populated
+ * ONLY from the shadow planner path, which runs only when a planner is injected —
+ * off-mode inert). The rate is `pass / (pass + fail)` summed over every hour
+ * bucket at or after the 1h cutoff.
+ *
+ * NO-DATA / EMPTY-table DEFAULT IS 1.0 (fully compliant), NOT 0.0. A compliance
+ * RATE with zero samples must mean "no violations observed", because the policy
+ * fires `pin_planner_to_repair_only` when the rate is < 0.95 — a 0.0 no-data
+ * default would auto-trigger a revert on an idle tenant (the exact
+ * inert/false-positive valve class DMV warns against). This mirrors the Ollama
+ * staleness guard: no-data / unknown ⇒ never auto-flip. Wave-2 rank 6 makes this
+ * metric REAL; before any planner-path sample the counter is empty so this still
+ * returns 1.0 (the dormant-safe property is preserved). Fail-safe: any error
+ * ⇒ 1.0.
+ */
+export function computeSchemaComplianceRate1h(
+  db: Database.Database = getDb(),
+  scope: ChatCoreV2MetricsScope,
+  now: Date = new Date(),
+): number {
+  try {
+    const cutoff = chatCoreV2HourBucket(new Date(now.getTime() - SCHEMA_COMPLIANCE_WINDOW_MS));
+    const sums = sumSchemaComplianceSince(db, scope.tenantId, cutoff);
+    // EMPTY table / no samples in window ⇒ revert-safe 1.0 (no-data ⇒ no revert).
+    const total = sums ? sums.pass + sums.fail : 0;
+    if (!sums || total <= 0) return 1.0;
+    return sums.pass / total;
+  } catch {
+    // Fail-safe: never let a read error pin the planner / trigger a revert.
+    return 1.0;
+  }
+}
+
+/**
+ * Map the integration-health `'ollama'` probe to the policy's `ollamaHealthy`
+ * boolean per build-plan §5.I. The read is wrapped in a 5s `AbortController`
+ * race so a hung probe-reader can never block the cron.
+ *
+ * Mapping (exact):
+ *  - Ollama NOT configured (`config.ollama.enabled` / `OLLAMA_ENABLED` false)
+ *      ⇒ short-circuit `true` (skip the valve entirely);
+ *  - status `'ok'`                                  ⇒ `true`;
+ *  - status `'fail'`                                ⇒ `false` (valve may fire);
+ *  - status `'skipped'` / `errorMessage==='not configured'` / MISSING `'ollama'`
+ *      key                                          ⇒ short-circuit `true`;
+ *  - STALE `'ollama'` row (ts older than the staleness window)
+ *      ⇒ short-circuit `true` (a dead probe is an operator-paging condition,
+ *        never an auto-flip — never revert on stale data);
+ *  - timeout / throw                                ⇒ `false` ONLY when Ollama is
+ *      configured; if not configured, `true`.
+ */
+export async function computeChatCoreV2OllamaHealthy(
+  probe?: ChatCoreV2OllamaHealthProbe,
+  options: {
+    env?: NodeJS.ProcessEnv;
+    now?: Date;
+    stalenessMs?: number;
+    readProbe?: () => ChatCoreV2OllamaHealthProbe | undefined;
+    timeoutMs?: number;
+  } = {},
+): Promise<boolean> {
+  const env = options.env ?? process.env;
+  const configured = isOllamaConfigured(env);
+
+  // Not configured ⇒ valve is skipped entirely. A not-configured Ollama in
+  // CI/staging must NEVER trigger an auto-revert.
+  if (!configured) return true;
+
+  const stalenessMs = resolveStalenessMs(env, options.stalenessMs);
+  const now = options.now ?? new Date();
+  const timeoutMs = options.timeoutMs ?? 5_000;
+
+  let row: ChatCoreV2OllamaHealthProbe | undefined;
+  try {
+    row = await raceWithTimeout(
+      () => probe ?? (options.readProbe ? options.readProbe() : readOllamaProbeRow()),
+      timeoutMs,
+    );
+  } catch {
+    // Timeout / throw while CONFIGURED ⇒ unhealthy (valve may fire). (If we had
+    // been not-configured we returned true above.)
+    return false;
+  }
+
+  // Missing 'ollama' key ⇒ short-circuit healthy (treat as not-yet-probed).
+  if (!row) return true;
+
+  // 'skipped' or explicit "not configured" ⇒ short-circuit healthy.
+  if (row.status === 'skipped' || row.errorMessage === 'not configured') return true;
+
+  // Staleness guard (§5.I): a stalled probe cron would otherwise return a
+  // permanently-fresh-looking stale 'ok'. Treat a stale row as unknown ⇒
+  // short-circuit healthy (never auto-flip on stale data).
+  if (isProbeStale(row.ts, now, stalenessMs)) return true;
+
+  if (row.status === 'ok') return true;
+  if (row.status === 'fail') return false;
+
+  // Unknown status value — fail safe to healthy (never auto-flip on something
+  // we cannot interpret).
+  return true;
+}
+
+/**
+ * Compose the per-tenant metrics bundle the policy consumes. The Ollama health
+ * read is process-wide (the daemon is shared), so `probe` is not tenant-scoped;
+ * the fallback/compliance reads are per `tenantId`.
+ *
+ * OD-3 open: per-language recall is NOT wired; `prepassRecallByLanguage` is
+ * intentionally left undefined so the policy's per-language arm stays dormant
+ * (do not ship a sampling-rate metric named recall — migrations/162 has no
+ * locale column and its reason codes are sampling reasons, not recall).
+ */
+export async function computeChatCoreV2AutoRevertMetrics(
+  db: Database.Database = getDb(),
+  scope: ChatCoreV2MetricsScope,
+  probe?: ChatCoreV2OllamaHealthProbe,
+  options: { env?: NodeJS.ProcessEnv; now?: Date; stalenessMs?: number } = {},
+): Promise<ChatCoreV2AutoRevertMetrics> {
+  const now = options.now ?? new Date();
+  const ollamaHealthy = await computeChatCoreV2OllamaHealthy(probe, {
+    env: options.env,
+    now,
+    stalenessMs: options.stalenessMs,
+  });
+
+  return {
+    legacyFallbackRate24h: computeLegacyFallbackRate24h(db, scope, now),
+    ollamaHealthy,
+    schemaComplianceRate1h: computeSchemaComplianceRate1h(db, scope, now),
+    // OD-3 open: per-language recall not wired; affectedLanguages intentionally
+    // empty (do not ship a sampling-rate metric named recall).
+    prepassRecallByLanguage: undefined,
+  };
+}
+
+/**
+ * Active tenant set: distinct `tenant_id`s with chat-core-v2 activity in the
+ * trailing 24h. Prefer trace spans when present, but also include the live
+ * legacy-fallback counter because the production iOS route records that counter
+ * directly. If every source table is empty / missing, the cron is a SAFE no-op.
+ */
+export function getActiveChatCoreV2TenantIds(
+  db: Database.Database = getDb(),
+  now: Date = new Date(),
+): string[] {
+  const cutoff = isoCutoff(now, ACTIVE_TENANT_WINDOW_MS);
+  const tenantIds = new Set<string>();
+  collectTenantIds(db, tenantIds, `SELECT DISTINCT tenant_id AS tenantId FROM chat_v2_trace_spans WHERE started_at >= ?`, [cutoff]);
+  collectTenantIds(db, tenantIds, `SELECT DISTINCT tenant_id AS tenantId FROM chat_v2_legacy_fallback_counter WHERE window_start >= ?`, [
+    chatCoreV2HourBucket(new Date(now.getTime() - ACTIVE_TENANT_WINDOW_MS)),
+  ]);
+  collectTenantIds(
+    db,
+    tenantIds,
+    `SELECT DISTINCT tenant_id AS tenantId FROM chat_v2_legacy_fallback_attribution_counter WHERE window_start >= ?`,
+    [chatCoreV2HourBucket(new Date(now.getTime() - ACTIVE_TENANT_WINDOW_MS))],
+  );
+  collectTenantIds(db, tenantIds, `SELECT DISTINCT tenant_id AS tenantId FROM chat_v2_completion_evidence WHERE created_at >= ?`, [cutoff]);
+  return [...tenantIds].sort();
+}
+
+// ── helpers ─────────────────────────────────────────────────────────
+
+function isOllamaConfigured(env: NodeJS.ProcessEnv): boolean {
+  const cfgEnabled = (config as { ollama?: { enabled?: boolean } }).ollama?.enabled === true;
+  const envEnabled = String(env.OLLAMA_ENABLED ?? '').trim().toLowerCase() === 'true';
+  return cfgEnabled || envEnabled;
+}
+
+function resolveStalenessMs(env: NodeJS.ProcessEnv, override?: number): number {
+  if (typeof override === 'number' && Number.isFinite(override) && override > 0) return override;
+  const parsed = Number.parseInt(env.OLLAMA_HEALTH_STALENESS_MS ?? '', 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_OLLAMA_HEALTH_STALENESS_MS;
+}
+
+function readOllamaProbeRow(): ChatCoreV2OllamaHealthProbe | undefined {
+  const latest = getLatestHealthByProvider();
+  return latest.ollama;
+}
+
+/**
+ * Parse the integration-health `ts` (SQLite `datetime('now')` → UTC string with
+ * no trailing 'Z') and decide whether it is older than the staleness window. A
+ * row whose ts cannot be parsed is treated as STALE-safe (unknown ⇒ healthy via
+ * the caller), so this returns `true` (stale) on parse failure.
+ */
+function isProbeStale(ts: string | undefined, now: Date, stalenessMs: number): boolean {
+  if (!ts) return true;
+  const hasZone = /[zZ]$|[+-]\d{2}:?\d{2}$/.test(ts.trim());
+  const parsed = Date.parse(hasZone ? ts : `${ts}Z`);
+  if (!Number.isFinite(parsed)) return true;
+  return now.getTime() - parsed > stalenessMs;
+}
+
+function isoCutoff(now: Date, windowMs: number): string {
+  return new Date(now.getTime() - windowMs).toISOString();
+}
+
+function collectTenantIds(
+  db: Database.Database,
+  target: Set<string>,
+  sql: string,
+  params: unknown[],
+): void {
+  try {
+    const rows = db.prepare(sql).all(...params) as Array<{ tenantId: string | number | null }>;
+    for (const row of rows) {
+      const tenantId = String(row.tenantId ?? '').trim();
+      if (tenantId.length > 0) target.add(tenantId);
+    }
+  } catch {
+    // Source table may not exist on a fresh DB or in tests for an earlier
+    // migration slice. Missing sources simply contribute no active tenants.
+  }
+}
+
+/**
+ * Run a synchronous reader inside a 5s race. The reader itself is sync (a single
+ * indexed SELECT), but wrapping it in an AbortController race guards against a
+ * hung daemon/driver and satisfies §5.I's "5s race" requirement.
+ */
+function raceWithTimeout<T>(read: () => T, timeoutMs: number): Promise<T> {
+  const controller = new AbortController();
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      controller.abort();
+      reject(new Error('ollama_health_read_timeout'));
+    }, timeoutMs);
+    if (typeof (timer as { unref?: () => void }).unref === 'function') {
+      (timer as { unref: () => void }).unref();
+    }
+    try {
+      const value = read();
+      clearTimeout(timer);
+      resolve(value);
+    } catch (err) {
+      clearTimeout(timer);
+      reject(err instanceof Error ? err : new Error(String(err)));
+    }
+  });
+}
+
+// Window constants are exported for tests that assert the documented cadence.
+export const _CHAT_CORE_V2_METRICS_WINDOWS_FOR_TESTS = {
+  fallbackRateWindowMs: FALLBACK_RATE_WINDOW_MS,
+  schemaComplianceWindowMs: SCHEMA_COMPLIANCE_WINDOW_MS,
+  activeTenantWindowMs: ACTIVE_TENANT_WINDOW_MS,
+  ollamaProbeIntervalMs: OLLAMA_HEALTH_PROBE_INTERVAL_MS,
+  ollamaStalenessMs: DEFAULT_OLLAMA_HEALTH_STALENESS_MS,
+} as const;

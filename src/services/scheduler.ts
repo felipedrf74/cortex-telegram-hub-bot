@@ -2,6 +2,7 @@
 
 import path from 'path';
 import { createHash } from 'crypto';
+import type Database from 'better-sqlite3';
 import cron from 'node-cron';
 import { Bot } from 'grammy';
 import { config } from '../config';
@@ -56,6 +57,14 @@ import { expireStalePendingChatActionsForJob } from './chat-action-state';
 import { pruneCompletedChatActionRuns, reapZombieChatActionRuns } from './chat-action-run-store';
 import { runGarminTenantIsolationWatcher } from './garmin-tenant-isolation-watcher';
 import { runDecisionCenterSmokeCleanupJob, runDecisionHandledHistoryBackfillJob, runDecisionSourceStateSupersessionJob } from './decision-center';
+import { resolveChatCoreV2ActivationConfig } from './chat-core-v2/activation-flags';
+import {
+  computeChatCoreV2AutoRevertMetrics,
+  getActiveChatCoreV2TenantIds,
+} from './chat-core-v2/metrics-aggregator';
+import { evaluateChatCoreV2AutoRevertPolicy } from './chat-core-v2/auto-revert-policy';
+import { applyAutoRevertDecision } from './chat-core-v2/auto-revert-executor';
+import { recordChatCoreV2GateCheck } from './chat-core-v2/gate-metrics-store';
 import { expireOldNexusPointCredits } from './nexus-points';
 import { getActivePlan, getCurrentWeek, getWeeklyAdherence, computeAdjustmentRecommendation, updateWeekAdjustment, getWeeksForPlan } from './training-plans';
 import { calculateReadiness, persistReadinessScore } from './readiness-scorer';
@@ -66,6 +75,19 @@ interface ActiveUserTarget {
 }
 
 let remindersJobInFlight = false;
+
+/**
+ * Opaque, non-reversible token for a tenant id, used only in the Chat Core v2
+ * auto-revert eval log line so operators can correlate without leaking raw ids.
+ */
+function opaqueChatV2TenantToken(tenantId: string): string {
+  const salt =
+    process.env.CHAT_CORE_V2_SHADOW_ROUTE_HMAC_SECRET ||
+    process.env.CHAT_CORE_V2_WRITE_INTENT_HASH_SECRET ||
+    process.env.CLASSIFY_SHADOW_HASH_SECRET ||
+    'chat_core_v2_auto_revert_eval_token_salt@1';
+  return createHash('sha256').update(`${salt}:tenant:${tenantId}`).digest('hex').slice(0, 16);
+}
 
 /**
  * Distinguish the expected "users table not created yet on first boot"
@@ -189,6 +211,124 @@ export async function runWeeklyContentPackageCronForActiveUsers(): Promise<void>
     } catch (err) {
       logger.error({ err, userId: target.tenantId, tenantId: target.tenantId }, 'Friday weekly content package failed');
     }
+  }
+}
+
+/**
+ * Chat Core v2 shadow data-retention sweep.
+ *
+ * Each table is swept independently so a missing migration/table never blocks
+ * the rest of the cleanup. Logs contain counts only, never row contents.
+ */
+export function runChatCoreV2ShadowDataRetention(
+  db: Database.Database = getDb(),
+  nowIso: string = new Date().toISOString(),
+): Record<string, number> {
+  const deleted: Record<string, number> = {};
+
+  const stanza = (table: string, run: () => number): void => {
+    try {
+      const changes = run();
+      deleted[table] = changes;
+      if (changes > 0) {
+        logger.info({ table, deleted: changes }, 'Chat Core v2 retention cleanup');
+      }
+    } catch (err) {
+      logger.warn(
+        { err: err instanceof Error ? err.message : String(err), table },
+        'Chat Core v2 retention cleanup failed for table (skipped)',
+      );
+    }
+  };
+
+  stanza('chat_v2_replay_bundles', () =>
+    db.prepare(
+      `DELETE FROM chat_v2_replay_bundles WHERE expires_at IS NOT NULL AND expires_at < ?`,
+    ).run(nowIso).changes,
+  );
+
+  stanza('chat_v2_canary_turn_log', () =>
+    db.prepare(
+      `DELETE FROM chat_v2_canary_turn_log WHERE expires_at IS NOT NULL AND expires_at < ?`,
+    ).run(nowIso).changes,
+  );
+
+  stanza('chat_v2_command_events', () =>
+    db.prepare(
+      `DELETE FROM chat_v2_command_events WHERE created_at < datetime(?, '-90 days')`,
+    ).run(nowIso).changes,
+  );
+
+  stanza('chat_v2_trace_spans', () =>
+    db.prepare(
+      `DELETE FROM chat_v2_trace_spans
+       WHERE expires_at IS NOT NULL
+         AND expires_at < ?
+         AND retention_policy NOT IN ('legal_required')`,
+    ).run(nowIso).changes,
+  );
+
+  stanza('chat_v2_online_eval_samples', () =>
+    db.prepare(
+      `DELETE FROM chat_v2_online_eval_samples WHERE created_at < datetime(?, '-90 days')`,
+    ).run(nowIso).changes,
+  );
+
+  stanza('chat_v2_auto_revert_decisions', () =>
+    db.prepare(
+      `DELETE FROM chat_v2_auto_revert_decisions WHERE decided_at < datetime(?, '-365 days')`,
+    ).run(nowIso).changes,
+  );
+
+  stanza('chat_v2_memory_items', () =>
+    db.prepare(
+      `DELETE FROM chat_v2_memory_items WHERE expires_at IS NOT NULL AND expires_at < ?`,
+    ).run(nowIso).changes,
+  );
+
+  stanza('chat_v2_human_reviews', () =>
+    db.prepare(
+      `DELETE FROM chat_v2_human_reviews
+       WHERE status IN ('approved', 'denied', 'changes_requested', 'cancelled', 'expired')
+         AND COALESCE(decided_at, requested_at) < datetime(?, '-90 days')`,
+    ).run(nowIso).changes,
+  );
+
+  return deleted;
+}
+
+/**
+ * Chat Core v2 automated shadow gate-check. Read-only beyond one safe audit
+ * row; never mutates runtime flags or routes.
+ */
+export function runChatCoreV2GateCheck(db: Database.Database = getDb()): {
+  gateMet: boolean;
+  shadowRowCount: number;
+  logRowId: number;
+} | null {
+  try {
+    const { report, logRowId } = recordChatCoreV2GateCheck(db);
+    logger.info(
+      {
+        event: 'chat_core_v2_gate_check',
+        gateMet: report.gateCanPromote,
+        meetsMinRows: report.shadow.meetsMinRows,
+        meetsSchemaValidity: report.shadow.meetsSchemaValidity,
+        meetsSafeShape: report.shadow.meetsSafeShape,
+        shadowRowCount: report.shadow.rowCount,
+        recallMeetsTarget: report.recallMeetsTarget,
+        recallBoundToSyntheticSeed: report.recallBoundToSyntheticSeed,
+        logRowId,
+      },
+      'Chat Core v2 shadow gate check',
+    );
+    return { gateMet: report.gateCanPromote, shadowRowCount: report.shadow.rowCount, logRowId };
+  } catch (err) {
+    logger.warn(
+      { event: 'chat_core_v2_gate_check_failed', err: err instanceof Error ? err.message : String(err) },
+      'Chat Core v2 shadow gate check failed (skipped)',
+    );
+    return null;
   }
 }
 
@@ -725,6 +865,12 @@ export function startScheduler(bot?: any): void {
   registerJob('event_backbone_worker', 'Event Backbone Worker', '* * * * *', 'system');
   registerJob('event_backbone_cleanup', 'Event Backbone Cleanup', '10 0 * * *', 'system');
   registerJob('nexus_points_expiry', 'Nexus Points Expiry Sweep', '0 4 * * *', 'system');
+  if (resolveChatCoreV2ActivationConfig(process.env).mode !== 'off' && isChatCoreV2AutoRevertEvalCronEnabled(process.env)) {
+    registerJob('chat_v2_auto_revert_eval', 'Chat Core v2 Auto-Revert Eval', '*/5 * * * *', 'system');
+  }
+  if (resolveChatCoreV2ActivationConfig(process.env).mode !== 'off') {
+    registerJob('chat_v2_gate_check', 'Chat Core v2 Shadow Gate Check', '37 * * * *', 'system');
+  }
 
   // Seed lastRunAt from DB so the DST watchdog doesn't re-fire jobs after a restart
   seedJobLastRunFromHistory();
@@ -946,6 +1092,8 @@ export function startScheduler(bot?: any): void {
     } catch (err) {
       logger.warn({ err }, 'Retention cleanup failed for audit_trail');
     }
+
+    runChatCoreV2ShadowDataRetention();
   }), { timezone: tz });
 
   // ── Unified task store: per-provider sync (every 15 min) ───────────
@@ -1019,6 +1167,7 @@ export function startScheduler(bot?: any): void {
     try {
       const { syncSecretaryAgendaItemsToProvider } = require('./secretary-agenda-provider-sync');
       const { createUnifiedCalendarSecretaryProviderAdapter } = require('./secretary-unified-calendar-provider-adapter');
+      const { reconcileOrphanedTrainingAgendaEvents } = require('./training-agenda-reconciliation');
       const googleCal = require('./google-calendar');
       const outlookCal = require('./outlook-calendar');
       const users = getActiveUserIds();
@@ -1028,6 +1177,7 @@ export function startScheduler(bot?: any): void {
       const CONCURRENCY = 4;
       let syncedTotal = 0;
       let readbackFailedTotal = 0;
+      let reconciledTrainingAgendaTotal = 0;
 
       // Per-user fan-out with bounded concurrency. Outlook + Google rate-limit
       // at the request layer (429 with Retry-After), so we keep concurrency low.
@@ -1043,6 +1193,24 @@ export function startScheduler(bot?: any): void {
 
             let userSynced = 0;
             let userReadbackFailed = 0;
+            let userReconciledTrainingAgenda = 0;
+            try {
+              const reconciliation = await reconcileOrphanedTrainingAgendaEvents(userId, userId);
+              userReconciledTrainingAgenda = reconciliation.deleted;
+              if (reconciliation.attempted > 0) {
+                logger.info(
+                  {
+                    userId,
+                    attempted: reconciliation.attempted,
+                    deleted: reconciliation.deleted,
+                    failed: reconciliation.failed,
+                  },
+                  '[scheduler] secretary_agenda_sync reconciled stale Training calendar events',
+                );
+              }
+            } catch (err) {
+              logger.warn({ err, userId }, '[scheduler] secretary_agenda_sync training reconciliation failure');
+            }
             for (const source of sources) {
               try {
                 const adapter = createUnifiedCalendarSecretaryProviderAdapter(source);
@@ -1063,20 +1231,24 @@ export function startScheduler(bot?: any): void {
                 logger.warn({ err, userId, source }, '[scheduler] secretary_agenda_sync per-user/source failure');
               }
             }
-            return { userId, synced: userSynced, readbackFailed: userReadbackFailed };
+            return { userId, synced: userSynced, readbackFailed: userReadbackFailed, reconciledTrainingAgenda: userReconciledTrainingAgenda };
           }),
         );
         for (const s of settled) {
           if (s.status === 'fulfilled' && !s.value.skipped) {
             syncedTotal += s.value.synced;
             readbackFailedTotal += s.value.readbackFailed;
+            reconciledTrainingAgendaTotal += s.value.reconciledTrainingAgenda ?? 0;
           } else if (s.status === 'rejected') {
             logger.warn({ reason: s.reason }, '[scheduler] secretary_agenda_sync batch rejection');
           }
         }
       }
-      if (syncedTotal > 0 || readbackFailedTotal > 0) {
-        logger.info({ syncedTotal, readbackFailedTotal, userCount: users.length }, '[scheduler] secretary_agenda_sync complete');
+      if (syncedTotal > 0 || readbackFailedTotal > 0 || reconciledTrainingAgendaTotal > 0) {
+        logger.info(
+          { syncedTotal, readbackFailedTotal, reconciledTrainingAgendaTotal, userCount: users.length },
+          '[scheduler] secretary_agenda_sync complete',
+        );
       }
     } catch (err) {
       logger.warn({ err }, '[scheduler] secretary_agenda_sync cron failed');
@@ -1839,6 +2011,71 @@ export function startScheduler(bot?: any): void {
     logger.info({ deleted, retentionDays: 90 }, 'Pruned retained chat action run summaries');
   }), { timezone: tz });
 
+  if (resolveChatCoreV2ActivationConfig(process.env).mode !== 'off' && isChatCoreV2AutoRevertEvalCronEnabled(process.env)) {
+    cron.schedule('*/5 * * * *', wrapJob('chat_v2_auto_revert_eval', async () => {
+      let evaluated = 0;
+      let wouldRevert = 0;
+      try {
+        const db = getDb();
+        const tenantIds = getActiveChatCoreV2TenantIds(db);
+        if (tenantIds.length === 0) return 'skipped';
+
+        for (const tenantId of tenantIds) {
+          try {
+            const metrics = await computeChatCoreV2AutoRevertMetrics(db, { tenantId });
+            const decision = evaluateChatCoreV2AutoRevertPolicy(metrics);
+            evaluated += 1;
+            const isRevert = !(decision.actions.length === 1 && decision.actions[0] === 'keep_current_mode');
+            if (isRevert) wouldRevert += 1;
+            logger.info(
+              {
+                event: 'chat_core_v2_auto_revert_eval',
+                tenantToken: opaqueChatV2TenantToken(tenantId),
+                metrics: {
+                  legacyFallbackRate24h: metrics.legacyFallbackRate24h,
+                  ollamaHealthy: metrics.ollamaHealthy,
+                  schemaComplianceRate1h: metrics.schemaComplianceRate1h,
+                  perLanguageArmActive: false,
+                },
+                decision: {
+                  actions: decision.actions,
+                  reasonCodes: decision.reasonCodes,
+                  affectedLanguageCount: decision.affectedLanguages.length,
+                },
+              },
+              'Chat Core v2 auto-revert evaluation (decision applied below)',
+            );
+            await applyAutoRevertDecision(tenantId, decision, metrics, db);
+          } catch (err) {
+            logger.warn(
+              {
+                event: 'chat_core_v2_auto_revert_eval_tenant_failed',
+                tenantToken: opaqueChatV2TenantToken(tenantId),
+                err: err instanceof Error ? err.message : String(err),
+              },
+              'Chat Core v2 auto-revert evaluation failed for one tenant (loop continues)',
+            );
+          }
+        }
+        logger.info(
+          { event: 'chat_core_v2_auto_revert_eval_cycle', evaluated, wouldRevert },
+          'Chat Core v2 auto-revert evaluation cycle complete',
+        );
+      } catch (err) {
+        logger.warn(
+          { event: 'chat_core_v2_auto_revert_eval_cycle_failed', err: err instanceof Error ? err.message : String(err) },
+          'Chat Core v2 auto-revert evaluation cycle failed',
+        );
+      }
+    }), { timezone: 'UTC' });
+  }
+
+  if (resolveChatCoreV2ActivationConfig(process.env).mode !== 'off') {
+    cron.schedule('37 * * * *', wrapJob('chat_v2_gate_check', async () => {
+      runChatCoreV2GateCheck();
+    }), { timezone: 'UTC' });
+  }
+
   cron.schedule('* * * * *', wrapJob('event_backbone_worker', async () => {
     if (process.env.EVENT_BACKBONE_WORKER_DISABLED === '1') {
       return 'skipped';
@@ -2037,6 +2274,11 @@ export async function sendDailyBriefing(bot?: any): Promise<void> {
       }
     }
   }
+}
+
+function isChatCoreV2AutoRevertEvalCronEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
+  const raw = String(env.CHAT_CORE_V2_AUTO_REVERT_EVAL ?? 'true').trim().toLowerCase();
+  return raw !== '0' && raw !== 'false' && raw !== 'off' && raw !== 'no';
 }
 
 async function sendWeeklyReview(bot?: any): Promise<void> {

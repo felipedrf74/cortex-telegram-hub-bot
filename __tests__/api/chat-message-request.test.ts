@@ -34,13 +34,12 @@ vi.mock('../../src/services/cost-guardrail', () => ({
       details: {
         plan: quota.plan,
         resetAt: quota.resetAt,
-        limitUsd: quota.limitUsd,
-        usedUsd: quota.usedUsd,
-        remainingUsd: quota.remainingUsd,
-        planDailyLimitUsd: quota.planDailyLimitUsd,
-        includedRemainingUsd: quota.includedRemainingUsd,
+        usageLevel: quota.usageLevel,
+        usageFraction: quota.usageFraction,
+        usagePercent: Math.round((quota.usageFraction || 0) * 100),
+        isOverLimit: quota.over,
+        boostAvailable: quota.boostAvailable,
         nexusPointsBalance: quota.nexusPointsBalance,
-        nexusPointsRemainingUsd: quota.nexusPointsRemainingUsd,
         pointsPurchaseAvailable: quota.pointsPurchaseAvailable,
       },
     };
@@ -92,6 +91,8 @@ describe('chat message request-boundary helpers', () => {
       spentUsd: 0,
       capUsd: 1,
       plan: 'pro',
+      usageLevel: 'enhanced',
+      usageFraction: 0,
       resetAt: '2026-04-25T00:00:00.000Z',
       limitUsd: 1,
       usedUsd: 0,
@@ -100,6 +101,7 @@ describe('chat message request-boundary helpers', () => {
       includedRemainingUsd: 1,
       nexusPointsBalance: 0,
       nexusPointsRemainingUsd: 0,
+      boostAvailable: true,
       pointsPurchaseAvailable: true,
     });
     mockBuildQuotaExceededMessage.mockReturnValue('Daily AI quota reached');
@@ -167,6 +169,8 @@ describe('chat message request-boundary helpers', () => {
       spentUsd: 0.2,
       capUsd: 0.1,
       plan: 'free',
+      usageLevel: 'exhausted',
+      usageFraction: 1,
       resetAt: '2026-04-25T00:00:00.000Z',
       limitUsd: 0.1,
       usedUsd: 0.2,
@@ -175,6 +179,7 @@ describe('chat message request-boundary helpers', () => {
       includedRemainingUsd: 0,
       nexusPointsBalance: 0,
       nexusPointsRemainingUsd: 0,
+      boostAvailable: false,
       pointsPurchaseAvailable: false,
     });
 
@@ -202,18 +207,18 @@ describe('chat message request-boundary helpers', () => {
         details: {
           plan: 'free',
           resetAt: '2026-04-25T00:00:00.000Z',
-          limitUsd: 0.1,
-          usedUsd: 0.2,
-          remainingUsd: 0,
-          planDailyLimitUsd: 0.1,
-          includedRemainingUsd: 0,
+          usageLevel: 'exhausted',
+          usageFraction: 1,
+          usagePercent: 100,
+          isOverLimit: true,
+          boostAvailable: false,
           nexusPointsBalance: 0,
-          nexusPointsRemainingUsd: 0,
           pointsPurchaseAvailable: false,
           error: 'rate_limited',
           retryable: true,
         },
       },
     });
+    expect(JSON.stringify(blockedRes.body.error.details)).not.toMatch(/usd|allowance/i);
   });
 });

@@ -266,6 +266,48 @@ export async function completeOneShot(
   return response.choices[0]?.message?.content ?? '';
 }
 
+export async function completeOneShotWithWebSearch(
+  systemPrompt: string,
+  userPrompt: string,
+  category: string,
+  options?: OneShotOptions,
+): Promise<{ text: string; sources: string[] }> {
+  if (!isOpenAIConfigured()) {
+    throw new Error('OpenAI provider not configured (OPENAI_API_KEY missing)');
+  }
+  const model = options?.model ?? process.env.OPENAI_WEB_SEARCH_MODEL ?? 'gpt-4o-mini';
+  const maxOutputTokens = options?.maxTokens ?? 900;
+  const startedAt = Date.now();
+  const response = await withRetry(() =>
+    withTimeout(getClient().responses.create({
+      model,
+      instructions: systemPrompt,
+      input: userPrompt,
+      tools: [{ type: 'web_search' }],
+      tool_choice: 'auto',
+      max_output_tokens: maxOutputTokens,
+    } as any), options?.timeoutMs ?? getAICallTimeoutMs()),
+  ) as any;
+
+  recordOpenAIResponseUsage({
+    response,
+    model: String(response?.model ?? model),
+    category,
+    userId: options?.userId ?? 0,
+    tenantId: options?.tenantId ?? options?.userId ?? 0,
+    durationMs: Date.now() - startedAt,
+  });
+
+  const text = extractOpenAIResponseText(response);
+  if (!text) {
+    throw new Error('openai_web_search_empty_response');
+  }
+  return {
+    text,
+    sources: collectHttpUrlsFromUnknown(response),
+  };
+}
+
 /**
  * Single-prompt chat completion with an image input (vision mode) via
  * GPT-4o. Mirrors `gemini-provider.completeVisionOneShot`.
@@ -321,6 +363,126 @@ export async function completeVisionOneShot(
   );
 
   return response.choices[0]?.message?.content ?? '';
+}
+
+function recordOpenAIResponseUsage(input: {
+  response: any;
+  model: string;
+  category: string;
+  userId: number;
+  tenantId: number;
+  durationMs: number;
+}): void {
+  const usage = input.response?.usage;
+  if (!usage || typeof usage !== 'object') return;
+  const inputTokens = numberFromUnknown(usage.input_tokens ?? usage.prompt_tokens);
+  const outputTokens = numberFromUnknown(usage.output_tokens ?? usage.completion_tokens);
+  if (inputTokens === null || outputTokens === null) return;
+  const cacheReadTokens = numberFromUnknown(usage.input_tokens_details?.cached_tokens) ?? 0;
+  const priced = computeModelUsageCostUsd(input.model, {
+    inputTokens,
+    outputTokens,
+    cacheReadTokens,
+  }, 'openai');
+  if (!priced.pricingResolved) {
+    warnUnresolvedOpenAiPricing(input.model, input.category, input.userId);
+  }
+  let apiUsageId: number | null = null;
+  try {
+    const db = getDb();
+    const result = db.prepare(`
+      INSERT INTO api_usage (category, model, tenant_id, user_id, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, cost_usd, duration_ms, provider, pricing_status, pricing_model_key)
+      VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?, 'openai', ?, ?)
+    `).run(
+      input.category,
+      input.model,
+      input.tenantId,
+      input.userId,
+      inputTokens,
+      outputTokens,
+      cacheReadTokens,
+      priced.costUsd,
+      input.durationMs,
+      priced.pricingResolved ? 'resolved' : 'unresolved',
+      priced.pricingModelKey,
+    );
+    apiUsageId = Number((result as { lastInsertRowid?: number | bigint } | undefined)?.lastInsertRowid ?? 0);
+  } catch (err) {
+    try {
+      const db = getDb();
+      apiUsageId = insertApiUsageFallback(db, {
+        category: input.category,
+        model: input.model,
+        provider: 'openai',
+        tenantId: input.tenantId,
+        userId: input.userId,
+        inputTokens,
+        outputTokens,
+        cacheReadTokens,
+        cacheWriteTokens: 0,
+        costUsd: priced.costUsd,
+        durationMs: input.durationMs,
+        pricingStatus: 'legacy',
+      });
+    } catch (fallbackErr) {
+      logger.warn({ err: fallbackErr }, 'Failed to log OpenAI Responses usage to database');
+    }
+  }
+  pushEvent({
+    ts: new Date().toISOString(),
+    type: 'api_call',
+    summary: `OpenAI ${input.model} [${input.category}] — ${inputTokens}+${outputTokens} tokens`,
+    detail: `$${priced.costUsd.toFixed(4)} in ${input.durationMs}ms`,
+  });
+  void settleNexusPointOverageForUser(input.userId, apiUsageId).catch((settleErr) => {
+    logger.warn({ err: settleErr, apiUsageId, userId: input.userId }, 'nexus_points: OpenAI Responses usage settlement failed');
+  });
+}
+
+function extractOpenAIResponseText(response: any): string {
+  if (typeof response?.output_text === 'string' && response.output_text.trim()) {
+    return response.output_text.trim();
+  }
+  const chunks: string[] = [];
+  const output = Array.isArray(response?.output) ? response.output : [];
+  for (const item of output) {
+    const content = Array.isArray(item?.content) ? item.content : [];
+    for (const block of content) {
+      if (typeof block?.text === 'string') chunks.push(block.text);
+    }
+  }
+  return chunks.join('\n').trim();
+}
+
+function collectHttpUrlsFromUnknown(value: unknown, urls = new Set<string>()): string[] {
+  if (typeof value === 'string') {
+    for (const match of value.matchAll(/https?:\/\/[^\s)"'<>]+/gi)) {
+      urls.add(match[0].replace(/[),.;\]]+$/g, ''));
+    }
+    return [...urls];
+  }
+  if (!value || typeof value !== 'object') return [...urls];
+  if (Array.isArray(value)) {
+    for (const entry of value) collectHttpUrlsFromUnknown(entry, urls);
+    return [...urls];
+  }
+  const record = value as Record<string, unknown>;
+  for (const [key, entry] of Object.entries(record)) {
+    if ((key === 'url' || key === 'uri') && typeof entry === 'string' && /^https?:\/\//i.test(entry)) {
+      urls.add(entry);
+    }
+    collectHttpUrlsFromUnknown(entry, urls);
+  }
+  return [...urls];
+}
+
+function numberFromUnknown(value: unknown): number | null {
+  if (typeof value === 'number' && Number.isFinite(value)) return value;
+  if (typeof value === 'string' && value.trim()) {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+  return null;
 }
 
 // ─── Retry on 429 / 5xx ─────────────────────────────────────────────

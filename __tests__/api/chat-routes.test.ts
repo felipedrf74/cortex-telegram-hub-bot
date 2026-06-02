@@ -39,6 +39,8 @@ const mockIsUserOverDailyCap = vi.fn(() => ({
   spentUsd: 0,
   capUsd: 1,
   plan: 'pro',
+  usageLevel: 'enhanced',
+  usageFraction: 0,
   resetAt: '2026-04-15T00:00:00.000Z',
   limitUsd: 1,
   usedUsd: 0,
@@ -47,6 +49,7 @@ const mockIsUserOverDailyCap = vi.fn(() => ({
   includedRemainingUsd: 1,
   nexusPointsBalance: 0,
   nexusPointsRemainingUsd: 0,
+  boostAvailable: true,
   pointsPurchaseAvailable: true,
 }));
 const mockGetLastAssistantMessage = vi.fn(() => null);
@@ -202,6 +205,7 @@ vi.mock('../../src/services/anthropic', () => ({
 vi.mock('../../src/services/cache-store', () => ({
   getCached: vi.fn(() => null),
   setCache: vi.fn(),
+  clearCache: vi.fn(),
   clearCacheByPrefix: vi.fn(),
 }));
 
@@ -248,13 +252,12 @@ vi.mock('../../src/services/cost-guardrail', () => ({
       details: {
         plan: quota.plan,
         resetAt: quota.resetAt,
-        limitUsd: quota.limitUsd,
-        usedUsd: quota.usedUsd,
-        remainingUsd: quota.remainingUsd,
-        planDailyLimitUsd: quota.planDailyLimitUsd,
-        includedRemainingUsd: quota.includedRemainingUsd,
+        usageLevel: quota.usageLevel,
+        usageFraction: quota.usageFraction,
+        usagePercent: Math.round((quota.usageFraction || 0) * 100),
+        isOverLimit: quota.over,
+        boostAvailable: quota.boostAvailable,
         nexusPointsBalance: quota.nexusPointsBalance,
-        nexusPointsRemainingUsd: quota.nexusPointsRemainingUsd,
         pointsPurchaseAvailable: quota.pointsPurchaseAvailable,
       },
     };
@@ -404,6 +407,7 @@ import { authMiddleware } from '../../src/api/auth-middleware';
 import { upsertPendingChatAction } from '../../src/services/chat-action-state';
 import { resetPendingChatConfirmationsForTests } from '../../src/services/chat-pending-confirmations';
 import { signChatConfirmationToken } from '../../src/services/chat-confirmation-token';
+import { resetPendingChatCoreV2CommandsForTests } from '../../src/services/chat-core-v2';
 
 function applyMigrations(db: Database.Database): void {
   db.exec(`CREATE TABLE IF NOT EXISTS _migrations (id INTEGER PRIMARY KEY, filename TEXT UNIQUE, applied_at TEXT DEFAULT (datetime('now')))`);
@@ -562,6 +566,7 @@ describe('Chat API routes', () => {
     applyMigrations(testDb);
     clearTenantScopeAnomaliesForTests();
     resetPendingChatConfirmationsForTests();
+    resetPendingChatCoreV2CommandsForTests();
 
     mockRouteMessage.mockReset();
     mockKeywordMatch.mockReset();
@@ -628,6 +633,8 @@ describe('Chat API routes', () => {
       spentUsd: 0,
       capUsd: 1,
       plan: 'pro',
+      usageLevel: 'enhanced',
+      usageFraction: 0,
       resetAt: '2026-04-15T00:00:00.000Z',
       limitUsd: 1,
       usedUsd: 0,
@@ -636,6 +643,7 @@ describe('Chat API routes', () => {
       includedRemainingUsd: 1,
       nexusPointsBalance: 0,
       nexusPointsRemainingUsd: 0,
+      boostAvailable: true,
       pointsPurchaseAvailable: true,
     });
     mockGetLastAssistantMessage.mockReturnValue(null);
@@ -849,7 +857,107 @@ describe('Chat API routes', () => {
 
   afterEach(() => {
     Settings.now = Date.now;
+    delete process.env.CHAT_V2_SHADOW_EVIDENCE_ENABLED;
+    delete process.env.CHAT_V2_ANSWER_CANARY_EVIDENCE_ENABLED;
+    delete process.env.CHAT_V2_DETERMINISTIC_READ_EVIDENCE_ENABLED;
+    delete process.env.CHAT_V2_WRITE_EVIDENCE_ENABLED;
+    delete process.env.CHAT_V2_COMPLETION_MODE;
+    delete process.env.CHAT_V2_EVIDENCE_HMAC_SECRET;
+    delete process.env.CHAT_CORE_V2_ACTION_GATEWAY_MODE;
+    delete process.env.CHAT_CORE_V2_ORCHESTRATOR_MODE;
+    delete process.env.CHAT_CORE_V2_CANARY_ENABLED_TENANT_IDS;
+    delete process.env.CHAT_CORE_V2_ALLOWED_DOMAINS;
+    delete process.env.CHAT_CORE_V2_ALLOW_DETERMINISTIC_READS;
+    delete process.env.CHAT_CORE_V2_ENABLED;
+    delete process.env.CHAT_CORE_V2_READS_ENABLED;
+    delete process.env.CHAT_CORE_V2_WRITES_ENABLED;
+    delete process.env.CHAT_CORE_V2_CONFIRMATIONS_ENABLED;
+    delete process.env.CHAT_CORE_V2_LEGACY_WRITE_FALLTHROUGH_BLOCK;
+    delete process.env.CHAT_CORE_V2_LEGACY_FALLBACK_DISABLED;
+    delete process.env.CHAT_CORE_V2_LEGACY_FALLBACK_DISABLED_TENANTS;
     testDb?.close();
+  });
+
+  it('keeps ChatV2 completion evidence dark by default', async () => {
+    mockRouteMessage.mockResolvedValue({
+      domain: 'secretary',
+      method: 'classifier',
+      confidence: 0.93,
+      strippedMessage: 'give me a simple focus tip',
+    });
+    mockHandleSecretary.mockResolvedValue({ text: 'Keep the next step small.', domain: 'secretary' });
+
+    const messageRes = await dispatch('POST', '/message', 7001, {
+      text: 'give me a simple focus tip',
+    });
+
+    expect(messageRes.statusCode, JSON.stringify(messageRes.body)).toBe(200);
+    expect(testDb.prepare('SELECT COUNT(*) AS count FROM chat_v2_completion_evidence').get()).toMatchObject({ count: 0 });
+  });
+
+  it('records safe HMAC-only ChatV2 shadow evidence when explicitly enabled', async () => {
+    process.env.CHAT_V2_SHADOW_EVIDENCE_ENABLED = 'true';
+    process.env.CHAT_V2_EVIDENCE_HMAC_SECRET = 'chat-routes-evidence-secret';
+    const rawMessage = 'give me a simple focus tip with private words';
+    mockRouteMessage.mockResolvedValue({
+      domain: 'secretary',
+      method: 'classifier',
+      confidence: 0.93,
+      strippedMessage: rawMessage,
+    });
+    mockHandleSecretary.mockResolvedValue({ text: 'Keep the next step small.', domain: 'secretary' });
+
+    const messageRes = await dispatch('POST', '/message', 7001, {
+      text: rawMessage,
+    });
+
+    expect(messageRes.statusCode, JSON.stringify(messageRes.body)).toBe(200);
+    const row = testDb.prepare('SELECT * FROM chat_v2_completion_evidence').get() as any;
+    expect(row).toMatchObject({
+      evidence_kind: 'shadow',
+      tenant_id: 7001,
+      user_id: 7001,
+      message_identifier_kind: 'hmac',
+      raw_field_audit_count: 0,
+      response_contract_valid: 1,
+    });
+    expect(row.message_hmac).toMatch(/^hmac:message:[a-f0-9]{64}$/);
+    expect(JSON.stringify(row)).not.toContain(rawMessage);
+    expect(JSON.parse(row.candidate_capabilities_json)).toContain(row.final_capability_id);
+  });
+
+  it('uses ChatCoreV2 unsupported fallback instead of routeMessage when the tenant catch-all is retired', async () => {
+    process.env.CHAT_CORE_V2_ORCHESTRATOR_MODE = 'on';
+    process.env.CHAT_CORE_V2_LEGACY_FALLBACK_DISABLED = 'true';
+    process.env.CHAT_CORE_V2_LEGACY_FALLBACK_DISABLED_TENANTS = '7001';
+    mockRouteMessage.mockResolvedValue({
+      domain: 'secretary',
+      method: 'classifier',
+      confidence: 0.93,
+      strippedMessage: 'tell me about unsupported parity gizmos',
+    });
+
+    const messageRes = await dispatch('POST', '/message', 7001, {
+      text: 'tell me about unsupported parity gizmos',
+    });
+
+    expect(messageRes.statusCode, JSON.stringify(messageRes.body)).toBe(200);
+    expect(messageRes.body).toMatchObject({
+      routeMethod: 'unsupported',
+      metadata: {
+        kind: 'unsupported',
+        chatReasoning: {
+          actionability: 'blocked',
+          verificationStatus: 'not_required',
+          fallback: {
+            fallbackType: 'degraded_response',
+            fallbackReason: 'legacy_fallback_disabled',
+          },
+        },
+      },
+    });
+    expect(messageRes.body.reasonCodes).toContain('legacy_fallback_disabled');
+    expect(mockRouteMessage).not.toHaveBeenCalled();
   });
 
   it('persists text chat exchanges and returns them through history', async () => {
@@ -894,14 +1002,217 @@ describe('Chat API routes', () => {
     });
   });
 
+  it('routes enforced task-create write intents through ChatCoreV2 action gateway before the legacy action planner', async () => {
+    process.env.CHAT_CORE_V2_ACTION_GATEWAY_MODE = 'enforce';
+    process.env.CHAT_CORE_V2_ENABLED = 'true';
+    process.env.CHAT_CORE_V2_WRITES_ENABLED = 'true';
+    process.env.CHAT_CORE_V2_CONFIRMATIONS_ENABLED = 'true';
+
+    const messageRes = await dispatch('POST', '/message', 7001, {
+      text: 'Create a task called parity planner check',
+    });
+
+    expect(messageRes.statusCode, JSON.stringify(messageRes.body)).toBe(202);
+    expect(messageRes.body.routeMethod).toBe('chat-core-v2-command-preview');
+    expect(messageRes.body.metadata).toMatchObject({
+      type: 'chat_core_v2_command_preview',
+      chatCoreV2: {
+        capabilityId: 'tasks.create',
+        command: {
+          commandType: 'tasks.create',
+          domain: 'tasks',
+        },
+      },
+    });
+    expect(messageRes.body.metadata.chatReasoning).toMatchObject({
+      routeMethod: 'chat-core-v2-command-preview',
+      actionability: 'preview',
+      verificationStatus: 'pending',
+    });
+    expect(mockRouteMessage).not.toHaveBeenCalled();
+    expect(mockCompleteOneShotWithFallback).not.toHaveBeenCalled();
+  });
+
+  it('executes ChatCoreV2 command-preview confirmations through the command bus and replays idempotently', async () => {
+    process.env.CHAT_V2_WRITE_EVIDENCE_ENABLED = 'true';
+    process.env.CHAT_V2_EVIDENCE_HMAC_SECRET = 'chat-routes-chatcore-v2-confirm-evidence-secret';
+    process.env.CHAT_CORE_V2_ACTION_GATEWAY_MODE = 'enforce';
+    process.env.CHAT_CORE_V2_ENABLED = 'true';
+    process.env.CHAT_CORE_V2_WRITES_ENABLED = 'true';
+    process.env.CHAT_CORE_V2_CONFIRMATIONS_ENABLED = 'true';
+
+    const preview = await dispatch('POST', '/message', 7001, {
+      text: 'Create a task called ChatCoreV2 confirmation bridge',
+      clientMessageId: 'chatcore-v2-confirm-bridge-1',
+    });
+
+    expect(preview.statusCode, JSON.stringify(preview.body)).toBe(202);
+    expect(preview.body.routeMethod).toBe('chat-core-v2-command-preview');
+    const token = preview.body.metadata.pendingConfirmation.confirmation_token;
+
+    const confirmed = await dispatch('POST', '/confirm-action', 7001, {
+      confirmation_token: token,
+      intent_class: 'tasks.create',
+      idempotencyKey: 'chatcore-v2-confirm-bridge-idempotency',
+    });
+
+    expect(confirmed.statusCode, JSON.stringify(confirmed.body)).toBe(200);
+    expect(confirmed.body).toMatchObject({
+      routeMethod: 'chat-core-v2-command-confirmation',
+      metadata: {
+        type: 'chat_core_v2_command_result',
+        actionStatus: 'verified',
+        verificationStatus: 'verified',
+        pendingConfirmation: {
+          kind: 'completed_confirmation',
+          intent_class: 'tasks.create',
+        },
+        chatCoreV2: {
+          capabilityId: 'tasks.create',
+          commandType: 'tasks.create',
+          status: 'verified',
+        },
+      },
+    });
+    expect(testDb.prepare('SELECT COUNT(*) AS count FROM native_tasks WHERE user_id = ? AND title = ?')
+      .get(7001, 'ChatCoreV2 confirmation bridge')).toMatchObject({ count: 1 });
+
+    const replay = await dispatch('POST', '/confirm-action', 7001, {
+      confirmation_token: token,
+      intent_class: 'tasks.create',
+      idempotencyKey: 'chatcore-v2-confirm-bridge-idempotency',
+    });
+
+    expect(replay.statusCode, JSON.stringify(replay.body)).toBe(200);
+    expect(replay.body.metadata).toMatchObject({
+      idempotentReplay: true,
+      confirmationReplay: true,
+    });
+    expect(testDb.prepare('SELECT COUNT(*) AS count FROM native_tasks WHERE user_id = ? AND title = ?')
+      .get(7001, 'ChatCoreV2 confirmation bridge')).toMatchObject({ count: 1 });
+
+    const evidenceRows = testDb.prepare("SELECT * FROM chat_v2_write_evidence WHERE phase = 'confirmed_writes'").all() as any[];
+    expect(evidenceRows).toHaveLength(1);
+    expect(evidenceRows[0]).toMatchObject({
+      evidence_source: 'runtime_route',
+      phase: 'confirmed_writes',
+      sample_identifier_kind: 'hmac',
+      risk_class: 'A',
+      preview_valid: 1,
+      diff_required: 1,
+      visible_diff_present: 1,
+      executed: 1,
+      validated_before_execution: 1,
+      success_claimed: 1,
+      verification_status: 'verified',
+      escalated_per_policy: 1,
+      idempotency_passed: 1,
+      retry_cancel_passed: 1,
+      raw_field_audit_count: 0,
+    });
+    expect(evidenceRows[0].sample_hmac).toMatch(/^hmac:write:[a-f0-9]{64}$/);
+    expect(JSON.stringify(evidenceRows[0])).not.toContain('ChatCoreV2 confirmation bridge');
+  });
+
+  it('routes enabled natural-language task reads through ChatCoreV2 deterministic read without disabling slash token-zero reads', async () => {
+    process.env.CHAT_CORE_V2_ORCHESTRATOR_MODE = 'canary';
+    process.env.CHAT_CORE_V2_CANARY_ENABLED_TENANT_IDS = '7001';
+    process.env.CHAT_CORE_V2_ALLOWED_DOMAINS = 'tasks';
+    process.env.CHAT_CORE_V2_ALLOW_DETERMINISTIC_READS = 'true';
+
+    const messageRes = await dispatch('POST', '/message', 7001, {
+      text: 'What tasks do I have today?',
+    });
+
+    expect(messageRes.statusCode, JSON.stringify(messageRes.body)).toBe(200);
+    expect(messageRes.body.routeMethod).toBe('chat-core-v2-deterministic-read');
+    expect(messageRes.body.metadata).toMatchObject({
+      type: 'chat_core_v2_deterministic_read',
+      chatCoreV2: {
+        capabilityId: 'tasks.today_summary',
+      },
+    });
+    expect(mockRouteMessage).not.toHaveBeenCalled();
+    expect(mockCompleteOneShotWithFallback).not.toHaveBeenCalled();
+    expect(testDb.prepare(`
+      SELECT fallback_count, total_count
+      FROM chat_v2_legacy_fallback_counter
+      WHERE tenant_id = ?
+    `).get('7001')).toMatchObject({
+      fallback_count: 0,
+      total_count: 1,
+    });
+    expect(testDb.prepare(`
+      SELECT domain, route_owner, route_method, fallback_count, total_count
+      FROM chat_v2_legacy_fallback_attribution_counter
+      WHERE tenant_id = ?
+    `).get('7001')).toMatchObject({
+      domain: 'tasks',
+      route_owner: 'chat_core_v2_deterministic_read',
+      route_method: 'chat-core-v2-deterministic-read',
+      fallback_count: 0,
+      total_count: 1,
+    });
+
+    mockTryDeterministicChatCommand.mockResolvedValueOnce({
+      text: '<b>Tasks</b>',
+      domain: 'secretary',
+      buttons: [[{ text: '📅 Today', callbackData: 'cmd:/day' }]],
+    });
+    const slashRes = await dispatch('POST', '/message', 7001, {
+      text: '/todo',
+    });
+    expect(slashRes.statusCode, JSON.stringify(slashRes.body)).toBe(200);
+    expect(slashRes.body.routeMethod).toBe('fast-path');
+    expect(testDb.prepare(`
+      SELECT fallback_count, total_count
+      FROM chat_v2_legacy_fallback_counter
+      WHERE tenant_id = ?
+    `).get('7001')).toMatchObject({
+      fallback_count: 0,
+      total_count: 1,
+    });
+  });
+
+  it('does not let ChatCoreV2 deterministic reads preempt write intents when reads are enabled', async () => {
+    process.env.CHAT_CORE_V2_ORCHESTRATOR_MODE = 'canary';
+    process.env.CHAT_CORE_V2_ACTION_GATEWAY_MODE = 'enforce';
+    process.env.CHAT_CORE_V2_ENABLED = 'true';
+    process.env.CHAT_CORE_V2_WRITES_ENABLED = 'true';
+    process.env.CHAT_CORE_V2_ALLOWED_DOMAINS = 'tasks,secretary';
+    process.env.CHAT_CORE_V2_ALLOW_DETERMINISTIC_READS = 'true';
+
+    const taskRes = await dispatch('POST', '/message', 7001, {
+      text: 'Create a task called read preemption guard',
+    });
+
+    expect(taskRes.statusCode, JSON.stringify(taskRes.body)).toBe(202);
+    expect(taskRes.body.routeMethod).toBe('chat-core-v2-command-preview');
+    expect(taskRes.body.routeMethod).not.toBe('chat-core-v2-deterministic-read');
+
+    const scheduleRes = await dispatch('POST', '/message', 7001, {
+      text: 'Schedule a meeting for Friday at 2pm',
+    });
+
+    expect(scheduleRes.statusCode, JSON.stringify(scheduleRes.body)).toBe(202);
+    expect(scheduleRes.body.routeMethod).toBe('chat-core-v2-action-gateway');
+    expect(scheduleRes.body.metadata).toMatchObject({
+      type: 'chat_core_v2_write_intent_guard',
+    });
+    expect(scheduleRes.body.routeMethod).not.toBe('chat-core-v2-deterministic-read');
+    expect(mockCompleteOneShotWithFallback).not.toHaveBeenCalled();
+  });
+
   it('runs the action planner before Gmail unread or generic chat for Gmail-agenda event creation', async () => {
+    process.env.CHAT_CORE_V2_ORCHESTRATOR_MODE = 'canary';
+    process.env.CHAT_CORE_V2_CANARY_ENABLED_TENANT_IDS = '7001';
     mockGetUserLanguage.mockReturnValue('pt-PT');
 
     const messageRes = await dispatch('POST', '/message', 7001, {
       text: 'Cria um evento na agenda do Gmail chamado igreja das 10 ao meio-dia e meio nesse domingo',
       clientMessageId: 'pt-gmail-agenda-event-1',
     }, {
-      'x-language': 'pt-PT',
+      'x-language': 'pt-AO',
     });
 
     expect(messageRes.statusCode, JSON.stringify(messageRes.body)).toBe(202);
@@ -922,6 +1233,25 @@ describe('Chat API routes', () => {
     expect(messageRes.body.metadata?.chatReasoning?.userFacingSummary ?? '').not.toMatch(forbiddenTokensRegex);
     expect(mockRouteMessage).not.toHaveBeenCalled();
     expect(mockCompleteOneShotWithFallback).not.toHaveBeenCalled();
+    expect(testDb.prepare(`
+      SELECT fallback_count, total_count
+      FROM chat_v2_legacy_fallback_counter
+      WHERE tenant_id = ?
+    `).get('7001')).toMatchObject({
+      fallback_count: 1,
+      total_count: 1,
+    });
+    expect(testDb.prepare(`
+      SELECT domain, route_owner, route_method, fallback_count, total_count
+      FROM chat_v2_legacy_fallback_attribution_counter
+      WHERE tenant_id = ?
+    `).get('7001')).toMatchObject({
+      domain: 'secretary',
+      route_owner: 'chat_action_planner',
+      route_method: 'chat-action-deterministic',
+      fallback_count: 1,
+      total_count: 1,
+    });
   });
 
   it('durably tracks action-planner confirmations for external side effects', async () => {
@@ -1001,6 +1331,9 @@ describe('Chat API routes', () => {
   });
 
   it('gates iOS task creation behind a confirmation token and replays idempotently', async () => {
+    process.env.CHAT_V2_WRITE_EVIDENCE_ENABLED = 'true';
+    process.env.CHAT_V2_EVIDENCE_HMAC_SECRET = 'chat-routes-confirm-write-evidence-secret';
+
     const first = await dispatch('POST', '/message', 7001, {
       text: 'Add a task to call my dentist on Friday',
       clientMessageId: 'task-create-confirmation-contract-1',
@@ -1039,6 +1372,27 @@ describe('Chat API routes', () => {
       },
     });
     expect(testDb.prepare('SELECT COUNT(*) AS count FROM native_tasks WHERE user_id = ?').get(7001)).toMatchObject({ count: 1 });
+    const evidenceRows = testDb.prepare('SELECT * FROM chat_v2_write_evidence').all() as any[];
+    expect(evidenceRows).toHaveLength(1);
+    expect(evidenceRows[0]).toMatchObject({
+      evidence_source: 'runtime_route',
+      phase: 'confirmed_writes',
+      sample_identifier_kind: 'hmac',
+      risk_class: 'A',
+      preview_valid: 1,
+      diff_required: 1,
+      visible_diff_present: 1,
+      executed: 1,
+      validated_before_execution: 1,
+      success_claimed: 1,
+      verification_status: 'verified',
+      escalated_per_policy: 1,
+      idempotency_passed: 1,
+      retry_cancel_passed: 1,
+      raw_field_audit_count: 0,
+    });
+    expect(evidenceRows[0].sample_hmac).toMatch(/^hmac:write:[a-f0-9]{64}$/);
+    expect(JSON.stringify(evidenceRows[0])).not.toContain('call my dentist');
 
     const replay = await dispatch('POST', '/confirm-action', 7001, confirmationBody);
     expect(replay.statusCode, JSON.stringify(replay.body)).toBe(200);
@@ -1047,6 +1401,7 @@ describe('Chat API routes', () => {
       confirmationReplay: true,
     });
     expect(testDb.prepare('SELECT COUNT(*) AS count FROM native_tasks WHERE user_id = ?').get(7001)).toMatchObject({ count: 1 });
+    expect(testDb.prepare('SELECT COUNT(*) AS count FROM chat_v2_write_evidence').get()).toMatchObject({ count: 1 });
   });
 
   it('rejects stale and wrong-user confirmation tokens before execution', async () => {
@@ -1081,6 +1436,9 @@ describe('Chat API routes', () => {
   });
 
   it('routes task-with-subtasks messages through Chat Reasoning Engine before the AI/tool loop', async () => {
+    process.env.CHAT_CORE_V2_ORCHESTRATOR_MODE = 'canary';
+    process.env.CHAT_CORE_V2_CANARY_ENABLED_TENANT_IDS = '7001';
+
     const messageRes = await dispatch('POST', '/message', 7001, {
       text: "Create a task called Prozis where it has sub tasks called creatine K2 D3 for now that's it",
       clientMessageId: 'prozis-subtasks-1',
@@ -1131,6 +1489,76 @@ describe('Chat API routes', () => {
       expect.objectContaining({ entityType: 'subtask', title: 'K2' }),
       expect.objectContaining({ entityType: 'subtask', title: 'D3' }),
     ]));
+    expect(testDb.prepare(`
+      SELECT fallback_count, total_count
+      FROM chat_v2_legacy_fallback_counter
+      WHERE tenant_id = ?
+    `).get('7001')).toMatchObject({
+      fallback_count: 1,
+      total_count: 1,
+    });
+  });
+
+  it('records HMAC-only write evidence for Chat Reasoning Engine executions when enabled', async () => {
+    process.env.CHAT_V2_WRITE_EVIDENCE_ENABLED = 'true';
+    process.env.CHAT_V2_EVIDENCE_HMAC_SECRET = 'chat-routes-write-evidence-secret';
+
+    const messageRes = await dispatch('POST', '/message', 7001, {
+      text: 'Create task Private Runtime Evidence with subtasks alpha beta',
+      clientMessageId: 'write-evidence-1',
+    });
+
+    expect(messageRes.statusCode, JSON.stringify(messageRes.body)).toBe(200);
+    const rows = testDb.prepare('SELECT * FROM chat_v2_write_evidence').all() as any[];
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      evidence_source: 'runtime_route',
+      phase: 'confirmed_writes',
+      sample_identifier_kind: 'hmac',
+      risk_class: 'A',
+      preview_valid: 1,
+      diff_required: 1,
+      visible_diff_present: 1,
+      executed: 1,
+      validated_before_execution: 1,
+      success_claimed: 1,
+      verification_status: 'verified',
+      escalated_per_policy: 1,
+      idempotency_passed: 1,
+      retry_cancel_passed: 1,
+    });
+    expect(rows[0].sample_hmac).toMatch(/^hmac:write:[a-f0-9]{64}$/);
+    expect(JSON.stringify(rows[0])).not.toContain('Private Runtime Evidence');
+    expect(JSON.stringify(rows[0])).not.toContain('alpha beta');
+  });
+
+  it('records Class C escalation evidence when destructive chat writes are blocked for confirmation', async () => {
+    process.env.CHAT_V2_WRITE_EVIDENCE_ENABLED = 'true';
+    process.env.CHAT_V2_EVIDENCE_HMAC_SECRET = 'chat-routes-write-evidence-secret';
+
+    const messageRes = await dispatch('POST', '/message', 7001, {
+      text: 'Delete all my tasks',
+      clientMessageId: 'write-evidence-class-c-1',
+    });
+
+    expect(messageRes.statusCode, JSON.stringify(messageRes.body)).toBe(200);
+    expect(messageRes.body.routeMethod).toBe('confirmation-required');
+    const row = testDb.prepare('SELECT * FROM chat_v2_write_evidence').get() as any;
+    expect(row).toMatchObject({
+      evidence_source: 'runtime_route',
+      phase: 'confirmed_writes',
+      sample_identifier_kind: 'hmac',
+      risk_class: 'C',
+      preview_valid: 1,
+      diff_required: 1,
+      visible_diff_present: 1,
+      executed: 0,
+      validated_before_execution: 1,
+      success_claimed: 0,
+      verification_status: 'indeterminate',
+      escalated_per_policy: 1,
+    });
+    expect(JSON.stringify(row)).not.toContain('Delete all my tasks');
   });
 
   it('does not duplicate task/subtask execution when iOS retries the same client message id', async () => {
@@ -1519,6 +1947,15 @@ describe('Chat API routes', () => {
       ownerSkill: 'tasks',
       routeMethod: 'fast-path',
       actionability: 'answer_only',
+      verificationStatus: 'not_required',
+    });
+    expect(messageRes.body.metadata.chatReasoning.groundingFacts).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ source: 'chat.fast_path', safeForUser: true }),
+      ]),
+    );
+    expect(messageRes.body.metadata.finalAnswerComposition).toMatchObject({
+      mode: 'templated',
     });
 
     const historyRes = await dispatch('GET', '/history?limit=10', 7001);
@@ -1526,6 +1963,74 @@ describe('Chat API routes', () => {
       buttons: [[{ text: '📅 Today', callbackData: 'cmd:/day' }]],
       routeMethod: 'fast-path',
     });
+  });
+
+  it('records HMAC-only deterministic-read evidence for slash fast-path responses when enabled', async () => {
+    process.env.CHAT_V2_DETERMINISTIC_READ_EVIDENCE_ENABLED = 'true';
+    process.env.CHAT_V2_EVIDENCE_HMAC_SECRET = 'chat-routes-deterministic-read-evidence-secret';
+    mockTryDeterministicChatCommand.mockResolvedValue({
+      text: '<b>Tasks</b>',
+      domain: 'secretary',
+      buttons: [[{ text: '📅 Today', callbackData: 'cmd:/day' }]],
+    });
+
+    const messageRes = await dispatch('POST', '/message', 7001, {
+      text: '/todo private task phrase',
+    });
+
+    expect(messageRes.statusCode, JSON.stringify(messageRes.body)).toBe(200);
+    const rows = testDb.prepare(`
+      SELECT *
+      FROM chat_v2_deterministic_read_evidence
+      ORDER BY evidence_kind
+    `).all() as any[];
+    expect(rows.map((row) => row.evidence_kind)).toEqual(['deterministic_read', 'token_zero_surface']);
+    for (const row of rows) {
+      expect(row.evidence_source).toBe('runtime_route');
+      expect(row.sample_hmac).toMatch(/^hmac:token-zero-read:[a-f0-9]{64}$/);
+      expect(row.sample_identifier_kind).toBe('hmac');
+      expect(row.response_contract_valid).toBe(1);
+      expect(row.tenant_user_isolation_passed).toBe(1);
+      expect(JSON.stringify(row)).not.toContain('private task phrase');
+    }
+    expect(rows.find((row) => row.evidence_kind === 'token_zero_surface')).toMatchObject({
+      token_zero_surface: 'slash',
+      token_zero_preserved: 1,
+    });
+  });
+
+  it('records templated answer-canary evidence for slash fast-path responses when enabled', async () => {
+    process.env.CHAT_V2_ANSWER_CANARY_EVIDENCE_ENABLED = 'true';
+    process.env.CHAT_V2_EVIDENCE_HMAC_SECRET = 'chat-routes-answer-canary-evidence-secret';
+    const rawMessage = '/todo private deterministic task phrase';
+    mockTryDeterministicChatCommand.mockResolvedValue({
+      text: '<b>Tasks</b>',
+      domain: 'secretary',
+      buttons: [[{ text: '📅 Today', callbackData: 'cmd:/day' }]],
+    });
+
+    const messageRes = await dispatch('POST', '/message', 7001, {
+      text: rawMessage,
+    });
+
+    expect(messageRes.statusCode, JSON.stringify(messageRes.body)).toBe(200);
+    expect(messageRes.body.metadata.finalAnswerComposition).toMatchObject({
+      mode: 'templated',
+    });
+    const row = testDb.prepare(`
+      SELECT *
+      FROM chat_v2_completion_evidence
+      WHERE evidence_kind = 'answer_canary'
+    `).get() as any;
+    expect(row).toMatchObject({
+      evidence_source: 'runtime_route',
+      message_identifier_kind: 'hmac',
+      raw_field_audit_count: 0,
+      response_contract_valid: 1,
+      composition_mode: 'templated',
+    });
+    expect(row.message_hmac).toMatch(/^hmac:message:[a-f0-9]{64}$/);
+    expect(JSON.stringify(row)).not.toContain('private deterministic task phrase');
   });
 
   it('handles deterministic command callbacks by replacing the original message and buttons', async () => {
@@ -1650,20 +2155,20 @@ describe('Chat API routes', () => {
       domain: 'secretary',
       method: 'keyword',
       confidence: 0.62,
-      strippedMessage: 'me indique uma receita de kibe de forno para 3 pessoas',
+      strippedMessage: 'me indique uma receita de legumes assados para 3 pessoas',
     });
     mockHandleSecretary.mockResolvedValue({ text: 'Should not run.', domain: 'secretary' });
     const { handleCooking } = await import('../../src/domains/cooking');
     vi.mocked(handleCooking).mockClear();
     vi.mocked(handleCooking).mockResolvedValue({
       text: [
-        'Kibe de forno para 3 pessoas',
+        'Legumes assados para 3 pessoas',
         '',
-        'Ingredientes: 250g de trigo para kibe, 350g de carne moída, cebola, hortelã e sal.',
+        'Ingredientes: batata, cenoura, abobrinha, cebola, azeite e sal.',
         '',
         'Modo de preparo:',
-        '1. Hidrate o trigo por 20 minutos.',
-        '2. Misture com a carne e temperos.',
+        '1. Corte os legumes em pedaços parecidos.',
+        '2. Tempere com azeite, sal e ervas.',
         '3. Asse por 35 minutos a 180°C.',
         '',
         'Rende 3 porções.',
@@ -1672,7 +2177,7 @@ describe('Chat API routes', () => {
     });
 
     const messageRes = await dispatch('POST', '/message', 7001, {
-      text: 'me indique uma receita de kibe de forno para 3 pessoas',
+      text: 'me indique uma receita de legumes assados para 3 pessoas',
     }, {
       'x-language': 'pt-BR',
     });
@@ -1697,14 +2202,14 @@ describe('Chat API routes', () => {
         domain: 'secretary',
         method: 'keyword',
         confidence: 0.62,
-        strippedMessage: 'me indique uma receita de kibe de forno para 3 pessoas',
+        strippedMessage: 'me indique uma receita de legumes assados para 3 pessoas',
       });
       mockHandleSecretary.mockResolvedValue({ text: 'Legacy secretary route.', domain: 'secretary' });
       const { handleCooking } = await import('../../src/domains/cooking');
       vi.mocked(handleCooking).mockClear();
 
       const messageRes = await dispatch('POST', '/message', 7001, {
-        text: 'me indique uma receita de kibe de forno para 3 pessoas',
+        text: 'me indique uma receita de legumes assados para 3 pessoas',
       }, {
         'x-language': 'pt-BR',
       });
@@ -1723,6 +2228,9 @@ describe('Chat API routes', () => {
   });
 
   it('routes local-and-web high-risk turns through research instead of weak generic routing', async () => {
+    process.env.CHAT_CORE_V2_ORCHESTRATOR_MODE = 'canary';
+    process.env.CHAT_CORE_V2_CANARY_ENABLED_TENANT_IDS = '7001';
+
     mockRouteMessage.mockClear();
     mockCompleteOneShotWithSearch.mockResolvedValueOnce({
       text: 'Do not train through knee pain. Use current sports-medicine guidance and seek professional care if pain persists.',
@@ -1737,7 +2245,7 @@ describe('Chat API routes', () => {
 
     expect(messageRes.statusCode, JSON.stringify(messageRes.body)).toBe(200);
     expect(messageRes.body.domain).toBe('triathlon');
-    expect(messageRes.body.routeMethod).toBe('internet-research');
+    expect(messageRes.body.routeMethod).toBe('chat-core-v2-internet-research');
     expect(messageRes.body.text).toContain('Sources consulted: https://sportsmedicine.example/knee-pain');
     expect(messageRes.body.metadata.chatTurnContract).toMatchObject({
       skill: 'training',
@@ -1754,14 +2262,62 @@ describe('Chat API routes', () => {
     );
     expect(mockCompleteOneShotWithSearch).toHaveBeenCalledWith(
       expect.stringContaining('<stable_system_policy>'),
-      expect.stringContaining('Scoped Nexus state for research prompt'),
+      expect.stringContaining('public health and training guidance for person has knee pain'),
       'chat_internet_research',
       expect.objectContaining({
         userId: 7001,
         tenantId: 7001,
       }),
     );
-    expect(mockCompleteOneShotWithSearch.mock.calls[0]?.[1]).toContain('I have knee pain, should I train today?');
+    expect(mockCompleteOneShotWithSearch.mock.calls[0]?.[1]).not.toContain('Scoped Nexus state for research prompt');
+    expect(mockCompleteOneShotWithSearch.mock.calls[0]?.[1]).not.toContain('I have knee pain, should I train today?');
+    expect(testDb.prepare(`
+      SELECT fallback_count, total_count
+      FROM chat_v2_legacy_fallback_counter
+      WHERE tenant_id = ?
+    `).get('7001')).toMatchObject({
+      fallback_count: 1,
+      total_count: 1,
+    });
+  });
+
+  it('routes regional Spanish research turns with a hard Spanish response contract', async () => {
+    process.env.CHAT_CORE_V2_ORCHESTRATOR_MODE = 'canary';
+    process.env.CHAT_CORE_V2_CANARY_ENABLED_TENANT_IDS = '7001';
+
+    mockRouteMessage.mockClear();
+    mockCompleteOneShotWithSearch.mockResolvedValueOnce({
+      text: 'La inflación reciente en América Latina varía según el país y debe revisarse con fuentes actuales.',
+      sources: ['https://example.com/inflacion-latam'],
+    });
+
+    const messageRes = await dispatch('POST', '/message', 7001, {
+      text: 'Search noticias recientes sobre inflación en América Latina esta semana.',
+    }, {
+      'x-language': 'es-419',
+    });
+
+    expect(messageRes.statusCode, JSON.stringify(messageRes.body)).toBe(200);
+    expect(messageRes.body.routeMethod).toBe('chat-core-v2-internet-research');
+    expect(messageRes.body.text).toContain('Fuentes consultadas: https://example.com/inflacion-latam');
+    expect(messageRes.body.metadata.chatTurnContract).toMatchObject({
+      routeKind: 'internet_research',
+      groundingRequired: 'web',
+      language: 'es',
+    });
+    expect(mockRouteMessage).not.toHaveBeenCalled();
+    expect(mockCompleteOneShotWithSearch).toHaveBeenCalledWith(
+      expect.stringContaining('Answer in Spanish. This is a hard contract'),
+      expect.stringContaining('Search noticias recientes sobre inflación'),
+      'chat_internet_research',
+      expect.objectContaining({
+        userId: 7001,
+        tenantId: 7001,
+      }),
+    );
+    const systemPrompt = mockCompleteOneShotWithSearch.mock.calls[0]?.[0];
+    expect(systemPrompt).toContain('Output language: Spanish');
+    expect(systemPrompt).toContain('do not answer Spanish prompts in Portuguese');
   });
 
   it('applies coach callbacks and clears buttons from the persisted message', async () => {
@@ -2669,6 +3225,8 @@ describe('Chat API routes', () => {
       spentUsd: 0.06,
       capUsd: 0.04,
       plan: 'pro',
+      usageLevel: 'exhausted',
+      usageFraction: 1,
       resetAt: '2026-04-15T00:00:00.000Z',
       limitUsd: 0.04,
       usedUsd: 0.06,
@@ -2677,6 +3235,7 @@ describe('Chat API routes', () => {
       includedRemainingUsd: 0,
       nexusPointsBalance: 0,
       nexusPointsRemainingUsd: 0,
+      boostAvailable: true,
       pointsPurchaseAvailable: true,
     });
     mockRouteMessage.mockResolvedValue({
@@ -2888,6 +3447,8 @@ describe('Chat API routes', () => {
       spentUsd: 0,
       capUsd: 0,
       plan: 'free',
+      usageLevel: 'exhausted',
+      usageFraction: 1,
       resetAt: '2026-04-15T00:00:00.000Z',
       limitUsd: 0,
       usedUsd: 0,
@@ -2896,6 +3457,7 @@ describe('Chat API routes', () => {
       includedRemainingUsd: 0,
       nexusPointsBalance: 0,
       nexusPointsRemainingUsd: 0,
+      boostAvailable: false,
       pointsPurchaseAvailable: false,
     });
 
@@ -2909,17 +3471,17 @@ describe('Chat API routes', () => {
     expect(messageRes.body.error.details).toEqual({
       plan: 'free',
       resetAt: '2026-04-15T00:00:00.000Z',
-      limitUsd: 0,
-      usedUsd: 0,
-      remainingUsd: 0,
-      planDailyLimitUsd: 0,
-      includedRemainingUsd: 0,
-      nexusPointsBalance: 0,
-      nexusPointsRemainingUsd: 0,
-      pointsPurchaseAvailable: false,
+      usageLevel: 'exhausted',
+      usageFraction: 1,
+          usagePercent: 100,
+          isOverLimit: true,
+          boostAvailable: false,
+          nexusPointsBalance: 0,
+          pointsPurchaseAvailable: false,
       error: 'rate_limited',
       retryable: true,
     });
+    expect(JSON.stringify(messageRes.body.error.details)).not.toMatch(/usd|allowance/i);
   });
 
   it('fails closed on invalid tenant scope before processing personalized chat state', async () => {
@@ -3028,6 +3590,9 @@ describe('Chat API routes', () => {
   });
 
   it('pauses destructive chat actions for explicit confirmation before invoking a skill handler', async () => {
+    process.env.CHAT_CORE_V2_ORCHESTRATOR_MODE = 'canary';
+    process.env.CHAT_CORE_V2_CANARY_ENABLED_TENANT_IDS = '7001';
+
     mockRouteMessage.mockResolvedValue({
       domain: 'secretary',
       method: 'keyword',
@@ -3051,9 +3616,152 @@ describe('Chat API routes', () => {
     expect(String(res.body.text)).toContain('explicit confirmation');
     expect(mockRouteMessage).not.toHaveBeenCalled();
     expect(mockHandleSecretary).not.toHaveBeenCalled();
+    expect(testDb.prepare(`
+      SELECT fallback_count, total_count
+      FROM chat_v2_legacy_fallback_counter
+      WHERE tenant_id = ?
+    `).get('7001')).toMatchObject({
+      fallback_count: 1,
+      total_count: 1,
+    });
+  });
+
+  it('renders ChatCoreV2 destructive holds as guard-only confirmations and never executes on confirm', async () => {
+    process.env.CHAT_CORE_V2_ORCHESTRATOR_MODE = 'canary';
+    process.env.CHAT_CORE_V2_CANARY_ENABLED_TENANT_IDS = '7001';
+    process.env.CHAT_CORE_V2_ACTION_GATEWAY_MODE = 'enforce';
+    process.env.CHAT_CORE_V2_LEGACY_WRITE_FALLTHROUGH_BLOCK = 'on';
+    process.env.CHAT_V2_WRITE_EVIDENCE_ENABLED = 'true';
+    process.env.CHAT_V2_EVIDENCE_HMAC_SECRET = 'chat-routes-guard-only-confirmation-secret';
+
+    const first = await dispatch('POST', '/message', 7001, {
+      text: 'Delete all my tasks',
+      clientMessageId: 'chat-core-v2-guard-only-1',
+    });
+
+    expect(first.statusCode, JSON.stringify(first.body)).toBe(202);
+    expect(first.body.routeMethod).toBe('chat-core-v2-action-gateway');
+    expect(first.body.metadata).toMatchObject({
+      type: 'chat_core_v2_write_intent_guard',
+      responseKind: 'action_preview',
+      pendingConfirmation: {
+        kind: 'pending_confirmation',
+        intent_class: 'chat_core_v2_destructive_hold',
+        confirmation_token: expect.any(String),
+      },
+      actionConfirmation: {
+        actionLabel: 'Keep paused',
+        destructive: true,
+        variant: 'destructive',
+        confirmationToken: expect.any(String),
+      },
+      chatCoreV2: {
+        actionGateway: {
+          guardOnlyConfirmation: true,
+        },
+      },
+    });
+    expect(first.body.responseCards).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        kind: 'confirmationCard',
+        destructive: true,
+      }),
+    ]));
+    expect(mockRouteMessage).not.toHaveBeenCalled();
+    expect(mockHandleSecretary).not.toHaveBeenCalled();
+
+    const token = first.body.metadata.pendingConfirmation.confirmation_token;
+    const confirmed = await dispatch('POST', '/confirm-action', 7001, {
+      confirmation_token: token,
+      intent_class: 'chat_core_v2_destructive_hold',
+      idempotencyKey: 'guard-only-confirm-once',
+    });
+
+    expect(confirmed.statusCode, JSON.stringify(confirmed.body)).toBe(200);
+    expect(confirmed.body.routeMethod).toBe('chat-core-v2-action-gateway-confirmation-hold');
+    expect(confirmed.body.metadata).toMatchObject({
+      type: 'chat_core_v2_destructive_confirmation_hold',
+      actionStatus: 'confirmation_acknowledged',
+      verificationStatus: 'not_executed',
+      pendingConfirmation: {
+        kind: 'completed_confirmation',
+        intent_class: 'chat_core_v2_destructive_hold',
+      },
+      chatCoreV2: {
+        guardOnlyConfirmation: true,
+      },
+    });
+    expect(String(confirmed.body.text)).toContain('did not change anything');
+
+    const replay = await dispatch('POST', '/confirm-action', 7001, {
+      confirmation_token: token,
+      intent_class: 'chat_core_v2_destructive_hold',
+      idempotencyKey: 'guard-only-confirm-once',
+    });
+    expect(replay.statusCode).toBe(200);
+    expect(replay.body.metadata).toMatchObject({
+      idempotentReplay: true,
+      confirmationReplay: true,
+      verificationStatus: 'not_executed',
+    });
+  });
+
+  it('uses the ChatCoreV2 route locale for destructive confirmation text instead of stale profile locale', async () => {
+    process.env.CHAT_CORE_V2_ORCHESTRATOR_MODE = 'canary';
+    process.env.CHAT_CORE_V2_CANARY_ENABLED_TENANT_IDS = '7001';
+
+    mockRouteMessage.mockResolvedValue({
+      domain: 'secretary',
+      method: 'keyword',
+      confidence: 0.9,
+      strippedMessage: 'cancel my training plan and clear the calendar',
+    });
+    mockGetUserLanguage.mockReturnValue('en-US');
+
+    const res = await dispatch('POST', '/message', 7001, {
+      text: 'cancel my training plan and clear the calendar',
+    }, {
+      'x-language': 'pt-PT',
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.body.routeMethod).toBe('confirmation-required');
+    expect(String(res.body.text)).toContain('Antes de fazer uma alteração destrutiva');
+    expect(String(res.body.text)).not.toContain('Before I make');
+    expect(res.body.metadata.pendingConfirmation.decisionId).toMatch(/^nc_/);
+    expect(mockRouteMessage).not.toHaveBeenCalled();
+  });
+
+  it('accepts numeric regional language tags like es-419 for ChatCoreV2 route locale', async () => {
+    process.env.CHAT_CORE_V2_ORCHESTRATOR_MODE = 'canary';
+    process.env.CHAT_CORE_V2_CANARY_ENABLED_TENANT_IDS = '7001';
+
+    mockRouteMessage.mockResolvedValue({
+      domain: 'secretary',
+      method: 'keyword',
+      confidence: 0.9,
+      strippedMessage: 'cancel my training plan and clear the calendar',
+    });
+    mockGetUserLanguage.mockReturnValue('en-US');
+
+    const res = await dispatch('POST', '/message', 7001, {
+      text: 'cancel my training plan and clear the calendar',
+    }, {
+      'x-language': 'es-419',
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.body.routeMethod).toBe('confirmation-required');
+    expect(String(res.body.text)).toContain('Antes de hacer un cambio destructivo');
+    expect(String(res.body.text)).not.toContain('Before I make');
+    expect(res.body.metadata.pendingConfirmation.decisionId).toMatch(/^nc_/);
+    expect(mockRouteMessage).not.toHaveBeenCalled();
   });
 
   it('routes accept-this-decision chat confirmations through Decision Center action policy', async () => {
+    process.env.CHAT_CORE_V2_ORCHESTRATOR_MODE = 'canary';
+    process.env.CHAT_CORE_V2_CANARY_ENABLED_TENANT_IDS = '7001';
+
     mockRouteMessage.mockResolvedValue({
       domain: 'secretary',
       method: 'keyword',
@@ -3081,6 +3789,14 @@ describe('Chat API routes', () => {
       actionId: 'option_a',
     });
     expect(mockHandleSecretary).not.toHaveBeenCalled();
+    expect(testDb.prepare(`
+      SELECT fallback_count, total_count
+      FROM chat_v2_legacy_fallback_counter
+      WHERE tenant_id = ?
+    `).get('7001')).toMatchObject({
+      fallback_count: 2,
+      total_count: 2,
+    });
   });
 
   function expectNoStorePendingActionHeaders(res: MockRes): void {

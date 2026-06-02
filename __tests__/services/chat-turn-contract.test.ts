@@ -55,7 +55,7 @@ describe('chat turn contract', () => {
 
   it('keeps the screenshot recipe case as generic Cooking advice rather than local scoped read', () => {
     const contract = inferChatTurnContract({
-      message: 'me indique uma receita de kibe de forno para 3 pessoas',
+      message: 'me indique uma receita de legumes assados para 3 pessoas',
       routedDomain: 'cooking',
     });
 
@@ -66,6 +66,107 @@ describe('chat turn contract', () => {
       expectedResponseShape: 'recipe',
       language: 'pt',
     });
+  });
+
+  it('keeps generic cooking idea questions as direct answers, not forced recipe structures', () => {
+    const english = inferChatTurnContract({
+      message: 'What should I cook for dinner?',
+      routedDomain: 'cooking',
+    });
+    const portuguese = inferChatTurnContract({
+      message: 'O que devo cozinhar para jantar?',
+      routedDomain: 'cooking',
+    });
+    const portugueseRecipeIdea = inferChatTurnContract({
+      message: 'Me dê uma ideia simples de receita para duas pessoas',
+      routedDomain: 'cooking',
+    });
+    const spanishRecipeIdea = inferChatTurnContract({
+      message: 'Dame una idea simple de receta para dos personas',
+      routedDomain: 'cooking',
+    });
+    const mixedRecipeIdea = inferChatTurnContract({
+      message: 'What recipe posso fazer hoje?',
+      routedDomain: 'cooking',
+    });
+    const mixedSimpleRecipeIdea = inferChatTurnContract({
+      message: 'Give me uma receita simples para duas pessoas',
+      routedDomain: 'cooking',
+    });
+
+    expect(english).toMatchObject({
+      skill: 'cooking',
+      routeKind: 'generic_skill_answer',
+      groundingRequired: 'none',
+      expectedResponseShape: 'direct_answer',
+      language: 'en',
+    });
+    expect(portuguese).toMatchObject({
+      skill: 'cooking',
+      routeKind: 'generic_skill_answer',
+      groundingRequired: 'none',
+      expectedResponseShape: 'direct_answer',
+      language: 'pt',
+    });
+    expect(portugueseRecipeIdea).toMatchObject({
+      skill: 'cooking',
+      routeKind: 'generic_skill_answer',
+      groundingRequired: 'none',
+      expectedResponseShape: 'direct_answer',
+      language: 'pt',
+    });
+    expect(spanishRecipeIdea).toMatchObject({
+      skill: 'cooking',
+      routeKind: 'generic_skill_answer',
+      groundingRequired: 'none',
+      expectedResponseShape: 'direct_answer',
+      language: 'es',
+    });
+    expect(mixedRecipeIdea).toMatchObject({
+      skill: 'cooking',
+      routeKind: 'generic_skill_answer',
+      groundingRequired: 'none',
+      expectedResponseShape: 'direct_answer',
+      language: 'mixed',
+    });
+    expect(mixedSimpleRecipeIdea).toMatchObject({
+      skill: 'cooking',
+      routeKind: 'generic_skill_answer',
+      groundingRequired: 'none',
+      expectedResponseShape: 'direct_answer',
+      language: 'mixed',
+    });
+  });
+
+  it('recognizes common Spanish read and cooking prompts as Spanish', () => {
+    expect(inferChatTurnContract({ message: 'Tengo tareas para completar hoy?' })).toMatchObject({
+      skill: 'tasks',
+      routeKind: 'local_read',
+      language: 'es',
+    });
+    expect(inferChatTurnContract({ message: 'Qué puedo cocinar para cenar?' })).toMatchObject({
+      skill: 'cooking',
+      routeKind: 'generic_skill_answer',
+      expectedResponseShape: 'direct_answer',
+      language: 'es',
+    });
+  });
+
+  it('keeps Spanish research prompts in Spanish even when the command word is English', () => {
+    const currentEvents = inferChatTurnContract({
+      message: 'Search noticias recientes sobre inflación en América Latina esta semana.',
+    });
+    const productComparison = inferChatTurnContract({
+      message: 'Search fuentes actuales sobre precio de paneles solares residenciales en México.',
+    });
+
+    for (const contract of [currentEvents, productComparison]) {
+      expect(contract).toMatchObject({
+        routeKind: 'internet_research',
+        groundingRequired: 'web',
+        language: 'es',
+      });
+    }
   });
 
   it('routes current/source-backed requests to selective internet research', () => {
@@ -85,6 +186,34 @@ describe('chat turn contract', () => {
     const contract = inferChatTurnContract({ message: 'What is a good GTD workflow?' });
 
     expect(contract.language).toBe('en');
+  });
+
+  it('keeps generic advice follow-ups out of scoped Secretary reads even with a routed domain hint', () => {
+    const contract = inferChatTurnContract({
+      message: 'Agora me dá um próximo passo pequeno para hoje.',
+      routedDomain: 'secretary',
+    });
+
+    expect(contract).toMatchObject({
+      skill: 'chat',
+      routeKind: 'generic_skill_answer',
+      groundingRequired: 'none',
+      expectedResponseShape: 'direct_answer',
+      language: 'pt',
+    });
+  });
+
+  it('still uses scoped reads when next-step wording explicitly asks about local state', () => {
+    const contract = inferChatTurnContract({
+      message: 'Qual é o próximo passo na minha agenda hoje?',
+      routedDomain: 'secretary',
+    });
+
+    expect(contract).toMatchObject({
+      skill: 'secretary',
+      routeKind: 'local_read',
+      groundingRequired: 'local',
+    });
   });
 
   it('routes Gmail agenda variants to calendar semantics', () => {

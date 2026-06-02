@@ -533,6 +533,23 @@ describe('ChatActionPlanner', () => {
     expect(plan?.steps[0]?.action).not.toBe('delete_task');
   });
 
+  it('does not special-case ordinary church/igreja nouns as unsafe task titles', async () => {
+    const plan = await buildChatActionPlan({
+      ...baseInput,
+      text: 'Create task church flyers',
+      locale: 'en',
+    });
+
+    expect(plan?.steps[0]).toMatchObject({
+      skill: 'tasks',
+      action: 'create_task',
+      requiredArgsPresent: true,
+      risk: 'safe_write',
+    });
+    expect(plan?.steps[0]?.args).toMatchObject({ title: 'Church flyers' });
+    expect(plan?.steps[0]?.args).not.toHaveProperty('rejectedTitle');
+  });
+
   it('resolves "this task" to the recent verified task and completes it once', async () => {
     const taskProvider = {
       getLists: vi.fn().mockResolvedValue({ success: true, data: [{ id: 'tasks', displayName: 'Tasks', wellknownListName: 'defaultList' }] }),
@@ -1022,10 +1039,10 @@ describe('ChatActionPlanner', () => {
       requiredArgsPresent: true,
     });
 
-    expect(shouldRunActionPlannerBeforeReadOnlyFastPaths('Me indique uma receita de kibe de forno para 3 pessoas')).toBe(false);
+    expect(shouldRunActionPlannerBeforeReadOnlyFastPaths('Me indique uma receita de legumes assados para 3 pessoas')).toBe(false);
     const recipePlan = await buildChatActionPlan({
       ...baseInput,
-      text: 'Me indique uma receita de kibe de forno para 3 pessoas',
+      text: 'Me indique uma receita de legumes assados para 3 pessoas',
     });
     expect(recipePlan).toBeNull();
 

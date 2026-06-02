@@ -82,12 +82,12 @@ afterEach(() => {
   testDb.close();
 });
 
-function seedPlan(opts: { id: number; userId: number; planVersion?: number }): void {
+function seedPlan(opts: { id: number; userId: number; planVersion?: number; status?: string }): void {
   testDb.prepare(`
     INSERT INTO fitness_training_plans
       (id, user_id, name, sport, duration_weeks, start_date, end_date, status, plan_version)
-    VALUES (?, ?, 'Test plan', 'gym', 12, '2026-01-01', '2026-04-01', 'active', ?)
-  `).run(opts.id, opts.userId, opts.planVersion ?? 1);
+    VALUES (?, ?, 'Test plan', 'gym', 12, '2026-01-01', '2026-04-01', ?, ?)
+  `).run(opts.id, opts.userId, opts.status ?? 'active', opts.planVersion ?? 1);
 }
 
 function seedSession(opts: { id: number; planId: number; weekId: number; userId: number }): void {
@@ -335,6 +335,19 @@ describe('training-plan-lifecycle — findOrphanedOwnerships', () => {
     });
     const orphans = findOrphanedOwnerships(100);
     expect(orphans.length).toBe(0);
+  });
+
+  it('returns active rows when the owning plan is no longer active even if sessions remain', () => {
+    seedPlan({ id: 1, userId: 100, status: 'cancelled' });
+    seedSession({ id: 10, planId: 1, weekId: 20, userId: 100 });
+    recordCalendarOwnership({
+      planId: 1, planVersion: 1, sessionId: 10, userId: 100, eventId: 'evt-cancelled-plan', source: 'google',
+    });
+
+    const orphans = findOrphanedOwnerships(100);
+
+    expect(orphans.length).toBe(1);
+    expect(orphans[0].calendar_event_id).toBe('evt-cancelled-plan');
   });
 
   it('does not treat an existing unlinked session as an orphan while sync can still relink it', () => {

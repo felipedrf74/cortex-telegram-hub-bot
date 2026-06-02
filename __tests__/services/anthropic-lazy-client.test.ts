@@ -15,6 +15,16 @@ describe('createLazyAnthropicClient', () => {
     expect(client.peekForTest()).toBeNull();
   });
 
+  it('does not construct a client when Anthropic is enabled without an API key', () => {
+    vi.stubEnv('ANTHROPIC_ENABLED', 'true');
+    vi.stubEnv('ANTHROPIC_API_KEY', '');
+    const client = createLazyAnthropicClient();
+
+    expect(client.peekForTest()).toBeNull();
+    expect(() => client.get()).toThrow('ANTHROPIC_RUNTIME_DISABLED');
+    expect(client.peekForTest()).toBeNull();
+  });
+
   it('constructs once on first enabled use and reuses the instance', () => {
     vi.stubEnv('ANTHROPIC_ENABLED', 'true');
     vi.stubEnv('ANTHROPIC_API_KEY', 'test-key');

@@ -25,6 +25,8 @@ import {
 } from '../../services/task-working-set-policy';
 import { handleCachedRoute, routeCacheKey } from '../route-helpers/cached-route-handler';
 import { sendProviderRouteError } from '../route-helpers/provider-error-classifier';
+import { buildNexusAnswerContract } from '../../services/chat-answer-contract';
+import { safeRecordChatV2DeterministicReadEvidence } from '../../services/chat-deterministic-read-evidence';
 
 // Cache TTLs
 const LISTS_CACHE_TTL = 300;  // 5 min for list names (rarely change)
@@ -59,6 +61,50 @@ export function taskDueDateKey(
   const raw = task?.dueDateTime?.dateTime || task?.dueDateTime;
   if (!raw) return null;
   return dateKeyInAppTimezone(raw, timezone);
+}
+
+function recordTasksFilteredApiReadEvidence(input: {
+  userId: number;
+  tenantId: number | undefined;
+  filter: string;
+  payload: { count?: unknown };
+  cached: boolean;
+}): void {
+  const tenantId = typeof input.tenantId === 'number' && input.tenantId > 0 ? input.tenantId : input.userId;
+  const normalizedMessage = `GET /api/v1/tasks/filtered?filter=${input.filter}`;
+  const requestId = `tasks-filtered:${tenantId}:${input.userId}:${input.filter}:${Date.now()}`;
+  const count = typeof input.payload.count === 'number' ? input.payload.count : 0;
+  safeRecordChatV2DeterministicReadEvidence({
+    tenantId,
+    userId: input.userId,
+    requestId,
+    normalizedMessage,
+    tokenZeroSurface: 'api',
+    tokenZeroPreserved: true,
+    tenantUserIsolationPassed: true,
+    response: {
+      id: requestId,
+      text: `Tasks API returned ${count} item${count === 1 ? '' : 's'}.`,
+      domain: 'tasks',
+      routeMethod: 'api',
+      metadata: {
+        chatReasoning: buildNexusAnswerContract({
+          intent: 'tasks.read',
+          ownerSkill: 'tasks',
+          routeMethod: 'api',
+          routeKind: 'local_read',
+          groundingRequirement: 'local',
+          expectedResponseShape: 'task_options',
+          language: 'en',
+          actionability: 'answer_only',
+          verificationStatus: 'not_required',
+          confidence: 1,
+          traceId: requestId,
+          fallback: input.cached ? { fallbackType: 'cached_read' } : undefined,
+        }),
+      },
+    },
+  });
 }
 
 /**
@@ -361,7 +407,16 @@ export function taskRoutes(): Router {
         staleSeconds: TASKS_SWR_STALE,
         refreshContext: { source: 'tasks_route', operation: 'task_swr_refresh', userId },
         fetchFresh: fetchAndCache,
-        send: (payload, meta) => sendSuccess(res, payload, { cached: meta.cached }),
+        send: (payload, meta) => {
+          recordTasksFilteredApiReadEvidence({
+            userId,
+            tenantId: (req as any).tenantId,
+            filter,
+            payload,
+            cached: meta.cached,
+          });
+          sendSuccess(res, payload, { cached: meta.cached });
+        },
       });
     } catch (err: any) {
       logger.error({ err }, 'iOS tasks/filtered failed');

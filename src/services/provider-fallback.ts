@@ -10,15 +10,52 @@
  * - Half-open recovery: after cooldown, probe the primary once to check recovery
  */
 
-import { AIProvider, AICallResult, AIToolResultMessage, CallDomainOptions } from './ai-provider';
+import { AIProvider, AICallResult, AIToolResultMessage, CallDomainOptions, ClassifyOptions } from './ai-provider';
 import { DomainName, DomainMessage, ClassificationResult } from '../domains/types';
 import { logger } from '../utils/logger';
 import { getCurrentContext } from '../utils/request-context';
+import { config } from '../config';
 
 // ─── Error Classification ─────────────────────────────────────────
 // Only retryable errors should trigger circuit-breaker failures and fallback.
 // Non-retryable errors (auth failures, bad requests) should throw immediately
 // without polluting the circuit breaker state.
+
+// Codex QA round 7 P1: stop reasons that indicate truncated output.
+// Anthropic emits `max_tokens`, Gemini emits `MAX_TOKENS`, OpenAI
+// emits `length`. When primary returns one of these we attempt the
+// fallback provider instead of shipping a half-answer.
+const TRUNCATED_STOP_REASONS = new Set([
+  'max_tokens',
+  'MAX_TOKENS',
+  'length',
+  'LENGTH',
+]);
+
+function isTruncatedDomainResult(result: unknown): boolean {
+  if (!result || typeof result !== 'object') return false;
+  const stop = (result as { stopReason?: unknown }).stopReason;
+  if (typeof stop !== 'string') return false;
+  return TRUNCATED_STOP_REASONS.has(stop);
+}
+
+// Codex QA round 9: a typed error so the route's catch can recognize
+// truncation as RETRYABLE and emit a degraded response instead of a
+// 500. Without this, a plain Error bubbles up as a non-retryable
+// internal failure and the iOS client sees an internal error.
+export class AIProviderTruncatedError extends Error {
+  readonly retryable = true;
+  readonly status = 502;
+  readonly code = 'AI_PROVIDER_TRUNCATED';
+  readonly providerName: string;
+  readonly stopReason: string;
+  constructor(providerName: string, stopReason: string) {
+    super(`AI provider ${providerName} returned truncated output (stopReason=${stopReason})`);
+    this.name = 'AIProviderTruncatedError';
+    this.providerName = providerName;
+    this.stopReason = stopReason;
+  }
+}
 
 function isRetryableError(err: any): boolean {
   const status = err?.status ?? err?.statusCode ?? err?.error_code;
@@ -40,6 +77,25 @@ import { planSecretaryOptimization, type SecretaryOptimization } from './secreta
 import { TOOLS } from './anthropic';
 import type Anthropic from '@anthropic-ai/sdk';
 
+// ─── Option 3 (O3-A7): low-confidence classify escalation ─────────
+// Domains where misroute risk is highest because they bind to live
+// tool calls (calendar / email / training-plan). When the primary
+// classifier returns one of these with confidence BELOW
+// `toolDomainMinConfidence`, escalate to the configured fallback
+// provider. For non-tool domains use `minConfidence`. The defaults
+// (0.65 / 0.80) are no-ops for Gemini-primary (confidence ≈ 1.0 in
+// practice) and become active when AI_CLASSIFY_PRIMARY=ollama under
+// the Option 3 cutover.
+const TOOL_BEARING_CLASSIFY_DOMAINS: ReadonlySet<string> = new Set(['secretary', 'triathlon']);
+
+function isLowConfidenceClassifyResult(result: ClassificationResult): boolean {
+  const thresholds = config.classifyConfidenceThresholds;
+  if (!thresholds) return false; // defensive: skip if config missing (test fixtures, etc.)
+  const isToolDomain = TOOL_BEARING_CLASSIFY_DOMAINS.has(result.domain);
+  const threshold = isToolDomain ? thresholds.toolDomainMinConfidence : thresholds.minConfidence;
+  return result.confidence < threshold;
+}
+
 // ─── Tenant-safe routing metadata ─────────────────────────────────
 
 export type RoutingCallKind = 'classify' | 'domain' | 'tool-continuation';
@@ -51,7 +107,9 @@ export type FallbackReason =
   | 'network_unavailable'
   | 'provider_overloaded'
   | 'circuit_open'
-  | 'unknown_retryable';
+  | 'unknown_retryable'
+  // Codex QA round 9: both providers returned truncated output.
+  | 'fallback_truncated';
 
 export interface SafeProviderErrorSummary {
   name: string;
@@ -227,16 +285,100 @@ function sanitizedFallbackError(reason: FallbackReason | 'non_retryable'): Error
 
 // ─── Task Types ────────────────────────────────────────────────────
 
-/** The three categories of AI work, each independently routable. */
-export type TaskType = 'classify' | 'chat' | 'tool-use';
+/**
+ * Categories of AI work, each independently routable through
+ * `providerRouting` in config. The first three are the original
+ * routable surfaces; `scriptGeneration` and `localReasoning` were
+ * added by WO-ollama-local-llm — they have separate dispatch methods
+ * (`dispatchScriptGeneration`, `dispatchLocalReasoning`) that honor
+ * the sentinel fallback targets `'none'` and `'approved_cloud_reasoning'`
+ * instead of expecting both pair members to be real `AIProvider`
+ * instances.
+ */
+export type TaskType =
+  | 'classify'
+  | 'chat'
+  | 'tool-use'
+  | 'scriptGeneration'
+  | 'localReasoning';
 
 /**
  * Determine the task type for a callDomain/continueWithToolResults call.
  * Secretary and triathlon use tools; content is pure chat.
+ *
+ * The return type is narrowed to the legacy three task types because
+ * `callDomain` / `continueWithToolResults` only dispatch through those —
+ * the new `scriptGeneration` / `localReasoning` types go through their
+ * own explicit dispatch methods, not the domain router.
  */
-export function resolveTaskType(domain: DomainName): TaskType {
+export type DomainDispatchTaskType = 'classify' | 'chat' | 'tool-use';
+
+export function resolveTaskType(domain: DomainName): DomainDispatchTaskType {
   if (domain === 'secretary' || domain === 'triathlon') return 'tool-use';
   return 'chat';
+}
+
+// ─── Phase K runtime hard-block ───────────────────────────────────
+//
+// Even if config-parse let an Ollama override through (or future code
+// dispatches with Ollama by other means), REFUSE to call Ollama for
+// requests that need tools, execute writes, or hit a tool-requiring
+// domain shape. The bypass routes to the cloud fallback for the
+// domain.
+//
+// IMPORTANT: domain string can be 'triathlon' while contract's
+// ownerSkill is 'training' (per chat-answer-contract.ts). The guard
+// MUST check BOTH shapes (Operator amendment item 3).
+//
+// Also enforces FINANCE FAIL-CLOSED (Operator amendment item 6):
+// finance routes to Ollama only when the request is explicitly
+// `answer_only` AND no tools AND no execute intent. Missing or
+// ambiguous contract → cloud, not Ollama.
+const PHASE_K_TOOL_REQUIRING_DOMAINS = new Set<DomainName>(['secretary', 'triathlon']);
+const PHASE_K_TOOL_REQUIRING_OWNERS = new Set<string>(['secretary', 'training']);
+const PHASE_K_TOOL_USE_TASK_TYPE: DomainDispatchTaskType = 'tool-use';
+
+export function shouldBypassOllamaForToolOrWrite(input: {
+  providerName: string;
+  domain: DomainName;
+  taskType: DomainDispatchTaskType;
+  callOptions?: CallDomainOptions;
+}): { bypass: boolean; reason?: string } {
+  if (input.providerName !== 'ollama') return { bypass: false };
+  if (PHASE_K_TOOL_REQUIRING_DOMAINS.has(input.domain)) {
+    return { bypass: true, reason: `tool_requiring_domain:${input.domain}` };
+  }
+  const ownerSkill = input.callOptions?.ownerSkill;
+  if (ownerSkill && PHASE_K_TOOL_REQUIRING_OWNERS.has(ownerSkill)) {
+    return { bypass: true, reason: `tool_requiring_owner:${ownerSkill}` };
+  }
+  if (input.taskType === PHASE_K_TOOL_USE_TASK_TYPE) {
+    return { bypass: true, reason: 'task_type_tool_use' };
+  }
+  if (input.callOptions?.executeIntent === true) {
+    return { bypass: true, reason: 'execute_intent' };
+  }
+  // Phase K Codex round-9 fix (F1): filteredTools is auto-populated by
+  // buildOptimizedOptions() from getToolsForDomainCached(domain) — it
+  // represents AVAILABLE tools, not INTENT to use them. Treating
+  // non-empty filteredTools as bypass-trigger sent every Phase K target
+  // domain (cooking/content/finance) to cloud, defeating the routing
+  // flip. The bypass now relies on the strict signals (domain in
+  // tool-requiring set, ownerSkill in tool-requiring set, taskType=
+  // 'tool-use', or explicit executeIntent). Ollama silently ignores
+  // the filteredTools at request time (it doesn't pass them to the
+  // /api/chat payload), so available-but-unused tools are no longer a
+  // misclassification.
+  //
+  // Finance fail-closed: finance is allowed on Ollama ONLY when the
+  // dispatcher has explicitly marked it as a finance-shape request.
+  // Missing ownerSkill or non-finance ownerSkill on a finance domain
+  // request → bypass.
+  if (input.domain === 'finance') {
+    if (!ownerSkill) return { bypass: true, reason: 'finance_missing_owner_skill' };
+    if (ownerSkill !== 'finance') return { bypass: true, reason: `finance_unexpected_owner:${ownerSkill}` };
+  }
+  return { bypass: false };
 }
 
 // ─── Circuit Breaker ───────────────────────────────────────────────
@@ -350,10 +492,32 @@ export interface TaskProviderPair {
   fallback?: AIProvider;
 }
 
+/**
+ * Sentinel routing targets accepted by the new task types added in
+ * WO-ollama-local-llm:
+ *   - `'none'`: no fallback; the primary's error surfaces to the caller.
+ *   - `'approved_cloud_reasoning'`: dispatch through
+ *     `cloud-reasoning-gate.selectApprovedCloudReasoningProvider`; if the
+ *     gate rejects, apply `onUnapproved` policy.
+ */
+export type FallbackSentinel = 'none' | 'approved_cloud_reasoning';
+
+/**
+ * Pair shape for `scriptGeneration` and `localReasoning`. Differs from
+ * `TaskProviderPair` only by allowing the fallback to be a sentinel
+ * string rather than a real `AIProvider`.
+ */
+export interface SentinelFallbackPair {
+  primary: AIProvider;
+  fallback: AIProvider | FallbackSentinel;
+}
+
 export interface TaskRoutingConfig {
   classify: TaskProviderPair;
   chat: TaskProviderPair;
   'tool-use': TaskProviderPair;
+  scriptGeneration?: SentinelFallbackPair;
+  localReasoning?: SentinelFallbackPair;
   circuitBreaker: CircuitBreakerOptions;
 }
 
@@ -421,6 +585,15 @@ export class TaskRoutingProvider implements AIProvider {
       providers.add(pair.primary.name);
       if (pair.fallback) providers.add(pair.fallback.name);
     }
+    // v2: include the new task-type pairs (skip if not configured or if
+    // fallback is a sentinel string rather than a provider).
+    for (const optionalPair of [routing.scriptGeneration, routing.localReasoning]) {
+      if (!optionalPair) continue;
+      providers.add(optionalPair.primary.name);
+      if (typeof optionalPair.fallback === 'object' && optionalPair.fallback !== null) {
+        providers.add((optionalPair.fallback as AIProvider).name);
+      }
+    }
     this.name = `routing(${[...providers].join(',')})`;
   }
 
@@ -457,12 +630,16 @@ export class TaskRoutingProvider implements AIProvider {
    * 4. If no fallback or fallback also fails, throw
    */
   private async executeWithFallback<T>(
-    taskType: TaskType,
+    // The legacy dispatch path only handles the three original task
+    // types; the new ones (scriptGeneration, localReasoning) go through
+    // dispatchOptionalTaskMethod instead because they have sentinel
+    // fallback semantics.
+    taskType: 'classify' | 'chat' | 'tool-use',
     fn: (provider: AIProvider) => Promise<T>,
     pairOverride?: TaskProviderPair,
     metadata?: RoutingCallMetadata,
   ): Promise<T> {
-    const pair = pairOverride ?? this.routing[taskType];
+    const pair: TaskProviderPair = pairOverride ?? this.routing[taskType];
     const primaryBreaker = this.getBreaker(pair.primary.name);
 
     // Try primary if circuit allows
@@ -477,6 +654,36 @@ export class TaskRoutingProvider implements AIProvider {
         }
         logger.debug(attemptMeta, 'AI provider routing attempt');
         const result = await fn(pair.primary);
+        // Codex QA round 7 (P1 prod blocker): treat truncated provider
+        // output as a degraded result and try the fallback. Anthropic
+        // returns stopReason='max_tokens', Gemini 'MAX_TOKENS', OpenAI
+        // 'length'. Previously these were accepted as success and a
+        // clipped half-answer shipped to the user.
+        // Codex round-10 fix (F-new-2): treat truncated primary output
+        // as failure REGARDLESS of whether a fallback exists. The Phase K
+        // runtime bypass intentionally clears `pair.fallback` (F5 fix)
+        // when it swaps Ollama→cloud, which made the old `&& pair.fallback`
+        // guard accept truncated cloud responses silently. The correct
+        // behavior is: ALWAYS surface truncation. If a fallback exists,
+        // executeWithFallback will fall through (existing path); if not,
+        // the error propagates to the caller, who can render a "try
+        // again" with explicit "the response was cut off" hint instead of
+        // shipping a clipped half-answer as success.
+        if (isTruncatedDomainResult(result)) {
+          const stopReason = String((result as { stopReason?: string }).stopReason ?? 'unknown');
+          logger.warn(
+            {
+              ...attemptMeta,
+              stopReason,
+              textChars: typeof (result as { text?: unknown }).text === 'string' ? (result as { text: string }).text.length : 0,
+              hasFallback: !!pair.fallback,
+            },
+            pair.fallback
+              ? 'Primary provider returned truncated output — falling back to secondary provider'
+              : 'Primary provider returned truncated output — no fallback configured, surfacing error',
+          );
+          throw new AIProviderTruncatedError(pair.primary.name, stopReason);
+        }
         primaryBreaker.recordSuccess();
         const pm = this.getMetrics(pair.primary.name);
         pm.usageCount++;
@@ -597,6 +804,46 @@ export class TaskRoutingProvider implements AIProvider {
       }));
       logger.debug(fallbackMeta, 'AI provider fallback attempt');
       const result = await fn(pair.fallback!);
+      // Codex QA round 8/9: if the fallback ALSO returns truncated
+      // output, do not silently ship a clipped half-answer. Throw a
+      // typed AIProviderTruncatedError (retryable=true, status=502)
+      // so the route's catch hands off to the degraded-response path
+      // instead of 500ing. Metrics are written ONCE here — the outer
+      // catch must skip its own usage/failure increment to avoid
+      // double-counting.
+      if (isTruncatedDomainResult(result)) {
+        const stopReason = String((result as { stopReason?: string }).stopReason ?? 'unknown');
+        logger.warn(
+          {
+            ...fallbackMeta,
+            stopReason,
+            textChars: typeof (result as { text?: unknown }).text === 'string' ? (result as { text: string }).text.length : 0,
+          },
+          'Fallback provider returned truncated output — refusing to ship clipped response',
+        );
+        const fm = this.getMetrics(pair.fallback!.name);
+        fm.usageCount++;
+        fm.failureCount++;
+        fm.lastFailureAt = new Date().toISOString();
+        // Telemetry signal so dashboards see this terminal state.
+        const truncatedReason: FallbackReason = 'fallback_truncated';
+        this.emitFallbackEvent({
+          ...safeRoutingMetadata(taskType, pair.fallback!.name, metadata, {
+            fallbackUsed: true,
+            fallbackReason: truncatedReason,
+            primaryProvider: pair.primary.name,
+            fallbackProvider: pair.fallback!.name,
+            circuitOpen: false,
+          }),
+          error: sanitizedFallbackError(truncatedReason),
+          errorSummary: { name: 'AIProviderTruncatedError', retryable: true, reason: truncatedReason },
+          fallbackReason: truncatedReason,
+          primaryProvider: pair.primary.name,
+          fallbackProvider: pair.fallback!.name,
+          circuitOpen: false,
+        });
+        throw new AIProviderTruncatedError(pair.fallback!.name, stopReason);
+      }
       const fm = this.getMetrics(pair.fallback!.name);
       fm.usageCount++;
       fm.lastSuccessAt = new Date().toISOString();
@@ -605,10 +852,15 @@ export class TaskRoutingProvider implements AIProvider {
     } catch (fallbackErr) {
       const retryable = isRetryableError(fallbackErr);
       const errorSummary = summarizeProviderError(fallbackErr, retryable);
-      const fm = this.getMetrics(pair.fallback!.name);
-      fm.usageCount++;
-      fm.failureCount++;
-      fm.lastFailureAt = new Date().toISOString();
+      // Codex QA round 9: skip metric increments for AIProviderTruncatedError
+      // because the throwing path already wrote them once. Otherwise the
+      // fallback usageCount + failureCount would double-count.
+      if (!(fallbackErr instanceof AIProviderTruncatedError)) {
+        const fm = this.getMetrics(pair.fallback!.name);
+        fm.usageCount++;
+        fm.failureCount++;
+        fm.lastFailureAt = new Date().toISOString();
+      }
       logger.warn(
         {
           ...safeRoutingMetadata(taskType, pair.fallback!.name, metadata, {
@@ -649,9 +901,10 @@ export class TaskRoutingProvider implements AIProvider {
   async classify(
     message: string,
     activeContext?: { domain: DomainName; lastAssistantMessage: string },
+    options?: ClassifyOptions,
   ): Promise<ClassificationResult> {
-    return this.executeWithFallback('classify', (p) =>
-      p.classify(message, activeContext),
+    const primaryResult = await this.executeWithFallback('classify', (p) =>
+      p.classify(message, activeContext, options),
       undefined,
       {
         callKind: 'classify',
@@ -662,6 +915,51 @@ export class TaskRoutingProvider implements AIProvider {
         operatorOverrideApplied: false,
       },
     );
+
+    // O3-A7 — Confidence-based fallback escalation. When the primary
+    // classifier returns a low-confidence result, retry once through
+    // the fallback provider. Tool-bearing domains (secretary, triathlon)
+    // require a higher confidence bar because misroute risk is higher
+    // (a secretary misclassified as cooking loses the user's scheduling
+    // intent entirely). Defaults are no-op for the current Gemini-primary
+    // path because Gemini's classify confidence is consistently ≥0.95;
+    // becomes active when AI_CLASSIFY_PRIMARY=ollama (Option 3 cutover).
+    //
+    // Why not raise inside the executeWithFallback fn: that would burn
+    // a circuit-breaker failure on the primary, which is wrong — the
+    // primary did its job (returned a result), it was just uncertain.
+    // We escalate WITHOUT marking the primary unhealthy.
+    const pair = this.routing.classify;
+    if (
+      pair.fallback &&
+      pair.fallback.name !== pair.primary.name &&
+      isLowConfidenceClassifyResult(primaryResult)
+    ) {
+      logger.warn(
+        {
+          primaryName: pair.primary.name,
+          fallbackName: pair.fallback.name,
+          predictedDomain: primaryResult.domain,
+          confidence: primaryResult.confidence,
+          isToolDomain: TOOL_BEARING_CLASSIFY_DOMAINS.has(primaryResult.domain),
+        },
+        'classify result below confidence threshold — escalating to fallback provider',
+      );
+      try {
+        const fallbackResult = await pair.fallback.classify(message, activeContext, options);
+        const fm = this.getMetrics(pair.fallback.name);
+        fm.usageCount++;
+        fm.lastSuccessAt = new Date().toISOString();
+        return fallbackResult;
+      } catch (err) {
+        logger.warn(
+          { err: err instanceof Error ? err.message : String(err) },
+          'low-confidence fallback classify failed — returning primary result',
+        );
+        return primaryResult;
+      }
+    }
+    return primaryResult;
   }
 
   // Cache domain-specific provider pairs to avoid re-construction on every call.
@@ -674,13 +972,15 @@ export class TaskRoutingProvider implements AIProvider {
    * then falls back to task-type routing.
    */
   private resolveProviderPairForDomain(domain: DomainName): {
-    taskType: TaskType;
+    taskType: DomainDispatchTaskType;
     pair: TaskProviderPair;
     pairSource: ProviderPairSource;
     operatorOverrideApplied: boolean;
   } {
-    const taskType = resolveTaskType(domain);
-    const defaultPair = this.routing[taskType];
+    const taskType: DomainDispatchTaskType = resolveTaskType(domain);
+    // taskType is narrowed to the three legacy task types so the indexer
+    // returns TaskProviderPair (not the wider union over new sentinel pairs).
+    const defaultPair: TaskProviderPair = this.routing[taskType];
 
     // Check cache first
     const cached = this.domainPairCache.get(domain);
@@ -729,7 +1029,8 @@ export class TaskRoutingProvider implements AIProvider {
     stateContext: string,
     optionsOrMaxTokens?: number | CallDomainOptions,
   ): Promise<AICallResult> {
-    const { taskType, pair, pairSource, operatorOverrideApplied } = this.resolveProviderPairForDomain(domain);
+    const { taskType, pair: resolvedPair, pairSource, operatorOverrideApplied } = this.resolveProviderPairForDomain(domain);
+    let pair = resolvedPair;
 
     // ── TASK-17 Layer 3+4+5: provider-agnostic optimization ──────
     //
@@ -746,6 +1047,58 @@ export class TaskRoutingProvider implements AIProvider {
       ? { maxTokensOverride: optionsOrMaxTokens }
       : (optionsOrMaxTokens || {});
     const opts = this.buildOptimizedOptions(domain, history, currentMessage, callerOpts);
+
+    // ── Phase K runtime hard-block (2026-05-26) ──────────────────
+    // If the resolved primary is Ollama but the request shape requires
+    // tools/execute (or finance is ambiguous), swap primary for the
+    // fallback before dispatch. The fallback chain remains intact so
+    // transient cloud errors don't blackhole the user. See
+    // shouldBypassOllamaForToolOrWrite + plan amendments A4/A5/item 6.
+    const bypass = shouldBypassOllamaForToolOrWrite({
+      providerName: pair.primary.name,
+      domain,
+      taskType,
+      callOptions: opts.callOptions,
+    });
+    if (bypass.bypass) {
+      // Without a usable fallback we can't safely bypass — better to
+      // let executeWithFallback raise the unsupported-capability error
+      // than to NPE here. Log + skip the swap.
+      if (!pair.fallback) {
+        logger.error(
+          {
+            domain,
+            taskType,
+            ownerSkill: opts.callOptions.ownerSkill,
+            providerOriginalPrimary: pair.primary.name,
+            reason: bypass.reason,
+          },
+          'phase_k_bypass_ollama_for_tool_or_write — bypass needed but no fallback configured; passing through to natural error',
+        );
+      } else {
+        logger.warn(
+          {
+            domain,
+            taskType,
+            ownerSkill: opts.callOptions.ownerSkill,
+            executeIntent: opts.callOptions.executeIntent,
+            providerOriginalPrimary: pair.primary.name,
+            providerSwappedTo: pair.fallback.name,
+            reason: bypass.reason,
+          },
+          'phase_k_bypass_ollama_for_tool_or_write — swapping primary to fallback (cloud)',
+        );
+        // Phase K Codex round-9 fix (F5): do NOT set
+        // {primary: fallback, fallback: fallback} — that makes
+        // executeWithFallback call the same cloud provider TWICE on a
+        // retryable failure (double cost, double latency, bogus
+        // fallback telemetry). The runtime hard-block routes to cloud
+        // intentionally; if cloud also fails, we surface the error to
+        // the caller instead of retrying the same provider as its own
+        // fallback. There is no usable tertiary in v1.
+        pair = { primary: pair.fallback, fallback: undefined };
+      }
+    }
 
     return this.executeWithFallback(taskType, (p) =>
       p.callDomain(domain, opts.slicedHistory, currentMessage, stateContext, opts.callOptions),
@@ -842,12 +1195,26 @@ export class TaskRoutingProvider implements AIProvider {
     // For example, if the caller passes filteredTools explicitly, that
     // overrides the auto-filter — useful for testing and for special
     // ops paths (like a "send all tools" debug flag).
+    //
+    // Phase K Codex round-9 fix (F2): ownerSkill + executeIntent hints
+    // from chat-message-routes / handleSimpleDomain MUST be preserved
+    // here so the runtime hard-block in callDomain can see them. The
+    // previous implementation discarded them, which is why the bypass
+    // helper couldn't catch the finance-fail-closed case (and why the
+    // operator's "auto-derive ownerSkill from domain" only worked
+    // partially).
     const callOptions: CallDomainOptions = {
       filteredTools: callerOpts.filteredTools ?? optimization.filteredTools,
       modelTier: callerOpts.modelTier ?? optimization.modelTier,
       maxTokensOverride: callerOpts.maxTokensOverride,
       userId: callerOpts.userId,
       tenantId: callerOpts.tenantId,
+      modelOverride: callerOpts.modelOverride,
+      containsPrivateData: callerOpts.containsPrivateData,
+      allowCloudEscalation: callerOpts.allowCloudEscalation,
+      redactionRequired: callerOpts.redactionRequired,
+      ownerSkill: callerOpts.ownerSkill,
+      executeIntent: callerOpts.executeIntent,
     };
 
     return {
@@ -911,4 +1278,288 @@ export class TaskRoutingProvider implements AIProvider {
     }
     return result;
   }
+
+  // ─── New task-type dispatch (v2 — WO-ollama-local-llm) ────────────
+  //
+  // `scriptGeneration` and `localReasoning` are sentinel-fallback-aware,
+  // so they bypass `executeWithFallback` (which assumes both pair members
+  // are real providers) and instead implement their own dispatch:
+  //
+  //   1. Try primary's optional method (typed via `keyof AIProvider`
+  //      narrowing — if the provider doesn't implement it, we treat that
+  //      as `unsupported_capability` and route around immediately).
+  //   2. On success: return.
+  //   3. On `LocalLLMError(capacity_exceeded | input_token_overflow |
+  //      unsupported_capability)`: route around WITHOUT incrementing the
+  //      circuit breaker (busy ≠ broken).
+  //   4. On other retryable errors: increment circuit, then fall through
+  //      to the configured fallback target.
+  //   5. Fallback target dispatch:
+  //      - `'none'`: re-throw the primary error (no silent escalation).
+  //      - `'approved_cloud_reasoning'`: call
+  //        `cloud-reasoning-gate.selectApprovedCloudReasoningProvider`;
+  //        if accepted, call the chosen provider's `callDomain` with
+  //        `modelOverride = selection.model` and
+  //        `containsPrivateData`/`allowCloudEscalation` echoed through.
+  //        If the gate rejects, apply `config.cloudReasoningFallback.onUnapproved`.
+  //      - real `AIProvider`: call its optional method directly.
+
+  async dispatchScriptGeneration(task: unknown): Promise<unknown> {
+    const pair = this.routing.scriptGeneration;
+    if (!pair) {
+      throw new Error('TaskRoutingProvider: scriptGeneration is not configured. Set AI_SCRIPT_GENERATION_PRIMARY in .env.');
+    }
+    return this.dispatchOptionalTaskMethod(
+      'scriptGeneration',
+      pair,
+      'generateScript',
+      task,
+    );
+  }
+
+  async dispatchLocalReasoning(task: unknown): Promise<unknown> {
+    const pair = this.routing.localReasoning;
+    if (!pair) {
+      throw new Error('TaskRoutingProvider: localReasoning is not configured. Set AI_LOCAL_REASONING_PRIMARY in .env.');
+    }
+    return this.dispatchOptionalTaskMethod(
+      'localReasoning',
+      pair,
+      'localReason',
+      task,
+    );
+  }
+
+  /**
+   * Internal helper for the two sentinel-aware dispatch paths. Keeps the
+   * fallback semantics (sentinel vs provider) in one place so both task
+   * types share identical behavior.
+   */
+  private async dispatchOptionalTaskMethod(
+    taskType: TaskType,
+    pair: SentinelFallbackPair,
+    methodName: 'generateScript' | 'localReason',
+    task: unknown,
+  ): Promise<unknown> {
+    const primaryBreaker = this.getBreaker(pair.primary.name);
+    const taskRecord = (task ?? {}) as {
+      containsPrivateData?: boolean;
+      allowCloudEscalation?: boolean;
+      redactionRequired?: boolean;
+      prompt?: string;
+      description?: string;
+    };
+
+    // ── Try primary ─────────────────────────────────────────────────
+    if (primaryBreaker.canAttempt()) {
+      const primaryMethod = (pair.primary as unknown as Record<string, unknown>)[methodName];
+      if (typeof primaryMethod !== 'function') {
+        // Primary doesn't implement the optional capability — treat as
+        // unsupported and route around without incrementing the circuit.
+        logger.warn(
+          { taskType, provider: pair.primary.name, methodName },
+          'TaskRoutingProvider: primary provider does not implement optional method — routing to fallback',
+        );
+      } else {
+        try {
+          const result = await (primaryMethod as (t: unknown) => Promise<unknown>).call(pair.primary, task);
+          primaryBreaker.recordSuccess();
+          const pm = this.getMetrics(pair.primary.name);
+          pm.usageCount++;
+          pm.lastSuccessAt = new Date().toISOString();
+          return result;
+        } catch (err) {
+          const retryable = isRetryableError(err);
+          const isOperational = isOperationalLocalLLMError(err);
+          if (retryable && !isOperational) {
+            primaryBreaker.recordFailure();
+          }
+          const pm = this.getMetrics(pair.primary.name);
+          pm.usageCount++;
+          pm.failureCount++;
+          pm.lastFailureAt = new Date().toISOString();
+          if (!retryable) {
+            // Non-retryable error from a "real" failure — don't escalate.
+            throw err;
+          }
+          // Fall through to fallback dispatch with the original error in scope.
+          return this.dispatchFallbackForOptionalMethod(taskType, pair, methodName, task, taskRecord, err);
+        }
+      }
+    }
+
+    // Circuit open OR primary missing the optional method — go straight
+    // to fallback dispatch with a synthetic error reason.
+    return this.dispatchFallbackForOptionalMethod(
+      taskType,
+      pair,
+      methodName,
+      task,
+      taskRecord,
+      new Error(`primary_unavailable:${pair.primary.name}.${methodName}`),
+    );
+  }
+
+  private async dispatchFallbackForOptionalMethod(
+    taskType: TaskType,
+    pair: SentinelFallbackPair,
+    methodName: 'generateScript' | 'localReason',
+    task: unknown,
+    taskRecord: {
+      containsPrivateData?: boolean;
+      allowCloudEscalation?: boolean;
+      redactionRequired?: boolean;
+      prompt?: string;
+      description?: string;
+    },
+    primaryError: unknown,
+  ): Promise<unknown> {
+    const fallback = pair.fallback;
+
+    // ── Sentinel: 'none' ─ no escalation ────────────────────────────
+    if (fallback === 'none') {
+      logger.warn(
+        { taskType, primary: pair.primary.name, fallback: 'none' },
+        'Primary failed and fallback is sentinel "none" — surfacing error without escalation',
+      );
+      throw primaryError;
+    }
+
+    // ── Sentinel: 'approved_cloud_reasoning' ─ quality + privacy gate ──
+    if (fallback === 'approved_cloud_reasoning') {
+      // v2.7 (angry-QA-found): vitest's CJS shim can't resolve `require()`
+      // calls for sibling files reliably (the resolution is rooted at
+      // the TEST file's directory, not the source file's). Use static
+      // ES imports at module load. cloud-reasoning-gate.ts and
+      // provider-registry.ts don't create circular import risk (the
+      // former imports OllamaProvider only as a type; the latter
+      // doesn't import provider-fallback).
+      const { selectApprovedCloudReasoningProvider, effectiveOnUnapprovedPolicy } =
+        await import('./cloud-reasoning-gate');
+      const { getProvider } = await import('./provider-registry');
+
+      // The Ollama-typed primary doubles as the redactor for privacy-gated escalation.
+      const ollamaPrimary = pair.primary as unknown as import('./ollama-provider').OllamaProvider;
+      const prompt = typeof taskRecord.prompt === 'string' ? taskRecord.prompt
+        : typeof taskRecord.description === 'string' ? taskRecord.description
+        : '';
+      const selection = await selectApprovedCloudReasoningProvider(
+        {
+          prompt,
+          containsPrivateData: taskRecord.containsPrivateData,
+          allowCloudEscalation: taskRecord.allowCloudEscalation,
+          redactionRequired: taskRecord.redactionRequired,
+        },
+        (name: string) => getProvider(name),
+        ollamaPrimary,
+      );
+
+      if (selection.rejected) {
+        const policy = effectiveOnUnapprovedPolicy();
+        logger.warn(
+          { taskType, reason: selection.reason, policy },
+          'cloud-reasoning-gate rejected escalation — applying onUnapproved policy',
+        );
+        if (policy === 'fail_visibly') {
+          throw new Error(`cloud_reasoning_gate_rejected:${selection.reason}:${selection.warning}`);
+        }
+        // 'return_local_result_with_warning' (default in production):
+        // re-throw the primary error so the caller can surface a
+        // visible "local result + warning" to the user.
+        // 'allow' was already squashed by effectiveOnUnapprovedPolicy
+        // unless explicitly opted in.
+        throw Object.assign(primaryError as Error, {
+          providerMetadata: {
+            providerUsed: pair.primary.name,
+            fallbackUsed: false,
+            warning: selection.warning,
+          },
+        });
+      }
+
+      // Gate accepted. The selected cloud provider does NOT implement
+      // generateScript or localReason as optional methods in v1; we map
+      // the request onto its standard callDomain with modelOverride and
+      // privacy metadata. Domain is 'secretary' as a safe generic
+      // catch-all — the system prompt itself defines the actual intent
+      // via prompt content.
+      //
+      // v3.1 (Codex round-6 architectural pivot): the gate no longer
+      // emits `privacyAction='sent_redacted'`. The only valid value is
+      // `'sent_raw'`, which the gate has already validated:
+      //   - non-private requests: always sent_raw
+      //   - private requests: ONLY sent_raw when mode=allow_raw +
+      //     allowRawPrivateData=true + allowCloudEscalation=true; all
+      //     other private-data combinations rejected upstream.
+      // The "redact-then-forward" path was removed entirely after 5 of
+      // 6 review rounds found leak bypasses.
+      const effectivePrompt = prompt;
+
+      const cloudResult = await selection.provider.callDomain(
+        'secretary',
+        [],
+        effectivePrompt,
+        '',
+        {
+          modelOverride: selection.model,
+          containsPrivateData: taskRecord.containsPrivateData,
+          allowCloudEscalation: taskRecord.allowCloudEscalation,
+          redactionRequired: taskRecord.redactionRequired,
+        },
+      );
+      const fm = this.getMetrics(selection.provider.name);
+      fm.fallbackTriggerCount++;
+      fm.usageCount++;
+      fm.lastSuccessAt = new Date().toISOString();
+      return {
+        ...cloudResult,
+        providerMetadata: {
+          ...(cloudResult.providerMetadata ?? {}),
+          providerUsed: selection.provider.name,
+          modelUsed: selection.model,
+          fallbackUsed: true,
+          fallbackReason: 'primary_failure',
+          privacyAction: selection.privacyAction,
+        },
+      };
+    }
+
+    // ── Real fallback AIProvider ────────────────────────────────────
+    const fallbackProvider = fallback as AIProvider;
+    const fallbackMethod = (fallbackProvider as unknown as Record<string, unknown>)[methodName];
+    if (typeof fallbackMethod !== 'function') {
+      logger.warn(
+        { taskType, fallback: fallbackProvider.name, methodName },
+        'Fallback provider does not implement optional method — re-throwing primary error',
+      );
+      throw primaryError;
+    }
+    const fm = this.getMetrics(fallbackProvider.name);
+    fm.fallbackTriggerCount++;
+    try {
+      const result = await (fallbackMethod as (t: unknown) => Promise<unknown>).call(fallbackProvider, task);
+      fm.usageCount++;
+      fm.lastSuccessAt = new Date().toISOString();
+      return result;
+    } catch (fallbackErr) {
+      fm.usageCount++;
+      fm.failureCount++;
+      fm.lastFailureAt = new Date().toISOString();
+      throw fallbackErr;
+    }
+  }
+}
+
+/**
+ * Recognize LocalLLMError kinds that are "operational" (busy / overflow
+ * / unsupported) rather than provider faults. Used by
+ * `dispatchOptionalTaskMethod` to skip circuit-breaker increments for
+ * these — busy ≠ broken.
+ */
+function isOperationalLocalLLMError(err: unknown): boolean {
+  if (!err || typeof err !== 'object') return false;
+  const kind = (err as { kind?: string }).kind;
+  return kind === 'capacity_exceeded'
+    || kind === 'input_token_overflow'
+    || kind === 'unsupported_capability';
 }

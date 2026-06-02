@@ -1,0 +1,228 @@
+import { describe, expect, it } from 'vitest';
+
+import { parseContentStateShortcut, parseFinanceStateShortcut } from '../../src/api/routes/chat-shortcut-parsers';
+import { detectChatCoreV2WriteIntent } from '../../src/services/chat-core-v2/action-gateway';
+import {
+  CHAT_V2_PHASE7_TARGET_ROUTE_READINESS,
+  CHAT_V2_LEGACY_PARITY_ROUTE_CORPUS_META,
+  CHAT_V2_LEGACY_PARITY_ROUTE_PROMPTS,
+  CHAT_V2_LEGACY_PARITY_WRITE_ROUTE_IDS,
+} from '../../src/services/chat-legacy-parity-route-prompts';
+import { inferChatTurnContract } from '../../src/services/chat-turn-contract';
+
+function route(id: string) {
+  const found = CHAT_V2_LEGACY_PARITY_ROUTE_PROMPTS.find((item) => item.routeId === id);
+  if (!found) throw new Error(`missing route prompt:${id}`);
+  return found;
+}
+
+describe('ChatV2 legacy parity route prompts', () => {
+  it('keeps the Phase 7 route set unique and fully represented', () => {
+    const routeIds = CHAT_V2_LEGACY_PARITY_ROUTE_PROMPTS.map((item) => item.routeId);
+
+    expect(new Set(routeIds).size).toBe(routeIds.length);
+    expect(routeIds.sort()).toEqual([
+      'chat_message_shortcut_after_route',
+      'chat_reasoning_engine_v1',
+      'classifier_route_skill_orchestration',
+      'decision_confirmation_shortcut',
+      'destructive_confirmation_hold',
+      'domain_handler_execution',
+      'general_action_planner',
+      'selective_internet_research',
+      'training_plan_shortcut',
+    ].sort());
+  });
+
+  it('uses a held-out multilingual/adversarial corpus, not only happy-path English samples', () => {
+    expect(CHAT_V2_LEGACY_PARITY_ROUTE_CORPUS_META).toMatchObject({
+      schemaVersion: 'chat_v2_legacy_parity_route_corpus_meta.v1',
+      frozenBeforeImplementation: true,
+      mutationPolicy: 'claude_or_manual_signoff_required_before_runtime_replacement',
+      reviewRubricVersion: 'chat_v2_legacy_parity_review_rubric.v2',
+    });
+
+    for (const routePrompt of CHAT_V2_LEGACY_PARITY_ROUTE_PROMPTS) {
+      expect(routePrompt.evidenceTrack, routePrompt.routeId).toMatch(/parity|bundle|research/);
+      expect(routePrompt.stateContract, routePrompt.routeId).toMatch(/snapshot|fresh_isolated/);
+    }
+
+    const prompts = CHAT_V2_LEGACY_PARITY_ROUTE_PROMPTS.flatMap((item) => item.prompts);
+    const languages = new Set(prompts.map((prompt) => prompt.language));
+    for (const language of ['en', 'pt-BR', 'pt-PT', 'pt-AO', 'es', 'es-419', 'mixed']) {
+      expect(languages.has(language as never), `missing ${language}`).toBe(true);
+    }
+
+    const tags = new Set(prompts.flatMap((prompt) => prompt.tags ?? []));
+    for (const tag of [
+      'negation',
+      'hypothetical',
+      'task_with_subtasks',
+      'destructive_write',
+      'confirmation_cancel',
+      'recipe_generation',
+      'ambiguous_cancel',
+      'duplicate_title',
+      'write_read_collision',
+    ]) {
+      expect(tags.has(tag), `missing ${tag}`).toBe(true);
+    }
+  });
+
+  it('keeps every Phase 7 retirement route large enough for route-scoped held-out packages', () => {
+    for (const routePrompt of CHAT_V2_LEGACY_PARITY_ROUTE_PROMPTS) {
+      const distinctTexts = new Set(routePrompt.prompts.map((prompt) => prompt.text.trim().replace(/\s+/g, ' ')));
+
+      expect(routePrompt.prompts.length, routePrompt.routeId).toBeGreaterThanOrEqual(50);
+      expect(distinctTexts.size, routePrompt.routeId).toBe(routePrompt.prompts.length);
+    }
+  });
+
+  it('covers required safety edge classes across core launch languages', () => {
+    const prompts = CHAT_V2_LEGACY_PARITY_ROUTE_PROMPTS.flatMap((item) => item.prompts);
+
+    for (const tag of ['ambiguous_cancel', 'duplicate_title', 'write_read_collision']) {
+      const languages = new Set(
+        prompts
+          .filter((prompt) => prompt.tags?.includes(tag))
+          .map((prompt) => prompt.language),
+      );
+      for (const language of ['en', 'pt-BR', 'pt-PT', 'es']) {
+        expect(languages.has(language as never), `missing ${tag}:${language}`).toBe(true);
+      }
+    }
+  });
+
+  it('uses research prompts that actually require the internet-research route', () => {
+    const research = route('selective_internet_research');
+    const distinctTexts = new Set(research.prompts.map((prompt) => prompt.text.trim().replace(/\s+/g, ' ')));
+    const healthAdjacentCount = research.prompts.filter((prompt) => prompt.tags?.includes('health_adjacent')).length;
+
+    expect(research.prompts.length).toBeGreaterThanOrEqual(50);
+    expect(distinctTexts.size).toBe(research.prompts.length);
+    expect(healthAdjacentCount).toBeGreaterThan(0);
+    expect(healthAdjacentCount).toBeLessThanOrEqual(10);
+
+    for (const [tag, minimum] of Object.entries(research.minSamplesPerSubcase ?? {})) {
+      const matching = research.prompts.filter((prompt) =>
+        prompt.tags?.some((item) => item === tag)
+      );
+      expect(matching.length, `missing research subcase coverage:${tag}`).toBeGreaterThanOrEqual(minimum);
+    }
+
+    for (const prompt of research.prompts) {
+      const contract = inferChatTurnContract({ message: prompt.text });
+      expect(contract.routeKind, prompt.text).toBe('internet_research');
+      expect(['web', 'local_and_web'], prompt.text).toContain(contract.groundingRequired);
+      expect(prompt.text, prompt.text).not.toMatch(/\b(my calendar|my task|my account|minha agenda|minha tarefa|minha conta|meu calendário|meu treino|mi calendario|mi cuenta)\b/i);
+    }
+  });
+
+  it('uses post-route shortcut prompts instead of explicit slash token-zero commands', () => {
+    for (const prompt of route('chat_message_shortcut_after_route').prompts) {
+      expect(prompt.text.trim().startsWith('/')).toBe(false);
+      expect(parseContentStateShortcut(prompt.text) ?? parseFinanceStateShortcut(prompt.text), prompt.text).toBeTruthy();
+    }
+  });
+
+  it('keeps independent read route corpora large enough for route-scoped parity packages', () => {
+    for (const routeId of ['training_plan_shortcut', 'chat_message_shortcut_after_route']) {
+      const routePrompt = route(routeId);
+      const distinctTexts = new Set(routePrompt.prompts.map((prompt) => prompt.text.trim().replace(/\s+/g, ' ')));
+
+      expect(routePrompt.runtimeCoupling, routeId).toBe('independent_read_route');
+      expect(routePrompt.prompts.length, routeId).toBeGreaterThanOrEqual(50);
+      expect(distinctTexts.size, routeId).toBe(routePrompt.prompts.length);
+      for (const prompt of routePrompt.prompts) {
+        expect(prompt.text.trim().startsWith('/'), `${routeId}:${prompt.text}`).toBe(false);
+      }
+      for (const [tag, minimum] of Object.entries(routePrompt.minSamplesPerSubcase ?? {})) {
+        const matching = routePrompt.prompts.filter((prompt) => prompt.tags?.includes(tag as never));
+        expect(matching.length, `missing ${routeId}:${tag}`).toBeGreaterThanOrEqual(minimum);
+      }
+    }
+  });
+
+  it('marks every mutating parity route as a write route and detects write intent', () => {
+    for (const routePrompt of CHAT_V2_LEGACY_PARITY_ROUTE_PROMPTS) {
+      const shouldMutate = CHAT_V2_LEGACY_PARITY_WRITE_ROUTE_IDS.has(routePrompt.routeId);
+      for (const prompt of routePrompt.prompts) {
+        const probe = detectChatCoreV2WriteIntent(prompt.text);
+        if (shouldMutate && !prompt.tags?.includes('negation') && !prompt.tags?.includes('hypothetical')) {
+          expect(probe.mayMutate, `${routePrompt.routeId}:${prompt.text}`).toBe(true);
+        }
+      }
+    }
+  });
+
+  it('documents the global coupling of write-route replacement', () => {
+    for (const routePrompt of CHAT_V2_LEGACY_PARITY_ROUTE_PROMPTS) {
+      if (!CHAT_V2_LEGACY_PARITY_WRITE_ROUTE_IDS.has(routePrompt.routeId)) continue;
+      expect(routePrompt.evidenceTrack, routePrompt.routeId).toBe('write_firewall_bundle');
+      expect(routePrompt.runtimeCoupling, routePrompt.routeId).toBe('global_write_firewall');
+      expect(routePrompt.stateContract, routePrompt.routeId).toBe('fresh_isolated_user_per_prompt');
+      expect(routePrompt.prompts.length, routePrompt.routeId).toBeGreaterThanOrEqual(50);
+    }
+  });
+
+  it('uses decision-specific prompts for the Decision Center parity route', () => {
+    for (const prompt of route('decision_confirmation_shortcut').prompts) {
+      expect(prompt.text, prompt.text).toMatch(/\b(decision|decis(?:ao|ão)|decisi[oó]n)\b/i);
+      expect(prompt.text, prompt.text).not.toMatch(/\b(training plan|plano de treino|calendar|agenda)\b/i);
+    }
+  });
+
+  it('defines classifier-route readiness owners, language recall floors, and unresolved clarifier coverage', () => {
+    const readiness = CHAT_V2_PHASE7_TARGET_ROUTE_READINESS.classifier_route_skill_orchestration;
+    const classifier = route('classifier_route_skill_orchestration');
+    const promptTexts = new Set(classifier.prompts.map((prompt) => prompt.text));
+
+    expect(readiness.answerQualityReviewRequired).toBe(true);
+    for (const [language, threshold] of Object.entries(readiness.recallAt8LanguageThresholds)) {
+      expect(threshold, language).toBeGreaterThanOrEqual(language === 'mixed' ? 0.9 : 0.95);
+    }
+
+    for (const ownership of readiness.promptOwnership) {
+      expect(promptTexts.has(ownership.promptText), ownership.promptText).toBe(true);
+    }
+
+    expect(readiness.promptOwnership.some((entry) => entry.owner === 'deterministic_read')).toBe(true);
+    expect(readiness.promptOwnership.some((entry) => entry.owner === 'local_chat_classifier')).toBe(true);
+    expect(readiness.requiredMissingCoverage).toContain('owner_boundary_review');
+    expect(classifier.prompts.some((prompt) => prompt.tags?.includes('low_confidence_clarification'))).toBe(true);
+    expect(classifier.prompts.some((prompt) => prompt.tags?.includes('write_read_collision'))).toBe(true);
+    expect(readiness.blockers.join(' ')).toMatch(/recall@8/i);
+    expect(readiness.blockers.join(' ')).toMatch(/no reviewed labels/i);
+  });
+
+  it('defines domain-handler adapter order and per-domain signed parity floors', () => {
+    const readiness = CHAT_V2_PHASE7_TARGET_ROUTE_READINESS.domain_handler_execution;
+
+    expect(readiness.answerQualityReviewRequired).toBe(true);
+    expect(readiness.replacementOrder).toEqual(['cooking', 'content', 'training', 'finance', 'secretary']);
+
+    for (const domain of readiness.replacementOrder) {
+      const floor = readiness.perDomainParityFloors[domain];
+      expect(floor.replacement, domain).toMatch(/ChatV2/);
+      expect(floor.minSamples, domain).toBeGreaterThanOrEqual(50);
+      expect(floor.minParity, domain).toBeGreaterThanOrEqual(0.95);
+      expect(floor.answerQualityReviewRequired, domain).toBe(true);
+    }
+
+    const domainHandler = route('domain_handler_execution');
+    for (const tag of ['domain_cooking', 'domain_content', 'domain_training', 'domain_finance', 'domain_secretary']) {
+      expect(domainHandler.prompts.some((prompt) => prompt.tags?.includes(tag as never)), tag).toBe(true);
+    }
+    expect(readiness.blockers.join(' ')).toMatch(/signed >=50-row parity package/);
+  });
+
+  it('keeps cooking domain-handler prompts generic while per-domain signed evidence is still missing', () => {
+    const domainHandler = route('domain_handler_execution');
+    const cookingDishNames = /\b(chicken|frango|salmon|salm[aã]o|pasta|massa|pizza|taco|burger|hamb[uú]rguer|risotto|risoto|omelet|omelete|soup|sopa|stew|ensopado|curry|lasagna|lasanha|bowl)\b/i;
+
+    expect(CHAT_V2_PHASE7_TARGET_ROUTE_READINESS.domain_handler_execution.cookingGenericityRule).toMatch(/generic/i);
+    for (const prompt of domainHandler.prompts.filter((item) => item.tags?.includes('domain_cooking'))) {
+      expect(prompt.text, prompt.text).not.toMatch(cookingDishNames);
+    }
+  });
+});

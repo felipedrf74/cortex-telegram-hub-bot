@@ -102,8 +102,11 @@ Remaining beta/operator gates:
 - Backend production changes should follow: focused tests/typecheck,
   staging deploy, staging smoke, production promote, production health, docs
   update. Do not skip the staging smoke gate.
-- Token-zero remains law for iOS: ordinary operational flows use REST routes,
-  not fake chat commands or prompt-driven lookups.
+- Token-zero remains law for explicit iOS buttons, slash commands, and REST
+  reads: operational surfaces use REST routes, not fake chat commands or
+  prompt-driven lookups. Ordinary natural-language chat, especially write
+  intents and ambiguous follow-ups, must flow through the chat
+  reasoning/action path instead of being disguised as token-zero reads.
 - Avoid single-tenant runtime assumptions in prompts, caches, background jobs,
   provider fallbacks, and user-facing copy. Hardcoded founder identity belongs
   only in docs, provenance notes, or explicit owner-only fixtures.
@@ -202,6 +205,7 @@ Direct `./scripts/deploy.sh` exists for trivial hotfixes but the default is alwa
 2. **Gemini-first, Anthropic-fallback.** `providerRouting` in `src/config.ts` controls this per-task-type. Don't hardcode `config.anthropic.model` in new code — use `getActiveProvider()` or `completeOneShotWithFallback()`.
 3. **Token cache awareness.** `oauth-store.getTokens()` is cached for 10 min. Call `storeTokens()` or `disconnectProvider()` to invalidate. The audit_trail row is written once per cache-refill, not per call.
 4. **Garmin auth safety.** `keepAlive()` must NEVER call `attemptReLogin()` — that triggers MFA emails. Full login is gated behind `serializedAuthRecovery` with a 15-min cooldown.
+5. **No hardcoded product behavior.** Chat, skills, routing, recipe parsing, task execution, and provider fixes must be capability/schema/policy driven. Do not add runtime branches for a specific user, email, tenant, dish, task title, screenshot example, or demo phrase. Regression examples belong in tests or corpora; production behavior must generalize.
 
 ### Testing
 
@@ -234,6 +238,7 @@ The pre-commit hook prints a soft warning when the sandbox isn't running. It nev
 - ❌ Adding real API calls in tests
 - ❌ Committing secrets (pre-commit hook enforces via `detect-secrets`)
 - ❌ Hardcoding absolute paths (`os.homedir()` or `config.*` instead)
+- ❌ Hardcoding user/email/tenant/recipe/task-specific behavior to make one chat example pass
 - ❌ Direct `anthropic.messages.create` — route through `trackedCreate()` for cost logging
 - ❌ `--amend` or `--no-verify` on commits without explicit user approval
 - ❌ Re-adding the multi-agent orchestration scaffolding that was removed in Phase 0

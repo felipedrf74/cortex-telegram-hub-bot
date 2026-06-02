@@ -63,8 +63,11 @@ export function getTrainingCalendarEventOwners(
             COALESCE(o.session_id, 0) AS sessionId,
             o.plan_id AS planId,
             o.user_id AS userId,
-            o.status AS planStatus
+            COALESCE(ftp.status, 'missing') AS planStatus
           FROM training_agenda_event_ownership o
+          LEFT JOIN fitness_training_plans ftp
+            ON ftp.id = o.plan_id
+           AND ftp.user_id = o.user_id
           WHERE o.calendar_event_id = ?
             AND o.calendar_source = ?
             AND o.status IN ('active', 'orphaned')
@@ -76,8 +79,11 @@ export function getTrainingCalendarEventOwners(
             COALESCE(o.session_id, 0) AS sessionId,
             o.plan_id AS planId,
             o.user_id AS userId,
-            o.status AS planStatus
+            COALESCE(ftp.status, 'missing') AS planStatus
           FROM training_agenda_event_ownership o
+          LEFT JOIN fitness_training_plans ftp
+            ON ftp.id = o.plan_id
+           AND ftp.user_id = o.user_id
           WHERE o.calendar_event_id = ?
             AND o.status IN ('active', 'orphaned')
         `).all(normalizedEventId);
@@ -130,8 +136,11 @@ export function filterCalendarEventsForTrainingScope<T extends CalendarEventLike
         COALESCE(o.session_id, 0) AS sessionId,
         o.plan_id AS planId,
         o.user_id AS userId,
-        o.status AS planStatus
+        COALESCE(ftp.status, 'missing') AS planStatus
       FROM training_agenda_event_ownership o
+      LEFT JOIN fitness_training_plans ftp
+        ON ftp.id = o.plan_id
+       AND ftp.user_id = o.user_id
       WHERE o.calendar_event_id IN (${placeholders})
         AND o.status IN ('active', 'orphaned')
     `).all(...eventIds);

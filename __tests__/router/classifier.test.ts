@@ -650,7 +650,7 @@ describe('routeMessage — Three-Tier Routing Integration', () => {
       mockClassifyMessage.mockResolvedValue({ domain: 'secretary', confidence: 0.91 });
       const context = { domain: 'secretary' as const, lastAssistantMessage: 'Here is your task summary.' };
 
-      const result = await routeMessage('me indique uma receita de kibe de forno para 3 pessoas', context);
+      const result = await routeMessage('me indique uma receita de legumes assados para 3 pessoas', context);
       expect(result.method).toBe('keyword');
       expect(result.domain).toBe('cooking');
       expect(mockClassifyMessage).not.toHaveBeenCalled();

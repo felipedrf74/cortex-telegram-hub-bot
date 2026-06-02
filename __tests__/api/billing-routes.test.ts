@@ -36,22 +36,19 @@ vi.mock('../../src/services/stripe-service', async () => {
 vi.mock('../../src/services/cost-guardrail', () => ({
   buildQuotaUsagePayload: (usage: any) => ({
     resetAt: usage.resetAt,
-    limitUsd: usage.limitUsd,
-    usedUsd: usage.usedUsd,
-    remainingUsd: usage.remainingUsd,
-    planDailyLimitUsd: usage.planDailyLimitUsd,
-    includedRemainingUsd: usage.includedRemainingUsd,
+    usageLevel: usage.usageLevel,
+    usageFraction: usage.usageFraction,
+    usagePercent: Math.round((usage.usageFraction || 0) * 100),
+    isOverLimit: usage.over,
+    boostAvailable: usage.boostAvailable,
     nexusPointsBalance: usage.nexusPointsBalance,
-    nexusPointsRemainingUsd: usage.nexusPointsRemainingUsd,
     nexusPointsExpiringSoon: usage.nexusPointsExpiringSoon,
-    nexusPointsExpiringSoonUsd: usage.nexusPointsExpiringSoonUsd,
     nextCreditExpiryAt: usage.nextCreditExpiryAt,
-    totalRemainingUsd: usage.totalRemainingUsd,
     pointsPurchaseAvailable: usage.pointsPurchaseAvailable,
     nexusPointPackages: [
-      { productId: 'me.nexushub.points.small', label: 'small', priceUsd: 5, points: 300, usdAllowance: 0.30, aiOnlyMarginPct: 94, netMarginAfterAppleCutPct: 91.4 },
-      { productId: 'me.nexushub.points.medium', label: 'medium', priceUsd: 10, points: 600, usdAllowance: 0.60, aiOnlyMarginPct: 94, netMarginAfterAppleCutPct: 91.4 },
-      { productId: 'me.nexushub.points.large', label: 'large', priceUsd: 20, points: 1200, usdAllowance: 1.20, aiOnlyMarginPct: 94, netMarginAfterAppleCutPct: 91.4 },
+      { productId: 'me.nexushub.points.small', label: 'small', points: 300 },
+      { productId: 'me.nexushub.points.medium', label: 'medium', points: 600 },
+      { productId: 'me.nexushub.points.large', label: 'large', points: 1200 },
     ],
   }),
   isUserOverDailyCap: vi.fn(() => ({
@@ -293,8 +290,9 @@ describe('billing routes', () => {
     expect(res.statusCode).toBe(200);
     expect(res.body.data).toMatchObject({
       nexusPointsBalance: 0,
-      includedRemainingUsd: 0.04,
-      totalRemainingUsd: 0.04,
+      usageFraction: 0,
+      usagePercent: 0,
+      isOverLimit: false,
       pointsPurchaseAvailable: true,
     });
     expect(res.body.data.nexusPointPackages).toEqual(expect.arrayContaining([
@@ -302,6 +300,7 @@ describe('billing routes', () => {
       expect.objectContaining({ productId: 'me.nexushub.points.medium', points: 600 }),
       expect.objectContaining({ productId: 'me.nexushub.points.large', points: 1200 }),
     ]));
+    expect(JSON.stringify(res.body.data)).not.toMatch(/usd|allowance/i);
   });
 
   it('returns Nexus Points availability in billing usage', async () => {
@@ -310,10 +309,12 @@ describe('billing routes', () => {
     expect(res.statusCode).toBe(200);
     expect(res.body.data).toMatchObject({
       nexusPointsBalance: 0,
-      includedRemainingUsd: 0.04,
-      totalRemainingUsd: 0.04,
+      usageFraction: 0,
+      usagePercent: 0,
+      isOverLimit: false,
       pointsPurchaseAvailable: true,
     });
+    expect(JSON.stringify(res.body.data)).not.toMatch(/usd|allowance/i);
   });
 
   it('processes Nexus Point Apple products through the point ledger instead of subscriptions', async () => {
@@ -346,9 +347,9 @@ describe('billing routes', () => {
         granted: true,
         productId: 'me.nexushub.points.small',
         points: 300,
-        usdAllowance: 0.30,
       },
     });
+    expect(JSON.stringify(res.body.data.nexusPointsPurchase)).not.toMatch(/usd|allowance/i);
   });
 
   it('creates web-only Stripe Nexus Points checkout from authenticated request scope', async () => {

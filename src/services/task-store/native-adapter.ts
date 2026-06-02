@@ -25,6 +25,7 @@ import type {
   TaskProviderCapabilities,
   SyncResult,
 } from './types';
+import type { TaskFilters } from './unified-task-store';
 
 export class NativeTaskAdapter implements TaskProviderAdapter {
   readonly provider = 'nexus' as const;
@@ -322,23 +323,7 @@ export class NativeTaskAdapter implements TaskProviderAdapter {
   }
 
   private rowToNormalizedTask(row: any): NormalizedTask {
-    return {
-      id: row.id,
-      provider: 'nexus',
-      externalId: String(row.id),
-      projectId: row.list_id,
-      projectName: row.list_name,
-      title: row.title,
-      description: row.body || undefined,
-      status: row.status === 'completed' ? 'completed' : row.status === 'inProgress' ? 'in_progress' : 'pending',
-      priority: this.importanceToPriority(row.importance),
-      dueDate: row.due_date_time || undefined,
-      dueIsDatetime: !!row.due_date_time?.includes('T'),
-      tags: row.tags ? JSON.parse(row.tags) : undefined,
-      notes: row.body || undefined,
-      completedAt: row.completed_at || undefined,
-      recurrence: row.recurrence ? JSON.parse(row.recurrence) : undefined,
-    };
+    return mapNativeTaskRow(row);
   }
 
   private priorityToImportance(priority: number): string {
@@ -346,10 +331,52 @@ export class NativeTaskAdapter implements TaskProviderAdapter {
     if (priority >= 2) return 'normal';
     return 'low';
   }
+}
 
-  private importanceToPriority(importance: string): number {
-    if (importance === 'high') return 3;
-    if (importance === 'normal') return 2;
-    return 1;
-  }
+/**
+ * Map a raw `native_tasks` row (joined with its list) to a NormalizedTask.
+ * Shared by the async adapter (`rowToNormalizedTask`) and the sync
+ * `listNativeTasks` read below so the two can never drift.
+ */
+function mapNativeTaskRow(row: any): NormalizedTask {
+  return {
+    id: row.id,
+    provider: 'nexus',
+    externalId: String(row.id),
+    projectId: row.list_id,
+    projectName: row.list_name,
+    title: row.title,
+    description: row.body || undefined,
+    status: row.status === 'completed' ? 'completed' : row.status === 'inProgress' ? 'in_progress' : 'pending',
+    priority: row.importance === 'high' ? 3 : row.importance === 'normal' ? 2 : 1,
+    dueDate: row.due_date_time || undefined,
+    dueIsDatetime: !!row.due_date_time?.includes('T'),
+    tags: row.tags ? JSON.parse(row.tags) : undefined,
+    notes: row.body || undefined,
+    completedAt: row.completed_at || undefined,
+    recurrence: row.recurrence ? JSON.parse(row.recurrence) : undefined,
+  };
+}
+
+/**
+ * Synchronous, provider-local read of a native user's tasks. Mirrors the
+ * unified store's getAllTasks() filter semantics (exact status match) so a
+ * token-zero deterministic read can include native_tasks without going async
+ * or touching any provider API. Native tasks are hard-deleted, so there is no
+ * is_deleted column to filter.
+ */
+export function listNativeTasks(userId: number, filters?: TaskFilters): NormalizedTask[] {
+  const db = getDb();
+  const rows = db.prepare(
+    `SELECT t.*, l.name AS list_name
+       FROM native_tasks t
+       JOIN native_task_lists l ON t.list_id = l.id
+      WHERE t.user_id = ?
+      ORDER BY t.position ASC, t.created_at DESC`,
+  ).all(userId) as any[];
+  let tasks = rows.map(mapNativeTaskRow);
+  if (filters?.status) tasks = tasks.filter((task) => task.status === filters.status);
+  if (filters?.provider) tasks = tasks.filter((task) => task.provider === filters.provider);
+  if (filters?.projectName) tasks = tasks.filter((task) => task.projectName === filters.projectName);
+  return tasks;
 }

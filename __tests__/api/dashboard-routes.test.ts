@@ -38,6 +38,12 @@ const mockGetDailyQuotaStatus = vi.fn(() => ({
   limitUsd: 0.2,
   usedUsd: 0.12,
   remainingUsd: 0.08,
+  includedRemainingUsd: 0.08,
+  nexusPointsBalance: 0,
+  nexusPointsRemainingUsd: 0,
+  nexusPointsExpiringSoon: 0,
+  totalRemainingUsd: 0.08,
+  pointsPurchaseAvailable: false,
   resetAt: '2026-04-15T00:00:00.000Z',
 }));
 const mockComposeDailyBrief = vi.fn();
@@ -332,12 +338,17 @@ describe('Dashboard API route', () => {
     expect(res.body.data.training.readinessScore).toBeNull();
     expect(res.body.data.training.bodyBattery).toBeNull();
     expect(res.body.data.quota).toEqual({
-      used_usd: 0.12,
-      limit_usd: 0.2,
-      remaining_usd: 0.08,
+      usage_level: 'enhanced',
+      usage_fraction: 0.6,
+      usage_percent: 60,
+      is_over_limit: false,
+      nexus_points_balance: 0,
+      nexus_points_expiring_soon: 0,
+      points_purchase_available: false,
       plan: 'pro',
       resetAt: '2026-04-15T00:00:00.000Z',
     });
+    expect(JSON.stringify(res.body.data.quota)).not.toMatch(/usd|allowance/i);
   });
 
   it('passes calendar event colors through the dashboard payload', async () => {
@@ -523,6 +534,15 @@ describe('Dashboard API route', () => {
     expect(res.statusCode).toBe(200);
     expect(res.body.data.greeting).toBe('Bom dia, Felipe');
     expect(res.body.data.tasks.totalPending).toBe(3);
+    expect(res.body.data.quota).toMatchObject({
+      plan: 'pro',
+      resetAt: '2026-04-15T00:00:00.000Z',
+      usage_level: 'ok',
+      usage_fraction: 0.6,
+      usage_percent: 60,
+      is_over_limit: false,
+    });
+    expect(JSON.stringify(res.body.data.quota)).not.toMatch(/usd|allowance|limitUsd|usedUsd|remainingUsd/i);
 
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(mockSetCacheSWR).toHaveBeenCalled();

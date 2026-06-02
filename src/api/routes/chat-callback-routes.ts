@@ -9,6 +9,8 @@ import { consumeCallbackForScope, getCallbackForScope } from '../../utils/callba
 import { applyCoachRecommendations } from '../../services/garmin-coach';
 import { getTaskProviderForUser } from '../../services/task-store/task-router';
 import { labelsForLanguage } from './chat-inline-buttons';
+import { buildNexusAnswerContract, type NexusChatOwnerSkill } from '../../services/chat-answer-contract';
+import { safeRecordChatV2DeterministicReadEvidence } from '../../services/chat-deterministic-read-evidence';
 import {
   buildCallbackDataRequiredError,
   buildCallbackExpiredError,
@@ -100,6 +102,36 @@ export function registerChatCallbackRoutes(
             timestamp,
           });
         }
+        safeRecordChatV2DeterministicReadEvidence({
+          tenantId,
+          userId,
+          requestId: typeof messageId === 'string' && messageId.trim() ? messageId : `chat-callback:${Date.now()}`,
+          normalizedMessage: command,
+          tokenZeroSurface: 'button',
+          tokenZeroPreserved: true,
+          tenantUserIsolationPassed: true,
+          response: {
+            id: typeof messageId === 'string' && messageId.trim() ? messageId : `chat-callback:${Date.now()}`,
+            text: fastPath.text,
+            domain: fastPath.domain,
+            routeMethod: 'fast-path',
+            metadata: {
+              chatReasoning: buildNexusAnswerContract({
+                intent: commandToDeterministicReadIntent(command),
+                ownerSkill: commandToOwnerSkill(command, fastPath.domain),
+                routeMethod: 'fast-path',
+                routeKind: 'local_read',
+                groundingRequirement: 'local',
+                expectedResponseShape: commandToExpectedShape(command),
+                language: language.startsWith('pt') ? 'pt' : 'en',
+                actionability: 'answer_only',
+                verificationStatus: 'not_required',
+                confidence: 1,
+                traceId: typeof messageId === 'string' && messageId.trim() ? messageId : `chat-callback:${Date.now()}`,
+              }),
+            },
+          },
+        });
 
         res.json(payload);
         return;
@@ -288,4 +320,28 @@ export function registerChatCallbackRoutes(
       });
     }
   });
+}
+
+function commandToOwnerSkill(command: string, fallbackDomain: string): NexusChatOwnerSkill {
+  if (/^\/?(todo|tasks|overdue|duetoday|due_today|dueweek|due_week|alltasks|all_tasks|todosummary|todo_summary)\b/i.test(command)) return 'tasks';
+  if (/^\/?(day|today|week|calendar|agenda)\b/i.test(command)) return 'secretary';
+  if (/training|treino/i.test(command)) return 'training';
+  if (fallbackDomain === 'triathlon') return 'training';
+  if (fallbackDomain === 'secretary') return 'secretary';
+  return 'chat';
+}
+
+function commandToDeterministicReadIntent(command: string): string {
+  if (/^\/?(todo|tasks|overdue|duetoday|due_today|dueweek|due_week|alltasks|all_tasks|todosummary|todo_summary)\b/i.test(command)) return 'tasks.read';
+  if (/^\/?(day|today)\b/i.test(command)) return 'today.read';
+  if (/^\/?(week|calendar|agenda)\b/i.test(command)) return 'calendar.read';
+  if (/training|treino/i.test(command)) return 'training.read';
+  return 'chat.deterministic_read';
+}
+
+function commandToExpectedShape(command: string): 'agenda_summary' | 'task_options' | 'training_advice' | 'direct_answer' {
+  if (/^\/?(todo|tasks|overdue|duetoday|due_today|dueweek|due_week|alltasks|all_tasks|todosummary|todo_summary)\b/i.test(command)) return 'task_options';
+  if (/^\/?(day|today|week|calendar|agenda)\b/i.test(command)) return 'agenda_summary';
+  if (/training|treino/i.test(command)) return 'training_advice';
+  return 'direct_answer';
 }

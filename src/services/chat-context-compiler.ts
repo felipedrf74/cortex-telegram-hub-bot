@@ -16,6 +16,7 @@ export type ChatContextSectionName =
   | 'web_source_package'
   | 'response_contract'
   | 'safety_constraints'
+  | 'web_source_quality_policy'
   | 'user_message';
 
 export interface ChatContextSectionInput {
@@ -51,6 +52,7 @@ const STABLE_ORDER: ChatContextSectionName[] = [
   'skill_response_policy',
   'response_contract',
   'safety_constraints',
+  'web_source_quality_policy',
   'conversation_repair_context',
   'local_facts',
   'web_source_package',
@@ -96,7 +98,8 @@ export function buildChatResearchContext(input: {
   groundingRequired?: NexusChatGroundingRequirement;
   localContext?: string | null;
 }): CompiledChatContext {
-  const isPT = input.language === 'pt' || input.language === 'mixed';
+  const outputLanguage = researchOutputLanguageLabel(input.language);
+  const languageInstruction = researchLanguageInstruction(input.language);
   return compileChatContext({
     sections: [
       {
@@ -109,6 +112,7 @@ export function buildChatResearchContext(input: {
           'You are Nexus Hub answering a chat turn that requires current web grounding.',
           'Use web search only for public external facts.',
           'Do not claim private Nexus data, account state, provider state, or action success.',
+          languageInstruction,
           input.groundingRequired === 'local_and_web'
             ? 'When local facts are provided, combine them with current web sources and clearly separate Nexus-local facts from public facts.'
             : '',
@@ -128,7 +132,27 @@ export function buildChatResearchContext(input: {
         cacheable: true,
         required: true,
         maxChars: 500,
-        content: `Expected response shape: ${input.expectedResponseShape}\nLanguage: ${isPT ? 'Portuguese' : 'English'}`,
+        content: [
+          `Expected response shape: ${input.expectedResponseShape}`,
+          `Output language: ${outputLanguage}`,
+          'Language fidelity is mandatory: do not answer Spanish prompts in Portuguese, and do not answer Portuguese prompts in English unless the user explicitly asks.',
+          'Keep the answer complete but concise: normally 4-8 bullets or short paragraphs, under 350 words unless the user explicitly asks for a long report.',
+          'Do not trail off mid-sentence. If evidence is limited, finish with that limitation instead of expanding indefinitely.',
+        ].join('\n'),
+      },
+      {
+        name: 'web_source_quality_policy',
+        source: 'chat.research.source_quality',
+        cacheable: true,
+        required: true,
+        maxChars: 1000,
+        content: [
+          'For current news or product/release questions, prefer recent primary or authoritative sources and include enough detail to answer the specific question.',
+          'For public law, regulation, visa, entry-requirement, or government-policy lookup questions, answer in educational public-information terms using official government or authoritative legal sources when available; do not refuse merely because the topic is legal, and do not provide personalized legal advice.',
+          'For scientific, medical, training, or health-adjacent questions, prefer peer-reviewed papers, official health/science institutions, or major medical references over blogs or commercial pages.',
+          'If only lower-quality sources are available, say that evidence is limited instead of overstating confidence.',
+          'When available, use at least two independent sources for answer-quality research turns.',
+        ].join('\n'),
       },
       {
         name: 'safety_constraints',
@@ -159,6 +183,26 @@ export function buildChatResearchContext(input: {
       },
     ],
   });
+}
+
+function researchOutputLanguageLabel(language: NexusChatLanguage): string {
+  if (language === 'pt') return 'Portuguese';
+  if (language === 'es') return 'Spanish';
+  if (language === 'mixed') return 'Preserve the user message language mix; do not default to Portuguese or English.';
+  return 'English';
+}
+
+function researchLanguageInstruction(language: NexusChatLanguage): string {
+  if (language === 'es') {
+    return 'Answer in Spanish. This is a hard contract even if other user or app context is Portuguese.';
+  }
+  if (language === 'pt') {
+    return 'Answer in Portuguese. This is a hard contract even if searched sources are in English or Spanish.';
+  }
+  if (language === 'mixed') {
+    return 'Preserve the user message language mix and avoid drifting into Portuguese by default.';
+  }
+  return 'Answer in English unless the user explicitly asks for another language.';
 }
 
 function compileSection(section: ChatContextSectionInput): CompiledChatContextSection {

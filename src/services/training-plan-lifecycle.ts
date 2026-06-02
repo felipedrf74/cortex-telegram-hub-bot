@@ -280,13 +280,16 @@ export function findOrphanedOwnerships(userId: number, tenantId?: number): Agend
   return db.prepare(`
     SELECT o.*
     FROM training_agenda_event_ownership o
+    LEFT JOIN fitness_training_plans ftp
+      ON ftp.id = o.plan_id
+     AND ftp.user_id = o.user_id
     LEFT JOIN training_sessions ts
       ON ts.id = o.session_id
      AND ts.plan_id = o.plan_id
     WHERE o.user_id = ?
       AND o.tenant_id = ?
       AND o.status = 'active'
-      AND ts.id IS NULL
+      AND (ts.id IS NULL OR ftp.id IS NULL OR LOWER(COALESCE(ftp.status, 'missing')) <> 'active')
     ORDER BY o.created_at ASC
   `).all(userId, resolveTrainingOwnershipTenantId(userId, tenantId)) as AgendaEventOwnership[];
 }

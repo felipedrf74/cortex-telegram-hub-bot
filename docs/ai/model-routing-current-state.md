@@ -99,6 +99,7 @@ The effective default cascade depends on route type and whether the domain provi
 | One-shot helpers | Gemini -> OpenAI -> Anthropic gated | Uses `completeOneShotWithFallback`; Anthropic thunk executes only if enabled. |
 | Vision helper | Gemini -> OpenAI -> Anthropic gated | Uses `completeVisionOneShotWithFallback` for most image paths. |
 | Content discovery with web search | Gemini Search -> Anthropic gated | Uses Gemini Google Search grounding first; falls back to Anthropic web search. |
+| ChatV2 internet research | Gemini Search -> Anthropic gated | Builds a public-query-only packet first; denied private-context queries do not hit either web provider. |
 | Python content engine | TS proxy Gemini -> OpenAI -> Anthropic gated | Python no longer calls provider APIs directly for ordinary completions. |
 
 ## Routing By Task Type
@@ -160,9 +161,9 @@ Anthropic is not simply another always-available fallback. It has a hard runtime
 - `isAnthropicRuntimeEnabled()` returns true only when `ANTHROPIC_ENABLED === 'true'`.
 - `provider-registry` skips Anthropic when the gate is false.
 - `anthropic-hook.trackedCreate` hard-throws when the gate is false.
-- Direct Anthropic fallback in domain handling is only allowed when `canUseAnthropicRuntimeFallback()` is true.
+- Direct Anthropic fallback in domain handling is only allowed when `canUseAnthropicRuntimeFallback()` is true, which requires both `ANTHROPIC_ENABLED=true` and an API key.
 
-This protects cost and prevents hidden Claude fallback usage, but direct Anthropic call sites can still throw if they are reached without the gate enabled.
+This protects cost and prevents hidden Claude fallback usage; shared lazy-client call sites now fail closed before constructing an SDK client when the runtime is disabled or no key is configured.
 
 ## Category Tags
 
@@ -229,6 +230,7 @@ These paths still have provider-aware fallback behavior, but they do not use `Ta
 - Image classification uses `completeVisionOneShotWithFallback`.
 - Python content engine uses `/internal/ai-complete`, then `completeOneShotWithFallback`.
 - Content discovery uses Gemini Search first, then Anthropic web search fallback.
+- ChatV2 internet research uses Gemini Search first, then Anthropic web search fallback only after its safe public query packet is built. Raw Nexus calendar/task/finance/health/email context is denied before provider selection.
 - Legacy direct Anthropic domain calls remain available as a guarded safety path when the active routing provider cannot initialize.
 - `OpenAIProvider.streamDomain` is OpenAI-specific and does not use task routing/circuit breaker fallback.
 

@@ -126,6 +126,24 @@ describe('training-calendar-scope', () => {
     ], 30).map((event) => event.id)).toEqual(['manual-workout']);
   });
 
+  it('hides ownership-backed training events when the plan row is missing', () => {
+    rows = [
+      {
+        eventId: 'evt-missing-plan',
+        source: 'google',
+        sessionId: 0,
+        planId: 22,
+        userId: 30,
+        planStatus: 'missing',
+      },
+    ];
+
+    expect(filterCalendarEventsForTrainingScope([
+      { id: 'evt-missing-plan', source: 'google' },
+      { id: 'manual-workout', source: 'google' },
+    ], 30).map((event) => event.id)).toEqual(['manual-workout']);
+  });
+
   it('fails open if the database is unavailable so calendar reads still render', () => {
     mocks.getDb.mockImplementationOnce(() => {
       throw new Error('Database not initialized');

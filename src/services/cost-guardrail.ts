@@ -194,22 +194,24 @@ export function buildQuotaExceededMessage(quota: Pick<DailyQuotaStatus, 'plan' |
 }
 
 export function buildQuotaUsagePayload(quota: DailyQuotaStatus): Record<string, unknown> {
+  const usageFraction = Math.max(0, Math.min(1, quota.usageFraction));
   return {
     plan: quota.plan,
     resetAt: quota.resetAt,
-    limitUsd: quota.limitUsd,
-    usedUsd: quota.usedUsd,
-    remainingUsd: quota.remainingUsd,
-    planDailyLimitUsd: quota.planDailyLimitUsd,
-    includedRemainingUsd: quota.includedRemainingUsd,
+    usageLevel: quota.usageLevel,
+    usageFraction,
+    usagePercent: Math.round(usageFraction * 100),
+    isOverLimit: quota.over,
+    boostAvailable: quota.boostAvailable,
     nexusPointsBalance: quota.nexusPointsBalance,
-    nexusPointsRemainingUsd: quota.nexusPointsRemainingUsd,
     nexusPointsExpiringSoon: quota.nexusPointsExpiringSoon,
-    nexusPointsExpiringSoonUsd: quota.nexusPointsExpiringSoonUsd,
     nextCreditExpiryAt: quota.nextCreditExpiryAt,
-    totalRemainingUsd: quota.totalRemainingUsd,
     pointsPurchaseAvailable: quota.pointsPurchaseAvailable,
-    nexusPointPackages: listNexusPointPackages(),
+    nexusPointPackages: listNexusPointPackages().map((pkg) => ({
+      productId: pkg.productId,
+      label: pkg.label,
+      points: pkg.points,
+    })),
   };
 }
 
@@ -336,8 +338,8 @@ export function enforceCostGuardrails(userId: number): CostGuardrailDecision {
       global,
       quota,
       details: {
-        totalUsd: global.totalUsd,
-        limitUsd: global.limitUsd,
+        serviceDegraded: true,
+        ...buildQuotaExceededPayload(quota),
       },
     };
   }

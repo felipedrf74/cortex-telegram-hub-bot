@@ -58,7 +58,15 @@ function applyMigrations(db: Database.Database): void {
 }
 
 import { checkQuota } from '../../src/services/usage-metering';
-import { checkGlobalCostGuardrail, isUserOverDailyCap, getUserDailySpend, getSpendByProvider } from '../../src/services/cost-guardrail';
+import {
+  buildQuotaExceededPayload,
+  buildQuotaUsagePayload,
+  checkGlobalCostGuardrail,
+  isUserOverDailyCap,
+  getUserDailySpend,
+  getSpendByProvider,
+  type DailyQuotaStatus,
+} from '../../src/services/cost-guardrail';
 
 describe('checkQuota', () => {
   beforeEach(() => {
@@ -360,6 +368,55 @@ describe('isUserOverDailyCap', () => {
     expect(result.nexusPointsRemainingUsd).toBeCloseTo(0.295, 8);
     expect(result.remainingUsd).toBeCloseTo(0.295, 8);
     expect(result.over).toBe(false);
+  });
+});
+
+describe('customer-facing quota payloads', () => {
+  it('hide raw dollar caps and expose only qualitative/percentage usage', () => {
+    const quota: DailyQuotaStatus = {
+      over: true,
+      spentUsd: 0.2,
+      capUsd: 0.1,
+      plan: 'pro',
+      usageLevel: 'exhausted',
+      usageFraction: 1,
+      callsToday: 7,
+      boostAvailable: true,
+      limitUsd: 0.1,
+      usedUsd: 0.2,
+      remainingUsd: 0,
+      planDailyLimitUsd: 0.1,
+      includedRemainingUsd: 0,
+      nexusPointsBalance: 300,
+      nexusPointsRemainingUsd: 0.3,
+      nexusPointsExpiringSoon: 20,
+      nexusPointsExpiringSoonUsd: 0.02,
+      nextCreditExpiryAt: '2026-06-02T00:00:00.000Z',
+      totalRemainingUsd: 0.3,
+      pointsPurchaseAvailable: true,
+      resetAt: '2026-06-02T00:00:00.000Z',
+    };
+
+    const usagePayload = buildQuotaUsagePayload(quota);
+    const exceededPayload = buildQuotaExceededPayload(quota);
+
+    expect(usagePayload).toMatchObject({
+      plan: 'pro',
+      usageLevel: 'exhausted',
+      usageFraction: 1,
+      usagePercent: 100,
+      isOverLimit: true,
+      boostAvailable: true,
+      nexusPointsBalance: 300,
+      nexusPointsExpiringSoon: 20,
+      pointsPurchaseAvailable: true,
+    });
+    expect(JSON.stringify(usagePayload)).not.toMatch(/usd|allowance|limitUsd|usedUsd|remainingUsd/i);
+    expect(JSON.stringify(exceededPayload)).not.toMatch(/usd|allowance|limitUsd|usedUsd|remainingUsd/i);
+    expect(usagePayload.nexusPointPackages).toEqual(expect.arrayContaining([
+      expect.objectContaining({ productId: 'me.nexushub.points.small', points: 300 }),
+    ]));
+    expect(JSON.stringify(usagePayload.nexusPointPackages)).not.toMatch(/priceUsd|usdAllowance|margin/i);
   });
 });
 

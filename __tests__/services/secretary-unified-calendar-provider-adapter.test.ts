@@ -54,7 +54,7 @@ beforeEach(() => {
 });
 
 describe('secretary-unified-calendar-provider-adapter', () => {
-  it('creates provider events with Secretary identity markers', async () => {
+  it('creates provider events with user-facing descriptions instead of Secretary identity markers', async () => {
     unifiedCalendar.createEvent.mockResolvedValue({
       id: 'google_event_1',
       source: 'google',
@@ -76,12 +76,12 @@ describe('secretary-unified-calendar-provider-adapter', () => {
       title: 'Endurance ride',
       start: input.startAt,
       end: input.endAt,
-      description: expect.stringContaining('NEXUS_SECRETARY_AGENDA_ITEM:sec_agenda_123'),
+      description: expect.not.stringContaining('NEXUS_SECRETARY_'),
       categories: ['Nexus', 'Secretary', 'training'],
     }), 'google', 42);
   });
 
-  it('puts Training session content before Secretary markers in provider descriptions', () => {
+  it('puts Training session content in provider descriptions without internal markers', () => {
     trainingPlans.getSessionById.mockReturnValue({
       id: 970,
       description: [
@@ -102,10 +102,30 @@ describe('secretary-unified-calendar-provider-adapter', () => {
       sourceEntityId: '970',
     });
 
-    expect(description).toMatch(/^WARM-UP:/);
+    expect(description).toContain('Endurance ride');
+    expect(description).toContain('Duration: 60 min');
+    expect(description).toContain('WARM-UP:');
     expect(description).toContain('MAIN WORKOUT:');
-    expect(description).toContain('NEXUS_SECRETARY_AGENDA_ITEM:sec_agenda_123');
+    expect(description).toContain('Source: Nexus Hub training plan.');
+    expect(description).not.toContain('NEXUS_SECRETARY_');
     expect(description).not.toContain('NEXUS_TRAINING_IDENTITY');
+  });
+
+  it('falls back to useful Training event body when the session row is unavailable', () => {
+    trainingPlans.getSessionById.mockReturnValue(null);
+
+    const description = buildSecretaryCalendarDescription({
+      ...input,
+      title: '🏃 Recovery Run (40min)',
+      durationMinutes: 40,
+      sourceIntentId: 'training:39:1:970',
+      sourceEntityId: '970',
+    });
+
+    expect(description).toContain('🏃 Recovery Run (40min)');
+    expect(description).toContain('Duration: 40 min');
+    expect(description).toContain('Source: Nexus Hub training plan.');
+    expect(description).not.toContain('NEXUS_SECRETARY_');
   });
 
   it('updates and deletes by exact provider event ID', async () => {
@@ -140,7 +160,11 @@ describe('secretary-unified-calendar-provider-adapter', () => {
         summary: 'Endurance ride',
         start: input.startAt,
         end: input.endAt,
-        description: buildSecretaryCalendarDescription(input),
+        description: [
+          'Legacy training details',
+          'NEXUS_SECRETARY_AGENDA_ITEM:sec_agenda_123',
+          'NEXUS_SECRETARY_SOURCE_INTENT:intent_123',
+        ].join('\n'),
       },
       {
         id: 'google_event_other',

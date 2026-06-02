@@ -122,6 +122,129 @@ describe('nexus chat answer contract', () => {
     }
   });
 
+  it('quality gate catches first-person model action claims even when the route mislabeled the answer as answer-only', () => {
+    const contract = buildNexusAnswerContract({
+      intent: 'cooking.answer',
+      ownerSkill: 'cooking',
+      routeMethod: 'model',
+      routeKind: 'generic_skill_answer',
+      groundingRequirement: 'none',
+      expectedResponseShape: 'direct_answer',
+      language: 'pt',
+      actionability: 'answer_only',
+      verificationStatus: 'not_required',
+      groundingFacts: [{
+        statement: 'Cooking owns generic cooking help.',
+        source: 'chat.skill_capability_registry',
+        freshness: 'fresh',
+        confidence: 0.9,
+        safeForUser: true,
+      }],
+    });
+
+    const result = applyChatResponseQualityGate({
+      text: 'Guardei a receita na tua lista.',
+      contract,
+    });
+
+    expect(result.status).toBe('repaired');
+    expect(result.issues).toContain('unverified_success_claim');
+    expect(result.contract.verificationStatus).toBe('pending');
+    expect(result.text).not.toContain('Guardei');
+  });
+
+  it('quality gate does not rewrite negated or confirmation-pending action text', () => {
+    const contract = buildNexusAnswerContract({
+      intent: 'secretary.clarify',
+      ownerSkill: 'secretary',
+      routeMethod: 'model',
+      routeKind: 'clarification',
+      groundingRequirement: 'none',
+      expectedResponseShape: 'direct_answer',
+      language: 'pt',
+      actionability: 'clarify',
+      verificationStatus: 'pending',
+      groundingFacts: [{
+        statement: 'Secretary is asking for confirmation.',
+        source: 'chat.action_gateway',
+        freshness: 'fresh',
+        confidence: 0.9,
+        safeForUser: true,
+      }],
+    });
+
+    for (const text of [
+      'A tarefa ainda não foi concluída. Quer que eu prepare uma prévia?',
+      'O evento não foi cancelado. Confirmas que queres apagar?',
+      'Não cancelei o evento. Posso preparar uma prévia.',
+    ]) {
+      const result = applyChatResponseQualityGate({ text, contract });
+      expect(result.status, text).toBe('pass');
+      expect(result.issues, text).not.toContain('unverified_success_claim');
+      expect(result.text, text).toBe(text);
+    }
+  });
+
+  it('quality gate repairs Spanish unverified success claims in Spanish', () => {
+    const contract = buildNexusAnswerContract({
+      intent: 'cooking.answer',
+      ownerSkill: 'cooking',
+      routeMethod: 'model',
+      routeKind: 'generic_skill_answer',
+      groundingRequirement: 'none',
+      expectedResponseShape: 'direct_answer',
+      language: 'es',
+      actionability: 'answer_only',
+      verificationStatus: 'not_required',
+      groundingFacts: [{
+        statement: 'Cooking owns generic cooking help.',
+        source: 'chat.skill_capability_registry',
+        freshness: 'fresh',
+        confidence: 0.9,
+        safeForUser: true,
+      }],
+    });
+
+    const result = applyChatResponseQualityGate({
+      text: 'Guardé la receta en tu lista.',
+      contract,
+    });
+
+    expect(result.status).toBe('repaired');
+    expect(result.issues).toContain('unverified_success_claim');
+    expect(result.text).toContain('Entendí la petición');
+    expect(result.text).toContain('No ejecuté');
+    expect(result.text).not.toContain('I understood');
+  });
+
+  it('quality gate allows Spanish negated pending-action text', () => {
+    const contract = buildNexusAnswerContract({
+      intent: 'secretary.clarify',
+      ownerSkill: 'secretary',
+      routeMethod: 'model',
+      routeKind: 'clarification',
+      groundingRequirement: 'none',
+      expectedResponseShape: 'direct_answer',
+      language: 'es',
+      actionability: 'clarify',
+      verificationStatus: 'pending',
+      groundingFacts: [{
+        statement: 'Secretary is asking for confirmation.',
+        source: 'chat.action_gateway',
+        freshness: 'fresh',
+        confidence: 0.9,
+        safeForUser: true,
+      }],
+    });
+
+    const text = 'El evento no fue cancelado todavía. Antes de cualquier cambio, dime si quieres que lo cancele.';
+    const result = applyChatResponseQualityGate({ text, contract });
+
+    expect(result.status).toBe('pass');
+    expect(result.issues).not.toContain('unverified_success_claim');
+    expect(result.text).toBe(text);
+  });
+
   it('quality gate strips raw backend/debug details from user-facing text', () => {
     const resolved = resolveChatSkillCapability({
       message: 'explain my training',
@@ -203,7 +326,7 @@ describe('nexus chat answer contract', () => {
       text: [
         '**Kibe de forno para 3 pessoas**',
         '',
-        '**Ingredientes:** 250g de trigo para kibe, 350g de carne moída, cebola, hortelã, sal e azeite.',
+        '**Ingredientes:** batata, cenoura, abobrinha, cebola, azeite, sal e ervas.',
         '',
         '**Modo de preparo:**',
         '1. Hidrate o trigo por 20 minutos e escorra bem.',
@@ -219,6 +342,48 @@ describe('nexus chat answer contract', () => {
     expect(result.issues).toEqual([]);
     expect(result.text).toContain('Kibe de forno');
     expect(result.text).not.toContain('scoped read');
+  });
+
+  it('quality gate does not treat recipe wording like cook until done as an app success claim', () => {
+    const contract = buildNexusAnswerContract({
+      intent: 'cooking.answer',
+      ownerSkill: 'cooking',
+      routeMethod: 'keyword',
+      routeKind: 'generic_skill_answer',
+      groundingRequirement: 'none',
+      expectedResponseShape: 'recipe',
+      language: 'en',
+      actionability: 'answer_only',
+      verificationStatus: 'not_required',
+      groundingFacts: [{
+        statement: 'Cooking owns generic recipe advice.',
+        source: 'chat.skill_capability_registry',
+        freshness: 'fresh',
+        confidence: 0.9,
+        safeForUser: true,
+      }],
+    });
+
+    const result = applyChatResponseQualityGate({
+      text: [
+        '**Quick soup**',
+        '',
+        '**Serves:** 2',
+        '',
+        '**Ingredients:**',
+        '- 2 cups broth',
+        '- 1 cup vegetables',
+        '',
+        '**Method:**',
+        '1. Simmer the vegetables until done.',
+        '2. Serve warm.',
+      ].join('\n'),
+      contract,
+    });
+
+    expect(result.status).toBe('pass');
+    expect(result.issues).toEqual([]);
+    expect(result.text).toContain('until done');
   });
 
   it('quality gate repairs recipe answers into user-visible recipe structure', () => {

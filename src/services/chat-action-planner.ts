@@ -1866,7 +1866,7 @@ function isUnsafeTaskTitle(title: string): boolean {
   const folded = foldCalendarText(title);
   return /\b(delete|remove|erase|wipe|apaga|apagar|elimina|eliminar|remove)\b.*\b(all|todos|todas|everything|tasks|tarefas|events|eventos|emails?)\b/.test(folded)
     || /\b(send|envia|enviar)\b.*\b(all|todos|todas|emails?|mensagens)\b/.test(folded)
-    || /\b(delete|apaga|apagar)\b.*\b(church|igreja|event|evento)\b/.test(folded);
+    || /\b(delete|remove|erase|wipe|apaga|apagar|elimina|eliminar)\b.*\b(events?|eventos?|appointments?|compromissos?|reunioes?|reuniao|calendar|calendario|agenda)\b/.test(folded);
 }
 
 // Audit §10.1 point 4: prompt-injection markers (LLM-instruction syntax) are

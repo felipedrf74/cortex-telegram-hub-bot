@@ -88,6 +88,7 @@ async function requestWaitlist(pathname: string, init: RequestInit = {}): Promis
 
 describe('public waitlist routes', () => {
   beforeEach(() => {
+    vi.unstubAllGlobals();
     vi.stubEnv('WAITLIST_SKIP_MX_CHECK', '1');
     vi.stubEnv('WAITLIST_IP_SALT', 'stable-test-salt');
     hoisted.sendBetaWaitlistConfirmation.mockResolvedValue(true);

@@ -77,12 +77,33 @@ export function fold(text: string): string {
 
 function inferLanguage(text: string): NexusChatLanguage {
   const foldedText = fold(text);
-  const ptKeywords = new Set(foldedText.match(/\b(minha|minhas|meu|meus|para|por|com|sem|que|hoje|amanha|semana|receita|treino|tarefa|tarefas|agenda|decisao|decisoes|notificacao|notificacoes|ligacao|conexao|qual|quais|quanto|como|porque|significa|devo|deve|tenho|estou|cria|criar|crie|mostra|listar|marcar|concluida|clima|tempo|previsao|placar|transito|voo|reuniao|reunioes|evento|eventos|plano|recentes|atual|atuais|esse|essa|este|esta|deste|desta|isso|isto|prova|domingo|preparo|preparar|planeei|planejar|comer|cozinhar|compras|despensa|assa|assar|kibe|quibe|ajuda|ajude|conectar|ligar|provedor|integracao|falhou|expirou|disponivel|principal|dados|foi|registrado|canal|saudavel|configuracoes|entrega|horas|silenciosas|funcionam|escrever|reescreve|reescrever|critica|qualidade|gancho|roteiro|legenda|titulo|rascunho|conteudo|apague|apaguem|cancele|cancelem|remova|removam|elimine|eliminem|exclua|excluam|excluir)\b/g) ?? []);
+  const ptKeywords = new Set(foldedText.match(/\b(minha|minhas|meu|meus|para|por|com|sem|que|hoje|amanha|semana|receita|treino|tarefa|tarefas|agenda|calendario|foco|decisao|decisoes|notificacao|notificacoes|ligacao|conexao|qual|quais|quanto|como|porque|significa|devo|deve|tenho|posso|fazer|estou|cria|criar|crie|gera|gerar|barato|mostra|listar|marcar|concluida|clima|tempo|previsao|placar|transito|voo|reuniao|reunioes|evento|eventos|plano|recentes|atual|atuais|esse|essa|este|esta|deste|desta|isso|isto|prova|domingo|preparo|preparar|planeei|planejar|comer|cozinhar|compras|despensa|assa|assar|ajuda|ajude|conectar|ligar|provedor|integracao|falhou|expirou|disponivel|principal|dados|foi|registrado|canal|saudavel|configuracoes|entrega|horas|silenciosas|funcionam|escrever|reescreve|reescrever|critica|qualidade|gancho|roteiro|legenda|titulo|rascunho|conteudo|apague|apaguem|cancele|cancelem|remova|removam|elimine|eliminem|exclua|excluam|excluir)\b/g) ?? []);
   const enKeywords = new Set(foldedText.match(/\b(the|my|mine|what|how|create|show|list|give|tell|mark|done|please|put|find|update|delete|add|workflow|workout|recipe|recipes|task|tasks|training|calendar|decision|notification|connection|title|ideas|week|weather|forecast|score|stock|flight|traffic|current|latest|recent)\b/g) ?? []);
+  const esKeywords = new Set(foldedText.match(/\b(mi|mis|quiero|quieres|dime|muestra|cuando|cual|todavia|vista|previa|cambio|cambios|cualquier|hecho|tengo|tienes|puedo|puedes|dame|manana|tarea|tareas|receta|recetas|cocinar|cenar|cena|comida|plato|entrenamiento|entrenar|reunion|recordatorio|borrador|guion|contenido|cancelar|complete|completar|guarde|guardar|busca|buscar|fuente|fuentes|noticia|noticias|reciente|recientes|actual|actuales|precio|precios|bateria|bicicleta|bicicletas|electrica|electricas|urbana|urbanas|panel|paneles|solar|solares|residencial|residenciales|mexico|mexicano|mexicanos|america|latina|inflacion|requisitos|visa|seguridad|adulto|adultos|sano|sanos)\b/g) ?? []);
   const hasPtAccent = /[ãõçáéíóúâêôà]/i.test(text);
+  const hasEsSignal = /[¿¡ñ]/i.test(text)
+    || /\bqué\b/i.test(text)
+    || /\b(?:dime|quiero|quieres|todavia|vista\s+previa|cualquier\s+cambio|fuentes?\s+(?:actuales?|publicas?)|noticias?\s+recientes?|precio\s+de|inflacion\s+en)\b/.test(foldedText);
   const hasPtProviderPhrase = /\b(?:agenda|calendario)\s+(?:do|da|no|na)\s+gmail\b/.test(foldedText);
   const hasPt = hasPtAccent || hasPtProviderPhrase || ptKeywords.size >= 2;
   const hasEn = enKeywords.size > 0;
+  const hasEs = hasEsSignal || esKeywords.size >= 2;
+  if (hasEs) {
+    const ptOnlyHits = [...ptKeywords].filter((word) => ![
+      'que',
+      'para',
+      'com',
+      'sem',
+      'esta',
+      'este',
+      'essa',
+      'esse',
+      'semana',
+    ].includes(word));
+    if (ptOnlyHits.length === 0) return hasEn ? 'mixed' : 'es';
+    if (hasPt || hasEn) return 'mixed';
+    return 'es';
+  }
   if (hasPt && hasEn) {
     const nonProviderEnglishHits = [...enKeywords].filter((word) => !['calendar', 'connection', 'notification', 'decision'].includes(word));
     if (ptKeywords.size >= 2 && nonProviderEnglishHits.length === 0) return 'pt';
@@ -94,6 +115,7 @@ function inferLanguage(text: string): NexusChatLanguage {
 function inferSkill(folded: string, input: ChatTurnContractInput): NexusChatOwnerSkill {
   const explicit = skillFromText(folded);
   if (explicit) return explicit;
+  if (isGenericAdviceRequest(folded)) return 'chat';
   const routed = input.routedDomain ? DOMAIN_SKILL[input.routedDomain] : null;
   if (routed) return routed;
   const active = input.activeContextDomain ? DOMAIN_SKILL[input.activeContextDomain] : null;
@@ -104,7 +126,7 @@ function inferSkill(folded: string, input: ChatTurnContractInput): NexusChatOwne
 function skillFromText(text: string): NexusChatOwnerSkill | null {
   if (/\b(tasks?|tarefas?)\b/.test(text) && /\b(calendar|calendario|agenda|meeting|meetings|reuniao|reunioes)\b/.test(text)) return 'secretary';
   if (/\b(bill|fatura|invoice|payment|pagamento|pagar)\b/.test(text)) return 'finance';
-  if (/\b(tasks?|todo|to-dos?|to-do|tarefas?|subtasks?|checklist|lembrete)\b/.test(text)) return 'tasks';
+  if (/\b(tasks?|todo|to-dos?|to-do|tarefas?|tareas?|subtasks?|checklist|lembrete|recordatorio)\b/.test(text)) return 'tasks';
   if (/\b(eat|eating|food|fueling|comer|refeicao)\b/.test(text) && /\b(training|workout|run|gym|treino|treinar|corrida|musculacao)\b/.test(text)) return 'cooking';
   if (/\b(research|pesquisa|fontes?|sources?)\b/.test(text) && /\b(topic|tema|script|roteiro|content|conteudo)\b/.test(text)) return 'content';
   if (/\b(content|script|post|video|caption|title|thumbnail|draft|hook|hooks|roteiro|conteudo|legenda|titulo|gancho|rascunho)\b/.test(text)) return 'content';
@@ -117,7 +139,7 @@ function skillFromText(text: string): NexusChatOwnerSkill | null {
     || isGmailAgendaSemantics(text)) return 'secretary';
   if (/\b(show|mostra|list|listar)\b.*\b(week|semana|day|dia|plan|plano)\b/.test(text)) return 'secretary';
   if (/\b(finance|budget|spend|spending|spent|expense|receipt|invoice|bill|tax|payment|investment|currency|exchange|savings|transaction|charge|recurring|financa|financeiro|financeira|orcamento|despesa|gasto|gastei|gastar|poupar|recibo|fatura|imposto|pagamento|investimento|cambio|transacao|cobranca|recorrente)\b/.test(text) || /\bsave\s+more\b/.test(text)) return 'finance';
-  if (/\b(recipe|recipes|cook|cooking|meal|meals|food|eat|eating|grocery|pantry|fueling|chicken|leftovers|food\s+safety|receita|cozinha|refeicao|jantar|almoco|comer|compras|despensa|kibe|kibbeh|quibe|frango|sobras|seguranca\s+alimentar)\b/.test(text)) return 'cooking';
+  if (/\b(recipe|recipes|cook|cooking|bake|baking|oven|meal|meals|food|eat|eating|grocery|pantry|fueling|chicken|leftovers|food\s+safety|receita|receitas|cozinha|assar|assa|forno|refeicao|jantar|almoco|comer|compras|despensa|frango|sobras|seguranca\s+alimentar|receta|recetas|cocinar|cenar|cena|comida|plato)\b/.test(text)) return 'cooking';
   if (/\b(connection|provider|integration|sync|oauth|token|gmail|outlook|google\s+calendar|apple\s+health|garmin|conexao|provedor|integracao|sincronizacao)\b/.test(text)) return 'connections';
   if (/\b(notification|notifications|push|alert|alerts|apns|quiet\s+hours|horas\s+silenciosas|notificacao|notificacoes|alerta|alertas)\b/.test(text)) return 'notifications';
   if (/\b(decision|decisions|decide|choice|option|streak|history|all\s+clear|decisao|decisoes|historico|escolha|opcao|sequencia)\b/.test(text)) return 'decision_center';
@@ -165,8 +187,9 @@ function inferExpectedShape(
   routeKind: NexusChatRouteKind,
   policy: SkillResponsePolicy | null,
 ): NexusChatExpectedResponseShape {
-  if (skill === 'cooking' && /\b(recipe|receita|kibe|kibbeh|quibe)\b/.test(text) && !needsLocalRead(text, skill)) return 'recipe';
-  if (skill === 'cooking' && /\b(eat|eating|food\s+safety|safety\s+guidance|fueling|leftovers|chicken|store|storage|fridge|comer|seguranca\s+alimentar|sobras|frango|conservar|conservo|conserva|guardar|geladeira|frigorifico)\b/.test(text)) return 'direct_answer';
+  if (skill === 'cooking' && isCookingIdeaRequest(text)) return 'direct_answer';
+  if (skill === 'cooking' && /\b(recipe|receita|bake|baking|oven|assar|assa|forno)\b/.test(text) && !needsLocalRead(text, skill)) return 'recipe';
+  if (skill === 'cooking' && /\b(eat|eating|bake|baking|oven|food\s+safety|safety\s+guidance|fueling|leftovers|chicken|store|storage|fridge|comer|assar|assa|forno|seguranca\s+alimentar|sobras|frango|conservar|conservo|conserva|guardar|geladeira|frigorifico)\b/.test(text)) return 'direct_answer';
   if (policy) {
     if (routeKind === 'local_read' || routeKind === 'action' || routeKind === 'repair') {
       return policy.defaultLocalShape;
@@ -174,6 +197,18 @@ function inferExpectedShape(
     return policy.defaultGenericShape;
   }
   return expectedShapeForRoute(skill, routeKind);
+}
+
+function isCookingIdeaRequest(text: string): boolean {
+  const recipeTerm = /\b(recipe|recipes|receita|receitas|receta|recetas|ingredientes?|ingredients?|modo de preparo|instrucoes|instructions|servings?|porcoes|porcao)\b/.test(text);
+  const ideaTerm = /\b(what should i|what can i|what could i|what recipe|which recipe|simple recipe|receita simples|receta simple|should i|could i|idea|ideas|ideia|ideias|sugestao|sugest[aã]o|option|opcao|opcoes|op(?:c|ç)(?:ao|oes)|quick meal|meal idea|que devo|o que devo|que posso|o que posso|qual receita|que receita|que receta|que puedo|me de|me da|da-me|dame)\b/.test(text);
+  const softSuggest = /\b(suggest|suggestion|suger)\b/.test(text);
+  const asksForIdea = ideaTerm || (softSuggest && !recipeTerm);
+  if (!asksForIdea && recipeTerm) {
+    return false;
+  }
+  const cookingContext = /\b(recipe|recipes|receita|receitas|receta|recetas|cook|cooking|dinner|lunch|meal|food|dish|cozinhar|jantar|almoco|comer|refeicao|prato|plato|cocinar|cena|comida)\b/.test(text);
+  return asksForIdea && cookingContext;
 }
 
 function inferRiskClass(text: string, skill: NexusChatOwnerSkill): NexusChatRiskLevel | 'destructive' {
@@ -187,7 +222,7 @@ function inferRiskClass(text: string, skill: NexusChatOwnerSkill): NexusChatRisk
 }
 
 function hasActionIntent(text: string, skill: NexusChatOwnerSkill): boolean {
-  if (skill === 'cooking' && /\b(recipe|receita|kibe|quibe|store|conservar)\b/.test(text) && !/\b(plan|plano|cardapio|lista|grocery|compras|add|adiciona|create\s+a\s+grocery)\b/.test(text)) {
+  if (skill === 'cooking' && /\b(recipe|receita|store|conservar)\b/.test(text) && !/\b(plan|plano|cardapio|lista|grocery|compras|add|adiciona|create\s+a\s+grocery)\b/.test(text)) {
     return false;
   }
   return /\b(create|add|schedule|book|move|reschedule|adjust|change|complete|mark|send|draft|generate|publish|choose|dismiss|snooze|retry|connect|disconnect|activate|apply|protect|cancel|delete|remove|eliminate|rewrite|repurpose|transform|turn\s+on|turn\s+off|cria|criar|crie|adiciona|agendar|marca|marcar|move|mover|muda|mudar|remarca|ajusta|alterar|concluir|conclui|envia|gera|gerar|aplica|aplicar|reescreve|reescrever|transforma|transformar|publicar|escolhe|adiar|ligar|desligar|conectar|ativa|ativar|reconectar|protege|proteger|cancela|cancelar|cancele|cancelem|apaga|apagar|apague|apaguem|remove|remover|remova|removam|elimina|eliminar|elimine|eliminem|exclui|excluir|exclua|excluam)\b/.test(text)
@@ -195,13 +230,15 @@ function hasActionIntent(text: string, skill: NexusChatOwnerSkill): boolean {
 }
 
 function needsLocalRead(text: string, skill: NexusChatOwnerSkill): boolean {
+  if (isGenericAdviceRequest(text)) return false;
+  if (skill === 'cooking' && /\b(meal\s+plan|grocery\s+list|shopping\s+list|pantry|plano\s+de\s+refeicao|cardapio|lista\s+de\s+compras|despensa)\b/.test(text)) return true;
+  if (skill === 'cooking' && isCookingIdeaRequest(text)) return false;
   if (skill === 'finance' && /\b(explain|explica)\b/.test(text) && /\b(category|categoria|deductible|dedutivel)\b/.test(text)) return false;
   if (skill === 'finance' && /\b(latest|current|atual|investment|investimento|recommendation|recomendacao|currency|exchange|cambio)\b/.test(text) && !/\b(my|meu|minha|minhas|meus)\b/.test(text)) return false;
   if (hasExplicitExternalCurrentInfo(text) && !hasPersonalLocalSignal(text)) return false;
   if (skill === 'decision_center') return true;
-  if (/\b(my|mine|meu|minha|minhas|meus|i\s+have|do\s+i\s+have|tenho|today|hoje|tomorrow|amanha|this\s+week|esta\s+semana|next\s+up|what\s+do\s+i\s+have|what\s+should\s+i\s+do|show|list|mostra|listar|status|estado|connected|conectado|unavailable|indisponivel)\b/.test(text)) return true;
+  if (/\b(my|mine|meu|minha|minhas|meus|i\s+have|do\s+i\s+have|tenho|tengo|tienes|today|hoje|hoy|tomorrow|amanha|manana|this\s+week|esta\s+semana|next\s+up|what\s+do\s+i\s+have|what\s+should\s+i\s+do|show|list|mostra|listar|muestra|lista|status|estado|connected|conectado|unavailable|indisponivel)\b/.test(text)) return true;
   if (skill === 'secretary' && (/\b(agenda|calendar|calendario)\b/.test(text) || isGmailAgendaSemantics(text))) return true;
-  if (skill === 'cooking' && /\b(meal\s+plan|grocery\s+list|shopping\s+list|pantry|plano\s+de\s+refeicao|cardapio|lista\s+de\s+compras|despensa)\b/.test(text)) return true;
   if (skill === 'content' && /\b(draft|drafts|pipeline|voice\s+card|voice|voz|meus\s+rascunhos|pipeline)\b/.test(text)) return true;
   if (skill === 'content' && /\b(critique|quality|critica|qualidade)\b/.test(text) && /\b(this|este|esta|script|roteiro|draft|rascunho)\b/.test(text)) return true;
   if (skill === 'connections' && /\b(failed|fail|falhou|expirou|expired|available|disponivel|connected|conectado|status|estado|principal|primary)\b/.test(text)) return true;
@@ -231,6 +268,13 @@ function hasExplicitExternalCurrentInfo(text: string): boolean {
 
 function hasPersonalLocalSignal(text: string): boolean {
   return /\b(my|mine|meu|minha|minhas|meus|i\s+have|do\s+i\s+have|tenho|what\s+do\s+i\s+have|what\s+should\s+i\s+do|show\s+my|list\s+my|mostra\s+(?:o\s+)?meu|minhas?\s+|meus\s+)\b/.test(text);
+}
+
+function isGenericAdviceRequest(text: string): boolean {
+  const asksForAdvice = /\b(next\s+step|small\s+step|tiny\s+step|one\s+step|advice|tip|strategy|strategies|suggestion|proximo\s+passo|pr[oó]ximo\s+passo|passo\s+pequeno|um\s+passo|conselho|dica|estrategia|estrategias|sugestao|sugest[aã]o)\b/.test(text);
+  if (!asksForAdvice) return false;
+  const asksForLocalState = /\b(my|mine|meu|minha|minhas|meus|i\s+have|tenho|tengo|tienes|agenda|calendar|calendario|task|tasks|tarefa|tarefas|tarea|tareas|treino|training|entrenamiento|plano|plan|budget|orcamento|conta|account|pipeline|draft|rascunho)\b/.test(text);
+  return !asksForLocalState;
 }
 
 function needsSafetyResearch(text: string): boolean {
