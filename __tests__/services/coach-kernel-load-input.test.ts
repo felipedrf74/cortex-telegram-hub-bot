@@ -185,6 +185,29 @@ describe('estimateSessionLoad — impact load only for running', () => {
     expect(result.impactLoad?.score).toBe(130);
   });
 
+  it('same distance at faster pace → higher impact load', () => {
+    const slower = estimateSessionLoad({
+      sport: 'running',
+      completion: { durationSec: 4200, distanceMeters: 10000 },
+      athlete: { bodyWeightKg: 70 },
+    });
+    const faster = estimateSessionLoad({
+      sport: 'running',
+      completion: { durationSec: 2400, distanceMeters: 10000 },
+      athlete: { bodyWeightKg: 70 },
+    });
+    expect(faster.impactLoad!.score).toBeGreaterThan(slower.impactLoad!.score);
+  });
+
+  it('pace factor is bounded for extreme outliers', () => {
+    const sprint = estimateSessionLoad({
+      sport: 'running',
+      completion: { durationSec: 600, distanceMeters: 10000 },
+      athlete: { bodyWeightKg: 70 },
+    });
+    expect(sprint.impactLoad?.score).toBe(182); // 10km × 1.3 × 1.4 × 10
+  });
+
   it('heavier athlete → higher impact load', () => {
     const light = estimateSessionLoad({
       sport: 'running',

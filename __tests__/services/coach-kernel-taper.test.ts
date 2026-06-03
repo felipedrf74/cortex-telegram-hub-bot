@@ -54,15 +54,34 @@ describe('decideTaper — volume curve', () => {
     expect(d.volumeMultiplier).toBeCloseTo(0.45, 2);
   });
 
-  it('A-priority taper start (daysToRace=14): volume ≈ 100%', () => {
+  it('A-priority taper start (daysToRace=14): volume respects the JSON max-volume clamp', () => {
     const d = decideTaper({ daysToRace: 14, priority: 'A' }, principles);
-    expect(d.volumeMultiplier).toBeCloseTo(1.0, 2);
+    expect(d.volumeMultiplier).toBeCloseTo(0.6, 2);
   });
 
   it('A-priority mid-taper (daysToRace=7): quadratic gives ~58.75%', () => {
     // (1 - 0.55) + 0.55 * (7/14)^2 = 0.45 + 0.55 * 0.25 = 0.5875
     const d = decideTaper({ daysToRace: 7, priority: 'A' }, principles);
     expect(d.volumeMultiplier).toBeCloseTo(0.5875, 2);
+  });
+
+  it('clamps taper volume to configured min and max percentages', () => {
+    const maxClamped = decideTaper({ daysToRace: 3, priority: 'C' }, principles);
+    const minClamped = decideTaper({
+      daysToRace: 0,
+      priority: 'A',
+      overrideCoefficients: {
+        durationDays: 14,
+        volumeDropPct: 90,
+        intensityPreservedPct: 100,
+        strengthCutoffDaysBeforeRace: 7,
+        minimumVolumePct: 40,
+        maximumVolumePct: 60,
+      },
+    }, principles);
+
+    expect(maxClamped.volumeMultiplier).toBe(0.6);
+    expect(minClamped.volumeMultiplier).toBe(0.4);
   });
 
   it('intensity preserved at 100% throughout taper', () => {

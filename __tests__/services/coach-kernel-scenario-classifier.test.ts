@@ -199,6 +199,30 @@ describe('return-from-gap', () => {
   });
 });
 
+describe('scale-volume action normalization', () => {
+  it('collapses stacked scale_volume actions per session into one combined multiplier', () => {
+    const result = classifyTrainingScenario({
+      sessions: [makeSession({ id: 's1' })],
+      weekConditions: {
+        weekIndex: 0,
+        deloadDue: true,
+        returnProtocol: 'minor_illness_resolved',
+      },
+      weekIntent: intent('taper'),
+      principles,
+    });
+    const scales = result.actions.filter((a) => a.type === 'scale_volume');
+
+    expect(scales).toHaveLength(1);
+    if (scales[0].type === 'scale_volume') {
+      expect(scales[0].sessionId).toBe('s1');
+      expect(scales[0].reasonCode).toContain('taper_volume_scaled');
+      expect(scales[0].reasonCode).toContain('return_from_gap_minor_illness_resolved');
+      expect(scales[0].reasonCode).toContain('deload_applied');
+    }
+  });
+});
+
 describe('travel adjustment', () => {
   it('travel week downgrades strength intensity', () => {
     const result = classifyTrainingScenario({
@@ -237,6 +261,31 @@ describe('missed-session policy', () => {
     });
     const drops = result.actions.filter((a) => a.type === 'drop_session');
     expect(drops.length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('reschedules missed key sessions from the training week date instead of Date.now', () => {
+    const result = classifyTrainingScenario({
+      sessions: [makeSession({
+        id: 'key-missed',
+        dayOfWeek: 'monday',
+        intensityZone: 'threshold',
+        sessionType: 'threshold_run',
+        keySession: true,
+      })],
+      weekConditions: {
+        weekIndex: 0,
+        weekStartISODate: '2026-05-04',
+        missedSessionsThisWeek: 1,
+        missedSessionIds: ['key-missed'],
+      },
+      weekIntent: intent('accumulation'),
+      principles,
+    });
+    const move = result.actions.find((a) => a.type === 'move_session');
+    expect(move?.type).toBe('move_session');
+    if (move?.type === 'move_session') {
+      expect(move.toDate).toBe('2026-05-06');
+    }
   });
 
   it('Codex P2 fix — ONE missed session in a 5-session week acts ONLY on that session', () => {
@@ -308,6 +357,26 @@ describe('low-adherence simplification', () => {
     // 'key' and 'aerobic' are kept; the other 2 dropped.
     // (Note: 'aerobic' may be a duplicate of the key session pick; allow 2 drops.)
     expect(drops.length).toBeGreaterThanOrEqual(2);
+  });
+
+  it('preserves a minimum mobility dose when simplifying low-adherence weeks', () => {
+    const result = classifyTrainingScenario({
+      sessions: [
+        makeSession({ id: 'key', keySession: true }),
+        makeSession({ id: 'aerobic', intensityZone: 'aerobic' }),
+        makeSession({ id: 'mobility', sport: 'strength', sessionType: 'mobility', tags: ['mobility'] }),
+        makeSession({ id: 'extra' }),
+      ],
+      weekConditions: { weekIndex: 0, lowAdherenceTrend: true },
+      weekIntent: intent('accumulation'),
+      principles,
+    });
+    const droppedIds = result.actions
+      .filter((action) => action.type === 'drop_session')
+      .map((action) => action.sessionId);
+
+    expect(droppedIds).toContain('extra');
+    expect(droppedIds).not.toContain('mobility');
   });
 });
 

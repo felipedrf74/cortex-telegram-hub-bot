@@ -101,6 +101,10 @@ export type SafetySource = 'structured_intake' | 'inferred_text' | 'wearable' | 
  *
  * Also: `signal.energyAvailabilityRisk === 'high'` with
  * `source === 'structured_intake'` → triggerType='red_s_high_risk'.
+ *
+ * Severe structured pain (`painScore >= 7`) with a typed location is
+ * also a hard-pause trigger. Chest locations map to `chest_pain`;
+ * other locations map to `worsening_localized_pain`.
  */
 export function deriveSafetyTriggerFromSignal(signal: {
   source?: string;
@@ -118,6 +122,7 @@ export function deriveSafetyTriggerFromSignal(signal: {
   // Structured intake — derive a concrete triggerType when one of
   // the red-flag symptom markers is present.
   const symptoms = (signal.illnessSymptoms ?? []).map((s) => s.toLowerCase());
+  const painLocation = signal.painLocation?.trim().toLowerCase() ?? '';
   if (symptoms.some((s) => s.includes('chest_pain') || s.includes('chest pain'))) {
     return { source: 'structured_intake', triggerType: 'chest_pain' };
   }
@@ -130,11 +135,21 @@ export function deriveSafetyTriggerFromSignal(signal: {
   if (symptoms.some((s) => s.includes('fever'))) {
     return { source: 'structured_intake', triggerType: 'fever_or_systemic_illness' };
   }
-  if (signal.injuryStatus === 'acute') {
-    return { source: 'structured_intake', triggerType: 'acute_injury' };
-  }
   if (signal.energyAvailabilityRisk === 'high') {
     return { source: 'structured_intake', triggerType: 'red_s_high_risk' };
+  }
+  if (
+    typeof signal.painScore === 'number' &&
+    signal.painScore >= 7 &&
+    painLocation.length > 0
+  ) {
+    if (painLocation.includes('chest') || painLocation.includes('peito')) {
+      return { source: 'structured_intake', triggerType: 'chest_pain' };
+    }
+    return { source: 'structured_intake', triggerType: 'worsening_localized_pain' };
+  }
+  if (signal.injuryStatus === 'acute') {
+    return { source: 'structured_intake', triggerType: 'acute_injury' };
   }
   if (
     typeof signal.painScore === 'number' &&
@@ -313,10 +328,9 @@ function findingsToDecisionReasons(
  * TrainingDecisionReason entries for any safety findings + the
  * effective severity for the plan.
  *
- * Hard-pause (effectiveSeverity === 'block') ONLY occurs when:
- *   - source === 'structured_intake' AND
- *   - triggerType is in HARD_PAUSE_TYPED_TRIGGERS AND
- *   - the underlying SafetyEvaluation produced a 'block' finding
+ * Hard-pause (effectiveSeverity === 'block') occurs when structured
+ * intake either carries a typed hard-pause trigger or the underlying
+ * safety evaluation produced a block finding from structured inputs.
  *
  * All other paths emit warnings — visible to the athlete, never
  * silently dropped, but the prescription continues.
@@ -355,9 +369,13 @@ export function wireHealthSignalToSafety(
     HARD_PAUSE_TYPED_TRIGGERS.has(input.triggerType);
 
   const hasBlockFinding = safetyEvaluation.findings.some((f) => f.severity === 'block');
+  const hasStructuredBlockFinding =
+    input.source === 'structured_intake' && hasBlockFinding;
 
   const effectiveSeverity: 'pass' | 'warning' | 'block' =
-    hasTypedHardPause && hasBlockFinding ? 'block' : 'warning';
+    (hasTypedHardPause && hasBlockFinding) || hasStructuredBlockFinding
+      ? 'block'
+      : 'warning';
 
   return {
     decisionReasons,

@@ -103,6 +103,32 @@ describe('training operation SQLite advisory locks', () => {
     }
   });
 
+  it('renews the SQLite lease while a long operation is still held', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-05-22T12:00:00.000Z'));
+    try {
+      const release = await acquireTrainingCalendarOperationLock({
+        userId: 45,
+        tenantId: 84,
+        operation: 'calendar_generate',
+      });
+      const lockKey = trainingCalendarOperationLockKey({ userId: 45, tenantId: 84 });
+      const initial = testDb.prepare(`
+        SELECT expires_at_ms FROM training_operation_locks WHERE lock_key = ?
+      `).get(lockKey) as { expires_at_ms: number };
+
+      await vi.advanceTimersByTimeAsync(7 * 60_000);
+
+      const renewed = testDb.prepare(`
+        SELECT expires_at_ms FROM training_operation_locks WHERE lock_key = ?
+      `).get(lockKey) as { expires_at_ms: number };
+      expect(renewed.expires_at_ms).toBeGreaterThan(initial.expires_at_ms);
+      release();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('ships the advisory lock table in a migration, not only runtime bootstrap', () => {
     const migrationSql = fs.readFileSync(
       path.join(MIGRATIONS_DIR, '154_training_operation_locks.sql'),

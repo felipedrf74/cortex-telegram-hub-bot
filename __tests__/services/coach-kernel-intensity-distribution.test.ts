@@ -184,4 +184,22 @@ describe('assessDistributionDelta', () => {
     );
     expect(delta.totalAbsDelta).toBeCloseTo(0.20, 2);
   });
+
+  it('race/taper options tighten tolerance to 5 percentage points', () => {
+    const delta = assessDistributionDelta(
+      { low: 0.89, moderate: 0.03, high: 0.08 },
+      { low: 0.95, moderate: 0, high: 0.05 },
+      { weekIntentKind: 'race' },
+    );
+    expect(delta.warnings.some((w) => /low-intensity under/.test(w))).toBe(true);
+  });
+
+  it('deload/recovery options use a middle tolerance', () => {
+    const delta = assessDistributionDelta(
+      { low: 0.82, moderate: 0.18, high: 0 },
+      { low: 0.90, moderate: 0.10, high: 0 },
+      { weekIntentKind: 'deload' },
+    );
+    expect(delta.warnings.some((w) => /low-intensity under/.test(w))).toBe(true);
+  });
 });

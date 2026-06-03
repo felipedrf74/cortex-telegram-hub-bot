@@ -141,7 +141,7 @@ export function computeLoadModelForDimension(
         ? 'warming'
         : 'stable';
 
-  const confidence = rollupConfidence(confidences);
+  const confidence = rollupConfidence(confidences.slice(-ctlDays));
 
   return {
     dimension: input.dimension,
@@ -224,8 +224,14 @@ export function classifyAcwr(
     highRisk: { min: number; max: number };
   },
 ): AcwrBand {
+  if (!Number.isFinite(acwr)) return 'lowRisk';
+  if (acwr >= thresholds.highRisk.min && acwr <= thresholds.highRisk.max) return 'highRisk';
+  if (acwr >= thresholds.moderateRisk.min && acwr <= thresholds.moderateRisk.max) return 'moderateRisk';
+  if (acwr >= thresholds.lowRisk.min && acwr <= thresholds.lowRisk.max) return 'lowRisk';
+  if (acwr >= thresholds.underTraining.min && acwr <= thresholds.underTraining.max) return 'underTraining';
+  if (acwr < thresholds.underTraining.min) return 'underTraining';
   if (acwr < thresholds.lowRisk.min) return 'underTraining';
-  if (acwr <= thresholds.lowRisk.max) return 'lowRisk';
-  if (acwr <= thresholds.moderateRisk.max) return 'moderateRisk';
+  if (acwr < thresholds.moderateRisk.min) return 'lowRisk';
+  if (acwr < thresholds.highRisk.min) return 'moderateRisk';
   return 'highRisk';
 }

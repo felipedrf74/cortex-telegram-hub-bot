@@ -17,6 +17,7 @@ import { describe, expect, it } from 'vitest';
 import type { HealthSignal } from '../../src/services/coach-kernel/types';
 import {
   SEEK_PROFESSIONAL_SUPPORT_COPY,
+  deriveSafetyTriggerFromSignal,
   mapHealthSignalToSafetyInput,
   wireHealthSignalToSafety,
 } from '../../src/services/coach-kernel/safety-wiring';
@@ -86,6 +87,60 @@ describe('mapHealthSignalToSafetyInput — consent gating', () => {
 });
 
 describe('wireHealthSignalToSafety — typed hard-pause vs inferred warning', () => {
+  it('derives severe structured pain with a location as a hard-pause trigger', () => {
+    const signal = makeSignal({
+      source: 'structured_intake',
+      painScore: 9,
+      painLocation: 'left knee',
+    });
+    const trigger = deriveSafetyTriggerFromSignal(signal);
+    expect(trigger).toEqual({
+      source: 'structured_intake',
+      triggerType: 'worsening_localized_pain',
+    });
+
+    const out = wireHealthSignalToSafety({ signal, ...trigger });
+    expect(out.effectiveSeverity).toBe('block');
+  });
+
+  it('derives severe structured chest location as chest_pain', () => {
+    const signal = makeSignal({
+      source: 'structured_intake',
+      painScore: 9,
+      painLocation: 'chest tightness',
+    });
+    expect(deriveSafetyTriggerFromSignal(signal)).toEqual({
+      source: 'structured_intake',
+      triggerType: 'chest_pain',
+    });
+  });
+
+  it('lets chest-pain copy win when acute injury is co-reported', () => {
+    const signal = makeSignal({
+      source: 'structured_intake',
+      injuryStatus: 'acute',
+      painScore: 9,
+      painLocation: 'chest tightness',
+    });
+
+    expect(deriveSafetyTriggerFromSignal(signal)).toEqual({
+      source: 'structured_intake',
+      triggerType: 'chest_pain',
+    });
+  });
+
+  it('structured block findings hard-pause even when trigger derivation was omitted', () => {
+    const signal = makeSignal({
+      painScore: 9,
+      painLocation: 'left knee',
+    });
+    const out = wireHealthSignalToSafety({
+      signal,
+      source: 'structured_intake',
+    });
+    expect(out.effectiveSeverity).toBe('block');
+  });
+
   it('typed chest_pain via structured intake → BLOCK effective severity', () => {
     const signal = makeSignal({
       painScore: 9,

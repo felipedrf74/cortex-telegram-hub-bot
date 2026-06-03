@@ -47,6 +47,7 @@ import type {
 } from './types';
 import type { WireHealthSignalOutput } from './safety-wiring';
 import { getMissedSessionPolicy, type Principles } from './training-principles';
+import { DAY_ORDER } from './utils';
 
 /** Typed coach actions — the DSL produced by the classifier. */
 export type CoachAction =
@@ -292,7 +293,7 @@ export function classifyTrainingScenario(
         actions.push({
           type: 'move_session',
           sessionId: s.id,
-          toDate: nextAvailableDate(s.dayOfWeek),
+          toDate: nextAvailableDate(s.dayOfWeek, input.weekConditions.weekStartISODate),
           reasonCode: 'missed_key_rescheduled',
         });
       } else {
@@ -324,6 +325,10 @@ export function classifyTrainingScenario(
     if (key) keepIds.add(key.id);
     const aerobic = input.sessions.find((s) => s.intensityZone === 'aerobic' && !keepIds.has(s.id));
     if (aerobic) keepIds.add(aerobic.id);
+    const mobility = input.sessions.find((s) =>
+      (s.sessionType === 'mobility' || s.tags.includes('mobility')) && !keepIds.has(s.id)
+    );
+    if (mobility) keepIds.add(mobility.id);
     for (const s of input.sessions) {
       if (!keepIds.has(s.id)) {
         actions.push({ type: 'drop_session', sessionId: s.id, reasonCode: 'minimum_viable_week' });
@@ -338,6 +343,8 @@ export function classifyTrainingScenario(
   // so the response can communicate "would-have done X." Safety
   // already short-circuited above so this only affects non-safety
   // scenarios.
+  const collapsedActions = collapseScaleVolumeActions(actions);
+
   if (rateLimited) {
     return {
       kind: 'rate_limited',
@@ -345,7 +352,7 @@ export function classifyTrainingScenario(
       modifiers,
       safetyOverrides: safety,
       actions: [],
-      suppressedActions: actions,
+      suppressedActions: collapsedActions,
       rateLimited: true,
       confidence: 'medium',
     };
@@ -356,7 +363,7 @@ export function classifyTrainingScenario(
     primaryScenario,
     modifiers,
     safetyOverrides: safety,
-    actions,
+    actions: collapsedActions,
     confidence: 'medium',
   };
 }
@@ -368,7 +375,41 @@ function inferSessionRole(session: Session): string {
   return 'easy_aerobic';
 }
 
-function nextAvailableDate(dayOfWeek: string): string {
-  // Simple placeholder — caller can override with a real scheduler.
+function nextAvailableDate(dayOfWeek: string, weekStartISODate?: string): string {
+  const weekStartMs = weekStartISODate ? Date.parse(`${weekStartISODate.slice(0, 10)}T00:00:00.000Z`) : NaN;
+  const dayOffset = DAY_ORDER.indexOf(dayOfWeek as any);
+  if (Number.isFinite(weekStartMs) && dayOffset >= 0) {
+    const original = weekStartMs + dayOffset * 24 * 3600 * 1000;
+    return new Date(original + 2 * 24 * 3600 * 1000).toISOString().slice(0, 10);
+  }
   return new Date(Date.now() + 2 * 24 * 3600 * 1000).toISOString().slice(0, 10);
+}
+
+function collapseScaleVolumeActions(actions: CoachAction[]): CoachAction[] {
+  const result: CoachAction[] = [];
+  const scaleIndexes = new Map<string, number>();
+
+  for (const action of actions) {
+    if (action.type !== 'scale_volume') {
+      result.push(action);
+      continue;
+    }
+
+    const existingIndex = scaleIndexes.get(action.sessionId);
+    if (existingIndex === undefined) {
+      scaleIndexes.set(action.sessionId, result.length);
+      result.push(action);
+      continue;
+    }
+
+    const existing = result[existingIndex];
+    if (existing.type !== 'scale_volume') continue;
+    result[existingIndex] = {
+      ...existing,
+      multiplier: Math.round(existing.multiplier * action.multiplier * 100) / 100,
+      reasonCode: `${existing.reasonCode}+${action.reasonCode}`,
+    };
+  }
+
+  return result;
 }

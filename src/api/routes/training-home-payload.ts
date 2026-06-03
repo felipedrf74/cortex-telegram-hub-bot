@@ -14,6 +14,7 @@ import {
 } from '../../services/training-home-view-state';
 import { getStoredPlanCoveringDate } from '../../services/coach-plan-registry';
 import { adjustForFatigue } from '../../services/coach-kernel/planner-engine';
+import { resolveTrainingDay, trainingWeekdayMatches } from '../../services/training-date-utils';
 import type {
   AthleteState,
   ReadinessLevel,
@@ -84,10 +85,8 @@ export async function buildTrainingHomePayload(
     ...(signalResult.status === 'rejected' ? ['SIGNALS_UNAVAILABLE'] : []),
     ...(coachBriefing?.degraded === true || coachBriefing?.cachedOnlyMiss === true ? ['COACH_STALE'] : []),
   ];
-  const tomorrowDayName = new Date(Date.now() + 24 * 60 * 60 * 1000)
-    .toLocaleDateString('en-US', { weekday: 'long' })
-    .toLowerCase();
-  const tomorrowSession = (week.sessions || []).find((session) => String(session.day || '').toLowerCase() === tomorrowDayName) || null;
+  const tomorrow = resolveTrainingDay({ offsetDays: 1 });
+  const tomorrowSession = (week.sessions || []).find((session) => trainingWeekdayMatches(session.day, tomorrow)) || null;
   const kernelContext = resolveKernelTodayContext(
     userId,
     readinessResult.status === 'fulfilled' ? readinessResult.value : null,

@@ -10,7 +10,7 @@ import {
   type Session,
 } from '../../src/services/coach-kernel';
 import { isActiveTrainingSession } from '../../src/services/coach-kernel/capacity-reconciliation';
-import { adaptSessionForPoorRecovery } from '../../src/services/coach-kernel/poor-recovery-variation';
+import { adaptSessionForPoorRecovery, classifyRecoveryScenario } from '../../src/services/coach-kernel/poor-recovery-variation';
 import { estimateStrengthSessionMinutes, validateSessionCoherence } from '../../src/services/coach-kernel/session-coherence';
 import type { ExercisePrescription } from '../../src/services/coach-kernel/types';
 
@@ -92,6 +92,42 @@ function uniqueTitles(sessions: Session[]): Set<string> {
 }
 
 describe('coach-kernel poor recovery variation', () => {
+  it('prioritizes high soreness before generic hybrid overload', () => {
+    const session: Session = {
+      id: 'run',
+      sport: 'running',
+      sessionType: 'threshold_run',
+      title: 'Threshold',
+      description: '',
+      dayOfWeek: 'tuesday',
+      durationMinutes: 60,
+      intensityZone: 'threshold',
+      fatigueCost: 'high',
+      keySession: true,
+      plannedLoad: 100,
+      tags: [],
+    };
+    const athlete = withPoorRecovery(sampleHybridAthlete, {
+      readiness: {
+        ...sampleHybridAthlete.readiness,
+        level: 'yellow',
+        score: 62,
+        soreness: 'high',
+        painFlags: [],
+      },
+    });
+
+    expect(classifyRecoveryScenario({
+      athlete,
+      session,
+      weekSessions: [
+        session,
+        { ...session, id: 'strength', sport: 'strength', sessionType: 'strength_hypertrophy', dayOfWeek: 'wednesday' },
+      ],
+      sessionIndex: 0,
+    })).toBe('high_soreness');
+  });
+
   it('varies cycling recovery sessions while preserving low-fatigue intent', () => {
     const plan = buildWeekPlan(cyclingAthlete(), '2026-06-01');
     const adjustedCycling = readinessAdjusted(plan.sessions).filter((session) => session.sport === 'cycling');

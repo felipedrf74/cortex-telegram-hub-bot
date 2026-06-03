@@ -2,7 +2,7 @@
 
 Status: canonical
 Owner: release lead (Felipe)
-Last verified: 2026-05-21
+Last verified: 2026-06-03
 Update policy: keep only current carryovers here. Historical closed, fixed, and
 deferred rows for the 2026-05 sweep live in
 `docs/release/OPEN_ITEMS_ARCHIVE_2026-05.md`. Rotate monthly with
@@ -34,6 +34,7 @@ closable without explicit authorization and live credentials/devices.
 
 | ID | Severity | Area | Closed | Evidence |
 | --- | --- | --- | --- | --- |
+| TRN-REMEDIATION | P1/P2 | training | 2026-06-03 | Code remediation executed end-to-end across backend Training coach, chat/parser/action registry, plan generation, safety/load math, sport engines, lifecycle/routes, iOS decoding/state/rendering, and low-adherence product surface. Evidence: backend `npm run verify` passed typecheck, science-policy pin check, and full Vitest **807 files / 11,794 tests**; `NODE_ENV=development TELEGRAM_BOT_TOKEN=local-training-eval-token-disabled TELEGRAM_ALLOWED_USER_IDS=1 npm run eval:training` passed with score **99/100** across **156** cases; iOS simulator build passed; focused iOS Training suite passed **113/113**; full `scripts/ios-single-simulator-test.sh` passed **1,451 XCTest tests** plus **10 Swift Testing cases**. Remaining signed TestFlight/device, HealthKit/Watch, Garmin, provider-state, APNs, and two-account proof stays in the operator gates above. |
 | GAP-TRN-1 | P1 | training | 2026-05-12 | Engine `b35ed604` runs strict write-free plan-linter preflight before cancellation/persistence and returns `plan_quality_blocked` without plan/session/calendar writes; iOS `d337636` renders that state as failed/requires-review instead of created. Focused backend 36/36, route 31/31, broad Training 908/908, iOS focused 14/14, and broader iOS Training subset 85/85 passed. |
 | GAP-REL-1 | P1 | docs/identity | 2026-05-12 | Re-ran `engine/scripts/release-identity.sh markdown --persist --quiet`; `docs/release/release-identity.md` now points at backend `feature/decision-center-logic-v2` commit `9d34f3fd` and iOS `feature/decision-center-logic-v2` commit `460850c`. Docs audit rerun after mirror refresh. |
 | GAP-REL-2 | P1 | docs/release | 2026-05-12 | Reconciled workspace current release state so 4.14.149 Round E + Decision Center remains the active production truth and older 4.14.132 notes are marked historical. |

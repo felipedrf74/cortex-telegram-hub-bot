@@ -38,6 +38,14 @@ function hasLowRecoverySignal(context: EngineContext): boolean {
     || context.athlete.readiness.soreness === 'high';
 }
 
+function cyclingPhaseVolumeMultiplier(phase: EngineContext['phase']): number {
+  if (phase === 'deload') return 0.78;
+  if (phase === 'race') return 0.6;
+  if (phase === 'taper') return 0.7;
+  if (phase === 'maintenance') return 1;
+  return 1.05;
+}
+
 function buildRideSession(template: WorkoutTemplate, dayOfWeek: DayOfWeek, durationMinutes: number, tags: string[]): Session {
   return {
     id: createSessionId('ride', dayOfWeek, template.title),
@@ -92,23 +100,15 @@ export const cyclingEngine: SportEngine = {
     const targetSessions = clamp(context.athlete.goals.weeklySessionsTarget.cycling ?? 3, 1, 5);
     const previousMinutes = context.athlete.trainingHistory.lastWeekMinutesBySport.cycling ?? 150;
     // Slice A1a — activate training-principles.json volume growth cap.
-    // principles.volumeGrowthCapsPct.cycling = 12 (cycling tolerates
-    // higher week-over-week growth than running due to lower
-    // mechanical load). Deload (0.78×) and taper (0.7×) reduce
-    // volume so the cap is a no-op; only build/peak (1.05×) bind
-    // when previousMinutes is high.
-    const cyclingPhaseTarget = Math.round(
-      previousMinutes * (context.phase === 'deload' ? 0.78 : context.phase === 'taper' ? 0.7 : 1.05),
-    );
+    // Build/peak can grow modestly, maintenance holds, and taper/race
+    // reduce volume rather than accidentally growing into event week.
+    const cyclingPhaseTarget = Math.round(previousMinutes * cyclingPhaseVolumeMultiplier(context.phase));
     const targetMinutes = applyVolumeGrowthCapForSport(
       context.knowledge.principles,
       'cycling',
       previousMinutes,
       cyclingPhaseTarget,
     );
-    const longRideMinutes = clamp(Math.round(targetMinutes * 0.4), 90, 240);
-    const keyMinutes = clamp(Math.round(targetMinutes * 0.22), 45, 75);
-    const fillerMinutes = clamp(Math.round((targetMinutes - longRideMinutes - keyMinutes) / Math.max(1, targetSessions - 2)), 40, 75);
 
     // Slice 4.F — availability-aware day picks. Falls back to the
     // canonical legacy defaults when the user has no availability
@@ -117,6 +117,18 @@ export const cyclingEngine: SportEngine = {
     const longDayPreferences: DayOfWeek[] = ['saturday', 'sunday'];
     const keyDay = pickKeyDay(context.athlete, 'cycling', keyDayPreferences);
     const longDay = pickKeyDay(context.athlete, 'cycling', longDayPreferences);
+
+    if (targetSessions === 1) {
+      const template = context.phase === 'deload' || context.phase === 'race' || context.phase === 'taper'
+        ? templateFor(templates, 'recovery_ride')
+        : templateFor(templates, 'endurance_ride');
+      const duration = clamp(Math.round(targetMinutes), 45, template.sessionType === 'recovery_ride' ? 75 : 180);
+      return [buildRideSession(template, longDay, duration, ['single_ride', template.id])];
+    }
+
+    const longRideMinutes = clamp(Math.round(targetMinutes * 0.4), 90, 240);
+    const keyMinutes = clamp(Math.round(targetMinutes * 0.22), 45, 75);
+    const fillerMinutes = clamp(Math.round((targetMinutes - longRideMinutes - keyMinutes) / Math.max(1, targetSessions - 2)), 40, 75);
 
     const keyTemplate = keyRideTemplateFor(context, templates);
     const sessions: Session[] = [

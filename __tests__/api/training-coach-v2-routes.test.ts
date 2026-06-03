@@ -581,6 +581,14 @@ describe('GET /plans/:planId/coach-analysis — end-to-end v2 composition', () =
     expect(result.json?.error?.code).toBe('BAD_WEEK_INDEX');
   });
 
+  it('rejects out-of-range weekIndex instead of silently clamping to the last week', async () => {
+    const result = await req('GET', '/api/v1/training/plans/1/coach-analysis?weekIndex=99');
+
+    expect(result.status).toBe(400);
+    expect(result.json?.error?.code).toBe('WEEK_OUT_OF_RANGE');
+    expect(result.json?.error?.details?.reason).toBe('week_out_of_range');
+  });
+
   it('returns 404 for unknown plan', async () => {
     const result = await req('GET', '/api/v1/training/plans/9999/coach-analysis?weekIndex=0');
     expect(result.status).toBe(404);
@@ -832,6 +840,20 @@ describe('R3 P1 — A4 hard-pause via structured intake', () => {
       INSERT INTO athlete_health_signals
         (user_id, date, pain_score, pain_location, illness_symptoms_json, source, consent_scope)
       VALUES (100, '2026-05-23', 9, 'chest', '["chest_pain"]', 'structured_intake', 'pain,illness')
+    `).run();
+    const result = await req('GET', '/api/v1/training/plans/1/coach-analysis?weekIndex=0');
+    expect(result.status).toBe(200);
+    const actions = result.json?.data?.scenario?.actions ?? [];
+    const pause = actions.find((a: any) => a.type === 'pause_training');
+    expect(pause).toBeDefined();
+    expect(pause?.severity).toBe('medical_referral');
+  });
+
+  it('severe structured pain with location → coach-analysis emits pause_training without symptom wording', async () => {
+    testDb.prepare(`
+      INSERT INTO athlete_health_signals
+        (user_id, date, pain_score, pain_location, illness_symptoms_json, source, consent_scope)
+      VALUES (100, '2026-05-23', 9, 'left knee', '[]', 'structured_intake', 'pain')
     `).run();
     const result = await req('GET', '/api/v1/training/plans/1/coach-analysis?weekIndex=0');
     expect(result.status).toBe(200);

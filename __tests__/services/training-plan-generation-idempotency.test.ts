@@ -10,6 +10,7 @@ import {
   _resetTrainingPlanGenerationIdempotencyForTests,
   claimTrainingPlanGenerationIdempotency,
   completeTrainingPlanGenerationIdempotency,
+  fingerprintTrainingPlanGenerationRequest,
 } from '../../src/services/training-plan-generation-idempotency';
 
 describe('training plan generation idempotency', () => {
@@ -51,5 +52,21 @@ describe('training plan generation idempotency', () => {
     const second = claimTrainingPlanGenerationIdempotency(12, key, requestHash);
 
     expect(second).toEqual({ kind: 'claimed', idempotencyKey: key, requestHash });
+  });
+
+  it('includes generator policy version in request fingerprints', () => {
+    const base = {
+      objective: 'Build consistency',
+      durationWeeks: 12,
+      sessionsPerWeek: 5,
+    };
+
+    expect(fingerprintTrainingPlanGenerationRequest({
+      ...base,
+      generatorPolicyVersion: 'training-plan-shape-v1',
+    })).not.toEqual(fingerprintTrainingPlanGenerationRequest({
+      ...base,
+      generatorPolicyVersion: 'training-plan-shape-v2',
+    }));
   });
 });

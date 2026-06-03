@@ -32,6 +32,11 @@ describe('coach-kernel/readiness-snapshot-adapter', () => {
       expect(scoreToReadinessLevel(80, true)).toBe('orange');
     });
 
+    it('caps yellow-range scores at orange when high-severity injury present', () => {
+      expect(scoreToReadinessLevel(65, true)).toBe('orange');
+      expect(scoreToReadinessLevel(60, true)).toBe('orange');
+    });
+
     it('does not lift the floor — red still red even with injury', () => {
       // High-injury caps at orange but does not RAISE a low score. A user
       // with an injury AND poor wearable signals should still see red so

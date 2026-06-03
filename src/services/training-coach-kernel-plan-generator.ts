@@ -33,6 +33,20 @@ import {
 } from './training-profile-model';
 import { logger } from '../utils/logger';
 
+export const MIN_TRAINING_PLAN_DURATION_WEEKS = 1;
+export const MAX_TRAINING_PLAN_DURATION_WEEKS = 52;
+
+export function normalizeTrainingPlanDurationWeeks(raw: unknown, fallback = 4): number {
+  const resolved = Number(raw);
+  const candidate = Number.isFinite(resolved) && resolved > 0
+    ? Math.round(resolved)
+    : fallback;
+  return Math.max(
+    MIN_TRAINING_PLAN_DURATION_WEEKS,
+    Math.min(MAX_TRAINING_PLAN_DURATION_WEEKS, candidate),
+  );
+}
+
 /** Current readiness measurements used to seed the planner's
  *  `AthleteState.readiness`. When provided the generator uses these real
  *  values (from `calculateReadiness`) instead of a hardcoded yellow/orange
@@ -170,6 +184,10 @@ const SESSION_TYPE_LABEL_MAP: Record<Session['sessionType'], string> = {
 };
 
 export function buildCoachKernelTrainingPlan(input: CoachKernelTrainingPlanInput): CoordinatedTrainingPlan {
+  input = {
+    ...input,
+    durationWeeks: normalizeTrainingPlanDurationWeeks(input.durationWeeks),
+  };
   const athlete = buildAthleteStateFromTrainingProfiles(input);
   let rollingAthlete = athlete;
   const rawWeeklyPlans: WeeklyPlan[] = [];
@@ -183,6 +201,7 @@ export function buildCoachKernelTrainingPlan(input: CoachKernelTrainingPlanInput
       weekStart,
       races: athlete.goals.raceCalendar,
       goalMode: input.goalMode,
+      experienceLevel: rollingAthlete.profile.experienceLevel,
     });
 
     const weekReadiness = readinessForPlannedWeek(rollingAthlete.readiness, weekNumber);
@@ -539,6 +558,7 @@ export function buildAthleteStateFromTrainingProfiles(input: CoachKernelTraining
         weekStart: input.startDate,
         races: raceCalendar,
         goalMode: input.goalMode,
+        experienceLevel: experienceResolution.value,
       }),
       weekIndex: 1,
       totalWeeks: input.durationWeeks,
@@ -1792,6 +1812,7 @@ function resolveWeekPhase(args: {
   weekStart: string;
   races: RaceEvent[];
   goalMode?: TrainingGoalMode | null;
+  experienceLevel?: AthleteState['profile']['experienceLevel'];
 }): BlockPhase {
   if (args.goalMode === 'maintenance') return 'maintenance';
 
@@ -1812,11 +1833,27 @@ function resolveWeekPhase(args: {
   }
 
   if (args.goalMode === 'return_to_training') {
-    return args.weekNumber <= 2 ? 'base' : 'build';
+    if (args.weekNumber <= 2) return 'base';
+    return shouldScheduleDeloadWeek(args) ? 'deload' : 'build';
   }
 
   if (args.weekNumber <= 2) return 'base';
+  if (shouldScheduleDeloadWeek(args)) return 'deload';
   return 'build';
+}
+
+function shouldScheduleDeloadWeek(args: {
+  weekNumber: number;
+  durationWeeks: number;
+  experienceLevel?: AthleteState['profile']['experienceLevel'];
+}): boolean {
+  if (args.durationWeeks < 4 || args.weekNumber < 4) return false;
+  const cadence = args.experienceLevel === 'novice'
+    ? 5
+    : args.experienceLevel === 'advanced'
+      ? 3
+      : 4;
+  return args.weekNumber % cadence === 0;
 }
 
 function rollAthleteStateForward(athlete: AthleteState, weeklyPlan: WeeklyPlan): AthleteState {
@@ -1829,6 +1866,12 @@ function rollAthleteStateForward(athlete: AthleteState, weeklyPlan: WeeklyPlan):
 
   return {
     ...athlete,
+    currentBlock: {
+      ...athlete.currentBlock,
+      lastDeloadWeekIndex: weeklyPlan.phase === 'deload'
+        ? athlete.currentBlock.weekIndex
+        : athlete.currentBlock.lastDeloadWeekIndex,
+    },
     trainingHistory: {
       lastWeekMinutesBySport: {
         ...athlete.trainingHistory.lastWeekMinutesBySport,

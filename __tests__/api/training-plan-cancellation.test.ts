@@ -320,6 +320,36 @@ describe('training-plan-cancellation (hard delete)', () => {
     });
   });
 
+  it('threads explicit tenant scope through ownership and hard delete', async () => {
+    mocks.getActivePlan.mockReturnValue({ id: 45, user_id: 12, tenant_id: 34 });
+    mocks.deletePlanHard.mockReturnValue({
+      ok: true,
+      removedPlans: 1,
+      removedWeeks: 0,
+      removedSessions: 0,
+      removedCompletions: 0,
+    });
+
+    const result = await cancelTrainingPlanForUser(12, undefined, { tenantId: 34 });
+
+    expect(result.status).toBe('cancelled');
+    expect(mocks.deletePlanHard).toHaveBeenCalledWith(45, 12, 34);
+    expect(mocks.cancelTrainingPlanCrossSkillDependents).toHaveBeenCalledWith(expect.objectContaining({
+      userId: 12,
+      tenantId: 34,
+      planId: 45,
+    }));
+  });
+
+  it('rejects requested plans from another tenant with uniform forbidden result', async () => {
+    mocks.getPlanById.mockReturnValue({ id: 46, user_id: 12, tenant_id: 99 });
+
+    const result = await cancelTrainingPlanForUser(12, 46, { tenantId: 34 });
+
+    expect(result).toEqual({ status: 'forbidden' });
+    expect(mocks.deletePlanHard).not.toHaveBeenCalled();
+  });
+
   it('does not delete a title-matched calendar event owned by another active training plan', async () => {
     mocks.getActivePlan.mockReturnValue({
       id: 73,

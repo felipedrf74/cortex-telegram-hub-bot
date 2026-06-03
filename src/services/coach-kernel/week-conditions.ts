@@ -75,15 +75,13 @@ export function aggregateWeekConditions(
   // C2 — travel.
   if (input.travelWindows && input.travelWindows.length > 0) {
     conditions.isTravelWeek = true;
-    // Pick the most-recent window's stress score.
-    const score = computeTravelStressScore(input.travelWindows[0]);
-    const window = input.travelWindows[0];
+    const score = Math.max(...input.travelWindows.map(computeTravelStressScore));
     conditions.travelStress = {
-      timeZoneShiftHours: window.time_zone_shift_hours ?? undefined,
-      flightDurationHours: window.flight_duration_hours ?? undefined,
-      sleepDisruptionExpected: window.sleep_disruption_expected === 1,
-      walkingLoadExpected: window.walking_load_expected === 1,
-      heatStress: window.heat_stress === 1,
+      timeZoneShiftHours: maxAbsDefined(input.travelWindows.map((window) => window.time_zone_shift_hours)),
+      flightDurationHours: maxDefined(input.travelWindows.map((window) => window.flight_duration_hours)),
+      sleepDisruptionExpected: input.travelWindows.some((window) => window.sleep_disruption_expected === 1),
+      walkingLoadExpected: input.travelWindows.some((window) => window.walking_load_expected === 1),
+      heatStress: input.travelWindows.some((window) => window.heat_stress === 1),
     };
     // Surface score under a custom field for C8 (it inspects this
     // via `travelStressScore` on a downstream extension).
@@ -117,4 +115,15 @@ export function aggregateWeekConditions(
   }
 
   return conditions;
+}
+
+function maxDefined(values: Array<number | null | undefined>): number | undefined {
+  const numeric = values.filter((value): value is number => typeof value === 'number' && Number.isFinite(value));
+  return numeric.length > 0 ? Math.max(...numeric) : undefined;
+}
+
+function maxAbsDefined(values: Array<number | null | undefined>): number | undefined {
+  const numeric = values.filter((value): value is number => typeof value === 'number' && Number.isFinite(value));
+  if (numeric.length === 0) return undefined;
+  return numeric.reduce((best, value) => Math.abs(value) > Math.abs(best) ? value : best, numeric[0]);
 }

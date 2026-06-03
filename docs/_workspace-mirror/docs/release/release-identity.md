@@ -5,7 +5,7 @@
 
 | Area | Path | Branch | Commit | Dirty state | Version | Migrations |
 | --- | --- | --- | --- | --- | --- | --- |
-| Backend | `/Users/felipedominguez/Desktop/Nexus Hub/worktrees/confirmation-main-promote-20260523` | `main` | `bac44816` | `unknown` | `4.14.190` | `157` |
-| iOS | `/Users/felipedominguez/Desktop/Nexus Hub IOS/Nexus Hub` | `main` | `bac44816` | `dirty` | n/a | n/a |
+| Backend | `/Users/felipedominguez/Desktop/Custom Connectors/Cortex/cortex-telegram-hub-bot` | `codex/chat_improvement_goal` | `6d1914a6` | `dirty` | `4.14.198` | `186` |
+| iOS | `/Users/felipedominguez/Desktop/Nexus Hub IOS/Nexus Hub` | `main` | `9f5649c` | `dirty` | n/a | n/a |
 
-Generated at: `2026-05-23T11:35:19Z`
+Generated at: `2026-06-03T19:55:41Z`

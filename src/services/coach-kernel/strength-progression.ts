@@ -26,7 +26,7 @@
  *
  * Gating signals (any one returns 'consistency_preservation'):
  *   - Reps missed in last session (completed < prescribed).
- *   - RPE ≥ 9 on top set (per Helms — leave 1+ rep in reserve to grow).
+ *   - RPE ≥ 8 on top set (load progression requires clear reserve).
  *   - Pain reported in same-region in last 7 days.
  *   - High soreness (≥7/10) in last session.
  *   - Technical success score < 6/10 (athlete couldn't execute).
@@ -43,6 +43,17 @@ export type ProgressionVector =
   | 'intent_then_load'
   | 'consistency_preservation';
 
+export interface StrengthProgressionSessionSignal {
+  /** Reps completed on the top working set. */
+  completedRepsTopSet: number;
+  /** Reps prescribed on the top working set. */
+  prescribedRepsTopSet: number;
+  rpeTopSet?: number;
+  rir?: number;
+  sorenessLevel?: number;
+  technicalSuccessScore?: number;
+}
+
 export interface ProgressionGateInput {
   /** Target intent for this exercise (from WorkoutTemplate.progressionTarget). */
   progressionTarget?: string;
@@ -56,16 +67,9 @@ export interface ProgressionGateInput {
   hoursSinceSamePattern?: number;
   /** Hours until the next key endurance session (for interference gate). */
   hoursUntilNextKeyEndurance?: number;
-  lastSession?: {
-    /** Reps completed on the top working set. */
-    completedRepsTopSet: number;
-    /** Reps prescribed on the top working set. */
-    prescribedRepsTopSet: number;
-    rpeTopSet?: number;
-    rir?: number;
-    sorenessLevel?: number;
-    technicalSuccessScore?: number;
-  };
+  lastSession?: StrengthProgressionSessionSignal;
+  /** Immediately prior consecutive session for this lift/movement. */
+  priorSession?: StrengthProgressionSessionSignal;
   /** Did the athlete report pain in the same body region in the last 7d? */
   painSameRegionLast7d?: boolean;
 }
@@ -90,9 +94,20 @@ const NOVICE_NOVELTY_GROOVING_EXPOSURES = 2;
 const INTERFERENCE_HOURS_THRESHOLD = 6;
 const SAME_PATTERN_RECOVERY_HOURS = 48;
 
+function targetResolvesToDirectLoadProgression(target: string): boolean {
+  if (target.includes('volume_then_load') || (target.includes('volume') && !target.includes('load_progression'))) {
+    return false;
+  }
+  if (target.includes('intent_then_load') || target.includes('intent') || target.includes('tempo')) {
+    return false;
+  }
+  return true;
+}
+
 export function decideStrengthProgression(input: ProgressionGateInput): ProgressionDecision {
   const gatesFired: string[] = [];
   const rationale: string[] = [];
+  const target = (input.progressionTarget ?? 'load_progression').toLowerCase();
 
   // 1. Equipment check.
   if (input.equipmentBucket && input.availableEquipment !== undefined) {
@@ -136,9 +151,9 @@ export function decideStrengthProgression(input: ProgressionGateInput): Progress
       gatesFired.push('reps_missed');
       rationale.push(`Top set: completed ${ls.completedRepsTopSet}/${ls.prescribedRepsTopSet} reps. Hold to re-baseline.`);
     }
-    if (ls.rpeTopSet !== undefined && ls.rpeTopSet >= 9) {
+    if (ls.rpeTopSet !== undefined && ls.rpeTopSet >= 8) {
       gatesFired.push('rpe_too_high');
-      rationale.push(`Top set RPE ${ls.rpeTopSet} ≥ 9; leave reps in reserve to grow.`);
+      rationale.push(`Top set RPE ${ls.rpeTopSet} ≥ 8; load progression requires clear reserve.`);
     }
     if (ls.sorenessLevel !== undefined && ls.sorenessLevel >= 7) {
       gatesFired.push('soreness_high');
@@ -147,6 +162,27 @@ export function decideStrengthProgression(input: ProgressionGateInput): Progress
     if (ls.technicalSuccessScore !== undefined && ls.technicalSuccessScore < 6) {
       gatesFired.push('technical_failure');
       rationale.push(`Technical success ${ls.technicalSuccessScore}/10 low; refine before adding load.`);
+    }
+  }
+
+  if (targetResolvesToDirectLoadProgression(target)) {
+    if (!input.lastSession || !input.priorSession) {
+      gatesFired.push('two_session_confirmation_missing');
+      rationale.push('Load progression needs two consecutive cleared sessions for this lift.');
+    } else {
+      const ps = input.priorSession;
+      if (ps.completedRepsTopSet < ps.prescribedRepsTopSet) {
+        gatesFired.push('prior_reps_missed');
+        rationale.push(`Prior top set: completed ${ps.completedRepsTopSet}/${ps.prescribedRepsTopSet} reps.`);
+      }
+      if (ps.rpeTopSet === undefined || ps.rpeTopSet >= 8) {
+        gatesFired.push('prior_rpe_not_clear');
+        rationale.push(`Prior top set RPE ${ps.rpeTopSet ?? 'missing'} was not < 8.`);
+      }
+      if (input.lastSession.rpeTopSet === undefined) {
+        gatesFired.push('last_rpe_missing');
+        rationale.push('Last top set RPE is missing; cannot confirm reserve for load progression.');
+      }
     }
   }
 
@@ -162,7 +198,6 @@ export function decideStrengthProgression(input: ProgressionGateInput): Progress
   // No gates → apply the progressionTarget vector. Order matters:
   // check the most specific compound names FIRST so 'volume_then_load'
   // is not swallowed by a substring match on 'load'.
-  const target = (input.progressionTarget ?? 'load_progression').toLowerCase();
   const ls = input.lastSession;
 
   if (target.includes('volume_then_load') || target === 'volume_then_load' || (target.includes('volume') && !target.includes('load_progression'))) {
@@ -189,7 +224,7 @@ export function decideStrengthProgression(input: ProgressionGateInput): Progress
       loadDeltaPct: 0.025,
       rationale: [
         ...rationale,
-        `Load progression: +2.5% on next session. All target reps hit at RPE ${ls?.rpeTopSet ?? '?'} ≤ 8.`,
+        `Load progression: +2.5% on next session. All target reps hit at RPE ${ls?.rpeTopSet ?? '?'} < 8 across two sessions.`,
       ],
       gatesFired,
     };

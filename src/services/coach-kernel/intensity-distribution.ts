@@ -24,6 +24,7 @@ import type {
   CoachPlanPolicy,
   IntensitySegment,
   Session,
+  WeekIntentKindEnum,
   WeekIntent,
 } from './types';
 import {
@@ -166,6 +167,22 @@ export interface DistributionDelta {
   warnings: string[];
 }
 
+export interface DistributionDeltaOptions {
+  toleranceBucket?: number;
+  weekIntentKind?: WeekIntentKindEnum;
+}
+
+function distributionToleranceFromOptions(
+  toleranceOrOptions?: number | DistributionDeltaOptions,
+): number {
+  if (typeof toleranceOrOptions === 'number') return toleranceOrOptions;
+  if (toleranceOrOptions?.toleranceBucket !== undefined) return toleranceOrOptions.toleranceBucket;
+  const kind = toleranceOrOptions?.weekIntentKind;
+  if (kind === 'race' || kind === 'taper' || kind === 'realization') return 0.05;
+  if (kind === 'deload' || kind === 'recovery' || kind === 'post_race_recovery') return 0.07;
+  return 0.10;
+}
+
 /**
  * Compare actual weekly distribution against the target model.
  * Returns per-bucket deltas + a list of warning strings.
@@ -176,20 +193,21 @@ export interface DistributionDelta {
 export function assessDistributionDelta(
   actual: { low: number; moderate: number; high: number },
   target: IntensityDistribution,
-  toleranceBucket = 0.10,
+  toleranceBucket: number | DistributionDeltaOptions = 0.10,
 ): DistributionDelta {
+  const resolvedTolerance = distributionToleranceFromOptions(toleranceBucket);
   const lowDelta = actual.low - target.low;
   const modDelta = actual.moderate - target.moderate;
   const highDelta = actual.high - target.high;
   const totalAbs = Math.abs(lowDelta) + Math.abs(modDelta) + Math.abs(highDelta);
   const warnings: string[] = [];
-  if (Math.abs(lowDelta) > toleranceBucket) {
+  if (Math.abs(lowDelta) > resolvedTolerance) {
     warnings.push(`low-intensity ${lowDelta > 0 ? 'over' : 'under'} target by ${Math.round(Math.abs(lowDelta) * 100)}%`);
   }
-  if (Math.abs(modDelta) > toleranceBucket) {
+  if (Math.abs(modDelta) > resolvedTolerance) {
     warnings.push(`moderate-intensity ${modDelta > 0 ? 'over' : 'under'} target by ${Math.round(Math.abs(modDelta) * 100)}%`);
   }
-  if (Math.abs(highDelta) > toleranceBucket) {
+  if (Math.abs(highDelta) > resolvedTolerance) {
     warnings.push(`high-intensity ${highDelta > 0 ? 'over' : 'under'} target by ${Math.round(Math.abs(highDelta) * 100)}%`);
   }
   return {

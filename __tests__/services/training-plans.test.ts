@@ -72,6 +72,7 @@ import {
   createWeek,
   getWeeksForPlan,
   getCurrentWeek,
+  resolveTrainingPlanWeekNumber,
   updateWeekAdjustment,
   createSession,
   getSessionsForWeek,
@@ -212,6 +213,18 @@ describe('Week CRUD', () => {
     expect(weeks[0].week_number).toBe(1);
     expect(weeks[1].week_number).toBe(2);
     expect(weeks[2].week_number).toBe(3);
+  });
+
+  it('resolves current week using training timezone day boundaries', () => {
+    const weekNumber = resolveTrainingPlanWeekNumber(
+      { start_date: '2026-05-04', duration_weeks: 4 },
+      {
+        now: new Date('2026-05-10T23:30:00.000Z'),
+        timezone: 'Europe/Lisbon',
+      },
+    );
+
+    expect(weekNumber).toBe(2);
   });
 
   it('updates week adjustment', () => {

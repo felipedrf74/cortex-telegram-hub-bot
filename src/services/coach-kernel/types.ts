@@ -291,6 +291,8 @@ export interface VersionStamp {
  */
 export interface WeekConditions {
   weekIndex: number;
+  /** ISO date for the Monday of this training week, used for deterministic reflow/reschedule actions. */
+  weekStartISODate?: string;
   isTravelWeek?: boolean;
   /**
    * Count of missed sessions this week. Kept for backwards-compat

@@ -71,7 +71,7 @@ export function extractTrainingPlanSlots(input: TrainingPlanStepInput): {
     });
   }
 
-  const sportMatch = folded.match(/\b(running|run|corrida|cycling|ciclismo|bike|swim|swimming|natacao|natação|triathlon|triathlon|gym|ginasio|ginásio|strength|forca|força)\b/);
+  const sportMatch = folded.match(/\b(running|run|corrida|correr|corre|cycling|ciclismo|bike|swim|swimming|natacao|natação|triathlon|gym|ginasio|ginásio|strength|forca|força)\b/);
   if (sportMatch) {
     const sport = normalizeTrainingSport(sportMatch[1]);
     slots.sport = sport;
@@ -113,7 +113,7 @@ export function extractTrainingPlanSlots(input: TrainingPlanStepInput): {
     provenance.startDate = start.provenance;
   }
 
-  const goalMatch = text.match(/\b(?:goal is|goal|objetivo(?:\s+é)?|para|to)\s+(.+?)(?=$|\.|,|\s+\b(?:in|em|for|por)\s+\d{1,2}\s*(?:weeks?|semanas?)\b)/i);
+  const goalMatch = text.match(/\b(?:goal is|goal|objetivo(?:\s+é)?|para|to)\s+(.+?)(?=$|\.|,|\s+\b(?:in|em|en|for|por)\s+\d{1,2}\s*(?:weeks?|semanas?)\b)/i);
   const goal = cleanupTrainingGoal(goalMatch?.[1] ?? inferTrainingGoalFromText(text));
   if (goal) {
     slots.goal = goal;
@@ -138,18 +138,23 @@ export function missingTrainingPlanSlots(slots: Record<string, unknown>): string
 }
 
 export function extractWeeklyVolumeKm(text: string): number | null {
-  const match = text.match(/\b(\d+(?:[.,]\d+)?)\s*(?:km|kilometers?|quil[oó]metros?)\b(?:\s*(?:a|per|por)\s*(?:week|semana))?/i);
-  if (!match || !/\b(week|semana)\b/i.test(text)) return null;
-  const value = Number(match[1].replace(',', '.'));
+  const direct = text.match(/\b(\d+(?:[.,]\d+)?)\s*(?:km|kilometers?|quil[oó]metros?)\s*(?:a|per|por|\/)\s*(?:week|semana)\b/i);
+  const reverse = text.match(/\b(?:week|semana)\b.{0,24}?\b(\d+(?:[.,]\d+)?)\s*(?:km|kilometers?|quil[oó]metros?)\b/i);
+  const raw = direct?.[1] ?? reverse?.[1];
+  if (!raw) return null;
+  const value = Number(raw.replace(',', '.'));
   return Number.isFinite(value) && value >= 0 && value <= 500 ? value : null;
 }
 
 export function extractTrainingStartDate(input: TrainingPlanStepInput): { value: string; provenance: ChatSlotProvenance } | null {
   const now = DateTime.fromISO(input.nowIso ?? new Date().toISOString()).setZone(input.timezone);
-  const match = input.text.match(/\b(?:start(?:ing)?|começar|inicio|início)\s+(today|tomorrow|hoje|amanh[ãa]|next week|pr[oó]xima semana)\b/i);
+  const match = input.text.match(/\b(?:start(?:ing)?|começar|comecar|começando|comecando|inicio|início|comienza(?:ndo)?|empezar)\s+(?:el\s+|na\s+|no\s+)?(today|tomorrow|hoje|amanh[ãa]|next week|pr[oó]xima semana|monday|tuesday|wednesday|thursday|friday|saturday|sunday|segunda(?:-feira)?|terça(?:-feira)?|terca(?:-feira)?|quarta(?:-feira)?|quinta(?:-feira)?|sexta(?:-feira)?|sábado|sabado|domingo|lunes|martes|mi[eé]rcoles|miercoles|jueves|viernes)\b/i);
   if (!match) return null;
   const folded = foldCalendarText(match[1]);
-  const date = folded === 'tomorrow' || folded === 'amanha'
+  const weekday = weekdayFromFoldedText(folded);
+  const date = weekday
+    ? nextWeekday(now, weekday)
+    : folded === 'tomorrow' || folded === 'amanha'
     ? now.plus({ days: 1 })
     : folded.includes('next week') || folded.includes('proxima semana')
       ? now.plus({ weeks: 1 }).startOf('week')
@@ -174,12 +179,28 @@ export function extractTrainingStartDate(input: TrainingPlanStepInput): { value:
 
 export function normalizeTrainingSport(raw: string): string {
   const folded = foldCalendarText(raw);
-  if (/\b(run|running|corrida)\b/.test(folded)) return 'running';
+  if (/\b(run|running|corrida|correr|corre)\b/.test(folded)) return 'running';
   if (/\b(cycling|ciclismo|bike)\b/.test(folded)) return 'cycling';
   if (/\b(swim|swimming|natacao)\b/.test(folded)) return 'swimming';
   if (/\b(triathlon)\b/.test(folded)) return 'triathlon';
   if (/\b(gym|ginasio|strength|forca)\b/.test(folded)) return 'strength';
   return folded;
+}
+
+function weekdayFromFoldedText(value: string): number | null {
+  if (/\b(monday|segunda|segunda-feira|lunes)\b/.test(value)) return 1;
+  if (/\b(tuesday|terca|terca-feira|terça|terça-feira|martes)\b/.test(value)) return 2;
+  if (/\b(wednesday|quarta|quarta-feira|miercoles|miércoles)\b/.test(value)) return 3;
+  if (/\b(thursday|quinta|quinta-feira|jueves)\b/.test(value)) return 4;
+  if (/\b(friday|sexta|sexta-feira|viernes)\b/.test(value)) return 5;
+  if (/\b(saturday|sabado|sábado)\b/.test(value)) return 6;
+  if (/\b(sunday|domingo)\b/.test(value)) return 7;
+  return null;
+}
+
+function nextWeekday(now: DateTime, weekday: number): DateTime {
+  const delta = (weekday - now.weekday + 7) % 7;
+  return now.plus({ days: delta === 0 ? 7 : delta }).startOf('day');
 }
 
 export function inferTrainingGoalFromText(text: string): string | null {

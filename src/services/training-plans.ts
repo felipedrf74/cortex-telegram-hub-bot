@@ -7,23 +7,10 @@
  * and weekly auto-adjustment based on completion data and wearable metrics.
  */
 
+import { DateTime } from 'luxon';
 import { getDb } from './database';
 import { logger } from '../utils/logger';
-import { createEvent as createCalendarEvent, hasWritableCalendarForUser } from './unified-calendar';
-import { publishTrainingSessionScheduled } from './training-signals';
 import { config } from '../config';
-
-// ─── Phase 1 Slice B helper ─────────────────────────────────────────
-
-/** Map a training plan sport string to the canonical sport enum for signals. */
-function normalizeSportForSignals(sport: string): 'gym' | 'running' | 'cycling' | 'swim' | null {
-  const s = sport.toLowerCase().trim();
-  if (['gym', 'strength', 'lifting', 'weight', 'weights', 'musculacao', 'musculação'].includes(s)) return 'gym';
-  if (['run', 'running', 'corrida'].includes(s)) return 'running';
-  if (['bike', 'biking', 'cycle', 'cycling', 'ciclismo', 'pedal'].includes(s)) return 'cycling';
-  if (['swim', 'swimming', 'natacao', 'natação'].includes(s)) return 'swim';
-  return null;
-}
 
 // ── Types ──────────────────────────────────────────────────────────
 
@@ -429,7 +416,7 @@ export function updatePlanPreferences(planId: number, preferencesJson: string): 
  * Returns row counts so the route can report what was actually
  * removed in the response payload (audit + UI feedback).
  */
-export function deletePlanHard(planId: number, userId: number): {
+export function deletePlanHard(planId: number, userId: number, tenantId?: number | null): {
   ok: boolean;
   removedPlans: number;
   removedWeeks: number;
@@ -448,9 +435,14 @@ export function deletePlanHard(planId: number, userId: number): {
   // Scope the DELETE to (id, user_id) so a stale planId from another
   // tenant cannot accidentally remove someone else's plan even if the
   // caller's ownership gate is bypassed in the future.
-  const result = db.prepare(`
-    DELETE FROM fitness_training_plans WHERE id = ? AND user_id = ?
-  `).run(planId, userId);
+  const scopedTenantId = Number(tenantId);
+  const result = Number.isFinite(scopedTenantId) && scopedTenantId > 0
+    ? db.prepare(`
+        DELETE FROM fitness_training_plans WHERE id = ? AND user_id = ? AND tenant_id = ?
+      `).run(planId, userId, Math.trunc(scopedTenantId))
+    : db.prepare(`
+        DELETE FROM fitness_training_plans WHERE id = ? AND user_id = ?
+      `).run(planId, userId);
 
   const removedPlans = result.changes;
   return {
@@ -484,19 +476,28 @@ export function getWeeksForPlan(planId: number): TrainingWeek[] {
   `).all(planId) as TrainingWeek[];
 }
 
-export function getCurrentWeek(planId: number): TrainingWeek | null {
+export function resolveTrainingPlanWeekNumber(
+  plan: Pick<TrainingPlan, 'start_date' | 'duration_weeks'>,
+  options: { now?: Date; timezone?: string | null } = {},
+): number {
+  const timezone = options.timezone || config.app?.timezone || 'Europe/Lisbon';
+  const start = DateTime.fromISO(plan.start_date, { zone: timezone }).startOf('day');
+  const now = DateTime.fromJSDate(options.now ?? new Date(), { zone: timezone }).startOf('day');
+  if (!start.isValid || !now.isValid) return 1;
+  const diffDays = Math.floor(now.diff(start, 'days').days);
+  const rawWeekNumber = Math.floor(diffDays / 7) + 1;
+  return Math.min(
+    Math.max(1, rawWeekNumber),
+    Math.max(1, plan.duration_weeks || 1),
+  );
+}
+
+export function getCurrentWeek(planId: number, options: { now?: Date; timezone?: string | null } = {}): TrainingWeek | null {
   const db = getDb();
   const plan = getPlanById(planId);
   if (!plan) return null;
 
-  const startDate = new Date(plan.start_date);
-  const now = new Date();
-  const diffMs = now.getTime() - startDate.getTime();
-  const rawWeekNumber = Math.floor(diffMs / (7 * 24 * 60 * 60 * 1000)) + 1;
-  const weekNumber = Math.min(
-    Math.max(1, rawWeekNumber),
-    Math.max(1, plan.duration_weeks || 1),
-  );
+  const weekNumber = resolveTrainingPlanWeekNumber(plan, options);
 
   return (db.prepare(`
     SELECT * FROM training_weeks WHERE plan_id = ? AND week_number = ?
@@ -950,111 +951,4 @@ export function getPlanStats(userId: number): {
     currentWeekAdherence: adherence,
     currentPlanName: activePlan?.name ?? null,
   };
-}
-
-// ── Calendar Blocker Creation ───────────────────────────────────────
-
-function addDays(isoDate: string, days: number): string {
-  const d = new Date(isoDate);
-  d.setDate(d.getDate() + days);
-  return d.toISOString().slice(0, 10);
-}
-
-function addMinutesToISO(isoDateTime: string, minutes: number): string {
-  const d = new Date(isoDateTime);
-  d.setMinutes(d.getMinutes() + minutes);
-  return d.toISOString().replace('Z', '').split('.')[0];
-}
-
-/**
- * Create calendar events for all sessions in a training week.
- * Uses the authenticated user's connected calendar. Skips gracefully if the
- * user has not connected a writable provider yet.
- *
- * @param weekOf - ISO Monday date, e.g., '2026-04-06'
- * @param sessions - Training sessions for the week
- * @param preferredTime - User's preferred start time, e.g., '06:00'
- */
-export async function createCalendarBlockers(
-  userId: number,
-  weekOf: string,
-  sessions: TrainingSession[],
-  preferredTime: string,
-): Promise<{ created: number; failed: number }> {
-  if (!hasWritableCalendarForUser(userId)) {
-    logger.info({ userId }, 'No writable user calendar connected — skipping blocker creation');
-    return { created: 0, failed: 0 };
-  }
-
-  // Determine which calendar to use for this user only.
-  let calendarSource: 'outlook' | 'google' | undefined;
-  try {
-    const { isConnected } = require('./oauth-store');
-    if (isConnected(userId, 'google')) calendarSource = 'google';
-    else if (isConnected(userId, 'outlook')) calendarSource = 'outlook';
-  } catch { /* oauth-store not available */ }
-
-  if (!calendarSource) {
-    logger.info({ userId }, 'No user-scoped calendar provider found for blocker creation');
-    return { created: 0, failed: 0 };
-  }
-
-  // Resolve sport once for the batch — all sessions belong to the same plan.
-  let batchSport: 'gym' | 'running' | 'cycling' | 'swim' | null = null;
-  if (sessions.length > 0) {
-    const plan = getPlanById(sessions[0].plan_id);
-    if (plan) batchSport = normalizeSportForSignals(plan.sport);
-  }
-
-  let created = 0;
-  let failed = 0;
-
-  for (const session of sessions) {
-    const dayOfWeek = typeof session.day_of_week === 'string'
-      ? parseInt(session.day_of_week, 10)
-      : (session.day_of_week as unknown as number) ?? 0;
-
-    const dayDate = addDays(weekOf, dayOfWeek);
-    const duration = session.duration_minutes || 60;
-    const startISO = `${dayDate}T${preferredTime}:00`;
-    const endISO = addMinutesToISO(startISO, duration);
-
-    try {
-      const event = await createCalendarEvent({
-        title: `🏋️ ${session.title} (${duration}min)`,
-        start: startISO,
-        end: endISO,
-        description: session.description || undefined,
-        categories: ['Green category'],
-      }, calendarSource, userId);
-
-      linkSessionToCalendar(session.id, event.id || event.summary, calendarSource);
-      created++;
-
-      // ─── Phase 1 Slice B — Signal C publishing ───
-      // Let the secretary (and sibling sport coaches) know this session
-      // now occupies a calendar slot. The secretary will cross-reference
-      // future user events against these signals to detect conflicts.
-      if (batchSport) {
-        try {
-          publishTrainingSessionScheduled({
-            userId,
-            sport: batchSport,
-            sessionId: session.id,
-            startTimeIso: new Date(startISO).toISOString(),
-            endTimeIso: new Date(endISO).toISOString(),
-            title: session.title,
-            calendarEventId: event.id || event.summary,
-          });
-        } catch (err) {
-          logger.warn({ err, sessionId: session.id }, 'publishTrainingSessionScheduled failed');
-        }
-      }
-    } catch (err) {
-      logger.warn({ err, sessionId: session.id, planId: session.plan_id, userId }, 'Failed to create calendar blocker');
-      failed++;
-    }
-  }
-
-  return { created, failed };
 }

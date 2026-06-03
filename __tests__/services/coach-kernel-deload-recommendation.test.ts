@@ -186,6 +186,20 @@ describe('primary signal selection', () => {
     expect(rec.triggered).toBe(true);
     expect(rec.primarySignal).toBe('painElevated');
   });
+
+  it('persistent elevated pain triggers a deload without waiting for a second signal', () => {
+    const rec = recommendDeload({
+      loadModelStatus: 'stable',
+      painElevated: true,
+      weeksSinceDeload: 1,
+      scheduledDeloadCadenceWeeks: 4,
+      deloadStrategy: 'data_informed',
+    }, principles);
+
+    expect(rec.triggered).toBe(true);
+    expect(rec.primarySignal).toBe('painElevated');
+    expect(rec.contributingSignals).toContain('painElevated');
+  });
 });
 
 describe('confidence', () => {

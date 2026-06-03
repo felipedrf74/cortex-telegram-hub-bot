@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import {
   buildCoachKernelTrainingPlan,
   buildAthleteStateFromTrainingProfiles,
+  normalizeTrainingPlanDurationWeeks,
 } from '../../src/services/training-coach-kernel-plan-generator';
 import {
   lintPlan,
@@ -18,6 +19,32 @@ import {
 describe('buildCoachKernelTrainingPlan — side effects', () => {
   beforeEach(() => {
     _resetCoachPlanStoreForTests();
+  });
+
+  it('normalizes invalid durationWeeks defensively before allocating weeks', () => {
+    expect(normalizeTrainingPlanDurationWeeks(-3)).toBe(4);
+    expect(normalizeTrainingPlanDurationWeeks(0)).toBe(4);
+    expect(normalizeTrainingPlanDurationWeeks(4.6)).toBe(5);
+    expect(normalizeTrainingPlanDurationWeeks(999)).toBe(52);
+
+    const plan = buildCoachKernelTrainingPlan({
+      userId: 99,
+      objective: 'Run base',
+      durationWeeks: -3,
+      startDate: '2026-04-13',
+      sessionsPerWeek: 4,
+      strengthSessionsPerWeek: 1,
+      preferredTime: '06:30',
+      preferredCardioTime: '06:30',
+      preferredStrengthTime: '18:00',
+      longWorkoutDay: 'Sunday',
+      notes: null,
+      fitnessProfile: null,
+      gymProfile: null,
+      runProfile: null,
+    });
+
+    expect(plan.weeks).toHaveLength(4);
   });
 
   it('records one WeeklyPlan per week in the plan registry for later guardrail lookup', () => {
@@ -559,11 +586,11 @@ describe('buildCoachKernelTrainingPlan — side effects', () => {
     expect(midWeek2?.weekStart).toBe('2026-04-20');
   });
 
-  it('uses rolling base/build phases without fake tapering or forced week-4 deload when no event date exists', () => {
+  it('uses rolling base/build phases with scheduled deloads but no fake tapering when no event date exists', () => {
     const plan = buildCoachKernelTrainingPlan({
       userId: 601,
       objective: 'General running base',
-      durationWeeks: 4,
+      durationWeeks: 8,
       startDate: '2026-05-04',
       sessionsPerWeek: 4,
       strengthSessionsPerWeek: 1,
@@ -578,8 +605,7 @@ describe('buildCoachKernelTrainingPlan — side effects', () => {
       goalMode: 'continuous',
     });
 
-    expect(plan.weeks?.map((week) => week.focus)).toEqual(['base', 'base', 'build', 'build']);
-    expect(plan.weeks?.map((week) => week.focus)).not.toContain('deload');
+    expect(plan.weeks?.map((week) => week.focus)).toEqual(['base', 'base', 'build', 'deload', 'build', 'build', 'build', 'deload']);
     expect(plan.weeks?.map((week) => week.focus)).not.toContain('taper');
     expect(plan.decisionReasons?.map((reason) => reason.code)).toContain('continuous_plan_no_taper');
   });
@@ -609,6 +635,7 @@ describe('buildCoachKernelTrainingPlan — side effects', () => {
     expect(phases).toContain('build');
     expect(phases).toContain('peak');
     expect(phases).toContain('taper');
+    expect(phases).not.toContain('deload');
     expect(phases[15]).toBe('race');
     expect(plan.decisionReasons?.map((reason) => reason.code)).not.toContain('event_based_missing_race_date');
   });

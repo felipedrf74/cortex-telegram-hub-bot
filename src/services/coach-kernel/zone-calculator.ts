@@ -347,6 +347,24 @@ export function computeZoneSet(
 }
 
 /**
+ * Half-open membership helper for zone tables. Lower bounds are
+ * inclusive; an upper bound that is also another zone's lower bound
+ * is exclusive so a boundary value belongs to exactly one zone.
+ */
+export function isValueInZoneRange(
+  value: number,
+  zone: IntensityZone,
+  zoneTable: Record<IntensityZone, { min: number; max: number }>,
+): boolean {
+  if (!Number.isFinite(value)) return false;
+  const range = zoneTable[zone];
+  if (!range || !Number.isFinite(range.min) || !Number.isFinite(range.max)) return false;
+  if (value < range.min || value > range.max) return false;
+  const upperIsAdjacentLower = ZONES.some((other) => other !== zone && zoneTable[other]?.min === range.max);
+  return value < range.max || !upperIsAdjacentLower;
+}
+
+/**
  * Compute the **intensity factor (IF)** for a target zone in a
  * specific sport, given the athlete's anchors. IF is the ratio of
  * the zone's representative intensity to the threshold anchor (FTP
@@ -366,28 +384,44 @@ export function computeIntensityFactorForZone(
   sport: 'running' | 'cycling' | 'swimming',
   profile: Pick<AthleteProfile, 'thresholdPaceSecondsPerKm' | 'cyclingFtpWatts' | 'swimCssSecondsPer100m'>,
 ): number | undefined {
+  if (zone === 'neuromuscular') return undefined;
   if (sport === 'cycling') {
     if (!profile.cyclingFtpWatts) return undefined;
     // Midpoint % FTP for the zone.
     const pctMid = (BIKE_PCT_FTP_LOWER[zone] + BIKE_PCT_FTP_UPPER[zone]) / 2;
+    const zones = computeBikePowerZones(profile.cyclingFtpWatts);
+    const representativeWatts = (pctMid / 100) * profile.cyclingFtpWatts;
+    if (!isValueInZoneRange(representativeWatts, zone, zones)) return undefined;
     return pctMid / 100;
   }
   if (sport === 'running') {
     if (!profile.thresholdPaceSecondsPerKm) return undefined;
+    const zones = computeRunningPaceZones(profile.thresholdPaceSecondsPerKm);
+    if (zone === 'threshold') {
+      return isValueInZoneRange(profile.thresholdPaceSecondsPerKm, zone, zones) ? 1 : undefined;
+    }
     // For pace, IF = (T-pace seconds) / (zone seconds). Faster pace
-    // (smaller sec/km) means higher IF. We use the midpoint of the
-    // pace range (in seconds-per-km units).
+    // (smaller sec/km) means higher IF. Average speed, not seconds,
+    // so wide slow zones are not biased toward the slow endpoint.
     const slowSec = (RUN_PCT_TPACE_SLOW[zone] / 100) * profile.thresholdPaceSecondsPerKm;
     const fastSec = (RUN_PCT_TPACE_FAST[zone] / 100) * profile.thresholdPaceSecondsPerKm;
-    const midSec = (slowSec + fastSec) / 2;
-    return profile.thresholdPaceSecondsPerKm / midSec;
+    const meanSpeed = ((1 / slowSec) + (1 / fastSec)) / 2;
+    const representativeSec = 1 / meanSpeed;
+    if (!isValueInZoneRange(representativeSec, zone, zones)) return undefined;
+    return profile.thresholdPaceSecondsPerKm / representativeSec;
   }
   if (sport === 'swimming') {
     if (!profile.swimCssSecondsPer100m) return undefined;
+    const zones = computeSwimPaceZones(profile.swimCssSecondsPer100m);
+    if (zone === 'threshold') {
+      return isValueInZoneRange(profile.swimCssSecondsPer100m, zone, zones) ? 1 : undefined;
+    }
     const slowSec = (SWIM_PCT_CSS_SLOW[zone] / 100) * profile.swimCssSecondsPer100m;
     const fastSec = (SWIM_PCT_CSS_FAST[zone] / 100) * profile.swimCssSecondsPer100m;
-    const midSec = (slowSec + fastSec) / 2;
-    return profile.swimCssSecondsPer100m / midSec;
+    const meanSpeed = ((1 / slowSec) + (1 / fastSec)) / 2;
+    const representativeSec = 1 / meanSpeed;
+    if (!isValueInZoneRange(representativeSec, zone, zones)) return undefined;
+    return profile.swimCssSecondsPer100m / representativeSec;
   }
   return undefined;
 }

@@ -1,6 +1,7 @@
 // Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
 
 import { logger } from '../../utils/logger';
+import { resolveTrainingDay, trainingWeekdayMatches } from '../../services/training-date-utils';
 
 type MutationPlanRef = { id: number; user_id?: number | null };
 type MutationWeekRef = { id: number };
@@ -22,6 +23,7 @@ export interface TrainingSessionMutationDeps {
 }
 
 export type TrainingSessionMutationResolution =
+  | { kind: 'bad_input'; message: string }
   | { kind: 'no_active_session' }
   | { kind: 'not_found'; rowId: number }
   | { kind: 'forbidden'; rowId: number; session: MutationSessionRef }
@@ -31,32 +33,56 @@ export interface ResolveTrainingMutationOptions {
   excludeSkippedSessions?: boolean;
 }
 
+type RequestedSessionResolution =
+  | { kind: 'today' }
+  | { kind: 'explicit'; rowId: number }
+  | { kind: 'invalid'; message: string };
+
+function parseRequestedTrainingSessionId(sessionId: unknown): RequestedSessionResolution {
+  if (sessionId === undefined || sessionId === null) return { kind: 'today' };
+  if (typeof sessionId === 'string') {
+    const trimmed = sessionId.trim();
+    if (!trimmed || trimmed === 'today') return { kind: 'today' };
+    if (!/^\d+$/.test(trimmed)) {
+      return { kind: 'invalid', message: 'sessionId must be a positive integer or "today"' };
+    }
+    const parsed = Number(trimmed);
+    if (Number.isSafeInteger(parsed) && parsed > 0) return { kind: 'explicit', rowId: parsed };
+    return { kind: 'invalid', message: 'sessionId must be a positive integer or "today"' };
+  }
+  if (typeof sessionId === 'number') {
+    if (Number.isSafeInteger(sessionId) && sessionId > 0) return { kind: 'explicit', rowId: sessionId };
+    return { kind: 'invalid', message: 'sessionId must be a positive integer or "today"' };
+  }
+  return { kind: 'invalid', message: 'sessionId must be a positive integer or "today"' };
+}
+
 function resolveRequestedTrainingSessionId(
   userId: number,
   sessionId: unknown,
   deps: TrainingSessionMutationDeps,
   options: ResolveTrainingMutationOptions = {},
-): number | null {
-  if (sessionId && sessionId !== 'today' && !Number.isNaN(Number(sessionId))) {
-    return Number(sessionId);
-  }
+): { rowId: number | null; error?: string } {
+  const requested = parseRequestedTrainingSessionId(sessionId);
+  if (requested.kind === 'invalid') return { rowId: null, error: requested.message };
+  if (requested.kind === 'explicit') return { rowId: requested.rowId };
 
   const plan = deps.getActivePlan(userId);
-  if (!plan) return null;
+  if (!plan) return { rowId: null };
 
   const week = deps.getCurrentWeek(plan.id);
-  if (!week) return null;
+  if (!week) return { rowId: null };
 
   const sessions = deps.getSessionsForWeek(week.id);
-  const todayName = new Date().toLocaleDateString('en-US', { weekday: 'long' });
+  const today = resolveTrainingDay();
   const todaySession = sessions?.find((session) => {
-    if (session.day_of_week !== todayName) return false;
+    if (!trainingWeekdayMatches(session.day_of_week, today)) return false;
     if (session.status === 'completed') return false;
     if (options.excludeSkippedSessions && session.status === 'skipped') return false;
     return true;
   });
 
-  return todaySession?.id ?? null;
+  return { rowId: todaySession?.id ?? null };
 }
 
 export function resolveTrainingMutationSession(
@@ -65,7 +91,10 @@ export function resolveTrainingMutationSession(
   deps: TrainingSessionMutationDeps,
   options: ResolveTrainingMutationOptions = {},
 ): TrainingSessionMutationResolution {
-  const rowId = resolveRequestedTrainingSessionId(userId, sessionId, deps, options);
+  const { rowId, error } = resolveRequestedTrainingSessionId(userId, sessionId, deps, options);
+  if (error) {
+    return { kind: 'bad_input', message: error };
+  }
   if (rowId == null) {
     return { kind: 'no_active_session' };
   }

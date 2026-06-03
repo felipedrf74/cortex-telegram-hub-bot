@@ -294,7 +294,7 @@ function estimateStrengthLoad(input: LoadEstimateInput): LoadValue | undefined {
 
 /**
  * Estimate impact load. Runs/plyometrics only. Uses a simple
- * `distance × (60 / pace) × body_mass_factor` proxy — not a precise
+ * `distance × pace_factor × body_mass_factor` proxy — not a precise
  * bone-stress model, but useful for relative comparisons within an
  * athlete. Future slices may swap this for a GCT-aware accelerometer-
  * derived value when device data supports it.
@@ -313,7 +313,9 @@ function estimateImpactLoad(input: LoadEstimateInput): LoadValue | undefined {
   const massFactor = input.athlete?.bodyWeightKg
     ? input.athlete.bodyWeightKg / 70 // normalize to 70kg reference athlete
     : 1;
-  const impactScore = Math.round(distanceKm * 1.3 * massFactor * 10);
+  const paceSecPerKm = completion.durationSec / distanceKm;
+  const paceFactor = Math.min(1.4, Math.max(0.75, 300 / paceSecPerKm));
+  const impactScore = Math.round(distanceKm * 1.3 * massFactor * paceFactor * 10);
   return {
     score: impactScore,
     unit: 'impact_au',

@@ -14,8 +14,28 @@ function readJsonFile<T>(filePath: string): T {
   return JSON.parse(fs.readFileSync(filePath, 'utf8')) as T;
 }
 
-function readJsonCompatibleYaml<T>(filePath: string): T {
-  return JSON.parse(fs.readFileSync(filePath, 'utf8')) as T;
+export class TrainingKnowledgeFormatError extends Error {
+  constructor(public readonly filePath: string, message: string) {
+    super(`${path.basename(filePath)}: ${message}`);
+    this.name = 'TrainingKnowledgeFormatError';
+  }
+}
+
+export function readJsonCompatibleYaml<T>(filePath: string): T {
+  const raw = fs.readFileSync(filePath, 'utf8');
+  const trimmed = raw.trimStart();
+  if (!trimmed.startsWith('[') && !trimmed.startsWith('{')) {
+    throw new TrainingKnowledgeFormatError(
+      filePath,
+      'template files must be JSON-compatible YAML starting with "[" or "{".',
+    );
+  }
+  try {
+    return JSON.parse(raw) as T;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new TrainingKnowledgeFormatError(filePath, `invalid JSON-compatible YAML: ${message}`);
+  }
 }
 
 function readMarkdown(filePath: string): string {
@@ -98,6 +118,8 @@ export function findMalformedPrinciplesSections(
   const isNumber = (v: unknown): boolean =>
     typeof v === 'number' && Number.isFinite(v);
   const isArray = (v: unknown): boolean => Array.isArray(v);
+  const validComplexity = new Set(['beginner', 'intermediate', 'advanced', 'expert']);
+  const validSpinalLoading = new Set(['low', 'moderate', 'high']);
 
   // R4 P2 fix — required top-level sections must be the right shape,
   // not just "present." Codex caught (R4 P2 #4) that the prior
@@ -284,6 +306,20 @@ export function findMalformedPrinciplesSections(
       }
       if (exSel.byExperience !== undefined && !isObj(exSel.byExperience)) {
         issues.push('exerciseSelection.byExperience: present but not an object');
+      } else if (isObj(exSel.byExperience)) {
+        for (const [level, value] of Object.entries(exSel.byExperience)) {
+          if (!isObj(value)) {
+            issues.push(`exerciseSelection.byExperience.${level}: not an object`);
+            continue;
+          }
+          const inner = value as Record<string, unknown>;
+          if (inner.complexityMax !== undefined && !validComplexity.has(String(inner.complexityMax))) {
+            issues.push(`exerciseSelection.byExperience.${level}.complexityMax: must be one of beginner/intermediate/advanced/expert`);
+          }
+          if (inner.spinalLoadingMax !== undefined && !validSpinalLoading.has(String(inner.spinalLoadingMax))) {
+            issues.push(`exerciseSelection.byExperience.${level}.spinalLoadingMax: must be one of low/moderate/high`);
+          }
+        }
       }
       if (exSel.byEquipment !== undefined && !isObj(exSel.byEquipment)) {
         issues.push('exerciseSelection.byEquipment: present but not an object');
@@ -463,4 +499,3 @@ export function loadCoachKnowledge(): CoachKnowledgeBase {
 export function resetCoachKnowledgeCache(): void {
   cachedKnowledge = null;
 }
-

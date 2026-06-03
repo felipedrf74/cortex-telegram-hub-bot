@@ -22,6 +22,7 @@ import {
 } from '../../services/training-plan-coordination';
 import {
   buildCoachKernelTrainingPlan,
+  normalizeTrainingPlanDurationWeeks,
   type TrainingGoalMode,
   type TrainingPriority,
 } from '../../services/training-coach-kernel-plan-generator';
@@ -47,9 +48,12 @@ import * as trainingPlans from '../../services/training-plans';
 import { findOrphanedOwnerships } from '../../services/training-plan-lifecycle';
 import { reconcileOrphanedTrainingAgendaEvents } from '../../services/training-agenda-reconciliation';
 import { resolveTrainingCalendarSource } from '../../services/training-calendar-source';
+import { isPastIsoDate, isStrictIsoDate } from '../../services/training-date-utils';
 import { logger } from '../../utils/logger';
 import type { CalendarSource } from '../../services/unified-calendar';
 import type { PlanLintResult } from '../../services/coach-kernel/plan-linter';
+
+export const TRAINING_PLAN_GENERATOR_POLICY_VERSION = 'training-plan-shape-v2';
 
 export interface GenerateTrainingPlanForUserInput {
   userId: number;
@@ -115,6 +119,7 @@ export type TrainingPlanGenerationResult =
         goalMode: TrainingGoalMode | null;
         trainingPriority: TrainingPriority | null;
         raceDate: string | null;
+        generatorPolicyVersion: string;
       };
     }
   | {
@@ -142,6 +147,7 @@ export type TrainingPlanGenerationResult =
         goalMode: TrainingGoalMode | null;
         trainingPriority: TrainingPriority | null;
         raceDate: string | null;
+        generatorPolicyVersion: string;
       };
     }
   /**
@@ -192,9 +198,11 @@ type CancellationSagaOutcome =
   | { kind: 'forbidden' }
   | { kind: 'local_delete_failed'; reason: string; activePlansRemaining: number };
 
-async function runPrePersistCancellationSaga(userId: number): Promise<CancellationSagaOutcome> {
+async function runPrePersistCancellationSaga(userId: number, tenantId: number): Promise<CancellationSagaOutcome> {
   try {
-    const cancellation = await cancelTrainingPlanForUser(userId);
+    const cancellation = tenantId === userId
+      ? await cancelTrainingPlanForUser(userId)
+      : await cancelTrainingPlanForUser(userId, undefined, { tenantId });
     if (cancellation.status === 'forbidden') {
       return { kind: 'forbidden' };
     }
@@ -224,7 +232,7 @@ async function runPrePersistCancellationSaga(userId: number): Promise<Cancellati
     // remain, the throw was post-delete (e.g. narrative cleanup), so
     // continuing is safe but we mark it as external-partial so the
     // ownership reconciler picks up any remaining orphans.
-    const remainingPlans = trainingPlans.getActivePlans?.(userId) ?? [];
+    const remainingPlans = trainingPlans.getActivePlans?.(userId, tenantId) ?? [];
     const reason = err instanceof Error ? err.message : String(err);
     if (remainingPlans.length > 0) {
       return {
@@ -275,7 +283,7 @@ export async function generateTrainingPlanForUser(
     calendarSource,
     previewOnly = false,
   } = input;
-  const durationWeeks = input.durationWeeks ?? 4;
+  const durationWeeks = normalizeTrainingPlanDurationWeeks(input.durationWeeks, 4);
 
   const fitnessProfile = unwrapOnboardingProfileData(onboarding.getProfile?.(userId, 'fitness'));
   const gymProfile = unwrapOnboardingProfileData(onboarding.getProfile?.(userId, 'triathlon-gym'));
@@ -283,6 +291,37 @@ export async function generateTrainingPlanForUser(
   const normalizedGoalMode = normalizeGoalMode(goalMode);
   const normalizedTrainingPriority = normalizeTrainingPriority(trainingPriority);
   const normalizedRaceDate = normalizeIsoDate(raceDate);
+  const raceDateWasProvided = typeof raceDate === 'string'
+    ? raceDate.trim() !== ''
+    : raceDate != null;
+  if (raceDateWasProvided && normalizedRaceDate == null) {
+    return {
+      status: 'needs_profile',
+      data: {
+        needsProfile: true,
+        message: 'Race date must be a real future date in YYYY-MM-DD format.',
+        missingFields: ['raceDate'],
+        validationError: {
+          code: 'INVALID_RACE_DATE',
+          field: 'raceDate',
+        },
+      },
+    };
+  }
+  if (normalizedRaceDate && isPastIsoDate(normalizedRaceDate)) {
+    return {
+      status: 'needs_profile',
+      data: {
+        needsProfile: true,
+        message: 'Race date must be in the future.',
+        missingFields: ['raceDate'],
+        validationError: {
+          code: 'PAST_RACE_DATE',
+          field: 'raceDate',
+        },
+      },
+    };
+  }
   const effectiveRaceDate = normalizedRaceDate ?? resolveProfileRaceDate(runProfile);
   const runProfileForPlan = effectiveRaceDate
     ? {
@@ -373,7 +412,8 @@ export async function generateTrainingPlanForUser(
   });
 
   const normalizedSessionsPerWeek = clampNumber(sessionsPerWeek, 5, 3, 7);
-  const normalizedRunSessionsPerWeek = clampNumber(runSessionsPerWeek, normalizedSessionsPerWeek, 0, 7);
+  const normalizedRunSessionsPerWeek =
+    normalizeOptionalSessionTarget(runSessionsPerWeek, 0, 7) ?? normalizedSessionsPerWeek;
   const normalizedBikeSessionsPerWeek = normalizeOptionalSessionTarget(bikeSessionsPerWeek, 0, 7);
   const normalizedSwimSessionsPerWeek = normalizeOptionalSessionTarget(swimSessionsPerWeek, 0, 7);
   const normalizedStrengthSessionsPerWeek = clampNumber(strengthSessionsPerWeek, 0, 0, 6);
@@ -556,6 +596,7 @@ export async function generateTrainingPlanForUser(
       raceDate: effectiveRaceDate,
       startPolicy: normalizedStartPolicy,
       trainingCalendarSource: resolvedCalendarSource || null,
+      generatorPolicyVersion: TRAINING_PLAN_GENERATOR_POLICY_VERSION,
     }),
     normalizedPreferredTime,
     normalizedPreferredCardioTime,
@@ -609,6 +650,7 @@ export async function generateTrainingPlanForUser(
         goalMode: normalizedGoalMode,
         trainingPriority: normalizedTrainingPriority,
         raceDate: raceDateForLint,
+        generatorPolicyVersion: TRAINING_PLAN_GENERATOR_POLICY_VERSION,
       },
     };
   }
@@ -642,6 +684,7 @@ export async function generateTrainingPlanForUser(
         goalMode: normalizedGoalMode,
         trainingPriority: normalizedTrainingPriority,
         raceDate: raceDateForLint,
+        generatorPolicyVersion: TRAINING_PLAN_GENERATOR_POLICY_VERSION,
       },
     };
   }
@@ -653,7 +696,7 @@ export async function generateTrainingPlanForUser(
   // are still present. This now runs only after the strict quality
   // gate has passed, so a blocked candidate cannot delete the current
   // plan.
-  const cancellationOutcome = await runPrePersistCancellationSaga(userId);
+  const cancellationOutcome = await runPrePersistCancellationSaga(userId, tenantId);
 
   switch (cancellationOutcome.kind) {
     case 'forbidden':
@@ -765,6 +808,7 @@ export async function generateTrainingPlanForUser(
       goalMode: normalizedGoalMode,
       trainingPriority: normalizedTrainingPriority,
       raceDate: raceDateForLint,
+      generatorPolicyVersion: TRAINING_PLAN_GENERATOR_POLICY_VERSION,
       // training-expert-coach-knowledge-engine: explicit calendar
       // health flag + lint verdict surface on the response payload.
       calendarFetchDegraded,
@@ -853,8 +897,9 @@ function unwrapOnboardingProfileData(profile: unknown): Record<string, any> | nu
 }
 
 function clampNumber(raw: unknown, fallback: number, min: number, max: number): number {
-  const resolved = Number(raw) || fallback;
-  return Math.max(min, Math.min(max, resolved));
+  const resolved = Number(raw);
+  const candidate = Number.isFinite(resolved) && resolved > 0 ? Math.round(resolved) : fallback;
+  return Math.max(min, Math.min(max, candidate));
 }
 
 function normalizeOptionalSessionTarget(raw: unknown, min: number, max: number): number | null {
@@ -923,7 +968,7 @@ function normalizeTrainingPriority(raw: unknown): TrainingPriority | null {
 function normalizeIsoDate(raw: unknown): string | null {
   if (typeof raw !== 'string') return null;
   const trimmed = raw.trim();
-  return /^\d{4}-\d{2}-\d{2}$/.test(trimmed) ? trimmed : null;
+  return isStrictIsoDate(trimmed) ? trimmed : null;
 }
 
 function resolveProfileRaceDate(profile: Record<string, any> | null | undefined): string | null {

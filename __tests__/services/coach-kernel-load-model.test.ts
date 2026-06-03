@@ -224,6 +224,25 @@ describe('classifyAcwr — Gabbett bands', () => {
     expect(classifyAcwr(1.4, thresholds)).toBe('moderateRisk');
     expect(classifyAcwr(2.0, thresholds)).toBe('highRisk');
   });
+
+  it('uses configured band min/max bounds instead of hardcoded neighbor checks', () => {
+    const custom = {
+      underTraining: { min: 0, max: 0.7 },
+      lowRisk: { min: 0.9, max: 1.1 },
+      moderateRisk: { min: 1.25, max: 1.4 },
+      highRisk: { min: 1.6, max: 10 },
+    };
+
+    expect(classifyAcwr(0.75, custom)).toBe('underTraining');
+    expect(classifyAcwr(0.95, custom)).toBe('lowRisk');
+    expect(classifyAcwr(1.3, custom)).toBe('moderateRisk');
+    expect(classifyAcwr(1.65, custom)).toBe('highRisk');
+  });
+
+  it('treats non-finite ACWR as neutral low risk', () => {
+    expect(classifyAcwr(Number.NaN, thresholds)).toBe('lowRisk');
+    expect(classifyAcwr(Number.POSITIVE_INFINITY, thresholds)).toBe('lowRisk');
+  });
 });
 
 describe('confidence rollup', () => {
@@ -253,6 +272,18 @@ describe('confidence rollup', () => {
       dimension: 'external',
     });
     expect(result.confidence).toBe('medium');
+  });
+
+  it('rolls up confidence from the current CTL window only', () => {
+    const days = makeDays(Array(60).fill(50), 'high');
+    days[0].confidence = 'low';
+    const result = computeLoadModelForDimension({
+      daily: days,
+      dimension: 'external',
+      ctlDays: 42,
+    });
+
+    expect(result.confidence).toBe('high');
   });
 });
 

@@ -69,8 +69,12 @@ export function resolveMesocyclePlan(
   input: ResolveMesocyclePlanInput,
 ): ResolvedMesocyclePlan {
   const blockName = input.blockTemplateName ?? defaultBlockNameFor(input.level);
-  const blockTemplate = getBlockTemplate(input.principles, blockName) ?? defaultBlockFallback(input.level);
-  const mesocycleLength = getMesocycleLength(input.principles, input.level);
+  const configuredTemplate = getBlockTemplate(input.principles, blockName);
+  const blockTemplate = configuredTemplate && configuredTemplate.length > 0
+    ? configuredTemplate
+    : defaultBlockFallback(input.level);
+  const configuredMesocycleLength = getMesocycleLength(input.principles, input.level);
+  const mesocycleLength = blockTemplate.length || configuredMesocycleLength;
 
   const start = Date.parse(input.startDate);
   if (!Number.isFinite(start)) {
@@ -82,7 +86,7 @@ export function resolveMesocyclePlan(
     const weekStart = new Date(start + i * 7 * 24 * 3600 * 1000)
       .toISOString()
       .slice(0, 10);
-    const weekInBlock = i % blockTemplate.length;
+    const weekInBlock = i % mesocycleLength;
     const intent = resolveWeekIntent({
       weekStartISODate: weekStart,
       mesocycle: blockTemplate,

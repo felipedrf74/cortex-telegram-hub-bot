@@ -70,6 +70,7 @@ vi.mock('../../src/services/wearable/wearable-service', () => mockWearableServic
 import {
   scoreHrv, scoreSleep, scoreBodyBattery, scoreAcwr,
   calculateReadiness, persistReadinessScore, getRecentReadinessScores,
+  computeAcwr,
 } from '../../src/services/readiness-scorer';
 import { getCurrentContext } from '../../src/utils/request-context';
 
@@ -142,6 +143,40 @@ describe('readiness-scorer — factor scorers', () => {
 
     it('returns 50 for moderate risk (1.2-1.5)', () => {
       expect(scoreAcwr(1.3)).toBe(50);
+    });
+
+    it('treats non-finite ACWR as neutral instead of high risk', () => {
+      expect(scoreAcwr(Number.NaN)).toBe(60);
+      expect(scoreAcwr(Number.POSITIVE_INFINITY)).toBe(60);
+    });
+
+    it('pins ACWR band boundaries', () => {
+      expect(scoreAcwr(0.8)).toBe(85);
+      expect(scoreAcwr(1.2)).toBe(85);
+      expect(scoreAcwr(1.2001)).toBe(50);
+      expect(scoreAcwr(1.5)).toBe(50);
+      expect(scoreAcwr(1.5001)).toBe(20);
+    });
+  });
+
+  describe('computeAcwr', () => {
+    it('uses the same UTC-calendar-day window for displayed loads and ratio inputs', () => {
+      const now = new Date('2026-06-03T12:00:00.000Z');
+      const chronicDays = Array.from({ length: 14 }, (_, index) => ({
+        startTimeGMT: `2026-05-${String(7 + index).padStart(2, '0')}T01:00:00.000Z`,
+        trainingLoad: 10,
+      }));
+      const result = computeAcwr([
+        { startTimeGMT: '2026-05-06T01:00:00.000Z', trainingLoad: 280 },
+        ...chronicDays,
+        { startTimeGMT: '2026-06-01T01:00:00.000Z', trainingLoad: 70 },
+        { startTimeGMT: '2026-06-02T01:00:00.000Z', trainingLoad: 70 },
+      ], now);
+
+      expect(result.chronicLoad).toBe(280);
+      expect(result.acuteLoad).toBe(140);
+      expect(Number.isFinite(result.acwr)).toBe(true);
+      expect(result.acwr).toBeGreaterThan(0);
     });
   });
 });
@@ -281,6 +316,33 @@ describe('readiness-scorer — calculateReadiness', () => {
     expect(result.factors.trainingLoad.acuteLoad).toBe(300);
     expect(result.factors.trainingLoad.chronicLoad).toBe(390);
     expect(result.factors.trainingLoad.acwr).toBe(1);
+  });
+
+  it('uses uncoupled ACWR for stable Garmin activity history', async () => {
+    const daysAgo = (days: number) => new Date(Date.now() - days * 86400000).toISOString();
+    const activities = [
+      ...Array.from({ length: 21 }, (_, index) => ({
+        activityTrainingLoad: 50,
+        startTimeLocal: daysAgo(27 - index),
+        duration: 3600,
+      })),
+      ...Array.from({ length: 7 }, (_, index) => ({
+        activityTrainingLoad: 100,
+        startTimeLocal: daysAgo(6 - index),
+        duration: 3600,
+      })),
+    ];
+    mockGarmin.getHrvData.mockResolvedValue({ hrvSummary: { lastNightAvg: 60, weeklyAvg: 60 } });
+    mockGarmin.getSleepData.mockResolvedValue({ dailySleepDTO: { sleepTimeSeconds: 28800, overallSleepScore: 90 } });
+    mockGarmin.getBodyBatteryEvents.mockResolvedValue([{ bodyBatteryLevel: 80 }]);
+    mockGarmin.getTrainingReadiness.mockResolvedValue({});
+    mockGarmin.getActivitiesByDate.mockResolvedValue(activities);
+
+    const result = await calculateReadiness(1);
+
+    expect(result.factors.trainingLoad.acuteLoad).toBe(700);
+    expect(result.factors.trainingLoad.chronicLoad).toBe(1750);
+    expect(result.factors.trainingLoad.acwr).toBe(2);
   });
 
   it('handles missing data gracefully (uses fallback per factor)', async () => {

@@ -26,6 +26,7 @@ import {
   getTaperCoefficients,
   type Principles,
   type RacePriority,
+  type TaperPriorityCoefficients,
 } from './training-principles';
 
 export interface TaperDecisionInput {
@@ -39,6 +40,8 @@ export interface TaperDecisionInput {
     volumeDropPct: number;
     intensityPreservedPct: number;
     strengthCutoffDaysBeforeRace: number;
+    minimumVolumePct?: number;
+    maximumVolumePct?: number;
   };
 }
 
@@ -61,12 +64,7 @@ export interface TaperDecision {
   rationale: string;
 }
 
-const FALLBACK_COEFFICIENTS: Record<RacePriority, {
-  durationDays: number;
-  volumeDropPct: number;
-  intensityPreservedPct: number;
-  strengthCutoffDaysBeforeRace: number;
-}> = {
+const FALLBACK_COEFFICIENTS: Record<RacePriority, TaperPriorityCoefficients> = {
   A: { durationDays: 14, volumeDropPct: 55, intensityPreservedPct: 100, strengthCutoffDaysBeforeRace: 7 },
   B: { durationDays: 7, volumeDropPct: 45, intensityPreservedPct: 100, strengthCutoffDaysBeforeRace: 3 },
   C: { durationDays: 3, volumeDropPct: 35, intensityPreservedPct: 100, strengthCutoffDaysBeforeRace: 2 },
@@ -109,7 +107,10 @@ export function decideTaper(
   const endMultiplier = 1 - coeffs.volumeDropPct / 100;
   // Quadratic curve from endMultiplier (at race day) up to ~1.0 (at start of taper).
   const t = input.daysToRace / coeffs.durationDays; // 0..1
-  const volumeMultiplier = endMultiplier + (1 - endMultiplier) * t * t;
+  const rawVolumeMultiplier = endMultiplier + (1 - endMultiplier) * t * t;
+  const minMultiplier = typeof coeffs.minimumVolumePct === 'number' ? coeffs.minimumVolumePct / 100 : 0;
+  const maxMultiplier = typeof coeffs.maximumVolumePct === 'number' ? coeffs.maximumVolumePct / 100 : 1;
+  const volumeMultiplier = Math.min(Math.max(rawVolumeMultiplier, minMultiplier), maxMultiplier);
 
   const dayInTaper = coeffs.durationDays - input.daysToRace;
   const daysRemainingInTaper = input.daysToRace;

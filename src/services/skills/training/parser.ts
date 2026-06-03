@@ -13,6 +13,20 @@ import {
 } from './helpers';
 import type { ChatPlanStep } from '../../chat/types';
 
+function hasTrainingQualifier(folded: string): boolean {
+  return /\b(training|entrenamiento[s]?|treino|workout|run|running|corrida|correr|corre|gym|ginasio|ginásio|gimnasio|marathon|maratona|triathlon|race|prova|session|sessao|sessão|sesi[oó]n|long\s+run|rodagem)\b/.test(folded)
+    || /\b(training\s+plan|plano\s+de\s+treino|plan\s+de\s+entrenamiento|programa\s+de\s+treino|running\s+plan|marathon\s+plan|race\s+plan)\b/.test(folded);
+}
+
+function hasCoachReportIntent(folded: string): boolean {
+  return /\bcoach\s+(?:report|briefing)\b/.test(folded)
+    || /\btraining\s+(?:report|briefing)\b/.test(folded)
+    || /\b(?:report|briefing)\s+(?:for\s+)?(?:this\s+|my\s+)?training\b/.test(folded)
+    || /\b(?:relatorio|relatório)\s+d[eo]\s+(?:coach|treino)\b/.test(folded)
+    || /\binforme\s+(?:del|de|do)\s+coach\b/.test(folded)
+    || /\bbriefing\s+d[eo]\s+treino\b/.test(folded);
+}
+
 export interface TrainingParserInput extends StepKeyInputs {
   text: string;
   messageId: string;
@@ -44,8 +58,16 @@ export function parseTrainingActionStep(
   // even though the user clearly wants to adjust an existing plan. Adjust
   // verbs are a more specific match — claim those first.
   // Phase 7 close-out: "tighten up" / "loosen up" English adjust idioms.
+  const trainingQualified = hasTrainingQualifier(folded);
+  const hasReflowSignal = /\b(reflow|remarca[r]?|reagenda[r]?|reorganiza[r]?|reorganizado)\b/.test(folded);
+  if (!trainingQualified
+    && !hasReflowSignal
+    && /\b(adjust|ajusta|alterar plano|muda o plano)\b/.test(folded)) {
+    return null;
+  }
   if ((/\b(reflow|remarca|reagenda|reorganiza[r]?|reorganizado|adjust|ajusta|alterar plano|muda o plano)\b/.test(folded)
     || /\b(tighten\s+up|loosen\s+up|dial\s+(?:back|down|up)|scale\s+(?:back|down|up))\b.*\b(training|treino|plan)\b/.test(folded))
+    && trainingQualified
     && !/\b(preview|mostra[r]?|muestra[r]?|show\s+me|ver|veja|propose|propoe[r]?|propone[r]?)\b/.test(folded)
     && !/\b(confirm|apply|aplica[r]?|confirma[r]?|aceita[r]?|sim,?\s+aplica)\b/.test(folded)) {
     return makeStep(input, {
@@ -74,10 +96,9 @@ export function parseTrainingActionStep(
   // plan_create from claiming reflow intent, skip this branch when a
   // reflow-class verb is also present. The reflow_preview / reflow_confirm
   // branches downstream will then handle the message.
-  const hasReflowSignal = /\b(reflow|remarca[r]?|reagenda[r]?|reorganiza[r]?|reorganizado)\b/.test(folded);
   if (!hasReflowSignal
     && /\b(create|build|generate|make|cria|criar|gera|gerar|monta|montar|faz|fazer|plan)\b/.test(folded)
-    && (/\b(training\s+plan|plano\s+de\s+treino|plan[o]?\b|programa\s+de\s+treino|(?:marathon|maratona|race|prova|running|half[\s-]?marathon|10k|5k|21k|42k)\s+plan)\b/.test(folded)
+    && (/\b(training\s+plan|plano\s+de\s+treino|plan\s+de\s+entrenamiento|programa\s+de\s+treino|(?:marathon|maratona|race|prova|running|half[\s-]?marathon|10k|5k|21k|42k)\s+plan)\b/.test(folded)
         || (/\b(training|treino|run|marathon|maratona)\b/.test(folded)
             && /\bfor\s+(?:the\s+)?(?:next\s+)?\d+\s+weeks?\b/.test(folded)))) {
     const extracted = extractTrainingPlanSlots(input);
@@ -113,7 +134,8 @@ export function parseTrainingActionStep(
   // (training_adjust_plan branch moved above to Phase 4 batch 22 position;
   // this fallback handles non-preview/non-confirm reflow phrasings that
   // weren't caught earlier.)
-  if (/\b(reflow|remarca|reagenda|reorganiza[r]?|reorganizado|adjust|ajusta|alterar plano|muda o plano)\b/.test(folded)) {
+  if (/\b(reflow|remarca|reagenda|reorganiza[r]?|reorganizado|adjust|ajusta|alterar plano|muda o plano)\b/.test(folded)
+    && trainingQualified) {
     return makeStep(input, {
       skill: 'training',
       action: 'training_adjust_plan',
@@ -123,7 +145,7 @@ export function parseTrainingActionStep(
       requiredArgsPresent: false,
     });
   }
-  if (/\b(coach|report|relatorio|relatório|briefing)\b/.test(folded)) {
+  if (hasCoachReportIntent(folded)) {
     return makeStep(input, {
       skill: 'training',
       action: 'training_coach_report',

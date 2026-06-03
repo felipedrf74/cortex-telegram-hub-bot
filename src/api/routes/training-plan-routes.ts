@@ -10,7 +10,10 @@ import {
   enforceCostGuardrails,
 } from '../../services/cost-guardrail';
 import { cancelTrainingPlanForUser } from './training-plan-cancellation';
-import { generateTrainingPlanForUser } from './training-plan-generation';
+import {
+  TRAINING_PLAN_GENERATOR_POLICY_VERSION,
+  generateTrainingPlanForUser,
+} from './training-plan-generation';
 import {
   confirmTrainingSessionReflow,
   previewTrainingSessionReflow,
@@ -22,6 +25,7 @@ import {
   trainingOperationDisabledMessage,
 } from '../../services/training-operational-switches';
 import { validateRequestedTrainingCalendarSource } from '../../services/training-calendar-source';
+import { isPastIsoDate, isStrictIsoDate } from '../../services/training-date-utils';
 import {
   claimTrainingPlanGenerationIdempotency,
   completeTrainingPlanGenerationIdempotency,
@@ -78,6 +82,12 @@ export function registerTrainingPlanRoutes(
 
     if (!objective || typeof objective !== 'string') {
       sendError(res, 'VALIDATION', 'objective is required (e.g., "Lisbon Marathon October 2026")', 400);
+      return;
+    }
+
+    const raceDateValidation = validateRaceDateInput(raceDate);
+    if (!raceDateValidation.ok) {
+      sendError(res, raceDateValidation.code, raceDateValidation.message, 400, { field: 'raceDate' });
       return;
     }
 
@@ -199,6 +209,12 @@ export function registerTrainingPlanRoutes(
       return;
     }
 
+    const raceDateValidation = validateRaceDateInput(raceDate);
+    if (!raceDateValidation.ok) {
+      sendError(res, raceDateValidation.code, raceDateValidation.message, 400, { field: 'raceDate' });
+      return;
+    }
+
     const calendarSourceValidation = validateRequestedTrainingCalendarSource(userId, calendarSource);
     if (!calendarSourceValidation.ok) {
       sendError(
@@ -229,6 +245,7 @@ export function registerTrainingPlanRoutes(
       raceDate,
       twoADayPreference,
       calendarSource: calendarSourceValidation.source,
+      generatorPolicyVersion: TRAINING_PLAN_GENERATOR_POLICY_VERSION,
     };
     const requestHash = fingerprintTrainingPlanGenerationRequest(generationRequest);
     const explicitIdempotencyKey = normalizeTrainingPlanGenerationIdempotencyKey(
@@ -551,12 +568,21 @@ export function registerTrainingPlanRoutes(
   });
 
   router.post('/plan/cancel', async (req, res: Response) => {
-    const { userId } = req as AuthenticatedRequest;
+    const { userId, tenantId } = req as AuthenticatedRequest;
 
     try {
-      const result = await cancelTrainingPlanForUser(userId, req.body?.planId);
+      const result = await cancelTrainingPlanForUser(userId, req.body?.planId, { tenantId });
       if (result.status === 'forbidden') {
-        sendError(res, 'FORBIDDEN', 'This training plan does not belong to the current user.', 403);
+        sendSuccess(res, {
+          cancelled: false,
+          removedEvents: 0,
+          removedSessions: 0,
+          removedWeeks: 0,
+          removedCompletions: 0,
+          removedPlans: 0,
+          totalSessions: 0,
+          message: 'No active training plan to cancel.',
+        });
         return;
       }
       if (result.status === 'not_found') {
@@ -579,4 +605,19 @@ export function registerTrainingPlanRoutes(
 
 function buildAutomaticTrainingPlanGenerationIdempotencyKey(requestHash: string): string {
   return `auto:${requestHash.slice(0, 48)}`;
+}
+
+function validateRaceDateInput(raceDate: unknown): { ok: true } | { ok: false; code: string; message: string } {
+  if (raceDate == null || raceDate === '') return { ok: true };
+  if (typeof raceDate !== 'string') {
+    return { ok: false, code: 'INVALID_RACE_DATE', message: 'raceDate must be a YYYY-MM-DD string.' };
+  }
+  const trimmed = raceDate.trim();
+  if (!isStrictIsoDate(trimmed)) {
+    return { ok: false, code: 'INVALID_RACE_DATE', message: 'raceDate must be a real date in YYYY-MM-DD format.' };
+  }
+  if (isPastIsoDate(trimmed)) {
+    return { ok: false, code: 'PAST_RACE_DATE', message: 'raceDate must be in the future.' };
+  }
+  return { ok: true };
 }

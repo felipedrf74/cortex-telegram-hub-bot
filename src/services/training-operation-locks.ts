@@ -150,9 +150,24 @@ export async function acquireTrainingCalendarOperationLock(input: TrainingOperat
     );
     if (result.changes > 0) {
       let released = false;
+      const ttlMs = ttlMsForTrainingOperation(input.operation);
+      const renewalInterval = setInterval(() => {
+        try {
+          const renewedAtMs = Date.now();
+          db.prepare(`
+            UPDATE training_operation_locks
+               SET expires_at_ms = ?
+             WHERE lock_key = ? AND owner_token = ?
+          `).run(renewedAtMs + ttlMs, lockKey, ownerToken);
+        } catch (err) {
+          logger.warn({ err, lockKey, operation: input.operation, userId: input.userId }, 'Training operation SQLite lock lease renewal failed');
+        }
+      }, Math.max(1_000, Math.floor(ttlMs / 3)));
+      if (typeof renewalInterval.unref === 'function') renewalInterval.unref();
       return () => {
         if (released) return;
         released = true;
+        clearInterval(renewalInterval);
         try {
           db.prepare('DELETE FROM training_operation_locks WHERE lock_key = ? AND owner_token = ?')
             .run(lockKey, ownerToken);

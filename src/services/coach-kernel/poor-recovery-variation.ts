@@ -99,13 +99,13 @@ function hasHybridOverload(athlete: AthleteState, weekSessions: Session[]): bool
 export function classifyRecoveryScenario(context: PoorRecoveryContext): RecoveryScenario {
   const { athlete, weekSessions } = context;
   if (hasTravelSignal(athlete)) return 'travel_fatigue';
+  if (hasHighSorenessSignal(athlete)) return 'high_soreness';
+  if (hasPostIntensityFatigue(athlete)) return 'post_intensity_fatigue';
+  if (athlete.readiness.level === 'red' || athlete.readiness.score <= 40) return 'low_readiness';
   if (athlete.compliance.trailing14DayCompliance < 0.7 || athlete.compliance.consecutiveMisses >= 2) {
     return 'low_adherence_fatigue';
   }
   if (hasHybridOverload(athlete, weekSessions)) return 'hybrid_modality_overload';
-  if (hasHighSorenessSignal(athlete)) return 'high_soreness';
-  if (hasPostIntensityFatigue(athlete)) return 'post_intensity_fatigue';
-  if (athlete.readiness.level === 'red' || athlete.readiness.score <= 40) return 'low_readiness';
   return 'mild_fatigue';
 }
 

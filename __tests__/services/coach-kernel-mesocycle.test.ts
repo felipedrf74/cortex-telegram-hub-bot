@@ -67,6 +67,53 @@ describe('resolveMesocyclePlan — base shape', () => {
       principles,
     })).toThrow(/invalid startDate/);
   });
+
+  it('falls back when a configured block template is empty', () => {
+    const plan = resolveMesocyclePlan({
+      startDate: '2026-01-05',
+      totalWeeks: 4,
+      level: 'intermediate',
+      principles: {
+        ...principles,
+        blockTemplates: {
+          empty_template: [],
+        },
+      },
+      blockTemplateName: 'empty_template',
+    });
+
+    expect(plan.blockTemplate).toEqual(['accumulation', 'accumulation', 'accumulation', 'deload']);
+    expect(plan.weeks[3].kind).toBe('deload');
+  });
+
+  it('derives mesocycle length from the actual block template length', () => {
+    const plan = resolveMesocyclePlan({
+      startDate: '2026-01-05',
+      totalWeeks: 6,
+      level: 'intermediate',
+      principles: {
+        ...principles,
+        mesocycleLengths: {
+          default: 4,
+          intermediate: 4,
+        },
+        blockTemplates: {
+          short_custom: ['accumulation', 'deload'],
+        },
+      },
+      blockTemplateName: 'short_custom',
+    });
+
+    expect(plan.mesocycleLength).toBe(2);
+    expect(plan.weeks.map((week) => week.kind)).toEqual([
+      'accumulation',
+      'deload',
+      'accumulation',
+      'deload',
+      'accumulation',
+      'deload',
+    ]);
+  });
 });
 
 describe('resolveMesocyclePlan — race-aware', () => {

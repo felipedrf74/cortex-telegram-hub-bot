@@ -52,6 +52,33 @@ describe('aggregateWeekConditions', () => {
     expect(result.travelStress?.sleepDisruptionExpected).toBe(true);
   });
 
+  it('aggregates multiple travel windows instead of only reading the newest one', () => {
+    const result = aggregateWeekConditions({
+      weekIndex: 5,
+      travelWindows: [
+        {
+          id: 1, user_id: 100, start_date: '2026-05-23', end_date: '2026-05-25',
+          equipment_profile: 'hotel_only', time_zone_shift_hours: 1, flight_duration_hours: 2,
+          sleep_disruption_expected: 0, walking_load_expected: 1, heat_stress: 0,
+          available_session_duration_minutes: 30, notes: null, created_at: 'x',
+        },
+        {
+          id: 2, user_id: 100, start_date: '2026-05-26', end_date: '2026-05-30',
+          equipment_profile: 'hotel_only', time_zone_shift_hours: -6, flight_duration_hours: 11,
+          sleep_disruption_expected: 1, walking_load_expected: 0, heat_stress: 1,
+          available_session_duration_minutes: 30, notes: null, created_at: 'x',
+        },
+      ],
+    });
+
+    expect(result.travelStress?.timeZoneShiftHours).toBe(-6);
+    expect(result.travelStress?.flightDurationHours).toBe(11);
+    expect(result.travelStress?.sleepDisruptionExpected).toBe(true);
+    expect(result.travelStress?.walkingLoadExpected).toBe(true);
+    expect(result.travelStress?.heatStress).toBe(true);
+    expect((result as any).travelStressScore).toBeGreaterThan(0.5);
+  });
+
   it('equipment override → conditions.equipmentOverride', () => {
     const result = aggregateWeekConditions({
       weekIndex: 0,

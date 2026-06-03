@@ -2,10 +2,10 @@
 
 Status: canonical
 Owner: release lead (Felipe)
-Last verified: 2026-05-23
+Last verified: 2026-06-03
 Update policy: update after merge / staging / production / deploy-gate changes. Live identity (branch/commit/version/migrations) auto-generated via engine/scripts/release-identity.sh --persist; do not type those by hand.
 
-Last updated: 2026-05-23
+Last updated: 2026-06-03
 
 > **Live identity** — branch / commit / version / migration count for the
 > current working tree are auto-generated. Do NOT type those values by
@@ -25,6 +25,31 @@ Last updated: 2026-05-23
   `bac44816`. Workspace audit evidence lives at
   `docs/release/worktree-recovery-audit-2026-05-18.md` and
   `docs/release/worktree-recovery-audit-2026-05-21/`.
+
+### 2026-06-03 Training Remediation Code Completion
+
+- Scope: completed the Training remediation plan in code across the backend
+  coach kernel, training-plan generation, safety and load math, sport-specific
+  engines, chat action/parser registry, route contracts, lifecycle cleanup, and
+  the iOS Training decoding/state/rendering/product-surface paths.
+- Backend verification passed from the working tree: `npm run verify` completed
+  typecheck, science-policy pin check, and full Vitest with **807 test files /
+  11,794 tests** passing.
+- Training evaluation passed with local non-secret placeholders:
+  `NODE_ENV=development TELEGRAM_BOT_TOKEN=local-training-eval-token-disabled
+  TELEGRAM_ALLOWED_USER_IDS=1 npm run eval:training` returned score **99/100**
+  across **156** cases and wrote reports under `engine/reports/training-eval/`.
+- iOS verification passed against `Nexus Hub.xcodeproj` / scheme `Nexus Hub` /
+  iPhone 17 Pro simulator: simulator build succeeded, the focused Training
+  suite passed **113/113** selected tests covering model decoding,
+  `TrainingViewModelObservationTests`, `TrainingHomeViewStateBuilderTests`, and
+  `TrainingHomeContractResolverTests`, and
+  `scripts/ios-single-simulator-test.sh` passed the full helper run with
+  **1,451 XCTest tests** plus **10 Swift Testing cases**.
+- No production deploy, signed iOS archive, TestFlight upload, APNs production
+  proof, real Apple Health/Watch proof, Garmin provider proof, or two-account
+  device walkthrough was performed in this code-completion pass. Those remain
+  the current operator/release gates.
 
 ### 2026-05-23 Beta Hardening Confirmation Contract Production Promote
 

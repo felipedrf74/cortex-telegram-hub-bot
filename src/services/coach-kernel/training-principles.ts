@@ -409,6 +409,8 @@ export interface TaperPriorityCoefficients {
   volumeDropPct: number;
   intensityPreservedPct: number;
   strengthCutoffDaysBeforeRace: number;
+  minimumVolumePct?: number;
+  maximumVolumePct?: number;
 }
 
 export interface ReturnFromGapRamp {
@@ -581,6 +583,8 @@ export function getTaperCoefficients(
   if (!taper) return undefined;
   const byPriority = asObject(taper['byPriority']);
   if (!byPriority) return undefined;
+  const minimumVolumePct = asNumber(taper['minimumVolumePct']);
+  const maximumVolumePct = asNumber(taper['maximumVolumePct']);
   const obj = asObject(byPriority[priority]);
   if (!obj) return undefined;
   const durationDays = asNumber(obj['durationDays']);
@@ -598,6 +602,8 @@ export function getTaperCoefficients(
     volumeDropPct,
     intensityPreservedPct,
     strengthCutoffDaysBeforeRace: strengthCutoff,
+    ...(minimumVolumePct !== undefined ? { minimumVolumePct } : {}),
+    ...(maximumVolumePct !== undefined ? { maximumVolumePct } : {}),
   };
 }
 

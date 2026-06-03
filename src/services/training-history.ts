@@ -263,14 +263,16 @@ export function readTrainingHistoryFromCompletions(
     const sport = normalizeSessionTypeToSport(row.session_type);
     const sessionType = normalizeSessionTypeToKernelType(row.session_type);
     if (!sport || !sessionType) continue;
+    const completedAt = normalizeCompletionTimestamp(row.completed_at);
+    if (!completedAt) continue;
     const actualMinutes = Math.max(0, Math.round(row.actual_duration_minutes ?? 0));
     const plannedMinutes = Math.max(0, Math.round(row.planned_duration_minutes ?? actualMinutes));
     const distanceKm = extractDistanceKm(row.actual_exercises_json);
     recentSessions.push({
-      id: `completion-${row.session_id}-${row.completed_at}`,
+      id: `completion-${row.session_id}-${completedAt}`,
       sport,
       sessionType,
-      completedAt: row.completed_at,
+      completedAt,
       durationMinutes: actualMinutes,
       plannedDurationMinutes: plannedMinutes,
       actualDurationMinutes: actualMinutes,
@@ -304,11 +306,18 @@ export function readTrainingHistoryFromCompletions(
  */
 function bucketWeekIndex(completedAtIso: string, asOf: Date): number {
   const completedAt = new Date(completedAtIso);
+  if (!Number.isFinite(completedAt.getTime()) || !Number.isFinite(asOf.getTime())) return -1;
   const deltaMs = asOf.getTime() - completedAt.getTime();
   const deltaDays = Math.floor(deltaMs / (24 * 60 * 60 * 1000));
   if (deltaDays < 0) return -1;
   if (deltaDays >= 28) return -1;
   return Math.floor(deltaDays / 7);
+}
+
+function normalizeCompletionTimestamp(value: string): string | null {
+  const parsed = new Date(value);
+  if (!Number.isFinite(parsed.getTime())) return null;
+  return parsed.toISOString();
 }
 
 function emptyHistory(): RealTrainingHistory {

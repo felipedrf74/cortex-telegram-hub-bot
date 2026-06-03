@@ -10,12 +10,17 @@
  *   - TrainingPrinciplesSchemaError message lists the missing keys
  */
 
+import fs from 'fs';
+import os from 'os';
+import path from 'path';
 import { describe, expect, it } from 'vitest';
 import {
+  TrainingKnowledgeFormatError,
   TrainingPrinciplesSchemaError,
   findMalformedPrinciplesSections,
   findMissingPrinciplesKeys,
   loadCoachKnowledge,
+  readJsonCompatibleYaml,
 } from '../../src/services/coach-kernel/knowledge-loader';
 
 describe('findMissingPrinciplesKeys', () => {
@@ -118,6 +123,43 @@ describe('Codex R2 P3 — findMalformedPrinciplesSections (nested validation)', 
   it('flags missing sciencePolicyVersion', () => {
     const issues = findMalformedPrinciplesSections({});
     expect(issues.some((i) => /sciencePolicyVersion/.test(i))).toBe(true);
+  });
+
+  it('flags invalid exerciseSelection experience ceilings', () => {
+    const issues = findMalformedPrinciplesSections({
+      exerciseSelection: {
+        byPhase: {
+          base: { intentNote: 'ok' },
+        },
+        byExperience: {
+          novice: {
+            complexityMax: 'elite',
+            spinalLoadingMax: 'axial',
+          },
+        },
+      },
+    });
+    expect(issues.some((i) => /complexityMax/.test(i))).toBe(true);
+    expect(issues.some((i) => /spinalLoadingMax/.test(i))).toBe(true);
+  });
+});
+
+describe('readJsonCompatibleYaml format guard', () => {
+  it('accepts the repository JSON-compatible template shape', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'training-knowledge-'));
+    const file = path.join(dir, 'template.yaml');
+    fs.writeFileSync(file, '[{"id":"x"}]', 'utf8');
+
+    expect(readJsonCompatibleYaml<Array<{ id: string }>>(file)).toEqual([{ id: 'x' }]);
+  });
+
+  it('rejects true YAML before JSON.parse ambiguity', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'training-knowledge-'));
+    const file = path.join(dir, 'template.yaml');
+    fs.writeFileSync(file, '- id: x\n', 'utf8');
+
+    expect(() => readJsonCompatibleYaml(file)).toThrow(TrainingKnowledgeFormatError);
+    expect(() => readJsonCompatibleYaml(file)).toThrow(/JSON-compatible YAML/);
   });
 });
 

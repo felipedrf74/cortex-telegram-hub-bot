@@ -6,7 +6,7 @@
  *   - volume_then_load adds 1 rep
  *   - intent_then_load adds 1s eccentric tempo
  *   - Reps missed → consistency
- *   - RPE ≥ 9 → consistency
+ *   - RPE ≥ 8 → consistency
  *   - Pain in same region → consistency
  *   - High soreness ≥7 → consistency
  *   - Technical failure <6 → consistency
@@ -26,6 +26,7 @@ describe('progression vectors', () => {
       progressionTarget: 'load_progression',
       priorExposureCount: 5,
       lastSession: { completedRepsTopSet: 8, prescribedRepsTopSet: 8, rpeTopSet: 7 },
+      priorSession: { completedRepsTopSet: 8, prescribedRepsTopSet: 8, rpeTopSet: 7 },
     });
     expect(d.vector).toBe('load_progression');
     expect(d.loadDeltaPct).toBe(0.025);
@@ -57,6 +58,7 @@ describe('progression vectors', () => {
       progressionTarget: 'mystery_vector',
       priorExposureCount: 5,
       lastSession: { completedRepsTopSet: 8, prescribedRepsTopSet: 8, rpeTopSet: 7 },
+      priorSession: { completedRepsTopSet: 8, prescribedRepsTopSet: 8, rpeTopSet: 7 },
     });
     expect(d.vector).toBe('load_progression');
   });
@@ -73,14 +75,37 @@ describe('gating signals', () => {
     expect(d.gatesFired).toContain('reps_missed');
   });
 
-  it('RPE ≥ 9 → consistency_preservation', () => {
+  it('RPE ≥ 8 → consistency_preservation', () => {
     const d = decideStrengthProgression({
       progressionTarget: 'load_progression',
       priorExposureCount: 5,
-      lastSession: { completedRepsTopSet: 8, prescribedRepsTopSet: 8, rpeTopSet: 9 },
+      lastSession: { completedRepsTopSet: 8, prescribedRepsTopSet: 8, rpeTopSet: 8 },
+      priorSession: { completedRepsTopSet: 8, prescribedRepsTopSet: 8, rpeTopSet: 7 },
     });
     expect(d.vector).toBe('consistency_preservation');
     expect(d.gatesFired).toContain('rpe_too_high');
+  });
+
+  it('missing prior confirmation blocks direct load progression', () => {
+    const d = decideStrengthProgression({
+      progressionTarget: 'load_progression',
+      priorExposureCount: 5,
+      lastSession: { completedRepsTopSet: 8, prescribedRepsTopSet: 8, rpeTopSet: 7 },
+    });
+    expect(d.vector).toBe('consistency_preservation');
+    expect(d.gatesFired).toContain('two_session_confirmation_missing');
+  });
+
+  it('prior session must also clear reps and RPE < 8', () => {
+    const d = decideStrengthProgression({
+      progressionTarget: 'load_progression',
+      priorExposureCount: 5,
+      lastSession: { completedRepsTopSet: 8, prescribedRepsTopSet: 8, rpeTopSet: 7 },
+      priorSession: { completedRepsTopSet: 7, prescribedRepsTopSet: 8, rpeTopSet: 8 },
+    });
+    expect(d.vector).toBe('consistency_preservation');
+    expect(d.gatesFired).toContain('prior_reps_missed');
+    expect(d.gatesFired).toContain('prior_rpe_not_clear');
   });
 
   it('pain in same region → consistency_preservation', () => {

@@ -20,6 +20,7 @@ import {
   computeRunningPaceZones,
   computeSwimPaceZones,
   computeZoneSet,
+  isValueInZoneRange,
 } from '../../src/services/coach-kernel/zone-calculator';
 
 describe('computeBikePowerZones — Coggan %FTP', () => {
@@ -164,6 +165,20 @@ describe('computeZoneSet', () => {
   });
 });
 
+describe('isValueInZoneRange — half-open boundaries', () => {
+  it('assigns shared power boundaries to the higher zone once', () => {
+    const zones = computeBikePowerZones(250);
+    expect(isValueInZoneRange(138, 'recovery', zones)).toBe(false);
+    expect(isValueInZoneRange(138, 'aerobic', zones)).toBe(true);
+  });
+
+  it('assigns shared pace boundaries to the slower zone once', () => {
+    const zones = computeRunningPaceZones(240);
+    expect(isValueInZoneRange(228, 'vo2', zones)).toBe(false);
+    expect(isValueInZoneRange(228, 'threshold', zones)).toBe(true);
+  });
+});
+
 describe('computeIntensityFactorForZone — IF for B1 TSS calculation', () => {
   it('cycling: threshold zone IF ≈ 0.975 (mid 90-105%)', () => {
     const ifVal = computeIntensityFactorForZone('threshold', 'cycling', { cyclingFtpWatts: 250 });
@@ -207,5 +222,11 @@ describe('computeIntensityFactorForZone — IF for B1 TSS calculation', () => {
     expect(computeIntensityFactorForZone('threshold', 'cycling', {})).toBeUndefined();
     expect(computeIntensityFactorForZone('threshold', 'running', { cyclingFtpWatts: 250 })).toBeUndefined();
     expect(computeIntensityFactorForZone('threshold', 'swimming', {})).toBeUndefined();
+  });
+
+  it('returns undefined for neuromuscular steady-state IF', () => {
+    expect(computeIntensityFactorForZone('neuromuscular', 'cycling', { cyclingFtpWatts: 250 })).toBeUndefined();
+    expect(computeIntensityFactorForZone('neuromuscular', 'running', { thresholdPaceSecondsPerKm: 240 })).toBeUndefined();
+    expect(computeIntensityFactorForZone('neuromuscular', 'swimming', { swimCssSecondsPer100m: 100 })).toBeUndefined();
   });
 });

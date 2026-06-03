@@ -75,6 +75,10 @@ export type TrainingPlanCancellationResult =
   | { status: 'not_found'; data: TrainingPlanCancellationNoop }
   | { status: 'forbidden' };
 
+export interface CancelTrainingPlanForUserOptions {
+  tenantId?: number | null;
+}
+
 interface TrainingSessionForCancellation {
   id: number;
   status?: string | null;
@@ -140,37 +144,40 @@ async function withTrainingCancellationLock<T>(key: string, fn: () => Promise<T>
 export async function cancelTrainingPlanForUser(
   userId: number,
   requestedPlanId?: unknown,
+  options: CancelTrainingPlanForUserOptions = {},
 ): Promise<TrainingPlanCancellationResult> {
+  const tenantId = normalizeTenantId(options.tenantId, userId);
   return withTrainingCalendarOperationLock(
     {
       userId,
-      tenantId: userId,
+      tenantId,
       planId: typeof requestedPlanId === 'number' ? requestedPlanId : null,
       operation: 'calendar_cancel',
     },
-    () => withTrainingCancellationLock(`training-plan-cancel:${userId}`, () =>
-      cancelTrainingPlanForUserLocked(userId, requestedPlanId)),
+    () => withTrainingCancellationLock(`training-plan-cancel:${userId}:tenant:${tenantId}`, () =>
+      cancelTrainingPlanForUserLocked(userId, requestedPlanId, tenantId)),
   );
 }
 
 async function cancelTrainingPlanForUserLocked(
   userId: number,
   requestedPlanId?: unknown,
+  tenantId: number = userId,
 ): Promise<TrainingPlanCancellationResult> {
   const parsedPlanId = Number(requestedPlanId);
   const hasRequestedPlan = Number.isFinite(parsedPlanId) && parsedPlanId > 0;
   const requestedPlan = hasRequestedPlan ? trainingPlans.getPlanById(parsedPlanId) : null;
   const activePlans = hasRequestedPlan
     ? []
-    : trainingPlans.getActivePlans?.(userId) ?? [];
+    : (trainingPlans.getActivePlans?.(userId) ?? []).filter((plan) => planTenantMatches(plan, tenantId));
   const fallbackActivePlan = hasRequestedPlan || activePlans.length > 0
     ? null
     : trainingPlans.getActivePlan(userId);
   const plans = hasRequestedPlan
     ? (requestedPlan ? [requestedPlan] : [])
-    : (activePlans.length > 0 ? activePlans : (fallbackActivePlan ? [fallbackActivePlan] : []));
+    : (activePlans.length > 0 ? activePlans : (fallbackActivePlan && planTenantMatches(fallbackActivePlan, tenantId) ? [fallbackActivePlan] : []));
 
-  if (requestedPlan && requestedPlan.user_id !== userId) {
+  if (requestedPlan && (requestedPlan.user_id !== userId || !planTenantMatches(requestedPlan, tenantId))) {
     return { status: 'forbidden' };
   }
 
@@ -267,7 +274,9 @@ async function cancelTrainingPlanForUserLocked(
     // sessions, and completions atomically. The user_id scope on the
     // DELETE is defense-in-depth in case the ownership gate above is
     // ever weakened or bypassed.
-    const removal = trainingPlans.deletePlanHard(plan.id, userId);
+    const removal = tenantId === userId
+      ? trainingPlans.deletePlanHard(plan.id, userId)
+      : trainingPlans.deletePlanHard(plan.id, userId, tenantId);
 
     if (!removal.ok) {
       // The plan was found above but hard delete didn't change any
@@ -415,6 +424,15 @@ async function cancelTrainingPlanForUserLocked(
       message: buildCancellationMessage(removedEvents, removedSessions),
     },
   };
+}
+
+function normalizeTenantId(value: number | null | undefined, userId: number): number {
+  const numeric = Number(value ?? userId);
+  return Number.isFinite(numeric) && numeric > 0 ? Math.trunc(numeric) : Math.trunc(userId);
+}
+
+function planTenantMatches(plan: trainingPlans.TrainingPlan, tenantId: number): boolean {
+  return normalizeTenantId(plan.tenant_id, plan.user_id) === tenantId;
 }
 
 async function deleteCalendarDeletionTargets(

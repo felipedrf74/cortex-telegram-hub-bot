@@ -176,6 +176,54 @@ describe('Health data routes', () => {
     expect(staleRow).toBeUndefined();
   });
 
+  it('rejects impossible biometric values before storing health data', async () => {
+    const res = await dispatch('POST', '/sync', {
+      date: '2026-04-16',
+      hrvMs: 500,
+    });
+
+    expect(res.statusCode).toBe(400);
+    expect(res.body.error.code).toBe('BAD_REQUEST');
+    expect(res.body.error.message).toMatch(/hrvMs/);
+  });
+
+  it('rejects future and stale HealthKit dates', async () => {
+    const future = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+    const stale = new Date(Date.now() - 500 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+
+    const futureRes = await dispatch('POST', '/sync', { date: future, hrvMs: 72 });
+    expect(futureRes.statusCode).toBe(400);
+    expect(futureRes.body.error.message).toMatch(/future/);
+
+    const staleRes = await dispatch('POST', '/sync', { date: stale, hrvMs: 72 });
+    expect(staleRes.statusCode).toBe(400);
+    expect(staleRes.body.error.message).toMatch(/too old/);
+  });
+
+  it('rejects inconsistent sleep stages and oversized workout sources', async () => {
+    const badSleep = await dispatch('POST', '/sync', {
+      date: '2026-04-16',
+      totalSleepMinutes: 300,
+      deepSleepMinutes: 220,
+      remSleepMinutes: 180,
+    });
+    expect(badSleep.statusCode).toBe(400);
+    expect(badSleep.body.error.message).toMatch(/sleep stage/);
+
+    const badWorkout = await dispatch('POST', '/sync', {
+      date: '2026-04-16',
+      workouts: [{
+        workoutActivityType: 'HKWorkoutActivityTypeRunning',
+        start: '2026-04-16T06:30:00.000Z',
+        end: '2026-04-16T07:15:00.000Z',
+        durationMinutes: 45,
+        source: 'x'.repeat(129),
+      }],
+    });
+    expect(badWorkout.statusCode).toBe(400);
+    expect(badWorkout.body.error.message).toMatch(/source/);
+  });
+
   it('keeps readiness calculations isolated between Felipe and Jaqueline Apple Health snapshots', async () => {
     const today = new Date().toISOString().slice(0, 10);
 

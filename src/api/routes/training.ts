@@ -409,8 +409,18 @@ export function trainingRoutes(): Router {
         return null;
       });
       if (fallback) {
-        const hydratedFallback = syncCoachStateForUser(userId, fallback);
-        setCache(cacheKey, hydratedFallback, COACH_BRIEFING_TTL);
+        const hydratedFallback = syncCoachStateForUser(userId, {
+          ...fallback,
+          degraded: true,
+          warnings: [
+            ...(
+              Array.isArray((fallback as any).warnings)
+                ? (fallback as any).warnings.filter((warning: unknown): warning is string => typeof warning === 'string')
+                : []
+            ),
+            'Coach AI unavailable; deterministic fallback used.',
+          ],
+        });
         sendSuccess(res, hydratedFallback);
         return;
       }
@@ -603,13 +613,18 @@ export function trainingRoutes(): Router {
         return;
       }
 
+      if (resolved.kind === 'bad_input') {
+        sendError(res, 'BAD_INPUT', resolved.message, 400);
+        return;
+      }
+
       if (resolved.kind === 'not_found') {
         sendError(res, 'NOT_FOUND', 'Training session not found', 404);
         return;
       }
 
       if (resolved.kind === 'forbidden') {
-        sendError(res, 'FORBIDDEN', 'Training session belongs to another account', 403);
+        sendError(res, 'NOT_FOUND', 'Training session not found', 404);
         return;
       }
 
@@ -761,13 +776,18 @@ export function trainingRoutes(): Router {
         return;
       }
 
+      if (resolved.kind === 'bad_input') {
+        sendError(res, 'BAD_INPUT', resolved.message, 400);
+        return;
+      }
+
       if (resolved.kind === 'not_found') {
         sendError(res, 'NOT_FOUND', 'Training session not found', 404);
         return;
       }
 
       if (resolved.kind === 'forbidden') {
-        sendError(res, 'FORBIDDEN', 'Training session belongs to another account', 403);
+        sendError(res, 'NOT_FOUND', 'Training session not found', 404);
         return;
       }
 

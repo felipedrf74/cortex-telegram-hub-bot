@@ -28,6 +28,20 @@
     "constraints": ["no_more_than_two_swim_keys_per_week"]
   },
   {
+    "id": "swim_speed",
+    "sport": "swimming",
+    "sessionType": "speed_swim",
+    "title": "Speed Swim",
+    "phaseTags": ["build", "peak"],
+    "goalTags": ["swimming", "triathlon"],
+    "durationOptionsMinutes": [35, 45, 50],
+    "primaryZone": "vo2",
+    "fatigueCost": "medium",
+    "keySession": true,
+    "instructions": ["Use short fast repeats with complete technical control.", "Stop the set if stroke quality falls apart."],
+    "constraints": ["avoid_on_low_readiness_days", "no_more_than_two_swim_keys_per_week"]
+  },
+  {
     "id": "swim_aerobic",
     "sport": "swimming",
     "sessionType": "aerobic_swim",
@@ -56,4 +70,3 @@
     "constraints": ["ideal_for_low_readiness_days"]
   }
 ]
-

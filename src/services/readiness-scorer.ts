@@ -29,6 +29,7 @@ import {
   extractGarminBodyBatterySnapshot,
   resolveFallbackEnergyReserve,
 } from './wearable/energy-reserve';
+import { computeLoadModelForDimension } from './coach-kernel/load-model';
 
 // ── Types ───────────────────────────────────────────────────────────
 
@@ -164,6 +165,7 @@ export function scoreBodyBattery(current: number): number {
 }
 
 export function scoreAcwr(acwr: number): number {
+  if (!Number.isFinite(acwr)) return 60;
   if (acwr > 1.5) return 20;     // injury risk — deload
   if (acwr > 1.2) return 50;     // moderate risk
   if (acwr >= 0.8) return 85;    // sweet spot
@@ -231,24 +233,37 @@ function estimateTrainingStress(activity: any): number {
   return 30;
 }
 
-function computeAcwr(activities: any[]): { acuteLoad: number; chronicLoad: number; acwr: number } {
-  const now = Date.now();
+export function computeAcwr(activities: any[], now: Date = new Date()): { acuteLoad: number; chronicLoad: number; acwr: number } {
   const msPerDay = 86400000;
+  const nowMs = now.getTime();
+  const todayStart = Date.UTC(
+    now.getUTCFullYear(),
+    now.getUTCMonth(),
+    now.getUTCDate(),
+  );
 
   let acuteLoad = 0;
   let chronicLoad = 0;
   const sampleDays = new Set<string>();
+  const loadByDay = new Map<string, number>();
 
   for (const a of activities) {
     const rawDate = a.startTimeLocal || a.startTimeGMT || a.beginTimestamp || a.startDate || a.start;
     const actDate = new Date(rawDate).getTime();
     if (!Number.isFinite(actDate)) continue;
-    const daysAgo = (now - actDate) / msPerDay;
-    if (daysAgo < 0 || daysAgo > 28) continue;
-    sampleDays.add(new Date(actDate).toISOString().slice(0, 10));
+    const dayKey = new Date(actDate).toISOString().slice(0, 10);
+    const dayStart = Date.UTC(
+      new Date(actDate).getUTCFullYear(),
+      new Date(actDate).getUTCMonth(),
+      new Date(actDate).getUTCDate(),
+    );
+    const daysAgo = Math.floor((todayStart - dayStart) / msPerDay);
+    if (actDate > nowMs || daysAgo < 0 || daysAgo >= 28) continue;
+    sampleDays.add(dayKey);
     const stress = estimateTrainingStress(a);
+    loadByDay.set(dayKey, (loadByDay.get(dayKey) ?? 0) + stress);
 
-    if (daysAgo <= 7) acuteLoad += stress;
+    if (daysAgo < 7) acuteLoad += stress;
     chronicLoad += stress;
   }
 
@@ -259,10 +274,22 @@ function computeAcwr(activities: any[]): { acuteLoad: number; chronicLoad: numbe
     return { acuteLoad, chronicLoad, acwr: 1.0 };
   }
 
-  // Normalize to per-day averages
-  const acuteAvg = acuteLoad / 7;
-  const chronicAvg = chronicLoad / 28;
-  const acwr = chronicAvg > 0 ? acuteAvg / chronicAvg : 1.0;
+  const daily = Array.from({ length: 28 }, (_, index) => {
+    const timestamp = todayStart - (27 - index) * msPerDay;
+    const date = new Date(timestamp).toISOString().slice(0, 10);
+    return {
+      date,
+      value: loadByDay.get(date) ?? 0,
+      confidence: 'high' as const,
+    };
+  });
+  const loadModel = computeLoadModelForDimension({
+    daily,
+    dimension: 'external',
+    ctlDays: 28,
+    atlDays: 7,
+  });
+  const acwr = loadModel.acwrUncoupled > 0 ? loadModel.acwrUncoupled : 1.0;
 
   return { acuteLoad, chronicLoad, acwr };
 }

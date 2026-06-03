@@ -245,7 +245,7 @@ export function failureCopy(input: ChatPlannerInput, reason?: string): string {
     if (reason?.includes('outlook_calendar_not_connected')) return 'Não consigo criar o evento ainda porque a tua conta Outlook Calendar não está ligada com permissão de escrita.';
     if (reason?.includes('not_connected')) return 'Não consigo fazer isso ainda porque o provedor necessário não está ligado com permissão de escrita.';
     if (reason?.includes('conflict')) return 'Encontrei um conflito no calendário. Queres que eu marque mesmo assim?';
-    if (reason?.includes('executor_not_enabled') || reason?.includes('requires_provider') || reason?.includes('requires_preview_contract') || reason?.includes('requires_outbound_confirmation') || reason?.includes('requires_provider_specific')) return 'Ainda não consigo executar essa ação por chat com segurança. Nada foi alterado.';
+    if (reason?.includes('executor_not_enabled') || reason?.includes('execution_policy_blocked') || reason?.includes('requires_provider') || reason?.includes('requires_preview_contract') || reason?.includes('requires_outbound_confirmation') || reason?.includes('requires_provider_specific')) return 'Ainda não consigo executar essa ação por chat com segurança. Nada foi alterado.';
     if (reason?.includes('read_back')) return 'A ação foi tentada, mas não consegui verificar o resultado. Não vou afirmar sucesso completo.';
     if (reason?.includes('required')) return 'Preciso de mais um detalhe específico antes de executar isto com segurança.';
     return 'Não consegui concluir a ação agora. Nada foi confirmado como feito.';
@@ -254,7 +254,7 @@ export function failureCopy(input: ChatPlannerInput, reason?: string): string {
   if (reason?.includes('outlook_calendar_not_connected')) return 'I cannot create the event yet because Outlook Calendar is not connected with write permission.';
   if (reason?.includes('not_connected')) return 'I cannot do that yet because the required provider is not connected with write permission.';
   if (reason?.includes('conflict')) return 'I found a calendar conflict. Do you want me to schedule it anyway?';
-  if (reason?.includes('executor_not_enabled') || reason?.includes('requires_provider') || reason?.includes('requires_preview_contract') || reason?.includes('requires_outbound_confirmation') || reason?.includes('requires_provider_specific')) return 'I cannot safely run that action from chat yet. Nothing was changed.';
+  if (reason?.includes('executor_not_enabled') || reason?.includes('execution_policy_blocked') || reason?.includes('requires_provider') || reason?.includes('requires_preview_contract') || reason?.includes('requires_outbound_confirmation') || reason?.includes('requires_provider_specific')) return 'I cannot safely run that action from chat yet. Nothing was changed.';
   if (reason?.includes('read_back')) return 'The action was attempted, but I could not verify the result. I will not claim full success.';
   if (reason?.includes('required')) return 'I need one more specific detail before I can do this safely.';
   return 'I could not complete the action right now. Nothing was confirmed as done.';

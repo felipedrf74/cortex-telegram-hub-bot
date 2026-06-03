@@ -44,6 +44,7 @@ vi.mock('../../src/services/garmin', () => ({
 }));
 
 import {
+  adaptDtoSessionForReadiness,
   fetchCurrentReadinessForPlan,
   getReadiness,
   getTodaySession,
@@ -67,6 +68,28 @@ describe('training-read-models', () => {
     (buildCalendarEventLookup as any).mockImplementation(async () => mockCalendarLookup);
     hoisted.calculateReadiness.mockImplementation(async () => mockReadinessResult);
     hoisted.getActivitiesByDateForUser.mockImplementation(async () => mockGarminActivities);
+  });
+
+  it('surfaces an injury-safe swap for injury-affecting active sessions', () => {
+    const adaptation = adaptDtoSessionForReadiness(
+      { sessionType: 'run', status: 'planned' },
+      {
+        capturedAt: '2026-06-03T08:00:00.000Z',
+        level: 'green',
+        score: 88,
+        painFlags: [
+          { area: 'left_knee', severity: 'moderate', impact: ['running'] },
+        ],
+      } as any,
+      true,
+    );
+
+    expect(adaptation).toMatchObject({
+      intensityDownshiftPct: 0.5,
+      originalSessionType: 'easy_run',
+      reason: 'injury_safe_swap',
+    });
+    expect(adaptation?.explanation).toContain('Active injury');
   });
 
   it('returns today session from the active plan plus linked calendar time', async () => {

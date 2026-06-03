@@ -150,6 +150,11 @@ vi.mock('../../src/services/onboarding', () => ({
 
 vi.mock('../../src/services/training-coach-kernel-plan-generator', () => ({
   buildCoachKernelTrainingPlan: (...args: unknown[]) => mockBuildCoachKernelTrainingPlan(...args),
+  normalizeTrainingPlanDurationWeeks: (raw: unknown, fallback = 4) => {
+    const resolved = Number(raw);
+    const candidate = Number.isFinite(resolved) && resolved > 0 ? Math.round(resolved) : fallback;
+    return Math.max(1, Math.min(52, candidate));
+  },
 }));
 
 vi.mock('../../src/services/readiness-scorer', () => ({
@@ -1034,10 +1039,37 @@ describe('Training API routes', () => {
 
     expect(res.statusCode).toBe(200);
     expect(res.body.ok).toBe(true);
-    expect(res.body.data.degraded).toBe(false);
+    expect(res.body.data.degraded).toBe(true);
     expect(res.body.data.deterministicFallback).toBe(true);
+    expect(res.body.data.warnings).toContain('Coach AI unavailable; deterministic fallback used.');
     expect(res.body.data.briefing).toContain('Leitura rápida do coach');
     expect(JSON.stringify(res.body)).not.toContain('upstream garmin timeout');
+    expect(mockSetCache).not.toHaveBeenCalledWith(
+      'coach-briefing:12',
+      expect.anything(),
+      expect.anything(),
+    );
+  });
+
+  it('returns uncached readiness unavailable state when readiness scoring fails', async () => {
+    mockCalculateReadiness.mockRejectedValueOnce(new Error('wearable store unavailable'));
+
+    const res = await dispatch('GET', '/readiness');
+
+    expect(res.statusCode).toBe(200);
+    expect(res.body.ok).toBe(true);
+    expect(res.body.data).toMatchObject({
+      score: 0,
+      factors: {},
+      recommendation: null,
+      reasonCode: 'READINESS_UNAVAILABLE',
+      unavailable: true,
+    });
+    expect(mockSetCache).not.toHaveBeenCalledWith(
+      'readiness:12',
+      expect.anything(),
+      expect.anything(),
+    );
   });
 
   it('keeps coach/apply failures generic for the client while preserving the route code', async () => {
@@ -1560,7 +1592,7 @@ describe('Training API routes', () => {
     expect(mockMarkSessionSkipped).toHaveBeenCalledWith(321);
   });
 
-  it('rejects /skip with 403 when the session id belongs to a different user', async () => {
+  it('returns uniform 404 from /skip when the session id belongs to a different user', async () => {
     // Hardening 2026-04-21: Alice (userId=12) must not be able to
     // skip Bob's session by POSTing Bob's session id. Previously
     // the route called markSessionSkipped(rowId) without any plan
@@ -1570,21 +1602,40 @@ describe('Training API routes', () => {
 
     const res = await dispatch('POST', '/skip', {}, { sessionId: '999' });
 
-    expect(res.statusCode).toBe(403);
+    expect(res.statusCode).toBe(404);
     expect(res.body.ok).toBe(false);
-    expect(res.body.error.code).toBe('FORBIDDEN');
+    expect(res.body.error.code).toBe('NOT_FOUND');
     expect(mockMarkSessionSkipped).not.toHaveBeenCalled();
   });
 
-  it('rejects /complete with 403 when the session id belongs to a different user', async () => {
+  it('rejects /skip with 400 when session id is malformed', async () => {
+    const res = await dispatch('POST', '/skip', {}, { sessionId: '12.5' });
+
+    expect(res.statusCode).toBe(400);
+    expect(res.body.ok).toBe(false);
+    expect(res.body.error.code).toBe('BAD_INPUT');
+    expect(res.body.error.message).toContain('sessionId must be a positive integer');
+    expect(mockMarkSessionSkipped).not.toHaveBeenCalled();
+  });
+
+  it('returns uniform 404 from /complete when the session id belongs to a different user', async () => {
     mockGetSessionById.mockReturnValue({ id: 999, plan_id: 88 });
     mockGetPlanById.mockReturnValue({ id: 88, user_id: 77 });
 
     const res = await dispatch('POST', '/complete', {}, { sessionId: '999' });
 
-    expect(res.statusCode).toBe(403);
+    expect(res.statusCode).toBe(404);
     expect(res.body.ok).toBe(false);
-    expect(res.body.error.code).toBe('FORBIDDEN');
+    expect(res.body.error.code).toBe('NOT_FOUND');
+  });
+
+  it('rejects /complete with 400 when session id is malformed', async () => {
+    const res = await dispatch('POST', '/complete', {}, { sessionId: 'abc' });
+
+    expect(res.statusCode).toBe(400);
+    expect(res.body.ok).toBe(false);
+    expect(res.body.error.code).toBe('BAD_INPUT');
+    expect(res.body.error.message).toContain('sessionId must be a positive integer');
   });
 
   // ─── R4 P2 #1 — /complete V2 field validation hardening ───
@@ -1899,6 +1950,36 @@ describe('Training API routes', () => {
     ]);
   });
 
+  it('rejects impossible race dates before plan generation starts', async () => {
+    mockGetProfile.mockReturnValue({ experienceLevel: 'intermediate' });
+
+    const res = await dispatch('POST', '/plan/generate', {}, {
+      objective: 'Lisbon Marathon October 2026',
+      raceDate: '2026-02-30',
+    });
+
+    expect(res.statusCode).toBe(400);
+    expect(res.body.error.code).toBe('INVALID_RACE_DATE');
+    expect(mockBuildCoachKernelTrainingPlan).not.toHaveBeenCalled();
+    expect(mockCreatePlan).not.toHaveBeenCalled();
+  });
+
+  it('rejects past race dates before plan generation starts', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    vi.setSystemTime(new Date('2026-06-03T12:00:00.000Z'));
+    mockGetProfile.mockReturnValue({ experienceLevel: 'intermediate' });
+
+    const res = await dispatch('POST', '/plan/generate', {}, {
+      objective: 'Old race',
+      raceDate: '2026-06-02',
+    });
+
+    expect(res.statusCode).toBe(400);
+    expect(res.body.error.code).toBe('PAST_RACE_DATE');
+    expect(mockBuildCoachKernelTrainingPlan).not.toHaveBeenCalled();
+    expect(mockCreatePlan).not.toHaveBeenCalled();
+  });
+
   it('falls back to the deterministic template when the coach kernel generation fails', async () => {
     mockGetProfile.mockImplementation((_userId: number, profile: string) => {
       if (profile === 'fitness') return { experienceLevel: 'Intermediate' };
@@ -1996,6 +2077,25 @@ describe('Training API routes', () => {
     // status mutations or plan status mutation should fire anymore.
     expect(mockUpdateSession).not.toHaveBeenCalled();
     expect(mockUpdatePlanStatus).not.toHaveBeenCalled();
+  });
+
+  it('returns uniform no-op from /plan/cancel when a requested plan belongs to another user', async () => {
+    mockGetPlanById.mockReturnValue({ id: 99, user_id: 77 });
+
+    const res = await dispatch('POST', '/plan/cancel', {}, { planId: 99 });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.body.ok).toBe(true);
+    expect(res.body.data).toMatchObject({
+      cancelled: false,
+      removedEvents: 0,
+      removedSessions: 0,
+      removedWeeks: 0,
+      removedPlans: 0,
+      totalSessions: 0,
+    });
+    expect(mockDeletePlanHard).not.toHaveBeenCalled();
+    expect(mockDeleteEvent).not.toHaveBeenCalled();
   });
 
   it('ignores generic routine walk events when resolving today training from calendar', async () => {

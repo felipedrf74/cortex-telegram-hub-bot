@@ -79,6 +79,11 @@ vi.mock('../../src/services/cross-agent-learning', () => ({
 
 vi.mock('../../src/services/training-coach-kernel-plan-generator', () => ({
   buildCoachKernelTrainingPlan: (...args: unknown[]) => mockBuildCoachKernelTrainingPlan(...args),
+  normalizeTrainingPlanDurationWeeks: (raw: unknown, fallback = 4) => {
+    const resolved = Number(raw);
+    const candidate = Number.isFinite(resolved) && resolved > 0 ? Math.round(resolved) : fallback;
+    return Math.max(1, Math.min(52, candidate));
+  },
 }));
 
 vi.mock('../../src/api/routes/training-fallback-plan', () => ({
@@ -131,6 +136,7 @@ vi.mock('../../src/utils/logger', () => ({
 }));
 
 import {
+  TRAINING_PLAN_GENERATOR_POLICY_VERSION,
   generateTrainingPlanForUser,
   resolveTrainingPlanStartDate,
 } from '../../src/api/routes/training-plan-generation';
@@ -681,6 +687,57 @@ describe('generateTrainingPlanForUser', () => {
     }));
   });
 
+  it('normalizes fractional and out-of-range frequency inputs before planning', async () => {
+    const result = await generateTrainingPlanForUser({
+      userId: 12,
+      objective: 'Olympic triathlon',
+      durationWeeks: 4.4,
+      sessionsPerWeek: 4.5,
+      runSessionsPerWeek: 2.4,
+      bikeSessionsPerWeek: 99,
+      swimSessionsPerWeek: 1.6,
+      strengthSessionsPerWeek: 1.2,
+      trainingPriority: 'triathlon',
+    });
+
+    expect(result.status).toBe('created');
+    expect(mockBuildCoachKernelTrainingPlan).toHaveBeenCalledWith(expect.objectContaining({
+      durationWeeks: 4,
+      sessionsPerWeek: 5,
+      runSessionsPerWeek: 2,
+      bikeSessionsPerWeek: 7,
+      swimSessionsPerWeek: 2,
+      strengthSessionsPerWeek: 1,
+    }));
+    expect((result as any).data.weeklyTargets).toMatchObject({
+      sessionsPerWeek: 5,
+      runSessionsPerWeek: 2,
+      bikeSessionsPerWeek: 7,
+      swimSessionsPerWeek: 2,
+      strengthSessionsPerWeek: 1,
+    });
+  });
+
+  it('bounds durationWeeks and records the generator policy version', async () => {
+    const result = await generateTrainingPlanForUser({
+      userId: 12,
+      objective: 'Build consistency',
+      durationWeeks: 999,
+    });
+
+    expect(result.status).toBe('created');
+    expect(mockBuildCoachKernelTrainingPlan).toHaveBeenCalledWith(expect.objectContaining({
+      durationWeeks: 52,
+    }));
+    expect((result as any).data.durationWeeks).toBe(52);
+    expect((result as any).data.generatorPolicyVersion).toBe(TRAINING_PLAN_GENERATOR_POLICY_VERSION);
+
+    const persistInput = mockPersistGeneratedTrainingPlan.mock.calls[0][0];
+    expect(JSON.parse(persistInput.preferencesJson)).toMatchObject({
+      generatorPolicyVersion: TRAINING_PLAN_GENERATOR_POLICY_VERSION,
+    });
+  });
+
   it('respects the requested gym volume for English muscle-building goals', async () => {
     await generateTrainingPlanForUser({
       userId: 12,
@@ -804,13 +861,12 @@ describe('generateTrainingPlanForUser', () => {
     });
   });
 
-  it('drops unsupported goal mode, priority, and non-ISO race date before planning', async () => {
+  it('drops unsupported goal mode and priority before planning', async () => {
     const result = await generateTrainingPlanForUser({
       userId: 12,
       objective: 'General running consistency',
       goalMode: 'race',
       trainingPriority: 'bodybuilding',
-      raceDate: '18/10/2026',
     });
 
     expect(result.status).toBe('created');
@@ -830,6 +886,22 @@ describe('generateTrainingPlanForUser', () => {
     });
   });
 
+  it('blocks impossible race dates before planning', async () => {
+    const result = await generateTrainingPlanForUser({
+      userId: 12,
+      objective: 'Lisbon Marathon',
+      raceDate: '2026-02-30',
+    });
+
+    expect(result.status).toBe('needs_profile');
+    expect((result as any).data.validationError).toMatchObject({
+      code: 'INVALID_RACE_DATE',
+      field: 'raceDate',
+    });
+    expect(mockBuildCoachKernelTrainingPlan).not.toHaveBeenCalled();
+    expect(mockPersistGeneratedTrainingPlan).not.toHaveBeenCalled();
+  });
+
   // ─── Slice 4.D.2 — pre-persist cancellation saga ─────────────────────
 
   describe('pre-persist cancellation saga (slice 4.D.2)', () => {
@@ -839,6 +911,7 @@ describe('generateTrainingPlanForUser', () => {
 
       const result = await generateTrainingPlanForUser({
         userId: 12,
+        tenantId: 34,
         objective: 'Lisbon Marathon',
         sessionsPerWeek: 5,
         strengthSessionsPerWeek: 2,
@@ -853,6 +926,7 @@ describe('generateTrainingPlanForUser', () => {
       // Critical: persist must NOT run when the saga aborts.
       expect(mockPersistGeneratedTrainingPlan).not.toHaveBeenCalled();
       expect(mockLoggerError).toHaveBeenCalled();
+      expect(mockGetActivePlans).toHaveBeenCalledWith(12, 34);
     });
 
     it('proceeds with persist when cancellation throws but no active plans remain (post-delete throw)', async () => {

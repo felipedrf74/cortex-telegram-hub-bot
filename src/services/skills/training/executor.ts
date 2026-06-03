@@ -56,6 +56,19 @@ export function executeTrainingPlanCreateStep(
 ): { step: ChatPlanStep; status: ChatActionRunStatus; result?: unknown; error?: string } {
   const args = step.args as Record<string, unknown>;
   const missing = missingTrainingPlanSlots(args);
+  if (!persistRuns) {
+    return {
+      step,
+      status: 'verified_pending',
+      result: {
+        pendingActionId: null,
+        missingSlots: missing,
+        collectedSlots: args,
+        openSurface: 'training_plan_builder',
+        verified: false,
+      },
+    };
+  }
   const pending = upsertPendingChatAction({
     userId: input.userId,
     tenantId: input.tenantId,
@@ -113,7 +126,7 @@ export async function executeTrainingReflowStep(
     if (step.action === 'training_reflow_preview') {
       const preview = await withProviderWriteTimeout(() => previewTrainingSessionReflow(input.userId, sessionId, source, input.tenantId));
       const verified = preview.status === 'preview';
-      const status: ChatActionRunStatus = verified ? 'verified_success' : preview.status === 'blocked' || preview.status === 'forbidden' || preview.status === 'no_calendar' ? 'blocked' : 'failed';
+      const status: ChatActionRunStatus = verified ? 'verified_success' : preview.status === 'blocked' || preview.status === 'forbidden' || preview.status === 'not_found' || preview.status === 'no_calendar' ? 'blocked' : 'failed';
       if (!updateClaimedActionRun(claim, status, {
         result: preview,
         providerObjectId: String(sessionId),

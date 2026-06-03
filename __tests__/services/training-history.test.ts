@@ -138,6 +138,20 @@ describe('training-history — bucketing', () => {
     expect(result.trailing4WeekMinutesBySport.running).toEqual([0, 0, 0, 45]);
   });
 
+  it('normalizes offset timestamps to UTC in recent sessions', () => {
+    seed({ userId: 100, sessionType: 'running', daysAgo: 3, durationMin: 45, baseId: 1 });
+    testDb.prepare(`
+      UPDATE training_completions
+         SET completed_at = '2026-04-27T01:00:00+02:00'
+       WHERE session_id = 1
+    `).run();
+
+    const result = READ(100);
+
+    expect(result.recentSessions[0].completedAt).toBe('2026-04-26T23:00:00.000Z');
+    expect(result.recentSessions[0].id).toContain('2026-04-26T23:00:00.000Z');
+  });
+
   it('buckets completion 8-14 days ago into week 1', () => {
     seed({ userId: 100, sessionType: 'running', daysAgo: 10, durationMin: 60, baseId: 1 });
     const result = READ(100);

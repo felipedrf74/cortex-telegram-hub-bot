@@ -91,8 +91,13 @@
       "cronJobs": []
     }
   ],
-  "requiredApiKeys": ["GEMINI_API_KEY"],
+  "requiredApiKeys": [],
   "config": {
+    "modelRouting": {
+      "task": "toolUse",
+      "primaryEnv": "AI_TOOL_USE_PRIMARY",
+      "fallbackEnv": "AI_TOOL_USE_FALLBACK"
+    },
     "stateContextTtl": 30000,
     "maxToolIterations": 4
   }

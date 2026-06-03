@@ -500,15 +500,10 @@ export async function getReadiness(userId: number) {
   const cached = getCached<any>(cacheKey);
   if (cached) return cached;
 
-  let score = 0;
-  let factors: any = {};
-  let recommendation: string | null = null;
-  let reasonCode: string | null = null;
-
   try {
     const readiness = await calculateReadiness(userId);
-    score = readiness?.score || 0;
-    factors = {
+    const score = readiness?.score || 0;
+    const factors = {
       sleepScore: readiness?.factors?.sleep?.score ?? readiness?.factors?.sleep?.qualityScore ?? null,
       hrvStatus: readiness?.factors?.hrv?.trend ?? null,
       bodyBattery: normalizeBodyBattery(readiness?.factors?.bodyBattery?.current),
@@ -519,13 +514,21 @@ export async function getReadiness(userId: number) {
       stressLevel: null,
     };
     const rawRec = readiness?.recommendation || '';
-    recommendation = humanizeRecommendation(rawRec, score);
-    reasonCode = typeof readiness?.reasonCode === 'string' ? readiness.reasonCode : null;
-  } catch {}
-
-  const result = { score, factors, recommendation, reasonCode };
-  setCache(cacheKey, result, READINESS_TTL);
-  return result;
+    const recommendation = humanizeRecommendation(rawRec, score);
+    const reasonCode = typeof readiness?.reasonCode === 'string' ? readiness.reasonCode : null;
+    const result = { score, factors, recommendation, reasonCode };
+    setCache(cacheKey, result, READINESS_TTL);
+    return result;
+  } catch (err) {
+    logger.debug({ err, userId }, 'getReadiness failed — returning uncached unavailable snapshot');
+    return {
+      score: 0,
+      factors: {},
+      recommendation: null,
+      reasonCode: 'READINESS_UNAVAILABLE',
+      unavailable: true,
+    };
+  }
 }
 
 export async function fetchCurrentReadinessForPlan(userId: number): Promise<CoachKernelReadinessInput | null> {

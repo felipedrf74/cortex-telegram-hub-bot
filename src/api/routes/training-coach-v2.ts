@@ -78,6 +78,7 @@ import {
   deriveSafetyTriggerFromSignal,
   wireHealthSignalToSafety,
 } from '../../services/coach-kernel/safety-wiring';
+import { isStrictIsoDate } from '../../services/training-date-utils';
 import {
   dbRowToSession,
   inferSportFromSessionType,
@@ -85,6 +86,8 @@ import {
   resolveRaceCalendarFromPlanWithReport,
   type DbSessionRow,
 } from './training-coach-v2-hydration';
+
+export { isStrictIsoDate };
 
 /**
  * When the v2 flag is off, the v2 handler short-circuits here.
@@ -267,24 +270,6 @@ export function hashOwnerIdForLog(userId: number): string {
  * Exported so tests can hit the helper directly without spinning up
  * the route surface.
  */
-export function isStrictIsoDate(s: string): boolean {
-  if (typeof s !== 'string') return false;
-  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(s);
-  if (!m) return false;
-  const year = Number.parseInt(m[1] as string, 10);
-  const month = Number.parseInt(m[2] as string, 10);
-  const day = Number.parseInt(m[3] as string, 10);
-  if (year < 1900 || year > 2200) return false;
-  if (month < 1 || month > 12) return false;
-  if (day < 1 || day > 31) return false;
-  const dt = new Date(Date.UTC(year, month - 1, day));
-  return (
-    dt.getUTCFullYear() === year &&
-    dt.getUTCMonth() === month - 1 &&
-    dt.getUTCDate() === day
-  );
-}
-
 function v2EnabledOrShortCircuit(res: Response): boolean {
   if (!config.coaching.periodizationV2Enabled) {
     sendError(
@@ -1163,7 +1148,15 @@ export function mountCoachV2Routes(parent: Router): Router {
         raceCalendar,
         principles,
       });
-      const safeWeekIndex = Math.min(weekIndex, meso.weeks.length - 1);
+      if (weekIndex >= meso.weeks.length) {
+        sendError(res, 'WEEK_OUT_OF_RANGE', `weekIndex ${weekIndex} is outside this plan's ${meso.weeks.length} week range.`, 400, {
+          reason: 'week_out_of_range',
+          requestedWeekIndex: weekIndex,
+          maxWeekIndex: Math.max(0, meso.weeks.length - 1),
+        });
+        return;
+      }
+      const safeWeekIndex = weekIndex;
       const weekIntent = meso.weeks[safeWeekIndex];
 
       // Build intensity profiles for the week's sessions (A2b).

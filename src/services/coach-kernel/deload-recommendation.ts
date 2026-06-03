@@ -236,15 +236,19 @@ export function recommendDeload(
 
   // Trigger logic:
   //   - cadence reached → trigger (hybrid mode)
+  //   - OR persistent elevated pain → trigger even without a second signal
   //   - OR ≥2 contributing signals AND riskScore ≥ 0.40
+  const persistentPainFires = input.painElevated === true;
   const dataInformedFires = contributingSignals.length >= 2 && riskScore >= 0.40;
-  const triggered = cadenceReached || dataInformedFires;
+  const triggered = cadenceReached || persistentPainFires || dataInformedFires;
 
   // Primary signal: cadence wins if reached; else highest-weight signal.
   let primarySignal: DeloadRecommendation['primarySignal'] = null;
   if (triggered) {
     if (cadenceReached) {
       primarySignal = 'scheduled';
+    } else if (persistentPainFires) {
+      primarySignal = 'painElevated';
     } else {
       // Pick the signal with the highest weight contributed.
       let bestScore = 0;
