@@ -10,16 +10,61 @@ Last updated: 2026-06-03
 ## Active Production Release
 
 - Source branch: `main`
-- Production HEAD: `30285bb3`
-- Production version: `4.14.200`
-- Source implementation commits before deploy bump: `c7f049e1` (Decision
-  Center execution gates and iOS smoke harness) and `ddcf211e` (staging smoke
-  evidence for `c7f049e1`).
-- Latest pushed runtime deploy commit: `origin/main` includes `30285bb3`.
+- Production HEAD: `ddb8eec4`
+- Production version: `4.14.201`
+- Source implementation commits before deploy bump: `3aac49b4` (Training
+  implementation), `fde1ad3e` (main sync), `e758d6ab` (migration renumber), and
+  `caa81a28` (staging smoke evidence for `e758d6ab`).
+- Latest pushed runtime deploy commit: `origin/main` includes `ddb8eec4`.
   Post-deploy docs-only closeout commits may sit ahead of the runtime deploy.
-- Staging remains on `4.14.199` until the next staging deploy; the promoted
+- Staging remains on `4.14.200` until the next staging deploy; the promoted
   functional code passed staging smoke before production.
 - Official workspace root: `/Users/felipedominguez/Desktop/Nexus Hub`
+
+## 2026-06-03 Training Remediation Production Promote
+
+- Scope: promoted the Training remediation and coach hardening release to
+  production. The backend now hardens Training plan generation, race-date
+  validation, no-oracle ownership handling, cancellation tenant scoping,
+  readiness/ACWR math, safety copy precedence, zone calculators, sport engines,
+  chat action/parser contracts, training skill manifest knowledge, lifecycle
+  cleanup, and the stale agenda unique-index migration. iOS main now carries
+  aligned Training decoding, home-card sanitization, low-adherence visibility,
+  two-a-day `auto` handling, and plan/coach UI contract fallbacks.
+- Production version: `4.14.201`.
+- Production deploy commit: `ddb8eec4`.
+- Source implementation/evidence commits before deploy bump: `3aac49b4`
+  (Training implementation), `fde1ad3e` (main sync), `e758d6ab` (migration
+  renumber), and `caa81a28` (staging smoke evidence).
+- iOS main: `c0c3f39` (`fix(training): harden coach UI contracts`).
+- Previous production deploy commit: `30285bb3` (4.14.200).
+- Staging deploy passed from `main` before production. Standalone staging smoke
+  passed **19/19** with evidence at
+  `docs/release/smoke-evidence/staging-smoke-e758d6ab-20260603T202437Z.json`;
+  promote-time staging smoke also passed **19/19** before production was
+  touched.
+- Release validation passed before production: focused backend Training suites
+  passed **11 files / 260 tests**; backend `npm run verify` passed typecheck,
+  science-policy pin check, and full Vitest with **815 test files / 11,942
+  tests**; focused iOS Training/contract suites passed **128 tests**; the full
+  iOS helper `scripts/ios-single-simulator-test.sh` passed **1,458 XCTest
+  tests** plus **10 Swift Testing cases**; and the final `main` pre-push gate
+  repeated typecheck, full Vitest with **815 test files / 11,942 tests**, and
+  build before pushing `ddb8eec4`.
+- Production promotion completed through `./scripts/promote-to-prod.sh` with
+  `NEXUS_DEPLOY_SKIP_VERIFY=auto-when-staged`: production backup included
+  `bot.db`, dependencies were installed, owner bootstrap preflight passed,
+  native modules rebuilt for system Node, and PM2 restarted `content-engine`
+  and `nexus-hub`.
+- Production health passed after deploy: content engine returned `status: ok`,
+  the authenticated status portal returned version `4.14.201`, the bot was
+  online, PM2 showed both production services online, and
+  `https://api.nexushub.me/public-status` returned `status: ok`.
+- Known caveats: staging remains on `4.14.200` after the production version
+  bump; the promoted functional code was smoke-tested on staging before
+  production. No signed TestFlight upload, production APNs proof, physical
+  HealthKit/Apple Watch proof, or real two-account device walkthrough was part
+  of this production promote.
 
 ## 2026-06-03 Decision Center Execution + iOS Smoke Production Promote
 

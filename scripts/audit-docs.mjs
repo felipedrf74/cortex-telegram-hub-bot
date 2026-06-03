@@ -201,6 +201,7 @@ function isApprovedCurrentOrArchive(file) {
   // OPERATING_CONTEXT requires end-of-session agent handoffs here. Approve the
   // directory so required handoffs do not appear as scattered-doc warnings.
   if (normalized.startsWith(path.join(workspaceRoot, 'docs', 'agents', 'handoffs') + path.sep)) return true;
+  if (normalized.startsWith(path.join(backendRoot, 'docs', 'agents', 'handoffs') + path.sep)) return true;
   if (normalized.startsWith(path.join(workspaceRoot, 'docs', 'release') + path.sep)) return true;
   if (normalized.startsWith(path.join(workspaceRoot, 'docs', 'runbooks') + path.sep)) return true;
   // Engineering-excellence enrichment (2026-05-04): canonical engineering

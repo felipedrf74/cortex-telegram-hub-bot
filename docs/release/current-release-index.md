@@ -12,55 +12,54 @@ Date: 2026-06-03
 Active production package:
 
 - source branch: `main`
-- production HEAD: `30285bb3` (version-bump for 4.14.200)
-- production version: `4.14.200`
-- runtime source commits: `c7f049e1` (Decision Center execution gates and iOS
-  smoke harness) plus `ddcf211e` (staging smoke evidence)
-- latest runtime deploy commit: `30285bb3`; post-deploy docs-only closeout may
+- production HEAD: `ddb8eec4` (version-bump for 4.14.201)
+- production version: `4.14.201`
+- runtime source commits: `3aac49b4` (Training remediation implementation),
+  `fde1ad3e` (main sync), `e758d6ab` (migration renumber), and `caa81a28`
+  (staging smoke evidence)
+- latest runtime deploy commit: `ddb8eec4`; post-deploy docs-only closeout may
   sit ahead of production runtime
 - release state: `docs/release/CURRENT_RELEASE_STATE.md` (backend) and `/Users/felipedominguez/Desktop/Nexus Hub/docs/release/CURRENT_RELEASE_STATE.md` (workspace)
 - official workspace root: `/Users/felipedominguez/Desktop/Nexus Hub`
 
-Commits in this release (4.14.199 -> 4.14.200):
+Commits in this release (4.14.200 -> 4.14.201):
 
-- `c7f049e1 feat(decision-center): add execution gates and iOS smoke harness`
-- `ddcf211e docs(release): add decision center staging smoke evidence`
-- `30285bb3 chore: bump version to 4.14.200 [deploy]`
+- `3aac49b4 fix(training): harden coach plan execution`
+- `fde1ad3e Merge remote-tracking branch 'origin/main' into codex/chat_improvement_goal`
+- `e758d6ab fix(migrations): renumber training agenda cleanup`
+- `caa81a28 docs(release): add training staging smoke evidence`
+- `ddb8eec4 chore: bump version to 4.14.201 [deploy]`
 
 Scope:
 
-- Decision Center execution plan:
-  - API v2 helpers, compact list cards, cursor pagination, and v2 detail
-    wrapper behind `DECISION_API_V2_ENABLED`.
-  - Lifecycle/action/effective status layering, lifecycle events, metrics
-    tables, operator dashboard snapshot, active expiry, and scheduler expiry.
-  - Semantic dedup/supersede, relationship types, fatigue caps, type
-    suppression, refresh, reconnect, rollback-snapshot protection,
-    choice-option, skill-card, evidence-freshness, and human-review guards.
-  - Decision Center-side Command Bus adapter for the low-risk dismiss slice
-    only, behind default-off `DECISION_CENTER_COMMAND_BUS_ENABLED`; ChatV2
-    internals were intentionally not edited.
-  - iOS main `9f5649c` adds a local-backend Decision Center smoke harness and
-    routes Decision Center primary actions through the backend action route.
+- Training remediation:
+  - backend plan generation, coach kernel, readiness/ACWR math, safety wiring,
+    zone calculation, sport engines, route contracts, lifecycle cleanup,
+    tenant-scoped cancellation, no-oracle ownership handling, chat
+    parser/action registry, and training skill knowledge hardening.
+  - migration `199_drop_stale_training_agenda_unique_index.sql` removes a stale
+    training agenda uniqueness hazard.
+  - iOS main `c0c3f39` hardens Training decoding, home-card sanitization,
+    low-adherence visibility, two-a-day `auto`, and plan/coach UI fallbacks.
 
 Validated through promotion:
 
-- backend local `npm run verify`: 812 files / 11,848 tests
+- focused backend Training suites: 11 files / 260 tests
+- backend local `npm run verify`: 815 files / 11,942 tests
 - staging smoke: 19/19 passed
-  (`staging-smoke-c7f049e1-20260603T135207Z.json`)
-- local Docker + iOS simulator smoke passed; peer rerun passed
-- deploy-time `npm run verify`: 812 files / 11,848 tests
+  (`staging-smoke-e758d6ab-20260603T202437Z.json`)
+- focused iOS Training/contract suites: 128 tests
+- full iOS helper: 1,458 XCTest tests plus 10 Swift Testing cases
 - final `main` pre-push gates: typecheck, full Vitest, and build passed
-- `promote-to-prod.sh` completed cleanly for 4.14.200
+- final `main` pre-push Vitest: 815 files / 11,942 tests
+- `promote-to-prod.sh` completed cleanly for 4.14.201
 - post-deploy: PM2 `nexus-hub` and `content-engine` online
-- production `/health` (`api.nexushub.me/health`): HTTP 200 `status: healthy`
-  with fresh uptime
+- production status portal returned version `4.14.201`
 - production `/public-status`: HTTP 200 `status: ok`
-- unauthenticated `/api/v1/decisions/overview`, `/summary`, and `/handled`:
-  HTTP 401
 
 ## Previous Production Versions On This Branch
 
+- 4.14.201 (`ddb8eec4`) — Training remediation and coach/iOS contract hardening (source commit `3aac49b4`)
 - 4.14.200 (`30285bb3`) — Decision Center execution gates + iOS local smoke harness (source commit `c7f049e1`)
 - 4.14.195 (`0682b34b`) — Training Outlook calendar default-enabled (source commit `0bae01cb`)
 - 4.14.194 (`fb1f844e`) — Training bug-fix triplet: cancel-orphan + two-a-day/Auto + calendar body Stage 1 (source commit `d94c2d1a`)

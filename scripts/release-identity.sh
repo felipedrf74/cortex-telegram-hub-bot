@@ -43,7 +43,7 @@ sha_for() {
 }
 
 dirty_for() {
-  if [ ! -d "$1/.git" ]; then
+  if [ ! -e "$1/.git" ]; then
     printf 'unknown'
     return
   fi
