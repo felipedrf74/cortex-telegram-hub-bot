@@ -1,4 +1,4 @@
--- Migration 195: Drop stale non-tenant training agenda ownership uniqueness.
+-- Migration 199: Drop stale non-tenant training agenda ownership uniqueness.
 --
 -- Migration 099 introduced tenant-aware uniqueness:
 --   idx_training_agenda_ownership_unique_tenant
