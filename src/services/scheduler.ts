@@ -4,6 +4,7 @@ import path from 'path';
 import { createHash } from 'crypto';
 import type Database from 'better-sqlite3';
 import cron from 'node-cron';
+import { DateTime } from 'luxon';
 import { Bot } from 'grammy';
 import { config } from '../config';
 import { logger } from '../utils/logger';
@@ -57,7 +58,14 @@ import { expireStalePendingChatActionsForJob } from './chat-action-state';
 import { pruneCompletedChatActionRuns, reapZombieChatActionRuns } from './chat-action-run-store';
 import { processChatActionFixerJobs } from './chat-action-fixer-worker';
 import { runGarminTenantIsolationWatcher } from './garmin-tenant-isolation-watcher';
-import { runDecisionCenterSmokeCleanupJob, runDecisionHandledHistoryBackfillJob, runDecisionSourceStateSupersessionJob } from './decision-center';
+import {
+  runDecisionCenterSmokeCleanupJob,
+  runDecisionExpiryJob,
+  runDecisionHandledHistoryBackfillJob,
+  runDecisionLedgerRetentionPruneJob,
+  runDecisionMetricsRollupJob,
+  runDecisionSourceStateSupersessionJob,
+} from './decision-center';
 import { resolveChatCoreV2ActivationConfig } from './chat-core-v2/activation-flags';
 import {
   computeChatCoreV2AutoRevertMetrics,
@@ -76,6 +84,10 @@ interface ActiveUserTarget {
 }
 
 let remindersJobInFlight = false;
+
+export function decisionMetricsRollupDateForScheduler(now = new Date(), timezone = config.app.timezone): string {
+  return DateTime.fromJSDate(now).setZone(timezone).minus({ days: 1 }).toISODate() ?? '1970-01-01';
+}
 
 /**
  * Opaque, non-reversible token for a tenant id, used only in the Chat Core v2
@@ -862,6 +874,9 @@ export function startScheduler(bot?: any): void {
   registerJob('operator_alert_delivery', 'Operator Alert Delivery', '* * * * *', 'system');
   registerJob('decision_source_supersession', 'Decision Source Supersession', '*/15 * * * *', 'system');
   registerJob('decision_handled_history_backfill', 'Decision Handled History Backfill', '22,52 * * * *', 'system');
+  registerJob('decision_expiry', 'Decision Expiry Sweep', '*/10 * * * *', 'system');
+  registerJob('decision_metrics_rollup', 'Decision Metrics Daily Rollup', '15 0 * * *', 'system');
+  registerJob('decision_ledger_retention_prune', 'Decision Ledger Retention Prune', '40 4 * * *', 'system');
   registerJob('chat_action_plan_expiry', 'Chat Action Plan Expiry', '15 * * * *', 'system');
   registerJob('chat_action_fixer_worker', 'Chat Action Fixer Worker', '* * * * *', 'system');
   registerJob('event_backbone_worker', 'Event Backbone Worker', '* * * * *', 'system');
@@ -2047,6 +2062,24 @@ export function startScheduler(bot?: any): void {
     const result = runDecisionCenterSmokeCleanupJob({ olderThanHours: 24, limit: 100 });
     if (result.expired === 0) return 'skipped';
     logger.info(result, 'Decision Center smoke cleanup completed');
+  }), { timezone: tz });
+
+  cron.schedule('*/10 * * * *', wrapJob('decision_expiry', async () => {
+    const result = runDecisionExpiryJob({ batchSize: 500, maxBatches: 20 });
+    if (result.expired === 0) return 'skipped';
+    logger.info(result, 'Decision expiry sweep completed');
+  }), { timezone: tz });
+
+  cron.schedule('15 0 * * *', wrapJob('decision_metrics_rollup', async () => {
+    const yesterday = decisionMetricsRollupDateForScheduler(new Date(), tz);
+    const result = runDecisionMetricsRollupJob({ date: yesterday });
+    logger.info(result, 'Decision metrics daily rollup completed');
+  }), { timezone: tz });
+
+  cron.schedule('40 4 * * *', wrapJob('decision_ledger_retention_prune', async () => {
+    const result = runDecisionLedgerRetentionPruneJob({ batchSize: 500, maxBatches: 200 });
+    if (result.outcomeLedgerPruned === 0 && result.qualityGateEventsPruned === 0) return 'skipped';
+    logger.info(result, 'Decision ledger retention prune completed');
   }), { timezone: tz });
 
   cron.schedule('*/2 * * * *', wrapJob('chat_action_plan_expiry', async () => {

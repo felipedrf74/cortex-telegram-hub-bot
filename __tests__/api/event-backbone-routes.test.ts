@@ -95,6 +95,7 @@ describe('event backbone API routes', () => {
   });
 
   afterEach(() => {
+    vi.useRealTimers();
     testDb.close();
   });
 
@@ -110,6 +111,9 @@ describe('event backbone API routes', () => {
   });
 
   it('sync route returns only authenticated user changes and rate-limit metadata on excess', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-06-03T10:00:00.000Z'));
+
     emitDomainEvent({
       tenantId: 7,
       userId: 7,

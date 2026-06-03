@@ -17,8 +17,14 @@ const mockUpdateDecisionPreferences = vi.fn();
 const mockCountOpenUrgentDecisionsForUser = vi.fn();
 const mockRegisterNotificationDeviceToken = vi.fn();
 const mockRevokeNotificationDeviceToken = vi.fn();
+const mockApplyDecisionTypeSuppression = vi.fn();
+const mockListDecisionTypeSuppressions = vi.fn();
+const mockSuppressDecisionType = vi.fn();
+const mockUnsuppressDecisionType = vi.fn();
+const mockCaptureError = vi.hoisted(() => vi.fn());
 
 vi.mock('../../src/services/decision-center', () => ({
+  DECISION_RANKING_VERSION: 1,
   DecisionActionError: class DecisionActionError extends Error {
     code: string;
     status: number;
@@ -50,6 +56,10 @@ vi.mock('../../src/services/decision-center', () => ({
   markDecisionViewed: (...args: unknown[]) => mockMarkDecisionViewed(...args),
   getDecisionPreferences: (...args: unknown[]) => mockGetDecisionPreferences(...args),
   updateDecisionPreferences: (...args: unknown[]) => mockUpdateDecisionPreferences(...args),
+  applyDecisionTypeSuppression: (...args: unknown[]) => mockApplyDecisionTypeSuppression(...args),
+  listDecisionTypeSuppressions: (...args: unknown[]) => mockListDecisionTypeSuppressions(...args),
+  suppressDecisionType: (...args: unknown[]) => mockSuppressDecisionType(...args),
+  unsuppressDecisionType: (...args: unknown[]) => mockUnsuppressDecisionType(...args),
 }));
 
 vi.mock('../../src/services/notification-orchestrator', () => ({
@@ -67,6 +77,10 @@ vi.mock('../../src/utils/logger', () => ({
     child: vi.fn().mockReturnThis(),
   },
   LOGGER_REDACTION_PATHS: [],
+}));
+
+vi.mock('../../src/services/error-monitor', () => ({
+  captureError: (...args: unknown[]) => mockCaptureError(...args),
 }));
 
 import { decisionRoutes, deviceTokenRoutes } from '../../src/api/routes/decisions';
@@ -162,6 +176,7 @@ describe('Decision routes', () => {
   beforeEach(() => {
     process.env.NODE_ENV = ORIGINAL_NODE_ENV;
     delete process.env.INTERNAL_API_SECRET;
+    delete process.env.DECISION_API_V2_ENABLED;
     mockGetDecisionSummary.mockReset();
     mockGetDecisionOverview.mockReset();
     mockListDecisionItems.mockReset();
@@ -177,6 +192,16 @@ describe('Decision routes', () => {
     mockUpdateDecisionPreferences.mockReset();
     mockRegisterNotificationDeviceToken.mockReset();
     mockRevokeNotificationDeviceToken.mockReset();
+    mockApplyDecisionTypeSuppression.mockReset();
+    mockListDecisionTypeSuppressions.mockReset();
+    mockSuppressDecisionType.mockReset();
+    mockUnsuppressDecisionType.mockReset();
+    mockCaptureError.mockReset();
+
+    // Type-suppression is a presentation post-filter; by default it passes the list through unchanged
+    // (flag OFF semantics) so the existing list assertions stay byte-identical.
+    mockApplyDecisionTypeSuppression.mockImplementation((items: unknown) => items);
+    mockListDecisionTypeSuppressions.mockReturnValue([]);
 
     mockGetDecisionSummary.mockReturnValue({ openCount: 1, urgentCount: 0, todayCount: 1, ctaLabel: '1 Decision', previewItems: [], badgeCount: 1 });
     mockGetDecisionOverview.mockReturnValue({
@@ -194,7 +219,19 @@ describe('Decision routes', () => {
     });
     mockListDecisionItems.mockReturnValue([{ decisionId: 'nc_1', status: 'unread' }]);
     mockListHandledByNexusItems.mockReturnValue([{ itemId: 'hbn_1', title: 'Handled sync', sourceSkill: 'secretary' }]);
-    mockGetDecisionItem.mockReturnValue({ decisionId: 'nc_1', status: 'unread' });
+    mockGetDecisionItem.mockReturnValue({
+      decisionId: 'nc_1',
+      status: 'unread',
+      effectiveStatus: 'needs_action',
+      decisionKind: 'action_proposal',
+      actionability: 'confirmation_required',
+      analysis: {
+        whyNow: 'The schedule conflict is today.',
+        costOfDelay: 'Waiting will remove the safe option.',
+      },
+      recommendedAction: { id: 'open_detail', label: 'Review decision', style: 'primary' },
+      alternativeActions: [{ id: 'dismiss', label: 'Dismiss', style: 'secondary' }],
+    });
     mockPerformDecisionAction.mockResolvedValue({ actionId: 'open_detail', idempotent: false, status: 'succeeded', item: { decisionId: 'nc_1', status: 'read' } });
     mockSnoozeDecision.mockReturnValue({ decisionId: 'nc_1', status: 'snoozed' });
     mockDismissDecision.mockReturnValue({ decisionId: 'nc_1', status: 'dismissed' });
@@ -211,16 +248,19 @@ describe('Decision routes', () => {
     const summary = await dispatch(router, 'GET', '/summary');
     expect(summary.statusCode).toBe(200);
     expect(summary.body.data.ctaLabel).toBe('1 Decision');
+    expect(summary.body.data.schemaVersion).toBeUndefined();
     expect(mockGetDecisionSummary).toHaveBeenCalledWith(7, 7, 3);
 
     const overview = await dispatch(router, 'GET', '/overview', { limit: 20, handledLimit: 4 });
     expect(overview.statusCode).toBe(200);
     expect(overview.body.data.topSuggestion.title).toBe('Schedule decision');
+    expect(overview.body.data.schemaVersion).toBeUndefined();
     expect(mockGetDecisionOverview).toHaveBeenCalledWith(7, 7, { limit: 20, handledLimit: 4 });
 
     const list = await dispatch(router, 'GET', '/', { limit: 10, status: 'all' });
     expect(list.statusCode).toBe(200);
     expect(list.body.data.count).toBe(1);
+    expect(list.body.data.schemaVersion).toBeUndefined();
     expect(mockListDecisionItems).toHaveBeenCalledWith(7, 7, expect.objectContaining({ status: 'all', limit: 10 }));
 
     mockListDecisionItems.mockClear();
@@ -231,6 +271,19 @@ describe('Decision routes', () => {
     const detail = await dispatch(router, 'GET', '/nc_1');
     expect(detail.statusCode).toBe(200);
     expect(detail.body.data.item.decisionId).toBe('nc_1');
+    expect(detail.body.data.schemaVersion).toBeUndefined();
+
+    process.env.DECISION_API_V2_ENABLED = 'true';
+    const detailV2 = await dispatch(router, 'GET', '/nc_1', {}, {}, { 'x-nexus-api-version': 'v2' });
+    expect(detailV2.statusCode).toBe(200);
+    expect(detailV2.body.data.schemaVersion).toBe('decision-center.v2');
+    expect(detailV2.body.data.item.decisionId).toBe('nc_1');
+    expect(detailV2.body.data.item.analysis).toMatchObject({
+      whyNow: 'The schedule conflict is today.',
+      costOfDelay: 'Waiting will remove the safe option.',
+    });
+    expect(detailV2.body.data.item.recommendedAction).toMatchObject({ id: 'open_detail', label: 'Review decision' });
+    delete process.env.DECISION_API_V2_ENABLED;
 
     const action = await dispatch(router, 'POST', '/nc_1/actions', {}, { actionId: 'open_detail', idempotencyKey: 'tap-1' });
     expect(action.statusCode).toBe(200);
@@ -240,6 +293,27 @@ describe('Decision routes', () => {
     expect(handled.statusCode).toBe(200);
     expect(handled.body.data.items[0].itemId).toBe('hbn_1');
     expect(mockListHandledByNexusItems).toHaveBeenCalledWith(7, 7, 5);
+  });
+
+  it('keeps v2 schema fields opt-in and reads the full cursor universe through the service cap override', async () => {
+    const router = decisionRoutes();
+    process.env.DECISION_API_V2_ENABLED = 'true';
+    mockListDecisionItems.mockReturnValue([
+      { decisionId: 'nc_1', status: 'unread', priorityScore: 90, createdAt: '2026-05-19T10:00:00.000Z', alternativeActions: [], analysis: {} },
+      { decisionId: 'nc_2', status: 'read', priorityScore: 80, createdAt: '2026-05-19T09:00:00.000Z', alternativeActions: [], analysis: {} },
+      { decisionId: 'nc_3', status: 'failed', priorityScore: 70, createdAt: '2026-05-19T08:00:00.000Z', alternativeActions: [], analysis: {} },
+    ]);
+
+    const response = await dispatch(router, 'GET', '/', { pageSize: '2' }, {}, { 'x-nexus-api-version': 'v2' });
+
+    expect(response.statusCode, JSON.stringify(mockCaptureError.mock.calls)).toBe(200);
+    expect(response.body.data.schemaVersion).toBe('decision-center.v2');
+    expect(response.body.data.items).toHaveLength(2);
+    expect(response.body.data.nextCursor).toEqual(expect.any(String));
+    expect(mockListDecisionItems).toHaveBeenCalledWith(7, 7, expect.objectContaining({
+      limit: 500,
+      maxLimit: 500,
+    }));
   });
 
   it('validates overview pagination before calling the service', async () => {
@@ -345,5 +419,66 @@ describe('Decision routes', () => {
     expect(mockPerformDecisionAction).toHaveBeenCalledWith('user-a-decision', 'approve_script', 7, 7, expect.objectContaining({
       idempotencyKey: 'wrong-user-notification-tap',
     }));
+  });
+
+  it('C3: lists, creates (dont_show_type + snooze_type), and removes type suppressions from authenticated scope', async () => {
+    const router = decisionRoutes();
+    mockListDecisionTypeSuppressions.mockReturnValue([
+      { sourceSkill: 'cooking', type: 'decision_required', mode: 'dont_show_type', until: null, createdAt: '2026-05-20T10:00:00.000Z' },
+    ]);
+
+    const listed = await dispatch(router, 'GET', '/preferences/suppressions');
+    expect(listed.statusCode).toBe(200);
+    expect(listed.body.data.suppressions[0].sourceSkill).toBe('cooking');
+    expect(mockListDecisionTypeSuppressions).toHaveBeenCalledWith(7, 7);
+
+    const dontShow = await dispatch(router, 'POST', '/preferences/suppress-type', {}, { sourceSkill: 'cooking', type: 'decision_required', mode: 'dont_show_type' });
+    expect(dontShow.statusCode).toBe(201);
+    // dont_show_type never carries an `until`.
+    expect(mockSuppressDecisionType).toHaveBeenCalledWith(7, 7, 'cooking', 'decision_required', 'dont_show_type', null);
+
+    const snooze = await dispatch(router, 'POST', '/preferences/suppress-type', {}, { sourceSkill: 'training', type: 'reminder', mode: 'snooze_type', untilDays: 3 });
+    expect(snooze.statusCode).toBe(201);
+    // snooze_type computes a forward `until` ISO timestamp from untilDays.
+    expect(mockSuppressDecisionType).toHaveBeenLastCalledWith(7, 7, 'training', 'reminder', 'snooze_type', expect.stringMatching(/^\d{4}-\d{2}-\d{2}T/));
+
+    const removed = await dispatch(router, 'DELETE', '/preferences/suppress-type', { sourceSkill: 'cooking', type: 'decision_required' });
+    expect(removed.statusCode).toBe(200);
+    expect(mockUnsuppressDecisionType).toHaveBeenCalledWith(7, 7, 'cooking', 'decision_required');
+  });
+
+  it('C3: rejects suppress/unsuppress requests with missing fields before touching the store', async () => {
+    const router = decisionRoutes();
+
+    const badMode = await dispatch(router, 'POST', '/preferences/suppress-type', {}, { sourceSkill: 'cooking', type: 'decision_required', mode: 'nope' });
+    expect(badMode.statusCode).toBe(400);
+    expect(badMode.body.error.code).toBe('VALIDATION');
+
+    const missingType = await dispatch(router, 'POST', '/preferences/suppress-type', {}, { sourceSkill: 'cooking', mode: 'dont_show_type' });
+    expect(missingType.statusCode).toBe(400);
+
+    // snooze_type with a non-positive untilDays is rejected by positiveIntQuery before any store write.
+    const badSnoozeWindow = await dispatch(router, 'POST', '/preferences/suppress-type', {}, { sourceSkill: 'training', type: 'reminder', mode: 'snooze_type', untilDays: -1 });
+    expect(badSnoozeWindow.statusCode).toBe(400);
+
+    const missingDeleteParams = await dispatch(router, 'DELETE', '/preferences/suppress-type', {});
+    expect(missingDeleteParams.statusCode).toBe(400);
+
+    expect(mockSuppressDecisionType).not.toHaveBeenCalled();
+    expect(mockUnsuppressDecisionType).not.toHaveBeenCalled();
+  });
+
+  it('C3: maps a service DecisionActionError from suppress/unsuppress to its 4xx status (not a 500)', async () => {
+    const router = decisionRoutes();
+
+    mockSuppressDecisionType.mockImplementation(() => { throw new DecisionActionError('VALIDATION', 'bad until', 422); });
+    const suppressRes = await dispatch(router, 'POST', '/preferences/suppress-type', {}, { sourceSkill: 'cooking', type: 'decision_required', mode: 'dont_show_type' });
+    expect(suppressRes.statusCode).toBe(422); // mapped by decisionError, NOT asyncHandler's 500
+    expect(suppressRes.body.error.code).toBe('VALIDATION');
+
+    mockUnsuppressDecisionType.mockImplementation(() => { throw new DecisionActionError('INVALID_SCOPE', 'nope', 403); });
+    const deleteRes = await dispatch(router, 'DELETE', '/preferences/suppress-type', { sourceSkill: 'cooking', type: 'decision_required' });
+    expect(deleteRes.statusCode).toBe(403);
+    expect(deleteRes.body.error.code).toBe('INVALID_SCOPE');
   });
 });

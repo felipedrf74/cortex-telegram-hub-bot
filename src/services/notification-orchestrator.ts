@@ -799,6 +799,7 @@ export async function releaseDueNotificationDeliveries(now = new Date()): Promis
       AND datetime(logs.scheduled_for) <= datetime(?)
       AND logs.sent_at IS NULL
       AND items.status IN ('unread', 'read')
+      AND (items.expires_at IS NULL OR datetime(items.expires_at) > datetime('now'))
     ORDER BY logs.scheduled_for ASC
     LIMIT 100
   `).all(now.toISOString()) as any[];
@@ -955,6 +956,10 @@ export function listNotificationCenterItems(
   } else {
     clauses.push("status != 'expired'");
   }
+  // A1: hide items past their hard deadline (unless the caller explicitly asks for expired).
+  if (opts.status !== 'expired') {
+    clauses.push("(expires_at IS NULL OR datetime(expires_at) > datetime('now'))");
+  }
   if (opts.sourceSkill) {
     clauses.push('source_skill = ?');
     params.push(opts.sourceSkill);
@@ -1047,8 +1052,12 @@ export function markNotificationCenterItemRead(itemId: string, userId: number, t
     SET status = CASE WHEN status = 'unread' THEN 'read' ELSE status END,
         read_at = COALESCE(read_at, datetime('now'))
     WHERE item_id = ? AND user_id = ? AND tenant_id = ? AND status IN ('unread', 'read')
+      AND (expires_at IS NULL OR datetime(expires_at) > datetime('now'))
   `).run(itemId, userId, tenantId);
   const item = getNotificationCenterItem(itemId, userId, tenantId);
+  // A1: a past-deadline item is not marked read (guard above) and is not surfaced on open —
+  // parity with getDecisionItem. The action path keeps its own DECISION_EXPIRED rejection.
+  if (item && item.expiresAt && Date.parse(item.expiresAt) <= Date.now()) return null;
   if (item) markDecisionOpened(item.decisionLogId);
   return item;
 }

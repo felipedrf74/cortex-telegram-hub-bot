@@ -1,0 +1,54 @@
+# Nexus Hub - Decision Center iOS smoke override
+#
+# Compose this with docker-compose.local.yml when running the dedicated
+# Decision Center iOS smoke gate. It keeps the same loopback ports so the
+# iOS Simulator reaches the backend at http://127.0.0.1:8200, but isolates
+# the DB and turns off external delivery/model paths.
+
+services:
+  content-engine:
+    container_name: nexus-hub-content-engine-decision-center-ios-smoke
+    environment:
+      CONTENT_ENGINE_PORT: "8100"
+      OPENAI_API_KEY: ""
+      GEMINI_API_KEY: ""
+      ANTHROPIC_API_KEY: ""
+
+  nexus-hub:
+    container_name: nexus-hub-node-decision-center-ios-smoke
+    environment:
+      NODE_ENV: development
+      IOS_API_ENABLED: "true"
+      IOS_API_JWT_SECRET: "${IOS_API_JWT_SECRET:-local-decision-center-ios-smoke-ios-jwt-secret-000000000000000000000}"
+      IOS_INVITE_CODE: "${IOS_INVITE_CODE:-LOCAL-DECISION-IOS-SMOKE}"
+      IOS_OWNER_CODE: "${IOS_OWNER_CODE:-LOCAL-DECISION-IOS-OWNER}"
+      DATABASE_PATH: "/app/data/decision-center-ios-smoke.db"
+      PORTAL_PORT: "8200"
+      PORTAL_BIND: "0.0.0.0"
+      PORTAL_ALLOW_LOCAL_BYPASS: "true"
+      PORTAL_TOKEN: "local-decision-center-ios-smoke-portal-token"
+      PORTAL_READ_TOKEN: "local-decision-center-ios-smoke-portal-token"
+      INTERNAL_API_SECRET: "local-decision-center-ios-smoke-internal-secret"
+      HEALTH_ALLOW_UNAUTHENTICATED: "true"
+      PAYWALL_ENABLED: "false"
+      OAUTH_ENCRYPTION_KEY: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+      FINANCE_ENCRYPTION_KEY: "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"
+      TELEGRAM_BOT_TOKEN: "local-disabled-decision-center-ios-smoke"
+      TELEGRAM_ALLOWED_USER_IDS: "${TELEGRAM_ALLOWED_USER_IDS:-100000001}"
+      OWNER_TELEGRAM_ID: "${OWNER_TELEGRAM_ID:-100000001}"
+      TELEGRAM_LEGACY_DELIVERY: "false"
+      APNS_ENABLED: "false"
+      NOTIFICATION_DELIVERY_MODE: "mock"
+      DECISION_CENTER_GUIDANCE_V1_ENABLED: "true"
+      DECISION_CENTER_GUIDANCE_V1_SECRETARY_ENABLED: "true"
+      DECISION_CENTER_COMMAND_BUS_ENABLED: "false"
+      DECISION_SEMANTIC_DEDUP_ENABLED: "false"
+      DECISION_SEMANTIC_SUPERSEDE_ENABLED: "false"
+      DECISION_API_V2_ENABLED: "false"
+      CONTENT_ENGINE_ENABLED: "false"
+      OPENAI_API_KEY: ""
+      GEMINI_API_KEY: ""
+      ANTHROPIC_API_KEY: ""
+    volumes:
+      - ./scripts:/app/scripts:cached
+      - ./.local:/app/.local

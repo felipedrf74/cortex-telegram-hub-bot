@@ -221,7 +221,7 @@ function buildTrainingSummary(userId: number, tenantId: number, db: Database.Dat
   const weekCount = activePlan && tableExists(db, 'training_sessions')
     ? countRows(db, 'training_sessions', 'plan_id = ? AND status IN (\'pending\', \'moved\', \'completed\', \'skipped\')', [activePlan.id])
     : 0;
-  const warningsCount = activePlan ? countRows(db, 'notification_center_items', 'user_id = ? AND tenant_id = ? AND source_skill = ? AND status = ?', [userId, tenantId, 'training', 'unread']) : 0;
+  const warningsCount = activePlan ? countRows(db, 'notification_center_items', "user_id = ? AND tenant_id = ? AND source_skill = ? AND status = ? AND (expires_at IS NULL OR datetime(expires_at) > datetime('now'))", [userId, tenantId, 'training', 'unread']) : 0;
   return {
     activePlanId: activePlan?.id ?? null,
     currentBlock: activePlan?.name ?? null,
@@ -250,12 +250,16 @@ function buildContentSummary(userId: number, tenantId: number, db: Database.Data
 }
 
 function buildNotificationSummary(userId: number, tenantId: number, db: Database.Database): Record<string, unknown> {
+  // A1: a notification whose hard deadline has passed must not count as unread/pending,
+  // even before the decision_expiry sweep flips its status. Same predicate as the
+  // findActiveDuplicate guard in notification-orchestrator.
+  const notExpired = "(expires_at IS NULL OR datetime(expires_at) > datetime('now'))";
   return {
-    unreadCount: countRows(db, 'notification_center_items', 'user_id = ? AND tenant_id = ? AND status = ?', [userId, tenantId, 'unread']),
-    needsDecisionCount: countRows(db, 'notification_center_items', 'user_id = ? AND tenant_id = ? AND type = ? AND status = ?', [userId, tenantId, 'decision_required', 'unread']),
-    conflictsCount: countRows(db, 'notification_center_items', 'user_id = ? AND tenant_id = ? AND type = ? AND status = ?', [userId, tenantId, 'conflict_detected', 'unread']),
-    approvalsCount: countRows(db, 'notification_center_items', 'user_id = ? AND tenant_id = ? AND type = ? AND status = ?', [userId, tenantId, 'approval_required', 'unread']),
-    remindersCount: countRows(db, 'notification_center_items', 'user_id = ? AND tenant_id = ? AND type = ? AND status = ?', [userId, tenantId, 'reminder', 'unread']),
+    unreadCount: countRows(db, 'notification_center_items', `user_id = ? AND tenant_id = ? AND status = ? AND ${notExpired}`, [userId, tenantId, 'unread']),
+    needsDecisionCount: countRows(db, 'notification_center_items', `user_id = ? AND tenant_id = ? AND type = ? AND status = ? AND ${notExpired}`, [userId, tenantId, 'decision_required', 'unread']),
+    conflictsCount: countRows(db, 'notification_center_items', `user_id = ? AND tenant_id = ? AND type = ? AND status = ? AND ${notExpired}`, [userId, tenantId, 'conflict_detected', 'unread']),
+    approvalsCount: countRows(db, 'notification_center_items', `user_id = ? AND tenant_id = ? AND type = ? AND status = ? AND ${notExpired}`, [userId, tenantId, 'approval_required', 'unread']),
+    remindersCount: countRows(db, 'notification_center_items', `user_id = ? AND tenant_id = ? AND type = ? AND status = ? AND ${notExpired}`, [userId, tenantId, 'reminder', 'unread']),
   };
 }
 
