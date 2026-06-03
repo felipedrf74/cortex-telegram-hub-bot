@@ -1,10 +1,20 @@
 # Final Handoff - WO-decision-center-ios-smoke-20260603
 
-Status: locally validated to L2.
+Status: locally validated to L2; iOS smoke harness commit pushed to iOS `main`
+on 2026-06-03.
 
 ## Claim Level
 
 Current maximum claim: L2 local harness implementation and local simulator/runtime proof. Independent peer validation has passed, but this Work Order still declares `max_claim_level: L2` and does not claim production APNs, TestFlight/device, staging, or production behavior.
+
+## Main Push
+
+- iOS repo: `/Users/felipedominguez/Desktop/Nexus Hub IOS/Nexus Hub`.
+- iOS main commit: `9f5649c` (`test(decision-center): add local backend smoke coverage`).
+- Local iOS `main` was fast-forwarded to `origin/main` after push.
+- Backend production promotion later deployed the paired backend artifact at
+  `4.14.200` / `30285bb3`; this does not change the iOS claim level because
+  production APNs, TestFlight, and physical-device behavior were not exercised.
 
 ## Evidence
 

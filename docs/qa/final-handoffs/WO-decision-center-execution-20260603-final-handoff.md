@@ -1,6 +1,6 @@
 # Final Handoff - WO-decision-center-execution-20260603
 
-Status: local verification complete; user authorized commit, main push, and production promotion on 2026-06-03.
+Status: production promoted on 2026-06-03.
 
 ## Candidate
 
@@ -8,7 +8,10 @@ Status: local verification complete; user authorized commit, main push, and prod
 - Worktree: `/Users/felipedominguez/Desktop/Custom Connectors/Cortex/cortex-telegram-hub-bot-decision-center-execution-20260603`
 - Base: `origin/main` `09a1c96d`
 - Mode: Implementation
-- Maximum overall claim before release promotion: L2 local verification with independent peer review for the tested backend slices. Production claim requires staging smoke plus production deploy/health evidence.
+- Maximum overall claim: L5 for the promoted backend artifact being deployed
+  and live under production health/auth-boundary checks. User-visible rollout
+  of default-off flags still requires separate flag enablement and runtime
+  proof.
 
 ## Implemented Locally
 
@@ -38,7 +41,7 @@ DATABASE_PATH=/tmp/nexus-decision-center-smoke.db DECISION_CENTER_NOTIFICATION_S
 node scripts/verify-deliverable.mjs --claim L2 --handoff docs/qa/final-handoffs/WO-decision-center-execution-20260603-final-handoff.md
 ```
 
-Results:
+Results before production:
 
 - Focused Decision Center suite: 13 files, 251 tests passed.
 - Expanded post-peer focused suite: 16 files, 286 tests passed, plus `npm run build`.
@@ -56,10 +59,27 @@ Additional runtime evidence exists in the paired iOS smoke Work Order:
 - Evidence: `.local/decision-center-ios-smoke/evidence/20260603-134101`.
 - Independent peer rerun passed with evidence: `.local/decision-center-ios-smoke/evidence/20260603-135756`.
 
+## Release Promotion Evidence
+
+- Backend implementation commit: `c7f049e1`.
+- Staging evidence commit: `ddcf211e`.
+- Production deploy commit/version: `30285bb3`, `4.14.200`.
+- Staging smoke before production: `./scripts/staging-smoke.sh` passed 19/19
+  at `docs/release/smoke-evidence/staging-smoke-c7f049e1-20260603T135207Z.json`.
+- Promote-time staging smoke passed 19/19 before the production confirmation.
+- Deploy-time `npm run verify` passed 812 test files / 11,848 tests.
+- Deploy-time `main` pre-push gate passed typecheck, full Vitest, and build.
+- Production deploy completed through `./scripts/promote-to-prod.sh`.
+- Production health after deploy:
+  - `https://api.nexushub.me/health` returned HTTP 200 with `status: healthy`.
+  - `https://api.nexushub.me/public-status` returned HTTP 200 with `status: ok`.
+  - PM2 showed `nexus-hub` and `content-engine` online at version `4.14.200`.
+  - Unauthenticated `/api/v1/decisions/overview`, `/summary`, and `/handled`
+    each returned HTTP 401.
+
 ## Evidence Limits
 
 - Backend tests and dry-run smoke do not prove iOS behavior.
-- No staging or production deploy/health/smoke proof was collected.
-- iOS simulator proof is limited to the paired local smoke Work Order and does not prove TestFlight/device or production APNs behavior.
-- Do not claim L5 production readiness until staging smoke and production health evidence are collected.
+- iOS simulator proof is limited to the paired local smoke Work Order and does
+  not prove TestFlight/device or production APNs behavior.
 - Do not enable `DECISION_CENTER_COMMAND_BUS_ENABLED` without explicit rollout approval and staged runtime proof.
